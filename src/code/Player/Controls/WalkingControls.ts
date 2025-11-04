@@ -48,8 +48,6 @@ export class WalkingControls implements IControls<PlayerVehicle> {
   public static KEY_F5 = ["f5"];
   public static KEY_F6 = ["f6"];
 
-  public world = new World();
-
   constructor(player: Player) {
     this.#controlledEntity = player.playerVehicle;
     this.#inputDirection = player.playerVehicle.inputDirection;
@@ -67,7 +65,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
     if (WalkingControls.MOUSE1.includes(mouseEvent.button) && isKeyDown) {
       const hit = CrossHair.pickTarget(this.#player);
       if (!hit) return;
-      this.world.deleteBlock(hit.x, hit.y, hit.z);
+      World.deleteBlock(hit.x, hit.y, hit.z);
     } else if (WalkingControls.MOUSE2.includes(mouseEvent.button)) {
       const item =
         this.#player.playerInventory.inventory[0][
@@ -77,7 +75,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
       if (item) {
         const hit = CrossHair.pickMesh(this.#player);
         if (!hit) return;
-        this.world.setBlock(hit.x, hit.y, hit.z, item.itemId);
+        World.setBlock(hit.x, hit.y, hit.z, item.itemId);
       }
     }
   }

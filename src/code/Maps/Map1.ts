@@ -22,6 +22,7 @@ import { Chunk } from "../World/Chunk/Chunk";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
 import { ChunkMesher } from "../World/Chunk/ChunckMesher";
 import { GlobalValues } from "../World/GlobalValues";
+import { TerrainGenerator } from "../World/Generation/TerrainGenarator";
 
 export class Map1 {
   public static mainScene: Scene;
@@ -35,7 +36,16 @@ export class Map1 {
     this.asyncInit().then(async () => {
       ChunkMesher.initAtlas();
       // Now that the material is ready, tell all existing chunks to remesh.
-      Chunk.chunkInstances.forEach((chunk) => chunk.scheduleRemesh());
+      // Now that textures are ready, generate terrain and remesh.
+      Chunk.chunkInstances.forEach((chunk) => {
+        if (chunk.chunkY === 0) {
+          for (let x = 0; x < Chunk.SIZE; x++) {
+            for (let z = 0; z < Chunk.SIZE; z++) {
+              TerrainGenerator.generateChunkColumn(chunk, x, z);
+            }
+          }
+        }
+      });
     });
     scene.onBeforeRenderObservable.add(this.updateDayNightCycle);
   }
@@ -207,7 +217,7 @@ export class Map1 {
     waterMaterial.addToRenderList(goldberg2);
     waterMaterial.addToRenderList(skybox);
     water.material = waterMaterial;
-    const waterHeight = 2;
+    const waterHeight = 40;
     water.position.y = waterHeight;
     water.isPickable = false;
 
