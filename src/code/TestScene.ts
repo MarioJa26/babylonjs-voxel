@@ -57,7 +57,7 @@ export class TestScene {
 
     // This creates and positions a free camera (non-mesh)
     const camera = new FreeCamera("camera1", new Vector3(0, 5, -5), scene);
-    camera.fov = 1.31;
+    camera.fov = 1.35;
     camera.minZ = 0.2;
 
     // This creates a light, aiming 0,1,0 - to the sky (non-mesh)

@@ -5,7 +5,8 @@ export class World {
   public static worldInstance: World;
 
   public static chunks = new Map<string, Chunk>();
-  public static readonly CHUNK_SIZE = Chunk.SIZE; // 64
+
+  public static readonly CHUNK_SIZE = 64;
 
   constructor() {
     this.initChunks();

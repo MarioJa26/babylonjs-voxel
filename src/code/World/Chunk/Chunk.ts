@@ -1,13 +1,15 @@
 import { Mesh } from "@babylonjs/core";
-import { ChunkMesher } from "./ChunckMesher";
+import { ChunkWorkerPool } from "./ChunkWorkerPool";
 
 export class Chunk {
   public static readonly SIZE = 64;
   public static readonly SIZE2 = Chunk.SIZE * Chunk.SIZE;
   public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
-  public static readonly chunkInstances: Chunk[] = [];
+  public static readonly chunkInstances = new Map<string, Chunk>();
+  private static nextId = 0;
 
   public isDirty = false;
+  public readonly id: string;
   private remeshTimeout: number | null = null;
 
   block_array: Uint8Array;
@@ -21,8 +23,9 @@ export class Chunk {
     this.#chunkX = chunkX;
     this.#chunkY = chunkY;
     this.#chunkZ = chunkZ;
+    this.id = (Chunk.nextId++).toString();
 
-    Chunk.chunkInstances.push(this);
+    Chunk.chunkInstances.set(this.id, this);
 
     this.block_array = new Uint8Array(Chunk.SIZE3);
     this.block_array.fill(0);
@@ -143,7 +146,8 @@ export class Chunk {
 
     // Defer the remesh to the next available moment in the event loop.
     this.remeshTimeout = setTimeout(() => {
-      ChunkMesher.build(this);
+      const pool = ChunkWorkerPool.getInstance();
+      pool.scheduleRemesh(this);
       this.isDirty = false;
       this.remeshTimeout = null;
     }, 0);
