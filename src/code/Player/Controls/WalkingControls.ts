@@ -5,6 +5,7 @@ import { CrossHair } from "../Hud/CrossHair";
 import { PlayerVehicle } from "../PlayerVehicle";
 import { World } from "@/code/World/World";
 import { GlobalValues } from "@/code/World/GlobalValues";
+import { PlayerHud } from "../Hud/PlayerHud";
 
 export class WalkingControls implements IControls<PlayerVehicle> {
   public pressedKeys = new Set<string>();
@@ -101,6 +102,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
       this.#player.flashlight.toggle();
     } else if (WalkingControls.KEY_F2.includes(key)) {
       GlobalValues.DEBUG = !GlobalValues.DEBUG;
+      PlayerHud.showDebugPanel();
     }
 
     if (WalkingControls.KEY_DROP.includes(key)) {

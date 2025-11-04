@@ -14,6 +14,7 @@ export class TextureAtlasFactory {
 
   static tileSize = 25;
   static atlasSize = 16;
+  static atlasTileSize = 1 / this.atlasSize;
 
   /**
    * Build both diffuse and normal atlases

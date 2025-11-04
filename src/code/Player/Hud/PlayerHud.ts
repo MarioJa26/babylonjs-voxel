@@ -17,6 +17,9 @@ export class PlayerHud {
 
   #overlayDiv: HTMLDivElement;
 
+  private static debugPanelDiv: HTMLDivElement;
+  private static infoLines: { [key: string]: string } = {};
+
   constructor(
     engine: Engine,
     scene: Scene,
@@ -29,6 +32,7 @@ export class PlayerHud {
     this.#crosshair = new CrossHair(engine, playerCamera, scene);
     this.#overlayDiv = this.initializeHUD();
     this.createHotbarUI();
+    this.initializeDebugPanel();
   }
 
   private initializeHUD(): HTMLDivElement {
@@ -122,5 +126,45 @@ export class PlayerHud {
       // Add 'selected' class if it's the selected slot, remove it otherwise
       slot.classList.toggle("selected", index === this.#selectedHotbarSlot);
     });
+  }
+
+  private initializeDebugPanel(): void {
+    if (PlayerHud.debugPanelDiv) return;
+
+    const div = document.createElement("div");
+    div.style.position = "absolute";
+    div.style.top = "10px";
+    div.style.left = "10px";
+    div.style.padding = "10px";
+    div.style.backgroundColor = "rgba(0, 0, 0, 0.6)";
+    div.style.color = "white";
+    div.style.fontFamily = "monospace";
+    div.style.fontSize = "16px";
+    div.style.zIndex = "100";
+    div.style.display = "block"; // Initially hidden
+    div.style.borderRadius = "5px";
+    document.body.appendChild(div);
+    PlayerHud.debugPanelDiv = div;
+  }
+
+  public static showDebugPanel(): void {
+    if (this.debugPanelDiv) this.debugPanelDiv.style.display = "block";
+  }
+
+  public static hideDebugPanel(): void {
+    if (this.debugPanelDiv) this.debugPanelDiv.style.display = "none";
+  }
+
+  public static updateDebugInfo(key: string, value: string | number): void {
+    this.infoLines[key] = String(value);
+    this.renderDebugInfo();
+  }
+
+  private static renderDebugInfo(): void {
+    let html = "";
+    for (const key in this.infoLines) {
+      html += `<div><strong>${key}:</strong> ${this.infoLines[key]}</div>`;
+    }
+    if (this.debugPanelDiv) this.debugPanelDiv.innerHTML = html;
   }
 }

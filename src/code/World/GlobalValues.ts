@@ -1,5 +1,4 @@
-import { Map1 } from "@/code/Maps/Map1";
-import { DirectionalLight, Vector3 } from "@babylonjs/core";
+import { Vector3 } from "@babylonjs/core";
 
 export class GlobalValues {
   public static DEBUG = false;

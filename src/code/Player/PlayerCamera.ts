@@ -81,6 +81,10 @@ export class PlayerCamera {
     return this.#cameraYaw;
   }
 
+  public get cameraPitch(): number {
+    return this.#cameraPitch;
+  }
+
   public get playerCamera(): FreeCamera {
     return this.#playerCamera;
   }

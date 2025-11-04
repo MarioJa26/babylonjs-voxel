@@ -1,7 +1,6 @@
 import {
   Mesh,
   VertexData,
-  Vector3,
   ShaderMaterial,
   Effect,
   Material,
@@ -16,6 +15,17 @@ import { Chunk } from "./Chunk";
 import { GlobalValues } from "../GlobalValues";
 import { DiffuseNormalShader } from "../Light/DiffuseNormalShader";
 
+type MeshData = {
+  positions: number[];
+  indices: number[];
+  normals: number[];
+  tangents: number[];
+  uvs: number[];
+  uvs2: number[];
+  uvs3: number[];
+  indexOffset: number;
+};
+
 export class ChunkMesher {
   private static atlasMaterial: Material | null = null;
 
@@ -28,7 +38,16 @@ export class ChunkMesher {
     const uvs2: number[] = []; // For tiling data (width, height)
     const uvs3: number[] = [];
 
-    let indexOffset = 0;
+    const meshData: MeshData = {
+      positions,
+      indices,
+      normals,
+      tangents,
+      uvs,
+      uvs2,
+      uvs3,
+      indexOffset: 0,
+    };
 
     for (let d = 0; d < 3; d++) {
       const u = (d + 1) % 3; // u-axis
@@ -37,231 +56,25 @@ export class ChunkMesher {
       const x = [0, 0, 0];
       const q = [0, 0, 0];
       q[d] = 1;
-      const mask = new Int32Array(Chunk.SIZE * Chunk.SIZE);
 
       // Iterate through slices of the chunk
       for (x[d] = -1; x[d] < Chunk.SIZE; ) {
-        let n = 0;
-        // Create a 2D mask for the current slice
-        for (x[v] = 0; x[v] < Chunk.SIZE; x[v]++) {
-          for (x[u] = 0; x[u] < Chunk.SIZE; x[u]++) {
-            const block1 = x[d] >= 0 ? chunk.getBlock(x[0], x[1], x[2]) : 0;
-            const block2 =
-              x[d] < Chunk.SIZE - 1
-                ? chunk.getBlock(x[0] + q[0], x[1] + q[1], x[2] + q[2])
-                : 0;
-
-            const isBlock1Solid = block1 > 0;
-            const isBlock2Solid = block2 > 0;
-
-            if (isBlock1Solid === isBlock2Solid) {
-              mask[n++] = 0; // Both are solid or both are air, so cull the face.
-            } else if (isBlock1Solid) {
-              mask[n++] = block1; // Block1 is solid and Block2 is air, draw front face for Block1.
-            } else {
-              mask[n++] = -block2; // Block1 is air and Block2 is solid, draw back face for Block2.
-            }
-          }
-        }
+        const mask = ChunkMesher.generateMask(chunk, x, d, u, v, q);
 
         x[d]++;
-        n = 0;
 
         // Generate quads from the mask
-        for (let j = 0; j < Chunk.SIZE; j++) {
-          for (let i = 0; i < Chunk.SIZE; ) {
-            if (mask[n] !== 0) {
-              const blockId = Math.abs(mask[n]);
-              const isBackFace = mask[n] < 0;
-
-              // Find width of the quad
-              let w = 1;
-              while (i + w < Chunk.SIZE && mask[n + w] === mask[n]) {
-                w++;
-              }
-
-              // Find height of the quad
-              let h = 1;
-              let done = false;
-              while (j + h < Chunk.SIZE) {
-                for (let k = 0; k < w; k++) {
-                  if (mask[n + k + h * Chunk.SIZE] !== mask[n]) {
-                    done = true;
-                    break;
-                  }
-                }
-                if (done) break;
-                h++;
-              }
-
-              // --- Add quad to mesh data ---
-              x[u] = i;
-              x[v] = j;
-
-              const du = [0, 0, 0];
-              du[u] = w;
-              const dv = [0, 0, 0];
-              dv[v] = h;
-
-              // Define the 4 vertices of the quad
-              const p1 = [x[0], x[1], x[2]];
-              const p2 = [x[0] + du[0], x[1] + du[1], x[2] + du[2]];
-              const p3 = [
-                x[0] + du[0] + dv[0],
-                x[1] + du[1] + dv[1],
-                x[2] + du[2] + dv[2],
-              ];
-              const p4 = [x[0] + dv[0], x[1] + dv[1], x[2] + dv[2]];
-
-              // Push vertices based on face direction
-              // Always push vertices in a consistent order. The indices will handle the winding.
-              positions.push(...p1, ...p2, ...p3, ...p4);
-
-              // Normals are the same for all 4 vertices
-              const normal = isBackFace ? [-q[0], -q[1], -q[2]] : q;
-              normals.push(...normal, ...normal, ...normal, ...normal);
-              // Build du/dv in world (mesh local) space for this quad (not normalised yet)
-              // Build du/dv in mesh space (raw edges of quad)
-              const duVec = [du[0], du[1], du[2]];
-              const dvVec = [dv[0], dv[1], dv[2]];
-
-              // Normalize helper
-              const normalize3 = (a: number[]) => {
-                const len = Math.hypot(a[0], a[1], a[2]);
-                return len > 0
-                  ? [a[0] / len, a[1] / len, a[2] / len]
-                  : [0, 0, 0];
-              };
-
-              // Face normal already computed above:
-              const N = normal;
-
-              const T = normalize3(duVec);
-              const B = normalize3(dvVec);
-
-              /*
-              // Fallback in weird cases
-              if (T[0] === 0 && T[1] === 0 && T[2] === 0) {
-                T[u] = 1;
-              }
-              if (B[0] === 0 && B[1] === 0 && B[2] === 0) {
-                B[v] = 1;
-              }
-              */
-
-              // Backfaces need tangent flipped to match your UV winding
-              // Handedness sign: cross(N, T) should match B
-              const crossNT = [
-                N[1] * T[2] - N[2] * T[1],
-                N[2] * T[0] - N[0] * T[2],
-                N[0] * T[1] - N[1] * T[0],
-              ];
-
-              // The handedness is -1 for back-facing quads to correct the TBN matrix.
-              const handedness =
-                crossNT[0] * B[0] + crossNT[1] * B[1] + crossNT[2] * B[2] < 0
-                  ? -1.0
-                  : 1;
-
-              // Push tangent (vec4)
-              for (let v = 0; v < 4; v++) {
-                tangents.push(T[0], T[1], T[2], handedness);
-              }
-
-              // UVs
-              const faceName = ChunkMesher.getFaceName(q, isBackFace);
-              const tex = BlockTextures[blockId]!;
-              const tile = tex[faceName] ?? tex.all!;
-              ChunkMesher.pushTileUV(uvs, uvs2, tile[0], tile[1], isBackFace);
-
-              // Add tiling data to uv2 buffer for each vertex
-              const tilingData = [w, h];
-              uvs3.push(
-                ...tilingData,
-                ...tilingData,
-                ...tilingData,
-                ...tilingData
-              );
-
-              if (!isBackFace) {
-                // Reversed winding order for back faces
-                indices.push(
-                  indexOffset,
-                  indexOffset + 2,
-                  indexOffset + 1,
-                  indexOffset,
-                  indexOffset + 3,
-                  indexOffset + 2
-                );
-              } else {
-                // Standard winding order for front faces
-                indices.push(
-                  indexOffset,
-                  indexOffset + 1,
-                  indexOffset + 2,
-                  indexOffset,
-                  indexOffset + 2,
-                  indexOffset + 3
-                );
-              }
-              indexOffset += 4;
-
-              // Mark mask as visited
-              for (let l = 0; l < h; l++) {
-                for (let k = 0; k < w; k++) {
-                  mask[n + k + l * Chunk.SIZE] = 0;
-                }
-              }
-              i += w;
-              n += w;
-            } else {
-              i++;
-              n++;
-            }
-          }
-        }
+        ChunkMesher.generateQuadsFromMask(mask, x, d, u, v, q, meshData);
       }
     }
 
     if (chunk.mesh) chunk.mesh.dispose();
-    if (positions.length === 0 || indices.length === 0) {
+    if (meshData.positions.length === 0 || meshData.indices.length === 0) {
       chunk.mesh?.dispose();
       chunk.mesh = null;
       return;
     }
-    chunk.mesh = new Mesh("chunk", Map1.mainScene);
-
-    chunk.mesh.material = ChunkMesher.atlasMaterial;
-
-    const v = new VertexData();
-    v.positions = positions;
-    v.indices = indices;
-    v.normals = normals;
-    v.uvs = uvs;
-    v.uvs2 = uvs2;
-    v.uvs3 = uvs3;
-
-    v.applyToMesh(chunk.mesh, true);
-
-    chunk.mesh.setVerticesData("tangent", tangents);
-
-    // For debugging, show the wireframe to see the vertices and quads.
-    if (chunk.mesh.material) {
-      (chunk.mesh.material as ShaderMaterial).wireframe = GlobalValues.DEBUG;
-    }
-
-    chunk.mesh.position = new Vector3(
-      chunk.chunkX * Chunk.SIZE,
-      chunk.chunkY * Chunk.SIZE,
-      chunk.chunkZ * Chunk.SIZE
-    );
-
-    new PhysicsAggregate(
-      chunk.mesh,
-      PhysicsShapeType.MESH,
-      { mass: 0, friction: 0.5, restitution: 0.1 },
-      Map1.mainScene
-    );
+    ChunkMesher.createMeshFromData(chunk, meshData);
   }
   static initAtlas() {
     // --- 🔑 Material Application Point (NEW LOGIC) ---
@@ -322,6 +135,223 @@ export class ChunkMesher {
       }
     }
   }
+
+  private static generateMask(
+    chunk: Chunk,
+    x: number[],
+    d: number,
+    u: number,
+    v: number,
+    q: number[]
+  ): Int32Array {
+    const mask = new Int32Array(Chunk.SIZE * Chunk.SIZE);
+    let n = 0;
+    for (x[v] = 0; x[v] < Chunk.SIZE; x[v]++) {
+      for (x[u] = 0; x[u] < Chunk.SIZE; x[u]++) {
+        const block1 = x[d] >= 0 ? chunk.getBlock(x[0], x[1], x[2]) : 0;
+        const block2 =
+          x[d] < Chunk.SIZE - 1
+            ? chunk.getBlock(x[0] + q[0], x[1] + q[1], x[2] + q[2])
+            : 0;
+
+        const isBlock1Solid = block1 > 0;
+        const isBlock2Solid = block2 > 0;
+
+        if (isBlock1Solid === isBlock2Solid) {
+          mask[n++] = 0;
+        } else if (isBlock1Solid) {
+          mask[n++] = block1;
+        } else {
+          mask[n++] = -block2;
+        }
+      }
+    }
+    return mask;
+  }
+
+  private static generateQuadsFromMask(
+    mask: Int32Array,
+    x: number[],
+    d: number,
+    u: number,
+    v: number,
+    q: number[],
+    meshData: MeshData
+  ) {
+    let n = 0;
+    for (let j = 0; j < Chunk.SIZE; j++) {
+      for (let i = 0; i < Chunk.SIZE; ) {
+        if (mask[n] !== 0) {
+          const blockId = Math.abs(mask[n]);
+          const isBackFace = mask[n] < 0;
+
+          let w = 1;
+          while (i + w < Chunk.SIZE && mask[n + w] === mask[n]) w++;
+
+          let h = 1;
+          let done = false;
+          while (j + h < Chunk.SIZE) {
+            for (let k = 0; k < w; k++) {
+              if (mask[n + k + h * Chunk.SIZE] !== mask[n]) {
+                done = true;
+                break;
+              }
+            }
+            if (done) break;
+            h++;
+          }
+
+          x[u] = i;
+          x[v] = j;
+
+          this.addQuad(x, q, u, v, w, h, blockId, isBackFace, meshData);
+
+          for (let l = 0; l < h; l++) {
+            for (let k = 0; k < w; k++) {
+              mask[n + k + l * Chunk.SIZE] = 0;
+            }
+          }
+          i += w;
+          n += w;
+        } else {
+          i++;
+          n++;
+        }
+      }
+    }
+  }
+
+  private static addQuad(
+    x: number[],
+    q: number[],
+    u: number,
+    v: number,
+    w: number,
+    h: number,
+    blockId: number,
+    isBackFace: boolean,
+    meshData: MeshData
+  ) {
+    const du = [0, 0, 0];
+    du[u] = w;
+    const dv = [0, 0, 0];
+    dv[v] = h;
+
+    const p1 = [x[0], x[1], x[2]];
+    const p2 = [x[0] + du[0], x[1] + du[1], x[2] + du[2]];
+    const p3 = [
+      x[0] + du[0] + dv[0],
+      x[1] + du[1] + dv[1],
+      x[2] + du[2] + dv[2],
+    ];
+    const p4 = [x[0] + dv[0], x[1] + dv[1], x[2] + dv[2]];
+
+    meshData.positions.push(...p1, ...p2, ...p3, ...p4);
+
+    const normal = isBackFace ? [-q[0], -q[1], -q[2]] : q;
+    meshData.normals.push(...normal, ...normal, ...normal, ...normal);
+
+    const duVec = [du[0], du[1], du[2]];
+    const dvVec = [dv[0], dv[1], dv[2]];
+
+    const normalize3 = (a: number[]) => {
+      const len = Math.hypot(a[0], a[1], a[2]);
+      return len > 0 ? [a[0] / len, a[1] / len, a[2] / len] : [0, 0, 0];
+    };
+
+    const N = normal;
+    const T = normalize3(duVec);
+    const B = normalize3(dvVec);
+
+    const crossNT = [
+      N[1] * T[2] - N[2] * T[1],
+      N[2] * T[0] - N[0] * T[2],
+      N[0] * T[1] - N[1] * T[0],
+    ];
+    const handedness =
+      crossNT[0] * B[0] + crossNT[1] * B[1] + crossNT[2] * B[2] < 0 ? -1.0 : 1;
+
+    for (let i = 0; i < 4; i++) {
+      meshData.tangents.push(T[0], T[1], T[2], handedness);
+    }
+
+    const faceName = ChunkMesher.getFaceName(q, isBackFace);
+    const tex = BlockTextures[blockId]!;
+    const tile = tex[faceName] ?? tex.all!;
+    ChunkMesher.pushTileUV(
+      meshData.uvs,
+      meshData.uvs2,
+      tile[0],
+      tile[1],
+      isBackFace
+    );
+
+    const tilingData = [w, h];
+    meshData.uvs3.push(
+      ...tilingData,
+      ...tilingData,
+      ...tilingData,
+      ...tilingData
+    );
+
+    const { indices, indexOffset } = meshData;
+    if (!isBackFace) {
+      indices.push(
+        indexOffset,
+        indexOffset + 2,
+        indexOffset + 1,
+        indexOffset,
+        indexOffset + 3,
+        indexOffset + 2
+      );
+    } else {
+      indices.push(
+        indexOffset,
+        indexOffset + 1,
+        indexOffset + 2,
+        indexOffset,
+        indexOffset + 2,
+        indexOffset + 3
+      );
+    }
+    meshData.indexOffset += 4;
+  }
+
+  private static createMeshFromData(chunk: Chunk, meshData: MeshData) {
+    const mesh = new Mesh("chunk", Map1.mainScene);
+    mesh.material = ChunkMesher.atlasMaterial;
+
+    const vertexData = new VertexData();
+    vertexData.positions = meshData.positions;
+    vertexData.indices = meshData.indices;
+    vertexData.normals = meshData.normals;
+    vertexData.uvs = meshData.uvs;
+    vertexData.uvs2 = meshData.uvs2;
+    vertexData.uvs3 = meshData.uvs3;
+
+    vertexData.applyToMesh(mesh, true);
+    mesh.setVerticesData("tangent", meshData.tangents);
+
+    if (mesh.material) {
+      (mesh.material as ShaderMaterial).wireframe = GlobalValues.DEBUG;
+    }
+
+    mesh.position.set(
+      chunk.chunkX * Chunk.SIZE,
+      chunk.chunkY * Chunk.SIZE,
+      chunk.chunkZ * Chunk.SIZE
+    );
+
+    new PhysicsAggregate(
+      mesh,
+      PhysicsShapeType.MESH,
+      { mass: 0, friction: 0.5, restitution: 0.1 },
+      Map1.mainScene
+    );
+
+    chunk.mesh = mesh;
+  }
+
   private static getFaceName(dir: number[], isBackFace: boolean): string {
     const [dx, dy, dz] = dir;
     if (dx === 1) return isBackFace ? "east" : "west";
@@ -337,11 +367,12 @@ export class ChunkMesher {
     ty: number, // Tile Y index (0 to ATLAS_SIZE - 1)
     isBackFace: boolean
   ) {
-    const atlasTileSize = 1 / TextureAtlasFactory.atlasSize;
-
     // Calculate the tile's base UV in the atlas
-    const u_base = tx * atlasTileSize;
-    const v_base_flipped = 1 - (ty * atlasTileSize + atlasTileSize); // Flipped V is bottom-left
+    const u_base = tx * TextureAtlasFactory.atlasTileSize;
+    const v_base_flipped =
+      1 -
+      (ty * TextureAtlasFactory.atlasTileSize +
+        TextureAtlasFactory.atlasTileSize); // Flipped V is bottom-left
     const tileBaseUV = [u_base, v_base_flipped];
 
     // Push the tile's base UV to uvs2 for all 4 vertices

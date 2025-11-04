@@ -1,9 +1,9 @@
 import {
   Scene,
   FreeCamera,
+  Engine,
   PointerEventTypes,
   Vector3,
-  Engine,
 } from "@babylonjs/core";
 import { IUsable } from "../Inferface/IUsable";
 import { MetadataContainer } from "../Entities/MetaDataContainer";
@@ -14,6 +14,8 @@ import { PlayerHud } from "./Hud/PlayerHud";
 import { PlayerInventory } from "./Inventory/PlayerInventory";
 import { InventoryControls } from "./Controls/InventoryControls";
 import { PlayerCamera } from "./PlayerCamera";
+import { GlobalValues } from "../World/GlobalValues";
+import { World } from "../World/World";
 import { PlayerVehicle } from "./PlayerVehicle";
 import { PlayerFlashLight } from "./PlayerFlashLight";
 
@@ -39,7 +41,7 @@ export class Player implements IUsable {
    * @param canvas The HTML canvas element for input handling
    */
   constructor(
-    engine: Engine,
+    private engine: Engine,
     private scene: Scene,
     playerCam: PlayerCamera,
     private canvas: HTMLCanvasElement
@@ -128,6 +130,42 @@ export class Player implements IUsable {
     this.scene.onBeforeRenderObservable.add(() => {
       if (this.#keyboardControls instanceof PaddleBoatControls)
         this.#keyboardControls.update();
+
+      //if (GlobalValues.DEBUG) {
+      const playerPos = this.position;
+      PlayerHud.updateDebugInfo(
+        "Player Pos",
+        `${playerPos.x.toFixed(2)}, ${playerPos.y.toFixed(
+          2
+        )}, ${playerPos.z.toFixed(2)}`
+      );
+
+      const cameraPos = this.#playerCamera.position;
+      PlayerHud.updateDebugInfo(
+        "Camera Pos",
+        `${cameraPos.x.toFixed(2)}, ${cameraPos.y.toFixed(
+          2
+        )}, ${cameraPos.z.toFixed(2)}`
+      );
+
+      const cameraYaw = this.#playerCamera.cameraYaw;
+      const cameraPitch = this.#playerCamera.cameraPitch;
+      PlayerHud.updateDebugInfo(
+        "Camera Angle",
+        `Yaw: ${cameraYaw.toFixed(2)}, Pitch: ${cameraPitch.toFixed(2)}`
+      );
+
+      const chunkX = World.worldToChunkCoord(playerPos.x);
+      const chunkY = World.worldToChunkCoord(playerPos.y);
+      const chunkZ = World.worldToChunkCoord(playerPos.z);
+      PlayerHud.updateDebugInfo("Chunk Pos", `${chunkX}, ${chunkY}, ${chunkZ}`);
+
+      PlayerHud.updateDebugInfo("FPS", this.engine.getFps().toFixed());
+      PlayerHud.updateDebugInfo("Meshes", this.scene.meshes.length);
+      PlayerHud.updateDebugInfo(
+        "Physics Bodies",
+        this.scene.meshes.filter((m) => m.physicsBody).length
+      );
     });
   }
 

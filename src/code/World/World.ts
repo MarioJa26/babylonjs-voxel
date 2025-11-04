@@ -1,5 +1,4 @@
 import { Chunk } from "./Chunk/Chunk";
-import { PlacedItem } from "./Chunk/PlacedItem";
 import { DIRS } from "./Texture/DIRS";
 
 export class World {
