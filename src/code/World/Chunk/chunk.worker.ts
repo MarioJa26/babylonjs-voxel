@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
 import { BlockTextures } from "../Texture/BlockTextures";
+import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
 import { MeshData } from "./MeshData";
 
 type WorkerInternalMeshData = {
@@ -161,10 +162,11 @@ class ChunkWorkerMesher {
     ty: number,
     isBackFace: boolean
   ) {
-    const atlasTileSize = 1 / 16; // Assuming TextureAtlasFactory.atlasSize is static and known
-
-    const u_base = tx * atlasTileSize;
-    const v_base_flipped = 1 - (ty * atlasTileSize + atlasTileSize);
+    const u_base = tx * TextureAtlasFactory.atlasTileSize;
+    const v_base_flipped =
+      1 -
+      (ty * TextureAtlasFactory.atlasTileSize +
+        TextureAtlasFactory.atlasTileSize);
     const tileBaseUV = [u_base, v_base_flipped];
 
     uvs2.push(...tileBaseUV, ...tileBaseUV, ...tileBaseUV, ...tileBaseUV);

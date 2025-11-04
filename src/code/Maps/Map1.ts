@@ -1,6 +1,7 @@
 import {
   Color3,
   CubeTexture,
+  Effect,
   DirectionalLight,
   HemisphericLight,
   Mesh,
@@ -8,6 +9,7 @@ import {
   PhysicsAggregate,
   PhysicsShapeType,
   Scene,
+  ShaderMaterial,
   ShadowGenerator,
   StandardMaterial,
   Texture,
@@ -22,6 +24,7 @@ import { Chunk } from "../World/Chunk/Chunk";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
 import { ChunkMesher } from "../World/Chunk/ChunckMesher";
 import { GlobalValues } from "../World/GlobalValues";
+import { SkyShader } from "../World/Light/SkyShader";
 import { TerrainGenerator } from "../World/Generation/TerrainGenarator";
 
 export class Map1 {
@@ -35,7 +38,6 @@ export class Map1 {
 
     this.asyncInit().then(async () => {
       ChunkMesher.initAtlas();
-      // Now that the material is ready, tell all existing chunks to remesh.
       // Now that textures are ready, generate terrain and remesh.
       Chunk.chunkInstances.forEach((chunk) => {
         if (chunk.chunkY === 0) {
@@ -267,20 +269,42 @@ export class Map1 {
       Map1.mainScene
     );
     skybox.isPickable = false;
-    const skyboxMaterial = new StandardMaterial("skyBox", Map1.mainScene);
+
+    // Register the new sky shader
+    Effect.ShadersStore["skyVertexShader"] = SkyShader.skyVertexShader;
+    Effect.ShadersStore["skyFragmentShader"] = SkyShader.skyFragmentShader;
+
+    // Create a ShaderMaterial using the sky shader
+    const skyboxMaterial = new ShaderMaterial(
+      "skyShaderMaterial",
+      Map1.mainScene,
+      {
+        vertex: "sky",
+        fragment: "sky",
+      },
+      {
+        attributes: ["position"],
+        uniforms: ["worldViewProjection", "sunDirection"],
+      }
+    );
+
     skyboxMaterial.backFaceCulling = false;
 
-    skyboxMaterial.reflectionTexture = new CubeTexture(
-      "texture/skybox/skybox",
-      Map1.mainScene
-    );
-    skyboxMaterial.reflectionTexture.coordinatesMode = Texture.SKYBOX_MODE;
-    skyboxMaterial.diffuseColor = new Color3(0, 0, 0.1);
+    // Update the sun's direction uniform every frame
+    skyboxMaterial.onBind = (mesh) => {
+      const effect = skyboxMaterial.getEffect();
+      if (effect) {
+        effect.setVector3(
+          "sunDirection",
+          GlobalValues.skyLightDirection.negate()
+        );
+      }
+    };
+
     skybox.setEnabled(true);
     skybox.material = skyboxMaterial;
     return skybox;
   }
-
   private createBlock() {
     const midBlock = MeshBuilder.CreateBox(
       "midBlock",
