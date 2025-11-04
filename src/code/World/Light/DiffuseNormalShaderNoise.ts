@@ -1,4 +1,4 @@
-export class DiffuseNormalShader {
+export class DiffuseNormalShaderNoise {
   static readonly chunkVertexShader = `
 precision highp float;
 
@@ -36,10 +36,6 @@ vTBN = mat3(T, B, N);
   static readonly chunkFragmentShader = `
     precision highp float;
 
-    // Enable standard derivatives extension for dFdx and dFdy
-    #extension GL_EXT_shader_texture_lod : enable
-    #extension GL_OES_standard_derivatives : enable
-
     varying vec2 vUV;  // Interpolated LOCAL quad UVs (0 to 1)
     varying vec2 vUV2; // u = tile's top-left U, v = tile's top-left V
     varying vec2 vUV3; // u = quad width, v = quad height
@@ -53,25 +49,6 @@ vTBN = mat3(T, B, N);
     uniform vec3 cameraPosition;
     uniform vec3 lightDirection;
 
-    // Samples from a texture atlas, calculating derivatives manually to avoid mipmap bleeding.
-    vec4 texture2D_with_derivatives(sampler2D atlas, vec2 tileOffset, vec2 tileUV, float tileSize) {
-        // Calculate the UV coordinates within the atlas for the main sample
-        vec2 atlasUV = tileOffset + tileUV * tileSize;
-
-        // Calculate derivatives of the atlas UVs
-        // dFdx/dFdy calculate the rate of change of a variable for the adjacent fragment horizontally/vertically.
-        // By multiplying the tile's UV derivative by the tile size, we get the correct derivative
-        // as if we were sampling a standalone, repeating texture.
-        vec2 dx = dFdx(tileUV) * tileSize;
-        vec2 dy = dFdy(tileUV) * tileSize;
-
-        // Calculate the explicit LOD level using the derivatives.
-        // log2(max(length(dx), length(dy))) gives the ideal mipmap level.
-        float lod = log2(max(length(dx), length(dy)));
-
-        // Sample the texture using the explicit LOD.
-        return texture2DLodEXT(atlas, atlasUV, lod);
-    }
     void main(void) {
         // 1. Scale the local UV by the quad's dimensions to get a repeating value.
         // eg: vUV.x goes 0->1, vUV3.x is 5, so tiledLocalUV.x goes 0->5
@@ -80,12 +57,15 @@ vTBN = mat3(T, B, N);
         // 2. Get the fractional part to create the 0->1 repeating pattern.
         vec2 singleTileUV = fract(tiledLocalUV);
 
-        // 3. Sample the diffuse and normal textures using manual derivatives.
-        // vUV2 is the tile's base offset in the atlas.
-        // singleTileUV is the coordinate within the tile (0-1).
-        // atlasTileSize is the size of one tile relative to the atlas (1/16).
-        vec4 diffuseColor = texture2D_with_derivatives(diffuseTexture, vUV2, singleTileUV, atlasTileSize);
-        vec3 normalMap = texture2D_with_derivatives(normalTexture, vUV2, singleTileUV, atlasTileSize).rgb;
+        // 3. Scale this 0->1 pattern to the size of one tile in the atlas.
+        vec2 scaledTileUV = singleTileUV * atlasTileSize;
+
+        // 4. Offset this by the tile's base position in the atlas.
+        vec2 finalUV = vUV2 + scaledTileUV;
+
+        // 5. Sample the diffuse and normal textures.
+        vec4 diffuseColor = texture2D(diffuseTexture, finalUV);
+        vec3 normalMap = texture2D(normalTexture, finalUV).rgb;
 
         // 6. Transform the normal from tangent space (read from map) to world space.
         normalMap = normalize(normalMap * 2.0 - 1.0); // Unpack normal from [0,1] to [-1,1]

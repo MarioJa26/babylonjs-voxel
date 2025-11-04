@@ -12,9 +12,9 @@ export class TextureAtlasFactory {
   private static normalAtlas: Texture | null = null;
   private static uvMap: Record<string, TileUV> = {};
 
-  static tileSize = 25;
-  static atlasSize = 16;
-  static atlasTileSize = 1 / this.atlasSize;
+  public static tileSize = 25;
+  public static atlasSize = 16;
+  public static atlasTileSize = 1 / this.atlasSize;
 
   /**
    * Build both diffuse and normal atlases
@@ -76,9 +76,9 @@ export class TextureAtlasFactory {
     const diffuseTex = new Texture(
       diffuseCanvas.toDataURL("image/png"),
       scene,
-      false, // noMipmap
+      false, // noMipmap -> false to enable mipmaps
       true, // invertY
-      Texture.NEAREST_SAMPLINGMODE
+      Texture.NEAREST_SAMPLINGMODE // mag: NEAREST, min: LINEAR, mip: LINEAR
     );
     diffuseTex.wrapU = Texture.CLAMP_ADDRESSMODE;
     diffuseTex.wrapV = Texture.CLAMP_ADDRESSMODE;
@@ -86,9 +86,9 @@ export class TextureAtlasFactory {
     const normalTex = new Texture(
       normalCanvas.toDataURL("image/png"),
       scene,
-      false, // noMipmap
+      false, // noMipmap -> false to enable mipmaps
       true, // invertY
-      Texture.NEAREST_SAMPLINGMODE
+      Texture.NEAREST_SAMPLINGMODE // mag: NEAREST, min: LINEAR, mip: LINEAR
     );
     normalTex.wrapU = Texture.CLAMP_ADDRESSMODE;
     normalTex.wrapV = Texture.CLAMP_ADDRESSMODE;
