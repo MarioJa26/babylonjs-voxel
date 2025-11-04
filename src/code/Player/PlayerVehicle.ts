@@ -1,0 +1,371 @@
+import {
+  CharacterSupportedState,
+  CharacterSurfaceInfo,
+  Color3,
+  Mesh,
+  MeshBuilder,
+  PhysicsCharacterController,
+  Quaternion,
+  Scene,
+  StandardMaterial,
+  Vector3,
+} from "@babylonjs/core";
+
+import { Mount } from "../Entities/Mount";
+import { PlayerCamera } from "./PlayerCamera";
+
+enum PlayerState {
+  IN_AIR = "IN_AIR",
+  ON_GROUND = "ON_GROUND",
+  START_JUMP = "START_JUMP",
+}
+export class PlayerVehicle {
+  public scene: Scene;
+  public camera: PlayerCamera;
+
+  public inputDirection = new Vector3(0, 0, 0);
+  public wantJump = 0;
+  public isSprinting = false;
+  public isMounted = false;
+
+  #displayCapsule!: Mesh;
+  #characterController!: PhysicsCharacterController;
+  readonly #forwardLocalSpace = new Vector3(0, 0, 1);
+  #characterOrientation = Quaternion.Identity();
+  #characterGravity = new Vector3(0, -18, 0);
+  public mount!: Mount;
+
+  private state: PlayerState = PlayerState.IN_AIR;
+
+  // Movement parameters
+  private readonly deacceleration = 0.8;
+  private readonly inAirSpeed = 7.0;
+  private readonly onGroundSpeed = 7.0;
+  private readonly jumpHeight = 0.35;
+  private readonly accelRateGround = 36;
+  private readonly sprintMultiplier = 1.6;
+
+  constructor(scene: Scene, camera: PlayerCamera) {
+    this.scene = scene;
+    this.camera = camera;
+    this.initializeCharacter();
+  }
+
+  private initializeCharacter(): void {
+    // Create visual representation
+    const height = 1.8;
+    const radius = 0.3;
+    this.#displayCapsule = this.createCharacterMesh(height, radius);
+
+    // Create physics controller
+    const startPosition = new Vector3(3, 67, -8);
+    this.#characterController = new PhysicsCharacterController(
+      startPosition,
+      { capsuleHeight: height, capsuleRadius: radius },
+      this.scene
+    );
+
+    this.camera.target = startPosition;
+  }
+
+  private createCharacterMesh(height: number, radius: number): Mesh {
+    const capsule = MeshBuilder.CreateCapsule(
+      "CharacterDisplay",
+      { height, radius },
+      this.scene
+    );
+
+    const material = new StandardMaterial("capsule", this.scene);
+    material.diffuseColor = new Color3(0.2, 0.9, 0.8);
+    capsule.material = material;
+    capsule.isPickable = false;
+
+    return capsule;
+  }
+
+  public updateCameraAndVisuals(): void {
+    // Character orientation (only yaw affects horizontal rotation)
+    this.#characterOrientation = Quaternion.RotationYawPitchRoll(
+      this.camera.cameraYaw,
+      0,
+      0
+    );
+
+    this.camera.moveWithPlayer(this.#characterController.getPosition());
+
+    this.#displayCapsule.position.copyFrom(
+      this.#characterController.getPosition()
+    );
+  }
+  /**
+   * Main update function called every frame
+   * @param deltaTime Time since last frame in seconds
+   */
+  public update(deltaTime: number): void {
+    if (this.mount) {
+      this.mount.update();
+    } else {
+      const support = this.#characterController.checkSupport(
+        deltaTime,
+        new Vector3(0, -1, 0)
+      );
+
+      const desiredVelocity = this.calculateDesiredVelocity(deltaTime, support);
+
+      this.#characterController.setVelocity(desiredVelocity);
+      this.#characterController.integrate(
+        deltaTime,
+        support,
+        this.#characterGravity
+      );
+    }
+  }
+
+  private calculateDesiredVelocity(
+    deltaTime: number,
+    supportInfo: CharacterSurfaceInfo
+  ): Vector3 {
+    // Update player state based on support info
+    this.updatePlayerState(supportInfo);
+
+    // Get current velocity
+    const currentVelocity = this.#characterController.getVelocity();
+
+    // Calculate desired velocity based on current state
+    switch (this.state) {
+      case PlayerState.IN_AIR:
+        return this.calculateInAirVelocity(deltaTime, currentVelocity);
+      case PlayerState.ON_GROUND:
+        return this.calculateOnGroundVelocity(
+          deltaTime,
+          currentVelocity,
+          supportInfo
+        );
+      case PlayerState.START_JUMP:
+        return this.calculateJumpVelocity(currentVelocity);
+      default:
+        return currentVelocity;
+    }
+  }
+
+  /**
+   * Update the player's state based on support information
+   */
+  private updatePlayerState(supportInfo: CharacterSurfaceInfo): void {
+    this.state = this.determineNextState(supportInfo);
+  }
+
+  /**
+   * Determine the next state based on current state and support info
+   */
+  private determineNextState(supportInfo: CharacterSurfaceInfo): PlayerState {
+    const isSupported =
+      supportInfo.supportedState === CharacterSupportedState.SUPPORTED;
+
+    switch (this.state) {
+      case PlayerState.IN_AIR:
+        return isSupported ? PlayerState.ON_GROUND : PlayerState.IN_AIR;
+
+      case PlayerState.ON_GROUND:
+        if (!isSupported) {
+          return PlayerState.IN_AIR;
+        }
+        if (this.wantJump > 0) {
+          this.wantJump--;
+          return PlayerState.START_JUMP;
+        }
+        return PlayerState.ON_GROUND;
+
+      case PlayerState.START_JUMP:
+        return PlayerState.IN_AIR;
+
+      default:
+        return this.state;
+    }
+  }
+
+  /**
+   * Calculate velocity when in air
+   */
+  private calculateInAirVelocity(
+    deltaTime: number,
+    currentVelocity: Vector3
+  ): Vector3 {
+    const upWorld = this.getUpVector();
+    const forwardWorld = this.getForwardVector();
+
+    // Calculate desired movement direction
+    const desiredVelocity = this.getInputVelocity(this.inAirSpeed);
+
+    // Calculate movement with physics
+    const outputVelocity = this.#characterController.calculateMovement(
+      deltaTime,
+      forwardWorld,
+      upWorld,
+      currentVelocity,
+      Vector3.ZeroReadOnly,
+      desiredVelocity,
+      upWorld
+    );
+
+    // Remove vertical component and add back current vertical velocity
+    outputVelocity.addInPlace(upWorld.scale(-outputVelocity.dot(upWorld)));
+    outputVelocity.addInPlace(upWorld.scale(currentVelocity.dot(upWorld)));
+
+    // Apply gravity
+    outputVelocity.addInPlace(this.#characterGravity.scale(deltaTime));
+
+    return outputVelocity;
+  }
+
+  /**
+   * Calculate velocity when on ground
+   */
+  private calculateOnGroundVelocity(
+    deltaTime: number,
+    currentVelocity: Vector3,
+    supportInfo: CharacterSurfaceInfo
+  ): Vector3 {
+    const upWorld = this.getUpVector();
+    const forwardWorld = this.getForwardVector();
+
+    // Calculate desired velocity based on input
+    const desiredVelocity = this.getInputVelocity(this.onGroundSpeed);
+
+    // Apply sprint multiplier if sprinting
+    if (
+      this.isSprinting &&
+      (this.inputDirection.x !== 0 || this.inputDirection.z !== 0)
+    ) {
+      desiredVelocity.scaleInPlace(this.sprintMultiplier);
+    }
+
+    // Apply deceleration if no input
+    let newVelocity = currentVelocity.clone();
+    if (this.inputDirection.x === 0 && this.inputDirection.z === 0) {
+      if (currentVelocity.length() < 0.2) {
+        newVelocity.x = 0;
+        newVelocity.z = 0;
+      } else {
+        newVelocity.x *= this.deacceleration;
+        newVelocity.z *= this.deacceleration;
+      }
+    } else {
+      // Accelerate towards desired velocity
+      newVelocity = this.accelerate(
+        currentVelocity,
+        desiredVelocity,
+        this.accelRateGround,
+        deltaTime
+      );
+    }
+
+    // Calculate movement with physics
+    let outputVelocity = this.#characterController.calculateMovement(
+      deltaTime,
+      forwardWorld,
+      supportInfo.averageSurfaceNormal,
+      newVelocity,
+      supportInfo.averageSurfaceVelocity,
+      desiredVelocity,
+      upWorld
+    );
+
+    outputVelocity = this.applyHorizontalProjectionCorrection(
+      outputVelocity,
+      supportInfo,
+      upWorld
+    );
+
+    return outputVelocity;
+  }
+
+  private applyHorizontalProjectionCorrection(
+    velocity: Vector3,
+    supportInfo: CharacterSurfaceInfo,
+    upWorld: Vector3
+  ): Vector3 {
+    // Remove surface velocity
+    velocity.subtractInPlace(supportInfo.averageSurfaceVelocity);
+
+    const inv1k = 1e-2;
+    if (velocity.dot(upWorld) > inv1k) {
+      const velLen = velocity.length();
+      velocity.normalizeFromLength(velLen);
+
+      const horizLen = velLen / supportInfo.averageSurfaceNormal.dot(upWorld);
+      const c = supportInfo.averageSurfaceNormal.cross(velocity);
+      velocity = c.cross(upWorld);
+      velocity.scaleInPlace(horizLen);
+    }
+
+    // Add surface velocity back
+    velocity.addInPlace(supportInfo.averageSurfaceVelocity);
+
+    return velocity;
+  }
+
+  private calculateJumpVelocity(currentVelocity: Vector3): Vector3 {
+    const upWorld = this.getUpVector();
+
+    // Calculate jump velocity
+    const jumpSpeed = this.#characterGravity.length() * this.jumpHeight;
+    const curVelocityProjected = currentVelocity.dot(upWorld);
+    const jumpVelocity = Math.max(jumpSpeed, curVelocityProjected + jumpSpeed);
+    const jumpVelVec = upWorld.scale(jumpVelocity);
+
+    // Add horizontal movement
+    const desiredVelocity = this.getInputVelocity(this.onGroundSpeed);
+
+    // Apply sprint multiplier if sprinting
+    if (this.isSprinting) {
+      desiredVelocity.scaleInPlace(this.sprintMultiplier);
+    }
+
+    return jumpVelVec.add(desiredVelocity);
+  }
+
+  private getInputVelocity(speed: number): Vector3 {
+    return this.inputDirection
+      .scale(speed)
+      .applyRotationQuaternion(this.#characterOrientation);
+  }
+  private accelerate(
+    current: Vector3,
+    target: Vector3,
+    maxAccel: number,
+    dt: number
+  ): Vector3 {
+    const delta = target.subtract(current);
+
+    if (delta.length() < 1) {
+      return current.clone();
+    }
+
+    const change = delta
+      .normalize()
+      .scale(Math.min(delta.length(), maxAccel * dt));
+
+    return current.add(change);
+  }
+  public get characterController(): PhysicsCharacterController {
+    return this.#characterController;
+  }
+
+  public get displayCapsule(): Mesh {
+    return this.#displayCapsule;
+  }
+  private getUpVector(): Vector3 {
+    return this.#characterGravity.normalizeToNew().scaleInPlace(-1.0);
+  }
+
+  private getForwardVector(): Vector3 {
+    return this.#forwardLocalSpace.applyRotationQuaternion(
+      this.#characterOrientation
+    );
+  }
+
+  setMount(mount: Mount): void {
+    this.mount = mount;
+  }
+}

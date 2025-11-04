@@ -1,0 +1,108 @@
+/* General HUD Containers */
+.hud-overlay {
+  position: absolute;
+  top: 5%;
+  left: 50%;
+  transform: translateX(-50%);
+
+  /* scale with window size */
+  width: 90vw;
+  max-width: 1200px;
+  height: 80vh;
+  max-height: 800px;
+
+  background-color: rgba(0, 0, 0, 0.4);
+  padding: 1em;
+  z-index: 100;
+
+  display: none;
+  display: flex; /* flex container */
+  flex-direction: column; /* stack content */
+  align-items: center;
+  justify-content: flex-end;
+
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 1em;
+}
+
+.hotbar-container {
+  position: absolute;
+  bottom: 1vh;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 101;
+
+  display: flex;
+  gap: 0.66em;
+  padding: 0.5em;
+  background-color: rgba(0, 0, 0, 0.4);
+}
+
+.inventory-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.66em;
+  padding: 0.5em;
+
+  overflow-y: auto;
+
+  background-color: rgba(0, 0, 0, 0.4);
+}
+
+.inventory-row {
+  display: flex;
+  gap: 0.66em;
+}
+
+.inventory-slot {
+  transition: 100ms;
+  flex: 0 0 auto;
+  aspect-ratio: 1 / 1; /* keeps them square */
+  width: clamp(2em, 5vw, 4em);
+  border: 3px solid rgba(96, 96, 64, 0.9);
+  background-color: rgba(0, 0, 0, 0.6);
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+/* Style for the selected hotbar slot */
+.inventory-slot.selected {
+  border: 3px solid rgb(192, 192, 192);
+}
+
+.inventory-slot:hover {
+  border: 3px solid rgb(0, 187, 255);
+  transition-duration: 150ms;
+  transform: scale(1.2);
+}
+
+/* HUD Buttons */
+.hud-close-button {
+  position: absolute;
+  top: -1em;
+  right: -1em;
+  border: none;
+  background: transparent;
+  color: black;
+  font-size: 2em;
+  user-select: none;
+  cursor: pointer;
+}
+
+.hud-close-button:hover {
+  color: red;
+}
+
+#fps {
+  position: absolute;
+  background-color: rgba(0, 0, 0, 0.5);
+  text-align: center;
+  font-size: 16px;
+  color: white;
+  height: 2vh;
+  width: 4vw;
+  left: auto;
+}

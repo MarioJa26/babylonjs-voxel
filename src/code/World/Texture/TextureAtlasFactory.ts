@@ -1,0 +1,158 @@
+import { Scene, Texture } from "@babylonjs/core";
+import { MaterialFactory } from "../Texture/MaterialFactory";
+
+export type TileUV = {
+  u: number;
+  v: number;
+  tileSize: number;
+};
+
+export class TextureAtlasFactory {
+  private static diffuseAtlas: Texture | null = null;
+  private static normalAtlas: Texture | null = null;
+  private static uvMap: Record<string, TileUV> = {};
+
+  static tileSize = 25;
+  static atlasSize = 16;
+
+  /**
+   * Build both diffuse and normal atlases
+   */
+  static async buildAtlas(
+    scene: Scene,
+    images: { name: string; path: string }[],
+    tileSize = TextureAtlasFactory.tileSize,
+    atlasSize = TextureAtlasFactory.atlasSize
+  ) {
+    const totalSize = tileSize * atlasSize;
+
+    // --- Create canvases for diffuse and normal maps ---
+    const diffuseCanvas = document.createElement("canvas");
+    const normalCanvas = document.createElement("canvas");
+    diffuseCanvas.width = normalCanvas.width = totalSize;
+    diffuseCanvas.height = normalCanvas.height = totalSize;
+
+    if (!diffuseCanvas || !normalCanvas) return;
+
+    const diffuseCtx = diffuseCanvas.getContext("2d")!;
+    const normalCtx = normalCanvas.getContext("2d")!;
+
+    // --- Load all diffuse + normal images ---
+    const loadedImages = await Promise.all(
+      images.map(async (img) => {
+        const diffuseSrc = MaterialFactory.getTexturePathFromFolder(img.path)!;
+        const normalSrc = MaterialFactory.getTexturePathFromFolder(
+          img.path,
+          "nor"
+        )!;
+
+        const [diffuseImg, normalImg] = await Promise.all([
+          this.loadImage(diffuseSrc),
+          this.loadImageSafe(normalSrc),
+        ]);
+
+        return { name: img.name, diffuseImg, normalImg };
+      })
+    );
+
+    loadedImages.forEach((entry, i) => {
+      const col = i % atlasSize;
+      const row = Math.floor(i / atlasSize);
+      const x = col * tileSize;
+      const y = row * tileSize;
+
+      diffuseCtx.drawImage(entry.diffuseImg, x, y, tileSize, tileSize);
+      if (entry.normalImg) {
+        normalCtx.drawImage(entry.normalImg, x, y, tileSize, tileSize);
+      }
+
+      const u = col / atlasSize;
+      const v = row / atlasSize;
+      this.uvMap[entry.name] = { u, v, tileSize: 1 / atlasSize };
+    });
+
+    // --- Create Babylon textures ---
+    const diffuseTex = new Texture(
+      diffuseCanvas.toDataURL("image/png"),
+      scene,
+      false, // noMipmap
+      true, // invertY
+      Texture.NEAREST_SAMPLINGMODE
+    );
+    diffuseTex.wrapU = Texture.CLAMP_ADDRESSMODE;
+    diffuseTex.wrapV = Texture.CLAMP_ADDRESSMODE;
+
+    const normalTex = new Texture(
+      normalCanvas.toDataURL("image/png"),
+      scene,
+      false, // noMipmap
+      true, // invertY
+      Texture.NEAREST_SAMPLINGMODE
+    );
+    normalTex.wrapU = Texture.CLAMP_ADDRESSMODE;
+    normalTex.wrapV = Texture.CLAMP_ADDRESSMODE;
+
+    // --- Cache ---
+    this.diffuseAtlas = diffuseTex;
+    this.normalAtlas = normalTex;
+
+    // --- Save atlas to file if requested ---
+    // if (GlobalValues.CREATE_ATLAS) {
+    // this.saveCanvasAsImage(diffuseCanvas, "diffuse_atlas.png");
+    //this.saveCanvasAsImage(normalCanvas, "normal_atlas.png");
+    // }
+
+    return {
+      diffuse: this.diffuseAtlas,
+      normal: this.normalAtlas,
+      uvMap: this.uvMap,
+    };
+  }
+
+  /**
+   * Triggers a browser download for a canvas content.
+   */
+  private static saveCanvasAsImage(
+    canvas: HTMLCanvasElement,
+    filename: string
+  ) {
+    const link = document.createElement("a");
+    link.download = filename;
+    link.href = canvas
+      .toDataURL("image/png")
+      .replace("image/png", "image/octet-stream");
+    link.click();
+  }
+  private static async loadImageSafe(
+    src: string
+  ): Promise<HTMLImageElement | null> {
+    try {
+      return await this.loadImage(src);
+    } catch {
+      console.warn("Missing normal map:", src);
+      return null;
+    }
+  }
+
+  /** Standard image loader */
+  private static loadImage(src: string): Promise<HTMLImageElement> {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = (e) => reject(e);
+      img.src = src;
+    });
+  }
+
+  static getUV(name: string): TileUV | undefined {
+    return this.uvMap[name];
+  }
+
+  static getDiffuse(): Texture | null {
+    return this.diffuseAtlas;
+  }
+
+  static getNormal(): Texture | null {
+    return this.normalAtlas;
+  }
+}
