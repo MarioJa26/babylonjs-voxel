@@ -1,5 +1,6 @@
 import { Engine, Scene } from "@babylonjs/core";
 import { Player } from "../Player";
+import { Map1 } from "@/code/Maps/Map1";
 import { CrossHair } from "../Hud/CrossHair";
 import { PlayerInventory } from "../Inventory/PlayerInventory";
 import { PlayerCamera } from "../PlayerCamera";
@@ -17,7 +18,7 @@ export class PlayerHud {
 
   #overlayDiv: HTMLDivElement;
 
-  private static debugPanelDiv: HTMLDivElement;
+  static debugPanelDiv: HTMLDivElement;
   private static infoLines: { [key: string]: string } = {};
 
   constructor(
@@ -145,6 +146,39 @@ export class PlayerHud {
     div.style.borderRadius = "5px";
     document.body.appendChild(div);
     PlayerHud.debugPanelDiv = div;
+
+    // Add time of day slider
+    const timeLabel = document.createElement("div");
+    timeLabel.innerText = "Time of Day";
+    div.appendChild(timeLabel);
+    const timeSlider = document.createElement("input");
+    timeSlider.id = "timeSlider";
+    timeSlider.type = "range";
+    timeSlider.min = "0";
+    timeSlider.max = "1000";
+    timeSlider.style.width = "100%";
+
+    timeSlider.oninput = () => {
+      const timeValue = parseFloat(timeSlider.value) / 1000;
+      Map1.setTime(timeValue);
+    };
+    div.appendChild(timeSlider);
+
+    // Add time scale slider
+    const timeScaleLabel = document.createElement("div");
+    timeScaleLabel.innerText = "Time Scale";
+    timeScaleLabel.style.marginTop = "10px";
+    div.appendChild(timeScaleLabel);
+    const timeScaleSlider = document.createElement("input");
+    timeScaleSlider.type = "range";
+    timeScaleSlider.min = "0";
+    timeScaleSlider.max = "300"; // 0.0 to 20.0
+    timeScaleSlider.value = "10"; // Default to 1.0 (10 / 10)
+    timeScaleSlider.style.width = "100%";
+    timeScaleSlider.oninput = () => {
+      Map1.timeScale = parseFloat(timeScaleSlider.value) / 10;
+    };
+    div.appendChild(timeScaleSlider);
   }
 
   public static showDebugPanel(): void {
@@ -161,10 +195,22 @@ export class PlayerHud {
   }
 
   private static renderDebugInfo(): void {
+    if (!this.debugPanelDiv) return;
+
     let html = "";
     for (const key in this.infoLines) {
       html += `<div><strong>${key}:</strong> ${this.infoLines[key]}</div>`;
     }
-    if (this.debugPanelDiv) this.debugPanelDiv.innerHTML = html;
+
+    // Keep the slider by only updating the text content part
+    const textContainer =
+      this.debugPanelDiv.querySelector("div.info-container") ||
+      document.createElement("div");
+    textContainer.className = "info-container";
+    textContainer.innerHTML = html;
+
+    if (!textContainer.parentElement) {
+      this.debugPanelDiv.prepend(textContainer);
+    }
   }
 }

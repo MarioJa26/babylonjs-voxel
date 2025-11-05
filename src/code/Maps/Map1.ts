@@ -10,8 +10,11 @@ import {
   Scene,
   ShaderMaterial,
   ShadowGenerator,
+  StandardMaterial,
   Texture,
   Vector3,
+  SSAORenderingPipeline,
+  Color4,
 } from "@babylonjs/core";
 import { GridMaterial, WaterMaterial } from "@babylonjs/materials";
 import { AdvancedBoat } from "../Entities/AdvancedBoat";
@@ -24,14 +27,18 @@ import { ChunkMesher } from "../World/Chunk/ChunckMesher";
 import { GlobalValues } from "../World/GlobalValues";
 import { SkyShader } from "../World/Light/SkyShader";
 import { TerrainGenerator } from "../World/Generation/TerrainGenarator";
+import { PlayerHud } from "../Player/Hud/PlayerHud";
+import { CrossHair } from "../Player/Hud/CrossHair";
 
 export class Map1 {
   public static mainScene: Scene;
   #player: Player;
   public static shadowGenerator: ShadowGenerator;
+  #blockHighlightMesh!: Mesh;
 
-  #timeOfDay = 0; // Time in milliseconds, progresses from 0 to dayDurationMs
-  readonly #dayDurationMs = 10 * 60 * 1000; // 10 minutes for a full day
+  static #timeOfDay = 0; // Time in milliseconds, progresses from 0 to dayDurationMs
+  static readonly #dayDurationMs = 10 * 60 * 1000; // 10 minutes for a full day
+  public static timeScale = 1.0;
 
   constructor(scene: Scene, player: Player) {
     this.#player = player;
@@ -50,12 +57,22 @@ export class Map1 {
         }
       });
     });
-    scene.onBeforeRenderObservable.add(() => this.updateDayNightCycle());
+    scene.onBeforeRenderObservable.add(() => {
+      this.updateDayNightCycle();
+      this.updateBlockHighlight();
+    });
   }
 
   async asyncInit() {
     try {
       await Promise.all([this.CreateEnvironment(), this.loadTextures()]);
+      if (GlobalValues.ENABLE_SSAO)
+        new SSAORenderingPipeline(
+          "ssaopipeline",
+          Map1.mainScene,
+          { ssaoRatio: 0.5, combineRatio: 2.0 },
+          [Map1.mainScene.activeCamera!]
+        );
       console.log("Environment and textures loaded successfully.");
     } catch (error) {
       console.error("Error loading environment or textures:", error);
@@ -66,20 +83,85 @@ export class Map1 {
    * Sets the time of day.
    * @param time A value between 0 (start of day) and 1 (end of day).
    */
-  public setTime(time: number): void {
-    this.#timeOfDay = (time % 1) * this.#dayDurationMs;
+  public static setTime(time: number): void {
+    Map1.#timeOfDay = (time % 1) * Map1.#dayDurationMs;
+  }
+
+  private updateBlockHighlight() {
+    if (!this.#blockHighlightMesh) {
+      // Create the highlight mesh if it doesn't exist
+      this.#blockHighlightMesh = MeshBuilder.CreateBox(
+        "blockHighlight",
+        { size: 1.01 },
+        Map1.mainScene
+      );
+      this.#blockHighlightMesh.isPickable = false;
+
+      // Create a transparent material for the box faces
+      const highlightMaterial = new StandardMaterial(
+        "highlightMat",
+        Map1.mainScene
+      );
+      highlightMaterial.alpha = 0.2; // Set transparency (0=invisible, 1=solid)
+      highlightMaterial.diffuseColor = new Color3(1, 1, 1); // Set face color to white
+      this.#blockHighlightMesh.material = highlightMaterial;
+
+      this.#blockHighlightMesh.enableEdgesRendering();
+      this.#blockHighlightMesh.edgesWidth = 1.0;
+      this.#blockHighlightMesh.edgesColor = new Color4(0, 0, 0, 0.5);
+      this.#blockHighlightMesh.visibility = 0; // Initially hidden
+    }
+    const hit = CrossHair.pickTarget(this.#player);
+
+    if (hit) {
+      this.#blockHighlightMesh.position.set(
+        Math.floor(hit.x) + 0.5,
+        Math.floor(hit.y) + 0.5,
+        Math.floor(hit.z) + 0.5
+      );
+      this.#blockHighlightMesh.visibility = 1;
+    } else {
+      // Hide if nothing is hit
+      this.#blockHighlightMesh.visibility = 0;
+    }
   }
 
   private updateDayNightCycle() {
+    if (Map1.timeScale < 0.001) return;
     // Increment time of day based on frame delta time
-    this.#timeOfDay += Map1.mainScene.getEngine().getDeltaTime();
-    this.#timeOfDay %= this.#dayDurationMs;
+    Map1.#timeOfDay +=
+      Map1.mainScene.getEngine().getDeltaTime() * Map1.timeScale;
+    Map1.#timeOfDay %= Map1.#dayDurationMs;
+
+    // For debug display
+    const timeAsHour = (Map1.#timeOfDay / Map1.#dayDurationMs) * 24;
+    const hour = Math.floor(timeAsHour);
+    const minute = Math.floor((timeAsHour - hour) * 60);
+    const second = Math.floor(((timeAsHour - hour) * 60 - minute) * 60);
+    PlayerHud.updateDebugInfo(
+      "Time of Day",
+      `${String(hour).padStart(2, "0")}:${String(minute).padStart(
+        2,
+        "0"
+      )}:${String(second).padStart(2, "0")}`
+    );
+    PlayerHud.updateDebugInfo("Time Scale", Map1.timeScale.toFixed(2) + "x");
+
+    // Update the time slider's position
+    const timeSlider = document.getElementById(
+      "timeSlider"
+    ) as HTMLInputElement;
+    if (timeSlider)
+      timeSlider.value = (
+        (Map1.#timeOfDay / Map1.#dayDurationMs) *
+        1000
+      ).toString();
 
     // Time within the current cycle
-    const timeInCycle = this.#timeOfDay;
+    const timeInCycle = Map1.#timeOfDay;
 
     // Angle around the full circle (0..2PI)
-    const angle = (timeInCycle / this.#dayDurationMs) * 2 * Math.PI;
+    const angle = (timeInCycle / Map1.#dayDurationMs) * 2 * Math.PI;
 
     // Use spherical-like parametrization:
     // - elevation controls vertical position (y)

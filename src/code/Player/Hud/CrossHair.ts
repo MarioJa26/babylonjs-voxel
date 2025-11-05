@@ -109,7 +109,9 @@ export class CrossHair {
     );
   }
   public static pickTarget(player: Player): Vector3 | null {
-    const ray = player.playerCamera.playerCamera.getForwardRay(50);
+    const ray = player.playerCamera.playerCamera.getForwardRay(
+      Player.REACH_DISTANCE
+    );
     const pick = Map1.mainScene.pickWithRay(ray);
     if (!pick?.pickedPoint) {
       return null;
@@ -123,6 +125,7 @@ export class CrossHair {
       Math.floor(hitPos.z)
     );
   }
+
   setCrosshair(number: string) {
     this.#crosshair.source = `/texture/gui/kenney_crosshair-pack/PNG/Outline Retina/crosshair${number}.png`;
   }

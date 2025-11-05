@@ -13,7 +13,7 @@ import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
 
 import { Chunk } from "./Chunk";
 import { GlobalValues } from "../GlobalValues";
-import { DiffuseNormalShader } from "../Light/DiffuseNormalShader";
+import { DiffuseOnlyShader } from "../Light/DiffuseOnlyShader";
 import { ShaderMaterial } from "@babylonjs/core";
 import { MeshData } from "./MeshData";
 
@@ -81,9 +81,9 @@ export class ChunkMesher {
       if (diffuseAtlasTexture) {
         // Register the shader with Babylon's Effect system
         Effect.ShadersStore["chunkVertexShader"] =
-          DiffuseNormalShader.chunkVertexShader;
+          DiffuseOnlyShader.chunkVertexShader;
         Effect.ShadersStore["chunkFragmentShader"] =
-          DiffuseNormalShader.chunkFragmentShader;
+          DiffuseOnlyShader.chunkFragmentShader;
 
         const mat = new ShaderMaterial(
           "chunkShaderMaterial",
@@ -105,6 +105,7 @@ export class ChunkMesher {
           }
         );
         mat.backFaceCulling = true;
+        mat.setPrePassRenderer(scene.prePassRenderer!);
         mat.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
 
         mat.setTexture("diffuseTexture", diffuseAtlasTexture);
@@ -161,13 +162,12 @@ export class ChunkMesher {
       chunk.chunkY * Chunk.SIZE,
       chunk.chunkZ * Chunk.SIZE
     );
-    if (vertexData.indices.length > 0)
-      new PhysicsAggregate(
-        mesh,
-        PhysicsShapeType.MESH,
-        { mass: 0, friction: 0.5, restitution: 0.1 },
-        Map1.mainScene
-      );
+    new PhysicsAggregate(
+      mesh,
+      PhysicsShapeType.MESH,
+      { mass: 0 },
+      Map1.mainScene
+    );
 
     chunk.mesh = mesh;
   }

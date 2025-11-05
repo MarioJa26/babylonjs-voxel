@@ -14,7 +14,6 @@ import { PlayerHud } from "./Hud/PlayerHud";
 import { PlayerInventory } from "./Inventory/PlayerInventory";
 import { InventoryControls } from "./Controls/InventoryControls";
 import { PlayerCamera } from "./PlayerCamera";
-import { GlobalValues } from "../World/GlobalValues";
 import { World } from "../World/World";
 import { PlayerVehicle } from "./PlayerVehicle";
 import { PlayerFlashLight } from "./PlayerFlashLight";
@@ -33,6 +32,8 @@ export class Player implements IUsable {
   #keyboardControls!: IControls<unknown>;
 
   public flashlight: PlayerFlashLight;
+
+  static readonly REACH_DISTANCE = 16;
 
   /**
    * Creates a new Player instance
