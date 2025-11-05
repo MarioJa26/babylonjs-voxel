@@ -96,7 +96,9 @@ export class CrossHair {
   }
 
   public static pickMesh(player: Player): Vector3 | null {
-    const ray = player.playerCamera.playerCamera.getForwardRay(50);
+    const ray = player.playerCamera.playerCamera.getForwardRay(
+      Player.REACH_DISTANCE
+    );
     const pick = Map1.mainScene.pickWithRay(ray);
     if (!pick?.pickedPoint) return null;
     const normal = pick.getNormal(true);

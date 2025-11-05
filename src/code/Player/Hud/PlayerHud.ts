@@ -15,6 +15,8 @@ export class PlayerHud {
 
   #selectedHotbarSlot = 0;
   #hotbarSlots: HTMLDivElement[] = [];
+  static #heldItemNameDiv: HTMLDivElement = document.createElement("div");
+  #heldItemNameTimeout?: number;
 
   #overlayDiv: HTMLDivElement;
 
@@ -79,6 +81,11 @@ export class PlayerHud {
     return inventoryContainer;
   }
   private createHotbarUI(): HTMLDivElement {
+    const hotbarWrapper = document.createElement("div");
+    hotbarWrapper.classList.add("hotbar-wrapper");
+    // Create item name display
+    PlayerHud.#heldItemNameDiv.classList.add("held-item-name");
+
     const hotbarContainer = document.createElement("div");
     hotbarContainer.classList.add("hotbar-container");
 
@@ -90,11 +97,14 @@ export class PlayerHud {
       this.#hotbarSlots.push(slot); // Store every slot
     }
 
+    hotbarWrapper.appendChild(PlayerHud.#heldItemNameDiv);
+    hotbarWrapper.appendChild(hotbarContainer);
+
     this.updateHotbarSelection();
-    document.body.appendChild(hotbarContainer);
+    document.body.appendChild(hotbarWrapper);
 
     this.#scene.onDisposeObservable.add(() => {
-      hotbarContainer.remove();
+      hotbarWrapper.remove();
     });
     return hotbarContainer;
   }
@@ -106,6 +116,7 @@ export class PlayerHud {
   public toggleInventory(): void {
     this.#inventoryOpen = !this.#inventoryOpen;
     if (this.#inventoryOpen) {
+      PlayerHud.#heldItemNameDiv.classList.remove("visible");
       this.#overlayDiv.style.display = "flex";
       this.#engine.exitPointerlock();
     } else {
@@ -124,9 +135,50 @@ export class PlayerHud {
   }
   private updateHotbarSelection(): void {
     this.#hotbarSlots.forEach((slot, index) => {
-      // Add 'selected' class if it's the selected slot, remove it otherwise
       slot.classList.toggle("selected", index === this.#selectedHotbarSlot);
     });
+
+    // Clear any existing fade-out timeout
+    if (this.#heldItemNameTimeout) {
+      clearTimeout(this.#heldItemNameTimeout);
+    }
+
+    // Update held item name display
+    const itemSlot =
+      PlayerHud.#inventory.inventory[0][this.#selectedHotbarSlot];
+    const item = itemSlot?.item;
+    if (PlayerHud.#heldItemNameDiv) {
+      const itemName = item ? item.name : "";
+      PlayerHud.#heldItemNameDiv.innerText = itemName;
+
+      if (itemName) {
+        PlayerHud.#heldItemNameDiv.classList.add("visible");
+        this.#heldItemNameTimeout = window.setTimeout(() => {
+          PlayerHud.#heldItemNameDiv.classList.remove("visible");
+        }, 2000);
+
+        // Calculate position relative to the hotbar container
+        const slotRect = itemSlot.divItemSlot.getBoundingClientRect();
+        const leftOffset = itemSlot.divItemSlot.getBoundingClientRect().left;
+        const widthOffset =
+          leftOffset +
+          slotRect.width / 2 -
+          PlayerHud.#heldItemNameDiv.getBoundingClientRect().width / 2;
+        console.log(
+          "Width Offset:",
+          widthOffset,
+          " Slot Left:",
+          leftOffset,
+          " Slot Width:",
+          slotRect.width,
+          " Name Width:",
+          PlayerHud.#heldItemNameDiv.getBoundingClientRect().width
+        );
+        PlayerHud.#heldItemNameDiv.style.left = `${widthOffset}px`;
+      } else {
+        PlayerHud.#heldItemNameDiv.classList.remove("visible");
+      }
+    }
   }
 
   private initializeDebugPanel(): void {

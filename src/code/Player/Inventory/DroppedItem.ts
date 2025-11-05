@@ -17,7 +17,6 @@ import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
 
 export class DroppedItem implements IUsable {
   #boxMesh: Mesh;
-  #physBox: PhysicsAggregate;
   #item: Item;
 
   constructor(item: Item, x: number, y: number, z: number) {
@@ -50,30 +49,26 @@ export class DroppedItem implements IUsable {
 
     this.#boxMesh.material = midMat;
 
-    this.#physBox = new PhysicsAggregate(
+    new PhysicsAggregate(
       this.#boxMesh,
       PhysicsShapeType.BOX,
       { mass: size },
       Map1.mainScene
     );
 
-    Map1.shadowGenerator.addShadowCaster(this.#boxMesh);
-
     this.#item = item;
   }
 
   pushItem(direction: Vector3): void {
-    this.#physBox.body.applyImpulse(
-      direction,
-      this.#boxMesh.getAbsolutePosition()
-    );
+    this.#boxMesh
+      .getPhysicsBody()
+      ?.applyImpulse(direction, this.#boxMesh.getAbsolutePosition());
   }
 
   use(player: Player): void {
     const remainder = player.playerInventory.addItem(this.#item);
     if (remainder <= 0) {
       this.#boxMesh.dispose();
-      this.#physBox.dispose();
     }
   }
   private static createTexture(
@@ -89,9 +84,7 @@ export class DroppedItem implements IUsable {
   get boxMesh(): Mesh {
     return this.#boxMesh;
   }
-  get physBox(): PhysicsAggregate {
-    return this.#physBox;
-  }
+
   get item(): Item {
     return this.#item;
   }

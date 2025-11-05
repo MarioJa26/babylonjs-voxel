@@ -8,10 +8,8 @@ import {
   Vector3,
   PhysicsAggregate,
   PhysicsShapeType,
-  ShadowGenerator,
 } from "@babylonjs/core";
 import { GridMaterial } from "@babylonjs/materials";
-import { Map1 } from "./Map1";
 
 export class MyTestBlock {
   public mesh: Mesh;
@@ -72,7 +70,6 @@ export class MyTestBlock {
       { mass: 0.01, restitution: 0.5, friction: 0.5 },
       scene
     );
-    Map1.shadowGenerator.addShadowCaster(box);
     // Store reference
     this.mesh = box;
   }

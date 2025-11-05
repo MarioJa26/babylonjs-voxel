@@ -106,3 +106,25 @@
   width: 4vw;
   left: auto;
 }
+.held-item-name {
+  position: absolute;
+  bottom: 10vh; /* Adjust to position it above your hotbar */
+  color: white;
+  font-size: clamp(0.6em, 2vw, 1em); /* scales with screen */
+  font-weight: bold;
+  text-shadow: 2px 2px 2px black;
+  margin: 0.2em;
+
+  font-family: Arial, Helvetica, sans-serif;
+  pointer-events: none; /* Make sure it doesn't block mouse clicks */
+  background-color: rgba(0, 0, 0, 0.5);
+  padding: 4px 8px;
+}
+.held-item-name {
+  opacity: 0;
+  transition: opacity 0.04s ease-in;
+  transition: opacity 0.5s ease-out;
+}
+.held-item-name.visible {
+  opacity: 1;
+}

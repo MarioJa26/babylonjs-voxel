@@ -33,7 +33,6 @@ import { CrossHair } from "../Player/Hud/CrossHair";
 export class Map1 {
   public static mainScene: Scene;
   #player: Player;
-  public static shadowGenerator: ShadowGenerator;
   #blockHighlightMesh!: Mesh;
 
   static #timeOfDay = 0; // Time in milliseconds, progresses from 0 to dayDurationMs
@@ -103,12 +102,12 @@ export class Map1 {
         Map1.mainScene
       );
       highlightMaterial.alpha = 0.2; // Set transparency (0=invisible, 1=solid)
-      highlightMaterial.diffuseColor = new Color3(1, 1, 1); // Set face color to white
+      highlightMaterial.diffuseColor = new Color3(0.6, 0.6, 1); // Set face color to white
       this.#blockHighlightMesh.material = highlightMaterial;
 
       this.#blockHighlightMesh.enableEdgesRendering();
       this.#blockHighlightMesh.edgesWidth = 1.0;
-      this.#blockHighlightMesh.edgesColor = new Color4(0, 0, 0, 0.5);
+      this.#blockHighlightMesh.edgesColor = new Color4(0, 0, 0, 0.7);
       this.#blockHighlightMesh.visibility = 0; // Initially hidden
     }
     const hit = CrossHair.pickTarget(this.#player);
@@ -127,7 +126,7 @@ export class Map1 {
   }
 
   private updateDayNightCycle() {
-    if (Map1.timeScale < 0.001) return;
+    if (Map1.timeScale < 0.01) return;
     // Increment time of day based on frame delta time
     Map1.#timeOfDay +=
       Map1.mainScene.getEngine().getDeltaTime() * Map1.timeScale;
@@ -195,9 +194,6 @@ export class Map1 {
     );
     dirLight.intensity = 0.3;
     dirLight.position = new Vector3(20, 40, 20);
-    Map1.shadowGenerator = new ShadowGenerator(1024, dirLight);
-    Map1.shadowGenerator.useBlurExponentialShadowMap = true;
-    Map1.shadowGenerator.blurKernel = 32;
     return scene;
   }
 
@@ -209,67 +205,6 @@ export class Map1 {
     );
     ground.isPickable = true;
     ground.position = new Vector3(0, -5, 0);
-    ground.receiveShadows = true;
-
-    const gridMaterial = new GridMaterial("gridMaterial", Map1.mainScene);
-    gridMaterial.majorUnitFrequency = 10;
-    gridMaterial.minorUnitVisibility = 0.2;
-    gridMaterial.gridRatio = 1;
-    gridMaterial.backFaceCulling = false;
-    gridMaterial.mainColor = new Color3(0.2, 0.2, 0.2);
-    gridMaterial.lineColor = new Color3(0.4, 0.4, 0.4);
-    gridMaterial.opacity = 1;
-    ground.material = gridMaterial;
-
-    new PhysicsAggregate(
-      ground,
-      PhysicsShapeType.BOX,
-      { mass: 0 },
-      Map1.mainScene
-    );
-
-    const goldberg = MeshBuilder.CreateGoldberg("goldberg", {
-      size: 0.4,
-      m: 3,
-      n: 3,
-      sideOrientation: Mesh.DOUBLESIDE,
-    });
-    goldberg.position = new Vector3(0, 5, 5);
-    goldberg.checkCollisions = true;
-    goldberg.receiveShadows = true;
-
-    const goldbergMat = new GridMaterial("goldbergGrid", Map1.mainScene);
-    goldbergMat.mainColor = new Color3(0.8, 0.6, 0.2);
-    goldbergMat.lineColor = goldbergMat.mainColor.scale(0.5); // slightly darker lines
-    goldberg.material = goldbergMat;
-
-    goldberg.metadata = new PhysicsAggregate(
-      goldberg,
-      PhysicsShapeType.SPHERE,
-      { mass: 0.1 },
-      Map1.mainScene
-    );
-
-    const goldberg2 = MeshBuilder.CreateGoldberg("goldberg2", {
-      size: 0.4,
-      m: 1,
-      n: 1,
-      sideOrientation: Mesh.BACKSIDE,
-    });
-    goldberg2.position = new Vector3(2, 5, 5);
-    goldberg2.checkCollisions = true;
-
-    const goldbergMat2 = new GridMaterial("goldbergGrid2", Map1.mainScene);
-    goldbergMat2.mainColor = new Color3(0.18, 0.6, 0.2);
-    goldbergMat2.lineColor = goldbergMat2.mainColor.scale(0.5);
-    goldberg2.material = goldbergMat2;
-
-    goldberg2.metadata = new PhysicsAggregate(
-      goldberg2,
-      PhysicsShapeType.SPHERE,
-      { mass: 0.1, restitution: 0.8 },
-      Map1.mainScene
-    );
 
     for (let x = 0; x < 0; x++) {
       for (let y = 0; y < 5; y++) {
@@ -280,15 +215,10 @@ export class Map1 {
     }
 
     const skybox = this.createSkybox();
-    this.createWater(goldberg, goldberg2, skybox, ground);
+    this.createWater(skybox, ground);
   }
 
-  private createWater(
-    goldberg: Mesh,
-    goldberg2: Mesh,
-    skybox: Mesh,
-    ground: Mesh
-  ): void {
+  private createWater(skybox: Mesh, ground: Mesh): void {
     const water = MeshBuilder.CreateGround(
       "water",
       { width: 1000, height: 1000, subdivisions: 15 },
@@ -307,8 +237,6 @@ export class Map1 {
     waterMaterial.colorBlendFactor = 0.3;
     waterMaterial.waveSpeed = 15;
     waterMaterial.alpha = 0.67;
-    waterMaterial.addToRenderList(goldberg);
-    waterMaterial.addToRenderList(goldberg2);
     waterMaterial.addToRenderList(skybox);
     water.material = waterMaterial;
     const waterHeight = 40;

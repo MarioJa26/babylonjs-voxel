@@ -150,7 +150,11 @@ export class ChunkMesher {
     vertexData.uvs2 = meshData.uvs2;
     vertexData.uvs3 = meshData.uvs3;
 
-    vertexData.applyToMesh(mesh, true);
+    // Apply the vertex data to the mesh. Setting 'updatable' to false is a performance
+    // optimization for static geometry like chunks, as it allows the GPU to store
+    // the data in a more efficient way for rendering.
+    vertexData.applyToMesh(mesh, false);
+
     mesh.setVerticesData("tangent", meshData.tangents);
 
     if (mesh.material) {

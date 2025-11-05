@@ -10,7 +10,7 @@ export class World {
   }
 
   private initChunks() {
-    const renderDistance = 4; // in chunks
+    const renderDistance = 1; // in chunks
     for (let x = -renderDistance; x < renderDistance; x++) {
       for (let z = -renderDistance; z < renderDistance; z++) {
         // For now, we only create the base layer of chunks (y=0)
