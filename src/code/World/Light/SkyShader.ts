@@ -55,7 +55,7 @@ export class SkyShader {
             finalColor += sunDisc * vec3(1.0, 1.0, 0.9);      // Additive sun disc
 
             // Ensure the sun is visible even when it's below the horizon by checking its y-direction
-            if (sunDirection.y < 0.1) {
+            if (sunDirection.y < 0.0) {
                 finalColor = mix(finalColor, vec3(0.1, 0.1, 0.2), -sunDirection.y * 2.0);
             }
 

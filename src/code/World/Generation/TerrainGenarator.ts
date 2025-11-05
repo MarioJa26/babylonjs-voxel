@@ -7,9 +7,9 @@ export class TerrainGenerator {
 
   // --- Terrain Generation Parameters ---
   private static readonly SEED = "my-secret-seed"; // Change this for a new world
-  private static readonly TERRAIN_SCALE = 0.006; // How zoomed in the noise is. Smaller = larger features.
-  private static readonly TERRAIN_HEIGHT_BASE = 30; // Base sea level
-  private static readonly TERRAIN_HEIGHT_AMPLITUDE = 60; // Max height variation from base
+  private static readonly TERRAIN_SCALE = 0.005; // How zoomed in the noise is. Smaller = larger features.
+  private static readonly TERRAIN_HEIGHT_BASE = 16; // Base sea level
+  private static readonly TERRAIN_HEIGHT_AMPLITUDE = 70; // Max height variation from base
   private static readonly SEA_LEVEL = 40;
 
   // --- Noise Octaves (for detail) ---

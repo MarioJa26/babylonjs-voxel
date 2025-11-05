@@ -101,6 +101,8 @@ export class WalkingControls implements IControls<PlayerVehicle> {
     } else if (WalkingControls.KEY_F2.includes(key)) {
       GlobalValues.DEBUG = !GlobalValues.DEBUG;
       PlayerHud.showDebugPanel();
+    } else if (key === "l") {
+      this.#player.position.y = 100;
     }
 
     if (WalkingControls.KEY_DROP.includes(key)) {
