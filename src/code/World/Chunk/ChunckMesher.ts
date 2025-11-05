@@ -5,6 +5,8 @@ import {
   Material,
   PhysicsAggregate,
   PhysicsShapeType,
+  Texture,
+  Tools,
 } from "@babylonjs/core";
 import { Map1 } from "@/code/Maps/Map1";
 import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
@@ -23,11 +25,58 @@ export class ChunkMesher {
     // as the logic is initiated from Chunk.scheduleRemesh()
   }
   static initAtlas() {
-    // --- 🔑 Material Application Point (NEW LOGIC) ---
     if (!ChunkMesher.atlasMaterial) {
-      const diffuseAtlasTexture = TextureAtlasFactory.getDiffuse();
-      const normalAtlasTexture = TextureAtlasFactory.getNormal();
+      let diffuseAtlasTexture: Texture | null = null;
+      let normalAtlasTexture: Texture | null = null;
       const scene = Map1.mainScene;
+
+      if (GlobalValues.CREATE_ATLAS) {
+        diffuseAtlasTexture = TextureAtlasFactory.getDiffuse();
+        normalAtlasTexture = TextureAtlasFactory.getNormal();
+
+        const saveTexture = async (texture: Texture, fileName: string) => {
+          // Wait for the texture to be fully ready, including for pixel reading.
+          await new Promise<void>((resolve, reject) => {
+            texture.onLoadObservable.addOnce(() => {
+              resolve();
+            });
+          });
+
+          const pixels = await texture.readPixels();
+          if (pixels) {
+            const size = texture.getSize();
+            Tools.DumpData(
+              size.width,
+              size.height,
+              pixels,
+              undefined,
+              "image/png",
+              fileName,
+              true
+            );
+          }
+        };
+
+        if (diffuseAtlasTexture) {
+          saveTexture(diffuseAtlasTexture, "diffuseAtlas.png").catch((err) =>
+            console.error("Failed to save diffuse atlas:", err)
+          );
+        }
+        if (normalAtlasTexture) {
+          saveTexture(normalAtlasTexture, "normalAtlas.png").catch((err) =>
+            console.error("Failed to save normal atlas:", err)
+          );
+        }
+      } else {
+        diffuseAtlasTexture = new Texture("/texture/diffuseAtlas.png", scene, {
+          noMipmap: false,
+          samplingMode: Texture.NEAREST_SAMPLINGMODE,
+        });
+        normalAtlasTexture = new Texture("/texture/normalAtlas.png", scene, {
+          noMipmap: false,
+          samplingMode: Texture.NEAREST_SAMPLINGMODE,
+        });
+      }
 
       if (diffuseAtlasTexture) {
         // Register the shader with Babylon's Effect system
@@ -56,7 +105,7 @@ export class ChunkMesher {
           }
         );
         mat.backFaceCulling = true;
-        mat.setFloat("atlasTileSize", 1 / TextureAtlasFactory.atlasSize);
+        mat.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
 
         mat.setTexture("diffuseTexture", diffuseAtlasTexture);
         if (normalAtlasTexture) {
@@ -112,13 +161,13 @@ export class ChunkMesher {
       chunk.chunkY * Chunk.SIZE,
       chunk.chunkZ * Chunk.SIZE
     );
-
-    new PhysicsAggregate(
-      mesh,
-      PhysicsShapeType.MESH,
-      { mass: 0, friction: 0.5, restitution: 0.1 },
-      Map1.mainScene
-    );
+    if (vertexData.indices.length > 0)
+      new PhysicsAggregate(
+        mesh,
+        PhysicsShapeType.MESH,
+        { mass: 0, friction: 0.5, restitution: 0.1 },
+        Map1.mainScene
+      );
 
     chunk.mesh = mesh;
   }

@@ -1,6 +1,5 @@
 import {
   Color3,
-  CubeTexture,
   Effect,
   DirectionalLight,
   HemisphericLight,
@@ -11,7 +10,6 @@ import {
   Scene,
   ShaderMaterial,
   ShadowGenerator,
-  StandardMaterial,
   Texture,
   Vector3,
 } from "@babylonjs/core";
@@ -32,6 +30,9 @@ export class Map1 {
   #player: Player;
   public static shadowGenerator: ShadowGenerator;
 
+  #timeOfDay = 0; // Time in milliseconds, progresses from 0 to dayDurationMs
+  readonly #dayDurationMs = 10 * 60 * 1000; // 10 minutes for a full day
+
   constructor(scene: Scene, player: Player) {
     this.#player = player;
     Map1.mainScene = this.CreateScene(scene);
@@ -49,7 +50,7 @@ export class Map1 {
         }
       });
     });
-    scene.onBeforeRenderObservable.add(this.updateDayNightCycle);
+    scene.onBeforeRenderObservable.add(() => this.updateDayNightCycle());
   }
 
   async asyncInit() {
@@ -60,16 +61,25 @@ export class Map1 {
       console.error("Error loading environment or textures:", error);
     }
   }
+
+  /**
+   * Sets the time of day.
+   * @param time A value between 0 (start of day) and 1 (end of day).
+   */
+  public setTime(time: number): void {
+    this.#timeOfDay = (time % 1) * this.#dayDurationMs;
+  }
+
   private updateDayNightCycle() {
-    // Duration of a full day in minutes (keeps your original value)
-    const dayDurationMinutes = 10;
-    const dayDurationMs = dayDurationMinutes * 60 * 1000;
+    // Increment time of day based on frame delta time
+    this.#timeOfDay += Map1.mainScene.getEngine().getDeltaTime();
+    this.#timeOfDay %= this.#dayDurationMs;
 
     // Time within the current cycle
-    const timeInCycle = Date.now() % dayDurationMs;
+    const timeInCycle = this.#timeOfDay;
 
     // Angle around the full circle (0..2PI)
-    const angle = (timeInCycle / dayDurationMs) * 2 * Math.PI;
+    const angle = (timeInCycle / this.#dayDurationMs) * 2 * Math.PI;
 
     // Use spherical-like parametrization:
     // - elevation controls vertical position (y)
@@ -304,134 +314,6 @@ export class Map1 {
     skybox.setEnabled(true);
     skybox.material = skyboxMaterial;
     return skybox;
-  }
-  private createBlock() {
-    const midBlock = MeshBuilder.CreateBox(
-      "midBlock",
-      { width: 9, height: 1.5, depth: 400 },
-      Map1.mainScene
-    );
-    midBlock.position = new Vector3(0, 0, 0);
-    midBlock.rotation.x = 0.1;
-
-    const midMat = new GridMaterial("midGrid", Map1.mainScene);
-    midMat.mainColor = new Color3(0.5, 0.5, 0.5);
-    midMat.lineColor = midMat.mainColor.scale(0.5);
-    midBlock.material = midMat;
-
-    midBlock.checkCollisions = true;
-    midBlock.isPickable = true;
-    new PhysicsAggregate(
-      midBlock,
-      PhysicsShapeType.BOX,
-      { mass: 0 },
-      Map1.mainScene
-    );
-    // Create left block
-    const leftBlock = MeshBuilder.CreateBox(
-      "leftBlock",
-      { width: 100, height: 10, depth: 250 },
-      Map1.mainScene
-    );
-    leftBlock.position = new Vector3(-54, -2, 0);
-
-    const leftMat = new GridMaterial("leftGrid", Map1.mainScene);
-    leftMat.mainColor = new Color3(0.3, 0.5, 0.5);
-    leftMat.lineColor = leftMat.mainColor.scale(0.5);
-    leftBlock.material = leftMat;
-
-    leftBlock.checkCollisions = true;
-    leftBlock.isPickable = true;
-    new PhysicsAggregate(
-      leftBlock,
-      PhysicsShapeType.BOX,
-      { mass: 0 },
-      Map1.mainScene
-    );
-
-    // Create right block
-    const rightBlock = MeshBuilder.CreateBox(
-      "rightBlock",
-      { width: 30, height: 10, depth: 500 },
-      Map1.mainScene
-    );
-    rightBlock.position = new Vector3(19, -2, 0);
-
-    const rightMat = new GridMaterial("rightGrid", Map1.mainScene);
-    rightMat.mainColor = new Color3(0.5, 0.5, 0.5);
-    rightMat.lineColor = rightMat.mainColor.scale(0.5);
-    rightBlock.material = rightMat;
-
-    rightBlock.checkCollisions = true;
-    rightBlock.isPickable = true;
-    new PhysicsAggregate(
-      rightBlock,
-      PhysicsShapeType.BOX,
-      { mass: 0 },
-      Map1.mainScene
-    );
-
-    // Create right block
-    const rightBlock2 = MeshBuilder.CreateBox(
-      "rightBlock2",
-      { width: 100, height: 8, depth: 140 },
-      Map1.mainScene
-    );
-    rightBlock2.position = new Vector3(-80, 0, 250);
-
-    rightBlock2.material = rightMat;
-
-    rightBlock2.checkCollisions = true;
-    rightBlock2.isPickable = false;
-    new PhysicsAggregate(
-      rightBlock2,
-      PhysicsShapeType.BOX,
-      { mass: 0 },
-      Map1.mainScene
-    );
-    midBlock.receiveShadows = true;
-    leftBlock.receiveShadows = true;
-    rightBlock.receiveShadows = true;
-    rightBlock2.receiveShadows = true;
-
-    this.createaChunkMarker(rightMat);
-  }
-  private createaChunkMarker(mat: GridMaterial) {
-    const chunkMarker = MeshBuilder.CreateBox(
-      "chunkMarker",
-      { width: 1, height: 20, depth: 1 },
-      Map1.mainScene
-    );
-    chunkMarker.position = new Vector3(0, 0, 0);
-    chunkMarker.isPickable = false;
-    chunkMarker.material = mat;
-
-    const chunkMarker2 = MeshBuilder.CreateBox(
-      "chunkMarker2",
-      { width: 1, height: 20, depth: 1 },
-      Map1.mainScene
-    );
-    chunkMarker2.position = new Vector3(Chunk.SIZE, 0, 0);
-    chunkMarker2.isPickable = false;
-    chunkMarker2.material = mat;
-
-    const chunkMarker3 = MeshBuilder.CreateBox(
-      "chunkMarker3",
-      { width: 1, height: 20, depth: 1 },
-      Map1.mainScene
-    );
-    chunkMarker3.position = new Vector3(0, 0, Chunk.SIZE);
-    chunkMarker3.isPickable = false;
-    chunkMarker3.material = mat;
-
-    const chunkMarker4 = MeshBuilder.CreateBox(
-      "chunkMarker4",
-      { width: 1, height: 20, depth: 1 },
-      Map1.mainScene
-    );
-    chunkMarker4.position = new Vector3(Chunk.SIZE, 0, Chunk.SIZE);
-    chunkMarker4.isPickable = false;
-    chunkMarker4.material = mat;
   }
 
   async loadTextures(): Promise<void> {

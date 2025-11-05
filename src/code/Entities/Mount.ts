@@ -1,7 +1,7 @@
 import { IMountable } from "../Inferface/IMountable";
 import { Player } from "../Player/Player";
 import { Vector3, Quaternion, TransformNode } from "@babylonjs/core";
-import { IControls } from "../Player/Controls/IControls";
+import { IControls } from "../Inferface/IControls";
 import MountOptions from "./MountOptions";
 import { PlayerVehicle } from "../Player/PlayerVehicle";
 

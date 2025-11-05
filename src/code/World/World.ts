@@ -68,6 +68,25 @@ export class World {
     chunk.setBlock(localX, localY, localZ, blockId);
   }
 
+  public static getBlockByWorldCoords(
+    worldX: number,
+    worldY: number,
+    worldZ: number
+  ): number {
+    const chunkX = this.worldToChunkCoord(worldX);
+    const chunkY = this.worldToChunkCoord(worldY);
+    const chunkZ = this.worldToChunkCoord(worldZ);
+
+    const chunk = this.getChunk(chunkX, chunkY, chunkZ);
+    if (!chunk) return 0;
+
+    const localX = this.worldToBlockCoord(worldX);
+    const localY = this.worldToBlockCoord(worldY);
+    const localZ = this.worldToBlockCoord(worldZ);
+
+    return chunk.getBlock(localX, localY, localZ);
+  }
+
   /**
    * Converts world coordinates to chunk coordinates.
    * @param value The world coordinate value (e.g., player's x position).

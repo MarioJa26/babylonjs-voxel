@@ -1,5 +1,5 @@
 import { Player } from "../Player";
-import { IControls } from "../Controls/IControls";
+import { IControls } from "../../Inferface/IControls";
 import { Vector3 } from "@babylonjs/core";
 import { CrossHair } from "../Hud/CrossHair";
 import { PlayerVehicle } from "../PlayerVehicle";
@@ -19,6 +19,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
   public static KEY_UP = ["w", "arrowup"];
   public static KEY_DOWN = ["s", "arrowdown"];
   public static KEY_USE = ["e"];
+  public static KEY_PICK_BLOCK = ["r"];
   public static KEY_JUMP = [" "];
   public static KEY_SPRINT = ["shift"];
   public static KEY_FLASH = ["f"];
@@ -45,6 +46,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
   public static KEY_0 = ["0", "="];
 
   public static KEY_F2 = ["f2"];
+  public static KEY_F3 = ["f3"];
   public static KEY_F5 = ["f5"];
   public static KEY_F6 = ["f6"];
 
@@ -102,7 +104,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
       GlobalValues.DEBUG = !GlobalValues.DEBUG;
       PlayerHud.showDebugPanel();
     } else if (key === "l") {
-      this.#player.position.y = 100;
+      this.#player.position.y += 50;
     }
 
     if (WalkingControls.KEY_DROP.includes(key)) {
@@ -169,13 +171,27 @@ export class WalkingControls implements IControls<PlayerVehicle> {
         WalkingControls.MOUSE_WHEEL_DOWN.includes(key))
     ) {
       this.#controlledEntity.camera.zoomOut();
-    }
-    if (
+    } else if (
       WalkingControls.KEY_F6.includes(key) ||
       (this.#pressedKeysHas(WalkingControls.KEY_ALT) &&
         WalkingControls.MOUSE_WHEEL_UP.includes(key))
     ) {
       this.#controlledEntity.camera.zoomIn();
+    }
+
+    if (WalkingControls.KEY_PICK_BLOCK.includes(key)) {
+      const hit = CrossHair.pickTarget(this.#player);
+      if (!hit) return;
+      const blockId = World.getBlockByWorldCoords(hit.x, hit.y, hit.z);
+      console.log(blockId);
+      for (let i = 0; i < 10; i++) {
+        const hotbarItemId =
+          this.#player.playerInventory.inventory[0][i].item?.itemId;
+        if (hotbarItemId === blockId) {
+          this.#player.playerHud.selectedHotbarSlot = i;
+          return;
+        }
+      }
     }
 
     if (WalkingControls.KEY_INVENTORY.includes(key)) {

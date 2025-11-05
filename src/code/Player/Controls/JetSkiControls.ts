@@ -1,6 +1,6 @@
 import { Matrix, PhysicsBody, Vector3 } from "@babylonjs/core";
 import { AdvancedBoat } from "../../Entities/AdvancedBoat";
-import { IControls } from "./IControls";
+import { IControls } from "../../Inferface/IControls";
 import { Player } from "../Player";
 
 export class JetSkiControls implements IControls<AdvancedBoat> {
