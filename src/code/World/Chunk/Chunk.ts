@@ -1,10 +1,9 @@
 import { Mesh } from "@babylonjs/core";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import { World } from "../World";
-import { TerrainGenerator } from "../Generation/TerrainGenarator";
 
 export class Chunk {
-  public static readonly SIZE = 64;
+  public static readonly SIZE = 32;
   public static readonly SIZE2 = Chunk.SIZE * Chunk.SIZE;
   public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
   public static readonly chunkInstances = new Map<string, Chunk>();

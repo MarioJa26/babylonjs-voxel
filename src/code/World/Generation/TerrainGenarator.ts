@@ -57,7 +57,7 @@ export class TerrainGenerator {
       // --- Block Placement Logic ---
       if (worldY === terrainHeight) {
         // Top layer
-        if (worldY >= this.SEA_LEVEL - 2) {
+        if (worldY >= this.SEA_LEVEL + 3) {
           targetChunk.setBlock(localX, localY, localZ, 15); // Grass
         } else {
           targetChunk.setBlock(localX, localY, localZ, 3); // Sand
@@ -67,7 +67,7 @@ export class TerrainGenerator {
         targetChunk.setBlock(localX, localY, localZ, 1); // Dirt
       } else {
         // Everything else below
-        targetChunk.setBlock(localX, localY, localZ, 1); // Stone
+        targetChunk.setBlock(localX, localY, localZ, 5); // Stone
       }
     }
 
@@ -77,7 +77,7 @@ export class TerrainGenerator {
       const targetChunk = World.getChunk(chunk.chunkX, chunkY, chunk.chunkZ);
       if (!targetChunk) continue;
       const localY = World.worldToBlockCoord(worldY);
-      targetChunk.setBlock(localX, localY, localZ, 3); // Water
+      targetChunk.setBlock(localX, localY, localZ, 0); // Water
     }
   }
 

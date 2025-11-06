@@ -38,12 +38,13 @@ export class Map1 {
   static #timeOfDay = 0; // Time in milliseconds, progresses from 0 to dayDurationMs
   static readonly #dayDurationMs = 10 * 60 * 1000; // 10 minutes for a full day
   public static timeScale = 1.0;
+  public readonly initPromise: Promise<void>;
 
   constructor(scene: Scene, player: Player) {
     this.#player = player;
     Map1.mainScene = this.CreateScene(scene);
 
-    this.asyncInit().then(async () => {
+    this.initPromise = this.asyncInit().then(async () => {
       ChunkMesher.initAtlas();
       // Now that textures are ready, generate terrain and remesh.
       Chunk.chunkInstances.forEach((chunk) => {
@@ -101,7 +102,7 @@ export class Map1 {
         "highlightMat",
         Map1.mainScene
       );
-      highlightMaterial.alpha = 0.2; // Set transparency (0=invisible, 1=solid)
+      highlightMaterial.alpha = 0; // Set transparency (0=invisible, 1=solid)
       highlightMaterial.diffuseColor = new Color3(0.6, 0.6, 1); // Set face color to white
       this.#blockHighlightMesh.material = highlightMaterial;
 

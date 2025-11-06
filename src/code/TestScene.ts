@@ -2,7 +2,6 @@ import {
   Scene,
   Engine,
   Vector3,
-  HemisphericLight,
   FreeCamera,
   HavokPlugin,
   ImportMeshAsync,
@@ -18,7 +17,6 @@ import {
   TransformNode,
 } from "@babylonjs/core";
 import HavokPhysics from "@babylonjs/havok";
-import "@babylonjs/loaders";
 import { Player } from "./Player/Player";
 import { distanceCullMeshes } from "../BabylonExamples/occlusion";
 import { Map1 } from "./Maps/Map1";
@@ -26,18 +24,22 @@ import { PlayerCamera } from "./Player/PlayerCamera";
 import MapFog from "./Maps/MapFog";
 import { TerrainGenerator } from "./World/Generation/TerrainGenarator";
 import { World } from "./World/World";
+import { MyConnection } from "./Server/MyConnection";
 
 export class TestScene {
   document: Document;
+  connection: MyConnection;
   scene?: Scene;
   engine: Engine;
   models!: AbstractMesh[];
+  public readonly initPromise: Promise<void>;
 
   constructor(document: Document, private canvas: HTMLCanvasElement) {
     this.document = document;
     this.engine = new Engine(this.canvas);
+    this.connection = new MyConnection();
 
-    this.init();
+    this.initPromise = this.init();
 
     // this.CreateEnvironment2();
 
@@ -50,6 +52,7 @@ export class TestScene {
 
   async init() {
     this.scene = await this.createScene();
+    await this.connection.connect();
   }
 
   // Playground scene creation
@@ -61,12 +64,6 @@ export class TestScene {
     const camera = new FreeCamera("camera1", new Vector3(0, 5, -5), scene);
     camera.fov = 1.35;
     camera.minZ = 0.2;
-
-    // This creates a light, aiming 0,1,0 - to the sky (non-mesh)
-    const light = new HemisphericLight("light", new Vector3(0, 1, 0), scene);
-
-    // Default intensity is 1. Let's dim the light a small amount
-    light.intensity = 0.7;
 
     // Initialize Havok plugin
     const hk = new HavokPlugin(false, await HavokPhysics());
@@ -81,7 +78,8 @@ export class TestScene {
     TerrainGenerator.initialize();
     new World(); // This will create all the initial chunks
     const player = new Player(this.engine, scene, playerCamera, this.canvas);
-    const map = new Map1(scene, player);
+    const map = new Map1(scene, player); // Create the map
+    await map.initPromise; // Wait for the map's async initialization to complete
     return scene;
   }
 
