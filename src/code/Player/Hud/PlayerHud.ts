@@ -39,7 +39,12 @@ export class PlayerHud {
   }
 
   private initializeHUD(): HTMLDivElement {
+    const existingOverlay = document.getElementById("hud-overlay");
+    if (existingOverlay) {
+      return existingOverlay as HTMLDivElement;
+    }
     const overlayDiv = document.createElement("div");
+    overlayDiv.id = "hud-overlay";
     overlayDiv.style.display = "none";
     overlayDiv.classList.add("hud-overlay");
 
@@ -81,7 +86,12 @@ export class PlayerHud {
     return inventoryContainer;
   }
   private createHotbarUI(): HTMLDivElement {
+    const existingWrapper = document.getElementById("hotbar-wrapper");
+    if (existingWrapper) {
+      existingWrapper.remove(); // Remove old one to rebuild with new scene context
+    }
     const hotbarWrapper = document.createElement("div");
+    hotbarWrapper.id = "hotbar-wrapper";
     hotbarWrapper.classList.add("hotbar-wrapper");
     // Create item name display
     PlayerHud.#heldItemNameDiv.classList.add("held-item-name");
@@ -164,16 +174,7 @@ export class PlayerHud {
           leftOffset +
           slotRect.width / 2 -
           PlayerHud.#heldItemNameDiv.getBoundingClientRect().width / 2;
-        console.log(
-          "Width Offset:",
-          widthOffset,
-          " Slot Left:",
-          leftOffset,
-          " Slot Width:",
-          slotRect.width,
-          " Name Width:",
-          PlayerHud.#heldItemNameDiv.getBoundingClientRect().width
-        );
+
         PlayerHud.#heldItemNameDiv.style.left = `${widthOffset}px`;
       } else {
         PlayerHud.#heldItemNameDiv.classList.remove("visible");

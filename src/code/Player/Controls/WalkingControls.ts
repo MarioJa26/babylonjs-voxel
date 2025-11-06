@@ -183,7 +183,6 @@ export class WalkingControls implements IControls<PlayerVehicle> {
       const hit = CrossHair.pickTarget(this.#player);
       if (!hit) return;
       const blockId = World.getBlockByWorldCoords(hit.x, hit.y, hit.z);
-      console.log(blockId);
       for (let i = 0; i < 10; i++) {
         const hotbarItemId =
           this.#player.playerInventory.inventory[0][i].item?.itemId;
