@@ -4,6 +4,8 @@ export class GlobalValues {
   public static DEBUG = false;
   public static readonly CREATE_ATLAS = false;
 
+  public static readonly INIT_CONNECTION = false;
+
   public static readonly ENABLE_SSAO = false;
 
   public static skyLightDirection = new Vector3(-1, -2, -1);

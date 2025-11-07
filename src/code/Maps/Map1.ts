@@ -5,18 +5,15 @@ import {
   HemisphericLight,
   Mesh,
   MeshBuilder,
-  PhysicsAggregate,
-  PhysicsShapeType,
   Scene,
   ShaderMaterial,
-  ShadowGenerator,
   StandardMaterial,
   Texture,
   Vector3,
   SSAORenderingPipeline,
   Color4,
 } from "@babylonjs/core";
-import { GridMaterial, WaterMaterial } from "@babylonjs/materials";
+import { WaterMaterial } from "@babylonjs/materials";
 import { AdvancedBoat } from "../Entities/AdvancedBoat";
 import { MyTestBlock } from "./MyTestBlock";
 import { Player } from "../Player/Player";
@@ -29,6 +26,7 @@ import { SkyShader } from "../World/Light/SkyShader";
 import { TerrainGenerator } from "../World/Generation/TerrainGenarator";
 import { PlayerHud } from "../Player/Hud/PlayerHud";
 import { CrossHair } from "../Player/Hud/CrossHair";
+import { TextureDefinitions } from "../World/Texture/TextureDefinitions";
 
 export class Map1 {
   public static mainScene: Scene;
@@ -328,29 +326,6 @@ export class Map1 {
   }
 
   async loadTextures(): Promise<void> {
-    const textureFolders = [
-      { name: "cobble", path: "/texture/cobble/cobble05_1k" },
-      { name: "factory_wall", path: "/texture/metal/factory_wall_1k" },
-      { name: "gravelly_sand", path: "/texture/sand/gravelly_sand_1k" },
-      { name: "brick_wall_10", path: "/texture/brick/brick_wall_10_1k" },
-      {
-        name: "castle_brick_red",
-        path: "/texture/brick/castle_brick_02_red_1k",
-      },
-      { name: "metal01", path: "/texture/metal/metal01_1k" },
-      {
-        name: "concrete_tile_facade",
-        path: "/texture/stone/concrete_tile_facade_1k",
-      },
-      { name: "gray_rocks", path: "/texture/stone/gray_rocks_1k" },
-      { name: "stone_tile_wall", path: "/texture/stone/stone_tile_wall_1k" },
-      { name: "bark_willow_02", path: "/texture/wood/bark_willow_02_1k" },
-      { name: "diagonal_parquet", path: "/texture/wood/diagonal_parquet_1k" },
-      { name: "old_wood_floor", path: "/texture/wood/old_wood_floor_1k" },
-      { name: "wood_table", path: "/texture/wood/wood_table_1k" },
-      { name: "rocky_terrain_02", path: "/texture/dirt/rocky_terrain_02_1k" },
-      { name: "grass001", path: "/texture/dirt/Grass001_1K" },
-    ];
-    await TextureAtlasFactory.buildAtlas(Map1.mainScene, textureFolders);
+    await TextureAtlasFactory.buildAtlas(Map1.mainScene, TextureDefinitions);
   }
 }

@@ -3,7 +3,7 @@ import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import { World } from "../World";
 
 export class Chunk {
-  public static readonly SIZE = 32;
+  public static readonly SIZE = 64;
   public static readonly SIZE2 = Chunk.SIZE * Chunk.SIZE;
   public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
   public static readonly chunkInstances = new Map<string, Chunk>();
@@ -55,6 +55,7 @@ export class Chunk {
     const index = localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2;
     if (index < 0 || index >= this.block_array.length) return; // Out of bounds check
     this.block_array[index] = blockId;
+
     this.scheduleRemesh();
   }
 

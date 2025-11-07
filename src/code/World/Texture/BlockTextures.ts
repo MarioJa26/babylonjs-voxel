@@ -10,67 +10,31 @@ type BlockTextureDef = {
 // The coordinates correspond to the order in which textures are loaded via textureFolders.
 export const BlockTextures: (BlockTextureDef | null)[] = [
   null, // 0: air (must be null)
-  { all: [0, 0] },
-  {
-    // Block ID 1: Based on original configuration (Grass)
-    // top: [0, 0] -> cobble
-    // bottom: [2, 0] -> gravelly_sand (dirt/sand look)
-    // side: [1, 0] -> factory_wall (or a generic side texture)
-    top: [1, 0],
-    all: [1, 0],
-  },
-  {
-    // Block ID 2: Dirt (uses gravelly_sand at [2, 0])
-    all: [2, 0],
-  },
-  {
-    // Block ID 3: Stone (uses brick_wall_10 at [3, 0])
-    all: [3, 0],
-  },
-  {
-    // Block ID 4: Castle Brick Red (from textureFolders index 4)
-    all: [4, 0],
-  },
-  {
-    // Block ID 5: Metal 01 (from textureFolders index 5)
-    all: [5, 0],
-  },
-  {
-    // Block ID 6: Concrete Tile Facade (from textureFolders index 6)
-    all: [6, 0],
-  },
-  {
-    // Block ID 7: Gray Rocks (from textureFolders index 7)
-    all: [7, 0],
-  },
-  {
-    // Block ID 8: Stone Tile Wall (from textureFolders index 8)
-    all: [8, 0],
-  },
-  {
-    // Block ID 9: Bark Willow 02 (from textureFolders index 9)
-    all: [9, 0],
-  },
-  {
-    // Block ID 10: Diagonal Parquet (from textureFolders index 10)
-    all: [10, 0],
-  },
-  {
-    // Block ID 11: Old Wood Floor (from textureFolders index 11)
-    all: [11, 0],
-  },
-  {
-    // Block ID 12: Wood Table (from textureFolders index 12)
-    all: [12, 0],
-  },
-  {
-    // Block ID 13: Rocky Terrain 02 (from textureFolders index 13)
-    all: [13, 0],
-  },
 
-  {
-    // Block ID 14: Grass001 (from textureFolders index 14)
-    all: [14, 0],
-  },
-  // Add more blocks here if you add more textures to textureFolders.
+  { all: [0, 0] }, // 1: cobble
+  { all: [1, 0] }, // 2: factory_wall
+  { all: [2, 0] }, // 3: gravelly_sand
+  { all: [3, 0] }, // 4: brick_wall_10
+  { all: [4, 0] }, // 5: castle_brick_red
+  { all: [5, 0] }, // 6: metal01
+  { all: [6, 0] }, // 7: concrete_tile_facade
+  { all: [7, 0] }, // 8: gray_rocks
+  { all: [8, 0] }, // 9: stone_tile_wall
+  { all: [9, 0] }, // 10: bark_willow_02
+  { all: [10, 0] }, // 11: diagonal_parquet
+  { all: [11, 0] }, // 12: old_wood_floor
+  { all: [12, 0] }, // 13: wood_table
+  { all: [13, 0] }, // 14: rocky_terrain_02
+  { all: [14, 0] }, // 15: grass001
+  { all: [15, 0] }, // 16: checkered_pavement_tiles
+  { all: [0, 1] }, // 17: wood_inlaid_stone_wall
+  { all: [1, 1] }, // 18: stone_tiles_02
+  { all: [2, 1] }, // 19: cracked_concrete
+  { all: [3, 1] }, // 20: rock_wall_12
+  { all: [4, 1] }, // 21: japanese_stone_wall
+  { all: [5, 1] }, // 22: pine_bark
+  { all: [6, 1] }, // 23: mud_cracked_dry_03
+  { all: [7, 1] }, // 24: metal_grate_rusty
+  { all: [8, 1] }, // 25: slab_tiles
+  { all: [9, 1] }, // 26: patterned_slate_tiles
 ];

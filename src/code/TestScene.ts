@@ -25,6 +25,7 @@ import MapFog from "./Maps/MapFog";
 import { TerrainGenerator } from "./World/Generation/TerrainGenarator";
 import { World } from "./World/World";
 import { MyConnection } from "./Server/MyConnection";
+import { GlobalValues } from "./World/GlobalValues";
 
 export class TestScene {
   document: Document;
@@ -52,7 +53,7 @@ export class TestScene {
 
   async init() {
     this.scene = await this.createScene();
-    await this.connection.connect();
+    if (GlobalValues.INIT_CONNECTION) await this.connection.connect();
   }
 
   // Playground scene creation

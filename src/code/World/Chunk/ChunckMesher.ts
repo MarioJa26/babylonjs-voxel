@@ -20,10 +20,6 @@ import { MeshData } from "./MeshData";
 export class ChunkMesher {
   private static atlasMaterial: Material | null = null;
 
-  static build(chunk: Chunk) {
-    // This function is now just a placeholder or can be removed
-    // as the logic is initiated from Chunk.scheduleRemesh()
-  }
   static initAtlas() {
     if (!ChunkMesher.atlasMaterial) {
       let diffuseAtlasTexture: Texture | null = null;
@@ -124,7 +120,6 @@ export class ChunkMesher {
           }
         };
 
-        // Cache the material
         ChunkMesher.atlasMaterial = mat;
       } else {
         console.error("Texture Atlas not yet built or available!");

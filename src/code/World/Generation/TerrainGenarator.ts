@@ -7,7 +7,7 @@ export class TerrainGenerator {
 
   // --- Terrain Generation Parameters ---
   private static readonly SEED = "my-secret-seed"; // Change this for a new world
-  private static readonly TERRAIN_SCALE = 0.005; // How zoomed in the noise is. Smaller = larger features.
+  private static readonly TERRAIN_SCALE = 0.002; // How zoomed in the noise is. Smaller = larger features.
   private static readonly TERRAIN_HEIGHT_BASE = 16; // Base sea level
   private static readonly TERRAIN_HEIGHT_AMPLITUDE = 70; // Max height variation from base
   private static readonly SEA_LEVEL = 40;
@@ -58,7 +58,7 @@ export class TerrainGenerator {
       if (worldY === terrainHeight) {
         // Top layer
         if (worldY >= this.SEA_LEVEL + 3) {
-          targetChunk.setBlock(localX, localY, localZ, 15); // Grass
+          targetChunk.setBlock(localX, localY, localZ, 20); // Grass
         } else {
           targetChunk.setBlock(localX, localY, localZ, 3); // Sand
         }

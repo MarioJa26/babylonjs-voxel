@@ -2,15 +2,13 @@ import { Chunk } from "./Chunk/Chunk";
 
 export class World {
   private static chunks = new Map<string, Chunk>();
-  private static worldInstance: World;
 
   constructor() {
-    World.worldInstance = this;
     this.initChunks();
   }
 
   private initChunks() {
-    const renderDistance = 1; // in chunks
+    const renderDistance = 2; // in chunks
     for (let x = -renderDistance; x < renderDistance; x++) {
       for (let z = -renderDistance; z < renderDistance; z++) {
         // For now, we only create the base layer of chunks (y=0)

@@ -15,7 +15,6 @@ type WorkerInternalMeshData = {
   indexOffset: number;
 };
 class ChunkWorkerMesher {
-  // This function contains the core greedy meshing logic, extracted from ChunkMesher.build
   static generateMesh(
     block_array: Uint8Array,
     CHUNK_SIZE: number

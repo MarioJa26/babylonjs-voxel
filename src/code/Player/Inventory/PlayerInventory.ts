@@ -4,6 +4,8 @@ import { DroppedItem } from "./DroppedItem";
 import { Item } from "./Item";
 import { ItemSlot } from "./ItemSlot";
 import { InventoryControls } from "../Controls/InventoryControls";
+import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
+import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
 
 export class PlayerInventory {
   scene: Scene;
@@ -42,12 +44,11 @@ export class PlayerInventory {
   }
 
   #generateFakeItems() {
-    let itemId = 2;
     let temp = 1;
-    for (let i = 0; i < this.#inventorySlots.length && temp < 15; i++) {
+    for (let i = 0; i < this.#inventorySlots.length && temp < 40; i++) {
       for (let j = 0; j < this.#inventorySlots[i].length; j++) {
         const item = new Item(
-          "Fake Item",
+          "☺☻♦❤☮✝☪☯🕳💟💛💙o(≧口≦)o╰(艹皿艹 )",
           "This is a fake item",
           "/texture/cobble/cobble05_1k/cobble05_diff_1k.png",
           "/texture/cobble/cobble05_1k",
@@ -55,219 +56,33 @@ export class PlayerInventory {
           j
         );
         item.stackSize = temp++;
+        item.itemId = 1;
         this.#inventorySlots[i][j].item = item;
         this.#inventorySlots[i][j].divItemSlot!.appendChild(item.div);
       }
     }
-    let x = 0;
-    let y = 1;
-    let item = new Item(
-      "Fake Item",
-      "This is a fake item",
-      "/texture/metal/factory_wall_1k/factory_wall_diff_1k.png",
-      "/texture/metal/factory_wall_1k",
-      x,
-      y
-    );
-    item.itemId = itemId++;
-    this.#inventorySlots[x][y] = new ItemSlot(x, y);
-    this.#inventorySlots[x][y].item = item;
-    this.#inventorySlots[x][y].divItemSlot!.appendChild(item.div);
-
-    x = 0;
-    y++;
-    item = new Item(
-      "Fake Item",
-      "This is a fake item",
-      "/texture/sand/gravelly_sand_1k/gravelly_sand_diff_1k.png",
-      "/texture/sand/gravelly_sand_1k",
-      x,
-      y
-    );
-    item.itemId = itemId++;
-    this.#inventorySlots[x][y] = new ItemSlot(x, y);
-    this.#inventorySlots[x][y].item = item;
-    this.#inventorySlots[x][y].divItemSlot!.appendChild(item.div);
-
-    x = 0;
-    y++;
-    item = new Item(
-      "Fake Item",
-      "This is a fake item",
-      "/texture/brick/brick_wall_10_1k/brick_wall_10_diff_1k.png",
-      "/texture/brick/brick_wall_10_1k",
-      x,
-      y
-    );
-    item.itemId = itemId++;
-    this.#inventorySlots[x][y] = new ItemSlot(x, y);
-    this.#inventorySlots[x][y].item = item;
-    this.#inventorySlots[x][y].divItemSlot!.appendChild(item.div);
-
-    x = 0;
-    y++;
-    item = new Item(
-      "Fake Item",
-      "This is a fake item",
-      "/texture/brick/castle_brick_02_red_1k/castle_brick_02_red_diff_1k.png",
-      "/texture/brick/castle_brick_02_red_1k",
-      x,
-      y
-    );
-    item.itemId = itemId++;
-    this.#inventorySlots[x][y] = new ItemSlot(x, y);
-    this.#inventorySlots[x][y].item = item;
-    this.#inventorySlots[x][y].divItemSlot!.appendChild(item.div);
-
-    x = 0;
-    y++;
-    item = new Item(
-      "Fake Item",
-      "This is a fake item",
-      "/texture/metal/metal01_1k/metal01_diff_1k.png",
-      "/texture/metal/metal01_1k",
-      x,
-      y
-    );
-    item.itemId = itemId++;
-    this.#inventorySlots[x][y] = new ItemSlot(x, y);
-    this.#inventorySlots[x][y].item = item;
-    this.#inventorySlots[x][y].divItemSlot!.appendChild(item.div);
-
-    x = 0;
-    y++;
-    item = new Item(
-      "Fake Item",
-      "This is a fake item",
-      "/texture/stone/concrete_tile_facade_1k/concrete_tile_facade_diff_1k.png",
-      "/texture/stone/concrete_tile_facade_1k",
-      x,
-      y
-    );
-    item.itemId = itemId++;
-    this.#inventorySlots[x][y] = new ItemSlot(x, y);
-    this.#inventorySlots[x][y].item = item;
-    this.#inventorySlots[x][y].divItemSlot!.appendChild(item.div);
-
-    x = 0;
-    y++;
-    item = new Item(
-      "Fake Item",
-      "This is a fake item",
-      "/texture/stone/gray_rocks_1k/gray_rocks_diff_1k.png",
-      "/texture/stone/gray_rocks_1k",
-      x,
-      y
-    );
-    item.itemId = itemId++;
-    this.#inventorySlots[x][y] = new ItemSlot(x, y);
-    this.#inventorySlots[x][y].item = item;
-    this.#inventorySlots[x][y].divItemSlot!.appendChild(item.div);
-
-    x = 0;
-    y++;
-    item = new Item(
-      "Fake Item",
-      "This is a fake item",
-      "/texture/stone/stone_tile_wall_1k/stone_tile_wall_diff_1k.png",
-      "/texture/stone/stone_tile_wall_1k",
-      x,
-      y
-    );
-    item.itemId = itemId++;
-    this.#inventorySlots[x][y] = new ItemSlot(x, y);
-    this.#inventorySlots[x][y].item = item;
-    this.#inventorySlots[x][y].divItemSlot!.appendChild(item.div);
-
-    x = 0;
-    y++;
-    item = new Item(
-      "Fake Item",
-      "This is a fake item",
-      "/texture/wood/bark_willow_02_1k/bark_willow_02_diff_1k.png",
-      "/texture/wood/bark_willow_02_1k",
-      x,
-      y
-    );
-    item.itemId = itemId++;
-    this.#inventorySlots[x][y] = new ItemSlot(x, y);
-    this.#inventorySlots[x][y].item = item;
-    this.#inventorySlots[x][y].divItemSlot!.appendChild(item.div);
-
-    x = 1;
-    y = 0;
-    item = new Item(
-      "Fake Item",
-      "This is a fake item",
-      "/texture/wood/diagonal_parquet_1k/diagonal_parquet_diff_1k.png",
-      "/texture/wood/diagonal_parquet_1k",
-      x,
-      y
-    );
-    item.itemId = itemId++;
-    this.#inventorySlots[x][y] = new ItemSlot(x, y);
-    this.#inventorySlots[x][y].item = item;
-    this.#inventorySlots[x][y].divItemSlot!.appendChild(item.div);
-
-    x = 1;
-    y++;
-    item = new Item(
-      "Fake Item",
-      "This is a fake item",
-      "/texture/wood/old_wood_floor_1k/old_wood_floor_diff_1k.png",
-      "/texture/wood/old_wood_floor_1k",
-      x,
-      y
-    );
-    item.itemId = itemId++;
-    this.#inventorySlots[x][y] = new ItemSlot(x, y);
-    this.#inventorySlots[x][y].item = item;
-    this.#inventorySlots[x][y].divItemSlot!.appendChild(item.div);
-
-    x = 1;
-    y++;
-    item = new Item(
-      "Fake Item",
-      "This is a fake item",
-      "/texture/wood/wood_table_1k/wood_table_diff_1k.png",
-      "/texture/wood/wood_table_1k",
-      x,
-      y
-    );
-    item.itemId = itemId++;
-    this.#inventorySlots[x][y] = new ItemSlot(x, y);
-    this.#inventorySlots[x][y].item = item;
-    this.#inventorySlots[x][y].divItemSlot!.appendChild(item.div);
-
-    x = 1;
-    y++;
-    item = new Item(
-      "Fake Item",
-      "This is a fake item",
-      "/texture/dirt/rocky_terrain_02_1k/rocky_terrain_02_diff_1k.png",
-      "/texture/dirt/rocky_terrain_02_1k",
-      x,
-      y
-    );
-    item.itemId = itemId++;
-    this.#inventorySlots[x][y] = new ItemSlot(x, y);
-    this.#inventorySlots[x][y].item = item;
-    this.#inventorySlots[x][y].divItemSlot!.appendChild(item.div);
-
-    x = 1;
-    y++;
-    item = new Item(
-      "Fake Item",
-      "This is a fake item",
-      "/texture/dirt/Grass001_1K/Grass001_diff_1K.png",
-      "/texture/dirt/Grass001_1K",
-      x,
-      y
-    );
-    item.itemId = itemId++;
-    this.#inventorySlots[x][y] = new ItemSlot(x, y);
-    this.#inventorySlots[x][y].item = item;
-    this.#inventorySlots[x][y].divItemSlot!.appendChild(item.div);
+    for (const textureDef of TextureDefinitions) {
+      const i = Math.floor(
+        (textureDef.id - 1) / this.#inventorySlots[0].length
+      );
+      // Only add the item if it fits within the inventory's height
+      if (i < this.#inventorySlots.length) {
+        const j = (textureDef.id - 1) % this.#inventorySlots[0].length;
+        const item = new Item(
+          textureDef.name,
+          "Description for " + textureDef.name,
+          MaterialFactory.getTexturePathFromFolder(textureDef.path)!,
+          textureDef.path,
+          i,
+          j
+        );
+        item.itemId = textureDef.id;
+        item.stackSize = textureDef.id;
+        this.#inventorySlots[i][j] = new ItemSlot(i, j);
+        this.#inventorySlots[i][j].item = item;
+        this.#inventorySlots[i][j].divItemSlot!.appendChild(item.div);
+      }
+    }
   }
 
   public addItem(item: Item): number {
