@@ -58,7 +58,7 @@ export class TerrainGenerator {
       if (worldY === terrainHeight) {
         // Top layer
         if (worldY >= this.SEA_LEVEL + 3) {
-          targetChunk.setBlock(localX, localY, localZ, 20); // Grass
+          targetChunk.setBlock(localX, localY, localZ, 15); // Grass
         } else {
           targetChunk.setBlock(localX, localY, localZ, 3); // Sand
         }
@@ -67,7 +67,7 @@ export class TerrainGenerator {
         targetChunk.setBlock(localX, localY, localZ, 1); // Dirt
       } else {
         // Everything else below
-        targetChunk.setBlock(localX, localY, localZ, 5); // Stone
+        targetChunk.setBlock(localX, localY, localZ, 20); // Stone
       }
     }
 

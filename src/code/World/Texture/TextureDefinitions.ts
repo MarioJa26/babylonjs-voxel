@@ -91,4 +91,19 @@ export const TextureDefinitions: TextureDefinition[] = [
     name: "patterned_slate_tiles",
     path: "/texture/stone/patterned_slate_tiles_1k",
   },
+  {
+    id: 27,
+    name: "concrete_panels",
+    path: "/texture/stone/concrete_panels_1k",
+  },
+  {
+    id: 28,
+    name: "bark_brown_02",
+    path: "/texture/wood/bark_brown_02_1k",
+  },
+  {
+    id: 29,
+    name: "slate_floor",
+    path: "/texture/stone/slate_floor_1k",
+  },
 ];
