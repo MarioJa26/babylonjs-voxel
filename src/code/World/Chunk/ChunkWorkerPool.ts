@@ -1,6 +1,5 @@
 import { Chunk } from "./Chunk";
 import { ChunkMesher } from "./ChunckMesher";
-import { MeshData } from "./MeshData";
 import { ChunkWorker } from "./chunkWorker";
 
 export class ChunkWorkerPool {
@@ -11,12 +10,12 @@ export class ChunkWorkerPool {
 
   private constructor(poolSize: number) {
     for (let i = 0; i < poolSize; i++) {
-      const onMessage = (event: MessageEvent<MeshData>) => {
+      const onMessage = (event: MessageEvent<any>) => {
         // The worker has finished, apply the mesh data.
-        const { chunkId, ...meshData } = event.data;
+        const { chunkId, opaque, transparent } = event.data;
         const chunk = Chunk.chunkInstances.get(chunkId as string);
         if (chunk) {
-          ChunkMesher.createMeshFromData(chunk, meshData);
+          ChunkMesher.createMeshFromData(chunk, { opaque, transparent });
         }
 
         // Mark this worker as idle and process the next task in the queue.

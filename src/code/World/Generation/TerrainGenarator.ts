@@ -77,7 +77,7 @@ export class TerrainGenerator {
       const targetChunk = World.getChunk(chunk.chunkX, chunkY, chunk.chunkZ);
       if (!targetChunk) continue;
       const localY = World.worldToBlockCoord(worldY);
-      targetChunk.setBlock(localX, localY, localZ, 0); // Water
+      targetChunk.setBlock(localX, localY, localZ, 30); // Water
     }
   }
 

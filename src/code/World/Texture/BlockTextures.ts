@@ -48,4 +48,5 @@ export const BlockTextures: (BlockTextureDef | null)[] = [
     all: [11, 1],
   }, // 28: bark_brown_02
   { all: [12, 1] }, // 29: slate_floor
+  { all: [13, 1] }, // 30: water_01
 ];

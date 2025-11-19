@@ -12,7 +12,7 @@ export class TextureAtlasFactory {
   private static normalAtlas: Texture | null = null;
   private static uvMap: Record<string, TileUV> = {};
 
-  public static readonly tileSize = 25;
+  public static readonly tileSize = 32;
   public static readonly atlasSize = 16;
   public static readonly atlasTileSize = 1 / this.atlasSize;
 

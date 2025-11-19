@@ -106,4 +106,9 @@ export const TextureDefinitions: TextureDefinition[] = [
     name: "slate_floor",
     path: "/texture/stone/slate_floor_1k",
   },
+  {
+    id: 30,
+    name: "water",
+    path: "/texture/water/water_01_1k",
+  },
 ];

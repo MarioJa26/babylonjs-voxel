@@ -8,6 +8,7 @@ import { PlayerCamera } from "../PlayerCamera";
 export class PlayerHud {
   #engine: Engine;
   #scene: Scene;
+  #player: Player;
 
   static #inventory: PlayerInventory;
   #inventoryOpen = false;
@@ -31,6 +32,7 @@ export class PlayerHud {
   ) {
     this.#engine = engine;
     this.#scene = scene;
+    this.#player = player;
     PlayerHud.#inventory = player.playerInventory;
     this.#crosshair = new CrossHair(engine, playerCamera, scene);
     this.#overlayDiv = this.initializeHUD();
@@ -51,7 +53,9 @@ export class PlayerHud {
     const closeButton = document.createElement("button");
     closeButton.innerHTML = "&times;";
     closeButton.classList.add("hud-close-button");
-    closeButton.onclick = () => this.toggleInventory();
+    closeButton.onclick = () => {
+      this.#player.keyboardControls.onKeyUp("tab");
+    };
 
     const inventoryUI = this.createInventoryUI();
 

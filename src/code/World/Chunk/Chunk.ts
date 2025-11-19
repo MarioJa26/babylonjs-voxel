@@ -19,6 +19,7 @@ export class Chunk {
   #chunkX: number;
   #chunkZ: number;
   public mesh: Mesh | null = null;
+  public transparentMesh: Mesh | null = null;
 
   constructor(chunkX: number, chunkY: number, chunkZ: number) {
     this.#chunkX = chunkX;
@@ -94,5 +95,23 @@ export class Chunk {
   }
   get chunkZ(): number {
     return this.#chunkZ;
+  }
+
+  public getNeighbor(dx: number, dy: number, dz: number): Chunk | undefined {
+    const nx = this.chunkX + dx;
+    const ny = this.chunkY + dy;
+    const nz = this.chunkZ + dz;
+    return World.getChunk(nx, ny, nz);
+  }
+
+  public getNeighbors(): Chunk[] {
+    return [
+      this.getNeighbor(1, 0, 0),
+      this.getNeighbor(-1, 0, 0),
+      this.getNeighbor(0, 1, 0),
+      this.getNeighbor(0, -1, 0),
+      this.getNeighbor(0, 0, 1),
+      this.getNeighbor(0, 0, -1),
+    ].filter((c): c is Chunk => c !== undefined);
   }
 }

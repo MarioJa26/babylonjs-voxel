@@ -214,7 +214,7 @@ export class Map1 {
     }
 
     const skybox = this.createSkybox();
-    this.createWater(skybox, ground);
+    //this.createWater(skybox, ground);
   }
 
   private createWater(skybox: Mesh, ground: Mesh): void {
