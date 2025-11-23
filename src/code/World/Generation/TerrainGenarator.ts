@@ -7,9 +7,9 @@ export class TerrainGenerator {
 
   // --- Terrain Generation Parameters ---
   private static readonly SEED = "my-secret-seed"; // Change this for a new world
-  private static readonly TERRAIN_SCALE = 0.002; // How zoomed in the noise is. Smaller = larger features.
+  private static readonly TERRAIN_SCALE = 0.05; // How zoomed in the noise is. Smaller = larger features.
   private static readonly TERRAIN_HEIGHT_BASE = 16; // Base sea level
-  private static readonly TERRAIN_HEIGHT_AMPLITUDE = 70; // Max height variation from base
+  private static readonly TERRAIN_HEIGHT_AMPLITUDE = 72; // Max height variation from base
   private static readonly SEA_LEVEL = 40;
 
   // --- Noise Octaves (for detail) ---
@@ -27,6 +27,20 @@ export class TerrainGenerator {
   }
 
   /**
+   * Generates terrain data for a chunk, including a 1-block border around it
+   * to ensure correct meshing with neighbors.
+   * @param chunk The chunk for which to generate terrain data.
+   */
+  public static generateChunkData(chunk: Chunk) {
+    // Loop from -1 to SIZE to include the border blocks for meshing.
+    for (let x = -1; x < Chunk.SIZE; x++) {
+      for (let z = -1; z < Chunk.SIZE; z++) {
+        this.generateChunkColumn(chunk, x, z);
+      }
+    }
+  }
+
+  /**
    * Generates the block data for a single vertical column in a chunk.
    * @param chunk The chunk to generate the column in.
    * @param localX The local X coordinate within the chunk (0-63).
@@ -37,47 +51,64 @@ export class TerrainGenerator {
     localX: number,
     localZ: number
   ) {
-    const worldX = chunk.chunkX * Chunk.SIZE + localX;
-    const worldZ = chunk.chunkZ * Chunk.SIZE + localZ;
+    const worldX = chunk.chunkX * Chunk.SIZE + localX; // This will be correct even for x/z = -1 or 64
+    const worldZ = chunk.chunkZ * Chunk.SIZE + localZ; // This will be correct even for x/z = -1 or 64
 
     const terrainHeight = Math.floor(this.getOctaveNoise(worldX, worldZ));
 
     // Loop from y=0 up to the max terrain height for this column
     for (let worldY = 0; worldY <= terrainHeight; worldY++) {
-      const chunkY = World.worldToChunkCoord(worldY);
-      const targetChunk = World.getChunk(chunk.chunkX, chunkY, chunk.chunkZ);
+      // Determine which chunk this block belongs to based on world coordinates
+      const targetChunkX = World.worldToChunkCoord(worldX);
+      const targetChunkZ = World.worldToChunkCoord(worldZ);
+      const targetChunkY = World.worldToChunkCoord(worldY);
+      const targetChunk = World.getChunk(
+        targetChunkX,
+        targetChunkY,
+        targetChunkZ
+      );
 
       // If the chunk doesn't exist (e.g., terrain is higher than pre-generated chunks), skip.
       if (!targetChunk) {
         continue;
       }
 
-      const localY = World.worldToBlockCoord(worldY);
+      const targetLocalX = World.worldToBlockCoord(worldX);
+      const targetLocalY = World.worldToBlockCoord(worldY);
+      const targetLocalZ = World.worldToBlockCoord(worldZ);
 
       // --- Block Placement Logic ---
       if (worldY === terrainHeight) {
         // Top layer
         if (worldY >= this.SEA_LEVEL + 3) {
-          targetChunk.setBlock(localX, localY, localZ, 15); // Grass
+          targetChunk.setBlock(targetLocalX, targetLocalY, targetLocalZ, 15); // Grass
         } else {
-          targetChunk.setBlock(localX, localY, localZ, 3); // Sand
+          targetChunk.setBlock(targetLocalX, targetLocalY, targetLocalZ, 3); // Sand
         }
       } else if (worldY > terrainHeight - 4) {
         // 3 blocks below the top layer
-        targetChunk.setBlock(localX, localY, localZ, 1); // Dirt
+        targetChunk.setBlock(targetLocalX, targetLocalY, targetLocalZ, 1); // Dirt
       } else {
         // Everything else below
-        targetChunk.setBlock(localX, localY, localZ, 20); // Stone
+        targetChunk.setBlock(targetLocalX, targetLocalY, targetLocalZ, 20); // Stone
       }
     }
 
     // Place water above the terrain if below sea level
     for (let worldY = terrainHeight + 1; worldY <= this.SEA_LEVEL; worldY++) {
-      const chunkY = World.worldToChunkCoord(worldY);
-      const targetChunk = World.getChunk(chunk.chunkX, chunkY, chunk.chunkZ);
+      const targetChunkX = World.worldToChunkCoord(worldX);
+      const targetChunkZ = World.worldToChunkCoord(worldZ);
+      const targetChunkY = World.worldToChunkCoord(worldY);
+      const targetChunk = World.getChunk(
+        targetChunkX,
+        targetChunkY,
+        targetChunkZ
+      );
       if (!targetChunk) continue;
-      const localY = World.worldToBlockCoord(worldY);
-      targetChunk.setBlock(localX, localY, localZ, 30); // Water
+      const targetLocalX = World.worldToBlockCoord(worldX);
+      const targetLocalY = World.worldToBlockCoord(worldY);
+      const targetLocalZ = World.worldToBlockCoord(worldZ);
+      targetChunk.setBlock(targetLocalX, targetLocalY, targetLocalZ, 30); // Water
     }
   }
 

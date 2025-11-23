@@ -12,12 +12,14 @@ attribute vec2 uv3; // uv3 = tiling count (w,h)
 // Uniforms
 uniform mat4 world;
 uniform mat4 worldViewProjection;
+uniform vec2 screenSize;
 
 // Varyings
 varying vec2 vUV;
 varying vec2 vUV2;
 varying vec2 vUV3;
 varying vec3 vNormalW;
+varying vec2 vScreenSize;
 
 void main(void) {
     gl_Position = worldViewProjection * vec4(position, 1.0);
@@ -25,10 +27,14 @@ void main(void) {
     vUV2 = uv2;
     vUV3 = uv3;
     vNormalW = normalize(mat3(world) * normal);
+    vScreenSize = screenSize;
 }
 `;
   static readonly chunkFragmentShader = `
     precision highp float;
+    // Required for manual mipmap level calculation
+    #extension GL_OES_standard_derivatives : enable
+    #extension GL_EXT_shader_texture_lod : enable
 
     varying vec2 vUV;  // Interpolated LOCAL quad UVs (0 to 1)
     varying vec2 vUV2; // u = tile's top-left U, v = tile's top-left V
@@ -40,20 +46,23 @@ void main(void) {
     uniform float atlasTileSize;
     uniform vec3 lightDirection;
 
+    // Samples from a texture atlas, calculating derivatives manually to avoid mipmap bleeding.
+    vec4 texture2D_with_derivatives(sampler2D atlas, vec2 tileOffset, vec2 tileUV, float tileSize) {
+        vec2 atlasUV = tileOffset + tileUV * tileSize;
+        vec2 dx = dFdx(tileUV) * tileSize;
+        vec2 dy = dFdy(tileUV) * tileSize;
+        float lod = log2(max(length(dx), length(dy)));
+        return texture2DLodEXT(atlas, atlasUV, lod);
+    }
+
     void main(void) {
         // 1. Scale the local UV by the quad's dimensions to get a repeating value.
         vec2 tiledLocalUV = vUV * vUV3;
 
         vec2 singleTileUV = fract(tiledLocalUV);
 
-        // 3. Scale this 0->1 pattern to the size of one tile in the atlas.
-        vec2 scaledTileUV = singleTileUV * atlasTileSize;
-
-        // 4. Offset this by the tile's base position in the atlas.
-        vec2 finalUV = vUV2 + scaledTileUV;
-
-        // 5. Sample the diffuse and normal textures.
-        vec4 diffuseColor = texture2D(diffuseTexture, finalUV);
+        // Sample the diffuse texture using the safe method.
+        vec4 diffuseColor = texture2D_with_derivatives(diffuseTexture, vUV2, singleTileUV, atlasTileSize);
 
         // --- Lighting Calculation ---
         vec3 normalizedLightDirection = -normalize(lightDirection);

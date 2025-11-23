@@ -46,13 +46,7 @@ export class Map1 {
       ChunkMesher.initAtlas();
       // Now that textures are ready, generate terrain and remesh.
       Chunk.chunkInstances.forEach((chunk) => {
-        if (chunk.chunkY === 0) {
-          for (let x = 0; x < Chunk.SIZE; x++) {
-            for (let z = 0; z < Chunk.SIZE; z++) {
-              TerrainGenerator.generateChunkColumn(chunk, x, z);
-            }
-          }
-        }
+        TerrainGenerator.generateChunkData(chunk);
       });
     });
     scene.onBeforeRenderObservable.add(() => {
@@ -282,12 +276,13 @@ export class Map1 {
 
   private createSkybox(): Mesh {
     // Skybox
-    const skybox = MeshBuilder.CreateBox(
+    const skybox = MeshBuilder.CreateSphere(
       "skyBox",
-      { size: 1000.0 },
+      { diameter: 4225.11, segments: 32 },
       Map1.mainScene
     );
     skybox.isPickable = false;
+    skybox.infiniteDistance = true;
 
     // Register the new sky shader
     Effect.ShadersStore["skyVertexShader"] = SkyShader.skyVertexShader;

@@ -26,7 +26,7 @@ import { TerrainGenerator } from "./World/Generation/TerrainGenarator";
 import { World } from "./World/World";
 import { MyConnection } from "./Server/MyConnection";
 import { GlobalValues } from "./World/GlobalValues";
-
+import "@babylonjs/core/Rendering/depthRendererSceneComponent";
 export class TestScene {
   document: Document;
   connection: MyConnection;

@@ -8,13 +8,16 @@ export class World {
   }
 
   private initChunks() {
-    const renderDistance = 2; // in chunks
+    const renderDistance = 8; // in chunks
     for (let x = -renderDistance; x < renderDistance; x++) {
       for (let z = -renderDistance; z < renderDistance; z++) {
         // For now, we only create the base layer of chunks (y=0)
         // and the one above it (y=1) to allow for tall terrain.
-        new Chunk(x, 0, z);
+        //new Chunk(x, 0, z);
         new Chunk(x, 1, z);
+        new Chunk(x, 2, z);
+        new Chunk(x, 3, z);
+        new Chunk(x, 4, z);
       }
     }
   }

@@ -13,6 +13,7 @@ attribute vec4 tangent;
 // Uniforms
 uniform mat4 world;
 uniform mat4 worldViewProjection;
+uniform vec2 screenSize;
 
 // Varyings
 varying vec2 vUV;
@@ -20,6 +21,7 @@ varying vec2 vUV2;
 varying vec2 vUV3;
 varying vec3 vPositionW;
 varying mat3 vTBN;
+varying vec2 vScreenSize;
 
 void main(void) {
     gl_Position = worldViewProjection * vec4(position, 1.0);
@@ -27,10 +29,13 @@ void main(void) {
     vUV2 = uv2;
     vUV3 = uv3;
     vPositionW = (world * vec4(position, 1.0)).xyz;
-vec3 N = normalize(mat3(world) * normal);
-vec3 T = normalize(mat3(world) * tangent.xyz);
-vec3 B = normalize(cross(N, T) * tangent.w);
-vTBN = mat3(T, B, N);
+    vec3 N = normalize(mat3(world) * normal);
+    vec3 T = normalize(mat3(world) * tangent.xyz);
+    vec3 B = normalize(cross(N, T) * tangent.w);
+    vTBN = mat3(T, B, N);
+
+    // Pass screen size to fragment shader for depth calculations
+    vScreenSize = screenSize;
 }
 `;
   static readonly chunkFragmentShader = `
@@ -103,7 +108,7 @@ vTBN = mat3(T, B, N);
         float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), 32.0);
         vec3 specular = vec3(0.3) * spec; // Specular color is white
 
-        gl_FragColor = vec4(diffuseColor.rgb * 0.4 + diffuse + specular, diffuseColor.a);
+        gl_FragColor = vec4(diffuseColor.rgb * 0.8 + diffuse + specular, diffuseColor.a);
     }
 `;
 }

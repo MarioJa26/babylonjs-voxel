@@ -3,9 +3,10 @@ import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import { World } from "../World";
 
 export class Chunk {
-  public static readonly SIZE = 64;
+  public static readonly SIZE = 16;
   public static readonly SIZE2 = Chunk.SIZE * Chunk.SIZE;
   public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
+
   public static readonly chunkInstances = new Map<string, Chunk>();
   private static nextId = 0;
 
@@ -58,6 +59,23 @@ export class Chunk {
     this.block_array[index] = blockId;
 
     this.scheduleRemesh();
+
+    // If the block is on a boundary, the neighbor chunk must also be remeshed.
+    if (localX === 0) {
+      this.getNeighbor(-1, 0, 0)?.scheduleRemesh();
+    } else if (localX === Chunk.SIZE - 1) {
+      this.getNeighbor(1, 0, 0)?.scheduleRemesh();
+    }
+    if (localY === 0) {
+      this.getNeighbor(0, -1, 0)?.scheduleRemesh();
+    } else if (localY === Chunk.SIZE - 1) {
+      this.getNeighbor(0, 1, 0)?.scheduleRemesh();
+    }
+    if (localZ === 0) {
+      this.getNeighbor(0, 0, -1)?.scheduleRemesh();
+    } else if (localZ === Chunk.SIZE - 1) {
+      this.getNeighbor(0, 0, 1)?.scheduleRemesh();
+    }
   }
 
   /**
@@ -71,6 +89,23 @@ export class Chunk {
     this.block_array[index] = 0;
 
     this.scheduleRemesh();
+
+    // If the block is on a boundary, the neighbor chunk must also be remeshed.
+    if (localX === 0) {
+      this.getNeighbor(-1, 0, 0)?.scheduleRemesh();
+    } else if (localX === Chunk.SIZE - 1) {
+      this.getNeighbor(1, 0, 0)?.scheduleRemesh();
+    }
+    if (localY === 0) {
+      this.getNeighbor(0, -1, 0)?.scheduleRemesh();
+    } else if (localY === Chunk.SIZE - 1) {
+      this.getNeighbor(0, 1, 0)?.scheduleRemesh();
+    }
+    if (localZ === 0) {
+      this.getNeighbor(0, 0, -1)?.scheduleRemesh();
+    } else if (localZ === Chunk.SIZE - 1) {
+      this.getNeighbor(0, 0, 1)?.scheduleRemesh();
+    }
   }
 
   public scheduleRemesh(): void {

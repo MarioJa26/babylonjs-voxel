@@ -7,7 +7,10 @@ import {
   PhysicsShapeType,
   Texture,
   Tools,
+  DepthRenderer,
+  Vector2,
 } from "@babylonjs/core";
+import "@babylonjs/core/Rendering/depthRendererSceneComponent"; // For getDepthRenderer
 import { Map1 } from "@/code/Maps/Map1";
 import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
 
@@ -19,14 +22,10 @@ import { MeshData } from "./MeshData";
 import { DiffuseNormalShader } from "../Light/DiffuseNormalShader";
 import { TransparentNormalShader } from "../Light/TransparentNormalShader";
 
-export type StitchedMesh = {
-  opaque: MeshData;
-  transparent: MeshData;
-};
-
 export class ChunkMesher {
   private static atlasMaterial: Material | null = null;
   private static transparentAtlasMaterial: Material | null = null;
+  private static depthRenderer: DepthRenderer | null = null;
 
   static initAtlas() {
     // Check if both materials are already initialized
@@ -108,6 +107,7 @@ export class ChunkMesher {
               "atlasTileSize",
               "cameraPosition",
               "lightDirection",
+              "screenSize",
             ],
             samplers: ["diffuseTexture", "normalTexture"],
           }
@@ -128,6 +128,13 @@ export class ChunkMesher {
             effect.setVector3(
               "cameraPosition",
               Map1.mainScene.activeCamera!.position
+            );
+            effect.setVector2(
+              "screenSize",
+              new Vector2(
+                Map1.mainScene.getEngine().getRenderWidth(),
+                Map1.mainScene.getEngine().getRenderHeight()
+              )
             );
           }
         };
@@ -150,9 +157,11 @@ export class ChunkMesher {
               "atlasTileSize",
               "cameraPosition",
               "lightDirection",
-              "time", // Add time for animation
+              "time", // Add time for animation,
+              "cameraPlanes", // for depth calculation
+              "screenSize", // for depth calculation
             ],
-            samplers: ["diffuseTexture", "normalTexture"],
+            samplers: ["diffuseTexture", "normalTexture", "depthSampler"],
           }
         );
 
@@ -176,6 +185,7 @@ export class ChunkMesher {
         }
 
         // Create a dedicated onBind for the transparent material to pass the time uniform
+
         transparentMat.onBind = (mesh) => {
           const effect = transparentMat.getEffect();
           if (effect) {
@@ -186,12 +196,36 @@ export class ChunkMesher {
               Map1.mainScene.activeCamera!.position
             );
             effect.setFloat("time", performance.now() / 1000.0); // Pass current time in seconds
+            effect.setVector2(
+              "cameraPlanes",
+              new Vector2(
+                Map1.mainScene.activeCamera!.minZ,
+                Map1.mainScene.activeCamera!.maxZ
+              )
+            );
+            effect.setVector2(
+              "screenSize",
+              new Vector2(
+                Map1.mainScene.getEngine().getRenderWidth(),
+                Map1.mainScene.getEngine().getRenderHeight()
+              )
+            );
+
+            // This is the crucial step: bind the depth map to the sampler
+            const depthMap = ChunkMesher.depthRenderer?.getDepthMap();
+            if (depthMap) {
+              effect.setTexture("depthSampler", depthMap);
+            }
           }
         };
 
         ChunkMesher.transparentAtlasMaterial = transparentMat;
       } else {
         console.error("Texture Atlas not yet built or available!");
+      }
+
+      if (!ChunkMesher.depthRenderer) {
+        ChunkMesher.depthRenderer = scene.enableDepthRenderer();
       }
     }
   }
@@ -242,33 +276,6 @@ export class ChunkMesher {
     }
   }
 
-  public static stitchBorderMesh(chunk: Chunk, borderMesh: StitchedMesh) {
-    if (borderMesh.opaque.positions.length > 0 && chunk.mesh) {
-      const mainVD = VertexData.ExtractFromMesh(chunk.mesh);
-      const borderVD = new VertexData();
-      borderVD.positions = borderMesh.opaque.positions;
-      borderVD.indices = borderMesh.opaque.indices;
-      borderVD.normals = borderMesh.opaque.normals;
-      borderVD.uvs = borderMesh.opaque.uvs;
-      borderVD.uvs2 = borderMesh.opaque.uvs2;
-      borderVD.uvs3 = borderMesh.opaque.uvs3;
-      mainVD.merge(borderVD);
-      mainVD.applyToMesh(chunk.mesh);
-    }
-    if (borderMesh.transparent.positions.length > 0 && chunk.transparentMesh) {
-      const mainVD = VertexData.ExtractFromMesh(chunk.transparentMesh);
-      const borderVD = new VertexData();
-      borderVD.positions = borderMesh.transparent.positions;
-      borderVD.indices = borderMesh.transparent.indices;
-      borderVD.normals = borderMesh.transparent.normals;
-      borderVD.uvs = borderMesh.transparent.uvs;
-      borderVD.uvs2 = borderMesh.transparent.uvs2;
-      borderVD.uvs3 = borderMesh.transparent.uvs3;
-      mainVD.merge(borderVD);
-      mainVD.applyToMesh(chunk.transparentMesh);
-    }
-  }
-
   private static buildMesh(
     chunk: Chunk,
     meshData: MeshData,
@@ -278,17 +285,7 @@ export class ChunkMesher {
     const mesh = new Mesh(name, Map1.mainScene);
     mesh.material = material;
 
-    const vertexData = new VertexData();
-    vertexData.positions = meshData.positions;
-    vertexData.indices = meshData.indices;
-    vertexData.normals = meshData.normals;
-    vertexData.uvs = meshData.uvs;
-    vertexData.uvs2 = meshData.uvs2;
-    vertexData.uvs3 = meshData.uvs3;
-
-    // Apply the vertex data to the mesh. Setting 'updatable' to false is a performance
-    // optimization for static geometry like chunks, as it allows the GPU to store
-    // the data in a more efficient way for rendering.
+    const vertexData = this.meshDataToVertexData(meshData);
     vertexData.applyToMesh(mesh, false);
 
     mesh.setVerticesData("tangent", meshData.tangents);
@@ -304,5 +301,17 @@ export class ChunkMesher {
     );
 
     return mesh;
+  }
+
+  private static meshDataToVertexData(meshData: MeshData): VertexData {
+    const vertexData = new VertexData();
+    vertexData.positions = meshData.positions;
+    vertexData.indices = meshData.indices;
+    vertexData.normals = meshData.normals;
+    vertexData.uvs = meshData.uvs;
+    vertexData.uvs2 = meshData.uvs2;
+    vertexData.uvs3 = meshData.uvs3;
+    // Tangents are handled separately as they are not part of VertexData merge
+    return vertexData;
   }
 }

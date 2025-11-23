@@ -55,7 +55,7 @@ export class ChunkWorkerPool {
       if (!chunk) return;
       this.workerStatus[idleWorkerIndex] = true; // Mark worker as busy
       const worker = this.workers[idleWorkerIndex];
-      (worker as unknown as ChunkWorker).postMessage(chunk);
+      (worker as unknown as ChunkWorker).postMessage(chunk, true);
     }
   }
 }
