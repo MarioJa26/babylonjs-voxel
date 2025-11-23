@@ -27,7 +27,7 @@ import { TerrainGenerator } from "../World/Generation/TerrainGenarator";
 import { PlayerHud } from "../Player/Hud/PlayerHud";
 import { CrossHair } from "../Player/Hud/CrossHair";
 import { TextureDefinitions } from "../World/Texture/TextureDefinitions";
-
+import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
 export class Map1 {
   public static mainScene: Scene;
   #player: Player;
@@ -44,9 +44,10 @@ export class Map1 {
 
     this.initPromise = this.asyncInit().then(async () => {
       ChunkMesher.initAtlas();
-      // Now that textures are ready, generate terrain and remesh.
+      // Now that textures are ready, generate terrain using worker pool.
+      const pool = ChunkWorkerPool.getInstance();
       Chunk.chunkInstances.forEach((chunk) => {
-        TerrainGenerator.generateChunkData(chunk);
+        pool.scheduleTerrainGeneration(chunk);
       });
     });
     scene.onBeforeRenderObservable.add(() => {

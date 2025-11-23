@@ -1,5 +1,8 @@
 /// <reference lib="webworker" />
 
+import Alea from "alea";
+import { createNoise2D } from "simplex-noise";
+
 import { BlockTextures } from "../Texture/BlockTextures";
 import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
 import { MeshData } from "./MeshData";
@@ -331,6 +334,88 @@ self.onmessage = (event: MessageEvent) => {
   if (type === "full-remesh") {
     const { opaque, transparent } = ChunkWorkerMesher.generateMesh(event.data);
     postFullMeshResult(event.data.chunkId, opaque, transparent);
+    return;
+  }
+
+  // --- Terrain generation request ---
+  if (type === "generate-terrain") {
+    const {
+      chunkId,
+      chunkX,
+      chunkY,
+      chunkZ,
+      CHUNK_SIZE,
+      SEED,
+      TERRAIN_SCALE,
+      OCTAVES,
+      PERSISTENCE,
+      LACUNARITY,
+      TERRAIN_HEIGHT_BASE,
+      TERRAIN_HEIGHT_AMPLITUDE,
+      SEA_LEVEL,
+    } = event.data;
+
+    // create PRNG/simplex for this request
+    const prng = Alea(SEED);
+    const simplex = createNoise2D(prng);
+
+    const getOctaveNoise = (x: number, z: number) => {
+      let total = 0;
+      let frequency = TERRAIN_SCALE;
+      let amplitude = 1;
+      let maxValue = 0;
+      for (let i = 0; i < OCTAVES; i++) {
+        total += simplex(x * frequency, z * frequency) * amplitude;
+        maxValue += amplitude;
+        amplitude *= PERSISTENCE;
+        frequency *= LACUNARITY;
+      }
+      const normalizedHeight = (total / maxValue + 1) / 2;
+      return TERRAIN_HEIGHT_BASE + normalizedHeight * TERRAIN_HEIGHT_AMPLITUDE;
+    };
+
+    const SIZE = CHUNK_SIZE;
+    const SIZE2 = SIZE * SIZE;
+    const SIZE3 = SIZE * SIZE2;
+    const blocks = new Uint8Array(SIZE3); // local chunk block array
+
+    // Fill the chunk's local block array
+    for (let localX = 0; localX < SIZE; localX++) {
+      for (let localZ = 0; localZ < SIZE; localZ++) {
+        const worldX = chunkX * SIZE + localX;
+        const worldZ = chunkZ * SIZE + localZ;
+
+        const terrainHeight = Math.floor(getOctaveNoise(worldX, worldZ));
+
+        // solid blocks up to terrainHeight
+        for (let worldY = 0; worldY <= terrainHeight; worldY++) {
+          const localY = worldY - chunkY * SIZE;
+          if (localY < 0 || localY >= SIZE) continue;
+
+          let blockId = 20; // stone
+          if (worldY === terrainHeight) {
+            blockId = worldY >= SEA_LEVEL + 3 ? 15 : 3; // grass or sand
+          } else if (worldY > terrainHeight - 4) {
+            blockId = 1; // dirt
+          }
+
+          blocks[localX + localY * SIZE + localZ * SIZE2] = blockId;
+        }
+
+        // water fill up to sea level
+        for (let worldY = terrainHeight + 1; worldY <= SEA_LEVEL; worldY++) {
+          const localY = worldY - chunkY * SIZE;
+          if (localY < 0 || localY >= SIZE) continue;
+          blocks[localX + localY * SIZE + localZ * SIZE2] = 30; // water
+        }
+      }
+    }
+
+    // return terrain result (transfer the buffer)
+    self.postMessage(
+      { chunkId, type: "terrain-generated", block_array: blocks },
+      [blocks.buffer]
+    );
     return;
   }
 };

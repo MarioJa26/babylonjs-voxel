@@ -6,19 +6,31 @@ export class ChunkWorkerPool {
   private static instance: ChunkWorkerPool;
   private workers: Worker[] = [];
   private taskQueue: Chunk[] = [];
+  private terrainTaskQueue: Chunk[] = [];
   private workerStatus: boolean[] = [];
 
   private constructor(poolSize: number) {
     for (let i = 0; i < poolSize; i++) {
       const onMessage = (event: MessageEvent<any>) => {
-        // The worker has finished, apply the mesh data.
-        const { chunkId, opaque, transparent } = event.data;
-        const chunk = Chunk.chunkInstances.get(chunkId as string);
-        if (chunk) {
-          ChunkMesher.createMeshFromData(chunk, { opaque, transparent });
+        const data = event.data;
+        const { type, chunkId } = data;
+
+        if (type === "full-mesh") {
+          const { opaque, transparent } = data;
+          const chunk = Chunk.chunkInstances.get(chunkId as string);
+          if (chunk) {
+            ChunkMesher.createMeshFromData(chunk, { opaque, transparent });
+          }
+        } else if (type === "terrain-generated") {
+          // Apply generated block array to the chunk and schedule remesh
+          const chunk = Chunk.chunkInstances.get(chunkId as string);
+          if (chunk) {
+            chunk.block_array = data.block_array as Uint8Array;
+            this.scheduleRemesh(chunk);
+          }
         }
 
-        // Mark this worker as idle and process the next task in the queue.
+        // Mark worker idle and try to process pending tasks (prefer terrain tasks)
         this.workerStatus[i] = false;
         this.processQueue();
       };
@@ -38,24 +50,49 @@ export class ChunkWorkerPool {
     return ChunkWorkerPool.instance;
   }
 
+  // existing remesh scheduling
   public scheduleRemesh(chunk: Chunk) {
-    // Add the chunk to the queue and try to process it.
     if (!this.taskQueue.includes(chunk)) {
       this.taskQueue.push(chunk);
     }
     this.processQueue();
   }
 
-  private processQueue() {
-    if (this.taskQueue.length === 0) return;
-
-    const idleWorkerIndex = this.workerStatus.findIndex((status) => !status);
+  // New: schedule terrain generation via the pool
+  public scheduleTerrainGeneration(chunk: Chunk) {
+    // try direct dispatch to idle worker
+    const idleWorkerIndex = this.workerStatus.findIndex((s) => !s);
     if (idleWorkerIndex !== -1) {
-      const chunk = this.taskQueue.shift();
-      if (!chunk) return;
-      this.workerStatus[idleWorkerIndex] = true; // Mark worker as busy
-      const worker = this.workers[idleWorkerIndex];
-      (worker as unknown as ChunkWorker).postMessage(chunk, true);
+      this.workerStatus[idleWorkerIndex] = true;
+      const worker = this.workers[idleWorkerIndex] as unknown as ChunkWorker;
+      worker.postTerrainGeneration(chunk);
+      return;
     }
+    // otherwise queue
+    if (!this.terrainTaskQueue.includes(chunk)) {
+      this.terrainTaskQueue.push(chunk);
+    }
+  }
+
+  private processQueue() {
+    // prefer terrain tasks
+    const idleWorkerIndex = this.workerStatus.findIndex((status) => !status);
+    if (idleWorkerIndex === -1) return;
+
+    // terrain tasks first
+    const terrainChunk = this.terrainTaskQueue.shift();
+    if (terrainChunk) {
+      this.workerStatus[idleWorkerIndex] = true;
+      const worker = this.workers[idleWorkerIndex] as unknown as ChunkWorker;
+      worker.postTerrainGeneration(terrainChunk);
+      return;
+    }
+
+    // then remesh tasks
+    const chunk = this.taskQueue.shift();
+    if (!chunk) return;
+    this.workerStatus[idleWorkerIndex] = true;
+    const worker = this.workers[idleWorkerIndex] as unknown as ChunkWorker;
+    (worker as unknown as ChunkWorker).postMessage(chunk, true);
   }
 }

@@ -26,4 +26,24 @@ export class ChunkWorker {
       neighbors,
     });
   }
+
+  public postTerrainGeneration(chunk: Chunk): void {
+    this.worker.postMessage({
+      type: "generate-terrain",
+      chunkId: chunk.id,
+      chunkX: chunk.chunkX,
+      chunkY: chunk.chunkY,
+      chunkZ: chunk.chunkZ,
+      CHUNK_SIZE: Chunk.SIZE,
+      // duplicate TerrainGenerator constants here (keep in sync or export them)
+      SEED: "my-secret-seed",
+      TERRAIN_SCALE: 0.05,
+      OCTAVES: 8,
+      PERSISTENCE: 0.5,
+      LACUNARITY: 12.0,
+      TERRAIN_HEIGHT_BASE: 16,
+      TERRAIN_HEIGHT_AMPLITUDE: 72,
+      SEA_LEVEL: 40,
+    });
+  }
 }
