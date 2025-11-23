@@ -38,7 +38,7 @@ div {
   right: 0;
   bottom: 0;
   left: 0;
-  background-color: rgb(46, 46, 46);
+  background-color: rgb(30, 38, 36);
 }
 
 canvas {
