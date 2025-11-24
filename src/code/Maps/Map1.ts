@@ -23,7 +23,6 @@ import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
 import { ChunkMesher } from "../World/Chunk/ChunckMesher";
 import { GlobalValues } from "../World/GlobalValues";
 import { SkyShader } from "../World/Light/SkyShader";
-import { TerrainGenerator } from "../World/Generation/TerrainGenarator";
 import { PlayerHud } from "../Player/Hud/PlayerHud";
 import { CrossHair } from "../Player/Hud/CrossHair";
 import { TextureDefinitions } from "../World/Texture/TextureDefinitions";
@@ -279,7 +278,7 @@ export class Map1 {
     // Skybox
     const skybox = MeshBuilder.CreateSphere(
       "skyBox",
-      { diameter: 4225.11, segments: 32 },
+      { diameter: 4225.11, segments: 8 },
       Map1.mainScene
     );
     skybox.isPickable = false;

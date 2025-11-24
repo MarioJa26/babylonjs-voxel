@@ -58,7 +58,7 @@ export class PlayerVehicle {
     this.#displayCapsule = this.createCharacterMesh(height, radius);
 
     // Create physics controller
-    const startPosition = new Vector3(32, 264, 32);
+    const startPosition = new Vector3(0, 134, 0);
     this.#characterController = new PhysicsCharacterController(
       startPosition,
       { capsuleHeight: height, capsuleRadius: radius },
@@ -285,24 +285,23 @@ export class PlayerVehicle {
     supportInfo: CharacterSurfaceInfo,
     upWorld: Vector3
   ): Vector3 {
-    // Remove surface velocity
-    velocity.subtractInPlace(supportInfo.averageSurfaceVelocity);
+    // Subtract any surface velocity first
+    const v = velocity.subtract(supportInfo.averageSurfaceVelocity);
 
-    const inv1k = 1e-2;
-    if (velocity.dot(upWorld) > inv1k) {
-      const velLen = velocity.length();
-      velocity.normalizeFromLength(velLen);
+    // Safely project v onto the plane tangent to the contact normal:
+    // v_tangent = v - n * dot(v, n)
+    const n = supportInfo.averageSurfaceNormal;
+    const vDotN = v.dot(n);
+    const vTangent = v.subtract(n.scale(vDotN));
 
-      const horizLen = velLen / supportInfo.averageSurfaceNormal.dot(upWorld);
-      const c = supportInfo.averageSurfaceNormal.cross(velocity);
-      velocity = c.cross(upWorld);
-      velocity.scaleInPlace(horizLen);
-    }
+    // tiny push-away to help penetration recovery (avoid sticking)
+    const EPS = 1e-5;
+    const pushAway = n.scale(EPS);
 
-    // Add surface velocity back
-    velocity.addInPlace(supportInfo.averageSurfaceVelocity);
-
-    return velocity;
+    // Reapply surface velocity and return
+    return vTangent
+      .addInPlace(supportInfo.averageSurfaceVelocity)
+      .addInPlace(pushAway);
   }
 
   private calculateJumpVelocity(currentVelocity: Vector3): Vector3 {

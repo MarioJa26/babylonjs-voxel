@@ -36,6 +36,19 @@ export class Chunk {
   }
 
   /**
+   * Populates the chunk with block data and schedules remeshing for itself and neighbors.
+   * This is called when terrain generation for this chunk is complete.
+   * @param block_array The block data from the worker.
+   */
+  public populate(block_array: Uint8Array): void {
+    this.block_array = block_array;
+    this.scheduleRemesh();
+    this.getNeighbors().forEach((neighbor) => {
+      neighbor.scheduleRemesh();
+    });
+  }
+
+  /**
    * Gets a block ID using LOCAL chunk coordinates (0-15).
    */
   public getBlock(localX: number, localY: number, localZ: number): number {

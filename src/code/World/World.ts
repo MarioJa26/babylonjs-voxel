@@ -1,23 +1,86 @@
 import { Chunk } from "./Chunk/Chunk";
+import { ChunkWorkerPool } from "./Chunk/ChunkWorkerPool";
 
 export class World {
   private static chunks = new Map<string, Chunk>();
+  private static lastCenterChunk: { x: number; y: number; z: number } | null =
+    null;
 
   constructor() {
+    // Create an initial small area around origin. World.updateChunksAround will
+    // keep chunks centered on the player during runtime.
     this.initChunks();
   }
 
   private initChunks() {
-    const renderDistance = 8; // in chunks
-    for (let x = -renderDistance; x < renderDistance; x++) {
-      for (let z = -renderDistance; z < renderDistance; z++) {
-        // For now, we only create the base layer of chunks (y=0)
-        // and the one above it (y=1) to allow for tall terrain.
-        //new Chunk(x, 0, z);
-        new Chunk(x, 1, z);
-        new Chunk(x, 2, z);
-        new Chunk(x, 3, z);
-        new Chunk(x, 4, z);
+    //World.updateChunksAround(0, 0, 0);
+  }
+
+  /**
+   * Ensure chunks exist around the provided world position.
+   * Only creates chunks when the player's chunk coordinate moves to a new chunk.
+   * Optionally removes chunks that are outside the radius.
+   */
+  public static updateChunksAround(
+    worldX: number,
+    worldY: number,
+    worldZ: number,
+    renderDistance = 8,
+    verticalRadius = 3
+  ) {
+    const centerX = this.worldToChunkCoord(worldX);
+    const centerY = this.worldToChunkCoord(worldY);
+    const centerZ = this.worldToChunkCoord(worldZ);
+
+    // avoid repeating work if still in same center chunk
+    if (
+      this.lastCenterChunk &&
+      this.lastCenterChunk.x === centerX &&
+      this.lastCenterChunk.y === centerY &&
+      this.lastCenterChunk.z === centerZ
+    ) {
+      return;
+    }
+    this.lastCenterChunk = { x: centerX, y: centerY, z: centerZ };
+
+    for (let x = centerX - renderDistance; x <= centerX + renderDistance; x++) {
+      for (
+        let z = centerZ - renderDistance;
+        z <= centerZ + renderDistance;
+        z++
+      ) {
+        for (
+          let y = centerY - verticalRadius;
+          y <= centerY + verticalRadius;
+          y++
+        ) {
+          if (y <= 1) continue; // skip negative Y chunks for now
+          const key = `${x},${y},${z}`;
+          if (!this.chunks.has(key)) {
+            console.log(`Creating chunk at ${key}`);
+            const newChunk = new Chunk(x, y, z);
+            // Request terrain data from the worker for the new chunk.
+            ChunkWorkerPool.getInstance().scheduleTerrainGeneration(newChunk);
+          }
+        }
+      }
+    }
+
+    // optional: remove chunks far outside the radius to free memory
+    const removeRadius = renderDistance + 2;
+    for (const key of Array.from(this.chunks.keys())) {
+      const [cx, cy, cz] = key.split(",").map((n) => parseInt(n, 10));
+      if (
+        Math.abs(cx - centerX) > removeRadius ||
+        Math.abs(cz - centerZ) > removeRadius ||
+        Math.abs(cy - centerY) > verticalRadius + 2
+      ) {
+        const chunk = this.chunks.get(key);
+        if (chunk) {
+          chunk.mesh?.dispose();
+          chunk.transparentMesh?.dispose();
+        }
+        this.chunks.delete(key);
       }
     }
   }

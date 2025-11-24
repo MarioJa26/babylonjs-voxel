@@ -25,8 +25,7 @@ export class ChunkWorkerPool {
           // Apply generated block array to the chunk and schedule remesh
           const chunk = Chunk.chunkInstances.get(chunkId as string);
           if (chunk) {
-            chunk.block_array = data.block_array as Uint8Array;
-            this.scheduleRemesh(chunk);
+            chunk.populate(data.block_array as Uint8Array);
           }
         }
 

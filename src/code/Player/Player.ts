@@ -132,14 +132,20 @@ export class Player implements IUsable {
       if (this.#keyboardControls instanceof PaddleBoatControls)
         this.#keyboardControls.update();
 
-      //if (GlobalValues.DEBUG) {
+      // Ensure world chunks are generated around the player when they move between chunks
       const playerPos = this.position;
+      World.updateChunksAround(playerPos.x, playerPos.y, playerPos.z);
+
+      //if (GlobalValues.DEBUG) {
       PlayerHud.updateDebugInfo(
         "Player Pos",
         `${playerPos.x.toFixed(2)}, ${playerPos.y.toFixed(
           2
         )}, ${playerPos.z.toFixed(2)}`
       );
+      const chunkX = World.worldToChunkCoord(playerPos.x);
+      const chunkY = World.worldToChunkCoord(playerPos.y);
+      const chunkZ = World.worldToChunkCoord(playerPos.z);
 
       const cameraPos = this.#playerCamera.position;
       PlayerHud.updateDebugInfo(
@@ -156,9 +162,6 @@ export class Player implements IUsable {
         `Yaw: ${cameraYaw.toFixed(2)}, Pitch: ${cameraPitch.toFixed(2)}`
       );
 
-      const chunkX = World.worldToChunkCoord(playerPos.x);
-      const chunkY = World.worldToChunkCoord(playerPos.y);
-      const chunkZ = World.worldToChunkCoord(playerPos.z);
       PlayerHud.updateDebugInfo("Chunk Pos", `${chunkX}, ${chunkY}, ${chunkZ}`);
 
       PlayerHud.updateDebugInfo("FPS", this.engine.getFps().toFixed());
