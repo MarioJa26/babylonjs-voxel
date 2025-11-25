@@ -119,6 +119,22 @@ export class Player implements IUsable {
     });
   }
 
+  private getDirectionFromYaw(yaw: number): string {
+    const directions = [
+      "↓ South",
+      "↙ South-West",
+      "← West",
+      "↖ North-West",
+      "↑ North",
+      "↗ North-East",
+      "→ East",
+      "↘ South-East",
+    ];
+    const degrees = Math.abs(yaw * (180 / Math.PI)) % 360;
+    const index = Math.round(degrees / 45) % 8;
+    return directions[index];
+  }
+
   private initializeRenderLoop(): void {
     this.scene.onBeforeRenderObservable.add(() =>
       this.#playerVehicle.updateCameraAndVisuals()
@@ -162,10 +178,15 @@ export class Player implements IUsable {
         `Yaw: ${cameraYaw.toFixed(2)}, Pitch: ${cameraPitch.toFixed(2)}`
       );
 
+      PlayerHud.updateDebugInfo("Facing", this.getDirectionFromYaw(cameraYaw));
+
       PlayerHud.updateDebugInfo("Chunk Pos", `${chunkX}, ${chunkY}, ${chunkZ}`);
 
       PlayerHud.updateDebugInfo("FPS", this.engine.getFps().toFixed());
-      PlayerHud.updateDebugInfo("Meshes", this.scene.meshes.length);
+      PlayerHud.updateDebugInfo(
+        "Faces",
+        this.scene.getActiveIndices().valueOf() / 3
+      );
       PlayerHud.updateDebugInfo(
         "Physics Bodies",
         this.scene.meshes.filter((m) => m.physicsBody).length

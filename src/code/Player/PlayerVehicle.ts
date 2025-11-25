@@ -63,7 +63,7 @@ export class PlayerVehicle {
     this.#displayCapsule = this.createCharacterMesh(height, radius);
 
     // Create physics controller
-    const startPosition = new Vector3(400, 160, 1044);
+    const startPosition = new Vector3(-1750, 160, 380);
     this.#characterController = new PhysicsCharacterController(
       startPosition,
       { capsuleHeight: height, capsuleRadius: radius },
