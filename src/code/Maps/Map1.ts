@@ -191,22 +191,6 @@ export class Map1 {
   }
 
   private CreateEnvironment(): void {
-    const ground = MeshBuilder.CreateGround(
-      "ground",
-      { width: 1000, height: 1000 },
-      Map1.mainScene
-    );
-    ground.isPickable = true;
-    ground.position = new Vector3(0, -5, 0);
-
-    for (let x = 0; x < 0; x++) {
-      for (let y = 0; y < 5; y++) {
-        for (let z = 0; z < 3; z++) {
-          new MyTestBlock(Map1.mainScene, x + 9, y + 6, z);
-        }
-      }
-    }
-
     const skybox = this.createSkybox();
     //this.createWater(skybox, ground);
   }

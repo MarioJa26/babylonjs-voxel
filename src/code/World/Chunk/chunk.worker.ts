@@ -366,12 +366,18 @@ class ChunkWorkerMesher {
   }
 }
 
+let generator: WorldGenerator | null = null;
+
 self.onmessage = (event: MessageEvent) => {
   const { type } = event.data;
 
   // --- Default Full Remesh ---
   if (type === "full-remesh") {
     const { opaque, transparent } = ChunkWorkerMesher.generateMesh(event.data);
+    // We don't need the block array for meshing result, so we can help GC.
+    event.data.block_array = undefined;
+    event.data.neighbors = undefined;
+
     postFullMeshResult(event.data.chunkId, opaque, transparent);
     return;
   }
@@ -379,12 +385,12 @@ self.onmessage = (event: MessageEvent) => {
   // --- Terrain generation request ---
   if (type === "generate-terrain") {
     const { chunkId, chunkX, chunkY, chunkZ } = event.data;
-    const generator = new WorldGenerator(event.data);
-    const { blocks, decorations } = generator.generateChunkData(
-      chunkX,
-      chunkY,
-      chunkZ
-    );
+
+    if (!generator) {
+      generator = new WorldGenerator(event.data);
+    }
+
+    const { blocks } = generator!.generateChunkData(chunkX, chunkY, chunkZ);
 
     // return terrain result (transfer the buffer)
     self.postMessage(
@@ -392,10 +398,6 @@ self.onmessage = (event: MessageEvent) => {
       [blocks.buffer]
     );
 
-    // return decorations if any
-    if (decorations.length > 0) {
-      self.postMessage({ chunkId, type: "decorations-generated", decorations });
-    }
     return;
   }
 };
