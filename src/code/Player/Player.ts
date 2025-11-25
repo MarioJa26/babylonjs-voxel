@@ -119,22 +119,6 @@ export class Player implements IUsable {
     });
   }
 
-  private getDirectionFromYaw(yaw: number): string {
-    const directions = [
-      "↓ South",
-      "↙ South-West",
-      "← West",
-      "↖ North-West",
-      "↑ North",
-      "↗ North-East",
-      "→ East",
-      "↘ South-East",
-    ];
-    const degrees = Math.abs(yaw * (180 / Math.PI)) % 360;
-    const index = Math.round(degrees / 45) % 8;
-    return directions[index];
-  }
-
   private initializeRenderLoop(): void {
     this.scene.onBeforeRenderObservable.add(() =>
       this.#playerVehicle.updateCameraAndVisuals()
@@ -151,47 +135,60 @@ export class Player implements IUsable {
       // Ensure world chunks are generated around the player when they move between chunks
       const playerPos = this.position;
       World.updateChunksAround(playerPos.x, playerPos.y, playerPos.z);
+    });
 
-      //if (GlobalValues.DEBUG) {
+    this.scene.onAfterRenderObservable.add(() => {
+      const playerPos = this.position;
+      const chunkX = World.worldToChunkCoord(playerPos.x);
+      const chunkY = World.worldToChunkCoord(playerPos.y);
+      const chunkZ = World.worldToChunkCoord(playerPos.z);
+      const cameraPos = this.#playerCamera.position;
+      const cameraYaw = this.#playerCamera.cameraYaw;
+      const cameraPitch = this.#playerCamera.cameraPitch;
+
+      PlayerHud.updateDebugInfo("FPS", this.engine.getFps().toFixed());
+      PlayerHud.updateDebugInfo("Faces", this.scene.getActiveIndices() / 3);
       PlayerHud.updateDebugInfo(
         "Player Pos",
         `${playerPos.x.toFixed(2)}, ${playerPos.y.toFixed(
           2
         )}, ${playerPos.z.toFixed(2)}`
       );
-      const chunkX = World.worldToChunkCoord(playerPos.x);
-      const chunkY = World.worldToChunkCoord(playerPos.y);
-      const chunkZ = World.worldToChunkCoord(playerPos.z);
-
-      const cameraPos = this.#playerCamera.position;
+      PlayerHud.updateDebugInfo("Chunk Pos", `${chunkX}, ${chunkY}, ${chunkZ}`);
       PlayerHud.updateDebugInfo(
         "Camera Pos",
         `${cameraPos.x.toFixed(2)}, ${cameraPos.y.toFixed(
           2
         )}, ${cameraPos.z.toFixed(2)}`
       );
-
-      const cameraYaw = this.#playerCamera.cameraYaw;
-      const cameraPitch = this.#playerCamera.cameraPitch;
       PlayerHud.updateDebugInfo(
         "Camera Angle",
         `Yaw: ${cameraYaw.toFixed(2)}, Pitch: ${cameraPitch.toFixed(2)}`
       );
-
       PlayerHud.updateDebugInfo("Facing", this.getDirectionFromYaw(cameraYaw));
-
-      PlayerHud.updateDebugInfo("Chunk Pos", `${chunkX}, ${chunkY}, ${chunkZ}`);
-
-      PlayerHud.updateDebugInfo("FPS", this.engine.getFps().toFixed());
-      PlayerHud.updateDebugInfo(
-        "Faces",
-        this.scene.getActiveIndices().valueOf() / 3
-      );
       PlayerHud.updateDebugInfo(
         "Physics Bodies",
         this.scene.meshes.filter((m) => m.physicsBody).length
       );
     });
+  }
+  private getDirectionFromYaw(yaw: number): string {
+    // Convert yaw from radians to degrees and normalize to a 0-360 range
+    const degrees = (yaw * (180 / Math.PI)) % 360;
+    const normalizedDegrees = (degrees + 360) % 360;
+
+    const directions = [
+      "→ West",
+      "↗ North-West",
+      "↑ North",
+      "↖ North-East",
+      "← East",
+      "↙ South-East",
+      "↓ South",
+      "↘ South-West",
+    ];
+    const index = Math.round(normalizedDegrees / 45) % 8;
+    return directions[index];
   }
 
   public get playerVehicle(): PlayerVehicle {
