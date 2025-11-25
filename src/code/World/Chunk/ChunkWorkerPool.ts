@@ -1,5 +1,6 @@
 import { Chunk } from "./Chunk";
 import { ChunkMesher } from "./ChunckMesher";
+import { World } from "../World";
 import { ChunkWorker } from "./chunkWorker";
 
 export class ChunkWorkerPool {
@@ -27,6 +28,16 @@ export class ChunkWorkerPool {
           if (chunk) {
             chunk.populate(data.block_array as Uint8Array);
           }
+        } else if (type === "decorations-generated") {
+          const decorations = data.decorations as {
+            x: number;
+            y: number;
+            z: number;
+            blockId: number;
+          }[];
+          decorations.forEach((d) => {
+            World.setBlock(d.x, d.y, d.z, d.blockId);
+          });
         }
 
         // Mark worker idle and try to process pending tasks (prefer terrain tasks)

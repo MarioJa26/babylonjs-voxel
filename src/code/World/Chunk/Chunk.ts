@@ -3,7 +3,7 @@ import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import { World } from "../World";
 
 export class Chunk {
-  public static readonly SIZE = 16;
+  public static readonly SIZE = 32;
   public static readonly SIZE2 = Chunk.SIZE * Chunk.SIZE;
   public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
 

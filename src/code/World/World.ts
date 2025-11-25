@@ -6,16 +6,6 @@ export class World {
   private static lastCenterChunk: { x: number; y: number; z: number } | null =
     null;
 
-  constructor() {
-    // Create an initial small area around origin. World.updateChunksAround will
-    // keep chunks centered on the player during runtime.
-    this.initChunks();
-  }
-
-  private initChunks() {
-    //World.updateChunksAround(0, 0, 0);
-  }
-
   /**
    * Ensure chunks exist around the provided world position.
    * Only creates chunks when the player's chunk coordinate moves to a new chunk.
@@ -54,10 +44,9 @@ export class World {
           y <= centerY + verticalRadius;
           y++
         ) {
-          if (y <= 1) continue; // skip negative Y chunks for now
+          if (y <= 0) continue; // skip negative Y chunks for now
           const key = `${x},${y},${z}`;
           if (!this.chunks.has(key)) {
-            console.log(`Creating chunk at ${key}`);
             const newChunk = new Chunk(x, y, z);
             // Request terrain data from the worker for the new chunk.
             ChunkWorkerPool.getInstance().scheduleTerrainGeneration(newChunk);

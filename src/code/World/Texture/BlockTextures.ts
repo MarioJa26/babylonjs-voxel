@@ -38,15 +38,7 @@ export const BlockTextures: (BlockTextureDef | null)[] = [
   { all: [8, 1] }, // 25: slab_tiles
   { all: [9, 1] }, // 26: patterned_slate_tiles
   { all: [10, 1] }, // 27: concrete_panels
-  {
-    west: [1, 0],
-    east: [2, 0],
-    north: [3, 0],
-    south: [4, 0],
-    up: [5, 0],
-    down: [6, 0],
-    all: [11, 1],
-  }, // 28: bark_brown_02
+  { all: [11, 1] }, // 28: bark_brown_02
   { all: [12, 1] }, // 29: slate_floor
   { all: [13, 1] }, // 30: water_01
 ];

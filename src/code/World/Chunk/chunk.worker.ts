@@ -1,10 +1,8 @@
 /// <reference lib="webworker" />
 
-import Alea from "alea";
-import { createNoise2D } from "simplex-noise";
-
 import { BlockTextures } from "../Texture/BlockTextures";
 import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
+import { WorldGenerator } from "../Generation/WorldGenerator";
 import { MeshData } from "./MeshData";
 
 type WorkerInternalMeshData = {
@@ -16,6 +14,7 @@ type WorkerInternalMeshData = {
   uvs2: number[];
   uvs3: number[];
   indexOffset: number;
+  decorations?: { x: number; y: number; z: number; blockId: number }[];
 };
 
 // Define which block IDs are transparent. Water is ID 30.
@@ -102,98 +101,138 @@ class ChunkWorkerMesher {
         ? transparentMeshData
         : opaqueMeshData;
 
-      for (let d = 0; d < 3; d++) {
-        const u = (d + 1) % 3;
-        const v = (d + 2) % 3;
+      // Iterate over the 3 axes (x, y, z)
+      for (let axis = 0; axis < 3; axis++) {
+        const u_axis = (axis + 1) % 3; // The first perpendicular axis
+        const v_axis = (axis + 2) % 3; // The second perpendicular axis
 
-        const x = [0, 0, 0];
-        const q = [0, 0, 0];
-        q[d] = 1;
+        const position = [0, 0, 0];
+        const direction = [0, 0, 0];
+        direction[axis] = 1;
         const mask = new Int32Array(CHUNK_SIZE * CHUNK_SIZE);
 
-        for (x[d] = -1; x[d] < CHUNK_SIZE; x[d]++) {
-          let n = 0;
-          for (x[v] = 0; x[v] < CHUNK_SIZE; x[v]++) {
-            for (x[u] = 0; x[u] < CHUNK_SIZE; x[u]++) {
-              const block1 = getBlock(x[0], x[1], x[2]);
-              const block2 = getBlock(x[0] + q[0], x[1] + q[1], x[2] + q[2]);
+        // Sweep through the chunk axis to create 2D slices
+        for (
+          position[axis] = 0;
+          position[axis] < CHUNK_SIZE;
+          position[axis]++
+        ) {
+          let maskIndex = 0;
+          for (
+            position[v_axis] = 0;
+            position[v_axis] < CHUNK_SIZE;
+            position[v_axis]++
+          ) {
+            for (
+              position[u_axis] = 0;
+              position[u_axis] < CHUNK_SIZE;
+              position[u_axis]++
+            ) {
+              const blockCurrent = getBlock(
+                position[0],
+                position[1],
+                position[2]
+              );
+              const blockNeighbor = getBlock(
+                position[0] + direction[0],
+                position[1] + direction[1],
+                position[2] + direction[2]
+              );
 
-              const isBlock1Transparent = TRANSPARENT_BLOCKS.has(block1);
-              const isBlock2Transparent = TRANSPARENT_BLOCKS.has(block2);
+              const isCurrentBlockTransparent =
+                TRANSPARENT_BLOCKS.has(blockCurrent);
+              const isNeighborBlockTransparent =
+                TRANSPARENT_BLOCKS.has(blockNeighbor);
 
               // In the opaque pass, we only care about opaque blocks.
               // In the transparent pass, we only care about transparent blocks.
-              const isBlock1Active = isBlock1Transparent === isTransparentPass;
-              const isBlock2Active = isBlock2Transparent === isTransparentPass;
+              const isCurrentBlockActive =
+                isCurrentBlockTransparent === isTransparentPass;
+              const isNeighborBlockActive =
+                isNeighborBlockTransparent === isTransparentPass;
 
               // Treat non-active blocks (and air) as empty space.
-              const type1 = block1 !== 0 && isBlock1Active ? block1 : 0;
-              const type2 = block2 !== 0 && isBlock2Active ? block2 : 0;
+              const blockTypeCurrent =
+                blockCurrent !== 0 && isCurrentBlockActive ? blockCurrent : 0;
+              const blockTypeNeighbor =
+                blockNeighbor !== 0 && isNeighborBlockActive
+                  ? blockNeighbor
+                  : 0;
 
-              if (type1 && !type2) {
-                mask[n++] = type1; // Forward face
-              } else if (!type1 && type2) {
-                mask[n++] = -type2; // Backward face
+              if (blockTypeCurrent && !blockTypeNeighbor) {
+                mask[maskIndex++] = blockTypeCurrent; // Forward face
+              } else if (!blockTypeCurrent && blockTypeNeighbor) {
+                mask[maskIndex++] = -blockTypeNeighbor; // Backward face
               } else {
-                mask[n++] = 0; // No face needed
+                mask[maskIndex++] = 0; // No face needed
               }
             }
           }
 
-          n = 0;
+          maskIndex = 0;
 
-          for (let j = 0; j < CHUNK_SIZE; j++) {
-            for (let i = 0; i < CHUNK_SIZE; ) {
-              if (mask[n] !== 0) {
-                const blockId = Math.abs(mask[n]);
-                const isBackFace = mask[n] < 0;
+          // Generate quads from the mask
+          for (let v_coord = 0; v_coord < CHUNK_SIZE; v_coord++) {
+            for (let u_coord = 0; u_coord < CHUNK_SIZE; ) {
+              if (mask[maskIndex] !== 0) {
+                const blockId = Math.abs(mask[maskIndex]);
+                const isBackFace = mask[maskIndex] < 0;
 
-                let w = 1;
-                while (i + w < CHUNK_SIZE && mask[n + w] === mask[n]) {
-                  w++;
+                // Greedily find the width of the quad
+                let width = 1;
+                while (
+                  u_coord + width < CHUNK_SIZE &&
+                  mask[maskIndex + width] === mask[maskIndex]
+                ) {
+                  width++;
                 }
 
-                let h = 1;
+                // Greedily find the height of the quad
+                let height = 1;
                 let done = false;
-                while (j + h < CHUNK_SIZE) {
-                  for (let k = 0; k < w; k++) {
-                    if (mask[n + k + h * CHUNK_SIZE] !== mask[n]) {
+                while (v_coord + height < CHUNK_SIZE) {
+                  for (let width_iter = 0; width_iter < width; width_iter++) {
+                    if (
+                      mask[maskIndex + width_iter + height * CHUNK_SIZE] !==
+                      mask[maskIndex]
+                    ) {
                       done = true;
                       break;
                     }
                   }
                   if (done) break;
-                  h++;
+                  height++;
                 }
 
-                x[u] = i;
-                x[v] = j;
+                position[u_axis] = u_coord;
+                position[v_axis] = v_coord;
 
-                const currentPos = [x[0], x[1], x[2]];
-                currentPos[d]++; // Move into the current slice for vertex positions
+                const quadStartPos = [position[0], position[1], position[2]];
+                quadStartPos[axis]++; // Move into the current slice for vertex positions
 
                 this.addQuad(
-                  currentPos,
-                  q,
-                  u,
-                  v,
-                  w,
-                  h,
+                  quadStartPos,
+                  direction,
+                  u_axis,
+                  v_axis,
+                  width,
+                  height,
                   blockId,
                   isBackFace,
                   currentMeshData
                 );
 
-                for (let l = 0; l < h; l++) {
-                  for (let k = 0; k < w; k++) {
-                    mask[n + k + l * CHUNK_SIZE] = 0;
+                // Zero out the mask for the area covered by the quad
+                for (let height_iter = 0; height_iter < height; height_iter++) {
+                  for (let width_iter = 0; width_iter < width; width_iter++) {
+                    mask[maskIndex + width_iter + height_iter * CHUNK_SIZE] = 0;
                   }
                 }
-                i += w;
-                n += w;
+                u_coord += width;
+                maskIndex += width;
               } else {
-                i++;
-                n++;
+                u_coord++;
+                maskIndex++;
               }
             }
           }
@@ -339,83 +378,24 @@ self.onmessage = (event: MessageEvent) => {
 
   // --- Terrain generation request ---
   if (type === "generate-terrain") {
-    const {
-      chunkId,
+    const { chunkId, chunkX, chunkY, chunkZ } = event.data;
+    const generator = new WorldGenerator(event.data);
+    const { blocks, decorations } = generator.generateChunkData(
       chunkX,
       chunkY,
-      chunkZ,
-      CHUNK_SIZE,
-      SEED,
-      TERRAIN_SCALE,
-      OCTAVES,
-      PERSISTENCE,
-      LACUNARITY,
-      TERRAIN_HEIGHT_BASE,
-      TERRAIN_HEIGHT_AMPLITUDE,
-      SEA_LEVEL,
-    } = event.data;
-
-    // create PRNG/simplex for this request
-    const prng = Alea(SEED);
-    const simplex = createNoise2D(prng);
-
-    const getOctaveNoise = (x: number, z: number) => {
-      let total = 0;
-      let frequency = TERRAIN_SCALE;
-      let amplitude = 1;
-      let maxValue = 0;
-      for (let i = 0; i < OCTAVES; i++) {
-        total += simplex(x * frequency, z * frequency) * amplitude;
-        maxValue += amplitude;
-        amplitude *= PERSISTENCE;
-        frequency *= LACUNARITY;
-      }
-      const normalizedHeight = (total / maxValue + 1) / 2;
-      return TERRAIN_HEIGHT_BASE + normalizedHeight * TERRAIN_HEIGHT_AMPLITUDE;
-    };
-
-    const SIZE = CHUNK_SIZE;
-    const SIZE2 = SIZE * SIZE;
-    const SIZE3 = SIZE * SIZE2;
-    const blocks = new Uint8Array(SIZE3); // local chunk block array
-
-    // Fill the chunk's local block array
-    for (let localX = 0; localX < SIZE; localX++) {
-      for (let localZ = 0; localZ < SIZE; localZ++) {
-        const worldX = chunkX * SIZE + localX;
-        const worldZ = chunkZ * SIZE + localZ;
-
-        const terrainHeight = Math.floor(getOctaveNoise(worldX, worldZ));
-
-        // solid blocks up to terrainHeight
-        for (let worldY = 0; worldY <= terrainHeight; worldY++) {
-          const localY = worldY - chunkY * SIZE;
-          if (localY < 0 || localY >= SIZE) continue;
-
-          let blockId = 20; // stone
-          if (worldY === terrainHeight) {
-            blockId = worldY >= SEA_LEVEL + 3 ? 15 : 3; // grass or sand
-          } else if (worldY > terrainHeight - 4) {
-            blockId = 1; // dirt
-          }
-
-          blocks[localX + localY * SIZE + localZ * SIZE2] = blockId;
-        }
-
-        // water fill up to sea level
-        for (let worldY = terrainHeight + 1; worldY <= SEA_LEVEL; worldY++) {
-          const localY = worldY - chunkY * SIZE;
-          if (localY < 0 || localY >= SIZE) continue;
-          blocks[localX + localY * SIZE + localZ * SIZE2] = 30; // water
-        }
-      }
-    }
+      chunkZ
+    );
 
     // return terrain result (transfer the buffer)
     self.postMessage(
       { chunkId, type: "terrain-generated", block_array: blocks },
       [blocks.buffer]
     );
+
+    // return decorations if any
+    if (decorations.length > 0) {
+      self.postMessage({ chunkId, type: "decorations-generated", decorations });
+    }
     return;
   }
 };

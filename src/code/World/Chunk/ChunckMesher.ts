@@ -40,7 +40,7 @@ export class ChunkMesher {
 
         const saveTexture = async (texture: Texture, fileName: string) => {
           // Wait for the texture to be fully ready, including for pixel reading.
-          await new Promise<void>((resolve, reject) => {
+          await new Promise<void>((resolve) => {
             texture.onLoadObservable.addOnce(() => {
               resolve();
             });

@@ -108,7 +108,7 @@ void main(void) {
         float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), 32.0);
         vec3 specular = vec3(0.3) * spec; // Specular color is white
 
-        gl_FragColor = vec4(diffuseColor.rgb * 0.8 + diffuse + specular, diffuseColor.a);
+        gl_FragColor = vec4(diffuseColor.rgb * 0.76 + diffuse + specular, diffuseColor.a);
     }
 `;
 }

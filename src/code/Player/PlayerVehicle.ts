@@ -26,6 +26,7 @@ export class PlayerVehicle {
   public inputDirection = new Vector3(0, 0, 0);
   public wantJump = 0;
   public isSprinting = false;
+  public isFlying = false;
   public isMounted = false;
 
   #displayCapsule!: Mesh;
@@ -51,6 +52,10 @@ export class PlayerVehicle {
     this.initializeCharacter();
   }
 
+  public toggleFlying(): void {
+    this.isFlying = !this.isFlying;
+  }
+
   private initializeCharacter(): void {
     // Create visual representation
     const height = 1.8;
@@ -58,7 +63,7 @@ export class PlayerVehicle {
     this.#displayCapsule = this.createCharacterMesh(height, radius);
 
     // Create physics controller
-    const startPosition = new Vector3(0, 134, 0);
+    const startPosition = new Vector3(330, 134, -100);
     this.#characterController = new PhysicsCharacterController(
       startPosition,
       { capsuleHeight: height, capsuleRadius: radius },
@@ -105,6 +110,11 @@ export class PlayerVehicle {
     if (this.mount) {
       this.mount.update();
     } else {
+      if (this.isFlying) {
+        const desiredVelocity = this.calculateFlyingVelocity(deltaTime);
+        this.#characterController.setVelocity(desiredVelocity);
+        return; // Skip normal physics integration
+      }
       const support = this.#characterController.checkSupport(
         deltaTime,
         new Vector3(0, -1, 0)
@@ -119,6 +129,39 @@ export class PlayerVehicle {
         this.#characterGravity
       );
     }
+  }
+  private calculateFlyingVelocity(deltaTime: number): Vector3 {
+    const upWorld = this.getUpVector();
+    const flySpeed = this.onGroundSpeed * 2.5; // Use a dedicated fly speed
+    const desiredVelocity = this.getInputVelocity(flySpeed);
+
+    // Vertical movement
+    if (this.wantJump > 0) {
+      // Ascend
+      desiredVelocity.addInPlace(upWorld.scale(flySpeed));
+    }
+    if (this.isSprinting) {
+      // Descend
+      desiredVelocity.addInPlace(upWorld.scale(-flySpeed));
+    }
+
+    // Apply deceleration
+    const currentVelocity = this.#characterController.getVelocity();
+    let newVelocity = currentVelocity.clone();
+    if (desiredVelocity.lengthSquared() < 0.01) {
+      // If no input, slow down
+      newVelocity.scaleInPlace(this.deacceleration);
+    } else {
+      // Accelerate towards desired velocity
+      newVelocity = this.accelerate(
+        currentVelocity,
+        desiredVelocity,
+        this.accelRateGround, // Can use a different accel rate for flying if desired
+        deltaTime
+      );
+    }
+
+    return newVelocity;
   }
 
   private calculateDesiredVelocity(
