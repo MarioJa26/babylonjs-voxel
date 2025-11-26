@@ -41,4 +41,21 @@ export const BlockTextures: (BlockTextureDef | null)[] = [
   { all: [11, 1] }, // 28: bark_brown_02
   { all: [12, 1] }, // 29: slate_floor
   { all: [13, 1] }, // 30: water_01
+  { all: [14, 1] }, // 31: bark_brown_01
+  { all: [15, 1] }, // 32: beam_wall_01
+  { all: [0, 2] }, // 33: metasequoia_bark_01
+  { all: [1, 2] }, // 34: moss_wood
+  { all: [2, 2] }, // 35: wood_planks
+  { all: [3, 2] }, // 36: old_planks_02
+  { all: [4, 2] }, // 37: plank_flooring_02
+  { all: [5, 2] }, // 38: roof_slates_02
+  { all: [6, 2] }, // 39: rough_wood
+  { all: [7, 2] }, // 40: thatch_roof_angled
+  { all: [8, 2] }, // 41: wood_plank_wall
+  { all: [9, 2] }, // 42: wood_trunk_wall
+  { all: [10, 2] }, // 43: forest_leaves_02
+  { all: [11, 2] }, // 44: leaves_forest_ground
+  { all: [12, 2] }, // 45: rocks_ground_02
+  { all: [13, 2] }, // 46: coast_land_rocks_01
+  { all: [14, 2] }, // 47: aerial_beach_01
 ];

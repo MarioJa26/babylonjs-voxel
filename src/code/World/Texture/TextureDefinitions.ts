@@ -111,4 +111,94 @@ export const TextureDefinitions: TextureDefinition[] = [
     name: "water",
     path: "/texture/water/water_01_1k",
   },
+  {
+    id: 31,
+    name: "bark_brown_01",
+    path: "/texture/wood/bark_brown_01_1k",
+  },
+  {
+    id: 32,
+    name: "beam_wall_01",
+    path: "/texture/wood/beam_wall_01_1k",
+  },
+  {
+    id: 33,
+    name: "metasequoia_bark",
+    path: "/texture/wood/metasequoia_bark_1k",
+  },
+  {
+    id: 34,
+    name: "moss_wood",
+    path: "/texture/wood/moss_wood_1k",
+  },
+  {
+    id: 35,
+    name: "wood_planks",
+    path: "/texture/wood/wood_planks_1k",
+  },
+  {
+    id: 36,
+    name: "old_planks_02",
+    path: "/texture/wood/old_planks_02_1k",
+  },
+  {
+    id: 37,
+    name: "plank_flooring_02",
+    path: "/texture/wood/plank_flooring_02_1k",
+  },
+  {
+    id: 38,
+    name: "roof_slates_02",
+    path: "/texture/wood/roof_slates_02_1k",
+  },
+  {
+    id: 39,
+    name: "rough_wood",
+    path: "/texture/wood/rough_wood_1k",
+  },
+  {
+    id: 40,
+    name: "thatch_roof_angled",
+    path: "/texture/wood/thatch_roof_angled_1k",
+  },
+  {
+    id: 41,
+    name: "wood_plank_wall",
+    path: "/texture/wood/wood_plank_wall_1k",
+  },
+  {
+    id: 42,
+    name: "wood_trunk_wall",
+    path: "/texture/wood/wood_trunk_wall_1k",
+  },
+
+  {
+    id: 43,
+    name: "forest_leaves_02",
+    path: "/texture/dirt/forest_leaves_02_1k",
+  },
+
+  {
+    id: 44,
+    name: "leaves_forest_ground",
+    path: "/texture/dirt/leaves_forest_ground_1k",
+  },
+
+  {
+    id: 45,
+    name: "rocks_ground_02",
+    path: "/texture/dirt/rocks_ground_02_1k",
+  },
+
+  {
+    id: 46,
+    name: "coast_land_rocks_01",
+    path: "/texture/dirt/coast_land_rocks_01_1k",
+  },
+
+  {
+    id: 47,
+    name: "aerial_beach_01",
+    path: "/texture/dirt/aerial_beach_01_1k",
+  },
 ];
