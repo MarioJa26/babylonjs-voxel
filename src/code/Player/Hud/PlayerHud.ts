@@ -292,7 +292,6 @@ export class PlayerHud {
 
     // Update position immediately and then follow the cursor
     const updatePos = (e: MouseEvent) => {
-      // small offset so tooltip doesn't overlap the cursor
       const offsetX = 12;
       const offsetY = 32;
       this.itemTooltipDiv.style.left = `${e.clientX + offsetX}px`;
