@@ -1,4 +1,5 @@
 import { Item } from "./Item";
+import { PlayerHud } from "../Hud/PlayerHud";
 import { PlayerInventory } from "./PlayerInventory";
 
 export class ItemSlot {
@@ -96,12 +97,16 @@ export class ItemSlot {
       if (dragged !== this) this.swapSlots(dragged);
     });
 
-    div.addEventListener("mouseover", () => {
+    div.addEventListener("mouseover", (e) => {
       PlayerInventory.currentlyHoveredSlot = this;
+      if (this.item) {
+        PlayerHud.showItemTooltip(this.item.name, e);
+      }
     });
 
     div.addEventListener("mouseout", () => {
       PlayerInventory.currentlyHoveredSlot = null;
+      PlayerHud.hideItemTooltip();
     });
   }
 }

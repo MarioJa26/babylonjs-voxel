@@ -15,7 +15,7 @@ export class World {
     worldX: number,
     worldY: number,
     worldZ: number,
-    renderDistance = 8,
+    renderDistance = 4,
     verticalRadius = 3
   ) {
     const centerX = this.worldToChunkCoord(worldX);

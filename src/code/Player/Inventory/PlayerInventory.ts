@@ -48,7 +48,7 @@ export class PlayerInventory {
     for (let i = 0; i < this.#inventorySlots.length && temp < 40; i++) {
       for (let j = 0; j < this.#inventorySlots[i].length; j++) {
         const item = new Item(
-          "☺☻♦❤☮✝☪☯🕳💟💛💙o(≧口≦)o╰(艹皿艹 )",
+          "c☺bble💯",
           "This is a fake item",
           "/texture/cobble/cobble05_1k/cobble05_diff_1k.png",
           "/texture/cobble/cobble05_1k",

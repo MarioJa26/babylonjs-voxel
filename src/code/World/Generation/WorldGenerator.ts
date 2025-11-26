@@ -48,11 +48,11 @@ export class WorldGenerator {
           const localY = worldY - chunkY * SIZE;
           if (localY < 0 || localY >= SIZE) continue;
 
-          let blockId = 20; // stone
+          let blockId = 1; // stone
           if (worldY === terrainHeight) {
             blockId = worldY >= SEA_LEVEL + 3 ? 15 : 3; // grass or sand
           } else if (worldY > terrainHeight - 5) {
-            blockId = 1; // dirt
+            blockId = 19; // dirt
           }
 
           blocks[localX + localY * SIZE + localZ * SIZE2] = blockId;

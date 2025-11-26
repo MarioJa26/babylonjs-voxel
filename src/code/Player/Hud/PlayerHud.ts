@@ -23,6 +23,8 @@ export class PlayerHud {
 
   static debugPanelDiv: HTMLDivElement;
   private static infoLines: { [key: string]: string } = {};
+  private static itemTooltipDiv: HTMLDivElement;
+  private static itemTooltipMouseMove?: (e: MouseEvent) => void;
 
   constructor(
     engine: Engine,
@@ -38,6 +40,7 @@ export class PlayerHud {
     this.#overlayDiv = this.initializeHUD();
     this.createHotbarUI();
     this.initializeDebugPanel();
+    this.initializeTooltip();
   }
 
   private initializeHUD(): HTMLDivElement {
@@ -268,6 +271,54 @@ export class PlayerHud {
 
     if (!textContainer.parentElement) {
       this.debugPanelDiv.prepend(textContainer);
+    }
+  }
+
+  private initializeTooltip(): void {
+    if (PlayerHud.itemTooltipDiv) return;
+
+    const tooltip = document.createElement("div");
+    tooltip.id = "item-tooltip";
+    tooltip.style.display = "none";
+    document.body.appendChild(tooltip);
+    PlayerHud.itemTooltipDiv = tooltip;
+  }
+
+  public static showItemTooltip(text: string, event: MouseEvent): void {
+    if (!this.itemTooltipDiv) return;
+
+    this.itemTooltipDiv.innerText = text;
+    this.itemTooltipDiv.style.display = "block";
+
+    // Update position immediately and then follow the cursor
+    const updatePos = (e: MouseEvent) => {
+      // small offset so tooltip doesn't overlap the cursor
+      const offsetX = 12;
+      const offsetY = 32;
+      this.itemTooltipDiv.style.left = `${e.clientX + offsetX}px`;
+      this.itemTooltipDiv.style.top = `${e.clientY - offsetY}px`;
+    };
+
+    // Set initial position from the original event
+    updatePos(event);
+
+    // Remove any previous listener to avoid duplicates
+    if (this.itemTooltipMouseMove) {
+      document.removeEventListener("mousemove", this.itemTooltipMouseMove);
+    }
+
+    this.itemTooltipMouseMove = updatePos;
+    document.addEventListener("mousemove", this.itemTooltipMouseMove);
+  }
+
+  public static hideItemTooltip(): void {
+    if (!this.itemTooltipDiv) return;
+
+    this.itemTooltipDiv.style.display = "none";
+
+    if (this.itemTooltipMouseMove) {
+      document.removeEventListener("mousemove", this.itemTooltipMouseMove);
+      this.itemTooltipMouseMove = undefined;
     }
   }
 }
