@@ -1,9 +1,10 @@
 import { Mesh } from "@babylonjs/core";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import { World } from "../World";
+import { GenerationParams } from "../Generation/GenerationParams";
 
 export class Chunk {
-  public static readonly SIZE = 32;
+  public static readonly SIZE = GenerationParams.CHUNK_SIZE;
   public static readonly SIZE2 = Chunk.SIZE * Chunk.SIZE;
   public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
 
@@ -11,6 +12,7 @@ export class Chunk {
   private static nextId = 0;
 
   public isDirty = false;
+  public isLoaded = true;
   public readonly id: string;
   private remeshTimeout: number | null = null;
 

@@ -234,6 +234,8 @@ export class ChunkMesher {
     chunk: Chunk,
     meshData: { opaque: MeshData; transparent: MeshData }
   ) {
+    if (!chunk.isLoaded) return;
+
     // Dispose of old meshes
     if (chunk.mesh) {
       chunk.mesh.dispose();
@@ -254,7 +256,6 @@ export class ChunkMesher {
       );
       chunk.mesh = opaqueMesh;
 
-      // Physics should only be on the solid, opaque mesh
       new PhysicsAggregate(
         opaqueMesh,
         PhysicsShapeType.MESH,

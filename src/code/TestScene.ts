@@ -22,7 +22,6 @@ import { distanceCullMeshes } from "../BabylonExamples/occlusion";
 import { Map1 } from "./Maps/Map1";
 import { PlayerCamera } from "./Player/PlayerCamera";
 import MapFog from "./Maps/MapFog";
-import { TerrainGenerator } from "./World/Generation/TerrainGenarator";
 import { World } from "./World/World";
 import { MyConnection } from "./Server/MyConnection";
 import { GlobalValues } from "./World/GlobalValues";
@@ -76,7 +75,6 @@ export class TestScene {
     //await this.CreateEnvironment2();
     const mapFog = new MapFog(scene);
     const playerCamera = new PlayerCamera(camera, scene);
-    TerrainGenerator.initialize();
     new World(); // This will create all the initial chunks
     const player = new Player(this.engine, scene, playerCamera, this.canvas);
     const map = new Map1(scene, player); // Create the map

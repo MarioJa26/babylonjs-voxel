@@ -1,10 +1,16 @@
 import { Chunk } from "./Chunk/Chunk";
 import { ChunkWorkerPool } from "./Chunk/ChunkWorkerPool";
+import { GenerationParams } from "./Generation/GenerationParams";
+import { TerrainHeightMap } from "./Generation/TerrainHeightMap";
 
 export class World {
   private static chunks = new Map<string, Chunk>();
   private static lastCenterChunk: { x: number; y: number; z: number } | null =
     null;
+
+  constructor() {
+    World.updateChunksAround(0, 0, 0, 3);
+  }
 
   /**
    * Ensure chunks exist around the provided world position.
@@ -15,8 +21,8 @@ export class World {
     worldX: number,
     worldY: number,
     worldZ: number,
-    renderDistance = 4,
-    verticalRadius = 3
+    renderDistance = 16,
+    verticalRadius = 12
   ) {
     const centerX = this.worldToChunkCoord(worldX);
     const centerY = this.worldToChunkCoord(worldY);
@@ -33,6 +39,10 @@ export class World {
     }
     this.lastCenterChunk = { x: centerX, y: centerY, z: centerZ };
 
+    const chunksToLoad: { x: number; y: number; z: number; distSq: number }[] =
+      [];
+
+    // 1. Collect all potential chunk coordinates and their distances
     for (let x = centerX - renderDistance; x <= centerX + renderDistance; x++) {
       for (
         let z = centerZ - renderDistance;
@@ -44,15 +54,43 @@ export class World {
           y <= centerY + verticalRadius;
           y++
         ) {
-          if (y <= 0) continue; // skip negative Y chunks for now
-          const key = `${x},${y},${z}`;
-          if (!this.chunks.has(key)) {
-            const newChunk = new Chunk(x, y, z);
-            // Request terrain data from the worker for the new chunk.
-            ChunkWorkerPool.getInstance().scheduleTerrainGeneration(newChunk);
+          if (y < 0) continue; // skip negative Y chunks
+
+          // Optimization: Skip generating chunks that are entirely below the surface
+          const chunkWorldY = y * GenerationParams.CHUNK_SIZE;
+          const terrainHeightAtChunkCenter = Math.floor(
+            TerrainHeightMap.getOctaveNoise(
+              (x + 0.5) * GenerationParams.CHUNK_SIZE,
+              (z + 0.5) * GenerationParams.CHUNK_SIZE
+            )
+          );
+          if (
+            chunkWorldY <
+            terrainHeightAtChunkCenter - GenerationParams.CHUNK_SIZE * 3
+          ) {
+            continue;
           }
+          const key = `${x},${y},${z}`;
+          if (this.chunks.has(key)) continue; // Already loaded
+
+          const dx = x - centerX;
+          const dy = y - centerY;
+          const dz = z - centerZ;
+
+          const distSq = dx * dx + dy * dy + dz * dz;
+
+          chunksToLoad.push({ x, y, z, distSq });
         }
       }
+    }
+
+    // 2. Sort chunks by distance (nearest first)
+    chunksToLoad.sort((a, b) => a.distSq - b.distSq);
+
+    // 3. Enqueue chunks for generation in the sorted order
+    for (const { x, y, z } of chunksToLoad) {
+      const newChunk = new Chunk(x, y, z);
+      ChunkWorkerPool.getInstance().scheduleTerrainGeneration(newChunk);
     }
 
     // optional: remove chunks far outside the radius to free memory
@@ -62,7 +100,7 @@ export class World {
       if (
         Math.abs(cx - centerX) > removeRadius ||
         Math.abs(cz - centerZ) > removeRadius ||
-        Math.abs(cy - centerY) > verticalRadius + 2
+        Math.abs(cy - centerY) > verticalRadius + 2 // a bit of buffer
       ) {
         const chunk = this.chunks.get(key);
         if (chunk) {
@@ -70,6 +108,7 @@ export class World {
           chunk.transparentMesh?.dispose();
         }
         this.chunks.delete(key);
+        if (chunk) chunk.isLoaded = false;
       }
     }
   }

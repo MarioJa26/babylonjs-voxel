@@ -1,3 +1,4 @@
+import { GenerationParams } from "../Generation/GenerationParams";
 import { Chunk } from "./Chunk";
 
 export class ChunkWorker {
@@ -22,7 +23,7 @@ export class ChunkWorker {
       type: "full-remesh",
       chunkId: chunk.id,
       block_array: chunk.block_array,
-      CHUNK_SIZE: Chunk.SIZE,
+      chunk_size: Chunk.SIZE,
       neighbors,
     });
   }
@@ -34,16 +35,7 @@ export class ChunkWorker {
       chunkX: chunk.chunkX,
       chunkY: chunk.chunkY,
       chunkZ: chunk.chunkZ,
-      CHUNK_SIZE: Chunk.SIZE,
-      // duplicate TerrainGenerator constants here (keep in sync or export them)
-      SEED: "my-secret-seed",
-      TERRAIN_SCALE: 0.001,
-      OCTAVES: 9,
-      PERSISTENCE: 0.33,
-      LACUNARITY: 3.141592653589793,
-      TERRAIN_HEIGHT_BASE: 16,
-      TERRAIN_HEIGHT_AMPLITUDE: 72,
-      SEA_LEVEL: 40,
+      ...GenerationParams,
     });
   }
 }

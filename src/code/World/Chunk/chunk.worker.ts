@@ -17,18 +17,19 @@ type WorkerInternalMeshData = {
   decorations?: { x: number; y: number; z: number; blockId: number }[];
 };
 
-// Define which block IDs are transparent. Water is ID 30.
 const TRANSPARENT_BLOCKS = new Set([30]);
 
 class ChunkWorkerMesher {
-  static normalize3 = (a: number[]) => {
-    const len = Math.hypot(a[0], a[1], a[2]);
+  static normalize3 = (a: number[]): number[] => {
+    // Since we are only normalizing axis-aligned vectors (duVec, dvVec),
+    // the length is simply the sum of the absolute values.
+    const len = Math.abs(a[0]) + Math.abs(a[1]) + Math.abs(a[2]);
     return len > 0 ? [a[0] / len, a[1] / len, a[2] / len] : [0, 0, 0];
   };
 
   static generateMesh(data: {
     block_array: Uint8Array;
-    CHUNK_SIZE: number;
+    chunk_size: number;
     neighbors: {
       px?: Uint8Array;
       nx?: Uint8Array;
@@ -45,8 +46,6 @@ class ChunkWorkerMesher {
     const uvs: number[] = [];
     const uvs2: number[] = [];
     const uvs3: number[] = [];
-
-    const { block_array, CHUNK_SIZE, neighbors } = data;
 
     const opaqueMeshData: WorkerInternalMeshData = {
       positions,
@@ -70,29 +69,50 @@ class ChunkWorkerMesher {
       indexOffset: 0,
     };
 
-    const getBlock = (x: number, y: number, z: number): number => {
-      const size = CHUNK_SIZE;
-      const size2 = size * size;
-
+    const { block_array, chunk_size: chunk_size, neighbors } = data;
+    const size = chunk_size;
+    const size2 = size * size;
+    const getBlock = (
+      x: number,
+      y: number,
+      z: number,
+      fallback = 0 // ← Use this when neighbor chunk does not exist
+    ): number => {
+      // Inside this chunk
       if (x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size) {
         return block_array[x + y * size + z * size2];
       }
 
-      // Neighbor chunk access
-      if (x < 0 && neighbors.nx)
-        return neighbors.nx[size - 1 + y * size + z * size2];
-      if (x >= size && neighbors.px)
-        return neighbors.px[0 + y * size + z * size2];
-      if (y < 0 && neighbors.ny)
-        return neighbors.ny[x + (size - 1) * size + z * size2];
-      if (y >= size && neighbors.py)
-        return neighbors.py[x + 0 * size + z * size2];
-      if (z < 0 && neighbors.nz)
-        return neighbors.nz[x + y * size + (size - 1) * size2];
-      if (z >= size && neighbors.pz)
-        return neighbors.pz[x + y * size + 0 * size2];
+      // Neighbor lookups
+      if (x < 0) {
+        const arr = neighbors.nx;
+        return arr ? arr[size - 1 + y * size + z * size2] : fallback;
+      }
+      if (x >= size) {
+        const arr = neighbors.px;
+        return arr ? arr[0 + y * size + z * size2] : fallback;
+      }
 
-      return 0; // Default to air if neighbor doesn't exist
+      if (y < 0) {
+        const arr = neighbors.ny;
+        return arr ? arr[x + (size - 1) * size + z * size2] : fallback;
+      }
+      if (y >= size) {
+        const arr = neighbors.py;
+        return arr ? arr[x + 0 * size + z * size2] : fallback;
+      }
+
+      if (z < 0) {
+        const arr = neighbors.nz;
+        return arr ? arr[x + y * size + (size - 1) * size2] : fallback;
+      }
+      if (z >= size) {
+        const arr = neighbors.pz;
+        return arr ? arr[x + y * size + 0 * size2] : fallback;
+      }
+
+      // Should never hit here — but fallback is fastest
+      return fallback;
     };
 
     // We perform two passes: one for opaque blocks and one for transparent blocks.
@@ -109,23 +129,23 @@ class ChunkWorkerMesher {
         const position = [0, 0, 0];
         const direction = [0, 0, 0];
         direction[axis] = 1;
-        const mask = new Int32Array(CHUNK_SIZE * CHUNK_SIZE);
+        const mask = new Int32Array(chunk_size * chunk_size);
 
         // Sweep through the chunk axis to create 2D slices
         for (
           position[axis] = 0;
-          position[axis] < CHUNK_SIZE;
+          position[axis] < chunk_size;
           position[axis]++
         ) {
           let maskIndex = 0;
           for (
             position[v_axis] = 0;
-            position[v_axis] < CHUNK_SIZE;
+            position[v_axis] < chunk_size;
             position[v_axis]++
           ) {
             for (
               position[u_axis] = 0;
-              position[u_axis] < CHUNK_SIZE;
+              position[u_axis] < chunk_size;
               position[u_axis]++
             ) {
               const blockCurrent = getBlock(
@@ -136,7 +156,8 @@ class ChunkWorkerMesher {
               const blockNeighbor = getBlock(
                 position[0] + direction[0],
                 position[1] + direction[1],
-                position[2] + direction[2]
+                position[2] + direction[2],
+                blockCurrent
               );
 
               const isCurrentBlockTransparent =
@@ -144,20 +165,21 @@ class ChunkWorkerMesher {
               const isNeighborBlockTransparent =
                 TRANSPARENT_BLOCKS.has(blockNeighbor);
 
-              // In the opaque pass, we only care about opaque blocks.
-              // In the transparent pass, we only care about transparent blocks.
-              const isCurrentBlockActive =
+              // Determine if the block is part of the current rendering pass (opaque or transparent)
+              const isCurrentInPass =
                 isCurrentBlockTransparent === isTransparentPass;
-              const isNeighborBlockActive =
+              const isNeighborInPass =
                 isNeighborBlockTransparent === isTransparentPass;
 
-              // Treat non-active blocks (and air) as empty space.
+              // A block is considered "solid" for culling if it's not air (0).
+              // This includes normal blocks, transparent blocks, and our new barrier blocks.
+              const isCurrentSolid = blockCurrent !== 0;
+              const isNeighborSolid = blockNeighbor !== 0;
+
               const blockTypeCurrent =
-                blockCurrent !== 0 && isCurrentBlockActive ? blockCurrent : 0;
+                isCurrentSolid && isCurrentInPass ? blockCurrent : 0;
               const blockTypeNeighbor =
-                blockNeighbor !== 0 && isNeighborBlockActive
-                  ? blockNeighbor
-                  : 0;
+                isNeighborSolid && isNeighborInPass ? blockNeighbor : 0;
 
               if (blockTypeCurrent && !blockTypeNeighbor) {
                 mask[maskIndex++] = blockTypeCurrent; // Forward face
@@ -172,8 +194,8 @@ class ChunkWorkerMesher {
           maskIndex = 0;
 
           // Generate quads from the mask
-          for (let v_coord = 0; v_coord < CHUNK_SIZE; v_coord++) {
-            for (let u_coord = 0; u_coord < CHUNK_SIZE; ) {
+          for (let v_coord = 0; v_coord < chunk_size; v_coord++) {
+            for (let u_coord = 0; u_coord < chunk_size; ) {
               if (mask[maskIndex] !== 0) {
                 const blockId = Math.abs(mask[maskIndex]);
                 const isBackFace = mask[maskIndex] < 0;
@@ -181,7 +203,7 @@ class ChunkWorkerMesher {
                 // Greedily find the width of the quad
                 let width = 1;
                 while (
-                  u_coord + width < CHUNK_SIZE &&
+                  u_coord + width < chunk_size &&
                   mask[maskIndex + width] === mask[maskIndex]
                 ) {
                   width++;
@@ -190,10 +212,10 @@ class ChunkWorkerMesher {
                 // Greedily find the height of the quad
                 let height = 1;
                 let done = false;
-                while (v_coord + height < CHUNK_SIZE) {
+                while (v_coord + height < chunk_size) {
                   for (let width_iter = 0; width_iter < width; width_iter++) {
                     if (
-                      mask[maskIndex + width_iter + height * CHUNK_SIZE] !==
+                      mask[maskIndex + width_iter + height * chunk_size] !==
                       mask[maskIndex]
                     ) {
                       done = true;
@@ -225,7 +247,7 @@ class ChunkWorkerMesher {
                 // Zero out the mask for the area covered by the quad
                 for (let height_iter = 0; height_iter < height; height_iter++) {
                   for (let width_iter = 0; width_iter < width; width_iter++) {
-                    mask[maskIndex + width_iter + height_iter * CHUNK_SIZE] = 0;
+                    mask[maskIndex + width_iter + height_iter * chunk_size] = 0;
                   }
                 }
                 u_coord += width;
@@ -366,6 +388,7 @@ class ChunkWorkerMesher {
   }
 }
 
+// This needs to be at the top level of the worker script
 let generator: WorldGenerator | null = null;
 
 self.onmessage = (event: MessageEvent) => {
@@ -387,10 +410,10 @@ self.onmessage = (event: MessageEvent) => {
     const { chunkId, chunkX, chunkY, chunkZ } = event.data;
 
     if (!generator) {
-      generator = new WorldGenerator(event.data);
+      generator = new WorldGenerator({ ...event.data });
     }
 
-    const { blocks } = generator!.generateChunkData(chunkX, chunkY, chunkZ);
+    const { blocks } = generator.generateChunkData(chunkX, chunkY, chunkZ);
 
     // return terrain result (transfer the buffer)
     self.postMessage(

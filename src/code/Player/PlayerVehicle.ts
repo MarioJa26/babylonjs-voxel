@@ -63,7 +63,7 @@ export class PlayerVehicle {
     this.#displayCapsule = this.createCharacterMesh(height, radius);
 
     // Create physics controller
-    const startPosition = new Vector3(-1750, 160, 380);
+    const startPosition = new Vector3(30, 165, 0);
     this.#characterController = new PhysicsCharacterController(
       startPosition,
       { capsuleHeight: height, capsuleRadius: radius },
@@ -169,6 +169,7 @@ export class PlayerVehicle {
     supportInfo: CharacterSurfaceInfo
   ): Vector3 {
     // Update player state based on support info
+    const previousState = this.state;
     this.updatePlayerState(supportInfo);
 
     // Get current velocity
@@ -185,7 +186,7 @@ export class PlayerVehicle {
           supportInfo
         );
       case PlayerState.START_JUMP:
-        return this.calculateJumpVelocity(currentVelocity);
+        return this.calculateJumpVelocity(currentVelocity, previousState);
       default:
         return currentVelocity;
     }
@@ -207,7 +208,13 @@ export class PlayerVehicle {
 
     switch (this.state) {
       case PlayerState.IN_AIR:
-        return isSupported ? PlayerState.ON_GROUND : PlayerState.IN_AIR;
+        if (isSupported) {
+          return PlayerState.ON_GROUND;
+        }
+        if (this.wantJump > 0) {
+          return PlayerState.START_JUMP;
+        }
+        return PlayerState.IN_AIR;
 
       case PlayerState.ON_GROUND:
         if (!isSupported) {
@@ -347,7 +354,10 @@ export class PlayerVehicle {
       .addInPlace(pushAway);
   }
 
-  private calculateJumpVelocity(currentVelocity: Vector3): Vector3 {
+  private calculateJumpVelocity(
+    currentVelocity: Vector3,
+    previousState: PlayerState
+  ): Vector3 {
     const upWorld = this.getUpVector();
 
     // Calculate jump velocity
@@ -364,7 +374,19 @@ export class PlayerVehicle {
       desiredVelocity.scaleInPlace(this.sprintMultiplier);
     }
 
-    return jumpVelVec.add(desiredVelocity);
+    const finalVelocity = jumpVelVec.add(desiredVelocity);
+
+    // If this was an air-jump, add a forward sling
+    if (previousState === PlayerState.IN_AIR) {
+      // Get the camera's forward direction (including pitch)
+      const viewDirection = this.camera.playerCamera.getForwardRay().direction;
+
+      finalVelocity.addInPlace(
+        viewDirection.normalize().scale(this.inAirSpeed * 5.5)
+      );
+    }
+
+    return finalVelocity;
   }
 
   private getInputVelocity(speed: number): Vector3 {

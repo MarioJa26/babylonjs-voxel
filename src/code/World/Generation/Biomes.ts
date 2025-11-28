@@ -50,7 +50,7 @@ const PLAINS: Biome = {
   canSpawnTrees: true,
   treeDensity: 0.005,
   beachBlock: 3,
-  seafloorBlock: 6,
+  seafloorBlock: 46,
 };
 
 const FOREST: Biome = {
@@ -61,7 +61,7 @@ const FOREST: Biome = {
   canSpawnTrees: true,
   treeDensity: 0.05,
   beachBlock: 3,
-  seafloorBlock: 6,
+  seafloorBlock: 46,
 };
 
 export function getBiomeFor(temperature: number, humidity: number): Biome {

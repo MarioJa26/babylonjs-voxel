@@ -15,10 +15,8 @@ import {
 } from "@babylonjs/core";
 import { WaterMaterial } from "@babylonjs/materials";
 import { AdvancedBoat } from "../Entities/AdvancedBoat";
-import { MyTestBlock } from "./MyTestBlock";
 import { Player } from "../Player/Player";
 import { UnderWaterEffect } from "./UnderWaterEffect";
-import { Chunk } from "../World/Chunk/Chunk";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
 import { ChunkMesher } from "../World/Chunk/ChunckMesher";
 import { GlobalValues } from "../World/GlobalValues";
@@ -26,7 +24,6 @@ import { SkyShader } from "../World/Light/SkyShader";
 import { PlayerHud } from "../Player/Hud/PlayerHud";
 import { CrossHair } from "../Player/Hud/CrossHair";
 import { TextureDefinitions } from "../World/Texture/TextureDefinitions";
-import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
 export class Map1 {
   public static mainScene: Scene;
   #player: Player;
@@ -40,15 +37,10 @@ export class Map1 {
   constructor(scene: Scene, player: Player) {
     this.#player = player;
     Map1.mainScene = this.CreateScene(scene);
-
     this.initPromise = this.asyncInit().then(async () => {
       ChunkMesher.initAtlas();
-      // Now that textures are ready, generate terrain using worker pool.
-      const pool = ChunkWorkerPool.getInstance();
-      Chunk.chunkInstances.forEach((chunk) => {
-        pool.scheduleTerrainGeneration(chunk);
-      });
     });
+
     scene.onBeforeRenderObservable.add(() => {
       this.updateDayNightCycle();
       this.updateBlockHighlight();
@@ -179,13 +171,13 @@ export class Map1 {
       scene
     );
     hemiLight.direction = new Vector3(-0.1, -1, -0.1);
-    hemiLight.intensity = 0.3;
+    hemiLight.intensity = 0.5;
     const dirLight = new DirectionalLight(
       "dirLight",
       new Vector3(-1, -2, -1),
       scene
     );
-    dirLight.intensity = 0.3;
+    dirLight.intensity = 0.5;
     dirLight.position = new Vector3(20, 40, 20);
     return scene;
   }

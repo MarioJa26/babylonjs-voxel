@@ -1,37 +1,46 @@
 import Alea from "alea";
-import { createNoise2D } from "simplex-noise";
+import { createNoise2D, createNoise3D } from "simplex-noise";
 import { GenerationParamsType } from "./GenerationParams";
-import { getBiomeFor } from "./Biomes";
+import { Biome, getBiomeFor } from "./Biomes";
 import { Squirrel3 } from "./Squirrel13";
+import { TerrainHeightMap } from "./TerrainHeightMap";
 
 export class WorldGenerator {
   private params: GenerationParamsType;
   private prng: ReturnType<typeof Alea>;
   private seedAsInt: number;
-  private terrainNoise: ReturnType<typeof createNoise2D>;
   private temperatureNoise: ReturnType<typeof createNoise2D>;
   private humidityNoise: ReturnType<typeof createNoise2D>;
+  private caveNoise: ReturnType<typeof createNoise3D>;
+  private coalNoise: ReturnType<typeof createNoise3D>;
+  private ironNoise: ReturnType<typeof createNoise3D>;
 
   constructor(params: GenerationParamsType) {
     this.params = params;
     this.prng = Alea(this.params.SEED);
     // Convert string seed to a number for hashing
     this.seedAsInt = Squirrel3.get(0, this.prng() * 0xffffffff);
-    this.terrainNoise = createNoise2D(this.prng);
 
     // Separate PRNGs for different noise types to avoid correlation
     const tempPrng = Alea(this.prng());
     const humidityPrng = Alea(this.prng());
+    const cavePrng = Alea(this.prng());
+    const coalPrng = Alea(this.prng());
+    const ironPrng = Alea(this.prng());
+
     this.temperatureNoise = createNoise2D(tempPrng);
     this.humidityNoise = createNoise2D(humidityPrng);
+    this.caveNoise = createNoise3D(cavePrng);
+    this.coalNoise = createNoise3D(coalPrng);
+    this.ironNoise = createNoise3D(ironPrng);
   }
 
   public generateChunkData(chunkX: number, chunkY: number, chunkZ: number) {
     const { CHUNK_SIZE } = this.params;
     const blocks = new Uint8Array(CHUNK_SIZE ** 3);
-
-    this.generateTerrain(chunkX, chunkY, chunkZ, blocks);
-    this.generateFlora(chunkX, chunkY, chunkZ, blocks);
+    const biome = this.#getBiome(chunkX * CHUNK_SIZE, chunkZ * CHUNK_SIZE);
+    this.generateTerrain(chunkX, chunkY, chunkZ, blocks, biome);
+    this.generateFlora(chunkX, chunkY, chunkZ, blocks, biome);
 
     return { blocks };
   }
@@ -40,7 +49,8 @@ export class WorldGenerator {
     chunkX: number,
     chunkY: number,
     chunkZ: number,
-    blocks: Uint8Array
+    blocks: Uint8Array,
+    biome: Biome
   ) {
     const { CHUNK_SIZE, SEA_LEVEL } = this.params;
     const SIZE = CHUNK_SIZE;
@@ -51,8 +61,9 @@ export class WorldGenerator {
         const worldX = chunkX * SIZE + localX;
         const worldZ = chunkZ * SIZE + localZ;
 
-        const biome = this.#getBiome(worldX, worldZ);
-        const terrainHeight = Math.floor(this.#getOctaveNoise(worldX, worldZ));
+        const terrainHeight = Math.floor(
+          TerrainHeightMap.getOctaveNoise(worldX, worldZ)
+        );
 
         for (let worldY = 0; worldY <= terrainHeight; worldY++) {
           const localY = worldY - chunkY * SIZE;
@@ -95,7 +106,8 @@ export class WorldGenerator {
     chunkX: number,
     chunkY: number,
     chunkZ: number,
-    blocks: Uint8Array
+    blocks: Uint8Array,
+    biome: Biome
   ) {
     const { CHUNK_SIZE } = this.params;
     const SIZE = CHUNK_SIZE;
@@ -111,15 +123,13 @@ export class WorldGenerator {
         const position = worldX * 374761393 + worldZ * 668265263;
         const hash = Squirrel3.get(position, this.seedAsInt);
 
-        const biome = this.#getBiome(worldX, worldZ);
-
         // Check if a tree should spawn
         const treeChanceRoll = (hash & 0x7fffffff) / 0x7fffffff; // Get a float [0, 1)
         if (treeChanceRoll > biome.treeDensity) continue;
 
         if (biome.canSpawnTrees) {
           const terrainHeight = Math.floor(
-            this.#getOctaveNoise(worldX, worldZ)
+            TerrainHeightMap.getOctaveNoise(worldX, worldZ)
           );
           const topBlock = this.#getBlockTypeAtWorldCoord(
             worldX,
@@ -221,30 +231,6 @@ export class WorldGenerator {
     }
   }
 
-  #getOctaveNoise(x: number, z: number): number {
-    const {
-      TERRAIN_SCALE,
-      OCTAVES,
-      PERSISTENCE,
-      LACUNARITY,
-      TERRAIN_HEIGHT_BASE,
-      TERRAIN_HEIGHT_AMPLITUDE,
-    } = this.params;
-
-    let total = 0;
-    let frequency = TERRAIN_SCALE;
-    let amplitude = 1;
-    let maxValue = 0;
-    for (let i = 0; i < OCTAVES; i++) {
-      total += this.terrainNoise(x * frequency, z * frequency) * amplitude;
-      maxValue += amplitude;
-      amplitude *= PERSISTENCE;
-      frequency *= LACUNARITY;
-    }
-    const normalizedHeight = (total / maxValue + 1) / 2;
-    return TERRAIN_HEIGHT_BASE + normalizedHeight * TERRAIN_HEIGHT_AMPLITUDE;
-  }
-
   /**
    * Checks if a given coordinate is at or below sea level.
    */
@@ -252,7 +238,7 @@ export class WorldGenerator {
     const terrainHeight = Math.floor(this.#getOctaveNoise(x, z));
     return terrainHeight <= this.params.SEA_LEVEL;
   }
-
+  #getOctaveNoise = TerrainHeightMap.getOctaveNoise.bind(TerrainHeightMap);
   /**
    * Gets the biome information for a given world coordinate.
    */
@@ -263,6 +249,55 @@ export class WorldGenerator {
       (this.humidityNoise(x * (1 / 1000), z * (1 / 1000)) + 1) / 2;
 
     return getBiomeFor(temperature, humidity);
+  }
+
+  /**
+   * Handles the generation of caves and ores for a given block.
+   */
+  #getUndergroundBlock(
+    worldX: number,
+    worldY: number,
+    worldZ: number,
+    currentBlockId: number,
+    biome: Biome
+  ): number {
+    if (currentBlockId !== biome.stoneBlock) {
+      return currentBlockId;
+    }
+
+    // Caves
+    const CAVE_SCALE = 0.05;
+    const caveDensity = this.caveNoise(
+      worldX * CAVE_SCALE,
+      worldY * CAVE_SCALE,
+      worldZ * CAVE_SCALE
+    );
+    if (caveDensity > 0.6) {
+      return 0; // Air
+    }
+
+    // Ores
+    const COAL_SCALE = 0.1;
+    const coalDensity = this.coalNoise(
+      worldX * COAL_SCALE,
+      worldY * COAL_SCALE,
+      worldZ * COAL_SCALE
+    );
+    if (coalDensity > 0.75) {
+      return 45; // Coal Ore
+    }
+
+    const IRON_SCALE = 0.08;
+    const ironDensity = this.ironNoise(
+      worldX * IRON_SCALE,
+      worldY * IRON_SCALE,
+      worldZ * IRON_SCALE
+    );
+    if (worldY < 50 && ironDensity > 0.8) {
+      return 46; // Iron Ore
+    }
+
+    return currentBlockId; // Return original stone block if no feature was generated
   }
 
   /**
@@ -290,8 +325,17 @@ export class WorldGenerator {
     } else if (worldY > terrainHeight - 5) {
       // 4 blocks below the top layer
       return biome.undergroundBlock;
-    } else {
-      return biome.stoneBlock;
     }
+    return biome.undergroundBlock;
+    /* else {
+      const stoneBlock = biome.stoneBlock;
+      return this.#getUndergroundBlock(
+        worldX,
+        worldY,
+        worldZ,
+        stoneBlock,
+        biome
+      );
+    } */
   }
 }
