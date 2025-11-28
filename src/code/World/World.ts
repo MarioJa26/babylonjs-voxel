@@ -94,21 +94,20 @@ export class World {
     }
 
     // optional: remove chunks far outside the radius to free memory
-    const removeRadius = renderDistance + 2;
+    const removeRadius = renderDistance + 6;
     for (const key of Array.from(this.chunks.keys())) {
       const [cx, cy, cz] = key.split(",").map((n) => parseInt(n, 10));
       if (
         Math.abs(cx - centerX) > removeRadius ||
         Math.abs(cz - centerZ) > removeRadius ||
-        Math.abs(cy - centerY) > verticalRadius + 2 // a bit of buffer
+        Math.abs(cy - centerY) > verticalRadius + 6 // a bit of buffer
       ) {
         const chunk = this.chunks.get(key);
         if (chunk) {
-          chunk.mesh?.dispose();
-          chunk.transparentMesh?.dispose();
+          chunk.dispose();
+          chunk.isLoaded = false;
         }
         this.chunks.delete(key);
-        if (chunk) chunk.isLoaded = false;
       }
     }
   }

@@ -164,4 +164,10 @@ export class Chunk {
       this.getNeighbor(0, 0, -1),
     ].filter((c): c is Chunk => c !== undefined);
   }
+  public dispose(): void {
+    this.mesh?.dispose();
+    this.transparentMesh?.dispose();
+    this.mesh = null;
+    this.transparentMesh = null;
+  }
 }

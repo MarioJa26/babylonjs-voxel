@@ -58,4 +58,5 @@ export const BlockTextures: (BlockTextureDef | null)[] = [
   { all: [12, 2] }, // 45: rocks_ground_02
   { all: [13, 2] }, // 46: coast_land_rocks_01
   { all: [14, 2] }, // 47: aerial_beach_01
+  { all: [15, 2] }, // 48: cobblestone_03
 ];

@@ -201,4 +201,10 @@ export const TextureDefinitions: TextureDefinition[] = [
     name: "aerial_beach_01",
     path: "/texture/dirt/aerial_beach_01_1k",
   },
+
+  {
+    id: 48,
+    name: "cobblestone_03",
+    path: "/texture/cobble/cobblestone_03_1k",
+  },
 ];

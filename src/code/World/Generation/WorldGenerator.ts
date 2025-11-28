@@ -160,7 +160,8 @@ export class WorldGenerator {
                 blocks,
                 hash, // Pass the generated hash to determine tree properties
                 22,
-                10
+                34,
+                12
               );
             } else continue;
           }
@@ -179,6 +180,7 @@ export class WorldGenerator {
     blocks: Uint8Array,
     hash: number,
     woodId = 28,
+    leavesId = 2,
     treeHeight = 5
   ) {
     const placeBlock = (x: number, y: number, z: number, blockId: number) => {
@@ -225,7 +227,7 @@ export class WorldGenerator {
       else radius = 1;
       for (let x = -radius; x <= radius; x++) {
         for (let z = -radius; z <= radius; z++) {
-          placeBlock(worldX + x, y, worldZ + z, 2); // Leaves
+          placeBlock(worldX + x, y, worldZ + z, leavesId); // Leaves
         }
       }
     }

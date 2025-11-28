@@ -183,12 +183,32 @@ export class WalkingControls implements IControls<PlayerVehicle> {
       const hit = CrossHair.pickTarget(this.#player);
       if (!hit) return;
       const blockId = World.getBlockByWorldCoords(hit.x, hit.y, hit.z);
+      if (blockId === 0) return; // Don't pick air
+
+      // 1. Check hotbar first
       for (let i = 0; i < 10; i++) {
         const hotbarItemId =
           this.#player.playerInventory.inventory[0][i].item?.itemId;
         if (hotbarItemId === blockId) {
           this.#player.playerHud.selectedHotbarSlot = i;
           return;
+        }
+      }
+
+      // 2. If not in hotbar, check main inventory and swap with current hotbar item
+      const inventory = this.#player.playerInventory.inventory;
+      for (let r = 1; r < inventory.length; r++) {
+        for (let c = 0; c < inventory[r].length; c++) {
+          const inventoryItemId = inventory[r][c].item?.itemId;
+          if (inventoryItemId === blockId) {
+            // Found in inventory, swap with selected hotbar slot
+            const selectedSlot = this.#player.playerHud.selectedHotbarSlot;
+            const hotbarSlot = inventory[0][selectedSlot];
+            const inventorySlot = inventory[r][c];
+            hotbarSlot.swapSlots(inventorySlot);
+
+            return;
+          }
         }
       }
     }
