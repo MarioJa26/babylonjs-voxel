@@ -19,10 +19,52 @@ type WorkerInternalMeshData = {
 
 const TRANSPARENT_BLOCKS = new Set([30]);
 
+type FaceData = {
+  normal: number[];
+  tangent: number[];
+  handedness: number;
+};
+
+const FACE_DATA_CACHE: { [key: string]: FaceData } = {};
+
+// Pre-calculate face data for all 6 directions
+for (const axis of [0, 1, 2]) {
+  for (const side of [-1, 1]) {
+    const normal = [0, 0, 0];
+    normal[axis] = side;
+
+    const u_axis = (axis + 1) % 3;
+    const v_axis = (axis + 2) % 3;
+
+    const tangentVec = [0, 0, 0];
+    tangentVec[u_axis] = 1;
+
+    const bitangentVec = [0, 0, 0];
+    bitangentVec[v_axis] = 1;
+
+    const crossNT = [
+      normal[1] * tangentVec[2] - normal[2] * tangentVec[1],
+      normal[2] * tangentVec[0] - normal[0] * tangentVec[2],
+      normal[0] * tangentVec[1] - normal[1] * tangentVec[0],
+    ];
+    const handedness =
+      crossNT[0] * bitangentVec[0] +
+        crossNT[1] * bitangentVec[1] +
+        crossNT[2] * bitangentVec[2] <
+      0
+        ? -1.0
+        : 1.0;
+    FACE_DATA_CACHE[normal.join(",")] = {
+      normal,
+      tangent: tangentVec,
+      handedness,
+    };
+  }
+}
+
 class ChunkWorkerMesher {
+  // normalize3 kept simple and safe for axis-aligned du/dv vectors
   static normalize3 = (a: number[]): number[] => {
-    // Since we are only normalizing axis-aligned vectors (duVec, dvVec),
-    // the length is simply the sum of the absolute values.
     const len = Math.abs(a[0]) + Math.abs(a[1]) + Math.abs(a[2]);
     return len > 0 ? [a[0] / len, a[1] / len, a[2] / len] : [0, 0, 0];
   };
@@ -39,12 +81,14 @@ class ChunkWorkerMesher {
       nz?: Uint8Array;
     };
   }): { opaque: WorkerInternalMeshData; transparent: WorkerInternalMeshData } {
+    // output accumulators (number[] for now; you can convert to typed arrays later)
     const positions: number[] = [];
     const indices: number[] = [];
     const normals: number[] = [];
     const tangents: number[] = [];
     const uvs: number[] = [];
     const uvs2: number[] = [];
+    const ao: number[] = [];
     const uvs3: number[] = [];
 
     const opaqueMeshData: WorkerInternalMeshData = {
@@ -72,18 +116,19 @@ class ChunkWorkerMesher {
     const { block_array, chunk_size: chunk_size, neighbors } = data;
     const size = chunk_size;
     const size2 = size * size;
+
+    // Fast getBlock: fallback parameter used when neighbor chunk missing.
+    // Caller should pass current block as fallback when sampling neighbor to avoid border faces.
     const getBlock = (
       x: number,
       y: number,
       z: number,
-      fallback = 0 // ← Use this when neighbor chunk does not exist
+      fallback = 0
     ): number => {
-      // Inside this chunk
       if (x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size) {
         return block_array[x + y * size + z * size2];
       }
 
-      // Neighbor lookups
       if (x < 0) {
         const arr = neighbors.nx;
         return arr ? arr[size - 1 + y * size + z * size2] : fallback;
@@ -92,7 +137,6 @@ class ChunkWorkerMesher {
         const arr = neighbors.px;
         return arr ? arr[0 + y * size + z * size2] : fallback;
       }
-
       if (y < 0) {
         const arr = neighbors.ny;
         return arr ? arr[x + (size - 1) * size + z * size2] : fallback;
@@ -101,7 +145,6 @@ class ChunkWorkerMesher {
         const arr = neighbors.py;
         return arr ? arr[x + 0 * size + z * size2] : fallback;
       }
-
       if (z < 0) {
         const arr = neighbors.nz;
         return arr ? arr[x + y * size + (size - 1) * size2] : fallback;
@@ -111,151 +154,161 @@ class ChunkWorkerMesher {
         return arr ? arr[x + y * size + 0 * size2] : fallback;
       }
 
-      // Should never hit here — but fallback is fastest
       return fallback;
     };
 
-    // We perform two passes: one for opaque blocks and one for transparent blocks.
-    for (const isTransparentPass of [false, true]) {
-      const currentMeshData = isTransparentPass
-        ? transparentMeshData
-        : opaqueMeshData;
+    // Mask bit encoding:
+    // lower 16 bits: block ID (0 means empty)
+    // bit 16 (1 << 16): TRANSPARENT_FLAG
+    // bit 17 (1 << 17): BACKFACE_FLAG
+    const TRANSPARENT_FLAG = 1 << 16;
+    const BACKFACE_FLAG = 1 << 17;
+    const BLOCK_ID_MASK = 0xffff;
 
-      // Iterate over the 3 axes (x, y, z)
-      for (let axis = 0; axis < 3; axis++) {
-        const u_axis = (axis + 1) % 3; // The first perpendicular axis
-        const v_axis = (axis + 2) % 3; // The second perpendicular axis
+    // single pass across axes -- generate masks containing encoded values
+    for (let axis = 0; axis < 3; axis++) {
+      const u_axis = (axis + 1) % 3;
+      const v_axis = (axis + 2) % 3;
 
-        const position = [0, 0, 0];
-        const direction = [0, 0, 0];
-        direction[axis] = 1;
-        const mask = new Int32Array(chunk_size * chunk_size);
+      const position = [0, 0, 0];
+      const direction = [0, 0, 0];
+      direction[axis] = 1;
 
-        // Sweep through the chunk axis to create 2D slices
+      // reuseable mask
+      const mask = new Int32Array(size * size);
+
+      // sweep slices
+      for (position[axis] = 0; position[axis] < size; position[axis]++) {
+        let maskIndex = 0;
+
         for (
-          position[axis] = 0;
-          position[axis] < chunk_size;
-          position[axis]++
+          position[v_axis] = 0;
+          position[v_axis] < size;
+          position[v_axis]++
         ) {
-          let maskIndex = 0;
           for (
-            position[v_axis] = 0;
-            position[v_axis] < chunk_size;
-            position[v_axis]++
+            position[u_axis] = 0;
+            position[u_axis] < size;
+            position[u_axis]++
           ) {
-            for (
-              position[u_axis] = 0;
-              position[u_axis] < chunk_size;
-              position[u_axis]++
+            const bx = position[0];
+            const by = position[1];
+            const bz = position[2];
+
+            // sample current and neighbor; pass blockCurrent as fallback when sampling neighbor
+            const blockCurrent = getBlock(bx, by, bz);
+            const blockNeighbor = getBlock(
+              bx + direction[0],
+              by + direction[1],
+              bz + direction[2],
+              blockCurrent // key: if neighbor missing, pretend same block to avoid border faces
+            );
+
+            const isCurrentTransparent = TRANSPARENT_BLOCKS.has(blockCurrent);
+            const isNeighborTransparent = TRANSPARENT_BLOCKS.has(blockNeighbor);
+
+            const isCurrentSolid = blockCurrent !== 0;
+            const isNeighborSolid = blockNeighbor !== 0;
+
+            // encode block id + transparency into encCurrent / encNeighbor
+            const encCurrent = isCurrentSolid
+              ? (blockCurrent & BLOCK_ID_MASK) |
+                (isCurrentTransparent ? TRANSPARENT_FLAG : 0)
+              : 0;
+            const encNeighbor = isNeighborSolid
+              ? (blockNeighbor & BLOCK_ID_MASK) |
+                (isNeighborTransparent ? TRANSPARENT_FLAG : 0)
+              : 0;
+
+            // --- Face Culling Logic ---
+            if (encCurrent === encNeighbor) {
+              mask[maskIndex++] = 0;
+            } else if (
+              encCurrent &&
+              (!encNeighbor || (isNeighborTransparent && !isCurrentTransparent))
             ) {
-              const blockCurrent = getBlock(
-                position[0],
-                position[1],
-                position[2]
-              );
-              const blockNeighbor = getBlock(
-                position[0] + direction[0],
-                position[1] + direction[1],
-                position[2] + direction[2],
-                blockCurrent
-              );
-
-              const isCurrentBlockTransparent =
-                TRANSPARENT_BLOCKS.has(blockCurrent);
-              const isNeighborBlockTransparent =
-                TRANSPARENT_BLOCKS.has(blockNeighbor);
-
-              // Determine if the block is part of the current rendering pass (opaque or transparent)
-              const isCurrentInPass =
-                isCurrentBlockTransparent === isTransparentPass;
-              const isNeighborInPass =
-                isNeighborBlockTransparent === isTransparentPass;
-
-              // A block is considered "solid" for culling if it's not air (0).
-              // This includes normal blocks, transparent blocks, and our new barrier blocks.
-              const isCurrentSolid = blockCurrent !== 0;
-              const isNeighborSolid = blockNeighbor !== 0;
-
-              const blockTypeCurrent =
-                isCurrentSolid && isCurrentInPass ? blockCurrent : 0;
-              const blockTypeNeighbor =
-                isNeighborSolid && isNeighborInPass ? blockNeighbor : 0;
-
-              if (blockTypeCurrent && !blockTypeNeighbor) {
-                mask[maskIndex++] = blockTypeCurrent; // Forward face
-              } else if (!blockTypeCurrent && blockTypeNeighbor) {
-                mask[maskIndex++] = -blockTypeNeighbor; // Backward face
-              } else {
-                mask[maskIndex++] = 0; // No face needed
-              }
+              // Render face for current block if it's opaque and neighbor is transparent/air
+              mask[maskIndex++] = encCurrent;
+            } else if (
+              encNeighbor &&
+              (!encCurrent || (isCurrentTransparent && !isNeighborTransparent))
+            ) {
+              // Render face for neighbor block if it's opaque and current is transparent/air
+              mask[maskIndex++] = encNeighbor | BACKFACE_FLAG;
+            } else {
+              mask[maskIndex++] = 0;
             }
           }
+        }
 
-          maskIndex = 0;
+        maskIndex = 0;
 
-          // Generate quads from the mask
-          for (let v_coord = 0; v_coord < chunk_size; v_coord++) {
-            for (let u_coord = 0; u_coord < chunk_size; ) {
-              if (mask[maskIndex] !== 0) {
-                const blockId = Math.abs(mask[maskIndex]);
-                const isBackFace = mask[maskIndex] < 0;
+        // Greedy merge from mask -> create quads and push to the correct mesh (opaque/transparent)
+        for (let v_coord = 0; v_coord < size; v_coord++) {
+          for (let u_coord = 0; u_coord < size; ) {
+            const m = mask[maskIndex];
+            if (m !== 0) {
+              // decode block id, transparent flag, and backface
+              const isBackFace = (m & BACKFACE_FLAG) !== 0;
+              const isTransparent = (m & TRANSPARENT_FLAG) !== 0;
+              const blockId = m & BLOCK_ID_MASK;
 
-                // Greedily find the width of the quad
-                let width = 1;
-                while (
-                  u_coord + width < chunk_size &&
-                  mask[maskIndex + width] === mask[maskIndex]
-                ) {
-                  width++;
-                }
-
-                // Greedily find the height of the quad
-                let height = 1;
-                let done = false;
-                while (v_coord + height < chunk_size) {
-                  for (let width_iter = 0; width_iter < width; width_iter++) {
-                    if (
-                      mask[maskIndex + width_iter + height * chunk_size] !==
-                      mask[maskIndex]
-                    ) {
-                      done = true;
-                      break;
-                    }
-                  }
-                  if (done) break;
-                  height++;
-                }
-
-                position[u_axis] = u_coord;
-                position[v_axis] = v_coord;
-
-                const quadStartPos = [position[0], position[1], position[2]];
-                quadStartPos[axis]++; // Move into the current slice for vertex positions
-
-                this.addQuad(
-                  quadStartPos,
-                  direction,
-                  u_axis,
-                  v_axis,
-                  width,
-                  height,
-                  blockId,
-                  isBackFace,
-                  currentMeshData
-                );
-
-                // Zero out the mask for the area covered by the quad
-                for (let height_iter = 0; height_iter < height; height_iter++) {
-                  for (let width_iter = 0; width_iter < width; width_iter++) {
-                    mask[maskIndex + width_iter + height_iter * chunk_size] = 0;
-                  }
-                }
-                u_coord += width;
-                maskIndex += width;
-              } else {
-                u_coord++;
-                maskIndex++;
+              // greedily find width
+              let width = 1;
+              while (u_coord + width < size && mask[maskIndex + width] === m) {
+                width++;
               }
+
+              // greedily find height
+              let height = 1;
+              let done = false;
+              while (v_coord + height < size) {
+                for (let width_iter = 0; width_iter < width; width_iter++) {
+                  if (mask[maskIndex + width_iter + height * size] !== m) {
+                    done = true;
+                    break;
+                  }
+                }
+                if (done) break;
+                height++;
+              }
+
+              position[u_axis] = u_coord;
+              position[v_axis] = v_coord;
+
+              const quadStartPos = [position[0], position[1], position[2]];
+              // for forward faces the quad sits on the current slice,
+              // for backward (neighbor) faces we also want to place at same slice
+              // but we keep the same convention used previously:
+              quadStartPos[axis]++;
+
+              // pick mesh based on transparency flag
+              const mesh = isTransparent ? transparentMeshData : opaqueMeshData;
+
+              this.addQuad(
+                quadStartPos,
+                direction,
+                u_axis,
+                v_axis,
+                width,
+                height,
+                blockId,
+                isBackFace,
+                mesh
+              );
+
+              // zero out mask region
+              for (let hh = 0; hh < height; hh++) {
+                for (let ww = 0; ww < width; ww++) {
+                  mask[maskIndex + ww + hh * size] = 0;
+                }
+              }
+
+              u_coord += width;
+              maskIndex += width;
+            } else {
+              u_coord++;
+              maskIndex++;
             }
           }
         }
@@ -280,15 +333,26 @@ class ChunkWorkerMesher {
     ty: number,
     isBackFace: boolean
   ) {
+    // avoid allocating temporary arrays; push values directly
     const u_base = tx * TextureAtlasFactory.atlasTileSize;
     const v_base_flipped =
       1 -
       (ty * TextureAtlasFactory.atlasTileSize +
         TextureAtlasFactory.atlasTileSize);
-    const tileBaseUV = [u_base, v_base_flipped];
 
-    uvs2.push(...tileBaseUV, ...tileBaseUV, ...tileBaseUV, ...tileBaseUV);
+    // uvs2: repeated tile base coords for 4 vertices
+    uvs2.push(
+      u_base,
+      v_base_flipped,
+      u_base,
+      v_base_flipped,
+      u_base,
+      v_base_flipped,
+      u_base,
+      v_base_flipped
+    );
 
+    // uvs: standard quad UVs (optionally flipped for back faces)
     const u0 = 0,
       v0 = 0,
       u1 = 1,
@@ -311,11 +375,13 @@ class ChunkWorkerMesher {
     isBackFace: boolean,
     meshData: WorkerInternalMeshData
   ) {
+    // create du/dv
     const du = [0, 0, 0];
     du[u] = w;
     const dv = [0, 0, 0];
     dv[v] = h;
 
+    // compute four corner positions
     const p1 = [x[0], x[1], x[2]];
     const p2 = [x[0] + du[0], x[1] + du[1], x[2] + du[2]];
     const p3 = [
@@ -325,45 +391,30 @@ class ChunkWorkerMesher {
     ];
     const p4 = [x[0] + dv[0], x[1] + dv[1], x[2] + dv[2]];
 
+    // positions
     meshData.positions.push(...p1, ...p2, ...p3, ...p4);
 
-    const normal = isBackFace ? [-q[0], -q[1], -q[2]] : q;
+    // normal
+    const normalVec = isBackFace ? [-q[0], -q[1], -q[2]] : q;
+    const faceData = FACE_DATA_CACHE[normalVec.join(",")];
+    const { normal, tangent, handedness } = faceData;
+
     meshData.normals.push(...normal, ...normal, ...normal, ...normal);
 
-    const duVec = [du[0], du[1], du[2]];
-    const dvVec = [dv[0], dv[1], dv[2]];
-
-    const N = normal;
-    const T = this.normalize3(duVec);
-    const B = this.normalize3(dvVec);
-
-    const crossNT = [
-      N[1] * T[2] - N[2] * T[1],
-      N[2] * T[0] - N[0] * T[2],
-      N[0] * T[1] - N[1] * T[0],
-    ];
-    const handedness =
-      crossNT[0] * B[0] + crossNT[1] * B[1] + crossNT[2] * B[2] < 0
-        ? -1.0
-        : 1.0;
-
     for (let i = 0; i < 4; i++) {
-      meshData.tangents.push(T[0], T[1], T[2], handedness);
+      meshData.tangents.push(tangent[0], tangent[1], tangent[2], handedness);
     }
 
+    // tile lookup and UV writes
     const faceName = this.getFaceName(q, isBackFace);
     const tex = BlockTextures[blockId]!;
     const tile = tex[faceName] ?? tex.all!;
     this.pushTileUV(meshData.uvs, meshData.uvs2, tile[0], tile[1], isBackFace);
 
-    const tilingData = [w, h];
-    meshData.uvs3.push(
-      ...tilingData,
-      ...tilingData,
-      ...tilingData,
-      ...tilingData
-    );
+    // uvs3 tiling info
+    meshData.uvs3.push(...[w, h, w, h, w, h, w, h]);
 
+    // indices
     const { indices, indexOffset } = meshData;
     if (!isBackFace) {
       indices.push(
@@ -388,7 +439,7 @@ class ChunkWorkerMesher {
   }
 }
 
-// This needs to be at the top level of the worker script
+// Top-level world generator instance for terrain requests
 let generator: WorldGenerator | null = null;
 
 self.onmessage = (event: MessageEvent) => {
@@ -397,7 +448,7 @@ self.onmessage = (event: MessageEvent) => {
   // --- Default Full Remesh ---
   if (type === "full-remesh") {
     const { opaque, transparent } = ChunkWorkerMesher.generateMesh(event.data);
-    // We don't need the block array for meshing result, so we can help GC.
+    // allow GC
     event.data.block_array = undefined;
     event.data.neighbors = undefined;
 
