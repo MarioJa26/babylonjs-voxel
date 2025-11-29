@@ -81,14 +81,12 @@ class ChunkWorkerMesher {
       nz?: Uint8Array;
     };
   }): { opaque: WorkerInternalMeshData; transparent: WorkerInternalMeshData } {
-    // output accumulators (number[] for now; you can convert to typed arrays later)
     const positions: number[] = [];
     const indices: number[] = [];
     const normals: number[] = [];
     const tangents: number[] = [];
     const uvs: number[] = [];
     const uvs2: number[] = [];
-    const ao: number[] = [];
     const uvs3: number[] = [];
 
     const opaqueMeshData: WorkerInternalMeshData = {

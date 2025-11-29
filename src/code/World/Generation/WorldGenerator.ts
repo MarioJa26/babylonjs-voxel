@@ -1,7 +1,7 @@
 import Alea from "alea";
-import { createNoise2D, createNoise3D } from "simplex-noise";
+import { createNoise2D } from "simplex-noise";
 import { GenerationParamsType } from "./GenerationParams";
-import { Biome, getBiomeFor } from "./Biomes";
+import { Biome } from "./Biomes";
 import { Squirrel3 } from "./Squirrel13";
 import { TerrainHeightMap } from "./TerrainHeightMap";
 
@@ -9,11 +9,7 @@ export class WorldGenerator {
   private params: GenerationParamsType;
   private prng: ReturnType<typeof Alea>;
   private seedAsInt: number;
-  private temperatureNoise: ReturnType<typeof createNoise2D>;
-  private humidityNoise: ReturnType<typeof createNoise2D>;
-  private caveNoise: ReturnType<typeof createNoise3D>;
-  private coalNoise: ReturnType<typeof createNoise3D>;
-  private ironNoise: ReturnType<typeof createNoise3D>;
+  private treeNoise: ReturnType<typeof createNoise2D>;
 
   constructor(params: GenerationParamsType) {
     this.params = params;
@@ -22,17 +18,9 @@ export class WorldGenerator {
     this.seedAsInt = Squirrel3.get(0, this.prng() * 0xffffffff);
 
     // Separate PRNGs for different noise types to avoid correlation
-    const tempPrng = Alea(this.prng());
-    const humidityPrng = Alea(this.prng());
-    const cavePrng = Alea(this.prng());
-    const coalPrng = Alea(this.prng());
-    const ironPrng = Alea(this.prng());
+    const treePrng = Alea(this.prng());
 
-    this.temperatureNoise = createNoise2D(tempPrng);
-    this.humidityNoise = createNoise2D(humidityPrng);
-    this.caveNoise = createNoise3D(cavePrng);
-    this.coalNoise = createNoise3D(coalPrng);
-    this.ironNoise = createNoise3D(ironPrng);
+    this.treeNoise = createNoise2D(treePrng);
   }
 
   public generateChunkData(chunkX: number, chunkY: number, chunkZ: number) {
@@ -61,8 +49,10 @@ export class WorldGenerator {
         const worldX = chunkX * SIZE + localX;
         const worldZ = chunkZ * SIZE + localZ;
 
-        const terrainHeight = Math.floor(
-          TerrainHeightMap.getOctaveNoise(worldX, worldZ)
+        const terrainHeight = this.#getFinalTerrainHeight(
+          worldX,
+          worldZ,
+          biome
         );
 
         for (let worldY = 0; worldY <= terrainHeight; worldY++) {
@@ -75,10 +65,10 @@ export class WorldGenerator {
             const isBeach =
               terrainHeight >= SEA_LEVEL - 1 &&
               terrainHeight <= SEA_LEVEL + 2 &&
-              (this.#isNearWater(worldX + 1, worldZ) ||
-                this.#isNearWater(worldX - 1, worldZ) ||
-                this.#isNearWater(worldX, worldZ + 1) ||
-                this.#isNearWater(worldX, worldZ - 1));
+              (this.#isNearWater(worldX + 1, worldZ, biome) ||
+                this.#isNearWater(worldX - 1, worldZ, biome) ||
+                this.#isNearWater(worldX, worldZ + 1, biome) ||
+                this.#isNearWater(worldX, worldZ - 1, biome));
             if (terrainHeight < SEA_LEVEL - 1) {
               blockId = biome.seafloorBlock;
             } else if (isBeach) {
@@ -118,18 +108,16 @@ export class WorldGenerator {
         const worldX = chunkX * SIZE + localX;
         const worldZ = chunkZ * SIZE + localZ;
 
-        // Use hashing for fast, deterministic randomness.
-        // Combine worldX and worldZ into a unique position integer.
-        const position = worldX * 374761393 + worldZ * 668265263;
-        const hash = Squirrel3.get(position, this.seedAsInt);
-
-        // Check if a tree should spawn
-        const treeChanceRoll = (hash & 0x7fffffff) / 0x7fffffff; // Get a float [0, 1)
+        // Use noise for tree placement. The value is in [-1, 1], so we map it to [0, 1].
+        const treeNoiseValue = (this.treeNoise(worldX, worldZ) + 1) / 2;
+        const treeChanceRoll = treeNoiseValue;
         if (treeChanceRoll > biome.treeDensity) continue;
 
         if (biome.canSpawnTrees) {
-          const terrainHeight = Math.floor(
-            TerrainHeightMap.getOctaveNoise(worldX, worldZ)
+          const terrainHeight = this.#getFinalTerrainHeight(
+            worldX,
+            worldZ,
+            biome
           );
           const topBlock = this.#getBlockTypeAtWorldCoord(
             worldX,
@@ -137,6 +125,7 @@ export class WorldGenerator {
             worldZ
           );
           if (topBlock === 15) {
+            // Use hashing for tree properties (height, etc.)
             // Only on grass
             this._generateTreeBlocksForChunk(
               worldX,
@@ -145,8 +134,7 @@ export class WorldGenerator {
               chunkX,
               chunkY,
               chunkZ, // Current chunk being generated
-              blocks,
-              hash // Pass the generated hash to determine tree properties
+              blocks
             );
           } else {
             if (topBlock === 14) {
@@ -158,7 +146,6 @@ export class WorldGenerator {
                 chunkY,
                 chunkZ, // Current chunk being generated
                 blocks,
-                hash, // Pass the generated hash to determine tree properties
                 22,
                 34,
                 12
@@ -178,7 +165,6 @@ export class WorldGenerator {
     currentChunkY: number,
     currentChunkZ: number,
     blocks: Uint8Array,
-    hash: number,
     woodId = 28,
     leavesId = 2,
     treeHeight = 5
@@ -207,9 +193,10 @@ export class WorldGenerator {
       }
     };
 
-    // Use the hash to determine tree height.
-    // We can "re-hash" the hash to get a new pseudo-random number.
-    const heightHash = Squirrel3.get(hash, this.seedAsInt);
+    const heightHash = Squirrel3.get(
+      worldX * 374761393 + worldZ * 678446653,
+      this.seedAsInt
+    );
     const height = treeHeight + (Math.abs(heightHash) % 3);
 
     // Place trunk
@@ -233,73 +220,28 @@ export class WorldGenerator {
     }
   }
 
+  #getFinalTerrainHeight(worldX: number, worldZ: number, biome: Biome): number {
+    return TerrainHeightMap.getFinalTerrainHeight(worldX, worldZ, biome);
+  }
+
   /**
    * Checks if a given coordinate is at or below sea level.
    */
-  #isNearWater(x: number, z: number): boolean {
-    const terrainHeight = Math.floor(this.#getOctaveNoise(x, z));
+  #isNearWater(x: number, z: number, biome: Biome): boolean {
+    const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(x, z, biome);
     return terrainHeight <= this.params.SEA_LEVEL;
   }
-  #getOctaveNoise = TerrainHeightMap.getOctaveNoise.bind(TerrainHeightMap);
+  /**
+   * Helper to get octave noise for a coordinate, optionally with biome context.
+   */
+  #getOctaveNoise(x: number, z: number, biome?: Biome) {
+    return TerrainHeightMap.getOctaveNoise(x, z, biome);
+  }
   /**
    * Gets the biome information for a given world coordinate.
    */
   #getBiome(x: number, z: number) {
-    const temperature =
-      (this.temperatureNoise(x * (1 / 1000), z * (1 / 1000)) + 1) / 2;
-    const humidity =
-      (this.humidityNoise(x * (1 / 1000), z * (1 / 1000)) + 1) / 2;
-
-    return getBiomeFor(temperature, humidity);
-  }
-
-  /**
-   * Handles the generation of caves and ores for a given block.
-   */
-  #getUndergroundBlock(
-    worldX: number,
-    worldY: number,
-    worldZ: number,
-    currentBlockId: number,
-    biome: Biome
-  ): number {
-    if (currentBlockId !== biome.stoneBlock) {
-      return currentBlockId;
-    }
-
-    // Caves
-    const CAVE_SCALE = 0.05;
-    const caveDensity = this.caveNoise(
-      worldX * CAVE_SCALE,
-      worldY * CAVE_SCALE,
-      worldZ * CAVE_SCALE
-    );
-    if (caveDensity > 0.6) {
-      return 0; // Air
-    }
-
-    // Ores
-    const COAL_SCALE = 0.1;
-    const coalDensity = this.coalNoise(
-      worldX * COAL_SCALE,
-      worldY * COAL_SCALE,
-      worldZ * COAL_SCALE
-    );
-    if (coalDensity > 0.75) {
-      return 45; // Coal Ore
-    }
-
-    const IRON_SCALE = 0.08;
-    const ironDensity = this.ironNoise(
-      worldX * IRON_SCALE,
-      worldY * IRON_SCALE,
-      worldZ * IRON_SCALE
-    );
-    if (worldY < 50 && ironDensity > 0.8) {
-      return 46; // Iron Ore
-    }
-
-    return currentBlockId; // Return original stone block if no feature was generated
+    return TerrainHeightMap.getBiome(x, z);
   }
 
   /**
@@ -313,7 +255,7 @@ export class WorldGenerator {
   ): number {
     const { SEA_LEVEL } = this.params;
     const biome = this.#getBiome(worldX, worldZ);
-    const terrainHeight = Math.floor(this.#getOctaveNoise(worldX, worldZ));
+    const terrainHeight = this.#getFinalTerrainHeight(worldX, worldZ, biome);
 
     if (worldY > terrainHeight) {
       // Above terrain, check for water

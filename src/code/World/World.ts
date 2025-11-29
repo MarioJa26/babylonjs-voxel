@@ -58,15 +58,29 @@ export class World {
 
           // Optimization: Skip generating chunks that are entirely below the surface
           const chunkWorldY = y * GenerationParams.CHUNK_SIZE;
+          const chunkWorldX = x * GenerationParams.CHUNK_SIZE;
+          const chunkWorldZ = z * GenerationParams.CHUNK_SIZE;
+          const biome = TerrainHeightMap.getBiome(chunkWorldX, chunkWorldZ);
           const terrainHeightAtChunkCenter = Math.floor(
-            TerrainHeightMap.getOctaveNoise(
-              (x + 0.5) * GenerationParams.CHUNK_SIZE,
-              (z + 0.5) * GenerationParams.CHUNK_SIZE
+            TerrainHeightMap.getFinalTerrainHeight(
+              chunkWorldX,
+              chunkWorldZ,
+              biome
             )
           );
+
+          // Optimization: Skip chunks that are entirely above the terrain surface.
+          if (
+            chunkWorldY >
+            terrainHeightAtChunkCenter + GenerationParams.CHUNK_SIZE * 6
+          ) {
+            if (chunkWorldY > GenerationParams.SEA_LEVEL) continue;
+          }
+
+          // Optimization: Skip chunks that are deep underground.
           if (
             chunkWorldY <
-            terrainHeightAtChunkCenter - GenerationParams.CHUNK_SIZE * 3
+            terrainHeightAtChunkCenter - GenerationParams.CHUNK_SIZE * 6
           ) {
             continue;
           }

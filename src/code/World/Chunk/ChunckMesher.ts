@@ -169,12 +169,6 @@ export class ChunkMesher {
         transparentMat.forceDepthWrite = false; // Don't write to depth buffer
         transparentMat.needAlphaBlending = () => true; // Enable alpha blending
 
-        // --- Z-Fighting Fix ---
-        // Apply a small negative offset to the depth value of the transparent material.
-        // This "pulls" the water surface slightly closer to the camera, ensuring it wins the depth test against the opaque block face behind it.
-        transparentMat.zOffset = -1;
-
-        // Set its textures and properties, just like the opaque material
         transparentMat.setFloat(
           "atlasTileSize",
           TextureAtlasFactory.atlasTileSize

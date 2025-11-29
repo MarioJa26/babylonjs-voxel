@@ -7,6 +7,8 @@ export interface Biome {
   treeDensity: number;
   beachBlock: number;
   seafloorBlock: number;
+  terrainHeightBase?: number;
+  terrainHeightAmplitude?: number;
 }
 
 const TUNDRA: Biome = {
@@ -66,12 +68,12 @@ const FOREST: Biome = {
 
 export function getBiomeFor(temperature: number, humidity: number): Biome {
   // Tundra: Cold regions
-  if (temperature < 0.3) {
+  if (temperature < 0.25) {
     return TUNDRA;
   }
 
   // Hot regions
-  if (temperature > 0.7) {
+  if (temperature > 0.75) {
     if (humidity < 0.4) {
       return DESERT; // Hot and dry
     } else {
