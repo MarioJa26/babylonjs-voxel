@@ -34,7 +34,7 @@ export class TerrainHeightMap {
   }
 
   public static getBiome(x: number, z: number): Biome {
-    const noiseScale = 1 / 5000; // Scale down coordinates for biome noise
+    const noiseScale = GenerationParams.BIOME_NOISE_SCALE; // Scale down coordinates for biome noise
     const temperature =
       (this.temperatureNoise(x * noiseScale, z * noiseScale) + 1) / 2;
     const humidity =
@@ -61,7 +61,7 @@ export class TerrainHeightMap {
       amplitude *= PERSISTENCE;
       frequency *= LACUNARITY;
     }
-    const normalizedHeight = (total / maxValue + 1) / 2;
+    const normalizedHeight = total / maxValue + 1;
     return terrainHeightBase + normalizedHeight * terrainHeightAmplitude;
   }
 
@@ -70,30 +70,33 @@ export class TerrainHeightMap {
     worldZ: number,
     biome: Biome
   ): number {
-    // 1. Calculate the full potential terrain height with all its detail.
     const potentialHeight = this.getOctaveNoise(worldX, worldZ, biome);
-
-    // 2. Get the Voronoi value to define continents.
-    // This value is 0 at the center of a landmass and increases towards the edges.
     const continentalness = this.continentalNoise.getF1Value(
       potentialHeight,
       potentialHeight
     );
 
-    // 3. Create a multiplier from the Voronoi value.
-    // This will be 1.0 at the center of continents and smoothly drop to 0.0 at the coastlines.
-    // The '2.5' controls how sharp the transition is (i.e., how steep the coasts are).
     let landMultiplier = Math.max(0, 1.0 - continentalness * 2.5);
-
-    // To make the drop-off sharper, we can apply a power to the multiplier.
-    // A higher exponent will result in a steeper transition.
-
     landMultiplier = landMultiplier ** 2;
 
-    // 4. Smoothly interpolate between the full terrain height and the sea floor.
-    // When landMultiplier is 1, we get the full potentialHeight.
-    // When landMultiplier is 0, we get a value slightly below sea level.
-    const finalHeight = potentialHeight * landMultiplier;
+    const riverScale = GenerationParams.RIVER_SCALE; // Controls the size/spacing of river systems.
+    let riverValue = this.temperatureNoise(
+      worldX * riverScale,
+      worldZ * riverScale
+    );
+    let riverValue2 = this.humidityNoise(
+      worldZ * riverScale,
+      worldZ * riverScale
+    );
+
+    riverValue = Math.abs(riverValue);
+    riverValue2 = Math.abs(riverValue2);
+
+    const riverMultiplier = Math.min(1, Math.pow(riverValue * 4, 0.5));
+    const riverMultiplier2 = Math.min(1, Math.pow(riverValue2 * 4, 0.5));
+
+    const finalHeight =
+      potentialHeight * landMultiplier * riverMultiplier * riverMultiplier2;
 
     return Math.floor(finalHeight);
   }
