@@ -41,20 +41,8 @@ export class TransparentNormalShader {
     void main(void) {
         // --- Animation ---
         // Create a scrolling effect by offsetting UVs with time.
-
-        vec2 tiledLocalUV = vUV * vUV3;
-
-
-        // Get the geometric world normal (the 3rd column of the TBN matrix).
-        vec3 geometricWorldNormal = vTBN[2];
-
-        // If rendering a front-face (top of water), move in one direction.
-        // If rendering a back-face (bottom of water), move in the opposite direction.
-        if (geometricWorldNormal.y > 0.0) { // Top face
-            tiledLocalUV -= vec2(-time * 0.3, time * 0.4);
-        } else { // Bottom face
-            tiledLocalUV += vec2(time * 0.3, time * 0.4);
-        }
+        // Simplified animation as we only render the top face now.
+        vec2 tiledLocalUV = (vUV * vUV3) - vec2(-time * 0.3, time * 0.4);
         vec2 singleTileUV = fract(tiledLocalUV);
 
         vec4 diffuseColor = texture2D_with_derivatives(diffuseTexture, vUV2, singleTileUV, atlasTileSize); 
@@ -68,12 +56,6 @@ export class TransparentNormalShader {
         normalMap = normalize(normalMap * 2.0 - 1.0);
 
         vec3 worldNormal = normalize(vTBN * normalMap);
-
-        // --- Back-face Normal Correction ---
-        // gl_FrontFacing is a built-in variable. It's false if we're viewing a back-face.
-        if (!gl_FrontFacing) {
-            worldNormal = -worldNormal; // Flip the normal if it's a back-face
-        }
 
         // --- Lighting Calculation ---
         vec3 normalizedLightDirection = -normalize(lightDirection);

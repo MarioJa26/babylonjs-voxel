@@ -165,8 +165,8 @@ export class ChunkMesher {
           }
         );
 
-        transparentMat.backFaceCulling = false; // Render both sides for water surface
-        transparentMat.forceDepthWrite = false; // Don't write to depth buffer
+        transparentMat.backFaceCulling = false; // No longer rendering back faces
+        transparentMat.forceDepthWrite = true; // Don't write to depth buffer
         transparentMat.needAlphaBlending = () => true; // Enable alpha blending
 
         transparentMat.setFloat(
