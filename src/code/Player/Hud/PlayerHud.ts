@@ -263,6 +263,7 @@ export class PlayerHud {
     }
 
     // Keep the slider by only updating the text content part
+    // Only update the text content part
     const textContainer =
       this.debugPanelDiv.querySelector("div.info-container") ||
       document.createElement("div");

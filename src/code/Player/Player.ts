@@ -16,7 +16,10 @@ import { InventoryControls } from "./Controls/InventoryControls";
 import { PlayerCamera } from "./PlayerCamera";
 import { World } from "../World/World";
 import { PlayerVehicle } from "./PlayerVehicle";
+import { Map1 } from "../Maps/Map1";
 import { PlayerFlashLight } from "./PlayerFlashLight";
+import { PauseMenu } from "./Hud/PauseMenu";
+import { TestScene } from "../TestScene";
 
 /**
  * Player class that handles character movement, physics, and camera controls
@@ -34,6 +37,7 @@ export class Player implements IUsable {
   public flashlight: PlayerFlashLight;
 
   static readonly REACH_DISTANCE = 16;
+  #pauseMenu: PauseMenu;
 
   /**
    * Creates a new Player instance
@@ -53,6 +57,7 @@ export class Player implements IUsable {
     this.#playerCamera = playerCam;
     this.flashlight = new PlayerFlashLight(this.scene, playerCam.playerCamera);
 
+    this.#pauseMenu = new PauseMenu(() => this.resumeGame(), this);
     this.#playerHud = new PlayerHud(engine, this.scene, this, playerCam);
 
     this.initializeInputHandlers();
@@ -85,6 +90,14 @@ export class Player implements IUsable {
     this.canvas.addEventListener("click", () => {
       if (document.pointerLockElement !== this.canvas) {
         this.canvas.requestPointerLock();
+      }
+    });
+
+    document.addEventListener("pointerlockchange", () => {
+      if (document.pointerLockElement !== this.canvas) {
+        if (Map1.timeScale > 0) {
+          this.pauseGame();
+        }
       }
     });
 
@@ -189,6 +202,22 @@ export class Player implements IUsable {
     ];
     const index = Math.round(normalizedDegrees / 45) % 8;
     return directions[index];
+  }
+  private pauseGame() {
+    Map1.timeScale = 0;
+    TestScene.hk.setTimeStep(0); // Freeze physics updates
+    this.#pauseMenu.show();
+  }
+
+  private resumeGame() {
+    TestScene.hk.setTimeStep(1 / 60); // Resume physics updates
+    Map1.timeScale = 1.0;
+    this.#pauseMenu.hide();
+    // Request pointer lock only if the canvas has focus
+    const canvas = Map1.mainScene.getEngine().getRenderingCanvas();
+    if (document.activeElement === canvas) {
+      (Map1.mainScene.getEngine() as Engine).enterPointerlock();
+    }
   }
 
   public get playerVehicle(): PlayerVehicle {

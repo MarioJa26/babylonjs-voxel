@@ -20,8 +20,10 @@
   z-index: 100;
 
   display: none;
-  display: flex; /* flex container */
-  flex-direction: column; /* stack content */
+  display: flex;
+  /* flex container */
+  flex-direction: column;
+  /* stack content */
   align-items: center;
   justify-content: flex-end;
 
@@ -61,7 +63,8 @@
 .inventory-slot {
   transition: 100ms;
   flex: 0 0 auto;
-  aspect-ratio: 1 / 1; /* keeps them square */
+  aspect-ratio: 1 / 1;
+  /* keeps them square */
   width: clamp(2em, 5vw, 4em);
   border: 3px solid rgba(96, 96, 64, 0.9);
   background-color: rgba(0, 0, 0, 0.6);
@@ -100,35 +103,31 @@
   color: red;
 }
 
-#fps {
-  position: absolute;
-  background-color: rgba(0, 0, 0, 0.5);
-  text-align: center;
-  font-size: 16px;
-  color: white;
-  height: 2vh;
-  width: 4vw;
-  left: auto;
-}
+
 .held-item-name {
   position: absolute;
-  bottom: 10vh; /* Adjust to position it above your hotbar */
+  bottom: 10vh;
+  /* Adjust to position it above your hotbar */
   color: white;
-  font-size: clamp(0.6em, 2vw, 1em); /* scales with screen */
+  font-size: clamp(0.6em, 2vw, 1em);
+  /* scales with screen */
   font-weight: bold;
   text-shadow: 2px 2px 2px black;
   margin: 0.2em;
 
   font-family: var(--ui-font-family);
-  pointer-events: none; /* Make sure it doesn't block mouse clicks */
+  pointer-events: none;
+  /* Make sure it doesn't block mouse clicks */
   background-color: rgba(0, 0, 0, 0.5);
   padding: 4px 8px;
 }
+
 .held-item-name {
   opacity: 0;
   transition: opacity 0.04s ease-in;
   transition: opacity 0.5s ease-out;
 }
+
 .held-item-name.visible {
   opacity: 1;
 }
@@ -142,8 +141,11 @@
   font-family: var(--ui-font-family);
   font-size: clamp(0.6em, 2vw, 1em);
   font-weight: bold;
-  z-index: 200; /* Ensure it's on top of other UI */
-  pointer-events: none; /* Prevent the tooltip from blocking mouse events */
-  white-space: nowrap; /* Keep the name on a single line */
+  z-index: 200;
+  /* Ensure it's on top of other UI */
+  pointer-events: none;
+  /* Prevent the tooltip from blocking mouse events */
+  white-space: nowrap;
+  /* Keep the name on a single line */
   text-shadow: 2px 2px 2px black;
 }

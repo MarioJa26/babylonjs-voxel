@@ -1,5 +1,4 @@
 import {
-  Color3,
   Effect,
   DirectionalLight,
   HemisphericLight,
@@ -11,7 +10,6 @@ import {
   Texture,
   Vector3,
   SSAORenderingPipeline,
-  Color4,
 } from "@babylonjs/core";
 import { WaterMaterial } from "@babylonjs/materials";
 import { AdvancedBoat } from "../Entities/AdvancedBoat";
@@ -31,20 +29,22 @@ export class Map1 {
   #player: Player;
   #blockHighlightMesh!: Mesh;
 
-  static #timeOfDay = 0; // Time in milliseconds, progresses from 0 to dayDurationMs
-  public static timeScale = 1.0;
+  static #timeOfDay = 12000; // Time in milliseconds, progresses from 0 to dayDurationMs
+  public static timeScale = 0;
   public readonly initPromise: Promise<void>;
 
   constructor(scene: Scene, player: Player) {
     this.#player = player;
     Map1.mainScene = this.CreateScene(scene);
+
     this.initPromise = this.asyncInit().then(async () => {
       ChunkMesher.initAtlas();
     });
 
     scene.onBeforeRenderObservable.add(() => {
-      this.updateDayNightCycle();
       this.updateBlockHighlight();
+      if (Map1.timeScale === 0) return; // Don't update game logic if paused
+      this.updateDayNightCycle();
     });
   }
 
@@ -82,7 +82,7 @@ export class Map1 {
       // Create the highlight mesh if it doesn't exist
       this.#blockHighlightMesh = MeshBuilder.CreateBox(
         "blockHighlight",
-        { size: 1.01 },
+        { size: 1.02 },
         Map1.mainScene
       );
       this.#blockHighlightMesh.isPickable = false;
@@ -188,7 +188,7 @@ export class Map1 {
 
     const boat = new AdvancedBoat(
       scene,
-      this.#player,
+      this.#player, // Note: #player is used here before it's fully constructed if we pass it to Player constructor
       GenerationParams.SEA_LEVEL + 0.5
     );
 

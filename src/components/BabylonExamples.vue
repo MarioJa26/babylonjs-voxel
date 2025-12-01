@@ -1,7 +1,6 @@
 <template>
   <div>
     <canvas></canvas>
-    <div id="fps">0</div>
   </div>
 </template>
 

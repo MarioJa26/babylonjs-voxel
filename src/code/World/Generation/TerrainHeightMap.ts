@@ -76,8 +76,7 @@ export class TerrainHeightMap {
       potentialHeight
     );
 
-    let landMultiplier = Math.max(0, 1.0 - continentalness * 2.5);
-    landMultiplier = landMultiplier ** 2;
+    const landMultiplier = Math.max(0, (1.0 - continentalness * 2.5) ** 2);
 
     const riverScale = GenerationParams.RIVER_SCALE; // Controls the size/spacing of river systems.
     let riverValue = this.temperatureNoise(
@@ -95,9 +94,9 @@ export class TerrainHeightMap {
     const riverMultiplier = Math.min(1, Math.pow(riverValue * 4, 0.5));
     const riverMultiplier2 = Math.min(1, Math.pow(riverValue2 * 4, 0.5));
 
-    const finalHeight =
+    let finalHeight =
       potentialHeight * landMultiplier * riverMultiplier * riverMultiplier2;
-
+    finalHeight = Math.max(12, finalHeight);
     return Math.floor(finalHeight);
   }
 }

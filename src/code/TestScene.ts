@@ -25,7 +25,7 @@ import MapFog from "./Maps/MapFog";
 import { World } from "./World/World";
 import { MyConnection } from "./Server/MyConnection";
 import { GlobalValues } from "./World/GlobalValues";
-import "@babylonjs/core/Rendering/depthRendererSceneComponent";
+
 export class TestScene {
   document: Document;
   connection: MyConnection;
@@ -33,7 +33,7 @@ export class TestScene {
   engine: Engine;
   models!: AbstractMesh[];
   public readonly initPromise: Promise<void>;
-
+  public static hk: HavokPlugin;
   constructor(document: Document, private canvas: HTMLCanvasElement) {
     this.document = document;
     this.engine = new Engine(this.canvas);
@@ -45,8 +45,6 @@ export class TestScene {
 
     this.engine.runRenderLoop(() => {
       this.scene?.render();
-      const divFps = document.getElementById("fps")!;
-      divFps.innerHTML = this.engine.getFps().toFixed() + " fps";
     });
   }
 
@@ -62,14 +60,12 @@ export class TestScene {
 
     // This creates and positions a free camera (non-mesh)
     const camera = new FreeCamera("camera1", new Vector3(0, 5, -5), scene);
-    camera.fov = 1.35;
-    camera.minZ = 0.2;
 
     // Initialize Havok plugin
-    const hk = new HavokPlugin(false, await HavokPhysics());
+    TestScene.hk = new HavokPlugin(false, await HavokPhysics());
 
     // Enable physics in the scene with a gravity
-    scene.enablePhysics(new Vector3(0, -9.80665, 0), hk);
+    scene.enablePhysics(new Vector3(0, -9.80665, 0), TestScene.hk);
 
     // Load GLB exported from Blender using Physics extension enabled
     //await this.CreateEnvironment2();

@@ -1,5 +1,6 @@
 import { FreeCamera, Scene, Vector3 } from "@babylonjs/core";
 import MapFog from "../Maps/MapFog";
+import { SettingParams } from "../World/SettingParams";
 
 export class PlayerCamera {
   #playerCamera: FreeCamera;
@@ -11,7 +12,7 @@ export class PlayerCamera {
   #cameraPitch = 0;
   #cameraYaw = 0;
   readonly #maxPitch = Math.PI / 2 - 0.003;
-  readonly #mouseSensitivity = 0.003;
+  public mouseSensitivity = 0.003;
   // Zoom values
   readonly #minZoom = 0.01;
   readonly #maxZoom = 400;
@@ -19,6 +20,9 @@ export class PlayerCamera {
 
   constructor(playerCamera: FreeCamera, private scene: Scene) {
     this.#playerCamera = playerCamera;
+
+    playerCamera.fov = SettingParams.CAMERA_FOV * (Math.PI / 180);
+    playerCamera.minZ = 0.2;
   }
 
   public moveWithPlayer(characterPosition: Vector3): void {
@@ -55,8 +59,8 @@ export class PlayerCamera {
   }
 
   public handleMouseMovement(deltaX: number, deltaY: number): void {
-    this.#cameraYaw -= -deltaX * this.#mouseSensitivity;
-    this.#cameraPitch += deltaY * this.#mouseSensitivity;
+    this.#cameraYaw -= -deltaX * this.mouseSensitivity;
+    this.#cameraPitch += deltaY * this.mouseSensitivity;
 
     // Clamp pitch to prevent camera flipping
     this.#cameraPitch = Math.max(
@@ -87,6 +91,10 @@ export class PlayerCamera {
 
   public get playerCamera(): FreeCamera {
     return this.#playerCamera;
+  }
+
+  public set fov(value: number) {
+    this.#playerCamera.fov = value * (Math.PI / 180);
   }
 
   get position(): Vector3 {
