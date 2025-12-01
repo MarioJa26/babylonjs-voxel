@@ -10,9 +10,9 @@ type WorkerInternalMeshData = {
   indices: number[];
   normals: number[];
   tangents: number[];
-  uvs: number[];
   uvs2: number[];
   uvs3: number[];
+  cornerIds: number[];
   indexOffset: number;
   decorations?: { x: number; y: number; z: number; blockId: number }[];
 };
@@ -85,18 +85,18 @@ class ChunkWorkerMesher {
     const indices: number[] = [];
     const normals: number[] = [];
     const tangents: number[] = [];
-    const uvs: number[] = [];
     const uvs2: number[] = [];
     const uvs3: number[] = [];
+    const cornerIds: number[] = [];
 
     const opaqueMeshData: WorkerInternalMeshData = {
       positions,
       indices,
       normals,
       tangents,
-      uvs,
       uvs2,
       uvs3,
+      cornerIds,
       indexOffset: 0,
     };
 
@@ -105,9 +105,9 @@ class ChunkWorkerMesher {
       indices: [],
       normals: [],
       tangents: [],
-      uvs: [],
       uvs2: [],
       uvs3: [],
+      cornerIds: [],
       indexOffset: 0,
     };
 
@@ -325,7 +325,7 @@ class ChunkWorkerMesher {
   }
 
   private static pushTileUV(
-    uvs: number[],
+    cornerIds: number[],
     uvs2: number[],
     tx: number,
     ty: number,
@@ -351,14 +351,10 @@ class ChunkWorkerMesher {
     );
 
     // uvs: standard quad UVs (optionally flipped for back faces)
-    const u0 = 0,
-      v0 = 0,
-      u1 = 1,
-      v1 = 1;
     if (isBackFace) {
-      uvs.push(u0, v1, u1, v1, u1, v0, u0, v0);
+      cornerIds.push(3, 2, 1, 0);
     } else {
-      uvs.push(u0, v0, u1, v0, u1, v1, u0, v1);
+      cornerIds.push(0, 1, 2, 3);
     }
   }
 
@@ -407,7 +403,13 @@ class ChunkWorkerMesher {
     const faceName = this.getFaceName(q, isBackFace);
     const tex = BlockTextures[blockId]!;
     const tile = tex[faceName] ?? tex.all!;
-    this.pushTileUV(meshData.uvs, meshData.uvs2, tile[0], tile[1], isBackFace);
+    this.pushTileUV(
+      meshData.cornerIds,
+      meshData.uvs2,
+      tile[0],
+      tile[1],
+      isBackFace
+    );
 
     // uvs3 tiling info
     meshData.uvs3.push(...[w, h, w, h, w, h, w, h]);
@@ -476,13 +478,13 @@ self.onmessage = (event: MessageEvent) => {
 
 function toTransferable(data: WorkerInternalMeshData): MeshData {
   return {
-    positions: new Float32Array(data.positions),
+    positions: new Uint8Array(data.positions),
     indices: new Uint32Array(data.indices),
-    normals: new Float32Array(data.normals),
-    tangents: new Float32Array(data.tangents),
-    uvs: new Float32Array(data.uvs),
+    normals: new Int8Array(data.normals),
+    tangents: new Int8Array(data.tangents),
     uvs2: new Float32Array(data.uvs2),
     uvs3: new Float32Array(data.uvs3),
+    cornerIds: new Uint8Array(data.cornerIds),
   };
 }
 
@@ -506,16 +508,16 @@ function postFullMeshResult(
     opaqueMeshData.indices.buffer,
     opaqueMeshData.normals.buffer,
     opaqueMeshData.tangents.buffer,
-    opaqueMeshData.uvs.buffer,
     opaqueMeshData.uvs2.buffer,
     opaqueMeshData.uvs3.buffer,
+    opaqueMeshData.cornerIds.buffer,
     transparentMeshData.positions.buffer,
     transparentMeshData.indices.buffer,
     transparentMeshData.normals.buffer,
     transparentMeshData.tangents.buffer,
-    transparentMeshData.uvs.buffer,
     transparentMeshData.uvs2.buffer,
     transparentMeshData.uvs3.buffer,
+    transparentMeshData.cornerIds.buffer,
   ];
 
   self.postMessage(transferableMessage, transferList);

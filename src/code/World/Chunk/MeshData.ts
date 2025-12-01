@@ -1,11 +1,11 @@
 export class MeshData {
-  positions: Float32Array = new Float32Array();
+  positions: Uint8Array = new Uint8Array();
   indices: Uint32Array = new Uint32Array();
-  normals: Float32Array = new Float32Array();
-  tangents: Float32Array = new Float32Array();
-  uvs: Float32Array = new Float32Array();
+  normals: Int8Array = new Int8Array();
+  tangents: Int8Array = new Int8Array();
   uvs2: Float32Array = new Float32Array();
   uvs3: Float32Array = new Float32Array();
+  cornerIds: Uint8Array = new Uint8Array();
 
   public static deserialize(data: any): MeshData {
     const meshData = new MeshData();
@@ -13,13 +13,13 @@ export class MeshData {
 
     // The data from the worker is a plain object with typed arrays.
     // We just need to assign them to the properties of our new MeshData instance.
-    meshData.positions = data.positions || new Float32Array();
+    meshData.positions = data.positions || new Uint8Array();
     meshData.indices = data.indices || new Uint32Array();
-    meshData.normals = data.normals || new Float32Array();
-    meshData.tangents = data.tangents || new Float32Array();
-    meshData.uvs = data.uvs || new Float32Array();
+    meshData.normals = data.normals || new Int8Array();
+    meshData.tangents = data.tangents || new Int8Array();
     meshData.uvs2 = data.uvs2 || new Float32Array();
     meshData.uvs3 = data.uvs3 || new Float32Array();
+    meshData.cornerIds = data.cornerIds || new Uint8Array();
 
     return meshData;
   }

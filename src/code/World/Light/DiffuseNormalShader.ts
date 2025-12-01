@@ -7,6 +7,7 @@ attribute vec3 position;
 attribute vec3 normal;
 attribute vec2 uv;
 attribute vec2 uv2; // uv2 = atlas tile offset (u,v)
+attribute float cornerId; // 0,1,2,3 for quad corners
 attribute vec2 uv3; // uv3 = tiling count (w,h)
 attribute vec4 tangent;
 
@@ -25,7 +26,18 @@ varying vec2 vScreenSize;
 
 void main(void) {
     gl_Position = worldViewProjection * vec4(position, 1.0);
-    vUV = uv;
+
+    // Decode cornerId into vUV
+    if (cornerId == 0.0) {
+        vUV = vec2(0.0, 0.0);
+    } else if (cornerId == 1.0) {
+        vUV = vec2(1.0, 0.0);
+    } else if (cornerId == 2.0) {
+        vUV = vec2(1.0, 1.0);
+    } else {
+        vUV = vec2(0.0, 1.0);
+    }
+
     vUV2 = uv2;
     vUV3 = uv3;
     vPositionW = (world * vec4(position, 1.0)).xyz;

@@ -1,6 +1,7 @@
 import {
   Mesh,
   VertexData,
+  VertexBuffer,
   Effect,
   Material,
   PhysicsAggregate,
@@ -100,7 +101,14 @@ export class ChunkMesher {
             fragment: "chunk",
           },
           {
-            attributes: ["position", "normal", "uv", "uv2", "uv3", "tangent"],
+            attributes: [
+              "position",
+              "normal",
+              "uv2",
+              "uv3",
+              "tangent",
+              "cornerId",
+            ],
             uniforms: [
               "world",
               "worldViewProjection",
@@ -150,7 +158,14 @@ export class ChunkMesher {
             fragment: "transparentChunk", // Use our new fragment shader
           },
           {
-            attributes: ["position", "normal", "uv", "uv2", "uv3", "tangent"],
+            attributes: [
+              "position",
+              "normal",
+              "uv2",
+              "uv3",
+              "tangent",
+              "cornerId",
+            ],
             uniforms: [
               "world",
               "worldViewProjection",
@@ -249,13 +264,6 @@ export class ChunkMesher {
         this.atlasMaterial!
       );
       chunk.mesh = opaqueMesh;
-
-      new PhysicsAggregate(
-        opaqueMesh,
-        PhysicsShapeType.MESH,
-        { mass: 0 },
-        Map1.mainScene
-      );
     }
 
     // Handle transparent mesh
@@ -280,10 +288,76 @@ export class ChunkMesher {
     const mesh = new Mesh(name, Map1.mainScene);
     mesh.material = material;
 
-    const vertexData = this.meshDataToVertexData(meshData);
-    vertexData.applyToMesh(mesh, false);
+    const engine = Map1.mainScene.getEngine();
 
-    mesh.setVerticesData("tangent", meshData.tangents);
+    // Create VertexBuffer for positions (Uint8)
+    const positionBuffer = new VertexBuffer(
+      engine,
+      meshData.positions,
+      VertexBuffer.PositionKind,
+      false, // updatable
+      undefined, // postpone
+      3, // stride
+      false, // instanced
+      undefined, // offset
+      undefined, // size
+      VertexBuffer.UNSIGNED_BYTE, // type
+      false // normalized
+    );
+    mesh.setVerticesBuffer(positionBuffer);
+
+    // Create VertexBuffer for normals (Int8)
+    const normalBuffer = new VertexBuffer(
+      engine,
+      meshData.normals,
+      VertexBuffer.NormalKind,
+      false,
+      undefined,
+      3,
+      false,
+      undefined,
+      undefined,
+      VertexBuffer.BYTE,
+      true
+    );
+    mesh.setVerticesBuffer(normalBuffer);
+
+    mesh.setVerticesData("uv2", meshData.uvs2, false, 2);
+    mesh.setVerticesData("uv3", meshData.uvs3, false, 2);
+
+    // Create VertexBuffer for cornerId (Uint8)
+    const cornerIdBuffer = new VertexBuffer(
+      engine,
+      meshData.cornerIds,
+      "cornerId",
+      false,
+      undefined,
+      1,
+      false,
+      undefined,
+      undefined,
+      VertexBuffer.UNSIGNED_BYTE,
+      false // normalized
+    );
+    mesh.setVerticesBuffer(cornerIdBuffer);
+
+    mesh.setIndices(meshData.indices);
+
+    // Create VertexBuffer for tangents (Int8)
+    const tangentBuffer = new VertexBuffer(
+      engine,
+      meshData.tangents,
+      VertexBuffer.TangentKind,
+      false,
+      undefined,
+      4,
+      false,
+      undefined,
+      undefined,
+      VertexBuffer.BYTE,
+      true
+    );
+    mesh.setVerticesBuffer(tangentBuffer);
 
     if (mesh.material) {
       (mesh.material as ShaderMaterial).wireframe = GlobalValues.DEBUG;
@@ -295,18 +369,18 @@ export class ChunkMesher {
       chunk.chunkZ * Chunk.SIZE
     );
     mesh.freezeWorldMatrix();
-    return mesh;
-  }
 
-  private static meshDataToVertexData(meshData: MeshData): VertexData {
-    const vertexData = new VertexData();
-    vertexData.positions = meshData.positions;
-    vertexData.indices = meshData.indices;
-    vertexData.normals = meshData.normals;
-    vertexData.uvs = meshData.uvs;
-    vertexData.uvs2 = meshData.uvs2;
-    vertexData.uvs3 = meshData.uvs3;
-    // Tangents are handled separately as they are not part of VertexData merge
-    return vertexData;
+    // Create physics aggregate AFTER the world matrix is set.
+    // Only for opaque meshes.
+    if (name === "chunk_opaque") {
+      new PhysicsAggregate(
+        mesh,
+        PhysicsShapeType.MESH,
+        { mass: 0 },
+        Map1.mainScene
+      );
+    }
+
+    return mesh;
   }
 }
