@@ -1,7 +1,5 @@
 import { Chunk } from "./Chunk/Chunk";
 import { ChunkWorkerPool } from "./Chunk/ChunkWorkerPool";
-import { GenerationParams } from "./Generation/GenerationParams";
-import { TerrainHeightMap } from "./Generation/TerrainHeightMap";
 import { SettingParams } from "./SettingParams";
 
 export class World {
@@ -45,50 +43,18 @@ export class World {
 
     // 1. Collect all potential chunk coordinates and their distances
     let distSq = 0;
-    for (let x = centerX - renderDistance; x <= centerX + renderDistance; x++) {
+    for (let y = centerY - verticalRadius; y <= centerY + verticalRadius; y++) {
+      if (y < 0 || y >= SettingParams.MAX_CHUNK_HEIGHT) continue;
       for (
-        let z = centerZ - renderDistance;
-        z <= centerZ + renderDistance;
-        z++
+        let x = centerX - renderDistance;
+        x <= centerX + renderDistance;
+        x++
       ) {
         for (
-          let y = centerY - verticalRadius;
-          y <= centerY + verticalRadius;
-          y++
+          let z = centerZ - renderDistance;
+          z <= centerZ + renderDistance;
+          z++
         ) {
-          if (y < 0) continue; // skip negative Y chunks
-
-          // Optimization: Skip generating chunks that are entirely below the surface
-          const chunkWorldY = y * GenerationParams.CHUNK_SIZE;
-          const chunkWorldX = x * GenerationParams.CHUNK_SIZE;
-          const chunkWorldZ = z * GenerationParams.CHUNK_SIZE;
-          const biome = TerrainHeightMap.getBiome(chunkWorldX, chunkWorldZ);
-          const terrainHeightAtChunkCenter =
-            TerrainHeightMap.getFinalTerrainHeight(
-              chunkWorldX,
-              chunkWorldZ,
-              biome
-            );
-
-          // Optimization: Skip chunks that are entirely above the terrain surface.
-          if (
-            chunkWorldY >
-            terrainHeightAtChunkCenter +
-              GenerationParams.CHUNK_SIZE *
-                SettingParams.VERTICAL_CHUNK_CULLING_FACTOR
-          ) {
-            if (chunkWorldY > GenerationParams.SEA_LEVEL) continue;
-          }
-
-          // Optimization: Skip chunks that are deep underground.
-          if (
-            chunkWorldY <
-            terrainHeightAtChunkCenter -
-              GenerationParams.CHUNK_SIZE *
-                SettingParams.VERTICAL_CHUNK_CULLING_FACTOR
-          ) {
-            continue;
-          }
           const key = `${x},${y},${z}`;
           if (this.chunks.has(key)) continue; // Already loaded
 

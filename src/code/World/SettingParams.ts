@@ -3,9 +3,10 @@ import { Color3, Color4 } from "@babylonjs/core";
 export class SettingParams {
   // --- World Generation & Loading ---
   public static RENDER_DISTANCE = 12;
-  public static VERTICAL_RENDER_DISTANCE = 16;
+  public static VERTICAL_RENDER_DISTANCE = 12;
+  public static MAX_CHUNK_HEIGHT = 24;
   public static CHUNK_UNLOAD_DISTANCE_BUFFER = 6; // How many extra chunks to keep before unloading
-  public static CHUNK_SORT_DISTANCE_THRESHOLD_SQ = 8; // Squared distance under which to sort chunks for loading
+  public static CHUNK_SORT_DISTANCE_THRESHOLD_SQ = 16; // Squared distance under which to sort chunks for loading
   public static VERTICAL_CHUNK_CULLING_FACTOR = 6; // Multiplier for CHUNK_SIZE to cull chunks above/below terrain
   public static CAMERA_FOV = 90; // Default camera field of view in degrees
 
@@ -21,7 +22,7 @@ export class SettingParams {
   public static HIGHLIGHT_ALPHA = 0.0;
   public static HIGHLIGHT_COLOR = new Color3(0.6, 0.6, 1);
   public static HIGHLIGHT_EDGE_WIDTH = 1.1;
-  public static HIGHLIGHT_EDGE_COLOR = new Color4(0, 0, 0, 0.7);
+  public static HIGHLIGHT_EDGE_COLOR = new Color4(0, 0.1, 0, 0.7);
 
   // --- Lighting ---
   public static HEMISPHERIC_LIGHT_INTENSITY = 0.5;

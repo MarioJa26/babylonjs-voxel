@@ -4,6 +4,7 @@ import { Squirrel3 } from "./Squirrel13";
 import { Biome, getBiomeFor } from "./Biomes";
 import { GenerationParams, GenerationParamsType } from "./GenerationParams";
 import { Voronoi } from "./Voronoi";
+import { SettingParams } from "../SettingParams";
 
 /**
  * A static utility class to calculate terrain height at any world coordinate.
@@ -16,13 +17,15 @@ export class TerrainHeightMap {
   private static temperatureNoise: ReturnType<typeof createNoise2D>;
   private static humidityNoise: ReturnType<typeof createNoise2D>;
 
+  private static seedAsInt: number;
+
   // Static initializer block. This runs once when the class is loaded.
   static {
     this.params = GenerationParams;
     const prng = Alea(this.params.SEED);
 
     // Separate PRNGs for different noise types to avoid correlation
-    const seedAsInt = Squirrel3.get(0, prng() * 0xffffffff);
+    TerrainHeightMap.seedAsInt = Squirrel3.get(0, prng() * 0xffffffff);
     const tempPrng = Alea(prng());
     const humidityPrng = Alea(prng());
     const detailPrng = Alea(prng());
@@ -30,7 +33,7 @@ export class TerrainHeightMap {
     this.temperatureNoise = createNoise2D(tempPrng);
     this.humidityNoise = createNoise2D(humidityPrng);
     this.detailNoise = createNoise2D(detailPrng);
-    this.continentalNoise = new Voronoi(seedAsInt, 5555);
+    this.continentalNoise = new Voronoi(TerrainHeightMap.seedAsInt, 5555);
   }
 
   public static getBiome(x: number, z: number): Biome {
