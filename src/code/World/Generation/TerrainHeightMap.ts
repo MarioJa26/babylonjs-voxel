@@ -53,7 +53,7 @@ export class TerrainHeightMap {
       GenerationParams.TERRAIN_HEIGHT_AMPLITUDE;
     let total = 0;
     let frequency = TERRAIN_SCALE;
-    let amplitude = 0.1;
+    let amplitude = 1;
     let maxValue = 0;
     for (let i = 0; i < OCTAVES; i++) {
       total += this.detailNoise(x * frequency, z * frequency) * amplitude;

@@ -2,6 +2,7 @@ import { Chunk } from "./Chunk/Chunk";
 import { ChunkWorkerPool } from "./Chunk/ChunkWorkerPool";
 import { GenerationParams } from "./Generation/GenerationParams";
 import { TerrainHeightMap } from "./Generation/TerrainHeightMap";
+import { SettingParams } from "./SettingParams";
 
 export class World {
   private static chunks = new Map<string, Chunk>();
@@ -9,7 +10,7 @@ export class World {
     null;
 
   constructor() {
-    World.updateChunksAround(0, 0, 0, 3);
+    World.updateChunksAround(0, 0, 0, 2);
   }
 
   /**
@@ -21,8 +22,8 @@ export class World {
     worldX: number,
     worldY: number,
     worldZ: number,
-    renderDistance = 12,
-    verticalRadius = 10
+    renderDistance = SettingParams.RENDER_DISTANCE,
+    verticalRadius = SettingParams.VERTICAL_RENDER_DISTANCE
   ) {
     const centerX = this.worldToChunkCoord(worldX);
     const centerY = this.worldToChunkCoord(worldY);
@@ -43,6 +44,7 @@ export class World {
       [];
 
     // 1. Collect all potential chunk coordinates and their distances
+    let distSq = 0;
     for (let x = centerX - renderDistance; x <= centerX + renderDistance; x++) {
       for (
         let z = centerZ - renderDistance;
@@ -61,18 +63,19 @@ export class World {
           const chunkWorldX = x * GenerationParams.CHUNK_SIZE;
           const chunkWorldZ = z * GenerationParams.CHUNK_SIZE;
           const biome = TerrainHeightMap.getBiome(chunkWorldX, chunkWorldZ);
-          const terrainHeightAtChunkCenter = Math.floor(
+          const terrainHeightAtChunkCenter =
             TerrainHeightMap.getFinalTerrainHeight(
               chunkWorldX,
               chunkWorldZ,
               biome
-            )
-          );
+            );
 
           // Optimization: Skip chunks that are entirely above the terrain surface.
           if (
             chunkWorldY >
-            terrainHeightAtChunkCenter + GenerationParams.CHUNK_SIZE * 6
+            terrainHeightAtChunkCenter +
+              GenerationParams.CHUNK_SIZE *
+                SettingParams.VERTICAL_CHUNK_CULLING_FACTOR
           ) {
             if (chunkWorldY > GenerationParams.SEA_LEVEL) continue;
           }
@@ -80,7 +83,9 @@ export class World {
           // Optimization: Skip chunks that are deep underground.
           if (
             chunkWorldY <
-            terrainHeightAtChunkCenter - GenerationParams.CHUNK_SIZE * 6
+            terrainHeightAtChunkCenter -
+              GenerationParams.CHUNK_SIZE *
+                SettingParams.VERTICAL_CHUNK_CULLING_FACTOR
           ) {
             continue;
           }
@@ -91,15 +96,15 @@ export class World {
           const dy = y - centerY;
           const dz = z - centerZ;
 
-          const distSq = dx * dx + dy * dy + dz * dz;
+          distSq = dx * dx + dy * dy + dz * dz;
 
           chunksToLoad.push({ x, y, z, distSq });
         }
       }
     }
-
-    // 2. Sort chunks by distance (nearest first)
-    chunksToLoad.sort((a, b) => a.distSq - b.distSq);
+    //Only sort if some chunks are close enough to matter
+    if (distSq < SettingParams.CHUNK_SORT_DISTANCE_THRESHOLD_SQ)
+      chunksToLoad.sort((a, b) => a.distSq - b.distSq);
 
     // 3. Enqueue chunks for generation in the sorted order
     for (const { x, y, z } of chunksToLoad) {
@@ -108,13 +113,15 @@ export class World {
     }
 
     // optional: remove chunks far outside the radius to free memory
-    const removeRadius = renderDistance + 6;
+    const removeRadius =
+      renderDistance + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER;
     for (const key of Array.from(this.chunks.keys())) {
       const [cx, cy, cz] = key.split(",").map((n) => parseInt(n, 10));
       if (
         Math.abs(cx - centerX) > removeRadius ||
         Math.abs(cz - centerZ) > removeRadius ||
-        Math.abs(cy - centerY) > verticalRadius + 6 // a bit of buffer
+        Math.abs(cy - centerY) >
+          verticalRadius + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER
       ) {
         const chunk = this.chunks.get(key);
         if (chunk) {

@@ -165,8 +165,8 @@ export class ChunkMesher {
           }
         );
 
-        transparentMat.backFaceCulling = false; // No longer rendering back faces
-        transparentMat.forceDepthWrite = true; // Don't write to depth buffer
+        transparentMat.backFaceCulling = false;
+        transparentMat.forceDepthWrite = false;
         transparentMat.needAlphaBlending = () => true; // Enable alpha blending
 
         transparentMat.setFloat(
@@ -294,7 +294,7 @@ export class ChunkMesher {
       chunk.chunkY * Chunk.SIZE,
       chunk.chunkZ * Chunk.SIZE
     );
-
+    mesh.freezeWorldMatrix();
     return mesh;
   }
 

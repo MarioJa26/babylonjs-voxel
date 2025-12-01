@@ -115,29 +115,28 @@ class ChunkWorkerMesher {
     const size = chunk_size;
     const size2 = size * size;
 
-    // Fast getBlock: fallback parameter used when neighbor chunk missing.
-    // Caller should pass current block as fallback when sampling neighbor to avoid border faces.
     const getBlock = (
       x: number,
       y: number,
       z: number,
       fallback = 0
     ): number => {
-      if (x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size) {
-        return block_array[x + y * size + z * size2];
-      }
+      const inChunk =
+        x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size;
+      if (inChunk) return block_array[x + y * size + z * size2];
 
       if (x < 0) {
-        const arr = neighbors.nx;
-        return arr ? arr[size - 1 + y * size + z * size2] : fallback;
+        return neighbors.nx
+          ? neighbors.nx[size - 1 + y * size + z * size2]
+          : fallback;
       }
       if (x >= size) {
-        const arr = neighbors.px;
-        return arr ? arr[0 + y * size + z * size2] : fallback;
+        return neighbors.px ? neighbors.px[0 + y * size + z * size2] : fallback;
       }
       if (y < 0) {
-        const arr = neighbors.ny;
-        return arr ? arr[x + (size - 1) * size + z * size2] : fallback;
+        return neighbors.ny
+          ? neighbors.ny[x + (size - 1) * size + z * size2]
+          : fallback;
       }
       if (y >= size) {
         const arr = neighbors.py;
@@ -148,8 +147,7 @@ class ChunkWorkerMesher {
         return arr ? arr[x + y * size + (size - 1) * size2] : fallback;
       }
       if (z >= size) {
-        const arr = neighbors.pz;
-        return arr ? arr[x + y * size + 0 * size2] : fallback;
+        return neighbors.pz ? neighbors.pz[x + y * size + 0 * size2] : fallback;
       }
 
       return fallback;
@@ -204,34 +202,34 @@ class ChunkWorkerMesher {
 
             const isCurrentTransparent = TRANSPARENT_BLOCKS.has(blockCurrent);
             const isNeighborTransparent = TRANSPARENT_BLOCKS.has(blockNeighbor);
-
             const isCurrentSolid = blockCurrent !== 0;
             const isNeighborSolid = blockNeighbor !== 0;
 
-            // encode block id + transparency into encCurrent / encNeighbor
-            const encCurrent = isCurrentSolid
-              ? (blockCurrent & BLOCK_ID_MASK) |
-                (isCurrentTransparent ? TRANSPARENT_FLAG : 0)
-              : 0;
-            const encNeighbor = isNeighborSolid
-              ? (blockNeighbor & BLOCK_ID_MASK) |
-                (isNeighborTransparent ? TRANSPARENT_FLAG : 0)
-              : 0;
-
             // --- Face Culling Logic ---
-            if (encCurrent === encNeighbor) {
+            if (blockCurrent === blockNeighbor) {
               mask[maskIndex++] = 0;
-            } else if (
-              encCurrent &&
-              (!encNeighbor || (isNeighborTransparent && !isCurrentTransparent))
+              continue;
+            }
+
+            if (
+              isCurrentSolid &&
+              (!isNeighborSolid ||
+                (isNeighborTransparent && !isCurrentTransparent))
             ) {
-              // Render face for current block if it's opaque and neighbor is transparent/air
+              // Current block face is visible.
+              const encCurrent =
+                (blockCurrent & BLOCK_ID_MASK) |
+                (isCurrentTransparent ? TRANSPARENT_FLAG : 0);
               mask[maskIndex++] = encCurrent;
             } else if (
-              encNeighbor &&
-              (!encCurrent || (isCurrentTransparent && !isNeighborTransparent))
+              isNeighborSolid &&
+              (!isCurrentSolid ||
+                (isCurrentTransparent && !isNeighborTransparent))
             ) {
-              // Render face for neighbor block if it's opaque and current is transparent/air
+              // Neighbor block face is visible (so we draw a back-face).
+              const encNeighbor =
+                (blockNeighbor & BLOCK_ID_MASK) |
+                (isNeighborTransparent ? TRANSPARENT_FLAG : 0);
               mask[maskIndex++] = encNeighbor | BACKFACE_FLAG;
             } else {
               mask[maskIndex++] = 0;
@@ -281,7 +279,9 @@ class ChunkWorkerMesher {
               quadStartPos[axis]++;
 
               // pick mesh based on transparency flag
-              const mesh = isTransparent ? transparentMeshData : opaqueMeshData;
+              const targetMesh = isTransparent
+                ? transparentMeshData
+                : opaqueMeshData;
 
               this.addQuad(
                 quadStartPos,
@@ -292,7 +292,7 @@ class ChunkWorkerMesher {
                 height,
                 blockId,
                 isBackFace,
-                mesh
+                targetMesh
               );
 
               // zero out mask region

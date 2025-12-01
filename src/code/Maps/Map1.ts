@@ -24,13 +24,14 @@ import { SkyShader } from "../World/Light/SkyShader";
 import { PlayerHud } from "../Player/Hud/PlayerHud";
 import { CrossHair } from "../Player/Hud/CrossHair";
 import { TextureDefinitions } from "../World/Texture/TextureDefinitions";
+import { GenerationParams } from "../World/Generation/GenerationParams";
+import { SettingParams } from "../World/SettingParams";
 export class Map1 {
   public static mainScene: Scene;
   #player: Player;
   #blockHighlightMesh!: Mesh;
 
   static #timeOfDay = 0; // Time in milliseconds, progresses from 0 to dayDurationMs
-  static readonly #dayDurationMs = 10 * 60 * 1000; // 10 minutes for a full day
   public static timeScale = 1.0;
   public readonly initPromise: Promise<void>;
 
@@ -50,11 +51,14 @@ export class Map1 {
   async asyncInit() {
     try {
       await Promise.all([this.CreateEnvironment(), this.loadTextures()]);
-      if (GlobalValues.ENABLE_SSAO)
+      if (SettingParams.ENABLE_SSAO)
         new SSAORenderingPipeline(
           "ssaopipeline",
           Map1.mainScene,
-          { ssaoRatio: 0.5, combineRatio: 2.0 },
+          {
+            ssaoRatio: SettingParams.SSAO_RATIO,
+            combineRatio: SettingParams.SSAO_COMBINE_RATIO,
+          },
           [Map1.mainScene.activeCamera!]
         );
       console.log("Environment and textures loaded successfully.");
@@ -68,10 +72,12 @@ export class Map1 {
    * @param time A value between 0 (start of day) and 1 (end of day).
    */
   public static setTime(time: number): void {
-    Map1.#timeOfDay = (time % 1) * Map1.#dayDurationMs;
+    Map1.#timeOfDay = (time % 1) * SettingParams.DAY_DURATION_MS;
   }
 
   private updateBlockHighlight() {
+    if (this.#player.playerVehicle instanceof AdvancedBoat) return;
+
     if (!this.#blockHighlightMesh) {
       // Create the highlight mesh if it doesn't exist
       this.#blockHighlightMesh = MeshBuilder.CreateBox(
@@ -86,13 +92,13 @@ export class Map1 {
         "highlightMat",
         Map1.mainScene
       );
-      highlightMaterial.alpha = 0; // Set transparency (0=invisible, 1=solid)
-      highlightMaterial.diffuseColor = new Color3(0.6, 0.6, 1); // Set face color to white
+      highlightMaterial.alpha = SettingParams.HIGHLIGHT_ALPHA;
+      highlightMaterial.diffuseColor = SettingParams.HIGHLIGHT_COLOR;
       this.#blockHighlightMesh.material = highlightMaterial;
 
       this.#blockHighlightMesh.enableEdgesRendering();
-      this.#blockHighlightMesh.edgesWidth = 1.0;
-      this.#blockHighlightMesh.edgesColor = new Color4(0, 0, 0, 0.7);
+      this.#blockHighlightMesh.edgesWidth = SettingParams.HIGHLIGHT_EDGE_WIDTH;
+      this.#blockHighlightMesh.edgesColor = SettingParams.HIGHLIGHT_EDGE_COLOR;
       this.#blockHighlightMesh.visibility = 0; // Initially hidden
     }
     const hit = CrossHair.pickTarget(this.#player);
@@ -115,10 +121,10 @@ export class Map1 {
     // Increment time of day based on frame delta time
     Map1.#timeOfDay +=
       Map1.mainScene.getEngine().getDeltaTime() * Map1.timeScale;
-    Map1.#timeOfDay %= Map1.#dayDurationMs;
+    Map1.#timeOfDay %= SettingParams.DAY_DURATION_MS;
 
     // For debug display
-    const timeAsHour = (Map1.#timeOfDay / Map1.#dayDurationMs) * 24;
+    const timeAsHour = (Map1.#timeOfDay / SettingParams.DAY_DURATION_MS) * 24;
     const hour = Math.floor(timeAsHour);
     const minute = Math.floor((timeAsHour - hour) * 60);
     const second = Math.floor(((timeAsHour - hour) * 60 - minute) * 60);
@@ -137,7 +143,7 @@ export class Map1 {
     ) as HTMLInputElement;
     if (timeSlider)
       timeSlider.value = (
-        (Map1.#timeOfDay / Map1.#dayDurationMs) *
+        (Map1.#timeOfDay / SettingParams.DAY_DURATION_MS) *
         1000
       ).toString();
 
@@ -145,7 +151,7 @@ export class Map1 {
     const timeInCycle = Map1.#timeOfDay;
 
     // Angle around the full circle (0..2PI)
-    const angle = (timeInCycle / Map1.#dayDurationMs) * 2 * Math.PI;
+    const angle = (timeInCycle / SettingParams.DAY_DURATION_MS) * 2 * Math.PI;
 
     // Use spherical-like parametrization:
     // - elevation controls vertical position (y)
@@ -171,14 +177,21 @@ export class Map1 {
       scene
     );
     hemiLight.direction = new Vector3(-0.1, -1, -0.1);
-    hemiLight.intensity = 0.5;
+    hemiLight.intensity = SettingParams.HEMISPHERIC_LIGHT_INTENSITY;
     const dirLight = new DirectionalLight(
       "dirLight",
       new Vector3(-1, -2, -1),
       scene
     );
-    dirLight.intensity = 0.5;
+    dirLight.intensity = SettingParams.DIRECTIONAL_LIGHT_INTENSITY;
     dirLight.position = new Vector3(20, 40, 20);
+
+    const boat = new AdvancedBoat(
+      scene,
+      this.#player,
+      GenerationParams.SEA_LEVEL + 0.5
+    );
+
     return scene;
   }
 
