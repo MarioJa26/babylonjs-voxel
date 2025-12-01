@@ -27,16 +27,12 @@ varying vec2 vScreenSize;
 void main(void) {
     gl_Position = worldViewProjection * vec4(position, 1.0);
 
-    // Decode cornerId into vUV
-    if (cornerId == 0.0) {
-        vUV = vec2(0.0, 0.0);
-    } else if (cornerId == 1.0) {
-        vUV = vec2(1.0, 0.0);
-    } else if (cornerId == 2.0) {
-        vUV = vec2(1.0, 1.0);
-    } else {
-        vUV = vec2(0.0, 1.0);
-    }
+    // Branchless UV decoding from cornerId (0,1,2,3)
+    // cornerId == 1.0 || cornerId == 2.0 -> u = 1.0
+    // cornerId == 2.0 || cornerId == 3.0 -> v = 1.0
+    float u = step(1.0, cornerId) - step(3.0, cornerId); // 0,1,1,0
+    float v = step(2.0, cornerId);                       // 0,0,1,1
+    vUV = vec2(u, v);
 
     vUV2 = uv2;
     vUV3 = uv3;

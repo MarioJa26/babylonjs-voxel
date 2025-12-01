@@ -239,46 +239,46 @@ class ChunkWorkerMesher {
 
         maskIndex = 0;
 
-        // Greedy merge from mask -> create quads and push to the correct mesh (opaque/transparent)
+        // Optimized Greedy merge from mask
         for (let v_coord = 0; v_coord < size; v_coord++) {
           for (let u_coord = 0; u_coord < size; ) {
-            const m = mask[maskIndex];
-            if (m !== 0) {
-              // decode block id, transparent flag, and backface
-              const isBackFace = (m & BACKFACE_FLAG) !== 0;
-              const isTransparent = (m & TRANSPARENT_FLAG) !== 0;
-              const blockId = m & BLOCK_ID_MASK;
-
-              // greedily find width
+            const currentMaskValue = mask[maskIndex];
+            if (currentMaskValue !== 0) {
+              // Greedily find width
               let width = 1;
-              while (u_coord + width < size && mask[maskIndex + width] === m) {
+              while (
+                u_coord + width < size &&
+                mask[maskIndex + width] === currentMaskValue
+              ) {
                 width++;
               }
 
-              // greedily find height
+              // Greedily find height
               let height = 1;
-              let done = false;
-              while (v_coord + height < size) {
-                for (let width_iter = 0; width_iter < width; width_iter++) {
-                  if (mask[maskIndex + width_iter + height * size] !== m) {
-                    done = true;
+              // Scan rows below to extend the quad vertically
+              for (let h = 1; v_coord + h < size; h++) {
+                let canExtend = true;
+                for (let w = 0; w < width; w++) {
+                  if (mask[maskIndex + w + h * size] !== currentMaskValue) {
+                    canExtend = false;
                     break;
                   }
                 }
-                if (done) break;
+                if (!canExtend) break;
                 height++;
               }
+
+              // Decode mask value
+              const isBackFace = (currentMaskValue & BACKFACE_FLAG) !== 0;
+              const isTransparent = (currentMaskValue & TRANSPARENT_FLAG) !== 0;
+              const blockId = currentMaskValue & BLOCK_ID_MASK;
 
               position[u_axis] = u_coord;
               position[v_axis] = v_coord;
 
               const quadStartPos = [position[0], position[1], position[2]];
-              // for forward faces the quad sits on the current slice,
-              // for backward (neighbor) faces we also want to place at same slice
-              // but we keep the same convention used previously:
               quadStartPos[axis]++;
 
-              // pick mesh based on transparency flag
               const targetMesh = isTransparent
                 ? transparentMeshData
                 : opaqueMeshData;
@@ -295,7 +295,7 @@ class ChunkWorkerMesher {
                 targetMesh
               );
 
-              // zero out mask region
+              // Zero out the mask for the area covered by the new quad
               for (let hh = 0; hh < height; hh++) {
                 for (let ww = 0; ww < width; ww++) {
                   mask[maskIndex + ww + hh * size] = 0;
@@ -303,7 +303,7 @@ class ChunkWorkerMesher {
               }
 
               u_coord += width;
-              maskIndex += width;
+              maskIndex += width; // Advance mask index by the width of the quad
             } else {
               u_coord++;
               maskIndex++;
