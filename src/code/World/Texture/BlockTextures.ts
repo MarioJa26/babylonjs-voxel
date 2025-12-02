@@ -9,7 +9,7 @@ type BlockTextureDef = {
 // This array maps Block ID (index) to the UV coordinates [tx, ty] within the texture atlas.
 // The coordinates correspond to the order in which textures are loaded via textureFolders.
 export const BlockTextures: (BlockTextureDef | null)[] = [
-  null, // 0: air (must be null)
+  null, // 0: air
 
   { all: [0, 0] }, // 1: cobble
   { all: [1, 0] }, // 2: factory_wall
@@ -27,6 +27,7 @@ export const BlockTextures: (BlockTextureDef | null)[] = [
   { all: [13, 0] }, // 14: rocky_terrain_02
   { all: [14, 0] }, // 15: grass001
   { all: [15, 0] }, // 16: checkered_pavement_tiles
+
   { all: [0, 1] }, // 17: wood_inlaid_stone_wall
   { all: [1, 1] }, // 18: stone_tiles_02
   { all: [2, 1] }, // 19: cracked_concrete
@@ -40,10 +41,11 @@ export const BlockTextures: (BlockTextureDef | null)[] = [
   { all: [10, 1] }, // 27: concrete_panels
   { all: [11, 1] }, // 28: bark_brown_02
   { all: [12, 1] }, // 29: slate_floor
-  { all: [13, 1] }, // 30: water_01
+  { all: [13, 1] }, // 30: water
   { all: [14, 1] }, // 31: bark_brown_01
   { all: [15, 1] }, // 32: beam_wall_01
-  { all: [0, 2] }, // 33: metasequoia_bark_01
+
+  { all: [0, 2] }, // 33: metasequoia_bark
   { all: [1, 2] }, // 34: moss_wood
   { all: [2, 2] }, // 35: wood_planks
   { all: [3, 2] }, // 36: old_planks_02
@@ -59,4 +61,16 @@ export const BlockTextures: (BlockTextureDef | null)[] = [
   { all: [13, 2] }, // 46: coast_land_rocks_01
   { all: [14, 2] }, // 47: aerial_beach_01
   { all: [15, 2] }, // 48: cobblestone_03
+
+  { all: [0, 3] }, // 49: anti_slip_concrete
+  { all: [1, 3] }, // 50: concrete_block_wall_02
+  { all: [2, 3] }, // 51: concrete_moss
+  { all: [3, 3] }, // 52: concrete_tile_facade (duplicate name but new texture)
+  { all: [4, 3] }, // 53: concrete_tiles_
+  { all: [5, 3] }, // 54: granite_wall
+  { all: [6, 3] }, // 55: patterned_brick_wall_03
+  { all: [7, 3] }, // 56: patterned_concrete_pavers_02
+  { all: [8, 3] }, // 57: quarry_wall
+  { all: [9, 3] }, // 58: rectangular_facade_tiles_02
+  { all: [10, 3] }, // 59: red_sandstone_wall
 ];

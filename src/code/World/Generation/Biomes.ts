@@ -35,7 +35,7 @@ const DESERT: Biome = {
 
 const JUNGLE: Biome = {
   name: "Jungle",
-  topBlock: 14,
+  topBlock: 51,
   undergroundBlock: 19,
   stoneBlock: 1,
   canSpawnTrees: true,

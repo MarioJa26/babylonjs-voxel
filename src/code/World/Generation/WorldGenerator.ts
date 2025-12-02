@@ -137,7 +137,7 @@ export class WorldGenerator {
               blocks
             );
           } else {
-            if (topBlock === 14) {
+            if (topBlock === 51) {
               this._generateTreeBlocksForChunk(
                 worldX,
                 terrainHeight + 1,
@@ -146,7 +146,7 @@ export class WorldGenerator {
                 chunkY,
                 chunkZ, // Current chunk being generated
                 blocks,
-                22,
+                33,
                 34,
                 12
               );

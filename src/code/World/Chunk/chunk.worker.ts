@@ -1,11 +1,11 @@
 /// <reference lib="webworker" />
 
 import { BlockTextures } from "../Texture/BlockTextures";
-import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
 import { WorldGenerator } from "../Generation/WorldGenerator";
 import { MeshData } from "./MeshData";
 
 type WorkerInternalMeshData = {
+  // Using number[] for easier pushing
   positions: number[];
   indices: number[];
   normals: number[];
@@ -63,12 +63,6 @@ for (const axis of [0, 1, 2]) {
 }
 
 class ChunkWorkerMesher {
-  // normalize3 kept simple and safe for axis-aligned du/dv vectors
-  static normalize3 = (a: number[]): number[] => {
-    const len = Math.abs(a[0]) + Math.abs(a[1]) + Math.abs(a[2]);
-    return len > 0 ? [a[0] / len, a[1] / len, a[2] / len] : [0, 0, 0];
-  };
-
   static generateMesh(data: {
     block_array: Uint8Array;
     chunk_size: number;
@@ -331,26 +325,10 @@ class ChunkWorkerMesher {
     ty: number,
     isBackFace: boolean
   ) {
-    // avoid allocating temporary arrays; push values directly
-    const u_base = tx * TextureAtlasFactory.atlasTileSize;
-    const v_base_flipped =
-      1 -
-      (ty * TextureAtlasFactory.atlasTileSize +
-        TextureAtlasFactory.atlasTileSize);
+    // uvs2: tile coordinates (tx, ty) repeated for 4 vertices
+    uvs2.push(tx, ty, tx, ty, tx, ty, tx, ty);
 
-    // uvs2: repeated tile base coords for 4 vertices
-    uvs2.push(
-      u_base,
-      v_base_flipped,
-      u_base,
-      v_base_flipped,
-      u_base,
-      v_base_flipped,
-      u_base,
-      v_base_flipped
-    );
-
-    // uvs: standard quad UVs (optionally flipped for back faces)
+    // cornerIds: standard quad UVs (optionally flipped for back faces)
     if (isBackFace) {
       cornerIds.push(3, 2, 1, 0);
     } else {
@@ -482,8 +460,8 @@ function toTransferable(data: WorkerInternalMeshData): MeshData {
     indices: new Uint16Array(data.indices),
     normals: new Int8Array(data.normals),
     tangents: new Int8Array(data.tangents),
-    uvs2: new Float32Array(data.uvs2),
-    uvs3: new Float32Array(data.uvs3),
+    uvs2: new Uint8Array(data.uvs2),
+    uvs3: new Uint8Array(data.uvs3),
     cornerIds: new Uint8Array(data.cornerIds),
   };
 }

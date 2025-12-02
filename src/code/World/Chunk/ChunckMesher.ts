@@ -1,6 +1,5 @@
 import {
   Mesh,
-  VertexData,
   VertexBuffer,
   Effect,
   Material,
@@ -193,12 +192,9 @@ export class ChunkMesher {
           transparentMat.setTexture("normalTexture", normalAtlasTexture);
         }
 
-        // Create a dedicated onBind for the transparent material to pass the time uniform
-
         transparentMat.onBind = (mesh) => {
           const effect = transparentMat.getEffect();
           if (effect) {
-            // Set shared uniforms
             effect.setVector3("lightDirection", GlobalValues.skyLightDirection);
             effect.setVector3(
               "cameraPosition",
@@ -317,13 +313,40 @@ export class ChunkMesher {
       false,
       undefined,
       undefined,
-      VertexBuffer.BYTE,
+      VertexBuffer.UNSIGNED_BYTE,
       true
     );
     mesh.setVerticesBuffer(normalBuffer);
 
-    mesh.setVerticesData("uv2", meshData.uvs2, false, 2);
-    mesh.setVerticesData("uv3", meshData.uvs3, false, 2);
+    const uv2Buffer = new VertexBuffer(
+      engine,
+      meshData.uvs2,
+      "uv2",
+      false,
+      undefined,
+      2,
+      false,
+      undefined,
+      undefined,
+      VertexBuffer.UNSIGNED_BYTE,
+      false
+    );
+    mesh.setVerticesBuffer(uv2Buffer);
+
+    const uv3Buffer = new VertexBuffer(
+      engine,
+      meshData.uvs3,
+      "uv3",
+      false,
+      undefined,
+      2,
+      false,
+      undefined,
+      undefined,
+      VertexBuffer.UNSIGNED_BYTE,
+      false
+    );
+    mesh.setVerticesBuffer(uv3Buffer);
 
     // Create VertexBuffer for cornerId (Uint8)
     const cornerIdBuffer = new VertexBuffer(
@@ -368,7 +391,6 @@ export class ChunkMesher {
       chunk.chunkY * Chunk.SIZE,
       chunk.chunkZ * Chunk.SIZE
     );
-    mesh.freezeWorldMatrix();
 
     // Create physics aggregate AFTER the world matrix is set.
     // Only for opaque meshes.

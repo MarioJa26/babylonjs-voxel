@@ -14,7 +14,7 @@ export class SettingParams {
   public static DAY_DURATION_MS = 10 * 60 * 1000; // 10 minutes for a full day
 
   // --- Graphics & Rendering ---
-  public static ENABLE_SSAO = false;
+  public static ENABLE_SSAO = true;
   public static SSAO_RATIO = 0.5;
   public static SSAO_COMBINE_RATIO = 2.0;
 

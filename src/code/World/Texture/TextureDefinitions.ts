@@ -207,4 +207,70 @@ export const TextureDefinitions: TextureDefinition[] = [
     name: "cobblestone_03",
     path: "/texture/cobble/cobblestone_03_1k",
   },
+
+  {
+    id: 49,
+    name: "anti_slip_concrete",
+    path: "/texture/stone/anti_slip_concrete_1k",
+  },
+
+  {
+    id: 50,
+    name: "concrete_block_wall_02",
+    path: "/texture/stone/concrete_block_wall_02_1k",
+  },
+
+  {
+    id: 51,
+    name: "concrete_moss",
+    path: "/texture/stone/concrete_moss_1k",
+  },
+
+  {
+    id: 52,
+    name: "floor_tiles_09",
+    path: "/texture/stone/floor_tiles_09_1k",
+  },
+
+  {
+    id: 53,
+    name: "concrete_tiles",
+    path: "/texture/stone/concrete_tiles_1k",
+  },
+
+  {
+    id: 54,
+    name: "granite_wall",
+    path: "/texture/stone/granite_wall_1k",
+  },
+
+  {
+    id: 55,
+    name: "patterned_brick_wall_03",
+    path: "/texture/stone/patterned_brick_wall_03_1k",
+  },
+
+  {
+    id: 56,
+    name: "patterned_concrete_pavers_02",
+    path: "/texture/stone/patterned_concrete_pavers_02_1k",
+  },
+
+  {
+    id: 57,
+    name: "quarry_wall",
+    path: "/texture/stone/quarry_wall_1k",
+  },
+
+  {
+    id: 58,
+    name: "rectangular_facade_tiles_02",
+    path: "/texture/stone/rectangular_facade_tiles_02_1k",
+  },
+
+  {
+    id: 59,
+    name: "red_sandstone_wall",
+    path: "/texture/stone/red_sandstone_wall_1k",
+  },
 ];

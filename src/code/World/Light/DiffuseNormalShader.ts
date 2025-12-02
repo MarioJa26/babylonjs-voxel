@@ -5,10 +5,9 @@ precision highp float;
 // Attributes
 attribute vec3 position;
 attribute vec3 normal;
-attribute vec2 uv;
-attribute vec2 uv2; // uv2 = atlas tile offset (u,v)
+attribute vec2 uv2; // uv2 = tile coords (tx, ty)
 attribute float cornerId; // 0,1,2,3 for quad corners
-attribute vec2 uv3; // uv3 = tiling count (w,h)
+attribute vec2 uv3; // uv3 = quad dimensions (w,h)
 attribute vec4 tangent;
 
 // Uniforms
@@ -16,13 +15,15 @@ uniform mat4 world;
 uniform mat4 worldViewProjection;
 uniform vec2 screenSize;
 
-// Varyings
+// Varyings - data passed to fragment shader
 varying vec2 vUV;
 varying vec2 vUV2;
 varying vec2 vUV3;
 varying vec3 vPositionW;
 varying mat3 vTBN;
 varying vec2 vScreenSize;
+
+uniform float atlasTileSize;
 
 void main(void) {
     gl_Position = worldViewProjection * vec4(position, 1.0);
@@ -34,8 +35,12 @@ void main(void) {
     float v = step(2.0, cornerId);                       // 0,0,1,1
     vUV = vec2(u, v);
 
-    vUV2 = uv2;
-    vUV3 = uv3;
+    // Calculate atlas tile offset (vUV2) from integer tile coordinates (uv2)
+    float u_base = uv2.x * atlasTileSize;
+    float v_base_flipped = 1.0 - (uv2.y * atlasTileSize + atlasTileSize);
+    vUV2 = vec2(u_base, v_base_flipped);
+
+    vUV3 = uv3; // Pass quad dimensions
     vPositionW = (world * vec4(position, 1.0)).xyz;
     vec3 N = normalize(mat3(world) * normal);
     vec3 T = normalize(mat3(world) * tangent.xyz);
