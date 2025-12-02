@@ -479,7 +479,7 @@ self.onmessage = (event: MessageEvent) => {
 function toTransferable(data: WorkerInternalMeshData): MeshData {
   return {
     positions: new Uint8Array(data.positions),
-    indices: new Uint32Array(data.indices),
+    indices: new Uint16Array(data.indices),
     normals: new Int8Array(data.normals),
     tangents: new Int8Array(data.tangents),
     uvs2: new Float32Array(data.uvs2),
