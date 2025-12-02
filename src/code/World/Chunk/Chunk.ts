@@ -9,7 +9,6 @@ export class Chunk {
   public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
 
   public static readonly chunkInstances = new Map<string, Chunk>();
-  private static nextId = 0;
 
   public isDirty = false;
   public isLoaded = true;
@@ -28,12 +27,11 @@ export class Chunk {
     this.#chunkX = chunkX;
     this.#chunkY = chunkY;
     this.#chunkZ = chunkZ;
-    this.id = (Chunk.nextId++).toString();
+    this.id = `${chunkX},${chunkY},${chunkZ}`;
 
-    World.addChunk(this); // Add this chunk to the world's map
-    Chunk.chunkInstances.set(this.id, this); // Keep this for worker pool backward compatibility
+    World.addChunk(this);
 
-    this.block_array = new Uint8Array(Chunk.SIZE3);
+    this.block_array = new Uint8Array(Chunk.SIZE ** 3);
     this.block_array.fill(0);
   }
 
@@ -135,7 +133,15 @@ export class Chunk {
     const nx = this.chunkX + dx;
     const ny = this.chunkY + dy;
     const nz = this.chunkZ + dz;
-    return World.getChunk(nx, ny, nz);
+    return Chunk.getChunk(nx, ny, nz);
+  }
+
+  public static getChunk(
+    chunkX: number,
+    chunkY: number,
+    chunkZ: number
+  ): Chunk | undefined {
+    return Chunk.chunkInstances.get(`${chunkX},${chunkY},${chunkZ}`);
   }
 
   public dispose(): void {

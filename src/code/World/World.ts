@@ -3,10 +3,6 @@ import { ChunkWorkerPool } from "./Chunk/ChunkWorkerPool";
 import { SettingParams } from "./SettingParams";
 
 export class World {
-  private static chunks = new Map<string, Chunk>();
-  private static lastCenterChunk: { x: number; y: number; z: number } | null =
-    null;
-
   constructor() {
     World.updateChunksAround(0, 0, 0, 2);
   }
@@ -27,22 +23,9 @@ export class World {
     const centerY = this.worldToChunkCoord(worldY);
     const centerZ = this.worldToChunkCoord(worldZ);
 
-    // avoid repeating work if still in same center chunk
-    if (
-      this.lastCenterChunk &&
-      this.lastCenterChunk.x === centerX &&
-      this.lastCenterChunk.y === centerY &&
-      this.lastCenterChunk.z === centerZ
-    ) {
-      return;
-    }
-    this.lastCenterChunk = { x: centerX, y: centerY, z: centerZ };
-
-    const chunksToLoad: { x: number; y: number; z: number; distSq: number }[] =
-      [];
+    const chunksToLoad: { x: number; y: number; z: number }[] = [];
 
     // 1. Collect all potential chunk coordinates and their distances
-    let distSq = 0;
     for (let y = centerY - verticalRadius; y <= centerY + verticalRadius; y++) {
       if (y < 0 || y >= SettingParams.MAX_CHUNK_HEIGHT) continue;
       for (
@@ -56,21 +39,11 @@ export class World {
           z++
         ) {
           const key = `${x},${y},${z}`;
-          if (this.chunks.has(key)) continue; // Already loaded
-
-          const dx = x - centerX;
-          const dy = y - centerY;
-          const dz = z - centerZ;
-
-          distSq = dx * dx + dy * dy + dz * dz;
-
-          chunksToLoad.push({ x, y, z, distSq });
+          if (Chunk.chunkInstances.has(key)) continue;
+          chunksToLoad.push({ x, y, z });
         }
       }
     }
-    //Only sort if some chunks are close enough to matter
-    if (distSq < SettingParams.CHUNK_SORT_DISTANCE_THRESHOLD_SQ)
-      chunksToLoad.sort((a, b) => a.distSq - b.distSq);
 
     // 3. Enqueue chunks for generation in the sorted order
     for (const { x, y, z } of chunksToLoad) {
@@ -81,7 +54,7 @@ export class World {
     // optional: remove chunks far outside the radius to free memory
     const removeRadius =
       renderDistance + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER;
-    for (const key of Array.from(this.chunks.keys())) {
+    for (const key of Array.from(Chunk.chunkInstances.keys())) {
       const [cx, cy, cz] = key.split(",").map((n) => parseInt(n, 10));
       if (
         Math.abs(cx - centerX) > removeRadius ||
@@ -89,26 +62,18 @@ export class World {
         Math.abs(cy - centerY) >
           verticalRadius + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER
       ) {
-        const chunk = this.chunks.get(key);
+        const chunk = Chunk.chunkInstances.get(key);
         if (chunk) {
           chunk.dispose();
           chunk.isLoaded = false;
         }
-        this.chunks.delete(key);
+        Chunk.chunkInstances.delete(key);
       }
     }
   }
 
   public static addChunk(chunk: Chunk) {
-    this.chunks.set(`${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`, chunk);
-  }
-
-  public static getChunk(
-    chunkX: number,
-    chunkY: number,
-    chunkZ: number
-  ): Chunk | undefined {
-    return this.chunks.get(`${chunkX},${chunkY},${chunkZ}`);
+    Chunk.chunkInstances.set(chunk.id, chunk);
   }
 
   public static deleteBlock(worldX: number, worldY: number, worldZ: number) {
@@ -116,7 +81,7 @@ export class World {
     const chunkY = this.worldToChunkCoord(worldY);
     const chunkZ = this.worldToChunkCoord(worldZ);
 
-    const chunk = this.getChunk(chunkX, chunkY, chunkZ);
+    const chunk = Chunk.getChunk(chunkX, chunkY, chunkZ);
     if (!chunk) return;
 
     const localX = this.worldToBlockCoord(worldX);
@@ -136,7 +101,7 @@ export class World {
     const chunkY = this.worldToChunkCoord(worldY);
     const chunkZ = this.worldToChunkCoord(worldZ);
 
-    const chunk = this.getChunk(chunkX, chunkY, chunkZ);
+    const chunk = Chunk.getChunk(chunkX, chunkY, chunkZ);
     if (!chunk) return;
 
     const localX = this.worldToBlockCoord(worldX);
@@ -155,7 +120,7 @@ export class World {
     const chunkY = this.worldToChunkCoord(worldY);
     const chunkZ = this.worldToChunkCoord(worldZ);
 
-    const chunk = this.getChunk(chunkX, chunkY, chunkZ);
+    const chunk = Chunk.getChunk(chunkX, chunkY, chunkZ);
     if (!chunk) return 0;
 
     const localX = this.worldToBlockCoord(worldX);

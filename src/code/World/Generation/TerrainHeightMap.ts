@@ -4,7 +4,6 @@ import { Squirrel3 } from "./Squirrel13";
 import { Biome, getBiomeFor } from "./Biomes";
 import { GenerationParams, GenerationParamsType } from "./GenerationParams";
 import { Voronoi } from "./Voronoi";
-import { SettingParams } from "../SettingParams";
 
 /**
  * A static utility class to calculate terrain height at any world coordinate.
