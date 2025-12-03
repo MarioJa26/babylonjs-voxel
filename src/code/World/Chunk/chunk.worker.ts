@@ -4,24 +4,63 @@ import { BlockTextures } from "../Texture/BlockTextures";
 import { WorldGenerator } from "../Generation/WorldGenerator";
 import { MeshData } from "./MeshData";
 
+/**
+ * A wrapper around a TypedArray that allows it to be resized dynamically.
+ * This is more performant than using a standard number[] and then converting.
+ */
+class ResizableTypedArray<T extends Uint8Array | Uint16Array | Int8Array> {
+  private array: T;
+  private capacity: number;
+  public length = 0;
+
+  constructor(
+    private ctor: new (capacity: number) => T,
+    initialCapacity = 256
+  ) {
+    this.capacity = initialCapacity;
+    this.array = new ctor(this.capacity);
+  }
+
+  push(...values: number[]): void {
+    if (this.length + values.length > this.capacity) {
+      this.grow(this.length + values.length);
+    }
+    this.array.set(values, this.length);
+    this.length += values.length;
+  }
+
+  private grow(minCapacity: number): void {
+    let newCapacity = this.capacity * 2;
+    while (newCapacity < minCapacity) {
+      newCapacity *= 2;
+    }
+    const newArray = new this.ctor(newCapacity);
+    newArray.set(this.array.subarray(0, this.length));
+    this.array = newArray;
+    this.capacity = newCapacity;
+  }
+
+  get finalArray(): T {
+    return this.array.subarray(0, this.length) as T;
+  }
+}
+
 type WorkerInternalMeshData = {
-  // Using number[] for easier pushing
-  positions: number[];
-  indices: number[];
-  normals: number[];
-  tangents: number[];
-  uvs2: number[];
-  uvs3: number[];
-  cornerIds: number[];
+  positions: ResizableTypedArray<Uint8Array>;
+  indices: ResizableTypedArray<Uint16Array>;
+  normals: ResizableTypedArray<Int8Array>;
+  tangents: ResizableTypedArray<Int8Array>;
+  uvs2: ResizableTypedArray<Uint8Array>;
+  uvs3: ResizableTypedArray<Uint8Array>;
+  cornerIds: ResizableTypedArray<Uint8Array>;
   indexOffset: number;
-  decorations?: { x: number; y: number; z: number; blockId: number }[];
 };
 
 const TRANSPARENT_BLOCKS = new Set([30]);
 
 type FaceData = {
-  normal: number[];
-  tangent: number[];
+  normal: Int8Array;
+  tangent: Int8Array;
   handedness: number;
 };
 
@@ -30,16 +69,16 @@ const FACE_DATA_CACHE: { [key: string]: FaceData } = {};
 // Pre-calculate face data for all 6 directions
 for (const axis of [0, 1, 2]) {
   for (const side of [-1, 1]) {
-    const normal = [0, 0, 0];
+    const normal = new Int8Array(3);
     normal[axis] = side;
 
     const u_axis = (axis + 1) % 3;
     const v_axis = (axis + 2) % 3;
 
-    const tangentVec = [0, 0, 0];
+    const tangentVec = new Int8Array(3);
     tangentVec[u_axis] = 1;
 
-    const bitangentVec = [0, 0, 0];
+    const bitangentVec = new Int8Array(3);
     bitangentVec[v_axis] = 1;
 
     const crossNT = [
@@ -75,33 +114,25 @@ class ChunkWorkerMesher {
       nz?: Uint8Array;
     };
   }): { opaque: WorkerInternalMeshData; transparent: WorkerInternalMeshData } {
-    const positions: number[] = [];
-    const indices: number[] = [];
-    const normals: number[] = [];
-    const tangents: number[] = [];
-    const uvs2: number[] = [];
-    const uvs3: number[] = [];
-    const cornerIds: number[] = [];
-
     const opaqueMeshData: WorkerInternalMeshData = {
-      positions,
-      indices,
-      normals,
-      tangents,
-      uvs2,
-      uvs3,
-      cornerIds,
+      positions: new ResizableTypedArray(Uint8Array),
+      indices: new ResizableTypedArray(Uint16Array),
+      normals: new ResizableTypedArray(Int8Array),
+      tangents: new ResizableTypedArray(Int8Array),
+      uvs2: new ResizableTypedArray(Uint8Array),
+      uvs3: new ResizableTypedArray(Uint8Array),
+      cornerIds: new ResizableTypedArray(Uint8Array),
       indexOffset: 0,
     };
 
     const transparentMeshData: WorkerInternalMeshData = {
-      positions: [],
-      indices: [],
-      normals: [],
-      tangents: [],
-      uvs2: [],
-      uvs3: [],
-      cornerIds: [],
+      positions: new ResizableTypedArray(Uint8Array),
+      indices: new ResizableTypedArray(Uint16Array),
+      normals: new ResizableTypedArray(Int8Array),
+      tangents: new ResizableTypedArray(Int8Array),
+      uvs2: new ResizableTypedArray(Uint8Array),
+      uvs3: new ResizableTypedArray(Uint8Array),
+      cornerIds: new ResizableTypedArray(Uint8Array),
       indexOffset: 0,
     };
 
@@ -319,8 +350,8 @@ class ChunkWorkerMesher {
   }
 
   private static pushTileUV(
-    cornerIds: number[],
-    uvs2: number[],
+    cornerIds: ResizableTypedArray<Uint8Array>,
+    uvs2: ResizableTypedArray<Uint8Array>,
     tx: number,
     ty: number,
     isBackFace: boolean
@@ -456,13 +487,13 @@ self.onmessage = (event: MessageEvent) => {
 
 function toTransferable(data: WorkerInternalMeshData): MeshData {
   return {
-    positions: new Uint8Array(data.positions),
-    indices: new Uint16Array(data.indices),
-    normals: new Int8Array(data.normals),
-    tangents: new Int8Array(data.tangents),
-    uvs2: new Uint8Array(data.uvs2),
-    uvs3: new Uint8Array(data.uvs3),
-    cornerIds: new Uint8Array(data.cornerIds),
+    positions: data.positions.finalArray,
+    indices: data.indices.finalArray,
+    normals: data.normals.finalArray,
+    tangents: data.tangents.finalArray,
+    uvs2: data.uvs2.finalArray,
+    uvs3: data.uvs3.finalArray,
+    cornerIds: data.cornerIds.finalArray,
   };
 }
 
