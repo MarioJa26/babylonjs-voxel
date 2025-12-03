@@ -41,7 +41,7 @@ const TUNDRA: Biome = {
   undergroundBlock: 19,
   stoneBlock: 1,
   canSpawnTrees: true,
-  treeDensity: 0.01,
+  treeDensity: 0.0,
   beachBlock: 8, // Gravel
   seafloorBlock: 8, // Dirt
   getTreeForBlock(blockId: number): TreeDefinition | null {

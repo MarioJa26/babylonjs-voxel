@@ -474,29 +474,28 @@ function postFullMeshResult(
   const opaqueMeshData = toTransferable(opaque);
   const transparentMeshData = toTransferable(transparent);
 
-  const transferableMessage = {
-    chunkId,
-    type: "full-mesh",
-    opaque: opaqueMeshData,
-    transparent: transparentMeshData,
-  };
-
-  const transferList: Transferable[] = [
-    opaqueMeshData.positions.buffer,
-    opaqueMeshData.indices.buffer,
-    opaqueMeshData.normals.buffer,
-    opaqueMeshData.tangents.buffer,
-    opaqueMeshData.uvs2.buffer,
-    opaqueMeshData.uvs3.buffer,
-    opaqueMeshData.cornerIds.buffer,
-    transparentMeshData.positions.buffer,
-    transparentMeshData.indices.buffer,
-    transparentMeshData.normals.buffer,
-    transparentMeshData.tangents.buffer,
-    transparentMeshData.uvs2.buffer,
-    transparentMeshData.uvs3.buffer,
-    transparentMeshData.cornerIds.buffer,
-  ];
-
-  self.postMessage(transferableMessage, transferList);
+  self.postMessage(
+    {
+      chunkId,
+      type: "full-mesh",
+      opaque: opaqueMeshData,
+      transparent: transparentMeshData,
+    },
+    [
+      opaqueMeshData.positions.buffer,
+      opaqueMeshData.indices.buffer,
+      opaqueMeshData.normals.buffer,
+      opaqueMeshData.tangents.buffer,
+      opaqueMeshData.uvs2.buffer,
+      opaqueMeshData.uvs3.buffer,
+      opaqueMeshData.cornerIds.buffer,
+      transparentMeshData.positions.buffer,
+      transparentMeshData.indices.buffer,
+      transparentMeshData.normals.buffer,
+      transparentMeshData.tangents.buffer,
+      transparentMeshData.uvs2.buffer,
+      transparentMeshData.uvs3.buffer,
+      transparentMeshData.cornerIds.buffer,
+    ]
+  );
 }
