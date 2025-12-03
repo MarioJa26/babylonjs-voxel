@@ -7,12 +7,11 @@ export class Chunk {
   public static readonly SIZE = GenerationParams.CHUNK_SIZE;
   public static readonly SIZE2 = Chunk.SIZE * Chunk.SIZE;
   public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
-
-  public static readonly chunkInstances = new Map<string, Chunk>();
+  public static readonly chunkInstances = new Map<bigint, Chunk>();
 
   public isDirty = false;
   public isLoaded = true;
-  public readonly id: string;
+  public readonly id: bigint;
   private remeshTimeout: number | null = null;
 
   block_array: Uint8Array;
@@ -27,12 +26,10 @@ export class Chunk {
     this.#chunkX = chunkX;
     this.#chunkY = chunkY;
     this.#chunkZ = chunkZ;
-    this.id = `${chunkX},${chunkY},${chunkZ}`;
-
-    World.addChunk(this);
-
+    this.id = Chunk.packCoords(chunkX, chunkY, chunkZ);
     this.block_array = new Uint8Array(Chunk.SIZE ** 3);
     this.block_array.fill(0);
+    Chunk.chunkInstances.set(this.id, this);
   }
 
   public populate(block_array: Uint8Array): void {
@@ -141,7 +138,21 @@ export class Chunk {
     chunkY: number,
     chunkZ: number
   ): Chunk | undefined {
-    return Chunk.chunkInstances.get(`${chunkX},${chunkY},${chunkZ}`);
+    const key = Chunk.packCoords(chunkX, chunkY, chunkZ);
+    return Chunk.chunkInstances.get(key);
+  }
+
+  // --- Coordinate Packing for BigInt Keys ---
+  private static readonly BITS = 21n; // 21 bits allows for coordinates up to ~1 million
+  private static readonly MASK = (1n << this.BITS) - 1n;
+  private static readonly Y_SHIFT = this.BITS;
+  private static readonly Z_SHIFT = this.BITS * 2n;
+
+  public static packCoords(x: number, y: number, z: number): bigint {
+    const xBig = BigInt(x) & this.MASK;
+    const yBig = (BigInt(y) & this.MASK) << this.Y_SHIFT;
+    const zBig = (BigInt(z) & this.MASK) << this.Z_SHIFT;
+    return xBig | yBig | zBig;
   }
 
   public dispose(): void {

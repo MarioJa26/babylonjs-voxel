@@ -39,6 +39,11 @@ export class Player implements IUsable {
   static readonly REACH_DISTANCE = 16;
   #pauseMenu: PauseMenu;
 
+  // Track player's chunk position to avoid unnecessary updates
+  #lastChunkX = 0;
+  #lastChunkY = 0;
+  #lastChunkZ = 0;
+
   /**
    * Creates a new Player instance
    * @param scene The Babylon.js scene
@@ -145,9 +150,22 @@ export class Player implements IUsable {
       if (this.#keyboardControls instanceof PaddleBoatControls)
         this.#keyboardControls.update();
 
-      // Ensure world chunks are generated around the player when they move between chunks
+      // Ensure world chunks are generated around the player ONLY when they move between chunks
       const playerPos = this.position;
-      World.updateChunksAround(playerPos.x, playerPos.y, playerPos.z);
+      const currentChunkX = World.worldToChunkCoord(playerPos.x);
+      const currentChunkY = World.worldToChunkCoord(playerPos.y);
+      const currentChunkZ = World.worldToChunkCoord(playerPos.z);
+
+      if (
+        currentChunkX !== this.#lastChunkX ||
+        currentChunkY !== this.#lastChunkY ||
+        currentChunkZ !== this.#lastChunkZ
+      ) {
+        World.updateChunksAround(currentChunkX, currentChunkY, currentChunkZ);
+        this.#lastChunkX = currentChunkX;
+        this.#lastChunkY = currentChunkY;
+        this.#lastChunkZ = currentChunkZ;
+      }
     });
 
     this.scene.onAfterRenderObservable.add(() => {

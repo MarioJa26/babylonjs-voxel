@@ -13,39 +13,39 @@ export class World {
    * Optionally removes chunks that are outside the radius.
    */
   public static updateChunksAround(
-    worldX: number,
-    worldY: number,
-    worldZ: number,
+    chunkX: number,
+    chunkY: number,
+    chunkZ: number,
     renderDistance = SettingParams.RENDER_DISTANCE,
     verticalRadius = SettingParams.VERTICAL_RENDER_DISTANCE
   ) {
-    const centerX = this.worldToChunkCoord(worldX);
-    const centerY = this.worldToChunkCoord(worldY);
-    const centerZ = this.worldToChunkCoord(worldZ);
-
-    const chunksToLoad: { x: number; y: number; z: number }[] = [];
+    const chunksToLoad: { x: number; y: number; z: number; distSq: number }[] =
+      [];
 
     // 1. Collect all potential chunk coordinates and their distances
-    for (let y = centerY - verticalRadius; y <= centerY + verticalRadius; y++) {
+    for (let y = chunkY - verticalRadius; y <= chunkY + verticalRadius; y++) {
       if (y < 0 || y >= SettingParams.MAX_CHUNK_HEIGHT) continue;
-      for (
-        let x = centerX - renderDistance;
-        x <= centerX + renderDistance;
-        x++
-      ) {
+      for (let x = chunkX - renderDistance; x <= chunkX + renderDistance; x++) {
         for (
-          let z = centerZ - renderDistance;
-          z <= centerZ + renderDistance;
+          let z = chunkZ - renderDistance;
+          z <= chunkZ + renderDistance;
           z++
         ) {
-          const key = `${x},${y},${z}`;
+          const key = Chunk.packCoords(x, y, z);
           if (Chunk.chunkInstances.has(key)) continue;
-          chunksToLoad.push({ x, y, z });
+
+          const dx = x - chunkX;
+          const dz = z - chunkZ;
+          const distSq = dx * dx + dz * dz + y;
+          chunksToLoad.push({ x, y, z, distSq });
         }
       }
     }
 
-    // 3. Enqueue chunks for generation in the sorted order
+    // 2. Sort chunks by distance (nearest first)
+    chunksToLoad.sort((a, b) => a.distSq - b.distSq);
+
+    // 3. Enqueue chunks for generation in the new, sorted order
     for (const { x, y, z } of chunksToLoad) {
       const newChunk = new Chunk(x, y, z);
       ChunkWorkerPool.getInstance().scheduleTerrainGeneration(newChunk);
@@ -54,26 +54,21 @@ export class World {
     // optional: remove chunks far outside the radius to free memory
     const removeRadius =
       renderDistance + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER;
-    for (const key of Array.from(Chunk.chunkInstances.keys())) {
-      const [cx, cy, cz] = key.split(",").map((n) => parseInt(n, 10));
+    for (const chunk of Chunk.chunkInstances.values()) {
+      const { chunkX: cx, chunkY: cy, chunkZ: cz } = chunk;
       if (
-        Math.abs(cx - centerX) > removeRadius ||
-        Math.abs(cz - centerZ) > removeRadius ||
-        Math.abs(cy - centerY) >
+        Math.abs(cx - chunkX) > removeRadius ||
+        Math.abs(cz - chunkZ) > removeRadius ||
+        Math.abs(cy - chunkY) >
           verticalRadius + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER
       ) {
-        const chunk = Chunk.chunkInstances.get(key);
         if (chunk) {
           chunk.dispose();
           chunk.isLoaded = false;
+          Chunk.chunkInstances.delete(chunk.id);
         }
-        Chunk.chunkInstances.delete(key);
       }
     }
-  }
-
-  public static addChunk(chunk: Chunk) {
-    Chunk.chunkInstances.set(chunk.id, chunk);
   }
 
   public static deleteBlock(worldX: number, worldY: number, worldZ: number) {
