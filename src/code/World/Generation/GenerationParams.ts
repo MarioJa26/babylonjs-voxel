@@ -13,3 +13,10 @@ export const GenerationParams = {
 };
 
 export type GenerationParamsType = typeof GenerationParams;
+
+export type TreeDefinition = {
+  woodId: number;
+  leavesId: number;
+  baseHeight: number;
+  heightVariance: number;
+};

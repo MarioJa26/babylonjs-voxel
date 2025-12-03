@@ -1,6 +1,6 @@
 import Alea from "alea";
 import { createNoise2D } from "simplex-noise";
-import { GenerationParamsType } from "./GenerationParams";
+import { GenerationParamsType, TreeDefinition } from "./GenerationParams";
 import { Biome } from "./Biomes";
 import { Squirrel3 } from "./Squirrel13";
 import { TerrainHeightMap } from "./TerrainHeightMap";
@@ -62,13 +62,12 @@ export class WorldGenerator {
           let blockId = biome.stoneBlock;
           if (worldY === terrainHeight) {
             // Check for beach generation
-            const isBeach =
-              terrainHeight >= SEA_LEVEL - 1 &&
-              terrainHeight <= SEA_LEVEL + 2 &&
-              (this.#isNearWater(worldX + 1, worldZ, biome) ||
-                this.#isNearWater(worldX - 1, worldZ, biome) ||
-                this.#isNearWater(worldX, worldZ + 1, biome) ||
-                this.#isNearWater(worldX, worldZ - 1, biome));
+            const isBeach = this.#isBeachLocation(
+              worldX,
+              worldZ,
+              terrainHeight,
+              biome
+            );
             if (terrainHeight < SEA_LEVEL - 1) {
               blockId = biome.seafloorBlock;
             } else if (isBeach) {
@@ -119,38 +118,26 @@ export class WorldGenerator {
             worldZ,
             biome
           );
-          const topBlock = this.#getBlockTypeAtWorldCoord(
+          const topBlockId = this.#getBlockTypeAtWorldCoord(
             worldX,
             terrainHeight,
             worldZ
           );
-          if (topBlock === 15) {
-            // Use hashing for tree properties (height, etc.)
-            // Only on grass
+
+          // Ask the biome for a tree definition for the block we're on
+          const treeDef = biome.getTreeForBlock(topBlockId);
+
+          if (treeDef) {
             this._generateTreeBlocksForChunk(
               worldX,
               terrainHeight + 1,
-              worldZ, // Tree origin (stem base)
+              worldZ,
               chunkX,
               chunkY,
-              chunkZ, // Current chunk being generated
-              blocks
+              chunkZ,
+              blocks,
+              treeDef
             );
-          } else {
-            if (topBlock === 51) {
-              this._generateTreeBlocksForChunk(
-                worldX,
-                terrainHeight + 1,
-                worldZ, // Tree origin (stem base)
-                chunkX,
-                chunkY,
-                chunkZ, // Current chunk being generated
-                blocks,
-                33,
-                34,
-                12
-              );
-            } else continue;
           }
         }
       }
@@ -165,9 +152,7 @@ export class WorldGenerator {
     currentChunkY: number,
     currentChunkZ: number,
     blocks: Uint8Array,
-    woodId = 28,
-    leavesId = 2,
-    treeHeight = 5
+    treeDef: TreeDefinition
   ) {
     const placeBlock = (x: number, y: number, z: number, blockId: number) => {
       const { CHUNK_SIZE } = this.params;
@@ -197,11 +182,13 @@ export class WorldGenerator {
       worldX * 374761393 + worldZ * 678446653,
       this.seedAsInt
     );
-    const height = treeHeight + (Math.abs(heightHash) % 3);
+    const height =
+      treeDef.baseHeight +
+      (Math.abs(heightHash) % (treeDef.heightVariance + 1));
 
     // Place trunk
     for (let i = 0; i < height; i++) {
-      placeBlock(worldX, worldY + i, worldZ, woodId); // Log
+      placeBlock(worldX, worldY + i, worldZ, treeDef.woodId); // Log
     }
 
     // A more authentic Minecraft oak tree canopy
@@ -214,7 +201,7 @@ export class WorldGenerator {
       else radius = 1;
       for (let x = -radius; x <= radius; x++) {
         for (let z = -radius; z <= radius; z++) {
-          placeBlock(worldX + x, y, worldZ + z, leavesId); // Leaves
+          placeBlock(worldX + x, y, worldZ + z, treeDef.leavesId); // Leaves
         }
       }
     }
@@ -224,6 +211,28 @@ export class WorldGenerator {
     return TerrainHeightMap.getFinalTerrainHeight(worldX, worldZ, biome);
   }
 
+  #isBeachLocation(
+    worldX: number,
+    worldZ: number,
+    terrainHeight: number,
+    biome: Biome
+  ): boolean {
+    const { SEA_LEVEL } = this.params;
+    const isAtBeachLevel =
+      terrainHeight >= SEA_LEVEL - 1 && terrainHeight <= SEA_LEVEL + 2;
+
+    if (!isAtBeachLevel) {
+      return false;
+    }
+
+    const isAdjacentToWater =
+      this.#isNearWater(worldX + 1, worldZ, biome) ||
+      this.#isNearWater(worldX - 1, worldZ, biome) ||
+      this.#isNearWater(worldX, worldZ + 1, biome) ||
+      this.#isNearWater(worldX, worldZ - 1, biome);
+
+    return isAdjacentToWater;
+  }
   /**
    * Checks if a given coordinate is at or below sea level.
    */
@@ -231,12 +240,7 @@ export class WorldGenerator {
     const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(x, z, biome);
     return terrainHeight <= this.params.SEA_LEVEL;
   }
-  /**
-   * Helper to get octave noise for a coordinate, optionally with biome context.
-   */
-  #getOctaveNoise(x: number, z: number, biome?: Biome) {
-    return TerrainHeightMap.getOctaveNoise(x, z, biome);
-  }
+
   /**
    * Gets the biome information for a given world coordinate.
    */
@@ -261,11 +265,20 @@ export class WorldGenerator {
       // Above terrain, check for water
       return worldY <= SEA_LEVEL ? 30 : 0; // Water or Air
     } else if (worldY === terrainHeight) {
-      if (worldY < SEA_LEVEL + 2) {
-        return 3; // Sand
+      // This logic should mirror generateTerrain to be accurate
+      const isBeach = this.#isBeachLocation(
+        worldX,
+        worldZ,
+        terrainHeight,
+        biome
+      );
+      if (terrainHeight < SEA_LEVEL - 1) {
+        return biome.seafloorBlock;
+      } else if (isBeach) {
+        return biome.beachBlock;
+      } else {
+        return biome.topBlock;
       }
-      // Top layer of terrain
-      return biome.topBlock;
     } else if (worldY > terrainHeight - 5) {
       // 4 blocks below the top layer
       return biome.undergroundBlock;
