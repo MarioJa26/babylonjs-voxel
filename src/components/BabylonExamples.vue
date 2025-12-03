@@ -18,6 +18,7 @@ export default defineComponent({
   }),
 
   async mounted() {
+    document.title = "b102 - " + new Date().toLocaleTimeString();
     const canvas = document.querySelector("canvas") as HTMLCanvasElement;
     this.testScene = new TestScene(document, canvas);
     await this.testScene.initPromise;

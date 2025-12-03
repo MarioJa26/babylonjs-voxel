@@ -1,7 +1,22 @@
 import { Chunk } from "./Chunk";
 import { ChunkMesher } from "./ChunckMesher";
-import { World } from "../World";
 import { ChunkWorker } from "./chunkWorker";
+import { MeshData } from "./MeshData";
+
+type FullMeshMessage = {
+  type: "full-mesh";
+  chunkId: bigint;
+  opaque: MeshData;
+  transparent: MeshData;
+};
+
+type TerrainGeneratedMessage = {
+  type: "terrain-generated";
+  chunkId: bigint;
+  block_array: Uint8Array;
+};
+
+export type WorkerMessageData = FullMeshMessage | TerrainGeneratedMessage;
 
 export class ChunkWorkerPool {
   private static instance: ChunkWorkerPool;
@@ -12,7 +27,7 @@ export class ChunkWorkerPool {
 
   private constructor(poolSize: number) {
     for (let i = 0; i < poolSize; i++) {
-      const onMessage = (event: MessageEvent<any>) => {
+      const onMessage = (event: MessageEvent<WorkerMessageData>) => {
         const data = event.data;
         const { type, chunkId } = data;
 

@@ -1,6 +1,5 @@
 import { Mesh } from "@babylonjs/core";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
-import { World } from "../World";
 import { GenerationParams } from "../Generation/GenerationParams";
 
 export class Chunk {

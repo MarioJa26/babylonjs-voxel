@@ -49,6 +49,7 @@ export class Map1 {
   }
 
   async asyncInit() {
+    if (!Map1.mainScene.activeCamera) return;
     try {
       await Promise.all([this.CreateEnvironment(), this.loadTextures()]);
       if (SettingParams.ENABLE_SSAO)
@@ -59,7 +60,7 @@ export class Map1 {
             ssaoRatio: SettingParams.SSAO_RATIO,
             combineRatio: SettingParams.SSAO_COMBINE_RATIO,
           },
-          [Map1.mainScene.activeCamera!]
+          [Map1.mainScene.activeCamera]
         );
       console.log("Environment and textures loaded successfully.");
     } catch (error) {
@@ -186,7 +187,7 @@ export class Map1 {
     dirLight.intensity = SettingParams.DIRECTIONAL_LIGHT_INTENSITY;
     dirLight.position = new Vector3(20, 40, 20);
 
-    const boat = new AdvancedBoat(
+    new AdvancedBoat(
       scene,
       this.#player, // Note: #player is used here before it's fully constructed if we pass it to Player constructor
       GenerationParams.SEA_LEVEL + 0.5
@@ -196,7 +197,7 @@ export class Map1 {
   }
 
   private CreateEnvironment(): void {
-    const skybox = this.createSkybox();
+    this.createSkybox();
     //this.createWater(skybox, ground);
   }
 
@@ -267,7 +268,7 @@ export class Map1 {
     // Skybox
     const skybox = MeshBuilder.CreateSphere(
       "skyBox",
-      { diameter: 4225.11, segments: 8 },
+      { diameter: 4225.11, segments: 1 },
       Map1.mainScene
     );
     skybox.isPickable = false;
@@ -294,7 +295,7 @@ export class Map1 {
     skyboxMaterial.backFaceCulling = false;
 
     // Update the sun's direction uniform every frame
-    skyboxMaterial.onBind = (mesh) => {
+    skyboxMaterial.onBind = () => {
       const effect = skyboxMaterial.getEffect();
       if (effect) {
         effect.setVector3(

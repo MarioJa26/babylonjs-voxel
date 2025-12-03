@@ -34,7 +34,7 @@ export class PlayerVehicle {
   readonly #forwardLocalSpace = new Vector3(0, 0, 1);
   #characterOrientation = Quaternion.Identity();
   #characterGravity = new Vector3(0, -18, 0);
-  public mount!: Mount;
+  public mount!: Mount | null;
 
   private state: PlayerState = PlayerState.IN_AIR;
 
@@ -323,8 +323,7 @@ export class PlayerVehicle {
 
     outputVelocity = this.applyHorizontalProjectionCorrection(
       outputVelocity,
-      supportInfo,
-      upWorld
+      supportInfo
     );
 
     return outputVelocity;
@@ -332,8 +331,7 @@ export class PlayerVehicle {
 
   private applyHorizontalProjectionCorrection(
     velocity: Vector3,
-    supportInfo: CharacterSurfaceInfo,
-    upWorld: Vector3
+    supportInfo: CharacterSurfaceInfo
   ): Vector3 {
     // Subtract any surface velocity first
     const v = velocity.subtract(supportInfo.averageSurfaceVelocity);

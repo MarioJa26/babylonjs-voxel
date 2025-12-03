@@ -1,7 +1,7 @@
 import { Map1 } from "@/code/Maps/Map1";
 import { Player } from "../Player"; // Import Player to access its methods
 import { SettingParams } from "@/code/World/SettingParams";
-import { SSAO2RenderingPipeline, Scene } from "@babylonjs/core";
+import { SSAO2RenderingPipeline } from "@babylonjs/core";
 
 export class PauseMenu {
   private menuContainer: HTMLElement;

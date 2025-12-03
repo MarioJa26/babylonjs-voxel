@@ -156,7 +156,7 @@ class ChunkWorkerMesher {
           : fallback;
       }
       if (x >= size) {
-        return neighbors.px ? neighbors.px[0 + y * size + z * size2] : fallback;
+        return neighbors.px ? neighbors.px[y * size + z * size2] : fallback;
       }
       if (y < 0) {
         return neighbors.ny
@@ -172,7 +172,7 @@ class ChunkWorkerMesher {
         return arr ? arr[x + y * size + (size - 1) * size2] : fallback;
       }
       if (z >= size) {
-        return neighbors.pz ? neighbors.pz[x + y * size + 0 * size2] : fallback;
+        return neighbors.pz ? neighbors.pz[x + y * size] : fallback;
       }
 
       return fallback;

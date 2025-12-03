@@ -16,7 +16,7 @@ import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
 
 import { Chunk } from "./Chunk";
 import { GlobalValues } from "../GlobalValues";
-import { DiffuseOnlyShader } from "../Light/DiffuseOnlyShader";
+//import { DiffuseOnlyShader } from "../Light/DiffuseOnlyShader";
 import { ShaderMaterial } from "@babylonjs/core";
 import { MeshData } from "./MeshData";
 import { DiffuseNormalShader } from "../Light/DiffuseNormalShader";
@@ -128,7 +128,7 @@ export class ChunkMesher {
           mat.setTexture("normalTexture", normalAtlasTexture);
         }
 
-        mat.onBind = (mesh) => {
+        mat.onBind = () => {
           const effect = mat.getEffect();
           if (effect) {
             effect.setVector3("lightDirection", GlobalValues.skyLightDirection);
@@ -192,7 +192,7 @@ export class ChunkMesher {
           transparentMat.setTexture("normalTexture", normalAtlasTexture);
         }
 
-        transparentMat.onBind = (mesh) => {
+        transparentMat.onBind = () => {
           const effect = transparentMat.getEffect();
           if (effect) {
             effect.setVector3("lightDirection", GlobalValues.skyLightDirection);

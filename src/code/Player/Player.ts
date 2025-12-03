@@ -108,7 +108,7 @@ export class Player implements IUsable {
 
     window.addEventListener("mousedown", (event) => {
       if (this.#keyboardControls instanceof InventoryControls)
-        this.#keyboardControls.handleMouseEvent(event, true);
+        this.#keyboardControls.handleMouseEvent(event);
       else if (this.#keyboardControls instanceof WalkingControls) {
         this.#keyboardControls.handleMouseEvent(event, true);
       }

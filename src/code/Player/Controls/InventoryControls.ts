@@ -50,7 +50,7 @@ export class InventoryControls implements IControls<unknown> {
     this.#underlyingControls.handleKeyEvent(key, isKeyDown);
   }
 
-  handleMouseEvent(mouseEvent: MouseEvent, isKeyDown: boolean): void {
+  handleMouseEvent(mouseEvent: MouseEvent): void {
     if (
       InventoryControls.MOUSE1_INVENTORY.includes(mouseEvent.button) &&
       mouseEvent.shiftKey

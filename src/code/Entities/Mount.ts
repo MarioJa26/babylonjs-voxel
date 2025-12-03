@@ -150,7 +150,7 @@ export class Mount implements IMountable {
 
   private enablePlayerPhysics(playerVehicle: PlayerVehicle): void {
     playerVehicle.isMounted = false;
-    playerVehicle.mount = null!;
+    playerVehicle.mount = null;
     this.#physicsDisabled = false;
   }
 }

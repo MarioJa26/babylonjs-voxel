@@ -21,7 +21,6 @@ import { Player } from "./Player/Player";
 import { distanceCullMeshes } from "../BabylonExamples/occlusion";
 import { Map1 } from "./Maps/Map1";
 import { PlayerCamera } from "./Player/PlayerCamera";
-import MapFog from "./Maps/MapFog";
 import { World } from "./World/World";
 import { MyConnection } from "./Server/MyConnection";
 import { GlobalValues } from "./World/GlobalValues";
@@ -69,7 +68,7 @@ export class TestScene {
 
     // Load GLB exported from Blender using Physics extension enabled
     //await this.CreateEnvironment2();
-    const mapFog = new MapFog(scene);
+    // const mapFog = new MapFog(scene);
     const playerCamera = new PlayerCamera(camera, scene);
     new World(); // This will create all the initial chunks
     const player = new Player(this.engine, scene, playerCamera, this.canvas);
