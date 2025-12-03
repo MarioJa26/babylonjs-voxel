@@ -9,7 +9,7 @@ export class ChunkWorker {
     this.worker.onmessage = onMessage;
   }
 
-  public postMessage(chunk: Chunk, isRemesh = false): void {
+  public postMessage(chunk: Chunk): void {
     const neighbors = {
       px: chunk.getNeighbor(1, 0, 0)?.block_array,
       nx: chunk.getNeighbor(-1, 0, 0)?.block_array,

@@ -89,6 +89,14 @@ export class ChunkWorkerPool {
     const idleWorkerIndex = this.workerStatus.findIndex((status) => !status);
     if (idleWorkerIndex === -1) return;
 
+    // then remesh tasks
+    const chunk = this.taskQueue.shift();
+    if (chunk) {
+      this.workerStatus[idleWorkerIndex] = true;
+      const worker = this.workers[idleWorkerIndex] as unknown as ChunkWorker;
+      (worker as unknown as ChunkWorker).postMessage(chunk);
+    }
+
     // terrain tasks first
     const terrainChunk = this.terrainTaskQueue.shift();
     if (terrainChunk) {
@@ -97,12 +105,5 @@ export class ChunkWorkerPool {
       worker.postTerrainGeneration(terrainChunk);
       return;
     }
-
-    // then remesh tasks
-    const chunk = this.taskQueue.shift();
-    if (!chunk) return;
-    this.workerStatus[idleWorkerIndex] = true;
-    const worker = this.workers[idleWorkerIndex] as unknown as ChunkWorker;
-    (worker as unknown as ChunkWorker).postMessage(chunk, true);
   }
 }
