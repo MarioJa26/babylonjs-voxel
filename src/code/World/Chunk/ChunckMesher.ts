@@ -107,6 +107,7 @@ export class ChunkMesher {
               "uv3",
               "tangent",
               "cornerId",
+              "ao",
             ],
             uniforms: [
               "world",
@@ -164,6 +165,7 @@ export class ChunkMesher {
               "uv3",
               "tangent",
               "cornerId",
+              "ao",
             ],
             uniforms: [
               "world",
@@ -363,6 +365,22 @@ export class ChunkMesher {
       false // normalized
     );
     mesh.setVerticesBuffer(cornerIdBuffer);
+
+    // Create VertexBuffer for ao (Uint8)
+    const aoBuffer = new VertexBuffer(
+      engine,
+      meshData.ao,
+      "ao",
+      false, // updatable
+      undefined, // postpone
+      1, // stride
+      false, // instanced
+      undefined, // offset
+      undefined, // size
+      VertexBuffer.UNSIGNED_BYTE,
+      false // normalized
+    );
+    mesh.setVerticesBuffer(aoBuffer);
 
     mesh.setIndices(meshData.indices);
 

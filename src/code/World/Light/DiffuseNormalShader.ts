@@ -9,6 +9,7 @@ attribute vec2 uv2; // uv2 = tile coords (tx, ty)
 attribute float cornerId; // 0,1,2,3 for quad corners
 attribute vec2 uv3; // uv3 = quad dimensions (w,h)
 attribute vec4 tangent;
+attribute float ao;
 
 // Uniforms
 uniform mat4 world;
@@ -22,6 +23,7 @@ varying vec2 vUV3;
 varying vec3 vPositionW;
 varying mat3 vTBN;
 varying vec2 vScreenSize;
+varying float vAO;
 
 uniform float atlasTileSize;
 
@@ -48,6 +50,8 @@ void main(void) {
 
     // Pass screen size to fragment shader for depth calculations
     vScreenSize = screenSize;
+
+    vAO = ao;
 }
 `;
   static readonly chunkFragmentShader = `
@@ -63,6 +67,7 @@ void main(void) {
 
     varying vec3 vPositionW;
     varying mat3 vTBN;
+    varying float vAO;
 
     uniform sampler2D diffuseTexture;
     uniform sampler2D normalTexture;
@@ -120,7 +125,11 @@ void main(void) {
         float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), 32.0);
         vec3 specular = vec3(0.3) * spec; // Specular color is white
 
-        gl_FragColor = vec4(diffuseColor.rgb * 0.76 + diffuse + specular, diffuseColor.a);
+        // --- Ambient Occlusion ---
+        float aoFactor = 1.0 - vAO * 0.175; // 0->1, 1->0.85, 2->0.7, 3->0.55
+        vec3 finalColor = (diffuseColor.rgb * 0.8 + diffuse + specular) * aoFactor;
+
+        gl_FragColor = vec4(finalColor, diffuseColor.a);
     }
 `;
 }

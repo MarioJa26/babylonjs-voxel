@@ -11,6 +11,7 @@ export class TransparentNormalShader {
     varying vec2 vUV3;
     varying mat3 vTBN;
     varying vec2 vScreenSize;
+    varying float vAO;
 
     // Uniforms
     uniform vec3 cameraPosition;
@@ -68,7 +69,11 @@ export class TransparentNormalShader {
         float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), 32.0);
         vec3 specular = vec3(0.3) * spec;
 
-        vec3 finalColor = diffuseColor.rgb * 0.4 + diffuse + specular;
+        // --- Ambient Occlusion ---
+        float aoFactor = 1.0 - vAO * 0.15;
+        vec3 litColor = diffuseColor.rgb * 0.4 + diffuse + specular;
+        vec3 finalColor = litColor * aoFactor;
+
 
         // --- Depth-based Transparency ---
         // Get screen UVs from gl_FragCoord

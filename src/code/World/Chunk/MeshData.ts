@@ -6,6 +6,7 @@ export class MeshData {
   uvs2: Uint8Array = new Uint8Array(); // vec2, tile coords (tx, ty)
   uvs3: Uint8Array = new Uint8Array(); // vec2, quad dimensions (w, h)
   cornerIds: Uint8Array = new Uint8Array(); // float
+  ao: Uint8Array = new Uint8Array(); // Ambient Occlusion values
 
   public static deserialize(data: any): MeshData {
     const meshData = new MeshData();
@@ -20,6 +21,7 @@ export class MeshData {
     meshData.uvs2 = data.uvs2 || new Uint8Array();
     meshData.uvs3 = data.uvs3 || new Uint8Array();
     meshData.cornerIds = data.cornerIds || new Uint8Array();
+    meshData.ao = data.ao || new Uint8Array();
 
     return meshData;
   }
