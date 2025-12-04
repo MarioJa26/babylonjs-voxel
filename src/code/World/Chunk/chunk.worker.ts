@@ -226,16 +226,16 @@ class ChunkWorkerMesher {
               blockCurrent // key: if neighbor missing, pretend same block to avoid border faces
             );
 
-            const isCurrentTransparent = TRANSPARENT_BLOCKS.has(blockCurrent);
-            const isNeighborTransparent = TRANSPARENT_BLOCKS.has(blockNeighbor);
-            const isCurrentSolid = blockCurrent !== 0;
-            const isNeighborSolid = blockNeighbor !== 0;
-
             // --- Face Culling Logic ---
             if (blockCurrent === blockNeighbor) {
               mask[maskIndex++] = 0;
               continue;
             }
+
+            const isCurrentTransparent = TRANSPARENT_BLOCKS.has(blockCurrent);
+            const isNeighborTransparent = TRANSPARENT_BLOCKS.has(blockNeighbor);
+            const isCurrentSolid = blockCurrent !== 0;
+            const isNeighborSolid = blockNeighbor !== 0;
 
             if (
               isCurrentSolid &&
@@ -323,9 +323,8 @@ class ChunkWorkerMesher {
 
               // Zero out the mask for the area covered by the new quad
               for (let hh = 0; hh < height; hh++) {
-                for (let ww = 0; ww < width; ww++) {
-                  mask[maskIndex + ww + hh * size] = 0;
-                }
+                const start = maskIndex + hh * size;
+                mask.fill(0, start, start + width);
               }
 
               u_coord += width;
