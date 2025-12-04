@@ -30,6 +30,9 @@ export class WorldGenerator {
     this.generateTerrain(chunkX, chunkY, chunkZ, blocks, biome);
     this.generateFlora(chunkX, chunkY, chunkZ, blocks, biome);
 
+    // Attempt to generate structures for this chunk
+    this.generateStructures(chunkX, chunkY, chunkZ, blocks);
+
     return { blocks };
   }
 
@@ -294,5 +297,154 @@ export class WorldGenerator {
         biome
       );
     } */
+  }
+  private generateStructures(
+    chunkX: number,
+    chunkY: number,
+    chunkZ: number,
+    blocks: Uint8Array
+  ) {
+    this.tryPlacingTower(chunkX, chunkY, chunkZ, blocks);
+  }
+
+  private tryPlacingTower(
+    chunkX: number,
+    chunkY: number,
+    chunkZ: number,
+    blocks: Uint8Array
+  ) {
+    const { CHUNK_SIZE } = this.params;
+    const TOWER_REGION_SIZE = 32; // in chunks
+    const TOWER_SPAWN_CHANCE = 100; // out of 100
+
+    // Determine the region this chunk belongs to
+    const regionX = Math.floor(chunkX / TOWER_REGION_SIZE);
+    const regionZ = Math.floor(chunkZ / TOWER_REGION_SIZE);
+
+    // Use a deterministic hash to decide if a tower spawns in this region
+    const regionHash = Squirrel3.get(
+      regionX * 374761393 + regionZ * 678446653,
+      this.seedAsInt
+    );
+
+    if (Math.abs(regionHash) % 100 < TOWER_SPAWN_CHANCE) {
+      // A tower should spawn in this region. Now, determine its exact location.
+      const offsetX =
+        Math.abs(Squirrel3.get(regionHash, this.seedAsInt)) %
+        (TOWER_REGION_SIZE * CHUNK_SIZE);
+      const offsetZ =
+        Math.abs(Squirrel3.get(regionHash + 1, this.seedAsInt)) %
+        (TOWER_REGION_SIZE * CHUNK_SIZE);
+
+      const towerCenterX = regionX * TOWER_REGION_SIZE * CHUNK_SIZE + offsetX;
+      const towerCenterZ = regionZ * TOWER_REGION_SIZE * CHUNK_SIZE + offsetZ;
+
+      // --- Prevent spawning near the world origin (0,0) ---
+      const axisCorridorWidth = 20; // No towers within this distance from the X or Z axis
+      if (
+        Math.abs(towerCenterX) < axisCorridorWidth ||
+        Math.abs(towerCenterZ) < axisCorridorWidth
+      ) {
+        return;
+      }
+
+      // Now that we have a position, generate the tower if this chunk is in range
+      this.generateCylinderTower(
+        chunkX,
+        chunkY,
+        chunkZ,
+        blocks,
+        towerCenterX,
+        towerCenterZ
+      );
+    }
+  }
+
+  private generateCylinderTower(
+    chunkX: number,
+    chunkY: number,
+    chunkZ: number,
+    blocks: Uint8Array,
+    towerCenterX: number,
+    towerCenterZ: number
+  ) {
+    const { CHUNK_SIZE } = this.params;
+    const towerRadius = 8 + (Squirrel3.get(towerCenterX, this.seedAsInt) % 4);
+    const towerHeight = 76 + (Squirrel3.get(towerCenterZ, this.seedAsInt) % 8);
+    const wallBlockId = 1;
+
+    // --- 1. Find the lowest ground point within the tower's radius ---
+    let minGroundHeight = Infinity;
+    const radiusSq = towerRadius * towerRadius;
+    const biome = this.#getBiome(towerCenterX, towerCenterZ);
+    for (let dx = -towerRadius; dx <= towerRadius; dx++) {
+      for (let dz = -towerRadius; dz <= towerRadius; dz++) {
+        if (dx * dx + dz * dz > radiusSq) continue;
+
+        const worldX = towerCenterX + dx;
+        const worldZ = towerCenterZ + dz;
+
+        const height = this.#getFinalTerrainHeight(worldX, worldZ, biome);
+        if (height < minGroundHeight) {
+          minGroundHeight = height;
+        }
+      }
+    }
+
+    const groundHeight = minGroundHeight;
+
+    // --- 2. Create a solid foundation up to the groundHeight ---
+    for (let localX = 0; localX < CHUNK_SIZE; localX++) {
+      for (let localZ = 0; localZ < CHUNK_SIZE; localZ++) {
+        const worldX = chunkX * CHUNK_SIZE + localX;
+        const worldZ = chunkZ * CHUNK_SIZE + localZ;
+
+        const dx = worldX - towerCenterX;
+        const dz = worldZ - towerCenterZ;
+        if (dx * dx + dz * dz <= radiusSq) {
+          const originalHeight = this.#getFinalTerrainHeight(
+            worldX,
+            worldZ,
+            biome
+          );
+          // Fill in blocks from original terrain height up to the new flat groundHeight
+          for (let y = originalHeight; y < groundHeight; y++) {
+            const localY = y - chunkY * CHUNK_SIZE;
+            if (localY >= 0 && localY < CHUNK_SIZE) {
+              blocks[
+                localX + localY * CHUNK_SIZE + localZ * CHUNK_SIZE * CHUNK_SIZE
+              ] = biome.undergroundBlock;
+            }
+          }
+        }
+      }
+    }
+
+    // Iterate through all possible blocks in the current chunk
+    for (let localY = 0; localY < CHUNK_SIZE; localY++) {
+      const worldY = chunkY * CHUNK_SIZE + localY;
+
+      // Check if the current world Y is within the tower's height range
+      if (worldY < groundHeight || worldY >= groundHeight + towerHeight) {
+        continue;
+      }
+
+      for (let localX = 0; localX < CHUNK_SIZE; localX++) {
+        for (let localZ = 0; localZ < CHUNK_SIZE; localZ++) {
+          const worldX = chunkX * CHUNK_SIZE + localX;
+          const worldZ = chunkZ * CHUNK_SIZE + localZ;
+
+          const dx = worldX - towerCenterX;
+          const dz = worldZ - towerCenterZ;
+          const distSq = dx * dx + dz * dz;
+
+          if (distSq <= radiusSq) {
+            blocks[
+              localX + localY * CHUNK_SIZE + localZ * CHUNK_SIZE * CHUNK_SIZE
+            ] = wallBlockId;
+          }
+        }
+      }
+    }
   }
 }
