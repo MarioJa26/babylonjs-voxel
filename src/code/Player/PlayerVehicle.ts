@@ -5,6 +5,8 @@ import {
   Mesh,
   MeshBuilder,
   PhysicsCharacterController,
+  PhysicsShape,
+  PhysicsShapeType,
   Quaternion,
   Scene,
   StandardMaterial,
@@ -39,7 +41,7 @@ export class PlayerVehicle {
   private state: PlayerState = PlayerState.IN_AIR;
 
   // Movement parameters
-  private readonly deacceleration = 0.8;
+  private readonly deacceleration = 0.85;
   private readonly inAirSpeed = 7.0;
   private readonly onGroundSpeed = 7.0;
   private readonly jumpHeight = 0.35;
@@ -58,34 +60,40 @@ export class PlayerVehicle {
 
   private initializeCharacter(): void {
     // Create visual representation
-    const height = 1.8;
-    const radius = 0.3;
-    this.#displayCapsule = this.createCharacterMesh(height, radius);
+    const height = 1.75;
+    const width = 0.6;
+    this.#displayCapsule = this.createCharacterMesh(height, width);
 
     // Create physics controller
     const startPosition = new Vector3(30, 165, 0);
+    const boxSize = new Vector3(width, height, width);
+    const characterShape = new PhysicsShape(
+      { type: PhysicsShapeType.BOX, parameters: { extents: boxSize } },
+      this.scene
+    );
+
     this.#characterController = new PhysicsCharacterController(
       startPosition,
-      { capsuleHeight: height, capsuleRadius: radius },
+      { shape: characterShape },
       this.scene
     );
 
     this.camera.target = startPosition;
   }
 
-  private createCharacterMesh(height: number, radius: number): Mesh {
-    const capsule = MeshBuilder.CreateCapsule(
+  private createCharacterMesh(height: number, width: number): Mesh {
+    const box = MeshBuilder.CreateBox(
       "CharacterDisplay",
-      { height, radius },
+      { width: width, height: height, depth: width },
       this.scene
     );
 
-    const material = new StandardMaterial("capsule", this.scene);
+    const material = new StandardMaterial("box", this.scene);
     material.diffuseColor = new Color3(0.2, 0.9, 0.8);
-    capsule.material = material;
-    capsule.isPickable = false;
+    box.material = material;
+    box.isPickable = false;
 
-    return capsule;
+    return box;
   }
 
   public updateCameraAndVisuals(): void {

@@ -28,11 +28,10 @@ uniform float atlasTileSize;
 void main(void) {
     gl_Position = worldViewProjection * vec4(position, 1.0);
 
-    // Branchless UV decoding from cornerId (0,1,2,3)
-    // cornerId == 1.0 || cornerId == 2.0 -> u = 1.0
-    // cornerId == 2.0 || cornerId == 3.0 -> v = 1.0
-    float u = step(1.0, cornerId) - step(3.0, cornerId); // 0,1,1,0
-    float v = step(2.0, cornerId);                       // 0,0,1,1
+    // UV decoding from cornerId (0,1,2,3)
+    float u = step(1.0, cornerId) - step(3.0, cornerId); // (0,1,1,0)
+    float v = step(2.0, cornerId);                       // (0,0,1,1)
+
     vUV = vec2(u, v);
 
     // Calculate atlas tile offset (vUV2) from integer tile coordinates (uv2)

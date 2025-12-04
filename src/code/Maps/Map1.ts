@@ -29,8 +29,9 @@ export class Map1 {
   #player: Player;
   #blockHighlightMesh!: Mesh;
 
-  static #timeOfDay = 12000; // Time in milliseconds, progresses from 0 to dayDurationMs
+  static #timeOfDay = 200000; // Time in milliseconds, progresses from 0 to dayDurationMs
   public static timeScale = 0;
+  public static isPaused = false;
   public readonly initPromise: Promise<void>;
 
   constructor(scene: Scene, player: Player) {
@@ -43,7 +44,7 @@ export class Map1 {
 
     scene.onBeforeRenderObservable.add(() => {
       this.updateBlockHighlight();
-      if (Map1.timeScale === 0) return; // Don't update game logic if paused
+      if (Map1.isPaused) return; // Don't update game logic if paused
       this.updateDayNightCycle();
     });
   }
@@ -118,7 +119,7 @@ export class Map1 {
   }
 
   private updateDayNightCycle() {
-    if (Map1.timeScale < 0.01) return;
+    if (Map1.isPaused) return;
     // Increment time of day based on frame delta time
     Map1.#timeOfDay +=
       Map1.mainScene.getEngine().getDeltaTime() * Map1.timeScale;

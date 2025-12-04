@@ -3,6 +3,7 @@
 import { BlockTextures } from "../Texture/BlockTextures";
 import { WorldGenerator } from "../Generation/WorldGenerator";
 import { MeshData } from "./MeshData";
+import { h } from "vue";
 
 /**
  * A wrapper around a TypedArray that allows it to be resized dynamically.
@@ -352,18 +353,26 @@ class ChunkWorkerMesher {
   private static pushTileUV(
     cornerIds: ResizableTypedArray<Uint8Array>,
     uvs2: ResizableTypedArray<Uint8Array>,
+    uvs3: ResizableTypedArray<Uint8Array>,
+    width: number,
+    height: number,
     tx: number,
     ty: number,
-    isBackFace: boolean
+    q: number[]
   ) {
     // uvs2: tile coordinates (tx, ty) repeated for 4 vertices
     uvs2.push(tx, ty, tx, ty, tx, ty, tx, ty);
 
-    // cornerIds: standard quad UVs (optionally flipped for back faces)
-    if (isBackFace) {
-      cornerIds.push(3, 2, 1, 0);
+    if (q[0] === 1) {
+      cornerIds.push(1, 2, 3, 0);
+      uvs3.push(
+        ...[height, width, height, width, height, width, height, width]
+      );
     } else {
       cornerIds.push(0, 1, 2, 3);
+      uvs3.push(
+        ...[width, height, width, height, width, height, width, height]
+      );
     }
   }
 
@@ -372,17 +381,17 @@ class ChunkWorkerMesher {
     q: number[],
     u: number,
     v: number,
-    w: number,
-    h: number,
+    width: number,
+    height: number,
     blockId: number,
     isBackFace: boolean,
     meshData: WorkerInternalMeshData
   ) {
     // create du/dv
     const du = [0, 0, 0];
-    du[u] = w;
+    du[u] = width;
     const dv = [0, 0, 0];
-    dv[v] = h;
+    dv[v] = height;
 
     // compute four corner positions
     const p1 = [x[0], x[1], x[2]];
@@ -415,26 +424,17 @@ class ChunkWorkerMesher {
     this.pushTileUV(
       meshData.cornerIds,
       meshData.uvs2,
+      meshData.uvs3,
+      width,
+      height,
       tile[0],
       tile[1],
-      isBackFace
+      q
     );
-
-    // uvs3 tiling info
-    meshData.uvs3.push(...[w, h, w, h, w, h, w, h]);
 
     // indices
     const { indices, indexOffset } = meshData;
-    if (!isBackFace) {
-      indices.push(
-        indexOffset,
-        indexOffset + 2,
-        indexOffset + 1,
-        indexOffset,
-        indexOffset + 3,
-        indexOffset + 2
-      );
-    } else {
+    if (isBackFace) {
       indices.push(
         indexOffset,
         indexOffset + 1,
@@ -442,6 +442,15 @@ class ChunkWorkerMesher {
         indexOffset,
         indexOffset + 2,
         indexOffset + 3
+      );
+    } else {
+      indices.push(
+        indexOffset,
+        indexOffset + 2,
+        indexOffset + 1,
+        indexOffset,
+        indexOffset + 3,
+        indexOffset + 2
       );
     }
     meshData.indexOffset += 4;

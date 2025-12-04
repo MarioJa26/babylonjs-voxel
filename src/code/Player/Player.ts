@@ -222,14 +222,14 @@ export class Player implements IUsable {
     return directions[index];
   }
   private pauseGame() {
-    Map1.timeScale = 0;
+    Map1.isPaused = true;
     TestScene.hk.setTimeStep(0); // Freeze physics updates
     this.#pauseMenu.show();
   }
 
   private resumeGame() {
     TestScene.hk.setTimeStep(1 / 60); // Resume physics updates
-    Map1.timeScale = 1.0;
+    Map1.isPaused = false;
     this.#pauseMenu.hide();
     // Request pointer lock only if the canvas has focus
     const canvas = Map1.mainScene.getEngine().getRenderingCanvas();
