@@ -456,10 +456,9 @@ class ChunkWorkerMesher {
     // `x` is the position of the corner of the quad, which is on a block boundary.
     // For a front face, we subtract the normal `q` to get the block's origin.
     // For a back face, the quad is on the correct side, so we don't subtract.
-    const blockOrigin = [x[0] - q[0], x[1] - q[1], x[2] - q[2]];
-    const blockPos = !isBackFace
-      ? [blockOrigin[0] + q[0], blockOrigin[1] + q[1], blockOrigin[2] + q[2]]
-      : blockOrigin;
+    const blockPos = isBackFace
+      ? [x[0] - q[0], x[1] - q[1], x[2] - q[2]]
+      : [x[0], x[1], x[2]];
 
     for (let i = 0; i < 4; i++) {
       const corner = corners[i];
@@ -525,7 +524,6 @@ class ChunkWorkerMesher {
       q
     );
 
-    // indices
     const { indices, indexOffset } = meshData;
 
     // 2. Decide which way to split the quad to get the best AO look.
@@ -584,7 +582,6 @@ const onMessageHandler = (event: MessageEvent) => {
 
     const { blocks } = generator.generateChunkData(chunkX, chunkY, chunkZ);
 
-    // return terrain result (transfer the buffer)
     self.postMessage(
       { chunkId, type: "terrain-generated", block_array: blocks },
       [blocks.buffer]

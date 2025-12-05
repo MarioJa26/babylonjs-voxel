@@ -67,11 +67,11 @@ export class TransparentNormalShader {
         vec3 viewDirection = normalize(cameraPosition - vPositionW);
         vec3 halfwayDir = normalize(normalizedLightDirection + viewDirection);
         float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), 32.0);
-        vec3 specular = vec3(0.3) * spec;
+        vec3 specular = vec3(0.4) * spec;
 
         // --- Ambient Occlusion ---
-        float aoFactor = 1.0 - vAO * 0.15;
-        vec3 litColor = diffuseColor.rgb * 0.4 + diffuse + specular;
+        float aoFactor = 1.0 - vAO * 0.24;
+        vec3 litColor = diffuseColor.rgb * 0.5 + diffuse + specular;
         vec3 finalColor = litColor * aoFactor;
 
 
@@ -87,10 +87,10 @@ export class TransparentNormalShader {
         float linearWaterDepth = linearizeDepth(gl_FragCoord.z, cameraPlanes.x, cameraPlanes.y);
         
         float waterThickness = linearSceneDepth - linearWaterDepth;
-        float fogFactor = clamp(waterThickness * 2.2, 0.0, 1.0); // Adjust 0.2 to control how quickly water becomes opaque
+        float fogFactor = clamp(waterThickness * 110.2, 0.0, 1.0); // Adjust 0.2 to control how quickly water becomes opaque
 
         // Apply alpha for transparency
-        gl_FragColor = vec4(finalColor, mix(diffuseColor.a * 0.4, 1.0, fogFactor));
+        gl_FragColor = vec4(finalColor, (diffuseColor.a * 0.4));
     }
   `;
 }

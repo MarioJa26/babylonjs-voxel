@@ -43,7 +43,7 @@ export class PlayerVehicle {
   // Movement parameters
   private readonly deacceleration = 0.85;
   private readonly inAirSpeed = 7.0;
-  private readonly onGroundSpeed = 7.0;
+  private readonly onGroundSpeed = 5.0;
   private readonly jumpHeight = 0.35;
   private readonly accelRateGround = 36;
   private readonly sprintMultiplier = 1.6;
@@ -65,7 +65,7 @@ export class PlayerVehicle {
     this.#displayCapsule = this.createCharacterMesh(height, width);
 
     // Create physics controller
-    const startPosition = new Vector3(30, 165, 0);
+    const startPosition = new Vector3(0, 165, 0);
     const boxSize = new Vector3(width, height, width);
     const characterShape = new PhysicsShape(
       { type: PhysicsShapeType.BOX, parameters: { extents: boxSize } },
@@ -157,7 +157,6 @@ export class PlayerVehicle {
     const currentVelocity = this.#characterController.getVelocity();
     let newVelocity = currentVelocity.clone();
     if (desiredVelocity.lengthSquared() < 0.01) {
-      // If no input, slow down
       newVelocity.scaleInPlace(this.deacceleration);
     } else {
       // Accelerate towards desired velocity

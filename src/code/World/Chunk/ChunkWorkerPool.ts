@@ -1,20 +1,7 @@
 import { Chunk } from "./Chunk";
 import { ChunkMesher } from "./ChunckMesher";
 import { ChunkWorker } from "./chunkWorker";
-import { MeshData } from "./MeshData";
-
-type FullMeshMessage = {
-  type: "full-mesh";
-  chunkId: bigint;
-  opaque: MeshData;
-  transparent: MeshData;
-};
-
-type TerrainGeneratedMessage = {
-  type: "terrain-generated";
-  chunkId: bigint;
-  block_array: Uint8Array;
-};
+import { FullMeshMessage, TerrainGeneratedMessage } from "./WorkerMessageType";
 
 export type WorkerMessageData = FullMeshMessage | TerrainGeneratedMessage;
 
