@@ -1,7 +1,7 @@
 import { createNoise2D } from "simplex-noise";
 import Alea from "alea";
 import { Squirrel3 } from "./Squirrel13";
-import { Biome, getBiomeFor } from "./Biomes";
+import { Biome, getBiomeFor } from "./Biome/Biomes";
 import { GenerationParams, GenerationParamsType } from "./GenerationParams";
 import { Voronoi } from "./Voronoi";
 

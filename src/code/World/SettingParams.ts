@@ -4,7 +4,7 @@ export class SettingParams {
   // --- World Generation & Loading ---
   public static RENDER_DISTANCE = 12;
   public static VERTICAL_RENDER_DISTANCE = 16;
-  public static MAX_CHUNK_HEIGHT = 24;
+  public static MAX_CHUNK_HEIGHT = 28;
   public static CHUNK_UNLOAD_DISTANCE_BUFFER = 6; // How many extra chunks to keep before unloading
   public static CHUNK_SORT_DISTANCE_THRESHOLD_SQ = 16; // Squared distance under which to sort chunks for loading
   public static VERTICAL_CHUNK_CULLING_FACTOR = 6; // Multiplier for CHUNK_SIZE to cull chunks above/below terrain

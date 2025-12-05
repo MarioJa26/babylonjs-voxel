@@ -1,7 +1,7 @@
 import Alea from "alea";
 import { createNoise2D } from "simplex-noise";
-import { GenerationParamsType, TreeDefinition } from "./GenerationParams";
-import { Biome } from "./Biomes";
+import { GenerationParamsType } from "./GenerationParams";
+import { Biome } from "./Biome/Biomes";
 import { Squirrel3 } from "./Squirrel13";
 import { TerrainHeightMap } from "./TerrainHeightMap";
 
@@ -10,6 +10,8 @@ export class WorldGenerator {
   private prng: ReturnType<typeof Alea>;
   private seedAsInt: number;
   private treeNoise: ReturnType<typeof createNoise2D>;
+
+  private chunk_size: number;
 
   constructor(params: GenerationParamsType) {
     this.params = params;
@@ -21,17 +23,56 @@ export class WorldGenerator {
     const treePrng = Alea(this.prng());
 
     this.treeNoise = createNoise2D(treePrng);
+    this.chunk_size = this.params.CHUNK_SIZE;
   }
 
   public generateChunkData(chunkX: number, chunkY: number, chunkZ: number) {
-    const { CHUNK_SIZE } = this.params;
-    const blocks = new Uint8Array(CHUNK_SIZE ** 3);
-    const biome = this.#getBiome(chunkX * CHUNK_SIZE, chunkZ * CHUNK_SIZE);
-    this.generateTerrain(chunkX, chunkY, chunkZ, blocks, biome);
-    this.generateFlora(chunkX, chunkY, chunkZ, blocks, biome);
+    const blocks = new Uint8Array(this.chunk_size ** 3);
+
+    /**
+     * Places a block in the current chunk's block array by world coordinates.
+     * @param x World X coordinate.
+     * @param y World Y coordinate.
+     * @param z World Z coordinate.
+     * @param blockId The ID of the block to place.
+     * @param overwrite If true, will place the block even if one already exists.
+     */
+    const placeBlock = (
+      x: number,
+      y: number,
+      z: number,
+      blockId: number,
+      overwrite = false
+    ) => {
+      const localX = x - chunkX * this.chunk_size;
+      const localY = y - chunkY * this.chunk_size;
+      const localZ = z - chunkZ * this.chunk_size;
+
+      if (
+        localX >= 0 &&
+        localX < this.chunk_size &&
+        localY >= 0 &&
+        localY < this.chunk_size &&
+        localZ >= 0 &&
+        localZ < this.chunk_size
+      ) {
+        const idx =
+          localX + localY * this.chunk_size + localZ * this.chunk_size ** 2;
+        if (overwrite || blocks[idx] === 0) {
+          blocks[idx] = blockId;
+        }
+      }
+    };
+
+    const biome = this.#getBiome(
+      chunkX * this.chunk_size,
+      chunkZ * this.chunk_size
+    );
+    this.generateTerrain(chunkX, chunkY, chunkZ, biome, placeBlock);
+    this.generateFlora(chunkX, chunkY, chunkZ, biome, placeBlock);
 
     // Attempt to generate structures for this chunk
-    this.generateStructures(chunkX, chunkY, chunkZ, blocks);
+    this.generateStructures(chunkX, chunkY, chunkZ, placeBlock);
 
     return { blocks };
   }
@@ -40,12 +81,17 @@ export class WorldGenerator {
     chunkX: number,
     chunkY: number,
     chunkZ: number,
-    blocks: Uint8Array,
-    biome: Biome
+    biome: Biome,
+    placeBlock: (
+      x: number,
+      y: number,
+      z: number,
+      id: number,
+      ow: boolean
+    ) => void
   ) {
     const { CHUNK_SIZE, SEA_LEVEL } = this.params;
     const SIZE = CHUNK_SIZE;
-    const SIZE2 = SIZE * SIZE;
 
     for (let localX = 0; localX < SIZE; localX++) {
       for (let localZ = 0; localZ < SIZE; localZ++) {
@@ -60,8 +106,6 @@ export class WorldGenerator {
 
         for (let worldY = 0; worldY <= terrainHeight; worldY++) {
           const localY = worldY - chunkY * SIZE;
-          if (localY < 0 || localY >= SIZE) continue;
-
           let blockId = biome.stoneBlock;
           if (worldY === terrainHeight) {
             // Check for beach generation
@@ -82,13 +126,12 @@ export class WorldGenerator {
             blockId = biome.undergroundBlock;
           }
 
-          blocks[localX + localY * SIZE + localZ * SIZE2] = blockId;
+          placeBlock(worldX, worldY, worldZ, blockId, true);
         }
 
         for (let worldY = terrainHeight + 1; worldY <= SEA_LEVEL; worldY++) {
-          const localY = worldY - chunkY * SIZE;
-          if (localY < 0 || localY >= SIZE) continue;
-          blocks[localX + localY * SIZE + localZ * SIZE2] = 30; // water
+          // Water should not overwrite existing blocks (like tower walls)
+          placeBlock(worldX, worldY, worldZ, 30, false); // water
         }
       }
     }
@@ -98,17 +141,23 @@ export class WorldGenerator {
     chunkX: number,
     chunkY: number,
     chunkZ: number,
-    blocks: Uint8Array,
-    biome: Biome
+    biome: Biome,
+    placeBlock: (x: number, y: number, z: number, id: number) => void
   ) {
-    const { CHUNK_SIZE } = this.params;
-    const SIZE = CHUNK_SIZE;
-    const TREE_RADIUS = 4; // Max horizontal extent of a tree from its stem
+    const TREE_RADIUS = Math.ceil(biome.treeDensity * 100) + 1;
 
-    for (let localX = -TREE_RADIUS; localX < SIZE + TREE_RADIUS; localX++) {
-      for (let localZ = -TREE_RADIUS; localZ < SIZE + TREE_RADIUS; localZ++) {
-        const worldX = chunkX * SIZE + localX;
-        const worldZ = chunkZ * SIZE + localZ;
+    for (
+      let localX = -TREE_RADIUS;
+      localX < this.chunk_size + TREE_RADIUS;
+      localX++
+    ) {
+      for (
+        let localZ = -TREE_RADIUS;
+        localZ < this.chunk_size + TREE_RADIUS;
+        localZ++
+      ) {
+        const worldX = chunkX * this.chunk_size + localX;
+        const worldZ = chunkZ * this.chunk_size + localZ;
 
         // Use noise for tree placement. The value is in [-1, 1], so we map it to [0, 1].
         const treeNoiseValue = (this.treeNoise(worldX, worldZ) + 1) / 2;
@@ -128,88 +177,19 @@ export class WorldGenerator {
           );
 
           // Ask the biome for a tree definition for the block we're on
-          const treeDef = biome.getTreeForBlock(topBlockId);
-
-          if (treeDef) {
-            this._generateTreeBlocksForChunk(
+          biome
+            .getTreeForBlock(topBlockId)
+            ?.generate(
               worldX,
               terrainHeight + 1,
               worldZ,
-              chunkX,
-              chunkY,
-              chunkZ,
-              blocks,
-              treeDef
+              placeBlock,
+              this.seedAsInt
             );
-          }
         }
       }
     }
   }
-
-  private _generateTreeBlocksForChunk(
-    worldX: number,
-    worldY: number,
-    worldZ: number,
-    currentChunkX: number,
-    currentChunkY: number,
-    currentChunkZ: number,
-    blocks: Uint8Array,
-    treeDef: TreeDefinition
-  ) {
-    const placeBlock = (x: number, y: number, z: number, blockId: number) => {
-      const { CHUNK_SIZE } = this.params;
-      const SIZE = CHUNK_SIZE;
-      const SIZE2 = SIZE * SIZE;
-      const localX = x - currentChunkX * SIZE;
-      const localY = y - currentChunkY * SIZE;
-      const localZ = z - currentChunkZ * SIZE;
-
-      if (
-        localX >= 0 &&
-        localX < SIZE &&
-        localY >= 0 &&
-        localY < SIZE &&
-        localZ >= 0 &&
-        localZ < SIZE
-      ) {
-        const idx = localX + localY * SIZE + localZ * SIZE2;
-        const existing = blocks[idx];
-        if (existing === 0) {
-          blocks[idx] = blockId;
-        }
-      }
-    };
-
-    const heightHash = Squirrel3.get(
-      worldX * 374761393 + worldZ * 678446653,
-      this.seedAsInt
-    );
-    const height =
-      treeDef.baseHeight +
-      (Math.abs(heightHash) % (treeDef.heightVariance + 1));
-
-    // Place trunk
-    for (let i = 0; i < height; i++) {
-      placeBlock(worldX, worldY + i, worldZ, treeDef.woodId); // Log
-    }
-
-    // A more authentic Minecraft oak tree canopy
-    const leafYStart = worldY + height - 3;
-
-    // Main canopy layers (two 5x5 layers with corners removed)
-    let radius = 2;
-    for (let y = leafYStart; y < leafYStart + 4; y++) {
-      if (y < leafYStart + 2) radius = 2;
-      else radius = 1;
-      for (let x = -radius; x <= radius; x++) {
-        for (let z = -radius; z <= radius; z++) {
-          placeBlock(worldX + x, y, worldZ + z, treeDef.leavesId); // Leaves
-        }
-      }
-    }
-  }
-
   #getFinalTerrainHeight(worldX: number, worldZ: number, biome: Biome): number {
     return TerrainHeightMap.getFinalTerrainHeight(worldX, worldZ, biome);
   }
@@ -302,18 +282,29 @@ export class WorldGenerator {
     chunkX: number,
     chunkY: number,
     chunkZ: number,
-    blocks: Uint8Array
+    placeBlock: (
+      x: number,
+      y: number,
+      z: number,
+      id: number,
+      ow: boolean
+    ) => void
   ) {
-    this.tryPlacingTower(chunkX, chunkY, chunkZ, blocks);
+    this.tryPlacingTower(chunkX, chunkY, chunkZ, placeBlock);
   }
 
   private tryPlacingTower(
     chunkX: number,
     chunkY: number,
     chunkZ: number,
-    blocks: Uint8Array
+    placeBlock: (
+      x: number,
+      y: number,
+      z: number,
+      id: number,
+      ow: boolean
+    ) => void
   ) {
-    const { CHUNK_SIZE } = this.params;
     const TOWER_REGION_SIZE = 32; // in chunks
     const TOWER_SPAWN_CHANCE = 100; // out of 100
 
@@ -331,13 +322,15 @@ export class WorldGenerator {
       // A tower should spawn in this region. Now, determine its exact location.
       const offsetX =
         Math.abs(Squirrel3.get(regionHash, this.seedAsInt)) %
-        (TOWER_REGION_SIZE * CHUNK_SIZE);
+        (TOWER_REGION_SIZE * this.chunk_size);
       const offsetZ =
         Math.abs(Squirrel3.get(regionHash + 1, this.seedAsInt)) %
-        (TOWER_REGION_SIZE * CHUNK_SIZE);
+        (TOWER_REGION_SIZE * this.chunk_size);
 
-      const towerCenterX = regionX * TOWER_REGION_SIZE * CHUNK_SIZE + offsetX;
-      const towerCenterZ = regionZ * TOWER_REGION_SIZE * CHUNK_SIZE + offsetZ;
+      const towerCenterX =
+        regionX * TOWER_REGION_SIZE * this.chunk_size + offsetX;
+      const towerCenterZ =
+        regionZ * TOWER_REGION_SIZE * this.chunk_size + offsetZ;
 
       // --- Prevent spawning near the world origin (0,0) ---
       const axisCorridorWidth = 20; // No towers within this distance from the X or Z axis
@@ -353,9 +346,9 @@ export class WorldGenerator {
         chunkX,
         chunkY,
         chunkZ,
-        blocks,
         towerCenterX,
-        towerCenterZ
+        towerCenterZ,
+        placeBlock
       );
     }
   }
@@ -364,11 +357,16 @@ export class WorldGenerator {
     chunkX: number,
     chunkY: number,
     chunkZ: number,
-    blocks: Uint8Array,
     towerCenterX: number,
-    towerCenterZ: number
+    towerCenterZ: number,
+    placeBlock: (
+      x: number,
+      y: number,
+      z: number,
+      id: number,
+      ow: boolean
+    ) => void
   ) {
-    const { CHUNK_SIZE } = this.params;
     const towerRadius = 8 + (Squirrel3.get(towerCenterX, this.seedAsInt) % 4);
     const towerHeight = 76 + (Squirrel3.get(towerCenterZ, this.seedAsInt) % 8);
     const wallBlockId = 1;
@@ -394,55 +392,46 @@ export class WorldGenerator {
     const groundHeight = minGroundHeight;
 
     // --- 2. Create a solid foundation up to the groundHeight ---
-    for (let localX = 0; localX < CHUNK_SIZE; localX++) {
-      for (let localZ = 0; localZ < CHUNK_SIZE; localZ++) {
-        const worldX = chunkX * CHUNK_SIZE + localX;
-        const worldZ = chunkZ * CHUNK_SIZE + localZ;
+    for (let dx = -towerRadius; dx <= towerRadius; dx++) {
+      for (let dz = -towerRadius; dz <= towerRadius; dz++) {
+        if (dx * dx + dz * dz > radiusSq) continue;
 
-        const dx = worldX - towerCenterX;
-        const dz = worldZ - towerCenterZ;
-        if (dx * dx + dz * dz <= radiusSq) {
-          const originalHeight = this.#getFinalTerrainHeight(
-            worldX,
-            worldZ,
-            biome
-          );
-          // Fill in blocks from original terrain height up to the new flat groundHeight
-          for (let y = originalHeight; y < groundHeight; y++) {
-            const localY = y - chunkY * CHUNK_SIZE;
-            if (localY >= 0 && localY < CHUNK_SIZE) {
-              blocks[
-                localX + localY * CHUNK_SIZE + localZ * CHUNK_SIZE * CHUNK_SIZE
-              ] = biome.undergroundBlock;
-            }
-          }
+        const worldX = towerCenterX + dx;
+        const worldZ = towerCenterZ + dz;
+
+        const originalHeight = this.#getFinalTerrainHeight(
+          worldX,
+          worldZ,
+          biome
+        );
+        // Fill in blocks from original terrain height up to the new flat groundHeight
+        for (let y = originalHeight; y < groundHeight; y++) {
+          placeBlock(worldX, y, worldZ, biome.undergroundBlock, true);
         }
       }
     }
 
     // Iterate through all possible blocks in the current chunk
-    for (let localY = 0; localY < CHUNK_SIZE; localY++) {
-      const worldY = chunkY * CHUNK_SIZE + localY;
+    for (let localY = 0; localY < this.chunk_size; localY++) {
+      const worldY = chunkY * this.chunk_size + localY;
 
       // Check if the current world Y is within the tower's height range
       if (worldY < groundHeight || worldY >= groundHeight + towerHeight) {
         continue;
       }
 
-      for (let localX = 0; localX < CHUNK_SIZE; localX++) {
-        for (let localZ = 0; localZ < CHUNK_SIZE; localZ++) {
-          const worldX = chunkX * CHUNK_SIZE + localX;
-          const worldZ = chunkZ * CHUNK_SIZE + localZ;
+      if (localY < 0 || localY >= this.chunk_size) continue;
 
-          const dx = worldX - towerCenterX;
-          const dz = worldZ - towerCenterZ;
-          const distSq = dx * dx + dz * dz;
-
-          if (distSq <= radiusSq) {
-            blocks[
-              localX + localY * CHUNK_SIZE + localZ * CHUNK_SIZE * CHUNK_SIZE
-            ] = wallBlockId;
-          }
+      for (let dx = -towerRadius; dx <= towerRadius; dx++) {
+        for (let dz = -towerRadius; dz <= towerRadius; dz++) {
+          if (dx * dx + dz * dz > radiusSq) continue;
+          placeBlock(
+            towerCenterX + dx,
+            worldY,
+            towerCenterZ + dz,
+            wallBlockId,
+            true
+          );
         }
       }
     }

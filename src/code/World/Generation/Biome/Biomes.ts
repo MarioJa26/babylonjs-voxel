@@ -1,4 +1,10 @@
-import { TreeDefinition } from "./GenerationParams";
+import {
+  CACTUS,
+  JUNGLE_TREE,
+  OAK_TREE,
+  PLAINS_TREE,
+  TreeDefinition,
+} from "./TreeDefinition";
 
 export interface Biome {
   name: string;
@@ -10,30 +16,10 @@ export interface Biome {
   beachBlock: number;
   seafloorBlock: number;
   terrainHeightBase?: number;
+  // The generateTree method is now part of TreeDefinition
   terrainHeightAmplitude?: number;
   getTreeForBlock(blockId: number): TreeDefinition | null;
 }
-
-const OAK_TREE: TreeDefinition = {
-  woodId: 28,
-  leavesId: 2,
-  baseHeight: 5,
-  heightVariance: 2,
-};
-
-const JUNGLE_TREE: TreeDefinition = {
-  woodId: 33, // Consider a different wood type for jungle
-  leavesId: 34, // Consider different leaves
-  baseHeight: 14,
-  heightVariance: 5,
-};
-
-const CACTUS: TreeDefinition = {
-  woodId: 34,
-  leavesId: 0, // No leaves on a cactus
-  baseHeight: 3,
-  heightVariance: 2,
-};
 
 const TUNDRA: Biome = {
   name: "Tundra",
@@ -88,7 +74,7 @@ const JUNGLE: Biome = {
 
 const PLAINS: Biome = {
   name: "Plains",
-  topBlock: 15,
+  topBlock: 57,
   undergroundBlock: 19,
   stoneBlock: 1,
   canSpawnTrees: true,
@@ -97,7 +83,7 @@ const PLAINS: Biome = {
   seafloorBlock: 46,
   getTreeForBlock(blockId: number): TreeDefinition | null {
     if (blockId === this.topBlock) {
-      return OAK_TREE;
+      return PLAINS_TREE;
     }
     return null;
   },
@@ -128,7 +114,7 @@ export function getBiomeFor(temperature: number, humidity: number): Biome {
 
   // Hot regions
   if (temperature > 0.75) {
-    if (humidity < 0.4) {
+    if (humidity < 0.5) {
       return DESERT; // Hot and dry
     } else {
       return JUNGLE; // Hot and wet
