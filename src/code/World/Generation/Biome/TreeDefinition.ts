@@ -64,7 +64,7 @@ export const OAK_TREE: TreeDefinition = {
 };
 
 export const PLAINS_TREE: TreeDefinition = {
-  woodId: 22,
+  woodId: 31,
   leavesId: 43,
   baseHeight: 6,
   heightVariance: 2,
