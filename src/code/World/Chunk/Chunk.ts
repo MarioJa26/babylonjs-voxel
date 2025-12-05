@@ -1,5 +1,6 @@
 import { Mesh } from "@babylonjs/core";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
+import { WorkerMessageData } from "./WorkerMessageType";
 import { GenerationParams } from "../Generation/GenerationParams";
 
 export class Chunk {
@@ -31,12 +32,30 @@ export class Chunk {
     Chunk.chunkInstances.set(this.id, this);
   }
 
-  public populate(block_array: Uint8Array): void {
+  public populate(
+    dataType: WorkerMessageData["type"],
+    block_array: Uint8Array
+  ): void {
     this.block_array = block_array;
-    this.scheduleRemesh();
-    this.getNeighbor(-1, 0, 0)?.scheduleRemesh();
-    this.getNeighbor(0, 0, -1)?.scheduleRemesh();
-    this.getNeighbor(0, -1, 0)?.scheduleRemesh();
+    const pool = ChunkWorkerPool.getInstance();
+
+    switch (dataType) {
+      case "terrain-generated":
+        // After terrain, generate structures
+        pool.scheduleStructureGeneration(this);
+        break;
+      case "structures-generated":
+        // After structures, generate flora
+        pool.scheduleFloraGeneration(this);
+        break;
+      case "flora-generated":
+        // After flora, the chunk is fully generated and can be meshed.
+        this.scheduleRemesh();
+        this.getNeighbor(-1, 0, 0)?.scheduleRemesh();
+        this.getNeighbor(0, 0, -1)?.scheduleRemesh();
+        this.getNeighbor(0, -1, 0)?.scheduleRemesh();
+        break;
+    }
   }
 
   public getBlock(localX: number, localY: number, localZ: number): number {
