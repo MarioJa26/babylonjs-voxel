@@ -1,5 +1,6 @@
 import { Chunk } from "./Chunk/Chunk";
 import { ChunkWorkerPool } from "./Chunk/ChunkWorkerPool";
+import { ChunkMesher } from "./Chunk/ChunckMesher";
 import { SettingParams } from "./SettingParams";
 import { WorldStorage } from "./WorldStorage";
 
@@ -60,8 +61,19 @@ export class World {
     loadedData.forEach((savedData, index) => {
       const chunk = newChunks[index];
       if (savedData) {
-        // If found in DB, populate immediately
-        chunk.populate(savedData);
+        // Populate block data without triggering an automatic remesh
+        chunk.populate(savedData.blocks, true);
+
+        // If we have saved mesh data, use it directly!
+        if (savedData.opaqueMesh || savedData.transparentMesh) {
+          ChunkMesher.createMeshFromData(chunk, {
+            opaque: savedData.opaqueMesh!,
+            transparent: savedData.transparentMesh!,
+          });
+        } else {
+          // If no mesh data, now we schedule a remesh
+          chunk.scheduleRemesh();
+        }
       } else {
         // Otherwise, add to generation queue
         chunksToGenerate.push(chunk);

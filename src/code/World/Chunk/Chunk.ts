@@ -1,5 +1,6 @@
 import { Mesh } from "@babylonjs/core";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
+import { MeshData } from "./MeshData";
 import { GenerationParams } from "../Generation/GenerationParams";
 
 export class Chunk {
@@ -21,6 +22,8 @@ export class Chunk {
   #chunkZ: number;
   public mesh: Mesh | null = null;
   public transparentMesh: Mesh | null = null;
+  public opaqueMeshData: MeshData | null = null;
+  public transparentMeshData: MeshData | null = null;
 
   constructor(chunkX: number, chunkY: number, chunkZ: number) {
     this.#chunkX = chunkX;
@@ -32,12 +35,14 @@ export class Chunk {
     Chunk.chunkInstances.set(this.id, this);
   }
 
-  public populate(block_array: Uint8Array): void {
+  public populate(block_array: Uint8Array, scheduleRemesh = true): void {
     this.block_array = block_array;
-    this.scheduleRemesh();
-    this.getNeighbor(-1, 0, 0)?.scheduleRemesh();
-    this.getNeighbor(0, 0, -1)?.scheduleRemesh();
-    this.getNeighbor(0, -1, 0)?.scheduleRemesh();
+    if (scheduleRemesh) {
+      this.scheduleRemesh();
+      this.getNeighbor(-1, 0, 0)?.scheduleRemesh();
+      this.getNeighbor(0, 0, -1)?.scheduleRemesh();
+      this.getNeighbor(0, -1, 0)?.scheduleRemesh();
+    }
   }
 
   public getBlock(localX: number, localY: number, localZ: number): number {
@@ -162,5 +167,7 @@ export class Chunk {
     this.transparentMesh?.dispose();
     this.mesh = null;
     this.transparentMesh = null;
+    this.opaqueMeshData = null;
+    this.transparentMeshData = null;
   }
 }

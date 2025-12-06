@@ -243,6 +243,10 @@ export class ChunkMesher {
   ) {
     if (!chunk.isLoaded) return;
 
+    // Cache the raw mesh data on the chunk instance for future saving
+    chunk.opaqueMeshData = meshData.opaque;
+    chunk.transparentMeshData = meshData.transparent;
+
     // Dispose of old meshes
     if (chunk.mesh) {
       chunk.mesh.dispose();
