@@ -7,6 +7,7 @@ export class Chunk {
   public static readonly SIZE2 = Chunk.SIZE * Chunk.SIZE;
   public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
   public static readonly chunkInstances = new Map<bigint, Chunk>();
+  public isModified = false;
 
   public isDirty = false;
   public isLoaded = true;
@@ -55,6 +56,7 @@ export class Chunk {
     if (index < 0 || index >= this.block_array.length) return; // Out of bounds check
     this.block_array[index] = blockId;
 
+    this.isModified = true;
     this.scheduleRemesh();
 
     // If the block is on a boundary, the neighbor chunk must also be remeshed.
@@ -81,6 +83,7 @@ export class Chunk {
 
     this.block_array[index] = 0;
 
+    this.isModified = true;
     this.scheduleRemesh();
 
     // If the block is on a boundary, the neighbor chunk must also be remeshed.

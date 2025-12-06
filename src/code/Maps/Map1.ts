@@ -24,6 +24,7 @@ import { CrossHair } from "../Player/Hud/CrossHair";
 import { TextureDefinitions } from "../World/Texture/TextureDefinitions";
 import { GenerationParams } from "../World/Generation/GenerationParams";
 import { SettingParams } from "../World/SettingParams";
+import { WorldStorage } from "../World/WorldStorage";
 export class Map1 {
   public static mainScene: Scene;
   #player: Player;
@@ -39,6 +40,7 @@ export class Map1 {
     Map1.mainScene = this.CreateScene(scene);
 
     this.initPromise = this.asyncInit().then(async () => {
+      await WorldStorage.initialize();
       ChunkMesher.initAtlas();
     });
 

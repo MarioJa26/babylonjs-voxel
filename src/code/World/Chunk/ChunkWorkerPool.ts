@@ -2,6 +2,7 @@ import { Chunk } from "./Chunk";
 import { ChunkMesher } from "./ChunckMesher";
 import { ChunkWorker } from "./chunkWorker";
 import { FullMeshMessage, TerrainGeneratedMessage } from "./WorkerMessageType";
+import { WorldStorage } from "../WorldStorage";
 
 export type WorkerMessageData = FullMeshMessage | TerrainGeneratedMessage;
 
@@ -29,6 +30,8 @@ export class ChunkWorkerPool {
           const chunk = Chunk.chunkInstances.get(chunkId);
           if (chunk) {
             chunk.populate(data.block_array as Uint8Array);
+            // Save the newly generated chunk to the database
+            WorldStorage.saveChunk(chunk);
           }
         }
 
@@ -61,6 +64,14 @@ export class ChunkWorkerPool {
   // New: schedule terrain generation via the pool
   public scheduleTerrainGeneration(chunk: Chunk) {
     this.terrainTaskQueue.add(chunk);
+    this.processQueue();
+  }
+
+  // New: schedule a batch of chunks for terrain generation
+  public scheduleTerrainGenerationBatch(chunks: Chunk[]) {
+    for (const chunk of chunks) {
+      this.terrainTaskQueue.add(chunk);
+    }
     this.processQueue();
   }
 

@@ -1,6 +1,7 @@
 import { Chunk } from "./Chunk/Chunk";
 import { ChunkWorkerPool } from "./Chunk/ChunkWorkerPool";
 import { SettingParams } from "./SettingParams";
+import { WorldStorage } from "./WorldStorage";
 
 export class World {
   constructor() {
@@ -12,7 +13,7 @@ export class World {
    * Only creates chunks when the player's chunk coordinate moves to a new chunk.
    * Optionally removes chunks that are outside the radius.
    */
-  public static updateChunksAround(
+  public static async updateChunksAround(
     chunkX: number,
     chunkY: number,
     chunkZ: number,
@@ -21,6 +22,7 @@ export class World {
   ) {
     const chunksToLoad: { x: number; y: number; z: number; distSq: number }[] =
       [];
+    const chunksToGenerate: Chunk[] = [];
 
     // 1. Collect all potential chunk coordinates and their distances
     for (let y = chunkY - verticalRadius; y <= chunkY + verticalRadius; y++) {
@@ -45,15 +47,36 @@ export class World {
     // 2. Sort chunks by distance (nearest first)
     chunksToLoad.sort((a, b) => a.distSq - b.distSq);
 
-    // 3. Enqueue chunks for generation in the new, sorted order
-    for (const { x, y, z } of chunksToLoad) {
-      const newChunk = new Chunk(x, y, z);
-      ChunkWorkerPool.getInstance().scheduleTerrainGeneration(newChunk);
-    }
+    // 3. Create all chunk instances first
+    const newChunks = chunksToLoad.map(({ x, y, z }) => new Chunk(x, y, z));
+
+    // 4. Fire off all DB load requests in parallel
+    const loadPromises = newChunks.map((chunk) =>
+      WorldStorage.loadChunk(chunk.id)
+    );
+    const loadedData = await Promise.all(loadPromises);
+
+    // 5. Process the results
+    loadedData.forEach((savedData, index) => {
+      const chunk = newChunks[index];
+      if (savedData) {
+        // If found in DB, populate immediately
+        chunk.populate(savedData);
+      } else {
+        // Otherwise, add to generation queue
+        chunksToGenerate.push(chunk);
+      }
+    });
+
+    // 6. Enqueue chunks for generation
+    ChunkWorkerPool.getInstance().scheduleTerrainGenerationBatch(
+      chunksToGenerate
+    );
 
     // optional: remove chunks far outside the radius to free memory
     const removeRadius =
       renderDistance + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER;
+    const chunksToSave: Chunk[] = [];
     for (const chunk of Chunk.chunkInstances.values()) {
       const { chunkX: cx, chunkY: cy, chunkZ: cz } = chunk;
       if (
@@ -63,12 +86,17 @@ export class World {
           verticalRadius + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER
       ) {
         if (chunk) {
+          if (chunk.isModified) {
+            chunksToSave.push(chunk);
+          }
           chunk.dispose();
           chunk.isLoaded = false;
           Chunk.chunkInstances.delete(chunk.id);
         }
       }
     }
+
+    WorldStorage.saveChunks(chunksToSave);
   }
 
   public static deleteBlock(worldX: number, worldY: number, worldZ: number) {
