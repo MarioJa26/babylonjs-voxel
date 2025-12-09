@@ -153,17 +153,20 @@ export const JUNGLE_TREE: TreeDefinition = {
     }
 
     // Simple canopy for now, similar to oak but larger
-    const leafYStart = worldY + height - 5; // Start leaves lower for jungle
+
     const canopyRadius = 4; // Larger radius
 
-    for (let y = leafYStart; y < leafYStart + 8; y++) {
-      // Taller canopy
-      const currentRadius = canopyRadius - Math.floor((y - leafYStart) / 2);
-      for (let x = -currentRadius; x <= currentRadius; x++) {
-        for (let z = -currentRadius; z <= currentRadius; z++) {
-          if (x * x + z * z <= currentRadius * currentRadius + 1) {
-            // More spherical
-            placeBlock(worldX + x, y, worldZ + z, this.leavesId, false);
+    for (let conopie = 1; conopie <= 2; conopie++) {
+      const leafYStart = worldY + height - 5 * conopie - (conopie - 1) * 3;
+      for (let y = leafYStart; y < leafYStart + 8; y++) {
+        // Taller canopy
+        const currentRadius = canopyRadius - Math.floor((y - leafYStart) / 2);
+        for (let x = -currentRadius; x <= currentRadius; x++) {
+          for (let z = -currentRadius; z <= currentRadius; z++) {
+            if (x * x + z * z <= currentRadius * currentRadius + 1) {
+              // More spherical
+              placeBlock(worldX + x, y, worldZ + z, this.leavesId, false);
+            }
           }
         }
       }

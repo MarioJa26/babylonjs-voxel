@@ -45,11 +45,6 @@ export class GlassShader {
 
         vec4 diffuseColor = texture2D_with_derivatives(diffuseTexture, vUV2, singleTileUV, atlasTileSize); 
 
-        // Alpha Test: Discard fragment if it's not opaque enough. This is crucial for correct depth sorting.
-        if (diffuseColor.a < 0.5) {
-            discard;
-        }
-
         vec3 normalMap = texture2D_with_derivatives(normalTexture, vUV2, singleTileUV, atlasTileSize).rgb;
         normalMap = normalize(normalMap * 2.0 - 1.0);
 
@@ -72,7 +67,8 @@ export class GlassShader {
         vec3 litColor = diffuseColor.rgb * 0.5 + diffuse + specular;
         vec3 finalColor = litColor * aoFactor;
 
-        gl_FragColor = vec4(finalColor, diffuseColor.a);
+        // Use a fixed alpha or one from the texture for blending
+        gl_FragColor = vec4(finalColor, diffuseColor.a); // Use the texture's alpha directly
     }
   `;
 }

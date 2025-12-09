@@ -58,7 +58,7 @@ type WorkerInternalMeshData = {
 };
 
 const WATER_BLOCKS = new Set([30]);
-const GLASS_BLOCKS = new Set([60]);
+const GLASS_BLOCKS = new Set([60, 61]);
 
 type FaceData = {
   normal: Int8Array;

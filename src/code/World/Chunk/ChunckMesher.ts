@@ -7,6 +7,7 @@ import {
   PhysicsShapeType,
   Texture,
   Tools,
+  CubeTexture,
   DepthRenderer,
   Vector2,
 } from "@babylonjs/core";
@@ -255,19 +256,32 @@ export class ChunkMesher {
               "cameraPlanes",
               "screenSize",
             ],
-            samplers: ["diffuseTexture", "normalTexture", "depthSampler"],
+            samplers: [
+              "diffuseTexture",
+              "normalTexture",
+              "depthSampler",
+              "skyboxTexture",
+            ],
           }
         );
 
-        glassMat.backFaceCulling = false;
+        glassMat.backFaceCulling = true;
         // Enable depth writing so glass occludes other glass correctly.
         glassMat.forceDepthWrite = true;
-        glassMat.needAlphaBlending = () => false; // We will use alpha testing in the shader instead.
+        glassMat.needAlphaBlending = () => true; // Enable alpha blending for transparency.
 
         glassMat.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
         glassMat.setTexture("diffuseTexture", diffuseAtlasTexture);
         if (normalAtlasTexture) {
           glassMat.setTexture("normalTexture", normalAtlasTexture);
+        }
+
+        // Find and set the skybox texture for reflections
+        if (
+          scene.environmentTexture &&
+          scene.environmentTexture instanceof CubeTexture
+        ) {
+          glassMat.setTexture("skyboxTexture", scene.environmentTexture);
         }
 
         glassMat.onBind = () => {
@@ -504,7 +518,7 @@ export class ChunkMesher {
 
     // Create physics aggregate AFTER the world matrix is set.
     // Only for opaque meshes.
-    if (name === "chunk_opaque") {
+    if (name === "chunk_opaque" || name === "chunk_glass") {
       new PhysicsAggregate(
         mesh,
         PhysicsShapeType.MESH,
