@@ -599,13 +599,61 @@ const onMessageHandler = (event: MessageEvent) => {
       generator = new WorldGenerator({ ...event.data });
     }
 
-    const { blocks } = generator.generateChunkData(chunkX, chunkY, chunkZ);
+    const { blocks } = generator.generateTerrainForChunk(
+      chunkX,
+      chunkY,
+      chunkZ
+    );
 
     self.postMessage(
       { chunkId, type: "terrain-generated", block_array: blocks },
       [blocks.buffer]
     );
 
+    return;
+  }
+
+  // --- Structure generation request ---
+  if (type === "generate-structures") {
+    const { chunkId, chunkX, chunkY, chunkZ, block_array } = event.data;
+
+    if (!generator) {
+      generator = new WorldGenerator({ ...event.data });
+    }
+
+    const { blocks } = generator.generateStructuresForChunk(
+      chunkX,
+      chunkY,
+      chunkZ,
+      block_array
+    );
+
+    self.postMessage(
+      { chunkId, type: "structures-generated", block_array: blocks },
+      [blocks.buffer]
+    );
+    return;
+  }
+
+  // --- Flora generation request ---
+  if (type === "generate-flora") {
+    const { chunkId, chunkX, chunkY, chunkZ, block_array } = event.data;
+
+    if (!generator) {
+      generator = new WorldGenerator({ ...event.data });
+    }
+
+    const { blocks } = generator.generateFloraForChunk(
+      chunkX,
+      chunkY,
+      chunkZ,
+      block_array
+    );
+
+    self.postMessage(
+      { chunkId, type: "flora-generated", block_array: blocks },
+      [blocks.buffer]
+    );
     return;
   }
 };

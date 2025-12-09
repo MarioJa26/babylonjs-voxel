@@ -38,4 +38,34 @@ export class ChunkWorker {
       ...GenerationParams,
     });
   }
+
+  public postStructureGeneration(chunk: Chunk): void {
+    this.worker.postMessage(
+      {
+        type: "generate-structures",
+        chunkId: chunk.id,
+        chunkX: chunk.chunkX,
+        chunkY: chunk.chunkY,
+        chunkZ: chunk.chunkZ,
+        block_array: chunk.block_array,
+        ...GenerationParams,
+      },
+      [chunk.block_array.buffer]
+    );
+  }
+
+  public postFloraGeneration(chunk: Chunk): void {
+    this.worker.postMessage(
+      {
+        type: "generate-flora",
+        chunkId: chunk.id,
+        chunkX: chunk.chunkX,
+        chunkY: chunk.chunkY,
+        chunkZ: chunk.chunkZ,
+        block_array: chunk.block_array,
+        ...GenerationParams,
+      },
+      [chunk.block_array.buffer]
+    );
+  }
 }

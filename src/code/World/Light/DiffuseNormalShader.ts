@@ -124,6 +124,8 @@ void main(void) {
         vec3 halfwayDir = normalize(normalizedLightDirection + viewDirection);
         float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), 32.0);
         vec3 specular = vec3(0.3) * spec; // Specular color is white
+     float aoFactor = 1.0 - vAO * 0.14; // 0->1, 1->0.85, 2->0.7, 3->0.55
+        vec3 finalColor = (diffuseColor.rgb * 0.8 + diffuse + specular) * aoFactor;
 
         float aoFactor = 1.0 - vAO * 0.175; // 0->1, 1->0.85, 2->0.7, 3->0.55
         vec3 finalColor = (diffuseColor.rgb * 0.8 + diffuse + specular) * aoFactor;
