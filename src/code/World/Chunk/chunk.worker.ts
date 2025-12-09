@@ -57,7 +57,8 @@ type WorkerInternalMeshData = {
   indexOffset: number;
 };
 
-const TRANSPARENT_BLOCKS = new Set([30, 60]);
+const WATER_BLOCKS = new Set([30]);
+const GLASS_BLOCKS = new Set([60]);
 
 type FaceData = {
   normal: Int8Array;
@@ -232,21 +233,26 @@ class ChunkWorkerMesher {
               continue;
             }
 
-            const isCurrentTransparent = TRANSPARENT_BLOCKS.has(blockCurrent);
-            const isNeighborTransparent = TRANSPARENT_BLOCKS.has(blockNeighbor);
+            const isCurrentTransparent =
+              WATER_BLOCKS.has(blockCurrent) || GLASS_BLOCKS.has(blockCurrent);
+            const isNeighborTransparent =
+              WATER_BLOCKS.has(blockNeighbor) ||
+              GLASS_BLOCKS.has(blockNeighbor);
             const isCurrentSolid = blockCurrent !== 0;
             const isNeighborSolid = blockNeighbor !== 0;
 
-            const areDifferentTransparentBlocks =
-              isCurrentTransparent &&
-              isNeighborTransparent &&
-              blockCurrent !== blockNeighbor;
+            // Water and glass should not cull each other.
+            const isWaterNextToGlass =
+              (WATER_BLOCKS.has(blockCurrent) &&
+                GLASS_BLOCKS.has(blockNeighbor)) ||
+              (GLASS_BLOCKS.has(blockCurrent) &&
+                WATER_BLOCKS.has(blockNeighbor));
 
             if (
               isCurrentSolid &&
               (!isNeighborSolid ||
                 (isNeighborTransparent && !isCurrentTransparent) ||
-                areDifferentTransparentBlocks)
+                isWaterNextToGlass)
             ) {
               // Current block face is visible.
               const encCurrent =
@@ -257,7 +263,7 @@ class ChunkWorkerMesher {
               isNeighborSolid &&
               (!isCurrentSolid ||
                 (isCurrentTransparent && !isNeighborTransparent) ||
-                areDifferentTransparentBlocks)
+                isWaterNextToGlass)
             ) {
               // Neighbor block face is visible (so we draw a back-face).
               const encNeighbor =
@@ -290,8 +296,9 @@ class ChunkWorkerMesher {
 
               let targetMesh = opaqueMeshData;
               if (isTransparent) {
-                // blockId 30 is water, 60 is glass
-                targetMesh = blockId === 30 ? waterMeshData : glassMeshData;
+                targetMesh = WATER_BLOCKS.has(blockId)
+                  ? waterMeshData
+                  : glassMeshData;
               } else {
                 targetMesh = opaqueMeshData;
               }
