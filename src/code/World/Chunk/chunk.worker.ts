@@ -58,7 +58,7 @@ type WorkerInternalMeshData = {
   indexOffset: number;
 };
 
-const TRANSPARENT_BLOCKS = new Set([30]);
+const TRANSPARENT_BLOCKS = new Set([30, 60]);
 
 type FaceData = {
   normal: Int8Array;

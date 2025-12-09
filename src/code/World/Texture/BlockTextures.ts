@@ -73,4 +73,5 @@ export const BlockTextures: (BlockTextureDef | null)[] = [
   { all: [8, 3] }, // 57: quarry_wall
   { all: [9, 3] }, // 58: rectangular_facade_tiles_02
   { all: [10, 3] }, // 59: red_sandstone_wall
+  { all: [11, 3] }, // 60: glass_01
 ];

@@ -1,5 +1,7 @@
 import { Chunk } from "./Chunk/Chunk";
 import { MeshData } from "./Chunk/MeshData";
+import { GlobalValues } from "./GlobalValues";
+import { SettingParams } from "./SettingParams";
 
 export type SavedChunkData = {
   blocks: Uint8Array;
@@ -47,7 +49,11 @@ export class WorldStorage {
   }
 
   public static async saveChunk(chunk: Chunk): Promise<void> {
-    if (!this.db) {
+    if (GlobalValues.DISABLE_CHUNK_SAVING) {
+      // Saving is disabled for testing, do nothing.
+      return;
+    }
+    if (!this.db || !chunk.isModified) {
       console.warn("DB not initialized, cannot save chunk.");
       return;
     }
@@ -69,20 +75,27 @@ export class WorldStorage {
     });
   }
 
-  public static async saveChunks(chunks: Chunk[]): Promise<void> {
-    if (!this.db || chunks.length === 0) {
-      return;
+  public static saveChunks(chunks: Chunk[]): Promise<void> {
+    if (GlobalValues.DISABLE_CHUNK_SAVING) {
+      // Saving is disabled for testing, do nothing.
+      return Promise.resolve();
+    }
+    const modifiedChunks = chunks.filter((c) => c.isModified);
+    if (!this.db || modifiedChunks.length === 0) {
+      return Promise.resolve();
     }
 
-    const transaction = this.db.transaction(CHUNK_STORE_NAME, "readwrite");
-    const store = transaction.objectStore(CHUNK_STORE_NAME);
+    return new Promise((resolve, reject) => {
+      const transaction = this.db.transaction(CHUNK_STORE_NAME, "readwrite");
+      const store = transaction.objectStore(CHUNK_STORE_NAME);
 
-    transaction.onerror = () => {
-      console.error("Batch save transaction error:", transaction.error);
-    };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => {
+        console.error("Batch save transaction error:", transaction.error);
+        reject(transaction.error);
+      };
 
-    for (const chunk of chunks) {
-      if (chunk.isModified) {
+      for (const chunk of modifiedChunks) {
         // IndexedDB does not support bigint as a key, so we convert it to a string.
         store.put({
           id: chunk.id.toString(),
@@ -92,7 +105,7 @@ export class WorldStorage {
         });
         chunk.isModified = false; // Mark as saved
       }
-    }
+    });
   }
 
   public static async loadChunk(
@@ -121,5 +134,36 @@ export class WorldStorage {
       };
       request.onerror = () => reject(request.error);
     });
+  }
+
+  public static async loadChunks(
+    chunkIds: bigint[]
+  ): Promise<Map<bigint, SavedChunkData>> {
+    const loadedChunks = new Map<bigint, SavedChunkData>();
+    if (!this.db || chunkIds.length === 0) {
+      return loadedChunks;
+    }
+
+    const BATCH_SIZE = SettingParams.RENDER_DISTANCE;
+    for (let i = 0; i < chunkIds.length; i += BATCH_SIZE) {
+      const batchIds = chunkIds.slice(i, i + BATCH_SIZE);
+      const transaction = this.db.transaction(CHUNK_STORE_NAME, "readonly");
+      const store = transaction.objectStore(CHUNK_STORE_NAME);
+
+      const promises = batchIds.map((chunkId) => {
+        return new Promise<void>((resolve, reject) => {
+          const request = store.get(chunkId.toString());
+          request.onsuccess = () => {
+            if (request.result) {
+              loadedChunks.set(chunkId, request.result);
+            }
+            resolve();
+          };
+          request.onerror = () => reject(request.error);
+        });
+      });
+      await Promise.all(promises);
+    }
+    return loadedChunks;
   }
 }

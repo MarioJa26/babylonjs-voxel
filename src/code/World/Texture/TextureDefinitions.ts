@@ -273,4 +273,9 @@ export const TextureDefinitions: TextureDefinition[] = [
     name: "red_sandstone_wall",
     path: "/texture/stone/red_sandstone_wall_1k",
   },
+  {
+    id: 60,
+    name: "glass_01",
+    path: "/texture/transparent/glass_01_1k",
+  },
 ];

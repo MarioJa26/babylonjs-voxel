@@ -51,15 +51,13 @@ export class World {
     // 3. Create all chunk instances first
     const newChunks = chunksToLoad.map(({ x, y, z }) => new Chunk(x, y, z));
 
-    // 4. Fire off all DB load requests in parallel
-    const loadPromises = newChunks.map((chunk) =>
-      WorldStorage.loadChunk(chunk.id)
-    );
-    const loadedData = await Promise.all(loadPromises);
+    // 4. Fire off a single batch DB load request
+    const chunkIdsToLoad = newChunks.map((chunk) => chunk.id);
+    const loadedDataMap = await WorldStorage.loadChunks(chunkIdsToLoad);
 
     // 5. Process the results
-    loadedData.forEach((savedData, index) => {
-      const chunk = newChunks[index];
+    for (const chunk of newChunks) {
+      const savedData = loadedDataMap.get(chunk.id);
       if (savedData) {
         // Populate block data without triggering an automatic remesh
         chunk.populate(savedData.blocks, true);
@@ -78,7 +76,7 @@ export class World {
         // Otherwise, add to generation queue
         chunksToGenerate.push(chunk);
       }
-    });
+    }
 
     // 6. Enqueue chunks for generation
     ChunkWorkerPool.getInstance().scheduleTerrainGenerationBatch(

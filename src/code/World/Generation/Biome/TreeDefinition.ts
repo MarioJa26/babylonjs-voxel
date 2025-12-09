@@ -17,7 +17,13 @@ export type TreeDefinition = {
     worldX: number,
     worldY: number,
     worldZ: number,
-    placeBlock: (x: number, y: number, z: number, blockId: number) => void,
+    placeBlock: (
+      x: number,
+      y: number,
+      z: number,
+      blockId: number,
+      overwrite?: boolean
+    ) => void,
     seedAsInt: number
   ): void;
 };
@@ -31,7 +37,13 @@ export const OAK_TREE: TreeDefinition = {
     worldX: number,
     worldY: number,
     worldZ: number,
-    placeBlock: (x: number, y: number, z: number, blockId: number) => void,
+    placeBlock: (
+      x: number,
+      y: number,
+      z: number,
+      blockId: number,
+      overwrite?: boolean
+    ) => void,
     seedAsInt: number
   ): void {
     const heightHash = Squirrel3.get(
@@ -43,7 +55,7 @@ export const OAK_TREE: TreeDefinition = {
 
     // Place trunk
     for (let i = 0; i < height; i++) {
-      placeBlock(worldX, worldY + i, worldZ, this.woodId); // Log
+      placeBlock(worldX, worldY + i, worldZ, this.woodId, true); // Log
     }
 
     // A more authentic Minecraft oak tree canopy
@@ -56,7 +68,7 @@ export const OAK_TREE: TreeDefinition = {
       else radius = 1;
       for (let x = -radius; x <= radius; x++) {
         for (let z = -radius; z <= radius; z++) {
-          placeBlock(worldX + x, y, worldZ + z, this.leavesId); // Leaves
+          placeBlock(worldX + x, y, worldZ + z, this.leavesId, false); // Leaves
         }
       }
     }
@@ -72,7 +84,13 @@ export const PLAINS_TREE: TreeDefinition = {
     worldX: number,
     worldY: number,
     worldZ: number,
-    placeBlock: (x: number, y: number, z: number, blockId: number) => void,
+    placeBlock: (
+      x: number,
+      y: number,
+      z: number,
+      blockId: number,
+      overwrite?: boolean
+    ) => void,
     seedAsInt: number
   ): void {
     const heightHash = Squirrel3.get(
@@ -84,7 +102,7 @@ export const PLAINS_TREE: TreeDefinition = {
 
     // Place trunk
     for (let i = 0; i < height; i++) {
-      placeBlock(worldX, worldY + i, worldZ, this.woodId); // Log
+      placeBlock(worldX, worldY + i, worldZ, this.woodId, true); // Log
     }
 
     // A more authentic Minecraft oak tree canopy
@@ -97,7 +115,7 @@ export const PLAINS_TREE: TreeDefinition = {
       else radius = 1;
       for (let x = -radius; x <= radius; x++) {
         for (let z = -radius; z <= radius; z++) {
-          placeBlock(worldX + x, y, worldZ + z, this.leavesId); // Leaves
+          placeBlock(worldX + x, y, worldZ + z, this.leavesId, false); // Leaves
         }
       }
     }
@@ -113,7 +131,13 @@ export const JUNGLE_TREE: TreeDefinition = {
     worldX: number,
     worldY: number,
     worldZ: number,
-    placeBlock: (x: number, y: number, z: number, blockId: number) => void,
+    placeBlock: (
+      x: number,
+      y: number,
+      z: number,
+      blockId: number,
+      overwrite?: boolean
+    ) => void,
     seedAsInt: number
   ): void {
     const heightHash = Squirrel3.get(
@@ -125,7 +149,7 @@ export const JUNGLE_TREE: TreeDefinition = {
 
     // Place trunk
     for (let i = 0; i < height; i++) {
-      placeBlock(worldX, worldY + i, worldZ, this.woodId);
+      placeBlock(worldX, worldY + i, worldZ, this.woodId, true);
     }
 
     // Simple canopy for now, similar to oak but larger
@@ -139,7 +163,7 @@ export const JUNGLE_TREE: TreeDefinition = {
         for (let z = -currentRadius; z <= currentRadius; z++) {
           if (x * x + z * z <= currentRadius * currentRadius + 1) {
             // More spherical
-            placeBlock(worldX + x, y, worldZ + z, this.leavesId);
+            placeBlock(worldX + x, y, worldZ + z, this.leavesId, false);
           }
         }
       }
