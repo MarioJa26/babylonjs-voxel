@@ -63,10 +63,15 @@ export class World {
         chunk.populate(savedData.blocks, true);
 
         // If we have saved mesh data, use it directly!
-        if (savedData.opaqueMesh || savedData.transparentMesh) {
+        if (
+          savedData.opaqueMesh ||
+          savedData.waterMesh ||
+          savedData.glassMesh
+        ) {
           ChunkMesher.createMeshFromData(chunk, {
             opaque: savedData.opaqueMesh!,
-            transparent: savedData.transparentMesh!,
+            water: savedData.waterMesh!,
+            glass: savedData.glassMesh!,
           });
         } else {
           // If no mesh data, now we schedule a remesh

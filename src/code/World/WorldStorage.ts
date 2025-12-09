@@ -6,7 +6,8 @@ import { SettingParams } from "./SettingParams";
 export type SavedChunkData = {
   blocks: Uint8Array;
   opaqueMesh?: MeshData;
-  transparentMesh?: MeshData;
+  waterMesh?: MeshData;
+  glassMesh?: MeshData;
 };
 
 const DB_NAME = "VoxelWorldDB";
@@ -64,7 +65,8 @@ export class WorldStorage {
       id: chunk.id.toString(),
       blocks: chunk.block_array,
       opaqueMesh: chunk.opaqueMeshData,
-      transparentMesh: chunk.transparentMeshData,
+      waterMesh: chunk.waterMeshData,
+      glassMesh: chunk.glassMeshData,
     });
 
     chunk.isModified = false; // Mark as saved
@@ -101,7 +103,8 @@ export class WorldStorage {
           id: chunk.id.toString(),
           blocks: chunk.block_array,
           opaqueMesh: chunk.opaqueMeshData,
-          transparentMesh: chunk.transparentMeshData,
+          waterMesh: chunk.waterMeshData,
+          glassMesh: chunk.glassMeshData,
         });
         chunk.isModified = false; // Mark as saved
       }
@@ -126,7 +129,8 @@ export class WorldStorage {
           resolve({
             blocks: request.result.blocks,
             opaqueMesh: request.result.opaqueMesh,
-            transparentMesh: request.result.transparentMesh,
+            waterMesh: request.result.waterMesh,
+            glassMesh: request.result.glassMesh,
           });
         } else {
           resolve(null); // Chunk not found

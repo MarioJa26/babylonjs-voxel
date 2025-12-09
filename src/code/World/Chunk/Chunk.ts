@@ -21,9 +21,11 @@ export class Chunk {
   #chunkX: number;
   #chunkZ: number;
   public mesh: Mesh | null = null;
-  public transparentMesh: Mesh | null = null;
+  public waterMesh: Mesh | null = null;
+  public glassMesh: Mesh | null = null;
   public opaqueMeshData: MeshData | null = null;
-  public transparentMeshData: MeshData | null = null;
+  public waterMeshData: MeshData | null = null;
+  public glassMeshData: MeshData | null = null;
 
   constructor(chunkX: number, chunkY: number, chunkZ: number) {
     this.#chunkX = chunkX;
@@ -164,10 +166,13 @@ export class Chunk {
 
   public dispose(): void {
     this.mesh?.dispose();
-    this.transparentMesh?.dispose();
+    this.waterMesh?.dispose();
+    this.glassMesh?.dispose();
     this.mesh = null;
-    this.transparentMesh = null;
+    this.waterMesh = null;
+    this.glassMesh = null;
     this.opaqueMeshData = null;
-    this.transparentMeshData = null;
+    this.waterMeshData = null;
+    this.glassMeshData = null;
   }
 }

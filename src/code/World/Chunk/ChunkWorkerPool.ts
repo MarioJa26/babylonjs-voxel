@@ -20,10 +20,10 @@ export class ChunkWorkerPool {
         const { type, chunkId } = data;
 
         if (type === "full-mesh") {
-          const { opaque, transparent } = data;
+          const { opaque, water, glass } = data;
           const chunk = Chunk.chunkInstances.get(chunkId);
           if (chunk) {
-            ChunkMesher.createMeshFromData(chunk, { opaque, transparent });
+            ChunkMesher.createMeshFromData(chunk, { opaque, water, glass });
           }
         } else if (type === "terrain-generated") {
           // Apply generated block array to the chunk and schedule remesh

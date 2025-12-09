@@ -3,7 +3,6 @@
 import { BlockTextures } from "../Texture/BlockTextures";
 import { WorldGenerator } from "../Generation/WorldGenerator";
 import { MeshData } from "./MeshData";
-import { h } from "vue";
 
 /**
  * A wrapper around a TypedArray that allows it to be resized dynamically.
@@ -104,6 +103,20 @@ for (const axis of [0, 1, 2]) {
 }
 
 class ChunkWorkerMesher {
+  private static createEmptyMeshData(): WorkerInternalMeshData {
+    return {
+      positions: new ResizableTypedArray(Uint8Array),
+      indices: new ResizableTypedArray(Uint16Array),
+      normals: new ResizableTypedArray(Int8Array),
+      tangents: new ResizableTypedArray(Int8Array),
+      uvs2: new ResizableTypedArray(Uint8Array),
+      uvs3: new ResizableTypedArray(Uint8Array),
+      cornerIds: new ResizableTypedArray(Uint8Array),
+      ao: new ResizableTypedArray(Uint8Array),
+      indexOffset: 0,
+    };
+  }
+
   static generateMesh(data: {
     block_array: Uint8Array;
     chunk_size: number;
@@ -115,30 +128,14 @@ class ChunkWorkerMesher {
       pz?: Uint8Array;
       nz?: Uint8Array;
     };
-  }): { opaque: WorkerInternalMeshData; transparent: WorkerInternalMeshData } {
-    const opaqueMeshData: WorkerInternalMeshData = {
-      positions: new ResizableTypedArray(Uint8Array),
-      indices: new ResizableTypedArray(Uint16Array),
-      normals: new ResizableTypedArray(Int8Array),
-      tangents: new ResizableTypedArray(Int8Array),
-      uvs2: new ResizableTypedArray(Uint8Array),
-      uvs3: new ResizableTypedArray(Uint8Array),
-      cornerIds: new ResizableTypedArray(Uint8Array),
-      ao: new ResizableTypedArray(Uint8Array),
-      indexOffset: 0,
-    };
-
-    const transparentMeshData: WorkerInternalMeshData = {
-      positions: new ResizableTypedArray(Uint8Array),
-      indices: new ResizableTypedArray(Uint16Array),
-      normals: new ResizableTypedArray(Int8Array),
-      tangents: new ResizableTypedArray(Int8Array),
-      uvs2: new ResizableTypedArray(Uint8Array),
-      uvs3: new ResizableTypedArray(Uint8Array),
-      cornerIds: new ResizableTypedArray(Uint8Array),
-      ao: new ResizableTypedArray(Uint8Array),
-      indexOffset: 0,
-    };
+  }): {
+    opaque: WorkerInternalMeshData;
+    water: WorkerInternalMeshData;
+    glass: WorkerInternalMeshData;
+  } {
+    const opaqueMeshData = this.createEmptyMeshData();
+    const waterMeshData = this.createEmptyMeshData();
+    const glassMeshData = this.createEmptyMeshData();
 
     const { block_array, chunk_size: chunk_size, neighbors } = data;
     const size = chunk_size;
@@ -240,10 +237,16 @@ class ChunkWorkerMesher {
             const isCurrentSolid = blockCurrent !== 0;
             const isNeighborSolid = blockNeighbor !== 0;
 
+            const areDifferentTransparentBlocks =
+              isCurrentTransparent &&
+              isNeighborTransparent &&
+              blockCurrent !== blockNeighbor;
+
             if (
               isCurrentSolid &&
               (!isNeighborSolid ||
-                (isNeighborTransparent && !isCurrentTransparent))
+                (isNeighborTransparent && !isCurrentTransparent) ||
+                areDifferentTransparentBlocks)
             ) {
               // Current block face is visible.
               const encCurrent =
@@ -253,7 +256,8 @@ class ChunkWorkerMesher {
             } else if (
               isNeighborSolid &&
               (!isCurrentSolid ||
-                (isCurrentTransparent && !isNeighborTransparent))
+                (isCurrentTransparent && !isNeighborTransparent) ||
+                areDifferentTransparentBlocks)
             ) {
               // Neighbor block face is visible (so we draw a back-face).
               const encNeighbor =
@@ -284,9 +288,13 @@ class ChunkWorkerMesher {
               const quadStartPos = [position[0], position[1], position[2]];
               quadStartPos[axis]++;
 
-              const targetMesh = isTransparent
-                ? transparentMeshData
-                : opaqueMeshData;
+              let targetMesh = opaqueMeshData;
+              if (isTransparent) {
+                // blockId 30 is water, 60 is glass
+                targetMesh = blockId === 30 ? waterMeshData : glassMeshData;
+              } else {
+                targetMesh = opaqueMeshData;
+              }
 
               this.addQuad(
                 quadStartPos,
@@ -380,7 +388,11 @@ class ChunkWorkerMesher {
       }
     }
 
-    return { opaque: opaqueMeshData, transparent: transparentMeshData };
+    return {
+      opaque: opaqueMeshData,
+      water: waterMeshData,
+      glass: glassMeshData,
+    };
   }
 
   private static getFaceName(dir: number[], isBackFace: boolean): string {
@@ -563,12 +575,12 @@ const onMessageHandler = (event: MessageEvent) => {
 
   // --- Default Full Remesh ---
   if (type === "full-remesh") {
-    const { opaque, transparent } = ChunkWorkerMesher.generateMesh(event.data);
+    const { opaque, water, glass } = ChunkWorkerMesher.generateMesh(event.data);
     // allow GC
     event.data.block_array = undefined;
     event.data.neighbors = undefined;
 
-    postFullMeshResult(event.data.chunkId, opaque, transparent);
+    postFullMeshResult(event.data.chunkId, opaque, water, glass);
     return;
   }
 
@@ -609,17 +621,20 @@ function toTransferable(data: WorkerInternalMeshData): MeshData {
 function postFullMeshResult(
   chunkId: string,
   opaque: WorkerInternalMeshData,
-  transparent: WorkerInternalMeshData
+  water: WorkerInternalMeshData,
+  glass: WorkerInternalMeshData
 ) {
   const opaqueMeshData = toTransferable(opaque);
-  const transparentMeshData = toTransferable(transparent);
+  const waterMeshData = toTransferable(water);
+  const glassMeshData = toTransferable(glass);
 
   self.postMessage(
     {
       chunkId,
       type: "full-mesh",
       opaque: opaqueMeshData,
-      transparent: transparentMeshData,
+      water: waterMeshData,
+      glass: glassMeshData,
     },
     [
       opaqueMeshData.positions.buffer,
@@ -630,14 +645,22 @@ function postFullMeshResult(
       opaqueMeshData.uvs3.buffer,
       opaqueMeshData.cornerIds.buffer,
       opaqueMeshData.ao.buffer,
-      transparentMeshData.positions.buffer,
-      transparentMeshData.indices.buffer,
-      transparentMeshData.normals.buffer,
-      transparentMeshData.tangents.buffer,
-      transparentMeshData.uvs2.buffer,
-      transparentMeshData.uvs3.buffer,
-      transparentMeshData.cornerIds.buffer,
-      transparentMeshData.ao.buffer,
+      waterMeshData.positions.buffer,
+      waterMeshData.indices.buffer,
+      waterMeshData.normals.buffer,
+      waterMeshData.tangents.buffer,
+      waterMeshData.uvs2.buffer,
+      waterMeshData.uvs3.buffer,
+      waterMeshData.cornerIds.buffer,
+      waterMeshData.ao.buffer,
+      glassMeshData.positions.buffer,
+      glassMeshData.indices.buffer,
+      glassMeshData.normals.buffer,
+      glassMeshData.tangents.buffer,
+      glassMeshData.uvs2.buffer,
+      glassMeshData.uvs3.buffer,
+      glassMeshData.cornerIds.buffer,
+      glassMeshData.ao.buffer,
     ]
   );
 }
