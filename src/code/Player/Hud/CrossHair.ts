@@ -11,6 +11,7 @@ import * as GUI from "@babylonjs/gui";
 import { Player } from "../Player";
 import { Map1 } from "@/code/Maps/Map1";
 import { PlayerCamera } from "../PlayerCamera";
+import { World } from "@/code/World/World";
 
 export class CrossHair {
   readonly #scene: Scene;
@@ -105,6 +106,21 @@ export class CrossHair {
     if (!normal) return null;
     const hitPos = pick.pickedPoint.add(normal.scale(0.001));
     return new Vector3(
+      Math.floor(hitPos.x),
+      Math.floor(hitPos.y),
+      Math.floor(hitPos.z)
+    );
+  }
+  public static pickBlock(player: Player): number | null {
+    const ray = player.playerCamera.playerCamera.getForwardRay(
+      Player.REACH_DISTANCE
+    );
+    const pick = Map1.mainScene.pickWithRay(ray);
+    if (!pick?.pickedPoint) return null;
+    const normal = pick.getNormal(true);
+    if (!normal) return null;
+    const hitPos = pick.pickedPoint.subtract(normal.scale(0.001));
+    return World.getBlockByWorldCoords(
       Math.floor(hitPos.x),
       Math.floor(hitPos.y),
       Math.floor(hitPos.z)

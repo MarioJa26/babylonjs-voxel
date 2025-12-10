@@ -74,5 +74,6 @@ export const BlockTextures: (BlockTextureDef | null)[] = [
   { all: [9, 3] }, // 58: rectangular_facade_tiles_02
   { all: [10, 3] }, // 59: red_sandstone_wall
   { all: [11, 3] }, // 60: glass_01
-  { all: [12, 3] }, // 60: glass_02
+  { all: [12, 3] }, // 61: glass_02
+  { all: [13, 3] }, // 62: crafting_table
 ];

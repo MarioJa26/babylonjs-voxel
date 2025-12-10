@@ -283,4 +283,9 @@ export const TextureDefinitions: TextureDefinition[] = [
     name: "glass_02",
     path: "/texture/transparent/glass_02_1k",
   },
+  {
+    id: 62,
+    name: "crafting_table",
+    path: "/texture/wood/crafting_table_1k",
+  },
 ];

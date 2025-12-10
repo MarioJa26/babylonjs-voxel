@@ -69,14 +69,20 @@ export class WalkingControls implements IControls<PlayerVehicle> {
       if (!hit) return;
       World.deleteBlock(hit.x, hit.y, hit.z);
     } else if (WalkingControls.MOUSE2.includes(mouseEvent.button)) {
+      const blockNumber = CrossHair.pickBlock(this.#player);
+      if (blockNumber === 62) {
+        console.log("Clicked on protected block!");
+        return;
+      }
+      const hit = CrossHair.pickMesh(this.#player);
+      if (!hit) return;
+
       const item =
         this.#player.playerInventory.inventory[0][
           this.#player.playerHud.selectedHotbarSlot
         ]?.item;
 
       if (item) {
-        const hit = CrossHair.pickMesh(this.#player);
-        if (!hit) return;
         World.setBlock(hit.x, hit.y, hit.z, item.itemId);
       }
     }
