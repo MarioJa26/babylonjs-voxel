@@ -2,12 +2,10 @@ import {
   Mesh,
   VertexBuffer,
   Effect,
-  Material,
   PhysicsAggregate,
   PhysicsShapeType,
   Texture,
-  Tools,
-  CubeTexture,
+  Material,
   DepthRenderer,
   Vector2,
 } from "@babylonjs/core";
@@ -36,49 +34,14 @@ export class ChunkMesher {
       let normalAtlasTexture: Texture | null = null;
       const scene = Map1.mainScene;
 
-      if (GlobalValues.CREATE_ATLAS) {
-        diffuseAtlasTexture = TextureAtlasFactory.getDiffuse();
-        normalAtlasTexture = TextureAtlasFactory.getNormal();
-
-        const saveTexture = async (texture: Texture, fileName: string) => {
-          // Wait for the texture to be fully ready, including for pixel reading.
-          await new Promise<void>((resolve) => {
-            texture.onLoadObservable.addOnce(() => {
-              resolve();
-            });
-          });
-
-          const pixels = await texture.readPixels();
-          if (pixels) {
-            const size = texture.getSize();
-            Tools.DumpData(
-              size.width,
-              size.height,
-              pixels,
-              undefined,
-              "image/png",
-              fileName,
-              true
-            );
-          }
-        };
-
-        if (diffuseAtlasTexture) {
-          saveTexture(diffuseAtlasTexture, "diffuseAtlas.png").catch((err) =>
-            console.error("Failed to save diffuse atlas:", err)
-          );
-        }
-        if (normalAtlasTexture) {
-          saveTexture(normalAtlasTexture, "normalAtlas.png").catch((err) =>
-            console.error("Failed to save normal atlas:", err)
-          );
-        }
-      } else {
-        diffuseAtlasTexture = new Texture("/texture/diffuseAtlas.png", scene, {
+      diffuseAtlasTexture = TextureAtlasFactory.getDiffuse();
+      normalAtlasTexture = TextureAtlasFactory.getNormal();
+      if (!diffuseAtlasTexture) {
+        diffuseAtlasTexture = new Texture("/texture/diffuse_atlas.png", scene, {
           noMipmap: false,
           samplingMode: Texture.NEAREST_SAMPLINGMODE,
         });
-        normalAtlasTexture = new Texture("/texture/normalAtlas.png", scene, {
+        normalAtlasTexture = new Texture("/texture/normal_atlas.png", scene, {
           noMipmap: false,
           samplingMode: Texture.NEAREST_SAMPLINGMODE,
         });
@@ -275,15 +238,6 @@ export class ChunkMesher {
         if (normalAtlasTexture) {
           glassMat.setTexture("normalTexture", normalAtlasTexture);
         }
-
-        // Find and set the skybox texture for reflections
-        if (
-          scene.environmentTexture &&
-          scene.environmentTexture instanceof CubeTexture
-        ) {
-          glassMat.setTexture("skyboxTexture", scene.environmentTexture);
-        }
-
         glassMat.onBind = () => {
           const effect = glassMat.getEffect();
           if (effect) {
@@ -346,20 +300,19 @@ export class ChunkMesher {
     }
 
     // Handle opaque mesh
-    if (meshData.opaque.positions.length === 0) {
-      chunk.mesh = null;
-    } else {
-      const opaqueMesh = this.buildMesh(
+    if (meshData.opaque.positions.length > 0) {
+      chunk.mesh = this.buildMesh(
         chunk,
         meshData.opaque,
         "chunk_opaque",
         this.atlasMaterial!
       );
-      chunk.mesh = opaqueMesh;
+    } else {
+      chunk.mesh = null;
     }
 
     // Handle water mesh
-    if (meshData.water.positions.length > 0) {
+    if (meshData.water?.positions.length > 0) {
       chunk.waterMesh = this.buildMesh(
         chunk,
         meshData.water,
@@ -371,7 +324,7 @@ export class ChunkMesher {
     }
 
     // Handle glass mesh
-    if (meshData.glass.positions.length > 0) {
+    if (meshData.glass?.positions.length > 0) {
       chunk.glassMesh = this.buildMesh(
         chunk,
         meshData.glass,

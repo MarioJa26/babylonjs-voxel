@@ -2,7 +2,7 @@ import { Vector3 } from "@babylonjs/core";
 
 export class GlobalValues {
   public static DEBUG = false;
-  public static readonly CREATE_ATLAS = true;
+  public static readonly CREATE_ATLAS = false;
 
   public static readonly INIT_CONNECTION = false;
 

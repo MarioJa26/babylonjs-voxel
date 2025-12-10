@@ -108,7 +108,8 @@ export class WalkingControls implements IControls<PlayerVehicle> {
       this.#player.flashlight.toggle();
     } else if (WalkingControls.KEY_F2.includes(key)) {
       GlobalValues.DEBUG = !GlobalValues.DEBUG;
-      PlayerHud.showDebugPanel();
+    } else if (WalkingControls.KEY_F3.includes(key)) {
+      PlayerHud.toggleDebugInfo();
     } else if (key === "l") {
       this.#player.position.y += 50;
     }

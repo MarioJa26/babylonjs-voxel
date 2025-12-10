@@ -241,6 +241,16 @@ export class PlayerHud {
     div.appendChild(timeScaleSlider);
   }
 
+  public static toggleDebugInfo(): void {
+    if (this.debugPanelDiv) {
+      if (this.debugPanelDiv.style.display === "none") {
+        this.showDebugPanel();
+      } else {
+        this.hideDebugPanel();
+      }
+    }
+  }
+
   public static showDebugPanel(): void {
     if (this.debugPanelDiv) this.debugPanelDiv.style.display = "block";
   }

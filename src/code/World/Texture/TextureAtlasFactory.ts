@@ -1,5 +1,6 @@
 import { Scene, Texture } from "@babylonjs/core";
 import { MaterialFactory } from "../Texture/MaterialFactory";
+import { GlobalValues } from "../GlobalValues";
 
 export type TileUV = {
   u: number;
@@ -98,10 +99,10 @@ export class TextureAtlasFactory {
     this.normalAtlas = normalTex;
 
     // --- Save atlas to file if requested ---
-    // if (GlobalValues.CREATE_ATLAS) {
-    // this.saveCanvasAsImage(diffuseCanvas, "diffuse_atlas.png");
-    //this.saveCanvasAsImage(normalCanvas, "normal_atlas.png");
-    // }
+    if (GlobalValues.CREATE_ATLAS) {
+      this.saveCanvasAsImage(diffuseCanvas, "diffuse_atlas.png");
+      this.saveCanvasAsImage(normalCanvas, "normal_atlas.png");
+    }
 
     return {
       diffuse: this.diffuseAtlas,

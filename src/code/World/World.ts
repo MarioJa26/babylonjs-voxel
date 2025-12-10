@@ -5,10 +5,11 @@ import { SettingParams } from "./SettingParams";
 import { WorldStorage } from "./WorldStorage";
 
 export class World {
+  /*
   constructor() {
     World.updateChunksAround(0, 0, 0, 2);
   }
-
+*/
   /**
    * Ensure chunks exist around the provided world position.
    * Only creates chunks when the player's chunk coordinate moves to a new chunk.
