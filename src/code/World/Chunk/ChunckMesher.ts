@@ -468,9 +468,9 @@ export class ChunkMesher {
       chunk.chunkY * Chunk.SIZE,
       chunk.chunkZ * Chunk.SIZE
     );
+    mesh.freezeWorldMatrix();
 
     // Create physics aggregate AFTER the world matrix is set.
-    // Only for opaque meshes.
     if (name === "chunk_opaque" || name === "chunk_glass") {
       new PhysicsAggregate(
         mesh,

@@ -63,8 +63,8 @@ export class GlassShader {
         vec3 specular = vec3(0.5) * spec;
 
         // --- Ambient Occlusion ---
-        float aoFactor = 1.0 - vAO * 0.24;
-        vec3 litColor = diffuseColor.rgb * 0.5 + diffuse + specular;
+        float aoFactor = 1.0 - vAO * 0.067;
+        vec3 litColor = diffuseColor.rgb * 0.6 + diffuse + specular;
         vec3 finalColor = litColor * aoFactor;
 
         // Use a fixed alpha or one from the texture for blending

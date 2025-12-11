@@ -125,7 +125,7 @@ void main(void) {
         float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), 32.0);
         vec3 specular = vec3(0.3) * spec; // Specular color is white
 
-        float aoFactor = 1.0 - vAO * 0.175; // 0->1, 1->0.85, 2->0.7, 3->0.55
+        float aoFactor = 1.0 - vAO * 0.2; // 0->1, 1->0.85, 2->0.7, 3->0.55
         vec3 finalColor = (diffuseColor.rgb * 0.8 + diffuse + specular) * aoFactor;
 
         gl_FragColor = vec4(finalColor, diffuseColor.a);  
