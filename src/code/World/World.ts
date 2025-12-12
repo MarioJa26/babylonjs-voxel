@@ -28,7 +28,7 @@ export class World {
 
     // 1. Collect all potential chunk coordinates and their distances
     for (let y = chunkY - verticalRadius; y <= chunkY + verticalRadius; y++) {
-      if (y < 0 || y >= SettingParams.MAX_CHUNK_HEIGHT) continue;
+      if (y >= SettingParams.MAX_CHUNK_HEIGHT) continue;
       for (let x = chunkX - renderDistance; x <= chunkX + renderDistance; x++) {
         for (
           let z = chunkZ - renderDistance;

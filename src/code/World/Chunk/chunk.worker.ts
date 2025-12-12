@@ -3,6 +3,7 @@
 import { BlockTextures } from "../Texture/BlockTextures";
 import { WorldGenerator } from "../Generation/WorldGenerator";
 import { MeshData } from "./MeshData";
+import { GenerationParams } from "../Generation/GenerationParams";
 
 /**
  * A wrapper around a TypedArray that allows it to be resized dynamically.

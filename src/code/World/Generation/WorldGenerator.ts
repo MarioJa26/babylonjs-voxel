@@ -1,5 +1,5 @@
 import Alea from "alea";
-import { createNoise2D } from "simplex-noise";
+import { createNoise2D, createNoise3D } from "simplex-noise";
 import { GenerationParamsType } from "./GenerationParams";
 import { Biome } from "./Biome/Biomes";
 import { Squirrel3 } from "./Squirrel13";
@@ -10,6 +10,7 @@ export class WorldGenerator {
   private prng: ReturnType<typeof Alea>;
   private seedAsInt: number;
   private treeNoise: ReturnType<typeof createNoise2D>;
+  private caveNoise: ReturnType<typeof createNoise3D>;
 
   private chunk_size: number;
 
@@ -21,9 +22,11 @@ export class WorldGenerator {
 
     // Separate PRNGs for different noise types to avoid correlation
     const treePrng = Alea(this.prng());
+    const cavePrng = Alea(this.prng());
 
     this.treeNoise = createNoise2D(treePrng);
     this.chunk_size = this.params.CHUNK_SIZE;
+    this.caveNoise = createNoise3D(cavePrng);
   }
 
   public generateChunkData(chunkX: number, chunkY: number, chunkZ: number) {
@@ -91,7 +94,8 @@ export class WorldGenerator {
     ) => void
   ) {
     const { CHUNK_SIZE, SEA_LEVEL } = this.params;
-    const SIZE = CHUNK_SIZE;
+    const SIZE = CHUNK_SIZE; // Alias for chunk size
+    const MIN_WORLD_Y = -16 * 100; // The lowest possible Y coordinate for terrain
 
     for (let localX = 0; localX < SIZE; localX++) {
       for (let localZ = 0; localZ < SIZE; localZ++) {
@@ -104,8 +108,38 @@ export class WorldGenerator {
           biome
         );
 
-        for (let worldY = 0; worldY <= terrainHeight; worldY++) {
-          const localY = worldY - chunkY * SIZE;
+        // Determine the range of Y coordinates to fill for this column
+        const startY = Math.max(MIN_WORLD_Y, chunkY * SIZE);
+        const endY = Math.min(terrainHeight, (chunkY + 1) * SIZE - 1);
+
+        const MIN_CAVE_DENSITY = 0.00000001; // For large caves deep underground.
+        const MAX_CAVE_DENSITY = 1.0; // For small caves near the surface.
+        const DENSITY_TRANSITION_DEPTH = -32; // How many blocks down until caves reach max size.
+        // Fill blocks from the bottom of the relevant world area up to the terrain height
+        for (let worldY = startY; worldY <= endY; worldY++) {
+          // --- Cave Generation ---
+          // Only carve caves below the surface layer
+          if (worldY < -2) {
+            // --- Dynamic Cave Density ---
+
+            // 't' is the interpolation factor, from 0 (at surface) to 1 (at max depth).
+            const t = Math.min(1, worldY / DENSITY_TRANSITION_DEPTH);
+            // Interpolate from MIN (deep) to MAX (surface)
+            const caveDensity =
+              MIN_CAVE_DENSITY * t + MAX_CAVE_DENSITY * (1 - t);
+
+            const CAVE_SCALE = 0.01; // How stretched out the caves are. Smaller = larger caves.
+            const noiseValue = this.caveNoise(
+              worldX * CAVE_SCALE,
+              worldY * CAVE_SCALE,
+              worldZ * CAVE_SCALE
+            );
+
+            if (noiseValue > caveDensity) {
+              continue; // Skip placing a block to create a cave
+            }
+          }
+
           let blockId = biome.stoneBlock;
           if (worldY === terrainHeight) {
             // Check for beach generation
@@ -124,6 +158,9 @@ export class WorldGenerator {
             }
           } else if (worldY > terrainHeight - 5) {
             blockId = biome.undergroundBlock;
+          }
+          if (worldY < 0) {
+            blockId = 29;
           }
 
           placeBlock(worldX, worldY, worldZ, blockId, true);
@@ -267,16 +304,6 @@ export class WorldGenerator {
       return biome.undergroundBlock;
     }
     return biome.undergroundBlock;
-    /* else {
-      const stoneBlock = biome.stoneBlock;
-      return this.#getUndergroundBlock(
-        worldX,
-        worldY,
-        worldZ,
-        stoneBlock,
-        biome
-      );
-    } */
   }
   private generateStructures(
     chunkX: number,
