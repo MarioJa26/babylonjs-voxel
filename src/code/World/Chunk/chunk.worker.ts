@@ -279,54 +279,12 @@ class ChunkWorkerMesher {
 
         maskIndex = 0;
 
-        // --- Non-Greedy Quad Generation for Per-Block AO ---
-        for (let v_coord = 0; v_coord < size; v_coord++) {
-          for (let u_coord = 0; u_coord < size; u_coord++) {
-            const currentMaskValue = mask[maskIndex];
-            if (currentMaskValue !== 0) {
-              // Decode mask value
-              const isBackFace = (currentMaskValue & BACKFACE_FLAG) !== 0;
-              const isTransparent = (currentMaskValue & TRANSPARENT_FLAG) !== 0;
-              const blockId = currentMaskValue & BLOCK_ID_MASK;
-
-              position[u_axis] = u_coord;
-              position[v_axis] = v_coord;
-
-              const quadStartPos = [position[0], position[1], position[2]];
-              quadStartPos[axis]++;
-
-              let targetMesh = opaqueMeshData;
-              if (isTransparent) {
-                targetMesh = WATER_BLOCKS.has(blockId)
-                  ? waterMeshData
-                  : glassMeshData;
-              } else {
-                targetMesh = opaqueMeshData;
-              }
-
-              this.addQuad(
-                quadStartPos,
-                direction,
-                u_axis,
-                v_axis,
-                1, // width is always 1
-                1, // height is always 1
-                blockId,
-                isBackFace,
-                getBlock,
-                targetMesh
-              );
-            }
-            maskIndex++;
-          }
-        }
-        /*
         // Optimized Greedy merge from mask
         for (let v_coord = 0; v_coord < size; v_coord++) {
           for (let u_coord = 0; u_coord < size; ) {
             const currentMaskValue = mask[maskIndex];
             if (currentMaskValue !== 0) {
-              // Greedily find width
+              // --- 1. Greedily find width ---
               let width = 1;
               while (
                 u_coord + width < size &&
@@ -335,13 +293,15 @@ class ChunkWorkerMesher {
                 width++;
               }
 
-              // Greedily find height
+              // --- 2. Greedily find height ---
               let height = 1;
-              // Scan rows below to extend the quad vertically
-              for (let h = 1; v_coord + h < size; h++) {
+              while (v_coord + height < size) {
                 let canExtend = true;
+                // Check if the row below can be merged
                 for (let w = 0; w < width; w++) {
-                  if (mask[maskIndex + w + h * size] !== currentMaskValue) {
+                  if (
+                    mask[maskIndex + w + height * size] !== currentMaskValue
+                  ) {
                     canExtend = false;
                     break;
                   }
@@ -350,7 +310,7 @@ class ChunkWorkerMesher {
                 height++;
               }
 
-              // Decode mask value
+              // --- 3. Add the quad and update the mask ---
               const isBackFace = (currentMaskValue & BACKFACE_FLAG) !== 0;
               const isTransparent = (currentMaskValue & TRANSPARENT_FLAG) !== 0;
               const blockId = currentMaskValue & BLOCK_ID_MASK;
@@ -361,9 +321,14 @@ class ChunkWorkerMesher {
               const quadStartPos = [position[0], position[1], position[2]];
               quadStartPos[axis]++;
 
-              const targetMesh = isTransparent
-                ? transparentMeshData
-                : opaqueMeshData;
+              let targetMesh: WorkerInternalMeshData;
+              if (isTransparent) {
+                targetMesh = WATER_BLOCKS.has(blockId)
+                  ? waterMeshData
+                  : glassMeshData;
+              } else {
+                targetMesh = opaqueMeshData;
+              }
 
               this.addQuad(
                 quadStartPos,
@@ -378,10 +343,11 @@ class ChunkWorkerMesher {
                 targetMesh
               );
 
-              // Zero out the mask for the area covered by the new quad
-              for (let hh = 0; hh < height; hh++) {
-                const start = maskIndex + hh * size;
-                mask.fill(0, start, start + width);
+              // Zero out the mask for the area we just processed
+              for (let h = 0; h < height; h++) {
+                for (let w = 0; w < width; w++) {
+                  mask[maskIndex + w + h * size] = 0;
+                }
               }
 
               u_coord += width;
@@ -392,7 +358,6 @@ class ChunkWorkerMesher {
             }
           }
         }
-        */
       }
     }
 
@@ -437,6 +402,58 @@ class ChunkWorkerMesher {
     }
   }
 
+  private static calculateAO(
+    x: number[],
+    q: number[],
+    u: number,
+    v: number,
+    corners: number[][],
+    isBackFace: boolean,
+    getBlock: (x: number, y: number, z: number) => number
+  ): number[] {
+    const aoValues = [0, 0, 0, 0]; // Corresponds to p1, p2, p3, p4
+
+    // Get the integer coordinates of the block this face belongs to.
+    // `x` is the position of the corner of the quad, which is on a block boundary.
+    // For a front face, we subtract the normal `q` to get the block's origin.
+    // For a back face, the quad is on the correct side, so we don't subtract.
+    const blockPos = isBackFace
+      ? [x[0] - q[0], x[1] - q[1], x[2] - q[2]]
+      : [x[0], x[1], x[2]];
+
+    for (let i = 0; i < 4; i++) {
+      const corner = corners[i];
+
+      // Determine the two side directions and the corner direction relative to the vertex.
+      const offsetU = corner[u] - x[u] > 0 ? 1 : -1;
+      const offsetV = corner[v] - x[v] > 0 ? 1 : -1;
+
+      // The three blocks to check for occlusion are relative to the block being drawn.
+      const side1Pos = [blockPos[0], blockPos[1], blockPos[2]];
+      side1Pos[v] += offsetV;
+
+      const side2Pos = [blockPos[0], blockPos[1], blockPos[2]];
+      side2Pos[u] += offsetU;
+
+      const cornerPos = [blockPos[0], blockPos[1], blockPos[2]];
+      cornerPos[u] += offsetU;
+      cornerPos[v] += offsetV;
+
+      const side1IsSolid =
+        getBlock(side1Pos[0], side1Pos[1], side1Pos[2]) !== 0;
+      const side2IsSolid =
+        getBlock(side2Pos[0], side2Pos[1], side2Pos[2]) !== 0;
+      const cornerIsSolid =
+        getBlock(cornerPos[0], cornerPos[1], cornerPos[2]) !== 0;
+
+      aoValues[i] =
+        (side1IsSolid ? 1 : 0) +
+        (side2IsSolid ? 1 : 0) +
+        (cornerIsSolid && side1IsSolid && side2IsSolid ? 1 : 0);
+    }
+    return aoValues;
+  }
+
   public static addQuad(
     x: number[],
     q: number[],
@@ -468,52 +485,16 @@ class ChunkWorkerMesher {
     // positions
     meshData.positions.push(...p1, ...p2, ...p3, ...p4);
 
-    // AO calculation
-    const aoValues = [0, 0, 0, 0]; // p1, p2, p3, p4
     const corners = [p1, p2, p3, p4];
-
-    // Get the integer coordinates of the block this face belongs to.
-    // `x` is the position of the corner of the quad, which is on a block boundary.
-    // For a front face, we subtract the normal `q` to get the block's origin.
-    // For a back face, the quad is on the correct side, so we don't subtract.
-    const blockPos = isBackFace
-      ? [x[0] - q[0], x[1] - q[1], x[2] - q[2]]
-      : [x[0], x[1], x[2]];
-
-    for (let i = 0; i < 4; i++) {
-      const corner = corners[i];
-
-      // Determine the two side directions and the corner direction relative to the vertex.
-      // `corner - x` gives us the offset from the quad's origin (e.g., [0,0,0], [w,0,0], [w,h,0], [0,h,0])
-      const offsetU = corner[u] - x[u] > 0 ? 1 : -1;
-      const offsetV = corner[v] - x[v] > 0 ? 1 : -1;
-
-      // The three blocks to check for occlusion are relative to the block being drawn.
-      // side1 is offset along the v-axis and the face normal.
-      // side2 is offset along the u-axis and the face normal.
-      // corner is offset along both u and v axes.
-      const side1Pos = [blockPos[0], blockPos[1], blockPos[2]];
-      side1Pos[v] += offsetV;
-
-      const side2Pos = [blockPos[0], blockPos[1], blockPos[2]];
-      side2Pos[u] += offsetU;
-
-      const cornerPos = [blockPos[0], blockPos[1], blockPos[2]];
-      cornerPos[u] += offsetU;
-      cornerPos[v] += offsetV;
-
-      const side1IsSolid =
-        getBlock(side1Pos[0], side1Pos[1], side1Pos[2]) !== 0;
-      const side2IsSolid =
-        getBlock(side2Pos[0], side2Pos[1], side2Pos[2]) !== 0;
-      const cornerIsSolid =
-        getBlock(cornerPos[0], cornerPos[1], cornerPos[2]) !== 0;
-
-      aoValues[i] =
-        (side1IsSolid ? 1 : 0) +
-        (side2IsSolid ? 1 : 0) +
-        (cornerIsSolid && side1IsSolid && side2IsSolid ? 1 : 0);
-    }
+    const aoValues = this.calculateAO(
+      x,
+      q,
+      u,
+      v,
+      corners,
+      isBackFace,
+      getBlock
+    );
     // 1. Push the four correct AO values for the four vertices.
     meshData.ao.push(...aoValues);
 
