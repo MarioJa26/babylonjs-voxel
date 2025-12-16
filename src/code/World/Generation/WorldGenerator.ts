@@ -11,6 +11,7 @@ export class WorldGenerator {
   private seedAsInt: number;
   private treeNoise: ReturnType<typeof createNoise2D>;
   private caveNoise: ReturnType<typeof createNoise3D>;
+  private chunkSizeSq: number;
 
   private chunk_size: number;
 
@@ -18,7 +19,7 @@ export class WorldGenerator {
     this.params = params;
     this.prng = Alea(this.params.SEED);
     // Convert string seed to a number for hashing
-    this.seedAsInt = Squirrel3.get(0, this.prng() * 0xffffffff);
+    this.seedAsInt = Squirrel3.get(0, (this.prng() * 0xffffffff) | 0);
 
     // Separate PRNGs for different noise types to avoid correlation
     const treePrng = Alea(this.prng());
@@ -26,6 +27,7 @@ export class WorldGenerator {
 
     this.treeNoise = createNoise2D(treePrng);
     this.chunk_size = this.params.CHUNK_SIZE;
+    this.chunkSizeSq = this.chunk_size ** 2;
     this.caveNoise = createNoise3D(cavePrng);
   }
 
@@ -60,7 +62,7 @@ export class WorldGenerator {
         localZ < this.chunk_size
       ) {
         const idx =
-          localX + localY * this.chunk_size + localZ * this.chunk_size ** 2;
+          localX + localY * this.chunk_size + localZ * this.chunkSizeSq;
         if (overwrite || blocks[idx] === 0) {
           blocks[idx] = blockId;
         }
@@ -96,11 +98,15 @@ export class WorldGenerator {
     const { CHUNK_SIZE, SEA_LEVEL } = this.params;
     const SIZE = CHUNK_SIZE; // Alias for chunk size
     const MIN_WORLD_Y = -16 * 100; // The lowest possible Y coordinate for terrain
+    const chunkWorldX = chunkX * SIZE;
+    const chunkWorldZ = chunkZ * SIZE;
+    const chunkWorldY = chunkY * SIZE;
+    const startYForChunk = Math.max(MIN_WORLD_Y, chunkWorldY);
 
     for (let localX = 0; localX < SIZE; localX++) {
+      const worldX = chunkWorldX + localX;
       for (let localZ = 0; localZ < SIZE; localZ++) {
-        const worldX = chunkX * SIZE + localX;
-        const worldZ = chunkZ * SIZE + localZ;
+        const worldZ = chunkWorldZ + localZ;
 
         const terrainHeight = this.#getFinalTerrainHeight(
           worldX,
@@ -109,14 +115,14 @@ export class WorldGenerator {
         );
 
         // Determine the range of Y coordinates to fill for this column
-        const startY = Math.max(MIN_WORLD_Y, chunkY * SIZE);
-        const endY = Math.min(terrainHeight, (chunkY + 1) * SIZE - 1);
+        const endY = Math.min(terrainHeight, chunkWorldY + SIZE - 1);
 
         const MIN_CAVE_DENSITY = 0.00000001; // For large caves deep underground.
         const MAX_CAVE_DENSITY = 1.0; // For small caves near the surface.
         const DENSITY_TRANSITION_DEPTH = -32; // How many blocks down until caves reach max size.
         // Fill blocks from the bottom of the relevant world area up to the terrain height
-        for (let worldY = startY; worldY <= endY; worldY++) {
+
+        for (let worldY = startYForChunk; worldY <= endY; worldY++) {
           // --- Cave Generation ---
           // Only carve caves below the surface layer
           if (worldY < -2) {
@@ -136,34 +142,37 @@ export class WorldGenerator {
             );
 
             if (noiseValue > caveDensity) {
+              // This is a cave space. Check if it should be a lava pool.
+              const LAVA_LEVEL = -16 * 100;
+              if (worldY < LAVA_LEVEL) {
+                placeBlock(worldX, worldY, worldZ, 24, false); // Lava
+              }
               continue; // Skip placing a block to create a cave
             }
-          }
-
-          let blockId = biome.stoneBlock;
-          if (worldY === terrainHeight) {
-            // Check for beach generation
-            const isBeach = this.#isBeachLocation(
-              worldX,
-              worldZ,
-              terrainHeight,
-              biome
-            );
-            if (terrainHeight < SEA_LEVEL - 1) {
-              blockId = biome.seafloorBlock;
-            } else if (isBeach) {
-              blockId = biome.beachBlock;
-            } else {
-              blockId = biome.topBlock;
+            placeBlock(worldX, worldY, worldZ, 29, true);
+          } else {
+            let blockId = biome.stoneBlock;
+            if (worldY === terrainHeight) {
+              // Check for beach generation
+              const isBeach = this.#isBeachLocation(
+                worldX,
+                worldZ,
+                terrainHeight,
+                biome
+              );
+              if (terrainHeight < SEA_LEVEL - 1) {
+                blockId = biome.seafloorBlock;
+              } else if (isBeach) {
+                blockId = biome.beachBlock;
+              } else {
+                blockId = biome.topBlock;
+              }
+            } else if (worldY > terrainHeight - 5) {
+              blockId = biome.undergroundBlock;
             }
-          } else if (worldY > terrainHeight - 5) {
-            blockId = biome.undergroundBlock;
-          }
-          if (worldY < 0) {
-            blockId = 29;
-          }
 
-          placeBlock(worldX, worldY, worldZ, blockId, true);
+            placeBlock(worldX, worldY, worldZ, blockId, true);
+          }
         }
 
         for (let worldY = terrainHeight + 1; worldY <= SEA_LEVEL; worldY++) {
@@ -318,6 +327,7 @@ export class WorldGenerator {
     ) => void
   ) {
     this.tryPlacingTower(chunkX, chunkY, chunkZ, placeBlock);
+    this.tryPlacingLavaPool(chunkX, chunkY, chunkZ, placeBlock);
   }
 
   private tryPlacingTower(
@@ -332,7 +342,7 @@ export class WorldGenerator {
       ow: boolean
     ) => void
   ) {
-    const TOWER_REGION_SIZE = 32; // in chunks
+    const TOWER_REGION_SIZE = 16; // in chunks
     const TOWER_SPAWN_CHANCE = 100; // out of 100
 
     // Determine the region this chunk belongs to
@@ -368,6 +378,15 @@ export class WorldGenerator {
         return;
       }
 
+      const towerRadius = 8 + (Squirrel3.get(towerCenterX, this.seedAsInt) % 4);
+      const biome = this.#getBiome(towerCenterX, towerCenterZ);
+      const groundHeight = this.findMinGroundHeightForTower(
+        towerCenterX,
+        towerCenterZ,
+        towerRadius,
+        biome
+      );
+
       // Now that we have a position, generate the tower if this chunk is in range
       this.generateCylinderTower(
         chunkX,
@@ -375,6 +394,20 @@ export class WorldGenerator {
         chunkZ,
         towerCenterX,
         towerCenterZ,
+        towerRadius,
+        groundHeight,
+        biome,
+        placeBlock
+      );
+      // Also try to generate the underground part of the tower
+      this.generateUndergroundCylinderTower(
+        chunkX,
+        chunkY,
+        chunkZ,
+        towerCenterX,
+        towerCenterZ,
+        towerRadius,
+        groundHeight,
         placeBlock
       );
     }
@@ -386,6 +419,9 @@ export class WorldGenerator {
     chunkZ: number,
     towerCenterX: number,
     towerCenterZ: number,
+    towerRadius: number,
+    groundHeight: number,
+    biome: Biome,
     placeBlock: (
       x: number,
       y: number,
@@ -394,29 +430,9 @@ export class WorldGenerator {
       ow: boolean
     ) => void
   ) {
-    const towerRadius = 8 + (Squirrel3.get(towerCenterX, this.seedAsInt) % 4);
     const towerHeight = 76 + (Squirrel3.get(towerCenterZ, this.seedAsInt) % 8);
     const wallBlockId = 1;
-
-    // --- 1. Find the lowest ground point within the tower's radius ---
-    let minGroundHeight = Infinity;
     const radiusSq = towerRadius * towerRadius;
-    const biome = this.#getBiome(towerCenterX, towerCenterZ);
-    for (let dx = -towerRadius; dx <= towerRadius; dx++) {
-      for (let dz = -towerRadius; dz <= towerRadius; dz++) {
-        if (dx * dx + dz * dz > radiusSq) continue;
-
-        const worldX = towerCenterX + dx;
-        const worldZ = towerCenterZ + dz;
-
-        const height = this.#getFinalTerrainHeight(worldX, worldZ, biome);
-        if (height < minGroundHeight) {
-          minGroundHeight = height;
-        }
-      }
-    }
-
-    const groundHeight = minGroundHeight;
 
     // --- 2. Create a solid foundation up to the groundHeight ---
     for (let dx = -towerRadius; dx <= towerRadius; dx++) {
@@ -462,5 +478,217 @@ export class WorldGenerator {
         }
       }
     }
+  }
+
+  private generateUndergroundCylinderTower(
+    chunkX: number,
+    chunkY: number,
+    chunkZ: number,
+    towerCenterX: number,
+    towerCenterZ: number,
+    towerRadius: number,
+    groundHeight: number,
+    placeBlock: (
+      x: number,
+      y: number,
+      z: number,
+      id: number,
+      ow: boolean
+    ) => void
+  ) {
+    const wallBlockId = 26;
+    const MIN_WORLD_Y = -16 * 100;
+    const radiusSq = towerRadius * towerRadius;
+
+    // Iterate through all possible blocks in the current chunk
+    for (let localY = 0; localY < this.chunk_size; localY++) {
+      const worldY = chunkY * this.chunk_size + localY;
+
+      // Check if the current world Y is within the tower's height range
+      if (worldY < MIN_WORLD_Y || worldY >= groundHeight) {
+        continue;
+      }
+
+      for (let dx = -towerRadius; dx <= towerRadius; dx++) {
+        for (let dz = -towerRadius; dz <= towerRadius; dz++) {
+          if (dx * dx + dz * dz > radiusSq) continue;
+          placeBlock(
+            towerCenterX + dx,
+            worldY,
+            towerCenterZ + dz,
+            wallBlockId,
+            true
+          );
+        }
+      }
+    }
+  }
+
+  private findMinGroundHeightForTower(
+    towerCenterX: number,
+    towerCenterZ: number,
+    towerRadius: number,
+    biome: Biome
+  ): number {
+    let minGroundHeight = Infinity;
+    const radiusSq = towerRadius * towerRadius;
+
+    for (let dx = -towerRadius; dx <= towerRadius; dx++) {
+      for (let dz = -towerRadius; dz <= towerRadius; dz++) {
+        if (dx * dx + dz * dz > radiusSq) continue;
+
+        const worldX = towerCenterX + dx;
+        const worldZ = towerCenterZ + dz;
+
+        const height = this.#getFinalTerrainHeight(worldX, worldZ, biome);
+        if (height < minGroundHeight) {
+          minGroundHeight = height;
+        }
+      }
+    }
+    return minGroundHeight;
+  }
+
+  private tryPlacingLavaPool(
+    chunkX: number,
+    chunkY: number,
+    chunkZ: number,
+    placeBlock: (
+      x: number,
+      y: number,
+      z: number,
+      id: number,
+      ow: boolean
+    ) => void
+  ) {
+    const POOL_REGION_SIZE = 2; // in chunks
+    const POOL_SPAWN_CHANCE = 100; // out of 100
+
+    // Determine the region this chunk belongs to
+    const regionX = Math.floor(chunkX / POOL_REGION_SIZE);
+    const regionZ = Math.floor(chunkZ / POOL_REGION_SIZE);
+
+    // Use a deterministic hash to decide if a pool spawns in this region
+    const regionHash = Squirrel3.get(
+      regionX * 873461393 + regionZ * 178246653, // Use different primes
+      this.seedAsInt
+    );
+
+    if (Math.abs(regionHash) % 100 < POOL_SPAWN_CHANCE) {
+      // A pool should spawn in this region. Now, determine its exact location.
+      const baseHash = Squirrel3.get(regionHash, this.seedAsInt);
+
+      const offsetX =
+        Math.abs(Squirrel3.get(baseHash, this.seedAsInt)) %
+        (POOL_REGION_SIZE * this.chunk_size);
+      const offsetZ =
+        Math.abs(Squirrel3.get(baseHash + 1, this.seedAsInt)) %
+        (POOL_REGION_SIZE * this.chunk_size);
+
+      // Place pools between Y=-32 and Y=-256
+      const offsetY =
+        -64 -
+        (Math.abs(Squirrel3.get(baseHash + 2, this.seedAsInt)) % (1024 - 64));
+
+      const poolCenterX =
+        regionX * POOL_REGION_SIZE * this.chunk_size + offsetX;
+      const poolSurfaceY = offsetY;
+      const poolCenterZ =
+        regionZ * POOL_REGION_SIZE * this.chunk_size + offsetZ;
+
+      this.generateLavaPool(
+        chunkX,
+        chunkY,
+        chunkZ,
+        poolCenterX,
+        poolSurfaceY,
+        poolCenterZ,
+        placeBlock
+      );
+    }
+  }
+
+  private generateLavaPool(
+    chunkX: number,
+    chunkY: number,
+    chunkZ: number,
+    poolCenterX: number,
+    poolCenterY: number,
+    poolCenterZ: number,
+    placeBlock: (
+      x: number,
+      y: number,
+      z: number,
+      id: number,
+      ow: boolean
+    ) => void
+  ) {
+    const poolRadius = 25 + (Squirrel3.get(poolCenterX, this.seedAsInt) % 5); // Radius 5 to 9
+    const maxDepth = 15 + (Squirrel3.get(poolCenterZ, this.seedAsInt) % 3); // Depth 4 to 6
+    const radiusSq = poolRadius * poolRadius;
+    const lavaBlockId = 24;
+    const shoreBlockId = 25; // e.g., Obsidian
+
+    // --- 1. Carve out the complete obsidian shell first ---
+    const shellRadius = poolRadius + 1;
+    const shellRadiusSq = shellRadius * shellRadius;
+    for (let dx = -shellRadius; dx <= shellRadius; dx++) {
+      for (let dz = -shellRadius; dz <= shellRadius; dz++) {
+        const distSq = dx * dx + dz * dz;
+        if (distSq >= shellRadiusSq) continue;
+
+        const worldX = poolCenterX + dx;
+        const worldZ = poolCenterZ + dz;
+        const depthFactor = Math.sqrt(distSq) / shellRadius; // sqrt is ok here as it's for the shell shape
+        const depth = Math.floor((maxDepth + 1) * (1 - depthFactor));
+        const floorY = poolCenterY - depth;
+
+        for (let y = floorY; y <= poolCenterY; y++) {
+          placeBlock(worldX, y, worldZ, shoreBlockId, true);
+        }
+      }
+    }
+
+    // --- 2. Fill the inside of the shell with lava ---
+    for (let dx = -poolRadius; dx <= poolRadius; dx++) {
+      for (let dz = -poolRadius; dz <= poolRadius; dz++) {
+        const distSq = dx * dx + dz * dz;
+        if (distSq >= radiusSq) continue;
+
+        // Use squared distance to avoid expensive sqrt in the inner loop
+        const depth = Math.floor(maxDepth * (1 - distSq / radiusSq));
+        const floorY = poolCenterY - depth;
+        for (let y = floorY; y <= poolCenterY; y++) {
+          placeBlock(poolCenterX + dx, y, poolCenterZ + dz, lavaBlockId, true);
+        }
+      }
+    }
+  }
+
+  /**
+   * A helper to check if a block is solid. For now, it re-runs cave noise.
+   * This is not perfectly accurate if other structures are present but is a good approximation.
+   */
+  private isBlockSolid(
+    worldX: number,
+    worldY: number,
+    worldZ: number
+  ): boolean {
+    // Simplified check: if it's in a cave, it's not solid.
+    // This is an approximation and doesn't account for other structures.
+    if (worldY < -2) {
+      const t = Math.min(1, worldY / -32);
+      const caveDensity = 0.00000001 * t + 1.0 * (1 - t);
+      const CAVE_SCALE = 0.01;
+      const noiseValue = this.caveNoise(
+        worldX * CAVE_SCALE,
+        worldY * CAVE_SCALE,
+        worldZ * CAVE_SCALE
+      );
+      if (noiseValue > caveDensity) {
+        return false; // It's a cave, so not solid
+      }
+    }
+    return true; // Assume solid otherwise
   }
 }

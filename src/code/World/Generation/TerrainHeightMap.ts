@@ -24,7 +24,7 @@ export class TerrainHeightMap {
     const prng = Alea(this.params.SEED);
 
     // Separate PRNGs for different noise types to avoid correlation
-    TerrainHeightMap.seedAsInt = Squirrel3.get(0, prng() * 0xffffffff);
+    TerrainHeightMap.seedAsInt = Squirrel3.get(0, (prng() * 0xffffffff) | 0);
     const tempPrng = Alea(prng());
     const humidityPrng = Alea(prng());
     const detailPrng = Alea(prng());
