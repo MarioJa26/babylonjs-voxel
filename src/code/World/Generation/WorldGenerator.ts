@@ -4,11 +4,13 @@ import { GenerationParamsType } from "./GenerationParams";
 import { Biome } from "./Biome/Biomes";
 import { Squirrel3 } from "./Squirrel13";
 import { TerrainHeightMap } from "./TerrainHeightMap";
+import { Structure, StructureData } from "./Structure";
 
 export class WorldGenerator {
   private params: GenerationParamsType;
   private prng: ReturnType<typeof Alea>;
   private seedAsInt: number;
+  private structures: Map<string, Structure> = new Map();
   private treeNoise: ReturnType<typeof createNoise2D>;
   private caveNoise: ReturnType<typeof createNoise3D>;
   private chunkSizeSq: number;
@@ -29,6 +31,8 @@ export class WorldGenerator {
     this.chunk_size = this.params.CHUNK_SIZE;
     this.chunkSizeSq = this.chunk_size ** 2;
     this.caveNoise = createNoise3D(cavePrng);
+
+    this.#loadStructures();
   }
 
   public generateChunkData(chunkX: number, chunkY: number, chunkZ: number) {
@@ -327,6 +331,7 @@ export class WorldGenerator {
     ) => void
   ) {
     this.tryPlacingTower(chunkX, chunkY, chunkZ, placeBlock);
+    this.tryPlacingStructure(chunkX, chunkY, chunkZ, placeBlock);
     this.tryPlacingLavaPool(chunkX, chunkY, chunkZ, placeBlock);
   }
 
@@ -549,6 +554,70 @@ export class WorldGenerator {
     return minGroundHeight;
   }
 
+  private tryPlacingStructure(
+    chunkX: number,
+    chunkY: number,
+    chunkZ: number,
+    placeBlock: (
+      x: number,
+      y: number,
+      z: number,
+      id: number,
+      ow: boolean
+    ) => void
+  ) {
+    if (this.structures.size === 0) return;
+
+    const REGION_SIZE = 3; // in chunks
+    const SPAWN_CHANCE = 100; // 5% chance per region
+
+    const regionX = Math.floor(chunkX / REGION_SIZE);
+    const regionZ = Math.floor(chunkZ / REGION_SIZE);
+
+    // Use a different prime from other structures to avoid overlap
+    const regionHash = Squirrel3.get(
+      regionX * 584661329 + regionZ * 957346603,
+      this.seedAsInt
+    );
+
+    if (Math.abs(regionHash) % 100 < SPAWN_CHANCE) {
+      // Pick a random structure to place
+      const structureNames = Array.from(this.structures.keys());
+      const structureName =
+        structureNames[Math.abs(regionHash) % structureNames.length];
+      const structure = this.structures.get(structureName);
+
+      if (!structure) return;
+
+      // Determine its exact location within the region
+      const offsetX =
+        Math.abs(Squirrel3.get(regionHash, this.seedAsInt)) %
+        (REGION_SIZE * this.chunk_size);
+      const offsetZ =
+        Math.abs(Squirrel3.get(regionHash + 1, this.seedAsInt)) %
+        (REGION_SIZE * this.chunk_size);
+
+      const structureOriginX =
+        regionX * REGION_SIZE * this.chunk_size + offsetX;
+      const structureOriginZ =
+        regionZ * REGION_SIZE * this.chunk_size + offsetZ;
+
+      const biome = this.#getBiome(structureOriginX, structureOriginZ);
+      const groundHeight = this.#getFinalTerrainHeight(
+        structureOriginX,
+        structureOriginZ,
+        biome
+      );
+
+      structure.place(
+        structureOriginX,
+        groundHeight,
+        structureOriginZ,
+        placeBlock
+      );
+    }
+  }
+
   private tryPlacingLavaPool(
     chunkX: number,
     chunkY: number,
@@ -561,7 +630,7 @@ export class WorldGenerator {
       ow: boolean
     ) => void
   ) {
-    const POOL_REGION_SIZE = 2; // in chunks
+    const POOL_REGION_SIZE = 9; // in chunks
     const POOL_SPAWN_CHANCE = 100; // out of 100
 
     // Determine the region this chunk belongs to
@@ -690,5 +759,37 @@ export class WorldGenerator {
       }
     }
     return true; // Assume solid otherwise
+  }
+
+  /**
+   * Loads hardcoded structures for testing purposes.
+   * In a production environment, this would typically load from external files.
+   */
+  #loadStructures() {
+    const smallHouseData: StructureData = {
+      name: "Small Stone House", // Name is not part of StructureData interface, but useful for context
+      width: 5,
+      height: 4,
+      depth: 5,
+      palette: {
+        "0": 0, // air
+        "1": 1, // stone_brick
+        "2": 18, // oak_wood
+        "3": 19, // glass
+      },
+      blocks: [
+        // Layer Y=0 (bottom)
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        // Layer Y=1
+        2, 0, 0, 0, 2, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 2, 0, 0, 0, 2,
+        // Layer Y=2
+        2, 2, 2, 2, 2, 1, 3, 0, 3, 1, 1, 0, 0, 0, 1, 2, 2, 2, 2, 2,
+        // Layer Y=3 (top)
+        0, 2, 2, 2, 0, 0, 2, 0, 2, 0, 0, 2, 0, 2, 0, 0, 2, 2, 2, 0,
+      ],
+    };
+
+    this.structures.set("Small Stone House", new Structure(smallHouseData));
+    console.log(`Loaded hardcoded structure: ${smallHouseData.name}`);
   }
 }
