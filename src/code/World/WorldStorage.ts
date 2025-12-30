@@ -114,6 +114,10 @@ export class WorldStorage {
   public static async loadChunk(
     chunkId: bigint
   ): Promise<SavedChunkData | null> {
+    if (GlobalValues.DISABLE_CHUNK_LOADING) {
+      // Loading is disabled for testing, do nothing.
+      return Promise.resolve(null);
+    }
     if (!this.db) {
       console.warn("DB not initialized, cannot load chunk.");
       return null;
@@ -144,6 +148,10 @@ export class WorldStorage {
     chunkIds: bigint[]
   ): Promise<Map<bigint, SavedChunkData>> {
     const loadedChunks = new Map<bigint, SavedChunkData>();
+    if (GlobalValues.DISABLE_CHUNK_LOADING) {
+      // Loading is disabled for testing, do nothing.
+      return loadedChunks;
+    }
     if (!this.db || chunkIds.length === 0) {
       return loadedChunks;
     }

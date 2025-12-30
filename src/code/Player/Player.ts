@@ -161,7 +161,12 @@ export class Player implements IUsable {
         currentChunkY !== this.#lastChunkY ||
         currentChunkZ !== this.#lastChunkZ
       ) {
-        World.updateChunksAround(currentChunkX, currentChunkY, currentChunkZ);
+        World.updateChunksAround(
+          currentChunkX,
+          currentChunkY,
+          currentChunkZ,
+          playerPos.y
+        );
         this.#lastChunkX = currentChunkX;
         this.#lastChunkY = currentChunkY;
         this.#lastChunkZ = currentChunkZ;

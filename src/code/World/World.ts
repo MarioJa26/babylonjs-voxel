@@ -3,6 +3,7 @@ import { ChunkWorkerPool } from "./Chunk/ChunkWorkerPool";
 import { ChunkMesher } from "./Chunk/ChunckMesher";
 import { SettingParams } from "./SettingParams";
 import { WorldStorage } from "./WorldStorage";
+import { GenerationParams } from "./Generation/GenerationParams";
 
 export class World {
   /*
@@ -19,6 +20,7 @@ export class World {
     chunkX: number,
     chunkY: number,
     chunkZ: number,
+    playerY: number,
     renderDistance = SettingParams.RENDER_DISTANCE,
     verticalRadius = SettingParams.VERTICAL_RENDER_DISTANCE
   ) {
@@ -28,7 +30,11 @@ export class World {
 
     // 1. Collect all potential chunk coordinates and their distances
     for (let y = chunkY - verticalRadius; y <= chunkY + verticalRadius; y++) {
-      if (y >= SettingParams.MAX_CHUNK_HEIGHT) continue;
+      if (
+        y >= SettingParams.MAX_CHUNK_HEIGHT ||
+        (playerY > GenerationParams.CHUNK_SIZE && y < 0)
+      )
+        continue;
       for (let x = chunkX - renderDistance; x <= chunkX + renderDistance; x++) {
         for (
           let z = chunkZ - renderDistance;

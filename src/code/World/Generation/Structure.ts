@@ -53,10 +53,13 @@ export class Structure {
           const index = x + z * this.width + y * this.width * this.depth;
           const blockId = this.blocks[index];
 
-          // A block ID of 0 is considered air; we don't place it.
-          if (blockId !== 0) {
-            placeBlock(originX + x, originY + y, originZ + z, blockId, true);
-          }
+          placeBlock(
+            originX + x,
+            originY + y,
+            originZ + z,
+            blockId,
+            blockId !== 0
+          );
         }
       }
     }

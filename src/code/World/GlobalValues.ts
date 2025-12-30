@@ -8,6 +8,7 @@ export class GlobalValues {
 
   // When true, prevents chunks from being saved to IndexedDB. Useful for testing generation.
   public static readonly DISABLE_CHUNK_SAVING = true;
+  public static readonly DISABLE_CHUNK_LOADING = true;
 
   public static skyLightDirection = new Vector3(-1, -2, -1);
   public static GLOBAL_TIME = 0;

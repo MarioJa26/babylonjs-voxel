@@ -5,16 +5,19 @@ import { Biome } from "./Biome/Biomes";
 import { Squirrel3 } from "./Squirrel13";
 import { TerrainHeightMap } from "./TerrainHeightMap";
 import { Structure, StructureData } from "./Structure";
+import { NoiseSampler } from "./NoiseSampler";
 
 export class WorldGenerator {
   private params: GenerationParamsType;
   private prng: ReturnType<typeof Alea>;
-  private seedAsInt: number;
+
   private structures: Map<string, Structure> = new Map();
+
   private treeNoise: ReturnType<typeof createNoise2D>;
   private caveNoise: ReturnType<typeof createNoise3D>;
-  private chunkSizeSq: number;
 
+  private seedAsInt: number;
+  private chunkSizeSq: number;
   private chunk_size: number;
 
   constructor(params: GenerationParamsType) {
@@ -22,14 +25,15 @@ export class WorldGenerator {
     this.prng = Alea(this.params.SEED);
     // Convert string seed to a number for hashing
     this.seedAsInt = Squirrel3.get(0, (this.prng() * 0xffffffff) | 0);
+    this.chunk_size = this.params.CHUNK_SIZE;
+    this.chunkSizeSq = this.chunk_size ** 2;
 
     // Separate PRNGs for different noise types to avoid correlation
     const treePrng = Alea(this.prng());
     const cavePrng = Alea(this.prng());
 
     this.treeNoise = createNoise2D(treePrng);
-    this.chunk_size = this.params.CHUNK_SIZE;
-    this.chunkSizeSq = this.chunk_size ** 2;
+
     this.caveNoise = createNoise3D(cavePrng);
 
     this.#loadStructures();
@@ -67,7 +71,13 @@ export class WorldGenerator {
       ) {
         const idx =
           localX + localY * this.chunk_size + localZ * this.chunkSizeSq;
-        if (overwrite || blocks[idx] === 0) {
+
+        // --- Rule: Don't let air replace water ---
+        if (blockId === 0 && blocks[idx] === 30) {
+          return; // Do not place air if water already exists
+        }
+
+        if (blocks[idx] === 0 || overwrite) {
           blocks[idx] = blockId;
         }
       }
@@ -77,11 +87,15 @@ export class WorldGenerator {
       chunkX * this.chunk_size,
       chunkZ * this.chunk_size
     );
-    this.generateTerrain(chunkX, chunkY, chunkZ, biome, placeBlock);
+
+    this.generateTerrain(chunkX, chunkY, chunkZ, biome, placeBlock); // Generates solid terrain first
+    if (chunkY < 0)
+      this.generateUnderground(chunkX, chunkY, chunkZ, placeBlock); // Then carves caves into it
+
     this.generateFlora(chunkX, chunkY, chunkZ, biome, placeBlock);
 
     // Attempt to generate structures for this chunk
-    this.generateStructures(chunkX, chunkY, chunkZ, placeBlock);
+    this.generateStructures(chunkX, chunkY, chunkZ, biome, placeBlock);
 
     return { blocks };
   }
@@ -100,16 +114,12 @@ export class WorldGenerator {
     ) => void
   ) {
     const { CHUNK_SIZE, SEA_LEVEL } = this.params;
-    const SIZE = CHUNK_SIZE; // Alias for chunk size
-    const MIN_WORLD_Y = -16 * 100; // The lowest possible Y coordinate for terrain
-    const chunkWorldX = chunkX * SIZE;
-    const chunkWorldZ = chunkZ * SIZE;
-    const chunkWorldY = chunkY * SIZE;
-    const startYForChunk = Math.max(MIN_WORLD_Y, chunkWorldY);
+    const chunkWorldX = chunkX * CHUNK_SIZE;
+    const chunkWorldZ = chunkZ * CHUNK_SIZE;
 
-    for (let localX = 0; localX < SIZE; localX++) {
+    for (let localX = 0; localX < CHUNK_SIZE; localX++) {
       const worldX = chunkWorldX + localX;
-      for (let localZ = 0; localZ < SIZE; localZ++) {
+      for (let localZ = 0; localZ < CHUNK_SIZE; localZ++) {
         const worldZ = chunkWorldZ + localZ;
 
         const terrainHeight = this.#getFinalTerrainHeight(
@@ -118,70 +128,101 @@ export class WorldGenerator {
           biome
         );
 
-        // Determine the range of Y coordinates to fill for this column
-        const endY = Math.min(terrainHeight, chunkWorldY + SIZE - 1);
+        // Iterate through the Y column for this chunk
+        for (let localY = 0; localY < CHUNK_SIZE; localY++) {
+          const worldY = chunkY * CHUNK_SIZE + localY;
 
-        const MIN_CAVE_DENSITY = 0.00000001; // For large caves deep underground.
-        const MAX_CAVE_DENSITY = 1.0; // For small caves near the surface.
-        const DENSITY_TRANSITION_DEPTH = -32; // How many blocks down until caves reach max size.
-        // Fill blocks from the bottom of the relevant world area up to the terrain height
+          if (worldY > terrainHeight) {
+            // Above ground, fill with water if below sea level
+            if (worldY <= SEA_LEVEL) {
+              placeBlock(worldX, worldY, worldZ, 30, false); // water
+            }
+            continue; // Air
+          }
 
-        for (let worldY = startYForChunk; worldY <= endY; worldY++) {
-          // --- Cave Generation ---
-          // Only carve caves below the surface layer
-          if (worldY < -2) {
-            // --- Dynamic Cave Density ---
-
-            // 't' is the interpolation factor, from 0 (at surface) to 1 (at max depth).
-            const t = Math.min(1, worldY / DENSITY_TRANSITION_DEPTH);
-            // Interpolate from MIN (deep) to MAX (surface)
-            const caveDensity =
-              MIN_CAVE_DENSITY * t + MAX_CAVE_DENSITY * (1 - t);
-
-            const CAVE_SCALE = 0.01; // How stretched out the caves are. Smaller = larger caves.
-            const noiseValue = this.caveNoise(
-              worldX * CAVE_SCALE,
-              worldY * CAVE_SCALE,
-              worldZ * CAVE_SCALE
+          // It's a solid cell, place the appropriate terrain block
+          let blockId = 29; // Use block 29 for all underground stone
+          if (worldY === terrainHeight) {
+            const isBeach = this.#isBeachLocation(
+              worldX,
+              worldZ,
+              terrainHeight,
+              biome
             );
-
-            if (noiseValue > caveDensity) {
-              // This is a cave space. Check if it should be a lava pool.
-              const LAVA_LEVEL = -16 * 100;
-              if (worldY < LAVA_LEVEL) {
-                placeBlock(worldX, worldY, worldZ, 24, false); // Lava
-              }
-              continue; // Skip placing a block to create a cave
+            if (terrainHeight < SEA_LEVEL - 1) {
+              blockId = biome.seafloorBlock;
+            } else if (isBeach) {
+              blockId = biome.beachBlock;
+            } else {
+              blockId = biome.topBlock;
             }
-            placeBlock(worldX, worldY, worldZ, 29, true);
+          } else if (worldY > terrainHeight - 6) {
+            blockId = biome.undergroundBlock;
           } else {
-            let blockId = biome.stoneBlock;
-            if (worldY === terrainHeight) {
-              // Check for beach generation
-              const isBeach = this.#isBeachLocation(
-                worldX,
-                worldZ,
-                terrainHeight,
-                biome
-              );
-              if (terrainHeight < SEA_LEVEL - 1) {
-                blockId = biome.seafloorBlock;
-              } else if (isBeach) {
-                blockId = biome.beachBlock;
-              } else {
-                blockId = biome.topBlock;
-              }
-            } else if (worldY > terrainHeight - 5) {
-              blockId = biome.undergroundBlock;
+            if (worldY > 0) {
+              blockId = 1;
             }
+          }
+          placeBlock(worldX, worldY, worldZ, blockId, true);
+        }
+      }
+    }
+  }
 
+  private generateUnderground(
+    chunkX: number,
+    chunkY: number,
+    chunkZ: number,
+    placeBlock: (
+      x: number,
+      y: number,
+      z: number,
+      id: number,
+      ow: boolean
+    ) => void
+  ) {
+    const { CHUNK_SIZE } = this.params;
+    const chunkWorldX = chunkX * CHUNK_SIZE;
+    const chunkWorldZ = chunkZ * CHUNK_SIZE;
+    const chunkWorldY = chunkY * CHUNK_SIZE;
+
+    const CAVE_SCALE = 0.013;
+
+    const MIN_CAVE_DENSITY = 0.00000001;
+    const MAX_CAVE_DENSITY = 1.0;
+
+    const DENSITY_TRANSITION_DEPTH = -32;
+    const LAVA_LEVEL = -16 * 100;
+
+    // Optimization: Use NoiseSampler for trilinear interpolation
+    const sampler = new NoiseSampler(
+      chunkX,
+      chunkY,
+      chunkZ,
+      CHUNK_SIZE,
+      16, // Sample every 4 blocks
+      CAVE_SCALE,
+      0.67, // XZ skeew factor
+      this.caveNoise
+    );
+
+    for (let localY = 0; localY < CHUNK_SIZE; localY++) {
+      const worldY = chunkWorldY + localY;
+      if (worldY >= -2) continue; // Optimization: skip if above cave level
+
+      const t = Math.min(1, worldY / DENSITY_TRANSITION_DEPTH);
+      const caveDensity = MIN_CAVE_DENSITY * t + MAX_CAVE_DENSITY * (1 - t);
+
+      for (let localZ = 0; localZ < CHUNK_SIZE; localZ++) {
+        for (let localX = 0; localX < CHUNK_SIZE; localX++) {
+          const noiseValue = sampler.get(localX, localY, localZ);
+
+          if (noiseValue > caveDensity) {
+            const worldX = chunkWorldX + localX;
+            const worldZ = chunkWorldZ + localZ;
+            const blockId = worldY < LAVA_LEVEL ? 24 : 0; // Lava or Air
             placeBlock(worldX, worldY, worldZ, blockId, true);
           }
-        }
-
-        for (let worldY = terrainHeight + 1; worldY <= SEA_LEVEL; worldY++) {
-          // Water should not overwrite existing blocks (like tower walls)
-          placeBlock(worldX, worldY, worldZ, 30, false); // water
         }
       }
     }
@@ -223,7 +264,8 @@ export class WorldGenerator {
           const topBlockId = this.#getBlockTypeAtWorldCoord(
             worldX,
             terrainHeight,
-            worldZ
+            worldZ,
+            biome
           );
 
           // Ask the biome for a tree definition for the block we're on
@@ -288,10 +330,10 @@ export class WorldGenerator {
   #getBlockTypeAtWorldCoord(
     worldX: number,
     worldY: number,
-    worldZ: number
+    worldZ: number,
+    biome: Biome
   ): number {
     const { SEA_LEVEL } = this.params;
-    const biome = this.#getBiome(worldX, worldZ);
     const terrainHeight = this.#getFinalTerrainHeight(worldX, worldZ, biome);
 
     if (worldY > terrainHeight) {
@@ -322,6 +364,7 @@ export class WorldGenerator {
     chunkX: number,
     chunkY: number,
     chunkZ: number,
+    biome: Biome,
     placeBlock: (
       x: number,
       y: number,
@@ -330,8 +373,8 @@ export class WorldGenerator {
       ow: boolean
     ) => void
   ) {
-    this.tryPlacingTower(chunkX, chunkY, chunkZ, placeBlock);
-    this.tryPlacingStructure(chunkX, chunkY, chunkZ, placeBlock);
+    this.tryPlacingTower(chunkX, chunkY, chunkZ, biome, placeBlock);
+    this.tryPlacingStructure(chunkX, chunkY, chunkZ, biome, placeBlock);
     this.tryPlacingLavaPool(chunkX, chunkY, chunkZ, placeBlock);
   }
 
@@ -339,6 +382,7 @@ export class WorldGenerator {
     chunkX: number,
     chunkY: number,
     chunkZ: number,
+    biome: Biome,
     placeBlock: (
       x: number,
       y: number,
@@ -384,7 +428,6 @@ export class WorldGenerator {
       }
 
       const towerRadius = 8 + (Squirrel3.get(towerCenterX, this.seedAsInt) % 4);
-      const biome = this.#getBiome(towerCenterX, towerCenterZ);
       const groundHeight = this.findMinGroundHeightForTower(
         towerCenterX,
         towerCenterZ,
@@ -558,6 +601,7 @@ export class WorldGenerator {
     chunkX: number,
     chunkY: number,
     chunkZ: number,
+    biome: Biome,
     placeBlock: (
       x: number,
       y: number,
@@ -568,8 +612,8 @@ export class WorldGenerator {
   ) {
     if (this.structures.size === 0) return;
 
-    const REGION_SIZE = 3; // in chunks
-    const SPAWN_CHANCE = 100; // 5% chance per region
+    const REGION_SIZE = 16; // in chunks
+    const SPAWN_CHANCE = 10; // % chance per region
 
     const regionX = Math.floor(chunkX / REGION_SIZE);
     const regionZ = Math.floor(chunkZ / REGION_SIZE);
@@ -602,7 +646,6 @@ export class WorldGenerator {
       const structureOriginZ =
         regionZ * REGION_SIZE * this.chunk_size + offsetZ;
 
-      const biome = this.#getBiome(structureOriginX, structureOriginZ);
       const groundHeight = this.#getFinalTerrainHeight(
         structureOriginX,
         structureOriginZ,
@@ -735,61 +778,40 @@ export class WorldGenerator {
   }
 
   /**
-   * A helper to check if a block is solid. For now, it re-runs cave noise.
-   * This is not perfectly accurate if other structures are present but is a good approximation.
-   */
-  private isBlockSolid(
-    worldX: number,
-    worldY: number,
-    worldZ: number
-  ): boolean {
-    // Simplified check: if it's in a cave, it's not solid.
-    // This is an approximation and doesn't account for other structures.
-    if (worldY < -2) {
-      const t = Math.min(1, worldY / -32);
-      const caveDensity = 0.00000001 * t + 1.0 * (1 - t);
-      const CAVE_SCALE = 0.01;
-      const noiseValue = this.caveNoise(
-        worldX * CAVE_SCALE,
-        worldY * CAVE_SCALE,
-        worldZ * CAVE_SCALE
-      );
-      if (noiseValue > caveDensity) {
-        return false; // It's a cave, so not solid
-      }
-    }
-    return true; // Assume solid otherwise
-  }
-
-  /**
    * Loads hardcoded structures for testing purposes.
    * In a production environment, this would typically load from external files.
    */
   #loadStructures() {
-    const smallHouseData: StructureData = {
-      name: "Small Stone House", // Name is not part of StructureData interface, but useful for context
+    const opulentHouseData: StructureData = {
+      name: "Opulent House",
       width: 5,
       height: 4,
       depth: 5,
       palette: {
         "0": 0, // air
-        "1": 1, // stone_brick
-        "2": 18, // oak_wood
+        "1": 43, // Marble
+        "2": 41, // Gold Block
         "3": 19, // glass
+        "4": 42, // Lapis Block
       },
       blocks: [
-        // Layer Y=0 (bottom)
-        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-        // Layer Y=1
-        2, 0, 0, 0, 2, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 2, 0, 0, 0, 2,
-        // Layer Y=2
-        2, 2, 2, 2, 2, 1, 3, 0, 3, 1, 1, 0, 0, 0, 1, 2, 2, 2, 2, 2,
-        // Layer Y=3 (top)
-        0, 2, 2, 2, 0, 0, 2, 0, 2, 0, 0, 2, 0, 2, 0, 0, 2, 2, 2, 0,
+        // Layer Y=0 (Foundation: Solid Marble)
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+        1,
+        // Layer Y=1 (Walls: Marble with Gold corners, Gold floor)
+        2, 1, 1, 1, 2, 1, 2, 2, 2, 1, 1, 2, 0, 2, 1, 1, 2, 2, 2, 1, 2, 1, 1, 1,
+        2,
+        // Layer Y=2 (Windows: Marble walls, Gold pillars, Glass)
+        2, 1, 1, 1, 2, 1, 3, 0, 3, 1, 1, 0, 0, 0, 1, 1, 3, 0, 3, 1, 2, 1, 1, 1,
+        2,
+
+        // Layer Y=3 (Roof: Lapis Lazuli with Marble trim)
+        1, 4, 4, 4, 1, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 1, 4, 4, 4,
+        1,
       ],
     };
 
-    this.structures.set("Small Stone House", new Structure(smallHouseData));
-    console.log(`Loaded hardcoded structure: ${smallHouseData.name}`);
+    this.structures.set("Opulent House", new Structure(opulentHouseData));
+    console.log(`Loaded hardcoded structure: ${opulentHouseData.name}`);
   }
 }
