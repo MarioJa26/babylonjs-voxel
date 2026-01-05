@@ -1,7 +1,7 @@
 import { Mesh } from "@babylonjs/core";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import { MeshData } from "./MeshData";
-import { GenerationParams } from "../Generation/GenerationParams";
+import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
 
 export class Chunk {
   public static readonly SIZE = GenerationParams.CHUNK_SIZE;

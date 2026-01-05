@@ -2,9 +2,9 @@ import { Color3, Color4 } from "@babylonjs/core";
 
 export class SettingParams {
   // --- World Generation & Loading ---
-  public static RENDER_DISTANCE = 8;
-  public static VERTICAL_RENDER_DISTANCE = 8;
-  public static MAX_CHUNK_HEIGHT = 28;
+  public static RENDER_DISTANCE = 12;
+  public static VERTICAL_RENDER_DISTANCE = 12;
+  public static MAX_CHUNK_HEIGHT = 32;
   public static CHUNK_UNLOAD_DISTANCE_BUFFER = 6; // How many extra chunks to keep before unloading
   public static CHUNK_SORT_DISTANCE_THRESHOLD_SQ = 16; // Squared distance under which to sort chunks for loading
   public static VERTICAL_CHUNK_CULLING_FACTOR = 6; // Multiplier for CHUNK_SIZE to cull chunks above/below terrain

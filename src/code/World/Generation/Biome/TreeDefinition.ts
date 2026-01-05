@@ -1,4 +1,4 @@
-import { Squirrel3 } from "../Squirrel13";
+import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
 
 export type TreeDefinition = {
   woodId: number;

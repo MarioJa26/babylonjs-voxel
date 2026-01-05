@@ -22,7 +22,7 @@ import { SkyShader } from "../World/Light/SkyShader";
 import { PlayerHud } from "../Player/Hud/PlayerHud";
 import { CrossHair } from "../Player/Hud/CrossHair";
 import { TextureDefinitions } from "../World/Texture/TextureDefinitions";
-import { GenerationParams } from "../World/Generation/GenerationParams";
+import { GenerationParams } from "../World/Generation/NoiseAndParameters/GenerationParams";
 import { SettingParams } from "../World/SettingParams";
 import { WorldStorage } from "../World/WorldStorage";
 export class Map1 {

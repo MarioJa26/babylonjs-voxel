@@ -1,4 +1,4 @@
-import { GenerationParams } from "../Generation/GenerationParams";
+import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
 import { Chunk } from "./Chunk";
 
 export class ChunkWorker {

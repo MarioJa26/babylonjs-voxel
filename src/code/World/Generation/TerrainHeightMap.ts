@@ -1,9 +1,12 @@
 import { createNoise2D } from "simplex-noise";
 import Alea from "alea";
-import { Squirrel3 } from "./Squirrel13";
+import { Squirrel3 } from "./NoiseAndParameters/Squirrel13";
 import { Biome, getBiomeFor } from "./Biome/Biomes";
-import { GenerationParams, GenerationParamsType } from "./GenerationParams";
-import { Voronoi } from "./Voronoi";
+import {
+  GenerationParams,
+  GenerationParamsType,
+} from "./NoiseAndParameters/GenerationParams";
+import { Voronoi } from "./NoiseAndParameters/Voronoi";
 
 /**
  * A static utility class to calculate terrain height at any world coordinate.
@@ -78,7 +81,7 @@ export class TerrainHeightMap {
       potentialHeight
     );
 
-    const landMultiplier = Math.max(0, (1.0 - continentalness * 4.0) ** 2);
+    const landMultiplier = Math.max(0, (1.0 - continentalness * 1.0) ** 2);
 
     const riverScale = GenerationParams.RIVER_SCALE; // Controls the size/spacing of river systems.
     let riverValue = this.temperatureNoise(
@@ -98,7 +101,7 @@ export class TerrainHeightMap {
 
     let finalHeight =
       potentialHeight * landMultiplier * riverMultiplier * riverMultiplier2;
-    finalHeight = Math.max(12, finalHeight);
+    finalHeight = Math.max(10, finalHeight);
     return Math.floor(finalHeight);
   }
 }

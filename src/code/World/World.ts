@@ -3,7 +3,7 @@ import { ChunkWorkerPool } from "./Chunk/ChunkWorkerPool";
 import { ChunkMesher } from "./Chunk/ChunckMesher";
 import { SettingParams } from "./SettingParams";
 import { WorldStorage } from "./WorldStorage";
-import { GenerationParams } from "./Generation/GenerationParams";
+import { GenerationParams } from "./Generation/NoiseAndParameters/GenerationParams";
 
 export class World {
   /*
