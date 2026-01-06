@@ -5,6 +5,7 @@ import { SettingParams } from "./SettingParams";
 
 export type SavedChunkData = {
   blocks: Uint8Array;
+  light_array?: Uint8Array;
   opaqueMesh?: MeshData;
   waterMesh?: MeshData;
   glassMesh?: MeshData;
@@ -64,6 +65,7 @@ export class WorldStorage {
     store.put({
       id: chunk.id.toString(),
       blocks: chunk.block_array,
+      light_array: chunk.light_array,
       opaqueMesh: chunk.opaqueMeshData,
       waterMesh: chunk.waterMeshData,
       glassMesh: chunk.glassMeshData,
@@ -102,6 +104,7 @@ export class WorldStorage {
         store.put({
           id: chunk.id.toString(),
           blocks: chunk.block_array,
+          light_array: chunk.light_array,
           opaqueMesh: chunk.opaqueMeshData,
           waterMesh: chunk.waterMeshData,
           glassMesh: chunk.glassMeshData,
@@ -132,6 +135,7 @@ export class WorldStorage {
         if (request.result) {
           resolve({
             blocks: request.result.blocks,
+            light_array: request.result.light_array,
             opaqueMesh: request.result.opaqueMesh,
             waterMesh: request.result.waterMesh,
             glassMesh: request.result.glassMesh,

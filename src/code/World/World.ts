@@ -67,7 +67,7 @@ export class World {
       const savedData = loadedDataMap.get(chunk.id);
       if (savedData) {
         // Populate block data without triggering an automatic remesh
-        chunk.populate(savedData.blocks, true);
+        chunk.populate(savedData.blocks, savedData.light_array, true);
 
         // If we have saved mesh data, use it directly!
         if (

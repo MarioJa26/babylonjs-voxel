@@ -3,7 +3,6 @@
 import { BlockTextures } from "../Texture/BlockTextures";
 import { WorldGenerator } from "../Generation/WorldGenerator";
 import { MeshData } from "./MeshData";
-import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
 
 /**
  * A wrapper around a TypedArray that allows it to be resized dynamically.
@@ -55,6 +54,7 @@ type WorkerInternalMeshData = {
   uvs3: ResizableTypedArray<Uint8Array>;
   cornerIds: ResizableTypedArray<Uint8Array>;
   ao: ResizableTypedArray<Uint8Array>;
+  light: ResizableTypedArray<Uint8Array>;
   indexOffset: number;
 };
 
@@ -115,6 +115,7 @@ class ChunkWorkerMesher {
       uvs3: new ResizableTypedArray(Uint8Array),
       cornerIds: new ResizableTypedArray(Uint8Array),
       ao: new ResizableTypedArray(Uint8Array),
+      light: new ResizableTypedArray(Uint8Array),
       indexOffset: 0,
     };
   }
@@ -122,7 +123,16 @@ class ChunkWorkerMesher {
   static generateMesh(data: {
     block_array: Uint8Array;
     chunk_size: number;
+    light_array?: Uint8Array;
     neighbors: {
+      px?: Uint8Array;
+      nx?: Uint8Array;
+      py?: Uint8Array;
+      ny?: Uint8Array;
+      pz?: Uint8Array;
+      nz?: Uint8Array;
+    };
+    neighborLights?: {
       px?: Uint8Array;
       nx?: Uint8Array;
       py?: Uint8Array;
@@ -139,7 +149,13 @@ class ChunkWorkerMesher {
     const waterMeshData = this.createEmptyMeshData();
     const glassMeshData = this.createEmptyMeshData();
 
-    const { block_array, chunk_size: chunk_size, neighbors } = data;
+    const {
+      block_array,
+      light_array,
+      chunk_size: chunk_size,
+      neighbors,
+      neighborLights,
+    } = data;
     const size = chunk_size;
     const size2 = size * size;
 
@@ -176,6 +192,41 @@ class ChunkWorkerMesher {
       }
       if (z >= size) {
         return neighbors.pz ? neighbors.pz[x + y * size + 0] : fallback;
+      }
+
+      return fallback;
+    };
+
+    const getLight = (
+      x: number,
+      y: number,
+      z: number,
+      fallback = 0
+    ): number => {
+      if (!light_array) return 15; // Default to full light if no array
+      const inChunk =
+        x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size;
+      if (inChunk) return light_array[x + y * size + z * size2];
+
+      const nl = neighborLights || {};
+
+      if (x < 0) {
+        return nl.nx ? nl.nx[size - 1 + y * size + z * size2] : fallback;
+      }
+      if (x >= size) {
+        return nl.px ? nl.px[0 + y * size + z * size2] : fallback;
+      }
+      if (y < 0) {
+        return nl.ny ? nl.ny[x + (size - 1) * size + z * size2] : fallback;
+      }
+      if (y >= size) {
+        return nl.py ? nl.py[x + 0 * size + z * size2] : fallback;
+      }
+      if (z < 0) {
+        return nl.nz ? nl.nz[x + y * size + (size - 1) * size2] : fallback;
+      }
+      if (z >= size) {
+        return nl.pz ? nl.pz[x + y * size + 0] : fallback;
       }
 
       return fallback;
@@ -256,9 +307,16 @@ class ChunkWorkerMesher {
                 isWaterNextToGlass)
             ) {
               // Current block face is visible.
+              // The light level of the face is determined by the block in front of it (the neighbor).
+              const lightLevel = getLight(
+                bx + direction[0],
+                by + direction[1],
+                bz + direction[2]
+              );
               const encCurrent =
                 (blockCurrent & BLOCK_ID_MASK) |
-                (isCurrentTransparent ? TRANSPARENT_FLAG : 0);
+                (isCurrentTransparent ? TRANSPARENT_FLAG : 0) |
+                (lightLevel << 24); // Pack light into high bits
               mask[maskIndex++] = encCurrent;
             } else if (
               isNeighborSolid &&
@@ -267,9 +325,12 @@ class ChunkWorkerMesher {
                 isWaterNextToGlass)
             ) {
               // Neighbor block face is visible (so we draw a back-face).
+              // The light level is determined by the current block (which is air/transparent).
+              const lightLevel = getLight(bx, by, bz);
               const encNeighbor =
                 (blockNeighbor & BLOCK_ID_MASK) |
-                (isNeighborTransparent ? TRANSPARENT_FLAG : 0);
+                (isNeighborTransparent ? TRANSPARENT_FLAG : 0) |
+                (lightLevel << 24);
               mask[maskIndex++] = encNeighbor | BACKFACE_FLAG;
             } else {
               mask[maskIndex++] = 0;
@@ -314,6 +375,7 @@ class ChunkWorkerMesher {
               const isBackFace = (currentMaskValue & BACKFACE_FLAG) !== 0;
               const isTransparent = (currentMaskValue & TRANSPARENT_FLAG) !== 0;
               const blockId = currentMaskValue & BLOCK_ID_MASK;
+              const lightLevel = (currentMaskValue >>> 24) & 0xf;
 
               position[u_axis] = u_coord;
               position[v_axis] = v_coord;
@@ -339,6 +401,7 @@ class ChunkWorkerMesher {
                 height,
                 blockId,
                 isBackFace,
+                lightLevel,
                 getBlock,
                 targetMesh
               );
@@ -463,6 +526,7 @@ class ChunkWorkerMesher {
     height: number,
     blockId: number,
     isBackFace: boolean,
+    lightLevel: number,
     getBlock: (x: number, y: number, z: number) => number,
     meshData: WorkerInternalMeshData
   ) {
@@ -497,6 +561,9 @@ class ChunkWorkerMesher {
     );
     // 1. Push the four correct AO values for the four vertices.
     meshData.ao.push(...aoValues);
+
+    // Push light values (flat shading for the quad)
+    meshData.light.push(lightLevel, lightLevel, lightLevel, lightLevel);
 
     // normal
     const normalVec = isBackFace ? [-q[0], -q[1], -q[2]] : q;
@@ -581,11 +648,20 @@ const onMessageHandler = (event: MessageEvent) => {
       generator = new WorldGenerator({ ...event.data });
     }
 
-    const { blocks } = generator.generateChunkData(chunkX, chunkY, chunkZ);
+    const { blocks, light } = generator.generateChunkData(
+      chunkX,
+      chunkY,
+      chunkZ
+    );
 
     self.postMessage(
-      { chunkId, type: "terrain-generated", block_array: blocks },
-      [blocks.buffer]
+      {
+        chunkId,
+        type: "terrain-generated",
+        block_array: blocks,
+        light_array: light,
+      },
+      [blocks.buffer, light.buffer]
     );
 
     return;
@@ -604,6 +680,7 @@ function toTransferable(data: WorkerInternalMeshData): MeshData {
     uvs3: data.uvs3.finalArray,
     cornerIds: data.cornerIds.finalArray,
     ao: data.ao.finalArray,
+    light: data.light.finalArray,
   };
 }
 
@@ -634,6 +711,7 @@ function postFullMeshResult(
       opaqueMeshData.uvs3.buffer,
       opaqueMeshData.cornerIds.buffer,
       opaqueMeshData.ao.buffer,
+      opaqueMeshData.light.buffer,
       waterMeshData.positions.buffer,
       waterMeshData.indices.buffer,
       waterMeshData.normals.buffer,
@@ -642,6 +720,7 @@ function postFullMeshResult(
       waterMeshData.uvs3.buffer,
       waterMeshData.cornerIds.buffer,
       waterMeshData.ao.buffer,
+      waterMeshData.light.buffer,
       glassMeshData.positions.buffer,
       glassMeshData.indices.buffer,
       glassMeshData.normals.buffer,
@@ -650,6 +729,7 @@ function postFullMeshResult(
       glassMeshData.uvs3.buffer,
       glassMeshData.cornerIds.buffer,
       glassMeshData.ao.buffer,
+      glassMeshData.light.buffer,
     ]
   );
 }

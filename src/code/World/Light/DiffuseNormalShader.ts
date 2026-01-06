@@ -10,6 +10,7 @@ attribute float cornerId; // 0,1,2,3 for quad corners
 attribute vec2 uv3; // uv3 = quad dimensions (w,h)
 attribute vec4 tangent;
 attribute float ao;
+attribute float light;
 
 // Uniforms
 uniform mat4 world;
@@ -24,6 +25,7 @@ varying vec3 vPositionW;
 varying mat3 vTBN;
 varying vec2 vScreenSize;
 varying float vAO;
+varying float vLight;
 
 uniform float atlasTileSize;
 
@@ -52,6 +54,7 @@ void main(void) {
     vScreenSize = screenSize;
 
     vAO = ao;
+    vLight = light / 15.0; // Normalize 0-15 to 0.0-1.0
 }
 `;
   static readonly chunkFragmentShader = `
@@ -68,6 +71,7 @@ void main(void) {
     varying vec3 vPositionW;
     varying mat3 vTBN;
     varying float vAO;
+    varying float vLight;
 
     uniform sampler2D diffuseTexture;
     uniform sampler2D normalTexture;
@@ -126,7 +130,10 @@ void main(void) {
         vec3 specular = vec3(0.3) * spec; // Specular color is white
 
         float aoFactor = 1.0 - vAO * 0.2; // 0->1, 1->0.85, 2->0.7, 3->0.55
-        vec3 finalColor = (diffuseColor.rgb * 0.8 + diffuse + specular) * aoFactor;
+        
+        // Combine AO and Light level
+        // Ensure a minimum brightness (e.g., 0.05) so pitch black isn't invisible
+        vec3 finalColor = (diffuseColor.rgb * 0.8 + diffuse + specular) * aoFactor * max(vLight, 0.05);
 
         gl_FragColor = vec4(finalColor, diffuseColor.a);  
     }

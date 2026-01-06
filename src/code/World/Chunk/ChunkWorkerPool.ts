@@ -29,7 +29,10 @@ export class ChunkWorkerPool {
           // Apply generated block array to the chunk and schedule remesh
           const chunk = Chunk.chunkInstances.get(chunkId);
           if (chunk) {
-            chunk.populate(data.block_array as Uint8Array);
+            chunk.populate(
+              data.block_array as Uint8Array,
+              data.light_array as Uint8Array
+            );
             // Save the newly generated chunk to the database
             WorldStorage.saveChunk(chunk);
           }

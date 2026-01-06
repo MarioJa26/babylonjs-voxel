@@ -19,12 +19,23 @@ export class ChunkWorker {
       nz: chunk.getNeighbor(0, 0, -1)?.block_array,
     };
 
+    const neighborLights = {
+      px: chunk.getNeighbor(1, 0, 0)?.light_array,
+      nx: chunk.getNeighbor(-1, 0, 0)?.light_array,
+      py: chunk.getNeighbor(0, 1, 0)?.light_array,
+      ny: chunk.getNeighbor(0, -1, 0)?.light_array,
+      pz: chunk.getNeighbor(0, 0, 1)?.light_array,
+      nz: chunk.getNeighbor(0, 0, -1)?.light_array,
+    };
+
     this.worker.postMessage({
       type: "full-remesh",
       chunkId: chunk.id,
       block_array: chunk.block_array,
+      light_array: chunk.light_array,
       chunk_size: Chunk.SIZE,
       neighbors,
+      neighborLights,
     });
   }
 

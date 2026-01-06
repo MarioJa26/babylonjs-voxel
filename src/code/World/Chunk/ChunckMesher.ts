@@ -75,6 +75,7 @@ export class ChunkMesher {
               "tangent",
               "cornerId",
               "ao",
+              "light",
             ],
             uniforms: [
               "world",
@@ -133,6 +134,7 @@ export class ChunkMesher {
               "tangent",
               "cornerId",
               "ao",
+              "light",
             ],
             uniforms: [
               "world",
@@ -209,6 +211,7 @@ export class ChunkMesher {
               "tangent",
               "cornerId",
               "ao",
+              "light",
             ],
             uniforms: [
               "world",
@@ -440,6 +443,22 @@ export class ChunkMesher {
       false // normalized
     );
     mesh.setVerticesBuffer(aoBuffer);
+
+    // Create VertexBuffer for light (Uint8)
+    const lightBuffer = new VertexBuffer(
+      engine,
+      meshData.light,
+      "light",
+      false, // updatable
+      undefined, // postpone
+      1, // stride
+      false, // instanced
+      undefined, // offset
+      undefined, // size
+      VertexBuffer.UNSIGNED_BYTE,
+      false // normalized
+    );
+    mesh.setVerticesBuffer(lightBuffer);
 
     mesh.setIndices(meshData.indices);
 
