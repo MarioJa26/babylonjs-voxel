@@ -120,6 +120,55 @@ class ChunkWorkerMesher {
     };
   }
 
+  // Helper to calculate AO for a single 1x1 face and return it as a packed 8-bit integer
+  private static calculateAOPacked(
+    ax: number, // Coordinates of the "air" block adjacent to the face
+    ay: number,
+    az: number,
+    u: number, // u-axis index (0, 1, 2)
+    v: number, // v-axis index
+    getBlock: (x: number, y: number, z: number) => number
+  ): number {
+    let packed = 0;
+    // Check 4 corners: (0,0), (1,0), (1,1), (0,1) in UV space
+    for (let i = 0; i < 4; i++) {
+      // UV offsets for the corner
+      const du = i === 1 || i === 2 ? 1 : 0;
+      const dv = i === 2 || i === 3 ? 1 : 0;
+
+      // Neighbors relative to the air block (ax, ay, az)
+      // Side 1: offset in V
+      const s1x = ax + (v === 0 ? (dv ? 1 : -1) : 0);
+      const s1y = ay + (v === 1 ? (dv ? 1 : -1) : 0);
+      const s1z = az + (v === 2 ? (dv ? 1 : -1) : 0);
+
+      // Side 2: offset in U
+      const s2x = ax + (u === 0 ? (du ? 1 : -1) : 0);
+      const s2y = ay + (u === 1 ? (du ? 1 : -1) : 0);
+      const s2z = az + (u === 2 ? (du ? 1 : -1) : 0);
+
+      // Corner: offset in U and V
+      const cx =
+        ax + (u === 0 ? (du ? 1 : -1) : 0) + (v === 0 ? (dv ? 1 : -1) : 0);
+      const cy =
+        ay + (u === 1 ? (du ? 1 : -1) : 0) + (v === 1 ? (dv ? 1 : -1) : 0);
+      const cz =
+        az + (u === 2 ? (du ? 1 : -1) : 0) + (v === 2 ? (dv ? 1 : -1) : 0);
+
+      const side1 = getBlock(s1x, s1y, s1z) !== 0;
+      const side2 = getBlock(s2x, s2y, s2z) !== 0;
+      const corner = getBlock(cx, cy, cz) !== 0;
+
+      // Calculate AO value (0-3)
+      const ao =
+        (side1 ? 1 : 0) + (side2 ? 1 : 0) + (corner && side1 && side2 ? 1 : 0);
+
+      // Pack into 2 bits per corner: 00, 02, 04, 06 bit shifts
+      packed |= ao << (i * 2);
+    }
+    return packed;
+  }
+
   static generateMesh(data: {
     block_array: Uint8Array;
     chunk_size: number;
@@ -313,10 +362,20 @@ class ChunkWorkerMesher {
                 by + direction[1],
                 bz + direction[2]
               );
+              // Calculate AO for the face (using the neighbor/air block coordinates)
+              const packedAO = this.calculateAOPacked(
+                bx + direction[0],
+                by + direction[1],
+                bz + direction[2],
+                u_axis,
+                v_axis,
+                getBlock
+              );
               const encCurrent =
                 (blockCurrent & BLOCK_ID_MASK) |
                 (isCurrentTransparent ? TRANSPARENT_FLAG : 0) |
-                (lightLevel << 24); // Pack light into high bits
+                (packedAO << 18) | // Pack AO into bits 18-25
+                (lightLevel << 28); // Pack light into bits 28-31
               mask[maskIndex++] = encCurrent;
             } else if (
               isNeighborSolid &&
@@ -327,10 +386,20 @@ class ChunkWorkerMesher {
               // Neighbor block face is visible (so we draw a back-face).
               // The light level is determined by the current block (which is air/transparent).
               const lightLevel = getLight(bx, by, bz);
+              // For backface, the "air" block is the current block (bx, by, bz)
+              const packedAO = this.calculateAOPacked(
+                bx,
+                by,
+                bz,
+                u_axis,
+                v_axis,
+                getBlock
+              );
               const encNeighbor =
                 (blockNeighbor & BLOCK_ID_MASK) |
                 (isNeighborTransparent ? TRANSPARENT_FLAG : 0) |
-                (lightLevel << 24);
+                (packedAO << 18) |
+                (lightLevel << 28);
               mask[maskIndex++] = encNeighbor | BACKFACE_FLAG;
             } else {
               mask[maskIndex++] = 0;
@@ -375,7 +444,8 @@ class ChunkWorkerMesher {
               const isBackFace = (currentMaskValue & BACKFACE_FLAG) !== 0;
               const isTransparent = (currentMaskValue & TRANSPARENT_FLAG) !== 0;
               const blockId = currentMaskValue & BLOCK_ID_MASK;
-              const lightLevel = (currentMaskValue >>> 24) & 0xf;
+              const lightLevel = (currentMaskValue >>> 28) & 0xf;
+              const packedAO = (currentMaskValue >>> 18) & 0xff;
 
               position[u_axis] = u_coord;
               position[v_axis] = v_coord;
@@ -402,6 +472,7 @@ class ChunkWorkerMesher {
                 blockId,
                 isBackFace,
                 lightLevel,
+                packedAO,
                 getBlock,
                 targetMesh
               );
@@ -465,58 +536,6 @@ class ChunkWorkerMesher {
     }
   }
 
-  private static calculateAO(
-    x: number[],
-    q: number[],
-    u: number,
-    v: number,
-    corners: number[][],
-    isBackFace: boolean,
-    getBlock: (x: number, y: number, z: number) => number
-  ): number[] {
-    const aoValues = [0, 0, 0, 0]; // Corresponds to p1, p2, p3, p4
-
-    // Get the integer coordinates of the block this face belongs to.
-    // `x` is the position of the corner of the quad, which is on a block boundary.
-    // For a front face, we subtract the normal `q` to get the block's origin.
-    // For a back face, the quad is on the correct side, so we don't subtract.
-    const blockPos = isBackFace
-      ? [x[0] - q[0], x[1] - q[1], x[2] - q[2]]
-      : [x[0], x[1], x[2]];
-
-    for (let i = 0; i < 4; i++) {
-      const corner = corners[i];
-
-      // Determine the two side directions and the corner direction relative to the vertex.
-      const offsetU = corner[u] - x[u] > 0 ? 1 : -1;
-      const offsetV = corner[v] - x[v] > 0 ? 1 : -1;
-
-      // The three blocks to check for occlusion are relative to the block being drawn.
-      const side1Pos = [blockPos[0], blockPos[1], blockPos[2]];
-      side1Pos[v] += offsetV;
-
-      const side2Pos = [blockPos[0], blockPos[1], blockPos[2]];
-      side2Pos[u] += offsetU;
-
-      const cornerPos = [blockPos[0], blockPos[1], blockPos[2]];
-      cornerPos[u] += offsetU;
-      cornerPos[v] += offsetV;
-
-      const side1IsSolid =
-        getBlock(side1Pos[0], side1Pos[1], side1Pos[2]) !== 0;
-      const side2IsSolid =
-        getBlock(side2Pos[0], side2Pos[1], side2Pos[2]) !== 0;
-      const cornerIsSolid =
-        getBlock(cornerPos[0], cornerPos[1], cornerPos[2]) !== 0;
-
-      aoValues[i] =
-        (side1IsSolid ? 1 : 0) +
-        (side2IsSolid ? 1 : 0) +
-        (cornerIsSolid && side1IsSolid && side2IsSolid ? 1 : 0);
-    }
-    return aoValues;
-  }
-
   public static addQuad(
     x: number[],
     q: number[],
@@ -527,6 +546,7 @@ class ChunkWorkerMesher {
     blockId: number,
     isBackFace: boolean,
     lightLevel: number,
+    packedAO: number,
     getBlock: (x: number, y: number, z: number) => number,
     meshData: WorkerInternalMeshData
   ) {
@@ -549,16 +569,13 @@ class ChunkWorkerMesher {
     // positions
     meshData.positions.push(...p1, ...p2, ...p3, ...p4);
 
-    const corners = [p1, p2, p3, p4];
-    const aoValues = this.calculateAO(
-      x,
-      q,
-      u,
-      v,
-      corners,
-      isBackFace,
-      getBlock
-    );
+    // Unpack AO
+    const ao0 = packedAO & 3;
+    const ao1 = (packedAO >> 2) & 3;
+    const ao2 = (packedAO >> 4) & 3;
+    const ao3 = (packedAO >> 6) & 3;
+    const aoValues = [ao0, ao1, ao2, ao3];
+
     // 1. Push the four correct AO values for the four vertices.
     meshData.ao.push(...aoValues);
 

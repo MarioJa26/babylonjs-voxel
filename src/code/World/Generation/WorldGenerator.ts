@@ -5,6 +5,7 @@ import { Squirrel3 } from "./NoiseAndParameters/Squirrel13";
 import { TerrainHeightMap } from "./TerrainHeightMap";
 import { SurfaceGenerator } from "./SurfaceGenerator";
 import { UndergroundGenerator } from "./UndergroundGenerator";
+import { LightGenerator } from "./LightGenerator";
 
 export class WorldGenerator {
   private params: GenerationParamsType;
@@ -16,6 +17,7 @@ export class WorldGenerator {
 
   private surfaceGenerator: SurfaceGenerator;
   private undergroundGenerator: UndergroundGenerator;
+  private lightGenerator: LightGenerator;
 
   constructor(params: GenerationParamsType) {
     this.params = params;
@@ -38,6 +40,7 @@ export class WorldGenerator {
       this.seedAsInt
     );
     this.undergroundGenerator = new UndergroundGenerator(params, caveNoise);
+    this.lightGenerator = new LightGenerator(params);
   }
 
   public generateChunkData(chunkX: number, chunkY: number, chunkZ: number) {
@@ -92,78 +95,7 @@ export class WorldGenerator {
     this.surfaceGenerator.generate(chunkX, chunkY, chunkZ, biome, placeBlock); // Generates solid terrain first
     if (chunkY < 0)
       this.undergroundGenerator.generate(chunkX, chunkY, chunkZ, placeBlock); // Then carves caves into it
-    // --- Sunlight Initialization ---
-    const queue: number[] = [];
-    const { CHUNK_SIZE } = this.params;
-
-    for (let x = 0; x < CHUNK_SIZE; x++) {
-      const worldX = chunkX * CHUNK_SIZE + x;
-      for (let z = 0; z < CHUNK_SIZE; z++) {
-        const worldZ = chunkZ * CHUNK_SIZE + z;
-
-        const biome = TerrainHeightMap.getBiome(worldX, worldZ);
-        const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(
-          worldX,
-          worldZ,
-          biome
-        );
-
-        for (let y = 0; y < CHUNK_SIZE; y++) {
-          const worldY = chunkY * CHUNK_SIZE + y;
-
-          if (worldY > terrainHeight) {
-            const idx = x + y * CHUNK_SIZE + z * this.chunkSizeSq;
-            if (blocks[idx] === 0) {
-              light[idx] = 15;
-              queue.push(x, y, z, 15);
-            }
-          }
-        }
-      }
-    }
-    // Internal propagation (BFS) to spread light into caves within the chunk
-    let head = 0;
-    while (head < queue.length) {
-      const x = queue[head++];
-      const y = queue[head++];
-      const z = queue[head++];
-      const l = queue[head++];
-
-      if (l <= 1) continue;
-
-      const neighbors = [
-        [x + 1, y, z],
-        [x - 1, y, z],
-        [x, y + 1, z],
-        [x, y - 1, z],
-        [x, y, z + 1],
-        [x, y, z - 1],
-      ];
-
-      for (const [nx, ny, nz] of neighbors) {
-        if (
-          nx >= 0 &&
-          nx < CHUNK_SIZE &&
-          ny >= 0 &&
-          ny < CHUNK_SIZE &&
-          nz >= 0 &&
-          nz < CHUNK_SIZE
-        ) {
-          const idx = nx + ny * CHUNK_SIZE + nz * this.chunkSizeSq;
-          const blockId = blocks[idx];
-          // Check transparency (0: Air, 30: Water, 60/61: Glass)
-          const isTransparent =
-            blockId === 0 || blockId === 30 || blockId === 60 || blockId === 61;
-
-          if (isTransparent) {
-            if (light[idx] < l - 1) {
-              light[idx] = l - 1;
-              queue.push(nx, ny, nz, l - 1);
-            }
-          }
-        }
-      }
-    }
+    this.lightGenerator.generate(chunkX, chunkY, chunkZ, biome, blocks, light);
 
     return { blocks, light };
   }
