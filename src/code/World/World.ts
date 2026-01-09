@@ -99,6 +99,8 @@ export class World {
     const removeRadius =
       renderDistance + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER;
     const chunksToSave: Chunk[] = [];
+    const chunksToRemove: Chunk[] = [];
+
     for (const chunk of Chunk.chunkInstances.values()) {
       const { chunkX: cx, chunkY: cy, chunkZ: cz } = chunk;
       if (
@@ -107,18 +109,24 @@ export class World {
         Math.abs(cy - chunkY) >
           verticalRadius + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER
       ) {
-        if (chunk) {
-          if (chunk.isModified) {
-            chunksToSave.push(chunk);
-          }
-          chunk.dispose();
-          chunk.isLoaded = false;
-          Chunk.chunkInstances.delete(chunk.id);
+        chunksToRemove.push(chunk);
+        if (chunk.isModified) {
+          chunksToSave.push(chunk);
         }
       }
     }
 
-    WorldStorage.saveChunks(chunksToSave);
+    try {
+      await WorldStorage.saveChunks(chunksToSave);
+    } catch (e) {
+      console.error("Failed to save chunks before unload:", e);
+    }
+
+    for (const chunk of chunksToRemove) {
+      chunk.dispose();
+      chunk.isLoaded = false;
+      Chunk.chunkInstances.delete(chunk.id);
+    }
   }
 
   public static deleteBlock(worldX: number, worldY: number, worldZ: number) {

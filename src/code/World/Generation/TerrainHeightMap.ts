@@ -16,7 +16,7 @@ export class TerrainHeightMap {
   private static params: GenerationParamsType;
   private static detailNoise: ReturnType<typeof createNoise2D>;
   private static continentalNoise: Voronoi;
-  private static temperatureNoise: ReturnType<typeof createNoise2D>;
+  public static temperatureNoise: ReturnType<typeof createNoise2D>;
   private static humidityNoise: ReturnType<typeof createNoise2D>;
 
   private static seedAsInt: number;
@@ -59,14 +59,14 @@ export class TerrainHeightMap {
     let total = 0;
     let frequency = TERRAIN_SCALE;
     let amplitude = 1;
-    let maxValue = 0;
+    let maxValue = 1;
     for (let i = 0; i < OCTAVES; i++) {
       total += this.detailNoise(x * frequency, z * frequency) * amplitude;
       maxValue += amplitude;
       amplitude *= PERSISTENCE;
       frequency *= LACUNARITY;
     }
-    const normalizedHeight = total / maxValue + 1;
+    const normalizedHeight = total / maxValue;
     return terrainHeightBase + normalizedHeight * terrainHeightAmplitude;
   }
 
@@ -76,32 +76,9 @@ export class TerrainHeightMap {
     biome: Biome
   ): number {
     const potentialHeight = this.getOctaveNoise(worldX, worldZ, biome);
-    const continentalness = this.continentalNoise.getF1Value(
-      potentialHeight,
-      potentialHeight
-    );
 
-    const landMultiplier = Math.max(0, (1.0 - continentalness * 1.0) ** 2);
-
-    const riverScale = GenerationParams.RIVER_SCALE; // Controls the size/spacing of river systems.
-    let riverValue = this.temperatureNoise(
-      worldX * riverScale,
-      worldZ * riverScale
-    );
-    let riverValue2 = this.humidityNoise(
-      worldZ * riverScale,
-      worldZ * riverScale
-    );
-
-    riverValue = Math.abs(riverValue);
-    riverValue2 = Math.abs(riverValue2);
-
-    const riverMultiplier = Math.min(1, Math.pow(riverValue * 4, 0.5));
-    const riverMultiplier2 = Math.min(1, Math.pow(riverValue2 * 4, 0.5));
-
-    let finalHeight =
-      potentialHeight * landMultiplier * riverMultiplier * riverMultiplier2;
-    finalHeight = Math.max(10, finalHeight);
+    let finalHeight = potentialHeight;
+    finalHeight = Math.max(17, finalHeight);
     return Math.floor(finalHeight);
   }
 }

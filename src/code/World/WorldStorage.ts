@@ -1,5 +1,5 @@
 import { Chunk } from "./Chunk/Chunk";
-import { MeshData } from "./Chunk/MeshData";
+import { MeshData } from "./Chunk/DataStructures/MeshData";
 import { GlobalValues } from "./GlobalValues";
 import { SettingParams } from "./SettingParams";
 
@@ -55,7 +55,10 @@ export class WorldStorage {
       // Saving is disabled for testing, do nothing.
       return;
     }
-    if (!this.db || !chunk.isModified) {
+    if (!chunk.isModified) {
+      return;
+    }
+    if (!this.db) {
       console.warn("DB not initialized, cannot save chunk.");
       return;
     }

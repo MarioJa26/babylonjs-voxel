@@ -1,6 +1,6 @@
 import { Mesh } from "@babylonjs/core";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
-import { MeshData } from "./MeshData";
+import { MeshData } from "./DataStructures/MeshData";
 import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
 import { TerrainHeightMap } from "../Generation/TerrainHeightMap";
 
@@ -23,6 +23,7 @@ export class Chunk {
   public isLoaded = true;
   public readonly id: bigint;
   private remeshTimeout: number | null = null;
+  private isHighPriorityRemesh = false;
 
   block_array: Uint8Array;
 
@@ -66,6 +67,7 @@ export class Chunk {
     scheduleRemesh = true
   ): void {
     this.block_array = block_array;
+    this.isLoaded = true;
     if (light_array) {
       this.light_array = light_array;
     } else {
@@ -78,6 +80,25 @@ export class Chunk {
       this.getNeighbor(0, -1, 0)?.scheduleRemesh();
     }
   }
+
+  public unload(): void {
+    if (!this.isLoaded) {
+      return;
+    }
+    if (this.remeshTimeout !== null) {
+      clearTimeout(this.remeshTimeout);
+      this.remeshTimeout = null;
+    }
+    // Keep the mesh, but discard the heavy block and light data arrays to save memory.
+    this.block_array = new Uint8Array(0);
+    this.light_array = new Uint8Array(0);
+    this.isLoaded = false;
+    this.isModified = false; // No longer considered modified as its data is gone.
+
+    // Also clear intermediate mesh data to free up more memory
+    this.opaqueMeshData = this.waterMeshData = this.glassMeshData = null;
+  }
+
   public initializeSunlight() {
     const queue: LightNode[] = [];
     const { CHUNK_SIZE } = GenerationParams;
@@ -112,6 +133,9 @@ export class Chunk {
   }
 
   public getBlock(localX: number, localY: number, localZ: number): number {
+    if (!this.isLoaded) {
+      return 0; // Unloaded chunks are treated as air for physics and rendering checks.
+    }
     return this.block_array[
       localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2
     ];
@@ -123,6 +147,12 @@ export class Chunk {
     localZ: number,
     blockId: number
   ): void {
+    if (!this.isLoaded) {
+      console.warn(
+        "Attempted to set block on an unloaded chunk. Action ignored."
+      );
+      return;
+    }
     const index = localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2;
     if (index < 0 || index >= this.block_array.length) return;
 
@@ -145,23 +175,23 @@ export class Chunk {
     }
 
     this.isModified = true;
-    this.scheduleRemesh();
+    this.scheduleRemesh(true);
 
     // If the block is on a boundary, the neighbor chunk must also be remeshed.
     if (localX === 0) {
-      this.getNeighbor(-1, 0, 0)?.scheduleRemesh();
+      this.getNeighbor(-1, 0, 0)?.scheduleRemesh(true);
     } else if (localX === Chunk.SIZE - 1) {
-      this.getNeighbor(1, 0, 0)?.scheduleRemesh();
+      this.getNeighbor(1, 0, 0)?.scheduleRemesh(true);
     }
     if (localY === 0) {
-      this.getNeighbor(0, -1, 0)?.scheduleRemesh();
+      this.getNeighbor(0, -1, 0)?.scheduleRemesh(true);
     } else if (localY === Chunk.SIZE - 1) {
-      this.getNeighbor(0, 1, 0)?.scheduleRemesh();
+      this.getNeighbor(0, 1, 0)?.scheduleRemesh(true);
     }
     if (localZ === 0) {
-      this.getNeighbor(0, 0, -1)?.scheduleRemesh();
+      this.getNeighbor(0, 0, -1)?.scheduleRemesh(true);
     } else if (localZ === Chunk.SIZE - 1) {
-      this.getNeighbor(0, 0, 1)?.scheduleRemesh();
+      this.getNeighbor(0, 0, 1)?.scheduleRemesh(true);
     }
   }
 
@@ -170,12 +200,18 @@ export class Chunk {
   }
 
   public getLight(localX: number, localY: number, localZ: number): number {
+    if (!this.isLoaded) {
+      return 0; // Unloaded chunks are dark.
+    }
     return this.light_array[
       localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2
     ];
   }
 
   public setLight(x: number, y: number, z: number, level: number) {
+    if (!this.isLoaded) {
+      return;
+    }
     const idx = x + y * Chunk.SIZE + z * Chunk.SIZE2;
     if (this.light_array[idx] !== level) {
       this.light_array[idx] = level;
@@ -413,16 +449,23 @@ export class Chunk {
 
     this.propagateLight(propagateQueue);
   }
-  public scheduleRemesh(): void {
+  public scheduleRemesh(priority = false): void {
+    if (!this.isLoaded) {
+      return; // Cannot remesh an unloaded chunk.
+    }
     this.isDirty = true;
+    if (priority) {
+      this.isHighPriorityRemesh = true;
+    }
     if (this.remeshTimeout !== null) {
       return;
     }
 
     this.remeshTimeout = setTimeout(() => {
       const pool = ChunkWorkerPool.getInstance();
-      pool.scheduleRemesh(this);
+      pool.scheduleRemesh(this, this.isHighPriorityRemesh);
       this.isDirty = false;
+      this.isHighPriorityRemesh = false;
       this.remeshTimeout = null;
     }, 0);
   }
@@ -476,5 +519,9 @@ export class Chunk {
     this.opaqueMeshData = null;
     this.waterMeshData = null;
     this.glassMeshData = null;
+    // Also clear data arrays and mark as unloaded for complete cleanup
+    this.block_array = new Uint8Array(0);
+    this.light_array = new Uint8Array(0);
+    this.isLoaded = false;
   }
 }

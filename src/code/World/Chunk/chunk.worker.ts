@@ -2,61 +2,15 @@
 
 import { BlockTextures } from "../Texture/BlockTextures";
 import { WorldGenerator } from "../Generation/WorldGenerator";
-import { MeshData } from "./MeshData";
+import { MeshData } from "./DataStructures/MeshData";
+import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
+import { ResizableTypedArray } from "./DataStructures/ResizableTypedArray";
+import { WorkerInternalMeshData } from "./DataStructures/WorkerInternalMeshData";
 
 /**
  * A wrapper around a TypedArray that allows it to be resized dynamically.
  * This is more performant than using a standard number[] and then converting.
  */
-class ResizableTypedArray<T extends Uint8Array | Uint16Array | Int8Array> {
-  private array: T;
-  private capacity: number;
-  public length = 0;
-
-  constructor(
-    private ctor: new (capacity: number) => T,
-    initialCapacity = 256
-  ) {
-    this.capacity = initialCapacity;
-    this.array = new ctor(this.capacity);
-  }
-
-  push(...values: number[]): void {
-    if (this.length + values.length > this.capacity) {
-      this.grow(this.length + values.length);
-    }
-    this.array.set(values, this.length);
-    this.length += values.length;
-  }
-
-  private grow(minCapacity: number): void {
-    let newCapacity = this.capacity * 2;
-    while (newCapacity < minCapacity) {
-      newCapacity *= 2;
-    }
-    const newArray = new this.ctor(newCapacity);
-    newArray.set(this.array.subarray(0, this.length));
-    this.array = newArray;
-    this.capacity = newCapacity;
-  }
-
-  get finalArray(): T {
-    return this.array.subarray(0, this.length) as T;
-  }
-}
-
-type WorkerInternalMeshData = {
-  positions: ResizableTypedArray<Uint8Array>;
-  indices: ResizableTypedArray<Uint16Array>;
-  normals: ResizableTypedArray<Int8Array>;
-  tangents: ResizableTypedArray<Int8Array>;
-  uvs2: ResizableTypedArray<Uint8Array>;
-  uvs3: ResizableTypedArray<Uint8Array>;
-  cornerIds: ResizableTypedArray<Uint8Array>;
-  ao: ResizableTypedArray<Uint8Array>;
-  light: ResizableTypedArray<Uint8Array>;
-  indexOffset: number;
-};
 
 const WATER_BLOCKS = new Set([30]);
 const GLASS_BLOCKS = new Set([60, 61]);
@@ -217,6 +171,13 @@ class ChunkWorkerMesher {
       const inChunk =
         x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size;
       if (inChunk) return block_array[x + y * size + z * size2];
+
+      // Check for diagonal neighbors (more than one coordinate out of bounds)
+      let outCount = 0;
+      if (x < 0 || x >= size) outCount++;
+      if (y < 0 || y >= size) outCount++;
+      if (z < 0 || z >= size) outCount++;
+      if (outCount > 1) return fallback;
 
       if (x < 0) {
         return neighbors.nx
@@ -550,6 +511,9 @@ class ChunkWorkerMesher {
     getBlock: (x: number, y: number, z: number) => number,
     meshData: WorkerInternalMeshData
   ) {
+    const tex = BlockTextures[blockId];
+    if (!tex) return;
+
     // create du/dv
     const du = [0, 0, 0];
     du[u] = width;
@@ -596,7 +560,6 @@ class ChunkWorkerMesher {
 
     // tile lookup and UV writes
     const faceName = this.getFaceName(q, isBackFace);
-    const tex = BlockTextures[blockId]!;
     const tile = tex[faceName] ?? tex.all!;
     this.pushTileUV(
       meshData.cornerIds,
@@ -611,37 +574,20 @@ class ChunkWorkerMesher {
 
     const { indices, indexOffset } = meshData;
 
-    // 2. Decide which way to split the quad to get the best AO look.
-    // We split along the diagonal that is "brighter" (has a lower AO sum).
-    if (aoValues[0] + aoValues[2] > aoValues[1] + aoValues[3]) {
-      // The p1-p3 diagonal is darker. Split along p2-p4.
-      // Triangles are (p1, p2, p4) and (p2, p3, p4).
-      // Indices: (0, 1, 3) and (1, 2, 3).
-      if (isBackFace) {
-        indices.push(indexOffset, indexOffset + 1, indexOffset + 3);
-        indices.push(indexOffset + 1, indexOffset + 2, indexOffset + 3);
-      } else {
-        indices.push(indexOffset, indexOffset + 3, indexOffset + 1);
-        indices.push(indexOffset + 1, indexOffset + 3, indexOffset + 2);
-      }
+    // Standard quad indices (0,1,2) and (0,2,3)
+    if (isBackFace) {
+      indices.push(indexOffset, indexOffset + 1, indexOffset + 2);
+      indices.push(indexOffset, indexOffset + 2, indexOffset + 3);
     } else {
-      // The p2-p4 diagonal is darker (or they are equal). Split along p1-p3.
-      // Triangles are (p1, p2, p3) and (p1, p3, p4).
-      // Indices: (0, 1, 2) and (0, 2, 3).
-      if (isBackFace) {
-        indices.push(indexOffset, indexOffset + 1, indexOffset + 2);
-        indices.push(indexOffset, indexOffset + 2, indexOffset + 3);
-      } else {
-        indices.push(indexOffset, indexOffset + 2, indexOffset + 1);
-        indices.push(indexOffset, indexOffset + 3, indexOffset + 2);
-      }
+      indices.push(indexOffset, indexOffset + 2, indexOffset + 1);
+      indices.push(indexOffset, indexOffset + 3, indexOffset + 2);
     }
     meshData.indexOffset += 4;
   }
 }
 
 // Top-level world generator instance for terrain requests
-let generator: WorldGenerator | null = null;
+const generator: WorldGenerator = new WorldGenerator(GenerationParams);
 
 const onMessageHandler = (event: MessageEvent) => {
   const { type } = event.data;
@@ -660,10 +606,6 @@ const onMessageHandler = (event: MessageEvent) => {
   // --- Terrain generation request ---
   if (type === "generate-terrain") {
     const { chunkId, chunkX, chunkY, chunkZ } = event.data;
-
-    if (!generator) {
-      generator = new WorldGenerator({ ...event.data });
-    }
 
     const { blocks, light } = generator.generateChunkData(
       chunkX,

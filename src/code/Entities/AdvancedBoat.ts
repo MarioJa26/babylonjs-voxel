@@ -55,7 +55,7 @@ export class AdvancedBoat implements IUsable {
     );
 
     boatHull.scaling = new Vector3(1.3, 1.3, 3.5);
-    boatHull.position = new Vector3(0, this.#waterLevel + 150, 0);
+    boatHull.position = new Vector3(0, this.#waterLevel + 10.5, 0);
 
     const hullMaterial = new StandardMaterial("hullMat", scene);
     hullMaterial.diffuseColor = new Color3(0.8, 0.6, 0.2);

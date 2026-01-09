@@ -3,18 +3,18 @@ import { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
 import { TerrainHeightMap } from "./TerrainHeightMap";
 
 export class LightGenerator {
-  private chunkSize: number;
-  private chunkSizeSq: number;
+  private static chunkSize: number;
+  private static chunkSizeSq: number;
   private lightQueue: Int32Array;
-  private queueCapacity: number;
+  private static queueCapacity: number;
 
   constructor(params: GenerationParamsType) {
-    this.chunkSize = params.CHUNK_SIZE;
-    this.chunkSizeSq = this.chunkSize ** 2;
+    LightGenerator.chunkSize = params.CHUNK_SIZE;
+    LightGenerator.chunkSizeSq = LightGenerator.chunkSize ** 2;
     // Allocate a fixed size buffer for the queue.
     // A size of chunkSize^3 is sufficient for a circular buffer in BFS
-    this.queueCapacity = this.chunkSize ** 3;
-    this.lightQueue = new Int32Array(this.queueCapacity);
+    LightGenerator.queueCapacity = LightGenerator.chunkSize ** 3;
+    this.lightQueue = new Int32Array(LightGenerator.queueCapacity);
   }
 
   public generate(
@@ -28,9 +28,9 @@ export class LightGenerator {
     let head = 0;
     let tail = 0;
     const queue = this.lightQueue;
-    const capacity = this.queueCapacity;
-    const CHUNK_SIZE = this.chunkSize;
-    const CHUNK_SIZE_SQ = this.chunkSizeSq;
+    const capacity = LightGenerator.queueCapacity;
+    const CHUNK_SIZE = LightGenerator.chunkSize;
+    const CHUNK_SIZE_SQ = LightGenerator.chunkSizeSq;
     for (let x = 0; x < CHUNK_SIZE; x++) {
       const worldX = chunkX * CHUNK_SIZE + x;
       for (let z = 0; z < CHUNK_SIZE; z++) {
@@ -180,7 +180,7 @@ export class LightGenerator {
     if (isTransparent) {
       if (light[idx] < l - 1) {
         light[idx] = l - 1;
-        this.lightQueue[tail % this.queueCapacity] =
+        this.lightQueue[tail % LightGenerator.queueCapacity] =
           (nx << 16) | (ny << 8) | nz;
         return tail + 1;
       }

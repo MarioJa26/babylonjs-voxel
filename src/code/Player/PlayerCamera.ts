@@ -22,7 +22,7 @@ export class PlayerCamera {
     this.#playerCamera = playerCamera;
 
     playerCamera.fov = SettingParams.CAMERA_FOV * (Math.PI / 180);
-    playerCamera.minZ = 0.2;
+    playerCamera.minZ = 0.1;
   }
 
   public moveWithPlayer(characterPosition: Vector3): void {

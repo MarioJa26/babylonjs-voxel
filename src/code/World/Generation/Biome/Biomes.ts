@@ -122,7 +122,7 @@ export function getBiomeFor(temperature: number, humidity: number): Biome {
   }
 
   // Temperate regions (0.3 <= temperature <= 0.7)
-  if (humidity < 0.5) {
+  if (humidity < 0.2) {
     return PLAINS; // Temperate and relatively dry
   } else {
     return FOREST; // Temperate and humid

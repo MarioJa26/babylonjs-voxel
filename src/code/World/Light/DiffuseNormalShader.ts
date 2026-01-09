@@ -126,14 +126,14 @@ void main(void) {
 
         vec3 viewDirection = normalize(cameraPosition - vPositionW);
         vec3 halfwayDir = normalize(normalizedLightDirection + viewDirection);
-        float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), 32.0);
+        float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), 16.0);
         vec3 specular = vec3(0.3) * spec; // Specular color is white
 
         float aoFactor = 1.0 - vAO * 0.2; // 0->1, 1->0.85, 2->0.7, 3->0.55
         
         // Combine AO and Light level
         // Ensure a minimum brightness (e.g., 0.05) so pitch black isn't invisible
-        vec3 finalColor = (diffuseColor.rgb * 0.8 + diffuse + specular) * aoFactor * max(vLight, 0.05);
+        vec3 finalColor = (diffuseColor.rgb * 0.8 + diffuse + specular) * max(vLight * aoFactor, 0.14);
 
         gl_FragColor = vec4(finalColor, diffuseColor.a);  
     }

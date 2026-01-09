@@ -1,7 +1,10 @@
 import { Chunk } from "./Chunk";
 import { ChunkMesher } from "./ChunckMesher";
 import { ChunkWorker } from "./chunkWorker";
-import { FullMeshMessage, TerrainGeneratedMessage } from "./WorkerMessageType";
+import {
+  FullMeshMessage,
+  TerrainGeneratedMessage,
+} from "./DataStructures/WorkerMessageType";
 import { WorldStorage } from "../WorldStorage";
 
 export type WorkerMessageData = FullMeshMessage | TerrainGeneratedMessage;
@@ -9,7 +12,7 @@ export type WorkerMessageData = FullMeshMessage | TerrainGeneratedMessage;
 export class ChunkWorkerPool {
   private static instance: ChunkWorkerPool;
   private workers: Worker[] = [];
-  private taskQueue: Set<Chunk> = new Set();
+  private taskQueue: Chunk[] = [];
   private terrainTaskQueue: Set<Chunk> = new Set();
   private idleWorkerIndices: number[] = [];
 
@@ -59,8 +62,18 @@ export class ChunkWorkerPool {
   }
 
   // existing remesh scheduling
-  public scheduleRemesh(chunk: Chunk) {
-    this.taskQueue.add(chunk);
+  public scheduleRemesh(chunk: Chunk, priority = false) {
+    const index = this.taskQueue.indexOf(chunk);
+    if (priority) {
+      if (index !== -1) {
+        this.taskQueue.splice(index, 1);
+      }
+      this.taskQueue.unshift(chunk);
+    } else {
+      if (index === -1) {
+        this.taskQueue.push(chunk);
+      }
+    }
     this.processQueue();
   }
 
@@ -89,10 +102,9 @@ export class ChunkWorkerPool {
         taskChunk = this.terrainTaskQueue.values().next().value;
         this.terrainTaskQueue.delete(taskChunk!);
         taskType = "terrain";
-      } else if (this.taskQueue.size > 0) {
+      } else if (this.taskQueue.length > 0) {
         // --- 2. Process Remesh Tasks ---
-        taskChunk = this.taskQueue.values().next().value;
-        this.taskQueue.delete(taskChunk!);
+        taskChunk = this.taskQueue.shift();
         taskType = "remesh";
       } else {
         break; // No more tasks to process

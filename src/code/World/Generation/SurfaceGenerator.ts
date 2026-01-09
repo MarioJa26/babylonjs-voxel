@@ -4,6 +4,7 @@ import { Biome } from "./Biome/Biomes";
 import { TerrainHeightMap } from "./TerrainHeightMap";
 import { Squirrel3 } from "./NoiseAndParameters/Squirrel13";
 import { Structure, StructureData } from "./Structure";
+import { RiverGenerator } from "./RiverGeneration";
 
 export class SurfaceGenerator {
   private params: GenerationParamsType;
@@ -11,6 +12,7 @@ export class SurfaceGenerator {
   private seedAsInt: number;
   private structures: Map<string, Structure> = new Map();
   private chunk_size: number;
+  private riverGenerator: RiverGenerator;
 
   constructor(
     params: GenerationParamsType,
@@ -21,6 +23,7 @@ export class SurfaceGenerator {
     this.treeNoise = treeNoise;
     this.seedAsInt = seedAsInt;
     this.chunk_size = this.params.CHUNK_SIZE;
+    this.riverGenerator = new RiverGenerator(params);
 
     this.loadStructures();
   }
@@ -66,10 +69,18 @@ export class SurfaceGenerator {
         const worldZ = chunkWorldZ + localZ;
 
         const terrainHeight = this.getFinalTerrainHeight(worldX, worldZ, biome);
+        const riverNoise = this.riverGenerator.getRiverNoise(worldX, worldZ);
 
         // Iterate through the Y column for this chunk
         for (let localY = 0; localY < CHUNK_SIZE; localY++) {
           const worldY = chunkY * CHUNK_SIZE + localY;
+
+          const isTunnel = this.riverGenerator.isRiver(
+            worldX,
+            worldZ,
+            riverNoise,
+            worldY
+          );
 
           if (worldY > terrainHeight) {
             // Above ground, fill with water if below sea level
@@ -77,6 +88,15 @@ export class SurfaceGenerator {
               placeBlock(worldX, worldY, worldZ, 30, false); // water
             }
             continue; // Air
+          }
+
+          if (isTunnel) {
+            if (worldY <= SEA_LEVEL) {
+              placeBlock(worldX, worldY, worldZ, 30, true); // Water
+            } else {
+              placeBlock(worldX, worldY, worldZ, 0, true); // Air
+            }
+            continue;
           }
 
           // It's a solid cell, place the appropriate terrain block
@@ -141,6 +161,18 @@ export class SurfaceGenerator {
             worldZ,
             biome
           );
+
+          const riverNoise = this.riverGenerator.getRiverNoise(worldX, worldZ);
+          if (
+            this.riverGenerator.isRiver(
+              worldX,
+              worldZ,
+              riverNoise,
+              terrainHeight
+            )
+          )
+            continue;
+
           const topBlockId = this.getBlockTypeAtWorldCoord(
             worldX,
             terrainHeight,

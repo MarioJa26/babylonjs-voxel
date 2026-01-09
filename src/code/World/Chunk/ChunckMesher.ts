@@ -17,7 +17,7 @@ import { Chunk } from "./Chunk";
 import { GlobalValues } from "../GlobalValues";
 //import { DiffuseOnlyShader } from "../Light/DiffuseOnlyShader";
 import { ShaderMaterial } from "@babylonjs/core";
-import { MeshData } from "./MeshData";
+import { MeshData } from "./DataStructures/MeshData";
 import { DiffuseNormalShader } from "../Light/DiffuseNormalShader";
 import { WaterShader } from "../Light/WaterShader";
 import { GlassShader } from "../Light/GlassShader";
