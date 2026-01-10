@@ -17,8 +17,6 @@ const GLASS_BLOCKS = new Set([60, 61]);
 
 type FaceData = {
   normal: Int8Array;
-  tangent: Int8Array;
-  handedness: number;
 };
 
 const FACE_DATA_CACHE: { [key: string]: FaceData } = {};
@@ -32,28 +30,8 @@ for (const axis of [0, 1, 2]) {
     const u_axis = (axis + 1) % 3;
     const v_axis = (axis + 2) % 3;
 
-    const tangentVec = new Int8Array(3);
-    tangentVec[u_axis] = 1;
-
-    const bitangentVec = new Int8Array(3);
-    bitangentVec[v_axis] = 1;
-
-    const crossNT = [
-      normal[1] * tangentVec[2] - normal[2] * tangentVec[1],
-      normal[2] * tangentVec[0] - normal[0] * tangentVec[2],
-      normal[0] * tangentVec[1] - normal[1] * tangentVec[0],
-    ];
-    const handedness =
-      crossNT[0] * bitangentVec[0] +
-        crossNT[1] * bitangentVec[1] +
-        crossNT[2] * bitangentVec[2] <
-      0
-        ? -1.0
-        : 1.0;
     FACE_DATA_CACHE[normal.join(",")] = {
       normal,
-      tangent: tangentVec,
-      handedness,
     };
   }
 }
@@ -64,7 +42,6 @@ class ChunkWorkerMesher {
       positions: new ResizableTypedArray(Uint8Array),
       indices: new ResizableTypedArray(Uint16Array),
       normals: new ResizableTypedArray(Int8Array),
-      tangents: new ResizableTypedArray(Int8Array),
       uvs2: new ResizableTypedArray(Uint8Array),
       uvs3: new ResizableTypedArray(Uint8Array),
       cornerIds: new ResizableTypedArray(Uint8Array),
@@ -434,7 +411,6 @@ class ChunkWorkerMesher {
                 isBackFace,
                 lightLevel,
                 packedAO,
-                getBlock,
                 targetMesh
               );
 
@@ -508,7 +484,6 @@ class ChunkWorkerMesher {
     isBackFace: boolean,
     lightLevel: number,
     packedAO: number,
-    getBlock: (x: number, y: number, z: number) => number,
     meshData: WorkerInternalMeshData
   ) {
     const tex = BlockTextures[blockId];
@@ -550,13 +525,9 @@ class ChunkWorkerMesher {
     const normalVec = isBackFace ? [-q[0], -q[1], -q[2]] : q;
 
     const faceData = FACE_DATA_CACHE[normalVec.join(",")];
-    const { normal, tangent, handedness } = faceData;
+    const { normal } = faceData;
 
     meshData.normals.push(...normal, ...normal, ...normal, ...normal);
-
-    for (let i = 0; i < 4; i++) {
-      meshData.tangents.push(tangent[0], tangent[1], tangent[2], handedness);
-    }
 
     // tile lookup and UV writes
     const faceName = this.getFaceName(q, isBackFace);
@@ -634,7 +605,6 @@ function toTransferable(data: WorkerInternalMeshData): MeshData {
     positions: data.positions.finalArray,
     indices: data.indices.finalArray,
     normals: data.normals.finalArray,
-    tangents: data.tangents.finalArray,
     uvs2: data.uvs2.finalArray,
     uvs3: data.uvs3.finalArray,
     cornerIds: data.cornerIds.finalArray,
@@ -665,7 +635,6 @@ function postFullMeshResult(
       opaqueMeshData.positions.buffer,
       opaqueMeshData.indices.buffer,
       opaqueMeshData.normals.buffer,
-      opaqueMeshData.tangents.buffer,
       opaqueMeshData.uvs2.buffer,
       opaqueMeshData.uvs3.buffer,
       opaqueMeshData.cornerIds.buffer,
@@ -674,7 +643,6 @@ function postFullMeshResult(
       waterMeshData.positions.buffer,
       waterMeshData.indices.buffer,
       waterMeshData.normals.buffer,
-      waterMeshData.tangents.buffer,
       waterMeshData.uvs2.buffer,
       waterMeshData.uvs3.buffer,
       waterMeshData.cornerIds.buffer,
@@ -683,7 +651,6 @@ function postFullMeshResult(
       glassMeshData.positions.buffer,
       glassMeshData.indices.buffer,
       glassMeshData.normals.buffer,
-      glassMeshData.tangents.buffer,
       glassMeshData.uvs2.buffer,
       glassMeshData.uvs3.buffer,
       glassMeshData.cornerIds.buffer,

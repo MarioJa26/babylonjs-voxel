@@ -8,7 +8,6 @@ attribute vec3 normal;
 attribute vec2 uv2; // uv2 = tile coords (tx, ty)
 attribute float cornerId; // 0,1,2,3 for quad corners
 attribute vec2 uv3; // uv3 = quad dimensions (w,h)
-attribute vec4 tangent;
 attribute float ao;
 attribute float light;
 
@@ -46,8 +45,16 @@ void main(void) {
     vUV3 = uv3; // Pass quad dimensions
     vPositionW = (world * vec4(position, 1.0)).xyz;
     vec3 N = normalize(mat3(world) * normal);
-    vec3 T = normalize(mat3(world) * tangent.xyz);
-    vec3 B = normalize(cross(N, T) * tangent.w);
+
+    // Reconstruct Tangent and Binormal from the Normal (assuming axis-aligned blocks)
+    vec3 absN = abs(normal);
+    float isX = step(0.5, absN.x);
+    float isY = step(0.5, absN.y);
+    vec3 tObj = vec3(1.0 - isX - isY, isX, isY);
+
+    float handedness = sign(normal.x + normal.y + normal.z);
+    vec3 T = normalize(mat3(world) * tObj);
+    vec3 B = normalize(cross(N, T) * handedness);
     vTBN = mat3(T, B, N);
 
     // Pass screen size to fragment shader for depth calculations

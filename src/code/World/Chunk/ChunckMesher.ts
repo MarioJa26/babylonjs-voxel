@@ -72,7 +72,6 @@ export class ChunkMesher {
               "normal",
               "uv2",
               "uv3",
-              "tangent",
               "cornerId",
               "ao",
               "light",
@@ -131,7 +130,6 @@ export class ChunkMesher {
               "normal",
               "uv2",
               "uv3",
-              "tangent",
               "cornerId",
               "ao",
               "light",
@@ -208,7 +206,6 @@ export class ChunkMesher {
               "normal",
               "uv2",
               "uv3",
-              "tangent",
               "cornerId",
               "ao",
               "light",
@@ -322,6 +319,7 @@ export class ChunkMesher {
         "chunk_water",
         this.waterMaterial!
       );
+      chunk.waterMesh.isPickable = false;
     } else {
       chunk.waterMesh = null;
     }
@@ -461,22 +459,6 @@ export class ChunkMesher {
     mesh.setVerticesBuffer(lightBuffer);
 
     mesh.setIndices(meshData.indices);
-
-    // Create VertexBuffer for tangents (Int8)
-    const tangentBuffer = new VertexBuffer(
-      engine,
-      meshData.tangents,
-      VertexBuffer.TangentKind,
-      false,
-      undefined,
-      4,
-      false,
-      undefined,
-      undefined,
-      VertexBuffer.BYTE,
-      true
-    );
-    mesh.setVerticesBuffer(tangentBuffer);
 
     if (mesh.material) {
       (mesh.material as ShaderMaterial).wireframe = GlobalValues.DEBUG;

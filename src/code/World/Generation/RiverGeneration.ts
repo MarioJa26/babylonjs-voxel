@@ -8,9 +8,9 @@ import { TerrainHeightMap } from "./TerrainHeightMap";
 
 export class RiverGenerator {
   private params: GenerationParamsType;
-  private readonly TUNNEL_RADIUS = 6;
+  private readonly TUNNEL_RADIUS = 7;
   private readonly TUNNEL_CENTER_Y: number;
-  private readonly RIVER_WIDTH_THRESHOLD = 0.03;
+  private readonly RIVER_WIDTH_THRESHOLD = 0.06;
   private wallNoise: ReturnType<typeof createNoise3D>;
 
   constructor(params: GenerationParamsType) {
@@ -43,7 +43,7 @@ export class RiverGenerator {
   }
 
   public static getRiverNoiseValue(worldX: number, worldZ: number): number {
-    const riverScale = GenerationParams.RIVER_SCALE;
+    const riverScale = GenerationParams.RIVER_SCALE * 2.0;
     return TerrainHeightMap.temperatureNoise(
       worldX * riverScale,
       worldZ * riverScale
