@@ -111,11 +111,9 @@ export class Chunk {
       for (let z = 0; z < CHUNK_SIZE; z++) {
         const worldZ = this.#chunkZ * CHUNK_SIZE + z;
 
-        const biome = TerrainHeightMap.getBiome(worldX, worldZ);
         const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(
           worldX,
-          worldZ,
-          biome
+          worldZ
         );
 
         for (let y = 0; y < CHUNK_SIZE; y++) {
@@ -276,15 +274,15 @@ export class Chunk {
       const { chunk, x, y, z, level } = queue.shift()!;
 
       const neighbors = [
-        [x + 1, y, z],
-        [x - 1, y, z],
-        [x, y + 1, z],
-        [x, y - 1, z],
-        [x, y, z + 1],
-        [x, y, z - 1],
+        [x + 1, y, z, 0],
+        [x - 1, y, z, 0],
+        [x, y + 1, z, 0],
+        [x, y - 1, z, 1],
+        [x, y, z + 1, 0],
+        [x, y, z - 1, 0],
       ];
 
-      for (const [nx, ny, nz] of neighbors) {
+      for (const [nx, ny, nz, isDown] of neighbors) {
         let targetChunk: Chunk | undefined = chunk;
         let tx = nx;
         let ty = ny;
@@ -325,15 +323,21 @@ export class Chunk {
             const currentLevel = isSkyLight
               ? targetChunk.getSkyLight(tx, ty, tz)
               : targetChunk.getBlockLight(tx, ty, tz);
-            if (currentLevel < level - 1) {
-              if (isSkyLight) targetChunk.setSkyLight(tx, ty, tz, level - 1);
-              else targetChunk.setBlockLight(tx, ty, tz, level - 1);
+
+            let nextLevel = level - 1;
+            if (isSkyLight && isDown === 1 && level === 15) {
+              nextLevel = 15;
+            }
+
+            if (currentLevel < nextLevel) {
+              if (isSkyLight) targetChunk.setSkyLight(tx, ty, tz, nextLevel);
+              else targetChunk.setBlockLight(tx, ty, tz, nextLevel);
               queue.push({
                 chunk: targetChunk,
                 x: tx,
                 y: ty,
                 z: tz,
-                level: level - 1,
+                level: nextLevel,
               });
             }
           }
@@ -441,15 +445,15 @@ export class Chunk {
       const { chunk, x, y, z, level } = queue.shift()!;
 
       const neighbors = [
-        [x + 1, y, z],
-        [x - 1, y, z],
-        [x, y + 1, z],
-        [x, y - 1, z],
-        [x, y, z + 1],
-        [x, y, z - 1],
+        [x + 1, y, z, 0],
+        [x - 1, y, z, 0],
+        [x, y + 1, z, 0],
+        [x, y - 1, z, 1],
+        [x, y, z + 1, 0],
+        [x, y, z - 1, 0],
       ];
 
-      for (const [nx, ny, nz] of neighbors) {
+      for (const [nx, ny, nz, isDown] of neighbors) {
         let targetChunk: Chunk | undefined = chunk;
         let tx = nx;
         let ty = ny;
@@ -488,7 +492,15 @@ export class Chunk {
           const neighborLight = isSkyLight
             ? targetChunk.getSkyLight(tx, ty, tz)
             : targetChunk.getBlockLight(tx, ty, tz);
-          if (neighborLight !== 0 && neighborLight < level) {
+
+          const isDependent =
+            neighborLight < level ||
+            (isSkyLight &&
+              isDown === 1 &&
+              level === 15 &&
+              neighborLight === 15);
+
+          if (neighborLight !== 0 && isDependent) {
             if (isSkyLight) targetChunk.setSkyLight(tx, ty, tz, 0);
             else targetChunk.setBlockLight(tx, ty, tz, 0);
             queue.push({

@@ -21,7 +21,7 @@ export class LightGenerator {
     chunkX: number,
     chunkY: number,
     chunkZ: number,
-    biome: Biome,
+    _biome: Biome,
     blocks: Uint8Array,
     light: Uint8Array
   ): void {
@@ -38,8 +38,7 @@ export class LightGenerator {
 
         const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(
           worldX,
-          worldZ,
-          biome
+          worldZ
         );
 
         for (let y = 0; y < CHUNK_SIZE; y++) {
@@ -79,7 +78,7 @@ export class LightGenerator {
           x + 1,
           y,
           z,
-          l,
+          l - 1,
           blocks,
           light,
           tail,
@@ -93,7 +92,7 @@ export class LightGenerator {
           x - 1,
           y,
           z,
-          l,
+          l - 1,
           blocks,
           light,
           tail,
@@ -107,7 +106,7 @@ export class LightGenerator {
           x,
           y + 1,
           z,
-          l,
+          l - 1,
           blocks,
           light,
           tail,
@@ -121,7 +120,7 @@ export class LightGenerator {
           x,
           y - 1,
           z,
-          l,
+          l === 15 ? 15 : l - 1,
           blocks,
           light,
           tail,
@@ -135,7 +134,7 @@ export class LightGenerator {
           x,
           y,
           z + 1,
-          l,
+          l - 1,
           blocks,
           light,
           tail,
@@ -149,7 +148,7 @@ export class LightGenerator {
           x,
           y,
           z - 1,
-          l,
+          l - 1,
           blocks,
           light,
           tail,
@@ -164,7 +163,7 @@ export class LightGenerator {
     nx: number,
     ny: number,
     nz: number,
-    l: number,
+    targetLight: number,
     blocks: Uint8Array,
     light: Uint8Array,
     tail: number,
@@ -179,9 +178,9 @@ export class LightGenerator {
 
     if (isTransparent) {
       const currentSky = (light[idx] >> 4) & 0xf;
-      if (currentSky < l - 1) {
+      if (currentSky < targetLight) {
         const blockLight = light[idx] & 0xf;
-        light[idx] = ((l - 1) << 4) | blockLight;
+        light[idx] = (targetLight << 4) | blockLight;
         this.lightQueue[tail % LightGenerator.queueCapacity] =
           (nx << 16) | (ny << 8) | nz;
         return tail + 1;
