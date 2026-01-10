@@ -8,7 +8,7 @@ export const GenerationParams = {
   TERRAIN_HEIGHT_BASE: 20,
   TERRAIN_HEIGHT_AMPLITUDE: 333,
   SEA_LEVEL: 42,
-  RIVER_SCALE: 1 / 1000,
+  RIVER_SCALE: 1 / 333,
   BIOME_NOISE_SCALE: 1 / 3333,
 };
 

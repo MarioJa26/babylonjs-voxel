@@ -146,7 +146,7 @@ void main(void) {
         vec3 skyColor = vec3(0.8, 0.8, 0.8); // Blue-ish for sky
         vec3 blockColor = vec3(1.0, 0.6, 0.2); // Orange-ish for block light
         
-        vec3 lightMix = (vSkyLight * skyColor) + (vBlockLight * blockColor);
+        vec3 lightMix = clamp((vSkyLight * skyColor) + (vBlockLight * blockColor), 0.0, 1.0);
         
         vec3 finalColor = (diffuseColor.rgb * 0.8 + diffuse + specular) * max(lightMix * aoFactor, 0.1);
 

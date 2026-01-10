@@ -27,9 +27,6 @@ for (const axis of [0, 1, 2]) {
     const normal = new Int8Array(3);
     normal[axis] = side;
 
-    const u_axis = (axis + 1) % 3;
-    const v_axis = (axis + 2) % 3;
-
     FACE_DATA_CACHE[normal.join(",")] = {
       normal,
     };

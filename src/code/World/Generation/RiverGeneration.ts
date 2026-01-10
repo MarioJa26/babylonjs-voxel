@@ -43,7 +43,7 @@ export class RiverGenerator {
   }
 
   public static getRiverNoiseValue(worldX: number, worldZ: number): number {
-    const riverScale = GenerationParams.RIVER_SCALE * 2.0;
+    const riverScale = GenerationParams.RIVER_SCALE;
     return TerrainHeightMap.temperatureNoise(
       worldX * riverScale,
       worldZ * riverScale
