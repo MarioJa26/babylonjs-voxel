@@ -12,6 +12,7 @@ export class GlassShader {
     varying mat3 vTBN;
     varying vec2 vScreenSize;
     varying float vAO;
+    varying float vLight;
 
     // Uniforms
     uniform vec3 cameraPosition;
@@ -64,8 +65,8 @@ export class GlassShader {
 
         // --- Ambient Occlusion ---
         float aoFactor = 1.0 - vAO * 0.067;
-        vec3 litColor = diffuseColor.rgb * 0.6 + diffuse + specular;
-        vec3 finalColor = litColor * aoFactor;
+        vec3 litColor = diffuseColor.rgb  + diffuse + specular;
+        vec3 finalColor = litColor * max(vLight * aoFactor, 0.06);
 
         // Use a fixed alpha or one from the texture for blending
         gl_FragColor = vec4(finalColor, diffuseColor.a); // Use the texture's alpha directly

@@ -12,6 +12,7 @@ export class WaterShader {
     varying mat3 vTBN;
     varying vec2 vScreenSize;
     varying float vAO;
+    varying float vLight;
 
     // Uniforms
     uniform vec3 cameraPosition;
@@ -48,11 +49,6 @@ export class WaterShader {
 
         vec4 diffuseColor = texture2D_with_derivatives(diffuseTexture, vUV2, singleTileUV, atlasTileSize); 
 
-        // Discard fragment if it's fully transparent to improve performance
-       // if (diffuseColor.a < 0.01) {
-        //    discard;
-       // }
-
         vec3 normalMap = texture2D_with_derivatives(normalTexture, vUV2, singleTileUV, atlasTileSize).rgb;
         normalMap = normalize(normalMap * 2.0 - 1.0);
 
@@ -72,25 +68,15 @@ export class WaterShader {
         // --- Ambient Occlusion ---
         float aoFactor = 1.0 - vAO * 0.24;
         vec3 litColor = diffuseColor.rgb * 0.5 + diffuse + specular;
-        vec3 finalColor = litColor * aoFactor;
 
+        // Desaturate color in low light
+        float luminance = dot(litColor, vec3(0.299, 0.587, 0.114));
+        litColor = mix(vec3(luminance), litColor, vLight);
 
-        // --- Depth-based Transparency ---
-        // Get screen UVs from gl_FragCoord
-        vec2 screenUV = gl_FragCoord.xy / vScreenSize;
-        
-        // Read depth of the opaque geometry behind the water
-        float sceneDepth = texture2D(depthSampler, screenUV).r; 
-        
-        // Linearize depths to get a real-world distance
-        float linearSceneDepth = linearizeDepth(sceneDepth, cameraPlanes.x, cameraPlanes.y);
-        float linearWaterDepth = linearizeDepth(gl_FragCoord.z, cameraPlanes.x, cameraPlanes.y);
-        
-        float waterThickness = linearSceneDepth - linearWaterDepth;
-        float fogFactor = clamp(waterThickness * 110.2, 0.0, 1.0); // Adjust 0.2 to control how quickly water becomes opaque
+        vec3 finalColor = litColor * max(vLight * aoFactor, 0.1);
 
         // Apply alpha for transparency
-        gl_FragColor = vec4(finalColor, (diffuseColor.a * 0.4));
+        gl_FragColor = vec4(finalColor, diffuseColor.a * mix(0.9, 0.4, vLight));
     }
   `;
 }
