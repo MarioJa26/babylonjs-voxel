@@ -24,7 +24,8 @@ varying vec3 vPositionW;
 varying mat3 vTBN;
 varying vec2 vScreenSize;
 varying float vAO;
-varying float vLight;
+varying float vSkyLight;
+varying float vBlockLight;
 
 uniform float atlasTileSize;
 
@@ -61,7 +62,9 @@ void main(void) {
     vScreenSize = screenSize;
 
     vAO = ao;
-    vLight = light / 15.0; // Normalize 0-15 to 0.0-1.0
+    // Unpack light (0-255) into sky (high 4 bits) and block (low 4 bits)
+    vSkyLight = floor(light / 16.0) / 15.0;
+    vBlockLight = mod(light, 16.0) / 15.0;
 }
 `;
   static readonly chunkFragmentShader = `
@@ -78,7 +81,8 @@ void main(void) {
     varying vec3 vPositionW;
     varying mat3 vTBN;
     varying float vAO;
-    varying float vLight;
+    varying float vSkyLight;
+    varying float vBlockLight;
 
     uniform sampler2D diffuseTexture;
     uniform sampler2D normalTexture;
@@ -138,9 +142,13 @@ void main(void) {
 
         float aoFactor = 1.0 - vAO * 0.2; // 0->1, 1->0.85, 2->0.7, 3->0.55
         
-        // Combine AO and Light level
-        // Ensure a minimum brightness (e.g., 0.05) so pitch black isn't invisible
-        vec3 finalColor = (diffuseColor.rgb * 0.8 + diffuse + specular) * max(vLight * aoFactor, 0.14);
+        // --- Light Coloring for Testing ---
+        vec3 skyColor = vec3(0.8, 0.8, 0.8); // Blue-ish for sky
+        vec3 blockColor = vec3(1.0, 0.6, 0.2); // Orange-ish for block light
+        
+        vec3 lightMix = (vSkyLight * skyColor) + (vBlockLight * blockColor);
+        
+        vec3 finalColor = (diffuseColor.rgb * 0.8 + diffuse + specular) * max(lightMix * aoFactor, 0.1);
 
         gl_FragColor = vec4(finalColor, diffuseColor.a);  
     }

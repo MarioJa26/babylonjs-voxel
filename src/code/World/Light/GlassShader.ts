@@ -12,7 +12,8 @@ export class GlassShader {
     varying mat3 vTBN;
     varying vec2 vScreenSize;
     varying float vAO;
-    varying float vLight;
+    varying float vSkyLight;
+    varying float vBlockLight;
 
     // Uniforms
     uniform vec3 cameraPosition;
@@ -64,9 +65,16 @@ export class GlassShader {
         vec3 specular = vec3(0.5) * spec;
 
         // --- Ambient Occlusion ---
-        float aoFactor = 1.0 - vAO * 0.067;
+        float aoFactor = 1.0 - vAO * 0.1;
+        float lightLevel = max(vSkyLight, vBlockLight);
+        
+        // --- Light Coloring for Testing ---
+        vec3 skyColor = vec3(0.6, 0.8, 1.0); // Blue-ish for sky
+        vec3 blockColor = vec3(1.0, 0.6, 0.2); // Orange-ish for block light
+        vec3 lightMix = (vSkyLight * skyColor) + (vBlockLight * blockColor);
+
         vec3 litColor = diffuseColor.rgb  + diffuse + specular;
-        vec3 finalColor = litColor * max(vLight * aoFactor, 0.06);
+        vec3 finalColor = litColor * max(lightMix * aoFactor, 0.06);
 
         // Use a fixed alpha or one from the texture for blending
         gl_FragColor = vec4(finalColor, diffuseColor.a); // Use the texture's alpha directly

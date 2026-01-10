@@ -12,7 +12,8 @@ export class WaterShader {
     varying mat3 vTBN;
     varying vec2 vScreenSize;
     varying float vAO;
-    varying float vLight;
+    varying float vSkyLight;
+    varying float vBlockLight;
 
     // Uniforms
     uniform vec3 cameraPosition;
@@ -69,14 +70,22 @@ export class WaterShader {
         float aoFactor = 1.0 - vAO * 0.24;
         vec3 litColor = diffuseColor.rgb * 0.5 + diffuse + specular;
 
+        float lightLevel = max(vSkyLight, vBlockLight);
+
         // Desaturate color in low light
         float luminance = dot(litColor, vec3(0.299, 0.587, 0.114));
-        litColor = mix(vec3(luminance), litColor, vLight);
+        litColor = mix(vec3(luminance), litColor, lightLevel);
 
-        vec3 finalColor = litColor * max(vLight * aoFactor, 0.1);
+        // --- Light Coloring for Testing ---
+        vec3 skyColor = vec3(0.6, 0.8, 1.0); // Blue-ish for sky
+        vec3 blockColor = vec3(1.0, 0.6, 0.2); // Orange-ish for block light
+        
+        vec3 lightMix = (vSkyLight * skyColor) + (vBlockLight * blockColor);
+
+        vec3 finalColor = litColor * max(lightMix * aoFactor, 0.1);
 
         // Apply alpha for transparency
-        gl_FragColor = vec4(finalColor, diffuseColor.a * mix(0.9, 0.4, vLight));
+        gl_FragColor = vec4(finalColor, diffuseColor.a * mix(0.9, 0.4, lightLevel));
     }
   `;
 }

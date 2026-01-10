@@ -223,9 +223,10 @@ class ChunkWorkerMesher {
     // lower 16 bits: block ID (0 means empty)
     // bit 16 (1 << 16): TRANSPARENT_FLAG
     // bit 17 (1 << 17): BACKFACE_FLAG
-    const TRANSPARENT_FLAG = 1 << 16;
-    const BACKFACE_FLAG = 1 << 17;
-    const BLOCK_ID_MASK = 0xffff;
+    // We repack to fit 8 bits of light (sky + block)
+    const BLOCK_ID_MASK = 0xfff; // 12 bits for block ID
+    const TRANSPARENT_FLAG = 1 << 12;
+    const BACKFACE_FLAG = 1 << 13;
 
     // single pass across axes -- generate masks containing encoded values
     for (let axis = 0; axis < 3; axis++) {
@@ -295,7 +296,7 @@ class ChunkWorkerMesher {
             ) {
               // Current block face is visible.
               // The light level of the face is determined by the block in front of it (the neighbor).
-              const lightLevel = getLight(
+              const lightPacked = getLight(
                 bx + direction[0],
                 by + direction[1],
                 bz + direction[2]
@@ -312,8 +313,8 @@ class ChunkWorkerMesher {
               const encCurrent =
                 (blockCurrent & BLOCK_ID_MASK) |
                 (isCurrentTransparent ? TRANSPARENT_FLAG : 0) |
-                (packedAO << 18) | // Pack AO into bits 18-25
-                (lightLevel << 28); // Pack light into bits 28-31
+                (packedAO << 14) | // Pack AO into bits 14-21
+                (lightPacked << 22); // Pack 8-bit light into bits 22-29
               mask[maskIndex++] = encCurrent;
             } else if (
               isNeighborSolid &&
@@ -323,7 +324,7 @@ class ChunkWorkerMesher {
             ) {
               // Neighbor block face is visible (so we draw a back-face).
               // The light level is determined by the current block (which is air/transparent).
-              const lightLevel = getLight(bx, by, bz);
+              const lightPacked = getLight(bx, by, bz);
               // For backface, the "air" block is the current block (bx, by, bz)
               const packedAO = this.calculateAOPacked(
                 bx,
@@ -336,8 +337,8 @@ class ChunkWorkerMesher {
               const encNeighbor =
                 (blockNeighbor & BLOCK_ID_MASK) |
                 (isNeighborTransparent ? TRANSPARENT_FLAG : 0) |
-                (packedAO << 18) |
-                (lightLevel << 28);
+                (packedAO << 14) |
+                (lightPacked << 22);
               mask[maskIndex++] = encNeighbor | BACKFACE_FLAG;
             } else {
               mask[maskIndex++] = 0;
@@ -382,8 +383,8 @@ class ChunkWorkerMesher {
               const isBackFace = (currentMaskValue & BACKFACE_FLAG) !== 0;
               const isTransparent = (currentMaskValue & TRANSPARENT_FLAG) !== 0;
               const blockId = currentMaskValue & BLOCK_ID_MASK;
-              const lightLevel = (currentMaskValue >>> 28) & 0xf;
-              const packedAO = (currentMaskValue >>> 18) & 0xff;
+              const lightPacked = (currentMaskValue >>> 22) & 0xff;
+              const packedAO = (currentMaskValue >>> 14) & 0xff;
 
               position[u_axis] = u_coord;
               position[v_axis] = v_coord;
@@ -409,7 +410,7 @@ class ChunkWorkerMesher {
                 height,
                 blockId,
                 isBackFace,
-                lightLevel,
+                lightPacked,
                 packedAO,
                 targetMesh
               );

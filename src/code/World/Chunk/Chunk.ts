@@ -39,6 +39,9 @@ export class Chunk {
 
   light_array: Uint8Array;
 
+  public static readonly SKY_LIGHT_SHIFT = 4;
+  public static readonly BLOCK_LIGHT_MASK = 0xf;
+
   constructor(chunkX: number, chunkY: number, chunkZ: number) {
     this.#chunkX = chunkX;
     this.#chunkY = chunkY;
@@ -122,7 +125,7 @@ export class Chunk {
             const idx = x + y * CHUNK_SIZE + z * Chunk.SIZE2;
             const blockId = this.block_array[idx];
             if (blockId === 0) {
-              this.light_array[idx] = 15;
+              this.light_array[idx] = 15 << Chunk.SKY_LIGHT_SHIFT;
               queue.push({ chunk: this, x, y, z, level: 15 });
             }
           }
@@ -130,6 +133,41 @@ export class Chunk {
       }
     }
     this.propagateLight(queue);
+  }
+
+  public getBlockLight(localX: number, localY: number, localZ: number): number {
+    if (!this.isLoaded) return 0;
+    return (
+      this.light_array[localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2] &
+      Chunk.BLOCK_LIGHT_MASK
+    );
+  }
+
+  public getSkyLight(localX: number, localY: number, localZ: number): number {
+    //Todo Return Time Adjusted Light Level
+    if (!this.isLoaded) return 15;
+    return (
+      (this.light_array[localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2] >>
+        Chunk.SKY_LIGHT_SHIFT) &
+      Chunk.BLOCK_LIGHT_MASK
+    );
+  }
+
+  public setBlockLight(x: number, y: number, z: number, level: number): void {
+    const current = this.getLight(x, y, z);
+    const sky = current & ~Chunk.BLOCK_LIGHT_MASK;
+    this.setLight(x, y, z, sky | (level & Chunk.BLOCK_LIGHT_MASK));
+  }
+
+  public setSkyLight(x: number, y: number, z: number, level: number): void {
+    const current = this.getLight(x, y, z);
+    const block = current & Chunk.BLOCK_LIGHT_MASK;
+    this.setLight(
+      x,
+      y,
+      z,
+      block | ((level & Chunk.BLOCK_LIGHT_MASK) << Chunk.SKY_LIGHT_SHIFT)
+    );
   }
 
   public getBlock(localX: number, localY: number, localZ: number): number {
@@ -159,14 +197,23 @@ export class Chunk {
     const oldBlockId = this.block_array[index];
     if (oldBlockId === blockId) return;
 
-    const oldLight = this.getLight(localX, localY, localZ);
+    const oldBlockLight = this.getBlockLight(localX, localY, localZ);
+    const oldSkyLight = this.getSkyLight(localX, localY, localZ);
 
     this.block_array[index] = blockId;
 
-    if (oldLight > 0) {
-      this.removeLight(localX, localY, localZ);
+    // Handle Block Light
+    if (oldBlockLight > 0) {
+      this.removeLight(localX, localY, localZ, false);
     } else if (this.isTransparent(blockId)) {
-      this.updateLightFromNeighbors(localX, localY, localZ);
+      this.updateLightFromNeighbors(localX, localY, localZ, false);
+    }
+
+    // Handle Sky Light
+    if (oldSkyLight > 0) {
+      this.removeLight(localX, localY, localZ, true);
+    } else if (this.isTransparent(blockId)) {
+      this.updateLightFromNeighbors(localX, localY, localZ, true);
     }
 
     const emission = Chunk.getLightEmission(blockId);
@@ -224,7 +271,7 @@ export class Chunk {
    * Propagates light from a queue of light sources.
    */
 
-  public propagateLight(queue: LightNode[]): void {
+  public propagateLight(queue: LightNode[], isSkyLight = true): void {
     while (queue.length > 0) {
       const { chunk, x, y, z, level } = queue.shift()!;
 
@@ -275,8 +322,12 @@ export class Chunk {
         if (targetChunk) {
           const blockId = targetChunk.getBlock(tx, ty, tz);
           if (targetChunk.isTransparent(blockId)) {
-            if (targetChunk.getLight(tx, ty, tz) < level - 1) {
-              targetChunk.setLight(tx, ty, tz, level - 1);
+            const currentLevel = isSkyLight
+              ? targetChunk.getSkyLight(tx, ty, tz)
+              : targetChunk.getBlockLight(tx, ty, tz);
+            if (currentLevel < level - 1) {
+              if (isSkyLight) targetChunk.setSkyLight(tx, ty, tz, level - 1);
+              else targetChunk.setBlockLight(tx, ty, tz, level - 1);
               queue.push({
                 chunk: targetChunk,
                 x: tx,
@@ -291,7 +342,12 @@ export class Chunk {
     }
   }
 
-  public updateLightFromNeighbors(x: number, y: number, z: number) {
+  public updateLightFromNeighbors(
+    x: number,
+    y: number,
+    z: number,
+    isSkyLight = false
+  ) {
     const queue: LightNode[] = [];
     const neighbors = [
       [x + 1, y, z],
@@ -339,7 +395,9 @@ export class Chunk {
       }
 
       if (targetChunk) {
-        const level = targetChunk.getLight(tx, ty, tz);
+        const level = isSkyLight
+          ? targetChunk.getSkyLight(tx, ty, tz)
+          : targetChunk.getBlockLight(tx, ty, tz);
         if (level > 0) {
           queue.push({
             chunk: targetChunk,
@@ -353,7 +411,7 @@ export class Chunk {
     }
 
     if (queue.length > 0) {
-      this.propagateLight(queue);
+      this.propagateLight(queue, isSkyLight);
     }
   }
 
@@ -362,19 +420,22 @@ export class Chunk {
     return blockId === 0 || blockId === 30 || blockId === 60 || blockId === 61;
   }
   public addLight(x: number, y: number, z: number, level: number) {
-    this.setLight(x, y, z, level);
-    this.propagateLight([{ chunk: this, x, y, z, level }]);
+    this.setBlockLight(x, y, z, level);
+    this.propagateLight([{ chunk: this, x, y, z, level }], false);
   }
 
-  public removeLight(x: number, y: number, z: number) {
-    const val = this.getLight(x, y, z);
+  public removeLight(x: number, y: number, z: number, isSkyLight = false) {
+    const val = isSkyLight
+      ? this.getSkyLight(x, y, z)
+      : this.getBlockLight(x, y, z);
     if (val === 0) return;
 
     const queue: LightNode[] = [];
     const propagateQueue: LightNode[] = [];
 
     queue.push({ chunk: this, x, y, z, level: val });
-    this.setLight(x, y, z, 0);
+    if (isSkyLight) this.setSkyLight(x, y, z, 0);
+    else this.setBlockLight(x, y, z, 0);
 
     while (queue.length > 0) {
       const { chunk, x, y, z, level } = queue.shift()!;
@@ -424,9 +485,12 @@ export class Chunk {
         }
 
         if (targetChunk) {
-          const neighborLight = targetChunk.getLight(tx, ty, tz);
+          const neighborLight = isSkyLight
+            ? targetChunk.getSkyLight(tx, ty, tz)
+            : targetChunk.getBlockLight(tx, ty, tz);
           if (neighborLight !== 0 && neighborLight < level) {
-            targetChunk.setLight(tx, ty, tz, 0);
+            if (isSkyLight) targetChunk.setSkyLight(tx, ty, tz, 0);
+            else targetChunk.setBlockLight(tx, ty, tz, 0);
             queue.push({
               chunk: targetChunk,
               x: tx,
@@ -447,7 +511,7 @@ export class Chunk {
       }
     }
 
-    this.propagateLight(propagateQueue);
+    this.propagateLight(propagateQueue, isSkyLight);
   }
   public scheduleRemesh(priority = false): void {
     if (!this.isLoaded) {

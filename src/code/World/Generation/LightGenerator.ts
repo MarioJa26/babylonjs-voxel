@@ -48,7 +48,7 @@ export class LightGenerator {
           if (worldY > terrainHeight) {
             const idx = x + y * CHUNK_SIZE + z * CHUNK_SIZE_SQ;
             if (blocks[idx] === 0) {
-              light[idx] = 15;
+              light[idx] = 15 << 4;
               // Pack coordinates: x (8), y (8), z (8)
               queue[tail % capacity] = (x << 16) | (y << 8) | z;
               tail++;
@@ -68,7 +68,7 @@ export class LightGenerator {
       const z = val & 0xff;
 
       const idx = x + y * CHUNK_SIZE + z * CHUNK_SIZE_SQ;
-      const l = light[idx];
+      const l = (light[idx] >> 4) & 0xf;
 
       if (l <= 1) continue;
 
@@ -178,8 +178,10 @@ export class LightGenerator {
       blockId === 0 || blockId === 30 || blockId === 60 || blockId === 61;
 
     if (isTransparent) {
-      if (light[idx] < l - 1) {
-        light[idx] = l - 1;
+      const currentSky = (light[idx] >> 4) & 0xf;
+      if (currentSky < l - 1) {
+        const blockLight = light[idx] & 0xf;
+        light[idx] = ((l - 1) << 4) | blockLight;
         this.lightQueue[tail % LightGenerator.queueCapacity] =
           (nx << 16) | (ny << 8) | nz;
         return tail + 1;
