@@ -140,7 +140,7 @@ export class PlayerVehicle {
   }
   private calculateFlyingVelocity(deltaTime: number): Vector3 {
     const upWorld = this.getUpVector();
-    const flySpeed = this.onGroundSpeed * 2.5; // Use a dedicated fly speed
+    const flySpeed = this.onGroundSpeed * 112.5; // Use a dedicated fly speed
     const desiredVelocity = this.getInputVelocity(flySpeed);
 
     // Vertical movement

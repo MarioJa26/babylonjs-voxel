@@ -7,7 +7,7 @@ import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationPar
 import { ResizableTypedArray } from "./DataStructures/ResizableTypedArray";
 import { WorkerInternalMeshData } from "./DataStructures/WorkerInternalMeshData";
 import { TerrainHeightMap } from "../Generation/TerrainHeightMap";
-import { DistantTerrainGenerator } from "./DistantTerrainGenerator";
+import { DistantTerrainGenerator } from "../Generation/DistanTerrain/DistantTerrainGenerator";
 
 /**
  * A wrapper around a TypedArray that allows it to be resized dynamically.

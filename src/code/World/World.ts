@@ -4,7 +4,7 @@ import { ChunkMesher } from "./Chunk/ChunckMesher";
 import { SettingParams } from "./SettingParams";
 import { WorldStorage } from "./WorldStorage";
 import { GenerationParams } from "./Generation/NoiseAndParameters/GenerationParams";
-import { DistantTerrain } from "./Chunk/DistantTerrian";
+import { DistantTerrain } from "./Generation/DistanTerrain/DistantTerrian";
 
 export class World {
   private static distantTerrain: DistantTerrain;

@@ -33,14 +33,14 @@ const FOREST: Biome = {
   undergroundBlock: 19,
   stoneBlock: 1,
   canSpawnTrees: true,
-  treeDensity: 0.05,
+  treeDensity: 0.06,
   beachBlock: 3,
   seafloorBlock: 46,
   terrainScale: GenerationParams.TERRAIN_SCALE,
   persistence: 0.31,
-  heightExponent: 1.2,
-  terrainHeightBase: 20,
-  terrainHeightAmplitude: 333,
+  heightExponent: 0.8,
+  terrainHeightBase: 42,
+  terrainHeightAmplitude: 222,
   getTreeForBlock(blockId: number): TreeDefinition | null {
     if (blockId === this.topBlock) {
       return OAK_TREE;
@@ -57,11 +57,32 @@ const TUNDRA: Biome = {
   treeDensity: 0.0,
   beachBlock: 8, // Gravel
   seafloorBlock: 8, // Dirt
-  terrainScale: GenerationParams.TERRAIN_SCALE,
+  terrainScale: GenerationParams.TERRAIN_SCALE * 0.6,
   persistence: 0.26,
-  heightExponent: 1.5,
-  terrainHeightBase: 35,
-  terrainHeightAmplitude: 333,
+  heightExponent: 0.9,
+  terrainHeightBase: 60,
+  terrainHeightAmplitude: 300,
+  getTreeForBlock(blockId: number): TreeDefinition | null {
+    if (blockId === this.topBlock) {
+      return OAK_TREE; // Or a specific pine/spruce tree definition
+    }
+    return null;
+  },
+};
+const TUNDRA_MOUNTAINS: Biome = {
+  name: "Tundra_Mountains",
+  topBlock: 9,
+  undergroundBlock: 19,
+  stoneBlock: 1,
+  canSpawnTrees: true,
+  treeDensity: 0.0,
+  beachBlock: 8, // Gravel
+  seafloorBlock: 8, // Dirt
+  terrainScale: GenerationParams.TERRAIN_SCALE * 0.6,
+  persistence: 0.26,
+  heightExponent: 0.7,
+  terrainHeightBase: 50,
+  terrainHeightAmplitude: 600,
   getTreeForBlock(blockId: number): TreeDefinition | null {
     if (blockId === this.topBlock) {
       return OAK_TREE; // Or a specific pine/spruce tree definition
@@ -82,7 +103,7 @@ const DESERT: Biome = {
   terrainScale: GenerationParams.TERRAIN_SCALE,
   persistence: 0.35,
   heightExponent: 1.3,
-  terrainHeightBase: 22,
+  terrainHeightBase: 42,
   terrainHeightAmplitude: 289,
   getTreeForBlock(blockId: number): TreeDefinition | null {
     if (blockId === this.topBlock) {
@@ -104,7 +125,7 @@ const JUNGLE: Biome = {
   terrainScale: GenerationParams.TERRAIN_SCALE,
   persistence: 0.3,
   heightExponent: 1.22,
-  terrainHeightBase: 25,
+  terrainHeightBase: 42,
   terrainHeightAmplitude: 350,
   getTreeForBlock(blockId: number): TreeDefinition | null {
     if (blockId === this.topBlock) {
@@ -125,8 +146,8 @@ const PLAINS: Biome = {
   seafloorBlock: 46,
   terrainScale: GenerationParams.TERRAIN_SCALE,
   persistence: 0.25,
-  heightExponent: 1.0,
-  terrainHeightBase: 20,
+  heightExponent: 0.8,
+  terrainHeightBase: 42,
   terrainHeightAmplitude: 200,
   getTreeForBlock(blockId: number): TreeDefinition | null {
     if (blockId === this.topBlock) {
@@ -158,27 +179,108 @@ const SWAMP: Biome = {
   },
 };
 
-export function getBiomeFor(temperature: number, humidity: number): Biome {
+const SANDY_SHORE: Biome = {
+  name: "Sandy_Shore",
+  topBlock: 23, // Grass
+  undergroundBlock: 23, // Dirt/Mud
+  stoneBlock: 1,
+  canSpawnTrees: true,
+  treeDensity: 0.0,
+  beachBlock: 3, // Muddy beach
+  seafloorBlock: 3, // Muddy bottom
+  terrainScale: GenerationParams.TERRAIN_SCALE,
+  persistence: 0.33,
+  heightExponent: 1.0,
+  terrainHeightBase: GenerationParams.SEA_LEVEL + 5,
+  terrainHeightAmplitude: 2, // Low amplitude for flat terrain
+  getTreeForBlock(blockId: number): TreeDefinition | null {
+    return null;
+  },
+};
+const ROCKY_SHORE: Biome = {
+  name: "Rocky_Shore",
+  topBlock: 8, // Grass
+  undergroundBlock: 8, // Dirt/Mud
+  stoneBlock: 1,
+  canSpawnTrees: true,
+  treeDensity: 0.0,
+  beachBlock: 8, // Muddy beach
+  seafloorBlock: 8, // Muddy bottom
+  terrainScale: GenerationParams.TERRAIN_SCALE * 8,
+  persistence: 0.33,
+  heightExponent: 1.3,
+  terrainHeightBase: GenerationParams.SEA_LEVEL + 4,
+  terrainHeightAmplitude: 14, // Low amplitude for flat terrain
+  getTreeForBlock(blockId: number): TreeDefinition | null {
+    return null;
+  },
+};
+
+const OCEAN: Biome = {
+  name: "Ocean",
+  topBlock: 46, // Grass
+  undergroundBlock: 46, // Dirt/Mud
+  stoneBlock: 1,
+  canSpawnTrees: true,
+  treeDensity: 0.0,
+  beachBlock: 3, // Muddy beach
+  seafloorBlock: 57, // Muddy bottom
+  terrainScale: GenerationParams.TERRAIN_SCALE * 16,
+  persistence: 0.3,
+  heightExponent: 1.0,
+  terrainHeightBase: GenerationParams.SEA_LEVEL - 16, // Near sea level (42) to create pools
+  terrainHeightAmplitude: 4, // Low amplitude for flat terrain
+  getTreeForBlock(blockId: number): TreeDefinition | null {
+    return null;
+  },
+};
+
+export function getBiomeFor(
+  temperature: number,
+  humidity: number,
+  continentalness: number
+): Biome {
+  if (continentalness < -0.25) {
+    return OCEAN;
+  }
+
+  if (continentalness > -0.25 && continentalness < -0.1) {
+    if (temperature < 0.15) {
+      return ROCKY_SHORE; // Temperate and humid
+    }
+    return SWAMP;
+  }
+
+  if (continentalness > 0.8) {
+    return TUNDRA_MOUNTAINS;
+  }
+
+  // Temperate regions (0.3 <= temperature <= 0.7)
+  if (humidity > 0.45) {
+    if (temperature < 0.15) {
+      return ROCKY_SHORE; // Temperate and humid
+    }
+  }
   // Tundra: Cold regions
-  if (temperature < 0.25) {
-    return TUNDRA;
+  if (temperature < 0.45) {
+    if (humidity < 0.5) {
+      return TUNDRA; // Cold and dry
+    } else {
+      return TUNDRA_MOUNTAINS; // Cold and wet
+    }
   }
 
   // Hot regions
-  if (temperature > 0.75) {
-    if (humidity < 0.5) {
+  if (temperature > 0.55) {
+    if (humidity < 0.25) {
       return DESERT; // Hot and dry
     } else {
       return JUNGLE; // Hot and wet
     }
   }
 
-  // Temperate regions (0.3 <= temperature <= 0.7)
-  if (humidity < 0.2) {
-    return PLAINS; // Temperate and relatively dry
-  } else if (humidity > 0.7) {
-    return SWAMP; // Temperate and very wet
-  } else {
-    return FOREST; // Temperate and humid
+  if (humidity < 0.3) {
+    return PLAINS;
   }
+  return FOREST;
 }

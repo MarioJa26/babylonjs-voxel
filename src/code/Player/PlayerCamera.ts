@@ -15,7 +15,7 @@ export class PlayerCamera {
   public mouseSensitivity = 0.003;
   // Zoom values
   readonly #minZoom = 0.01;
-  readonly #maxZoom = 400;
+  readonly #maxZoom = 10000;
   readonly #zoomSpeed = 20.333;
 
   constructor(playerCamera: FreeCamera, private scene: Scene) {
@@ -23,6 +23,7 @@ export class PlayerCamera {
 
     playerCamera.fov = SettingParams.CAMERA_FOV * (Math.PI / 180);
     playerCamera.minZ = 0.1;
+    playerCamera.maxZ = 100000;
   }
 
   public moveWithPlayer(characterPosition: Vector3): void {

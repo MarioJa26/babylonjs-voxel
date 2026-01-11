@@ -1,5 +1,5 @@
-import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
-import { TerrainHeightMap } from "../Generation/TerrainHeightMap";
+import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
+import { TerrainHeightMap } from "../TerrainHeightMap";
 
 export class DistantTerrainGenerator {
   public static generate(
@@ -106,6 +106,11 @@ export class DistantTerrainGenerator {
               g = 200;
               b = 200;
               break;
+            case "Tundra_Mountains":
+              r = 128;
+              g = 128;
+              b = 200;
+              break;
             case "Desert":
               r = 237;
               g = 213;
@@ -117,19 +122,34 @@ export class DistantTerrainGenerator {
               b = 41;
               break;
             case "Plains":
-              r = 141;
-              g = 182;
-              b = 104;
+              r = 120;
+              g = 100;
+              b = 70;
               break;
             case "Swamp":
               r = 47;
               g = 79;
               b = 79;
               break;
+            case "Ocean":
+              r = 0;
+              g = 0;
+              b = 222;
+              break;
+            case "Sandy_Shore":
+              r = 255;
+              g = 255;
+              b = 0;
+              break;
+            case "Rocky_Shore":
+              r = 128;
+              g = 128;
+              b = 128;
+              break;
             default:
-              r = 100;
-              g = 100;
-              b = 100;
+              r = 64;
+              g = 0;
+              b = 0;
               break;
           }
 

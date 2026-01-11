@@ -5,10 +5,10 @@ import {
   Color3,
   VertexBuffer,
 } from "@babylonjs/core";
-import { SettingParams } from "../SettingParams";
+import { SettingParams } from "../../SettingParams";
 import { Map1 } from "@/code/Maps/Map1";
-import { Chunk } from "./Chunk";
-import { ChunkWorkerPool } from "./ChunkWorkerPool";
+import { Chunk } from "../../Chunk/Chunk";
+import { ChunkWorkerPool } from "../../Chunk/ChunkWorkerPool";
 
 export class DistantTerrain {
   private mesh: Mesh;

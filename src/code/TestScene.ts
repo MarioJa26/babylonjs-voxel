@@ -58,7 +58,7 @@ export class TestScene {
     const scene = new Scene(this.engine);
 
     // This creates and positions a free camera (non-mesh)
-    const camera = new FreeCamera("camera1", new Vector3(0, 5, -5), scene);
+    const camera = new FreeCamera("camera1", Vector3.Zero(), scene);
 
     // Initialize Havok plugin
     TestScene.hk = new HavokPlugin(false, await HavokPhysics());
