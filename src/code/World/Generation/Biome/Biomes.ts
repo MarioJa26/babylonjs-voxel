@@ -144,12 +144,12 @@ const SWAMP: Biome = {
   canSpawnTrees: true,
   treeDensity: 0.08,
   beachBlock: 8, // Muddy beach
-  seafloorBlock: 8, // Muddy bottom
-  terrainScale: GenerationParams.TERRAIN_SCALE,
+  seafloorBlock: 57, // Muddy bottom
+  terrainScale: GenerationParams.TERRAIN_SCALE * 16,
   persistence: 0.33,
-  heightExponent: 1.0,
-  terrainHeightBase: GenerationParams.SEA_LEVEL, // Near sea level (42) to create pools
-  terrainHeightAmplitude: 30, // Low amplitude for flat terrain
+  heightExponent: 1.55,
+  terrainHeightBase: GenerationParams.SEA_LEVEL + 5, // Near sea level (42) to create pools
+  terrainHeightAmplitude: 14, // Low amplitude for flat terrain
   getTreeForBlock(blockId: number): TreeDefinition | null {
     if (blockId === this.topBlock) {
       return OAK_TREE;

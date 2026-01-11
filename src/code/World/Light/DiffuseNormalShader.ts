@@ -140,7 +140,7 @@ void main(void) {
         float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), 16.0);
         vec3 specular = vec3(0.3) * spec; // Specular color is white
 
-        float aoFactor = 1.0 - vAO * 0.2; // 0->1, 1->0.85, 2->0.7, 3->0.55
+        float aoFactor = 1.0 - vAO * 0.23; // 0->1, 1->0.85, 2->0.7, 3->0.55
         
         // --- Light Coloring for Testing ---
         vec3 skyColor = vec3(0.8, 0.8, 0.8); // Blue-ish for sky

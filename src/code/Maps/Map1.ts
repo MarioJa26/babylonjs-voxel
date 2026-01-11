@@ -271,11 +271,12 @@ export class Map1 {
     // Skybox
     const skybox = MeshBuilder.CreateSphere(
       "skyBox",
-      { diameter: 4225.11, segments: 1 },
+      { diameter: 13000.11, segments: 1 },
       Map1.mainScene
     );
     skybox.isPickable = false;
     skybox.infiniteDistance = true;
+    skybox.ignoreCameraMaxZ = true;
 
     // Register the new sky shader
     Effect.ShadersStore["skyVertexShader"] = SkyShader.skyVertexShader;

@@ -4,8 +4,11 @@ import { ChunkMesher } from "./Chunk/ChunckMesher";
 import { SettingParams } from "./SettingParams";
 import { WorldStorage } from "./WorldStorage";
 import { GenerationParams } from "./Generation/NoiseAndParameters/GenerationParams";
+import { DistantTerrain } from "./Chunk/DistantTerrian";
 
 export class World {
+  private static distantTerrain: DistantTerrain;
+
   /*
   constructor() {
     World.updateChunksAround(0, 0, 0, 2);
@@ -24,8 +27,12 @@ export class World {
     renderDistance = SettingParams.RENDER_DISTANCE,
     verticalRadius = SettingParams.VERTICAL_RENDER_DISTANCE
   ) {
-    const chunksToLoad: { x: number; y: number; z: number; distSq: number }[] =
-      [];
+    if (!this.distantTerrain) {
+      this.distantTerrain = new DistantTerrain();
+    }
+    this.distantTerrain.update(chunkX, chunkZ);
+
+    const chunksToLoadFromDB: Chunk[] = [];
     const chunksToGenerate: Chunk[] = [];
 
     // 1. Collect all potential chunk coordinates and their distances
@@ -41,29 +48,26 @@ export class World {
           z <= chunkZ + renderDistance;
           z++
         ) {
-          const key = Chunk.packCoords(x, y, z);
-          if (Chunk.chunkInstances.has(key)) continue;
+          let chunk = Chunk.getChunk(x, y, z);
+          if (!chunk) {
+            chunk = new Chunk(x, y, z);
+          }
 
-          const dx = x - chunkX;
-          const dz = z - chunkZ;
-          const distSq = dx * dx + dz * dz + y;
-          chunksToLoad.push({ x, y, z, distSq });
+          // Close chunk: Needs full terrain
+          if (!chunk.isLoaded && !chunk.isTerrainScheduled) {
+            chunksToLoadFromDB.push(chunk);
+            chunk.isTerrainScheduled = true;
+          }
         }
       }
     }
 
-    // 2. Sort chunks by distance (nearest first)
-    chunksToLoad.sort((a, b) => a.distSq - b.distSq);
-
-    // 3. Create all chunk instances first
-    const newChunks = chunksToLoad.map(({ x, y, z }) => new Chunk(x, y, z));
-
     // 4. Fire off a single batch DB load request
-    const chunkIdsToLoad = newChunks.map((chunk) => chunk.id);
+    const chunkIdsToLoad = chunksToLoadFromDB.map((chunk) => chunk.id);
     const loadedDataMap = await WorldStorage.loadChunks(chunkIdsToLoad);
 
     // 5. Process the results
-    for (const chunk of newChunks) {
+    for (const chunk of chunksToLoadFromDB) {
       const savedData = loadedDataMap.get(chunk.id);
       if (savedData) {
         // Populate block data without triggering an automatic remesh

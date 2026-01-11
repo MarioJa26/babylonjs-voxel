@@ -63,88 +63,11 @@ export class TerrainHeightMap {
     };
   }
 
-  private static getBlendedParams(x: number, z: number) {
-    const SAMPLE_DISTANCE = 32;
-
-    const x0 = Math.floor(x / SAMPLE_DISTANCE) * SAMPLE_DISTANCE;
-    const z0 = Math.floor(z / SAMPLE_DISTANCE) * SAMPLE_DISTANCE;
-    const x1 = x0 + SAMPLE_DISTANCE;
-    const z1 = z0 + SAMPLE_DISTANCE;
-
-    const tx = (x - x0) / SAMPLE_DISTANCE;
-    const tz = (z - z0) / SAMPLE_DISTANCE;
-
-    const p00 = this.getBiomeParams(x0, z0);
-    const p10 = this.getBiomeParams(x1, z0);
-    const p01 = this.getBiomeParams(x0, z1);
-    const p11 = this.getBiomeParams(x1, z1);
-
-    const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
-
-    const interpolate = (
-      v00: number,
-      v10: number,
-      v01: number,
-      v11: number
-    ) => {
-      const top = lerp(v00, v10, tx);
-      const bottom = lerp(v01, v11, tx);
-      return lerp(top, bottom, tz);
-    };
-
-    return {
-      scale: interpolate(p00.scale, p10.scale, p01.scale, p11.scale),
-      octaves: interpolate(p00.octaves, p10.octaves, p01.octaves, p11.octaves),
-      persistence: interpolate(
-        p00.persistence,
-        p10.persistence,
-        p01.persistence,
-        p11.persistence
-      ),
-      lacunarity: interpolate(
-        p00.lacunarity,
-        p10.lacunarity,
-        p01.lacunarity,
-        p11.lacunarity
-      ),
-      heightExponent: interpolate(
-        p00.heightExponent,
-        p10.heightExponent,
-        p01.heightExponent,
-        p11.heightExponent
-      ),
-      terrainHeightBase: interpolate(
-        p00.terrainHeightBase,
-        p10.terrainHeightBase,
-        p01.terrainHeightBase,
-        p11.terrainHeightBase
-      ),
-      terrainHeightAmplitude: interpolate(
-        p00.terrainHeightAmplitude,
-        p10.terrainHeightAmplitude,
-        p01.terrainHeightAmplitude,
-        p11.terrainHeightAmplitude
-      ),
-    };
-  }
-
-  public static getOctaveNoise(x: number, z: number, biome?: Biome): number {
-    // OTG-Style: Allow biomes to override noise parameters
-    const params = biome
-      ? {
-          scale: biome.terrainScale ?? GenerationParams.TERRAIN_SCALE,
-          octaves: biome.octaves ?? GenerationParams.OCTAVES,
-          persistence: biome.persistence ?? GenerationParams.PERSISTENCE,
-          lacunarity: biome.lacunarity ?? GenerationParams.LACUNARITY,
-          heightExponent: biome.heightExponent ?? 1.0,
-          terrainHeightBase:
-            biome.terrainHeightBase ?? GenerationParams.TERRAIN_HEIGHT_BASE,
-          terrainHeightAmplitude:
-            biome.terrainHeightAmplitude ??
-            GenerationParams.TERRAIN_HEIGHT_AMPLITUDE,
-        }
-      : this.getBlendedParams(x, z);
-
+  private static computeNoiseFromParams(
+    x: number,
+    z: number,
+    params: ReturnType<typeof TerrainHeightMap.getBiomeParams>
+  ): number {
     let total = 0;
     let frequency = params.scale;
     let amplitude = 1;
@@ -167,6 +90,51 @@ export class TerrainHeightMap {
       params.terrainHeightBase +
       normalizedHeight * params.terrainHeightAmplitude
     );
+  }
+
+  public static getOctaveNoise(x: number, z: number, biome?: Biome): number {
+    if (biome) {
+      const params = {
+        scale: biome.terrainScale ?? GenerationParams.TERRAIN_SCALE,
+        octaves: biome.octaves ?? GenerationParams.OCTAVES,
+        persistence: biome.persistence ?? GenerationParams.PERSISTENCE,
+        lacunarity: biome.lacunarity ?? GenerationParams.LACUNARITY,
+        heightExponent: biome.heightExponent ?? 1.0,
+        terrainHeightBase:
+          biome.terrainHeightBase ?? GenerationParams.TERRAIN_HEIGHT_BASE,
+        terrainHeightAmplitude:
+          biome.terrainHeightAmplitude ??
+          GenerationParams.TERRAIN_HEIGHT_AMPLITUDE,
+      };
+      return this.computeNoiseFromParams(x, z, params);
+    }
+
+    const SAMPLE_DISTANCE = 32;
+
+    const x0 = Math.floor(x / SAMPLE_DISTANCE) * SAMPLE_DISTANCE;
+    const z0 = Math.floor(z / SAMPLE_DISTANCE) * SAMPLE_DISTANCE;
+    const x1 = x0 + SAMPLE_DISTANCE;
+    const z1 = z0 + SAMPLE_DISTANCE;
+
+    const tx = (x - x0) / SAMPLE_DISTANCE;
+    const tz = (z - z0) / SAMPLE_DISTANCE;
+
+    const p00 = this.getBiomeParams(x0, z0);
+    const p10 = this.getBiomeParams(x1, z0);
+    const p01 = this.getBiomeParams(x0, z1);
+    const p11 = this.getBiomeParams(x1, z1);
+
+    // Compute height for (x,z) using each corner's definition
+    const h00 = this.computeNoiseFromParams(x, z, p00);
+    const h10 = this.computeNoiseFromParams(x, z, p10);
+    const h01 = this.computeNoiseFromParams(x, z, p01);
+    const h11 = this.computeNoiseFromParams(x, z, p11);
+
+    // Bilinear interpolation of heights
+    const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+    const top = lerp(h00, h10, tx);
+    const bottom = lerp(h01, h11, tx);
+    return lerp(top, bottom, tz);
   }
 
   public static getFinalTerrainHeight(

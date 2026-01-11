@@ -20,7 +20,8 @@ export class Chunk {
   public isModified = false;
 
   public isDirty = false;
-  public isLoaded = true;
+  public isLoaded = false;
+  public isTerrainScheduled = false;
   public readonly id: bigint;
   private remeshTimeout: number | null = null;
   private isHighPriorityRemesh = false;
@@ -47,10 +48,8 @@ export class Chunk {
     this.#chunkY = chunkY;
     this.#chunkZ = chunkZ;
     this.id = Chunk.packCoords(chunkX, chunkY, chunkZ);
-    this.block_array = new Uint8Array(Chunk.SIZE ** 3);
-    this.block_array.fill(0);
-    this.light_array = new Uint8Array(Chunk.SIZE ** 3);
-    this.light_array.fill(0);
+    this.block_array = new Uint8Array(0);
+    this.light_array = new Uint8Array(0);
     Chunk.chunkInstances.set(this.id, this);
   }
 
@@ -71,6 +70,7 @@ export class Chunk {
   ): void {
     this.block_array = block_array;
     this.isLoaded = true;
+    this.isTerrainScheduled = false; // Reset flag
     if (light_array) {
       this.light_array = light_array;
     } else {
@@ -96,6 +96,7 @@ export class Chunk {
     this.block_array = new Uint8Array(0);
     this.light_array = new Uint8Array(0);
     this.isLoaded = false;
+    this.isTerrainScheduled = false;
     this.isModified = false; // No longer considered modified as its data is gone.
 
     // Also clear intermediate mesh data to free up more memory
@@ -599,5 +600,6 @@ export class Chunk {
     this.block_array = new Uint8Array(0);
     this.light_array = new Uint8Array(0);
     this.isLoaded = false;
+    this.isTerrainScheduled = false;
   }
 }

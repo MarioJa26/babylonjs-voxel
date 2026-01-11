@@ -14,3 +14,13 @@ export type TerrainGeneratedMessage = {
   block_array: Uint8Array;
   light_array: Uint8Array;
 };
+
+export interface DistantTerrainGeneratedMessage {
+  type: "distant-terrain-generated";
+  chunkId: bigint;
+  centerChunkX: number;
+  centerChunkZ: number;
+  positions: Int16Array;
+  colors: Uint8Array;
+  normals: Uint8Array;
+}

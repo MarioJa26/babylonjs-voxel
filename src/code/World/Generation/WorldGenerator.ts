@@ -93,8 +93,8 @@ export class WorldGenerator {
     );
 
     this.surfaceGenerator.generate(chunkX, chunkY, chunkZ, biome, placeBlock); // Generates solid terrain first
-    if (chunkY < 0)
-      this.undergroundGenerator.generate(chunkX, chunkY, chunkZ, placeBlock); // Then carves caves into it
+    // if (chunkY < 0)
+    //  this.undergroundGenerator.generate(chunkX, chunkY, chunkZ, placeBlock); // Then carves caves into it
     this.lightGenerator.generate(chunkX, chunkY, chunkZ, biome, blocks, light);
 
     return { blocks, light };

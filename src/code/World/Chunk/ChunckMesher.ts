@@ -8,6 +8,8 @@ import {
   Material,
   DepthRenderer,
   Vector2,
+  StandardMaterial,
+  Color3,
 } from "@babylonjs/core";
 import "@babylonjs/core/Rendering/depthRendererSceneComponent"; // For getDepthRenderer
 import { Map1 } from "@/code/Maps/Map1";
@@ -27,6 +29,7 @@ export class ChunkMesher {
   private static waterMaterial: Material | null = null;
   private static glassMaterial: Material | null = null;
   private static depthRenderer: DepthRenderer | null = null;
+  private static heightMapMaterial: StandardMaterial | null = null;
 
   static initAtlas() {
     if (!ChunkMesher.atlasMaterial) {

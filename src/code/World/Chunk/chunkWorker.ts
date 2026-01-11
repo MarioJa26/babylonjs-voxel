@@ -49,4 +49,41 @@ export class ChunkWorker {
       ...GenerationParams,
     });
   }
+
+  public postGenerateDistantTerrain(
+    centerChunkX: number,
+    centerChunkZ: number,
+    radius: number,
+    renderDistance: number,
+    gridStep: number,
+    oldData?: {
+      positions: Int16Array;
+      colors: Uint8Array;
+      normals: Uint8Array;
+    },
+    oldCenterChunkX?: number,
+    oldCenterChunkZ?: number
+  ): void {
+    const transferables: Transferable[] = [];
+    if (oldData) {
+      transferables.push(oldData.positions.buffer);
+      transferables.push(oldData.colors.buffer);
+      transferables.push(oldData.normals.buffer);
+    }
+
+    this.worker.postMessage(
+      {
+        type: "generate-distant-terrain",
+        centerChunkX,
+        centerChunkZ,
+        radius,
+        renderDistance,
+        gridStep,
+        oldData,
+        oldCenterChunkX,
+        oldCenterChunkZ,
+      },
+      transferables
+    );
+  }
 }
