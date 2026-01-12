@@ -1,52 +1,67 @@
-import { createNoise3D } from "simplex-noise";
+import { createNoise3D, createNoise2D } from "simplex-noise";
 import Alea from "alea";
 import {
   GenerationParams,
   GenerationParamsType,
 } from "./NoiseAndParameters/GenerationParams";
-import { TerrainHeightMap } from "./TerrainHeightMap";
+import { Spline } from "./NoiseAndParameters/Spline";
 
 export class RiverGenerator {
   private params: GenerationParamsType;
-  private readonly TUNNEL_RADIUS = 7;
+  private readonly TUNNEL_RADIUS = 14;
   private readonly TUNNEL_CENTER_Y: number;
-  private readonly RIVER_WIDTH_THRESHOLD = 0.06;
+
+  private riverNoise: ReturnType<typeof createNoise2D>;
   private wallNoise: ReturnType<typeof createNoise3D>;
+  private riverSpline: Spline;
+  private riverDepthSpline: Spline;
 
   constructor(params: GenerationParamsType) {
     this.params = params;
-    this.TUNNEL_CENTER_Y = this.params.SEA_LEVEL + 1;
+    this.TUNNEL_CENTER_Y = this.params.SEA_LEVEL;
     const prng = Alea(this.params.SEED + "_river_walls");
     this.wallNoise = createNoise3D(prng);
-  }
-
-  public getRiverNoise(worldX: number, worldZ: number): number {
-    return RiverGenerator.getRiverNoiseValue(worldX, worldZ);
+    this.riverNoise = createNoise2D(prng);
+    this.riverSpline = new Spline([
+      { t: 0, v: this.TUNNEL_RADIUS },
+      { t: 0.04, v: this.TUNNEL_RADIUS * 0.9 },
+      { t: 0.08, v: this.TUNNEL_RADIUS * 0.5 },
+      { t: 0.1, v: 0 },
+    ]);
+    this.riverDepthSpline = new Spline([
+      { t: 0, v: -25 },
+      { t: 0.02, v: -20 },
+      { t: 0.1, v: 0 },
+      { t: 1.0, v: 0 },
+    ]);
   }
 
   public isRiver(
     worldX: number,
+    worldY: number,
     worldZ: number,
-    riverNoise: number,
-    worldY: number
+    riverNoise: number
   ): boolean {
-    if (riverNoise < this.RIVER_WIDTH_THRESHOLD) {
-      const normalizedX = riverNoise / this.RIVER_WIDTH_THRESHOLD;
-      const normalizedY = (worldY - this.TUNNEL_CENTER_Y) / this.TUNNEL_RADIUS;
+    const radiusAtLocation = this.riverSpline.getValue(Math.abs(riverNoise));
 
-      const noise = this.wallNoise(worldX * 0.1, worldY * 0.1, worldZ * 0.1);
-      if (normalizedX * normalizedX + normalizedY * normalizedY <= 1 + noise) {
-        return true;
-      }
+    if (radiusAtLocation <= 0) return false;
+    const dy = worldY - this.TUNNEL_CENTER_Y;
+    const noise = this.wallNoise(worldX * 0.1, worldY * 0.1, worldZ * 0.1);
+
+    if (Math.abs(dy) <= radiusAtLocation + noise) {
+      return true;
     }
     return false;
   }
 
-  public static getRiverNoiseValue(worldX: number, worldZ: number): number {
-    const riverScale = GenerationParams.RIVER_SCALE;
-    return TerrainHeightMap.temperatureNoise(
-      worldX * riverScale,
-      worldZ * riverScale
+  public getRiverNoise(x: number, z: number): number {
+    return this.riverNoise(
+      x * GenerationParams.RIVER_SCALE,
+      z * GenerationParams.RIVER_SCALE
     );
+  }
+
+  public getRiverDepth(riverValue: number): number {
+    return this.riverDepthSpline.getValue(riverValue);
   }
 }

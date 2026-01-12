@@ -179,6 +179,28 @@ const SWAMP: Biome = {
   },
 };
 
+const GROVE: Biome = {
+  name: "Grove",
+  topBlock: 14, // Grass
+  undergroundBlock: 8, // Dirt/Mud
+  stoneBlock: 1,
+  canSpawnTrees: true,
+  treeDensity: 0.08,
+  beachBlock: 57, // Muddy beach
+  seafloorBlock: 14, // Muddy bottom
+  terrainScale: GenerationParams.TERRAIN_SCALE * 16,
+  persistence: 0.33,
+  heightExponent: 1.55,
+  terrainHeightBase: GenerationParams.SEA_LEVEL + 5, // Near sea level (42) to create pools
+  terrainHeightAmplitude: 14, // Low amplitude for flat terrain
+  getTreeForBlock(blockId: number): TreeDefinition | null {
+    if (blockId === this.topBlock) {
+      return OAK_TREE;
+    }
+    return null;
+  },
+};
+
 const SANDY_SHORE: Biome = {
   name: "Sandy_Shore",
   topBlock: 23, // Grass
@@ -235,23 +257,46 @@ const OCEAN: Biome = {
   },
 };
 
+const RIVER: Biome = {
+  name: "River",
+  topBlock: 8, // Dirt
+  undergroundBlock: 8,
+  stoneBlock: 1,
+  canSpawnTrees: false,
+  treeDensity: 0.0,
+  beachBlock: 8,
+  seafloorBlock: 8,
+  terrainScale: GenerationParams.TERRAIN_SCALE,
+  persistence: 0.3,
+  heightExponent: 1.0,
+  terrainHeightBase: GenerationParams.SEA_LEVEL - 5,
+  terrainHeightAmplitude: 5,
+  getTreeForBlock(blockId: number): TreeDefinition | null {
+    return null;
+  },
+};
+
 export function getBiomeFor(
   temperature: number,
   humidity: number,
-  continentalness: number
+  continentalness: number,
+  river: number
 ): Biome {
-  if (continentalness < -0.25) {
+  if (river < 0.1 && continentalness > -0.28 && continentalness < 0.67) {
+    return RIVER;
+  }
+  if (continentalness < -0.3) {
     return OCEAN;
   }
 
-  if (continentalness > -0.25 && continentalness < -0.1) {
+  if (continentalness > -0.3 && continentalness < -0.1) {
     if (temperature < 0.15) {
       return ROCKY_SHORE; // Temperate and humid
     }
-    return SWAMP;
+    return GROVE;
   }
 
-  if (continentalness > 0.8) {
+  if (continentalness > 0.75) {
     return TUNDRA_MOUNTAINS;
   }
 

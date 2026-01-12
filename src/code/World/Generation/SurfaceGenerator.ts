@@ -1,5 +1,8 @@
 import { createNoise2D } from "simplex-noise";
-import { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
+import {
+  GenerationParams,
+  GenerationParamsType,
+} from "./NoiseAndParameters/GenerationParams";
 import { Biome } from "./Biome/Biomes";
 import { TerrainHeightMap } from "./TerrainHeightMap";
 import { RiverGenerator } from "./RiverGeneration";
@@ -79,6 +82,7 @@ export class SurfaceGenerator {
         // Pass undefined for biome to allow parameter blending/smoothing
         const terrainHeight = this.getFinalTerrainHeight(worldX, worldZ);
         const riverNoise = this.riverGenerator.getRiverNoise(worldX, worldZ);
+        const tunnelHeight = GenerationParams.SEA_LEVEL;
 
         // Iterate through the Y column for this chunk
         for (let localY = 0; localY < CHUNK_SIZE; localY++) {
@@ -86,9 +90,9 @@ export class SurfaceGenerator {
 
           const isTunnel = this.riverGenerator.isRiver(
             worldX,
+            worldY,
             worldZ,
-            riverNoise,
-            worldY
+            riverNoise
           );
 
           if (worldY > terrainHeight) {
@@ -100,7 +104,7 @@ export class SurfaceGenerator {
           }
 
           if (isTunnel) {
-            if (worldY <= SEA_LEVEL) {
+            if (worldY <= tunnelHeight) {
               placeBlock(worldX, worldY, worldZ, 30, true); // Water
             } else {
               placeBlock(worldX, worldY, worldZ, 0, true); // Air
@@ -111,12 +115,7 @@ export class SurfaceGenerator {
           // It's a solid cell, place the appropriate terrain block
           let blockId = 29; // Use block 29 for all underground stone
           if (worldY === terrainHeight) {
-            const isBeach = this.isBeachLocation(
-              worldX,
-              worldZ,
-              terrainHeight,
-              biome
-            );
+            const isBeach = this.isBeachLocation(worldX, worldZ, terrainHeight);
             if (terrainHeight < SEA_LEVEL - 1) {
               blockId = biome.seafloorBlock;
             } else if (isBeach) {
@@ -165,21 +164,11 @@ export class SurfaceGenerator {
         if (treeChanceRoll > biome.treeDensity) continue;
 
         if (biome.canSpawnTrees) {
-          const terrainHeight = this.getFinalTerrainHeight(
-            worldX,
-            worldZ,
-            biome
-          );
+          const terrainHeight = this.getFinalTerrainHeight(worldX, worldZ);
 
           const riverNoise = this.riverGenerator.getRiverNoise(worldX, worldZ);
-          if (
-            this.riverGenerator.isRiver(
-              worldX,
-              worldZ,
-              riverNoise,
-              terrainHeight
-            )
-          )
+          const worldY = chunkY * this.chunk_size;
+          if (this.riverGenerator.isRiver(worldX, worldY, worldZ, riverNoise))
             continue;
 
           const topBlockId = this.getBlockTypeAtWorldCoord(
@@ -232,19 +221,14 @@ export class SurfaceGenerator {
     }
   }
 
-  private getFinalTerrainHeight(
-    worldX: number,
-    worldZ: number,
-    biome?: Biome
-  ): number {
-    return TerrainHeightMap.getFinalTerrainHeight(worldX, worldZ, biome);
+  private getFinalTerrainHeight(worldX: number, worldZ: number): number {
+    return TerrainHeightMap.getFinalTerrainHeight(worldX, worldZ);
   }
 
   private isBeachLocation(
     worldX: number,
     worldZ: number,
-    terrainHeight: number,
-    biome: Biome
+    terrainHeight: number
   ): boolean {
     const { SEA_LEVEL } = this.params;
     const isAtBeachLevel =
@@ -255,10 +239,10 @@ export class SurfaceGenerator {
     }
 
     const isAdjacentToWater =
-      this.isNearWater(worldX + 1, worldZ, biome) ||
-      this.isNearWater(worldX - 1, worldZ, biome) ||
-      this.isNearWater(worldX, worldZ + 1, biome) ||
-      this.isNearWater(worldX, worldZ - 1, biome);
+      this.isNearWater(worldX + 1, worldZ) ||
+      this.isNearWater(worldX - 1, worldZ) ||
+      this.isNearWater(worldX, worldZ + 1) ||
+      this.isNearWater(worldX, worldZ - 1);
 
     return isAdjacentToWater;
   }
@@ -266,8 +250,8 @@ export class SurfaceGenerator {
   /**
    * Checks if a given coordinate is at or below sea level.
    */
-  private isNearWater(x: number, z: number, biome: Biome): boolean {
-    const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(x, z, biome);
+  private isNearWater(x: number, z: number): boolean {
+    const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(x, z);
     return terrainHeight <= this.params.SEA_LEVEL;
   }
 
@@ -289,12 +273,7 @@ export class SurfaceGenerator {
       return worldY <= SEA_LEVEL ? 30 : 0; // Water or Air
     } else if (worldY === terrainHeight) {
       // This logic should mirror generateTerrain to be accurate
-      const isBeach = this.isBeachLocation(
-        worldX,
-        worldZ,
-        terrainHeight,
-        biome
-      );
+      const isBeach = this.isBeachLocation(worldX, worldZ, terrainHeight);
       if (terrainHeight < SEA_LEVEL - 1) {
         return biome.seafloorBlock;
       } else if (isBeach) {

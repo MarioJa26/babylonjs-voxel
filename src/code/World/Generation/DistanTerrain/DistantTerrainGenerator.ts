@@ -146,6 +146,11 @@ export class DistantTerrainGenerator {
               g = 128;
               b = 128;
               break;
+            case "Grove":
+              r = 120;
+              g = 180;
+              b = 70;
+              break;
             default:
               r = 64;
               g = 0;
