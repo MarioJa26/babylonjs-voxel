@@ -22,9 +22,7 @@ import { WaterShader } from "../Light/WaterShader";
 import { GlassShader } from "../Light/GlassShader";
 
 export class ChunkMesher {
-  private static atlasMaterial: Material | null = null;
-  private static waterMaterial: Material | null = null;
-  private static glassMaterial: Material | null = null;
+  private static atlasMaterial: Material | null = null; // One material for all
 
   // Cache global uniforms
   private static cachedUniforms = {
@@ -73,7 +71,7 @@ export class ChunkMesher {
           scene,
           {
             vertex: "chunk",
-            fragment: "chunk",
+            fragment: "chunk", // Uses the unified shader
           },
           {
             attributes: [
@@ -84,6 +82,7 @@ export class ChunkMesher {
               "cornerId",
               "ao",
               "light",
+              "materialId", // This tells shader what to render
             ],
             uniforms: [
               "world",
@@ -92,14 +91,16 @@ export class ChunkMesher {
               "cameraPosition",
               "lightDirection",
               "screenSize",
+              "time",
             ],
             samplers: ["diffuseTexture", "normalTexture"],
           }
         );
         mat.backFaceCulling = true;
-        mat.setPrePassRenderer(scene.prePassRenderer!);
-        mat.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
+        mat.needAlphaBlending = () => true; // Enable for water/glass
+        mat.forceDepthWrite = true; // Required for transparency
 
+        mat.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
         mat.setTexture("diffuseTexture", diffuseAtlasTexture);
         if (normalAtlasTexture) {
           mat.setTexture("normalTexture", normalAtlasTexture);
@@ -108,111 +109,11 @@ export class ChunkMesher {
         mat.onBind = () => {
           const effect = mat.getEffect();
           if (effect) {
-            ChunkMesher.applyOpaqueUniforms(effect);
+            ChunkMesher.applyUniforms(effect); // Single function
           }
         };
 
         ChunkMesher.atlasMaterial = mat;
-
-        // Create a separate material for water meshes
-        const waterMat = new ShaderMaterial(
-          "waterChunkShaderMaterial",
-          scene,
-          {
-            vertex: "chunk", // Reuse the same vertex shader
-            fragment: "waterChunk", // Use our water fragment shader
-          },
-          {
-            attributes: [
-              "position",
-              "normal",
-              "uv2",
-              "uv3",
-              "cornerId",
-              "ao",
-              "light",
-            ],
-            uniforms: [
-              "world",
-              "worldViewProjection",
-              "atlasTileSize",
-              "cameraPosition",
-              "lightDirection",
-              "time", // Add time for animation,
-              "cameraPlanes", // for depth calculation
-              "screenSize", // for depth calculation
-            ],
-            samplers: ["diffuseTexture", "normalTexture"],
-          }
-        );
-
-        waterMat.backFaceCulling = false;
-        waterMat.forceDepthWrite = false;
-        waterMat.needAlphaBlending = () => true; // Enable alpha blending
-
-        waterMat.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
-        waterMat.setTexture("diffuseTexture", diffuseAtlasTexture);
-        if (normalAtlasTexture) {
-          waterMat.setTexture("normalTexture", normalAtlasTexture);
-        }
-
-        waterMat.onBind = () => {
-          const effect = waterMat.getEffect();
-          if (effect) {
-            ChunkMesher.applyWaterUniforms(effect);
-          }
-        };
-
-        ChunkMesher.waterMaterial = waterMat;
-
-        // Create a separate material for glass meshes
-        const glassMat = new ShaderMaterial(
-          "glassChunkShaderMaterial",
-          scene,
-          {
-            vertex: "chunk", // Reuse the same vertex shader
-            fragment: "glassChunk", // Use our glass fragment shader
-          },
-          {
-            attributes: [
-              "position",
-              "normal",
-              "uv2",
-              "uv3",
-              "cornerId",
-              "ao",
-              "light",
-            ],
-            uniforms: [
-              "world",
-              "worldViewProjection",
-              "atlasTileSize",
-              "cameraPosition",
-              "lightDirection",
-              "cameraPlanes",
-              "screenSize",
-            ],
-            samplers: ["diffuseTexture", "normalTexture", "skyboxTexture"],
-          }
-        );
-
-        glassMat.backFaceCulling = true;
-        // Enable depth writing so glass occludes other glass correctly.
-        glassMat.forceDepthWrite = true;
-        glassMat.needAlphaBlending = () => true; // Enable alpha blending for transparency.
-
-        glassMat.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
-        glassMat.setTexture("diffuseTexture", diffuseAtlasTexture);
-        if (normalAtlasTexture) {
-          glassMat.setTexture("normalTexture", normalAtlasTexture);
-        }
-        glassMat.onBind = () => {
-          const effect = glassMat.getEffect();
-          if (effect) {
-            ChunkMesher.applyGlassUniforms(effect);
-          }
-        };
-        ChunkMesher.glassMaterial = glassMat;
       } else {
         console.error("Texture Atlas not yet built or available!");
       }
@@ -225,77 +126,127 @@ export class ChunkMesher {
   ) {
     if (!chunk.isLoaded) return;
 
-    // Cache the raw mesh data on the chunk instance for future saving
-    // Optimization: Only keep raw data in memory if the chunk is modified and needs saving.
-    if (chunk.isModified) {
-      chunk.opaqueMeshData = meshData.opaque;
-      chunk.waterMeshData = meshData.water;
-      chunk.glassMeshData = meshData.glass;
-    } else {
-      // Only keep if actively being edited
-      chunk.opaqueMeshData = null;
-      chunk.waterMeshData = null;
-      chunk.glassMeshData = null;
-    }
-
-    // Dispose of old meshes
+    // Dispose of old mesh
     if (chunk.mesh) {
       chunk.mesh.dispose();
     }
-    if (chunk.waterMesh) {
-      chunk.waterMesh.dispose();
-    }
-    if (chunk.glassMesh) {
-      chunk.glassMesh.dispose();
-    }
+    chunk.waterMesh = null; // No longer needed
+    chunk.glassMesh = null; // No longer needed
 
-    // Handle opaque mesh
-    if (meshData.opaque.positions.length > 0) {
-      chunk.mesh = this.buildMesh(
+    // Merge all meshes into one
+    const mergedMesh = this.mergeMeshData(meshData);
+
+    if (mergedMesh.positions.length > 0) {
+      chunk.mesh = this.buildMergedMesh(
         chunk,
-        meshData.opaque,
-        "chunk_opaque",
+        mergedMesh,
+        "chunk_merged",
         this.atlasMaterial!
       );
     } else {
       chunk.mesh = null;
     }
+  }
 
-    // Handle water mesh
-    if (meshData.water?.positions.length > 0) {
-      chunk.waterMesh = this.buildMesh(
-        chunk,
-        meshData.water,
-        "chunk_water",
-        this.waterMaterial!
-      );
-      chunk.waterMesh.isPickable = false;
-    } else {
-      chunk.waterMesh = null;
+  private static mergeMeshData(meshData: {
+    opaque: MeshData;
+    water: MeshData;
+    glass: MeshData;
+  }): MeshData & { materialIds: Uint8Array } {
+    const opaque = meshData.opaque;
+    const water = meshData.water;
+    const glass = meshData.glass;
+
+    const totalVertices =
+      opaque.positions.length + water.positions.length + glass.positions.length;
+
+    const merged: any = {
+      positions: new Uint8Array(totalVertices),
+      normals: new Uint8Array(totalVertices),
+      uvs2: new Uint8Array((totalVertices / 3) * 2),
+      uvs3: new Uint8Array((totalVertices / 3) * 2),
+      cornerIds: new Uint8Array(totalVertices / 3),
+      ao: new Uint8Array(totalVertices / 3),
+      light: new Uint8Array(totalVertices / 3),
+      materialIds: new Uint8Array(totalVertices / 3), // 0=opaque, 1=water, 2=glass
+      indices: new Uint32Array(
+        opaque.indices.length + water.indices.length + glass.indices.length
+      ),
+    };
+
+    let vertexOffset = 0;
+    let indexOffset = 0;
+
+    // Merge opaque (materialId = 0)
+    this.mergeGeometry(
+      merged,
+      opaque,
+      vertexOffset,
+      indexOffset,
+      0 // materialId
+    );
+    vertexOffset += opaque.positions.length;
+    indexOffset += opaque.indices.length;
+
+    // Merge water (materialId = 1)
+    this.mergeGeometry(
+      merged,
+      water,
+      vertexOffset,
+      indexOffset,
+      1 // materialId
+    );
+    vertexOffset += water.positions.length;
+    indexOffset += water.indices.length;
+
+    // Merge glass (materialId = 2)
+    this.mergeGeometry(
+      merged,
+      glass,
+      vertexOffset,
+      indexOffset,
+      2 // materialId
+    );
+
+    return merged;
+  }
+
+  private static mergeGeometry(
+    merged: any,
+    source: MeshData,
+    vertexOffset: number,
+    indexOffset: number,
+    materialId: number
+  ) {
+    // Copy vertex data
+    merged.positions.set(source.positions, vertexOffset);
+    merged.normals.set(source.normals, vertexOffset);
+    merged.uvs2.set(source.uvs2, (vertexOffset / 3) * 2);
+    merged.uvs3.set(source.uvs3, (vertexOffset / 3) * 2);
+    merged.cornerIds.set(source.cornerIds, vertexOffset / 3);
+    merged.ao.set(source.ao, vertexOffset / 3);
+    merged.light.set(source.light, vertexOffset / 3);
+
+    // Set material IDs
+    const vertexCount = source.positions.length / 3;
+    for (let i = 0; i < vertexCount; i++) {
+      merged.materialIds[vertexOffset / 3 + i] = materialId;
     }
 
-    // Handle glass mesh
-    if (meshData.glass?.positions.length > 0) {
-      chunk.glassMesh = this.buildMesh(
-        chunk,
-        meshData.glass,
-        "chunk_glass",
-        this.glassMaterial!
-      );
-    } else {
-      chunk.glassMesh = null;
+    // Copy and offset indices
+    for (let i = 0; i < source.indices.length; i++) {
+      merged.indices[indexOffset + i] = source.indices[i] + vertexOffset / 3;
     }
   }
 
-  private static buildMesh(
+  private static buildMergedMesh(
     chunk: Chunk,
-    meshData: MeshData,
+    meshData: MeshData & { materialIds: Uint8Array },
     name: string,
     material: Material
   ): Mesh {
     const mesh = new Mesh(name, Map1.mainScene);
     mesh.renderingGroupId = 1;
-
     mesh.material = material;
 
     const engine = Map1.mainScene.getEngine();
@@ -410,11 +361,23 @@ export class ChunkMesher {
     );
     mesh.setVerticesBuffer(lightBuffer);
 
-    mesh.setIndices(meshData.indices);
+    // Add materialId buffer
+    const materialIdBuffer = new VertexBuffer(
+      engine,
+      meshData.materialIds,
+      "materialId",
+      false,
+      undefined,
+      1,
+      false,
+      undefined,
+      undefined,
+      VertexBuffer.UNSIGNED_BYTE,
+      false
+    );
+    mesh.setVerticesBuffer(materialIdBuffer);
 
-    if (mesh.material) {
-      (mesh.material as ShaderMaterial).wireframe = GlobalValues.DEBUG;
-    }
+    mesh.setIndices(meshData.indices);
 
     mesh.position.set(
       chunk.chunkX * Chunk.SIZE,
@@ -423,39 +386,23 @@ export class ChunkMesher {
     );
     mesh.freezeWorldMatrix();
 
-    // Create physics aggregate AFTER the world matrix is set.
-    if (name === "chunk_opaque" || name === "chunk_glass") {
-      new PhysicsAggregate(
-        mesh,
-        PhysicsShapeType.MESH,
-        { mass: 0 },
-        Map1.mainScene
-      );
-    }
+    // Single physics aggregate for the merged mesh
+    new PhysicsAggregate(
+      mesh,
+      PhysicsShapeType.MESH,
+      { mass: 0 },
+      Map1.mainScene
+    );
 
     return mesh;
   }
 
-  // Apply uniforms using cached values (no expensive operations)
-  private static applyOpaqueUniforms(effect: Effect) {
+  // Single uniform application function
+  private static applyUniforms(effect: Effect) {
     effect.setVector3("lightDirection", this.cachedUniforms.lightDirection);
     effect.setVector3("cameraPosition", this.cachedUniforms.cameraPosition);
-    effect.setVector2("screenSize", this.cachedUniforms.screenSize);
-  }
-
-  private static applyWaterUniforms(effect: Effect) {
-    effect.setVector3("lightDirection", this.cachedUniforms.lightDirection);
-    effect.setVector3("cameraPosition", this.cachedUniforms.cameraPosition);
-    effect.setVector2("cameraPlanes", this.cachedUniforms.cameraPlanes);
     effect.setVector2("screenSize", this.cachedUniforms.screenSize);
     effect.setFloat("time", this.cachedUniforms.time);
-  }
-
-  private static applyGlassUniforms(effect: Effect) {
-    effect.setVector3("lightDirection", this.cachedUniforms.lightDirection);
-    effect.setVector3("cameraPosition", this.cachedUniforms.cameraPosition);
-    effect.setVector2("cameraPlanes", this.cachedUniforms.cameraPlanes);
-    effect.setVector2("screenSize", this.cachedUniforms.screenSize);
   }
 
   static updateGlobalUniforms(frameId: number) {
