@@ -24,6 +24,7 @@ import { PlayerCamera } from "./Player/PlayerCamera";
 import { World } from "./World/World";
 import { MyConnection } from "./Server/MyConnection";
 import { GlobalValues } from "./World/GlobalValues";
+import { ChunkMesher } from "./World/Chunk/ChunckMesher";
 
 export class TestScene {
   document: Document;
@@ -33,6 +34,8 @@ export class TestScene {
   models!: AbstractMesh[];
   public readonly initPromise: Promise<void>;
   public static hk: HavokPlugin;
+  private frameCounter = 0;
+
   constructor(document: Document, private canvas: HTMLCanvasElement) {
     this.document = document;
     this.engine = new Engine(this.canvas);
@@ -43,6 +46,11 @@ export class TestScene {
     // this.CreateEnvironment2();
 
     this.engine.runRenderLoop(() => {
+      // Update shader uniforms ONCE per frame
+      this.frameCounter++;
+      ChunkMesher.updateGlobalUniforms(this.frameCounter);
+
+      // Then render the scene
       this.scene?.render();
     });
   }

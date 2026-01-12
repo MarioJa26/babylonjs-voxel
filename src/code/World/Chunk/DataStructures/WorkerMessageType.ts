@@ -15,12 +15,21 @@ export type TerrainGeneratedMessage = {
   light_array: Uint8Array;
 };
 
-export interface DistantTerrainGeneratedMessage {
+export type DistantTerrainGeneratedMessage = {
   type: "distant-terrain-generated";
-  chunkId: bigint;
   centerChunkX: number;
   centerChunkZ: number;
   positions: Int16Array;
   colors: Uint8Array;
-  normals: Uint8Array;
+};
+
+export interface DistantTerrainTask {
+  centerChunkX: number;
+  centerChunkZ: number;
+  radius: number;
+  renderDistance: number;
+  gridStep: number;
+  oldData?: { positions: Int16Array; colors: Uint8Array };
+  oldCenterChunkX?: number;
+  oldCenterChunkZ?: number;
 }

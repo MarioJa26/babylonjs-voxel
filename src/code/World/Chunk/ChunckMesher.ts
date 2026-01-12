@@ -8,6 +8,7 @@ import {
   Material,
   DepthRenderer,
   Vector2,
+  Vector3,
 } from "@babylonjs/core";
 import "@babylonjs/core/Rendering/depthRendererSceneComponent"; // For getDepthRenderer
 import { Map1 } from "@/code/Maps/Map1";
@@ -27,6 +28,17 @@ export class ChunkMesher {
   private static waterMaterial: Material | null = null;
   private static glassMaterial: Material | null = null;
   private static depthRenderer: DepthRenderer | null = null;
+
+  // Cache global uniforms
+  private static cachedUniforms = {
+    lightDirection: new Vector3(0, 1, 0),
+    cameraPosition: new Vector3(0, 0, 0),
+    screenSize: new Vector2(1920, 1080),
+    cameraPlanes: new Vector2(0.1, 1000),
+    time: 0,
+  };
+
+  private static lastUpdateFrame = -1;
 
   static initAtlas() {
     if (!ChunkMesher.atlasMaterial) {
@@ -99,18 +111,7 @@ export class ChunkMesher {
         mat.onBind = () => {
           const effect = mat.getEffect();
           if (effect) {
-            effect.setVector3("lightDirection", GlobalValues.skyLightDirection);
-            effect.setVector3(
-              "cameraPosition",
-              Map1.mainScene.activeCamera!.position
-            );
-            effect.setVector2(
-              "screenSize",
-              new Vector2(
-                Map1.mainScene.getEngine().getRenderWidth(),
-                Map1.mainScene.getEngine().getRenderHeight()
-              )
-            );
+            ChunkMesher.applyOpaqueUniforms(effect);
           }
         };
 
@@ -161,32 +162,7 @@ export class ChunkMesher {
         waterMat.onBind = () => {
           const effect = waterMat.getEffect();
           if (effect) {
-            effect.setVector3("lightDirection", GlobalValues.skyLightDirection);
-            effect.setVector3(
-              "cameraPosition",
-              Map1.mainScene.activeCamera!.position
-            );
-            effect.setFloat("time", performance.now() / 1000.0); // Pass current time in seconds
-            effect.setVector2(
-              "cameraPlanes",
-              new Vector2(
-                Map1.mainScene.activeCamera!.minZ,
-                Map1.mainScene.activeCamera!.maxZ
-              )
-            );
-            effect.setVector2(
-              "screenSize",
-              new Vector2(
-                Map1.mainScene.getEngine().getRenderWidth(),
-                Map1.mainScene.getEngine().getRenderHeight()
-              )
-            );
-
-            // This is the crucial step: bind the depth map to the sampler
-            const depthMap = ChunkMesher.depthRenderer?.getDepthMap();
-            if (depthMap) {
-              effect.setTexture("depthSampler", depthMap);
-            }
+            ChunkMesher.applyWaterUniforms(effect);
           }
         };
 
@@ -241,29 +217,7 @@ export class ChunkMesher {
         glassMat.onBind = () => {
           const effect = glassMat.getEffect();
           if (effect) {
-            effect.setVector3("lightDirection", GlobalValues.skyLightDirection);
-            effect.setVector3(
-              "cameraPosition",
-              Map1.mainScene.activeCamera!.position
-            );
-            effect.setVector2(
-              "cameraPlanes",
-              new Vector2(
-                Map1.mainScene.activeCamera!.minZ,
-                Map1.mainScene.activeCamera!.maxZ
-              )
-            );
-            effect.setVector2(
-              "screenSize",
-              new Vector2(
-                Map1.mainScene.getEngine().getRenderWidth(),
-                Map1.mainScene.getEngine().getRenderHeight()
-              )
-            );
-            const depthMap = ChunkMesher.depthRenderer?.getDepthMap();
-            if (depthMap) {
-              effect.setTexture("depthSampler", depthMap);
-            }
+            ChunkMesher.applyGlassUniforms(effect);
           }
         };
         ChunkMesher.glassMaterial = glassMat;
@@ -284,9 +238,17 @@ export class ChunkMesher {
     if (!chunk.isLoaded) return;
 
     // Cache the raw mesh data on the chunk instance for future saving
-    chunk.opaqueMeshData = meshData.opaque;
-    chunk.waterMeshData = meshData.water;
-    chunk.glassMeshData = meshData.glass;
+    // Optimization: Only keep raw data in memory if the chunk is modified and needs saving.
+    if (chunk.isModified) {
+      chunk.opaqueMeshData = meshData.opaque;
+      chunk.waterMeshData = meshData.water;
+      chunk.glassMeshData = meshData.glass;
+    } else {
+      // Only keep if actively being edited
+      chunk.opaqueMeshData = null;
+      chunk.waterMeshData = null;
+      chunk.glassMeshData = null;
+    }
 
     // Dispose of old meshes
     if (chunk.mesh) {
@@ -344,6 +306,8 @@ export class ChunkMesher {
     material: Material
   ): Mesh {
     const mesh = new Mesh(name, Map1.mainScene);
+    mesh.renderingGroupId = 1;
+
     mesh.material = material;
 
     const engine = Map1.mainScene.getEngine();
@@ -482,5 +446,64 @@ export class ChunkMesher {
     }
 
     return mesh;
+  }
+
+  // Apply uniforms using cached values (no expensive operations)
+  private static applyOpaqueUniforms(effect: Effect) {
+    effect.setVector3("lightDirection", this.cachedUniforms.lightDirection);
+    effect.setVector3("cameraPosition", this.cachedUniforms.cameraPosition);
+    effect.setVector2("screenSize", this.cachedUniforms.screenSize);
+  }
+
+  private static applyWaterUniforms(effect: Effect) {
+    effect.setVector3("lightDirection", this.cachedUniforms.lightDirection);
+    effect.setVector3("cameraPosition", this.cachedUniforms.cameraPosition);
+    effect.setVector2("cameraPlanes", this.cachedUniforms.cameraPlanes);
+    effect.setVector2("screenSize", this.cachedUniforms.screenSize);
+    effect.setFloat("time", this.cachedUniforms.time);
+
+    const depthMap = ChunkMesher.depthRenderer?.getDepthMap();
+    if (depthMap) {
+      effect.setTexture("depthSampler", depthMap);
+    }
+  }
+
+  private static applyGlassUniforms(effect: Effect) {
+    effect.setVector3("lightDirection", this.cachedUniforms.lightDirection);
+    effect.setVector3("cameraPosition", this.cachedUniforms.cameraPosition);
+    effect.setVector2("cameraPlanes", this.cachedUniforms.cameraPlanes);
+    effect.setVector2("screenSize", this.cachedUniforms.screenSize);
+  }
+
+  // Call this ONCE per frame in your game loop (before rendering)
+  static updateGlobalUniforms(frameId: number) {
+    // Skip if already updated this frame
+    if (this.lastUpdateFrame === frameId) {
+      return;
+    }
+    this.lastUpdateFrame = frameId;
+
+    const scene = Map1.mainScene;
+    if (!scene) return;
+    const camera = scene.activeCamera;
+    if (!camera) return;
+    const engine = scene.getEngine();
+
+    const lightDir = GlobalValues.skyLightDirection;
+    this.cachedUniforms.lightDirection.x = lightDir.x;
+    this.cachedUniforms.lightDirection.y = lightDir.y;
+    this.cachedUniforms.lightDirection.z = lightDir.z;
+    const camPos = camera.position;
+    this.cachedUniforms.cameraPosition.x = camPos.x;
+    this.cachedUniforms.cameraPosition.y = camPos.y;
+    this.cachedUniforms.cameraPosition.z = camPos.z;
+
+    this.cachedUniforms.screenSize.set(
+      engine.getRenderWidth(),
+      engine.getRenderHeight()
+    );
+
+    this.cachedUniforms.cameraPlanes.set(camera.minZ, camera.maxZ);
+    this.cachedUniforms.time = performance.now() / 1000.0;
   }
 }

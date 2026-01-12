@@ -11,7 +11,6 @@ export class DistantTerrainGenerator {
     oldData?: {
       positions: Int16Array;
       colors: Uint8Array;
-      normals: Uint8Array;
     },
     oldCenterChunkX?: number,
     oldCenterChunkZ?: number
@@ -22,10 +21,18 @@ export class DistantTerrainGenerator {
 
     const positions = new Int16Array(vertexCount * 3);
     const colors = new Uint8Array(vertexCount * 3);
-    const normals = new Uint8Array(vertexCount * 3);
 
-    const startX = (centerChunkX - radius) * chunkSize;
-    const startZ = (centerChunkZ - radius) * chunkSize;
+    // Snap the center to the grid step to ensure consistent sampling
+    const gridCenterChunkX = Math.floor(centerChunkX / gridStep) * gridStep;
+    const gridCenterChunkZ = Math.floor(centerChunkZ / gridStep) * gridStep;
+
+    const startX = (gridCenterChunkX - radius) * chunkSize;
+    const startZ = (gridCenterChunkZ - radius) * chunkSize;
+
+    // Calculate offsets for local position to keep vertices fixed in world space
+    // relative to the mesh's moving origin
+    const offsetX = centerChunkX - gridCenterChunkX;
+    const offsetZ = centerChunkZ - gridCenterChunkZ;
 
     // Calculate grid shift if old data is available
     let shiftX = 0;
@@ -37,8 +44,13 @@ export class DistantTerrainGenerator {
       oldCenterChunkX !== undefined &&
       oldCenterChunkZ !== undefined
     ) {
-      const diffX = centerChunkX - oldCenterChunkX;
-      const diffZ = centerChunkZ - oldCenterChunkZ;
+      const oldGridCenterChunkX =
+        Math.floor(oldCenterChunkX / gridStep) * gridStep;
+      const oldGridCenterChunkZ =
+        Math.floor(oldCenterChunkZ / gridStep) * gridStep;
+
+      const diffX = gridCenterChunkX - oldGridCenterChunkX;
+      const diffZ = gridCenterChunkZ - oldGridCenterChunkZ;
 
       // Only reuse if the shift aligns with the grid step
       if (diffX % gridStep === 0 && diffZ % gridStep === 0) {
@@ -54,18 +66,17 @@ export class DistantTerrainGenerator {
     for (let z = 0; z <= segments; z++) {
       const worldZ = startZ + z * chunkSize * gridStep;
       const oldZ = z + shiftZ;
-      const localChunkZ = z * gridStep - radius;
+      const localChunkZ = z * gridStep - radius - offsetZ;
       let y = 0;
       let r = 128,
         g = 128,
         b = 128;
-      let normalYComponent = 255;
 
       const localZ = localChunkZ * chunkSize;
       for (let x = 0; x <= segments; x++) {
         const worldX = startX + x * chunkSize * gridStep;
         const oldX = x + shiftX;
-        const localChunkX = x * gridStep - radius;
+        const localChunkX = x * gridStep - radius - offsetX;
 
         // Try to reuse data from old arrays
         if (
@@ -81,7 +92,6 @@ export class DistantTerrainGenerator {
           r = oldData.colors[oldIndex * 3];
           g = oldData.colors[oldIndex * 3 + 1];
           b = oldData.colors[oldIndex * 3 + 2];
-          normalYComponent = oldData.normals[oldIndex * 3 + 1];
         } else {
           const isInsideRealTerrain =
             localChunkX > -renderDistance &&
@@ -136,6 +146,11 @@ export class DistantTerrainGenerator {
               g = 0;
               b = 222;
               break;
+            case "River":
+              r = 0;
+              g = 26;
+              b = 180;
+              break;
             case "Sandy_Shore":
               r = 255;
               g = 255;
@@ -152,7 +167,7 @@ export class DistantTerrainGenerator {
               b = 70;
               break;
             default:
-              r = 64;
+              r = 84;
               g = 0;
               b = 0;
               break;
@@ -172,11 +187,6 @@ export class DistantTerrainGenerator {
         positions[vIndex * 3 + 1] = y;
         positions[vIndex * 3 + 2] = localZ;
 
-        // Simple up normal for now
-        normals[vIndex * 3] = 0;
-        normals[vIndex * 3 + 1] = normalYComponent;
-        normals[vIndex * 3 + 2] = 0;
-
         colors[vIndex * 3] = r;
         colors[vIndex * 3 + 1] = g;
         colors[vIndex * 3 + 2] = b;
@@ -184,6 +194,6 @@ export class DistantTerrainGenerator {
         vIndex++;
       }
     }
-    return { positions, colors, normals };
+    return { positions, colors };
   }
 }

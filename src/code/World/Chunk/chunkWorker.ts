@@ -1,5 +1,6 @@
 import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
 import { Chunk } from "./Chunk";
+import Util from "./Util";
 
 export class ChunkWorker {
   private worker: Worker;
@@ -10,13 +11,16 @@ export class ChunkWorker {
   }
 
   public postMessage(chunk: Chunk): void {
+    const pzChunk = chunk.getNeighbor(0, 0, 1);
+    const nzChunk = chunk.getNeighbor(0, 0, -1);
+
     const neighbors = {
       px: chunk.getNeighbor(1, 0, 0)?.block_array,
       nx: chunk.getNeighbor(-1, 0, 0)?.block_array,
       py: chunk.getNeighbor(0, 1, 0)?.block_array,
       ny: chunk.getNeighbor(0, -1, 0)?.block_array,
-      pz: chunk.getNeighbor(0, 0, 1)?.block_array,
-      nz: chunk.getNeighbor(0, 0, -1)?.block_array,
+      pz: pzChunk ? Util.getNorthSlice(pzChunk.block_array) : undefined,
+      nz: nzChunk ? Util.getSouthSlice(nzChunk.block_array) : undefined,
     };
 
     const neighborLights = {
@@ -24,8 +28,8 @@ export class ChunkWorker {
       nx: chunk.getNeighbor(-1, 0, 0)?.light_array,
       py: chunk.getNeighbor(0, 1, 0)?.light_array,
       ny: chunk.getNeighbor(0, -1, 0)?.light_array,
-      pz: chunk.getNeighbor(0, 0, 1)?.light_array,
-      nz: chunk.getNeighbor(0, 0, -1)?.light_array,
+      pz: pzChunk ? Util.getNorthSlice(pzChunk.light_array) : undefined,
+      nz: nzChunk ? Util.getSouthSlice(nzChunk.light_array) : undefined,
     };
 
     this.worker.postMessage({
@@ -59,7 +63,6 @@ export class ChunkWorker {
     oldData?: {
       positions: Int16Array;
       colors: Uint8Array;
-      normals: Uint8Array;
     },
     oldCenterChunkX?: number,
     oldCenterChunkZ?: number
@@ -68,7 +71,6 @@ export class ChunkWorker {
     if (oldData) {
       transferables.push(oldData.positions.buffer);
       transferables.push(oldData.colors.buffer);
-      transferables.push(oldData.normals.buffer);
     }
 
     this.worker.postMessage(

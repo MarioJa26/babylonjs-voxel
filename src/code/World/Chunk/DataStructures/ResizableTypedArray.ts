@@ -33,6 +33,9 @@ export class ResizableTypedArray<
   }
 
   get finalArray(): T {
+    if (this.length < this.capacity) {
+      return this.array.slice(0, this.length) as T;
+    }
     return this.array.subarray(0, this.length) as T;
   }
 }

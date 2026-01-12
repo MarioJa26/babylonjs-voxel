@@ -9,6 +9,10 @@ module.exports = defineConfig({
   devServer: {
     hot: false,
     liveReload: false,
+    headers: {
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Cross-Origin-Embedder-Policy": "require-corp",
+    },
   },
 
   // --- PRODUCTION ---

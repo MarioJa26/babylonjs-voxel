@@ -2,9 +2,10 @@ import { Chunk } from "./Chunk";
 import { ChunkMesher } from "./ChunckMesher";
 import { ChunkWorker } from "./chunkWorker";
 import {
-  DistantTerrainGeneratedMessage,
+  DistantTerrainTask,
   FullMeshMessage,
   TerrainGeneratedMessage,
+  DistantTerrainGeneratedMessage,
 } from "./DataStructures/WorkerMessageType";
 import { WorldStorage } from "../WorldStorage";
 
@@ -12,17 +13,6 @@ export type WorkerMessageData =
   | FullMeshMessage
   | TerrainGeneratedMessage
   | DistantTerrainGeneratedMessage;
-
-interface DistantTerrainTask {
-  centerChunkX: number;
-  centerChunkZ: number;
-  radius: number;
-  renderDistance: number;
-  gridStep: number;
-  oldData?: { positions: Int16Array; colors: Uint8Array; normals: Uint8Array };
-  oldCenterChunkX?: number;
-  oldCenterChunkZ?: number;
-}
 
 export class ChunkWorkerPool {
   private static instance: ChunkWorkerPool;
@@ -124,7 +114,6 @@ export class ChunkWorkerPool {
     oldData?: {
       positions: Int16Array;
       colors: Uint8Array;
-      normals: Uint8Array;
     },
     oldCenterChunkX?: number,
     oldCenterChunkZ?: number

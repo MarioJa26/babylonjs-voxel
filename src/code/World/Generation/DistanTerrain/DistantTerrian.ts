@@ -14,12 +14,11 @@ export class DistantTerrain {
   private mesh: Mesh;
   private material: StandardMaterial;
   private radius: number;
-  private gridStep = 1; // Optimization: 1 vertex per 4 chunks
+  private gridStep = 2; // Optimization: 1 vertex per 4 chunks
 
   // Store data for reuse
   private lastPositions: Int16Array | null = null;
   private lastColors: Uint8Array | null = null;
-  private lastNormals: Uint8Array | null = null;
   private lastCenterChunkX: number | null = null;
   private lastCenterChunkZ: number | null = null;
 
@@ -58,7 +57,6 @@ export class DistantTerrain {
       this.applyTerrainData(
         data.positions,
         data.colors,
-        data.normals,
         data.centerChunkX,
         data.centerChunkZ
       );
@@ -73,11 +71,10 @@ export class DistantTerrain {
       this.radius,
       SettingParams.RENDER_DISTANCE,
       this.gridStep,
-      this.lastPositions && this.lastColors && this.lastNormals
+      this.lastPositions && this.lastColors
         ? {
             positions: this.lastPositions,
             colors: this.lastColors,
-            normals: this.lastNormals,
           }
         : undefined,
       this.lastCenterChunkX ?? undefined,
@@ -87,20 +84,17 @@ export class DistantTerrain {
     // Clear references since we transferred ownership to worker
     this.lastPositions = null;
     this.lastColors = null;
-    this.lastNormals = null;
   }
 
   private applyTerrainData(
     positions: Int16Array,
     colors: Uint8Array,
-    normals: Uint8Array,
     centerChunkX: number,
     centerChunkZ: number
   ) {
     // Save data for next update reuse
     this.lastPositions = positions;
     this.lastColors = colors;
-    this.lastNormals = normals;
     this.lastCenterChunkX = centerChunkX;
     this.lastCenterChunkZ = centerChunkZ;
 
@@ -141,20 +135,5 @@ export class DistantTerrain {
       true // normalized
     );
     this.mesh.setVerticesBuffer(colorBuffer);
-
-    const normalBuffer = new VertexBuffer(
-      engine,
-      normals,
-      VertexBuffer.NormalKind,
-      true, // updatable
-      false, // postpone
-      3, // stride
-      false, // instanced
-      0, // offset
-      undefined, // size
-      VertexBuffer.UNSIGNED_BYTE, // type
-      true // normalized
-    );
-    this.mesh.setVerticesBuffer(normalBuffer);
   }
 }

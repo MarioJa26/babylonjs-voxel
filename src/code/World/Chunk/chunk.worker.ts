@@ -6,7 +6,6 @@ import { MeshData } from "./DataStructures/MeshData";
 import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
 import { ResizableTypedArray } from "./DataStructures/ResizableTypedArray";
 import { WorkerInternalMeshData } from "./DataStructures/WorkerInternalMeshData";
-import { TerrainHeightMap } from "../Generation/TerrainHeightMap";
 import { DistantTerrainGenerator } from "../Generation/DistanTerrain/DistantTerrainGenerator";
 
 /**
@@ -172,9 +171,12 @@ class ChunkWorkerMesher {
         return neighbors.py ? neighbors.py[x + 0 * size + z * size2] : fallback;
       }
       if (z < 0) {
-        return neighbors.nz
-          ? neighbors.nz[x + y * size + (size - 1) * size2]
-          : fallback;
+        if (!neighbors.nz) return fallback;
+        // If we received a slice (size^2), access it directly.
+        if (neighbors.nz.length === size2) {
+          return neighbors.nz[x + y * size];
+        }
+        return neighbors.nz[x + y * size + (size - 1) * size2];
       }
       if (z >= size) {
         return neighbors.pz ? neighbors.pz[x + y * size + 0] : fallback;
@@ -209,7 +211,12 @@ class ChunkWorkerMesher {
         return nl.py ? nl.py[x + 0 * size + z * size2] : fallback;
       }
       if (z < 0) {
-        return nl.nz ? nl.nz[x + y * size + (size - 1) * size2] : fallback;
+        if (!nl.nz) return fallback;
+        // If we received a slice (size^2), access it directly.
+        if (nl.nz.length === size2) {
+          return nl.nz[x + y * size];
+        }
+        return nl.nz[x + y * size + (size - 1) * size2];
       }
       if (z >= size) {
         return nl.pz ? nl.pz[x + y * size + 0] : fallback;
@@ -227,14 +234,17 @@ class ChunkWorkerMesher {
     const TRANSPARENT_FLAG = 1 << 12;
     const BACKFACE_FLAG = 1 << 13;
 
+    const position = [0, 0, 0];
+    const direction = [0, 0, 0];
+
     // single pass across axes -- generate masks containing encoded values
     for (let axis = 0; axis < 3; axis++) {
       const u_axis = (axis + 1) % 3;
       const v_axis = (axis + 2) % 3;
 
-      const position = [0, 0, 0];
-      const direction = [0, 0, 0];
       direction[axis] = 1;
+      direction[(axis + 1) % 3] = 0;
+      direction[(axis + 2) % 3] = 0;
 
       // reuseable mask
       const mask = new Int32Array(size * size);
@@ -258,7 +268,7 @@ class ChunkWorkerMesher {
             const bz = position[2];
 
             // sample current and neighbor; pass blockCurrent as fallback when sampling neighbor
-            const blockCurrent = getBlock(bx, by, bz);
+            const blockCurrent = block_array[bx + by * size + bz * size2];
             const blockNeighbor = getBlock(
               bx + direction[0],
               by + direction[1],
@@ -555,122 +565,6 @@ class ChunkWorkerMesher {
     }
     meshData.indexOffset += 4;
   }
-
-  public static generateHeightMapMesh(
-    chunkX: number,
-    chunkZ: number,
-    chunkSize: number
-  ) {
-    // LOD: Use 1 segment per chunk (2x2 vertices) for distant terrain
-    const segments = 1;
-    const step = chunkSize / segments;
-    const vertexCount = (segments + 1) * (segments + 1);
-    const positions = new Int16Array(vertexCount * 3);
-    const normals = new Uint8Array(vertexCount * 3);
-    const uvs = new Uint8Array(vertexCount * 2);
-    const colors = new Uint8Array(vertexCount * 4);
-    const indices: number[] = [];
-
-    const startX = chunkX * chunkSize;
-    const startZ = chunkZ * chunkSize;
-    const rowSize = segments + 1;
-
-    let vIndex = 0;
-    for (let z = 0; z <= chunkSize; z += step) {
-      for (let x = 0; x <= chunkSize; x += step) {
-        const worldX = startX + x;
-        const worldZ = startZ + z;
-        const y = TerrainHeightMap.getFinalTerrainHeight(worldX, worldZ);
-        const biome = TerrainHeightMap.getBiome(worldX, worldZ);
-
-        positions[vIndex * 3] = x;
-        positions[vIndex * 3 + 1] = y;
-        positions[vIndex * 3 + 2] = z;
-
-        normals[vIndex * 3] = 0;
-        normals[vIndex * 3 + 1] = 255;
-        normals[vIndex * 3 + 2] = 0;
-
-        uvs[vIndex * 2] = (1.0 - x / chunkSize) * 255;
-        uvs[vIndex * 2 + 1] = (1.0 - z / chunkSize) * 255;
-
-        let r = 128;
-        let g = 128;
-        let b = 128;
-
-        switch (biome.name) {
-          case "Forest":
-            r = 34;
-            g = 139;
-            b = 34;
-            break;
-          case "Tundra":
-            r = 200;
-            g = 200;
-            b = 200;
-            break;
-          case "Desert":
-            r = 237;
-            g = 213;
-            b = 164;
-            break;
-          case "Jungle":
-            r = 41;
-            g = 168;
-            b = 41;
-            break;
-          case "Plains":
-            r = 141;
-            g = 182;
-            b = 104;
-            break;
-          case "Swamp":
-            r = 47;
-            g = 79;
-            b = 79;
-            break;
-          default:
-            r = 100;
-            g = 100;
-            b = 100;
-            break;
-        }
-
-        // Simple height darkening
-        if (y < 40) {
-          r *= 0.8;
-          g *= 0.8;
-          b *= 0.8;
-        }
-
-        colors[vIndex * 4] = r;
-        colors[vIndex * 4 + 1] = g;
-        colors[vIndex * 4 + 2] = b;
-        colors[vIndex * 4 + 3] = 255;
-        vIndex++;
-      }
-    }
-
-    for (let z = 0; z < segments; z++) {
-      for (let x = 0; x < segments; x++) {
-        const i0 = z * rowSize + x;
-        const i1 = z * rowSize + (x + 1);
-        const i2 = (z + 1) * rowSize + x;
-        const i3 = (z + 1) * rowSize + (x + 1);
-
-        indices.push(i0, i1, i2);
-        indices.push(i1, i3, i2);
-      }
-    }
-
-    return {
-      positions,
-      indices: new Uint16Array(indices),
-      normals,
-      uvs,
-      colors,
-    };
-  }
 }
 
 // Top-level world generator instance for terrain requests
@@ -713,31 +607,6 @@ const onMessageHandler = (event: MessageEvent) => {
     return;
   }
 
-  if (type === "generate-heightmap") {
-    const { chunkId, chunkX, chunkZ, chunk_size } = event.data;
-    const meshData = ChunkWorkerMesher.generateHeightMapMesh(
-      chunkX,
-      chunkZ,
-      chunk_size
-    );
-
-    self.postMessage(
-      {
-        chunkId,
-        type: "heightmap-generated",
-        mesh: meshData,
-      },
-      [
-        meshData.positions.buffer,
-        meshData.indices.buffer,
-        meshData.normals.buffer,
-        meshData.uvs.buffer,
-        meshData.colors.buffer,
-      ]
-    );
-    return;
-  }
-
   if (type === "generate-distant-terrain") {
     const {
       centerChunkX,
@@ -766,7 +635,7 @@ const onMessageHandler = (event: MessageEvent) => {
         centerChunkZ,
         ...data,
       },
-      [data.positions.buffer, data.colors.buffer, data.normals.buffer]
+      [data.positions.buffer, data.colors.buffer]
     );
     return;
   }

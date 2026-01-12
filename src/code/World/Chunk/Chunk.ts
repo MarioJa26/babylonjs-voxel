@@ -63,17 +63,35 @@ export class Chunk {
     return Chunk.LIGHT_EMISSION[blockId] || 0;
   }
 
+  private ensureSharedArrayBuffer(array: Uint8Array): Uint8Array {
+    if (array.buffer instanceof SharedArrayBuffer) {
+      return array;
+    }
+    const sab = new SharedArrayBuffer(array.length);
+    const newArray = new Uint8Array(sab);
+    newArray.set(array);
+    return newArray;
+  }
+
   public populate(
     block_array: Uint8Array,
     light_array?: Uint8Array,
     scheduleRemesh = true
   ): void {
-    this.block_array = block_array;
+    // Use SharedArrayBuffer if available to avoid copying data to workers
+    this.block_array = this.ensureSharedArrayBuffer(block_array);
+
     this.isLoaded = true;
     this.isTerrainScheduled = false; // Reset flag
     if (light_array) {
-      this.light_array = light_array;
+      this.light_array = this.ensureSharedArrayBuffer(light_array);
     } else {
+      // Ensure light array is allocated if we are initializing sunlight
+      if (this.light_array.length !== this.block_array.length) {
+        this.light_array = new Uint8Array(
+          new SharedArrayBuffer(this.block_array.length)
+        );
+      }
       this.initializeSunlight();
     }
     if (scheduleRemesh) {
@@ -98,9 +116,6 @@ export class Chunk {
     this.isLoaded = false;
     this.isTerrainScheduled = false;
     this.isModified = false; // No longer considered modified as its data is gone.
-
-    // Also clear intermediate mesh data to free up more memory
-    this.opaqueMeshData = this.waterMeshData = this.glassMeshData = null;
   }
 
   public initializeSunlight() {
@@ -526,6 +541,7 @@ export class Chunk {
 
     this.propagateLight(propagateQueue, isSkyLight);
   }
+
   public scheduleRemesh(priority = false): void {
     if (!this.isLoaded) {
       return; // Cannot remesh an unloaded chunk.
