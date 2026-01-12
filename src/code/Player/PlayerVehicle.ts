@@ -47,6 +47,8 @@ export class PlayerVehicle {
   private readonly jumpHeight = 0.35;
   private readonly accelRateGround = 36;
   private readonly sprintMultiplier = 1.6;
+  private readonly penetrationRecoveryEps = 0.0001;
+  private readonly airJumpForwardBoost = 5.5;
 
   constructor(scene: Scene, camera: PlayerCamera) {
     this.scene = scene;
@@ -66,9 +68,10 @@ export class PlayerVehicle {
 
     // Create physics controller
     const startPosition = new Vector3(0, 165, -700);
-    const boxSize = new Vector3(width, height, width);
+    // Extents are HALF-sizes for physics shapes
+    const boxExtents = new Vector3(width, height, width);
     const characterShape = new PhysicsShape(
-      { type: PhysicsShapeType.BOX, parameters: { extents: boxSize } },
+      { type: PhysicsShapeType.BOX, parameters: { extents: boxExtents } },
       this.scene
     );
 
@@ -77,7 +80,6 @@ export class PlayerVehicle {
       { shape: characterShape },
       this.scene
     );
-
     this.camera.target = startPosition;
   }
 
@@ -92,6 +94,7 @@ export class PlayerVehicle {
     material.diffuseColor = new Color3(0.2, 0.9, 0.8);
     box.material = material;
     box.isPickable = false;
+    box.renderingGroupId = 1;
 
     return box;
   }
@@ -335,28 +338,24 @@ export class PlayerVehicle {
 
     return outputVelocity;
   }
-
+  // tiny push-away to help penetration recovery (avoid sticking)
   private applyHorizontalProjectionCorrection(
     velocity: Vector3,
     supportInfo: CharacterSurfaceInfo
   ): Vector3 {
-    // Subtract any surface velocity first
+    // Remove surface velocity
     const v = velocity.subtract(supportInfo.averageSurfaceVelocity);
-
-    // Safely project v onto the plane tangent to the contact normal:
-    // v_tangent = v - n * dot(v, n)
     const n = supportInfo.averageSurfaceNormal;
+
+    // Project onto tangent plane: v_tangent = v - (v·n)n
     const vDotN = v.dot(n);
     const vTangent = v.subtract(n.scale(vDotN));
 
-    // tiny push-away to help penetration recovery (avoid sticking)
-    const EPS = 1e-5;
-    const pushAway = n.scale(EPS);
+    // Add small push-away to recover from penetration
+    vTangent.addInPlace(n.scale(this.penetrationRecoveryEps));
 
-    // Reapply surface velocity and return
-    return vTangent
-      .addInPlace(supportInfo.averageSurfaceVelocity)
-      .addInPlace(pushAway);
+    // Reapply surface velocity
+    return vTangent.addInPlace(supportInfo.averageSurfaceVelocity);
   }
 
   private calculateJumpVelocity(
@@ -365,33 +364,43 @@ export class PlayerVehicle {
   ): Vector3 {
     const upWorld = this.getUpVector();
 
-    // Calculate jump velocity
-    const jumpSpeed = this.#characterGravity.length() * this.jumpHeight;
-    const curVelocityProjected = currentVelocity.dot(upWorld);
-    const jumpVelocity = Math.max(jumpSpeed, curVelocityProjected + jumpSpeed);
-    const jumpVelVec = upWorld.scale(jumpVelocity);
+    // Calculate vertical jump component
+    const verticalJumpVelocity = this.calculateVerticalJumpVelocity(
+      currentVelocity,
+      upWorld
+    );
 
-    // Add horizontal movement
-    const desiredVelocity = this.getInputVelocity(this.onGroundSpeed);
-
-    // Apply sprint multiplier if sprinting
+    // Calculate horizontal movement component
+    const horizontalVelocity = this.getInputVelocity(this.onGroundSpeed);
     if (this.isSprinting) {
-      desiredVelocity.scaleInPlace(this.sprintMultiplier);
+      horizontalVelocity.scaleInPlace(this.sprintMultiplier);
     }
 
-    const finalVelocity = jumpVelVec.add(desiredVelocity);
+    // Combine vertical + horizontal
+    const finalVelocity = upWorld
+      .scale(verticalJumpVelocity)
+      .add(horizontalVelocity);
 
-    // If this was an air-jump, add a forward sling
+    // Air-jump boost: add forward momentum from camera direction
     if (previousState === PlayerState.IN_AIR) {
-      // Get the camera's forward direction (including pitch)
       const viewDirection = this.camera.playerCamera.getForwardRay().direction;
-
       finalVelocity.addInPlace(
-        viewDirection.normalize().scale(this.inAirSpeed * 5.5)
+        viewDirection
+          .normalize()
+          .scale(this.inAirSpeed * this.airJumpForwardBoost)
       );
     }
 
     return finalVelocity;
+  }
+
+  private calculateVerticalJumpVelocity(
+    currentVelocity: Vector3,
+    upWorld: Vector3
+  ): number {
+    const jumpSpeed = this.#characterGravity.length() * this.jumpHeight;
+    const currentUpwardVelocity = currentVelocity.dot(upWorld);
+    return Math.max(jumpSpeed, currentUpwardVelocity + jumpSpeed);
   }
 
   private getInputVelocity(speed: number): Vector3 {

@@ -114,6 +114,7 @@ export class ChunkWorkerPool {
     oldData?: {
       positions: Int16Array;
       colors: Uint8Array;
+      normals: Int8Array;
     },
     oldCenterChunkX?: number,
     oldCenterChunkZ?: number

@@ -84,6 +84,8 @@ void main(void) {
     uniform float atlasTileSize;
     uniform vec3 cameraPosition;
     uniform vec3 lightDirection;
+    uniform float sunLightIntensity;
+
 
     void main(void) {
         // 1. Scale the local UV by the quad's dimensions to get a repeating value.
@@ -108,8 +110,8 @@ void main(void) {
         vec3 worldNormal = normalize(vTBN * normalMap);
 
         // --- Lighting Calculation ---
-        // Ensure the light direction vector is normalized before use.
-        vec3 normalizedLightDirection = -normalize(lightDirection);
+        // lightDirection is normalized by the CPU and cached — avoid per-pixel normalize().
+        vec3 normalizedLightDirection = lightDirection;
 
         float diffuseIntensity = max(0.0, dot(worldNormal, normalizedLightDirection));
         vec3 diffuse = diffuseColor.rgb * diffuseIntensity;
@@ -117,19 +119,19 @@ void main(void) {
         vec3 viewDirection = normalize(cameraPosition - vPositionW);
         vec3 halfwayDir = normalize(normalizedLightDirection + viewDirection);
         float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), 16.0);
-        vec3 specular = vec3(0.3) * spec; // Specular color is white
+        vec3 specular = vec3(0.3) * spec * (sunLightIntensity - 0.1); // Specular color is white
 
         float aoFactor = 1.0 - vAO * 0.23; // 0->1, 1->0.85, 2->0.7, 3->0.55
         
         // --- Light Coloring for Testing ---
-        vec3 skyColor = vec3(0.8, 0.8, 0.8); // Blue-ish for sky
+        vec3 skyColor = vec3(0.8, 0.8, 0.8) * (sunLightIntensity + 0.2); // Blue-ish for sky
         vec3 blockColor = vec3(1.0, 0.6, 0.2); // Orange-ish for block light
         
         vec3 lightMix = clamp((vSkyLight * skyColor) + (vBlockLight * blockColor), 0.0, 1.0);
         
-        vec3 finalColor = (diffuseColor.rgb * 0.8 + diffuse + specular) * max(lightMix * aoFactor, 0.1);
+        vec3 finalColor = (diffuseColor.rgb * 0.8 + diffuse + specular) * max(lightMix * aoFactor, 0.2);
 
-        gl_FragColor = vec4(finalColor, diffuseColor.a);  
+        gl_FragColor = vec4(finalColor, diffuseColor.a);    
     }
 `;
 }

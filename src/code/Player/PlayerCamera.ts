@@ -49,7 +49,7 @@ export class PlayerCamera {
     this.#playerCamera.target = characterPosition.add(
       new Vector3(0, this.#eyeHeight, 0)
     );
-
+    /*
     if (this.position.y < 2.1) {
       this.scene.fogStart = MapFog.fogStartUnderWater;
       this.scene.fogEnd = MapFog.fogEndUnderWater;
@@ -57,6 +57,7 @@ export class PlayerCamera {
       this.scene.fogStart = MapFog.fogStartAboveWater;
       this.scene.fogEnd = MapFog.fogEndAboveWater;
     }
+    */
   }
 
   public handleMouseMovement(deltaX: number, deltaY: number): void {

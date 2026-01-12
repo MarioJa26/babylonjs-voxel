@@ -29,8 +29,9 @@ export class Map1 {
   public static mainScene: Scene;
   #player: Player;
   #blockHighlightMesh!: Mesh;
+  private dirLight?: DirectionalLight;
 
-  static #timeOfDay = 200000; // Time in milliseconds, progresses from 0 to dayDurationMs
+  static #timeOfDay = 450000; // Time in milliseconds, progresses from 0 to dayDurationMs
   public static timeScale = 0;
   public static isPaused = false;
   public readonly initPromise: Promise<void>;
@@ -127,6 +128,40 @@ export class Map1 {
       Map1.mainScene.getEngine().getDeltaTime() * Map1.timeScale;
     Map1.#timeOfDay %= SettingParams.DAY_DURATION_MS;
 
+    // Compute smooth solar parameters (CPU)
+    const t = Map1.#timeOfDay / SettingParams.DAY_DURATION_MS; // 0..1
+    const angle = t * Math.PI * 2; // full orbit
+
+    // Use spherical coordinates:
+    // - azimuth rotates horizontally
+    // - elevationAngle is limited so sun rises/sets smoothly
+    const maxElevation = 1.1; // radians (~28.6°). Tune to taste.
+    const elevationAngle = Math.sin(angle) * maxElevation; // -max..max
+
+    // Cartesian direction (sun direction vector, normalized on assignment)
+    const sx = Math.cos(elevationAngle) * Math.cos(angle);
+    const sz = Math.cos(elevationAngle) * Math.sin(angle);
+    const sy = Math.sin(elevationAngle);
+
+    const len = Math.hypot(sx, sy, sz) || 1;
+    // GlobalValues.skyLightDirection is expected normalized
+    GlobalValues.skyLightDirection.x = sx / len;
+    GlobalValues.skyLightDirection.y = sy / len;
+    GlobalValues.skyLightDirection.z = sz / len;
+
+    // Sun intensity driven by elevation (zero below horizon)
+    const sunIntensity = Math.max(0.0, Math.sin(angle)); // 0..1, tune multiplier below
+
+    // Update engine directional light if present (direction points FROM light)
+    if (this.dirLight) {
+      this.dirLight.direction = new Vector3(
+        GlobalValues.skyLightDirection.x,
+        GlobalValues.skyLightDirection.y,
+        GlobalValues.skyLightDirection.z
+      );
+      // Scale base intensity with elevation (tune multiplier)
+      this.dirLight.intensity = 1.0 * sunIntensity;
+    }
     // For debug display
     const timeAsHour = (Map1.#timeOfDay / SettingParams.DAY_DURATION_MS) * 24;
     const hour = Math.floor(timeAsHour);
@@ -151,28 +186,7 @@ export class Map1 {
         1000
       ).toString();
 
-    // Time within the current cycle
-    const timeInCycle = Map1.#timeOfDay;
-
-    // Angle around the full circle (0..2PI)
-    const angle = (timeInCycle / SettingParams.DAY_DURATION_MS) * 2 * Math.PI;
-
-    // Use spherical-like parametrization:
-    // - elevation controls vertical position (y)
-    // - azimuth rotates the sun around the scene horizontally (x,z)
-    const elevation = Math.sin(angle); // -1..1 (1 = overhead)
-    const azimuth = angle; // full rotation for horizontal component
-    const horizontalRadius = Math.cos(angle); // shrinks as elevation increases
-
-    const x = horizontalRadius * Math.cos(azimuth);
-    const z = horizontalRadius * Math.sin(azimuth);
-    const y = -elevation; // negative so light points downward when sun is high
-
-    // Normalize the vector to keep consistent intensity/direction
-    const len = Math.sqrt(x * x + y * y + z * z) || 1;
-    GlobalValues.skyLightDirection.x = x / len;
-    GlobalValues.skyLightDirection.y = y / len;
-    GlobalValues.skyLightDirection.z = z / len;
+    // (No further sun math here — the spherical Cartesian sun direction above is the single source of truth.)
   }
   private CreateScene(scene: Scene): Scene {
     const hemiLight = new HemisphericLight(
@@ -189,6 +203,8 @@ export class Map1 {
     );
     dirLight.intensity = SettingParams.DIRECTIONAL_LIGHT_INTENSITY;
     dirLight.position = new Vector3(20, 40, 20);
+    // keep a reference so we can update it every frame
+    this.dirLight = dirLight;
 
     new AdvancedBoat(
       scene,

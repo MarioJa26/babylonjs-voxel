@@ -307,7 +307,7 @@ export function getBiomeFor(
     }
   }
   // Tundra: Cold regions
-  if (temperature < 0.45) {
+  if (temperature < 0.45 && continentalness > 0.5) {
     if (humidity < 0.5) {
       return TUNDRA; // Cold and dry
     } else {

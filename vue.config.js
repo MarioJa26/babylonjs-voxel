@@ -2,7 +2,7 @@ const { defineConfig } = require("@vue/cli-service");
 const CopyWebpackPlugin = require("copy-webpack-plugin");
 
 module.exports = defineConfig({
-  transpileDependencies: true,
+  transpileDependencies: false,
 
   // --- DEVELOPMENT ---
   // You already have this, which is great for preventing costly reloads.
@@ -44,6 +44,19 @@ module.exports = defineConfig({
         JSON.stringify(false);
       return args;
     });
+
+    // Drop console logs in production to improve runtime performance
+    if (process.env.NODE_ENV === "production") {
+      config.optimization.minimizer("terser").tap((args) => {
+        const terserOptions = args[0].terserOptions || {};
+        terserOptions.compress = {
+          ...terserOptions.compress,
+          drop_console: true,
+        };
+        args[0].terserOptions = terserOptions;
+        return args;
+      });
+    }
   },
 
   /*

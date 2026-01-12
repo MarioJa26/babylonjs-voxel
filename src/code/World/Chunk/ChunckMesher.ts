@@ -14,7 +14,6 @@ import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
 
 import { Chunk } from "./Chunk";
 import { GlobalValues } from "../GlobalValues";
-//import { DiffuseOnlyShader } from "../Light/DiffuseOnlyShader";
 import { ShaderMaterial } from "@babylonjs/core";
 import { MeshData } from "./DataStructures/MeshData";
 import { DiffuseNormalShader } from "../Light/DiffuseNormalShader";
@@ -22,23 +21,24 @@ import { WaterShader } from "../Light/WaterShader";
 import { GlassShader } from "../Light/GlassShader";
 
 export class ChunkMesher {
-  private static atlasMaterial: Material | null = null;
-  private static waterMaterial: Material | null = null;
-  private static glassMaterial: Material | null = null;
+  static #atlasMaterial: Material | null = null;
+  static #waterMaterial: Material | null = null;
+  static #glassMaterial: Material | null = null;
 
   // Cache global uniforms
-  private static cachedUniforms = {
+  static #cachedUniforms = {
     lightDirection: new Vector3(0, 1, 0),
     cameraPosition: new Vector3(0, 0, 0),
     screenSize: new Vector2(1920, 1080),
     cameraPlanes: new Vector2(0.1, 1000),
     time: 0,
+    sunLightIntensity: 1.0,
   };
 
   private static lastUpdateFrame = -1;
 
   static initAtlas() {
-    if (!ChunkMesher.atlasMaterial) {
+    if (!ChunkMesher.#atlasMaterial) {
       let diffuseAtlasTexture: Texture | null = null;
       let normalAtlasTexture: Texture | null = null;
       const scene = Map1.mainScene;
@@ -92,6 +92,7 @@ export class ChunkMesher {
               "cameraPosition",
               "lightDirection",
               "screenSize",
+              "sunLightIntensity",
             ],
             samplers: ["diffuseTexture", "normalTexture"],
           }
@@ -112,7 +113,7 @@ export class ChunkMesher {
           }
         };
 
-        ChunkMesher.atlasMaterial = mat;
+        ChunkMesher.#atlasMaterial = mat;
 
         // Create a separate material for water meshes
         const waterMat = new ShaderMaterial(
@@ -141,6 +142,7 @@ export class ChunkMesher {
               "time", // Add time for animation,
               "cameraPlanes", // for depth calculation
               "screenSize", // for depth calculation
+              "sunLightIntensity",
             ],
             samplers: ["diffuseTexture", "normalTexture"],
           }
@@ -163,7 +165,7 @@ export class ChunkMesher {
           }
         };
 
-        ChunkMesher.waterMaterial = waterMat;
+        ChunkMesher.#waterMaterial = waterMat;
 
         // Create a separate material for glass meshes
         const glassMat = new ShaderMaterial(
@@ -198,7 +200,6 @@ export class ChunkMesher {
 
         glassMat.backFaceCulling = true;
         // Enable depth writing so glass occludes other glass correctly.
-        glassMat.forceDepthWrite = true;
         glassMat.needAlphaBlending = () => true; // Enable alpha blending for transparency.
 
         glassMat.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
@@ -212,7 +213,7 @@ export class ChunkMesher {
             ChunkMesher.applyGlassUniforms(effect);
           }
         };
-        ChunkMesher.glassMaterial = glassMat;
+        ChunkMesher.#glassMaterial = glassMat;
       } else {
         console.error("Texture Atlas not yet built or available!");
       }
@@ -255,7 +256,7 @@ export class ChunkMesher {
         chunk,
         meshData.opaque,
         "chunk_opaque",
-        this.atlasMaterial!
+        this.#atlasMaterial!
       );
     } else {
       chunk.mesh = null;
@@ -267,7 +268,7 @@ export class ChunkMesher {
         chunk,
         meshData.water,
         "chunk_water",
-        this.waterMaterial!
+        this.#waterMaterial!
       );
       chunk.waterMesh.isPickable = false;
     } else {
@@ -280,7 +281,7 @@ export class ChunkMesher {
         chunk,
         meshData.glass,
         "chunk_glass",
-        this.glassMaterial!
+        this.#glassMaterial!
       );
     } else {
       chunk.glassMesh = null;
@@ -425,10 +426,15 @@ export class ChunkMesher {
 
     // Create physics aggregate AFTER the world matrix is set.
     if (name === "chunk_opaque" || name === "chunk_glass") {
-      new PhysicsAggregate(
+      // For voxel engines, MESH is necessary but needs proper setup
+      const aggregate = new PhysicsAggregate(
         mesh,
         PhysicsShapeType.MESH,
-        { mass: 0 },
+        {
+          mass: 0,
+          restitution: 0.0,
+          friction: 0.8,
+        },
         Map1.mainScene
       );
     }
@@ -438,24 +444,32 @@ export class ChunkMesher {
 
   // Apply uniforms using cached values (no expensive operations)
   private static applyOpaqueUniforms(effect: Effect) {
-    effect.setVector3("lightDirection", this.cachedUniforms.lightDirection);
-    effect.setVector3("cameraPosition", this.cachedUniforms.cameraPosition);
-    effect.setVector2("screenSize", this.cachedUniforms.screenSize);
+    effect.setVector3("lightDirection", this.#cachedUniforms.lightDirection);
+    effect.setVector3("cameraPosition", this.#cachedUniforms.cameraPosition);
+    effect.setVector2("screenSize", this.#cachedUniforms.screenSize);
+    effect.setFloat(
+      "sunLightIntensity",
+      this.#cachedUniforms.sunLightIntensity
+    );
   }
 
   private static applyWaterUniforms(effect: Effect) {
-    effect.setVector3("lightDirection", this.cachedUniforms.lightDirection);
-    effect.setVector3("cameraPosition", this.cachedUniforms.cameraPosition);
-    effect.setVector2("cameraPlanes", this.cachedUniforms.cameraPlanes);
-    effect.setVector2("screenSize", this.cachedUniforms.screenSize);
-    effect.setFloat("time", this.cachedUniforms.time);
+    effect.setVector3("lightDirection", this.#cachedUniforms.lightDirection);
+    effect.setVector3("cameraPosition", this.#cachedUniforms.cameraPosition);
+    effect.setVector2("cameraPlanes", this.#cachedUniforms.cameraPlanes);
+    effect.setVector2("screenSize", this.#cachedUniforms.screenSize);
+    effect.setFloat("time", this.#cachedUniforms.time);
+    effect.setFloat(
+      "sunLightIntensity",
+      this.#cachedUniforms.sunLightIntensity
+    );
   }
 
   private static applyGlassUniforms(effect: Effect) {
-    effect.setVector3("lightDirection", this.cachedUniforms.lightDirection);
-    effect.setVector3("cameraPosition", this.cachedUniforms.cameraPosition);
-    effect.setVector2("cameraPlanes", this.cachedUniforms.cameraPlanes);
-    effect.setVector2("screenSize", this.cachedUniforms.screenSize);
+    effect.setVector3("lightDirection", this.#cachedUniforms.lightDirection);
+    effect.setVector3("cameraPosition", this.#cachedUniforms.cameraPosition);
+    effect.setVector2("cameraPlanes", this.#cachedUniforms.cameraPlanes);
+    effect.setVector2("screenSize", this.#cachedUniforms.screenSize);
   }
 
   static updateGlobalUniforms(frameId: number) {
@@ -472,20 +486,32 @@ export class ChunkMesher {
     const engine = scene.getEngine();
 
     const lightDir = GlobalValues.skyLightDirection;
-    this.cachedUniforms.lightDirection.x = lightDir.x;
-    this.cachedUniforms.lightDirection.y = lightDir.y;
-    this.cachedUniforms.lightDirection.z = lightDir.z;
+    // Ensure cached light direction is normalized on the CPU so shaders can skip per-pixel normalize()
+    const tmpLight = new Vector3(
+      lightDir.x,
+      lightDir.y,
+      lightDir.z
+    ).normalize();
+    this.#cachedUniforms.lightDirection.x = tmpLight.x;
+    this.#cachedUniforms.lightDirection.y = tmpLight.y;
+    this.#cachedUniforms.lightDirection.z = tmpLight.z;
     const camPos = camera.position;
-    this.cachedUniforms.cameraPosition.x = camPos.x;
-    this.cachedUniforms.cameraPosition.y = camPos.y;
-    this.cachedUniforms.cameraPosition.z = camPos.z;
+    this.#cachedUniforms.cameraPosition.x = camPos.x;
+    this.#cachedUniforms.cameraPosition.y = camPos.y;
+    this.#cachedUniforms.cameraPosition.z = camPos.z;
 
-    this.cachedUniforms.screenSize.set(
+    this.#cachedUniforms.screenSize.set(
       engine.getRenderWidth(),
       engine.getRenderHeight()
     );
 
-    this.cachedUniforms.cameraPlanes.set(camera.minZ, camera.maxZ);
-    this.cachedUniforms.time = performance.now() / 1000.0;
+    this.#cachedUniforms.cameraPlanes.set(camera.minZ, camera.maxZ);
+    this.#cachedUniforms.time = performance.now() / 1000.0;
+
+    const sunElevation = -lightDir.y + 0.1;
+    this.#cachedUniforms.sunLightIntensity = Math.min(
+      1.0,
+      Math.max(0.1, sunElevation * 4)
+    );
   }
 }

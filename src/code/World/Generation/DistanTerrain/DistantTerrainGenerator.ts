@@ -11,6 +11,7 @@ export class DistantTerrainGenerator {
     oldData?: {
       positions: Int16Array;
       colors: Uint8Array;
+      normals: Int8Array;
     },
     oldCenterChunkX?: number,
     oldCenterChunkZ?: number
@@ -21,6 +22,7 @@ export class DistantTerrainGenerator {
 
     const positions = new Int16Array(vertexCount * 3);
     const colors = new Uint8Array(vertexCount * 3);
+    const normals = new Int8Array(vertexCount * 3);
 
     // Snap the center to the grid step to ensure consistent sampling
     const gridCenterChunkX = Math.floor(centerChunkX / gridStep) * gridStep;
@@ -92,6 +94,9 @@ export class DistantTerrainGenerator {
           r = oldData.colors[oldIndex * 3];
           g = oldData.colors[oldIndex * 3 + 1];
           b = oldData.colors[oldIndex * 3 + 2];
+          normals[vIndex * 3] = oldData.normals[oldIndex * 3];
+          normals[vIndex * 3 + 1] = oldData.normals[oldIndex * 3 + 1];
+          normals[vIndex * 3 + 2] = oldData.normals[oldIndex * 3 + 2];
         } else {
           const isInsideRealTerrain =
             localChunkX > -renderDistance &&
@@ -178,6 +183,27 @@ export class DistantTerrainGenerator {
             g *= 0.6;
             b *= 0.8;
           }
+
+          if (isInsideRealTerrain) {
+            normals[vIndex * 3] = 0;
+            normals[vIndex * 3 + 1] = 127;
+            normals[vIndex * 3 + 2] = 0;
+          } else {
+            const hRight = TerrainHeightMap.getFinalTerrainHeight(
+              worldX + 1,
+              worldZ
+            );
+            const hDown = TerrainHeightMap.getFinalTerrainHeight(
+              worldX,
+              worldZ + 1
+            );
+            const dy1 = hRight - y;
+            const dy2 = hDown - y;
+            const len = Math.sqrt(dy1 * dy1 + 1 + dy2 * dy2);
+            normals[vIndex * 3] = (-dy1 / len) * 127;
+            normals[vIndex * 3 + 1] = (1 / len) * 127;
+            normals[vIndex * 3 + 2] = (-dy2 / len) * 127;
+          }
         }
 
         // Local position relative to the mesh center
@@ -194,6 +220,6 @@ export class DistantTerrainGenerator {
         vIndex++;
       }
     }
-    return { positions, colors };
+    return { positions, colors, normals };
   }
 }

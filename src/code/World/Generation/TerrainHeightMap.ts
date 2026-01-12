@@ -6,7 +6,7 @@ import {
   GenerationParams,
   GenerationParamsType,
 } from "./NoiseAndParameters/GenerationParams";
-import { Voronoi } from "./NoiseAndParameters/Voronoi";
+//import { Voronoi } from "./NoiseAndParameters/Voronoi";
 import { Spline } from "./NoiseAndParameters/Spline";
 import { RiverGenerator } from "./RiverGeneration";
 
@@ -39,7 +39,7 @@ export class TerrainHeightMap {
     TerrainHeightMap.seedAsInt = Squirrel3.get(0, (prng() * 0xffffffff) | 0);
     const tempPrng = Alea(prng());
     const humidityPrng = Alea(prng());
-    const detailPrng = Alea(prng());
+    //const detailPrng = Alea(prng());
     const continentalnessPrng = Alea(prng());
     const erosionPrng = Alea(prng());
     const pvPrng = Alea(prng());

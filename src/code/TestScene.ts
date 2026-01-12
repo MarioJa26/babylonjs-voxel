@@ -80,8 +80,8 @@ export class TestScene {
     const playerCamera = new PlayerCamera(camera, scene);
     new World(); // This will create all the initial chunks
     const player = new Player(this.engine, scene, playerCamera, this.canvas);
-    const map = new Map1(scene, player); // Create the map
-    await map.initPromise; // Wait for the map's async initialization to complete
+    const map = new Map1(scene, player);
+    map.initPromise;
     return scene;
   }
 
