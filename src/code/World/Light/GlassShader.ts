@@ -10,7 +10,6 @@ export class GlassShader {
     varying vec2 vUV2;
     varying vec2 vUV3;
     varying mat3 vTBN;
-    varying vec2 vScreenSize;
     varying float vAO;
     varying float vSkyLight;
     varying float vBlockLight;
@@ -22,21 +21,6 @@ export class GlassShader {
 
     uniform sampler2D diffuseTexture;
     uniform sampler2D normalTexture;
-    uniform sampler2D depthSampler;
-
-    vec4 texture2D_with_derivatives(sampler2D atlas, vec2 tileOffset, vec2 tileUV, float tileSize) {
-        vec2 atlasUV = tileOffset + tileUV * tileSize;
-        vec2 dx = dFdx(tileUV) * tileSize;
-        vec2 dy = dFdy(tileUV) * tileSize;
-        float lod = log2(max(length(dx), length(dy)));
-        return texture2DLodEXT(atlas, atlasUV, lod);
-    }
-
-    // Function to linearize depth value from depth map
-    float linearizeDepth(float depth, float zNear, float zFar) {
-        float z = depth * 2.0 - 1.0; // Back to NDC
-        return (2.0 * zNear * zFar) / (zFar + zNear - z * (zFar - zNear));
-    }
 
     uniform vec2 cameraPlanes; // Represents camera.minZ and camera.maxZ
 
@@ -45,9 +29,13 @@ export class GlassShader {
         vec2 tiledLocalUV = vUV * vUV3;
         vec2 singleTileUV = fract(tiledLocalUV);
 
-        vec4 diffuseColor = texture2D_with_derivatives(diffuseTexture, vUV2, singleTileUV, atlasTileSize); 
+        vec2 dx = dFdx(singleTileUV) * atlasTileSize;
+        vec2 dy = dFdy(singleTileUV) * atlasTileSize;
+        float lod = log2(max(length(dx), length(dy)));
+        vec2 atlasUV = vUV2 + singleTileUV * atlasTileSize;
 
-        vec3 normalMap = texture2D_with_derivatives(normalTexture, vUV2, singleTileUV, atlasTileSize).rgb;
+        vec4 diffuseColor = texture2DLodEXT(diffuseTexture, atlasUV, lod);
+        vec3 normalMap = texture2DLodEXT(normalTexture, atlasUV, lod).rgb;
         normalMap = normalize(normalMap * 2.0 - 1.0);
 
         vec3 worldNormal = normalize(vTBN * normalMap);

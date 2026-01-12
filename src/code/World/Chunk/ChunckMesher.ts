@@ -6,11 +6,9 @@ import {
   PhysicsShapeType,
   Texture,
   Material,
-  DepthRenderer,
   Vector2,
   Vector3,
 } from "@babylonjs/core";
-import "@babylonjs/core/Rendering/depthRendererSceneComponent"; // For getDepthRenderer
 import { Map1 } from "@/code/Maps/Map1";
 import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
 
@@ -27,7 +25,6 @@ export class ChunkMesher {
   private static atlasMaterial: Material | null = null;
   private static waterMaterial: Material | null = null;
   private static glassMaterial: Material | null = null;
-  private static depthRenderer: DepthRenderer | null = null;
 
   // Cache global uniforms
   private static cachedUniforms = {
@@ -145,7 +142,7 @@ export class ChunkMesher {
               "cameraPlanes", // for depth calculation
               "screenSize", // for depth calculation
             ],
-            samplers: ["diffuseTexture", "normalTexture", "depthSampler"],
+            samplers: ["diffuseTexture", "normalTexture"],
           }
         );
 
@@ -195,12 +192,7 @@ export class ChunkMesher {
               "cameraPlanes",
               "screenSize",
             ],
-            samplers: [
-              "diffuseTexture",
-              "normalTexture",
-              "depthSampler",
-              "skyboxTexture",
-            ],
+            samplers: ["diffuseTexture", "normalTexture", "skyboxTexture"],
           }
         );
 
@@ -223,10 +215,6 @@ export class ChunkMesher {
         ChunkMesher.glassMaterial = glassMat;
       } else {
         console.error("Texture Atlas not yet built or available!");
-      }
-
-      if (!ChunkMesher.depthRenderer) {
-        ChunkMesher.depthRenderer = scene.enableDepthRenderer();
       }
     }
   }
@@ -461,11 +449,6 @@ export class ChunkMesher {
     effect.setVector2("cameraPlanes", this.cachedUniforms.cameraPlanes);
     effect.setVector2("screenSize", this.cachedUniforms.screenSize);
     effect.setFloat("time", this.cachedUniforms.time);
-
-    const depthMap = ChunkMesher.depthRenderer?.getDepthMap();
-    if (depthMap) {
-      effect.setTexture("depthSampler", depthMap);
-    }
   }
 
   private static applyGlassUniforms(effect: Effect) {
@@ -475,7 +458,6 @@ export class ChunkMesher {
     effect.setVector2("screenSize", this.cachedUniforms.screenSize);
   }
 
-  // Call this ONCE per frame in your game loop (before rendering)
   static updateGlobalUniforms(frameId: number) {
     // Skip if already updated this frame
     if (this.lastUpdateFrame === frameId) {

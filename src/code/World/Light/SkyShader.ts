@@ -51,7 +51,7 @@ export class SkyShader {
             // Add the sun glow, tinted slightly yellow.
             // Add the sun disc, which is bright white.
             vec3 finalColor = skyColor;
-            finalColor += sunGlow * vec3(1.0, 0.9, 0.7) * 0.5; // Additive glow
+            finalColor += sunGlow * vec3(1.0, 0.9, 0.7) * 0.3; // Additive glow
             finalColor += sunDisc * vec3(1.0, 1.0, 0.9);      // Additive sun disc
 
             // Ensure the sun is visible even when it's below the horizon by checking its y-direction
