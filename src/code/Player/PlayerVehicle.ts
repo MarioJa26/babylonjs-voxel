@@ -67,7 +67,7 @@ export class PlayerVehicle {
     this.#displayCapsule = this.createCharacterMesh(height, width);
 
     // Create physics controller
-    const startPosition = new Vector3(0, 165, -700);
+    const startPosition = new Vector3(0, 165, 0);
     // Extents are HALF-sizes for physics shapes
     const boxExtents = new Vector3(width, height, width);
     const characterShape = new PhysicsShape(
@@ -80,6 +80,27 @@ export class PlayerVehicle {
       { shape: characterShape },
       this.scene
     );
+
+    // Collision groups (must match boat's groups)
+    const GROUP_DEFAULT = 1;
+    const GROUP_CHARACTER = 2;
+    const GROUP_BOAT = 4;
+
+    // Try to mark the character's underlying physics body so it does NOT collide with boats
+    const charBody: any =
+      (this.#characterController as any).body ||
+      (this.#characterController as any).physicsBody ||
+      null;
+    if (
+      charBody &&
+      "collisionFilterGroup" in charBody &&
+      "collisionFilterMask" in charBody
+    ) {
+      charBody.collisionFilterGroup = GROUP_CHARACTER;
+      // collide with default world but NOT with boats
+      charBody.collisionFilterMask = GROUP_DEFAULT;
+    }
+
     this.camera.target = startPosition;
   }
 

@@ -165,7 +165,7 @@ export class ChunkWorkerPool {
         if (taskType === "terrain") {
           worker.postTerrainGeneration(taskChunk!);
         } else if (taskType === "remesh") {
-          worker.postMessage(taskChunk!);
+          worker.postFullRemesh(taskChunk!);
         } else if (taskType === "distantTerrain") {
           worker.postGenerateDistantTerrain(
             distantTask!.centerChunkX,

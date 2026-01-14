@@ -35,6 +35,8 @@ export class AdvancedBoat implements IUsable {
     this.#boat.metadata = new MetadataContainer();
     this.#boat.metadata.add("use", (player: Player) => this.use(player));
 
+    this.#boat.renderingGroupId = 1;
+
     this.setupBuoyancyPoints();
     this.setupAdvancedPhysics(scene);
     AdvancedBoat.#boatControls = new PaddleBoatControls(this, player);
@@ -91,6 +93,31 @@ export class AdvancedBoat implements IUsable {
       },
       scene
     );
+
+    // Collision groups (bit flags)
+    const GROUP_DEFAULT = 1;
+    const GROUP_CHARACTER = 2;
+    const GROUP_BOAT = 4;
+
+    // Try to protect from character pushing the boat by excluding character group
+    const boatBody: any = this.#physicsAggregate.body;
+    if (boatBody) {
+      if (
+        "collisionFilterGroup" in boatBody &&
+        "collisionFilterMask" in boatBody
+      ) {
+        boatBody.collisionFilterGroup = GROUP_BOAT;
+        // collide with world/default but NOT with characters
+        boatBody.collisionFilterMask = GROUP_DEFAULT | GROUP_BOAT;
+      }
+      // increase mass so small pushes don't move it
+      if (typeof boatBody.setMass === "function") {
+        boatBody.setMass(40);
+      } else if ("mass" in boatBody) {
+        boatBody.mass = 40;
+      }
+    }
+
     const worldMatrix = this.#boat.getWorldMatrix();
     scene.registerBeforeRender(() => {
       this.#submergedPoints = 0;

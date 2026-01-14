@@ -63,35 +63,16 @@ export class Chunk {
     return Chunk.LIGHT_EMISSION[blockId] || 0;
   }
 
-  private ensureSharedArrayBuffer(array: Uint8Array): Uint8Array {
-    if (array.buffer instanceof SharedArrayBuffer) {
-      return array;
-    }
-    const sab = new SharedArrayBuffer(array.length);
-    const newArray = new Uint8Array(sab);
-    newArray.set(array);
-    return newArray;
-  }
-
   public populate(
     block_array: Uint8Array,
     light_array?: Uint8Array,
     scheduleRemesh = true
   ): void {
-    // Use SharedArrayBuffer if available to avoid copying data to workers
-    this.block_array = this.ensureSharedArrayBuffer(block_array);
+    this.block_array = block_array;
 
-    this.isLoaded = true;
-    this.isTerrainScheduled = false; // Reset flag
     if (light_array) {
-      this.light_array = this.ensureSharedArrayBuffer(light_array);
+      this.light_array = light_array;
     } else {
-      // Ensure light array is allocated if we are initializing sunlight
-      if (this.light_array.length !== this.block_array.length) {
-        this.light_array = new Uint8Array(
-          new SharedArrayBuffer(this.block_array.length)
-        );
-      }
       this.initializeSunlight();
     }
     if (scheduleRemesh) {
@@ -100,6 +81,8 @@ export class Chunk {
       this.getNeighbor(0, 0, -1)?.scheduleRemesh();
       this.getNeighbor(0, -1, 0)?.scheduleRemesh();
     }
+    this.isLoaded = true;
+    this.isTerrainScheduled = false; // Reset flag
   }
 
   public unload(): void {

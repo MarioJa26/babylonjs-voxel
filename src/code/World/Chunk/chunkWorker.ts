@@ -1,6 +1,5 @@
 import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
 import { Chunk } from "./Chunk";
-import Util from "./Util";
 
 export class ChunkWorker {
   private worker: Worker;
@@ -10,17 +9,17 @@ export class ChunkWorker {
     this.worker.onmessage = onMessage;
   }
 
-  public postMessage(chunk: Chunk): void {
-    const pzChunk = chunk.getNeighbor(0, 0, 1);
-    const nzChunk = chunk.getNeighbor(0, 0, -1);
-
+  offset = (Chunk.SIZE - 1) * Chunk.SIZE2;
+  public postFullRemesh(chunk: Chunk): void {
     const neighbors = {
       px: chunk.getNeighbor(1, 0, 0)?.block_array,
       nx: chunk.getNeighbor(-1, 0, 0)?.block_array,
       py: chunk.getNeighbor(0, 1, 0)?.block_array,
       ny: chunk.getNeighbor(0, -1, 0)?.block_array,
-      pz: pzChunk ? Util.getNorthSlice(pzChunk.block_array) : undefined,
-      nz: nzChunk ? Util.getSouthSlice(nzChunk.block_array) : undefined,
+      pz: chunk.getNeighbor(0, 0, 1)?.block_array.slice(0, Chunk.SIZE2),
+      nz: chunk
+        .getNeighbor(0, 0, -1)
+        ?.block_array.slice(this.offset, this.offset + Chunk.SIZE2),
     };
 
     const neighborLights = {
@@ -28,8 +27,10 @@ export class ChunkWorker {
       nx: chunk.getNeighbor(-1, 0, 0)?.light_array,
       py: chunk.getNeighbor(0, 1, 0)?.light_array,
       ny: chunk.getNeighbor(0, -1, 0)?.light_array,
-      pz: pzChunk ? Util.getNorthSlice(pzChunk.light_array) : undefined,
-      nz: nzChunk ? Util.getSouthSlice(nzChunk.light_array) : undefined,
+      pz: chunk.getNeighbor(0, 0, 1)?.light_array.slice(0, Chunk.SIZE2),
+      nz: chunk
+        .getNeighbor(0, 0, -1)
+        ?.light_array.slice(this.offset, this.offset + Chunk.SIZE2),
     };
 
     this.worker.postMessage({

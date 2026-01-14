@@ -19,6 +19,8 @@ export class World {
    * Only creates chunks when the player's chunk coordinate moves to a new chunk.
    * Optionally removes chunks that are outside the radius.
    */
+
+  private static isUpdating = false;
   public static async updateChunksAround(
     chunkX: number,
     chunkY: number,
@@ -27,6 +29,8 @@ export class World {
     renderDistance = SettingParams.RENDER_DISTANCE,
     verticalRadius = SettingParams.VERTICAL_RENDER_DISTANCE
   ) {
+    if (this.isUpdating) return;
+    this.isUpdating = true;
     if (!this.distantTerrain) {
       this.distantTerrain = new DistantTerrain();
     }
@@ -99,7 +103,23 @@ export class World {
       chunksToGenerate
     );
 
-    // optional: remove chunks far outside the radius to free memory
+    this.handleUnloading(
+      chunkX,
+      chunkY,
+      chunkZ,
+      renderDistance,
+      verticalRadius
+    );
+
+    this.isUpdating = false;
+  }
+  private static async handleUnloading(
+    chunkX: number,
+    chunkY: number,
+    chunkZ: number,
+    renderDistance: number,
+    verticalRadius: number
+  ) {
     const removeRadius =
       renderDistance + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER;
     const chunksToSave: Chunk[] = [];
@@ -120,11 +140,13 @@ export class World {
       }
     }
 
-    try {
-      await WorldStorage.saveChunks(chunksToSave);
-    } catch (e) {
-      console.error("Failed to save chunks before unload:", e);
-    }
+    if (chunksToRemove.length === 0) return;
+
+    // Fire and forget - Don't await this inside the main loop
+    // Just catch errors to prevent crashes
+    WorldStorage.saveChunks(chunksToSave).catch((e) =>
+      console.error("Background save failed:", e)
+    );
 
     for (const chunk of chunksToRemove) {
       chunk.dispose();
@@ -132,7 +154,6 @@ export class World {
       Chunk.chunkInstances.delete(chunk.id);
     }
   }
-
   public static deleteBlock(worldX: number, worldY: number, worldZ: number) {
     const chunkX = this.worldToChunkCoord(worldX);
     const chunkY = this.worldToChunkCoord(worldY);

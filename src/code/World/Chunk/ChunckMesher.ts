@@ -427,7 +427,7 @@ export class ChunkMesher {
     // Create physics aggregate AFTER the world matrix is set.
     if (name === "chunk_opaque" || name === "chunk_glass") {
       // For voxel engines, MESH is necessary but needs proper setup
-      const aggregate = new PhysicsAggregate(
+      new PhysicsAggregate(
         mesh,
         PhysicsShapeType.MESH,
         {

@@ -109,15 +109,16 @@ void main(void) {
         normalMap = normalize(normalMap * 2.0 - 1.0); // Unpack normal from [0,1] to [-1,1]
         vec3 worldNormal = normalize(vTBN * normalMap);
 
-        // --- Lighting Calculation ---
-        // lightDirection is normalized by the CPU and cached — avoid per-pixel normalize().
-        vec3 normalizedLightDirection = lightDirection;
-
-        float diffuseIntensity = max(0.0, dot(worldNormal, normalizedLightDirection));
+        // 7. Calculate lighting.
+        float diffuseIntensity = max(0.0, dot(worldNormal, lightDirection));
         vec3 diffuse = diffuseColor.rgb * diffuseIntensity;
 
-        vec3 viewDirection = normalize(cameraPosition - vPositionW);
-        vec3 halfwayDir = normalize(normalizedLightDirection + viewDirection);
+
+        vec3 viewVec = cameraPosition - vPositionW;
+        float dist = length(viewVec);
+        vec3 viewDirection = viewVec / dist;
+
+        vec3 halfwayDir = normalize(viewDirection - lightDirection);
         float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), 16.0);
         vec3 specular = vec3(0.3) * spec * (sunLightIntensity - 0.1); // Specular color is white
 
@@ -125,11 +126,11 @@ void main(void) {
         
         // --- Light Coloring for Testing ---
         vec3 skyColor = vec3(0.8, 0.8, 0.8) * (sunLightIntensity + 0.2); // Blue-ish for sky
-        vec3 blockColor = vec3(1.0, 0.6, 0.2); // Orange-ish for block light
+        vec3 blockColor = vec3(0.9, 0.6, 0.2); // Orange-ish for block light
         
         vec3 lightMix = clamp((vSkyLight * skyColor) + (vBlockLight * blockColor), 0.0, 1.0);
         
-        vec3 finalColor = (diffuseColor.rgb * 0.8 + diffuse + specular) * max(lightMix * aoFactor, 0.2);
+        vec3 finalColor = (diffuseColor.rgb + diffuse + specular) * max(lightMix * aoFactor, 0.2);
 
         gl_FragColor = vec4(finalColor, diffuseColor.a);    
     }

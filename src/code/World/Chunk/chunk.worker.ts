@@ -20,7 +20,7 @@ type FaceData = {
   normal: Int8Array;
 };
 
-const FACE_DATA_CACHE: { [key: string]: FaceData } = {};
+const FACE_DATA_CACHE: { [key: number]: FaceData } = {};
 
 // Pre-calculate face data for all 6 directions
 for (const axis of [0, 1, 2]) {
@@ -28,7 +28,8 @@ for (const axis of [0, 1, 2]) {
     const normal = new Int8Array(3);
     normal[axis] = side;
 
-    FACE_DATA_CACHE[normal.join(",")] = {
+    const key = normal[0] + 1 + (normal[1] + 1) * 3 + (normal[2] + 1) * 9;
+    FACE_DATA_CACHE[key] = {
       normal,
     };
   }
@@ -171,12 +172,7 @@ class ChunkWorkerMesher {
         return neighbors.py ? neighbors.py[x + 0 * size + z * size2] : fallback;
       }
       if (z < 0) {
-        if (!neighbors.nz) return fallback;
-        // If we received a slice (size^2), access it directly.
-        if (neighbors.nz.length === size2) {
-          return neighbors.nz[x + y * size];
-        }
-        return neighbors.nz[x + y * size + (size - 1) * size2];
+        return neighbors.nz ? neighbors.nz[x + y * size] : fallback;
       }
       if (z >= size) {
         return neighbors.pz ? neighbors.pz[x + y * size + 0] : fallback;
@@ -211,12 +207,7 @@ class ChunkWorkerMesher {
         return nl.py ? nl.py[x + 0 * size + z * size2] : fallback;
       }
       if (z < 0) {
-        if (!nl.nz) return fallback;
-        // If we received a slice (size^2), access it directly.
-        if (nl.nz.length === size2) {
-          return nl.nz[x + y * size];
-        }
-        return nl.nz[x + y * size + (size - 1) * size2];
+        return nl.pz ? nl.pz[x + y * size] : fallback;
       }
       if (z >= size) {
         return nl.pz ? nl.pz[x + y * size + 0] : fallback;
@@ -246,8 +237,18 @@ class ChunkWorkerMesher {
       direction[(axis + 1) % 3] = 0;
       direction[(axis + 2) % 3] = 0;
 
+      const faceNamePositive = this.getFaceName(direction, false);
+      const faceNameNegative = this.getFaceName(direction, true);
+
+      const keyPos =
+        direction[0] + 1 + (direction[1] + 1) * 3 + (direction[2] + 1) * 9;
+      const normalPositive = FACE_DATA_CACHE[keyPos].normal;
+      const keyNeg =
+        -direction[0] + 1 + (-direction[1] + 1) * 3 + (-direction[2] + 1) * 9;
+      const normalNegative = FACE_DATA_CACHE[keyNeg].normal;
+
       // reuseable mask
-      const mask = new Int32Array(size * size);
+      const mask = new Uint32Array(size * size);
 
       // sweep slices
       for (position[axis] = 0; position[axis] < size; position[axis]++) {
@@ -392,6 +393,8 @@ class ChunkWorkerMesher {
               const isBackFace = (currentMaskValue & BACKFACE_FLAG) !== 0;
               const isTransparent = (currentMaskValue & TRANSPARENT_FLAG) !== 0;
               const blockId = currentMaskValue & BLOCK_ID_MASK;
+              const faceName = isBackFace ? faceNameNegative : faceNamePositive;
+              const normal = isBackFace ? normalNegative : normalPositive;
               const lightPacked = (currentMaskValue >>> 22) & 0xff;
               const packedAO = (currentMaskValue >>> 14) & 0xff;
 
@@ -419,6 +422,8 @@ class ChunkWorkerMesher {
                 height,
                 blockId,
                 isBackFace,
+                faceName,
+                normal,
                 lightPacked,
                 packedAO,
                 targetMesh
@@ -492,6 +497,8 @@ class ChunkWorkerMesher {
     height: number,
     blockId: number,
     isBackFace: boolean,
+    faceName: string,
+    normal: Int8Array,
     lightLevel: number,
     packedAO: number,
     meshData: WorkerInternalMeshData
@@ -532,15 +539,9 @@ class ChunkWorkerMesher {
     meshData.light.push(lightLevel, lightLevel, lightLevel, lightLevel);
 
     // normal
-    const normalVec = isBackFace ? [-q[0], -q[1], -q[2]] : q;
-
-    const faceData = FACE_DATA_CACHE[normalVec.join(",")];
-    const { normal } = faceData;
-
     meshData.normals.push(...normal, ...normal, ...normal, ...normal);
 
     // tile lookup and UV writes
-    const faceName = this.getFaceName(q, isBackFace);
     const tile = tex[faceName] ?? tex.all!;
     this.pushTileUV(
       meshData.cornerIds,

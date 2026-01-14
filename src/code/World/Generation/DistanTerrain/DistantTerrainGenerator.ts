@@ -147,9 +147,9 @@ export class DistantTerrainGenerator {
               b = 79;
               break;
             case "Ocean":
-              r = 0;
-              g = 0;
-              b = 222;
+              r = 65;
+              g = 56;
+              b = 41;
               break;
             case "River":
               r = 0;
