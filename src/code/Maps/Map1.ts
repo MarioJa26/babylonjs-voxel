@@ -87,10 +87,11 @@ export class Map1 {
       // Create the highlight mesh if it doesn't exist
       this.#blockHighlightMesh = MeshBuilder.CreateBox(
         "blockHighlight",
-        { size: 1.02 },
+        { size: 1.005 },
         Map1.mainScene
       );
       this.#blockHighlightMesh.isPickable = false;
+      this.#blockHighlightMesh.renderingGroupId = 1;
 
       // Create a transparent material for the box faces
       const highlightMaterial = new StandardMaterial(

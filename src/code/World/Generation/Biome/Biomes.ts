@@ -276,6 +276,26 @@ const RIVER: Biome = {
   },
 };
 
+const FLOATING_ISLANDS: Biome = {
+  name: "Floating_Islands",
+  topBlock: 15, // Grass
+  undergroundBlock: 1, // Stone
+  stoneBlock: 1,
+  canSpawnTrees: true,
+  treeDensity: 0.02,
+  beachBlock: 1, // Stone beach (no sand in sky)
+  seafloorBlock: 1,
+  terrainScale: GenerationParams.TERRAIN_SCALE,
+  persistence: 0.5,
+  heightExponent: 1.0,
+  terrainHeightBase: 0,
+  terrainHeightAmplitude: 100,
+  getTreeForBlock(blockId: number): TreeDefinition | null {
+    if (blockId === this.topBlock) return OAK_TREE;
+    return null;
+  },
+};
+
 export function getBiomeFor(
   temperature: number,
   humidity: number,
@@ -284,6 +304,9 @@ export function getBiomeFor(
 ): Biome {
   if (river < 0.1 && continentalness > -0.28 && continentalness < 0.67) {
     return RIVER;
+  }
+  if (continentalness < -0.93) {
+    return FLOATING_ISLANDS;
   }
   if (continentalness < -0.3) {
     return OCEAN;

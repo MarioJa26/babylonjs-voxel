@@ -30,13 +30,16 @@ export class WorldGenerator {
     // Separate PRNGs for different noise types to avoid correlation
     const treePrng = Alea(this.prng());
     const cavePrng = Alea(this.prng());
+    const densityPrng = Alea(this.prng());
 
     const treeNoise = createNoise2D(treePrng);
     const caveNoise = createNoise3D(cavePrng);
+    const densityNoise = createNoise3D(densityPrng);
 
     this.surfaceGenerator = new SurfaceGenerator(
       params,
       treeNoise,
+      densityNoise,
       this.seedAsInt
     );
     this.undergroundGenerator = new UndergroundGenerator(params, caveNoise);

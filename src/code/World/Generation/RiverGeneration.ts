@@ -46,6 +46,10 @@ export class RiverGenerator {
 
     if (radiusAtLocation <= 0) return false;
     const dy = worldY - this.TUNNEL_CENTER_Y;
+
+    // Optimization: Early exit if outside max possible radius (radius + max noise margin)
+    if (Math.abs(dy) > radiusAtLocation + 2) return false;
+
     const noise = this.wallNoise(worldX * 0.1, worldY * 0.1, worldZ * 0.1);
 
     if (Math.abs(dy) <= radiusAtLocation + noise) {

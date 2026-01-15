@@ -1,4 +1,4 @@
-import { createNoise2D } from "simplex-noise";
+import { createNoise2D, createNoise3D } from "simplex-noise";
 import {
   GenerationParams,
   GenerationParamsType,
@@ -14,6 +14,7 @@ import { TowerFeature } from "./Structure/TowerFeature";
 export class SurfaceGenerator {
   private params: GenerationParamsType;
   private treeNoise: ReturnType<typeof createNoise2D>;
+  private densityNoise: ReturnType<typeof createNoise3D>;
   private seedAsInt: number;
   private chunk_size: number;
   private riverGenerator: RiverGenerator;
@@ -22,10 +23,12 @@ export class SurfaceGenerator {
   constructor(
     params: GenerationParamsType,
     treeNoise: ReturnType<typeof createNoise2D>,
+    densityNoise: ReturnType<typeof createNoise3D>,
     seedAsInt: number
   ) {
     this.params = params;
     this.treeNoise = treeNoise;
+    this.densityNoise = densityNoise;
     this.seedAsInt = seedAsInt;
     this.chunk_size = this.params.CHUNK_SIZE;
     this.riverGenerator = new RiverGenerator(params);
@@ -95,13 +98,13 @@ export class SurfaceGenerator {
             riverNoise
           );
 
-          if (worldY > terrainHeight) {
-            // Above ground, fill with water if below sea level
-            if (worldY <= SEA_LEVEL) {
-              placeBlock(worldX, worldY, worldZ, 30, false); // water
-            }
-            continue; // Air
-          }
+          const density = this.getDensity(
+            worldX,
+            worldY,
+            worldZ,
+            terrainHeight,
+            biome
+          );
 
           if (isTunnel) {
             if (worldY <= tunnelHeight) {
@@ -112,25 +115,45 @@ export class SurfaceGenerator {
             continue;
           }
 
-          // It's a solid cell, place the appropriate terrain block
-          let blockId = 29; // Use block 29 for all underground stone
-          if (worldY === terrainHeight) {
-            const isBeach = this.isBeachLocation(worldX, worldZ, terrainHeight);
-            if (terrainHeight < SEA_LEVEL - 1) {
-              blockId = biome.seafloorBlock;
-            } else if (isBeach) {
-              blockId = biome.beachBlock;
+          if (density > 0) {
+            // It's a solid cell, place the appropriate terrain block
+            // Check the density of the block above to decide if this is a surface block
+            const densityAbove = this.getDensity(
+              worldX,
+              worldY + 1,
+              worldZ,
+              terrainHeight,
+              biome
+            );
+
+            let blockId = 29; // Use block 29 for all underground stone
+
+            if (densityAbove <= 0) {
+              // This is the surface layer
+              const isBeach = this.isBeachLocation(worldX, worldZ, worldY);
+              if (worldY < SEA_LEVEL - 1) {
+                blockId = biome.seafloorBlock;
+              } else if (isBeach) {
+                blockId = biome.beachBlock;
+              } else {
+                blockId = biome.topBlock;
+              }
+            } else if (densityAbove < 6) {
+              // Just below surface
+              blockId = biome.undergroundBlock;
             } else {
-              blockId = biome.topBlock;
+              // Deep underground
+              if (worldY > 0) {
+                blockId = 1;
+              }
             }
-          } else if (worldY > terrainHeight - 6) {
-            blockId = biome.undergroundBlock;
+            placeBlock(worldX, worldY, worldZ, blockId, true);
           } else {
-            if (worldY > 0) {
-              blockId = 1;
+            // Air or Water
+            if (worldY <= SEA_LEVEL) {
+              placeBlock(worldX, worldY, worldZ, 30, false); // water
             }
           }
-          placeBlock(worldX, worldY, worldZ, blockId, true);
         }
       }
     }
@@ -164,26 +187,49 @@ export class SurfaceGenerator {
         if (treeChanceRoll > biome.treeDensity) continue;
 
         if (biome.canSpawnTrees) {
-          const terrainHeight = this.getFinalTerrainHeight(worldX, worldZ);
+          const colBiome = TerrainHeightMap.getBiome(worldX, worldZ);
+          const baseHeight = this.getFinalTerrainHeight(worldX, worldZ);
+
+          let scanHeight = baseHeight;
+          if (colBiome.name === "Floating_Islands") {
+            scanHeight += 128;
+          }
+
+          // Find the actual surface height using density
+          let surfaceY = -Infinity;
+          // Scan range around base height. 3D noise amplitude is approx +/- 8.
+          for (let y = scanHeight + 16; y >= scanHeight - 16; y--) {
+            const density = this.getDensity(
+              worldX,
+              y,
+              worldZ,
+              baseHeight,
+              colBiome
+            );
+            if (density > 0) {
+              surfaceY = y;
+              break;
+            }
+          }
+
+          if (surfaceY === -Infinity) continue;
 
           const riverNoise = this.riverGenerator.getRiverNoise(worldX, worldZ);
-          const worldY = chunkY * this.chunk_size;
-          if (this.riverGenerator.isRiver(worldX, worldY, worldZ, riverNoise))
+          if (this.riverGenerator.isRiver(worldX, surfaceY, worldZ, riverNoise))
             continue;
 
-          const topBlockId = this.getBlockTypeAtWorldCoord(
-            worldX,
-            terrainHeight,
-            worldZ,
-            biome
-          );
+          // Don't place trees underwater
+          if (surfaceY < this.params.SEA_LEVEL) continue;
+
+          const isBeach = this.isBeachLocation(worldX, worldZ, surfaceY);
+          const topBlockId = isBeach ? biome.beachBlock : biome.topBlock;
 
           // Ask the biome for a tree definition for the block we're on
           biome
             .getTreeForBlock(topBlockId)
             ?.generate(
               worldX,
-              terrainHeight + 1,
+              surfaceY + 1,
               worldZ,
               placeBlock,
               this.seedAsInt
@@ -255,36 +301,45 @@ export class SurfaceGenerator {
     return terrainHeight <= this.params.SEA_LEVEL;
   }
 
-  /**
-   * Deterministically gets the block type at a given world coordinate,
-   * by re-evaluating the terrain generation logic for that specific point.
-   */
-  private getBlockTypeAtWorldCoord(
-    worldX: number,
-    worldY: number,
-    worldZ: number,
+  private getDensity(
+    x: number,
+    y: number,
+    z: number,
+    baseHeight: number,
     biome: Biome
   ): number {
-    const { SEA_LEVEL } = this.params;
-    const terrainHeight = this.getFinalTerrainHeight(worldX, worldZ);
+    if (biome.name === "Floating_Islands") {
+      // 1. Floating islands logic: Create blobs around the base height
+      const islandOffset = 60;
+      const islandBaseHeight = baseHeight + islandOffset;
 
-    if (worldY > terrainHeight) {
-      // Above terrain, check for water
-      return worldY <= SEA_LEVEL ? 30 : 0; // Water or Air
-    } else if (worldY === terrainHeight) {
-      // This logic should mirror generateTerrain to be accurate
-      const isBeach = this.isBeachLocation(worldX, worldZ, terrainHeight);
-      if (terrainHeight < SEA_LEVEL - 1) {
-        return biome.seafloorBlock;
-      } else if (isBeach) {
-        return biome.beachBlock;
-      } else {
-        return biome.topBlock;
+      let islandDensity = -100;
+      if (Math.abs(islandBaseHeight - y) < 50) {
+        const noise = this.densityNoise(x * 0.02, y * 0.05, z * 0.02);
+        islandDensity = noise * 30 - Math.abs(islandBaseHeight - y) * 0.8;
       }
-    } else if (worldY > terrainHeight - 5) {
-      // 4 blocks below the top layer
-      return biome.undergroundBlock;
+
+      // 2. Floor logic: Ensure there is terrain below (e.g. ocean floor)
+      const floorHeight = this.params.SEA_LEVEL - 15;
+      const floorNoise = this.densityNoise(x * 0.04, y * 0.04, z * 0.04);
+      const floorDensity = floorHeight - y + floorNoise * 8;
+
+      return Math.max(islandDensity, floorDensity);
     }
-    return biome.undergroundBlock;
+
+    const relativeHeight = baseHeight - y;
+    // Optimization: Skip noise calculation if far from the surface approximation.
+    // The noise amplitude is 8.
+    // We use a margin of 16 to be safe for both:
+    // 1. Determining solid vs air (threshold 0) -> margin 8 is enough.
+    // 2. Determining block type (threshold 6 for dirt depth) -> margin 14 is needed (6 + 8).
+    if (relativeHeight > 16) return relativeHeight;
+    if (relativeHeight < -16) return relativeHeight;
+
+    // 3D noise for density.
+    // Scale controls the size of the features (caves/overhangs).
+    const noise = this.densityNoise(x * 0.04, y * 0.04, z * 0.04);
+    // (baseHeight - y) creates the ground. Adding noise distorts it.
+    return relativeHeight + noise * 8;
   }
 }

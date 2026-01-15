@@ -96,6 +96,13 @@ export class CrossHair {
     };
   }
 
+  /**
+   * Returns the position of the Babylon mesh that the player is currently
+   * looking at, or null if no Babylon mesh is hit.
+   * @param player The player to check for.
+   * @returns The position of the Babylon mesh that the player is currently
+   *          looking at, or null if no Babylon mesh is hit.
+   */
   public static pickMesh(player: Player): Vector3 | null {
     const ray = player.playerCamera.playerCamera.getForwardRay(
       Player.REACH_DISTANCE
@@ -111,6 +118,13 @@ export class CrossHair {
       Math.floor(hitPos.z)
     );
   }
+  /**
+   * Returns the block ID at the position that the player is currently
+   * looking at, or null if no block is hit.
+   * @param player The player to check for.
+   * @returns The block ID at the position that the player is currently
+   *          looking at, or null if no block is hit.
+   */
   public static pickBlock(player: Player): number | null {
     const ray = player.playerCamera.playerCamera.getForwardRay(
       Player.REACH_DISTANCE
@@ -126,6 +140,13 @@ export class CrossHair {
       Math.floor(hitPos.z)
     );
   }
+  /**
+   * Returns the position of the Babylon mesh that the player is currently
+   * looking at, or null if no Babylon mesh is hit.
+   * @param player The player to check for.
+   * @returns The position of the Babylon mesh that the player is currently
+   *          looking at, or null if no Babylon mesh is hit.
+   */
   public static pickTarget(player: Player): Vector3 | null {
     const ray = player.playerCamera.playerCamera.getForwardRay(
       Player.REACH_DISTANCE

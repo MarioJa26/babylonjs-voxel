@@ -36,7 +36,7 @@ export class Player implements IUsable {
 
   public flashlight: PlayerFlashLight;
 
-  static readonly REACH_DISTANCE = 16;
+  static readonly REACH_DISTANCE = 64;
   #pauseMenu: PauseMenu;
 
   // Track player's chunk position to avoid unnecessary updates

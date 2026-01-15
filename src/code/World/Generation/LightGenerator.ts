@@ -41,17 +41,25 @@ export class LightGenerator {
           worldZ
         );
 
-        for (let y = 0; y < CHUNK_SIZE; y++) {
-          const worldY = chunkY * CHUNK_SIZE + y;
+        let receivingSun = true;
+        const topWorldY = chunkY * CHUNK_SIZE + CHUNK_SIZE - 1;
+        // Heuristic: If we are deep below the terrain baseline, assume no direct sun.
+        // 32 is a margin to account for 3D noise variations (valleys/caves).
+        if (topWorldY < terrainHeight - 32) {
+          receivingSun = false;
+        }
 
-          if (worldY > terrainHeight) {
-            const idx = x + y * CHUNK_SIZE + z * CHUNK_SIZE_SQ;
-            if (blocks[idx] === 0) {
-              light[idx] = 15 << 4;
-              // Pack coordinates: x (8), y (8), z (8)
-              queue[tail % capacity] = (x << 16) | (y << 8) | z;
-              tail++;
-            }
+        for (let y = CHUNK_SIZE - 1; y >= 0; y--) {
+          const idx = x + y * CHUNK_SIZE + z * CHUNK_SIZE_SQ;
+          const blockId = blocks[idx];
+
+          if (blockId !== 0) {
+            receivingSun = false;
+          } else if (receivingSun) {
+            light[idx] = 15 << 4;
+            // Pack coordinates: x (8), y (8), z (8)
+            queue[tail % capacity] = (x << 16) | (y << 8) | z;
+            tail++;
           }
         }
       }
