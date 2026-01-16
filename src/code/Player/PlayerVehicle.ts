@@ -67,8 +67,7 @@ export class PlayerVehicle {
     this.#displayCapsule = this.createCharacterMesh(height, width);
 
     // Create physics controller
-    const startPosition = new Vector3(-1600, 165, 1000);
-    // Extents are HALF-sizes for physics shapes
+    const startPosition = new Vector3(-7000, 165, 2400);
     const boxExtents = new Vector3(width, height, width);
     const characterShape = new PhysicsShape(
       { type: PhysicsShapeType.BOX, parameters: { extents: boxExtents } },
@@ -82,6 +81,7 @@ export class PlayerVehicle {
     );
 
     // Collision groups (must match boat's groups)
+    //Todo does not work
     const GROUP_DEFAULT = 1;
     const GROUP_CHARACTER = 2;
     const GROUP_BOAT = 4;

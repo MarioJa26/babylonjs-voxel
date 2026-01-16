@@ -29,6 +29,10 @@ export class TerrainHeightMap {
 
   private static seedAsInt: number;
 
+  private static heightCache = new Map<string, number>();
+  private static biomeCache = new Map<string, Biome>();
+  private static readonly MAX_CACHE_SIZE = 50000;
+
   // Static initializer block. This runs once when the class is loaded.
   static {
     this.params = GenerationParams;
@@ -104,6 +108,11 @@ export class TerrainHeightMap {
   }
 
   public static getBiome(x: number, z: number): Biome {
+    const key = `${x},${z}`;
+    if (this.biomeCache.has(key)) {
+      return this.biomeCache.get(key)!;
+    }
+
     const CONTINENTALNESS_NOISE_SCALE =
       GenerationParams.CONTINENTALNESS_NOISE_SCALE;
 
@@ -134,7 +143,18 @@ export class TerrainHeightMap {
       effectiveRiver = 1.0;
     }
 
-    return getBiomeFor(temperature, humidity, continentalness, effectiveRiver);
+    const biome = getBiomeFor(
+      temperature,
+      humidity,
+      continentalness,
+      effectiveRiver
+    );
+
+    if (this.biomeCache.size > this.MAX_CACHE_SIZE) {
+      this.biomeCache.clear();
+    }
+    this.biomeCache.set(key, biome);
+    return biome;
   }
 
   private static computeBaseHeight(x: number, z: number): number {
@@ -227,16 +247,27 @@ export class TerrainHeightMap {
   }
 
   public static getOctaveNoise(x: number, z: number): number {
-    const base = this.getInterpolatedBaseHeight(x, z, 32);
+    const base = this.getInterpolatedBaseHeight(x, z, 1);
     const detail = this.computeDetail(x, z, base);
     return base + detail;
   }
 
   public static getFinalTerrainHeight(worldX: number, worldZ: number): number {
+    const key = `${worldX},${worldZ}`;
+    if (this.heightCache.has(key)) {
+      return this.heightCache.get(key)!;
+    }
+
     const potentialHeight = this.getOctaveNoise(worldX, worldZ);
 
     let finalHeight = potentialHeight;
     finalHeight = Math.max(17, finalHeight);
-    return Math.floor(finalHeight);
+    finalHeight = Math.floor(finalHeight);
+
+    if (this.heightCache.size > this.MAX_CACHE_SIZE) {
+      this.heightCache.clear();
+    }
+    this.heightCache.set(key, finalHeight);
+    return finalHeight;
   }
 }

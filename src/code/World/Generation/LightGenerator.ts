@@ -5,7 +5,7 @@ import { TerrainHeightMap } from "./TerrainHeightMap";
 export class LightGenerator {
   private static chunkSize: number;
   private static chunkSizeSq: number;
-  private lightQueue: Int32Array;
+  private lightQueue: Uint16Array;
   private static queueCapacity: number;
 
   constructor(params: GenerationParamsType) {
@@ -14,7 +14,7 @@ export class LightGenerator {
     // Allocate a fixed size buffer for the queue.
     // A size of chunkSize^3 is sufficient for a circular buffer in BFS
     LightGenerator.queueCapacity = LightGenerator.chunkSize ** 3;
-    this.lightQueue = new Int32Array(LightGenerator.queueCapacity);
+    this.lightQueue = new Uint16Array(LightGenerator.queueCapacity);
   }
 
   public generate(
@@ -55,10 +55,16 @@ export class LightGenerator {
 
           if (blockId !== 0) {
             receivingSun = false;
+            // Check for light emitting blocks (e.g. Lava)
+            if (blockId === 24) {
+              light[idx] = (light[idx] & 0xf0) | 15;
+              queue[tail % capacity] = (x << 10) | (y << 5) | z;
+              tail++;
+            }
           } else if (receivingSun) {
             light[idx] = 15 << 4;
-            // Pack coordinates: x (8), y (8), z (8)
-            queue[tail % capacity] = (x << 16) | (y << 8) | z;
+            // Pack coordinates: x (5), y (5), z (5) -> Max 32
+            queue[tail % capacity] = (x << 10) | (y << 5) | z;
             tail++;
           }
         }
@@ -70,14 +76,16 @@ export class LightGenerator {
       const val = queue[head % capacity];
       head++;
 
-      const x = (val >> 16) & 0xff;
-      const y = (val >> 8) & 0xff;
-      const z = val & 0xff;
+      const x = (val >> 10) & 0x1f;
+      const y = (val >> 5) & 0x1f;
+      const z = val & 0x1f;
 
       const idx = x + y * CHUNK_SIZE + z * CHUNK_SIZE_SQ;
-      const l = (light[idx] >> 4) & 0xf;
+      const lightVal = light[idx];
+      const skyLight = (lightVal >> 4) & 0xf;
+      const blockLight = lightVal & 0xf;
 
-      if (l <= 1) continue;
+      if (skyLight <= 1 && blockLight <= 1) continue;
 
       // Check neighbors manually to avoid GC from array allocation
       // x + 1
@@ -86,7 +94,8 @@ export class LightGenerator {
           x + 1,
           y,
           z,
-          l - 1,
+          skyLight - 1,
+          blockLight - 1,
           blocks,
           light,
           tail,
@@ -100,7 +109,8 @@ export class LightGenerator {
           x - 1,
           y,
           z,
-          l - 1,
+          skyLight - 1,
+          blockLight - 1,
           blocks,
           light,
           tail,
@@ -114,7 +124,8 @@ export class LightGenerator {
           x,
           y + 1,
           z,
-          l - 1,
+          skyLight - 1,
+          blockLight - 1,
           blocks,
           light,
           tail,
@@ -128,7 +139,8 @@ export class LightGenerator {
           x,
           y - 1,
           z,
-          l === 15 ? 15 : l - 1,
+          skyLight === 15 ? 15 : skyLight - 1,
+          blockLight - 1,
           blocks,
           light,
           tail,
@@ -142,7 +154,8 @@ export class LightGenerator {
           x,
           y,
           z + 1,
-          l - 1,
+          skyLight - 1,
+          blockLight - 1,
           blocks,
           light,
           tail,
@@ -156,7 +169,8 @@ export class LightGenerator {
           x,
           y,
           z - 1,
-          l - 1,
+          skyLight - 1,
+          blockLight - 1,
           blocks,
           light,
           tail,
@@ -171,7 +185,8 @@ export class LightGenerator {
     nx: number,
     ny: number,
     nz: number,
-    targetLight: number,
+    targetSky: number,
+    targetBlock: number,
     blocks: Uint8Array,
     light: Uint8Array,
     tail: number,
@@ -185,12 +200,27 @@ export class LightGenerator {
       blockId === 0 || blockId === 30 || blockId === 60 || blockId === 61;
 
     if (isTransparent) {
-      const currentSky = (light[idx] >> 4) & 0xf;
-      if (currentSky < targetLight) {
-        const blockLight = light[idx] & 0xf;
-        light[idx] = (targetLight << 4) | blockLight;
+      const currentVal = light[idx];
+      const currentSky = (currentVal >> 4) & 0xf;
+      const currentBlock = currentVal & 0xf;
+
+      let updated = false;
+      let newSky = currentSky;
+      let newBlock = currentBlock;
+
+      if (targetSky > currentSky) {
+        newSky = targetSky;
+        updated = true;
+      }
+      if (targetBlock > currentBlock) {
+        newBlock = targetBlock;
+        updated = true;
+      }
+
+      if (updated) {
+        light[idx] = (newSky << 4) | newBlock;
         this.lightQueue[tail % LightGenerator.queueCapacity] =
-          (nx << 16) | (ny << 8) | nz;
+          (nx << 10) | (ny << 5) | nz;
         return tail + 1;
       }
     }

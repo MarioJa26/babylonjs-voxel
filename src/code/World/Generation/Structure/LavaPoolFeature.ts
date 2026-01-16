@@ -16,10 +16,10 @@ export class LavaPoolFeature implements IWorldFeature {
       ow: boolean
     ) => void,
     seed: number,
-    chunkSize: number
+    chunkSize: number,
+    getTerrainHeight: (x: number, z: number, biome: Biome) => number
   ) {
     const POOL_REGION_SIZE = 9;
-    const POOL_SPAWN_CHANCE = 100;
 
     const regionX = Math.floor(chunkX / POOL_REGION_SIZE);
     const regionZ = Math.floor(chunkZ / POOL_REGION_SIZE);
@@ -29,7 +29,15 @@ export class LavaPoolFeature implements IWorldFeature {
       seed
     );
 
-    if (Math.abs(regionHash) % 100 < POOL_SPAWN_CHANCE) {
+    let spawnChance = 2;
+    let isSurface = false;
+
+    if (biome.name === "Volcanic_Wasteland") {
+      spawnChance = 100;
+      isSurface = true;
+    }
+
+    if (Math.abs(regionHash) % 100 < spawnChance) {
       const baseHash = Squirrel3.get(regionHash, seed);
       const offsetX =
         Math.abs(Squirrel3.get(baseHash, seed)) %
@@ -37,12 +45,17 @@ export class LavaPoolFeature implements IWorldFeature {
       const offsetZ =
         Math.abs(Squirrel3.get(baseHash + 1, seed)) %
         (POOL_REGION_SIZE * chunkSize);
-      const offsetY =
-        -64 - (Math.abs(Squirrel3.get(baseHash + 2, seed)) % (1024 - 64));
 
       const poolCenterX = regionX * POOL_REGION_SIZE * chunkSize + offsetX;
-      const poolSurfaceY = offsetY;
       const poolCenterZ = regionZ * POOL_REGION_SIZE * chunkSize + offsetZ;
+
+      let poolSurfaceY;
+      if (isSurface) {
+        poolSurfaceY = getTerrainHeight(poolCenterX, poolCenterZ, biome) - 1;
+      } else {
+        poolSurfaceY =
+          -64 - (Math.abs(Squirrel3.get(baseHash + 2, seed)) % (1024 - 64));
+      }
 
       this.generateLavaPool(
         chunkX,

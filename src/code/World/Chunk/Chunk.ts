@@ -57,6 +57,7 @@ export class Chunk {
   public static readonly LIGHT_EMISSION: Record<number, number> = {
     10: 15, // Example: Lava
     11: 15, // Example: Glowstone
+    24: 15, //Lava
   };
 
   public static getLightEmission(blockId: number): number {

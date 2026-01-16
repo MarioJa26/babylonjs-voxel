@@ -63,7 +63,7 @@ export class SurfaceGenerator {
     chunkX: number,
     chunkY: number,
     chunkZ: number,
-    biome: Biome,
+    _currentBiome: Biome,
     placeBlock: (
       x: number,
       y: number,
@@ -151,7 +151,8 @@ export class SurfaceGenerator {
           } else {
             // Air or Water
             if (worldY <= SEA_LEVEL) {
-              placeBlock(worldX, worldY, worldZ, 30, false); // water
+              const liquidId = biome.name === "Volcanic_Wasteland" ? 24 : 30; // 24 = Lava, 30 = Water
+              placeBlock(worldX, worldY, worldZ, liquidId, false);
             }
           }
         }
@@ -252,18 +253,55 @@ export class SurfaceGenerator {
       ow: boolean
     ) => void
   ) {
-    // Iterate through all registered features (OTG style)
-    for (const feature of this.features) {
-      feature.generate(
-        chunkX,
-        chunkY,
-        chunkZ,
-        biome,
-        placeBlock,
-        this.seedAsInt,
-        this.chunk_size,
-        this.getFinalTerrainHeight.bind(this)
-      );
+    // To handle structures that span across chunk boundaries without breaking,
+    // we must check neighbor chunks to see if a structure starts there and overlaps into this chunk.
+    const STRUCTURE_SEARCH_RADIUS = 1; // Check 1 chunk radius (3x3 area). Increase for larger structures.
+
+    for (
+      let cx = chunkX - STRUCTURE_SEARCH_RADIUS;
+      cx <= chunkX + STRUCTURE_SEARCH_RADIUS;
+      cx++
+    ) {
+      for (
+        let cz = chunkZ - STRUCTURE_SEARCH_RADIUS;
+        cz <= chunkZ + STRUCTURE_SEARCH_RADIUS;
+        cz++
+      ) {
+        // Determine the biome at the origin of the potential structure
+        const originWorldX = cx * this.chunk_size + this.chunk_size / 2;
+        const originWorldZ = cz * this.chunk_size + this.chunk_size / 2;
+
+        // Optimization: Lazy load the biome using a Proxy.
+        // This avoids expensive noise calculations if the feature decides not to spawn (e.g. due to random chance) before checking the biome.
+        let cachedBiome: Biome | null = null;
+        const originBiome = new Proxy({} as Biome, {
+          get: (_target, prop) => {
+            if (!cachedBiome) {
+              cachedBiome = TerrainHeightMap.getBiome(
+                originWorldX,
+                originWorldZ
+              );
+            }
+            const value = cachedBiome[prop as keyof Biome];
+            return typeof value === "function"
+              ? value.bind(cachedBiome)
+              : value;
+          },
+        });
+
+        for (const feature of this.features) {
+          feature.generate(
+            cx,
+            chunkY,
+            cz,
+            originBiome,
+            placeBlock,
+            this.seedAsInt,
+            this.chunk_size,
+            this.getFinalTerrainHeight.bind(this)
+          );
+        }
+      }
     }
   }
 
@@ -340,6 +378,6 @@ export class SurfaceGenerator {
     // Scale controls the size of the features (caves/overhangs).
     const noise = this.densityNoise(x * 0.04, y * 0.04, z * 0.04);
     // (baseHeight - y) creates the ground. Adding noise distorts it.
-    return relativeHeight + noise * 16;
+    return relativeHeight + noise * 8;
   }
 }

@@ -296,6 +296,25 @@ const FLOATING_ISLANDS: Biome = {
   },
 };
 
+const VOLCANIC_WASTELAND: Biome = {
+  name: "Volcanic_Wasteland",
+  topBlock: 1, // Stone (or Obsidian if you have a block ID for it)
+  undergroundBlock: 1, // Stone
+  stoneBlock: 1,
+  canSpawnTrees: false,
+  treeDensity: 0.0,
+  beachBlock: 8, // Gravel or similar
+  seafloorBlock: 1, // Stone bottom for lava lakes
+  terrainScale: GenerationParams.TERRAIN_SCALE,
+  persistence: 0.5, // Rough terrain
+  heightExponent: 1.2,
+  terrainHeightBase: 50,
+  terrainHeightAmplitude: 150,
+  getTreeForBlock(blockId: number): TreeDefinition | null {
+    return null;
+  },
+};
+
 export function getBiomeFor(
   temperature: number,
   humidity: number,
@@ -341,6 +360,9 @@ export function getBiomeFor(
   // Hot regions
   if (temperature > 0.55) {
     if (humidity < 0.25) {
+      if (temperature > 0.85) {
+        return VOLCANIC_WASTELAND; // Extremely hot and dry
+      }
       return DESERT; // Hot and dry
     } else {
       return JUNGLE; // Hot and wet
