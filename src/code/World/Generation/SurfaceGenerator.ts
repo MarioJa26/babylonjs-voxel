@@ -173,12 +173,12 @@ export class SurfaceGenerator {
       localX < this.chunk_size + TREE_RADIUS;
       localX++
     ) {
+      const worldX = chunkX * this.chunk_size + localX;
       for (
         let localZ = -TREE_RADIUS;
         localZ < this.chunk_size + TREE_RADIUS;
         localZ++
       ) {
-        const worldX = chunkX * this.chunk_size + localX;
         const worldZ = chunkZ * this.chunk_size + localZ;
 
         // Use noise for tree placement. The value is in [-1, 1], so we map it to [0, 1].
@@ -340,6 +340,6 @@ export class SurfaceGenerator {
     // Scale controls the size of the features (caves/overhangs).
     const noise = this.densityNoise(x * 0.04, y * 0.04, z * 0.04);
     // (baseHeight - y) creates the ground. Adding noise distorts it.
-    return relativeHeight + noise * 8;
+    return relativeHeight + noise * 16;
   }
 }
