@@ -16,6 +16,8 @@ import {
   Mesh,
   TransformNode,
 } from "@babylonjs/core";
+import "@babylonjs/core/Debug/debugLayer";
+import "@babylonjs/inspector";
 import HavokPhysics from "@babylonjs/havok";
 import { Player } from "./Player/Player";
 import { distanceCullMeshes } from "../BabylonExamples/occlusion";
@@ -40,6 +42,19 @@ export class TestScene {
     this.document = document;
     this.engine = new Engine(this.canvas);
     this.connection = new MyConnection();
+
+    window.addEventListener("keydown", (ev) => {
+      // Shift+Ctrl+Alt+I
+      if (ev.ctrlKey && ev.key.toLowerCase() === "f") {
+        if (this.scene) {
+          if (this.scene.debugLayer.isVisible()) {
+            this.scene.debugLayer.hide();
+          } else {
+            this.scene.debugLayer.show();
+          }
+        }
+      }
+    });
 
     this.initPromise = this.init();
 

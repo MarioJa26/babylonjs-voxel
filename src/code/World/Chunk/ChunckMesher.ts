@@ -8,6 +8,8 @@ import {
   Material,
   Vector2,
   Vector3,
+  BoundingInfo,
+  AbstractMesh,
 } from "@babylonjs/core";
 import { Map1 } from "@/code/Maps/Map1";
 import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
@@ -317,7 +319,7 @@ export class ChunkMesher {
     );
     mesh.setVerticesBuffer(positionBuffer);
 
-    // Create VertexBuffer for normals (Int8)
+    // Create VertexBuffer for normals (now faceId: 1 component)
     const normalBuffer = new VertexBuffer(
       engine,
       meshData.normals,
@@ -422,7 +424,18 @@ export class ChunkMesher {
       chunk.chunkY * Chunk.SIZE,
       chunk.chunkZ * Chunk.SIZE
     );
+
+    const chunkMax = new Vector3(Chunk.SIZE, Chunk.SIZE, Chunk.SIZE);
+    mesh.setBoundingInfo(new BoundingInfo(Vector3.Zero(), chunkMax));
+
+    // Optimization: Use sphere culling for faster visibility checks on cubic chunks
+    mesh.cullingStrategy = AbstractMesh.CULLINGSTRATEGY_BOUNDINGSPHERE_ONLY;
+
     mesh.freezeWorldMatrix();
+    mesh.doNotSyncBoundingInfo = true;
+    mesh.ignoreNonUniformScaling = true;
+    mesh.checkCollisions = false;
+    mesh.freezeNormals();
 
     // Create physics aggregate AFTER the world matrix is set.
     if (name === "chunk_opaque" || name === "chunk_glass") {

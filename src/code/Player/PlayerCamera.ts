@@ -1,6 +1,7 @@
 import { FreeCamera, Scene, Vector3 } from "@babylonjs/core";
 import MapFog from "../Maps/MapFog";
 import { SettingParams } from "../World/SettingParams";
+import { GenerationParams } from "../World/Generation/NoiseAndParameters/GenerationParams";
 
 export class PlayerCamera {
   #playerCamera: FreeCamera;
@@ -49,15 +50,14 @@ export class PlayerCamera {
     this.#playerCamera.target = characterPosition.add(
       new Vector3(0, this.#eyeHeight, 0)
     );
-    /*
-    if (this.position.y < 2.1) {
+
+    if (this.position.y < GenerationParams.SEA_LEVEL) {
       this.scene.fogStart = MapFog.fogStartUnderWater;
       this.scene.fogEnd = MapFog.fogEndUnderWater;
     } else {
       this.scene.fogStart = MapFog.fogStartAboveWater;
       this.scene.fogEnd = MapFog.fogEndAboveWater;
     }
-    */
   }
 
   public handleMouseMovement(deltaX: number, deltaY: number): void {

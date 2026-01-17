@@ -332,6 +332,8 @@ export class Map1 {
   }
 
   async loadTextures(): Promise<void> {
-    await TextureAtlasFactory.buildAtlas(Map1.mainScene, TextureDefinitions);
+    if (GlobalValues.CREATE_ATLAS) {
+      await TextureAtlasFactory.buildAtlas(Map1.mainScene, TextureDefinitions);
+    }
   }
 }
