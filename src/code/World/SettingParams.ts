@@ -2,7 +2,7 @@ import { Color3, Color4 } from "@babylonjs/core";
 
 export class SettingParams {
   // --- World Generation & Loading ---
-  public static RENDER_DISTANCE = 12;
+  public static RENDER_DISTANCE = 10;
   public static VERTICAL_RENDER_DISTANCE = 12;
   public static MAX_CHUNK_HEIGHT = 32;
   public static CHUNK_UNLOAD_DISTANCE_BUFFER = 6; // How many extra chunks to keep before unloading
@@ -10,7 +10,7 @@ export class SettingParams {
   public static VERTICAL_CHUNK_CULLING_FACTOR = 6; // Multiplier for CHUNK_SIZE to cull chunks above/below terrain
   public static CAMERA_FOV = 90; // Default camera field of view in degrees
 
-  public static DISTANT_RENDER_DISTANCE = 296;
+  public static DISTANT_RENDER_DISTANCE = 216;
 
   // --- Day/Night Cycle ---
   public static DAY_DURATION_MS = 10 * 60 * 1000; // 10 minutes for a full day

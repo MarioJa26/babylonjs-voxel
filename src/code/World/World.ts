@@ -27,7 +27,7 @@ export class World {
     chunkZ: number,
     playerY: number,
     renderDistance = SettingParams.RENDER_DISTANCE,
-    verticalRadius = SettingParams.VERTICAL_RENDER_DISTANCE
+    verticalRadius = SettingParams.VERTICAL_RENDER_DISTANCE,
   ) {
     if (this.isUpdating) return;
     this.isUpdating = true;
@@ -100,7 +100,7 @@ export class World {
 
     // 6. Enqueue chunks for generation
     ChunkWorkerPool.getInstance().scheduleTerrainGenerationBatch(
-      chunksToGenerate
+      chunksToGenerate,
     );
 
     this.handleUnloading(
@@ -108,7 +108,7 @@ export class World {
       chunkY,
       chunkZ,
       renderDistance,
-      verticalRadius
+      verticalRadius,
     );
 
     this.isUpdating = false;
@@ -118,7 +118,7 @@ export class World {
     chunkY: number,
     chunkZ: number,
     renderDistance: number,
-    verticalRadius: number
+    verticalRadius: number,
   ) {
     const removeRadius =
       renderDistance + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER;
@@ -145,7 +145,7 @@ export class World {
     // Fire and forget - Don't await this inside the main loop
     // Just catch errors to prevent crashes
     WorldStorage.saveChunks(chunksToSave).catch((e) =>
-      console.error("Background save failed:", e)
+      console.error("Background save failed:", e),
     );
 
     for (const chunk of chunksToRemove) {
@@ -173,7 +173,7 @@ export class World {
     worldX: number,
     worldY: number,
     worldZ: number,
-    blockId: number
+    blockId: number,
   ) {
     const chunkX = this.worldToChunkCoord(worldX);
     const chunkY = this.worldToChunkCoord(worldY);
@@ -192,7 +192,7 @@ export class World {
   public static getBlockByWorldCoords(
     worldX: number,
     worldY: number,
-    worldZ: number
+    worldZ: number,
   ): number {
     const chunkX = this.worldToChunkCoord(worldX);
     const chunkY = this.worldToChunkCoord(worldY);

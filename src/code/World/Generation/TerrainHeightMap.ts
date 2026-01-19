@@ -57,31 +57,22 @@ export class TerrainHeightMap {
 
     this.continentalnessSpline = new Spline([
       { t: -1.0, v: -16 },
-      { t: -0.4, v: 0 },
-      { t: -0.35, v: 11 },
-      { t: -0.3, v: -3 },
+      { t: -0.3, v: -16 },
       { t: -0.29, v: 5 },
 
       { t: -0.1, v: 6 },
       { t: 0.0, v: 0 },
-      { t: 0.2, v: 32 },
+      { t: 0.2, v: 0 },
+      { t: 0.3, v: 1 },
 
-      { t: 0.3, v: 46 },
-      { t: 0.36, v: 120 },
-      { t: 0.45, v: 120 },
-      { t: 0.455, v: 130 },
+      { t: 0.4, v: 10 },
+      { t: 0.5, v: 90 },
 
-      { t: 0.5, v: 120 },
-      { t: 0.55, v: 130 },
-
-      { t: 0.59, v: 120 },
-
-      { t: 0.595, v: 130 },
-      { t: 0.6, v: 167 },
+      { t: 0.6, v: 150 },
       { t: 0.7, v: 180 },
-      { t: 0.74, v: 201 },
+      { t: 0.74, v: 220 },
       { t: 0.8, v: 340 },
-      { t: 0.9, v: 365 },
+      { t: 0.9, v: 400 },
       { t: 0.98, v: 500 },
       { t: 1.0, v: 512 },
     ]);
@@ -118,19 +109,19 @@ export class TerrainHeightMap {
 
     const continentalness = this.continentalnessNoise(
       x * CONTINENTALNESS_NOISE_SCALE,
-      z * CONTINENTALNESS_NOISE_SCALE
+      z * CONTINENTALNESS_NOISE_SCALE,
     );
     const temperature =
       (this.temperatureNoise(
         x * GenerationParams.TEMPERATURE_NOISE_SCALE,
-        z * GenerationParams.TEMPERATURE_NOISE_SCALE
+        z * GenerationParams.TEMPERATURE_NOISE_SCALE,
       ) +
         1) /
       2;
     const humidity =
       (this.humidityNoise(
         x * GenerationParams.HUMIDITY_NOISE_SCALE,
-        z * GenerationParams.HUMIDITY_NOISE_SCALE
+        z * GenerationParams.HUMIDITY_NOISE_SCALE,
       ) +
         1) /
       2;
@@ -147,7 +138,7 @@ export class TerrainHeightMap {
       temperature,
       humidity,
       continentalness,
-      effectiveRiver
+      effectiveRiver,
     );
 
     if (this.biomeCache.size > this.MAX_CACHE_SIZE) {
@@ -160,7 +151,7 @@ export class TerrainHeightMap {
   private static computeBaseHeight(x: number, z: number): number {
     const continentalness = this.continentalnessNoise(
       x * GenerationParams.CONTINENTALNESS_NOISE_SCALE,
-      z * GenerationParams.CONTINENTALNESS_NOISE_SCALE
+      z * GenerationParams.CONTINENTALNESS_NOISE_SCALE,
     );
     const SEA_LEVEL = GenerationParams.SEA_LEVEL;
     return SEA_LEVEL + this.continentalnessSpline.getValue(continentalness);
@@ -169,15 +160,15 @@ export class TerrainHeightMap {
   private static computeDetail(
     x: number,
     z: number,
-    baseHeight: number
+    baseHeight: number,
   ): number {
     const erosion = this.erosionNoise(
       x * GenerationParams.EROSION_NOISE_SCALE,
-      z * GenerationParams.EROSION_NOISE_SCALE
+      z * GenerationParams.EROSION_NOISE_SCALE,
     );
     const pv = this.peaksAndValleysNoise(
       x * GenerationParams.PV_NOISE_SCALE,
-      z * GenerationParams.PV_NOISE_SCALE
+      z * GenerationParams.PV_NOISE_SCALE,
     );
     const river = Math.abs(this.riverGenerator.getRiverNoise(x, z));
 
@@ -223,7 +214,7 @@ export class TerrainHeightMap {
   public static getInterpolatedBaseHeight(
     x: number,
     z: number,
-    sampleDistance: number
+    sampleDistance: number,
   ): number {
     const x0 = Math.floor(x / sampleDistance) * sampleDistance;
     const z0 = Math.floor(z / sampleDistance) * sampleDistance;

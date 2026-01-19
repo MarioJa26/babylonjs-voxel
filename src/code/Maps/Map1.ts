@@ -64,7 +64,7 @@ export class Map1 {
             ssaoRatio: SettingParams.SSAO_RATIO,
             combineRatio: SettingParams.SSAO_COMBINE_RATIO,
           },
-          [Map1.mainScene.activeCamera]
+          [Map1.mainScene.activeCamera],
         );
       console.log("Environment and textures loaded successfully.");
     } catch (error) {
@@ -88,7 +88,7 @@ export class Map1 {
       this.#blockHighlightMesh = MeshBuilder.CreateBox(
         "blockHighlight",
         { size: 1.005 },
-        Map1.mainScene
+        Map1.mainScene,
       );
       this.#blockHighlightMesh.isPickable = false;
       this.#blockHighlightMesh.renderingGroupId = 1;
@@ -96,7 +96,7 @@ export class Map1 {
       // Create a transparent material for the box faces
       const highlightMaterial = new StandardMaterial(
         "highlightMat",
-        Map1.mainScene
+        Map1.mainScene,
       );
       highlightMaterial.alpha = SettingParams.HIGHLIGHT_ALPHA;
       highlightMaterial.diffuseColor = SettingParams.HIGHLIGHT_COLOR;
@@ -113,7 +113,7 @@ export class Map1 {
       this.#blockHighlightMesh.position.set(
         Math.floor(hit.x) + 0.5,
         Math.floor(hit.y) + 0.5,
-        Math.floor(hit.z) + 0.5
+        Math.floor(hit.z) + 0.5,
       );
       this.#blockHighlightMesh.visibility = 1;
     } else {
@@ -158,7 +158,7 @@ export class Map1 {
       this.dirLight.direction = new Vector3(
         GlobalValues.skyLightDirection.x,
         GlobalValues.skyLightDirection.y,
-        GlobalValues.skyLightDirection.z
+        GlobalValues.skyLightDirection.z,
       );
       // Scale base intensity with elevation (tune multiplier)
       this.dirLight.intensity = 1.0 * sunIntensity;
@@ -172,14 +172,14 @@ export class Map1 {
       "Time of Day",
       `${String(hour).padStart(2, "0")}:${String(minute).padStart(
         2,
-        "0"
-      )}:${String(second).padStart(2, "0")}`
+        "0",
+      )}:${String(second).padStart(2, "0")}`,
     );
     PlayerHud.updateDebugInfo("Time Scale", Map1.timeScale.toFixed(2) + "x");
 
     // Update the time slider's position
     const timeSlider = document.getElementById(
-      "timeSlider"
+      "timeSlider",
     ) as HTMLInputElement;
     if (timeSlider)
       timeSlider.value = (
@@ -193,14 +193,14 @@ export class Map1 {
     const hemiLight = new HemisphericLight(
       "hemiLight",
       new Vector3(100, 11, 55),
-      scene
+      scene,
     );
     hemiLight.direction = new Vector3(-0.1, -1, -0.1);
     hemiLight.intensity = SettingParams.HEMISPHERIC_LIGHT_INTENSITY;
     const dirLight = new DirectionalLight(
       "dirLight",
       new Vector3(-1, -2, -1),
-      scene
+      scene,
     );
     dirLight.intensity = SettingParams.DIRECTIONAL_LIGHT_INTENSITY;
     dirLight.position = new Vector3(20, 40, 20);
@@ -210,7 +210,7 @@ export class Map1 {
     new AdvancedBoat(
       scene,
       this.#player, // Note: #player is used here before it's fully constructed if we pass it to Player constructor
-      GenerationParams.SEA_LEVEL + 0.5
+      GenerationParams.SEA_LEVEL + 0.5,
     );
 
     return scene;
@@ -218,70 +218,6 @@ export class Map1 {
 
   private CreateEnvironment(): void {
     this.createSkybox();
-    //this.createWater(skybox, ground);
-  }
-
-  private createWater(skybox: Mesh, ground: Mesh): void {
-    const water = MeshBuilder.CreateGround(
-      "water",
-      { width: 1000, height: 1000, subdivisions: 15 },
-      Map1.mainScene
-    );
-    const waterMaterial = new WaterMaterial("water_material", Map1.mainScene);
-    waterMaterial.bumpTexture = new Texture(
-      "/texture/water/water02.png",
-      Map1.mainScene
-    );
-
-    waterMaterial.windForce = 1;
-    waterMaterial.waveHeight = 0.1;
-    waterMaterial.bumpHeight = 2;
-    waterMaterial.waveLength = 0.1;
-    waterMaterial.colorBlendFactor = 0.3;
-    waterMaterial.waveSpeed = 15;
-    waterMaterial.alpha = 0.67;
-    waterMaterial.addToRenderList(skybox);
-    water.material = waterMaterial;
-    const waterHeight = 40;
-    water.position.y = waterHeight;
-    water.isPickable = false;
-
-    const advancedBoat = new AdvancedBoat(
-      Map1.mainScene,
-      this.#player,
-      waterHeight + waterMaterial.waveHeight
-    );
-    waterMaterial.addToRenderList(advancedBoat.boatMesh);
-
-    const groundTexture = new Texture(
-      "/texture/sand/sand01_diff.jpg",
-      Map1.mainScene
-    );
-    groundTexture.uScale = 16;
-    groundTexture.vScale = 16;
-
-    const waterMaterialUpsideDown = waterMaterial.clone("water_material");
-    waterMaterialUpsideDown.bumpTexture = new Texture(
-      "/texture/water/water02.png",
-      Map1.mainScene
-    );
-    const underWaterEffect = new UnderWaterEffect(
-      Map1.mainScene,
-      this.#player.playerCamera.playerCamera,
-      this.#player,
-      groundTexture
-    );
-    // Create the water mesh for the upside-down water material and apply the material
-    const upsideDownWater = water.clone("upsideDownWater");
-    upsideDownWater.material = waterMaterialUpsideDown;
-
-    // Invert the upside-down water mesh
-    upsideDownWater.scaling.y = -1;
-    upsideDownWater.position.y = waterHeight + waterMaterial.waveHeight + 0.4; // Position it below the water surface
-    // Add same objects to render list for reflection
-    ground.material = underWaterEffect.material;
-    waterMaterialUpsideDown.addToRenderList(ground);
-    waterMaterialUpsideDown.addToRenderList(advancedBoat.boatMesh);
   }
 
   private createSkybox(): Mesh {
@@ -289,7 +225,7 @@ export class Map1 {
     const skybox = MeshBuilder.CreateSphere(
       "skyBox",
       { diameter: 50000.11, segments: 1 },
-      Map1.mainScene
+      Map1.mainScene,
     );
     skybox.isPickable = false;
     skybox.infiniteDistance = true;
@@ -310,10 +246,11 @@ export class Map1 {
       {
         attributes: ["position"],
         uniforms: ["worldViewProjection", "sunDirection"],
-      }
+      },
     );
 
     skyboxMaterial.backFaceCulling = false;
+    skyboxMaterial.disableDepthWrite = true;
 
     // Update the sun's direction uniform every frame
     skyboxMaterial.onBind = () => {
@@ -321,7 +258,7 @@ export class Map1 {
       if (effect) {
         effect.setVector3(
           "sunDirection",
-          GlobalValues.skyLightDirection.negate()
+          GlobalValues.skyLightDirection.negate(),
         );
       }
     };

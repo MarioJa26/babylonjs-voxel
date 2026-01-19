@@ -106,7 +106,7 @@ export class TestScene {
       "lightingSceneTask",
       "",
       "./models/",
-      "city.glb"
+      "city.glb",
     );
 
     await new Promise<void>((resolve, reject) => {
@@ -118,7 +118,7 @@ export class TestScene {
         root.scaling = new Vector3(
           scaleingFactor,
           scaleingFactor,
-          scaleingFactor
+          scaleingFactor,
         );
         this.models.forEach((mesh) => {
           mesh.parent = root;
@@ -129,7 +129,7 @@ export class TestScene {
               mesh,
               PhysicsShapeType.MESH,
               { mass: 0 },
-              this.scene
+              this.scene,
             );
           }
           mesh.occlusionType = AbstractMesh.OCCLUSION_TYPE_OPTIMISTIC;
@@ -142,7 +142,7 @@ export class TestScene {
                 { quality: 0.1, distance: 95 },
               ],
               true,
-              SimplificationType.QUADRATIC
+              SimplificationType.QUADRATIC,
             );
           }
         });
@@ -164,11 +164,11 @@ export class TestScene {
   async CreateEnvironment2(): Promise<void> {
     ImportMeshAsync(
       "https://raw.githubusercontent.com/CedricGuillemet/dump/master/CharController/levelTest.glb",
-      this.scene!
+      this.scene!,
     ).then(() => {
       // Load a texture that will be used as lightmap. This Lightmap was made using this process : https://www.youtube.com/watch?v=Q4Ajd06eTak
       const lightmap = new Texture(
-        "https://raw.githubusercontent.com/CedricGuillemet/dump/master/CharController/lightmap.jpg"
+        "https://raw.githubusercontent.com/CedricGuillemet/dump/master/CharController/lightmap.jpg",
       );
       // Meshes using the lightmap
       const lightmapped = [
@@ -229,7 +229,7 @@ export class TestScene {
           new Vector3(-0.25, 0, 0),
           new Vector3(0, 0, -1),
           new Vector3(0, 0, 1),
-          this.scene!
+          this.scene!,
         );
         fixedMass.body.addConstraint(plane.body, joint);
       }

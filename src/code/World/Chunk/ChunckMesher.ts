@@ -70,7 +70,7 @@ export class ChunkMesher {
         Effect.ShadersStore["glassChunkFragmentShader"] =
           GlassShader.chunkFragmentShader;
 
-        const mat = new ShaderMaterial(
+        const opaqueBlockShader = new ShaderMaterial(
           "chunkShaderMaterial",
           scene,
           {
@@ -97,25 +97,28 @@ export class ChunkMesher {
               "sunLightIntensity",
             ],
             samplers: ["diffuseTexture", "normalTexture"],
-          }
+          },
         );
-        mat.backFaceCulling = true;
-        mat.setPrePassRenderer(scene.prePassRenderer!);
-        mat.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
+        opaqueBlockShader.backFaceCulling = true;
+        opaqueBlockShader.setPrePassRenderer(scene.prePassRenderer!);
+        opaqueBlockShader.setFloat(
+          "atlasTileSize",
+          TextureAtlasFactory.atlasTileSize,
+        );
 
-        mat.setTexture("diffuseTexture", diffuseAtlasTexture);
+        opaqueBlockShader.setTexture("diffuseTexture", diffuseAtlasTexture);
         if (normalAtlasTexture) {
-          mat.setTexture("normalTexture", normalAtlasTexture);
+          opaqueBlockShader.setTexture("normalTexture", normalAtlasTexture);
         }
 
-        mat.onBind = () => {
-          const effect = mat.getEffect();
+        opaqueBlockShader.onBind = () => {
+          const effect = opaqueBlockShader.getEffect();
           if (effect) {
             ChunkMesher.applyOpaqueUniforms(effect);
           }
         };
 
-        ChunkMesher.#atlasMaterial = mat;
+        ChunkMesher.#atlasMaterial = opaqueBlockShader;
 
         // Create a separate material for water meshes
         const waterMat = new ShaderMaterial(
@@ -147,7 +150,7 @@ export class ChunkMesher {
               "sunLightIntensity",
             ],
             samplers: ["diffuseTexture", "normalTexture"],
-          }
+          },
         );
 
         waterMat.backFaceCulling = false;
@@ -197,7 +200,7 @@ export class ChunkMesher {
               "screenSize",
             ],
             samplers: ["diffuseTexture", "normalTexture", "skyboxTexture"],
-          }
+          },
         );
 
         glassMat.backFaceCulling = true;
@@ -224,16 +227,18 @@ export class ChunkMesher {
 
   public static createMeshFromData(
     chunk: Chunk,
-    meshData: { opaque: MeshData; water: MeshData; glass: MeshData }
+    meshData: { opaque: MeshData; water: MeshData; glass: MeshData },
   ) {
-    if (!chunk.isLoaded) return;
-
     // Cache the raw mesh data on the chunk instance for future saving
     // Optimization: Only keep raw data in memory if the chunk is modified and needs saving.
     if (chunk.isModified) {
-      chunk.opaqueMeshData = meshData.opaque;
-      chunk.waterMeshData = meshData.water;
-      chunk.glassMeshData = meshData.glass;
+      // Only cache if there is actual data to save to avoid holding empty objects
+      chunk.opaqueMeshData =
+        meshData.opaque.positions.length > 0 ? meshData.opaque : null;
+      chunk.waterMeshData =
+        meshData.water?.positions.length > 0 ? meshData.water : null;
+      chunk.glassMeshData =
+        meshData.glass?.positions.length > 0 ? meshData.glass : null;
     } else {
       // Only keep if actively being edited
       chunk.opaqueMeshData = null;
@@ -258,7 +263,7 @@ export class ChunkMesher {
         chunk,
         meshData.opaque,
         "chunk_opaque",
-        this.#atlasMaterial!
+        this.#atlasMaterial!,
       );
     } else {
       chunk.mesh = null;
@@ -270,7 +275,7 @@ export class ChunkMesher {
         chunk,
         meshData.water,
         "chunk_water",
-        this.#waterMaterial!
+        this.#waterMaterial!,
       );
       chunk.waterMesh.isPickable = false;
     } else {
@@ -283,7 +288,7 @@ export class ChunkMesher {
         chunk,
         meshData.glass,
         "chunk_glass",
-        this.#glassMaterial!
+        this.#glassMaterial!,
       );
     } else {
       chunk.glassMesh = null;
@@ -294,7 +299,7 @@ export class ChunkMesher {
     chunk: Chunk,
     meshData: MeshData,
     name: string,
-    material: Material
+    material: Material,
   ): Mesh {
     const mesh = new Mesh(name, Map1.mainScene);
     mesh.renderingGroupId = 1;
@@ -315,7 +320,7 @@ export class ChunkMesher {
       undefined, // offset
       undefined, // size
       VertexBuffer.UNSIGNED_BYTE, // type
-      false // normalized
+      false, // normalized
     );
     mesh.setVerticesBuffer(positionBuffer);
 
@@ -331,7 +336,7 @@ export class ChunkMesher {
       undefined,
       undefined,
       VertexBuffer.UNSIGNED_BYTE,
-      true
+      true,
     );
     mesh.setVerticesBuffer(normalBuffer);
 
@@ -346,7 +351,7 @@ export class ChunkMesher {
       undefined,
       undefined,
       VertexBuffer.UNSIGNED_BYTE,
-      false
+      false,
     );
     mesh.setVerticesBuffer(uv2Buffer);
 
@@ -361,7 +366,7 @@ export class ChunkMesher {
       undefined,
       undefined,
       VertexBuffer.UNSIGNED_BYTE,
-      false
+      false,
     );
     mesh.setVerticesBuffer(uv3Buffer);
 
@@ -377,7 +382,7 @@ export class ChunkMesher {
       undefined,
       undefined,
       VertexBuffer.UNSIGNED_BYTE,
-      false // normalized
+      false, // normalized
     );
     mesh.setVerticesBuffer(cornerIdBuffer);
 
@@ -393,7 +398,7 @@ export class ChunkMesher {
       undefined, // offset
       undefined, // size
       VertexBuffer.UNSIGNED_BYTE,
-      false // normalized
+      false, // normalized
     );
     mesh.setVerticesBuffer(aoBuffer);
 
@@ -409,7 +414,7 @@ export class ChunkMesher {
       undefined, // offset
       undefined, // size
       VertexBuffer.UNSIGNED_BYTE,
-      false // normalized
+      false, // normalized
     );
     mesh.setVerticesBuffer(lightBuffer);
 
@@ -422,14 +427,14 @@ export class ChunkMesher {
     mesh.position.set(
       chunk.chunkX * Chunk.SIZE,
       chunk.chunkY * Chunk.SIZE,
-      chunk.chunkZ * Chunk.SIZE
+      chunk.chunkZ * Chunk.SIZE,
     );
 
     const chunkMax = new Vector3(Chunk.SIZE, Chunk.SIZE, Chunk.SIZE);
     mesh.setBoundingInfo(new BoundingInfo(Vector3.Zero(), chunkMax));
 
     // Optimization: Use sphere culling for faster visibility checks on cubic chunks
-    mesh.cullingStrategy = AbstractMesh.CULLINGSTRATEGY_BOUNDINGSPHERE_ONLY;
+    mesh.cullingStrategy = AbstractMesh.CULLINGSTRATEGY_STANDARD;
 
     mesh.freezeWorldMatrix();
     mesh.doNotSyncBoundingInfo = true;
@@ -448,7 +453,7 @@ export class ChunkMesher {
           restitution: 0.0,
           friction: 0.8,
         },
-        Map1.mainScene
+        Map1.mainScene,
       );
     }
 
@@ -462,7 +467,7 @@ export class ChunkMesher {
     effect.setVector2("screenSize", this.#cachedUniforms.screenSize);
     effect.setFloat(
       "sunLightIntensity",
-      this.#cachedUniforms.sunLightIntensity
+      this.#cachedUniforms.sunLightIntensity,
     );
   }
 
@@ -474,7 +479,7 @@ export class ChunkMesher {
     effect.setFloat("time", this.#cachedUniforms.time);
     effect.setFloat(
       "sunLightIntensity",
-      this.#cachedUniforms.sunLightIntensity
+      this.#cachedUniforms.sunLightIntensity,
     );
   }
 
@@ -503,7 +508,7 @@ export class ChunkMesher {
     const tmpLight = new Vector3(
       lightDir.x,
       lightDir.y,
-      lightDir.z
+      lightDir.z,
     ).normalize();
     this.#cachedUniforms.lightDirection.x = tmpLight.x;
     this.#cachedUniforms.lightDirection.y = tmpLight.y;
@@ -515,7 +520,7 @@ export class ChunkMesher {
 
     this.#cachedUniforms.screenSize.set(
       engine.getRenderWidth(),
-      engine.getRenderHeight()
+      engine.getRenderHeight(),
     );
 
     this.#cachedUniforms.cameraPlanes.set(camera.minZ, camera.maxZ);
@@ -524,7 +529,7 @@ export class ChunkMesher {
     const sunElevation = -lightDir.y + 0.1;
     this.#cachedUniforms.sunLightIntensity = Math.min(
       1.0,
-      Math.max(0.1, sunElevation * 4)
+      Math.max(0.1, sunElevation * 4),
     );
   }
 }
