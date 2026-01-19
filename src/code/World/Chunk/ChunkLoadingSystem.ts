@@ -1,12 +1,12 @@
-import { Chunk } from "./Chunk/Chunk";
-import { ChunkWorkerPool } from "./Chunk/ChunkWorkerPool";
-import { ChunkMesher } from "./Chunk/ChunckMesher";
-import { SettingParams } from "./SettingParams";
-import { WorldStorage } from "./WorldStorage";
-import { GenerationParams } from "./Generation/NoiseAndParameters/GenerationParams";
-import { DistantTerrain } from "./Generation/DistanTerrain/DistantTerrian";
+import { Chunk } from "./Chunk";
+import { ChunkWorkerPool } from "./ChunkWorkerPool";
+import { ChunkMesher } from "./ChunckMesher";
+import { SettingParams } from "../SettingParams";
+import { WorldStorage } from "../WorldStorage";
+import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
+import { DistantTerrain } from "../Generation/DistanTerrain/DistantTerrian";
 
-export class World {
+export class ChunkLoadingSystem {
   private static distantTerrain: DistantTerrain;
 
   /*

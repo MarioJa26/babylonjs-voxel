@@ -14,7 +14,7 @@ import { PlayerHud } from "./Hud/PlayerHud";
 import { PlayerInventory } from "./Inventory/PlayerInventory";
 import { InventoryControls } from "./Controls/InventoryControls";
 import { PlayerCamera } from "./PlayerCamera";
-import { World } from "../World/World";
+import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
 import { PlayerVehicle } from "./PlayerVehicle";
 import { Map1 } from "../Maps/Map1";
 import { PlayerFlashLight } from "./PlayerFlashLight";
@@ -54,7 +54,7 @@ export class Player implements IUsable {
     private engine: Engine,
     private scene: Scene,
     playerCam: PlayerCamera,
-    private canvas: HTMLCanvasElement
+    private canvas: HTMLCanvasElement,
   ) {
     this.#playerInventory = new PlayerInventory(scene, this, 10, 10);
     this.#playerVehicle = new PlayerVehicle(this.scene, playerCam);
@@ -120,7 +120,7 @@ export class Player implements IUsable {
         case PointerEventTypes.POINTERMOVE: {
           this.#playerCamera.handleMouseMovement(
             pointerInfo.event.movementX,
-            pointerInfo.event.movementY
+            pointerInfo.event.movementY,
           );
           break;
         }
@@ -139,7 +139,7 @@ export class Player implements IUsable {
 
   private initializeRenderLoop(): void {
     this.scene.onBeforeRenderObservable.add(() =>
-      this.#playerVehicle.updateCameraAndVisuals()
+      this.#playerVehicle.updateCameraAndVisuals(),
     );
 
     this.scene.onAfterPhysicsObservable.add(() => {
@@ -152,20 +152,20 @@ export class Player implements IUsable {
 
       // Ensure world chunks are generated around the player ONLY when they move between chunks
       const playerPos = this.position;
-      const currentChunkX = World.worldToChunkCoord(playerPos.x);
-      const currentChunkY = World.worldToChunkCoord(playerPos.y);
-      const currentChunkZ = World.worldToChunkCoord(playerPos.z);
+      const currentChunkX = ChunkLoadingSystem.worldToChunkCoord(playerPos.x);
+      const currentChunkY = ChunkLoadingSystem.worldToChunkCoord(playerPos.y);
+      const currentChunkZ = ChunkLoadingSystem.worldToChunkCoord(playerPos.z);
 
       if (
         currentChunkX !== this.#lastChunkX ||
         currentChunkY !== this.#lastChunkY ||
         currentChunkZ !== this.#lastChunkZ
       ) {
-        World.updateChunksAround(
+        ChunkLoadingSystem.updateChunksAround(
           currentChunkX,
           currentChunkY,
           currentChunkZ,
-          playerPos.y
+          playerPos.y,
         );
         this.#lastChunkX = currentChunkX;
         this.#lastChunkY = currentChunkY;
@@ -175,9 +175,9 @@ export class Player implements IUsable {
 
     this.scene.onAfterRenderObservable.add(() => {
       const playerPos = this.position;
-      const chunkX = World.worldToChunkCoord(playerPos.x);
-      const chunkY = World.worldToChunkCoord(playerPos.y);
-      const chunkZ = World.worldToChunkCoord(playerPos.z);
+      const chunkX = ChunkLoadingSystem.worldToChunkCoord(playerPos.x);
+      const chunkY = ChunkLoadingSystem.worldToChunkCoord(playerPos.y);
+      const chunkZ = ChunkLoadingSystem.worldToChunkCoord(playerPos.z);
       const cameraPos = this.#playerCamera.position;
       const cameraYaw = this.#playerCamera.cameraYaw;
       const cameraPitch = this.#playerCamera.cameraPitch;
@@ -187,24 +187,24 @@ export class Player implements IUsable {
       PlayerHud.updateDebugInfo(
         "Player Pos",
         `${playerPos.x.toFixed(2)}, ${playerPos.y.toFixed(
-          2
-        )}, ${playerPos.z.toFixed(2)}`
+          2,
+        )}, ${playerPos.z.toFixed(2)}`,
       );
       PlayerHud.updateDebugInfo("Chunk Pos", `${chunkX}, ${chunkY}, ${chunkZ}`);
       PlayerHud.updateDebugInfo(
         "Camera Pos",
         `${cameraPos.x.toFixed(2)}, ${cameraPos.y.toFixed(
-          2
-        )}, ${cameraPos.z.toFixed(2)}`
+          2,
+        )}, ${cameraPos.z.toFixed(2)}`,
       );
       PlayerHud.updateDebugInfo(
         "Camera Angle",
-        `Yaw: ${cameraYaw.toFixed(2)}, Pitch: ${cameraPitch.toFixed(2)}`
+        `Yaw: ${cameraYaw.toFixed(2)}, Pitch: ${cameraPitch.toFixed(2)}`,
       );
       PlayerHud.updateDebugInfo("Facing", this.getDirectionFromYaw(cameraYaw));
       PlayerHud.updateDebugInfo(
         "Physics Bodies",
-        this.scene.meshes.filter((m) => m.physicsBody).length
+        this.scene.meshes.filter((m) => m.physicsBody).length,
       );
     });
   }

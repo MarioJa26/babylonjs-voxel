@@ -112,7 +112,7 @@ export class DistantTerrainShader {
             vec3 deepBlue = vec3(0.1, 0.2, 0.4);
             vec3 lightBlue = vec3(0.6, 0.75, 0.95);
             vec3 atmosphereColor = mix(lightBlue, deepBlue, heightFactor) * (sunLightIntensity * sunLightIntensity);
-            vec3 baseFogColor = mix(vFogColor, atmosphereColor, 0.6);
+            vec3 baseFogColor = mix(vFogColor, atmosphereColor, 0.8);
 
             // Blend into skybox color at distance
 

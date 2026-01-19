@@ -85,6 +85,7 @@ void main(void) {
     uniform vec3 cameraPosition;
     uniform vec3 lightDirection;
     uniform float sunLightIntensity;
+    uniform float wetness;
 
 
     void main(void) {
@@ -103,6 +104,10 @@ void main(void) {
         vec2 atlasUV = vUV2 + singleTileUV * atlasTileSize;
 
         vec4 diffuseColor = texture2DLodEXT(diffuseTexture, atlasUV, lod);
+
+        // Wetness effect: Darken the surface
+        diffuseColor.rgb *= mix(1.0, 0.5, wetness);
+
         vec3 normalMap = texture2DLodEXT(normalTexture, atlasUV, lod).rgb;
 
         // 6. Transform the normal from tangent space (read from map) to world space.
@@ -119,8 +124,10 @@ void main(void) {
         vec3 viewDirection = viewVec / dist;
 
         vec3 halfwayDir = normalize(viewDirection - lightDirection);
-        float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), 16.0);
-        vec3 specular = vec3(0.3) * spec * (sunLightIntensity - 0.1); // Specular color is white
+        float shininess = mix(16.0, 128.0, wetness);
+        float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), shininess);
+        float specIntensity = mix(0.05, 2.0, wetness);
+        vec3 specular = vec3(specIntensity) * spec * max(sunLightIntensity - 0.1, 0.0);
 
         float aoFactor = 1.0 - vAO * 0.23; // 0->1, 1->0.85, 2->0.7, 3->0.55
         

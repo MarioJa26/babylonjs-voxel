@@ -24,7 +24,7 @@ export class DroppedItem implements IUsable {
     this.#boxMesh = MeshBuilder.CreateBox(
       "box",
       { width: size, height: size, depth: size },
-      Map1.mainScene
+      Map1.mainScene,
     );
     this.#boxMesh.metadata = new MetadataContainer();
     this.#boxMesh.metadata.add("use", (player: Player) => this.use(player));
@@ -41,7 +41,7 @@ export class DroppedItem implements IUsable {
       true, // diff
       true, // nor
       true, // ao
-      false // spec
+      false, // spec
     );
     midMat.diffuseTexture = concreteMat.diffuseTexture;
     midMat.bumpTexture = concreteMat.bumpTexture;
@@ -49,11 +49,13 @@ export class DroppedItem implements IUsable {
 
     this.#boxMesh.material = midMat;
 
+    this.#boxMesh.renderingGroupId = 1;
+
     new PhysicsAggregate(
       this.#boxMesh,
       PhysicsShapeType.BOX,
       { mass: size },
-      Map1.mainScene
+      Map1.mainScene,
     );
 
     this.#item = item;
@@ -74,7 +76,7 @@ export class DroppedItem implements IUsable {
   private static createTexture(
     scene: Scene,
     path: string,
-    uvScale: number
+    uvScale: number,
   ): Texture {
     const tex = new Texture(path, scene);
     tex.uScale = uvScale;

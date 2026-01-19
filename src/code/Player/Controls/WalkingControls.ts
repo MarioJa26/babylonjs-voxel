@@ -3,7 +3,7 @@ import { IControls } from "../../Inferface/IControls";
 import { Vector3 } from "@babylonjs/core";
 import { CrossHair } from "../Hud/CrossHair";
 import { PlayerVehicle } from "../PlayerVehicle";
-import { World } from "@/code/World/World";
+import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { GlobalValues } from "@/code/World/GlobalValues";
 import { PlayerHud } from "../Hud/PlayerHud";
 
@@ -67,7 +67,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
     if (WalkingControls.MOUSE1.includes(mouseEvent.button) && isKeyDown) {
       const hit = CrossHair.pickTarget(this.#player);
       if (!hit) return;
-      World.deleteBlock(hit.x, hit.y, hit.z);
+      ChunkLoadingSystem.deleteBlock(hit.x, hit.y, hit.z);
     } else if (WalkingControls.MOUSE2.includes(mouseEvent.button)) {
       const blockNumber = CrossHair.pickBlock(this.#player);
       if (blockNumber === 62) {
@@ -83,7 +83,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
         ]?.item;
 
       if (item) {
-        World.setBlock(hit.x, hit.y, hit.z, item.itemId);
+        ChunkLoadingSystem.setBlock(hit.x, hit.y, hit.z, item.itemId);
       }
     }
   }
@@ -189,7 +189,11 @@ export class WalkingControls implements IControls<PlayerVehicle> {
     if (WalkingControls.KEY_PICK_BLOCK.includes(key)) {
       const hit = CrossHair.pickTarget(this.#player);
       if (!hit) return;
-      const blockId = World.getBlockByWorldCoords(hit.x, hit.y, hit.z);
+      const blockId = ChunkLoadingSystem.getBlockByWorldCoords(
+        hit.x,
+        hit.y,
+        hit.z,
+      );
       if (blockId === 0) return; // Don't pick air
 
       // 1. Check hotbar first

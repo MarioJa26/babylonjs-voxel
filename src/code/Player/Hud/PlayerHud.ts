@@ -4,6 +4,7 @@ import { Map1 } from "@/code/Maps/Map1";
 import { CrossHair } from "../Hud/CrossHair";
 import { PlayerInventory } from "../Inventory/PlayerInventory";
 import { PlayerCamera } from "../PlayerCamera";
+import { WorldEnvironment } from "../../Maps/WorldEnvironment";
 
 export class PlayerHud {
   #engine: Engine;
@@ -30,7 +31,7 @@ export class PlayerHud {
     engine: Engine,
     scene: Scene,
     player: Player,
-    playerCamera: PlayerCamera
+    playerCamera: PlayerCamera,
   ) {
     this.#engine = engine;
     this.#scene = scene;
@@ -239,6 +240,65 @@ export class PlayerHud {
       Map1.timeScale = parseFloat(timeScaleSlider.value) / 10;
     };
     div.appendChild(timeScaleSlider);
+
+    // Add Fog Start slider
+    const fogStartLabel = document.createElement("div");
+    fogStartLabel.innerText = "Fog Start";
+    fogStartLabel.style.marginTop = "10px";
+    div.appendChild(fogStartLabel);
+    const fogStartSlider = document.createElement("input");
+    fogStartSlider.type = "range";
+    fogStartSlider.min = "0";
+    fogStartSlider.max = "3000";
+    fogStartSlider.value = (this.#scene.fogStart || 0).toString();
+    fogStartSlider.style.width = "100%";
+    fogStartSlider.oninput = () => {
+      if (this.#scene.fogMode === Scene.FOGMODE_NONE) {
+        this.#scene.fogMode = Scene.FOGMODE_LINEAR;
+      }
+      this.#scene.fogStart = parseFloat(fogStartSlider.value);
+    };
+    div.appendChild(fogStartSlider);
+
+    // Add Fog End slider
+    const fogEndLabel = document.createElement("div");
+    fogEndLabel.innerText = "Fog End";
+    fogEndLabel.style.marginTop = "10px";
+    div.appendChild(fogEndLabel);
+    const fogEndSlider = document.createElement("input");
+    fogEndSlider.type = "range";
+    fogEndSlider.min = "0";
+    fogEndSlider.max = "3000";
+    fogEndSlider.value = (this.#scene.fogEnd || 1000).toString();
+    fogEndSlider.style.width = "100%";
+    fogEndSlider.oninput = () => {
+      if (this.#scene.fogMode === Scene.FOGMODE_NONE) {
+        this.#scene.fogMode = Scene.FOGMODE_LINEAR;
+      }
+      this.#scene.fogEnd = parseFloat(fogEndSlider.value);
+    };
+    div.appendChild(fogEndSlider);
+
+    // Add Wetness slider
+    const wetnessLabel = document.createElement("div");
+    wetnessLabel.innerText = "Wetness";
+    wetnessLabel.style.marginTop = "10px";
+    div.appendChild(wetnessLabel);
+    const wetnessSlider = document.createElement("input");
+    wetnessSlider.type = "range";
+    wetnessSlider.min = "0";
+    wetnessSlider.max = "100";
+    wetnessSlider.value = (
+      (WorldEnvironment.instance?.wetness || 0) * 100
+    ).toString();
+    wetnessSlider.style.width = "100%";
+    wetnessSlider.oninput = () => {
+      if (WorldEnvironment.instance) {
+        WorldEnvironment.instance.wetness =
+          parseFloat(wetnessSlider.value) / 100;
+      }
+    };
+    div.appendChild(wetnessSlider);
   }
 
   public static toggleDebugInfo(): void {

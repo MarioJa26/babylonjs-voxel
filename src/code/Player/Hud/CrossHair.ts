@@ -11,7 +11,7 @@ import * as GUI from "@babylonjs/gui";
 import { Player } from "../Player";
 import { Map1 } from "@/code/Maps/Map1";
 import { PlayerCamera } from "../PlayerCamera";
-import { World } from "@/code/World/World";
+import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
 
 export class CrossHair {
   readonly #scene: Scene;
@@ -35,7 +35,7 @@ export class CrossHair {
   #createCrosshair(hitMarkerId: string): GUI.Image {
     const img = new GUI.Image(
       "crossHair",
-      `/texture/gui/kenney_crosshair-pack/PNG/Outline Retina/crosshair${hitMarkerId}.png`
+      `/texture/gui/kenney_crosshair-pack/PNG/Outline Retina/crosshair${hitMarkerId}.png`,
     );
     img.width = "48px";
     img.height = "48px";
@@ -61,7 +61,7 @@ export class CrossHair {
       elapsedTime += this.#engine.getDeltaTime() / 1000;
       this.#hitMarker.alpha = Math.max(
         0,
-        this.#crosshair.alpha - elapsedTime / durationSeconds
+        this.#crosshair.alpha - elapsedTime / durationSeconds,
       );
 
       if (elapsedTime >= durationSeconds) {
@@ -105,7 +105,7 @@ export class CrossHair {
    */
   public static pickMesh(player: Player): Vector3 | null {
     const ray = player.playerCamera.playerCamera.getForwardRay(
-      Player.REACH_DISTANCE
+      Player.REACH_DISTANCE,
     );
     const pick = Map1.mainScene.pickWithRay(ray);
     if (!pick?.pickedPoint) return null;
@@ -115,7 +115,7 @@ export class CrossHair {
     return new Vector3(
       Math.floor(hitPos.x),
       Math.floor(hitPos.y),
-      Math.floor(hitPos.z)
+      Math.floor(hitPos.z),
     );
   }
   /**
@@ -127,17 +127,17 @@ export class CrossHair {
    */
   public static pickBlock(player: Player): number | null {
     const ray = player.playerCamera.playerCamera.getForwardRay(
-      Player.REACH_DISTANCE
+      Player.REACH_DISTANCE,
     );
     const pick = Map1.mainScene.pickWithRay(ray);
     if (!pick?.pickedPoint) return null;
     const normal = pick.getNormal(true);
     if (!normal) return null;
     const hitPos = pick.pickedPoint.subtract(normal.scale(0.001));
-    return World.getBlockByWorldCoords(
+    return ChunkLoadingSystem.getBlockByWorldCoords(
       Math.floor(hitPos.x),
       Math.floor(hitPos.y),
-      Math.floor(hitPos.z)
+      Math.floor(hitPos.z),
     );
   }
   /**
@@ -149,7 +149,7 @@ export class CrossHair {
    */
   public static pickTarget(player: Player): Vector3 | null {
     const ray = player.playerCamera.playerCamera.getForwardRay(
-      Player.REACH_DISTANCE
+      Player.REACH_DISTANCE,
     );
     const pick = Map1.mainScene.pickWithRay(ray);
     if (!pick?.pickedPoint) {
@@ -161,7 +161,7 @@ export class CrossHair {
     return new Vector3(
       Math.floor(hitPos.x),
       Math.floor(hitPos.y),
-      Math.floor(hitPos.z)
+      Math.floor(hitPos.z),
     );
   }
 

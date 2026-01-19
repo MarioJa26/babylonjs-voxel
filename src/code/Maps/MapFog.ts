@@ -1,4 +1,4 @@
-import { Color3, Scene } from "@babylonjs/core";
+import { Scene } from "@babylonjs/core";
 
 export default class MapFog {
   public static readonly fogStartUnderWater = 1;

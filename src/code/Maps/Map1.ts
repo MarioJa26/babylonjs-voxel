@@ -1,71 +1,44 @@
-import {
-  Effect,
-  DirectionalLight,
-  HemisphericLight,
-  Mesh,
-  MeshBuilder,
-  Scene,
-  ShaderMaterial,
-  StandardMaterial,
-  Texture,
-  Vector3,
-  SSAORenderingPipeline,
-} from "@babylonjs/core";
-import { WaterMaterial } from "@babylonjs/materials";
+import { Mesh, MeshBuilder, Scene, StandardMaterial } from "@babylonjs/core";
 import { AdvancedBoat } from "../Entities/AdvancedBoat";
 import { Player } from "../Player/Player";
-import { UnderWaterEffect } from "./UnderWaterEffect";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
 import { ChunkMesher } from "../World/Chunk/ChunckMesher";
 import { GlobalValues } from "../World/GlobalValues";
-import { SkyShader } from "../World/Light/SkyShader";
-import { PlayerHud } from "../Player/Hud/PlayerHud";
 import { CrossHair } from "../Player/Hud/CrossHair";
 import { TextureDefinitions } from "../World/Texture/TextureDefinitions";
 import { GenerationParams } from "../World/Generation/NoiseAndParameters/GenerationParams";
 import { SettingParams } from "../World/SettingParams";
 import { WorldStorage } from "../World/WorldStorage";
+import { WorldEnvironment } from "./WorldEnvironment";
 export class Map1 {
   public static mainScene: Scene;
+  public static environment: WorldEnvironment;
   #player: Player;
   #blockHighlightMesh!: Mesh;
-  private dirLight?: DirectionalLight;
 
-  static #timeOfDay = 450000; // Time in milliseconds, progresses from 0 to dayDurationMs
-  public static timeScale = 0;
-  public static isPaused = false;
   public readonly initPromise: Promise<void>;
 
   constructor(scene: Scene, player: Player) {
     this.#player = player;
     Map1.mainScene = this.CreateScene(scene);
+    Map1.environment = new WorldEnvironment(Map1.mainScene);
 
     this.initPromise = this.asyncInit().then(async () => {
-      await WorldStorage.initialize();
+      WorldStorage.initialize();
       ChunkMesher.initAtlas();
     });
 
     scene.onBeforeRenderObservable.add(() => {
       this.updateBlockHighlight();
-      if (Map1.isPaused) return; // Don't update game logic if paused
-      this.updateDayNightCycle();
+      Map1.environment.update();
     });
   }
 
   async asyncInit() {
     if (!Map1.mainScene.activeCamera) return;
     try {
-      await Promise.all([this.CreateEnvironment(), this.loadTextures()]);
-      if (SettingParams.ENABLE_SSAO)
-        new SSAORenderingPipeline(
-          "ssaopipeline",
-          Map1.mainScene,
-          {
-            ssaoRatio: SettingParams.SSAO_RATIO,
-            combineRatio: SettingParams.SSAO_COMBINE_RATIO,
-          },
-          [Map1.mainScene.activeCamera],
-        );
+      await this.loadTextures();
+      Map1.environment.initSSAO();
       console.log("Environment and textures loaded successfully.");
     } catch (error) {
       console.error("Error loading environment or textures:", error);
@@ -77,7 +50,23 @@ export class Map1 {
    * @param time A value between 0 (start of day) and 1 (end of day).
    */
   public static setTime(time: number): void {
-    Map1.#timeOfDay = (time % 1) * SettingParams.DAY_DURATION_MS;
+    if (Map1.environment) {
+      Map1.environment.setTime(time);
+    }
+  }
+
+  public static get timeScale() {
+    return Map1.environment ? Map1.environment.timeScale : 0;
+  }
+  public static set timeScale(v: number) {
+    if (Map1.environment) Map1.environment.timeScale = v;
+  }
+
+  public static get isPaused() {
+    return Map1.environment ? Map1.environment.isPaused : false;
+  }
+  public static set isPaused(v: boolean) {
+    if (Map1.environment) Map1.environment.isPaused = v;
   }
 
   private updateBlockHighlight() {
@@ -122,91 +111,7 @@ export class Map1 {
     }
   }
 
-  private updateDayNightCycle() {
-    if (Map1.isPaused) return;
-    // Increment time of day based on frame delta time
-    Map1.#timeOfDay +=
-      Map1.mainScene.getEngine().getDeltaTime() * Map1.timeScale;
-    Map1.#timeOfDay %= SettingParams.DAY_DURATION_MS;
-
-    // Compute smooth solar parameters (CPU)
-    const t = Map1.#timeOfDay / SettingParams.DAY_DURATION_MS; // 0..1
-    const angle = t * Math.PI * 2; // full orbit
-
-    // Use spherical coordinates:
-    // - azimuth rotates horizontally
-    // - elevationAngle is limited so sun rises/sets smoothly
-    const maxElevation = 1.1; // radians (~28.6°). Tune to taste.
-    const elevationAngle = Math.sin(angle) * maxElevation; // -max..max
-
-    // Cartesian direction (sun direction vector, normalized on assignment)
-    const sx = Math.cos(elevationAngle) * Math.cos(angle);
-    const sz = Math.cos(elevationAngle) * Math.sin(angle);
-    const sy = Math.sin(elevationAngle);
-
-    const len = Math.hypot(sx, sy, sz) || 1;
-    // GlobalValues.skyLightDirection is expected normalized
-    GlobalValues.skyLightDirection.x = sx / len;
-    GlobalValues.skyLightDirection.y = sy / len;
-    GlobalValues.skyLightDirection.z = sz / len;
-
-    // Sun intensity driven by elevation (zero below horizon)
-    const sunIntensity = Math.max(0.0, Math.sin(angle)); // 0..1, tune multiplier below
-
-    // Update engine directional light if present (direction points FROM light)
-    if (this.dirLight) {
-      this.dirLight.direction = new Vector3(
-        GlobalValues.skyLightDirection.x,
-        GlobalValues.skyLightDirection.y,
-        GlobalValues.skyLightDirection.z,
-      );
-      // Scale base intensity with elevation (tune multiplier)
-      this.dirLight.intensity = 1.0 * sunIntensity;
-    }
-    // For debug display
-    const timeAsHour = (Map1.#timeOfDay / SettingParams.DAY_DURATION_MS) * 24;
-    const hour = Math.floor(timeAsHour);
-    const minute = Math.floor((timeAsHour - hour) * 60);
-    const second = Math.floor(((timeAsHour - hour) * 60 - minute) * 60);
-    PlayerHud.updateDebugInfo(
-      "Time of Day",
-      `${String(hour).padStart(2, "0")}:${String(minute).padStart(
-        2,
-        "0",
-      )}:${String(second).padStart(2, "0")}`,
-    );
-    PlayerHud.updateDebugInfo("Time Scale", Map1.timeScale.toFixed(2) + "x");
-
-    // Update the time slider's position
-    const timeSlider = document.getElementById(
-      "timeSlider",
-    ) as HTMLInputElement;
-    if (timeSlider)
-      timeSlider.value = (
-        (Map1.#timeOfDay / SettingParams.DAY_DURATION_MS) *
-        1000
-      ).toString();
-
-    // (No further sun math here — the spherical Cartesian sun direction above is the single source of truth.)
-  }
   private CreateScene(scene: Scene): Scene {
-    const hemiLight = new HemisphericLight(
-      "hemiLight",
-      new Vector3(100, 11, 55),
-      scene,
-    );
-    hemiLight.direction = new Vector3(-0.1, -1, -0.1);
-    hemiLight.intensity = SettingParams.HEMISPHERIC_LIGHT_INTENSITY;
-    const dirLight = new DirectionalLight(
-      "dirLight",
-      new Vector3(-1, -2, -1),
-      scene,
-    );
-    dirLight.intensity = SettingParams.DIRECTIONAL_LIGHT_INTENSITY;
-    dirLight.position = new Vector3(20, 40, 20);
-    // keep a reference so we can update it every frame
-    this.dirLight = dirLight;
-
     new AdvancedBoat(
       scene,
       this.#player, // Note: #player is used here before it's fully constructed if we pass it to Player constructor
@@ -214,58 +119,6 @@ export class Map1 {
     );
 
     return scene;
-  }
-
-  private CreateEnvironment(): void {
-    this.createSkybox();
-  }
-
-  private createSkybox(): Mesh {
-    // Skybox
-    const skybox = MeshBuilder.CreateSphere(
-      "skyBox",
-      { diameter: 50000.11, segments: 1 },
-      Map1.mainScene,
-    );
-    skybox.isPickable = false;
-    skybox.infiniteDistance = true;
-    skybox.ignoreCameraMaxZ = true;
-
-    // Register the new sky shader
-    Effect.ShadersStore["skyVertexShader"] = SkyShader.skyVertexShader;
-    Effect.ShadersStore["skyFragmentShader"] = SkyShader.skyFragmentShader;
-
-    // Create a ShaderMaterial using the sky shader
-    const skyboxMaterial = new ShaderMaterial(
-      "skyShaderMaterial",
-      Map1.mainScene,
-      {
-        vertex: "sky",
-        fragment: "sky",
-      },
-      {
-        attributes: ["position"],
-        uniforms: ["worldViewProjection", "sunDirection"],
-      },
-    );
-
-    skyboxMaterial.backFaceCulling = false;
-    skyboxMaterial.disableDepthWrite = true;
-
-    // Update the sun's direction uniform every frame
-    skyboxMaterial.onBind = () => {
-      const effect = skyboxMaterial.getEffect();
-      if (effect) {
-        effect.setVector3(
-          "sunDirection",
-          GlobalValues.skyLightDirection.negate(),
-        );
-      }
-    };
-
-    skybox.setEnabled(true);
-    skybox.material = skyboxMaterial;
-    return skybox;
   }
 
   async loadTextures(): Promise<void> {

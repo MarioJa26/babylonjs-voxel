@@ -23,7 +23,7 @@ import { Player } from "./Player/Player";
 import { distanceCullMeshes } from "../BabylonExamples/occlusion";
 import { Map1 } from "./Maps/Map1";
 import { PlayerCamera } from "./Player/PlayerCamera";
-import { World } from "./World/World";
+import { ChunkLoadingSystem } from "./World/Chunk/ChunkLoadingSystem";
 import { MyConnection } from "./Server/MyConnection";
 import { GlobalValues } from "./World/GlobalValues";
 import { ChunkMesher } from "./World/Chunk/ChunckMesher";
@@ -93,7 +93,7 @@ export class TestScene {
     //await this.CreateEnvironment2();
     // const mapFog = new MapFog(scene);
     const playerCamera = new PlayerCamera(camera, scene);
-    new World(); // This will create all the initial chunks
+    new ChunkLoadingSystem(); // This will create all the initial chunks
     const player = new Player(this.engine, scene, playerCamera, this.canvas);
     const map = new Map1(scene, player);
     map.initPromise;

@@ -13,6 +13,7 @@ import {
 } from "@babylonjs/core";
 import { Map1 } from "@/code/Maps/Map1";
 import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
+import { WorldEnvironment } from "../../Maps/WorldEnvironment";
 
 import { Chunk } from "./Chunk";
 import { GlobalValues } from "../GlobalValues";
@@ -35,6 +36,7 @@ export class ChunkMesher {
     cameraPlanes: new Vector2(0.1, 1000),
     time: 0,
     sunLightIntensity: 1.0,
+    wetness: 0,
   };
 
   private static lastUpdateFrame = -1;
@@ -95,6 +97,7 @@ export class ChunkMesher {
               "lightDirection",
               "screenSize",
               "sunLightIntensity",
+              "wetness",
             ],
             samplers: ["diffuseTexture", "normalTexture"],
           },
@@ -148,6 +151,7 @@ export class ChunkMesher {
               "cameraPlanes", // for depth calculation
               "screenSize", // for depth calculation
               "sunLightIntensity",
+              "wetness",
             ],
             samplers: ["diffuseTexture", "normalTexture"],
           },
@@ -198,6 +202,7 @@ export class ChunkMesher {
               "lightDirection",
               "cameraPlanes",
               "screenSize",
+              "wetness",
             ],
             samplers: ["diffuseTexture", "normalTexture", "skyboxTexture"],
           },
@@ -469,6 +474,7 @@ export class ChunkMesher {
       "sunLightIntensity",
       this.#cachedUniforms.sunLightIntensity,
     );
+    effect.setFloat("wetness", this.#cachedUniforms.wetness);
   }
 
   private static applyWaterUniforms(effect: Effect) {
@@ -481,6 +487,7 @@ export class ChunkMesher {
       "sunLightIntensity",
       this.#cachedUniforms.sunLightIntensity,
     );
+    effect.setFloat("wetness", this.#cachedUniforms.wetness);
   }
 
   private static applyGlassUniforms(effect: Effect) {
@@ -488,6 +495,7 @@ export class ChunkMesher {
     effect.setVector3("cameraPosition", this.#cachedUniforms.cameraPosition);
     effect.setVector2("cameraPlanes", this.#cachedUniforms.cameraPlanes);
     effect.setVector2("screenSize", this.#cachedUniforms.screenSize);
+    effect.setFloat("wetness", this.#cachedUniforms.wetness);
   }
 
   static updateGlobalUniforms(frameId: number) {
@@ -531,5 +539,8 @@ export class ChunkMesher {
       1.0,
       Math.max(0.1, sunElevation * 4),
     );
+    if (WorldEnvironment.instance) {
+      this.#cachedUniforms.wetness = WorldEnvironment.instance.wetness;
+    }
   }
 }
