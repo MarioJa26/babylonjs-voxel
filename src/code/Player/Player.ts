@@ -20,6 +20,7 @@ import { Map1 } from "../Maps/Map1";
 import { PlayerFlashLight } from "./PlayerFlashLight";
 import { PauseMenu } from "./Hud/PauseMenu";
 import { TestScene } from "../TestScene";
+import { PlayerStats } from "./PlayerStats";
 
 /**
  * Player class that handles character movement, physics, and camera controls
@@ -35,6 +36,7 @@ export class Player implements IUsable {
   #keyboardControls!: IControls<unknown>;
 
   public flashlight: PlayerFlashLight;
+  public stats: PlayerStats;
 
   static readonly REACH_DISTANCE = 64;
   #pauseMenu: PauseMenu;
@@ -61,6 +63,7 @@ export class Player implements IUsable {
     this.#camera = playerCam.playerCamera;
     this.#playerCamera = playerCam;
     this.flashlight = new PlayerFlashLight(this.scene, playerCam.playerCamera);
+    this.stats = new PlayerStats();
 
     this.#pauseMenu = new PauseMenu(() => this.resumeGame(), this);
     this.#playerHud = new PlayerHud(engine, this.scene, this, playerCam);
@@ -138,15 +141,21 @@ export class Player implements IUsable {
   }
 
   private initializeRenderLoop(): void {
-    this.scene.onBeforeRenderObservable.add(() =>
-      this.#playerVehicle.updateCameraAndVisuals(),
-    );
-
     this.scene.onAfterPhysicsObservable.add(() => {
-      this.#playerVehicle.update(this.scene.deltaTime / 1000);
+      const dt = (this.scene.deltaTime || 0) / 1000;
+
+      if (this.#playerVehicle.isSprinting) {
+        if (!this.stats.consumeStamina(25 * dt)) {
+          this.#playerVehicle.isSprinting = false;
+        }
+      }
+      this.#playerVehicle.update(dt);
+      this.stats.update(dt, this.#playerVehicle.isSprinting);
     });
 
     this.scene.onBeforeRenderObservable.add(() => {
+      this.#playerVehicle.updateCameraAndVisuals();
+
       if (this.#keyboardControls instanceof PaddleBoatControls)
         this.#keyboardControls.update();
 
@@ -206,6 +215,11 @@ export class Player implements IUsable {
         "Physics Bodies",
         this.scene.meshes.filter((m) => m.physicsBody).length,
       );
+      PlayerHud.updateDebugInfo("Health", Math.ceil(this.stats.health));
+      PlayerHud.updateDebugInfo("Hunger", Math.ceil(this.stats.hunger));
+      PlayerHud.updateDebugInfo("Stamina", Math.ceil(this.stats.stamina));
+      PlayerHud.updateDebugInfo("Mana", Math.ceil(this.stats.mana));
+      this.#playerHud.updateStats();
     });
   }
   private getDirectionFromYaw(yaw: number): string {

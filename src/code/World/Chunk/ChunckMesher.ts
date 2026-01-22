@@ -267,7 +267,7 @@ export class ChunkMesher {
       chunk.mesh = this.buildMesh(
         chunk,
         meshData.opaque,
-        "chunk_opaque",
+        "c_opaque",
         this.#atlasMaterial!,
       );
     } else {
@@ -279,7 +279,7 @@ export class ChunkMesher {
       chunk.waterMesh = this.buildMesh(
         chunk,
         meshData.water,
-        "chunk_water",
+        "c_water",
         this.#waterMaterial!,
       );
       chunk.waterMesh.isPickable = false;
@@ -292,7 +292,7 @@ export class ChunkMesher {
       chunk.glassMesh = this.buildMesh(
         chunk,
         meshData.glass,
-        "chunk_glass",
+        "c_glass",
         this.#glassMaterial!,
       );
     } else {
@@ -448,7 +448,7 @@ export class ChunkMesher {
     mesh.freezeNormals();
 
     // Create physics aggregate AFTER the world matrix is set.
-    if (name === "chunk_opaque" || name === "chunk_glass") {
+    if (name === "c_opaque" || name === "c_glass") {
       // For voxel engines, MESH is necessary but needs proper setup
       new PhysicsAggregate(
         mesh,
@@ -461,6 +461,9 @@ export class ChunkMesher {
         Map1.mainScene,
       );
     }
+
+    mesh.name =
+      name + "_" + chunk.chunkX + "_" + chunk.chunkY + "_" + chunk.chunkZ;
 
     return mesh;
   }

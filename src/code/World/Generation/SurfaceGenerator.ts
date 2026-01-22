@@ -24,7 +24,7 @@ export class SurfaceGenerator {
     params: GenerationParamsType,
     treeNoise: ReturnType<typeof createNoise2D>,
     densityNoise: ReturnType<typeof createNoise3D>,
-    seedAsInt: number
+    seedAsInt: number,
   ) {
     this.params = params;
     this.treeNoise = treeNoise;
@@ -51,8 +51,8 @@ export class SurfaceGenerator {
       y: number,
       z: number,
       id: number,
-      ow?: boolean
-    ) => void
+      ow?: boolean,
+    ) => void,
   ) {
     this.generateTerrain(chunkX, chunkY, chunkZ, biome, placeBlock);
     this.generateFlora(chunkX, chunkY, chunkZ, biome, placeBlock);
@@ -69,8 +69,8 @@ export class SurfaceGenerator {
       y: number,
       z: number,
       id: number,
-      ow: boolean
-    ) => void
+      ow: boolean,
+    ) => void,
   ) {
     const { CHUNK_SIZE, SEA_LEVEL } = this.params;
     const chunkWorldX = chunkX * CHUNK_SIZE;
@@ -95,7 +95,7 @@ export class SurfaceGenerator {
             worldX,
             worldY,
             worldZ,
-            riverNoise
+            riverNoise,
           );
 
           const density = this.getDensity(
@@ -103,7 +103,7 @@ export class SurfaceGenerator {
             worldY,
             worldZ,
             terrainHeight,
-            biome
+            biome,
           );
 
           if (isTunnel) {
@@ -123,7 +123,7 @@ export class SurfaceGenerator {
               worldY + 1,
               worldZ,
               terrainHeight,
-              biome
+              biome,
             );
 
             let blockId = 29; // Use block 29 for all underground stone
@@ -165,7 +165,7 @@ export class SurfaceGenerator {
     chunkY: number,
     chunkZ: number,
     biome: Biome,
-    placeBlock: (x: number, y: number, z: number, id: number) => void
+    placeBlock: (x: number, y: number, z: number, id: number) => void,
   ) {
     const TREE_RADIUS = Math.ceil(biome.treeDensity * 100) + 1;
 
@@ -205,7 +205,7 @@ export class SurfaceGenerator {
               y,
               worldZ,
               baseHeight,
-              colBiome
+              colBiome,
             );
             if (density > 0) {
               surfaceY = y;
@@ -233,7 +233,7 @@ export class SurfaceGenerator {
               surfaceY + 1,
               worldZ,
               placeBlock,
-              this.seedAsInt
+              this.seedAsInt,
             );
         }
       }
@@ -250,8 +250,8 @@ export class SurfaceGenerator {
       y: number,
       z: number,
       id: number,
-      ow: boolean
-    ) => void
+      ow: boolean,
+    ) => void,
   ) {
     // To handle structures that span across chunk boundaries without breaking,
     // we must check neighbor chunks to see if a structure starts there and overlaps into this chunk.
@@ -279,7 +279,7 @@ export class SurfaceGenerator {
             if (!cachedBiome) {
               cachedBiome = TerrainHeightMap.getBiome(
                 originWorldX,
-                originWorldZ
+                originWorldZ,
               );
             }
             const value = cachedBiome[prop as keyof Biome];
@@ -298,7 +298,7 @@ export class SurfaceGenerator {
             placeBlock,
             this.seedAsInt,
             this.chunk_size,
-            this.getFinalTerrainHeight.bind(this)
+            this.getFinalTerrainHeight.bind(this),
           );
         }
       }
@@ -312,7 +312,7 @@ export class SurfaceGenerator {
   private isBeachLocation(
     worldX: number,
     worldZ: number,
-    terrainHeight: number
+    terrainHeight: number,
   ): boolean {
     const { SEA_LEVEL } = this.params;
     const isAtBeachLevel =
@@ -344,7 +344,7 @@ export class SurfaceGenerator {
     y: number,
     z: number,
     baseHeight: number,
-    biome: Biome
+    biome: Biome,
   ): number {
     if (biome.name === "Floating_Islands") {
       // 1. Floating islands logic: Create blobs around the base height
@@ -376,7 +376,7 @@ export class SurfaceGenerator {
 
     // 3D noise for density.
     // Scale controls the size of the features (caves/overhangs).
-    const noise = this.densityNoise(x * 0.04, y * 0.04, z * 0.04);
+    const noise = this.densityNoise(x * 0.04, y * 0.05, z * 0.04);
     // (baseHeight - y) creates the ground. Adding noise distorts it.
     return relativeHeight + noise * 8;
   }

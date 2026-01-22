@@ -30,6 +30,7 @@ export class PlayerVehicle {
   public isSprinting = false;
   public isFlying = false;
   public isMounted = false;
+  public DASH = true;
 
   #displayCapsule!: Mesh;
   #characterController!: PhysicsCharacterController;
@@ -71,13 +72,13 @@ export class PlayerVehicle {
     const boxExtents = new Vector3(width, height, width);
     const characterShape = new PhysicsShape(
       { type: PhysicsShapeType.BOX, parameters: { extents: boxExtents } },
-      this.scene
+      this.scene,
     );
 
     this.#characterController = new PhysicsCharacterController(
       startPosition,
       { shape: characterShape },
-      this.scene
+      this.scene,
     );
 
     // Collision groups (must match boat's groups)
@@ -108,7 +109,7 @@ export class PlayerVehicle {
     const box = MeshBuilder.CreateBox(
       "CharacterDisplay",
       { width: width, height: height, depth: width },
-      this.scene
+      this.scene,
     );
 
     const material = new StandardMaterial("box", this.scene);
@@ -125,13 +126,13 @@ export class PlayerVehicle {
     this.#characterOrientation = Quaternion.RotationYawPitchRoll(
       this.camera.cameraYaw,
       0,
-      0
+      0,
     );
 
     this.camera.moveWithPlayer(this.#characterController.getPosition());
 
     this.#displayCapsule.position.copyFrom(
-      this.#characterController.getPosition()
+      this.#characterController.getPosition(),
     );
   }
   /**
@@ -149,7 +150,7 @@ export class PlayerVehicle {
       }
       const support = this.#characterController.checkSupport(
         deltaTime,
-        new Vector3(0, -1, 0)
+        new Vector3(0, -1, 0),
       );
 
       const desiredVelocity = this.calculateDesiredVelocity(deltaTime, support);
@@ -158,7 +159,7 @@ export class PlayerVehicle {
       this.#characterController.integrate(
         deltaTime,
         support,
-        this.#characterGravity
+        this.#characterGravity,
       );
     }
   }
@@ -188,7 +189,7 @@ export class PlayerVehicle {
         currentVelocity,
         desiredVelocity,
         this.accelRateGround, // Can use a different accel rate for flying if desired
-        deltaTime
+        deltaTime,
       );
     }
 
@@ -197,7 +198,7 @@ export class PlayerVehicle {
 
   private calculateDesiredVelocity(
     deltaTime: number,
-    supportInfo: CharacterSurfaceInfo
+    supportInfo: CharacterSurfaceInfo,
   ): Vector3 {
     // Update player state based on support info
     const previousState = this.state;
@@ -214,7 +215,7 @@ export class PlayerVehicle {
         return this.calculateOnGroundVelocity(
           deltaTime,
           currentVelocity,
-          supportInfo
+          supportInfo,
         );
       case PlayerState.START_JUMP:
         return this.calculateJumpVelocity(currentVelocity, previousState);
@@ -242,7 +243,7 @@ export class PlayerVehicle {
         if (isSupported) {
           return PlayerState.ON_GROUND;
         }
-        if (this.wantJump > 0) {
+        if (this.wantJump > 0 && this.DASH) {
           return PlayerState.START_JUMP;
         }
         return PlayerState.IN_AIR;
@@ -270,7 +271,7 @@ export class PlayerVehicle {
    */
   private calculateInAirVelocity(
     deltaTime: number,
-    currentVelocity: Vector3
+    currentVelocity: Vector3,
   ): Vector3 {
     const upWorld = this.getUpVector();
     const forwardWorld = this.getForwardVector();
@@ -286,7 +287,7 @@ export class PlayerVehicle {
       currentVelocity,
       Vector3.ZeroReadOnly,
       desiredVelocity,
-      upWorld
+      upWorld,
     );
 
     // Remove vertical component and add back current vertical velocity
@@ -305,7 +306,7 @@ export class PlayerVehicle {
   private calculateOnGroundVelocity(
     deltaTime: number,
     currentVelocity: Vector3,
-    supportInfo: CharacterSurfaceInfo
+    supportInfo: CharacterSurfaceInfo,
   ): Vector3 {
     const upWorld = this.getUpVector();
     const forwardWorld = this.getForwardVector();
@@ -337,7 +338,7 @@ export class PlayerVehicle {
         currentVelocity,
         desiredVelocity,
         this.accelRateGround,
-        deltaTime
+        deltaTime,
       );
     }
 
@@ -349,12 +350,12 @@ export class PlayerVehicle {
       newVelocity,
       supportInfo.averageSurfaceVelocity,
       desiredVelocity,
-      upWorld
+      upWorld,
     );
 
     outputVelocity = this.applyHorizontalProjectionCorrection(
       outputVelocity,
-      supportInfo
+      supportInfo,
     );
 
     return outputVelocity;
@@ -362,7 +363,7 @@ export class PlayerVehicle {
   // tiny push-away to help penetration recovery (avoid sticking)
   private applyHorizontalProjectionCorrection(
     velocity: Vector3,
-    supportInfo: CharacterSurfaceInfo
+    supportInfo: CharacterSurfaceInfo,
   ): Vector3 {
     // Remove surface velocity
     const v = velocity.subtract(supportInfo.averageSurfaceVelocity);
@@ -381,14 +382,14 @@ export class PlayerVehicle {
 
   private calculateJumpVelocity(
     currentVelocity: Vector3,
-    previousState: PlayerState
+    previousState: PlayerState,
   ): Vector3 {
     const upWorld = this.getUpVector();
 
     // Calculate vertical jump component
     const verticalJumpVelocity = this.calculateVerticalJumpVelocity(
       currentVelocity,
-      upWorld
+      upWorld,
     );
 
     // Calculate horizontal movement component
@@ -408,7 +409,7 @@ export class PlayerVehicle {
       finalVelocity.addInPlace(
         viewDirection
           .normalize()
-          .scale(this.inAirSpeed * this.airJumpForwardBoost)
+          .scale(this.inAirSpeed * this.airJumpForwardBoost),
       );
     }
 
@@ -417,7 +418,7 @@ export class PlayerVehicle {
 
   private calculateVerticalJumpVelocity(
     currentVelocity: Vector3,
-    upWorld: Vector3
+    upWorld: Vector3,
   ): number {
     const jumpSpeed = this.#characterGravity.length() * this.jumpHeight;
     const currentUpwardVelocity = currentVelocity.dot(upWorld);
@@ -433,7 +434,7 @@ export class PlayerVehicle {
     current: Vector3,
     target: Vector3,
     maxAccel: number,
-    dt: number
+    dt: number,
   ): Vector3 {
     const delta = target.subtract(current);
 
@@ -460,7 +461,7 @@ export class PlayerVehicle {
 
   private getForwardVector(): Vector3 {
     return this.#forwardLocalSpace.applyRotationQuaternion(
-      this.#characterOrientation
+      this.#characterOrientation,
     );
   }
 

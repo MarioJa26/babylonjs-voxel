@@ -27,6 +27,12 @@ export class PlayerHud {
   private static itemTooltipDiv: HTMLDivElement;
   private static itemTooltipMouseMove?: (e: MouseEvent) => void;
 
+  #statsContainer!: HTMLDivElement;
+  #healthBarFill!: HTMLDivElement;
+  #hungerBarFill!: HTMLDivElement;
+  #staminaBarFill!: HTMLDivElement;
+  #manaBarFill!: HTMLDivElement;
+
   constructor(
     engine: Engine,
     scene: Scene,
@@ -40,6 +46,7 @@ export class PlayerHud {
     this.#crosshair = new CrossHair(engine, playerCamera, scene);
     this.#overlayDiv = this.initializeHUD();
     this.createHotbarUI();
+    this.createStatsUI();
     this.initializeDebugPanel();
     this.initializeTooltip();
   }
@@ -125,6 +132,35 @@ export class PlayerHud {
       hotbarWrapper.remove();
     });
     return hotbarContainer;
+  }
+
+  private createStatsUI(): void {
+    const container = document.createElement("div");
+    container.id = "stats-container";
+
+    const createBar = (className: string) => {
+      const wrapper = document.createElement("div");
+      wrapper.classList.add("stat-bar-wrapper");
+
+      const fill = document.createElement("div");
+      fill.classList.add("stat-bar-fill", className);
+
+      wrapper.appendChild(fill);
+      container.appendChild(wrapper);
+      return fill;
+    };
+
+    this.#healthBarFill = createBar("health"); // Red
+    this.#hungerBarFill = createBar("hunger"); // Orange
+    this.#staminaBarFill = createBar("stamina"); // Green
+    this.#manaBarFill = createBar("mana"); // Blue
+
+    document.body.appendChild(container);
+    this.#statsContainer = container;
+
+    this.#scene.onDisposeObservable.add(() => {
+      container.remove();
+    });
   }
 
   private getSlot(column: number, row: number): HTMLDivElement | null {
@@ -390,5 +426,21 @@ export class PlayerHud {
       document.removeEventListener("mousemove", this.itemTooltipMouseMove);
       this.itemTooltipMouseMove = undefined;
     }
+  }
+
+  public updateStats(): void {
+    const stats = this.#player.stats;
+    if (!stats) return;
+
+    this.#healthBarFill.style.width = `${
+      (stats.health / stats.maxHealth) * 100
+    }%`;
+    this.#hungerBarFill.style.width = `${
+      (stats.hunger / stats.maxHunger) * 100
+    }%`;
+    this.#staminaBarFill.style.width = `${
+      (stats.stamina / stats.maxStamina) * 100
+    }%`;
+    this.#manaBarFill.style.width = `${(stats.mana / stats.maxMana) * 100}%`;
   }
 }
