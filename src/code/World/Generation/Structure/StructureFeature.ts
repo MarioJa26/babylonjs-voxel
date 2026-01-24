@@ -4,7 +4,7 @@ import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
 import { Structure, StructureData } from "./Structure";
 
 export class StructureSpawnerFeature implements IWorldFeature {
-  private structures: Map<string, Structure> = new Map();
+  private static structures: Map<string, Structure> = new Map();
 
   constructor() {
     this.loadStructures();
@@ -40,8 +40,10 @@ export class StructureSpawnerFeature implements IWorldFeature {
       ],
     };
 
-    this.structures.set("Opulent House", new Structure(opulentHouseData));
-    console.log(`Loaded hardcoded structure: ${opulentHouseData.name}`);
+    StructureSpawnerFeature.structures.set(
+      "Opulent House",
+      new Structure(opulentHouseData),
+    );
   }
 
   public generate(
@@ -54,13 +56,13 @@ export class StructureSpawnerFeature implements IWorldFeature {
       y: number,
       z: number,
       id: number,
-      ow: boolean
+      ow: boolean,
     ) => void,
     seed: number,
     chunkSize: number,
-    getTerrainHeight: (x: number, z: number, biome: Biome) => number
+    getTerrainHeight: (x: number, z: number, biome: Biome) => number,
   ) {
-    if (this.structures.size === 0) return;
+    if (StructureSpawnerFeature.structures.size === 0) return;
 
     const REGION_SIZE = 16;
     const SPAWN_CHANCE = 10;
@@ -70,14 +72,16 @@ export class StructureSpawnerFeature implements IWorldFeature {
 
     const regionHash = Squirrel3.get(
       regionX * 584661329 + regionZ * 957346603,
-      seed
+      seed,
     );
 
     if (Math.abs(regionHash) % 100 < SPAWN_CHANCE) {
-      const structureNames = Array.from(this.structures.keys());
+      const structureNames = Array.from(
+        StructureSpawnerFeature.structures.keys(),
+      );
       const structureName =
         structureNames[Math.abs(regionHash) % structureNames.length];
-      const structure = this.structures.get(structureName);
+      const structure = StructureSpawnerFeature.structures.get(structureName);
 
       if (!structure) return;
 
@@ -93,14 +97,14 @@ export class StructureSpawnerFeature implements IWorldFeature {
       const groundHeight = getTerrainHeight(
         structureOriginX,
         structureOriginZ,
-        biome
+        biome,
       );
 
       structure.place(
         structureOriginX,
         groundHeight,
         structureOriginZ,
-        placeBlock
+        placeBlock,
       );
     }
   }

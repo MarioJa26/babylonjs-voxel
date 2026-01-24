@@ -42,191 +42,193 @@ export class ChunkMesher {
   private static lastUpdateFrame = -1;
 
   static initAtlas() {
-    if (!ChunkMesher.#atlasMaterial) {
-      let diffuseAtlasTexture: Texture | null = null;
-      let normalAtlasTexture: Texture | null = null;
-      const scene = Map1.mainScene;
+    let diffuseAtlasTexture: Texture | null = null;
+    let normalAtlasTexture: Texture | null = null;
+    const scene = Map1.mainScene;
 
-      diffuseAtlasTexture = TextureAtlasFactory.getDiffuse();
-      normalAtlasTexture = TextureAtlasFactory.getNormal();
-      if (!diffuseAtlasTexture) {
-        diffuseAtlasTexture = new Texture("/texture/diffuse_atlas.png", scene, {
-          noMipmap: false,
-          samplingMode: Texture.NEAREST_SAMPLINGMODE,
-        });
-        normalAtlasTexture = new Texture("/texture/normal_atlas.png", scene, {
-          noMipmap: false,
-          samplingMode: Texture.NEAREST_SAMPLINGMODE,
-        });
+    diffuseAtlasTexture = TextureAtlasFactory.getDiffuse();
+    normalAtlasTexture = TextureAtlasFactory.getNormal();
+    if (!diffuseAtlasTexture) {
+      diffuseAtlasTexture = new Texture("/texture/diffuse_atlas.png", scene, {
+        noMipmap: false,
+        samplingMode: Texture.NEAREST_SAMPLINGMODE,
+      });
+
+      normalAtlasTexture = new Texture("/texture/normal_atlas.png", scene, {
+        noMipmap: false,
+        samplingMode: Texture.NEAREST_SAMPLINGMODE,
+      });
+
+      TextureAtlasFactory.setDiffuse(diffuseAtlasTexture);
+      TextureAtlasFactory.setNormal(normalAtlasTexture);
+    }
+
+    if (diffuseAtlasTexture) {
+      // Register the shader with Babylon's Effect system
+      Effect.ShadersStore["chunkVertexShader"] =
+        DiffuseNormalShader.chunkVertexShader;
+      Effect.ShadersStore["chunkFragmentShader"] =
+        DiffuseNormalShader.chunkFragmentShader;
+      // Register the water and glass shaders
+      Effect.ShadersStore["waterChunkFragmentShader"] =
+        WaterShader.chunkFragmentShader;
+      Effect.ShadersStore["glassChunkFragmentShader"] =
+        GlassShader.chunkFragmentShader;
+
+      const opaqueBlockShader = new ShaderMaterial(
+        "chunkShaderMaterial",
+        scene,
+        {
+          vertex: "chunk",
+          fragment: "chunk",
+        },
+        {
+          attributes: [
+            "position",
+            "normal",
+            "uv2",
+            "uv3",
+            "cornerId",
+            "ao",
+            "light",
+          ],
+          uniforms: [
+            "world",
+            "worldViewProjection",
+            "atlasTileSize",
+            "cameraPosition",
+            "lightDirection",
+            "screenSize",
+            "sunLightIntensity",
+            "wetness",
+          ],
+          samplers: ["diffuseTexture", "normalTexture"],
+        },
+      );
+      opaqueBlockShader.backFaceCulling = true;
+      opaqueBlockShader.setPrePassRenderer(scene.prePassRenderer!);
+      opaqueBlockShader.setFloat(
+        "atlasTileSize",
+        TextureAtlasFactory.atlasTileSize,
+      );
+
+      opaqueBlockShader.setTexture("diffuseTexture", diffuseAtlasTexture);
+      if (normalAtlasTexture) {
+        opaqueBlockShader.setTexture("normalTexture", normalAtlasTexture);
       }
 
-      if (diffuseAtlasTexture) {
-        // Register the shader with Babylon's Effect system
-        Effect.ShadersStore["chunkVertexShader"] =
-          DiffuseNormalShader.chunkVertexShader;
-        Effect.ShadersStore["chunkFragmentShader"] =
-          DiffuseNormalShader.chunkFragmentShader;
-        // Register the water and glass shaders
-        Effect.ShadersStore["waterChunkFragmentShader"] =
-          WaterShader.chunkFragmentShader;
-        Effect.ShadersStore["glassChunkFragmentShader"] =
-          GlassShader.chunkFragmentShader;
-
-        const opaqueBlockShader = new ShaderMaterial(
-          "chunkShaderMaterial",
-          scene,
-          {
-            vertex: "chunk",
-            fragment: "chunk",
-          },
-          {
-            attributes: [
-              "position",
-              "normal",
-              "uv2",
-              "uv3",
-              "cornerId",
-              "ao",
-              "light",
-            ],
-            uniforms: [
-              "world",
-              "worldViewProjection",
-              "atlasTileSize",
-              "cameraPosition",
-              "lightDirection",
-              "screenSize",
-              "sunLightIntensity",
-              "wetness",
-            ],
-            samplers: ["diffuseTexture", "normalTexture"],
-          },
-        );
-        opaqueBlockShader.backFaceCulling = true;
-        opaqueBlockShader.setPrePassRenderer(scene.prePassRenderer!);
-        opaqueBlockShader.setFloat(
-          "atlasTileSize",
-          TextureAtlasFactory.atlasTileSize,
-        );
-
-        opaqueBlockShader.setTexture("diffuseTexture", diffuseAtlasTexture);
-        if (normalAtlasTexture) {
-          opaqueBlockShader.setTexture("normalTexture", normalAtlasTexture);
+      opaqueBlockShader.onBind = () => {
+        const effect = opaqueBlockShader.getEffect();
+        if (effect) {
+          ChunkMesher.applyOpaqueUniforms(effect);
         }
+      };
 
-        opaqueBlockShader.onBind = () => {
-          const effect = opaqueBlockShader.getEffect();
-          if (effect) {
-            ChunkMesher.applyOpaqueUniforms(effect);
-          }
-        };
+      ChunkMesher.#atlasMaterial = opaqueBlockShader;
 
-        ChunkMesher.#atlasMaterial = opaqueBlockShader;
+      // Create a separate material for water meshes
+      const waterMat = new ShaderMaterial(
+        "waterChunkShaderMaterial",
+        scene,
+        {
+          vertex: "chunk", // Reuse the same vertex shader
+          fragment: "waterChunk", // Use our water fragment shader
+        },
+        {
+          attributes: [
+            "position",
+            "normal",
+            "uv2",
+            "uv3",
+            "cornerId",
+            "ao",
+            "light",
+          ],
+          uniforms: [
+            "world",
+            "worldViewProjection",
+            "atlasTileSize",
+            "cameraPosition",
+            "lightDirection",
+            "time", // Add time for animation,
+            "cameraPlanes", // for depth calculation
+            "screenSize", // for depth calculation
+            "sunLightIntensity",
+            "wetness",
+          ],
+          samplers: ["diffuseTexture", "normalTexture"],
+        },
+      );
 
-        // Create a separate material for water meshes
-        const waterMat = new ShaderMaterial(
-          "waterChunkShaderMaterial",
-          scene,
-          {
-            vertex: "chunk", // Reuse the same vertex shader
-            fragment: "waterChunk", // Use our water fragment shader
-          },
-          {
-            attributes: [
-              "position",
-              "normal",
-              "uv2",
-              "uv3",
-              "cornerId",
-              "ao",
-              "light",
-            ],
-            uniforms: [
-              "world",
-              "worldViewProjection",
-              "atlasTileSize",
-              "cameraPosition",
-              "lightDirection",
-              "time", // Add time for animation,
-              "cameraPlanes", // for depth calculation
-              "screenSize", // for depth calculation
-              "sunLightIntensity",
-              "wetness",
-            ],
-            samplers: ["diffuseTexture", "normalTexture"],
-          },
-        );
+      waterMat.backFaceCulling = false;
+      waterMat.forceDepthWrite = false;
+      waterMat.needAlphaBlending = () => true; // Enable alpha blending
 
-        waterMat.backFaceCulling = false;
-        waterMat.forceDepthWrite = false;
-        waterMat.needAlphaBlending = () => true; // Enable alpha blending
-
-        waterMat.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
-        waterMat.setTexture("diffuseTexture", diffuseAtlasTexture);
-        if (normalAtlasTexture) {
-          waterMat.setTexture("normalTexture", normalAtlasTexture);
-        }
-
-        waterMat.onBind = () => {
-          const effect = waterMat.getEffect();
-          if (effect) {
-            ChunkMesher.applyWaterUniforms(effect);
-          }
-        };
-
-        ChunkMesher.#waterMaterial = waterMat;
-
-        // Create a separate material for glass meshes
-        const glassMat = new ShaderMaterial(
-          "glassChunkShaderMaterial",
-          scene,
-          {
-            vertex: "chunk", // Reuse the same vertex shader
-            fragment: "glassChunk", // Use our glass fragment shader
-          },
-          {
-            attributes: [
-              "position",
-              "normal",
-              "uv2",
-              "uv3",
-              "cornerId",
-              "ao",
-              "light",
-            ],
-            uniforms: [
-              "world",
-              "worldViewProjection",
-              "atlasTileSize",
-              "cameraPosition",
-              "lightDirection",
-              "cameraPlanes",
-              "screenSize",
-              "wetness",
-            ],
-            samplers: ["diffuseTexture", "normalTexture", "skyboxTexture"],
-          },
-        );
-
-        glassMat.backFaceCulling = true;
-        // Enable depth writing so glass occludes other glass correctly.
-        glassMat.needAlphaBlending = () => true; // Enable alpha blending for transparency.
-
-        glassMat.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
-        glassMat.setTexture("diffuseTexture", diffuseAtlasTexture);
-        if (normalAtlasTexture) {
-          glassMat.setTexture("normalTexture", normalAtlasTexture);
-        }
-        glassMat.onBind = () => {
-          const effect = glassMat.getEffect();
-          if (effect) {
-            ChunkMesher.applyGlassUniforms(effect);
-          }
-        };
-        ChunkMesher.#glassMaterial = glassMat;
-      } else {
-        console.error("Texture Atlas not yet built or available!");
+      waterMat.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
+      waterMat.setTexture("diffuseTexture", diffuseAtlasTexture);
+      if (normalAtlasTexture) {
+        waterMat.setTexture("normalTexture", normalAtlasTexture);
       }
+
+      waterMat.onBind = () => {
+        const effect = waterMat.getEffect();
+        if (effect) {
+          ChunkMesher.applyWaterUniforms(effect);
+        }
+      };
+
+      ChunkMesher.#waterMaterial = waterMat;
+
+      // Create a separate material for glass meshes
+      const glassMat = new ShaderMaterial(
+        "glassChunkShaderMaterial",
+        scene,
+        {
+          vertex: "chunk", // Reuse the same vertex shader
+          fragment: "glassChunk", // Use our glass fragment shader
+        },
+        {
+          attributes: [
+            "position",
+            "normal",
+            "uv2",
+            "uv3",
+            "cornerId",
+            "ao",
+            "light",
+          ],
+          uniforms: [
+            "world",
+            "worldViewProjection",
+            "atlasTileSize",
+            "cameraPosition",
+            "lightDirection",
+            "cameraPlanes",
+            "screenSize",
+            "wetness",
+          ],
+          samplers: ["diffuseTexture", "normalTexture", "skyboxTexture"],
+        },
+      );
+
+      glassMat.backFaceCulling = true;
+      // Enable depth writing so glass occludes other glass correctly.
+      glassMat.needAlphaBlending = () => true; // Enable alpha blending for transparency.
+
+      glassMat.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
+      glassMat.setTexture("diffuseTexture", diffuseAtlasTexture);
+      if (normalAtlasTexture) {
+        glassMat.setTexture("normalTexture", normalAtlasTexture);
+      }
+      glassMat.onBind = () => {
+        const effect = glassMat.getEffect();
+        if (effect) {
+          ChunkMesher.applyGlassUniforms(effect);
+        }
+      };
+      ChunkMesher.#glassMaterial = glassMat;
+    } else {
+      console.error("Texture Atlas not yet built or available!");
     }
   }
 

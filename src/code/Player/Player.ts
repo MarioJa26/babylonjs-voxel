@@ -117,6 +117,12 @@ export class Player implements IUsable {
       }
     });
 
+    window.addEventListener("mouseup", (event) => {
+      if (this.#keyboardControls instanceof WalkingControls) {
+        this.#keyboardControls.handleMouseEvent(event, false);
+      }
+    });
+
     this.scene.onPointerObservable.add((pointerInfo) => {
       if (document.pointerLockElement !== this.canvas) return;
       switch (pointerInfo.type) {
@@ -158,6 +164,9 @@ export class Player implements IUsable {
 
       if (this.#keyboardControls instanceof PaddleBoatControls)
         this.#keyboardControls.update();
+      else if (this.#keyboardControls instanceof WalkingControls) {
+        this.#keyboardControls.update();
+      }
 
       // Ensure world chunks are generated around the player ONLY when they move between chunks
       const playerPos = this.position;

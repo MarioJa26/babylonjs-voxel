@@ -1,4 +1,10 @@
-import { Mesh, MeshBuilder, Scene, StandardMaterial } from "@babylonjs/core";
+import {
+  Mesh,
+  MeshBuilder,
+  Scene,
+  StandardMaterial,
+  Color3,
+} from "@babylonjs/core";
 import { AdvancedBoat } from "../Entities/AdvancedBoat";
 import { Player } from "../Player/Player";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
@@ -10,6 +16,7 @@ import { GenerationParams } from "../World/Generation/NoiseAndParameters/Generat
 import { SettingParams } from "../World/SettingParams";
 import { WorldStorage } from "../World/WorldStorage";
 import { WorldEnvironment } from "./WorldEnvironment";
+import { BlockBreakParticles } from "./BlockBreakParticles";
 export class Map1 {
   public static mainScene: Scene;
   public static environment: WorldEnvironment;
@@ -124,6 +131,62 @@ export class Map1 {
   async loadTextures(): Promise<void> {
     if (GlobalValues.CREATE_ATLAS) {
       await TextureAtlasFactory.buildAtlas(Map1.mainScene, TextureDefinitions);
+      const atlas = TextureAtlasFactory.getDiffuse();
+      if (atlas) {
+        BlockBreakParticles.setAtlasTexture(atlas);
+      }
+    }
+  }
+
+  static #crackingMesh: Mesh | null = null;
+  static #crackMaterials: StandardMaterial[] = [];
+
+  public static updateCrackingState(
+    block: { x: number; y: number; z: number } | null,
+    progress: number,
+  ) {
+    if (!this.#crackingMesh) {
+      this.initCrackingMesh();
+    }
+
+    if (!block || progress <= 0) {
+      if (this.#crackingMesh) this.#crackingMesh.isVisible = false;
+      return;
+    }
+
+    if (this.#crackingMesh) {
+      this.#crackingMesh.isVisible = true;
+      this.#crackingMesh.position.set(
+        Math.floor(block.x) + 0.5,
+        Math.floor(block.y) + 0.5,
+        Math.floor(block.z) + 0.5,
+      );
+
+      const stage = Math.min(9, Math.floor(progress * 10));
+      if (this.#crackMaterials[stage]) {
+        this.#crackingMesh.material = this.#crackMaterials[stage];
+      }
+    }
+  }
+
+  private static initCrackingMesh() {
+    this.#crackingMesh = MeshBuilder.CreateBox(
+      "crackingMesh",
+      { size: 1.02 },
+      this.mainScene,
+    );
+    this.#crackingMesh.isPickable = false;
+    this.#crackingMesh.isVisible = false;
+    this.#crackingMesh.renderingGroupId = 1;
+
+    for (let i = 0; i < 10; i++) {
+      const mat = new StandardMaterial(`crackMat${i}`, this.mainScene);
+      mat.diffuseColor = SettingParams.HIGHLIGHT_COLOR;
+      mat.alpha = 0.1 + (i / 9) * 0.6;
+      mat.backFaceCulling = false;
+      mat.disableLighting = true;
+      mat.zOffset = -1;
+      this.#crackMaterials.push(mat);
     }
   }
 }

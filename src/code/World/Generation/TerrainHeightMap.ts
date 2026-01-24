@@ -9,6 +9,7 @@ import {
 //import { Voronoi } from "./NoiseAndParameters/Voronoi";
 import { Spline } from "./NoiseAndParameters/Spline";
 import { RiverGenerator } from "./RiverGeneration";
+import { SettingParams } from "../SettingParams";
 
 /**
  * A static utility class to calculate terrain height at any world coordinate.
@@ -58,6 +59,7 @@ export class TerrainHeightMap {
     this.continentalnessSpline = new Spline([
       { t: -1.0, v: -16 },
       { t: -0.3, v: -16 },
+      /*
       { t: -0.29, v: 5 },
 
       { t: -0.1, v: 6 },
@@ -74,7 +76,11 @@ export class TerrainHeightMap {
       { t: 0.8, v: 340 },
       { t: 0.9, v: 400 },
       { t: 0.98, v: 500 },
-      { t: 1.0, v: 512 },
+      */
+      {
+        t: 1.0,
+        v: GenerationParams.CHUNK_SIZE * SettingParams.MAX_CHUNK_HEIGHT,
+      },
     ]);
 
     this.erosionSpline = new Spline([

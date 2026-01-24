@@ -15,7 +15,7 @@ export const GenerationParams = {
   EROSION_NOISE_SCALE: 0.002,
   PV_NOISE_SCALE: 0.006,
   RIVER_TUNNEL_THRESHOLD_OFFSET: 6,
-  RIVER_TRANSITION_RANGE: 15,
+  RIVER_TRANSITION_RANGE: 16,
 };
 
 export type GenerationParamsType = typeof GenerationParams;

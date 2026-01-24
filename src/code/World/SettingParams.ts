@@ -2,7 +2,7 @@ import { Color3, Color4 } from "@babylonjs/core";
 
 export class SettingParams {
   // --- World Generation & Loading ---
-  public static RENDER_DISTANCE = 10;
+  public static RENDER_DISTANCE = 6;
   public static VERTICAL_RENDER_DISTANCE = 12;
   public static MAX_CHUNK_HEIGHT = 32;
   public static CHUNK_UNLOAD_DISTANCE_BUFFER = 6; // How many extra chunks to keep before unloading
@@ -22,7 +22,7 @@ export class SettingParams {
 
   // --- Block Highlighter ---
   public static HIGHLIGHT_ALPHA = 0.0;
-  public static HIGHLIGHT_COLOR = new Color3(0.6, 0.6, 1);
+  public static HIGHLIGHT_COLOR = new Color3(0, 0.1, 0);
   public static HIGHLIGHT_EDGE_WIDTH = 1.1;
   public static HIGHLIGHT_EDGE_COLOR = new Color4(0, 0.1, 0, 0.7);
 

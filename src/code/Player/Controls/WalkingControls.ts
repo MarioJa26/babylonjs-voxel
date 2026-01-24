@@ -6,6 +6,8 @@ import { PlayerVehicle } from "../PlayerVehicle";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { GlobalValues } from "@/code/World/GlobalValues";
 import { PlayerHud } from "../Hud/PlayerHud";
+import { Map1 } from "@/code/Maps/Map1";
+import { BlockBreakParticles } from "@/code/Maps/BlockBreakParticles";
 
 export class WalkingControls implements IControls<PlayerVehicle> {
   public pressedKeys = new Set<string>();
@@ -13,6 +15,10 @@ export class WalkingControls implements IControls<PlayerVehicle> {
   #inputDirection: Vector3;
 
   #player: Player;
+
+  #isBreaking = false;
+  #breakingBlock: { x: number; y: number; z: number } | null = null;
+  #breakTimer = 0;
 
   public static KEY_LEFT = ["a", "arrowleft"];
   public static KEY_RIGHT = ["d", "arrowright"];
@@ -64,11 +70,17 @@ export class WalkingControls implements IControls<PlayerVehicle> {
     }
   }
   public handleMouseEvent(mouseEvent: MouseEvent, isKeyDown: boolean): void {
-    if (WalkingControls.MOUSE1.includes(mouseEvent.button) && isKeyDown) {
-      const hit = CrossHair.pickTarget(this.#player);
-      if (!hit) return;
-      ChunkLoadingSystem.deleteBlock(hit.x, hit.y, hit.z);
-    } else if (WalkingControls.MOUSE2.includes(mouseEvent.button)) {
+    if (WalkingControls.MOUSE1.includes(mouseEvent.button)) {
+      this.#isBreaking = isKeyDown;
+      if (!isKeyDown) {
+        this.#breakingBlock = null;
+        this.#breakTimer = 0;
+        Map1.updateCrackingState(null, 0);
+      }
+    } else if (
+      WalkingControls.MOUSE2.includes(mouseEvent.button) &&
+      isKeyDown
+    ) {
       const blockNumber = CrossHair.pickBlock(this.#player);
       if (blockNumber === 62) {
         console.log("Clicked on protected block!");
@@ -84,6 +96,77 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 
       if (item) {
         ChunkLoadingSystem.setBlock(hit.x, hit.y, hit.z, item.itemId);
+      }
+    }
+  }
+
+  private getBlockBreakTime(blockId: number): number {
+    switch (blockId) {
+      case 60: // Glass
+      case 61:
+        return 0.1;
+      case 30: // Water
+        return Infinity;
+      case 1: // Stone
+        return 1.5;
+      case 2: // Grass
+        return 0.25;
+      case 3: // Dirt
+        return 0.6;
+      case 5: // Wood
+        return 2.0;
+      case 10: // Lava
+      case 11:
+        return Infinity;
+      default:
+        return 0.5;
+    }
+  }
+
+  public update(): void {
+    if (this.#isBreaking) {
+      const dt =
+        this.#player.playerVehicle.scene.getEngine().getDeltaTime() / 1000;
+      const hit = CrossHair.pickTarget(this.#player);
+
+      if (hit) {
+        const blockId = ChunkLoadingSystem.getBlockByWorldCoords(
+          hit.x,
+          hit.y,
+          hit.z,
+        );
+        const breakTime = this.getBlockBreakTime(blockId);
+
+        if (
+          this.#breakingBlock &&
+          this.#breakingBlock.x === hit.x &&
+          this.#breakingBlock.y === hit.y &&
+          this.#breakingBlock.z === hit.z
+        ) {
+          this.#breakTimer += dt;
+          Map1.updateCrackingState(
+            this.#breakingBlock,
+            this.#breakTimer / breakTime,
+          );
+          if (this.#breakTimer >= breakTime) {
+            ChunkLoadingSystem.deleteBlock(hit.x, hit.y, hit.z);
+            BlockBreakParticles.play(
+              this.#player.playerVehicle.scene,
+              new Vector3(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5),
+              blockId,
+            );
+            this.#breakTimer = 0;
+            Map1.updateCrackingState(null, 0);
+          }
+        } else {
+          this.#breakingBlock = { x: hit.x, y: hit.y, z: hit.z };
+          this.#breakTimer = 0;
+          Map1.updateCrackingState(this.#breakingBlock, 0);
+        }
+      } else {
+        this.#breakingBlock = null;
+        this.#breakTimer = 0;
+        Map1.updateCrackingState(null, 0);
       }
     }
   }

@@ -24,7 +24,7 @@ export class TextureAtlasFactory {
     scene: Scene,
     images: { name: string; path: string }[],
     tileSize = TextureAtlasFactory.tileSize,
-    atlasSize = TextureAtlasFactory.atlasSize
+    atlasSize = TextureAtlasFactory.atlasSize,
   ) {
     const totalSize = tileSize * atlasSize;
 
@@ -45,7 +45,7 @@ export class TextureAtlasFactory {
         const diffuseSrc = MaterialFactory.getTexturePathFromFolder(img.path)!;
         const normalSrc = MaterialFactory.getTexturePathFromFolder(
           img.path,
-          "nor"
+          "nor",
         )!;
 
         const [diffuseImg, normalImg] = await Promise.all([
@@ -54,7 +54,7 @@ export class TextureAtlasFactory {
         ]);
 
         return { name: img.name, diffuseImg, normalImg };
-      })
+      }),
     );
 
     loadedImages.forEach((entry, i) => {
@@ -79,7 +79,7 @@ export class TextureAtlasFactory {
       scene,
       false, // noMipmap -> false to enable mipmaps
       true, // invertY
-      Texture.NEAREST_SAMPLINGMODE // mag: NEAREST, min: LINEAR, mip: LINEAR
+      Texture.NEAREST_SAMPLINGMODE, // mag: NEAREST, min: LINEAR, mip: LINEAR
     );
     diffuseTex.wrapU = Texture.CLAMP_ADDRESSMODE;
     diffuseTex.wrapV = Texture.CLAMP_ADDRESSMODE;
@@ -89,7 +89,7 @@ export class TextureAtlasFactory {
       scene,
       false, // noMipmap -> false to enable mipmaps
       true, // invertY
-      Texture.NEAREST_SAMPLINGMODE // mag: NEAREST, min: LINEAR, mip: LINEAR
+      Texture.NEAREST_SAMPLINGMODE, // mag: NEAREST, min: LINEAR, mip: LINEAR
     );
     normalTex.wrapU = Texture.CLAMP_ADDRESSMODE;
     normalTex.wrapV = Texture.CLAMP_ADDRESSMODE;
@@ -116,7 +116,7 @@ export class TextureAtlasFactory {
    */
   private static saveCanvasAsImage(
     canvas: HTMLCanvasElement,
-    filename: string
+    filename: string,
   ) {
     const link = document.createElement("a");
     link.download = filename;
@@ -126,7 +126,7 @@ export class TextureAtlasFactory {
     link.click();
   }
   private static async loadImageSafe(
-    src: string
+    src: string,
   ): Promise<HTMLImageElement | null> {
     try {
       return await this.loadImage(src);
@@ -153,8 +153,14 @@ export class TextureAtlasFactory {
   static getDiffuse(): Texture | null {
     return this.diffuseAtlas;
   }
+  static setDiffuse(texture: Texture) {
+    this.diffuseAtlas = texture;
+  }
 
   static getNormal(): Texture | null {
     return this.normalAtlas;
+  }
+  static setNormal(texture: Texture) {
+    this.normalAtlas = texture;
   }
 }
