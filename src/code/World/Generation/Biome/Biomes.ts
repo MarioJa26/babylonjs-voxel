@@ -319,7 +319,7 @@ export function getBiomeFor(
   temperature: number,
   humidity: number,
   continentalness: number,
-  river: number
+  river: number,
 ): Biome {
   if (river < 0.1 && continentalness > -0.28 && continentalness < 0.67) {
     return RIVER;
@@ -359,7 +359,7 @@ export function getBiomeFor(
 
   // Hot regions
   if (temperature > 0.55) {
-    if (humidity < 0.25) {
+    if (humidity < 0.3) {
       if (temperature > 0.85) {
         return VOLCANIC_WASTELAND; // Extremely hot and dry
       }

@@ -5,6 +5,9 @@ import { CrossHair } from "../Hud/CrossHair";
 import { PlayerInventory } from "../Inventory/PlayerInventory";
 import { PlayerCamera } from "../PlayerCamera";
 import { WorldEnvironment } from "../../Maps/WorldEnvironment";
+import { Recipe, Recipes } from "../Crafting/CraftingManager";
+import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
+import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
 
 export class PlayerHud {
   #engine: Engine;
@@ -14,6 +17,7 @@ export class PlayerHud {
   static #inventory: PlayerInventory;
   #inventoryOpen = false;
   #crosshair: CrossHair;
+  #craftingRecipeDivs: { recipe: Recipe; div: HTMLDivElement }[] = [];
 
   #selectedHotbarSlot = 0;
   #hotbarSlots: HTMLDivElement[] = [];
@@ -49,12 +53,18 @@ export class PlayerHud {
     this.createStatsUI();
     this.initializeDebugPanel();
     this.initializeTooltip();
+
+    PlayerHud.#inventory.onInventoryChangedObservable.add(() => {
+      if (this.#inventoryOpen) {
+        this.updateCraftingAvailability();
+      }
+    });
   }
 
   private initializeHUD(): HTMLDivElement {
     const existingOverlay = document.getElementById("hud-overlay");
     if (existingOverlay) {
-      return existingOverlay as HTMLDivElement;
+      existingOverlay.remove();
     }
     const overlayDiv = document.createElement("div");
     overlayDiv.id = "hud-overlay";
@@ -68,9 +78,16 @@ export class PlayerHud {
       this.#player.keyboardControls.onKeyUp("tab");
     };
 
-    const inventoryUI = this.createInventoryUI();
+    const contentWrapper = document.createElement("div");
+    contentWrapper.classList.add("hud-content-wrapper");
 
-    overlayDiv.appendChild(inventoryUI);
+    const inventoryUI = this.createInventoryUI();
+    const craftingUI = this.createCraftingUI();
+
+    contentWrapper.appendChild(inventoryUI);
+    contentWrapper.appendChild(craftingUI);
+
+    overlayDiv.appendChild(contentWrapper);
     overlayDiv.appendChild(closeButton);
     document.body.appendChild(overlayDiv);
 
@@ -80,6 +97,117 @@ export class PlayerHud {
     });
 
     return overlayDiv;
+  }
+
+  private createCraftingUI(): HTMLDivElement {
+    const container = document.createElement("div");
+    container.classList.add("crafting-container");
+    this.#craftingRecipeDivs = [];
+
+    const viewSwitcher = document.createElement("div");
+    viewSwitcher.classList.add("crafting-view-switcher");
+
+    const detailedButton = document.createElement("button");
+    detailedButton.innerText = "List";
+    detailedButton.title = "Show name and icon";
+    detailedButton.classList.add("active");
+
+    const compactButton = document.createElement("button");
+    compactButton.innerText = "Grid";
+    compactButton.title = "Show only icon";
+
+    detailedButton.onclick = () => {
+      container.classList.remove("compact-view");
+      detailedButton.classList.add("active");
+      compactButton.classList.remove("active");
+    };
+
+    compactButton.onclick = () => {
+      container.classList.add("compact-view");
+      compactButton.classList.add("active");
+      detailedButton.classList.remove("active");
+    };
+
+    viewSwitcher.appendChild(detailedButton);
+    viewSwitcher.appendChild(compactButton);
+    container.appendChild(viewSwitcher);
+
+    for (const recipe of Recipes) {
+      const textureDef = TextureDefinitions.find(
+        (t) => t.id === recipe.resultId,
+      );
+      if (!textureDef) continue;
+
+      const recipeDiv = document.createElement("div");
+      recipeDiv.classList.add("crafting-recipe");
+
+      const ingredientsInfo = recipe.ingredients
+        .map((ing) => {
+          const ingDef = TextureDefinitions.find((t) => t.id === ing.itemId);
+          return `- ${ingDef ? ingDef.name : "Unknown"} x${ing.count}`;
+        })
+        .join("\n");
+      recipeDiv.title = `Craft ${textureDef.name}\nRequires:\n${ingredientsInfo}`;
+
+      const icon = document.createElement("img");
+      icon.src =
+        MaterialFactory.getTexturePathFromFolder(textureDef.path) ?? "";
+      icon.classList.add("crafting-icon");
+
+      const name = document.createElement("span");
+      name.innerText = textureDef.name;
+
+      recipeDiv.appendChild(icon);
+      recipeDiv.appendChild(name);
+
+      this.#craftingRecipeDivs.push({ recipe, div: recipeDiv });
+
+      recipeDiv.onclick = () => {
+        let canCraft = true;
+        for (const ing of recipe.ingredients) {
+          if (!PlayerHud.#inventory.hasItem(ing.itemId, ing.count)) {
+            canCraft = false;
+            break;
+          }
+        }
+
+        if (canCraft) {
+          for (const ing of recipe.ingredients) {
+            PlayerHud.#inventory.removeItems(ing.itemId, ing.count);
+          }
+          PlayerHud.#inventory.createAndAddItem(
+            recipe.resultId,
+            recipe.resultCount,
+          );
+          this.updateCraftingAvailability();
+        } else {
+          recipeDiv.style.borderColor = "red";
+          setTimeout(() => (recipeDiv.style.borderColor = ""), 200);
+        }
+      };
+      container.appendChild(recipeDiv);
+    }
+    this.updateCraftingAvailability();
+    return container;
+  }
+
+  public updateCraftingAvailability(): void {
+    for (const item of this.#craftingRecipeDivs) {
+      let canCraft = true;
+      for (const ing of item.recipe.ingredients) {
+        if (!PlayerHud.#inventory.hasItem(ing.itemId, ing.count)) {
+          canCraft = false;
+          break;
+        }
+      }
+
+      if (canCraft) {
+        item.div.classList.remove("not-craftable");
+        item.div.style.borderColor = ""; // Reset red border if it was set
+      } else {
+        item.div.classList.add("not-craftable");
+      }
+    }
   }
 
   private createInventoryUI(): HTMLDivElement {
@@ -170,6 +298,7 @@ export class PlayerHud {
   public toggleInventory(): void {
     this.#inventoryOpen = !this.#inventoryOpen;
     if (this.#inventoryOpen) {
+      this.updateCraftingAvailability();
       PlayerHud.#heldItemNameDiv.classList.remove("visible");
       this.#overlayDiv.style.display = "flex";
       this.#engine.exitPointerlock();

@@ -31,6 +31,15 @@
   font-size: 1em;
 }
 
+.hud-content-wrapper {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 1em;
+  max-height: 100%;
+  overflow: hidden;
+}
+
 .hotbar-container {
   position: absolute;
   bottom: 1vh;
@@ -42,6 +51,88 @@
   gap: 0.66em;
   padding: 0.5em;
   background-color: rgba(0, 0, 0, 0.4);
+}
+
+.crafting-view-switcher {
+  display: flex;
+  gap: 0.5em;
+  margin-bottom: 0.5em;
+}
+
+.crafting-view-switcher button {
+  flex: 1;
+  padding: 0.25em;
+  background-color: rgba(0, 0, 0, 0.6);
+  border: 2px solid rgba(96, 96, 64, 0.9);
+  color: white;
+  cursor: pointer;
+  transition: 0.1s;
+}
+
+.crafting-view-switcher button:hover {
+  border-color: rgb(0, 187, 255);
+}
+
+.crafting-view-switcher button.active {
+  background-color: rgba(50, 50, 50, 0.8);
+  border-color: rgb(0, 187, 255);
+}
+
+.crafting-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
+  padding: 0.5em;
+  background-color: rgba(0, 0, 0, 0.4);
+  overflow-y: auto;
+  min-width: 200px;
+  max-height: 100%;
+}
+
+.crafting-recipe {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.5em;
+  background-color: rgba(0, 0, 0, 0.6);
+  border: 2px solid rgba(96, 96, 64, 0.9);
+  cursor: pointer;
+  color: white;
+  transition: 0.1s;
+}
+
+.crafting-recipe.not-craftable {
+  opacity: 0.5;
+  filter: grayscale(100%);
+  border-color: #555;
+  cursor: not-allowed;
+}
+
+.crafting-recipe:hover {
+  border-color: rgb(0, 187, 255);
+  background-color: rgba(50, 50, 50, 0.8);
+}
+
+.crafting-icon {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+}
+
+.crafting-container.compact-view {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-content: flex-start;
+}
+
+.crafting-container.compact-view .crafting-recipe {
+  padding: 0.5em;
+  gap: 0;
+  justify-content: center;
+}
+
+.crafting-container.compact-view .crafting-recipe span {
+  display: none;
 }
 
 .inventory-container {

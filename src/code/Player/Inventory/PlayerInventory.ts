@@ -1,4 +1,4 @@
-import { Ray, Scene, Vector3 } from "@babylonjs/core";
+import { Observable, Ray, Scene, Vector3 } from "@babylonjs/core";
 import { Player } from "../Player";
 import { DroppedItem } from "./DroppedItem";
 import { Item } from "./Item";
@@ -14,6 +14,7 @@ export class PlayerInventory {
   #y: number;
   #inventorySlots: ItemSlot[][];
 
+  public onInventoryChangedObservable = new Observable<void>();
   #inventoryControls: InventoryControls;
 
   public static currentlyHoveredSlot: ItemSlot | null = null;
@@ -28,7 +29,7 @@ export class PlayerInventory {
     this.#inventoryControls = new InventoryControls(
       this,
       player.keyboardControls,
-      this.#player
+      this.#player,
     );
 
     this.#generateInventorySlots();
@@ -53,7 +54,7 @@ export class PlayerInventory {
           "/texture/cobble/cobble05_1k/cobble05_diff_1k.png",
           "/texture/cobble/cobble05_1k",
           i,
-          j
+          j,
         );
         item.stackSize = temp++;
         item.itemId = 1;
@@ -63,7 +64,7 @@ export class PlayerInventory {
     }
     for (const textureDef of TextureDefinitions) {
       const i = Math.floor(
-        (textureDef.id - 1) / this.#inventorySlots[0].length
+        (textureDef.id - 1) / this.#inventorySlots[0].length,
       );
       // Only add the item if it fits within the inventory's height
       if (i < this.#inventorySlots.length) {
@@ -74,7 +75,7 @@ export class PlayerInventory {
           MaterialFactory.getTexturePathFromFolder(textureDef.path)!,
           textureDef.path,
           i,
-          j
+          j,
         );
         item.itemId = textureDef.id;
         item.stackSize = textureDef.id;
@@ -103,7 +104,61 @@ export class PlayerInventory {
         }
       }
     }
+    this.onInventoryChangedObservable.notifyObservers();
     return item.stackSize;
+  }
+
+  public hasItem(itemId: number, count: number): boolean {
+    let found = 0;
+    for (const row of this.#inventorySlots) {
+      for (const slot of row) {
+        if (slot.item && slot.item.itemId === itemId) {
+          found += slot.item.stackSize;
+          if (found >= count) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  public removeItems(itemId: number, count: number): void {
+    let remaining = count;
+    for (const row of this.#inventorySlots) {
+      for (const slot of row) {
+        if (remaining <= 0) return;
+        if (slot.item && slot.item.itemId === itemId) {
+          if (slot.item.stackSize > remaining) {
+            slot.item.stackSize -= remaining;
+            remaining = 0;
+          } else {
+            remaining -= slot.item.stackSize;
+            this.deleteItem(slot.item);
+          }
+        }
+      }
+    }
+    this.onInventoryChangedObservable.notifyObservers();
+  }
+
+  public createAndAddItem(itemId: number, count: number): void {
+    const textureDef = TextureDefinitions.find((t) => t.id === itemId);
+    if (!textureDef) return;
+
+    const item = new Item(
+      textureDef.name,
+      "Crafted Item",
+      MaterialFactory.getTexturePathFromFolder(textureDef.path)!,
+      textureDef.path,
+      -1,
+      -1,
+    );
+    item.itemId = itemId;
+    item.stackSize = count;
+
+    const remainder = this.addItem(item);
+    if (remainder > 0) {
+      this.dropItem(item, remainder);
+    }
   }
 
   public dropItemFromHotbar() {
@@ -124,7 +179,7 @@ export class PlayerInventory {
       item.icon,
       item.materialFolder,
       -1, // No row
-      -1 // No col
+      -1, // No col
     );
     worldItem.itemId = item.itemId;
     worldItem.stackSize = quantity ?? item.stackSize;
@@ -142,12 +197,14 @@ export class PlayerInventory {
       worldItem,
       dropPosition.x,
       dropPosition.y + 0.5,
-      dropPosition.z
+      dropPosition.z,
     );
 
     droppedItem.pushItem(cam.direction.scale(3));
 
-    if (item.stackSize <= 0) this.deleteItem(item);
+    if (item.stackSize <= 0) {
+      this.deleteItem(item);
+    } else this.onInventoryChangedObservable.notifyObservers();
   }
 
   public moveItemToHotbar(slotFocused: ItemSlot): void {
@@ -159,7 +216,7 @@ export class PlayerInventory {
   }
   public moveItem(
     slotFocused: ItemSlot,
-    targetBarIndexRange: [number, number]
+    targetBarIndexRange: [number, number],
   ): void {
     const itemToMove = slotFocused.item;
     if (!itemToMove) return;
@@ -204,6 +261,7 @@ export class PlayerInventory {
         }
       }
     }
+    this.onInventoryChangedObservable.notifyObservers();
   }
 
   public deleteItem(item: Item) {
@@ -211,6 +269,7 @@ export class PlayerInventory {
 
     item.div.parentElement?.removeChild(item.div);
     this.#inventorySlots[item.row][item.col].clearItemSlots();
+    this.onInventoryChangedObservable.notifyObservers();
   }
 
   public get inventoryControls(): InventoryControls {
