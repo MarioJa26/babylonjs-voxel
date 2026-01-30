@@ -57,7 +57,7 @@ class ChunkWorkerMesher {
     az: number,
     u: number, // u-axis index (0, 1, 2)
     v: number, // v-axis index
-    getBlock: (x: number, y: number, z: number) => number
+    getBlock: (x: number, y: number, z: number) => number,
   ): number {
     let packed = 0;
     // Check 4 corners: (0,0), (1,0), (1,1), (0,1) in UV space
@@ -103,22 +103,8 @@ class ChunkWorkerMesher {
     block_array: Uint8Array;
     chunk_size: number;
     light_array?: Uint8Array;
-    neighbors: {
-      px?: Uint8Array;
-      nx?: Uint8Array;
-      py?: Uint8Array;
-      ny?: Uint8Array;
-      pz?: Uint8Array;
-      nz?: Uint8Array;
-    };
-    neighborLights?: {
-      px?: Uint8Array;
-      nx?: Uint8Array;
-      py?: Uint8Array;
-      ny?: Uint8Array;
-      pz?: Uint8Array;
-      nz?: Uint8Array;
-    };
+    neighbors: (Uint8Array | undefined)[];
+    neighborLights?: (Uint8Array | undefined)[];
   }): {
     opaque: WorkerInternalMeshData;
     water: WorkerInternalMeshData;
@@ -142,78 +128,57 @@ class ChunkWorkerMesher {
       x: number,
       y: number,
       z: number,
-      fallback = 0
+      fallback = 0,
     ): number => {
-      const inChunk =
-        x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size;
-      if (inChunk) return block_array[x + y * size + z * size2];
-
-      // Check for diagonal neighbors (more than one coordinate out of bounds)
-      let outCount = 0;
-      if (x < 0 || x >= size) outCount++;
-      if (y < 0 || y >= size) outCount++;
-      if (z < 0 || z >= size) outCount++;
-      if (outCount > 1) return fallback;
-
-      if (x < 0) {
-        return neighbors.nx
-          ? neighbors.nx[size - 1 + y * size + z * size2]
-          : fallback;
-      }
-      if (x >= size) {
-        return neighbors.px ? neighbors.px[0 + y * size + z * size2] : fallback;
-      }
-      if (y < 0) {
-        return neighbors.ny
-          ? neighbors.ny[x + (size - 1) * size + z * size2]
-          : fallback;
-      }
-      if (y >= size) {
-        return neighbors.py ? neighbors.py[x + 0 * size + z * size2] : fallback;
-      }
-      if (z < 0) {
-        return neighbors.nz ? neighbors.nz[x + y * size] : fallback;
-      }
-      if (z >= size) {
-        return neighbors.pz ? neighbors.pz[x + y * size + 0] : fallback;
+      if (x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size) {
+        return block_array[x + y * size + z * size2];
       }
 
-      return fallback;
+      const dx = x < 0 ? -1 : x >= size ? 1 : 0;
+      const dy = y < 0 ? -1 : y >= size ? 1 : 0;
+      const dz = z < 0 ? -1 : z >= size ? 1 : 0;
+
+      // Map -1,0,1 to 0,1,2 for array indexing
+      // Index = (dx+1) + (dy+1)*3 + (dz+1)*9
+      const neighborIndex = dx + 1 + (dy + 1) * 3 + (dz + 1) * 9;
+      const neighbor = neighbors[neighborIndex];
+
+      if (!neighbor) return fallback;
+
+      const lx = x - dx * size;
+      const ly = y - dy * size;
+      const lz = z - dz * size;
+
+      return neighbor[lx + ly * size + lz * size2];
     };
 
     const getLight = (
       x: number,
       y: number,
       z: number,
-      fallback = 0
+      fallback = 0,
     ): number => {
       if (!light_array) return 15; // Default to full light if no array
-      const inChunk =
-        x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size;
-      if (inChunk) return light_array[x + y * size + z * size2];
-
-      const nl = neighborLights || {};
-
-      if (x < 0) {
-        return nl.nx ? nl.nx[size - 1 + y * size + z * size2] : fallback;
-      }
-      if (x >= size) {
-        return nl.px ? nl.px[0 + y * size + z * size2] : fallback;
-      }
-      if (y < 0) {
-        return nl.ny ? nl.ny[x + (size - 1) * size + z * size2] : fallback;
-      }
-      if (y >= size) {
-        return nl.py ? nl.py[x + 0 * size + z * size2] : fallback;
-      }
-      if (z < 0) {
-        return nl.pz ? nl.pz[x + y * size] : fallback;
-      }
-      if (z >= size) {
-        return nl.pz ? nl.pz[x + y * size + 0] : fallback;
+      if (x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size) {
+        return light_array[x + y * size + z * size2];
       }
 
-      return fallback;
+      const dx = x < 0 ? -1 : x >= size ? 1 : 0;
+      const dy = y < 0 ? -1 : y >= size ? 1 : 0;
+      const dz = z < 0 ? -1 : z >= size ? 1 : 0;
+
+      const neighborIndex = dx + 1 + (dy + 1) * 3 + (dz + 1) * 9;
+      const neighbor = neighborLights
+        ? neighborLights[neighborIndex]
+        : undefined;
+
+      if (!neighbor) return fallback;
+
+      const lx = x - dx * size;
+      const ly = y - dy * size;
+      const lz = z - dz * size;
+
+      return neighbor[lx + ly * size + lz * size2];
     };
 
     // Mask bit encoding:
@@ -274,7 +239,7 @@ class ChunkWorkerMesher {
               bx + direction[0],
               by + direction[1],
               bz + direction[2],
-              blockCurrent // key: if neighbor missing, pretend same block to avoid border faces
+              blockCurrent, // key: if neighbor missing, pretend same block to avoid border faces
             );
 
             // --- Face Culling Logic ---
@@ -309,7 +274,7 @@ class ChunkWorkerMesher {
               const lightPacked = getLight(
                 bx + direction[0],
                 by + direction[1],
-                bz + direction[2]
+                bz + direction[2],
               );
               // Calculate AO for the face (using the neighbor/air block coordinates)
               const packedAO = this.calculateAOPacked(
@@ -318,7 +283,7 @@ class ChunkWorkerMesher {
                 bz + direction[2],
                 u_axis,
                 v_axis,
-                getBlock
+                getBlock,
               );
               const encCurrent =
                 (blockCurrent & BLOCK_ID_MASK) |
@@ -342,7 +307,7 @@ class ChunkWorkerMesher {
                 bz,
                 u_axis,
                 v_axis,
-                getBlock
+                getBlock,
               );
               const encNeighbor =
                 (blockNeighbor & BLOCK_ID_MASK) |
@@ -426,7 +391,7 @@ class ChunkWorkerMesher {
                 normal,
                 lightPacked,
                 packedAO,
-                targetMesh
+                targetMesh,
               );
 
               // Zero out the mask for the area we just processed
@@ -470,7 +435,7 @@ class ChunkWorkerMesher {
     height: number,
     tx: number,
     ty: number,
-    q: number[]
+    q: number[],
   ) {
     // uvs2: tile coordinates (tx, ty) repeated for 4 vertices
     uvs2.push(tx, ty, tx, ty, tx, ty, tx, ty);
@@ -478,12 +443,12 @@ class ChunkWorkerMesher {
     if (q[0] === 1) {
       cornerIds.push(1, 2, 3, 0);
       uvs3.push(
-        ...[height, width, height, width, height, width, height, width]
+        ...[height, width, height, width, height, width, height, width],
       );
     } else {
       cornerIds.push(0, 1, 2, 3);
       uvs3.push(
-        ...[width, height, width, height, width, height, width, height]
+        ...[width, height, width, height, width, height, width, height],
       );
     }
   }
@@ -501,7 +466,7 @@ class ChunkWorkerMesher {
     normal: Int8Array,
     lightLevel: number,
     packedAO: number,
-    meshData: WorkerInternalMeshData
+    meshData: WorkerInternalMeshData,
   ) {
     const tex = BlockTextures[blockId];
     if (!tex) return;
@@ -551,7 +516,7 @@ class ChunkWorkerMesher {
       height,
       tile[0],
       tile[1],
-      q
+      q,
     );
 
     const { indices, indexOffset } = meshData;
@@ -592,8 +557,22 @@ const onMessageHandler = (event: MessageEvent) => {
     const { blocks, light } = generator.generateChunkData(
       chunkX,
       chunkY,
-      chunkZ
+      chunkZ,
     );
+
+    const transferables: Transferable[] = [];
+    if (
+      typeof SharedArrayBuffer === "undefined" ||
+      !(blocks.buffer instanceof SharedArrayBuffer)
+    ) {
+      transferables.push(blocks.buffer);
+    }
+    if (
+      typeof SharedArrayBuffer === "undefined" ||
+      !(light.buffer instanceof SharedArrayBuffer)
+    ) {
+      transferables.push(light.buffer);
+    }
 
     self.postMessage(
       {
@@ -602,7 +581,7 @@ const onMessageHandler = (event: MessageEvent) => {
         block_array: blocks,
         light_array: light,
       },
-      [blocks.buffer, light.buffer]
+      transferables,
     );
 
     return;
@@ -627,7 +606,7 @@ const onMessageHandler = (event: MessageEvent) => {
       gridStep,
       oldData,
       oldCenterChunkX,
-      oldCenterChunkZ
+      oldCenterChunkZ,
     );
     self.postMessage(
       {
@@ -636,7 +615,7 @@ const onMessageHandler = (event: MessageEvent) => {
         centerChunkZ,
         ...data,
       },
-      [data.positions.buffer, data.colors.buffer]
+      [data.positions.buffer, data.colors.buffer],
     );
     return;
   }
@@ -661,7 +640,7 @@ function postFullMeshResult(
   chunkId: string,
   opaque: WorkerInternalMeshData,
   water: WorkerInternalMeshData,
-  glass: WorkerInternalMeshData
+  glass: WorkerInternalMeshData,
 ) {
   const opaqueMeshData = toTransferable(opaque);
   const waterMeshData = toTransferable(water);
@@ -700,6 +679,6 @@ function postFullMeshResult(
       glassMeshData.cornerIds.buffer,
       glassMeshData.ao.buffer,
       glassMeshData.light.buffer,
-    ]
+    ],
   );
 }

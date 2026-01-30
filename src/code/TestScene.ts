@@ -44,7 +44,7 @@ export class TestScene {
     this.connection = new MyConnection();
 
     window.addEventListener("keydown", (ev) => {
-      // Shift+Ctrl+Alt+I
+      // Ctrl+F
       if (ev.ctrlKey && ev.key.toLowerCase() === "f") {
         if (this.scene) {
           if (this.scene.debugLayer.isVisible()) {

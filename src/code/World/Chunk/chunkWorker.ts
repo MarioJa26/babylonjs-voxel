@@ -9,29 +9,26 @@ export class ChunkWorker {
     this.worker.onmessage = onMessage;
   }
 
-  offset = (Chunk.SIZE - 1) * Chunk.SIZE2;
   public postFullRemesh(chunk: Chunk): void {
-    const neighbors = {
-      px: chunk.getNeighbor(1, 0, 0)?.block_array,
-      nx: chunk.getNeighbor(-1, 0, 0)?.block_array,
-      py: chunk.getNeighbor(0, 1, 0)?.block_array,
-      ny: chunk.getNeighbor(0, -1, 0)?.block_array,
-      pz: chunk.getNeighbor(0, 0, 1)?.block_array.slice(0, Chunk.SIZE2),
-      nz: chunk
-        .getNeighbor(0, 0, -1)
-        ?.block_array.slice(this.offset, this.offset + Chunk.SIZE2),
-    };
+    const neighbors: (Uint8Array | undefined)[] = [];
+    const neighborLights: (Uint8Array | undefined)[] = [];
 
-    const neighborLights = {
-      px: chunk.getNeighbor(1, 0, 0)?.light_array,
-      nx: chunk.getNeighbor(-1, 0, 0)?.light_array,
-      py: chunk.getNeighbor(0, 1, 0)?.light_array,
-      ny: chunk.getNeighbor(0, -1, 0)?.light_array,
-      pz: chunk.getNeighbor(0, 0, 1)?.light_array.slice(0, Chunk.SIZE2),
-      nz: chunk
-        .getNeighbor(0, 0, -1)
-        ?.light_array.slice(this.offset, this.offset + Chunk.SIZE2),
-    };
+    for (let z = -1; z <= 1; z++) {
+      for (let y = -1; y <= 1; y++) {
+        for (let x = -1; x <= 1; x++) {
+          // We include the center chunk (0,0,0) in the array to keep indexing simple,
+          // even though we send the center block_array separately.
+          const neighbor = chunk.getNeighbor(x, y, z);
+          if (neighbor && neighbor.isLoaded) {
+            neighbors.push(neighbor.block_array);
+            neighborLights.push(neighbor.light_array);
+          } else {
+            neighbors.push(undefined);
+            neighborLights.push(undefined);
+          }
+        }
+      }
+    }
 
     this.worker.postMessage({
       type: "full-remesh",
@@ -67,7 +64,7 @@ export class ChunkWorker {
       normals: Int8Array;
     },
     oldCenterChunkX?: number,
-    oldCenterChunkZ?: number
+    oldCenterChunkZ?: number,
   ): void {
     const transferables: Transferable[] = [];
     if (oldData) {
@@ -87,7 +84,7 @@ export class ChunkWorker {
         oldCenterChunkX,
         oldCenterChunkZ,
       },
-      transferables
+      transferables,
     );
   }
 }

@@ -40,15 +40,22 @@ export class WorldGenerator {
       params,
       treeNoise,
       densityNoise,
-      this.seedAsInt
+      this.seedAsInt,
     );
     this.undergroundGenerator = new UndergroundGenerator(params, caveNoise);
     this.lightGenerator = new LightGenerator(params);
   }
 
+  private createBuffer(size: number): Uint8Array {
+    if (typeof SharedArrayBuffer !== "undefined") {
+      return new Uint8Array(new SharedArrayBuffer(size));
+    }
+    return new Uint8Array(size);
+  }
+
   public generateChunkData(chunkX: number, chunkY: number, chunkZ: number) {
-    const blocks = new Uint8Array(this.chunk_size ** 3);
-    const light = new Uint8Array(this.chunk_size ** 3);
+    const blocks = this.createBuffer(this.chunk_size ** 3);
+    const light = this.createBuffer(this.chunk_size ** 3);
     /**
      * Places a block in the current chunk's block array by world coordinates.
      * @param x World X coordinate.
@@ -62,7 +69,7 @@ export class WorldGenerator {
       y: number,
       z: number,
       blockId: number,
-      overwrite = false
+      overwrite = false,
     ) => {
       const localX = x - chunkX * this.chunk_size;
       const localY = y - chunkY * this.chunk_size;
@@ -92,7 +99,7 @@ export class WorldGenerator {
 
     const biome = this.#getBiome(
       chunkX * this.chunk_size,
-      chunkZ * this.chunk_size
+      chunkZ * this.chunk_size,
     );
 
     this.surfaceGenerator.generate(chunkX, chunkY, chunkZ, biome, placeBlock); // Generates solid terrain first

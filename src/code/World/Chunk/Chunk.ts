@@ -67,7 +67,7 @@ export class Chunk {
   public populate(
     block_array: Uint8Array,
     light_array?: Uint8Array,
-    scheduleRemesh = true
+    scheduleRemesh = true,
   ): void {
     this.block_array = block_array;
 
@@ -81,6 +81,9 @@ export class Chunk {
       this.getNeighbor(-1, 0, 0)?.scheduleRemesh();
       this.getNeighbor(0, 0, -1)?.scheduleRemesh();
       this.getNeighbor(0, -1, 0)?.scheduleRemesh();
+      this.getNeighbor(1, 0, 0)?.scheduleRemesh();
+      this.getNeighbor(0, 0, 1)?.scheduleRemesh();
+      this.getNeighbor(0, 1, 0)?.scheduleRemesh();
     }
     this.isLoaded = true;
     this.isTerrainScheduled = false; // Reset flag
@@ -113,7 +116,7 @@ export class Chunk {
 
         const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(
           worldX,
-          worldZ
+          worldZ,
         );
 
         for (let y = 0; y < CHUNK_SIZE; y++) {
@@ -164,7 +167,7 @@ export class Chunk {
       x,
       y,
       z,
-      block | ((level & Chunk.BLOCK_LIGHT_MASK) << Chunk.SKY_LIGHT_SHIFT)
+      block | ((level & Chunk.BLOCK_LIGHT_MASK) << Chunk.SKY_LIGHT_SHIFT),
     );
   }
 
@@ -181,11 +184,11 @@ export class Chunk {
     localX: number,
     localY: number,
     localZ: number,
-    blockId: number
+    blockId: number,
   ): void {
     if (!this.isLoaded) {
       console.warn(
-        "Attempted to set block on an unloaded chunk. Action ignored."
+        "Attempted to set block on an unloaded chunk. Action ignored.",
       );
       return;
     }
@@ -350,7 +353,7 @@ export class Chunk {
     x: number,
     y: number,
     z: number,
-    isSkyLight = false
+    isSkyLight = false,
   ) {
     const queue: LightNode[] = [];
     const neighbors = [
@@ -567,7 +570,7 @@ export class Chunk {
   public static getChunk(
     chunkX: number,
     chunkY: number,
-    chunkZ: number
+    chunkZ: number,
   ): Chunk | undefined {
     const key = Chunk.packCoords(chunkX, chunkY, chunkZ);
     return Chunk.chunkInstances.get(key);
