@@ -115,7 +115,7 @@ void main(void) {
         vec3 worldNormal = normalize(vTBN * normalMap);
 
         // 7. Calculate lighting.
-        float diffuseIntensity = max(0.0, dot(worldNormal, lightDirection));
+        float diffuseIntensity = max(0.0, dot(worldNormal, -lightDirection));
         vec3 diffuse = diffuseColor.rgb * diffuseIntensity;
 
 

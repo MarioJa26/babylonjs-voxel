@@ -342,7 +342,7 @@ export class ChunkMesher {
       false,
       undefined,
       undefined,
-      VertexBuffer.UNSIGNED_BYTE,
+      VertexBuffer.BYTE,
       true,
     );
     mesh.setVerticesBuffer(normalBuffer);

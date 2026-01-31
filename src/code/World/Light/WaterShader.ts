@@ -44,7 +44,7 @@ export class WaterShader {
         vec3 worldNormal = normalize(vTBN * normalMap);
 
         // --- Lighting Calculation ---
-        vec3 normalizedLightDirection = -normalize(lightDirection);
+        vec3 normalizedLightDirection = normalize(lightDirection);
 
         float diffuseIntensity = max(0.0, dot(worldNormal, normalizedLightDirection));
         vec3 diffuse = diffuseColor.rgb * diffuseIntensity;

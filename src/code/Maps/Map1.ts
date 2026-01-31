@@ -1,10 +1,4 @@
-import {
-  Mesh,
-  MeshBuilder,
-  Scene,
-  StandardMaterial,
-  Color3,
-} from "@babylonjs/core";
+import { Mesh, MeshBuilder, Scene, StandardMaterial } from "@babylonjs/core";
 import { AdvancedBoat } from "../Entities/AdvancedBoat";
 import { Player } from "../Player/Player";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
@@ -38,6 +32,7 @@ export class Map1 {
     scene.onBeforeRenderObservable.add(() => {
       this.updateBlockHighlight();
       Map1.environment.update();
+      ChunkMesher.updateGlobalUniforms(scene.getFrameId());
     });
   }
 

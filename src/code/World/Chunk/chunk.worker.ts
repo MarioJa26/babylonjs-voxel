@@ -26,9 +26,13 @@ const FACE_DATA_CACHE: { [key: number]: FaceData } = {};
 for (const axis of [0, 1, 2]) {
   for (const side of [-1, 1]) {
     const normal = new Int8Array(3);
-    normal[axis] = side;
+    normal[axis] = side * 127;
 
-    const key = normal[0] + 1 + (normal[1] + 1) * 3 + (normal[2] + 1) * 9;
+    // Key calculation must use -1, 0, 1 values to match lookup in generateMesh
+    const k = [0, 0, 0];
+    k[axis] = side;
+
+    const key = k[0] + 1 + (k[1] + 1) * 3 + (k[2] + 1) * 9;
     FACE_DATA_CACHE[key] = {
       normal,
     };
@@ -435,18 +439,19 @@ class ChunkWorkerMesher {
     height: number,
     tx: number,
     ty: number,
-    q: number[],
+    cIds: number[],
+    swapUV: boolean,
   ) {
     // uvs2: tile coordinates (tx, ty) repeated for 4 vertices
     uvs2.push(tx, ty, tx, ty, tx, ty, tx, ty);
 
-    if (q[0] === 1) {
-      cornerIds.push(1, 2, 3, 0);
+    cornerIds.push(...cIds);
+
+    if (swapUV) {
       uvs3.push(
         ...[height, width, height, width, height, width, height, width],
       );
     } else {
-      cornerIds.push(0, 1, 2, 3);
       uvs3.push(
         ...[width, height, width, height, width, height, width, height],
       );
@@ -508,6 +513,43 @@ class ChunkWorkerMesher {
 
     // tile lookup and UV writes
     const tile = tex[faceName] ?? tex.all!;
+
+    // Determine cornerIds and swapUV based on face direction to fix wrapping/mirroring
+    let cIds = [0, 1, 2, 3];
+    let swapUV = false;
+
+    if (q[0] === 1) {
+      if (!isBackFace) {
+        // East (+X)
+        cIds = [0, 3, 2, 1];
+        swapUV = true;
+      } else {
+        // West (-X)
+        cIds = [1, 2, 3, 0];
+        swapUV = true;
+      }
+    } else if (q[1] === 1) {
+      if (!isBackFace) {
+        // Top (+Y)
+        cIds = [0, 3, 2, 1];
+        swapUV = true;
+      } else {
+        // Bottom (-Y)
+        cIds = [3, 0, 1, 2];
+        swapUV = true;
+      }
+    } else if (q[2] === 1) {
+      if (!isBackFace) {
+        // South (+Z)
+        cIds = [1, 0, 3, 2];
+        swapUV = false;
+      } else {
+        // North (-Z)
+        cIds = [0, 1, 2, 3];
+        swapUV = false;
+      }
+    }
+
     this.pushTileUV(
       meshData.cornerIds,
       meshData.uvs2,
@@ -516,18 +558,32 @@ class ChunkWorkerMesher {
       height,
       tile[0],
       tile[1],
-      q,
+      cIds,
+      swapUV,
     );
 
     const { indices, indexOffset } = meshData;
 
+    // Fix anisotropy by flipping quad diagonal based on AO
+    const flip = ao0 + ao2 < ao1 + ao3;
+
     // Standard quad indices (0,1,2) and (0,2,3)
     if (isBackFace) {
-      indices.push(indexOffset, indexOffset + 1, indexOffset + 2);
-      indices.push(indexOffset, indexOffset + 2, indexOffset + 3);
+      if (flip) {
+        indices.push(indexOffset, indexOffset + 1, indexOffset + 3);
+        indices.push(indexOffset + 1, indexOffset + 2, indexOffset + 3);
+      } else {
+        indices.push(indexOffset, indexOffset + 1, indexOffset + 2);
+        indices.push(indexOffset, indexOffset + 2, indexOffset + 3);
+      }
     } else {
-      indices.push(indexOffset, indexOffset + 2, indexOffset + 1);
-      indices.push(indexOffset, indexOffset + 3, indexOffset + 2);
+      if (flip) {
+        indices.push(indexOffset, indexOffset + 3, indexOffset + 1);
+        indices.push(indexOffset + 1, indexOffset + 3, indexOffset + 2);
+      } else {
+        indices.push(indexOffset, indexOffset + 2, indexOffset + 1);
+        indices.push(indexOffset, indexOffset + 3, indexOffset + 2);
+      }
     }
     meshData.indexOffset += 4;
   }
