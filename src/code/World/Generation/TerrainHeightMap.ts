@@ -78,6 +78,7 @@ export class TerrainHeightMap {
       { t: 0.9, v: 400 },
       { t: 0.98, v: 500 },
 */
+
       { t: 0.8, v: 340 },
       {
         t: 1.0,
@@ -246,7 +247,8 @@ export class TerrainHeightMap {
   }
 
   public static getOctaveNoise(x: number, z: number): number {
-    const base = this.getInterpolatedBaseHeight(x, z, 1);
+    //const base = this.getInterpolatedBaseHeight(x, z, 1);
+    const base = this.computeBaseHeight(x, z);
     const detail = this.computeDetail(x, z, base);
     return base + detail;
   }

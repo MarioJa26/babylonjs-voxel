@@ -45,23 +45,6 @@ export class PlayerInventory {
   }
 
   #generateFakeItems() {
-    let temp = 1;
-    for (let i = 0; i < this.#inventorySlots.length && temp < 40; i++) {
-      for (let j = 0; j < this.#inventorySlots[i].length; j++) {
-        const item = new Item(
-          "c☺bble💯",
-          "This is a fake item",
-          "/texture/cobble/cobble05_1k/cobble05_diff_1k.png",
-          "/texture/cobble/cobble05_1k",
-          i,
-          j,
-        );
-        item.stackSize = temp++;
-        item.itemId = 1;
-        this.#inventorySlots[i][j].item = item;
-        this.#inventorySlots[i][j].divItemSlot!.appendChild(item.div);
-      }
-    }
     for (const textureDef of TextureDefinitions) {
       const i = Math.floor(
         (textureDef.id - 1) / this.#inventorySlots[0].length,

@@ -8,6 +8,14 @@ import { GlobalValues } from "@/code/World/GlobalValues";
 import { PlayerHud } from "../Hud/PlayerHud";
 import { Map1 } from "@/code/Maps/Map1";
 import { BlockBreakParticles } from "@/code/Maps/BlockBreakParticles";
+import {
+  getBlockBreakTime,
+  getBlockInfo,
+} from "@/code/World/Texture/TextureDefinitions";
+import { BlockType } from "@/code/World/BlockType";
+import { Item } from "../Inventory/Item";
+import { DroppedItem } from "../Inventory/DroppedItem";
+import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
 
 export class WalkingControls implements IControls<PlayerVehicle> {
   public pressedKeys = new Set<string>();
@@ -82,7 +90,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
       isKeyDown
     ) {
       const blockNumber = CrossHair.pickBlock(this.#player);
-      if (blockNumber === 62) {
+      if (blockNumber === BlockType.CraftingTable) {
         console.log("Clicked on protected block!");
         return;
       }
@@ -100,29 +108,6 @@ export class WalkingControls implements IControls<PlayerVehicle> {
     }
   }
 
-  private getBlockBreakTime(blockId: number): number {
-    switch (blockId) {
-      case 60: // Glass
-      case 61:
-        return 0.1;
-      case 30: // Water
-        return Infinity;
-      case 1: // Stone
-        return 1.5;
-      case 2: // Grass
-        return 0.25;
-      case 3: // Dirt
-        return 0.6;
-      case 5: // Wood
-        return 2.0;
-      case 10: // Lava
-      case 11:
-        return Infinity;
-      default:
-        return 0.5;
-    }
-  }
-
   public update(): void {
     if (this.#isBreaking) {
       const dt =
@@ -135,7 +120,12 @@ export class WalkingControls implements IControls<PlayerVehicle> {
           hit.y,
           hit.z,
         );
-        const breakTime = this.getBlockBreakTime(blockId);
+        const item =
+          this.#player.playerInventory.inventory[0][
+            this.#player.playerHud.selectedHotbarSlot
+          ]?.item;
+
+        const breakTime = getBlockBreakTime(blockId, item?.itemId);
 
         if (
           this.#breakingBlock &&
@@ -149,14 +139,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
             this.#breakTimer / breakTime,
           );
           if (this.#breakTimer >= breakTime) {
-            ChunkLoadingSystem.deleteBlock(hit.x, hit.y, hit.z);
-            BlockBreakParticles.play(
-              this.#player.playerVehicle.scene,
-              new Vector3(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5),
-              blockId,
-            );
-            this.#breakTimer = 0;
-            Map1.updateCrackingState(null, 0);
+            this.#breakBlock(hit.x, hit.y, hit.z, blockId);
           }
         } else {
           this.#breakingBlock = { x: hit.x, y: hit.y, z: hit.z };
@@ -341,6 +324,35 @@ export class WalkingControls implements IControls<PlayerVehicle> {
   #pressedKeysHas(keys: string[]) {
     return keys.some((k) => this.pressedKeys.has(k));
   }
+
+  #breakBlock(x: number, y: number, z: number, blockId: number) {
+    const info = getBlockInfo(blockId);
+    if (!info) return;
+
+    ChunkLoadingSystem.deleteBlock(x, y, z);
+
+    const worldItem = new Item(
+      info?.name || "Error",
+      "Mined Block",
+      MaterialFactory.getTexturePathFromFolder(info.path) || "",
+      info.path,
+      -1,
+      -1,
+    );
+    worldItem.stackSize = 1;
+    worldItem.itemId = blockId;
+
+    const droppedItem = new DroppedItem(worldItem, x + 0.5, y + 0.5, z + 0.5);
+
+    BlockBreakParticles.play(
+      this.#player.playerVehicle.scene,
+      new Vector3(x + 0.5, y + 0.5, z + 0.5),
+      blockId,
+    );
+    this.#breakTimer = 0;
+    Map1.updateCrackingState(null, 0);
+  }
+
   public get controlledEntity(): PlayerVehicle {
     return this.#controlledEntity;
   }

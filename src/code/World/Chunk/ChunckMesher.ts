@@ -523,9 +523,9 @@ export class ChunkMesher {
       lightDir.y,
       lightDir.z,
     ).normalize();
-    this.#cachedUniforms.lightDirection.x = tmpLight.x;
-    this.#cachedUniforms.lightDirection.y = tmpLight.y;
-    this.#cachedUniforms.lightDirection.z = tmpLight.z;
+    this.#cachedUniforms.lightDirection.x = -tmpLight.x;
+    this.#cachedUniforms.lightDirection.y = -tmpLight.y;
+    this.#cachedUniforms.lightDirection.z = -tmpLight.z;
     const camPos = camera.position;
     this.#cachedUniforms.cameraPosition.x = camPos.x;
     this.#cachedUniforms.cameraPosition.y = camPos.y;
