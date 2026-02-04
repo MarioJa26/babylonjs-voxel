@@ -46,14 +46,14 @@ export class ChunkWorkerPool {
           if (chunk) {
             chunk.populate(
               data.block_array as Uint8Array,
-              data.light_array as Uint8Array
+              data.light_array as Uint8Array,
             );
             // Save the newly generated chunk to the database
             WorldStorage.saveChunk(chunk);
           }
         } else if (type === "distant-terrain-generated") {
           this.onDistantTerrainGenerated?.(
-            data as DistantTerrainGeneratedMessage
+            data as DistantTerrainGeneratedMessage,
           );
         }
 
@@ -64,12 +64,16 @@ export class ChunkWorkerPool {
 
       const workerWrapper = new ChunkWorker(onMessage);
       this.workers.push(workerWrapper as unknown as Worker);
+      // Add this to see why they are "busy" (crashed)
+      (workerWrapper as any).worker.onerror = (err: any) => {
+        console.error("🔥 Worker Pipeline Crash:", err);
+      };
       this.idleWorkerIndices.push(i); // Initially all workers are idle.
     }
   }
 
   public static getInstance(
-    poolSize = navigator.hardwareConcurrency || 4
+    poolSize = navigator.hardwareConcurrency || 4,
   ): ChunkWorkerPool {
     if (!ChunkWorkerPool.instance) {
       ChunkWorkerPool.instance = new ChunkWorkerPool(poolSize);
@@ -117,7 +121,7 @@ export class ChunkWorkerPool {
       normals: Int8Array;
     },
     oldCenterChunkX?: number,
-    oldCenterChunkZ?: number
+    oldCenterChunkZ?: number,
   ) {
     // Cancel pending distant terrain tasks by clearing the queue.
     // We only care about the most recent request.
@@ -175,7 +179,7 @@ export class ChunkWorkerPool {
             distantTask!.gridStep,
             distantTask!.oldData,
             distantTask!.oldCenterChunkX,
-            distantTask!.oldCenterChunkZ
+            distantTask!.oldCenterChunkZ,
           );
         }
       } else {

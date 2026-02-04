@@ -104,6 +104,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 
       if (item) {
         ChunkLoadingSystem.setBlock(hit.x, hit.y, hit.z, item.itemId);
+        item.use(this.#player);
       }
     }
   }
@@ -331,14 +332,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 
     ChunkLoadingSystem.deleteBlock(x, y, z);
 
-    const worldItem = new Item(
-      info?.name || "Error",
-      "Mined Block",
-      MaterialFactory.getTexturePathFromFolder(info.path) || "",
-      info.path,
-      -1,
-      -1,
-    );
+    const worldItem = Item.createById(blockId);
     worldItem.stackSize = 1;
     worldItem.itemId = blockId;
 

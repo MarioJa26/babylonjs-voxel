@@ -6,6 +6,9 @@ import { ItemSlot } from "./ItemSlot";
 import { InventoryControls } from "../Controls/InventoryControls";
 import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
 import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
+import { AdvancedBoat } from "@/code/Entities/AdvancedBoat";
+import { Map1 } from "@/code/Maps/Map1";
+import { GenerationParams } from "@/code/World/Generation/NoiseAndParameters/GenerationParams";
 
 export class PlayerInventory {
   scene: Scene;
@@ -62,11 +65,25 @@ export class PlayerInventory {
         );
         item.itemId = textureDef.id;
         item.stackSize = textureDef.id;
-        this.#inventorySlots[i][j] = new ItemSlot(i, j);
         this.#inventorySlots[i][j].item = item;
         this.#inventorySlots[i][j].divItemSlot!.appendChild(item.div);
       }
     }
+
+    const boat = Item.createById(10);
+    boat.stackSize = 1;
+    boat.use = (player: Player) => {
+      new AdvancedBoat(
+        Map1.mainScene,
+        player,
+        GenerationParams.SEA_LEVEL,
+        player.position,
+      );
+    };
+    boat.name = "Boat";
+    boat.itemId = 100;
+    this.#inventorySlots[9][9].item = boat;
+    this.#inventorySlots[9][9].divItemSlot!.appendChild(boat.div);
   }
 
   public addItem(item: Item): number {

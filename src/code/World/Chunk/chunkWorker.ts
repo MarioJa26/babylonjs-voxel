@@ -5,7 +5,9 @@ export class ChunkWorker {
   private worker: Worker;
 
   constructor(onMessage: (event: MessageEvent) => void) {
-    this.worker = new Worker(new URL("./chunk.worker.ts", import.meta.url));
+    this.worker = new Worker(new URL("./chunk.worker.ts", import.meta.url), {
+      type: "module",
+    });
     this.worker.onmessage = onMessage;
   }
 

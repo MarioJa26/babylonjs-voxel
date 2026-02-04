@@ -57,7 +57,6 @@ export class DroppedItem implements IUsable {
       { mass: size },
       Map1.mainScene,
     );
-
     this.#item = item;
   }
 

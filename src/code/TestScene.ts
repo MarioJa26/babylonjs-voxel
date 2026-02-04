@@ -24,13 +24,11 @@ import { distanceCullMeshes } from "../BabylonExamples/occlusion";
 import { Map1 } from "./Maps/Map1";
 import { PlayerCamera } from "./Player/PlayerCamera";
 import { ChunkLoadingSystem } from "./World/Chunk/ChunkLoadingSystem";
-import { MyConnection } from "./Server/MyConnection";
-import { GlobalValues } from "./World/GlobalValues";
 import { ChunkMesher } from "./World/Chunk/ChunckMesher";
 
 export class TestScene {
   document: Document;
-  connection: MyConnection;
+  //connection: MyConnection;
   scene?: Scene;
   engine: Engine;
   models!: AbstractMesh[];
@@ -38,10 +36,13 @@ export class TestScene {
   public static hk: HavokPlugin;
   private frameCounter = 0;
 
-  constructor(document: Document, private canvas: HTMLCanvasElement) {
+  constructor(
+    document: Document,
+    private canvas: HTMLCanvasElement,
+  ) {
     this.document = document;
     this.engine = new Engine(this.canvas);
-    this.connection = new MyConnection();
+    //this.connection = new MyConnection();
 
     window.addEventListener("keydown", (ev) => {
       // Ctrl+F
@@ -72,7 +73,7 @@ export class TestScene {
 
   async init() {
     this.scene = await this.createScene();
-    if (GlobalValues.INIT_CONNECTION) await this.connection.connect();
+    //if (GlobalValues.INIT_CONNECTION) await this.connection.connect();
   }
 
   // Playground scene creation
@@ -83,8 +84,11 @@ export class TestScene {
     // This creates and positions a free camera (non-mesh)
     const camera = new FreeCamera("camera1", Vector3.Zero(), scene);
 
-    // Initialize Havok plugin
-    TestScene.hk = new HavokPlugin(false, await HavokPhysics());
+    const havokInstance = await HavokPhysics({
+      locateFile: () => "/HavokPhysics.wasm",
+    });
+
+    TestScene.hk = new HavokPlugin(false, havokInstance);
 
     // Enable physics in the scene with a gravity
     scene.enablePhysics(new Vector3(0, -9.80665, 0), TestScene.hk);

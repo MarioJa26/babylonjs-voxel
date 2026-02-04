@@ -26,19 +26,19 @@ export class PaddleBoatControls implements IControls<AdvancedBoat> {
   #pushVectorUp = new Vector3(0, 0.5, 0);
   #pushVectorDown = new Vector3(0, -0.5, 0);
 
-  #pushStrength = 10;
+  #pushStrength = 2;
   #pushNoseUpStrength = -3;
   #angularPushStrength = 5;
   #angularRotationStrength = 0.45;
   #pushAngularVectorLeft = new Vector3(
     this.#pushNoseUpStrength,
     -this.#angularPushStrength,
-    this.#angularRotationStrength
+    this.#angularRotationStrength,
   );
   #pushAngularVectorRight = new Vector3(
     this.#pushNoseUpStrength,
     this.#angularPushStrength,
-    -this.#angularRotationStrength
+    -this.#angularRotationStrength,
   );
 
   constructor(paddleBoat: AdvancedBoat, player: Player) {
@@ -118,19 +118,19 @@ export class PaddleBoatControls implements IControls<AdvancedBoat> {
     }
     const position = this.#controlledEntity.boatPosition;
     this.#controlledEntity.boatMesh.rotationQuaternion!.toRotationMatrix(
-      PaddleBoatControls.#rotationMatrix
+      PaddleBoatControls.#rotationMatrix,
     );
     const angularLeftWorld = Vector3.TransformNormal(
       this.#pushAngularVectorLeft,
-      PaddleBoatControls.#rotationMatrix
+      PaddleBoatControls.#rotationMatrix,
     );
     const angularRightWorld = Vector3.TransformNormal(
       this.#pushAngularVectorRight,
-      PaddleBoatControls.#rotationMatrix
+      PaddleBoatControls.#rotationMatrix,
     );
 
     const forward = this.#controlledEntity.boatMesh.forward.scale(
-      this.#pushStrength
+      this.#pushStrength,
     );
 
     // Sprint cancels push
@@ -149,7 +149,7 @@ export class PaddleBoatControls implements IControls<AdvancedBoat> {
       forward,
       position,
       angularLeftWorld,
-      angularRightWorld
+      angularRightWorld,
     );
   }
   #handleUpDown(forward: Vector3, position: Vector3) {
@@ -165,7 +165,7 @@ export class PaddleBoatControls implements IControls<AdvancedBoat> {
     forward: Vector3,
     position: Vector3,
     angularLeftWorld: Vector3,
-    angularRightWorld: Vector3
+    angularRightWorld: Vector3,
   ) {
     if (this.#inputDirection.x > 0) {
       this.#physicsBody.applyImpulse(forward, position);

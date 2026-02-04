@@ -28,8 +28,13 @@ export class AdvancedBoat implements IUsable {
 
   #submergedPoints = 0;
 
-  constructor(scene: Scene, player: Player, waterLevel: number) {
-    this.createBoat(scene);
+  constructor(
+    scene: Scene,
+    player: Player,
+    waterLevel: number,
+    position?: Vector3,
+  ) {
+    this.createBoat(scene, position);
     this.#waterLevel = waterLevel;
 
     this.#boat.metadata = new MetadataContainer();
@@ -44,7 +49,7 @@ export class AdvancedBoat implements IUsable {
     this.#mount = new Mount(this.#boat, AdvancedBoat.#boatControls);
   }
 
-  private createBoat(scene: Scene): void {
+  private createBoat(scene: Scene, position?: Vector3): void {
     const boatHull = MeshBuilder.CreateCylinder(
       "boatHull",
       {
@@ -53,11 +58,15 @@ export class AdvancedBoat implements IUsable {
         diameterBottom: 2,
         tessellation: 8,
       },
-      scene
+      scene,
     );
 
-    boatHull.scaling = new Vector3(1.3, 1.3, 3.5);
-    boatHull.position = new Vector3(-10, this.#waterLevel + 10, -10);
+    boatHull.scaling = new Vector3(1.0, 1.0, 2.5);
+    boatHull.position = new Vector3(
+      position?.x || 0,
+      position?.y || this.#waterLevel + 10,
+      position?.z || 0,
+    );
 
     const hullMaterial = new StandardMaterial("hullMat", scene);
     hullMaterial.diffuseColor = new Color3(0.8, 0.6, 0.2);
@@ -91,32 +100,8 @@ export class AdvancedBoat implements IUsable {
         restitution: 0.2,
         friction: 10,
       },
-      scene
+      scene,
     );
-
-    // Collision groups (bit flags)
-    const GROUP_DEFAULT = 1;
-    const GROUP_CHARACTER = 2;
-    const GROUP_BOAT = 4;
-
-    // Try to protect from character pushing the boat by excluding character group
-    const boatBody: any = this.#physicsAggregate.body;
-    if (boatBody) {
-      if (
-        "collisionFilterGroup" in boatBody &&
-        "collisionFilterMask" in boatBody
-      ) {
-        boatBody.collisionFilterGroup = GROUP_BOAT;
-        // collide with world/default but NOT with characters
-        boatBody.collisionFilterMask = GROUP_DEFAULT | GROUP_BOAT;
-      }
-      // increase mass so small pushes don't move it
-      if (typeof boatBody.setMass === "function") {
-        boatBody.setMass(40);
-      } else if ("mass" in boatBody) {
-        boatBody.mass = 40;
-      }
-    }
 
     const worldMatrix = this.#boat.getWorldMatrix();
     scene.registerBeforeRender(() => {
@@ -131,7 +116,7 @@ export class AdvancedBoat implements IUsable {
       this.#buoyancyPoints.forEach((localPoint) => {
         const worldPoint = Vector3.TransformCoordinates(
           localPoint,
-          worldMatrix
+          worldMatrix,
         );
 
         if (worldPoint.y < this.#waterLevel) {
@@ -140,7 +125,7 @@ export class AdvancedBoat implements IUsable {
 
           this.#physicsAggregate.body.applyForce(
             new Vector3(0, buoyancyForce, 0),
-            worldPoint
+            worldPoint,
           );
 
           this.#submergedPoints++;
@@ -156,7 +141,7 @@ export class AdvancedBoat implements IUsable {
         this.#physicsAggregate.body.setLinearVelocity(velocity.scale(0.98));
 
         this.#physicsAggregate.body.setAngularVelocity(
-          angularVelocity.scale(0.8)
+          angularVelocity.scale(0.8),
         );
       }
     });
@@ -166,7 +151,7 @@ export class AdvancedBoat implements IUsable {
   public addPlayer(player: Player): void {
     this.#playersOnBoard.add(player);
     console.log(
-      `Player added to boat. Total players: ${this.#playersOnBoard.size}`
+      `Player added to boat. Total players: ${this.#playersOnBoard.size}`,
     );
   }
 
@@ -174,7 +159,7 @@ export class AdvancedBoat implements IUsable {
   public removePlayer(player: Player): void {
     this.#playersOnBoard.delete(player);
     console.log(
-      `Player removed from boat. Total players: ${this.#playersOnBoard.size}`
+      `Player removed from boat. Total players: ${this.#playersOnBoard.size}`,
     );
   }
 
@@ -206,7 +191,7 @@ export class AdvancedBoat implements IUsable {
     return new Vector3(
       this.#boat.position.x,
       boatBounds.boundingBox.maximumWorld.y,
-      this.#boat.position.z
+      this.#boat.position.z,
     );
   }
 

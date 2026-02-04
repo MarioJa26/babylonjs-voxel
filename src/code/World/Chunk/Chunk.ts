@@ -48,8 +48,8 @@ export class Chunk {
     this.#chunkY = chunkY;
     this.#chunkZ = chunkZ;
     this.id = Chunk.packCoords(chunkX, chunkY, chunkZ);
-    this.block_array = new Uint8Array(0);
-    this.light_array = new Uint8Array(0);
+    this.block_array = new Uint8Array(new SharedArrayBuffer(0));
+    this.light_array = new Uint8Array(new SharedArrayBuffer(0));
     Chunk.chunkInstances.set(this.id, this);
   }
 
@@ -541,7 +541,7 @@ export class Chunk {
       return;
     }
 
-    this.remeshTimeout = setTimeout(() => {
+    this.remeshTimeout = window.setTimeout(() => {
       const pool = ChunkWorkerPool.getInstance();
       pool.scheduleRemesh(this, this.isHighPriorityRemesh);
       this.isDirty = false;

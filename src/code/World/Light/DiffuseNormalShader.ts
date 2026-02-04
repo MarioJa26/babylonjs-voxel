@@ -123,7 +123,7 @@ void main(void) {
         float dist = length(viewVec);
         vec3 viewDirection = viewVec / dist;
 
-        vec3 halfwayDir = normalize(viewDirection - lightDirection);
+        vec3 halfwayDir = normalize(viewDirection + lightDirection);
         float shininess = mix(16.0, 128.0, wetness);
         float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), shininess);
         float specIntensity = mix(0.05, 2.0, wetness);

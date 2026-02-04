@@ -1,8 +1,11 @@
 import { Color3, StandardMaterial } from "@babylonjs/core";
 import { MaterialFactory } from "../../World/Texture/MaterialFactory";
 import { Map1 } from "@/code/Maps/Map1";
+import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
+import { IUsable } from "@/code/Inferface/IUsable";
+import { Player } from "../Player";
 
-export class Item {
+export class Item implements IUsable {
   name: string;
   description: string;
   icon: string;
@@ -24,7 +27,7 @@ export class Item {
     icon: string,
     materialFolder: string,
     row: number,
-    col: number
+    col: number,
   ) {
     this.name = name;
     this.description = description;
@@ -38,12 +41,32 @@ export class Item {
       true,
       true,
       true,
-      false
+      false,
     );
     this.material.specularColor = new Color3(0.24, 0.3, 0.3);
     this.row = row;
     this.col = col;
     this.#div = this.createDiv();
+  }
+
+  static createById(itemId: number): Item {
+    const textureDef = TextureDefinitions.find((t) => t.id === itemId);
+    if (!textureDef) throw new Error("Item not found");
+    const item = new Item(
+      textureDef.name,
+      "Crafted Item",
+      MaterialFactory.getTexturePathFromFolder(textureDef.path)!,
+      textureDef.path,
+      -1,
+      -1,
+    );
+    item.itemId = itemId;
+
+    return item;
+  }
+
+  use(player: Player): void {
+    //
   }
 
   createDiv(): HTMLDivElement {

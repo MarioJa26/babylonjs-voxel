@@ -1,48 +1,57 @@
 <template>
-  <div>
-    <canvas></canvas>
+  <div class="game-container">
+    <canvas ref="bjsCanvas"></canvas>
   </div>
 </template>
 
-<script lang="ts">
-import { defineComponent } from "vue";
+<script setup lang="ts">
+import { ref, onMounted, onBeforeUnmount } from "vue";
 import { TestScene } from "@/code/TestScene";
 
+// Vite handles these imports automatically 
 import "@/style/hud.css";
 import "@/style/Item.css";
 
-export default defineComponent({
-  name: "BabylonExamples",
-  data: () => ({
-    testScene: null as TestScene | null,
-  }),
+// 1. Reactive reference to the canvas element
+const bjsCanvas = ref<HTMLCanvasElement | null>(null);
+let testScene: TestScene | null = null;
 
-  async mounted() {
-    document.title = "b102 - " + new Date().toLocaleTimeString();
-    const canvas = document.querySelector("canvas") as HTMLCanvasElement;
-    this.testScene = new TestScene(document, canvas);
-    await this.testScene.initPromise;
-  },
-  beforeUnmount() {
-    if (this.testScene) {
-      this.testScene.connection.disconnect();
-    }
-  },
+onMounted(async () => {
+  document.title = "b102 - " + new Date().toLocaleTimeString();
+
+  if (bjsCanvas.value) {
+    // 2. Initialize the scene with the ref value
+    testScene = new TestScene(document, bjsCanvas.value);
+    await testScene.initPromise;
+  }
+});
+
+onBeforeUnmount(() => {
+  if (testScene) {
+    // Optional: Dispose of the Babylon engine here to prevent memory leaks
+    // testScene.engine.dispose(); 
+  }
 });
 </script>
 
 <style scoped>
-div {
+.game-container {
   position: fixed;
   top: 0;
   right: 0;
   bottom: 0;
   left: 0;
   background-color: rgb(30, 38, 36);
+  overflow: hidden;
+  /* Prevents scrollbars on the canvas */
 }
 
 canvas {
   width: 100%;
   height: 100%;
+  display: block;
+  /* Removes the 4px baseline gap */
+  outline: none;
+  /* Prevents the focus ring when clicking the canvas */
 }
 </style>

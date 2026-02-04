@@ -16,7 +16,6 @@ export class PlayerHud {
 
   static #inventory: PlayerInventory;
   #inventoryOpen = false;
-  #crosshair: CrossHair;
   #craftingRecipeDivs: { recipe: Recipe; div: HTMLDivElement }[] = [];
 
   #selectedHotbarSlot = 0;
@@ -31,7 +30,6 @@ export class PlayerHud {
   private static itemTooltipDiv: HTMLDivElement;
   private static itemTooltipMouseMove?: (e: MouseEvent) => void;
 
-  #statsContainer!: HTMLDivElement;
   #healthBarFill!: HTMLDivElement;
   #hungerBarFill!: HTMLDivElement;
   #staminaBarFill!: HTMLDivElement;
@@ -47,7 +45,7 @@ export class PlayerHud {
     this.#scene = scene;
     this.#player = player;
     PlayerHud.#inventory = player.playerInventory;
-    this.#crosshair = new CrossHair(engine, playerCamera, scene);
+    new CrossHair(engine, playerCamera, scene);
     this.#overlayDiv = this.initializeHUD();
     this.createHotbarUI();
     this.createStatsUI();
@@ -284,7 +282,6 @@ export class PlayerHud {
     this.#manaBarFill = createBar("mana"); // Blue
 
     document.body.appendChild(container);
-    this.#statsContainer = container;
 
     this.#scene.onDisposeObservable.add(() => {
       container.remove();
