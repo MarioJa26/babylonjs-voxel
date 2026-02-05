@@ -9,6 +9,7 @@ import { IWorldFeature } from "./Structure/IWorldFeature";
 import { StructureSpawnerFeature } from "./Structure/StructureFeature";
 import { LavaPoolFeature } from "./Structure/LavaPoolFeature";
 import { TowerFeature } from "./Structure/TowerFeature";
+import { DungeonFeature } from "./Structure/DungeonFeature";
 import { Biome } from "./Biome/BiomeTypes";
 
 export class SurfaceGenerator {
@@ -38,6 +39,7 @@ export class SurfaceGenerator {
       new TowerFeature(),
       new LavaPoolFeature(),
       new StructureSpawnerFeature(),
+      new DungeonFeature(),
     ];
   }
 
