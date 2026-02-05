@@ -15,13 +15,6 @@ export class ChunkWorker {
     this.worker.onerror = handler;
   }
 
-  public postInit(blockTextures: any): void {
-    this.worker.postMessage({
-      type: "init",
-      blockTextures,
-    });
-  }
-
   public postFullRemesh(chunk: Chunk): void {
     const neighbors: (Uint8Array | undefined)[] = [];
     const neighborLights: (Uint8Array | undefined)[] = [];

@@ -8,7 +8,6 @@ import {
   DistantTerrainGeneratedMessage,
 } from "./DataStructures/WorkerMessageType";
 import { WorldStorage } from "../WorldStorage";
-import { BlockTextures } from "../Texture/BlockTextures";
 
 export type WorkerMessageData =
   | FullMeshMessage
@@ -64,7 +63,6 @@ export class ChunkWorkerPool {
       };
 
       const workerWrapper = new ChunkWorker(onMessage);
-      workerWrapper.postInit(BlockTextures);
       this.workers.push(workerWrapper);
 
       // Attach error handler to the actual Worker instance inside ChunkWorker

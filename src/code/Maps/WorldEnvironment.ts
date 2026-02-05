@@ -26,7 +26,7 @@ export class WorldEnvironment {
   private timeOfDay = 450000;
   public timeScale = 0;
   public isPaused = false;
-  public wetness = 0;
+  public wetness = 0.2;
 
   constructor(scene: Scene) {
     WorldEnvironment.instance = this;
