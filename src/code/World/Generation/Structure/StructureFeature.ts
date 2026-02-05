@@ -1,7 +1,7 @@
-import { Biome } from "../Biome/Biomes";
 import { IWorldFeature } from "./IWorldFeature";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
 import { Structure, StructureData } from "./Structure";
+import { Biome } from "../Biome/BiomeTypes";
 
 export class StructureSpawnerFeature implements IWorldFeature {
   private static structures: Map<string, Structure> = new Map();
@@ -61,6 +61,8 @@ export class StructureSpawnerFeature implements IWorldFeature {
     seed: number,
     chunkSize: number,
     getTerrainHeight: (x: number, z: number, biome: Biome) => number,
+    generatingChunkX: number,
+    generatingChunkZ: number,
   ) {
     if (StructureSpawnerFeature.structures.size === 0) return;
 
@@ -93,6 +95,27 @@ export class StructureSpawnerFeature implements IWorldFeature {
 
       const structureOriginX = regionX * REGION_SIZE * chunkSize + offsetX;
       const structureOriginZ = regionZ * REGION_SIZE * chunkSize + offsetZ;
+
+      // --- Optimization: Bounding Box Check ---
+      // Check if the structure actually overlaps the chunk we are currently generating.
+      const minX = structureOriginX;
+      const maxX = structureOriginX + structure.width;
+      const minZ = structureOriginZ;
+      const maxZ = structureOriginZ + structure.depth;
+
+      const chunkMinX = generatingChunkX * chunkSize;
+      const chunkMaxX = (generatingChunkX + 1) * chunkSize;
+      const chunkMinZ = generatingChunkZ * chunkSize;
+      const chunkMaxZ = (generatingChunkZ + 1) * chunkSize;
+
+      if (
+        maxX <= chunkMinX ||
+        minX >= chunkMaxX ||
+        maxZ <= chunkMinZ ||
+        minZ >= chunkMaxZ
+      )
+        return;
+      // ----------------------------------------
 
       const groundHeight = getTerrainHeight(
         structureOriginX,

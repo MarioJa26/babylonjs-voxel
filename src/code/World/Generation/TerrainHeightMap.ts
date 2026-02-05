@@ -1,7 +1,6 @@
 import { createNoise2D } from "simplex-noise";
 import Alea from "alea";
 import { Squirrel3 } from "./NoiseAndParameters/Squirrel13";
-import { Biome, getBiomeFor } from "./Biome/Biomes";
 import {
   GenerationParams,
   GenerationParamsType,
@@ -10,6 +9,8 @@ import {
 import { Spline } from "./NoiseAndParameters/Spline";
 import { RiverGenerator } from "./RiverGeneration";
 import { SettingParams } from "../SettingParams";
+import { Biome } from "./Biome/BiomeTypes";
+import { getBiomeFor } from "./Biome/Biomes";
 
 /**
  * A static utility class to calculate terrain height at any world coordinate.

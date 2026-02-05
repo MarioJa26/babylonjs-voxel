@@ -1,6 +1,7 @@
-import { Biome } from "../Biome/Biomes";
+import { Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
 import { IWorldFeature } from "./IWorldFeature";
+import { TerrainHeightMap } from "../TerrainHeightMap";
 
 export class LavaPoolFeature implements IWorldFeature {
   public generate(
@@ -13,11 +14,13 @@ export class LavaPoolFeature implements IWorldFeature {
       y: number,
       z: number,
       id: number,
-      ow: boolean
+      ow: boolean,
     ) => void,
     seed: number,
     chunkSize: number,
-    getTerrainHeight: (x: number, z: number, biome: Biome) => number
+    getTerrainHeight: (x: number, z: number, biome: Biome) => number,
+    generatingChunkX: number,
+    generatingChunkZ: number,
   ) {
     const POOL_REGION_SIZE = 9;
 
@@ -26,13 +29,18 @@ export class LavaPoolFeature implements IWorldFeature {
 
     const regionHash = Squirrel3.get(
       regionX * 873461393 + regionZ * 178246653,
-      seed
+      seed,
     );
+
+    // We must check the biome at the *region* location or the specific pool location,
+    // not just the biome passed in (which is the center of the neighbor chunk being iterated).
+    // However, for the spawn chance logic, we'll defer the biome check until we have coordinates.
 
     let spawnChance = 2;
     let isSurface = false;
 
-    if (biome.name === "Volcanic_Wasteland") {
+    // We use the passed biome for a quick check, but ideally we check the specific location later
+    if (biome.name === "Volcanic_Wasteland" || biome.name === "Basalt_Deltas") {
       spawnChance = 100;
       isSurface = true;
     }
@@ -49,9 +57,35 @@ export class LavaPoolFeature implements IWorldFeature {
       const poolCenterX = regionX * POOL_REGION_SIZE * chunkSize + offsetX;
       const poolCenterZ = regionZ * POOL_REGION_SIZE * chunkSize + offsetZ;
 
+      // --- Optimization: Bounding Box Check ---
+      const MAX_POOL_RADIUS = 30; // Approximate max radius
+      const minX = poolCenterX - MAX_POOL_RADIUS;
+      const maxX = poolCenterX + MAX_POOL_RADIUS;
+      const minZ = poolCenterZ - MAX_POOL_RADIUS;
+      const maxZ = poolCenterZ + MAX_POOL_RADIUS;
+
+      const chunkMinX = generatingChunkX * chunkSize;
+      const chunkMaxX = (generatingChunkX + 1) * chunkSize;
+      const chunkMinZ = generatingChunkZ * chunkSize;
+      const chunkMaxZ = (generatingChunkZ + 1) * chunkSize;
+
+      if (
+        maxX <= chunkMinX ||
+        minX >= chunkMaxX ||
+        maxZ <= chunkMinZ ||
+        minZ >= chunkMaxZ
+      )
+        return;
+      // ----------------------------------------
+
+      // Re-evaluate biome at the specific pool location for correctness
+      const poolBiome = TerrainHeightMap.getBiome(poolCenterX, poolCenterZ);
+      isSurface = poolBiome.name === "Volcanic_Wasteland";
+
       let poolSurfaceY;
       if (isSurface) {
-        poolSurfaceY = getTerrainHeight(poolCenterX, poolCenterZ, biome) - 1;
+        poolSurfaceY =
+          getTerrainHeight(poolCenterX, poolCenterZ, poolBiome) - 1;
       } else {
         poolSurfaceY =
           -64 - (Math.abs(Squirrel3.get(baseHash + 2, seed)) % (1024 - 64));
@@ -65,7 +99,7 @@ export class LavaPoolFeature implements IWorldFeature {
         poolSurfaceY,
         poolCenterZ,
         placeBlock,
-        seed
+        seed,
       );
     }
   }
@@ -82,9 +116,9 @@ export class LavaPoolFeature implements IWorldFeature {
       y: number,
       z: number,
       id: number,
-      ow: boolean
+      ow: boolean,
     ) => void,
-    seed: number
+    seed: number,
   ) {
     const poolRadius = 25 + (Squirrel3.get(poolCenterX, seed) % 5);
     const maxDepth = 15 + (Squirrel3.get(poolCenterZ, seed) % 3);

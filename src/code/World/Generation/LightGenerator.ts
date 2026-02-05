@@ -1,4 +1,4 @@
-import { Biome } from "./Biome/Biomes";
+import { Biome } from "./Biome/BiomeTypes";
 import { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
 import { TerrainHeightMap } from "./TerrainHeightMap";
 
@@ -23,7 +23,7 @@ export class LightGenerator {
     chunkZ: number,
     _biome: Biome,
     blocks: Uint8Array,
-    light: Uint8Array
+    light: Uint8Array,
   ): void {
     let head = 0;
     let tail = 0;
@@ -38,7 +38,7 @@ export class LightGenerator {
 
         const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(
           worldX,
-          worldZ
+          worldZ,
         );
 
         let receivingSun = true;
@@ -100,7 +100,7 @@ export class LightGenerator {
           light,
           tail,
           CHUNK_SIZE,
-          CHUNK_SIZE_SQ
+          CHUNK_SIZE_SQ,
         );
       }
       // x - 1
@@ -115,7 +115,7 @@ export class LightGenerator {
           light,
           tail,
           CHUNK_SIZE,
-          CHUNK_SIZE_SQ
+          CHUNK_SIZE_SQ,
         );
       }
       // y + 1
@@ -130,7 +130,7 @@ export class LightGenerator {
           light,
           tail,
           CHUNK_SIZE,
-          CHUNK_SIZE_SQ
+          CHUNK_SIZE_SQ,
         );
       }
       // y - 1
@@ -145,7 +145,7 @@ export class LightGenerator {
           light,
           tail,
           CHUNK_SIZE,
-          CHUNK_SIZE_SQ
+          CHUNK_SIZE_SQ,
         );
       }
       // z + 1
@@ -160,7 +160,7 @@ export class LightGenerator {
           light,
           tail,
           CHUNK_SIZE,
-          CHUNK_SIZE_SQ
+          CHUNK_SIZE_SQ,
         );
       }
       // z - 1
@@ -175,7 +175,7 @@ export class LightGenerator {
           light,
           tail,
           CHUNK_SIZE,
-          CHUNK_SIZE_SQ
+          CHUNK_SIZE_SQ,
         );
       }
     }
@@ -191,7 +191,7 @@ export class LightGenerator {
     light: Uint8Array,
     tail: number,
     CHUNK_SIZE: number,
-    CHUNK_SIZE_SQ: number
+    CHUNK_SIZE_SQ: number,
   ): number {
     const idx = nx + ny * CHUNK_SIZE + nz * CHUNK_SIZE_SQ;
     const blockId = blocks[idx];

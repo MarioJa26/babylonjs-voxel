@@ -1,4 +1,4 @@
-import { Biome } from "../Biome/Biomes";
+import { Biome } from "../Biome/BiomeTypes";
 
 export interface IWorldFeature {
   generate(
@@ -11,10 +11,12 @@ export interface IWorldFeature {
       y: number,
       z: number,
       id: number,
-      ow: boolean
+      ow: boolean,
     ) => void,
     seed: number,
     chunkSize: number,
-    getTerrainHeight: (x: number, z: number, biome: Biome) => number
+    getTerrainHeight: (x: number, z: number, biome: Biome) => number,
+    generatingChunkX: number,
+    generatingChunkZ: number,
   ): void;
 }

@@ -3,13 +3,13 @@ import {
   GenerationParams,
   GenerationParamsType,
 } from "./NoiseAndParameters/GenerationParams";
-import { Biome } from "./Biome/Biomes";
 import { TerrainHeightMap } from "./TerrainHeightMap";
 import { RiverGenerator } from "./RiverGeneration";
 import { IWorldFeature } from "./Structure/IWorldFeature";
 import { StructureSpawnerFeature } from "./Structure/StructureFeature";
 import { LavaPoolFeature } from "./Structure/LavaPoolFeature";
 import { TowerFeature } from "./Structure/TowerFeature";
+import { Biome } from "./Biome/BiomeTypes";
 
 export class SurfaceGenerator {
   private params: GenerationParamsType;
@@ -164,78 +164,77 @@ export class SurfaceGenerator {
     chunkX: number,
     chunkY: number,
     chunkZ: number,
-    biome: Biome,
+    _biome: Biome,
     placeBlock: (x: number, y: number, z: number, id: number) => void,
   ) {
-    const TREE_RADIUS = Math.ceil(biome.treeDensity * 100) + 1;
+    // Scan a fixed radius outside the chunk to catch trees from neighbors.
+    // 8 blocks is usually enough for standard tree canopies.
+    const SCAN_RADIUS = 8;
 
     for (
-      let localX = -TREE_RADIUS;
-      localX < this.chunk_size + TREE_RADIUS;
+      let localX = -SCAN_RADIUS;
+      localX < this.chunk_size + SCAN_RADIUS;
       localX++
     ) {
       const worldX = chunkX * this.chunk_size + localX;
       for (
-        let localZ = -TREE_RADIUS;
-        localZ < this.chunk_size + TREE_RADIUS;
+        let localZ = -SCAN_RADIUS;
+        localZ < this.chunk_size + SCAN_RADIUS;
         localZ++
       ) {
         const worldZ = chunkZ * this.chunk_size + localZ;
 
+        // Get the biome for this specific column.
+        // This ensures that if we are in a Desert chunk but scanning the margin of a Forest neighbor,
+        // we correctly identify it as Forest and spawn the tree.
+        const colBiome = TerrainHeightMap.getBiome(worldX, worldZ);
+
+        if (!colBiome.canSpawnTrees) continue;
+
         // Use noise for tree placement. The value is in [-1, 1], so we map it to [0, 1].
         const treeNoiseValue = (this.treeNoise(worldX, worldZ) + 1) / 2;
-        const treeChanceRoll = treeNoiseValue;
-        if (treeChanceRoll > biome.treeDensity) continue;
+        if (treeNoiseValue > colBiome.treeDensity) continue;
 
-        if (biome.canSpawnTrees) {
-          const colBiome = TerrainHeightMap.getBiome(worldX, worldZ);
-          const baseHeight = this.getFinalTerrainHeight(worldX, worldZ);
+        const baseHeight = this.getFinalTerrainHeight(worldX, worldZ);
 
-          let scanHeight = baseHeight;
-          if (colBiome.name === "Floating_Islands") {
-            scanHeight += 128;
-          }
-
-          // Find the actual surface height using density
-          let surfaceY = -Infinity;
-          // Scan range around base height. 3D noise amplitude is approx +/- 8.
-          for (let y = scanHeight + 16; y >= scanHeight - 16; y--) {
-            const density = this.getDensity(
-              worldX,
-              y,
-              worldZ,
-              baseHeight,
-              colBiome,
-            );
-            if (density > 0) {
-              surfaceY = y;
-              break;
-            }
-          }
-
-          if (surfaceY === -Infinity) continue;
-
-          const riverNoise = this.riverGenerator.getRiverNoise(worldX, worldZ);
-          if (this.riverGenerator.isRiver(worldX, surfaceY, worldZ, riverNoise))
-            continue;
-
-          // Don't place trees underwater
-          if (surfaceY < this.params.SEA_LEVEL) continue;
-
-          const isBeach = this.isBeachLocation(worldX, worldZ, surfaceY);
-          const topBlockId = isBeach ? biome.beachBlock : biome.topBlock;
-
-          // Ask the biome for a tree definition for the block we're on
-          biome
-            .getTreeForBlock(topBlockId)
-            ?.generate(
-              worldX,
-              surfaceY + 1,
-              worldZ,
-              placeBlock,
-              this.seedAsInt,
-            );
+        let scanHeight = baseHeight;
+        if (colBiome.name === "Floating_Islands") {
+          scanHeight += 128;
         }
+
+        // Find the actual surface height using density
+        let surfaceY = -Infinity;
+        // Scan range around base height. 3D noise amplitude is approx +/- 8.
+        for (let y = scanHeight + 16; y >= scanHeight - 16; y--) {
+          const density = this.getDensity(
+            worldX,
+            y,
+            worldZ,
+            baseHeight,
+            colBiome,
+          );
+          if (density > 0) {
+            surfaceY = y;
+            break;
+          }
+        }
+
+        if (surfaceY === -Infinity) continue;
+
+        const riverNoise = this.riverGenerator.getRiverNoise(worldX, worldZ);
+        if (this.riverGenerator.isRiver(worldX, surfaceY, worldZ, riverNoise))
+          continue;
+
+        // Don't place trees underwater
+        if (surfaceY < this.params.SEA_LEVEL) continue;
+
+        const isBeach = this.isBeachLocation(worldX, worldZ, surfaceY);
+        const topBlockId = isBeach ? colBiome.beachBlock : colBiome.topBlock;
+
+        // Ask the biome for a tree definition for the block we're on
+        colBiome
+          .getTreeForBlock(topBlockId)
+          ?.generate(worldX, surfaceY + 1, worldZ, placeBlock, this.seedAsInt);
       }
     }
   }
@@ -255,7 +254,7 @@ export class SurfaceGenerator {
   ) {
     // To handle structures that span across chunk boundaries without breaking,
     // we must check neighbor chunks to see if a structure starts there and overlaps into this chunk.
-    const STRUCTURE_SEARCH_RADIUS = 1; // Check 1 chunk radius (3x3 area). Increase for larger structures.
+    const STRUCTURE_SEARCH_RADIUS = 2; // Check 2 chunk radius (5x5 area) to catch larger structures.
 
     for (
       let cx = chunkX - STRUCTURE_SEARCH_RADIUS;
@@ -299,6 +298,8 @@ export class SurfaceGenerator {
             this.seedAsInt,
             this.chunk_size,
             this.getFinalTerrainHeight.bind(this),
+            chunkX,
+            chunkZ,
           );
         }
       }

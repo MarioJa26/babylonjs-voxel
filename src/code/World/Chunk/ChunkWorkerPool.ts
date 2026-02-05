@@ -64,25 +64,6 @@ export class ChunkWorkerPool {
 
       const workerWrapper = new ChunkWorker(onMessage);
       this.workers.push(workerWrapper);
-
-      // Attach error handler to the actual Worker instance inside ChunkWorker
-      // Log full ErrorEvent so we can see filename/line/stack (important for Vite/module errors).
-      workerWrapper.setOnError((ev: ErrorEvent | Event) => {
-        console.error("Worker Error:", ev);
-
-        // Check if it's a runtime error (ErrorEvent) or loading error (Event)
-        const isRuntimeError = ev instanceof ErrorEvent || "message" in ev;
-
-        if (isRuntimeError) {
-          this.idleWorkerIndices.push(i);
-        } else {
-          const idleIndex = this.idleWorkerIndices.indexOf(i);
-          if (idleIndex > -1) {
-            this.idleWorkerIndices.splice(idleIndex, 1);
-          }
-        }
-        this.processQueue();
-      });
       this.idleWorkerIndices.push(i); // Initially all workers are idle.
     }
   }

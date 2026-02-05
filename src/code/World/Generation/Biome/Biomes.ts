@@ -1,31 +1,7 @@
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
-import {
-  CACTUS,
-  JUNGLE_TREE,
-  OAK_TREE,
-  PLAINS_TREE,
-  TreeDefinition,
-} from "./TreeDefinition";
+import { CACTUS, JUNGLE_TREE, OAK_TREE, PLAINS_TREE } from "./TreeDefinition";
+import { Biome, TreeDefinition } from "./BiomeTypes";
 
-export interface Biome {
-  name: string;
-  topBlock: number;
-  undergroundBlock: number;
-  stoneBlock: number;
-  canSpawnTrees: boolean;
-  treeDensity: number;
-  beachBlock: number;
-  seafloorBlock: number;
-  terrainHeightBase?: number;
-  // The generateTree method is now part of TreeDefinition
-  terrainHeightAmplitude?: number;
-  terrainScale?: number;
-  octaves?: number;
-  persistence?: number;
-  lacunarity?: number;
-  heightExponent?: number;
-  getTreeForBlock(blockId: number): TreeDefinition | null;
-}
 //Default
 const FOREST: Biome = {
   name: "Forest",

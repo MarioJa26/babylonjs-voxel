@@ -1,32 +1,5 @@
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-
-export type TreeDefinition = {
-  woodId: number;
-  leavesId: number;
-  baseHeight: number;
-  heightVariance: number;
-  /**
-   * Generates the blocks for this tree type at the given world coordinates.
-   * @param worldX The world X coordinate of the tree's base.
-   * @param worldY The world Y coordinate of the tree's base (usually terrainHeight + 1).
-   * @param worldZ The world Z coordinate of the tree's base.
-   * @param placeBlock A callback function to place a block in the current chunk's block array.
-   * @param seedAsInt The integer seed for deterministic height calculation.
-   */
-  generate(
-    worldX: number,
-    worldY: number,
-    worldZ: number,
-    placeBlock: (
-      x: number,
-      y: number,
-      z: number,
-      blockId: number,
-      overwrite?: boolean
-    ) => void,
-    seedAsInt: number
-  ): void;
-};
+import { TreeDefinition } from "./BiomeTypes";
 
 export const OAK_TREE: TreeDefinition = {
   woodId: 28,
@@ -42,13 +15,13 @@ export const OAK_TREE: TreeDefinition = {
       y: number,
       z: number,
       blockId: number,
-      overwrite?: boolean
+      overwrite?: boolean,
     ) => void,
-    seedAsInt: number
+    seedAsInt: number,
   ): void {
     const heightHash = Squirrel3.get(
       worldX * 374761393 + worldZ * 678446653,
-      seedAsInt
+      seedAsInt,
     );
     const height =
       this.baseHeight + (Math.abs(heightHash) % (this.heightVariance + 1));
@@ -89,13 +62,13 @@ export const PLAINS_TREE: TreeDefinition = {
       y: number,
       z: number,
       blockId: number,
-      overwrite?: boolean
+      overwrite?: boolean,
     ) => void,
-    seedAsInt: number
+    seedAsInt: number,
   ): void {
     const heightHash = Squirrel3.get(
       worldX * 374761393 + worldZ * 678446653,
-      seedAsInt
+      seedAsInt,
     );
     const height =
       this.baseHeight + (Math.abs(heightHash) % (this.heightVariance + 1));
@@ -136,13 +109,13 @@ export const JUNGLE_TREE: TreeDefinition = {
       y: number,
       z: number,
       blockId: number,
-      overwrite?: boolean
+      overwrite?: boolean,
     ) => void,
-    seedAsInt: number
+    seedAsInt: number,
   ): void {
     const heightHash = Squirrel3.get(
       worldX * 374761393 + worldZ * 678446653,
-      seedAsInt
+      seedAsInt,
     );
     const height =
       this.baseHeight + (Math.abs(heightHash) % (this.heightVariance + 1));
@@ -184,11 +157,11 @@ export const CACTUS: TreeDefinition = {
     worldY: number,
     worldZ: number,
     placeBlock: (x: number, y: number, z: number, blockId: number) => void,
-    seedAsInt: number
+    seedAsInt: number,
   ): void {
     const heightHash = Squirrel3.get(
       worldX * 374761393 + worldZ * 678446653,
-      seedAsInt
+      seedAsInt,
     );
     const height =
       this.baseHeight + (Math.abs(heightHash) % (this.heightVariance + 1));

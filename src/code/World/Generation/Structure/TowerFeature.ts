@@ -1,4 +1,4 @@
-import { Biome } from "../Biome/Biomes";
+import { Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
 import { IWorldFeature } from "./IWorldFeature";
 
@@ -13,11 +13,13 @@ export class TowerFeature implements IWorldFeature {
       y: number,
       z: number,
       id: number,
-      ow: boolean
+      ow: boolean,
     ) => void,
     seed: number,
     chunkSize: number,
-    getTerrainHeight: (x: number, z: number, biome: Biome) => number
+    getTerrainHeight: (x: number, z: number, biome: Biome) => number,
+    generatingChunkX: number,
+    generatingChunkZ: number,
   ) {
     const TOWER_REGION_SIZE = 16; // in chunks
     const TOWER_SPAWN_CHANCE = 100; // out of 100
@@ -27,7 +29,7 @@ export class TowerFeature implements IWorldFeature {
 
     const regionHash = Squirrel3.get(
       regionX * 374761393 + regionZ * 678446653,
-      seed
+      seed,
     );
 
     if (Math.abs(regionHash) % 100 < TOWER_SPAWN_CHANCE) {
@@ -50,12 +52,33 @@ export class TowerFeature implements IWorldFeature {
       }
 
       const towerRadius = 8 + (Squirrel3.get(towerCenterX, seed) % 4);
+
+      // --- Optimization: Bounding Box Check ---
+      const minX = towerCenterX - towerRadius;
+      const maxX = towerCenterX + towerRadius;
+      const minZ = towerCenterZ - towerRadius;
+      const maxZ = towerCenterZ + towerRadius;
+
+      const chunkMinX = generatingChunkX * chunkSize;
+      const chunkMaxX = (generatingChunkX + 1) * chunkSize;
+      const chunkMinZ = generatingChunkZ * chunkSize;
+      const chunkMaxZ = (generatingChunkZ + 1) * chunkSize;
+
+      if (
+        maxX <= chunkMinX ||
+        minX >= chunkMaxX ||
+        maxZ <= chunkMinZ ||
+        minZ >= chunkMaxZ
+      )
+        return;
+      // ----------------------------------------
+
       const groundHeight = this.findMinGroundHeightForTower(
         towerCenterX,
         towerCenterZ,
         towerRadius,
         biome,
-        getTerrainHeight
+        getTerrainHeight,
       );
 
       this.generateCylinderTower(
@@ -70,7 +93,7 @@ export class TowerFeature implements IWorldFeature {
         placeBlock,
         chunkSize,
         seed,
-        getTerrainHeight
+        getTerrainHeight,
       );
       this.generateUndergroundCylinderTower(
         chunkX,
@@ -81,7 +104,7 @@ export class TowerFeature implements IWorldFeature {
         towerRadius,
         groundHeight,
         placeBlock,
-        chunkSize
+        chunkSize,
       );
     }
   }
@@ -100,11 +123,11 @@ export class TowerFeature implements IWorldFeature {
       y: number,
       z: number,
       id: number,
-      ow: boolean
+      ow: boolean,
     ) => void,
     chunkSize: number,
     seed: number,
-    getTerrainHeight: (x: number, z: number, biome: Biome) => number
+    getTerrainHeight: (x: number, z: number, biome: Biome) => number,
   ) {
     const towerHeight = 76 + (Squirrel3.get(towerCenterZ, seed) % 8);
     const wallBlockId = 1;
@@ -138,7 +161,7 @@ export class TowerFeature implements IWorldFeature {
             worldY,
             towerCenterZ + dz,
             wallBlockId,
-            true
+            true,
           );
         }
       }
@@ -158,9 +181,9 @@ export class TowerFeature implements IWorldFeature {
       y: number,
       z: number,
       id: number,
-      ow: boolean
+      ow: boolean,
     ) => void,
-    chunkSize: number
+    chunkSize: number,
   ) {
     const wallBlockId = 26;
     const MIN_WORLD_Y = -16 * 100;
@@ -180,7 +203,7 @@ export class TowerFeature implements IWorldFeature {
             worldY,
             towerCenterZ + dz,
             wallBlockId,
-            true
+            true,
           );
         }
       }
@@ -192,7 +215,7 @@ export class TowerFeature implements IWorldFeature {
     towerCenterZ: number,
     towerRadius: number,
     biome: Biome,
-    getTerrainHeight: (x: number, z: number, biome: Biome) => number
+    getTerrainHeight: (x: number, z: number, biome: Biome) => number,
   ): number {
     let minGroundHeight = Infinity;
     const radiusSq = towerRadius * towerRadius;
