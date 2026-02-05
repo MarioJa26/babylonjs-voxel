@@ -1,5 +1,4 @@
-import { Mesh } from "@babylonjs/core";
-import { ChunkWorkerPool } from "./ChunkWorkerPool";
+import type { Mesh } from "@babylonjs/core";
 import { MeshData } from "./DataStructures/MeshData";
 import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
 import { TerrainHeightMap } from "../Generation/TerrainHeightMap";
@@ -26,6 +25,10 @@ export class Chunk {
   private remeshTimeout: number | null = null;
   private isHighPriorityRemesh = false;
 
+  public static onRequestRemesh:
+    | ((chunk: Chunk, priority: boolean) => void)
+    | null = null;
+
   block_array: Uint8Array;
 
   #chunkY: number;
@@ -48,8 +51,18 @@ export class Chunk {
     this.#chunkY = chunkY;
     this.#chunkZ = chunkZ;
     this.id = Chunk.packCoords(chunkX, chunkY, chunkZ);
-    this.block_array = new Uint8Array(new SharedArrayBuffer(0));
-    this.light_array = new Uint8Array(new SharedArrayBuffer(0));
+
+    // Create zero-length buffers in a safe way:
+    if (typeof SharedArrayBuffer !== "undefined") {
+      // Use SharedArrayBuffer when available (requires cross-origin isolation)
+      this.block_array = new Uint8Array(new SharedArrayBuffer(0));
+      this.light_array = new Uint8Array(new SharedArrayBuffer(0));
+    } else {
+      // Fallback to regular typed arrays (ArrayBuffer) when not isolated
+      this.block_array = new Uint8Array(0);
+      this.light_array = new Uint8Array(0);
+    }
+
     Chunk.chunkInstances.set(this.id, this);
   }
 
@@ -541,13 +554,12 @@ export class Chunk {
       return;
     }
 
-    this.remeshTimeout = window.setTimeout(() => {
-      const pool = ChunkWorkerPool.getInstance();
-      pool.scheduleRemesh(this, this.isHighPriorityRemesh);
+    this.remeshTimeout = setTimeout(() => {
+      Chunk.onRequestRemesh?.(this, this.isHighPriorityRemesh);
       this.isDirty = false;
       this.isHighPriorityRemesh = false;
       this.remeshTimeout = null;
-    }, 0);
+    }, 0) as unknown as number;
   }
 
   get chunkX(): number {

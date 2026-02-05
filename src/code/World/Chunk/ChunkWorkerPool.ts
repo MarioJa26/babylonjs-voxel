@@ -8,6 +8,7 @@ import {
   DistantTerrainGeneratedMessage,
 } from "./DataStructures/WorkerMessageType";
 import { WorldStorage } from "../WorldStorage";
+import { BlockTextures } from "../Texture/BlockTextures";
 
 export type WorkerMessageData =
   | FullMeshMessage
@@ -16,7 +17,7 @@ export type WorkerMessageData =
 
 export class ChunkWorkerPool {
   private static instance: ChunkWorkerPool;
-  private workers: Worker[] = [];
+  private workers: ChunkWorker[] = [];
   private taskQueue: Chunk[] = [];
   private terrainTaskQueue: Set<Chunk> = new Set();
   private distantTerrainTaskQueue: DistantTerrainTask[] = [];
@@ -63,11 +64,27 @@ export class ChunkWorkerPool {
       };
 
       const workerWrapper = new ChunkWorker(onMessage);
-      this.workers.push(workerWrapper as unknown as Worker);
-      // Add this to see why they are "busy" (crashed)
-      (workerWrapper as any).worker.onerror = (err: any) => {
-        console.error("🔥 Worker Pipeline Crash:", err);
-      };
+      workerWrapper.postInit(BlockTextures);
+      this.workers.push(workerWrapper);
+
+      // Attach error handler to the actual Worker instance inside ChunkWorker
+      // Log full ErrorEvent so we can see filename/line/stack (important for Vite/module errors).
+      workerWrapper.setOnError((ev: ErrorEvent | Event) => {
+        console.error("Worker Error:", ev);
+
+        // Check if it's a runtime error (ErrorEvent) or loading error (Event)
+        const isRuntimeError = ev instanceof ErrorEvent || "message" in ev;
+
+        if (isRuntimeError) {
+          this.idleWorkerIndices.push(i);
+        } else {
+          const idleIndex = this.idleWorkerIndices.indexOf(i);
+          if (idleIndex > -1) {
+            this.idleWorkerIndices.splice(idleIndex, 1);
+          }
+        }
+        this.processQueue();
+      });
       this.idleWorkerIndices.push(i); // Initially all workers are idle.
     }
   }
@@ -77,6 +94,9 @@ export class ChunkWorkerPool {
   ): ChunkWorkerPool {
     if (!ChunkWorkerPool.instance) {
       ChunkWorkerPool.instance = new ChunkWorkerPool(poolSize);
+      Chunk.onRequestRemesh = (chunk, priority) => {
+        ChunkWorkerPool.instance.scheduleRemesh(chunk, priority);
+      };
     }
     return ChunkWorkerPool.instance;
   }
@@ -165,7 +185,7 @@ export class ChunkWorkerPool {
 
       if (taskChunk || distantTask) {
         const workerIndex = this.idleWorkerIndices.shift()!;
-        const worker = this.workers[workerIndex] as unknown as ChunkWorker;
+        const worker = this.workers[workerIndex];
         if (taskType === "terrain") {
           worker.postTerrainGeneration(taskChunk!);
         } else if (taskType === "remesh") {

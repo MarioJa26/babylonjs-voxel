@@ -1,17 +1,12 @@
 /// <reference lib="webworker" />
 
-import { BlockTextures } from "../Texture/BlockTextures";
 import { WorldGenerator } from "../Generation/WorldGenerator";
 import { MeshData } from "./DataStructures/MeshData";
 import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
 import { ResizableTypedArray } from "./DataStructures/ResizableTypedArray";
 import { WorkerInternalMeshData } from "./DataStructures/WorkerInternalMeshData";
 import { DistantTerrainGenerator } from "../Generation/DistanTerrain/DistantTerrainGenerator";
-
-/**
- * A wrapper around a TypedArray that allows it to be resized dynamically.
- * This is more performant than using a standard number[] and then converting.
- */
+import { BlockTextures } from "../Texture/BlockTextures";
 
 const WATER_BLOCKS = new Set([30]);
 const GLASS_BLOCKS = new Set([60, 61]);

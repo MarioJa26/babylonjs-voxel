@@ -1,4 +1,4 @@
-import { Color3, Color4 } from "@babylonjs/core";
+// import { Color3, Color4 } from "@babylonjs/core"; // Removed to prevent worker crash
 
 export class SettingParams {
   // --- World Generation & Loading ---
@@ -22,9 +22,9 @@ export class SettingParams {
 
   // --- Block Highlighter ---
   public static HIGHLIGHT_ALPHA = 0.0;
-  public static HIGHLIGHT_COLOR = new Color3(0, 0.1, 0);
+  public static HIGHLIGHT_COLOR = [0, 0.1, 0]; // Stored as array [r, g, b]
   public static HIGHLIGHT_EDGE_WIDTH = 1.1;
-  public static HIGHLIGHT_EDGE_COLOR = new Color4(0, 0.1, 0, 0.7);
+  public static HIGHLIGHT_EDGE_COLOR = [0, 0.1, 0, 0.7]; // Stored as array [r, g, b, a]
 
   // --- Lighting ---
   public static HEMISPHERIC_LIGHT_INTENSITY = 0.5;

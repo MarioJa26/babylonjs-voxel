@@ -1,4 +1,11 @@
-import { Mesh, MeshBuilder, Scene, StandardMaterial } from "@babylonjs/core";
+import {
+  Color3,
+  Color4,
+  Mesh,
+  MeshBuilder,
+  Scene,
+  StandardMaterial,
+} from "@babylonjs/core";
 import { AdvancedBoat } from "../Entities/AdvancedBoat";
 import { Player } from "../Player/Player";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
@@ -90,12 +97,21 @@ export class Map1 {
         Map1.mainScene,
       );
       highlightMaterial.alpha = SettingParams.HIGHLIGHT_ALPHA;
-      highlightMaterial.diffuseColor = SettingParams.HIGHLIGHT_COLOR;
+      highlightMaterial.diffuseColor = new Color3(
+        SettingParams.HIGHLIGHT_COLOR[0],
+        SettingParams.HIGHLIGHT_COLOR[1],
+        SettingParams.HIGHLIGHT_COLOR[2],
+      );
       this.#blockHighlightMesh.material = highlightMaterial;
 
       this.#blockHighlightMesh.enableEdgesRendering();
       this.#blockHighlightMesh.edgesWidth = SettingParams.HIGHLIGHT_EDGE_WIDTH;
-      this.#blockHighlightMesh.edgesColor = SettingParams.HIGHLIGHT_EDGE_COLOR;
+      this.#blockHighlightMesh.edgesColor = new Color4(
+        SettingParams.HIGHLIGHT_EDGE_COLOR[0],
+        SettingParams.HIGHLIGHT_EDGE_COLOR[1],
+        SettingParams.HIGHLIGHT_EDGE_COLOR[2],
+        SettingParams.HIGHLIGHT_EDGE_COLOR[3],
+      );
       this.#blockHighlightMesh.visibility = 0; // Initially hidden
     }
     const hit = CrossHair.pickTarget(this.#player);
@@ -176,7 +192,11 @@ export class Map1 {
 
     for (let i = 0; i < 10; i++) {
       const mat = new StandardMaterial(`crackMat${i}`, this.mainScene);
-      mat.diffuseColor = SettingParams.HIGHLIGHT_COLOR;
+      mat.diffuseColor = new Color3(
+        SettingParams.HIGHLIGHT_COLOR[0],
+        SettingParams.HIGHLIGHT_COLOR[1],
+        SettingParams.HIGHLIGHT_COLOR[2],
+      );
       mat.alpha = 0.1 + (i / 9) * 0.6;
       mat.backFaceCulling = false;
       mat.disableLighting = true;

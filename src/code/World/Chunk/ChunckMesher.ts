@@ -22,6 +22,7 @@ import { MeshData } from "./DataStructures/MeshData";
 import { DiffuseNormalShader } from "../Light/DiffuseNormalShader";
 import { WaterShader } from "../Light/WaterShader";
 import { GlassShader } from "../Light/GlassShader";
+import { TextureCache } from "../Texture/TextureCache";
 
 export class ChunkMesher {
   static #atlasMaterial: Material | null = null;
@@ -49,15 +50,33 @@ export class ChunkMesher {
     diffuseAtlasTexture = TextureAtlasFactory.getDiffuse();
     normalAtlasTexture = TextureAtlasFactory.getNormal();
     if (!diffuseAtlasTexture) {
-      diffuseAtlasTexture = new Texture("/texture/diffuse_atlas.png", scene, {
-        noMipmap: false,
-        samplingMode: Texture.NEAREST_SAMPLINGMODE,
-      });
-
-      normalAtlasTexture = new Texture("/texture/normal_atlas.png", scene, {
-        noMipmap: false,
-        samplingMode: Texture.NEAREST_SAMPLINGMODE,
-      });
+      if (GlobalValues.CACHE_TEXTURES) {
+        diffuseAtlasTexture = this.createCachedTexture(
+          "/texture/diffuse_atlas.png",
+          scene,
+          {
+            noMipmap: false,
+            samplingMode: Texture.NEAREST_SAMPLINGMODE,
+          },
+        );
+        normalAtlasTexture = this.createCachedTexture(
+          "/texture/normal_atlas.png",
+          scene,
+          {
+            noMipmap: false,
+            samplingMode: Texture.NEAREST_SAMPLINGMODE,
+          },
+        );
+      } else {
+        diffuseAtlasTexture = new Texture("/texture/diffuse_atlas.png", scene, {
+          noMipmap: false,
+          samplingMode: Texture.NEAREST_SAMPLINGMODE,
+        });
+        normalAtlasTexture = new Texture("/texture/normal_atlas.png", scene, {
+          noMipmap: false,
+          samplingMode: Texture.NEAREST_SAMPLINGMODE,
+        });
+      }
 
       TextureAtlasFactory.setDiffuse(diffuseAtlasTexture);
       TextureAtlasFactory.setNormal(normalAtlasTexture);
@@ -547,5 +566,34 @@ export class ChunkMesher {
     if (WorldEnvironment.instance) {
       this.#cachedUniforms.wetness = WorldEnvironment.instance.wetness;
     }
+  }
+
+  private static createCachedTexture(
+    url: string,
+    scene: any,
+    args: any,
+  ): Texture {
+    const texture = new Texture(null, scene, args);
+    this.loadTextureToCache(url)
+      .then((blobUrl) => {
+        texture.updateURL(blobUrl);
+      })
+      .catch((e) => {
+        console.warn("Texture cache failed, falling back to network", e);
+        texture.updateURL(url);
+      });
+    return texture;
+  }
+
+  private static async loadTextureToCache(url: string): Promise<string> {
+    const cacheKey = `${url}?v=${GlobalValues.TEXTURE_VERSION}`;
+    const blob = await TextureCache.get(cacheKey);
+    if (blob) {
+      return URL.createObjectURL(blob);
+    }
+    const response = await fetch(cacheKey);
+    const newBlob = await response.blob();
+    await TextureCache.put(cacheKey, newBlob);
+    return URL.createObjectURL(newBlob);
   }
 }
