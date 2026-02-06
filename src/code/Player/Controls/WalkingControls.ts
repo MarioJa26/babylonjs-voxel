@@ -89,21 +89,12 @@ export class WalkingControls implements IControls<PlayerVehicle> {
       WalkingControls.MOUSE2.includes(mouseEvent.button) &&
       isKeyDown
     ) {
-      const blockNumber = CrossHair.pickBlock(this.#player);
-      if (blockNumber === BlockType.CraftingTable) {
-        console.log("Clicked on protected block!");
-        return;
-      }
-      const hit = CrossHair.pickMesh(this.#player);
-      if (!hit) return;
-
       const item =
         this.#player.playerInventory.inventory[0][
           this.#player.playerHud.selectedHotbarSlot
         ]?.item;
 
       if (item) {
-        ChunkLoadingSystem.setBlock(hit.x, hit.y, hit.z, item.itemId);
         item.use(this.#player);
       }
     }

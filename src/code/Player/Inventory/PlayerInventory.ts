@@ -70,14 +70,24 @@ export class PlayerInventory {
       }
     }
 
-    const boat = Item.createById(10);
+    const boat = new Item(
+      "Boat",
+      "Boat",
+      "/texture/other/boat-row-small.png",
+      "",
+      9,
+      9,
+    );
     boat.stackSize = 1;
     boat.use = (player: Player) => {
+      const ray: Ray = player.playerCamera.playerCamera.getForwardRay(200);
+      const pick = Map1.mainScene.pickWithRay(ray);
+
       new AdvancedBoat(
         Map1.mainScene,
         player,
         GenerationParams.SEA_LEVEL,
-        player.position,
+        pick?.pickedPoint || player.position,
       );
     };
     boat.name = "Boat";

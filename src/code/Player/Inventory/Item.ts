@@ -4,6 +4,9 @@ import { Map1 } from "@/code/Maps/Map1";
 import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
 import { IUsable } from "@/code/Inferface/IUsable";
 import { Player } from "../Player";
+import { CrossHair } from "../Hud/CrossHair";
+import { BlockType } from "@/code/World/BlockType";
+import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
 
 export class Item implements IUsable {
   name: string;
@@ -66,7 +69,25 @@ export class Item implements IUsable {
   }
 
   use(player: Player): void {
-    //
+    Item.place(player);
+  }
+
+  static place(player: Player) {
+    const blockNumber = CrossHair.pickBlock(player);
+    if (blockNumber === BlockType.CraftingTable) {
+      console.log("Clicked on protected block!");
+      return;
+    }
+    const hit = CrossHair.pickMesh(player);
+    if (!hit) return;
+
+    const item =
+      player.playerInventory.inventory[0][player.playerHud.selectedHotbarSlot]
+        ?.item;
+
+    if (item) {
+      ChunkLoadingSystem.setBlock(hit.x, hit.y, hit.z, item.itemId);
+    }
   }
 
   createDiv(): HTMLDivElement {
