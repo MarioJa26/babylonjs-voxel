@@ -13,12 +13,13 @@ import { Mount } from "./Mount";
 import { MetadataContainer } from "./MetaDataContainer";
 import { Player } from "../Player/Player";
 import { PaddleBoatControls } from "../Player/Controls/PaddleBoatControls";
+import { GenerationParams } from "../World/Generation/NoiseAndParameters/GenerationParams";
 
 export class AdvancedBoat implements IUsable {
   #boat!: Mesh;
   #physicsAggregate!: PhysicsAggregate;
   #mount: Mount;
-  #waterLevel = 2;
+  #waterLevel = GenerationParams.SEA_LEVEL;
   #buoyancyPoints: Vector3[] = [];
   #playersOnBoard: Set<Player> = new Set();
   #baseBuoyancyForce = 20;
@@ -39,8 +40,6 @@ export class AdvancedBoat implements IUsable {
 
     this.#boat.metadata = new MetadataContainer();
     this.#boat.metadata.add("use", (player: Player) => this.use(player));
-
-    this.#boat.renderingGroupId = 1;
 
     this.setupBuoyancyPoints();
     this.setupAdvancedPhysics(scene);
@@ -72,22 +71,23 @@ export class AdvancedBoat implements IUsable {
     hullMaterial.diffuseColor = new Color3(0.8, 0.6, 0.2);
     boatHull.material = hullMaterial;
     boatHull.isPickable = true;
-
+    boatHull.renderingGroupId = 1;
     this.#boat = boatHull;
   }
 
   private setupBuoyancyPoints(): void {
     // More buoyancy points for better stability with player weight
+    const y = -1.5; // Lowering these points makes the boat ride higher
     this.#buoyancyPoints = [
-      new Vector3(-1, -0.5, -2), // Front left
-      new Vector3(1, -0.5, -2), // Front right
-      new Vector3(-1, -0.5, 2), // Back left
-      new Vector3(1, -0.5, 2), // Back right
-      new Vector3(0, -0.5, 0), // Center
-      new Vector3(-0.5, -0.5, -1),
-      new Vector3(0.5, -0.5, -1),
-      new Vector3(-0.5, -0.5, 1),
-      new Vector3(0.5, -0.5, 1),
+      new Vector3(-3, y, -3), // Front left - Widened significantly for stability
+      new Vector3(3, y, -3), // Front right
+      new Vector3(-3, y, 3), // Back left
+      new Vector3(3, y, 3), // Back right
+      new Vector3(0, y, 0), // Center
+      new Vector3(-1.5, y, -1.5),
+      new Vector3(1.5, y, -1.5),
+      new Vector3(-1.5, y, 1.5),
+      new Vector3(1.5, y, 1.5),
     ];
   }
 

@@ -59,9 +59,9 @@ export class PlayerInventory {
           textureDef.name,
           "Description for " + textureDef.name,
           MaterialFactory.getTexturePathFromFolder(textureDef.path)!,
-          textureDef.path,
           i,
           j,
+          textureDef.path,
         );
         item.itemId = textureDef.id;
         item.stackSize = textureDef.id;
@@ -71,10 +71,9 @@ export class PlayerInventory {
     }
 
     const boat = new Item(
-      "Boat",
+      "Small Row Boat",
       "Boat",
       "/texture/other/boat-row-small.png",
-      "",
       9,
       9,
     );
@@ -157,10 +156,10 @@ export class PlayerInventory {
     const item = new Item(
       textureDef.name,
       "Crafted Item",
-      MaterialFactory.getTexturePathFromFolder(textureDef.path)!,
       textureDef.path,
       -1,
       -1,
+      MaterialFactory.getTexturePathFromFolder(textureDef.path)!,
     );
     item.itemId = itemId;
     item.stackSize = count;
@@ -187,9 +186,9 @@ export class PlayerInventory {
       item.name,
       item.description,
       item.icon,
-      item.materialFolder,
       -1, // No row
       -1, // No col
+      item.materialFolder,
     );
     worldItem.itemId = item.itemId;
     worldItem.stackSize = quantity ?? item.stackSize;

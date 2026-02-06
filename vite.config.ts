@@ -19,6 +19,9 @@ export default defineConfig({
     plugins: () => [glsl()], // Allows workers to also import shaders
   },
   server: {
+    hmr: false,
+    port: 8080,
+
     // These enable SharedArrayBuffer (Fastest chunk loading)
     headers: {
       "Cross-Origin-Opener-Policy": "same-origin",

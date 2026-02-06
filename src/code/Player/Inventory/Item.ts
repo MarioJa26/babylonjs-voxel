@@ -12,8 +12,8 @@ export class Item implements IUsable {
   name: string;
   description: string;
   icon: string;
-  materialFolder: string;
-  material: StandardMaterial;
+  materialFolder: string | undefined;
+  material: StandardMaterial | undefined;
 
   itemId = 1;
 
@@ -28,25 +28,27 @@ export class Item implements IUsable {
     name: string,
     description: string,
     icon: string,
-    materialFolder: string,
     row: number,
     col: number,
+    materialFolder?: string,
   ) {
     this.name = name;
     this.description = description;
     this.icon = icon;
-    this.materialFolder = materialFolder;
-    this.material = MaterialFactory.createMaterialByFolder(
-      Map1.mainScene,
-      materialFolder,
-      1,
-      ".png",
-      true,
-      true,
-      true,
-      false,
-    );
-    this.material.specularColor = new Color3(0.24, 0.3, 0.3);
+    if (materialFolder) {
+      this.materialFolder = materialFolder;
+      this.material = MaterialFactory.createMaterialByFolder(
+        Map1.mainScene,
+        materialFolder,
+        1,
+        ".png",
+        true,
+        true,
+        true,
+        false,
+      );
+      this.material.specularColor = new Color3(0.24, 0.3, 0.3);
+    }
     this.row = row;
     this.col = col;
     this.#div = this.createDiv();
@@ -58,10 +60,10 @@ export class Item implements IUsable {
     const item = new Item(
       textureDef.name,
       "Crafted Item",
-      MaterialFactory.getTexturePathFromFolder(textureDef.path)!,
       textureDef.path,
       -1,
       -1,
+      MaterialFactory.getTexturePathFromFolder(textureDef.path)!,
     );
     item.itemId = itemId;
 
