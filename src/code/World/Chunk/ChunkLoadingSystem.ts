@@ -31,87 +31,106 @@ export class ChunkLoadingSystem {
   ) {
     if (this.isUpdating) return;
     this.isUpdating = true;
-    if (!this.distantTerrain) {
-      this.distantTerrain = new DistantTerrain();
-    }
-    this.distantTerrain.update(chunkX, chunkZ);
 
-    const chunksToLoadFromDB: Chunk[] = [];
-    const chunksToGenerate: Chunk[] = [];
-
-    // 1. Collect all potential chunk coordinates and their distances
-    for (let y = chunkY - verticalRadius; y <= chunkY + verticalRadius; y++) {
-      if (
-        y >= SettingParams.MAX_CHUNK_HEIGHT ||
-        (playerY > GenerationParams.CHUNK_SIZE && y < 0)
-      )
-        continue;
-      for (let x = chunkX - renderDistance; x <= chunkX + renderDistance; x++) {
-        for (
-          let z = chunkZ - renderDistance;
-          z <= chunkZ + renderDistance;
-          z++
-        ) {
-          let chunk = Chunk.getChunk(x, y, z);
-          if (!chunk) {
-            chunk = new Chunk(x, y, z);
-          }
-
-          // Close chunk: Needs full terrain
-          if (!chunk.isLoaded && !chunk.isTerrainScheduled) {
-            chunksToLoadFromDB.push(chunk);
-            chunk.isTerrainScheduled = true;
-          }
-        }
+    try {
+      if (!this.distantTerrain) {
+        this.distantTerrain = new DistantTerrain();
       }
-    }
+      this.distantTerrain.update(chunkX, chunkZ);
 
-    // 4. Fire off a single batch DB load request
-    const chunkIdsToLoad = chunksToLoadFromDB.map((chunk) => chunk.id);
-    const loadedDataMap = await WorldStorage.loadChunks(chunkIdsToLoad);
+      const chunksToLoadFromDB: Chunk[] = [];
+      const chunksToGenerate: Chunk[] = [];
 
-    // 5. Process the results
-    for (const chunk of chunksToLoadFromDB) {
-      const savedData = loadedDataMap.get(chunk.id);
-      if (savedData) {
-        // Populate block data without triggering an automatic remesh
-        chunk.populate(savedData.blocks, savedData.light_array, true);
-
-        // If we have saved mesh data, use it directly!
+      // 1. Collect all potential chunk coordinates and their distances
+      for (let y = chunkY - verticalRadius; y <= chunkY + verticalRadius; y++) {
         if (
-          savedData.opaqueMesh ||
-          savedData.waterMesh ||
-          savedData.glassMesh
+          y >= SettingParams.MAX_CHUNK_HEIGHT ||
+          (playerY > GenerationParams.CHUNK_SIZE && y < 0)
+        )
+          continue;
+        for (
+          let x = chunkX - renderDistance;
+          x <= chunkX + renderDistance;
+          x++
         ) {
-          ChunkMesher.createMeshFromData(chunk, {
-            opaque: savedData.opaqueMesh!,
-            water: savedData.waterMesh!,
-            glass: savedData.glassMesh!,
-          });
-        } else {
-          // If no mesh data, now we schedule a remesh
-          chunk.scheduleRemesh();
+          for (
+            let z = chunkZ - renderDistance;
+            z <= chunkZ + renderDistance;
+            z++
+          ) {
+            let chunk = Chunk.getChunk(x, y, z);
+            if (!chunk) {
+              chunk = new Chunk(x, y, z);
+            }
+
+            // Close chunk: Needs full terrain
+            if (!chunk.isLoaded && !chunk.isTerrainScheduled) {
+              chunksToLoadFromDB.push(chunk);
+              chunk.isTerrainScheduled = true;
+            }
+          }
         }
-      } else {
-        // Otherwise, add to generation queue
-        chunksToGenerate.push(chunk);
       }
+
+      // 4. Fire off a single batch DB load request
+      const chunkIdsToLoad = chunksToLoadFromDB.map((chunk) => chunk.id);
+      let loadedDataMap = new Map();
+      try {
+        loadedDataMap = await WorldStorage.loadChunks(chunkIdsToLoad);
+      } catch (e) {
+        console.warn("Failed to load chunks from storage", e);
+      }
+
+      // 5. Process the results
+      for (const chunk of chunksToLoadFromDB) {
+        const savedData = loadedDataMap.get(chunk.id);
+        if (savedData) {
+          // Populate block data without triggering an automatic remesh
+          chunk.loadFromStorage(
+            savedData.blocks,
+            savedData.palette,
+            savedData.isUniform,
+            savedData.uniformBlockId,
+            savedData.light_array,
+            true,
+          );
+
+          // If we have saved mesh data, use it directly!
+          if (
+            savedData.opaqueMesh ||
+            savedData.waterMesh ||
+            savedData.glassMesh
+          ) {
+            ChunkMesher.createMeshFromData(chunk, {
+              opaque: savedData.opaqueMesh!,
+              water: savedData.waterMesh!,
+              glass: savedData.glassMesh!,
+            });
+          } else {
+            // If no mesh data, now we schedule a remesh
+            chunk.scheduleRemesh();
+          }
+        } else {
+          // Otherwise, add to generation queue
+          chunksToGenerate.push(chunk);
+        }
+      }
+
+      // 6. Enqueue chunks for generation
+      ChunkWorkerPool.getInstance().scheduleTerrainGenerationBatch(
+        chunksToGenerate,
+      );
+
+      this.handleUnloading(
+        chunkX,
+        chunkY,
+        chunkZ,
+        renderDistance,
+        verticalRadius,
+      );
+    } finally {
+      this.isUpdating = false;
     }
-
-    // 6. Enqueue chunks for generation
-    ChunkWorkerPool.getInstance().scheduleTerrainGenerationBatch(
-      chunksToGenerate,
-    );
-
-    this.handleUnloading(
-      chunkX,
-      chunkY,
-      chunkZ,
-      renderDistance,
-      verticalRadius,
-    );
-
-    this.isUpdating = false;
   }
   private static async handleUnloading(
     chunkX: number,

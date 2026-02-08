@@ -1,6 +1,6 @@
 export const GenerationParams = {
   SEED: "my-secret-seed",
-  CHUNK_SIZE: 16,
+  CHUNK_SIZE: 32,
   TERRAIN_SCALE: 0.001,
   OCTAVES: 8,
   PERSISTENCE: 0.31,

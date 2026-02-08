@@ -29,7 +29,10 @@ export class Chunk {
     | ((chunk: Chunk, priority: boolean) => void)
     | null = null;
 
-  block_array: Uint8Array;
+  private _block_array: Uint8Array | Uint16Array | null = null;
+  private _isUniform = true;
+  private _uniformBlockId = 0;
+  private _palette: number[] | null = null;
 
   #chunkY: number;
   #chunkX: number;
@@ -55,15 +58,31 @@ export class Chunk {
     // Create zero-length buffers in a safe way:
     if (typeof SharedArrayBuffer !== "undefined") {
       // Use SharedArrayBuffer when available (requires cross-origin isolation)
-      this.block_array = new Uint8Array(new SharedArrayBuffer(0));
+      // this.block_array = new Uint8Array(new SharedArrayBuffer(0)); // Removed
       this.light_array = new Uint8Array(new SharedArrayBuffer(0));
     } else {
       // Fallback to regular typed arrays (ArrayBuffer) when not isolated
-      this.block_array = new Uint8Array(0);
+      // this.block_array = new Uint8Array(0); // Removed
       this.light_array = new Uint8Array(0);
     }
 
     Chunk.chunkInstances.set(this.id, this);
+  }
+
+  get block_array(): Uint8Array | Uint16Array | null {
+    return this._block_array;
+  }
+
+  get palette(): number[] | null {
+    return this._palette;
+  }
+
+  get isUniform(): boolean {
+    return this._isUniform;
+  }
+
+  get uniformBlockId(): number {
+    return this._uniformBlockId;
   }
 
   // Define blocks that emit light (Block ID -> Light Level)
@@ -77,12 +96,63 @@ export class Chunk {
     return Chunk.LIGHT_EMISSION[blockId] || 0;
   }
 
+  private getNibble(index: number): number {
+    if (!this._block_array) return 0;
+    const byteIndex = index >> 1;
+    // When using palette, _block_array is always Uint8Array (packed nibbles)
+    const byte = (this._block_array as Uint8Array)[byteIndex];
+    return index & 1 ? (byte >> 4) & 0xf : byte & 0xf;
+  }
+
+  private setNibble(index: number, value: number): void {
+    if (!this._block_array) return;
+    const byteIndex = index >> 1;
+    const arr = this._block_array as Uint8Array;
+    let byte = arr[byteIndex];
+    if (index & 1) {
+      byte = (byte & 0x0f) | ((value & 0xf) << 4);
+    } else {
+      byte = (byte & 0xf0) | (value & 0xf);
+    }
+    arr[byteIndex] = byte;
+  }
+
   public populate(
-    block_array: Uint8Array,
+    block_array: Uint8Array | Uint16Array,
     light_array?: Uint8Array,
     scheduleRemesh = true,
   ): void {
-    this.block_array = block_array;
+    // Analyze block_array for unique blocks to determine storage strategy
+    const uniqueBlocks = new Set<number>();
+    for (let i = 0; i < block_array.length; i++) {
+      uniqueBlocks.add(block_array[i]);
+      if (uniqueBlocks.size > 16) break;
+    }
+
+    if (uniqueBlocks.size === 1) {
+      this._isUniform = true;
+      this._uniformBlockId = uniqueBlocks.values().next().value || 0;
+      this._block_array = null;
+      this._palette = null;
+    } else if (uniqueBlocks.size <= 16) {
+      // Use Palette (4-bit packed)
+      this._isUniform = false;
+      this._uniformBlockId = 0;
+      this._palette = Array.from(uniqueBlocks);
+      this._block_array = new Uint8Array(Math.ceil(block_array.length / 2));
+
+      const paletteMap = new Map<number, number>();
+      this._palette.forEach((id, index) => paletteMap.set(id, index));
+
+      for (let i = 0; i < block_array.length; i++) {
+        this.setNibble(i, paletteMap.get(block_array[i])!);
+      }
+    } else {
+      // Use Raw Array
+      this._isUniform = false;
+      this._palette = null;
+      this._block_array = block_array;
+    }
 
     if (light_array) {
       this.light_array = light_array;
@@ -102,6 +172,56 @@ export class Chunk {
     this.isTerrainScheduled = false; // Reset flag
   }
 
+  public loadFromStorage(
+    blocks: Uint8Array | Uint16Array | null,
+    palette: number[] | null | undefined,
+    isUniform: boolean | undefined,
+    uniformBlockId: number | undefined,
+    light_array?: Uint8Array,
+    scheduleRemesh = true,
+  ): void {
+    if (isUniform && typeof uniformBlockId === "number") {
+      this._isUniform = true;
+      this._uniformBlockId = uniformBlockId;
+      this._block_array = null;
+      this._palette = null;
+    } else if (palette && blocks instanceof Uint8Array) {
+      this._isUniform = false;
+      this._uniformBlockId = 0;
+      this._palette = palette;
+      this._block_array = blocks;
+    } else if (blocks) {
+      this._isUniform = false;
+      this._uniformBlockId = 0;
+      this._palette = null;
+      this._block_array = blocks;
+    } else {
+      // Fallback to uniform air if data is missing/corrupt
+      this._isUniform = true;
+      this._uniformBlockId = 0;
+      this._block_array = null;
+      this._palette = null;
+    }
+
+    if (light_array) {
+      this.light_array = light_array;
+    } else {
+      this.initializeSunlight();
+    }
+
+    if (scheduleRemesh) {
+      this.scheduleRemesh();
+      this.getNeighbor(-1, 0, 0)?.scheduleRemesh();
+      this.getNeighbor(0, 0, -1)?.scheduleRemesh();
+      this.getNeighbor(0, -1, 0)?.scheduleRemesh();
+      this.getNeighbor(1, 0, 0)?.scheduleRemesh();
+      this.getNeighbor(0, 0, 1)?.scheduleRemesh();
+      this.getNeighbor(0, 1, 0)?.scheduleRemesh();
+    }
+    this.isLoaded = true;
+    this.isTerrainScheduled = false;
+  }
+
   public unload(): void {
     if (!this.isLoaded) {
       return;
@@ -111,7 +231,10 @@ export class Chunk {
       this.remeshTimeout = null;
     }
     // Keep the mesh, but discard the heavy block and light data arrays to save memory.
-    this.block_array = new Uint8Array(0);
+    this._block_array = null;
+    this._isUniform = true;
+    this._uniformBlockId = 0;
+    this._palette = null;
     this.light_array = new Uint8Array(0);
     this.isLoaded = false;
     this.isTerrainScheduled = false;
@@ -137,7 +260,7 @@ export class Chunk {
 
           if (worldY > terrainHeight) {
             const idx = x + y * CHUNK_SIZE + z * Chunk.SIZE2;
-            const blockId = this.block_array[idx];
+            const blockId = this.getBlock(x, y, z);
             if (blockId === 0) {
               this.light_array[idx] = 15 << Chunk.SKY_LIGHT_SHIFT;
               queue.push({ chunk: this, x, y, z, level: 15 });
@@ -188,7 +311,14 @@ export class Chunk {
     if (!this.isLoaded) {
       return 0; // Unloaded chunks are treated as air for physics and rendering checks.
     }
-    return this.block_array[
+    if (this._isUniform) {
+      return this._uniformBlockId;
+    }
+    if (this._palette) {
+      const index = localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2;
+      return this._palette[this.getNibble(index)];
+    }
+    return this._block_array![
       localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2
     ];
   }
@@ -205,16 +335,65 @@ export class Chunk {
       );
       return;
     }
-    const index = localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2;
-    if (index < 0 || index >= this.block_array.length) return;
 
-    const oldBlockId = this.block_array[index];
-    if (oldBlockId === blockId) return;
+    const index = localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2;
+    let oldBlockId = 0;
+
+    if (this._isUniform) {
+      oldBlockId = this._uniformBlockId;
+      if (oldBlockId === blockId) return;
+
+      // Expand Uniform -> Palette
+      this._isUniform = false;
+      this._palette = [this._uniformBlockId];
+      // If the new block is different, add it to palette
+      let newIndex = 0;
+      if (this._palette[0] !== blockId) {
+        this._palette.push(blockId);
+        newIndex = 1;
+      }
+
+      this._block_array = new Uint8Array(Chunk.SIZE3 / 2);
+      this._block_array.fill(0); // All blocks default to index 0 (old uniform id)
+      this.setNibble(index, newIndex);
+    } else if (this._palette) {
+      const paletteIndex = this.getNibble(index);
+      oldBlockId = this._palette[paletteIndex];
+      if (oldBlockId === blockId) return;
+
+      let newPaletteIndex = this._palette.indexOf(blockId);
+      if (newPaletteIndex === -1) {
+        if (this._palette.length < 16) {
+          // Add to palette
+          newPaletteIndex = this._palette.length;
+          this._palette.push(blockId);
+          this.setNibble(index, newPaletteIndex);
+        } else {
+          // Palette full -> Expand to Raw
+          const newArray = new Uint16Array(Chunk.SIZE3);
+          for (let i = 0; i < Chunk.SIZE3; i++) {
+            newArray[i] = this._palette[this.getNibble(i)];
+          }
+          newArray[index] = blockId;
+          this._block_array = newArray;
+          this._palette = null;
+        }
+      } else {
+        this.setNibble(index, newPaletteIndex);
+      }
+    } else {
+      // Raw Array: Upgrade to Uint16Array if needed
+      if (blockId > 255 && this._block_array instanceof Uint8Array) {
+        const newArray = new Uint16Array(this._block_array);
+        this._block_array = newArray;
+      }
+      oldBlockId = this._block_array![index];
+      if (oldBlockId === blockId) return;
+      this._block_array![index] = blockId;
+    }
 
     const oldBlockLight = this.getBlockLight(localX, localY, localZ);
     const oldSkyLight = this.getSkyLight(localX, localY, localZ);
-
-    this.block_array[index] = blockId;
 
     // Handle Block Light
     if (oldBlockLight > 0) {
@@ -612,7 +791,10 @@ export class Chunk {
     this.waterMeshData = null;
     this.glassMeshData = null;
     // Also clear data arrays and mark as unloaded for complete cleanup
-    this.block_array = new Uint8Array(0);
+    this._block_array = null;
+    this._isUniform = true;
+    this._uniformBlockId = 0;
+    this._palette = null;
     this.light_array = new Uint8Array(0);
     this.isLoaded = false;
     this.isTerrainScheduled = false;

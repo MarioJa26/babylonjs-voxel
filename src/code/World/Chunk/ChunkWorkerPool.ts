@@ -49,6 +49,7 @@ export class ChunkWorkerPool {
               data.light_array as Uint8Array,
             );
             // Save the newly generated chunk to the database
+            chunk.isModified = true;
             WorldStorage.saveChunk(chunk);
           }
         } else if (type === "distant-terrain-generated") {

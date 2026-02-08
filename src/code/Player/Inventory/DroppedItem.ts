@@ -35,7 +35,7 @@ export class DroppedItem implements IUsable {
 
     const concreteMat = MaterialFactory.createMaterialByFolder(
       Map1.mainScene,
-      item.materialFolder, // folder
+      item.materialFolder || "", // folder
       1, // uvScale
       ".png", // extension
       true, // diff

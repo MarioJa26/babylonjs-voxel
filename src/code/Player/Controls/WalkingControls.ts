@@ -12,10 +12,8 @@ import {
   getBlockBreakTime,
   getBlockInfo,
 } from "@/code/World/Texture/TextureDefinitions";
-import { BlockType } from "@/code/World/BlockType";
 import { Item } from "../Inventory/Item";
 import { DroppedItem } from "../Inventory/DroppedItem";
-import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
 
 export class WalkingControls implements IControls<PlayerVehicle> {
   public pressedKeys = new Set<string>();
@@ -327,7 +325,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
     worldItem.stackSize = 1;
     worldItem.itemId = blockId;
 
-    const droppedItem = new DroppedItem(worldItem, x + 0.5, y + 0.5, z + 0.5);
+    new DroppedItem(worldItem, x + 0.5, y + 0.5, z + 0.5);
 
     BlockBreakParticles.play(
       this.#player.playerVehicle.scene,

@@ -99,10 +99,10 @@ class ChunkWorkerMesher {
   }
 
   static generateMesh(data: {
-    block_array: Uint8Array;
+    block_array: Uint8Array | Uint16Array;
     chunk_size: number;
     light_array?: Uint8Array;
-    neighbors: (Uint8Array | undefined)[];
+    neighbors: (Uint8Array | Uint16Array | undefined)[];
     neighborLights?: (Uint8Array | undefined)[];
   }): {
     opaque: WorkerInternalMeshData;
@@ -120,6 +120,15 @@ class ChunkWorkerMesher {
       neighbors,
       neighborLights,
     } = data;
+
+    if (!block_array) {
+      return {
+        opaque: opaqueMeshData,
+        water: waterMeshData,
+        glass: glassMeshData,
+      };
+    }
+
     const size = chunk_size;
     const size2 = size * size;
 
@@ -592,6 +601,68 @@ const onMessageHandler = (event: MessageEvent) => {
 
   // --- Default Full Remesh ---
   if (type === "full-remesh") {
+    const { chunk_size } = event.data;
+    // Rehydrate block_array if uniform
+    if (
+      !event.data.block_array &&
+      typeof event.data.uniformBlockId === "number"
+    ) {
+      if (event.data.uniformBlockId > 255) {
+        event.data.block_array = new Uint16Array(chunk_size ** 3).fill(
+          event.data.uniformBlockId,
+        );
+      } else {
+        event.data.block_array = new Uint8Array(chunk_size ** 3).fill(
+          event.data.uniformBlockId,
+        );
+      }
+    } else if (event.data.palette && event.data.block_array) {
+      // Expand palette to raw array for meshing
+      const packed = event.data.block_array as Uint8Array;
+      const palette = event.data.palette as number[];
+      const expanded = palette.some((id) => id > 255)
+        ? new Uint16Array(chunk_size ** 3)
+        : new Uint8Array(chunk_size ** 3);
+      for (let i = 0; i < expanded.length; i++) {
+        const byteIndex = i >> 1;
+        const byte = packed[byteIndex];
+        const nibble = i & 1 ? (byte >> 4) & 0xf : byte & 0xf;
+        expanded[i] = palette[nibble];
+      }
+      event.data.block_array = expanded;
+    }
+
+    // Rehydrate neighbors if uniform
+    const { neighbors, neighborUniformIds, neighborPalettes } = event.data;
+    if (neighborUniformIds) {
+      for (let i = 0; i < neighbors.length; i++) {
+        if (!neighbors[i] && typeof neighborUniformIds[i] === "number") {
+          if (neighborUniformIds[i]! > 255) {
+            neighbors[i] = new Uint16Array(chunk_size ** 3).fill(
+              neighborUniformIds[i]!,
+            );
+          } else {
+            neighbors[i] = new Uint8Array(chunk_size ** 3).fill(
+              neighborUniformIds[i]!,
+            );
+          }
+        } else if (neighbors[i] && neighborPalettes && neighborPalettes[i]) {
+          const packed = neighbors[i]!;
+          const palette = neighborPalettes[i]!;
+          const expanded = palette.some((id: number) => id > 255)
+            ? new Uint16Array(chunk_size ** 3)
+            : new Uint8Array(chunk_size ** 3);
+          for (let j = 0; j < expanded.length; j++) {
+            const byteIndex = j >> 1;
+            const byte = packed[byteIndex];
+            const nibble = j & 1 ? (byte >> 4) & 0xf : byte & 0xf;
+            expanded[j] = palette[nibble];
+          }
+          neighbors[i] = expanded;
+        }
+      }
+    }
+
     const { opaque, water, glass } = ChunkWorkerMesher.generateMesh(event.data);
     // allow GC
     event.data.block_array = undefined;

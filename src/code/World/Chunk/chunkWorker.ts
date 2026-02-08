@@ -16,8 +16,10 @@ export class ChunkWorker {
   }
 
   public postFullRemesh(chunk: Chunk): void {
-    const neighbors: (Uint8Array | undefined)[] = [];
+    const neighbors: (Uint8Array | Uint16Array | null | undefined)[] = [];
     const neighborLights: (Uint8Array | undefined)[] = [];
+    const neighborUniformIds: (number | undefined)[] = [];
+    const neighborPalettes: (number[] | null | undefined)[] = [];
 
     for (let z = -1; z <= 1; z++) {
       for (let y = -1; y <= 1; y++) {
@@ -28,9 +30,15 @@ export class ChunkWorker {
           if (neighbor && neighbor.isLoaded) {
             neighbors.push(neighbor.block_array);
             neighborLights.push(neighbor.light_array);
+            neighborUniformIds.push(
+              neighbor.isUniform ? neighbor.uniformBlockId : undefined,
+            );
+            neighborPalettes.push(neighbor.palette);
           } else {
             neighbors.push(undefined);
             neighborLights.push(undefined);
+            neighborUniformIds.push(undefined);
+            neighborPalettes.push(undefined);
           }
         }
       }
@@ -40,10 +48,14 @@ export class ChunkWorker {
       type: "full-remesh",
       chunkId: chunk.id,
       block_array: chunk.block_array,
+      uniformBlockId: chunk.isUniform ? chunk.uniformBlockId : undefined,
+      palette: chunk.palette,
       light_array: chunk.light_array,
       chunk_size: Chunk.SIZE,
       neighbors,
       neighborLights,
+      neighborUniformIds,
+      neighborPalettes,
     });
   }
 
