@@ -1,5 +1,11 @@
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
-import { CACTUS, JUNGLE_TREE, OAK_TREE, PLAINS_TREE } from "./TreeDefinition";
+import {
+  BIG_OAK_TREE,
+  CACTUS,
+  JUNGLE_TREE,
+  OAK_TREE,
+  PLAINS_TREE,
+} from "./TreeDefinition";
 import { Biome, TreeDefinition } from "./BiomeTypes";
 
 //Default
@@ -9,7 +15,7 @@ const FOREST: Biome = {
   undergroundBlock: 19,
   stoneBlock: 1,
   canSpawnTrees: true,
-  treeDensity: 0.06,
+  treeDensity: 0.046,
   beachBlock: 3,
   seafloorBlock: 46,
   terrainScale: GenerationParams.TERRAIN_SCALE,
@@ -19,7 +25,7 @@ const FOREST: Biome = {
   terrainHeightAmplitude: 222,
   getTreeForBlock(blockId: number): TreeDefinition | null {
     if (blockId === this.topBlock) {
-      return OAK_TREE;
+      return BIG_OAK_TREE;
     }
     return null;
   },

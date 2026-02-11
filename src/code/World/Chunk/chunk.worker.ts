@@ -166,7 +166,7 @@ class ChunkWorkerMesher {
       z: number,
       fallback = 0,
     ): number => {
-      if (!light_array) return 15; // Default to full light if no array
+      if (!light_array) return 15 << 4; // Default to full skylight if no array
       if (x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size) {
         return light_array[x + y * size + z * size2];
       }
@@ -279,10 +279,12 @@ class ChunkWorkerMesher {
             ) {
               // Current block face is visible.
               // The light level of the face is determined by the block in front of it (the neighbor).
+              const currentLightPacked = getLight(bx, by, bz, 15 << 4);
               const lightPacked = getLight(
                 bx + direction[0],
                 by + direction[1],
                 bz + direction[2],
+                currentLightPacked,
               );
               // Calculate AO for the face (using the neighbor/air block coordinates)
               const packedAO = this.calculateAOPacked(

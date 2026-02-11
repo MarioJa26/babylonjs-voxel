@@ -159,6 +159,8 @@ export class Chunk {
     } else {
       this.initializeSunlight();
     }
+    this.isLoaded = true;
+    this.isTerrainScheduled = false; // Reset flag
     if (scheduleRemesh) {
       this.scheduleRemesh();
       this.getNeighbor(-1, 0, 0)?.scheduleRemesh();
@@ -168,8 +170,6 @@ export class Chunk {
       this.getNeighbor(0, 0, 1)?.scheduleRemesh();
       this.getNeighbor(0, 1, 0)?.scheduleRemesh();
     }
-    this.isLoaded = true;
-    this.isTerrainScheduled = false; // Reset flag
   }
 
   public loadFromStorage(
@@ -209,6 +209,8 @@ export class Chunk {
       this.initializeSunlight();
     }
 
+    this.isLoaded = true;
+    this.isTerrainScheduled = false;
     if (scheduleRemesh) {
       this.scheduleRemesh();
       this.getNeighbor(-1, 0, 0)?.scheduleRemesh();
@@ -218,8 +220,6 @@ export class Chunk {
       this.getNeighbor(0, 0, 1)?.scheduleRemesh();
       this.getNeighbor(0, 1, 0)?.scheduleRemesh();
     }
-    this.isLoaded = true;
-    this.isTerrainScheduled = false;
   }
 
   public unload(): void {
