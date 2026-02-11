@@ -319,8 +319,6 @@ export class WalkingControls implements IControls<PlayerVehicle> {
     const info = getBlockInfo(blockId);
     if (!info) return;
 
-    ChunkLoadingSystem.deleteBlock(x, y, z);
-
     const worldItem = Item.createById(blockId);
     worldItem.stackSize = 1;
     worldItem.itemId = blockId;
@@ -334,6 +332,8 @@ export class WalkingControls implements IControls<PlayerVehicle> {
     );
     this.#breakTimer = 0;
     Map1.updateCrackingState(null, 0);
+
+    ChunkLoadingSystem.deleteBlock(x, y, z);
   }
 
   public get controlledEntity(): PlayerVehicle {

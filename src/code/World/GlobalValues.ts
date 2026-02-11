@@ -5,7 +5,7 @@ export class GlobalValues {
   public static readonly CREATE_ATLAS = false;
 
   public static readonly INIT_CONNECTION = false;
-  public static readonly CACHE_TEXTURES = false;
+  public static readonly CACHE_TEXTURES = true;
   public static readonly TEXTURE_VERSION = 1;
 
   // When true, prevents chunks from being saved to IndexedDB. Useful for testing generation.

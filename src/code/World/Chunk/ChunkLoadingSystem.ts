@@ -72,6 +72,19 @@ export class ChunkLoadingSystem {
         }
       }
 
+      // Sort chunks by distance to prioritize loading closer chunks first
+      chunksToLoadFromDB.sort((a, b) => {
+        const distA =
+          (a.chunkX - chunkX) ** 2 +
+          (a.chunkY - chunkY) ** 2 +
+          (a.chunkZ - chunkZ) ** 2;
+        const distB =
+          (b.chunkX - chunkX) ** 2 +
+          (b.chunkY - chunkY) ** 2 +
+          (b.chunkZ - chunkZ) ** 2;
+        return distA - distB;
+      });
+
       // 4. Fire off a single batch DB load request
       const chunkIdsToLoad = chunksToLoadFromDB.map((chunk) => chunk.id);
       let loadedDataMap = new Map();

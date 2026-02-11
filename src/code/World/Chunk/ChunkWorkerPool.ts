@@ -21,6 +21,7 @@ export class ChunkWorkerPool {
   private terrainTaskQueue: Set<Chunk> = new Set();
   private distantTerrainTaskQueue: DistantTerrainTask[] = [];
   private idleWorkerIndices: number[] = [];
+  private meshResultQueue: FullMeshMessage[] = [];
 
   public onDistantTerrainGenerated:
     | ((data: DistantTerrainGeneratedMessage) => void)
@@ -33,12 +34,7 @@ export class ChunkWorkerPool {
         const { type } = data;
 
         if (type === "full-mesh") {
-          const { chunkId } = data;
-          const { opaque, water, glass } = data;
-          const chunk = Chunk.chunkInstances.get(chunkId);
-          if (chunk) {
-            ChunkMesher.createMeshFromData(chunk, { opaque, water, glass });
-          }
+          this.meshResultQueue.push(data);
         } else if (type === "terrain-generated") {
           const { chunkId } = data;
           // Apply generated block array to the chunk and schedule remesh
@@ -67,7 +63,25 @@ export class ChunkWorkerPool {
       this.workers.push(workerWrapper);
       this.idleWorkerIndices.push(i); // Initially all workers are idle.
     }
+
+    this.processMeshQueueLoop();
   }
+
+  private processMeshQueueLoop = () => {
+    const start = performance.now();
+    // Process meshes for up to 4ms per frame to prevent stutter
+    while (this.meshResultQueue.length > 0 && performance.now() - start < 4) {
+      const data = this.meshResultQueue.shift();
+      if (data) {
+        const { chunkId, opaque, water, glass } = data;
+        const chunk = Chunk.chunkInstances.get(chunkId);
+        if (chunk) {
+          ChunkMesher.createMeshFromData(chunk, { opaque, water, glass });
+        }
+      }
+    }
+    requestAnimationFrame(this.processMeshQueueLoop);
+  };
 
   public static getInstance(
     poolSize = navigator.hardwareConcurrency || 4,

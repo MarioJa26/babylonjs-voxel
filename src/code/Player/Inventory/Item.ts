@@ -60,10 +60,10 @@ export class Item implements IUsable {
     const item = new Item(
       textureDef.name,
       "Crafted Item",
-      textureDef.path,
-      -1,
-      -1,
       MaterialFactory.getTexturePathFromFolder(textureDef.path)!,
+      -1,
+      -1,
+      textureDef.path,
     );
     item.itemId = itemId;
 
