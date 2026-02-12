@@ -5,6 +5,7 @@
 </template>
 
 <script setup lang="ts">
+/* global document, HTMLCanvasElement */
 import { ref, onMounted, onBeforeUnmount } from "vue";
 import { TestScene } from "@/code/TestScene";
 

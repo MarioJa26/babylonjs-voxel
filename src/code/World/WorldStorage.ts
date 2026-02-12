@@ -1,7 +1,6 @@
 import { Chunk } from "./Chunk/Chunk";
 import { MeshData } from "./Chunk/DataStructures/MeshData";
 import { GlobalValues } from "./GlobalValues";
-import { SettingParams } from "./SettingParams";
 
 export type SavedChunkData = {
   blocks: Uint8Array | Uint16Array | null;
@@ -22,6 +21,43 @@ const CHUNK_STORE_NAME = "chunks";
 export class WorldStorage {
   private static db: IDBDatabase;
   private static initPromise: Promise<void> | null = null;
+  private static pendingChunkSaves = new Map<string, Promise<void>>();
+
+  private static trackPendingChunkSaves(
+    chunkIds: string[],
+    savePromise: Promise<void>,
+  ): Promise<void> {
+    const uniqueChunkIds = Array.from(new Set(chunkIds));
+    const trackedPromise = savePromise.finally(() => {
+      for (const id of uniqueChunkIds) {
+        if (this.pendingChunkSaves.get(id) === trackedPromise) {
+          this.pendingChunkSaves.delete(id);
+        }
+      }
+    });
+
+    for (const id of uniqueChunkIds) {
+      this.pendingChunkSaves.set(id, trackedPromise);
+    }
+
+    return trackedPromise;
+  }
+
+  private static async awaitPendingChunkSaves(
+    chunkIds: string[],
+  ): Promise<void> {
+    const pending: Promise<void>[] = [];
+    for (const id of new Set(chunkIds)) {
+      const savePromise = this.pendingChunkSaves.get(id);
+      if (savePromise) {
+        pending.push(savePromise);
+      }
+    }
+
+    if (pending.length > 0) {
+      await Promise.allSettled(pending);
+    }
+  }
 
   public static initialize(): Promise<void> {
     if (this.initPromise) {
@@ -99,12 +135,15 @@ export class WorldStorage {
       compressed: true,
     });
 
-    chunk.isModified = false; // Mark as saved
-
-    return new Promise((resolve, reject) => {
-      transaction.oncomplete = () => resolve();
+    const savePromise = new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => {
+        chunk.isModified = false; // Mark as saved
+        resolve();
+      };
       transaction.onerror = () => reject(transaction.error);
     });
+
+    return this.trackPendingChunkSaves([id], savePromise);
   }
 
   public static async saveChunks(chunks: Chunk[]): Promise<void> {
@@ -147,7 +186,8 @@ export class WorldStorage {
       }),
     );
 
-    return new Promise((resolve, reject) => {
+    const chunkIds = preparedData.map((data) => data.id);
+    const savePromise = new Promise<void>((resolve, reject) => {
       const transaction = this.db!.transaction(CHUNK_STORE_NAME, "readwrite");
       const store = transaction.objectStore(CHUNK_STORE_NAME);
 
@@ -164,6 +204,8 @@ export class WorldStorage {
         chunk.isModified = false; // Mark as saved
       }
     });
+
+    return this.trackPendingChunkSaves(chunkIds, savePromise);
   }
 
   public static async loadChunk(
@@ -177,6 +219,7 @@ export class WorldStorage {
       console.warn("DB not initialized, cannot load chunk.");
       return null;
     }
+    await this.awaitPendingChunkSaves([chunkId.toString()]);
     const transaction = this.db.transaction(CHUNK_STORE_NAME, "readonly");
     const store = transaction.objectStore(CHUNK_STORE_NAME);
     // The key is stored as a string, so we must use a string to retrieve it.
@@ -213,36 +256,33 @@ export class WorldStorage {
     if (!this.db || chunkIds.length === 0) {
       return loadedChunks;
     }
+    await this.awaitPendingChunkSaves(chunkIds.map((id) => id.toString()));
 
-    const BATCH_SIZE = SettingParams.RENDER_DISTANCE;
-    for (let i = 0; i < chunkIds.length; i += BATCH_SIZE) {
-      const batchIds = chunkIds.slice(i, i + BATCH_SIZE);
-      const transaction = this.db.transaction(CHUNK_STORE_NAME, "readonly");
-      const store = transaction.objectStore(CHUNK_STORE_NAME);
+    const transaction = this.db.transaction(CHUNK_STORE_NAME, "readonly");
+    const store = transaction.objectStore(CHUNK_STORE_NAME);
 
-      const promises = batchIds.map((chunkId) => {
-        return new Promise<void>((resolve, reject) => {
-          const request = store.get(chunkId.toString());
-          request.onsuccess = async () => {
-            if (request.result) {
-              const data = request.result;
-              if (data.compressed) {
-                if (data.blocks)
-                  data.blocks = await this.decompress(data.blocks);
-                if (data.light_array)
-                  data.light_array = (await this.decompress(
-                    data.light_array,
-                  )) as Uint8Array;
-              }
-              loadedChunks.set(chunkId, data);
+    const promises = chunkIds.map((chunkId) => {
+      return new Promise<void>((resolve, reject) => {
+        const request = store.get(chunkId.toString());
+        request.onsuccess = async () => {
+          if (request.result) {
+            const data = request.result;
+            if (data.compressed) {
+              if (data.blocks) data.blocks = await this.decompress(data.blocks);
+              if (data.light_array)
+                data.light_array = (await this.decompress(
+                  data.light_array,
+                )) as Uint8Array;
             }
-            resolve();
-          };
-          request.onerror = () => reject(request.error);
-        });
+            loadedChunks.set(chunkId, data);
+          }
+          resolve();
+        };
+        request.onerror = () => reject(request.error);
       });
-      await Promise.all(promises);
-    }
+    });
+    await Promise.all(promises);
+
     return loadedChunks;
   }
 

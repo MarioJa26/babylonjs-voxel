@@ -23,7 +23,7 @@ export class WorldEnvironment {
   private skybox!: Mesh;
 
   // Time cycle
-  private timeOfDay = 450000;
+  private timeOfDay = 120000;
   public timeScale = 0;
   public isPaused = false;
   public wetness = 0.2;
@@ -137,9 +137,9 @@ export class WorldEnvironment {
 
     const len = Math.hypot(sx, sy, sz) || 1;
     // GlobalValues.skyLightDirection is expected normalized
-    GlobalValues.skyLightDirection.x = sx / len;
-    GlobalValues.skyLightDirection.y = sy / len;
-    GlobalValues.skyLightDirection.z = sz / len;
+    GlobalValues.skyLightDirection.x = -sx / len;
+    GlobalValues.skyLightDirection.y = -sy / len;
+    GlobalValues.skyLightDirection.z = -sz / len;
 
     // Sun intensity driven by elevation (zero below horizon)
     const sunIntensity = Math.max(0.0, Math.sin(angle)); // 0..1, tune multiplier below

@@ -20,7 +20,12 @@ export class ChunkLoadingSystem {
    * Optionally removes chunks that are outside the radius.
    */
 
-  private static isUpdating = false;
+  private static loadQueue: Chunk[] = [];
+  private static unloadQueue: Chunk[] = [];
+  private static isProcessing = false;
+  private static readonly LOAD_BATCH_SIZE = SettingParams.RENDER_DISTANCE / 2;
+  private static readonly UNLOAD_BATCH_SIZE = SettingParams.RENDER_DISTANCE;
+
   public static async updateChunksAround(
     chunkX: number,
     chunkY: number,
@@ -29,123 +34,76 @@ export class ChunkLoadingSystem {
     renderDistance = SettingParams.RENDER_DISTANCE,
     verticalRadius = SettingParams.VERTICAL_RENDER_DISTANCE,
   ) {
-    if (this.isUpdating) return;
-    this.isUpdating = true;
+    if (!this.distantTerrain) {
+      this.distantTerrain = new DistantTerrain();
+    }
+    this.distantTerrain.update(chunkX, chunkZ);
 
-    try {
-      if (!this.distantTerrain) {
-        this.distantTerrain = new DistantTerrain();
+    // Optimization: Prune the load queue.
+    // If the player moved fast, remove chunks from the queue that are now out of range.
+    // This prevents "Loading then immediately Unloading" overhead.
+    this.loadQueue = this.loadQueue.filter((chunk) => {
+      const dist = Math.max(
+        Math.abs(chunk.chunkX - chunkX),
+        Math.abs(chunk.chunkZ - chunkZ),
+      );
+      if (dist > renderDistance) {
+        chunk.isTerrainScheduled = false; // Reset flag so it can be queued again if we return
+        return false;
       }
-      this.distantTerrain.update(chunkX, chunkZ);
+      return true;
+    });
 
-      const chunksToLoadFromDB: Chunk[] = [];
-      const chunksToGenerate: Chunk[] = [];
-
-      // 1. Collect all potential chunk coordinates and their distances
-      for (let y = chunkY - verticalRadius; y <= chunkY + verticalRadius; y++) {
-        if (
-          y >= SettingParams.MAX_CHUNK_HEIGHT ||
-          (playerY > GenerationParams.CHUNK_SIZE && y < 0)
-        )
-          continue;
+    // 1. Collect all potential chunk coordinates
+    for (let y = chunkY - verticalRadius; y <= chunkY + verticalRadius; y++) {
+      if (
+        y >= SettingParams.MAX_CHUNK_HEIGHT ||
+        (playerY > GenerationParams.CHUNK_SIZE && y < 0)
+      )
+        continue;
+      for (let x = chunkX - renderDistance; x <= chunkX + renderDistance; x++) {
         for (
-          let x = chunkX - renderDistance;
-          x <= chunkX + renderDistance;
-          x++
+          let z = chunkZ - renderDistance;
+          z <= chunkZ + renderDistance;
+          z++
         ) {
-          for (
-            let z = chunkZ - renderDistance;
-            z <= chunkZ + renderDistance;
-            z++
-          ) {
-            let chunk = Chunk.getChunk(x, y, z);
-            if (!chunk) {
-              chunk = new Chunk(x, y, z);
-            }
+          let chunk = Chunk.getChunk(x, y, z);
+          if (!chunk) {
+            chunk = new Chunk(x, y, z);
+          }
 
-            // Close chunk: Needs full terrain
-            if (!chunk.isLoaded && !chunk.isTerrainScheduled) {
-              chunksToLoadFromDB.push(chunk);
-              chunk.isTerrainScheduled = true;
-            }
+          // Close chunk: Needs full terrain
+          if (!chunk.isLoaded && !chunk.isTerrainScheduled) {
+            chunk.isTerrainScheduled = true;
+            this.loadQueue.push(chunk);
           }
         }
       }
+    }
 
-      // Sort chunks by distance to prioritize loading closer chunks first
-      chunksToLoadFromDB.sort((a, b) => {
-        const distA =
-          (a.chunkX - chunkX) ** 2 +
-          (a.chunkY - chunkY) ** 2 +
-          (a.chunkZ - chunkZ) ** 2;
-        const distB =
-          (b.chunkX - chunkX) ** 2 +
-          (b.chunkY - chunkY) ** 2 +
-          (b.chunkZ - chunkZ) ** 2;
-        return distA - distB;
-      });
+    // Sort chunks by distance to prioritize loading closer chunks first
+    this.loadQueue.sort((a, b) => {
+      const distA =
+        (a.chunkX - chunkX) ** 2 +
+        (a.chunkY - chunkY) ** 2 +
+        (a.chunkZ - chunkZ) ** 2;
+      const distB =
+        (b.chunkX - chunkX) ** 2 +
+        (b.chunkY - chunkY) ** 2 +
+        (b.chunkZ - chunkZ) ** 2;
+      return distA - distB;
+    });
 
-      // 4. Fire off a single batch DB load request
-      const chunkIdsToLoad = chunksToLoadFromDB.map((chunk) => chunk.id);
-      let loadedDataMap = new Map();
-      try {
-        loadedDataMap = await WorldStorage.loadChunks(chunkIdsToLoad);
-      } catch (e) {
-        console.warn("Failed to load chunks from storage", e);
-      }
+    // 2. Identify chunks to unload
+    this.queueUnloading(chunkX, chunkY, chunkZ, renderDistance, verticalRadius);
 
-      // 5. Process the results
-      for (const chunk of chunksToLoadFromDB) {
-        const savedData = loadedDataMap.get(chunk.id);
-        if (savedData) {
-          // Populate block data without triggering an automatic remesh
-          chunk.loadFromStorage(
-            savedData.blocks,
-            savedData.palette,
-            savedData.isUniform,
-            savedData.uniformBlockId,
-            savedData.light_array,
-            true,
-          );
-
-          // If we have saved mesh data, use it directly!
-          if (
-            savedData.opaqueMesh ||
-            savedData.waterMesh ||
-            savedData.glassMesh
-          ) {
-            ChunkMesher.createMeshFromData(chunk, {
-              opaque: savedData.opaqueMesh!,
-              water: savedData.waterMesh!,
-              glass: savedData.glassMesh!,
-            });
-          } else {
-            // If no mesh data, now we schedule a remesh
-            chunk.scheduleRemesh();
-          }
-        } else {
-          // Otherwise, add to generation queue
-          chunksToGenerate.push(chunk);
-        }
-      }
-
-      // 6. Enqueue chunks for generation
-      ChunkWorkerPool.getInstance().scheduleTerrainGenerationBatch(
-        chunksToGenerate,
-      );
-
-      this.handleUnloading(
-        chunkX,
-        chunkY,
-        chunkZ,
-        renderDistance,
-        verticalRadius,
-      );
-    } finally {
-      this.isUpdating = false;
+    // 3. Start processing if not already active
+    if (!this.isProcessing) {
+      this.processQueues();
     }
   }
-  private static async handleUnloading(
+
+  private static queueUnloading(
     chunkX: number,
     chunkY: number,
     chunkZ: number,
@@ -154,10 +112,10 @@ export class ChunkLoadingSystem {
   ) {
     const removeRadius =
       renderDistance + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER;
-    const chunksToSave: Chunk[] = [];
-    const chunksToRemove: Chunk[] = [];
 
     for (const chunk of Chunk.chunkInstances.values()) {
+      if (this.unloadQueue.includes(chunk)) continue;
+
       const { chunkX: cx, chunkY: cy, chunkZ: cz } = chunk;
       if (
         Math.abs(cx - chunkX) > removeRadius ||
@@ -165,27 +123,109 @@ export class ChunkLoadingSystem {
         Math.abs(cy - chunkY) >
           verticalRadius + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER
       ) {
-        chunksToRemove.push(chunk);
-        if (chunk.isModified) {
-          chunksToSave.push(chunk);
-        }
+        this.unloadQueue.push(chunk);
       }
     }
-
-    if (chunksToRemove.length === 0) return;
-
-    // Fire and forget - Don't await this inside the main loop
-    // Just catch errors to prevent crashes
-    WorldStorage.saveChunks(chunksToSave).catch((e) =>
-      console.error("Background save failed:", e),
-    );
-
-    for (const chunk of chunksToRemove) {
-      chunk.dispose();
-      chunk.isLoaded = false;
-      Chunk.chunkInstances.delete(chunk.id);
-    }
   }
+
+  private static async processQueues() {
+    if (this.isProcessing) return;
+    this.isProcessing = true;
+
+    const processLoop = async () => {
+      // --- Process Unload Batch ---
+      if (this.unloadQueue.length > 0) {
+        const batch = this.unloadQueue.splice(0, this.UNLOAD_BATCH_SIZE);
+        const chunksToSave: Chunk[] = [];
+
+        for (const chunk of batch) {
+          if (chunk.isModified) {
+            chunksToSave.push(chunk);
+          }
+        }
+
+        if (chunksToSave.length > 0) {
+          try {
+            await WorldStorage.saveChunks(chunksToSave);
+          } catch (e) {
+            console.error("Background save failed:", e);
+          }
+        }
+
+        for (const chunk of batch) {
+          chunk.dispose();
+          chunk.isLoaded = false;
+          Chunk.chunkInstances.delete(chunk.id);
+        }
+      }
+
+      // --- Process Load Batch ---
+      if (this.loadQueue.length > 0) {
+        const batch = this.loadQueue.splice(0, this.LOAD_BATCH_SIZE);
+        // Filter out chunks that might have been disposed (unloaded) while in queue
+        const validBatch = batch.filter((c) => c.isTerrainScheduled);
+
+        if (validBatch.length > 0) {
+          const chunkIdsToLoad = validBatch.map((chunk) => chunk.id);
+          const chunksToGenerate: Chunk[] = [];
+
+          try {
+            const loadedDataMap = await WorldStorage.loadChunks(chunkIdsToLoad);
+
+            for (const chunk of validBatch) {
+              // Double check if disposed during await
+              if (!chunk.isTerrainScheduled) continue;
+
+              const savedData = loadedDataMap.get(chunk.id);
+              if (savedData) {
+                chunk.loadFromStorage(
+                  savedData.blocks,
+                  savedData.palette,
+                  savedData.isUniform,
+                  savedData.uniformBlockId,
+                  savedData.light_array,
+                  true,
+                );
+
+                if (
+                  savedData.opaqueMesh ||
+                  savedData.waterMesh ||
+                  savedData.glassMesh
+                ) {
+                  ChunkMesher.createMeshFromData(chunk, {
+                    opaque: savedData.opaqueMesh ?? null,
+                    water: savedData.waterMesh ?? null,
+                    glass: savedData.glassMesh ?? null,
+                  });
+                } else {
+                  chunk.scheduleRemesh();
+                }
+              } else {
+                chunksToGenerate.push(chunk);
+              }
+            }
+
+            if (chunksToGenerate.length > 0) {
+              ChunkWorkerPool.getInstance().scheduleTerrainGenerationBatch(
+                chunksToGenerate,
+              );
+            }
+          } catch (e) {
+            console.warn("Failed to load chunks from storage", e);
+          }
+        }
+      }
+
+      if (this.loadQueue.length > 0 || this.unloadQueue.length > 0) {
+        requestAnimationFrame(processLoop);
+      } else {
+        this.isProcessing = false;
+      }
+    };
+
+    processLoop();
+  }
+
   public static deleteBlock(worldX: number, worldY: number, worldZ: number) {
     const chunkX = this.worldToChunkCoord(worldX);
     const chunkY = this.worldToChunkCoord(worldY);

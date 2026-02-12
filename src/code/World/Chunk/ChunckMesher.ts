@@ -253,18 +253,26 @@ export class ChunkMesher {
 
   public static createMeshFromData(
     chunk: Chunk,
-    meshData: { opaque: MeshData; water: MeshData; glass: MeshData },
+    meshData: {
+      opaque: MeshData | null;
+      water: MeshData | null;
+      glass: MeshData | null;
+    },
   ) {
+    const opaqueMesh = meshData.opaque;
+    const waterMesh = meshData.water;
+    const glassMesh = meshData.glass;
+
     // Cache the raw mesh data on the chunk instance for future saving
     // Optimization: Only keep raw data in memory if the chunk is modified and needs saving.
     if (chunk.isModified) {
       // Only cache if there is actual data to save to avoid holding empty objects
       chunk.opaqueMeshData =
-        meshData.opaque.positions.length > 0 ? meshData.opaque : null;
+        opaqueMesh && opaqueMesh.positions.length > 0 ? opaqueMesh : null;
       chunk.waterMeshData =
-        meshData.water?.positions.length > 0 ? meshData.water : null;
+        waterMesh && waterMesh.positions.length > 0 ? waterMesh : null;
       chunk.glassMeshData =
-        meshData.glass?.positions.length > 0 ? meshData.glass : null;
+        glassMesh && glassMesh.positions.length > 0 ? glassMesh : null;
     } else {
       // Only keep if actively being edited
       chunk.opaqueMeshData = null;
@@ -284,10 +292,10 @@ export class ChunkMesher {
     }
 
     // Handle opaque mesh
-    if (meshData.opaque.positions.length > 0) {
+    if (opaqueMesh && opaqueMesh.positions.length > 0) {
       chunk.mesh = this.buildMesh(
         chunk,
-        meshData.opaque,
+        opaqueMesh,
         "c_opaque",
         this.#atlasMaterial!,
       );
@@ -296,10 +304,10 @@ export class ChunkMesher {
     }
 
     // Handle water mesh
-    if (meshData.water?.positions.length > 0) {
+    if (waterMesh && waterMesh.positions.length > 0) {
       chunk.waterMesh = this.buildMesh(
         chunk,
-        meshData.water,
+        waterMesh,
         "c_water",
         this.#waterMaterial!,
       );
@@ -309,10 +317,10 @@ export class ChunkMesher {
     }
 
     // Handle glass mesh
-    if (meshData.glass?.positions.length > 0) {
+    if (glassMesh && glassMesh.positions.length > 0) {
       chunk.glassMesh = this.buildMesh(
         chunk,
-        meshData.glass,
+        glassMesh,
         "c_glass",
         this.#glassMaterial!,
       );

@@ -7,7 +7,6 @@ import {
   TerrainGeneratedMessage,
   DistantTerrainGeneratedMessage,
 } from "./DataStructures/WorkerMessageType";
-import { WorldStorage } from "../WorldStorage";
 
 export type WorkerMessageData =
   | FullMeshMessage
@@ -44,9 +43,8 @@ export class ChunkWorkerPool {
               data.block_array as Uint8Array,
               data.light_array as Uint8Array,
             );
-            // Save the newly generated chunk to the database
+            // Mark dirty and defer persistence to unload to avoid write stutter.
             chunk.isModified = true;
-            WorldStorage.saveChunk(chunk);
           }
         } else if (type === "distant-terrain-generated") {
           this.onDistantTerrainGenerated?.(

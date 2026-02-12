@@ -46,7 +46,6 @@ export class DroppedItem implements IUsable {
     midMat.diffuseTexture = concreteMat.diffuseTexture;
     midMat.bumpTexture = concreteMat.bumpTexture;
     midMat.ambientTexture = concreteMat.ambientTexture;
-
     this.#boxMesh.material = midMat;
 
     this.#boxMesh.renderingGroupId = 1;

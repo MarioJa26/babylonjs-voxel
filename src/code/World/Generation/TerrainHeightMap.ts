@@ -69,7 +69,7 @@ export class TerrainHeightMap {
       { t: 0.3, v: 1 },
 
       { t: 0.4, v: 10 },
-      /*
+
       { t: 0.5, v: 90 },
 
       { t: 0.6, v: 150 },
@@ -78,9 +78,8 @@ export class TerrainHeightMap {
       { t: 0.8, v: 340 },
       { t: 0.9, v: 400 },
       { t: 0.98, v: 500 },
-*/
 
-      { t: 0.8, v: 340 },
+      //  { t: 0.8, v: 340 },
       {
         t: 1.0,
         v: GenerationParams.CHUNK_SIZE * SettingParams.MAX_CHUNK_HEIGHT,
