@@ -17,10 +17,12 @@ export class ChunkWorkerPool {
   private static instance: ChunkWorkerPool;
   private workers: ChunkWorker[] = [];
   private taskQueue: Chunk[] = [];
+  private pendingRemeshQueue: Map<Chunk, boolean> = new Map();
   private terrainTaskQueue: Set<Chunk> = new Set();
   private distantTerrainTaskQueue: DistantTerrainTask[] = [];
   private idleWorkerIndices: number[] = [];
   private meshResultQueue: FullMeshMessage[] = [];
+  private remeshFlushScheduled = false;
 
   public onDistantTerrainGenerated:
     | ((data: DistantTerrainGeneratedMessage) => void)
@@ -66,7 +68,21 @@ export class ChunkWorkerPool {
               light = new Uint8Array(shared);
             }
 
-            chunk.populate(blocks, palette, isUniform, uniformBlockId, light);
+            chunk.populate(
+              blocks,
+              palette,
+              isUniform,
+              uniformBlockId,
+              light,
+              false,
+            );
+            this.scheduleRemesh(chunk);
+            this.scheduleRemesh(chunk.getNeighbor(-1, 0, 0));
+            this.scheduleRemesh(chunk.getNeighbor(0, 0, -1));
+            this.scheduleRemesh(chunk.getNeighbor(0, -1, 0));
+            this.scheduleRemesh(chunk.getNeighbor(1, 0, 0));
+            this.scheduleRemesh(chunk.getNeighbor(0, 0, 1));
+            this.scheduleRemesh(chunk.getNeighbor(0, 1, 0));
             // Mark dirty and defer persistence to unload to avoid write stutter.
             chunk.isModified = true;
           }
@@ -118,18 +134,48 @@ export class ChunkWorkerPool {
   }
 
   // existing remesh scheduling
-  public scheduleRemesh(chunk: Chunk, priority = false) {
-    const index = this.taskQueue.indexOf(chunk);
-    if (priority) {
-      if (index !== -1) {
-        this.taskQueue.splice(index, 1);
-      }
-      this.taskQueue.unshift(chunk);
-    } else {
-      if (index === -1) {
+  public scheduleRemesh(chunk: Chunk | undefined, priority = false) {
+    if (!chunk || !chunk.isLoaded) {
+      return;
+    }
+
+    const existingPriority = this.pendingRemeshQueue.get(chunk) ?? false;
+    this.pendingRemeshQueue.set(chunk, existingPriority || priority);
+    this.scheduleRemeshFlush();
+  }
+
+  private scheduleRemeshFlush() {
+    if (this.remeshFlushScheduled) {
+      return;
+    }
+    this.remeshFlushScheduled = true;
+    requestAnimationFrame(() => {
+      this.remeshFlushScheduled = false;
+      this.flushPendingRemeshQueue();
+    });
+  }
+
+  private flushPendingRemeshQueue() {
+    if (this.pendingRemeshQueue.size === 0) {
+      return;
+    }
+
+    const pending = Array.from(this.pendingRemeshQueue.entries());
+    this.pendingRemeshQueue.clear();
+
+    for (const [chunk, priority] of pending) {
+      if (!chunk.isLoaded) continue;
+      const index = this.taskQueue.indexOf(chunk);
+      if (priority) {
+        if (index !== -1) {
+          this.taskQueue.splice(index, 1);
+        }
+        this.taskQueue.unshift(chunk);
+      } else if (index === -1) {
         this.taskQueue.push(chunk);
       }
     }
+
     this.processQueue();
   }
 

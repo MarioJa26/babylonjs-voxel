@@ -4,7 +4,7 @@ import { GlobalValues } from "./GlobalValues";
 
 export type SavedChunkData = {
   blocks: Uint8Array | Uint16Array | null;
-  palette?: number[] | null;
+  palette?: Uint16Array | null;
   uniformBlockId?: number;
   isUniform?: boolean;
   light_array?: Uint8Array;
@@ -227,17 +227,17 @@ export class WorldStorage {
 
     return new Promise((resolve, reject) => {
       request.onsuccess = async () => {
-        if (request.result) {
-          const data = request.result;
-          if (data.compressed) {
-            if (data.blocks) data.blocks = await this.decompress(data.blocks);
-            if (data.light_array)
-              data.light_array = (await this.decompress(
-                data.light_array,
-              )) as Uint8Array;
-          }
-          resolve(data);
-        } else {
+          if (request.result) {
+            const data = request.result;
+            if (data.compressed) {
+              if (data.blocks) data.blocks = await this.decompress(data.blocks);
+              if (data.light_array)
+                data.light_array = (await this.decompress(
+                  data.light_array,
+                )) as Uint8Array;
+            }
+            resolve(data);
+          } else {
           resolve(null); // Chunk not found
         }
       };

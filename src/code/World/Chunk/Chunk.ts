@@ -22,8 +22,8 @@ export class Chunk {
   public isLoaded = false;
   public isTerrainScheduled = false;
   public readonly id: bigint;
-  private remeshTimeout: number | null = null;
-  private isHighPriorityRemesh = false;
+  private remeshQueued = false;
+  private remeshQueuedPriority = false;
 
   public static onRequestRemesh:
     | ((chunk: Chunk, priority: boolean) => void)
@@ -32,7 +32,7 @@ export class Chunk {
   private _block_array: Uint8Array | Uint16Array | null = null;
   private _isUniform = true;
   private _uniformBlockId = 0;
-  private _palette: number[] | null = null;
+  private _palette: Uint16Array | null = null;
 
   #chunkY: number;
   #chunkX: number;
@@ -65,7 +65,7 @@ export class Chunk {
     return this._block_array;
   }
 
-  get palette(): number[] | null {
+  get palette(): Uint16Array | null {
     return this._palette;
   }
 
@@ -111,7 +111,7 @@ export class Chunk {
 
   public populate(
     blocks: Uint8Array | Uint16Array | null,
-    palette: number[] | null,
+    palette: Uint16Array | null,
     isUniform: boolean,
     uniformBlockId: number,
     light_array?: Uint8Array,
@@ -142,7 +142,7 @@ export class Chunk {
 
   public loadFromStorage(
     blocks: Uint8Array | Uint16Array | null,
-    palette: number[] | null | undefined,
+    palette: Uint16Array | null | undefined,
     isUniform: boolean | undefined,
     uniformBlockId: number | undefined,
     light_array?: Uint8Array,
@@ -193,10 +193,6 @@ export class Chunk {
   public unload(): void {
     if (!this.isLoaded) {
       return;
-    }
-    if (this.remeshTimeout !== null) {
-      clearTimeout(this.remeshTimeout);
-      this.remeshTimeout = null;
     }
     // Keep the mesh, but discard the heavy block and light data arrays to save memory.
     this._block_array = null;
@@ -313,11 +309,14 @@ export class Chunk {
 
       // Expand Uniform -> Palette
       this._isUniform = false;
-      this._palette = [this._uniformBlockId];
+      this._palette = new Uint16Array([this._uniformBlockId]);
       // If the new block is different, add it to palette
       let newIndex = 0;
       if (this._palette[0] !== blockId) {
-        this._palette.push(blockId);
+        const expandedPalette = new Uint16Array(2);
+        expandedPalette[0] = this._palette[0];
+        expandedPalette[1] = blockId;
+        this._palette = expandedPalette;
         newIndex = 1;
       }
 
@@ -336,7 +335,10 @@ export class Chunk {
         if (this._palette.length < 16) {
           // Add to palette
           newPaletteIndex = this._palette.length;
-          this._palette.push(blockId);
+          const expandedPalette = new Uint16Array(this._palette.length + 1);
+          expandedPalette.set(this._palette);
+          expandedPalette[newPaletteIndex] = blockId;
+          this._palette = expandedPalette;
           this.setNibble(index, newPaletteIndex);
         } else {
           // Palette full -> Expand to Raw
@@ -431,7 +433,6 @@ export class Chunk {
     if (this.light_array[idx] !== level) {
       this.light_array[idx] = level;
       this.isModified = true;
-      this.scheduleRemesh();
     }
   }
 
@@ -702,18 +703,19 @@ export class Chunk {
     }
     this.isDirty = true;
     if (priority) {
-      this.isHighPriorityRemesh = true;
+      this.remeshQueuedPriority = true;
     }
-    if (this.remeshTimeout !== null) {
+    if (this.remeshQueued) {
       return;
     }
 
-    this.remeshTimeout = setTimeout(() => {
-      Chunk.onRequestRemesh?.(this, this.isHighPriorityRemesh);
-      this.isDirty = false;
-      this.isHighPriorityRemesh = false;
-      this.remeshTimeout = null;
-    }, 0) as unknown as number;
+    this.remeshQueued = true;
+    requestAnimationFrame(() => {
+      this.remeshQueued = false;
+      const queuedPriority = this.remeshQueuedPriority;
+      this.remeshQueuedPriority = false;
+      Chunk.onRequestRemesh?.(this, queuedPriority);
+    });
   }
 
   get chunkX(): number {

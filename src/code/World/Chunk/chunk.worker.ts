@@ -39,6 +39,12 @@ const TRANSPARENT_FLAG = 1 << 12;
 const BACKFACE_FLAG = 1 << 13;
 
 class ChunkWorkerMesher {
+  private static toCompactNeighborIndex(fullIndex: number): number {
+    // Full index is in a 3x3x3 cube (0..26) with center at 13.
+    // Remesh payload omits center, so compact index is 0..25.
+    return fullIndex > 13 ? fullIndex - 1 : fullIndex;
+  }
+
   private static createEmptyMeshData(): WorkerInternalMeshData {
     return {
       positions: new ResizableTypedArray(Uint8Array),
@@ -152,8 +158,8 @@ class ChunkWorkerMesher {
 
       // Map -1,0,1 to 0,1,2 for array indexing
       // Index = (dx+1) + (dy+1)*3 + (dz+1)*9
-      const neighborIndex = dx + 1 + (dy + 1) * 3 + (dz + 1) * 9;
-      const neighbor = neighbors[neighborIndex];
+      const fullNeighborIndex = dx + 1 + (dy + 1) * 3 + (dz + 1) * 9;
+      const neighbor = neighbors[this.toCompactNeighborIndex(fullNeighborIndex)];
 
       if (!neighbor) return fallback;
 
@@ -179,9 +185,9 @@ class ChunkWorkerMesher {
       const dy = y < 0 ? -1 : y >= size ? 1 : 0;
       const dz = z < 0 ? -1 : z >= size ? 1 : 0;
 
-      const neighborIndex = dx + 1 + (dy + 1) * 3 + (dz + 1) * 9;
+      const fullNeighborIndex = dx + 1 + (dy + 1) * 3 + (dz + 1) * 9;
       const neighbor = neighborLights
-        ? neighborLights[neighborIndex]
+        ? neighborLights[this.toCompactNeighborIndex(fullNeighborIndex)]
         : undefined;
 
       if (!neighbor) return fallback;
@@ -543,7 +549,20 @@ class ChunkWorkerMesher {
     }
 
     // positions
-    meshData.positions.push(x1, y1, z1, x2, y2, z2, x3, y3, z3, x4, y4, z4);
+    meshData.positions.push12(
+      x1,
+      y1,
+      z1,
+      x2,
+      y2,
+      z2,
+      x3,
+      y3,
+      z3,
+      x4,
+      y4,
+      z4,
+    );
 
     // Unpack AO
     const ao0 = packedAO & 3;
@@ -552,17 +571,17 @@ class ChunkWorkerMesher {
     const ao3 = (packedAO >> 6) & 3;
 
     // 1. Push the four correct AO values for the four vertices.
-    meshData.ao.push(ao0, ao1, ao2, ao3);
+    meshData.ao.push4(ao0, ao1, ao2, ao3);
 
     // Push light values (flat shading for the quad)
-    meshData.light.push(lightLevel, lightLevel, lightLevel, lightLevel);
+    meshData.light.push4(lightLevel, lightLevel, lightLevel, lightLevel);
 
     // normal
     // We can assume normal is Int8Array(3)
     const nx = normal[0],
       ny = normal[1],
       nz = normal[2];
-    meshData.normals.push(nx, ny, nz, nx, ny, nz, nx, ny, nz, nx, ny, nz);
+    meshData.normals.push12(nx, ny, nz, nx, ny, nz, nx, ny, nz, nx, ny, nz);
 
     // tile lookup and UV writes
     const tile = tex[faceName] ?? tex.all!;
@@ -627,11 +646,11 @@ class ChunkWorkerMesher {
     // Push UVs and Corner IDs
     const tx = tile[0];
     const ty = tile[1];
-    meshData.uvs2.push(tx, ty, tx, ty, tx, ty, tx, ty);
-    meshData.cornerIds.push(c0, c1, c2, c3);
+    meshData.uvs2.push8(tx, ty, tx, ty, tx, ty, tx, ty);
+    meshData.cornerIds.push4(c0, c1, c2, c3);
 
     if (swapUV) {
-      meshData.uvs3.push(
+      meshData.uvs3.push8(
         height,
         width,
         height,
@@ -642,7 +661,7 @@ class ChunkWorkerMesher {
         width,
       );
     } else {
-      meshData.uvs3.push(
+      meshData.uvs3.push8(
         width,
         height,
         width,
@@ -662,19 +681,43 @@ class ChunkWorkerMesher {
     // Standard quad indices (0,1,2) and (0,2,3)
     if (isBackFace) {
       if (flip) {
-        indices.push(indexOffset, indexOffset + 1, indexOffset + 3);
-        indices.push(indexOffset + 1, indexOffset + 2, indexOffset + 3);
+        indices.push6(
+          indexOffset,
+          indexOffset + 1,
+          indexOffset + 3,
+          indexOffset + 1,
+          indexOffset + 2,
+          indexOffset + 3,
+        );
       } else {
-        indices.push(indexOffset, indexOffset + 1, indexOffset + 2);
-        indices.push(indexOffset, indexOffset + 2, indexOffset + 3);
+        indices.push6(
+          indexOffset,
+          indexOffset + 1,
+          indexOffset + 2,
+          indexOffset,
+          indexOffset + 2,
+          indexOffset + 3,
+        );
       }
     } else {
       if (flip) {
-        indices.push(indexOffset, indexOffset + 3, indexOffset + 1);
-        indices.push(indexOffset + 1, indexOffset + 3, indexOffset + 2);
+        indices.push6(
+          indexOffset,
+          indexOffset + 3,
+          indexOffset + 1,
+          indexOffset + 1,
+          indexOffset + 3,
+          indexOffset + 2,
+        );
       } else {
-        indices.push(indexOffset, indexOffset + 2, indexOffset + 1);
-        indices.push(indexOffset, indexOffset + 3, indexOffset + 2);
+        indices.push6(
+          indexOffset,
+          indexOffset + 2,
+          indexOffset + 1,
+          indexOffset,
+          indexOffset + 3,
+          indexOffset + 2,
+        );
       }
     }
     meshData.indexOffset += 4;
@@ -684,7 +727,7 @@ class ChunkWorkerMesher {
 function compressBlocks(blocks: Uint8Array): {
   isUniform: boolean;
   uniformBlockId: number;
-  palette: number[] | null;
+  palette: Uint16Array | null;
   packedBlocks: Uint8Array | Uint16Array | null;
 } {
   const uniqueBlocks = new Set<number>();
@@ -701,7 +744,7 @@ function compressBlocks(blocks: Uint8Array): {
       packedBlocks: null,
     };
   } else if (uniqueBlocks.size <= 16) {
-    const palette = Array.from(uniqueBlocks);
+    const palette = Uint16Array.from(uniqueBlocks);
     const len = Math.ceil(blocks.length / 2);
     const buffer =
       typeof SharedArrayBuffer !== "undefined"
@@ -710,7 +753,9 @@ function compressBlocks(blocks: Uint8Array): {
     const packedArray = new Uint8Array(buffer);
 
     const paletteMap = new Map<number, number>();
-    palette.forEach((id, index) => paletteMap.set(id, index));
+    for (let i = 0; i < palette.length; i++) {
+      paletteMap.set(palette[i], i);
+    }
 
     for (let i = 0; i < blocks.length; i++) {
       const byteIndex = i >> 1;
@@ -742,6 +787,13 @@ function compressBlocks(blocks: Uint8Array): {
 // Top-level world generator instance for terrain requests
 const generator: WorldGenerator = new WorldGenerator(GenerationParams);
 
+function hasPaletteValuesAbove255(palette: ArrayLike<number>): boolean {
+  for (let i = 0; i < palette.length; i++) {
+    if (palette[i] > 255) return true;
+  }
+  return false;
+}
+
 const onMessageHandler = (event: MessageEvent) => {
   const { type } = event.data;
 
@@ -765,8 +817,8 @@ const onMessageHandler = (event: MessageEvent) => {
     } else if (event.data.palette && event.data.block_array) {
       // Expand palette to raw array for meshing
       const packed = event.data.block_array as Uint8Array;
-      const palette = event.data.palette as number[];
-      const expanded = palette.some((id) => id > 255)
+      const palette = event.data.palette as ArrayLike<number>;
+      const expanded = hasPaletteValuesAbove255(palette)
         ? new Uint16Array(chunk_size ** 3)
         : new Uint8Array(chunk_size ** 3);
       for (let i = 0; i < expanded.length; i++) {
@@ -794,8 +846,8 @@ const onMessageHandler = (event: MessageEvent) => {
           }
         } else if (neighbors[i] && neighborPalettes && neighborPalettes[i]) {
           const packed = neighbors[i]!;
-          const palette = neighborPalettes[i]!;
-          const expanded = palette.some((id: number) => id > 255)
+          const palette = neighborPalettes[i]! as ArrayLike<number>;
+          const expanded = hasPaletteValuesAbove255(palette)
             ? new Uint16Array(chunk_size ** 3)
             : new Uint8Array(chunk_size ** 3);
           for (let j = 0; j < expanded.length; j++) {

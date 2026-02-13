@@ -78,7 +78,7 @@ export class PlayerVehicle {
     this.#displayCapsule = this.createCharacterMesh(height, width);
 
     // Create physics controller
-    const startPosition = new Vector3(-7000, 165, 2400);
+    const startPosition = new Vector3(0, 165, 0);
     const radius = width * 0.5;
     const halfSegment = Math.max(0.01, (height - 2 * radius) * 0.5);
     const characterShape = new PhysicsShapeCapsule(
@@ -169,7 +169,10 @@ export class PlayerVehicle {
 
     const targetSubStep = 1 / 120;
     const maxSubSteps = 8;
-    const subSteps = Math.min(maxSubSteps, Math.ceil(deltaTime / targetSubStep));
+    const subSteps = Math.min(
+      maxSubSteps,
+      Math.ceil(deltaTime / targetSubStep),
+    );
     const stepDt = deltaTime / subSteps;
 
     for (let i = 0; i < subSteps; i++) {
@@ -550,7 +553,9 @@ export class PlayerVehicle {
     return true;
   }
 
-  private isValidSavedPosition(position: unknown): position is SavedPlayerPosition {
+  private isValidSavedPosition(
+    position: unknown,
+  ): position is SavedPlayerPosition {
     if (!position || typeof position !== "object") {
       return false;
     }
