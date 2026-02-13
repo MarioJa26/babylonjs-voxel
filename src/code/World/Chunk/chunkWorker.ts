@@ -1,26 +1,7 @@
 import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
 import { Chunk } from "./Chunk";
-import { FullMeshMessage } from "./DataStructures/WorkerMessageType";
-import { MeshData } from "./DataStructures/MeshData";
 
 export class ChunkWorker {
-  public static meshResultQueue: FullMeshMessage[] = [];
-
-  public static enqueueLoadedMesh(
-    chunkId: bigint,
-    opaque: MeshData | null,
-    water: MeshData | null,
-    glass: MeshData | null,
-  ) {
-    this.meshResultQueue.push({
-      type: "full-mesh",
-      chunkId: chunkId as any,
-      opaque: opaque as any,
-      water: water as any,
-      glass: glass as any,
-    });
-  }
-
   private worker: Worker;
 
   constructor(onMessage: (event: MessageEvent) => void) {

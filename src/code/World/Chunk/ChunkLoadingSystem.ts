@@ -1,6 +1,6 @@
 import { Chunk } from "./Chunk";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
-import { ChunkWorker } from "./chunkWorker";
+import { ChunkMesher } from "./ChunckMesher";
 import { SettingParams } from "../SettingParams";
 import { WorldStorage } from "../WorldStorage";
 import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
@@ -212,12 +212,11 @@ export class ChunkLoadingSystem {
                 );
 
                 if (hasMeshes) {
-                  ChunkWorker.enqueueLoadedMesh(
-                    chunk.id,
-                    savedData.opaqueMesh ?? null,
-                    savedData.waterMesh ?? null,
-                    savedData.glassMesh ?? null,
-                  );
+                  ChunkMesher.createMeshFromData(chunk, {
+                    opaque: savedData.opaqueMesh ?? null,
+                    water: savedData.waterMesh ?? null,
+                    glass: savedData.glassMesh ?? null,
+                  });
                 }
               } else {
                 chunksToGenerate.push(chunk);

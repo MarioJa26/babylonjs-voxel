@@ -5,8 +5,7 @@ import {
   Mesh,
   MeshBuilder,
   PhysicsCharacterController,
-  PhysicsShape,
-  PhysicsShapeType,
+  PhysicsShapeCapsule,
   Quaternion,
   Scene,
   StandardMaterial,
@@ -60,6 +59,7 @@ export class PlayerVehicle {
   private readonly sprintMultiplier = 1.6;
   private readonly penetrationRecoveryEps = 0.0001;
   private readonly airJumpForwardBoost = 5.5;
+  private readonly minFloorNormalDot = 0.55;
 
   constructor(scene: Scene, camera: PlayerCamera) {
     this.scene = scene;
@@ -79,9 +79,12 @@ export class PlayerVehicle {
 
     // Create physics controller
     const startPosition = new Vector3(-7000, 165, 2400);
-    const boxExtents = new Vector3(width, height, width);
-    const characterShape = new PhysicsShape(
-      { type: PhysicsShapeType.BOX, parameters: { extents: boxExtents } },
+    const radius = width * 0.5;
+    const halfSegment = Math.max(0.01, (height - 2 * radius) * 0.5);
+    const characterShape = new PhysicsShapeCapsule(
+      new Vector3(0, -halfSegment, 0),
+      new Vector3(0, halfSegment, 0),
+      radius,
       this.scene,
     );
 
@@ -90,8 +93,17 @@ export class PlayerVehicle {
       { shape: characterShape },
       this.scene,
     );
+    this.configureCharacterController();
 
     this.camera.target = startPosition;
+  }
+
+  private configureCharacterController(): void {
+    this.#characterController.keepDistance = 0.08;
+    this.#characterController.keepContactTolerance = 0.12;
+    this.#characterController.maxCastIterations = 20;
+    this.#characterController.penetrationRecoverySpeed = 3.0;
+    this.#characterController.maxSlopeCosine = Math.cos((50 * Math.PI) / 180);
   }
 
   private createCharacterMesh(height: number, width: number): Mesh {
@@ -145,20 +157,39 @@ export class PlayerVehicle {
         this.#characterController.setVelocity(desiredVelocity);
         return; // Skip normal physics integration
       }
-      const support = this.#characterController.checkSupport(
-        deltaTime,
-        new Vector3(0, -1, 0),
-      );
-
-      const desiredVelocity = this.calculateDesiredVelocity(deltaTime, support);
-
-      this.#characterController.setVelocity(desiredVelocity);
-      this.#characterController.integrate(
-        deltaTime,
-        support,
-        this.#characterGravity,
-      );
+      this.integrateMovement(deltaTime);
     }
+  }
+
+  private integrateMovement(deltaTime: number): void {
+    if (deltaTime <= 1 / 60) {
+      this.integrateMovementStep(deltaTime);
+      return;
+    }
+
+    const targetSubStep = 1 / 120;
+    const maxSubSteps = 8;
+    const subSteps = Math.min(maxSubSteps, Math.ceil(deltaTime / targetSubStep));
+    const stepDt = deltaTime / subSteps;
+
+    for (let i = 0; i < subSteps; i++) {
+      this.integrateMovementStep(stepDt);
+    }
+  }
+
+  private integrateMovementStep(deltaTime: number): void {
+    const support = this.#characterController.checkSupport(
+      deltaTime,
+      new Vector3(0, -1, 0),
+    );
+    const desiredVelocity = this.calculateDesiredVelocity(deltaTime, support);
+
+    this.#characterController.setVelocity(desiredVelocity);
+    this.#characterController.integrate(
+      deltaTime,
+      support,
+      this.#characterGravity,
+    );
   }
   private calculateFlyingVelocity(deltaTime: number): Vector3 {
     const upWorld = this.getUpVector();
@@ -307,6 +338,11 @@ export class PlayerVehicle {
   ): Vector3 {
     const upWorld = this.getUpVector();
     const forwardWorld = this.getForwardVector();
+    const surfaceNormal = supportInfo.averageSurfaceNormal;
+    const floorNormal =
+      surfaceNormal.dot(upWorld) >= this.minFloorNormalDot
+        ? surfaceNormal
+        : upWorld;
 
     // Calculate desired velocity based on input
     const desiredVelocity = this.getInputVelocity(this.onGroundSpeed);
@@ -343,7 +379,7 @@ export class PlayerVehicle {
     let outputVelocity = this.#characterController.calculateMovement(
       deltaTime,
       forwardWorld,
-      supportInfo.averageSurfaceNormal,
+      floorNormal,
       newVelocity,
       supportInfo.averageSurfaceVelocity,
       desiredVelocity,
@@ -353,6 +389,7 @@ export class PlayerVehicle {
     outputVelocity = this.applyHorizontalProjectionCorrection(
       outputVelocity,
       supportInfo,
+      upWorld,
     );
 
     return outputVelocity;
@@ -361,10 +398,14 @@ export class PlayerVehicle {
   private applyHorizontalProjectionCorrection(
     velocity: Vector3,
     supportInfo: CharacterSurfaceInfo,
+    upWorld: Vector3,
   ): Vector3 {
     // Remove surface velocity
     const v = velocity.subtract(supportInfo.averageSurfaceVelocity);
     const n = supportInfo.averageSurfaceNormal;
+    if (n.dot(upWorld) < this.minFloorNormalDot) {
+      return velocity;
+    }
 
     // Project onto tangent plane: v_tangent = v - (v·n)n
     const vDotN = v.dot(n);
