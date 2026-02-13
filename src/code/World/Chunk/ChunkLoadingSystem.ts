@@ -316,4 +316,28 @@ export class ChunkLoadingSystem {
   public static worldToBlockCoord(value: number): number {
     return ((Math.floor(value) % Chunk.SIZE) + Chunk.SIZE) % Chunk.SIZE;
   }
+
+  public static areChunksLoadedAround(
+    chunkX: number,
+    chunkY: number,
+    chunkZ: number,
+    horizontalRadius = 1,
+    verticalRadius = 0,
+  ): boolean {
+    for (let y = chunkY - verticalRadius; y <= chunkY + verticalRadius; y++) {
+      for (let x = chunkX - horizontalRadius; x <= chunkX + horizontalRadius; x++) {
+        for (
+          let z = chunkZ - horizontalRadius;
+          z <= chunkZ + horizontalRadius;
+          z++
+        ) {
+          const chunk = Chunk.getChunk(x, y, z);
+          if (!chunk || !chunk.isLoaded) {
+            return false;
+          }
+        }
+      }
+    }
+    return true;
+  }
 }

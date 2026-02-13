@@ -21,6 +21,13 @@ enum PlayerState {
   ON_GROUND = "ON_GROUND",
   START_JUMP = "START_JUMP",
 }
+
+export type SavedPlayerPosition = {
+  x: number;
+  y: number;
+  z: number;
+};
+
 export class PlayerVehicle {
   public scene: Scene;
   public camera: PlayerCamera;
@@ -37,6 +44,9 @@ export class PlayerVehicle {
   readonly #forwardLocalSpace = new Vector3(0, 0, 1);
   #characterOrientation = Quaternion.Identity();
   #characterGravity = new Vector3(0, -18, 0);
+  #movementLocked = false;
+  #lockedPosition: Vector3 | null = null;
+  readonly #zeroVelocity = Vector3.Zero();
   public mount!: Mount | null;
 
   private state: PlayerState = PlayerState.IN_AIR;
@@ -119,6 +129,14 @@ export class PlayerVehicle {
    * @param deltaTime Time since last frame in seconds
    */
   public update(deltaTime: number): void {
+    if (this.#movementLocked) {
+      if (this.#lockedPosition) {
+        this.#characterController.setPosition(this.#lockedPosition);
+      }
+      this.#characterController.setVelocity(this.#zeroVelocity);
+      return;
+    }
+
     if (this.mount) {
       this.mount.update();
     } else {
@@ -446,5 +464,61 @@ export class PlayerVehicle {
 
   setMount(mount: Mount): void {
     this.mount = mount;
+  }
+
+  public lockMovementAtCurrentPosition(): void {
+    this.#lockedPosition = this.#characterController.getPosition().clone();
+    this.#movementLocked = true;
+    this.#characterController.setPosition(this.#lockedPosition);
+    this.#characterController.setVelocity(this.#zeroVelocity);
+    this.camera.moveWithPlayer(this.#lockedPosition);
+    this.#displayCapsule.position.copyFrom(this.#lockedPosition);
+  }
+
+  public unlockMovement(): void {
+    this.#movementLocked = false;
+    this.#lockedPosition = null;
+    this.#characterController.setVelocity(this.#zeroVelocity);
+  }
+
+  public get isMovementLocked(): boolean {
+    return this.#movementLocked;
+  }
+
+  public getSavedPosition(): SavedPlayerPosition {
+    const position = this.#characterController.getPosition();
+    return {
+      x: position.x,
+      y: position.y,
+      z: position.z,
+    };
+  }
+
+  public restoreSavedPosition(position: unknown): boolean {
+    if (!this.isValidSavedPosition(position)) {
+      return false;
+    }
+
+    const restoredPosition = new Vector3(position.x, position.y, position.z);
+    this.#characterController.setPosition(restoredPosition);
+    if (this.#movementLocked) {
+      this.#lockedPosition = restoredPosition.clone();
+    }
+    this.camera.moveWithPlayer(restoredPosition);
+    this.#displayCapsule.position.copyFrom(restoredPosition);
+    return true;
+  }
+
+  private isValidSavedPosition(position: unknown): position is SavedPlayerPosition {
+    if (!position || typeof position !== "object") {
+      return false;
+    }
+
+    const candidate = position as Partial<SavedPlayerPosition>;
+    return (
+      Number.isFinite(candidate.x) &&
+      Number.isFinite(candidate.y) &&
+      Number.isFinite(candidate.z)
+    );
   }
 }

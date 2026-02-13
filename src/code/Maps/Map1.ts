@@ -16,13 +16,18 @@ import { TextureDefinitions } from "../World/Texture/TextureDefinitions";
 import { GenerationParams } from "../World/Generation/NoiseAndParameters/GenerationParams";
 import { SettingParams } from "../World/SettingParams";
 import { WorldStorage } from "../World/WorldStorage";
+import { PlayerLoadingGate } from "../Player/PlayerLoadingGate";
+import { PlayerStatePersistence } from "../Player/PlayerStatePersistence";
 import { WorldEnvironment } from "./WorldEnvironment";
 import { BlockBreakParticles } from "./BlockBreakParticles";
+
 export class Map1 {
   public static mainScene: Scene;
   public static environment: WorldEnvironment;
   #player: Player;
   #blockHighlightMesh!: Mesh;
+  #playerStatePersistence: PlayerStatePersistence | null = null;
+  #playerLoadingGate: PlayerLoadingGate | null = null;
 
   public readonly initPromise: Promise<void>;
 
@@ -30,6 +35,18 @@ export class Map1 {
     this.#player = player;
     Map1.mainScene = this.CreateScene(scene);
     Map1.environment = new WorldEnvironment(Map1.mainScene);
+    this.#playerStatePersistence = new PlayerStatePersistence(
+      Map1.mainScene,
+      this.#player,
+    );
+    this.#playerLoadingGate = new PlayerLoadingGate(Map1.mainScene, this.#player);
+
+    Map1.mainScene.onDisposeObservable.add(() => {
+      this.#playerStatePersistence?.dispose();
+      this.#playerStatePersistence = null;
+      this.#playerLoadingGate?.dispose();
+      this.#playerLoadingGate = null;
+    });
 
     this.initPromise = this.asyncInit().then(async () => {
       WorldStorage.initialize();
@@ -40,6 +57,7 @@ export class Map1 {
       this.updateBlockHighlight();
       Map1.environment.update();
       ChunkMesher.updateGlobalUniforms(scene.getFrameId());
+      this.#playerStatePersistence?.update();
     });
   }
 

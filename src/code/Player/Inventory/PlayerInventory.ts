@@ -10,7 +10,20 @@ import { AdvancedBoat } from "@/code/Entities/AdvancedBoat";
 import { Map1 } from "@/code/Maps/Map1";
 import { GenerationParams } from "@/code/World/Generation/NoiseAndParameters/GenerationParams";
 
+export type SavedInventoryItem = {
+  itemId: number;
+  stackSize: number;
+};
+
+export type SavedInventoryState = {
+  width: number;
+  height: number;
+  slots: (SavedInventoryItem | null)[][];
+};
+
 export class PlayerInventory {
+  private static readonly BOAT_ITEM_ID = 100;
+
   scene: Scene;
   #player: Player;
   #x: number;
@@ -55,14 +68,8 @@ export class PlayerInventory {
       // Only add the item if it fits within the inventory's height
       if (i < this.#inventorySlots.length) {
         const j = (textureDef.id - 1) % this.#inventorySlots[0].length;
-        const item = new Item(
-          textureDef.name,
-          "Description for " + textureDef.name,
-          MaterialFactory.getTexturePathFromFolder(textureDef.path)!,
-          i,
-          j,
-          textureDef.path,
-        );
+        const item = this.#createItemById(textureDef.id, i, j);
+        if (!item) continue;
         item.itemId = textureDef.id;
         item.stackSize = textureDef.id;
         this.#inventorySlots[i][j].item = item;
@@ -70,12 +77,39 @@ export class PlayerInventory {
       }
     }
 
+    const boat = this.#createItemById(PlayerInventory.BOAT_ITEM_ID, 9, 9);
+    if (!boat) return;
+    this.#inventorySlots[9][9].item = boat;
+    this.#inventorySlots[9][9].divItemSlot!.appendChild(boat.div);
+  }
+
+  #createItemById(itemId: number, row: number, col: number): Item | null {
+    if (itemId === PlayerInventory.BOAT_ITEM_ID) {
+      return this.#createBoatItem(row, col);
+    }
+
+    const textureDef = TextureDefinitions.find((t) => t.id === itemId);
+    if (!textureDef) return null;
+
+    const item = new Item(
+      textureDef.name,
+      "Description for " + textureDef.name,
+      MaterialFactory.getTexturePathFromFolder(textureDef.path)!,
+      row,
+      col,
+      textureDef.path,
+    );
+    item.itemId = textureDef.id;
+    return item;
+  }
+
+  #createBoatItem(row: number, col: number): Item {
     const boat = new Item(
       "Small Row Boat",
       "Boat",
       "/texture/other/boat-row-small.png",
-      9,
-      9,
+      row,
+      col,
     );
     boat.stackSize = 1;
     boat.use = (player: Player) => {
@@ -90,9 +124,102 @@ export class PlayerInventory {
       );
     };
     boat.name = "Boat";
-    boat.itemId = 100;
-    this.#inventorySlots[9][9].item = boat;
-    this.#inventorySlots[9][9].divItemSlot!.appendChild(boat.div);
+    boat.itemId = PlayerInventory.BOAT_ITEM_ID;
+    return boat;
+  }
+
+  public getSavedInventoryState(): SavedInventoryState {
+    const slots: (SavedInventoryItem | null)[][] = [];
+    for (let row = 0; row < this.#inventorySlots.length; row++) {
+      const savedRow: (SavedInventoryItem | null)[] = [];
+      for (let col = 0; col < this.#inventorySlots[row].length; col++) {
+        const item = this.#inventorySlots[row][col].item;
+        if (!item) {
+          savedRow.push(null);
+          continue;
+        }
+
+        savedRow.push({
+          itemId: item.itemId,
+          stackSize: item.stackSize,
+        });
+      }
+      slots.push(savedRow);
+    }
+
+    return {
+      width: this.#x,
+      height: this.#y,
+      slots,
+    };
+  }
+
+  public restoreSavedInventoryState(savedState: unknown): boolean {
+    if (!this.#isValidSavedInventoryState(savedState)) {
+      return false;
+    }
+
+    this.#clearInventory();
+
+    for (let row = 0; row < savedState.slots.length; row++) {
+      for (let col = 0; col < savedState.slots[row].length; col++) {
+        const savedItem = savedState.slots[row][col];
+        if (!savedItem) continue;
+
+        const item = this.#createItemById(savedItem.itemId, row, col);
+        if (!item) continue;
+        item.stackSize = savedItem.stackSize;
+        this.#inventorySlots[row][col].item = item;
+        this.#inventorySlots[row][col].divItemSlot.appendChild(item.div);
+      }
+    }
+
+    this.onInventoryChangedObservable.notifyObservers();
+    return true;
+  }
+
+  #clearInventory(): void {
+    for (const row of this.#inventorySlots) {
+      for (const slot of row) {
+        slot.clearItemSlots();
+      }
+    }
+  }
+
+  #isValidSavedInventoryState(
+    savedState: unknown,
+  ): savedState is SavedInventoryState {
+    if (!savedState || typeof savedState !== "object") return false;
+
+    const candidate = savedState as Partial<SavedInventoryState>;
+    if (
+      candidate.width !== this.#x ||
+      candidate.height !== this.#y ||
+      !Array.isArray(candidate.slots) ||
+      candidate.slots.length !== this.#y
+    ) {
+      return false;
+    }
+
+    for (const row of candidate.slots) {
+      if (!Array.isArray(row) || row.length !== this.#x) return false;
+      for (const slot of row) {
+        if (slot === null) continue;
+        if (!this.#isValidSavedInventoryItem(slot)) return false;
+      }
+    }
+
+    return true;
+  }
+
+  #isValidSavedInventoryItem(value: unknown): value is SavedInventoryItem {
+    if (!value || typeof value !== "object") return false;
+    const item = value as Partial<SavedInventoryItem>;
+    return (
+      Number.isInteger(item.itemId) &&
+      Number.isInteger(item.stackSize) &&
+      item.stackSize > 0
+    );
   }
 
   public addItem(item: Item): number {
