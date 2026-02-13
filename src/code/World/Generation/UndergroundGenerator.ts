@@ -8,7 +8,7 @@ export class UndergroundGenerator {
 
   constructor(
     params: GenerationParamsType,
-    caveNoise: ReturnType<typeof createNoise3D>
+    caveNoise: ReturnType<typeof createNoise3D>,
   ) {
     this.params = params;
     this.caveNoise = caveNoise;
@@ -23,8 +23,8 @@ export class UndergroundGenerator {
       y: number,
       z: number,
       id: number,
-      ow?: boolean
-    ) => void
+      ow?: boolean,
+    ) => void,
   ) {
     const { CHUNK_SIZE } = this.params;
     const chunkWorldX = chunkX * CHUNK_SIZE;
@@ -48,7 +48,7 @@ export class UndergroundGenerator {
       16, // Sample every 4 blocks
       CAVE_SCALE,
       0.67, // XZ skeew factor
-      this.caveNoise
+      this.caveNoise,
     );
 
     for (let localY = 0; localY < CHUNK_SIZE; localY++) {

@@ -36,13 +36,37 @@ export class ChunkWorkerPool {
           this.meshResultQueue.push(data);
         } else if (type === "terrain-generated") {
           const { chunkId } = data;
+          const {
+            block_array,
+            light_array,
+            isUniform,
+            uniformBlockId,
+            palette,
+          } = data as any;
           // Apply generated block array to the chunk and schedule remesh
           const chunk = Chunk.chunkInstances.get(chunkId);
           if (chunk) {
-            chunk.populate(
-              data.block_array as Uint8Array,
-              data.light_array as Uint8Array,
-            );
+            let blocks = block_array as Uint8Array | Uint16Array | null;
+            let light = light_array as Uint8Array;
+
+            // Ensure we are using SharedArrayBuffer to avoid copying during remesh
+            if (blocks && !(blocks.buffer instanceof SharedArrayBuffer)) {
+              const shared = new SharedArrayBuffer(blocks.byteLength);
+              if (blocks instanceof Uint16Array) {
+                new Uint16Array(shared).set(blocks);
+                blocks = new Uint16Array(shared);
+              } else {
+                new Uint8Array(shared).set(blocks);
+                blocks = new Uint8Array(shared);
+              }
+            }
+            if (!(light.buffer instanceof SharedArrayBuffer)) {
+              const shared = new SharedArrayBuffer(light.byteLength);
+              new Uint8Array(shared).set(light);
+              light = new Uint8Array(shared);
+            }
+
+            chunk.populate(blocks, palette, isUniform, uniformBlockId, light);
             // Mark dirty and defer persistence to unload to avoid write stutter.
             chunk.isModified = true;
           }

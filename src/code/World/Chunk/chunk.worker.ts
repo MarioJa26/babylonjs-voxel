@@ -34,6 +34,10 @@ for (const axis of [0, 1, 2]) {
   }
 }
 
+const BLOCK_ID_MASK = 0xfff; // 12 bits for block ID
+const TRANSPARENT_FLAG = 1 << 12;
+const BACKFACE_FLAG = 1 << 13;
+
 class ChunkWorkerMesher {
   private static createEmptyMeshData(): WorkerInternalMeshData {
     return {
@@ -189,27 +193,17 @@ class ChunkWorkerMesher {
       return neighbor[lx + ly * size + lz * size2];
     };
 
-    // Mask bit encoding:
-    // lower 16 bits: block ID (0 means empty)
-    // bit 16 (1 << 16): TRANSPARENT_FLAG
-    // bit 17 (1 << 17): BACKFACE_FLAG
-    // We repack to fit 8 bits of light (sky + block)
-    const BLOCK_ID_MASK = 0xfff; // 12 bits for block ID
-    const TRANSPARENT_FLAG = 1 << 12;
-    const BACKFACE_FLAG = 1 << 13;
-
-    const position = [0, 0, 0];
     const direction = [0, 0, 0];
+    // Reuseable mask allocated once
+    const mask = new Uint32Array(size * size);
 
     // single pass across axes -- generate masks containing encoded values
     for (let axis = 0; axis < 3; axis++) {
-      const u_axis = (axis + 1) % 3;
-      const v_axis = (axis + 2) % 3;
-
       direction[axis] = 1;
       direction[(axis + 1) % 3] = 0;
       direction[(axis + 2) % 3] = 0;
 
+      // Precompute face data for this axis to avoid lookups in the inner loop
       const faceNamePositive = this.getFaceName(direction, false);
       const faceNameNegative = this.getFaceName(direction, true);
 
@@ -220,205 +214,31 @@ class ChunkWorkerMesher {
         -direction[0] + 1 + (-direction[1] + 1) * 3 + (-direction[2] + 1) * 9;
       const normalNegative = FACE_DATA_CACHE[keyNeg].normal;
 
-      // reuseable mask
-      const mask = new Uint32Array(size * size);
-
       // sweep slices
-      for (position[axis] = 0; position[axis] < size; position[axis]++) {
-        let maskIndex = 0;
-
-        for (
-          position[v_axis] = 0;
-          position[v_axis] < size;
-          position[v_axis]++
-        ) {
-          for (
-            position[u_axis] = 0;
-            position[u_axis] < size;
-            position[u_axis]++
-          ) {
-            const bx = position[0];
-            const by = position[1];
-            const bz = position[2];
-
-            // sample current and neighbor; pass blockCurrent as fallback when sampling neighbor
-            const blockCurrent = block_array[bx + by * size + bz * size2];
-            const blockNeighbor = getBlock(
-              bx + direction[0],
-              by + direction[1],
-              bz + direction[2],
-              blockCurrent, // key: if neighbor missing, pretend same block to avoid border faces
-            );
-
-            // --- Face Culling Logic ---
-            if (blockCurrent === blockNeighbor) {
-              mask[maskIndex++] = 0;
-              continue;
-            }
-
-            const isCurrentTransparent =
-              WATER_BLOCKS.has(blockCurrent) || GLASS_BLOCKS.has(blockCurrent);
-            const isNeighborTransparent =
-              WATER_BLOCKS.has(blockNeighbor) ||
-              GLASS_BLOCKS.has(blockNeighbor);
-            const isCurrentSolid = blockCurrent !== 0;
-            const isNeighborSolid = blockNeighbor !== 0;
-
-            // Water and glass should not cull each other.
-            const isWaterNextToGlass =
-              (WATER_BLOCKS.has(blockCurrent) &&
-                GLASS_BLOCKS.has(blockNeighbor)) ||
-              (GLASS_BLOCKS.has(blockCurrent) &&
-                WATER_BLOCKS.has(blockNeighbor));
-
-            if (
-              isCurrentSolid &&
-              (!isNeighborSolid ||
-                (isNeighborTransparent && !isCurrentTransparent) ||
-                isWaterNextToGlass)
-            ) {
-              // Current block face is visible.
-              // The light level of the face is determined by the block in front of it (the neighbor).
-              const currentLightPacked = getLight(bx, by, bz, 15 << 4);
-              const lightPacked = getLight(
-                bx + direction[0],
-                by + direction[1],
-                bz + direction[2],
-                currentLightPacked,
-              );
-              // Calculate AO for the face (using the neighbor/air block coordinates)
-              const packedAO = this.calculateAOPacked(
-                bx + direction[0],
-                by + direction[1],
-                bz + direction[2],
-                u_axis,
-                v_axis,
-                getBlock,
-              );
-              const encCurrent =
-                (blockCurrent & BLOCK_ID_MASK) |
-                (isCurrentTransparent ? TRANSPARENT_FLAG : 0) |
-                (packedAO << 14) | // Pack AO into bits 14-21
-                (lightPacked << 22); // Pack 8-bit light into bits 22-29
-              mask[maskIndex++] = encCurrent;
-            } else if (
-              isNeighborSolid &&
-              (!isCurrentSolid ||
-                (isCurrentTransparent && !isNeighborTransparent) ||
-                isWaterNextToGlass)
-            ) {
-              // Neighbor block face is visible (so we draw a back-face).
-              // The light level is determined by the current block (which is air/transparent).
-              const lightPacked = getLight(bx, by, bz);
-              // For backface, the "air" block is the current block (bx, by, bz)
-              const packedAO = this.calculateAOPacked(
-                bx,
-                by,
-                bz,
-                u_axis,
-                v_axis,
-                getBlock,
-              );
-              const encNeighbor =
-                (blockNeighbor & BLOCK_ID_MASK) |
-                (isNeighborTransparent ? TRANSPARENT_FLAG : 0) |
-                (packedAO << 14) |
-                (lightPacked << 22);
-              mask[maskIndex++] = encNeighbor | BACKFACE_FLAG;
-            } else {
-              mask[maskIndex++] = 0;
-            }
-          }
-        }
-
-        maskIndex = 0;
-
-        // Optimized Greedy merge from mask
-        for (let v_coord = 0; v_coord < size; v_coord++) {
-          for (let u_coord = 0; u_coord < size; ) {
-            const currentMaskValue = mask[maskIndex];
-            if (currentMaskValue !== 0) {
-              // --- 1. Greedily find width ---
-              let width = 1;
-              while (
-                u_coord + width < size &&
-                mask[maskIndex + width] === currentMaskValue
-              ) {
-                width++;
-              }
-
-              // --- 2. Greedily find height ---
-              let height = 1;
-              while (v_coord + height < size) {
-                let canExtend = true;
-                // Check if the row below can be merged
-                for (let w = 0; w < width; w++) {
-                  if (
-                    mask[maskIndex + w + height * size] !== currentMaskValue
-                  ) {
-                    canExtend = false;
-                    break;
-                  }
-                }
-                if (!canExtend) break;
-                height++;
-              }
-
-              // --- 3. Add the quad and update the mask ---
-              const isBackFace = (currentMaskValue & BACKFACE_FLAG) !== 0;
-              const isTransparent = (currentMaskValue & TRANSPARENT_FLAG) !== 0;
-              const blockId = currentMaskValue & BLOCK_ID_MASK;
-              const faceName = isBackFace ? faceNameNegative : faceNamePositive;
-              const normal = isBackFace ? normalNegative : normalPositive;
-              const lightPacked = (currentMaskValue >>> 22) & 0xff;
-              const packedAO = (currentMaskValue >>> 14) & 0xff;
-
-              position[u_axis] = u_coord;
-              position[v_axis] = v_coord;
-
-              const quadStartPos = [position[0], position[1], position[2]];
-              quadStartPos[axis]++;
-
-              let targetMesh: WorkerInternalMeshData;
-              if (isTransparent) {
-                targetMesh = WATER_BLOCKS.has(blockId)
-                  ? waterMeshData
-                  : glassMeshData;
-              } else {
-                targetMesh = opaqueMeshData;
-              }
-
-              this.addQuad(
-                quadStartPos,
-                direction,
-                u_axis,
-                v_axis,
-                width,
-                height,
-                blockId,
-                isBackFace,
-                faceName,
-                normal,
-                lightPacked,
-                packedAO,
-                targetMesh,
-              );
-
-              // Zero out the mask for the area we just processed
-              for (let h = 0; h < height; h++) {
-                for (let w = 0; w < width; w++) {
-                  mask[maskIndex + w + h * size] = 0;
-                }
-              }
-
-              u_coord += width;
-              maskIndex += width; // Advance mask index by the width of the quad
-            } else {
-              u_coord++;
-              maskIndex++;
-            }
-          }
-        }
+      for (let slice = 0; slice < size; slice++) {
+        this.computeSliceMask(
+          size,
+          axis,
+          slice,
+          direction,
+          block_array,
+          getBlock,
+          getLight,
+          mask,
+        );
+        this.meshSlice(
+          size,
+          axis,
+          slice,
+          mask,
+          opaqueMeshData,
+          waterMeshData,
+          glassMeshData,
+          faceNamePositive,
+          faceNameNegative,
+          normalPositive,
+          normalNegative,
+        );
       }
     }
 
@@ -429,6 +249,233 @@ class ChunkWorkerMesher {
     };
   }
 
+  private static computeSliceMask(
+    size: number,
+    axis: number,
+    slice: number,
+    direction: number[],
+    block_array: Uint8Array | Uint16Array,
+    getBlock: (x: number, y: number, z: number, fallback?: number) => number,
+    getLight: (x: number, y: number, z: number, fallback?: number) => number,
+    mask: Uint32Array,
+  ) {
+    const u_axis = (axis + 1) % 3;
+    const v_axis = (axis + 2) % 3;
+    const size2 = size * size;
+    let maskIndex = 0;
+    const position = [0, 0, 0];
+    position[axis] = slice;
+
+    for (position[v_axis] = 0; position[v_axis] < size; position[v_axis]++) {
+      for (position[u_axis] = 0; position[u_axis] < size; position[u_axis]++) {
+        const bx = position[0];
+        const by = position[1];
+        const bz = position[2];
+
+        // sample current and neighbor; pass blockCurrent as fallback when sampling neighbor
+        const blockCurrent = block_array[bx + by * size + bz * size2];
+        const blockNeighbor = getBlock(
+          bx + direction[0],
+          by + direction[1],
+          bz + direction[2],
+          blockCurrent, // key: if neighbor missing, pretend same block to avoid border faces
+        );
+
+        // --- Face Culling Logic ---
+        if (blockCurrent === blockNeighbor) {
+          mask[maskIndex++] = 0;
+          continue;
+        }
+
+        const isCurrentTransparent =
+          WATER_BLOCKS.has(blockCurrent) || GLASS_BLOCKS.has(blockCurrent);
+        const isNeighborTransparent =
+          WATER_BLOCKS.has(blockNeighbor) || GLASS_BLOCKS.has(blockNeighbor);
+        const isCurrentSolid = blockCurrent !== 0;
+        const isNeighborSolid = blockNeighbor !== 0;
+
+        // Water and glass should not cull each other.
+        const isWaterNextToGlass =
+          (WATER_BLOCKS.has(blockCurrent) && GLASS_BLOCKS.has(blockNeighbor)) ||
+          (GLASS_BLOCKS.has(blockCurrent) && WATER_BLOCKS.has(blockNeighbor));
+
+        if (
+          isCurrentSolid &&
+          (!isNeighborSolid ||
+            (isNeighborTransparent && !isCurrentTransparent) ||
+            isWaterNextToGlass)
+        ) {
+          // Current block face is visible.
+          // The light level of the face is determined by the block in front of it (the neighbor).
+          const currentLightPacked = getLight(bx, by, bz, 15 << 4);
+          const lightPacked = getLight(
+            bx + direction[0],
+            by + direction[1],
+            bz + direction[2],
+            currentLightPacked,
+          );
+          // Calculate AO for the face (using the neighbor/air block coordinates)
+          const packedAO = this.calculateAOPacked(
+            bx + direction[0],
+            by + direction[1],
+            bz + direction[2],
+            u_axis,
+            v_axis,
+            getBlock,
+          );
+          const encCurrent =
+            (blockCurrent & BLOCK_ID_MASK) |
+            (isCurrentTransparent ? TRANSPARENT_FLAG : 0) |
+            (packedAO << 14) | // Pack AO into bits 14-21
+            (lightPacked << 22); // Pack 8-bit light into bits 22-29
+          mask[maskIndex++] = encCurrent;
+        } else if (
+          isNeighborSolid &&
+          (!isCurrentSolid ||
+            (isCurrentTransparent && !isNeighborTransparent) ||
+            isWaterNextToGlass)
+        ) {
+          // Neighbor block face is visible (so we draw a back-face).
+          // The light level is determined by the current block (which is air/transparent).
+          const lightPacked = getLight(bx, by, bz);
+          // For backface, the "air" block is the current block (bx, by, bz)
+          const packedAO = this.calculateAOPacked(
+            bx,
+            by,
+            bz,
+            u_axis,
+            v_axis,
+            getBlock,
+          );
+          const encNeighbor =
+            (blockNeighbor & BLOCK_ID_MASK) |
+            (isNeighborTransparent ? TRANSPARENT_FLAG : 0) |
+            (packedAO << 14) |
+            (lightPacked << 22);
+          mask[maskIndex++] = encNeighbor | BACKFACE_FLAG;
+        } else {
+          mask[maskIndex++] = 0;
+        }
+      }
+    }
+  }
+
+  private static meshSlice(
+    size: number,
+    axis: number,
+    slice: number,
+    mask: Uint32Array,
+    opaqueMeshData: WorkerInternalMeshData,
+    waterMeshData: WorkerInternalMeshData,
+    glassMeshData: WorkerInternalMeshData,
+    faceNamePositive: string,
+    faceNameNegative: string,
+    normalPositive: Int8Array,
+    normalNegative: Int8Array,
+  ) {
+    const u_axis = (axis + 1) % 3;
+    const v_axis = (axis + 2) % 3;
+    let maskIndex = 0;
+
+    // Optimized Greedy merge from mask
+    for (let v_coord = 0; v_coord < size; v_coord++) {
+      for (let u_coord = 0; u_coord < size; ) {
+        const currentMaskValue = mask[maskIndex];
+        if (currentMaskValue !== 0) {
+          // --- 1. Greedily find width ---
+          let width = 1;
+          while (
+            u_coord + width < size &&
+            mask[maskIndex + width] === currentMaskValue
+          ) {
+            width++;
+          }
+
+          // --- 2. Greedily find height ---
+          let height = 1;
+          while (v_coord + height < size) {
+            let canExtend = true;
+            // Check if the row below can be merged
+            for (let w = 0; w < width; w++) {
+              if (mask[maskIndex + w + height * size] !== currentMaskValue) {
+                canExtend = false;
+                break;
+              }
+            }
+            if (!canExtend) break;
+            height++;
+          }
+
+          // --- 3. Add the quad and update the mask ---
+          const isBackFace = (currentMaskValue & BACKFACE_FLAG) !== 0;
+          const isTransparent = (currentMaskValue & TRANSPARENT_FLAG) !== 0;
+          const blockId = currentMaskValue & BLOCK_ID_MASK;
+          const faceName = isBackFace ? faceNameNegative : faceNamePositive;
+          const normal = isBackFace ? normalNegative : normalPositive;
+          const lightPacked = (currentMaskValue >>> 22) & 0xff;
+          const packedAO = (currentMaskValue >>> 14) & 0xff;
+
+          let x = 0,
+            y = 0,
+            z = 0;
+          if (axis === 0) {
+            x = slice + 1;
+            y = u_coord;
+            z = v_coord;
+          } else if (axis === 1) {
+            x = v_coord;
+            y = slice + 1;
+            z = u_coord;
+          } else {
+            x = u_coord;
+            y = v_coord;
+            z = slice + 1;
+          }
+
+          let targetMesh: WorkerInternalMeshData;
+          if (isTransparent) {
+            targetMesh = WATER_BLOCKS.has(blockId)
+              ? waterMeshData
+              : glassMeshData;
+          } else {
+            targetMesh = opaqueMeshData;
+          }
+
+          this.addQuad(
+            x,
+            y,
+            z,
+            axis,
+            u_axis,
+            v_axis,
+            width,
+            height,
+            blockId,
+            isBackFace,
+            faceName,
+            normal,
+            lightPacked,
+            packedAO,
+            targetMesh,
+          );
+
+          // Zero out the mask for the area we just processed
+          for (let h = 0; h < height; h++) {
+            for (let w = 0; w < width; w++) {
+              mask[maskIndex + w + h * size] = 0;
+            }
+          }
+
+          u_coord += width;
+          maskIndex += width; // Advance mask index by the width of the quad
+        } else {
+          u_coord++;
+          maskIndex++;
+        }
+      }
+    }
+  }
+
   private static getFaceName(dir: number[], isBackFace: boolean): string {
     const [dx, dy, dz] = dir;
     if (dx === 1) return isBackFace ? "east" : "west";
@@ -437,36 +484,11 @@ class ChunkWorkerMesher {
     throw new Error("Invalid direction");
   }
 
-  private static pushTileUV(
-    cornerIds: ResizableTypedArray<Uint8Array>,
-    uvs2: ResizableTypedArray<Uint8Array>,
-    uvs3: ResizableTypedArray<Uint8Array>,
-    width: number,
-    height: number,
-    tx: number,
-    ty: number,
-    cIds: number[],
-    swapUV: boolean,
-  ) {
-    // uvs2: tile coordinates (tx, ty) repeated for 4 vertices
-    uvs2.push(tx, ty, tx, ty, tx, ty, tx, ty);
-
-    cornerIds.push(...cIds);
-
-    if (swapUV) {
-      uvs3.push(
-        ...[height, width, height, width, height, width, height, width],
-      );
-    } else {
-      uvs3.push(
-        ...[width, height, width, height, width, height, width, height],
-      );
-    }
-  }
-
   public static addQuad(
-    x: number[],
-    q: number[],
+    x: number,
+    y: number,
+    z: number,
+    axis: number,
     u: number,
     v: number,
     width: number,
@@ -482,91 +504,155 @@ class ChunkWorkerMesher {
     const tex = BlockTextures[blockId];
     if (!tex) return;
 
-    // create du/dv
-    const du = [0, 0, 0];
-    du[u] = width;
-    const dv = [0, 0, 0];
-    dv[v] = height;
+    // Compute four corner positions directly
+    const x1 = x,
+      y1 = y,
+      z1 = z;
+    let x2 = x,
+      y2 = y,
+      z2 = z;
+    let x3 = x,
+      y3 = y,
+      z3 = z;
+    let x4 = x,
+      y4 = y,
+      z4 = z;
 
-    // compute four corner positions
-    const p1 = [x[0], x[1], x[2]];
-    const p2 = [x[0] + du[0], x[1] + du[1], x[2] + du[2]];
-    const p3 = [
-      x[0] + du[0] + dv[0],
-      x[1] + du[1] + dv[1],
-      x[2] + du[2] + dv[2],
-    ];
-    const p4 = [x[0] + dv[0], x[1] + dv[1], x[2] + dv[2]];
+    // Apply width (u_axis)
+    if (u === 0) {
+      x2 += width;
+      x3 += width;
+    } else if (u === 1) {
+      y2 += width;
+      y3 += width;
+    } else {
+      z2 += width;
+      z3 += width;
+    }
+
+    // Apply height (v_axis)
+    if (v === 0) {
+      x3 += height;
+      x4 += height;
+    } else if (v === 1) {
+      y3 += height;
+      y4 += height;
+    } else {
+      z3 += height;
+      z4 += height;
+    }
 
     // positions
-    meshData.positions.push(...p1, ...p2, ...p3, ...p4);
+    meshData.positions.push(x1, y1, z1, x2, y2, z2, x3, y3, z3, x4, y4, z4);
 
     // Unpack AO
     const ao0 = packedAO & 3;
     const ao1 = (packedAO >> 2) & 3;
     const ao2 = (packedAO >> 4) & 3;
     const ao3 = (packedAO >> 6) & 3;
-    const aoValues = [ao0, ao1, ao2, ao3];
 
     // 1. Push the four correct AO values for the four vertices.
-    meshData.ao.push(...aoValues);
+    meshData.ao.push(ao0, ao1, ao2, ao3);
 
     // Push light values (flat shading for the quad)
     meshData.light.push(lightLevel, lightLevel, lightLevel, lightLevel);
 
     // normal
-    meshData.normals.push(...normal, ...normal, ...normal, ...normal);
+    // We can assume normal is Int8Array(3)
+    const nx = normal[0],
+      ny = normal[1],
+      nz = normal[2];
+    meshData.normals.push(nx, ny, nz, nx, ny, nz, nx, ny, nz, nx, ny, nz);
 
     // tile lookup and UV writes
     const tile = tex[faceName] ?? tex.all!;
 
     // Determine cornerIds and swapUV based on face direction to fix wrapping/mirroring
-    let cIds = [0, 1, 2, 3];
+    let c0 = 0,
+      c1 = 1,
+      c2 = 2,
+      c3 = 3;
     let swapUV = false;
 
-    if (q[0] === 1) {
+    if (axis === 0) {
       if (!isBackFace) {
         // East (+X)
-        cIds = [0, 3, 2, 1];
+        c0 = 0;
+        c1 = 3;
+        c2 = 2;
+        c3 = 1;
         swapUV = true;
       } else {
         // West (-X)
-        cIds = [1, 2, 3, 0];
+        c0 = 1;
+        c1 = 2;
+        c2 = 3;
+        c3 = 0;
         swapUV = true;
       }
-    } else if (q[1] === 1) {
+    } else if (axis === 1) {
       if (!isBackFace) {
         // Top (+Y)
-        cIds = [0, 3, 2, 1];
+        c0 = 0;
+        c1 = 3;
+        c2 = 2;
+        c3 = 1;
         swapUV = true;
       } else {
         // Bottom (-Y)
-        cIds = [3, 0, 1, 2];
+        c0 = 3;
+        c1 = 0;
+        c2 = 1;
+        c3 = 2;
         swapUV = true;
       }
-    } else if (q[2] === 1) {
+    } else if (axis === 2) {
       if (!isBackFace) {
         // South (+Z)
-        cIds = [1, 0, 3, 2];
+        c0 = 1;
+        c1 = 0;
+        c2 = 3;
+        c3 = 2;
         swapUV = false;
       } else {
         // North (-Z)
-        cIds = [0, 1, 2, 3];
+        c0 = 0;
+        c1 = 1;
+        c2 = 2;
+        c3 = 3;
         swapUV = false;
       }
     }
 
-    this.pushTileUV(
-      meshData.cornerIds,
-      meshData.uvs2,
-      meshData.uvs3,
-      width,
-      height,
-      tile[0],
-      tile[1],
-      cIds,
-      swapUV,
-    );
+    // Push UVs and Corner IDs
+    const tx = tile[0];
+    const ty = tile[1];
+    meshData.uvs2.push(tx, ty, tx, ty, tx, ty, tx, ty);
+    meshData.cornerIds.push(c0, c1, c2, c3);
+
+    if (swapUV) {
+      meshData.uvs3.push(
+        height,
+        width,
+        height,
+        width,
+        height,
+        width,
+        height,
+        width,
+      );
+    } else {
+      meshData.uvs3.push(
+        width,
+        height,
+        width,
+        height,
+        width,
+        height,
+        width,
+        height,
+      );
+    }
 
     const { indices, indexOffset } = meshData;
 
@@ -592,6 +678,64 @@ class ChunkWorkerMesher {
       }
     }
     meshData.indexOffset += 4;
+  }
+}
+
+function compressBlocks(blocks: Uint8Array): {
+  isUniform: boolean;
+  uniformBlockId: number;
+  palette: number[] | null;
+  packedBlocks: Uint8Array | Uint16Array | null;
+} {
+  const uniqueBlocks = new Set<number>();
+  for (let i = 0; i < blocks.length; i++) {
+    uniqueBlocks.add(blocks[i]);
+    if (uniqueBlocks.size > 16) break;
+  }
+
+  if (uniqueBlocks.size === 1) {
+    return {
+      isUniform: true,
+      uniformBlockId: uniqueBlocks.values().next().value || 0,
+      palette: null,
+      packedBlocks: null,
+    };
+  } else if (uniqueBlocks.size <= 16) {
+    const palette = Array.from(uniqueBlocks);
+    const len = Math.ceil(blocks.length / 2);
+    const buffer =
+      typeof SharedArrayBuffer !== "undefined"
+        ? new SharedArrayBuffer(len)
+        : new ArrayBuffer(len);
+    const packedArray = new Uint8Array(buffer);
+
+    const paletteMap = new Map<number, number>();
+    palette.forEach((id, index) => paletteMap.set(id, index));
+
+    for (let i = 0; i < blocks.length; i++) {
+      const byteIndex = i >> 1;
+      let byte = packedArray[byteIndex];
+      const nibble = paletteMap.get(blocks[i])!;
+      if (i & 1) {
+        byte = (byte & 0x0f) | ((nibble & 0xf) << 4);
+      } else {
+        byte = (byte & 0xf0) | (nibble & 0xf);
+      }
+      packedArray[byteIndex] = byte;
+    }
+    return {
+      isUniform: false,
+      uniformBlockId: 0,
+      palette,
+      packedBlocks: packedArray,
+    };
+  } else {
+    return {
+      isUniform: false,
+      uniformBlockId: 0,
+      palette: null,
+      packedBlocks: blocks,
+    };
   }
 }
 
@@ -684,12 +828,16 @@ const onMessageHandler = (event: MessageEvent) => {
       chunkZ,
     );
 
+    const { isUniform, uniformBlockId, palette, packedBlocks } =
+      compressBlocks(blocks);
+
     const transferables: Transferable[] = [];
     if (
-      typeof SharedArrayBuffer === "undefined" ||
-      !(blocks.buffer instanceof SharedArrayBuffer)
+      packedBlocks &&
+      (typeof SharedArrayBuffer === "undefined" ||
+        !(packedBlocks.buffer instanceof SharedArrayBuffer))
     ) {
-      transferables.push(blocks.buffer);
+      transferables.push(packedBlocks.buffer);
     }
     if (
       typeof SharedArrayBuffer === "undefined" ||
@@ -702,8 +850,11 @@ const onMessageHandler = (event: MessageEvent) => {
       {
         chunkId,
         type: "terrain-generated",
-        block_array: blocks,
+        block_array: packedBlocks,
         light_array: light,
+        isUniform,
+        uniformBlockId,
+        palette,
       },
       transferables,
     );

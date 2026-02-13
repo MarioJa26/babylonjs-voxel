@@ -310,9 +310,14 @@ export class WorldStorage {
       .stream()
       .pipeThrough(new DecompressionStream("gzip"));
     const buffer = await new Response(stream).arrayBuffer();
-    if (buffer.byteLength === Chunk.SIZE3 * 2) {
-      return new Uint16Array(buffer);
+
+    // Convert to SharedArrayBuffer to ensure zero-copy sharing with workers later
+    const sharedBuffer = new SharedArrayBuffer(buffer.byteLength);
+    new Uint8Array(sharedBuffer).set(new Uint8Array(buffer));
+
+    if (sharedBuffer.byteLength === Chunk.SIZE3 * 2) {
+      return new Uint16Array(sharedBuffer);
     }
-    return new Uint8Array(buffer);
+    return new Uint8Array(sharedBuffer);
   }
 }

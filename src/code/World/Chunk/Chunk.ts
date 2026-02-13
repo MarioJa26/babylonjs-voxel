@@ -56,15 +56,7 @@ export class Chunk {
     this.id = Chunk.packCoords(chunkX, chunkY, chunkZ);
 
     // Create zero-length buffers in a safe way:
-    if (typeof SharedArrayBuffer !== "undefined") {
-      // Use SharedArrayBuffer when available (requires cross-origin isolation)
-      // this.block_array = new Uint8Array(new SharedArrayBuffer(0)); // Removed
-      this.light_array = new Uint8Array(new SharedArrayBuffer(0));
-    } else {
-      // Fallback to regular typed arrays (ArrayBuffer) when not isolated
-      // this.block_array = new Uint8Array(0); // Removed
-      this.light_array = new Uint8Array(0);
-    }
+    this.light_array = new Uint8Array(new SharedArrayBuffer(0));
 
     Chunk.chunkInstances.set(this.id, this);
   }
@@ -118,41 +110,17 @@ export class Chunk {
   }
 
   public populate(
-    block_array: Uint8Array | Uint16Array,
+    blocks: Uint8Array | Uint16Array | null,
+    palette: number[] | null,
+    isUniform: boolean,
+    uniformBlockId: number,
     light_array?: Uint8Array,
     scheduleRemesh = true,
   ): void {
-    // Analyze block_array for unique blocks to determine storage strategy
-    const uniqueBlocks = new Set<number>();
-    for (let i = 0; i < block_array.length; i++) {
-      uniqueBlocks.add(block_array[i]);
-      if (uniqueBlocks.size > 16) break;
-    }
-
-    if (uniqueBlocks.size === 1) {
-      this._isUniform = true;
-      this._uniformBlockId = uniqueBlocks.values().next().value || 0;
-      this._block_array = null;
-      this._palette = null;
-    } else if (uniqueBlocks.size <= 16) {
-      // Use Palette (4-bit packed)
-      this._isUniform = false;
-      this._uniformBlockId = 0;
-      this._palette = Array.from(uniqueBlocks);
-      this._block_array = new Uint8Array(Math.ceil(block_array.length / 2));
-
-      const paletteMap = new Map<number, number>();
-      this._palette.forEach((id, index) => paletteMap.set(id, index));
-
-      for (let i = 0; i < block_array.length; i++) {
-        this.setNibble(i, paletteMap.get(block_array[i])!);
-      }
-    } else {
-      // Use Raw Array
-      this._isUniform = false;
-      this._palette = null;
-      this._block_array = block_array;
-    }
+    this._isUniform = isUniform;
+    this._uniformBlockId = uniformBlockId;
+    this._palette = palette;
+    this._block_array = blocks;
 
     if (light_array) {
       this.light_array = light_array;
@@ -235,7 +203,7 @@ export class Chunk {
     this._isUniform = true;
     this._uniformBlockId = 0;
     this._palette = null;
-    this.light_array = new Uint8Array(0);
+    this.light_array = new Uint8Array(new SharedArrayBuffer(0));
     this.isLoaded = false;
     this.isTerrainScheduled = false;
     this.isModified = false; // No longer considered modified as its data is gone.
@@ -353,7 +321,9 @@ export class Chunk {
         newIndex = 1;
       }
 
-      this._block_array = new Uint8Array(Chunk.SIZE3 / 2);
+      this._block_array = new Uint8Array(
+        new SharedArrayBuffer(Chunk.SIZE3 / 2),
+      );
       this._block_array.fill(0); // All blocks default to index 0 (old uniform id)
       this.setNibble(index, newIndex);
     } else if (this._palette) {
@@ -370,7 +340,9 @@ export class Chunk {
           this.setNibble(index, newPaletteIndex);
         } else {
           // Palette full -> Expand to Raw
-          const newArray = new Uint16Array(Chunk.SIZE3);
+          const newArray = new Uint16Array(
+            new SharedArrayBuffer(Chunk.SIZE3 * 2),
+          );
           for (let i = 0; i < Chunk.SIZE3; i++) {
             newArray[i] = this._palette[this.getNibble(i)];
           }
@@ -384,7 +356,10 @@ export class Chunk {
     } else {
       // Raw Array: Upgrade to Uint16Array if needed
       if (blockId > 255 && this._block_array instanceof Uint8Array) {
-        const newArray = new Uint16Array(this._block_array);
+        const newArray = new Uint16Array(
+          new SharedArrayBuffer(Chunk.SIZE3 * 2),
+        );
+        newArray.set(this._block_array);
         this._block_array = newArray;
       }
       oldBlockId = this._block_array![index];
@@ -795,7 +770,7 @@ export class Chunk {
     this._isUniform = true;
     this._uniformBlockId = 0;
     this._palette = null;
-    this.light_array = new Uint8Array(0);
+    this.light_array = new Uint8Array(new SharedArrayBuffer(0));
     this.isLoaded = false;
     this.isTerrainScheduled = false;
   }

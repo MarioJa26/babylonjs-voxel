@@ -1,6 +1,6 @@
 import { Chunk } from "./Chunk";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
-import { ChunkMesher } from "./ChunckMesher";
+import { ChunkWorker } from "./chunkWorker";
 import { SettingParams } from "../SettingParams";
 import { WorldStorage } from "../WorldStorage";
 import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
@@ -23,8 +23,8 @@ export class ChunkLoadingSystem {
   private static loadQueue: Chunk[] = [];
   private static unloadQueue: Chunk[] = [];
   private static isProcessing = false;
-  private static readonly LOAD_BATCH_SIZE = SettingParams.RENDER_DISTANCE / 2;
-  private static readonly UNLOAD_BATCH_SIZE = SettingParams.RENDER_DISTANCE;
+  private static readonly LOAD_BATCH_SIZE = SettingParams.RENDER_DISTANCE * 2;
+  private static readonly UNLOAD_BATCH_SIZE = SettingParams.RENDER_DISTANCE * 2;
 
   public static async updateChunksAround(
     chunkX: number,
@@ -52,6 +52,25 @@ export class ChunkLoadingSystem {
         return false;
       }
       return true;
+    });
+
+    // Optimization: Prune the unload queue.
+    // If the player moved back towards a chunk that was scheduled for unload, remove it from the queue.
+    const removeRadius =
+      renderDistance + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER;
+    const verticalRemoveRadius =
+      verticalRadius + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER;
+
+    this.unloadQueue = this.unloadQueue.filter((chunk) => {
+      const dist = Math.max(
+        Math.abs(chunk.chunkX - chunkX),
+        Math.abs(chunk.chunkZ - chunkZ),
+      );
+
+      return (
+        dist > removeRadius ||
+        Math.abs(chunk.chunkY - chunkY) > verticalRemoveRadius
+      );
     });
 
     // 1. Collect all potential chunk coordinates
@@ -178,27 +197,27 @@ export class ChunkLoadingSystem {
 
               const savedData = loadedDataMap.get(chunk.id);
               if (savedData) {
+                const hasMeshes =
+                  savedData.opaqueMesh ||
+                  savedData.waterMesh ||
+                  savedData.glassMesh;
+
                 chunk.loadFromStorage(
                   savedData.blocks,
                   savedData.palette,
                   savedData.isUniform,
                   savedData.uniformBlockId,
                   savedData.light_array,
-                  true,
+                  !hasMeshes,
                 );
 
-                if (
-                  savedData.opaqueMesh ||
-                  savedData.waterMesh ||
-                  savedData.glassMesh
-                ) {
-                  ChunkMesher.createMeshFromData(chunk, {
-                    opaque: savedData.opaqueMesh ?? null,
-                    water: savedData.waterMesh ?? null,
-                    glass: savedData.glassMesh ?? null,
-                  });
-                } else {
-                  chunk.scheduleRemesh();
+                if (hasMeshes) {
+                  ChunkWorker.enqueueLoadedMesh(
+                    chunk.id,
+                    savedData.opaqueMesh ?? null,
+                    savedData.waterMesh ?? null,
+                    savedData.glassMesh ?? null,
+                  );
                 }
               } else {
                 chunksToGenerate.push(chunk);
