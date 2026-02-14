@@ -318,10 +318,8 @@ export class SurfaceGenerator {
     terrainHeight: number,
   ): boolean {
     const { SEA_LEVEL } = this.params;
-    const isAtBeachLevel =
-      terrainHeight >= SEA_LEVEL - 1 && terrainHeight <= SEA_LEVEL + 2;
 
-    if (!isAtBeachLevel) {
+    if (!(terrainHeight >= SEA_LEVEL - 2 && terrainHeight <= SEA_LEVEL + 2)) {
       return false;
     }
 

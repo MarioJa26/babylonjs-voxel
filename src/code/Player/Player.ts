@@ -15,6 +15,7 @@ import { PlayerInventory } from "./Inventory/PlayerInventory";
 import { InventoryControls } from "./Controls/InventoryControls";
 import { PlayerCamera } from "./PlayerCamera";
 import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
+import { Chunk } from "../World/Chunk/Chunk";
 import { PlayerVehicle } from "./PlayerVehicle";
 import { Map1 } from "../Maps/Map1";
 import { PlayerFlashLight } from "./PlayerFlashLight";
@@ -221,8 +222,9 @@ export class Player implements IUsable {
       );
       PlayerHud.updateDebugInfo("Facing", this.getDirectionFromYaw(cameraYaw));
       PlayerHud.updateDebugInfo(
-        "Physics Bodies",
-        this.scene.meshes.filter((m) => m.physicsBody).length,
+        "Loaded Chunks",
+        Array.from(Chunk.chunkInstances.values()).filter((c) => c.isLoaded)
+          .length,
       );
       PlayerHud.updateDebugInfo("Health", Math.ceil(this.stats.health));
       PlayerHud.updateDebugInfo("Hunger", Math.ceil(this.stats.hunger));

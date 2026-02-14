@@ -14,6 +14,7 @@ import {
 
 import { Mount } from "../Entities/Mount";
 import { PlayerCamera } from "./PlayerCamera";
+import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
 
 enum PlayerState {
   IN_AIR = "IN_AIR",
@@ -37,6 +38,7 @@ export class PlayerVehicle {
   public isFlying = false;
   public isMounted = false;
   public DASH = true;
+  public isJumpHeld = false;
 
   #displayCapsule!: Mesh;
   #characterController!: PhysicsCharacterController;
@@ -60,6 +62,14 @@ export class PlayerVehicle {
   private readonly penetrationRecoveryEps = 0.0001;
   private readonly airJumpForwardBoost = 5.5;
   private readonly minFloorNormalDot = 0.55;
+  private readonly useVoxelCollision = true;
+  private readonly colliderHalfWidth = 0.3;
+  private readonly colliderHalfHeight = 0.875;
+  private readonly voxelStepSize = 0.25;
+  private readonly collisionEpsilon = 0.001;
+  private voxelPosition = new Vector3(0, 165, 0);
+  private voxelVelocity = Vector3.Zero();
+  private voxelIsGrounded = false;
 
   constructor(scene: Scene, camera: PlayerCamera) {
     this.scene = scene;
@@ -94,6 +104,8 @@ export class PlayerVehicle {
       this.scene,
     );
     this.configureCharacterController();
+    this.voxelPosition.copyFrom(startPosition);
+    this.voxelVelocity.copyFromFloats(0, 0, 0);
 
     this.camera.target = startPosition;
   }
@@ -130,31 +142,46 @@ export class PlayerVehicle {
       0,
     );
 
-    this.camera.moveWithPlayer(this.#characterController.getPosition());
+    this.camera.moveWithPlayer(this.getPositionInternal());
 
-    this.#displayCapsule.position.copyFrom(
-      this.#characterController.getPosition(),
-    );
+    this.#displayCapsule.position.copyFrom(this.getPositionInternal());
   }
   /**
    * Main update function called every frame
    * @param deltaTime Time since last frame in seconds
    */
   public update(deltaTime: number): void {
+    if (this.isJumpHeld) {
+      this.wantJump = Math.max(this.wantJump, 1);
+    }
     if (this.#movementLocked) {
       if (this.#lockedPosition) {
+        this.voxelPosition.copyFrom(this.#lockedPosition);
         this.#characterController.setPosition(this.#lockedPosition);
       }
+      this.voxelVelocity.copyFromFloats(0, 0, 0);
       this.#characterController.setVelocity(this.#zeroVelocity);
       return;
     }
 
     if (this.mount) {
       this.mount.update();
+      if (this.useVoxelCollision) {
+        this.voxelPosition.copyFrom(this.#characterController.getPosition());
+        this.voxelVelocity.copyFromFloats(0, 0, 0);
+      }
     } else {
       if (this.isFlying) {
         const desiredVelocity = this.calculateFlyingVelocity(deltaTime);
-        this.#characterController.setVelocity(desiredVelocity);
+        this.setVelocityInternal(desiredVelocity);
+        if (this.useVoxelCollision) {
+          const next = this.voxelPosition.add(desiredVelocity.scale(deltaTime));
+          this.voxelPosition.copyFrom(next);
+          this.#characterController.setPosition(this.voxelPosition);
+          this.#characterController.setVelocity(this.#zeroVelocity);
+        } else {
+          this.#characterController.setVelocity(desiredVelocity);
+        }
         return; // Skip normal physics integration
       }
       this.integrateMovement(deltaTime);
@@ -162,6 +189,10 @@ export class PlayerVehicle {
   }
 
   private integrateMovement(deltaTime: number): void {
+    if (this.useVoxelCollision) {
+      this.integrateVoxelMovement(deltaTime);
+      return;
+    }
     if (deltaTime <= 1 / 60) {
       this.integrateMovementStep(deltaTime);
       return;
@@ -210,7 +241,7 @@ export class PlayerVehicle {
     }
 
     // Apply deceleration
-    const currentVelocity = this.#characterController.getVelocity();
+    const currentVelocity = this.getVelocityInternal();
     let newVelocity = currentVelocity.clone();
     if (desiredVelocity.lengthSquared() < 0.01) {
       newVelocity.scaleInPlace(this.deacceleration);
@@ -236,7 +267,7 @@ export class PlayerVehicle {
     this.updatePlayerState(supportInfo);
 
     // Get current velocity
-    const currentVelocity = this.#characterController.getVelocity();
+    const currentVelocity = this.getVelocityInternal();
 
     // Calculate desired velocity based on current state
     switch (this.state) {
@@ -511,8 +542,9 @@ export class PlayerVehicle {
   }
 
   public lockMovementAtCurrentPosition(): void {
-    this.#lockedPosition = this.#characterController.getPosition().clone();
+    this.#lockedPosition = this.getPositionInternal().clone();
     this.#movementLocked = true;
+    this.voxelPosition.copyFrom(this.#lockedPosition);
     this.#characterController.setPosition(this.#lockedPosition);
     this.#characterController.setVelocity(this.#zeroVelocity);
     this.camera.moveWithPlayer(this.#lockedPosition);
@@ -522,6 +554,7 @@ export class PlayerVehicle {
   public unlockMovement(): void {
     this.#movementLocked = false;
     this.#lockedPosition = null;
+    this.voxelVelocity.copyFromFloats(0, 0, 0);
     this.#characterController.setVelocity(this.#zeroVelocity);
   }
 
@@ -530,7 +563,7 @@ export class PlayerVehicle {
   }
 
   public getSavedPosition(): SavedPlayerPosition {
-    const position = this.#characterController.getPosition();
+    const position = this.getPositionInternal();
     return {
       x: position.x,
       y: position.y,
@@ -543,7 +576,13 @@ export class PlayerVehicle {
       return false;
     }
 
-    const restoredPosition = new Vector3(position.x, position.y, position.z);
+    const restoredPosition = new Vector3(
+      position.x,
+      position.y < -1000 ? 32 : position.y,
+      position.z,
+    );
+    this.voxelPosition.copyFrom(restoredPosition);
+    this.voxelVelocity.copyFromFloats(0, 0, 0);
     this.#characterController.setPosition(restoredPosition);
     if (this.#movementLocked) {
       this.#lockedPosition = restoredPosition.clone();
@@ -566,5 +605,168 @@ export class PlayerVehicle {
       Number.isFinite(candidate.y) &&
       Number.isFinite(candidate.z)
     );
+  }
+
+  private getPositionInternal(): Vector3 {
+    return this.useVoxelCollision
+      ? this.voxelPosition
+      : this.#characterController.getPosition();
+  }
+
+  private getVelocityInternal(): Vector3 {
+    return this.useVoxelCollision
+      ? this.voxelVelocity
+      : this.#characterController.getVelocity();
+  }
+
+  private setVelocityInternal(velocity: Vector3): void {
+    if (this.useVoxelCollision) {
+      this.voxelVelocity.copyFrom(velocity);
+      return;
+    }
+    this.#characterController.setVelocity(velocity);
+  }
+
+  private integrateVoxelMovement(deltaTime: number): void {
+    if (deltaTime <= 1 / 60) {
+      this.integrateVoxelMovementStep(deltaTime);
+      return;
+    }
+
+    const targetSubStep = 1 / 120;
+    const maxSubSteps = 8;
+    const subSteps = Math.min(
+      maxSubSteps,
+      Math.ceil(deltaTime / targetSubStep),
+    );
+    const stepDt = deltaTime / subSteps;
+    for (let i = 0; i < subSteps; i++) {
+      this.integrateVoxelMovementStep(stepDt);
+    }
+  }
+
+  private integrateVoxelMovementStep(deltaTime: number): void {
+    const desiredVelocity = this.getInputVelocity(
+      this.voxelIsGrounded ? this.onGroundSpeed : this.inAirSpeed,
+    );
+
+    if (
+      this.isSprinting &&
+      this.voxelIsGrounded &&
+      (this.inputDirection.x !== 0 || this.inputDirection.z !== 0)
+    ) {
+      desiredVelocity.scaleInPlace(this.sprintMultiplier);
+    }
+
+    const currentHorizontal = new Vector3(
+      this.voxelVelocity.x,
+      0,
+      this.voxelVelocity.z,
+    );
+    const targetHorizontal = new Vector3(desiredVelocity.x, 0, desiredVelocity.z);
+    const accelRate = this.voxelIsGrounded
+      ? this.accelRateGround
+      : this.accelRateGround * 0.5;
+    const nextHorizontal = this.accelerate(
+      currentHorizontal,
+      targetHorizontal,
+      accelRate,
+      deltaTime,
+    );
+    this.voxelVelocity.x = nextHorizontal.x;
+    this.voxelVelocity.z = nextHorizontal.z;
+
+    if (
+      this.voxelIsGrounded &&
+      this.inputDirection.x === 0 &&
+      this.inputDirection.z === 0
+    ) {
+      this.voxelVelocity.x *= this.deacceleration;
+      this.voxelVelocity.z *= this.deacceleration;
+    }
+
+    if (this.wantJump > 0 && this.voxelIsGrounded) {
+      this.wantJump--;
+      this.voxelVelocity.y = this.calculateVerticalJumpVelocity(
+        this.voxelVelocity,
+        this.getUpVector(),
+      );
+      this.voxelIsGrounded = false;
+    }
+
+    this.voxelVelocity.y += this.#characterGravity.y * deltaTime;
+
+    this.moveVoxelAxis("x", this.voxelVelocity.x * deltaTime);
+    this.moveVoxelAxis("y", this.voxelVelocity.y * deltaTime);
+    this.moveVoxelAxis("z", this.voxelVelocity.z * deltaTime);
+
+    this.#characterController.setPosition(this.voxelPosition);
+    this.#characterController.setVelocity(this.#zeroVelocity);
+
+    this.voxelIsGrounded = this.checkVoxelGrounded();
+    if (this.voxelIsGrounded && this.voxelVelocity.y < 0) {
+      this.voxelVelocity.y = 0;
+    }
+  }
+
+  private moveVoxelAxis(axis: "x" | "y" | "z", delta: number): void {
+    if (delta === 0) return;
+    let remaining = delta;
+
+    while (Math.abs(remaining) > 0) {
+      const step =
+        Math.abs(remaining) > this.voxelStepSize
+          ? this.voxelStepSize * Math.sign(remaining)
+          : remaining;
+      const candidate = this.voxelPosition.clone();
+      if (axis === "x") candidate.x += step;
+      else if (axis === "y") candidate.y += step;
+      else candidate.z += step;
+
+      if (this.overlapsSolidVoxel(candidate)) {
+        if (axis === "x") this.voxelVelocity.x = 0;
+        else if (axis === "y") this.voxelVelocity.y = 0;
+        else this.voxelVelocity.z = 0;
+        break;
+      }
+
+      this.voxelPosition.copyFrom(candidate);
+      remaining -= step;
+    }
+  }
+
+  private overlapsSolidVoxel(position: Vector3): boolean {
+    const minX = position.x - this.colliderHalfWidth;
+    const maxX = position.x + this.colliderHalfWidth;
+    const minY = position.y - this.colliderHalfHeight;
+    const maxY = position.y + this.colliderHalfHeight;
+    const minZ = position.z - this.colliderHalfWidth;
+    const maxZ = position.z + this.colliderHalfWidth;
+
+    const x0 = Math.floor(minX + this.collisionEpsilon);
+    const x1 = Math.floor(maxX - this.collisionEpsilon);
+    const y0 = Math.floor(minY + this.collisionEpsilon);
+    const y1 = Math.floor(maxY - this.collisionEpsilon);
+    const z0 = Math.floor(minZ + this.collisionEpsilon);
+    const z1 = Math.floor(maxZ - this.collisionEpsilon);
+
+    for (let x = x0; x <= x1; x++) {
+      for (let y = y0; y <= y1; y++) {
+        for (let z = z0; z <= z1; z++) {
+          const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
+          if (blockId !== 0 && blockId !== 30) {
+            return true;
+          }
+        }
+      }
+    }
+
+    return false;
+  }
+
+  private checkVoxelGrounded(): boolean {
+    const probe = this.voxelPosition.clone();
+    probe.y -= 0.06;
+    return this.overlapsSolidVoxel(probe);
   }
 }

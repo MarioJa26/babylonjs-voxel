@@ -218,7 +218,7 @@ export class PlayerInventory {
     return (
       Number.isInteger(item.itemId) &&
       Number.isInteger(item.stackSize) &&
-      item.stackSize > 0
+      item.stackSize! > 0
     );
   }
 
@@ -336,7 +336,7 @@ export class PlayerInventory {
       dropPosition.z,
     );
 
-    droppedItem.pushItem(cam.direction.scale(3));
+    droppedItem.pushItem(cam.direction.scale(6));
 
     if (item.stackSize <= 0) {
       this.deleteItem(item);

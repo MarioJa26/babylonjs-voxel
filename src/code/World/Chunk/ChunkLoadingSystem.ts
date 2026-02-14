@@ -23,8 +23,19 @@ export class ChunkLoadingSystem {
   private static loadQueue: Chunk[] = [];
   private static unloadQueue: Chunk[] = [];
   private static isProcessing = false;
-  private static readonly LOAD_BATCH_SIZE = SettingParams.RENDER_DISTANCE * 2;
-  private static readonly UNLOAD_BATCH_SIZE = SettingParams.RENDER_DISTANCE * 2;
+  private static readonly LOAD_BATCH_SIZE = SettingParams.RENDER_DISTANCE * 4;
+  private static readonly UNLOAD_BATCH_SIZE = SettingParams.RENDER_DISTANCE * 4;
+
+  private static scheduleChunkAndNeighborsRemesh(chunk: Chunk): void {
+    const pool = ChunkWorkerPool.getInstance();
+    pool.scheduleRemesh(chunk, true);
+    pool.scheduleRemesh(chunk.getNeighbor(-1, 0, 0), true);
+    pool.scheduleRemesh(chunk.getNeighbor(1, 0, 0), true);
+    pool.scheduleRemesh(chunk.getNeighbor(0, -1, 0), true);
+    pool.scheduleRemesh(chunk.getNeighbor(0, 1, 0), true);
+    pool.scheduleRemesh(chunk.getNeighbor(0, 0, -1), true);
+    pool.scheduleRemesh(chunk.getNeighbor(0, 0, 1), true);
+  }
 
   public static async updateChunksAround(
     chunkX: number,
@@ -217,6 +228,9 @@ export class ChunkLoadingSystem {
                     water: savedData.waterMesh ?? null,
                     glass: savedData.glassMesh ?? null,
                   });
+                  // Keep cached meshes for fast load, but still reconcile chunk borders
+                  // with currently loaded neighbors via worker remesh scheduling.
+                  this.scheduleChunkAndNeighborsRemesh(chunk);
                 }
               } else {
                 chunksToGenerate.push(chunk);
@@ -324,7 +338,11 @@ export class ChunkLoadingSystem {
     verticalRadius = 0,
   ): boolean {
     for (let y = chunkY - verticalRadius; y <= chunkY + verticalRadius; y++) {
-      for (let x = chunkX - horizontalRadius; x <= chunkX + horizontalRadius; x++) {
+      for (
+        let x = chunkX - horizontalRadius;
+        x <= chunkX + horizontalRadius;
+        x++
+      ) {
         for (
           let z = chunkZ - horizontalRadius;
           z <= chunkZ + horizontalRadius;

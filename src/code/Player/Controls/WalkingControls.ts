@@ -25,6 +25,8 @@ export class WalkingControls implements IControls<PlayerVehicle> {
   #isBreaking = false;
   #breakingBlock: { x: number; y: number; z: number } | null = null;
   #breakTimer = 0;
+  #lastJumpTapMs = 0;
+  static readonly DOUBLE_TAP_MS = 260;
 
   public static KEY_LEFT = ["a", "arrowleft"];
   public static KEY_RIGHT = ["d", "arrowright"];
@@ -145,17 +147,30 @@ export class WalkingControls implements IControls<PlayerVehicle> {
   }
 
   public onKeyDown(key: string) {
+    const isAlreadyPressed = this.pressedKeys.has(key);
+    if (isAlreadyPressed && !WalkingControls.KEY_JUMP.includes(key)) return;
+    if (isAlreadyPressed && WalkingControls.KEY_JUMP.includes(key)) {
+      // Keep jump buffered while key is held.
+      this.#controlledEntity.isJumpHeld = true;
+      this.#controlledEntity.wantJump = Math.max(
+        this.#controlledEntity.wantJump,
+        1,
+      );
+      return;
+    }
     this.pressedKeys.add(key);
-    if (WalkingControls.KEY_UP.includes(key)) {
-      this.#inputDirection.z = 1;
-    } else if (WalkingControls.KEY_DOWN.includes(key)) {
-      this.#inputDirection.z = -1;
-    } else if (WalkingControls.KEY_RIGHT.includes(key)) {
-      this.#inputDirection.x = 1;
-    } else if (WalkingControls.KEY_LEFT.includes(key)) {
-      this.#inputDirection.x = -1;
-    } else if (WalkingControls.KEY_JUMP.includes(key)) {
-      this.#controlledEntity.wantJump++;
+    this.#updateMovementAxesFromPressedKeys();
+    if (WalkingControls.KEY_JUMP.includes(key)) {
+      this.#controlledEntity.isJumpHeld = true;
+      const now = performance.now();
+      if (now - this.#lastJumpTapMs <= WalkingControls.DOUBLE_TAP_MS) {
+        this.#controlledEntity.toggleFlying();
+        this.#controlledEntity.wantJump = 0;
+        this.#lastJumpTapMs = 0;
+      } else {
+        this.#controlledEntity.wantJump++;
+        this.#lastJumpTapMs = now;
+      }
     } else if (WalkingControls.KEY_SPRINT.includes(key)) {
       this.#controlledEntity.isSprinting = true;
     } else if (WalkingControls.KEY_USE.includes(key)) {
@@ -184,34 +199,8 @@ export class WalkingControls implements IControls<PlayerVehicle> {
     }
   }
   public onKeyUp(key: string) {
-    if (WalkingControls.KEY_UP.includes(key)) {
-      if (this.#pressedKeysHas(WalkingControls.KEY_DOWN)) {
-        this.#inputDirection.z = -1;
-      } else {
-        this.#inputDirection.z = 0;
-      }
-    } else if (WalkingControls.KEY_DOWN.includes(key)) {
-      if (this.#pressedKeysHas(WalkingControls.KEY_UP)) {
-        this.#inputDirection.z = 1;
-      } else {
-        this.#inputDirection.z = 0;
-      }
-    }
-
-    if (WalkingControls.KEY_LEFT.includes(key)) {
-      if (this.#pressedKeysHas(WalkingControls.KEY_RIGHT)) {
-        this.#inputDirection.x = 1;
-      } else {
-        this.#inputDirection.x = 0;
-      }
-    } else if (WalkingControls.KEY_RIGHT.includes(key)) {
-      if (this.#pressedKeysHas(WalkingControls.KEY_LEFT)) {
-        this.#inputDirection.x = -1;
-      } else {
-        this.#inputDirection.x = 0;
-      }
-    }
     if (WalkingControls.KEY_JUMP.includes(key)) {
+      this.#controlledEntity.isJumpHeld = false;
       this.#controlledEntity.wantJump = 0;
     }
     if (WalkingControls.KEY_SPRINT.includes(key)) {
@@ -310,9 +299,20 @@ export class WalkingControls implements IControls<PlayerVehicle> {
     }
 
     this.pressedKeys.delete(key);
+    this.#updateMovementAxesFromPressedKeys();
   }
   #pressedKeysHas(keys: string[]) {
     return keys.some((k) => this.pressedKeys.has(k));
+  }
+
+  #updateMovementAxesFromPressedKeys() {
+    const forward = this.#pressedKeysHas(WalkingControls.KEY_UP);
+    const backward = this.#pressedKeysHas(WalkingControls.KEY_DOWN);
+    const right = this.#pressedKeysHas(WalkingControls.KEY_RIGHT);
+    const left = this.#pressedKeysHas(WalkingControls.KEY_LEFT);
+
+    this.#inputDirection.z = forward === backward ? 0 : forward ? 1 : -1;
+    this.#inputDirection.x = right === left ? 0 : right ? 1 : -1;
   }
 
   #breakBlock(x: number, y: number, z: number, blockId: number) {

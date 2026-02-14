@@ -2,8 +2,6 @@ import {
   Mesh,
   VertexBuffer,
   Effect,
-  PhysicsAggregate,
-  PhysicsShapeType,
   Texture,
   Material,
   Vector2,
@@ -327,6 +325,10 @@ export class ChunkMesher {
     } else {
       chunk.glassMesh = null;
     }
+
+    if (chunk.colliderDirty) {
+      chunk.colliderDirty = false;
+    }
   }
 
   private static buildMesh(
@@ -475,21 +477,6 @@ export class ChunkMesher {
     mesh.ignoreNonUniformScaling = true;
     mesh.checkCollisions = false;
     mesh.freezeNormals();
-
-    // Create physics aggregate AFTER the world matrix is set.
-    if (name === "c_opaque" || name === "c_glass") {
-      // For voxel engines, MESH is necessary but needs proper setup
-      new PhysicsAggregate(
-        mesh,
-        PhysicsShapeType.MESH,
-        {
-          mass: 0,
-          restitution: 0.0,
-          friction: 0.8,
-        },
-        Map1.mainScene,
-      );
-    }
 
     mesh.name =
       name + "_" + chunk.chunkX + "_" + chunk.chunkY + "_" + chunk.chunkZ;

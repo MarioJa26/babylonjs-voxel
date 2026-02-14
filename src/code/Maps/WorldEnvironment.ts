@@ -57,14 +57,6 @@ export class WorldEnvironment {
     );
     this.hemiLight.direction = new Vector3(-0.1, -1, -0.1);
     this.hemiLight.intensity = SettingParams.HEMISPHERIC_LIGHT_INTENSITY;
-
-    this.dirLight = new DirectionalLight(
-      "dirLight",
-      new Vector3(-1, -2, -1),
-      this.scene,
-    );
-    this.dirLight.intensity = SettingParams.DIRECTIONAL_LIGHT_INTENSITY;
-    this.dirLight.position = new Vector3(20, 40, 20);
   }
 
   private createSkybox() {

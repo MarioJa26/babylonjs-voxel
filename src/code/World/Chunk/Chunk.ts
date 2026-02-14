@@ -21,6 +21,7 @@ export class Chunk {
   public isDirty = false;
   public isLoaded = false;
   public isTerrainScheduled = false;
+  public colliderDirty = true;
   public readonly id: bigint;
   private remeshQueued = false;
   private remeshQueuedPriority = false;
@@ -129,6 +130,7 @@ export class Chunk {
     }
     this.isLoaded = true;
     this.isTerrainScheduled = false; // Reset flag
+    this.colliderDirty = true;
     if (scheduleRemesh) {
       this.scheduleRemesh();
       this.getNeighbor(-1, 0, 0)?.scheduleRemesh();
@@ -179,6 +181,7 @@ export class Chunk {
 
     this.isLoaded = true;
     this.isTerrainScheduled = false;
+    this.colliderDirty = true;
     if (scheduleRemesh) {
       this.scheduleRemesh();
       this.getNeighbor(-1, 0, 0)?.scheduleRemesh();
@@ -203,6 +206,7 @@ export class Chunk {
     this.isLoaded = false;
     this.isTerrainScheduled = false;
     this.isModified = false; // No longer considered modified as its data is gone.
+    this.colliderDirty = true;
   }
 
   public initializeSunlight() {
@@ -392,6 +396,7 @@ export class Chunk {
     }
 
     this.isModified = true;
+    this.colliderDirty = true;
     this.scheduleRemesh(true);
 
     // If the block is on a boundary, the neighbor chunk must also be remeshed.
@@ -775,5 +780,6 @@ export class Chunk {
     this.light_array = new Uint8Array(new SharedArrayBuffer(0));
     this.isLoaded = false;
     this.isTerrainScheduled = false;
+    this.colliderDirty = true;
   }
 }
