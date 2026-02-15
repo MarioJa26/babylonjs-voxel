@@ -309,7 +309,7 @@ export function getBiomeFor(
   if (continentalness < -0.93) {
     return FLOATING_ISLANDS;
   }
-  if (continentalness < -0.3) {
+  if (continentalness < -0.33) {
     return OCEAN;
   }
 
@@ -342,7 +342,7 @@ export function getBiomeFor(
   // Hot regions
   if (temperature > 0.55) {
     if (humidity < 0.3) {
-      if (temperature > 0.85) {
+      if (temperature > 0.85 && continentalness > -0.3) {
         return VOLCANIC_WASTELAND; // Extremely hot and dry
       }
       return DESERT; // Hot and dry

@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Terrain Spline Editor</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        background: #222;
+        color: #eee;
+        display: flex;
+        flex-direction: column;
+        margin: 0;
+        height: 100vh;
+        overflow: hidden;
+      }
+      .container {
+        display: flex;
+        flex: 1;
+        width: 100%;
+      }
+      canvas {
+        background: #333;
+        cursor: crosshair;
+        flex: 1;
+      }
+      textarea {
+        width: 300px;
+        height: 100%;
+        background: #111;
+        color: #0f0;
+        border: none;
+        border-left: 1px solid #444;
+        font-family: monospace;
+        padding: 10px;
+        box-sizing: border-box;
+        resize: none;
+      }
+      .controls {
+        padding: 10px;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        width: 100%;
+        box-sizing: border-box;
+        background: #2a2a2a;
+        border-bottom: 1px solid #444;
+      }
+      button {
+        padding: 8px 16px;
+        cursor: pointer;
+        background: #444;
+        color: white;
+        border: none;
+      }
+      button:hover {
+        background: #555;
+      }
+      label {
+        font-size: 0.9em;
+        color: #aaa;
+      }
+    </style>
+  </head>
+  <body>
+    <h2>Terrain Spline Editor (Linear)</h2>
+    <div class="controls">
+      <button onclick="parseInput()">Load from Text</button>
+      <button onclick="sortAndRender()">Sort Points</button>
+      <button onclick="undo()">Undo (Ctrl+Z)</button>
+      <button onclick="redo()">Redo (Ctrl+Y)</button>
+      <button onclick="resetView()">Reset View</button>
+      <label>Left: Move | DblClick: Add/Del | Right: Pan | Wheel: Zoom</label>
+    </div>
+    <div class="container">
+      <canvas id="canvas"></canvas>
+      <textarea id="codeOutput" spellcheck="false"></textarea>
+    </div>
+
+    <script>
+      const canvas = document.getElementById("canvas");
+      const ctx = canvas.getContext("2d");
+      const output = document.getElementById("codeOutput");
+
+      // Default data (Continentalness example)
+      let points = [
+        { t: -1.0, v: -16 },
+        { t: -0.3, v: -16 },
+        { t: -0.29, v: 5 },
+        { t: -0.1, v: 6 },
+        { t: 0.0, v: 0 },
+        { t: 0.2, v: 0 },
+        { t: 0.3, v: 1 },
+        { t: 0.35, v: 1 },
+        { t: 0.4, v: 10 },
+        { t: 0.5, v: 90 },
+        { t: 0.6, v: 150 },
+        { t: 0.7, v: 180 },
+        { t: 0.74, v: 220 },
+        { t: 0.8, v: 340 },
+        { t: 0.9, v: 400 },
+        { t: 0.98, v: 500 },
+      ];
+
+      // Viewport settings
+      let minT = -1.2,
+        maxT = 1.2;
+      let minV = -50,
+        maxV = 600;
+      let seaLevel = 42;
+      let draggingPoint = null;
+      let isPanning = false;
+      let lastMouseX = 0;
+      let lastMouseY = 0;
+      let history = [];
+      let historyIndex = -1;
+      let isDirty = false;
+
+      function map(val, inMin, inMax, outMin, outMax) {
+        return ((val - inMin) * (outMax - outMin)) / (inMax - inMin) + outMin;
+      }
+
+      function toScreen(t, v) {
+        return {
+          x: map(t, minT, maxT, 0, canvas.width),
+          y: map(v, maxV, minV, 0, canvas.height), // Invert Y
+        };
+      }
+
+      function toWorld(x, y) {
+        return {
+          t: map(x, 0, canvas.width, minT, maxT),
+          v: map(y, 0, canvas.height, maxV, minV),
+        };
+      }
+
+      function render() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Draw Grid
+        ctx.strokeStyle = "#444";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        // Zero lines
+        let zero = toScreen(0, 0);
+        ctx.moveTo(0, zero.y);
+        ctx.lineTo(canvas.width, zero.y);
+        ctx.moveTo(zero.x, 0);
+        ctx.lineTo(zero.x, canvas.height);
+        ctx.stroke();
+
+        // Draw Sea Level
+        let sea = toScreen(0, seaLevel);
+        ctx.strokeStyle = "rgba(64, 164, 255, 0.8)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, sea.y);
+        ctx.lineTo(canvas.width, sea.y);
+        ctx.stroke();
+
+        // Draw Borders
+        ctx.strokeStyle = "#888";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        let b1 = toScreen(-1, 0);
+        let b2 = toScreen(1, 0);
+        ctx.moveTo(b1.x, 0);
+        ctx.lineTo(b1.x, canvas.height);
+        ctx.moveTo(b2.x, 0);
+        ctx.lineTo(b2.x, canvas.height);
+        ctx.stroke();
+
+        // Draw Spline Line
+        if (points.length > 0) {
+          points.sort((a, b) => a.t - b.t);
+          ctx.strokeStyle = "#0af";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          let start = toScreen(points[0].t, points[0].v);
+          ctx.moveTo(start.x, start.y);
+          for (let i = 1; i < points.length; i++) {
+            let p = toScreen(points[i].t, points[i].v);
+            ctx.lineTo(p.x, p.y);
+          }
+          ctx.stroke();
+        }
+
+        // Draw Points
+        points.forEach((p) => {
+          let pos = toScreen(p.t, p.v);
+          ctx.fillStyle = "#fff";
+          ctx.beginPath();
+          ctx.arc(pos.x, pos.y, 4, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Draw coords
+          ctx.fillStyle = "#aaa";
+          ctx.font = "10px monospace";
+          ctx.fillText(
+            `(${p.t.toFixed(2)}, ${Math.round(p.v)})`,
+            pos.x + 8,
+            pos.y - 8,
+          );
+        });
+
+        updateOutput();
+      }
+
+      function updateOutput() {
+        const lines = points.map(
+          (p) => `  { t: ${p.t.toFixed(3)}, v: ${Math.round(p.v)} },`,
+        );
+        output.value = lines.join("\n");
+      }
+
+      function parseInput() {
+        try {
+          // Loose parsing to handle the format
+          const text = output.value.replace(/,\s*$/, ""); // remove trailing comma
+          // Wrap in array brackets if missing
+          const jsonStr = `[${text}]`
+            .replace(/t:/g, '"t":')
+            .replace(/v:/g, '"v":');
+          // This is a hacky parser for the specific TS format provided
+          const rawLines = output.value.split("\n");
+          const newPoints = [];
+          for (let line of rawLines) {
+            const tMatch = line.match(/t:\s*(-?[\d\.]+)/);
+            const vMatch = line.match(/v:\s*(-?[\d\.]+)/);
+            if (tMatch && vMatch) {
+              newPoints.push({
+                t: parseFloat(tMatch[1]),
+                v: Math.round(parseFloat(vMatch[1])),
+              });
+            }
+          }
+          if (newPoints.length > 0) {
+            points = newPoints;
+            render();
+            commitState();
+          }
+        } catch (e) {
+          alert("Could not parse text");
+        }
+      }
+
+      function sortAndRender() {
+        points.sort((a, b) => a.t - b.t);
+        render();
+        commitState();
+      }
+
+      function resetView() {
+        minT = -1.2;
+        maxT = 1.2;
+        minV = -50;
+        maxV = 600;
+        render();
+      }
+
+      function commitState() {
+        const newStateStr = JSON.stringify(points);
+        if (
+          historyIndex >= 0 &&
+          JSON.stringify(history[historyIndex]) === newStateStr
+        ) {
+          return;
+        }
+        if (historyIndex < history.length - 1) {
+          history = history.slice(0, historyIndex + 1);
+        }
+        history.push(JSON.parse(newStateStr));
+        historyIndex++;
+      }
+
+      function undo() {
+        if (historyIndex > 0) {
+          historyIndex--;
+          points = JSON.parse(JSON.stringify(history[historyIndex]));
+          render();
+        }
+      }
+
+      function redo() {
+        if (historyIndex < history.length - 1) {
+          historyIndex++;
+          points = JSON.parse(JSON.stringify(history[historyIndex]));
+          render();
+        }
+      }
+
+      canvas.addEventListener("mousedown", (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        // Check collision
+        let clickedIndex = -1;
+        for (let i = 0; i < points.length; i++) {
+          let pos = toScreen(points[i].t, points[i].v);
+          let dist = Math.hypot(pos.x - x, pos.y - y);
+          if (dist < 10) {
+            clickedIndex = i;
+            break;
+          }
+        }
+
+        if (e.button === 2) {
+          // Right click - Pan
+          isPanning = true;
+          lastMouseX = x;
+          lastMouseY = y;
+          canvas.style.cursor = "grabbing";
+        } else {
+          // Left click
+          if (clickedIndex !== -1) {
+            draggingPoint = points[clickedIndex];
+          }
+        }
+      });
+
+      canvas.addEventListener("dblclick", (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        // Check collision
+        let clickedIndex = -1;
+        for (let i = 0; i < points.length; i++) {
+          let pos = toScreen(points[i].t, points[i].v);
+          let dist = Math.hypot(pos.x - x, pos.y - y);
+          if (dist < 10) {
+            clickedIndex = i;
+            break;
+          }
+        }
+
+        if (clickedIndex !== -1) {
+          // Delete
+          points.splice(clickedIndex, 1);
+          render();
+          commitState();
+        } else {
+          // Add
+          let world = toWorld(x, y);
+          let newP = {
+            t: Math.max(-1, Math.min(1, world.t)),
+            v: Math.round(world.v),
+          };
+          points.push(newP);
+          render();
+          commitState();
+        }
+      });
+
+      canvas.addEventListener("mousemove", (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+
+        if (isPanning) {
+          const dx = x - lastMouseX;
+          const dy = y - lastMouseY;
+          lastMouseX = x;
+          lastMouseY = y;
+
+          const tRange = maxT - minT;
+          const vRange = minV - maxV; // minV is bottom, maxV is top
+
+          minT -= dx * (tRange / canvas.width);
+          maxT -= dx * (tRange / canvas.width);
+          minV -= dy * (vRange / canvas.height);
+          maxV -= dy * (vRange / canvas.height);
+          render();
+          return;
+        }
+
+        if (draggingPoint) {
+          let world = toWorld(x, y);
+          draggingPoint.t = Math.max(-1, Math.min(1, world.t));
+          draggingPoint.v = Math.round(world.v);
+          isDirty = true;
+          render();
+        }
+      });
+
+      window.addEventListener("mouseup", () => {
+        if (draggingPoint && isDirty) {
+          commitState();
+          isDirty = false;
+        }
+        draggingPoint = null;
+        if (isPanning) {
+          isPanning = false;
+          canvas.style.cursor = "crosshair";
+        }
+      });
+
+      canvas.addEventListener(
+        "wheel",
+        (e) => {
+          e.preventDefault();
+          const rect = canvas.getBoundingClientRect();
+          const x = e.clientX - rect.left;
+          const y = e.clientY - rect.top;
+
+          const worldMouse = toWorld(x, y);
+          const zoom = e.deltaY > 0 ? 1.1 : 0.9;
+
+          const tRange = maxT - minT;
+          const signedVRange = minV - maxV;
+
+          const newTRange = tRange * zoom;
+          const newSignedVRange = signedVRange * zoom;
+
+          const tRatio = (worldMouse.t - minT) / tRange;
+          const vRatio = (worldMouse.v - maxV) / signedVRange;
+
+          minT = worldMouse.t - tRatio * newTRange;
+          maxT = minT + newTRange;
+          maxV = worldMouse.v - vRatio * newSignedVRange;
+          minV = maxV + newSignedVRange;
+
+          render();
+        },
+        { passive: false },
+      );
+
+      window.addEventListener("keydown", (e) => {
+        if (
+          (e.ctrlKey || e.metaKey) &&
+          e.key.toLowerCase() === "z" &&
+          !e.shiftKey
+        ) {
+          e.preventDefault();
+          undo();
+        }
+        if (
+          (e.ctrlKey || e.metaKey) &&
+          (e.key.toLowerCase() === "y" ||
+            (e.shiftKey && e.key.toLowerCase() === "z"))
+        ) {
+          e.preventDefault();
+          redo();
+        }
+      });
+
+      canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+      function resize() {
+        canvas.width = canvas.clientWidth;
+        canvas.height = canvas.clientHeight;
+        render();
+      }
+      window.addEventListener("resize", resize);
+
+      resize();
+      commitState();
+    </script>
+  </body>
+</html>
