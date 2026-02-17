@@ -2,8 +2,7 @@ import {
   Color3,
   Mesh,
   MeshBuilder,
-  PhysicsAggregate,
-  PhysicsShapeType,
+  Quaternion,
   Scene,
   StandardMaterial,
   Vector3,
@@ -15,19 +14,33 @@ import { Mount } from "./Mount";
 import { MetadataContainer } from "./MetaDataContainer";
 import { Player } from "../Player/Player";
 import { PaddleBoatControls } from "../Player/Controls/PaddleBoatControls";
-import { GenerationParams } from "../World/Generation/NoiseAndParameters/GenerationParams";
+import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
+import { BlockType } from "../World/BlockType";
+import { VoxelAabbCollider } from "../World/Collision/VoxelAabbCollider";
 
 export class AdvancedBoat implements IUsable {
+  #collisionHalfExtents = new Vector3(1.15, 0.6, 2.1);
   #boat!: Mesh;
-  #physicsAggregate!: PhysicsAggregate;
   #mount: Mount;
-  #waterLevel = GenerationParams.SEA_LEVEL;
   #buoyancyPoints: Vector3[] = [];
   #playersOnBoard: Set<Player> = new Set();
   #baseBuoyancyForce = 20;
   #playerWeightCompensation = 14; // Extra buoyancy per player
+  #mass = 10;
+  #gravity = -9.81;
+  #collisionStepSize = 0.25;
+  #collisionEpsilon = 0.001;
+  #buoyancyTorqueScale = 0.12;
+  #lockRoll = true;
+  #lockPitch = true;
+  #linearVelocity = Vector3.Zero();
+  #angularVelocity = Vector3.Zero();
+  #aabbMesh!: Mesh;
+  #voxelCollider: VoxelAabbCollider;
 
   static #boatControls: PaddleBoatControls;
+  static #collisionAabbDebugEnabled = false;
+  static readonly #instances = new Set<AdvancedBoat>();
 
   #submergedPoints = 0;
 
@@ -37,8 +50,17 @@ export class AdvancedBoat implements IUsable {
     waterLevel: number,
     position?: Vector3,
   ) {
-    this.createBoat(scene, position);
-    this.#waterLevel = waterLevel;
+    this.#voxelCollider = new VoxelAabbCollider(
+      this.#collisionHalfExtents,
+      (x, y, z) => {
+        const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
+        return blockId !== BlockType.Air && blockId !== BlockType.Water;
+      },
+      this.#collisionEpsilon,
+    );
+
+    this.createBoat(scene, position, waterLevel);
+    AdvancedBoat.#instances.add(this);
 
     this.#boat.metadata = new MetadataContainer();
     this.#boat.metadata.add("use", (player: Player) => this.use(player));
@@ -50,23 +72,25 @@ export class AdvancedBoat implements IUsable {
     this.#mount = new Mount(this.#boat, AdvancedBoat.#boatControls);
   }
 
-  private createBoat(scene: Scene, position?: Vector3): void {
-    // Create the physics root (invisible collision/buoyancy box)
-    const boatHull = MeshBuilder.CreateCylinder(
+  private createBoat(
+    scene: Scene,
+    position: Vector3 | undefined,
+    waterLevel: number,
+  ): void {
+    // AABB collision hull used by the physics body.
+    const boatHull = MeshBuilder.CreateBox(
       "boatHull",
       {
-        height: 1.2,
-        diameterTop: 2.5,
-        diameterBottom: 2,
-        tessellation: 8,
+        width: this.#collisionHalfExtents.x * 2,
+        height: this.#collisionHalfExtents.y * 2,
+        depth: this.#collisionHalfExtents.z * 2,
       },
       scene,
     );
 
-    boatHull.scaling = new Vector3(1.3, 1.3, 1.3);
     boatHull.position = new Vector3(
       position?.x || 0,
-      position?.y || this.#waterLevel + 10,
+      position?.y || waterLevel + 10,
       position?.z || 0,
     );
 
@@ -78,7 +102,34 @@ export class AdvancedBoat implements IUsable {
 
     // Set to false to see the physics shape during debugging, true to hide it
     boatHull.isVisible = false;
+    boatHull.rotationQuaternion = Quaternion.Identity();
     this.#boat = boatHull;
+
+    // Create a separate mesh for AABB debugging that stays axis-aligned
+    this.#aabbMesh = MeshBuilder.CreateBox(
+      "boatAABB",
+      {
+        width: this.#collisionHalfExtents.x * 2,
+        height: this.#collisionHalfExtents.y * 2,
+        depth: this.#collisionHalfExtents.z * 2,
+      },
+      scene,
+    );
+    this.#aabbMesh.position.copyFrom(this.#boat.position);
+    this.#aabbMesh.isPickable = false;
+    this.#aabbMesh.rotationQuaternion = Quaternion.Identity();
+    this.#aabbMesh.renderingGroupId = 1;
+    this.#aabbMesh.showBoundingBox = AdvancedBoat.#collisionAabbDebugEnabled;
+    this.#boat.onDisposeObservable.add(() => {
+      this.#aabbMesh.dispose();
+      AdvancedBoat.#instances.delete(this);
+    });
+
+    // Keep mesh transparent so scene bounding-box debug (F4) draws the AABB lines.
+    const aabbMaterial = new StandardMaterial("aabbMat", scene);
+    aabbMaterial.alpha = 0;
+    this.#aabbMesh.material = aabbMaterial;
+    this.#aabbMesh.isVisible = true;
 
     ImportMeshAsync("models/boat-row-small.glb", scene)
       .then((result) => {
@@ -98,36 +149,37 @@ export class AdvancedBoat implements IUsable {
   }
 
   private setupBuoyancyPoints(): void {
-    // Distributed points to ensure the boat stays level even with movement
-    const y = -1.5;
+    // Keep buoyancy sample points inside the AABB hull.
+    const y = -this.#collisionHalfExtents.y - 0.3;
+    const outerX = this.#collisionHalfExtents.x * 0.85;
+    const outerZ = this.#collisionHalfExtents.z * 0.85;
+    const innerX = this.#collisionHalfExtents.x * 0.45;
+    const innerZ = this.#collisionHalfExtents.z * 0.45;
     this.#buoyancyPoints = [
-      new Vector3(-3, y, -3), // Front left
-      new Vector3(3, y, -3), // Front right
-      new Vector3(-3, y, 3), // Back left
-      new Vector3(3, y, 3), // Back right
+      new Vector3(-outerX, y, -outerZ), // Front left
+      new Vector3(outerX, y, -outerZ), // Front right
+      new Vector3(-outerX, y, outerZ), // Back left
+      new Vector3(outerX, y, outerZ), // Back right
       new Vector3(0, y, 0), // Center
-      new Vector3(-1.5, y, -1.5),
-      new Vector3(1.5, y, -1.5),
-      new Vector3(-1.5, y, 1.5),
-      new Vector3(1.5, y, 1.5),
+      new Vector3(-innerX, y, -innerZ),
+      new Vector3(innerX, y, -innerZ),
+      new Vector3(-innerX, y, innerZ),
+      new Vector3(innerX, y, innerZ),
     ];
   }
 
   private setupAdvancedPhysics(scene: Scene): void {
-    this.#physicsAggregate = new PhysicsAggregate(
-      this.#boat,
-      PhysicsShapeType.BOX,
-      {
-        mass: 10,
-        restitution: 0.2,
-        friction: 10,
-      },
-      scene,
-    );
-
     scene.registerBeforeRender(() => {
+      const dt = scene.getEngine().getDeltaTime() / 1000;
+      if (dt <= 0) {
+        return;
+      }
+
       this.#submergedPoints = 0;
       const worldMatrix = this.#boat.getWorldMatrix();
+
+      // Gravity is always applied, buoyancy counters it when submerged.
+      this.#linearVelocity.y += this.#gravity * dt;
 
       // Calculate total buoyancy force needed based on player count
       const totalBuoyancyMultiplier =
@@ -141,14 +193,12 @@ export class AdvancedBoat implements IUsable {
           worldMatrix,
         );
 
-        if (worldPoint.y < this.#waterLevel) {
-          const submersion = this.#waterLevel - worldPoint.y;
+        const submersion = this.getWaterSubmersionAtPoint(worldPoint);
+        if (submersion > 0) {
           const buoyancyForce = submersion * totalBuoyancyMultiplier;
+          const buoyancyVector = new Vector3(0, buoyancyForce, 0);
 
-          this.#physicsAggregate.body.applyForce(
-            new Vector3(0, buoyancyForce, 0),
-            worldPoint,
-          );
+          this.applyForceAtPoint(buoyancyVector, worldPoint, dt);
 
           this.#submergedPoints++;
         }
@@ -156,19 +206,114 @@ export class AdvancedBoat implements IUsable {
 
       // Water Resistance (Drag)
       if (this.#submergedPoints > 0) {
-        const velocity = this.#physicsAggregate.body.getLinearVelocity();
-        const angularVelocity =
-          this.#physicsAggregate.body.getAngularVelocity();
-
-        // Linear dampening (slows forward/backward movement)
-        this.#physicsAggregate.body.setLinearVelocity(velocity.scale(0.98));
-
-        // Angular dampening (stops the boat from spinning infinitely)
-        this.#physicsAggregate.body.setAngularVelocity(
-          angularVelocity.scale(0.8),
-        );
+        const linearDamping = Math.pow(0.985, dt * 60);
+        const angularDamping = Math.pow(0.92, dt * 60);
+        this.#linearVelocity.scaleInPlace(linearDamping);
+        this.#angularVelocity.scaleInPlace(angularDamping);
+      } else {
+        const airLinearDamping = Math.pow(0.995, dt * 60);
+        const airAngularDamping = Math.pow(0.98, dt * 60);
+        this.#linearVelocity.scaleInPlace(airLinearDamping);
+        this.#angularVelocity.scaleInPlace(airAngularDamping);
       }
+
+      this.moveAxis("x", this.#linearVelocity.x * dt);
+      this.moveAxis("y", this.#linearVelocity.y * dt);
+      this.moveAxis("z", this.#linearVelocity.z * dt);
+      this.integrateRotation(dt);
+
+      // Update AABB debug mesh position to match the boat's final position for the frame
+      this.#aabbMesh.position.copyFrom(this.#boat.position);
     });
+  }
+
+  private applyForceAtPoint(
+    force: Vector3,
+    worldPoint: Vector3,
+    dt: number,
+  ): void {
+    const invMass = 1 / this.#mass;
+    const linearAcceleration = force.scale(invMass);
+    this.#linearVelocity.addInPlace(linearAcceleration.scale(dt));
+
+    const lever = worldPoint.subtract(this.#boat.position);
+    const torque = Vector3.Cross(lever, force).scale(
+      this.#buoyancyTorqueScale * invMass * dt,
+    );
+    this.#angularVelocity.addInPlace(torque);
+  }
+
+  private integrateRotation(dt: number): void {
+    const currentRotation =
+      this.#boat.rotationQuaternion ?? Quaternion.Identity();
+    const deltaRotation = Quaternion.RotationYawPitchRoll(
+      this.#angularVelocity.y * dt,
+      this.#lockPitch ? 0 : this.#angularVelocity.x * dt,
+      this.#lockRoll ? 0 : this.#angularVelocity.z * dt,
+    );
+    const nextRotation = deltaRotation.multiply(currentRotation);
+    nextRotation.normalize();
+    const euler = nextRotation.toEulerAngles();
+    if (this.#lockPitch) {
+      euler.x = 0;
+    }
+    if (this.#lockRoll) {
+      euler.z = 0;
+    }
+    this.#boat.rotationQuaternion = Quaternion.RotationYawPitchRoll(
+      euler.y,
+      euler.x,
+      euler.z,
+    );
+
+    if (this.#lockPitch) {
+      this.#angularVelocity.x = 0;
+    } else {
+      this.#angularVelocity.x *= 0.985;
+    }
+    if (this.#lockRoll) {
+      this.#angularVelocity.z = 0;
+    } else {
+      this.#angularVelocity.z *= 0.985;
+    }
+  }
+
+  private moveAxis(axis: "x" | "y" | "z", delta: number): void {
+    this.#voxelCollider.moveAxis(
+      this.#boat.position,
+      this.#linearVelocity,
+      axis,
+      delta,
+      this.#collisionStepSize,
+    );
+  }
+
+  private getWaterSubmersionAtPoint(worldPoint: Vector3): number {
+    const x = Math.floor(worldPoint.x);
+    const y = Math.floor(worldPoint.y);
+    const z = Math.floor(worldPoint.z);
+
+    const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
+    if (blockId !== BlockType.Water) {
+      return 0;
+    }
+
+    const aboveBlockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y + 1, z);
+    if (aboveBlockId === BlockType.Water) {
+      return 1;
+    }
+
+    const topOfWaterVoxel = y + 1;
+    return Math.max(0, Math.min(1, topOfWaterVoxel - worldPoint.y));
+  }
+
+  public applyImpulse(impulse: Vector3, worldPoint: Vector3): void {
+    this.applyForceAtPoint(impulse, worldPoint, 1);
+  }
+
+  public applyAngularImpulse(impulse: Vector3): void {
+    const invMass = 1 / this.#mass;
+    this.#angularVelocity.addInPlace(impulse.scale(invMass));
   }
 
   public addPlayer(player: Player): void {
@@ -187,9 +332,6 @@ export class AdvancedBoat implements IUsable {
   public get boatPosition(): Vector3 {
     return this.#boat.position.clone();
   }
-  public get physicsAggregate(): PhysicsAggregate {
-    return this.#physicsAggregate;
-  }
   public get mount(): Mount {
     return this.#mount;
   }
@@ -204,6 +346,14 @@ export class AdvancedBoat implements IUsable {
       boatBounds.boundingBox.maximumWorld.y,
       this.#boat.position.z,
     );
+  }
+
+  public static toggleCollisionAabbDebug(): void {
+    AdvancedBoat.#collisionAabbDebugEnabled =
+      !AdvancedBoat.#collisionAabbDebugEnabled;
+    AdvancedBoat.#instances.forEach((boat) => {
+      boat.#aabbMesh.showBoundingBox = AdvancedBoat.#collisionAabbDebugEnabled;
+    });
   }
 
   use(player: Player): void {

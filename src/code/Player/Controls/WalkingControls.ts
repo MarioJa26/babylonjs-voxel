@@ -14,6 +14,7 @@ import {
 } from "@/code/World/Texture/TextureDefinitions";
 import { Item } from "../Inventory/Item";
 import { DroppedItem } from "../Inventory/DroppedItem";
+import { VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollider";
 
 export class WalkingControls implements IControls<PlayerVehicle> {
   public pressedKeys = new Set<string>();
@@ -61,6 +62,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 
   public static KEY_F2 = ["f2"];
   public static KEY_F3 = ["f3"];
+  public static KEY_F4 = ["f4"];
   public static KEY_F5 = ["f5"];
   public static KEY_F6 = ["f6"];
 
@@ -179,8 +181,12 @@ export class WalkingControls implements IControls<PlayerVehicle> {
       this.#player.flashlight.toggle();
     } else if (WalkingControls.KEY_F2.includes(key)) {
       GlobalValues.DEBUG = !GlobalValues.DEBUG;
+      Map1.setDebug(GlobalValues.DEBUG);
     } else if (WalkingControls.KEY_F3.includes(key)) {
       PlayerHud.toggleDebugInfo();
+    } else if (WalkingControls.KEY_F4.includes(key)) {
+      Map1.mainScene.forceShowBoundingBoxes = false;
+      VoxelAabbCollider.toggleDebugEnabled();
     } else if (key === "l") {
       this.#player.position.y += 50;
     }

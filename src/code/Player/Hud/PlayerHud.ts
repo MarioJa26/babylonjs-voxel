@@ -45,7 +45,7 @@ export class PlayerHud {
     this.#scene = scene;
     this.#player = player;
     PlayerHud.#inventory = player.playerInventory;
-    new CrossHair(engine, playerCamera, scene);
+    new CrossHair(engine, playerCamera, scene, player);
     this.#overlayDiv = this.initializeHUD();
     this.createHotbarUI();
     this.createStatsUI();

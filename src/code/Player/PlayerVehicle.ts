@@ -15,6 +15,7 @@ import {
 import { Mount } from "../Entities/Mount";
 import { PlayerCamera } from "./PlayerCamera";
 import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
+import { VoxelAabbCollider } from "../World/Collision/VoxelAabbCollider";
 
 enum PlayerState {
   IN_AIR = "IN_AIR",
@@ -67,6 +68,7 @@ export class PlayerVehicle {
   private readonly colliderHalfHeight = 0.875;
   private readonly voxelStepSize = 0.25;
   private readonly collisionEpsilon = 0.001;
+  private readonly voxelCollider: VoxelAabbCollider;
   private voxelPosition = new Vector3(0, 165, 0);
   private voxelVelocity = Vector3.Zero();
   private voxelIsGrounded = false;
@@ -74,6 +76,24 @@ export class PlayerVehicle {
   constructor(scene: Scene, camera: PlayerCamera) {
     this.scene = scene;
     this.camera = camera;
+    this.voxelCollider = new VoxelAabbCollider(
+      new Vector3(
+        this.colliderHalfWidth,
+        this.colliderHalfHeight,
+        this.colliderHalfWidth,
+      ),
+      (x, y, z) => {
+        const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
+        return blockId !== 0 && blockId !== 30;
+      },
+      this.collisionEpsilon,
+      {
+        scene: this.scene,
+        name: "playerAABB",
+        position: this.voxelPosition,
+        renderingGroupId: 1,
+      },
+    );
     this.initializeCharacter();
   }
 
@@ -106,6 +126,7 @@ export class PlayerVehicle {
     this.configureCharacterController();
     this.voxelPosition.copyFrom(startPosition);
     this.voxelVelocity.copyFromFloats(0, 0, 0);
+    this.voxelCollider.syncDebugMesh(this.voxelPosition);
 
     this.camera.target = startPosition;
   }
@@ -161,6 +182,7 @@ export class PlayerVehicle {
       }
       this.voxelVelocity.copyFromFloats(0, 0, 0);
       this.#characterController.setVelocity(this.#zeroVelocity);
+      this.voxelCollider.syncDebugMesh(this.voxelPosition);
       return;
     }
 
@@ -182,9 +204,14 @@ export class PlayerVehicle {
         } else {
           this.#characterController.setVelocity(desiredVelocity);
         }
+        this.voxelCollider.syncDebugMesh(this.voxelPosition);
         return; // Skip normal physics integration
       }
       this.integrateMovement(deltaTime);
+    }
+
+    if (this.useVoxelCollision) {
+      this.voxelCollider.syncDebugMesh(this.voxelPosition);
     }
   }
 
@@ -549,6 +576,7 @@ export class PlayerVehicle {
     this.#characterController.setVelocity(this.#zeroVelocity);
     this.camera.moveWithPlayer(this.#lockedPosition);
     this.#displayCapsule.position.copyFrom(this.#lockedPosition);
+    this.voxelCollider.syncDebugMesh(this.voxelPosition);
   }
 
   public unlockMovement(): void {
@@ -589,6 +617,7 @@ export class PlayerVehicle {
     }
     this.camera.moveWithPlayer(restoredPosition);
     this.#displayCapsule.position.copyFrom(restoredPosition);
+    this.voxelCollider.syncDebugMesh(this.voxelPosition);
     return true;
   }
 
@@ -710,58 +739,17 @@ export class PlayerVehicle {
   }
 
   private moveVoxelAxis(axis: "x" | "y" | "z", delta: number): void {
-    if (delta === 0) return;
-    let remaining = delta;
-
-    while (Math.abs(remaining) > 0) {
-      const step =
-        Math.abs(remaining) > this.voxelStepSize
-          ? this.voxelStepSize * Math.sign(remaining)
-          : remaining;
-      const candidate = this.voxelPosition.clone();
-      if (axis === "x") candidate.x += step;
-      else if (axis === "y") candidate.y += step;
-      else candidate.z += step;
-
-      if (this.overlapsSolidVoxel(candidate)) {
-        if (axis === "x") this.voxelVelocity.x = 0;
-        else if (axis === "y") this.voxelVelocity.y = 0;
-        else this.voxelVelocity.z = 0;
-        break;
-      }
-
-      this.voxelPosition.copyFrom(candidate);
-      remaining -= step;
-    }
+    this.voxelCollider.moveAxis(
+      this.voxelPosition,
+      this.voxelVelocity,
+      axis,
+      delta,
+      this.voxelStepSize,
+    );
   }
 
   private overlapsSolidVoxel(position: Vector3): boolean {
-    const minX = position.x - this.colliderHalfWidth;
-    const maxX = position.x + this.colliderHalfWidth;
-    const minY = position.y - this.colliderHalfHeight;
-    const maxY = position.y + this.colliderHalfHeight;
-    const minZ = position.z - this.colliderHalfWidth;
-    const maxZ = position.z + this.colliderHalfWidth;
-
-    const x0 = Math.floor(minX + this.collisionEpsilon);
-    const x1 = Math.floor(maxX - this.collisionEpsilon);
-    const y0 = Math.floor(minY + this.collisionEpsilon);
-    const y1 = Math.floor(maxY - this.collisionEpsilon);
-    const z0 = Math.floor(minZ + this.collisionEpsilon);
-    const z1 = Math.floor(maxZ - this.collisionEpsilon);
-
-    for (let x = x0; x <= x1; x++) {
-      for (let y = y0; y <= y1; y++) {
-        for (let z = z0; z <= z1; z++) {
-          const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
-          if (blockId !== 0 && blockId !== 30) {
-            return true;
-          }
-        }
-      }
-    }
-
-    return false;
+    return this.voxelCollider.overlaps(position);
   }
 
   private checkVoxelGrounded(): boolean {

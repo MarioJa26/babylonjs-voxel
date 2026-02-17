@@ -309,7 +309,7 @@ export class ChunkMesher {
         "c_water",
         this.#waterMaterial!,
       );
-      chunk.waterMesh.isPickable = false;
+      chunk.waterMesh.isPickable = true;
     } else {
       chunk.waterMesh = null;
     }

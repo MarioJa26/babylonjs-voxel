@@ -1,4 +1,4 @@
-import { Matrix, PhysicsBody, Vector3 } from "@babylonjs/core";
+import { Matrix, Vector3 } from "@babylonjs/core";
 import { AdvancedBoat } from "../../Entities/AdvancedBoat";
 import { IControls } from "../../Inferface/IControls";
 import { Player } from "../Player";
@@ -7,7 +7,6 @@ export class JetSkiControls implements IControls<AdvancedBoat> {
   public pressedKeys = new Set<string>();
   #controlledEntity: AdvancedBoat;
   #inputDirection = new Vector3(0, 0, 0);
-  #physicsBody: PhysicsBody;
 
   #player: Player;
 
@@ -43,7 +42,6 @@ export class JetSkiControls implements IControls<AdvancedBoat> {
 
   constructor(paddleBoat: AdvancedBoat, player: Player) {
     this.#controlledEntity = paddleBoat;
-    this.#physicsBody = this.#controlledEntity.physicsAggregate.body;
     this.#inputDirection = player.playerVehicle.inputDirection;
     this.#player = player;
   }
@@ -155,10 +153,10 @@ export class JetSkiControls implements IControls<AdvancedBoat> {
   #handleUpDown(forward: Vector3, position: Vector3) {
     if (this.#inputDirection.y < 0) {
       forward.scaleInPlace(0.4);
-      this.#physicsBody.applyImpulse(this.#pushVectorUp, position);
+      this.#controlledEntity.applyImpulse(this.#pushVectorUp, position);
     } else if (this.#inputDirection.y > 0) {
       forward.scaleInPlace(0.4);
-      this.#physicsBody.applyImpulse(this.#pushVectorDown, position);
+      this.#controlledEntity.applyImpulse(this.#pushVectorDown, position);
     }
   }
   #handleLeftRight(
@@ -168,11 +166,11 @@ export class JetSkiControls implements IControls<AdvancedBoat> {
     angularRightWorld: Vector3
   ) {
     if (this.#inputDirection.x > 0) {
-      this.#physicsBody.applyImpulse(forward, position);
-      this.#physicsBody.applyAngularImpulse(angularRightWorld);
+      this.#controlledEntity.applyImpulse(forward, position);
+      this.#controlledEntity.applyAngularImpulse(angularRightWorld);
     } else if (this.#inputDirection.x < 0) {
-      this.#physicsBody.applyImpulse(forward, position);
-      this.#physicsBody.applyAngularImpulse(angularLeftWorld);
+      this.#controlledEntity.applyImpulse(forward, position);
+      this.#controlledEntity.applyAngularImpulse(angularLeftWorld);
     }
   }
   #pressedKeysHas(keys: string[]) {

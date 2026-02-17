@@ -13,12 +13,14 @@ import { MetadataContainer } from "@/code/Entities/MetaDataContainer";
 import { Map1 } from "@/code/Maps/Map1";
 import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollider";
 
 export class DroppedItem implements IUsable {
   #boxMesh: Mesh;
   #item: Item;
   #velocity = Vector3.Zero();
   #halfSize = 0.25;
+  #voxelCollider!: VoxelAabbCollider;
   #observer: Observer<Scene> | null = null;
   static readonly GRAVITY = -18;
   static readonly STEP_SIZE = 0.2;
@@ -59,6 +61,20 @@ export class DroppedItem implements IUsable {
     this.#boxMesh.renderingGroupId = 1;
     this.#halfSize = size * 0.5;
     this.#item = item;
+    this.#voxelCollider = new VoxelAabbCollider(
+      new Vector3(this.#halfSize, this.#halfSize, this.#halfSize),
+      (x, y, z) => {
+        const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
+        return blockId !== 0 && blockId !== 30;
+      },
+      DroppedItem.EPSILON,
+      {
+        scene: Map1.mainScene,
+        name: "droppedItemAABB",
+        position: this.#boxMesh.position,
+        renderingGroupId: 1,
+      },
+    );
 
     this.#observer = Map1.mainScene.onBeforeRenderObservable.add(() => {
       this.#updatePhysics();
@@ -80,6 +96,7 @@ export class DroppedItem implements IUsable {
       Map1.mainScene.onBeforeRenderObservable.remove(this.#observer);
       this.#observer = null;
     }
+    this.#voxelCollider.dispose();
     this.#boxMesh.dispose();
   }
 
@@ -123,58 +140,17 @@ export class DroppedItem implements IUsable {
   }
 
   #moveAxis(axis: "x" | "y" | "z", delta: number): void {
-    if (delta === 0) return;
-    let remaining = delta;
-
-    while (Math.abs(remaining) > 0) {
-      const step =
-        Math.abs(remaining) > DroppedItem.STEP_SIZE
-          ? DroppedItem.STEP_SIZE * Math.sign(remaining)
-          : remaining;
-
-      const pos = this.#boxMesh.position.clone();
-      if (axis === "x") pos.x += step;
-      else if (axis === "y") pos.y += step;
-      else pos.z += step;
-
-      if (this.#overlapsSolid(pos)) {
-        if (axis === "x") this.#velocity.x = 0;
-        else if (axis === "y") this.#velocity.y = 0;
-        else this.#velocity.z = 0;
-        break;
-      }
-
-      this.#boxMesh.position.copyFrom(pos);
-      remaining -= step;
-    }
+    this.#voxelCollider.moveAxis(
+      this.#boxMesh.position,
+      this.#velocity,
+      axis,
+      delta,
+      DroppedItem.STEP_SIZE,
+    );
   }
 
   #overlapsSolid(position: Vector3): boolean {
-    const minX = position.x - this.#halfSize;
-    const maxX = position.x + this.#halfSize;
-    const minY = position.y - this.#halfSize;
-    const maxY = position.y + this.#halfSize;
-    const minZ = position.z - this.#halfSize;
-    const maxZ = position.z + this.#halfSize;
-
-    const x0 = Math.floor(minX + DroppedItem.EPSILON);
-    const x1 = Math.floor(maxX - DroppedItem.EPSILON);
-    const y0 = Math.floor(minY + DroppedItem.EPSILON);
-    const y1 = Math.floor(maxY - DroppedItem.EPSILON);
-    const z0 = Math.floor(minZ + DroppedItem.EPSILON);
-    const z1 = Math.floor(maxZ - DroppedItem.EPSILON);
-
-    for (let x = x0; x <= x1; x++) {
-      for (let y = y0; y <= y1; y++) {
-        for (let z = z0; z <= z1; z++) {
-          const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
-          if (blockId !== 0 && blockId !== 30) {
-            return true;
-          }
-        }
-      }
-    }
-    return false;
+    return this.#voxelCollider.overlaps(position);
   }
 
   #isGrounded(): boolean {

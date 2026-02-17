@@ -8,7 +8,6 @@ import {
 //import { Voronoi } from "./NoiseAndParameters/Voronoi";
 import { Spline } from "./NoiseAndParameters/Spline";
 import { RiverGenerator } from "./RiverGeneration";
-import { SettingParams } from "../SettingParams";
 import { Biome } from "./Biome/BiomeTypes";
 import { getBiomeFor } from "./Biome/Biomes";
 

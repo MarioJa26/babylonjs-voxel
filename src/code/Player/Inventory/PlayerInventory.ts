@@ -6,6 +6,9 @@ import { ItemSlot } from "./ItemSlot";
 import { InventoryControls } from "../Controls/InventoryControls";
 import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
 import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
+import { CrossHair } from "../Hud/CrossHair";
+import { BlockType } from "@/code/World/BlockType";
+import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { AdvancedBoat } from "@/code/Entities/AdvancedBoat";
 import { Map1 } from "@/code/Maps/Map1";
 import { GenerationParams } from "@/code/World/Generation/NoiseAndParameters/GenerationParams";
@@ -113,14 +116,67 @@ export class PlayerInventory {
     );
     boat.stackSize = 1;
     boat.use = (player: Player) => {
-      const ray: Ray = player.playerCamera.playerCamera.getForwardRay(200);
-      const pick = Map1.mainScene.pickWithRay(ray);
+      const hit = CrossHair.pickMesh(player);
+      if (!hit) return;
+
+      const blockAtHit = ChunkLoadingSystem.getBlockByWorldCoords(
+        hit.x,
+        hit.y,
+        hit.z,
+      );
+      const blockBelowHit = ChunkLoadingSystem.getBlockByWorldCoords(
+        hit.x,
+        hit.y - 1,
+        hit.z,
+      );
+
+      // We must place the boat on water, or on an air block right above water.
+      if (blockAtHit !== BlockType.Water && blockBelowHit !== BlockType.Water) {
+        console.log("Boat must be placed on water.");
+        return;
+      }
+
+      // Place the boat on top of the water, not inside it.
+      const spawnY = blockAtHit === BlockType.Water ? hit.y + 1 : hit.y;
+
+      // The boat's center will be at this position.
+      const spawnPos = new Vector3(hit.x + 0.5, spawnY + 0.5, hit.z + 0.5);
+
+      // The boat's collision half-extents are (1.15, 0.6, 2.1).
+      // We need space for the boat to spawn without being inside a solid block.
+      // We check a 3x2x5 area (width, height, depth).
+      const halfWidth = 1; // ceil(1.15) -> 2, so 1 block on each side. Total 3 wide.
+      const halfHeight = 1; // ceil(0.6) -> 1, so 1 block up. Total 2 high.
+      const halfDepth = 2; // ceil(2.1) -> 3, so 2 blocks on each side. Total 5 deep.
+
+      for (let y = 0; y < halfHeight * 2; y++) {
+        for (let x = -halfWidth; x <= halfWidth; x++) {
+          for (let z = -halfDepth; z <= halfDepth; z++) {
+            // Check around the block where the boat will be centered
+            const checkX = hit.x + x;
+            const checkY = spawnY + y;
+            const checkZ = hit.z + z;
+
+            const blockId = ChunkLoadingSystem.getBlockByWorldCoords(
+              checkX,
+              checkY,
+              checkZ,
+            );
+
+            // We can only place in air or water.
+            if (blockId !== BlockType.Air && blockId !== BlockType.Water) {
+              console.log("Not enough space to place the boat.");
+              return;
+            }
+          }
+        }
+      }
 
       new AdvancedBoat(
         Map1.mainScene,
         player,
         GenerationParams.SEA_LEVEL,
-        pick?.pickedPoint || player.position,
+        spawnPos,
       );
     };
     boat.name = "Boat";

@@ -80,15 +80,20 @@ export class Item implements IUsable {
       console.log("Clicked on protected block!");
       return;
     }
-    const hit = CrossHair.pickMesh(player);
-    if (!hit) return;
+
+    const pos = CrossHair.getPlacementPosition(player);
+    if (!pos) return;
+
+    const x = pos.x;
+    const y = pos.y;
+    const z = pos.z;
 
     const item =
       player.playerInventory.inventory[0][player.playerHud.selectedHotbarSlot]
         ?.item;
 
     if (item) {
-      ChunkLoadingSystem.setBlock(hit.x, hit.y, hit.z, item.itemId);
+      ChunkLoadingSystem.setBlock(x, y, z, item.itemId);
     }
   }
 

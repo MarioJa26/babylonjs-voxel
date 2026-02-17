@@ -1,7 +1,7 @@
 import {
   Color3,
-  Color4,
   Mesh,
+  ShaderMaterial,
   MeshBuilder,
   Scene,
   StandardMaterial,
@@ -11,7 +11,6 @@ import { Player } from "../Player/Player";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
 import { ChunkMesher } from "../World/Chunk/ChunckMesher";
 import { GlobalValues } from "../World/GlobalValues";
-import { CrossHair } from "../Player/Hud/CrossHair";
 import { TextureDefinitions } from "../World/Texture/TextureDefinitions";
 import { GenerationParams } from "../World/Generation/NoiseAndParameters/GenerationParams";
 import { SettingParams } from "../World/SettingParams";
@@ -25,7 +24,6 @@ export class Map1 {
   public static mainScene: Scene;
   public static environment: WorldEnvironment;
   #player: Player;
-  #blockHighlightMesh!: Mesh;
   #playerStatePersistence: PlayerStatePersistence | null = null;
   #playerLoadingGate: PlayerLoadingGate | null = null;
 
@@ -39,7 +37,10 @@ export class Map1 {
       Map1.mainScene,
       this.#player,
     );
-    this.#playerLoadingGate = new PlayerLoadingGate(Map1.mainScene, this.#player);
+    this.#playerLoadingGate = new PlayerLoadingGate(
+      Map1.mainScene,
+      this.#player,
+    );
 
     Map1.mainScene.onDisposeObservable.add(() => {
       this.#playerStatePersistence?.dispose();
@@ -54,7 +55,6 @@ export class Map1 {
     });
 
     scene.onBeforeRenderObservable.add(() => {
-      this.updateBlockHighlight();
       Map1.environment.update();
       ChunkMesher.updateGlobalUniforms(scene.getFrameId());
       this.#playerStatePersistence?.update();
@@ -96,55 +96,15 @@ export class Map1 {
     if (Map1.environment) Map1.environment.isPaused = v;
   }
 
-  private updateBlockHighlight() {
-    if (this.#player.playerVehicle instanceof AdvancedBoat) return;
-
-    if (!this.#blockHighlightMesh) {
-      // Create the highlight mesh if it doesn't exist
-      this.#blockHighlightMesh = MeshBuilder.CreateBox(
-        "blockHighlight",
-        { size: 1.005 },
-        Map1.mainScene,
-      );
-      this.#blockHighlightMesh.isPickable = false;
-      this.#blockHighlightMesh.renderingGroupId = 1;
-
-      // Create a transparent material for the box faces
-      const highlightMaterial = new StandardMaterial(
-        "highlightMat",
-        Map1.mainScene,
-      );
-      highlightMaterial.alpha = SettingParams.HIGHLIGHT_ALPHA;
-      highlightMaterial.diffuseColor = new Color3(
-        SettingParams.HIGHLIGHT_COLOR[0],
-        SettingParams.HIGHLIGHT_COLOR[1],
-        SettingParams.HIGHLIGHT_COLOR[2],
-      );
-      this.#blockHighlightMesh.material = highlightMaterial;
-
-      this.#blockHighlightMesh.enableEdgesRendering();
-      this.#blockHighlightMesh.edgesWidth = SettingParams.HIGHLIGHT_EDGE_WIDTH;
-      this.#blockHighlightMesh.edgesColor = new Color4(
-        SettingParams.HIGHLIGHT_EDGE_COLOR[0],
-        SettingParams.HIGHLIGHT_EDGE_COLOR[1],
-        SettingParams.HIGHLIGHT_EDGE_COLOR[2],
-        SettingParams.HIGHLIGHT_EDGE_COLOR[3],
-      );
-      this.#blockHighlightMesh.visibility = 0; // Initially hidden
-    }
-    const hit = CrossHair.pickTarget(this.#player);
-
-    if (hit) {
-      this.#blockHighlightMesh.position.set(
-        Math.floor(hit.x) + 0.5,
-        Math.floor(hit.y) + 0.5,
-        Math.floor(hit.z) + 0.5,
-      );
-      this.#blockHighlightMesh.visibility = 1;
-    } else {
-      // Hide if nothing is hit
-      this.#blockHighlightMesh.visibility = 0;
-    }
+  public static setDebug(enabled: boolean) {
+    this.mainScene.meshes.forEach((mesh) => {
+      if (
+        mesh.material instanceof ShaderMaterial &&
+        mesh.name.startsWith("c_")
+      ) {
+        mesh.material.wireframe = enabled;
+      }
+    });
   }
 
   private CreateScene(scene: Scene): Scene {
