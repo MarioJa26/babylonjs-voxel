@@ -16,7 +16,7 @@ import { Player } from "../Player/Player";
 import { PaddleBoatControls } from "../Player/Controls/PaddleBoatControls";
 import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
 import { BlockType } from "../World/BlockType";
-import { VoxelAabbCollider } from "../World/Collision/VoxelAabbCollider";
+import { VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollider";
 
 export class AdvancedBoat implements IUsable {
   #collisionHalfExtents = new Vector3(1.15, 0.6, 2.1);
@@ -35,12 +35,9 @@ export class AdvancedBoat implements IUsable {
   #lockPitch = true;
   #linearVelocity = Vector3.Zero();
   #angularVelocity = Vector3.Zero();
-  #aabbMesh!: Mesh;
-  #voxelCollider: VoxelAabbCollider;
+  #voxelCollider!: VoxelAabbCollider;
 
   static #boatControls: PaddleBoatControls;
-  static #collisionAabbDebugEnabled = false;
-  static readonly #instances = new Set<AdvancedBoat>();
 
   #submergedPoints = 0;
 
@@ -50,17 +47,7 @@ export class AdvancedBoat implements IUsable {
     waterLevel: number,
     position?: Vector3,
   ) {
-    this.#voxelCollider = new VoxelAabbCollider(
-      this.#collisionHalfExtents,
-      (x, y, z) => {
-        const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
-        return blockId !== BlockType.Air && blockId !== BlockType.Water;
-      },
-      this.#collisionEpsilon,
-    );
-
     this.createBoat(scene, position, waterLevel);
-    AdvancedBoat.#instances.add(this);
 
     this.#boat.metadata = new MetadataContainer();
     this.#boat.metadata.add("use", (player: Player) => this.use(player));
@@ -105,31 +92,21 @@ export class AdvancedBoat implements IUsable {
     boatHull.rotationQuaternion = Quaternion.Identity();
     this.#boat = boatHull;
 
-    // Create a separate mesh for AABB debugging that stays axis-aligned
-    this.#aabbMesh = MeshBuilder.CreateBox(
-      "boatAABB",
-      {
-        width: this.#collisionHalfExtents.x * 2,
-        height: this.#collisionHalfExtents.y * 2,
-        depth: this.#collisionHalfExtents.z * 2,
+    this.#voxelCollider = new VoxelAabbCollider(
+      this.#collisionHalfExtents,
+      (x, y, z) => {
+        const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
+        return blockId !== BlockType.Air && blockId !== BlockType.Water;
       },
-      scene,
+      this.#collisionEpsilon,
+      {
+        scene,
+        name: "boatAABB",
+        position: this.#boat.position,
+        renderingGroupId: 1,
+      },
     );
-    this.#aabbMesh.position.copyFrom(this.#boat.position);
-    this.#aabbMesh.isPickable = false;
-    this.#aabbMesh.rotationQuaternion = Quaternion.Identity();
-    this.#aabbMesh.renderingGroupId = 1;
-    this.#aabbMesh.showBoundingBox = AdvancedBoat.#collisionAabbDebugEnabled;
-    this.#boat.onDisposeObservable.add(() => {
-      this.#aabbMesh.dispose();
-      AdvancedBoat.#instances.delete(this);
-    });
-
-    // Keep mesh transparent so scene bounding-box debug (F4) draws the AABB lines.
-    const aabbMaterial = new StandardMaterial("aabbMat", scene);
-    aabbMaterial.alpha = 0;
-    this.#aabbMesh.material = aabbMaterial;
-    this.#aabbMesh.isVisible = true;
+    this.#boat.onDisposeObservable.add(() => this.#voxelCollider.dispose());
 
     ImportMeshAsync("models/boat-row-small.glb", scene)
       .then((result) => {
@@ -222,8 +199,7 @@ export class AdvancedBoat implements IUsable {
       this.moveAxis("z", this.#linearVelocity.z * dt);
       this.integrateRotation(dt);
 
-      // Update AABB debug mesh position to match the boat's final position for the frame
-      this.#aabbMesh.position.copyFrom(this.#boat.position);
+      this.#voxelCollider.syncDebugMesh(this.#boat.position);
     });
   }
 
@@ -346,14 +322,6 @@ export class AdvancedBoat implements IUsable {
       boatBounds.boundingBox.maximumWorld.y,
       this.#boat.position.z,
     );
-  }
-
-  public static toggleCollisionAabbDebug(): void {
-    AdvancedBoat.#collisionAabbDebugEnabled =
-      !AdvancedBoat.#collisionAabbDebugEnabled;
-    AdvancedBoat.#instances.forEach((boat) => {
-      boat.#aabbMesh.showBoundingBox = AdvancedBoat.#collisionAabbDebugEnabled;
-    });
   }
 
   use(player: Player): void {

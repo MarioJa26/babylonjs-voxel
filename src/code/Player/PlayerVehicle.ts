@@ -15,7 +15,7 @@ import {
 import { Mount } from "../Entities/Mount";
 import { PlayerCamera } from "./PlayerCamera";
 import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
-import { VoxelAabbCollider } from "../World/Collision/VoxelAabbCollider";
+import { VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollider";
 
 enum PlayerState {
   IN_AIR = "IN_AIR",
