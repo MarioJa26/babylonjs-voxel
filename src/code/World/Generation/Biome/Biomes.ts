@@ -302,6 +302,7 @@ export function getBiomeFor(
   humidity: number,
   continentalness: number,
   river: number,
+  terrainBaseHeight: number,
 ): Biome {
   if (river < 0.1 && continentalness > -0.28 && continentalness < 0.67) {
     return RIVER;
@@ -309,7 +310,10 @@ export function getBiomeFor(
   if (continentalness < -0.93) {
     return FLOATING_ISLANDS;
   }
-  if (continentalness < -0.33) {
+  if (
+    continentalness < -0.33 &&
+    terrainBaseHeight <= GenerationParams.SEA_LEVEL
+  ) {
     return OCEAN;
   }
 

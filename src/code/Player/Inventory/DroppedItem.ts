@@ -137,6 +137,9 @@ export class DroppedItem implements IUsable {
     if (Math.abs(this.#velocity.z) < DroppedItem.MIN_SPEED) {
       this.#velocity.z = 0;
     }
+
+    // Sync debug AABB once per frame (not per collision sub-step).
+    this.#voxelCollider.syncDebugMesh(this.#boxMesh.position);
   }
 
   #moveAxis(axis: "x" | "y" | "z", delta: number): void {

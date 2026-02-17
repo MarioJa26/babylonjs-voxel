@@ -32,7 +32,7 @@ export class RiverGenerator {
       { t: 0, v: -25 },
       { t: 0.02, v: -20 },
       { t: 0.1, v: 0 },
-      { t: 1.0, v: 0 },
+      { t: 1.0, v: 125 },
     ]);
   }
 
@@ -40,7 +40,7 @@ export class RiverGenerator {
     worldX: number,
     worldY: number,
     worldZ: number,
-    riverNoise: number
+    riverNoise: number,
   ): boolean {
     const radiusAtLocation = this.riverSpline.getValue(Math.abs(riverNoise));
 
@@ -61,7 +61,7 @@ export class RiverGenerator {
   public getRiverNoise(x: number, z: number): number {
     return this.riverNoise(
       x * GenerationParams.RIVER_SCALE,
-      z * GenerationParams.RIVER_SCALE
+      z * GenerationParams.RIVER_SCALE,
     );
   }
 

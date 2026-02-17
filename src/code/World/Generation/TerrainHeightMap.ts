@@ -104,11 +104,11 @@ export class TerrainHeightMap {
     this.peaksAndValleysSpline = new Spline([
       { t: -1.0, v: -60 },
       { t: -0.6, v: -25 },
-      { t: -0.2, v: -5 },
-      { t: 0.2, v: 5 },
-      { t: 0.5, v: 10 },
-      { t: 0.8, v: 30 },
-      { t: 1.0, v: 45 },
+      { t: -0.2, v: -15 },
+      { t: 0.2, v: 15 },
+      { t: 0.5, v: 30 },
+      { t: 0.8, v: 60 },
+      { t: 1.0, v: 80 },
     ]);
   }
 
@@ -147,12 +147,18 @@ export class TerrainHeightMap {
     if (continentalness > 0.07) {
       effectiveRiver = 1.0;
     }
+    const terrainBaseHeight =
+      GenerationParams.SEA_LEVEL +
+      this.continentalnessSpline.getValue(continentalness);
+    const terrainShapedHeight =
+      terrainBaseHeight + this.computeDetail(x, z, terrainBaseHeight);
 
     const biome = getBiomeFor(
       temperature,
       humidity,
       continentalness,
       effectiveRiver,
+      terrainShapedHeight,
     );
 
     if (this.biomeCache.size > this.MAX_CACHE_SIZE) {

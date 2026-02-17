@@ -1,4 +1,5 @@
 import {
+  Color4,
   Mesh,
   MeshBuilder,
   Quaternion,
@@ -20,7 +21,9 @@ export class VoxelAabbCollider {
   #halfExtents: Vector3;
   #epsilon: number;
   #isSolidBlockAt: IsSolidBlockAt;
+  #tmpCandidate = Vector3.Zero();
   #debugMesh: Mesh | null = null;
+  #debugOptions: VoxelAabbDebugOptions | null = null;
   static #debugEnabled = false;
   static readonly #debugColliders = new Set<VoxelAabbCollider>();
 
@@ -34,12 +37,18 @@ export class VoxelAabbCollider {
     this.#isSolidBlockAt = isSolidBlockAt;
     this.#epsilon = epsilon;
     if (debugOptions) {
-      this.#createDebugMesh(debugOptions);
+      this.#debugOptions = debugOptions;
       VoxelAabbCollider.#debugColliders.add(this);
+      if (VoxelAabbCollider.#debugEnabled) {
+        this.#createDebugMesh(debugOptions);
+      }
     }
   }
 
   #createDebugMesh(options: VoxelAabbDebugOptions): void {
+    if (this.#debugMesh && !this.#debugMesh.isDisposed()) {
+      return;
+    }
     const name = options.name ?? "voxelAabbDebug";
     this.#debugMesh = MeshBuilder.CreateBox(
       name,
@@ -58,12 +67,20 @@ export class VoxelAabbCollider {
 
     const material = new StandardMaterial(`${name}Mat`, options.scene);
     material.alpha = 0;
+    material.disableLighting = true;
     this.#debugMesh.material = material;
     this.#debugMesh.isVisible = true;
-    this.#debugMesh.showBoundingBox = VoxelAabbCollider.#debugEnabled;
+    this.#debugMesh.enableEdgesRendering();
+    this.#debugMesh.edgesWidth = 2;
+    this.#debugMesh.edgesColor = new Color4(0.2, 1, 0.2, 1);
     if (options.position) {
       this.#debugMesh.position.copyFrom(options.position);
     }
+  }
+
+  #ensureDebugMesh(): void {
+    if (!this.#debugOptions) return;
+    this.#createDebugMesh(this.#debugOptions);
   }
 
   public overlaps(position: Vector3): boolean {
@@ -110,7 +127,8 @@ export class VoxelAabbCollider {
           ? stepSize * Math.sign(remaining)
           : remaining;
 
-      const candidate = position.clone();
+      const candidate = this.#tmpCandidate;
+      candidate.copyFrom(position);
       if (axis === "x") candidate.x += step;
       else if (axis === "y") candidate.y += step;
       else candidate.z += step;
@@ -123,12 +141,14 @@ export class VoxelAabbCollider {
       }
 
       position.copyFrom(candidate);
-      this.syncDebugMesh(position);
       remaining -= step;
     }
   }
 
   public syncDebugMesh(position: Vector3): void {
+    if (VoxelAabbCollider.#debugEnabled) {
+      this.#ensureDebugMesh();
+    }
     if (!this.#debugMesh || this.#debugMesh.isDisposed()) return;
     this.#debugMesh.position.copyFrom(position);
   }
@@ -139,6 +159,7 @@ export class VoxelAabbCollider {
       this.#debugMesh.dispose();
     }
     this.#debugMesh = null;
+    this.#debugOptions = null;
   }
 
   public static toggleDebugEnabled(): void {
@@ -148,8 +169,11 @@ export class VoxelAabbCollider {
   public static setDebugEnabled(enabled: boolean): void {
     VoxelAabbCollider.#debugEnabled = enabled;
     VoxelAabbCollider.#debugColliders.forEach((collider) => {
-      if (collider.#debugMesh && !collider.#debugMesh.isDisposed()) {
-        collider.#debugMesh.showBoundingBox = enabled;
+      if (enabled) {
+        collider.#ensureDebugMesh();
+      } else if (collider.#debugMesh && !collider.#debugMesh.isDisposed()) {
+        collider.#debugMesh.dispose();
+        collider.#debugMesh = null;
       }
     });
   }
