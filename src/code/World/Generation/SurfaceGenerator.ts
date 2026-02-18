@@ -105,7 +105,6 @@ export class SurfaceGenerator {
             worldY,
             worldZ,
             terrainHeight,
-            biome,
           );
 
           if (isTunnel) {
@@ -125,7 +124,6 @@ export class SurfaceGenerator {
               worldY + 1,
               worldZ,
               terrainHeight,
-              biome,
             );
 
             let blockId = 29; // Use block 29 for all underground stone
@@ -199,22 +197,11 @@ export class SurfaceGenerator {
 
         const baseHeight = this.getFinalTerrainHeight(worldX, worldZ);
 
-        let scanHeight = baseHeight;
-        if (colBiome.name === "Floating_Islands") {
-          scanHeight += 128;
-        }
-
         // Find the actual surface height using density
         let surfaceY = -Infinity;
         // Scan range around base height. 3D noise amplitude is approx +/- 8.
-        for (let y = scanHeight + 16; y >= scanHeight - 16; y--) {
-          const density = this.getDensity(
-            worldX,
-            y,
-            worldZ,
-            baseHeight,
-            colBiome,
-          );
+        for (let y = baseHeight + 16; y >= baseHeight - 16; y--) {
+          const density = this.getDensity(worldX, y, worldZ, baseHeight);
           if (density > 0) {
             surfaceY = y;
             break;
@@ -345,27 +332,8 @@ export class SurfaceGenerator {
     y: number,
     z: number,
     baseHeight: number,
-    biome: Biome,
+    //biome: Biome,
   ): number {
-    if (biome.name === "Floating_Islands") {
-      // 1. Floating islands logic: Create blobs around the base height
-      const islandOffset = 60;
-      const islandBaseHeight = baseHeight + islandOffset;
-
-      let islandDensity = -100;
-      if (Math.abs(islandBaseHeight - y) < 50) {
-        const noise = this.densityNoise(x * 0.02, y * 0.05, z * 0.02);
-        islandDensity = noise * 30 - Math.abs(islandBaseHeight - y) * 0.8;
-      }
-
-      // 2. Floor logic: Ensure there is terrain below (e.g. ocean floor)
-      const floorHeight = this.params.SEA_LEVEL - 15;
-      const floorNoise = this.densityNoise(x * 0.04, y * 0.04, z * 0.04);
-      const floorDensity = floorHeight - y + floorNoise * 8;
-
-      return Math.max(islandDensity, floorDensity);
-    }
-
     const relativeHeight = baseHeight - y;
     // Optimization: Skip noise calculation if far from the surface approximation.
     // The noise amplitude is 8.

@@ -164,11 +164,11 @@ const SWAMP: Biome = {
 const GROVE: Biome = {
   name: "Grove",
   topBlock: 14, // Grass
-  undergroundBlock: 8, // Dirt/Mud
+  undergroundBlock: 1, // Dirt/Mud
   stoneBlock: 1,
   canSpawnTrees: true,
   treeDensity: 0.08,
-  beachBlock: 57, // Muddy beach
+  beachBlock: 3, // Muddy beach
   seafloorBlock: 14, // Muddy bottom
   terrainScale: GenerationParams.TERRAIN_SCALE * 16,
   persistence: 0.33,
@@ -222,7 +222,7 @@ const ROCKY_SHORE: Biome = {
 
 const OCEAN: Biome = {
   name: "Ocean",
-  topBlock: 46, // Grass
+  topBlock: 46,
   undergroundBlock: 46, // Dirt/Mud
   stoneBlock: 1,
   canSpawnTrees: true,
@@ -258,13 +258,13 @@ const RIVER: Biome = {
   },
 };
 
-const FLOATING_ISLANDS: Biome = {
-  name: "Floating_Islands",
+const GRASS_LAND: Biome = {
+  name: "Grass_Land",
   topBlock: 15, // Grass
   undergroundBlock: 1, // Stone
   stoneBlock: 1,
-  canSpawnTrees: true,
-  treeDensity: 0.02,
+  canSpawnTrees: false,
+  treeDensity: 0.0,
   beachBlock: 1, // Stone beach (no sand in sky)
   seafloorBlock: 1,
   terrainScale: GenerationParams.TERRAIN_SCALE,
@@ -304,15 +304,15 @@ export function getBiomeFor(
   river: number,
   terrainBaseHeight: number,
 ): Biome {
+  /*
   if (river < 0.1 && continentalness > -0.28 && continentalness < 0.67) {
     return RIVER;
   }
-  if (continentalness < -0.93) {
-    return FLOATING_ISLANDS;
-  }
+  */
+
   if (
     continentalness < -0.33 &&
-    terrainBaseHeight <= GenerationParams.SEA_LEVEL
+    terrainBaseHeight < GenerationParams.SEA_LEVEL
   ) {
     return OCEAN;
   }
@@ -320,7 +320,10 @@ export function getBiomeFor(
   if (continentalness > -0.3 && continentalness < -0.1) {
     if (temperature < 0.15) {
       return ROCKY_SHORE; // Temperate and humid
+    } else if (temperature < 0.4) {
+      return GRASS_LAND;
     }
+
     return GROVE;
   }
 

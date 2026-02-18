@@ -20,6 +20,16 @@ import { Map1 } from "@/code/Maps/Map1";
 import { PlayerCamera } from "../PlayerCamera";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { SettingParams } from "@/code/World/SettingParams";
+import { BlockType } from "@/code/World/BlockType";
+
+type BlockRaycastHit = {
+  x: number;
+  y: number;
+  z: number;
+  nx: number;
+  ny: number;
+  nz: number;
+};
 
 export class CrossHair {
   readonly #scene: Scene;
@@ -174,6 +184,125 @@ export class CrossHair {
     });
   }
 
+  static #sharedRay: Ray | null = null;
+  static readonly #sharedHit: BlockRaycastHit = {
+    x: 0,
+    y: 0,
+    z: 0,
+    nx: 0,
+    ny: 0,
+    nz: 0,
+  };
+
+  static #getSharedForwardRay(player: Player, length: number): Ray {
+    if (!this.#sharedRay) {
+      this.#sharedRay = new Ray(new Vector3(0, 0, 0), new Vector3(0, 0, 1), 1);
+    }
+
+    player.playerCamera.playerCamera.getForwardRayToRef(
+      this.#sharedRay,
+      length,
+    );
+    return this.#sharedRay;
+  }
+
+  static #raycastFirstBlock(
+    player: Player,
+    shouldHitBlockId: (blockId: number) => boolean,
+  ): BlockRaycastHit | null {
+    const ray = this.#getSharedForwardRay(player, Player.REACH_DISTANCE);
+
+    const ox = ray.origin.x;
+    const oy = ray.origin.y;
+    const oz = ray.origin.z;
+    const dx = ray.direction.x;
+    const dy = ray.direction.y;
+    const dz = ray.direction.z;
+
+    const maxDistance = ray.length;
+    if (!(maxDistance > 0)) return null;
+
+    let x = Math.floor(ox);
+    let y = Math.floor(oy);
+    let z = Math.floor(oz);
+
+    const stepX = dx > 0 ? 1 : dx < 0 ? -1 : 0;
+    const stepY = dy > 0 ? 1 : dy < 0 ? -1 : 0;
+    const stepZ = dz > 0 ? 1 : dz < 0 ? -1 : 0;
+
+    const invDx = stepX === 0 ? Infinity : 1 / Math.abs(dx);
+    const invDy = stepY === 0 ? Infinity : 1 / Math.abs(dy);
+    const invDz = stepZ === 0 ? Infinity : 1 / Math.abs(dz);
+
+    const nextBoundaryX = stepX > 0 ? x + 1 : x;
+    const nextBoundaryY = stepY > 0 ? y + 1 : y;
+    const nextBoundaryZ = stepZ > 0 ? z + 1 : z;
+
+    let tMaxX = stepX === 0 ? Infinity : (nextBoundaryX - ox) / dx;
+    let tMaxY = stepY === 0 ? Infinity : (nextBoundaryY - oy) / dy;
+    let tMaxZ = stepZ === 0 ? Infinity : (nextBoundaryZ - oz) / dz;
+
+    const tDeltaX = invDx;
+    const tDeltaY = invDy;
+    const tDeltaZ = invDz;
+
+    // Skip the voxel the ray starts in (avoids "picking yourself" when inside a block)
+    let t = 0;
+    let nx = 0;
+    let ny = 0;
+    let nz = 0;
+
+    while (true) {
+      if (tMaxX < tMaxY) {
+        if (tMaxX < tMaxZ) {
+          x += stepX;
+          t = tMaxX;
+          tMaxX += tDeltaX;
+          nx = -stepX;
+          ny = 0;
+          nz = 0;
+        } else {
+          z += stepZ;
+          t = tMaxZ;
+          tMaxZ += tDeltaZ;
+          nx = 0;
+          ny = 0;
+          nz = -stepZ;
+        }
+      } else {
+        if (tMaxY < tMaxZ) {
+          y += stepY;
+          t = tMaxY;
+          tMaxY += tDeltaY;
+          nx = 0;
+          ny = -stepY;
+          nz = 0;
+        } else {
+          z += stepZ;
+          t = tMaxZ;
+          tMaxZ += tDeltaZ;
+          nx = 0;
+          ny = 0;
+          nz = -stepZ;
+        }
+      }
+
+      if (t > maxDistance) return null;
+
+      const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
+      if (shouldHitBlockId(blockId)) {
+        const out = this.#sharedHit;
+        out.x = x;
+        out.y = y;
+        out.z = z;
+        out.nx = nx;
+        out.ny = ny;
+        out.nz = nz;
+        return out;
+      }
+    }
+  }
+
   /**
    * Returns the position of the Babylon mesh that the player is currently
    * looking at, or null if no Babylon mesh is hit.
@@ -182,11 +311,13 @@ export class CrossHair {
    *          looking at, or null if no Babylon mesh is hit.
    */
   public static pickMesh(player: Player): Vector3 | null {
-    const info = this.pick(player);
-    if (!info?.pickedPoint) return null;
-    const normal = info.getNormal(true);
-    if (!normal) return null;
-    const hitPos = info.pickedPoint.add(normal.scale(0.001));
+    const hit = this.#raycastFirstBlock(
+      player,
+      (blockId) => blockId !== BlockType.Air,
+    );
+    if (!hit) return null;
+
+    const hitPos = new Vector3(hit.x + hit.nx, hit.y + hit.ny, hit.z + hit.nz);
     return new Vector3(
       Math.floor(hitPos.x),
       Math.floor(hitPos.y),
@@ -213,30 +344,22 @@ export class CrossHair {
    *          looking at, or null if no Babylon mesh is hit.
    */
   public static pickTarget(player: Player): Vector3 | null {
-    const info = this.pick(
+    const hit = this.#raycastFirstBlock(
       player,
-      (mesh) => mesh.name.indexOf("c_water") === -1,
+      (blockId) => blockId !== BlockType.Air && blockId !== BlockType.Water,
     );
-    if (!info?.pickedPoint) return null;
-    const normal = info.getNormal(true);
-    if (!normal) return null;
-    const hitPos = info.pickedPoint.subtract(normal.scale(0.001));
-    return new Vector3(
-      Math.floor(hitPos.x),
-      Math.floor(hitPos.y),
-      Math.floor(hitPos.z),
-    );
+    if (!hit) return null;
+    return new Vector3(hit.x, hit.y, hit.z);
   }
 
   public static getPlacementPosition(player: Player): Vector3 | null {
-    const info = this.pick(
+    const hit = this.#raycastFirstBlock(
       player,
-      (mesh) => mesh.name.indexOf("c_water") === -1,
+      (blockId) => blockId !== BlockType.Air && blockId !== BlockType.Water,
     );
-    if (!info?.pickedPoint) return null;
-    const normal = info.getNormal(true);
-    if (!normal) return null;
-    const hitPos = info.pickedPoint.add(normal.scale(0.001));
+    if (!hit) return null;
+
+    const hitPos = new Vector3(hit.x + hit.nx, hit.y + hit.ny, hit.z + hit.nz);
     return new Vector3(
       Math.floor(hitPos.x),
       Math.floor(hitPos.y),
