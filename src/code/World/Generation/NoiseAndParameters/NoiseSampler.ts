@@ -13,7 +13,7 @@ export class NoiseSampler {
     sampleRate: number,
     scale: number,
     xzFactor: number,
-    noiseFunction: ReturnType<typeof createNoise3D>
+    noiseFunction: ReturnType<typeof createNoise3D>,
   ) {
     this.sampleRate = sampleRate;
     const sampleCount = chunkSize / sampleRate;
@@ -34,7 +34,7 @@ export class NoiseSampler {
           const val = noiseFunction(
             wx * scale * xzFactor,
             wy * scale,
-            wz * scale * xzFactor
+            wz * scale * xzFactor,
           );
           this.noiseSamples[
             x +

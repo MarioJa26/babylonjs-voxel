@@ -11,11 +11,12 @@ import { LavaPoolFeature } from "./Structure/LavaPoolFeature";
 import { TowerFeature } from "./Structure/TowerFeature";
 import { DungeonFeature } from "./Structure/DungeonFeature";
 import { Biome } from "./Biome/BiomeTypes";
+import FastNoiseLite from "./NoiseAndParameters/FastNoise/FastNoiseLite";
 
 export class SurfaceGenerator {
   private params: GenerationParamsType;
-  private treeNoise: ReturnType<typeof createNoise2D>;
-  private densityNoise: ReturnType<typeof createNoise3D>;
+  private treeNoise: (x: number, z: number) => number;
+  private densityNoise: (x: number, y: number, z: number) => number;
   private seedAsInt: number;
   private chunk_size: number;
   private riverGenerator: RiverGenerator;
@@ -23,8 +24,8 @@ export class SurfaceGenerator {
 
   constructor(
     params: GenerationParamsType,
-    treeNoise: ReturnType<typeof createNoise2D>,
-    densityNoise: ReturnType<typeof createNoise3D>,
+    treeNoise: (x: number, z: number) => number,
+    densityNoise: (x: number, y: number, z: number) => number,
     seedAsInt: number,
   ) {
     this.params = params;
@@ -93,12 +94,13 @@ export class SurfaceGenerator {
         for (let localY = 0; localY < CHUNK_SIZE; localY++) {
           const worldY = chunkY * CHUNK_SIZE + localY;
 
-          const isTunnel = this.riverGenerator.isRiver(
+          let isTunnel = this.riverGenerator.isRiver(
             worldX,
             worldY,
             worldZ,
             riverNoise,
           );
+          isTunnel = false;
 
           const density = this.getDensity(
             worldX,
@@ -345,7 +347,7 @@ export class SurfaceGenerator {
 
     // 3D noise for density.
     // Scale controls the size of the features (caves/overhangs).
-    const noise = this.densityNoise(x * 0.04, y * 0.05, z * 0.04);
+    const noise = this.densityNoise(x * 0.01, y * 0.02, z * 0.02);
     // (baseHeight - y) creates the ground. Adding noise distorts it.
     return relativeHeight + noise * 8;
   }

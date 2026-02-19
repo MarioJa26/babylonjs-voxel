@@ -1,7 +1,13 @@
 import Alea from "alea";
-import { createNoise2D, createNoise3D } from "simplex-noise";
-import { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
+import {
+  GenerationParams,
+  GenerationParamsType,
+} from "./NoiseAndParameters/GenerationParams";
 import { Squirrel3 } from "./NoiseAndParameters/Squirrel13";
+import {
+  createFastNoise2D,
+  createFastNoise3D,
+} from "./NoiseAndParameters/FastNoise/FastNoiseFactory";
 import { TerrainHeightMap } from "./TerrainHeightMap";
 import { SurfaceGenerator } from "./SurfaceGenerator";
 import { UndergroundGenerator } from "./UndergroundGenerator";
@@ -27,14 +33,19 @@ export class WorldGenerator {
     this.chunk_size = this.params.CHUNK_SIZE;
     this.chunkSizeSq = this.chunk_size ** 2;
 
-    // Separate PRNGs for different noise types to avoid correlation
-    const treePrng = Alea(this.prng());
-    const cavePrng = Alea(this.prng());
-    const densityPrng = Alea(this.prng());
-
-    const treeNoise = createNoise2D(treePrng);
-    const caveNoise = createNoise3D(cavePrng);
-    const densityNoise = createNoise3D(densityPrng);
+    // Separate seeds for different noise types to avoid correlation.
+    const treeNoise = createFastNoise2D({
+      seed: Squirrel3.get(21, (this.prng() * 0xffffffff) | 0),
+      frequency: 1,
+    });
+    const caveNoise = createFastNoise3D({
+      seed: Squirrel3.get(2, (this.prng() * 0xffffffff) | 0),
+      frequency: GenerationParams.RIVER_SCALE,
+    });
+    const densityNoise = createFastNoise3D({
+      seed: Squirrel3.get(21, (this.prng() * 0xffffffff) | 0),
+      frequency: 0.33,
+    });
 
     this.surfaceGenerator = new SurfaceGenerator(
       params,

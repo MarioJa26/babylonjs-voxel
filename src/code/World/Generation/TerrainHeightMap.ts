@@ -1,15 +1,15 @@
-import { createNoise2D } from "simplex-noise";
 import Alea from "alea";
 import { Squirrel3 } from "./NoiseAndParameters/Squirrel13";
 import {
   GenerationParams,
   GenerationParamsType,
 } from "./NoiseAndParameters/GenerationParams";
-//import { Voronoi } from "./NoiseAndParameters/Voronoi";
+import { createFastNoise2D } from "./NoiseAndParameters/FastNoise/FastNoiseFactory";
 import { Spline } from "./NoiseAndParameters/Spline";
 import { RiverGenerator } from "./RiverGeneration";
 import { Biome } from "./Biome/BiomeTypes";
 import { getBiomeFor } from "./Biome/Biomes";
+import { FractalType } from "./NoiseAndParameters/FastNoise/FastNoiseLite";
 
 /**
  * A static utility class to calculate terrain height at any world coordinate.
@@ -19,11 +19,11 @@ export class TerrainHeightMap {
   private static params: GenerationParamsType;
   //private static continentalNoise: Voronoi;
   private static riverGenerator: RiverGenerator;
-  public static temperatureNoise: ReturnType<typeof createNoise2D>;
-  private static humidityNoise: ReturnType<typeof createNoise2D>;
-  private static continentalnessNoise: ReturnType<typeof createNoise2D>;
-  private static erosionNoise: ReturnType<typeof createNoise2D>;
-  private static peaksAndValleysNoise: ReturnType<typeof createNoise2D>;
+  private static temperatureNoise: (x: number, z: number) => number;
+  private static humidityNoise: (x: number, z: number) => number;
+  private static continentalnessNoise: (x: number, z: number) => number;
+  private static erosionNoise: (x: number, z: number) => number;
+  private static peaksAndValleysNoise: (x: number, z: number) => number;
   private static continentalnessSpline: Spline;
   private static erosionSpline: Spline;
   private static peaksAndValleysSpline: Spline;
@@ -41,28 +41,37 @@ export class TerrainHeightMap {
     const prng = Alea(this.params.SEED);
 
     // Separate PRNGs for different noise types to avoid correlation
-    TerrainHeightMap.seedAsInt = Squirrel3.get(0, (prng() * 0xffffffff) | 0);
-    const tempPrng = Alea(prng());
-    const humidityPrng = Alea(prng());
-    //const detailPrng = Alea(prng());
-    const continentalnessPrng = Alea(prng());
-    const erosionPrng = Alea(prng());
-    const pvPrng = Alea(prng());
-
-    this.temperatureNoise = createNoise2D(tempPrng);
-    this.humidityNoise = createNoise2D(humidityPrng);
-    this.continentalnessNoise = createNoise2D(continentalnessPrng);
-    this.erosionNoise = createNoise2D(erosionPrng);
-    this.peaksAndValleysNoise = createNoise2D(pvPrng);
-    // this.continentalNoise = new Voronoi(TerrainHeightMap.seedAsInt, 5555);
+    //TerrainHeightMap.seedAsInt = Squirrel3.get(0, (prng() * 0xffffffff) | 0);
+    this.temperatureNoise = createFastNoise2D({
+      seed: Squirrel3.get(1, (prng() * 0xffffffff) | 0),
+      fractalType: FractalType.None,
+      frequency: GenerationParams.TEMPERATURE_NOISE_SCALE,
+    });
+    this.humidityNoise = createFastNoise2D({
+      seed: Squirrel3.get(2, (prng() * 0xffffffff) | 0),
+      fractalType: FractalType.None,
+      frequency: GenerationParams.HUMIDITY_NOISE_SCALE,
+    });
+    this.continentalnessNoise = createFastNoise2D({
+      seed: Squirrel3.get(3, (prng() * 0xffffffff) | 0),
+      frequency: GenerationParams.CONTINENTALNESS_NOISE_SCALE,
+    });
+    this.erosionNoise = createFastNoise2D({
+      seed: Squirrel3.get(4, (prng() * 0xffffffff) | 0),
+      frequency: GenerationParams.EROSION_NOISE_SCALE,
+    });
+    this.peaksAndValleysNoise = createFastNoise2D({
+      seed: Squirrel3.get(5, (prng() * 0xffffffff) | 0),
+      frequency: GenerationParams.PV_NOISE_SCALE,
+    });
 
     this.continentalnessSpline = new Spline([
       { t: -1.0, v: -16 },
       { t: -0.327, v: -16 },
       { t: -0.319, v: -5 },
       { t: -0.312, v: 0 },
-      { t: -0.306, v: 3 },
-      { t: -0.299, v: 4 },
+      { t: -0.306, v: 0 },
+      { t: -0.299, v: 0 },
       { t: -0.29, v: 3 },
       { t: -0.181, v: 3 },
       { t: -0.123, v: 4 },
@@ -118,27 +127,9 @@ export class TerrainHeightMap {
       return this.biomeCache.get(key)!;
     }
 
-    const CONTINENTALNESS_NOISE_SCALE =
-      GenerationParams.CONTINENTALNESS_NOISE_SCALE;
-
-    const continentalness = this.continentalnessNoise(
-      x * CONTINENTALNESS_NOISE_SCALE,
-      z * CONTINENTALNESS_NOISE_SCALE,
-    );
-    const temperature =
-      (this.temperatureNoise(
-        x * GenerationParams.TEMPERATURE_NOISE_SCALE,
-        z * GenerationParams.TEMPERATURE_NOISE_SCALE,
-      ) +
-        1) /
-      2;
-    const humidity =
-      (this.humidityNoise(
-        x * GenerationParams.HUMIDITY_NOISE_SCALE,
-        z * GenerationParams.HUMIDITY_NOISE_SCALE,
-      ) +
-        1) /
-      2;
+    const continentalness = this.continentalnessNoise(x, z);
+    const temperature = (this.temperatureNoise(x, z) + 1) / 2;
+    const humidity = (this.humidityNoise(x, z) + 1) / 2;
     const river = Math.abs(this.riverGenerator.getRiverNoise(x, z));
 
     // Fast approximation: If continentalness is high (mountains), the river is underground.
@@ -169,10 +160,7 @@ export class TerrainHeightMap {
   }
 
   private static computeBaseHeight(x: number, z: number): number {
-    const continentalness = this.continentalnessNoise(
-      x * GenerationParams.CONTINENTALNESS_NOISE_SCALE,
-      z * GenerationParams.CONTINENTALNESS_NOISE_SCALE,
-    );
+    const continentalness = this.continentalnessNoise(x, z);
     const SEA_LEVEL = GenerationParams.SEA_LEVEL;
     return SEA_LEVEL + this.continentalnessSpline.getValue(continentalness);
   }
@@ -182,14 +170,8 @@ export class TerrainHeightMap {
     z: number,
     baseHeight: number,
   ): number {
-    const erosion = this.erosionNoise(
-      x * GenerationParams.EROSION_NOISE_SCALE,
-      z * GenerationParams.EROSION_NOISE_SCALE,
-    );
-    const pv = this.peaksAndValleysNoise(
-      x * GenerationParams.PV_NOISE_SCALE,
-      z * GenerationParams.PV_NOISE_SCALE,
-    );
+    const erosion = this.erosionNoise(x, z);
+    const pv = this.peaksAndValleysNoise(x, z);
     const river = Math.abs(this.riverGenerator.getRiverNoise(x, z));
 
     // Dampen detail in river
@@ -231,34 +213,7 @@ export class TerrainHeightMap {
     return detail + riverDepth;
   }
 
-  public static getInterpolatedBaseHeight(
-    x: number,
-    z: number,
-    sampleDistance: number,
-  ): number {
-    const x0 = Math.floor(x / sampleDistance) * sampleDistance;
-    const z0 = Math.floor(z / sampleDistance) * sampleDistance;
-    const x1 = x0 + sampleDistance;
-    const z1 = z0 + sampleDistance;
-
-    const tx = (x - x0) / sampleDistance;
-    const tz = (z - z0) / sampleDistance;
-
-    // Compute height for (x,z) using each corner's definition
-    const h00 = this.computeBaseHeight(x0, z0);
-    const h10 = this.computeBaseHeight(x1, z0);
-    const h01 = this.computeBaseHeight(x0, z1);
-    const h11 = this.computeBaseHeight(x1, z1);
-
-    // Bilinear interpolation of heights
-    const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
-    const top = lerp(h00, h10, tx);
-    const bottom = lerp(h01, h11, tx);
-    return lerp(top, bottom, tz);
-  }
-
   public static getOctaveNoise(x: number, z: number): number {
-    //const base = this.getInterpolatedBaseHeight(x, z, 1);
     const base = this.computeBaseHeight(x, z);
     const detail = this.computeDetail(x, z, base);
     return base + detail;

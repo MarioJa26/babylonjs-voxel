@@ -29,12 +29,11 @@ export class RiverGenerator {
       { t: 0.1, v: 0 },
     ]);
     this.riverDepthSpline = new Spline([
-      { t: 0, v: -30 },
-      { t: 0.02, v: -20 },
+      { t: 0, v: -15 },
+      { t: 0.02, v: -10 },
       { t: 0.1, v: 0 },
-      { t: 0.25, v: 10 },
 
-      { t: 1.0, v: 130 },
+      { t: 1.0, v: 0 },
     ]);
   }
 
