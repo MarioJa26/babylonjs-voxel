@@ -309,7 +309,6 @@ export class ChunkMesher {
         "c_water",
         this.#waterMaterial!,
       );
-      chunk.waterMesh.isPickable = true;
     } else {
       chunk.waterMesh = null;
     }
@@ -339,7 +338,6 @@ export class ChunkMesher {
   ): Mesh {
     const mesh = new Mesh(name, Map1.mainScene);
     mesh.renderingGroupId = 1;
-
     mesh.material = material;
 
     const engine = Map1.mainScene.getEngine();
@@ -472,11 +470,13 @@ export class ChunkMesher {
     // Optimization: Use sphere culling for faster visibility checks on cubic chunks
     mesh.cullingStrategy = AbstractMesh.CULLINGSTRATEGY_STANDARD;
 
-    mesh.freezeWorldMatrix();
     mesh.doNotSyncBoundingInfo = true;
     mesh.ignoreNonUniformScaling = true;
     mesh.checkCollisions = false;
+    mesh.isPickable = false;
+    mesh.material.freeze();
     mesh.freezeNormals();
+    mesh.freezeWorldMatrix();
 
     mesh.name =
       name + "_" + chunk.chunkX + "_" + chunk.chunkY + "_" + chunk.chunkZ;

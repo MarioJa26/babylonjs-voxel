@@ -2,9 +2,7 @@ import {
   Scene,
   Engine,
   FreeCamera,
-  PhysicsBody,
   Ray,
-  Nullable,
   Vector3,
   AbstractMesh,
   PickingInfo,
@@ -54,7 +52,6 @@ export class CrossHair {
     this.#scene = scene;
     this.#player = player;
 
-    this.#registerEvents();
     this.#engine.enterPointerlock();
     this.#blockHighlightMesh = this.#createBlockHighlight();
     this.#scene.onBeforeRenderObservable.add(() => {
@@ -145,29 +142,6 @@ export class CrossHair {
     } else {
       this.#blockHighlightMesh.visibility = 0;
     }
-  }
-
-  #registerEvents(): void {
-    this.#scene.onPointerDown = (e) => {
-      if (e.button === 2) {
-        return;
-      }
-      const ray: Ray = this.#camera.getForwardRay(200);
-      const pick = this.#scene.pickWithRay(ray);
-
-      if (!pick?.pickedMesh || pick.faceId === -1 || !pick.pickedPoint) {
-        return;
-      }
-
-      const body: Nullable<PhysicsBody> = pick.pickedMesh.physicsBody;
-      if (!body) return;
-
-      const { mass = 1 } = body.getMassProperties();
-
-      body.applyImpulse(ray.direction.scale(mass * 1.5), pick.pickedPoint);
-
-      this.#showHitMarker();
-    };
   }
 
   public static pick(
@@ -303,27 +277,6 @@ export class CrossHair {
     }
   }
 
-  /**
-   * Returns the position of the Babylon mesh that the player is currently
-   * looking at, or null if no Babylon mesh is hit.
-   * @param player The player to check for.
-   * @returns The position of the Babylon mesh that the player is currently
-   *          looking at, or null if no Babylon mesh is hit.
-   */
-  public static pickMesh(player: Player): Vector3 | null {
-    const hit = this.#raycastFirstBlock(
-      player,
-      (blockId) => blockId !== BlockType.Air,
-    );
-    if (!hit) return null;
-
-    const hitPos = new Vector3(hit.x + hit.nx, hit.y + hit.ny, hit.z + hit.nz);
-    return new Vector3(
-      Math.floor(hitPos.x),
-      Math.floor(hitPos.y),
-      Math.floor(hitPos.z),
-    );
-  }
   /**
    * Returns the block ID at the position that the player is currently
    * looking at, or null if no block is hit.

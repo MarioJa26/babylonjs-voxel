@@ -1,4 +1,3 @@
-import { createNoise2D, createNoise3D } from "simplex-noise";
 import {
   GenerationParams,
   GenerationParamsType,
@@ -11,7 +10,6 @@ import { LavaPoolFeature } from "./Structure/LavaPoolFeature";
 import { TowerFeature } from "./Structure/TowerFeature";
 import { DungeonFeature } from "./Structure/DungeonFeature";
 import { Biome } from "./Biome/BiomeTypes";
-import FastNoiseLite from "./NoiseAndParameters/FastNoise/FastNoiseLite";
 
 export class SurfaceGenerator {
   private params: GenerationParamsType;
