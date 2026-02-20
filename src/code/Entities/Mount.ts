@@ -20,11 +20,11 @@ export class Mount implements IMountable {
   constructor(
     vehicle: TransformNode,
     keyBoardControls: IControls<unknown>,
-    options: MountOptions = {}
+    options: MountOptions = {},
   ) {
     this.vehicle = vehicle;
     this.#keyBoardControls = keyBoardControls;
-    this.#mountOffset = options.mountOffset ?? new Vector3(0, 1.8, 0);
+    this.#mountOffset = options.mountOffset ?? new Vector3(0, 0.9, 0);
     this.#mountRotationOffset =
       options.mountRotationOffset ?? Quaternion.Identity();
   }
@@ -60,10 +60,6 @@ export class Mount implements IMountable {
       this.enablePlayerPhysics(vehicle);
     }
 
-    const dismountPosition = this.vehicle.position;
-    dismountPosition.addInPlace(this.#mountOffset);
-
-    vehicle.characterController.setPosition(dismountPosition);
     vehicle.displayCapsule.setParent(null);
 
     this.user = null;
@@ -135,7 +131,7 @@ export class Mount implements IMountable {
   private updateMountedPosition(): void {
     if (!this.user) return;
     this.user.playerVehicle.characterController.setPosition(
-      this.vehicle.position.clone().add(this.#mountOffset)
+      this.vehicle.position.clone().add(this.#mountOffset),
     );
   }
 
