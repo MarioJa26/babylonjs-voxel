@@ -43,7 +43,7 @@ export class WorldGenerator {
       frequency: GenerationParams.RIVER_SCALE,
     });
     const densityNoise = createFastNoise3D({
-      seed: Squirrel3.get(21, (this.prng() * 0xffffffff) | 0),
+      seed: Squirrel3.get(999, (this.prng() * 0xffffffff) | 0),
       frequency: 0.33,
     });
 
@@ -55,6 +55,7 @@ export class WorldGenerator {
     );
     this.undergroundGenerator = new UndergroundGenerator(params, caveNoise);
     this.lightGenerator = new LightGenerator(params);
+    console.log("create");
   }
 
   private createBuffer(size: number): Uint8Array {

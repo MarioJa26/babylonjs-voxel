@@ -1,11 +1,9 @@
 import {
   Scene,
   Engine,
-  FreeCamera,
   Ray,
   Vector3,
   AbstractMesh,
-  PickingInfo,
   Mesh,
   MeshBuilder,
   StandardMaterial,
@@ -14,11 +12,11 @@ import {
 } from "@babylonjs/core";
 import * as GUI from "@babylonjs/gui";
 import { Player } from "../Player";
-import { Map1 } from "@/code/Maps/Map1";
 import { PlayerCamera } from "../PlayerCamera";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { SettingParams } from "@/code/World/SettingParams";
 import { BlockType } from "@/code/World/BlockType";
+import { MetadataContainer } from "@/code/Entities/MetaDataContainer";
 
 type BlockRaycastHit = {
   x: number;
@@ -30,8 +28,11 @@ type BlockRaycastHit = {
 };
 
 export class CrossHair {
+  static readonly #meshRayMarchStep = 0.25;
+  static readonly #meshBoundsEpsilon = 0.001;
+  static readonly #sharedPoint = new Vector3(0, 0, 0);
+
   readonly #scene: Scene;
-  readonly #camera: FreeCamera;
   readonly #engine: Engine;
   readonly #ui: GUI.AdvancedDynamicTexture =
     GUI.AdvancedDynamicTexture.CreateFullscreenUI("UI");
@@ -48,7 +49,6 @@ export class CrossHair {
     player: Player,
   ) {
     this.#engine = engine;
-    this.#camera = playerCamera.playerCamera;
     this.#scene = scene;
     this.#player = player;
 
@@ -144,20 +144,6 @@ export class CrossHair {
     }
   }
 
-  public static pick(
-    player: Player,
-    predicate?: (mesh: AbstractMesh) => boolean,
-  ): PickingInfo | null {
-    const ray = player.playerCamera.playerCamera.getForwardRay(
-      Player.REACH_DISTANCE,
-    );
-    return Map1.mainScene.pickWithRay(ray, (mesh) => {
-      if (!mesh.isPickable || !mesh.isEnabled()) return false;
-      if (predicate) return predicate(mesh);
-      return true;
-    });
-  }
-
   static #sharedRay: Ray | null = null;
   static readonly #sharedHit: BlockRaycastHit = {
     x: 0,
@@ -182,7 +168,12 @@ export class CrossHair {
 
   static #raycastFirstBlock(
     player: Player,
-    shouldHitBlockId: (blockId: number) => boolean,
+    shouldHitBlockId: (
+      x: number,
+      y: number,
+      z: number,
+      blockId: number,
+    ) => boolean,
   ): BlockRaycastHit | null {
     const ray = this.#getSharedForwardRay(player, Player.REACH_DISTANCE);
 
@@ -264,7 +255,7 @@ export class CrossHair {
       if (t > maxDistance) return null;
 
       const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
-      if (shouldHitBlockId(blockId)) {
+      if (shouldHitBlockId(x, y, z, blockId)) {
         const out = this.#sharedHit;
         out.x = x;
         out.y = y;
@@ -275,6 +266,64 @@ export class CrossHair {
         return out;
       }
     }
+  }
+
+  static #isInsideMeshBounds(mesh: AbstractMesh, point: Vector3): boolean {
+    if (mesh.isDisposed()) return false;
+    const bounds = mesh.getBoundingInfo().boundingBox;
+    const min = bounds.minimumWorld;
+    const max = bounds.maximumWorld;
+    const eps = this.#meshBoundsEpsilon;
+    return (
+      point.x >= min.x - eps &&
+      point.x <= max.x + eps &&
+      point.y >= min.y - eps &&
+      point.y <= max.y + eps &&
+      point.z >= min.z - eps &&
+      point.z <= max.z + eps
+    );
+  }
+
+  static #rayMarchFirstMesh(
+    player: Player,
+    maxDistance: number,
+    predicate?: (mesh: AbstractMesh) => boolean,
+  ): AbstractMesh | null {
+    const ray = this.#getSharedForwardRay(player, maxDistance);
+    const sceneMeshes = player.playerVehicle.scene.meshes;
+    const candidates = sceneMeshes.filter((mesh) => {
+      if (!mesh.isPickable || !mesh.isEnabled()) return false;
+      if (predicate) return predicate(mesh);
+      return true;
+    });
+    if (candidates.length === 0) return null;
+
+    const origin = ray.origin;
+    const dir = ray.direction;
+    const marchLength = ray.length;
+    const step = this.#meshRayMarchStep;
+    const p = this.#sharedPoint;
+
+    for (let t = 0; t <= marchLength; t += step) {
+      p.set(origin.x + dir.x * t, origin.y + dir.y * t, origin.z + dir.z * t);
+      for (const mesh of candidates) {
+        if (this.#isInsideMeshBounds(mesh, p)) {
+          return mesh;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  public static pickUsableMesh(
+    player: Player,
+    maxDistance = Player.REACH_DISTANCE,
+  ): AbstractMesh | null {
+    return this.#rayMarchFirstMesh(player, maxDistance, (mesh) => {
+      const metadata = mesh.metadata;
+      return metadata instanceof MetadataContainer && metadata.has("use");
+    });
   }
 
   /**
@@ -290,16 +339,22 @@ export class CrossHair {
     return ChunkLoadingSystem.getBlockByWorldCoords(pos.x, pos.y, pos.z);
   }
   /**
-   * Returns the position of the Babylon mesh that the player is currently
-   * looking at, or null if no Babylon mesh is hit.
-   * @param player The player to check for.
-   * @returns The position of the Babylon mesh that the player is currently
-   *          looking at, or null if no Babylon mesh is hit.
+   * Returns the first solid non-water block position along the player's view ray.
    */
   public static pickTarget(player: Player): Vector3 | null {
     const hit = this.#raycastFirstBlock(
       player,
-      (blockId) => blockId !== BlockType.Air && blockId !== BlockType.Water,
+      (_x, _y, _z, blockId) =>
+        blockId !== BlockType.Air && blockId !== BlockType.Water,
+    );
+    if (!hit) return null;
+    return new Vector3(hit.x, hit.y, hit.z);
+  }
+
+  public static pickWaterPlacementTarget(player: Player): Vector3 | null {
+    const hit = this.#raycastFirstBlock(
+      player,
+      (_x, _y, _z, blockId) => blockId === BlockType.Water,
     );
     if (!hit) return null;
     return new Vector3(hit.x, hit.y, hit.z);
@@ -308,7 +363,8 @@ export class CrossHair {
   public static getPlacementPosition(player: Player): Vector3 | null {
     const hit = this.#raycastFirstBlock(
       player,
-      (blockId) => blockId !== BlockType.Air && blockId !== BlockType.Water,
+      (_x, _y, _z, blockId) =>
+        blockId !== BlockType.Air && blockId !== BlockType.Water,
     );
     if (!hit) return null;
 

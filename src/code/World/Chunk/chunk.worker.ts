@@ -159,7 +159,8 @@ class ChunkWorkerMesher {
       // Map -1,0,1 to 0,1,2 for array indexing
       // Index = (dx+1) + (dy+1)*3 + (dz+1)*9
       const fullNeighborIndex = dx + 1 + (dy + 1) * 3 + (dz + 1) * 9;
-      const neighbor = neighbors[this.toCompactNeighborIndex(fullNeighborIndex)];
+      const neighbor =
+        neighbors[this.toCompactNeighborIndex(fullNeighborIndex)];
 
       if (!neighbor) return fallback;
 
@@ -549,20 +550,7 @@ class ChunkWorkerMesher {
     }
 
     // positions
-    meshData.positions.push12(
-      x1,
-      y1,
-      z1,
-      x2,
-      y2,
-      z2,
-      x3,
-      y3,
-      z3,
-      x4,
-      y4,
-      z4,
-    );
+    meshData.positions.push12(x1, y1, z1, x2, y2, z2, x3, y3, z3, x4, y4, z4);
 
     // Unpack AO
     const ao0 = packedAO & 3;
@@ -785,7 +773,7 @@ function compressBlocks(blocks: Uint8Array): {
 }
 
 // Top-level world generator instance for terrain requests
-const generator: WorldGenerator = new WorldGenerator(GenerationParams);
+const generator = new WorldGenerator(GenerationParams);
 
 function hasPaletteValuesAbove255(palette: ArrayLike<number>): boolean {
   for (let i = 0; i < palette.length; i++) {

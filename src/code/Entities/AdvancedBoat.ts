@@ -19,13 +19,11 @@ import { BlockType } from "../World/BlockType";
 import { VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollider";
 
 export class AdvancedBoat implements IUsable {
-  #collisionHalfExtents = new Vector3(1.15, 0.6, 2.1);
+  #collisionHalfExtents = new Vector3(1.15, 0.6, 1.15);
   #boat!: Mesh;
   #mount: Mount;
   #buoyancyPoints: Vector3[] = [];
-  #playersOnBoard: Set<Player> = new Set();
   #baseBuoyancyForce = 20;
-  #playerWeightCompensation = 14; // Extra buoyancy per player
   #mass = 10;
   #gravity = -9.81;
   #collisionStepSize = 0.25;
@@ -112,7 +110,7 @@ export class AdvancedBoat implements IUsable {
       .then((result) => {
         const root = result.meshes[0];
         root.parent = this.#boat;
-        root.position.y = -0.5;
+        root.position.y = -0.45;
 
         result.meshes.forEach((m) => {
           m.isPickable = true;
@@ -159,9 +157,7 @@ export class AdvancedBoat implements IUsable {
       this.#linearVelocity.y += this.#gravity * dt;
 
       // Calculate total buoyancy force needed based on player count
-      const totalBuoyancyMultiplier =
-        this.#baseBuoyancyForce +
-        this.#playersOnBoard.size * this.#playerWeightCompensation;
+      const totalBuoyancyMultiplier = this.#baseBuoyancyForce;
 
       // Check each buoyancy point for submersion
       this.#buoyancyPoints.forEach((localPoint) => {
@@ -290,16 +286,6 @@ export class AdvancedBoat implements IUsable {
   public applyAngularImpulse(impulse: Vector3): void {
     const invMass = 1 / this.#mass;
     this.#angularVelocity.addInPlace(impulse.scale(invMass));
-  }
-
-  public addPlayer(player: Player): void {
-    this.#playersOnBoard.add(player);
-    console.log(`Player added. Total: ${this.#playersOnBoard.size}`);
-  }
-
-  public removePlayer(player: Player): void {
-    this.#playersOnBoard.delete(player);
-    console.log(`Player removed. Total: ${this.#playersOnBoard.size}`);
   }
 
   public get boatMesh(): Mesh {

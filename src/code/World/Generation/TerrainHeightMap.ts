@@ -54,6 +54,7 @@ export class TerrainHeightMap {
     });
     this.continentalnessNoise = createFastNoise2D({
       seed: Squirrel3.get(3, (prng() * 0xffffffff) | 0),
+      fractalType: FractalType.Ridged,
       frequency: GenerationParams.CONTINENTALNESS_NOISE_SCALE,
     });
     this.erosionNoise = createFastNoise2D({

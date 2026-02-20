@@ -116,7 +116,7 @@ export class PlayerInventory {
     );
     boat.stackSize = 1;
     boat.use = (player: Player) => {
-      const hit = CrossHair.pickMesh(player);
+      const hit = CrossHair.pickWaterPlacementTarget(player);
       if (!hit) return;
 
       const blockAtHit = ChunkLoadingSystem.getBlockByWorldCoords(
@@ -124,20 +124,14 @@ export class PlayerInventory {
         hit.y,
         hit.z,
       );
-      const blockBelowHit = ChunkLoadingSystem.getBlockByWorldCoords(
-        hit.x,
-        hit.y - 1,
-        hit.z,
-      );
-
-      // We must place the boat on water, or on an air block right above water.
-      if (blockAtHit !== BlockType.Water && blockBelowHit !== BlockType.Water) {
+      // We only target actual water blocks for boat placement.
+      if (blockAtHit !== BlockType.Water) {
         console.log("Boat must be placed on water.");
         return;
       }
 
       // Place the boat on top of the water, not inside it.
-      const spawnY = blockAtHit === BlockType.Water ? hit.y + 1 : hit.y;
+      const spawnY = hit.y + 1;
 
       // The boat's center will be at this position.
       const spawnPos = new Vector3(hit.x + 0.5, spawnY + 0.5, hit.z + 0.5);

@@ -15,7 +15,7 @@ const FOREST: Biome = {
   undergroundBlock: 19,
   stoneBlock: 1,
   canSpawnTrees: true,
-  treeDensity: 0.1,
+  treeDensity: 0.15,
   beachBlock: 3,
   seafloorBlock: 46,
   terrainScale: GenerationParams.TERRAIN_SCALE,
@@ -79,7 +79,7 @@ const DESERT: Biome = {
   undergroundBlock: 3,
   stoneBlock: 1,
   canSpawnTrees: true,
-  treeDensity: 0.005,
+  treeDensity: 0.075,
   beachBlock: 3, // Sand,
   seafloorBlock: 3, // Sand
   terrainScale: GenerationParams.TERRAIN_SCALE,
@@ -167,7 +167,7 @@ const GROVE: Biome = {
   undergroundBlock: 1, // Dirt/Mud
   stoneBlock: 1,
   canSpawnTrees: true,
-  treeDensity: 0.08,
+  treeDensity: 0.2,
   beachBlock: 3, // Muddy beach
   seafloorBlock: 14, // Muddy bottom
   terrainScale: GenerationParams.TERRAIN_SCALE * 16,

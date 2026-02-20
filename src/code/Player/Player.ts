@@ -1,6 +1,5 @@
 import {
   Scene,
-  FreeCamera,
   Engine,
   PointerEventTypes,
   Vector3,
@@ -22,12 +21,12 @@ import { PlayerFlashLight } from "./PlayerFlashLight";
 import { PauseMenu } from "./Hud/PauseMenu";
 import { TestScene } from "../TestScene";
 import { PlayerStats } from "./PlayerStats";
+import { CrossHair } from "./Hud/CrossHair";
 
 /**
  * Player class that handles character movement, physics, and camera controls
  */
 export class Player implements IUsable {
-  #camera: FreeCamera;
   #playerCamera: PlayerCamera;
   #playerVehicle: PlayerVehicle;
   #playerInventory: PlayerInventory;
@@ -61,7 +60,6 @@ export class Player implements IUsable {
   ) {
     this.#playerInventory = new PlayerInventory(scene, this, 10, 10);
     this.#playerVehicle = new PlayerVehicle(this.scene, playerCam);
-    this.#camera = playerCam.playerCamera;
     this.#playerCamera = playerCam;
     this.flashlight = new PlayerFlashLight(this.scene, playerCam.playerCamera);
     this.stats = new PlayerStats();
@@ -298,14 +296,9 @@ export class Player implements IUsable {
   }
 
   use(): void {
-    const ray = this.#camera.getForwardRay(200);
-    const pick = this.scene.pickWithRay(ray);
+    const mesh = CrossHair.pickUsableMesh(this, 200);
+    if (!mesh) return;
 
-    if (!pick || pick.faceId === -1 || !pick.pickedMesh) {
-      return;
-    }
-
-    const mesh = pick.pickedMesh;
     if (mesh.metadata) {
       const metadataContainer = mesh.metadata as MetadataContainer;
       if (
