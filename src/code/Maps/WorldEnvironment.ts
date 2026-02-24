@@ -55,7 +55,8 @@ export class WorldEnvironment {
       new Vector3(100, 11, 55),
       this.scene,
     );
-    this.hemiLight.direction = new Vector3(-0.1, -1, -0.1);
+    // Hemispheric "up" should point toward the sky, not the ground.
+    this.hemiLight.direction = new Vector3(0.1, 1, 0.1);
     this.hemiLight.intensity = SettingParams.HEMISPHERIC_LIGHT_INTENSITY;
   }
 
