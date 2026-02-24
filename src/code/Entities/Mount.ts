@@ -3,7 +3,7 @@ import { Player } from "../Player/Player";
 import { Vector3, Quaternion, TransformNode } from "@babylonjs/core";
 import { IControls } from "../Inferface/IControls";
 import MountOptions from "./MountOptions";
-import { PlayerVehicle } from "../Player/PlayerVehicle";
+import { IPlayerBody } from "../Player/IPlayerBody";
 
 export class Mount implements IMountable {
   public user: Player | null = null;
@@ -54,7 +54,7 @@ export class Mount implements IMountable {
     //Prevent stuck keys on remount
     player.keyboardControls.pressedKeys.clear();
     player.keyboardControls = player.defaultKeyboardControls;
-    player.keyboardControls.inputDirection.set(0, 0, 0);
+    vehicle.clearControlState();
 
     if (this.#physicsDisabled && vehicle.characterController) {
       this.enablePlayerPhysics(vehicle);
@@ -130,23 +130,28 @@ export class Mount implements IMountable {
    */
   private updateMountedPosition(): void {
     if (!this.user) return;
-    this.user.playerVehicle.characterController.setPosition(
+    const playerBody = this.user.playerVehicle;
+    playerBody.characterController.setPosition(
       this.vehicle.position.clone().add(this.#mountOffset),
     );
+    const vehicleRotation =
+      this.vehicle.rotationQuaternion ?? Quaternion.Identity();
+    playerBody.displayCapsule.rotationQuaternion =
+      vehicleRotation.multiply(this.#mountRotationOffset);
   }
 
-  private disablePlayerPhysics(player: PlayerVehicle): void {
+  private disablePlayerPhysics(player: IPlayerBody): void {
     player.characterController.setVelocity(Vector3.Zero());
-    //  player.inputDirection.set(0, 0, 0);
+    player.clearControlState();
     player.isMounted = true;
-    player.wantJump = 0;
     // Disable gravity effect by setting a flag
     this.#physicsDisabled = true;
   }
 
-  private enablePlayerPhysics(playerVehicle: PlayerVehicle): void {
+  private enablePlayerPhysics(playerVehicle: IPlayerBody): void {
     playerVehicle.isMounted = false;
     playerVehicle.mount = null;
+    playerVehicle.clearControlState();
     this.#physicsDisabled = false;
   }
 }

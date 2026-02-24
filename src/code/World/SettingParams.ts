@@ -27,6 +27,6 @@ export class SettingParams {
   public static HIGHLIGHT_EDGE_COLOR = [0, 0.1, 0, 0.7]; // Stored as array [r, g, b, a]
 
   // --- Lighting ---
-  public static HEMISPHERIC_LIGHT_INTENSITY = 0.8;
+  public static HEMISPHERIC_LIGHT_INTENSITY = 1.0;
   public static DIRECTIONAL_LIGHT_INTENSITY = 1;
 }

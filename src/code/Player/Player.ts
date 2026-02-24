@@ -1,27 +1,22 @@
-import {
-  Scene,
-  Engine,
-  PointerEventTypes,
-  Vector3,
-} from "@babylonjs/core";
-import { IUsable } from "../Inferface/IUsable";
+import { Engine, Scene, Vector3 } from "@babylonjs/core";
+
 import { MetadataContainer } from "../Entities/MetaDataContainer";
-import { WalkingControls } from "../Player/Controls/WalkingControls";
 import { IControls } from "../Inferface/IControls";
-import { PaddleBoatControls } from "./Controls/PaddleBoatControls";
+import { IUsable } from "../Inferface/IUsable";
+import { Map1 } from "../Maps/Map1";
+import { TestScene } from "../TestScene";
+import { WalkingControls } from "../Player/Controls/WalkingControls";
+import { CrossHair } from "./Hud/CrossHair";
+import { PauseMenu } from "./Hud/PauseMenu";
 import { PlayerHud } from "./Hud/PlayerHud";
 import { PlayerInventory } from "./Inventory/PlayerInventory";
-import { InventoryControls } from "./Controls/InventoryControls";
 import { PlayerCamera } from "./PlayerCamera";
-import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
-import { Chunk } from "../World/Chunk/Chunk";
-import { PlayerVehicle } from "./PlayerVehicle";
-import { Map1 } from "../Maps/Map1";
 import { PlayerFlashLight } from "./PlayerFlashLight";
-import { PauseMenu } from "./Hud/PauseMenu";
-import { TestScene } from "../TestScene";
+import { PlayerInputController } from "./PlayerInputController";
+import { PlayerLoopController } from "./PlayerLoopController";
 import { PlayerStats } from "./PlayerStats";
-import { CrossHair } from "./Hud/CrossHair";
+import { PlayerVehicle } from "./PlayerVehicle";
+import { IPlayerBody } from "./IPlayerBody";
 
 /**
  * Player class that handles character movement, physics, and camera controls
@@ -40,11 +35,6 @@ export class Player implements IUsable {
 
   static readonly REACH_DISTANCE = 64;
   #pauseMenu: PauseMenu;
-
-  // Track player's chunk position to avoid unnecessary updates
-  #lastChunkX = 0;
-  #lastChunkY = 0;
-  #lastChunkZ = 0;
 
   /**
    * Creates a new Player instance
@@ -67,188 +57,33 @@ export class Player implements IUsable {
     this.#pauseMenu = new PauseMenu(() => this.resumeGame(), this);
     this.#playerHud = new PlayerHud(engine, this.scene, this, playerCam);
 
-    this.initializeInputHandlers();
-    this.initializeRenderLoop();
-  }
-
-  private initializeInputHandlers(): void {
-    this.initializeKeyboardInput();
-    this.initializePointerLock();
-  }
-
-  private initializeKeyboardInput(): void {
     this.#defaultKeyboardControls = new WalkingControls(this);
     this.#keyboardControls = this.#defaultKeyboardControls;
 
-    window.addEventListener("keydown", (event) => {
-      event.preventDefault();
-      const key = event.key.toLowerCase();
-      this.#keyboardControls.handleKeyEvent(key, true);
-    });
+    const inputController = new PlayerInputController(
+      this.scene,
+      this.canvas,
+      this.#playerCamera,
+      (key, isKeyDown) => this.#keyboardControls.handleKeyEvent(key, isKeyDown),
+      () => this.#keyboardControls,
+      () => this.pauseGame(),
+    );
 
-    window.addEventListener("keyup", (event) => {
-      event.preventDefault();
-      const key = event.key.toLowerCase();
-      this.#keyboardControls.handleKeyEvent(key, false);
-    });
+    const loopController = new PlayerLoopController(
+      this.engine,
+      this.scene,
+      this.#playerVehicle,
+      this.stats,
+      this.#playerHud,
+      this.#playerCamera,
+      () => this.#keyboardControls,
+      () => this.position,
+    );
+
+    inputController.bind();
+    loopController.bind();
   }
 
-  private initializePointerLock(): void {
-    this.canvas.addEventListener("click", () => {
-      if (document.pointerLockElement !== this.canvas) {
-        this.canvas.requestPointerLock();
-      }
-    });
-
-    document.addEventListener("pointerlockchange", () => {
-      if (document.pointerLockElement !== this.canvas) {
-        if (Map1.timeScale > 0) {
-          this.pauseGame();
-        }
-      }
-    });
-
-    window.addEventListener("mousedown", (event) => {
-      if (this.#keyboardControls instanceof InventoryControls)
-        this.#keyboardControls.handleMouseEvent(event);
-      else if (this.#keyboardControls instanceof WalkingControls) {
-        this.#keyboardControls.handleMouseEvent(event, true);
-      }
-    });
-
-    window.addEventListener("mouseup", (event) => {
-      if (this.#keyboardControls instanceof WalkingControls) {
-        this.#keyboardControls.handleMouseEvent(event, false);
-      }
-    });
-
-    this.scene.onPointerObservable.add((pointerInfo) => {
-      if (document.pointerLockElement !== this.canvas) return;
-      switch (pointerInfo.type) {
-        case PointerEventTypes.POINTERMOVE: {
-          this.#playerCamera.handleMouseMovement(
-            pointerInfo.event.movementX,
-            pointerInfo.event.movementY,
-          );
-          break;
-        }
-        case PointerEventTypes.POINTERWHEEL: {
-          const wheelEvent = pointerInfo.event as WheelEvent;
-          if (wheelEvent.deltaY > 0) {
-            this.#keyboardControls.handleKeyEvent("wheel_down", false);
-          } else if (wheelEvent.deltaY < 0) {
-            this.#keyboardControls.handleKeyEvent("wheel_up", false);
-          }
-          break;
-        }
-      }
-    });
-  }
-
-  private initializeRenderLoop(): void {
-    this.scene.onAfterPhysicsObservable.add(() => {
-      const dt = (this.scene.deltaTime || 0) / 1000;
-
-      if (this.#playerVehicle.isSprinting) {
-        if (!this.stats.consumeStamina(25 * dt)) {
-          this.#playerVehicle.isSprinting = false;
-        }
-      }
-      this.#playerVehicle.update(dt);
-      this.stats.update(dt, this.#playerVehicle.isSprinting);
-    });
-
-    this.scene.onBeforeRenderObservable.add(() => {
-      this.#playerVehicle.updateCameraAndVisuals();
-
-      if (this.#keyboardControls instanceof PaddleBoatControls)
-        this.#keyboardControls.update();
-      else if (this.#keyboardControls instanceof WalkingControls) {
-        this.#keyboardControls.update();
-      }
-
-      // Ensure world chunks are generated around the player ONLY when they move between chunks
-      const playerPos = this.position;
-      const currentChunkX = ChunkLoadingSystem.worldToChunkCoord(playerPos.x);
-      const currentChunkY = ChunkLoadingSystem.worldToChunkCoord(playerPos.y);
-      const currentChunkZ = ChunkLoadingSystem.worldToChunkCoord(playerPos.z);
-
-      if (
-        currentChunkX !== this.#lastChunkX ||
-        currentChunkY !== this.#lastChunkY ||
-        currentChunkZ !== this.#lastChunkZ
-      ) {
-        ChunkLoadingSystem.updateChunksAround(
-          currentChunkX,
-          currentChunkY,
-          currentChunkZ,
-          playerPos.y,
-        );
-        this.#lastChunkX = currentChunkX;
-        this.#lastChunkY = currentChunkY;
-        this.#lastChunkZ = currentChunkZ;
-      }
-    });
-
-    this.scene.onAfterRenderObservable.add(() => {
-      const playerPos = this.position;
-      const chunkX = ChunkLoadingSystem.worldToChunkCoord(playerPos.x);
-      const chunkY = ChunkLoadingSystem.worldToChunkCoord(playerPos.y);
-      const chunkZ = ChunkLoadingSystem.worldToChunkCoord(playerPos.z);
-      const cameraPos = this.#playerCamera.position;
-      const cameraYaw = this.#playerCamera.cameraYaw;
-      const cameraPitch = this.#playerCamera.cameraPitch;
-
-      PlayerHud.updateDebugInfo("FPS", this.engine.getFps().toFixed());
-      PlayerHud.updateDebugInfo("Faces", this.scene.getActiveIndices() / 3);
-      PlayerHud.updateDebugInfo(
-        "Player Pos",
-        `${playerPos.x.toFixed(2)}, ${playerPos.y.toFixed(
-          2,
-        )}, ${playerPos.z.toFixed(2)}`,
-      );
-      PlayerHud.updateDebugInfo("Chunk Pos", `${chunkX}, ${chunkY}, ${chunkZ}`);
-      PlayerHud.updateDebugInfo(
-        "Camera Pos",
-        `${cameraPos.x.toFixed(2)}, ${cameraPos.y.toFixed(
-          2,
-        )}, ${cameraPos.z.toFixed(2)}`,
-      );
-      PlayerHud.updateDebugInfo(
-        "Camera Angle",
-        `Yaw: ${cameraYaw.toFixed(2)}, Pitch: ${cameraPitch.toFixed(2)}`,
-      );
-      PlayerHud.updateDebugInfo("Facing", this.getDirectionFromYaw(cameraYaw));
-      PlayerHud.updateDebugInfo(
-        "Loaded Chunks",
-        Array.from(Chunk.chunkInstances.values()).filter((c) => c.isLoaded)
-          .length,
-      );
-      PlayerHud.updateDebugInfo("Health", Math.ceil(this.stats.health));
-      PlayerHud.updateDebugInfo("Hunger", Math.ceil(this.stats.hunger));
-      PlayerHud.updateDebugInfo("Stamina", Math.ceil(this.stats.stamina));
-      PlayerHud.updateDebugInfo("Mana", Math.ceil(this.stats.mana));
-      this.#playerHud.updateStats();
-    });
-  }
-  private getDirectionFromYaw(yaw: number): string {
-    // Convert yaw from radians to degrees and normalize to a 0-360 range
-    const degrees = (yaw * (180 / Math.PI)) % 360;
-    const normalizedDegrees = (degrees + 360) % 360;
-
-    const directions = [
-      "→ West",
-      "↗ North-West",
-      "↑ North",
-      "↖ North-East",
-      "← East",
-      "↙ South-East",
-      "↓ South",
-      "↘ South-West",
-    ];
-    const index = Math.round(normalizedDegrees / 45) % 8;
-    return directions[index];
-  }
   private pauseGame() {
     Map1.isPaused = true;
     TestScene.hk.setTimeStep(0); // Freeze physics updates
@@ -270,6 +105,10 @@ export class Player implements IUsable {
     return this.#playerVehicle;
   }
 
+  public get playerBody(): IPlayerBody {
+    return this.#playerVehicle;
+  }
+
   public get playerCamera(): PlayerCamera {
     return this.#playerCamera;
   }
@@ -277,12 +116,15 @@ export class Player implements IUsable {
   public get keyboardControls(): IControls<unknown> {
     return this.#keyboardControls;
   }
+
   public set keyboardControls(keyboardControls: IControls<unknown>) {
     this.#keyboardControls = keyboardControls;
   }
+
   public get playerHud(): PlayerHud {
     return this.#playerHud;
   }
+
   public get playerInventory(): PlayerInventory {
     return this.#playerInventory;
   }
