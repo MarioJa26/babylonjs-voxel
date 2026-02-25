@@ -261,11 +261,11 @@ const RIVER: Biome = {
 const GRASS_LAND: Biome = {
   name: "Grass_Land",
   topBlock: 15, // Grass
-  undergroundBlock: 1, // Stone
+  undergroundBlock: 46, // Stone
   stoneBlock: 1,
   canSpawnTrees: false,
   treeDensity: 0.0,
-  beachBlock: 1, // Stone beach (no sand in sky)
+  beachBlock: 3, // Stone beach (no sand in sky)
   seafloorBlock: 1,
   terrainScale: GenerationParams.TERRAIN_SCALE,
   persistence: 0.5,

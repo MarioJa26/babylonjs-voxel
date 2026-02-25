@@ -83,6 +83,7 @@ export class PlayerLoopController {
   }
 
   private updateDebugHud(): void {
+    this.playerHud.updateStats();
     if (PlayerHud.debugPanelDiv.style.display === "none") return;
 
     const playerPos = this.getPlayerPosition();
@@ -118,7 +119,6 @@ export class PlayerLoopController {
     PlayerHud.updateDebugInfo("Hunger", Math.ceil(this.playerStats.hunger));
     PlayerHud.updateDebugInfo("Stamina", Math.ceil(this.playerStats.stamina));
     PlayerHud.updateDebugInfo("Mana", Math.ceil(this.playerStats.mana));
-    this.playerHud.updateStats();
   }
 
   private getDirectionFromYaw(yaw: number): string {

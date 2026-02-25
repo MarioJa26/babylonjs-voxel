@@ -149,10 +149,16 @@ export class SurfaceGenerator {
             }
             placeBlock(worldX, worldY, worldZ, blockId, true);
           } else {
-            // Air or Water
+            // Air / liquids:
+            // - keep sea-level filling near the surface
+            // - below y=0, keep a stone baseline so underground chunks don't turn into vast empty space
             if (worldY <= SEA_LEVEL) {
-              const liquidId = biome.name === "Volcanic_Wasteland" ? 24 : 30; // 24 = Lava, 30 = Water
-              placeBlock(worldX, worldY, worldZ, liquidId, false);
+              if (worldY >= 0) {
+                const liquidId = biome.name === "Volcanic_Wasteland" ? 24 : 30; // 24 = Lava, 30 = Water
+                placeBlock(worldX, worldY, worldZ, liquidId, false);
+              } else {
+                placeBlock(worldX, worldY, worldZ, 29, false);
+              }
             }
           }
         }

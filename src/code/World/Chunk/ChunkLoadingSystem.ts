@@ -3,7 +3,6 @@ import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import { ChunkMesher } from "./ChunckMesher";
 import { SettingParams } from "../SettingParams";
 import { WorldStorage } from "../WorldStorage";
-import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
 import { DistantTerrain } from "../Generation/DistanTerrain/DistantTerrian";
 
 export class ChunkLoadingSystem {
@@ -75,10 +74,7 @@ export class ChunkLoadingSystem {
 
     // 1. Collect all potential chunk coordinates
     for (let y = chunkY - verticalRadius; y <= chunkY + verticalRadius; y++) {
-      if (
-        y >= SettingParams.MAX_CHUNK_HEIGHT ||
-        (playerY > GenerationParams.CHUNK_SIZE && y < 0)
-      )
+      if (y >= SettingParams.MAX_CHUNK_HEIGHT)
         continue;
       for (let x = chunkX - renderDistance; x <= chunkX + renderDistance; x++) {
         for (
