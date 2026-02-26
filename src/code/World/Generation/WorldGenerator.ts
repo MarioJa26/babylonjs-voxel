@@ -54,13 +54,14 @@ export class WorldGenerator {
       this.seedAsInt,
     );
     this.undergroundGenerator = new UndergroundGenerator(params, caveNoise);
-    this.lightGenerator = new LightGenerator(params, densityNoise);
+    this.lightGenerator = new LightGenerator(params);
   }
 
   private createBuffer(size: number): Uint8Array {
     if (typeof SharedArrayBuffer !== "undefined") {
       return new Uint8Array(new SharedArrayBuffer(size));
     }
+    console.warn("buffer not created!");
     return new Uint8Array(size);
   }
 
@@ -113,13 +114,13 @@ export class WorldGenerator {
       chunkZ * this.chunk_size,
     );
 
-    const topSunlightMask = this.surfaceGenerator.generate(
+    const surfaceGeneration = this.surfaceGenerator.generate(
       chunkX,
       chunkY,
       chunkZ,
       biome,
       placeBlock,
-    ); // Generates solid terrain first and computes per-column top sunlight
+    ); // Generates solid terrain first and computes per-column top sunlight/surface data
 
     if (chunkY < 0) {
       this.undergroundGenerator.generate(chunkX, chunkY, chunkZ, placeBlock); // Then carves caves into it
@@ -131,7 +132,7 @@ export class WorldGenerator {
       biome,
       blocks,
       light,
-      topSunlightMask,
+      surfaceGeneration.topSunlightMask,
     );
 
     return { blocks, light };

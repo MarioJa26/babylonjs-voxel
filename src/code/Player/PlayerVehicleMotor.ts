@@ -580,7 +580,7 @@ export class PlayerVehicleMotor {
     dt: number,
   ): Vector3 {
     const delta = target.subtract(current);
-    if (delta.length() < 1) {
+    if (delta.length() < 0.1) {
       return current.clone();
     }
     const change = delta

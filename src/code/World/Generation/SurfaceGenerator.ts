@@ -11,6 +11,11 @@ import { TowerFeature } from "./Structure/TowerFeature";
 import { DungeonFeature } from "./Structure/DungeonFeature";
 import { Biome } from "./Biome/BiomeTypes";
 
+export type SurfaceGenerationResult = {
+  topSunlightMask: Uint8Array;
+  topSurfaceYMap: Int16Array;
+};
+
 export class SurfaceGenerator {
   private params: GenerationParamsType;
   private treeNoise: (x: number, z: number) => number;
@@ -24,6 +29,7 @@ export class SurfaceGenerator {
     SurfaceGenerator.DENSITY_BASE_AMPLITUDE +
     SurfaceGenerator.DENSITY_OVERHANG_AMPLITUDE +
     SurfaceGenerator.DENSITY_CLIFF_AMPLITUDE;
+  private static readonly NO_SURFACE_Y = -32768;
   private seedAsInt: number;
   private chunk_size: number;
   private riverGenerator: RiverGenerator;
@@ -63,17 +69,24 @@ export class SurfaceGenerator {
       id: number,
       ow?: boolean,
     ) => void,
-  ): Uint8Array {
-    const topSunlightMask = this.generateTerrain(
+  ): SurfaceGenerationResult {
+    const generationResult = this.generateTerrain(
       chunkX,
       chunkY,
       chunkZ,
       biome,
       placeBlock,
     );
-    this.generateFlora(chunkX, chunkY, chunkZ, biome, placeBlock);
+    this.generateFlora(
+      chunkX,
+      chunkY,
+      chunkZ,
+      biome,
+      placeBlock,
+      generationResult.topSurfaceYMap,
+    );
     this.generateStructures(chunkX, chunkY, chunkZ, biome, placeBlock);
-    return topSunlightMask;
+    return generationResult;
   }
 
   private generateTerrain(
@@ -88,12 +101,14 @@ export class SurfaceGenerator {
       id: number,
       ow: boolean,
     ) => void,
-  ): Uint8Array {
+  ): SurfaceGenerationResult {
     const { CHUNK_SIZE, SEA_LEVEL } = this.params;
     const chunkWorldX = chunkX * CHUNK_SIZE;
     const chunkWorldZ = chunkZ * CHUNK_SIZE;
     const topWorldY = chunkY * CHUNK_SIZE + CHUNK_SIZE - 1;
     const topSunlightMask = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE);
+    const topSurfaceYMap = new Int16Array(CHUNK_SIZE * CHUNK_SIZE);
+    topSurfaceYMap.fill(SurfaceGenerator.NO_SURFACE_Y);
 
     for (let localX = 0; localX < CHUNK_SIZE; localX++) {
       const worldX = chunkWorldX + localX;
@@ -103,10 +118,15 @@ export class SurfaceGenerator {
         const biome = TerrainHeightMap.getBiome(worldX, worldZ);
         // Pass undefined for biome to allow parameter blending/smoothing
         const terrainHeight = this.getFinalTerrainHeight(worldX, worldZ);
-        topSunlightMask[localX + localZ * CHUNK_SIZE] =
-          this.columnReceivesDirectSun(worldX, worldZ, topWorldY, terrainHeight)
-            ? 1
-            : 0;
+        const columnIndex = localX + localZ * CHUNK_SIZE;
+        const topSurfaceY = this.findTopSurfaceY(worldX, worldZ, terrainHeight);
+        const hasSurface = Number.isFinite(topSurfaceY);
+
+        if (hasSurface) {
+          topSurfaceYMap[columnIndex] = topSurfaceY as number;
+        }
+        topSunlightMask[columnIndex] =
+          !hasSurface || topSurfaceY <= topWorldY ? 1 : 0;
         const riverNoise = this.riverGenerator.getRiverNoise(worldX, worldZ);
         const tunnelHeight = GenerationParams.SEA_LEVEL;
 
@@ -187,7 +207,7 @@ export class SurfaceGenerator {
       }
     }
 
-    return topSunlightMask;
+    return { topSunlightMask, topSurfaceYMap };
   }
 
   private generateFlora(
@@ -196,6 +216,7 @@ export class SurfaceGenerator {
     chunkZ: number,
     _biome: Biome,
     placeBlock: (x: number, y: number, z: number, id: number) => void,
+    topSurfaceYMap: Int16Array,
   ) {
     // Scan a fixed radius outside the chunk to catch trees from neighbors.
     // 8 blocks is usually enough for standard tree canopies.
@@ -225,11 +246,29 @@ export class SurfaceGenerator {
         const treeNoiseValue = (this.treeNoise(worldX, worldZ) + 1) / 2;
         if (treeNoiseValue > colBiome.treeDensity) continue;
 
-        const baseHeight = this.getFinalTerrainHeight(worldX, worldZ);
+        let surfaceY = SurfaceGenerator.NO_SURFACE_Y;
+        const isInsideChunkColumn =
+          localX >= 0 &&
+          localX < this.chunk_size &&
+          localZ >= 0 &&
+          localZ < this.chunk_size;
 
-        // Plant on the final 3D density surface (solid with air immediately above).
-        const surfaceY = this.findTopSurfaceY(worldX, worldZ, baseHeight);
-        if (!Number.isFinite(surfaceY)) continue;
+        if (isInsideChunkColumn) {
+          surfaceY = topSurfaceYMap[localX + localZ * this.chunk_size];
+        } else {
+          const baseHeight = this.getFinalTerrainHeight(worldX, worldZ);
+          // For columns outside this chunk, we do not have cached column data.
+          const sampledSurfaceY = this.findTopSurfaceY(
+            worldX,
+            worldZ,
+            baseHeight,
+          );
+          if (Number.isFinite(sampledSurfaceY)) {
+            surfaceY = sampledSurfaceY as number;
+          }
+        }
+
+        if (surfaceY === SurfaceGenerator.NO_SURFACE_Y) continue;
 
         const riverNoise = this.riverGenerator.getRiverNoise(worldX, worldZ);
         if (this.riverGenerator.isRiver(worldX, surfaceY, worldZ, riverNoise))
@@ -381,30 +420,6 @@ export class SurfaceGenerator {
       overhangNoise * SurfaceGenerator.DENSITY_OVERHANG_AMPLITUDE +
       cliffNoise * SurfaceGenerator.DENSITY_CLIFF_AMPLITUDE
     );
-  }
-
-  private columnReceivesDirectSun(
-    worldX: number,
-    worldZ: number,
-    topWorldY: number,
-    terrainHeight: number,
-  ): boolean {
-    const influence = SurfaceGenerator.DENSITY_VERTICAL_SCAN_RANGE;
-
-    if (topWorldY < terrainHeight - influence) {
-      return false;
-    }
-    if (topWorldY >= terrainHeight + influence) {
-      return true;
-    }
-
-    for (let y = topWorldY + 1; y <= terrainHeight + influence; y++) {
-      if (this.getDensity(worldX, y, worldZ, terrainHeight) > 0) {
-        return false;
-      }
-    }
-
-    return true;
   }
 
   private findTopSurfaceY(

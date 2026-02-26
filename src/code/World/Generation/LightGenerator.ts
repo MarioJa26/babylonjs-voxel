@@ -7,23 +7,15 @@ export class LightGenerator {
   private static chunkSizeSq: number;
   private lightQueue: Uint16Array;
   private static queueCapacity: number;
-  private densityNoise: (x: number, y: number, z: number) => number;
-  private static readonly DENSITY_BASE_AMPLITUDE = 32;
-  private static readonly DENSITY_OVERHANG_AMPLITUDE = 32;
-  private static readonly DENSITY_CLIFF_AMPLITUDE = 16;
   private static readonly DENSITY_INFLUENCE_RANGE = 48;
 
-  constructor(
-    params: GenerationParamsType,
-    densityNoise: (x: number, y: number, z: number) => number,
-  ) {
+  constructor(params: GenerationParamsType) {
     LightGenerator.chunkSize = params.CHUNK_SIZE;
     LightGenerator.chunkSizeSq = LightGenerator.chunkSize ** 2;
     // Allocate a fixed size buffer for the queue.
     // A size of chunkSize^3 is sufficient for a circular buffer in BFS
     LightGenerator.queueCapacity = LightGenerator.chunkSize ** 3;
     this.lightQueue = new Uint16Array(LightGenerator.queueCapacity);
-    this.densityNoise = densityNoise;
   }
 
   public generate(
@@ -232,50 +224,19 @@ export class LightGenerator {
     return blockId === 0 || blockId === 30 || blockId === 60 || blockId === 61;
   }
 
-  private getDensity(x: number, y: number, z: number, baseHeight: number): number {
-    const relativeHeight = baseHeight - y;
-    if (relativeHeight > LightGenerator.DENSITY_INFLUENCE_RANGE) {
-      return relativeHeight;
-    }
-    if (relativeHeight < -LightGenerator.DENSITY_INFLUENCE_RANGE) {
-      return relativeHeight;
-    }
-
-    const baseNoise = this.densityNoise(x * 0.01, y * 0.02, z * 0.02);
-    const overhangNoise = this.densityNoise(
-      (x + y * 0.55) * 0.008,
-      y * 0.012,
-      (z - y * 0.45) * 0.008,
-    );
-    const cliffNoise = this.densityNoise(x * 0.0035, y * 0.004, z * 0.0035);
-
-    return (
-      relativeHeight +
-      baseNoise * LightGenerator.DENSITY_BASE_AMPLITUDE +
-      overhangNoise * LightGenerator.DENSITY_OVERHANG_AMPLITUDE +
-      cliffNoise * LightGenerator.DENSITY_CLIFF_AMPLITUDE
-    );
-  }
-
   private columnReceivesDirectSun(
     worldX: number,
     worldZ: number,
     topWorldY: number,
   ): boolean {
-    const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(worldX, worldZ);
+    const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(
+      worldX,
+      worldZ,
+    );
     const influence = LightGenerator.DENSITY_INFLUENCE_RANGE;
 
     if (topWorldY < terrainHeight - influence) {
       return false;
-    }
-    if (topWorldY >= terrainHeight + influence) {
-      return true;
-    }
-
-    for (let y = topWorldY + 1; y <= terrainHeight + influence; y++) {
-      if (this.getDensity(worldX, y, worldZ, terrainHeight) > 0) {
-        return false;
-      }
     }
 
     return true;
