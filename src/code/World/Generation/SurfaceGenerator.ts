@@ -15,6 +15,10 @@ export class SurfaceGenerator {
   private params: GenerationParamsType;
   private treeNoise: (x: number, z: number) => number;
   private densityNoise: (x: number, y: number, z: number) => number;
+  private static readonly DENSITY_BASE_AMPLITUDE = 32;
+  private static readonly DENSITY_OVERHANG_AMPLITUDE = 32;
+  private static readonly DENSITY_CLIFF_AMPLITUDE = 16;
+  private static readonly DENSITY_INFLUENCE_RANGE = 48;
   private seedAsInt: number;
   private chunk_size: number;
   private riverGenerator: RiverGenerator;
@@ -341,18 +345,30 @@ export class SurfaceGenerator {
     //biome: Biome,
   ): number {
     const relativeHeight = baseHeight - y;
-    // Optimization: Skip noise calculation if far from the surface approximation.
-    // The noise amplitude is 8.
-    // We use a margin of 16 to be safe for both:
-    // 1. Determining solid vs air (threshold 0) -> margin 8 is enough.
-    // 2. Determining block type (threshold 6 for dirt depth) -> margin 14 is needed (6 + 8).
-    if (relativeHeight > 16) return relativeHeight;
-    if (relativeHeight < -16) return relativeHeight;
+    // Skip far from transition band to keep generation fast.
+    if (relativeHeight > SurfaceGenerator.DENSITY_INFLUENCE_RANGE) {
+      return relativeHeight;
+    }
+    if (relativeHeight < -SurfaceGenerator.DENSITY_INFLUENCE_RANGE) {
+      return relativeHeight;
+    }
 
-    // 3D noise for density.
-    // Scale controls the size of the features (caves/overhangs).
-    const noise = this.densityNoise(x * 0.01, y * 0.02, z * 0.02);
-    // (baseHeight - y) creates the ground. Adding noise distorts it.
-    return relativeHeight + noise * 8;
+    // Base shaping component.
+    const baseNoise = this.densityNoise(x * 0.01, y * 0.02, z * 0.02);
+    // Y-skewed sample creates shelves and overhang-like lateral drift.
+    const overhangNoise = this.densityNoise(
+      (x + y * 0.55) * 0.008,
+      y * 0.012,
+      (z - y * 0.45) * 0.008,
+    );
+    // Low-frequency component reinforces cliff bands.
+    const cliffNoise = this.densityNoise(x * 0.0035, y * 0.004, z * 0.0035);
+
+    return (
+      relativeHeight +
+      baseNoise * SurfaceGenerator.DENSITY_BASE_AMPLITUDE +
+      overhangNoise * SurfaceGenerator.DENSITY_OVERHANG_AMPLITUDE +
+      cliffNoise * SurfaceGenerator.DENSITY_CLIFF_AMPLITUDE
+    );
   }
 }
