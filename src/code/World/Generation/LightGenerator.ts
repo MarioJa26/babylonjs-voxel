@@ -7,14 +7,23 @@ export class LightGenerator {
   private static chunkSizeSq: number;
   private lightQueue: Uint16Array;
   private static queueCapacity: number;
+  private densityNoise: (x: number, y: number, z: number) => number;
+  private static readonly DENSITY_BASE_AMPLITUDE = 32;
+  private static readonly DENSITY_OVERHANG_AMPLITUDE = 32;
+  private static readonly DENSITY_CLIFF_AMPLITUDE = 16;
+  private static readonly DENSITY_INFLUENCE_RANGE = 48;
 
-  constructor(params: GenerationParamsType) {
+  constructor(
+    params: GenerationParamsType,
+    densityNoise: (x: number, y: number, z: number) => number,
+  ) {
     LightGenerator.chunkSize = params.CHUNK_SIZE;
     LightGenerator.chunkSizeSq = LightGenerator.chunkSize ** 2;
     // Allocate a fixed size buffer for the queue.
     // A size of chunkSize^3 is sufficient for a circular buffer in BFS
     LightGenerator.queueCapacity = LightGenerator.chunkSize ** 3;
     this.lightQueue = new Uint16Array(LightGenerator.queueCapacity);
+    this.densityNoise = densityNoise;
   }
 
   public generate(
@@ -24,6 +33,7 @@ export class LightGenerator {
     _biome: Biome,
     blocks: Uint8Array,
     light: Uint8Array,
+    topSunlightMask?: Uint8Array,
   ): void {
     let head = 0;
     let tail = 0;
@@ -35,25 +45,17 @@ export class LightGenerator {
       const worldX = chunkX * CHUNK_SIZE + x;
       for (let z = 0; z < CHUNK_SIZE; z++) {
         const worldZ = chunkZ * CHUNK_SIZE + z;
-
-        const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(
-          worldX,
-          worldZ,
-        );
-
-        let receivingSun = true;
         const topWorldY = chunkY * CHUNK_SIZE + CHUNK_SIZE - 1;
-        // Heuristic: If we are deep below the terrain baseline, assume no direct sun.
-        // 32 is a margin to account for 3D noise variations (valleys/caves).
-        if (topWorldY < terrainHeight - 32) {
-          receivingSun = false;
-        }
+        const columnIndex = x + z * CHUNK_SIZE;
+        let receivingSun = topSunlightMask
+          ? topSunlightMask[columnIndex] !== 0
+          : this.columnReceivesDirectSun(worldX, worldZ, topWorldY);
 
         for (let y = CHUNK_SIZE - 1; y >= 0; y--) {
           const idx = x + y * CHUNK_SIZE + z * CHUNK_SIZE_SQ;
           const blockId = blocks[idx];
 
-          if (blockId !== 0) {
+          if (!LightGenerator.isTransparentBlock(blockId)) {
             receivingSun = false;
             // Check for light emitting blocks (e.g. Lava)
             if (blockId === 24) {
@@ -196,8 +198,7 @@ export class LightGenerator {
     const idx = nx + ny * CHUNK_SIZE + nz * CHUNK_SIZE_SQ;
     const blockId = blocks[idx];
     // Check transparency (0: Air, 30: Water, 60/61: Glass)
-    const isTransparent =
-      blockId === 0 || blockId === 30 || blockId === 60 || blockId === 61;
+    const isTransparent = LightGenerator.isTransparentBlock(blockId);
 
     if (isTransparent) {
       const currentVal = light[idx];
@@ -225,5 +226,58 @@ export class LightGenerator {
       }
     }
     return tail;
+  }
+
+  private static isTransparentBlock(blockId: number): boolean {
+    return blockId === 0 || blockId === 30 || blockId === 60 || blockId === 61;
+  }
+
+  private getDensity(x: number, y: number, z: number, baseHeight: number): number {
+    const relativeHeight = baseHeight - y;
+    if (relativeHeight > LightGenerator.DENSITY_INFLUENCE_RANGE) {
+      return relativeHeight;
+    }
+    if (relativeHeight < -LightGenerator.DENSITY_INFLUENCE_RANGE) {
+      return relativeHeight;
+    }
+
+    const baseNoise = this.densityNoise(x * 0.01, y * 0.02, z * 0.02);
+    const overhangNoise = this.densityNoise(
+      (x + y * 0.55) * 0.008,
+      y * 0.012,
+      (z - y * 0.45) * 0.008,
+    );
+    const cliffNoise = this.densityNoise(x * 0.0035, y * 0.004, z * 0.0035);
+
+    return (
+      relativeHeight +
+      baseNoise * LightGenerator.DENSITY_BASE_AMPLITUDE +
+      overhangNoise * LightGenerator.DENSITY_OVERHANG_AMPLITUDE +
+      cliffNoise * LightGenerator.DENSITY_CLIFF_AMPLITUDE
+    );
+  }
+
+  private columnReceivesDirectSun(
+    worldX: number,
+    worldZ: number,
+    topWorldY: number,
+  ): boolean {
+    const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(worldX, worldZ);
+    const influence = LightGenerator.DENSITY_INFLUENCE_RANGE;
+
+    if (topWorldY < terrainHeight - influence) {
+      return false;
+    }
+    if (topWorldY >= terrainHeight + influence) {
+      return true;
+    }
+
+    for (let y = topWorldY + 1; y <= terrainHeight + influence; y++) {
+      if (this.getDensity(worldX, y, worldZ, terrainHeight) > 0) {
+        return false;
+      }
+    }
+
+    return true;
   }
 }

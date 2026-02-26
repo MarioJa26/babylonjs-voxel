@@ -212,27 +212,56 @@ export class Chunk {
   public initializeSunlight() {
     const queue: LightNode[] = [];
     const { CHUNK_SIZE } = GenerationParams;
+    const topWorldY = this.#chunkY * CHUNK_SIZE + CHUNK_SIZE - 1;
+    const aboveChunk = this.getNeighbor(0, 1, 0);
+
+    if (this.light_array.length !== Chunk.SIZE3) {
+      if (typeof SharedArrayBuffer !== "undefined") {
+        this.light_array = new Uint8Array(new SharedArrayBuffer(Chunk.SIZE3));
+      } else {
+        this.light_array = new Uint8Array(Chunk.SIZE3);
+      }
+    }
+
+    // Rebuild skylight while preserving existing block-light nibbles.
+    for (let i = 0; i < Chunk.SIZE3; i++) {
+      this.light_array[i] &= Chunk.BLOCK_LIGHT_MASK;
+    }
 
     for (let x = 0; x < CHUNK_SIZE; x++) {
       const worldX = this.#chunkX * CHUNK_SIZE + x;
       for (let z = 0; z < CHUNK_SIZE; z++) {
         const worldZ = this.#chunkZ * CHUNK_SIZE + z;
+        let receivingSun = true;
 
-        const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(
-          worldX,
-          worldZ,
-        );
+        if (aboveChunk?.isLoaded) {
+          const aboveBlock = aboveChunk.getBlock(x, 0, z);
+          receivingSun =
+            aboveChunk.isTransparent(aboveBlock) &&
+            aboveChunk.getSkyLight(x, 0, z) === 15;
+        } else {
+          const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(
+            worldX,
+            worldZ,
+          );
+          // Conservative fallback when top-neighbor state is unavailable.
+          receivingSun = topWorldY >= terrainHeight - 48;
+        }
 
-        for (let y = 0; y < CHUNK_SIZE; y++) {
-          const worldY = this.#chunkY * CHUNK_SIZE + y;
+        for (let y = CHUNK_SIZE - 1; y >= 0; y--) {
+          const idx = x + y * CHUNK_SIZE + z * Chunk.SIZE2;
+          const blockId = this.getBlock(x, y, z);
 
-          if (worldY > terrainHeight) {
-            const idx = x + y * CHUNK_SIZE + z * Chunk.SIZE2;
-            const blockId = this.getBlock(x, y, z);
-            if (blockId === 0) {
-              this.light_array[idx] = 15 << Chunk.SKY_LIGHT_SHIFT;
-              queue.push({ chunk: this, x, y, z, level: 15 });
-            }
+          if (!this.isTransparent(blockId)) {
+            receivingSun = false;
+            continue;
+          }
+
+          if (receivingSun) {
+            this.light_array[idx] =
+              (this.light_array[idx] & Chunk.BLOCK_LIGHT_MASK) |
+              (15 << Chunk.SKY_LIGHT_SHIFT);
+            queue.push({ chunk: this, x, y, z, level: 15 });
           }
         }
       }

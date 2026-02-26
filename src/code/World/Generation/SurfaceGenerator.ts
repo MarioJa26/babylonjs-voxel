@@ -19,6 +19,11 @@ export class SurfaceGenerator {
   private static readonly DENSITY_OVERHANG_AMPLITUDE = 32;
   private static readonly DENSITY_CLIFF_AMPLITUDE = 16;
   private static readonly DENSITY_INFLUENCE_RANGE = 48;
+  private static readonly DENSITY_VERTICAL_SCAN_RANGE =
+    SurfaceGenerator.DENSITY_INFLUENCE_RANGE +
+    SurfaceGenerator.DENSITY_BASE_AMPLITUDE +
+    SurfaceGenerator.DENSITY_OVERHANG_AMPLITUDE +
+    SurfaceGenerator.DENSITY_CLIFF_AMPLITUDE;
   private seedAsInt: number;
   private chunk_size: number;
   private riverGenerator: RiverGenerator;
@@ -58,10 +63,17 @@ export class SurfaceGenerator {
       id: number,
       ow?: boolean,
     ) => void,
-  ) {
-    this.generateTerrain(chunkX, chunkY, chunkZ, biome, placeBlock);
+  ): Uint8Array {
+    const topSunlightMask = this.generateTerrain(
+      chunkX,
+      chunkY,
+      chunkZ,
+      biome,
+      placeBlock,
+    );
     this.generateFlora(chunkX, chunkY, chunkZ, biome, placeBlock);
     this.generateStructures(chunkX, chunkY, chunkZ, biome, placeBlock);
+    return topSunlightMask;
   }
 
   private generateTerrain(
@@ -76,10 +88,12 @@ export class SurfaceGenerator {
       id: number,
       ow: boolean,
     ) => void,
-  ) {
+  ): Uint8Array {
     const { CHUNK_SIZE, SEA_LEVEL } = this.params;
     const chunkWorldX = chunkX * CHUNK_SIZE;
     const chunkWorldZ = chunkZ * CHUNK_SIZE;
+    const topWorldY = chunkY * CHUNK_SIZE + CHUNK_SIZE - 1;
+    const topSunlightMask = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE);
 
     for (let localX = 0; localX < CHUNK_SIZE; localX++) {
       const worldX = chunkWorldX + localX;
@@ -89,6 +103,10 @@ export class SurfaceGenerator {
         const biome = TerrainHeightMap.getBiome(worldX, worldZ);
         // Pass undefined for biome to allow parameter blending/smoothing
         const terrainHeight = this.getFinalTerrainHeight(worldX, worldZ);
+        topSunlightMask[localX + localZ * CHUNK_SIZE] =
+          this.columnReceivesDirectSun(worldX, worldZ, topWorldY, terrainHeight)
+            ? 1
+            : 0;
         const riverNoise = this.riverGenerator.getRiverNoise(worldX, worldZ);
         const tunnelHeight = GenerationParams.SEA_LEVEL;
 
@@ -168,6 +186,8 @@ export class SurfaceGenerator {
         }
       }
     }
+
+    return topSunlightMask;
   }
 
   private generateFlora(
@@ -207,18 +227,9 @@ export class SurfaceGenerator {
 
         const baseHeight = this.getFinalTerrainHeight(worldX, worldZ);
 
-        // Find the actual surface height using density
-        let surfaceY = -Infinity;
-        // Scan range around base height. 3D noise amplitude is approx +/- 8.
-        for (let y = baseHeight + 16; y >= baseHeight - 16; y--) {
-          const density = this.getDensity(worldX, y, worldZ, baseHeight);
-          if (density > 0) {
-            surfaceY = y;
-            break;
-          }
-        }
-
-        if (surfaceY === -Infinity) continue;
+        // Plant on the final 3D density surface (solid with air immediately above).
+        const surfaceY = this.findTopSurfaceY(worldX, worldZ, baseHeight);
+        if (!Number.isFinite(surfaceY)) continue;
 
         const riverNoise = this.riverGenerator.getRiverNoise(worldX, worldZ);
         if (this.riverGenerator.isRiver(worldX, surfaceY, worldZ, riverNoise))
@@ -370,5 +381,58 @@ export class SurfaceGenerator {
       overhangNoise * SurfaceGenerator.DENSITY_OVERHANG_AMPLITUDE +
       cliffNoise * SurfaceGenerator.DENSITY_CLIFF_AMPLITUDE
     );
+  }
+
+  private columnReceivesDirectSun(
+    worldX: number,
+    worldZ: number,
+    topWorldY: number,
+    terrainHeight: number,
+  ): boolean {
+    const influence = SurfaceGenerator.DENSITY_VERTICAL_SCAN_RANGE;
+
+    if (topWorldY < terrainHeight - influence) {
+      return false;
+    }
+    if (topWorldY >= terrainHeight + influence) {
+      return true;
+    }
+
+    for (let y = topWorldY + 1; y <= terrainHeight + influence; y++) {
+      if (this.getDensity(worldX, y, worldZ, terrainHeight) > 0) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  private findTopSurfaceY(
+    worldX: number,
+    worldZ: number,
+    baseHeight: number,
+  ): number {
+    const range = SurfaceGenerator.DENSITY_VERTICAL_SCAN_RANGE;
+    const maxY = baseHeight + range;
+    const minY = baseHeight - range;
+
+    let densityAbove = this.getDensity(worldX, maxY + 1, worldZ, baseHeight);
+    let highestSolid = Number.NEGATIVE_INFINITY;
+
+    for (let y = maxY; y >= minY; y--) {
+      const densityHere = this.getDensity(worldX, y, worldZ, baseHeight);
+
+      if (densityHere > 0 && densityAbove <= 0) {
+        return y;
+      }
+
+      if (densityHere > 0 && !Number.isFinite(highestSolid)) {
+        highestSolid = y;
+      }
+
+      densityAbove = densityHere;
+    }
+
+    return highestSolid;
   }
 }
