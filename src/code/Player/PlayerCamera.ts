@@ -5,6 +5,7 @@ import { GenerationParams } from "../World/Generation/NoiseAndParameters/Generat
 
 export class PlayerCamera {
   #playerCamera: FreeCamera;
+  #isUnderWater: boolean | null = null;
 
   #followDistance = 0.001;
   #eyeHeight = 1.8;
@@ -51,12 +52,10 @@ export class PlayerCamera {
       new Vector3(0, this.#eyeHeight, 0)
     );
 
-    if (this.position.y < GenerationParams.SEA_LEVEL) {
-      this.scene.fogStart = MapFog.fogStartUnderWater;
-      this.scene.fogEnd = MapFog.fogEndUnderWater;
-    } else {
-      this.scene.fogStart = MapFog.fogStartAboveWater;
-      this.scene.fogEnd = MapFog.fogEndAboveWater;
+    const isUnderWater = this.position.y < GenerationParams.SEA_LEVEL;
+    if (this.#isUnderWater !== isUnderWater) {
+      MapFog.applyToScene(this.scene, isUnderWater);
+      this.#isUnderWater = isUnderWater;
     }
   }
 

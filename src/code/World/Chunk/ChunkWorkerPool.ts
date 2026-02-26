@@ -201,6 +201,7 @@ export class ChunkWorkerPool {
       positions: Int16Array;
       colors: Uint8Array;
       normals: Int8Array;
+      surfaceTiles: Uint8Array;
     },
     oldCenterChunkX?: number,
     oldCenterChunkZ?: number,

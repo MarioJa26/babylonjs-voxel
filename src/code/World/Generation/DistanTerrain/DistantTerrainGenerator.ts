@@ -1,7 +1,11 @@
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
 import { TerrainHeightMap } from "../TerrainHeightMap";
+import { BlockTextures } from "../../Texture/BlockTextures";
 
 export class DistantTerrainGenerator {
+  private static readonly DEFAULT_TILE_X = 14;
+  private static readonly DEFAULT_TILE_Y = 0;
+
   public static generate(
     centerChunkX: number,
     centerChunkZ: number,
@@ -12,6 +16,7 @@ export class DistantTerrainGenerator {
       positions: Int16Array;
       colors: Uint8Array;
       normals: Int8Array;
+      surfaceTiles: Uint8Array;
     },
     oldCenterChunkX?: number,
     oldCenterChunkZ?: number
@@ -23,6 +28,7 @@ export class DistantTerrainGenerator {
     const positions = new Int16Array(vertexCount * 3);
     const colors = new Uint8Array(vertexCount * 3);
     const normals = new Int8Array(vertexCount * 3);
+    const surfaceTiles = new Uint8Array(vertexCount * 2);
 
     // Snap the center to the grid step to ensure consistent sampling
     const gridCenterChunkX = Math.floor(centerChunkX / gridStep) * gridStep;
@@ -79,6 +85,11 @@ export class DistantTerrainGenerator {
         const worldX = startX + x * chunkSize * gridStep;
         const oldX = x + shiftX;
         const localChunkX = x * gridStep - radius - offsetX;
+        const isInsideRealTerrain =
+          localChunkX > -renderDistance &&
+          localChunkX <= renderDistance &&
+          localChunkZ > -renderDistance &&
+          localChunkZ <= renderDistance;
 
         // Try to reuse data from old arrays
         if (
@@ -98,11 +109,6 @@ export class DistantTerrainGenerator {
           normals[vIndex * 3 + 1] = oldData.normals[oldIndex * 3 + 1];
           normals[vIndex * 3 + 2] = oldData.normals[oldIndex * 3 + 2];
         } else {
-          const isInsideRealTerrain =
-            localChunkX > -renderDistance &&
-            localChunkX <= renderDistance &&
-            localChunkZ > -renderDistance &&
-            localChunkZ <= renderDistance;
           y = isInsideRealTerrain
             ? -200
             : TerrainHeightMap.getFinalTerrainHeight(worldX, worldZ);
@@ -206,6 +212,16 @@ export class DistantTerrainGenerator {
           }
         }
 
+        if (isInsideRealTerrain) {
+          surfaceTiles[vIndex * 2] = this.DEFAULT_TILE_X;
+          surfaceTiles[vIndex * 2 + 1] = this.DEFAULT_TILE_Y;
+        } else {
+          const topBlockId = TerrainHeightMap.getBiome(worldX, worldZ).topBlock;
+          const [tileX, tileY] = this.getTopTileForBlock(topBlockId);
+          surfaceTiles[vIndex * 2] = tileX;
+          surfaceTiles[vIndex * 2 + 1] = tileY;
+        }
+
         // Local position relative to the mesh center
         const localX = localChunkX * chunkSize;
 
@@ -220,6 +236,18 @@ export class DistantTerrainGenerator {
         vIndex++;
       }
     }
-    return { positions, colors, normals };
+    return { positions, colors, normals, surfaceTiles };
+  }
+
+  private static getTopTileForBlock(blockId: number): [number, number] {
+    const tex = BlockTextures[blockId];
+    if (!tex) {
+      return [this.DEFAULT_TILE_X, this.DEFAULT_TILE_Y];
+    }
+    const tile = tex.top ?? tex.all;
+    if (!tile) {
+      return [this.DEFAULT_TILE_X, this.DEFAULT_TILE_Y];
+    }
+    return [tile[0], tile[1]];
   }
 }

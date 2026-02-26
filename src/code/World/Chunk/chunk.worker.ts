@@ -930,7 +930,12 @@ const onMessageHandler = (event: MessageEvent) => {
         centerChunkZ,
         ...data,
       },
-      [data.positions.buffer, data.colors.buffer],
+      [
+        data.positions.buffer,
+        data.colors.buffer,
+        data.normals.buffer,
+        data.surfaceTiles.buffer,
+      ],
     );
     return;
   }

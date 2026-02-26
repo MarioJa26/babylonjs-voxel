@@ -5,6 +5,7 @@ import { CrossHair } from "../Hud/CrossHair";
 import { PlayerInventory } from "../Inventory/PlayerInventory";
 import { PlayerCamera } from "../PlayerCamera";
 import { WorldEnvironment } from "../../Maps/WorldEnvironment";
+import MapFog from "../../Maps/MapFog";
 import { Recipe, Recipes } from "../Crafting/CraftingManager";
 import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
 import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
@@ -418,7 +419,11 @@ export class PlayerHud {
       if (this.#scene.fogMode === Scene.FOGMODE_NONE) {
         this.#scene.fogMode = Scene.FOGMODE_LINEAR;
       }
-      this.#scene.fogStart = parseFloat(fogStartSlider.value);
+      const value = parseFloat(fogStartSlider.value);
+      MapFog.setFogStartOverride(value);
+      if (this.#scene.fogStart !== value) {
+        this.#scene.fogStart = value;
+      }
     };
     div.appendChild(fogStartSlider);
 
@@ -437,7 +442,11 @@ export class PlayerHud {
       if (this.#scene.fogMode === Scene.FOGMODE_NONE) {
         this.#scene.fogMode = Scene.FOGMODE_LINEAR;
       }
-      this.#scene.fogEnd = parseFloat(fogEndSlider.value);
+      const value = parseFloat(fogEndSlider.value);
+      MapFog.setFogEndOverride(value);
+      if (this.#scene.fogEnd !== value) {
+        this.#scene.fogEnd = value;
+      }
     };
     div.appendChild(fogEndSlider);
 

@@ -89,7 +89,7 @@ export default class FastNoiseLite {
 
   private _FractalBounding = 1 / 1.75;
 
-  private SQRT3 = 1.7320508075688772935274463415059;
+  private SQRT3 = 1.7320508075688772;
 
   private _CellularDistanceFunction = CellularDistanceFunction.EuclideanSq;
   private _CellularReturnType = CellularReturnType.Distance;
@@ -247,12 +247,13 @@ export default class FastNoiseLite {
 
       switch (this._NoiseType) {
         case FastNoiseLite.NoiseType.OpenSimplex2:
-        case FastNoiseLite.NoiseType.OpenSimplex2S:
+        case FastNoiseLite.NoiseType.OpenSimplex2S: {
           const F2 = 0.5 * (this.SQRT3 - 1);
           const t = (x + y) * F2;
           x += t;
           y += t;
           break;
+        }
         default:
           break;
       }
@@ -293,13 +294,14 @@ export default class FastNoiseLite {
           y += xz * 0.577350269189626;
           break;
         }
-        case FastNoiseLite.TransformType3D.DefaultOpenSimplex2:
+        case FastNoiseLite.TransformType3D.DefaultOpenSimplex2: {
           const R3 = 2.0 / 3.0;
           const r = (x + y + z) * R3;
           x = r - x;
           y = r - y;
           z = r - z;
           break;
+        }
         default:
           break;
       }
@@ -2175,12 +2177,13 @@ export default class FastNoiseLite {
       let ys = coord.y;
       switch (this._DomainWarpType) {
         case FastNoiseLite.DomainWarpType.OpenSimplex2:
-        case FastNoiseLite.DomainWarpType.OpenSimplex2Reduced:
+        case FastNoiseLite.DomainWarpType.OpenSimplex2Reduced: {
           const F2 = 0.5 * (this.SQRT3 - 1);
           const t = (xs + ys) * F2;
           xs += t;
           ys += t;
           break;
+        }
         default:
           break;
       }
@@ -2218,13 +2221,14 @@ export default class FastNoiseLite {
             ys += xz * 0.577350269189626;
           }
           break;
-        case FastNoiseLite.TransformType3D.DefaultOpenSimplex2:
+        case FastNoiseLite.TransformType3D.DefaultOpenSimplex2: {
           const R3 = 2.0 / 3.0;
           const r = (xs + ys + zs) * R3; // Rotation, not skew
           xs = r - xs;
           ys = r - ys;
           zs = r - zs;
           break;
+        }
         default:
           break;
       }
@@ -2250,12 +2254,13 @@ export default class FastNoiseLite {
         let ys = coord.y;
         switch (this._DomainWarpType) {
           case FastNoiseLite.DomainWarpType.OpenSimplex2:
-          case FastNoiseLite.DomainWarpType.OpenSimplex2Reduced:
+          case FastNoiseLite.DomainWarpType.OpenSimplex2Reduced: {
             const F2 = 0.5 * (this.SQRT3 - 1);
             const t = (xs + ys) * F2;
             xs += t;
             ys += t;
             break;
+          }
           default:
             break;
         }
@@ -2332,12 +2337,13 @@ export default class FastNoiseLite {
       let ys = coord.y;
       switch (this._DomainWarpType) {
         case FastNoiseLite.DomainWarpType.OpenSimplex2:
-        case FastNoiseLite.DomainWarpType.OpenSimplex2Reduced:
+        case FastNoiseLite.DomainWarpType.OpenSimplex2Reduced: {
           const F2 = 0.5 * (this.SQRT3 - 1);
           const t = (xs + ys) * F2;
           xs += t;
           ys += t;
           break;
+        }
         default:
           break;
       }

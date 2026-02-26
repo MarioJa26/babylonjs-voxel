@@ -5,8 +5,10 @@ import {
   VertexBuffer,
   Effect,
   Vector3,
+  Vector2,
   Scene,
-  Color3,
+  Texture,
+  RawTexture,
 } from "@babylonjs/core";
 import { SettingParams } from "../../SettingParams";
 import { Map1 } from "@/code/Maps/Map1";
@@ -15,25 +17,32 @@ import { ChunkWorkerPool } from "../../Chunk/ChunkWorkerPool";
 import { GlobalValues } from "../../GlobalValues";
 import { DistantTerrainShader } from "../../Light/DistantTerrainShader";
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
+import { TextureAtlasFactory } from "../../Texture/TextureAtlasFactory";
 
 export class DistantTerrain {
   private mesh: Mesh;
   private waterMesh: Mesh;
   private material: ShaderMaterial;
   private waterMaterial: ShaderMaterial;
+  private diffuseAtlasTexture: Texture | null = null;
+  private surfaceTileLookupTexture: RawTexture;
+  private surfaceTileLookupData: Uint8Array;
   private radius: number;
   private gridStep = 1; // Optimization: 1 vertex per 4 chunks
+  private gridResolution: number;
 
   // Store data for reuse
   private lastPositions: Int16Array | null = null;
   private lastColors: Uint8Array | null = null;
   private lastNormals: Int8Array | null = null;
+  private lastSurfaceTiles: Uint8Array | null = null;
   private lastCenterChunkX: number | null = null;
   private lastCenterChunkZ: number | null = null;
 
   constructor() {
     this.radius = SettingParams.DISTANT_RENDER_DISTANCE;
     const segments = Math.floor((this.radius * 2) / this.gridStep);
+    this.gridResolution = segments + 1;
     const size = this.radius * 2 * Chunk.SIZE;
 
     // Create a flat ground plane
@@ -45,7 +54,7 @@ export class DistantTerrain {
         subdivisions: segments,
         updatable: true,
       },
-      Map1.mainScene
+      Map1.mainScene,
     );
     this.mesh.sideOrientation = Mesh.FRONTSIDE;
 
@@ -58,13 +67,13 @@ export class DistantTerrain {
         subdivisions: 1,
         updatable: false,
       },
-      Map1.mainScene
+      Map1.mainScene,
     );
 
     // Initialize dummy colors for shader to prevent crash before worker returns
     const engine = this.mesh.getEngine();
     const initialColors = new Uint8Array(this.mesh.getTotalVertices() * 3).fill(
-      128
+      128,
     );
     const initialColorBuffer = new VertexBuffer(
       engine,
@@ -77,9 +86,29 @@ export class DistantTerrain {
       0,
       undefined,
       VertexBuffer.UNSIGNED_BYTE,
-      true
+      true,
     );
     this.mesh.setVerticesBuffer(initialColorBuffer);
+    this.surfaceTileLookupData = new Uint8Array(
+      this.gridResolution * this.gridResolution * 4,
+    );
+    for (let i = 0; i < this.surfaceTileLookupData.length; i += 4) {
+      this.surfaceTileLookupData[i] = 14;
+      this.surfaceTileLookupData[i + 1] = 0;
+      this.surfaceTileLookupData[i + 2] = 0;
+      this.surfaceTileLookupData[i + 3] = 255;
+    }
+    this.surfaceTileLookupTexture = RawTexture.CreateRGBATexture(
+      this.surfaceTileLookupData,
+      this.gridResolution,
+      this.gridResolution,
+      Map1.mainScene,
+      false,
+      false,
+      Texture.NEAREST_SAMPLINGMODE,
+    );
+    this.surfaceTileLookupTexture.wrapU = Texture.CLAMP_ADDRESSMODE;
+    this.surfaceTileLookupTexture.wrapV = Texture.CLAMP_ADDRESSMODE;
 
     Effect.ShadersStore["distantTerrainVertexShader"] =
       DistantTerrainShader.distantTerrainVertexShader;
@@ -106,19 +135,34 @@ export class DistantTerrain {
           "worldViewProjection",
           "lightDirection",
           "sunLightIntensity",
+          "atlasTileSize",
+          "textureScale",
+          "useTexture",
+          "tileGridResolution",
+          "gridOriginWorld",
+          "gridWorldStep",
           "vFogInfos",
           "vFogColor",
           "cameraPosition",
         ],
-      }
+        samplers: ["diffuseTexture", "tileLookupTexture"],
+      },
     );
 
     this.material.onBind = (mesh) => {
+      this.bindDiffuseTexture();
       const effect = this.material.getEffect();
       if (!effect) return;
       this.bindCommonUniforms(effect, mesh.getScene());
     };
-    this.material.setColor3("color", new Color3(31 / 255, 64 / 255, 107 / 255));
+    this.material.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
+    this.material.setFloat("textureScale", 32);
+    this.material.setFloat("tileGridResolution", this.gridResolution);
+    this.material.setFloat("gridWorldStep", Chunk.SIZE * this.gridStep);
+    this.material.setVector2("gridOriginWorld", Vector2.Zero());
+    this.material.setFloat("useTexture", 0);
+    this.material.setTexture("tileLookupTexture", this.surfaceTileLookupTexture);
+    this.bindDiffuseTexture();
     this.mesh.material = this.material;
 
     this.waterMaterial = new ShaderMaterial(
@@ -139,7 +183,7 @@ export class DistantTerrain {
           "vFogColor",
           "cameraPosition",
         ],
-      }
+      },
     );
 
     this.waterMaterial.onBind = (mesh) => {
@@ -169,10 +213,36 @@ export class DistantTerrain {
         data.positions,
         data.colors,
         data.normals,
+        data.surfaceTiles,
         data.centerChunkX,
-        data.centerChunkZ
+        data.centerChunkZ,
       );
     };
+  }
+
+  private bindDiffuseTexture() {
+    if (!this.diffuseAtlasTexture) {
+      this.diffuseAtlasTexture = TextureAtlasFactory.getDiffuse();
+    }
+
+    if (!this.diffuseAtlasTexture) {
+      this.diffuseAtlasTexture = new Texture(
+        "/texture/diffuse_atlas.png",
+        Map1.mainScene,
+        {
+          noMipmap: false,
+          samplingMode: Texture.NEAREST_SAMPLINGMODE,
+        },
+      );
+      TextureAtlasFactory.setDiffuse(this.diffuseAtlasTexture);
+    }
+
+    if (this.diffuseAtlasTexture) {
+      this.diffuseAtlasTexture.wrapU = Texture.CLAMP_ADDRESSMODE;
+      this.diffuseAtlasTexture.wrapV = Texture.CLAMP_ADDRESSMODE;
+      this.material.setTexture("diffuseTexture", this.diffuseAtlasTexture);
+      this.material.setFloat("useTexture", 1);
+    }
   }
 
   private bindCommonUniforms(effect: Effect, scene: Scene) {
@@ -184,14 +254,14 @@ export class DistantTerrain {
 
     effect.setVector3(
       "cameraPosition",
-      scene.activeCamera?.position || Vector3.Zero()
+      scene.activeCamera?.position || Vector3.Zero(),
     );
     effect.setFloat4(
       "vFogInfos",
       scene.fogMode,
       scene.fogStart,
       scene.fogEnd,
-      scene.fogDensity
+      scene.fogDensity,
     );
     effect.setColor3("vFogColor", scene.fogColor);
   }
@@ -204,47 +274,64 @@ export class DistantTerrain {
       this.radius,
       SettingParams.RENDER_DISTANCE,
       this.gridStep,
-      this.lastPositions && this.lastColors && this.lastNormals
+      this.lastPositions &&
+        this.lastColors &&
+        this.lastNormals &&
+        this.lastSurfaceTiles
         ? {
             positions: this.lastPositions,
             colors: this.lastColors,
             normals: this.lastNormals,
+            surfaceTiles: this.lastSurfaceTiles,
           }
         : undefined,
       this.lastCenterChunkX ?? undefined,
-      this.lastCenterChunkZ ?? undefined
+      this.lastCenterChunkZ ?? undefined,
     );
 
     // Clear references since we transferred ownership to worker
     this.lastPositions = null;
     this.lastColors = null;
     this.lastNormals = null;
+    this.lastSurfaceTiles = null;
   }
 
   private applyTerrainData(
     positions: Int16Array,
     colors: Uint8Array,
     normals: Int8Array,
+    surfaceTiles: Uint8Array,
     centerChunkX: number,
-    centerChunkZ: number
+    centerChunkZ: number,
   ) {
     // Save data for next update reuse
     this.lastPositions = positions;
     this.lastColors = colors;
     this.lastNormals = normals;
+    this.lastSurfaceTiles = surfaceTiles;
     this.lastCenterChunkX = centerChunkX;
     this.lastCenterChunkZ = centerChunkZ;
 
     this.mesh.position.set(
       centerChunkX * Chunk.SIZE,
       -2,
-      centerChunkZ * Chunk.SIZE
+      centerChunkZ * Chunk.SIZE,
     );
 
     this.waterMesh.position.set(
       centerChunkX * Chunk.SIZE,
       GenerationParams.SEA_LEVEL,
-      centerChunkZ * Chunk.SIZE
+      centerChunkZ * Chunk.SIZE,
+    );
+
+    const gridCenterChunkX = Math.floor(centerChunkX / this.gridStep) * this.gridStep;
+    const gridCenterChunkZ = Math.floor(centerChunkZ / this.gridStep) * this.gridStep;
+    this.material.setVector2(
+      "gridOriginWorld",
+      new Vector2(
+        (gridCenterChunkX - this.radius) * Chunk.SIZE,
+        (gridCenterChunkZ - this.radius) * Chunk.SIZE,
+      ),
     );
 
     const engine = this.mesh.getEngine();
@@ -259,7 +346,7 @@ export class DistantTerrain {
       0, // offset
       undefined, // size
       VertexBuffer.SHORT, // type
-      false // normalized
+      false, // normalized
     );
     this.mesh.setVerticesBuffer(positionBuffer);
 
@@ -275,7 +362,7 @@ export class DistantTerrain {
       0, // offset
       undefined, // size
       VertexBuffer.UNSIGNED_BYTE, // type
-      true // normalized
+      true, // normalized
     );
     this.mesh.setVerticesBuffer(colorBuffer);
 
@@ -290,8 +377,20 @@ export class DistantTerrain {
       0, // offset
       undefined, // size
       VertexBuffer.BYTE, // type
-      true // normalized
+      true, // normalized
     );
     this.mesh.setVerticesBuffer(normalBuffer);
+
+    for (
+      let srcIndex = 0, dstIndex = 0;
+      srcIndex < surfaceTiles.length;
+      srcIndex += 2, dstIndex += 4
+    ) {
+      this.surfaceTileLookupData[dstIndex] = surfaceTiles[srcIndex];
+      this.surfaceTileLookupData[dstIndex + 1] = surfaceTiles[srcIndex + 1];
+      this.surfaceTileLookupData[dstIndex + 2] = 0;
+      this.surfaceTileLookupData[dstIndex + 3] = 255;
+    }
+    this.surfaceTileLookupTexture.update(this.surfaceTileLookupData);
   }
 }

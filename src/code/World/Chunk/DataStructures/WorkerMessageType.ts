@@ -22,6 +22,7 @@ export type DistantTerrainGeneratedMessage = {
   positions: Int16Array;
   colors: Uint8Array;
   normals: Int8Array;
+  surfaceTiles: Uint8Array;
 };
 
 export interface DistantTerrainTask {
@@ -34,6 +35,7 @@ export interface DistantTerrainTask {
     positions: Int16Array;
     colors: Uint8Array;
     normals: Int8Array;
+    surfaceTiles: Uint8Array;
   };
   oldCenterChunkX?: number;
   oldCenterChunkZ?: number;

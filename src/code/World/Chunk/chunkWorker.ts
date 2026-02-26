@@ -114,6 +114,7 @@ export class ChunkWorker {
       positions: Int16Array;
       colors: Uint8Array;
       normals: Int8Array;
+      surfaceTiles: Uint8Array;
     },
     oldCenterChunkX?: number,
     oldCenterChunkZ?: number,
@@ -122,6 +123,8 @@ export class ChunkWorker {
     if (oldData) {
       transferables.push(oldData.positions.buffer);
       transferables.push(oldData.colors.buffer);
+      transferables.push(oldData.normals.buffer);
+      transferables.push(oldData.surfaceTiles.buffer);
     }
 
     this.worker.postMessage(

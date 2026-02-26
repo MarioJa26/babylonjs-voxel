@@ -28,17 +28,54 @@ export class DistantTerrainShader {
 
         uniform vec3 lightDirection;
         uniform float sunLightIntensity;
+        uniform sampler2D diffuseTexture;
+        uniform sampler2D tileLookupTexture;
+        uniform float atlasTileSize;
+        uniform float textureScale;
+        uniform float useTexture;
+        uniform float tileGridResolution;
+        uniform vec2 gridOriginWorld;
+        uniform float gridWorldStep;
         
         uniform vec4 vFogInfos;
         uniform vec3 vFogColor;
         uniform vec3 cameraPosition;
 
+        vec3 sampleAtlasTile(vec2 tile, vec2 worldUV) {
+            vec2 baseUV = vec2(
+                tile.x * atlasTileSize,
+                1.0 - ((tile.y + 1.0) * atlasTileSize)
+            );
+            vec2 atlasUV = baseUV + fract(worldUV) * atlasTileSize;
+            return texture2D(diffuseTexture, atlasUV).rgb;
+        }
+
+        vec2 readTopTileFromLookup() {
+            vec2 grid = (vPositionW.xz - gridOriginWorld) / gridWorldStep;
+            vec2 nearest = clamp(
+                floor(grid + vec2(0.5)),
+                vec2(0.0),
+                vec2(tileGridResolution - 1.0)
+            );
+            vec2 lookupUV = (nearest + vec2(0.5)) / tileGridResolution;
+            vec2 encodedTile = texture2D(tileLookupTexture, lookupUV).rg;
+            return floor(encodedTile * 255.0 + vec2(0.5));
+        }
+
         void main() {
-            float ndotl = max(0.0, dot(vNormal, -lightDirection));
-            
+            vec3 worldNormal = normalize(vNormal);
+            float ndotl = max(0.0, dot(worldNormal, -lightDirection));
+
+            vec3 albedo = vColor;
+            if (useTexture > 0.5) {
+                vec2 tile = readTopTileFromLookup();
+                vec2 worldUV = vPositionW.xz / textureScale;
+                albedo = sampleAtlasTile(tile, worldUV);
+            }
+             
             vec3 skyColor = vec3(0.8, 0.8, 0.8) * (sunLightIntensity + 0.2);
-            vec3 finalColor = vColor * (ndotl * sunLightIntensity * 0.6 + skyColor * 0.6);
-            
+            vec3 finalColor = albedo * (ndotl * sunLightIntensity * 0.6 + skyColor * 0.6);
+             
             vec3 viewVec = vPositionW - cameraPosition;
             float dist = length(viewVec);
             float fogFactor = clamp((vFogInfos.z - dist) / (vFogInfos.z - vFogInfos.y), 0.0, 1.0);
