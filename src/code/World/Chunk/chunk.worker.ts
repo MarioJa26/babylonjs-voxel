@@ -8,8 +8,17 @@ import { WorkerInternalMeshData } from "./DataStructures/WorkerInternalMeshData"
 import { DistantTerrainGenerator } from "../Generation/DistanTerrain/DistantTerrainGenerator";
 import { BlockTextures } from "../Texture/BlockTextures";
 
-const WATER_BLOCKS = new Set([30]);
-const GLASS_BLOCKS = new Set([60, 61]);
+// ---------------------------------------------------------------------------
+// Block classification — flat Uint8 lookup instead of Set.has() calls
+// ---------------------------------------------------------------------------
+// Set.has() on every block face in the inner loop is surprisingly expensive.
+// Replace with a typed array lookup: O(1) with no hashing overhead.
+const BLOCK_TYPE = new Uint8Array(65536); // covers all 16-bit block IDs
+const BLOCK_TYPE_WATER = 1;
+const BLOCK_TYPE_GLASS = 2;
+// 0 = opaque/air
+for (const id of [30]) BLOCK_TYPE[id] = BLOCK_TYPE_WATER;
+for (const id of [60, 61]) BLOCK_TYPE[id] = BLOCK_TYPE_GLASS;
 
 type FaceData = {
   normal: Int8Array;
@@ -23,16 +32,24 @@ for (const axis of [0, 1, 2]) {
     const normal = new Int8Array(3);
     normal[axis] = side * 127;
 
-    // Key calculation must use -1, 0, 1 values to match lookup in generateMesh
     const k = [0, 0, 0];
     k[axis] = side;
 
     const key = k[0] + 1 + (k[1] + 1) * 3 + (k[2] + 1) * 9;
-    FACE_DATA_CACHE[key] = {
-      normal,
-    };
+    FACE_DATA_CACHE[key] = { normal };
   }
 }
+
+// Pre-build cornerId + swapUV tables indexed by [axis * 2 + (isBackFace ? 1 : 0)]
+// so addQuad() avoids a chain of if/else on every call.
+const CORNER_TABLE: [number, number, number, number, boolean][] = [
+  [0, 3, 2, 1, true], // axis=0 front  (East  +X)
+  [1, 2, 3, 0, true], // axis=0 back   (West  -X)
+  [0, 3, 2, 1, true], // axis=1 front  (Top   +Y)
+  [3, 0, 1, 2, true], // axis=1 back   (Bottom-Y)
+  [1, 0, 3, 2, false], // axis=2 front  (South +Z)
+  [0, 1, 2, 3, false], // axis=2 back   (North -Z)
+];
 
 const BLOCK_ID_MASK = 0xfff; // 12 bits for block ID
 const TRANSPARENT_FLAG = 1 << 12;
@@ -40,8 +57,6 @@ const BACKFACE_FLAG = 1 << 13;
 
 class ChunkWorkerMesher {
   private static toCompactNeighborIndex(fullIndex: number): number {
-    // Full index is in a 3x3x3 cube (0..26) with center at 13.
-    // Remesh payload omits center, so compact index is 0..25.
     return fullIndex > 13 ? fullIndex - 1 : fullIndex;
   }
 
@@ -59,50 +74,47 @@ class ChunkWorkerMesher {
     };
   }
 
-  // Helper to calculate AO for a single 1x1 face and return it as a packed 8-bit integer
+  /**
+   * Calculate packed AO (2 bits × 4 corners = 8 bits) for one face.
+   *
+   * OPTIMIZATION: Pre-compute the six axis offsets once per call rather than
+   * recomputing the ternary `(axis === N ? ±1 : 0)` expressions 12× inside
+   * the corner loop. This cuts ~72 conditional evaluations down to 6.
+   */
   private static calculateAOPacked(
-    ax: number, // Coordinates of the "air" block adjacent to the face
+    ax: number,
     ay: number,
     az: number,
-    u: number, // u-axis index (0, 1, 2)
-    v: number, // v-axis index
+    u: number,
+    v: number,
     getBlock: (x: number, y: number, z: number) => number,
   ): number {
+    // Offsets along u-axis (±1) and v-axis (±1) in world-space X/Y/Z
+    const ux = u === 0 ? 1 : 0;
+    const uy = u === 1 ? 1 : 0;
+    const uz = u === 2 ? 1 : 0;
+    const vx = v === 0 ? 1 : 0;
+    const vy = v === 1 ? 1 : 0;
+    const vz = v === 2 ? 1 : 0;
+
+    // 4 corners: du/dv ∈ {0,1}×{0,1} mapped to UV-quad corners (0,0)(1,0)(1,1)(0,1)
     let packed = 0;
-    // Check 4 corners: (0,0), (1,0), (1,1), (0,1) in UV space
     for (let i = 0; i < 4; i++) {
-      // UV offsets for the corner
-      const du = i === 1 || i === 2 ? 1 : 0;
-      const dv = i === 2 || i === 3 ? 1 : 0;
+      // du=1 for corners 1 & 2,  dv=1 for corners 2 & 3
+      const du = i === 1 || i === 2 ? 1 : -1;
+      const dv = i === 2 || i === 3 ? 1 : -1;
 
-      // Neighbors relative to the air block (ax, ay, az)
-      // Side 1: offset in V
-      const s1x = ax + (v === 0 ? (dv ? 1 : -1) : 0);
-      const s1y = ay + (v === 1 ? (dv ? 1 : -1) : 0);
-      const s1z = az + (v === 2 ? (dv ? 1 : -1) : 0);
+      const side1 = getBlock(ax + vx * dv, ay + vy * dv, az + vz * dv) !== 0;
+      const side2 = getBlock(ax + ux * du, ay + uy * du, az + uz * du) !== 0;
+      const corner =
+        getBlock(
+          ax + ux * du + vx * dv,
+          ay + uy * du + vy * dv,
+          az + uz * du + vz * dv,
+        ) !== 0;
 
-      // Side 2: offset in U
-      const s2x = ax + (u === 0 ? (du ? 1 : -1) : 0);
-      const s2y = ay + (u === 1 ? (du ? 1 : -1) : 0);
-      const s2z = az + (u === 2 ? (du ? 1 : -1) : 0);
-
-      // Corner: offset in U and V
-      const cx =
-        ax + (u === 0 ? (du ? 1 : -1) : 0) + (v === 0 ? (dv ? 1 : -1) : 0);
-      const cy =
-        ay + (u === 1 ? (du ? 1 : -1) : 0) + (v === 1 ? (dv ? 1 : -1) : 0);
-      const cz =
-        az + (u === 2 ? (du ? 1 : -1) : 0) + (v === 2 ? (dv ? 1 : -1) : 0);
-
-      const side1 = getBlock(s1x, s1y, s1z) !== 0;
-      const side2 = getBlock(s2x, s2y, s2z) !== 0;
-      const corner = getBlock(cx, cy, cz) !== 0;
-
-      // Calculate AO value (0-3)
       const ao =
         (side1 ? 1 : 0) + (side2 ? 1 : 0) + (corner && side1 && side2 ? 1 : 0);
-
-      // Pack into 2 bits per corner: 00, 02, 04, 06 bit shifts
       packed |= ao << (i * 2);
     }
     return packed;
@@ -126,7 +138,7 @@ class ChunkWorkerMesher {
     const {
       block_array,
       light_array,
-      chunk_size: chunk_size,
+      chunk_size: size,
       neighbors,
       neighborLights,
     } = data;
@@ -139,9 +151,12 @@ class ChunkWorkerMesher {
       };
     }
 
-    const size = chunk_size;
     const size2 = size * size;
 
+    // ---------------------------------------------------------------------------
+    // getBlock / getLight — inlined hot path for in-bounds coords,
+    // neighbor lookup only for out-of-bounds.
+    // ---------------------------------------------------------------------------
     const getBlock = (
       x: number,
       y: number,
@@ -151,24 +166,17 @@ class ChunkWorkerMesher {
       if (x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size) {
         return block_array[x + y * size + z * size2];
       }
-
       const dx = x < 0 ? -1 : x >= size ? 1 : 0;
       const dy = y < 0 ? -1 : y >= size ? 1 : 0;
       const dz = z < 0 ? -1 : z >= size ? 1 : 0;
-
-      // Map -1,0,1 to 0,1,2 for array indexing
-      // Index = (dx+1) + (dy+1)*3 + (dz+1)*9
-      const fullNeighborIndex = dx + 1 + (dy + 1) * 3 + (dz + 1) * 9;
       const neighbor =
-        neighbors[this.toCompactNeighborIndex(fullNeighborIndex)];
-
+        neighbors[
+          this.toCompactNeighborIndex(dx + 1 + (dy + 1) * 3 + (dz + 1) * 9)
+        ];
       if (!neighbor) return fallback;
-
-      const lx = x - dx * size;
-      const ly = y - dy * size;
-      const lz = z - dz * size;
-
-      return neighbor[lx + ly * size + lz * size2];
+      return neighbor[
+        x - dx * size + (y - dy * size) * size + (z - dz * size) * size2
+      ];
     };
 
     const getLight = (
@@ -177,51 +185,42 @@ class ChunkWorkerMesher {
       z: number,
       fallback = 0,
     ): number => {
-      if (!light_array) return 15 << 4; // Default to full skylight if no array
+      if (!light_array) return 15 << 4;
       if (x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size) {
         return light_array[x + y * size + z * size2];
       }
-
       const dx = x < 0 ? -1 : x >= size ? 1 : 0;
       const dy = y < 0 ? -1 : y >= size ? 1 : 0;
       const dz = z < 0 ? -1 : z >= size ? 1 : 0;
-
-      const fullNeighborIndex = dx + 1 + (dy + 1) * 3 + (dz + 1) * 9;
       const neighbor = neighborLights
-        ? neighborLights[this.toCompactNeighborIndex(fullNeighborIndex)]
+        ? neighborLights[
+            this.toCompactNeighborIndex(dx + 1 + (dy + 1) * 3 + (dz + 1) * 9)
+          ]
         : undefined;
-
       if (!neighbor) return fallback;
-
-      const lx = x - dx * size;
-      const ly = y - dy * size;
-      const lz = z - dz * size;
-
-      return neighbor[lx + ly * size + lz * size2];
+      return neighbor[
+        x - dx * size + (y - dy * size) * size + (z - dz * size) * size2
+      ];
     };
 
     const direction = [0, 0, 0];
-    // Reuseable mask allocated once
-    const mask = new Uint32Array(size * size);
+    const mask = new Uint32Array(size * size); // reused across all slices
 
-    // single pass across axes -- generate masks containing encoded values
     for (let axis = 0; axis < 3; axis++) {
-      direction[axis] = 1;
-      direction[(axis + 1) % 3] = 0;
-      direction[(axis + 2) % 3] = 0;
+      direction[0] = axis === 0 ? 1 : 0;
+      direction[1] = axis === 1 ? 1 : 0;
+      direction[2] = axis === 2 ? 1 : 0;
 
-      // Precompute face data for this axis to avoid lookups in the inner loop
       const faceNamePositive = this.getFaceName(direction, false);
       const faceNameNegative = this.getFaceName(direction, true);
 
       const keyPos =
         direction[0] + 1 + (direction[1] + 1) * 3 + (direction[2] + 1) * 9;
-      const normalPositive = FACE_DATA_CACHE[keyPos].normal;
       const keyNeg =
         -direction[0] + 1 + (-direction[1] + 1) * 3 + (-direction[2] + 1) * 9;
+      const normalPositive = FACE_DATA_CACHE[keyPos].normal;
       const normalNegative = FACE_DATA_CACHE[keyNeg].normal;
 
-      // sweep slices
       for (let slice = 0; slice < size; slice++) {
         this.computeSliceMask(
           size,
@@ -273,38 +272,36 @@ class ChunkWorkerMesher {
     const position = [0, 0, 0];
     position[axis] = slice;
 
+    const dx = direction[0],
+      dy = direction[1],
+      dz = direction[2];
+
     for (position[v_axis] = 0; position[v_axis] < size; position[v_axis]++) {
       for (position[u_axis] = 0; position[u_axis] < size; position[u_axis]++) {
         const bx = position[0];
         const by = position[1];
         const bz = position[2];
 
-        // sample current and neighbor; pass blockCurrent as fallback when sampling neighbor
         const blockCurrent = block_array[bx + by * size + bz * size2];
-        const blockNeighbor = getBlock(
-          bx + direction[0],
-          by + direction[1],
-          bz + direction[2],
-          blockCurrent, // key: if neighbor missing, pretend same block to avoid border faces
-        );
+        const blockNeighbor = getBlock(bx + dx, by + dy, bz + dz, blockCurrent);
 
-        // --- Face Culling Logic ---
         if (blockCurrent === blockNeighbor) {
           mask[maskIndex++] = 0;
           continue;
         }
 
-        const isCurrentTransparent =
-          WATER_BLOCKS.has(blockCurrent) || GLASS_BLOCKS.has(blockCurrent);
-        const isNeighborTransparent =
-          WATER_BLOCKS.has(blockNeighbor) || GLASS_BLOCKS.has(blockNeighbor);
+        // OPTIMIZATION: replace Set.has() with flat array lookup (no hashing)
+        const curType = BLOCK_TYPE[blockCurrent];
+        const nbrType = BLOCK_TYPE[blockNeighbor];
+        const isCurrentTransparent = curType !== 0;
+        const isNeighborTransparent = nbrType !== 0;
         const isCurrentSolid = blockCurrent !== 0;
         const isNeighborSolid = blockNeighbor !== 0;
 
-        // Water and glass should not cull each other.
+        // Water ↔ Glass boundary: don't cull across material types
         const isWaterNextToGlass =
-          (WATER_BLOCKS.has(blockCurrent) && GLASS_BLOCKS.has(blockNeighbor)) ||
-          (GLASS_BLOCKS.has(blockCurrent) && WATER_BLOCKS.has(blockNeighbor));
+          (curType === BLOCK_TYPE_WATER && nbrType === BLOCK_TYPE_GLASS) ||
+          (curType === BLOCK_TYPE_GLASS && nbrType === BLOCK_TYPE_WATER);
 
         if (
           isCurrentSolid &&
@@ -312,40 +309,33 @@ class ChunkWorkerMesher {
             (isNeighborTransparent && !isCurrentTransparent) ||
             isWaterNextToGlass)
         ) {
-          // Current block face is visible.
-          // The light level of the face is determined by the block in front of it (the neighbor).
           const currentLightPacked = getLight(bx, by, bz, 15 << 4);
           const lightPacked = getLight(
-            bx + direction[0],
-            by + direction[1],
-            bz + direction[2],
+            bx + dx,
+            by + dy,
+            bz + dz,
             currentLightPacked,
           );
-          // Calculate AO for the face (using the neighbor/air block coordinates)
           const packedAO = this.calculateAOPacked(
-            bx + direction[0],
-            by + direction[1],
-            bz + direction[2],
+            bx + dx,
+            by + dy,
+            bz + dz,
             u_axis,
             v_axis,
             getBlock,
           );
-          const encCurrent =
+          mask[maskIndex++] =
             (blockCurrent & BLOCK_ID_MASK) |
             (isCurrentTransparent ? TRANSPARENT_FLAG : 0) |
-            (packedAO << 14) | // Pack AO into bits 14-21
-            (lightPacked << 22); // Pack 8-bit light into bits 22-29
-          mask[maskIndex++] = encCurrent;
+            (packedAO << 14) |
+            (lightPacked << 22);
         } else if (
           isNeighborSolid &&
           (!isCurrentSolid ||
             (isCurrentTransparent && !isNeighborTransparent) ||
             isWaterNextToGlass)
         ) {
-          // Neighbor block face is visible (so we draw a back-face).
-          // The light level is determined by the current block (which is air/transparent).
           const lightPacked = getLight(bx, by, bz);
-          // For backface, the "air" block is the current block (bx, by, bz)
           const packedAO = this.calculateAOPacked(
             bx,
             by,
@@ -354,12 +344,12 @@ class ChunkWorkerMesher {
             v_axis,
             getBlock,
           );
-          const encNeighbor =
+          mask[maskIndex++] =
             (blockNeighbor & BLOCK_ID_MASK) |
             (isNeighborTransparent ? TRANSPARENT_FLAG : 0) |
             (packedAO << 14) |
-            (lightPacked << 22);
-          mask[maskIndex++] = encNeighbor | BACKFACE_FLAG;
+            (lightPacked << 22) |
+            BACKFACE_FLAG;
         } else {
           mask[maskIndex++] = 0;
         }
@@ -384,12 +374,11 @@ class ChunkWorkerMesher {
     const v_axis = (axis + 2) % 3;
     let maskIndex = 0;
 
-    // Optimized Greedy merge from mask
     for (let v_coord = 0; v_coord < size; v_coord++) {
       for (let u_coord = 0; u_coord < size; ) {
         const currentMaskValue = mask[maskIndex];
         if (currentMaskValue !== 0) {
-          // --- 1. Greedily find width ---
+          // Greedy width
           let width = 1;
           while (
             u_coord + width < size &&
@@ -398,22 +387,16 @@ class ChunkWorkerMesher {
             width++;
           }
 
-          // --- 2. Greedily find height ---
+          // Greedy height
           let height = 1;
-          while (v_coord + height < size) {
-            let canExtend = true;
-            // Check if the row below can be merged
+          outer: while (v_coord + height < size) {
             for (let w = 0; w < width; w++) {
-              if (mask[maskIndex + w + height * size] !== currentMaskValue) {
-                canExtend = false;
-                break;
-              }
+              if (mask[maskIndex + w + height * size] !== currentMaskValue)
+                break outer;
             }
-            if (!canExtend) break;
             height++;
           }
 
-          // --- 3. Add the quad and update the mask ---
           const isBackFace = (currentMaskValue & BACKFACE_FLAG) !== 0;
           const isTransparent = (currentMaskValue & TRANSPARENT_FLAG) !== 0;
           const blockId = currentMaskValue & BLOCK_ID_MASK;
@@ -422,9 +405,8 @@ class ChunkWorkerMesher {
           const lightPacked = (currentMaskValue >>> 22) & 0xff;
           const packedAO = (currentMaskValue >>> 14) & 0xff;
 
-          let x = 0,
-            y = 0,
-            z = 0;
+          // Resolve vertex origin based on axis
+          let x: number, y: number, z: number;
           if (axis === 0) {
             x = slice + 1;
             y = u_coord;
@@ -439,11 +421,13 @@ class ChunkWorkerMesher {
             z = slice + 1;
           }
 
+          // OPTIMIZATION: replace Set.has() with flat array lookup
           let targetMesh: WorkerInternalMeshData;
           if (isTransparent) {
-            targetMesh = WATER_BLOCKS.has(blockId)
-              ? waterMeshData
-              : glassMeshData;
+            targetMesh =
+              BLOCK_TYPE[blockId] === BLOCK_TYPE_WATER
+                ? waterMeshData
+                : glassMeshData;
           } else {
             targetMesh = opaqueMeshData;
           }
@@ -466,7 +450,7 @@ class ChunkWorkerMesher {
             targetMesh,
           );
 
-          // Zero out the mask for the area we just processed
+          // Zero out the processed mask region
           for (let h = 0; h < height; h++) {
             for (let w = 0; w < width; w++) {
               mask[maskIndex + w + h * size] = 0;
@@ -474,7 +458,7 @@ class ChunkWorkerMesher {
           }
 
           u_coord += width;
-          maskIndex += width; // Advance mask index by the width of the quad
+          maskIndex += width;
         } else {
           u_coord++;
           maskIndex++;
@@ -511,7 +495,7 @@ class ChunkWorkerMesher {
     const tex = BlockTextures[blockId];
     if (!tex) return;
 
-    // Compute four corner positions directly
+    // Compute four corner positions
     const x1 = x,
       y1 = y,
       z1 = z;
@@ -525,7 +509,6 @@ class ChunkWorkerMesher {
       y4 = y,
       z4 = z;
 
-    // Apply width (u_axis)
     if (u === 0) {
       x2 += width;
       x3 += width;
@@ -537,7 +520,6 @@ class ChunkWorkerMesher {
       z3 += width;
     }
 
-    // Apply height (v_axis)
     if (v === 0) {
       x3 += height;
       x4 += height;
@@ -549,92 +531,30 @@ class ChunkWorkerMesher {
       z4 += height;
     }
 
-    // positions
     meshData.positions.push12(x1, y1, z1, x2, y2, z2, x3, y3, z3, x4, y4, z4);
 
-    // Unpack AO
     const ao0 = packedAO & 3;
     const ao1 = (packedAO >> 2) & 3;
     const ao2 = (packedAO >> 4) & 3;
     const ao3 = (packedAO >> 6) & 3;
-
-    // 1. Push the four correct AO values for the four vertices.
     meshData.ao.push4(ao0, ao1, ao2, ao3);
 
-    // Push light values (flat shading for the quad)
     meshData.light.push4(lightLevel, lightLevel, lightLevel, lightLevel);
 
-    // normal
-    // We can assume normal is Int8Array(3)
     const nx = normal[0],
       ny = normal[1],
       nz = normal[2];
     meshData.normals.push12(nx, ny, nz, nx, ny, nz, nx, ny, nz, nx, ny, nz);
 
-    // tile lookup and UV writes
     const tile = tex[faceName] ?? tex.all!;
-
-    // Determine cornerIds and swapUV based on face direction to fix wrapping/mirroring
-    let c0 = 0,
-      c1 = 1,
-      c2 = 2,
-      c3 = 3;
-    let swapUV = false;
-
-    if (axis === 0) {
-      if (!isBackFace) {
-        // East (+X)
-        c0 = 0;
-        c1 = 3;
-        c2 = 2;
-        c3 = 1;
-        swapUV = true;
-      } else {
-        // West (-X)
-        c0 = 1;
-        c1 = 2;
-        c2 = 3;
-        c3 = 0;
-        swapUV = true;
-      }
-    } else if (axis === 1) {
-      if (!isBackFace) {
-        // Top (+Y)
-        c0 = 0;
-        c1 = 3;
-        c2 = 2;
-        c3 = 1;
-        swapUV = true;
-      } else {
-        // Bottom (-Y)
-        c0 = 3;
-        c1 = 0;
-        c2 = 1;
-        c3 = 2;
-        swapUV = true;
-      }
-    } else if (axis === 2) {
-      if (!isBackFace) {
-        // South (+Z)
-        c0 = 1;
-        c1 = 0;
-        c2 = 3;
-        c3 = 2;
-        swapUV = false;
-      } else {
-        // North (-Z)
-        c0 = 0;
-        c1 = 1;
-        c2 = 2;
-        c3 = 3;
-        swapUV = false;
-      }
-    }
-
-    // Push UVs and Corner IDs
-    const tx = tile[0];
-    const ty = tile[1];
+    const tx = tile[0],
+      ty = tile[1];
     meshData.uvs2.push8(tx, ty, tx, ty, tx, ty, tx, ty);
+
+    // OPTIMIZATION: look up corner config from pre-built table — eliminates
+    // 6 branches (if/else chain) executed on every single quad.
+    const [c0, c1, c2, c3, swapUV] =
+      CORNER_TABLE[axis * 2 + (isBackFace ? 1 : 0)];
     meshData.cornerIds.push4(c0, c1, c2, c3);
 
     if (swapUV) {
@@ -662,11 +582,8 @@ class ChunkWorkerMesher {
     }
 
     const { indices, indexOffset } = meshData;
-
-    // Fix anisotropy by flipping quad diagonal based on AO
     const flip = ao0 + ao2 < ao1 + ao3;
 
-    // Standard quad indices (0,1,2) and (0,2,3)
     if (isBackFace) {
       if (flip) {
         indices.push6(
@@ -712,68 +629,92 @@ class ChunkWorkerMesher {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Block compression
+// ---------------------------------------------------------------------------
+
 function compressBlocks(blocks: Uint8Array): {
   isUniform: boolean;
   uniformBlockId: number;
   palette: Uint16Array | null;
   packedBlocks: Uint8Array | Uint16Array | null;
 } {
-  const uniqueBlocks = new Set<number>();
+  // OPTIMIZATION: scan with early-exit rather than collecting into a Set.
+  // We only need to know: uniform? ≤16 unique? or >16 unique?
+  // This avoids allocating a Set object on every terrain generation call.
+  const seen = new Uint8Array(65536); // 64 KB, stack-allocated equivalent
+  let uniqueCount = 0;
+  let firstId = blocks[0];
+
   for (let i = 0; i < blocks.length; i++) {
-    uniqueBlocks.add(blocks[i]);
-    if (uniqueBlocks.size > 16) break;
+    const id = blocks[i];
+    if (!seen[id]) {
+      seen[id] = 1;
+      uniqueCount++;
+      if (uniqueCount > 16) break;
+    }
   }
 
-  if (uniqueBlocks.size === 1) {
+  if (uniqueCount === 1) {
     return {
       isUniform: true,
-      uniformBlockId: uniqueBlocks.values().next().value || 0,
+      uniformBlockId: firstId,
       palette: null,
       packedBlocks: null,
     };
-  } else if (uniqueBlocks.size <= 16) {
-    const palette = Uint16Array.from(uniqueBlocks);
-    const len = Math.ceil(blocks.length / 2);
+  }
+
+  if (uniqueCount <= 16) {
+    // Build palette from the seen[] flags (preserves insertion order isn't needed)
+    const palette = new Uint16Array(uniqueCount);
+    let pi = 0;
+    for (let id = 0; id < 65536 && pi < uniqueCount; id++) {
+      if (seen[id]) palette[pi++] = id;
+    }
+
+    // Build a reverse lookup: blockId → palette index
+    // Re-use seen[] as a scratch buffer (values 0..15 now mean palette index)
+    for (let i = 0; i < palette.length; i++) seen[palette[i]] = i;
+
+    const len = (blocks.length + 1) >> 1;
     const buffer =
       typeof SharedArrayBuffer !== "undefined"
         ? new SharedArrayBuffer(len)
         : new ArrayBuffer(len);
     const packedArray = new Uint8Array(buffer);
 
-    const paletteMap = new Map<number, number>();
-    for (let i = 0; i < palette.length; i++) {
-      paletteMap.set(palette[i], i);
+    for (let i = 0; i < blocks.length; i++) {
+      const nibble = seen[blocks[i]];
+      const byteIndex = i >> 1;
+      if (i & 1) {
+        packedArray[byteIndex] =
+          (packedArray[byteIndex] & 0x0f) | ((nibble & 0xf) << 4);
+      } else {
+        packedArray[byteIndex] =
+          (packedArray[byteIndex] & 0xf0) | (nibble & 0xf);
+      }
     }
 
-    for (let i = 0; i < blocks.length; i++) {
-      const byteIndex = i >> 1;
-      let byte = packedArray[byteIndex];
-      const nibble = paletteMap.get(blocks[i])!;
-      if (i & 1) {
-        byte = (byte & 0x0f) | ((nibble & 0xf) << 4);
-      } else {
-        byte = (byte & 0xf0) | (nibble & 0xf);
-      }
-      packedArray[byteIndex] = byte;
-    }
     return {
       isUniform: false,
       uniformBlockId: 0,
       palette,
       packedBlocks: packedArray,
     };
-  } else {
-    return {
-      isUniform: false,
-      uniformBlockId: 0,
-      palette: null,
-      packedBlocks: blocks,
-    };
   }
+
+  // >16 unique blocks — store raw
+  return {
+    isUniform: false,
+    uniformBlockId: 0,
+    palette: null,
+    packedBlocks: blocks,
+  };
 }
 
-// Top-level world generator instance for terrain requests
-const generator = new WorldGenerator(GenerationParams);
+// ---------------------------------------------------------------------------
+// Palette expansion helpers (reused by full-remesh handler)
+// ---------------------------------------------------------------------------
 
 function hasPaletteValuesAbove255(palette: ArrayLike<number>): boolean {
   for (let i = 0; i < palette.length; i++) {
@@ -782,75 +723,73 @@ function hasPaletteValuesAbove255(palette: ArrayLike<number>): boolean {
   return false;
 }
 
+function expandPalette(
+  packed: Uint8Array,
+  palette: ArrayLike<number>,
+  totalBlocks: number,
+): Uint8Array | Uint16Array {
+  const expanded = hasPaletteValuesAbove255(palette)
+    ? new Uint16Array(totalBlocks)
+    : new Uint8Array(totalBlocks);
+  for (let i = 0; i < totalBlocks; i++) {
+    const byte = packed[i >> 1];
+    expanded[i] = palette[i & 1 ? (byte >> 4) & 0xf : byte & 0xf];
+  }
+  return expanded;
+}
+
+// ---------------------------------------------------------------------------
+// Worker message handler
+// ---------------------------------------------------------------------------
+
+const generator = new WorldGenerator(GenerationParams);
+
 const onMessageHandler = (event: MessageEvent) => {
   const { type } = event.data;
 
-  // --- Default Full Remesh ---
+  // --- Full Remesh ---
   if (type === "full-remesh") {
     const { chunk_size } = event.data;
-    // Rehydrate block_array if uniform
+    const totalBlocks = chunk_size ** 3;
+
+    // Rehydrate center chunk block array
     if (
       !event.data.block_array &&
       typeof event.data.uniformBlockId === "number"
     ) {
-      if (event.data.uniformBlockId > 255) {
-        event.data.block_array = new Uint16Array(chunk_size ** 3).fill(
-          event.data.uniformBlockId,
-        );
-      } else {
-        event.data.block_array = new Uint8Array(chunk_size ** 3).fill(
-          event.data.uniformBlockId,
-        );
-      }
+      event.data.block_array =
+        event.data.uniformBlockId > 255
+          ? new Uint16Array(totalBlocks).fill(event.data.uniformBlockId)
+          : new Uint8Array(totalBlocks).fill(event.data.uniformBlockId);
     } else if (event.data.palette && event.data.block_array) {
-      // Expand palette to raw array for meshing
-      const packed = event.data.block_array as Uint8Array;
-      const palette = event.data.palette as ArrayLike<number>;
-      const expanded = hasPaletteValuesAbove255(palette)
-        ? new Uint16Array(chunk_size ** 3)
-        : new Uint8Array(chunk_size ** 3);
-      for (let i = 0; i < expanded.length; i++) {
-        const byteIndex = i >> 1;
-        const byte = packed[byteIndex];
-        const nibble = i & 1 ? (byte >> 4) & 0xf : byte & 0xf;
-        expanded[i] = palette[nibble];
-      }
-      event.data.block_array = expanded;
+      event.data.block_array = expandPalette(
+        event.data.block_array,
+        event.data.palette,
+        totalBlocks,
+      );
     }
 
-    // Rehydrate neighbors if uniform
+    // Rehydrate neighbors
     const { neighbors, neighborUniformIds, neighborPalettes } = event.data;
     if (neighborUniformIds) {
       for (let i = 0; i < neighbors.length; i++) {
         if (!neighbors[i] && typeof neighborUniformIds[i] === "number") {
-          if (neighborUniformIds[i]! > 255) {
-            neighbors[i] = new Uint16Array(chunk_size ** 3).fill(
-              neighborUniformIds[i]!,
-            );
-          } else {
-            neighbors[i] = new Uint8Array(chunk_size ** 3).fill(
-              neighborUniformIds[i]!,
-            );
-          }
-        } else if (neighbors[i] && neighborPalettes && neighborPalettes[i]) {
-          const packed = neighbors[i]!;
-          const palette = neighborPalettes[i]! as ArrayLike<number>;
-          const expanded = hasPaletteValuesAbove255(palette)
-            ? new Uint16Array(chunk_size ** 3)
-            : new Uint8Array(chunk_size ** 3);
-          for (let j = 0; j < expanded.length; j++) {
-            const byteIndex = j >> 1;
-            const byte = packed[byteIndex];
-            const nibble = j & 1 ? (byte >> 4) & 0xf : byte & 0xf;
-            expanded[j] = palette[nibble];
-          }
-          neighbors[i] = expanded;
+          neighbors[i] =
+            neighborUniformIds[i]! > 255
+              ? new Uint16Array(totalBlocks).fill(neighborUniformIds[i]!)
+              : new Uint8Array(totalBlocks).fill(neighborUniformIds[i]!);
+        } else if (neighbors[i] && neighborPalettes?.[i]) {
+          neighbors[i] = expandPalette(
+            neighbors[i]! as Uint8Array,
+            neighborPalettes[i]!,
+            totalBlocks,
+          );
         }
       }
     }
 
     const { opaque, water, glass } = ChunkWorkerMesher.generateMesh(event.data);
-    // allow GC
+    // Allow GC of large block arrays
     event.data.block_array = undefined;
     event.data.neighbors = undefined;
 
@@ -858,30 +797,32 @@ const onMessageHandler = (event: MessageEvent) => {
     return;
   }
 
-  // --- Terrain generation request ---
+  // --- Terrain generation ---
   if (type === "generate-terrain") {
     const { chunkId, chunkX, chunkY, chunkZ } = event.data;
-
     const { blocks, light } = generator.generateChunkData(
       chunkX,
       chunkY,
       chunkZ,
     );
-
     const { isUniform, uniformBlockId, palette, packedBlocks } =
       compressBlocks(blocks);
 
     const transferables: Transferable[] = [];
     if (
       packedBlocks &&
-      (typeof SharedArrayBuffer === "undefined" ||
-        !(packedBlocks.buffer instanceof SharedArrayBuffer))
+      !(
+        packedBlocks.buffer instanceof
+        (typeof SharedArrayBuffer !== "undefined" ? SharedArrayBuffer : Object)
+      )
     ) {
       transferables.push(packedBlocks.buffer);
     }
     if (
-      typeof SharedArrayBuffer === "undefined" ||
-      !(light.buffer instanceof SharedArrayBuffer)
+      !(
+        light.buffer instanceof
+        (typeof SharedArrayBuffer !== "undefined" ? SharedArrayBuffer : Object)
+      )
     ) {
       transferables.push(light.buffer);
     }
@@ -898,10 +839,10 @@ const onMessageHandler = (event: MessageEvent) => {
       },
       transferables,
     );
-
     return;
   }
 
+  // --- Distant terrain ---
   if (type === "generate-distant-terrain") {
     const {
       centerChunkX,
@@ -942,6 +883,10 @@ const onMessageHandler = (event: MessageEvent) => {
 };
 
 self.onmessage = onMessageHandler;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function toTransferable(data: WorkerInternalMeshData): MeshData {
   return {

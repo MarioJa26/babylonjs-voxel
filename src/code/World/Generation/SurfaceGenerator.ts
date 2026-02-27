@@ -23,12 +23,14 @@ export class SurfaceGenerator {
   private static readonly DENSITY_BASE_AMPLITUDE = 32;
   private static readonly DENSITY_OVERHANG_AMPLITUDE = 32;
   private static readonly DENSITY_CLIFF_AMPLITUDE = 16;
-  private static readonly DENSITY_INFLUENCE_RANGE = 48;
+  private static readonly DENSITY_INFLUENCE_RANGE = 32;
   private static readonly DENSITY_VERTICAL_SCAN_RANGE =
     SurfaceGenerator.DENSITY_INFLUENCE_RANGE +
     SurfaceGenerator.DENSITY_BASE_AMPLITUDE +
     SurfaceGenerator.DENSITY_OVERHANG_AMPLITUDE +
     SurfaceGenerator.DENSITY_CLIFF_AMPLITUDE;
+  private static readonly SUBSURFACE_LAYER_DEPTH = 5;
+  private static readonly SURFACE_RESET_AIR_GAP = 6;
   private static readonly NO_SURFACE_Y = -32768;
   private seedAsInt: number;
   private chunk_size: number;
@@ -48,7 +50,6 @@ export class SurfaceGenerator {
     this.chunk_size = this.params.CHUNK_SIZE;
     this.riverGenerator = new RiverGenerator(params);
 
-    // Initialize features (OTG style: list of active resources)
     this.features = [
       new TowerFeature(),
       new LavaPoolFeature(),
@@ -115,32 +116,56 @@ export class SurfaceGenerator {
       for (let localZ = 0; localZ < CHUNK_SIZE; localZ++) {
         const worldZ = chunkWorldZ + localZ;
 
-        const biome = TerrainHeightMap.getBiome(worldX, worldZ);
-        // Pass undefined for biome to allow parameter blending/smoothing
-        const terrainHeight = this.getFinalTerrainHeight(worldX, worldZ);
+        // OPTIMIZATION: getTerrainSample() returns height + biome + riverNoise in one cache hit.
+        // Previously, getFinalTerrainHeight() and getRiverNoise() each ran the full noise stack.
+        const sample = TerrainHeightMap.getTerrainSample(worldX, worldZ);
+        const terrainHeight = sample.height;
+        // Reuse the cached river noise — no second noise evaluation.
+        const riverNoise = sample.riverNoise;
+
         const columnIndex = localX + localZ * CHUNK_SIZE;
         const topSurfaceY = this.findTopSurfaceY(worldX, worldZ, terrainHeight);
         const hasSurface = Number.isFinite(topSurfaceY);
+        const columnTopSurfaceY = hasSurface
+          ? (topSurfaceY as number)
+          : SurfaceGenerator.NO_SURFACE_Y;
 
         if (hasSurface) {
           topSurfaceYMap[columnIndex] = topSurfaceY as number;
         }
         topSunlightMask[columnIndex] =
           !hasSurface || topSurfaceY <= topWorldY ? 1 : 0;
-        const riverNoise = this.riverGenerator.getRiverNoise(worldX, worldZ);
-        const tunnelHeight = GenerationParams.SEA_LEVEL;
 
-        // Iterate through the Y column for this chunk
-        for (let localY = 0; localY < CHUNK_SIZE; localY++) {
+        const tunnelHeight = GenerationParams.SEA_LEVEL;
+        let depthAnchorY = columnTopSurfaceY;
+
+        // Check the block just above this chunk for continuity
+        const densityAboveChunk = this.getDensity(
+          worldX,
+          topWorldY + 1,
+          worldZ,
+          terrainHeight,
+        );
+        const isTunnelAboveChunk = this.riverGenerator.isRiver(
+          worldX,
+          topWorldY + 1,
+          worldZ,
+          riverNoise,
+        );
+        let airGapSinceLastSolid =
+          !isTunnelAboveChunk && densityAboveChunk > 0 ? 0 : 1;
+
+        // Iterate Y column top-to-bottom within this chunk
+        for (let localY = CHUNK_SIZE - 1; localY >= 0; localY--) {
           const worldY = chunkY * CHUNK_SIZE + localY;
 
-          let isTunnel = this.riverGenerator.isRiver(
+          // River check reuses the already-fetched riverNoise — no extra noise call.
+          const isTunnel = this.riverGenerator.isRiver(
             worldX,
             worldY,
             worldZ,
             riverNoise,
           );
-          isTunnel = false;
 
           const density = this.getDensity(
             worldX,
@@ -155,53 +180,49 @@ export class SurfaceGenerator {
             } else {
               placeBlock(worldX, worldY, worldZ, 0, true); // Air
             }
+            airGapSinceLastSolid++;
             continue;
           }
 
           if (density > 0) {
-            // It's a solid cell, place the appropriate terrain block
-            // Check the density of the block above to decide if this is a surface block
-            const densityAbove = this.getDensity(
-              worldX,
-              worldY + 1,
-              worldZ,
-              terrainHeight,
-            );
+            if (airGapSinceLastSolid >= SurfaceGenerator.SURFACE_RESET_AIR_GAP) {
+              depthAnchorY = worldY;
+            }
+            const depthBelowSurface =
+              depthAnchorY !== SurfaceGenerator.NO_SURFACE_Y
+                ? depthAnchorY - worldY
+                : Number.POSITIVE_INFINITY;
 
-            let blockId = 29; // Use block 29 for all underground stone
+            let blockId = _currentBiome.stoneBlock;
 
-            if (densityAbove <= 0) {
-              // This is the surface layer
+            if (depthBelowSurface === 0) {
               const isBeach = this.isBeachLocation(worldX, worldZ, worldY);
               if (worldY < SEA_LEVEL - 1) {
-                blockId = biome.seafloorBlock;
+                blockId = _currentBiome.seafloorBlock;
               } else if (isBeach) {
-                blockId = biome.beachBlock;
+                blockId = _currentBiome.beachBlock;
               } else {
-                blockId = biome.topBlock;
+                blockId = _currentBiome.topBlock;
               }
-            } else if (densityAbove < 6) {
-              // Just below surface
-              blockId = biome.undergroundBlock;
-            } else {
-              // Deep underground
-              if (worldY > 0) {
-                blockId = 1;
-              }
+            } else if (
+              depthBelowSurface > 0 &&
+              depthBelowSurface <= SurfaceGenerator.SUBSURFACE_LAYER_DEPTH
+            ) {
+              blockId = _currentBiome.undergroundBlock;
             }
             placeBlock(worldX, worldY, worldZ, blockId, true);
+            airGapSinceLastSolid = 0;
           } else {
-            // Air / liquids:
-            // - keep sea-level filling near the surface
-            // - below y=0, keep a stone baseline so underground chunks don't turn into vast empty space
             if (worldY <= SEA_LEVEL) {
               if (worldY >= 0) {
-                const liquidId = biome.name === "Volcanic_Wasteland" ? 24 : 30; // 24 = Lava, 30 = Water
+                const liquidId =
+                  _currentBiome.name === "Volcanic_Wasteland" ? 24 : 30;
                 placeBlock(worldX, worldY, worldZ, liquidId, false);
               } else {
                 placeBlock(worldX, worldY, worldZ, 29, false);
               }
             }
+            airGapSinceLastSolid++;
           }
         }
       }
@@ -218,8 +239,6 @@ export class SurfaceGenerator {
     placeBlock: (x: number, y: number, z: number, id: number) => void,
     topSurfaceYMap: Int16Array,
   ) {
-    // Scan a fixed radius outside the chunk to catch trees from neighbors.
-    // 8 blocks is usually enough for standard tree canopies.
     const SCAN_RADIUS = 8;
 
     for (
@@ -235,14 +254,14 @@ export class SurfaceGenerator {
       ) {
         const worldZ = chunkZ * this.chunk_size + localZ;
 
-        // Get the biome for this specific column.
-        // This ensures that if we are in a Desert chunk but scanning the margin of a Forest neighbor,
-        // we correctly identify it as Forest and spawn the tree.
-        const colBiome = TerrainHeightMap.getBiome(worldX, worldZ);
+        // OPTIMIZATION: getTerrainSample() gives us biome, height, and riverNoise
+        // all in one cache lookup — previously this called getBiome() + getFinalTerrainHeight()
+        // + getRiverNoise() separately, each re-running the same noise functions.
+        const sample = TerrainHeightMap.getTerrainSample(worldX, worldZ);
+        const colBiome = sample.biome;
 
         if (!colBiome.canSpawnTrees) continue;
 
-        // Use noise for tree placement. The value is in [-1, 1], so we map it to [0, 1].
         const treeNoiseValue = (this.treeNoise(worldX, worldZ) + 1) / 2;
         if (treeNoiseValue > colBiome.treeDensity) continue;
 
@@ -256,12 +275,11 @@ export class SurfaceGenerator {
         if (isInsideChunkColumn) {
           surfaceY = topSurfaceYMap[localX + localZ * this.chunk_size];
         } else {
-          const baseHeight = this.getFinalTerrainHeight(worldX, worldZ);
-          // For columns outside this chunk, we do not have cached column data.
+          // OPTIMIZATION: reuse sample.height instead of calling getFinalTerrainHeight() again.
           const sampledSurfaceY = this.findTopSurfaceY(
             worldX,
             worldZ,
-            baseHeight,
+            sample.height,
           );
           if (Number.isFinite(sampledSurfaceY)) {
             surfaceY = sampledSurfaceY as number;
@@ -270,17 +288,16 @@ export class SurfaceGenerator {
 
         if (surfaceY === SurfaceGenerator.NO_SURFACE_Y) continue;
 
-        const riverNoise = this.riverGenerator.getRiverNoise(worldX, worldZ);
+        // OPTIMIZATION: reuse cached river noise — no extra noise evaluation.
+        const riverNoise = sample.riverNoise;
         if (this.riverGenerator.isRiver(worldX, surfaceY, worldZ, riverNoise))
           continue;
 
-        // Don't place trees underwater
         if (surfaceY < this.params.SEA_LEVEL) continue;
 
         const isBeach = this.isBeachLocation(worldX, worldZ, surfaceY);
         const topBlockId = isBeach ? colBiome.beachBlock : colBiome.topBlock;
 
-        // Ask the biome for a tree definition for the block we're on
         colBiome
           .getTreeForBlock(topBlockId)
           ?.generate(worldX, surfaceY + 1, worldZ, placeBlock, this.seedAsInt);
@@ -301,9 +318,7 @@ export class SurfaceGenerator {
       ow: boolean,
     ) => void,
   ) {
-    // To handle structures that span across chunk boundaries without breaking,
-    // we must check neighbor chunks to see if a structure starts there and overlaps into this chunk.
-    const STRUCTURE_SEARCH_RADIUS = 2; // Check 2 chunk radius (5x5 area) to catch larger structures.
+    const STRUCTURE_SEARCH_RADIUS = 2;
 
     for (
       let cx = chunkX - STRUCTURE_SEARCH_RADIUS;
@@ -315,34 +330,12 @@ export class SurfaceGenerator {
         cz <= chunkZ + STRUCTURE_SEARCH_RADIUS;
         cz++
       ) {
-        // Determine the biome at the origin of the potential structure
-        const originWorldX = cx * this.chunk_size + this.chunk_size / 2;
-        const originWorldZ = cz * this.chunk_size + this.chunk_size / 2;
-
-        // Optimization: Lazy load the biome using a Proxy.
-        // This avoids expensive noise calculations if the feature decides not to spawn (e.g. due to random chance) before checking the biome.
-        let cachedBiome: Biome | null = null;
-        const originBiome = new Proxy({} as Biome, {
-          get: (_target, prop) => {
-            if (!cachedBiome) {
-              cachedBiome = TerrainHeightMap.getBiome(
-                originWorldX,
-                originWorldZ,
-              );
-            }
-            const value = cachedBiome[prop as keyof Biome];
-            return typeof value === "function"
-              ? value.bind(cachedBiome)
-              : value;
-          },
-        });
-
         for (const feature of this.features) {
           feature.generate(
             cx,
             chunkY,
             cz,
-            originBiome,
+            biome,
             placeBlock,
             this.seedAsInt,
             this.chunk_size,
@@ -379,12 +372,8 @@ export class SurfaceGenerator {
     return isAdjacentToWater;
   }
 
-  /**
-   * Checks if a given coordinate is at or below sea level.
-   */
   private isNearWater(x: number, z: number): boolean {
-    const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(x, z);
-    return terrainHeight <= this.params.SEA_LEVEL;
+    return TerrainHeightMap.getFinalTerrainHeight(x, z) <= this.params.SEA_LEVEL;
   }
 
   private getDensity(
@@ -392,10 +381,8 @@ export class SurfaceGenerator {
     y: number,
     z: number,
     baseHeight: number,
-    //biome: Biome,
   ): number {
     const relativeHeight = baseHeight - y;
-    // Skip far from transition band to keep generation fast.
     if (relativeHeight > SurfaceGenerator.DENSITY_INFLUENCE_RANGE) {
       return relativeHeight;
     }
@@ -403,15 +390,17 @@ export class SurfaceGenerator {
       return relativeHeight;
     }
 
-    // Base shaping component.
+    // OPTIMIZATION NOTE: These 3 noise calls remain because they are 3D density noise
+    // (different from the 2D terrain noise). They are already relatively cheap (FastNoise).
+    // The cliff noise uses very low frequency — if you need more perf, you could
+    // sample it on a coarser grid (e.g., every 4 blocks) and trilinearly interpolate,
+    // similar to how UndergroundGenerator uses NoiseSampler.
     const baseNoise = this.densityNoise(x * 0.01, y * 0.02, z * 0.02);
-    // Y-skewed sample creates shelves and overhang-like lateral drift.
     const overhangNoise = this.densityNoise(
       (x + y * 0.55) * 0.008,
       y * 0.012,
       (z - y * 0.45) * 0.008,
     );
-    // Low-frequency component reinforces cliff bands.
     const cliffNoise = this.densityNoise(x * 0.0035, y * 0.004, z * 0.0035);
 
     return (

@@ -8,6 +8,17 @@ import {
 } from "./TreeDefinition";
 import { Biome, TreeDefinition } from "./BiomeTypes";
 
+// Must stay in sync with SurfaceGenerator density shaping:
+// max uplift is limited by the influence clamp, not by summed amplitudes.
+const DENSITY_INFLUENCE_RANGE = 48;
+const DENSITY_BASE_AMPLITUDE = 32;
+const DENSITY_OVERHANG_AMPLITUDE = 32;
+const DENSITY_CLIFF_AMPLITUDE = 16;
+const MAX_3D_NOISE_HEIGHT_ADD = Math.min(
+  DENSITY_INFLUENCE_RANGE,
+  DENSITY_BASE_AMPLITUDE + DENSITY_OVERHANG_AMPLITUDE + DENSITY_CLIFF_AMPLITUDE,
+);
+
 //Default
 const FOREST: Biome = {
   name: "Forest",
@@ -164,7 +175,7 @@ const SWAMP: Biome = {
 const GROVE: Biome = {
   name: "Grove",
   topBlock: 14, // Grass
-  undergroundBlock: 1, // Dirt/Mud
+  undergroundBlock: 46, // Dirt/Mud
   stoneBlock: 1,
   canSpawnTrees: true,
   treeDensity: 0.2,
@@ -232,7 +243,7 @@ const OCEAN: Biome = {
   terrainScale: GenerationParams.TERRAIN_SCALE * 16,
   persistence: 0.3,
   heightExponent: 1.0,
-  terrainHeightBase: GenerationParams.SEA_LEVEL - 16, // Near sea level (42) to create pools
+  terrainHeightBase: GenerationParams.SEA_LEVEL - 48, // Near sea level (42) to create pools
   terrainHeightAmplitude: 4, // Low amplitude for flat terrain
   getTreeForBlock(blockId: number): TreeDefinition | null {
     return null;
@@ -302,7 +313,7 @@ export function getBiomeFor(
   humidity: number,
   continentalness: number,
   river: number,
-  terrainBaseHeight: number,
+  terrainShapedHeight: number,
 ): Biome {
   /*
   if (river < 0.1 && continentalness > -0.28 && continentalness < 0.67) {
@@ -312,7 +323,7 @@ export function getBiomeFor(
 
   if (
     continentalness < -0.33 &&
-    terrainBaseHeight < GenerationParams.SEA_LEVEL
+    terrainShapedHeight < GenerationParams.SEA_LEVEL
   ) {
     return OCEAN;
   }
@@ -320,7 +331,7 @@ export function getBiomeFor(
   if (continentalness > -0.3 && continentalness < -0.1) {
     if (temperature < 0.15) {
       return ROCKY_SHORE; // Temperate and humid
-    } else if (temperature < 0.4) {
+    } else if (temperature < 0.6) {
       return GRASS_LAND;
     }
 
@@ -348,7 +359,7 @@ export function getBiomeFor(
 
   // Hot regions
   if (temperature > 0.55) {
-    if (humidity < 0.3) {
+    if (humidity < 0.4) {
       if (temperature > 0.85 && continentalness > -0.3) {
         return VOLCANIC_WASTELAND; // Extremely hot and dry
       }

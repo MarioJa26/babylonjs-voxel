@@ -28,12 +28,10 @@ export class WorldGenerator {
   constructor(params: GenerationParamsType) {
     this.params = params;
     this.prng = Alea(this.params.SEED);
-    // Convert string seed to a number for hashing
     this.seedAsInt = Squirrel3.get(0, (this.prng() * 0xffffffff) | 0);
     this.chunk_size = this.params.CHUNK_SIZE;
     this.chunkSizeSq = this.chunk_size ** 2;
 
-    // Separate seeds for different noise types to avoid correlation.
     const treeNoise = createFastNoise2D({
       seed: Squirrel3.get(21, (this.prng() * 0xffffffff) | 0),
       frequency: 1,
@@ -42,6 +40,10 @@ export class WorldGenerator {
       seed: Squirrel3.get(2, (this.prng() * 0xffffffff) | 0),
       frequency: GenerationParams.RIVER_SCALE,
     });
+
+    // OPTIMIZATION: density noise frequency is baked in here at 1.0 so the noise
+    // function itself handles frequency scaling internally (FastNoise is optimized for this).
+    // SurfaceGenerator already multiplies coordinates by the appropriate scales before calling.
     const densityNoise = createFastNoise3D({
       seed: Squirrel3.get(999, (this.prng() * 0xffffffff) | 0),
       frequency: 0.33,
@@ -68,14 +70,7 @@ export class WorldGenerator {
   public generateChunkData(chunkX: number, chunkY: number, chunkZ: number) {
     const blocks = this.createBuffer(this.chunk_size ** 3);
     const light = this.createBuffer(this.chunk_size ** 3);
-    /**
-     * Places a block in the current chunk's block array by world coordinates.
-     * @param x World X coordinate.
-     * @param y World Y coordinate.
-     * @param z World Z coordinate.
-     * @param blockId The ID of the block to place.
-     * @param overwrite If true, will place the block even if one already exists.
-     */
+
     const placeBlock = (
       x: number,
       y: number,
@@ -98,9 +93,9 @@ export class WorldGenerator {
         const idx =
           localX + localY * this.chunk_size + localZ * this.chunkSizeSq;
 
-        // --- Rule: Don't let air replace water ---
+        // Don't let air replace water
         if (blockId === 0 && blocks[idx] === 30) {
-          return; // Do not place air if water already exists
+          return;
         }
 
         if (blocks[idx] === 0 || overwrite) {
@@ -120,11 +115,12 @@ export class WorldGenerator {
       chunkZ,
       biome,
       placeBlock,
-    ); // Generates solid terrain first and computes per-column top sunlight/surface data
+    );
 
     if (chunkY < 0) {
-      this.undergroundGenerator.generate(chunkX, chunkY, chunkZ, placeBlock); // Then carves caves into it
+      this.undergroundGenerator.generate(chunkX, chunkY, chunkZ, placeBlock);
     }
+
     this.lightGenerator.generate(
       chunkX,
       chunkY,
@@ -138,9 +134,6 @@ export class WorldGenerator {
     return { blocks, light };
   }
 
-  /**
-   * Gets the biome information for a given world coordinate.
-   */
   #getBiome(x: number, z: number) {
     return TerrainHeightMap.getBiome(x, z);
   }

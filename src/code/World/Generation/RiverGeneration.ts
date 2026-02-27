@@ -8,7 +8,7 @@ import { Spline } from "./NoiseAndParameters/Spline";
 
 export class RiverGenerator {
   private params: GenerationParamsType;
-  private readonly TUNNEL_RADIUS = 8;
+  private readonly TUNNEL_RADIUS = 4;
   private readonly TUNNEL_CENTER_Y: number;
 
   private riverNoise: ReturnType<typeof createNoise2D>;
@@ -29,8 +29,8 @@ export class RiverGenerator {
       { t: 0.1, v: 0 },
     ]);
     this.riverDepthSpline = new Spline([
-      { t: 0, v: -15 },
-      { t: 0.02, v: -10 },
+      { t: 0, v: -5 },
+      { t: 0.02, v: -2 },
       { t: 0.1, v: 0 },
 
       { t: 1.0, v: 0 },

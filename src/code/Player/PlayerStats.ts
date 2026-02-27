@@ -15,7 +15,7 @@ export class PlayerStats {
   public healthRegenRate = 1;
   public staminaRegenRate = 15;
   public manaRegenRate = 5;
-  public hungerDepletionRate = 0.5;
+  public hungerDepletionRate = 0.03;
 
   public update(deltaTime: number, isSprinting: boolean): void {
     // Regenerate stamina if not sprinting

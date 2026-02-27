@@ -11,13 +11,25 @@ import { Biome } from "./Biome/BiomeTypes";
 import { getBiomeFor } from "./Biome/Biomes";
 import { FractalType } from "./NoiseAndParameters/FastNoise/FastNoiseLite";
 
+/** Combined result of a single full terrain sample — avoids re-computing noise. */
+export type TerrainSample = {
+  height: number;
+  biome: Biome;
+  riverNoise: number; // raw river noise value (pre-abs)
+};
+
 /**
  * A static utility class to calculate terrain height at any world coordinate.
- * This is used to determine if chunks are fully underground before generating them.
+ *
+ * OPTIMIZATION NOTES:
+ *  - getBiome() and getFinalTerrainHeight() previously duplicated every noise call.
+ *    They now share a single `getTerrainSample()` path backed by a unified cache.
+ *  - River noise is stored in the cache so callers (SurfaceGenerator, LightGenerator)
+ *    can retrieve it for free instead of re-sampling.
+ *  - String key allocation is replaced with a compact integer hash for hot paths.
  */
 export class TerrainHeightMap {
   private static params: GenerationParamsType;
-  //private static continentalNoise: Voronoi;
   private static riverGenerator: RiverGenerator;
   private static temperatureNoise: (x: number, z: number) => number;
   private static humidityNoise: (x: number, z: number) => number;
@@ -30,8 +42,9 @@ export class TerrainHeightMap {
 
   private static seedAsInt: number;
 
-  private static heightCache = new Map<string, number>();
-  private static biomeCache = new Map<string, Biome>();
+  // Unified cache: stores the full TerrainSample so height + biome + river are
+  // computed once and shared by all callers.
+  private static sampleCache = new Map<number, TerrainSample>();
   private static readonly MAX_CACHE_SIZE = 50000;
 
   // Static initializer block. This runs once when the class is loaded.
@@ -40,8 +53,6 @@ export class TerrainHeightMap {
     this.riverGenerator = new RiverGenerator(this.params);
     const prng = Alea(this.params.SEED);
 
-    // Separate PRNGs for different noise types to avoid correlation
-    //TerrainHeightMap.seedAsInt = Squirrel3.get(0, (prng() * 0xffffffff) | 0);
     this.temperatureNoise = createFastNoise2D({
       seed: Squirrel3.get(1, (prng() * 0xffffffff) | 0),
       fractalType: FractalType.None,
@@ -67,16 +78,14 @@ export class TerrainHeightMap {
     });
 
     this.continentalnessSpline = new Spline([
-      { t: -1.0, v: -16 },
-      { t: -0.327, v: -16 },
-      { t: -0.319, v: -5 },
-      { t: -0.312, v: 0 },
-      { t: -0.306, v: 0 },
-      { t: -0.299, v: 0 },
-      { t: -0.29, v: 3 },
-      { t: -0.181, v: 3 },
-      { t: -0.123, v: 4 },
-      { t: -0.062, v: 41 },
+      { t: -0.995, v: -90 },
+      { t: -0.366, v: -74 },
+      { t: -0.315, v: -70 },
+      { t: -0.294, v: -62 },
+      { t: -0.208, v: -51 },
+      { t: -0.179, v: 0 },
+      { t: -0.113, v: 1 },
+      { t: -0.051, v: 33 },
       { t: -0.029, v: 43 },
       { t: 0.088, v: 43 },
       { t: 0.116, v: 81 },
@@ -94,16 +103,10 @@ export class TerrainHeightMap {
       { t: 0.968, v: 560 },
       { t: 0.988, v: 560 },
       { t: 1.0, v: 562 },
-      /*
-      {
-        t: 1.0,
-        v: GenerationParams.CHUNK_SIZE * SettingParams.MAX_CHUNK_HEIGHT,
-      },
-      */
     ]);
 
     this.erosionSpline = new Spline([
-      { t: -1.0, v: 1.0 },
+      { t: -1.0, v: 11.0 },
       { t: -0.8, v: 0.8 },
       { t: -0.5, v: 0.6 },
       { t: 0.0, v: 0.4 },
@@ -123,29 +126,56 @@ export class TerrainHeightMap {
     ]);
   }
 
-  public static getBiome(x: number, z: number): Biome {
-    const key = `${x},${z}`;
-    if (this.biomeCache.has(key)) {
-      return this.biomeCache.get(key)!;
-    }
+  // ---------------------------------------------------------------------------
+  // Cache key helpers
+  // ---------------------------------------------------------------------------
 
-    const continentalness = this.continentalnessNoise(x, z);
-    const temperature = (this.temperatureNoise(x, z) + 1) / 2;
-    const humidity = (this.humidityNoise(x, z) + 1) / 2;
-    const river = Math.abs(this.riverGenerator.getRiverNoise(x, z));
+  /**
+   * Encode a world (x, z) pair into a single 32-bit integer key.
+   * Assumes coordinates fit in ±32767 (signed 16-bit range).
+   * Much cheaper than template-string allocation.
+   */
+  private static encodeKey(x: number, z: number): number {
+    // Shift x into high 16 bits, z into low 16 bits (both masked to 16 bits)
+    return (((x & 0xffff) << 16) | (z & 0xffff)) >>> 0;
+  }
 
-    // Fast approximation: If continentalness is high (mountains), the river is underground.
-    // We skip the expensive spline calculation here.
-    let effectiveRiver = river;
-    if (continentalness > 0.07) {
-      effectiveRiver = 1.0;
-    }
-    const terrainBaseHeight =
+  // ---------------------------------------------------------------------------
+  // Core sample — all noise evaluated ONCE per (x, z)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Returns the full terrain sample for a world coordinate.
+   * Height, biome, and river noise are all computed here and cached together,
+   * so every downstream caller (getBiome, getFinalTerrainHeight, getRiverNoise)
+   * hits the same cache entry.
+   */
+  public static getTerrainSample(
+    worldX: number,
+    worldZ: number,
+  ): TerrainSample {
+    const key = this.encodeKey(worldX, worldZ);
+    const cached = this.sampleCache.get(key);
+    if (cached !== undefined) return cached;
+
+    // --- Noise evaluation (each function called exactly once) ---
+    const continentalness = this.continentalnessNoise(worldX, worldZ);
+    const temperature = (this.temperatureNoise(worldX, worldZ) + 1) / 2;
+    const humidity = (this.humidityNoise(worldX, worldZ) + 1) / 2;
+    const riverNoise = this.riverGenerator.getRiverNoise(worldX, worldZ);
+    const riverAbs = Math.abs(riverNoise);
+
+    // --- Height computation ---
+    const baseHeight =
       GenerationParams.SEA_LEVEL +
       this.continentalnessSpline.getValue(continentalness);
-    const terrainShapedHeight =
-      terrainBaseHeight + this.computeDetail(x, z, terrainBaseHeight);
+    const detail = this.computeDetail(worldX, worldZ, baseHeight, riverAbs);
+    const height = Math.floor(baseHeight + detail);
 
+    // --- Biome determination ---
+    // Mountains push the river underground — skip expensive recalc.
+    const effectiveRiver = continentalness > 0.07 ? 1.0 : riverAbs;
+    const terrainShapedHeight = baseHeight + detail;
     const biome = getBiomeFor(
       temperature,
       humidity,
@@ -154,43 +184,63 @@ export class TerrainHeightMap {
       terrainShapedHeight,
     );
 
-    if (this.biomeCache.size > this.MAX_CACHE_SIZE) {
-      this.biomeCache.clear();
+    const sample: TerrainSample = { height, biome, riverNoise };
+
+    if (this.sampleCache.size > this.MAX_CACHE_SIZE) {
+      this.sampleCache.clear();
     }
-    this.biomeCache.set(key, biome);
-    return biome;
+    this.sampleCache.set(key, sample);
+    return sample;
   }
 
-  private static computeBaseHeight(x: number, z: number): number {
-    const continentalness = this.continentalnessNoise(x, z);
-    const SEA_LEVEL = GenerationParams.SEA_LEVEL;
-    return SEA_LEVEL + this.continentalnessSpline.getValue(continentalness);
+  // ---------------------------------------------------------------------------
+  // Public accessors — thin wrappers around getTerrainSample
+  // ---------------------------------------------------------------------------
+
+  /** Returns the biome for a world (x, z) coordinate. */
+  public static getBiome(x: number, z: number): Biome {
+    return this.getTerrainSample(x, z).biome;
   }
+
+  /** Returns the terrain height for a world (x, z) coordinate. */
+  public static getFinalTerrainHeight(worldX: number, worldZ: number): number {
+    return this.getTerrainSample(worldX, worldZ).height;
+  }
+
+  /**
+   * Returns the raw river noise value (NOT abs) for a world coordinate.
+   * Callers that need Math.abs() should compute it themselves.
+   * This avoids a redundant getRiverNoise() call when height is already cached.
+   */
+  public static getCachedRiverNoise(worldX: number, worldZ: number): number {
+    return this.getTerrainSample(worldX, worldZ).riverNoise;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internal helpers
+  // ---------------------------------------------------------------------------
 
   private static computeDetail(
     x: number,
     z: number,
     baseHeight: number,
+    riverAbs: number, // pre-computed Math.abs(riverNoise) — no re-sample needed
   ): number {
+    // erosion and pv noise are only needed here — sample them now
     const erosion = this.erosionNoise(x, z);
     const pv = this.peaksAndValleysNoise(x, z);
-    const river = Math.abs(this.riverGenerator.getRiverNoise(x, z));
 
-    // Dampen detail in river
+    // Dampen detail inside river channel
     const riverEdge = 0.1;
-    const riverFactor = river < riverEdge ? river / riverEdge : 1.0;
+    const riverFactor = riverAbs < riverEdge ? riverAbs / riverEdge : 1.0;
 
     // --- Tunnel / Roof Logic ---
-    // If the base terrain is high (mountain), we stop carving the surface river
-    // so it becomes a tunnel underneath.
     const TUNNEL_THRESHOLD =
       GenerationParams.SEA_LEVEL +
       GenerationParams.RIVER_TUNNEL_THRESHOLD_OFFSET;
     const TRANSITION_RANGE = GenerationParams.RIVER_TRANSITION_RANGE;
 
-    // 1.0 = Full Surface River, 0.0 = Full Tunnel (No surface carving)
     let surfaceRiverInfluence = 1.0;
-
     if (baseHeight > TUNNEL_THRESHOLD + TRANSITION_RANGE) {
       surfaceRiverInfluence = 0.0;
     } else if (baseHeight > TUNNEL_THRESHOLD) {
@@ -198,45 +248,21 @@ export class TerrainHeightMap {
         1.0 - (baseHeight - TUNNEL_THRESHOLD) / TRANSITION_RANGE;
     }
 
-    // If we are tunneling, we shouldn't flatten the mountain top (riverFactor should be 1)
     const effectiveRiverFactor =
       riverFactor + (1.0 - riverFactor) * (1.0 - surfaceRiverInfluence);
 
-    // Erosion: Determines roughness/amplitude of local features
     const roughness =
       this.erosionSpline.getValue(erosion) * effectiveRiverFactor;
-
-    // Peaks & Valleys: Determines local shape (valleys, peaks)
     const detail = this.peaksAndValleysSpline.getValue(pv) * roughness;
-
-    // Only apply river depth if we are on the surface
     const riverDepth =
-      this.riverGenerator.getRiverDepth(river) * surfaceRiverInfluence;
+      this.riverGenerator.getRiverDepth(riverAbs) * surfaceRiverInfluence;
+
     return detail + riverDepth;
   }
 
+  /** Used by SurfaceGenerator for its internal density field. */
   public static getOctaveNoise(x: number, z: number): number {
-    const base = this.computeBaseHeight(x, z);
-    const detail = this.computeDetail(x, z, base);
-    return base + detail;
-  }
-
-  public static getFinalTerrainHeight(worldX: number, worldZ: number): number {
-    const key = `${worldX},${worldZ}`;
-    if (this.heightCache.has(key)) {
-      return this.heightCache.get(key)!;
-    }
-
-    const potentialHeight = this.getOctaveNoise(worldX, worldZ);
-
-    let finalHeight = potentialHeight;
-    finalHeight = Math.max(17, finalHeight);
-    finalHeight = Math.floor(finalHeight);
-
-    if (this.heightCache.size > this.MAX_CACHE_SIZE) {
-      this.heightCache.clear();
-    }
-    this.heightCache.set(key, finalHeight);
-    return finalHeight;
+    const sample = this.getTerrainSample(x, z);
+    return sample.height; // already = floor(base + detail), so return directly
   }
 }
