@@ -111,10 +111,13 @@ export class ChunkWorkerPool {
     while (this.meshResultQueue.length > 0 && performance.now() - start < 4) {
       const data = this.meshResultQueue.shift();
       if (data) {
-        const { chunkId, opaque, water, glass } = data;
+        const { chunkId, opaque, transparent } = data;
         const chunk = Chunk.chunkInstances.get(chunkId);
         if (chunk) {
-          ChunkMesher.createMeshFromData(chunk, { opaque, water, glass });
+          ChunkMesher.createMeshFromData(chunk, {
+            opaque,
+            transparent,
+          });
         }
       }
     }

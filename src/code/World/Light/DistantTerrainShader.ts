@@ -79,7 +79,7 @@ export class DistantTerrainShader {
             // Atmospheric perspective: Blue hue gradient based on height
             // Lighter at the bottom, darker at the peaks
             // Adjusted to start gradient from -20 to cover valleys/ocean floor
-            float heightFactor = clamp((vPositionW.y - dist * 0.04) / 300.0, 0.0, 1.0);
+            float heightFactor = clamp((vPositionW.y - dist * 0.04) * 0.003, 0.0, 1.0);
             vec3 deepBlue = vec3(0.1, 0.2, 0.4);
             vec3 lightBlue = vec3(0.6, 0.75, 0.95);
             
@@ -141,7 +141,7 @@ export class DistantTerrainShader {
 
             float fogFactor = clamp((vFogInfos.z - dist) / (vFogInfos.z - vFogInfos.y), 0.0, 1.0);
             
-            float heightFactor = clamp((vPositionW.y - dist * 0.3) / 300.0, 0.0, 1.0);
+            float heightFactor = clamp((vPositionW.y - dist * 0.3) * 0.003, 0.0, 1.0);
             vec3 deepBlue = vec3(0.1, 0.2, 0.4);
             vec3 lightBlue = vec3(0.6, 0.75, 0.95);
             vec3 atmosphereColor = mix(lightBlue, deepBlue, heightFactor) * (sunLightIntensity * sunLightIntensity);

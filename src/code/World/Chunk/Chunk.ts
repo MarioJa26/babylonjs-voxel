@@ -39,11 +39,9 @@ export class Chunk {
   #chunkX: number;
   #chunkZ: number;
   public mesh: Mesh | null = null;
-  public waterMesh: Mesh | null = null;
-  public glassMesh: Mesh | null = null;
+  public transparentMesh: Mesh | null = null;
   public opaqueMeshData: MeshData | null = null;
-  public waterMeshData: MeshData | null = null;
-  public glassMeshData: MeshData | null = null;
+  public transparentMeshData: MeshData | null = null;
 
   light_array: Uint8Array;
 
@@ -793,14 +791,11 @@ export class Chunk {
 
   public dispose(): void {
     this.mesh?.dispose();
-    this.waterMesh?.dispose();
-    this.glassMesh?.dispose();
+    this.transparentMesh?.dispose();
     this.mesh = null;
-    this.waterMesh = null;
-    this.glassMesh = null;
+    this.transparentMesh = null;
     this.opaqueMeshData = null;
-    this.waterMeshData = null;
-    this.glassMeshData = null;
+    this.transparentMeshData = null;
     // Also clear data arrays and mark as unloaded for complete cleanup
     this._block_array = null;
     this._isUniform = true;

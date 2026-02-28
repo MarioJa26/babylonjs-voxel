@@ -14,11 +14,9 @@ import { BlockTextures } from "../Texture/BlockTextures";
 // Set.has() on every block face in the inner loop is surprisingly expensive.
 // Replace with a typed array lookup: O(1) with no hashing overhead.
 const BLOCK_TYPE = new Uint8Array(65536); // covers all 16-bit block IDs
-const BLOCK_TYPE_WATER = 1;
-const BLOCK_TYPE_GLASS = 2;
+const BLOCK_TYPE_TRANSPARENT = 1;
 // 0 = opaque/air
-for (const id of [30]) BLOCK_TYPE[id] = BLOCK_TYPE_WATER;
-for (const id of [60, 61]) BLOCK_TYPE[id] = BLOCK_TYPE_GLASS;
+for (const id of [30, 60, 61]) BLOCK_TYPE[id] = BLOCK_TYPE_TRANSPARENT; // water (30) and glass (60, 61)
 
 type FaceData = {
   normal: Int8Array;
@@ -70,6 +68,7 @@ class ChunkWorkerMesher {
       cornerIds: new ResizableTypedArray(Uint8Array),
       ao: new ResizableTypedArray(Uint8Array),
       light: new ResizableTypedArray(Uint8Array),
+      materialFlags: new ResizableTypedArray(Uint8Array), // 0 = glass, 1 = water
       indexOffset: 0,
     };
   }
@@ -128,12 +127,10 @@ class ChunkWorkerMesher {
     neighborLights?: (Uint8Array | undefined)[];
   }): {
     opaque: WorkerInternalMeshData;
-    water: WorkerInternalMeshData;
-    glass: WorkerInternalMeshData;
+    transparent: WorkerInternalMeshData;
   } {
     const opaqueMeshData = this.createEmptyMeshData();
-    const waterMeshData = this.createEmptyMeshData();
-    const glassMeshData = this.createEmptyMeshData();
+    const transparentMeshData = this.createEmptyMeshData();
 
     const {
       block_array,
@@ -146,8 +143,7 @@ class ChunkWorkerMesher {
     if (!block_array) {
       return {
         opaque: opaqueMeshData,
-        water: waterMeshData,
-        glass: glassMeshData,
+        transparent: transparentMeshData,
       };
     }
 
@@ -238,8 +234,7 @@ class ChunkWorkerMesher {
           slice,
           mask,
           opaqueMeshData,
-          waterMeshData,
-          glassMeshData,
+          transparentMeshData,
           faceNamePositive,
           faceNameNegative,
           normalPositive,
@@ -250,8 +245,7 @@ class ChunkWorkerMesher {
 
     return {
       opaque: opaqueMeshData,
-      water: waterMeshData,
-      glass: glassMeshData,
+      transparent: transparentMeshData,
     };
   }
 
@@ -298,16 +292,9 @@ class ChunkWorkerMesher {
         const isCurrentSolid = blockCurrent !== 0;
         const isNeighborSolid = blockNeighbor !== 0;
 
-        // Water ↔ Glass boundary: don't cull across material types
-        const isWaterNextToGlass =
-          (curType === BLOCK_TYPE_WATER && nbrType === BLOCK_TYPE_GLASS) ||
-          (curType === BLOCK_TYPE_GLASS && nbrType === BLOCK_TYPE_WATER);
-
         if (
           isCurrentSolid &&
-          (!isNeighborSolid ||
-            (isNeighborTransparent && !isCurrentTransparent) ||
-            isWaterNextToGlass)
+          (!isNeighborSolid || (isNeighborTransparent && !isCurrentTransparent))
         ) {
           const currentLightPacked = getLight(bx, by, bz, 15 << 4);
           const lightPacked = getLight(
@@ -331,9 +318,7 @@ class ChunkWorkerMesher {
             (lightPacked << 22);
         } else if (
           isNeighborSolid &&
-          (!isCurrentSolid ||
-            (isCurrentTransparent && !isNeighborTransparent) ||
-            isWaterNextToGlass)
+          (!isCurrentSolid || (isCurrentTransparent && !isNeighborTransparent))
         ) {
           const lightPacked = getLight(bx, by, bz);
           const packedAO = this.calculateAOPacked(
@@ -363,8 +348,7 @@ class ChunkWorkerMesher {
     slice: number,
     mask: Uint32Array,
     opaqueMeshData: WorkerInternalMeshData,
-    waterMeshData: WorkerInternalMeshData,
-    glassMeshData: WorkerInternalMeshData,
+    transparentMeshData: WorkerInternalMeshData,
     faceNamePositive: string,
     faceNameNegative: string,
     normalPositive: Int8Array,
@@ -424,10 +408,7 @@ class ChunkWorkerMesher {
           // OPTIMIZATION: replace Set.has() with flat array lookup
           let targetMesh: WorkerInternalMeshData;
           if (isTransparent) {
-            targetMesh =
-              BLOCK_TYPE[blockId] === BLOCK_TYPE_WATER
-                ? waterMeshData
-                : glassMeshData;
+            targetMesh = transparentMeshData;
           } else {
             targetMesh = opaqueMeshData;
           }
@@ -540,6 +521,15 @@ class ChunkWorkerMesher {
     meshData.ao.push4(ao0, ao1, ao2, ao3);
 
     meshData.light.push4(lightLevel, lightLevel, lightLevel, lightLevel);
+
+    // Determine material type: 1 = water (blockId 30), 0 = glass (blockId 60, 61)
+    const materialType = blockId === 30 ? 1 : 0;
+    meshData.materialFlags.push4(
+      materialType,
+      materialType,
+      materialType,
+      materialType,
+    );
 
     const nx = normal[0],
       ny = normal[1],
@@ -788,12 +778,12 @@ const onMessageHandler = (event: MessageEvent) => {
       }
     }
 
-    const { opaque, water, glass } = ChunkWorkerMesher.generateMesh(event.data);
+    const { opaque, transparent } = ChunkWorkerMesher.generateMesh(event.data);
     // Allow GC of large block arrays
     event.data.block_array = undefined;
     event.data.neighbors = undefined;
 
-    postFullMeshResult(event.data.chunkId, opaque, water, glass);
+    postFullMeshResult(event.data.chunkId, opaque, transparent);
     return;
   }
 
@@ -893,26 +883,24 @@ function toTransferable(data: WorkerInternalMeshData): MeshData {
     cornerIds: data.cornerIds.finalArray,
     ao: data.ao.finalArray,
     light: data.light.finalArray,
+    materialType: data.materialFlags.finalArray,
   };
 }
 
 function postFullMeshResult(
   chunkId: string,
   opaque: WorkerInternalMeshData,
-  water: WorkerInternalMeshData,
-  glass: WorkerInternalMeshData,
+  transparent: WorkerInternalMeshData,
 ) {
   const opaqueMeshData = toTransferable(opaque);
-  const waterMeshData = toTransferable(water);
-  const glassMeshData = toTransferable(glass);
+  const transparentMeshData = toTransferable(transparent);
 
   self.postMessage(
     {
       chunkId,
       type: "full-mesh",
       opaque: opaqueMeshData,
-      water: waterMeshData,
-      glass: glassMeshData,
+      transparent: transparentMeshData,
     },
     [
       opaqueMeshData.positions.buffer,
@@ -923,22 +911,15 @@ function postFullMeshResult(
       opaqueMeshData.cornerIds.buffer,
       opaqueMeshData.ao.buffer,
       opaqueMeshData.light.buffer,
-      waterMeshData.positions.buffer,
-      waterMeshData.indices.buffer,
-      waterMeshData.normals.buffer,
-      waterMeshData.uvs2.buffer,
-      waterMeshData.uvs3.buffer,
-      waterMeshData.cornerIds.buffer,
-      waterMeshData.ao.buffer,
-      waterMeshData.light.buffer,
-      glassMeshData.positions.buffer,
-      glassMeshData.indices.buffer,
-      glassMeshData.normals.buffer,
-      glassMeshData.uvs2.buffer,
-      glassMeshData.uvs3.buffer,
-      glassMeshData.cornerIds.buffer,
-      glassMeshData.ao.buffer,
-      glassMeshData.light.buffer,
+      transparentMeshData.positions.buffer,
+      transparentMeshData.indices.buffer,
+      transparentMeshData.normals.buffer,
+      transparentMeshData.uvs2.buffer,
+      transparentMeshData.uvs3.buffer,
+      transparentMeshData.cornerIds.buffer,
+      transparentMeshData.ao.buffer,
+      transparentMeshData.light.buffer,
+      transparentMeshData.materialType.buffer,
     ],
   );
 }

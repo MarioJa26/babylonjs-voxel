@@ -10,6 +10,7 @@ attribute float cornerId; // 0,1,2,3 for quad corners
 attribute vec2 uv3; // uv3 = quad dimensions (w,h)
 attribute float ao;
 attribute float light;
+attribute float materialType; // 0 = glass, 1 = water
 
 // Uniforms
 uniform mat4 world;
@@ -24,6 +25,7 @@ varying mat3 vTBN;
 varying float vAO;
 varying float vSkyLight;
 varying float vBlockLight;
+varying float vMaterialType; // Pass material type to fragment shader
 
 uniform float atlasTileSize;
 
@@ -58,8 +60,9 @@ void main(void) {
 
     vAO = ao;
     // Unpack light (0-255) into sky (high 4 bits) and block (low 4 bits)
-    vSkyLight = floor(light / 16.0) / 15.0;
-    vBlockLight = mod(light, 16.0) / 15.0;
+    vSkyLight = floor(light * 0.0625) * 0.0666666;
+    vBlockLight = mod(light, 16.0) * 0.0666666;
+    vMaterialType = materialType;
 }
 `;
   static readonly chunkFragmentShader = `

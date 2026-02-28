@@ -4,8 +4,7 @@ export type FullMeshMessage = {
   type: "full-mesh";
   chunkId: bigint;
   opaque: MeshData;
-  water: MeshData;
-  glass: MeshData;
+  transparent: MeshData;
 };
 
 export type TerrainGeneratedMessage = {

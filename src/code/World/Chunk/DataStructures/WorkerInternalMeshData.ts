@@ -9,5 +9,6 @@ export type WorkerInternalMeshData = {
   cornerIds: ResizableTypedArray<Uint8Array>;
   ao: ResizableTypedArray<Uint8Array>;
   light: ResizableTypedArray<Uint8Array>;
+  materialFlags: ResizableTypedArray<Uint8Array>;
   indexOffset: number;
 };
