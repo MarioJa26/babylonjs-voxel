@@ -71,10 +71,13 @@ export class PlayerVehicleMotor {
   private readonly swimRiseSpeed = 3.2;
   private readonly swimVerticalAcceleration = 18;
   private readonly swimHorizontalDrag = 0.97;
+  private readonly stepUpHeight = 1.0; // Maximum height (in blocks) to step up
+  private readonly stepUpCooldown = 0.1; // Cooldown between step-ups in seconds
   private readonly voxelCollider: VoxelAabbCollider;
   private voxelPosition = new Vector3(0, 165, 0);
   private voxelVelocity = Vector3.Zero();
   private voxelIsGrounded = false;
+  private lastStepUpTime = 0; // Cooldown to prevent multiple step-ups in quick succession
 
   constructor(options: PlayerVehicleMotorOptions) {
     this.#scene = options.scene;
@@ -747,6 +750,37 @@ export class PlayerVehicleMotor {
   }
 
   private moveVoxelAxis(axis: "x" | "y" | "z", delta: number): void {
+    if (axis !== "x" && axis !== "z") {
+      // Handle Y axis normally
+      this.voxelCollider.moveAxis(
+        this.voxelPosition,
+        this.voxelVelocity,
+        axis,
+        delta,
+        this.voxelStepSize,
+      );
+      return;
+    }
+
+    // For horizontal movement, try step-up first
+    if (
+      this.voxelIsGrounded &&
+      (this.inputDirection.x !== 0 || this.inputDirection.z !== 0) &&
+      Date.now() - this.lastStepUpTime > this.stepUpCooldown * 1000
+    ) {
+      // Save current position
+      const prevPosition = this.voxelPosition.clone();
+
+      // Try to step up
+      if (this.attemptStepUp(axis, delta)) {
+        return; // Step up succeeded
+      }
+
+      // Step up failed, restore position and try normal movement
+      this.voxelPosition.copyFrom(prevPosition);
+    }
+
+    // Normal horizontal movement
     this.voxelCollider.moveAxis(
       this.voxelPosition,
       this.voxelVelocity,
@@ -754,6 +788,58 @@ export class PlayerVehicleMotor {
       delta,
       this.voxelStepSize,
     );
+  }
+
+  private attemptStepUp(axis: "x" | "y" | "z", delta: number): boolean {
+    const testPosition = this.voxelPosition.clone();
+
+    // First, try moving forward at current height
+    if (axis === "x") {
+      testPosition.x += delta;
+    } else {
+      testPosition.z += delta;
+    }
+
+    // If blocked at current height, try stepping up
+    if (this.overlapsSolidVoxel(testPosition)) {
+      // Try stepping up in increments
+      for (let step = 0.25; step <= this.stepUpHeight; step += 0.25) {
+        const upPosition = this.voxelPosition.clone();
+        upPosition.y += step;
+
+        // Check if there's space to step up to
+        if (!this.overlapsSolidVoxel(upPosition)) {
+          // Now try moving forward from this higher position
+          const upAndForward = upPosition.clone();
+          if (axis === "x") {
+            upAndForward.x += delta;
+          } else {
+            upAndForward.z += delta;
+          }
+
+          // Check if forward movement is possible
+          if (!this.overlapsSolidVoxel(upAndForward)) {
+            // Check if there's ground below the new position
+            const groundCheck = upAndForward.clone();
+            groundCheck.y -= 0.01; // Small probe downward
+
+            if (this.overlapsSolidVoxel(groundCheck)) {
+              // Valid step up position found!
+              this.voxelPosition.copyFrom(upAndForward);
+              this.voxelVelocity.y = 0;
+              this.lastStepUpTime = Date.now();
+              return true;
+            }
+          }
+        }
+      }
+    } else {
+      // Movement succeeded without stepping
+      this.voxelPosition.copyFrom(testPosition);
+      return true;
+    }
+
+    return false;
   }
 
   private overlapsSolidVoxel(position: Vector3): boolean {

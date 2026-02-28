@@ -644,7 +644,7 @@ function compressBlocks(blocks: Uint8Array): {
   // This avoids allocating a Set object on every terrain generation call.
   const seen = new Uint8Array(65536); // 64 KB, stack-allocated equivalent
   let uniqueCount = 0;
-  let firstId = blocks[0];
+  const firstId = blocks[0];
 
   for (let i = 0; i < blocks.length; i++) {
     const id = blocks[i];

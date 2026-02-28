@@ -8,17 +8,6 @@ import {
 } from "./TreeDefinition";
 import { Biome, TreeDefinition } from "./BiomeTypes";
 
-// Must stay in sync with SurfaceGenerator density shaping:
-// max uplift is limited by the influence clamp, not by summed amplitudes.
-const DENSITY_INFLUENCE_RANGE = 48;
-const DENSITY_BASE_AMPLITUDE = 32;
-const DENSITY_OVERHANG_AMPLITUDE = 32;
-const DENSITY_CLIFF_AMPLITUDE = 16;
-const MAX_3D_NOISE_HEIGHT_ADD = Math.min(
-  DENSITY_INFLUENCE_RANGE,
-  DENSITY_BASE_AMPLITUDE + DENSITY_OVERHANG_AMPLITUDE + DENSITY_CLIFF_AMPLITUDE,
-);
-
 //Default
 const FOREST: Biome = {
   name: "Forest",
