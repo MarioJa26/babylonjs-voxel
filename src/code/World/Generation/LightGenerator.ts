@@ -94,23 +94,89 @@ export class LightGenerator {
       const blkM1 = blockLight - 1;
 
       if (x + 1 < CHUNK_SIZE) {
-        tail = this.tryPropagate(x + 1, y, z, skyM1, blkM1, blocks, light, tail, CHUNK_SIZE, CHUNK_SIZE_SQ);
+        tail = this.tryPropagate(
+          x + 1,
+          y,
+          z,
+          skyM1,
+          blkM1,
+          blocks,
+          light,
+          tail,
+          CHUNK_SIZE,
+          CHUNK_SIZE_SQ,
+        );
       }
       if (x > 0) {
-        tail = this.tryPropagate(x - 1, y, z, skyM1, blkM1, blocks, light, tail, CHUNK_SIZE, CHUNK_SIZE_SQ);
+        tail = this.tryPropagate(
+          x - 1,
+          y,
+          z,
+          skyM1,
+          blkM1,
+          blocks,
+          light,
+          tail,
+          CHUNK_SIZE,
+          CHUNK_SIZE_SQ,
+        );
       }
       if (y + 1 < CHUNK_SIZE) {
-        tail = this.tryPropagate(x, y + 1, z, skyM1, blkM1, blocks, light, tail, CHUNK_SIZE, CHUNK_SIZE_SQ);
+        tail = this.tryPropagate(
+          x,
+          y + 1,
+          z,
+          skyM1,
+          blkM1,
+          blocks,
+          light,
+          tail,
+          CHUNK_SIZE,
+          CHUNK_SIZE_SQ,
+        );
       }
       if (y > 0) {
         // Sky light falls without loss downward
-        tail = this.tryPropagate(x, y - 1, z, skyLight === 15 ? 15 : skyM1, blkM1, blocks, light, tail, CHUNK_SIZE, CHUNK_SIZE_SQ);
+        tail = this.tryPropagate(
+          x,
+          y - 1,
+          z,
+          skyLight === 15 ? 15 : skyM1,
+          blkM1,
+          blocks,
+          light,
+          tail,
+          CHUNK_SIZE,
+          CHUNK_SIZE_SQ,
+        );
       }
       if (z + 1 < CHUNK_SIZE) {
-        tail = this.tryPropagate(x, y, z + 1, skyM1, blkM1, blocks, light, tail, CHUNK_SIZE, CHUNK_SIZE_SQ);
+        tail = this.tryPropagate(
+          x,
+          y,
+          z + 1,
+          skyM1,
+          blkM1,
+          blocks,
+          light,
+          tail,
+          CHUNK_SIZE,
+          CHUNK_SIZE_SQ,
+        );
       }
       if (z > 0) {
-        tail = this.tryPropagate(x, y, z - 1, skyM1, blkM1, blocks, light, tail, CHUNK_SIZE, CHUNK_SIZE_SQ);
+        tail = this.tryPropagate(
+          x,
+          y,
+          z - 1,
+          skyM1,
+          blkM1,
+          blocks,
+          light,
+          tail,
+          CHUNK_SIZE,
+          CHUNK_SIZE_SQ,
+        );
       }
     }
   }
@@ -157,7 +223,10 @@ export class LightGenerator {
     topWorldY: number,
   ): boolean {
     // OPTIMIZATION: reuse cached height from TerrainHeightMap instead of a separate call.
-    const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(worldX, worldZ);
+    const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(
+      worldX,
+      worldZ,
+    );
     return topWorldY >= terrainHeight - LightGenerator.DENSITY_INFLUENCE_RANGE;
   }
 }

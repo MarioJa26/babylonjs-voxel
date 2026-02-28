@@ -18,11 +18,11 @@ export type SurfaceGenerationResult = {
 
 export class SurfaceGenerator {
   private params: GenerationParamsType;
-  private treeNoise: (x: number, z: number) => number;
-  private densityNoise: (x: number, y: number, z: number) => number;
+  private static treeNoise: (x: number, z: number) => number;
+  private static densityNoise: (x: number, y: number, z: number) => number;
   private static readonly DENSITY_BASE_AMPLITUDE = 32;
   private static readonly DENSITY_OVERHANG_AMPLITUDE = 32;
-  private static readonly DENSITY_CLIFF_AMPLITUDE = 16;
+  private static readonly DENSITY_CLIFF_AMPLITUDE = 32;
   private static readonly DENSITY_INFLUENCE_RANGE = 32;
   private static readonly DENSITY_VERTICAL_SCAN_RANGE =
     SurfaceGenerator.DENSITY_INFLUENCE_RANGE +
@@ -32,7 +32,7 @@ export class SurfaceGenerator {
   private static readonly SUBSURFACE_LAYER_DEPTH = 5;
   private static readonly SURFACE_RESET_AIR_GAP = 6;
   private static readonly NO_SURFACE_Y = -32768;
-  private seedAsInt: number;
+  private static seedAsInt: number;
   private chunk_size: number;
   private riverGenerator: RiverGenerator;
   private features: IWorldFeature[];
@@ -44,9 +44,9 @@ export class SurfaceGenerator {
     seedAsInt: number,
   ) {
     this.params = params;
-    this.treeNoise = treeNoise;
-    this.densityNoise = densityNoise;
-    this.seedAsInt = seedAsInt;
+    SurfaceGenerator.treeNoise = treeNoise;
+    SurfaceGenerator.densityNoise = densityNoise;
+    SurfaceGenerator.seedAsInt = seedAsInt;
     this.chunk_size = this.params.CHUNK_SIZE;
     this.riverGenerator = new RiverGenerator(params);
 
@@ -111,6 +111,8 @@ export class SurfaceGenerator {
     const topSurfaceYMap = new Int16Array(CHUNK_SIZE * CHUNK_SIZE);
     topSurfaceYMap.fill(SurfaceGenerator.NO_SURFACE_Y);
 
+    let isTunnel = false;
+
     for (let localX = 0; localX < CHUNK_SIZE; localX++) {
       const worldX = chunkWorldX + localX;
       for (let localZ = 0; localZ < CHUNK_SIZE; localZ++) {
@@ -160,13 +162,23 @@ export class SurfaceGenerator {
           const worldY = chunkY * CHUNK_SIZE + localY;
 
           // River check reuses the already-fetched riverNoise — no extra noise call.
-          const isTunnel = this.riverGenerator.isRiver(
-            worldX,
-            worldY,
-            worldZ,
-            riverNoise,
-          );
-
+          if (worldY < GenerationParams.SEA_LEVEL + 16) {
+            isTunnel = this.riverGenerator.isRiver(
+              worldX,
+              worldY,
+              worldZ,
+              riverNoise,
+            );
+            if (isTunnel) {
+              if (worldY <= tunnelHeight) {
+                placeBlock(worldX, worldY, worldZ, 30, true); // Water
+              } else {
+                placeBlock(worldX, worldY, worldZ, 0, true); // Air
+              }
+              airGapSinceLastSolid++;
+              continue;
+            }
+          }
           const density = this.getDensity(
             worldX,
             worldY,
@@ -174,18 +186,10 @@ export class SurfaceGenerator {
             terrainHeight,
           );
 
-          if (isTunnel) {
-            if (worldY <= tunnelHeight) {
-              placeBlock(worldX, worldY, worldZ, 30, true); // Water
-            } else {
-              placeBlock(worldX, worldY, worldZ, 0, true); // Air
-            }
-            airGapSinceLastSolid++;
-            continue;
-          }
-
           if (density > 0) {
-            if (airGapSinceLastSolid >= SurfaceGenerator.SURFACE_RESET_AIR_GAP) {
+            if (
+              airGapSinceLastSolid >= SurfaceGenerator.SURFACE_RESET_AIR_GAP
+            ) {
               depthAnchorY = worldY;
             }
             const depthBelowSurface =
@@ -262,7 +266,8 @@ export class SurfaceGenerator {
 
         if (!colBiome.canSpawnTrees) continue;
 
-        const treeNoiseValue = (this.treeNoise(worldX, worldZ) + 1) / 2;
+        const treeNoiseValue =
+          (SurfaceGenerator.treeNoise(worldX, worldZ) + 1) / 2;
         if (treeNoiseValue > colBiome.treeDensity) continue;
 
         let surfaceY = SurfaceGenerator.NO_SURFACE_Y;
@@ -300,7 +305,13 @@ export class SurfaceGenerator {
 
         colBiome
           .getTreeForBlock(topBlockId)
-          ?.generate(worldX, surfaceY + 1, worldZ, placeBlock, this.seedAsInt);
+          ?.generate(
+            worldX,
+            surfaceY + 1,
+            worldZ,
+            placeBlock,
+            SurfaceGenerator.seedAsInt,
+          );
       }
     }
   }
@@ -337,7 +348,7 @@ export class SurfaceGenerator {
             cz,
             biome,
             placeBlock,
-            this.seedAsInt,
+            SurfaceGenerator.seedAsInt,
             this.chunk_size,
             this.getFinalTerrainHeight.bind(this),
             chunkX,
@@ -373,7 +384,9 @@ export class SurfaceGenerator {
   }
 
   private isNearWater(x: number, z: number): boolean {
-    return TerrainHeightMap.getFinalTerrainHeight(x, z) <= this.params.SEA_LEVEL;
+    return (
+      TerrainHeightMap.getFinalTerrainHeight(x, z) <= this.params.SEA_LEVEL
+    );
   }
 
   private getDensity(
@@ -395,13 +408,21 @@ export class SurfaceGenerator {
     // The cliff noise uses very low frequency — if you need more perf, you could
     // sample it on a coarser grid (e.g., every 4 blocks) and trilinearly interpolate,
     // similar to how UndergroundGenerator uses NoiseSampler.
-    const baseNoise = this.densityNoise(x * 0.01, y * 0.02, z * 0.02);
-    const overhangNoise = this.densityNoise(
+    const baseNoise = SurfaceGenerator.densityNoise(
+      x * 0.01,
+      y * 0.02,
+      z * 0.02,
+    );
+    const overhangNoise = SurfaceGenerator.densityNoise(
       (x + y * 0.55) * 0.008,
       y * 0.012,
       (z - y * 0.45) * 0.008,
     );
-    const cliffNoise = this.densityNoise(x * 0.0035, y * 0.004, z * 0.0035);
+    const cliffNoise = SurfaceGenerator.densityNoise(
+      x * 0.0035,
+      y * 0.004,
+      z * 0.0035,
+    );
 
     return (
       relativeHeight +

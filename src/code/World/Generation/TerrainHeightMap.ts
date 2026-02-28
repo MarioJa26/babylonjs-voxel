@@ -40,8 +40,6 @@ export class TerrainHeightMap {
   private static erosionSpline: Spline;
   private static peaksAndValleysSpline: Spline;
 
-  private static seedAsInt: number;
-
   // Unified cache: stores the full TerrainSample so height + biome + river are
   // computed once and shared by all callers.
   private static sampleCache = new Map<number, TerrainSample>();

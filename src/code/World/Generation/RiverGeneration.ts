@@ -1,4 +1,7 @@
-import { createNoise3D, createNoise2D } from "simplex-noise";
+import {
+  createFastNoise2D,
+  createFastNoise3D,
+} from "./NoiseAndParameters/FastNoise/FastNoiseFactory";
 import Alea from "alea";
 import {
   GenerationParams,
@@ -11,8 +14,9 @@ export class RiverGenerator {
   private readonly TUNNEL_RADIUS = 4;
   private readonly TUNNEL_CENTER_Y: number;
 
-  private riverNoise: ReturnType<typeof createNoise2D>;
-  private wallNoise: ReturnType<typeof createNoise3D>;
+  private static riverNoise: (x: number, z: number) => number;
+  private static wallNoise: (x: number, y: number, z: number) => number;
+
   private riverSpline: Spline;
   private riverDepthSpline: Spline;
 
@@ -20,20 +24,27 @@ export class RiverGenerator {
     this.params = params;
     this.TUNNEL_CENTER_Y = this.params.SEA_LEVEL;
     const prng = Alea(this.params.SEED + "_river_walls");
-    this.wallNoise = createNoise3D(prng);
-    this.riverNoise = createNoise2D(prng);
+    const seed = (prng() * 0xffffffff) | 0;
+
+    RiverGenerator.wallNoise = createFastNoise3D({
+      seed,
+      frequency: 0.1,
+    });
+    RiverGenerator.riverNoise = createFastNoise2D({
+      seed,
+      frequency: GenerationParams.RIVER_SCALE,
+    });
+
     this.riverSpline = new Spline([
       { t: 0, v: this.TUNNEL_RADIUS },
-      { t: 0.04, v: this.TUNNEL_RADIUS * 0.9 },
-      { t: 0.08, v: this.TUNNEL_RADIUS * 0.7 },
-      { t: 0.1, v: 0 },
+      { t: 0.02, v: this.TUNNEL_RADIUS * 0.9 },
+      { t: 0.04, v: this.TUNNEL_RADIUS * 0.3 },
+      { t: 0.045, v: 0 },
     ]);
     this.riverDepthSpline = new Spline([
-      { t: 0, v: -5 },
-      { t: 0.02, v: -2 },
-      { t: 0.1, v: 0 },
-
-      { t: 1.0, v: 0 },
+      { t: 0, v: -7 },
+      { t: 0.02, v: -5 },
+      { t: 0.05, v: 0 },
     ]);
   }
 
@@ -51,7 +62,7 @@ export class RiverGenerator {
     // Optimization: Early exit if outside max possible radius (radius + max noise margin)
     if (Math.abs(dy) > radiusAtLocation + 2) return false;
 
-    const noise = this.wallNoise(worldX * 0.1, worldY * 0.1, worldZ * 0.1);
+    const noise = RiverGenerator.wallNoise(worldX, worldY, worldZ);
 
     if (Math.abs(dy) <= radiusAtLocation + noise) {
       return true;
@@ -60,10 +71,7 @@ export class RiverGenerator {
   }
 
   public getRiverNoise(x: number, z: number): number {
-    return this.riverNoise(
-      x * GenerationParams.RIVER_SCALE,
-      z * GenerationParams.RIVER_SCALE,
-    );
+    return RiverGenerator.riverNoise(x, z);
   }
 
   public getRiverDepth(riverValue: number): number {
