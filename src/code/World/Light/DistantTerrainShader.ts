@@ -3,12 +3,10 @@ export class DistantTerrainShader {
         precision lowp float;
         attribute vec3 position;
         attribute vec3 normal;
-        attribute vec3 color;
 
         uniform mat4 world;
         uniform mat4 worldViewProjection;
 
-        varying vec3 vColor;
         varying vec3 vNormal;
         varying vec3 vPositionW;
 
@@ -16,13 +14,11 @@ export class DistantTerrainShader {
             gl_Position = worldViewProjection * vec4(position, 1.0);
             vPositionW = (world * vec4(position, 1.0)).xyz;
             vNormal = normalize(mat3(world) * normal);
-            vColor = color;
         }
     `;
 
   static readonly distantTerrainFragmentShader = `
         precision highp float;
-        varying vec3 vColor;
         varying vec3 vNormal;
         varying vec3 vPositionW;
 
@@ -66,7 +62,7 @@ export class DistantTerrainShader {
             vec3 worldNormal = normalize(vNormal);
             float ndotl = max(0.0, dot(worldNormal, -lightDirection));
 
-            vec3 albedo = vColor;
+            vec3 albedo = vec3(0.5);
             if (useTexture > 0.5) {
                 vec2 tile = readTopTileFromLookup();
                 vec2 worldUV = vPositionW.xz / textureScale;

@@ -199,7 +199,6 @@ export class ChunkWorkerPool {
     gridStep: number,
     oldData?: {
       positions: Int16Array;
-      colors: Uint8Array;
       normals: Int8Array;
       surfaceTiles: Uint8Array;
     },

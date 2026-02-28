@@ -408,10 +408,11 @@ export class SurfaceGenerator {
     // The cliff noise uses very low frequency — if you need more perf, you could
     // sample it on a coarser grid (e.g., every 4 blocks) and trilinearly interpolate,
     // similar to how UndergroundGenerator uses NoiseSampler.
+
     const baseNoise = SurfaceGenerator.densityNoise(
-      x * 0.01,
-      y * 0.02,
-      z * 0.02,
+      x * 0.002,
+      y * (0.04 + SurfaceGenerator.treeNoise(x * 0.00001, z * 0.00001) * 0.02),
+      z * 0.01,
     );
     const overhangNoise = SurfaceGenerator.densityNoise(
       (x + y * 0.55) * 0.008,

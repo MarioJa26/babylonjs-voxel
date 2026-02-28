@@ -642,7 +642,7 @@ function compressBlocks(blocks: Uint8Array): {
   // OPTIMIZATION: scan with early-exit rather than collecting into a Set.
   // We only need to know: uniform? ≤16 unique? or >16 unique?
   // This avoids allocating a Set object on every terrain generation call.
-  const seen = new Uint8Array(65536); // 64 KB, stack-allocated equivalent
+  const seen = new Uint8Array(255); // 64 KB, stack-allocated equivalent
   let uniqueCount = 0;
   const firstId = blocks[0];
 
@@ -871,12 +871,7 @@ const onMessageHandler = (event: MessageEvent) => {
         centerChunkZ,
         ...data,
       },
-      [
-        data.positions.buffer,
-        data.colors.buffer,
-        data.normals.buffer,
-        data.surfaceTiles.buffer,
-      ],
+      [data.positions.buffer, data.normals.buffer, data.surfaceTiles.buffer],
     );
     return;
   }

@@ -20,7 +20,6 @@ export type DistantTerrainGeneratedMessage = {
   centerChunkX: number;
   centerChunkZ: number;
   positions: Int16Array;
-  colors: Uint8Array;
   normals: Int8Array;
   surfaceTiles: Uint8Array;
 };
@@ -33,7 +32,6 @@ export interface DistantTerrainTask {
   gridStep: number;
   oldData?: {
     positions: Int16Array;
-    colors: Uint8Array;
     normals: Int8Array;
     surfaceTiles: Uint8Array;
   };

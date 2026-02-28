@@ -31,7 +31,7 @@ export class PlayerLoopController {
       const dt = (this.scene.deltaTime || 0) / 1000;
 
       if (this.playerVehicle.isSprinting) {
-        if (!this.playerStats.consumeStamina(25 * dt)) {
+        if (!this.playerStats.consumeStamina(4 * dt)) {
           this.playerVehicle.isSprinting = false;
         }
       }

@@ -112,7 +112,6 @@ export class ChunkWorker {
     gridStep: number,
     oldData?: {
       positions: Int16Array;
-      colors: Uint8Array;
       normals: Int8Array;
       surfaceTiles: Uint8Array;
     },
@@ -122,7 +121,6 @@ export class ChunkWorker {
     const transferables: Transferable[] = [];
     if (oldData) {
       transferables.push(oldData.positions.buffer);
-      transferables.push(oldData.colors.buffer);
       transferables.push(oldData.normals.buffer);
       transferables.push(oldData.surfaceTiles.buffer);
     }

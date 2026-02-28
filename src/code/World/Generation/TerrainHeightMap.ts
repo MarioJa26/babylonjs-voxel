@@ -260,7 +260,6 @@ export class TerrainHeightMap {
 
   /** Used by SurfaceGenerator for its internal density field. */
   public static getOctaveNoise(x: number, z: number): number {
-    const sample = this.getTerrainSample(x, z);
-    return sample.height; // already = floor(base + detail), so return directly
+    return this.getTerrainSample(x, z).height; // already = floor(base + detail), so return directly
   }
 }

@@ -33,7 +33,6 @@ export class DistantTerrain {
 
   // Store data for reuse
   private lastPositions: Int16Array | null = null;
-  private lastColors: Uint8Array | null = null;
   private lastNormals: Int8Array | null = null;
   private lastSurfaceTiles: Uint8Array | null = null;
   private lastCenterChunkX: number | null = null;
@@ -70,25 +69,6 @@ export class DistantTerrain {
       Map1.mainScene,
     );
 
-    // Initialize dummy colors for shader to prevent crash before worker returns
-    const engine = this.mesh.getEngine();
-    const initialColors = new Uint8Array(this.mesh.getTotalVertices() * 3).fill(
-      128,
-    );
-    const initialColorBuffer = new VertexBuffer(
-      engine,
-      initialColors,
-      VertexBuffer.ColorKind,
-      true,
-      false,
-      3,
-      false,
-      0,
-      undefined,
-      VertexBuffer.UNSIGNED_BYTE,
-      true,
-    );
-    this.mesh.setVerticesBuffer(initialColorBuffer);
     this.surfaceTileLookupData = new Uint8Array(
       this.gridResolution * this.gridResolution * 4,
     );
@@ -129,7 +109,7 @@ export class DistantTerrain {
         fragment: "distantTerrain",
       },
       {
-        attributes: ["position", "normal", "color"],
+        attributes: ["position", "normal"],
         uniforms: [
           "world",
           "worldViewProjection",
@@ -161,7 +141,10 @@ export class DistantTerrain {
     this.material.setFloat("gridWorldStep", Chunk.SIZE * this.gridStep);
     this.material.setVector2("gridOriginWorld", Vector2.Zero());
     this.material.setFloat("useTexture", 0);
-    this.material.setTexture("tileLookupTexture", this.surfaceTileLookupTexture);
+    this.material.setTexture(
+      "tileLookupTexture",
+      this.surfaceTileLookupTexture,
+    );
     this.bindDiffuseTexture();
     this.mesh.material = this.material;
 
@@ -211,7 +194,6 @@ export class DistantTerrain {
     ChunkWorkerPool.getInstance().onDistantTerrainGenerated = (data) => {
       this.applyTerrainData(
         data.positions,
-        data.colors,
         data.normals,
         data.surfaceTiles,
         data.centerChunkX,
@@ -274,13 +256,9 @@ export class DistantTerrain {
       this.radius,
       SettingParams.RENDER_DISTANCE,
       this.gridStep,
-      this.lastPositions &&
-        this.lastColors &&
-        this.lastNormals &&
-        this.lastSurfaceTiles
+      this.lastPositions && this.lastNormals && this.lastSurfaceTiles
         ? {
             positions: this.lastPositions,
-            colors: this.lastColors,
             normals: this.lastNormals,
             surfaceTiles: this.lastSurfaceTiles,
           }
@@ -291,14 +269,12 @@ export class DistantTerrain {
 
     // Clear references since we transferred ownership to worker
     this.lastPositions = null;
-    this.lastColors = null;
     this.lastNormals = null;
     this.lastSurfaceTiles = null;
   }
 
   private applyTerrainData(
     positions: Int16Array,
-    colors: Uint8Array,
     normals: Int8Array,
     surfaceTiles: Uint8Array,
     centerChunkX: number,
@@ -306,7 +282,6 @@ export class DistantTerrain {
   ) {
     // Save data for next update reuse
     this.lastPositions = positions;
-    this.lastColors = colors;
     this.lastNormals = normals;
     this.lastSurfaceTiles = surfaceTiles;
     this.lastCenterChunkX = centerChunkX;
@@ -324,8 +299,10 @@ export class DistantTerrain {
       centerChunkZ * Chunk.SIZE,
     );
 
-    const gridCenterChunkX = Math.floor(centerChunkX / this.gridStep) * this.gridStep;
-    const gridCenterChunkZ = Math.floor(centerChunkZ / this.gridStep) * this.gridStep;
+    const gridCenterChunkX =
+      Math.floor(centerChunkX / this.gridStep) * this.gridStep;
+    const gridCenterChunkZ =
+      Math.floor(centerChunkZ / this.gridStep) * this.gridStep;
     this.material.setVector2(
       "gridOriginWorld",
       new Vector2(
@@ -349,22 +326,6 @@ export class DistantTerrain {
       false, // normalized
     );
     this.mesh.setVerticesBuffer(positionBuffer);
-
-    // Use setVerticesBuffer to ensure the buffer is created with the correct type and normalization
-    const colorBuffer = new VertexBuffer(
-      engine,
-      colors,
-      VertexBuffer.ColorKind,
-      true, // updatable
-      false, // postpone
-      3, // stride
-      false, // instanced
-      0, // offset
-      undefined, // size
-      VertexBuffer.UNSIGNED_BYTE, // type
-      true, // normalized
-    );
-    this.mesh.setVerticesBuffer(colorBuffer);
 
     const normalBuffer = new VertexBuffer(
       engine,
