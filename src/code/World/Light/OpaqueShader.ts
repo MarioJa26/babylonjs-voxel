@@ -1,4 +1,4 @@
-export class DiffuseNormalShader {
+export class OpaqueShader {
   static readonly chunkVertexShader = `
 precision highp float;
 

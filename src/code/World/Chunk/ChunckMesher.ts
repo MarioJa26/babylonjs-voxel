@@ -17,7 +17,7 @@ import { Chunk } from "./Chunk";
 import { GlobalValues } from "../GlobalValues";
 import { ShaderMaterial } from "@babylonjs/core";
 import { MeshData } from "./DataStructures/MeshData";
-import { DiffuseNormalShader } from "../Light/DiffuseNormalShader";
+import { OpaqueShader } from "../Light/OpaqueShader";
 import { TransparentShader } from "../Light/TransparentShader";
 import { TextureCache } from "../Texture/TextureCache";
 
@@ -83,10 +83,9 @@ export class ChunkMesher {
     }
 
     if (diffuseAtlasTexture) {
-      Effect.ShadersStore["chunkVertexShader"] =
-        DiffuseNormalShader.chunkVertexShader;
+      Effect.ShadersStore["chunkVertexShader"] = OpaqueShader.chunkVertexShader;
       Effect.ShadersStore["chunkFragmentShader"] =
-        DiffuseNormalShader.chunkFragmentShader;
+        OpaqueShader.chunkFragmentShader;
       Effect.ShadersStore["transparentChunkFragmentShader"] =
         TransparentShader.chunkFragmentShader;
 
