@@ -33,6 +33,7 @@ export class Map1 {
     this.#player = player;
     Map1.mainScene = this.CreateScene(scene);
     Map1.environment = new WorldEnvironment(Map1.mainScene);
+    Map1.initCrackingMesh();
     this.#playerStatePersistence = new PlayerStatePersistence(
       Map1.mainScene,
       this.#player,
@@ -134,10 +135,6 @@ export class Map1 {
     block: { x: number; y: number; z: number } | null,
     progress: number,
   ) {
-    if (!this.#crackingMesh) {
-      this.initCrackingMesh();
-    }
-
     if (!block || progress <= 0) {
       if (this.#crackingMesh) this.#crackingMesh.isVisible = false;
       return;

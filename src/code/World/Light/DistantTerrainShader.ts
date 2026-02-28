@@ -37,6 +37,16 @@ export class DistantTerrainShader {
         uniform vec3 vFogColor;
         uniform vec3 cameraPosition;
 
+        const vec3 DEEP_BLUE = vec3(0.1, 0.2, 0.4);
+        const vec3 LIGHT_BLUE = vec3(0.6, 0.75, 0.95);
+        const vec3 DARK_SKY = vec3(0.1, 0.1, 0.2);
+        const vec3 MID_SKY = vec3(0.5, 0.7, 0.9);
+        const vec3 DAY_SKY = vec3(0.1, 0.3, 0.6);
+        const float HEIGHT_SCALE = 0.003;
+        const float HEIGHT_OFFSET = 0.04;
+        const float SKYBLEND_DIST = 1400.0;
+        const float SKYBLEND_FACTOR = 0.0003333;
+
         vec3 sampleAtlasTile(vec2 tile, vec2 worldUV) {
             vec2 baseUV = vec2(
                 tile.x * atlasTileSize,
@@ -54,8 +64,20 @@ export class DistantTerrainShader {
                 vec2(tileGridResolution - 1.0)
             );
             vec2 lookupUV = (nearest + vec2(0.5)) / tileGridResolution;
-            vec2 encodedTile = texture2D(tileLookupTexture, lookupUV).rg;
-            return floor(encodedTile * 255.0 + vec2(0.5));
+            return floor(texture2D(tileLookupTexture, lookupUV).rg * 255.0 + vec2(0.5));
+        }
+
+        vec3 getAtmosphereColor(float heightFactor) {
+            return mix(LIGHT_BLUE, DEEP_BLUE, heightFactor) * (sunLightIntensity * sunLightIntensity);
+        }
+
+        vec3 getSkyboxColor(float viewDirY) {
+            float skyFactor = smoothstep(0.0, 0.4, max(viewDirY, 0.0));
+            vec3 skyboxColor = mix(MID_SKY, DAY_SKY, skyFactor);
+            if (lightDirection.y > 0.0) {
+                skyboxColor = mix(skyboxColor, DARK_SKY, lightDirection.y * 2.0);
+            }
+            return skyboxColor;
         }
 
         void main() {
@@ -69,32 +91,21 @@ export class DistantTerrainShader {
                 albedo = sampleAtlasTile(tile, worldUV);
             }
              
-            vec3 skyColor = vec3(0.8, 0.8, 0.8) * (sunLightIntensity + 0.2);
+            vec3 skyColor = vec3(0.8) * (sunLightIntensity + 0.2);
             vec3 finalColor = albedo * (ndotl * sunLightIntensity * 0.6 + skyColor * 0.6);
              
             vec3 viewVec = vPositionW - cameraPosition;
             float dist = length(viewVec);
             float fogFactor = clamp((vFogInfos.z - dist) / (vFogInfos.z - vFogInfos.y), 0.0, 1.0);
             
-            // Atmospheric perspective: Blue hue gradient based on height
-            // Lighter at the bottom, darker at the peaks
-            // Adjusted to start gradient from -20 to cover valleys/ocean floor
-            float heightFactor = clamp((vPositionW.y - dist * 0.04) * 0.003, 0.0, 1.0);
-            vec3 deepBlue = vec3(0.1, 0.2, 0.4);
-            vec3 lightBlue = vec3(0.6, 0.75, 0.95);
-            
-            vec3 atmosphereColor = mix(lightBlue, deepBlue, heightFactor) * (sunLightIntensity * sunLightIntensity);
+            float heightFactor = clamp((vPositionW.y - dist * HEIGHT_OFFSET) * HEIGHT_SCALE, 0.0, 1.0);
+            vec3 atmosphereColor = getAtmosphereColor(heightFactor);
             vec3 baseFogColor = mix(vFogColor, atmosphereColor, 0.8);
 
-            // Blend into skybox color at distance
             float viewDirY = viewVec.y / dist;
-            float skyFactor = smoothstep(0.0, 0.4, max(viewDirY, 0.0));
-            vec3 skyboxColor = mix(vec3(0.5, 0.7, 0.9), vec3(0.1, 0.3, 0.6), skyFactor);
-            if (lightDirection.y > 0.0) {
-                skyboxColor = mix(skyboxColor, vec3(0.1, 0.1, 0.2), lightDirection.y * 2.0);
-            }
+            vec3 skyboxColor = getSkyboxColor(viewDirY);
             
-            float skyBlend = clamp((dist - 1400.0) * 0.0003, 0.0, 1.0);
+            float skyBlend = clamp((dist - SKYBLEND_DIST) * SKYBLEND_FACTOR, 0.0, 1.0);
             vec3 effectiveFogColor = mix(baseFogColor, skyboxColor, skyBlend);
             
             vec3 colorWithFog = mix(effectiveFogColor, finalColor, fogFactor);
@@ -126,36 +137,53 @@ export class DistantTerrainShader {
         uniform vec3 vFogColor;
         uniform vec3 cameraPosition;
 
+        const vec3 WATER_COLOR = vec3(0.0, 0.1, 0.3);
+        const vec3 DEEP_BLUE = vec3(0.1, 0.2, 0.4);
+        const vec3 LIGHT_BLUE = vec3(0.6, 0.75, 0.95);
+        const vec3 DARK_SKY = vec3(0.1, 0.1, 0.2);
+        const vec3 MID_SKY = vec3(0.5, 0.7, 0.9);
+        const vec3 DAY_SKY = vec3(0.1, 0.3, 0.6);
+        const float SPEC_POWER = 64.0;
+        const float HEIGHT_SCALE = 0.003;
+        const float HEIGHT_OFFSET = 0.3;
+        const float SKYBLEND_DIST = 7000.0;
+        const float SKYBLEND_FACTOR = 0.0003333;
+
+        vec3 getAtmosphereColor(float heightFactor) {
+            return mix(LIGHT_BLUE, DEEP_BLUE, heightFactor) * (sunLightIntensity * sunLightIntensity);
+        }
+
+        vec3 getSkyboxColor(float viewDirY) {
+            float skyFactor = smoothstep(0.0, 0.4, max(viewDirY, 0.0));
+            vec3 skyboxColor = mix(MID_SKY, DAY_SKY, skyFactor);
+            if (lightDirection.y > 0.0) {
+                skyboxColor = mix(skyboxColor, DARK_SKY, lightDirection.y * 2.0);
+            }
+            return skyboxColor;
+        }
+
         void main() {
             vec3 normal = vec3(0.0, 1.0, 0.0);
             
             vec3 viewVec = vPositionW - cameraPosition;
             float dist = length(viewVec);
             vec3 viewDir = -viewVec / dist;
-            vec3 reflectDir = reflect(lightDirection, normal);
-            float spec = pow(max(dot(viewDir, reflectDir), 0.0), 64.0);
-            vec3 specular = vec3(1.0) * spec * sunLightIntensity;
             
-            vec3 waterColor = vec3(0.0, 0.1, 0.3);
-            vec3 finalColor = waterColor * (sunLightIntensity * 0.8 + 0.1) + specular;
+            vec3 reflectDir = reflect(lightDirection, normal);
+            float spec = pow(max(dot(viewDir, reflectDir), 0.0), SPEC_POWER);
+            vec3 specular = vec3(spec * sunLightIntensity);
+            
+            vec3 finalColor = WATER_COLOR * (sunLightIntensity * 0.8 + 0.1) + specular;
 
             float fogFactor = clamp((vFogInfos.z - dist) / (vFogInfos.z - vFogInfos.y), 0.0, 1.0);
             
-            float heightFactor = clamp((vPositionW.y - dist * 0.3) * 0.003, 0.0, 1.0);
-            vec3 deepBlue = vec3(0.1, 0.2, 0.4);
-            vec3 lightBlue = vec3(0.6, 0.75, 0.95);
-            vec3 atmosphereColor = mix(lightBlue, deepBlue, heightFactor) * (sunLightIntensity * sunLightIntensity);
+            float heightFactor = clamp((vPositionW.y - dist * HEIGHT_OFFSET) * HEIGHT_SCALE, 0.0, 1.0);
+            vec3 atmosphereColor = getAtmosphereColor(heightFactor);
             vec3 baseFogColor = mix(vFogColor, atmosphereColor, 0.8);
 
-            // Blend into skybox color at distance
-
-            float skyFactor = smoothstep(0.0, 0.4, max(viewDir.y, 0.0));
-            vec3 skyboxColor = mix(vec3(0.5, 0.7, 0.9), vec3(0.1, 0.3, 0.6), skyFactor);
-            if (lightDirection.y > 0.0) {
-                skyboxColor = mix(skyboxColor, vec3(0.1, 0.1, 0.2), lightDirection.y * 2.0);
-            }
+            vec3 skyboxColor = getSkyboxColor(viewDir.y);
             
-            float skyBlend = clamp((dist - 7000.0) * 0.0003333, 0.0, 1.0);
+            float skyBlend = clamp((dist - SKYBLEND_DIST) * SKYBLEND_FACTOR, 0.0, 1.0);
             vec3 effectiveFogColor = mix(baseFogColor, skyboxColor, skyBlend);
 
             vec3 colorWithFog = mix(effectiveFogColor, finalColor, fogFactor);
