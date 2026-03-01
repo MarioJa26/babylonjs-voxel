@@ -46,7 +46,7 @@ export class WorldGenerator {
     // SurfaceGenerator already multiplies coordinates by the appropriate scales before calling.
     const densityNoise = createFastNoise3D({
       seed: Squirrel3.get(999, (this.prng() * 0xffffffff) | 0),
-      frequency: 0.33,
+      frequency: 0.3333,
     });
 
     this.surfaceGenerator = new SurfaceGenerator(

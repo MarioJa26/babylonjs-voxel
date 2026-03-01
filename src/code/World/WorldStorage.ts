@@ -9,8 +9,7 @@ export type SavedChunkData = {
   isUniform?: boolean;
   light_array?: Uint8Array;
   opaqueMesh?: MeshData;
-  waterMesh?: MeshData;
-  glassMesh?: MeshData;
+  transparentMesh?: MeshData;
   compressed?: boolean;
 };
 
@@ -112,8 +111,7 @@ export class WorldStorage {
     const uniformBlockId = chunk.uniformBlockId;
     const isUniform = chunk.isUniform;
     const opaqueMesh = chunk.opaqueMeshData;
-    const waterMesh = chunk.waterMeshData;
-    const glassMesh = chunk.glassMeshData;
+    const transparentMesh = chunk.transparentMeshData;
 
     const compressedBlocks = blocks ? await this.compress(blocks) : null;
     const compressedLight = light ? await this.compress(light) : null;
@@ -130,8 +128,7 @@ export class WorldStorage {
       isUniform,
       light_array: compressedLight,
       opaqueMesh,
-      waterMesh,
-      glassMesh,
+      transparentMesh,
       compressed: true,
     });
 
@@ -168,8 +165,7 @@ export class WorldStorage {
         const uniformBlockId = chunk.uniformBlockId;
         const isUniform = chunk.isUniform;
         const opaqueMesh = chunk.opaqueMeshData;
-        const waterMesh = chunk.waterMeshData;
-        const glassMesh = chunk.glassMeshData;
+        const transparentMesh = chunk.transparentMeshData;
 
         return {
           id,
@@ -179,8 +175,7 @@ export class WorldStorage {
           isUniform,
           light_array: light ? await this.compress(light) : null,
           opaqueMesh,
-          waterMesh,
-          glassMesh,
+          transparentMesh,
           compressed: true,
         };
       }),

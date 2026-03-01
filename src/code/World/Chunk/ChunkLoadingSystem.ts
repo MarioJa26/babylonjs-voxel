@@ -74,8 +74,7 @@ export class ChunkLoadingSystem {
 
     // 1. Collect all potential chunk coordinates
     for (let y = chunkY - verticalRadius; y <= chunkY + verticalRadius; y++) {
-      if (y >= SettingParams.MAX_CHUNK_HEIGHT)
-        continue;
+      if (y >= SettingParams.MAX_CHUNK_HEIGHT || y < 0) continue;
       for (let x = chunkX - renderDistance; x <= chunkX + renderDistance; x++) {
         for (
           let z = chunkZ - renderDistance;
@@ -194,9 +193,7 @@ export class ChunkLoadingSystem {
               const savedData = loadedDataMap.get(chunk.id);
               if (savedData) {
                 const hasMeshes =
-                  savedData.opaqueMesh ||
-                  savedData.waterMesh ||
-                  savedData.glassMesh;
+                  savedData.opaqueMesh || savedData.transparentMesh;
 
                 chunk.loadFromStorage(
                   savedData.blocks,
@@ -210,8 +207,7 @@ export class ChunkLoadingSystem {
                 if (hasMeshes) {
                   ChunkMesher.createMeshFromData(chunk, {
                     opaque: savedData.opaqueMesh ?? null,
-                    water: savedData.waterMesh ?? null,
-                    glass: savedData.glassMesh ?? null,
+                    transparent: savedData.transparentMesh ?? null,
                   });
                   // Keep cached meshes for fast load, but still reconcile chunk borders
                   // with currently loaded neighbors via worker remesh scheduling.

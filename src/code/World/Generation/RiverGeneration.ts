@@ -54,6 +54,8 @@ export class RiverGenerator {
     worldZ: number,
     riverNoise: number,
   ): boolean {
+    //TODO
+    /*
     const radiusAtLocation = this.riverSpline.getValue(Math.abs(riverNoise));
 
     if (radiusAtLocation <= 0) return false;
@@ -66,7 +68,7 @@ export class RiverGenerator {
 
     if (Math.abs(dy) <= radiusAtLocation + noise) {
       return true;
-    }
+    }*/
     return false;
   }
 

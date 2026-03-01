@@ -71,7 +71,7 @@ export class PlayerVehicleMotor {
   private readonly swimRiseSpeed = 3.2;
   private readonly swimVerticalAcceleration = 18;
   private readonly swimHorizontalDrag = 0.97;
-  private readonly stepUpHeight = 1.0; // Maximum height (in blocks) to step up
+  private readonly stepUpHeight = 2.01; // Maximum height (in blocks) to step up
   private readonly stepUpCooldown = 0.1; // Cooldown between step-ups in seconds
   private readonly voxelCollider: VoxelAabbCollider;
   private voxelPosition = new Vector3(0, 165, 0);

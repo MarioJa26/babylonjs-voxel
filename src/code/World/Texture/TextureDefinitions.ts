@@ -1,4 +1,4 @@
-import { BlockType } from "../BlockType";
+import { BlockType, Hardness } from "../BlockType";
 
 export interface TextureDefinition {
   id: BlockType;
@@ -61,23 +61,25 @@ export const TextureDefinitions: TextureDefinition[] = [
     id: BlockType.BarkWillow02,
     name: "bark_willow_02",
     path: "/texture/wood/bark_willow_02_1k",
-    hardness: Infinity,
+    hardness: Hardness.WOOD,
   },
   {
     id: BlockType.DiagonalParquet,
     name: "diagonal_parquet",
     path: "/texture/wood/diagonal_parquet_1k",
-    hardness: Infinity,
+    hardness: Hardness.WOOD,
   },
   {
     id: BlockType.OldWoodFloor,
     name: "old_wood_floor",
     path: "/texture/wood/old_wood_floor_1k",
+    hardness: Hardness.WOOD,
   },
   {
     id: BlockType.WoodTable,
     name: "wood_table",
     path: "/texture/wood/wood_table_1k",
+    hardness: Hardness.WOOD,
   },
   {
     id: BlockType.RockyTerrain02,
@@ -123,6 +125,7 @@ export const TextureDefinitions: TextureDefinition[] = [
     id: BlockType.PineBark,
     name: "pine_bark",
     path: "/texture/wood/pine_bark_1k",
+    hardness: Hardness.WOOD,
   },
   {
     id: BlockType.MudCrackedDry03,
@@ -153,6 +156,7 @@ export const TextureDefinitions: TextureDefinition[] = [
     id: BlockType.BarkBrown02,
     name: "bark_brown_02",
     path: "/texture/wood/bark_brown_02_1k",
+    hardness: Hardness.WOOD,
   },
   {
     id: BlockType.SlateFloor,
@@ -163,67 +167,79 @@ export const TextureDefinitions: TextureDefinition[] = [
     id: BlockType.Water,
     name: "water",
     path: "/texture/water/water_01_1k",
-    hardness: Infinity,
+    hardness: 1.0,
   },
   {
     id: BlockType.BarkBrown01,
     name: "bark_brown_01",
     path: "/texture/wood/bark_brown_01_1k",
+    hardness: Hardness.WOOD,
   },
   {
     id: BlockType.BeamWall01,
     name: "beam_wall_01",
     path: "/texture/wood/beam_wall_01_1k",
+    hardness: Hardness.WOOD,
   },
   {
     id: BlockType.MetasequoiaBark,
     name: "metasequoia_bark",
     path: "/texture/wood/metasequoia_bark_1k",
+    hardness: Hardness.WOOD,
   },
   {
     id: BlockType.MossWood,
     name: "moss_wood",
     path: "/texture/wood/moss_wood_1k",
+    hardness: Hardness.WOOD,
   },
   {
     id: BlockType.WoodPlanks,
     name: "wood_planks",
     path: "/texture/wood/wood_planks_1k",
+    hardness: Hardness.WOOD,
   },
   {
     id: BlockType.OldPlanks02,
     name: "old_planks_02",
     path: "/texture/wood/old_planks_02_1k",
+    hardness: Hardness.WOOD,
   },
   {
     id: BlockType.PlankFlooring02,
     name: "plank_flooring_02",
     path: "/texture/wood/plank_flooring_02_1k",
+    hardness: Hardness.WOOD,
   },
   {
     id: BlockType.RoofSlates02,
     name: "roof_slates_02",
     path: "/texture/wood/roof_slates_02_1k",
+    hardness: Hardness.WOOD,
   },
   {
     id: BlockType.RoughWood,
     name: "rough_wood",
     path: "/texture/wood/rough_wood_1k",
+    hardness: Hardness.WOOD,
   },
   {
     id: BlockType.ThatchRoofAngled,
     name: "thatch_roof_angled",
     path: "/texture/wood/thatch_roof_angled_1k",
+    hardness: Hardness.WOOD,
   },
   {
     id: BlockType.WoodPlankWall,
     name: "wood_plank_wall",
     path: "/texture/wood/wood_plank_wall_1k",
+    hardness: Hardness.WOOD,
   },
   {
     id: BlockType.WoodTrunkWall,
     name: "wood_trunk_wall",
     path: "/texture/wood/wood_trunk_wall_1k",
+    hardness: Hardness.WOOD,
   },
 
   {
