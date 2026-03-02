@@ -535,6 +535,7 @@ export class Chunk {
             if (currentLevel < nextLevel) {
               if (isSkyLight) targetChunk.setSkyLight(tx, ty, tz, nextLevel);
               else targetChunk.setBlockLight(tx, ty, tz, nextLevel);
+              targetChunk.scheduleRemesh();
               queue.push({
                 chunk: targetChunk,
                 x: tx,
@@ -706,6 +707,7 @@ export class Chunk {
           if (neighborLight !== 0 && isDependent) {
             if (isSkyLight) targetChunk.setSkyLight(tx, ty, tz, 0);
             else targetChunk.setBlockLight(tx, ty, tz, 0);
+            targetChunk.scheduleRemesh();
             queue.push({
               chunk: targetChunk,
               x: tx,

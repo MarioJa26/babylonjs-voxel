@@ -403,12 +403,6 @@ export class SurfaceGenerator {
       return relativeHeight;
     }
 
-    // OPTIMIZATION NOTE: These 3 noise calls remain because they are 3D density noise
-    // (different from the 2D terrain noise). They are already relatively cheap (FastNoise).
-    // The cliff noise uses very low frequency — if you need more perf, you could
-    // sample it on a coarser grid (e.g., every 4 blocks) and trilinearly interpolate,
-    // similar to how UndergroundGenerator uses NoiseSampler.
-
     const baseNoise = SurfaceGenerator.densityNoise(
       x * 0.002,
       y * (0.04 + SurfaceGenerator.treeNoise(x * 0.00001, z * 0.00001) * 0.02),

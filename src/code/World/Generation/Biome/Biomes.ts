@@ -317,16 +317,6 @@ export function getBiomeFor(
     return OCEAN;
   }
 
-  if (continentalness > -0.3 && continentalness < -0.1) {
-    if (temperature < 0.15) {
-      return ROCKY_SHORE; // Temperate and humid
-    } else if (temperature < 0.6) {
-      return GRASS_LAND;
-    }
-
-    return GROVE;
-  }
-
   if (continentalness > 0.75) {
     return TUNDRA_MOUNTAINS;
   }
@@ -347,7 +337,7 @@ export function getBiomeFor(
   }
 
   // Hot regions
-  if (temperature > 0.55) {
+  if (temperature > 0.67) {
     if (humidity < 0.4) {
       if (temperature > 0.85 && continentalness > -0.3) {
         return VOLCANIC_WASTELAND; // Extremely hot and dry
@@ -358,8 +348,13 @@ export function getBiomeFor(
     }
   }
 
-  if (humidity < 0.3) {
+  if (humidity < 0.24) {
     return PLAINS;
   }
+
+  if (temperature < 0.5) {
+    return GRASS_LAND;
+  }
+
   return FOREST;
 }
