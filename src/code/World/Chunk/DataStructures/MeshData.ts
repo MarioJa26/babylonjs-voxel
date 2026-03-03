@@ -2,8 +2,7 @@ export class MeshData {
   positions: Uint8Array = new Uint8Array();
   indices: Uint16Array = new Uint16Array();
   normals: Int8Array = new Int8Array();
-  uvs2: Uint8Array = new Uint8Array(); // vec2, tile coords (tx, ty)
-  uvs3: Uint8Array = new Uint8Array(); // vec2, quad dimensions (w, h)
+  uvData: Uint8Array = new Uint8Array();
   cornerIds: Uint8Array = new Uint8Array(); // float
   ao: Uint8Array = new Uint8Array(); // Ambient Occlusion values
   light: Uint8Array = new Uint8Array(); // Light values
@@ -18,8 +17,7 @@ export class MeshData {
     meshData.positions = data.positions || new Uint8Array();
     meshData.indices = data.indices || new Uint16Array();
     meshData.normals = data.normals || new Int8Array();
-    meshData.uvs2 = data.uvs2 || new Uint8Array();
-    meshData.uvs3 = data.uvs3 || new Uint8Array();
+    meshData.uvData = data.uvData || new Uint8Array();
     meshData.cornerIds = data.cornerIds || new Uint8Array();
     meshData.ao = data.ao || new Uint8Array();
     meshData.light = data.light || new Uint8Array();

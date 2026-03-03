@@ -63,8 +63,7 @@ class ChunkWorkerMesher {
       positions: new ResizableTypedArray(Uint8Array),
       indices: new ResizableTypedArray(Uint16Array),
       normals: new ResizableTypedArray(Int8Array),
-      uvs2: new ResizableTypedArray(Uint8Array),
-      uvs3: new ResizableTypedArray(Uint8Array),
+      uvData: new ResizableTypedArray(Uint8Array),
       cornerIds: new ResizableTypedArray(Uint8Array),
       ao: new ResizableTypedArray(Uint8Array),
       light: new ResizableTypedArray(Uint8Array),
@@ -539,36 +538,16 @@ class ChunkWorkerMesher {
     const tile = tex[faceName] ?? tex.all!;
     const tx = tile[0],
       ty = tile[1];
-    meshData.uvs2.push8(tx, ty, tx, ty, tx, ty, tx, ty);
 
     // OPTIMIZATION: look up corner config from pre-built table — eliminates
     // 6 branches (if/else chain) executed on every single quad.
     const [c0, c1, c2, c3, swapUV] =
       CORNER_TABLE[axis * 2 + (isBackFace ? 1 : 0)];
     meshData.cornerIds.push4(c0, c1, c2, c3);
-
-    if (swapUV) {
-      meshData.uvs3.push8(
-        height,
-        width,
-        height,
-        width,
-        height,
-        width,
-        height,
-        width,
-      );
-    } else {
-      meshData.uvs3.push8(
-        width,
-        height,
-        width,
-        height,
-        width,
-        height,
-        width,
-        height,
-      );
+    const uDim = swapUV ? height : width;
+    const vDim = swapUV ? width : height;
+    for (let i = 0; i < 4; i++) {
+      meshData.uvData.push4(tx, ty, uDim, vDim);
     }
 
     const { indices, indexOffset } = meshData;
@@ -878,8 +857,7 @@ function toTransferable(data: WorkerInternalMeshData): MeshData {
     positions: data.positions.finalArray,
     indices: data.indices.finalArray,
     normals: data.normals.finalArray,
-    uvs2: data.uvs2.finalArray,
-    uvs3: data.uvs3.finalArray,
+    uvData: data.uvData.finalArray,
     cornerIds: data.cornerIds.finalArray,
     ao: data.ao.finalArray,
     light: data.light.finalArray,
@@ -906,16 +884,14 @@ function postFullMeshResult(
       opaqueMeshData.positions.buffer,
       opaqueMeshData.indices.buffer,
       opaqueMeshData.normals.buffer,
-      opaqueMeshData.uvs2.buffer,
-      opaqueMeshData.uvs3.buffer,
+      opaqueMeshData.uvData.buffer,
       opaqueMeshData.cornerIds.buffer,
       opaqueMeshData.ao.buffer,
       opaqueMeshData.light.buffer,
       transparentMeshData.positions.buffer,
       transparentMeshData.indices.buffer,
       transparentMeshData.normals.buffer,
-      transparentMeshData.uvs2.buffer,
-      transparentMeshData.uvs3.buffer,
+      transparentMeshData.uvData.buffer,
       transparentMeshData.cornerIds.buffer,
       transparentMeshData.ao.buffer,
       transparentMeshData.light.buffer,

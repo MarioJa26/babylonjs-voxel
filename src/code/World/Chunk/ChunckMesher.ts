@@ -97,8 +97,7 @@ export class ChunkMesher {
           attributes: [
             "position",
             "normal",
-            "uv2",
-            "uv3",
+            "uvData",
             "cornerId",
             "ao",
             "light",
@@ -142,8 +141,7 @@ export class ChunkMesher {
           attributes: [
             "position",
             "normal",
-            "uv2",
-            "uv3",
+            "uvData",
             "cornerId",
             "ao",
             "light",
@@ -274,31 +272,14 @@ export class ChunkMesher {
         true,
       ),
     );
-
     mesh.setVerticesBuffer(
       new VertexBuffer(
         engine,
-        meshData.uvs2,
-        "uv2",
+        meshData.uvData,
+        "uvData",
         false,
         undefined,
-        2,
-        false,
-        undefined,
-        undefined,
-        VertexBuffer.UNSIGNED_BYTE,
-        false,
-      ),
-    );
-
-    mesh.setVerticesBuffer(
-      new VertexBuffer(
-        engine,
-        meshData.uvs3,
-        "uv3",
-        false,
-        undefined,
-        2,
+        4, // 4 components: tx, ty, w, h
         false,
         undefined,
         undefined,
