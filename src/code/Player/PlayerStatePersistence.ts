@@ -3,17 +3,14 @@ import type { SavedInventoryState } from "./Inventory/PlayerInventory";
 import type { SavedPlayerPosition } from "./PlayerVehicle";
 import { Player } from "./Player";
 
-type SavedPlayerState = {
-  position: SavedPlayerPosition;
-  inventory: SavedInventoryState;
-  savedAt: number;
-};
-
 export class PlayerStatePersistence {
-  private static readonly PLAYER_STATE_STORAGE_KEY = "b102.playerState.v1";
+  private static readonly PLAYER_POSITION_STORAGE_KEY =
+    "b102.playerPosition.v1";
+  private static readonly PLAYER_INVENTORY_STORAGE_KEY =
+    "b102.playerInventory.v1";
   private static readonly PLAYER_STATE_SAVE_INTERVAL_MS = 2000;
 
-  private lastPlayerStateSaveMs = 0;
+  private lastPositionSaveMs = 0;
   private inventoryObserver: Observer<void> | null = null;
   private sceneDisposeObserver: Observer<Scene> | null = null;
   private isDisposed = false;
@@ -38,32 +35,21 @@ export class PlayerStatePersistence {
 
     const now = Date.now();
     if (
-      now - this.lastPlayerStateSaveMs <
+      now - this.lastPositionSaveMs <
       PlayerStatePersistence.PLAYER_STATE_SAVE_INTERVAL_MS
     ) {
       return;
     }
-    this.saveNow();
+    this.savePosition();
+    this.lastPositionSaveMs = now;
   }
 
   public saveNow(): void {
     if (this.isDisposed || typeof window === "undefined") return;
-    if (this.player.playerVehicle.isMovementLocked) return;
 
-    try {
-      const state: SavedPlayerState = {
-        position: this.player.playerVehicle.getSavedPosition(),
-        inventory: this.player.playerInventory.getSavedInventoryState(),
-        savedAt: Date.now(),
-      };
-      window.localStorage.setItem(
-        PlayerStatePersistence.PLAYER_STATE_STORAGE_KEY,
-        JSON.stringify(state),
-      );
-      this.lastPlayerStateSaveMs = state.savedAt;
-    } catch (error) {
-      console.warn("Failed to save player state to localStorage.", error);
-    }
+    this.savePosition();
+    this.saveInventory();
+    this.lastPositionSaveMs = Date.now();
   }
 
   public dispose(): void {
@@ -93,11 +79,10 @@ export class PlayerStatePersistence {
   private setupPersistence(): void {
     if (typeof window === "undefined") return;
 
-    this.inventoryObserver = this.player.playerInventory.onInventoryChangedObservable.add(
-      () => {
-        this.saveNow();
-      },
-    );
+    this.inventoryObserver =
+      this.player.playerInventory.onInventoryChangedObservable.add(() => {
+        this.saveInventory();
+      });
 
     window.addEventListener("beforeunload", this.onBeforeUnload);
     document.addEventListener("visibilitychange", this.onVisibilityChange);
@@ -107,33 +92,85 @@ export class PlayerStatePersistence {
     });
   }
 
-  private restoreFromLocalStorage(): void {
-    if (typeof window === "undefined") return;
+  private savePosition(): void {
+    if (this.isDisposed || typeof window === "undefined") return;
+    if (this.player.playerVehicle.isMovementLocked) return;
 
     try {
+      const positionState = this.player.playerVehicle.getSavedPosition();
+      window.localStorage.setItem(
+        PlayerStatePersistence.PLAYER_POSITION_STORAGE_KEY,
+        JSON.stringify(positionState),
+      );
+    } catch (error) {
+      console.warn("Failed to save player position to localStorage.", error);
+    }
+  }
+
+  private saveInventory(): void {
+    if (this.isDisposed || typeof window === "undefined") return;
+
+    try {
+      const inventoryState =
+        this.player.playerInventory.getSavedInventoryState();
+      window.localStorage.setItem(
+        PlayerStatePersistence.PLAYER_INVENTORY_STORAGE_KEY,
+        JSON.stringify(inventoryState),
+      );
+    } catch (error) {
+      console.warn("Failed to save player inventory to localStorage.", error);
+    }
+  }
+
+  private restoreFromLocalStorage(): void {
+    if (typeof window === "undefined") return;
+    this.restorePosition();
+    this.restoreInventory();
+  }
+
+  private restorePosition(): void {
+    try {
       const raw = window.localStorage.getItem(
-        PlayerStatePersistence.PLAYER_STATE_STORAGE_KEY,
+        PlayerStatePersistence.PLAYER_POSITION_STORAGE_KEY,
       );
       if (!raw) return;
 
-      const savedState = JSON.parse(raw) as Partial<SavedPlayerState>;
-      const restoredPosition = this.player.playerVehicle.restoreSavedPosition(
-        savedState.position,
-      );
-      const restoredInventory =
-        this.player.playerInventory.restoreSavedInventoryState(
-          savedState.inventory,
-        );
-
-      if (restoredPosition) {
+      const savedPosition = JSON.parse(raw) as SavedPlayerPosition;
+      if (this.player.playerVehicle.restoreSavedPosition(savedPosition)) {
         this.player.playerVehicle.updateCameraAndVisuals();
-      }
-
-      if (!restoredPosition && !restoredInventory) {
-        console.warn("Saved player data was invalid. Defaults were kept.");
+      } else {
+        console.warn(
+          "Saved player position data was invalid. Defaults were kept.",
+        );
       }
     } catch (error) {
-      console.warn("Failed to restore player state from localStorage.", error);
+      console.warn(
+        "Failed to restore player position from localStorage.",
+        error,
+      );
+    }
+  }
+
+  private restoreInventory(): void {
+    try {
+      const raw = window.localStorage.getItem(
+        PlayerStatePersistence.PLAYER_INVENTORY_STORAGE_KEY,
+      );
+      if (!raw) return;
+
+      const savedInventory = JSON.parse(raw) as SavedInventoryState;
+      if (
+        !this.player.playerInventory.restoreSavedInventoryState(savedInventory)
+      ) {
+        console.warn(
+          "Saved player inventory data was invalid. Defaults were kept.",
+        );
+      }
+    } catch (error) {
+      console.warn(
+        "Failed to restore player inventory from localStorage.",
+        error,
+      );
     }
   }
 }
