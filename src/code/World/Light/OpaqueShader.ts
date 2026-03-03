@@ -15,6 +15,7 @@ attribute float materialType;
 uniform mat4 world;
 uniform mat4 worldViewProjection;
 uniform float atlasTileSize;
+uniform float sunLightIntensity;
 
 // Varyings
 varying vec2 vUV;
@@ -25,6 +26,8 @@ varying float vAO;
 varying float vSkyLight;
 varying float vBlockLight;
 varying float vMaterialType;
+varying vec3 vSkyColor;
+varying vec3 vBlockColor;
 
 void main(void) {
     gl_Position = worldViewProjection * vec4(position, 1.0);
@@ -59,6 +62,10 @@ void main(void) {
     vSkyLight = floor(light * 0.0625) * 0.0666666;
     vBlockLight = mod(light, 16.0) * 0.0666666;
     vMaterialType = materialType;
+
+    // 6. Color Declarations (Moved from Fragment to avoid recomputation)
+    vSkyColor = vec3(0.8, 0.8, 0.8) * (sunLightIntensity + 0.2);
+    vBlockColor = vec3(0.9, 0.6, 0.2);
 }
 `;
 
@@ -75,6 +82,8 @@ void main(void) {
     varying float vAO;
     varying float vSkyLight;
     varying float vBlockLight;
+    varying vec3 vSkyColor;
+    varying vec3 vBlockColor;
 
     uniform sampler2D diffuseTexture;
     uniform sampler2D normalTexture;
@@ -115,13 +124,10 @@ void main(void) {
 
         // 5. Final Coloring
         float aoFactor = 1.0 - vAO * 0.23; 
-        vec3 skyColor = vec3(0.8, 0.8, 0.8) * (sunLightIntensity + 0.2);
-        vec3 blockColor = vec3(0.9, 0.6, 0.2);
         
-        vec3 lightMix = clamp((vSkyLight * skyColor) + (vBlockLight * blockColor), 0.2, 1.0);
+        // Colors are now provided by varyings vSkyColor and vBlockColor
+        vec3 lightMix = clamp((vSkyLight * vSkyColor) + (vBlockLight * vBlockColor), 0.2, 1.0);
         
-        // Fix: Apply AO factor AFTER the 0.2 floor.
-        // This keeps corners darker than flat faces even at minimum light.
         vec3 finalColor = (diffuseColor.rgb + diffuse + specular) * lightMix * aoFactor;
 
         gl_FragColor = vec4(finalColor, diffuseColor.a);    
