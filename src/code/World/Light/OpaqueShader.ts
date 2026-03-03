@@ -105,14 +105,11 @@ void main(void) {
         vec3 diffuse = diffuseColor.rgb * diffuseIntensity;
 
         // 4. SPECULAR MUTING
-        // We calculate the reflection, then multiply the intensity by vSkyLight.
-        // This makes the "normal" (the reflective property) less prominent in shade.
         vec3 viewDirection = normalize(cameraPosition - vPositionW);
         vec3 halfwayDir = normalize(viewDirection + lightDirection);
         float shininess = mix(16.0, 128.0, wetness);
         float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), shininess);
         
-        // Intensity is scaled by wetness, sun intensity, AND skylight
         float specIntensity = mix(0.05, 2.0, wetness) * vSkyLight;
         vec3 specular = vec3(specIntensity) * spec * max(sunLightIntensity - 0.1, 0.0);
 
@@ -121,9 +118,11 @@ void main(void) {
         vec3 skyColor = vec3(0.8, 0.8, 0.8) * (sunLightIntensity + 0.2);
         vec3 blockColor = vec3(0.9, 0.6, 0.2);
         
-        vec3 lightMix = clamp((vSkyLight * skyColor) + (vBlockLight * blockColor), 0.0, 1.0);
+        vec3 lightMix = clamp((vSkyLight * skyColor) + (vBlockLight * blockColor), 0.2, 1.0);
         
-        vec3 finalColor = (diffuseColor.rgb + diffuse + specular) * max(lightMix * aoFactor, 0.2);
+        // Fix: Apply AO factor AFTER the 0.2 floor.
+        // This keeps corners darker than flat faces even at minimum light.
+        vec3 finalColor = (diffuseColor.rgb + diffuse + specular) * lightMix * aoFactor;
 
         gl_FragColor = vec4(finalColor, diffuseColor.a);    
     }
