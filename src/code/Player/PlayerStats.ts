@@ -1,4 +1,12 @@
+export enum Gamemodes {
+  Survival = 0,
+  Creative = 1,
+  Adventure = 2,
+  Spectator = 3,
+}
 export class PlayerStats {
+  public gamemode: Gamemodes = Gamemodes.Creative;
+
   public maxHealth = 100;
   public health = 100;
 
@@ -15,7 +23,7 @@ export class PlayerStats {
   public healthRegenRate = 1;
   public staminaRegenRate = 15;
   public manaRegenRate = 5;
-  public hungerDepletionRate = 0.03;
+  public hungerDepletionRate = 0.01;
 
   public update(deltaTime: number, isSprinting: boolean): void {
     // Regenerate stamina if not sprinting
@@ -24,6 +32,14 @@ export class PlayerStats {
         this.maxStamina,
         this.stamina + this.staminaRegenRate * deltaTime,
       );
+      // Deplete hunger
+      if (this.hunger > 0) {
+        this.hunger = Math.max(
+          0,
+          this.hunger -
+            this.staminaRegenRate * this.hungerDepletionRate * deltaTime,
+        );
+      }
     }
 
     // Regenerate mana
@@ -34,16 +50,8 @@ export class PlayerStats {
       );
     }
 
-    // Deplete hunger
-    if (this.hunger > 0) {
-      this.hunger = Math.max(
-        0,
-        this.hunger - this.hungerDepletionRate * deltaTime,
-      );
-    }
-
     // Regenerate health if well fed
-    if (this.hunger > 90 && this.health < this.maxHealth) {
+    if (this.hunger > 50 && this.health < this.maxHealth) {
       this.health = Math.min(
         this.maxHealth,
         this.health + this.healthRegenRate * deltaTime,

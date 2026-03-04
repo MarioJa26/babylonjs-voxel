@@ -239,6 +239,18 @@
   white-space: nowrap;
   /* Keep the name on a single line */
   text-shadow: 2px 2px 2px black;
+  border-radius: 4px;
+}
+
+.item-tooltip-name {
+  font-weight: bold;
+}
+
+.item-tooltip-desc {
+  font-style: italic;
+  color: #cccccc;
+  font-size: 0.9em;
+  margin-top: 4px;
 }
 
 /* Stats Bars */

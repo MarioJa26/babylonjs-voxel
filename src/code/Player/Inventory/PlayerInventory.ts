@@ -173,7 +173,6 @@ export class PlayerInventory {
         spawnPos,
       );
     };
-    boat.name = "Boat";
     boat.itemId = PlayerInventory.BOAT_ITEM_ID;
     return boat;
   }

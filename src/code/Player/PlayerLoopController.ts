@@ -74,7 +74,6 @@ export class PlayerLoopController {
         currentChunkX,
         currentChunkY,
         currentChunkZ,
-        playerPos.y,
       );
       this.#lastChunkX = currentChunkX;
       this.#lastChunkY = currentChunkY;

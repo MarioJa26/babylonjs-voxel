@@ -10,9 +10,46 @@ export class ChunkLoadingSystem {
 
   private static loadQueue: Chunk[] = [];
   private static unloadQueue: Chunk[] = [];
+  private static flushPromise: Promise<void> | null = null;
   private static isProcessing = false;
   private static readonly LOAD_BATCH_SIZE = SettingParams.RENDER_DISTANCE * 4;
   private static readonly UNLOAD_BATCH_SIZE = SettingParams.RENDER_DISTANCE * 4;
+
+  public static flushModifiedChunks(
+    maxChunks = ChunkLoadingSystem.UNLOAD_BATCH_SIZE,
+  ): Promise<void> {
+    if (this.flushPromise) {
+      return this.flushPromise;
+    }
+
+    const cappedBatchSize = Math.max(1, Math.floor(maxChunks));
+    const chunksToSave: Chunk[] = [];
+
+    for (const chunk of Chunk.chunkInstances.values()) {
+      if (!chunk.isLoaded || !chunk.isModified) {
+        continue;
+      }
+      chunksToSave.push(chunk);
+      if (chunksToSave.length >= cappedBatchSize) {
+        break;
+      }
+    }
+
+    if (chunksToSave.length === 0) {
+      return Promise.resolve();
+    }
+
+    const savePromise = WorldStorage.saveChunks(chunksToSave).catch((error) => {
+      console.error("Periodic chunk save failed:", error);
+    });
+    const trackedPromise = savePromise.finally(() => {
+      if (this.flushPromise === trackedPromise) {
+        this.flushPromise = null;
+      }
+    });
+    this.flushPromise = trackedPromise;
+    return trackedPromise;
+  }
 
   private static scheduleChunkAndNeighborsRemesh(chunk: Chunk): void {
     const pool = ChunkWorkerPool.getInstance();
@@ -29,7 +66,6 @@ export class ChunkLoadingSystem {
     chunkX: number,
     chunkY: number,
     chunkZ: number,
-    playerY: number,
     renderDistance = SettingParams.RENDER_DISTANCE,
     verticalRadius = SettingParams.VERTICAL_RENDER_DISTANCE,
   ) {
@@ -150,13 +186,7 @@ export class ChunkLoadingSystem {
       // --- Process Unload Batch ---
       if (this.unloadQueue.length > 0) {
         const batch = this.unloadQueue.splice(0, this.UNLOAD_BATCH_SIZE);
-        const chunksToSave: Chunk[] = [];
-
-        for (const chunk of batch) {
-          if (chunk.isModified) {
-            chunksToSave.push(chunk);
-          }
-        }
+        const chunksToSave = batch.filter((c) => c.isModified);
 
         if (chunksToSave.length > 0) {
           try {
@@ -167,9 +197,14 @@ export class ChunkLoadingSystem {
         }
 
         for (const chunk of batch) {
-          chunk.dispose();
-          chunk.isLoaded = false;
-          Chunk.chunkInstances.delete(chunk.id);
+          // Only dispose of chunks that are not modified.
+          // If a chunk was modified, it will only be disposed if the save was successful.
+          // If saving failed, isModified remains true, and we keep the chunk in memory to retry saving later.
+          if (!chunk.isModified) {
+            chunk.dispose();
+            chunk.isLoaded = false;
+            Chunk.chunkInstances.delete(chunk.id);
+          }
         }
       }
 

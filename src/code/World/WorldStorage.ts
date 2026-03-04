@@ -22,6 +22,20 @@ export class WorldStorage {
   private static initPromise: Promise<void> | null = null;
   private static pendingChunkSaves = new Map<string, Promise<void>>();
 
+  private static async ensureInitialized(): Promise<boolean> {
+    if (this.db) {
+      return true;
+    }
+
+    try {
+      await this.initialize();
+      return !!this.db;
+    } catch (error) {
+      console.warn("WorldStorage initialization failed.", error);
+      return false;
+    }
+  }
+
   private static trackPendingChunkSaves(
     chunkIds: string[],
     savePromise: Promise<void>,
@@ -91,13 +105,12 @@ export class WorldStorage {
 
   public static async saveChunk(chunk: Chunk): Promise<void> {
     if (GlobalValues.DISABLE_CHUNK_SAVING) {
-      // Saving is disabled for testing, do nothing.
       return;
     }
     if (!chunk.isModified) {
       return;
     }
-    if (!this.db) {
+    if (!(await this.ensureInitialized())) {
       console.warn("DB not initialized, cannot save chunk.");
       return;
     }
@@ -149,7 +162,10 @@ export class WorldStorage {
       return Promise.resolve();
     }
     const modifiedChunks = chunks.filter((c) => c.isModified);
-    if (!this.db || modifiedChunks.length === 0) {
+    if (modifiedChunks.length === 0) {
+      return Promise.resolve();
+    }
+    if (!(await this.ensureInitialized())) {
       return Promise.resolve();
     }
 
@@ -186,7 +202,13 @@ export class WorldStorage {
       const transaction = this.db!.transaction(CHUNK_STORE_NAME, "readwrite");
       const store = transaction.objectStore(CHUNK_STORE_NAME);
 
-      transaction.oncomplete = () => resolve();
+      transaction.oncomplete = () => {
+        // Only mark chunks as not modified after the transaction is successfully completed.
+        for (const chunk of modifiedChunks) {
+          chunk.isModified = false; // Mark as saved
+        }
+        resolve();
+      };
       transaction.onerror = () => {
         console.error("Batch save transaction error:", transaction.error);
         reject(transaction.error);
@@ -194,9 +216,6 @@ export class WorldStorage {
 
       for (const data of preparedData) {
         store.put(data);
-      }
-      for (const chunk of modifiedChunks) {
-        chunk.isModified = false; // Mark as saved
       }
     });
 
@@ -210,7 +229,7 @@ export class WorldStorage {
       // Loading is disabled for testing, do nothing.
       return Promise.resolve(null);
     }
-    if (!this.db) {
+    if (!(await this.ensureInitialized())) {
       console.warn("DB not initialized, cannot load chunk.");
       return null;
     }
@@ -248,7 +267,10 @@ export class WorldStorage {
       // Loading is disabled for testing, do nothing.
       return loadedChunks;
     }
-    if (!this.db || chunkIds.length === 0) {
+    if (chunkIds.length === 0) {
+      return loadedChunks;
+    }
+    if (!(await this.ensureInitialized())) {
       return loadedChunks;
     }
     await this.awaitPendingChunkSaves(chunkIds.map((id) => id.toString()));

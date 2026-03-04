@@ -15,6 +15,7 @@ import {
 import { Item } from "../Inventory/Item";
 import { DroppedItem } from "../Inventory/DroppedItem";
 import { VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollider";
+import { Gamemodes } from "../PlayerStats";
 
 export class WalkingControls implements IControls<PlayerVehicle> {
   public pressedKeys = new Set<string>();
@@ -119,7 +120,10 @@ export class WalkingControls implements IControls<PlayerVehicle> {
             this.#player.playerHud.selectedHotbarSlot
           ]?.item;
 
-        const breakTime = getBlockBreakTime(blockId, item?.itemId);
+        const breakTime =
+          this.#player.stats.gamemode === Gamemodes.Creative
+            ? 0.1
+            : getBlockBreakTime(blockId, item?.itemId);
 
         if (
           this.#breakingBlock &&
@@ -329,7 +333,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
     worldItem.stackSize = 1;
     worldItem.itemId = blockId;
 
-    new DroppedItem(worldItem, x + 0.5, y + 0.5, z + 0.5);
+    const di = new DroppedItem(worldItem, x + 0.5, y + 0.5, z + 0.5);
 
     BlockBreakParticles.play(
       this.#player.playerVehicle.scene,
@@ -340,6 +344,9 @@ export class WalkingControls implements IControls<PlayerVehicle> {
     Map1.updateCrackingState(null, 0);
 
     ChunkLoadingSystem.deleteBlock(x, y, z);
+
+    if (this.#player.stats.gamemode === Gamemodes.Creative)
+      di.use(this.#player);
   }
 
   public get controlledEntity(): PlayerVehicle {

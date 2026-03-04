@@ -2,6 +2,7 @@ import { Observer, Scene } from "@babylonjs/core";
 import type { SavedInventoryState } from "./Inventory/PlayerInventory";
 import type { SavedPlayerPosition } from "./PlayerVehicle";
 import { Player } from "./Player";
+import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
 
 export class PlayerStatePersistence {
   private static readonly PLAYER_POSITION_STORAGE_KEY =
@@ -9,6 +10,8 @@ export class PlayerStatePersistence {
   private static readonly PLAYER_INVENTORY_STORAGE_KEY =
     "b102.playerInventory.v1";
   private static readonly PLAYER_STATE_SAVE_INTERVAL_MS = 2000;
+  private static readonly CHUNK_SAVE_BATCH_SIZE = 12;
+  private static readonly CHUNK_SAVE_NOW_BATCH_SIZE = 64;
 
   private lastPositionSaveMs = 0;
   private inventoryObserver: Observer<void> | null = null;
@@ -41,6 +44,7 @@ export class PlayerStatePersistence {
       return;
     }
     this.savePosition();
+    this.requestChunkSave(PlayerStatePersistence.CHUNK_SAVE_BATCH_SIZE);
     this.lastPositionSaveMs = now;
   }
 
@@ -49,6 +53,7 @@ export class PlayerStatePersistence {
 
     this.savePosition();
     this.saveInventory();
+    this.requestChunkSave(PlayerStatePersistence.CHUNK_SAVE_NOW_BATCH_SIZE);
     this.lastPositionSaveMs = Date.now();
   }
 
@@ -89,6 +94,12 @@ export class PlayerStatePersistence {
 
     this.sceneDisposeObserver = this.scene.onDisposeObservable.add(() => {
       this.dispose();
+    });
+  }
+
+  private requestChunkSave(batchSize: number): void {
+    void ChunkLoadingSystem.flushModifiedChunks(batchSize).catch((error) => {
+      console.warn("Failed to persist modified chunks.", error);
     });
   }
 
@@ -152,6 +163,7 @@ export class PlayerStatePersistence {
   }
 
   private restoreInventory(): void {
+    return;
     try {
       const raw = window.localStorage.getItem(
         PlayerStatePersistence.PLAYER_INVENTORY_STORAGE_KEY,

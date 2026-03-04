@@ -27,7 +27,12 @@ export class PlayerHud {
   #overlayDiv: HTMLDivElement;
 
   static debugPanelDiv: HTMLDivElement;
-  private static infoLines: { [key: string]: string } = {};
+  private static infoRows: {
+    [key: string]: {
+      container: HTMLDivElement;
+      valueNode: Text;
+    };
+  } = {};
   private static itemTooltipDiv: HTMLDivElement;
   private static itemTooltipMouseMove?: (e: MouseEvent) => void;
 
@@ -491,28 +496,43 @@ export class PlayerHud {
   }
 
   public static updateDebugInfo(key: string, value: string | number): void {
-    this.infoLines[key] = String(value);
-    this.renderDebugInfo();
-  }
-
-  private static renderDebugInfo(): void {
     if (!this.debugPanelDiv) return;
 
-    let html = "";
-    for (const key in this.infoLines) {
-      html += `<div><strong>${key}:</strong> ${this.infoLines[key]}</div>`;
-    }
+    const stringValue = String(value);
 
-    // Keep the slider by only updating the text content part
-    // Only update the text content part
-    const textContainer =
-      this.debugPanelDiv.querySelector("div.info-container") ||
-      document.createElement("div");
-    textContainer.className = "info-container";
-    textContainer.innerHTML = html;
+    let row = this.infoRows[key];
 
-    if (!textContainer.parentElement) {
-      this.debugPanelDiv.prepend(textContainer);
+    if (!row) {
+      // Create row once
+      const container = document.createElement("div");
+
+      const strong = document.createElement("strong");
+      strong.textContent = key + ": ";
+
+      const valueNode = document.createTextNode(stringValue);
+
+      container.appendChild(strong);
+      container.appendChild(valueNode);
+
+      // Create info container once
+      let textContainer = this.debugPanelDiv.querySelector(
+        ".info-container",
+      ) as HTMLDivElement;
+
+      if (!textContainer) {
+        textContainer = document.createElement("div");
+        textContainer.className = "info-container";
+        this.debugPanelDiv.prepend(textContainer);
+      }
+
+      textContainer.appendChild(container);
+
+      this.infoRows[key] = { container, valueNode };
+    } else {
+      // Only update text node if changed
+      if (row.valueNode.nodeValue !== stringValue) {
+        row.valueNode.nodeValue = stringValue;
+      }
     }
   }
 
@@ -529,7 +549,19 @@ export class PlayerHud {
   public static showItemTooltip(text: string, event: MouseEvent): void {
     if (!this.itemTooltipDiv) return;
 
-    this.itemTooltipDiv.innerText = text;
+    const item = PlayerInventory.currentlyHoveredSlot?.item;
+
+    let content: string;
+    if (item) {
+      content = `<div class="item-tooltip-name">${item.name}</div>`;
+      if (item.description) {
+        content += `<div class="item-tooltip-desc">${item.description}</div>`;
+      }
+    } else {
+      content = text;
+    }
+
+    this.itemTooltipDiv.innerHTML = content;
     this.itemTooltipDiv.style.display = "block";
 
     // Update position immediately and then follow the cursor
