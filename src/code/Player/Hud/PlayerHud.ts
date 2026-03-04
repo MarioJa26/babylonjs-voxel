@@ -500,7 +500,7 @@ export class PlayerHud {
 
     const stringValue = String(value);
 
-    let row = this.infoRows[key];
+    const row = this.infoRows[key];
 
     if (!row) {
       // Create row once
