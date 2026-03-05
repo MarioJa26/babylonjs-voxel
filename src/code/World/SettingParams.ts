@@ -2,13 +2,12 @@
 
 export class SettingParams {
   // --- World Generation & Loading ---
-  public static RENDER_DISTANCE = 6;
+  public static RENDER_DISTANCE = 12;
   public static VERTICAL_RENDER_DISTANCE = 12;
   public static MAX_CHUNK_HEIGHT = 32;
-  public static CHUNK_UNLOAD_DISTANCE_BUFFER = 6; // How many extra chunks to keep before unloading
-  public static CHUNK_SORT_DISTANCE_THRESHOLD_SQ = 16; // Squared distance under which to sort chunks for loading
+  public static CHUNK_UNLOAD_DISTANCE_BUFFER = 1; // How many extra chunks to keep before unloading
   public static VERTICAL_CHUNK_CULLING_FACTOR = 6; // Multiplier for CHUNK_SIZE to cull chunks above/below terrain
-  public static CAMERA_FOV = 90; // Default camera field of view in degrees
+  public static CAMERA_FOV = 93; // Default camera field of view in degrees
 
   public static DISTANT_RENDER_DISTANCE = 216;
 
@@ -28,5 +27,4 @@ export class SettingParams {
 
   // --- Lighting ---
   public static HEMISPHERIC_LIGHT_INTENSITY = 1.0;
-  public static DIRECTIONAL_LIGHT_INTENSITY = 1;
 }

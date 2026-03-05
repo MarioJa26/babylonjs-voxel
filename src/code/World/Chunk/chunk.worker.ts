@@ -18,37 +18,6 @@ const BLOCK_TYPE_TRANSPARENT = 1;
 // 0 = opaque/air
 for (const id of [30, 60, 61]) BLOCK_TYPE[id] = BLOCK_TYPE_TRANSPARENT; // water (30) and glass (60, 61)
 
-type FaceData = {
-  normal: Int8Array;
-};
-
-const FACE_DATA_CACHE: { [key: number]: FaceData } = {};
-
-// Pre-calculate face data for all 6 directions
-for (const axis of [0, 1, 2]) {
-  for (const side of [-1, 1]) {
-    const normal = new Int8Array(3);
-    normal[axis] = side * 127;
-
-    const k = [0, 0, 0];
-    k[axis] = side;
-
-    const key = k[0] + 1 + (k[1] + 1) * 3 + (k[2] + 1) * 9;
-    FACE_DATA_CACHE[key] = { normal };
-  }
-}
-
-// Pre-build cornerId + swapUV tables indexed by [axis * 2 + (isBackFace ? 1 : 0)]
-// so addQuad() avoids a chain of if/else on every call.
-const CORNER_TABLE: [number, number, number, number, boolean][] = [
-  [0, 3, 2, 1, true], // axis=0 front  (East  +X)
-  [1, 2, 3, 0, true], // axis=0 back   (West  -X)
-  [0, 3, 2, 1, true], // axis=1 front  (Top   +Y)
-  [3, 0, 1, 2, true], // axis=1 back   (Bottom-Y)
-  [1, 0, 3, 2, false], // axis=2 front  (South +Z)
-  [0, 1, 2, 3, false], // axis=2 back   (North -Z)
-];
-
 const BLOCK_ID_MASK = 0xfff; // 12 bits for block ID
 const TRANSPARENT_FLAG = 1 << 12;
 const BACKFACE_FLAG = 1 << 13;
@@ -60,15 +29,10 @@ class ChunkWorkerMesher {
 
   private static createEmptyMeshData(): WorkerInternalMeshData {
     return {
-      positions: new ResizableTypedArray(Uint8Array),
-      indices: new ResizableTypedArray(Uint16Array),
-      normals: new ResizableTypedArray(Int8Array),
-      uvData: new ResizableTypedArray(Uint8Array),
-      cornerIds: new ResizableTypedArray(Uint8Array),
-      ao: new ResizableTypedArray(Uint8Array),
-      light: new ResizableTypedArray(Uint8Array),
-      materialFlags: new ResizableTypedArray(Uint8Array), // 0 = glass, 1 = water
-      indexOffset: 0,
+      faceDataA: new ResizableTypedArray(Uint8Array),
+      faceDataB: new ResizableTypedArray(Uint16Array),
+      faceDataC: new ResizableTypedArray(Uint8Array),
+      faceCount: 0,
     };
   }
 
@@ -209,13 +173,6 @@ class ChunkWorkerMesher {
       const faceNamePositive = this.getFaceName(direction, false);
       const faceNameNegative = this.getFaceName(direction, true);
 
-      const keyPos =
-        direction[0] + 1 + (direction[1] + 1) * 3 + (direction[2] + 1) * 9;
-      const keyNeg =
-        -direction[0] + 1 + (-direction[1] + 1) * 3 + (-direction[2] + 1) * 9;
-      const normalPositive = FACE_DATA_CACHE[keyPos].normal;
-      const normalNegative = FACE_DATA_CACHE[keyNeg].normal;
-
       for (let slice = 0; slice < size; slice++) {
         this.computeSliceMask(
           size,
@@ -236,8 +193,6 @@ class ChunkWorkerMesher {
           transparentMeshData,
           faceNamePositive,
           faceNameNegative,
-          normalPositive,
-          normalNegative,
         );
       }
     }
@@ -350,11 +305,7 @@ class ChunkWorkerMesher {
     transparentMeshData: WorkerInternalMeshData,
     faceNamePositive: string,
     faceNameNegative: string,
-    normalPositive: Int8Array,
-    normalNegative: Int8Array,
   ) {
-    const u_axis = (axis + 1) % 3;
-    const v_axis = (axis + 2) % 3;
     let maskIndex = 0;
 
     for (let v_coord = 0; v_coord < size; v_coord++) {
@@ -384,7 +335,6 @@ class ChunkWorkerMesher {
           const isTransparent = (currentMaskValue & TRANSPARENT_FLAG) !== 0;
           const blockId = currentMaskValue & BLOCK_ID_MASK;
           const faceName = isBackFace ? faceNameNegative : faceNamePositive;
-          const normal = isBackFace ? normalNegative : normalPositive;
           const lightPacked = (currentMaskValue >>> 22) & 0xff;
           const packedAO = (currentMaskValue >>> 14) & 0xff;
 
@@ -417,14 +367,11 @@ class ChunkWorkerMesher {
             y,
             z,
             axis,
-            u_axis,
-            v_axis,
             width,
             height,
             blockId,
             isBackFace,
             faceName,
-            normal,
             lightPacked,
             packedAO,
             targetMesh,
@@ -460,14 +407,11 @@ class ChunkWorkerMesher {
     y: number,
     z: number,
     axis: number,
-    u: number,
-    v: number,
     width: number,
     height: number,
     blockId: number,
     isBackFace: boolean,
     faceName: string,
-    normal: Int8Array,
     lightLevel: number,
     packedAO: number,
     meshData: WorkerInternalMeshData,
@@ -475,126 +419,32 @@ class ChunkWorkerMesher {
     const tex = BlockTextures[blockId];
     if (!tex) return;
 
-    // Compute four corner positions
-    const x1 = x,
-      y1 = y,
-      z1 = z;
-    let x2 = x,
-      y2 = y,
-      z2 = z;
-    let x3 = x,
-      y3 = y,
-      z3 = z;
-    let x4 = x,
-      y4 = y,
-      z4 = z;
-
-    if (u === 0) {
-      x2 += width;
-      x3 += width;
-    } else if (u === 1) {
-      y2 += width;
-      y3 += width;
-    } else {
-      z2 += width;
-      z3 += width;
-    }
-
-    if (v === 0) {
-      x3 += height;
-      x4 += height;
-    } else if (v === 1) {
-      y3 += height;
-      y4 += height;
-    } else {
-      z3 += height;
-      z4 += height;
-    }
-
-    meshData.positions.push12(x1, y1, z1, x2, y2, z2, x3, y3, z3, x4, y4, z4);
-
     const ao0 = packedAO & 3;
     const ao1 = (packedAO >> 2) & 3;
     const ao2 = (packedAO >> 4) & 3;
     const ao3 = (packedAO >> 6) & 3;
-    meshData.ao.push4(ao0, ao1, ao2, ao3);
-
-    meshData.light.push4(lightLevel, lightLevel, lightLevel, lightLevel);
 
     // Determine material type: 1 = water (blockId 30), 0 = glass (blockId 60, 61)
     const materialType = blockId === 30 ? 1 : 0;
-    meshData.materialFlags.push4(
-      materialType,
-      materialType,
-      materialType,
-      materialType,
-    );
-
-    const nx = normal[0],
-      ny = normal[1],
-      nz = normal[2];
-    meshData.normals.push12(nx, ny, nz, nx, ny, nz, nx, ny, nz, nx, ny, nz);
 
     const tile = tex[faceName] ?? tex.all!;
     const tx = tile[0],
       ty = tile[1];
 
     // OPTIMIZATION: look up corner config from pre-built table — eliminates
-    // 6 branches (if/else chain) executed on every single quad.
-    const [c0, c1, c2, c3, swapUV] =
-      CORNER_TABLE[axis * 2 + (isBackFace ? 1 : 0)];
-    meshData.cornerIds.push4(c0, c1, c2, c3);
-    const uDim = swapUV ? height : width;
-    const vDim = swapUV ? width : height;
-    for (let i = 0; i < 4; i++) {
-      meshData.uvData.push4(tx, ty, uDim, vDim);
-    }
-
-    const { indices, indexOffset } = meshData;
+    // Packed per-face payload consumed by instanced vertex reconstruction.
     const flip = ao0 + ao2 < ao1 + ao3;
+    const axisFace = axis * 2 + (isBackFace ? 1 : 0);
 
-    if (isBackFace) {
-      if (flip) {
-        indices.push6(
-          indexOffset,
-          indexOffset + 1,
-          indexOffset + 3,
-          indexOffset + 1,
-          indexOffset + 2,
-          indexOffset + 3,
-        );
-      } else {
-        indices.push6(
-          indexOffset,
-          indexOffset + 1,
-          indexOffset + 2,
-          indexOffset,
-          indexOffset + 2,
-          indexOffset + 3,
-        );
-      }
-    } else {
-      if (flip) {
-        indices.push6(
-          indexOffset,
-          indexOffset + 3,
-          indexOffset + 1,
-          indexOffset + 1,
-          indexOffset + 3,
-          indexOffset + 2,
-        );
-      } else {
-        indices.push6(
-          indexOffset,
-          indexOffset + 2,
-          indexOffset + 1,
-          indexOffset,
-          indexOffset + 3,
-          indexOffset + 2,
-        );
-      }
-    }
-    meshData.indexOffset += 4;
+    meshData.faceDataA.push4(x, y, z, axisFace);
+    meshData.faceDataB.push4(width, height, tx, ty);
+    meshData.faceDataC.push4(
+      packedAO,
+      lightLevel,
+      materialType,
+      flip ? 1 : 0,
+    );
+    meshData.faceCount++;
   }
 }
 
@@ -854,14 +704,10 @@ self.onmessage = onMessageHandler;
 
 function toTransferable(data: WorkerInternalMeshData): MeshData {
   return {
-    positions: data.positions.finalArray,
-    indices: data.indices.finalArray,
-    normals: data.normals.finalArray,
-    uvData: data.uvData.finalArray,
-    cornerIds: data.cornerIds.finalArray,
-    ao: data.ao.finalArray,
-    light: data.light.finalArray,
-    materialType: data.materialFlags.finalArray,
+    faceDataA: data.faceDataA.finalArray,
+    faceDataB: data.faceDataB.finalArray,
+    faceDataC: data.faceDataC.finalArray,
+    faceCount: data.faceCount,
   };
 }
 
@@ -881,21 +727,12 @@ function postFullMeshResult(
       transparent: transparentMeshData,
     },
     [
-      opaqueMeshData.positions.buffer,
-      opaqueMeshData.indices.buffer,
-      opaqueMeshData.normals.buffer,
-      opaqueMeshData.uvData.buffer,
-      opaqueMeshData.cornerIds.buffer,
-      opaqueMeshData.ao.buffer,
-      opaqueMeshData.light.buffer,
-      transparentMeshData.positions.buffer,
-      transparentMeshData.indices.buffer,
-      transparentMeshData.normals.buffer,
-      transparentMeshData.uvData.buffer,
-      transparentMeshData.cornerIds.buffer,
-      transparentMeshData.ao.buffer,
-      transparentMeshData.light.buffer,
-      transparentMeshData.materialType.buffer,
+      opaqueMeshData.faceDataA.buffer,
+      opaqueMeshData.faceDataB.buffer,
+      opaqueMeshData.faceDataC.buffer,
+      transparentMeshData.faceDataA.buffer,
+      transparentMeshData.faceDataB.buffer,
+      transparentMeshData.faceDataC.buffer,
     ],
   );
 }

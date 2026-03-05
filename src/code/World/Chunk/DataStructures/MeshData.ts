@@ -1,27 +1,38 @@
 export class MeshData {
-  positions: Uint8Array = new Uint8Array();
-  indices: Uint16Array = new Uint16Array();
-  normals: Int8Array = new Int8Array();
-  uvData: Uint8Array = new Uint8Array();
-  cornerIds: Uint8Array = new Uint8Array(); // float
-  ao: Uint8Array = new Uint8Array(); // Ambient Occlusion values
-  light: Uint8Array = new Uint8Array(); // Light values
-  materialType: Uint8Array = new Uint8Array(); // Material type (0 = glass, 1 = water)
+  faceDataA: Uint8Array = new Uint8Array();
+  faceDataB: Uint16Array = new Uint16Array();
+  faceDataC: Uint8Array = new Uint8Array();
+  faceCount = 0;
 
   public static deserialize(data: any): MeshData {
     const meshData = new MeshData();
     if (!data) return meshData;
 
-    // The data from the worker is a plain object with typed arrays.
-    // We just need to assign them to the properties of our new MeshData instance.
-    meshData.positions = data.positions || new Uint8Array();
-    meshData.indices = data.indices || new Uint16Array();
-    meshData.normals = data.normals || new Int8Array();
-    meshData.uvData = data.uvData || new Uint8Array();
-    meshData.cornerIds = data.cornerIds || new Uint8Array();
-    meshData.ao = data.ao || new Uint8Array();
-    meshData.light = data.light || new Uint8Array();
-    meshData.materialType = data.materialType || new Uint8Array();
+    const rawA = data.faceDataA;
+    const rawB = data.faceDataB;
+    const rawC = data.faceDataC;
+    meshData.faceDataA =
+      rawA instanceof Uint8Array
+        ? rawA
+        : rawA
+          ? new Uint8Array(rawA)
+          : new Uint8Array();
+    meshData.faceDataB =
+      rawB instanceof Uint16Array
+        ? rawB
+        : rawB
+          ? new Uint16Array(rawB)
+          : new Uint16Array();
+    meshData.faceDataC =
+      rawC instanceof Uint8Array
+        ? rawC
+        : rawC
+          ? new Uint8Array(rawC)
+          : new Uint8Array();
+    meshData.faceCount =
+      typeof data.faceCount === "number"
+        ? data.faceCount
+        : Math.floor(meshData.faceDataA.length / 4);
 
     return meshData;
   }

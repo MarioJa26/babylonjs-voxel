@@ -98,13 +98,21 @@ export class Map1 {
   }
 
   public static setDebug(enabled: boolean) {
+    const chunkMaterials = new Set<ShaderMaterial>();
     this.mainScene.meshes.forEach((mesh) => {
       if (
         mesh.material instanceof ShaderMaterial &&
         mesh.name.startsWith("c_")
       ) {
-        mesh.material.wireframe = enabled;
+        chunkMaterials.add(mesh.material);
       }
+    });
+
+    chunkMaterials.forEach((material) => {
+      const wasFrozen = material.isFrozen;
+      if (wasFrozen) material.unfreeze();
+      material.wireframe = enabled;
+      if (wasFrozen) material.freeze();
     });
   }
 

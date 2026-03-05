@@ -41,6 +41,17 @@ export class ChunkMesher {
   private static _tmpLightDir = new Vector3(0, 0, 0);
 
   private static lastUpdateFrame = -1;
+  private static readonly FACE_VERTEX_TEMPLATE = new Float32Array([
+    0, 0, 0,
+    1, 0, 0,
+    2, 0, 0,
+    3, 0, 0,
+    4, 0, 0,
+    5, 0, 0,
+  ]);
+  private static readonly FACE_INDEX_TEMPLATE = new Uint16Array([
+    0, 1, 2, 3, 4, 5,
+  ]);
 
   static initAtlas() {
     let diffuseAtlasTexture: Texture | null = null;
@@ -96,12 +107,9 @@ export class ChunkMesher {
         {
           attributes: [
             "position",
-            "normal",
-            "uvData",
-            "cornerId",
-            "ao",
-            "light",
-            "materialType",
+            "faceDataA",
+            "faceDataB",
+            "faceDataC",
           ],
           uniforms: [
             "world",
@@ -140,12 +148,9 @@ export class ChunkMesher {
         {
           attributes: [
             "position",
-            "normal",
-            "uvData",
-            "cornerId",
-            "ao",
-            "light",
-            "materialType",
+            "faceDataA",
+            "faceDataB",
+            "faceDataC",
           ],
           uniforms: [
             "world",
@@ -195,9 +200,9 @@ export class ChunkMesher {
     // Cache raw mesh data only for chunks that need saving
     if (chunk.isModified) {
       chunk.opaqueMeshData =
-        opaqueMesh && opaqueMesh.positions.length > 0 ? opaqueMesh : null;
+        opaqueMesh && opaqueMesh.faceCount > 0 ? opaqueMesh : null;
       chunk.transparentMeshData =
-        transparentMesh && transparentMesh.positions.length > 0
+        transparentMesh && transparentMesh.faceCount > 0
           ? transparentMesh
           : null;
     } else {
@@ -210,12 +215,12 @@ export class ChunkMesher {
     chunk.transparentMesh?.dispose();
 
     chunk.mesh =
-      opaqueMesh && opaqueMesh.positions.length > 0
+      opaqueMesh && opaqueMesh.faceCount > 0
         ? this.buildMesh(chunk, opaqueMesh, "c_opaque", this.#atlasMaterial!)
         : null;
 
     chunk.transparentMesh =
-      transparentMesh && transparentMesh.positions.length > 0
+      transparentMesh && transparentMesh.faceCount > 0
         ? this.buildMesh(
             chunk,
             transparentMesh,
@@ -244,46 +249,42 @@ export class ChunkMesher {
     mesh.setVerticesBuffer(
       new VertexBuffer(
         engine,
-        meshData.positions,
+        ChunkMesher.FACE_VERTEX_TEMPLATE,
         VertexBuffer.PositionKind,
         false,
         undefined,
         3,
         false,
-        undefined,
-        undefined,
-        VertexBuffer.UNSIGNED_BYTE,
-        false,
       ),
     );
 
     mesh.setVerticesBuffer(
       new VertexBuffer(
         engine,
-        meshData.normals,
-        VertexBuffer.NormalKind,
+        meshData.faceDataA,
+        "faceDataA",
         false,
         undefined,
-        3,
-        false,
-        undefined,
-        undefined,
-        VertexBuffer.BYTE,
+        4,
         true,
+        undefined,
+        4,
+        VertexBuffer.UNSIGNED_BYTE,
+        false,
       ),
     );
     mesh.setVerticesBuffer(
       new VertexBuffer(
         engine,
-        meshData.uvData,
-        "uvData",
+        meshData.faceDataB,
+        "faceDataB",
         false,
         undefined,
-        4, // 4 components: tx, ty, w, h
-        false,
+        4,
+        true,
         undefined,
-        undefined,
-        VertexBuffer.UNSIGNED_BYTE,
+        4,
+        VertexBuffer.UNSIGNED_SHORT,
         false,
       ),
     );
@@ -291,68 +292,21 @@ export class ChunkMesher {
     mesh.setVerticesBuffer(
       new VertexBuffer(
         engine,
-        meshData.cornerIds,
-        "cornerId",
+        meshData.faceDataC,
+        "faceDataC",
         false,
         undefined,
-        1,
-        false,
+        4,
+        true,
         undefined,
-        undefined,
+        4,
         VertexBuffer.UNSIGNED_BYTE,
         false,
       ),
     );
 
-    mesh.setVerticesBuffer(
-      new VertexBuffer(
-        engine,
-        meshData.ao,
-        "ao",
-        false,
-        undefined,
-        1,
-        false,
-        undefined,
-        undefined,
-        VertexBuffer.UNSIGNED_BYTE,
-        false,
-      ),
-    );
-
-    mesh.setVerticesBuffer(
-      new VertexBuffer(
-        engine,
-        meshData.light,
-        "light",
-        false,
-        undefined,
-        1,
-        false,
-        undefined,
-        undefined,
-        VertexBuffer.UNSIGNED_BYTE,
-        false,
-      ),
-    );
-
-    mesh.setVerticesBuffer(
-      new VertexBuffer(
-        engine,
-        meshData.materialType,
-        "materialType",
-        false,
-        undefined,
-        1,
-        false,
-        undefined,
-        undefined,
-        VertexBuffer.UNSIGNED_BYTE,
-        false,
-      ),
-    );
-
-    mesh.setIndices(meshData.indices);
+    mesh.setIndices(ChunkMesher.FACE_INDEX_TEMPLATE);
+    mesh.overridenInstanceCount = meshData.faceCount;
 
     if (mesh.material) {
       (mesh.material as ShaderMaterial).wireframe = GlobalValues.DEBUG;
@@ -375,7 +329,6 @@ export class ChunkMesher {
     mesh.checkCollisions = false;
     mesh.isPickable = false;
     mesh.material.freeze();
-    mesh.freezeNormals();
     mesh.freezeWorldMatrix();
 
     mesh.name = `${name}_${chunk.chunkX}_${chunk.chunkY}_${chunk.chunkZ}`;

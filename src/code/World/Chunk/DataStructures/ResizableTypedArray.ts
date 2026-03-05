@@ -1,5 +1,5 @@
 export class ResizableTypedArray<
-  T extends Uint8Array | Uint16Array | Int8Array,
+  T extends Uint8Array | Uint16Array | Int8Array | Float32Array,
 > {
   private array: T;
   private capacity: number;

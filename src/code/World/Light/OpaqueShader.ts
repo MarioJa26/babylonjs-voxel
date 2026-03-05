@@ -4,12 +4,9 @@ precision highp float;
 
 // Attributes
 attribute vec3 position;
-attribute vec3 normal;
-attribute vec4 uvData;      // x: tileX, y: tileY, z: quadWidth, w: quadHeight
-attribute float cornerId;   // 0,1,2,3 for quad corners
-attribute float ao;
-attribute float light;
-attribute float materialType;
+attribute vec4 faceDataA; // x,y,z origin, w = axisFace(0..5)
+attribute vec4 faceDataB; // x=width, y=height, z=tileX, w=tileY
+attribute vec4 faceDataC; // x=packedAO, y=light, z=materialType, w=flip
 
 // Uniforms
 uniform mat4 world;
@@ -29,23 +26,115 @@ varying float vMaterialType;
 varying vec3 vSkyColor;
 varying vec3 vBlockColor;
 
+float decodeCorner(float vertexId, float isBackFace, float flip) {
+    if (isBackFace > 0.5) {
+        if (flip > 0.5) {
+            if (vertexId < 0.5) return 0.0;
+            if (vertexId < 1.5) return 1.0;
+            if (vertexId < 2.5) return 3.0;
+            if (vertexId < 3.5) return 1.0;
+            if (vertexId < 4.5) return 2.0;
+            return 3.0;
+        }
+        if (vertexId < 0.5) return 0.0;
+        if (vertexId < 1.5) return 1.0;
+        if (vertexId < 2.5) return 2.0;
+        if (vertexId < 3.5) return 0.0;
+        if (vertexId < 4.5) return 2.0;
+        return 3.0;
+    }
+
+    if (flip > 0.5) {
+        if (vertexId < 0.5) return 0.0;
+        if (vertexId < 1.5) return 3.0;
+        if (vertexId < 2.5) return 1.0;
+        if (vertexId < 3.5) return 1.0;
+        if (vertexId < 4.5) return 3.0;
+        return 2.0;
+    }
+    if (vertexId < 0.5) return 0.0;
+    if (vertexId < 1.5) return 2.0;
+    if (vertexId < 2.5) return 1.0;
+    if (vertexId < 3.5) return 0.0;
+    if (vertexId < 4.5) return 3.0;
+    return 2.0;
+}
+
+void decodeAtlasCorner(float axisFace, float corner, out float cornerId, out float swapUV) {
+    if (axisFace < 0.5) {
+        swapUV = 1.0;
+        cornerId = corner < 0.5 ? 0.0 : (corner < 1.5 ? 3.0 : (corner < 2.5 ? 2.0 : 1.0));
+        return;
+    }
+    if (axisFace < 1.5) {
+        swapUV = 1.0;
+        cornerId = corner < 0.5 ? 1.0 : (corner < 1.5 ? 2.0 : (corner < 2.5 ? 3.0 : 0.0));
+        return;
+    }
+    if (axisFace < 2.5) {
+        swapUV = 1.0;
+        cornerId = corner < 0.5 ? 0.0 : (corner < 1.5 ? 3.0 : (corner < 2.5 ? 2.0 : 1.0));
+        return;
+    }
+    if (axisFace < 3.5) {
+        swapUV = 1.0;
+        cornerId = corner < 0.5 ? 3.0 : (corner < 1.5 ? 0.0 : (corner < 2.5 ? 1.0 : 2.0));
+        return;
+    }
+    if (axisFace < 4.5) {
+        swapUV = 0.0;
+        cornerId = corner < 0.5 ? 1.0 : (corner < 1.5 ? 0.0 : (corner < 2.5 ? 3.0 : 2.0));
+        return;
+    }
+    swapUV = 0.0;
+    cornerId = corner < 0.5 ? 0.0 : (corner < 1.5 ? 1.0 : (corner < 2.5 ? 2.0 : 3.0));
+}
+
 void main(void) {
-    gl_Position = worldViewProjection * vec4(position, 1.0);
+    float axisFace = floor(faceDataA.w + 0.5);
+    float axis = floor(axisFace * 0.5);
+    float isBackFace = mod(axisFace, 2.0);
+    float vertexId = floor(position.x + 0.5);
+    float flip = step(0.5, faceDataC.w);
 
-    // 1. UV decoding
-    float u = step(1.0, cornerId) - step(3.0, cornerId); 
-    float v = step(2.0, cornerId);                       
+    float corner = decodeCorner(vertexId, isBackFace, flip);
+    float du = (corner > 0.5 && corner < 2.5) ? faceDataB.x : 0.0;
+    float dv = corner > 1.5 ? faceDataB.y : 0.0;
 
-    // 2. Scale local UVs
-    vUV = vec2(u, v) * uvData.zw;
+    float uAxis = mod(axis + 1.0, 3.0);
+    float vAxis = mod(axis + 2.0, 3.0);
 
-    // 3. Atlas offset
+    vec3 localPosition = faceDataA.xyz;
+    if (uAxis < 0.5) localPosition.x += du;
+    else if (uAxis < 1.5) localPosition.y += du;
+    else localPosition.z += du;
+
+    if (vAxis < 0.5) localPosition.x += dv;
+    else if (vAxis < 1.5) localPosition.y += dv;
+    else localPosition.z += dv;
+
+    gl_Position = worldViewProjection * vec4(localPosition, 1.0);
+
+    float atlasCornerId;
+    float swapUV;
+    decodeAtlasCorner(axisFace, corner, atlasCornerId, swapUV);
+    float u = step(1.0, atlasCornerId) - step(3.0, atlasCornerId);
+    float v = step(2.0, atlasCornerId);
+
+    float uDim = mix(faceDataB.x, faceDataB.y, swapUV);
+    float vDim = mix(faceDataB.y, faceDataB.x, swapUV);
+    vUV = vec2(u, v) * vec2(uDim, vDim);
+
     float maxTiles = floor(1.0 / atlasTileSize + 0.5);
-    vUV2 = vec2(uvData.x, maxTiles - 1.0 - uvData.y) * atlasTileSize;
+    vUV2 = vec2(faceDataB.z, maxTiles - 1.0 - faceDataB.w) * atlasTileSize;
     
-    vPositionW = (world * vec4(position, 1.0)).xyz;
+    vPositionW = (world * vec4(localPosition, 1.0)).xyz;
     
-    // 4. TBN Reconstruction
+    vec3 normal = vec3(0.0);
+    if (axis < 0.5) normal.x = isBackFace > 0.5 ? -1.0 : 1.0;
+    else if (axis < 1.5) normal.y = isBackFace > 0.5 ? -1.0 : 1.0;
+    else normal.z = isBackFace > 0.5 ? -1.0 : 1.0;
+
     vec3 N = normalize(mat3(world) * normal);
     vec3 absN = abs(normal);
     float isX = step(0.5, absN.x);
@@ -57,13 +146,22 @@ void main(void) {
     vec3 B = normalize(cross(N, T) * handedness);
     vTBN = mat3(T, B, N);
 
-    // 5. Light Unpacking
-    vAO = ao;
+    float packedAO = faceDataC.x;
+    if (corner < 0.5) {
+        vAO = mod(packedAO, 4.0);
+    } else if (corner < 1.5) {
+        vAO = mod(floor(packedAO * 0.25), 4.0);
+    } else if (corner < 2.5) {
+        vAO = mod(floor(packedAO * 0.0625), 4.0);
+    } else {
+        vAO = mod(floor(packedAO * 0.015625), 4.0);
+    }
+
+    float light = faceDataC.y;
     vSkyLight = floor(light * 0.0625) * 0.0666666;
     vBlockLight = mod(light, 16.0) * 0.0666666;
-    vMaterialType = materialType;
+    vMaterialType = faceDataC.z;
 
-    // 6. Color Declarations (Moved from Fragment to avoid recomputation)
     vSkyColor = vec3(0.8, 0.8, 0.8) * (sunLightIntensity + 0.2);
     vBlockColor = vec3(0.9, 0.6, 0.2);
 }
