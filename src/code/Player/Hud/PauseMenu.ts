@@ -2,6 +2,7 @@ import { Map1 } from "@/code/Maps/Map1";
 import { Player } from "../Player"; // Import Player to access its methods
 import { SettingParams } from "@/code/World/SettingParams";
 import { SSAO2RenderingPipeline } from "@babylonjs/core";
+import { WorldStorage } from "../../World/WorldStorage";
 
 export class PauseMenu {
   private menuContainer: HTMLElement;
@@ -53,11 +54,55 @@ export class PauseMenu {
     };
     container.appendChild(resumeButton);
 
+    // Save Game Button
+    const saveButton = document.createElement("button");
+    saveButton.innerText = "Save Game";
+    saveButton.onclick = async () => {
+      saveButton.innerText = "Saving...";
+      saveButton.disabled = true;
+      try {
+        await WorldStorage.saveAllModifiedChunks();
+        saveButton.innerText = "Saved!";
+      } catch (e) {
+        console.error("Save failed", e);
+        saveButton.innerText = "Error!";
+      }
+
+      setTimeout(() => {
+        saveButton.innerText = "Save Game";
+        saveButton.disabled = false;
+      }, 1000);
+    };
+    container.appendChild(saveButton);
+
     // Settings Button
     const settingsButton = document.createElement("button");
     settingsButton.innerText = "Settings";
     settingsButton.onclick = () => this.showSettings(true);
     container.appendChild(settingsButton);
+
+    // Reset World Button
+    const resetButton = document.createElement("button");
+    resetButton.innerText = "Reset World";
+    resetButton.style.backgroundColor = "#800000";
+    resetButton.onclick = async () => {
+      if (
+        confirm(
+          "Are you sure you want to delete your world? This cannot be undone.",
+        )
+      ) {
+        resetButton.innerText = "Deleting...";
+        resetButton.disabled = true;
+        try {
+          await WorldStorage.clearWorldData();
+          window.location.reload();
+        } catch (e) {
+          console.error("Failed to reset world", e);
+          resetButton.innerText = "Error!";
+        }
+      }
+    };
+    container.appendChild(resetButton);
 
     // Quit Button
     const quitButton = document.createElement("button");
@@ -93,7 +138,7 @@ export class PauseMenu {
       (value) => {
         Map1.timeScale = value / 10;
         return `x${(value / 10).toFixed(1)}`;
-      }
+      },
     );
 
     container.appendChild(this.createSeparator("Player Settings"));
@@ -109,7 +154,7 @@ export class PauseMenu {
         const sensitivity = value / 1000;
         this.player.playerCamera.mouseSensitivity = sensitivity;
         return sensitivity.toFixed(3);
-      }
+      },
     );
 
     this.createSlider(
@@ -121,7 +166,7 @@ export class PauseMenu {
       (value) => {
         this.player.playerCamera.fov = value;
         return `${value}°`;
-      }
+      },
     );
 
     container.appendChild(this.createSeparator("Graphics"));
@@ -136,7 +181,7 @@ export class PauseMenu {
       (value) => {
         SettingParams.RENDER_DISTANCE = value;
         return `${value} chunks`;
-      }
+      },
     );
 
     // --- SSAO Toggle ---
@@ -185,7 +230,7 @@ export class PauseMenu {
     min: number,
     max: number,
     initialValue: number,
-    onInput: (value: number) => string
+    onInput: (value: number) => string,
   ) {
     const sliderContainer = document.createElement("div");
     sliderContainer.className = "slider-container";
@@ -237,7 +282,7 @@ export class PauseMenu {
         "ssao",
         scene,
         SettingParams.SSAO_RATIO,
-        [camera]
+        [camera],
       );
       ssao.radius = 2;
       ssao.totalStrength = 1.3;

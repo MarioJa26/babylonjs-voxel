@@ -1,6 +1,6 @@
 export class MeshData {
   faceDataA: Uint8Array = new Uint8Array();
-  faceDataB: Uint16Array = new Uint16Array();
+  faceDataB: Uint8Array = new Uint8Array();
   faceDataC: Uint8Array = new Uint8Array();
   faceCount = 0;
 
@@ -18,11 +18,11 @@ export class MeshData {
           ? new Uint8Array(rawA)
           : new Uint8Array();
     meshData.faceDataB =
-      rawB instanceof Uint16Array
+      rawB instanceof Uint8Array
         ? rawB
         : rawB
-          ? new Uint16Array(rawB)
-          : new Uint16Array();
+          ? new Uint8Array(rawB)
+          : new Uint8Array();
     meshData.faceDataC =
       rawC instanceof Uint8Array
         ? rawC

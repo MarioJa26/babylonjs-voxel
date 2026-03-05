@@ -284,7 +284,7 @@ export class ChunkMesher {
         true,
         undefined,
         4,
-        VertexBuffer.UNSIGNED_SHORT,
+        VertexBuffer.UNSIGNED_BYTE,
         false,
       ),
     );

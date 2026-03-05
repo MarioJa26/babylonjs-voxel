@@ -30,7 +30,7 @@ class ChunkWorkerMesher {
   private static createEmptyMeshData(): WorkerInternalMeshData {
     return {
       faceDataA: new ResizableTypedArray(Uint8Array),
-      faceDataB: new ResizableTypedArray(Uint16Array),
+      faceDataB: new ResizableTypedArray(Uint8Array),
       faceDataC: new ResizableTypedArray(Uint8Array),
       faceCount: 0,
     };

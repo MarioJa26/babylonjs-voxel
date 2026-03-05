@@ -222,6 +222,43 @@ export class WorldStorage {
     return this.trackPendingChunkSaves(chunkIds, savePromise);
   }
 
+  public static async saveAllModifiedChunks(): Promise<void> {
+    const modifiedChunks: Chunk[] = [];
+    for (const chunk of Chunk.chunkInstances.values()) {
+      if (chunk.isModified) {
+        modifiedChunks.push(chunk);
+      }
+    }
+
+    if (modifiedChunks.length > 0) {
+      await this.saveChunks(modifiedChunks);
+    }
+  }
+
+  public static async clearWorldData(): Promise<void> {
+    if (this.db) {
+      this.db.close();
+    }
+
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.deleteDatabase(DB_NAME);
+
+      request.onsuccess = () => {
+        console.log("World data cleared.");
+        resolve();
+      };
+
+      request.onerror = () => {
+        console.error("Failed to clear world data:", request.error);
+        reject(request.error);
+      };
+
+      request.onblocked = () => {
+        console.warn("Delete database blocked.");
+      };
+    });
+  }
+
   public static async loadChunk(
     chunkId: bigint,
   ): Promise<SavedChunkData | null> {
