@@ -9,7 +9,7 @@ export class ChunkLoadingSystem {
   private static distantTerrain: DistantTerrain;
 
   private static loadQueue: Chunk[] = [];
-  private static unloadQueue: Chunk[] = [];
+  private static unloadQueueSet: Set<Chunk> = new Set();
   private static flushPromise: Promise<void> | null = null;
   private static isProcessing = false;
   private static readonly LOAD_BATCH_SIZE = SettingParams.RENDER_DISTANCE * 4;
@@ -96,17 +96,19 @@ export class ChunkLoadingSystem {
     const verticalRemoveRadius =
       verticalRadius + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER;
 
-    this.unloadQueue = this.unloadQueue.filter((chunk) => {
+    for (const chunk of this.unloadQueueSet) {
       const dist = Math.max(
         Math.abs(chunk.chunkX - chunkX),
         Math.abs(chunk.chunkZ - chunkZ),
       );
 
-      return (
-        dist > removeRadius ||
-        Math.abs(chunk.chunkY - chunkY) > verticalRemoveRadius
-      );
-    });
+      if (
+        dist <= removeRadius &&
+        Math.abs(chunk.chunkY - chunkY) <= verticalRemoveRadius
+      ) {
+        this.unloadQueueSet.delete(chunk); // Remove if back in range
+      }
+    }
 
     // 1. Collect all potential chunk coordinates
     for (let y = chunkY - verticalRadius; y <= chunkY + verticalRadius; y++) {
@@ -164,7 +166,7 @@ export class ChunkLoadingSystem {
       renderDistance + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER;
 
     for (const chunk of Chunk.chunkInstances.values()) {
-      if (this.unloadQueue.includes(chunk)) continue;
+      if (this.unloadQueueSet.has(chunk)) continue; // ✅ O(1) lookup
 
       const { chunkX: cx, chunkY: cy, chunkZ: cz } = chunk;
       if (
@@ -173,7 +175,7 @@ export class ChunkLoadingSystem {
         Math.abs(cy - chunkY) >
           verticalRadius + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER
       ) {
-        this.unloadQueue.push(chunk);
+        this.unloadQueueSet.add(chunk); // ✅ O(1) add
       }
     }
   }
@@ -184,8 +186,17 @@ export class ChunkLoadingSystem {
 
     const processLoop = async () => {
       // --- Process Unload Batch ---
-      if (this.unloadQueue.length > 0) {
-        const batch = this.unloadQueue.splice(0, this.UNLOAD_BATCH_SIZE);
+      if (this.unloadQueueSet.size > 0) {
+        const batch: Chunk[] = [];
+        let count = 0;
+
+        // Drain batch from Set
+        for (const chunk of this.unloadQueueSet) {
+          batch.push(chunk);
+          this.unloadQueueSet.delete(chunk);
+          if (++count >= this.UNLOAD_BATCH_SIZE) break;
+        }
+
         const chunksToSave = batch.filter((c) => c.isModified);
 
         if (chunksToSave.length > 0) {
@@ -197,9 +208,6 @@ export class ChunkLoadingSystem {
         }
 
         for (const chunk of batch) {
-          // Only dispose of chunks that are not modified.
-          // If a chunk was modified, it will only be disposed if the save was successful.
-          // If saving failed, isModified remains true, and we keep the chunk in memory to retry saving later.
           if (!chunk.isModified) {
             chunk.dispose();
             chunk.isLoaded = false;
@@ -264,7 +272,7 @@ export class ChunkLoadingSystem {
         }
       }
 
-      if (this.loadQueue.length > 0 || this.unloadQueue.length > 0) {
+      if (this.loadQueue.length > 0 || this.unloadQueueSet.size > 0) {
         requestAnimationFrame(processLoop);
       } else {
         this.isProcessing = false;

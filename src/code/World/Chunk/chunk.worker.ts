@@ -7,6 +7,7 @@ import { ResizableTypedArray } from "./DataStructures/ResizableTypedArray";
 import { WorkerInternalMeshData } from "./DataStructures/WorkerInternalMeshData";
 import { DistantTerrainGenerator } from "../Generation/DistanTerrain/DistantTerrainGenerator";
 import { BlockTextures } from "../Texture/BlockTextures";
+import { PaletteExpander } from "./DataStructures/PaletteExpander";
 
 // ---------------------------------------------------------------------------
 // Block classification — flat Uint8 lookup instead of Set.has() calls
@@ -21,6 +22,8 @@ for (const id of [30, 60, 61]) BLOCK_TYPE[id] = BLOCK_TYPE_TRANSPARENT; // water
 const BLOCK_ID_MASK = 0xfff; // 12 bits for block ID
 const TRANSPARENT_FLAG = 1 << 12;
 const BACKFACE_FLAG = 1 << 13;
+
+const paletteExpander = new PaletteExpander();
 
 class ChunkWorkerMesher {
   private static toCompactNeighborIndex(fullIndex: number): number {
@@ -95,6 +98,12 @@ class ChunkWorkerMesher {
     const opaqueMeshData = this.createEmptyMeshData();
     const transparentMeshData = this.createEmptyMeshData();
 
+    if (!data.block_array) {
+      return {
+        opaque: opaqueMeshData,
+        transparent: transparentMeshData,
+      };
+    }
     const {
       block_array,
       light_array,
@@ -102,14 +111,6 @@ class ChunkWorkerMesher {
       neighbors,
       neighborLights,
     } = data;
-
-    if (!block_array) {
-      return {
-        opaque: opaqueMeshData,
-        transparent: transparentMeshData,
-      };
-    }
-
     const size2 = size * size;
 
     // ---------------------------------------------------------------------------
@@ -527,36 +528,12 @@ function compressBlocks(blocks: Uint8Array): {
 }
 
 // ---------------------------------------------------------------------------
-// Palette expansion helpers (reused by full-remesh handler)
-// ---------------------------------------------------------------------------
-
-function hasPaletteValuesAbove255(palette: ArrayLike<number>): boolean {
-  for (let i = 0; i < palette.length; i++) {
-    if (palette[i] > 255) return true;
-  }
-  return false;
-}
-
-function expandPalette(
-  packed: Uint8Array,
-  palette: ArrayLike<number>,
-  totalBlocks: number,
-): Uint8Array | Uint16Array {
-  const expanded = hasPaletteValuesAbove255(palette)
-    ? new Uint16Array(totalBlocks)
-    : new Uint8Array(totalBlocks);
-  for (let i = 0; i < totalBlocks; i++) {
-    const byte = packed[i >> 1];
-    expanded[i] = palette[i & 1 ? (byte >> 4) & 0xf : byte & 0xf];
-  }
-  return expanded;
-}
-
-// ---------------------------------------------------------------------------
 // Worker message handler
 // ---------------------------------------------------------------------------
 
 const generator = new WorldGenerator(GenerationParams);
+
+// In chunk_worker.ts, refactor the full-remesh handler:
 
 const onMessageHandler = (event: MessageEvent) => {
   const { type } = event.data;
@@ -566,17 +543,43 @@ const onMessageHandler = (event: MessageEvent) => {
     const { chunk_size } = event.data;
     const totalBlocks = chunk_size ** 3;
 
+    // ✅ Determine output type once using isUint16
+    let needsUint16 = paletteExpander.isUint16(event.data.palette);
+
+    // Also check uniform block IDs if no palette
+    if (!needsUint16 && typeof event.data.uniformBlockId === "number") {
+      needsUint16 = event.data.uniformBlockId > 255;
+    }
+
+    // Check neighbor uniform IDs
+    if (!needsUint16 && event.data.neighborUniformIds) {
+      for (let i = 0; i < event.data.neighborUniformIds.length; i++) {
+        if (
+          event.data.neighborUniformIds[i] !== undefined &&
+          event.data.neighborUniformIds[i] > 255
+        ) {
+          needsUint16 = true;
+          break;
+        }
+      }
+    }
+
     // Rehydrate center chunk block array
     if (
       !event.data.block_array &&
       typeof event.data.uniformBlockId === "number"
     ) {
-      event.data.block_array =
-        event.data.uniformBlockId > 255
-          ? new Uint16Array(totalBlocks).fill(event.data.uniformBlockId)
-          : new Uint8Array(totalBlocks).fill(event.data.uniformBlockId);
+      const uniformValue = event.data.uniformBlockId;
+      event.data.block_array = needsUint16
+        ? new Uint16Array(totalBlocks)
+        : new Uint8Array(totalBlocks);
+
+      // ✅ Manual loop instead of .fill()
+      for (let i = 0; i < totalBlocks; i++) {
+        event.data.block_array[i] = uniformValue;
+      }
     } else if (event.data.palette && event.data.block_array) {
-      event.data.block_array = expandPalette(
+      event.data.block_array = paletteExpander.expandPalette(
         event.data.block_array,
         event.data.palette,
         totalBlocks,
@@ -588,12 +591,17 @@ const onMessageHandler = (event: MessageEvent) => {
     if (neighborUniformIds) {
       for (let i = 0; i < neighbors.length; i++) {
         if (!neighbors[i] && typeof neighborUniformIds[i] === "number") {
-          neighbors[i] =
-            neighborUniformIds[i]! > 255
-              ? new Uint16Array(totalBlocks).fill(neighborUniformIds[i]!)
-              : new Uint8Array(totalBlocks).fill(neighborUniformIds[i]!);
+          const uniformValue = neighborUniformIds[i]!;
+          neighbors[i] = needsUint16
+            ? new Uint16Array(totalBlocks)
+            : new Uint8Array(totalBlocks);
+
+          // ✅ Use cached needsUint16 type
+          for (let j = 0; j < totalBlocks; j++) {
+            neighbors[i]![j] = uniformValue;
+          }
         } else if (neighbors[i] && neighborPalettes?.[i]) {
-          neighbors[i] = expandPalette(
+          neighbors[i] = paletteExpander.expandPalette(
             neighbors[i]! as Uint8Array,
             neighborPalettes[i]!,
             totalBlocks,
@@ -690,6 +698,8 @@ const onMessageHandler = (event: MessageEvent) => {
     return;
   }
 };
+
+self.onmessage = onMessageHandler;
 
 self.onmessage = onMessageHandler;
 
