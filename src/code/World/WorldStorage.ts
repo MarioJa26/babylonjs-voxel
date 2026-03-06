@@ -360,11 +360,14 @@ export class WorldStorage {
   private static async decompress(
     data: Uint8Array,
   ): Promise<Uint8Array | Uint16Array> {
-    const stream = new Blob([data])
-      .stream()
-      .pipeThrough(new DecompressionStream("gzip"));
-    const buffer = await new Response(stream).arrayBuffer();
+    const readableStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(data);
+        controller.close();
+      },
+    }).pipeThrough(new DecompressionStream("gzip"));
 
+    const buffer = await new Response(readableStream).arrayBuffer();
     // Convert to SharedArrayBuffer to ensure zero-copy sharing with workers later
     const sharedBuffer = new SharedArrayBuffer(buffer.byteLength);
     new Uint8Array(sharedBuffer).set(new Uint8Array(buffer));

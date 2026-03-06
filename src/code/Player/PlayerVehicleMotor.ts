@@ -15,15 +15,15 @@ import {
 import { Mount } from "../Entities/Mount";
 import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
 import { BlockType } from "../World/BlockType";
-import { VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollider";
+import { Axis, VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollider";
 import { SavedBodyPosition } from "./IPlayerBody";
 import { PlayerBodyControlState } from "./PlayerBodyControlState";
 import { PlayerCamera } from "./PlayerCamera";
 
 enum PlayerState {
-  IN_AIR = "IN_AIR",
-  ON_GROUND = "ON_GROUND",
-  START_JUMP = "START_JUMP",
+  IN_AIR,
+  ON_GROUND,
+  START_JUMP,
 }
 
 type PlayerVehicleMotorOptions = {
@@ -720,6 +720,7 @@ export class PlayerVehicleMotor {
         Math.min(verticalDelta, maxVerticalStep),
       );
       this.voxelVelocity.y += clampedVerticalStep;
+      this.voxelVelocity.y *= this.swimHorizontalDrag;
       this.voxelVelocity.x *= this.swimHorizontalDrag;
       this.voxelVelocity.z *= this.swimHorizontalDrag;
       this.wantJump = 0;
@@ -736,9 +737,9 @@ export class PlayerVehicleMotor {
       this.voxelVelocity.y += this.#characterGravity.y * deltaTime;
     }
 
-    this.moveVoxelAxis("x", this.voxelVelocity.x * deltaTime);
-    this.moveVoxelAxis("y", this.voxelVelocity.y * deltaTime);
-    this.moveVoxelAxis("z", this.voxelVelocity.z * deltaTime);
+    this.moveVoxelAxis(Axis.X, this.voxelVelocity.x * deltaTime);
+    this.moveVoxelAxis(Axis.Y, this.voxelVelocity.y * deltaTime);
+    this.moveVoxelAxis(Axis.Z, this.voxelVelocity.z * deltaTime);
 
     this.#characterController.setPosition(this.voxelPosition);
     this.#characterController.setVelocity(this.#zeroVelocity);
@@ -749,8 +750,8 @@ export class PlayerVehicleMotor {
     }
   }
 
-  private moveVoxelAxis(axis: "x" | "y" | "z", delta: number): void {
-    if (axis !== "x" && axis !== "z") {
+  private moveVoxelAxis(axis: Axis, delta: number): void {
+    if (axis === Axis.Y) {
       // Handle Y axis normally
       this.voxelCollider.moveAxis(
         this.voxelPosition,
@@ -790,11 +791,11 @@ export class PlayerVehicleMotor {
     );
   }
 
-  private attemptStepUp(axis: "x" | "y" | "z", delta: number): boolean {
+  private attemptStepUp(axis: Axis.X | Axis.Z, delta: number): boolean {
     const testPosition = this.voxelPosition.clone();
 
     // First, try moving forward at current height
-    if (axis === "x") {
+    if (axis === Axis.X) {
       testPosition.x += delta;
     } else {
       testPosition.z += delta;
@@ -811,7 +812,7 @@ export class PlayerVehicleMotor {
         if (!this.overlapsSolidVoxel(upPosition)) {
           // Now try moving forward from this higher position
           const upAndForward = upPosition.clone();
-          if (axis === "x") {
+          if (axis === Axis.X) {
             upAndForward.x += delta;
           } else {
             upAndForward.z += delta;

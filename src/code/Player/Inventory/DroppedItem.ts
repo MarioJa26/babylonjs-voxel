@@ -13,7 +13,7 @@ import { MetadataContainer } from "@/code/Entities/MetaDataContainer";
 import { Map1 } from "@/code/Maps/Map1";
 import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
-import { VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollider";
+import { Axis, VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollider";
 
 export class DroppedItem implements IUsable {
   #boxMesh: Mesh;
@@ -113,9 +113,9 @@ export class DroppedItem implements IUsable {
     if (dt <= 0) return;
 
     this.#velocity.y += DroppedItem.GRAVITY * dt;
-    this.#moveAxis("x", this.#velocity.x * dt);
-    this.#moveAxis("y", this.#velocity.y * dt);
-    this.#moveAxis("z", this.#velocity.z * dt);
+    this.#moveAxis(Axis.X, this.#velocity.x * dt);
+    this.#moveAxis(Axis.Y, this.#velocity.y * dt);
+    this.#moveAxis(Axis.Z, this.#velocity.z * dt);
 
     const grounded = this.#isGrounded();
     const damping = grounded
@@ -142,7 +142,7 @@ export class DroppedItem implements IUsable {
     this.#voxelCollider.syncDebugMesh(this.#boxMesh.position);
   }
 
-  #moveAxis(axis: "x" | "y" | "z", delta: number): void {
+  #moveAxis(axis: Axis, delta: number): void {
     this.#voxelCollider.moveAxis(
       this.#boxMesh.position,
       this.#velocity,

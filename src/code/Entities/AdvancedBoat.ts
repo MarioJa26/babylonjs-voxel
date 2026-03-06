@@ -16,7 +16,7 @@ import { Player } from "../Player/Player";
 import { PaddleBoatControls } from "../Player/Controls/PaddleBoatControls";
 import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
 import { BlockType } from "../World/BlockType";
-import { VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollider";
+import { Axis, VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollider";
 
 export class AdvancedBoat implements IUsable {
   #collisionHalfExtents = new Vector3(1.15, 0.6, 1.15);
@@ -190,9 +190,9 @@ export class AdvancedBoat implements IUsable {
         this.#angularVelocity.scaleInPlace(airAngularDamping);
       }
 
-      this.moveAxis("x", this.#linearVelocity.x * dt);
-      this.moveAxis("y", this.#linearVelocity.y * dt);
-      this.moveAxis("z", this.#linearVelocity.z * dt);
+      this.moveAxis(Axis.X, this.#linearVelocity.x * dt);
+      this.moveAxis(Axis.Y, this.#linearVelocity.y * dt);
+      this.moveAxis(Axis.Z, this.#linearVelocity.z * dt);
       this.integrateRotation(dt);
 
       this.#voxelCollider.syncDebugMesh(this.#boat.position);
@@ -250,7 +250,7 @@ export class AdvancedBoat implements IUsable {
     }
   }
 
-  private moveAxis(axis: "x" | "y" | "z", delta: number): void {
+  private moveAxis(axis: Axis, delta: number): void {
     this.#voxelCollider.moveAxis(
       this.#boat.position,
       this.#linearVelocity,

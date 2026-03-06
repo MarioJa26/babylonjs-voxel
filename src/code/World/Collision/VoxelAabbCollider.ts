@@ -8,7 +8,11 @@ import {
   Vector3,
 } from "@babylonjs/core";
 
-type Axis = "x" | "y" | "z";
+export enum Axis {
+  X,
+  Y,
+  Z,
+}
 type IsSolidBlockAt = (x: number, y: number, z: number) => boolean;
 type VoxelAabbDebugOptions = {
   scene: Scene;
@@ -129,13 +133,13 @@ export class VoxelAabbCollider {
 
       const candidate = this.#tmpCandidate;
       candidate.copyFrom(position);
-      if (axis === "x") candidate.x += step;
-      else if (axis === "y") candidate.y += step;
+      if (axis === Axis.X) candidate.x += step;
+      else if (axis === Axis.Y) candidate.y += step;
       else candidate.z += step;
 
       if (this.overlaps(candidate)) {
-        if (axis === "x") velocity.x = 0;
-        else if (axis === "y") velocity.y = 0;
+        if (axis === Axis.X) velocity.x = 0;
+        else if (axis === Axis.Y) velocity.y = 0;
         else velocity.z = 0;
         break;
       }

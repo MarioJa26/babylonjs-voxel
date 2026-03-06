@@ -438,12 +438,7 @@ class ChunkWorkerMesher {
 
     meshData.faceDataA.push4(x, y, z, axisFace);
     meshData.faceDataB.push4(width, height, tx, ty);
-    meshData.faceDataC.push4(
-      packedAO,
-      lightLevel,
-      materialType,
-      flip ? 1 : 0,
-    );
+    meshData.faceDataC.push4(packedAO, lightLevel, materialType, flip ? 1 : 0);
     meshData.faceCount++;
   }
 }
