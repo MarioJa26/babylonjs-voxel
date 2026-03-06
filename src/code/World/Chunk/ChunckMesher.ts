@@ -42,12 +42,7 @@ export class ChunkMesher {
 
   private static lastUpdateFrame = -1;
   private static readonly FACE_VERTEX_TEMPLATE = new Float32Array([
-    0, 0, 0,
-    1, 0, 0,
-    2, 0, 0,
-    3, 0, 0,
-    4, 0, 0,
-    5, 0, 0,
+    0, 0, 0, 1, 0, 0, 2, 0, 0, 3, 0, 0, 4, 0, 0, 5, 0, 0,
   ]);
   private static readonly FACE_INDEX_TEMPLATE = new Uint16Array([
     0, 1, 2, 3, 4, 5,
@@ -105,16 +100,12 @@ export class ChunkMesher {
         scene,
         { vertex: "chunk", fragment: "chunk" },
         {
-          attributes: [
-            "position",
-            "faceDataA",
-            "faceDataB",
-            "faceDataC",
-          ],
+          attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
           uniforms: [
             "world",
             "worldViewProjection",
             "atlasTileSize",
+            "maxAtlasTiles",
             "cameraPosition",
             "lightDirection",
             "screenSize",
@@ -129,6 +120,10 @@ export class ChunkMesher {
       opaqueBlockShader.setFloat(
         "atlasTileSize",
         TextureAtlasFactory.atlasTileSize,
+      );
+      opaqueBlockShader.setFloat(
+        "maxAtlasTiles",
+        TextureAtlasFactory.atlasSize,
       );
       opaqueBlockShader.setTexture("diffuseTexture", diffuseAtlasTexture);
       if (normalAtlasTexture)
@@ -146,12 +141,7 @@ export class ChunkMesher {
         scene,
         { vertex: "chunk", fragment: "transparentChunk" },
         {
-          attributes: [
-            "position",
-            "faceDataA",
-            "faceDataB",
-            "faceDataC",
-          ],
+          attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
           uniforms: [
             "world",
             "worldViewProjection",

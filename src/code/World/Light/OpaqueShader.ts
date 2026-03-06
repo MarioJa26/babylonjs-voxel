@@ -12,6 +12,7 @@ attribute vec4 faceDataC; // x=packedAO, y=light, z=materialType, w=flip
 uniform mat4 world;
 uniform mat4 worldViewProjection;
 uniform float atlasTileSize;
+uniform float maxAtlasTiles;
 uniform float sunLightIntensity;
 
 // Varyings
@@ -126,7 +127,7 @@ void main(void) {
     vUV = vec2(u, v) * vec2(uDim, vDim);
 
     float maxTiles = floor(1.0 / atlasTileSize + 0.5);
-    vUV2 = vec2(faceDataB.z, maxTiles - 1.0 - faceDataB.w) * atlasTileSize;
+    vUV2 = vec2(faceDataB.z, maxAtlasTiles - 1.0 - faceDataB.w) * atlasTileSize;
     
     vPositionW = (world * vec4(localPosition, 1.0)).xyz;
     
