@@ -127,7 +127,7 @@ void main(void) {
     vUV = vec2(u, v) * vec2(uDim, vDim);
 
     float maxTiles = floor(1.0 / atlasTileSize + 0.5);
-    vUV2 = vec2(faceDataB.z, maxAtlasTiles - 1.0 - faceDataB.w) * atlasTileSize;
+    vUV2 = vec2(faceDataB.z, maxTiles - 1.0 - faceDataB.w) * atlasTileSize;
     
     vPositionW = (world * vec4(localPosition, 1.0)).xyz;
     
