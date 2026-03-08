@@ -1,4 +1,5 @@
 import {
+  Color3,
   Mesh,
   MeshBuilder,
   Observer,
@@ -13,10 +14,15 @@ import { MetadataContainer } from "@/code/Entities/MetaDataContainer";
 import { Map1 } from "@/code/Maps/Map1";
 import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
-import { Axis, VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollider";
+import {
+  Axis,
+  VoxelAabbCollider,
+} from "@/code/World/Collision/VoxelAabbCollider";
+import { GlobalValues } from "@/code/World/GlobalValues";
 
 export class DroppedItem implements IUsable {
   #boxMesh: Mesh;
+  #material: StandardMaterial;
   #item: Item;
   #velocity = Vector3.Zero();
   #halfSize = 0.25;
@@ -28,6 +34,8 @@ export class DroppedItem implements IUsable {
   static readonly AIR_DAMPING_PER_SEC = 1.8;
   static readonly GROUND_DAMPING_PER_SEC = 8.0;
   static readonly MIN_SPEED = 0.03;
+  static readonly SKY_LIGHT_COLOR = new Vector3(0.8, 0.8, 0.8);
+  static readonly BLOCK_LIGHT_COLOR = new Vector3(0.9, 0.6, 0.2);
 
   constructor(item: Item, x: number, y: number, z: number) {
     const size = 0.5 + item.stackSize * 0.005;
@@ -56,7 +64,9 @@ export class DroppedItem implements IUsable {
     midMat.diffuseTexture = concreteMat.diffuseTexture;
     midMat.bumpTexture = concreteMat.bumpTexture;
     midMat.ambientTexture = concreteMat.ambientTexture;
+    midMat.specularColor = Color3.Black();
     this.#boxMesh.material = midMat;
+    this.#material = midMat;
 
     this.#boxMesh.renderingGroupId = 1;
     this.#halfSize = size * 0.5;
@@ -79,6 +89,7 @@ export class DroppedItem implements IUsable {
     this.#observer = Map1.mainScene.onBeforeRenderObservable.add(() => {
       this.#updatePhysics();
     });
+    this.#updateLighting();
   }
 
   pushItem(direction: Vector3): void {
@@ -140,6 +151,7 @@ export class DroppedItem implements IUsable {
 
     // Sync debug AABB once per frame (not per collision sub-step).
     this.#voxelCollider.syncDebugMesh(this.#boxMesh.position);
+    this.#updateLighting();
   }
 
   #moveAxis(axis: Axis, delta: number): void {
@@ -160,6 +172,34 @@ export class DroppedItem implements IUsable {
     const probe = this.#boxMesh.position.clone();
     probe.y -= 0.06;
     return this.#overlapsSolid(probe);
+  }
+
+  #updateLighting(): void {
+    const px = Math.floor(this.#boxMesh.position.x);
+    const py = Math.floor(this.#boxMesh.position.y);
+    const pz = Math.floor(this.#boxMesh.position.z);
+    const packedLight = ChunkLoadingSystem.getLightByWorldCoords(px, py, pz);
+
+    const skyLight = ((packedLight >> 4) & 0xf) / 15;
+    const blockLight = (packedLight & 0xf) / 15;
+
+    const sunElevation = -GlobalValues.skyLightDirection.y + 0.1;
+    const sunLightIntensity = Math.min(1.0, Math.max(0.1, sunElevation * 4.0));
+    const skyScale = sunLightIntensity + 0.3;
+
+    const skyR = skyLight * DroppedItem.SKY_LIGHT_COLOR.x * skyScale;
+    const skyG = skyLight * DroppedItem.SKY_LIGHT_COLOR.y * skyScale;
+    const skyB = skyLight * DroppedItem.SKY_LIGHT_COLOR.z * skyScale;
+
+    const blockR = blockLight * DroppedItem.BLOCK_LIGHT_COLOR.x;
+    const blockG = blockLight * DroppedItem.BLOCK_LIGHT_COLOR.y;
+    const blockB = blockLight * DroppedItem.BLOCK_LIGHT_COLOR.z;
+
+    const finalR = Math.min(1, Math.max(0.3, skyR + blockR));
+    const finalG = Math.min(1, Math.max(0.3, skyG + blockG));
+    const finalB = Math.min(1, Math.max(0.3, skyB + blockB));
+
+    this.#material.diffuseColor.set(finalR, finalG, finalB);
   }
 
   get boxMesh(): Mesh {

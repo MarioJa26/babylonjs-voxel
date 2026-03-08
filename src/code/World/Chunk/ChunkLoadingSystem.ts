@@ -336,6 +336,27 @@ export class ChunkLoadingSystem {
     return chunk.getBlock(localX, localY, localZ);
   }
 
+  public static getLightByWorldCoords(
+    worldX: number,
+    worldY: number,
+    worldZ: number,
+  ): number {
+    const chunkX = this.worldToChunkCoord(worldX);
+    const chunkY = this.worldToChunkCoord(worldY);
+    const chunkZ = this.worldToChunkCoord(worldZ);
+
+    const chunk = Chunk.getChunk(chunkX, chunkY, chunkZ);
+    if (!chunk || !chunk.isLoaded) {
+      return 15 << Chunk.SKY_LIGHT_SHIFT;
+    }
+
+    const localX = this.worldToBlockCoord(worldX);
+    const localY = this.worldToBlockCoord(worldY);
+    const localZ = this.worldToBlockCoord(worldZ);
+
+    return chunk.getLight(localX, localY, localZ);
+  }
+
   /**
    * Converts world coordinates to chunk coordinates.
    * @param value The world coordinate value (e.g., player's x position).
