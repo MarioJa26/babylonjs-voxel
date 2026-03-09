@@ -1,6 +1,5 @@
 import {
   Mesh,
-  PhysicsCharacterController,
   Scene,
   Vector3,
 } from "@babylonjs/core";
@@ -10,6 +9,7 @@ import { IPlayerBody, SavedBodyPosition } from "./IPlayerBody";
 import { PlayerBodyControlState } from "./PlayerBodyControlState";
 import { PlayerCamera } from "./PlayerCamera";
 import { PlayerVehicleMotor } from "./PlayerVehicleMotor";
+import { SimpleCharacterController } from "./SimpleCharacterController";
 
 export type SavedPlayerPosition = SavedBodyPosition;
 
@@ -106,7 +106,7 @@ export class PlayerVehicle implements IPlayerBody {
     return this.motor.restoreSavedPosition(position);
   }
 
-  public get characterController(): PhysicsCharacterController {
+  public get characterController(): SimpleCharacterController {
     return this.motor.characterController;
   }
 

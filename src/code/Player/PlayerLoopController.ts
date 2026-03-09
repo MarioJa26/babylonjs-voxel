@@ -27,7 +27,7 @@ export class PlayerLoopController {
   ) {}
 
   public bind(): void {
-    this.scene.onAfterPhysicsObservable.add(() => {
+    this.scene.onBeforeRenderObservable.add(() => {
       const dt = (this.scene.deltaTime || 0) / 1000;
 
       if (this.playerVehicle.isSprinting) {
@@ -37,9 +37,6 @@ export class PlayerLoopController {
       }
       this.playerVehicle.update(dt);
       this.playerStats.update(dt, this.playerVehicle.isSprinting);
-    });
-
-    this.scene.onBeforeRenderObservable.add(() => {
       this.playerVehicle.updateCameraAndVisuals();
       this.updateControls();
       this.updateChunksAroundPlayer();

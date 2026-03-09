@@ -2,9 +2,6 @@ import {
   Scene,
   Vector3,
   Mesh,
-  PhysicsAggregate,
-  PhysicsShapeType,
-  PhysicsMotionType,
   StandardMaterial,
   Color3,
 } from "@babylonjs/core";
@@ -14,26 +11,18 @@ export class BouyantObject {
   public mesh: Mesh;
   public waterMaterial: WaterMaterial;
   public waterHeight: number;
-  public physicsAggregate: PhysicsAggregate;
+  private verticalVelocity = 0;
 
   constructor(
     scene: Scene,
     mesh: Mesh,
     waterMaterial: WaterMaterial,
-    waterHeight: number
+    waterHeight: number,
   ) {
     this.scene = scene;
     this.mesh = mesh;
     this.waterMaterial = waterMaterial;
     this.waterHeight = waterHeight;
-    this.physicsAggregate = new PhysicsAggregate(
-      mesh,
-      PhysicsShapeType.CAPSULE,
-      { mass: 1 },
-      this.scene
-    );
-    this.physicsAggregate.body.setMotionType(PhysicsMotionType.DYNAMIC);
-    this.mesh.metadata = this.physicsAggregate;
     this.mesh.position = new Vector3(0, 2, 0); // Start above water
 
     const boatMat = new StandardMaterial("boatMat", this.scene);
@@ -43,6 +32,7 @@ export class BouyantObject {
     let time = 0;
     this.scene.onBeforeRenderObservable.add(() => {
       time += this.scene.getEngine().getDeltaTime() / 100000;
+      const dt = this.scene.getEngine().getDeltaTime() / 1000;
       const x = this.mesh.position.x;
       const z = this.mesh.position.z;
       const targetY = Math.abs(
@@ -58,13 +48,12 @@ export class BouyantObject {
 
       let deltaY = targetY - mesh.position.y + waterHeight / 2;
       if (deltaY > 2) deltaY = 2;
-      mesh.metadata.body.applyImpulse(
-        new Vector3(0, deltaY / 2, 0),
-        mesh.getAbsolutePosition()
-      );
+      if (deltaY < -2) deltaY = -2;
+
+      // Simple spring + damping buoyancy.
+      this.verticalVelocity += deltaY * 2.5 * dt;
+      this.verticalVelocity *= 0.94;
+      this.mesh.position.y += this.verticalVelocity;
     });
-  }
-  setPhysicsAggregate(aggregate: PhysicsAggregate) {
-    this.physicsAggregate = aggregate;
   }
 }

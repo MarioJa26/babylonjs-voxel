@@ -47,6 +47,7 @@ export class Chunk {
 
   public static readonly SKY_LIGHT_SHIFT = 4;
   public static readonly BLOCK_LIGHT_MASK = 0xf;
+  private static readonly WATER_BLOCK_ID = 30;
 
   constructor(chunkX: number, chunkY: number, chunkZ: number) {
     this.#chunkX = chunkX;
@@ -230,20 +231,24 @@ export class Chunk {
       const worldX = this.#chunkX * CHUNK_SIZE + x;
       for (let z = 0; z < CHUNK_SIZE; z++) {
         const worldZ = this.#chunkZ * CHUNK_SIZE + z;
-        let receivingSun = true;
+        let incomingSkyLight = 0;
+        let sourceIsWater = false;
 
         if (aboveChunk?.isLoaded) {
           const aboveBlock = aboveChunk.getBlock(x, 0, z);
-          receivingSun =
-            aboveChunk.isTransparent(aboveBlock) &&
-            aboveChunk.getSkyLight(x, 0, z) === 15;
+          if (aboveChunk.isTransparent(aboveBlock)) {
+            incomingSkyLight = aboveChunk.getSkyLight(x, 0, z);
+            sourceIsWater = aboveBlock === Chunk.WATER_BLOCK_ID;
+          }
         } else {
           const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(
             worldX,
             worldZ,
           );
           // Conservative fallback when top-neighbor state is unavailable.
-          receivingSun = topWorldY >= terrainHeight - 48;
+          if (topWorldY >= terrainHeight - 48) {
+            incomingSkyLight = 15;
+          }
         }
 
         for (let y = CHUNK_SIZE - 1; y >= 0; y--) {
@@ -251,15 +256,32 @@ export class Chunk {
           const blockId = this.getBlock(x, y, z);
 
           if (!this.isTransparent(blockId)) {
-            receivingSun = false;
+            incomingSkyLight = 0;
+            sourceIsWater = false;
             continue;
           }
 
-          if (receivingSun) {
+          if (incomingSkyLight > 0) {
+            const preservesFullSun =
+              incomingSkyLight === 15 &&
+              !sourceIsWater &&
+              !Chunk.isWaterBlock(blockId);
+            const cellSkyLight = preservesFullSun
+              ? 15
+              : Math.max(incomingSkyLight - 1, 0);
+
+            if (cellSkyLight === 0) {
+              incomingSkyLight = 0;
+              sourceIsWater = Chunk.isWaterBlock(blockId);
+              continue;
+            }
+
             this.light_array[idx] =
               (this.light_array[idx] & Chunk.BLOCK_LIGHT_MASK) |
-              (15 << Chunk.SKY_LIGHT_SHIFT);
-            queue.push({ chunk: this, x, y, z, level: 15 });
+              (cellSkyLight << Chunk.SKY_LIGHT_SHIFT);
+            queue.push({ chunk: this, x, y, z, level: cellSkyLight });
+            incomingSkyLight = cellSkyLight;
+            sourceIsWater = Chunk.isWaterBlock(blockId);
           }
         }
       }
@@ -402,19 +424,24 @@ export class Chunk {
 
     const oldBlockLight = this.getBlockLight(localX, localY, localZ);
     const oldSkyLight = this.getSkyLight(localX, localY, localZ);
+    const oldWasTransparent = this.isTransparent(oldBlockId);
+    const newIsTransparent = this.isTransparent(blockId);
 
     // Handle Block Light
     if (oldBlockLight > 0) {
       this.removeLight(localX, localY, localZ, false);
-    } else if (this.isTransparent(blockId)) {
+    } else if (newIsTransparent) {
       this.updateLightFromNeighbors(localX, localY, localZ, false);
     }
 
     // Handle Sky Light
     if (oldSkyLight > 0) {
       this.removeLight(localX, localY, localZ, true);
-    } else if (this.isTransparent(blockId)) {
+    } else if (newIsTransparent) {
       this.updateLightFromNeighbors(localX, localY, localZ, true);
+    }
+    if (oldWasTransparent && !newIsTransparent && oldSkyLight === 0) {
+      this.cutSkyLightBelow(localX, localY, localZ);
     }
 
     const emission = Chunk.getLightEmission(blockId);
@@ -475,6 +502,7 @@ export class Chunk {
   public propagateLight(queue: LightNode[], isSkyLight = true): void {
     while (queue.length > 0) {
       const { chunk, x, y, z, level } = queue.shift()!;
+      const sourceBlockId = chunk.getBlock(x, y, z);
 
       const neighbors = [
         [x + 1, y, z, 0],
@@ -527,10 +555,17 @@ export class Chunk {
               ? targetChunk.getSkyLight(tx, ty, tz)
               : targetChunk.getBlockLight(tx, ty, tz);
 
+            const preservesFullSun =
+              isSkyLight &&
+              isDown === 1 &&
+              level === 15 &&
+              !Chunk.isWaterBlock(sourceBlockId) &&
+              !Chunk.isWaterBlock(blockId);
             let nextLevel = level - 1;
-            if (isSkyLight && isDown === 1 && level === 15) {
+            if (preservesFullSun) {
               nextLevel = 15;
             }
+            if (nextLevel <= 0) continue;
 
             if (currentLevel < nextLevel) {
               if (isSkyLight) targetChunk.setSkyLight(tx, ty, tz, nextLevel);
@@ -627,6 +662,30 @@ export class Chunk {
     // 0: Air, 30: Water, 60: Glass, 61: Glass
     return blockId === 0 || blockId === 30 || blockId === 60 || blockId === 61;
   }
+
+  private static isWaterBlock(blockId: number): boolean {
+    return blockId === Chunk.WATER_BLOCK_ID;
+  }
+
+  private cutSkyLightBelow(localX: number, localY: number, localZ: number): void {
+    let targetChunk: Chunk | undefined = this;
+    let tx = localX;
+    let ty = localY - 1;
+    let tz = localZ;
+
+    if (ty < 0) {
+      targetChunk = targetChunk.getNeighbor(0, -1, 0);
+      ty = Chunk.SIZE - 1;
+    }
+    if (!targetChunk?.isLoaded) return;
+
+    const belowBlockId = targetChunk.getBlock(tx, ty, tz);
+    if (!targetChunk.isTransparent(belowBlockId)) return;
+
+    if (targetChunk.getSkyLight(tx, ty, tz) > 0) {
+      targetChunk.removeLight(tx, ty, tz, true);
+    }
+  }
   public addLight(x: number, y: number, z: number, level: number) {
     this.setBlockLight(x, y, z, level);
     this.propagateLight([{ chunk: this, x, y, z, level }], false);
@@ -647,6 +706,7 @@ export class Chunk {
 
     while (queue.length > 0) {
       const { chunk, x, y, z, level } = queue.shift()!;
+      const sourceBlockId = chunk.getBlock(x, y, z);
 
       const neighbors = [
         [x + 1, y, z, 0],
@@ -693,16 +753,20 @@ export class Chunk {
         }
 
         if (targetChunk) {
+          const targetBlockId = targetChunk.getBlock(tx, ty, tz);
           const neighborLight = isSkyLight
             ? targetChunk.getSkyLight(tx, ty, tz)
             : targetChunk.getBlockLight(tx, ty, tz);
+          const preservesFullSun =
+            isSkyLight &&
+            isDown === 1 &&
+            level === 15 &&
+            !Chunk.isWaterBlock(sourceBlockId) &&
+            !Chunk.isWaterBlock(targetBlockId);
 
           const isDependent =
             neighborLight < level ||
-            (isSkyLight &&
-              isDown === 1 &&
-              level === 15 &&
-              neighborLight === 15);
+            (preservesFullSun && neighborLight === 15);
 
           if (neighborLight !== 0 && isDependent) {
             if (isSkyLight) targetChunk.setSkyLight(tx, ty, tz, 0);

@@ -1,11 +1,7 @@
 import {
-  CharacterSupportedState,
-  CharacterSurfaceInfo,
   Color3,
   Mesh,
   MeshBuilder,
-  PhysicsCharacterController,
-  PhysicsShapeCapsule,
   Quaternion,
   Scene,
   StandardMaterial,
@@ -19,6 +15,11 @@ import { Axis, VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollide
 import { SavedBodyPosition } from "./IPlayerBody";
 import { PlayerBodyControlState } from "./PlayerBodyControlState";
 import { PlayerCamera } from "./PlayerCamera";
+import {
+  CharacterSupportedState,
+  CharacterSurfaceInfo,
+  SimpleCharacterController,
+} from "./SimpleCharacterController";
 
 enum PlayerState {
   IN_AIR,
@@ -40,7 +41,7 @@ export class PlayerVehicleMotor {
   readonly #getMount: () => Mount | null;
 
   #displayCapsule!: Mesh;
-  #characterController!: PhysicsCharacterController;
+  #characterController!: SimpleCharacterController;
   readonly #forwardLocalSpace = new Vector3(0, 0, 1);
   #characterOrientation = Quaternion.Identity();
   #characterGravity = new Vector3(0, -18, 0);
@@ -107,7 +108,7 @@ export class PlayerVehicleMotor {
     this.initializeCharacter();
   }
 
-  public get characterController(): PhysicsCharacterController {
+  public get characterController(): SimpleCharacterController {
     return this.#characterController;
   }
 
@@ -256,20 +257,7 @@ export class PlayerVehicleMotor {
     this.#displayCapsule = this.createCharacterMesh(height, width);
 
     const startPosition = new Vector3(0, 165, 0);
-    const radius = width * 0.5;
-    const halfSegment = Math.max(0.01, (height - 2 * radius) * 0.5);
-    const characterShape = new PhysicsShapeCapsule(
-      new Vector3(0, -halfSegment, 0),
-      new Vector3(0, halfSegment, 0),
-      radius,
-      this.#scene,
-    );
-
-    this.#characterController = new PhysicsCharacterController(
-      startPosition,
-      { shape: characterShape },
-      this.#scene,
-    );
+    this.#characterController = new SimpleCharacterController(startPosition);
 
     this.configureCharacterController();
     this.voxelPosition.copyFrom(startPosition);

@@ -10,6 +10,7 @@ export class LightGenerator {
   // Bitmask for wrapping the circular buffer — only valid when capacity is a power of two.
   private static queueMask: number;
   private static readonly DENSITY_INFLUENCE_RANGE = 48;
+  private static readonly WATER_BLOCK_ID = 30;
 
   constructor(params: GenerationParamsType) {
     LightGenerator.chunkSize = params.CHUNK_SIZE;
@@ -48,16 +49,22 @@ export class LightGenerator {
         const worldZ = chunkZ * CHUNK_SIZE + z;
         const topWorldY = chunkY * CHUNK_SIZE + CHUNK_SIZE - 1;
         const columnIndex = x + z * CHUNK_SIZE;
-        let receivingSun = topSunlightMask
+        let incomingSkyLight = topSunlightMask
           ? topSunlightMask[columnIndex] !== 0
-          : this.columnReceivesDirectSun(worldX, worldZ, topWorldY);
+            ? 15
+            : 0
+          : this.columnReceivesDirectSun(worldX, worldZ, topWorldY)
+            ? 15
+            : 0;
+        let sourceIsWater = false;
 
         for (let y = CHUNK_SIZE - 1; y >= 0; y--) {
           const idx = x + y * CHUNK_SIZE + z * CHUNK_SIZE_SQ;
           const blockId = blocks[idx];
 
           if (!LightGenerator.isTransparentBlock(blockId)) {
-            receivingSun = false;
+            incomingSkyLight = 0;
+            sourceIsWater = false;
             if (blockId === 24) {
               // Lava emits light
               light[idx] = (light[idx] & 0xf0) | 15;
@@ -65,10 +72,26 @@ export class LightGenerator {
               queue[tail & mask] = (x << 10) | (y << 5) | z;
               tail++;
             }
-          } else if (receivingSun) {
-            light[idx] = 15 << 4;
+          } else if (incomingSkyLight > 0) {
+            const preservesFullSun =
+              incomingSkyLight === 15 &&
+              !sourceIsWater &&
+              !LightGenerator.isWaterBlock(blockId);
+            const cellSkyLight = preservesFullSun
+              ? 15
+              : Math.max(incomingSkyLight - 1, 0);
+
+            if (cellSkyLight === 0) {
+              incomingSkyLight = 0;
+              sourceIsWater = LightGenerator.isWaterBlock(blockId);
+              continue;
+            }
+
+            light[idx] = (light[idx] & 0xf) | (cellSkyLight << 4);
             queue[tail & mask] = (x << 10) | (y << 5) | z;
             tail++;
+            incomingSkyLight = cellSkyLight;
+            sourceIsWater = LightGenerator.isWaterBlock(blockId);
           }
         }
       }
@@ -136,12 +159,17 @@ export class LightGenerator {
         );
       }
       if (y > 0) {
+        const belowIdx = x + (y - 1) * CHUNK_SIZE + z * CHUNK_SIZE_SQ;
+        const preservesFullSunDown =
+          skyLight === 15 &&
+          !LightGenerator.isWaterBlock(blocks[idx]) &&
+          !LightGenerator.isWaterBlock(blocks[belowIdx]);
         // Sky light falls without loss downward
         tail = this.tryPropagate(
           x,
           y - 1,
           z,
-          skyLight === 15 ? 15 : skyM1,
+          preservesFullSunDown ? 15 : skyM1,
           blkM1,
           blocks,
           light,
@@ -215,6 +243,10 @@ export class LightGenerator {
 
   private static isTransparentBlock(blockId: number): boolean {
     return blockId === 0 || blockId === 30 || blockId === 60 || blockId === 61;
+  }
+
+  private static isWaterBlock(blockId: number): boolean {
+    return blockId === LightGenerator.WATER_BLOCK_ID;
   }
 
   private columnReceivesDirectSun(

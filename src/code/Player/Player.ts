@@ -4,7 +4,6 @@ import { MetadataContainer } from "../Entities/MetaDataContainer";
 import { IControls } from "../Inferface/IControls";
 import { IUsable } from "../Inferface/IUsable";
 import { Map1 } from "../Maps/Map1";
-import { TestScene } from "../TestScene";
 import { WalkingControls } from "../Player/Controls/WalkingControls";
 import { CrossHair } from "./Hud/CrossHair";
 import { PauseMenu } from "./Hud/PauseMenu";
@@ -86,12 +85,10 @@ export class Player implements IUsable {
 
   private pauseGame() {
     Map1.isPaused = true;
-    TestScene.hk.setTimeStep(0); // Freeze physics updates
     this.#pauseMenu.show();
   }
 
   private resumeGame() {
-    TestScene.hk.setTimeStep(1 / 60); // Resume physics updates
     Map1.isPaused = false;
     this.#pauseMenu.hide();
     // Request pointer lock only if the canvas has focus

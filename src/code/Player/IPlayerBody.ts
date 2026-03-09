@@ -1,7 +1,8 @@
-import { Mesh, PhysicsCharacterController, Scene, Vector3 } from "@babylonjs/core";
+import { Mesh, Scene, Vector3 } from "@babylonjs/core";
 
 import type { Mount } from "../Entities/Mount";
 import type { PlayerCamera } from "./PlayerCamera";
+import type { SimpleCharacterController } from "./SimpleCharacterController";
 
 export type SavedBodyPosition = {
   x: number;
@@ -20,7 +21,7 @@ export interface IPlayerBody {
   isMounted: boolean;
   mount: Mount | null;
 
-  characterController: PhysicsCharacterController;
+  characterController: SimpleCharacterController;
   displayCapsule: Mesh;
 
   toggleFlying(): void;
