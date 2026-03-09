@@ -152,7 +152,7 @@
 }
 
 .inventory-slot {
-  transition: 100ms;
+  transition: transform 150ms;
   flex: 0 0 auto;
   aspect-ratio: 1 / 1;
   /* keeps them square */
@@ -173,7 +173,6 @@
 
 .inventory-slot:hover {
   border: 3px solid rgb(0, 187, 255);
-  transition-duration: 150ms;
   transform: scale(1.2);
 }
 

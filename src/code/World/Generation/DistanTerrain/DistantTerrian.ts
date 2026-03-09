@@ -183,12 +183,14 @@ export class DistantTerrain {
     this.mesh.receiveShadows = false;
     this.mesh.doNotSyncBoundingInfo = true;
     this.mesh.alwaysSelectAsActiveMesh = true; // Always render if enabled
+    this.mesh.freezeNormals();
 
     this.waterMesh.isPickable = false;
     this.waterMesh.checkCollisions = false;
     this.waterMesh.receiveShadows = false;
     this.waterMesh.doNotSyncBoundingInfo = true;
     this.waterMesh.alwaysSelectAsActiveMesh = true;
+    this.waterMesh.freezeNormals();
 
     // Listen for worker results
     ChunkWorkerPool.getInstance().onDistantTerrainGenerated = (data) => {

@@ -100,10 +100,7 @@ export class Map1 {
   public static setDebug(enabled: boolean) {
     const chunkMaterials = new Set<ShaderMaterial>();
     this.mainScene.meshes.forEach((mesh) => {
-      if (
-        mesh.material instanceof ShaderMaterial &&
-        mesh.name.startsWith("c_")
-      ) {
+      if (mesh.material instanceof ShaderMaterial) {
         chunkMaterials.add(mesh.material);
       }
     });

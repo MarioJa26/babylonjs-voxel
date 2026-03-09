@@ -84,7 +84,7 @@ export class PlayerLoadingGate {
         continue;
       }
 
-      if (chunk.mesh || chunk.glassMesh) {
+      if (chunk.mesh || chunk.transparentMesh) {
         return true;
       }
     }
