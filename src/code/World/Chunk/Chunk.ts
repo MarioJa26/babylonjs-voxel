@@ -667,11 +667,15 @@ export class Chunk {
     return blockId === Chunk.WATER_BLOCK_ID;
   }
 
-  private cutSkyLightBelow(localX: number, localY: number, localZ: number): void {
+  private cutSkyLightBelow(
+    localX: number,
+    localY: number,
+    localZ: number,
+  ): void {
     let targetChunk: Chunk | undefined = this;
-    let tx = localX;
+    const tx = localX;
     let ty = localY - 1;
-    let tz = localZ;
+    const tz = localZ;
 
     if (ty < 0) {
       targetChunk = targetChunk.getNeighbor(0, -1, 0);
@@ -765,8 +769,7 @@ export class Chunk {
             !Chunk.isWaterBlock(targetBlockId);
 
           const isDependent =
-            neighborLight < level ||
-            (preservesFullSun && neighborLight === 15);
+            neighborLight < level || (preservesFullSun && neighborLight === 15);
 
           if (neighborLight !== 0 && isDependent) {
             if (isSkyLight) targetChunk.setSkyLight(tx, ty, tz, 0);

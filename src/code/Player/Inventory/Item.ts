@@ -7,6 +7,8 @@ import { Player } from "../Player";
 import { CrossHair } from "../Hud/CrossHair";
 import { BlockType } from "@/code/World/BlockType";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { ItemRegistry, ItemDefinition } from "./ItemRegistry";
+import { ItemUseActions } from "./ItemUseActions";
 
 export class Item implements IUsable {
   name: string;
@@ -31,7 +33,12 @@ export class Item implements IUsable {
     row: number,
     col: number,
     materialFolder?: string,
+    maxStack?: number,
   ) {
+    if (typeof maxStack === "number") {
+      this.#maxStack = Math.max(1, Math.floor(maxStack));
+      this.#stackSize = Math.min(this.#stackSize, this.#maxStack);
+    }
     this.name = name;
     this.description = description;
     this.icon = icon;
@@ -54,15 +61,57 @@ export class Item implements IUsable {
     this.#div = this.createDiv();
   }
 
-  static createById(itemId: number): Item {
+  private static createFromDefinition(
+    def: ItemDefinition,
+    row: number,
+    col: number,
+  ): Item {
+    const icon =
+      def.icon ||
+      (def.materialFolder
+        ? MaterialFactory.getTexturePathFromFolder(def.materialFolder) ?? ""
+        : "");
+
+    const item = new Item(
+      def.name,
+      def.description ?? def.name,
+      icon,
+      row,
+      col,
+      def.materialFolder,
+      def.maxStack,
+    );
+    item.itemId = def.id;
+
+    if (def.useAction === "place_block") {
+      item.use = (player: Player) => Item.place(player);
+    } else if (def.useAction) {
+      const action = ItemUseActions[def.useAction];
+      if (action) {
+        item.use = action;
+      } else {
+        console.warn(`Unknown item use action: ${def.useAction}`);
+      }
+    }
+
+    return item;
+  }
+
+  static createById(itemId: number, row = -1, col = -1): Item {
+    const def = ItemRegistry.get(itemId);
+    if (def) {
+      return Item.createFromDefinition(def, row, col);
+    }
+
     const textureDef = TextureDefinitions.find((t) => t.id === itemId);
     if (!textureDef) throw new Error("Item not found");
+
     const item = new Item(
       textureDef.name,
       "Crafted Item",
       MaterialFactory.getTexturePathFromFolder(textureDef.path)!,
-      -1,
-      -1,
+      row,
+      col,
       textureDef.path,
     );
     item.itemId = itemId;

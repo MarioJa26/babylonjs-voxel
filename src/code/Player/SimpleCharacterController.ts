@@ -69,16 +69,4 @@ export class SimpleCharacterController {
       }
     }
   }
-
-  public calculateMovement(
-    _deltaTime: number,
-    _forward: Vector3,
-    _up: Vector3,
-    currentVelocity: Vector3,
-    _surfaceVelocity: Vector3,
-    _desiredVelocity: Vector3,
-    _upDirection: Vector3,
-  ): Vector3 {
-    return currentVelocity.clone();
-  }
 }

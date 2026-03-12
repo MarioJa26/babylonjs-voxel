@@ -11,7 +11,10 @@ import {
 import { Mount } from "../Entities/Mount";
 import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
 import { BlockType } from "../World/BlockType";
-import { Axis, VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollider";
+import {
+  Axis,
+  VoxelAabbCollider,
+} from "@/code/World/Collision/VoxelAabbCollider";
 import { SavedBodyPosition } from "./IPlayerBody";
 import { PlayerBodyControlState } from "./PlayerBodyControlState";
 import { PlayerCamera } from "./PlayerCamera";
@@ -421,18 +424,7 @@ export class PlayerVehicleMotor {
     currentVelocity: Vector3,
   ): Vector3 {
     const upWorld = this.getUpVector();
-    const forwardWorld = this.getForwardVector();
-
-    const desiredVelocity = this.getInputVelocity(this.inAirSpeed);
-    const outputVelocity = this.#characterController.calculateMovement(
-      deltaTime,
-      forwardWorld,
-      upWorld,
-      currentVelocity,
-      Vector3.ZeroReadOnly,
-      desiredVelocity,
-      upWorld,
-    );
+    const outputVelocity = currentVelocity.clone();
 
     outputVelocity.addInPlace(upWorld.scale(-outputVelocity.dot(upWorld)));
     outputVelocity.addInPlace(upWorld.scale(currentVelocity.dot(upWorld)));
@@ -447,12 +439,6 @@ export class PlayerVehicleMotor {
     supportInfo: CharacterSurfaceInfo,
   ): Vector3 {
     const upWorld = this.getUpVector();
-    const forwardWorld = this.getForwardVector();
-    const surfaceNormal = supportInfo.averageSurfaceNormal;
-    const floorNormal =
-      surfaceNormal.dot(upWorld) >= this.minFloorNormalDot
-        ? surfaceNormal
-        : upWorld;
 
     const desiredVelocity = this.getInputVelocity(this.onGroundSpeed);
 
@@ -463,41 +449,11 @@ export class PlayerVehicleMotor {
       desiredVelocity.scaleInPlace(this.sprintMultiplier);
     }
 
-    let newVelocity = currentVelocity.clone();
-    if (this.inputDirection.x === 0 && this.inputDirection.z === 0) {
-      if (currentVelocity.length() < 0.2) {
-        newVelocity.x = 0;
-        newVelocity.z = 0;
-      } else {
-        newVelocity.x *= this.deacceleration;
-        newVelocity.z *= this.deacceleration;
-      }
-    } else {
-      newVelocity = this.accelerate(
-        currentVelocity,
-        desiredVelocity,
-        this.accelRateGround,
-        deltaTime,
-      );
-    }
-
-    let outputVelocity = this.#characterController.calculateMovement(
-      deltaTime,
-      forwardWorld,
-      floorNormal,
-      newVelocity,
-      supportInfo.averageSurfaceVelocity,
-      desiredVelocity,
-      upWorld,
-    );
-
-    outputVelocity = this.applyHorizontalProjectionCorrection(
-      outputVelocity,
+    return this.applyHorizontalProjectionCorrection(
+      currentVelocity.clone(),
       supportInfo,
       upWorld,
     );
-
-    return outputVelocity;
   }
 
   private applyHorizontalProjectionCorrection(

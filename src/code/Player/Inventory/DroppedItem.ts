@@ -151,7 +151,7 @@ export class DroppedItem implements IUsable {
 
     // Sync debug AABB once per frame (not per collision sub-step).
     this.#voxelCollider.syncDebugMesh(this.#boxMesh.position);
-    this.#updateLighting();
+    //this.#updateLighting();
   }
 
   #moveAxis(axis: Axis, delta: number): void {
@@ -170,15 +170,16 @@ export class DroppedItem implements IUsable {
 
   #isGrounded(): boolean {
     const probe = this.#boxMesh.position.clone();
-    probe.y -= 0.06;
+    probe.y -= 0.01;
     return this.#overlapsSolid(probe);
   }
 
   #updateLighting(): void {
-    const px = Math.floor(this.#boxMesh.position.x);
-    const py = Math.floor(this.#boxMesh.position.y);
-    const pz = Math.floor(this.#boxMesh.position.z);
-    const packedLight = ChunkLoadingSystem.getLightByWorldCoords(px, py, pz);
+    const packedLight = ChunkLoadingSystem.getLightByWorldCoords(
+      this.#boxMesh.position.x,
+      this.#boxMesh.position.y,
+      this.#boxMesh.position.z,
+    );
 
     const skyLight = ((packedLight >> 4) & 0xf) / 15;
     const blockLight = (packedLight & 0xf) / 15;

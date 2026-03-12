@@ -72,12 +72,7 @@ export class DistantTerrain {
     this.surfaceTileLookupData = new Uint8Array(
       this.gridResolution * this.gridResolution * 4,
     );
-    for (let i = 0; i < this.surfaceTileLookupData.length; i += 4) {
-      this.surfaceTileLookupData[i] = 14;
-      this.surfaceTileLookupData[i + 1] = 0;
-      this.surfaceTileLookupData[i + 2] = 0;
-      this.surfaceTileLookupData[i + 3] = 255;
-    }
+
     this.surfaceTileLookupTexture = RawTexture.CreateRGBATexture(
       this.surfaceTileLookupData,
       this.gridResolution,

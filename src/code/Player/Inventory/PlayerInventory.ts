@@ -4,14 +4,7 @@ import { DroppedItem } from "./DroppedItem";
 import { Item } from "./Item";
 import { ItemSlot } from "./ItemSlot";
 import { InventoryControls } from "../Controls/InventoryControls";
-import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
-import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
-import { CrossHair } from "../Hud/CrossHair";
-import { BlockType } from "@/code/World/BlockType";
-import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
-import { AdvancedBoat } from "@/code/Entities/AdvancedBoat";
-import { Map1 } from "@/code/Maps/Map1";
-import { GenerationParams } from "@/code/World/Generation/NoiseAndParameters/GenerationParams";
+import { ItemRegistry } from "./ItemRegistry";
 
 export type SavedInventoryItem = {
   itemId: number;
@@ -25,8 +18,6 @@ export type SavedInventoryState = {
 };
 
 export class PlayerInventory {
-  private static readonly BOAT_ITEM_ID = 100;
-
   scene: Scene;
   #player: Player;
   #x: number;
@@ -52,7 +43,7 @@ export class PlayerInventory {
     );
 
     this.#generateInventorySlots();
-    this.#generateFakeItems();
+    void this.#loadInitialItems();
   }
 
   #generateInventorySlots() {
@@ -63,118 +54,32 @@ export class PlayerInventory {
     }
   }
 
+  async #loadInitialItems() {
+    await ItemRegistry.ensureLoaded();
+    this.#generateFakeItems();
+  }
+
   #generateFakeItems() {
-    for (const textureDef of TextureDefinitions) {
-      const i = Math.floor(
-        (textureDef.id - 1) / this.#inventorySlots[0].length,
-      );
-      // Only add the item if it fits within the inventory's height
+    const definitions = ItemRegistry.getAll();
+    for (const def of definitions) {
+      const i = Math.floor((def.id - 1) / this.#inventorySlots[0].length);
       if (i < this.#inventorySlots.length) {
-        const j = (textureDef.id - 1) % this.#inventorySlots[0].length;
-        const item = this.#createItemById(textureDef.id, i, j);
+        const j = (def.id - 1) % this.#inventorySlots[0].length;
+        const item = this.#createItemById(def.id, i, j);
         if (!item) continue;
-        item.itemId = textureDef.id;
-        item.stackSize = textureDef.id;
+        item.stackSize = def.maxStack ?? Math.min(64, def.id);
         this.#inventorySlots[i][j].item = item;
         this.#inventorySlots[i][j].divItemSlot!.appendChild(item.div);
       }
     }
-
-    const boat = this.#createItemById(PlayerInventory.BOAT_ITEM_ID, 9, 9);
-    if (!boat) return;
-    this.#inventorySlots[9][9].item = boat;
-    this.#inventorySlots[9][9].divItemSlot!.appendChild(boat.div);
   }
 
   #createItemById(itemId: number, row: number, col: number): Item | null {
-    if (itemId === PlayerInventory.BOAT_ITEM_ID) {
-      return this.#createBoatItem(row, col);
+    try {
+      return Item.createById(itemId, row, col);
+    } catch {
+      return null;
     }
-
-    const textureDef = TextureDefinitions.find((t) => t.id === itemId);
-    if (!textureDef) return null;
-
-    const item = new Item(
-      textureDef.name,
-      "Description for " + textureDef.name,
-      MaterialFactory.getTexturePathFromFolder(textureDef.path)!,
-      row,
-      col,
-      textureDef.path,
-    );
-    item.itemId = textureDef.id;
-    return item;
-  }
-
-  #createBoatItem(row: number, col: number): Item {
-    const boat = new Item(
-      "Small Row Boat",
-      "Boat",
-      "/texture/other/boat-row-small.png",
-      row,
-      col,
-    );
-    boat.stackSize = 1;
-    boat.use = (player: Player) => {
-      const hit = CrossHair.pickWaterPlacementTarget(player);
-      if (!hit) return;
-
-      const blockAtHit = ChunkLoadingSystem.getBlockByWorldCoords(
-        hit.x,
-        hit.y,
-        hit.z,
-      );
-      // We only target actual water blocks for boat placement.
-      if (blockAtHit !== BlockType.Water) {
-        console.log("Boat must be placed on water.");
-        return;
-      }
-
-      // Place the boat on top of the water, not inside it.
-      const spawnY = hit.y + 1;
-
-      // The boat's center will be at this position.
-      const spawnPos = new Vector3(hit.x + 0.5, spawnY + 0.5, hit.z + 0.5);
-
-      // The boat's collision half-extents are (1.15, 0.6, 2.1).
-      // We need space for the boat to spawn without being inside a solid block.
-      // We check a 3x2x5 area (width, height, depth).
-      const halfWidth = 1; // ceil(1.15) -> 2, so 1 block on each side. Total 3 wide.
-      const halfHeight = 1; // ceil(0.6) -> 1, so 1 block up. Total 2 high.
-      const halfDepth = 2; // ceil(2.1) -> 3, so 2 blocks on each side. Total 5 deep.
-
-      for (let y = 0; y < halfHeight * 2; y++) {
-        for (let x = -halfWidth; x <= halfWidth; x++) {
-          for (let z = -halfDepth; z <= halfDepth; z++) {
-            // Check around the block where the boat will be centered
-            const checkX = hit.x + x;
-            const checkY = spawnY + y;
-            const checkZ = hit.z + z;
-
-            const blockId = ChunkLoadingSystem.getBlockByWorldCoords(
-              checkX,
-              checkY,
-              checkZ,
-            );
-
-            // We can only place in air or water.
-            if (blockId !== BlockType.Air && blockId !== BlockType.Water) {
-              console.log("Not enough space to place the boat.");
-              return;
-            }
-          }
-        }
-      }
-
-      new AdvancedBoat(
-        Map1.mainScene,
-        player,
-        GenerationParams.SEA_LEVEL,
-        spawnPos,
-      );
-    };
-    boat.itemId = PlayerInventory.BOAT_ITEM_ID;
-    return boat;
   }
 
   public getSavedInventoryState(): SavedInventoryState {
@@ -326,18 +231,12 @@ export class PlayerInventory {
   }
 
   public createAndAddItem(itemId: number, count: number): void {
-    const textureDef = TextureDefinitions.find((t) => t.id === itemId);
-    if (!textureDef) return;
-
-    const item = new Item(
-      textureDef.name,
-      "Crafted Item",
-      MaterialFactory.getTexturePathFromFolder(textureDef.path)!,
-      -1,
-      -1,
-      textureDef.path,
-    );
-    item.itemId = itemId;
+    let item: Item;
+    try {
+      item = Item.createById(itemId, -1, -1);
+    } catch {
+      return;
+    }
     item.stackSize = count;
 
     const remainder = this.addItem(item);

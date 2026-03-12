@@ -31,9 +31,10 @@ export class Map1 {
 
   constructor(scene: Scene, player: Player) {
     this.#player = player;
+    Map1.initCrackingMesh();
     Map1.mainScene = this.CreateScene(scene);
     Map1.environment = new WorldEnvironment(Map1.mainScene);
-    Map1.initCrackingMesh();
+
     this.#playerStatePersistence = new PlayerStatePersistence(
       Map1.mainScene,
       this.#player,
@@ -160,10 +161,10 @@ export class Map1 {
     }
   }
 
-  private static initCrackingMesh() {
+  private static async initCrackingMesh() {
     this.#crackingMesh = MeshBuilder.CreateBox(
       "crackingMesh",
-      { size: 1.02 },
+      { size: 1.04 },
       this.mainScene,
     );
     this.#crackingMesh.isPickable = false;
