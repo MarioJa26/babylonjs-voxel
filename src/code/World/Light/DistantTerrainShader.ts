@@ -1,14 +1,15 @@
 export class DistantTerrainShader {
   static readonly distantTerrainVertexShader = `
-        precision lowp float;
-        attribute vec3 position;
-        attribute vec3 normal;
+        #version 300 es
+        precision highp float; // lowp can cause issues on some hardware, highp is safer
+        in vec3 position;
+        in vec3 normal;
 
         uniform mat4 world;
         uniform mat4 worldViewProjection;
 
-        varying vec3 vNormal;
-        varying vec3 vPositionW;
+        out vec3 vNormal;
+        out vec3 vPositionW;
 
         void main() {
             gl_Position = worldViewProjection * vec4(position, 1.0);
@@ -18,9 +19,10 @@ export class DistantTerrainShader {
     `;
 
   static readonly distantTerrainFragmentShader = `
+        #version 300 es
         precision highp float;
-        varying vec3 vNormal;
-        varying vec3 vPositionW;
+        in vec3 vNormal;
+        in vec3 vPositionW;
 
         uniform vec3 lightDirection;
         uniform float sunLightIntensity;
@@ -36,6 +38,8 @@ export class DistantTerrainShader {
         uniform vec4 vFogInfos;
         uniform vec3 vFogColor;
         uniform vec3 cameraPosition;
+
+        out vec4 fragColor;
 
         const vec3 DEEP_BLUE = vec3(0.1, 0.2, 0.4);
         const vec3 LIGHT_BLUE = vec3(0.6, 0.75, 0.95);
@@ -53,7 +57,7 @@ export class DistantTerrainShader {
                 1.0 - ((tile.y + 1.0) * atlasTileSize)
             );
             vec2 atlasUV = baseUV + fract(worldUV) * atlasTileSize;
-            return texture2D(diffuseTexture, atlasUV).rgb;
+            return texture(diffuseTexture, atlasUV).rgb;
         }
 
         vec2 readTopTileFromLookup() {
@@ -64,7 +68,7 @@ export class DistantTerrainShader {
                 vec2(tileGridResolution - 1.0)
             );
             vec2 lookupUV = (nearest + vec2(0.5)) / tileGridResolution;
-            return floor(texture2D(tileLookupTexture, lookupUV).rg * 255.0 + vec2(0.5));
+            return floor(texture(tileLookupTexture, lookupUV).rg * 255.0 + vec2(0.5));
         }
 
         vec3 getAtmosphereColor(float heightFactor) {
@@ -110,16 +114,17 @@ export class DistantTerrainShader {
             
             vec3 colorWithFog = mix(effectiveFogColor, finalColor, fogFactor);
 
-            gl_FragColor = vec4(colorWithFog, 1.0);
+            fragColor = vec4(colorWithFog, 1.0);
         }
     `;
 
   static readonly distantWaterVertexShader = `
+        #version 300 es
         precision highp float;
-        attribute vec3 position;
+        in vec3 position;
         uniform mat4 world;
         uniform mat4 worldViewProjection;
-        varying vec3 vPositionW;
+        out vec3 vPositionW;
 
         void main() {
             gl_Position = worldViewProjection * vec4(position, 1.0);
@@ -128,14 +133,17 @@ export class DistantTerrainShader {
     `;
 
   static readonly distantWaterFragmentShader = `
+        #version 300 es
         precision highp float;
-        varying vec3 vPositionW;
+        in vec3 vPositionW;
 
         uniform vec3 lightDirection;
         uniform float sunLightIntensity;
         uniform vec4 vFogInfos;
         uniform vec3 vFogColor;
         uniform vec3 cameraPosition;
+
+        out vec4 fragColor;
 
         const vec3 WATER_COLOR = vec3(0.0, 0.1, 0.3);
         const vec3 DEEP_BLUE = vec3(0.1, 0.2, 0.4);
@@ -188,7 +196,7 @@ export class DistantTerrainShader {
 
             vec3 colorWithFog = mix(effectiveFogColor, finalColor, fogFactor);
 
-            gl_FragColor = vec4(colorWithFog, 1.0);
+            fragColor = vec4(colorWithFog, 1.0);
         }
     `;
 }

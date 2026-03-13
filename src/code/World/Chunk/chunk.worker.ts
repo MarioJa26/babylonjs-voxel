@@ -416,6 +416,8 @@ class ChunkWorkerMesher {
     lightLevel: number,
     packedAO: number,
     meshData: WorkerInternalMeshData,
+    rotation = 0,
+    slice = 0,
   ) {
     const tex = BlockTextures[blockId];
     if (!tex) return;
@@ -436,10 +438,15 @@ class ChunkWorkerMesher {
     // Packed per-face payload consumed by instanced vertex reconstruction.
     const flip = ao0 + ao2 < ao1 + ao3;
     const axisFace = axis * 2 + (isBackFace ? 1 : 0);
+    const meta =
+      (flip ? 1 : 0) |
+      ((materialType & 1) << 1) |
+      ((rotation & 7) << 2) |
+      ((slice & 7) << 5);
 
     meshData.faceDataA.push4(x, y, z, axisFace);
     meshData.faceDataB.push4(width, height, tx, ty);
-    meshData.faceDataC.push4(packedAO, lightLevel, materialType, flip ? 1 : 0);
+    meshData.faceDataC.push4(packedAO, lightLevel, 0, meta);
     meshData.faceCount++;
   }
 }

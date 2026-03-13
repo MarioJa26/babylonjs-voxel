@@ -1,15 +1,16 @@
 export class SkyShader {
   static readonly skyVertexShader = `
+        #version 300 es
         precision highp float;
 
         // Attributes
-        attribute vec3 position;
+        in vec3 position;
 
         // Uniforms
         uniform mat4 worldViewProjection;
 
         // Varyings
-        varying vec3 vPosition;
+        out vec3 vPosition;
 
         void main(void) {
             gl_Position = worldViewProjection * vec4(position, 1.0);
@@ -18,13 +19,16 @@ export class SkyShader {
     `;
 
   static readonly skyFragmentShader = `
+        #version 300 es
         precision highp float;
 
         // Varyings
-        varying vec3 vPosition;
+        in vec3 vPosition;
 
         // Uniforms
         uniform vec3 sunDirection;
+
+        out vec4 fragColor;
 
         void main(void) {
             // 1. Calculate view direction
@@ -59,7 +63,7 @@ export class SkyShader {
                 finalColor = mix(finalColor, vec3(0.1, 0.1, 0.2), -sunDirection.y * 2.0);
             }
 
-            gl_FragColor = vec4(clamp(finalColor, 0.0, 1.0), 1.0);
+            fragColor = vec4(clamp(finalColor, 0.0, 1.0), 1.0);
         }
     `;
 }

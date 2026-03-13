@@ -1,17 +1,18 @@
 export class TransparentShader {
   public static readonly chunkFragmentShader = `
+    #version 300 es
     precision highp float;
-    #extension GL_OES_standard_derivatives : enable
-    #extension GL_EXT_shader_texture_lod : enable
 
-    varying vec3 vPositionW;
-    varying vec2 vUV;
-    varying vec2 vUV2;
-    varying mat3 vTBN;
-    varying float vAO;
-    varying float vSkyLight;
-    varying float vBlockLight;
-    varying float vMaterialType; 
+    in vec3 vPositionW;
+    in vec2 vUV;
+    in vec2 vUV2;
+    in mat3 vTBN;
+    in float vAO;
+    in float vSkyLight;
+    in float vBlockLight;
+    in float vMaterialType; 
+    in vec3 vSkyColor;
+    in vec3 vBlockColor;
 
     uniform vec3 cameraPosition;
     uniform vec3 lightDirection;
@@ -20,6 +21,8 @@ export class TransparentShader {
     uniform float sunLightIntensity;
     uniform sampler2D diffuseTexture;
     uniform sampler2D normalTexture;
+
+    out vec4 fragColor;
 
     void main(void) {
         float isWater = vMaterialType; 
@@ -36,8 +39,8 @@ export class TransparentShader {
         vec2 atlasUV = vUV2 + singleTileUV * atlasTileSize;
 
         // --- 3. Sampling ---
-        vec4 diffuseColor = texture2DLodEXT(diffuseTexture, atlasUV, lod);
-        vec3 normalMap = texture2DLodEXT(normalTexture, atlasUV, lod).rgb;
+        vec4 diffuseColor = textureLod(diffuseTexture, atlasUV, lod);
+        vec3 normalMap = textureLod(normalTexture, atlasUV, lod).rgb;
         normalMap = normalize(normalMap * 2.0 - 1.0);
         vec3 worldNormal = normalize(vTBN * normalMap);
 
@@ -58,10 +61,7 @@ export class TransparentShader {
         float aoFactor = 1.0 - vAO * mix(0.1, 0.24, isWater); 
         float lightLevel = max(vSkyLight, vBlockLight);
         
-        // FIX: Scale sky light color by sunLightIntensity so ambient light disappears at night
-        vec3 skyColor = vec3(0.6, 0.8, 1.0) * (sunLightIntensity + 0.05); 
-        vec3 blockColor = vec3(1.0, 0.6, 0.2); 
-        vec3 lightMix = clamp((vSkyLight * skyColor) + (vBlockLight * blockColor), 0.0, 1.0);
+        vec3 lightMix = clamp((vSkyLight * vSkyColor) + (vBlockLight * vBlockColor), 0.0, 1.0);
 
         // --- 6. Final Color and Alpha ---
         vec3 litColor = diffuseColor.rgb + diffuse + specular;
@@ -78,7 +78,7 @@ export class TransparentShader {
         float baseAlpha = diffuseColor.a;
         float alpha = baseAlpha * mix(1.0, mix(0.9, 0.4, lightLevel), isWater);
 
-        gl_FragColor = vec4(finalColor, alpha);
+        fragColor = vec4(finalColor, alpha);
     }
   `;
 }

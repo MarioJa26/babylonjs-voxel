@@ -12,6 +12,7 @@ type LightNode = {
 };
 
 export class Chunk {
+  public readonly id: bigint;
   public static readonly SIZE = GenerationParams.CHUNK_SIZE;
   public static readonly SIZE2 = Chunk.SIZE * Chunk.SIZE;
   public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
@@ -22,7 +23,7 @@ export class Chunk {
   public isLoaded = false;
   public isTerrainScheduled = false;
   public colliderDirty = true;
-  public readonly id: bigint;
+
   private remeshQueued = false;
   private remeshQueuedPriority = false;
 
