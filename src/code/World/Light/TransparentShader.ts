@@ -5,22 +5,24 @@ export class TransparentShader {
 
     in vec3 vPositionW;
     in vec2 vUV;
-    in vec2 vUV2;
+    flat in vec2 vUV2;
     in mat3 vTBN;
     in float vAO;
-    in float vSkyLight;
-    in float vBlockLight;
-    in float vMaterialType; 
-    in vec3 vSkyColor;
-    in vec3 vBlockColor;
+    flat in float vSkyLight;
+    flat in float vBlockLight;
+    flat in float vMaterialType;
 
-    uniform vec3 cameraPosition;
-    uniform vec3 lightDirection;
     uniform float atlasTileSize;
-    uniform float time; 
-    uniform float sunLightIntensity;
     uniform sampler2D diffuseTexture;
     uniform sampler2D normalTexture;
+
+    uniform GlobalUniforms {
+        vec3 lightDirection;
+        vec3 cameraPosition;
+        float sunLightIntensity;
+        float wetness;
+        float time;
+    };
 
     out vec4 fragColor;
 
@@ -60,6 +62,9 @@ export class TransparentShader {
         // --- 5. Ambient Occlusion and Environment Light ---
         float aoFactor = 1.0 - vAO * mix(0.1, 0.24, isWater); 
         float lightLevel = max(vSkyLight, vBlockLight);
+        
+        vec3 vSkyColor = vec3(0.8, 0.8, 0.8) * (sunLightIntensity + 0.2);
+        vec3 vBlockColor = vec3(0.9, 0.6, 0.2);
         
         vec3 lightMix = clamp((vSkyLight * vSkyColor) + (vBlockLight * vBlockColor), 0.0, 1.0);
 

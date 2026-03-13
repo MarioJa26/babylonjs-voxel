@@ -8,6 +8,7 @@ import {
   Vector3,
   BoundingInfo,
   AbstractMesh,
+  UniformBuffer,
 } from "@babylonjs/core";
 import { Map1 } from "@/code/Maps/Map1";
 import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
@@ -24,12 +25,12 @@ import { TextureCache } from "../Texture/TextureCache";
 export class ChunkMesher {
   static #atlasMaterial: Material | null = null;
   static #transparentMaterial: Material | null = null;
+  static #globalUniformBuffer: UniformBuffer | null = null;
 
   // Cache global uniforms — updated once per frame.
   static #cachedUniforms = {
     lightDirection: new Vector3(0, 1, 0),
     cameraPosition: new Vector3(0, 0, 0),
-    screenSize: new Vector2(1920, 1080),
     cameraPlanes: new Vector2(0.1, 1000),
     time: 0,
     sunLightIntensity: 1.0,
@@ -88,6 +89,20 @@ export class ChunkMesher {
       TextureAtlasFactory.setNormal(normalAtlasTexture);
     }
 
+    const engine = scene.getEngine();
+    this.#globalUniformBuffer = new UniformBuffer(
+      engine,
+      undefined,
+      true,
+      "GlobalUniforms",
+    );
+    this.#globalUniformBuffer.addUniform("lightDirection", 3);
+    this.#globalUniformBuffer.addUniform("cameraPosition", 3);
+    this.#globalUniformBuffer.addUniform("sunLightIntensity", 1);
+    this.#globalUniformBuffer.addUniform("wetness", 1);
+    this.#globalUniformBuffer.addUniform("time", 1);
+    this.#globalUniformBuffer.create();
+
     if (diffuseAtlasTexture) {
       Effect.ShadersStore["chunkVertexShader"] = OpaqueShader.chunkVertexShader;
       Effect.ShadersStore["chunkFragmentShader"] =
@@ -106,12 +121,8 @@ export class ChunkMesher {
             "worldViewProjection",
             "atlasTileSize",
             "maxAtlasTiles",
-            "cameraPosition",
-            "lightDirection",
-            "screenSize",
-            "sunLightIntensity",
-            "wetness",
           ],
+          uniformBuffers: ["GlobalUniforms"],
           samplers: ["diffuseTexture", "normalTexture"],
         },
       );
@@ -128,11 +139,10 @@ export class ChunkMesher {
       opaqueBlockShader.setTexture("diffuseTexture", diffuseAtlasTexture);
       if (normalAtlasTexture)
         opaqueBlockShader.setTexture("normalTexture", normalAtlasTexture);
-
-      opaqueBlockShader.onBind = () => {
-        const effect = opaqueBlockShader.getEffect();
-        if (effect) ChunkMesher.applyOpaqueUniforms(effect);
-      };
+      opaqueBlockShader.setUniformBuffer(
+        "GlobalUniforms",
+        this.#globalUniformBuffer,
+      );
       ChunkMesher.#atlasMaterial = opaqueBlockShader;
 
       // Transparent material (glass + water)
@@ -142,17 +152,8 @@ export class ChunkMesher {
         { vertex: "chunk", fragment: "transparentChunk" },
         {
           attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
-          uniforms: [
-            "world",
-            "worldViewProjection",
-            "atlasTileSize",
-            "cameraPosition",
-            "lightDirection",
-            "time",
-            "screenSize",
-            "sunLightIntensity",
-            "wetness",
-          ],
+          uniforms: ["world", "worldViewProjection", "atlasTileSize"],
+          uniformBuffers: ["GlobalUniforms"],
           samplers: ["diffuseTexture", "normalTexture"],
         },
       );
@@ -166,11 +167,10 @@ export class ChunkMesher {
       transparentMat.setTexture("diffuseTexture", diffuseAtlasTexture);
       if (normalAtlasTexture)
         transparentMat.setTexture("normalTexture", normalAtlasTexture);
-
-      transparentMat.onBind = () => {
-        const effect = transparentMat.getEffect();
-        if (effect) ChunkMesher.applyTransparentUniforms(effect);
-      };
+      transparentMat.setUniformBuffer(
+        "GlobalUniforms",
+        this.#globalUniformBuffer,
+      );
       ChunkMesher.#transparentMaterial = transparentMat;
     } else {
       console.error("Texture Atlas not yet built or available!");
@@ -326,25 +326,6 @@ export class ChunkMesher {
     return mesh;
   }
 
-  private static applyOpaqueUniforms(effect: Effect) {
-    const u = this.#cachedUniforms;
-    effect.setVector3("lightDirection", u.lightDirection);
-    effect.setVector3("cameraPosition", u.cameraPosition);
-    effect.setVector2("screenSize", u.screenSize);
-    effect.setFloat("sunLightIntensity", u.sunLightIntensity);
-    effect.setFloat("wetness", u.wetness);
-  }
-
-  private static applyTransparentUniforms(effect: Effect) {
-    const u = this.#cachedUniforms;
-    effect.setVector3("lightDirection", u.lightDirection);
-    effect.setVector3("cameraPosition", u.cameraPosition);
-    effect.setVector2("screenSize", u.screenSize);
-    effect.setFloat("time", u.time);
-    effect.setFloat("sunLightIntensity", u.sunLightIntensity);
-    effect.setFloat("wetness", u.wetness);
-  }
-
   static updateGlobalUniforms(frameId: number) {
     if (this.lastUpdateFrame === frameId) return;
     this.lastUpdateFrame = frameId;
@@ -353,7 +334,6 @@ export class ChunkMesher {
     if (!scene) return;
     const camera = scene.activeCamera;
     if (!camera) return;
-    const engine = scene.getEngine();
 
     // OPTIMIZATION: normalize into _tmpLightDir (pre-allocated) instead of
     // `new Vector3(...).normalize()` which allocates a fresh object every frame.
@@ -371,7 +351,6 @@ export class ChunkMesher {
     const camPos = camera.position;
     u.cameraPosition.set(camPos.x, camPos.y, camPos.z);
 
-    u.screenSize.set(engine.getRenderWidth(), engine.getRenderHeight());
     u.cameraPlanes.set(camera.minZ, camera.maxZ);
     u.time = performance.now() / 1000.0;
 
@@ -380,6 +359,24 @@ export class ChunkMesher {
 
     if (WorldEnvironment.instance) {
       u.wetness = WorldEnvironment.instance.wetness;
+    }
+
+    if (this.#globalUniformBuffer) {
+      this.#globalUniformBuffer.updateVector3(
+        "lightDirection",
+        u.lightDirection,
+      );
+      this.#globalUniformBuffer.updateVector3(
+        "cameraPosition",
+        u.cameraPosition,
+      );
+      this.#globalUniformBuffer.updateFloat(
+        "sunLightIntensity",
+        u.sunLightIntensity,
+      );
+      this.#globalUniformBuffer.updateFloat("wetness", u.wetness);
+      this.#globalUniformBuffer.updateFloat("time", u.time);
+      this.#globalUniformBuffer.update();
     }
   }
 

@@ -14,19 +14,24 @@ export class OpaqueShader {
         uniform mat4 worldViewProjection;
         uniform float atlasTileSize;
         uniform float maxAtlasTiles;
-        uniform float sunLightIntensity;
+
+        uniform GlobalUniforms {
+            vec3 lightDirection;
+            vec3 cameraPosition;
+            float sunLightIntensity;
+            float wetness;
+            float time;
+        };
 
         // Varyings
         out vec2 vUV;
-        out vec2 vUV2;
+        flat out vec2 vUV2;
         out vec3 vPositionW;
         out mat3 vTBN;
         out float vAO;
-        out float vSkyLight;
-        out float vBlockLight;
-        out float vMaterialType;
-        out vec3 vSkyColor;
-        out vec3 vBlockColor;
+        flat out float vSkyLight;
+        flat out float vBlockLight;
+        flat out float vMaterialType;
 
         int decodeCorner(int vertexId, int isBackFace, int flip) {
             // Packed corner IDs for 6 vertices (2 bits each) for 4 states (isBackFace/flip)
@@ -114,9 +119,6 @@ void main(void) {
     vSkyLight = float(light >> 4) * 0.0666666;
     vBlockLight = float(light & 0xF) * 0.0666666;
     vMaterialType = float(materialType);
-
-    vSkyColor = vec3(0.8, 0.8, 0.8) * (sunLightIntensity + 0.2);
-    vBlockColor = vec3(0.9, 0.6, 0.2);
 }
 `;
 
@@ -125,24 +127,26 @@ void main(void) {
     precision highp float;
 
     in vec2 vUV;
-    in vec2 vUV2;
+    flat in vec2 vUV2;
     in vec3 vPositionW;
     in mat3 vTBN;
     in float vAO;
-    in float vSkyLight;
-    in float vBlockLight;
-    in vec3 vSkyColor;
-    in vec3 vBlockColor;
+    flat in float vSkyLight;
+    flat in float vBlockLight;
 
     uniform sampler2D diffuseTexture;
     uniform sampler2D normalTexture;
     uniform float atlasTileSize;
-    uniform vec3 cameraPosition;
-    uniform vec3 lightDirection;
-    uniform float sunLightIntensity;
-    uniform float wetness;
 
     out vec4 fragColor;
+
+    uniform GlobalUniforms {
+        vec3 lightDirection;
+        vec3 cameraPosition;
+        float sunLightIntensity;
+        float wetness;
+        float time;
+    };
 
     void main(void) {
         // 1. UV setup
@@ -175,6 +179,9 @@ void main(void) {
 
         // 5. Final Coloring
         float aoFactor = 1.0 - vAO * 0.23; 
+
+        vec3 vSkyColor = vec3(0.8, 0.8, 0.8) * (sunLightIntensity + 0.2);
+        vec3 vBlockColor = vec3(0.9, 0.6, 0.2);
         
         // Colors are now provided by varyings vSkyColor and vBlockColor
         vec3 lightMix = clamp((vSkyLight * vSkyColor) + (vBlockLight * vBlockColor), 0.2, 1.0);
