@@ -465,10 +465,6 @@ export class Chunk {
       this.removeLight(localX, localY, localZ, true);
     } else if (newIsSkyTransparent) {
       this.updateLightFromNeighbors(localX, localY, localZ, true);
-      // updateLightFromNeighbors always decrements by 1 from the cell above,
-      // breaking full-sun columns. Restore unattenuated sky=15 downward if the
-      // cell above carries full sunlight.
-      this.propagateFullSunColumnDown(localX, localY, localZ);
     }
     if (oldWasSkyTransparent && !newIsSkyTransparent && oldSkyLight > 0) {
       this.cutSkyLightBelow(localX, localY, localZ);
@@ -743,59 +739,6 @@ export class Chunk {
     return unpackBlockId(blockId) === Chunk.WATER_BLOCK_ID;
   }
 
-  private propagateFullSunColumnDown(
-    localX: number,
-    localY: number,
-    localZ: number,
-  ): void {
-    let aboveChunk: Chunk | undefined = this;
-    let aboveY = localY + 1;
-    if (aboveY >= Chunk.SIZE) {
-      aboveChunk = this.getNeighbor(0, 1, 0);
-      aboveY = 0;
-    }
-    if (!aboveChunk?.isLoaded) return;
-
-    const aboveBlock = aboveChunk.getBlockPacked(localX, aboveY, localZ);
-    if (
-      aboveChunk.getSkyLight(localX, aboveY, localZ) !== 15 ||
-      Chunk.isWaterBlock(aboveBlock)
-    ) {
-      return;
-    }
-
-    const bfsSeeds: LightNode[] = [];
-    let targetChunk: Chunk | undefined = this;
-    let ty = localY;
-
-    while (true) {
-      if (!targetChunk?.isLoaded) break;
-      const blockPacked = targetChunk.getBlockPacked(localX, ty, localZ);
-      if (!targetChunk.isTransparent(blockPacked, 1, -1)) break;
-      if (Chunk.isWaterBlock(blockPacked)) break;
-
-      targetChunk.setSkyLight(localX, ty, localZ, 15);
-      targetChunk.scheduleRemesh();
-      bfsSeeds.push({
-        chunk: targetChunk,
-        x: localX,
-        y: ty,
-        z: localZ,
-        level: 15,
-      });
-
-      ty--;
-      if (ty < 0) {
-        targetChunk = targetChunk.getNeighbor(0, -1, 0);
-        ty = Chunk.SIZE - 1;
-      }
-    }
-
-    if (bfsSeeds.length > 0) {
-      this.propagateLight(bfsSeeds, true);
-    }
-  }
-
   private cutSkyLightBelow(
     localX: number,
     localY: number,
@@ -906,12 +849,8 @@ export class Chunk {
             !Chunk.isWaterBlock(sourceBlockId) &&
             !Chunk.isWaterBlock(targetBlockId);
 
-          // Dependent = strictly less than current level (propagation always
-          // decrements, so a lower neighbour must have been lit by this path).
-          // Cells at exactly `level` are ambiguous — push them to propagateQueue
-          // so any independent source re-floods the darkened region.
           const isDependent =
-            neighborLight > 0 &&
+            neighborLight !== 0 &&
             (neighborLight < level ||
               (preservesFullSun && neighborLight === 15));
 
@@ -927,7 +866,6 @@ export class Chunk {
               level: neighborLight,
             });
           } else if (neighborLight >= level) {
-            // At least as bright — may be an independent source; seed re-flood.
             propagateQueue.push({
               chunk: targetChunk,
               x: tx,
