@@ -302,6 +302,7 @@ export class ChunkLoadingSystem {
     worldY: number,
     worldZ: number,
     blockId: number,
+    state = 0,
   ) {
     const chunkX = this.worldToChunkCoord(worldX);
     const chunkY = this.worldToChunkCoord(worldY);
@@ -314,7 +315,7 @@ export class ChunkLoadingSystem {
     const localY = this.worldToBlockCoord(worldY);
     const localZ = this.worldToBlockCoord(worldZ);
 
-    chunk.setBlock(localX, localY, localZ, blockId);
+    chunk.setBlock(localX, localY, localZ, blockId, state);
   }
 
   public static getBlockByWorldCoords(
@@ -334,6 +335,25 @@ export class ChunkLoadingSystem {
     const localZ = this.worldToBlockCoord(worldZ);
 
     return chunk.getBlock(localX, localY, localZ);
+  }
+
+  public static getBlockStateByWorldCoords(
+    worldX: number,
+    worldY: number,
+    worldZ: number,
+  ): number {
+    const chunkX = this.worldToChunkCoord(worldX);
+    const chunkY = this.worldToChunkCoord(worldY);
+    const chunkZ = this.worldToChunkCoord(worldZ);
+
+    const chunk = Chunk.getChunk(chunkX, chunkY, chunkZ);
+    if (!chunk) return 0;
+
+    const localX = this.worldToBlockCoord(worldX);
+    const localY = this.worldToBlockCoord(worldY);
+    const localZ = this.worldToBlockCoord(worldZ);
+
+    return chunk.getBlockState(localX, localY, localZ);
   }
 
   public static getLightByWorldCoords(

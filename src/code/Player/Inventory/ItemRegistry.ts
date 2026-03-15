@@ -1,4 +1,6 @@
 import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
+import { packRotationSlice } from "@/code/World/BlockEncoding";
+import { BlockType } from "@/code/World/BlockType";
 
 export type ItemDefinition = {
   id: number;
@@ -8,6 +10,8 @@ export type ItemDefinition = {
   materialFolder?: string;
   maxStack?: number;
   useAction?: string;
+  blockId?: number;
+  blockState?: number;
 };
 
 const DEFAULT_ITEMS_URL = "/data/items.json";
@@ -16,6 +20,16 @@ export class ItemRegistry {
   private static initialized = false;
   private static loadPromise: Promise<void> | null = null;
   private static definitions = new Map<number, ItemDefinition>();
+  private static variantsInitialized = false;
+
+  private static readonly COBBLE_VARIANTS = [
+    { rotation: 0, slice: 4, label: "Cobble Slab (Bottom)" },
+    { rotation: 4, slice: 4, label: "Cobble Slab (Top)" },
+    { rotation: 1, slice: 4, label: "Cobble Half Wall (X-)" },
+    { rotation: 5, slice: 4, label: "Cobble Half Wall (X+)" },
+    { rotation: 2, slice: 4, label: "Cobble Half Wall (Z-)" },
+    { rotation: 6, slice: 4, label: "Cobble Half Wall (Z+)" },
+  ];
 
   static initDefaults(): void {
     if (this.initialized) return;
@@ -28,6 +42,8 @@ export class ItemRegistry {
         description: `Block: ${textureDef.name}`,
         materialFolder: textureDef.path,
         useAction: "place_block",
+        blockId: textureDef.id,
+        blockState: 0,
       });
     }
   }
@@ -36,7 +52,10 @@ export class ItemRegistry {
     this.initDefaults();
 
     if (this.loadPromise) return this.loadPromise;
-    this.loadPromise = this.loadFromUrl(url);
+    this.loadPromise = (async () => {
+      await this.loadFromUrl(url);
+      this.ensureBlockStateVariants();
+    })();
     return this.loadPromise;
   }
 
@@ -77,6 +96,34 @@ export class ItemRegistry {
   static getAll(): ItemDefinition[] {
     this.initDefaults();
     return [...this.definitions.values()].sort((a, b) => a.id - b.id);
+  }
+
+  private static ensureBlockStateVariants(): void {
+    if (this.variantsInitialized) return;
+    this.variantsInitialized = true;
+
+    let nextId = 1;
+    for (const id of this.definitions.keys()) {
+      if (id >= nextId) nextId = id + 1;
+    }
+
+    const cobbleDef = TextureDefinitions.find(
+      (textureDef) => textureDef.id === BlockType.Cobble,
+    );
+    if (!cobbleDef) return;
+
+    for (const variant of this.COBBLE_VARIANTS) {
+      const state = packRotationSlice(variant.rotation, variant.slice);
+      this.register({
+        id: nextId++,
+        name: variant.label,
+        description: `Block: ${variant.label}`,
+        materialFolder: cobbleDef.path,
+        useAction: "place_block",
+        blockId: cobbleDef.id,
+        blockState: state,
+      });
+    }
   }
 
   private static isValidDefinition(value: unknown): value is ItemDefinition {

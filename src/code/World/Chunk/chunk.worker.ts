@@ -8,6 +8,13 @@ import { WorkerInternalMeshData } from "./DataStructures/WorkerInternalMeshData"
 import { DistantTerrainGenerator } from "../Generation/DistanTerrain/DistantTerrainGenerator";
 import { BlockTextures } from "../Texture/BlockTextures";
 import { PaletteExpander } from "./DataStructures/PaletteExpander";
+import {
+  BLOCK_ID_MASK,
+  BLOCK_STATE_MASK,
+  BLOCK_STATE_SHIFT,
+  unpackBlockId,
+  unpackBlockState,
+} from "../BlockEncoding";
 
 // ---------------------------------------------------------------------------
 // Block classification — flat Uint8 lookup instead of Set.has() calls
@@ -19,9 +26,9 @@ const BLOCK_TYPE_TRANSPARENT = 1;
 // 0 = opaque/air
 for (const id of [30, 60, 61]) BLOCK_TYPE[id] = BLOCK_TYPE_TRANSPARENT; // water (30) and glass (60, 61)
 
-const BLOCK_ID_MASK = 0xfff; // 12 bits for block ID
-const TRANSPARENT_FLAG = 1 << 12;
-const BACKFACE_FLAG = 1 << 13;
+const BLOCK_PACK_MASK = BLOCK_ID_MASK | (BLOCK_STATE_MASK << BLOCK_STATE_SHIFT);
+const TRANSPARENT_FLAG = 1 << 16;
+const BACKFACE_FLAG = 1 << 17;
 
 const paletteExpander = new PaletteExpander();
 
@@ -54,6 +61,12 @@ class ChunkWorkerMesher {
     v: number,
     getBlock: (x: number, y: number, z: number) => number,
   ): number {
+    const isOccluding = (value: number): boolean => {
+      if (unpackBlockId(value) === 0) return false;
+      const state = unpackBlockState(value);
+      return ((state >> 3) & 7) === 0;
+    };
+
     // Offsets along u-axis (±1) and v-axis (±1) in world-space X/Y/Z
     const ux = u === 0 ? 1 : 0;
     const uy = u === 1 ? 1 : 0;
@@ -69,20 +82,46 @@ class ChunkWorkerMesher {
       const du = i === 1 || i === 2 ? 1 : -1;
       const dv = i === 2 || i === 3 ? 1 : -1;
 
-      const side1 = getBlock(ax + vx * dv, ay + vy * dv, az + vz * dv) !== 0;
-      const side2 = getBlock(ax + ux * du, ay + uy * du, az + uz * du) !== 0;
-      const corner =
+      const side1 = isOccluding(
+        getBlock(ax + vx * dv, ay + vy * dv, az + vz * dv),
+      );
+      const side2 = isOccluding(
+        getBlock(ax + ux * du, ay + uy * du, az + uz * du),
+      );
+      const corner = isOccluding(
         getBlock(
           ax + ux * du + vx * dv,
           ay + uy * du + vy * dv,
           az + uz * du + vz * dv,
-        ) !== 0;
+        ),
+      );
 
       const ao =
         (side1 ? 1 : 0) + (side2 ? 1 : 0) + (corner && side1 && side2 ? 1 : 0);
       packed |= ao << (i * 2);
     }
     return packed;
+  }
+
+  private static getSliceAxis(rotation: number): number {
+    const sliceAxisRaw = rotation & 3;
+    return sliceAxisRaw === 1 ? 0 : sliceAxisRaw === 2 ? 2 : 1;
+  }
+
+  private static isFaceFull(
+    state: number,
+    axis: number,
+    isBackFace: boolean,
+  ): boolean {
+    const slice = (state >> 3) & 7;
+    if (slice === 0) return true;
+
+    const rotation = state & 7;
+    const sliceAxis = this.getSliceAxis(rotation);
+    if (sliceAxis !== axis) return false;
+
+    const flip = (rotation & 4) !== 0;
+    return isBackFace ? !flip : flip;
   }
 
   static generateMesh(data: {
@@ -165,6 +204,9 @@ class ChunkWorkerMesher {
 
     const direction = [0, 0, 0];
     const mask = new Uint32Array(size * size); // reused across all slices
+    const maskLight = new Uint16Array(size * size); // packed AO + light
+    const maskBack = new Uint32Array(size * size);
+    const maskBackLight = new Uint16Array(size * size);
 
     for (let axis = 0; axis < 3; axis++) {
       direction[0] = axis === 0 ? 1 : 0;
@@ -184,12 +226,27 @@ class ChunkWorkerMesher {
           getBlock,
           getLight,
           mask,
+          maskLight,
+          maskBack,
+          maskBackLight,
         );
         this.meshSlice(
           size,
           axis,
           slice,
           mask,
+          maskLight,
+          opaqueMeshData,
+          transparentMeshData,
+          faceNamePositive,
+          faceNameNegative,
+        );
+        this.meshSlice(
+          size,
+          axis,
+          slice,
+          maskBack,
+          maskBackLight,
           opaqueMeshData,
           transparentMeshData,
           faceNamePositive,
@@ -213,6 +270,9 @@ class ChunkWorkerMesher {
     getBlock: (x: number, y: number, z: number, fallback?: number) => number,
     getLight: (x: number, y: number, z: number, fallback?: number) => number,
     mask: Uint32Array,
+    maskLight: Uint16Array,
+    maskBack: Uint32Array,
+    maskBackLight: Uint16Array,
   ) {
     const u_axis = (axis + 1) % 3;
     const v_axis = (axis + 2) % 3;
@@ -235,29 +295,63 @@ class ChunkWorkerMesher {
         const blockNeighbor = getBlock(bx + dx, by + dy, bz + dz, blockCurrent);
 
         if (blockCurrent === blockNeighbor) {
-          mask[maskIndex++] = 0;
+          mask[maskIndex] = 0;
+          maskLight[maskIndex] = 0;
+          maskBack[maskIndex] = 0;
+          maskBackLight[maskIndex] = 0;
+          maskIndex++;
           continue;
         }
 
         // OPTIMIZATION: replace Set.has() with flat array lookup (no hashing)
-        const curType = BLOCK_TYPE[blockCurrent];
-        const nbrType = BLOCK_TYPE[blockNeighbor];
+        const currentId = unpackBlockId(blockCurrent);
+        const neighborId = unpackBlockId(blockNeighbor);
+        const currentState = unpackBlockState(blockCurrent);
+        const neighborState = unpackBlockState(blockNeighbor);
+
+        const curType = BLOCK_TYPE[currentId];
+        const nbrType = BLOCK_TYPE[neighborId];
         const isCurrentTransparent = curType !== 0;
         const isNeighborTransparent = nbrType !== 0;
-        const isCurrentSolid = blockCurrent !== 0;
-        const isNeighborSolid = blockNeighbor !== 0;
+        const isCurrentSolid = currentId !== 0;
+        const isNeighborSolid = neighborId !== 0;
+        const currentFaceFull = this.isFaceFull(currentState, axis, false);
+        const neighborFaceFull = this.isFaceFull(neighborState, axis, true);
+        const neighborOccludesCurrent =
+          isNeighborSolid && currentFaceFull && neighborFaceFull;
+        const currentOccludesNeighbor =
+          isCurrentSolid && currentFaceFull && neighborFaceFull;
 
-        if (
+        const currentPartial = ((currentState >> 3) & 7) !== 0;
+        const neighborPartial = ((neighborState >> 3) & 7) !== 0;
+        const emitCurrent =
           isCurrentSolid &&
-          (!isNeighborSolid || (isNeighborTransparent && !isCurrentTransparent))
-        ) {
+          (!isNeighborSolid ||
+            (isNeighborTransparent && !isCurrentTransparent) ||
+            !neighborOccludesCurrent);
+        const emitNeighbor =
+          isNeighborSolid &&
+          (!isCurrentSolid ||
+            (isCurrentTransparent && !isNeighborTransparent) ||
+            !currentOccludesNeighbor);
+
+        if (emitCurrent) {
           const currentLightPacked = getLight(bx, by, bz, 15 << 4);
-          const lightPacked = getLight(
+          const neighborLightPacked = getLight(
             bx + dx,
             by + dy,
             bz + dz,
             currentLightPacked,
           );
+          // The face of `current` is lit by the open air on the neighbor side.
+          // If `current` is partial (set back from the boundary), its face is
+          // also partially exposed to its own cell, so take the brighter of the
+          // two. The condition was previously inverted (neighborPartial instead
+          // of currentPartial), which caused wrong dark faces.
+          const lightPacked =
+            currentPartial && !neighborPartial
+              ? Math.max(currentLightPacked, neighborLightPacked)
+              : neighborLightPacked;
           const packedAO = this.calculateAOPacked(
             bx + dx,
             by + dy,
@@ -266,16 +360,33 @@ class ChunkWorkerMesher {
             v_axis,
             getBlock,
           );
-          mask[maskIndex++] =
-            (blockCurrent & BLOCK_ID_MASK) |
-            (isCurrentTransparent ? TRANSPARENT_FLAG : 0) |
-            (packedAO << 14) |
-            (lightPacked << 22);
-        } else if (
-          isNeighborSolid &&
-          (!isCurrentSolid || (isCurrentTransparent && !isNeighborTransparent))
-        ) {
-          const lightPacked = getLight(bx, by, bz);
+          const packedIdState = currentId | (currentState << BLOCK_STATE_SHIFT);
+          mask[maskIndex] =
+            (packedIdState & BLOCK_PACK_MASK) |
+            (isCurrentTransparent ? TRANSPARENT_FLAG : 0);
+          maskLight[maskIndex] = packedAO | (lightPacked << 8);
+        } else {
+          mask[maskIndex] = 0;
+          maskLight[maskIndex] = 0;
+        }
+
+        if (emitNeighbor) {
+          const currentLightPacked = getLight(bx, by, bz);
+          const neighborLightPacked = getLight(
+            bx + dx,
+            by + dy,
+            bz + dz,
+            currentLightPacked,
+          );
+          // The face of `neighbor` is lit by the open air on the current side.
+          // If `neighbor` is partial (set back from the boundary), its face is
+          // also partially exposed to its own cell, so take the brighter of the
+          // two. The condition was previously inverted (currentPartial instead
+          // of neighborPartial), which caused wrong dark faces.
+          const lightPacked =
+            neighborPartial && !currentPartial
+              ? Math.max(currentLightPacked, neighborLightPacked)
+              : currentLightPacked;
           const packedAO = this.calculateAOPacked(
             bx,
             by,
@@ -284,15 +395,19 @@ class ChunkWorkerMesher {
             v_axis,
             getBlock,
           );
-          mask[maskIndex++] =
-            (blockNeighbor & BLOCK_ID_MASK) |
+          const packedIdState =
+            neighborId | (neighborState << BLOCK_STATE_SHIFT);
+          maskBack[maskIndex] =
+            (packedIdState & BLOCK_PACK_MASK) |
             (isNeighborTransparent ? TRANSPARENT_FLAG : 0) |
-            (packedAO << 14) |
-            (lightPacked << 22) |
             BACKFACE_FLAG;
+          maskBackLight[maskIndex] = packedAO | (lightPacked << 8);
         } else {
-          mask[maskIndex++] = 0;
+          maskBack[maskIndex] = 0;
+          maskBackLight[maskIndex] = 0;
         }
+
+        maskIndex++;
       }
     }
   }
@@ -300,24 +415,28 @@ class ChunkWorkerMesher {
   private static meshSlice(
     size: number,
     axis: number,
-    slice: number,
+    axisSlice: number,
     mask: Uint32Array,
+    maskLight: Uint16Array,
     opaqueMeshData: WorkerInternalMeshData,
     transparentMeshData: WorkerInternalMeshData,
     faceNamePositive: string,
     faceNameNegative: string,
   ) {
+    const axisPos = axisSlice + 1;
     let maskIndex = 0;
 
     for (let v_coord = 0; v_coord < size; v_coord++) {
       for (let u_coord = 0; u_coord < size; ) {
         const currentMaskValue = mask[maskIndex];
+        const currentMaskLight = maskLight[maskIndex];
         if (currentMaskValue !== 0) {
           // Greedy width
           let width = 1;
           while (
             u_coord + width < size &&
-            mask[maskIndex + width] === currentMaskValue
+            mask[maskIndex + width] === currentMaskValue &&
+            maskLight[maskIndex + width] === currentMaskLight
           ) {
             width++;
           }
@@ -326,7 +445,11 @@ class ChunkWorkerMesher {
           let height = 1;
           outer: while (v_coord + height < size) {
             for (let w = 0; w < width; w++) {
-              if (mask[maskIndex + w + height * size] !== currentMaskValue)
+              const idx = maskIndex + w + height * size;
+              if (
+                mask[idx] !== currentMaskValue ||
+                maskLight[idx] !== currentMaskLight
+              )
                 break outer;
             }
             height++;
@@ -334,25 +457,30 @@ class ChunkWorkerMesher {
 
           const isBackFace = (currentMaskValue & BACKFACE_FLAG) !== 0;
           const isTransparent = (currentMaskValue & TRANSPARENT_FLAG) !== 0;
-          const blockId = currentMaskValue & BLOCK_ID_MASK;
+          const packedIdState = currentMaskValue & BLOCK_PACK_MASK;
+          const blockId = packedIdState & BLOCK_ID_MASK;
+          const state = packedIdState >> BLOCK_STATE_SHIFT;
           const faceName = isBackFace ? faceNameNegative : faceNamePositive;
-          const lightPacked = (currentMaskValue >>> 22) & 0xff;
-          const packedAO = (currentMaskValue >>> 14) & 0xff;
+          const packedAO = currentMaskLight & 0xff;
+          const lightPacked = (currentMaskLight >> 8) & 0xff;
+          const rotation = state & 7;
+          const stateSlice = (state >> 3) & 7;
 
           // Resolve vertex origin based on axis
           let x: number, y: number, z: number;
+
           if (axis === 0) {
-            x = slice + 1;
+            x = axisPos;
             y = u_coord;
             z = v_coord;
           } else if (axis === 1) {
             x = v_coord;
-            y = slice + 1;
+            y = axisPos;
             z = u_coord;
           } else {
             x = u_coord;
             y = v_coord;
-            z = slice + 1;
+            z = axisPos;
           }
 
           // OPTIMIZATION: replace Set.has() with flat array lookup
@@ -376,12 +504,16 @@ class ChunkWorkerMesher {
             lightPacked,
             packedAO,
             targetMesh,
+            rotation,
+            stateSlice,
           );
 
           // Zero out the processed mask region
           for (let h = 0; h < height; h++) {
             for (let w = 0; w < width; w++) {
-              mask[maskIndex + w + h * size] = 0;
+              const idx = maskIndex + w + h * size;
+              mask[idx] = 0;
+              maskLight[idx] = 0;
             }
           }
 
@@ -464,7 +596,7 @@ function compressBlocks(blocks: Uint8Array): {
   // OPTIMIZATION: scan with early-exit rather than collecting into a Set.
   // We only need to know: uniform? ≤16 unique? or >16 unique?
   // This avoids allocating a Set object on every terrain generation call.
-  const seen = new Uint8Array(255); // 64 KB, stack-allocated equivalent
+  const seen = new Uint8Array(65536);
   let uniqueCount = 0;
   const firstId = blocks[0];
 

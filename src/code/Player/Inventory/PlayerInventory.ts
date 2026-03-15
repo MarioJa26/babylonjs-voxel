@@ -61,16 +61,46 @@ export class PlayerInventory {
 
   #generateFakeItems() {
     const definitions = ItemRegistry.getAll();
+    const width = this.#inventorySlots[0].length;
+    const height = this.#inventorySlots.length;
+    const slotCount = width * height;
+    const placed = new Set<number>();
+
+    const placeItem = (def: (typeof definitions)[number], row: number, col: number) => {
+      if (this.#inventorySlots[row][col].item) return false;
+      const item = this.#createItemById(def.id, row, col);
+      if (!item) return false;
+      item.stackSize = def.maxStack ?? Math.min(64, def.id);
+      this.#inventorySlots[row][col].item = item;
+      this.#inventorySlots[row][col].divItemSlot!.appendChild(item.div);
+      placed.add(def.id);
+      return true;
+    };
+
+    // Pass 1: Keep existing IDs in their slots when they fit the grid.
     for (const def of definitions) {
-      const i = Math.floor((def.id - 1) / this.#inventorySlots[0].length);
-      if (i < this.#inventorySlots.length) {
-        const j = (def.id - 1) % this.#inventorySlots[0].length;
-        const item = this.#createItemById(def.id, i, j);
-        if (!item) continue;
-        item.stackSize = def.maxStack ?? Math.min(64, def.id);
-        this.#inventorySlots[i][j].item = item;
-        this.#inventorySlots[i][j].divItemSlot!.appendChild(item.div);
+      if (def.id < 1 || def.id > slotCount) continue;
+      const row = Math.floor((def.id - 1) / width);
+      const col = (def.id - 1) % width;
+      placeItem(def, row, col);
+    }
+
+    // Pass 2: Fill remaining empty slots with any extra items (variants, etc.).
+    const emptySlots: Array<[number, number]> = [];
+    for (let row = 0; row < height; row++) {
+      for (let col = 0; col < width; col++) {
+        if (!this.#inventorySlots[row][col].item) {
+          emptySlots.push([row, col]);
+        }
       }
+    }
+
+    let emptyIndex = 0;
+    for (const def of definitions) {
+      if (placed.has(def.id)) continue;
+      if (emptyIndex >= emptySlots.length) break;
+      const [row, col] = emptySlots[emptyIndex++];
+      placeItem(def, row, col);
     }
   }
 
@@ -266,6 +296,8 @@ export class PlayerInventory {
       item.materialFolder,
     );
     worldItem.itemId = item.itemId;
+    worldItem.blockId = item.blockId ?? item.itemId;
+    worldItem.blockState = item.blockState ?? 0;
     worldItem.stackSize = quantity ?? item.stackSize;
     item.stackSize -= worldItem.stackSize;
 

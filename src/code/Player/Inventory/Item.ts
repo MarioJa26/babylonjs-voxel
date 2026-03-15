@@ -18,6 +18,8 @@ export class Item implements IUsable {
   material: StandardMaterial | undefined;
 
   itemId = 1;
+  blockId: number | null = null;
+  blockState = 0;
 
   #maxStack = 64;
   #stackSize = Math.round(Math.random() * this.#maxStack);
@@ -69,7 +71,7 @@ export class Item implements IUsable {
     const icon =
       def.icon ||
       (def.materialFolder
-        ? MaterialFactory.getTexturePathFromFolder(def.materialFolder) ?? ""
+        ? (MaterialFactory.getTexturePathFromFolder(def.materialFolder) ?? "")
         : "");
 
     const item = new Item(
@@ -82,6 +84,8 @@ export class Item implements IUsable {
       def.maxStack,
     );
     item.itemId = def.id;
+    item.blockId = def.blockId ?? def.id;
+    item.blockState = def.blockState ?? 0;
 
     if (def.useAction === "place_block") {
       item.use = (player: Player) => Item.place(player);
@@ -115,6 +119,8 @@ export class Item implements IUsable {
       textureDef.path,
     );
     item.itemId = itemId;
+    item.blockId = itemId;
+    item.blockState = 0;
 
     return item;
   }
@@ -142,7 +148,9 @@ export class Item implements IUsable {
         ?.item;
 
     if (item) {
-      ChunkLoadingSystem.setBlock(x, y, z, item.itemId);
+      const blockId = item.blockId ?? item.itemId;
+      const blockState = item.blockState ?? 0;
+      ChunkLoadingSystem.setBlock(x, y, z, blockId, blockState);
     }
   }
 

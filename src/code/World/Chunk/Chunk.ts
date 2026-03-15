@@ -2,6 +2,11 @@ import type { Mesh } from "@babylonjs/core";
 import { MeshData } from "./DataStructures/MeshData";
 import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
 import { TerrainHeightMap } from "../Generation/TerrainHeightMap";
+import {
+  packBlockValue,
+  unpackBlockId,
+  unpackBlockState,
+} from "../BlockEncoding";
 
 type LightNode = {
   chunk: Chunk;
@@ -86,7 +91,7 @@ export class Chunk {
   };
 
   public static getLightEmission(blockId: number): number {
-    return Chunk.LIGHT_EMISSION[blockId] || 0;
+    return Chunk.LIGHT_EMISSION[unpackBlockId(blockId)] || 0;
   }
 
   private getNibble(index: number): number {
@@ -236,10 +241,10 @@ export class Chunk {
         let sourceIsWater = false;
 
         if (aboveChunk?.isLoaded) {
-          const aboveBlock = aboveChunk.getBlock(x, 0, z);
-          if (aboveChunk.isTransparent(aboveBlock)) {
+          const aboveBlock = aboveChunk.getBlockPacked(x, 0, z);
+          if (aboveChunk.isTransparent(aboveBlock, 1)) {
             incomingSkyLight = aboveChunk.getSkyLight(x, 0, z);
-            sourceIsWater = aboveBlock === Chunk.WATER_BLOCK_ID;
+            sourceIsWater = Chunk.isWaterBlock(aboveBlock);
           }
         } else {
           const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(
@@ -254,9 +259,9 @@ export class Chunk {
 
         for (let y = CHUNK_SIZE - 1; y >= 0; y--) {
           const idx = x + y * CHUNK_SIZE + z * Chunk.SIZE2;
-          const blockId = this.getBlock(x, y, z);
+          const blockId = this.getBlockPacked(x, y, z);
 
-          if (!this.isTransparent(blockId)) {
+          if (!this.isTransparent(blockId, 1)) {
             incomingSkyLight = 0;
             sourceIsWater = false;
             continue;
@@ -326,6 +331,20 @@ export class Chunk {
   }
 
   public getBlock(localX: number, localY: number, localZ: number): number {
+    const packed = this.getBlockPacked(localX, localY, localZ);
+    return unpackBlockId(packed);
+  }
+
+  public getBlockState(localX: number, localY: number, localZ: number): number {
+    const packed = this.getBlockPacked(localX, localY, localZ);
+    return unpackBlockState(packed);
+  }
+
+  public getBlockPacked(
+    localX: number,
+    localY: number,
+    localZ: number,
+  ): number {
     if (!this.isLoaded) {
       return 0; // Unloaded chunks are treated as air for physics and rendering checks.
     }
@@ -346,6 +365,7 @@ export class Chunk {
     localY: number,
     localZ: number,
     blockId: number,
+    state = 0,
   ): void {
     if (!this.isLoaded) {
       console.warn(
@@ -355,21 +375,22 @@ export class Chunk {
     }
 
     const index = localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2;
-    let oldBlockId = 0;
+    const packedBlock = packBlockValue(blockId, state);
+    let oldPacked = 0;
 
     if (this._isUniform) {
-      oldBlockId = this._uniformBlockId;
-      if (oldBlockId === blockId) return;
+      oldPacked = this._uniformBlockId;
+      if (oldPacked === packedBlock) return;
 
       // Expand Uniform -> Palette
       this._isUniform = false;
       this._palette = new Uint16Array([this._uniformBlockId]);
       // If the new block is different, add it to palette
       let newIndex = 0;
-      if (this._palette[0] !== blockId) {
+      if (this._palette[0] !== packedBlock) {
         const expandedPalette = new Uint16Array(2);
         expandedPalette[0] = this._palette[0];
-        expandedPalette[1] = blockId;
+        expandedPalette[1] = packedBlock;
         this._palette = expandedPalette;
         newIndex = 1;
       }
@@ -381,17 +402,17 @@ export class Chunk {
       this.setNibble(index, newIndex);
     } else if (this._palette) {
       const paletteIndex = this.getNibble(index);
-      oldBlockId = this._palette[paletteIndex];
-      if (oldBlockId === blockId) return;
+      oldPacked = this._palette[paletteIndex];
+      if (oldPacked === packedBlock) return;
 
-      let newPaletteIndex = this._palette.indexOf(blockId);
+      let newPaletteIndex = this._palette.indexOf(packedBlock);
       if (newPaletteIndex === -1) {
         if (this._palette.length < 16) {
           // Add to palette
           newPaletteIndex = this._palette.length;
           const expandedPalette = new Uint16Array(this._palette.length + 1);
           expandedPalette.set(this._palette);
-          expandedPalette[newPaletteIndex] = blockId;
+          expandedPalette[newPaletteIndex] = packedBlock;
           this._palette = expandedPalette;
           this.setNibble(index, newPaletteIndex);
         } else {
@@ -402,7 +423,7 @@ export class Chunk {
           for (let i = 0; i < Chunk.SIZE3; i++) {
             newArray[i] = this._palette[this.getNibble(i)];
           }
-          newArray[index] = blockId;
+          newArray[index] = packedBlock;
           this._block_array = newArray;
           this._palette = null;
         }
@@ -411,22 +432,26 @@ export class Chunk {
       }
     } else {
       // Raw Array: Upgrade to Uint16Array if needed
-      if (blockId > 255 && this._block_array instanceof Uint8Array) {
+      if (packedBlock > 255 && this._block_array instanceof Uint8Array) {
         const newArray = new Uint16Array(
           new SharedArrayBuffer(Chunk.SIZE3 * 2),
         );
         newArray.set(this._block_array);
         this._block_array = newArray;
       }
-      oldBlockId = this._block_array![index];
-      if (oldBlockId === blockId) return;
-      this._block_array![index] = blockId;
+      oldPacked = this._block_array![index];
+      if (oldPacked === packedBlock) return;
+      this._block_array![index] = packedBlock;
     }
 
     const oldBlockLight = this.getBlockLight(localX, localY, localZ);
     const oldSkyLight = this.getSkyLight(localX, localY, localZ);
-    const oldWasTransparent = this.isTransparent(oldBlockId);
-    const newIsTransparent = this.isTransparent(blockId);
+    const oldBlockId = unpackBlockId(oldPacked);
+    const newBlockId = unpackBlockId(packedBlock);
+    const oldWasTransparent = this.isTransparent(oldPacked);
+    const newIsTransparent = this.isTransparent(packedBlock);
+    const oldWasSkyTransparent = this.isTransparent(oldPacked, 1);
+    const newIsSkyTransparent = this.isTransparent(packedBlock, 1);
 
     // Handle Block Light
     if (oldBlockLight > 0) {
@@ -438,14 +463,18 @@ export class Chunk {
     // Handle Sky Light
     if (oldSkyLight > 0) {
       this.removeLight(localX, localY, localZ, true);
-    } else if (newIsTransparent) {
+    } else if (newIsSkyTransparent) {
       this.updateLightFromNeighbors(localX, localY, localZ, true);
+      // updateLightFromNeighbors always decrements by 1 from the cell above,
+      // breaking full-sun columns. Restore unattenuated sky=15 downward if the
+      // cell above carries full sunlight.
+      this.propagateFullSunColumnDown(localX, localY, localZ);
     }
-    if (oldWasTransparent && !newIsTransparent && oldSkyLight === 0) {
+    if (oldWasSkyTransparent && !newIsSkyTransparent && oldSkyLight > 0) {
       this.cutSkyLightBelow(localX, localY, localZ);
     }
 
-    const emission = Chunk.getLightEmission(blockId);
+    const emission = Chunk.getLightEmission(newBlockId);
     if (emission > 0) {
       this.addLight(localX, localY, localZ, emission);
     }
@@ -502,19 +531,35 @@ export class Chunk {
 
   public propagateLight(queue: LightNode[], isSkyLight = true): void {
     while (queue.length > 0) {
-      const { chunk, x, y, z, level } = queue.shift()!;
-      const sourceBlockId = chunk.getBlock(x, y, z);
+      const { chunk, x, y, z } = queue.shift()!;
+      // Always re-read the current stored level rather than trusting the queued
+      // value. By the time a node is dequeued, another path may have already
+      // written a higher value into this cell. Using a stale queued level would
+      // compute a wrong nextLevel and fail to re-flood zeroed neighbours
+      // correctly when multiple light sources overlap.
+      const level = isSkyLight
+        ? chunk.getSkyLight(x, y, z)
+        : chunk.getBlockLight(x, y, z);
+      if (level <= 0) continue;
+      const sourceBlockPacked = chunk.getBlockPacked(x, y, z);
+      const sourceBlockId = unpackBlockId(sourceBlockPacked);
+      const sourceEmits = Chunk.getLightEmission(sourceBlockId) > 0;
 
+      // [dx, dy, dz, axis, isDown, dir]
+      // axis: 0=X 1=Y 2=Z  dir: +1 or -1 (direction of travel along axis)
       const neighbors = [
-        [x + 1, y, z, 0],
-        [x - 1, y, z, 0],
-        [x, y + 1, z, 0],
-        [x, y - 1, z, 1],
-        [x, y, z + 1, 0],
-        [x, y, z - 1, 0],
+        [1, 0, 0, 0, 0, 1],
+        [-1, 0, 0, 0, 0, -1],
+        [0, 1, 0, 1, 0, 1],
+        [0, -1, 0, 1, 1, -1],
+        [0, 0, 1, 2, 0, 1],
+        [0, 0, -1, 2, 0, -1],
       ];
 
-      for (const [nx, ny, nz, isDown] of neighbors) {
+      for (const [dx, dy, dz, axis, isDown, dir] of neighbors) {
+        const nx = x + dx;
+        const ny = y + dy;
+        const nz = z + dz;
         let targetChunk: Chunk | undefined = chunk;
         let tx = nx;
         let ty = ny;
@@ -550,8 +595,13 @@ export class Chunk {
         }
 
         if (targetChunk) {
-          const blockId = targetChunk.getBlock(tx, ty, tz);
-          if (targetChunk.isTransparent(blockId)) {
+          const blockId = targetChunk.getBlockPacked(tx, ty, tz);
+          // Pass dir so slabs only block their single closed face, not both faces on the axis.
+          const sourceAllows = isSkyLight
+            ? chunk.isTransparent(sourceBlockPacked, axis, dir)
+            : sourceEmits || chunk.isTransparent(sourceBlockPacked, axis, dir);
+          if (!sourceAllows) continue;
+          if (targetChunk.isTransparent(blockId, axis, dir)) {
             const currentLevel = isSkyLight
               ? targetChunk.getSkyLight(tx, ty, tz)
               : targetChunk.getBlockLight(tx, ty, tz);
@@ -659,13 +709,91 @@ export class Chunk {
     }
   }
 
-  private isTransparent(blockId: number): boolean {
+  private isTransparent(
+    blockPacked: number,
+    axis?: number,
+    dir?: number,
+  ): boolean {
     // 0: Air, 30: Water, 60: Glass, 61: Glass
-    return blockId === 0 || blockId === 30 || blockId === 60 || blockId === 61;
+    const id = unpackBlockId(blockPacked);
+    if (id === 0 || id === 30 || id === 60 || id === 61) return true;
+    const state = unpackBlockState(blockPacked);
+    const slice = (state >> 3) & 7;
+    if (slice === 0) return false;
+    if (axis === undefined) return true;
+
+    const rotation = state & 7;
+    const sliceAxisRaw = rotation & 3;
+    const sliceAxis = sliceAxisRaw === 1 ? 0 : sliceAxisRaw === 2 ? 2 : 1;
+
+    // Face axis doesn't match the slab's closed axis — always open.
+    if (sliceAxis !== axis) return true;
+
+    // The slab closes only ONE face on this axis. The flip bit (rotation bit 2)
+    // controls which face: flip=false closes the +dir face, flip=true closes -dir.
+    // Without a direction we conservatively report opaque (old behaviour).
+    if (dir === undefined) return false;
+
+    const flip = (rotation & 4) !== 0;
+    const closedDir = flip ? -1 : 1;
+    return dir !== closedDir;
   }
 
   private static isWaterBlock(blockId: number): boolean {
-    return blockId === Chunk.WATER_BLOCK_ID;
+    return unpackBlockId(blockId) === Chunk.WATER_BLOCK_ID;
+  }
+
+  private propagateFullSunColumnDown(
+    localX: number,
+    localY: number,
+    localZ: number,
+  ): void {
+    let aboveChunk: Chunk | undefined = this;
+    let aboveY = localY + 1;
+    if (aboveY >= Chunk.SIZE) {
+      aboveChunk = this.getNeighbor(0, 1, 0);
+      aboveY = 0;
+    }
+    if (!aboveChunk?.isLoaded) return;
+
+    const aboveBlock = aboveChunk.getBlockPacked(localX, aboveY, localZ);
+    if (
+      aboveChunk.getSkyLight(localX, aboveY, localZ) !== 15 ||
+      Chunk.isWaterBlock(aboveBlock)
+    ) {
+      return;
+    }
+
+    const bfsSeeds: LightNode[] = [];
+    let targetChunk: Chunk | undefined = this;
+    let ty = localY;
+
+    while (true) {
+      if (!targetChunk?.isLoaded) break;
+      const blockPacked = targetChunk.getBlockPacked(localX, ty, localZ);
+      if (!targetChunk.isTransparent(blockPacked, 1, -1)) break;
+      if (Chunk.isWaterBlock(blockPacked)) break;
+
+      targetChunk.setSkyLight(localX, ty, localZ, 15);
+      targetChunk.scheduleRemesh();
+      bfsSeeds.push({
+        chunk: targetChunk,
+        x: localX,
+        y: ty,
+        z: localZ,
+        level: 15,
+      });
+
+      ty--;
+      if (ty < 0) {
+        targetChunk = targetChunk.getNeighbor(0, -1, 0);
+        ty = Chunk.SIZE - 1;
+      }
+    }
+
+    if (bfsSeeds.length > 0) {
+      this.propagateLight(bfsSeeds, true);
+    }
   }
 
   private cutSkyLightBelow(
@@ -673,6 +801,7 @@ export class Chunk {
     localY: number,
     localZ: number,
   ): void {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
     let targetChunk: Chunk | undefined = this;
     const tx = localX;
     let ty = localY - 1;
@@ -684,8 +813,8 @@ export class Chunk {
     }
     if (!targetChunk?.isLoaded) return;
 
-    const belowBlockId = targetChunk.getBlock(tx, ty, tz);
-    if (!targetChunk.isTransparent(belowBlockId)) return;
+    const belowBlockId = targetChunk.getBlockPacked(tx, ty, tz);
+    if (!targetChunk.isTransparent(belowBlockId, 1)) return;
 
     if (targetChunk.getSkyLight(tx, ty, tz) > 0) {
       targetChunk.removeLight(tx, ty, tz, true);
@@ -711,18 +840,24 @@ export class Chunk {
 
     while (queue.length > 0) {
       const { chunk, x, y, z, level } = queue.shift()!;
-      const sourceBlockId = chunk.getBlock(x, y, z);
+      const sourceBlockPacked = chunk.getBlockPacked(x, y, z);
+      const sourceBlockId = unpackBlockId(sourceBlockPacked);
 
+      // [dx, dy, dz, axis, isDown, dir]
+      // axis: 0=X 1=Y 2=Z  dir: +1 or -1 (direction of travel along axis)
       const neighbors = [
-        [x + 1, y, z, 0],
-        [x - 1, y, z, 0],
-        [x, y + 1, z, 0],
-        [x, y - 1, z, 1],
-        [x, y, z + 1, 0],
-        [x, y, z - 1, 0],
+        [1, 0, 0, 0, 0, 1],
+        [-1, 0, 0, 0, 0, -1],
+        [0, 1, 0, 1, 0, 1],
+        [0, -1, 0, 1, 1, -1],
+        [0, 0, 1, 2, 0, 1],
+        [0, 0, -1, 2, 0, -1],
       ];
 
-      for (const [nx, ny, nz, isDown] of neighbors) {
+      for (const [dx, dy, dz, axis, isDown, dir] of neighbors) {
+        const nx = x + dx;
+        const ny = y + dy;
+        const nz = z + dz;
         let targetChunk: Chunk | undefined = chunk;
         let tx = nx;
         let ty = ny;
@@ -758,7 +893,9 @@ export class Chunk {
         }
 
         if (targetChunk) {
-          const targetBlockId = targetChunk.getBlock(tx, ty, tz);
+          const targetBlockId = targetChunk.getBlockPacked(tx, ty, tz);
+          if (!targetChunk.isTransparent(targetBlockId, axis, dir)) continue;
+
           const neighborLight = isSkyLight
             ? targetChunk.getSkyLight(tx, ty, tz)
             : targetChunk.getBlockLight(tx, ty, tz);
@@ -769,10 +906,16 @@ export class Chunk {
             !Chunk.isWaterBlock(sourceBlockId) &&
             !Chunk.isWaterBlock(targetBlockId);
 
+          // Dependent = strictly less than current level (propagation always
+          // decrements, so a lower neighbour must have been lit by this path).
+          // Cells at exactly `level` are ambiguous — push them to propagateQueue
+          // so any independent source re-floods the darkened region.
           const isDependent =
-            neighborLight < level || (preservesFullSun && neighborLight === 15);
+            neighborLight > 0 &&
+            (neighborLight < level ||
+              (preservesFullSun && neighborLight === 15));
 
-          if (neighborLight !== 0 && isDependent) {
+          if (isDependent) {
             if (isSkyLight) targetChunk.setSkyLight(tx, ty, tz, 0);
             else targetChunk.setBlockLight(tx, ty, tz, 0);
             targetChunk.scheduleRemesh();
@@ -784,6 +927,7 @@ export class Chunk {
               level: neighborLight,
             });
           } else if (neighborLight >= level) {
+            // At least as bright — may be an independent source; seed re-flood.
             propagateQueue.push({
               chunk: targetChunk,
               x: tx,
