@@ -18,5 +18,86 @@
         "faceMask": 55
       }
     ]
+  },
+  {
+    "name": "slab",
+    "rotateY": true,
+    "allowFlipY": true,
+    "boxes": [
+      {
+        "min": [0, 0, 0],
+        "max": [1, 0.5, 1]
+      }
+    ]
+  },
+  {
+    "name": "cross",
+    "rotateY": true,
+    "allowFlipY": true,
+    "boxes": [
+      {
+        "min": [0, 0, 0.25],
+        "max": [1, 1, 0.75]
+      },
+      {
+        "min": [0.25, 0, 0],
+        "max": [0.75, 1, 1]
+      }
+    ]
+  },
+  {
+    "name": "torch",
+    "rotateY": true,
+    "allowFlipY": true,
+    "boxes": [
+      {
+        "min": [0.4375, 0, 0.4375],
+        "max": [0.5625, 0.5, 0.5625]
+      }
+    ]
+  },
+  {
+    "name": "fence",
+    "rotateY": true,
+    "allowFlipY": true,
+    "boxes": [
+      {
+        "min": [0.375, 0, 0.375],
+        "max": [0.625, 1, 0.625]
+      }
+    ]
+  },
+  {
+    "name": "fence_gate",
+    "rotateY": true,
+    "allowFlipY": true,
+    "boxes": [
+      {
+        "min": [0.375, 0, 0.375],
+        "max": [0.625, 1, 0.625]
+      }
+    ]
+  },
+  {
+    "name": "pane",
+    "rotateY": true,
+    "allowFlipY": true,
+    "boxes": [
+      {
+        "min": [0.4375, 0, 0],
+        "max": [0.5625, 1, 1]
+      }
+    ]
+  },
+  {
+    "name": "sheet",
+    "rotateY": true,
+    "allowFlipY": true,
+    "boxes": [
+      {
+        "min": [0, 0, 0],
+        "max": [1, 1, 0.0625]
+      }
+    ]
   }
 ]

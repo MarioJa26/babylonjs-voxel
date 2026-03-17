@@ -173,3 +173,8 @@ export const ShapeByBlockId: Uint16Array =
   await loadBlockShapeMap(ShapeDefinitions);
 const cubeIndex = ShapeDefinitions.findIndex((shape) => shape.name === "cube");
 export const CUBE_SHAPE_INDEX = cubeIndex === -1 ? 0 : cubeIndex;
+
+export const getShapeForBlockId = (id: number): ShapeDefinition => {
+  const shapeIndex = ShapeByBlockId[id] ?? CUBE_SHAPE_INDEX;
+  return ShapeDefinitions[shapeIndex] ?? ShapeDefinitions[CUBE_SHAPE_INDEX];
+};

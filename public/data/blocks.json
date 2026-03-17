@@ -286,22 +286,26 @@
   {
     "id": "ConcreteTiles",
     "name": "concrete_tiles",
-    "path": "/texture/stone/concrete_tiles_1k"
+    "path": "/texture/stone/concrete_tiles_1k",
+    "shape": "cross"
   },
   {
     "id": "GraniteWall",
     "name": "granite_wall",
-    "path": "/texture/stone/granite_wall_1k"
+    "path": "/texture/stone/granite_wall_1k",
+    "shape": "slab"
   },
   {
     "id": "PatternedBrickWall03",
     "name": "patterned_brick_wall_03",
-    "path": "/texture/stone/patterned_brick_wall_03_1k"
+    "path": "/texture/stone/patterned_brick_wall_03_1k",
+    "shape": "pane"
   },
   {
     "id": "PatternedConcretePavers02",
     "name": "patterned_concrete_pavers_02",
-    "path": "/texture/stone/patterned_concrete_pavers_02_1k"
+    "path": "/texture/stone/patterned_concrete_pavers_02_1k",
+    "shape": "fence"
   },
   {
     "id": "QuarryWall",

@@ -25,6 +25,7 @@ type BlockRaycastHit = {
   nx: number;
   ny: number;
   nz: number;
+  t: number;
 };
 
 export class CrossHair {
@@ -152,6 +153,7 @@ export class CrossHair {
     nx: 0,
     ny: 0,
     nz: 0,
+    t: 0,
   };
 
   static #getSharedForwardRay(player: Player, length: number): Ray {
@@ -263,6 +265,7 @@ export class CrossHair {
         out.nx = nx;
         out.ny = ny;
         out.nz = nz;
+        out.t = t;
         return out;
       }
     }
@@ -374,6 +377,32 @@ export class CrossHair {
       Math.floor(hitPos.y),
       Math.floor(hitPos.z),
     );
+  }
+  public static getPlacementHit(
+    player: Player,
+  ): { pos: Vector3; ny: number; hitFracY: number } | null {
+    const hit = this.#raycastFirstBlock(
+      player,
+      (_x, _y, _z, blockId) =>
+        blockId !== BlockType.Air && blockId !== BlockType.Water,
+    );
+    if (!hit) return null;
+
+    const ray = this.#getSharedForwardRay(player, Player.REACH_DISTANCE);
+
+    // exact world Y where the ray struck the block face
+    const worldHitY = ray.origin.y + ray.direction.y * hit.t;
+    // fractional position within the block (0 = bottom, 1 = top)
+    const hitFracY = worldHitY - Math.floor(worldHitY);
+
+    const hitPos = new Vector3(hit.x + hit.nx, hit.y + hit.ny, hit.z + hit.nz);
+    const pos = new Vector3(
+      Math.floor(hitPos.x),
+      Math.floor(hitPos.y),
+      Math.floor(hitPos.z),
+    );
+
+    return { pos, ny: hit.ny, hitFracY };
   }
 
   setCrosshair(number: string) {

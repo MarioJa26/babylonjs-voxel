@@ -7,6 +7,7 @@ import { Player } from "../Player";
 import { CrossHair } from "../Hud/CrossHair";
 import { BlockType } from "@/code/World/BlockType";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
 import { ItemRegistry, ItemDefinition } from "./ItemRegistry";
 import { ItemUseActions } from "./ItemUseActions";
 
@@ -131,17 +132,12 @@ export class Item implements IUsable {
 
   static place(player: Player) {
     const blockNumber = CrossHair.pickBlock(player);
-    if (blockNumber === BlockType.CraftingTable) {
-      console.log("Clicked on protected block!");
-      return;
-    }
+    if (blockNumber === BlockType.CraftingTable) return;
 
-    const pos = CrossHair.getPlacementPosition(player);
-    if (!pos) return;
+    const hit = CrossHair.getPlacementHit(player);
+    if (!hit) return;
 
-    const x = pos.x;
-    const y = pos.y;
-    const z = pos.z;
+    const { pos, ny, hitFracY } = hit;
 
     const item =
       player.playerInventory.inventory[0][player.playerHud.selectedHotbarSlot]
@@ -149,8 +145,31 @@ export class Item implements IUsable {
 
     if (item) {
       const blockId = item.blockId ?? item.itemId;
-      const blockState = item.blockState ?? 0;
-      ChunkLoadingSystem.setBlock(x, y, z, blockId, blockState);
+      let blockState = item.blockState ?? 0;
+      const shape = getShapeForBlockId(blockId);
+
+      if (shape.rotateY) {
+        const yaw = player.playerCamera.cameraYaw;
+        const quarterTurn = Math.PI / 2;
+        const normalized =
+          ((yaw % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+
+        const sliceBits = blockState & ~7;
+        let rotation =
+          (Math.floor((normalized + quarterTurn / 2) / quarterTurn) & 3) ^ 2;
+        rotation = (4 - rotation) & 3;
+        // ny === 1 means you hit the TOP face of the block below (normal points up)
+        // ny === -1 means you hit the BOTTOM face of the block above (normal points down)
+        const flipY = (shape.allowFlipY && ny === -1) || hitFracY > 0.5;
+        const flipBit = flipY ? 4 : 0;
+        //console.log(`Placing block ${blockId} at ${pos.x}, ${pos.y}, ${pos.z} with state ${blockState}`);
+        // console.log(`Calculated rotation: ${rotation}, flipY: ${flipY}`);
+        //console.log(`Slice bits: ${sliceBits}, flip bit: ${flipBit}`);
+        console.log(`Hit: ${JSON.stringify(hit)}`);
+        blockState = sliceBits | flipBit | rotation;
+      }
+
+      ChunkLoadingSystem.setBlock(pos.x, pos.y, pos.z, blockId, blockState);
     }
   }
 

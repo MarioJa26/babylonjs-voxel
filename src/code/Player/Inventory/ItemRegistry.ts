@@ -39,7 +39,7 @@ export class ItemRegistry {
       this.register({
         id: textureDef.id,
         name: textureDef.name,
-        description: `Block: ${textureDef.name}`,
+        description: `Shape: ${textureDef.shape || "cube"}`,
         materialFolder: textureDef.path,
         useAction: "place_block",
         blockId: textureDef.id,
