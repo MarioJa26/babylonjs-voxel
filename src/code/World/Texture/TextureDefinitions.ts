@@ -5,6 +5,7 @@ export interface TextureDefinition {
   name: string;
   path: string;
   hardness?: number;
+  shape?: string;
 }
 
 type RawBlockDefinition = {
@@ -12,6 +13,7 @@ type RawBlockDefinition = {
   name: string;
   path: string;
   hardness?: number | null;
+  shape?: string | null;
 };
 
 const BLOCKS_URL = "/data/blocks.json";
@@ -47,6 +49,7 @@ async function loadBlockDefinitions(): Promise<TextureDefinition[]> {
         name: entry.name,
         path: entry.path,
         hardness: entry.hardness ?? undefined,
+        shape: entry.shape ?? undefined,
       });
     }
 

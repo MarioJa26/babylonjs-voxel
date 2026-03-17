@@ -280,7 +280,8 @@
   {
     "id": "FloorTiles09",
     "name": "floor_tiles_09",
-    "path": "/texture/stone/floor_tiles_09_1k"
+    "path": "/texture/stone/floor_tiles_09_1k",
+    "shape": "stairs"
   },
   {
     "id": "ConcreteTiles",

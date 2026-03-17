@@ -70,13 +70,16 @@ void main(void) {
     float flipShape = ((rotation & 4) != 0) ? 1.0 : 0.0;
 
     int corner = decodeCorner(vertexId, isBackFace, flip);
-    float du = (corner == 1 || corner == 2) ? faceDataB.x : 0.0;
-    float dv = (corner >= 2) ? faceDataB.y : 0.0;
+    const float invPosScale = 0.25;
+    float faceWidth = faceDataB.x * invPosScale;
+    float faceHeight = faceDataB.y * invPosScale;
+    float du = (corner == 1 || corner == 2) ? faceWidth : 0.0;
+    float dv = (corner >= 2) ? faceHeight : 0.0;
 
     int uAxis = (axis + 1) % 3;
     int vAxis = (axis + 2) % 3;
 
-    vec3 localPosition = faceDataA.xyz;
+    vec3 localPosition = faceDataA.xyz * invPosScale;
     float uIsSlice = uAxis == sliceAxis ? 1.0 : 0.0;
     float vIsSlice = vAxis == sliceAxis ? 1.0 : 0.0;
     float minOffset = (slice == 0) ? 0.0 : (flipShape > 0.5 ? 1.0 - heightScale : 0.0);
@@ -114,13 +117,21 @@ void main(void) {
     float u = (atlasCornerId == 1 || atlasCornerId == 2) ? 1.0 : 0.0;
     float v = (atlasCornerId >= 2) ? 1.0 : 0.0;
 
-    float uDim = swapUV == 1 ? faceDataB.y : faceDataB.x;
-    float vDim = swapUV == 1 ? faceDataB.x : faceDataB.y;
+    float uDim = swapUV == 1 ? faceHeight : faceWidth;
+    float vDim = swapUV == 1 ? faceWidth : faceHeight;
     float uScale = swapUV == 1 ? vIsSlice : uIsSlice;
     float vScale = swapUV == 1 ? uIsSlice : vIsSlice;
     uDim *= mix(1.0, heightScale, hasSlice * uScale);
     vDim *= mix(1.0, heightScale, hasSlice * vScale);
     vUV = vec2(u, v) * vec2(uDim, vDim);
+
+    // UV offset for sub-block faces: the face origin's fractional block position
+    // tells us exactly where within the tile this face starts — no extra data needed.
+    vec3 faceOrigin = faceDataA.xyz * invPosScale;
+    float uvOffU = fract(faceOrigin[uAxis]);
+    float uvOffV = fract(faceOrigin[vAxis]);
+    vUV += vec2(swapUV == 1 ? uvOffV : uvOffU,
+                swapUV == 1 ? uvOffU : uvOffV);
 
     float maxTiles = floor(1.0 / atlasTileSize + 0.5);
     vUV2 = vec2(faceDataB.z, maxTiles - 1.0 - faceDataB.w) * atlasTileSize;

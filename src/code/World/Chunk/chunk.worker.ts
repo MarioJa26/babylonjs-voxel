@@ -7,6 +7,18 @@ import { ResizableTypedArray } from "./DataStructures/ResizableTypedArray";
 import { WorkerInternalMeshData } from "./DataStructures/WorkerInternalMeshData";
 import { DistantTerrainGenerator } from "../Generation/DistanTerrain/DistantTerrainGenerator";
 import { BlockTextures } from "../Texture/BlockTextures";
+import {
+  CUBE_SHAPE_INDEX,
+  FACE_ALL,
+  FACE_NX,
+  FACE_NY,
+  FACE_NZ,
+  FACE_PX,
+  FACE_PY,
+  FACE_PZ,
+  ShapeByBlockId,
+  ShapeDefinitions,
+} from "../Shape/BlockShapes";
 import { PaletteExpander } from "./DataStructures/PaletteExpander";
 import {
   BLOCK_ID_MASK,
@@ -29,6 +41,7 @@ for (const id of [30, 60, 61]) BLOCK_TYPE[id] = BLOCK_TYPE_TRANSPARENT; // water
 const BLOCK_PACK_MASK = BLOCK_ID_MASK | (BLOCK_STATE_MASK << BLOCK_STATE_SHIFT);
 const TRANSPARENT_FLAG = 1 << 16;
 const BACKFACE_FLAG = 1 << 17;
+const POS_SCALE = 4;
 
 const paletteExpander = new PaletteExpander();
 
@@ -62,7 +75,9 @@ class ChunkWorkerMesher {
     getBlock: (x: number, y: number, z: number) => number,
   ): number {
     const isOccluding = (value: number): boolean => {
-      if (unpackBlockId(value) === 0) return false;
+      const id = unpackBlockId(value);
+      if (id === 0) return false;
+      if (ShapeByBlockId[id] !== CUBE_SHAPE_INDEX) return false;
       const state = unpackBlockState(value);
       return ((state >> 3) & 7) === 0;
     };
@@ -255,6 +270,15 @@ class ChunkWorkerMesher {
       }
     }
 
+    this.emitCustomShapes(
+      size,
+      block_array,
+      getBlock,
+      getLight,
+      opaqueMeshData,
+      transparentMeshData,
+    );
+
     return {
       opaque: opaqueMeshData,
       transparent: transparentMeshData,
@@ -294,7 +318,20 @@ class ChunkWorkerMesher {
         const blockCurrent = block_array[bx + by * size + bz * size2];
         const blockNeighbor = getBlock(bx + dx, by + dy, bz + dz, blockCurrent);
 
-        if (blockCurrent === blockNeighbor) {
+        const currentIdRaw = unpackBlockId(blockCurrent);
+        const neighborIdRaw = unpackBlockId(blockNeighbor);
+        const currentStateRaw = unpackBlockState(blockCurrent);
+        const neighborStateRaw = unpackBlockState(blockNeighbor);
+        const currentShape = ShapeByBlockId[currentIdRaw];
+        const neighborShape = ShapeByBlockId[neighborIdRaw];
+        const currentIsCustom = currentShape !== CUBE_SHAPE_INDEX;
+        const neighborIsCustom = neighborShape !== CUBE_SHAPE_INDEX;
+        const currentId = currentIsCustom ? 0 : currentIdRaw;
+        const neighborId = neighborIsCustom ? 0 : neighborIdRaw;
+        const currentState = currentIsCustom ? 0 : currentStateRaw;
+        const neighborState = neighborIsCustom ? 0 : neighborStateRaw;
+
+        if (currentId === neighborId && currentState === neighborState) {
           mask[maskIndex] = 0;
           maskLight[maskIndex] = 0;
           maskBack[maskIndex] = 0;
@@ -302,12 +339,6 @@ class ChunkWorkerMesher {
           maskIndex++;
           continue;
         }
-
-        // OPTIMIZATION: replace Set.has() with flat array lookup (no hashing)
-        const currentId = unpackBlockId(blockCurrent);
-        const neighborId = unpackBlockId(blockNeighbor);
-        const currentState = unpackBlockState(blockCurrent);
-        const neighborState = unpackBlockState(blockNeighbor);
 
         const curType = BLOCK_TYPE[currentId];
         const nbrType = BLOCK_TYPE[neighborId];
@@ -527,6 +558,280 @@ class ChunkWorkerMesher {
     }
   }
 
+  private static transformBox(
+    min: [number, number, number],
+    max: [number, number, number],
+    faceMask: number,
+    rotation: number,
+    flipY: boolean,
+  ): {
+    min: [number, number, number];
+    max: [number, number, number];
+    faceMask: number;
+  } {
+    let minX = min[0];
+    let minY = min[1];
+    let minZ = min[2];
+    let maxX = max[0];
+    let maxY = max[1];
+    let maxZ = max[2];
+
+    if (rotation !== 0) {
+      const points: [number, number][] = [
+        [minX, minZ],
+        [minX, maxZ],
+        [maxX, minZ],
+        [maxX, maxZ],
+      ];
+      const rotated: [number, number][] = points.map(([x, z]) => {
+        switch (rotation) {
+          case 1:
+            return [1 - z, x];
+          case 2:
+            return [1 - x, 1 - z];
+          case 3:
+            return [z, 1 - x];
+          default:
+            return [x, z];
+        }
+      });
+      minX = Math.min(...rotated.map((p) => p[0]));
+      maxX = Math.max(...rotated.map((p) => p[0]));
+      minZ = Math.min(...rotated.map((p) => p[1]));
+      maxZ = Math.max(...rotated.map((p) => p[1]));
+
+      // Rotate the XZ face-mask bits: +X/-X swap with +Z/-Z per 90° turn.
+      // Each CW rotation maps: +X→+Z, +Z→-X, -X→-Z, -Z→+X (Y faces unchanged).
+      let mask = faceMask;
+      for (let r = 0; r < rotation; r++) {
+        const px = (mask >> 0) & 1; // +X
+        const nx = (mask >> 1) & 1; // -X
+        const pz = (mask >> 4) & 1; // +Z
+        const nz = (mask >> 5) & 1; // -Z
+        // +X → +Z, +Z → -X, -X → -Z, -Z → +X
+        mask =
+          (mask & (FACE_PY | FACE_NY)) | // Y faces unchanged
+          (nz << 0) | // new +X = old -Z
+          (pz << 1) | // new -X = old +Z
+          (px << 4) | // new +Z = old +X
+          (nx << 5); // new -Z = old -X
+      }
+      faceMask = mask;
+    }
+
+    if (flipY) {
+      const newMinY = 1 - maxY;
+      const newMaxY = 1 - minY;
+      minY = newMinY;
+      maxY = newMaxY;
+
+      // Swap +Y and -Y face-mask bits
+      const py = (faceMask >> 2) & 1;
+      const ny = (faceMask >> 3) & 1;
+      faceMask = (faceMask & ~(FACE_PY | FACE_NY)) | (ny << 2) | (py << 3);
+    }
+
+    return {
+      min: [minX, minY, minZ],
+      max: [maxX, maxY, maxZ],
+      faceMask,
+    };
+  }
+
+  private static emitCustomShapes(
+    size: number,
+    block_array: Uint8Array | Uint16Array,
+    getBlock: (x: number, y: number, z: number, fallback?: number) => number,
+    getLight: (x: number, y: number, z: number, fallback?: number) => number,
+    opaqueMeshData: WorkerInternalMeshData,
+    transparentMeshData: WorkerInternalMeshData,
+  ) {
+    const size2 = size * size;
+    const isFullCube = (value: number): boolean => {
+      const id = unpackBlockId(value);
+      if (id === 0) return false;
+      if (ShapeByBlockId[id] !== CUBE_SHAPE_INDEX) return false;
+      const state = unpackBlockState(value);
+      return ((state >> 3) & 7) === 0;
+    };
+
+    for (let y = 0; y < size; y++) {
+      for (let z = 0; z < size; z++) {
+        for (let x = 0; x < size; x++) {
+          const packed = block_array[x + y * size + z * size2];
+          const blockId = unpackBlockId(packed);
+          if (blockId === 0) continue;
+          const shapeIndex = ShapeByBlockId[blockId];
+          if (shapeIndex === CUBE_SHAPE_INDEX) continue;
+
+          const shape = ShapeDefinitions[shapeIndex];
+          if (!shape) continue;
+          const state = unpackBlockState(packed);
+          const rotation = shape.rotateY ? state & 3 : 0;
+          const flipY = shape.allowFlipY && (state & 4) !== 0;
+          const isTransparent = BLOCK_TYPE[blockId] !== 0;
+          const meshData = isTransparent ? transparentMeshData : opaqueMeshData;
+
+          for (const box of shape.boxes) {
+            const { min, max, faceMask } = this.transformBox(
+              box.min,
+              box.max,
+              box.faceMask ?? FACE_ALL,
+              rotation,
+              flipY,
+            );
+
+            const x0 = x + min[0];
+            const y0 = y + min[1];
+            const z0 = z + min[2];
+            const x1 = x + max[0];
+            const y1 = y + max[1];
+            const z1 = z + max[2];
+
+            const emitFace = (
+              axis: number,
+              isBackFace: boolean,
+              ox: number,
+              oy: number,
+              oz: number,
+              width: number,
+              height: number,
+              nx: number,
+              ny: number,
+              nz: number,
+              onBoundary: boolean,
+            ) => {
+              if (width <= 0 || height <= 0) return;
+              if (onBoundary && isFullCube(getBlock(nx, ny, nz, 0))) return;
+
+              const direction: number[] = [
+                axis === 0 ? 1 : 0,
+                axis === 1 ? 1 : 0,
+                axis === 2 ? 1 : 0,
+              ];
+              const faceName = this.getFaceName(direction, isBackFace);
+              const lightPacked = onBoundary
+                ? getLight(nx, ny, nz, getLight(x, y, z))
+                : getLight(x, y, z);
+              const u_axis = (axis + 1) % 3;
+              const v_axis = (axis + 2) % 3;
+              const packedAO = onBoundary
+                ? this.calculateAOPacked(nx, ny, nz, u_axis, v_axis, getBlock)
+                : 0;
+
+              this.addQuad(
+                ox,
+                oy,
+                oz,
+                axis,
+                width,
+                height,
+                blockId,
+                isBackFace,
+                faceName,
+                lightPacked,
+                packedAO,
+                meshData,
+                0,
+                0,
+              );
+            };
+
+            // +X / -X
+            if (faceMask & FACE_PX)
+              emitFace(
+                0,
+                false,
+                x1,
+                y0,
+                z0,
+                y1 - y0,
+                z1 - z0,
+                x + 1,
+                y,
+                z,
+                max[0] >= 1,
+              );
+            if (faceMask & FACE_NX)
+              emitFace(
+                0,
+                true,
+                x0,
+                y0,
+                z0,
+                y1 - y0,
+                z1 - z0,
+                x - 1,
+                y,
+                z,
+                min[0] <= 0,
+              );
+
+            // +Y / -Y
+            if (faceMask & FACE_PY)
+              emitFace(
+                1,
+                false,
+                x0,
+                y1,
+                z0,
+                z1 - z0,
+                x1 - x0,
+                x,
+                y + 1,
+                z,
+                max[1] >= 1,
+              );
+            if (faceMask & FACE_NY)
+              emitFace(
+                1,
+                true,
+                x0,
+                y0,
+                z0,
+                z1 - z0,
+                x1 - x0,
+                x,
+                y - 1,
+                z,
+                min[1] <= 0,
+              );
+
+            // +Z / -Z
+            if (faceMask & FACE_PZ)
+              emitFace(
+                2,
+                false,
+                x0,
+                y0,
+                z1,
+                x1 - x0,
+                y1 - y0,
+                x,
+                y,
+                z + 1,
+                max[2] >= 1,
+              );
+            if (faceMask & FACE_NZ)
+              emitFace(
+                2,
+                true,
+                x0,
+                y0,
+                z0,
+                x1 - x0,
+                y1 - y0,
+                x,
+                y,
+                z - 1,
+                min[2] <= 0,
+              );
+          }
+        }
+      }
+    }
+  }
+
   private static getFaceName(dir: number[], isBackFace: boolean): string {
     const [dx, dy, dz] = dir;
     if (dx === 1) return isBackFace ? "east" : "west";
@@ -576,8 +881,14 @@ class ChunkWorkerMesher {
       ((rotation & 7) << 2) |
       ((slice & 7) << 5);
 
-    meshData.faceDataA.push4(x, y, z, axisFace);
-    meshData.faceDataB.push4(width, height, tx, ty);
+    const sx = Math.round(x * POS_SCALE);
+    const sy = Math.round(y * POS_SCALE);
+    const sz = Math.round(z * POS_SCALE);
+    const sw = Math.round(width * POS_SCALE);
+    const sh = Math.round(height * POS_SCALE);
+
+    meshData.faceDataA.push4(sx, sy, sz, axisFace);
+    meshData.faceDataB.push4(sw, sh, tx, ty);
     meshData.faceDataC.push4(packedAO, lightLevel, 0, meta);
     meshData.faceCount++;
   }
