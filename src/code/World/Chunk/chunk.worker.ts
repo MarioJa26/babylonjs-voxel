@@ -77,7 +77,8 @@ class ChunkWorkerMesher {
     const isOccluding = (value: number): boolean => {
       const id = unpackBlockId(value);
       if (id === 0) return false;
-      if (ShapeByBlockId[id] !== CUBE_SHAPE_INDEX) return false;
+      const shapeIndex = ShapeByBlockId[id];
+      if (!this.isGreedyCompatibleShape(shapeIndex)) return false;
       const state = unpackBlockState(value);
       return ((state >> 3) & 7) === 0;
     };
@@ -121,6 +122,24 @@ class ChunkWorkerMesher {
   private static getSliceAxis(rotation: number): number {
     const sliceAxisRaw = rotation & 3;
     return sliceAxisRaw === 1 ? 0 : sliceAxisRaw === 2 ? 2 : 1;
+  }
+
+  private static isGreedyCompatibleShape(shapeIndex: number): boolean {
+    if (shapeIndex === CUBE_SHAPE_INDEX) return true;
+    const shape = ShapeDefinitions[shapeIndex];
+    if (!shape) return false;
+    if (!shape.usesSliceState) return false;
+    if (shape.boxes.length !== 1) return false;
+    const box = shape.boxes[0];
+    return (
+      box.faceMask === FACE_ALL &&
+      box.min[0] === 0 &&
+      box.min[1] === 0 &&
+      box.min[2] === 0 &&
+      box.max[0] === 1 &&
+      box.max[1] === 1 &&
+      box.max[2] === 1
+    );
   }
 
   private static isFaceFull(
@@ -324,21 +343,12 @@ class ChunkWorkerMesher {
         const neighborStateRaw = unpackBlockState(blockNeighbor);
         const currentShape = ShapeByBlockId[currentIdRaw];
         const neighborShape = ShapeByBlockId[neighborIdRaw];
-        const currentIsCustom = currentShape !== CUBE_SHAPE_INDEX;
-        const neighborIsCustom = neighborShape !== CUBE_SHAPE_INDEX;
+        const currentIsCustom = !this.isGreedyCompatibleShape(currentShape);
+        const neighborIsCustom = !this.isGreedyCompatibleShape(neighborShape);
         const currentId = currentIsCustom ? 0 : currentIdRaw;
         const neighborId = neighborIsCustom ? 0 : neighborIdRaw;
         const currentState = currentIsCustom ? 0 : currentStateRaw;
         const neighborState = neighborIsCustom ? 0 : neighborStateRaw;
-
-        if (currentId === neighborId && currentState === neighborState) {
-          mask[maskIndex] = 0;
-          maskLight[maskIndex] = 0;
-          maskBack[maskIndex] = 0;
-          maskBackLight[maskIndex] = 0;
-          maskIndex++;
-          continue;
-        }
 
         const curType = BLOCK_TYPE[currentId];
         const nbrType = BLOCK_TYPE[neighborId];
@@ -348,6 +358,19 @@ class ChunkWorkerMesher {
         const isNeighborSolid = neighborId !== 0;
         const currentFaceFull = this.isFaceFull(currentState, axis, false);
         const neighborFaceFull = this.isFaceFull(neighborState, axis, true);
+        if (
+          currentId === neighborId &&
+          currentState === neighborState &&
+          currentFaceFull &&
+          neighborFaceFull
+        ) {
+          mask[maskIndex] = 0;
+          maskLight[maskIndex] = 0;
+          maskBack[maskIndex] = 0;
+          maskBackLight[maskIndex] = 0;
+          maskIndex++;
+          continue;
+        }
         const neighborOccludesCurrent =
           isNeighborSolid && currentFaceFull && neighborFaceFull;
         const currentOccludesNeighbor =
@@ -455,6 +478,8 @@ class ChunkWorkerMesher {
     faceNameNegative: string,
   ) {
     const axisPos = axisSlice + 1;
+    const u_axis = (axis + 1) % 3;
+    const v_axis = (axis + 2) % 3;
     let maskIndex = 0;
 
     for (let v_coord = 0; v_coord < size; v_coord++) {
@@ -462,28 +487,49 @@ class ChunkWorkerMesher {
         const currentMaskValue = mask[maskIndex];
         const currentMaskLight = maskLight[maskIndex];
         if (currentMaskValue !== 0) {
+          const packedIdStateForGreedy = currentMaskValue & BLOCK_PACK_MASK;
+          const stateForGreedy = packedIdStateForGreedy >> BLOCK_STATE_SHIFT;
+          const sliceForGreedy = (stateForGreedy >> 3) & 7;
+          let allowGreedyMerge = sliceForGreedy === 0;
+          if (!allowGreedyMerge) {
+            const rotationForGreedy = stateForGreedy & 7;
+            const sliceAxisForGreedy = this.getSliceAxis(rotationForGreedy);
+            // Slice faces are only guaranteed coplanar when the slice axis
+            // matches the face normal axis. If slice axis is on u/v, merged
+            // quads stretch the per-block slice transform across neighbors.
+            allowGreedyMerge = sliceAxisForGreedy === axis;
+          }
+          const canMergeWidth =
+            allowGreedyMerge && !(sliceForGreedy > 0 && u_axis === 1);
+          const canMergeHeight =
+            allowGreedyMerge && !(sliceForGreedy > 0 && v_axis === 1);
+
           // Greedy width
           let width = 1;
-          while (
-            u_coord + width < size &&
-            mask[maskIndex + width] === currentMaskValue &&
-            maskLight[maskIndex + width] === currentMaskLight
-          ) {
-            width++;
+          if (canMergeWidth) {
+            while (
+              u_coord + width < size &&
+              mask[maskIndex + width] === currentMaskValue &&
+              maskLight[maskIndex + width] === currentMaskLight
+            ) {
+              width++;
+            }
           }
 
           // Greedy height
           let height = 1;
-          outer: while (v_coord + height < size) {
-            for (let w = 0; w < width; w++) {
-              const idx = maskIndex + w + height * size;
-              if (
-                mask[idx] !== currentMaskValue ||
-                maskLight[idx] !== currentMaskLight
-              )
-                break outer;
+          if (canMergeHeight) {
+            outer: while (v_coord + height < size) {
+              for (let w = 0; w < width; w++) {
+                const idx = maskIndex + w + height * size;
+                if (
+                  mask[idx] !== currentMaskValue ||
+                  maskLight[idx] !== currentMaskLight
+                )
+                  break outer;
+              }
+              height++;
             }
-            height++;
           }
 
           const isBackFace = (currentMaskValue & BACKFACE_FLAG) !== 0;
@@ -638,6 +684,43 @@ class ChunkWorkerMesher {
     };
   }
 
+  private static applySliceStateToBox(
+    min: [number, number, number],
+    max: [number, number, number],
+    state: number,
+  ): {
+    min: [number, number, number];
+    max: [number, number, number];
+  } {
+    const slice = (state >> 3) & 7;
+    if (slice === 0) {
+      return { min, max };
+    }
+
+    const rotation = state & 7;
+    const sliceAxis = this.getSliceAxis(rotation);
+    const flip = (rotation & 4) !== 0;
+    const heightScale = slice / 8;
+    const outMin: [number, number, number] = [min[0], min[1], min[2]];
+    const outMax: [number, number, number] = [max[0], max[1], max[2]];
+
+    if (flip) {
+      outMin[sliceAxis] = 1 - (1 - min[sliceAxis]) * heightScale;
+      outMax[sliceAxis] = 1 - (1 - max[sliceAxis]) * heightScale;
+    } else {
+      outMin[sliceAxis] = min[sliceAxis] * heightScale;
+      outMax[sliceAxis] = max[sliceAxis] * heightScale;
+    }
+
+    if (outMin[sliceAxis] > outMax[sliceAxis]) {
+      const tmp = outMin[sliceAxis];
+      outMin[sliceAxis] = outMax[sliceAxis];
+      outMax[sliceAxis] = tmp;
+    }
+
+    return { min: outMin, max: outMax };
+  }
+
   private static emitCustomShapes(
     size: number,
     block_array: Uint8Array | Uint16Array,
@@ -650,7 +733,8 @@ class ChunkWorkerMesher {
     const isFullCube = (value: number): boolean => {
       const id = unpackBlockId(value);
       if (id === 0) return false;
-      if (ShapeByBlockId[id] !== CUBE_SHAPE_INDEX) return false;
+      const shapeIndex = ShapeByBlockId[id];
+      if (!this.isGreedyCompatibleShape(shapeIndex)) return false;
       const state = unpackBlockState(value);
       return ((state >> 3) & 7) === 0;
     };
@@ -662,7 +746,7 @@ class ChunkWorkerMesher {
           const blockId = unpackBlockId(packed);
           if (blockId === 0) continue;
           const shapeIndex = ShapeByBlockId[blockId];
-          if (shapeIndex === CUBE_SHAPE_INDEX) continue;
+          if (this.isGreedyCompatibleShape(shapeIndex)) continue;
 
           const shape = ShapeDefinitions[shapeIndex];
           if (!shape) continue;
@@ -680,13 +764,25 @@ class ChunkWorkerMesher {
               rotation,
               flipY,
             );
+            const slicedBox = shape.usesSliceState
+              ? this.applySliceStateToBox(min, max, state)
+              : { min, max };
+            const slicedMin = slicedBox.min;
+            const slicedMax = slicedBox.max;
+            if (
+              slicedMax[0] <= slicedMin[0] ||
+              slicedMax[1] <= slicedMin[1] ||
+              slicedMax[2] <= slicedMin[2]
+            ) {
+              continue;
+            }
 
-            const x0 = x + min[0];
-            const y0 = y + min[1];
-            const z0 = z + min[2];
-            const x1 = x + max[0];
-            const y1 = y + max[1];
-            const z1 = z + max[2];
+            const x0 = x + slicedMin[0];
+            const y0 = y + slicedMin[1];
+            const z0 = z + slicedMin[2];
+            const x1 = x + slicedMax[0];
+            const y1 = y + slicedMax[1];
+            const z1 = z + slicedMax[2];
 
             const emitFace = (
               axis: number,
@@ -748,10 +844,10 @@ class ChunkWorkerMesher {
                 y1 - y0,
                 z1 - z0,
                 x + 1,
-                y,
-                z,
-                max[0] >= 1,
-              );
+                 y,
+                 z,
+                 slicedMax[0] >= 1,
+               );
             if (faceMask & FACE_NX)
               emitFace(
                 0,
@@ -762,10 +858,10 @@ class ChunkWorkerMesher {
                 y1 - y0,
                 z1 - z0,
                 x - 1,
-                y,
-                z,
-                min[0] <= 0,
-              );
+                 y,
+                 z,
+                 slicedMin[0] <= 0,
+               );
 
             // +Y / -Y
             if (faceMask & FACE_PY)
@@ -778,10 +874,10 @@ class ChunkWorkerMesher {
                 z1 - z0,
                 x1 - x0,
                 x,
-                y + 1,
-                z,
-                max[1] >= 1,
-              );
+                 y + 1,
+                 z,
+                 slicedMax[1] >= 1,
+               );
             if (faceMask & FACE_NY)
               emitFace(
                 1,
@@ -792,10 +888,10 @@ class ChunkWorkerMesher {
                 z1 - z0,
                 x1 - x0,
                 x,
-                y - 1,
-                z,
-                min[1] <= 0,
-              );
+                 y - 1,
+                 z,
+                 slicedMin[1] <= 0,
+               );
 
             // +Z / -Z
             if (faceMask & FACE_PZ)
@@ -808,10 +904,10 @@ class ChunkWorkerMesher {
                 x1 - x0,
                 y1 - y0,
                 x,
-                y,
-                z + 1,
-                max[2] >= 1,
-              );
+                 y,
+                 z + 1,
+                 slicedMax[2] >= 1,
+               );
             if (faceMask & FACE_NZ)
               emitFace(
                 2,
@@ -822,10 +918,10 @@ class ChunkWorkerMesher {
                 x1 - x0,
                 y1 - y0,
                 x,
-                y,
-                z - 1,
-                min[2] <= 0,
-              );
+                 y,
+                 z - 1,
+                 slicedMin[2] <= 0,
+               );
           }
         }
       }

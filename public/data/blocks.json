@@ -1,9 +1,17 @@
 [
   {
     "id": "Cobble",
-    "name": "cobble",
+    "name": "Cobble",
     "path": "/texture/cobble/cobble05_1k",
-    "hardness": 1.5
+    "hardness": 1.5,
+    "shape": "cube"
+  },
+  {
+    "id": "Cobble Slab",
+    "name": "Cobble Slab",
+    "path": "/texture/cobble/cobble05_1k",
+    "hardness": 1.5,
+    "shape": "slab"
   },
   {
     "id": "FactoryWall",

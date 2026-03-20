@@ -6,15 +6,17 @@
   align-items: flex-end;
   justify-content: flex-end;
 
-  background-color: rgba(0, 0, 0, 0.3);
   background-size: contain;
   background-position: center;
   background-repeat: no-repeat;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
 }
 
 .stack-label {
   color: white;
-  font-size: clamp(0.6em, 2vw, 1em); /* scales with screen */
+  font-size: clamp(0.6em, 2vw, 1em);
+  /* scales with screen */
   font-weight: bold;
   text-shadow: 2px 2px 2px black;
   margin: 0.2em;

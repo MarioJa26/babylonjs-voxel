@@ -22,6 +22,7 @@ export type ShapeDefinition = {
   boxes: ShapeBox[];
   rotateY: boolean;
   allowFlipY: boolean;
+  usesSliceState: boolean;
 };
 
 type RawShapeBox = {
@@ -35,6 +36,7 @@ type RawShapeDefinition = {
   boxes?: RawShapeBox[];
   rotateY?: boolean;
   allowFlipY?: boolean;
+  usesSliceState?: boolean;
 };
 
 type RawBlockDefinition = {
@@ -44,13 +46,14 @@ type RawBlockDefinition = {
 
 const BLOCKS_URL = "/data/blocks.json";
 const SHAPES_URL = "/data/block-shapes.json";
-const SHAPE_SCALE = 4;
+const SHAPE_SCALE = 16;
 
 const FALLBACK_CUBE: ShapeDefinition = {
   name: "cube",
   boxes: [{ min: [0, 0, 0], max: [1, 1, 1], faceMask: FACE_ALL }],
   rotateY: false,
   allowFlipY: false,
+  usesSliceState: false,
 };
 
 const quantize = (value: number): number =>
@@ -119,6 +122,7 @@ const loadShapeDefinitions = async (): Promise<ShapeDefinition[]> => {
         boxes,
         rotateY: Boolean(entry.rotateY),
         allowFlipY: Boolean(entry.allowFlipY),
+        usesSliceState: Boolean(entry.usesSliceState),
       });
     }
 

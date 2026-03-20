@@ -17,6 +17,7 @@ import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { SettingParams } from "@/code/World/SettingParams";
 import { BlockType } from "@/code/World/BlockType";
 import { MetadataContainer } from "@/code/Entities/MetaDataContainer";
+import { FACE_ALL, getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
 
 type BlockRaycastHit = {
   x: number;
@@ -41,6 +42,8 @@ export class CrossHair {
 
   #crosshair = this.#createCrosshair("179");
   #hitMarker = this.#createHitMarker();
+  #highlightMaterial: StandardMaterial;
+  #highlightShapeKey = "";
   #blockHighlightMesh: Mesh;
 
   constructor(
@@ -52,6 +55,7 @@ export class CrossHair {
     this.#engine = engine;
     this.#scene = scene;
     this.#player = player;
+    this.#highlightMaterial = this.#createHighlightMaterial();
 
     this.#engine.enterPointerlock();
     this.#blockHighlightMesh = this.#createBlockHighlight();
@@ -102,14 +106,13 @@ export class CrossHair {
   }
 
   #createBlockHighlight(): Mesh {
-    const mesh = MeshBuilder.CreateBox(
-      "blockHighlight",
-      { size: 1.005 },
-      this.#scene,
-    );
-    mesh.isPickable = false;
-    mesh.renderingGroupId = 1;
+    const mesh = this.#createUnitCubeHighlightMesh();
+    this.#configureHighlightMesh(mesh);
+    this.#highlightShapeKey = "default";
+    return mesh;
+  }
 
+  #createHighlightMaterial(): StandardMaterial {
     const highlightMaterial = new StandardMaterial("highlightMat", this.#scene);
     highlightMaterial.alpha = SettingParams.HIGHLIGHT_ALPHA;
     highlightMaterial.diffuseColor = new Color3(
@@ -117,8 +120,13 @@ export class CrossHair {
       SettingParams.HIGHLIGHT_COLOR[1],
       SettingParams.HIGHLIGHT_COLOR[2],
     );
-    mesh.material = highlightMaterial;
+    return highlightMaterial;
+  }
 
+  #configureHighlightMesh(mesh: Mesh): void {
+    mesh.isPickable = false;
+    mesh.renderingGroupId = 1;
+    mesh.material = this.#highlightMaterial;
     mesh.enableEdgesRendering();
     mesh.edgesWidth = SettingParams.HIGHLIGHT_EDGE_WIDTH;
     mesh.edgesColor = new Color4(
@@ -128,16 +136,114 @@ export class CrossHair {
       SettingParams.HIGHLIGHT_EDGE_COLOR[3],
     );
     mesh.visibility = 0;
+  }
+
+  #createUnitCubeHighlightMesh(): Mesh {
+    const mesh = MeshBuilder.CreateBox(
+      "blockHighlightUnitCube",
+      { size: 1.005 },
+      this.#scene,
+    );
+    mesh.position.set(0.5, 0.5, 0.5);
+    this.#bakeLocalOffset(mesh);
     return mesh;
+  }
+
+  #bakeLocalOffset(mesh: Mesh): void {
+    mesh.bakeCurrentTransformIntoVertices();
+    mesh.position.set(0, 0, 0);
+  }
+
+  #buildHighlightMeshForBlock(blockId: number, blockState: number): Mesh {
+    const shape = getShapeForBlockId(blockId);
+    const rotation = shape.rotateY ? blockState & 3 : 0;
+    const flipY = shape.allowFlipY && (blockState & 4) !== 0;
+    const inflation = 0.005;
+    const parts: Mesh[] = [];
+
+    let index = 0;
+    for (const box of shape.boxes) {
+      let transformed = CrossHair.#transformBox(box.min, box.max, rotation, flipY);
+      if (shape.usesSliceState) {
+        transformed = CrossHair.#applySliceToBox(
+          transformed.min,
+          transformed.max,
+          blockState,
+        );
+      }
+
+      const width = transformed.max[0] - transformed.min[0];
+      const height = transformed.max[1] - transformed.min[1];
+      const depth = transformed.max[2] - transformed.min[2];
+      if (width <= 0 || height <= 0 || depth <= 0) continue;
+
+      const part = MeshBuilder.CreateBox(
+        `blockHighlightPart_${index++}`,
+        {
+          width: width + inflation,
+          height: height + inflation,
+          depth: depth + inflation,
+        },
+        this.#scene,
+      );
+      part.position.set(
+        (transformed.min[0] + transformed.max[0]) * 0.5,
+        (transformed.min[1] + transformed.max[1]) * 0.5,
+        (transformed.min[2] + transformed.max[2]) * 0.5,
+      );
+      this.#bakeLocalOffset(part);
+      parts.push(part);
+    }
+
+    if (parts.length === 0) {
+      const fallback = this.#createUnitCubeHighlightMesh();
+      this.#configureHighlightMesh(fallback);
+      return fallback;
+    }
+
+    let mesh: Mesh;
+    if (parts.length === 1) {
+      mesh = parts[0];
+    } else {
+      const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, true);
+      if (!merged || !(merged instanceof Mesh)) {
+        mesh = parts[0];
+        for (let i = 1; i < parts.length; i++) parts[i].dispose();
+      } else {
+        mesh = merged;
+      }
+    }
+
+    mesh.name = "blockHighlight";
+    this.#configureHighlightMesh(mesh);
+    return mesh;
+  }
+
+  #ensureHighlightShape(blockId: number, blockState: number): void {
+    const shapeKey = `${blockId}:${blockState}`;
+    if (shapeKey === this.#highlightShapeKey) return;
+
+    const newMesh = this.#buildHighlightMeshForBlock(blockId, blockState);
+    newMesh.position.copyFrom(this.#blockHighlightMesh.position);
+    this.#blockHighlightMesh.dispose();
+    this.#blockHighlightMesh = newMesh;
+    this.#highlightShapeKey = shapeKey;
   }
 
   #updateBlockHighlight() {
     const hit = CrossHair.pickTarget(this.#player);
     if (hit) {
+      const blockId = ChunkLoadingSystem.getBlockByWorldCoords(hit.x, hit.y, hit.z);
+      const blockState = ChunkLoadingSystem.getBlockStateByWorldCoords(
+        hit.x,
+        hit.y,
+        hit.z,
+      );
+      this.#ensureHighlightShape(blockId, blockState);
       this.#blockHighlightMesh.position.set(
-        hit.x + 0.5,
-        hit.y + 0.5,
-        hit.z + 0.5,
+        hit.x,
+        hit.y,
+        hit.z,
       );
       this.#blockHighlightMesh.visibility = 1;
     } else {
@@ -258,17 +364,311 @@ export class CrossHair {
 
       const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
       if (shouldHitBlockId(x, y, z, blockId)) {
-        const out = this.#sharedHit;
-        out.x = x;
-        out.y = y;
-        out.z = z;
-        out.nx = nx;
-        out.ny = ny;
-        out.nz = nz;
-        out.t = t;
-        return out;
+        const blockState = ChunkLoadingSystem.getBlockStateByWorldCoords(x, y, z);
+        if (this.#isFullBlockShape(blockId, blockState)) {
+          const out = this.#sharedHit;
+          out.x = x;
+          out.y = y;
+          out.z = z;
+          out.nx = nx;
+          out.ny = ny;
+          out.nz = nz;
+          out.t = t;
+          return out;
+        }
+
+        const tExit = Math.min(tMaxX, tMaxY, tMaxZ, maxDistance);
+        const shapeHit = this.#raycastShapeInVoxel(
+          ox,
+          oy,
+          oz,
+          dx,
+          dy,
+          dz,
+          x,
+          y,
+          z,
+          blockId,
+          blockState,
+          t,
+          tExit,
+          nx,
+          ny,
+          nz,
+        );
+        if (shapeHit) {
+          const out = this.#sharedHit;
+          out.x = x;
+          out.y = y;
+          out.z = z;
+          out.nx = shapeHit.nx;
+          out.ny = shapeHit.ny;
+          out.nz = shapeHit.nz;
+          out.t = shapeHit.t;
+          return out;
+        }
+
+        continue;
       }
     }
+  }
+
+  static #getSliceAxis(rotation: number): number {
+    const sliceAxisRaw = rotation & 3;
+    return sliceAxisRaw === 1 ? 0 : sliceAxisRaw === 2 ? 2 : 1;
+  }
+
+  static #isFullBlockShape(blockId: number, blockState: number): boolean {
+    const slice = (blockState >> 3) & 7;
+    if (slice !== 0) return false;
+    const shape = getShapeForBlockId(blockId);
+    if (shape.name === "cube") return true;
+    if (!shape.usesSliceState) return false;
+    if (shape.boxes.length !== 1) return false;
+    const box = shape.boxes[0];
+    return (
+      box.faceMask === FACE_ALL &&
+      box.min[0] === 0 &&
+      box.min[1] === 0 &&
+      box.min[2] === 0 &&
+      box.max[0] === 1 &&
+      box.max[1] === 1 &&
+      box.max[2] === 1
+    );
+  }
+
+  static #transformBox(
+    min: [number, number, number],
+    max: [number, number, number],
+    rotation: number,
+    flipY: boolean,
+  ): { min: [number, number, number]; max: [number, number, number] } {
+    let minX = min[0];
+    let minY = min[1];
+    let minZ = min[2];
+    let maxX = max[0];
+    let maxY = max[1];
+    let maxZ = max[2];
+
+    if (rotation !== 0) {
+      const points: [number, number][] = [
+        [minX, minZ],
+        [minX, maxZ],
+        [maxX, minZ],
+        [maxX, maxZ],
+      ];
+      const rotated: [number, number][] = points.map(([x, z]) => {
+        switch (rotation) {
+          case 1:
+            return [1 - z, x];
+          case 2:
+            return [1 - x, 1 - z];
+          case 3:
+            return [z, 1 - x];
+          default:
+            return [x, z];
+        }
+      });
+      minX = Math.min(...rotated.map((p) => p[0]));
+      maxX = Math.max(...rotated.map((p) => p[0]));
+      minZ = Math.min(...rotated.map((p) => p[1]));
+      maxZ = Math.max(...rotated.map((p) => p[1]));
+    }
+
+    if (flipY) {
+      const newMinY = 1 - maxY;
+      const newMaxY = 1 - minY;
+      minY = newMinY;
+      maxY = newMaxY;
+    }
+
+    return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
+  }
+
+  static #applySliceToBox(
+    min: [number, number, number],
+    max: [number, number, number],
+    state: number,
+  ): { min: [number, number, number]; max: [number, number, number] } {
+    const slice = (state >> 3) & 7;
+    if (slice === 0) return { min, max };
+
+    const rotation = state & 7;
+    const sliceAxis = this.#getSliceAxis(rotation);
+    const flip = (rotation & 4) !== 0;
+    const heightScale = slice / 8;
+    const outMin: [number, number, number] = [min[0], min[1], min[2]];
+    const outMax: [number, number, number] = [max[0], max[1], max[2]];
+
+    if (flip) {
+      outMin[sliceAxis] = 1 - (1 - min[sliceAxis]) * heightScale;
+      outMax[sliceAxis] = 1 - (1 - max[sliceAxis]) * heightScale;
+    } else {
+      outMin[sliceAxis] = min[sliceAxis] * heightScale;
+      outMax[sliceAxis] = max[sliceAxis] * heightScale;
+    }
+
+    if (outMin[sliceAxis] > outMax[sliceAxis]) {
+      const tmp = outMin[sliceAxis];
+      outMin[sliceAxis] = outMax[sliceAxis];
+      outMax[sliceAxis] = tmp;
+    }
+
+    return { min: outMin, max: outMax };
+  }
+
+  static #intersectRayAabbSegment(
+    ox: number,
+    oy: number,
+    oz: number,
+    dx: number,
+    dy: number,
+    dz: number,
+    minX: number,
+    minY: number,
+    minZ: number,
+    maxX: number,
+    maxY: number,
+    maxZ: number,
+    tMin: number,
+    tMax: number,
+    fallbackNx: number,
+    fallbackNy: number,
+    fallbackNz: number,
+  ): { t: number; nx: number; ny: number; nz: number } | null {
+    const eps = 1e-8;
+    let t0 = tMin;
+    let t1 = tMax;
+    let hitNx = 0;
+    let hitNy = 0;
+    let hitNz = 0;
+
+    const origins = [ox, oy, oz];
+    const dirs = [dx, dy, dz];
+    const mins = [minX, minY, minZ];
+    const maxs = [maxX, maxY, maxZ];
+
+    for (let axis = 0; axis < 3; axis++) {
+      const o = origins[axis];
+      const d = dirs[axis];
+      const mn = mins[axis];
+      const mx = maxs[axis];
+
+      if (Math.abs(d) < eps) {
+        if (o < mn || o > mx) return null;
+        continue;
+      }
+
+      const tToMin = (mn - o) / d;
+      const tToMax = (mx - o) / d;
+      let near = tToMin;
+      let far = tToMax;
+      let nearNx = 0;
+      let nearNy = 0;
+      let nearNz = 0;
+
+      if (axis === 0) {
+        nearNx = -1;
+      } else if (axis === 1) {
+        nearNy = -1;
+      } else {
+        nearNz = -1;
+      }
+
+      if (tToMin > tToMax) {
+        near = tToMax;
+        far = tToMin;
+        nearNx = -nearNx;
+        nearNy = -nearNy;
+        nearNz = -nearNz;
+      }
+
+      if (near > t0) {
+        t0 = near;
+        hitNx = nearNx;
+        hitNy = nearNy;
+        hitNz = nearNz;
+      }
+      if (far < t1) {
+        t1 = far;
+      }
+      if (t0 > t1) return null;
+    }
+
+    if (t0 < tMin || t0 > tMax) return null;
+    if (hitNx === 0 && hitNy === 0 && hitNz === 0) {
+      hitNx = fallbackNx;
+      hitNy = fallbackNy;
+      hitNz = fallbackNz;
+    }
+    return { t: t0, nx: hitNx, ny: hitNy, nz: hitNz };
+  }
+
+  static #raycastShapeInVoxel(
+    ox: number,
+    oy: number,
+    oz: number,
+    dx: number,
+    dy: number,
+    dz: number,
+    vx: number,
+    vy: number,
+    vz: number,
+    blockId: number,
+    blockState: number,
+    tEnter: number,
+    tExit: number,
+    fallbackNx: number,
+    fallbackNy: number,
+    fallbackNz: number,
+  ): { t: number; nx: number; ny: number; nz: number } | null {
+    const shape = getShapeForBlockId(blockId);
+    const rotation = shape.rotateY ? blockState & 3 : 0;
+    const flipY = shape.allowFlipY && (blockState & 4) !== 0;
+
+    let bestHit: { t: number; nx: number; ny: number; nz: number } | null = null;
+    for (const box of shape.boxes) {
+      let transformed = this.#transformBox(box.min, box.max, rotation, flipY);
+      if (shape.usesSliceState) {
+        transformed = this.#applySliceToBox(
+          transformed.min,
+          transformed.max,
+          blockState,
+        );
+      }
+
+      if (
+        transformed.max[0] <= transformed.min[0] ||
+        transformed.max[1] <= transformed.min[1] ||
+        transformed.max[2] <= transformed.min[2]
+      ) {
+        continue;
+      }
+
+      const hit = this.#intersectRayAabbSegment(
+        ox,
+        oy,
+        oz,
+        dx,
+        dy,
+        dz,
+        vx + transformed.min[0],
+        vy + transformed.min[1],
+        vz + transformed.min[2],
+        vx + transformed.max[0],
+        vy + transformed.max[1],
+        vz + transformed.max[2],
+        tEnter,
+        tExit,
+        fallbackNx,
+        fallbackNy,
+        fallbackNz,
+      );
+      if (!hit) continue;
+      if (!bestHit || hit.t < bestHit.t) bestHit = hit;
+    }
+
+    return bestHit;
   }
 
   static #isInsideMeshBounds(mesh: AbstractMesh, point: Vector3): boolean {
@@ -380,7 +780,15 @@ export class CrossHair {
   }
   public static getPlacementHit(
     player: Player,
-  ): { pos: Vector3; ny: number; hitFracY: number } | null {
+  ): {
+    pos: Vector3;
+    nx: number;
+    ny: number;
+    nz: number;
+    hitFracX: number;
+    hitFracY: number;
+    hitFracZ: number;
+  } | null {
     const hit = this.#raycastFirstBlock(
       player,
       (_x, _y, _z, blockId) =>
@@ -390,10 +798,16 @@ export class CrossHair {
 
     const ray = this.#getSharedForwardRay(player, Player.REACH_DISTANCE);
 
-    // exact world Y where the ray struck the block face
+    // exact world position where the ray struck the block face
+    const worldHitX = ray.origin.x + ray.direction.x * hit.t;
     const worldHitY = ray.origin.y + ray.direction.y * hit.t;
+    const worldHitZ = ray.origin.z + ray.direction.z * hit.t;
+
+    // fractional position within the block
+    const hitFracX = worldHitX - Math.floor(worldHitX);
     // fractional position within the block (0 = bottom, 1 = top)
     const hitFracY = worldHitY - Math.floor(worldHitY);
+    const hitFracZ = worldHitZ - Math.floor(worldHitZ);
 
     const hitPos = new Vector3(hit.x + hit.nx, hit.y + hit.ny, hit.z + hit.nz);
     const pos = new Vector3(
@@ -402,7 +816,15 @@ export class CrossHair {
       Math.floor(hitPos.z),
     );
 
-    return { pos, ny: hit.ny, hitFracY };
+    return {
+      pos,
+      nx: hit.nx,
+      ny: hit.ny,
+      nz: hit.nz,
+      hitFracX,
+      hitFracY,
+      hitFracZ,
+    };
   }
 
   setCrosshair(number: string) {

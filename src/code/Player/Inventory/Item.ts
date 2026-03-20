@@ -8,10 +8,20 @@ import { CrossHair } from "../Hud/CrossHair";
 import { BlockType } from "@/code/World/BlockType";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
+import { BlockTextures } from "@/code/World/Texture/BlockTextures";
+import { TextureAtlasFactory } from "@/code/World/Texture/TextureAtlasFactory";
 import { ItemRegistry, ItemDefinition } from "./ItemRegistry";
 import { ItemUseActions } from "./ItemUseActions";
 
 export class Item implements IUsable {
+  private static readonly SLICE_SHAPE_ROTATION_POLICY: Record<
+    string,
+    { rotateVerticalByYaw: boolean }
+  > = {
+    cube: { rotateVerticalByYaw: true },
+    slab: { rotateVerticalByYaw: true },
+  };
+
   name: string;
   description: string;
   icon: string;
@@ -87,6 +97,7 @@ export class Item implements IUsable {
     item.itemId = def.id;
     item.blockId = def.blockId ?? def.id;
     item.blockState = def.blockState ?? 0;
+    item.refreshIconStyle();
 
     if (def.useAction === "place_block") {
       item.use = (player: Player) => Item.place(player);
@@ -122,6 +133,7 @@ export class Item implements IUsable {
     item.itemId = itemId;
     item.blockId = itemId;
     item.blockState = 0;
+    item.refreshIconStyle();
 
     return item;
   }
@@ -137,7 +149,7 @@ export class Item implements IUsable {
     const hit = CrossHair.getPlacementHit(player);
     if (!hit) return;
 
-    const { pos, ny, hitFracY } = hit;
+    const { pos, nx, ny, nz, hitFracX, hitFracY, hitFracZ } = hit;
 
     const item =
       player.playerInventory.inventory[0][player.playerHud.selectedHotbarSlot]
@@ -147,25 +159,49 @@ export class Item implements IUsable {
       const blockId = item.blockId ?? item.itemId;
       let blockState = item.blockState ?? 0;
       const shape = getShapeForBlockId(blockId);
+      const yaw = player.playerCamera.cameraYaw;
+      const hasSlice = (blockState >> 3) & 7;
 
-      if (shape.rotateY) {
-        const yaw = player.playerCamera.cameraYaw;
+      if (hasSlice > 0) {
+        const sliceBits = blockState & ~7;
+        const existingRotation = blockState & 7;
+        const originalSliceAxis = Item.getSliceAxis(existingRotation);
+        const policy = Item.SLICE_SHAPE_ROTATION_POLICY[shape.name] ?? {
+          rotateVerticalByYaw: true,
+        };
+
+        let rotation = existingRotation & 3;
+        if (originalSliceAxis !== 1 && policy.rotateVerticalByYaw) {
+          rotation = Item.getWallRotationFromYaw(yaw);
+        }
+        const sliceAxis = Item.getSliceAxis(rotation);
+
+        let flip = (existingRotation & 4) !== 0;
+        if (sliceAxis === 1) {
+          // Horizontal slabs: only top/bottom.
+          if (ny === -1) flip = true;
+          else if (ny === 1) flip = false;
+          else flip = hitFracY > 0.5;
+        } else if (sliceAxis === 0) {
+          // Vertical slabs on X: only +/-X side.
+          flip = nx !== 0 ? nx < 0 : hitFracX > 0.5;
+        } else {
+          // Vertical slabs on Z: only +/-Z side.
+          flip = nz !== 0 ? nz < 0 : hitFracZ > 0.5;
+        }
+
+        const flipBit = flip ? 4 : 0;
+        blockState = sliceBits | flipBit | rotation;
+      } else if (shape.rotateY) {
         const quarterTurn = Math.PI / 2;
         const normalized =
           ((yaw % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
-
-        const sliceBits = blockState & ~7;
         let rotation =
           (Math.floor((normalized + quarterTurn / 2) / quarterTurn) & 3) ^ 2;
         rotation = (4 - rotation) & 3;
-        // ny === 1 means you hit the TOP face of the block below (normal points up)
-        // ny === -1 means you hit the BOTTOM face of the block above (normal points down)
         const flipY = (shape.allowFlipY && ny === -1) || hitFracY > 0.5;
         const flipBit = flipY ? 4 : 0;
-        //console.log(`Placing block ${blockId} at ${pos.x}, ${pos.y}, ${pos.z} with state ${blockState}`);
-        // console.log(`Calculated rotation: ${rotation}, flipY: ${flipY}`);
-        //console.log(`Slice bits: ${sliceBits}, flip bit: ${flipBit}`);
-        console.log(`Hit: ${JSON.stringify(hit)}`);
+        const sliceBits = blockState & ~7;
         blockState = sliceBits | flipBit | rotation;
       }
 
@@ -175,7 +211,7 @@ export class Item implements IUsable {
 
   createDiv(): HTMLDivElement {
     this.#div.classList.add("inventory-item");
-    this.#div.style.backgroundImage = `url(${this.icon})`;
+    this.refreshIconStyle();
 
     this.#stackLabel.innerText = this.#stackSize.toString();
     this.#stackLabel.classList.add("stack-label");
@@ -185,6 +221,54 @@ export class Item implements IUsable {
     this.#div.draggable = true;
 
     return this.#div;
+  }
+
+  private static getSliceAxis(rotation: number): number {
+    const sliceAxisRaw = rotation & 3;
+    return sliceAxisRaw === 1 ? 0 : sliceAxisRaw === 2 ? 2 : 1;
+  }
+
+  private static getWallRotationFromYaw(yaw: number): number {
+    const quarterTurn = Math.PI / 2;
+    const normalized = ((yaw % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+    const quarterIndex =
+      Math.floor((normalized + quarterTurn / 2) / quarterTurn) & 3;
+    return quarterIndex % 2 === 0 ? 2 : 1;
+  }
+
+  public refreshIconStyle(): void {
+    const atlasTile = this.getAtlasTile();
+    if (atlasTile) {
+      const [tx, ty] = atlasTile;
+      const atlasSize = TextureAtlasFactory.atlasSize;
+      const maxIndex = Math.max(1, atlasSize - 1);
+      this.#div.style.backgroundImage = "url(/texture/diffuse_atlas.png)";
+      this.#div.style.backgroundSize = `${atlasSize * 100}% ${atlasSize * 100}%`;
+      this.#div.style.backgroundPosition = `${(tx / maxIndex) * 100}% ${(ty / maxIndex) * 100}%`;
+      this.#div.style.backgroundRepeat = "no-repeat";
+      return;
+    }
+
+    this.#div.style.backgroundImage = this.icon ? `url(${this.icon})` : "";
+    this.#div.style.backgroundSize = "contain";
+    this.#div.style.backgroundPosition = "center";
+    this.#div.style.backgroundRepeat = "no-repeat";
+  }
+
+  private getAtlasTile(): [number, number] | null {
+    if (this.blockId === null) return null;
+
+    const blockTexture = BlockTextures[this.blockId];
+    if (!blockTexture) return null;
+
+    const uv =
+      blockTexture.all ??
+      blockTexture.side ??
+      blockTexture.top ??
+      blockTexture.bottom;
+
+    if (!uv || uv.length < 2) return null;
+    return [uv[0], uv[1]];
   }
 
   public static stackItemAtoB(itemA: Item, itemB: Item): number {

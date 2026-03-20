@@ -550,18 +550,23 @@ export class PlayerHud {
     if (!this.itemTooltipDiv) return;
 
     const item = PlayerInventory.currentlyHoveredSlot?.item;
-
-    let content: string;
+    this.itemTooltipDiv.innerHTML = "";
     if (item) {
-      content = `<div class="item-tooltip-name">${item.name}</div>`;
+      const nameDiv = document.createElement("div");
+      nameDiv.className = "item-tooltip-name";
+      nameDiv.textContent = item.name;
+      this.itemTooltipDiv.appendChild(nameDiv);
+
       if (item.description) {
-        content += `<div class="item-tooltip-desc">${item.description}</div>`;
+        const descDiv = document.createElement("div");
+        descDiv.className = "item-tooltip-desc";
+        descDiv.textContent = item.description;
+        this.itemTooltipDiv.appendChild(descDiv);
       }
     } else {
-      content = text;
+      this.itemTooltipDiv.textContent = text;
     }
 
-    this.itemTooltipDiv.innerHTML = content;
     this.itemTooltipDiv.style.display = "block";
 
     // Update position immediately and then follow the cursor

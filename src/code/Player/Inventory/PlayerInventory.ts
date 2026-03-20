@@ -5,6 +5,8 @@ import { Item } from "./Item";
 import { ItemSlot } from "./ItemSlot";
 import { InventoryControls } from "../Controls/InventoryControls";
 import { ItemRegistry } from "./ItemRegistry";
+import { BlockType } from "@/code/World/BlockType";
+import type { ItemDefinition } from "./ItemRegistry";
 
 export type SavedInventoryItem = {
   itemId: number;
@@ -59,6 +61,25 @@ export class PlayerInventory {
     this.#generateFakeItems();
   }
 
+  private static getCobbleVariantRank(def: ItemDefinition): number {
+    const state = def.blockState ?? 0;
+    const rotation = state & 7;
+    const slice = (state >> 3) & 7;
+    if (slice === 0) return 0; // Full block
+    if (slice === 4 && rotation === 0) return 1; // Bottom slab
+    if (slice === 4 && rotation === 4) return 2; // Top slab
+    if (slice === 4 && (rotation & 3) === 1) return 3; // Half wall
+    return 10 + state;
+  }
+
+  private static getCobbleDefinitions(
+    definitions: ItemDefinition[],
+  ): ItemDefinition[] {
+    return definitions
+      .filter((def) => (def.blockId ?? def.id) === BlockType.Cobble)
+      .sort((a, b) => this.getCobbleVariantRank(a) - this.getCobbleVariantRank(b));
+  }
+
   #generateFakeItems() {
     const definitions = ItemRegistry.getAll();
     const width = this.#inventorySlots[0].length;
@@ -77,8 +98,25 @@ export class PlayerInventory {
       return true;
     };
 
+    const placeInFirstEmptySlot = (def: (typeof definitions)[number]) => {
+      for (let index = 0; index < slotCount; index++) {
+        const row = Math.floor(index / width);
+        const col = index % width;
+        if (placeItem(def, row, col)) return true;
+      }
+      return false;
+    };
+
+    const cobbleDefs = PlayerInventory.getCobbleDefinitions(definitions);
+
+    // Ensure every cobble variant is present and easy to find.
+    for (const def of cobbleDefs) {
+      placeInFirstEmptySlot(def);
+    }
+
     // Pass 1: Keep existing IDs in their slots when they fit the grid.
     for (const def of definitions) {
+      if (placed.has(def.id)) continue;
       if (def.id < 1 || def.id > slotCount) continue;
       const row = Math.floor((def.id - 1) / width);
       const col = (def.id - 1) % width;
@@ -101,6 +139,49 @@ export class PlayerInventory {
       if (emptyIndex >= emptySlots.length) break;
       const [row, col] = emptySlots[emptyIndex++];
       placeItem(def, row, col);
+    }
+  }
+
+  #ensureCobbleVariantsPresent(): void {
+    const definitions = ItemRegistry.getAll();
+    const cobbleDefs = PlayerInventory.getCobbleDefinitions(definitions);
+    if (cobbleDefs.length === 0) return;
+
+    const existingItemIds = new Set<number>();
+    const requiredCobbleIds = new Set<number>(cobbleDefs.map((def) => def.id));
+    const emptySlots: Array<[number, number]> = [];
+    const replacementSlots: Array<[number, number]> = [];
+    for (let row = 0; row < this.#inventorySlots.length; row++) {
+      for (let col = 0; col < this.#inventorySlots[row].length; col++) {
+        const current = this.#inventorySlots[row][col].item;
+        if (current) existingItemIds.add(current.itemId);
+        else emptySlots.push([row, col]);
+      }
+    }
+
+    // Prefer replacing items from the back of inventory first, then hotbar.
+    for (let row = this.#inventorySlots.length - 1; row >= 0; row--) {
+      for (let col = this.#inventorySlots[row].length - 1; col >= 0; col--) {
+        const current = this.#inventorySlots[row][col].item;
+        if (!current) continue;
+        if (requiredCobbleIds.has(current.itemId)) continue;
+        replacementSlots.push([row, col]);
+      }
+    }
+
+    for (const def of cobbleDefs) {
+      if (existingItemIds.has(def.id)) continue;
+      const target = emptySlots.shift() ?? replacementSlots.shift();
+      if (!target) break;
+      const [row, col] = target;
+      const slot = this.#inventorySlots[row][col];
+      if (slot.item) slot.clearItemSlots();
+      const item = this.#createItemById(def.id, row, col);
+      if (!item) continue;
+      item.stackSize = def.maxStack ?? Math.min(64, def.id);
+      slot.item = item;
+      slot.divItemSlot.appendChild(item.div);
+      existingItemIds.add(def.id);
     }
   }
 
@@ -158,6 +239,7 @@ export class PlayerInventory {
       }
     }
 
+    this.#ensureCobbleVariantsPresent();
     this.onInventoryChangedObservable.notifyObservers();
     return true;
   }
@@ -298,6 +380,7 @@ export class PlayerInventory {
     worldItem.itemId = item.itemId;
     worldItem.blockId = item.blockId ?? item.itemId;
     worldItem.blockState = item.blockState ?? 0;
+    worldItem.refreshIconStyle();
     worldItem.stackSize = quantity ?? item.stackSize;
     item.stackSize -= worldItem.stackSize;
 

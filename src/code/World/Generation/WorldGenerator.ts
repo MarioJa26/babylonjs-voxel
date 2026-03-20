@@ -1,8 +1,5 @@
 import Alea from "alea";
-import {
-  GenerationParams,
-  GenerationParamsType,
-} from "./NoiseAndParameters/GenerationParams";
+import { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
 import { Squirrel3 } from "./NoiseAndParameters/Squirrel13";
 import {
   createFastNoise2D,
@@ -38,7 +35,7 @@ export class WorldGenerator {
     });
     const caveNoise = createFastNoise3D({
       seed: Squirrel3.get(2, (this.prng() * 0xffffffff) | 0),
-      frequency: GenerationParams.RIVER_SCALE,
+      frequency: 0.02,
     });
 
     // OPTIMIZATION: density noise frequency is baked in here at 1.0 so the noise
