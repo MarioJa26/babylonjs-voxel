@@ -1,11 +1,20 @@
-import { Matrix, Vector3 } from "@babylonjs/core";
-import { AdvancedBoat } from "../../Entities/AdvancedBoat";
+import { Matrix, Mesh, Vector3 } from "@babylonjs/core";
 import { IControls } from "../../Inferface/IControls";
 import { Player } from "../Player";
+import { Mount } from "@/code/Entities/Mount";
 
-export class PaddleBoatControls implements IControls<AdvancedBoat> {
+export type BoatControlEntity = {
+  mount: Mount;
+  submergedPoints: number;
+  boatPosition: Vector3;
+  boatMesh: Mesh;
+  applyImpulse(impulse: Vector3, worldPoint: Vector3): void;
+  applyAngularImpulse(impulse: Vector3): void;
+};
+
+export class PaddleBoatControls implements IControls<BoatControlEntity> {
   public pressedKeys = new Set<string>();
-  #controlledEntity: AdvancedBoat;
+  #controlledEntity: BoatControlEntity;
   #inputDirection = new Vector3(0, 0, 0);
 
   #player: Player;
@@ -40,7 +49,7 @@ export class PaddleBoatControls implements IControls<AdvancedBoat> {
     -this.#angularRotationStrength,
   );
 
-  constructor(paddleBoat: AdvancedBoat, player: Player) {
+  constructor(paddleBoat: BoatControlEntity, player: Player) {
     this.#controlledEntity = paddleBoat;
     this.#inputDirection = player.playerVehicle.inputDirection;
     this.#player = player;
@@ -65,6 +74,8 @@ export class PaddleBoatControls implements IControls<AdvancedBoat> {
       this.#inputDirection.y = -1;
     } else if (PaddleBoatControls.KEY_DOWN.includes(key)) {
       this.#inputDirection.y = 1;
+    } else if (PaddleBoatControls.KEY_USE.includes(key)) {
+      this.#player.use();
     }
   }
 
@@ -93,8 +104,6 @@ export class PaddleBoatControls implements IControls<AdvancedBoat> {
       } else {
         this.#inputDirection.x = 0;
       }
-    } else if (PaddleBoatControls.KEY_USE.includes(key)) {
-      this.#player.use();
     } else if (PaddleBoatControls.KEY_FLASH.includes(key)) {
       this.#player.flashlight.toggle();
     }
@@ -176,7 +185,7 @@ export class PaddleBoatControls implements IControls<AdvancedBoat> {
   #pressedKeysHas(keys: string[]) {
     return keys.some((k) => this.pressedKeys.has(k));
   }
-  public get controlledEntity(): AdvancedBoat {
+  public get controlledEntity(): BoatControlEntity {
     return this.#controlledEntity;
   }
 

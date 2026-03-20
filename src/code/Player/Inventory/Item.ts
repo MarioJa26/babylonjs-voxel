@@ -12,6 +12,7 @@ import { BlockTextures } from "@/code/World/Texture/BlockTextures";
 import { TextureAtlasFactory } from "@/code/World/Texture/TextureAtlasFactory";
 import { ItemRegistry, ItemDefinition } from "./ItemRegistry";
 import { ItemUseActions } from "./ItemUseActions";
+import { BoatCreatorSystem } from "@/code/World/Boat/BoatCreatorSystem";
 
 export class Item implements IUsable {
   private static readonly SLICE_SHAPE_ROTATION_POLICY: Record<
@@ -206,6 +207,9 @@ export class Item implements IUsable {
       }
 
       ChunkLoadingSystem.setBlock(pos.x, pos.y, pos.z, blockId, blockState);
+      if (blockId === BlockType.BoatCreator) {
+        BoatCreatorSystem.tryCreateBoatFromMarker(player, pos.x, pos.y, pos.z);
+      }
     }
   }
 

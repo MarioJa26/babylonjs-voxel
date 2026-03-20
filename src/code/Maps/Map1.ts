@@ -6,7 +6,7 @@ import {
   Scene,
   StandardMaterial,
 } from "@babylonjs/core";
-import { AdvancedBoat } from "../Entities/AdvancedBoat";
+import { CustomBoat } from "../Entities/CustomBoat";
 import { Player } from "../Player/Player";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
 import { ChunkMesher } from "../World/Chunk/ChunckMesher";
@@ -115,7 +115,7 @@ export class Map1 {
   }
 
   private CreateScene(scene: Scene): Scene {
-    new AdvancedBoat(
+    new CustomBoat(
       scene,
       this.#player, // Note: #player is used here before it's fully constructed if we pass it to Player constructor
       GenerationParams.SEA_LEVEL + 0.5,

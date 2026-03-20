@@ -1,11 +1,11 @@
 import { Matrix, Vector3 } from "@babylonjs/core";
-import { AdvancedBoat } from "../../Entities/AdvancedBoat";
 import { IControls } from "../../Inferface/IControls";
 import { Player } from "../Player";
+import { BoatControlEntity } from "./PaddleBoatControls";
 
-export class JetSkiControls implements IControls<AdvancedBoat> {
+export class JetSkiControls implements IControls<BoatControlEntity> {
   public pressedKeys = new Set<string>();
-  #controlledEntity: AdvancedBoat;
+  #controlledEntity: BoatControlEntity;
   #inputDirection = new Vector3(0, 0, 0);
 
   #player: Player;
@@ -40,7 +40,7 @@ export class JetSkiControls implements IControls<AdvancedBoat> {
     -this.#angularRotationStrength
   );
 
-  constructor(paddleBoat: AdvancedBoat, player: Player) {
+  constructor(paddleBoat: BoatControlEntity, player: Player) {
     this.#controlledEntity = paddleBoat;
     this.#inputDirection = player.playerVehicle.inputDirection;
     this.#player = player;
@@ -176,7 +176,7 @@ export class JetSkiControls implements IControls<AdvancedBoat> {
   #pressedKeysHas(keys: string[]) {
     return keys.some((k) => this.pressedKeys.has(k));
   }
-  public get controlledEntity(): AdvancedBoat {
+  public get controlledEntity(): BoatControlEntity {
     return this.#controlledEntity;
   }
 

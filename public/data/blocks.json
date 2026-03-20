@@ -278,7 +278,8 @@
   {
     "id": "ConcreteBlockWall02",
     "name": "concrete_block_wall_02",
-    "path": "/texture/stone/concrete_block_wall_02_1k"
+    "path": "/texture/stone/concrete_block_wall_02_1k",
+    "shape": "fence"
   },
   {
     "id": "ConcreteMoss",
@@ -345,6 +346,11 @@
   {
     "id": "CraftingTable",
     "name": "crafting_table",
+    "path": "/texture/wood/crafting_table_1k"
+  },
+  {
+    "id": "BoatCreator",
+    "name": "boat_creator",
     "path": "/texture/wood/crafting_table_1k"
   }
 ]

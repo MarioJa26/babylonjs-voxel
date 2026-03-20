@@ -62,6 +62,7 @@ export enum BlockType {
   Glass01 = 60,
   Glass02 = 61,
   CraftingTable = 62,
+  BoatCreator = 63,
 }
 
 export const Hardness = {

@@ -3,7 +3,7 @@ import { Player } from "../Player";
 import { CrossHair } from "../Hud/CrossHair";
 import { BlockType } from "@/code/World/BlockType";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
-import { AdvancedBoat } from "@/code/Entities/AdvancedBoat";
+import { CustomBoat } from "@/code/Entities/CustomBoat";
 import { Map1 } from "@/code/Maps/Map1";
 import { GenerationParams } from "@/code/World/Generation/NoiseAndParameters/GenerationParams";
 
@@ -53,7 +53,7 @@ export const ItemUseActions: Record<string, ItemUseAction> = {
       }
     }
 
-    new AdvancedBoat(
+    new CustomBoat(
       Map1.mainScene,
       player,
       GenerationParams.SEA_LEVEL,
