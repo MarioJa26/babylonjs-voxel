@@ -43,6 +43,70 @@ const TRANSPARENT_FLAG = 1 << 16;
 const BACKFACE_FLAG = 1 << 17;
 const POS_SCALE = 4;
 
+const ROTATE_Y_FACE_MASK_1 = new Uint8Array(64);
+const ROTATE_Y_FACE_MASK_2 = new Uint8Array(64);
+const ROTATE_Y_FACE_MASK_3 = new Uint8Array(64);
+const FLIP_Y_FACE_MASK = new Uint8Array(64);
+
+for (let mask = 0; mask < 64; mask++) {
+  const px = (mask >> 0) & 1;
+  const nx = (mask >> 1) & 1;
+  const py = (mask >> 2) & 1;
+  const ny = (mask >> 3) & 1;
+  const pz = (mask >> 4) & 1;
+  const nz = (mask >> 5) & 1;
+
+  // One 90° CW rotation around Y:
+  // +X -> +Z
+  // +Z -> -X
+  // -X -> -Z
+  // -Z -> +X
+  const rot1 =
+    (nz << 0) | // new +X = old -Z
+    (pz << 1) | // new -X = old +Z
+    (py << 2) | // +Y unchanged
+    (ny << 3) | // -Y unchanged
+    (px << 4) | // new +Z = old +X
+    (nx << 5); // new -Z = old -X
+
+  ROTATE_Y_FACE_MASK_1[mask] = rot1;
+
+  // rot2 = rot1 applied again
+  const px1 = (rot1 >> 0) & 1;
+  const nx1 = (rot1 >> 1) & 1;
+  const py1 = (rot1 >> 2) & 1;
+  const ny1 = (rot1 >> 3) & 1;
+  const pz1 = (rot1 >> 4) & 1;
+  const nz1 = (rot1 >> 5) & 1;
+
+  const rot2 =
+    (nz1 << 0) | (pz1 << 1) | (py1 << 2) | (ny1 << 3) | (px1 << 4) | (nx1 << 5);
+
+  ROTATE_Y_FACE_MASK_2[mask] = rot2;
+
+  // rot3 = rot2 applied again
+  const px2 = (rot2 >> 0) & 1;
+  const nx2 = (rot2 >> 1) & 1;
+  const py2 = (rot2 >> 2) & 1;
+  const ny2 = (rot2 >> 3) & 1;
+  const pz2 = (rot2 >> 4) & 1;
+  const nz2 = (rot2 >> 5) & 1;
+
+  const rot3 =
+    (nz2 << 0) | (pz2 << 1) | (py2 << 2) | (ny2 << 3) | (px2 << 4) | (nx2 << 5);
+
+  ROTATE_Y_FACE_MASK_3[mask] = rot3;
+
+  // Flip Y: swap +Y and -Y
+  FLIP_Y_FACE_MASK[mask] =
+    (px << 0) |
+    (nx << 1) |
+    (ny << 2) | // new +Y = old -Y
+    (py << 3) | // new -Y = old +Y
+    (pz << 4) |
+    (nz << 5);
+}
+
 const paletteExpander = new PaletteExpander();
 
 class ChunkWorkerMesher {
@@ -58,6 +122,8 @@ class ChunkWorkerMesher {
       faceCount: 0,
     };
   }
+
+  initFaceMaskTables() {}
 
   /**
    * Calculate packed AO (2 bits × 4 corners = 8 bits) for one face.
@@ -615,66 +681,53 @@ class ChunkWorkerMesher {
     max: [number, number, number];
     faceMask: number;
   } {
-    let minX = min[0];
-    let minY = min[1];
-    let minZ = min[2];
-    let maxX = max[0];
-    let maxY = max[1];
-    let maxZ = max[2];
+    let minX = min[0],
+      minY = min[1],
+      minZ = min[2];
+    let maxX = max[0],
+      maxY = max[1],
+      maxZ = max[2];
 
-    if (rotation !== 0) {
-      const points: [number, number][] = [
-        [minX, minZ],
-        [minX, maxZ],
-        [maxX, minZ],
-        [maxX, maxZ],
-      ];
-      const rotated: [number, number][] = points.map(([x, z]) => {
-        switch (rotation) {
-          case 1:
-            return [1 - z, x];
-          case 2:
-            return [1 - x, 1 - z];
-          case 3:
-            return [z, 1 - x];
-          default:
-            return [x, z];
-        }
-      });
-      minX = Math.min(...rotated.map((p) => p[0]));
-      maxX = Math.max(...rotated.map((p) => p[0]));
-      minZ = Math.min(...rotated.map((p) => p[1]));
-      maxZ = Math.max(...rotated.map((p) => p[1]));
-
-      // Rotate the XZ face-mask bits: +X/-X swap with +Z/-Z per 90° turn.
-      // Each CW rotation maps: +X→+Z, +Z→-X, -X→-Z, -Z→+X (Y faces unchanged).
-      let mask = faceMask;
-      for (let r = 0; r < rotation; r++) {
-        const px = (mask >> 0) & 1; // +X
-        const nx = (mask >> 1) & 1; // -X
-        const pz = (mask >> 4) & 1; // +Z
-        const nz = (mask >> 5) & 1; // -Z
-        // +X → +Z, +Z → -X, -X → -Z, -Z → +X
-        mask =
-          (mask & (FACE_PY | FACE_NY)) | // Y faces unchanged
-          (nz << 0) | // new +X = old -Z
-          (pz << 1) | // new -X = old +Z
-          (px << 4) | // new +Z = old +X
-          (nx << 5); // new -Z = old -X
+    switch (rotation & 3) {
+      case 1: {
+        const nMinX = 1 - maxZ;
+        const nMaxX = 1 - minZ;
+        const nMinZ = minX;
+        const nMaxZ = maxX;
+        minX = nMinX;
+        maxX = nMaxX;
+        minZ = nMinZ;
+        maxZ = nMaxZ;
+        faceMask = ROTATE_Y_FACE_MASK_1[faceMask];
+        break;
       }
-      faceMask = mask;
+      case 2: {
+        minX = 1 - maxX;
+        maxX = 1 - minX;
+        minZ = 1 - maxZ;
+        maxZ = 1 - minZ;
+        faceMask = ROTATE_Y_FACE_MASK_2[faceMask];
+        break;
+      }
+      case 3: {
+        const nMinX = minZ;
+        const nMaxX = maxZ;
+        const nMinZ = 1 - maxX;
+        const nMaxZ = 1 - minX;
+        minX = nMinX;
+        maxX = nMaxX;
+        minZ = nMinZ;
+        maxZ = nMaxZ;
+        faceMask = ROTATE_Y_FACE_MASK_3[faceMask];
+        break;
+      }
     }
 
     if (flipY) {
-      const newMinY = 1 - maxY;
-      const newMaxY = 1 - minY;
-      minY = newMinY;
-      maxY = newMaxY;
-
-      // Swap +Y and -Y face-mask bits
-      const py = (faceMask >> 2) & 1;
-      const ny = (faceMask >> 3) & 1;
-      faceMask = (faceMask & ~(FACE_PY | FACE_NY)) | (ny << 2) | (py << 3);
+      const oldMinY = minY;
+      minY = 1 - maxY;
+      maxY = 1 - oldMinY;
+      faceMask = FLIP_Y_FACE_MASK[faceMask];
     }
 
     return {
@@ -844,10 +897,10 @@ class ChunkWorkerMesher {
                 y1 - y0,
                 z1 - z0,
                 x + 1,
-                 y,
-                 z,
-                 slicedMax[0] >= 1,
-               );
+                y,
+                z,
+                slicedMax[0] >= 1,
+              );
             if (faceMask & FACE_NX)
               emitFace(
                 0,
@@ -858,10 +911,10 @@ class ChunkWorkerMesher {
                 y1 - y0,
                 z1 - z0,
                 x - 1,
-                 y,
-                 z,
-                 slicedMin[0] <= 0,
-               );
+                y,
+                z,
+                slicedMin[0] <= 0,
+              );
 
             // +Y / -Y
             if (faceMask & FACE_PY)
@@ -874,10 +927,10 @@ class ChunkWorkerMesher {
                 z1 - z0,
                 x1 - x0,
                 x,
-                 y + 1,
-                 z,
-                 slicedMax[1] >= 1,
-               );
+                y + 1,
+                z,
+                slicedMax[1] >= 1,
+              );
             if (faceMask & FACE_NY)
               emitFace(
                 1,
@@ -888,10 +941,10 @@ class ChunkWorkerMesher {
                 z1 - z0,
                 x1 - x0,
                 x,
-                 y - 1,
-                 z,
-                 slicedMin[1] <= 0,
-               );
+                y - 1,
+                z,
+                slicedMin[1] <= 0,
+              );
 
             // +Z / -Z
             if (faceMask & FACE_PZ)
@@ -904,10 +957,10 @@ class ChunkWorkerMesher {
                 x1 - x0,
                 y1 - y0,
                 x,
-                 y,
-                 z + 1,
-                 slicedMax[2] >= 1,
-               );
+                y,
+                z + 1,
+                slicedMax[2] >= 1,
+              );
             if (faceMask & FACE_NZ)
               emitFace(
                 2,
@@ -918,10 +971,10 @@ class ChunkWorkerMesher {
                 x1 - x0,
                 y1 - y0,
                 x,
-                 y,
-                 z - 1,
-                 slicedMin[2] <= 0,
-               );
+                y,
+                z - 1,
+                slicedMin[2] <= 0,
+              );
           }
         }
       }

@@ -33,9 +33,14 @@ export class SurfaceGenerator {
   private static readonly SURFACE_RESET_AIR_GAP = 6;
   private static readonly NO_SURFACE_Y = -32768;
   private static seedAsInt: number;
+
   private chunk_size: number;
   private riverGenerator: RiverGenerator;
   private features: IWorldFeature[];
+  private readonly getFinalTerrainHeightBound: (
+    worldX: number,
+    worldZ: number,
+  ) => number;
 
   constructor(
     params: GenerationParamsType,
@@ -56,6 +61,8 @@ export class SurfaceGenerator {
       new StructureSpawnerFeature(),
       new DungeonFeature(),
     ];
+
+    this.getFinalTerrainHeightBound = this.getFinalTerrainHeight.bind(this);
   }
 
   public generate(
@@ -76,17 +83,38 @@ export class SurfaceGenerator {
       chunkY,
       chunkZ,
       biome,
-      placeBlock,
+      placeBlock as (
+        x: number,
+        y: number,
+        z: number,
+        id: number,
+        ow: boolean,
+      ) => void,
     );
+
     this.generateFlora(
       chunkX,
       chunkY,
       chunkZ,
       biome,
-      placeBlock,
+      placeBlock as (x: number, y: number, z: number, id: number) => void,
       generationResult.topSurfaceYMap,
     );
-    this.generateStructures(chunkX, chunkY, chunkZ, biome, placeBlock);
+
+    this.generateStructures(
+      chunkX,
+      chunkY,
+      chunkZ,
+      biome,
+      placeBlock as (
+        x: number,
+        y: number,
+        z: number,
+        id: number,
+        ow: boolean,
+      ) => void,
+    );
+
     return generationResult;
   }
 
@@ -94,7 +122,7 @@ export class SurfaceGenerator {
     chunkX: number,
     chunkY: number,
     chunkZ: number,
-    _currentBiome: Biome,
+    currentBiome: Biome,
     placeBlock: (
       x: number,
       y: number,
@@ -103,87 +131,108 @@ export class SurfaceGenerator {
       ow: boolean,
     ) => void,
   ): SurfaceGenerationResult {
-    const { CHUNK_SIZE, SEA_LEVEL } = this.params;
+    const CHUNK_SIZE = this.params.CHUNK_SIZE;
+    const SEA_LEVEL = this.params.SEA_LEVEL;
+    const NO_SURFACE_Y = SurfaceGenerator.NO_SURFACE_Y;
+
     const chunkWorldX = chunkX * CHUNK_SIZE;
+    const chunkWorldY = chunkY * CHUNK_SIZE;
     const chunkWorldZ = chunkZ * CHUNK_SIZE;
-    const topWorldY = chunkY * CHUNK_SIZE + CHUNK_SIZE - 1;
+    const topWorldY = chunkWorldY + CHUNK_SIZE - 1;
+
     const topSunlightMask = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE);
     const topSurfaceYMap = new Int16Array(CHUNK_SIZE * CHUNK_SIZE);
-    topSurfaceYMap.fill(SurfaceGenerator.NO_SURFACE_Y);
+    topSurfaceYMap.fill(NO_SURFACE_Y);
 
-    let isTunnel = false;
+    const volcanicLiquidId =
+      currentBiome.name === "Volcanic_Wasteland" ? 24 : 30;
 
     for (let localX = 0; localX < CHUNK_SIZE; localX++) {
       const worldX = chunkWorldX + localX;
+
       for (let localZ = 0; localZ < CHUNK_SIZE; localZ++) {
         const worldZ = chunkWorldZ + localZ;
+        const columnIndex = localX + localZ * CHUNK_SIZE;
 
-        // OPTIMIZATION: getTerrainSample() returns height + biome + riverNoise in one cache hit.
-        // Previously, getFinalTerrainHeight() and getRiverNoise() each ran the full noise stack.
         const sample = TerrainHeightMap.getTerrainSample(worldX, worldZ);
         const terrainHeight = sample.height;
-        // Reuse the cached river noise — no second noise evaluation.
         const riverNoise = sample.riverNoise;
 
-        const columnIndex = localX + localZ * CHUNK_SIZE;
-        const topSurfaceY = this.findTopSurfaceY(worldX, worldZ, terrainHeight);
-        const hasSurface = Number.isFinite(topSurfaceY);
-        const columnTopSurfaceY = hasSurface
-          ? (topSurfaceY as number)
-          : SurfaceGenerator.NO_SURFACE_Y;
+        const treeMod = SurfaceGenerator.treeNoise(
+          worldX * 0.00001,
+          worldZ * 0.00001,
+        );
+        const yFreq = 0.04 + treeMod * 0.02;
+
+        const topSurfaceY = this.findTopSurfaceY(
+          worldX,
+          worldZ,
+          terrainHeight,
+          yFreq,
+        );
+
+        const hasSurface = topSurfaceY !== NO_SURFACE_Y;
+        const columnTopSurfaceY = hasSurface ? topSurfaceY : NO_SURFACE_Y;
 
         if (hasSurface) {
-          topSurfaceYMap[columnIndex] = topSurfaceY as number;
+          topSurfaceYMap[columnIndex] = topSurfaceY;
         }
+
         topSunlightMask[columnIndex] =
           !hasSurface || topSurfaceY <= topWorldY ? 1 : 0;
 
-        const tunnelHeight = GenerationParams.SEA_LEVEL;
         let depthAnchorY = columnTopSurfaceY;
 
-        // Check the block just above this chunk for continuity
         const densityAboveChunk = this.getDensity(
           worldX,
           topWorldY + 1,
           worldZ,
           terrainHeight,
+          yFreq,
         );
-        const isTunnelAboveChunk = this.riverGenerator.isRiver(
-          worldX,
-          topWorldY + 1,
-          worldZ,
-          riverNoise,
-        );
+
+        const isTunnelAboveChunk =
+          topWorldY + 1 < GenerationParams.SEA_LEVEL + 16 &&
+          this.riverGenerator.isRiver(
+            worldX,
+            topWorldY + 1,
+            worldZ,
+            riverNoise,
+          );
+
         let airGapSinceLastSolid =
           !isTunnelAboveChunk && densityAboveChunk > 0 ? 0 : 1;
 
-        // Iterate Y column top-to-bottom within this chunk
         for (let localY = CHUNK_SIZE - 1; localY >= 0; localY--) {
-          const worldY = chunkY * CHUNK_SIZE + localY;
+          const worldY = chunkWorldY + localY;
 
-          // River check reuses the already-fetched riverNoise — no extra noise call.
           if (worldY < GenerationParams.SEA_LEVEL + 16) {
-            isTunnel = this.riverGenerator.isRiver(
+            const isTunnel = this.riverGenerator.isRiver(
               worldX,
               worldY,
               worldZ,
               riverNoise,
             );
+
             if (isTunnel) {
-              if (worldY <= tunnelHeight) {
-                placeBlock(worldX, worldY, worldZ, 30, true); // Water
-              } else {
-                placeBlock(worldX, worldY, worldZ, 0, true); // Air
-              }
+              placeBlock(
+                worldX,
+                worldY,
+                worldZ,
+                worldY <= SEA_LEVEL ? 30 : 0,
+                true,
+              );
               airGapSinceLastSolid++;
               continue;
             }
           }
+
           const density = this.getDensity(
             worldX,
             worldY,
             worldZ,
             terrainHeight,
+            yFreq,
           );
 
           if (density > 0) {
@@ -192,36 +241,37 @@ export class SurfaceGenerator {
             ) {
               depthAnchorY = worldY;
             }
+
             const depthBelowSurface =
-              depthAnchorY !== SurfaceGenerator.NO_SURFACE_Y
+              depthAnchorY !== NO_SURFACE_Y
                 ? depthAnchorY - worldY
                 : Number.POSITIVE_INFINITY;
 
-            let blockId = _currentBiome.stoneBlock;
+            let blockId = currentBiome.stoneBlock;
 
             if (depthBelowSurface === 0) {
               const isBeach = this.isBeachLocation(worldX, worldZ, worldY);
+
               if (worldY < SEA_LEVEL - 1) {
-                blockId = _currentBiome.seafloorBlock;
+                blockId = currentBiome.seafloorBlock;
               } else if (isBeach) {
-                blockId = _currentBiome.beachBlock;
+                blockId = currentBiome.beachBlock;
               } else {
-                blockId = _currentBiome.topBlock;
+                blockId = currentBiome.topBlock;
               }
             } else if (
               depthBelowSurface > 0 &&
               depthBelowSurface <= SurfaceGenerator.SUBSURFACE_LAYER_DEPTH
             ) {
-              blockId = _currentBiome.undergroundBlock;
+              blockId = currentBiome.undergroundBlock;
             }
+
             placeBlock(worldX, worldY, worldZ, blockId, true);
             airGapSinceLastSolid = 0;
           } else {
             if (worldY <= SEA_LEVEL) {
               if (worldY >= 0) {
-                const liquidId =
-                  _currentBiome.name === "Volcanic_Wasteland" ? 24 : 30;
-                placeBlock(worldX, worldY, worldZ, liquidId, false);
+                placeBlock(worldX, worldY, worldZ, volcanicLiquidId, false);
               } else {
                 placeBlock(worldX, worldY, worldZ, 29, false);
               }
@@ -244,59 +294,67 @@ export class SurfaceGenerator {
     topSurfaceYMap: Int16Array,
   ) {
     const SCAN_RADIUS = 8;
+    const chunkSize = this.chunk_size;
+    const chunkWorldX = chunkX * chunkSize;
+    const chunkWorldZ = chunkZ * chunkSize;
 
     for (
       let localX = -SCAN_RADIUS;
-      localX < this.chunk_size + SCAN_RADIUS;
+      localX < chunkSize + SCAN_RADIUS;
       localX++
     ) {
-      const worldX = chunkX * this.chunk_size + localX;
+      const worldX = chunkWorldX + localX;
+
       for (
         let localZ = -SCAN_RADIUS;
-        localZ < this.chunk_size + SCAN_RADIUS;
+        localZ < chunkSize + SCAN_RADIUS;
         localZ++
       ) {
-        const worldZ = chunkZ * this.chunk_size + localZ;
+        const worldZ = chunkWorldZ + localZ;
 
-        // OPTIMIZATION: getTerrainSample() gives us biome, height, and riverNoise
-        // all in one cache lookup — previously this called getBiome() + getFinalTerrainHeight()
-        // + getRiverNoise() separately, each re-running the same noise functions.
         const sample = TerrainHeightMap.getTerrainSample(worldX, worldZ);
         const colBiome = sample.biome;
 
         if (!colBiome.canSpawnTrees) continue;
 
         const treeNoiseValue =
-          (SurfaceGenerator.treeNoise(worldX, worldZ) + 1) / 2;
+          (SurfaceGenerator.treeNoise(worldX, worldZ) + 1) * 0.5;
         if (treeNoiseValue > colBiome.treeDensity) continue;
 
+        const treeMod = SurfaceGenerator.treeNoise(
+          worldX * 0.00001,
+          worldZ * 0.00001,
+        );
+        const yFreq = 0.04 + treeMod * 0.02;
+
         let surfaceY = SurfaceGenerator.NO_SURFACE_Y;
+
         const isInsideChunkColumn =
           localX >= 0 &&
-          localX < this.chunk_size &&
+          localX < chunkSize &&
           localZ >= 0 &&
-          localZ < this.chunk_size;
+          localZ < chunkSize;
 
         if (isInsideChunkColumn) {
-          surfaceY = topSurfaceYMap[localX + localZ * this.chunk_size];
+          surfaceY = topSurfaceYMap[localX + localZ * chunkSize];
         } else {
-          // OPTIMIZATION: reuse sample.height instead of calling getFinalTerrainHeight() again.
           const sampledSurfaceY = this.findTopSurfaceY(
             worldX,
             worldZ,
             sample.height,
+            yFreq,
           );
-          if (Number.isFinite(sampledSurfaceY)) {
-            surfaceY = sampledSurfaceY as number;
+          if (sampledSurfaceY !== SurfaceGenerator.NO_SURFACE_Y) {
+            surfaceY = sampledSurfaceY;
           }
         }
 
         if (surfaceY === SurfaceGenerator.NO_SURFACE_Y) continue;
 
-        // OPTIMIZATION: reuse cached river noise — no extra noise evaluation.
         const riverNoise = sample.riverNoise;
-        if (this.riverGenerator.isRiver(worldX, surfaceY, worldZ, riverNoise))
+        if (this.riverGenerator.isRiver(worldX, surfaceY, worldZ, riverNoise)) {
           continue;
+        }
 
         if (surfaceY < this.params.SEA_LEVEL) continue;
 
@@ -330,6 +388,7 @@ export class SurfaceGenerator {
     ) => void,
   ) {
     const STRUCTURE_SEARCH_RADIUS = 2;
+    const features = this.features;
 
     for (
       let cx = chunkX - STRUCTURE_SEARCH_RADIUS;
@@ -341,8 +400,8 @@ export class SurfaceGenerator {
         cz <= chunkZ + STRUCTURE_SEARCH_RADIUS;
         cz++
       ) {
-        for (const feature of this.features) {
-          feature.generate(
+        for (let i = 0; i < features.length; i++) {
+          features[i]!.generate(
             cx,
             chunkY,
             cz,
@@ -350,7 +409,7 @@ export class SurfaceGenerator {
             placeBlock,
             SurfaceGenerator.seedAsInt,
             this.chunk_size,
-            this.getFinalTerrainHeight.bind(this),
+            this.getFinalTerrainHeightBound,
             chunkX,
             chunkZ,
           );
@@ -368,19 +427,18 @@ export class SurfaceGenerator {
     worldZ: number,
     terrainHeight: number,
   ): boolean {
-    const { SEA_LEVEL } = this.params;
+    const SEA_LEVEL = this.params.SEA_LEVEL;
 
     if (!(terrainHeight >= SEA_LEVEL - 2 && terrainHeight <= SEA_LEVEL + 2)) {
       return false;
     }
 
-    const isAdjacentToWater =
+    return (
       this.isNearWater(worldX + 1, worldZ) ||
       this.isNearWater(worldX - 1, worldZ) ||
       this.isNearWater(worldX, worldZ + 1) ||
-      this.isNearWater(worldX, worldZ - 1);
-
-    return isAdjacentToWater;
+      this.isNearWater(worldX, worldZ - 1)
+    );
   }
 
   private isNearWater(x: number, z: number): boolean {
@@ -394,8 +452,10 @@ export class SurfaceGenerator {
     y: number,
     z: number,
     baseHeight: number,
+    yFreq: number,
   ): number {
     const relativeHeight = baseHeight - y;
+
     if (relativeHeight > SurfaceGenerator.DENSITY_INFLUENCE_RANGE) {
       return relativeHeight;
     }
@@ -405,7 +465,7 @@ export class SurfaceGenerator {
 
     const baseNoise = SurfaceGenerator.densityNoise(
       x * 0.002,
-      y * (0.04 + SurfaceGenerator.treeNoise(x * 0.00001, z * 0.00001) * 0.02),
+      y * yFreq,
       z * 0.01,
     );
     const overhangNoise = SurfaceGenerator.densityNoise(
@@ -431,22 +491,29 @@ export class SurfaceGenerator {
     worldX: number,
     worldZ: number,
     baseHeight: number,
+    yFreq: number,
   ): number {
     const range = SurfaceGenerator.DENSITY_VERTICAL_SCAN_RANGE;
     const maxY = baseHeight + range;
     const minY = baseHeight - range;
 
-    let densityAbove = this.getDensity(worldX, maxY + 1, worldZ, baseHeight);
-    let highestSolid = Number.NEGATIVE_INFINITY;
+    let densityAbove = this.getDensity(
+      worldX,
+      maxY + 1,
+      worldZ,
+      baseHeight,
+      yFreq,
+    );
+    let highestSolid = SurfaceGenerator.NO_SURFACE_Y;
 
     for (let y = maxY; y >= minY; y--) {
-      const densityHere = this.getDensity(worldX, y, worldZ, baseHeight);
+      const densityHere = this.getDensity(worldX, y, worldZ, baseHeight, yFreq);
 
       if (densityHere > 0 && densityAbove <= 0) {
         return y;
       }
 
-      if (densityHere > 0 && !Number.isFinite(highestSolid)) {
+      if (densityHere > 0 && highestSolid === SurfaceGenerator.NO_SURFACE_Y) {
         highestSolid = y;
       }
 
