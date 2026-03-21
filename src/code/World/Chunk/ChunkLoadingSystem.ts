@@ -26,7 +26,7 @@ export class ChunkLoadingSystem {
     const chunksToSave: Chunk[] = [];
 
     for (const chunk of Chunk.chunkInstances.values()) {
-      if (!chunk.isLoaded || !chunk.isModified) {
+      if (chunk.isPersistent || !chunk.isLoaded || !chunk.isModified) {
         continue;
       }
       chunksToSave.push(chunk);
@@ -166,7 +166,8 @@ export class ChunkLoadingSystem {
       renderDistance + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER;
 
     for (const chunk of Chunk.chunkInstances.values()) {
-      if (this.unloadQueueSet.has(chunk)) continue; // ✅ O(1) lookup
+      if (chunk.isPersistent) continue;
+      if (this.unloadQueueSet.has(chunk)) continue; // O(1) lookup
 
       const { chunkX: cx, chunkY: cy, chunkZ: cz } = chunk;
       if (
@@ -175,7 +176,7 @@ export class ChunkLoadingSystem {
         Math.abs(cy - chunkY) >
           verticalRadius + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER
       ) {
-        this.unloadQueueSet.add(chunk); // ✅ O(1) add
+        this.unloadQueueSet.add(chunk); // O(1) add
       }
     }
   }
@@ -197,7 +198,9 @@ export class ChunkLoadingSystem {
           if (++count >= this.UNLOAD_BATCH_SIZE) break;
         }
 
-        const chunksToSave = batch.filter((c) => c.isModified);
+        const chunksToSave = batch.filter(
+          (c) => c.isModified && !c.isPersistent,
+        );
 
         if (chunksToSave.length > 0) {
           try {
@@ -208,7 +211,7 @@ export class ChunkLoadingSystem {
         }
 
         for (const chunk of batch) {
-          if (!chunk.isModified) {
+          if (!chunk.isModified && !chunk.isPersistent) {
             chunk.dispose();
             chunk.isLoaded = false;
             Chunk.chunkInstances.delete(chunk.id);
@@ -423,3 +426,5 @@ export class ChunkLoadingSystem {
     return true;
   }
 }
+
+

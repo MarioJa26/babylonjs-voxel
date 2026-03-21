@@ -9,6 +9,7 @@ import { PlayerHud } from "./Hud/PlayerHud";
 import { IPlayerBody } from "./IPlayerBody";
 import { PlayerCamera } from "./PlayerCamera";
 import { PlayerStats } from "./PlayerStats";
+import { CustomBoatControls } from "./Controls/CustomBoatControls";
 
 export class PlayerLoopController {
   #lastChunkX = 0;
@@ -49,7 +50,9 @@ export class PlayerLoopController {
 
   private updateControls(): void {
     const controls = this.getKeyboardControls();
-    if (controls instanceof PaddleBoatControls) {
+    if (controls instanceof CustomBoatControls) {
+      controls.update();
+    } else if (controls instanceof PaddleBoatControls) {
       controls.update();
     } else if (controls instanceof WalkingControls) {
       controls.update();

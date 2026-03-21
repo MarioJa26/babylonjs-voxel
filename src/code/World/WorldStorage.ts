@@ -107,6 +107,9 @@ export class WorldStorage {
     if (GlobalValues.DISABLE_CHUNK_SAVING) {
       return;
     }
+    if (chunk.isPersistent) {
+      return;
+    }
     if (!chunk.isModified) {
       return;
     }
@@ -161,7 +164,7 @@ export class WorldStorage {
       // Saving is disabled for testing, do nothing.
       return Promise.resolve();
     }
-    const modifiedChunks = chunks.filter((c) => c.isModified);
+    const modifiedChunks = chunks.filter((c) => c.isModified && !c.isPersistent);
     if (modifiedChunks.length === 0) {
       return Promise.resolve();
     }
@@ -225,7 +228,7 @@ export class WorldStorage {
   public static async saveAllModifiedChunks(): Promise<void> {
     const modifiedChunks: Chunk[] = [];
     for (const chunk of Chunk.chunkInstances.values()) {
-      if (chunk.isModified) {
+      if (chunk.isModified && !chunk.isPersistent) {
         modifiedChunks.push(chunk);
       }
     }

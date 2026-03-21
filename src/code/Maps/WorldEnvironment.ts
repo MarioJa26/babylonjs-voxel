@@ -58,6 +58,14 @@ export class WorldEnvironment {
     // Hemispheric "up" should point toward the sky, not the ground.
     this.hemiLight.direction = new Vector3(0.1, 1, 0.1);
     this.hemiLight.intensity = SettingParams.HEMISPHERIC_LIGHT_INTENSITY;
+
+    // Directional sun light used by non-chunk StandardMaterials (boats/items/etc.).
+    this.dirLight = new DirectionalLight(
+      "sunLight",
+      GlobalValues.skyLightDirection.clone(),
+      this.scene,
+    );
+    this.dirLight.intensity = 1.0;
   }
 
   private createSkybox() {

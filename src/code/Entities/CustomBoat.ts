@@ -13,10 +13,14 @@ import { IUsable } from "../Inferface/IUsable";
 import { Mount } from "./Mount";
 import { MetadataContainer } from "./MetaDataContainer";
 import { Player } from "../Player/Player";
-import { PaddleBoatControls } from "../Player/Controls/PaddleBoatControls";
+import { CustomBoatControls } from "../Player/Controls/CustomBoatControls";
 import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
 import { BlockType } from "../World/BlockType";
-import { Axis, VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollider";
+import {
+  Axis,
+  VoxelAabbCollider,
+} from "@/code/World/Collision/VoxelAabbCollider";
+import { BoatChunk } from "@/code/World/Boat/BoatChunk";
 
 export type CustomBoatOptions = {
   collisionHalfExtents?: Vector3;
@@ -25,6 +29,7 @@ export type CustomBoatOptions = {
   initialYaw?: number;
   customVisualLocalYaw?: number;
   blockCount?: number;
+  boatChunk?: BoatChunk;
 };
 
 export class CustomBoat implements IUsable {
@@ -44,10 +49,14 @@ export class CustomBoat implements IUsable {
   #angularVelocity = Vector3.Zero();
   #voxelCollider!: VoxelAabbCollider;
 
-  static #boatControls: PaddleBoatControls;
+  // Yaw is tracked separately so the physics hull (AABB) stays axis-aligned
+  // while the visual rotates freely.
+  #currentYaw = 0;
+
+  static #boatControls: CustomBoatControls;
   #customVisualRoot?: Mesh;
+  #boatChunk?: BoatChunk;
   #skipDefaultModel = false;
-  #initialYaw = 0;
   #customVisualLocalYaw = 0;
   #angularResponseScale = 1;
 
@@ -64,9 +73,10 @@ export class CustomBoat implements IUsable {
       this.#collisionHalfExtents = options.collisionHalfExtents.clone();
     }
     this.#customVisualRoot = options?.customVisualRoot;
+    this.#boatChunk = options?.boatChunk;
     this.#skipDefaultModel = Boolean(options?.skipDefaultModel);
     if (typeof options?.initialYaw === "number") {
-      this.#initialYaw = options.initialYaw;
+      this.#currentYaw = options.initialYaw;
     }
     if (typeof options?.customVisualLocalYaw === "number") {
       this.#customVisualLocalYaw = options.customVisualLocalYaw;
@@ -83,10 +93,15 @@ export class CustomBoat implements IUsable {
 
     this.#boat.metadata = new MetadataContainer();
     this.#boat.metadata.add("use", (player: Player) => this.use(player));
+    if (this.#boatChunk) {
+      this.#boat.metadata.add("boatChunk", this.#boatChunk);
+      this.#boat.onDisposeObservable.add(() => this.#boatChunk?.dispose());
+    }
+    this.applyCustomVisualMetadata();
 
     this.setupBuoyancyPoints();
     this.setupAdvancedPhysics(scene);
-    CustomBoat.#boatControls = new PaddleBoatControls(this, player);
+    CustomBoat.#boatControls = new CustomBoatControls(this, player);
 
     this.#mount = new Mount(this.#boat, CustomBoat.#boatControls);
   }
@@ -97,6 +112,8 @@ export class CustomBoat implements IUsable {
     waterLevel: number,
   ): void {
     // AABB collision hull used by the physics body.
+    // The hull never rotates — it stays axis-aligned and is resized each frame
+    // to the world-space AABB of the rotated boat extents.
     const boatHull = MeshBuilder.CreateBox(
       "boatHull",
       {
@@ -121,11 +138,8 @@ export class CustomBoat implements IUsable {
 
     // Set to false to see the physics shape during debugging, true to hide it
     boatHull.isVisible = false;
-    boatHull.rotationQuaternion = Quaternion.RotationYawPitchRoll(
-      this.#initialYaw,
-      0,
-      0,
-    );
+    // Hull always stays at identity rotation — yaw lives in #currentYaw only.
+    boatHull.rotationQuaternion = Quaternion.Identity();
     this.#boat = boatHull;
 
     this.#voxelCollider = new VoxelAabbCollider(
@@ -145,19 +159,16 @@ export class CustomBoat implements IUsable {
     this.#boat.onDisposeObservable.add(() => this.#voxelCollider.dispose());
 
     if (this.#customVisualRoot) {
-      this.#customVisualRoot.parent = this.#boat;
-      this.#customVisualRoot.position.set(0, 0, 0);
-      this.#customVisualRoot.rotation.set(0, this.#customVisualLocalYaw, 0);
+      // Do NOT parent the visual to the hull — it is positioned/rotated manually
+      // each frame so the AABB hull can stay axis-aligned.
+      this.#customVisualRoot.position.copyFrom(boatHull.position);
+      this.#customVisualRoot.rotationQuaternion =
+        Quaternion.RotationYawPitchRoll(
+          this.#currentYaw + this.#customVisualLocalYaw,
+          0,
+          0,
+        );
       this.#customVisualRoot.scaling.set(1, 1, 1);
-      const meshes = [
-        this.#customVisualRoot,
-        ...this.#customVisualRoot.getChildMeshes(false),
-      ];
-      for (const mesh of meshes) {
-        mesh.isPickable = true;
-        mesh.renderingGroupId = 1;
-        mesh.metadata = this.#boat.metadata;
-      }
       return;
     }
 
@@ -178,6 +189,19 @@ export class CustomBoat implements IUsable {
       .catch((err) => {
         console.error("Model failed to load:", err);
       });
+  }
+
+  private applyCustomVisualMetadata(): void {
+    if (!this.#customVisualRoot || !this.#boat.metadata) return;
+    const meshes = [
+      this.#customVisualRoot,
+      ...this.#customVisualRoot.getChildMeshes(false),
+    ];
+    for (const mesh of meshes) {
+      mesh.isPickable = true;
+      mesh.renderingGroupId = 1;
+      mesh.metadata = this.#boat.metadata;
+    }
   }
 
   private setupBuoyancyPoints(): void {
@@ -208,28 +232,30 @@ export class CustomBoat implements IUsable {
       }
 
       this.#submergedPoints = 0;
-      const worldMatrix = this.#boat.getWorldMatrix();
+
+      // Buoyancy points are in local boat space — rotate them by current yaw
+      // before transforming to world space, since the hull mesh no longer rotates.
+      const cos = Math.cos(this.#currentYaw);
+      const sin = Math.sin(this.#currentYaw);
 
       // Gravity is always applied, buoyancy counters it when submerged.
       this.#linearVelocity.y += this.#gravity * dt;
 
-      // Calculate total buoyancy force needed based on player count
-      const totalBuoyancyMultiplier = this.#baseBuoyancyForce;
-
       // Check each buoyancy point for submersion
       this.#buoyancyPoints.forEach((localPoint) => {
-        const worldPoint = Vector3.TransformCoordinates(
-          localPoint,
-          worldMatrix,
+        // Manually rotate the local point by current yaw (hull mesh is identity)
+        const rotatedLocal = new Vector3(
+          localPoint.x * cos - localPoint.z * sin,
+          localPoint.y,
+          localPoint.x * sin + localPoint.z * cos,
         );
+        const worldPoint = this.#boat.position.add(rotatedLocal);
 
         const submersion = this.getWaterSubmersionAtPoint(worldPoint);
         if (submersion > 0) {
-          const buoyancyForce = submersion * totalBuoyancyMultiplier;
+          const buoyancyForce = submersion * this.#baseBuoyancyForce;
           const buoyancyVector = new Vector3(0, buoyancyForce, 0);
-
           this.applyForceAtPoint(buoyancyVector, worldPoint, dt);
-
           this.#submergedPoints++;
         }
       });
@@ -252,6 +278,17 @@ export class CustomBoat implements IUsable {
       this.moveAxis(Axis.Z, this.#linearVelocity.z * dt);
       this.integrateRotation(dt);
 
+      // Sync visual root position and yaw — the hull mesh never rotates
+      if (this.#customVisualRoot) {
+        this.#customVisualRoot.position.copyFrom(this.#boat.position);
+        this.#customVisualRoot.rotationQuaternion =
+          Quaternion.RotationYawPitchRoll(
+            this.#currentYaw + this.#customVisualLocalYaw,
+            0,
+            0,
+          );
+      }
+
       this.#voxelCollider.syncDebugMesh(this.#boat.position);
     });
   }
@@ -273,38 +310,14 @@ export class CustomBoat implements IUsable {
   }
 
   private integrateRotation(dt: number): void {
-    const currentRotation =
-      this.#boat.rotationQuaternion ?? Quaternion.Identity();
-    const deltaRotation = Quaternion.RotationYawPitchRoll(
-      this.#angularVelocity.y * dt,
-      this.#lockPitch ? 0 : this.#angularVelocity.x * dt,
-      this.#lockRoll ? 0 : this.#angularVelocity.z * dt,
-    );
-    const nextRotation = deltaRotation.multiply(currentRotation);
-    nextRotation.normalize();
-    const euler = nextRotation.toEulerAngles();
-    if (this.#lockPitch) {
-      euler.x = 0;
-    }
-    if (this.#lockRoll) {
-      euler.z = 0;
-    }
-    this.#boat.rotationQuaternion = Quaternion.RotationYawPitchRoll(
-      euler.y,
-      euler.x,
-      euler.z,
-    );
+    // Only yaw is integrated — stored in #currentYaw, not on the hull mesh.
+    // The hull mesh stays at Quaternion.Identity() so the AABB stays axis-aligned.
+    this.#currentYaw += this.#angularVelocity.y * dt;
+    this.#angularVelocity.y *= 0.985;
 
-    if (this.#lockPitch) {
-      this.#angularVelocity.x = 0;
-    } else {
-      this.#angularVelocity.x *= 0.985;
-    }
-    if (this.#lockRoll) {
-      this.#angularVelocity.z = 0;
-    } else {
-      this.#angularVelocity.z *= 0.985;
-    }
+    // Pitch and roll are locked — zero them out
+    this.#angularVelocity.x = 0;
+    this.#angularVelocity.z = 0;
   }
 
   private moveAxis(axis: Axis, delta: number): void {
@@ -358,6 +371,9 @@ export class CustomBoat implements IUsable {
   }
   public get submergedPoints(): number {
     return this.#submergedPoints;
+  }
+  public get currentYaw(): number {
+    return this.#currentYaw;
   }
 
   public getBoatTopY(): Vector3 {

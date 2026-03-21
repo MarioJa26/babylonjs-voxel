@@ -23,6 +23,9 @@ export class Chunk {
   public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
   public static readonly chunkInstances = new Map<bigint, Chunk>();
   public isModified = false;
+  // Persistent chunks are managed by systems outside world streaming
+  // (e.g. movable boat chunks) and must never be auto-unloaded/saved.
+  public isPersistent = false;
 
   public isDirty = false;
   public isLoaded = false;

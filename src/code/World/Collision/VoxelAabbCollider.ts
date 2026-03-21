@@ -181,4 +181,8 @@ export class VoxelAabbCollider {
       }
     });
   }
+
+  public set HalfExtents(halfExtents: Vector3) {
+    this.#halfExtents.copyFrom(halfExtents);
+  }
 }

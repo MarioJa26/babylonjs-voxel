@@ -2,7 +2,7 @@
 
 export class SettingParams {
   // --- World Generation & Loading ---
-  public static RENDER_DISTANCE = 8;
+  public static RENDER_DISTANCE = 6;
   public static VERTICAL_RENDER_DISTANCE = 6;
   public static MAX_CHUNK_HEIGHT = 32;
   public static CHUNK_UNLOAD_DISTANCE_BUFFER = 1; // How many extra chunks to keep before unloading
