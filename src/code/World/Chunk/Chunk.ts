@@ -94,28 +94,29 @@ export class Chunk {
   };
 
   public static getLightEmission(blockId: number): number {
-    return Chunk.LIGHT_EMISSION[unpackBlockId(blockId)] || 0;
+    return Chunk.LIGHT_EMISSION[blockId] || 0;
   }
 
   private getNibble(index: number): number {
-    if (!this._block_array) return 0;
-    const byteIndex = index >> 1;
-    // When using palette, _block_array is always Uint8Array (packed nibbles)
-    const byte = (this._block_array as Uint8Array)[byteIndex];
-    return index & 1 ? (byte >> 4) & 0xf : byte & 0xf;
+    const arr = this._block_array as Uint8Array | null;
+    if (!arr) return 0;
+
+    const byte = arr[index >>> 1];
+    return (index & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
   }
 
   private setNibble(index: number, value: number): void {
-    if (!this._block_array) return;
-    const byteIndex = index >> 1;
-    const arr = this._block_array as Uint8Array;
-    let byte = arr[byteIndex];
-    if (index & 1) {
-      byte = (byte & 0x0f) | ((value & 0xf) << 4);
-    } else {
-      byte = (byte & 0xf0) | (value & 0xf);
-    }
-    arr[byteIndex] = byte;
+    const arr = this._block_array as Uint8Array | null;
+    if (!arr) return;
+
+    const byteIndex = index >>> 1;
+    const nibble = value & 0x0f;
+    const byte = arr[byteIndex];
+
+    arr[byteIndex] =
+      (index & 1) === 0
+        ? (byte & 0xf0) | nibble
+        : (byte & 0x0f) | (nibble << 4);
   }
 
   public populate(
@@ -219,8 +220,8 @@ export class Chunk {
 
   public initializeSunlight() {
     const queue: LightNode[] = [];
-    const { CHUNK_SIZE } = GenerationParams;
-    const topWorldY = this.#chunkY * CHUNK_SIZE + CHUNK_SIZE - 1;
+    const size = Chunk.SIZE;
+    const topWorldY = this.#chunkY * size + size - 1;
     const aboveChunk = this.getNeighbor(0, 1, 0);
 
     if (this.light_array.length !== Chunk.SIZE3) {
@@ -231,73 +232,89 @@ export class Chunk {
       }
     }
 
-    // Rebuild skylight while preserving existing block-light nibbles.
+    // Rebuild skylight while preserving block-light nibble
     for (let i = 0; i < Chunk.SIZE3; i++) {
       this.light_array[i] &= Chunk.BLOCK_LIGHT_MASK;
     }
 
-    for (let x = 0; x < CHUNK_SIZE; x++) {
-      const worldX = this.#chunkX * CHUNK_SIZE + x;
-      for (let z = 0; z < CHUNK_SIZE; z++) {
-        const worldZ = this.#chunkZ * CHUNK_SIZE + z;
+    const chunkBaseX = this.#chunkX * size;
+    const chunkBaseZ = this.#chunkZ * size;
+    const hasLoadedAbove = !!aboveChunk?.isLoaded;
+
+    for (let x = 0; x < size; x++) {
+      const worldX = chunkBaseX + x;
+
+      for (let z = 0; z < size; z++) {
+        const worldZ = chunkBaseZ + z;
         let incomingSkyLight = 0;
         let sourceIsWater = false;
 
-        if (aboveChunk?.isLoaded) {
-          const aboveBlock = aboveChunk.getBlockPacked(x, 0, z);
-          if (aboveChunk.isTransparent(aboveBlock, 1)) {
-            incomingSkyLight = aboveChunk.getSkyLight(x, 0, z);
-            sourceIsWater = Chunk.isWaterBlock(aboveBlock);
+        if (hasLoadedAbove) {
+          const aboveBlockPacked = aboveChunk!.getBlockPacked(x, 0, z);
+          if (aboveChunk!.isTransparent(aboveBlockPacked, 1)) {
+            incomingSkyLight = aboveChunk!.getSkyLight(x, 0, z);
+            sourceIsWater = Chunk.isWaterBlock(unpackBlockId(aboveBlockPacked));
           }
         } else {
           const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(
             worldX,
             worldZ,
           );
-          // Conservative fallback when top-neighbor state is unavailable.
+
+          // Conservative fallback when the chunk above is unavailable
           if (topWorldY >= terrainHeight - 48) {
             incomingSkyLight = 15;
           }
         }
 
-        for (let y = CHUNK_SIZE - 1; y >= 0; y--) {
-          const idx = x + y * CHUNK_SIZE + z * Chunk.SIZE2;
-          const blockId = this.getBlockPacked(x, y, z);
+        for (let y = size - 1; y >= 0; y--) {
+          const idx = x + y * size + z * Chunk.SIZE2;
+          const blockPacked = this.getBlockPacked(x, y, z);
 
-          if (!this.isTransparent(blockId, 1)) {
+          if (!this.isTransparent(blockPacked, 1)) {
             incomingSkyLight = 0;
             sourceIsWater = false;
             continue;
           }
 
-          if (incomingSkyLight > 0) {
-            const preservesFullSun =
-              incomingSkyLight === 15 &&
-              !sourceIsWater &&
-              !Chunk.isWaterBlock(blockId);
-            const cellSkyLight = preservesFullSun
-              ? 15
-              : Math.max(incomingSkyLight - 1, 0);
-
-            if (cellSkyLight === 0) {
-              incomingSkyLight = 0;
-              sourceIsWater = Chunk.isWaterBlock(blockId);
-              continue;
-            }
-
-            this.light_array[idx] =
-              (this.light_array[idx] & Chunk.BLOCK_LIGHT_MASK) |
-              (cellSkyLight << Chunk.SKY_LIGHT_SHIFT);
-            queue.push({ chunk: this, x, y, z, level: cellSkyLight });
-            incomingSkyLight = cellSkyLight;
-            sourceIsWater = Chunk.isWaterBlock(blockId);
+          if (incomingSkyLight <= 0) {
+            continue;
           }
+
+          const thisIsWater = Chunk.isWaterBlock(unpackBlockId(blockPacked));
+          const preservesFullSun =
+            incomingSkyLight === 15 && !sourceIsWater && !thisIsWater;
+
+          const cellSkyLight = preservesFullSun
+            ? 15
+            : Math.max(incomingSkyLight - 1, 0);
+
+          if (cellSkyLight === 0) {
+            incomingSkyLight = 0;
+            sourceIsWater = thisIsWater;
+            continue;
+          }
+
+          this.light_array[idx] =
+            (this.light_array[idx] & Chunk.BLOCK_LIGHT_MASK) |
+            (cellSkyLight << Chunk.SKY_LIGHT_SHIFT);
+
+          queue.push({
+            chunk: this,
+            x,
+            y,
+            z,
+            level: cellSkyLight,
+          });
+
+          incomingSkyLight = cellSkyLight;
+          sourceIsWater = thisIsWater;
         }
       }
     }
-    this.propagateLight(queue);
-  }
 
+    this.propagateLight(queue, true);
+  }
   public getBlockLight(localX: number, localY: number, localZ: number): number {
     if (!this.isLoaded) return 0;
     return (
@@ -307,8 +324,9 @@ export class Chunk {
   }
 
   public getSkyLight(localX: number, localY: number, localZ: number): number {
-    //Todo Return Time Adjusted Light Level
-    if (!this.isLoaded) return 15;
+    // TODO: Return time-adjusted light level if needed.
+    if (!this.isLoaded) return 0;
+
     return (
       (this.light_array[localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2] >>
         Chunk.SKY_LIGHT_SHIFT) &
@@ -318,18 +336,18 @@ export class Chunk {
 
   public setBlockLight(x: number, y: number, z: number, level: number): void {
     const current = this.getLight(x, y, z);
-    const sky = current & ~Chunk.BLOCK_LIGHT_MASK;
-    this.setLight(x, y, z, sky | (level & Chunk.BLOCK_LIGHT_MASK));
+    const skyBits = current & ~Chunk.BLOCK_LIGHT_MASK;
+    this.setLight(x, y, z, skyBits | (level & Chunk.BLOCK_LIGHT_MASK));
   }
 
   public setSkyLight(x: number, y: number, z: number, level: number): void {
     const current = this.getLight(x, y, z);
-    const block = current & Chunk.BLOCK_LIGHT_MASK;
+    const blockBits = current & Chunk.BLOCK_LIGHT_MASK;
     this.setLight(
       x,
       y,
       z,
-      block | ((level & Chunk.BLOCK_LIGHT_MASK) << Chunk.SKY_LIGHT_SHIFT),
+      blockBits | ((level & Chunk.BLOCK_LIGHT_MASK) << Chunk.SKY_LIGHT_SHIFT),
     );
   }
 
@@ -349,18 +367,20 @@ export class Chunk {
     localZ: number,
   ): number {
     if (!this.isLoaded) {
-      return 0; // Unloaded chunks are treated as air for physics and rendering checks.
+      return 0; // Unloaded chunks are treated as air for rendering/physics checks.
     }
+
     if (this._isUniform) {
       return this._uniformBlockId;
     }
+
+    const index = localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2;
+
     if (this._palette) {
-      const index = localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2;
       return this._palette[this.getNibble(index)];
     }
-    return this._block_array![
-      localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2
-    ];
+
+    return this._block_array![index];
   }
 
   public setBlock(
@@ -529,107 +549,149 @@ export class Chunk {
    */
 
   public propagateLight(queue: LightNode[], isSkyLight = true): void {
-    while (queue.length > 0) {
-      const { chunk, x, y, z } = queue.shift()!;
-      // Always re-read the current stored level rather than trusting the queued
-      // value. By the time a node is dequeued, another path may have already
-      // written a higher value into this cell. Using a stale queued level would
-      // compute a wrong nextLevel and fail to re-flood zeroed neighbours
-      // correctly when multiple light sources overlap.
+    for (let head = 0; head < queue.length; head++) {
+      const node = queue[head];
+      const chunk = node.chunk;
+      const x = node.x;
+      const y = node.y;
+      const z = node.z;
+
+      // Always re-read the stored level instead of trusting queued data.
       const level = isSkyLight
         ? chunk.getSkyLight(x, y, z)
         : chunk.getBlockLight(x, y, z);
+
       if (level <= 0) continue;
+
       const sourceBlockPacked = chunk.getBlockPacked(x, y, z);
       const sourceBlockId = unpackBlockId(sourceBlockPacked);
       const sourceEmits = Chunk.getLightEmission(sourceBlockId) > 0;
 
-      // [dx, dy, dz, axis, isDown, dir]
-      // axis: 0=X 1=Y 2=Z  dir: +1 or -1 (direction of travel along axis)
-      const neighbors = [
-        [1, 0, 0, 0, 0, 1],
-        [-1, 0, 0, 0, 0, -1],
-        [0, 1, 0, 1, 0, 1],
-        [0, -1, 0, 1, 1, -1],
-        [0, 0, 1, 2, 0, 1],
-        [0, 0, -1, 2, 0, -1],
-      ];
+      // 6 cardinal directions:
+      // 0: +X, 1: -X, 2: +Y, 3: -Y, 4: +Z, 5: -Z
+      for (let dirIndex = 0; dirIndex < 6; dirIndex++) {
+        let dx = 0;
+        let dy = 0;
+        let dz = 0;
+        let axis = 0;
+        let isDown = 0;
+        let dir = 1;
 
-      for (const [dx, dy, dz, axis, isDown, dir] of neighbors) {
+        switch (dirIndex) {
+          case 0: // +X
+            dx = 1;
+            axis = 0;
+            dir = 1;
+            break;
+          case 1: // -X
+            dx = -1;
+            axis = 0;
+            dir = -1;
+            break;
+          case 2: // +Y
+            dy = 1;
+            axis = 1;
+            dir = 1;
+            break;
+          case 3: // -Y
+            dy = -1;
+            axis = 1;
+            isDown = 1;
+            dir = -1;
+            break;
+          case 4: // +Z
+            dz = 1;
+            axis = 2;
+            dir = 1;
+            break;
+          case 5: // -Z
+            dz = -1;
+            axis = 2;
+            dir = -1;
+            break;
+        }
+
         const nx = x + dx;
         const ny = y + dy;
         const nz = z + dz;
+
         let targetChunk: Chunk | undefined = chunk;
         let tx = nx;
         let ty = ny;
         let tz = nz;
 
-        // Handle chunk boundaries
-        if (nx < 0) {
+        // Resolve cross-chunk X boundary
+        if (tx < 0) {
           targetChunk = targetChunk.getNeighbor(-1, 0, 0);
           tx = Chunk.SIZE - 1;
-        } else if (nx >= Chunk.SIZE) {
+        } else if (tx >= Chunk.SIZE) {
           targetChunk = targetChunk.getNeighbor(1, 0, 0);
           tx = 0;
         }
 
-        if (targetChunk && (ny < 0 || ny >= Chunk.SIZE)) {
-          if (ny < 0) {
-            targetChunk = targetChunk.getNeighbor(0, -1, 0);
-            ty = Chunk.SIZE - 1;
-          } else {
-            targetChunk = targetChunk.getNeighbor(0, 1, 0);
-            ty = 0;
-          }
+        // Resolve cross-chunk Y boundary
+        if (targetChunk && ty < 0) {
+          targetChunk = targetChunk.getNeighbor(0, -1, 0);
+          ty = Chunk.SIZE - 1;
+        } else if (targetChunk && ty >= Chunk.SIZE) {
+          targetChunk = targetChunk.getNeighbor(0, 1, 0);
+          ty = 0;
         }
 
-        if (targetChunk && (nz < 0 || nz >= Chunk.SIZE)) {
-          if (nz < 0) {
-            targetChunk = targetChunk.getNeighbor(0, 0, -1);
-            tz = Chunk.SIZE - 1;
-          } else {
-            targetChunk = targetChunk.getNeighbor(0, 0, 1);
-            tz = 0;
-          }
+        // Resolve cross-chunk Z boundary
+        if (targetChunk && tz < 0) {
+          targetChunk = targetChunk.getNeighbor(0, 0, -1);
+          tz = Chunk.SIZE - 1;
+        } else if (targetChunk && tz >= Chunk.SIZE) {
+          targetChunk = targetChunk.getNeighbor(0, 0, 1);
+          tz = 0;
         }
 
-        if (targetChunk) {
-          const blockId = targetChunk.getBlockPacked(tx, ty, tz);
-          // Pass dir so slabs only block their single closed face, not both faces on the axis.
-          const sourceAllows = isSkyLight
-            ? chunk.isTransparent(sourceBlockPacked, axis, dir)
-            : sourceEmits || chunk.isTransparent(sourceBlockPacked, axis, dir);
-          if (!sourceAllows) continue;
-          if (targetChunk.isTransparent(blockId, axis, dir)) {
-            const currentLevel = isSkyLight
-              ? targetChunk.getSkyLight(tx, ty, tz)
-              : targetChunk.getBlockLight(tx, ty, tz);
+        if (!targetChunk) continue;
 
-            const preservesFullSun =
-              isSkyLight &&
-              isDown === 1 &&
-              level === 15 &&
-              !Chunk.isWaterBlock(sourceBlockId) &&
-              !Chunk.isWaterBlock(blockId);
-            let nextLevel = level - 1;
-            if (preservesFullSun) {
-              nextLevel = 15;
-            }
-            if (nextLevel <= 0) continue;
+        const targetBlockPacked = targetChunk.getBlockPacked(tx, ty, tz);
 
-            if (currentLevel < nextLevel) {
-              if (isSkyLight) targetChunk.setSkyLight(tx, ty, tz, nextLevel);
-              else targetChunk.setBlockLight(tx, ty, tz, nextLevel);
-              targetChunk.scheduleRemesh();
-              queue.push({
-                chunk: targetChunk,
-                x: tx,
-                y: ty,
-                z: tz,
-                level: nextLevel,
-              });
-            }
+        // Source-side face transparency:
+        // For sky light, source must be transparent in that direction.
+        // For block light, an emitting source can emit through itself even if not transparent.
+        const sourceAllows = isSkyLight
+          ? chunk.isTransparent(sourceBlockPacked, axis, dir)
+          : sourceEmits || chunk.isTransparent(sourceBlockPacked, axis, dir);
+
+        if (!sourceAllows) continue;
+
+        // Target-side face must accept light from this direction.
+        if (!targetChunk.isTransparent(targetBlockPacked, axis, dir)) continue;
+
+        const currentLevel = isSkyLight
+          ? targetChunk.getSkyLight(tx, ty, tz)
+          : targetChunk.getBlockLight(tx, ty, tz);
+
+        const preservesFullSun =
+          isSkyLight &&
+          isDown === 1 &&
+          level === 15 &&
+          !Chunk.isWaterBlock(sourceBlockId) &&
+          !Chunk.isWaterBlock(unpackBlockId(targetBlockPacked));
+
+        let nextLevel = preservesFullSun ? 15 : level - 1;
+        if (nextLevel <= 0) continue;
+
+        if (currentLevel < nextLevel) {
+          if (isSkyLight) {
+            targetChunk.setSkyLight(tx, ty, tz, nextLevel);
+          } else {
+            targetChunk.setBlockLight(tx, ty, tz, nextLevel);
           }
+
+          targetChunk.scheduleRemesh();
+          queue.push({
+            chunk: targetChunk,
+            x: tx,
+            y: ty,
+            z: tz,
+            level: nextLevel,
+          });
         }
       }
     }
@@ -641,66 +703,111 @@ export class Chunk {
     z: number,
     isSkyLight = false,
   ) {
+    if (!this.isLoaded) return;
+
     const queue: LightNode[] = [];
-    const neighbors = [
-      [x + 1, y, z],
-      [x - 1, y, z],
-      [x, y + 1, z],
-      [x, y - 1, z],
-      [x, y, z + 1],
-      [x, y, z - 1],
-    ];
+    const targetBlockPacked = this.getBlockPacked(x, y, z);
 
-    for (const [nx, ny, nz] of neighbors) {
-      // eslint-disable-next-line @typescript-eslint/no-this-alias
-      let targetChunk: Chunk | undefined = this;
-      let tx = nx;
-      let ty = ny;
-      let tz = nz;
+    for (let dirIndex = 0; dirIndex < 6; dirIndex++) {
+      let dx = 0;
+      let dy = 0;
+      let dz = 0;
+      let axis = 0;
+      let dir = 1;
 
-      // Handle chunk boundaries
-      if (nx < 0) {
-        targetChunk = targetChunk.getNeighbor(-1, 0, 0);
-        tx = Chunk.SIZE - 1;
-      } else if (nx >= Chunk.SIZE) {
-        targetChunk = targetChunk.getNeighbor(1, 0, 0);
-        tx = 0;
+      switch (dirIndex) {
+        case 0: // +X neighbor
+          dx = 1;
+          axis = 0;
+          dir = -1;
+          break;
+        case 1: // -X neighbor
+          dx = -1;
+          axis = 0;
+          dir = 1;
+          break;
+        case 2: // +Y neighbor
+          dy = 1;
+          axis = 1;
+          dir = -1;
+          break;
+        case 3: // -Y neighbor
+          dy = -1;
+          axis = 1;
+          dir = 1;
+          break;
+        case 4: // +Z neighbor
+          dz = 1;
+          axis = 2;
+          dir = -1;
+          break;
+        case 5: // -Z neighbor
+          dz = -1;
+          axis = 2;
+          dir = 1;
+          break;
       }
 
-      if (targetChunk && (ny < 0 || ny >= Chunk.SIZE)) {
-        if (ny < 0) {
-          targetChunk = targetChunk.getNeighbor(0, -1, 0);
-          ty = Chunk.SIZE - 1;
-        } else {
-          targetChunk = targetChunk.getNeighbor(0, 1, 0);
-          ty = 0;
-        }
+      let sourceChunk: Chunk | undefined = this;
+      let sx = x + dx;
+      let sy = y + dy;
+      let sz = z + dz;
+
+      // Resolve X boundary
+      if (sx < 0) {
+        sourceChunk = sourceChunk.getNeighbor(-1, 0, 0);
+        sx = Chunk.SIZE - 1;
+      } else if (sx >= Chunk.SIZE) {
+        sourceChunk = sourceChunk.getNeighbor(1, 0, 0);
+        sx = 0;
       }
 
-      if (targetChunk && (nz < 0 || nz >= Chunk.SIZE)) {
-        if (nz < 0) {
-          targetChunk = targetChunk.getNeighbor(0, 0, -1);
-          tz = Chunk.SIZE - 1;
-        } else {
-          targetChunk = targetChunk.getNeighbor(0, 0, 1);
-          tz = 0;
-        }
+      // Resolve Y boundary
+      if (sourceChunk && sy < 0) {
+        sourceChunk = sourceChunk.getNeighbor(0, -1, 0);
+        sy = Chunk.SIZE - 1;
+      } else if (sourceChunk && sy >= Chunk.SIZE) {
+        sourceChunk = sourceChunk.getNeighbor(0, 1, 0);
+        sy = 0;
       }
 
-      if (targetChunk) {
-        const level = isSkyLight
-          ? targetChunk.getSkyLight(tx, ty, tz)
-          : targetChunk.getBlockLight(tx, ty, tz);
-        if (level > 0) {
-          queue.push({
-            chunk: targetChunk,
-            x: tx,
-            y: ty,
-            z: tz,
-            level: level,
-          });
-        }
+      // Resolve Z boundary
+      if (sourceChunk && sz < 0) {
+        sourceChunk = sourceChunk.getNeighbor(0, 0, -1);
+        sz = Chunk.SIZE - 1;
+      } else if (sourceChunk && sz >= Chunk.SIZE) {
+        sourceChunk = sourceChunk.getNeighbor(0, 0, 1);
+        sz = 0;
       }
+
+      if (!sourceChunk) continue;
+
+      const sourceBlockPacked = sourceChunk.getBlockPacked(sx, sy, sz);
+      const sourceBlockId = unpackBlockId(sourceBlockPacked);
+      const sourceEmits = Chunk.getLightEmission(sourceBlockId) > 0;
+
+      const sourceAllows = isSkyLight
+        ? sourceChunk.isTransparent(sourceBlockPacked, axis, dir)
+        : sourceEmits ||
+          sourceChunk.isTransparent(sourceBlockPacked, axis, dir);
+
+      if (!sourceAllows) continue;
+
+      if (!this.isTransparent(targetBlockPacked, axis, dir)) continue;
+
+      const level = isSkyLight
+        ? sourceChunk.getSkyLight(sx, sy, sz)
+        : sourceChunk.getBlockLight(sx, sy, sz);
+
+      if (level <= 0) continue;
+
+      queue.push({
+        chunk: sourceChunk,
+        x: sx,
+        y: sy,
+        z: sz,
+        level,
+      });
     }
 
     if (queue.length > 0) {
@@ -713,28 +820,46 @@ export class Chunk {
     axis?: number,
     dir?: number,
   ): boolean {
-    // 0: Air, 30: Water, 60: Glass, 61: Glass
+    // 0: Air, 30: Water, 60/61: Glass variants
     const id = unpackBlockId(blockPacked);
-    if (id === 0 || id === 30 || id === 60 || id === 61) return true;
+    if (id === 0 || id === 30 || id === 60 || id === 61) {
+      return true;
+    }
+
     const state = unpackBlockState(blockPacked);
     const slice = (state >> 3) & 7;
-    if (slice === 0) return false;
-    if (axis === undefined) return true;
+
+    // No slice metadata => full opaque block
+    if (slice === 0) {
+      return false;
+    }
+
+    // Generic transparency query (non-face-specific)
+    if (axis === undefined) {
+      return true;
+    }
 
     const rotation = state & 7;
     const sliceAxisRaw = rotation & 3;
+
+    // Encoded axis mapping:
+    // raw 1 => X, raw 2 => Z, everything else => Y
     const sliceAxis = sliceAxisRaw === 1 ? 0 : sliceAxisRaw === 2 ? 2 : 1;
 
-    // Face axis doesn't match the slab's closed axis — always open.
-    if (sliceAxis !== axis) return true;
+    // Query axis does not match the slab's closed/open axis => open
+    if (sliceAxis !== axis) {
+      return true;
+    }
 
-    // The slab closes only ONE face on this axis. The flip bit (rotation bit 2)
-    // controls which face: flip=false closes the +dir face, flip=true closes -dir.
-    // Without a direction we conservatively report opaque (old behaviour).
-    if (dir === undefined) return false;
+    // Without a direction we conservatively treat directional slabs as opaque
+    if (dir === undefined) {
+      return false;
+    }
 
+    // flip=false closes +dir face, flip=true closes -dir face
     const flip = (rotation & 4) !== 0;
     const closedDir = flip ? -1 : 1;
+
     return dir !== closedDir;
   }
 
@@ -767,118 +892,177 @@ export class Chunk {
     }
   }
   public addLight(x: number, y: number, z: number, level: number) {
+    if (!this.isLoaded) return;
+
+    level &= Chunk.BLOCK_LIGHT_MASK;
+    if (level <= 0) return;
+
+    const current = this.getBlockLight(x, y, z);
+    if (current >= level) {
+      return;
+    }
+
     this.setBlockLight(x, y, z, level);
     this.propagateLight([{ chunk: this, x, y, z, level }], false);
   }
 
   public removeLight(x: number, y: number, z: number, isSkyLight = false) {
-    const val = isSkyLight
+    const startLevel = isSkyLight
       ? this.getSkyLight(x, y, z)
       : this.getBlockLight(x, y, z);
-    if (val === 0) return;
+
+    if (startLevel === 0) return;
 
     const queue: LightNode[] = [];
     const propagateQueue: LightNode[] = [];
+    const remeshChunks = new Set<Chunk>();
 
-    queue.push({ chunk: this, x, y, z, level: val });
+    queue.push({ chunk: this, x, y, z, level: startLevel });
+
     if (isSkyLight) this.setSkyLight(x, y, z, 0);
     else this.setBlockLight(x, y, z, 0);
 
-    while (queue.length > 0) {
-      const { chunk, x, y, z, level } = queue.shift()!;
-      const sourceBlockPacked = chunk.getBlockPacked(x, y, z);
+    remeshChunks.add(this);
+
+    for (let head = 0; head < queue.length; head++) {
+      const node = queue[head];
+      const chunk = node.chunk;
+      const cx = node.x;
+      const cy = node.y;
+      const cz = node.z;
+      const level = node.level;
+
+      const sourceBlockPacked = chunk.getBlockPacked(cx, cy, cz);
       const sourceBlockId = unpackBlockId(sourceBlockPacked);
 
-      // [dx, dy, dz, axis, isDown, dir]
-      // axis: 0=X 1=Y 2=Z  dir: +1 or -1 (direction of travel along axis)
-      const neighbors = [
-        [1, 0, 0, 0, 0, 1],
-        [-1, 0, 0, 0, 0, -1],
-        [0, 1, 0, 1, 0, 1],
-        [0, -1, 0, 1, 1, -1],
-        [0, 0, 1, 2, 0, 1],
-        [0, 0, -1, 2, 0, -1],
-      ];
+      for (let dirIndex = 0; dirIndex < 6; dirIndex++) {
+        let dx = 0;
+        let dy = 0;
+        let dz = 0;
+        let axis = 0;
+        let isDown = 0;
+        let dir = 1;
 
-      for (const [dx, dy, dz, axis, isDown, dir] of neighbors) {
-        const nx = x + dx;
-        const ny = y + dy;
-        const nz = z + dz;
+        switch (dirIndex) {
+          case 0: // +X
+            dx = 1;
+            axis = 0;
+            dir = 1;
+            break;
+          case 1: // -X
+            dx = -1;
+            axis = 0;
+            dir = -1;
+            break;
+          case 2: // +Y
+            dy = 1;
+            axis = 1;
+            dir = 1;
+            break;
+          case 3: // -Y
+            dy = -1;
+            axis = 1;
+            isDown = 1;
+            dir = -1;
+            break;
+          case 4: // +Z
+            dz = 1;
+            axis = 2;
+            dir = 1;
+            break;
+          case 5: // -Z
+            dz = -1;
+            axis = 2;
+            dir = -1;
+            break;
+        }
+
         let targetChunk: Chunk | undefined = chunk;
-        let tx = nx;
-        let ty = ny;
-        let tz = nz;
+        let tx = cx + dx;
+        let ty = cy + dy;
+        let tz = cz + dz;
 
-        // Handle chunk boundaries
-        if (nx < 0) {
+        // Resolve X boundary
+        if (tx < 0) {
           targetChunk = targetChunk.getNeighbor(-1, 0, 0);
           tx = Chunk.SIZE - 1;
-        } else if (nx >= Chunk.SIZE) {
+        } else if (tx >= Chunk.SIZE) {
           targetChunk = targetChunk.getNeighbor(1, 0, 0);
           tx = 0;
         }
 
-        if (targetChunk && (ny < 0 || ny >= Chunk.SIZE)) {
-          if (ny < 0) {
-            targetChunk = targetChunk.getNeighbor(0, -1, 0);
-            ty = Chunk.SIZE - 1;
-          } else {
-            targetChunk = targetChunk.getNeighbor(0, 1, 0);
-            ty = 0;
-          }
+        // Resolve Y boundary
+        if (targetChunk && ty < 0) {
+          targetChunk = targetChunk.getNeighbor(0, -1, 0);
+          ty = Chunk.SIZE - 1;
+        } else if (targetChunk && ty >= Chunk.SIZE) {
+          targetChunk = targetChunk.getNeighbor(0, 1, 0);
+          ty = 0;
         }
 
-        if (targetChunk && (nz < 0 || nz >= Chunk.SIZE)) {
-          if (nz < 0) {
-            targetChunk = targetChunk.getNeighbor(0, 0, -1);
-            tz = Chunk.SIZE - 1;
-          } else {
-            targetChunk = targetChunk.getNeighbor(0, 0, 1);
-            tz = 0;
-          }
+        // Resolve Z boundary
+        if (targetChunk && tz < 0) {
+          targetChunk = targetChunk.getNeighbor(0, 0, -1);
+          tz = Chunk.SIZE - 1;
+        } else if (targetChunk && tz >= Chunk.SIZE) {
+          targetChunk = targetChunk.getNeighbor(0, 0, 1);
+          tz = 0;
         }
 
-        if (targetChunk) {
-          const targetBlockId = targetChunk.getBlockPacked(tx, ty, tz);
-          if (!targetChunk.isTransparent(targetBlockId, axis, dir)) continue;
+        if (!targetChunk) continue;
 
-          const neighborLight = isSkyLight
-            ? targetChunk.getSkyLight(tx, ty, tz)
-            : targetChunk.getBlockLight(tx, ty, tz);
-          const preservesFullSun =
-            isSkyLight &&
-            isDown === 1 &&
-            level === 15 &&
-            !Chunk.isWaterBlock(sourceBlockId) &&
-            !Chunk.isWaterBlock(targetBlockId);
+        const targetBlockPacked = targetChunk.getBlockPacked(tx, ty, tz);
 
-          const isDependent =
-            neighborLight !== 0 &&
-            (neighborLight < level ||
-              (preservesFullSun && neighborLight === 15));
+        // If the neighbor block itself cannot contain/pass light on this face,
+        // it cannot be part of the removable light graph.
+        if (!targetChunk.isTransparent(targetBlockPacked, axis, dir)) {
+          continue;
+        }
 
-          if (isDependent) {
-            if (isSkyLight) targetChunk.setSkyLight(tx, ty, tz, 0);
-            else targetChunk.setBlockLight(tx, ty, tz, 0);
-            targetChunk.scheduleRemesh();
-            queue.push({
-              chunk: targetChunk,
-              x: tx,
-              y: ty,
-              z: tz,
-              level: neighborLight,
-            });
-          } else if (neighborLight >= level) {
-            propagateQueue.push({
-              chunk: targetChunk,
-              x: tx,
-              y: ty,
-              z: tz,
-              level: neighborLight,
-            });
-          }
+        const neighborLight = isSkyLight
+          ? targetChunk.getSkyLight(tx, ty, tz)
+          : targetChunk.getBlockLight(tx, ty, tz);
+
+        const preservesFullSun =
+          isSkyLight &&
+          isDown === 1 &&
+          level === 15 &&
+          !Chunk.isWaterBlock(sourceBlockId) &&
+          !Chunk.isWaterBlock(unpackBlockId(targetBlockPacked));
+
+        const isDependent =
+          neighborLight !== 0 &&
+          (neighborLight < level || (preservesFullSun && neighborLight === 15));
+
+        if (isDependent) {
+          if (isSkyLight) targetChunk.setSkyLight(tx, ty, tz, 0);
+          else targetChunk.setBlockLight(tx, ty, tz, 0);
+
+          remeshChunks.add(targetChunk);
+
+          queue.push({
+            chunk: targetChunk,
+            x: tx,
+            y: ty,
+            z: tz,
+            level: neighborLight,
+          });
+        } else if (neighborLight >= level) {
+          // This neighbor may still act as an alternate source and needs
+          // re-propagation after the dependent flood removal finishes.
+          propagateQueue.push({
+            chunk: targetChunk,
+            x: tx,
+            y: ty,
+            z: tz,
+            level: neighborLight,
+          });
         }
       }
+    }
+
+    for (const chunk of remeshChunks) {
+      chunk.scheduleRemesh();
     }
 
     this.propagateLight(propagateQueue, isSkyLight);
@@ -888,19 +1072,25 @@ export class Chunk {
     if (!this.isLoaded) {
       return; // Cannot remesh an unloaded chunk.
     }
+
     this.isDirty = true;
+
     if (priority) {
       this.remeshQueuedPriority = true;
     }
+
     if (this.remeshQueued) {
       return;
     }
 
     this.remeshQueued = true;
+
     requestAnimationFrame(() => {
       this.remeshQueued = false;
+
       const queuedPriority = this.remeshQueuedPriority;
       this.remeshQueuedPriority = false;
+
       Chunk.onRequestRemesh?.(this, queuedPriority);
     });
   }
@@ -916,10 +1106,11 @@ export class Chunk {
   }
 
   public getNeighbor(dx: number, dy: number, dz: number): Chunk | undefined {
-    const nx = this.chunkX + dx;
-    const ny = this.chunkY + dy;
-    const nz = this.chunkZ + dz;
-    return Chunk.getChunk(nx, ny, nz);
+    return Chunk.getChunk(
+      this.#chunkX + dx,
+      this.#chunkY + dy,
+      this.#chunkZ + dz,
+    );
   }
 
   public static getChunk(

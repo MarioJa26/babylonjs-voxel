@@ -9,25 +9,23 @@ export class ResizableTypedArray<
     private ctor: new (capacity: number) => T,
     initialCapacity = 512,
   ) {
-    this.capacity = initialCapacity;
-    this.array = new ctor(this.capacity);
-  }
-
-  private ensureCapacity(additional: number): void {
-    const minCapacity = this.length + additional;
-    if (minCapacity > this.capacity) {
-      this.grow(minCapacity);
-    }
+    this.capacity = Math.max(1, initialCapacity);
+    this.array = new this.ctor(this.capacity);
   }
 
   push4(a: number, b: number, c: number, d: number): void {
-    this.ensureCapacity(4);
+    const nextLength = this.length + 4;
+    if (nextLength > this.capacity) {
+      this.grow(nextLength);
+    }
+
+    const arr = this.array;
     const i = this.length;
-    this.array[i] = a;
-    this.array[i + 1] = b;
-    this.array[i + 2] = c;
-    this.array[i + 3] = d;
-    this.length = i + 4;
+    arr[i] = a;
+    arr[i + 1] = b;
+    arr[i + 2] = c;
+    arr[i + 3] = d;
+    this.length = nextLength;
   }
 
   push6(
@@ -38,15 +36,20 @@ export class ResizableTypedArray<
     e: number,
     f: number,
   ): void {
-    this.ensureCapacity(6);
+    const nextLength = this.length + 6;
+    if (nextLength > this.capacity) {
+      this.grow(nextLength);
+    }
+
+    const arr = this.array;
     const i = this.length;
-    this.array[i] = a;
-    this.array[i + 1] = b;
-    this.array[i + 2] = c;
-    this.array[i + 3] = d;
-    this.array[i + 4] = e;
-    this.array[i + 5] = f;
-    this.length = i + 6;
+    arr[i] = a;
+    arr[i + 1] = b;
+    arr[i + 2] = c;
+    arr[i + 3] = d;
+    arr[i + 4] = e;
+    arr[i + 5] = f;
+    this.length = nextLength;
   }
 
   push8(
@@ -59,17 +62,22 @@ export class ResizableTypedArray<
     g: number,
     h: number,
   ): void {
-    this.ensureCapacity(8);
+    const nextLength = this.length + 8;
+    if (nextLength > this.capacity) {
+      this.grow(nextLength);
+    }
+
+    const arr = this.array;
     const i = this.length;
-    this.array[i] = a;
-    this.array[i + 1] = b;
-    this.array[i + 2] = c;
-    this.array[i + 3] = d;
-    this.array[i + 4] = e;
-    this.array[i + 5] = f;
-    this.array[i + 6] = g;
-    this.array[i + 7] = h;
-    this.length = i + 8;
+    arr[i] = a;
+    arr[i + 1] = b;
+    arr[i + 2] = c;
+    arr[i + 3] = d;
+    arr[i + 4] = e;
+    arr[i + 5] = f;
+    arr[i + 6] = g;
+    arr[i + 7] = h;
+    this.length = nextLength;
   }
 
   push12(
@@ -86,28 +94,34 @@ export class ResizableTypedArray<
     k: number,
     l: number,
   ): void {
-    this.ensureCapacity(12);
+    const nextLength = this.length + 12;
+    if (nextLength > this.capacity) {
+      this.grow(nextLength);
+    }
+
+    const arr = this.array;
     const i = this.length;
-    this.array[i] = a;
-    this.array[i + 1] = b;
-    this.array[i + 2] = c;
-    this.array[i + 3] = d;
-    this.array[i + 4] = e;
-    this.array[i + 5] = f;
-    this.array[i + 6] = g;
-    this.array[i + 7] = h;
-    this.array[i + 8] = i1;
-    this.array[i + 9] = j;
-    this.array[i + 10] = k;
-    this.array[i + 11] = l;
-    this.length = i + 12;
+    arr[i] = a;
+    arr[i + 1] = b;
+    arr[i + 2] = c;
+    arr[i + 3] = d;
+    arr[i + 4] = e;
+    arr[i + 5] = f;
+    arr[i + 6] = g;
+    arr[i + 7] = h;
+    arr[i + 8] = i1;
+    arr[i + 9] = j;
+    arr[i + 10] = k;
+    arr[i + 11] = l;
+    this.length = nextLength;
   }
 
   private grow(minCapacity: number): void {
-    let newCapacity = this.capacity * 2;
+    let newCapacity = this.capacity << 1;
     while (newCapacity < minCapacity) {
-      newCapacity *= 2;
+      newCapacity <<= 1;
     }
+
     const newArray = new this.ctor(newCapacity);
     newArray.set(this.array.subarray(0, this.length));
     this.array = newArray;
@@ -118,3 +132,4 @@ export class ResizableTypedArray<
     return this.array.slice(0, this.length) as T;
   }
 }
+``;
