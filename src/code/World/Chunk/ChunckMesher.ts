@@ -248,43 +248,41 @@ export class ChunkMesher {
       chunk.transparentMeshData = null;
     }
 
-    if (chunk.mesh) {
-      chunk.mesh.dispose();
-      chunk.mesh = null;
-    }
-
-    if (chunk.transparentMesh) {
-      chunk.transparentMesh.dispose();
-      chunk.transparentMesh = null;
-    }
-
     if (hasOpaque) {
-      chunk.mesh = this.buildMesh(
+      chunk.mesh = this.upsertMesh(
         chunk,
+        chunk.mesh,
         opaqueMeshData!,
         "c_opaque",
         this.#atlasMaterial!,
         1,
       );
+    } else if (chunk.mesh) {
+      chunk.mesh.dispose();
+      chunk.mesh = null;
     }
 
     if (hasTransparent) {
-      chunk.transparentMesh = this.buildMesh(
+      chunk.transparentMesh = this.upsertMesh(
         chunk,
+        chunk.transparentMesh,
         transparentMeshData!,
         "c_transparent",
         this.#transparentMaterial!,
         1,
       );
+    } else if (chunk.transparentMesh) {
+      chunk.transparentMesh.dispose();
+      chunk.transparentMesh = null;
     }
 
     if (chunk.colliderDirty) {
       chunk.colliderDirty = false;
     }
   }
-
-  private static buildMesh(
+  private static upsertMesh(
     chunk: Chunk,
+    existingMesh: Mesh | null,
     meshData: MeshData,
     name: string,
     material: Material,
@@ -292,94 +290,88 @@ export class ChunkMesher {
   ): Mesh {
     const scene = Map1.mainScene;
     const engine = scene.getEngine();
-    const mesh = new Mesh(name, scene);
+
+    let mesh = existingMesh;
+
+    if (!mesh) {
+      mesh = new Mesh(name, scene);
+      mesh.renderingGroupId = renderingGroupId;
+      mesh.material = material;
+      mesh.checkCollisions = false;
+      mesh.isPickable = false;
+      mesh.doNotSyncBoundingInfo = true;
+      mesh.ignoreNonUniformScaling = true;
+
+      // Static vertex template: create once per mesh.
+      mesh.setVerticesBuffer(
+        new VertexBuffer(
+          engine,
+          ChunkMesher.FACE_VERTEX_TEMPLATE,
+          VertexBuffer.PositionKind,
+          false,
+          undefined,
+          3,
+          false,
+        ),
+      );
+
+      // Static indices: create once per mesh.
+      mesh.setIndices(ChunkMesher.FACE_INDEX_TEMPLATE);
+
+      mesh.position.set(
+        chunk.chunkX * Chunk.SIZE,
+        chunk.chunkY * Chunk.SIZE,
+        chunk.chunkZ * Chunk.SIZE,
+      );
+
+      const boundsMin = Vector3.Zero();
+      const boundsMax = new Vector3(Chunk.SIZE, Chunk.SIZE, Chunk.SIZE);
+      mesh.setBoundingInfo(new BoundingInfo(boundsMin, boundsMax));
+      mesh.cullingStrategy = AbstractMesh.CULLINGSTRATEGY_OPTIMISTIC_INCLUSION;
+
+      mesh.freezeWorldMatrix();
+    }
 
     mesh.renderingGroupId = renderingGroupId;
     mesh.material = material;
-    mesh.checkCollisions = false;
-    mesh.isPickable = false;
-    mesh.doNotSyncBoundingInfo = true;
-    mesh.ignoreNonUniformScaling = true;
-
-    mesh.setVerticesBuffer(
-      new VertexBuffer(
-        engine,
-        ChunkMesher.FACE_VERTEX_TEMPLATE,
-        VertexBuffer.PositionKind,
-        false,
-        undefined,
-        3,
-        false,
-      ),
-    );
-
-    mesh.setVerticesBuffer(
-      new VertexBuffer(
-        engine,
-        meshData.faceDataA,
-        "faceDataA",
-        false,
-        undefined,
-        4,
-        true,
-        undefined,
-        4,
-        VertexBuffer.UNSIGNED_BYTE,
-        false,
-      ),
-    );
-
-    mesh.setVerticesBuffer(
-      new VertexBuffer(
-        engine,
-        meshData.faceDataB,
-        "faceDataB",
-        false,
-        undefined,
-        4,
-        true,
-        undefined,
-        4,
-        VertexBuffer.UNSIGNED_BYTE,
-        false,
-      ),
-    );
-
-    mesh.setVerticesBuffer(
-      new VertexBuffer(
-        engine,
-        meshData.faceDataC,
-        "faceDataC",
-        false,
-        undefined,
-        4,
-        true,
-        undefined,
-        4,
-        VertexBuffer.UNSIGNED_BYTE,
-        false,
-      ),
-    );
-
-    mesh.setIndices(ChunkMesher.FACE_INDEX_TEMPLATE);
-    mesh.overridenInstanceCount = meshData.faceCount;
-
-    mesh.position.set(
-      chunk.chunkX * Chunk.SIZE,
-      chunk.chunkY * Chunk.SIZE,
-      chunk.chunkZ * Chunk.SIZE,
-    );
-
-    const boundsMin = Vector3.Zero();
-    const boundsMax = new Vector3(Chunk.SIZE, Chunk.SIZE, Chunk.SIZE);
-    mesh.setBoundingInfo(new BoundingInfo(boundsMin, boundsMax));
-    mesh.cullingStrategy = AbstractMesh.CULLINGSTRATEGY_OPTIMISTIC_INCLUSION;
-
-    mesh.freezeWorldMatrix();
     mesh.name = `${name}_${chunk.chunkX}_${chunk.chunkY}_${chunk.chunkZ}`;
+
+    this.replaceFaceVertexBuffer(mesh, engine, "faceDataA", meshData.faceDataA);
+    this.replaceFaceVertexBuffer(mesh, engine, "faceDataB", meshData.faceDataB);
+    this.replaceFaceVertexBuffer(mesh, engine, "faceDataC", meshData.faceDataC);
+
+    mesh.overridenInstanceCount = meshData.faceCount;
 
     return mesh;
   }
+  private static replaceFaceVertexBuffer(
+    mesh: Mesh,
+    engine: ReturnType<typeof Map1.mainScene.getEngine>,
+    kind: string,
+    data: Uint8Array,
+  ): void {
+    const oldBuffer = mesh.getVertexBuffer(kind);
+    if (oldBuffer) {
+      oldBuffer.dispose();
+    }
+
+    mesh.setVerticesBuffer(
+      new VertexBuffer(
+        engine,
+        data,
+        kind,
+        false,
+        undefined,
+        4,
+        true,
+        undefined,
+        4,
+        VertexBuffer.UNSIGNED_BYTE,
+        false,
+      ),
+    );
+  }
+
   static updateGlobalUniforms(frameId: number) {
     if (this.lastUpdateFrame === frameId) return;
     this.lastUpdateFrame = frameId;
