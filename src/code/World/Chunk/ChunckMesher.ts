@@ -1,6 +1,7 @@
 import {
   Mesh,
   VertexBuffer,
+  Buffer,
   Effect,
   Texture,
   Material,
@@ -10,6 +11,7 @@ import {
   AbstractMesh,
   UniformBuffer,
 } from "@babylonjs/core";
+
 import { Map1 } from "@/code/Maps/Map1";
 import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
 import { WorldEnvironment } from "../../Maps/WorldEnvironment";
@@ -26,6 +28,7 @@ export class ChunkMesher {
   static #atlasMaterial: Material | null = null;
   static #transparentMaterial: Material | null = null;
   static #globalUniformBuffer: UniformBuffer | null = null;
+  static #sharedFacePositionBuffer: Buffer | null = null;
 
   // Cache global uniforms — updated once per frame.
   static #cachedUniforms = {
@@ -224,7 +227,23 @@ export class ChunkMesher {
       transparentMat.freeze();
     }
   }
+  private static ensureSharedFacePositionBuffer(): void {
+    if (this.#sharedFacePositionBuffer) {
+      return;
+    }
 
+    const scene = Map1.mainScene;
+    const engine = scene.getEngine();
+
+    this.#sharedFacePositionBuffer = new Buffer(
+      engine,
+      ChunkMesher.FACE_VERTEX_TEMPLATE,
+      false,
+      3,
+      false,
+      false,
+    );
+  }
   public static createMeshFromData(
     chunk: Chunk,
     meshData: {
@@ -291,6 +310,8 @@ export class ChunkMesher {
     const scene = Map1.mainScene;
     const engine = scene.getEngine();
 
+    this.ensureSharedFacePositionBuffer();
+
     let mesh = existingMesh;
 
     if (!mesh) {
@@ -302,20 +323,20 @@ export class ChunkMesher {
       mesh.doNotSyncBoundingInfo = true;
       mesh.ignoreNonUniformScaling = true;
 
-      // Static vertex template: create once per mesh.
+      // Shared static face-position buffer
       mesh.setVerticesBuffer(
-        new VertexBuffer(
-          engine,
-          ChunkMesher.FACE_VERTEX_TEMPLATE,
+        this.#sharedFacePositionBuffer!.createVertexBuffer(
           VertexBuffer.PositionKind,
-          false,
-          undefined,
+          0,
+          3,
           3,
           false,
+          false,
+          0,
         ),
       );
 
-      // Static indices: create once per mesh.
+      // Index buffer is now created once per mesh, not on every remesh.
       mesh.setIndices(ChunkMesher.FACE_INDEX_TEMPLATE);
 
       mesh.position.set(
@@ -464,5 +485,22 @@ export class ChunkMesher {
     await TextureCache.put(cacheKey, newBlob);
 
     return URL.createObjectURL(newBlob);
+  }
+  public static disposeSharedResources(): void {
+    if (this.#sharedFacePositionBuffer) {
+      this.#sharedFacePositionBuffer.dispose();
+      this.#sharedFacePositionBuffer = null;
+    }
+
+    this.#globalUniformBuffer?.dispose();
+    this.#globalUniformBuffer = null;
+
+    this.#atlasMaterial?.dispose();
+    this.#atlasMaterial = null;
+
+    this.#transparentMaterial?.dispose();
+    this.#transparentMaterial = null;
+
+    this.lastUpdateFrame = -1;
   }
 }

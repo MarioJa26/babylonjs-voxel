@@ -34,7 +34,7 @@ export class BoatCreatorSystem {
 
   // Expand this set with any additional block IDs that should be treated as hull.
   private static sourceBlockIds = new Set<number>([
-    6, 12, 37, 41, 42, 60, 61, 22,
+    6, 10, 12, 37, 41, 42, 60, 61, 22,
   ]);
   private static maxFloodBlocks = 8192;
   private static visualMode: VisualMode = "blocks";

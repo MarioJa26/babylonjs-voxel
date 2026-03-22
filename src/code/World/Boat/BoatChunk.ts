@@ -48,16 +48,72 @@ export class BoatChunk {
     const chunkCoords = BoatChunk.allocateChunkCoords();
     this.#centerChunk = new Chunk(chunkCoords.x, chunkCoords.y, chunkCoords.z);
     this.#centerChunk.isPersistent = true;
+
     this.createNeighborChunks(chunkCoords);
-    this.populateCenterChunk(blocks);
+
+    // Important: neighbor chunks must exist and be populated first so the center
+    // chunk can derive correct skylight from its surroundings.
     this.populateNeighborChunks();
+    this.populateCenterChunk(blocks);
+    this.initializeCenterChunkLighting(blocks);
 
     this.#beforeRenderObserver = this.#scene.onBeforeRenderObservable.add(
       () => {
         this.#syncVisualMeshes();
       },
     );
+
     this.remesh();
+  }
+  private initializeCenterChunkLighting(blocks: BoatChunkBlock[]): void {
+    // Rebuild skylight properly using the actual boat blocks plus the already
+    // populated empty neighbor chunks around it.
+    this.#centerChunk.initializeSunlight();
+
+    // Add explicit/custom light data or infer block emission from block IDs.
+    for (const block of blocks) {
+      const bx = Math.floor(block.x);
+      const by = Math.floor(block.y);
+      const bz = Math.floor(block.z);
+
+      if (!this.isInsideChunkBounds(bx, by, bz)) {
+        continue;
+      }
+
+      const packed =
+        typeof block.packedBlock === "number"
+          ? block.packedBlock
+          : packBlockValue(block.blockId, block.blockState ?? 0);
+
+      if (typeof block.lightLevel === "number") {
+        const packedLight = block.lightLevel & 0xff;
+
+        const skyLight =
+          (packedLight >> Chunk.SKY_LIGHT_SHIFT) & Chunk.BLOCK_LIGHT_MASK;
+        const blockLight = packedLight & Chunk.BLOCK_LIGHT_MASK;
+
+        if (skyLight > 0) {
+          const currentSky = this.#centerChunk.getSkyLight(bx, by, bz);
+          if (skyLight > currentSky) {
+            this.#centerChunk.setSkyLight(bx, by, bz, skyLight);
+          }
+        }
+
+        if (blockLight > 0) {
+          this.#centerChunk.addLight(bx, by, bz, blockLight);
+        }
+
+        continue;
+      }
+
+      const emission = Chunk.getLightEmission(unpackBlockId(packed));
+      if (emission > 0) {
+        this.#centerChunk.addLight(bx, by, bz, emission);
+      }
+    }
+
+    // Initial setup should not mark the boat chunk as modified.
+    this.#centerChunk.isModified = false;
   }
 
   private static allocateChunkCoords(): ChunkCoords {
@@ -129,11 +185,13 @@ export class BoatChunk {
 
   private populateCenterChunk(blocks: BoatChunkBlock[]): void {
     const blockArray = this.createBlockArray();
-    const lightArray = this.createSkyLightArray();
+    const lightArray = this.createEmptyLightArray();
+
     for (const block of blocks) {
       const bx = Math.floor(block.x);
       const by = Math.floor(block.y);
       const bz = Math.floor(block.z);
+
       if (!this.isInsideChunkBounds(bx, by, bz)) {
         continue;
       }
@@ -143,14 +201,12 @@ export class BoatChunk {
         typeof block.packedBlock === "number"
           ? block.packedBlock
           : packBlockValue(block.blockId, block.blockState ?? 0);
+
       blockArray[index] = packed;
-      if (typeof block.lightLevel === "number") {
-        lightArray[index] = block.lightLevel & 0xff;
-      }
     }
 
+    // Start dark; skylight/block light are initialized in initializeCenterChunkLighting().
     this.#centerChunk.populate(blockArray, null, false, 0, lightArray, false);
-    this.#centerChunk.isModified = false;
   }
 
   private isAliveMesh(mesh: Mesh | null): mesh is Mesh {
@@ -261,7 +317,13 @@ export class BoatChunk {
     packedLight: number,
   ): void {
     if (!this.isInsideChunkBounds(x, y, z)) return;
-    this.#centerChunk.setLight(x, y, z, packedLight & 0xff);
+
+    const value = packedLight & 0xff;
+    const skyLight = (value >> Chunk.SKY_LIGHT_SHIFT) & Chunk.BLOCK_LIGHT_MASK;
+    const blockLight = value & Chunk.BLOCK_LIGHT_MASK;
+
+    this.#centerChunk.setSkyLight(x, y, z, skyLight);
+    this.#centerChunk.setBlockLight(x, y, z, blockLight);
     this.#centerChunk.scheduleRemesh();
   }
 
@@ -303,6 +365,9 @@ export class BoatChunk {
     this.#neighborChunks.length = 0;
 
     this.#visualRoot.dispose(false, true);
+  }
+  private createEmptyLightArray(): Uint8Array {
+    return new Uint8Array(this.createSharedBuffer(Chunk.SIZE3));
   }
 
   public get visualRoot(): Mesh {
