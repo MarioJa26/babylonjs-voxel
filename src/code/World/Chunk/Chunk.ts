@@ -549,6 +549,8 @@ export class Chunk {
    */
 
   public propagateLight(queue: LightNode[], isSkyLight = true): void {
+    const remeshChunks = new Set<Chunk>();
+
     for (let head = 0; head < queue.length; head++) {
       const node = queue[head];
       const chunk = node.chunk;
@@ -565,10 +567,9 @@ export class Chunk {
 
       const sourceBlockPacked = chunk.getBlockPacked(x, y, z);
       const sourceBlockId = unpackBlockId(sourceBlockPacked);
-      const sourceEmits = Chunk.getLightEmission(sourceBlockId) > 0;
+      const sourceEmits =
+        !isSkyLight && Chunk.getLightEmission(sourceBlockId) > 0;
 
-      // 6 cardinal directions:
-      // 0: +X, 1: -X, 2: +Y, 3: -Y, 4: +Z, 5: -Z
       for (let dirIndex = 0; dirIndex < 6; dirIndex++) {
         let dx = 0;
         let dy = 0;
@@ -611,14 +612,10 @@ export class Chunk {
             break;
         }
 
-        const nx = x + dx;
-        const ny = y + dy;
-        const nz = z + dz;
-
         let targetChunk: Chunk | undefined = chunk;
-        let tx = nx;
-        let ty = ny;
-        let tz = nz;
+        let tx = x + dx;
+        let ty = y + dy;
+        let tz = z + dz;
 
         // Resolve cross-chunk X boundary
         if (tx < 0) {
@@ -649,51 +646,50 @@ export class Chunk {
 
         if (!targetChunk) continue;
 
-        const targetBlockPacked = targetChunk.getBlockPacked(tx, ty, tz);
-
-        // Source-side face transparency:
-        // For sky light, source must be transparent in that direction.
-        // For block light, an emitting source can emit through itself even if not transparent.
         const sourceAllows = isSkyLight
           ? chunk.isTransparent(sourceBlockPacked, axis, dir)
           : sourceEmits || chunk.isTransparent(sourceBlockPacked, axis, dir);
 
         if (!sourceAllows) continue;
 
-        // Target-side face must accept light from this direction.
+        const targetBlockPacked = targetChunk.getBlockPacked(tx, ty, tz);
         if (!targetChunk.isTransparent(targetBlockPacked, axis, dir)) continue;
 
         const currentLevel = isSkyLight
           ? targetChunk.getSkyLight(tx, ty, tz)
           : targetChunk.getBlockLight(tx, ty, tz);
 
+        const targetBlockId = unpackBlockId(targetBlockPacked);
         const preservesFullSun =
           isSkyLight &&
           isDown === 1 &&
           level === 15 &&
           !Chunk.isWaterBlock(sourceBlockId) &&
-          !Chunk.isWaterBlock(unpackBlockId(targetBlockPacked));
+          !Chunk.isWaterBlock(targetBlockId);
 
-        let nextLevel = preservesFullSun ? 15 : level - 1;
-        if (nextLevel <= 0) continue;
+        const nextLevel = preservesFullSun ? 15 : level - 1;
+        if (nextLevel <= 0 || currentLevel >= nextLevel) continue;
 
-        if (currentLevel < nextLevel) {
-          if (isSkyLight) {
-            targetChunk.setSkyLight(tx, ty, tz, nextLevel);
-          } else {
-            targetChunk.setBlockLight(tx, ty, tz, nextLevel);
-          }
-
-          targetChunk.scheduleRemesh();
-          queue.push({
-            chunk: targetChunk,
-            x: tx,
-            y: ty,
-            z: tz,
-            level: nextLevel,
-          });
+        if (isSkyLight) {
+          targetChunk.setSkyLight(tx, ty, tz, nextLevel);
+        } else {
+          targetChunk.setBlockLight(tx, ty, tz, nextLevel);
         }
+
+        remeshChunks.add(targetChunk);
+
+        queue.push({
+          chunk: targetChunk,
+          x: tx,
+          y: ty,
+          z: tz,
+          level: nextLevel,
+        });
       }
+    }
+
+    for (const chunk of remeshChunks) {
+      chunk.scheduleRemesh();
     }
   }
 
@@ -707,6 +703,9 @@ export class Chunk {
 
     const queue: LightNode[] = [];
     const targetBlockPacked = this.getBlockPacked(x, y, z);
+    const currentTargetLevel = isSkyLight
+      ? this.getSkyLight(x, y, z)
+      : this.getBlockLight(x, y, z);
 
     for (let dirIndex = 0; dirIndex < 6; dirIndex++) {
       let dx = 0;
@@ -714,34 +713,36 @@ export class Chunk {
       let dz = 0;
       let axis = 0;
       let dir = 1;
+      let isDown = 0;
 
       switch (dirIndex) {
-        case 0: // +X neighbor
+        case 0: // +X neighbor -> light travels -X into target
           dx = 1;
           axis = 0;
           dir = -1;
           break;
-        case 1: // -X neighbor
+        case 1: // -X neighbor -> light travels +X into target
           dx = -1;
           axis = 0;
           dir = 1;
           break;
-        case 2: // +Y neighbor
+        case 2: // +Y neighbor -> light travels downward into target
           dy = 1;
           axis = 1;
           dir = -1;
+          isDown = 1;
           break;
-        case 3: // -Y neighbor
+        case 3: // -Y neighbor -> light travels upward into target
           dy = -1;
           axis = 1;
           dir = 1;
           break;
-        case 4: // +Z neighbor
+        case 4: // +Z neighbor -> light travels -Z into target
           dz = 1;
           axis = 2;
           dir = -1;
           break;
-        case 5: // -Z neighbor
+        case 5: // -Z neighbor -> light travels +Z into target
           dz = -1;
           axis = 2;
           dir = 1;
@@ -784,7 +785,8 @@ export class Chunk {
 
       const sourceBlockPacked = sourceChunk.getBlockPacked(sx, sy, sz);
       const sourceBlockId = unpackBlockId(sourceBlockPacked);
-      const sourceEmits = Chunk.getLightEmission(sourceBlockId) > 0;
+      const sourceEmits =
+        !isSkyLight && Chunk.getLightEmission(sourceBlockId) > 0;
 
       const sourceAllows = isSkyLight
         ? sourceChunk.isTransparent(sourceBlockPacked, axis, dir)
@@ -800,6 +802,17 @@ export class Chunk {
         : sourceChunk.getBlockLight(sx, sy, sz);
 
       if (level <= 0) continue;
+
+      const targetBlockId = unpackBlockId(targetBlockPacked);
+      const preservesFullSun =
+        isSkyLight &&
+        isDown === 1 &&
+        level === 15 &&
+        !Chunk.isWaterBlock(sourceBlockId) &&
+        !Chunk.isWaterBlock(targetBlockId);
+
+      const nextLevel = preservesFullSun ? 15 : level - 1;
+      if (nextLevel <= 0 || nextLevel <= currentTargetLevel) continue;
 
       queue.push({
         chunk: sourceChunk,
@@ -1023,20 +1036,27 @@ export class Chunk {
           ? targetChunk.getSkyLight(tx, ty, tz)
           : targetChunk.getBlockLight(tx, ty, tz);
 
+        if (neighborLight === 0) {
+          continue;
+        }
+
+        const targetBlockId = unpackBlockId(targetBlockPacked);
         const preservesFullSun =
           isSkyLight &&
           isDown === 1 &&
           level === 15 &&
           !Chunk.isWaterBlock(sourceBlockId) &&
-          !Chunk.isWaterBlock(unpackBlockId(targetBlockPacked));
+          !Chunk.isWaterBlock(targetBlockId);
 
         const isDependent =
-          neighborLight !== 0 &&
-          (neighborLight < level || (preservesFullSun && neighborLight === 15));
+          neighborLight < level || (preservesFullSun && neighborLight === 15);
 
         if (isDependent) {
-          if (isSkyLight) targetChunk.setSkyLight(tx, ty, tz, 0);
-          else targetChunk.setBlockLight(tx, ty, tz, 0);
+          if (isSkyLight) {
+            targetChunk.setSkyLight(tx, ty, tz, 0);
+          } else {
+            targetChunk.setBlockLight(tx, ty, tz, 0);
+          }
 
           remeshChunks.add(targetChunk);
 
@@ -1047,7 +1067,7 @@ export class Chunk {
             z: tz,
             level: neighborLight,
           });
-        } else if (neighborLight >= level) {
+        } else {
           // This neighbor may still act as an alternate source and needs
           // re-propagation after the dependent flood removal finishes.
           propagateQueue.push({

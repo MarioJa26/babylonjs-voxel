@@ -336,7 +336,7 @@ export class ChunkMesher {
         ),
       );
 
-      // Index buffer is now created once per mesh, not on every remesh.
+      // Index buffer is created once per mesh.
       mesh.setIndices(ChunkMesher.FACE_INDEX_TEMPLATE);
 
       mesh.position.set(
@@ -357,23 +357,37 @@ export class ChunkMesher {
     mesh.material = material;
     mesh.name = `${name}_${chunk.chunkX}_${chunk.chunkY}_${chunk.chunkZ}`;
 
-    this.replaceFaceVertexBuffer(mesh, engine, "faceDataA", meshData.faceDataA);
-    this.replaceFaceVertexBuffer(mesh, engine, "faceDataB", meshData.faceDataB);
-    this.replaceFaceVertexBuffer(mesh, engine, "faceDataC", meshData.faceDataC);
+    this.upsertFaceVertexBuffer(mesh, engine, "faceDataA", meshData.faceDataA);
+    this.upsertFaceVertexBuffer(mesh, engine, "faceDataB", meshData.faceDataB);
+    this.upsertFaceVertexBuffer(mesh, engine, "faceDataC", meshData.faceDataC);
 
     mesh.overridenInstanceCount = meshData.faceCount;
 
     return mesh;
   }
-  private static replaceFaceVertexBuffer(
+  private static upsertFaceVertexBuffer(
     mesh: Mesh,
     engine: ReturnType<typeof Map1.mainScene.getEngine>,
     kind: string,
     data: Uint8Array,
   ): void {
-    const oldBuffer = mesh.getVertexBuffer(kind);
-    if (oldBuffer) {
-      oldBuffer.dispose();
+    const bufferLengths = this.getFaceBufferLengths(mesh);
+    const existing = mesh.getVertexBuffer(kind);
+    const nextLength = data.length;
+
+    // Fast path: same sized updatable buffer -> update in place
+    if (
+      existing &&
+      existing.isUpdatable() &&
+      bufferLengths[kind] === nextLength
+    ) {
+      existing.update(data);
+      return;
+    }
+
+    // Size changed or old buffer is not updatable -> recreate
+    if (existing) {
+      existing.dispose();
     }
 
     mesh.setVerticesBuffer(
@@ -381,7 +395,7 @@ export class ChunkMesher {
         engine,
         data,
         kind,
-        false,
+        true, // updatable
         undefined,
         4,
         true,
@@ -391,6 +405,26 @@ export class ChunkMesher {
         false,
       ),
     );
+
+    bufferLengths[kind] = nextLength;
+  }
+  private static getFaceBufferLengths(mesh: Mesh): Record<string, number> {
+    if (!mesh.metadata || typeof mesh.metadata !== "object") {
+      mesh.metadata = {};
+    }
+
+    const metadata = mesh.metadata as {
+      __chunkMesherFaceBufferLengths?: Record<string, number>;
+    };
+
+    if (!metadata.__chunkMesherFaceBufferLengths) {
+      metadata.__chunkMesherFaceBufferLengths = Object.create(null) as Record<
+        string,
+        number
+      >;
+    }
+
+    return metadata.__chunkMesherFaceBufferLengths;
   }
 
   static updateGlobalUniforms(frameId: number) {
