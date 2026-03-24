@@ -469,9 +469,7 @@ export class Chunk {
 
     const oldBlockLight = this.getBlockLight(localX, localY, localZ);
     const oldSkyLight = this.getSkyLight(localX, localY, localZ);
-    const oldBlockId = unpackBlockId(oldPacked);
     const newBlockId = unpackBlockId(packedBlock);
-    const oldWasTransparent = this.isTransparent(oldPacked);
     const newIsTransparent = this.isTransparent(packedBlock);
     const oldWasSkyTransparent = this.isTransparent(oldPacked, 1);
     const newIsSkyTransparent = this.isTransparent(packedBlock, 1);
@@ -748,7 +746,7 @@ export class Chunk {
           dir = 1;
           break;
       }
-
+      // eslint-disable-next-line @typescript-eslint/no-this-alias
       let sourceChunk: Chunk | undefined = this;
       let sx = x + dx;
       let sy = y + dy;

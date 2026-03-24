@@ -213,7 +213,7 @@ export class BoatChunk {
     return !!mesh && !mesh.isDisposed();
   }
 
-  private configureAttachedMesh(mesh: Mesh, transparent: boolean): void {
+  private configureAttachedMesh(mesh: Mesh): void {
     if (mesh.isDisposed()) return;
     mesh.unfreezeWorldMatrix();
     // World chunks are static and use frozen bounds. Boat meshes move/rotate, so
@@ -233,7 +233,6 @@ export class BoatChunk {
   private syncMeshRef(
     source: Mesh | null,
     attachedRef: Mesh | null,
-    transparent: boolean,
   ): Mesh | null {
     if (!this.isAliveMesh(source)) {
       return null;
@@ -241,7 +240,7 @@ export class BoatChunk {
     if (source === attachedRef) {
       return attachedRef;
     }
-    this.configureAttachedMesh(source, transparent);
+    this.configureAttachedMesh(source);
     return source;
   }
 
@@ -254,12 +253,10 @@ export class BoatChunk {
     this.#attachedOpaqueMesh = this.syncMeshRef(
       this.#centerChunk.mesh,
       this.#attachedOpaqueMesh,
-      false,
     );
     this.#attachedTransparentMesh = this.syncMeshRef(
       this.#centerChunk.transparentMesh,
       this.#attachedTransparentMesh,
-      true,
     );
     this.updateAttachedMeshTransform(this.#attachedOpaqueMesh);
     this.updateAttachedMeshTransform(this.#attachedTransparentMesh);
