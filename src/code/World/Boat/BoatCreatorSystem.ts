@@ -101,8 +101,25 @@ export class BoatCreatorSystem {
       return false;
     }
 
-    const { center, halfExtents } = bounds;
+    const { center } = bounds;
     const initialYaw = this.computeForwardYaw(bounds, markerX, markerZ);
+
+    let hx = bounds.sizeX * 0.5;
+    let hy = bounds.sizeY * 0.5;
+    let hz = bounds.sizeZ * 0.5;
+
+    const yaw = initialYaw % (Math.PI * 2);
+
+    // If yaw is ±90° → swap X and Z extents
+    if (
+      Math.abs(yaw - Math.PI / 2) < 0.001 ||
+      Math.abs(yaw + Math.PI / 2) < 0.001
+    ) {
+      [hx, hz] = [hz, hx];
+    }
+
+    const halfExtents = new Vector3(hx, hy, hz);
+
     const scene = Map1.mainScene;
 
     let boatChunk: BoatChunk | undefined;

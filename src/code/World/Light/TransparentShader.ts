@@ -17,7 +17,7 @@ export class TransparentShader {
     uniform sampler2D normalTexture;
 
     uniform GlobalUniforms {
-        vec3 lightDirection;
+        vec3 lightDirection;   // pre-normalized on CPU
         vec3 cameraPosition;
         float sunLightIntensity;
         float wetness;
@@ -26,11 +26,29 @@ export class TransparentShader {
 
     out vec4 fragColor;
 
+    float hash(vec2 p) {
+        p = fract(p * vec2(127.1, 311.7));
+        p += dot(p, p + 19.19);
+        return fract(p.x * p.y);
+    }
+
+    float valueNoise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(
+            mix(hash(i + vec2(0,0)), hash(i + vec2(1,0)), u.x),
+            mix(hash(i + vec2(0,1)), hash(i + vec2(1,1)), u.x),
+            u.y
+        );
+    }
+
     void main(void) {
-        float isWater = vMaterialType; 
-        
+        float isWater = vMaterialType;
+
         // --- 1. Animation ---
-        vec2 animationOffset = vec2(-time * 0.3, time * 0.4) * isWater;
+        vec2 scrollDir = vec2(-time * 0.3, time * 0.4);
+        vec2 animationOffset = scrollDir * isWater;
         vec2 animatedUV = vUV + animationOffset;
         vec2 singleTileUV = fract(animatedUV);
 
@@ -42,42 +60,67 @@ export class TransparentShader {
 
         // --- 3. Sampling ---
         vec4 diffuseColor = textureLod(diffuseTexture, atlasUV, lod);
-        vec3 normalMap = textureLod(normalTexture, atlasUV, lod).rgb;
-        normalMap = normalize(normalMap * 2.0 - 1.0);
-        vec3 worldNormal = normalize(vTBN * normalMap);
+        vec3 normalMapBase = textureLod(normalTexture, atlasUV, lod).rgb;
 
-        // --- 4. Direct Lighting ---
-        vec3 normalizedLightDirection = normalize(lightDirection);
-        float diffuseIntensity = max(0.0, dot(worldNormal, normalizedLightDirection));
+        // --- 4. Water Normal (world-space, bypass TBN) ---
+        // Drive wavePos from animatedUV so wave crests align with the scrolling
+        // texture — previously wavePos used vPositionW.xz with separate time offsets,
+        // causing the texture and normals to drift independently.
+        // Scale animatedUV into a world-like range with vPositionW for spatial variation.
+        vec2 wavePos  = vPositionW.xz * 0.3 + scrollDir;
+        vec2 wavePosB = wavePos * 1.314 + 4.7;
+
+        float eps = 0.05;
+        vec2 epsDX = vec2(eps, 0.0);
+        vec2 epsDZ = vec2(0.0, eps);
+
+        // No separate t1/t2 offsets needed — scroll is already baked into wavePos
+        float wC   = valueNoise(wavePos)        + valueNoise(wavePosB);
+        float wCDX = valueNoise(wavePos + epsDX) + valueNoise(wavePosB + epsDX);
+        float wCDZ = valueNoise(wavePos + epsDZ) + valueNoise(wavePosB + epsDZ);
+
+        float waveStrength = 0.33;
+        vec3 waveNormalWorld = normalize(vec3(
+            -(wCDX - wC) / eps * waveStrength,
+            1.0,
+            -(wCDZ - wC) / eps * waveStrength
+        ));
+
+        // Non-water: tangent-space normal map -> world space via TBN
+        vec3 nonWaterWorldNormal = normalize(vTBN * (normalMapBase * 2.0 - 1.0));
+
+        // Water uses world-space wave normal directly; no TBN involved
+        vec3 worldNormal = mix(nonWaterWorldNormal, waveNormalWorld, isWater);
+
+        // --- 5. Direct Lighting ---
+        float diffuseIntensity = max(0.0, dot(worldNormal, lightDirection));
         vec3 diffuse = diffuseColor.rgb * diffuseIntensity * sunLightIntensity;
 
         vec3 viewDirection = normalize(cameraPosition - vPositionW);
-        vec3 halfwayDir = normalize(normalizedLightDirection + viewDirection);
-        float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), 16.0);
+        vec3 halfwayDir = normalize(lightDirection + viewDirection);
 
-        // Specular is muted by both sun intensity and sky light level
-        float specularIntensity = 0.5 * vSkyLight; 
+        float specPower = mix(16.0, 128.0, isWater);
+        float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), specPower);
+
+        float specularIntensity = mix(0.5, 1.8, isWater) * vSkyLight;
         vec3 specular = vec3(specularIntensity) * spec * sunLightIntensity;
 
-        // --- 5. Ambient Occlusion and Environment Light ---
-        float aoFactor = 1.0 - vAO * mix(0.1, 0.24, isWater); 
+        // --- 6. Ambient Occlusion and Environment Light ---
+        float aoFactor = 1.0 - vAO * mix(0.1, 0.24, isWater);
         float lightLevel = max(vSkyLight, vBlockLight);
-        
+
         vec3 vSkyColor = vec3(0.8, 0.8, 0.8) * (sunLightIntensity + 0.2);
         vec3 vBlockColor = vec3(0.9, 0.6, 0.2);
-        
+
         vec3 lightMix = clamp((vSkyLight * vSkyColor) + (vBlockLight * vBlockColor), 0.0, 1.0);
 
-        // --- 6. Final Color and Alpha ---
+        // --- 7. Final Color and Alpha ---
         vec3 litColor = diffuseColor.rgb + diffuse + specular;
 
-        // Desaturate in low light
         float luminance = dot(litColor, vec3(0.299, 0.587, 0.114));
-        float saturation = mix(1.0, 0.5, isWater); 
+        float saturation = mix(1.0, 0.5, isWater);
         litColor = mix(vec3(luminance), litColor, lightLevel * saturation + (1.0 - saturation));
 
-        // FIX: Lowered the minimum brightness (0.02 for glass) to prevent glowing in the dark
-        // Also replaced the hardcoded 1.0 with isWater
         vec3 finalColor = litColor * max(lightMix * aoFactor, mix(0.02, 0.08, isWater));
 
         float baseAlpha = diffuseColor.a;

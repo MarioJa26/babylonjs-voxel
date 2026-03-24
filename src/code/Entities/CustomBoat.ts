@@ -18,11 +18,10 @@ import { Player } from "../Player/Player";
 import { CustomBoatControls } from "../Player/Controls/CustomBoatControls";
 import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
 import { BlockType } from "../World/BlockType";
-import {
-  Axis,
-  VoxelAabbCollider,
-} from "@/code/World/Collision/VoxelAabbCollider";
+
+import { Axis } from "@/code/World/Collision/VoxelAabbCollider";
 import { BoatChunk } from "@/code/World/Boat/BoatChunk";
+import { VoxelObbCollider } from "../World/Collision/VoxelObbCollider";
 
 // ===========================
 // Types & Options
@@ -42,56 +41,50 @@ export type CustomBoatOptions = {
 // ===========================
 export class CustomBoat implements IUsable {
   // ---------------------------
-  // Tunables / Config (centralized)
+  // Tunables / Config
   // ---------------------------
   #cfg = {
-    mass: 10, // kg (effective)
-    gravity: -9.81, // m/s^2
-    baseBuoyancyForce: 20, // upward force per fully-submerged point
-    torqueScale: 0.12, // how strongly off-center forces induce yaw torque
-    collisionStepSize: 0.25, // voxel sweep step
-    collisionEpsilon: 0.001, // voxel penetration tolerance
+    mass: 10,
+    gravity: -9.81,
+    baseBuoyancyForce: 20,
+    torqueScale: 0.12,
+    collisionStepSize: 0.25,
+    collisionEpsilon: 0.01,
     damping: {
-      waterLinear: 0.985, // per-frame factor @ 60 fps (exponentiated by dt*60)
+      waterLinear: 0.985,
       waterAngular: 0.92,
       airLinear: 0.995,
       airAngular: 0.98,
     },
-    dtClamp: { min: 1 / 600, max: 1 / 24 }, // clamp dt to avoid spikes/tunneling
+    dtClamp: { min: 1 / 600, max: 1 / 24 },
   } as const;
 
   // ---------------------------
   // Core State
   // ---------------------------
   #collisionHalfExtents = new Vector3(1.15, 0.6, 1.15);
-  #boat!: Mesh; // AABB hull mesh (never rotates)
-  #voxelCollider!: VoxelAabbCollider;
+  #boat!: Mesh;
+  #voxelCollider!: VoxelObbCollider;
 
   #mount!: Mount;
   static #boatControls: CustomBoatControls;
 
-  // Visual override
   #customVisualRoot?: Mesh;
-  #customVisualLocalYaw = 0; // local visual offset (yaw only)
+  #customVisualLocalYaw = 0;
   #skipDefaultModel = false;
 
-  // Boat chunk (optional)
   #boatChunk?: BoatChunk;
 
-  // Physics State
-  #currentYaw = 0; // tracked separately from hull rotation
+  #currentYaw = 0;
   #linearVelocity = Vector3.Zero();
   #angularVelocity = Vector3.Zero();
-  #angularResponseScale = 1; // scaled down for larger boats
+  #angularResponseScale = 1;
 
-  // Buoyancy sampling
   #buoyancyPoints: Vector3[] = [];
   #submergedPoints = 0;
 
-  // Update hook
   #beforeRenderObs?: Observer<Scene>;
 
-  // Reusable temp vectors (reduce GC)
   #tmpWorldPoint = new Vector3();
   #tmpTorque = new Vector3();
   #tmpLever = new Vector3();
@@ -103,7 +96,7 @@ export class CustomBoat implements IUsable {
     position?: Vector3,
     options?: CustomBoatOptions,
   ) {
-    // 1) Options → State
+    // 1) Options
     if (options?.collisionHalfExtents) {
       this.#collisionHalfExtents = options.collisionHalfExtents.clone();
     }
@@ -111,14 +104,12 @@ export class CustomBoat implements IUsable {
     this.#boatChunk = options?.boatChunk;
     this.#skipDefaultModel = Boolean(options?.skipDefaultModel);
 
-    if (typeof options?.initialYaw === "number") {
+    if (typeof options?.initialYaw === "number")
       this.#currentYaw = options.initialYaw;
-    }
-    if (typeof options?.customVisualLocalYaw === "number") {
+    if (typeof options?.customVisualLocalYaw === "number")
       this.#customVisualLocalYaw = options.customVisualLocalYaw;
-    }
+
     if (typeof options?.blockCount === "number" && options.blockCount > 1) {
-      // Inverse sqrt scaling for larger crafts (less twitchy but steerable)
       this.#angularResponseScale = Math.max(
         0.08,
         1 / Math.sqrt(options.blockCount),
@@ -127,9 +118,23 @@ export class CustomBoat implements IUsable {
 
     // 2) Create hull & collider
     this.#boat = this.#createHull(scene, position, waterLevel);
-    this.#voxelCollider = this.#createCollider(scene, this.#boat);
 
-    // 3) Metadata & chunk lifecycle
+    this.#voxelCollider = new VoxelObbCollider(
+      this.#collisionHalfExtents,
+      (x, y, z) => {
+        const id = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
+        return id !== BlockType.Air && id !== BlockType.Water;
+      },
+      this.#cfg.collisionEpsilon,
+      {
+        scene,
+        name: "boatOBB",
+        position: this.#boat.position,
+        renderingGroupId: 1,
+      },
+    );
+
+    // 3) Metadata
     this.#boat.metadata = new MetadataContainer();
     this.#boat.metadata.add("use", (p: Player) => this.use(p));
 
@@ -138,34 +143,34 @@ export class CustomBoat implements IUsable {
       this.#boat.onDisposeObservable.add(() => this.#boatChunk?.dispose());
     }
 
-    // 4) Visuals: custom or default
+    // 4) Visuals
     if (this.#customVisualRoot) {
       this.#attachCustomVisual(this.#customVisualRoot);
       this.#applyCustomVisualMetadata(this.#customVisualRoot);
     } else if (!this.#skipDefaultModel) {
       this.#loadDefaultModel(scene).catch((err) =>
-        console.error("Model failed to load:", err),
+        console.error("Model failed:", err),
       );
     }
 
-    // 5) Buoyancy sampling points
+    // 5) Buoyancy points
     this.#buildBuoyancyPoints();
 
-    // 6) Controls & Mount
+    // 6) Controls
     CustomBoat.#boatControls = new CustomBoatControls(this, player);
     this.#mount = new Mount(this.#boat, CustomBoat.#boatControls);
 
-    // 7) Update loop
+    // 7) Tick loop
     this.#beforeRenderObs = scene.onBeforeRenderObservable.add(() =>
       this.#tick(scene),
     );
 
-    // 8) Clean up when hull is disposed
+    // 8) Cleanup
     this.#boat.onDisposeObservable.add(() => this.dispose(scene));
   }
 
   // ---------------------------
-  // Construction helpers
+  // Construction
   // ---------------------------
   #createHull(
     scene: Scene,
@@ -188,53 +193,25 @@ export class CustomBoat implements IUsable {
       position?.z ?? 0,
     );
 
-    const hullMaterial = new StandardMaterial("hullMat", scene);
-    hullMaterial.diffuseColor = new Color3(0.8, 0.6, 0.2);
-    hull.material = hullMaterial;
+    const mat = new StandardMaterial("hullMat", scene);
+    mat.diffuseColor = new Color3(0.8, 0.6, 0.2);
+    hull.material = mat;
 
     hull.isPickable = true;
     hull.renderingGroupId = 1;
 
-    // Hide the hull by default; keep for debug if needed
     hull.isVisible = false;
-
-    // The hull never rotates — yaw is tracked separately to keep AABB aligned
     hull.rotationQuaternion = Quaternion.Identity();
 
     return hull;
   }
 
-  #createCollider(scene: Scene, hull: Mesh): VoxelAabbCollider {
-    const collider = new VoxelAabbCollider(
-      this.#collisionHalfExtents,
-      (x, y, z) => {
-        const id = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
-        return id !== BlockType.Air && id !== BlockType.Water;
-      },
-      this.#cfg.collisionEpsilon,
-      {
-        scene,
-        name: "boatAABB",
-        position: hull.position,
-        renderingGroupId: 1,
-      },
-    );
-
-    hull.onDisposeObservable.add(() => collider.dispose());
-    return collider;
-  }
-
   async #loadDefaultModel(scene: Scene): Promise<void> {
-    // NOTE: Keeping your original ImportMeshAsync usage for compatibility.
-    // If needed, the canonical Babylon call is: SceneLoader.ImportMeshAsync("", "models/", "boat-row-small.glb", scene)
     const result = await ImportMeshAsync("models/boat-row-small.glb", scene);
     const root = result.meshes[0];
-
-    // Parent to hull so it inherits position (yaw still independent via visualRoot path)
     root.parent = this.#boat;
     root.position.y = -0.45;
 
-    // Make meshes pickable and share metadata
     for (const m of result.meshes) {
       m.isPickable = true;
       m.renderingGroupId = 1;
@@ -243,7 +220,6 @@ export class CustomBoat implements IUsable {
   }
 
   #attachCustomVisual(visual: Mesh): void {
-    // Not parented — we drive transform manually each frame (yaw independence)
     visual.position.copyFrom(this.#boat.position);
     visual.rotationQuaternion = Quaternion.RotationYawPitchRoll(
       this.#currentYaw + this.#customVisualLocalYaw,
@@ -254,8 +230,7 @@ export class CustomBoat implements IUsable {
   }
 
   #applyCustomVisualMetadata(root: Mesh): void {
-    const meshes = [root, ...root.getChildMeshes(false)];
-    for (const mesh of meshes) {
+    for (const mesh of [root, ...root.getChildMeshes(false)]) {
       mesh.isPickable = true;
       mesh.renderingGroupId = 1;
       mesh.metadata = this.#boat.metadata;
@@ -263,47 +238,41 @@ export class CustomBoat implements IUsable {
   }
 
   #buildBuoyancyPoints(): void {
-    // Keep sample points inside AABB hull
     const y = -this.#collisionHalfExtents.y - 0.3;
-    const outerX = this.#collisionHalfExtents.x * 0.85;
-    const outerZ = this.#collisionHalfExtents.z * 0.85;
-    const innerX = this.#collisionHalfExtents.x * 0.45;
-    const innerZ = this.#collisionHalfExtents.z * 0.45;
+    const ox = this.#collisionHalfExtents.x * 0.85;
+    const oz = this.#collisionHalfExtents.z * 0.85;
+    const ix = this.#collisionHalfExtents.x * 0.45;
+    const iz = this.#collisionHalfExtents.z * 0.45;
 
     this.#buoyancyPoints = [
-      new Vector3(-outerX, y, -outerZ), // Front left
-      new Vector3(outerX, y, -outerZ), // Front right
-      new Vector3(-outerX, y, outerZ), // Back left
-      new Vector3(outerX, y, outerZ), // Back right
-      new Vector3(0, y, 0), // Center
-      new Vector3(-innerX, y, -innerZ),
-      new Vector3(innerX, y, -innerZ),
-      new Vector3(-innerX, y, innerZ),
-      new Vector3(innerX, y, innerZ),
+      new Vector3(-ox, y, -oz),
+      new Vector3(ox, y, -oz),
+      new Vector3(-ox, y, oz),
+      new Vector3(ox, y, oz),
+      new Vector3(0, y, 0),
+      new Vector3(-ix, y, -iz),
+      new Vector3(ix, y, -iz),
+      new Vector3(-ix, y, iz),
+      new Vector3(ix, y, iz),
     ];
   }
 
   // ---------------------------
-  // Frame Update
+  // Tick
   // ---------------------------
   #tick(scene: Scene): void {
-    // Get dt in seconds, clamp for numerical stability
     let dt = scene.getEngine().getDeltaTime() / 1000;
     if (dt <= 0) return;
     dt = Math.min(Math.max(dt, this.#cfg.dtClamp.min), this.#cfg.dtClamp.max);
 
     this.#submergedPoints = 0;
 
-    // Precompute yaw rotation for local buoyancy points
     const cos = Math.cos(this.#currentYaw);
     const sin = Math.sin(this.#currentYaw);
 
-    // Gravity
     this.#linearVelocity.y += this.#cfg.gravity * dt;
 
-    // Buoyancy force per point (rotate local → world, no hull rotation)
-    for (let i = 0; i < this.#buoyancyPoints.length; i++) {
-      const lp = this.#buoyancyPoints[i];
+    for (const lp of this.#buoyancyPoints) {
       const rx = lp.x * cos - lp.z * sin;
       const rz = lp.x * sin + lp.z * cos;
 
@@ -313,37 +282,43 @@ export class CustomBoat implements IUsable {
         this.#boat.position.z + rz,
       );
 
-      const submersion = this.#getWaterSubmersionAtPoint(this.#tmpWorldPoint);
-      if (submersion > 0) {
-        const buoyancy = submersion * this.#cfg.baseBuoyancyForce;
-        // Upward force at the point
-        this.#applyForceAtPoint(0, buoyancy, 0, this.#tmpWorldPoint, dt);
+      const sub = this.#getWaterSubmersionAtPoint(this.#tmpWorldPoint);
+      if (sub > 0) {
+        this.#applyForceAtPoint(
+          0,
+          sub * this.#cfg.baseBuoyancyForce,
+          0,
+          this.#tmpWorldPoint,
+          dt,
+        );
         this.#submergedPoints++;
       }
     }
 
-    // Drag (water vs air)
-    if (this.#submergedPoints > 0) {
-      const l = Math.pow(this.#cfg.damping.waterLinear, dt * 60);
-      const a = Math.pow(this.#cfg.damping.waterAngular, dt * 60);
-      this.#linearVelocity.scaleInPlace(l);
-      this.#angularVelocity.scaleInPlace(a);
-    } else {
-      const l = Math.pow(this.#cfg.damping.airLinear, dt * 60);
-      const a = Math.pow(this.#cfg.damping.airAngular, dt * 60);
-      this.#linearVelocity.scaleInPlace(l);
-      this.#angularVelocity.scaleInPlace(a);
+    // Drag
+    {
+      const d =
+        this.#submergedPoints > 0
+          ? this.#cfg.damping.waterLinear
+          : this.#cfg.damping.airLinear;
+      const ad =
+        this.#submergedPoints > 0
+          ? this.#cfg.damping.waterAngular
+          : this.#cfg.damping.airAngular;
+
+      this.#linearVelocity.scaleInPlace(Math.pow(d, dt * 60));
+      this.#angularVelocity.scaleInPlace(Math.pow(ad, dt * 60));
     }
 
-    // Integrate translation axis by axis (voxel collider resolves)
+    // Move
     this.#moveAxis(Axis.X, this.#linearVelocity.x * dt);
     this.#moveAxis(Axis.Y, this.#linearVelocity.y * dt);
     this.#moveAxis(Axis.Z, this.#linearVelocity.z * dt);
 
-    // Integrate rotation (yaw only, hull AABB stays axis-aligned)
+    // Rotate
     this.#integrateRotation(dt);
 
-    // Sync custom visual (if any)
+    // Sync visuals (if any)
     if (this.#customVisualRoot) {
       this.#customVisualRoot.position.copyFrom(this.#boat.position);
       this.#customVisualRoot.rotationQuaternion =
@@ -354,12 +329,15 @@ export class CustomBoat implements IUsable {
         );
     }
 
-    // Debug collider (if enabled)
+    // Always update collider orientation
+    this.#voxelCollider.setYaw(this.#currentYaw);
+
+    // Debug
     this.#voxelCollider.syncDebugMesh(this.#boat.position);
   }
 
   // ---------------------------
-  // Low-level physics helpers
+  // Helpers
   // ---------------------------
   #applyForceAtPoint(
     fx: number,
@@ -367,47 +345,40 @@ export class CustomBoat implements IUsable {
     fz: number,
     worldPoint: Vector3,
     dt: number,
-  ): void {
+  ) {
     const invMass = 1 / this.#cfg.mass;
 
-    // Linear
     this.#linearVelocity.x += fx * invMass * dt;
     this.#linearVelocity.y += fy * invMass * dt;
     this.#linearVelocity.z += fz * invMass * dt;
 
-    // Angular (torque around center)
     this.#tmpLever.copyFrom(worldPoint).subtractInPlace(this.#boat.position);
-    // torque = lever x force
+
     this.#tmpTorque.set(
       this.#tmpLever.y * fz - this.#tmpLever.z * fy,
       this.#tmpLever.z * fx - this.#tmpLever.x * fz,
       this.#tmpLever.x * fy - this.#tmpLever.y * fx,
     );
 
-    const torqueScale =
+    const ts =
       this.#cfg.torqueScale * this.#angularResponseScale * invMass * dt;
-
-    this.#angularVelocity.addInPlace(this.#tmpTorque.scaleInPlace(torqueScale));
+    this.#angularVelocity.addInPlace(this.#tmpTorque.scaleInPlace(ts));
   }
 
-  #integrateRotation(dt: number): void {
-    // Yaw only
+  #integrateRotation(dt: number) {
     this.#currentYaw += this.#angularVelocity.y * dt;
-    // Light yaw damping
     this.#angularVelocity.y *= 0.985;
 
-    // Lock pitch/roll
     this.#angularVelocity.x = 0;
     this.#angularVelocity.z = 0;
 
-    // Normalize yaw to [-PI, PI] to keep numbers bounded
     if (this.#currentYaw > Math.PI || this.#currentYaw < -Math.PI) {
       this.#currentYaw =
         ((this.#currentYaw + Math.PI) % (2 * Math.PI)) - Math.PI;
     }
   }
 
-  #moveAxis(axis: Axis, delta: number): void {
+  #moveAxis(axis: Axis, delta: number) {
     this.#voxelCollider.moveAxis(
       this.#boat.position,
       this.#linearVelocity,
@@ -422,25 +393,23 @@ export class CustomBoat implements IUsable {
     const y = Math.floor(worldPoint.y);
     const z = Math.floor(worldPoint.z);
 
-    const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
-    if (blockId !== BlockType.Water) return 0;
+    const id = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
+    if (id !== BlockType.Water) return 0;
 
     const above = ChunkLoadingSystem.getBlockByWorldCoords(x, y + 1, z);
     if (above === BlockType.Water) return 1;
 
-    const top = y + 1;
-    // linear submersion from voxel bottom->top
-    return Math.max(0, Math.min(1, top - worldPoint.y));
+    return Math.max(0, Math.min(1, y + 1 - worldPoint.y));
   }
 
   // ---------------------------
-  // Public API (preserved)
+  // Public API
   // ---------------------------
-  public applyImpulse(impulse: Vector3, worldPoint: Vector3): void {
-    this.#applyForceAtPoint(impulse.x, impulse.y, impulse.z, worldPoint, 1);
+  public applyImpulse(impulse: Vector3, point: Vector3) {
+    this.#applyForceAtPoint(impulse.x, impulse.y, impulse.z, point, 1);
   }
 
-  public applyAngularImpulse(impulse: Vector3): void {
+  public applyAngularImpulse(impulse: Vector3) {
     const invMass = 1 / this.#cfg.mass;
     this.#angularVelocity.addInPlace(
       impulse.scaleInPlace(invMass * this.#angularResponseScale),
@@ -468,10 +437,10 @@ export class CustomBoat implements IUsable {
   }
 
   public getBoatTopY(): Vector3 {
-    const info = this.#boat.getBoundingInfo();
+    const b = this.#boat.getBoundingInfo();
     return new Vector3(
       this.#boat.position.x,
-      info.boundingBox.maximumWorld.y,
+      b.boundingBox.maximumWorld.y,
       this.#boat.position.z,
     );
   }
@@ -481,18 +450,14 @@ export class CustomBoat implements IUsable {
   }
 
   // ---------------------------
-  // Extras / Lifecycle
+  // Cleanup
   // ---------------------------
-  public setAngularResponseScale(scale: number): void {
-    this.#angularResponseScale = Math.max(0.01, scale);
-  }
-
   public dispose(scene: Scene): void {
     if (this.#beforeRenderObs) {
       scene.onBeforeRenderObservable.remove(this.#beforeRenderObs);
       this.#beforeRenderObs = undefined;
     }
-    // Colliders and chunk are already tied to hull disposal; ensure hull goes away
+
     if (!this.#boat.isDisposed()) {
       this.#boat.dispose(false, true);
     }

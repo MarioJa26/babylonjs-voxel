@@ -16,6 +16,7 @@ import { Item } from "../Inventory/Item";
 import { DroppedItem } from "../Inventory/DroppedItem";
 import { VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollider";
 import { Gamemodes } from "../PlayerStats";
+import { VoxelObbCollider } from "@/code/World/Collision/VoxelObbCollider";
 
 export class WalkingControls implements IControls<PlayerVehicle> {
   public pressedKeys = new Set<string>();
@@ -191,6 +192,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
     } else if (WalkingControls.KEY_F4.includes(key)) {
       Map1.mainScene.forceShowBoundingBoxes = false;
       VoxelAabbCollider.toggleDebugEnabled();
+      VoxelObbCollider.toggleDebugEnabled();
     } else if (key === "l") {
       this.#player.position.y += 50;
     }
