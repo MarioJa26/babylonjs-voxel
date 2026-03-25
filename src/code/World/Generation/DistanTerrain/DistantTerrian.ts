@@ -31,7 +31,7 @@ export class DistantTerrain {
   private static readonly USE_LA_TILE_TEXTURE = false;
 
   private surfaceTileLookupTexture: RawTexture;
-  private surfaceTileLookupData: Uint8Array; // length depends on format (2 or 4 bytes per texel)
+  private surfaceTileLookupData: Uint8Array;
 
   private radius: number;
   private gridStep = 1; // 1 vertex per gridStep*chunkSize in each axis
@@ -40,7 +40,7 @@ export class DistantTerrain {
   // Reusable vector (avoid per-frame allocations)
   private _gridOrigin = new Vector2();
 
-  // GPU buffers (reused)
+  // GPU buffers (created once, updated later)
   private _positionVB?: VertexBuffer;
   private _normalVB?: VertexBuffer;
 
@@ -57,19 +57,11 @@ export class DistantTerrain {
     this.gridResolution = segments + 1;
     const size = this.radius * 2 * Chunk.SIZE;
 
-    // ---- Meshes ----
-    this.mesh = MeshBuilder.CreateGround(
-      "distantTerrain",
-      {
-        width: size,
-        height: size,
-        subdivisions: segments,
-        updatable: true,
-      },
-      Map1.mainScene,
-    );
+    // ---- Terrain mesh ----
+    this.mesh = this.createEmptyGridMesh("distantTerrain", Map1.mainScene);
     this.mesh.sideOrientation = Mesh.FRONTSIDE;
 
+    // ---- Water mesh ----
     this.waterMesh = MeshBuilder.CreateGround(
       "distantWater",
       {
@@ -92,12 +84,12 @@ export class DistantTerrain {
         this.gridResolution,
         this.gridResolution,
         Map1.mainScene,
-        false, // generateMipMaps
-        false, // invertY
+        false,
+        false,
         Texture.NEAREST_SAMPLINGMODE,
       );
     } else {
-      // 4 channels (R=tileX, G=tileY, B=0, A=255) - compatible with your current shader
+      // 4 channels (R=tileX, G=tileY, B=0, A=255)
       this.surfaceTileLookupData = new Uint8Array(
         this.gridResolution * this.gridResolution * 4,
       );
@@ -111,6 +103,7 @@ export class DistantTerrain {
         Texture.NEAREST_SAMPLINGMODE,
       );
     }
+
     this.surfaceTileLookupTexture.wrapU = Texture.CLAMP_ADDRESSMODE;
     this.surfaceTileLookupTexture.wrapV = Texture.CLAMP_ADDRESSMODE;
 
@@ -124,7 +117,7 @@ export class DistantTerrain {
     Effect.ShadersStore["distantWaterFragmentShader"] =
       DistantTerrainShader.distantWaterFragmentShader;
 
-    // ---- Materials ----
+    // ---- Terrain material ----
     this.material = new ShaderMaterial(
       "distantTerrainMat",
       Map1.mainScene,
@@ -153,7 +146,6 @@ export class DistantTerrain {
       },
     );
 
-    // Bind *only* the dynamic uniforms here (no texture checks)
     this.material.onBind = (_mesh) => {
       const effect = this.material.getEffect();
       if (!effect) return;
@@ -170,11 +162,10 @@ export class DistantTerrain {
       this.surfaceTileLookupTexture,
     );
 
-    // Bind diffuse atlas once and set flag so shader samples it
     this.bindDiffuseTexture();
     this.mesh.material = this.material;
 
-    // Water material
+    // ---- Water material ----
     this.waterMaterial = new ShaderMaterial(
       "distantWaterMat",
       Map1.mainScene,
@@ -209,8 +200,6 @@ export class DistantTerrain {
     this.mesh.checkCollisions = false;
     this.mesh.receiveShadows = false;
     this.mesh.doNotSyncBoundingInfo = true;
-    // If you want frustum culling, set this to false (recommended unless you *must* always render)
-    // this.mesh.alwaysSelectAsActiveMesh = false;
     this.mesh.alwaysSelectAsActiveMesh = true;
 
     this.waterMesh.isPickable = false;
@@ -231,13 +220,91 @@ export class DistantTerrain {
     };
   }
 
+  private createEmptyGridMesh(name: string, scene: Scene): Mesh {
+    const mesh = new Mesh(name, scene);
+    const engine = scene.getEngine();
+
+    const res = this.gridResolution;
+    const vertexCount = res * res;
+    const quadCount = (res - 1) * (res - 1);
+    const indexCount = quadCount * 6;
+
+    // Choose 16-bit or 32-bit index buffer
+    const useUint32 = vertexCount > 65535 && !!engine.getCaps().uintIndices;
+    const indices = useUint32
+      ? new Uint32Array(indexCount)
+      : new Uint16Array(indexCount);
+
+    // Build indices once
+    let k = 0;
+    for (let z = 0; z < res - 1; z++) {
+      const row = z * res;
+      const next = (z + 1) * res;
+      for (let x = 0; x < res - 1; x++) {
+        const i0 = row + x;
+        const i1 = i0 + 1;
+        const i2 = next + x;
+        const i3 = i2 + 1;
+
+        indices[k++] = i0;
+        indices[k++] = i2;
+        indices[k++] = i1;
+
+        indices[k++] = i1;
+        indices[k++] = i2;
+        indices[k++] = i3;
+      }
+    }
+
+    mesh.setIndices(indices);
+
+    // Allocate empty buffers
+    const positions = new Int16Array(vertexCount * 3);
+    const normals = new Int8Array(vertexCount * 3);
+
+    // Initialize normals upward so first frame isn't black
+    for (let i = 1; i < normals.length; i += 3) {
+      normals[i] = 127;
+    }
+
+    this._positionVB = new VertexBuffer(
+      engine,
+      positions,
+      VertexBuffer.PositionKind,
+      true, // updatable
+      false, // postpone
+      3, // stride
+      false,
+      0,
+      undefined,
+      VertexBuffer.SHORT,
+      false,
+    );
+    mesh.setVerticesBuffer(this._positionVB);
+
+    this._normalVB = new VertexBuffer(
+      engine,
+      normals,
+      VertexBuffer.NormalKind,
+      true,
+      false,
+      3,
+      false,
+      0,
+      undefined,
+      VertexBuffer.BYTE,
+      true, // normalized
+    );
+    mesh.setVerticesBuffer(this._normalVB);
+
+    return mesh;
+  }
+
   private bindDiffuseTexture() {
-    // Try shared atlas first
     if (!this.diffuseAtlasTexture) {
       this.diffuseAtlasTexture = TextureAtlasFactory.getDiffuse();
     }
 
-    // Fallback to loading
     if (!this.diffuseAtlasTexture) {
       this.diffuseAtlasTexture = new Texture(
         "/texture/diffuse_atlas.png",
@@ -280,7 +347,6 @@ export class DistantTerrain {
   }
 
   public update(centerChunkX: number, centerChunkZ: number) {
-    // Request new vertex data relative to this center
     ChunkWorkerPool.getInstance().scheduleDistantTerrain(
       centerChunkX,
       centerChunkZ,
@@ -298,7 +364,7 @@ export class DistantTerrain {
       this.lastCenterChunkZ ?? undefined,
     );
 
-    // We expect the worker to take ownership of these (transferable), so release references
+    // transferred to worker
     this.lastPositions = null;
     this.lastNormals = null;
     this.lastSurfaceTiles = null;
@@ -311,87 +377,41 @@ export class DistantTerrain {
     centerChunkX: number,
     centerChunkZ: number,
   ) {
-    // Save data for next update reuse (will be transferred on next schedule)
+    // Save data for next update reuse
     this.lastPositions = positions;
     this.lastNormals = normals;
     this.lastSurfaceTiles = surfaceTiles;
     this.lastCenterChunkX = centerChunkX;
     this.lastCenterChunkZ = centerChunkZ;
 
-    // Move meshes to the current center (cheap); alternatively, keep meshes at origin and only move gridOrigin
     this.mesh.position.set(
       centerChunkX * Chunk.SIZE,
       -2,
       centerChunkZ * Chunk.SIZE,
     );
+
     this.waterMesh.position.set(
       centerChunkX * Chunk.SIZE,
       GenerationParams.SEA_LEVEL,
       centerChunkZ * Chunk.SIZE,
     );
 
-    // Update grid origin without allocating a new Vector2
     const gridCenterChunkX =
       Math.floor(centerChunkX / this.gridStep) * this.gridStep;
     const gridCenterChunkZ =
       Math.floor(centerChunkZ / this.gridStep) * this.gridStep;
+
     this._gridOrigin.x = (gridCenterChunkX - this.radius) * Chunk.SIZE;
     this._gridOrigin.y = (gridCenterChunkZ - this.radius) * Chunk.SIZE;
     this.material.setVector2("gridOriginWorld", this._gridOrigin);
 
-    // ---- Update / create GPU vertex buffers (no reallocation if already exist) ----
-    const engine = this.mesh.getEngine();
+    // Update existing GPU buffers only
+    this._positionVB?.update(positions);
+    this._normalVB?.update(normals);
 
-    // Position buffer (Int16, not normalized)
-    if (!this._positionVB) {
-      this._positionVB = new VertexBuffer(
-        engine,
-        positions,
-        VertexBuffer.PositionKind,
-        true, // updatable
-        false, // postpone
-        3, // stride
-        false, // instanced
-        0,
-        undefined,
-        VertexBuffer.SHORT, // component type
-        false, // normalized
-      );
-      this.mesh.setVerticesBuffer(this._positionVB);
-    } else {
-      this._positionVB.update(positions);
-    }
-
-    // Normal buffer (Int8, normalized)
-    if (!this._normalVB) {
-      this._normalVB = new VertexBuffer(
-        engine,
-        normals,
-        VertexBuffer.NormalKind,
-        true, // updatable
-        false,
-        3,
-        false,
-        0,
-        undefined,
-        VertexBuffer.BYTE, // component type
-        true, // normalized
-      );
-      this.mesh.setVerticesBuffer(this._normalVB);
-    } else {
-      this._normalVB.update(normals);
-    }
-
-    // ---- Update tile-lookup texture ----
+    // ---- Update tile lookup texture ----
     if (DistantTerrain.USE_LA_TILE_TEXTURE) {
-      // 2 channels: RG = [tileX, tileY]
-      // Copy interleaved pairs
-      // surfaceTiles is [tileX, tileY, tileX, tileY, ...]
-      // Our texture data is the same layout (RG), so we can copy directly if lengths match:
-      // But our texture resolution is gridResolution^2 texels, and surfaceTiles length is (gridRes^2 * 2)
-      // => We can just set the array directly.
       if (surfaceTiles.length !== this.surfaceTileLookupData.length) {
-        // Fallback (shouldn't happen); copy pairwise
         for (let i = 0, j = 0; i < surfaceTiles.length; i += 2, j += 2) {
           this.surfaceTileLookupData[j] = surfaceTiles[i];
           this.surfaceTileLookupData[j + 1] = surfaceTiles[i + 1];
@@ -400,8 +420,6 @@ export class DistantTerrain {
         this.surfaceTileLookupData.set(surfaceTiles);
       }
     } else {
-      // 4 channels: RGBA = [tileX, tileY, 0, 255]
-      // Expand pairs into RGBA
       for (
         let src = 0, dst = 0;
         src < surfaceTiles.length;
@@ -413,7 +431,7 @@ export class DistantTerrain {
         this.surfaceTileLookupData[dst + 3] = 255;
       }
     }
+
     this.surfaceTileLookupTexture.update(this.surfaceTileLookupData);
   }
 }
-``;
