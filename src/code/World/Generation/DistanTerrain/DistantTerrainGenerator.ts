@@ -6,6 +6,9 @@ export class DistantTerrainGenerator {
   private static readonly DEFAULT_TILE_X = 14;
   private static readonly DEFAULT_TILE_Y = 0;
 
+  // Matches your current "hole over real terrain"
+  private static readonly INSIDE_CLIP_Y = -200;
+
   public static generate(
     centerChunkX: number,
     centerChunkZ: number,
@@ -20,31 +23,33 @@ export class DistantTerrainGenerator {
     oldCenterChunkX?: number,
     oldCenterChunkZ?: number,
   ) {
+    // --- Derived sizes ---
     const chunkSize = GenerationParams.CHUNK_SIZE;
+    const stepSize = chunkSize * gridStep; // world-space spacing between samples
     const segments = Math.floor((radius * 2) / gridStep);
-    const vertexCount = (segments + 1) * (segments + 1);
+    const rowSize = segments + 1;
+    const vertexCount = rowSize * rowSize;
 
+    // Output buffers (types preserved)
     const positions = new Int16Array(vertexCount * 3);
     const normals = new Int8Array(vertexCount * 3);
     const surfaceTiles = new Uint8Array(vertexCount * 2);
 
-    // Snap the center to the grid step to ensure consistent sampling
+    // --- Grid snapping ---
     const gridCenterChunkX = Math.floor(centerChunkX / gridStep) * gridStep;
     const gridCenterChunkZ = Math.floor(centerChunkZ / gridStep) * gridStep;
 
     const startX = (gridCenterChunkX - radius) * chunkSize;
     const startZ = (gridCenterChunkZ - radius) * chunkSize;
 
-    // Calculate offsets for local position to keep vertices fixed in world space
-    // relative to the mesh's moving origin
+    // Keep vertices fixed while the mesh origin moves
     const offsetX = centerChunkX - gridCenterChunkX;
     const offsetZ = centerChunkZ - gridCenterChunkZ;
 
-    // Calculate grid shift if old data is available
+    // --- Reuse window (align with grid step) ---
     let shiftX = 0;
     let shiftZ = 0;
     let canReuse = false;
-
     if (
       oldData &&
       oldCenterChunkX !== undefined &&
@@ -58,7 +63,6 @@ export class DistantTerrainGenerator {
       const diffX = gridCenterChunkX - oldGridCenterChunkX;
       const diffZ = gridCenterChunkZ - oldGridCenterChunkZ;
 
-      // Only reuse if the shift aligns with the grid step
       if (diffX % gridStep === 0 && diffZ % gridStep === 0) {
         shiftX = diffX / gridStep;
         shiftZ = diffZ / gridStep;
@@ -66,27 +70,36 @@ export class DistantTerrainGenerator {
       }
     }
 
-    const rowSize = segments + 1;
+    // --- Main build loop (parity normals) ---
+    let vIndex = 0; // vertex counter
+    let i3 = 0; // positions/normals pointer = vIndex * 3
+    let i2 = 0; // tiles pointer = vIndex * 2
 
-    let vIndex = 0;
-    for (let z = 0; z <= segments; z++) {
-      const worldZ = startZ + z * chunkSize * gridStep;
-      const oldZ = z + shiftZ;
+    let worldZ = startZ;
+    for (let z = 0; z <= segments; z++, worldZ += stepSize) {
       const localChunkZ = z * gridStep - radius - offsetZ;
-      let y = 0;
-
       const localZ = localChunkZ * chunkSize;
-      for (let x = 0; x <= segments; x++) {
-        const worldX = startX + x * chunkSize * gridStep;
-        const oldX = x + shiftX;
+      const oldZ = z + shiftZ;
+
+      let worldX = startX;
+      for (
+        let x = 0;
+        x <= segments;
+        x++, vIndex++, i3 += 3, i2 += 2, worldX += stepSize
+      ) {
         const localChunkX = x * gridStep - radius - offsetX;
+        const localX = localChunkX * chunkSize;
+        const oldX = x + shiftX;
+
         const isInsideRealTerrain =
           localChunkX > -renderDistance &&
           localChunkX <= renderDistance &&
           localChunkZ > -renderDistance &&
           localChunkZ <= renderDistance;
 
-        // Try to reuse data from old arrays
+        let y: number;
+
+        // Try to reuse previous data if the grid moved by full steps
         if (
           canReuse &&
           oldData &&
@@ -96,21 +109,25 @@ export class DistantTerrainGenerator {
           oldZ <= segments
         ) {
           const oldIndex = oldZ * rowSize + oldX;
-          y = oldData.positions[oldIndex * 3 + 1];
+          const oldIndex3 = oldIndex * 3;
 
-          normals[vIndex * 3] = oldData.normals[oldIndex * 3];
-          normals[vIndex * 3 + 1] = oldData.normals[oldIndex * 3 + 1];
-          normals[vIndex * 3 + 2] = oldData.normals[oldIndex * 3 + 2];
+          // Reuse Y and normals directly (parity behavior)
+          y = oldData.positions[oldIndex3 + 1];
+
+          normals[i3] = oldData.normals[oldIndex3];
+          normals[i3 + 1] = oldData.normals[oldIndex3 + 1];
+          normals[i3 + 2] = oldData.normals[oldIndex3 + 2];
         } else {
-          y = isInsideRealTerrain
-            ? -200
-            : TerrainHeightMap.getFinalTerrainHeight(worldX, worldZ);
-
           if (isInsideRealTerrain) {
-            normals[vIndex * 3] = 0;
-            normals[vIndex * 3 + 1] = 127;
-            normals[vIndex * 3 + 2] = 0;
+            y = this.INSIDE_CLIP_Y;
+            // Up normal inside the punched-out area
+            normals[i3] = 0;
+            normals[i3 + 1] = 127;
+            normals[i3 + 2] = 0;
           } else {
+            // Parity height and normals (exactly like your original)
+            y = TerrainHeightMap.getFinalTerrainHeight(worldX, worldZ);
+
             const hRight = TerrainHeightMap.getFinalTerrainHeight(
               worldX + 1,
               worldZ,
@@ -119,40 +136,46 @@ export class DistantTerrainGenerator {
               worldX,
               worldZ + 1,
             );
+
             const dy1 = hRight - y;
             const dy2 = hDown - y;
-            const len = Math.sqrt(dy1 * dy1 + 1 + dy2 * dy2);
-            normals[vIndex * 3] = (-dy1 / len) * 127;
-            normals[vIndex * 3 + 1] = (1 / len) * 127;
-            normals[vIndex * 3 + 2] = (-dy2 / len) * 127;
+
+            const len = Math.sqrt(dy1 * dy1 + 1 + dy2 * dy2) || 1;
+            // Assign directly; Int8Array will coerce on write (same as original)
+            normals[i3] = (-dy1 / len) * 127;
+            normals[i3 + 1] = (1 / len) * 127;
+            normals[i3 + 2] = (-dy2 / len) * 127;
           }
         }
 
+        // Surface tiles
         if (isInsideRealTerrain) {
-          surfaceTiles[vIndex * 2] = this.DEFAULT_TILE_X;
-          surfaceTiles[vIndex * 2 + 1] = this.DEFAULT_TILE_Y;
+          surfaceTiles[i2] = this.DEFAULT_TILE_X;
+          surfaceTiles[i2 + 1] = this.DEFAULT_TILE_Y;
         } else {
           const topBlockId = TerrainHeightMap.getBiome(worldX, worldZ).topBlock;
           const [tileX, tileY] = this.getTopTileForBlock(topBlockId);
-          surfaceTiles[vIndex * 2] = tileX;
-          surfaceTiles[vIndex * 2 + 1] = tileY;
+          surfaceTiles[i2] = tileX;
+          surfaceTiles[i2 + 1] = tileY;
         }
 
-        // Local position relative to the mesh center
-        const localX = localChunkX * chunkSize;
-
-        positions[vIndex * 3] = localX;
-        positions[vIndex * 3 + 1] = y;
-        positions[vIndex * 3 + 2] = localZ;
-
-        vIndex++;
+        // Positions
+        positions[i3] = localX;
+        positions[i3 + 1] = y;
+        positions[i3 + 2] = localZ;
       }
     }
+
     return { positions, normals, surfaceTiles };
   }
 
   private static getTopTileForBlock(blockId: number): [number, number] {
-    const tex = BlockTextures[blockId];
+    const tex = (
+      BlockTextures as Record<
+        number,
+        { top?: [number, number]; all?: [number, number] }
+      >
+    )[blockId];
     if (!tex) {
       return [this.DEFAULT_TILE_X, this.DEFAULT_TILE_Y];
     }
@@ -163,3 +186,4 @@ export class DistantTerrainGenerator {
     return [tile[0], tile[1]];
   }
 }
+``;
