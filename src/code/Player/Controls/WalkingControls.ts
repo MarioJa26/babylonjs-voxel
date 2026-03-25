@@ -4,8 +4,6 @@ import { Vector3 } from "@babylonjs/core";
 import { CrossHair } from "../Hud/CrossHair";
 import { PlayerVehicle } from "../PlayerVehicle";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
-import { GlobalValues } from "@/code/World/GlobalValues";
-import { PlayerHud } from "../Hud/PlayerHud";
 import { Map1 } from "@/code/Maps/Map1";
 import { BlockBreakParticles } from "@/code/Maps/BlockBreakParticles";
 import {
@@ -14,9 +12,8 @@ import {
 } from "@/code/World/Texture/TextureDefinitions";
 import { Item } from "../Inventory/Item";
 import { DroppedItem } from "../Inventory/DroppedItem";
-import { VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollider";
 import { Gamemodes } from "../PlayerStats";
-import { VoxelObbCollider } from "@/code/World/Collision/VoxelObbCollider";
+import { DebugControlHelper } from "./DebugControlHelper";
 
 export class WalkingControls implements IControls<PlayerVehicle> {
   public pressedKeys = new Set<string>();
@@ -62,9 +59,6 @@ export class WalkingControls implements IControls<PlayerVehicle> {
   public static KEY_9 = ["9", ")"];
   public static KEY_0 = ["0", "="];
 
-  public static KEY_F2 = ["f2"];
-  public static KEY_F3 = ["f3"];
-  public static KEY_F4 = ["f4"];
   public static KEY_F5 = ["f5"];
   public static KEY_F6 = ["f6"];
 
@@ -105,51 +99,69 @@ export class WalkingControls implements IControls<PlayerVehicle> {
   }
 
   public update(): void {
-    if (this.#isBreaking) {
-      const dt =
-        this.#player.playerVehicle.scene.getEngine().getDeltaTime() / 1000;
-      const hit = CrossHair.pickTarget(this.#player);
+    if (!this.#isBreaking) return;
 
-      if (hit) {
-        const blockId = ChunkLoadingSystem.getBlockByWorldCoords(
-          hit.x,
-          hit.y,
-          hit.z,
+    const dt =
+      this.#player.playerVehicle.scene.getEngine().getDeltaTime() / 1000;
+
+    const hit = CrossHair.getPlacementHit(this.#player);
+    if (!hit) {
+      this.#breakingBlock = null;
+      this.#breakTimer = 0;
+      Map1.updateCrackingState(null, 0);
+      return;
+    }
+
+    const x = hit.pos.x - hit.nx;
+    const y = hit.pos.y - hit.ny;
+    const z = hit.pos.z - hit.nz;
+
+    const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
+
+    const item =
+      this.#player.playerInventory.inventory[0][
+        this.#player.playerHud.selectedHotbarSlot
+      ]?.item;
+
+    const breakTime =
+      this.#player.stats.gamemode === Gamemodes.Creative
+        ? 0.1
+        : getBlockBreakTime(blockId, item?.itemId) || 0.001; // guard against 0
+
+    const isSameBlock =
+      this.#breakingBlock &&
+      this.#breakingBlock.x === x &&
+      this.#breakingBlock.y === y &&
+      this.#breakingBlock.z === z;
+
+    if (isSameBlock) {
+      this.#breakTimer += dt;
+
+      const frac = Math.min(this.#breakTimer / breakTime, 1);
+      Map1.updateCrackingState(this.#breakingBlock, frac);
+
+      if (this.#breakTimer >= breakTime) {
+        // Sample light from the neighbor in the face-normal direction
+        // (faces are lit by the adjacent cell, solids often store 0 light).
+        const lightPos = new Vector3(
+          x + 0.5 + hit.nx,
+          y + 0.5 + hit.ny,
+          z + 0.5 + hit.nz,
         );
-        const item =
-          this.#player.playerInventory.inventory[0][
-            this.#player.playerHud.selectedHotbarSlot
-          ]?.item;
 
-        const breakTime =
-          this.#player.stats.gamemode === Gamemodes.Creative
-            ? 0.1
-            : getBlockBreakTime(blockId, item?.itemId);
+        const packedLight = ChunkLoadingSystem.getLightByWorldCoords(
+          lightPos.x,
+          lightPos.y,
+          lightPos.z,
+        );
 
-        if (
-          this.#breakingBlock &&
-          this.#breakingBlock.x === hit.x &&
-          this.#breakingBlock.y === hit.y &&
-          this.#breakingBlock.z === hit.z
-        ) {
-          this.#breakTimer += dt;
-          Map1.updateCrackingState(
-            this.#breakingBlock,
-            this.#breakTimer / breakTime,
-          );
-          if (this.#breakTimer >= breakTime) {
-            this.#breakBlock(hit.x, hit.y, hit.z, blockId);
-          }
-        } else {
-          this.#breakingBlock = { x: hit.x, y: hit.y, z: hit.z };
-          this.#breakTimer = 0;
-          Map1.updateCrackingState(this.#breakingBlock, 0);
-        }
-      } else {
-        this.#breakingBlock = null;
-        this.#breakTimer = 0;
-        Map1.updateCrackingState(null, 0);
+        this.#breakBlock(x, y, z, blockId, packedLight);
       }
+    } else {
+      // New target → reset cracking
+      this.#breakingBlock = { x, y, z };
+      this.#breakTimer = 0;
+      Map1.updateCrackingState(this.#breakingBlock, 0);
     }
   }
 
@@ -166,6 +178,9 @@ export class WalkingControls implements IControls<PlayerVehicle> {
       return;
     }
     this.pressedKeys.add(key);
+
+    if (DebugControlHelper.handleKey(key)) return;
+
     this.#updateMovementAxesFromPressedKeys();
     if (WalkingControls.KEY_JUMP.includes(key)) {
       this.#controlledEntity.isJumpHeld = true;
@@ -184,15 +199,6 @@ export class WalkingControls implements IControls<PlayerVehicle> {
       this.#player.use();
     } else if (WalkingControls.KEY_FLASH.includes(key)) {
       this.#player.flashlight.toggle();
-    } else if (WalkingControls.KEY_F2.includes(key)) {
-      GlobalValues.DEBUG = !GlobalValues.DEBUG;
-      Map1.setDebug(GlobalValues.DEBUG);
-    } else if (WalkingControls.KEY_F3.includes(key)) {
-      PlayerHud.toggleDebugInfo();
-    } else if (WalkingControls.KEY_F4.includes(key)) {
-      Map1.mainScene.forceShowBoundingBoxes = false;
-      VoxelAabbCollider.toggleDebugEnabled();
-      VoxelObbCollider.toggleDebugEnabled();
     } else if (key === "l") {
       this.#player.position.y += 50;
     }
@@ -327,7 +333,13 @@ export class WalkingControls implements IControls<PlayerVehicle> {
     this.#inputDirection.x = right === left ? 0 : right ? 1 : -1;
   }
 
-  #breakBlock(x: number, y: number, z: number, blockId: number) {
+  #breakBlock(
+    x: number,
+    y: number,
+    z: number,
+    blockId: number,
+    packedLight: number,
+  ) {
     const info = getBlockInfo(blockId);
     if (!info) return;
 
@@ -341,6 +353,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
       this.#player.playerVehicle.scene,
       new Vector3(x + 0.5, y + 0.5, z + 0.5),
       blockId,
+      packedLight,
     );
     this.#breakTimer = 0;
     Map1.updateCrackingState(null, 0);

@@ -6,13 +6,11 @@ import {
   Scene,
   StandardMaterial,
 } from "@babylonjs/core";
-import { CustomBoat } from "../Entities/CustomBoat";
 import { Player } from "../Player/Player";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
 import { ChunkMesher } from "../World/Chunk/ChunckMesher";
 import { GlobalValues } from "../World/GlobalValues";
 import { TextureDefinitions } from "../World/Texture/TextureDefinitions";
-import { GenerationParams } from "../World/Generation/NoiseAndParameters/GenerationParams";
 import { SettingParams } from "../World/SettingParams";
 import { WorldStorage } from "../World/WorldStorage";
 import { PlayerLoadingGate } from "../Player/PlayerLoadingGate";
@@ -32,7 +30,8 @@ export class Map1 {
   constructor(scene: Scene, player: Player) {
     this.#player = player;
     Map1.initCrackingMesh();
-    Map1.mainScene = this.CreateScene(scene);
+    Map1.mainScene = scene;
+    Map1.mainScene.skipPointerMovePicking = true;
     Map1.environment = new WorldEnvironment(Map1.mainScene);
 
     this.#playerStatePersistence = new PlayerStatePersistence(
@@ -112,16 +111,6 @@ export class Map1 {
       material.wireframe = enabled;
       if (wasFrozen) material.freeze();
     });
-  }
-
-  private CreateScene(scene: Scene): Scene {
-    new CustomBoat(
-      scene,
-      this.#player, // Note: #player is used here before it's fully constructed if we pass it to Player constructor
-      GenerationParams.SEA_LEVEL + 0.5,
-    );
-
-    return scene;
   }
 
   async loadTextures(): Promise<void> {

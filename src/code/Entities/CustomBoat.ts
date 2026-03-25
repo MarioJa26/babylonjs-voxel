@@ -10,7 +10,6 @@ import {
 import { ImportMeshAsync } from "@babylonjs/core/Loading/sceneLoader";
 import "@babylonjs/loaders/glTF";
 import type { Observer } from "@babylonjs/core/Misc/observable";
-
 import { IUsable } from "../Inferface/IUsable";
 import { Mount } from "./Mount";
 import { MetadataContainer } from "./MetaDataContainer";
@@ -18,14 +17,10 @@ import { Player } from "../Player/Player";
 import { CustomBoatControls } from "../Player/Controls/CustomBoatControls";
 import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
 import { BlockType } from "../World/BlockType";
-
 import { Axis } from "@/code/World/Collision/VoxelAabbCollider";
 import { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { VoxelObbCollider } from "../World/Collision/VoxelObbCollider";
 
-// ===========================
-// Types & Options
-// ===========================
 export type CustomBoatOptions = {
   collisionHalfExtents?: Vector3;
   customVisualRoot?: Mesh;
@@ -36,15 +31,9 @@ export type CustomBoatOptions = {
   boatChunk?: BoatChunk;
 };
 
-// ===========================
-// CustomBoat
-// ===========================
 export class CustomBoat implements IUsable {
-  // ---------------------------
-  // Tunables / Config
-  // ---------------------------
   #cfg = {
-    mass: 10,
+    mass: 20,
     gravity: -9.81,
     baseBuoyancyForce: 20,
     torqueScale: 0.12,
@@ -59,9 +48,6 @@ export class CustomBoat implements IUsable {
     dtClamp: { min: 1 / 600, max: 1 / 24 },
   } as const;
 
-  // ---------------------------
-  // Core State
-  // ---------------------------
   #collisionHalfExtents = new Vector3(1.15, 0.6, 1.15);
   #boat!: Mesh;
   #voxelCollider!: VoxelObbCollider;
@@ -169,9 +155,6 @@ export class CustomBoat implements IUsable {
     this.#boat.onDisposeObservable.add(() => this.dispose(scene));
   }
 
-  // ---------------------------
-  // Construction
-  // ---------------------------
   #createHull(
     scene: Scene,
     position: Vector3 | undefined,
@@ -257,9 +240,6 @@ export class CustomBoat implements IUsable {
     ];
   }
 
-  // ---------------------------
-  // Tick
-  // ---------------------------
   #tick(scene: Scene): void {
     let dt = scene.getEngine().getDeltaTime() / 1000;
     if (dt <= 0) return;
@@ -336,9 +316,6 @@ export class CustomBoat implements IUsable {
     this.#voxelCollider.syncDebugMesh(this.#boat.position);
   }
 
-  // ---------------------------
-  // Helpers
-  // ---------------------------
   #applyForceAtPoint(
     fx: number,
     fy: number,
@@ -402,9 +379,6 @@ export class CustomBoat implements IUsable {
     return Math.max(0, Math.min(1, y + 1 - worldPoint.y));
   }
 
-  // ---------------------------
-  // Public API
-  // ---------------------------
   public applyImpulse(impulse: Vector3, point: Vector3) {
     this.#applyForceAtPoint(impulse.x, impulse.y, impulse.z, point, 1);
   }
@@ -449,9 +423,6 @@ export class CustomBoat implements IUsable {
     this.#mount.mount(player);
   }
 
-  // ---------------------------
-  // Cleanup
-  // ---------------------------
   public dispose(scene: Scene): void {
     if (this.#beforeRenderObs) {
       scene.onBeforeRenderObservable.remove(this.#beforeRenderObs);

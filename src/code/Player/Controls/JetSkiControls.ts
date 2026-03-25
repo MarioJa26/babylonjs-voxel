@@ -2,6 +2,7 @@ import { Matrix, Vector3 } from "@babylonjs/core";
 import { IControls } from "../../Inferface/IControls";
 import { Player } from "../Player";
 import { BoatControlEntity } from "./PaddleBoatControls";
+import { DebugControlHelper } from "./DebugControlHelper";
 
 export class JetSkiControls implements IControls<BoatControlEntity> {
   public pressedKeys = new Set<string>();
@@ -32,12 +33,12 @@ export class JetSkiControls implements IControls<BoatControlEntity> {
   #pushAngularVectorLeft = new Vector3(
     this.#pushNoseUpStrength,
     -this.#angularPushStrength,
-    this.#angularRotationStrength
+    this.#angularRotationStrength,
   );
   #pushAngularVectorRight = new Vector3(
     this.#pushNoseUpStrength,
     this.#angularPushStrength,
-    -this.#angularRotationStrength
+    -this.#angularRotationStrength,
   );
 
   constructor(paddleBoat: BoatControlEntity, player: Player) {
@@ -56,6 +57,8 @@ export class JetSkiControls implements IControls<BoatControlEntity> {
 
   public onKeyDown(key: string) {
     this.pressedKeys.add(key);
+
+    if (DebugControlHelper.handleKey(key)) return;
 
     if (JetSkiControls.KEY_RIGHT.includes(key)) {
       this.#inputDirection.x = 1;
@@ -116,19 +119,19 @@ export class JetSkiControls implements IControls<BoatControlEntity> {
     }
     const position = this.#controlledEntity.boatPosition;
     this.#controlledEntity.boatMesh.rotationQuaternion!.toRotationMatrix(
-      JetSkiControls.#rotationMatrix
+      JetSkiControls.#rotationMatrix,
     );
     const angularLeftWorld = Vector3.TransformNormal(
       this.#pushAngularVectorLeft,
-      JetSkiControls.#rotationMatrix
+      JetSkiControls.#rotationMatrix,
     );
     const angularRightWorld = Vector3.TransformNormal(
       this.#pushAngularVectorRight,
-      JetSkiControls.#rotationMatrix
+      JetSkiControls.#rotationMatrix,
     );
 
     const forward = this.#controlledEntity.boatMesh.forward.scale(
-      this.#pushStrength
+      this.#pushStrength,
     );
 
     // Sprint cancels push
@@ -147,7 +150,7 @@ export class JetSkiControls implements IControls<BoatControlEntity> {
       forward,
       position,
       angularLeftWorld,
-      angularRightWorld
+      angularRightWorld,
     );
   }
   #handleUpDown(forward: Vector3, position: Vector3) {
@@ -163,7 +166,7 @@ export class JetSkiControls implements IControls<BoatControlEntity> {
     forward: Vector3,
     position: Vector3,
     angularLeftWorld: Vector3,
-    angularRightWorld: Vector3
+    angularRightWorld: Vector3,
   ) {
     if (this.#inputDirection.x > 0) {
       this.#controlledEntity.applyImpulse(forward, position);

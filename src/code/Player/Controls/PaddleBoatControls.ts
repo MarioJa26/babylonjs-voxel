@@ -2,6 +2,7 @@ import { Matrix, Mesh, Vector3 } from "@babylonjs/core";
 import { IControls } from "../../Inferface/IControls";
 import { Player } from "../Player";
 import { Mount } from "@/code/Entities/Mount";
+import { DebugControlHelper } from "./DebugControlHelper";
 
 export type BoatControlEntity = {
   mount: Mount;
@@ -65,6 +66,8 @@ export class PaddleBoatControls implements IControls<BoatControlEntity> {
 
   public onKeyDown(key: string) {
     this.pressedKeys.add(key);
+
+    if (DebugControlHelper.handleKey(key)) return;
 
     if (PaddleBoatControls.KEY_RIGHT.includes(key)) {
       this.#inputDirection.x = 1;

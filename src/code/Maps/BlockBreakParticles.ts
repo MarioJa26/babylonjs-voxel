@@ -7,16 +7,23 @@ import {
 } from "@babylonjs/core";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
 import { BlockTextures } from "../World/Texture/BlockTextures";
+import { GlobalValues } from "../World/GlobalValues";
 
 export class BlockBreakParticles {
   private static particleSystem: ParticleSystem;
 
-  public static play(scene: Scene, position: Vector3, blockId: number) {
+  public static play(
+    scene: Scene,
+    position: Vector3,
+    blockId: number,
+    packedLight: number,
+  ) {
     if (!this.particleSystem) {
       this.init(scene);
     }
 
     this.particleSystem.emitter = position;
+    const lightTint = this.computeLightTint(packedLight);
 
     const blockTex = BlockTextures[blockId];
     if (blockTex) {
@@ -35,15 +42,48 @@ export class BlockBreakParticles {
         this.particleSystem.endSpriteCellID = cellId;
         this.particleSystem.spriteCellChangeSpeed = 0;
       }
-      this.particleSystem.color1 = new Color4(1, 1, 1, 1);
-      this.particleSystem.color2 = new Color4(1, 1, 1, 1);
-      this.particleSystem.colorDead = new Color4(0.9, 1, 0.9, 0);
+      this.particleSystem.color1 = new Color4(
+        lightTint.r,
+        lightTint.g,
+        lightTint.b,
+        1,
+      );
+      this.particleSystem.color2 = new Color4(
+        lightTint.r,
+        lightTint.g,
+        lightTint.b,
+        1,
+      );
+      this.particleSystem.colorDead = new Color4(
+        lightTint.r * 0.9,
+        lightTint.g * 0.9,
+        lightTint.b * 0.9,
+        0,
+      );
     } else {
       // Fallback to a default cell (e.g. cobble at 0,0 -> row 15) if no texture found
       const defaultCell =
         (TextureAtlasFactory.atlasSize - 1) * TextureAtlasFactory.atlasSize;
       this.particleSystem.startSpriteCellID = defaultCell;
       this.particleSystem.endSpriteCellID = defaultCell;
+      this.particleSystem.color1 = new Color4(
+        lightTint.r,
+        lightTint.g,
+        lightTint.b,
+        1,
+      );
+      this.particleSystem.color2 = new Color4(
+        lightTint.r,
+        lightTint.g,
+        lightTint.b,
+        1,
+      );
+      this.particleSystem.colorDead = new Color4(
+        lightTint.r * 0.9,
+        lightTint.g * 0.9,
+        lightTint.b * 0.9,
+        0,
+      );
     }
 
     this.particleSystem.manualEmitCount = 64;
@@ -88,5 +128,32 @@ export class BlockBreakParticles {
       this.particleSystem.spriteCellWidth = TextureAtlasFactory.tileSize;
       this.particleSystem.spriteCellHeight = TextureAtlasFactory.tileSize;
     }
+  }
+
+  private static computeLightTint(packedLight: number): {
+    r: number;
+    g: number;
+    b: number;
+  } {
+    const skyLight = ((packedLight >> 4) & 0xf) / 15;
+    const blockLight = (packedLight & 0xf) / 15;
+
+    const sunElevation = -GlobalValues.skyLightDirection.y + 0.1;
+    const sunLightIntensity = Math.min(1.0, Math.max(0.1, sunElevation * 4.0));
+    const skyScale = sunLightIntensity + 0.3;
+
+    const skyR = skyLight * 0.8 * skyScale;
+    const skyG = skyLight * 0.8 * skyScale;
+    const skyB = skyLight * 0.8 * skyScale;
+
+    const blockR = blockLight * 0.9;
+    const blockG = blockLight * 0.6;
+    const blockB = blockLight * 0.2;
+
+    const finalR = Math.min(1, Math.max(0.2, skyR + blockR));
+    const finalG = Math.min(1, Math.max(0.2, skyG + blockG));
+    const finalB = Math.min(1, Math.max(0.2, skyB + blockB));
+
+    return { r: finalR, g: finalG, b: finalB };
   }
 }
