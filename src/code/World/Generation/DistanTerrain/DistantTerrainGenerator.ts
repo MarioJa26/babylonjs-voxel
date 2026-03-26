@@ -71,7 +71,6 @@ export class DistantTerrainGenerator {
     }
 
     // --- Main build loop (parity normals) ---
-    let vIndex = 0; // vertex counter
     let i3 = 0; // positions/normals pointer = vIndex * 3
     let i2 = 0; // tiles pointer = vIndex * 2
 
@@ -85,7 +84,7 @@ export class DistantTerrainGenerator {
       for (
         let x = 0;
         x <= segments;
-        x++, vIndex++, i3 += 3, i2 += 2, worldX += stepSize
+        x++, i3 += 3, i2 += 2, worldX += stepSize
       ) {
         const localChunkX = x * gridStep - radius - offsetX;
         const localX = localChunkX * chunkSize;
