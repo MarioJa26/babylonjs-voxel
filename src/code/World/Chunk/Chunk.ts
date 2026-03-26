@@ -7,6 +7,18 @@ import {
   unpackBlockId,
   unpackBlockState,
 } from "../BlockEncoding";
+import {
+  CUBE_SHAPE_INDEX,
+  FACE_ALL,
+  FACE_NX,
+  FACE_NY,
+  FACE_NZ,
+  FACE_PX,
+  FACE_PY,
+  FACE_PZ,
+  ShapeByBlockId,
+  ShapeDefinitions,
+} from "../Shape/BlockShapes";
 
 type LightNode = {
   chunk: Chunk;
@@ -14,6 +26,13 @@ type LightNode = {
   y: number;
   z: number;
   level: number;
+};
+
+type FaceRect = {
+  u0: number;
+  u1: number;
+  v0: number;
+  v1: number;
 };
 
 export class Chunk {
@@ -57,6 +76,14 @@ export class Chunk {
   public static readonly SKY_LIGHT_SHIFT = 4;
   public static readonly BLOCK_LIGHT_MASK = 0xf;
   private static readonly WATER_BLOCK_ID = 30;
+  private static readonly GLASS_01_BLOCK_ID = 60;
+  private static readonly GLASS_02_BLOCK_ID = 61;
+  private static readonly EPS = 1e-6;
+  private static readonly CLOSED_FACE_MASK_CACHE = (() => {
+    const cache = new Int16Array(1 << 16);
+    cache.fill(-1);
+    return cache;
+  })();
 
   constructor(chunkX: number, chunkY: number, chunkZ: number) {
     this.#chunkX = chunkX;
@@ -251,7 +278,7 @@ export class Chunk {
 
         if (hasLoadedAbove) {
           const aboveBlockPacked = aboveChunk!.getBlockPacked(x, 0, z);
-          if (aboveChunk!.isTransparent(aboveBlockPacked, 1)) {
+          if (aboveChunk!.isTransparent(aboveBlockPacked, 1, -1)) {
             incomingSkyLight = aboveChunk!.getSkyLight(x, 0, z);
             sourceIsWater = Chunk.isWaterBlock(unpackBlockId(aboveBlockPacked));
           }
@@ -271,7 +298,7 @@ export class Chunk {
           const idx = x + y * size + z * Chunk.SIZE2;
           const blockPacked = this.getBlockPacked(x, y, z);
 
-          if (!this.isTransparent(blockPacked, 1)) {
+          if (!this.isTransparent(blockPacked, 1, 1)) {
             incomingSkyLight = 0;
             sourceIsWater = false;
             continue;
@@ -306,6 +333,12 @@ export class Chunk {
             z,
             level: cellSkyLight,
           });
+
+          if (!this.isTransparent(blockPacked, 1, -1)) {
+            incomingSkyLight = 0;
+            sourceIsWater = thisIsWater;
+            continue;
+          }
 
           incomingSkyLight = cellSkyLight;
           sourceIsWater = thisIsWater;
@@ -476,15 +509,17 @@ export class Chunk {
 
     // Handle Block Light
     if (oldBlockLight > 0) {
-      this.removeLight(localX, localY, localZ, false);
-    } else if (newIsTransparent) {
+      this.removeLight(localX, localY, localZ, false, oldPacked);
+    }
+    if (newIsTransparent) {
       this.updateLightFromNeighbors(localX, localY, localZ, false);
     }
 
     // Handle Sky Light
     if (oldSkyLight > 0) {
-      this.removeLight(localX, localY, localZ, true);
-    } else if (newIsSkyTransparent) {
+      this.removeLight(localX, localY, localZ, true, oldPacked);
+    }
+    if (newIsSkyTransparent) {
       this.updateLightFromNeighbors(localX, localY, localZ, true);
     }
     if (oldWasSkyTransparent && !newIsSkyTransparent && oldSkyLight > 0) {
@@ -651,7 +686,7 @@ export class Chunk {
         if (!sourceAllows) continue;
 
         const targetBlockPacked = targetChunk.getBlockPacked(tx, ty, tz);
-        if (!targetChunk.isTransparent(targetBlockPacked, axis, dir)) continue;
+        if (!targetChunk.isTransparent(targetBlockPacked, axis, -dir)) continue;
 
         const currentLevel = isSkyLight
           ? targetChunk.getSkyLight(tx, ty, tz)
@@ -793,7 +828,7 @@ export class Chunk {
 
       if (!sourceAllows) continue;
 
-      if (!this.isTransparent(targetBlockPacked, axis, dir)) continue;
+      if (!this.isTransparent(targetBlockPacked, axis, -dir)) continue;
 
       const level = isSkyLight
         ? sourceChunk.getSkyLight(sx, sy, sz)
@@ -826,52 +861,321 @@ export class Chunk {
     }
   }
 
+  private static getSliceAxis(rotation: number): number {
+    const sliceAxisRaw = rotation & 3;
+    return sliceAxisRaw === 1 ? 0 : sliceAxisRaw === 2 ? 2 : 1;
+  }
+
+  private static clamp01(value: number): number {
+    return Math.min(1, Math.max(0, value));
+  }
+
+  private static uniqueSortedEdges(values: number[]): number[] {
+    values.sort((a, b) => a - b);
+    const unique: number[] = [];
+    for (const value of values) {
+      if (
+        unique.length === 0 ||
+        Math.abs(value - unique[unique.length - 1]) > Chunk.EPS
+      ) {
+        unique.push(value);
+      }
+    }
+    if (unique.length === 0 || unique[0] > 0 + Chunk.EPS) {
+      unique.unshift(0);
+    }
+    if (unique[unique.length - 1] < 1 - Chunk.EPS) {
+      unique.push(1);
+    }
+    return unique;
+  }
+
+  private static doesRectUnionCoverUnitSquare(rects: FaceRect[]): boolean {
+    if (rects.length === 0) return false;
+
+    const uEdges: number[] = [0, 1];
+    const vEdges: number[] = [0, 1];
+    for (const rect of rects) {
+      uEdges.push(rect.u0, rect.u1);
+      vEdges.push(rect.v0, rect.v1);
+    }
+
+    const u = Chunk.uniqueSortedEdges(uEdges);
+    const v = Chunk.uniqueSortedEdges(vEdges);
+
+    for (let ui = 0; ui < u.length - 1; ui++) {
+      const u0 = u[ui];
+      const u1 = u[ui + 1];
+      if (u1 - u0 <= Chunk.EPS) continue;
+
+      for (let vi = 0; vi < v.length - 1; vi++) {
+        const v0 = v[vi];
+        const v1 = v[vi + 1];
+        if (v1 - v0 <= Chunk.EPS) continue;
+
+        let covered = false;
+        for (const rect of rects) {
+          if (
+            rect.u0 <= u0 + Chunk.EPS &&
+            rect.u1 >= u1 - Chunk.EPS &&
+            rect.v0 <= v0 + Chunk.EPS &&
+            rect.v1 >= v1 - Chunk.EPS
+          ) {
+            covered = true;
+            break;
+          }
+        }
+
+        if (!covered) {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  }
+
+  private static pushRect(
+    rects: FaceRect[],
+    u0: number,
+    u1: number,
+    v0: number,
+    v1: number,
+  ): void {
+    const cu0 = Chunk.clamp01(Math.min(u0, u1));
+    const cu1 = Chunk.clamp01(Math.max(u0, u1));
+    const cv0 = Chunk.clamp01(Math.min(v0, v1));
+    const cv1 = Chunk.clamp01(Math.max(v0, v1));
+    if (cu1 - cu0 <= Chunk.EPS || cv1 - cv0 <= Chunk.EPS) return;
+    rects.push({ u0: cu0, u1: cu1, v0: cv0, v1: cv1 });
+  }
+
+  private static transformBoxForLight(
+    min: [number, number, number],
+    max: [number, number, number],
+    rotation: number,
+    flipY: boolean,
+  ): {
+    min: [number, number, number];
+    max: [number, number, number];
+  } {
+    let minX = min[0];
+    let minY = min[1];
+    let minZ = min[2];
+    let maxX = max[0];
+    let maxY = max[1];
+    let maxZ = max[2];
+
+    switch (rotation & 3) {
+      case 1: {
+        const oldMinX = minX;
+        const oldMaxX = maxX;
+        const oldMinZ = minZ;
+        const oldMaxZ = maxZ;
+        minX = 1 - oldMaxZ;
+        maxX = 1 - oldMinZ;
+        minZ = oldMinX;
+        maxZ = oldMaxX;
+        break;
+      }
+      case 2: {
+        const oldMinX = minX;
+        const oldMaxX = maxX;
+        const oldMinZ = minZ;
+        const oldMaxZ = maxZ;
+        minX = 1 - oldMaxX;
+        maxX = 1 - oldMinX;
+        minZ = 1 - oldMaxZ;
+        maxZ = 1 - oldMinZ;
+        break;
+      }
+      case 3: {
+        const oldMinX = minX;
+        const oldMaxX = maxX;
+        const oldMinZ = minZ;
+        const oldMaxZ = maxZ;
+        minX = oldMinZ;
+        maxX = oldMaxZ;
+        minZ = 1 - oldMaxX;
+        maxZ = 1 - oldMinX;
+        break;
+      }
+    }
+
+    if (flipY) {
+      const oldMinY = minY;
+      const oldMaxY = maxY;
+      minY = 1 - oldMaxY;
+      maxY = 1 - oldMinY;
+    }
+
+    return {
+      min: [minX, minY, minZ],
+      max: [maxX, maxY, maxZ],
+    };
+  }
+
+  private static applySliceStateToBoxForLight(
+    min: [number, number, number],
+    max: [number, number, number],
+    state: number,
+  ): {
+    min: [number, number, number];
+    max: [number, number, number];
+  } {
+    const slice = (state >>> 3) & 7;
+    if (slice === 0) {
+      return { min, max };
+    }
+
+    const rotation = state & 7;
+    const sliceAxis = Chunk.getSliceAxis(rotation);
+    const flip = (rotation & 4) !== 0;
+    const heightScale = slice / 8;
+    const outMin: [number, number, number] = [min[0], min[1], min[2]];
+    const outMax: [number, number, number] = [max[0], max[1], max[2]];
+
+    if (flip) {
+      outMin[sliceAxis] = 1 - (1 - min[sliceAxis]) * heightScale;
+      outMax[sliceAxis] = 1 - (1 - max[sliceAxis]) * heightScale;
+    } else {
+      outMin[sliceAxis] = min[sliceAxis] * heightScale;
+      outMax[sliceAxis] = max[sliceAxis] * heightScale;
+    }
+
+    if (outMin[sliceAxis] > outMax[sliceAxis]) {
+      const tmp = outMin[sliceAxis];
+      outMin[sliceAxis] = outMax[sliceAxis];
+      outMax[sliceAxis] = tmp;
+    }
+
+    return {
+      min: outMin,
+      max: outMax,
+    };
+  }
+
+  private static getClosedFaceMaskForPacked(blockPacked: number): number {
+    const cacheIndex = blockPacked & 0xffff;
+    const cached = Chunk.CLOSED_FACE_MASK_CACHE[cacheIndex];
+    if (cached !== -1) {
+      return cached;
+    }
+
+    const blockId = unpackBlockId(blockPacked);
+    if (
+      blockId === 0 ||
+      blockId === Chunk.WATER_BLOCK_ID ||
+      blockId === Chunk.GLASS_01_BLOCK_ID ||
+      blockId === Chunk.GLASS_02_BLOCK_ID
+    ) {
+      Chunk.CLOSED_FACE_MASK_CACHE[cacheIndex] = 0;
+      return 0;
+    }
+
+    const state = unpackBlockState(blockPacked);
+    const shapeIndex = ShapeByBlockId[blockId] ?? CUBE_SHAPE_INDEX;
+    const shape =
+      ShapeDefinitions[shapeIndex] ?? ShapeDefinitions[CUBE_SHAPE_INDEX];
+    if (!shape) {
+      Chunk.CLOSED_FACE_MASK_CACHE[cacheIndex] = FACE_ALL;
+      return FACE_ALL;
+    }
+
+    const rotation = shape.rotateY ? state & 3 : 0;
+    const flipY = Boolean(shape.allowFlipY && (state & 4) !== 0);
+
+    const pxRects: FaceRect[] = [];
+    const nxRects: FaceRect[] = [];
+    const pyRects: FaceRect[] = [];
+    const nyRects: FaceRect[] = [];
+    const pzRects: FaceRect[] = [];
+    const nzRects: FaceRect[] = [];
+
+    for (const box of shape.boxes) {
+      const transformed = Chunk.transformBoxForLight(
+        box.min,
+        box.max,
+        rotation,
+        flipY,
+      );
+      const sliced = shape.usesSliceState
+        ? Chunk.applySliceStateToBoxForLight(
+            transformed.min,
+            transformed.max,
+            state,
+          )
+        : transformed;
+
+      const min = sliced.min;
+      const max = sliced.max;
+      if (
+        max[0] - min[0] <= Chunk.EPS ||
+        max[1] - min[1] <= Chunk.EPS ||
+        max[2] - min[2] <= Chunk.EPS
+      ) {
+        continue;
+      }
+
+      if (max[0] >= 1 - Chunk.EPS) {
+        Chunk.pushRect(pxRects, min[1], max[1], min[2], max[2]);
+      }
+      if (min[0] <= Chunk.EPS) {
+        Chunk.pushRect(nxRects, min[1], max[1], min[2], max[2]);
+      }
+      if (max[1] >= 1 - Chunk.EPS) {
+        Chunk.pushRect(pyRects, min[0], max[0], min[2], max[2]);
+      }
+      if (min[1] <= Chunk.EPS) {
+        Chunk.pushRect(nyRects, min[0], max[0], min[2], max[2]);
+      }
+      if (max[2] >= 1 - Chunk.EPS) {
+        Chunk.pushRect(pzRects, min[0], max[0], min[1], max[1]);
+      }
+      if (min[2] <= Chunk.EPS) {
+        Chunk.pushRect(nzRects, min[0], max[0], min[1], max[1]);
+      }
+    }
+
+    let closedMask = 0;
+    if (Chunk.doesRectUnionCoverUnitSquare(pxRects)) closedMask |= FACE_PX;
+    if (Chunk.doesRectUnionCoverUnitSquare(nxRects)) closedMask |= FACE_NX;
+    if (Chunk.doesRectUnionCoverUnitSquare(pyRects)) closedMask |= FACE_PY;
+    if (Chunk.doesRectUnionCoverUnitSquare(nyRects)) closedMask |= FACE_NY;
+    if (Chunk.doesRectUnionCoverUnitSquare(pzRects)) closedMask |= FACE_PZ;
+    if (Chunk.doesRectUnionCoverUnitSquare(nzRects)) closedMask |= FACE_NZ;
+
+    Chunk.CLOSED_FACE_MASK_CACHE[cacheIndex] = closedMask;
+    return closedMask;
+  }
+
+  private static getFaceBit(axis: number, dir: number): number {
+    if (axis === 0) return dir >= 0 ? FACE_PX : FACE_NX;
+    if (axis === 1) return dir >= 0 ? FACE_PY : FACE_NY;
+    return dir >= 0 ? FACE_PZ : FACE_NZ;
+  }
+
   private isTransparent(
     blockPacked: number,
     axis?: number,
     dir?: number,
   ): boolean {
-    // 0: Air, 30: Water, 60/61: Glass variants
-    const id = unpackBlockId(blockPacked);
-    if (id === 0 || id === 30 || id === 60 || id === 61) {
-      return true;
-    }
+    const closedMask = Chunk.getClosedFaceMaskForPacked(blockPacked);
 
-    const state = unpackBlockState(blockPacked);
-    const slice = (state >> 3) & 7;
-
-    // No slice metadata => full opaque block
-    if (slice === 0) {
-      return false;
-    }
-
-    // Generic transparency query (non-face-specific)
     if (axis === undefined) {
-      return true;
+      // Generic query: treat blocks with at least one open face as non-opaque.
+      return closedMask !== FACE_ALL;
     }
 
-    const rotation = state & 7;
-    const sliceAxisRaw = rotation & 3;
-
-    // Encoded axis mapping:
-    // raw 1 => X, raw 2 => Z, everything else => Y
-    const sliceAxis = sliceAxisRaw === 1 ? 0 : sliceAxisRaw === 2 ? 2 : 1;
-
-    // Query axis does not match the slab's closed/open axis => open
-    if (sliceAxis !== axis) {
-      return true;
-    }
-
-    // Without a direction we conservatively treat directional slabs as opaque
     if (dir === undefined) {
-      return false;
+      // Axis-only query: open if either side on this axis is open.
+      const plusFace = Chunk.getFaceBit(axis, 1);
+      const minusFace = Chunk.getFaceBit(axis, -1);
+      return (closedMask & plusFace) === 0 || (closedMask & minusFace) === 0;
     }
 
-    // flip=false closes +dir face, flip=true closes -dir face
-    const flip = (rotation & 4) !== 0;
-    const closedDir = flip ? -1 : 1;
-
-    return dir !== closedDir;
+    const faceBit = Chunk.getFaceBit(axis, dir);
+    return (closedMask & faceBit) === 0;
   }
 
   private static isWaterBlock(blockId: number): boolean {
@@ -896,7 +1200,7 @@ export class Chunk {
     if (!targetChunk?.isLoaded) return;
 
     const belowBlockId = targetChunk.getBlockPacked(tx, ty, tz);
-    if (!targetChunk.isTransparent(belowBlockId, 1)) return;
+    if (!targetChunk.isTransparent(belowBlockId, 1, 1)) return;
 
     if (targetChunk.getSkyLight(tx, ty, tz) > 0) {
       targetChunk.removeLight(tx, ty, tz, true);
@@ -917,7 +1221,13 @@ export class Chunk {
     this.propagateLight([{ chunk: this, x, y, z, level }], false);
   }
 
-  public removeLight(x: number, y: number, z: number, isSkyLight = false) {
+  public removeLight(
+    x: number,
+    y: number,
+    z: number,
+    isSkyLight = false,
+    sourcePackedOverride?: number,
+  ) {
     const startLevel = isSkyLight
       ? this.getSkyLight(x, y, z)
       : this.getBlockLight(x, y, z);
@@ -943,8 +1253,13 @@ export class Chunk {
       const cz = node.z;
       const level = node.level;
 
-      const sourceBlockPacked = chunk.getBlockPacked(cx, cy, cz);
+      const sourceBlockPacked =
+        head === 0 && sourcePackedOverride !== undefined
+          ? sourcePackedOverride
+          : chunk.getBlockPacked(cx, cy, cz);
       const sourceBlockId = unpackBlockId(sourceBlockPacked);
+      const sourceEmits =
+        !isSkyLight && Chunk.getLightEmission(sourceBlockId) > 0;
 
       for (let dirIndex = 0; dirIndex < 6; dirIndex++) {
         let dx = 0;
@@ -1023,10 +1338,15 @@ export class Chunk {
         if (!targetChunk) continue;
 
         const targetBlockPacked = targetChunk.getBlockPacked(tx, ty, tz);
+        const sourceAllows = isSkyLight
+          ? chunk.isTransparent(sourceBlockPacked, axis, dir)
+          : sourceEmits || chunk.isTransparent(sourceBlockPacked, axis, dir);
+
+        if (!sourceAllows) continue;
 
         // If the neighbor block itself cannot contain/pass light on this face,
         // it cannot be part of the removable light graph.
-        if (!targetChunk.isTransparent(targetBlockPacked, axis, dir)) {
+        if (!targetChunk.isTransparent(targetBlockPacked, axis, -dir)) {
           continue;
         }
 
