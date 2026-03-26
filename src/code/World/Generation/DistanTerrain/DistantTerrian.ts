@@ -30,32 +30,32 @@ export class DistantTerrain {
   // Set to true if you also update the shader to sample .rg instead of .rgba
   private static readonly USE_LA_TILE_TEXTURE = false;
 
-  private surfaceTileLookupTexture: RawTexture;
-  private surfaceTileLookupData: Uint8Array;
+  #surfaceTileLookupTexture: RawTexture;
+  #surfaceTileLookupData: Uint8Array;
 
-  private radius: number;
-  private gridStep = 1; // 1 vertex per gridStep*chunkSize in each axis
-  private gridResolution: number;
+  #radius: number;
+  #gridStep = 1; // 1 vertex per gridStep*chunkSize in each axis
+  #gridResolution: number;
 
   // Reusable vector (avoid per-frame allocations)
-  private _gridOrigin = new Vector2();
+  #gridOrigin = new Vector2();
 
   // GPU buffers (created once, updated later)
-  private _positionVB?: VertexBuffer;
-  private _normalVB?: VertexBuffer;
+  #positionVB?: VertexBuffer;
+  #normalVB?: VertexBuffer;
 
   // Store data for reuse (transferred to worker between updates)
-  private lastPositions: Int16Array | null = null;
-  private lastNormals: Int8Array | null = null;
-  private lastSurfaceTiles: Uint8Array | null = null;
-  private lastCenterChunkX: number | null = null;
-  private lastCenterChunkZ: number | null = null;
+  #lastPositions: Int16Array | null = null;
+  #lastNormals: Int8Array | null = null;
+  #lastSurfaceTiles: Uint8Array | null = null;
+  #lastCenterChunkX: number | null = null;
+  #lastCenterChunkZ: number | null = null;
 
   constructor() {
-    this.radius = SettingParams.DISTANT_RENDER_DISTANCE;
-    const segments = Math.floor((this.radius * 2) / this.gridStep);
-    this.gridResolution = segments + 1;
-    const size = this.radius * 2 * Chunk.SIZE;
+    this.#radius = SettingParams.DISTANT_RENDER_DISTANCE;
+    const segments = Math.floor((this.#radius * 2) / this.#gridStep);
+    this.#gridResolution = segments + 1;
+    const size = this.#radius * 2 * Chunk.SIZE;
 
     // ---- Terrain mesh ----
     this.mesh = this.createEmptyGridMesh("distantTerrain", Map1.mainScene);
@@ -76,13 +76,13 @@ export class DistantTerrain {
     // ---- Tile lookup texture & backing array ----
     if (DistantTerrain.USE_LA_TILE_TEXTURE) {
       // 2 channels (R=tileX, G=tileY)
-      this.surfaceTileLookupData = new Uint8Array(
-        this.gridResolution * this.gridResolution * 2,
+      this.#surfaceTileLookupData = new Uint8Array(
+        this.#gridResolution * this.#gridResolution * 2,
       );
-      this.surfaceTileLookupTexture = RawTexture.CreateLuminanceAlphaTexture(
-        this.surfaceTileLookupData,
-        this.gridResolution,
-        this.gridResolution,
+      this.#surfaceTileLookupTexture = RawTexture.CreateLuminanceAlphaTexture(
+        this.#surfaceTileLookupData,
+        this.#gridResolution,
+        this.#gridResolution,
         Map1.mainScene,
         false,
         false,
@@ -90,13 +90,13 @@ export class DistantTerrain {
       );
     } else {
       // 4 channels (R=tileX, G=tileY, B=0, A=255)
-      this.surfaceTileLookupData = new Uint8Array(
-        this.gridResolution * this.gridResolution * 4,
+      this.#surfaceTileLookupData = new Uint8Array(
+        this.#gridResolution * this.#gridResolution * 4,
       );
-      this.surfaceTileLookupTexture = RawTexture.CreateRGBATexture(
-        this.surfaceTileLookupData,
-        this.gridResolution,
-        this.gridResolution,
+      this.#surfaceTileLookupTexture = RawTexture.CreateRGBATexture(
+        this.#surfaceTileLookupData,
+        this.#gridResolution,
+        this.#gridResolution,
         Map1.mainScene,
         false,
         false,
@@ -104,8 +104,8 @@ export class DistantTerrain {
       );
     }
 
-    this.surfaceTileLookupTexture.wrapU = Texture.CLAMP_ADDRESSMODE;
-    this.surfaceTileLookupTexture.wrapV = Texture.CLAMP_ADDRESSMODE;
+    this.#surfaceTileLookupTexture.wrapU = Texture.CLAMP_ADDRESSMODE;
+    this.#surfaceTileLookupTexture.wrapV = Texture.CLAMP_ADDRESSMODE;
 
     // ---- Shaders ----
     Effect.ShadersStore["distantTerrainVertexShader"] =
@@ -154,12 +154,12 @@ export class DistantTerrain {
 
     this.material.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
     this.material.setFloat("textureScale", 32);
-    this.material.setFloat("tileGridResolution", this.gridResolution);
-    this.material.setFloat("gridWorldStep", Chunk.SIZE * this.gridStep);
+    this.material.setFloat("tileGridResolution", this.#gridResolution);
+    this.material.setFloat("gridWorldStep", Chunk.SIZE * this.#gridStep);
     this.material.setFloat("useTexture", 0);
     this.material.setTexture(
       "tileLookupTexture",
-      this.surfaceTileLookupTexture,
+      this.#surfaceTileLookupTexture,
     );
 
     this.bindDiffuseTexture();
@@ -224,7 +224,7 @@ export class DistantTerrain {
     const mesh = new Mesh(name, scene);
     const engine = scene.getEngine();
 
-    const res = this.gridResolution;
+    const res = this.#gridResolution;
     const vertexCount = res * res;
     const quadCount = (res - 1) * (res - 1);
     const indexCount = quadCount * 6;
@@ -267,7 +267,7 @@ export class DistantTerrain {
       normals[i] = 127;
     }
 
-    this._positionVB = new VertexBuffer(
+    this.#positionVB = new VertexBuffer(
       engine,
       positions,
       VertexBuffer.PositionKind,
@@ -280,9 +280,9 @@ export class DistantTerrain {
       VertexBuffer.SHORT,
       false,
     );
-    mesh.setVerticesBuffer(this._positionVB);
+    mesh.setVerticesBuffer(this.#positionVB);
 
-    this._normalVB = new VertexBuffer(
+    this.#normalVB = new VertexBuffer(
       engine,
       normals,
       VertexBuffer.NormalKind,
@@ -295,7 +295,7 @@ export class DistantTerrain {
       VertexBuffer.BYTE,
       true, // normalized
     );
-    mesh.setVerticesBuffer(this._normalVB);
+    mesh.setVerticesBuffer(this.#normalVB);
 
     return mesh;
   }
@@ -350,24 +350,24 @@ export class DistantTerrain {
     ChunkWorkerPool.getInstance().scheduleDistantTerrain(
       centerChunkX,
       centerChunkZ,
-      this.radius,
+      this.#radius,
       SettingParams.RENDER_DISTANCE,
-      this.gridStep,
-      this.lastPositions && this.lastNormals && this.lastSurfaceTiles
+      this.#gridStep,
+      this.#lastPositions && this.#lastNormals && this.#lastSurfaceTiles
         ? {
-            positions: this.lastPositions,
-            normals: this.lastNormals,
-            surfaceTiles: this.lastSurfaceTiles,
+            positions: this.#lastPositions,
+            normals: this.#lastNormals,
+            surfaceTiles: this.#lastSurfaceTiles,
           }
         : undefined,
-      this.lastCenterChunkX ?? undefined,
-      this.lastCenterChunkZ ?? undefined,
+      this.#lastCenterChunkX ?? undefined,
+      this.#lastCenterChunkZ ?? undefined,
     );
 
     // transferred to worker
-    this.lastPositions = null;
-    this.lastNormals = null;
-    this.lastSurfaceTiles = null;
+    this.#lastPositions = null;
+    this.#lastNormals = null;
+    this.#lastSurfaceTiles = null;
   }
 
   private applyTerrainData(
@@ -378,11 +378,11 @@ export class DistantTerrain {
     centerChunkZ: number,
   ) {
     // Save data for next update reuse
-    this.lastPositions = positions;
-    this.lastNormals = normals;
-    this.lastSurfaceTiles = surfaceTiles;
-    this.lastCenterChunkX = centerChunkX;
-    this.lastCenterChunkZ = centerChunkZ;
+    this.#lastPositions = positions;
+    this.#lastNormals = normals;
+    this.#lastSurfaceTiles = surfaceTiles;
+    this.#lastCenterChunkX = centerChunkX;
+    this.#lastCenterChunkZ = centerChunkZ;
 
     this.mesh.position.set(
       centerChunkX * Chunk.SIZE,
@@ -396,28 +396,23 @@ export class DistantTerrain {
       centerChunkZ * Chunk.SIZE,
     );
 
-    const gridCenterChunkX =
-      Math.floor(centerChunkX / this.gridStep) * this.gridStep;
-    const gridCenterChunkZ =
-      Math.floor(centerChunkZ / this.gridStep) * this.gridStep;
-
-    this._gridOrigin.x = (gridCenterChunkX - this.radius) * Chunk.SIZE;
-    this._gridOrigin.y = (gridCenterChunkZ - this.radius) * Chunk.SIZE;
-    this.material.setVector2("gridOriginWorld", this._gridOrigin);
+    this.#gridOrigin.x = (centerChunkX - this.#radius) * Chunk.SIZE;
+    this.#gridOrigin.y = (centerChunkZ - this.#radius) * Chunk.SIZE;
+    this.material.setVector2("gridOriginWorld", this.#gridOrigin);
 
     // Update existing GPU buffers only
-    this._positionVB?.update(positions);
-    this._normalVB?.update(normals);
+    this.#positionVB?.update(positions);
+    this.#normalVB?.update(normals);
 
     // ---- Update tile lookup texture ----
     if (DistantTerrain.USE_LA_TILE_TEXTURE) {
-      if (surfaceTiles.length !== this.surfaceTileLookupData.length) {
+      if (surfaceTiles.length !== this.#surfaceTileLookupData.length) {
         for (let i = 0, j = 0; i < surfaceTiles.length; i += 2, j += 2) {
-          this.surfaceTileLookupData[j] = surfaceTiles[i];
-          this.surfaceTileLookupData[j + 1] = surfaceTiles[i + 1];
+          this.#surfaceTileLookupData[j] = surfaceTiles[i];
+          this.#surfaceTileLookupData[j + 1] = surfaceTiles[i + 1];
         }
       } else {
-        this.surfaceTileLookupData.set(surfaceTiles);
+        this.#surfaceTileLookupData.set(surfaceTiles);
       }
     } else {
       for (
@@ -425,13 +420,13 @@ export class DistantTerrain {
         src < surfaceTiles.length;
         src += 2, dst += 4
       ) {
-        this.surfaceTileLookupData[dst] = surfaceTiles[src];
-        this.surfaceTileLookupData[dst + 1] = surfaceTiles[src + 1];
-        this.surfaceTileLookupData[dst + 2] = 0;
-        this.surfaceTileLookupData[dst + 3] = 255;
+        this.#surfaceTileLookupData[dst] = surfaceTiles[src];
+        this.#surfaceTileLookupData[dst + 1] = surfaceTiles[src + 1];
+        this.#surfaceTileLookupData[dst + 2] = 0;
+        this.#surfaceTileLookupData[dst + 3] = 255;
       }
     }
 
-    this.surfaceTileLookupTexture.update(this.surfaceTileLookupData);
+    this.#surfaceTileLookupTexture.update(this.#surfaceTileLookupData);
   }
 }
