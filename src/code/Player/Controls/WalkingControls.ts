@@ -34,6 +34,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
   public static KEY_DOWN = ["s", "arrowdown"];
   public static KEY_USE = ["e"];
   public static KEY_PICK_BLOCK = ["r"];
+  public static KEY_PICK_BLOCK_EXACT = ["t"];
   public static KEY_JUMP = [" "];
   public static KEY_SPRINT = ["shift"];
   public static KEY_FLASH = ["f"];
@@ -249,7 +250,10 @@ export class WalkingControls implements IControls<PlayerVehicle> {
       this.#controlledEntity.camera.zoomIn();
     }
 
-    if (WalkingControls.KEY_PICK_BLOCK.includes(key)) {
+    if (
+      WalkingControls.KEY_PICK_BLOCK.includes(key) ||
+      WalkingControls.KEY_PICK_BLOCK_EXACT.includes(key)
+    ) {
       const hit = CrossHair.pickTarget(this.#player);
       if (!hit) return;
       const blockId = ChunkLoadingSystem.getBlockByWorldCoords(
@@ -257,33 +261,58 @@ export class WalkingControls implements IControls<PlayerVehicle> {
         hit.y,
         hit.z,
       );
+      const blockState = ChunkLoadingSystem.getBlockStateByWorldCoords(
+        hit.x,
+        hit.y,
+        hit.z,
+      );
       if (blockId === 0) return; // Don't pick air
-
-      // 1. Check hotbar first
-      for (let i = 0; i < 10; i++) {
-        const hotbarItemId =
-          this.#player.playerInventory.inventory[0][i].item?.itemId;
-        if (hotbarItemId === blockId) {
-          this.#player.playerHud.selectedHotbarSlot = i;
-          return;
-        }
-      }
-
-      // 2. If not in hotbar, check main inventory and swap with current hotbar item
-      const inventory = this.#player.playerInventory.inventory;
-      for (let r = 1; r < inventory.length; r++) {
-        for (let c = 0; c < inventory[r].length; c++) {
-          const inventoryItemId = inventory[r][c].item?.itemId;
-          if (inventoryItemId === blockId) {
-            // Found in inventory, swap with selected hotbar slot
-            const selectedSlot = this.#player.playerHud.selectedHotbarSlot;
-            const hotbarSlot = inventory[0][selectedSlot];
-            const inventorySlot = inventory[r][c];
-            hotbarSlot.swapSlots(inventorySlot);
-
-            return;
+      const isExactPickMode = WalkingControls.KEY_PICK_BLOCK_EXACT.includes(key);
+      const matchesPickedBlock = (
+        item: Item | null | undefined,
+        requireExactState: boolean,
+      ): boolean => {
+        if (!item) return false;
+        const itemBlockId = item.blockId ?? item.itemId;
+        if (itemBlockId !== blockId) return false;
+        if (!requireExactState) return true;
+        return (item.blockState ?? 0) === blockState;
+      };
+      const trySelectOrSwapMatchingItem = (
+        requireExactState: boolean,
+      ): boolean => {
+        // 1. Check hotbar first
+        for (let i = 0; i < 10; i++) {
+          const hotbarItem = this.#player.playerInventory.inventory[0][i].item;
+          if (matchesPickedBlock(hotbarItem, requireExactState)) {
+            this.#player.playerHud.selectedHotbarSlot = i;
+            return true;
           }
         }
+
+        // 2. If not in hotbar, check main inventory and swap with current hotbar item
+        const inventory = this.#player.playerInventory.inventory;
+        for (let r = 1; r < inventory.length; r++) {
+          for (let c = 0; c < inventory[r].length; c++) {
+            if (matchesPickedBlock(inventory[r][c].item, requireExactState)) {
+              const selectedSlot = this.#player.playerHud.selectedHotbarSlot;
+              const hotbarSlot = inventory[0][selectedSlot];
+              const inventorySlot = inventory[r][c];
+              hotbarSlot.swapSlots(inventorySlot);
+              return true;
+            }
+          }
+        }
+        return false;
+      };
+
+      if (isExactPickMode) {
+        // T: exact state-aware picker (includes slice variants), then id fallback.
+        if (trySelectOrSwapMatchingItem(true)) return;
+        if (trySelectOrSwapMatchingItem(false)) return;
+      } else {
+        // R: classic picker by block id only.
+        if (trySelectOrSwapMatchingItem(false)) return;
       }
     }
 

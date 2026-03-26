@@ -689,8 +689,6 @@ class ChunkWorkerMesher {
 
         const blockId = packedIdState & BLOCK_ID_MASK;
         const state = packedIdState >>> BLOCK_STATE_SHIFT;
-        const rotation = state & 7;
-        const stateSlice = (state >>> 3) & 7;
 
         const packedAO = currentMaskLight & 0xff;
         const lightPacked = (currentMaskLight >>> 8) & 0xff;
@@ -698,39 +696,58 @@ class ChunkWorkerMesher {
         const faceName = isBackFace ? faceNameNegative : faceNamePositive;
         const targetMesh = isTransparent ? transparentMeshData : opaqueMeshData;
 
-        let x: number;
-        let y: number;
-        let z: number;
+        const shapeIndex = ShapeByBlockId[blockId];
+        const shape = ShapeDefinitions[shapeIndex];
 
-        if (axis === 0) {
-          x = axisPos;
-          y = u_coord;
-          z = v_coord;
-        } else if (axis === 1) {
-          x = v_coord;
-          y = axisPos;
-          z = u_coord;
-        } else {
-          x = u_coord;
-          y = v_coord;
-          z = axisPos;
+        let boxMin: [number, number, number] = [0, 0, 0];
+        let boxMax: [number, number, number] = [1, 1, 1];
+        if (shape && shape.boxes.length > 0) {
+          const sourceBox = shape.boxes[0];
+          const rotationForBox = shape.rotateY ? state & 3 : 0;
+          const flipYForBox = !!(shape.allowFlipY && (state & 4) !== 0);
+          const transformedBox = this.transformBox(
+            sourceBox.min,
+            sourceBox.max,
+            sourceBox.faceMask ?? FACE_ALL,
+            rotationForBox,
+            flipYForBox,
+          );
+          if (shape.usesSliceState) {
+            const slicedBox = this.applySliceStateToBox(
+              transformedBox.min,
+              transformedBox.max,
+              state,
+            );
+            boxMin = slicedBox.min;
+            boxMax = slicedBox.max;
+          } else {
+            boxMin = transformedBox.min;
+            boxMax = transformedBox.max;
+          }
         }
 
+        const axisOffset = isBackFace ? boxMin[axis] : boxMax[axis] - 1;
+        const origin: [number, number, number] = [0, 0, 0];
+        origin[axis] = axisPos + axisOffset;
+        origin[u_axis] = u_coord + boxMin[u_axis];
+        origin[v_axis] = v_coord + boxMin[v_axis];
+
+        const faceWidth = width * (boxMax[u_axis] - boxMin[u_axis]);
+        const faceHeight = height * (boxMax[v_axis] - boxMin[v_axis]);
+
         this.addQuad(
-          x,
-          y,
-          z,
+          origin[0],
+          origin[1],
+          origin[2],
           axis,
-          width,
-          height,
+          faceWidth,
+          faceHeight,
           blockId,
           isBackFace,
           faceName,
           lightPacked,
           packedAO,
           targetMesh,
-          rotation,
-          stateSlice,
         );
 
         // Zero out processed mask region.
@@ -957,8 +974,6 @@ class ChunkWorkerMesher {
               lightPacked,
               packedAO,
               meshData,
-              0,
-              0,
             );
           };
 
@@ -1129,8 +1144,6 @@ class ChunkWorkerMesher {
     lightLevel: number,
     packedAO: number,
     meshData: WorkerInternalMeshData,
-    rotation = 0,
-    slice = 0,
   ) {
     const tex = BlockTextures[blockId];
     if (!tex) return;
@@ -1156,9 +1169,7 @@ class ChunkWorkerMesher {
     // Packed metadata consumed by the shader
     const meta =
       (flip ? 1 : 0) |
-      ((materialType & 1) << 1) |
-      ((rotation & 7) << 2) |
-      ((slice & 7) << 5);
+      ((materialType & 1) << 1);
 
     const sx = Math.round(x * POS_SCALE);
     const sy = Math.round(y * POS_SCALE);

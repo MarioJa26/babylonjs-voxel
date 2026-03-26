@@ -61,13 +61,6 @@ void main(void) {
     int meta = int(faceDataC.w);
     int flip = meta & 1;
     int materialType = (meta >> 1) & 1;
-    int rotation = (meta >> 2) & 7;
-    int slice = (meta >> 5) & 7;
-    int sliceAxisRaw = rotation & 3;
-    int sliceAxis = sliceAxisRaw == 1 ? 0 : (sliceAxisRaw == 2 ? 2 : 1);
-    float hasSlice = slice == 0 ? 0.0 : 1.0;
-    float heightScale = slice == 0 ? 1.0 : float(slice) / 8.0;
-    float flipShape = ((rotation & 4) != 0) ? 1.0 : 0.0;
 
     int corner = decodeCorner(vertexId, isBackFace, flip);
     const float invPosScale = 0.25;
@@ -80,12 +73,6 @@ void main(void) {
     int vAxis = (axis + 2) % 3;
 
     vec3 localPosition = faceDataA.xyz * invPosScale;
-    float uIsSlice = uAxis == sliceAxis ? 1.0 : 0.0;
-    float vIsSlice = vAxis == sliceAxis ? 1.0 : 0.0;
-    float minOffset = (slice == 0) ? 0.0 : (flipShape > 0.5 ? 1.0 - heightScale : 0.0);
-
-    du = mix(du, du * heightScale, hasSlice * uIsSlice);
-    dv = mix(dv, dv * heightScale, hasSlice * vIsSlice);
     if (uAxis == 0) localPosition.x += du;
     else if (uAxis == 1) localPosition.y += du;
     else localPosition.z += du;
@@ -93,21 +80,6 @@ void main(void) {
     if (vAxis == 0) localPosition.x += dv;
     else if (vAxis == 1) localPosition.y += dv;
     else localPosition.z += dv;
-
-    if (hasSlice > 0.5 && (uIsSlice + vIsSlice) > 0.5) {
-        if (sliceAxis == 0) localPosition.x += minOffset;
-        else if (sliceAxis == 1) localPosition.y += minOffset;
-        else localPosition.z += minOffset;
-    }
-
-    if (hasSlice > 0.5 && axis == sliceAxis) {
-        float posOffset = flipShape > 0.5 ? 0.0 : (heightScale - 1.0);
-        float negOffset = flipShape > 0.5 ? (1.0 - heightScale) : 0.0;
-        float planeOffset = isBackFace == 0 ? posOffset : negOffset;
-        if (sliceAxis == 0) localPosition.x += planeOffset;
-        else if (sliceAxis == 1) localPosition.y += planeOffset;
-        else localPosition.z += planeOffset;
-    }
 
     gl_Position = worldViewProjection * vec4(localPosition, 1.0);
 
@@ -119,10 +91,6 @@ void main(void) {
 
     float uDim = swapUV == 1 ? faceHeight : faceWidth;
     float vDim = swapUV == 1 ? faceWidth : faceHeight;
-    float uScale = swapUV == 1 ? vIsSlice : uIsSlice;
-    float vScale = swapUV == 1 ? uIsSlice : vIsSlice;
-    uDim *= mix(1.0, heightScale, hasSlice * uScale);
-    vDim *= mix(1.0, heightScale, hasSlice * vScale);
     vUV = vec2(u, v) * vec2(uDim, vDim);
 
     // UV offset for sub-block faces: the face origin's fractional block position
