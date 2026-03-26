@@ -33,7 +33,7 @@ export type CustomBoatOptions = {
 
 export class CustomBoat implements IUsable {
   #cfg = {
-    mass: 20,
+    mass: 11,
     gravity: -9.81,
     baseBuoyancyForce: 20,
     torqueScale: 0.12,

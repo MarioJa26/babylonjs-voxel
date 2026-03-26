@@ -79,7 +79,7 @@ export class TransparentShader {
         float wCDX = valueNoise(wavePos + epsDX) + valueNoise(wavePosB + epsDX);
         float wCDZ = valueNoise(wavePos + epsDZ) + valueNoise(wavePosB + epsDZ);
 
-        float waveStrength = 0.33;
+        float waveStrength = 0.15;
         vec3 waveNormalWorld = normalize(vec3(
             -(wCDX - wC) / eps * waveStrength,
             1.0,
@@ -99,14 +99,14 @@ export class TransparentShader {
         vec3 viewDirection = normalize(cameraPosition - vPositionW);
         vec3 halfwayDir = normalize(lightDirection + viewDirection);
 
-        float specPower = mix(16.0, 128.0, isWater);
+        float specPower = mix(16.0, 64.0, isWater);
         float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), specPower);
 
         float specularIntensity = mix(0.5, 1.8, isWater) * vSkyLight;
         vec3 specular = vec3(specularIntensity) * spec * sunLightIntensity;
 
         // --- 6. Ambient Occlusion and Environment Light ---
-        float aoFactor = 1.0 - vAO * mix(0.1, 0.24, isWater);
+        float aoFactor = 1.0 - vAO * mix(0.1, 0.1, isWater);
         float lightLevel = max(vSkyLight, vBlockLight);
 
         vec3 vSkyColor = vec3(0.8, 0.8, 0.8) * (sunLightIntensity + 0.2);
