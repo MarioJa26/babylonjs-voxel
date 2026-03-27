@@ -398,19 +398,40 @@ class ChunkWorkerMesher {
       }
     }
 
-    this.emitCustomShapes(
-      size,
-      block_array,
-      getBlock,
-      getLight,
-      opaqueMeshData,
-      transparentMeshData,
-    );
+    // Skip the expensive custom-shape pass entirely if this chunk contains
+    // only greedy-compatible blocks.
+    if (this.chunkHasCustomShapes(block_array)) {
+      this.emitCustomShapes(
+        size,
+        block_array,
+        getBlock,
+        getLight,
+        opaqueMeshData,
+        transparentMeshData,
+      );
+    }
 
     return {
       opaque: opaqueMeshData,
       transparent: transparentMeshData,
     };
+  }
+
+  private static chunkHasCustomShapes(
+    block_array: Uint8Array | Uint16Array,
+  ): boolean {
+    for (let i = 0; i < block_array.length; i++) {
+      const packed = block_array[i];
+      const blockId = unpackBlockId(packed);
+      if (blockId === 0) continue;
+
+      const shapeIndex = ShapeByBlockId[blockId];
+      if (!this.isGreedyCompatibleShape(shapeIndex)) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private static computeSliceMask(
@@ -1282,28 +1303,22 @@ const onMessageHandler = (event: MessageEvent) => {
     const { chunk_size } = event.data;
     const totalBlocks = chunk_size ** 3;
 
-    // ✅ Determine output type once using isUint16
     let needsUint16 = paletteExpander.isUint16(event.data.palette);
 
-    // Also check uniform block IDs if no palette
     if (!needsUint16 && typeof event.data.uniformBlockId === "number") {
       needsUint16 = event.data.uniformBlockId > 255;
     }
 
-    // Check neighbor uniform IDs
     if (!needsUint16 && event.data.neighborUniformIds) {
       for (let i = 0; i < event.data.neighborUniformIds.length; i++) {
-        if (
-          event.data.neighborUniformIds[i] !== undefined &&
-          event.data.neighborUniformIds[i] > 255
-        ) {
+        const v = event.data.neighborUniformIds[i];
+        if (v !== undefined && v > 255) {
           needsUint16 = true;
           break;
         }
       }
     }
 
-    // Rehydrate center chunk block array
     if (
       !event.data.block_array &&
       typeof event.data.uniformBlockId === "number"
@@ -1313,10 +1328,7 @@ const onMessageHandler = (event: MessageEvent) => {
         ? new Uint16Array(totalBlocks)
         : new Uint8Array(totalBlocks);
 
-      // ✅ Manual loop instead of .fill()
-      for (let i = 0; i < totalBlocks; i++) {
-        event.data.block_array[i] = uniformValue;
-      }
+      event.data.block_array.fill(uniformValue);
     } else if (event.data.palette && event.data.block_array) {
       event.data.block_array = paletteExpander.expandPalette(
         event.data.block_array,
@@ -1325,7 +1337,6 @@ const onMessageHandler = (event: MessageEvent) => {
       );
     }
 
-    // Rehydrate neighbors
     const { neighbors, neighborUniformIds, neighborPalettes } = event.data;
     if (neighborUniformIds) {
       for (let i = 0; i < neighbors.length; i++) {
@@ -1335,10 +1346,7 @@ const onMessageHandler = (event: MessageEvent) => {
             ? new Uint16Array(totalBlocks)
             : new Uint8Array(totalBlocks);
 
-          // ✅ Use cached needsUint16 type
-          for (let j = 0; j < totalBlocks; j++) {
-            neighbors[i]![j] = uniformValue;
-          }
+          neighbors[i]!.fill(uniformValue);
         } else if (neighbors[i] && neighborPalettes?.[i]) {
           neighbors[i] = paletteExpander.expandPalette(
             neighbors[i]! as Uint8Array,
@@ -1350,11 +1358,12 @@ const onMessageHandler = (event: MessageEvent) => {
     }
 
     const { opaque, transparent } = ChunkWorkerMesher.generateMesh(event.data);
-    // Allow GC of large block arrays
+
     event.data.block_array = undefined;
     event.data.neighbors = undefined;
 
     postFullMeshResult(event.data.chunkId, opaque, transparent);
+
     return;
   }
 

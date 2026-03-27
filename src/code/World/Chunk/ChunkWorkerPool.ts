@@ -106,6 +106,25 @@ export class ChunkWorkerPool {
     this.processMeshQueueLoop();
   }
 
+  private isCompletelyEmptyChunk(chunk: Chunk): boolean {
+    return chunk.isUniform && chunk.uniformBlockId === 0;
+  }
+
+  private clearChunkMeshIfPresent(chunk: Chunk): void {
+    if (
+      chunk.mesh ||
+      chunk.transparentMesh ||
+      chunk.opaqueMeshData ||
+      chunk.transparentMeshData ||
+      chunk.colliderDirty
+    ) {
+      ChunkMesher.createMeshFromData(chunk, {
+        opaque: null,
+        transparent: null,
+      });
+    }
+  }
+
   private processMeshQueueLoop = () => {
     const start = performance.now();
     // Process meshes for up to 4ms per frame to prevent stutter
@@ -140,6 +159,16 @@ export class ChunkWorkerPool {
   // existing remesh scheduling
   public scheduleRemesh(chunk: Chunk | undefined, priority = false) {
     if (!chunk || !chunk.isLoaded) {
+      return;
+    }
+
+    if (this.isCompletelyEmptyChunk(chunk)) {
+      this.pendingRemeshQueue.delete(chunk);
+      const queuedIndex = this.taskQueue.indexOf(chunk);
+      if (queuedIndex !== -1) {
+        this.taskQueue.splice(queuedIndex, 1);
+      }
+      this.clearChunkMeshIfPresent(chunk);
       return;
     }
 
@@ -250,6 +279,15 @@ export class ChunkWorkerPool {
       }
 
       if (taskChunk || distantTask) {
+        if (
+          taskType === "remesh" &&
+          taskChunk &&
+          this.isCompletelyEmptyChunk(taskChunk)
+        ) {
+          this.clearChunkMeshIfPresent(taskChunk);
+          continue;
+        }
+
         const workerIndex = this.idleWorkerIndices.shift()!;
         const worker = this.workers[workerIndex];
         if (taskType === "terrain") {
