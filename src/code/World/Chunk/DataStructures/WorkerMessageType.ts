@@ -1,21 +1,28 @@
 import { MeshData } from "./MeshData";
 
+export enum WorkerTaskType {
+  GenerateTerrain,
+  GenerateFullMesh,
+  GenerateDistantTerrain_Generated,
+  GenerateDistantTerrain,
+}
+
 export type FullMeshMessage = {
-  type: "full-mesh";
+  type: WorkerTaskType.GenerateFullMesh;
   chunkId: bigint;
   opaque: MeshData;
   transparent: MeshData;
 };
 
 export type TerrainGeneratedMessage = {
-  type: "terrain-generated";
+  type: WorkerTaskType.GenerateTerrain;
   chunkId: bigint;
   block_array: Uint8Array;
   light_array: Uint8Array;
 };
 
 export type DistantTerrainGeneratedMessage = {
-  type: "distant-terrain-generated";
+  type: WorkerTaskType.GenerateDistantTerrain_Generated;
   centerChunkX: number;
   centerChunkZ: number;
   positions: Int16Array;

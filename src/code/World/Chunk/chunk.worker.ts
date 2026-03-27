@@ -5,6 +5,7 @@ import { MeshData } from "./DataStructures/MeshData";
 import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
 import { ResizableTypedArray } from "./DataStructures/ResizableTypedArray";
 import { WorkerInternalMeshData } from "./DataStructures/WorkerInternalMeshData";
+import { WorkerTaskType } from "./DataStructures/WorkerMessageType";
 import { DistantTerrainGenerator } from "../Generation/DistanTerrain/DistantTerrainGenerator";
 import { BlockTextures } from "../Texture/BlockTextures";
 import {
@@ -1167,9 +1168,7 @@ class ChunkWorkerMesher {
     const axisFace = axis * 2 + (isBackFace ? 1 : 0);
 
     // Packed metadata consumed by the shader
-    const meta =
-      (flip ? 1 : 0) |
-      ((materialType & 1) << 1);
+    const meta = (flip ? 1 : 0) | ((materialType & 1) << 1);
 
     const sx = Math.round(x * POS_SCALE);
     const sy = Math.round(y * POS_SCALE);
@@ -1279,7 +1278,7 @@ const onMessageHandler = (event: MessageEvent) => {
   const { type } = event.data;
 
   // --- Full Remesh ---
-  if (type === "full-remesh") {
+  if (type === WorkerTaskType.GenerateFullMesh) {
     const { chunk_size } = event.data;
     const totalBlocks = chunk_size ** 3;
 
@@ -1360,7 +1359,7 @@ const onMessageHandler = (event: MessageEvent) => {
   }
 
   // --- Terrain generation ---
-  if (type === "generate-terrain") {
+  if (type === WorkerTaskType.GenerateTerrain) {
     const { chunkId, chunkX, chunkY, chunkZ } = event.data;
     const { blocks, light } = generator.generateChunkData(
       chunkX,
@@ -1392,7 +1391,7 @@ const onMessageHandler = (event: MessageEvent) => {
     self.postMessage(
       {
         chunkId,
-        type: "terrain-generated",
+        type: WorkerTaskType.GenerateTerrain,
         block_array: packedBlocks,
         light_array: light,
         isUniform,
@@ -1405,7 +1404,7 @@ const onMessageHandler = (event: MessageEvent) => {
   }
 
   // --- Distant terrain ---
-  if (type === "generate-distant-terrain") {
+  if (type === WorkerTaskType.GenerateDistantTerrain) {
     const {
       centerChunkX,
       centerChunkZ,
@@ -1428,7 +1427,7 @@ const onMessageHandler = (event: MessageEvent) => {
     );
     self.postMessage(
       {
-        type: "distant-terrain-generated",
+        type: WorkerTaskType.GenerateDistantTerrain_Generated,
         centerChunkX,
         centerChunkZ,
         ...data,
@@ -1467,7 +1466,7 @@ function postFullMeshResult(
   self.postMessage(
     {
       chunkId,
-      type: "full-mesh",
+      type: WorkerTaskType.GenerateFullMesh,
       opaque: opaqueMeshData,
       transparent: transparentMeshData,
     },

@@ -1,5 +1,6 @@
 import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
 import { Chunk } from "./Chunk";
+import { WorkerTaskType } from "./DataStructures/WorkerMessageType";
 
 export class ChunkWorker {
   private worker: Worker;
@@ -78,7 +79,7 @@ export class ChunkWorker {
     }
 
     this.worker.postMessage({
-      type: "full-remesh",
+      type: WorkerTaskType.GenerateFullMesh,
       chunkId: chunk.id,
       block_array: chunk.block_array,
       uniformBlockId: chunk.isUniform ? chunk.uniformBlockId : undefined,
@@ -94,7 +95,7 @@ export class ChunkWorker {
 
   public postTerrainGeneration(chunk: Chunk): void {
     this.worker.postMessage({
-      type: "generate-terrain",
+      type: WorkerTaskType.GenerateTerrain,
       chunkId: chunk.id,
       chunkX: chunk.chunkX,
       chunkY: chunk.chunkY,
@@ -126,7 +127,7 @@ export class ChunkWorker {
 
     this.worker.postMessage(
       {
-        type: "generate-distant-terrain",
+        type: WorkerTaskType.GenerateDistantTerrain,
         centerChunkX,
         centerChunkZ,
         radius,

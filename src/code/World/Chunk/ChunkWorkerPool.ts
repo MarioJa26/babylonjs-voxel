@@ -6,6 +6,7 @@ import {
   FullMeshMessage,
   TerrainGeneratedMessage,
   DistantTerrainGeneratedMessage,
+  WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
 
 export type WorkerMessageData =
@@ -34,9 +35,9 @@ export class ChunkWorkerPool {
         const data = event.data;
         const { type } = data;
 
-        if (type === "full-mesh") {
+        if (type === WorkerTaskType.GenerateFullMesh) {
           this.meshResultQueue.push(data);
-        } else if (type === "terrain-generated") {
+        } else if (type === WorkerTaskType.GenerateTerrain) {
           const { chunkId } = data;
           const {
             block_array,
@@ -86,7 +87,7 @@ export class ChunkWorkerPool {
             // Mark dirty and defer persistence to unload to avoid write stutter.
             chunk.isModified = true;
           }
-        } else if (type === "distant-terrain-generated") {
+        } else if (type === WorkerTaskType.GenerateDistantTerrain_Generated) {
           this.onDistantTerrainGenerated?.(
             data as DistantTerrainGeneratedMessage,
           );
