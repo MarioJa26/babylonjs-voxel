@@ -118,6 +118,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
     const z = hit.pos.z - hit.nz;
 
     const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
+    const blockState = ChunkLoadingSystem.getBlockStateByWorldCoords(x, y, z);
 
     const item =
       this.#player.playerInventory.inventory[0][
@@ -139,7 +140,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
       this.#breakTimer += dt;
 
       const frac = Math.min(this.#breakTimer / breakTime, 1);
-      Map1.updateCrackingState(this.#breakingBlock, frac);
+      Map1.updateCrackingState(this.#breakingBlock, frac, blockId, blockState);
 
       if (this.#breakTimer >= breakTime) {
         // Sample light from the neighbor in the face-normal direction
@@ -162,7 +163,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
       // New target → reset cracking
       this.#breakingBlock = { x, y, z };
       this.#breakTimer = 0;
-      Map1.updateCrackingState(this.#breakingBlock, 0);
+      Map1.updateCrackingState(this.#breakingBlock, 0, blockId, blockState);
     }
   }
 

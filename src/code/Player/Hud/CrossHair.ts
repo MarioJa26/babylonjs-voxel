@@ -18,6 +18,7 @@ import { SettingParams } from "@/code/World/SettingParams";
 import { BlockType } from "@/code/World/BlockType";
 import { MetadataContainer } from "@/code/Entities/MetaDataContainer";
 import { FACE_ALL, getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
+import { getTransformedShapeBoxes } from "@/code/World/Shape/BlockShapeTransforms";
 
 type BlockRaycastHit = {
   x: number;
@@ -155,28 +156,11 @@ export class CrossHair {
   }
 
   #buildHighlightMeshForBlock(blockId: number, blockState: number): Mesh {
-    const shape = getShapeForBlockId(blockId);
-    const rotation = shape.rotateY ? blockState & 3 : 0;
-    const flipY = shape.allowFlipY && (blockState & 4) !== 0;
     const inflation = 0.005;
     const parts: Mesh[] = [];
 
     let index = 0;
-    for (const box of shape.boxes) {
-      let transformed = CrossHair.#transformBox(
-        box.min,
-        box.max,
-        rotation,
-        flipY,
-      );
-      if (shape.usesSliceState) {
-        transformed = CrossHair.#applySliceToBox(
-          transformed.min,
-          transformed.max,
-          blockState,
-        );
-      }
-
+    for (const transformed of getTransformedShapeBoxes(blockId, blockState)) {
       const width = transformed.max[0] - transformed.min[0];
       const height = transformed.max[1] - transformed.min[1];
       const depth = transformed.max[2] - transformed.min[2];
@@ -429,11 +413,6 @@ export class CrossHair {
     }
   }
 
-  static #getSliceAxis(rotation: number): number {
-    const sliceAxisRaw = rotation & 3;
-    return sliceAxisRaw === 1 ? 0 : sliceAxisRaw === 2 ? 2 : 1;
-  }
-
   static #isFullBlockShape(blockId: number, blockState: number): boolean {
     const slice = (blockState >> 3) & 7;
     if (slice !== 0) return false;
@@ -451,86 +430,6 @@ export class CrossHair {
       box.max[1] === 1 &&
       box.max[2] === 1
     );
-  }
-
-  static #transformBox(
-    min: [number, number, number],
-    max: [number, number, number],
-    rotation: number,
-    flipY: boolean,
-  ): { min: [number, number, number]; max: [number, number, number] } {
-    let minX = min[0];
-    let minY = min[1];
-    let minZ = min[2];
-    let maxX = max[0];
-    let maxY = max[1];
-    let maxZ = max[2];
-
-    if (rotation !== 0) {
-      const points: [number, number][] = [
-        [minX, minZ],
-        [minX, maxZ],
-        [maxX, minZ],
-        [maxX, maxZ],
-      ];
-      const rotated: [number, number][] = points.map(([x, z]) => {
-        switch (rotation) {
-          case 1:
-            return [1 - z, x];
-          case 2:
-            return [1 - x, 1 - z];
-          case 3:
-            return [z, 1 - x];
-          default:
-            return [x, z];
-        }
-      });
-      minX = Math.min(...rotated.map((p) => p[0]));
-      maxX = Math.max(...rotated.map((p) => p[0]));
-      minZ = Math.min(...rotated.map((p) => p[1]));
-      maxZ = Math.max(...rotated.map((p) => p[1]));
-    }
-
-    if (flipY) {
-      const newMinY = 1 - maxY;
-      const newMaxY = 1 - minY;
-      minY = newMinY;
-      maxY = newMaxY;
-    }
-
-    return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
-  }
-
-  static #applySliceToBox(
-    min: [number, number, number],
-    max: [number, number, number],
-    state: number,
-  ): { min: [number, number, number]; max: [number, number, number] } {
-    const slice = (state >> 3) & 7;
-    if (slice === 0) return { min, max };
-
-    const rotation = state & 7;
-    const sliceAxis = this.#getSliceAxis(rotation);
-    const flip = (rotation & 4) !== 0;
-    const heightScale = slice / 8;
-    const outMin: [number, number, number] = [min[0], min[1], min[2]];
-    const outMax: [number, number, number] = [max[0], max[1], max[2]];
-
-    if (flip) {
-      outMin[sliceAxis] = 1 - (1 - min[sliceAxis]) * heightScale;
-      outMax[sliceAxis] = 1 - (1 - max[sliceAxis]) * heightScale;
-    } else {
-      outMin[sliceAxis] = min[sliceAxis] * heightScale;
-      outMax[sliceAxis] = max[sliceAxis] * heightScale;
-    }
-
-    if (outMin[sliceAxis] > outMax[sliceAxis]) {
-      const tmp = outMin[sliceAxis];
-      outMin[sliceAxis] = outMax[sliceAxis];
-      outMax[sliceAxis] = tmp;
-    }
-
-    return { min: outMin, max: outMax };
   }
 
   static #intersectRayAabbSegment(
@@ -638,30 +537,9 @@ export class CrossHair {
     fallbackNy: number,
     fallbackNz: number,
   ): { t: number; nx: number; ny: number; nz: number } | null {
-    const shape = getShapeForBlockId(blockId);
-    const rotation = shape.rotateY ? blockState & 3 : 0;
-    const flipY = shape.allowFlipY && (blockState & 4) !== 0;
-
     let bestHit: { t: number; nx: number; ny: number; nz: number } | null =
       null;
-    for (const box of shape.boxes) {
-      let transformed = this.#transformBox(box.min, box.max, rotation, flipY);
-      if (shape.usesSliceState) {
-        transformed = this.#applySliceToBox(
-          transformed.min,
-          transformed.max,
-          blockState,
-        );
-      }
-
-      if (
-        transformed.max[0] <= transformed.min[0] ||
-        transformed.max[1] <= transformed.min[1] ||
-        transformed.max[2] <= transformed.min[2]
-      ) {
-        continue;
-      }
-
+    for (const transformed of getTransformedShapeBoxes(blockId, blockState)) {
       const hit = this.#intersectRayAabbSegment(
         ox,
         oy,

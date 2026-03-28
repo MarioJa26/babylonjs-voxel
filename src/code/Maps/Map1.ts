@@ -17,6 +17,7 @@ import { PlayerLoadingGate } from "../Player/PlayerLoadingGate";
 import { PlayerStatePersistence } from "../Player/PlayerStatePersistence";
 import { WorldEnvironment } from "./WorldEnvironment";
 import { BlockBreakParticles } from "./BlockBreakParticles";
+import { getTransformedShapeBoxes } from "../World/Shape/BlockShapeTransforms";
 
 export class Map1 {
   public static mainScene: Scene;
@@ -125,10 +126,13 @@ export class Map1 {
 
   static #crackingMesh: Mesh | null = null;
   static #crackMaterials: StandardMaterial[] = [];
+  static #crackingShapeKey = "";
 
   public static updateCrackingState(
     block: { x: number; y: number; z: number } | null,
     progress: number,
+    blockId?: number,
+    blockState = 0,
   ) {
     if (!block || progress <= 0) {
       if (this.#crackingMesh) this.#crackingMesh.isVisible = false;
@@ -136,11 +140,14 @@ export class Map1 {
     }
 
     if (this.#crackingMesh) {
+      if (typeof blockId === "number") {
+        this.#ensureCrackingShape(blockId, blockState);
+      }
       this.#crackingMesh.isVisible = true;
       this.#crackingMesh.position.set(
-        Math.floor(block.x) + 0.5,
-        Math.floor(block.y) + 0.5,
-        Math.floor(block.z) + 0.5,
+        Math.floor(block.x),
+        Math.floor(block.y),
+        Math.floor(block.z),
       );
 
       const stage = Math.min(9, Math.floor(progress * 10));
@@ -151,11 +158,7 @@ export class Map1 {
   }
 
   private static async initCrackingMesh() {
-    this.#crackingMesh = MeshBuilder.CreateBox(
-      "crackingMesh",
-      { size: 1.04 },
-      this.mainScene,
-    );
+    this.#crackingMesh = this.#createUnitCrackingMesh();
     this.#crackingMesh.isPickable = false;
     this.#crackingMesh.isVisible = false;
     this.#crackingMesh.renderingGroupId = 1;
@@ -173,5 +176,88 @@ export class Map1 {
       mat.zOffset = -1;
       this.#crackMaterials.push(mat);
     }
+  }
+
+  static #createUnitCrackingMesh(): Mesh {
+    const mesh = MeshBuilder.CreateBox(
+      "crackingMeshUnitCube",
+      { size: 1.04 },
+      this.mainScene,
+    );
+    mesh.position.set(0.5, 0.5, 0.5);
+    this.#bakeLocalOffset(mesh);
+    return mesh;
+  }
+
+  static #bakeLocalOffset(mesh: Mesh): void {
+    mesh.bakeCurrentTransformIntoVertices();
+    mesh.position.set(0, 0, 0);
+  }
+
+  static #buildCrackingMeshForBlock(
+    blockId: number,
+    blockState: number,
+  ): Mesh {
+    const inflation = 0.04;
+    const parts: Mesh[] = [];
+    let index = 0;
+
+    for (const box of getTransformedShapeBoxes(blockId, blockState)) {
+      const width = box.max[0] - box.min[0];
+      const height = box.max[1] - box.min[1];
+      const depth = box.max[2] - box.min[2];
+      if (width <= 0 || height <= 0 || depth <= 0) continue;
+
+      const part = MeshBuilder.CreateBox(
+        `crackingMeshPart_${index++}`,
+        {
+          width: width + inflation,
+          height: height + inflation,
+          depth: depth + inflation,
+        },
+        this.mainScene,
+      );
+      part.position.set(
+        (box.min[0] + box.max[0]) * 0.5,
+        (box.min[1] + box.max[1]) * 0.5,
+        (box.min[2] + box.max[2]) * 0.5,
+      );
+      this.#bakeLocalOffset(part);
+      parts.push(part);
+    }
+
+    if (parts.length === 0) {
+      return this.#createUnitCrackingMesh();
+    }
+
+    if (parts.length === 1) {
+      return parts[0];
+    }
+
+    const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, true);
+    if (!merged || !(merged instanceof Mesh)) {
+      const fallback = parts[0];
+      for (let i = 1; i < parts.length; i++) parts[i].dispose();
+      return fallback;
+    }
+
+    return merged;
+  }
+
+  static #ensureCrackingShape(blockId: number, blockState: number) {
+    const shapeKey = `${blockId}:${blockState}`;
+    if (shapeKey === this.#crackingShapeKey) return;
+    if (!this.#crackingMesh) return;
+
+    const oldMesh = this.#crackingMesh;
+    const newMesh = this.#buildCrackingMeshForBlock(blockId, blockState);
+    newMesh.position.copyFrom(oldMesh.position);
+    newMesh.isPickable = false;
+    newMesh.isVisible = oldMesh.isVisible;
+    newMesh.renderingGroupId = oldMesh.renderingGroupId;
+    newMesh.material = oldMesh.material;
+    this.#crackingMesh = newMesh;
+    this.#crackingShapeKey = shapeKey;
+    oldMesh.dispose();
   }
 }
