@@ -1449,8 +1449,6 @@ const onMessageHandler = (event: MessageEvent) => {
 
 self.onmessage = onMessageHandler;
 
-self.onmessage = onMessageHandler;
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -1465,7 +1463,7 @@ function toTransferable(data: WorkerInternalMeshData): MeshData {
 }
 
 function postFullMeshResult(
-  chunkId: string,
+  chunkId: bigint,
   opaque: WorkerInternalMeshData,
   transparent: WorkerInternalMeshData,
 ) {

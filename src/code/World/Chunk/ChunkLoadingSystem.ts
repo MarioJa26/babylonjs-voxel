@@ -3,17 +3,215 @@ import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import { ChunkMesher } from "./ChunckMesher";
 import { SettingParams } from "../SettingParams";
 import { WorldStorage } from "../WorldStorage";
+import type { SavedChunkEntityData } from "../WorldStorage";
 import { DistantTerrain } from "../Generation/DistanTerrain/DistantTerrian";
+
+type ChunkBoundEntity = {
+  getWorldPosition: () => { x: number; y: number; z: number };
+  unload: () => void;
+  isAlive?: () => boolean;
+  serializeForChunkReload?: () => SavedChunkEntityData | null;
+};
 
 export class ChunkLoadingSystem {
   private static distantTerrain: DistantTerrain;
 
   private static loadQueue: Chunk[] = [];
   private static unloadQueueSet: Set<Chunk> = new Set();
+  private static chunkBoundEntities: Map<symbol, ChunkBoundEntity> = new Map();
+  private static pendingChunkEntityReloads: Map<
+    bigint,
+    SavedChunkEntityData[]
+  > = new Map();
+  private static chunkEntityLoaders: Map<
+    string,
+    (payload: unknown, chunk: Chunk) => void
+  > = new Map();
+  private static restoringChunkEntities = new Set<bigint>();
+  private static chunkLoadedHookInstalled = false;
   private static flushPromise: Promise<void> | null = null;
+  private static entityFlushPromise: Promise<void> | null = null;
+  private static lastPersistedEntityChunkIds = new Set<bigint>();
   private static isProcessing = false;
   private static readonly LOAD_BATCH_SIZE = SettingParams.RENDER_DISTANCE * 4;
   private static readonly UNLOAD_BATCH_SIZE = SettingParams.RENDER_DISTANCE * 4;
+
+  private static ensureChunkLoadedHook(): void {
+    if (this.chunkLoadedHookInstalled) {
+      return;
+    }
+    this.chunkLoadedHookInstalled = true;
+
+    const previousOnChunkLoaded = Chunk.onChunkLoaded;
+    Chunk.onChunkLoaded = (chunk: Chunk) => {
+      previousOnChunkLoaded?.(chunk);
+      void this.restoreChunkBoundEntitiesForChunk(chunk);
+    };
+  }
+
+  public static registerChunkEntityLoader(
+    type: string,
+    loader: (payload: unknown, chunk: Chunk) => void,
+  ): void {
+    this.ensureChunkLoadedHook();
+    this.chunkEntityLoaders.set(type, loader);
+
+    for (const chunk of Chunk.chunkInstances.values()) {
+      if (chunk.isLoaded) {
+        void this.restoreChunkBoundEntitiesForChunk(chunk);
+      }
+    }
+  }
+
+  public static registerChunkBoundEntity(entity: ChunkBoundEntity): symbol {
+    this.ensureChunkLoadedHook();
+    const handle = Symbol("chunk-bound-entity");
+    this.chunkBoundEntities.set(handle, entity);
+    return handle;
+  }
+
+  public static unregisterChunkBoundEntity(handle: symbol | undefined): void {
+    if (!handle) {
+      return;
+    }
+    this.chunkBoundEntities.delete(handle);
+  }
+
+  private static async unloadChunkBoundEntitiesForChunk(
+    chunk: Chunk,
+  ): Promise<void> {
+    const serializedEntities: SavedChunkEntityData[] = [];
+
+    const chunkX = chunk.chunkX;
+    const chunkY = chunk.chunkY;
+    const chunkZ = chunk.chunkZ;
+    const handlesToUnload: symbol[] = [];
+
+    for (const [handle, entity] of this.chunkBoundEntities.entries()) {
+      if (entity.isAlive && !entity.isAlive()) {
+        handlesToUnload.push(handle);
+        continue;
+      }
+
+      const worldPos = entity.getWorldPosition();
+      const entityChunkX = this.worldToChunkCoord(worldPos.x);
+      const entityChunkY = this.worldToChunkCoord(worldPos.y);
+      const entityChunkZ = this.worldToChunkCoord(worldPos.z);
+
+      if (
+        entityChunkX === chunkX &&
+        entityChunkY === chunkY &&
+        entityChunkZ === chunkZ
+      ) {
+        handlesToUnload.push(handle);
+      }
+    }
+
+    for (const handle of handlesToUnload) {
+      const entity = this.chunkBoundEntities.get(handle);
+      this.chunkBoundEntities.delete(handle);
+      if (!entity) continue;
+
+      const serialized = entity.serializeForChunkReload?.() ?? null;
+      if (serialized) {
+        serializedEntities.push(serialized);
+      }
+
+      try {
+        entity.unload();
+      } catch (error) {
+        console.error("Failed to unload chunk-bound entity:", error);
+      }
+    }
+
+    const chunkKey = Chunk.packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+    if (serializedEntities.length > 0) {
+      this.pendingChunkEntityReloads.set(chunkKey, serializedEntities);
+    } else {
+      this.pendingChunkEntityReloads.delete(chunkKey);
+    }
+
+    try {
+      await WorldStorage.saveChunkEntities(chunk.id, serializedEntities);
+    } catch (error) {
+      console.error("Failed to persist chunk-bound entities:", error);
+    }
+  }
+
+  private static spawnSerializedEntities(
+    serializedEntities: SavedChunkEntityData[],
+    chunk: Chunk,
+  ): SavedChunkEntityData[] {
+    const remaining: SavedChunkEntityData[] = [];
+
+    for (const serialized of serializedEntities) {
+      const loader = this.chunkEntityLoaders.get(serialized.type);
+      if (!loader) {
+        remaining.push(serialized);
+        continue;
+      }
+
+      try {
+        loader(serialized.payload, chunk);
+      } catch (error) {
+        console.error("Failed to reload chunk-bound entity:", error);
+        remaining.push(serialized);
+      }
+    }
+
+    return remaining;
+  }
+
+  private static async restoreChunkBoundEntitiesForChunk(
+    chunk: Chunk,
+  ): Promise<void> {
+    if (!chunk.isLoaded) {
+      return;
+    }
+    if (this.chunkEntityLoaders.size === 0) {
+      return;
+    }
+    if (this.restoringChunkEntities.has(chunk.id)) {
+      return;
+    }
+
+    this.restoringChunkEntities.add(chunk.id);
+
+    try {
+      const pendingKey = Chunk.packCoords(
+        chunk.chunkX,
+        chunk.chunkY,
+        chunk.chunkZ,
+      );
+      const pendingEntities = this.pendingChunkEntityReloads.get(pendingKey);
+      if (pendingEntities && pendingEntities.length > 0) {
+        const remainingPending = this.spawnSerializedEntities(
+          pendingEntities,
+          chunk,
+        );
+        if (remainingPending.length === 0) {
+          this.pendingChunkEntityReloads.delete(pendingKey);
+          await WorldStorage.saveChunkEntities(chunk.id, []);
+          return;
+        }
+        this.pendingChunkEntityReloads.set(pendingKey, remainingPending);
+        return;
+      }
+
+      const serializedEntities = await WorldStorage.loadChunkEntities(chunk.id);
+      if (serializedEntities.length === 0) {
+        return;
+      }
+
+      const remaining = this.spawnSerializedEntities(serializedEntities, chunk);
+
+      await WorldStorage.saveChunkEntities(chunk.id, remaining);
+    } catch (error) {
+      console.error("Failed to restore chunk-bound entities:", error);
+    } finally {
+      this.restoringChunkEntities.delete(chunk.id);
+    }
+  }
 
   public static flushModifiedChunks(
     maxChunks = ChunkLoadingSystem.UNLOAD_BATCH_SIZE,
@@ -55,6 +253,74 @@ export class ChunkLoadingSystem {
     return trackedPromise;
   }
 
+  public static flushChunkBoundEntities(): Promise<void> {
+    if (this.entityFlushPromise) {
+      return this.entityFlushPromise;
+    }
+
+    const entitiesByChunk = new Map<bigint, SavedChunkEntityData[]>();
+    const staleHandles: symbol[] = [];
+
+    for (const [handle, entity] of this.chunkBoundEntities.entries()) {
+      if (entity.isAlive && !entity.isAlive()) {
+        staleHandles.push(handle);
+        continue;
+      }
+
+      const serialized = entity.serializeForChunkReload?.() ?? null;
+      if (!serialized) {
+        continue;
+      }
+
+      const worldPos = entity.getWorldPosition();
+      const chunkX = this.worldToChunkCoord(worldPos.x);
+      const chunkY = this.worldToChunkCoord(worldPos.y);
+      const chunkZ = this.worldToChunkCoord(worldPos.z);
+      const chunkId = Chunk.packCoords(chunkX, chunkY, chunkZ);
+
+      const list = entitiesByChunk.get(chunkId);
+      if (list) {
+        list.push(serialized);
+      } else {
+        entitiesByChunk.set(chunkId, [serialized]);
+      }
+    }
+
+    for (const handle of staleHandles) {
+      this.chunkBoundEntities.delete(handle);
+    }
+
+    const chunkIdsToPersist = new Set<bigint>([
+      ...this.lastPersistedEntityChunkIds,
+      ...entitiesByChunk.keys(),
+    ]);
+
+    if (chunkIdsToPersist.size === 0) {
+      return Promise.resolve();
+    }
+
+    const flushPromise = Promise.all(
+      Array.from(chunkIdsToPersist).map((chunkId) =>
+        WorldStorage.saveChunkEntities(chunkId, entitiesByChunk.get(chunkId) ?? []),
+      ),
+    )
+      .then(() => {
+        this.lastPersistedEntityChunkIds = new Set(entitiesByChunk.keys());
+      })
+      .catch((error) => {
+        console.error("Failed to flush chunk-bound entities:", error);
+      });
+
+    const trackedPromise = flushPromise.finally(() => {
+      if (this.entityFlushPromise === trackedPromise) {
+        this.entityFlushPromise = null;
+      }
+    });
+
+    this.entityFlushPromise = trackedPromise;
+    return trackedPromise;
+  }
+
   private static scheduleChunkAndNeighborsRemesh(chunk: Chunk): void {
     const pool = ChunkWorkerPool.getInstance();
 
@@ -80,6 +346,7 @@ export class ChunkLoadingSystem {
     renderDistance = SettingParams.RENDER_DISTANCE,
     verticalRadius = SettingParams.VERTICAL_RENDER_DISTANCE,
   ) {
+    this.ensureChunkLoadedHook();
     if (!this.distantTerrain) {
       this.distantTerrain = new DistantTerrain();
     }
@@ -251,6 +518,7 @@ export class ChunkLoadingSystem {
               (savedChunkIds !== null && savedChunkIds.has(chunk.id));
 
             if (canUnload) {
+              await this.unloadChunkBoundEntitiesForChunk(chunk);
               chunk.dispose();
               chunk.isLoaded = false;
               chunk.isTerrainScheduled = false;

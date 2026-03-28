@@ -25,6 +25,23 @@ export class ChunkWorkerPool {
   private meshResultQueue: FullMeshMessage[] = [];
   private remeshFlushScheduled = false;
 
+  private resolveChunkByMessageId(chunkId: unknown): Chunk | undefined {
+    if (typeof chunkId === "bigint") {
+      return Chunk.chunkInstances.get(chunkId);
+    }
+    if (typeof chunkId === "string") {
+      try {
+        return Chunk.chunkInstances.get(BigInt(chunkId));
+      } catch {
+        return undefined;
+      }
+    }
+    if (typeof chunkId === "number" && Number.isInteger(chunkId)) {
+      return Chunk.chunkInstances.get(BigInt(chunkId));
+    }
+    return undefined;
+  }
+
   public onDistantTerrainGenerated:
     | ((data: DistantTerrainGeneratedMessage) => void)
     | null = null;
@@ -47,7 +64,7 @@ export class ChunkWorkerPool {
             palette,
           } = data as any;
           // Apply generated block array to the chunk and schedule remesh
-          const chunk = Chunk.chunkInstances.get(chunkId);
+          const chunk = this.resolveChunkByMessageId(chunkId);
           if (chunk) {
             let blocks = block_array as Uint8Array | Uint16Array | null;
             let light = light_array as Uint8Array;
@@ -132,7 +149,7 @@ export class ChunkWorkerPool {
       const data = this.meshResultQueue.shift();
       if (data) {
         const { chunkId, opaque, transparent } = data;
-        const chunk = Chunk.chunkInstances.get(chunkId);
+        const chunk = this.resolveChunkByMessageId(chunkId);
         if (chunk) {
           ChunkMesher.createMeshFromData(chunk, {
             opaque,

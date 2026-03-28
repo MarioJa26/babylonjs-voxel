@@ -7,10 +7,12 @@ import {
 import "@babylonjs/core/Debug/debugLayer";
 import "@babylonjs/inspector";
 import { Player } from "./Player/Player";
+import { CustomBoat } from "./Entities/CustomBoat";
 import { Map1 } from "./Maps/Map1";
 import { PlayerCamera } from "./Player/PlayerCamera";
 import { ChunkLoadingSystem } from "./World/Chunk/ChunkLoadingSystem";
 import { ChunkMesher } from "./World/Chunk/ChunckMesher";
+import { GenerationParams } from "./World/Generation/NoiseAndParameters/GenerationParams";
 
 export class TestScene {
   document: Document;
@@ -69,6 +71,11 @@ export class TestScene {
     const playerCamera = new PlayerCamera(camera, scene);
     new ChunkLoadingSystem(); // This will create all the initial chunks
     const player = new Player(this.engine, scene, playerCamera, this.canvas);
+    CustomBoat.configureChunkReloadContext(
+      scene,
+      player,
+      GenerationParams.SEA_LEVEL,
+    );
     const map = new Map1(scene, player);
     map.initPromise;
     return scene;

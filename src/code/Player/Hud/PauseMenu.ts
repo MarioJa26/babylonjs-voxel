@@ -3,6 +3,7 @@ import { Player } from "../Player"; // Import Player to access its methods
 import { SettingParams } from "@/code/World/SettingParams";
 import { SSAO2RenderingPipeline } from "@babylonjs/core";
 import { WorldStorage } from "../../World/WorldStorage";
+import { ChunkLoadingSystem } from "../../World/Chunk/ChunkLoadingSystem";
 
 export class PauseMenu {
   private menuContainer: HTMLElement;
@@ -62,6 +63,7 @@ export class PauseMenu {
       saveButton.disabled = true;
       try {
         await WorldStorage.saveAllModifiedChunks();
+        await ChunkLoadingSystem.flushChunkBoundEntities();
         saveButton.innerText = "Saved!";
       } catch (e) {
         console.error("Save failed", e);

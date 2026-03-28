@@ -18,7 +18,7 @@ import { CustomBoatControls } from "../Player/Controls/CustomBoatControls";
 import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
 import { BlockType } from "../World/BlockType";
 import { Axis } from "@/code/World/Collision/VoxelAabbCollider";
-import { BoatChunk } from "@/code/World/Boat/BoatChunk";
+import { BoatChunk, BoatChunkBlock } from "@/code/World/Boat/BoatChunk";
 import { VoxelObbCollider } from "../World/Collision/VoxelObbCollider";
 
 export type CustomBoatOptions = {
@@ -31,7 +31,100 @@ export type CustomBoatOptions = {
   boatChunk?: BoatChunk;
 };
 
+type SerializedBoatChunk = {
+  blocks: BoatChunkBlock[];
+  center: { x: number; y: number; z: number };
+};
+
+type CustomBoatSerializedPayload = {
+  position: { x: number; y: number; z: number };
+  collisionHalfExtents: { x: number; y: number; z: number };
+  initialYaw: number;
+  customVisualLocalYaw: number;
+  blockCount?: number;
+  boatChunk?: SerializedBoatChunk;
+};
+
 export class CustomBoat implements IUsable {
+  static readonly CHUNK_ENTITY_TYPE = "custom_boat_v1";
+  static #chunkReloadContext:
+    | { scene: Scene; player: Player; waterLevel: number }
+    | null = null;
+  static #chunkLoaderRegistered = false;
+
+  public static configureChunkReloadContext(
+    scene: Scene,
+    player: Player,
+    waterLevel: number,
+  ): void {
+    this.#chunkReloadContext = { scene, player, waterLevel };
+    if (this.#chunkLoaderRegistered) {
+      return;
+    }
+
+    this.#chunkLoaderRegistered = true;
+    ChunkLoadingSystem.registerChunkEntityLoader(
+      this.CHUNK_ENTITY_TYPE,
+      (payload) => {
+        const context = this.#chunkReloadContext;
+        if (!context || context.scene.isDisposed) {
+          return;
+        }
+
+        const data = payload as CustomBoatSerializedPayload | undefined;
+        if (!data || !data.position || !data.collisionHalfExtents) {
+          return;
+        }
+
+        const spawnPosition = new Vector3(
+          data.position.x,
+          data.position.y,
+          data.position.z,
+        );
+        const collisionHalfExtents = new Vector3(
+          data.collisionHalfExtents.x,
+          data.collisionHalfExtents.y,
+          data.collisionHalfExtents.z,
+        );
+
+        let restoredBoatChunk: BoatChunk | undefined;
+        let restoredCustomVisualRoot: Mesh | undefined;
+
+        if (data.boatChunk) {
+          const snapshotBlocks = data.boatChunk.blocks.map((block) => ({
+            ...block,
+          }));
+          restoredBoatChunk = new BoatChunk(
+            context.scene,
+            snapshotBlocks,
+            new Vector3(
+              data.boatChunk.center.x,
+              data.boatChunk.center.y,
+              data.boatChunk.center.z,
+            ),
+          );
+          restoredCustomVisualRoot = restoredBoatChunk.visualRoot;
+        }
+
+        new CustomBoat(
+          context.scene,
+          context.player,
+          context.waterLevel,
+          spawnPosition,
+          {
+            collisionHalfExtents,
+            customVisualRoot: restoredCustomVisualRoot,
+            skipDefaultModel: !!restoredBoatChunk,
+            initialYaw: data.initialYaw,
+            customVisualLocalYaw: data.customVisualLocalYaw,
+            blockCount: data.blockCount,
+            boatChunk: restoredBoatChunk,
+          },
+        );
+      },
+    );
+  }
+
   #cfg = {
     mass: 11,
     gravity: -9.81,
@@ -70,6 +163,8 @@ export class CustomBoat implements IUsable {
   #submergedPoints = 0;
 
   #beforeRenderObs?: Observer<Scene>;
+  #chunkBindingHandle?: symbol;
+  #isDisposed = false;
 
   #tmpWorldPoint = new Vector3();
   #tmpTorque = new Vector3();
@@ -82,6 +177,8 @@ export class CustomBoat implements IUsable {
     position?: Vector3,
     options?: CustomBoatOptions,
   ) {
+    CustomBoat.configureChunkReloadContext(scene, player, waterLevel);
+
     // 1) Options
     if (options?.collisionHalfExtents) {
       this.#collisionHalfExtents = options.collisionHalfExtents.clone();
@@ -126,7 +223,6 @@ export class CustomBoat implements IUsable {
 
     if (this.#boatChunk) {
       this.#boat.metadata.add("boatChunk", this.#boatChunk);
-      this.#boat.onDisposeObservable.add(() => this.#boatChunk?.dispose());
     }
 
     // 4) Visuals
@@ -150,6 +246,13 @@ export class CustomBoat implements IUsable {
     this.#beforeRenderObs = scene.onBeforeRenderObservable.add(() =>
       this.#tick(scene),
     );
+
+    this.#chunkBindingHandle = ChunkLoadingSystem.registerChunkBoundEntity({
+      getWorldPosition: () => this.#boat.position,
+      unload: () => this.dispose(scene),
+      isAlive: () => !this.#boat.isDisposed(),
+      serializeForChunkReload: () => this.#createSerializedPayload(),
+    });
 
     // 8) Cleanup
     this.#boat.onDisposeObservable.add(() => this.dispose(scene));
@@ -419,15 +522,66 @@ export class CustomBoat implements IUsable {
     );
   }
 
+  #createSerializedPayload(): { type: string; payload: CustomBoatSerializedPayload } {
+    const boatChunkSnapshot = this.#boatChunk?.toSnapshot();
+
+    const payload: CustomBoatSerializedPayload = {
+      position: {
+        x: this.#boat.position.x,
+        y: this.#boat.position.y,
+        z: this.#boat.position.z,
+      },
+      collisionHalfExtents: {
+        x: this.#collisionHalfExtents.x,
+        y: this.#collisionHalfExtents.y,
+        z: this.#collisionHalfExtents.z,
+      },
+      initialYaw: this.#currentYaw,
+      customVisualLocalYaw: this.#customVisualLocalYaw,
+      blockCount: boatChunkSnapshot?.blocks.length,
+      boatChunk: boatChunkSnapshot
+        ? {
+            blocks: boatChunkSnapshot.blocks.map((block) => ({ ...block })),
+            center: {
+              x: boatChunkSnapshot.center.x,
+              y: boatChunkSnapshot.center.y,
+              z: boatChunkSnapshot.center.z,
+            },
+          }
+        : undefined,
+    };
+
+    return {
+      type: CustomBoat.CHUNK_ENTITY_TYPE,
+      payload,
+    };
+  }
+
   public use(player: Player): void {
     this.#mount.mount(player);
   }
 
   public dispose(scene: Scene): void {
+    if (this.#isDisposed) {
+      return;
+    }
+    this.#isDisposed = true;
+
+    ChunkLoadingSystem.unregisterChunkBoundEntity(this.#chunkBindingHandle);
+    this.#chunkBindingHandle = undefined;
+
+    if (this.#mount?.isMounted()) {
+      this.#mount.dismount();
+    }
+
     if (this.#beforeRenderObs) {
       scene.onBeforeRenderObservable.remove(this.#beforeRenderObs);
       this.#beforeRenderObs = undefined;
     }
+
+    this.#voxelCollider?.dispose();
+    this.#boatChunk?.dispose();
+    this.#boatChunk = undefined;
 
     if (!this.#boat.isDisposed()) {
       this.#boat.dispose(false, true);

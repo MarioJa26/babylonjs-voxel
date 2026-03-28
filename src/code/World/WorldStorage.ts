@@ -13,9 +13,15 @@ export type SavedChunkData = {
   compressed?: boolean;
 };
 
+export type SavedChunkEntityData = {
+  type: string;
+  payload: unknown;
+};
+
 const DB_NAME = "VoxelWorldDB";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const CHUNK_STORE_NAME = "chunks";
+const CHUNK_ENTITY_STORE_NAME = "chunk_entities";
 
 export class WorldStorage {
   private static db: IDBDatabase;
@@ -96,6 +102,10 @@ export class WorldStorage {
         if (!db.objectStoreNames.contains(CHUNK_STORE_NAME)) {
           db.createObjectStore(CHUNK_STORE_NAME, { keyPath: "id" });
           console.log(`Object store '${CHUNK_STORE_NAME}' created.`);
+        }
+        if (!db.objectStoreNames.contains(CHUNK_ENTITY_STORE_NAME)) {
+          db.createObjectStore(CHUNK_ENTITY_STORE_NAME, { keyPath: "chunkId" });
+          console.log(`Object store '${CHUNK_ENTITY_STORE_NAME}' created.`);
         }
       };
     });
@@ -236,6 +246,65 @@ export class WorldStorage {
     if (modifiedChunks.length > 0) {
       await this.saveChunks(modifiedChunks);
     }
+  }
+
+  public static async saveChunkEntities(
+    chunkId: bigint,
+    entities: SavedChunkEntityData[],
+  ): Promise<void> {
+    if (GlobalValues.DISABLE_CHUNK_SAVING) {
+      return;
+    }
+    if (!(await this.ensureInitialized())) {
+      return;
+    }
+
+    const chunkIdKey = chunkId.toString();
+    const transaction = this.db.transaction(CHUNK_ENTITY_STORE_NAME, "readwrite");
+    const store = transaction.objectStore(CHUNK_ENTITY_STORE_NAME);
+
+    if (entities.length === 0) {
+      store.delete(chunkIdKey);
+    } else {
+      store.put({
+        chunkId: chunkIdKey,
+        entities,
+      });
+    }
+
+    const savePromise = new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
+
+    return this.trackPendingChunkSaves([chunkIdKey], savePromise);
+  }
+
+  public static async loadChunkEntities(
+    chunkId: bigint,
+  ): Promise<SavedChunkEntityData[]> {
+    if (GlobalValues.DISABLE_CHUNK_LOADING) {
+      return [];
+    }
+    if (!(await this.ensureInitialized())) {
+      return [];
+    }
+
+    const chunkIdKey = chunkId.toString();
+    await this.awaitPendingChunkSaves([chunkIdKey]);
+    const transaction = this.db.transaction(CHUNK_ENTITY_STORE_NAME, "readonly");
+    const store = transaction.objectStore(CHUNK_ENTITY_STORE_NAME);
+    const request = store.get(chunkIdKey);
+
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => {
+        const entities = request.result?.entities as
+          | SavedChunkEntityData[]
+          | undefined;
+        resolve(Array.isArray(entities) ? entities : []);
+      };
+      request.onerror = () => reject(request.error);
+    });
   }
 
   public static async clearWorldData(): Promise<void> {

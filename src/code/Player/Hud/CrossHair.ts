@@ -141,7 +141,7 @@ export class CrossHair {
   #createUnitCubeHighlightMesh(): Mesh {
     const mesh = MeshBuilder.CreateBox(
       "blockHighlightUnitCube",
-      { size: 1.005 },
+      { size: 1.012 },
       this.#scene,
     );
     mesh.position.set(0.5, 0.5, 0.5);
@@ -163,7 +163,12 @@ export class CrossHair {
 
     let index = 0;
     for (const box of shape.boxes) {
-      let transformed = CrossHair.#transformBox(box.min, box.max, rotation, flipY);
+      let transformed = CrossHair.#transformBox(
+        box.min,
+        box.max,
+        rotation,
+        flipY,
+      );
       if (shape.usesSliceState) {
         transformed = CrossHair.#applySliceToBox(
           transformed.min,
@@ -205,7 +210,14 @@ export class CrossHair {
     if (parts.length === 1) {
       mesh = parts[0];
     } else {
-      const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, true);
+      const merged = Mesh.MergeMeshes(
+        parts,
+        true,
+        true,
+        undefined,
+        false,
+        true,
+      );
       if (!merged || !(merged instanceof Mesh)) {
         mesh = parts[0];
         for (let i = 1; i < parts.length; i++) parts[i].dispose();
@@ -233,18 +245,18 @@ export class CrossHair {
   #updateBlockHighlight() {
     const hit = CrossHair.pickTarget(this.#player);
     if (hit) {
-      const blockId = ChunkLoadingSystem.getBlockByWorldCoords(hit.x, hit.y, hit.z);
+      const blockId = ChunkLoadingSystem.getBlockByWorldCoords(
+        hit.x,
+        hit.y,
+        hit.z,
+      );
       const blockState = ChunkLoadingSystem.getBlockStateByWorldCoords(
         hit.x,
         hit.y,
         hit.z,
       );
       this.#ensureHighlightShape(blockId, blockState);
-      this.#blockHighlightMesh.position.set(
-        hit.x,
-        hit.y,
-        hit.z,
-      );
+      this.#blockHighlightMesh.position.set(hit.x, hit.y, hit.z);
       this.#blockHighlightMesh.visibility = 1;
     } else {
       this.#blockHighlightMesh.visibility = 0;
@@ -364,7 +376,11 @@ export class CrossHair {
 
       const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
       if (shouldHitBlockId(x, y, z, blockId)) {
-        const blockState = ChunkLoadingSystem.getBlockStateByWorldCoords(x, y, z);
+        const blockState = ChunkLoadingSystem.getBlockStateByWorldCoords(
+          x,
+          y,
+          z,
+        );
         if (this.#isFullBlockShape(blockId, blockState)) {
           const out = this.#sharedHit;
           out.x = x;
@@ -626,7 +642,8 @@ export class CrossHair {
     const rotation = shape.rotateY ? blockState & 3 : 0;
     const flipY = shape.allowFlipY && (blockState & 4) !== 0;
 
-    let bestHit: { t: number; nx: number; ny: number; nz: number } | null = null;
+    let bestHit: { t: number; nx: number; ny: number; nz: number } | null =
+      null;
     for (const box of shape.boxes) {
       let transformed = this.#transformBox(box.min, box.max, rotation, flipY);
       if (shape.usesSliceState) {
@@ -778,9 +795,7 @@ export class CrossHair {
       Math.floor(hitPos.z),
     );
   }
-  public static getPlacementHit(
-    player: Player,
-  ): {
+  public static getPlacementHit(player: Player): {
     pos: Vector3;
     nx: number;
     ny: number;

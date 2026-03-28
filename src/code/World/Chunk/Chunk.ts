@@ -57,6 +57,7 @@ export class Chunk {
   public static onRequestRemesh:
     | ((chunk: Chunk, priority: boolean) => void)
     | null = null;
+  public static onChunkLoaded: ((chunk: Chunk) => void) | null = null;
 
   private _block_array: Uint8Array | Uint16Array | null = null;
   private _isUniform = true;
@@ -167,6 +168,7 @@ export class Chunk {
     this.isLoaded = true;
     this.isTerrainScheduled = false; // Reset flag
     this.colliderDirty = true;
+    Chunk.onChunkLoaded?.(this);
     if (scheduleRemesh) {
       this.scheduleRemesh();
       this.getNeighbor(-1, 0, 0)?.scheduleRemesh();
@@ -218,6 +220,7 @@ export class Chunk {
     this.isLoaded = true;
     this.isTerrainScheduled = false;
     this.colliderDirty = true;
+    Chunk.onChunkLoaded?.(this);
     if (scheduleRemesh) {
       this.scheduleRemesh();
       this.getNeighbor(-1, 0, 0)?.scheduleRemesh();

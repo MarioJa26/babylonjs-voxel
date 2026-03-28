@@ -101,6 +101,9 @@ export class PlayerStatePersistence {
     void ChunkLoadingSystem.flushModifiedChunks(batchSize).catch((error) => {
       console.warn("Failed to persist modified chunks.", error);
     });
+    void ChunkLoadingSystem.flushChunkBoundEntities().catch((error) => {
+      console.warn("Failed to persist chunk-bound entities.", error);
+    });
   }
 
   private savePosition(): void {

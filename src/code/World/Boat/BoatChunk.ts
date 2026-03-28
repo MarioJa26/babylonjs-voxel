@@ -346,6 +346,37 @@ export class BoatChunk {
     );
   }
 
+  public toSnapshot(): { blocks: BoatChunkBlock[]; center: Vector3 } {
+    const blocks: BoatChunkBlock[] = [];
+
+    for (let y = 0; y < Chunk.SIZE; y++) {
+      for (let z = 0; z < Chunk.SIZE; z++) {
+        for (let x = 0; x < Chunk.SIZE; x++) {
+          const packedBlock = this.#centerChunk.getBlockPacked(x, y, z);
+          const blockId = unpackBlockId(packedBlock);
+          if (blockId === 0) {
+            continue;
+          }
+
+          blocks.push({
+            x,
+            y,
+            z,
+            blockId,
+            blockState: unpackBlockState(packedBlock),
+            packedBlock,
+            lightLevel: this.#centerChunk.getLight(x, y, z),
+          });
+        }
+      }
+    }
+
+    return {
+      blocks,
+      center: this.#center.clone(),
+    };
+  }
+
   public dispose(): void {
     if (this.#beforeRenderObserver) {
       this.#scene.onBeforeRenderObservable.remove(this.#beforeRenderObserver);
