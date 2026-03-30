@@ -16,13 +16,13 @@ import { Map1 } from "@/code/Maps/Map1";
 import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
 import { WorldEnvironment } from "../../Maps/WorldEnvironment";
 
-import { Chunk } from "./Chunk";
 import { GlobalValues } from "../GlobalValues";
 import { ShaderMaterial } from "@babylonjs/core";
 import { MeshData } from "./DataStructures/MeshData";
 import { OpaqueShader } from "../Light/OpaqueShader";
 import { TransparentShader } from "../Light/TransparentShader";
 import { TextureCache } from "../Texture/TextureCache";
+import { Chunk } from "./Chunk";
 
 export class ChunkMesher {
   static #atlasMaterial: Material | null = null;

@@ -5,7 +5,10 @@ import { MeshData } from "./DataStructures/MeshData";
 import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
 import { ResizableTypedArray } from "./DataStructures/ResizableTypedArray";
 import { WorkerInternalMeshData } from "./DataStructures/WorkerInternalMeshData";
-import { WorkerTaskType } from "./DataStructures/WorkerMessageType";
+import {
+  WorkerTaskType,
+  WorkerRequestData,
+} from "./DataStructures/WorkerMessageType";
 import { DistantTerrainGenerator } from "../Generation/DistanTerrain/DistantTerrainGenerator";
 import { BlockTextures } from "../Texture/BlockTextures";
 import {
@@ -38,6 +41,8 @@ const BLOCK_TYPE = new Uint8Array(65536); // covers all 16-bit block IDs
 const BLOCK_TYPE_TRANSPARENT = 1;
 // 0 = opaque/air
 for (const id of [30, 60, 61]) BLOCK_TYPE[id] = BLOCK_TYPE_TRANSPARENT; // water (30) and glass (60, 61)
+
+const WATER_BLOCK_ID = 30;
 
 const BLOCK_PACK_MASK = BLOCK_ID_MASK | (BLOCK_STATE_MASK << BLOCK_STATE_SHIFT);
 const TRANSPARENT_FLAG = 1 << 16;
@@ -109,7 +114,21 @@ for (let mask = 0; mask < 64; mask++) {
 }
 
 const paletteExpander = new PaletteExpander();
+type WaterSurfaceSample = {
+  worldX: number;
+  worldY: number;
+  worldZ: number;
+  width: number;
+  depth: number;
+  packedLight: number;
+};
 
+type WaterLODArgs = {
+  chunk_size: number;
+  getBlock: (x: number, y: number, z: number, fallback?: number) => number;
+  getLight: (x: number, y: number, z: number, fallback?: number) => number;
+  step: number;
+};
 class ChunkWorkerMesher {
   private static toCompactNeighborIndex(fullIndex: number): number {
     return fullIndex > 13 ? fullIndex - 1 : fullIndex;
@@ -1202,8 +1221,270 @@ class ChunkWorkerMesher {
     meshData.faceDataC.push4(packedAO, lightLevel, 0, meta);
     meshData.faceCount++;
   }
-}
 
+  private static isWaterPacked(packed: number): boolean {
+    return unpackBlockId(packed) === WATER_BLOCK_ID;
+  }
+
+  private static packMaxLightInCell(
+    getLight: (x: number, y: number, z: number, fallback?: number) => number,
+    baseX: number,
+    baseY: number,
+    baseZ: number,
+    step: number,
+    size: number,
+  ): number {
+    let maxBlock = 0;
+    let maxSky = 0;
+
+    for (let dz = 0; dz < step && baseZ + dz < size; dz++) {
+      for (let dy = 0; dy < step && baseY + dy < size; dy++) {
+        for (let dx = 0; dx < step && baseX + dx < size; dx++) {
+          const packedLight = getLight(baseX + dx, baseY + dy, baseZ + dz, 0);
+          const blockLight = packedLight & 0x0f;
+          const skyLight = (packedLight >>> 4) & 0x0f;
+
+          if (blockLight > maxBlock) maxBlock = blockLight;
+          if (skyLight > maxSky) maxSky = skyLight;
+        }
+      }
+    }
+
+    return (maxSky << 4) | maxBlock;
+  }
+
+  /**
+   * Sample one coarse LOD cell and decide whether it should emit a water top surface.
+   *
+   * Current policy:
+   * - If the coarse cell contains any visible water surface, emit ONE top quad.
+   * - Height is chosen from the highest water voxel in the cell that is exposed upward.
+   * - Lighting is the max packed light across the cell.
+   *
+   * You can later extend this to also emit side walls.
+   */
+  public static sampleCoarseWaterSurface(
+    args: WaterLODArgs,
+    coarseX: number,
+    coarseY: number,
+    coarseZ: number,
+  ): WaterSurfaceSample | null {
+    const { chunk_size: size, getBlock, getLight, step } = args;
+
+    let highestSurfaceY = -1;
+    let foundWaterSurface = false;
+
+    for (let dz = 0; dz < step && coarseZ + dz < size; dz++) {
+      for (let dy = 0; dy < step && coarseY + dy < size; dy++) {
+        for (let dx = 0; dx < step && coarseX + dx < size; dx++) {
+          const x = coarseX + dx;
+          const y = coarseY + dy;
+          const z = coarseZ + dz;
+
+          const packed = getBlock(x, y, z, 0);
+          if (!this.isWaterPacked(packed)) {
+            continue;
+          }
+
+          const above = getBlock(x, y + 1, z, 0);
+
+          // Emit only if the water voxel is exposed upward to non-water.
+          if (!this.isWaterPacked(above)) {
+            foundWaterSurface = true;
+            if (y > highestSurfaceY) {
+              highestSurfaceY = y;
+            }
+          }
+        }
+      }
+    }
+
+    if (!foundWaterSurface || highestSurfaceY < 0) {
+      return null;
+    }
+
+    const packedLight = this.packMaxLightInCell(
+      getLight,
+      coarseX,
+      coarseY,
+      coarseZ,
+      step,
+      size,
+    );
+
+    return {
+      worldX: coarseX,
+      // +1 because top quads in your mesher are emitted at the upper face plane
+      worldY: highestSurfaceY + 1,
+      worldZ: coarseZ,
+      width: Math.min(step, size - coarseX),
+      depth: Math.min(step, size - coarseZ),
+      packedLight,
+    };
+  }
+
+  /**
+   * Generate a transparent-only water LOD mesh.
+   *
+   * Version 1:
+   * - emits top water surfaces only
+   * - does NOT emit water side walls yet
+   * - uses packedLight from the sampled coarse cell
+   * - AO is forced to 0 for now (you can add custom distant-water AO later if desired)
+   */
+  public static generateLODWaterMesh(
+    args: WaterLODArgs,
+  ): WorkerInternalMeshData {
+    const mesh = this.createEmptyMeshData();
+    const { chunk_size: size, step } = args;
+
+    const cellsX = Math.ceil(size / step);
+    const cellsZ = Math.ceil(size / step);
+
+    // Process one coarse Y band at a time.
+    for (let coarseY = 0; coarseY < size; coarseY += step) {
+      const samples: (WaterSurfaceSample | null)[] = new Array(
+        cellsX * cellsZ,
+      ).fill(null);
+      const used = new Uint8Array(cellsX * cellsZ);
+
+      // Build a 2D sample grid for this coarse Y band.
+      for (let cellZ = 0; cellZ < cellsZ; cellZ++) {
+        const z = cellZ * step;
+        if (z >= size) continue;
+
+        for (let cellX = 0; cellX < cellsX; cellX++) {
+          const x = cellX * step;
+          if (x >= size) continue;
+
+          const sample = this.sampleCoarseWaterSurface(args, x, coarseY, z);
+          samples[cellX + cellZ * cellsX] = sample;
+        }
+      }
+
+      // Greedy merge on the X/Z coarse-cell grid.
+      for (let cellZ = 0; cellZ < cellsZ; cellZ++) {
+        for (let cellX = 0; cellX < cellsX; cellX++) {
+          const startIndex = cellX + cellZ * cellsX;
+          if (used[startIndex]) continue;
+
+          const sample = samples[startIndex];
+          if (!sample) continue;
+
+          // Merge rule: same water plane height + same packed light + same cell dimensions.
+          const baseWorldY = sample.worldY;
+          const basePackedLight = sample.packedLight;
+          const baseCellWidth = sample.width; // X span of one coarse cell
+          const baseCellDepth = sample.depth; // Z span of one coarse cell
+
+          // Greedy width in X direction
+          let mergeWidthCells = 1;
+          while (cellX + mergeWidthCells < cellsX) {
+            const idx = cellX + mergeWidthCells + cellZ * cellsX;
+            if (used[idx]) break;
+
+            const s = samples[idx];
+            if (
+              !s ||
+              s.worldY !== baseWorldY ||
+              s.packedLight !== basePackedLight ||
+              s.width !== baseCellWidth ||
+              s.depth !== baseCellDepth
+            ) {
+              break;
+            }
+
+            mergeWidthCells++;
+          }
+
+          // Greedy height in Z direction
+          let mergeHeightCells = 1;
+          outer: while (cellZ + mergeHeightCells < cellsZ) {
+            for (let w = 0; w < mergeWidthCells; w++) {
+              const idx = cellX + w + (cellZ + mergeHeightCells) * cellsX;
+              if (used[idx]) {
+                break outer;
+              }
+
+              const s = samples[idx];
+              if (
+                !s ||
+                s.worldY !== baseWorldY ||
+                s.packedLight !== basePackedLight ||
+                s.width !== baseCellWidth ||
+                s.depth !== baseCellDepth
+              ) {
+                break outer;
+              }
+            }
+
+            mergeHeightCells++;
+          }
+
+          // Mark merged rectangle as used
+          for (let dz = 0; dz < mergeHeightCells; dz++) {
+            for (let dx = 0; dx < mergeWidthCells; dx++) {
+              const idx = cellX + dx + (cellZ + dz) * cellsX;
+              used[idx] = 1;
+            }
+          }
+
+          // Convert merged cell counts to actual block-space size.
+          const mergedWidthX = mergeWidthCells * baseCellWidth;
+          const mergedDepthZ = mergeHeightCells * baseCellDepth;
+
+          // NOTE:
+          // For axis = 1 (top face), your addQuad convention uses:
+          // width  = Z extent
+          // height = X extent
+          this.addQuad(
+            sample.worldX,
+            sample.worldY,
+            sample.worldZ,
+            1,
+            mergedDepthZ, // Z span
+            mergedWidthX, // X span
+            WATER_BLOCK_ID,
+            false,
+            "top",
+            sample.packedLight,
+            0, // packedAO = 0 for distant water
+            mesh,
+          );
+        }
+      }
+    }
+
+    return mesh;
+  }
+  public static appendMeshData(
+    target: WorkerInternalMeshData,
+    source: WorkerInternalMeshData,
+  ): void {
+    if (source.faceCount === 0) {
+      return;
+    }
+
+    const srcA = source.faceDataA.finalArray;
+    const srcB = source.faceDataB.finalArray;
+    const srcC = source.faceDataC.finalArray;
+
+    // faceDataA/B/C are encoded as groups of 4 values per face
+    for (let i = 0; i < srcA.length; i += 4) {
+      target.faceDataA.push4(srcA[i], srcA[i + 1], srcA[i + 2], srcA[i + 3]);
+    }
+
+    for (let i = 0; i < srcB.length; i += 4) {
+      target.faceDataB.push4(srcB[i], srcB[i + 1], srcB[i + 2], srcB[i + 3]);
+    }
+
+    for (let i = 0; i < srcC.length; i += 4) {
+      target.faceDataC.push4(srcC[i], srcC[i + 1], srcC[i + 2], srcC[i + 3]);
+    }
+
+    target.faceCount += source.faceCount;
+  }
+}
 // ---------------------------------------------------------------------------
 // Block compression
 // ---------------------------------------------------------------------------
@@ -1294,24 +1575,23 @@ function compressBlocks(blocks: Uint8Array): {
 const generator = new WorldGenerator(GenerationParams);
 
 // In chunk_worker.ts, refactor the full-remesh handler:
-
-const onMessageHandler = (event: MessageEvent) => {
+const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
   const { type } = event.data;
 
   // --- Full Remesh ---
   if (type === WorkerTaskType.GenerateFullMesh) {
-    const { chunk_size } = event.data;
+    const request = event.data;
+    const { chunk_size, chunkId } = request;
     const totalBlocks = chunk_size ** 3;
+    const lod = request.lod ?? 0;
 
-    let needsUint16 = paletteExpander.isUint16(event.data.palette);
-
-    if (!needsUint16 && typeof event.data.uniformBlockId === "number") {
-      needsUint16 = event.data.uniformBlockId > 255;
+    let needsUint16 = paletteExpander.isUint16(request.palette);
+    if (!needsUint16 && typeof request.uniformBlockId === "number") {
+      needsUint16 = request.uniformBlockId > 255;
     }
-
-    if (!needsUint16 && event.data.neighborUniformIds) {
-      for (let i = 0; i < event.data.neighborUniformIds.length; i++) {
-        const v = event.data.neighborUniformIds[i];
+    if (!needsUint16 && request.neighborUniformIds) {
+      for (let i = 0; i < request.neighborUniformIds.length; i++) {
+        const v = request.neighborUniformIds[i];
         if (v !== undefined && v > 255) {
           needsUint16 = true;
           break;
@@ -1319,51 +1599,371 @@ const onMessageHandler = (event: MessageEvent) => {
       }
     }
 
-    if (
-      !event.data.block_array &&
-      typeof event.data.uniformBlockId === "number"
-    ) {
-      const uniformValue = event.data.uniformBlockId;
-      event.data.block_array = needsUint16
+    // -----------------------------
+    // Expand center chunk data
+    // -----------------------------
+    if (!request.block_array && typeof request.uniformBlockId === "number") {
+      const uniformValue = request.uniformBlockId;
+      request.block_array = needsUint16
         ? new Uint16Array(totalBlocks)
         : new Uint8Array(totalBlocks);
-
-      event.data.block_array.fill(uniformValue);
-    } else if (event.data.palette && event.data.block_array) {
-      event.data.block_array = paletteExpander.expandPalette(
-        event.data.block_array,
-        event.data.palette,
+      request.block_array.fill(uniformValue);
+    } else if (request.palette && request.block_array instanceof Uint8Array) {
+      request.block_array = paletteExpander.expandPalette(
+        request.block_array,
+        request.palette,
         totalBlocks,
       );
     }
 
-    const { neighbors, neighborUniformIds, neighborPalettes } = event.data;
+    // -----------------------------
+    // Expand neighbor chunk data
+    // -----------------------------
+    const { neighbors, neighborUniformIds, neighborPalettes } = request;
+
     if (neighborUniformIds) {
       for (let i = 0; i < neighbors.length; i++) {
-        if (!neighbors[i] && typeof neighborUniformIds[i] === "number") {
-          const uniformValue = neighborUniformIds[i]!;
-          neighbors[i] = needsUint16
+        const neighbor = neighbors[i];
+        const uniformId = neighborUniformIds[i];
+        const palette = neighborPalettes?.[i];
+
+        if (
+          (neighbor === undefined || neighbor === null) &&
+          typeof uniformId === "number"
+        ) {
+          const expandedNeighbor = needsUint16
             ? new Uint16Array(totalBlocks)
             : new Uint8Array(totalBlocks);
 
-          neighbors[i]!.fill(uniformValue);
-        } else if (neighbors[i] && neighborPalettes?.[i]) {
+          expandedNeighbor.fill(uniformId);
+          neighbors[i] = expandedNeighbor;
+          continue;
+        }
+
+        if (neighbor instanceof Uint8Array && palette) {
           neighbors[i] = paletteExpander.expandPalette(
-            neighbors[i]! as Uint8Array,
-            neighborPalettes[i]!,
+            neighbor,
+            palette,
             totalBlocks,
           );
         }
       }
     }
 
-    const { opaque, transparent } = ChunkWorkerMesher.generateMesh(event.data);
+    const clearLargeReferences = () => {
+      request.block_array = undefined;
+      request.palette = undefined;
 
-    event.data.block_array = undefined;
-    event.data.neighbors = undefined;
+      for (let i = 0; i < request.neighbors.length; i++) {
+        request.neighbors[i] = undefined;
+      }
 
-    postFullMeshResult(event.data.chunkId, opaque, transparent);
+      if (request.neighborLights) {
+        for (let i = 0; i < request.neighborLights.length; i++) {
+          request.neighborLights[i] = undefined;
+        }
+      }
 
+      if (request.neighborPalettes) {
+        for (let i = 0; i < request.neighborPalettes.length; i++) {
+          request.neighborPalettes[i] = undefined;
+        }
+      }
+    };
+
+    // -----------------------------
+    // Validate expanded center array
+    // -----------------------------
+    const expandedCenterBlockArray = request.block_array;
+    if (
+      !(expandedCenterBlockArray instanceof Uint8Array) &&
+      !(expandedCenterBlockArray instanceof Uint16Array)
+    ) {
+      throw new Error(
+        "GenerateFullMesh: block_array was not expanded before meshing.",
+      );
+    }
+
+    // -----------------------------
+    // Shared block/light sampling helpers
+    // Used by the water LOD pass so chunk borders work correctly.
+    // -----------------------------
+    const size = chunk_size;
+    const size2 = size * size;
+    const fullBright = 15 << 4;
+
+    const toCompactNeighborIndex = (fullIndex: number): number =>
+      fullIndex > 13 ? fullIndex - 1 : fullIndex;
+
+    const getBlock = (
+      x: number,
+      y: number,
+      z: number,
+      fallback = 0,
+    ): number => {
+      if (x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size) {
+        return expandedCenterBlockArray[x + y * size + z * size2];
+      }
+
+      const dx = x < 0 ? -1 : x >= size ? 1 : 0;
+      const dy = y < 0 ? -1 : y >= size ? 1 : 0;
+      const dz = z < 0 ? -1 : z >= size ? 1 : 0;
+
+      const neighborIndex = toCompactNeighborIndex(
+        dx + 1 + (dy + 1) * 3 + (dz + 1) * 9,
+      );
+
+      const neighbor = request.neighbors[neighborIndex];
+      if (
+        !(neighbor instanceof Uint8Array) &&
+        !(neighbor instanceof Uint16Array)
+      ) {
+        return fallback;
+      }
+
+      const nx = x - dx * size;
+      const ny = y - dy * size;
+      const nz = z - dz * size;
+
+      return neighbor[nx + ny * size + nz * size2];
+    };
+
+    const getLight = (
+      x: number,
+      y: number,
+      z: number,
+      fallback = fullBright,
+    ): number => {
+      const centerLight = request.light_array;
+
+      if (!(centerLight instanceof Uint8Array)) {
+        return fullBright;
+      }
+
+      if (x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size) {
+        return centerLight[x + y * size + z * size2];
+      }
+
+      const dx = x < 0 ? -1 : x >= size ? 1 : 0;
+      const dy = y < 0 ? -1 : y >= size ? 1 : 0;
+      const dz = z < 0 ? -1 : z >= size ? 1 : 0;
+
+      const neighborIndex = toCompactNeighborIndex(
+        dx + 1 + (dy + 1) * 3 + (dz + 1) * 9,
+      );
+
+      const neighborLight = request.neighborLights?.[neighborIndex];
+      if (!(neighborLight instanceof Uint8Array)) {
+        return fallback;
+      }
+
+      const nx = x - dx * size;
+      const ny = y - dy * size;
+      const nz = z - dz * size;
+
+      return neighborLight[nx + ny * size + nz * size2];
+    };
+
+    // -----------------------------
+    // LOD1 simplification path
+    // -----------------------------
+    if (lod >= 1) {
+      const step = 2;
+
+      const createBlockArray = (): Uint8Array | Uint16Array =>
+        needsUint16
+          ? new Uint16Array(totalBlocks)
+          : new Uint8Array(totalBlocks);
+
+      const simplifyBlockArray = (
+        source: Uint8Array | Uint16Array,
+      ): Uint8Array | Uint16Array => {
+        const simplified = createBlockArray();
+
+        // Local getBlock for this source array only
+        const localGetBlock = (
+          x: number,
+          y: number,
+          z: number,
+          fallback = 0,
+        ): number => {
+          if (x < 0 || x >= size || y < 0 || y >= size || z < 0 || z >= size) {
+            return fallback;
+          }
+          return source[x + y * size + z * size2];
+        };
+
+        for (let z = 0; z < size; z += step) {
+          for (let y = 0; y < size; y += step) {
+            for (let x = 0; x < size; x += step) {
+              // If this coarse cell contains a visible water surface,
+              // reserve the cell for the separate transparent water LOD mesh.
+              const waterSurface = ChunkWorkerMesher.sampleCoarseWaterSurface(
+                {
+                  chunk_size: size,
+                  getBlock: localGetBlock,
+                  getLight: () => 0,
+                  step,
+                },
+                x,
+                y,
+                z,
+              );
+
+              let chosen = 0;
+
+              if (!waterSurface) {
+                // No visible water here -> choose opaque terrain as before
+                outer: for (let dz = 0; dz < step && z + dz < size; dz++) {
+                  for (let dy = 0; dy < step && y + dy < size; dy++) {
+                    for (let dx = 0; dx < step && x + dx < size; dx++) {
+                      const idx = x + dx + (y + dy) * size + (z + dz) * size2;
+
+                      const packed = source[idx];
+                      const blockId = unpackBlockId(packed);
+
+                      if (blockId === 0) continue;
+                      if (BLOCK_TYPE[blockId] !== 0) continue; // skip transparent
+
+                      chosen = packed;
+                      break outer;
+                    }
+                  }
+                }
+              }
+
+              // Fill the whole coarse cell
+              for (let dz = 0; dz < step && z + dz < size; dz++) {
+                for (let dy = 0; dy < step && y + dy < size; dy++) {
+                  for (let dx = 0; dx < step && x + dx < size; dx++) {
+                    const idx = x + dx + (y + dy) * size + (z + dz) * size2;
+                    simplified[idx] = chosen;
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        return simplified;
+      };
+
+      const simplifyLightArray = (source: Uint8Array): Uint8Array => {
+        const simplified = new Uint8Array(totalBlocks);
+
+        for (let z = 0; z < size; z += step) {
+          for (let y = 0; y < size; y += step) {
+            for (let x = 0; x < size; x += step) {
+              let maxSky = 0;
+              let maxBlock = 0;
+
+              for (let dz = 0; dz < step && z + dz < size; dz++) {
+                for (let dy = 0; dy < step && y + dy < size; dy++) {
+                  for (let dx = 0; dx < step && x + dx < size; dx++) {
+                    const idx = x + dx + (y + dy) * size + (z + dz) * size2;
+
+                    const packedLight = source[idx];
+                    const blockLight = packedLight & 0x0f;
+                    const skyLight = (packedLight >>> 4) & 0x0f;
+
+                    if (blockLight > maxBlock) maxBlock = blockLight;
+                    if (skyLight > maxSky) maxSky = skyLight;
+                  }
+                }
+              }
+
+              const packedOut = maxBlock | (maxSky << 4);
+
+              for (let dz = 0; dz < step && z + dz < size; dz++) {
+                for (let dy = 0; dy < step && y + dy < size; dy++) {
+                  for (let dx = 0; dx < step && x + dx < size; dx++) {
+                    const idx = x + dx + (y + dy) * size + (z + dz) * size2;
+                    simplified[idx] = packedOut;
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        return simplified;
+      };
+
+      const simplifiedCenter = simplifyBlockArray(expandedCenterBlockArray);
+
+      const simplifiedNeighbors: (Uint8Array | Uint16Array | undefined)[] =
+        request.neighbors.map((neighbor) =>
+          neighbor instanceof Uint8Array || neighbor instanceof Uint16Array
+            ? simplifyBlockArray(neighbor)
+            : undefined,
+        );
+
+      const simplifiedCenterLight =
+        request.light_array instanceof Uint8Array
+          ? simplifyLightArray(request.light_array)
+          : undefined;
+
+      const simplifiedNeighborLights: (Uint8Array | undefined)[] | undefined =
+        request.neighborLights
+          ? request.neighborLights.map((light) =>
+              light instanceof Uint8Array
+                ? simplifyLightArray(light)
+                : undefined,
+            )
+          : undefined;
+
+      // Solid terrain LOD mesh
+      const solidResult = ChunkWorkerMesher.generateMesh({
+        block_array: simplifiedCenter,
+        chunk_size: size,
+        light_array: simplifiedCenterLight,
+        neighbors: simplifiedNeighbors,
+        neighborLights: simplifiedNeighborLights,
+      });
+
+      // Separate transparent water LOD mesh generated from the ORIGINAL
+      // expanded block/light field, not the simplified solid field.
+      const waterResult = ChunkWorkerMesher.generateLODWaterMesh({
+        chunk_size: size,
+        getBlock,
+        getLight,
+        step,
+      });
+      ChunkWorkerMesher.appendMeshData(solidResult.transparent, waterResult);
+
+      console.log(
+        "[LOD water merge]",
+        "water=",
+        waterResult.faceCount,
+        "transparentAfter=",
+        solidResult.transparent.faceCount,
+      );
+
+      clearLargeReferences();
+      postFullMeshResult(chunkId, solidResult.opaque, solidResult.transparent);
+      return;
+    }
+
+    // -----------------------------
+    // Full-quality LOD0 path
+    // -----------------------------
+    const fullNeighbors: (Uint8Array | Uint16Array | undefined)[] =
+      request.neighbors.map((neighbor) =>
+        neighbor instanceof Uint8Array || neighbor instanceof Uint16Array
+          ? neighbor
+          : undefined,
+      );
+
+    const { opaque, transparent } = ChunkWorkerMesher.generateMesh({
+      block_array: expandedCenterBlockArray,
+      chunk_size: request.chunk_size,
+      light_array: request.light_array,
+      neighbors: fullNeighbors,
+      neighborLights: request.neighborLights,
+    });
+
+    clearLargeReferences();
+    postFullMeshResult(chunkId, opaque, transparent);
     return;
   }
 

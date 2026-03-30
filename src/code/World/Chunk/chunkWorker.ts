@@ -1,12 +1,18 @@
 import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
 import { Chunk } from "./Chunk";
-import { WorkerTaskType } from "./DataStructures/WorkerMessageType";
+import {
+  GenerateDistantTerrainRequest,
+  GenerateFullMeshRequest,
+  GenerateTerrainRequest,
+  WorkerResponseData,
+  WorkerTaskType,
+} from "./DataStructures/WorkerMessageType";
 
 export class ChunkWorker {
   private worker: Worker;
   private warnedNonSharedRemeshPayload = false;
 
-  constructor(onMessage: (event: MessageEvent) => void) {
+  constructor(onMessage: (event: MessageEvent<WorkerResponseData>) => void) {
     this.worker = new Worker(new URL("./chunk.worker.ts", import.meta.url), {
       type: "module",
     });
@@ -32,8 +38,8 @@ export class ChunkWorker {
     for (let z = -1; z <= 1; z++) {
       for (let y = -1; y <= 1; y++) {
         for (let x = -1; x <= 1; x++) {
-          // Center is sent separately as block_array/light_array.
           if (x === 0 && y === 0 && z === 0) continue;
+
           const neighbor = chunk.getNeighbor(x, y, z);
           if (neighbor && neighbor.isLoaded) {
             neighbors.push(neighbor.block_array);
@@ -65,6 +71,7 @@ export class ChunkWorker {
       const hasNonSharedNeighborLights = neighborLights.some(
         (n) => !!n && !(n.buffer instanceof SharedArrayBuffer),
       );
+
       if (
         hasNonSharedCenterBlocks ||
         hasNonSharedCenterLight ||
@@ -78,9 +85,10 @@ export class ChunkWorker {
       }
     }
 
-    this.worker.postMessage({
+    const message: GenerateFullMeshRequest = {
       type: WorkerTaskType.GenerateFullMesh,
       chunkId: chunk.id,
+      lod: (chunk as any).lodLevel ?? 0,
       block_array: chunk.block_array,
       uniformBlockId: chunk.isUniform ? chunk.uniformBlockId : undefined,
       palette: this.paletteToTyped(chunk.palette),
@@ -90,16 +98,22 @@ export class ChunkWorker {
       neighborLights,
       neighborUniformIds,
       neighborPalettes,
-    });
+    };
+
+    this.worker.postMessage(message);
   }
 
   public postTerrainGeneration(chunk: Chunk): void {
-    this.worker.postMessage({
+    const message: GenerateTerrainRequest = {
       type: WorkerTaskType.GenerateTerrain,
       chunkId: chunk.id,
       chunkX: chunk.chunkX,
       chunkY: chunk.chunkY,
       chunkZ: chunk.chunkZ,
+    };
+
+    this.worker.postMessage({
+      ...message,
       ...GenerationParams,
     });
   }
@@ -125,19 +139,18 @@ export class ChunkWorker {
       transferables.push(oldData.surfaceTiles.buffer);
     }
 
-    this.worker.postMessage(
-      {
-        type: WorkerTaskType.GenerateDistantTerrain,
-        centerChunkX,
-        centerChunkZ,
-        radius,
-        renderDistance,
-        gridStep,
-        oldData,
-        oldCenterChunkX,
-        oldCenterChunkZ,
-      },
-      transferables,
-    );
+    const message: GenerateDistantTerrainRequest = {
+      type: WorkerTaskType.GenerateDistantTerrain,
+      centerChunkX,
+      centerChunkZ,
+      radius,
+      renderDistance,
+      gridStep,
+      oldData,
+      oldCenterChunkX,
+      oldCenterChunkZ,
+    };
+
+    this.worker.postMessage(message, transferables);
   }
 }

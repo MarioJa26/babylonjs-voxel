@@ -37,6 +37,9 @@ type FaceRect = {
 
 export class Chunk {
   public readonly id: bigint;
+
+  public lodLevel = 0;
+
   public static readonly SIZE = GenerationParams.CHUNK_SIZE;
   public static readonly SIZE2 = Chunk.SIZE * Chunk.SIZE;
   public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
