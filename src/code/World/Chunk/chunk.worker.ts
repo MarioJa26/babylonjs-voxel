@@ -129,6 +129,17 @@ type WaterLODArgs = {
   getLight: (x: number, y: number, z: number, fallback?: number) => number;
   step: number;
 };
+
+type WaterSampleGrid = {
+  samples: (WaterSurfaceSample | null)[];
+  cellsX: number;
+  cellsY: number;
+  cellsZ: number;
+  step: number;
+  chunkSize: number;
+  hasAnyWaterSurface: boolean;
+};
+
 class ChunkWorkerMesher {
   private static toCompactNeighborIndex(fullIndex: number): number {
     return fullIndex > 13 ? fullIndex - 1 : fullIndex;
@@ -1323,64 +1334,50 @@ class ChunkWorkerMesher {
     };
   }
 
-  /**
-   * Generate a transparent-only water LOD mesh.
-   *
-   * Version 1:
-   * - emits top water surfaces only
-   * - does NOT emit water side walls yet
-   * - uses packedLight from the sampled coarse cell
-   * - AO is forced to 0 for now (you can add custom distant-water AO later if desired)
-   */
-  public static generateLODWaterMesh(
-    args: WaterLODArgs,
+  public static generateLODWaterMeshFromGrid(
+    grid: WaterSampleGrid,
   ): WorkerInternalMeshData {
     const mesh = this.createEmptyMeshData();
-    const { chunk_size: size, step } = args;
 
-    const cellsX = Math.ceil(size / step);
-    const cellsZ = Math.ceil(size / step);
+    if (!grid.hasAnyWaterSurface) {
+      return mesh;
+    }
 
-    // Process one coarse Y band at a time.
-    for (let coarseY = 0; coarseY < size; coarseY += step) {
-      const samples: (WaterSurfaceSample | null)[] = new Array(
-        cellsX * cellsZ,
-      ).fill(null);
-      const used = new Uint8Array(cellsX * cellsZ);
+    const { samples, cellsX, cellsY, cellsZ } = grid;
+    const used = new Uint8Array(samples.length);
 
-      // Build a 2D sample grid for this coarse Y band.
-      for (let cellZ = 0; cellZ < cellsZ; cellZ++) {
-        const z = cellZ * step;
-        if (z >= size) continue;
-
-        for (let cellX = 0; cellX < cellsX; cellX++) {
-          const x = cellX * step;
-          if (x >= size) continue;
-
-          const sample = this.sampleCoarseWaterSurface(args, x, coarseY, z);
-          samples[cellX + cellZ * cellsX] = sample;
-        }
-      }
-
-      // Greedy merge on the X/Z coarse-cell grid.
+    for (let cellY = 0; cellY < cellsY; cellY++) {
       for (let cellZ = 0; cellZ < cellsZ; cellZ++) {
         for (let cellX = 0; cellX < cellsX; cellX++) {
-          const startIndex = cellX + cellZ * cellsX;
+          const startIndex = this.waterGridIndex(
+            cellX,
+            cellY,
+            cellZ,
+            cellsX,
+            cellsZ,
+          );
+
           if (used[startIndex]) continue;
 
           const sample = samples[startIndex];
           if (!sample) continue;
 
-          // Merge rule: same water plane height + same packed light + same cell dimensions.
           const baseWorldY = sample.worldY;
           const basePackedLight = sample.packedLight;
-          const baseCellWidth = sample.width; // X span of one coarse cell
-          const baseCellDepth = sample.depth; // Z span of one coarse cell
+          const baseCellWidth = sample.width;
+          const baseCellDepth = sample.depth;
 
-          // Greedy width in X direction
+          // Greedy width in +X coarse-cell direction
           let mergeWidthCells = 1;
           while (cellX + mergeWidthCells < cellsX) {
-            const idx = cellX + mergeWidthCells + cellZ * cellsX;
+            const idx = this.waterGridIndex(
+              cellX + mergeWidthCells,
+              cellY,
+              cellZ,
+              cellsX,
+              cellsZ,
+            );
+
             if (used[idx]) break;
 
             const s = samples[idx];
@@ -1397,11 +1394,18 @@ class ChunkWorkerMesher {
             mergeWidthCells++;
           }
 
-          // Greedy height in Z direction
+          // Greedy height in +Z coarse-cell direction
           let mergeHeightCells = 1;
           outer: while (cellZ + mergeHeightCells < cellsZ) {
-            for (let w = 0; w < mergeWidthCells; w++) {
-              const idx = cellX + w + (cellZ + mergeHeightCells) * cellsX;
+            for (let dx = 0; dx < mergeWidthCells; dx++) {
+              const idx = this.waterGridIndex(
+                cellX + dx,
+                cellY,
+                cellZ + mergeHeightCells,
+                cellsX,
+                cellsZ,
+              );
+
               if (used[idx]) {
                 break outer;
               }
@@ -1424,31 +1428,36 @@ class ChunkWorkerMesher {
           // Mark merged rectangle as used
           for (let dz = 0; dz < mergeHeightCells; dz++) {
             for (let dx = 0; dx < mergeWidthCells; dx++) {
-              const idx = cellX + dx + (cellZ + dz) * cellsX;
+              const idx = this.waterGridIndex(
+                cellX + dx,
+                cellY,
+                cellZ + dz,
+                cellsX,
+                cellsZ,
+              );
               used[idx] = 1;
             }
           }
 
-          // Convert merged cell counts to actual block-space size.
           const mergedWidthX = mergeWidthCells * baseCellWidth;
           const mergedDepthZ = mergeHeightCells * baseCellDepth;
 
-          // NOTE:
-          // For axis = 1 (top face), your addQuad convention uses:
-          // width  = Z extent
-          // height = X extent
+          // axis = 1 (top face)
+          // For top faces in your addQuad convention:
+          // width  = Z span
+          // height = X span
           this.addQuad(
             sample.worldX,
             sample.worldY,
             sample.worldZ,
             1,
-            mergedDepthZ, // Z span
-            mergedWidthX, // X span
+            mergedDepthZ,
+            mergedWidthX,
             WATER_BLOCK_ID,
             false,
             "top",
             sample.packedLight,
-            0, // packedAO = 0 for distant water
+            0,
             mesh,
           );
         }
@@ -1484,7 +1493,72 @@ class ChunkWorkerMesher {
 
     target.faceCount += source.faceCount;
   }
+
+  public static waterGridIndex(
+    cellX: number,
+    cellY: number,
+    cellZ: number,
+    cellsX: number,
+    cellsZ: number,
+  ): number {
+    return cellX + cellZ * cellsX + cellY * cellsX * cellsZ;
+  }
+  public static buildCoarseWaterSampleGrid(
+    args: WaterLODArgs,
+  ): WaterSampleGrid {
+    const { chunk_size: size, step } = args;
+
+    const cellsX = Math.ceil(size / step);
+    const cellsY = Math.ceil(size / step);
+    const cellsZ = Math.ceil(size / step);
+
+    const samples: (WaterSurfaceSample | null)[] = new Array(
+      cellsX * cellsY * cellsZ,
+    ).fill(null);
+
+    let hasAnyWaterSurface = false;
+
+    for (let cellY = 0; cellY < cellsY; cellY++) {
+      const y = cellY * step;
+      if (y >= size) continue;
+
+      for (let cellZ = 0; cellZ < cellsZ; cellZ++) {
+        const z = cellZ * step;
+        if (z >= size) continue;
+
+        for (let cellX = 0; cellX < cellsX; cellX++) {
+          const x = cellX * step;
+          if (x >= size) continue;
+
+          const sample = this.sampleCoarseWaterSurface(args, x, y, z);
+          const index = this.waterGridIndex(
+            cellX,
+            cellY,
+            cellZ,
+            cellsX,
+            cellsZ,
+          );
+          samples[index] = sample;
+
+          if (sample) {
+            hasAnyWaterSurface = true;
+          }
+        }
+      }
+    }
+
+    return {
+      samples,
+      cellsX,
+      cellsY,
+      cellsZ,
+      step,
+      chunkSize: size,
+      hasAnyWaterSurface,
+    };
+  }
 }
+
 // ---------------------------------------------------------------------------
 // Block compression
 // ---------------------------------------------------------------------------
@@ -1686,7 +1760,6 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
 
     // -----------------------------
     // Shared block/light sampling helpers
-    // Used by the water LOD pass so chunk borders work correctly.
     // -----------------------------
     const size = chunk_size;
     const size2 = size * size;
@@ -1777,43 +1850,35 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
 
       const simplifyBlockArray = (
         source: Uint8Array | Uint16Array,
+        waterGrid?: WaterSampleGrid,
       ): Uint8Array | Uint16Array => {
         const simplified = createBlockArray();
-
-        // Local getBlock for this source array only
-        const localGetBlock = (
-          x: number,
-          y: number,
-          z: number,
-          fallback = 0,
-        ): number => {
-          if (x < 0 || x >= size || y < 0 || y >= size || z < 0 || z >= size) {
-            return fallback;
-          }
-          return source[x + y * size + z * size2];
-        };
 
         for (let z = 0; z < size; z += step) {
           for (let y = 0; y < size; y += step) {
             for (let x = 0; x < size; x += step) {
-              // If this coarse cell contains a visible water surface,
-              // reserve the cell for the separate transparent water LOD mesh.
-              const waterSurface = ChunkWorkerMesher.sampleCoarseWaterSurface(
-                {
-                  chunk_size: size,
-                  getBlock: localGetBlock,
-                  getLight: () => 0,
-                  step,
-                },
-                x,
-                y,
-                z,
-              );
+              let waterSurface: WaterSurfaceSample | null = null;
+
+              if (waterGrid && waterGrid.hasAnyWaterSurface) {
+                const cellX = Math.floor(x / step);
+                const cellY = Math.floor(y / step);
+                const cellZ = Math.floor(z / step);
+
+                const waterIndex = ChunkWorkerMesher.waterGridIndex(
+                  cellX,
+                  cellY,
+                  cellZ,
+                  waterGrid.cellsX,
+                  waterGrid.cellsZ,
+                );
+
+                waterSurface = waterGrid.samples[waterIndex];
+              }
 
               let chosen = 0;
 
               if (!waterSurface) {
-                // No visible water here -> choose opaque terrain as before
+                // No reserved water surface here -> choose opaque terrain
                 outer: for (let dz = 0; dz < step && z + dz < size; dz++) {
                   for (let dy = 0; dy < step && y + dy < size; dy++) {
                     for (let dx = 0; dx < step && x + dx < size; dx++) {
@@ -1832,7 +1897,6 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
                 }
               }
 
-              // Fill the whole coarse cell
               for (let dz = 0; dz < step && z + dz < size; dz++) {
                 for (let dy = 0; dy < step && y + dy < size; dy++) {
                   for (let dx = 0; dx < step && x + dx < size; dx++) {
@@ -1889,7 +1953,17 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
         return simplified;
       };
 
-      const simplifiedCenter = simplifyBlockArray(expandedCenterBlockArray);
+      const waterGrid = ChunkWorkerMesher.buildCoarseWaterSampleGrid({
+        chunk_size: size,
+        getBlock,
+        getLight,
+        step,
+      });
+
+      const simplifiedCenter = simplifyBlockArray(
+        expandedCenterBlockArray,
+        waterGrid,
+      );
 
       const simplifiedNeighbors: (Uint8Array | Uint16Array | undefined)[] =
         request.neighbors.map((neighbor) =>
@@ -1912,7 +1986,6 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
             )
           : undefined;
 
-      // Solid terrain LOD mesh
       const solidResult = ChunkWorkerMesher.generateMesh({
         block_array: simplifiedCenter,
         chunk_size: size,
@@ -1921,23 +1994,10 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
         neighborLights: simplifiedNeighborLights,
       });
 
-      // Separate transparent water LOD mesh generated from the ORIGINAL
-      // expanded block/light field, not the simplified solid field.
-      const waterResult = ChunkWorkerMesher.generateLODWaterMesh({
-        chunk_size: size,
-        getBlock,
-        getLight,
-        step,
-      });
-      ChunkWorkerMesher.appendMeshData(solidResult.transparent, waterResult);
+      const waterResult =
+        ChunkWorkerMesher.generateLODWaterMeshFromGrid(waterGrid);
 
-      console.log(
-        "[LOD water merge]",
-        "water=",
-        waterResult.faceCount,
-        "transparentAfter=",
-        solidResult.transparent.faceCount,
-      );
+      ChunkWorkerMesher.appendMeshData(solidResult.transparent, waterResult);
 
       clearLargeReferences();
       postFullMeshResult(chunkId, solidResult.opaque, solidResult.transparent);
@@ -1975,6 +2035,7 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
       chunkY,
       chunkZ,
     );
+
     const { isUniform, uniformBlockId, palette, packedBlocks } =
       compressBlocks(blocks);
 
@@ -2024,6 +2085,7 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
       oldCenterChunkX,
       oldCenterChunkZ,
     } = event.data;
+
     const data = DistantTerrainGenerator.generate(
       centerChunkX,
       centerChunkZ,
@@ -2034,6 +2096,7 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
       oldCenterChunkX,
       oldCenterChunkZ,
     );
+
     self.postMessage(
       {
         type: WorkerTaskType.GenerateDistantTerrain_Generated,
