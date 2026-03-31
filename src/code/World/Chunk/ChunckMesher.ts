@@ -15,7 +15,6 @@ import {
 import { Map1 } from "@/code/Maps/Map1";
 import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
 import { WorldEnvironment } from "../../Maps/WorldEnvironment";
-
 import { GlobalValues } from "../GlobalValues";
 import { ShaderMaterial } from "@babylonjs/core";
 import { MeshData } from "./DataStructures/MeshData";
