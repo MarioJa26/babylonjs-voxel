@@ -268,6 +268,12 @@ export class ChunkWorkerPool {
   }
 
   private tryApplyCachedLODMesh(chunk: Chunk): boolean {
+    // Never reuse cache for a chunk that was explicitly marked for remesh.
+    // Border edits and light changes set isDirty via scheduleRemesh().
+    if (chunk.isDirty) {
+      return false;
+    }
+
     const cached = chunk.getCachedLODMesh(chunk.lodLevel);
     if (!cached) {
       return false;
@@ -280,6 +286,7 @@ export class ChunkWorkerPool {
 
     return true;
   }
+
   private getChunkLodLevel(chunk: Chunk | undefined): number {
     return chunk?.lodLevel ?? 0;
   }
