@@ -1966,10 +1966,11 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
       );
 
       const simplifiedNeighbors: (Uint8Array | Uint16Array | undefined)[] =
-        request.neighbors.map((neighbor) =>
-          neighbor instanceof Uint8Array || neighbor instanceof Uint16Array
-            ? simplifyBlockArray(neighbor)
-            : undefined,
+        request.neighbors.map(
+          (neighbor: Uint8Array | Uint16Array | null | undefined) =>
+            neighbor instanceof Uint8Array || neighbor instanceof Uint16Array
+              ? simplifyBlockArray(neighbor)
+              : undefined,
         );
 
       const simplifiedCenterLight =
@@ -1979,7 +1980,7 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
 
       const simplifiedNeighborLights: (Uint8Array | undefined)[] | undefined =
         request.neighborLights
-          ? request.neighborLights.map((light) =>
+          ? request.neighborLights.map((light: Uint8Array | undefined) =>
               light instanceof Uint8Array
                 ? simplifyLightArray(light)
                 : undefined,
@@ -2000,7 +2001,12 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
       ChunkWorkerMesher.appendMeshData(solidResult.transparent, waterResult);
 
       clearLargeReferences();
-      postFullMeshResult(chunkId, solidResult.opaque, solidResult.transparent);
+      postFullMeshResult(
+        chunkId,
+        lod,
+        solidResult.opaque,
+        solidResult.transparent,
+      );
       return;
     }
 
@@ -2008,10 +2014,11 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
     // Full-quality LOD0 path
     // -----------------------------
     const fullNeighbors: (Uint8Array | Uint16Array | undefined)[] =
-      request.neighbors.map((neighbor) =>
-        neighbor instanceof Uint8Array || neighbor instanceof Uint16Array
-          ? neighbor
-          : undefined,
+      request.neighbors.map(
+        (neighbor: Uint8Array | Uint16Array | null | undefined) =>
+          neighbor instanceof Uint8Array || neighbor instanceof Uint16Array
+            ? neighbor
+            : undefined,
       );
 
     const { opaque, transparent } = ChunkWorkerMesher.generateMesh({
@@ -2023,7 +2030,7 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
     });
 
     clearLargeReferences();
-    postFullMeshResult(chunkId, opaque, transparent);
+    postFullMeshResult(chunkId, lod, opaque, transparent);
     return;
   }
 
@@ -2127,6 +2134,7 @@ function toTransferable(data: WorkerInternalMeshData): MeshData {
 
 function postFullMeshResult(
   chunkId: bigint,
+  lod: number,
   opaque: WorkerInternalMeshData,
   transparent: WorkerInternalMeshData,
 ) {
@@ -2136,6 +2144,7 @@ function postFullMeshResult(
   self.postMessage(
     {
       chunkId,
+      lod,
       type: WorkerTaskType.GenerateFullMesh,
       opaque: opaqueMeshData,
       transparent: transparentMeshData,

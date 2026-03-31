@@ -10,6 +10,13 @@ export type SavedChunkData = {
   light_array?: Uint8Array;
   opaqueMesh?: MeshData;
   transparentMesh?: MeshData;
+  lodMeshes?: Record<
+    number,
+    {
+      opaque?: MeshData | null;
+      transparent?: MeshData | null;
+    }
+  >;
   compressed?: boolean;
 };
 
@@ -120,9 +127,11 @@ export class WorldStorage {
     if (chunk.isPersistent) {
       return;
     }
-    if (!chunk.isModified) {
+
+    if (!chunk.isModified && !chunk.isLODMeshCacheDirty) {
       return;
     }
+
     if (!(await this.ensureInitialized())) {
       console.warn("DB not initialized, cannot save chunk.");
       return;
@@ -138,6 +147,7 @@ export class WorldStorage {
     const isUniform = chunk.isUniform;
     const opaqueMesh = chunk.opaqueMeshData;
     const transparentMesh = chunk.transparentMeshData;
+    const lodMeshes = chunk.getSerializableLODMeshCache();
 
     const compressedBlocks = blocks ? await this.compress(blocks) : null;
     const compressedLight = light ? await this.compress(light) : null;
@@ -155,14 +165,17 @@ export class WorldStorage {
       light_array: compressedLight,
       opaqueMesh,
       transparentMesh,
+      lodMeshes,
       compressed: true,
     });
 
     const savePromise = new Promise<void>((resolve, reject) => {
       transaction.oncomplete = () => {
-        chunk.isModified = false; // Mark as saved
+        chunk.isModified = false;
+        chunk.isLODMeshCacheDirty = false;
         resolve();
       };
+
       transaction.onerror = () => reject(transaction.error);
     });
 
@@ -174,7 +187,11 @@ export class WorldStorage {
       // Saving is disabled for testing, do nothing.
       return Promise.resolve();
     }
-    const modifiedChunks = chunks.filter((c) => c.isModified && !c.isPersistent);
+
+    const modifiedChunks = chunks.filter(
+      (c) => (c.isModified || c.isLODMeshCacheDirty) && !c.isPersistent,
+    );
+
     if (modifiedChunks.length === 0) {
       return Promise.resolve();
     }
@@ -195,7 +212,7 @@ export class WorldStorage {
         const isUniform = chunk.isUniform;
         const opaqueMesh = chunk.opaqueMeshData;
         const transparentMesh = chunk.transparentMeshData;
-
+        const lodMeshes = chunk.getSerializableLODMeshCache();
         return {
           id,
           blocks: blocks ? await this.compress(blocks) : null,
@@ -205,6 +222,7 @@ export class WorldStorage {
           light_array: light ? await this.compress(light) : null,
           opaqueMesh,
           transparentMesh,
+          lodMeshes,
           compressed: true,
         };
       }),
@@ -218,7 +236,8 @@ export class WorldStorage {
       transaction.oncomplete = () => {
         // Only mark chunks as not modified after the transaction is successfully completed.
         for (const chunk of modifiedChunks) {
-          chunk.isModified = false; // Mark as saved
+          chunk.isModified = false;
+          chunk.isLODMeshCacheDirty = false;
         }
         resolve();
       };
@@ -260,7 +279,10 @@ export class WorldStorage {
     }
 
     const chunkIdKey = chunkId.toString();
-    const transaction = this.db.transaction(CHUNK_ENTITY_STORE_NAME, "readwrite");
+    const transaction = this.db.transaction(
+      CHUNK_ENTITY_STORE_NAME,
+      "readwrite",
+    );
     const store = transaction.objectStore(CHUNK_ENTITY_STORE_NAME);
 
     if (entities.length === 0) {
@@ -292,7 +314,10 @@ export class WorldStorage {
 
     const chunkIdKey = chunkId.toString();
     await this.awaitPendingChunkSaves([chunkIdKey]);
-    const transaction = this.db.transaction(CHUNK_ENTITY_STORE_NAME, "readonly");
+    const transaction = this.db.transaction(
+      CHUNK_ENTITY_STORE_NAME,
+      "readonly",
+    );
     const store = transaction.objectStore(CHUNK_ENTITY_STORE_NAME);
     const request = store.get(chunkIdKey);
 

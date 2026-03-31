@@ -224,7 +224,11 @@ export class ChunkLoadingSystem {
     const chunksToSave: Chunk[] = [];
 
     for (const chunk of Chunk.chunkInstances.values()) {
-      if (!chunk.isLoaded || chunk.isPersistent || !chunk.isModified) {
+      if (
+        !chunk.isLoaded ||
+        chunk.isPersistent ||
+        (!chunk.isModified && !chunk.isLODMeshCacheDirty)
+      ) {
         continue;
       }
 
@@ -589,7 +593,9 @@ export class ChunkLoadingSystem {
 
           const chunksToSave = batch.filter(
             (chunk) =>
-              chunk.isLoaded && chunk.isModified && !chunk.isPersistent,
+              chunk.isLoaded &&
+              !chunk.isPersistent &&
+              (chunk.isModified || chunk.isLODMeshCacheDirty),
           );
 
           let savedChunkIds: Set<bigint> | null = null;
@@ -608,7 +614,7 @@ export class ChunkLoadingSystem {
             if (!chunk.isLoaded) continue;
 
             const canUnload =
-              !chunk.isModified ||
+              (!chunk.isModified && !chunk.isLODMeshCacheDirty) ||
               (savedChunkIds !== null && savedChunkIds.has(chunk.id));
 
             if (canUnload) {
@@ -645,8 +651,27 @@ export class ChunkLoadingSystem {
                 const savedData = loadedDataMap.get(chunk.id);
 
                 if (savedData) {
-                  const hasMeshes =
-                    !!savedData.opaqueMesh || !!savedData.transparentMesh;
+                  const currentLod = chunk.lodLevel ?? 0;
+
+                  const savedLODMesh =
+                    currentLod === 0
+                      ? {
+                          opaque: savedData.opaqueMesh ?? null,
+                          transparent: savedData.transparentMesh ?? null,
+                        }
+                      : savedData.lodMeshes?.[currentLod]
+                        ? {
+                            opaque:
+                              savedData.lodMeshes[currentLod]?.opaque ?? null,
+                            transparent:
+                              savedData.lodMeshes[currentLod]?.transparent ??
+                              null,
+                          }
+                        : null;
+
+                  const hasDesiredMesh =
+                    !!savedLODMesh &&
+                    (!!savedLODMesh.opaque || !!savedLODMesh.transparent);
 
                   chunk.loadFromStorage(
                     savedData.blocks,
@@ -654,17 +679,31 @@ export class ChunkLoadingSystem {
                     savedData.isUniform,
                     savedData.uniformBlockId,
                     savedData.light_array,
-                    !hasMeshes,
+                    !hasDesiredMesh,
                   );
 
-                  if (hasMeshes) {
-                    ChunkMesher.createMeshFromData(chunk, {
+                  // Restore persisted LOD cache first
+                  chunk.restoreLODMeshCache(savedData.lodMeshes);
+
+                  // Also restore the base LOD0 mesh into the runtime cache
+                  if (savedData.opaqueMesh || savedData.transparentMesh) {
+                    chunk.setCachedLODMesh(0, {
                       opaque: savedData.opaqueMesh ?? null,
                       transparent: savedData.transparentMesh ?? null,
                     });
+                    chunk.isLODMeshCacheDirty = false;
+                  }
 
-                    // Reconcile borders with currently loaded neighbors.
-                    this.scheduleChunkAndNeighborsRemesh(chunk);
+                  if (hasDesiredMesh) {
+                    ChunkMesher.createMeshFromData(chunk, {
+                      opaque: savedLODMesh!.opaque,
+                      transparent: savedLODMesh!.transparent,
+                    });
+
+                    // Only reconcile borders immediately for full-detail mesh
+                    if (currentLod === 0) {
+                      this.scheduleChunkAndNeighborsRemesh(chunk);
+                    }
                   }
                 } else {
                   chunksToGenerate.push(chunk);

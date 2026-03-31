@@ -1,6 +1,7 @@
 import { ChunkMesher } from "./ChunckMesher";
 import { Chunk } from "./Chunk";
 import { ChunkWorker } from "./chunkWorker";
+import { MeshData } from "./DataStructures/MeshData";
 
 import {
   DistantTerrainTask,
@@ -150,13 +151,24 @@ export class ChunkWorkerPool {
     while (this.meshResultQueue.length > 0 && performance.now() - start < 4) {
       const data = this.meshResultQueue.shift();
       if (data) {
-        const { chunkId, opaque, transparent } = data;
+        const { chunkId, lod, opaque, transparent } = data;
         const chunk = this.resolveChunkByMessageId(chunkId);
         if (chunk) {
-          ChunkMesher.createMeshFromData(chunk, {
-            opaque,
-            transparent,
-          });
+          this.storeReturnedLODMesh(
+            chunk,
+            lod,
+            opaque ?? null,
+            transparent ?? null,
+          );
+
+          // Only apply immediately if the chunk is still on the same LOD
+          // that produced this worker result.
+          if ((chunk.lodLevel ?? 0) === lod) {
+            ChunkMesher.createMeshFromData(chunk, {
+              opaque,
+              transparent,
+            });
+          }
         }
       }
     }
@@ -242,6 +254,31 @@ export class ChunkWorkerPool {
     }
 
     this.processQueue();
+  }
+  private storeReturnedLODMesh(
+    chunk: Chunk,
+    lod: number,
+    opaque: MeshData | null,
+    transparent: MeshData | null,
+  ): void {
+    chunk.setCachedLODMesh(lod, {
+      opaque: opaque ?? null,
+      transparent: transparent ?? null,
+    });
+  }
+
+  private tryApplyCachedLODMesh(chunk: Chunk): boolean {
+    const cached = chunk.getCachedLODMesh(chunk.lodLevel);
+    if (!cached) {
+      return false;
+    }
+
+    ChunkMesher.createMeshFromData(chunk, {
+      opaque: cached.opaque,
+      transparent: cached.transparent,
+    });
+
+    return true;
   }
   private getChunkLodLevel(chunk: Chunk | undefined): number {
     return chunk?.lodLevel ?? 0;
@@ -407,6 +444,12 @@ export class ChunkWorkerPool {
         ) {
           this.clearChunkMeshIfPresent(taskChunk);
           continue;
+        }
+
+        if (taskType === "remesh" && taskChunk) {
+          if (this.tryApplyCachedLODMesh(taskChunk)) {
+            continue;
+          }
         }
 
         const workerIndex = this.idleWorkerIndices.shift()!;

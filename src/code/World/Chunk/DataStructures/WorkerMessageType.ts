@@ -77,10 +77,10 @@ export type WorkerRequestData =
 /* =========================================================
  * Responses sent FROM the worker
  * ========================================================= */
-
 export type FullMeshMessage = {
   type: WorkerTaskType.GenerateFullMesh;
   chunkId: bigint;
+  lod: number;
   opaque: MeshData;
   transparent: MeshData;
 };

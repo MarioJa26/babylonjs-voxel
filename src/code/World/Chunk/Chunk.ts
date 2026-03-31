@@ -34,6 +34,17 @@ type FaceRect = {
   v0: number;
   v1: number;
 };
+type CachedLODMesh = {
+  opaque: MeshData | null;
+  transparent: MeshData | null;
+};
+type SerializedLODMeshCache = Record<
+  number,
+  {
+    opaque?: MeshData | null;
+    transparent?: MeshData | null;
+  }
+>;
 
 export class Chunk {
   public readonly id: bigint;
@@ -88,6 +99,9 @@ export class Chunk {
     cache.fill(-1);
     return cache;
   })();
+
+  public cachedLODMeshes = new Map<number, CachedLODMesh>();
+  public isLODMeshCacheDirty = false;
 
   constructor(chunkX: number, chunkY: number, chunkZ: number) {
     this.#chunkX = chunkX;
@@ -158,6 +172,7 @@ export class Chunk {
     light_array?: Uint8Array,
     scheduleRemesh = true,
   ): void {
+    this.clearCachedLODMeshes();
     this._isUniform = isUniform;
     this._uniformBlockId = uniformBlockId;
     this._palette = palette;
@@ -191,6 +206,7 @@ export class Chunk {
     light_array?: Uint8Array,
     scheduleRemesh = true,
   ): void {
+    this.clearCachedLODMeshes();
     if (isUniform && typeof uniformBlockId === "number") {
       this._isUniform = true;
       this._uniformBlockId = uniformBlockId;
@@ -249,6 +265,67 @@ export class Chunk {
     this.isTerrainScheduled = false;
     this.isModified = false; // No longer considered modified as its data is gone.
     this.colliderDirty = true;
+  }
+
+  public getCachedLODMesh(lod: number): CachedLODMesh | null {
+    return this.cachedLODMeshes.get(lod) ?? null;
+  }
+
+  public setCachedLODMesh(lod: number, mesh: CachedLODMesh): void {
+    this.cachedLODMeshes.set(lod, {
+      opaque: mesh.opaque ?? null,
+      transparent: mesh.transparent ?? null,
+    });
+    this.isLODMeshCacheDirty = true;
+  }
+
+  public clearCachedLODMeshes(): void {
+    this.cachedLODMeshes.clear();
+    this.isLODMeshCacheDirty = false;
+  }
+
+  public invalidateLODMeshCaches(): void {
+    if (this.cachedLODMeshes.size > 0) {
+      this.cachedLODMeshes.clear();
+    }
+    this.isLODMeshCacheDirty = true;
+  }
+
+  public getSerializableLODMeshCache(): SerializedLODMeshCache | undefined {
+    if (this.cachedLODMeshes.size === 0) {
+      return undefined;
+    }
+
+    const out: SerializedLODMeshCache = {};
+    for (const [lod, mesh] of this.cachedLODMeshes.entries()) {
+      out[lod] = {
+        opaque: mesh.opaque ?? null,
+        transparent: mesh.transparent ?? null,
+      };
+    }
+    return out;
+  }
+
+  public restoreLODMeshCache(cache?: SerializedLODMeshCache): void {
+    this.cachedLODMeshes.clear();
+
+    if (!cache) {
+      this.isLODMeshCacheDirty = false;
+      return;
+    }
+
+    for (const key of Object.keys(cache)) {
+      const lod = Number(key);
+      if (!Number.isFinite(lod)) continue;
+
+      const entry = cache[lod];
+      this.cachedLODMeshes.set(lod, {
+        opaque: entry?.opaque ?? null,
+        transparent: entry?.transparent ?? null,
+      });
+    }
+
+    this.isLODMeshCacheDirty = false;
   }
 
   public initializeSunlight() {
@@ -539,6 +616,9 @@ export class Chunk {
 
     this.isModified = true;
     this.colliderDirty = true;
+
+    this.clearCachedLODMeshes();
+
     this.scheduleRemesh(true);
 
     // If the block is on a boundary, the neighbor chunk must also be remeshed.
@@ -1480,6 +1560,7 @@ export class Chunk {
   }
 
   public dispose(): void {
+    this.clearCachedLODMeshes();
     this.mesh?.dispose();
     this.transparentMesh?.dispose();
     this.mesh = null;
