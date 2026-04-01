@@ -1,16 +1,16 @@
 /// <reference lib="webworker" />
 
-import { WorldGenerator } from "../Generation/WorldGenerator";
-import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
-import { MeshData } from "./DataStructures/MeshData";
-import { WorkerInternalMeshData } from "./DataStructures/WorkerInternalMeshData";
+import { WorldGenerator } from "../../Generation/WorldGenerator";
+import { GenerationParams } from "../../Generation/NoiseAndParameters/GenerationParams";
+import { MeshData } from "../DataStructures/MeshData";
+import { WorkerInternalMeshData } from "../DataStructures/WorkerInternalMeshData";
 import {
   WorkerTaskType,
   WorkerRequestData,
-} from "./DataStructures/WorkerMessageType";
-import { PaletteExpander } from "./DataStructures/PaletteExpander";
-import { WorkerTaskHandlers } from "./Worker/WorkerTaskHandlers";
-import { ChunkMeshBuilder } from "./Worker/ChunkMeshBuilder";
+} from "../DataStructures/WorkerMessageType";
+import { PaletteExpander } from "../DataStructures/PaletteExpander";
+import { WorkerTaskHandlers } from "./WorkerTaskHandlers";
+import { ChunkMeshBuilder } from "./ChunkMeshBuilder";
 
 // ---------------------------------------------------------------------------
 // Shared instances

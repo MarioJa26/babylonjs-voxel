@@ -1,10 +1,9 @@
+import { DistantTerrain } from "../Generation/DistanTerrain/DistantTerrian";
+import { SettingParams } from "../SettingParams";
+import { SavedChunkEntityData, WorldStorage } from "../WorldStorage";
+import { ChunkMesher } from "./ChunckMesher";
 import { Chunk } from "./Chunk";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
-import { SettingParams } from "../SettingParams";
-import { WorldStorage } from "../WorldStorage";
-import type { SavedChunkEntityData } from "../WorldStorage";
-import { DistantTerrain } from "../Generation/DistanTerrain/DistantTerrian";
-import { ChunkMesher } from "./ChunckMesher";
 
 type ChunkBoundEntity = {
   getWorldPosition: () => { x: number; y: number; z: number };
