@@ -155,7 +155,7 @@ export class WorkerTaskHandlers {
       return neighborLight[nx + ny * size + nz * size2];
     };
 
-    if (lod >= 1) {
+    if (lod >= 2) {
       const step = 2;
 
       const createBlockArray = (): Uint8Array | Uint16Array =>

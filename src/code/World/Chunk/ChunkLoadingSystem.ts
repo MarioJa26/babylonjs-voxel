@@ -5,6 +5,7 @@ import { WorldStorage } from "../WorldStorage";
 import type { SavedChunkEntityData } from "../WorldStorage";
 import { DistantTerrain } from "../Generation/DistanTerrain/DistantTerrian";
 import { ChunkMesher } from "./ChunckMesher";
+import { ChunkLodRuleSet } from "./LOD/ChunkLodRules";
 
 type ChunkBoundEntity = {
   getWorldPosition: () => { x: number; y: number; z: number };
@@ -361,36 +362,32 @@ export class ChunkLoadingSystem {
     // Keep/update your far-distance terrain renderer.
     this.distantTerrain.update(chunkX, chunkZ);
 
-    const lod0HorizontalRadius = renderDistance;
-    const lod1HorizontalRadius = renderDistance + 6;
-
-    const lod0VerticalRadius = verticalRadius;
-    const lod1VerticalRadius = verticalRadius + 2;
+    const lodRuleSet = ChunkLodRuleSet.fromRenderRadii(
+      renderDistance,
+      verticalRadius,
+    );
+    const { lod3HorizontalRadius, lod3VerticalRadius } = lodRuleSet.radii;
 
     // -----------------------------
     // Prune stale load requests
     // -----------------------------
     this.loadQueue = this.loadQueue.filter((chunk) => {
-      const lod = this.getLODLevelForChunk(
-        chunk.chunkX,
-        chunk.chunkY,
-        chunk.chunkZ,
-        chunkX,
-        chunkY,
-        chunkZ,
-        lod0HorizontalRadius,
-        lod1HorizontalRadius,
-        lod0VerticalRadius,
-        lod1VerticalRadius,
+      const decision = lodRuleSet.resolve(
+        {
+          chunkX: chunk.chunkX,
+          chunkY: chunk.chunkY,
+          chunkZ: chunk.chunkZ,
+        },
+        { chunkX, chunkY, chunkZ },
       );
 
-      if (lod === 2) {
+      if (!decision.allowsChunkCreation) {
         chunk.isTerrainScheduled = false;
         return false;
       }
 
       const previousLod = chunk.lodLevel ?? 0;
-      chunk.lodLevel = lod;
+      chunk.lodLevel = decision.lodLevel;
 
       // queued chunks are not loaded yet, so no remesh here
       void previousLod;
@@ -409,8 +406,8 @@ export class ChunkLoadingSystem {
       const verticalDist = Math.abs(chunk.chunkY - chunkY);
 
       if (
-        horizontalDist <= lod1HorizontalRadius &&
-        verticalDist <= lod1VerticalRadius
+        horizontalDist <= lod3HorizontalRadius &&
+        verticalDist <= lod3VerticalRadius
       ) {
         this.unloadQueueSet.delete(chunk);
       }
@@ -421,8 +418,8 @@ export class ChunkLoadingSystem {
     // -----------------------------
 
     for (
-      let y = chunkY - lod1VerticalRadius;
-      y <= chunkY + lod1VerticalRadius;
+      let y = chunkY - lod3VerticalRadius;
+      y <= chunkY + lod3VerticalRadius;
       y++
     ) {
       if (y < 0 || y >= SettingParams.MAX_CHUNK_HEIGHT) {
@@ -430,51 +427,26 @@ export class ChunkLoadingSystem {
       }
 
       for (
-        let x = chunkX - lod1HorizontalRadius;
-        x <= chunkX + lod1HorizontalRadius;
+        let x = chunkX - lod3HorizontalRadius;
+        x <= chunkX + lod3HorizontalRadius;
         x++
       ) {
         for (
-          let z = chunkZ - lod1HorizontalRadius;
-          z <= chunkZ + lod1HorizontalRadius;
+          let z = chunkZ - lod3HorizontalRadius;
+          z <= chunkZ + lod3HorizontalRadius;
           z++
         ) {
-          const horizontalDist = Math.max(
-            Math.abs(x - chunkX),
-            Math.abs(z - chunkZ),
-          );
-          const verticalDist = Math.abs(y - chunkY);
-
-          // Outside LOD1 range -> do not create/load a normal chunk.
-          // This area should be covered by DistantTerrain only.
-          if (
-            horizontalDist > lod1HorizontalRadius ||
-            verticalDist > lod1VerticalRadius
-          ) {
-            continue;
-          }
-
-          const nextLod =
-            horizontalDist <= lod0HorizontalRadius &&
-            verticalDist <= lod0VerticalRadius
-              ? 0
-              : 1;
-
-          const lod = this.getLODLevelForChunk(
-            x,
-            y,
-            z,
-            chunkX,
-            chunkY,
-            chunkZ,
-            lod0HorizontalRadius,
-            lod1HorizontalRadius,
-            lod0VerticalRadius,
-            lod1VerticalRadius,
+          const decision = lodRuleSet.resolve(
+            {
+              chunkX: x,
+              chunkY: y,
+              chunkZ: z,
+            },
+            { chunkX, chunkY, chunkZ },
           );
 
-          // LOD2 = distant terrain only, so skip normal chunk creation/loading
-          if (lod === 2) {
+          // LOD4 = distant terrain only, so skip normal chunk creation/loading
+          if (!decision.allowsChunkCreation) {
             continue;
           }
 
@@ -484,11 +456,11 @@ export class ChunkLoadingSystem {
           }
 
           const previousLod = chunk.lodLevel ?? 0;
-          chunk.lodLevel = lod;
+          chunk.lodLevel = decision.lodLevel;
 
           // If a loaded chunk changes LOD, rebuild its mesh using the correct detail level
-          if (chunk.isLoaded && previousLod !== lod) {
-            chunk.scheduleRemesh(previousLod === 0 || lod === 0);
+          if (chunk.isLoaded && previousLod !== decision.lodLevel) {
+            chunk.scheduleRemesh(previousLod === 0 || decision.lodLevel === 0);
           }
 
           if (!chunk.isLoaded && !chunk.isTerrainScheduled) {
@@ -525,14 +497,14 @@ export class ChunkLoadingSystem {
 
     // Keep your existing unload behavior.
     // queueUnloading() already adds CHUNK_UNLOAD_DISTANCE_BUFFER internally,
-    // so passing lod0 radii here effectively keeps LOD1 chunks alive too.
+    // so passing lod3 radii here effectively keeps outer chunks alive too.
 
     this.queueUnloading(
       chunkX,
       chunkY,
       chunkZ,
-      lod1HorizontalRadius,
-      lod1VerticalRadius,
+      lod3HorizontalRadius,
+      lod3VerticalRadius,
     );
 
     if (!this.isProcessing) {
@@ -838,42 +810,6 @@ export class ChunkLoadingSystem {
 
     return chunk.getLight(localX, localY, localZ);
   }
-  private static getLODLevelForChunk(
-    targetChunkX: number,
-    targetChunkY: number,
-    targetChunkZ: number,
-    playerChunkX: number,
-    playerChunkY: number,
-    playerChunkZ: number,
-    lod0HorizontalRadius: number,
-    lod1HorizontalRadius: number,
-    lod0VerticalRadius: number,
-    lod1VerticalRadius: number,
-  ): number {
-    const horizontalDist = Math.max(
-      Math.abs(targetChunkX - playerChunkX),
-      Math.abs(targetChunkZ - playerChunkZ),
-    );
-
-    const verticalDist = Math.abs(targetChunkY - playerChunkY);
-
-    if (
-      horizontalDist <= lod0HorizontalRadius &&
-      verticalDist <= lod0VerticalRadius
-    ) {
-      return 0; // full detail
-    }
-
-    if (
-      horizontalDist <= lod1HorizontalRadius &&
-      verticalDist <= lod1VerticalRadius
-    ) {
-      return 1; // simplified detail
-    }
-
-    return 2; // distant terrain only
-  }
-
   /**
    * Converts world coordinates to chunk coordinates.
    * @param value The world coordinate value (e.g., player's x position).

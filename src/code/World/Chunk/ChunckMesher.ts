@@ -17,15 +17,18 @@ import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
 import { WorldEnvironment } from "../../Maps/WorldEnvironment";
 import { GlobalValues } from "../GlobalValues";
 import { ShaderMaterial } from "@babylonjs/core";
-import { MeshData } from "./DataStructures/MeshData";
 import { OpaqueShader } from "../Light/OpaqueShader";
 import { TransparentShader } from "../Light/TransparentShader";
+import { Lod3Shader } from "../Light/Lod3Shader";
 import { TextureCache } from "../Texture/TextureCache";
 import { Chunk } from "./Chunk";
+import { MeshData } from "./DataStructures/MeshData";
 
 export class ChunkMesher {
   static #atlasMaterial: Material | null = null;
   static #transparentMaterial: Material | null = null;
+  static #lod3OpaqueMaterial: Material | null = null;
+  static #lod3TransparentMaterial: Material | null = null;
   static #globalUniformBuffer: UniformBuffer | null = null;
   static #sharedFacePositionBuffer: Buffer | null = null;
 
@@ -104,6 +107,11 @@ export class ChunkMesher {
       OpaqueShader.chunkFragmentShader;
     Effect.ShadersStore["transparentChunkFragmentShader"] =
       TransparentShader.chunkFragmentShader;
+    Effect.ShadersStore["lod3ChunkVertexShader"] = Lod3Shader.chunkVertexShader;
+    Effect.ShadersStore["lod3ChunkFragmentShader"] =
+      Lod3Shader.opaqueFragmentShader;
+    Effect.ShadersStore["lod3TransparentChunkFragmentShader"] =
+      Lod3Shader.transparentFragmentShader;
 
     if (!this.#globalUniformBuffer) {
       const engine = scene.getEngine();
@@ -225,6 +233,82 @@ export class ChunkMesher {
       );
       transparentMat.freeze();
     }
+
+    if (!this.#lod3OpaqueMaterial) {
+      const lod3Opaque = new ShaderMaterial(
+        "lod3ChunkShaderMaterial",
+        scene,
+        { vertex: "lod3Chunk", fragment: "lod3Chunk" },
+        {
+          attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
+          uniforms: ["worldViewProjection", "atlasTileSize"],
+          uniformBuffers: ["GlobalUniforms"],
+          samplers: ["diffuseTexture"],
+        },
+      );
+
+      lod3Opaque.backFaceCulling = true;
+      lod3Opaque.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
+      lod3Opaque.setTexture("diffuseTexture", diffuseAtlasTexture);
+      lod3Opaque.setUniformBuffer("GlobalUniforms", this.#globalUniformBuffer);
+      lod3Opaque.wireframe = GlobalValues.DEBUG;
+      lod3Opaque.freeze();
+
+      this.#lod3OpaqueMaterial = lod3Opaque;
+    } else {
+      const lod3Opaque = this.#lod3OpaqueMaterial as ShaderMaterial;
+      if (lod3Opaque.isFrozen) lod3Opaque.unfreeze();
+      lod3Opaque.wireframe = GlobalValues.DEBUG;
+      lod3Opaque.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
+      lod3Opaque.setTexture("diffuseTexture", diffuseAtlasTexture);
+      lod3Opaque.setUniformBuffer("GlobalUniforms", this.#globalUniformBuffer);
+      lod3Opaque.freeze();
+    }
+
+    if (!this.#lod3TransparentMaterial) {
+      const lod3Transparent = new ShaderMaterial(
+        "lod3TransparentChunkShaderMaterial",
+        scene,
+        { vertex: "lod3Chunk", fragment: "lod3TransparentChunk" },
+        {
+          attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
+          uniforms: ["worldViewProjection", "atlasTileSize"],
+          uniformBuffers: ["GlobalUniforms"],
+          samplers: ["diffuseTexture"],
+        },
+      );
+
+      lod3Transparent.backFaceCulling = false;
+      lod3Transparent.forceDepthWrite = false;
+      lod3Transparent.needAlphaBlending = () => false;
+      lod3Transparent.setFloat(
+        "atlasTileSize",
+        TextureAtlasFactory.atlasTileSize,
+      );
+      lod3Transparent.setTexture("diffuseTexture", diffuseAtlasTexture);
+      lod3Transparent.setUniformBuffer(
+        "GlobalUniforms",
+        this.#globalUniformBuffer,
+      );
+      lod3Transparent.wireframe = GlobalValues.DEBUG;
+      lod3Transparent.freeze();
+
+      this.#lod3TransparentMaterial = lod3Transparent;
+    } else {
+      const lod3Transparent = this.#lod3TransparentMaterial as ShaderMaterial;
+      if (lod3Transparent.isFrozen) lod3Transparent.unfreeze();
+      lod3Transparent.wireframe = GlobalValues.DEBUG;
+      lod3Transparent.setFloat(
+        "atlasTileSize",
+        TextureAtlasFactory.atlasTileSize,
+      );
+      lod3Transparent.setTexture("diffuseTexture", diffuseAtlasTexture);
+      lod3Transparent.setUniformBuffer(
+        "GlobalUniforms",
+        this.#globalUniformBuffer,
+      );
+      lod3Transparent.freeze();
+    }
   }
   private static ensureSharedFacePositionBuffer(): void {
     if (this.#sharedFacePositionBuffer) {
@@ -267,12 +351,16 @@ export class ChunkMesher {
     }
 
     if (hasOpaque) {
+      const opaqueMaterial =
+        (chunk.lodLevel ?? 0) >= 3
+          ? this.#lod3OpaqueMaterial!
+          : this.#atlasMaterial!;
       chunk.mesh = this.upsertMesh(
         chunk,
         chunk.mesh,
         opaqueMeshData!,
         "c_opaque",
-        this.#atlasMaterial!,
+        opaqueMaterial,
         1,
       );
     } else if (chunk.mesh) {
@@ -281,12 +369,16 @@ export class ChunkMesher {
     }
 
     if (hasTransparent) {
+      const transparentMaterial =
+        (chunk.lodLevel ?? 0) >= 3
+          ? this.#lod3TransparentMaterial!
+          : this.#transparentMaterial!;
       chunk.transparentMesh = this.upsertMesh(
         chunk,
         chunk.transparentMesh,
         transparentMeshData!,
         "c_transparent",
-        this.#transparentMaterial!,
+        transparentMaterial,
         1,
       );
     } else if (chunk.transparentMesh) {
@@ -533,6 +625,12 @@ export class ChunkMesher {
 
     this.#transparentMaterial?.dispose();
     this.#transparentMaterial = null;
+
+    this.#lod3OpaqueMaterial?.dispose();
+    this.#lod3OpaqueMaterial = null;
+
+    this.#lod3TransparentMaterial?.dispose();
+    this.#lod3TransparentMaterial = null;
 
     this.lastUpdateFrame = -1;
   }

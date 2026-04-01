@@ -175,6 +175,15 @@ function postFullMeshResult(
   const opaqueMeshData = toTransferable(opaque);
   const transparentMeshData = toTransferable(transparent);
 
+  if (lod >= 3) {
+    for (let i = 0; i < opaqueMeshData.faceDataC.length; i += 4) {
+      opaqueMeshData.faceDataC[i] = 0;
+    }
+    for (let i = 0; i < transparentMeshData.faceDataC.length; i += 4) {
+      transparentMeshData.faceDataC[i] = 0;
+    }
+  }
+
   self.postMessage(
     {
       chunkId,
