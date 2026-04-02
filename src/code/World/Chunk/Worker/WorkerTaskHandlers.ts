@@ -169,6 +169,23 @@ export class WorkerTaskHandlers {
         waterGrid?: WaterSampleGrid,
       ): Uint8Array | Uint16Array => {
         const simplified = createBlockArray();
+        const scoreByPacked = new Map<number, number>();
+        const isAir = (packed: number): boolean => unpackBlockId(packed) === 0;
+
+        const exposedFaceWeight = (
+          sx: number,
+          sy: number,
+          sz: number,
+        ): number => {
+          let exposed = 0;
+          if (isAir(getBlock(sx + 1, sy, sz, 0))) exposed++;
+          if (isAir(getBlock(sx - 1, sy, sz, 0))) exposed++;
+          if (isAir(getBlock(sx, sy + 1, sz, 0))) exposed++;
+          if (isAir(getBlock(sx, sy - 1, sz, 0))) exposed++;
+          if (isAir(getBlock(sx, sy, sz + 1, 0))) exposed++;
+          if (isAir(getBlock(sx, sy, sz - 1, 0))) exposed++;
+          return exposed;
+        };
 
         for (let z = 0; z < size; z += step) {
           for (let y = 0; y < size; y += step) {
@@ -194,7 +211,11 @@ export class WorkerTaskHandlers {
               let chosen = 0;
 
               if (!waterSurface) {
-                outer: for (let dz = 0; dz < step && z + dz < size; dz++) {
+                scoreByPacked.clear();
+                let fallbackPacked = 0;
+                let fallbackScore = -1;
+
+                for (let dz = 0; dz < step && z + dz < size; dz++) {
                   for (let dy = 0; dy < step && y + dy < size; dy++) {
                     for (let dx = 0; dx < step && x + dx < size; dx++) {
                       const idx = x + dx + (y + dy) * size + (z + dz) * size2;
@@ -203,14 +224,49 @@ export class WorkerTaskHandlers {
                       const blockId = unpackBlockId(packed);
 
                       if (blockId === 0) continue;
-                      if (blockId === 30 || blockId === 60 || blockId === 61)
+                      // Water is rendered by WaterLODBuilder from original data.
+                      // Keep it out of simplified voxel meshing so we don't create
+                      // coarse 2x2 side walls that do not match LOD0 exposure.
+                      if (blockId === 30) {
                         continue;
+                      }
 
-                      chosen = packed;
-                      break outer;
+                      if (blockId === 60 || blockId === 61) {
+                        const lightScore = 1 + dy;
+                        if (lightScore > fallbackScore) {
+                          fallbackScore = lightScore;
+                          fallbackPacked = packed;
+                        }
+                        continue;
+                      }
+
+                      const sx = x + dx;
+                      const sy = y + dy;
+                      const sz = z + dz;
+
+                      const edgeScore = exposedFaceWeight(sx, sy, sz) * 3;
+
+                      // Weighted vote:
+                      // - multiple voxels of same packed block reinforce stability
+                      // - slight top-bias preserves surface silhouette
+                      // - exposed voxels get extra weight to preserve ridges/cliffs
+                      const score =
+                        (scoreByPacked.get(packed) ?? 0) + 4 + dy + edgeScore;
+                      scoreByPacked.set(packed, score);
                     }
                   }
                 }
+
+                let bestPacked = 0;
+                let bestScore = -1;
+                for (const [packed, score] of scoreByPacked.entries()) {
+                  if (score > bestScore) {
+                    bestScore = score;
+                    bestPacked = packed;
+                  }
+                }
+
+                chosen = bestScore >= 0 ? bestPacked : fallbackPacked;
               }
 
               for (let dz = 0; dz < step && z + dz < size; dz++) {

@@ -48,7 +48,7 @@ export class PlayerLoadingGate {
     const chunkY = ChunkLoadingSystem.worldToChunkCoord(playerPos.y);
     const chunkZ = ChunkLoadingSystem.worldToChunkCoord(playerPos.z);
 
-    const chunksReady = ChunkLoadingSystem.areChunksLoadedAround(
+    const chunksReady = ChunkLoadingSystem.areChunksLod0ReadyAround(
       chunkX,
       chunkY,
       chunkZ,

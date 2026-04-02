@@ -22,13 +22,17 @@ export class ChunkWorker {
   public setOnError(handler: (ev: ErrorEvent | Event) => void): void {
     this.worker.onerror = handler;
   }
+
+  public terminate(): void {
+    this.worker.terminate();
+  }
   private readonly paletteToTyped = (
     palette: Uint8Array | Uint16Array | null | undefined,
   ): Uint8Array | Uint16Array | null | undefined => {
     if (!palette || palette.length === 0) return palette;
     return palette;
   };
-  public postFullRemesh(chunk: Chunk): void {
+  public postFullRemesh(chunk: Chunk, forcedLod?: number): void {
     const neighbors: (Uint8Array | Uint16Array | null | undefined)[] = [];
     const neighborLights: (Uint8Array | undefined)[] = [];
     const neighborUniformIds: (number | undefined)[] = [];
@@ -88,7 +92,7 @@ export class ChunkWorker {
     const message: GenerateFullMeshRequest = {
       type: WorkerTaskType.GenerateFullMesh,
       chunkId: chunk.id,
-      lod: (chunk as any).lodLevel ?? 0,
+      lod: forcedLod ?? ((chunk as any).lodLevel ?? 0),
       block_array: chunk.block_array,
       uniformBlockId: chunk.isUniform ? chunk.uniformBlockId : undefined,
       palette: this.paletteToTyped(chunk.palette),

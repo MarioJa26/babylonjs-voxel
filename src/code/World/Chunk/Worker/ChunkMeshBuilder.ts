@@ -990,6 +990,45 @@ export class ChunkMeshBuilder {
     throw new Error("Invalid direction");
   }
 
+  private static getMaterialTintBucket(blockId: number): number {
+    // 0 = neutral, 1 = stone/mineral, 2 = dirt/sand, 3 = vegetation,
+    // 4 = water/glass, 5 = wood.
+    if (blockId === 30 || blockId === 60 || blockId === 61) {
+      return 4;
+    }
+
+    if (blockId === 15 || blockId === 43 || blockId === 44) {
+      return 3;
+    }
+
+    if (
+      blockId === 3 ||
+      blockId === 8 ||
+      blockId === 14 ||
+      blockId === 23 ||
+      blockId === 45 ||
+      blockId === 46 ||
+      blockId === 47
+    ) {
+      return 2;
+    }
+
+    if (
+      blockId === 10 ||
+      blockId === 11 ||
+      blockId === 12 ||
+      blockId === 13 ||
+      blockId === 22 ||
+      blockId === 28 ||
+      blockId === 31 ||
+      (blockId >= 32 && blockId <= 42)
+    ) {
+      return 5;
+    }
+
+    return 1;
+  }
+
   public static addQuad(
     x: number,
     y: number,
@@ -1021,6 +1060,8 @@ export class ChunkMeshBuilder {
     const flip = ao0 + ao2 < ao1 + ao3;
     const axisFace = axis * 2 + (isBackFace ? 1 : 0);
     const meta = (flip ? 1 : 0) | ((materialType & 1) << 1);
+    // Use class-qualified call so addQuad can safely be passed as a callback.
+    const tintBucket = ChunkMeshBuilder.getMaterialTintBucket(blockId);
 
     const sx = Math.round(x * POS_SCALE);
     const sy = Math.round(y * POS_SCALE);
@@ -1030,13 +1071,13 @@ export class ChunkMeshBuilder {
 
     meshData.faceDataA.push4(sx, sy, sz, axisFace);
     meshData.faceDataB.push4(sw, sh, tx, ty);
-    meshData.faceDataC.push4(packedAO, lightLevel, 0, meta);
+    meshData.faceDataC.push4(packedAO, lightLevel, tintBucket, meta);
     meshData.faceCount++;
   }
   private static quantizeLightNibble(value: number): number {
-    if (value >= 12) return 14;
-    if (value >= 8) return 10;
-    if (value >= 4) return 5;
+    if (value >= 12) return 15;
+    if (value >= 8) return 11;
+    if (value >= 4) return 6;
     return 0;
   }
 

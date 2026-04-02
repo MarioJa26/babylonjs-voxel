@@ -77,6 +77,7 @@ export class Chunk {
   private _isUniform = true;
   private _uniformBlockId = 0;
   private _palette: Uint16Array | null = null;
+  private _hasVoxelData = false;
 
   #chunkY: number;
   #chunkX: number;
@@ -90,6 +91,7 @@ export class Chunk {
 
   public static readonly SKY_LIGHT_SHIFT = 4;
   public static readonly BLOCK_LIGHT_MASK = 0xf;
+  private static readonly SKYLIGHT_GENERATION_MIN_WORLD_Y = 32;
   private static readonly WATER_BLOCK_ID = 30;
   private static readonly GLASS_01_BLOCK_ID = 60;
   private static readonly GLASS_02_BLOCK_ID = 61;
@@ -129,6 +131,10 @@ export class Chunk {
 
   get uniformBlockId(): number {
     return this._uniformBlockId;
+  }
+
+  public get hasVoxelData(): boolean {
+    return this._hasVoxelData;
   }
 
   // Define blocks that emit light (Block ID -> Light Level)
@@ -173,6 +179,7 @@ export class Chunk {
     scheduleRemesh = true,
   ): void {
     this.clearCachedLODMeshes();
+    this._hasVoxelData = true;
     this._isUniform = isUniform;
     this._uniformBlockId = uniformBlockId;
     this._palette = palette;
@@ -207,6 +214,7 @@ export class Chunk {
     scheduleRemesh = true,
   ): void {
     this.clearCachedLODMeshes();
+    this._hasVoxelData = true;
     if (isUniform && typeof uniformBlockId === "number") {
       this._isUniform = true;
       this._uniformBlockId = uniformBlockId;
@@ -251,6 +259,22 @@ export class Chunk {
     }
   }
 
+  public loadLodOnlyFromStorage(scheduleRemesh = false): void {
+    // Lightweight far-LOD mode: mesh-only chunk without heavy voxel payloads.
+    this._hasVoxelData = false;
+    this._isUniform = true;
+    this._uniformBlockId = 0;
+    this._block_array = null;
+    this._palette = null;
+    this.light_array = new Uint8Array(new SharedArrayBuffer(0));
+    this.isLoaded = true;
+    this.isTerrainScheduled = false;
+    this.colliderDirty = false;
+    if (scheduleRemesh) {
+      this.scheduleRemesh();
+    }
+  }
+
   public unload(): void {
     if (!this.isLoaded) {
       return;
@@ -260,6 +284,7 @@ export class Chunk {
     this._isUniform = true;
     this._uniformBlockId = 0;
     this._palette = null;
+    this._hasVoxelData = false;
     this.light_array = new Uint8Array(new SharedArrayBuffer(0));
     this.isLoaded = false;
     this.isTerrainScheduled = false;
@@ -269,6 +294,11 @@ export class Chunk {
 
   public getCachedLODMesh(lod: number): CachedLODMesh | null {
     return this.cachedLODMeshes.get(lod) ?? null;
+  }
+
+  public hasCachedLODMesh(lod: number): boolean {
+    const cached = this.cachedLODMeshes.get(lod);
+    return !!cached && (!!cached.opaque || !!cached.transparent);
   }
 
   public setCachedLODMesh(lod: number, mesh: CachedLODMesh): void {
@@ -298,10 +328,16 @@ export class Chunk {
 
     const out: SerializedLODMeshCache = {};
     for (const [lod, mesh] of this.cachedLODMeshes.entries()) {
+      if (!mesh.opaque && !mesh.transparent) {
+        continue;
+      }
       out[lod] = {
         opaque: mesh.opaque ?? null,
         transparent: mesh.transparent ?? null,
       };
+    }
+    if (Object.keys(out).length === 0) {
+      return undefined;
     }
     return out;
   }
@@ -319,6 +355,9 @@ export class Chunk {
       if (!Number.isFinite(lod)) continue;
 
       const entry = cache[lod];
+      if (!entry?.opaque && !entry?.transparent) {
+        continue;
+      }
       this.cachedLODMeshes.set(lod, {
         opaque: entry?.opaque ?? null,
         transparent: entry?.transparent ?? null,
@@ -371,13 +410,27 @@ export class Chunk {
             worldZ,
           );
 
-          // Conservative fallback when the chunk above is unavailable
-          if (topWorldY >= terrainHeight - 48) {
+          // Conservative fallback when the chunk above is unavailable.
+          // Clamp fallback generation to avoid creating new skylight too deep.
+          if (
+            topWorldY >= Chunk.SKYLIGHT_GENERATION_MIN_WORLD_Y &&
+            topWorldY >= terrainHeight - 48
+          ) {
             incomingSkyLight = 15;
           }
         }
 
         for (let y = size - 1; y >= 0; y--) {
+          const worldY = this.#chunkY * size + y;
+          if (
+            !hasLoadedAbove &&
+            worldY < Chunk.SKYLIGHT_GENERATION_MIN_WORLD_Y
+          ) {
+            incomingSkyLight = 0;
+            sourceIsWater = false;
+            continue;
+          }
+
           const idx = x + y * size + z * Chunk.SIZE2;
           const blockPacked = this.getBlockPacked(x, y, z);
 
@@ -766,7 +819,8 @@ export class Chunk {
         if (!targetChunk) continue;
 
         const sourceAllows = isSkyLight
-          ? chunk.isTransparent(sourceBlockPacked, axis, dir)
+          ? chunk.isTransparent(sourceBlockPacked, axis, dir) &&
+            (isDown === 1 || !Chunk.isWaterBlock(sourceBlockId))
           : sourceEmits || chunk.isTransparent(sourceBlockPacked, axis, dir);
 
         if (!sourceAllows) continue;
@@ -908,7 +962,8 @@ export class Chunk {
         !isSkyLight && Chunk.getLightEmission(sourceBlockId) > 0;
 
       const sourceAllows = isSkyLight
-        ? sourceChunk.isTransparent(sourceBlockPacked, axis, dir)
+        ? sourceChunk.isTransparent(sourceBlockPacked, axis, dir) &&
+          (isDown === 1 || !Chunk.isWaterBlock(sourceBlockId))
         : sourceEmits ||
           sourceChunk.isTransparent(sourceBlockPacked, axis, dir);
 
@@ -1425,7 +1480,8 @@ export class Chunk {
 
         const targetBlockPacked = targetChunk.getBlockPacked(tx, ty, tz);
         const sourceAllows = isSkyLight
-          ? chunk.isTransparent(sourceBlockPacked, axis, dir)
+          ? chunk.isTransparent(sourceBlockPacked, axis, dir) &&
+            (isDown === 1 || !Chunk.isWaterBlock(sourceBlockId))
           : sourceEmits || chunk.isTransparent(sourceBlockPacked, axis, dir);
 
         if (!sourceAllows) continue;
@@ -1572,6 +1628,7 @@ export class Chunk {
     this._isUniform = true;
     this._uniformBlockId = 0;
     this._palette = null;
+    this._hasVoxelData = false;
     this.light_array = new Uint8Array(new SharedArrayBuffer(0));
     this.isLoaded = false;
     this.isTerrainScheduled = false;

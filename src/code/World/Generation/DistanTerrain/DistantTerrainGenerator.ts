@@ -185,4 +185,3 @@ export class DistantTerrainGenerator {
     return [tile[0], tile[1]];
   }
 }
-``;

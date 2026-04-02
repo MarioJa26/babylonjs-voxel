@@ -3,6 +3,7 @@ import { Engine, Scene, Vector3 } from "@babylonjs/core";
 import { IControls } from "../Inferface/IControls";
 import { Chunk } from "../World/Chunk/Chunk";
 import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
+import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
 import { PaddleBoatControls } from "./Controls/PaddleBoatControls";
 import { WalkingControls } from "./Controls/WalkingControls";
 import { PlayerHud } from "./Hud/PlayerHud";
@@ -113,6 +114,36 @@ export class PlayerLoopController {
       "Loaded Chunks",
       Array.from(Chunk.chunkInstances.values()).filter((c) => c.isLoaded)
         .length,
+    );
+    const loadStats = ChunkLoadingSystem.getDebugStats();
+    const workerStats = ChunkWorkerPool.getInstance().getDebugStats();
+    PlayerHud.updateDebugInfo(
+      "Chunk Queues",
+      `L:${loadStats.loadQueueLength} U:${loadStats.unloadQueueLength} B:${loadStats.loadBatchLimit}/${loadStats.unloadBatchLimit}`,
+    );
+    PlayerHud.updateDebugInfo(
+      "Chunk Loop",
+      `${loadStats.lastProcessMs.toFixed(2)}ms (budget ${loadStats.frameBudgetMs.toFixed(1)}ms)`,
+    );
+    PlayerHud.updateDebugInfo(
+      "Chunk I/O",
+      `load:${loadStats.lastLoadedFromStorage} gen:${loadStats.lastGenerated} hyd:${loadStats.lastHydrated} unload:${loadStats.lastUnloaded} save:${loadStats.lastSaved}`,
+    );
+    PlayerHud.updateDebugInfo(
+      "LOD Cache Ver",
+      `mismatch:${loadStats.lastLodCacheVersionMismatches}`,
+    );
+    PlayerHud.updateDebugInfo(
+      "Worker Queues",
+      `T:${workerStats.terrainQueueLength} R:${workerStats.remeshQueueLength} P:${workerStats.lodPrecomputeQueueLength} D:${workerStats.distantTerrainQueueLength} idle:${workerStats.idleWorkers}/${workerStats.workerCount}`,
+    );
+    PlayerHud.updateDebugInfo(
+      "Worker Dispatch",
+      `last:${workerStats.lastDispatchCount} total:${workerStats.totalDispatchCount} budget:${workerStats.dispatchBudgetPerTick || "inf"}`,
+    );
+    PlayerHud.updateDebugInfo(
+      "Mesh Drain",
+      `${workerStats.lastMeshProcessed} in ${workerStats.lastMeshDrainMs.toFixed(2)}ms`,
     );
     PlayerHud.updateDebugInfo("Health", Math.ceil(this.playerStats.health));
     PlayerHud.updateDebugInfo("Hunger", Math.ceil(this.playerStats.hunger));

@@ -116,9 +116,9 @@ export class ChunkLodRuleSet {
   ): ChunkLodRuleSet {
     const radii: ChunkLodRadii = {
       lod0HorizontalRadius: renderDistance,
-      lod1HorizontalRadius: renderDistance + 1, //6
-      lod2HorizontalRadius: renderDistance + 4,
-      lod3HorizontalRadius: renderDistance + 8,
+      lod1HorizontalRadius: renderDistance + 4, //6
+      lod2HorizontalRadius: renderDistance + 8,
+      lod3HorizontalRadius: renderDistance + 10,
       lod0VerticalRadius: verticalRadius,
       lod1VerticalRadius: verticalRadius + 2,
       lod2VerticalRadius: verticalRadius + 4,

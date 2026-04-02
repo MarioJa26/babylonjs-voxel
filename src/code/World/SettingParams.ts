@@ -6,10 +6,20 @@ export class SettingParams {
   public static VERTICAL_RENDER_DISTANCE = 6;
   public static MAX_CHUNK_HEIGHT = 32;
   public static CHUNK_UNLOAD_DISTANCE_BUFFER = 1; // How many extra chunks to keep before unloading
+  // 0 = auto (render-distance based), >0 = explicit per-cycle cap
+  public static CHUNK_LOAD_BATCH_LIMIT = 0;
+  public static CHUNK_UNLOAD_BATCH_LIMIT = 0;
+  // Soft budget used by chunk loading scheduler to decide whether to continue
+  // work in microtasks or yield to next frame.
+  public static CHUNK_LOADING_FRAME_BUDGET_MS = 5.0;
   public static VERTICAL_CHUNK_CULLING_FACTOR = 6; // Multiplier for CHUNK_SIZE to cull chunks above/below terrain
   public static CAMERA_FOV = 93; // Default camera field of view in degrees
 
-  public static DISTANT_RENDER_DISTANCE = 216;
+  public static DISTANT_RENDER_DISTANCE = 128;
+  public static LOD_PRECOMPUTE_SCHEDULE_THROTTLE_MS = 120;
+  public static LOD_PRECOMPUTE_MAX_ENQUEUE_PER_UPDATE = 48;
+  // 0 = unlimited dispatch while workers are idle
+  public static CHUNK_WORKER_DISPATCH_BUDGET_PER_TICK = 8;
 
   // --- Day/Night Cycle ---
   public static DAY_DURATION_MS = 10 * 60 * 1000; // 10 minutes for a full day

@@ -132,4 +132,3 @@ export class ResizableTypedArray<
     return this.array.slice(0, this.length) as T;
   }
 }
-``;

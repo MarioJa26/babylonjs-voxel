@@ -1,5 +1,6 @@
 import { Chunk } from "./Chunk/Chunk";
 import { MeshData } from "./Chunk/DataStructures/MeshData";
+import { getCurrentLodCacheVersion } from "./Chunk/LOD/LodCacheVersion";
 import { GlobalValues } from "./GlobalValues";
 
 export type SavedChunkData = {
@@ -17,7 +18,12 @@ export type SavedChunkData = {
       transparent?: MeshData | null;
     }
   >;
+  lodCacheVersion?: string;
   compressed?: boolean;
+};
+
+export type LoadChunkOptions = {
+  includeVoxelData?: boolean;
 };
 
 export type SavedChunkEntityData = {
@@ -30,10 +36,51 @@ const DB_VERSION = 2;
 const CHUNK_STORE_NAME = "chunks";
 const CHUNK_ENTITY_STORE_NAME = "chunk_entities";
 
+type PersistenceLane = "critical" | "background";
+
+type PersistenceJob = {
+  run: () => Promise<void>;
+  resolve: () => void;
+  reject: (reason?: unknown) => void;
+};
+
+type PreparedFullChunkSave = {
+  id: string;
+  chunk: Chunk;
+  data: {
+    id: string;
+    blocks: Uint8Array | null;
+    palette: Uint16Array | null;
+    uniformBlockId: number;
+    isUniform: boolean;
+    light_array: Uint8Array | null;
+    opaqueMesh: MeshData | null;
+    transparentMesh: MeshData | null;
+    lodMeshes: SavedChunkData["lodMeshes"];
+    lodCacheVersion: string;
+    compressed: true;
+  };
+};
+
+type PreparedLodOnlySave = {
+  id: string;
+  chunk: Chunk;
+  opaqueMesh: MeshData | null;
+  transparentMesh: MeshData | null;
+  lodMeshes: SavedChunkData["lodMeshes"];
+  lodCacheVersion: string;
+};
+
 export class WorldStorage {
   private static db: IDBDatabase;
   private static initPromise: Promise<void> | null = null;
   private static pendingChunkSaves = new Map<string, Promise<void>>();
+  private static persistenceQueues: Record<PersistenceLane, PersistenceJob[]> = {
+    critical: [],
+    background: [],
+  };
+  private static isProcessingPersistenceQueues = false;
+  private static pendingLodInvalidationChunkIds = new Set<string>();
 
   private static async ensureInitialized(): Promise<boolean> {
     if (this.db) {
@@ -85,6 +132,182 @@ export class WorldStorage {
     }
   }
 
+  private static enqueuePersistenceJob(
+    lane: PersistenceLane,
+    chunkIds: string[],
+    run: () => Promise<void>,
+  ): Promise<void> {
+    const savePromise = new Promise<void>((resolve, reject) => {
+      this.persistenceQueues[lane].push({
+        run,
+        resolve,
+        reject,
+      });
+      this.processPersistenceQueues();
+    });
+
+    return this.trackPendingChunkSaves(chunkIds, savePromise);
+  }
+
+  private static processPersistenceQueues(): void {
+    if (this.isProcessingPersistenceQueues) {
+      return;
+    }
+    this.isProcessingPersistenceQueues = true;
+
+    const run = async () => {
+      while (true) {
+        const job =
+          this.persistenceQueues.critical.shift() ??
+          this.persistenceQueues.background.shift();
+        if (!job) {
+          break;
+        }
+        try {
+          await job.run();
+          job.resolve();
+        } catch (error) {
+          job.reject(error);
+        }
+      }
+
+      this.isProcessingPersistenceQueues = false;
+      if (
+        this.persistenceQueues.critical.length > 0 ||
+        this.persistenceQueues.background.length > 0
+      ) {
+        this.processPersistenceQueues();
+      }
+    };
+
+    void run();
+  }
+
+  private static async persistPreparedFullChunks(
+    prepared: PreparedFullChunkSave[],
+  ): Promise<void> {
+    if (prepared.length === 0) return;
+
+    const transaction = this.db.transaction(CHUNK_STORE_NAME, "readwrite");
+    const store = transaction.objectStore(CHUNK_STORE_NAME);
+    for (const entry of prepared) {
+      store.put(entry.data);
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => {
+        for (const entry of prepared) {
+          entry.chunk.isModified = false;
+          entry.chunk.isLODMeshCacheDirty = false;
+        }
+        resolve();
+      };
+      transaction.onerror = () => reject(transaction.error);
+    });
+  }
+
+  private static async persistPreparedLodOnlyChunks(
+    prepared: PreparedLodOnlySave[],
+  ): Promise<void> {
+    if (prepared.length === 0) return;
+
+    const transaction = this.db.transaction(CHUNK_STORE_NAME, "readwrite");
+    const store = transaction.objectStore(CHUNK_STORE_NAME);
+    const updatedChunkRefs = new Set<Chunk>();
+
+    for (const entry of prepared) {
+      const getRequest = store.get(entry.id);
+      getRequest.onsuccess = () => {
+        const existing = getRequest.result;
+        if (!existing) {
+          // If we only have LOD delta but no base record yet, escalate to a
+          // full save on the next persistence pass.
+          entry.chunk.isModified = true;
+          return;
+        }
+
+        existing.opaqueMesh = entry.opaqueMesh;
+        existing.transparentMesh = entry.transparentMesh;
+        existing.lodMeshes = entry.lodMeshes;
+        existing.lodCacheVersion = entry.lodCacheVersion;
+        store.put(existing);
+        updatedChunkRefs.add(entry.chunk);
+      };
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => {
+        for (const chunk of updatedChunkRefs) {
+          if (!chunk.isModified) {
+            chunk.isLODMeshCacheDirty = false;
+          }
+        }
+        resolve();
+      };
+      transaction.onerror = () => reject(transaction.error);
+    });
+  }
+
+  private static async persistLodCacheInvalidation(
+    chunkId: string,
+    targetVersion: string,
+  ): Promise<void> {
+    const transaction = this.db.transaction(CHUNK_STORE_NAME, "readwrite");
+    const store = transaction.objectStore(CHUNK_STORE_NAME);
+    const request = store.get(chunkId);
+
+    request.onsuccess = () => {
+      const existing = request.result;
+      if (!existing) return;
+      if (existing.lodCacheVersion === targetVersion) return;
+      existing.lodMeshes = undefined;
+      existing.lodCacheVersion = targetVersion;
+      store.put(existing);
+    };
+
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
+  }
+
+  private static applyLodCacheVersionPolicy(
+    chunkId: string,
+    data: SavedChunkData,
+  ): SavedChunkData {
+    const currentVersion = getCurrentLodCacheVersion();
+    if (data.lodCacheVersion === currentVersion) {
+      return data;
+    }
+
+    // Invalidate only coarse LOD cache payloads; keep voxel data and base mesh.
+    data.lodMeshes = undefined;
+    this.scheduleLodCacheInvalidation(chunkId, currentVersion);
+    return data;
+  }
+
+  private static scheduleLodCacheInvalidation(
+    chunkId: string,
+    targetVersion: string,
+  ): void {
+    if (this.pendingLodInvalidationChunkIds.has(chunkId)) {
+      return;
+    }
+    this.pendingLodInvalidationChunkIds.add(chunkId);
+
+    const jobPromise = this.enqueuePersistenceJob(
+      "background",
+      [chunkId],
+      async () => {
+        await this.persistLodCacheInvalidation(chunkId, targetVersion);
+      },
+    );
+
+    void jobPromise.finally(() => {
+      this.pendingLodInvalidationChunkIds.delete(chunkId);
+    });
+  }
+
   public static initialize(): Promise<void> {
     if (this.initPromise) {
       return this.initPromise;
@@ -121,65 +344,7 @@ export class WorldStorage {
   }
 
   public static async saveChunk(chunk: Chunk): Promise<void> {
-    if (GlobalValues.DISABLE_CHUNK_SAVING) {
-      return;
-    }
-    if (chunk.isPersistent) {
-      return;
-    }
-
-    if (!chunk.isModified && !chunk.isLODMeshCacheDirty) {
-      return;
-    }
-
-    if (!(await this.ensureInitialized())) {
-      console.warn("DB not initialized, cannot save chunk.");
-      return;
-    }
-
-    const blocks = chunk.block_array;
-    const light = chunk.light_array;
-
-    // Capture state synchronously before await to prevent race conditions with chunk disposal
-    const id = chunk.id.toString();
-    const palette = chunk.palette;
-    const uniformBlockId = chunk.uniformBlockId;
-    const isUniform = chunk.isUniform;
-    const opaqueMesh = chunk.opaqueMeshData;
-    const transparentMesh = chunk.transparentMeshData;
-    const lodMeshes = chunk.getSerializableLODMeshCache();
-
-    const compressedBlocks = blocks ? await this.compress(blocks) : null;
-    const compressedLight = light ? await this.compress(light) : null;
-
-    const transaction = this.db.transaction(CHUNK_STORE_NAME, "readwrite");
-    const store = transaction.objectStore(CHUNK_STORE_NAME);
-    // IndexedDB does not support bigint as a key, so we convert it to a string.
-
-    store.put({
-      id,
-      blocks: compressedBlocks,
-      palette,
-      uniformBlockId,
-      isUniform,
-      light_array: compressedLight,
-      opaqueMesh,
-      transparentMesh,
-      lodMeshes,
-      compressed: true,
-    });
-
-    const savePromise = new Promise<void>((resolve, reject) => {
-      transaction.oncomplete = () => {
-        chunk.isModified = false;
-        chunk.isLODMeshCacheDirty = false;
-        resolve();
-      };
-
-      transaction.onerror = () => reject(transaction.error);
-    });
-
-    return this.trackPendingChunkSaves([id], savePromise);
+    await this.saveChunks([chunk]);
   }
 
   public static async saveChunks(chunks: Chunk[]): Promise<void> {
@@ -188,76 +353,93 @@ export class WorldStorage {
       return Promise.resolve();
     }
 
-    const modifiedChunks = chunks.filter(
+    const savableChunks = chunks.filter(
       (c) => (c.isModified || c.isLODMeshCacheDirty) && !c.isPersistent,
     );
 
-    if (modifiedChunks.length === 0) {
+    if (savableChunks.length === 0) {
       return Promise.resolve();
     }
     if (!(await this.ensureInitialized())) {
       return Promise.resolve();
     }
 
-    // Pre-compress data in parallel
-    const preparedData = await Promise.all(
-      modifiedChunks.map(async (chunk) => {
-        const blocks = chunk.block_array;
-        const light = chunk.light_array;
-
-        // Capture state synchronously before await to prevent race conditions with chunk disposal
-        const id = chunk.id.toString();
-        const palette = chunk.palette;
-        const uniformBlockId = chunk.uniformBlockId;
-        const isUniform = chunk.isUniform;
-        const opaqueMesh = chunk.opaqueMeshData;
-        const transparentMesh = chunk.transparentMeshData;
-        const lodMeshes = chunk.getSerializableLODMeshCache();
-        return {
-          id,
-          blocks: blocks ? await this.compress(blocks) : null,
-          palette,
-          uniformBlockId,
-          isUniform,
-          light_array: light ? await this.compress(light) : null,
-          opaqueMesh,
-          transparentMesh,
-          lodMeshes,
-          compressed: true,
-        };
-      }),
+    const fullSaveChunks = savableChunks.filter((chunk) => chunk.isModified);
+    const lodOnlyChunks = savableChunks.filter(
+      (chunk) => !chunk.isModified && chunk.isLODMeshCacheDirty,
     );
 
-    const chunkIds = preparedData.map((data) => data.id);
-    const savePromise = new Promise<void>((resolve, reject) => {
-      const transaction = this.db!.transaction(CHUNK_STORE_NAME, "readwrite");
-      const store = transaction.objectStore(CHUNK_STORE_NAME);
+    const lanePromises: Promise<void>[] = [];
 
-      transaction.oncomplete = () => {
-        // Only mark chunks as not modified after the transaction is successfully completed.
-        for (const chunk of modifiedChunks) {
-          chunk.isModified = false;
-          chunk.isLODMeshCacheDirty = false;
-        }
-        resolve();
-      };
-      transaction.onerror = () => {
-        console.error("Batch save transaction error:", transaction.error);
-        reject(transaction.error);
-      };
+    if (fullSaveChunks.length > 0) {
+      // Capture & compress up-front to freeze data before async lane execution.
+      const preparedFull = await Promise.all(
+        fullSaveChunks.map(async (chunk): Promise<PreparedFullChunkSave> => {
+          const blocks = chunk.block_array;
+          const light = chunk.light_array;
+          const id = chunk.id.toString();
 
-      for (const data of preparedData) {
-        store.put(data);
-      }
-    });
+          return {
+            id,
+            chunk,
+            data: {
+              id,
+              blocks: blocks ? await this.compress(blocks) : null,
+              palette: chunk.palette,
+              uniformBlockId: chunk.uniformBlockId,
+              isUniform: chunk.isUniform,
+              light_array: light ? await this.compress(light) : null,
+              opaqueMesh: chunk.opaqueMeshData ?? null,
+              transparentMesh: chunk.transparentMeshData ?? null,
+              lodMeshes: chunk.getSerializableLODMeshCache(),
+              lodCacheVersion: getCurrentLodCacheVersion(),
+              compressed: true,
+            },
+          };
+        }),
+      );
 
-    return this.trackPendingChunkSaves(chunkIds, savePromise);
+      lanePromises.push(
+        this.enqueuePersistenceJob(
+          "critical",
+          preparedFull.map((entry) => entry.id),
+          async () => {
+            await this.persistPreparedFullChunks(preparedFull);
+          },
+        ),
+      );
+    }
+
+    if (lodOnlyChunks.length > 0) {
+      const preparedLodOnly: PreparedLodOnlySave[] = lodOnlyChunks.map(
+        (chunk) => ({
+          id: chunk.id.toString(),
+          chunk,
+          opaqueMesh: chunk.opaqueMeshData ?? null,
+          transparentMesh: chunk.transparentMeshData ?? null,
+          lodMeshes: chunk.getSerializableLODMeshCache(),
+          lodCacheVersion: getCurrentLodCacheVersion(),
+        }),
+      );
+
+      lanePromises.push(
+        this.enqueuePersistenceJob(
+          "background",
+          preparedLodOnly.map((entry) => entry.id),
+          async () => {
+            await this.persistPreparedLodOnlyChunks(preparedLodOnly);
+          },
+        ),
+      );
+    }
+
+    await Promise.all(lanePromises);
   }
 
   public static async saveAllModifiedChunks(): Promise<void> {
     const modifiedChunks: Chunk[] = [];
     for (const chunk of Chunk.chunkInstances.values()) {
-      if (chunk.isModified && !chunk.isPersistent) {
+      if ((chunk.isModified || chunk.isLODMeshCacheDirty) && !chunk.isPersistent) {
         modifiedChunks.push(chunk);
       }
     }
@@ -358,6 +540,7 @@ export class WorldStorage {
 
   public static async loadChunk(
     chunkId: bigint,
+    options?: LoadChunkOptions,
   ): Promise<SavedChunkData | null> {
     if (GlobalValues.DISABLE_CHUNK_LOADING) {
       // Loading is disabled for testing, do nothing.
@@ -377,14 +560,22 @@ export class WorldStorage {
       request.onsuccess = async () => {
         if (request.result) {
           const data = request.result;
-          if (data.compressed) {
+          const chunkIdKey = chunkId.toString();
+          const includeVoxelData = options?.includeVoxelData ?? true;
+          if (data.compressed && includeVoxelData) {
             if (data.blocks) data.blocks = await this.decompress(data.blocks);
             if (data.light_array)
               data.light_array = (await this.decompress(
                 data.light_array,
               )) as Uint8Array;
+          } else if (!includeVoxelData) {
+            data.blocks = null;
+            data.palette = null;
+            data.isUniform = undefined;
+            data.uniformBlockId = undefined;
+            data.light_array = undefined;
           }
-          resolve(data);
+          resolve(this.applyLodCacheVersionPolicy(chunkIdKey, data));
         } else {
           resolve(null); // Chunk not found
         }
@@ -395,6 +586,7 @@ export class WorldStorage {
 
   public static async loadChunks(
     chunkIds: bigint[],
+    options?: LoadChunkOptions,
   ): Promise<Map<bigint, SavedChunkData>> {
     const loadedChunks = new Map<bigint, SavedChunkData>();
     if (GlobalValues.DISABLE_CHUNK_LOADING) {
@@ -418,14 +610,25 @@ export class WorldStorage {
         request.onsuccess = async () => {
           if (request.result) {
             const data = request.result;
-            if (data.compressed) {
+            const chunkIdKey = chunkId.toString();
+            const includeVoxelData = options?.includeVoxelData ?? true;
+            if (data.compressed && includeVoxelData) {
               if (data.blocks) data.blocks = await this.decompress(data.blocks);
               if (data.light_array)
                 data.light_array = (await this.decompress(
                   data.light_array,
                 )) as Uint8Array;
+            } else if (!includeVoxelData) {
+              data.blocks = null;
+              data.palette = null;
+              data.isUniform = undefined;
+              data.uniformBlockId = undefined;
+              data.light_array = undefined;
             }
-            loadedChunks.set(chunkId, data);
+            loadedChunks.set(
+              chunkId,
+              this.applyLodCacheVersionPolicy(chunkIdKey, data),
+            );
           }
           resolve();
         };
