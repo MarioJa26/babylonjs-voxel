@@ -41,6 +41,7 @@ export type GenerateMeshInput = {
   light_array?: Uint8Array;
   neighbors: (SamplingBlockArray | undefined)[];
   neighborLights?: (Uint8Array | undefined)[];
+  lod: number;
 };
 
 export class ChunkMeshBuilder {
@@ -186,6 +187,8 @@ export class ChunkMeshBuilder {
     }
 
     const { block_array, chunk_size: size } = data;
+    const lod = data.lod;
+    const disableAO = lod >= 2;
     const context = new ChunkSamplingContext(data);
     const getBlock = context.getBlock;
     const getLight = context.getLight;
@@ -217,6 +220,8 @@ export class ChunkMeshBuilder {
           maskLight,
           maskBack,
           maskBackLight,
+          lod,
+          disableAO,
         );
 
         this.meshSlice(
@@ -253,6 +258,7 @@ export class ChunkMeshBuilder {
         getLight,
         opaqueMeshData,
         transparentMeshData,
+        disableAO,
       );
     }
 
@@ -291,6 +297,8 @@ export class ChunkMeshBuilder {
     maskLight: Uint16Array,
     maskBack: Uint32Array,
     maskBackLight: Uint16Array,
+    lod: number,
+    disableAO: boolean,
   ): void {
     const u_axis = (axis + 1) % 3;
     const v_axis = (axis + 2) % 3;
@@ -396,22 +404,27 @@ export class ChunkMeshBuilder {
               ? Math.max(currentLightPacked, neighborLightPacked)
               : neighborLightPacked;
 
-          const packedAO = this.calculateAOPacked(
-            bx + dx,
-            by + dy,
-            bz + dz,
-            u_axis,
-            v_axis,
-            getBlock,
+          const packedAO = disableAO
+            ? 0
+            : this.calculateAOPacked(
+                bx + dx,
+                by + dy,
+                bz + dz,
+                u_axis,
+                v_axis,
+                getBlock,
+              );
+          const quantizedLightPacked = this.quantizePackedLightForLod(
+            lightPacked,
+            disableAO,
           );
-
           const packedIdState = currentIsCustom
             ? 0
             : blockCurrent & BLOCK_PACK_MASK;
 
           mask[maskIndex] =
             packedIdState | (isCurrentTransparent ? TRANSPARENT_FLAG : 0);
-          maskLight[maskIndex] = packedAO | (lightPacked << 8);
+          maskLight[maskIndex] = packedAO | (quantizedLightPacked << 8);
         } else {
           mask[maskIndex] = 0;
           maskLight[maskIndex] = 0;
@@ -440,6 +453,11 @@ export class ChunkMeshBuilder {
             getBlock,
           );
 
+          const quantizedLightPacked = this.quantizePackedLightForLod(
+            lightPacked,
+            disableAO,
+          );
+
           const packedIdState = neighborIsCustom
             ? 0
             : blockNeighbor & BLOCK_PACK_MASK;
@@ -448,8 +466,7 @@ export class ChunkMeshBuilder {
             packedIdState |
             (isNeighborTransparent ? TRANSPARENT_FLAG : 0) |
             BACKFACE_FLAG;
-
-          maskBackLight[maskIndex] = packedAO | (lightPacked << 8);
+          maskBackLight[maskIndex] = packedAO | (quantizedLightPacked << 8);
         } else {
           maskBack[maskIndex] = 0;
           maskBackLight[maskIndex] = 0;
@@ -737,6 +754,7 @@ export class ChunkMeshBuilder {
     getLight: (x: number, y: number, z: number, fallback?: number) => number,
     opaqueMeshData: WorkerInternalMeshData,
     transparentMeshData: WorkerInternalMeshData,
+    disableAO: boolean,
   ): void {
     const size2 = size * size;
 
@@ -799,9 +817,11 @@ export class ChunkMeshBuilder {
             const u_axis = (axis + 1) % 3;
             const v_axis = (axis + 2) % 3;
 
-            const packedAO = onBoundary
-              ? this.calculateAOPacked(nx, ny, nz, u_axis, v_axis, getBlock)
-              : 0;
+            const packedAO = disableAO
+              ? 0
+              : onBoundary
+                ? this.calculateAOPacked(nx, ny, nz, u_axis, v_axis, getBlock)
+                : 0;
 
             this.addQuad(
               ox,
@@ -1012,5 +1032,28 @@ export class ChunkMeshBuilder {
     meshData.faceDataB.push4(sw, sh, tx, ty);
     meshData.faceDataC.push4(packedAO, lightLevel, 0, meta);
     meshData.faceCount++;
+  }
+  private static quantizeLightNibble(value: number): number {
+    if (value >= 12) return 14;
+    if (value >= 8) return 10;
+    if (value >= 4) return 5;
+    return 0;
+  }
+
+  private static quantizePackedLightForLod(
+    packedLight: number,
+    disableAO: boolean,
+  ): number {
+    const light = packedLight & 0xff;
+    if (disableAO) {
+      const sky = light >>> 4;
+      const block = light & 0x0f;
+
+      const quantizedSky = this.quantizeLightNibble(sky);
+      const quantizedBlock = this.quantizeLightNibble(block);
+
+      return ((quantizedSky & 0x0f) << 4) | (quantizedBlock & 0x0f);
+    }
+    return light;
   }
 }

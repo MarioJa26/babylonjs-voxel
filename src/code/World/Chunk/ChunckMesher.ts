@@ -23,12 +23,17 @@ import { Lod3Shader } from "../Light/Lod3Shader";
 import { TextureCache } from "../Texture/TextureCache";
 import { Chunk } from "./Chunk";
 import { MeshData } from "./DataStructures/MeshData";
+import { Lod2Shader } from "../Light/Lod2Shader";
 
 export class ChunkMesher {
   static #atlasMaterial: Material | null = null;
   static #transparentMaterial: Material | null = null;
   static #lod3OpaqueMaterial: Material | null = null;
   static #lod3TransparentMaterial: Material | null = null;
+
+  static #lod2OpaqueMaterial: Material | null = null;
+  static #lod2TransparentMaterial: Material | null = null;
+
   static #globalUniformBuffer: UniformBuffer | null = null;
   static #sharedFacePositionBuffer: Buffer | null = null;
 
@@ -112,6 +117,12 @@ export class ChunkMesher {
       Lod3Shader.opaqueFragmentShader;
     Effect.ShadersStore["lod3TransparentChunkFragmentShader"] =
       Lod3Shader.transparentFragmentShader;
+
+    Effect.ShadersStore["lod2ChunkVertexShader"] = Lod2Shader.chunkVertexShader;
+    Effect.ShadersStore["lod2ChunkFragmentShader"] =
+      Lod2Shader.opaqueFragmentShader;
+    Effect.ShadersStore["lod2TransparentChunkFragmentShader"] =
+      Lod2Shader.transparentFragmentShader;
 
     if (!this.#globalUniformBuffer) {
       const engine = scene.getEngine();
@@ -241,7 +252,7 @@ export class ChunkMesher {
         { vertex: "lod3Chunk", fragment: "lod3Chunk" },
         {
           attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
-          uniforms: ["worldViewProjection", "atlasTileSize"],
+          uniforms: ["world", "worldViewProjection", "atlasTileSize"],
           uniformBuffers: ["GlobalUniforms"],
           samplers: ["diffuseTexture"],
         },
@@ -272,7 +283,7 @@ export class ChunkMesher {
         { vertex: "lod3Chunk", fragment: "lod3TransparentChunk" },
         {
           attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
-          uniforms: ["worldViewProjection", "atlasTileSize"],
+          uniforms: ["world", "worldViewProjection", "atlasTileSize"],
           uniformBuffers: ["GlobalUniforms"],
           samplers: ["diffuseTexture"],
         },
@@ -308,6 +319,79 @@ export class ChunkMesher {
         this.#globalUniformBuffer,
       );
       lod3Transparent.freeze();
+    }
+
+    if (!this.#lod2OpaqueMaterial) {
+      const lod2Opaque = new ShaderMaterial(
+        "lod2ChunkShaderMaterial",
+        scene,
+        { vertex: "lod2Chunk", fragment: "lod2Chunk" },
+        {
+          attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
+          uniforms: ["world", "worldViewProjection", "atlasTileSize"],
+          uniformBuffers: ["GlobalUniforms"],
+          samplers: ["diffuseTexture", "normalTexture"],
+        },
+      );
+      lod2Opaque.backFaceCulling = true;
+      lod2Opaque.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
+      lod2Opaque.setTexture("diffuseTexture", diffuseAtlasTexture);
+      lod2Opaque.setUniformBuffer("GlobalUniforms", this.#globalUniformBuffer);
+      lod2Opaque.wireframe = GlobalValues.DEBUG;
+      lod2Opaque.freeze();
+      this.#lod2OpaqueMaterial = lod2Opaque;
+    } else {
+      const lod2Opaque = this.#lod2OpaqueMaterial as ShaderMaterial;
+      if (lod2Opaque.isFrozen) lod2Opaque.unfreeze();
+      lod2Opaque.wireframe = GlobalValues.DEBUG;
+      lod2Opaque.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
+      lod2Opaque.setTexture("diffuseTexture", diffuseAtlasTexture);
+      lod2Opaque.setUniformBuffer("GlobalUniforms", this.#globalUniformBuffer);
+      lod2Opaque.freeze();
+    }
+
+    // create lod2 transparent material
+    if (!this.#lod2TransparentMaterial) {
+      const lod2Transparent = new ShaderMaterial(
+        "lod2TransparentChunkShaderMaterial",
+        scene,
+        { vertex: "lod2Chunk", fragment: "lod2TransparentChunk" },
+        {
+          attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
+          uniforms: ["worldViewProjection", "atlasTileSize"],
+          uniformBuffers: ["GlobalUniforms"],
+          samplers: ["diffuseTexture"],
+        },
+      );
+      lod2Transparent.backFaceCulling = false;
+      lod2Transparent.forceDepthWrite = false;
+      lod2Transparent.needAlphaBlending = () => false;
+      lod2Transparent.setFloat(
+        "atlasTileSize",
+        TextureAtlasFactory.atlasTileSize,
+      );
+      lod2Transparent.setTexture("diffuseTexture", diffuseAtlasTexture);
+      lod2Transparent.setUniformBuffer(
+        "GlobalUniforms",
+        this.#globalUniformBuffer,
+      );
+      lod2Transparent.wireframe = GlobalValues.DEBUG;
+      lod2Transparent.freeze();
+      this.#lod2TransparentMaterial = lod2Transparent;
+    } else {
+      const lod2Transparent = this.#lod2TransparentMaterial as ShaderMaterial;
+      if (lod2Transparent.isFrozen) lod2Transparent.unfreeze();
+      lod2Transparent.wireframe = GlobalValues.DEBUG;
+      lod2Transparent.setFloat(
+        "atlasTileSize",
+        TextureAtlasFactory.atlasTileSize,
+      );
+      lod2Transparent.setTexture("diffuseTexture", diffuseAtlasTexture);
+      lod2Transparent.setUniformBuffer(
+        "GlobalUniforms",
+        this.#globalUniformBuffer,
+      );
+      lod2Transparent.freeze();
     }
   }
   private static ensureSharedFacePositionBuffer(): void {
@@ -349,12 +433,11 @@ export class ChunkMesher {
       chunk.opaqueMeshData = null;
       chunk.transparentMeshData = null;
     }
-
+    const lodLevel = chunk.lodLevel ?? 0;
     if (hasOpaque) {
       const opaqueMaterial =
-        (chunk.lodLevel ?? 0) >= 3
-          ? this.#lod3OpaqueMaterial!
-          : this.#atlasMaterial!;
+        lodLevel >= 3 ? this.#lod3OpaqueMaterial! : this.#atlasMaterial!;
+
       chunk.mesh = this.upsertMesh(
         chunk,
         chunk.mesh,
@@ -370,9 +453,12 @@ export class ChunkMesher {
 
     if (hasTransparent) {
       const transparentMaterial =
-        (chunk.lodLevel ?? 0) >= 3
+        lodLevel >= 3
           ? this.#lod3TransparentMaterial!
-          : this.#transparentMaterial!;
+          : lodLevel >= 2
+            ? this.#lod2TransparentMaterial!
+            : this.#transparentMaterial!;
+
       chunk.transparentMesh = this.upsertMesh(
         chunk,
         chunk.transparentMesh,
@@ -631,6 +717,11 @@ export class ChunkMesher {
 
     this.#lod3TransparentMaterial?.dispose();
     this.#lod3TransparentMaterial = null;
+
+    this.#lod2OpaqueMaterial?.dispose();
+    this.#lod2OpaqueMaterial = null;
+    this.#lod2TransparentMaterial?.dispose();
+    this.#lod2TransparentMaterial = null;
 
     this.lastUpdateFrame = -1;
   }

@@ -18,6 +18,7 @@ export type MeshBuilderLike = {
     light_array?: Uint8Array;
     neighbors: (Uint8Array | Uint16Array | undefined)[];
     neighborLights?: (Uint8Array | undefined)[];
+    lod?: number;
   }): {
     opaque: WorkerInternalMeshData;
     transparent: WorkerInternalMeshData;
@@ -308,6 +309,7 @@ export class WorkerTaskHandlers {
         light_array: simplifiedCenterLight,
         neighbors: simplifiedNeighbors,
         neighborLights: simplifiedNeighborLights,
+        lod: lod,
       });
 
       const waterResult = WaterLODBuilder.generateLODWaterMeshFromGrid(
@@ -341,6 +343,7 @@ export class WorkerTaskHandlers {
       light_array: request.light_array,
       neighbors: fullNeighbors,
       neighborLights: request.neighborLights,
+      lod: lod,
     });
 
     WorkerPayloadExpander.clearLargeReferences(request);
