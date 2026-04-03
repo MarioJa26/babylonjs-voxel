@@ -20,6 +20,44 @@ import {
   ShapeDefinitions,
 } from "../Shape/BlockShapes";
 
+type LightDirection = {
+  dx: number;
+  dy: number;
+  dz: number;
+  axis: number;
+  /** Direction light travels *out* from the source (used in propagateLight / removeLight). */
+  dir: number;
+  isDown: number;
+};
+
+/**
+ * The six cardinal directions light propagates *outward* from a source block.
+ * Used by `propagateLight` and `removeLight`.
+ */
+const LIGHT_PROPAGATION_DIRS: readonly LightDirection[] = [
+  { dx: 1, dy: 0, dz: 0, axis: 0, dir: 1, isDown: 0 }, // +X
+  { dx: -1, dy: 0, dz: 0, axis: 0, dir: -1, isDown: 0 }, // -X
+  { dx: 0, dy: 1, dz: 0, axis: 1, dir: 1, isDown: 0 }, // +Y
+  { dx: 0, dy: -1, dz: 0, axis: 1, dir: -1, isDown: 1 }, // -Y (downward)
+  { dx: 0, dy: 0, dz: 1, axis: 2, dir: 1, isDown: 0 }, // +Z
+  { dx: 0, dy: 0, dz: -1, axis: 2, dir: -1, isDown: 0 }, // -Z
+] as const;
+
+/**
+ * The six cardinal directions from which light may arrive *into* a target block.
+ * `dir` is inverted vs LIGHT_PROPAGATION_DIRS because it describes the travel
+ * direction into the target, not out of the source.
+ * Used by `updateLightFromNeighbors`.
+ */
+const LIGHT_INCOMING_DIRS: readonly LightDirection[] = [
+  { dx: 1, dy: 0, dz: 0, axis: 0, dir: -1, isDown: 0 }, // +X neighbor → light travels -X into target
+  { dx: -1, dy: 0, dz: 0, axis: 0, dir: 1, isDown: 0 }, // -X neighbor → light travels +X into target
+  { dx: 0, dy: 1, dz: 0, axis: 1, dir: -1, isDown: 1 }, // +Y neighbor → light travels downward into target
+  { dx: 0, dy: -1, dz: 0, axis: 1, dir: 1, isDown: 0 }, // -Y neighbor → light travels upward into target
+  { dx: 0, dy: 0, dz: 1, axis: 2, dir: -1, isDown: 0 }, // +Z neighbor → light travels -Z into target
+  { dx: 0, dy: 0, dz: -1, axis: 2, dir: 1, isDown: 0 }, // -Z neighbor → light travels +Z into target
+] as const;
+
 type LightNode = {
   chunk: Chunk;
   x: number;
@@ -742,48 +780,7 @@ export class Chunk {
       const sourceEmits =
         !isSkyLight && Chunk.getLightEmission(sourceBlockId) > 0;
 
-      for (let dirIndex = 0; dirIndex < 6; dirIndex++) {
-        let dx = 0;
-        let dy = 0;
-        let dz = 0;
-        let axis = 0;
-        let isDown = 0;
-        let dir = 1;
-
-        switch (dirIndex) {
-          case 0: // +X
-            dx = 1;
-            axis = 0;
-            dir = 1;
-            break;
-          case 1: // -X
-            dx = -1;
-            axis = 0;
-            dir = -1;
-            break;
-          case 2: // +Y
-            dy = 1;
-            axis = 1;
-            dir = 1;
-            break;
-          case 3: // -Y
-            dy = -1;
-            axis = 1;
-            isDown = 1;
-            dir = -1;
-            break;
-          case 4: // +Z
-            dz = 1;
-            axis = 2;
-            dir = 1;
-            break;
-          case 5: // -Z
-            dz = -1;
-            axis = 2;
-            dir = -1;
-            break;
-        }
-
+      for (const { dx, dy, dz, axis, dir, isDown } of LIGHT_PROPAGATION_DIRS) {
         let targetChunk: Chunk | undefined = chunk;
         let tx = x + dx;
         let ty = y + dy;
@@ -880,48 +877,7 @@ export class Chunk {
       ? this.getSkyLight(x, y, z)
       : this.getBlockLight(x, y, z);
 
-    for (let dirIndex = 0; dirIndex < 6; dirIndex++) {
-      let dx = 0;
-      let dy = 0;
-      let dz = 0;
-      let axis = 0;
-      let dir = 1;
-      let isDown = 0;
-
-      switch (dirIndex) {
-        case 0: // +X neighbor -> light travels -X into target
-          dx = 1;
-          axis = 0;
-          dir = -1;
-          break;
-        case 1: // -X neighbor -> light travels +X into target
-          dx = -1;
-          axis = 0;
-          dir = 1;
-          break;
-        case 2: // +Y neighbor -> light travels downward into target
-          dy = 1;
-          axis = 1;
-          dir = -1;
-          isDown = 1;
-          break;
-        case 3: // -Y neighbor -> light travels upward into target
-          dy = -1;
-          axis = 1;
-          dir = 1;
-          break;
-        case 4: // +Z neighbor -> light travels -Z into target
-          dz = 1;
-          axis = 2;
-          dir = -1;
-          break;
-        case 5: // -Z neighbor -> light travels +Z into target
-          dz = -1;
-          axis = 2;
-          dir = 1;
-          break;
-      }
-      // eslint-disable-next-line @typescript-eslint/no-this-alias
+    for (const { dx, dy, dz, axis, dir, isDown } of LIGHT_INCOMING_DIRS) {
       let sourceChunk: Chunk | undefined = this;
       let sx = x + dx;
       let sy = y + dy;
@@ -1402,48 +1358,7 @@ export class Chunk {
       const sourceEmits =
         !isSkyLight && Chunk.getLightEmission(sourceBlockId) > 0;
 
-      for (let dirIndex = 0; dirIndex < 6; dirIndex++) {
-        let dx = 0;
-        let dy = 0;
-        let dz = 0;
-        let axis = 0;
-        let isDown = 0;
-        let dir = 1;
-
-        switch (dirIndex) {
-          case 0: // +X
-            dx = 1;
-            axis = 0;
-            dir = 1;
-            break;
-          case 1: // -X
-            dx = -1;
-            axis = 0;
-            dir = -1;
-            break;
-          case 2: // +Y
-            dy = 1;
-            axis = 1;
-            dir = 1;
-            break;
-          case 3: // -Y
-            dy = -1;
-            axis = 1;
-            isDown = 1;
-            dir = -1;
-            break;
-          case 4: // +Z
-            dz = 1;
-            axis = 2;
-            dir = 1;
-            break;
-          case 5: // -Z
-            dz = -1;
-            axis = 2;
-            dir = -1;
-            break;
-        }
-
+      for (const { dx, dy, dz, axis, dir, isDown } of LIGHT_PROPAGATION_DIRS) {
         let targetChunk: Chunk | undefined = chunk;
         let tx = cx + dx;
         let ty = cy + dy;
