@@ -13,6 +13,7 @@ import { TextureAtlasFactory } from "@/code/World/Texture/TextureAtlasFactory";
 import { ItemRegistry, ItemDefinition } from "./ItemRegistry";
 import { ItemUseActions } from "./ItemUseActions";
 import { BoatCreatorSystem } from "@/code/World/Boat/BoatCreatorSystem";
+import { getSliceAxis } from "@/code/World/Shape/BlockShapeTransforms";
 
 export class Item implements IUsable {
   private static readonly SLICE_SHAPE_ROTATION_POLICY: Record<
@@ -166,7 +167,7 @@ export class Item implements IUsable {
       if (hasSlice > 0) {
         const sliceBits = blockState & ~7;
         const existingRotation = blockState & 7;
-        const originalSliceAxis = Item.getSliceAxis(existingRotation);
+        const originalSliceAxis = getSliceAxis(existingRotation);
         const policy = Item.SLICE_SHAPE_ROTATION_POLICY[shape.name] ?? {
           rotateVerticalByYaw: true,
         };
@@ -175,7 +176,7 @@ export class Item implements IUsable {
         if (originalSliceAxis !== 1 && policy.rotateVerticalByYaw) {
           rotation = Item.getWallRotationFromYaw(yaw);
         }
-        const sliceAxis = Item.getSliceAxis(rotation);
+        const sliceAxis = getSliceAxis(rotation);
 
         let flip = (existingRotation & 4) !== 0;
         if (sliceAxis === 1) {
@@ -225,11 +226,6 @@ export class Item implements IUsable {
     this.#div.draggable = true;
 
     return this.#div;
-  }
-
-  private static getSliceAxis(rotation: number): number {
-    const sliceAxisRaw = rotation & 3;
-    return sliceAxisRaw === 1 ? 0 : sliceAxisRaw === 2 ? 2 : 1;
   }
 
   private static getWallRotationFromYaw(yaw: number): number {

@@ -19,6 +19,7 @@ import {
 } from "../Shape/BlockShapes";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { TerrainHeightMap } from "@/code/Generation/TerrainHeightMap";
+import { getSliceAxis, transformBox } from "../Shape/BlockShapeTransforms";
 
 type LightDirection = {
   dx: number;
@@ -795,7 +796,7 @@ export class Chunk {
       const sourceEmits =
         !isSkyLight && Chunk.getLightEmission(sourceBlockId) > 0;
 
-      for (const dir of LIGHT_DIRS) {
+      for (const dir of LIGHT_PROPAGATION_DIRS) {
         // Calculate target position
         let tx = x + dir.dx;
         let ty = y + dir.dy;
@@ -895,7 +896,7 @@ export class Chunk {
       ? this.getSkyLight(x, y, z)
       : this.getBlockLight(x, y, z);
 
-    for (const dir of LIGHT_DIRS) {
+    for (const dir of LIGHT_INCOMING_DIRS) {
       let sourceChunk: Chunk | undefined = this;
       let sx = x + dir.dx;
       let sy = y + dir.dy;
@@ -974,11 +975,6 @@ export class Chunk {
     if (queue.length > 0) {
       this.propagateLight(queue, isSkyLight);
     }
-  }
-
-  private static getSliceAxis(rotation: number): number {
-    const sliceAxisRaw = rotation & 3;
-    return sliceAxisRaw === 1 ? 0 : sliceAxisRaw === 2 ? 2 : 1;
   }
 
   private static clamp01(value: number): number {
@@ -1065,71 +1061,6 @@ export class Chunk {
     rects.push({ u0: cu0, u1: cu1, v0: cv0, v1: cv1 });
   }
 
-  private static transformBoxForLight(
-    min: [number, number, number],
-    max: [number, number, number],
-    rotation: number,
-    flipY: boolean,
-  ): {
-    min: [number, number, number];
-    max: [number, number, number];
-  } {
-    let minX = min[0];
-    let minY = min[1];
-    let minZ = min[2];
-    let maxX = max[0];
-    let maxY = max[1];
-    let maxZ = max[2];
-
-    switch (rotation & 3) {
-      case 1: {
-        const oldMinX = minX;
-        const oldMaxX = maxX;
-        const oldMinZ = minZ;
-        const oldMaxZ = maxZ;
-        minX = 1 - oldMaxZ;
-        maxX = 1 - oldMinZ;
-        minZ = oldMinX;
-        maxZ = oldMaxX;
-        break;
-      }
-      case 2: {
-        const oldMinX = minX;
-        const oldMaxX = maxX;
-        const oldMinZ = minZ;
-        const oldMaxZ = maxZ;
-        minX = 1 - oldMaxX;
-        maxX = 1 - oldMinX;
-        minZ = 1 - oldMaxZ;
-        maxZ = 1 - oldMinZ;
-        break;
-      }
-      case 3: {
-        const oldMinX = minX;
-        const oldMaxX = maxX;
-        const oldMinZ = minZ;
-        const oldMaxZ = maxZ;
-        minX = oldMinZ;
-        maxX = oldMaxZ;
-        minZ = 1 - oldMaxX;
-        maxZ = 1 - oldMinX;
-        break;
-      }
-    }
-
-    if (flipY) {
-      const oldMinY = minY;
-      const oldMaxY = maxY;
-      minY = 1 - oldMaxY;
-      maxY = 1 - oldMinY;
-    }
-
-    return {
-      min: [minX, minY, minZ],
-      max: [maxX, maxY, maxZ],
-    };
-  }
-
   private static applySliceStateToBoxForLight(
     min: [number, number, number],
     max: [number, number, number],
@@ -1144,7 +1075,7 @@ export class Chunk {
     }
 
     const rotation = state & 7;
-    const sliceAxis = Chunk.getSliceAxis(rotation);
+    const sliceAxis = getSliceAxis(rotation);
     const flip = (rotation & 4) !== 0;
     const heightScale = slice / 8;
     const outMin: [number, number, number] = [min[0], min[1], min[2]];
@@ -1208,12 +1139,7 @@ export class Chunk {
     const nzRects: FaceRect[] = [];
 
     for (const box of shape.boxes) {
-      const transformed = Chunk.transformBoxForLight(
-        box.min,
-        box.max,
-        rotation,
-        flipY,
-      );
+      const transformed = transformBox(box.min, box.max, rotation, flipY);
       const sliced = shape.usesSliceState
         ? Chunk.applySliceStateToBoxForLight(
             transformed.min,
@@ -1376,7 +1302,7 @@ export class Chunk {
       const sourceEmits =
         !isSkyLight && Chunk.getLightEmission(sourceBlockId) > 0;
 
-      for (const dir of LIGHT_DIRS) {
+      for (const dir of LIGHT_PROPAGATION_DIRS) {
         let targetChunk: Chunk | undefined = chunk;
         let tx = cx + dir.dx;
         let ty = cy + dir.dy;

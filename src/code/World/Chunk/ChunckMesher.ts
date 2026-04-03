@@ -156,6 +156,21 @@ export class ChunkMesher {
     });
   }
 
+  private static shouldUseLodCrossFade(
+    previousLod: number | null,
+    nextLod: number,
+  ): boolean {
+    if (previousLod === null || previousLod === nextLod) return false;
+    // LOD0 <-> LOD1 is intentionally instant: quality is very close.
+    if (
+      (previousLod === 0 && nextLod === 1) ||
+      (previousLod === 1 && nextLod === 0)
+    ) {
+      return false;
+    }
+    return true;
+  }
+
   private static getMeshFadeUniforms(mesh: Mesh | undefined): {
     progress: number;
     direction: number;
@@ -709,7 +724,11 @@ export class ChunkMesher {
     }
 
     if (lodChangedOpaque && previousOpaqueMesh && chunk.mesh) {
-      this.beginLodCrossFade(chunk, previousOpaqueMesh, chunk.mesh);
+      if (this.shouldUseLodCrossFade(previousOpaqueLod, lodLevel)) {
+        this.beginLodCrossFade(chunk, previousOpaqueMesh, chunk.mesh);
+      } else {
+        previousOpaqueMesh.dispose();
+      }
     }
 
     if (
@@ -717,11 +736,15 @@ export class ChunkMesher {
       previousTransparentMesh &&
       chunk.transparentMesh
     ) {
-      this.beginLodCrossFade(
-        chunk,
-        previousTransparentMesh,
-        chunk.transparentMesh,
-      );
+      if (this.shouldUseLodCrossFade(previousTransparentLod, lodLevel)) {
+        this.beginLodCrossFade(
+          chunk,
+          previousTransparentMesh,
+          chunk.transparentMesh,
+        );
+      } else {
+        previousTransparentMesh.dispose();
+      }
     }
 
     if (chunk.colliderDirty) {

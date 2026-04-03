@@ -16,6 +16,10 @@ import {
   ShapeByBlockId,
   ShapeDefinitions,
 } from "../../Shape/BlockShapes";
+import {
+  getSliceAxis,
+  transformBox as transformShapeBox,
+} from "../../Shape/BlockShapeTransforms";
 import { BlockTextures } from "../../Texture/BlockTextures";
 import { ResizableTypedArray } from "../DataStructures/ResizableTypedArray";
 import { WorkerInternalMeshData } from "../DataStructures/WorkerInternalMeshData";
@@ -121,18 +125,6 @@ export class ChunkMeshBuilder {
     return ((state >>> 3) & 7) === 0;
   }
 
-  private static getSliceAxis(rotation: number): number {
-    const sliceAxisRaw = rotation & 3;
-    switch (sliceAxisRaw) {
-      case 1:
-        return 0;
-      case 2:
-        return 2;
-      default:
-        return 1;
-    }
-  }
-
   private static isGreedyCompatibleShape(shapeIndex: number): boolean {
     if (shapeIndex === CUBE_SHAPE_INDEX) return true;
 
@@ -164,7 +156,7 @@ export class ChunkMeshBuilder {
     }
 
     const rotation = state & 7;
-    const sliceAxis = this.getSliceAxis(rotation);
+    const sliceAxis = getSliceAxis(rotation);
     if (sliceAxis !== axis) {
       return false;
     }
@@ -512,7 +504,7 @@ export class ChunkMeshBuilder {
         let allowGreedyMerge = sliceForGreedy === 0;
         if (!allowGreedyMerge) {
           const rotationForGreedy = stateForGreedy & 7;
-          const sliceAxisForGreedy = this.getSliceAxis(rotationForGreedy);
+          const sliceAxisForGreedy = getSliceAxis(rotationForGreedy);
           allowGreedyMerge = sliceAxisForGreedy === axis;
         }
 
@@ -573,10 +565,9 @@ export class ChunkMeshBuilder {
           const rotationForBox = shape.rotateY ? state & 3 : 0;
           const flipYForBox = !!(shape.allowFlipY && (state & 4) !== 0);
 
-          const transformedBox = this.transformBox(
+          const transformedBox = transformShapeBox(
             sourceBox.min,
             sourceBox.max,
-            sourceBox.faceMask ?? FACE_ALL,
             rotationForBox,
             flipYForBox,
           );
@@ -635,76 +626,31 @@ export class ChunkMeshBuilder {
     }
   }
 
-  private static transformBox(
-    min: [number, number, number],
-    max: [number, number, number],
+  private static transformFaceMask(
     faceMask: number,
     rotation: number,
     flipY: boolean,
-  ): {
-    min: [number, number, number];
-    max: [number, number, number];
-    faceMask: number;
-  } {
-    let minX = min[0];
-    let minY = min[1];
-    let minZ = min[2];
-    let maxX = max[0];
-    let maxY = max[1];
-    let maxZ = max[2];
-
+  ): number {
     switch (rotation & 3) {
       case 1: {
-        const oldMinX = minX;
-        const oldMaxX = maxX;
-        const oldMinZ = minZ;
-        const oldMaxZ = maxZ;
-        minX = 1 - oldMaxZ;
-        maxX = 1 - oldMinZ;
-        minZ = oldMinX;
-        maxZ = oldMaxX;
         faceMask = ROTATE_Y_FACE_MASK_1[faceMask];
         break;
       }
       case 2: {
-        const oldMinX = minX;
-        const oldMaxX = maxX;
-        const oldMinZ = minZ;
-        const oldMaxZ = maxZ;
-        minX = 1 - oldMaxX;
-        maxX = 1 - oldMinX;
-        minZ = 1 - oldMaxZ;
-        maxZ = 1 - oldMinZ;
         faceMask = ROTATE_Y_FACE_MASK_2[faceMask];
         break;
       }
       case 3: {
-        const oldMinX = minX;
-        const oldMaxX = maxX;
-        const oldMinZ = minZ;
-        const oldMaxZ = maxZ;
-        minX = oldMinZ;
-        maxX = oldMaxZ;
-        minZ = 1 - oldMaxX;
-        maxZ = 1 - oldMinX;
         faceMask = ROTATE_Y_FACE_MASK_3[faceMask];
         break;
       }
     }
 
     if (flipY) {
-      const oldMinY = minY;
-      const oldMaxY = maxY;
-      minY = 1 - oldMaxY;
-      maxY = 1 - oldMinY;
       faceMask = FLIP_Y_FACE_MASK[faceMask];
     }
 
-    return {
-      min: [minX, minY, minZ],
-      max: [maxX, maxY, maxZ],
-      faceMask,
-    };
+    return faceMask;
   }
 
   private static applySliceStateToBox(
@@ -721,7 +667,7 @@ export class ChunkMeshBuilder {
     }
 
     const rotation = state & 7;
-    const sliceAxis = this.getSliceAxis(rotation);
+    const sliceAxis = getSliceAxis(rotation);
     const flip = (rotation & 4) !== 0;
     const heightScale = slice / 8;
 
@@ -841,15 +787,18 @@ export class ChunkMeshBuilder {
           };
 
           for (const box of shape.boxes) {
-            const transformed = this.transformBox(
+            const transformed = transformShapeBox(
               box.min,
               box.max,
-              box.faceMask ?? FACE_ALL,
               rotation,
               flipY,
             );
 
-            const faceMask = transformed.faceMask;
+            const faceMask = this.transformFaceMask(
+              box.faceMask ?? FACE_ALL,
+              rotation,
+              flipY,
+            );
             const slicedBox = shape.usesSliceState
               ? this.applySliceStateToBox(
                   transformed.min,

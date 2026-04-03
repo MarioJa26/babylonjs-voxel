@@ -5,12 +5,12 @@ export type ShapeBounds = {
   max: [number, number, number];
 };
 
-const getSliceAxis = (rotation: number): number => {
+export const getSliceAxis = (rotation: number): number => {
   const sliceAxisRaw = rotation & 3;
   return sliceAxisRaw === 1 ? 0 : sliceAxisRaw === 2 ? 2 : 1;
 };
 
-const transformBox = (
+export const transformBox = (
   min: [number, number, number],
   max: [number, number, number],
   rotation: number,
@@ -23,29 +23,40 @@ const transformBox = (
   let maxY = max[1];
   let maxZ = max[2];
 
-  if (rotation !== 0) {
-    const points: [number, number][] = [
-      [minX, minZ],
-      [minX, maxZ],
-      [maxX, minZ],
-      [maxX, maxZ],
-    ];
-    const rotated: [number, number][] = points.map(([x, z]) => {
-      switch (rotation) {
-        case 1:
-          return [1 - z, x];
-        case 2:
-          return [1 - x, 1 - z];
-        case 3:
-          return [z, 1 - x];
-        default:
-          return [x, z];
-      }
-    });
-    minX = Math.min(...rotated.map((p) => p[0]));
-    maxX = Math.max(...rotated.map((p) => p[0]));
-    minZ = Math.min(...rotated.map((p) => p[1]));
-    maxZ = Math.max(...rotated.map((p) => p[1]));
+  switch (rotation & 3) {
+    case 1: {
+      const oldMinX = minX;
+      const oldMaxX = maxX;
+      const oldMinZ = minZ;
+      const oldMaxZ = maxZ;
+      minX = 1 - oldMaxZ;
+      maxX = 1 - oldMinZ;
+      minZ = oldMinX;
+      maxZ = oldMaxX;
+      break;
+    }
+    case 2: {
+      const oldMinX = minX;
+      const oldMaxX = maxX;
+      const oldMinZ = minZ;
+      const oldMaxZ = maxZ;
+      minX = 1 - oldMaxX;
+      maxX = 1 - oldMinX;
+      minZ = 1 - oldMaxZ;
+      maxZ = 1 - oldMinZ;
+      break;
+    }
+    case 3: {
+      const oldMinX = minX;
+      const oldMaxX = maxX;
+      const oldMinZ = minZ;
+      const oldMaxZ = maxZ;
+      minX = oldMinZ;
+      maxX = oldMaxZ;
+      minZ = 1 - oldMaxX;
+      maxZ = 1 - oldMinX;
+      break;
+    }
   }
 
   if (flipY) {
