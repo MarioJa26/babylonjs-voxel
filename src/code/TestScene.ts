@@ -1,9 +1,4 @@
-import {
-  Scene,
-  Engine,
-  Vector3,
-  FreeCamera,
-} from "@babylonjs/core";
+import { Scene, Engine, Vector3, FreeCamera } from "@babylonjs/core";
 import "@babylonjs/core/Debug/debugLayer";
 import "@babylonjs/inspector";
 import { Player } from "./Player/Player";
@@ -12,7 +7,7 @@ import { Map1 } from "./Maps/Map1";
 import { PlayerCamera } from "./Player/PlayerCamera";
 import { ChunkLoadingSystem } from "./World/Chunk/ChunkLoadingSystem";
 import { ChunkMesher } from "./World/Chunk/ChunckMesher";
-import { GenerationParams } from "./World/Generation/NoiseAndParameters/GenerationParams";
+import { GenerationParams } from "./Generation/NoiseAndParameters/GenerationParams";
 
 export class TestScene {
   document: Document;

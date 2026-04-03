@@ -1,4 +1,4 @@
-import { GenerationParams } from "../../Generation/NoiseAndParameters/GenerationParams";
+import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 
 // Bump this whenever LOD mesh format/simplification/shading semantics change.
 const LOD_CACHE_SCHEMA_VERSION = "lod-cache-v1";
@@ -12,4 +12,3 @@ export function getCurrentLodCacheVersion(): string {
     "shader:lod-fog-v1",
   ].join("|");
 }
-

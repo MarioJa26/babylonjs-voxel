@@ -1,6 +1,6 @@
+import { BlockTextures } from "@/code/World/Texture/BlockTextures";
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
 import { TerrainHeightMap } from "../TerrainHeightMap";
-import { BlockTextures } from "../../Texture/BlockTextures";
 
 export class DistantTerrainGenerator {
   private static readonly DEFAULT_TILE_X = 14;

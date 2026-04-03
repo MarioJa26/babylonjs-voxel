@@ -1,6 +1,5 @@
+import { WorldGenerator } from "@/code/Generation/WorldGenerator";
 import { unpackBlockId } from "../../BlockEncoding";
-import { DistantTerrainGenerator } from "../../Generation/DistanTerrain/DistantTerrainGenerator";
-import { WorldGenerator } from "../../Generation/WorldGenerator";
 import { PaletteExpander } from "../DataStructures/PaletteExpander";
 import { WorkerInternalMeshData } from "../DataStructures/WorkerInternalMeshData";
 import {
@@ -10,6 +9,7 @@ import {
 } from "../DataStructures/WorkerMessageType";
 import { WaterLODBuilder, WaterSampleGrid } from "./WaterLODBuilder";
 import { WorkerPayloadExpander } from "./WorkerPayloadExpander";
+import { DistantTerrainGenerator } from "@/code/Generation/DistanTerrain/DistantTerrainGenerator";
 
 export type MeshBuilderLike = {
   generateMesh(data: {

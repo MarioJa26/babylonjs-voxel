@@ -1,7 +1,5 @@
 import type { Mesh } from "@babylonjs/core";
 import { MeshData } from "./DataStructures/MeshData";
-import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
-import { TerrainHeightMap } from "../Generation/TerrainHeightMap";
 import {
   packBlockValue,
   unpackBlockId,
@@ -19,6 +17,8 @@ import {
   ShapeByBlockId,
   ShapeDefinitions,
 } from "../Shape/BlockShapes";
+import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
+import { TerrainHeightMap } from "@/code/Generation/TerrainHeightMap";
 
 type LightDirection = {
   dx: number;
@@ -29,6 +29,21 @@ type LightDirection = {
   dir: number;
   isDown: number;
 };
+const LIGHT_DIRS: readonly {
+  dx: number;
+  dy: number;
+  dz: number;
+  axis: number;
+  dir: number;
+  isDown: number;
+}[] = [
+  { dx: 1, dy: 0, dz: 0, axis: 0, dir: 1, isDown: 0 },
+  { dx: -1, dy: 0, dz: 0, axis: 0, dir: -1, isDown: 0 },
+  { dx: 0, dy: 1, dz: 0, axis: 1, dir: 1, isDown: 0 },
+  { dx: 0, dy: -1, dz: 0, axis: 1, dir: -1, isDown: 1 },
+  { dx: 0, dy: 0, dz: 1, axis: 2, dir: 1, isDown: 0 },
+  { dx: 0, dy: 0, dz: -1, axis: 2, dir: -1, isDown: 0 },
+] as const;
 
 /**
  * The six cardinal directions light propagates *outward* from a source block.
@@ -780,11 +795,12 @@ export class Chunk {
       const sourceEmits =
         !isSkyLight && Chunk.getLightEmission(sourceBlockId) > 0;
 
-      for (const { dx, dy, dz, axis, dir, isDown } of LIGHT_PROPAGATION_DIRS) {
+      for (const dir of LIGHT_DIRS) {
+        // Calculate target position
+        let tx = x + dir.dx;
+        let ty = y + dir.dy;
+        let tz = z + dir.dz;
         let targetChunk: Chunk | undefined = chunk;
-        let tx = x + dx;
-        let ty = y + dy;
-        let tz = z + dz;
 
         // Resolve cross-chunk X boundary
         if (tx < 0) {
@@ -816,14 +832,16 @@ export class Chunk {
         if (!targetChunk) continue;
 
         const sourceAllows = isSkyLight
-          ? chunk.isTransparent(sourceBlockPacked, axis, dir) &&
-            (isDown === 1 || !Chunk.isWaterBlock(sourceBlockId))
-          : sourceEmits || chunk.isTransparent(sourceBlockPacked, axis, dir);
+          ? chunk.isTransparent(sourceBlockPacked, dir.axis, dir.dir) &&
+            (dir.isDown === 1 || !Chunk.isWaterBlock(sourceBlockId))
+          : sourceEmits ||
+            chunk.isTransparent(sourceBlockPacked, dir.axis, dir.dir);
 
         if (!sourceAllows) continue;
 
         const targetBlockPacked = targetChunk.getBlockPacked(tx, ty, tz);
-        if (!targetChunk.isTransparent(targetBlockPacked, axis, -dir)) continue;
+        if (!targetChunk.isTransparent(targetBlockPacked, dir.axis, -dir.dir))
+          continue;
 
         const currentLevel = isSkyLight
           ? targetChunk.getSkyLight(tx, ty, tz)
@@ -832,7 +850,7 @@ export class Chunk {
         const targetBlockId = unpackBlockId(targetBlockPacked);
         const preservesFullSun =
           isSkyLight &&
-          isDown === 1 &&
+          dir.isDown === 1 &&
           level === 15 &&
           !Chunk.isWaterBlock(sourceBlockId) &&
           !Chunk.isWaterBlock(targetBlockId);
@@ -877,11 +895,11 @@ export class Chunk {
       ? this.getSkyLight(x, y, z)
       : this.getBlockLight(x, y, z);
 
-    for (const { dx, dy, dz, axis, dir, isDown } of LIGHT_INCOMING_DIRS) {
+    for (const dir of LIGHT_DIRS) {
       let sourceChunk: Chunk | undefined = this;
-      let sx = x + dx;
-      let sy = y + dy;
-      let sz = z + dz;
+      let sx = x + dir.dx;
+      let sy = y + dir.dy;
+      let sz = z + dir.dz;
 
       // Resolve X boundary
       if (sx < 0) {
@@ -918,14 +936,14 @@ export class Chunk {
         !isSkyLight && Chunk.getLightEmission(sourceBlockId) > 0;
 
       const sourceAllows = isSkyLight
-        ? sourceChunk.isTransparent(sourceBlockPacked, axis, dir) &&
-          (isDown === 1 || !Chunk.isWaterBlock(sourceBlockId))
+        ? sourceChunk.isTransparent(sourceBlockPacked, dir.axis, dir.dir) &&
+          (dir.isDown === 1 || !Chunk.isWaterBlock(sourceBlockId))
         : sourceEmits ||
-          sourceChunk.isTransparent(sourceBlockPacked, axis, dir);
+          sourceChunk.isTransparent(sourceBlockPacked, dir.axis, dir.dir);
 
       if (!sourceAllows) continue;
 
-      if (!this.isTransparent(targetBlockPacked, axis, -dir)) continue;
+      if (!this.isTransparent(targetBlockPacked, dir.axis, -dir.dir)) continue;
 
       const level = isSkyLight
         ? sourceChunk.getSkyLight(sx, sy, sz)
@@ -936,7 +954,7 @@ export class Chunk {
       const targetBlockId = unpackBlockId(targetBlockPacked);
       const preservesFullSun =
         isSkyLight &&
-        isDown === 1 &&
+        dir.isDown === 1 &&
         level === 15 &&
         !Chunk.isWaterBlock(sourceBlockId) &&
         !Chunk.isWaterBlock(targetBlockId);
@@ -1358,11 +1376,11 @@ export class Chunk {
       const sourceEmits =
         !isSkyLight && Chunk.getLightEmission(sourceBlockId) > 0;
 
-      for (const { dx, dy, dz, axis, dir, isDown } of LIGHT_PROPAGATION_DIRS) {
+      for (const dir of LIGHT_DIRS) {
         let targetChunk: Chunk | undefined = chunk;
-        let tx = cx + dx;
-        let ty = cy + dy;
-        let tz = cz + dz;
+        let tx = cx + dir.dx;
+        let ty = cy + dir.dy;
+        let tz = cz + dir.dz;
 
         // Resolve X boundary
         if (tx < 0) {
@@ -1395,15 +1413,16 @@ export class Chunk {
 
         const targetBlockPacked = targetChunk.getBlockPacked(tx, ty, tz);
         const sourceAllows = isSkyLight
-          ? chunk.isTransparent(sourceBlockPacked, axis, dir) &&
-            (isDown === 1 || !Chunk.isWaterBlock(sourceBlockId))
-          : sourceEmits || chunk.isTransparent(sourceBlockPacked, axis, dir);
+          ? chunk.isTransparent(sourceBlockPacked, dir.axis, dir.dir) &&
+            (dir.isDown === 1 || !Chunk.isWaterBlock(sourceBlockId))
+          : sourceEmits ||
+            chunk.isTransparent(sourceBlockPacked, dir.axis, dir.dir);
 
         if (!sourceAllows) continue;
 
         // If the neighbor block itself cannot contain/pass light on this face,
         // it cannot be part of the removable light graph.
-        if (!targetChunk.isTransparent(targetBlockPacked, axis, -dir)) {
+        if (!targetChunk.isTransparent(targetBlockPacked, dir.axis, -dir.dir)) {
           continue;
         }
 
@@ -1418,7 +1437,7 @@ export class Chunk {
         const targetBlockId = unpackBlockId(targetBlockPacked);
         const preservesFullSun =
           isSkyLight &&
-          isDown === 1 &&
+          dir.isDown === 1 &&
           level === 15 &&
           !Chunk.isWaterBlock(sourceBlockId) &&
           !Chunk.isWaterBlock(targetBlockId);

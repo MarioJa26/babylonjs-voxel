@@ -1,7 +1,7 @@
 import { FreeCamera, Scene, Vector3 } from "@babylonjs/core";
 import MapFog from "../Maps/MapFog";
 import { SettingParams } from "../World/SettingParams";
-import { GenerationParams } from "../World/Generation/NoiseAndParameters/GenerationParams";
+import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
 
 export class PlayerCamera {
   #playerCamera: FreeCamera;
@@ -20,7 +20,10 @@ export class PlayerCamera {
   readonly #maxZoom = 10000;
   readonly #zoomSpeed = 20.333;
 
-  constructor(playerCamera: FreeCamera, private scene: Scene) {
+  constructor(
+    playerCamera: FreeCamera,
+    private scene: Scene,
+  ) {
     this.#playerCamera = playerCamera;
 
     playerCamera.fov = SettingParams.CAMERA_FOV * (Math.PI / 180);
@@ -33,7 +36,7 @@ export class PlayerCamera {
     const forward = new Vector3(
       Math.sin(this.#cameraYaw) * Math.cos(this.#cameraPitch),
       -Math.sin(this.#cameraPitch),
-      Math.cos(this.#cameraYaw) * Math.cos(this.#cameraPitch)
+      Math.cos(this.#cameraYaw) * Math.cos(this.#cameraPitch),
     ).normalize();
 
     if (this.#followDistance > this.#minZoom) {
@@ -49,7 +52,7 @@ export class PlayerCamera {
 
     // Make the camera look at the character
     this.#playerCamera.target = characterPosition.add(
-      new Vector3(0, this.#eyeHeight, 0)
+      new Vector3(0, this.#eyeHeight, 0),
     );
 
     const isUnderWater = this.position.y < GenerationParams.SEA_LEVEL;
@@ -66,7 +69,7 @@ export class PlayerCamera {
     // Clamp pitch to prevent camera flipping
     this.#cameraPitch = Math.max(
       -this.#maxPitch,
-      Math.min(this.#maxPitch, this.#cameraPitch)
+      Math.min(this.#maxPitch, this.#cameraPitch),
     );
   }
 

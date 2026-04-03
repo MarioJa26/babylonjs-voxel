@@ -1,4 +1,4 @@
-import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
+import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { Chunk } from "./Chunk";
 import {
   GenerateDistantTerrainRequest,
@@ -92,7 +92,7 @@ export class ChunkWorker {
     const message: GenerateFullMeshRequest = {
       type: WorkerTaskType.GenerateFullMesh,
       chunkId: chunk.id,
-      lod: forcedLod ?? ((chunk as any).lodLevel ?? 0),
+      lod: forcedLod ?? (chunk as any).lodLevel ?? 0,
       block_array: chunk.block_array,
       uniformBlockId: chunk.isUniform ? chunk.uniformBlockId : undefined,
       palette: this.paletteToTyped(chunk.palette),

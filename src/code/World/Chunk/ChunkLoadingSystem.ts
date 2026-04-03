@@ -3,11 +3,11 @@ import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import { SettingParams } from "../SettingParams";
 import { WorldStorage } from "../WorldStorage";
 import type { SavedChunkData, SavedChunkEntityData } from "../WorldStorage";
-import { DistantTerrain } from "../Generation/DistanTerrain/DistantTerrian";
 import { ChunkMesher } from "./ChunckMesher";
 import { ChunkLodRuleSet } from "./LOD/ChunkLodRules";
 import { getCurrentLodCacheVersion } from "./LOD/LodCacheVersion";
 import type { MeshData } from "./DataStructures/MeshData";
+import { DistantTerrain } from "@/code/Generation/DistanTerrain/DistantTerrian";
 
 type ChunkBoundEntity = {
   getWorldPosition: () => { x: number; y: number; z: number };

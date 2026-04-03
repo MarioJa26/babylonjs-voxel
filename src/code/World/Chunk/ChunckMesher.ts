@@ -92,8 +92,9 @@ export class ChunkMesher {
     if (!mesh.metadata || typeof mesh.metadata !== "object") {
       return null;
     }
-    const state = (mesh.metadata as Record<string, unknown>)
-      .__lodCrossFade as LodCrossFadeState | undefined;
+    const state = (mesh.metadata as Record<string, unknown>).__lodCrossFade as
+      | LodCrossFadeState
+      | undefined;
     if (!state) return null;
     if (
       typeof state.startMs !== "number" ||
@@ -637,7 +638,9 @@ export class ChunkMesher {
     const previousOpaqueMesh = chunk.mesh;
     const previousTransparentMesh = chunk.transparentMesh;
     const previousOpaqueLod = this.getMeshLodLevel(previousOpaqueMesh);
-    const previousTransparentLod = this.getMeshLodLevel(previousTransparentMesh);
+    const previousTransparentLod = this.getMeshLodLevel(
+      previousTransparentMesh,
+    );
 
     const opaqueMeshData = meshData.opaque;
     const transparentMeshData = meshData.transparent;
@@ -709,7 +712,11 @@ export class ChunkMesher {
       this.beginLodCrossFade(chunk, previousOpaqueMesh, chunk.mesh);
     }
 
-    if (lodChangedTransparent && previousTransparentMesh && chunk.transparentMesh) {
+    if (
+      lodChangedTransparent &&
+      previousTransparentMesh &&
+      chunk.transparentMesh
+    ) {
       this.beginLodCrossFade(
         chunk,
         previousTransparentMesh,

@@ -112,6 +112,7 @@ export class ChunkMeshBuilder {
   private static isFullCubeOccluder(value: number): boolean {
     const id = unpackBlockId(value);
     if (id === 0) return false;
+    if (BLOCK_TYPE[id] !== 0) return false;
 
     const shapeIndex = ShapeByBlockId[id];
     if (!this.isGreedyCompatibleShape(shapeIndex)) return false;
