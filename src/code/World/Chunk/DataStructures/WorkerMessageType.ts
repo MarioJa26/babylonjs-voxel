@@ -81,8 +81,8 @@ export type FullMeshMessage = {
   type: WorkerTaskType.GenerateFullMesh;
   chunkId: bigint;
   lod: number;
-  opaque: MeshData;
-  transparent: MeshData;
+  opaque: MeshData | null;
+  transparent: MeshData | null;
 };
 
 export type TerrainGeneratedMessage = {
@@ -108,3 +108,10 @@ export type WorkerResponseData =
   | FullMeshMessage
   | TerrainGeneratedMessage
   | DistantTerrainGeneratedMessage;
+
+export type MeshWorkerResponse = {
+  chunkId: bigint;
+  lod: number;
+  opaque: MeshData | null;
+  transparent: MeshData | null;
+};

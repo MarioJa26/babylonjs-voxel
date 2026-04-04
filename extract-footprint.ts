@@ -104,7 +104,9 @@ function returnTypeText(
   try {
     const sig = checker.getSignatureFromDeclaration(node);
     if (sig) return checker.typeToString(checker.getReturnTypeOfSignature(sig));
-  } catch {}
+  } catch {
+    /**/
+  }
   return "";
 }
 

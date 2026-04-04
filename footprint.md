@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-04-03T13:13:23.660Z
+Generated: 2026-04-04T13:51:57.855Z
 
-> **Summary:** 92 classes · 1603 members · 26 module-level functions
+> **Summary:** 92 classes · 1580 members · 47 module-level functions
 
 ---
 
@@ -2339,8 +2339,6 @@ Generated: 2026-04-03T13:13:23.660Z
   palette: Uint16Array | null;
   packedBlocks: Uint8Array | Uint16Array | null;
 }`
-- `function toTransferable(data: WorkerInternalMeshData): MeshData`
-- `function postFullMeshResult(chunkId: bigint, lod: number, opaque: WorkerInternalMeshData, transparent: WorkerInternalMeshData): void`
 
 ---
 
@@ -2411,10 +2409,12 @@ Generated: 2026-04-03T13:13:23.660Z
 ### export class ChunkWorker
 
 **Constructor**
-- `constructor(onMessage: (event: MessageEvent<WorkerResponseData>) => void)`
+- `constructor(onMessageTerrain: (event: MessageEvent<WorkerResponseData>) => void, onMessageMesh: (event: MessageEvent<MeshWorkerResponse>) => void)`
 
 **Properties**
-- `private worker: Worker`
+- `private terrainWorker: Worker`
+- `private voxelWorker: Worker`
+- `private waterWorker: Worker`
 - `private warnedNonSharedRemeshPayload: unknown`
 - `private readonly paletteToTyped: unknown`
 
@@ -2442,15 +2442,12 @@ Generated: 2026-04-03T13:13:23.660Z
 - `private static instance: ChunkWorkerPool`
 - `private static readonly WORKER_ERROR_COOLDOWN_MS: unknown`
 - `private workers: ChunkWorker[]`
-- `private workerTaskContext: Array<
-    | {
-        taskType: "terrain" | "remesh" | "lodPrecompute" | "distantTerrain";
-        chunk?: Chunk;
-        lod?: number;
-        distantTask?: DistantTerrainTask;
-      }
-    | null
-  >`
+- `private workerTaskContext: Array<{
+    taskType: "terrain" | "remesh" | "lodPrecompute" | "distantTerrain";
+    chunk?: Chunk;
+    lod?: number;
+    distantTask?: DistantTerrainTask;
+  } | null>`
 - `private workerRestartAtMs: number[]`
 - `private taskQueue: Chunk[]`
 - `private pendingRemeshQueue: Map<Chunk, boolean>`
@@ -2484,6 +2481,8 @@ Generated: 2026-04-03T13:13:23.660Z
 - `private flushPendingRemeshQueue(): void`
 - `private storeReturnedLODMesh(chunk: Chunk, lod: number, opaque: MeshData | null, transparent: MeshData | null): void`
 - `private tryApplyCachedLODMesh(chunk: Chunk, allowDirtyReuse: unknown = false): boolean`
+- `private makeTerrainMessageHandler(workerIndex: number, getWorker: () => ChunkWorker | undefined): (event: MessageEvent<WorkerResponseData>) => void`
+- `private makeMeshMessageHandler(workerIndex: number, getWorker: () => ChunkWorker | undefined): (event: MessageEvent<MeshWorkerResponse>) => void`
 - `private getChunkLodLevel(chunk: Chunk | undefined): number`
 - `private compareRemeshPriority(aChunk: Chunk, aPriority: boolean, bChunk: Chunk, bPriority: boolean): number`
 - `private insertChunkIntoRemeshQueue(chunk: Chunk, priority: boolean): void`
@@ -2602,6 +2601,7 @@ Generated: 2026-04-03T13:13:23.660Z
 - type `TerrainGeneratedMessage`
 - type `DistantTerrainGeneratedMessage`
 - type `WorkerResponseData`
+- type `MeshWorkerResponse`
 - enum `WorkerTaskType`
 
 ---
@@ -2693,103 +2693,21 @@ Generated: 2026-04-03T13:13:23.660Z
 
 ---
 
-## `World/Chunk/Worker/ChunkMeshBuilder.ts`
+## `World/Chunk/voxel.worker.ts`
 
-### export class ChunkMeshBuilder
-
-**Methods**
-- `public static createEmptyMeshData(): WorkerInternalMeshData`
-- `private static calculateAOPacked(ax: number, ay: number, az: number, u: number, v: number, getBlock: (x: number, y: number, z: number) => number): number`
-- `private static isAOOccluder(value: number): boolean`
-- `private static isFullCubeOccluder(value: number): boolean`
-- `private static isGreedyCompatibleShape(shapeIndex: number): boolean`
-- `private static isFaceFull(state: number, axis: number, isBackFace: boolean): boolean`
-- `public static generateMesh(data: GenerateMeshInput): {
-    opaque: WorkerInternalMeshData;
-    transparent: WorkerInternalMeshData;
-  }`
-- `private static chunkHasCustomShapes(block_array: SamplingBlockArray): boolean`
-- `private static computeSliceMask(size: number, axis: number, slice: number, direction: number[], block_array: SamplingBlockArray, getBlock: (x: number, y: number, z: number, fallback?: number) => number, getLight: (x: number, y: number, z: number, fallback?: number) => number, mask: Uint32Array, maskLight: Uint16Array, maskBack: Uint32Array, maskBackLight: Uint16Array, lod: number, disableAO: boolean): void`
-- `private static meshSlice(size: number, axis: number, axisSlice: number, mask: Uint32Array, maskLight: Uint16Array, opaqueMeshData: WorkerInternalMeshData, transparentMeshData: WorkerInternalMeshData, faceNamePositive: string, faceNameNegative: string): void`
-- `private static transformFaceMask(faceMask: number, rotation: number, flipY: boolean): number`
-- `private static applySliceStateToBox(min: [number, number, number], max: [number, number, number], state: number): {
-    min: [number, number, number];
-    max: [number, number, number];
-  }`
-- `private static emitCustomShapes(size: number, block_array: SamplingBlockArray, getBlock: (x: number, y: number, z: number, fallback?: number) => number, getLight: (x: number, y: number, z: number, fallback?: number) => number, opaqueMeshData: WorkerInternalMeshData, transparentMeshData: WorkerInternalMeshData, disableAO: boolean): void`
-- `private static getFaceName(dir: number[], isBackFace: boolean): string`
-- `private static getMaterialTintBucket(blockId: number): number`
-- `public static addQuad(x: number, y: number, z: number, axis: number, width: number, height: number, blockId: number, isBackFace: boolean, faceName: string, lightLevel: number, packedAO: number, meshData: WorkerInternalMeshData): void`
-- `private static quantizeLightNibble(value: number): number`
-- `private static quantizePackedLightForLod(packedLight: number, disableAO: boolean): number`
+**Module-level functions**
+- `function expandBlockPayload(raw: Uint8Array | Uint16Array | null | undefined, palette: Uint8Array | Uint16Array | null | undefined, uniformBlockId: number | undefined, totalBlocks: number, paletteExpander: PaletteExpander): Uint8Array | Uint16Array`
+- `function expandVoxelPayload(request: VoxelWorkerRequest): WorkerMeshInput`
 
 **Types / Interfaces / Enums**
-- type `GenerateMeshInput`
+- interface `VoxelWorkerRequest`
 
 ---
 
-## `World/Chunk/Worker/ChunkSamplingContext.ts`
-
-### export class ChunkSamplingContext
-
-**Constructor**
-- `constructor(args: ChunkSamplingContextArgs)`
-
-**Properties**
-- `public readonly size: number`
-- `public readonly size2: number`
-- `public readonly fullBright: number`
-- `private readonly block_array: SamplingBlockArray`
-- `private readonly light_array?: Uint8Array`
-- `private readonly neighbors: (SamplingBlockArray | undefined)[]`
-- `private readonly neighborLights?: (Uint8Array | undefined)[]`
-- `public getBlock: unknown`
-- `public getLight: unknown`
-
-**Methods**
-- `public static toCompactNeighborIndex(fullIndex: number): number`
+## `World/Chunk/water.worker.ts`
 
 **Types / Interfaces / Enums**
-- type `SamplingBlockArray`
-- type `ChunkSamplingContextArgs`
-
----
-
-## `World/Chunk/Worker/WaterLODBuilder.ts`
-
-### export class WaterLODBuilder
-
-**Methods**
-- `public static createEmptyMeshData(): WorkerInternalMeshData`
-- `public static isWaterPacked(packed: number): boolean`
-- `public static waterGridIndex(cellX: number, cellY: number, cellZ: number, cellsX: number, cellsZ: number): number`
-- `public static packMaxLightInCell(getLight: (x: number, y: number, z: number, fallback?: number) => number, baseX: number, baseY: number, baseZ: number, step: number, size: number): number`
-- `public static sampleCoarseWaterSurface(args: WaterLODArgs, coarseX: number, coarseY: number, coarseZ: number): WaterSurfaceSample | null`
-- `public static buildCoarseWaterSampleGrid(args: WaterLODArgs): WaterSampleGrid`
-- `public static generateLODWaterMeshFromGrid(grid: WaterSampleGrid, addQuad: AddQuadFn): WorkerInternalMeshData`
-- `public static appendMeshData(target: WorkerInternalMeshData, source: WorkerInternalMeshData): void`
-
-**Types / Interfaces / Enums**
-- type `WaterSurfaceSample`
-- type `WaterLODArgs`
-- type `WaterSampleGrid`
-- type `AddQuadFn`
-
----
-
-## `World/Chunk/Worker/WorkerPayloadExpander.ts`
-
-### export class WorkerPayloadExpander
-
-**Methods**
-- `public static detectNeedsUint16(request: GenerateFullMeshRequest, paletteExpander: PaletteExpander): boolean`
-- `public static expandCenterChunkPayload(request: GenerateFullMeshRequest, totalBlocks: number, needsUint16: boolean, paletteExpander: PaletteExpander): void`
-- `public static expandNeighborPayloads(request: GenerateFullMeshRequest, totalBlocks: number, needsUint16: boolean, paletteExpander: PaletteExpander): void`
-- `public static expandFullMeshRequest(request: GenerateFullMeshRequest, paletteExpander: PaletteExpander): ExpandedFullMeshContext`
-- `public static clearLargeReferences(request: GenerateFullMeshRequest): void`
-
-**Types / Interfaces / Enums**
-- type `ExpandedFullMeshContext`
+- interface `WaterWorkerRequest`
 
 ---
 
@@ -2798,11 +2716,6 @@ Generated: 2026-04-03T13:13:23.660Z
 ### export class WorkerTaskHandlers
 
 **Methods**
-- `public static handleGenerateFullMesh(request: GenerateFullMeshRequest, deps: {
-      paletteExpander: PaletteExpander;
-      meshBuilder: MeshBuilderLike;
-      postFullMeshResult: PostFullMeshResultFn;
-    }): void`
 - `public static handleGenerateTerrain(request: GenerateTerrainRequest, deps: {
       generator: WorldGenerator;
       compressBlocks: CompressBlocksFn;
@@ -2832,7 +2745,6 @@ Generated: 2026-04-03T13:13:23.660Z
 
 **Types / Interfaces / Enums**
 - type `MeshBuilderLike`
-- type `PostFullMeshResultFn`
 - type `CompressBlocksFn`
 
 ---
@@ -3013,6 +2925,183 @@ Generated: 2026-04-03T13:13:23.660Z
 
 **Properties**
 - `public static readonly chunkFragmentShader: unknown`
+
+---
+
+## `World/MeshPipeline/core/AOPipeline.ts`
+
+**Module-level functions**
+- `export function isOccluder(packedBlock: number, shape: BlockShapeInfo): boolean`
+- `export function computeAO(ctx: MeshContext, ax: number, ay: number, az: number, uAxis: number, vAxis: number, getShapeInfo: (packedBlock: number) => BlockShapeInfo): number`
+
+---
+
+## `World/MeshPipeline/core/FaceEmitter.ts`
+
+**Module-level functions**
+- `export function emitQuad(out: WorkerInternalMeshData, params: EmitQuadParams): void`
+
+---
+
+## `World/MeshPipeline/core/GreedyPipeline.ts`
+
+**Module-level functions**
+- `export function greedyMesh(ctx: MeshContext, axis: number, extractMask: MaskExtractor, emitFace: FaceEmitterCallback): void`
+
+**Types / Interfaces / Enums**
+- interface `MaskExtractor`
+- interface `FaceEmitterCallback`
+
+---
+
+## `World/MeshPipeline/core/LightPipeline.ts`
+
+**Module-level functions**
+- `export function quantizeNibble(v: number): number`
+- `export function quantizeLightForLOD(packed: number, disableAO: boolean): number`
+- `export function mergeLight(currLight: number, neighborLight: number, isPartialCurrent: boolean, isPartialNeighbor: boolean): number`
+- `export function getPackedLightByte(ctx: MeshContext, x: number, y: number, z: number): number`
+
+---
+
+## `World/MeshPipeline/core/MeshAssembler.ts`
+
+**Module-level functions**
+- `export function mergeMeshData(target: WorkerInternalMeshData, source: WorkerInternalMeshData): void`
+
+---
+
+## `World/MeshPipeline/core/MeshContext.ts`
+
+**Module-level functions**
+- `export function createMeshContext(params: {
+  size: number;
+  lod: number;
+}): Omit<MeshContext, "getBlock" | "getLight" | "hasNeighborChunk">`
+
+---
+
+## `World/MeshPipeline/core/MeshEmitters.ts`
+
+**Module-level functions**
+- `export function createEmptyMeshData(): WorkerInternalMeshData`
+- `export function buildVoxelMesh(ctx: MeshContext, opaqueOut: WorkerInternalMeshData, transparentOut: WorkerInternalMeshData): void`
+- `export function buildWaterSurfaceMesh(ctx: MeshContext, grid: any, out: WorkerInternalMeshData): void`
+
+---
+
+## `World/MeshPipeline/core/ShapePipeline.ts`
+
+**Module-level functions**
+- `export function getShapeInfo(packedBlock: number): BlockShapeInfo`
+- `export function getMaterialTintBucket(blockId: number): number`
+- `export function getMaterialType(blockId: number): MaterialType`
+
+---
+
+## `World/MeshPipeline/core/VoxelFaceEmitterAdapter.ts`
+
+### export class VoxelFaceEmitterAdapter
+
+**Methods**
+- `public emitVoxelFace(axis: number, desc: GreedyFaceDescriptor, opaqueOut: WorkerInternalMeshData, transparentOut: WorkerInternalMeshData): void`
+- `getFaceName(axis: number, isBackFace: boolean): string`
+
+---
+
+## `World/MeshPipeline/core/VoxelGreedyAdapter.ts`
+
+### export class VoxelGreedyAdapter
+
+**Constructor**
+- `constructor(ctx: MeshContext)`
+
+**Properties**
+- `private ctx: MeshContext`
+- `private maskExtractor: VoxelMaskExtractor`
+- `private faceEmitter: VoxelFaceEmitterAdapter`
+
+**Methods**
+- `public build(opaqueOut: WorkerInternalMeshData, transparentOut: WorkerInternalMeshData): void`
+- `private runForAxis(axis: number, opaqueOut: WorkerInternalMeshData, transparentOut: WorkerInternalMeshData): void`
+
+---
+
+## `World/MeshPipeline/core/VoxelMaskExtractor.ts`
+
+### export class VoxelMaskExtractor
+
+**Constructor**
+- `constructor(ctx: MeshContext)`
+
+**Properties**
+- `private ctx: MeshContext`
+
+**Methods**
+- `private samplePacked(x: number, y: number, z: number, fallback: number): number`
+- `public extractSliceMask(axis: number, slice: number, mask: number[], lightMask: number[]): void`
+- `private pickLight(curr: ParsedBlock, nbr: ParsedBlock, x: number, y: number, z: number, dx: number, dy: number, dz: number): number`
+
+**Module-level functions**
+- `function unpackBlock(packed: number): ParsedBlock`
+
+**Types / Interfaces / Enums**
+- interface `ParsedBlock`
+
+---
+
+## `World/MeshPipeline/core/VoxelPipeline.ts`
+
+### export class VoxelPipeline
+
+**Constructor**
+- `constructor(ctx: MeshContext)`
+
+**Properties**
+- `private ctx: MeshContext`
+
+**Methods**
+- `public build(opaqueOut: WorkerInternalMeshData, transparentOut: WorkerInternalMeshData): void`
+
+**Types / Interfaces / Enums**
+- interface `VoxelPipelineInput`
+
+---
+
+## `World/MeshPipeline/core/WaterPipeline.ts`
+
+**Module-level functions**
+- `export function buildWaterMesh(_ctx: MeshContext, grid: WaterSampleGrid, out: WorkerInternalMeshData): void`
+
+**Types / Interfaces / Enums**
+- interface `WaterSurfaceSample`
+- interface `WaterSampleGrid`
+
+---
+
+## `World/MeshPipeline/core/WorkerMeshHelpers.ts`
+
+**Module-level functions**
+- `export function createEmptyWorkerInternalMeshData(): WorkerInternalMeshData`
+- `export function toTransferableMeshData(data: WorkerInternalMeshData): MeshData`
+- `export function createMeshContextFromPayload(base: WorkerMeshBaseContext, input: WorkerMeshInput): MeshContext`
+
+**Types / Interfaces / Enums**
+- type `WorkerMeshBaseContext`
+- type `WorkerMeshInput`
+
+---
+
+## `World/MeshPipeline/types/MeshTypes.ts`
+
+**Types / Interfaces / Enums**
+- interface `WorkerInternalMeshData`
+- interface `ResizableTypedArray`
+- interface `MeshContext`
+- interface `EmitQuadParams`
+- interface `BlockShapeInfo`
+- interface `GreedyFaceDescriptor`
+- enum `MaterialType`
 
 ---
 

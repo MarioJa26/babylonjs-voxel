@@ -1,4 +1,3 @@
-import { ChunkMesher } from "./ChunckMesher";
 import { Chunk } from "./Chunk";
 import { ChunkWorker } from "./chunkWorker";
 import { MeshData } from "./DataStructures/MeshData";
@@ -12,7 +11,9 @@ import {
   TerrainGeneratedMessage,
   WorkerResponseData,
   WorkerTaskType,
+  MeshWorkerResponse,
 } from "./DataStructures/WorkerMessageType";
+import { ChunkMesher } from "./ChunckMesher";
 
 export type WorkerMessageData = WorkerResponseData;
 
@@ -40,15 +41,12 @@ export class ChunkWorkerPool {
   private static instance: ChunkWorkerPool;
   private static readonly WORKER_ERROR_COOLDOWN_MS = 120;
   private workers: ChunkWorker[] = [];
-  private workerTaskContext: Array<
-    | {
-        taskType: "terrain" | "remesh" | "lodPrecompute" | "distantTerrain";
-        chunk?: Chunk;
-        lod?: number;
-        distantTask?: DistantTerrainTask;
-      }
-    | null
-  > = [];
+  private workerTaskContext: Array<{
+    taskType: "terrain" | "remesh" | "lodPrecompute" | "distantTerrain";
+    chunk?: Chunk;
+    lod?: number;
+    distantTask?: DistantTerrainTask;
+  } | null> = [];
   private workerRestartAtMs: number[] = [];
   private taskQueue: Chunk[] = [];
   private pendingRemeshQueue: Map<Chunk, boolean> = new Map();
@@ -114,7 +112,8 @@ export class ChunkWorkerPool {
     this.debugStats.remeshQueueLength = this.taskQueue.length;
     this.debugStats.terrainQueueLength = this.terrainTaskQueue.size;
     this.debugStats.lodPrecomputeQueueLength = this.lodPrecomputeQueue.length;
-    this.debugStats.distantTerrainQueueLength = this.distantTerrainTaskQueue.length;
+    this.debugStats.distantTerrainQueueLength =
+      this.distantTerrainTaskQueue.length;
     this.debugStats.meshResultQueueLength = this.meshResultQueue.length;
     const dispatchBudget = this.getDispatchBudgetPerTick();
     this.debugStats.dispatchBudgetPerTick = Number.isFinite(dispatchBudget)
@@ -153,7 +152,8 @@ export class ChunkWorkerPool {
     this.workerTaskContext[workerIndex] = null;
 
     if (context?.taskType === "terrain" && context.chunk) {
-      this.terrainTaskQueue.add(context.chunk);
+      context.chunk.isTerrainScheduled = false;
+      this.scheduleTerrainGeneration(context.chunk);
     } else if (
       context?.taskType === "remesh" &&
       context.chunk &&
@@ -168,7 +168,10 @@ export class ChunkWorkerPool {
       const key = this.getLodPrecomputeKey(context.chunk, context.lod);
       if (!this.pendingLodPrecomputeKeys.has(key)) {
         this.pendingLodPrecomputeKeys.add(key);
-        this.lodPrecomputeQueue.push({ chunk: context.chunk, lod: context.lod });
+        this.lodPrecomputeQueue.push({
+          chunk: context.chunk,
+          lod: context.lod,
+        });
       }
     } else if (context?.taskType === "distantTerrain" && context.distantTask) {
       this.distantTerrainTaskQueue.unshift(context.distantTask);
@@ -185,117 +188,41 @@ export class ChunkWorkerPool {
     }
 
     const now = performance.now();
-    const earliestRestart = (this.workerRestartAtMs[workerIndex] ?? 0) + ChunkWorkerPool.WORKER_ERROR_COOLDOWN_MS;
+    const earliestRestart =
+      (this.workerRestartAtMs[workerIndex] ?? 0) +
+      ChunkWorkerPool.WORKER_ERROR_COOLDOWN_MS;
     const delay = Math.max(0, earliestRestart - now);
 
     const restart = () => {
-      let replacement: ChunkWorker;
-      const onMessage = (event: MessageEvent<WorkerMessageData>) => {
-        let failed = false;
-        try {
-          const data = event.data;
-          const { type } = data;
+      const holder: { worker?: ChunkWorker } = {};
 
-          if (type === WorkerTaskType.GenerateFullMesh) {
-            const meshData: FullMeshMessage = data;
-            this.meshResultQueue.push(meshData);
-          } else if (type === WorkerTaskType.GenerateTerrain) {
-            const terrainData: TerrainGeneratedMessage = data;
-            const {
-              chunkId,
-              block_array,
-              light_array,
-              isUniform,
-              uniformBlockId,
-              palette,
-            } = terrainData;
+      const onMessageTerrain = this.makeTerrainMessageHandler(
+        workerIndex,
+        () => holder.worker,
+      );
 
-            const chunk = this.resolveChunkByMessageId(chunkId);
-            if (chunk) {
-              let blocks: Uint8Array | Uint16Array | null = block_array;
-              let light: Uint8Array = light_array;
-
-              // Terrain-generation palettes are produced as Uint16Array | null by the worker.
-              const typedPalette: Uint16Array | null =
-                palette instanceof Uint16Array ? palette : null;
-
-              // Ensure we are using SharedArrayBuffer to avoid copying during remesh
-              if (blocks && !(blocks.buffer instanceof SharedArrayBuffer)) {
-                const shared = new SharedArrayBuffer(blocks.byteLength);
-                if (blocks instanceof Uint16Array) {
-                  new Uint16Array(shared).set(blocks);
-                  blocks = new Uint16Array(shared);
-                } else {
-                  new Uint8Array(shared).set(blocks);
-                  blocks = new Uint8Array(shared);
-                }
-              }
-
-              if (!(light.buffer instanceof SharedArrayBuffer)) {
-                const shared = new SharedArrayBuffer(light.byteLength);
-                new Uint8Array(shared).set(light);
-                light = new Uint8Array(shared);
-              }
-
-              chunk.populate(
-                blocks,
-                typedPalette,
-                isUniform,
-                uniformBlockId,
-                light,
-                false,
-              );
-
-              this.scheduleChunkAndNeighborsRemesh(chunk);
-
-              // Mark dirty and persist immediately through WorldStorage lanes.
-              chunk.isModified = true;
-              void WorldStorage.saveChunk(chunk).catch((error) => {
-                console.error("Initial generated chunk persistence failed:", error);
-              });
-            }
-          } else if (type === WorkerTaskType.GenerateDistantTerrain_Generated) {
-            const distantData: DistantTerrainGeneratedMessage = data;
-            this.onDistantTerrainGenerated?.(distantData);
-          }
-        } catch (messageError) {
-          failed = true;
-          console.error(
-            `Chunk worker ${workerIndex} onmessage failed; respawning worker`,
-            messageError,
-          );
-          this.handleWorkerFailure(workerIndex, messageError);
-          return;
-        } finally {
-          if (failed) {
-            return;
-          }
-          // If handleWorkerFailure already replaced this worker, avoid mutating
-          // queue state from the stale callback.
-          if (this.workers[workerIndex] !== replacement) {
-            return;
-          }
-          this.workerTaskContext[workerIndex] = null;
-          if (!this.idleWorkerIndices.includes(workerIndex)) {
-            this.idleWorkerIndices.push(workerIndex);
-          }
-          this.processQueue();
-        }
-      };
+      const onMessageMesh = this.makeMeshMessageHandler(
+        workerIndex,
+        () => holder.worker,
+      );
 
       const onError = (ev: ErrorEvent | Event) => {
         console.error(`Chunk worker ${workerIndex} error`, ev, reason);
         this.handleWorkerFailure(workerIndex, ev);
       };
 
-      replacement = new ChunkWorker(onMessage);
+      const replacement = new ChunkWorker(onMessageTerrain, onMessageMesh);
       replacement.setOnError(onError);
+      holder.worker = replacement;
+
       this.workers[workerIndex] = replacement;
       this.workerRestartAtMs[workerIndex] = performance.now();
       this.workerTaskContext[workerIndex] = null;
+
       if (!this.idleWorkerIndices.includes(workerIndex)) {
         this.idleWorkerIndices.push(workerIndex);
       }
+
       this.processQueue();
     };
 
@@ -308,106 +235,26 @@ export class ChunkWorkerPool {
 
   private constructor(poolSize: number) {
     for (let i = 0; i < poolSize; i++) {
-      let workerWrapper: ChunkWorker;
-      const onMessage = (event: MessageEvent<WorkerMessageData>) => {
-        let failed = false;
-        try {
-          const data = event.data;
-          const { type } = data;
+      const holder: { worker?: ChunkWorker } = {};
 
-          if (type === WorkerTaskType.GenerateFullMesh) {
-            const meshData: FullMeshMessage = data;
-            this.meshResultQueue.push(meshData);
-          } else if (type === WorkerTaskType.GenerateTerrain) {
-            const terrainData: TerrainGeneratedMessage = data;
-            const {
-              chunkId,
-              block_array,
-              light_array,
-              isUniform,
-              uniformBlockId,
-              palette,
-            } = terrainData;
+      const onMessageTerrain = this.makeTerrainMessageHandler(
+        i,
+        () => holder.worker,
+      );
 
-            const chunk = this.resolveChunkByMessageId(chunkId);
-            if (chunk) {
-              let blocks: Uint8Array | Uint16Array | null = block_array;
-              let light: Uint8Array = light_array;
+      const onMessageMesh = this.makeMeshMessageHandler(i, () => holder.worker);
 
-              // Terrain-generation palettes are produced as Uint16Array | null by the worker.
-              const typedPalette: Uint16Array | null =
-                palette instanceof Uint16Array ? palette : null;
-
-              // Ensure we are using SharedArrayBuffer to avoid copying during remesh
-              if (blocks && !(blocks.buffer instanceof SharedArrayBuffer)) {
-                const shared = new SharedArrayBuffer(blocks.byteLength);
-                if (blocks instanceof Uint16Array) {
-                  new Uint16Array(shared).set(blocks);
-                  blocks = new Uint16Array(shared);
-                } else {
-                  new Uint8Array(shared).set(blocks);
-                  blocks = new Uint8Array(shared);
-                }
-              }
-
-              if (!(light.buffer instanceof SharedArrayBuffer)) {
-                const shared = new SharedArrayBuffer(light.byteLength);
-                new Uint8Array(shared).set(light);
-                light = new Uint8Array(shared);
-              }
-
-              chunk.populate(
-                blocks,
-                typedPalette,
-                isUniform,
-                uniformBlockId,
-                light,
-                false,
-              );
-
-              this.scheduleChunkAndNeighborsRemesh(chunk);
-
-              // Mark dirty and persist immediately through WorldStorage lanes.
-              chunk.isModified = true;
-              void WorldStorage.saveChunk(chunk).catch((error) => {
-                console.error("Initial generated chunk persistence failed:", error);
-              });
-            }
-          } else if (type === WorkerTaskType.GenerateDistantTerrain_Generated) {
-            const distantData: DistantTerrainGeneratedMessage = data;
-            this.onDistantTerrainGenerated?.(distantData);
-          }
-        } catch (messageError) {
-          failed = true;
-          console.error(
-            `Chunk worker ${i} onmessage failed; respawning worker`,
-            messageError,
-          );
-          this.handleWorkerFailure(i, messageError);
-          return;
-        } finally {
-          if (failed) {
-            return;
-          }
-          if (this.workers[i] !== workerWrapper) {
-            return;
-          }
-          this.workerTaskContext[i] = null;
-          if (!this.idleWorkerIndices.includes(i)) {
-            this.idleWorkerIndices.push(i);
-          }
-          this.processQueue();
-        }
-      };
       const onError = (ev: ErrorEvent | Event) => {
         console.error(`Chunk worker ${i} error`, ev);
         this.handleWorkerFailure(i, ev);
       };
 
-      workerWrapper = new ChunkWorker(onMessage);
+      const workerWrapper = new ChunkWorker(onMessageTerrain, onMessageMesh);
       workerWrapper.setOnError(onError);
+      holder.worker = workerWrapper;
+
       this.workers.push(workerWrapper);
-      this.idleWorkerIndices.push(i); // Initially all workers are idle.
+      this.idleWorkerIndices.push(i);
       this.workerTaskContext.push(null);
       this.workerRestartAtMs.push(0);
     }
@@ -439,7 +286,7 @@ export class ChunkWorkerPool {
     const start = performance.now();
     let processed = 0;
     // Process meshes for up to 4ms per frame to prevent stutter
-    while (this.meshResultQueue.length > 0 && performance.now() - start < 4) {
+    while (this.meshResultQueue.length > 0 && performance.now() - start < 5) {
       const data = this.meshResultQueue.shift();
       if (data) {
         processed++;
@@ -597,6 +444,139 @@ export class ChunkWorkerPool {
 
     return true;
   }
+  private makeTerrainMessageHandler(
+    workerIndex: number,
+    getWorker: () => ChunkWorker | undefined,
+  ) {
+    return (event: MessageEvent<WorkerMessageData>) => {
+      let failed = false;
+
+      try {
+        const data = event.data;
+        const { type } = data;
+
+        if (type === WorkerTaskType.GenerateFullMesh) {
+          const meshData: FullMeshMessage = data;
+          this.meshResultQueue.push(meshData);
+        } else if (type === WorkerTaskType.GenerateTerrain) {
+          const terrainData: TerrainGeneratedMessage = data;
+          const {
+            chunkId,
+            block_array,
+            light_array,
+            isUniform,
+            uniformBlockId,
+            palette,
+          } = terrainData;
+
+          const chunk = this.resolveChunkByMessageId(chunkId);
+          if (chunk) {
+            let blocks: Uint8Array | Uint16Array | null = block_array;
+            let light: Uint8Array = light_array;
+
+            const typedPalette: Uint16Array | null =
+              palette instanceof Uint16Array ? palette : null;
+
+            if (blocks && !(blocks.buffer instanceof SharedArrayBuffer)) {
+              const shared = new SharedArrayBuffer(blocks.byteLength);
+              if (blocks instanceof Uint16Array) {
+                new Uint16Array(shared).set(blocks);
+                blocks = new Uint16Array(shared);
+              } else {
+                new Uint8Array(shared).set(blocks);
+                blocks = new Uint8Array(shared);
+              }
+            }
+
+            if (!(light.buffer instanceof SharedArrayBuffer)) {
+              const shared = new SharedArrayBuffer(light.byteLength);
+              new Uint8Array(shared).set(light);
+              light = new Uint8Array(shared);
+            }
+
+            chunk.populate(
+              blocks,
+              typedPalette,
+              isUniform,
+              uniformBlockId,
+              light,
+              false,
+            );
+            chunk.isTerrainScheduled = false;
+            this.scheduleChunkAndNeighborsRemesh(chunk);
+
+            chunk.isModified = true;
+            void WorldStorage.saveChunk(chunk).catch((error) => {
+              console.error(
+                "Initial generated chunk persistence failed:",
+                error,
+              );
+            });
+          }
+        } else if (type === WorkerTaskType.GenerateDistantTerrain_Generated) {
+          const distantData: DistantTerrainGeneratedMessage = data;
+          this.onDistantTerrainGenerated?.(distantData);
+        }
+      } catch (messageError) {
+        failed = true;
+        console.error(
+          `Chunk worker ${workerIndex} onmessage failed; respawning worker`,
+          messageError,
+        );
+        this.handleWorkerFailure(workerIndex, messageError);
+        return;
+      }
+
+      if (failed) return;
+      if (this.workers[workerIndex] !== getWorker()) return;
+
+      this.workerTaskContext[workerIndex] = null;
+      if (!this.idleWorkerIndices.includes(workerIndex)) {
+        this.idleWorkerIndices.push(workerIndex);
+      }
+      this.processQueue();
+    };
+  }
+
+  private makeMeshMessageHandler(
+    workerIndex: number,
+    getWorker: () => ChunkWorker | undefined,
+  ) {
+    return (event: MessageEvent<MeshWorkerResponse>) => {
+      let failed = false;
+
+      try {
+        const data = event.data;
+
+        const fullMeshMessage: FullMeshMessage = {
+          type: WorkerTaskType.GenerateFullMesh,
+          chunkId: data.chunkId as bigint,
+          lod: data.lod,
+          opaque: data.opaque,
+          transparent: data.transparent,
+        };
+
+        this.meshResultQueue.push(fullMeshMessage);
+      } catch (messageError) {
+        failed = true;
+        console.error(
+          `Chunk worker ${workerIndex} mesh onmessage failed; respawning worker`,
+          messageError,
+        );
+        this.handleWorkerFailure(workerIndex, messageError);
+        return;
+      }
+
+      if (failed) return;
+      if (this.workers[workerIndex] !== getWorker()) return;
+
+      this.workerTaskContext[workerIndex] = null;
+      if (!this.idleWorkerIndices.includes(workerIndex)) {
+        this.idleWorkerIndices.push(workerIndex);
+      }
+      this.processQueue();
+    };
+  }
 
   private getChunkLodLevel(chunk: Chunk | undefined): number {
     return chunk?.lodLevel ?? 0;
@@ -706,10 +686,7 @@ export class ChunkWorkerPool {
         Math.abs(chunk.chunkZ - centerChunkZ),
       );
       const verticalDist = Math.abs(chunk.chunkY - centerChunkY);
-      if (
-        horizontalDist > horizontalRadius ||
-        verticalDist > verticalRadius
-      ) {
+      if (horizontalDist > horizontalRadius || verticalDist > verticalRadius) {
         continue;
       }
 

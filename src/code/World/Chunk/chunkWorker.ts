@@ -2,36 +2,62 @@ import { GenerationParams } from "@/code/Generation/NoiseAndParameters/Generatio
 import { Chunk } from "./Chunk";
 import {
   GenerateDistantTerrainRequest,
-  GenerateFullMeshRequest,
   GenerateTerrainRequest,
+  MeshWorkerResponse,
   WorkerResponseData,
   WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
 
 export class ChunkWorker {
-  private worker: Worker;
+  private terrainWorker: Worker; // old worker
+  private voxelWorker: Worker; // new
+  private waterWorker: Worker; // new
+
   private warnedNonSharedRemeshPayload = false;
 
-  constructor(onMessage: (event: MessageEvent<WorkerResponseData>) => void) {
-    this.worker = new Worker(new URL("./chunk.worker.ts", import.meta.url), {
-      type: "module",
-    });
-    this.worker.onmessage = onMessage;
+  constructor(
+    onMessageTerrain: (event: MessageEvent<WorkerResponseData>) => void,
+    onMessageMesh: (event: MessageEvent<MeshWorkerResponse>) => void,
+  ) {
+    // OLD WORKER → terrain, distant terrain, lighting
+    this.terrainWorker = new Worker(
+      new URL("./chunk.worker.ts", import.meta.url),
+      { type: "module" },
+    );
+    this.terrainWorker.onmessage = onMessageTerrain;
+
+    this.voxelWorker = new Worker(
+      new URL("./voxel.worker.ts", import.meta.url),
+      { type: "module" },
+    );
+    this.voxelWorker.onmessage = (e) => onMessageMesh(e);
+
+    this.waterWorker = new Worker(
+      new URL("./water.worker.ts", import.meta.url),
+      { type: "module" },
+    );
+    this.waterWorker.onmessage = (e) => onMessageMesh(e);
   }
 
   public setOnError(handler: (ev: ErrorEvent | Event) => void): void {
-    this.worker.onerror = handler;
+    this.terrainWorker.onerror = handler;
+    this.voxelWorker.onerror = handler;
+    this.waterWorker.onerror = handler;
   }
 
   public terminate(): void {
-    this.worker.terminate();
+    this.terrainWorker.terminate();
+    this.voxelWorker.terminate();
+    this.waterWorker.terminate();
   }
+
   private readonly paletteToTyped = (
     palette: Uint8Array | Uint16Array | null | undefined,
-  ): Uint8Array | Uint16Array | null | undefined => {
+  ) => {
     if (!palette || palette.length === 0) return palette;
     return palette;
   };
+
   public postFullRemesh(chunk: Chunk, forcedLod?: number): void {
     const neighbors: (Uint8Array | Uint16Array | null | undefined)[] = [];
     const neighborLights: (Uint8Array | undefined)[] = [];
@@ -62,16 +88,21 @@ export class ChunkWorker {
       }
     }
 
+    // Warn once if structured cloning may copy arrays instead of sharing them
     if (!this.warnedNonSharedRemeshPayload) {
       const centerBlocks = chunk.block_array;
       const centerLight = chunk.light_array;
+
       const hasNonSharedCenterBlocks =
         !!centerBlocks && !(centerBlocks.buffer instanceof SharedArrayBuffer);
+
       const hasNonSharedCenterLight =
         !!centerLight && !(centerLight.buffer instanceof SharedArrayBuffer);
+
       const hasNonSharedNeighborBlocks = neighbors.some(
         (n) => !!n && !(n.buffer instanceof SharedArrayBuffer),
       );
+
       const hasNonSharedNeighborLights = neighborLights.some(
         (n) => !!n && !(n.buffer instanceof SharedArrayBuffer),
       );
@@ -89,24 +120,38 @@ export class ChunkWorker {
       }
     }
 
-    const message: GenerateFullMeshRequest = {
-      type: WorkerTaskType.GenerateFullMesh,
+    /**
+     * IMPORTANT:
+     * We do NOT send MeshContext/getBlock/getLight from the main thread.
+     * The worker reconstructs those from the raw payload.
+     *
+     * We also send the same rich shape your old mesh worker pipeline used,
+     * so the worker can expand:
+     *  - uniform chunks
+     *  - palette-packed chunks
+     *  - uniform neighbors
+     *  - palette-packed neighbors
+     */
+    this.voxelWorker.postMessage({
+      task: "voxelMesh",
+
       chunkId: chunk.id,
-      lod: forcedLod ?? (chunk as any).lodLevel ?? 0,
+      lod: forcedLod ?? chunk.lodLevel ?? 0,
+      chunk_size: Chunk.SIZE,
+
       block_array: chunk.block_array,
       uniformBlockId: chunk.isUniform ? chunk.uniformBlockId : undefined,
       palette: this.paletteToTyped(chunk.palette),
       light_array: chunk.light_array,
-      chunk_size: Chunk.SIZE,
+
       neighbors,
       neighborLights,
       neighborUniformIds,
       neighborPalettes,
-    };
-
-    this.worker.postMessage(message);
+    });
   }
 
+  // ✅ Terrain generation stays on your old worker
   public postTerrainGeneration(chunk: Chunk): void {
     const message: GenerateTerrainRequest = {
       type: WorkerTaskType.GenerateTerrain,
@@ -116,12 +161,13 @@ export class ChunkWorker {
       chunkZ: chunk.chunkZ,
     };
 
-    this.worker.postMessage({
+    this.terrainWorker.postMessage({
       ...message,
       ...GenerationParams,
     });
   }
 
+  // ✅ Distant terrain also stays on old worker
   public postGenerateDistantTerrain(
     centerChunkX: number,
     centerChunkZ: number,
@@ -155,6 +201,6 @@ export class ChunkWorker {
       oldCenterChunkZ,
     };
 
-    this.worker.postMessage(message, transferables);
+    this.terrainWorker.postMessage(message, transferables);
   }
 }
