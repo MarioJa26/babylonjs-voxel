@@ -53,28 +53,52 @@ function expandBlockPayload(
   totalBlocks: number,
   paletteExpander: PaletteExpander,
 ): Uint8Array | Uint16Array {
-  if (raw) {
-    if (palette && palette.length > 0) {
-      // Palette-packed -> expand to dense typed array
-      return paletteExpander.expandPalette(
-        raw as Uint8Array,
-        palette,
-        totalBlocks,
-      );
-    }
-
-    // Already dense
+  // 1) Already dense 16-bit data → return as-is
+  if (raw instanceof Uint16Array) {
     return raw;
   }
 
-  if (uniformBlockId !== undefined) {
+  // 2) Dense 8-bit data with no palette → return as-is
+  if (raw instanceof Uint8Array && (!palette || palette.length === 0)) {
+    return raw;
+  }
+
+  // 3) Missing raw array but explicitly uniform
+  if (!raw && uniformBlockId !== undefined) {
+    // Fast path for empty air chunk
+    if (uniformBlockId === 0) {
+      return new Uint16Array(totalBlocks);
+    }
+
     const dense = new Uint16Array(totalBlocks);
     dense.fill(uniformBlockId);
     return dense;
   }
 
-  // Empty / missing
-  return new Uint16Array(totalBlocks);
+  // 4) Missing raw array and no uniform id → empty
+  if (!raw) {
+    return new Uint16Array(totalBlocks);
+  }
+
+  // 5) Palette exists but has only one entry → uniform chunk in disguise
+  if (palette && palette.length === 1) {
+    const blockId = palette[0];
+    if (blockId === 0) {
+      return new Uint16Array(totalBlocks);
+    }
+
+    const dense = new Uint16Array(totalBlocks);
+    dense.fill(blockId);
+    return dense;
+  }
+
+  // 6) Real palette-compressed case → expand fully
+  if (palette && palette.length > 0) {
+    return paletteExpander.expandPalette(raw, palette, totalBlocks);
+  }
+
+  // 7) Fallback
+  return raw;
 }
 
 /**

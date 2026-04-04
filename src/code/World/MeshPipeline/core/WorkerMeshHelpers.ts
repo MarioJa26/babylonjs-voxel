@@ -50,92 +50,111 @@ export function createMeshContextFromPayload(
   input: WorkerMeshInput,
 ): MeshContext {
   const size = base.size;
+  const size2 = size * size;
 
+  // O(1) compact 26-neighbor index mapping
   const getNeighborIndex = (dx: number, dy: number, dz: number): number => {
-    let index = 0;
-    for (let z = -1; z <= 1; z++) {
-      for (let y = -1; y <= 1; y++) {
-        for (let x = -1; x <= 1; x++) {
-          if (x === 0 && y === 0 && z === 0) continue;
-          if (x === dx && y === dy && z === dz) {
-            return index;
-          }
-          index++;
-        }
-      }
-    }
-    return -1;
+    if (dx === 0 && dy === 0 && dz === 0) return -1;
+    const linear = dx + 1 + (dy + 1) * 3 + (dz + 1) * 9;
+    return linear < 13 ? linear : linear - 1;
   };
 
   const hasNeighborChunk = (dx: number, dy: number, dz: number): boolean => {
     const neighborIndex = getNeighborIndex(dx, dy, dz);
-    if (neighborIndex < 0) return false;
-    return !!input.neighbors[neighborIndex];
-  };
-
-  const wrapCoord = (value: number): { chunkOffset: number; local: number } => {
-    if (value < 0) return { chunkOffset: -1, local: value + size };
-    if (value >= size) return { chunkOffset: 1, local: value - size };
-    return { chunkOffset: 0, local: value };
-  };
-
-  const getIndex = (x: number, y: number, z: number): number => {
-    return x + y * size + z * size * size;
+    return neighborIndex >= 0 && !!input.neighbors[neighborIndex];
   };
 
   const readBlock = (x: number, y: number, z: number, fallback = 0): number => {
-    const wx = wrapCoord(x);
-    const wy = wrapCoord(y);
-    const wz = wrapCoord(z);
-
-    // center chunk
-    if (wx.chunkOffset === 0 && wy.chunkOffset === 0 && wz.chunkOffset === 0) {
-      return (
-        input.block_array[getIndex(wx.local, wy.local, wz.local)] ?? fallback
-      );
+    // Fast in-bounds path
+    if (x >>> 0 < size && y >>> 0 < size && z >>> 0 < size) {
+      return input.block_array[x + y * size + z * size2] ?? fallback;
     }
 
-    // neighbor chunk
-    const neighborIndex = getNeighborIndex(
-      wx.chunkOffset,
-      wy.chunkOffset,
-      wz.chunkOffset,
-    );
+    let ox = 0,
+      oy = 0,
+      oz = 0;
+    let lx = x,
+      ly = y,
+      lz = z;
 
+    if (x < 0) {
+      ox = -1;
+      lx = x + size;
+    } else if (x >= size) {
+      ox = 1;
+      lx = x - size;
+    }
+
+    if (y < 0) {
+      oy = -1;
+      ly = y + size;
+    } else if (y >= size) {
+      oy = 1;
+      ly = y - size;
+    }
+
+    if (z < 0) {
+      oz = -1;
+      lz = z + size;
+    } else if (z >= size) {
+      oz = 1;
+      lz = z - size;
+    }
+
+    const neighborIndex = getNeighborIndex(ox, oy, oz);
     if (neighborIndex < 0) return fallback;
 
     const neighbor = input.neighbors[neighborIndex];
     if (!neighbor) return fallback;
 
-    return neighbor[getIndex(wx.local, wy.local, wz.local)] ?? fallback;
+    return neighbor[lx + ly * size + lz * size2] ?? fallback;
   };
 
   const readLight = (x: number, y: number, z: number, fallback = 0): number => {
-    const wx = wrapCoord(x);
-    const wy = wrapCoord(y);
-    const wz = wrapCoord(z);
-
-    // center chunk
-    if (wx.chunkOffset === 0 && wy.chunkOffset === 0 && wz.chunkOffset === 0) {
+    // Fast in-bounds path
+    if (x >>> 0 < size && y >>> 0 < size && z >>> 0 < size) {
       if (!input.light_array) return fallback;
-      return (
-        input.light_array[getIndex(wx.local, wy.local, wz.local)] ?? fallback
-      );
+      return input.light_array[x + y * size + z * size2] ?? fallback;
     }
 
-    // neighbor chunk
-    const neighborIndex = getNeighborIndex(
-      wx.chunkOffset,
-      wy.chunkOffset,
-      wz.chunkOffset,
-    );
+    let ox = 0,
+      oy = 0,
+      oz = 0;
+    let lx = x,
+      ly = y,
+      lz = z;
 
+    if (x < 0) {
+      ox = -1;
+      lx = x + size;
+    } else if (x >= size) {
+      ox = 1;
+      lx = x - size;
+    }
+
+    if (y < 0) {
+      oy = -1;
+      ly = y + size;
+    } else if (y >= size) {
+      oy = 1;
+      ly = y - size;
+    }
+
+    if (z < 0) {
+      oz = -1;
+      lz = z + size;
+    } else if (z >= size) {
+      oz = 1;
+      lz = z - size;
+    }
+
+    const neighborIndex = getNeighborIndex(ox, oy, oz);
     if (neighborIndex < 0) return fallback;
 
     const neighborLight = input.neighborLights?.[neighborIndex];
     if (!neighborLight) return fallback;
 
-    return neighborLight[getIndex(wx.local, wy.local, wz.local)] ?? fallback;
+    return neighborLight[lx + ly * size + lz * size2] ?? fallback;
   };
 
   return {

@@ -1,6 +1,6 @@
 # Project Footprint
 
-Generated: 2026-04-04T13:51:57.855Z
+Generated: 2026-04-04T21:03:42.168Z
 
 > **Summary:** 92 classes · 1580 members · 47 module-level functions
 
@@ -227,26 +227,7 @@ Generated: 2026-04-04T13:51:57.855Z
 
 ---
 
-## `Generation/DistanTerrain/DistantTerrainGenerator.ts`
-
-### export class DistantTerrainGenerator
-
-**Properties**
-- `private static readonly DEFAULT_TILE_X: unknown`
-- `private static readonly DEFAULT_TILE_Y: unknown`
-- `private static readonly INSIDE_CLIP_Y: unknown`
-
-**Methods**
-- `public static generate(centerChunkX: number, centerChunkZ: number, radius: number, renderDistance: number, gridStep: number, oldData?: {
-      positions: Int16Array;
-      normals: Int8Array;
-      surfaceTiles: Uint8Array;
-    }, oldCenterChunkX?: number, oldCenterChunkZ?: number): { positions: Int16Array<ArrayBuffer>; normals: Int8Array<ArrayBuffer>; surfaceTiles: Uint8Array<ArrayBuffer>; }`
-- `private static getTopTileForBlock(blockId: number): [number, number]`
-
----
-
-## `Generation/DistanTerrain/DistantTerrian.ts`
+## `Generation/DistantTerrain/DistantTerrain.ts`
 
 ### export class DistantTerrain
 
@@ -280,6 +261,25 @@ Generated: 2026-04-04T13:51:57.855Z
 - `private bindCommonUniforms(effect: Effect, scene: Scene): void`
 - `public update(centerChunkX: number, centerChunkZ: number): void`
 - `private applyTerrainData(positions: Int16Array, normals: Int8Array, surfaceTiles: Uint8Array, centerChunkX: number, centerChunkZ: number): void`
+
+---
+
+## `Generation/DistantTerrain/DistantTerrainGenerator.ts`
+
+### export class DistantTerrainGenerator
+
+**Properties**
+- `private static readonly DEFAULT_TILE_X: unknown`
+- `private static readonly DEFAULT_TILE_Y: unknown`
+- `private static readonly INSIDE_CLIP_Y: unknown`
+
+**Methods**
+- `public static generate(centerChunkX: number, centerChunkZ: number, radius: number, renderDistance: number, gridStep: number, oldData?: {
+      positions: Int16Array;
+      normals: Int8Array;
+      surfaceTiles: Uint8Array;
+    }, oldCenterChunkX?: number, oldCenterChunkZ?: number): { positions: Int16Array<ArrayBuffer>; normals: Int8Array<ArrayBuffer>; surfaceTiles: Uint8Array<ArrayBuffer>; }`
+- `private static getTopTileForBlock(blockId: number): [number, number]`
 
 ---
 
