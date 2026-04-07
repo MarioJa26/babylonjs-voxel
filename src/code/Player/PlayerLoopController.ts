@@ -2,7 +2,6 @@ import { Engine, Scene, Vector3 } from "@babylonjs/core";
 
 import { IControls } from "../Inferface/IControls";
 import { Chunk } from "../World/Chunk/Chunk";
-import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
 import { PaddleBoatControls } from "./Controls/PaddleBoatControls";
 import { WalkingControls } from "./Controls/WalkingControls";
@@ -11,6 +10,7 @@ import { IPlayerBody } from "./IPlayerBody";
 import { PlayerCamera } from "./PlayerCamera";
 import { PlayerStats } from "./PlayerStats";
 import { CustomBoatControls } from "./Controls/CustomBoatControls";
+import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
 
 export class PlayerLoopController {
   #lastChunkX = 0;
@@ -75,7 +75,13 @@ export class PlayerLoopController {
         currentChunkX,
         currentChunkY,
         currentChunkZ,
+        undefined,
+        undefined,
+        this.#lastChunkX,
+        this.#lastChunkY,
+        this.#lastChunkZ,
       );
+
       this.#lastChunkX = currentChunkX;
       this.#lastChunkY = currentChunkY;
       this.#lastChunkZ = currentChunkZ;

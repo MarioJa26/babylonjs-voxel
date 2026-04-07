@@ -1,12 +1,12 @@
 # Project Footprint
 
-Generated: 2026-04-04T21:03:42.168Z
+Generated: 2026-04-07T07:15:23.151Z
 
-> **Summary:** 92 classes · 1580 members · 47 module-level functions
+> **Summary:** 101 classes · 1718 members · 47 module-level functions · 25100 LOC
 
 ---
 
-## `Entities/AdvancedBoat.ts`
+## `Entities/AdvancedBoat.ts` (269 LOC)
 
 ### export class AdvancedBoat implements IUsable
 
@@ -53,7 +53,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Entities/BouyantObject.ts`
+## `Entities/BouyantObject.ts` (53 LOC)
 
 ### export class BouyantObject
 
@@ -69,7 +69,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Entities/CustomBoat.ts`
+## `Entities/CustomBoat.ts` (485 LOC)
 
 ### export class CustomBoat implements IUsable
 
@@ -137,7 +137,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Entities/MetaDataContainer.ts`
+## `Entities/MetaDataContainer.ts` (21 LOC)
 
 ### export class MetadataContainer
 
@@ -154,7 +154,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Entities/Mount.ts`
+## `Entities/Mount.ts` (107 LOC)
 
 ### export class Mount implements IMountable
 
@@ -185,21 +185,21 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Entities/MountOptions.ts`
+## `Entities/MountOptions.ts` (6 LOC)
 
 **Types / Interfaces / Enums**
 - interface `MountOptions`
 
 ---
 
-## `Generation/Biome/Biomes.ts`
+## `Generation/Biome/Biomes.ts` (332 LOC)
 
 **Module-level functions**
 - `export function getBiomeFor(temperature: number, humidity: number, continentalness: number, river: number, terrainShapedHeight: number): Biome`
 
 ---
 
-## `Generation/Biome/BiomeTypes.ts`
+## `Generation/Biome/BiomeTypes.ts` (37 LOC)
 
 **Types / Interfaces / Enums**
 - interface `Biome`
@@ -207,7 +207,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Generation/Biome/TreeDefinition.ts`
+## `Generation/Biome/TreeDefinition.ts` (551 LOC)
 
 **Module-level functions**
 - `export function generateSlinkyTree(worldX: number, worldY: number, worldZ: number, placeBlock: (
@@ -227,7 +227,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Generation/DistantTerrain/DistantTerrain.ts`
+## `Generation/DistantTerrain/DistantTerrain.ts` (359 LOC)
 
 ### export class DistantTerrain
 
@@ -264,7 +264,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Generation/DistantTerrain/DistantTerrainGenerator.ts`
+## `Generation/DistantTerrain/DistantTerrainGenerator.ts` (148 LOC)
 
 ### export class DistantTerrainGenerator
 
@@ -283,7 +283,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Generation/LightGenerator.ts`
+## `Generation/LightGenerator.ts` (237 LOC)
 
 ### export class LightGenerator
 
@@ -311,7 +311,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Generation/NoiseAndParameters/FastNoise/FastNoiseFactory.ts`
+## `Generation/NoiseAndParameters/FastNoise/FastNoiseFactory.ts` (77 LOC)
 
 **Module-level functions**
 - `export function createFastNoise(seed: number, fractalType?: FractalType, frequency?: number): FastNoiseLite`
@@ -328,7 +328,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Generation/NoiseAndParameters/FastNoise/FastNoiseLite.ts`
+## `Generation/NoiseAndParameters/FastNoise/FastNoiseLite.ts` (2518 LOC)
 
 ### export class FastNoiseLite
 
@@ -442,14 +442,14 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Generation/NoiseAndParameters/GenerationParams.ts`
+## `Generation/NoiseAndParameters/GenerationParams.ts` (20 LOC)
 
 **Types / Interfaces / Enums**
 - type `GenerationParamsType`
 
 ---
 
-## `Generation/NoiseAndParameters/NoiseSampler.ts`
+## `Generation/NoiseAndParameters/NoiseSampler.ts` (80 LOC)
 
 ### export class NoiseSampler
 
@@ -466,7 +466,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Generation/NoiseAndParameters/Spline.ts`
+## `Generation/NoiseAndParameters/Spline.ts` (30 LOC)
 
 ### export class Spline
 
@@ -484,7 +484,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Generation/NoiseAndParameters/Squirrel13.ts`
+## `Generation/NoiseAndParameters/Squirrel13.ts` (28 LOC)
 
 ### export class Squirrel3
 
@@ -500,7 +500,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Generation/RiverGeneration.ts`
+## `Generation/RiverGeneration.ts` (58 LOC)
 
 ### export class RiverGenerator
 
@@ -523,7 +523,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Generation/Structure/DungeonFeature.ts`
+## `Generation/Structure/DungeonFeature.ts` (161 LOC)
 
 ### export class DungeonFeature implements IWorldFeature
 
@@ -539,14 +539,14 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Generation/Structure/IWorldFeature.ts`
+## `Generation/Structure/IWorldFeature.ts` (21 LOC)
 
 **Types / Interfaces / Enums**
 - interface `IWorldFeature`
 
 ---
 
-## `Generation/Structure/LavaPoolFeature.ts`
+## `Generation/Structure/LavaPoolFeature.ts` (134 LOC)
 
 ### export class LavaPoolFeature implements IWorldFeature
 
@@ -568,7 +568,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Generation/Structure/Structure.ts`
+## `Generation/Structure/Structure.ts` (53 LOC)
 
 ### export class Structure
 
@@ -590,7 +590,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Generation/Structure/StructureFeature.ts`
+## `Generation/Structure/StructureFeature.ts` (109 LOC)
 
 ### export class StructureSpawnerFeature implements IWorldFeature
 
@@ -612,7 +612,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Generation/Structure/TowerFeature.ts`
+## `Generation/Structure/TowerFeature.ts` (211 LOC)
 
 ### export class TowerFeature implements IWorldFeature
 
@@ -642,7 +642,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Generation/SurfaceGenerator.ts`
+## `Generation/SurfaceGenerator.ts` (455 LOC)
 
 ### export class SurfaceGenerator
 
@@ -704,7 +704,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Generation/TerrainHeightMap.ts`
+## `Generation/TerrainHeightMap.ts` (183 LOC)
 
 ### export class TerrainHeightMap
 
@@ -736,7 +736,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Generation/UndergroundGenerator.ts`
+## `Generation/UndergroundGenerator.ts` (51 LOC)
 
 ### export class UndergroundGenerator
 
@@ -758,7 +758,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Generation/WorldGenerator.ts`
+## `Generation/WorldGenerator.ts` (114 LOC)
 
 ### export class WorldGenerator
 
@@ -782,28 +782,28 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Inferface/IControls.ts`
+## `Inferface/IControls.ts` (9 LOC)
 
 **Types / Interfaces / Enums**
 - interface `IControls`
 
 ---
 
-## `Inferface/IMountable.ts`
+## `Inferface/IMountable.ts` (6 LOC)
 
 **Types / Interfaces / Enums**
 - interface `IMountable`
 
 ---
 
-## `Inferface/IUsable.ts`
+## `Inferface/IUsable.ts` (4 LOC)
 
 **Types / Interfaces / Enums**
 - interface `IUsable`
 
 ---
 
-## `Maps/BlockBreakParticles.ts`
+## `Maps/BlockBreakParticles.ts` (141 LOC)
 
 ### export class BlockBreakParticles
 
@@ -822,7 +822,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Maps/Map1.ts`
+## `Maps/Map1.ts` (228 LOC)
 
 ### export class Map1
 
@@ -860,7 +860,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Maps/MapFog.ts`
+## `Maps/MapFog.ts` (34 LOC)
 
 ### export class MapFog
 
@@ -884,7 +884,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Maps/UnderWaterEffect.ts`
+## `Maps/UnderWaterEffect.ts` (302 LOC)
 
 ### export class UnderWaterEffect
 
@@ -913,7 +913,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Maps/WorldEnvironment.ts`
+## `Maps/WorldEnvironment.ts` (147 LOC)
 
 ### export class WorldEnvironment
 
@@ -940,7 +940,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/Controls/CustomBoatControls.ts`
+## `Player/Controls/CustomBoatControls.ts` (184 LOC)
 
 ### export class CustomBoatControls implements IControls<BoatControlEntity>
 
@@ -991,7 +991,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/Controls/DebugControlHelper.ts`
+## `Player/Controls/DebugControlHelper.ts` (27 LOC)
 
 ### export class DebugControlHelper
 
@@ -1005,7 +1005,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/Controls/InventoryControls.ts`
+## `Player/Controls/InventoryControls.ts` (78 LOC)
 
 ### export class InventoryControls implements IControls<unknown>
 
@@ -1037,7 +1037,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/Controls/JetSkiControls.ts`
+## `Player/Controls/JetSkiControls.ts` (173 LOC)
 
 ### export class JetSkiControls implements IControls<BoatControlEntity>
 
@@ -1085,7 +1085,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/Controls/PaddleBoatControls.ts`
+## `Player/Controls/PaddleBoatControls.ts` (181 LOC)
 
 ### export class PaddleBoatControls implements IControls<BoatControlEntity>
 
@@ -1136,7 +1136,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/Controls/WalkingControls.ts`
+## `Player/Controls/WalkingControls.ts` (369 LOC)
 
 ### export class WalkingControls implements IControls<PlayerVehicle>
 
@@ -1167,6 +1167,7 @@ Generated: 2026-04-04T21:03:42.168Z
 - `public static KEY_DROP: unknown`
 - `public static KEY_CTRL: unknown`
 - `public static KEY_ALT: unknown`
+- `public static KEY_PRINT_TRACE: unknown`
 - `public static MOUSE_WHEEL_UP: unknown`
 - `public static MOUSE_WHEEL_DOWN: unknown`
 - `public static MOUSE1: unknown`
@@ -1194,13 +1195,14 @@ Generated: 2026-04-04T21:03:42.168Z
 - `public update(): void`
 - `public onKeyDown(key: string): void`
 - `public onKeyUp(key: string): void`
+- `#handlePickBlock(key: string): void`
 - `#pressedKeysHas(keys: string[]): boolean`
 - `#updateMovementAxesFromPressedKeys(): void`
 - `#breakBlock(x: number, y: number, z: number, blockId: number, packedLight: number): void`
 
 ---
 
-## `Player/Crafting/CraftingManager.ts`
+## `Player/Crafting/CraftingManager.ts` (21 LOC)
 
 **Types / Interfaces / Enums**
 - interface `Ingredient`
@@ -1208,7 +1210,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/Hud/CrossHair.ts`
+## `Player/Hud/CrossHair.ts` (640 LOC)
 
 ### export class CrossHair
 
@@ -1276,7 +1278,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/Hud/PauseMenu.ts`
+## `Player/Hud/PauseMenu.ts` (311 LOC)
 
 ### export class PauseMenu
 
@@ -1304,7 +1306,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/Hud/PlayerHud.ts`
+## `Player/Hud/PlayerHud.ts` (508 LOC)
 
 ### export class PlayerHud
 
@@ -1363,7 +1365,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/Inventory/DroppedItem.ts`
+## `Player/Inventory/DroppedItem.ts` (184 LOC)
 
 ### export class DroppedItem implements IUsable
 
@@ -1403,7 +1405,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/Inventory/Item.ts`
+## `Player/Inventory/Item.ts` (255 LOC)
 
 ### export class Item implements IUsable
 
@@ -1448,7 +1450,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/Inventory/ItemRegistry.ts`
+## `Player/Inventory/ItemRegistry.ts` (134 LOC)
 
 ### export class ItemRegistry
 
@@ -1475,7 +1477,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/Inventory/ItemSlot.ts`
+## `Player/Inventory/ItemSlot.ts` (85 LOC)
 
 ### export class ItemSlot
 
@@ -1501,14 +1503,14 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/Inventory/ItemUseActions.ts`
+## `Player/Inventory/ItemUseActions.ts` (53 LOC)
 
 **Types / Interfaces / Enums**
 - type `ItemUseAction`
 
 ---
 
-## `Player/Inventory/PlayerInventory.ts`
+## `Player/Inventory/PlayerInventory.ts` (421 LOC)
 
 ### export class PlayerInventory
 
@@ -1562,7 +1564,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/IPlayerBody.ts`
+## `Player/IPlayerBody.ts` (31 LOC)
 
 **Types / Interfaces / Enums**
 - interface `IPlayerBody`
@@ -1570,7 +1572,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/Player.ts`
+## `Player/Player.ts` (120 LOC)
 
 ### export class Player implements IUsable
 
@@ -1607,7 +1609,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/PlayerBodyControlState.ts`
+## `Player/PlayerBodyControlState.ts` (14 LOC)
 
 ### export class PlayerBodyControlState
 
@@ -1623,7 +1625,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/PlayerCamera.ts`
+## `Player/PlayerCamera.ts` (88 LOC)
 
 ### export class PlayerCamera
 
@@ -1660,7 +1662,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/PlayerFlashLight.ts`
+## `Player/PlayerFlashLight.ts` (32 LOC)
 
 ### export class PlayerFlashLight
 
@@ -1676,7 +1678,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/PlayerInputController.ts`
+## `Player/PlayerInputController.ts` (83 LOC)
 
 ### export class PlayerInputController
 
@@ -1695,7 +1697,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/PlayerLoadingGate.ts`
+## `Player/PlayerLoadingGate.ts` (79 LOC)
 
 ### export class PlayerLoadingGate
 
@@ -1718,7 +1720,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/PlayerLoopController.ts`
+## `Player/PlayerLoopController.ts` (162 LOC)
 
 ### export class PlayerLoopController
 
@@ -1739,7 +1741,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/PlayerStatePersistence.ts`
+## `Player/PlayerStatePersistence.ts` (164 LOC)
 
 ### export class PlayerStatePersistence
 
@@ -1773,7 +1775,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/PlayerStats.ts`
+## `Player/PlayerStats.ts` (74 LOC)
 
 ### export class PlayerStats
 
@@ -1805,7 +1807,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/PlayerVehicle.ts`
+## `Player/PlayerVehicle.ts` (94 LOC)
 
 ### export class PlayerVehicle implements IPlayerBody
 
@@ -1851,7 +1853,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/PlayerVehicleMotor.ts`
+## `Player/PlayerVehicleMotor.ts` (708 LOC)
 
 ### export class PlayerVehicleMotor
 
@@ -1954,7 +1956,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Player/SimpleCharacterController.ts`
+## `Player/SimpleCharacterController.ts` (61 LOC)
 
 ### export class SimpleCharacterController
 
@@ -1984,7 +1986,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `Server/MyConnection.ts`
+## `Server/MyConnection.ts` (30 LOC)
 
 ### export class MyConnection
 
@@ -2001,7 +2003,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `TestScene.ts`
+## `TestScene.ts` (59 LOC)
 
 ### export class TestScene
 
@@ -2021,7 +2023,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/BlockEncoding.ts`
+## `World/BlockEncoding.ts` (26 LOC)
 
 **Module-level functions**
 - `export function packBlockValue(blockId: number, state: unknown = 0): number`
@@ -2033,14 +2035,14 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/BlockType.ts`
+## `World/BlockType.ts` (76 LOC)
 
 **Types / Interfaces / Enums**
 - enum `BlockType`
 
 ---
 
-## `World/Boat/BoatChunk.ts`
+## `World/Boat/BoatChunk.ts` (336 LOC)
 
 ### export class BoatChunk
 
@@ -2101,7 +2103,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Boat/BoatCreatorSystem.ts`
+## `World/Boat/BoatCreatorSystem.ts` (274 LOC)
 
 ### export class BoatCreatorSystem
 
@@ -2150,7 +2152,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Chunk/ChunckMesher.ts`
+## `World/Chunk/ChunckMesher.ts` (885 LOC)
 
 ### export class ChunkMesher
 
@@ -2207,7 +2209,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Chunk/Chunk.ts`
+## `World/Chunk/Chunk.ts` (1230 LOC)
 
 ### export class Chunk
 
@@ -2330,7 +2332,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Chunk/chunk.worker.ts`
+## `World/Chunk/chunk.worker.ts` (110 LOC)
 
 **Module-level functions**
 - `function compressBlocks(blocks: Uint8Array): {
@@ -2342,52 +2344,66 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Chunk/ChunkLoadingSystem.ts`
+## `World/Chunk/ChunkLoadingSystem.ts` (730 LOC)
 
 ### export class ChunkLoadingSystem
 
 **Properties**
-- `private static distantTerrain: DistantTerrain`
-- `private static loadQueue: Chunk[]`
+- `private static loadQueue: QueuedChunkRequest[]`
 - `private static unloadQueueSet: Set<Chunk>`
-- `private static chunkBoundEntities: Map<symbol, ChunkBoundEntity>`
-- `private static pendingChunkEntityReloads: Map<
-    bigint,
-    SavedChunkEntityData[]
-  >`
-- `private static chunkEntityLoaders: Map<
-    string,
-    (payload: unknown, chunk: Chunk) => void
-  >`
-- `private static restoringChunkEntities: unknown`
-- `private static chunkLoadedHookInstalled: unknown`
-- `private static flushPromise: Promise<void> | null`
-- `private static entityFlushPromise: Promise<void> | null`
-- `private static lastPersistedEntityChunkIds: unknown`
-- `private static isProcessing: unknown`
+- `private static debug: unknown`
+- `private static chunkEntityRegistry: unknown`
+- `private static processScheduler: unknown`
+- `private static _neighborBuffer: (Chunk | undefined)[]`
+- `private static chunkHydration: unknown`
+- `private static streamingController: unknown`
+- `private static worldMutations: unknown`
+- `private static readiness: unknown`
+- `private static persistenceCoordinator: unknown`
 - `private static debugStats: ChunkLoadingDebugStats`
+- `private static readonly MAX_TRACE_EVENTS_PER_CHUNK: unknown`
+- `private static chunkTrace: unknown`
+- `private static _queuedIdSet: Set<bigint>`
+- `private static _meshData: {
+    opaque: MeshData | null;
+    transparent: MeshData | null;
+  }`
 
 **Methods**
+- `private static getNeighbors(chunk: Chunk): (Chunk | undefined)[]`
 - `private static getLoadBatchSize(): number`
 - `private static getUnloadBatchSize(): number`
 - `private static getProcessFrameBudgetMs(): number`
 - `private static refreshQueueDebugSnapshot(): void`
+- `public static traceChunk(chunkId: bigint, event: string, data?: Record<string, unknown>): void`
+- `public static getChunkTrace(chunkId: bigint): Array<{
+    t: number;
+    event: string;
+    data?: Record<string, unknown>;
+  }>`
+- `public static clearChunkTrace(chunkId?: bigint): void`
+- `public static dumpChunkTrace(chunkId: bigint): void`
+- `public static dumpChunkTraceByCoords(chunkX: number, chunkY: number, chunkZ: number): void`
+- `public static validateChunksAround(centerChunkX: number, centerChunkY: number, centerChunkZ: number, horizontalRadius: unknown = SettingParams.RENDER_DISTANCE, verticalRadius: unknown = SettingParams.VERTICAL_RENDER_DISTANCE): void`
+- `private static scheduleChunkBorderRemeshOnLoad(chunk: Chunk): void`
+- `private static buildQueuedIdSet(): Set<bigint>`
 - `public static getDebugStats(): ChunkLoadingDebugStats`
 - `private static ensureChunkLoadedHook(): void`
 - `public static registerChunkEntityLoader(type: string, loader: (payload: unknown, chunk: Chunk) => void): void`
 - `public static registerChunkBoundEntity(entity: ChunkBoundEntity): symbol`
 - `public static unregisterChunkBoundEntity(handle: symbol | undefined): void`
 - `private static async unloadChunkBoundEntitiesForChunk(chunk: Chunk): Promise<void>`
-- `private static spawnSerializedEntities(serializedEntities: SavedChunkEntityData[], chunk: Chunk): SavedChunkEntityData[]`
-- `private static async restoreChunkBoundEntitiesForChunk(chunk: Chunk): Promise<void>`
 - `public static flushModifiedChunks(maxChunks: unknown = ChunkLoadingSystem.getUnloadBatchSize()): Promise<void>`
 - `public static flushChunkBoundEntities(): Promise<void>`
 - `private static scheduleChunkAndNeighborsRemesh(chunk: Chunk): void`
-- `public static async updateChunksAround(chunkX: number, chunkY: number, chunkZ: number, renderDistance: unknown = SettingParams.RENDER_DISTANCE, verticalRadius: unknown = SettingParams.VERTICAL_RENDER_DISTANCE): Promise<void>`
-- `private static queueUnloading(chunkX: number, chunkY: number, chunkZ: number, renderDistance: number, verticalRadius: number): void`
+- `public static async updateChunksAround(chunkX: number, chunkY: number, chunkZ: number, renderDistance: unknown = SettingParams.RENDER_DISTANCE, verticalRadius: unknown = SettingParams.VERTICAL_RENDER_DISTANCE, prevChunkX?: number, prevChunkY?: number, prevChunkZ?: number): Promise<void>`
 - `private static getSavedMeshForLod(savedData: SavedChunkData, lod: number): { opaque: MeshData | null; transparent: MeshData | null } | null`
 - `private static pickBestSavedMesh(savedData: SavedChunkData, desiredLod: number): { opaque: MeshData | null; transparent: MeshData | null } | null`
-- `private static async processQueues(): Promise<void>`
+- `private static updateSliceDebugStats(state: InFlightProcessState): void`
+- `private static finalizeProcessState(state: InFlightProcessState): void`
+- `private static getReusableMeshData(opaque: MeshData | null, transparent: MeshData | null): { opaque: MeshData | null; transparent: MeshData | null; }`
+- `private static applyLoadedChunkFromSavedData(state: InFlightProcessState, request: QueuedChunkRequest, savedData: SavedChunkData): void`
+- `private static applyHydratedChunkFromSavedData(chunk: Chunk, savedData: SavedChunkData): void`
 - `public static deleteBlock(worldX: number, worldY: number, worldZ: number): void`
 - `public static setBlock(worldX: number, worldY: number, worldZ: number, blockId: number, state: unknown = 0): void`
 - `public static getBlockByWorldCoords(worldX: number, worldY: number, worldZ: number): number`
@@ -2397,14 +2413,16 @@ Generated: 2026-04-04T21:03:42.168Z
 - `public static worldToBlockCoord(value: number): number`
 - `public static areChunksLoadedAround(chunkX: number, chunkY: number, chunkZ: number, horizontalRadius: unknown = 1, verticalRadius: unknown = 0): boolean`
 - `public static areChunksLod0ReadyAround(chunkX: number, chunkY: number, chunkZ: number, horizontalRadius: unknown = 1, verticalRadius: unknown = 0): boolean`
-
-**Types / Interfaces / Enums**
-- type `ChunkBoundEntity`
-- type `ChunkLoadingDebugStats`
+- `private static getRuntimeEntityChunkId(entity: ChunkBoundEntity): bigint | null`
+- `private static serializeRuntimeEntity(entity: ChunkBoundEntity): SavedChunkEntityData | null`
+- `private static collectChunkEntityPayloads(): ReadonlyMap<
+    bigint,
+    SavedChunkEntityData[]
+  >`
 
 ---
 
-## `World/Chunk/chunkWorker.ts`
+## `World/Chunk/chunkWorker.ts` (164 LOC)
 
 ### export class ChunkWorker
 
@@ -2431,7 +2449,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Chunk/ChunkWorkerPool.ts`
+## `World/Chunk/ChunkWorkerPool.ts` (866 LOC)
 
 ### export class ChunkWorkerPool
 
@@ -2461,6 +2479,8 @@ Generated: 2026-04-04T21:03:42.168Z
 - `private remeshFlushScheduled: unknown`
 - `private processQueuePumpScheduled: unknown`
 - `private debugStats: ChunkWorkerPoolDebugStats`
+- `private inFlightRemeshKeys: unknown`
+- `private rerunRemeshAfterInflight: unknown`
 - `public onDistantTerrainGenerated: | ((data: DistantTerrainGeneratedMessage) => void)
     | null`
 - `private processMeshQueueLoop: unknown`
@@ -2472,6 +2492,10 @@ Generated: 2026-04-04T21:03:42.168Z
 - `private updateQueueDebugStats(): void`
 - `public getDebugStats(): ChunkWorkerPoolDebugStats`
 - `private resolveChunkByMessageId(chunkId: unknown): Chunk | undefined`
+- `private normalizeChunkIdToBigInt(chunkId: unknown): bigint | undefined`
+- `private getRemeshInflightKey(chunkId: bigint, lod: number): string`
+- `private isSameLodRemeshInflight(chunk: Chunk): boolean`
+- `private clearInflightRemeshByMessage(chunkId: unknown, lod: number): void`
 - `private handleWorkerFailure(workerIndex: number, reason: unknown): void`
 - `private isCompletelyEmptyChunk(chunk: Chunk): boolean`
 - `private clearChunkMeshIfPresent(chunk: Chunk): void`
@@ -2504,7 +2528,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Chunk/DataStructures/MeshData.ts`
+## `World/Chunk/DataStructures/MeshData.ts` (41 LOC)
 
 ### export class MeshData
 
@@ -2519,7 +2543,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Chunk/DataStructures/PaletteExpander.ts`
+## `World/Chunk/DataStructures/PaletteExpander.ts` (37 LOC)
 
 ### export class PaletteExpander
 
@@ -2529,7 +2553,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Chunk/DataStructures/ResizableTypedArray.ts`
+## `World/Chunk/DataStructures/ResizableTypedArray.ts` (122 LOC)
 
 ### export class ResizableTypedArray
 
@@ -2553,7 +2577,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Chunk/DataStructures/SparseVoxelOctree.ts`
+## `World/Chunk/DataStructures/SparseVoxelOctree.ts` (147 LOC)
 
 ### export class SparseVoxelOctree
 
@@ -2578,14 +2602,14 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Chunk/DataStructures/WorkerInternalMeshData.ts`
+## `World/Chunk/DataStructures/WorkerInternalMeshData.ts` (7 LOC)
 
 **Types / Interfaces / Enums**
 - type `WorkerInternalMeshData`
 
 ---
 
-## `World/Chunk/DataStructures/WorkerMessageType.ts`
+## `World/Chunk/DataStructures/WorkerMessageType.ts` (87 LOC)
 
 **Types / Interfaces / Enums**
 - interface `DistantTerrainTask`
@@ -2606,7 +2630,282 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Chunk/LOD/ChunkLodRules.ts`
+## `World/Chunk/Loading/ChunkEntityRegistry.ts` (127 LOC)
+
+### export class ChunkEntityRegistry
+
+**Constructor**
+- `constructor(adapter: ChunkBoundEntityAdapter<TEntity>)`
+
+**Properties**
+- `private readonly entities: unknown`
+- `private readonly pendingReloads: unknown`
+- `private readonly loaders: unknown`
+- `private restoringChunkEntities: unknown`
+- `private chunkLoadedHookInstalled: unknown`
+- `private previousChunkLoadedHook: ((chunk: Chunk) => void) | null`
+
+**Methods**
+- `public registerLoader(type: string, loader: ChunkEntityLoader): void`
+- `public registerEntity(entity: TEntity): symbol`
+- `public unregisterEntity(handle: symbol | undefined): void`
+- `public ensureChunkLoadedHook(): void`
+- `public async unloadEntitiesForChunk(chunk: Chunk): Promise<void>`
+- `public async restoreEntitiesForChunk(chunk: Chunk): Promise<void>`
+- `public spawnSerializedEntities(serializedEntities: SavedChunkEntityData[], chunk: Chunk): SavedChunkEntityData[]`
+- `public getRegisteredEntities(): ReadonlyMap<symbol, TEntity>`
+- `public getPendingReloadCount(): number`
+- `public getRegisteredEntityCount(): number`
+
+**Types / Interfaces / Enums**
+- interface `ChunkBoundEntityAdapter`
+- type `ChunkEntityLoader`
+
+---
+
+## `World/Chunk/Loading/ChunkHydration.ts` (115 LOC)
+
+### export class ChunkHydration
+
+**Constructor**
+- `constructor(adapter: ChunkHydrationAdapter)`
+
+**Methods**
+- `public getSavedMeshForLod(savedData: SavedChunkData, lod: number): SelectedSavedMesh | null`
+- `public pickBestSavedMesh(savedData: SavedChunkData, desiredLod: number): SelectedSavedMesh | null`
+- `public applyHydratedChunkFromSavedData(chunk: Chunk, savedData: SavedChunkData, scheduleRemesh: unknown = false): void`
+- `public applyLoadedChunkFromSavedData(chunk: Chunk, savedData: SavedChunkData, desiredLod: number, scheduleRemesh: unknown = false): SelectedSavedMesh | null`
+- `public applySelectedMeshDataToChunk(chunk: Chunk, selectedMesh: SelectedSavedMesh | null): void`
+
+**Types / Interfaces / Enums**
+- interface `SelectedSavedMesh`
+- interface `HydrationStoragePayload`
+- interface `ChunkHydrationAdapter`
+
+---
+
+## `World/Chunk/Loading/ChunkLoadingDebug.ts` (119 LOC)
+
+### export class ChunkLoadingDebug
+
+**Constructor**
+- `constructor(adapter: ChunkLoadingDebugAdapter = {})`
+
+**Properties**
+- `private stats: ChunkLoadingDebugStats`
+
+**Methods**
+- `public getStats(): ChunkLoadingDebugStats`
+- `public refreshQueueSnapshot(params: {
+    loadQueueLength: number;
+    unloadQueueLength: number;
+    pendingChunkEntityReloadCount?: number;
+    registeredChunkEntityCount?: number;
+  }): void`
+- `public beginProcessing(frameBudgetMs: number, stage: string | null = null): void`
+- `public endProcessing(): void`
+- `public setStage(stage: string | null): void`
+- `public markContinuationScheduled(value: boolean): void`
+- `public recordLoadProcessed(count: number = 1): void`
+- `public recordUnloadProcessed(count: number = 1): void`
+- `public updateSlice(frameBudgetMs?: number): void`
+- `public resetTotals(): void`
+- `private updateSliceElapsed(): void`
+- `private now(): number`
+
+**Types / Interfaces / Enums**
+- interface `ChunkQueueDebugSnapshot`
+- interface `ChunkProcessDebugSnapshot`
+- interface `ChunkLoadingDebugStats`
+- interface `ChunkLoadingDebugAdapter`
+
+---
+
+## `World/Chunk/Loading/ChunkPersistenceCoordinator.ts` (105 LOC)
+
+### export class ChunkPersistenceCoordinator
+
+**Constructor**
+- `constructor(adapter: ChunkPersistenceCoordinatorAdapter)`
+
+**Properties**
+- `private flushPromise: Promise<void> | null`
+- `private entityFlushPromise: Promise<void> | null`
+- `private readonly lastPersistedEntityChunkIds: unknown`
+
+**Methods**
+- `public async flushModifiedChunks(maxChunks: number = this.getChunkSaveBatchSize()): Promise<void>`
+- `public async flushChunkBoundEntities(maxChunks: number = this.getChunkEntitySaveBatchSize()): Promise<void>`
+- `public getLastPersistedEntityChunkIds(): ReadonlySet<bigint>`
+- `private getChunkSaveBatchSize(): number`
+- `private getChunkEntitySaveBatchSize(): number`
+- `private async flushModifiedChunksInternal(maxChunks: number): Promise<void>`
+- `private async flushChunkBoundEntitiesInternal(maxChunks: number): Promise<void>`
+
+**Types / Interfaces / Enums**
+- interface `ChunkPersistenceCoordinatorAdapter`
+
+---
+
+## `World/Chunk/Loading/ChunkProcessScheduler.ts` (707 LOC)
+
+### export class ChunkProcessScheduler
+
+**Constructor**
+- `constructor(adapter: ChunkProcessSchedulerAdapter)`
+
+**Properties**
+- `private isProcessing: unknown`
+- `private inFlightProcessState: InFlightProcessState | null`
+- `private _state: InFlightProcessState`
+- `private processContinuationScheduled: unknown`
+- `private _chunksToSave: Chunk[]`
+
+**Accessors**
+- `public get processing(): boolean`
+
+**Methods**
+- `private createReusableProcessState(): InFlightProcessState`
+- `private resetState(state: InFlightProcessState): void`
+- `public async processQueues(): Promise<void>`
+- `public beginSlice(state: InFlightProcessState): void`
+- `public hasBudget(state: InFlightProcessState): boolean`
+- `public scheduleProcessContinuation(): void`
+
+**Types / Interfaces / Enums**
+- interface `ChunkProcessSchedulerAdapter`
+- type `InFlightProcessState`
+
+---
+
+## `World/Chunk/Loading/ChunkQueueManager.ts` (153 LOC)
+
+### export class ChunkQueueManager
+
+**Constructor**
+- `constructor(adapter: ChunkQueueManagerAdapter = {})`
+
+**Properties**
+- `private readonly loadQueue: Chunk[]`
+- `private readonly loadQueueSet: unknown`
+- `private readonly unloadQueueSet: unknown`
+
+**Methods**
+- `public getLoadBatchSize(): number`
+- `public getUnloadBatchSize(): number`
+- `public getLoadQueueLength(): number`
+- `public getUnloadQueueLength(): number`
+- `public hasPendingLoads(): boolean`
+- `public hasPendingUnloads(): boolean`
+- `public hasPendingWork(): boolean`
+- `public ensureChunkQueuedForLoad(chunk: Chunk): boolean`
+- `public queueChunkForUnload(chunk: Chunk): boolean`
+- `public dequeueLoadBatch(maxChunks: number = this.getLoadBatchSize()): ChunkQueueBatch`
+- `public dequeueUnloadBatch(maxChunks: number = this.getUnloadBatchSize()): ChunkQueueBatch`
+- `public removeChunk(chunk: Chunk): void`
+- `public clear(): void`
+- `public snapshot(): {
+    loadQueue: readonly Chunk[];
+    unloadQueue: readonly Chunk[];
+  }`
+- `public refreshQueueDebugSnapshot(): void`
+
+**Types / Interfaces / Enums**
+- interface `ChunkQueueManagerAdapter`
+- interface `ChunkQueueBatch`
+
+---
+
+## `World/Chunk/Loading/ChunkReadinessAdapter.ts` (63 LOC)
+
+### export class ChunkReadiness
+
+**Constructor**
+- `constructor(adapter: ChunkReadinessAdapter = {})`
+
+**Methods**
+- `public areChunksLoadedAround(chunkX: number, chunkY: number, chunkZ: number, horizontalRadius: number = 1, verticalRadius: number = 0): boolean`
+- `public areChunksLod0ReadyAround(chunkX: number, chunkY: number, chunkZ: number, horizontalRadius: number = 1, verticalRadius: number = 0): boolean`
+- `private isLoaded(chunk: Chunk): boolean`
+- `private isLod0Ready(chunk: Chunk): boolean`
+
+**Types / Interfaces / Enums**
+- interface `ChunkReadinessAdapter`
+
+---
+
+## `World/Chunk/Loading/ChunkStreamingController.ts` (656 LOC)
+
+### export class ChunkStreamingController
+
+**Constructor**
+- `constructor(adapter: ChunkStreamingControllerAdapter)`
+
+**Properties**
+- `private distantTerrain: DistantTerrain | null`
+- `private static readonly DESIRED_STATE_REVISION_RETENTION: unknown`
+- `private streamRevision: unknown`
+- `private desiredStates: unknown`
+- `private loadQueueIndexMap: Map<bigint, number>`
+
+**Methods**
+- `public getDesiredState(chunkId: bigint): DesiredChunkState | undefined`
+- `public async updateChunksAround(chunkX: number, chunkY: number, chunkZ: number, renderDistance: unknown = SettingParams.RENDER_DISTANCE, verticalRadius: unknown = SettingParams.VERTICAL_RENDER_DISTANCE, prevChunkX?: number, prevChunkY?: number, prevChunkZ?: number): Promise<void>`
+- `private rebuildLoadQueueIndexMap(): void`
+- `private refreshLoadedChunksInWindow(chunkX: number, chunkY: number, chunkZ: number, lodRuleSet: ChunkLodRuleSet): void`
+- `public processTargetChunkCoordinate(x: number, y: number, z: number, playerChunkX: number, playerChunkY: number, playerChunkZ: number, lodRuleSet: ChunkLodRuleSet): void`
+- `public processFullTargetVolume(chunkX: number, chunkY: number, chunkZ: number, lodRuleSet: ChunkLodRuleSet): void`
+- `public processDeltaSlabs(chunkX: number, chunkY: number, chunkZ: number, prevChunkX: number, prevChunkY: number, prevChunkZ: number, lodRuleSet: ChunkLodRuleSet): void`
+- `public queueUnloading(chunkX: number, chunkY: number, chunkZ: number, renderDistance: number, verticalRadius: number): void`
+- `public tryApplyCachedLodTransitionMesh(chunk: Chunk, targetLod: number): boolean`
+- `public ensureChunkQueuedForLoad(chunk: Chunk, desiredLod: number, revision: number, includeVoxelData: unknown = desiredLod <= 1): void`
+- `private sortLoadQueue(playerChunkX: number, playerChunkY: number, playerChunkZ: number): void`
+- `private computePriority(chunk: Chunk, desiredLod: number, playerChunkX: number, playerChunkY: number, playerChunkZ: number): number`
+
+**Types / Interfaces / Enums**
+- interface `ChunkStreamingControllerAdapter`
+- type `QueuedChunkRequest`
+- type `DesiredChunkState`
+
+---
+
+## `World/Chunk/Loading/ChunkTypes.ts` (68 LOC)
+
+**Types / Interfaces / Enums**
+- type `ChunkBoundEntity`
+- type `InFlightProcessState`
+- type `ChunkLoadingDebugStats`
+- enum `ProcessStage`
+
+---
+
+## `World/Chunk/Loading/ChunkWorldMutations.ts` (192 LOC)
+
+### export class ChunkWorldMutations
+
+**Constructor**
+- `constructor(adapter: ChunkWorldMutationsAdapter = {})`
+
+**Methods**
+- `public worldToChunkCoord(value: number): number`
+- `public worldToBlockCoord(value: number): number`
+- `public getBlockByWorldCoords(worldX: number, worldY: number, worldZ: number): number`
+- `public getBlockStateByWorldCoords(worldX: number, worldY: number, worldZ: number): number`
+- `public getLightByWorldCoords(worldX: number, worldY: number, worldZ: number): number`
+- `public setBlock(worldX: number, worldY: number, worldZ: number, blockId: number, state: number = 0): boolean`
+- `public deleteBlock(worldX: number, worldY: number, worldZ: number): boolean`
+- `public toLocalBlockCoordinates(worldX: number, worldY: number, worldZ: number): LocalBlockCoordinates`
+- `private isBoundaryLocalCoord(localX: number, localY: number, localZ: number): boolean`
+
+**Types / Interfaces / Enums**
+- interface `WorldBlockCoordinates`
+- interface `LocalBlockCoordinates`
+- interface `BlockMutationContext`
+- interface `ChunkWorldMutationsAdapter`
+
+---
+
+## `World/Chunk/LOD/ChunkLodRules.ts` (220 LOC)
 
 ### export class Lod0ChunkCreationRule implements ChunkLodCreationRule
 
@@ -2676,6 +2975,7 @@ Generated: 2026-04-04T21:03:42.168Z
 - `public static fromRenderRadii(renderDistance: number, verticalRadius: number): ChunkLodRuleSet`
 - `public resolve(target: ChunkLodCoordinates, player: ChunkLodCoordinates): ChunkLodDecision`
 - `private measureDistance(target: ChunkLodCoordinates, player: ChunkLodCoordinates): ChunkLodDistance`
+- `public resolveWithHysteresis(target: ChunkLodCoordinates, player: ChunkLodCoordinates, previousLod: number | null | undefined): ChunkLodDecision`
 
 **Types / Interfaces / Enums**
 - interface `ChunkLodCreationRule`
@@ -2686,14 +2986,14 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Chunk/LOD/LodCacheVersion.ts`
+## `World/Chunk/LOD/LodCacheVersion.ts` (11 LOC)
 
 **Module-level functions**
 - `export function getCurrentLodCacheVersion(): string`
 
 ---
 
-## `World/Chunk/voxel.worker.ts`
+## `World/Chunk/voxel.worker.ts` (140 LOC)
 
 **Module-level functions**
 - `function expandBlockPayload(raw: Uint8Array | Uint16Array | null | undefined, palette: Uint8Array | Uint16Array | null | undefined, uniformBlockId: number | undefined, totalBlocks: number, paletteExpander: PaletteExpander): Uint8Array | Uint16Array`
@@ -2704,14 +3004,18 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Chunk/water.worker.ts`
+## `World/Chunk/water.worker.ts` (43 LOC)
 
 **Types / Interfaces / Enums**
 - interface `WaterWorkerRequest`
 
 ---
 
-## `World/Chunk/Worker/WorkerTaskHandlers.ts`
+## `World/Chunk/Worker/ChunkMesherConstants.ts` (51 LOC)
+
+---
+
+## `World/Chunk/Worker/WorkerTaskHandlers.ts` (149 LOC)
 
 ### export class WorkerTaskHandlers
 
@@ -2749,7 +3053,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Collision/VoxelAabbCollider.ts`
+## `World/Collision/VoxelAabbCollider.ts` (168 LOC)
 
 ### export class VoxelAabbCollider
 
@@ -2786,7 +3090,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Collision/VoxelObbCollider.ts`
+## `World/Collision/VoxelObbCollider.ts` (213 LOC)
 
 ### export class VoxelObbCollider
 
@@ -2826,7 +3130,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/DebugPanel.ts`
+## `World/DebugPanel.ts` (43 LOC)
 
 ### export class DebugPanel
 
@@ -2847,7 +3151,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/GlobalValues.ts`
+## `World/GlobalValues.ts` (13 LOC)
 
 ### export class GlobalValues
 
@@ -2865,7 +3169,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Light/DistantTerrainShader.ts`
+## `World/Light/DistantTerrainShader.ts` (163 LOC)
 
 ### export class DistantTerrainShader
 
@@ -2877,7 +3181,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Light/Lod2Shader.ts`
+## `World/Light/Lod2Shader.ts` (373 LOC)
 
 ### export class Lod2Shader
 
@@ -2888,7 +3192,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Light/Lod3Shader.ts`
+## `World/Light/Lod3Shader.ts` (305 LOC)
 
 ### export class Lod3Shader
 
@@ -2899,7 +3203,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Light/OpaqueShader.ts`
+## `World/Light/OpaqueShader.ts` (151 LOC)
 
 ### export class OpaqueShader
 
@@ -2909,7 +3213,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Light/SkyShader.ts`
+## `World/Light/SkyShader.ts` (35 LOC)
 
 ### export class SkyShader
 
@@ -2919,7 +3223,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Light/TransparentShader.ts`
+## `World/Light/TransparentShader.ts` (103 LOC)
 
 ### export class TransparentShader
 
@@ -2928,7 +3232,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/MeshPipeline/core/AOPipeline.ts`
+## `World/MeshPipeline/core/AOPipeline.ts` (49 LOC)
 
 **Module-level functions**
 - `export function isOccluder(packedBlock: number, shape: BlockShapeInfo): boolean`
@@ -2936,14 +3240,14 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/MeshPipeline/core/FaceEmitter.ts`
+## `World/MeshPipeline/core/FaceEmitter.ts` (42 LOC)
 
 **Module-level functions**
 - `export function emitQuad(out: WorkerInternalMeshData, params: EmitQuadParams): void`
 
 ---
 
-## `World/MeshPipeline/core/GreedyPipeline.ts`
+## `World/MeshPipeline/core/GreedyPipeline.ts` (69 LOC)
 
 **Module-level functions**
 - `export function greedyMesh(ctx: MeshContext, axis: number, extractMask: MaskExtractor, emitFace: FaceEmitterCallback): void`
@@ -2954,7 +3258,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/MeshPipeline/core/LightPipeline.ts`
+## `World/MeshPipeline/core/LightPipeline.ts` (36 LOC)
 
 **Module-level functions**
 - `export function quantizeNibble(v: number): number`
@@ -2964,14 +3268,14 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/MeshPipeline/core/MeshAssembler.ts`
+## `World/MeshPipeline/core/MeshAssembler.ts` (20 LOC)
 
 **Module-level functions**
 - `export function mergeMeshData(target: WorkerInternalMeshData, source: WorkerInternalMeshData): void`
 
 ---
 
-## `World/MeshPipeline/core/MeshContext.ts`
+## `World/MeshPipeline/core/MeshContext.ts` (12 LOC)
 
 **Module-level functions**
 - `export function createMeshContext(params: {
@@ -2981,7 +3285,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/MeshPipeline/core/MeshEmitters.ts`
+## `World/MeshPipeline/core/MeshEmitters.ts` (36 LOC)
 
 **Module-level functions**
 - `export function createEmptyMeshData(): WorkerInternalMeshData`
@@ -2990,7 +3294,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/MeshPipeline/core/ShapePipeline.ts`
+## `World/MeshPipeline/core/ShapePipeline.ts` (46 LOC)
 
 **Module-level functions**
 - `export function getShapeInfo(packedBlock: number): BlockShapeInfo`
@@ -2999,7 +3303,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/MeshPipeline/core/VoxelFaceEmitterAdapter.ts`
+## `World/MeshPipeline/core/VoxelFaceEmitterAdapter.ts` (70 LOC)
 
 ### export class VoxelFaceEmitterAdapter
 
@@ -3009,7 +3313,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/MeshPipeline/core/VoxelGreedyAdapter.ts`
+## `World/MeshPipeline/core/VoxelGreedyAdapter.ts` (43 LOC)
 
 ### export class VoxelGreedyAdapter
 
@@ -3027,7 +3331,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/MeshPipeline/core/VoxelMaskExtractor.ts`
+## `World/MeshPipeline/core/VoxelMaskExtractor.ts` (177 LOC)
 
 ### export class VoxelMaskExtractor
 
@@ -3050,7 +3354,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/MeshPipeline/core/VoxelPipeline.ts`
+## `World/MeshPipeline/core/VoxelPipeline.ts` (21 LOC)
 
 ### export class VoxelPipeline
 
@@ -3068,7 +3372,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/MeshPipeline/core/WaterPipeline.ts`
+## `World/MeshPipeline/core/WaterPipeline.ts` (105 LOC)
 
 **Module-level functions**
 - `export function buildWaterMesh(_ctx: MeshContext, grid: WaterSampleGrid, out: WorkerInternalMeshData): void`
@@ -3079,7 +3383,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/MeshPipeline/core/WorkerMeshHelpers.ts`
+## `World/MeshPipeline/core/WorkerMeshHelpers.ts` (129 LOC)
 
 **Module-level functions**
 - `export function createEmptyWorkerInternalMeshData(): WorkerInternalMeshData`
@@ -3092,7 +3396,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/MeshPipeline/types/MeshTypes.ts`
+## `World/MeshPipeline/types/MeshTypes.ts` (83 LOC)
 
 **Types / Interfaces / Enums**
 - interface `WorkerInternalMeshData`
@@ -3105,7 +3409,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/SettingParams.ts`
+## `World/SettingParams.ts` (24 LOC)
 
 ### export class SettingParams
 
@@ -3135,7 +3439,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Shape/BlockShapes.ts`
+## `World/Shape/BlockShapes.ts` (161 LOC)
 
 **Types / Interfaces / Enums**
 - type `ShapeBox`
@@ -3146,21 +3450,21 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Shape/BlockShapeTransforms.ts`
+## `World/Shape/BlockShapeTransforms.ts` (119 LOC)
 
 **Types / Interfaces / Enums**
 - type `ShapeBounds`
 
 ---
 
-## `World/Texture/BlockTextures.ts`
+## `World/Texture/BlockTextures.ts` (73 LOC)
 
 **Types / Interfaces / Enums**
 - type `BlockTextureDef`
 
 ---
 
-## `World/Texture/MaterialFactory.ts`
+## `World/Texture/MaterialFactory.ts` (111 LOC)
 
 ### export class MaterialFactory
 
@@ -3175,7 +3479,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Texture/TextureAtlasFactory.ts`
+## `World/Texture/TextureAtlasFactory.ts` (131 LOC)
 
 ### export class TextureAtlasFactory
 
@@ -3203,7 +3507,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Texture/TextureCache.ts`
+## `World/Texture/TextureCache.ts` (49 LOC)
 
 ### export class TextureCache
 
@@ -3219,7 +3523,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/Texture/TextureDefinitions.ts`
+## `World/Texture/TextureDefinitions.ts` (79 LOC)
 
 **Module-level functions**
 - `async function loadBlockDefinitions(): Promise<TextureDefinition[]>`
@@ -3233,7 +3537,7 @@ Generated: 2026-04-04T21:03:42.168Z
 
 ---
 
-## `World/WorldStorage.ts`
+## `World/WorldStorage.ts` (589 LOC)
 
 ### export class WorldStorage
 

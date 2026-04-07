@@ -187,4 +187,67 @@ export class ChunkLodRuleSet {
       verticalDist: Math.abs(target.chunkY - player.chunkY),
     };
   }
+
+  public resolveWithHysteresis(
+    target: ChunkLodCoordinates,
+    player: ChunkLodCoordinates,
+    previousLod: number | null | undefined,
+  ): ChunkLodDecision {
+    const distance = this.measureDistance(target, player);
+    const baseDecision = this.resolve(target, player);
+
+    if (previousLod === null || previousLod === undefined) {
+      return baseDecision;
+    }
+
+    const horizontalLeaveBuffer = 1;
+    const verticalLeaveBuffer = 1;
+
+    const previousBandAllowsCreation = previousLod >= 0 && previousLod <= 3;
+
+    const withinPreviousBandWithBuffer = (() => {
+      switch (previousLod) {
+        case 0:
+          return (
+            distance.horizontalDist <=
+              this.radii.lod0HorizontalRadius + horizontalLeaveBuffer &&
+            distance.verticalDist <=
+              this.radii.lod0VerticalRadius + verticalLeaveBuffer
+          );
+        case 1:
+          return (
+            distance.horizontalDist <=
+              this.radii.lod1HorizontalRadius + horizontalLeaveBuffer &&
+            distance.verticalDist <=
+              this.radii.lod1VerticalRadius + verticalLeaveBuffer
+          );
+        case 2:
+          return (
+            distance.horizontalDist <=
+              this.radii.lod2HorizontalRadius + horizontalLeaveBuffer &&
+            distance.verticalDist <=
+              this.radii.lod2VerticalRadius + verticalLeaveBuffer
+          );
+        case 3:
+          return (
+            distance.horizontalDist <=
+              this.radii.lod3HorizontalRadius + horizontalLeaveBuffer &&
+            distance.verticalDist <=
+              this.radii.lod3VerticalRadius + verticalLeaveBuffer
+          );
+        default:
+          return false;
+      }
+    })();
+
+    if (withinPreviousBandWithBuffer && previousLod < baseDecision.lodLevel) {
+      return {
+        ...distance,
+        lodLevel: previousLod,
+        allowsChunkCreation: previousBandAllowsCreation,
+      };
+    }
+
+    return baseDecision;
+  }
 }

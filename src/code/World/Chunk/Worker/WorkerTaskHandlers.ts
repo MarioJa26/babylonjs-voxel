@@ -4,7 +4,7 @@ import {
   GenerateDistantTerrainRequest,
   GenerateTerrainRequest,
 } from "../DataStructures/WorkerMessageType";
-import { DistantTerrainGenerator } from "@/code/Generation/DistanTerrain/DistantTerrainGenerator";
+import { DistantTerrainGenerator } from "@/code/Generation/DistantTerrain/DistantTerrainGenerator";
 
 export type MeshBuilderLike = {
   generateMesh(data: {

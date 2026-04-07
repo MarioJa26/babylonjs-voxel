@@ -1,0 +1,774 @@
+import { Chunk } from "../Chunk";
+import { ChunkWorkerPool } from "../ChunkWorkerPool";
+import { ChunkMesher } from "../ChunckMesher";
+import { ChunkLodRuleSet } from "../LOD/ChunkLodRules";
+import { SettingParams } from "../../SettingParams";
+import { DistantTerrain } from "@/code/Generation/DistantTerrain/DistantTerrain";
+import { ChunkLoadingSystem } from "../ChunkLoadingSystem";
+
+export type QueuedChunkRequest = {
+  chunk: Chunk;
+  desiredLod: number;
+  revision: number;
+  includeVoxelData: boolean;
+  priority: number;
+};
+
+type DesiredChunkState = {
+  desiredLod: number;
+  revision: number;
+};
+
+export interface ChunkStreamingControllerAdapter {
+  getLoadQueue(): QueuedChunkRequest[];
+  getUnloadQueueSet(): Set<Chunk>;
+  onQueueSnapshotChanged?(): void;
+}
+
+export class ChunkStreamingController {
+  private distantTerrain: DistantTerrain | null = null;
+  private static readonly DESIRED_STATE_REVISION_RETENTION = 2;
+  private streamRevision = 0;
+  private desiredStates = new Map<bigint, DesiredChunkState>();
+  // Map from chunkId -> index in the load queue for O(1) lookups while
+  // building the new streaming window. Rebuilt each updateChunksAround call.
+  private loadQueueIndexMap: Map<bigint, number> = new Map();
+
+  public constructor(
+    private readonly adapter: ChunkStreamingControllerAdapter,
+  ) {}
+
+  public getDesiredState(chunkId: bigint): DesiredChunkState | undefined {
+    const state = this.desiredStates.get(chunkId);
+
+    if (!state) {
+      ChunkLoadingSystem.traceChunk(chunkId, "desired-state-miss");
+      return undefined;
+    }
+
+    return state;
+  }
+
+  public async updateChunksAround(
+    chunkX: number,
+    chunkY: number,
+    chunkZ: number,
+    renderDistance = SettingParams.RENDER_DISTANCE,
+    verticalRadius = SettingParams.VERTICAL_RENDER_DISTANCE,
+    prevChunkX?: number,
+    prevChunkY?: number,
+    prevChunkZ?: number,
+  ): Promise<void> {
+    this.streamRevision++;
+
+    if (!this.distantTerrain) {
+      this.distantTerrain = new DistantTerrain();
+    }
+
+    this.distantTerrain.update(chunkX, chunkZ);
+
+    const lodRuleSet = ChunkLodRuleSet.fromRenderRadii(
+      renderDistance,
+      verticalRadius,
+    );
+    const { lod3HorizontalRadius, lod3VerticalRadius } = lodRuleSet.radii;
+
+    const loadQueue = this.adapter.getLoadQueue();
+    const unloadQueueSet = this.adapter.getUnloadQueueSet();
+
+    // Retag queued requests IN PLACE using the same hysteresis policy as normal target processing.
+    // This avoids allocating a fresh nextQueue array + fresh request objects every update.
+    let writeIndex = 0;
+
+    for (let readIndex = 0; readIndex < loadQueue.length; readIndex++) {
+      const request = loadQueue[readIndex];
+
+      const decision = lodRuleSet.resolveWithHysteresis(
+        {
+          chunkX: request.chunk.chunkX,
+          chunkY: request.chunk.chunkY,
+          chunkZ: request.chunk.chunkZ,
+        },
+        { chunkX, chunkY, chunkZ },
+        request.chunk.lodLevel ?? request.desiredLod,
+      );
+
+      if (!decision.allowsChunkCreation) {
+        request.chunk.isTerrainScheduled = false;
+
+        ChunkLoadingSystem.traceChunk(
+          request.chunk.id,
+          "queued-request-pruned",
+          {
+            previousDesiredLod: request.desiredLod,
+            previousRevision: request.revision,
+          },
+        );
+
+        continue;
+      }
+
+      request.desiredLod = decision.lodLevel;
+      request.revision = this.streamRevision;
+      request.includeVoxelData = request.desiredLod <= 1;
+      request.priority = this.computePriority(
+        request.chunk,
+        request.desiredLod,
+        chunkX,
+        chunkY,
+        chunkZ,
+      );
+
+      this.desiredStates.set(request.chunk.id, {
+        desiredLod: request.desiredLod,
+        revision: request.revision,
+      });
+
+      ChunkLoadingSystem.traceChunk(request.chunk.id, "load-request-retagged", {
+        desiredLod: request.desiredLod,
+        revision: request.revision,
+        includeVoxelData: request.includeVoxelData,
+      });
+
+      loadQueue[writeIndex++] = request;
+    }
+
+    loadQueue.length = writeIndex;
+
+    this.rebuildLoadQueueIndexMap();
+
+    // Remove chunks from unload queue if they are back in range.
+    for (const chunk of unloadQueueSet) {
+      const horizontalDist = Math.max(
+        Math.abs(chunk.chunkX - chunkX),
+        Math.abs(chunk.chunkZ - chunkZ),
+      );
+      const verticalDist = Math.abs(chunk.chunkY - chunkY);
+
+      if (
+        horizontalDist <= lod3HorizontalRadius &&
+        verticalDist <= lod3VerticalRadius
+      ) {
+        unloadQueueSet.delete(chunk);
+      }
+    }
+
+    const canUseDelta =
+      typeof prevChunkX === "number" &&
+      typeof prevChunkY === "number" &&
+      typeof prevChunkZ === "number" &&
+      Math.abs(chunkX - prevChunkX) <= 1 &&
+      Math.abs(chunkY - prevChunkY) <= 1 &&
+      Math.abs(chunkZ - prevChunkZ) <= 1;
+
+    if (canUseDelta) {
+      this.processDeltaSlabs(
+        chunkX,
+        chunkY,
+        chunkZ,
+        prevChunkX,
+        prevChunkY,
+        prevChunkZ,
+        lodRuleSet,
+      );
+    } else {
+      this.processFullTargetVolume(chunkX, chunkY, chunkZ, lodRuleSet);
+    }
+
+    // Delta slabs only cover newly entered cells.
+    // Already-loaded chunks that stayed inside the window still need LOD refresh.
+    this.refreshLoadedChunksInWindow(chunkX, chunkY, chunkZ, lodRuleSet);
+
+    this.sortLoadQueue(chunkX, chunkY, chunkZ);
+    this.rebuildLoadQueueIndexMap();
+
+    this.queueUnloading(
+      chunkX,
+      chunkY,
+      chunkZ,
+      lod3HorizontalRadius,
+      lod3VerticalRadius,
+    );
+
+    ChunkWorkerPool.getInstance().scheduleBackgroundLodPrecompute(
+      chunkX,
+      chunkY,
+      chunkZ,
+    );
+
+    // Keep a small revision window so in-flight work from recent updates
+    // is not invalidated too aggressively.
+    const oldestKeptRevision = Math.max(
+      0,
+      this.streamRevision -
+        ChunkStreamingController.DESIRED_STATE_REVISION_RETENTION,
+    );
+
+    for (const [id, state] of this.desiredStates) {
+      if (state.revision < oldestKeptRevision) {
+        this.desiredStates.delete(id);
+      }
+    }
+
+    this.adapter.onQueueSnapshotChanged?.();
+  }
+  private rebuildLoadQueueIndexMap(): void {
+    const loadQueue = this.adapter.getLoadQueue();
+    this.loadQueueIndexMap.clear();
+
+    for (let i = 0; i < loadQueue.length; i++) {
+      this.loadQueueIndexMap.set(loadQueue[i].chunk.id, i);
+    }
+  }
+
+  private refreshLoadedChunksInWindow(
+    chunkX: number,
+    chunkY: number,
+    chunkZ: number,
+    lodRuleSet: ChunkLodRuleSet,
+  ): void {
+    const { lod3HorizontalRadius, lod3VerticalRadius } = lodRuleSet.radii;
+
+    for (
+      let y = Math.max(0, chunkY - lod3VerticalRadius);
+      y <=
+      Math.min(SettingParams.MAX_CHUNK_HEIGHT - 1, chunkY + lod3VerticalRadius);
+      y++
+    ) {
+      for (
+        let x = chunkX - lod3HorizontalRadius;
+        x <= chunkX + lod3HorizontalRadius;
+        x++
+      ) {
+        for (
+          let z = chunkZ - lod3HorizontalRadius;
+          z <= chunkZ + lod3HorizontalRadius;
+          z++
+        ) {
+          const chunk = Chunk.getChunk(x, y, z);
+          if (!chunk) continue;
+          if (!chunk.isLoaded) continue;
+
+          this.processTargetChunkCoordinate(
+            x,
+            y,
+            z,
+            chunkX,
+            chunkY,
+            chunkZ,
+            lodRuleSet,
+          );
+        }
+      }
+    }
+  }
+  public processTargetChunkCoordinate(
+    x: number,
+    y: number,
+    z: number,
+    playerChunkX: number,
+    playerChunkY: number,
+    playerChunkZ: number,
+    lodRuleSet: ChunkLodRuleSet,
+  ): void {
+    let chunk = Chunk.getChunk(x, y, z);
+    if (!chunk) {
+      chunk = new Chunk(x, y, z);
+
+      ChunkLoadingSystem.traceChunk(chunk.id, "chunk-created", {
+        x,
+        y,
+        z,
+      });
+    }
+
+    const previousLod = chunk.lodLevel ?? 0;
+    const decision = lodRuleSet.resolveWithHysteresis(
+      { chunkX: x, chunkY: y, chunkZ: z },
+      { chunkX: playerChunkX, chunkY: playerChunkY, chunkZ: playerChunkZ },
+      previousLod,
+    );
+
+    if (!decision.allowsChunkCreation) {
+      ChunkLoadingSystem.traceChunk(chunk.id, "chunk-not-desired", {
+        x,
+        y,
+        z,
+        previousLod,
+      });
+      return;
+    }
+
+    const desiredLod = decision.lodLevel;
+
+    if (chunk.isLoaded && previousLod === desiredLod) {
+      return;
+    }
+
+    const revision = this.streamRevision;
+    const includeVoxelData = desiredLod <= 1;
+
+    this.desiredStates.set(chunk.id, {
+      desiredLod,
+      revision,
+    });
+
+    ChunkLoadingSystem.traceChunk(chunk.id, "desired-state", {
+      x,
+      y,
+      z,
+      previousLod,
+      desiredLod,
+      revision,
+      includeVoxelData,
+      isLoaded: chunk.isLoaded,
+      hasVoxelData: chunk.hasVoxelData,
+    });
+
+    chunk.lodLevel = desiredLod;
+
+    if (chunk.isLoaded && previousLod !== desiredLod) {
+      if (!chunk.hasVoxelData) {
+        const hasTargetCachedMesh = chunk.hasCachedLODMesh(desiredLod);
+
+        if (desiredLod <= 1 && !hasTargetCachedMesh) {
+          ChunkLoadingSystem.traceChunk(chunk.id, "lod-upgrade-needs-load", {
+            previousLod,
+            desiredLod,
+            revision,
+          });
+
+          this.ensureChunkQueuedForLoad(chunk, desiredLod, revision);
+          return;
+        }
+
+        if (desiredLod >= 2 && !hasTargetCachedMesh) {
+          ChunkLoadingSystem.traceChunk(
+            chunk.id,
+            "lod-downgrade-waiting-for-cache",
+            {
+              previousLod,
+              desiredLod,
+              revision,
+            },
+          );
+          return;
+        }
+      }
+
+      if (this.tryApplyCachedLodTransitionMesh(chunk, desiredLod)) {
+        ChunkLoadingSystem.traceChunk(
+          chunk.id,
+          "cached-lod-transition-applied",
+          {
+            previousLod,
+            desiredLod,
+            revision,
+          },
+        );
+        return;
+      }
+
+      const requiresImmediateRemesh = previousLod <= 1 || desiredLod <= 1;
+      if (requiresImmediateRemesh) {
+        ChunkLoadingSystem.traceChunk(chunk.id, "lod-transition-remesh", {
+          previousLod,
+          desiredLod,
+          revision,
+        });
+
+        chunk.scheduleRemesh(previousLod === 0 || desiredLod === 0);
+      }
+
+      return;
+    }
+
+    if (!chunk.isLoaded) {
+      this.ensureChunkQueuedForLoad(
+        chunk,
+        desiredLod,
+        revision,
+        includeVoxelData,
+      );
+    }
+  }
+
+  public processFullTargetVolume(
+    chunkX: number,
+    chunkY: number,
+    chunkZ: number,
+    lodRuleSet: ChunkLodRuleSet,
+  ): void {
+    const { lod3HorizontalRadius, lod3VerticalRadius } = lodRuleSet.radii;
+
+    for (
+      let y = chunkY - lod3VerticalRadius;
+      y <= chunkY + lod3VerticalRadius;
+      y++
+    ) {
+      if (y < 0 || y >= SettingParams.MAX_CHUNK_HEIGHT) {
+        continue;
+      }
+
+      for (
+        let x = chunkX - lod3HorizontalRadius;
+        x <= chunkX + lod3HorizontalRadius;
+        x++
+      ) {
+        for (
+          let z = chunkZ - lod3HorizontalRadius;
+          z <= chunkZ + lod3HorizontalRadius;
+          z++
+        ) {
+          this.processTargetChunkCoordinate(
+            x,
+            y,
+            z,
+            chunkX,
+            chunkY,
+            chunkZ,
+            lodRuleSet,
+          );
+        }
+      }
+    }
+  }
+
+  public processDeltaSlabs(
+    chunkX: number,
+    chunkY: number,
+    chunkZ: number,
+    prevChunkX: number,
+    prevChunkY: number,
+    prevChunkZ: number,
+    lodRuleSet: ChunkLodRuleSet,
+  ): void {
+    const dx = chunkX - prevChunkX;
+    const dy = chunkY - prevChunkY;
+    const dz = chunkZ - prevChunkZ;
+
+    const { lod3HorizontalRadius, lod3VerticalRadius } = lodRuleSet.radii;
+
+    if (dx !== 0) {
+      const slabX =
+        dx > 0 ? chunkX + lod3HorizontalRadius : chunkX - lod3HorizontalRadius;
+
+      for (
+        let y = chunkY - lod3VerticalRadius;
+        y <= chunkY + lod3VerticalRadius;
+        y++
+      ) {
+        if (y < 0 || y >= SettingParams.MAX_CHUNK_HEIGHT) continue;
+
+        for (
+          let z = chunkZ - lod3HorizontalRadius;
+          z <= chunkZ + lod3HorizontalRadius;
+          z++
+        ) {
+          this.processTargetChunkCoordinate(
+            slabX,
+            y,
+            z,
+            chunkX,
+            chunkY,
+            chunkZ,
+            lodRuleSet,
+          );
+        }
+      }
+    }
+
+    if (dz !== 0) {
+      const slabZ =
+        dz > 0 ? chunkZ + lod3HorizontalRadius : chunkZ - lod3HorizontalRadius;
+
+      for (
+        let y = chunkY - lod3VerticalRadius;
+        y <= chunkY + lod3VerticalRadius;
+        y++
+      ) {
+        if (y < 0 || y >= SettingParams.MAX_CHUNK_HEIGHT) continue;
+
+        for (
+          let x = chunkX - lod3HorizontalRadius;
+          x <= chunkX + lod3HorizontalRadius;
+          x++
+        ) {
+          // Skip X/Z overlap column if X slab already handled it
+          if (dx !== 0) {
+            const enteringX =
+              dx > 0
+                ? chunkX + lod3HorizontalRadius
+                : chunkX - lod3HorizontalRadius;
+
+            if (x === enteringX) continue;
+          }
+
+          this.processTargetChunkCoordinate(
+            x,
+            y,
+            slabZ,
+            chunkX,
+            chunkY,
+            chunkZ,
+            lodRuleSet,
+          );
+        }
+      }
+    }
+
+    if (dy !== 0) {
+      const slabY =
+        dy > 0 ? chunkY + lod3VerticalRadius : chunkY - lod3VerticalRadius;
+
+      if (slabY >= 0 && slabY < SettingParams.MAX_CHUNK_HEIGHT) {
+        for (
+          let x = chunkX - lod3HorizontalRadius;
+          x <= chunkX + lod3HorizontalRadius;
+          x++
+        ) {
+          for (
+            let z = chunkZ - lod3HorizontalRadius;
+            z <= chunkZ + lod3HorizontalRadius;
+            z++
+          ) {
+            // Skip X/Y overlap plane already handled by X slab
+            if (dx !== 0) {
+              const enteringX =
+                dx > 0
+                  ? chunkX + lod3HorizontalRadius
+                  : chunkX - lod3HorizontalRadius;
+
+              if (x === enteringX) continue;
+            }
+
+            // Skip Z/Y overlap plane already handled by Z slab
+            if (dz !== 0) {
+              const enteringZ =
+                dz > 0
+                  ? chunkZ + lod3HorizontalRadius
+                  : chunkZ - lod3HorizontalRadius;
+
+              if (z === enteringZ) continue;
+            }
+
+            this.processTargetChunkCoordinate(
+              x,
+              slabY,
+              z,
+              chunkX,
+              chunkY,
+              chunkZ,
+              lodRuleSet,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  public queueUnloading(
+    chunkX: number,
+    chunkY: number,
+    chunkZ: number,
+    renderDistance: number,
+    verticalRadius: number,
+  ): void {
+    const unloadQueueSet = this.adapter.getUnloadQueueSet();
+
+    const removeRadius =
+      renderDistance + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER;
+    const verticalRemoveRadius =
+      verticalRadius + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER;
+
+    for (const chunk of Chunk.chunkInstances.values()) {
+      if (chunk.isPersistent) continue;
+      if (!chunk.isLoaded) continue;
+      if (unloadQueueSet.has(chunk)) continue;
+
+      const cx = chunk.chunkX;
+      const cy = chunk.chunkY;
+      const cz = chunk.chunkZ;
+
+      if (
+        Math.abs(cx - chunkX) > removeRadius ||
+        Math.abs(cz - chunkZ) > removeRadius ||
+        Math.abs(cy - chunkY) > verticalRemoveRadius
+      ) {
+        unloadQueueSet.add(chunk);
+
+        ChunkLoadingSystem.traceChunk(chunk.id, "unload-queued", {
+          x: chunk.chunkX,
+          y: chunk.chunkY,
+          z: chunk.chunkZ,
+          dx: Math.abs(cx - chunkX),
+          dy: Math.abs(cy - chunkY),
+          dz: Math.abs(cz - chunkZ),
+          playerChunkX: chunkX,
+          playerChunkY: chunkY,
+          playerChunkZ: chunkZ,
+          removeRadius,
+          verticalRemoveRadius,
+        });
+      }
+    }
+  }
+
+  public tryApplyCachedLodTransitionMesh(
+    chunk: Chunk,
+    targetLod: number,
+  ): boolean {
+    if (chunk.isDirty) {
+      ChunkLoadingSystem.traceChunk(
+        chunk.id,
+        "cached-lod-transition-skip-dirty",
+        {
+          targetLod,
+        },
+      );
+      return false;
+    }
+
+    const cached = chunk.getCachedLODMesh(targetLod);
+    if (!cached) {
+      ChunkLoadingSystem.traceChunk(chunk.id, "cached-lod-transition-miss", {
+        targetLod,
+      });
+      return false;
+    }
+
+    if (!cached.opaque && !cached.transparent) {
+      ChunkLoadingSystem.traceChunk(
+        chunk.id,
+        "cached-lod-transition-empty-mesh",
+        {
+          targetLod,
+        },
+      );
+      return false;
+    }
+
+    ChunkMesher.createMeshFromData(chunk, {
+      opaque: cached.opaque ?? null,
+      transparent: cached.transparent ?? null,
+    });
+    chunk.isDirty = false;
+
+    ChunkLoadingSystem.traceChunk(chunk.id, "cached-lod-transition-applied", {
+      targetLod,
+    });
+
+    return true;
+  }
+
+  public ensureChunkQueuedForLoad(
+    chunk: Chunk,
+    desiredLod: number,
+    revision: number,
+    includeVoxelData = desiredLod <= 1,
+  ): void {
+    if (chunk.isLoaded) {
+      ChunkLoadingSystem.traceChunk(chunk.id, "load-skip-already-loaded", {
+        desiredLod,
+        revision,
+        includeVoxelData,
+      });
+      return;
+    }
+
+    const loadQueue = this.adapter.getLoadQueue();
+
+    let existingIndex = -1;
+    const maybeIndex = this.loadQueueIndexMap.get(chunk.id);
+    if (typeof maybeIndex === "number") {
+      existingIndex = maybeIndex;
+    }
+
+    if (existingIndex >= 0) {
+      const request = loadQueue[existingIndex];
+
+      const previousDesiredLod = request.desiredLod;
+      const previousRevision = request.revision;
+
+      request.desiredLod = desiredLod;
+      request.revision = revision;
+      request.includeVoxelData = includeVoxelData;
+      request.priority = Number.POSITIVE_INFINITY;
+
+      this.loadQueueIndexMap.set(chunk.id, existingIndex);
+
+      ChunkLoadingSystem.traceChunk(chunk.id, "load-request-updated", {
+        previousDesiredLod,
+        previousRevision,
+        desiredLod,
+        revision,
+        includeVoxelData,
+      });
+    } else {
+      const request: QueuedChunkRequest = {
+        chunk,
+        desiredLod,
+        revision,
+        includeVoxelData,
+        priority: Number.POSITIVE_INFINITY,
+      };
+
+      loadQueue.push(request);
+      this.loadQueueIndexMap.set(chunk.id, loadQueue.length - 1);
+
+      ChunkLoadingSystem.traceChunk(chunk.id, "load-queued", {
+        desiredLod,
+        revision,
+        includeVoxelData,
+      });
+    }
+
+    const unloadSet = this.adapter.getUnloadQueueSet();
+    if (unloadSet.has(chunk)) {
+      unloadSet.delete(chunk);
+      ChunkLoadingSystem.traceChunk(
+        chunk.id,
+        "unload-cancelled-due-to-load",
+        {},
+      );
+    }
+
+    chunk.isTerrainScheduled = true;
+  }
+
+  private sortLoadQueue(
+    playerChunkX: number,
+    playerChunkY: number,
+    playerChunkZ: number,
+  ): void {
+    const loadQueue = this.adapter.getLoadQueue();
+
+    for (const request of loadQueue) {
+      request.priority = this.computePriority(
+        request.chunk,
+        request.desiredLod,
+        playerChunkX,
+        playerChunkY,
+        playerChunkZ,
+      );
+    }
+
+    loadQueue.sort((a, b) => a.priority - b.priority);
+  }
+
+  private computePriority(
+    chunk: Chunk,
+    desiredLod: number,
+    playerChunkX: number,
+    playerChunkY: number,
+    playerChunkZ: number,
+  ): number {
+    const lodBias = desiredLod * 1_000_000;
+    const dist =
+      (chunk.chunkX - playerChunkX) ** 2 +
+      (chunk.chunkY - playerChunkY) ** 2 +
+      (chunk.chunkZ - playerChunkZ) ** 2;
+
+    return lodBias + dist;
+  }
+}

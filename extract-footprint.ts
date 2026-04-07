@@ -5,14 +5,20 @@
  * designed to be pasted into Claude as context.
  *
  * Usage:
- *   node extract-footprint.cjs [src-dir] [tsconfig-path]
+ *   node extract-footprint.cjs [src-dir] [tsconfig-path] [--loc]
  *   node extract-footprint.cjs src/code
+ *   node extract-footprint.cjs src/code --loc
+ *   node extract-footprint.cjs --loc src/code ./tsconfig.json
+ *
  * Defaults:
  *   src-dir  = ./src
  *   tsconfig = ./tsconfig.json
  *
+ * Flags:
+ *   --loc    Include per-file and total LOC counts in output
+ *
  * Output:
- *   footprint.md (also printed to stdout)
+ *   footprint.md (also printed to stdout if you uncomment console.log)
  */
 
 import * as ts from "typescript";
@@ -23,8 +29,14 @@ import * as path from "path";
 // Config
 // ---------------------------------------------------------------------------
 
-const srcDir = path.resolve(process.argv[2] ?? "./src");
-const tsconfigPath = path.resolve(process.argv[3] ?? "./tsconfig.json");
+const rawArgs = process.argv.slice(2);
+const includeLoc = rawArgs.includes("--loc");
+
+// Keep only positional args for srcDir / tsconfigPath
+const positionalArgs = rawArgs.filter((arg) => !arg.startsWith("--"));
+
+const srcDir = path.resolve(positionalArgs[0] ?? "./src");
+const tsconfigPath = path.resolve(positionalArgs[1] ?? "./tsconfig.json");
 const outFile = "footprint.md";
 
 /** Normalise to forward-slash for reliable cross-platform comparison. */
@@ -43,8 +55,9 @@ function collectTsFiles(dir: string): string[] {
         entry.name === "node_modules" ||
         entry.name === "dist" ||
         entry.name === ".git"
-      )
+      ) {
         continue;
+      }
       results.push(...collectTsFiles(full));
     } else if (
       entry.isFile() &&
@@ -65,6 +78,7 @@ function getModifiers(node: ts.Node): string {
   const parts: string[] = [];
   const mods = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
   if (!mods) return "";
+
   for (const mod of mods) {
     switch (mod.kind) {
       case ts.SyntaxKind.PublicKeyword:
@@ -93,6 +107,7 @@ function getModifiers(node: ts.Node): string {
         break;
     }
   }
+
   return parts.join(" ");
 }
 
@@ -105,7 +120,7 @@ function returnTypeText(
     const sig = checker.getSignatureFromDeclaration(node);
     if (sig) return checker.typeToString(checker.getReturnTypeOfSignature(sig));
   } catch {
-    /**/
+    // ignore inference failures
   }
   return "";
 }
@@ -120,6 +135,30 @@ function formatParams(node: ts.FunctionLikeDeclaration): string {
       return `${name}${optional}: ${type}${def}`;
     })
     .join(", ");
+}
+
+/**
+ * Counts logical LOC by:
+ * - removing block comments
+ * - removing line comments
+ * - excluding blank lines
+ *
+ * This is intentionally lightweight and approximate.
+ */
+function countLoc(sourceFile: ts.SourceFile): number {
+  const text = sourceFile.getFullText();
+
+  // Remove block comments
+  const withoutBlockComments = text.replace(/\/\*[\s\S]*?\*\//g, "");
+
+  // Remove line comments
+  const withoutComments = withoutBlockComments.replace(/\/\/.*$/gm, "");
+
+  // Count non-empty lines
+  return withoutComments
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0).length;
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +184,7 @@ interface FunctionEntry {
 
 interface FileEntry {
   relativePath: string;
+  loc?: number;
   classes: ClassEntry[];
   functions: FunctionEntry[];
   typeAliases: string[];
@@ -156,11 +196,13 @@ function analyzeFile(
   sourceFile: ts.SourceFile,
   checker: ts.TypeChecker,
   rootDir: string,
+  includeLoc: boolean,
 ): FileEntry {
   const entry: FileEntry = {
     relativePath: path
       .relative(rootDir, sourceFile.fileName)
       .replace(/\\/g, "/"),
+    loc: includeLoc ? countLoc(sourceFile) : undefined,
     classes: [],
     functions: [],
     typeAliases: [],
@@ -228,6 +270,7 @@ function analyzeFile(
         });
       }
     }
+
     return classEntry;
   }
 
@@ -248,6 +291,7 @@ function analyzeFile(
     } else if (ts.isEnumDeclaration(node)) {
       entry.enums.push(node.name.getText());
     }
+
     ts.forEachChild(node, visit);
   }
 
@@ -259,34 +303,51 @@ function analyzeFile(
 // Markdown rendering
 // ---------------------------------------------------------------------------
 
-function renderMarkdown(files: FileEntry[]): string {
+function renderMarkdown(files: FileEntry[], includeLoc: boolean): string {
   let totalClasses = 0;
   let totalMembers = 0;
   let totalFunctions = 0;
+  let totalLoc = 0;
 
   const body: string[] = [];
 
   for (const file of files) {
-    const hasContent =
+    const hasStructuralContent =
       file.classes.length > 0 ||
       file.functions.length > 0 ||
       file.typeAliases.length > 0 ||
       file.interfaces.length > 0 ||
       file.enums.length > 0;
-    if (!hasContent) continue;
 
-    body.push(`## \`${file.relativePath}\``);
+    const shouldInclude =
+      hasStructuralContent ||
+      (includeLoc && typeof file.loc === "number" && file.loc > 0);
+
+    if (!shouldInclude) continue;
+
+    if (includeLoc && typeof file.loc === "number") {
+      totalLoc += file.loc;
+    }
+
+    body.push(
+      includeLoc && typeof file.loc === "number"
+        ? `## \`${file.relativePath}\` (${file.loc} LOC)`
+        : `## \`${file.relativePath}\``,
+    );
     body.push("");
 
     for (const cls of file.classes) {
       totalClasses++;
+
       const header = [cls.modifiers, "class", cls.name]
         .filter(Boolean)
         .join(" ");
+
       const ext = cls.extends ? ` extends ${cls.extends}` : "";
       const impl = cls.implements?.length
         ? ` implements ${cls.implements.join(", ")}`
         : "";
+
       body.push(`### ${header}${ext}${impl}`);
       body.push("");
 
@@ -302,16 +363,19 @@ function renderMarkdown(files: FileEntry[]): string {
         ctor.forEach((m) => body.push(`- \`${m.signature}\``));
         body.push("");
       }
+
       if (props.length) {
         body.push("**Properties**");
         props.forEach((m) => body.push(`- \`${m.signature}\``));
         body.push("");
       }
+
       if (getset.length) {
         body.push("**Accessors**");
         getset.forEach((m) => body.push(`- \`${m.signature}\``));
         body.push("");
       }
+
       if (methods.length) {
         body.push("**Methods**");
         methods.forEach((m) => body.push(`- \`${m.signature}\``));
@@ -333,6 +397,7 @@ function renderMarkdown(files: FileEntry[]): string {
       ...file.typeAliases.map((n) => `type \`${n}\``),
       ...file.enums.map((n) => `enum \`${n}\``),
     ];
+
     if (extras.length) {
       body.push("**Types / Interfaces / Enums**");
       extras.forEach((e) => body.push(`- ${e}`));
@@ -343,7 +408,9 @@ function renderMarkdown(files: FileEntry[]): string {
     body.push("");
   }
 
-  const summary = `> **Summary:** ${totalClasses} classes · ${totalMembers} members · ${totalFunctions} module-level functions`;
+  const summary = includeLoc
+    ? `> **Summary:** ${totalClasses} classes · ${totalMembers} members · ${totalFunctions} module-level functions · ${totalLoc} LOC`
+    : `> **Summary:** ${totalClasses} classes · ${totalMembers} members · ${totalFunctions} module-level functions`;
 
   return [
     "# Project Footprint",
@@ -386,11 +453,22 @@ let compilerOptions: ts.CompilerOptions = {
 if (fs.existsSync(tsconfigPath)) {
   console.error(`Using tsconfig: ${tsconfigPath}`);
   const configFile = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
+
+  if (configFile.error) {
+    const message = ts.flattenDiagnosticMessageText(
+      configFile.error.messageText,
+      "\n",
+    );
+    console.error(`Failed to read tsconfig: ${message}`);
+    process.exit(1);
+  }
+
   const parsed = ts.parseJsonConfigFileContent(
     configFile.config,
     ts.sys,
     path.dirname(tsconfigPath),
   );
+
   compilerOptions = { ...parsed.options, skipLibCheck: true };
 }
 
@@ -404,14 +482,17 @@ const normSrcFiles = new Set(tsFiles.map(norm));
 const fileEntries: FileEntry[] = [];
 for (const sf of program.getSourceFiles()) {
   if (!sf.isDeclarationFile && normSrcFiles.has(norm(sf.fileName))) {
-    fileEntries.push(analyzeFile(sf, checker, srcDir));
+    fileEntries.push(analyzeFile(sf, checker, srcDir, includeLoc));
   }
 }
 
 console.error(`Analysed ${fileEntries.length} files`);
 fileEntries.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
 
-const markdown = renderMarkdown(fileEntries);
+const markdown = renderMarkdown(fileEntries, includeLoc);
 fs.writeFileSync(outFile, markdown, "utf8");
-//console.log(markdown);
+
+// Uncomment if you also want stdout output
+// console.log(markdown);
+
 console.error(`\n✓ Written to ${outFile}`);

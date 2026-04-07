@@ -3,7 +3,6 @@ import { IControls } from "../../Inferface/IControls";
 import { Vector3 } from "@babylonjs/core";
 import { CrossHair } from "../Hud/CrossHair";
 import { PlayerVehicle } from "../PlayerVehicle";
-import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { Map1 } from "@/code/Maps/Map1";
 import { BlockBreakParticles } from "@/code/Maps/BlockBreakParticles";
 import {
@@ -14,6 +13,7 @@ import { Item } from "../Inventory/Item";
 import { DroppedItem } from "../Inventory/DroppedItem";
 import { Gamemodes } from "../PlayerStats";
 import { DebugControlHelper } from "./DebugControlHelper";
+import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
 
 export class WalkingControls implements IControls<PlayerVehicle> {
   public pressedKeys = new Set<string>();
@@ -42,6 +42,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
   public static KEY_DROP = ["q"];
   public static KEY_CTRL = ["control"];
   public static KEY_ALT = ["alt"];
+  public static KEY_PRINT_TRACE = ["o"];
 
   public static MOUSE_WHEEL_UP = ["wheel_up"];
   public static MOUSE_WHEEL_DOWN = ["wheel_down"];
@@ -255,66 +256,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
       WalkingControls.KEY_PICK_BLOCK.includes(key) ||
       WalkingControls.KEY_PICK_BLOCK_EXACT.includes(key)
     ) {
-      const hit = CrossHair.pickTarget(this.#player);
-      if (!hit) return;
-      const blockId = ChunkLoadingSystem.getBlockByWorldCoords(
-        hit.x,
-        hit.y,
-        hit.z,
-      );
-      const blockState = ChunkLoadingSystem.getBlockStateByWorldCoords(
-        hit.x,
-        hit.y,
-        hit.z,
-      );
-      if (blockId === 0) return; // Don't pick air
-      const isExactPickMode = WalkingControls.KEY_PICK_BLOCK_EXACT.includes(key);
-      const matchesPickedBlock = (
-        item: Item | null | undefined,
-        requireExactState: boolean,
-      ): boolean => {
-        if (!item) return false;
-        const itemBlockId = item.blockId ?? item.itemId;
-        if (itemBlockId !== blockId) return false;
-        if (!requireExactState) return true;
-        return (item.blockState ?? 0) === blockState;
-      };
-      const trySelectOrSwapMatchingItem = (
-        requireExactState: boolean,
-      ): boolean => {
-        // 1. Check hotbar first
-        for (let i = 0; i < 10; i++) {
-          const hotbarItem = this.#player.playerInventory.inventory[0][i].item;
-          if (matchesPickedBlock(hotbarItem, requireExactState)) {
-            this.#player.playerHud.selectedHotbarSlot = i;
-            return true;
-          }
-        }
-
-        // 2. If not in hotbar, check main inventory and swap with current hotbar item
-        const inventory = this.#player.playerInventory.inventory;
-        for (let r = 1; r < inventory.length; r++) {
-          for (let c = 0; c < inventory[r].length; c++) {
-            if (matchesPickedBlock(inventory[r][c].item, requireExactState)) {
-              const selectedSlot = this.#player.playerHud.selectedHotbarSlot;
-              const hotbarSlot = inventory[0][selectedSlot];
-              const inventorySlot = inventory[r][c];
-              hotbarSlot.swapSlots(inventorySlot);
-              return true;
-            }
-          }
-        }
-        return false;
-      };
-
-      if (isExactPickMode) {
-        // T: exact state-aware picker (includes slice variants), then id fallback.
-        if (trySelectOrSwapMatchingItem(true)) return;
-        if (trySelectOrSwapMatchingItem(false)) return;
-      } else {
-        // R: classic picker by block id only.
-        if (trySelectOrSwapMatchingItem(false)) return;
-      }
+      this.#handlePickBlock(key);
     }
 
     if (WalkingControls.KEY_INVENTORY.includes(key)) {
@@ -322,6 +264,20 @@ export class WalkingControls implements IControls<PlayerVehicle> {
       this.#player.playerInventory.inventoryControls.underlyingControls = this;
       this.#player.keyboardControls =
         this.#player.playerInventory.inventoryControls;
+    }
+
+    if (WalkingControls.KEY_PRINT_TRACE.includes(key)) {
+      console.log("Player position:", this.#player.position);
+      console.log("Player chunk:", {
+        x: Math.floor(this.#player.position.x / 32),
+        y: Math.floor(this.#player.position.y / 32),
+        z: Math.floor(this.#player.position.z / 32),
+      });
+      ChunkLoadingSystem.validateChunksAround(
+        Math.floor(this.#player.position.x / 32),
+        Math.floor(this.#player.position.y / 32),
+        Math.floor(this.#player.position.z / 32),
+      );
     }
 
     if (WalkingControls.KEY_1.includes(key)) {
@@ -348,6 +304,74 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 
     this.pressedKeys.delete(key);
     this.#updateMovementAxesFromPressedKeys();
+  }
+
+  #handlePickBlock(key: string) {
+    const hit = CrossHair.pickTarget(this.#player);
+    if (!hit) return;
+
+    const blockId = ChunkLoadingSystem.getBlockByWorldCoords(
+      hit.x,
+      hit.y,
+      hit.z,
+    );
+    const blockState = ChunkLoadingSystem.getBlockStateByWorldCoords(
+      hit.x,
+      hit.y,
+      hit.z,
+    );
+
+    if (blockId === 0) return; // Don't pick air
+
+    const isExactPickMode = WalkingControls.KEY_PICK_BLOCK_EXACT.includes(key);
+
+    const matchesPickedBlock = (
+      item: Item | null | undefined,
+      requireExactState: boolean,
+    ): boolean => {
+      if (!item) return false;
+      const itemBlockId = item.blockId ?? item.itemId;
+      if (itemBlockId !== blockId) return false;
+      if (!requireExactState) return true;
+      return (item.blockState ?? 0) === blockState;
+    };
+
+    const trySelectOrSwapMatchingItem = (
+      requireExactState: boolean,
+    ): boolean => {
+      // 1. Check hotbar first
+      for (let i = 0; i < 10; i++) {
+        const hotbarItem = this.#player.playerInventory.inventory[0][i].item;
+        if (matchesPickedBlock(hotbarItem, requireExactState)) {
+          this.#player.playerHud.selectedHotbarSlot = i;
+          return true;
+        }
+      }
+
+      // 2. If not in hotbar, check main inventory and swap with current hotbar item
+      const inventory = this.#player.playerInventory.inventory;
+      for (let r = 1; r < inventory.length; r++) {
+        for (let c = 0; c < inventory[r].length; c++) {
+          if (matchesPickedBlock(inventory[r][c].item, requireExactState)) {
+            const selectedSlot = this.#player.playerHud.selectedHotbarSlot;
+            const hotbarSlot = inventory[0][selectedSlot];
+            const inventorySlot = inventory[r][c];
+            hotbarSlot.swapSlots(inventorySlot);
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    if (isExactPickMode) {
+      // T: exact state-aware picker (includes slice variants), then id fallback.
+      if (trySelectOrSwapMatchingItem(true)) return;
+      if (trySelectOrSwapMatchingItem(false)) return;
+    } else {
+      // R: classic picker by block id only.
+      if (trySelectOrSwapMatchingItem(false)) return;
+    }
   }
   #pressedKeysHas(keys: string[]) {
     return keys.some((k) => this.pressedKeys.has(k));
