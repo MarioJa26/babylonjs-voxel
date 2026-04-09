@@ -341,12 +341,21 @@ export class ChunkStreamingController {
     }
 
     const desiredLod = decision.lodLevel;
+    const revision = this.streamRevision;
 
     if (chunk.isLoaded && previousLod === desiredLod) {
+      if (desiredLod <= 1 && !chunk.hasVoxelData) {
+        ChunkLoadingSystem.traceChunk(chunk.id, "lod-steady-needs-voxel-load", {
+          desiredLod,
+          revision,
+        });
+
+        this.ensureChunkQueuedForLoad(chunk, desiredLod, revision, true);
+        this.tryApplyCachedLodTransitionMesh(chunk, desiredLod);
+      }
       return;
     }
 
-    const revision = this.streamRevision;
     const includeVoxelData = desiredLod <= 1;
 
     this.desiredStates.set(chunk.id, {
@@ -372,15 +381,27 @@ export class ChunkStreamingController {
       if (!chunk.hasVoxelData) {
         const hasTargetCachedMesh = chunk.hasCachedLODMesh(desiredLod);
 
-        if (desiredLod <= 1 && !hasTargetCachedMesh) {
-          ChunkLoadingSystem.traceChunk(chunk.id, "lod-upgrade-needs-load", {
-            previousLod,
-            desiredLod,
-            revision,
-          });
+        if (desiredLod <= 1) {
+          this.ensureChunkQueuedForLoad(chunk, desiredLod, revision, true);
 
-          this.ensureChunkQueuedForLoad(chunk, desiredLod, revision);
-          return;
+          if (!hasTargetCachedMesh) {
+            ChunkLoadingSystem.traceChunk(chunk.id, "lod-upgrade-needs-load", {
+              previousLod,
+              desiredLod,
+              revision,
+            });
+            return;
+          }
+
+          ChunkLoadingSystem.traceChunk(
+            chunk.id,
+            "lod-upgrade-cache-hit-awaiting-voxel-load",
+            {
+              previousLod,
+              desiredLod,
+              revision,
+            },
+          );
         }
 
         if (desiredLod >= 2 && !hasTargetCachedMesh) {
@@ -708,11 +729,12 @@ export class ChunkStreamingController {
     revision: number,
     includeVoxelData = desiredLod <= 1,
   ): void {
-    if (chunk.isLoaded) {
+    if (chunk.isLoaded && (!includeVoxelData || chunk.hasVoxelData)) {
       ChunkLoadingSystem.traceChunk(chunk.id, "load-skip-already-loaded", {
         desiredLod,
         revision,
         includeVoxelData,
+        hasVoxelData: chunk.hasVoxelData,
       });
       return;
     }
