@@ -33,6 +33,8 @@ export class ChunkStreamingController {
   // Map from chunkId -> index in the load queue for O(1) lookups while
   // building the new streaming window. Rebuilt each updateChunksAround call.
   private loadQueueIndexMap: Map<bigint, number> = new Map();
+  private loadedRefreshQueue: Chunk[] = [];
+  private loadedRefreshQueueSet: Set<bigint> = new Set();
 
   public constructor(
     private readonly adapter: ChunkStreamingControllerAdapter,
@@ -76,8 +78,7 @@ export class ChunkStreamingController {
     const loadQueue = this.adapter.getLoadQueue();
     const unloadQueueSet = this.adapter.getUnloadQueueSet();
 
-    // Retag queued requests IN PLACE using the same hysteresis policy as normal target processing.
-    // This avoids allocating a fresh nextQueue array + fresh request objects every update.
+    // Retag queued requests in place.
     let writeIndex = 0;
 
     for (let readIndex = 0; readIndex < loadQueue.length; readIndex++) {
@@ -137,7 +138,7 @@ export class ChunkStreamingController {
 
     this.rebuildLoadQueueIndexMap();
 
-    // Remove chunks from unload queue if they are back in range.
+    // Cancel pending unloads for chunks that are back in range.
     for (const chunk of unloadQueueSet) {
       const horizontalDist = Math.max(
         Math.abs(chunk.chunkX - chunkX),
@@ -152,6 +153,9 @@ export class ChunkStreamingController {
         unloadQueueSet.delete(chunk);
       }
     }
+
+    const chunkChanged =
+      prevChunkX !== chunkX || prevChunkY !== chunkY || prevChunkZ !== chunkZ;
 
     const canUseDelta =
       typeof prevChunkX === "number" &&
@@ -175,9 +179,12 @@ export class ChunkStreamingController {
       this.processFullTargetVolume(chunkX, chunkY, chunkZ, lodRuleSet);
     }
 
-    // Delta slabs only cover newly entered cells.
-    // Already-loaded chunks that stayed inside the window still need LOD refresh.
-    this.refreshLoadedChunksInWindow(chunkX, chunkY, chunkZ, lodRuleSet);
+    // IMPORTANT:
+    // Do NOT synchronously refresh the whole loaded window here.
+    // Just enqueue loaded chunks for incremental LOD refresh.
+    if (chunkChanged) {
+      this.enqueueLoadedChunksForRefresh(chunkX, chunkY, chunkZ, lodRuleSet);
+    }
 
     this.sortLoadQueue(chunkX, chunkY, chunkZ);
     this.rebuildLoadQueueIndexMap();
@@ -196,8 +203,6 @@ export class ChunkStreamingController {
       chunkZ,
     );
 
-    // Keep a small revision window so in-flight work from recent updates
-    // is not invalidated too aggressively.
     const oldestKeptRevision = Math.max(
       0,
       this.streamRevision -
@@ -212,6 +217,83 @@ export class ChunkStreamingController {
 
     this.adapter.onQueueSnapshotChanged?.();
   }
+
+  private enqueueLoadedChunksForRefresh(
+    chunkX: number,
+    chunkY: number,
+    chunkZ: number,
+    lodRuleSet: ChunkLodRuleSet,
+  ): void {
+    // Refresh only a smaller near-to-mid window, not the whole lod3 window.
+    const horizontalRadius = lodRuleSet.radii.lod1HorizontalRadius;
+    const verticalRadius = lodRuleSet.radii.lod1VerticalRadius;
+
+    for (
+      let y = Math.max(0, chunkY - verticalRadius);
+      y <=
+      Math.min(SettingParams.MAX_CHUNK_HEIGHT - 1, chunkY + verticalRadius);
+      y++
+    ) {
+      for (
+        let x = chunkX - horizontalRadius;
+        x <= chunkX + horizontalRadius;
+        x++
+      ) {
+        for (
+          let z = chunkZ - horizontalRadius;
+          z <= chunkZ + horizontalRadius;
+          z++
+        ) {
+          const chunk = Chunk.getChunk(x, y, z);
+          if (!chunk) continue;
+          if (!chunk.isLoaded) continue;
+
+          if (!this.loadedRefreshQueueSet.has(chunk.id)) {
+            this.loadedRefreshQueueSet.add(chunk.id);
+            this.loadedRefreshQueue.push(chunk);
+          }
+        }
+      }
+    }
+  }
+
+  public processLoadedRefreshQueue(
+    playerChunkX: number,
+    playerChunkY: number,
+    playerChunkZ: number,
+    renderDistance = SettingParams.RENDER_DISTANCE,
+    verticalRadius = SettingParams.VERTICAL_RENDER_DISTANCE,
+    maxChunks = 8,
+  ): void {
+    if (this.loadedRefreshQueue.length === 0) {
+      return;
+    }
+
+    const lodRuleSet = ChunkLodRuleSet.fromRenderRadii(
+      renderDistance,
+      verticalRadius,
+    );
+
+    let processed = 0;
+    while (processed < maxChunks && this.loadedRefreshQueue.length > 0) {
+      const chunk = this.loadedRefreshQueue.shift()!;
+      this.loadedRefreshQueueSet.delete(chunk.id);
+
+      // Re-evaluate loaded chunks incrementally instead of scanning the full window in one frame.
+      this.processTargetChunkCoordinate(
+        chunk.chunkX,
+        chunk.chunkY,
+        chunk.chunkZ,
+        playerChunkX,
+        playerChunkY,
+        playerChunkZ,
+        lodRuleSet,
+      );
+
+      processed++;
+    }
+  }
+
   private rebuildLoadQueueIndexMap(): void {
     const loadQueue = this.adapter.getLoadQueue();
     this.loadQueueIndexMap.clear();
@@ -221,47 +303,6 @@ export class ChunkStreamingController {
     }
   }
 
-  private refreshLoadedChunksInWindow(
-    chunkX: number,
-    chunkY: number,
-    chunkZ: number,
-    lodRuleSet: ChunkLodRuleSet,
-  ): void {
-    const { lod3HorizontalRadius, lod3VerticalRadius } = lodRuleSet.radii;
-
-    for (
-      let y = Math.max(0, chunkY - lod3VerticalRadius);
-      y <=
-      Math.min(SettingParams.MAX_CHUNK_HEIGHT - 1, chunkY + lod3VerticalRadius);
-      y++
-    ) {
-      for (
-        let x = chunkX - lod3HorizontalRadius;
-        x <= chunkX + lod3HorizontalRadius;
-        x++
-      ) {
-        for (
-          let z = chunkZ - lod3HorizontalRadius;
-          z <= chunkZ + lod3HorizontalRadius;
-          z++
-        ) {
-          const chunk = Chunk.getChunk(x, y, z);
-          if (!chunk) continue;
-          if (!chunk.isLoaded) continue;
-
-          this.processTargetChunkCoordinate(
-            x,
-            y,
-            z,
-            chunkX,
-            chunkY,
-            chunkZ,
-            lodRuleSet,
-          );
-        }
-      }
-    }
-  }
   public processTargetChunkCoordinate(
     x: number,
     y: number,
@@ -377,7 +418,7 @@ export class ChunkStreamingController {
           revision,
         });
 
-        chunk.scheduleRemesh(previousLod === 0 || desiredLod === 0);
+        ChunkLoadingSystem.enqueueChunkRemesh(chunk);
       }
 
       return;

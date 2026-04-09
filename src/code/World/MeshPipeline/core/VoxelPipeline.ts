@@ -1,6 +1,7 @@
 // MeshPipeline/core/VoxelPipeline.ts
 
 import { MeshContext, WorkerInternalMeshData } from "../types/MeshTypes";
+import { emitCustomShapes } from "./CustomShapeEmitter";
 
 import { VoxelGreedyAdapter } from "./VoxelGreedyAdapter.js";
 
@@ -42,6 +43,7 @@ export class VoxelPipeline {
     const greedy = new VoxelGreedyAdapter(this.ctx);
 
     greedy.build(opaqueOut, transparentOut);
+    emitCustomShapes(this.ctx, opaqueOut, transparentOut);
 
     // After this, `out` contains:
     // - faceDataA (x,y,z,axisFace)

@@ -15,7 +15,7 @@ import { PlayerInputController } from "./PlayerInputController";
 import { PlayerLoopController } from "./PlayerLoopController";
 import { PlayerStats } from "./PlayerStats";
 import { PlayerVehicle } from "./PlayerVehicle";
-import { IPlayerBody } from "./IPlayerBody";
+import { IPlayerBody } from "./PlayerBody";
 
 /**
  * Player class that handles character movement, physics, and camera controls

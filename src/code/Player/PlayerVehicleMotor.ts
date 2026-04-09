@@ -15,8 +15,7 @@ import {
   Axis,
   VoxelAabbCollider,
 } from "@/code/World/Collision/VoxelAabbCollider";
-import { SavedBodyPosition } from "./IPlayerBody";
-import { PlayerBodyControlState } from "./PlayerBodyControlState";
+import { PlayerBodyControlState, SavedBodyPosition } from "./PlayerBody";
 import { PlayerCamera } from "./PlayerCamera";
 import {
   CharacterSupportedState,

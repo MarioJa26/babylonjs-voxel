@@ -6,7 +6,7 @@ import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
 import { PaddleBoatControls } from "./Controls/PaddleBoatControls";
 import { WalkingControls } from "./Controls/WalkingControls";
 import { PlayerHud } from "./Hud/PlayerHud";
-import { IPlayerBody } from "./IPlayerBody";
+import { IPlayerBody } from "./PlayerBody";
 import { PlayerCamera } from "./PlayerCamera";
 import { PlayerStats } from "./PlayerStats";
 import { CustomBoatControls } from "./Controls/CustomBoatControls";
@@ -16,6 +16,8 @@ export class PlayerLoopController {
   #lastChunkX = 0;
   #lastChunkY = 0;
   #lastChunkZ = 0;
+
+  static readonly DEBUG_HUD_INTERVAL_MS = 250;
 
   constructor(
     private readonly engine: Engine,
@@ -37,11 +39,26 @@ export class PlayerLoopController {
           this.playerVehicle.isSprinting = false;
         }
       }
+
       this.playerVehicle.update(dt);
       this.playerStats.update(dt, this.playerVehicle.isSprinting);
       this.playerVehicle.updateCameraAndVisuals();
       this.updateControls();
+
       this.updateChunksAroundPlayer();
+
+      // Always drain a small amount of streaming work every frame.
+      // This is what smooths out chunk-boundary spikes.
+      const playerPos = this.getPlayerPosition();
+      const currentChunkX = ChunkLoadingSystem.worldToChunkCoord(playerPos.x);
+      const currentChunkY = ChunkLoadingSystem.worldToChunkCoord(playerPos.y);
+      const currentChunkZ = ChunkLoadingSystem.worldToChunkCoord(playerPos.z);
+
+      ChunkLoadingSystem.processFrameBudgetedStreamingWork(
+        currentChunkX,
+        currentChunkY,
+        currentChunkZ,
+      );
     });
 
     this.scene.onAfterRenderObservable.add(() => {
@@ -71,7 +88,7 @@ export class PlayerLoopController {
       currentChunkY !== this.#lastChunkY ||
       currentChunkZ !== this.#lastChunkZ
     ) {
-      ChunkLoadingSystem.updateChunksAround(
+      void ChunkLoadingSystem.updateChunksAround(
         currentChunkX,
         currentChunkY,
         currentChunkZ,

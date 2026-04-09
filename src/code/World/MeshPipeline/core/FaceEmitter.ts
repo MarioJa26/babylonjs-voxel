@@ -37,7 +37,6 @@ export function emitQuad(
   const meta = (flip ? 1 : 0) | ((materialType & 1) << 1);
   const tint = getMaterialTintBucket(blockId);
 
-  // ✅ Match original ChunkMeshBuilder.addQuad packing
   const sx = Math.round(x * POS_SCALE);
   const sy = Math.round(y * POS_SCALE);
   const sz = Math.round(z * POS_SCALE);

@@ -873,7 +873,7 @@ export class ChunkWorkerPool {
     }
 
     const dispatchBudget = this.getDispatchBudgetPerTick();
-    let dispatchedThisTick = 0;
+    const dispatchedThisTick = 0;
 
     // Process tasks as long as there are idle workers and tasks in queues
     while (

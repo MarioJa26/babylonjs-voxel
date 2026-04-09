@@ -3,27 +3,12 @@ import { WorldStorage, type SavedChunkEntityData } from "../../WorldStorage";
 import { SettingParams } from "../../SettingParams";
 
 export interface ChunkPersistenceCoordinatorAdapter {
-  /**
-   * Return all currently modified chunks that may need persistence.
-   */
   getModifiedChunks(): Iterable<Chunk>;
-
-  /**
-   * Return the current serialized entity payloads grouped by chunk id.
-   * Chunks that previously had entities but now do not will still be flushed
-   * as empty arrays by this coordinator.
-   */
   getChunkEntityPayloads(): ReadonlyMap<bigint, SavedChunkEntityData[]>;
 
-  /**
-   * Optional batch size overrides.
-   */
   getChunkSaveBatchSize?(): number;
   getChunkEntitySaveBatchSize?(): number;
 
-  /**
-   * Optional lifecycle hooks.
-   */
   onChunksFlushed?(chunks: readonly Chunk[]): void;
   onChunkEntitiesFlushed?(chunkIds: readonly bigint[]): void;
 }
@@ -32,6 +17,11 @@ export class ChunkPersistenceCoordinator {
   private flushPromise: Promise<void> | null = null;
   private entityFlushPromise: Promise<void> | null = null;
   private readonly lastPersistedEntityChunkIds = new Set<bigint>();
+
+  // Reusable scratch storage
+  private readonly _modifiedChunksScratch: Chunk[] = [];
+  private readonly _candidateChunkIdsScratch: bigint[] = [];
+  private readonly _seenChunkIdsScratch = new Set<bigint>();
 
   public constructor(
     private readonly adapter: ChunkPersistenceCoordinatorAdapter,
@@ -90,56 +80,88 @@ export class ChunkPersistenceCoordinator {
   }
 
   private async flushModifiedChunksInternal(maxChunks: number): Promise<void> {
-    const modifiedChunks = [...this.adapter.getModifiedChunks()]
-      .filter((chunk) => chunk.isModified)
-      .slice(0, Math.max(0, maxChunks));
+    const out = this._modifiedChunksScratch;
+    out.length = 0;
 
-    if (modifiedChunks.length === 0) {
+    const limit = Math.max(0, maxChunks);
+    if (limit === 0) {
       return;
     }
 
-    await WorldStorage.saveChunks(modifiedChunks);
-    this.adapter.onChunksFlushed?.(modifiedChunks);
+    for (const chunk of this.adapter.getModifiedChunks()) {
+      if (!chunk.isModified) continue;
+
+      out.push(chunk);
+      if (out.length >= limit) {
+        break;
+      }
+    }
+
+    if (out.length === 0) {
+      return;
+    }
+
+    await WorldStorage.saveChunks(out);
+    this.adapter.onChunksFlushed?.(out);
   }
 
   private async flushChunkBoundEntitiesInternal(
     maxChunks: number,
   ): Promise<void> {
-    const payloadsByChunk = this.adapter.getChunkEntityPayloads();
-
-    const candidateChunkIds: bigint[] = [];
-    const seen = new Set<bigint>();
-
-    for (const chunkId of payloadsByChunk.keys()) {
-      if (seen.has(chunkId)) continue;
-      seen.add(chunkId);
-      candidateChunkIds.push(chunkId);
-    }
-
-    for (const chunkId of this.lastPersistedEntityChunkIds) {
-      if (seen.has(chunkId)) continue;
-      seen.add(chunkId);
-      candidateChunkIds.push(chunkId);
-    }
-
-    const chunkIdsToFlush = candidateChunkIds.slice(0, Math.max(0, maxChunks));
-    if (chunkIdsToFlush.length === 0) {
+    const limit = Math.max(0, maxChunks);
+    if (limit === 0) {
       return;
     }
 
-    await Promise.all(
-      chunkIdsToFlush.map(async (chunkId) => {
-        const payload = payloadsByChunk.get(chunkId) ?? [];
-        await WorldStorage.saveChunkEntities(chunkId, payload);
+    const payloadsByChunk = this.adapter.getChunkEntityPayloads();
 
-        if (payload.length > 0) {
-          this.lastPersistedEntityChunkIds.add(chunkId);
-        } else {
-          this.lastPersistedEntityChunkIds.delete(chunkId);
+    const candidateChunkIds = this._candidateChunkIdsScratch;
+    candidateChunkIds.length = 0;
+
+    const seen = this._seenChunkIdsScratch;
+    seen.clear();
+
+    for (const chunkId of payloadsByChunk.keys()) {
+      if (seen.has(chunkId)) continue;
+
+      seen.add(chunkId);
+      candidateChunkIds.push(chunkId);
+
+      if (candidateChunkIds.length >= limit) {
+        break;
+      }
+    }
+
+    if (candidateChunkIds.length < limit) {
+      for (const chunkId of this.lastPersistedEntityChunkIds) {
+        if (seen.has(chunkId)) continue;
+
+        seen.add(chunkId);
+        candidateChunkIds.push(chunkId);
+
+        if (candidateChunkIds.length >= limit) {
+          break;
         }
-      }),
-    );
+      }
+    }
 
-    this.adapter.onChunkEntitiesFlushed?.(chunkIdsToFlush);
+    if (candidateChunkIds.length === 0) {
+      return;
+    }
+
+    for (let i = 0; i < candidateChunkIds.length; i++) {
+      const chunkId = candidateChunkIds[i];
+      const payload = payloadsByChunk.get(chunkId) ?? [];
+
+      await WorldStorage.saveChunkEntities(chunkId, payload);
+
+      if (payload.length > 0) {
+        this.lastPersistedEntityChunkIds.add(chunkId);
+      } else {
+        this.lastPersistedEntityChunkIds.delete(chunkId);
+      }
+    }
+
+    this.adapter.onChunkEntitiesFlushed?.(candidateChunkIds);
   }
 }

@@ -89,6 +89,7 @@ export interface BlockShapeInfo {
   isCube: boolean;
   isSliceCompatible: boolean;
   sliceMask: number;
+  closedFaceMask: number;
 }
 
 /**

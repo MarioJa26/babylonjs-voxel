@@ -24,6 +24,9 @@ export class ChunkLoadingSystem {
   private static loadQueue: QueuedChunkRequest[] = [];
   private static unloadQueueSet: Set<Chunk> = new Set();
 
+  private static pendingRemeshChunks: Chunk[] = [];
+  private static pendingRemeshChunkIds: Set<bigint> = new Set();
+
   private static debug = new ChunkLoadingDebug();
 
   private static chunkEntityRegistry =
@@ -448,6 +451,59 @@ export class ChunkLoadingSystem {
   private static ensureChunkLoadedHook(): void {
     this.chunkEntityRegistry.ensureChunkLoadedHook();
   }
+  public static enqueueChunkRemesh(chunk: Chunk): void {
+    if (this.pendingRemeshChunkIds.has(chunk.id)) {
+      return;
+    }
+
+    this.pendingRemeshChunkIds.add(chunk.id);
+    this.pendingRemeshChunks.push(chunk);
+
+    this.traceChunk(chunk.id, "remesh-enqueued", {
+      chunkX: chunk.chunkX,
+      chunkY: chunk.chunkY,
+      chunkZ: chunk.chunkZ,
+    });
+  }
+
+  public static processPendingRemeshes(maxChunks = 2): void {
+    const pool = ChunkWorkerPool.getInstance();
+
+    let processed = 0;
+    while (processed < maxChunks && this.pendingRemeshChunks.length > 0) {
+      const chunk = this.pendingRemeshChunks.shift()!;
+      this.pendingRemeshChunkIds.delete(chunk.id);
+
+      pool.scheduleRemesh(chunk, true);
+
+      this.traceChunk(chunk.id, "remesh-dispatched", {
+        chunkX: chunk.chunkX,
+        chunkY: chunk.chunkY,
+        chunkZ: chunk.chunkZ,
+      });
+
+      processed++;
+    }
+  }
+
+  public static processFrameBudgetedStreamingWork(
+    playerChunkX: number,
+    playerChunkY: number,
+    playerChunkZ: number,
+  ): void {
+    // Incrementally refresh a few already-loaded chunks whose LOD may need updating.
+    this.streamingController.processLoadedRefreshQueue(
+      playerChunkX,
+      playerChunkY,
+      playerChunkZ,
+      SettingParams.RENDER_DISTANCE,
+      SettingParams.VERTICAL_RENDER_DISTANCE,
+      8,
+    );
+
+    // Incrementally dispatch remesh work instead of submitting a burst in one frame.
+    this.processPendingRemeshes(2);
+  }
 
   public static registerChunkEntityLoader(
     type: string,
@@ -643,22 +699,25 @@ export class ChunkLoadingSystem {
     if (targetLod >= 2) {
       if (hasDesiredMesh) {
         chunk.loadLodOnlyFromStorage(false);
-        ChunkMesher.createMeshFromData(
-          chunk,
-          this.getReusableMeshData(
-            savedLODMesh!.opaque,
-            savedLODMesh!.transparent,
-          ),
-        );
+        ChunkMesher.createMeshFromData(chunk, {
+          opaque: savedLODMesh!.opaque,
+          transparent: savedLODMesh!.transparent,
+        });
+
+        this.traceChunk(chunk.id, "far-mesh-applied", {
+          targetLod,
+        });
         return;
       }
 
-      if (!hasExactDesiredMesh && chunk.isModified) {
-        state.chunksNeedingFullHydration.add(chunk.id);
-        return;
-      }
+      // If we do not have a usable far mesh, do NOT silently unschedule.
+      // Fall back to hydration so the chunk can still become visible.
+      state.chunksNeedingFullHydration.add(chunk.id);
 
-      chunk.isTerrainScheduled = false;
+      this.traceChunk(chunk.id, "far-no-mesh-needs-hydration", {
+        targetLod,
+        isModified: chunk.isModified,
+      });
       return;
     }
 

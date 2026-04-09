@@ -3,7 +3,7 @@ import { Player } from "../Player/Player";
 import { Vector3, Quaternion, TransformNode } from "@babylonjs/core";
 import { IControls } from "../Inferface/IControls";
 import MountOptions from "./MountOptions";
-import { IPlayerBody } from "../Player/IPlayerBody";
+import { IPlayerBody } from "../Player/PlayerBody";
 
 export class Mount implements IMountable {
   public user: Player | null = null;
@@ -136,8 +136,9 @@ export class Mount implements IMountable {
     );
     const vehicleRotation =
       this.vehicle.rotationQuaternion ?? Quaternion.Identity();
-    playerBody.displayCapsule.rotationQuaternion =
-      vehicleRotation.multiply(this.#mountRotationOffset);
+    playerBody.displayCapsule.rotationQuaternion = vehicleRotation.multiply(
+      this.#mountRotationOffset,
+    );
   }
 
   private disablePlayerPhysics(player: IPlayerBody): void {
