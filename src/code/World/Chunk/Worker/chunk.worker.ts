@@ -1,22 +1,18 @@
 /// <reference lib="webworker" />
 
-import { WorldGenerator } from "../../Generation/WorldGenerator";
-import { GenerationParams } from "../../Generation/NoiseAndParameters/GenerationParams";
-import { MeshData } from "../DataStructures/MeshData";
-import { WorkerInternalMeshData } from "../DataStructures/WorkerInternalMeshData";
 import {
   WorkerTaskType,
   WorkerRequestData,
-} from "../DataStructures/WorkerMessageType";
-import { PaletteExpander } from "../DataStructures/PaletteExpander";
-import { WorkerTaskHandlers } from "./WorkerTaskHandlers";
-import { ChunkMeshBuilder } from "./ChunkMeshBuilder";
+} from "./DataStructures/WorkerMessageType";
+import { WorkerTaskHandlers } from "./Worker/WorkerTaskHandlers";
+
+import { WorldGenerator } from "@/code/Generation/WorldGenerator";
+import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 
 // ---------------------------------------------------------------------------
 // Shared instances
 // ---------------------------------------------------------------------------
 const generator = new WorldGenerator(GenerationParams);
-const paletteExpander = new PaletteExpander();
 
 // ---------------------------------------------------------------------------
 // Block compression
@@ -107,15 +103,6 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
   const { type } = event.data;
 
   switch (type) {
-    case WorkerTaskType.GenerateFullMesh: {
-      WorkerTaskHandlers.handleGenerateFullMesh(event.data, {
-        paletteExpander,
-        meshBuilder: ChunkMeshBuilder,
-        postFullMeshResult,
-      });
-      return;
-    }
-
     case WorkerTaskType.GenerateTerrain: {
       const { payload, transferables } =
         WorkerTaskHandlers.handleGenerateTerrain(event.data, {
@@ -153,43 +140,3 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
 };
 
 self.onmessage = onMessageHandler;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-function toTransferable(data: WorkerInternalMeshData): MeshData {
-  return {
-    faceDataA: data.faceDataA.finalArray,
-    faceDataB: data.faceDataB.finalArray,
-    faceDataC: data.faceDataC.finalArray,
-    faceCount: data.faceCount,
-  };
-}
-
-function postFullMeshResult(
-  chunkId: bigint,
-  lod: number,
-  opaque: WorkerInternalMeshData,
-  transparent: WorkerInternalMeshData,
-) {
-  const opaqueMeshData = toTransferable(opaque);
-  const transparentMeshData = toTransferable(transparent);
-
-  self.postMessage(
-    {
-      chunkId,
-      lod,
-      type: WorkerTaskType.GenerateFullMesh,
-      opaque: opaqueMeshData,
-      transparent: transparentMeshData,
-    },
-    [
-      opaqueMeshData.faceDataA.buffer,
-      opaqueMeshData.faceDataB.buffer,
-      opaqueMeshData.faceDataC.buffer,
-      transparentMeshData.faceDataA.buffer,
-      transparentMeshData.faceDataB.buffer,
-      transparentMeshData.faceDataC.buffer,
-    ],
-  );
-}

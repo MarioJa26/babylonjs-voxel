@@ -10,14 +10,15 @@ import {
   Texture,
   RawTexture,
 } from "@babylonjs/core";
-import { SettingParams } from "../../SettingParams";
-import { Map1 } from "@/code/Maps/Map1";
-import { Chunk } from "../../Chunk/Chunk";
-import { ChunkWorkerPool } from "../../Chunk/ChunkWorkerPool";
-import { GlobalValues } from "../../GlobalValues";
-import { DistantTerrainShader } from "../../Light/DistantTerrainShader";
+
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
-import { TextureAtlasFactory } from "../../Texture/TextureAtlasFactory";
+import { SettingParams } from "@/code/World/SettingParams";
+import { Chunk } from "@/code/World/Chunk/Chunk";
+import { Map1 } from "@/code/Maps/Map1";
+import { DistantTerrainShader } from "@/code/World/Light/DistantTerrainShader";
+import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
+import { TextureAtlasFactory } from "@/code/World/Texture/TextureAtlasFactory";
+import { GlobalValues } from "@/code/World/GlobalValues";
 
 export class DistantTerrain {
   private mesh: Mesh;

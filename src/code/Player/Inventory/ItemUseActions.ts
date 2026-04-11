@@ -1,11 +1,11 @@
 import { Vector3 } from "@babylonjs/core";
 import { Player } from "../Player";
 import { CrossHair } from "../Hud/CrossHair";
-import { BlockType } from "@/code/World/BlockType";
+import { BlockType, isCollidableBlock } from "@/code/World/BlockType";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { CustomBoat } from "@/code/Entities/CustomBoat";
 import { Map1 } from "@/code/Maps/Map1";
-import { GenerationParams } from "@/code/World/Generation/NoiseAndParameters/GenerationParams";
+import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 
 export type ItemUseAction = (player: Player) => void;
 
@@ -45,7 +45,7 @@ export const ItemUseActions: Record<string, ItemUseAction> = {
             checkZ,
           );
 
-          if (blockId !== BlockType.Air && blockId !== BlockType.Water) {
+          if (isCollidableBlock(blockId)) {
             console.log("Not enough space to place the boat.");
             return;
           }

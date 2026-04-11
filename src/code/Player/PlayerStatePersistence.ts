@@ -167,6 +167,7 @@ export class PlayerStatePersistence {
 
   private restoreInventory(): void {
     return;
+    /*
     try {
       const raw = window.localStorage.getItem(
         PlayerStatePersistence.PLAYER_INVENTORY_STORAGE_KEY,
@@ -187,5 +188,6 @@ export class PlayerStatePersistence {
         error,
       );
     }
+    */
   }
 }

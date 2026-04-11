@@ -5,8 +5,8 @@ import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import { BlockType } from "@/code/World/BlockType";
 import { Map1 } from "@/code/Maps/Map1";
-import { GenerationParams } from "@/code/World/Generation/NoiseAndParameters/GenerationParams";
 import { BoatChunk, BoatChunkBlock } from "@/code/World/Boat/BoatChunk";
+import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 
 type VoxelBlock = {
   x: number;

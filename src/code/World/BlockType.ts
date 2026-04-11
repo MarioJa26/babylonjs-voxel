@@ -63,6 +63,7 @@ export enum BlockType {
   Glass02 = 61,
   CraftingTable = 62,
   BoatCreator = 63,
+  GrassCross = 64,
 }
 
 export const Hardness = {
@@ -78,3 +79,15 @@ export const Hardness = {
 
   UNBREAKABLE: Infinity,
 };
+
+export function isPassThroughBlock(blockId: number): boolean {
+  return (
+    blockId === BlockType.Air ||
+    blockId === BlockType.Water ||
+    blockId === BlockType.GrassCross
+  );
+}
+
+export function isCollidableBlock(blockId: number): boolean {
+  return !isPassThroughBlock(blockId);
+}

@@ -1,12 +1,11 @@
-import {
-  Mesh,
-  Scene,
-  Vector3,
-} from "@babylonjs/core";
+import { Mesh, Scene, Vector3 } from "@babylonjs/core";
 
 import { Mount } from "../Entities/Mount";
-import { IPlayerBody, SavedBodyPosition } from "./IPlayerBody";
-import { PlayerBodyControlState } from "./PlayerBodyControlState";
+import {
+  IPlayerBody,
+  PlayerBodyControlState,
+  SavedBodyPosition,
+} from "./PlayerBody";
 import { PlayerCamera } from "./PlayerCamera";
 import { PlayerVehicleMotor } from "./PlayerVehicleMotor";
 import { SimpleCharacterController } from "./SimpleCharacterController";

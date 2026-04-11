@@ -15,7 +15,7 @@ import { MetadataContainer } from "./MetaDataContainer";
 import { Player } from "../Player/Player";
 import { PaddleBoatControls } from "../Player/Controls/PaddleBoatControls";
 import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
-import { BlockType } from "../World/BlockType";
+import { BlockType, isCollidableBlock } from "../World/BlockType";
 import { Axis, VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollider";
 
 export class AdvancedBoat implements IUsable {
@@ -94,7 +94,7 @@ export class AdvancedBoat implements IUsable {
       this.#collisionHalfExtents,
       (x, y, z) => {
         const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
-        return blockId !== BlockType.Air && blockId !== BlockType.Water;
+        return isCollidableBlock(blockId);
       },
       this.#collisionEpsilon,
       {

@@ -17,17 +17,34 @@ import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
 import { WorldEnvironment } from "../../Maps/WorldEnvironment";
 import { GlobalValues } from "../GlobalValues";
 import { ShaderMaterial } from "@babylonjs/core";
-import { MeshData } from "./DataStructures/MeshData";
 import { OpaqueShader } from "../Light/OpaqueShader";
 import { TransparentShader } from "../Light/TransparentShader";
+import { Lod3Shader } from "../Light/Lod3Shader";
 import { TextureCache } from "../Texture/TextureCache";
 import { Chunk } from "./Chunk";
+import { MeshData } from "./DataStructures/MeshData";
+import { Lod2Shader } from "../Light/Lod2Shader";
+
+type LodCrossFadeState = {
+  startMs: number;
+  durationMs: number;
+  direction: 1 | -1;
+  seed: number;
+};
 
 export class ChunkMesher {
   static #atlasMaterial: Material | null = null;
   static #transparentMaterial: Material | null = null;
+  static #lod3OpaqueMaterial: Material | null = null;
+  static #lod3TransparentMaterial: Material | null = null;
+
+  static #lod2OpaqueMaterial: Material | null = null;
+  static #lod2TransparentMaterial: Material | null = null;
+
   static #globalUniformBuffer: UniformBuffer | null = null;
   static #sharedFacePositionBuffer: Buffer | null = null;
+  static #activeLodFadeMeshes = new Set<Mesh>();
+  static readonly #LOD_FADE_DURATION_MS = 150;
 
   // Cache global uniforms — updated once per frame.
   static #cachedUniforms = {
@@ -50,6 +67,185 @@ export class ChunkMesher {
   private static readonly FACE_INDEX_TEMPLATE = new Uint16Array([
     0, 1, 2, 3, 4, 5,
   ]);
+
+  private static ensureMeshMetadata(mesh: Mesh): Record<string, unknown> {
+    if (!mesh.metadata || typeof mesh.metadata !== "object") {
+      mesh.metadata = {};
+    }
+    return mesh.metadata as Record<string, unknown>;
+  }
+
+  private static getMeshLodLevel(mesh: Mesh | null): number | null {
+    if (!mesh?.metadata || typeof mesh.metadata !== "object") {
+      return null;
+    }
+    const lod = (mesh.metadata as Record<string, unknown>).__lodLevel;
+    return typeof lod === "number" ? lod : null;
+  }
+
+  private static setMeshLodLevel(mesh: Mesh, lod: number): void {
+    const metadata = this.ensureMeshMetadata(mesh);
+    metadata.__lodLevel = lod;
+  }
+
+  private static getMeshFadeState(mesh: Mesh): LodCrossFadeState | null {
+    if (!mesh.metadata || typeof mesh.metadata !== "object") {
+      return null;
+    }
+    const state = (mesh.metadata as Record<string, unknown>).__lodCrossFade as
+      | LodCrossFadeState
+      | undefined;
+    if (!state) return null;
+    if (
+      typeof state.startMs !== "number" ||
+      typeof state.durationMs !== "number" ||
+      typeof state.direction !== "number" ||
+      typeof state.seed !== "number"
+    ) {
+      return null;
+    }
+    return state;
+  }
+
+  private static clearMeshFadeState(mesh: Mesh): void {
+    if (!mesh.metadata || typeof mesh.metadata !== "object") return;
+    delete (mesh.metadata as Record<string, unknown>).__lodCrossFade;
+  }
+
+  private static setMeshFadeState(mesh: Mesh, state: LodCrossFadeState): void {
+    const metadata = this.ensureMeshMetadata(mesh);
+    metadata.__lodCrossFade = state;
+    this.#activeLodFadeMeshes.add(mesh);
+  }
+
+  private static makeFadeSeed(chunk: Chunk): number {
+    const hx = Math.imul(chunk.chunkX | 0, 73856093);
+    const hy = Math.imul(chunk.chunkY | 0, 19349663);
+    const hz = Math.imul(chunk.chunkZ | 0, 83492791);
+    const mixed = (hx ^ hy ^ hz) >>> 0;
+    return (mixed % 1024) + 1;
+  }
+
+  private static beginLodCrossFade(
+    chunk: Chunk,
+    oldMesh: Mesh | null,
+    newMesh: Mesh | null,
+  ): void {
+    if (!oldMesh || !newMesh) return;
+    if (oldMesh === newMesh) return;
+    if (oldMesh.isDisposed() || newMesh.isDisposed()) return;
+
+    const now = performance.now();
+    const seed = this.makeFadeSeed(chunk);
+    const durationMs = this.#LOD_FADE_DURATION_MS;
+
+    newMesh.visibility = 0;
+    oldMesh.visibility = 1;
+
+    this.setMeshFadeState(newMesh, {
+      startMs: now,
+      durationMs,
+      direction: 1,
+      seed,
+    });
+    this.setMeshFadeState(oldMesh, {
+      startMs: now,
+      durationMs,
+      direction: -1,
+      seed,
+    });
+  }
+
+  private static shouldUseLodCrossFade(
+    previousLod: number | null,
+    nextLod: number,
+  ): boolean {
+    if (previousLod === null || previousLod === nextLod) return false;
+    // LOD0 <-> LOD1 is intentionally instant: quality is very close.
+    if (
+      (previousLod === 0 && nextLod === 1) ||
+      (previousLod === 1 && nextLod === 0)
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  private static getMeshFadeUniforms(mesh: Mesh | undefined): {
+    progress: number;
+    direction: number;
+    seed: number;
+  } {
+    if (!mesh) {
+      return { progress: 1, direction: 0, seed: 0 };
+    }
+
+    const state = this.getMeshFadeState(mesh);
+    if (!state) {
+      return { progress: 1, direction: 0, seed: 0 };
+    }
+
+    const elapsed = (performance.now() - state.startMs) / state.durationMs;
+    const t = Math.min(1, Math.max(0, elapsed));
+    return {
+      // Progress always runs from 0 to 1.
+      // Direction decides whether we are fading in or fading out.
+      progress: t,
+      direction: state.direction,
+      seed: state.seed,
+    };
+  }
+
+  private static updateLodCrossFades(nowMs: number): void {
+    if (this.#activeLodFadeMeshes.size === 0) return;
+
+    for (const mesh of Array.from(this.#activeLodFadeMeshes)) {
+      if (!mesh || mesh.isDisposed()) {
+        this.#activeLodFadeMeshes.delete(mesh);
+        continue;
+      }
+
+      const state = this.getMeshFadeState(mesh);
+      if (!state) {
+        this.#activeLodFadeMeshes.delete(mesh);
+        continue;
+      }
+
+      const t = (nowMs - state.startMs) / state.durationMs;
+      const clamped = Math.min(1, Math.max(0, t));
+      mesh.visibility = state.direction > 0 ? clamped : 1 - clamped;
+      if (t >= 1) {
+        this.#activeLodFadeMeshes.delete(mesh);
+        this.clearMeshFadeState(mesh);
+        if (state.direction < 0) {
+          mesh.dispose();
+        } else {
+          mesh.visibility = 1;
+        }
+      }
+    }
+  }
+
+  private static applyLodShaderBindings(material: ShaderMaterial): void {
+    material.onBind = (mesh) => {
+      const effect = material.getEffect();
+      if (!effect) return;
+
+      const fade = this.getMeshFadeUniforms(mesh as Mesh | undefined);
+      effect.setFloat("lodFadeProgress", fade.progress);
+      effect.setFloat("lodFadeDirection", fade.direction);
+      effect.setFloat("lodFadeSeed", fade.seed);
+      const scene = (mesh as Mesh | undefined)?.getScene() ?? Map1.mainScene;
+      effect.setFloat4(
+        "vFogInfos",
+        scene.fogMode,
+        scene.fogStart,
+        scene.fogEnd,
+        scene.fogDensity,
+      );
+      effect.setColor3("vFogColor", scene.fogColor);
+    };
+  }
 
   static initAtlas() {
     const scene = Map1.mainScene;
@@ -99,11 +295,32 @@ export class ChunkMesher {
       return;
     }
 
+    // ---------------------------------------------------------------------------
+    // Shader registration
+    // ---------------------------------------------------------------------------
     Effect.ShadersStore["chunkVertexShader"] = OpaqueShader.chunkVertexShader;
     Effect.ShadersStore["chunkFragmentShader"] =
       OpaqueShader.chunkFragmentShader;
+
+    // IMPORTANT FIX:
+    // Transparent chunk meshes must use the transparent vertex shader,
+    // not the shared opaque vertex shader.
+    Effect.ShadersStore["transparentChunkVertexShader"] =
+      TransparentShader.chunkVertexShader;
     Effect.ShadersStore["transparentChunkFragmentShader"] =
       TransparentShader.chunkFragmentShader;
+
+    Effect.ShadersStore["lod3ChunkVertexShader"] = Lod3Shader.chunkVertexShader;
+    Effect.ShadersStore["lod3ChunkFragmentShader"] =
+      Lod3Shader.opaqueFragmentShader;
+    Effect.ShadersStore["lod3TransparentChunkFragmentShader"] =
+      Lod3Shader.transparentFragmentShader;
+
+    Effect.ShadersStore["lod2ChunkVertexShader"] = Lod2Shader.chunkVertexShader;
+    Effect.ShadersStore["lod2ChunkFragmentShader"] =
+      Lod2Shader.opaqueFragmentShader;
+    Effect.ShadersStore["lod2TransparentChunkFragmentShader"] =
+      Lod2Shader.transparentFragmentShader;
 
     if (!this.#globalUniformBuffer) {
       const engine = scene.getEngine();
@@ -121,6 +338,9 @@ export class ChunkMesher {
       this.#globalUniformBuffer.create();
     }
 
+    // ---------------------------------------------------------------------------
+    // Opaque material
+    // ---------------------------------------------------------------------------
     if (!this.#atlasMaterial) {
       const opaqueBlockShader = new ShaderMaterial(
         "chunkShaderMaterial",
@@ -138,7 +358,6 @@ export class ChunkMesher {
           samplers: ["diffuseTexture", "normalTexture"],
         },
       );
-
       opaqueBlockShader.backFaceCulling = true;
       opaqueBlockShader.setPrePassRenderer(scene.prePassRenderer!);
       opaqueBlockShader.setFloat(
@@ -159,7 +378,6 @@ export class ChunkMesher {
       );
       opaqueBlockShader.wireframe = GlobalValues.DEBUG;
       opaqueBlockShader.freeze();
-
       this.#atlasMaterial = opaqueBlockShader;
     } else {
       const opaqueMat = this.#atlasMaterial as ShaderMaterial;
@@ -175,11 +393,16 @@ export class ChunkMesher {
       opaqueMat.freeze();
     }
 
+    // ---------------------------------------------------------------------------
+    // Transparent material
+    // ---------------------------------------------------------------------------
     if (!this.#transparentMaterial) {
       const transparentMat = new ShaderMaterial(
         "transparentChunkShaderMaterial",
         scene,
-        { vertex: "chunk", fragment: "transparentChunk" },
+        // IMPORTANT FIX:
+        // Use the transparent vertex shader, not the shared "chunk" vertex shader.
+        { vertex: "transparentChunk", fragment: "transparentChunk" },
         {
           attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
           uniforms: ["world", "worldViewProjection", "atlasTileSize"],
@@ -187,7 +410,6 @@ export class ChunkMesher {
           samplers: ["diffuseTexture", "normalTexture"],
         },
       );
-
       transparentMat.backFaceCulling = false;
       transparentMat.forceDepthWrite = false;
       transparentMat.needAlphaBlending = () => true;
@@ -205,7 +427,6 @@ export class ChunkMesher {
       );
       transparentMat.wireframe = GlobalValues.DEBUG;
       transparentMat.freeze();
-
       this.#transparentMaterial = transparentMat;
     } else {
       const transparentMat = this.#transparentMaterial as ShaderMaterial;
@@ -224,6 +445,206 @@ export class ChunkMesher {
         this.#globalUniformBuffer,
       );
       transparentMat.freeze();
+    }
+
+    // ---------------------------------------------------------------------------
+    // LOD3 opaque material
+    // ---------------------------------------------------------------------------
+    if (!this.#lod3OpaqueMaterial) {
+      const lod3Opaque = new ShaderMaterial(
+        "lod3ChunkShaderMaterial",
+        scene,
+        { vertex: "lod3Chunk", fragment: "lod3Chunk" },
+        {
+          attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
+          uniforms: [
+            "world",
+            "worldViewProjection",
+            "atlasTileSize",
+            "vFogInfos",
+            "vFogColor",
+            "lodFadeProgress",
+            "lodFadeDirection",
+            "lodFadeSeed",
+          ],
+          uniformBuffers: ["GlobalUniforms"],
+          samplers: ["diffuseTexture"],
+        },
+      );
+      lod3Opaque.backFaceCulling = true;
+      lod3Opaque.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
+      lod3Opaque.setTexture("diffuseTexture", diffuseAtlasTexture);
+      lod3Opaque.setUniformBuffer("GlobalUniforms", this.#globalUniformBuffer);
+      this.applyLodShaderBindings(lod3Opaque);
+      lod3Opaque.wireframe = GlobalValues.DEBUG;
+      this.#lod3OpaqueMaterial = lod3Opaque;
+    } else {
+      const lod3Opaque = this.#lod3OpaqueMaterial as ShaderMaterial;
+      lod3Opaque.wireframe = GlobalValues.DEBUG;
+      lod3Opaque.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
+      lod3Opaque.setTexture("diffuseTexture", diffuseAtlasTexture);
+      lod3Opaque.setUniformBuffer("GlobalUniforms", this.#globalUniformBuffer);
+      this.applyLodShaderBindings(lod3Opaque);
+    }
+
+    // ---------------------------------------------------------------------------
+    // LOD3 transparent material
+    // ---------------------------------------------------------------------------
+    if (!this.#lod3TransparentMaterial) {
+      const lod3Transparent = new ShaderMaterial(
+        "lod3TransparentChunkShaderMaterial",
+        scene,
+        { vertex: "lod3Chunk", fragment: "lod3TransparentChunk" },
+        {
+          attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
+          uniforms: [
+            "world",
+            "worldViewProjection",
+            "atlasTileSize",
+            "vFogInfos",
+            "vFogColor",
+            "lodFadeProgress",
+            "lodFadeDirection",
+            "lodFadeSeed",
+          ],
+          uniformBuffers: ["GlobalUniforms"],
+          samplers: ["diffuseTexture"],
+        },
+      );
+      lod3Transparent.backFaceCulling = false;
+      lod3Transparent.forceDepthWrite = false;
+      lod3Transparent.needAlphaBlending = () => true;
+      lod3Transparent.setFloat(
+        "atlasTileSize",
+        TextureAtlasFactory.atlasTileSize,
+      );
+      lod3Transparent.setTexture("diffuseTexture", diffuseAtlasTexture);
+      lod3Transparent.setUniformBuffer(
+        "GlobalUniforms",
+        this.#globalUniformBuffer,
+      );
+      this.applyLodShaderBindings(lod3Transparent);
+      lod3Transparent.wireframe = GlobalValues.DEBUG;
+      this.#lod3TransparentMaterial = lod3Transparent;
+    } else {
+      const lod3Transparent = this.#lod3TransparentMaterial as ShaderMaterial;
+      lod3Transparent.wireframe = GlobalValues.DEBUG;
+      lod3Transparent.setFloat(
+        "atlasTileSize",
+        TextureAtlasFactory.atlasTileSize,
+      );
+      lod3Transparent.setTexture("diffuseTexture", diffuseAtlasTexture);
+      lod3Transparent.setUniformBuffer(
+        "GlobalUniforms",
+        this.#globalUniformBuffer,
+      );
+      this.applyLodShaderBindings(lod3Transparent);
+    }
+
+    // ---------------------------------------------------------------------------
+    // LOD2 opaque material
+    // ---------------------------------------------------------------------------
+    if (!this.#lod2OpaqueMaterial) {
+      const lod2Opaque = new ShaderMaterial(
+        "lod2ChunkShaderMaterial",
+        scene,
+        { vertex: "lod2Chunk", fragment: "lod2Chunk" },
+        {
+          attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
+          uniforms: [
+            "world",
+            "worldViewProjection",
+            "atlasTileSize",
+            "vFogInfos",
+            "vFogColor",
+            "lodFadeProgress",
+            "lodFadeDirection",
+            "lodFadeSeed",
+          ],
+          uniformBuffers: ["GlobalUniforms"],
+          samplers: ["diffuseTexture", "normalTexture"],
+        },
+      );
+      lod2Opaque.backFaceCulling = true;
+      lod2Opaque.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
+      lod2Opaque.setTexture("diffuseTexture", diffuseAtlasTexture);
+      if (normalAtlasTexture) {
+        lod2Opaque.setTexture("normalTexture", normalAtlasTexture);
+      }
+      lod2Opaque.setUniformBuffer("GlobalUniforms", this.#globalUniformBuffer);
+      this.applyLodShaderBindings(lod2Opaque);
+      lod2Opaque.wireframe = GlobalValues.DEBUG;
+      this.#lod2OpaqueMaterial = lod2Opaque;
+    } else {
+      const lod2Opaque = this.#lod2OpaqueMaterial as ShaderMaterial;
+      lod2Opaque.wireframe = GlobalValues.DEBUG;
+      lod2Opaque.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
+      lod2Opaque.setTexture("diffuseTexture", diffuseAtlasTexture);
+      if (normalAtlasTexture) {
+        lod2Opaque.setTexture("normalTexture", normalAtlasTexture);
+      }
+      lod2Opaque.setUniformBuffer("GlobalUniforms", this.#globalUniformBuffer);
+      this.applyLodShaderBindings(lod2Opaque);
+    }
+
+    // ---------------------------------------------------------------------------
+    // LOD2 transparent material
+    // ---------------------------------------------------------------------------
+    if (!this.#lod2TransparentMaterial) {
+      const lod2Transparent = new ShaderMaterial(
+        "lod2TransparentChunkShaderMaterial",
+        scene,
+        { vertex: "lod2Chunk", fragment: "lod2TransparentChunk" },
+        {
+          attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
+          uniforms: [
+            "world",
+            "worldViewProjection",
+            "atlasTileSize",
+            "vFogInfos",
+            "vFogColor",
+            "lodFadeProgress",
+            "lodFadeDirection",
+            "lodFadeSeed",
+          ],
+          uniformBuffers: ["GlobalUniforms"],
+          samplers: ["diffuseTexture", "normalTexture"],
+        },
+      );
+      lod2Transparent.backFaceCulling = false;
+      lod2Transparent.forceDepthWrite = false;
+      lod2Transparent.needAlphaBlending = () => true;
+      lod2Transparent.setFloat(
+        "atlasTileSize",
+        TextureAtlasFactory.atlasTileSize,
+      );
+      lod2Transparent.setTexture("diffuseTexture", diffuseAtlasTexture);
+      if (normalAtlasTexture) {
+        lod2Transparent.setTexture("normalTexture", normalAtlasTexture);
+      }
+      lod2Transparent.setUniformBuffer(
+        "GlobalUniforms",
+        this.#globalUniformBuffer,
+      );
+      this.applyLodShaderBindings(lod2Transparent);
+      lod2Transparent.wireframe = GlobalValues.DEBUG;
+      this.#lod2TransparentMaterial = lod2Transparent;
+    } else {
+      const lod2Transparent = this.#lod2TransparentMaterial as ShaderMaterial;
+      lod2Transparent.wireframe = GlobalValues.DEBUG;
+      lod2Transparent.setFloat(
+        "atlasTileSize",
+        TextureAtlasFactory.atlasTileSize,
+      );
+      lod2Transparent.setTexture("diffuseTexture", diffuseAtlasTexture);
+      if (normalAtlasTexture) {
+        lod2Transparent.setTexture("normalTexture", normalAtlasTexture);
+      }
+      lod2Transparent.setUniformBuffer(
+        "GlobalUniforms",
+        this.#globalUniformBuffer,
+      );
+      this.applyLodShaderBindings(lod2Transparent);
     }
   }
   private static ensureSharedFacePositionBuffer(): void {
@@ -250,6 +671,13 @@ export class ChunkMesher {
       transparent: MeshData | null;
     },
   ) {
+    const previousOpaqueMesh = chunk.mesh;
+    const previousTransparentMesh = chunk.transparentMesh;
+    const previousOpaqueLod = this.getMeshLodLevel(previousOpaqueMesh);
+    const previousTransparentLod = this.getMeshLodLevel(
+      previousTransparentMesh,
+    );
+
     const opaqueMeshData = meshData.opaque;
     const transparentMeshData = meshData.transparent;
 
@@ -265,33 +693,79 @@ export class ChunkMesher {
       chunk.opaqueMeshData = null;
       chunk.transparentMeshData = null;
     }
+    const lodLevel = chunk.lodLevel ?? 0;
+
+    const lodChangedOpaque =
+      previousOpaqueLod !== null && previousOpaqueLod !== lodLevel;
+    const lodChangedTransparent =
+      previousTransparentLod !== null && previousTransparentLod !== lodLevel;
 
     if (hasOpaque) {
+      const opaqueMaterial =
+        lodLevel >= 3
+          ? this.#lod3OpaqueMaterial!
+          : lodLevel >= 2
+            ? this.#lod2OpaqueMaterial!
+            : this.#atlasMaterial!;
+
       chunk.mesh = this.upsertMesh(
         chunk,
-        chunk.mesh,
+        lodChangedOpaque ? null : chunk.mesh,
         opaqueMeshData!,
         "c_opaque",
-        this.#atlasMaterial!,
+        opaqueMaterial,
         1,
       );
+      this.setMeshLodLevel(chunk.mesh!, lodLevel);
     } else if (chunk.mesh) {
       chunk.mesh.dispose();
       chunk.mesh = null;
     }
 
     if (hasTransparent) {
+      const transparentMaterial =
+        lodLevel >= 3
+          ? this.#lod3TransparentMaterial!
+          : lodLevel >= 2
+            ? this.#lod2TransparentMaterial!
+            : this.#transparentMaterial!;
+
       chunk.transparentMesh = this.upsertMesh(
         chunk,
-        chunk.transparentMesh,
+        lodChangedTransparent ? null : chunk.transparentMesh,
         transparentMeshData!,
         "c_transparent",
-        this.#transparentMaterial!,
+        transparentMaterial,
         1,
       );
+      this.setMeshLodLevel(chunk.transparentMesh!, lodLevel);
     } else if (chunk.transparentMesh) {
       chunk.transparentMesh.dispose();
       chunk.transparentMesh = null;
+    }
+
+    if (lodChangedOpaque && previousOpaqueMesh && chunk.mesh) {
+      if (this.shouldUseLodCrossFade(previousOpaqueLod, lodLevel)) {
+        this.beginLodCrossFade(chunk, previousOpaqueMesh, chunk.mesh);
+      } else {
+        previousOpaqueMesh.dispose();
+      }
+    }
+
+    if (
+      lodChangedTransparent &&
+      previousTransparentMesh &&
+      chunk.transparentMesh
+    ) {
+      if (this.shouldUseLodCrossFade(previousTransparentLod, lodLevel)) {
+        this.beginLodCrossFade(
+          chunk,
+          previousTransparentMesh,
+          chunk.transparentMesh,
+        );
+      } else {
+        previousTransparentMesh.dispose();
+      }
     }
 
     if (chunk.colliderDirty) {
@@ -452,7 +926,8 @@ export class ChunkMesher {
     const camPos = camera.position;
     u.cameraPosition.set(camPos.x, camPos.y, camPos.z);
     u.cameraPlanes.set(camera.minZ, camera.maxZ);
-    u.time = performance.now() / 1000.0;
+    const nowMs = performance.now();
+    u.time = nowMs / 1000.0;
 
     const sunElevation = -lightDir.y + 0.1;
     u.sunLightIntensity = Math.min(1.0, Math.max(0.1, sunElevation * 4.0));
@@ -469,6 +944,8 @@ export class ChunkMesher {
     this.#globalUniformBuffer.updateFloat("wetness", u.wetness);
     this.#globalUniformBuffer.updateFloat("time", u.time);
     this.#globalUniformBuffer.update();
+
+    this.updateLodCrossFades(nowMs);
   }
 
   private static createCachedTexture(
@@ -534,6 +1011,18 @@ export class ChunkMesher {
     this.#transparentMaterial?.dispose();
     this.#transparentMaterial = null;
 
+    this.#lod3OpaqueMaterial?.dispose();
+    this.#lod3OpaqueMaterial = null;
+
+    this.#lod3TransparentMaterial?.dispose();
+    this.#lod3TransparentMaterial = null;
+
+    this.#lod2OpaqueMaterial?.dispose();
+    this.#lod2OpaqueMaterial = null;
+    this.#lod2TransparentMaterial?.dispose();
+    this.#lod2TransparentMaterial = null;
+
+    this.#activeLodFadeMeshes.clear();
     this.lastUpdateFrame = -1;
   }
 }
