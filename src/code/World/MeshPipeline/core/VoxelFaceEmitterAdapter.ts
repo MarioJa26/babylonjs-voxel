@@ -4,13 +4,13 @@ import {
   GreedyFaceDescriptor,
   WorkerInternalMeshData,
   MaterialType,
-} from "../types/MeshTypes.js";
+} from "../types/MeshTypes";
 import { emitQuad } from "./FaceEmitter";
 import {
   getRuntimeShapeBoxes,
   getShapeInfo,
   getMaterialType,
-} from "./ShapePipeline.js";
+} from "./ShapePipeline";
 import {
   FACE_PX,
   FACE_NX,
@@ -18,8 +18,8 @@ import {
   FACE_NY,
   FACE_PZ,
   FACE_NZ,
-} from "../../Shape/BlockShapes.js";
-import { unpackBlockId } from "../../BlockEncoding.js";
+} from "../../Shape/BlockShapes";
+import { unpackBlockId } from "../../BlockEncoding";
 
 /**
  * Matches the mask bits emitted by VoxelMaskExtractor:

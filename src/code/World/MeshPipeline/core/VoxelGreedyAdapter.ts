@@ -6,9 +6,9 @@ import {
   GreedyFaceDescriptor,
 } from "../types/MeshTypes";
 
-import { greedyMesh } from "./GreedyPipeline.js";
+import { greedyMesh } from "./GreedyPipeline";
 import { VoxelMaskExtractor } from "./VoxelMaskExtractor";
-import { VoxelFaceEmitterAdapter } from "./VoxelFaceEmitterAdapter.js";
+import { VoxelFaceEmitterAdapter } from "./VoxelFaceEmitterAdapter";
 
 /**
  * Drives the greedy mesher across all 3 axes (X, Y, Z),

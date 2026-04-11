@@ -1,5 +1,5 @@
 // MeshPipeline/core/GreedyPipeline.ts
-import { MeshContext, GreedyFaceDescriptor } from "../types/MeshTypes.js";
+import { MeshContext, GreedyFaceDescriptor } from "../types/MeshTypes";
 
 /**
  * Interface required from the caller to extract mask data.

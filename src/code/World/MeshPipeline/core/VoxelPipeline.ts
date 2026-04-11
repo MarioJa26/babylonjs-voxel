@@ -3,7 +3,7 @@
 import { MeshContext, WorkerInternalMeshData } from "../types/MeshTypes";
 import { emitCustomShapes } from "./CustomShapeEmitter";
 
-import { VoxelGreedyAdapter } from "./VoxelGreedyAdapter.js";
+import { VoxelGreedyAdapter } from "./VoxelGreedyAdapter";
 
 /**
  * Structured input format for voxel meshing.

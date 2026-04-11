@@ -4,7 +4,7 @@ import {
   MeshContext,
   WorkerInternalMeshData,
   MaterialType,
-} from "../types/MeshTypes.js";
+} from "../types/MeshTypes";
 import { emitQuad } from "./FaceEmitter";
 
 import {
@@ -14,9 +14,9 @@ import {
   isGreedyCompatiblePackedBlock,
   isCrossShapePackedBlock,
   isCrossDiagonalShapePackedBlock,
-} from "./ShapePipeline.js";
+} from "./ShapePipeline";
 
-import { computeAO } from "./AOPipeline.js";
+import { computeAO } from "./AOPipeline";
 import {
   FACE_PX,
   FACE_NX,
@@ -24,8 +24,8 @@ import {
   FACE_NY,
   FACE_PZ,
   FACE_NZ,
-} from "../../Shape/BlockShapes.js";
-import { unpackBlockId } from "../../BlockEncoding.js";
+} from "../../Shape/BlockShapes";
+import { unpackBlockId } from "../../BlockEncoding";
 
 const EPS = 1e-6;
 

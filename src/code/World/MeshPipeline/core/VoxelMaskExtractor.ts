@@ -1,16 +1,16 @@
 // MeshPipeline/core/VoxelMaskExtractor.ts
 
-import { MeshContext, MaterialType } from "../types/MeshTypes.js";
+import { MeshContext, MaterialType } from "../types/MeshTypes";
 
-import { unpackBlockId } from "../../BlockEncoding.js";
+import { unpackBlockId } from "../../BlockEncoding";
 import {
   getShapeInfo,
   getMaterialType,
   isGreedyCompatiblePackedBlock,
-} from "./ShapePipeline.js";
-import { quantizeLightForLOD } from "./LightPipeline.js";
-import { computeAO } from "./AOPipeline.js";
-import { BLOCK_TYPE } from "../../Chunk/Worker/ChunkMesherConstants.js";
+} from "./ShapePipeline";
+import { quantizeLightForLOD } from "./LightPipeline";
+import { computeAO } from "./AOPipeline";
+import { BLOCK_TYPE } from "../../Chunk/Worker/ChunkMesherConstants";
 import {
   FACE_PX,
   FACE_NX,
@@ -18,7 +18,7 @@ import {
   FACE_NY,
   FACE_PZ,
   FACE_NZ,
-} from "../../Shape/BlockShapes.js";
+} from "../../Shape/BlockShapes";
 
 /**
  * Marker bit used so non-cube faces do not greedily merge with cube faces.

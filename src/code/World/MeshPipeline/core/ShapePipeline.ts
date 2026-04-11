@@ -1,6 +1,6 @@
 // World/MeshPipeline/core/ShapePipeline.ts
 
-import { unpackBlockId, unpackBlockState } from "../../BlockEncoding.js";
+import { unpackBlockId, unpackBlockState } from "../../BlockEncoding";
 import {
   FACE_ALL,
   FACE_PX,
@@ -10,12 +10,12 @@ import {
   FACE_PZ,
   FACE_NZ,
   getShapeForBlockId,
-} from "../../Shape/BlockShapes.js";
+} from "../../Shape/BlockShapes";
 import {
   getTransformedShapeBoxes,
   type ShapeBounds,
-} from "../../Shape/BlockShapeTransforms.js";
-import { BlockShapeInfo, MaterialType } from "../types/MeshTypes.js";
+} from "../../Shape/BlockShapeTransforms";
+import { BlockShapeInfo, MaterialType } from "../types/MeshTypes";
 
 /**
  * Dense-cache size for the current packed-block key space.
