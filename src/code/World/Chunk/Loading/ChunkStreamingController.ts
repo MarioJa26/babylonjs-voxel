@@ -30,9 +30,9 @@ export class ChunkStreamingController {
   private static readonly DESIRED_STATE_REVISION_RETENTION = 2;
   private streamRevision = 0;
   private desiredStates = new Map<bigint, DesiredChunkState>();
-  // Map from chunkId -> index in the load queue for O(1) lookups while
-  // building the new streaming window. Rebuilt each updateChunksAround call.
-  private loadQueueIndexMap: Map<bigint, number> = new Map();
+  // Map from chunkId -> queued request object for O(1) updates without relying
+  // on unstable queue indices (the scheduler dequeues from the head).
+  private loadQueueRequestMap: Map<bigint, QueuedChunkRequest> = new Map();
   private loadedRefreshQueue: Chunk[] = [];
   private loadedRefreshQueueSet: Set<bigint> = new Set();
 
@@ -77,6 +77,7 @@ export class ChunkStreamingController {
 
     const loadQueue = this.adapter.getLoadQueue();
     const unloadQueueSet = this.adapter.getUnloadQueueSet();
+    this.loadQueueRequestMap.clear();
 
     // Retag queued requests in place.
     let writeIndex = 0;
@@ -96,6 +97,7 @@ export class ChunkStreamingController {
 
       if (!decision.allowsChunkCreation) {
         request.chunk.isTerrainScheduled = false;
+        this.loadQueueRequestMap.delete(request.chunk.id);
 
         ChunkLoadingSystem.traceChunk(
           request.chunk.id,
@@ -131,12 +133,11 @@ export class ChunkStreamingController {
         includeVoxelData: request.includeVoxelData,
       });
 
+      this.loadQueueRequestMap.set(request.chunk.id, request);
       loadQueue[writeIndex++] = request;
     }
 
     loadQueue.length = writeIndex;
-
-    this.rebuildLoadQueueIndexMap();
 
     // Cancel pending unloads for chunks that are back in range.
     for (const chunk of unloadQueueSet) {
@@ -187,7 +188,6 @@ export class ChunkStreamingController {
     }
 
     this.sortLoadQueue(chunkX, chunkY, chunkZ);
-    this.rebuildLoadQueueIndexMap();
 
     this.queueUnloading(
       chunkX,
@@ -291,15 +291,6 @@ export class ChunkStreamingController {
       );
 
       processed++;
-    }
-  }
-
-  private rebuildLoadQueueIndexMap(): void {
-    const loadQueue = this.adapter.getLoadQueue();
-    this.loadQueueIndexMap.clear();
-
-    for (let i = 0; i < loadQueue.length; i++) {
-      this.loadQueueIndexMap.set(loadQueue[i].chunk.id, i);
     }
   }
 
@@ -740,15 +731,10 @@ export class ChunkStreamingController {
     }
 
     const loadQueue = this.adapter.getLoadQueue();
+    const existingRequest = this.loadQueueRequestMap.get(chunk.id);
 
-    let existingIndex = -1;
-    const maybeIndex = this.loadQueueIndexMap.get(chunk.id);
-    if (typeof maybeIndex === "number") {
-      existingIndex = maybeIndex;
-    }
-
-    if (existingIndex >= 0) {
-      const request = loadQueue[existingIndex];
+    if (existingRequest) {
+      const request = existingRequest;
 
       const previousDesiredLod = request.desiredLod;
       const previousRevision = request.revision;
@@ -757,8 +743,7 @@ export class ChunkStreamingController {
       request.revision = revision;
       request.includeVoxelData = includeVoxelData;
       request.priority = Number.POSITIVE_INFINITY;
-
-      this.loadQueueIndexMap.set(chunk.id, existingIndex);
+      this.loadQueueRequestMap.set(chunk.id, request);
 
       ChunkLoadingSystem.traceChunk(chunk.id, "load-request-updated", {
         previousDesiredLod,
@@ -777,7 +762,7 @@ export class ChunkStreamingController {
       };
 
       loadQueue.push(request);
-      this.loadQueueIndexMap.set(chunk.id, loadQueue.length - 1);
+      this.loadQueueRequestMap.set(chunk.id, request);
 
       ChunkLoadingSystem.traceChunk(chunk.id, "load-queued", {
         desiredLod,
@@ -797,6 +782,17 @@ export class ChunkStreamingController {
     }
 
     chunk.isTerrainScheduled = true;
+  }
+
+  public onLoadRequestsDequeued(
+    requests: ReadonlyArray<QueuedChunkRequest>,
+  ): void {
+    for (const request of requests) {
+      const queued = this.loadQueueRequestMap.get(request.chunk.id);
+      if (queued === request) {
+        this.loadQueueRequestMap.delete(request.chunk.id);
+      }
+    }
   }
 
   private sortLoadQueue(

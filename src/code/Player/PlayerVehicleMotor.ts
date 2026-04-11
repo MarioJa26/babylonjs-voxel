@@ -10,7 +10,7 @@ import {
 
 import { Mount } from "../Entities/Mount";
 import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
-import { BlockType } from "../World/BlockType";
+import { BlockType, isCollidableBlock } from "../World/BlockType";
 import {
   Axis,
   VoxelAabbCollider,
@@ -96,7 +96,7 @@ export class PlayerVehicleMotor {
       ),
       (x, y, z) => {
         const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
-        return blockId !== BlockType.Air && blockId !== BlockType.Water;
+        return isCollidableBlock(blockId);
       },
       this.collisionEpsilon,
       {

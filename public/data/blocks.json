@@ -296,7 +296,7 @@
     "id": "ConcreteTiles",
     "name": "concrete_tiles",
     "path": "/texture/stone/concrete_tiles_1k",
-    "shape": "cross"
+    "shape": "cross_wall"
   },
   {
     "id": "GraniteWall",
@@ -352,5 +352,11 @@
     "id": "BoatCreator",
     "name": "boat_creator",
     "path": "/texture/wood/crafting_table_1k"
+  },
+  {
+    "id": "GrassCross",
+    "name": "grass_cross",
+    "path": "/texture/dirt/Grass002_1K",
+    "shape": "cross"
   }
 ]

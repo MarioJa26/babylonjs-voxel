@@ -89,6 +89,8 @@ export class ChunkLoadingSystem {
 
     onQueueSnapshotChanged: () =>
       ChunkLoadingSystem.refreshQueueDebugSnapshot(),
+    onLoadRequestsDequeued: (requests) =>
+      ChunkLoadingSystem.streamingController.onLoadRequestsDequeued(requests),
   });
 
   private static _neighborBuffer: (Chunk | undefined)[] = new Array(6);

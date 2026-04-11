@@ -5,7 +5,7 @@ import {
   WorkerInternalMeshData,
   MaterialType,
 } from "../types/MeshTypes.js";
-import { emitQuad } from "./FaceEmitter.js";
+import { emitQuad } from "./FaceEmitter";
 import {
   getRuntimeShapeBoxes,
   getShapeInfo,
@@ -96,13 +96,14 @@ export class VoxelFaceEmitterAdapter {
   }
 
   public getFaceName(axis: number, isBackFace: boolean): string {
+    // Match the old working worker mesher convention
     if (axis === 0) {
-      return isBackFace ? "-x" : "+x";
+      return isBackFace ? "east" : "west";
     }
     if (axis === 1) {
-      return isBackFace ? "-y" : "+y";
+      return isBackFace ? "bottom" : "top";
     }
-    return isBackFace ? "-z" : "+z";
+    return isBackFace ? "north" : "south";
   }
 
   private emitCubeFace(
@@ -273,6 +274,8 @@ export class VoxelFaceEmitterAdapter {
     }
 
     if (axis === 1) {
+      // Match the old working worker mesher convention for Y faces:
+      // width = Z extent, height = X extent
       return {
         x: baseX + box.min[0],
         y: baseY + (isBackFace ? box.min[1] : box.max[1]),

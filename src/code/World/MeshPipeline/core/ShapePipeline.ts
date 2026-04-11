@@ -64,11 +64,17 @@ const RUNTIME_BOX_CACHE: (readonly ShapeBounds[] | undefined)[] = new Array(
 const GREEDY_COMPAT_CACHE = new Uint8Array(DENSE_CACHE_SIZE);
 
 /**
+ * Optional tiny shape-name cache for the dense key range.
+ */
+const SHAPE_NAME_CACHE: (string | undefined)[] = new Array(DENSE_CACHE_SIZE);
+
+/**
  * Sparse overflow fallback if a packed key ever exceeds the dense range.
  */
 const SHAPE_INFO_OVERFLOW = new Map<number, BlockShapeInfo>();
 const RUNTIME_BOX_OVERFLOW = new Map<number, readonly ShapeBounds[]>();
 const GREEDY_COMPAT_OVERFLOW = new Map<number, boolean>();
+const SHAPE_NAME_OVERFLOW = new Map<number, string>();
 
 function canUseDenseCache(packedBlock: number): boolean {
   return packedBlock >= 0 && packedBlock <= DENSE_CACHE_MASK;
@@ -82,7 +88,8 @@ export function getMaterialTintBucket(blockId: number): number {
   if (blockId === 30 || blockId === 60 || blockId === 61) return 4;
 
   // vegetation
-  if (blockId === 15 || blockId === 43 || blockId === 44) return 3;
+  if (blockId === 15 || blockId === 43 || blockId === 44 || blockId === 64)
+    return 3;
 
   // sand/dirt/soil
   if (
@@ -119,9 +126,25 @@ export function getMaterialTintBucket(blockId: number): number {
  * Transparent/water bucket selection.
  */
 export function getMaterialType(blockId: number): MaterialType {
-  return blockId === 30 || blockId === 60 || blockId === 61
+  return blockId === 30 || blockId === 60 || blockId === 61 || blockId === 64
     ? MaterialType.WaterOrGlass
     : MaterialType.Default;
+}
+
+export function getMaterialTypeForPackedBlock(
+  packedBlock: number,
+): MaterialType {
+  if (!packedBlock) return MaterialType.Default;
+
+  if (
+    isCrossShapePackedBlock(packedBlock) ||
+    isCrossDiagonalShapePackedBlock(packedBlock)
+  ) {
+    return MaterialType.Cutout;
+  }
+
+  const { blockId } = getPackedBlockParts(packedBlock);
+  return getMaterialType(blockId);
 }
 
 /**
@@ -135,6 +158,42 @@ export function getPackedBlockParts(packedBlock: number): {
     blockId: unpackBlockId(packedBlock),
     blockState: unpackBlockState(packedBlock),
   };
+}
+
+/**
+ * Runtime helper: get the authored shape name for a packed block.
+ */
+export function getShapeNameForPackedBlock(packedBlock: number): string {
+  if (!packedBlock) return "cube";
+
+  if (canUseDenseCache(packedBlock)) {
+    const cached = SHAPE_NAME_CACHE[packedBlock];
+    if (cached) return cached;
+
+    const { blockId } = getPackedBlockParts(packedBlock);
+    const name = getShapeForBlockId(blockId).name;
+    SHAPE_NAME_CACHE[packedBlock] = name;
+    return name;
+  }
+
+  const overflow = SHAPE_NAME_OVERFLOW.get(packedBlock);
+  if (overflow) return overflow;
+
+  const { blockId } = getPackedBlockParts(packedBlock);
+  const name = getShapeForBlockId(blockId).name;
+  SHAPE_NAME_OVERFLOW.set(packedBlock, name);
+  return name;
+}
+
+/**
+ * Runtime helper: whether this packed block should render as a crossed plant shape.
+ */
+export function isCrossShapePackedBlock(packedBlock: number): boolean {
+  return getShapeNameForPackedBlock(packedBlock) === "cross";
+}
+
+export function isCrossDiagonalShapePackedBlock(packedBlock: number): boolean {
+  return getShapeNameForPackedBlock(packedBlock) === "cross_diagonal";
 }
 
 /**

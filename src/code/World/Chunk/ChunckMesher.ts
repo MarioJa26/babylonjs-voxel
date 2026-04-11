@@ -295,11 +295,21 @@ export class ChunkMesher {
       return;
     }
 
+    // ---------------------------------------------------------------------------
+    // Shader registration
+    // ---------------------------------------------------------------------------
     Effect.ShadersStore["chunkVertexShader"] = OpaqueShader.chunkVertexShader;
     Effect.ShadersStore["chunkFragmentShader"] =
       OpaqueShader.chunkFragmentShader;
+
+    // IMPORTANT FIX:
+    // Transparent chunk meshes must use the transparent vertex shader,
+    // not the shared opaque vertex shader.
+    Effect.ShadersStore["transparentChunkVertexShader"] =
+      TransparentShader.chunkVertexShader;
     Effect.ShadersStore["transparentChunkFragmentShader"] =
       TransparentShader.chunkFragmentShader;
+
     Effect.ShadersStore["lod3ChunkVertexShader"] = Lod3Shader.chunkVertexShader;
     Effect.ShadersStore["lod3ChunkFragmentShader"] =
       Lod3Shader.opaqueFragmentShader;
@@ -328,6 +338,9 @@ export class ChunkMesher {
       this.#globalUniformBuffer.create();
     }
 
+    // ---------------------------------------------------------------------------
+    // Opaque material
+    // ---------------------------------------------------------------------------
     if (!this.#atlasMaterial) {
       const opaqueBlockShader = new ShaderMaterial(
         "chunkShaderMaterial",
@@ -345,7 +358,6 @@ export class ChunkMesher {
           samplers: ["diffuseTexture", "normalTexture"],
         },
       );
-
       opaqueBlockShader.backFaceCulling = true;
       opaqueBlockShader.setPrePassRenderer(scene.prePassRenderer!);
       opaqueBlockShader.setFloat(
@@ -366,7 +378,6 @@ export class ChunkMesher {
       );
       opaqueBlockShader.wireframe = GlobalValues.DEBUG;
       opaqueBlockShader.freeze();
-
       this.#atlasMaterial = opaqueBlockShader;
     } else {
       const opaqueMat = this.#atlasMaterial as ShaderMaterial;
@@ -382,11 +393,16 @@ export class ChunkMesher {
       opaqueMat.freeze();
     }
 
+    // ---------------------------------------------------------------------------
+    // Transparent material
+    // ---------------------------------------------------------------------------
     if (!this.#transparentMaterial) {
       const transparentMat = new ShaderMaterial(
         "transparentChunkShaderMaterial",
         scene,
-        { vertex: "chunk", fragment: "transparentChunk" },
+        // IMPORTANT FIX:
+        // Use the transparent vertex shader, not the shared "chunk" vertex shader.
+        { vertex: "transparentChunk", fragment: "transparentChunk" },
         {
           attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
           uniforms: ["world", "worldViewProjection", "atlasTileSize"],
@@ -394,7 +410,6 @@ export class ChunkMesher {
           samplers: ["diffuseTexture", "normalTexture"],
         },
       );
-
       transparentMat.backFaceCulling = false;
       transparentMat.forceDepthWrite = false;
       transparentMat.needAlphaBlending = () => true;
@@ -412,7 +427,6 @@ export class ChunkMesher {
       );
       transparentMat.wireframe = GlobalValues.DEBUG;
       transparentMat.freeze();
-
       this.#transparentMaterial = transparentMat;
     } else {
       const transparentMat = this.#transparentMaterial as ShaderMaterial;
@@ -433,6 +447,9 @@ export class ChunkMesher {
       transparentMat.freeze();
     }
 
+    // ---------------------------------------------------------------------------
+    // LOD3 opaque material
+    // ---------------------------------------------------------------------------
     if (!this.#lod3OpaqueMaterial) {
       const lod3Opaque = new ShaderMaterial(
         "lod3ChunkShaderMaterial",
@@ -454,14 +471,12 @@ export class ChunkMesher {
           samplers: ["diffuseTexture"],
         },
       );
-
       lod3Opaque.backFaceCulling = true;
       lod3Opaque.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
       lod3Opaque.setTexture("diffuseTexture", diffuseAtlasTexture);
       lod3Opaque.setUniformBuffer("GlobalUniforms", this.#globalUniformBuffer);
       this.applyLodShaderBindings(lod3Opaque);
       lod3Opaque.wireframe = GlobalValues.DEBUG;
-
       this.#lod3OpaqueMaterial = lod3Opaque;
     } else {
       const lod3Opaque = this.#lod3OpaqueMaterial as ShaderMaterial;
@@ -472,6 +487,9 @@ export class ChunkMesher {
       this.applyLodShaderBindings(lod3Opaque);
     }
 
+    // ---------------------------------------------------------------------------
+    // LOD3 transparent material
+    // ---------------------------------------------------------------------------
     if (!this.#lod3TransparentMaterial) {
       const lod3Transparent = new ShaderMaterial(
         "lod3TransparentChunkShaderMaterial",
@@ -493,7 +511,6 @@ export class ChunkMesher {
           samplers: ["diffuseTexture"],
         },
       );
-
       lod3Transparent.backFaceCulling = false;
       lod3Transparent.forceDepthWrite = false;
       lod3Transparent.needAlphaBlending = () => true;
@@ -508,7 +525,6 @@ export class ChunkMesher {
       );
       this.applyLodShaderBindings(lod3Transparent);
       lod3Transparent.wireframe = GlobalValues.DEBUG;
-
       this.#lod3TransparentMaterial = lod3Transparent;
     } else {
       const lod3Transparent = this.#lod3TransparentMaterial as ShaderMaterial;
@@ -525,6 +541,9 @@ export class ChunkMesher {
       this.applyLodShaderBindings(lod3Transparent);
     }
 
+    // ---------------------------------------------------------------------------
+    // LOD2 opaque material
+    // ---------------------------------------------------------------------------
     if (!this.#lod2OpaqueMaterial) {
       const lod2Opaque = new ShaderMaterial(
         "lod2ChunkShaderMaterial",
@@ -568,7 +587,9 @@ export class ChunkMesher {
       this.applyLodShaderBindings(lod2Opaque);
     }
 
-    // create lod2 transparent material
+    // ---------------------------------------------------------------------------
+    // LOD2 transparent material
+    // ---------------------------------------------------------------------------
     if (!this.#lod2TransparentMaterial) {
       const lod2Transparent = new ShaderMaterial(
         "lod2TransparentChunkShaderMaterial",

@@ -65,6 +65,7 @@ export interface ChunkProcessSchedulerAdapter {
   finalizeProcessState(state: InFlightProcessState): void;
 
   onQueueSnapshotChanged?(): void;
+  onLoadRequestsDequeued?(requests: ReadonlyArray<QueuedChunkRequest>): void;
   onProcessError?(error: unknown): void;
 }
 
@@ -366,6 +367,7 @@ export class ChunkProcessScheduler {
             const takeCount = Math.min(batchSize, loadQueue.length);
             if (takeCount > 0) {
               const taken = loadQueue.splice(0, takeCount);
+              this.adapter.onLoadRequestsDequeued?.(taken);
               for (let i = 0; i < taken.length; i++) {
                 state.loadBatch.push(taken[i]);
               }

@@ -5,13 +5,17 @@ import {
   WorkerInternalMeshData,
   MaterialType,
 } from "../types/MeshTypes.js";
-import { emitQuad } from "./FaceEmitter.js";
+import { emitQuad } from "./FaceEmitter";
+
 import {
   getShapeInfo,
   getRuntimeShapeBoxes,
   getMaterialType,
   isGreedyCompatiblePackedBlock,
+  isCrossShapePackedBlock,
+  isCrossDiagonalShapePackedBlock,
 } from "./ShapePipeline.js";
+
 import { computeAO } from "./AOPipeline.js";
 import {
   FACE_PX,
@@ -34,6 +38,21 @@ type ParsedBlock = {
   isTransparent: boolean;
   greedyCompatible: boolean;
 };
+
+type FaceDescriptor = {
+  bit: number;
+  axis: 0 | 1 | 2;
+  isBackFace: boolean;
+};
+
+const FACE_DESCRIPTORS: readonly FaceDescriptor[] = [
+  { bit: FACE_PX, axis: 0, isBackFace: false },
+  { bit: FACE_NX, axis: 0, isBackFace: true },
+  { bit: FACE_PY, axis: 1, isBackFace: false },
+  { bit: FACE_NY, axis: 1, isBackFace: true },
+  { bit: FACE_PZ, axis: 2, isBackFace: false },
+  { bit: FACE_NZ, axis: 2, isBackFace: true },
+] as const;
 
 function parseBlock(packed: number): ParsedBlock {
   if (!packed) {
@@ -119,33 +138,45 @@ export function emitCustomShapes(
             ? transparentOut
             : opaqueOut;
 
+        const baseLight = getLight(x, y, z, 0);
+
+        // Cross-shape vegetation lives here now too.
+        if (isCrossShapePackedBlock(packed)) {
+          emitCrossShapeAtBlock(
+            x,
+            y,
+            z,
+            blockId,
+            baseLight,
+            materialType,
+            transparentOut,
+          );
+          continue;
+        }
+
+        // New true diagonal cross
+        if (isCrossDiagonalShapePackedBlock(packed)) {
+          emitCrossDiagonalAtBlock(
+            x,
+            y,
+            z,
+            blockId,
+            baseLight,
+            materialType,
+            transparentOut,
+          );
+          continue;
+        }
+
         const boxes = getRuntimeShapeBoxes(packed);
         if (boxes.length === 0) continue;
-
-        const baseLight = getLight(x, y, z, 0);
 
         for (let i = 0; i < boxes.length; i++) {
           const box = boxes[i];
 
-          // +X
-          if ((box.faceMask & FACE_PX) !== 0) {
-            emitBoxFace(
-              ctx,
-              x,
-              y,
-              z,
-              blockId,
-              packed,
-              box,
-              0,
-              false,
-              baseLight,
-              out,
-            );
-          }
+          for (const face of FACE_DESCRIPTORS) {
+            if ((box.faceMask & face.bit) === 0) continue;
 
-          // -X
-          if ((box.faceMask & FACE_NX) !== 0) {
             emitBoxFace(
               ctx,
               x,
@@ -154,76 +185,8 @@ export function emitCustomShapes(
               blockId,
               packed,
               box,
-              0,
-              true,
-              baseLight,
-              out,
-            );
-          }
-
-          // +Y
-          if ((box.faceMask & FACE_PY) !== 0) {
-            emitBoxFace(
-              ctx,
-              x,
-              y,
-              z,
-              blockId,
-              packed,
-              box,
-              1,
-              false,
-              baseLight,
-              out,
-            );
-          }
-
-          // -Y
-          if ((box.faceMask & FACE_NY) !== 0) {
-            emitBoxFace(
-              ctx,
-              x,
-              y,
-              z,
-              blockId,
-              packed,
-              box,
-              1,
-              true,
-              baseLight,
-              out,
-            );
-          }
-
-          // +Z
-          if ((box.faceMask & FACE_PZ) !== 0) {
-            emitBoxFace(
-              ctx,
-              x,
-              y,
-              z,
-              blockId,
-              packed,
-              box,
-              2,
-              false,
-              baseLight,
-              out,
-            );
-          }
-
-          // -Z
-          if ((box.faceMask & FACE_NZ) !== 0) {
-            emitBoxFace(
-              ctx,
-              x,
-              y,
-              z,
-              blockId,
-              packed,
-              box,
-              2,
-              true,
+              face.axis,
+              face.isBackFace,
               baseLight,
               out,
             );
@@ -232,6 +195,175 @@ export function emitCustomShapes(
       }
     }
   }
+}
+
+/**
+ * Emit a "cross" shape as two intersecting transparent planes centered in the block.
+ */
+function emitCrossShapeAtBlock(
+  x: number,
+  y: number,
+  z: number,
+  blockId: number,
+  baseLight: number,
+  materialType: MaterialType = MaterialType.Cutout,
+  out: WorkerInternalMeshData,
+): void {
+  // X-aligned plane (perpendicular to X axis)
+  emitQuad(out, {
+    x: x + 0.5,
+    y,
+    z,
+    axis: 0,
+    width: 1,
+    height: 1,
+    blockId,
+    isBackFace: false,
+    light: baseLight,
+    ao: 0,
+    faceName: "+x",
+    materialType: materialType,
+    flip: false,
+  });
+
+  emitQuad(out, {
+    x: x + 0.5,
+    y,
+    z,
+    axis: 0,
+    width: 1,
+    height: 1,
+    blockId,
+    isBackFace: true,
+    light: baseLight,
+    ao: 0,
+    faceName: "-x",
+    materialType: materialType,
+    flip: false,
+  });
+
+  // Z-aligned plane (perpendicular to Z axis)
+  emitQuad(out, {
+    x,
+    y,
+    z: z + 0.5,
+    axis: 2,
+    width: 1,
+    height: 1,
+    blockId,
+    isBackFace: false,
+    light: baseLight,
+    ao: 0,
+    faceName: "+z",
+    materialType: materialType,
+    flip: false,
+  });
+
+  emitQuad(out, {
+    x,
+    y,
+    z: z + 0.5,
+    axis: 2,
+    width: 1,
+    height: 1,
+    blockId,
+    isBackFace: true,
+    light: baseLight,
+    ao: 0,
+    faceName: "-z",
+    materialType: materialType,
+    flip: false,
+  });
+} /**
+ * Emit a true diagonal "X" cross centered in the block.
+ *
+ * This uses diagonal metadata so the runtime reconstruction can rotate
+ * the planes corner-to-corner across the voxel.
+ */
+function emitCrossDiagonalAtBlock(
+  x: number,
+  y: number,
+  z: number,
+  blockId: number,
+  baseLight: number,
+  materialType: MaterialType = MaterialType.Cutout,
+  out: WorkerInternalMeshData,
+): void {
+  const cx = x + 0.5;
+  const cz = z + 0.5;
+
+  // diagonal across a unit square corner-to-corner
+  const diagWidth = Math.SQRT2;
+
+  // Diagonal A: NW -> SE
+  emitQuad(out, {
+    x: cx,
+    y,
+    z: cz,
+    axis: 0,
+    width: diagWidth,
+    height: 1,
+    blockId,
+    isBackFace: false,
+    light: baseLight,
+    ao: 0,
+    faceName: "west",
+    materialType: materialType,
+    flip: false,
+    diagonal: 1,
+  });
+
+  emitQuad(out, {
+    x: cx,
+    y,
+    z: cz,
+    axis: 0,
+    width: diagWidth,
+    height: 1,
+    blockId,
+    isBackFace: true,
+    light: baseLight,
+    ao: 0,
+    faceName: "east",
+    materialType: materialType,
+    flip: false,
+    diagonal: 1,
+  });
+
+  // Diagonal B: NE -> SW
+  emitQuad(out, {
+    x: cx,
+    y,
+    z: cz,
+    axis: 0,
+    width: diagWidth,
+    height: 1,
+    blockId,
+    isBackFace: false,
+    light: baseLight,
+    ao: 0,
+    faceName: "south",
+    materialType: materialType,
+    flip: false,
+    diagonal: 2,
+  });
+
+  emitQuad(out, {
+    x: cx,
+    y,
+    z: cz,
+    axis: 0,
+    width: diagWidth,
+    height: 1,
+    blockId,
+    isBackFace: true,
+    light: baseLight,
+    ao: 0,
+    faceName: "north",
+    materialType: materialType,
+    flip: false,
+    diagonal: 2,
+  });
 }
 
 function emitBoxFace(
@@ -252,14 +384,12 @@ function emitBoxFace(
   out: WorkerInternalMeshData,
 ): void {
   const faceBit = getFaceBit(axis, isBackFace);
-
   if ((box.faceMask & faceBit) === 0) {
     return;
   }
 
   const min = box.min;
   const max = box.max;
-
   const currentBlock = parseBlock(packedBlock);
 
   const dir =

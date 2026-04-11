@@ -80,6 +80,7 @@ export interface EmitQuadParams {
   faceName: string;
   materialType: number;
   flip: boolean;
+  diagonal?: 0 | 1 | 2;
 }
 
 /**
@@ -111,4 +112,5 @@ export interface GreedyFaceDescriptor {
 export enum MaterialType {
   Default = 0,
   WaterOrGlass = 1,
+  Cutout = 2,
 }

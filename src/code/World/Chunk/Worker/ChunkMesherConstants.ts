@@ -8,7 +8,7 @@ export const BLOCK_TYPE = new Uint8Array(65536);
 export const BLOCK_TYPE_TRANSPARENT = 1;
 
 // 0 = opaque / air
-for (const id of [30, 60, 61]) {
+for (const id of [30, 60, 61, 64]) {
   BLOCK_TYPE[id] = BLOCK_TYPE_TRANSPARENT;
 }
 

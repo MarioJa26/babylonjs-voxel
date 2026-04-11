@@ -15,7 +15,7 @@ import { Player } from "../Player";
 import { PlayerCamera } from "../PlayerCamera";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { SettingParams } from "@/code/World/SettingParams";
-import { BlockType } from "@/code/World/BlockType";
+import { BlockType, isCollidableBlock } from "@/code/World/BlockType";
 import { MetadataContainer } from "@/code/Entities/MetaDataContainer";
 import { FACE_ALL, getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
 import { getTransformedShapeBoxes } from "@/code/World/Shape/BlockShapeTransforms";
@@ -642,8 +642,7 @@ export class CrossHair {
   public static pickTarget(player: Player): Vector3 | null {
     const hit = this.#raycastFirstBlock(
       player,
-      (_x, _y, _z, blockId) =>
-        blockId !== BlockType.Air && blockId !== BlockType.Water,
+      (_x, _y, _z, blockId) => isCollidableBlock(blockId),
     );
     if (!hit) return null;
     return new Vector3(hit.x, hit.y, hit.z);
@@ -661,8 +660,7 @@ export class CrossHair {
   public static getPlacementPosition(player: Player): Vector3 | null {
     const hit = this.#raycastFirstBlock(
       player,
-      (_x, _y, _z, blockId) =>
-        blockId !== BlockType.Air && blockId !== BlockType.Water,
+      (_x, _y, _z, blockId) => isCollidableBlock(blockId),
     );
     if (!hit) return null;
 
@@ -684,8 +682,7 @@ export class CrossHair {
   } | null {
     const hit = this.#raycastFirstBlock(
       player,
-      (_x, _y, _z, blockId) =>
-        blockId !== BlockType.Air && blockId !== BlockType.Water,
+      (_x, _y, _z, blockId) => isCollidableBlock(blockId),
     );
     if (!hit) return null;
 
