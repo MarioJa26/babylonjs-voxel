@@ -3,7 +3,11 @@ import { MeshData } from "../DataStructures/MeshData";
 import type { SavedChunkData } from "../../WorldStorage";
 
 /**
- * A selected mesh payload that can be applied to a chunk load path.
+ * Selected saved mesh payload.
+ *
+ * NOTE:
+ * This shape is intentionally mutable so callers can reuse a scratch object
+ * and avoid allocating a fresh wrapper on every lookup.
  */
 export interface SelectedSavedMesh {
   opaque: MeshData | null;
@@ -13,8 +17,6 @@ export interface SelectedSavedMesh {
 
 /**
  * Normalized storage payload required to restore chunk voxel/light state.
- * This mirrors the general shape implied by Chunk.loadFromStorage(...)
- * without assuming exact SavedChunkData property names.
  */
 export interface HydrationStoragePayload {
   blocks: Uint8Array | Uint16Array | null;
@@ -25,8 +27,12 @@ export interface HydrationStoragePayload {
 }
 
 /**
- * Adapter so this helper does not need to know the exact SavedChunkData shape yet.
- * You will wire this up from ChunkLoadingSystem later.
+ * Adapter so this helper does not need to know the exact SavedChunkData shape.
+ *
+ * PERFORMANCE CONTRACT:
+ * - getStoragePayload(...) should return references, not clones
+ * - getSavedMeshForLod(...) should return references, not clones
+ * - getAvailableMeshLods(...) should return a stable ascending readonly list
  */
 export interface ChunkHydrationAdapter {
   /**
@@ -47,9 +53,11 @@ export interface ChunkHydrationAdapter {
 
   /**
    * Return all LOD levels that may have persisted meshes on this saved record.
-   * Example: [0, 1, 2, 3]
+   *
+   * IMPORTANT:
+   * This should be a stable ascending readonly list.
    */
-  getAvailableMeshLods(savedData: SavedChunkData): number[];
+  getAvailableMeshLods(savedData: SavedChunkData): readonly number[];
 
   /**
    * If your SavedChunkData stores serialized LOD cache data, return it here.
@@ -71,14 +79,40 @@ export interface ChunkHydrationAdapter {
  * - restoring block/light storage into a Chunk
  * - restoring serialized LOD cache if present
  *
- * This corresponds directly to the hydration-specific responsibilities currently
- * sitting in ChunkLoadingSystem.
+ * OPTIMIZED VERSION:
+ * - avoids array clone/sort work
+ * - offers out-parameter APIs to avoid SelectedSavedMesh allocations
  */
 export class ChunkHydration {
   public constructor(private readonly adapter: ChunkHydrationAdapter) {}
 
   /**
-   * Return the exact saved mesh for the requested LOD if present.
+   * Fill an existing SelectedSavedMesh object with the exact mesh for a given LOD.
+   *
+   * Returns true on success, false if no mesh exists for that LOD.
+   *
+   * This is the preferred low-allocation API.
+   */
+  public tryGetSavedMeshForLod(
+    savedData: SavedChunkData,
+    lod: number,
+    out: SelectedSavedMesh,
+  ): boolean {
+    const mesh = this.adapter.getSavedMeshForLod(savedData, lod);
+    if (!mesh) {
+      return false;
+    }
+
+    out.opaque = mesh.opaque;
+    out.transparent = mesh.transparent;
+    out.lod = lod;
+    return true;
+  }
+
+  /**
+   * Convenience wrapper that allocates a SelectedSavedMesh only when needed.
+   *
+   * Use tryGetSavedMeshForLod(...) in hot paths if you want to avoid wrapper allocation.
    */
   public getSavedMeshForLod(
     savedData: SavedChunkData,
@@ -95,55 +129,102 @@ export class ChunkHydration {
   }
 
   /**
-   * Picks the "best" available saved mesh for the desired LOD.
+   * Internal low-allocation LOD selection.
    *
    * Strategy:
    * 1) exact LOD match
    * 2) nearest lower-detail LOD (higher number, e.g. 3 when requesting 2)
    * 3) nearest higher-detail LOD (lower number, e.g. 1 when requesting 2)
    *
-   * This keeps the policy deterministic and easy to reason about.
+   * Assumes availableLods is already stable ascending.
+   */
+  private pickBestAvailableLod(
+    availableLods: readonly number[],
+    desiredLod: number,
+  ): number {
+    if (availableLods.length === 0) {
+      return -1;
+    }
+
+    let exactLod = -1;
+    let bestLowerDetail = Number.POSITIVE_INFINITY; // lod > desired
+    let bestHigherDetail = Number.NEGATIVE_INFINITY; // lod < desired
+
+    for (let i = 0; i < availableLods.length; i++) {
+      const lod = availableLods[i];
+
+      if (lod === desiredLod) {
+        exactLod = lod;
+        break;
+      }
+
+      if (lod > desiredLod && lod < bestLowerDetail) {
+        bestLowerDetail = lod;
+      } else if (lod < desiredLod && lod > bestHigherDetail) {
+        bestHigherDetail = lod;
+      }
+    }
+
+    if (exactLod !== -1) {
+      return exactLod;
+    }
+
+    if (Number.isFinite(bestLowerDetail)) {
+      return bestLowerDetail;
+    }
+
+    if (Number.isFinite(bestHigherDetail)) {
+      return bestHigherDetail;
+    }
+
+    return -1;
+  }
+
+  /**
+   * Fill an existing SelectedSavedMesh object with the best available mesh
+   * for the desired LOD.
+   *
+   * Returns true on success, false if no saved mesh exists at all.
+   *
+   * This is the preferred low-allocation API.
+   */
+  public tryPickBestSavedMesh(
+    savedData: SavedChunkData,
+    desiredLod: number,
+    out: SelectedSavedMesh,
+  ): boolean {
+    const availableLods = this.adapter.getAvailableMeshLods(savedData);
+    const chosenLod = this.pickBestAvailableLod(availableLods, desiredLod);
+    if (chosenLod === -1) {
+      return false;
+    }
+
+    return this.tryGetSavedMeshForLod(savedData, chosenLod, out);
+  }
+
+  /**
+   * Convenience wrapper that allocates a SelectedSavedMesh only when needed.
+   *
+   * Use tryPickBestSavedMesh(...) in hot paths if you want to avoid wrapper allocation.
    */
   public pickBestSavedMesh(
     savedData: SavedChunkData,
     desiredLod: number,
   ): SelectedSavedMesh | null {
-    const availableLods = [
-      ...this.adapter.getAvailableMeshLods(savedData),
-    ].sort((a, b) => a - b);
-
-    if (availableLods.length === 0) {
+    const availableLods = this.adapter.getAvailableMeshLods(savedData);
+    const chosenLod = this.pickBestAvailableLod(availableLods, desiredLod);
+    if (chosenLod === -1) {
       return null;
     }
 
-    const exact = this.getSavedMeshForLod(savedData, desiredLod);
-    if (exact) {
-      return exact;
-    }
-
-    // Prefer a lower-detail fallback first (higher lod number)
-    for (const lod of availableLods) {
-      if (lod > desiredLod) {
-        const mesh = this.getSavedMeshForLod(savedData, lod);
-        if (mesh) return mesh;
-      }
-    }
-
-    // Otherwise fall back to a higher-detail mesh (lower lod number)
-    for (let i = availableLods.length - 1; i >= 0; i--) {
-      const lod = availableLods[i];
-      if (lod < desiredLod) {
-        const mesh = this.getSavedMeshForLod(savedData, lod);
-        if (mesh) return mesh;
-      }
-    }
-
-    return null;
+    return this.getSavedMeshForLod(savedData, chosenLod);
   }
 
   /**
    * Hydrate the chunk's voxel/light storage from persisted data.
-   * This should be the direct replacement target for applyHydratedChunkFromSavedData(...).
+   *
+   * IMPORTANT:
+   * The adapter should return references, not copies.
    */
   public applyHydratedChunkFromSavedData(
     chunk: Chunk,
@@ -174,10 +255,9 @@ export class ChunkHydration {
    * - restore chunk storage
    * - return the best saved mesh for the target LOD
    *
-   * The caller (later ChunkLoadingSystem) can decide whether to:
-   * - apply returned mesh immediately
-   * - prefer a transition mesh
-   * - schedule a remesh instead
+   * This wrapper is simple but allocates a SelectedSavedMesh if a mesh is found.
+   * In hot paths, call applyHydratedChunkFromSavedData(...) first and then
+   * tryPickBestSavedMesh(...) with a reusable scratch object.
    */
   public applyLoadedChunkFromSavedData(
     chunk: Chunk,
@@ -190,20 +270,26 @@ export class ChunkHydration {
   }
 
   /**
-   * Optional helper if you want to stash selected saved mesh payload directly
-   * onto the chunk before the render pipeline creates real Babylon meshes.
+   * Apply a selected saved mesh payload directly to the chunk.
+   *
+   * OPTIMIZATION:
+   * Skip redundant writes if the exact same mesh references are already assigned.
    */
   public applySelectedMeshDataToChunk(
     chunk: Chunk,
     selectedMesh: SelectedSavedMesh | null,
   ): void {
-    if (!selectedMesh) {
-      chunk.opaqueMeshData = null;
-      chunk.transparentMeshData = null;
+    const nextOpaque = selectedMesh?.opaque ?? null;
+    const nextTransparent = selectedMesh?.transparent ?? null;
+
+    if (
+      chunk.opaqueMeshData === nextOpaque &&
+      chunk.transparentMeshData === nextTransparent
+    ) {
       return;
     }
 
-    chunk.opaqueMeshData = selectedMesh.opaque;
-    chunk.transparentMeshData = selectedMesh.transparent;
+    chunk.opaqueMeshData = nextOpaque;
+    chunk.transparentMeshData = nextTransparent;
   }
 }

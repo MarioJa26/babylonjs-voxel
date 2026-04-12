@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-04-11T17:37:21.029Z
+Generated: 2026-04-12T19:45:30.782Z
 
-> **Summary:** 101 classes · 1756 members · 75 module-level functions · 26687 LOC
+> **Summary:** 101 classes · 1760 members · 75 module-level functions · 26776 LOC
 
 ---
 
@@ -1136,7 +1136,7 @@ Generated: 2026-04-11T17:37:21.029Z
 
 ---
 
-## `Player/Controls/WalkingControls.ts` (369 LOC)
+## `Player/Controls/WalkingControls.ts` (371 LOC)
 
 ### export class WalkingControls implements IControls<PlayerVehicle>
 
@@ -2367,7 +2367,7 @@ Generated: 2026-04-11T17:37:21.029Z
 
 ---
 
-## `World/Chunk/ChunkLoadingSystem.ts` (776 LOC)
+## `World/Chunk/ChunkLoadingSystem.ts` (819 LOC)
 
 ### export class ChunkLoadingSystem
 
@@ -2376,10 +2376,13 @@ Generated: 2026-04-11T17:37:21.029Z
 - `private static unloadQueueSet: Set<Chunk>`
 - `private static pendingRemeshChunks: Chunk[]`
 - `private static pendingRemeshChunkIds: Set<bigint>`
+- `private static readonly hydrationScratchSelectedMesh: SelectedSavedMesh`
+- `private static readonly hydrationScratchExactMesh: SelectedSavedMesh`
 - `private static debug: unknown`
 - `private static chunkEntityRegistry: unknown`
 - `private static processScheduler: unknown`
 - `private static _neighborBuffer: (Chunk | undefined)[]`
+- `private static readonly hydrationAvailableLodsCache: unknown`
 - `private static chunkHydration: unknown`
 - `private static streamingController: unknown`
 - `private static worldMutations: unknown`
@@ -2425,13 +2428,11 @@ Generated: 2026-04-11T17:37:21.029Z
 - `public static flushChunkBoundEntities(): Promise<void>`
 - `private static scheduleChunkAndNeighborsRemesh(chunk: Chunk): void`
 - `public static async updateChunksAround(chunkX: number, chunkY: number, chunkZ: number, renderDistance: unknown = SettingParams.RENDER_DISTANCE, verticalRadius: unknown = SettingParams.VERTICAL_RENDER_DISTANCE, prevChunkX?: number, prevChunkY?: number, prevChunkZ?: number): Promise<void>`
-- `private static getSavedMeshForLod(savedData: SavedChunkData, lod: number): { opaque: MeshData | null; transparent: MeshData | null } | null`
-- `private static pickBestSavedMesh(savedData: SavedChunkData, desiredLod: number): { opaque: MeshData | null; transparent: MeshData | null } | null`
 - `private static updateSliceDebugStats(state: InFlightProcessState): void`
 - `private static finalizeProcessState(state: InFlightProcessState): void`
 - `private static getReusableMeshData(opaque: MeshData | null, transparent: MeshData | null): { opaque: MeshData | null; transparent: MeshData | null; }`
-- `private static applyLoadedChunkFromSavedData(state: InFlightProcessState, request: QueuedChunkRequest, savedData: SavedChunkData): void`
 - `private static applyHydratedChunkFromSavedData(chunk: Chunk, savedData: SavedChunkData): void`
+- `private static applyLoadedChunkFromSavedData(state: InFlightProcessState, request: QueuedChunkRequest, savedData: SavedChunkData): void`
 - `public static deleteBlock(worldX: number, worldY: number, worldZ: number): void`
 - `public static setBlock(worldX: number, worldY: number, worldZ: number, blockId: number, state: unknown = 0): void`
 - `public static getBlockByWorldCoords(worldX: number, worldY: number, worldZ: number): number`
@@ -2691,7 +2692,7 @@ Generated: 2026-04-11T17:37:21.029Z
 
 ---
 
-## `World/Chunk/Loading/ChunkHydration.ts` (115 LOC)
+## `World/Chunk/Loading/ChunkHydration.ts` (159 LOC)
 
 ### export class ChunkHydration
 
@@ -2699,7 +2700,10 @@ Generated: 2026-04-11T17:37:21.029Z
 - `constructor(adapter: ChunkHydrationAdapter)`
 
 **Methods**
+- `public tryGetSavedMeshForLod(savedData: SavedChunkData, lod: number, out: SelectedSavedMesh): boolean`
 - `public getSavedMeshForLod(savedData: SavedChunkData, lod: number): SelectedSavedMesh | null`
+- `private pickBestAvailableLod(availableLods: readonly number[], desiredLod: number): number`
+- `public tryPickBestSavedMesh(savedData: SavedChunkData, desiredLod: number, out: SelectedSavedMesh): boolean`
 - `public pickBestSavedMesh(savedData: SavedChunkData, desiredLod: number): SelectedSavedMesh | null`
 - `public applyHydratedChunkFromSavedData(chunk: Chunk, savedData: SavedChunkData, scheduleRemesh: unknown = false): void`
 - `public applyLoadedChunkFromSavedData(chunk: Chunk, savedData: SavedChunkData, desiredLod: number, scheduleRemesh: unknown = false): SelectedSavedMesh | null`

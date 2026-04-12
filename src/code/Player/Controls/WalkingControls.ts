@@ -203,7 +203,10 @@ export class WalkingControls implements IControls<PlayerVehicle> {
     } else if (WalkingControls.KEY_FLASH.includes(key)) {
       this.#player.flashlight.toggle();
     } else if (key === "l") {
-      this.#player.position.y += 50;
+      //TODO delete
+      if (Map1.mainScene._activeMeshesFrozen)
+        Map1.mainScene.unfreezeActiveMeshes();
+      else Map1.mainScene.freezeActiveMeshes();
     }
 
     if (WalkingControls.KEY_DROP.includes(key)) {

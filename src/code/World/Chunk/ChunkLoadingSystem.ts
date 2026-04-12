@@ -7,7 +7,10 @@ import { getCurrentLodCacheVersion } from "./LOD/LodCacheVersion";
 import type { MeshData } from "./DataStructures/MeshData";
 
 import { ChunkEntityRegistry } from "./Loading/ChunkEntityRegistry";
-import { ChunkHydration } from "./Loading/ChunkHydration";
+import {
+  ChunkHydration,
+  type SelectedSavedMesh,
+} from "./Loading/ChunkHydration";
 import { ChunkWorldMutations } from "./Loading/ChunkWorldMutations";
 import { ChunkLoadingDebug } from "./Loading/ChunkLoadingDebug";
 import { ChunkPersistenceCoordinator } from "./Loading/ChunkPersistenceCoordinator";
@@ -26,6 +29,18 @@ export class ChunkLoadingSystem {
 
   private static pendingRemeshChunks: Chunk[] = [];
   private static pendingRemeshChunkIds: Set<bigint> = new Set();
+
+  private static readonly hydrationScratchSelectedMesh: SelectedSavedMesh = {
+    opaque: null,
+    transparent: null,
+    lod: 0,
+  };
+
+  private static readonly hydrationScratchExactMesh: SelectedSavedMesh = {
+    opaque: null,
+    transparent: null,
+    lod: 0,
+  };
 
   private static debug = new ChunkLoadingDebug();
 
@@ -107,8 +122,13 @@ export class ChunkLoadingSystem {
 
     return n;
   }
+  private static readonly hydrationAvailableLodsCache = new WeakMap<
+    SavedChunkData,
+    readonly number[]
+  >();
   private static chunkHydration = new ChunkHydration({
     getStoragePayload: (savedData) => ({
+      // IMPORTANT: zero-copy handoff
       blocks: savedData.blocks,
       palette: savedData.palette,
       isUniform: savedData.isUniform,
@@ -118,13 +138,33 @@ export class ChunkLoadingSystem {
 
     getSavedMeshForLod: (savedData, lod) => {
       if (lod === 0) {
-        if (!savedData.opaqueMesh && !savedData.transparentMesh) {
+        const hasBaseMesh =
+          !!savedData.opaqueMesh ||
+          !!savedData.transparentMesh ||
+          !!savedData.lodMeshes?.[0]?.opaque ||
+          !!savedData.lodMeshes?.[0]?.transparent;
+
+        if (!hasBaseMesh) {
+          return null;
+        }
+
+        // Prefer explicit base mesh fields first
+        if (savedData.opaqueMesh || savedData.transparentMesh) {
+          return {
+            opaque: savedData.opaqueMesh ?? null,
+            transparent: savedData.transparentMesh ?? null,
+          };
+        }
+
+        // Fallback to lodMeshes[0] if present
+        const lod0 = savedData.lodMeshes?.[0];
+        if (!lod0) {
           return null;
         }
 
         return {
-          opaque: savedData.opaqueMesh ?? null,
-          transparent: savedData.transparentMesh ?? null,
+          opaque: lod0.opaque ?? null,
+          transparent: lod0.transparent ?? null,
         };
       }
 
@@ -140,20 +180,28 @@ export class ChunkLoadingSystem {
     },
 
     getAvailableMeshLods: (savedData) => {
+      const cached =
+        ChunkLoadingSystem.hydrationAvailableLodsCache.get(savedData);
+      if (cached) {
+        return cached;
+      }
+
       const lods: number[] = [];
 
-      if (
-        savedData.opaqueMesh ||
-        savedData.transparentMesh ||
-        savedData.lodMeshes?.[0]
-      ) {
+      const hasBaseMesh =
+        !!savedData.opaqueMesh ||
+        !!savedData.transparentMesh ||
+        !!savedData.lodMeshes?.[0]?.opaque ||
+        !!savedData.lodMeshes?.[0]?.transparent;
+
+      if (hasBaseMesh) {
         lods.push(0);
       }
 
       if (savedData.lodMeshes) {
         for (const key of Object.keys(savedData.lodMeshes)) {
           const lod = Number(key);
-          if (!Number.isFinite(lod)) continue;
+          if (!Number.isInteger(lod) || lod === 0) continue;
 
           const entry = savedData.lodMeshes[lod];
           if (entry?.opaque || entry?.transparent) {
@@ -162,6 +210,9 @@ export class ChunkLoadingSystem {
         }
       }
 
+      lods.sort((a, b) => a - b);
+
+      ChunkLoadingSystem.hydrationAvailableLodsCache.set(savedData, lods);
       return lods;
     },
 
@@ -592,35 +643,6 @@ export class ChunkLoadingSystem {
     }
   }
 
-  private static getSavedMeshForLod(
-    savedData: SavedChunkData,
-    lod: number,
-  ): { opaque: MeshData | null; transparent: MeshData | null } | null {
-    const selected = this.chunkHydration.getSavedMeshForLod(savedData, lod);
-    if (!selected) return null;
-
-    return {
-      opaque: selected.opaque,
-      transparent: selected.transparent,
-    };
-  }
-
-  private static pickBestSavedMesh(
-    savedData: SavedChunkData,
-    desiredLod: number,
-  ): { opaque: MeshData | null; transparent: MeshData | null } | null {
-    const selected = this.chunkHydration.pickBestSavedMesh(
-      savedData,
-      desiredLod,
-    );
-    if (!selected) return null;
-
-    return {
-      opaque: selected.opaque,
-      transparent: selected.transparent,
-    };
-  }
-
   private static updateSliceDebugStats(state: InFlightProcessState): void {
     this.debugStats.lastProcessMs = performance.now() - state.sliceStartMs;
     this.debugStats.lastLoadedFromStorage = state.loadedFromStorageCount;
@@ -662,6 +684,55 @@ export class ChunkLoadingSystem {
     return m;
   }
 
+  private static applyHydratedChunkFromSavedData(
+    chunk: Chunk,
+    savedData: SavedChunkData,
+  ): void {
+    const currentLod = chunk.lodLevel ?? 0;
+
+    const hasSelectedMesh = this.chunkHydration.tryPickBestSavedMesh(
+      savedData,
+      currentLod,
+      this.hydrationScratchSelectedMesh,
+    );
+
+    const hasExactSavedMesh = this.chunkHydration.tryGetSavedMeshForLod(
+      savedData,
+      currentLod,
+      this.hydrationScratchExactMesh,
+    );
+
+    const selectedMesh = hasSelectedMesh
+      ? this.hydrationScratchSelectedMesh
+      : null;
+
+    const exactSavedMesh = hasExactSavedMesh
+      ? this.hydrationScratchExactMesh
+      : null;
+
+    const hasDesiredMesh =
+      !!selectedMesh && (!!selectedMesh.opaque || !!selectedMesh.transparent);
+
+    const hasExactDesiredMesh =
+      !!exactSavedMesh &&
+      (!!exactSavedMesh.opaque || !!exactSavedMesh.transparent);
+
+    this.chunkHydration.applyHydratedChunkFromSavedData(
+      chunk,
+      savedData,
+      !hasExactDesiredMesh,
+    );
+
+    if (hasDesiredMesh) {
+      ChunkMesher.createMeshFromData(
+        chunk,
+        this.getReusableMeshData(
+          selectedMesh!.opaque,
+          selectedMesh!.transparent,
+        ),
+      );
+    }
+  }
   private static applyLoadedChunkFromSavedData(
     state: InFlightProcessState,
     request: QueuedChunkRequest,
@@ -677,19 +748,39 @@ export class ChunkLoadingSystem {
 
     state.loadedFromStorageCount++;
 
-    const savedLODMesh = this.pickBestSavedMesh(savedData, targetLod);
-    const exactSavedMesh = this.getSavedMeshForLod(savedData, targetLod);
+    const hasSelectedMesh = this.chunkHydration.tryPickBestSavedMesh(
+      savedData,
+      targetLod,
+      this.hydrationScratchSelectedMesh,
+    );
+
+    const hasExactSavedMesh = this.chunkHydration.tryGetSavedMeshForLod(
+      savedData,
+      targetLod,
+      this.hydrationScratchExactMesh,
+    );
+
+    const selectedMesh = hasSelectedMesh
+      ? this.hydrationScratchSelectedMesh
+      : null;
+
+    const exactSavedMesh = hasExactSavedMesh
+      ? this.hydrationScratchExactMesh
+      : null;
 
     const hasDesiredMesh =
-      !!savedLODMesh && (!!savedLODMesh.opaque || !!savedLODMesh.transparent);
+      !!selectedMesh && (!!selectedMesh.opaque || !!selectedMesh.transparent);
+
     const hasExactDesiredMesh =
       !!exactSavedMesh &&
       (!!exactSavedMesh.opaque || !!exactSavedMesh.transparent);
 
     chunk.lodLevel = targetLod;
 
+    // Restore serialized LOD cache ONCE here.
     chunk.restoreLODMeshCache(savedData.lodMeshes);
 
+    // Keep explicit LOD0 cached if base meshes exist
     if (savedData.opaqueMesh || savedData.transparentMesh) {
       chunk.setCachedLODMesh(0, {
         opaque: savedData.opaqueMesh ?? null,
@@ -701,10 +792,14 @@ export class ChunkLoadingSystem {
     if (targetLod >= 2) {
       if (hasDesiredMesh) {
         chunk.loadLodOnlyFromStorage(false);
-        ChunkMesher.createMeshFromData(chunk, {
-          opaque: savedLODMesh!.opaque,
-          transparent: savedLODMesh!.transparent,
-        });
+
+        ChunkMesher.createMeshFromData(
+          chunk,
+          this.getReusableMeshData(
+            selectedMesh!.opaque,
+            selectedMesh!.transparent,
+          ),
+        );
 
         this.traceChunk(chunk.id, "far-mesh-applied", {
           targetLod,
@@ -712,8 +807,7 @@ export class ChunkLoadingSystem {
         return;
       }
 
-      // If we do not have a usable far mesh, do NOT silently unschedule.
-      // Fall back to hydration so the chunk can still become visible.
+      // No usable far mesh: fall back to full hydration later
       state.chunksNeedingFullHydration.add(chunk.id);
 
       this.traceChunk(chunk.id, "far-no-mesh-needs-hydration", {
@@ -723,6 +817,8 @@ export class ChunkLoadingSystem {
       return;
     }
 
+    // Near LOD path:
+    // Hydrate storage directly here so we do NOT restore the LOD cache twice.
     chunk.loadFromStorage(
       savedData.blocks,
       savedData.palette,
@@ -736,49 +832,14 @@ export class ChunkLoadingSystem {
       ChunkMesher.createMeshFromData(
         chunk,
         this.getReusableMeshData(
-          savedLODMesh!.opaque,
-          savedLODMesh!.transparent,
+          selectedMesh!.opaque,
+          selectedMesh!.transparent,
         ),
       );
 
       if (targetLod === 0) {
         this.scheduleChunkBorderRemeshOnLoad(chunk);
       }
-    }
-  }
-
-  private static applyHydratedChunkFromSavedData(
-    chunk: Chunk,
-    savedData: SavedChunkData,
-  ): void {
-    const currentLod = chunk.lodLevel ?? 0;
-
-    const selectedMesh = this.chunkHydration.pickBestSavedMesh(
-      savedData,
-      currentLod,
-    );
-    const exactSavedMesh = this.chunkHydration.getSavedMeshForLod(
-      savedData,
-      currentLod,
-    );
-
-    const hasDesiredMesh =
-      !!selectedMesh && (!!selectedMesh.opaque || !!selectedMesh.transparent);
-    const hasExactDesiredMesh =
-      !!exactSavedMesh &&
-      (!!exactSavedMesh.opaque || !!exactSavedMesh.transparent);
-
-    this.chunkHydration.applyHydratedChunkFromSavedData(
-      chunk,
-      savedData,
-      !hasExactDesiredMesh,
-    );
-
-    if (hasDesiredMesh) {
-      ChunkMesher.createMeshFromData(chunk, {
-        opaque: selectedMesh!.opaque,
-        transparent: selectedMesh!.transparent,
-      });
     }
   }
 
