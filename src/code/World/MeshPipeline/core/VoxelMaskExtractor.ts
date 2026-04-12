@@ -54,7 +54,7 @@ const FLAG_WATER_GLASS = 1 << 4;
 const BLOCK_FLAGS_CACHE = new Uint8Array(DENSE_CACHE_SIZE);
 const BLOCK_FLAGS_READY = new Uint8Array(DENSE_CACHE_SIZE);
 const BLOCK_ID_CACHE = new Uint16Array(DENSE_CACHE_SIZE);
-
+type WritableNumberArray = number[] | Int32Array | Uint16Array | Uint32Array;
 function canUseDenseCache(packed: number): boolean {
   return packed >= 0 && packed <= DENSE_CACHE_MASK;
 }
@@ -223,334 +223,522 @@ export class VoxelMaskExtractor {
     );
   }
 
-  public extractSliceMask(
+  private clearSlice(
+    mask: WritableNumberArray,
+    lightMask: WritableNumberArray,
+    size: number,
+  ): void {
+    const total = size * size;
+    mask.fill(0, 0, total);
+    lightMask.fill(0, 0, total);
+  }
+
+  /**
+   * Shared per-cell logic.
+   *
+   * Second optimization pass:
+   * - derive cube/partial from cached flags
+   * - resolve getShapeInfo(...) lazily only on the slow path
+   * - keep your exact visibility / AO / water-glass logic unchanged
+   */
+  private processCell(
     axis: number,
+    bx: number,
+    by: number,
+    bz: number,
+    dx: number,
+    dy: number,
+    dz: number,
+    uAxis: number,
+    vAxis: number,
+    currentFaceBit: number,
+    neighborFaceBit: number,
+    outIndex: number,
+    mask: WritableNumberArray,
+    lightMask: WritableNumberArray,
+  ): void {
+    const nx = bx + dx;
+    const ny = by + dy;
+    const nz = bz + dz;
+
+    const currentPacked = this.samplePacked(bx, by, bz, 0);
+    const neighborPacked = this.samplePacked(nx, ny, nz, 0);
+
+    const currFlags = getCachedFlags(currentPacked);
+    const nbrFlags = getCachedFlags(neighborPacked);
+
+    const currSolid = (currFlags & FLAG_SOLID) !== 0;
+    const nbrSolid = (nbrFlags & FLAG_SOLID) !== 0;
+
+    // Air vs air = no face
+    if (!currSolid && !nbrSolid) {
+      mask[outIndex] = 0;
+      lightMask[outIndex] = 0;
+      return;
+    }
+
+    const preserveTransparentInterface = this.isWaterGlassInterface(
+      currentPacked,
+      currFlags,
+      neighborPacked,
+      nbrFlags,
+    );
+
+    // Participation in greedy OUTPUT is restricted to greedy-compatible shapes.
+    // Non-greedy shapes may still OCCLUDE via closedFaceMask checks below.
+    const currParticipates = currSolid && (currFlags & FLAG_GREEDY) !== 0;
+    const nbrParticipates = nbrSolid && (nbrFlags & FLAG_GREEDY) !== 0;
+
+    const currTransparent = (currFlags & FLAG_TRANSPARENT) !== 0;
+    const nbrTransparent = (nbrFlags & FLAG_TRANSPARENT) !== 0;
+
+    /**
+     * Important optimization:
+     * We already cache whether a shape is partial (non-cube) in FLAG_PARTIAL.
+     * So we can decide cube vs. partial without calling getShapeInfo(...) yet.
+     */
+    const currCube = currParticipates && (currFlags & FLAG_PARTIAL) === 0;
+    const nbrCube = nbrParticipates && (nbrFlags & FLAG_PARTIAL) === 0;
+    const bothCube = currCube && nbrCube;
+
+    /**
+     * Lazy shape resolution:
+     * Only fetch shape info if the slow path actually needs it.
+     */
+    let currShape: ReturnType<typeof getShapeInfo> | undefined | null =
+      undefined;
+    let nbrShape: ReturnType<typeof getShapeInfo> | undefined | null =
+      undefined;
+
+    const getCurrShape = () => {
+      if (currShape === undefined) {
+        currShape = currSolid ? getShapeInfo(currentPacked) : null;
+      }
+      return currShape ?? undefined;
+    };
+
+    const getNbrShape = () => {
+      if (nbrShape === undefined) {
+        nbrShape = nbrSolid ? getShapeInfo(neighborPacked) : null;
+      }
+      return nbrShape ?? undefined;
+    };
+
+    /**
+     * FAST PATH: cube vs cube
+     *
+     * This is the hot common case in terrain chunks.
+     * If both sides are participating, solid, non-transparent full cubes,
+     * the shared face is internal -> cull it.
+     *
+     * IMPORTANT:
+     * glass/water transparent interfaces must NOT be culled here.
+     */
+    if (bothCube) {
+      if (
+        !preserveTransparentInterface &&
+        currParticipates &&
+        nbrParticipates &&
+        !currTransparent &&
+        !nbrTransparent
+      ) {
+        mask[outIndex] = 0;
+        lightMask[outIndex] = 0;
+        return;
+      }
+    } else {
+      /**
+       * SLOW PATH: directional shape-aware face closure
+       *
+       * Cull the face only if:
+       * - current closes the face toward neighbor
+       * - and neighbor closes the opposite face back toward current
+       *
+       * IMPORTANT:
+       * glass/water interfaces must not be culled here either.
+       *
+       * Note:
+       * custom/non-greedy shapes are allowed to OCCLUDE here even though
+       * they do not participate in greedy output.
+       */
+      const currShapeInfo = getCurrShape();
+      const nbrShapeInfo = getNbrShape();
+
+      const currCloses =
+        currSolid &&
+        !!currShapeInfo &&
+        (currShapeInfo.closedFaceMask & currentFaceBit) !== 0;
+
+      const nbrCloses =
+        nbrSolid &&
+        !!nbrShapeInfo &&
+        (nbrShapeInfo.closedFaceMask & neighborFaceBit) !== 0;
+
+      if (!preserveTransparentInterface && currCloses && nbrCloses) {
+        mask[outIndex] = 0;
+        lightMask[outIndex] = 0;
+        return;
+      }
+    }
+
+    /**
+     * Preserve a visible interface between different water/glass-type transparent blocks.
+     * Emit exactly one deterministic face to avoid z-fighting.
+     *
+     * Only emit if the chosen side participates in the greedy path.
+     * If not, the separate custom-shape pass should own that geometry.
+     */
+    if (preserveTransparentInterface) {
+      const currId = getCachedBlockId(currentPacked);
+      const nbrId = getCachedBlockId(neighborPacked);
+
+      // Prefer glass over water if one side is glass.
+      const preferCurrent =
+        currId === 60 || currId === 61
+          ? true
+          : nbrId === 60 || nbrId === 61
+            ? false
+            : true;
+
+      let packedMask = 0;
+      let packedLightOnly = 0;
+      let packedAO = 0;
+
+      if (preferCurrent && currParticipates) {
+        const currShapeInfo = getCurrShape();
+        if (!currShapeInfo) {
+          mask[outIndex] = 0;
+          lightMask[outIndex] = 0;
+          return;
+        }
+
+        packedMask =
+          (currentPacked & PACKED_ID_STATE_MASK) |
+          (currShapeInfo.isCube ? 0 : NON_CUBE_MASK);
+
+        packedLightOnly = this.pickLight(bx, by, bz, dx, dy, dz);
+
+        packedAO = this.ctx.disableAO
+          ? 0
+          : computeAO(
+              this.ctx,
+              nx,
+              ny,
+              nz,
+              axis,
+              false,
+              uAxis,
+              vAxis,
+              getShapeInfo,
+            );
+      } else if (!preferCurrent && nbrParticipates) {
+        const nbrShapeInfo = getNbrShape();
+        if (!nbrShapeInfo) {
+          mask[outIndex] = 0;
+          lightMask[outIndex] = 0;
+          return;
+        }
+
+        packedMask =
+          (neighborPacked & PACKED_ID_STATE_MASK) |
+          (nbrShapeInfo.isCube ? 0 : NON_CUBE_MASK) |
+          BACK_FACE_MASK;
+
+        packedLightOnly = this.pickLight(bx, by, bz, dx, dy, dz);
+
+        packedAO = this.ctx.disableAO
+          ? 0
+          : computeAO(
+              this.ctx,
+              bx,
+              by,
+              bz,
+              axis,
+              true,
+              uAxis,
+              vAxis,
+              getShapeInfo,
+            );
+      } else {
+        // If the preferred side is non-greedy, let the custom-shape pass own it.
+        mask[outIndex] = 0;
+        lightMask[outIndex] = 0;
+        return;
+      }
+
+      mask[outIndex] = packedMask;
+      lightMask[outIndex] = (packedAO & 0xff) | ((packedLightOnly & 0xff) << 8);
+
+      return;
+    }
+
+    /**
+     * Decide which side emits through the GREEDY path.
+     *
+     * Participation rule:
+     * - the emitting side must be greedy-compatible
+     * - the opposing side may still be non-greedy and still occlude
+     */
+    const nbrShapeInfo = nbrSolid ? getNbrShape() : undefined;
+    const currShapeInfo = currSolid ? getCurrShape() : undefined;
+
+    const nbrClosesFace =
+      nbrSolid &&
+      !!nbrShapeInfo &&
+      (nbrShapeInfo.closedFaceMask & neighborFaceBit) !== 0;
+
+    const currClosesFace =
+      currSolid &&
+      !!currShapeInfo &&
+      (currShapeInfo.closedFaceMask & currentFaceBit) !== 0;
+
+    const emitCurrent =
+      currParticipates &&
+      (!nbrSolid || (nbrTransparent && !currTransparent) || !nbrClosesFace);
+
+    const emitNeighbor =
+      nbrParticipates &&
+      (!currSolid || (currTransparent && !nbrTransparent) || !currClosesFace);
+
+    if (!emitCurrent && !emitNeighbor) {
+      mask[outIndex] = 0;
+      lightMask[outIndex] = 0;
+      return;
+    }
+
+    let packedMask = 0;
+    let packedLightOnly = 0;
+    let packedAO = 0;
+
+    // Prefer current side deterministically when both are technically open.
+    if (emitCurrent && currShapeInfo) {
+      packedMask =
+        (currentPacked & PACKED_ID_STATE_MASK) |
+        (currShapeInfo.isCube ? 0 : NON_CUBE_MASK);
+
+      packedLightOnly = this.pickLight(bx, by, bz, dx, dy, dz);
+
+      // Front/current face:
+      // AO anchor must be the outside cell in front of the face.
+      packedAO = this.ctx.disableAO
+        ? 0
+        : computeAO(
+            this.ctx,
+            nx,
+            ny,
+            nz,
+            axis,
+            false,
+            uAxis,
+            vAxis,
+            getShapeInfo,
+          );
+    } else if (nbrShapeInfo) {
+      packedMask =
+        (neighborPacked & PACKED_ID_STATE_MASK) |
+        (nbrShapeInfo.isCube ? 0 : NON_CUBE_MASK) |
+        BACK_FACE_MASK;
+
+      packedLightOnly = this.pickLight(bx, by, bz, dx, dy, dz);
+
+      // Back/neighbor face:
+      // AO anchor is the current block cell, and this IS a back face.
+      packedAO = this.ctx.disableAO
+        ? 0
+        : computeAO(
+            this.ctx,
+            bx,
+            by,
+            bz,
+            axis,
+            true,
+            uAxis,
+            vAxis,
+            getShapeInfo,
+          );
+    } else {
+      mask[outIndex] = 0;
+      lightMask[outIndex] = 0;
+      return;
+    }
+
+    mask[outIndex] = packedMask;
+    lightMask[outIndex] = (packedAO & 0xff) | ((packedLightOnly & 0xff) << 8);
+  }
+
+  private extractSliceMaskX(
     slice: number,
-    mask: number[],
-    lightMask: number[],
+    mask: WritableNumberArray,
+    lightMask: WritableNumberArray,
   ): void {
     const size = this.ctx.size;
+    const axis = 0;
+    const dx = 1;
+    const dy = 0;
+    const dz = 0;
 
-    const dx = axis === 0 ? 1 : 0;
-    const dy = axis === 1 ? 1 : 0;
-    const dz = axis === 2 ? 1 : 0;
-
-    const uAxis = (axis + 1) % 3;
-    const vAxis = (axis + 2) % 3;
+    const uAxis = 1;
+    const vAxis = 2;
 
     const currentFaceBit = this.getCurrentFaceBit(axis);
     const neighborFaceBit = this.getNeighborFaceBit(axis);
+
+    // Only the positive boundary can cross for this extractor.
+    if (slice === size - 1 && !this.ctx.hasNeighborChunk(1, 0, 0)) {
+      this.clearSlice(mask, lightMask, size);
+      return;
+    }
 
     let idx = 0;
 
     for (let v = 0; v < size; v++) {
       for (let u = 0; u < size; u++) {
-        const pos = [0, 0, 0] as [number, number, number];
+        const bx = slice;
+        const by = u;
+        const bz = v;
 
-        pos[axis] = slice;
-        pos[uAxis] = u;
-        pos[vAxis] = v;
-
-        const bx = pos[0];
-        const by = pos[1];
-        const bz = pos[2];
-
-        const nx = bx + dx;
-        const ny = by + dy;
-        const nz = bz + dz;
-
-        // If this face crosses a chunk boundary and the neighbor chunk is not loaded,
-        // do NOT emit anything yet. Wait for neighbor load + remesh.
-        if (
-          nx < 0 ||
-          ny < 0 ||
-          nz < 0 ||
-          nx >= size ||
-          ny >= size ||
-          nz >= size
-        ) {
-          const ndx = nx < 0 ? -1 : nx >= size ? 1 : 0;
-          const ndy = ny < 0 ? -1 : ny >= size ? 1 : 0;
-          const ndz = nz < 0 ? -1 : nz >= size ? 1 : 0;
-
-          if (!this.ctx.hasNeighborChunk(ndx, ndy, ndz)) {
-            mask[idx] = 0;
-            lightMask[idx] = 0;
-            idx++;
-            continue;
-          }
-        }
-
-        const currentPacked = this.samplePacked(bx, by, bz, 0);
-        const neighborPacked = this.samplePacked(nx, ny, nz, 0);
-
-        const currFlags = getCachedFlags(currentPacked);
-        const nbrFlags = getCachedFlags(neighborPacked);
-
-        const currSolid = (currFlags & FLAG_SOLID) !== 0;
-        const nbrSolid = (nbrFlags & FLAG_SOLID) !== 0;
-
-        // Air vs air = no face
-        if (!currSolid && !nbrSolid) {
-          mask[idx] = 0;
-          lightMask[idx] = 0;
-          idx++;
-          continue;
-        }
-
-        const preserveTransparentInterface = this.isWaterGlassInterface(
-          currentPacked,
-          currFlags,
-          neighborPacked,
-          nbrFlags,
+        this.processCell(
+          axis,
+          bx,
+          by,
+          bz,
+          dx,
+          dy,
+          dz,
+          uAxis,
+          vAxis,
+          currentFaceBit,
+          neighborFaceBit,
+          idx,
+          mask,
+          lightMask,
         );
-
-        // Participation in greedy OUTPUT is restricted to greedy-compatible shapes.
-        // Non-greedy shapes may still OCCLUDE via closedFaceMask checks below.
-        const currParticipates = currSolid && (currFlags & FLAG_GREEDY) !== 0;
-        const nbrParticipates = nbrSolid && (nbrFlags & FLAG_GREEDY) !== 0;
-
-        const currShape = currSolid ? getShapeInfo(currentPacked) : undefined;
-        const nbrShape = nbrSolid ? getShapeInfo(neighborPacked) : undefined;
-
-        const currCube = currParticipates && !!currShape?.isCube;
-        const nbrCube = nbrParticipates && !!nbrShape?.isCube;
-        const bothCube = currCube && nbrCube;
-
-        const currTransparent = (currFlags & FLAG_TRANSPARENT) !== 0;
-        const nbrTransparent = (nbrFlags & FLAG_TRANSPARENT) !== 0;
-
-        /**
-         * FAST PATH: cube vs cube
-         *
-         * This is the hot common case in terrain chunks.
-         * If both sides are participating, solid, non-transparent full cubes,
-         * the shared face is internal -> cull it.
-         *
-         * IMPORTANT:
-         * glass/water transparent interfaces must NOT be culled here.
-         */
-        if (bothCube) {
-          if (
-            !preserveTransparentInterface &&
-            currParticipates &&
-            nbrParticipates &&
-            !currTransparent &&
-            !nbrTransparent
-          ) {
-            mask[idx] = 0;
-            lightMask[idx] = 0;
-            idx++;
-            continue;
-          }
-        } else {
-          /**
-           * SLOW PATH: directional shape-aware face closure
-           *
-           * Cull the face only if:
-           * - current closes the face toward neighbor
-           * - and neighbor closes the opposite face back toward current
-           *
-           * IMPORTANT:
-           * glass/water interfaces must not be culled here either.
-           *
-           * Note:
-           * custom/non-greedy shapes are allowed to OCCLUDE here even though
-           * they do not participate in greedy output.
-           */
-          const currCloses =
-            currSolid &&
-            !!currShape &&
-            (currShape.closedFaceMask & currentFaceBit) !== 0;
-
-          const nbrCloses =
-            nbrSolid &&
-            !!nbrShape &&
-            (nbrShape.closedFaceMask & neighborFaceBit) !== 0;
-
-          if (!preserveTransparentInterface && currCloses && nbrCloses) {
-            mask[idx] = 0;
-            lightMask[idx] = 0;
-            idx++;
-            continue;
-          }
-        }
-
-        /**
-         * Preserve a visible interface between different water/glass-type transparent blocks.
-         * Emit exactly one deterministic face to avoid z-fighting.
-         *
-         * Only emit if the chosen side participates in the greedy path.
-         * If not, the separate custom-shape pass should own that geometry.
-         */
-        if (preserveTransparentInterface) {
-          const currId = getCachedBlockId(currentPacked);
-          const nbrId = getCachedBlockId(neighborPacked);
-
-          // Prefer glass over water if one side is glass.
-          const preferCurrent =
-            currId === 60 || currId === 61
-              ? true
-              : nbrId === 60 || nbrId === 61
-                ? false
-                : true;
-
-          let packedMask = 0;
-          let packedLightOnly = 0;
-          let packedAO = 0;
-
-          if (preferCurrent && currParticipates && currShape) {
-            packedMask =
-              (currentPacked & PACKED_ID_STATE_MASK) |
-              (currShape.isCube ? 0 : NON_CUBE_MASK);
-
-            packedLightOnly = this.pickLight(bx, by, bz, dx, dy, dz);
-
-            packedAO = this.ctx.disableAO
-              ? 0
-              : computeAO(
-                  this.ctx,
-                  nx,
-                  ny,
-                  nz,
-                  axis,
-                  false,
-                  uAxis,
-                  vAxis,
-                  getShapeInfo,
-                );
-          } else if (!preferCurrent && nbrParticipates && nbrShape) {
-            packedMask =
-              (neighborPacked & PACKED_ID_STATE_MASK) |
-              (nbrShape.isCube ? 0 : NON_CUBE_MASK) |
-              BACK_FACE_MASK;
-
-            packedLightOnly = this.pickLight(bx, by, bz, dx, dy, dz);
-
-            packedAO = this.ctx.disableAO
-              ? 0
-              : computeAO(
-                  this.ctx,
-                  bx,
-                  by,
-                  bz,
-                  axis,
-                  true,
-                  uAxis,
-                  vAxis,
-                  getShapeInfo,
-                );
-          } else {
-            // If the preferred side is non-greedy, let the custom-shape pass own it.
-            mask[idx] = 0;
-            lightMask[idx] = 0;
-            idx++;
-            continue;
-          }
-
-          mask[idx] = packedMask;
-          lightMask[idx] = (packedAO & 0xff) | ((packedLightOnly & 0xff) << 8);
-
-          idx++;
-          continue;
-        }
-
-        /**
-         * Decide which side emits through the GREEDY path.
-         *
-         * Participation rule:
-         * - the emitting side must be greedy-compatible
-         * - the opposing side may still be non-greedy and still occlude
-         */
-        const nbrClosesFace =
-          nbrSolid &&
-          !!nbrShape &&
-          (nbrShape.closedFaceMask & neighborFaceBit) !== 0;
-
-        const currClosesFace =
-          currSolid &&
-          !!currShape &&
-          (currShape.closedFaceMask & currentFaceBit) !== 0;
-
-        const emitCurrent =
-          currParticipates &&
-          (!nbrSolid || (nbrTransparent && !currTransparent) || !nbrClosesFace);
-
-        const emitNeighbor =
-          nbrParticipates &&
-          (!currSolid ||
-            (currTransparent && !nbrTransparent) ||
-            !currClosesFace);
-
-        if (!emitCurrent && !emitNeighbor) {
-          mask[idx] = 0;
-          lightMask[idx] = 0;
-          idx++;
-          continue;
-        }
-
-        let packedMask = 0;
-        let packedLightOnly = 0;
-        let packedAO = 0;
-
-        // Prefer current side deterministically when both are technically open.
-        if (emitCurrent && currShape) {
-          packedMask =
-            (currentPacked & PACKED_ID_STATE_MASK) |
-            (currShape.isCube ? 0 : NON_CUBE_MASK);
-
-          packedLightOnly = this.pickLight(bx, by, bz, dx, dy, dz);
-
-          // Front/current face:
-          // AO anchor must be the outside cell in front of the face.
-          packedAO = this.ctx.disableAO
-            ? 0
-            : computeAO(
-                this.ctx,
-                nx,
-                ny,
-                nz,
-                axis,
-                false,
-                uAxis,
-                vAxis,
-                getShapeInfo,
-              );
-        } else if (nbrShape) {
-          packedMask =
-            (neighborPacked & PACKED_ID_STATE_MASK) |
-            (nbrShape.isCube ? 0 : NON_CUBE_MASK) |
-            BACK_FACE_MASK;
-
-          packedLightOnly = this.pickLight(bx, by, bz, dx, dy, dz);
-
-          // Back/neighbor face:
-          // AO anchor is the current block cell, and this IS a back face.
-          packedAO = this.ctx.disableAO
-            ? 0
-            : computeAO(
-                this.ctx,
-                bx,
-                by,
-                bz,
-                axis,
-                true,
-                uAxis,
-                vAxis,
-                getShapeInfo,
-              );
-        } else {
-          mask[idx] = 0;
-          lightMask[idx] = 0;
-          idx++;
-          continue;
-        }
-
-        mask[idx] = packedMask;
-        lightMask[idx] = (packedAO & 0xff) | ((packedLightOnly & 0xff) << 8);
 
         idx++;
       }
     }
+  }
+
+  private extractSliceMaskY(
+    slice: number,
+    mask: WritableNumberArray,
+    lightMask: WritableNumberArray,
+  ): void {
+    const size = this.ctx.size;
+    const axis = 1;
+    const dx = 0;
+    const dy = 1;
+    const dz = 0;
+
+    const uAxis = 2;
+    const vAxis = 0;
+
+    const currentFaceBit = this.getCurrentFaceBit(axis);
+    const neighborFaceBit = this.getNeighborFaceBit(axis);
+
+    if (slice === size - 1 && !this.ctx.hasNeighborChunk(0, 1, 0)) {
+      this.clearSlice(mask, lightMask, size);
+      return;
+    }
+
+    let idx = 0;
+
+    for (let v = 0; v < size; v++) {
+      for (let u = 0; u < size; u++) {
+        const bx = v;
+        const by = slice;
+        const bz = u;
+
+        this.processCell(
+          axis,
+          bx,
+          by,
+          bz,
+          dx,
+          dy,
+          dz,
+          uAxis,
+          vAxis,
+          currentFaceBit,
+          neighborFaceBit,
+          idx,
+          mask,
+          lightMask,
+        );
+
+        idx++;
+      }
+    }
+  }
+
+  private extractSliceMaskZ(
+    slice: number,
+    mask: WritableNumberArray,
+    lightMask: WritableNumberArray,
+  ): void {
+    const size = this.ctx.size;
+    const axis = 2;
+    const dx = 0;
+    const dy = 0;
+    const dz = 1;
+
+    const uAxis = 0;
+    const vAxis = 1;
+
+    const currentFaceBit = this.getCurrentFaceBit(axis);
+    const neighborFaceBit = this.getNeighborFaceBit(axis);
+
+    if (slice === size - 1 && !this.ctx.hasNeighborChunk(0, 0, 1)) {
+      this.clearSlice(mask, lightMask, size);
+      return;
+    }
+
+    let idx = 0;
+
+    for (let v = 0; v < size; v++) {
+      for (let u = 0; u < size; u++) {
+        const bx = u;
+        const by = v;
+        const bz = slice;
+
+        this.processCell(
+          axis,
+          bx,
+          by,
+          bz,
+          dx,
+          dy,
+          dz,
+          uAxis,
+          vAxis,
+          currentFaceBit,
+          neighborFaceBit,
+          idx,
+          mask,
+          lightMask,
+        );
+
+        idx++;
+      }
+    }
+  }
+
+  public extractSliceMask(
+    axis: number,
+    slice: number,
+    mask: WritableNumberArray,
+    lightMask: WritableNumberArray,
+  ): void {
+    if (axis === 0) {
+      this.extractSliceMaskX(slice, mask, lightMask);
+      return;
+    }
+
+    if (axis === 1) {
+      this.extractSliceMaskY(slice, mask, lightMask);
+      return;
+    }
+
+    this.extractSliceMaskZ(slice, mask, lightMask);
   }
 }
