@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-04-12T19:45:30.782Z
+Generated: 2026-04-13T02:16:28.570Z
 
-> **Summary:** 101 classes · 1760 members · 75 module-level functions · 26776 LOC
+> **Summary:** 101 classes · 1776 members · 76 module-level functions · 27170 LOC
 
 ---
 
@@ -642,7 +642,7 @@ Generated: 2026-04-12T19:45:30.782Z
 
 ---
 
-## `Generation/SurfaceGenerator.ts` (455 LOC)
+## `Generation/SurfaceGenerator.ts` (676 LOC)
 
 ### export class SurfaceGenerator
 
@@ -662,6 +662,12 @@ Generated: 2026-04-12T19:45:30.782Z
 - `private static readonly SURFACE_RESET_AIR_GAP: unknown`
 - `private static readonly NO_SURFACE_Y: unknown`
 - `private static seedAsInt: number`
+- `private static readonly MAX_COLUMN_PREPASS_CACHE: unknown`
+- `private static readonly columnPrepassCache: unknown`
+- `private static readonly columnPrepassFifo: string[]`
+- `private static readonly MAX_FLORA_COLUMN_CACHE: unknown`
+- `private static readonly floraColumnCache: unknown`
+- `private static readonly floraColumnCacheFifo: string[]`
 - `private chunk_size: number`
 - `private riverGenerator: RiverGenerator`
 - `private features: IWorldFeature[]`
@@ -671,6 +677,10 @@ Generated: 2026-04-12T19:45:30.782Z
   ) => number`
 
 **Methods**
+- `private getColumnPrepassKey(chunkX: number, chunkZ: number): string`
+- `private getOrBuildColumnPrepass(chunkX: number, chunkZ: number): ColumnPrepassCacheEntry`
+- `private getFloraColumnKey(worldX: number, worldZ: number): string`
+- `private getOrBuildFloraColumnInfo(worldX: number, worldZ: number, knownTopSurfaceY?: number): FloraColumnCacheEntry`
 - `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
       x: number,
       y: number,
@@ -678,6 +688,7 @@ Generated: 2026-04-12T19:45:30.782Z
       id: number,
       ow?: boolean,
     ) => void): SurfaceGenerationResult`
+- `private resolveSolidBlockId(currentBiome: Biome, worldX: number, worldZ: number, worldY: number, depthBelowSurface: number): number`
 - `private generateTerrain(chunkX: number, chunkY: number, chunkZ: number, currentBiome: Biome, placeBlock: (
       x: number,
       y: number,
@@ -701,6 +712,8 @@ Generated: 2026-04-12T19:45:30.782Z
 
 **Types / Interfaces / Enums**
 - type `SurfaceGenerationResult`
+- type `ColumnPrepassCacheEntry`
+- type `FloraColumnCacheEntry`
 
 ---
 
@@ -3308,14 +3321,19 @@ Generated: 2026-04-12T19:45:30.782Z
 
 ---
 
-## `World/MeshPipeline/core/GreedyPipeline.ts` (69 LOC)
+## `World/MeshPipeline/core/GreedyPipeline.ts` (92 LOC)
 
 **Module-level functions**
+- `function ensureScratchCapacity(area: number): {
+  mask: Int32Array;
+  lights: Uint16Array;
+}`
 - `export function greedyMesh(ctx: MeshContext, axis: number, extractMask: MaskExtractor, emitFace: FaceEmitterCallback): void`
 
 **Types / Interfaces / Enums**
 - interface `MaskExtractor`
 - interface `FaceEmitterCallback`
+- type `WritableNumberArray`
 
 ---
 
@@ -3426,7 +3444,7 @@ Generated: 2026-04-12T19:45:30.782Z
 
 ---
 
-## `World/MeshPipeline/core/VoxelMaskExtractor.ts` (379 LOC)
+## `World/MeshPipeline/core/VoxelMaskExtractor.ts` (529 LOC)
 
 ### export class VoxelMaskExtractor
 
@@ -3442,12 +3460,20 @@ Generated: 2026-04-12T19:45:30.782Z
 - `private getNeighborFaceBit(axis: number): number`
 - `private isWaterGlassInterface(currPacked: number, currFlags: number, nbrPacked: number, nbrFlags: number): boolean`
 - `private pickLight(x: number, y: number, z: number, dx: number, dy: number, dz: number): number`
-- `public extractSliceMask(axis: number, slice: number, mask: number[], lightMask: number[]): void`
+- `private clearSlice(mask: WritableNumberArray, lightMask: WritableNumberArray, size: number): void`
+- `private processCell(axis: number, bx: number, by: number, bz: number, dx: number, dy: number, dz: number, uAxis: number, vAxis: number, currentFaceBit: number, neighborFaceBit: number, outIndex: number, mask: WritableNumberArray, lightMask: WritableNumberArray): void`
+- `private extractSliceMaskX(slice: number, mask: WritableNumberArray, lightMask: WritableNumberArray): void`
+- `private extractSliceMaskY(slice: number, mask: WritableNumberArray, lightMask: WritableNumberArray): void`
+- `private extractSliceMaskZ(slice: number, mask: WritableNumberArray, lightMask: WritableNumberArray): void`
+- `public extractSliceMask(axis: number, slice: number, mask: WritableNumberArray, lightMask: WritableNumberArray): void`
 
 **Module-level functions**
 - `function canUseDenseCache(packed: number): boolean`
 - `function getCachedBlockId(packed: number): number`
 - `function getCachedFlags(packed: number): number`
+
+**Types / Interfaces / Enums**
+- type `WritableNumberArray`
 
 ---
 
