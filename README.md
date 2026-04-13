@@ -1,8 +1,11 @@
+
 # b102
 
 `b102` is a browser-based voxel world engine and sandbox prototype written in TypeScript using Babylon.js.
 The project is served and developed using Vite.
 It focuses on procedural world generation, chunk-based streaming, voxel rendering, and player interaction systems.
+
+<img width="1851" height="834" alt="Game" src="https://github.com/user-attachments/assets/9935f7ac-24be-47f5-b4f7-ca9d2aa39ecd" />
 
 ## Overview
 
