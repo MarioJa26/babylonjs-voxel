@@ -42,9 +42,7 @@ export class ChunkStreamingController {
 	) {}
 
 	public getDesiredState(chunkId: bigint): DesiredChunkState | undefined {
-		const state = this.desiredStates.get(chunkId);
-
-		return state;
+		return this.desiredStates.get(chunkId);
 	}
 
 	public async updateChunksAround(
