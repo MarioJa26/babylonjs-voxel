@@ -122,7 +122,7 @@ export class ChunkProcessScheduler {
 
 		state.unloadBatch.length = 0;
 		state.unloadBatchIndex = 0;
-		state.savedChunkIds?.clear();
+		state.savedChunkIds.clear();
 
 		state.loadBatch.length = 0;
 		state.validLoadBatch.length = 0;
@@ -242,11 +242,7 @@ export class ChunkProcessScheduler {
 						) {
 							const chunk = state.unloadBatch[state.unloadBatchIndex++];
 
-							if (chunk.isPersistent) {
-								continue;
-							}
-
-							if (!chunk.isLoaded) {
+							if (chunk.isPersistent || !chunk.isLoaded) {
 								continue;
 							}
 
@@ -308,21 +304,16 @@ export class ChunkProcessScheduler {
 
 						for (let i = 0; i < state.loadBatch.length; i++) {
 							const request = state.loadBatch[i];
+							if (!request.chunk.isTerrainScheduled) {
+								continue;
+							}
 							const desired = this.adapter.getDesiredState(request.chunk.id);
 
-							if (!desired) {
-								continue;
-							}
-
-							if (desired.revision !== request.revision) {
-								continue;
-							}
-
-							if (desired.desiredLod !== request.desiredLod) {
-								continue;
-							}
-
-							if (!request.chunk.isTerrainScheduled) {
+							if (
+								!desired ||
+								desired.revision !== request.revision ||
+								desired.desiredLod !== request.desiredLod
+							) {
 								continue;
 							}
 
@@ -400,21 +391,16 @@ export class ChunkProcessScheduler {
 							this.hasBudget(state)
 						) {
 							const request = state.validLoadBatch[state.applyLoadedIndex++];
+							if (!request.chunk.isTerrainScheduled) {
+								continue;
+							}
 							const desired = this.adapter.getDesiredState(request.chunk.id);
 
-							if (!desired) {
-								continue;
-							}
-
-							if (desired.revision !== request.revision) {
-								continue;
-							}
-
-							if (desired.desiredLod !== request.desiredLod) {
-								continue;
-							}
-
-							if (!request.chunk.isTerrainScheduled) {
+							if (
+								!desired ||
+								desired.revision !== request.revision ||
+								desired.desiredLod !== request.desiredLod
+							) {
 								continue;
 							}
 
@@ -473,11 +459,7 @@ export class ChunkProcessScheduler {
 							const chunkId = state.hydrateIds[state.hydrateIndex++];
 							const chunk = Chunk.chunkInstances.get(chunkId);
 
-							if (!chunk) {
-								continue;
-							}
-
-							if (!chunk.isTerrainScheduled) {
+							if (!chunk?.isTerrainScheduled) {
 								continue;
 							}
 
