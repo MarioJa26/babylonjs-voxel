@@ -1,6 +1,5 @@
 import { type SavedChunkData, WorldStorage } from "../../WorldStorage";
 import { Chunk } from "../Chunk";
-import { ChunkLoadingSystem } from "../ChunkLoadingSystem";
 import type { QueuedChunkRequest } from "./ChunkStreamingController";
 import { ProcessStage } from "./ChunkTypes";
 
@@ -187,12 +186,6 @@ export class ChunkProcessScheduler {
 							state.unloadBatch.push(chunk);
 							unloadQueueSet.delete(chunk);
 
-							ChunkLoadingSystem.traceChunk(chunk.id, "unload-batch-selected", {
-								chunkX: chunk.chunkX,
-								chunkY: chunk.chunkY,
-								chunkZ: chunk.chunkZ,
-							});
-
 							if (++count >= unloadBatchSize) break;
 						}
 
@@ -222,13 +215,6 @@ export class ChunkProcessScheduler {
 							}
 						}
 
-						for (const chunk of chunksToSave) {
-							ChunkLoadingSystem.traceChunk(chunk.id, "unload-save-requested", {
-								isModified: chunk.isModified,
-								isLODMeshCacheDirty: chunk.isLODMeshCacheDirty,
-							});
-						}
-
 						state.savedChunkIds.clear();
 
 						if (chunksToSave.length > 0) {
@@ -239,30 +225,9 @@ export class ChunkProcessScheduler {
 									state.savedChunkIds.add(chunksToSave[i].id);
 								}
 								state.savedCount += chunksToSave.length;
-
-								for (const chunk of chunksToSave) {
-									ChunkLoadingSystem.traceChunk(
-										chunk.id,
-										"unload-save-complete",
-										{
-											isModified: chunk.isModified,
-											isLODMeshCacheDirty: chunk.isLODMeshCacheDirty,
-										},
-									);
-								}
 							} catch (error) {
 								console.error("Background save failed:", error);
 								state.savedChunkIds.clear();
-
-								for (const chunk of chunksToSave) {
-									ChunkLoadingSystem.traceChunk(
-										chunk.id,
-										"unload-save-failed",
-										{
-											error: String(error),
-										},
-									);
-								}
 							}
 						}
 
@@ -278,18 +243,10 @@ export class ChunkProcessScheduler {
 							const chunk = state.unloadBatch[state.unloadBatchIndex++];
 
 							if (chunk.isPersistent) {
-								ChunkLoadingSystem.traceChunk(
-									chunk.id,
-									"unload-skip-persistent",
-								);
 								continue;
 							}
 
 							if (!chunk.isLoaded) {
-								ChunkLoadingSystem.traceChunk(
-									chunk.id,
-									"unload-skip-not-loaded",
-								);
 								continue;
 							}
 
@@ -298,22 +255,8 @@ export class ChunkProcessScheduler {
 								state.savedChunkIds.has(chunk.id);
 
 							if (!canUnload) {
-								ChunkLoadingSystem.traceChunk(
-									chunk.id,
-									"unload-skip-not-safe",
-									{
-										isModified: chunk.isModified,
-										isLODMeshCacheDirty: chunk.isLODMeshCacheDirty,
-									},
-								);
 								continue;
 							}
-
-							ChunkLoadingSystem.traceChunk(chunk.id, "unload-dispose-start", {
-								chunkX: chunk.chunkX,
-								chunkY: chunk.chunkY,
-								chunkZ: chunk.chunkZ,
-							});
 
 							await this.adapter.unloadChunkBoundEntitiesForChunk(chunk);
 
@@ -323,16 +266,6 @@ export class ChunkProcessScheduler {
 							Chunk.chunkInstances.delete(chunk.id);
 
 							state.unloadedCount++;
-
-							ChunkLoadingSystem.traceChunk(
-								chunk.id,
-								"unload-dispose-complete",
-								{
-									chunkX: chunk.chunkX,
-									chunkY: chunk.chunkY,
-									chunkZ: chunk.chunkZ,
-								},
-							);
 						}
 
 						if (state.unloadBatchIndex >= state.unloadBatch.length) {
@@ -378,66 +311,20 @@ export class ChunkProcessScheduler {
 							const desired = this.adapter.getDesiredState(request.chunk.id);
 
 							if (!desired) {
-								ChunkLoadingSystem.traceChunk(
-									request.chunk.id,
-									"load-request-invalid-no-desired-state",
-									{
-										requestDesiredLod: request.desiredLod,
-										requestRevision: request.revision,
-									},
-								);
 								continue;
 							}
 
 							if (desired.revision !== request.revision) {
-								ChunkLoadingSystem.traceChunk(
-									request.chunk.id,
-									"load-request-invalid-revision",
-									{
-										requestDesiredLod: request.desiredLod,
-										requestRevision: request.revision,
-										desiredLod: desired.desiredLod,
-										desiredRevision: desired.revision,
-									},
-								);
 								continue;
 							}
 
 							if (desired.desiredLod !== request.desiredLod) {
-								ChunkLoadingSystem.traceChunk(
-									request.chunk.id,
-									"load-request-invalid-lod",
-									{
-										requestDesiredLod: request.desiredLod,
-										requestRevision: request.revision,
-										desiredLod: desired.desiredLod,
-										desiredRevision: desired.revision,
-									},
-								);
 								continue;
 							}
 
 							if (!request.chunk.isTerrainScheduled) {
-								ChunkLoadingSystem.traceChunk(
-									request.chunk.id,
-									"load-request-invalid-not-scheduled",
-									{
-										requestDesiredLod: request.desiredLod,
-										requestRevision: request.revision,
-									},
-								);
 								continue;
 							}
-
-							ChunkLoadingSystem.traceChunk(
-								request.chunk.id,
-								"load-batch-selected",
-								{
-									desiredLod: request.desiredLod,
-									revision: request.revision,
-									includeVoxelData: request.includeVoxelData,
-								},
-							);
 
 							state.validLoadBatch.push(request);
 
@@ -463,30 +350,6 @@ export class ChunkProcessScheduler {
 					}
 
 					case ProcessStage.LoadFromStorage: {
-						for (const request of state.nearRequests) {
-							ChunkLoadingSystem.traceChunk(
-								request.chunk.id,
-								"storage-load-requested",
-								{
-									desiredLod: request.desiredLod,
-									revision: request.revision,
-									includeVoxelData: true,
-								},
-							);
-						}
-
-						for (const request of state.farRequests) {
-							ChunkLoadingSystem.traceChunk(
-								request.chunk.id,
-								"storage-load-requested",
-								{
-									desiredLod: request.desiredLod,
-									revision: request.revision,
-									includeVoxelData: false,
-								},
-							);
-						}
-
 						try {
 							const [nearLoadedDataMap, farLoadedDataMap] = await Promise.all([
 								state.nearRequests.length > 0
@@ -515,50 +378,12 @@ export class ChunkProcessScheduler {
 								state.farLoadedDataMap.set(k, v);
 							}
 
-							for (const request of state.nearRequests) {
-								ChunkLoadingSystem.traceChunk(
-									request.chunk.id,
-									nearLoadedDataMap.has(request.chunk.id)
-										? "storage-load-hit"
-										: "storage-load-miss",
-									{
-										desiredLod: request.desiredLod,
-										revision: request.revision,
-										includeVoxelData: true,
-									},
-								);
-							}
-
-							for (const request of state.farRequests) {
-								ChunkLoadingSystem.traceChunk(
-									request.chunk.id,
-									farLoadedDataMap.has(request.chunk.id)
-										? "storage-load-hit"
-										: "storage-load-miss",
-									{
-										desiredLod: request.desiredLod,
-										revision: request.revision,
-										includeVoxelData: false,
-									},
-								);
-							}
-
 							state.stage = ProcessStage.ApplyLoadedChunks;
 						} catch (error) {
 							console.warn("Failed to load chunks from storage", error);
 
 							for (const request of state.validLoadBatch) {
 								request.chunk.isTerrainScheduled = false;
-
-								ChunkLoadingSystem.traceChunk(
-									request.chunk.id,
-									"storage-load-failed",
-									{
-										desiredLod: request.desiredLod,
-										revision: request.revision,
-										error: String(error),
-									},
-								);
 							}
 
 							state.stage =
@@ -578,54 +403,18 @@ export class ChunkProcessScheduler {
 							const desired = this.adapter.getDesiredState(request.chunk.id);
 
 							if (!desired) {
-								ChunkLoadingSystem.traceChunk(
-									request.chunk.id,
-									"apply-skip-no-desired-state",
-									{
-										requestDesiredLod: request.desiredLod,
-										requestRevision: request.revision,
-									},
-								);
 								continue;
 							}
 
 							if (desired.revision !== request.revision) {
-								ChunkLoadingSystem.traceChunk(
-									request.chunk.id,
-									"apply-skip-revision-mismatch",
-									{
-										requestDesiredLod: request.desiredLod,
-										requestRevision: request.revision,
-										desiredLod: desired.desiredLod,
-										desiredRevision: desired.revision,
-									},
-								);
 								continue;
 							}
 
 							if (desired.desiredLod !== request.desiredLod) {
-								ChunkLoadingSystem.traceChunk(
-									request.chunk.id,
-									"apply-skip-lod-mismatch",
-									{
-										requestDesiredLod: request.desiredLod,
-										requestRevision: request.revision,
-										desiredLod: desired.desiredLod,
-										desiredRevision: desired.revision,
-									},
-								);
 								continue;
 							}
 
 							if (!request.chunk.isTerrainScheduled) {
-								ChunkLoadingSystem.traceChunk(
-									request.chunk.id,
-									"apply-skip-not-scheduled",
-									{
-										requestDesiredLod: request.desiredLod,
-										requestRevision: request.revision,
-									},
-								);
 								continue;
 							}
 
@@ -634,16 +423,6 @@ export class ChunkProcessScheduler {
 								: state.farLoadedDataMap.get(request.chunk.id);
 
 							if (savedData) {
-								ChunkLoadingSystem.traceChunk(
-									request.chunk.id,
-									"apply-loaded-dispatch",
-									{
-										desiredLod: request.desiredLod,
-										revision: request.revision,
-										includeVoxelData: request.includeVoxelData,
-									},
-								);
-
 								this.adapter.applyLoadedChunkFromSavedData(
 									state,
 									request,
@@ -651,16 +430,6 @@ export class ChunkProcessScheduler {
 								);
 							} else {
 								state.chunksToGenerate.push(request.chunk);
-
-								ChunkLoadingSystem.traceChunk(
-									request.chunk.id,
-									"storage-miss-needs-generation",
-									{
-										desiredLod: request.desiredLod,
-										revision: request.revision,
-										includeVoxelData: request.includeVoxelData,
-									},
-								);
 							}
 						}
 
@@ -681,13 +450,6 @@ export class ChunkProcessScheduler {
 						}
 						state.hydrateIndex = 0;
 
-						for (const chunkId of state.hydrateIds) {
-							ChunkLoadingSystem.traceChunk(
-								chunkId,
-								"hydration-load-requested",
-							);
-						}
-
 						try {
 							state.hydrateMap = await WorldStorage.loadChunks(
 								state.hydrateIds,
@@ -696,16 +458,6 @@ export class ChunkProcessScheduler {
 						} catch (error) {
 							console.warn("Failed to hydrate chunks from storage", error);
 							state.hydrateMap = new Map();
-
-							for (const chunkId of state.hydrateIds) {
-								ChunkLoadingSystem.traceChunk(
-									chunkId,
-									"hydration-load-failed",
-									{
-										error: String(error),
-									},
-								);
-							}
 						}
 
 						state.hydratedCount += state.hydrateIds.length;
@@ -722,33 +474,18 @@ export class ChunkProcessScheduler {
 							const chunk = Chunk.chunkInstances.get(chunkId);
 
 							if (!chunk) {
-								ChunkLoadingSystem.traceChunk(
-									chunkId,
-									"hydration-skip-missing-chunk",
-								);
 								continue;
 							}
 
 							if (!chunk.isTerrainScheduled) {
-								ChunkLoadingSystem.traceChunk(
-									chunkId,
-									"hydration-skip-not-scheduled",
-								);
 								continue;
 							}
 
 							const savedData = state.hydrateMap.get(chunkId);
 							if (!savedData) {
 								state.chunksToGenerate.push(chunk);
-
-								ChunkLoadingSystem.traceChunk(
-									chunkId,
-									"hydration-miss-needs-generation",
-								);
 								continue;
 							}
-
-							ChunkLoadingSystem.traceChunk(chunkId, "hydration-dispatch");
 
 							this.adapter.applyHydratedChunkFromSavedData(chunk, savedData);
 						}
@@ -762,18 +499,6 @@ export class ChunkProcessScheduler {
 					case ProcessStage.ScheduleGeneration: {
 						if (state.chunksToGenerate.length > 0) {
 							state.generatedCount += state.chunksToGenerate.length;
-
-							for (const chunk of state.chunksToGenerate) {
-								ChunkLoadingSystem.traceChunk(
-									chunk.id,
-									"generation-scheduled",
-									{
-										chunkX: chunk.chunkX,
-										chunkY: chunk.chunkY,
-										chunkZ: chunk.chunkZ,
-									},
-								);
-							}
 
 							this.adapter.scheduleTerrainGenerationBatch(
 								state.chunksToGenerate,

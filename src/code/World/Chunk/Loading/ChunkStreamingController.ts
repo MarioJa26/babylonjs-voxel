@@ -35,6 +35,7 @@ export class ChunkStreamingController {
 	private loadQueueRequestMap: Map<bigint, QueuedChunkRequest> = new Map();
 	private loadedRefreshQueue: Chunk[] = [];
 	private loadedRefreshQueueSet: Set<bigint> = new Set();
+	private loadedRefreshQueueHead = 0;
 
 	public constructor(
 		private readonly adapter: ChunkStreamingControllerAdapter,
@@ -42,11 +43,6 @@ export class ChunkStreamingController {
 
 	public getDesiredState(chunkId: bigint): DesiredChunkState | undefined {
 		const state = this.desiredStates.get(chunkId);
-
-		if (!state) {
-			ChunkLoadingSystem.traceChunk(chunkId, "desired-state-miss");
-			return undefined;
-		}
 
 		return state;
 	}
@@ -99,15 +95,6 @@ export class ChunkStreamingController {
 				request.chunk.isTerrainScheduled = false;
 				this.loadQueueRequestMap.delete(request.chunk.id);
 
-				ChunkLoadingSystem.traceChunk(
-					request.chunk.id,
-					"queued-request-pruned",
-					{
-						previousDesiredLod: request.desiredLod,
-						previousRevision: request.revision,
-					},
-				);
-
 				continue;
 			}
 
@@ -125,12 +112,6 @@ export class ChunkStreamingController {
 			this.desiredStates.set(request.chunk.id, {
 				desiredLod: request.desiredLod,
 				revision: request.revision,
-			});
-
-			ChunkLoadingSystem.traceChunk(request.chunk.id, "load-request-retagged", {
-				desiredLod: request.desiredLod,
-				revision: request.revision,
-				includeVoxelData: request.includeVoxelData,
 			});
 
 			this.loadQueueRequestMap.set(request.chunk.id, request);
@@ -187,7 +168,7 @@ export class ChunkStreamingController {
 			this.enqueueLoadedChunksForRefresh(chunkX, chunkY, chunkZ, lodRuleSet);
 		}
 
-		this.sortLoadQueue(chunkX, chunkY, chunkZ);
+		//this.sortLoadQueue(chunkX, chunkY, chunkZ);
 
 		this.queueUnloading(
 			chunkX,
@@ -265,7 +246,7 @@ export class ChunkStreamingController {
 		verticalRadius = SettingParams.VERTICAL_RENDER_DISTANCE,
 		maxChunks = 8,
 	): void {
-		if (this.loadedRefreshQueue.length === 0) {
+		if (this.loadedRefreshQueueHead >= this.loadedRefreshQueue.length) {
 			return;
 		}
 
@@ -275,11 +256,13 @@ export class ChunkStreamingController {
 		);
 
 		let processed = 0;
-		while (processed < maxChunks && this.loadedRefreshQueue.length > 0) {
-			const chunk = this.loadedRefreshQueue.shift()!;
+
+		while (processed < maxChunks) {
+			const chunk = this.dequeueLoadedRefreshChunk();
+			if (!chunk) break;
+
 			this.loadedRefreshQueueSet.delete(chunk.id);
 
-			// Re-evaluate loaded chunks incrementally instead of scanning the full window in one frame.
 			this.processTargetChunkCoordinate(
 				chunk.chunkX,
 				chunk.chunkY,
@@ -292,6 +275,25 @@ export class ChunkStreamingController {
 
 			processed++;
 		}
+	}
+	private dequeueLoadedRefreshChunk(): Chunk | undefined {
+		if (this.loadedRefreshQueueHead >= this.loadedRefreshQueue.length) {
+			return undefined;
+		}
+
+		const chunk = this.loadedRefreshQueue[this.loadedRefreshQueueHead++];
+
+		if (
+			this.loadedRefreshQueueHead > 1024 &&
+			this.loadedRefreshQueueHead * 2 >= this.loadedRefreshQueue.length
+		) {
+			this.loadedRefreshQueue = this.loadedRefreshQueue.slice(
+				this.loadedRefreshQueueHead,
+			);
+			this.loadedRefreshQueueHead = 0;
+		}
+
+		return chunk;
 	}
 
 	public processTargetChunkCoordinate(
@@ -306,12 +308,6 @@ export class ChunkStreamingController {
 		let chunk = Chunk.getChunk(x, y, z);
 		if (!chunk) {
 			chunk = new Chunk(x, y, z);
-
-			ChunkLoadingSystem.traceChunk(chunk.id, "chunk-created", {
-				x,
-				y,
-				z,
-			});
 		}
 
 		const previousLod = chunk.lodLevel ?? 0;
@@ -322,12 +318,6 @@ export class ChunkStreamingController {
 		);
 
 		if (!decision.allowsChunkCreation) {
-			ChunkLoadingSystem.traceChunk(chunk.id, "chunk-not-desired", {
-				x,
-				y,
-				z,
-				previousLod,
-			});
 			return;
 		}
 
@@ -336,11 +326,6 @@ export class ChunkStreamingController {
 
 		if (chunk.isLoaded && previousLod === desiredLod) {
 			if (desiredLod <= 1 && !chunk.hasVoxelData) {
-				ChunkLoadingSystem.traceChunk(chunk.id, "lod-steady-needs-voxel-load", {
-					desiredLod,
-					revision,
-				});
-
 				this.ensureChunkQueuedForLoad(chunk, desiredLod, revision, true);
 				this.tryApplyCachedLodTransitionMesh(chunk, desiredLod);
 			}
@@ -354,18 +339,6 @@ export class ChunkStreamingController {
 			revision,
 		});
 
-		ChunkLoadingSystem.traceChunk(chunk.id, "desired-state", {
-			x,
-			y,
-			z,
-			previousLod,
-			desiredLod,
-			revision,
-			includeVoxelData,
-			isLoaded: chunk.isLoaded,
-			hasVoxelData: chunk.hasVoxelData,
-		});
-
 		chunk.lodLevel = desiredLod;
 
 		if (chunk.isLoaded && previousLod !== desiredLod) {
@@ -376,60 +349,21 @@ export class ChunkStreamingController {
 					this.ensureChunkQueuedForLoad(chunk, desiredLod, revision, true);
 
 					if (!hasTargetCachedMesh) {
-						ChunkLoadingSystem.traceChunk(chunk.id, "lod-upgrade-needs-load", {
-							previousLod,
-							desiredLod,
-							revision,
-						});
 						return;
 					}
-
-					ChunkLoadingSystem.traceChunk(
-						chunk.id,
-						"lod-upgrade-cache-hit-awaiting-voxel-load",
-						{
-							previousLod,
-							desiredLod,
-							revision,
-						},
-					);
 				}
 
 				if (desiredLod >= 2 && !hasTargetCachedMesh) {
-					ChunkLoadingSystem.traceChunk(
-						chunk.id,
-						"lod-downgrade-waiting-for-cache",
-						{
-							previousLod,
-							desiredLod,
-							revision,
-						},
-					);
 					return;
 				}
 			}
 
 			if (this.tryApplyCachedLodTransitionMesh(chunk, desiredLod)) {
-				ChunkLoadingSystem.traceChunk(
-					chunk.id,
-					"cached-lod-transition-applied",
-					{
-						previousLod,
-						desiredLod,
-						revision,
-					},
-				);
 				return;
 			}
 
 			const requiresImmediateRemesh = previousLod <= 1 || desiredLod <= 1;
 			if (requiresImmediateRemesh) {
-				ChunkLoadingSystem.traceChunk(chunk.id, "lod-transition-remesh", {
-					previousLod,
-					desiredLod,
-					revision,
-				});
-
 				ChunkLoadingSystem.enqueueChunkRemesh(chunk);
 			}
 
@@ -649,20 +583,6 @@ export class ChunkStreamingController {
 				Math.abs(cy - chunkY) > verticalRemoveRadius
 			) {
 				unloadQueueSet.add(chunk);
-
-				ChunkLoadingSystem.traceChunk(chunk.id, "unload-queued", {
-					x: chunk.chunkX,
-					y: chunk.chunkY,
-					z: chunk.chunkZ,
-					dx: Math.abs(cx - chunkX),
-					dy: Math.abs(cy - chunkY),
-					dz: Math.abs(cz - chunkZ),
-					playerChunkX: chunkX,
-					playerChunkY: chunkY,
-					playerChunkZ: chunkZ,
-					removeRadius,
-					verticalRemoveRadius,
-				});
 			}
 		}
 	}
@@ -672,32 +592,15 @@ export class ChunkStreamingController {
 		targetLod: number,
 	): boolean {
 		if (chunk.isDirty) {
-			ChunkLoadingSystem.traceChunk(
-				chunk.id,
-				"cached-lod-transition-skip-dirty",
-				{
-					targetLod,
-				},
-			);
 			return false;
 		}
 
 		const cached = chunk.getCachedLODMesh(targetLod);
 		if (!cached) {
-			ChunkLoadingSystem.traceChunk(chunk.id, "cached-lod-transition-miss", {
-				targetLod,
-			});
 			return false;
 		}
 
 		if (!cached.opaque && !cached.transparent) {
-			ChunkLoadingSystem.traceChunk(
-				chunk.id,
-				"cached-lod-transition-empty-mesh",
-				{
-					targetLod,
-				},
-			);
 			return false;
 		}
 
@@ -706,10 +609,6 @@ export class ChunkStreamingController {
 			transparent: cached.transparent ?? null,
 		});
 		chunk.isDirty = false;
-
-		ChunkLoadingSystem.traceChunk(chunk.id, "cached-lod-transition-applied", {
-			targetLod,
-		});
 
 		return true;
 	}
@@ -721,12 +620,6 @@ export class ChunkStreamingController {
 		includeVoxelData = desiredLod <= 1,
 	): void {
 		if (chunk.isLoaded && (!includeVoxelData || chunk.hasVoxelData)) {
-			ChunkLoadingSystem.traceChunk(chunk.id, "load-skip-already-loaded", {
-				desiredLod,
-				revision,
-				includeVoxelData,
-				hasVoxelData: chunk.hasVoxelData,
-			});
 			return;
 		}
 
@@ -736,22 +629,11 @@ export class ChunkStreamingController {
 		if (existingRequest) {
 			const request = existingRequest;
 
-			const previousDesiredLod = request.desiredLod;
-			const previousRevision = request.revision;
-
 			request.desiredLod = desiredLod;
 			request.revision = revision;
 			request.includeVoxelData = includeVoxelData;
 			request.priority = Number.POSITIVE_INFINITY;
 			this.loadQueueRequestMap.set(chunk.id, request);
-
-			ChunkLoadingSystem.traceChunk(chunk.id, "load-request-updated", {
-				previousDesiredLod,
-				previousRevision,
-				desiredLod,
-				revision,
-				includeVoxelData,
-			});
 		} else {
 			const request: QueuedChunkRequest = {
 				chunk,
@@ -763,22 +645,11 @@ export class ChunkStreamingController {
 
 			loadQueue.push(request);
 			this.loadQueueRequestMap.set(chunk.id, request);
-
-			ChunkLoadingSystem.traceChunk(chunk.id, "load-queued", {
-				desiredLod,
-				revision,
-				includeVoxelData,
-			});
 		}
 
 		const unloadSet = this.adapter.getUnloadQueueSet();
 		if (unloadSet.has(chunk)) {
 			unloadSet.delete(chunk);
-			ChunkLoadingSystem.traceChunk(
-				chunk.id,
-				"unload-cancelled-due-to-load",
-				{},
-			);
 		}
 
 		chunk.isTerrainScheduled = true;

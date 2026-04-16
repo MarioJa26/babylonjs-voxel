@@ -322,77 +322,6 @@ export class ChunkLoadingSystem {
 		ChunkLoadingSystem.debugStats.frameBudgetMs =
 			ChunkLoadingSystem.getProcessFrameBudgetMs();
 	}
-	private static readonly MAX_TRACE_EVENTS_PER_CHUNK = 80;
-
-	private static chunkTrace = new Map<
-		bigint,
-		Array<{
-			t: number;
-			event: string;
-			data?: Record<string, unknown>;
-		}>
-	>();
-
-	public static traceChunk(
-		chunkId: bigint,
-		event: string,
-		data?: Record<string, unknown>,
-	): void {
-		const list = ChunkLoadingSystem.chunkTrace.get(chunkId) ?? [];
-
-		list.push({
-			t: performance.now(),
-			event,
-			data,
-		});
-
-		if (list.length > ChunkLoadingSystem.MAX_TRACE_EVENTS_PER_CHUNK) {
-			list.splice(
-				0,
-				list.length - ChunkLoadingSystem.MAX_TRACE_EVENTS_PER_CHUNK,
-			);
-		}
-
-		ChunkLoadingSystem.chunkTrace.set(chunkId, list);
-	}
-
-	public static getChunkTrace(chunkId: bigint): Array<{
-		t: number;
-		event: string;
-		data?: Record<string, unknown>;
-	}> {
-		return [...(ChunkLoadingSystem.chunkTrace.get(chunkId) ?? [])];
-	}
-
-	public static clearChunkTrace(chunkId?: bigint): void {
-		if (chunkId === undefined) {
-			ChunkLoadingSystem.chunkTrace.clear();
-			return;
-		}
-
-		ChunkLoadingSystem.chunkTrace.delete(chunkId);
-	}
-
-	public static dumpChunkTrace(chunkId: bigint): void {
-		const entries = ChunkLoadingSystem.chunkTrace.get(chunkId) ?? [];
-		console.group(`[ChunkTrace ${chunkId.toString()}]`);
-		for (const entry of entries) {
-			console.log(
-				`${entry.t.toFixed(2)}ms :: ${entry.event}`,
-				entry.data ?? {},
-			);
-		}
-		console.groupEnd();
-	}
-
-	public static dumpChunkTraceByCoords(
-		chunkX: number,
-		chunkY: number,
-		chunkZ: number,
-	): void {
-		const chunkId = Chunk.packCoords(chunkX, chunkY, chunkZ);
-		ChunkLoadingSystem.dumpChunkTrace(chunkId);
-	}
 
 	public static validateChunksAround(
 		centerChunkX: number,
@@ -456,22 +385,6 @@ export class ChunkLoadingSystem {
 							isUnloading,
 							hasDesiredState,
 						});
-
-						ChunkLoadingSystem.traceChunk(
-							chunkId,
-							"missing-desired-in-validate-window",
-							{
-								chunkX: x,
-								chunkY: y,
-								chunkZ: z,
-								centerChunkX,
-								centerChunkY,
-								centerChunkZ,
-								horizontalRadius,
-								verticalRadius,
-								hasDesiredState,
-							},
-						);
 					}
 				}
 			}
@@ -528,12 +441,6 @@ export class ChunkLoadingSystem {
 
 		ChunkLoadingSystem.pendingRemeshChunkIds.add(chunk.id);
 		ChunkLoadingSystem.pendingRemeshChunks.push(chunk);
-
-		ChunkLoadingSystem.traceChunk(chunk.id, "remesh-enqueued", {
-			chunkX: chunk.chunkX,
-			chunkY: chunk.chunkY,
-			chunkZ: chunk.chunkZ,
-		});
 	}
 
 	public static processPendingRemeshes(maxChunks = 2): void {
@@ -548,12 +455,6 @@ export class ChunkLoadingSystem {
 			ChunkLoadingSystem.pendingRemeshChunkIds.delete(chunk.id);
 
 			pool.scheduleRemesh(chunk, true);
-
-			ChunkLoadingSystem.traceChunk(chunk.id, "remesh-dispatched", {
-				chunkX: chunk.chunkX,
-				chunkY: chunk.chunkY,
-				chunkZ: chunk.chunkZ,
-			});
 
 			processed++;
 		}
@@ -571,11 +472,11 @@ export class ChunkLoadingSystem {
 			playerChunkZ,
 			SettingParams.RENDER_DISTANCE,
 			SettingParams.VERTICAL_RENDER_DISTANCE,
-			8,
+			16,
 		);
 
 		// Incrementally dispatch remesh work instead of submitting a burst in one frame.
-		ChunkLoadingSystem.processPendingRemeshes(2);
+		ChunkLoadingSystem.processPendingRemeshes(5);
 	}
 
 	public static registerChunkEntityLoader(
@@ -832,19 +733,12 @@ export class ChunkLoadingSystem {
 					),
 				);
 
-				ChunkLoadingSystem.traceChunk(chunk.id, "far-mesh-applied", {
-					targetLod,
-				});
 				return;
 			}
 
 			// No usable far mesh: fall back to full hydration later
 			state.chunksNeedingFullHydration.add(chunk.id);
 
-			ChunkLoadingSystem.traceChunk(chunk.id, "far-no-mesh-needs-hydration", {
-				targetLod,
-				isModified: chunk.isModified,
-			});
 			return;
 		}
 
