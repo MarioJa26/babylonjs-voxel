@@ -1,5 +1,5 @@
 // MeshPipeline/core/MeshContext.ts
-import { MeshContext } from "../types/MeshTypes";
+import type { MeshContext } from "../types/MeshTypes";
 
 /**
  * Create a strict, immutable meshing context used by all pipelines.
@@ -7,14 +7,14 @@ import { MeshContext } from "../types/MeshTypes";
  */
 
 export function createMeshContext(params: {
-  size: number;
-  lod: number;
+	size: number;
+	lod: number;
 }): Omit<MeshContext, "getBlock" | "getLight" | "hasNeighborChunk"> {
-  const { size, lod } = params;
+	const { size, lod } = params;
 
-  return {
-    size,
-    lod,
-    disableAO: lod >= 2,
-  };
+	return {
+		size,
+		lod,
+		disableAO: lod >= 2,
+	};
 }

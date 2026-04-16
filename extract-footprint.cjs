@@ -21,39 +21,62 @@
  * Output:
  *   footprint.md (also printed to stdout if you uncomment console.log)
  */
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
+var __createBinding =
+	(this && this.__createBinding) ||
+	(Object.create
+		? function (o, m, k, k2) {
+				if (k2 === undefined) k2 = k;
+				var desc = Object.getOwnPropertyDescriptor(m, k);
+				if (
+					!desc ||
+					("get" in desc ? !m.__esModule : desc.writable || desc.configurable)
+				) {
+					desc = {
+						enumerable: true,
+						get: function () {
+							return m[k];
+						},
+					};
+				}
+				Object.defineProperty(o, k2, desc);
+			}
+		: function (o, m, k, k2) {
+				if (k2 === undefined) k2 = k;
+				o[k2] = m[k];
+			});
+var __setModuleDefault =
+	(this && this.__setModuleDefault) ||
+	(Object.create
+		? function (o, v) {
+				Object.defineProperty(o, "default", { enumerable: true, value: v });
+			}
+		: function (o, v) {
+				o["default"] = v;
+			});
+var __importStar =
+	(this && this.__importStar) ||
+	(function () {
+		var ownKeys = function (o) {
+			ownKeys =
+				Object.getOwnPropertyNames ||
+				function (o) {
+					var ar = [];
+					for (var k in o)
+						if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+					return ar;
+				};
+			return ownKeys(o);
+		};
+		return function (mod) {
+			if (mod && mod.__esModule) return mod;
+			var result = {};
+			if (mod != null)
+				for (var k = ownKeys(mod), i = 0; i < k.length; i++)
+					if (k[i] !== "default") __createBinding(result, mod, k[i]);
+			__setModuleDefault(result, mod);
+			return result;
+		};
+	})();
 Object.defineProperty(exports, "__esModule", { value: true });
 const ts = __importStar(require("typescript"));
 const fs = __importStar(require("fs"));
@@ -74,86 +97,85 @@ const norm = (p) => p.replace(/\\/g, "/");
 // File discovery
 // ---------------------------------------------------------------------------
 function collectTsFiles(dir) {
-    const results = [];
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-            if (entry.name === "node_modules" ||
-                entry.name === "dist" ||
-                entry.name === ".git") {
-                continue;
-            }
-            results.push(...collectTsFiles(full));
-        }
-        else if (entry.isFile() &&
-            /\.tsx?$/.test(entry.name) &&
-            !entry.name.endsWith(".d.ts")) {
-            results.push(full);
-        }
-    }
-    return results;
+	const results = [];
+	for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+		const full = path.join(dir, entry.name);
+		if (entry.isDirectory()) {
+			if (
+				entry.name === "node_modules" ||
+				entry.name === "dist" ||
+				entry.name === ".git"
+			) {
+				continue;
+			}
+			results.push(...collectTsFiles(full));
+		} else if (
+			entry.isFile() &&
+			/\.tsx?$/.test(entry.name) &&
+			!entry.name.endsWith(".d.ts")
+		) {
+			results.push(full);
+		}
+	}
+	return results;
 }
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 function getModifiers(node) {
-    const parts = [];
-    const mods = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
-    if (!mods)
-        return "";
-    for (const mod of mods) {
-        switch (mod.kind) {
-            case ts.SyntaxKind.PublicKeyword:
-                parts.push("public");
-                break;
-            case ts.SyntaxKind.PrivateKeyword:
-                parts.push("private");
-                break;
-            case ts.SyntaxKind.ProtectedKeyword:
-                parts.push("protected");
-                break;
-            case ts.SyntaxKind.StaticKeyword:
-                parts.push("static");
-                break;
-            case ts.SyntaxKind.ReadonlyKeyword:
-                parts.push("readonly");
-                break;
-            case ts.SyntaxKind.AbstractKeyword:
-                parts.push("abstract");
-                break;
-            case ts.SyntaxKind.AsyncKeyword:
-                parts.push("async");
-                break;
-            case ts.SyntaxKind.ExportKeyword:
-                parts.push("export");
-                break;
-        }
-    }
-    return parts.join(" ");
+	const parts = [];
+	const mods = ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined;
+	if (!mods) return "";
+	for (const mod of mods) {
+		switch (mod.kind) {
+			case ts.SyntaxKind.PublicKeyword:
+				parts.push("public");
+				break;
+			case ts.SyntaxKind.PrivateKeyword:
+				parts.push("private");
+				break;
+			case ts.SyntaxKind.ProtectedKeyword:
+				parts.push("protected");
+				break;
+			case ts.SyntaxKind.StaticKeyword:
+				parts.push("static");
+				break;
+			case ts.SyntaxKind.ReadonlyKeyword:
+				parts.push("readonly");
+				break;
+			case ts.SyntaxKind.AbstractKeyword:
+				parts.push("abstract");
+				break;
+			case ts.SyntaxKind.AsyncKeyword:
+				parts.push("async");
+				break;
+			case ts.SyntaxKind.ExportKeyword:
+				parts.push("export");
+				break;
+		}
+	}
+	return parts.join(" ");
 }
 function returnTypeText(node, checker) {
-    if (node.type)
-        return node.type.getText();
-    try {
-        const sig = checker.getSignatureFromDeclaration(node);
-        if (sig)
-            return checker.typeToString(checker.getReturnTypeOfSignature(sig));
-    }
-    catch {
-        // ignore inference failures
-    }
-    return "";
+	if (node.type) return node.type.getText();
+	try {
+		const sig = checker.getSignatureFromDeclaration(node);
+		if (sig) return checker.typeToString(checker.getReturnTypeOfSignature(sig));
+	} catch {
+		// ignore inference failures
+	}
+	return "";
 }
 function formatParams(node) {
-    return node.parameters
-        .map((p) => {
-        const name = p.name.getText();
-        const optional = p.questionToken ? "?" : "";
-        const type = p.type ? p.type.getText() : "unknown";
-        const def = p.initializer ? ` = ${p.initializer.getText()}` : "";
-        return `${name}${optional}: ${type}${def}`;
-    })
-        .join(", ");
+	return node.parameters
+		.map((p) => {
+			const name = p.name.getText();
+			const optional = p.questionToken ? "?" : "";
+			const type = p.type ? p.type.getText() : "unknown";
+			const def = p.initializer ? ` = ${p.initializer.getText()}` : "";
+			return `${name}${optional}: ${type}${def}`;
+		})
+		.join(", ");
 }
 /**
  * Counts logical LOC by:
@@ -164,239 +186,247 @@ function formatParams(node) {
  * This is intentionally lightweight and approximate.
  */
 function countLoc(sourceFile) {
-    const text = sourceFile.getFullText();
-    // Remove block comments
-    const withoutBlockComments = text.replace(/\/\*[\s\S]*?\*\//g, "");
-    // Remove line comments
-    const withoutComments = withoutBlockComments.replace(/\/\/.*$/gm, "");
-    // Count non-empty lines
-    return withoutComments
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0).length;
+	const text = sourceFile.getFullText();
+	// Remove block comments
+	const withoutBlockComments = text.replace(/\/\*[\s\S]*?\*\//g, "");
+	// Remove line comments
+	const withoutComments = withoutBlockComments.replace(/\/\/.*$/gm, "");
+	// Count non-empty lines
+	return withoutComments
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter((line) => line.length > 0).length;
 }
 function analyzeFile(sourceFile, checker, rootDir, includeLoc) {
-    const entry = {
-        relativePath: path
-            .relative(rootDir, sourceFile.fileName)
-            .replace(/\\/g, "/"),
-        loc: includeLoc ? countLoc(sourceFile) : undefined,
-        classes: [],
-        functions: [],
-        typeAliases: [],
-        interfaces: [],
-        enums: [],
-    };
-    function visitClass(node) {
-        const name = node.name?.getText() ?? "(anonymous)";
-        const mods = getModifiers(node);
-        const ext = node.heritageClauses
-            ?.find((h) => h.token === ts.SyntaxKind.ExtendsKeyword)
-            ?.types.map((t) => t.getText())
-            .join(", ");
-        const impl = node.heritageClauses
-            ?.find((h) => h.token === ts.SyntaxKind.ImplementsKeyword)
-            ?.types.map((t) => t.getText());
-        const classEntry = {
-            name,
-            modifiers: mods,
-            extends: ext,
-            implements: impl,
-            members: [],
-        };
-        for (const member of node.members) {
-            const mMods = getModifiers(member);
-            if (ts.isConstructorDeclaration(member)) {
-                classEntry.members.push({
-                    kind: "constructor",
-                    signature: `constructor(${formatParams(member)})`,
-                });
-            }
-            else if (ts.isMethodDeclaration(member)) {
-                const mName = member.name.getText();
-                const ret = returnTypeText(member, checker);
-                classEntry.members.push({
-                    kind: "method",
-                    signature: `${mMods} ${mName}(${formatParams(member)})${ret ? `: ${ret}` : ""}`.trim(),
-                });
-            }
-            else if (ts.isPropertyDeclaration(member)) {
-                const pName = member.name.getText();
-                const optional = member.questionToken ? "?" : "";
-                const pType = member.type ? member.type.getText() : "unknown";
-                classEntry.members.push({
-                    kind: "property",
-                    signature: `${mMods} ${pName}${optional}: ${pType}`.trim(),
-                });
-            }
-            else if (ts.isGetAccessorDeclaration(member)) {
-                const ret = returnTypeText(member, checker);
-                classEntry.members.push({
-                    kind: "getter",
-                    signature: `${mMods} get ${member.name.getText()}()${ret ? `: ${ret}` : ""}`.trim(),
-                });
-            }
-            else if (ts.isSetAccessorDeclaration(member)) {
-                classEntry.members.push({
-                    kind: "setter",
-                    signature: `${mMods} set ${member.name.getText()}(${formatParams(member)})`.trim(),
-                });
-            }
-        }
-        return classEntry;
-    }
-    function visit(node) {
-        if (ts.isClassDeclaration(node)) {
-            entry.classes.push(visitClass(node));
-        }
-        else if (ts.isFunctionDeclaration(node) && node.name) {
-            const mods = getModifiers(node);
-            const ret = returnTypeText(node, checker);
-            entry.functions.push({
-                signature: `${mods} function ${node.name.getText()}(${formatParams(node)})${ret ? `: ${ret}` : ""}`.trim(),
-            });
-        }
-        else if (ts.isTypeAliasDeclaration(node)) {
-            entry.typeAliases.push(node.name.getText());
-        }
-        else if (ts.isInterfaceDeclaration(node)) {
-            entry.interfaces.push(node.name.getText());
-        }
-        else if (ts.isEnumDeclaration(node)) {
-            entry.enums.push(node.name.getText());
-        }
-        ts.forEachChild(node, visit);
-    }
-    ts.forEachChild(sourceFile, visit);
-    return entry;
+	const entry = {
+		relativePath: path
+			.relative(rootDir, sourceFile.fileName)
+			.replace(/\\/g, "/"),
+		loc: includeLoc ? countLoc(sourceFile) : undefined,
+		classes: [],
+		functions: [],
+		typeAliases: [],
+		interfaces: [],
+		enums: [],
+	};
+	function visitClass(node) {
+		const name = node.name?.getText() ?? "(anonymous)";
+		const mods = getModifiers(node);
+		const ext = node.heritageClauses
+			?.find((h) => h.token === ts.SyntaxKind.ExtendsKeyword)
+			?.types.map((t) => t.getText())
+			.join(", ");
+		const impl = node.heritageClauses
+			?.find((h) => h.token === ts.SyntaxKind.ImplementsKeyword)
+			?.types.map((t) => t.getText());
+		const classEntry = {
+			name,
+			modifiers: mods,
+			extends: ext,
+			implements: impl,
+			members: [],
+		};
+		for (const member of node.members) {
+			const mMods = getModifiers(member);
+			if (ts.isConstructorDeclaration(member)) {
+				classEntry.members.push({
+					kind: "constructor",
+					signature: `constructor(${formatParams(member)})`,
+				});
+			} else if (ts.isMethodDeclaration(member)) {
+				const mName = member.name.getText();
+				const ret = returnTypeText(member, checker);
+				classEntry.members.push({
+					kind: "method",
+					signature:
+						`${mMods} ${mName}(${formatParams(member)})${ret ? `: ${ret}` : ""}`.trim(),
+				});
+			} else if (ts.isPropertyDeclaration(member)) {
+				const pName = member.name.getText();
+				const optional = member.questionToken ? "?" : "";
+				const pType = member.type ? member.type.getText() : "unknown";
+				classEntry.members.push({
+					kind: "property",
+					signature: `${mMods} ${pName}${optional}: ${pType}`.trim(),
+				});
+			} else if (ts.isGetAccessorDeclaration(member)) {
+				const ret = returnTypeText(member, checker);
+				classEntry.members.push({
+					kind: "getter",
+					signature:
+						`${mMods} get ${member.name.getText()}()${ret ? `: ${ret}` : ""}`.trim(),
+				});
+			} else if (ts.isSetAccessorDeclaration(member)) {
+				classEntry.members.push({
+					kind: "setter",
+					signature:
+						`${mMods} set ${member.name.getText()}(${formatParams(member)})`.trim(),
+				});
+			}
+		}
+		return classEntry;
+	}
+	function visit(node) {
+		if (ts.isClassDeclaration(node)) {
+			entry.classes.push(visitClass(node));
+		} else if (ts.isFunctionDeclaration(node) && node.name) {
+			const mods = getModifiers(node);
+			const ret = returnTypeText(node, checker);
+			entry.functions.push({
+				signature:
+					`${mods} function ${node.name.getText()}(${formatParams(node)})${ret ? `: ${ret}` : ""}`.trim(),
+			});
+		} else if (ts.isTypeAliasDeclaration(node)) {
+			entry.typeAliases.push(node.name.getText());
+		} else if (ts.isInterfaceDeclaration(node)) {
+			entry.interfaces.push(node.name.getText());
+		} else if (ts.isEnumDeclaration(node)) {
+			entry.enums.push(node.name.getText());
+		}
+		ts.forEachChild(node, visit);
+	}
+	ts.forEachChild(sourceFile, visit);
+	return entry;
 }
 // ---------------------------------------------------------------------------
 // Markdown rendering
 // ---------------------------------------------------------------------------
 function renderMarkdown(files, includeLoc) {
-    let totalClasses = 0;
-    let totalMembers = 0;
-    let totalFunctions = 0;
-    let totalLoc = 0;
-    const body = [];
-    for (const file of files) {
-        const hasStructuralContent = file.classes.length > 0 ||
-            file.functions.length > 0 ||
-            file.typeAliases.length > 0 ||
-            file.interfaces.length > 0 ||
-            file.enums.length > 0;
-        const shouldInclude = hasStructuralContent ||
-            (includeLoc && typeof file.loc === "number" && file.loc > 0);
-        if (!shouldInclude)
-            continue;
-        if (includeLoc && typeof file.loc === "number") {
-            totalLoc += file.loc;
-        }
-        body.push(includeLoc && typeof file.loc === "number"
-            ? `## \`${file.relativePath}\` (${file.loc} LOC)`
-            : `## \`${file.relativePath}\``);
-        body.push("");
-        for (const cls of file.classes) {
-            totalClasses++;
-            const header = [cls.modifiers, "class", cls.name]
-                .filter(Boolean)
-                .join(" ");
-            const ext = cls.extends ? ` extends ${cls.extends}` : "";
-            const impl = cls.implements?.length
-                ? ` implements ${cls.implements.join(", ")}`
-                : "";
-            body.push(`### ${header}${ext}${impl}`);
-            body.push("");
-            const ctor = cls.members.filter((m) => m.kind === "constructor");
-            const props = cls.members.filter((m) => m.kind === "property");
-            const getset = cls.members.filter((m) => m.kind === "getter" || m.kind === "setter");
-            const methods = cls.members.filter((m) => m.kind === "method");
-            if (ctor.length) {
-                body.push("**Constructor**");
-                ctor.forEach((m) => body.push(`- \`${m.signature}\``));
-                body.push("");
-            }
-            if (props.length) {
-                body.push("**Properties**");
-                props.forEach((m) => body.push(`- \`${m.signature}\``));
-                body.push("");
-            }
-            if (getset.length) {
-                body.push("**Accessors**");
-                getset.forEach((m) => body.push(`- \`${m.signature}\``));
-                body.push("");
-            }
-            if (methods.length) {
-                body.push("**Methods**");
-                methods.forEach((m) => body.push(`- \`${m.signature}\``));
-                body.push("");
-            }
-            totalMembers += cls.members.length;
-        }
-        if (file.functions.length > 0) {
-            totalFunctions += file.functions.length;
-            body.push("**Module-level functions**");
-            file.functions.forEach((fn) => body.push(`- \`${fn.signature}\``));
-            body.push("");
-        }
-        const extras = [
-            ...file.interfaces.map((n) => `interface \`${n}\``),
-            ...file.typeAliases.map((n) => `type \`${n}\``),
-            ...file.enums.map((n) => `enum \`${n}\``),
-        ];
-        if (extras.length) {
-            body.push("**Types / Interfaces / Enums**");
-            extras.forEach((e) => body.push(`- ${e}`));
-            body.push("");
-        }
-        body.push("---");
-        body.push("");
-    }
-    const summary = includeLoc
-        ? `> **Summary:** ${totalClasses} classes · ${totalMembers} members · ${totalFunctions} module-level functions · ${totalLoc} LOC`
-        : `> **Summary:** ${totalClasses} classes · ${totalMembers} members · ${totalFunctions} module-level functions`;
-    return [
-        "# Project Footprint",
-        "",
-        `Generated: ${new Date().toISOString()}`,
-        "",
-        summary,
-        "",
-        "---",
-        "",
-        ...body,
-    ].join("\n");
+	let totalClasses = 0;
+	let totalMembers = 0;
+	let totalFunctions = 0;
+	let totalLoc = 0;
+	const body = [];
+	for (const file of files) {
+		const hasStructuralContent =
+			file.classes.length > 0 ||
+			file.functions.length > 0 ||
+			file.typeAliases.length > 0 ||
+			file.interfaces.length > 0 ||
+			file.enums.length > 0;
+		const shouldInclude =
+			hasStructuralContent ||
+			(includeLoc && typeof file.loc === "number" && file.loc > 0);
+		if (!shouldInclude) continue;
+		if (includeLoc && typeof file.loc === "number") {
+			totalLoc += file.loc;
+		}
+		body.push(
+			includeLoc && typeof file.loc === "number"
+				? `## \`${file.relativePath}\` (${file.loc} LOC)`
+				: `## \`${file.relativePath}\``,
+		);
+		body.push("");
+		for (const cls of file.classes) {
+			totalClasses++;
+			const header = [cls.modifiers, "class", cls.name]
+				.filter(Boolean)
+				.join(" ");
+			const ext = cls.extends ? ` extends ${cls.extends}` : "";
+			const impl = cls.implements?.length
+				? ` implements ${cls.implements.join(", ")}`
+				: "";
+			body.push(`### ${header}${ext}${impl}`);
+			body.push("");
+			const ctor = cls.members.filter((m) => m.kind === "constructor");
+			const props = cls.members.filter((m) => m.kind === "property");
+			const getset = cls.members.filter(
+				(m) => m.kind === "getter" || m.kind === "setter",
+			);
+			const methods = cls.members.filter((m) => m.kind === "method");
+			if (ctor.length) {
+				body.push("**Constructor**");
+				ctor.forEach((m) => body.push(`- \`${m.signature}\``));
+				body.push("");
+			}
+			if (props.length) {
+				body.push("**Properties**");
+				props.forEach((m) => body.push(`- \`${m.signature}\``));
+				body.push("");
+			}
+			if (getset.length) {
+				body.push("**Accessors**");
+				getset.forEach((m) => body.push(`- \`${m.signature}\``));
+				body.push("");
+			}
+			if (methods.length) {
+				body.push("**Methods**");
+				methods.forEach((m) => body.push(`- \`${m.signature}\``));
+				body.push("");
+			}
+			totalMembers += cls.members.length;
+		}
+		if (file.functions.length > 0) {
+			totalFunctions += file.functions.length;
+			body.push("**Module-level functions**");
+			file.functions.forEach((fn) => body.push(`- \`${fn.signature}\``));
+			body.push("");
+		}
+		const extras = [
+			...file.interfaces.map((n) => `interface \`${n}\``),
+			...file.typeAliases.map((n) => `type \`${n}\``),
+			...file.enums.map((n) => `enum \`${n}\``),
+		];
+		if (extras.length) {
+			body.push("**Types / Interfaces / Enums**");
+			extras.forEach((e) => body.push(`- ${e}`));
+			body.push("");
+		}
+		body.push("---");
+		body.push("");
+	}
+	const summary = includeLoc
+		? `> **Summary:** ${totalClasses} classes · ${totalMembers} members · ${totalFunctions} module-level functions · ${totalLoc} LOC`
+		: `> **Summary:** ${totalClasses} classes · ${totalMembers} members · ${totalFunctions} module-level functions`;
+	return [
+		"# Project Footprint",
+		"",
+		`Generated: ${new Date().toISOString()}`,
+		"",
+		summary,
+		"",
+		"---",
+		"",
+		...body,
+	].join("\n");
 }
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 if (!fs.existsSync(srcDir)) {
-    console.error(`Source directory not found: ${srcDir}`);
-    process.exit(1);
+	console.error(`Source directory not found: ${srcDir}`);
+	process.exit(1);
 }
 const tsFiles = collectTsFiles(srcDir);
 console.error(`Found ${tsFiles.length} TypeScript files under ${srcDir}`);
 if (tsFiles.length === 0) {
-    console.error("No .ts/.tsx files found — check the path argument.");
-    process.exit(1);
+	console.error("No .ts/.tsx files found — check the path argument.");
+	process.exit(1);
 }
 let compilerOptions = {
-    target: ts.ScriptTarget.ESNext,
-    moduleResolution: ts.ModuleResolutionKind.Node10,
-    allowJs: false,
-    strict: false,
-    skipLibCheck: true,
+	target: ts.ScriptTarget.ESNext,
+	moduleResolution: ts.ModuleResolutionKind.Node10,
+	allowJs: false,
+	strict: false,
+	skipLibCheck: true,
 };
 if (fs.existsSync(tsconfigPath)) {
-    console.error(`Using tsconfig: ${tsconfigPath}`);
-    const configFile = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
-    if (configFile.error) {
-        const message = ts.flattenDiagnosticMessageText(configFile.error.messageText, "\n");
-        console.error(`Failed to read tsconfig: ${message}`);
-        process.exit(1);
-    }
-    const parsed = ts.parseJsonConfigFileContent(configFile.config, ts.sys, path.dirname(tsconfigPath));
-    compilerOptions = { ...parsed.options, skipLibCheck: true };
+	console.error(`Using tsconfig: ${tsconfigPath}`);
+	const configFile = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
+	if (configFile.error) {
+		const message = ts.flattenDiagnosticMessageText(
+			configFile.error.messageText,
+			"\n",
+		);
+		console.error(`Failed to read tsconfig: ${message}`);
+		process.exit(1);
+	}
+	const parsed = ts.parseJsonConfigFileContent(
+		configFile.config,
+		ts.sys,
+		path.dirname(tsconfigPath),
+	);
+	compilerOptions = { ...parsed.options, skipLibCheck: true };
 }
 const program = ts.createProgram(tsFiles, compilerOptions);
 const checker = program.getTypeChecker();
@@ -405,9 +435,9 @@ const checker = program.getTypeChecker();
 const normSrcFiles = new Set(tsFiles.map(norm));
 const fileEntries = [];
 for (const sf of program.getSourceFiles()) {
-    if (!sf.isDeclarationFile && normSrcFiles.has(norm(sf.fileName))) {
-        fileEntries.push(analyzeFile(sf, checker, srcDir, includeLoc));
-    }
+	if (!sf.isDeclarationFile && normSrcFiles.has(norm(sf.fileName))) {
+		fileEntries.push(analyzeFile(sf, checker, srcDir, includeLoc));
+	}
 }
 console.error(`Analysed ${fileEntries.length} files`);
 fileEntries.sort((a, b) => a.relativePath.localeCompare(b.relativePath));

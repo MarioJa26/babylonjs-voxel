@@ -9,7 +9,7 @@
 import { ref, onMounted, onBeforeUnmount } from "vue";
 import { TestScene } from "@/code/TestScene";
 
-// Vite handles these imports automatically 
+// Vite handles these imports automatically
 import "@/style/hud.css";
 import "@/style/Item.css";
 
@@ -18,20 +18,20 @@ const bjsCanvas = ref<HTMLCanvasElement | null>(null);
 let testScene: TestScene | null = null;
 
 onMounted(async () => {
-  document.title = "b102 - " + new Date().toLocaleTimeString();
+	document.title = "b102 - " + new Date().toLocaleTimeString();
 
-  if (bjsCanvas.value) {
-    // 2. Initialize the scene with the ref value
-    testScene = new TestScene(document, bjsCanvas.value);
-    await testScene.initPromise;
-  }
+	if (bjsCanvas.value) {
+		// 2. Initialize the scene with the ref value
+		testScene = new TestScene(document, bjsCanvas.value);
+		await testScene.initPromise;
+	}
 });
 
 onBeforeUnmount(() => {
-  if (testScene) {
-    // Optional: Dispose of the Babylon engine here to prevent memory leaks
-    // testScene.engine.dispose(); 
-  }
+	if (testScene) {
+		// Optional: Dispose of the Babylon engine here to prevent memory leaks
+		// testScene.engine.dispose();
+	}
 });
 </script>
 

@@ -1,18 +1,18 @@
 import * as BABYLON from "@babylonjs/core";
-import { Player } from "../Player/Player";
+import type { Player } from "../Player/Player";
 
 export class UnderWaterEffect {
-  public material: BABYLON.ShaderMaterial;
-  public postProcess: BABYLON.PostProcess;
+	public material: BABYLON.ShaderMaterial;
+	public postProcess: BABYLON.PostProcess;
 
-  private scene: BABYLON.Scene;
-  private camera: BABYLON.Camera;
-  private player: Player;
-  private depthRenderer: BABYLON.DepthRenderer;
-  private time = 0;
-  private rate = 0.01;
+	private scene: BABYLON.Scene;
+	private camera: BABYLON.Camera;
+	private player: Player;
+	private depthRenderer: BABYLON.DepthRenderer;
+	private time = 0;
+	private rate = 0.01;
 
-  private static readonly VERTEX_SHADER: string = `
+	private static readonly VERTEX_SHADER: string = `
         precision lowp float;
 
         attribute vec3 position;
@@ -80,7 +80,7 @@ export class UnderWaterEffect {
             vPosition = worldPos.xyz;
         }`;
 
-  private static readonly FRAGMENT_SHADER: string = `
+	private static readonly FRAGMENT_SHADER: string = `
         precision lowp float;
 
         varying vec2 vUV;
@@ -178,7 +178,7 @@ export class UnderWaterEffect {
             gl_FragColor = vec4(color, 0.0);
         }`;
 
-  private static readonly BACKGROUND_POST_PROCESS_SHADER: string = `
+	private static readonly BACKGROUND_POST_PROCESS_SHADER: string = `
         precision lowp float;
 
         varying vec2 vUV;
@@ -289,112 +289,112 @@ export class UnderWaterEffect {
             gl_FragColor = vec4(finalColor, 1.0);
         }`;
 
-  constructor(
-    scene: BABYLON.Scene,
-    camera: BABYLON.Camera,
-    player: Player,
-    baseTexture: BABYLON.Texture
-  ) {
-    // NEW: Added baseTexture parameter
-    this.scene = scene;
-    this.camera = camera;
-    this.player = player;
+	constructor(
+		scene: BABYLON.Scene,
+		camera: BABYLON.Camera,
+		player: Player,
+		baseTexture: BABYLON.Texture,
+	) {
+		// NEW: Added baseTexture parameter
+		this.scene = scene;
+		this.camera = camera;
+		this.player = player;
 
-    this.registerShaders();
+		this.registerShaders();
 
-    this.material = this.createShaderMaterial(baseTexture); // NEW: Pass baseTexture
-    // Enable depth renderer and ensure it generates a linear depth map
-    this.depthRenderer = this.scene.enableDepthRenderer(camera);
-    this.depthRenderer.useOnlyInActiveCamera = true;
+		this.material = this.createShaderMaterial(baseTexture); // NEW: Pass baseTexture
+		// Enable depth renderer and ensure it generates a linear depth map
+		this.depthRenderer = this.scene.enableDepthRenderer(camera);
+		this.depthRenderer.useOnlyInActiveCamera = true;
 
-    this.postProcess = this.createPostProcess();
+		this.postProcess = this.createPostProcess();
 
-    this.scene.registerBeforeRender(this.update);
-  }
+		this.scene.registerBeforeRender(this.update);
+	}
 
-  private registerShaders(): void {
-    BABYLON.Effect.ShadersStore["underWaterVertexShader"] =
-      UnderWaterEffect.VERTEX_SHADER;
-    BABYLON.Effect.ShadersStore["underWaterFragmentShader"] =
-      UnderWaterEffect.FRAGMENT_SHADER;
-    BABYLON.Effect.ShadersStore["underWaterBackGroundFragmentShader"] =
-      UnderWaterEffect.BACKGROUND_POST_PROCESS_SHADER;
-  }
+	private registerShaders(): void {
+		BABYLON.Effect.ShadersStore["underWaterVertexShader"] =
+			UnderWaterEffect.VERTEX_SHADER;
+		BABYLON.Effect.ShadersStore["underWaterFragmentShader"] =
+			UnderWaterEffect.FRAGMENT_SHADER;
+		BABYLON.Effect.ShadersStore["underWaterBackGroundFragmentShader"] =
+			UnderWaterEffect.BACKGROUND_POST_PROCESS_SHADER;
+	}
 
-  private createShaderMaterial(
-    baseTexture: BABYLON.Texture
-  ): BABYLON.ShaderMaterial {
-    const material = new BABYLON.ShaderMaterial(
-      "underWaterShader",
-      this.scene,
-      {
-        vertex: "underWater",
-        fragment: "underWater",
-      },
-      {
-        attributes: [
-          "position",
-          "normal",
-          "uv",
-          "matricesIndices",
-          "matricesWeights",
-        ],
-        samplers: ["baseTexture"], // NEW: Declare baseTexture as a sampler
-        uniforms: [
-          "world",
-          "worldViewProjection",
-          "time",
-          "cameraPosition",
-          "playerPosition",
-          "isUnderwater",
-          "vFogInfos",
-          "vFogColor",
-          "mBones",
-        ],
-      }
-    );
-    material.setTexture("baseTexture", baseTexture); // NEW: Set the texture uniform
-    return material;
-  }
+	private createShaderMaterial(
+		baseTexture: BABYLON.Texture,
+	): BABYLON.ShaderMaterial {
+		const material = new BABYLON.ShaderMaterial(
+			"underWaterShader",
+			this.scene,
+			{
+				vertex: "underWater",
+				fragment: "underWater",
+			},
+			{
+				attributes: [
+					"position",
+					"normal",
+					"uv",
+					"matricesIndices",
+					"matricesWeights",
+				],
+				samplers: ["baseTexture"], // NEW: Declare baseTexture as a sampler
+				uniforms: [
+					"world",
+					"worldViewProjection",
+					"time",
+					"cameraPosition",
+					"playerPosition",
+					"isUnderwater",
+					"vFogInfos",
+					"vFogColor",
+					"mBones",
+				],
+			},
+		);
+		material.setTexture("baseTexture", baseTexture); // NEW: Set the texture uniform
+		return material;
+	}
 
-  private createPostProcess(): BABYLON.PostProcess {
-    const postProcess = new BABYLON.PostProcess(
-      "UnderWaterBackground",
-      "underWaterBackGround",
-      ["time", "screenSize", "playerPosition", "isUnderwater"],
-      ["dPass"],
-      1.0,
-      this.camera
-    );
+	private createPostProcess(): BABYLON.PostProcess {
+		const postProcess = new BABYLON.PostProcess(
+			"UnderWaterBackground",
+			"underWaterBackGround",
+			["time", "screenSize", "playerPosition", "isUnderwater"],
+			["dPass"],
+			1.0,
+			this.camera,
+		);
 
-    postProcess.onApply = (effect: BABYLON.Effect) => {
-      effect.setFloat2("screenSize", postProcess.width, postProcess.height);
-      effect.setFloat("time", this.time);
-      effect.setVector3("playerPosition", this.player.position);
-      effect.setBool("isUnderwater", this.player.position.y < 1.8);
-      effect.setTexture("dPass", this.depthRenderer.getDepthMap());
-    };
+		postProcess.onApply = (effect: BABYLON.Effect) => {
+			effect.setFloat2("screenSize", postProcess.width, postProcess.height);
+			effect.setFloat("time", this.time);
+			effect.setVector3("playerPosition", this.player.position);
+			effect.setBool("isUnderwater", this.player.position.y < 1.8);
+			effect.setTexture("dPass", this.depthRenderer.getDepthMap());
+		};
 
-    return postProcess;
-  }
+		return postProcess;
+	}
 
-  private update = (): void => {
-    this.time +=
-      (this.scene.getEngine().getDeltaTime() / 1000) * this.rate * 100;
+	private update = (): void => {
+		this.time +=
+			(this.scene.getEngine().getDeltaTime() / 1000) * this.rate * 100;
 
-    this.material.setFloat("time", this.time);
-    if (this.scene.activeCamera) {
-      this.material.setVector3(
-        "cameraPosition",
-        this.scene.activeCamera.position
-      );
-      this.material.setVector3("playerPosition", this.player.position);
-    }
-  };
+		this.material.setFloat("time", this.time);
+		if (this.scene.activeCamera) {
+			this.material.setVector3(
+				"cameraPosition",
+				this.scene.activeCamera.position,
+			);
+			this.material.setVector3("playerPosition", this.player.position);
+		}
+	};
 
-  public dispose(): void {
-    this.scene.unregisterBeforeRender(this.update);
-    this.material.dispose();
-    this.postProcess.dispose();
-  }
+	public dispose(): void {
+		this.scene.unregisterBeforeRender(this.update);
+		this.material.dispose();
+		this.postProcess.dispose();
+	}
 }

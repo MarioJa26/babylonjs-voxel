@@ -1,5 +1,5 @@
 export class TransparentShader {
-  public static readonly chunkVertexShader = `
+	public static readonly chunkVertexShader = `
     #version 300 es
     precision highp float;
 
@@ -222,7 +222,7 @@ int diagonalVariant = (meta >> 5) & 1;
     }
   `;
 
-  public static readonly chunkFragmentShader = `
+	public static readonly chunkFragmentShader = `
   #version 300 es
   precision highp float;
 

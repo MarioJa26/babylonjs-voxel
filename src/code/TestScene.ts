@@ -1,78 +1,78 @@
-import { Scene, Engine, Vector3, FreeCamera } from "@babylonjs/core";
+import { Engine, FreeCamera, Scene, Vector3 } from "@babylonjs/core";
 import "@babylonjs/core/Debug/debugLayer";
 import "@babylonjs/inspector";
-import { Player } from "./Player/Player";
 import { CustomBoat } from "./Entities/CustomBoat";
-import { Map1 } from "./Maps/Map1";
-import { PlayerCamera } from "./Player/PlayerCamera";
-import { ChunkLoadingSystem } from "./World/Chunk/ChunkLoadingSystem";
-import { ChunkMesher } from "./World/Chunk/ChunckMesher";
 import { GenerationParams } from "./Generation/NoiseAndParameters/GenerationParams";
+import { Map1 } from "./Maps/Map1";
+import { Player } from "./Player/Player";
+import { PlayerCamera } from "./Player/PlayerCamera";
+import { ChunkMesher } from "./World/Chunk/ChunckMesher";
+import { ChunkLoadingSystem } from "./World/Chunk/ChunkLoadingSystem";
 
 export class TestScene {
-  document: Document;
-  //connection: MyConnection;
-  scene?: Scene;
-  engine: Engine;
-  public readonly initPromise: Promise<void>;
-  private frameCounter = 0;
+	document: Document;
+	//connection: MyConnection;
+	scene?: Scene;
+	engine: Engine;
+	public readonly initPromise: Promise<void>;
+	private frameCounter = 0;
 
-  constructor(
-    document: Document,
-    private canvas: HTMLCanvasElement,
-  ) {
-    this.document = document;
-    this.engine = new Engine(this.canvas);
-    //this.connection = new MyConnection();
+	constructor(
+		document: Document,
+		private canvas: HTMLCanvasElement,
+	) {
+		this.document = document;
+		this.engine = new Engine(this.canvas);
+		//this.connection = new MyConnection();
 
-    window.addEventListener("keydown", (ev) => {
-      // Ctrl+F
-      if (ev.ctrlKey && ev.key.toLowerCase() === "f") {
-        if (this.scene) {
-          if (this.scene.debugLayer.isVisible()) {
-            this.scene.debugLayer.hide();
-          } else {
-            this.scene.debugLayer.show();
-          }
-        }
-      }
-    });
+		window.addEventListener("keydown", (ev) => {
+			// Ctrl+F
+			if (ev.ctrlKey && ev.key.toLowerCase() === "f") {
+				if (this.scene) {
+					if (this.scene.debugLayer.isVisible()) {
+						this.scene.debugLayer.hide();
+					} else {
+						this.scene.debugLayer.show();
+					}
+				}
+			}
+		});
 
-    this.initPromise = this.init();
+		this.initPromise = this.init();
 
-    this.engine.runRenderLoop(() => {
-      // Update shader uniforms ONCE per frame
-      this.frameCounter++;
-      ChunkMesher.updateGlobalUniforms(this.frameCounter);
+		this.engine.runRenderLoop(() => {
+			// Update shader uniforms ONCE per frame
+			this.frameCounter++;
+			ChunkMesher.updateGlobalUniforms(this.frameCounter);
 
-      // Then render the scene
-      this.scene?.render();
-    });
-  }
+			// Then render the scene
+			this.scene?.render();
+		});
+	}
 
-  async init() {
-    this.scene = await this.createScene();
-    //if (GlobalValues.INIT_CONNECTION) await this.connection.connect();
-  }
+	async init() {
+		this.scene = await this.createScene();
+		//if (GLOBAL_VALUES.INIT_CONNECTION) await this.connection.connect();
+	}
 
-  // Playground scene creation
-  async createScene() {
-    // This creates a basic Babylon Scene object (non-mesh)
-    const scene = new Scene(this.engine);
+	// Playground scene creation
+	async createScene() {
+		// This creates a basic Babylon Scene object (non-mesh)
+		const scene = new Scene(this.engine);
 
-    // This creates and positions a free camera (non-mesh)
-    const camera = new FreeCamera("camera1", Vector3.Zero(), scene);
+		// This creates and positions a free camera (non-mesh)
+		const camera = new FreeCamera("camera1", Vector3.Zero(), scene);
 
-    const playerCamera = new PlayerCamera(camera, scene);
-    new ChunkLoadingSystem(); // This will create all the initial chunks
-    const player = new Player(this.engine, scene, playerCamera, this.canvas);
-    CustomBoat.configureChunkReloadContext(
-      scene,
-      player,
-      GenerationParams.SEA_LEVEL,
-    );
-    const map = new Map1(scene, player);
-    map.initPromise;
-    return scene;
-  }
+		const playerCamera = new PlayerCamera(camera, scene);
+		new ChunkLoadingSystem(); // This will create all the initial chunks
+		const player = new Player(this.engine, scene, playerCamera, this.canvas);
+		CustomBoat.configureChunkReloadContext(
+			scene,
+			player,
+			GenerationParams.SEA_LEVEL,
+		);
+		const map = new Map1(scene, player);
+		map.initPromise;
+		return scene;
+	}
 }

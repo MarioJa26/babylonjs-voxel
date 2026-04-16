@@ -1,5 +1,5 @@
-import { Player } from "../Player/Player";
+import type { Player } from "../Player/Player";
 
 export interface IUsable {
-  use(player?: Player): void;
+	use(player?: Player): void;
 }

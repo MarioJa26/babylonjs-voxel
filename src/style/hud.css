@@ -1,297 +1,294 @@
 /* General HUD Containers */
 :root {
-  --ui-font-family: Arial, Helvetica, sans-serif;
+	--ui-font-family: Arial, Helvetica, sans-serif;
 }
 
 .hud-overlay {
-  position: absolute;
-  top: 5%;
-  left: 50%;
-  transform: translateX(-50%);
+	position: absolute;
+	top: 5%;
+	left: 50%;
+	transform: translateX(-50%);
 
-  /* scale with window size */
-  width: 90vw;
-  max-width: 1200px;
-  height: 80vh;
-  max-height: 800px;
+	/* scale with window size */
+	width: 90vw;
+	max-width: 1200px;
+	height: 80vh;
+	max-height: 800px;
 
-  background-color: rgba(0, 0, 0, 0.4);
-  padding: 1em;
-  z-index: 100;
+	background-color: rgba(0, 0, 0, 0.4);
+	padding: 1em;
+	z-index: 100;
 
-  display: none;
-  display: flex;
-  /* flex container */
-  flex-direction: column;
-  /* stack content */
-  align-items: center;
-  justify-content: flex-end;
+	display: flex;
+	/* flex container */
+	flex-direction: column;
+	/* stack content */
+	align-items: center;
+	justify-content: flex-end;
 
-  font-family: var(--ui-font-family);
-  font-size: 1em;
+	font-family: var(--ui-font-family);
+	font-size: 1em;
 }
 
 .hud-content-wrapper {
-  display: flex;
-  flex-direction: row;
-  align-items: flex-start;
-  gap: 1em;
-  max-height: 100%;
-  overflow: hidden;
+	display: flex;
+	flex-direction: row;
+	align-items: flex-start;
+	gap: 1em;
+	max-height: 100%;
+	overflow: hidden;
 }
 
 .hotbar-container {
-  position: absolute;
-  bottom: 1vh;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 101;
+	position: absolute;
+	bottom: 1vh;
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 101;
 
-  display: flex;
-  gap: 0.66em;
-  padding: 0.5em;
-  background-color: rgba(0, 0, 0, 0.4);
+	display: flex;
+	gap: 0.66em;
+	padding: 0.5em;
+	background-color: rgba(0, 0, 0, 0.4);
 }
 
 .crafting-view-switcher {
-  display: flex;
-  gap: 0.5em;
-  margin-bottom: 0.5em;
+	display: flex;
+	gap: 0.5em;
+	margin-bottom: 0.5em;
 }
 
 .crafting-view-switcher button {
-  flex: 1;
-  padding: 0.25em;
-  background-color: rgba(0, 0, 0, 0.6);
-  border: 2px solid rgba(96, 96, 64, 0.9);
-  color: white;
-  cursor: pointer;
-  transition: 0.1s;
+	flex: 1;
+	padding: 0.25em;
+	background-color: rgba(0, 0, 0, 0.6);
+	border: 2px solid rgba(96, 96, 64, 0.9);
+	color: white;
+	cursor: pointer;
+	transition: 0.1s;
 }
 
 .crafting-view-switcher button:hover {
-  border-color: rgb(0, 187, 255);
+	border-color: rgb(0, 187, 255);
 }
 
 .crafting-view-switcher button.active {
-  background-color: rgba(50, 50, 50, 0.8);
-  border-color: rgb(0, 187, 255);
+	background-color: rgba(50, 50, 50, 0.8);
+	border-color: rgb(0, 187, 255);
 }
 
 .crafting-container {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5em;
-  padding: 0.5em;
-  background-color: rgba(0, 0, 0, 0.4);
-  overflow-y: auto;
-  min-width: 200px;
-  max-height: 100%;
+	display: flex;
+	flex-direction: column;
+	gap: 0.5em;
+	padding: 0.5em;
+	background-color: rgba(0, 0, 0, 0.4);
+	overflow-y: auto;
+	min-width: 200px;
+	max-height: 100%;
 }
 
 .crafting-recipe {
-  display: flex;
-  align-items: center;
-  gap: 0.5em;
-  padding: 0.5em;
-  background-color: rgba(0, 0, 0, 0.6);
-  border: 2px solid rgba(96, 96, 64, 0.9);
-  cursor: pointer;
-  color: white;
-  transition: 0.1s;
+	display: flex;
+	align-items: center;
+	gap: 0.5em;
+	padding: 0.5em;
+	background-color: rgba(0, 0, 0, 0.6);
+	border: 2px solid rgba(96, 96, 64, 0.9);
+	cursor: pointer;
+	color: white;
+	transition: 0.1s;
 }
 
 .crafting-recipe.not-craftable {
-  opacity: 0.5;
-  filter: grayscale(100%);
-  border-color: #555;
-  cursor: not-allowed;
+	opacity: 0.5;
+	filter: grayscale(100%);
+	border-color: #555;
+	cursor: not-allowed;
 }
 
 .crafting-recipe:hover {
-  border-color: rgb(0, 187, 255);
-  background-color: rgba(50, 50, 50, 0.8);
+	border-color: rgb(0, 187, 255);
+	background-color: rgba(50, 50, 50, 0.8);
 }
 
 .crafting-icon {
-  width: 32px;
-  height: 32px;
-  object-fit: contain;
+	width: 32px;
+	height: 32px;
+	object-fit: contain;
 }
 
 .crafting-container.compact-view {
-  flex-direction: row;
-  flex-wrap: wrap;
-  align-content: flex-start;
+	flex-direction: row;
+	flex-wrap: wrap;
+	align-content: flex-start;
 }
 
 .crafting-container.compact-view .crafting-recipe {
-  padding: 0.5em;
-  gap: 0;
-  justify-content: center;
+	padding: 0.5em;
+	gap: 0;
+	justify-content: center;
 }
 
 .crafting-container.compact-view .crafting-recipe span {
-  display: none;
+	display: none;
 }
 
 .inventory-container {
-  display: flex;
-  flex-direction: column;
-  gap: 0.66em;
-  padding: 0.5em;
+	display: flex;
+	flex-direction: column;
+	gap: 0.66em;
+	padding: 0.5em;
 
-  overflow-y: auto;
+	overflow-y: auto;
 
-  background-color: rgba(0, 0, 0, 0.4);
+	background-color: rgba(0, 0, 0, 0.4);
 }
 
 .inventory-row {
-  display: flex;
-  gap: 0.66em;
+	display: flex;
+	gap: 0.66em;
 }
 
 .inventory-slot {
-  transition: 100ms;
-  flex: 0 0 auto;
-  aspect-ratio: 1 / 1;
-  /* keeps them square */
-  width: clamp(2em, 5vw, 4em);
-  border: 3px solid rgba(96, 96, 64, 0.9);
-  background-color: rgba(0, 0, 0, 0.6);
+	transition: 100ms;
+	flex: 0 0 auto;
+	aspect-ratio: 1 / 1;
+	/* keeps them square */
+	width: clamp(2em, 5vw, 4em);
+	border: 3px solid rgba(96, 96, 64, 0.9);
+	background-color: rgba(0, 0, 0, 0.6);
 
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--ui-font-family);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-family: var(--ui-font-family);
 }
 
 /* Style for the selected hotbar slot */
 .inventory-slot.selected {
-  border: 3px solid rgb(192, 192, 192);
+	border: 3px solid rgb(192, 192, 192);
 }
 
 .inventory-slot:hover {
-  border: 3px solid rgb(0, 187, 255);
-  transition-duration: 150ms;
-  transform: scale(1.2);
+	border: 3px solid rgb(0, 187, 255);
+	transition-duration: 150ms;
+	transform: scale(1.2);
 }
 
 /* HUD Buttons */
 .hud-close-button {
-  position: absolute;
-  top: -1em;
-  right: -1em;
-  border: none;
-  background: transparent;
-  color: black;
-  font-size: 2em;
-  user-select: none;
-  cursor: pointer;
+	position: absolute;
+	top: -1em;
+	right: -1em;
+	border: none;
+	background: transparent;
+	color: black;
+	font-size: 2em;
+	user-select: none;
+	cursor: pointer;
 }
 
 .hud-close-button:hover {
-  color: red;
-}
-
-
-.held-item-name {
-  position: absolute;
-  bottom: 10vh;
-  /* Adjust to position it above your hotbar */
-  color: white;
-  font-size: clamp(0.6em, 2vw, 1em);
-  /* scales with screen */
-  font-weight: bold;
-  text-shadow: 2px 2px 2px black;
-  margin: 0.2em;
-
-  font-family: var(--ui-font-family);
-  pointer-events: none;
-  /* Make sure it doesn't block mouse clicks */
-  background-color: rgba(0, 0, 0, 0.5);
-  padding: 4px 8px;
+	color: red;
 }
 
 .held-item-name {
-  opacity: 0;
-  transition: opacity 0.04s ease-in;
-  transition: opacity 0.5s ease-out;
+	position: absolute;
+	bottom: 10vh;
+	/* Adjust to position it above your hotbar */
+	color: white;
+	font-size: clamp(0.6em, 2vw, 1em);
+	/* scales with screen */
+	font-weight: bold;
+	text-shadow: 2px 2px 2px black;
+	margin: 0.2em;
+
+	font-family: var(--ui-font-family);
+	pointer-events: none;
+	/* Make sure it doesn't block mouse clicks */
+	background-color: rgba(0, 0, 0, 0.5);
+	padding: 4px 8px;
+}
+
+.held-item-name {
+	opacity: 0;
+	transition: opacity 0.04s 0.5s ease-in-out;
 }
 
 .held-item-name.visible {
-  opacity: 1;
+	opacity: 1;
 }
 
 /* Item Tooltip */
 #item-tooltip {
-  position: absolute;
-  background-color: rgba(0, 0, 0, 0.5);
-  color: white;
-  padding: 5px 10px;
-  font-family: var(--ui-font-family);
-  font-size: clamp(0.6em, 2vw, 1em);
-  font-weight: bold;
-  z-index: 200;
-  /* Ensure it's on top of other UI */
-  pointer-events: none;
-  /* Prevent the tooltip from blocking mouse events */
-  white-space: nowrap;
-  /* Keep the name on a single line */
-  text-shadow: 2px 2px 2px black;
-  border-radius: 4px;
+	position: absolute;
+	background-color: rgba(0, 0, 0, 0.5);
+	color: white;
+	padding: 5px 10px;
+	font-family: var(--ui-font-family);
+	font-size: clamp(0.6em, 2vw, 1em);
+	font-weight: bold;
+	z-index: 200;
+	/* Ensure it's on top of other UI */
+	pointer-events: none;
+	/* Prevent the tooltip from blocking mouse events */
+	white-space: nowrap;
+	/* Keep the name on a single line */
+	text-shadow: 2px 2px 2px black;
+	border-radius: 4px;
 }
 
 .item-tooltip-name {
-  font-weight: bold;
+	font-weight: bold;
 }
 
 .item-tooltip-desc {
-  font-style: italic;
-  color: #cccccc;
-  font-size: 0.9em;
-  margin-top: 4px;
-  white-space: pre-line;
+	font-style: italic;
+	color: #cccccc;
+	font-size: 0.9em;
+	margin-top: 4px;
+	white-space: pre-line;
 }
 
 /* Stats Bars */
 #stats-container {
-  position: absolute;
-  bottom: 20px;
-  left: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  pointer-events: none;
+	position: absolute;
+	bottom: 20px;
+	left: 20px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	pointer-events: none;
 }
 
 .stat-bar-wrapper {
-  width: 250px;
-  height: 12px;
-  background-color: rgba(0, 0, 0, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 2px;
+	width: 250px;
+	height: 12px;
+	background-color: rgba(0, 0, 0, 0.6);
+	border: 1px solid rgba(255, 255, 255, 0.2);
+	border-radius: 2px;
 }
 
 .stat-bar-fill {
-  width: 100%;
-  height: 100%;
-  transition: width 0.1s;
-  border-radius: 1px;
+	width: 100%;
+	height: 100%;
+	transition: width 0.1s;
+	border-radius: 1px;
 }
 
 .stat-bar-fill.health {
-  background-color: #e74c3c;
+	background-color: #e74c3c;
 }
 
 .stat-bar-fill.hunger {
-  background-color: #e67e22;
+	background-color: #e67e22;
 }
 
 .stat-bar-fill.stamina {
-  background-color: #2ecc71;
+	background-color: #2ecc71;
 }
 
 .stat-bar-fill.mana {
-  background-color: #3498db;
+	background-color: #3498db;
 }

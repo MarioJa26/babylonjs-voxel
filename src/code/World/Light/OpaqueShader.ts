@@ -1,5 +1,5 @@
 export class OpaqueShader {
-  static readonly chunkVertexShader = `
+	static readonly chunkVertexShader = `
         #version 300 es
         precision highp float;
 
@@ -230,7 +230,7 @@ int diagonalVariant = (meta >> 5) & 1;
 }
 `;
 
-  static readonly chunkFragmentShader = `
+	static readonly chunkFragmentShader = `
     #version 300 es
     precision highp float;
 

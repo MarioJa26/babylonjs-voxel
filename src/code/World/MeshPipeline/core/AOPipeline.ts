@@ -1,6 +1,6 @@
 // MeshPipeline/core/AOPipeline.ts
 
-import { BlockShapeInfo, MeshContext } from "../types/MeshTypes";
+import type { BlockShapeInfo, MeshContext } from "../types/MeshTypes";
 
 /**
  * Utility: determine if a block occludes light for AO.
@@ -13,14 +13,14 @@ import { BlockShapeInfo, MeshContext } from "../types/MeshTypes";
  * but they absolutely should occlude AO.
  */
 export function isOccluder(
-  packedBlock: number,
-  shape: BlockShapeInfo,
+	packedBlock: number,
+	shape: BlockShapeInfo,
 ): boolean {
-  if (!packedBlock) return false;
+	if (!packedBlock) return false;
 
-  // For now keep AO conservative:
-  // only fully closed cube-like blocks count as AO occluders.
-  return shape.isCube && shape.closedFaceMask !== 0;
+	// For now keep AO conservative:
+	// only fully closed cube-like blocks count as AO occluders.
+	return shape.isCube && shape.closedFaceMask !== 0;
 }
 
 /**
@@ -36,56 +36,54 @@ export function isOccluder(
  * on the outside side of the face, exactly like the geometry fix did for quad placement.
  */
 export function computeAO(
-  ctx: MeshContext,
-  faceX: number,
-  faceY: number,
-  faceZ: number,
-  axis: number,
-  isBackFace: boolean,
-  uAxis: number,
-  vAxis: number,
-  getShapeInfo: (packedBlock: number) => BlockShapeInfo,
+	ctx: MeshContext,
+	faceX: number,
+	faceY: number,
+	faceZ: number,
+	uAxis: number,
+	vAxis: number,
+	getShapeInfo: (packedBlock: number) => BlockShapeInfo,
 ): number {
-  const getBlock = ctx.getBlock;
-  let packedAO = 0;
+	const getBlock = ctx.getBlock;
+	let packedAO = 0;
 
-  for (let i = 0; i < 4; i++) {
-    // Corner pattern:
-    // 0 = (-u, -v)
-    // 1 = (+u, -v)
-    // 2 = (+u, +v)
-    // 3 = (-u, +v)
-    const du = i === 1 || i === 2 ? 1 : -1;
-    const dv = i === 2 || i === 3 ? 1 : -1;
+	for (let i = 0; i < 4; i++) {
+		// Corner pattern:
+		// 0 = (-u, -v)
+		// 1 = (+u, -v)
+		// 2 = (+u, +v)
+		// 3 = (-u, +v)
+		const du = i === 1 || i === 2 ? 1 : -1;
+		const dv = i === 2 || i === 3 ? 1 : -1;
 
-    // Side sample along U
-    const sux = faceX + (uAxis === 0 ? du : 0);
-    const suy = faceY + (uAxis === 1 ? du : 0);
-    const suz = faceZ + (uAxis === 2 ? du : 0);
+		// Side sample along U
+		const sux = faceX + (uAxis === 0 ? du : 0);
+		const suy = faceY + (uAxis === 1 ? du : 0);
+		const suz = faceZ + (uAxis === 2 ? du : 0);
 
-    // Side sample along V
-    const svx = faceX + (vAxis === 0 ? dv : 0);
-    const svy = faceY + (vAxis === 1 ? dv : 0);
-    const svz = faceZ + (vAxis === 2 ? dv : 0);
+		// Side sample along V
+		const svx = faceX + (vAxis === 0 ? dv : 0);
+		const svy = faceY + (vAxis === 1 ? dv : 0);
+		const svz = faceZ + (vAxis === 2 ? dv : 0);
 
-    // Corner sample along U+V
-    const scx = faceX + (uAxis === 0 ? du : 0) + (vAxis === 0 ? dv : 0);
-    const scy = faceY + (uAxis === 1 ? du : 0) + (vAxis === 1 ? dv : 0);
-    const scz = faceZ + (uAxis === 2 ? du : 0) + (vAxis === 2 ? dv : 0);
+		// Corner sample along U+V
+		const scx = faceX + (uAxis === 0 ? du : 0) + (vAxis === 0 ? dv : 0);
+		const scy = faceY + (uAxis === 1 ? du : 0) + (vAxis === 1 ? dv : 0);
+		const scz = faceZ + (uAxis === 2 ? du : 0) + (vAxis === 2 ? dv : 0);
 
-    const sideU = getBlock(sux, suy, suz, 0);
-    const sideV = getBlock(svx, svy, svz, 0);
-    const corner = getBlock(scx, scy, scz, 0);
+		const sideU = getBlock(sux, suy, suz, 0);
+		const sideV = getBlock(svx, svy, svz, 0);
+		const corner = getBlock(scx, scy, scz, 0);
 
-    const occU = isOccluder(sideU, getShapeInfo(sideU)) ? 1 : 0;
-    const occV = isOccluder(sideV, getShapeInfo(sideV)) ? 1 : 0;
-    const occCorner =
-      occU && occV && isOccluder(corner, getShapeInfo(corner)) ? 1 : 0;
+		const occU = isOccluder(sideU, getShapeInfo(sideU)) ? 1 : 0;
+		const occV = isOccluder(sideV, getShapeInfo(sideV)) ? 1 : 0;
+		const occCorner =
+			occU && occV && isOccluder(corner, getShapeInfo(corner)) ? 1 : 0;
 
-    const aoLevel = occU + occV + occCorner;
+		const aoLevel = occU + occV + occCorner;
 
-    packedAO |= aoLevel << (i * 2);
-  }
+		packedAO |= aoLevel << (i * 2);
+	}
 
-  return packedAO;
+	return packedAO;
 }

@@ -1,431 +1,431 @@
-import { Player } from "../Player";
-import { IControls } from "../../Inferface/IControls";
 import { Vector3 } from "@babylonjs/core";
-import { CrossHair } from "../Hud/CrossHair";
-import { PlayerVehicle } from "../PlayerVehicle";
-import { Map1 } from "@/code/Maps/Map1";
 import { BlockBreakParticles } from "@/code/Maps/BlockBreakParticles";
-import {
-  getBlockBreakTime,
-  getBlockInfo,
-} from "@/code/World/Texture/TextureDefinitions";
-import { Item } from "../Inventory/Item";
-import { DroppedItem } from "../Inventory/DroppedItem";
-import { Gamemodes } from "../PlayerStats";
-import { DebugControlHelper } from "./DebugControlHelper";
+import { Map1 } from "@/code/Maps/Map1";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
+import {
+	getBlockBreakTime,
+	getBlockInfo,
+} from "@/code/World/Texture/TextureDefinitions";
+import type { IControls } from "../../Inferface/IControls";
+import { CrossHair } from "../Hud/CrossHair";
+import { DroppedItem } from "../Inventory/DroppedItem";
+import { Item } from "../Inventory/Item";
+import type { Player } from "../Player";
+import { Gamemodes } from "../PlayerStats";
+import type { PlayerVehicle } from "../PlayerVehicle";
+import { DebugControlHelper } from "./DebugControlHelper";
 
 export class WalkingControls implements IControls<PlayerVehicle> {
-  public pressedKeys = new Set<string>();
-  #controlledEntity: PlayerVehicle;
-  #inputDirection: Vector3;
+	public pressedKeys = new Set<string>();
+	#controlledEntity: PlayerVehicle;
+	#inputDirection: Vector3;
 
-  #player: Player;
+	#player: Player;
 
-  #isBreaking = false;
-  #breakingBlock: { x: number; y: number; z: number } | null = null;
-  #breakTimer = 0;
-  #lastJumpTapMs = 0;
-  static readonly DOUBLE_TAP_MS = 260;
+	#isBreaking = false;
+	#breakingBlock: { x: number; y: number; z: number } | null = null;
+	#breakTimer = 0;
+	#lastJumpTapMs = 0;
+	static readonly DOUBLE_TAP_MS = 260;
 
-  public static KEY_LEFT = ["a", "arrowleft"];
-  public static KEY_RIGHT = ["d", "arrowright"];
-  public static KEY_UP = ["w", "arrowup"];
-  public static KEY_DOWN = ["s", "arrowdown"];
-  public static KEY_USE = ["e"];
-  public static KEY_PICK_BLOCK = ["r"];
-  public static KEY_PICK_BLOCK_EXACT = ["t"];
-  public static KEY_JUMP = [" "];
-  public static KEY_SPRINT = ["shift"];
-  public static KEY_FLASH = ["f"];
-  public static KEY_INVENTORY = ["tab"];
-  public static KEY_DROP = ["q"];
-  public static KEY_CTRL = ["control"];
-  public static KEY_ALT = ["alt"];
-  public static KEY_PRINT_TRACE = ["o"];
+	public static KEY_LEFT = ["a", "arrowleft"];
+	public static KEY_RIGHT = ["d", "arrowright"];
+	public static KEY_UP = ["w", "arrowup"];
+	public static KEY_DOWN = ["s", "arrowdown"];
+	public static KEY_USE = ["e"];
+	public static KEY_PICK_BLOCK = ["r"];
+	public static KEY_PICK_BLOCK_EXACT = ["t"];
+	public static KEY_JUMP = [" "];
+	public static KEY_SPRINT = ["shift"];
+	public static KEY_FLASH = ["f"];
+	public static KEY_INVENTORY = ["tab"];
+	public static KEY_DROP = ["q"];
+	public static KEY_CTRL = ["control"];
+	public static KEY_ALT = ["alt"];
+	public static KEY_PRINT_TRACE = ["o"];
 
-  public static MOUSE_WHEEL_UP = ["wheel_up"];
-  public static MOUSE_WHEEL_DOWN = ["wheel_down"];
+	public static MOUSE_WHEEL_UP = ["wheel_up"];
+	public static MOUSE_WHEEL_DOWN = ["wheel_down"];
 
-  public static MOUSE1 = [0];
-  public static MOUSE2 = [2];
+	public static MOUSE1 = [0];
+	public static MOUSE2 = [2];
 
-  public static KEY_1 = ["1", "!"];
-  public static KEY_2 = ["2", '"'];
-  public static KEY_3 = ["3", "§"];
-  public static KEY_4 = ["4", "$"];
-  public static KEY_5 = ["5", "%"];
-  public static KEY_6 = ["6", "&"];
-  public static KEY_7 = ["7", "/"];
-  public static KEY_8 = ["8", "("];
-  public static KEY_9 = ["9", ")"];
-  public static KEY_0 = ["0", "="];
+	public static KEY_1 = ["1", "!"];
+	public static KEY_2 = ["2", '"'];
+	public static KEY_3 = ["3", "§"];
+	public static KEY_4 = ["4", "$"];
+	public static KEY_5 = ["5", "%"];
+	public static KEY_6 = ["6", "&"];
+	public static KEY_7 = ["7", "/"];
+	public static KEY_8 = ["8", "("];
+	public static KEY_9 = ["9", ")"];
+	public static KEY_0 = ["0", "="];
 
-  public static KEY_F5 = ["f5"];
-  public static KEY_F6 = ["f6"];
+	public static KEY_F5 = ["f5"];
+	public static KEY_F6 = ["f6"];
 
-  constructor(player: Player) {
-    this.#controlledEntity = player.playerVehicle;
-    this.#inputDirection = player.playerVehicle.inputDirection;
-    this.#player = player;
-  }
+	constructor(player: Player) {
+		this.#controlledEntity = player.playerVehicle;
+		this.#inputDirection = player.playerVehicle.inputDirection;
+		this.#player = player;
+	}
 
-  public handleKeyEvent(key: string, isKeyDown: boolean) {
-    if (isKeyDown) {
-      this.onKeyDown(key);
-    } else {
-      this.onKeyUp(key);
-    }
-  }
-  public handleMouseEvent(mouseEvent: MouseEvent, isKeyDown: boolean): void {
-    if (WalkingControls.MOUSE1.includes(mouseEvent.button)) {
-      this.#isBreaking = isKeyDown;
-      if (!isKeyDown) {
-        this.#breakingBlock = null;
-        this.#breakTimer = 0;
-        Map1.updateCrackingState(null, 0);
-      }
-    } else if (
-      WalkingControls.MOUSE2.includes(mouseEvent.button) &&
-      isKeyDown
-    ) {
-      const item =
-        this.#player.playerInventory.inventory[0][
-          this.#player.playerHud.selectedHotbarSlot
-        ]?.item;
+	public handleKeyEvent(key: string, isKeyDown: boolean) {
+		if (isKeyDown) {
+			this.onKeyDown(key);
+		} else {
+			this.onKeyUp(key);
+		}
+	}
+	public handleMouseEvent(mouseEvent: MouseEvent, isKeyDown: boolean): void {
+		if (WalkingControls.MOUSE1.includes(mouseEvent.button)) {
+			this.#isBreaking = isKeyDown;
+			if (!isKeyDown) {
+				this.#breakingBlock = null;
+				this.#breakTimer = 0;
+				Map1.updateCrackingState(null, 0);
+			}
+		} else if (
+			WalkingControls.MOUSE2.includes(mouseEvent.button) &&
+			isKeyDown
+		) {
+			const item =
+				this.#player.playerInventory.inventory[0][
+					this.#player.playerHud.selectedHotbarSlot
+				]?.item;
 
-      if (item) {
-        item.use(this.#player);
-      }
-    }
-  }
+			if (item) {
+				item.use(this.#player);
+			}
+		}
+	}
 
-  public update(): void {
-    if (!this.#isBreaking) return;
+	public update(): void {
+		if (!this.#isBreaking) return;
 
-    const dt =
-      this.#player.playerVehicle.scene.getEngine().getDeltaTime() / 1000;
+		const dt =
+			this.#player.playerVehicle.scene.getEngine().getDeltaTime() / 1000;
 
-    const hit = CrossHair.getPlacementHit(this.#player);
-    if (!hit) {
-      this.#breakingBlock = null;
-      this.#breakTimer = 0;
-      Map1.updateCrackingState(null, 0);
-      return;
-    }
+		const hit = CrossHair.getPlacementHit(this.#player);
+		if (!hit) {
+			this.#breakingBlock = null;
+			this.#breakTimer = 0;
+			Map1.updateCrackingState(null, 0);
+			return;
+		}
 
-    const x = hit.pos.x - hit.nx;
-    const y = hit.pos.y - hit.ny;
-    const z = hit.pos.z - hit.nz;
+		const x = hit.pos.x - hit.nx;
+		const y = hit.pos.y - hit.ny;
+		const z = hit.pos.z - hit.nz;
 
-    const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
-    const blockState = ChunkLoadingSystem.getBlockStateByWorldCoords(x, y, z);
+		const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
+		const blockState = ChunkLoadingSystem.getBlockStateByWorldCoords(x, y, z);
 
-    const item =
-      this.#player.playerInventory.inventory[0][
-        this.#player.playerHud.selectedHotbarSlot
-      ]?.item;
+		const item =
+			this.#player.playerInventory.inventory[0][
+				this.#player.playerHud.selectedHotbarSlot
+			]?.item;
 
-    const breakTime =
-      this.#player.stats.gamemode === Gamemodes.Creative
-        ? 0.1
-        : getBlockBreakTime(blockId, item?.itemId) || 0.001; // guard against 0
+		const breakTime =
+			this.#player.stats.gamemode === Gamemodes.Creative
+				? 0.1
+				: getBlockBreakTime(blockId, item?.itemId) || 0.001; // guard against 0
 
-    const isSameBlock =
-      this.#breakingBlock &&
-      this.#breakingBlock.x === x &&
-      this.#breakingBlock.y === y &&
-      this.#breakingBlock.z === z;
+		const isSameBlock =
+			this.#breakingBlock &&
+			this.#breakingBlock.x === x &&
+			this.#breakingBlock.y === y &&
+			this.#breakingBlock.z === z;
 
-    if (isSameBlock) {
-      this.#breakTimer += dt;
+		if (isSameBlock) {
+			this.#breakTimer += dt;
 
-      const frac = Math.min(this.#breakTimer / breakTime, 1);
-      Map1.updateCrackingState(this.#breakingBlock, frac, blockId, blockState);
+			const frac = Math.min(this.#breakTimer / breakTime, 1);
+			Map1.updateCrackingState(this.#breakingBlock, frac, blockId, blockState);
 
-      if (this.#breakTimer >= breakTime) {
-        // Sample light from the neighbor in the face-normal direction
-        // (faces are lit by the adjacent cell, solids often store 0 light).
-        const lightPos = new Vector3(
-          x + 0.5 + hit.nx,
-          y + 0.5 + hit.ny,
-          z + 0.5 + hit.nz,
-        );
+			if (this.#breakTimer >= breakTime) {
+				// Sample light from the neighbor in the face-normal direction
+				// (faces are lit by the adjacent cell, solids often store 0 light).
+				const lightPos = new Vector3(
+					x + 0.5 + hit.nx,
+					y + 0.5 + hit.ny,
+					z + 0.5 + hit.nz,
+				);
 
-        const packedLight = ChunkLoadingSystem.getLightByWorldCoords(
-          lightPos.x,
-          lightPos.y,
-          lightPos.z,
-        );
+				const packedLight = ChunkLoadingSystem.getLightByWorldCoords(
+					lightPos.x,
+					lightPos.y,
+					lightPos.z,
+				);
 
-        this.#breakBlock(x, y, z, blockId, packedLight);
-      }
-    } else {
-      // New target → reset cracking
-      this.#breakingBlock = { x, y, z };
-      this.#breakTimer = 0;
-      Map1.updateCrackingState(this.#breakingBlock, 0, blockId, blockState);
-    }
-  }
+				this.#breakBlock(x, y, z, blockId, packedLight);
+			}
+		} else {
+			// New target → reset cracking
+			this.#breakingBlock = { x, y, z };
+			this.#breakTimer = 0;
+			Map1.updateCrackingState(this.#breakingBlock, 0, blockId, blockState);
+		}
+	}
 
-  public onKeyDown(key: string) {
-    const isAlreadyPressed = this.pressedKeys.has(key);
-    if (isAlreadyPressed && !WalkingControls.KEY_JUMP.includes(key)) return;
-    if (isAlreadyPressed && WalkingControls.KEY_JUMP.includes(key)) {
-      // Keep jump buffered while key is held.
-      this.#controlledEntity.isJumpHeld = true;
-      this.#controlledEntity.wantJump = Math.max(
-        this.#controlledEntity.wantJump,
-        1,
-      );
-      return;
-    }
-    this.pressedKeys.add(key);
+	public onKeyDown(key: string) {
+		const isAlreadyPressed = this.pressedKeys.has(key);
+		if (isAlreadyPressed && !WalkingControls.KEY_JUMP.includes(key)) return;
+		if (isAlreadyPressed && WalkingControls.KEY_JUMP.includes(key)) {
+			// Keep jump buffered while key is held.
+			this.#controlledEntity.isJumpHeld = true;
+			this.#controlledEntity.wantJump = Math.max(
+				this.#controlledEntity.wantJump,
+				1,
+			);
+			return;
+		}
+		this.pressedKeys.add(key);
 
-    if (DebugControlHelper.handleKey(key)) return;
+		if (DebugControlHelper.handleKey(key)) return;
 
-    this.#updateMovementAxesFromPressedKeys();
-    if (WalkingControls.KEY_JUMP.includes(key)) {
-      this.#controlledEntity.isJumpHeld = true;
-      const now = performance.now();
-      if (now - this.#lastJumpTapMs <= WalkingControls.DOUBLE_TAP_MS) {
-        this.#controlledEntity.toggleFlying();
-        this.#controlledEntity.wantJump = 0;
-        this.#lastJumpTapMs = 0;
-      } else {
-        this.#controlledEntity.wantJump++;
-        this.#lastJumpTapMs = now;
-      }
-    } else if (WalkingControls.KEY_SPRINT.includes(key)) {
-      this.#controlledEntity.isSprinting = true;
-    } else if (WalkingControls.KEY_USE.includes(key)) {
-      this.#player.use();
-    } else if (WalkingControls.KEY_FLASH.includes(key)) {
-      this.#player.flashlight.toggle();
-    } else if (key === "l") {
-      //TODO delete
-      if (Map1.mainScene._activeMeshesFrozen)
-        Map1.mainScene.unfreezeActiveMeshes();
-      else Map1.mainScene.freezeActiveMeshes();
-    }
+		this.#updateMovementAxesFromPressedKeys();
+		if (WalkingControls.KEY_JUMP.includes(key)) {
+			this.#controlledEntity.isJumpHeld = true;
+			const now = performance.now();
+			if (now - this.#lastJumpTapMs <= WalkingControls.DOUBLE_TAP_MS) {
+				this.#controlledEntity.toggleFlying();
+				this.#controlledEntity.wantJump = 0;
+				this.#lastJumpTapMs = 0;
+			} else {
+				this.#controlledEntity.wantJump++;
+				this.#lastJumpTapMs = now;
+			}
+		} else if (WalkingControls.KEY_SPRINT.includes(key)) {
+			this.#controlledEntity.isSprinting = true;
+		} else if (WalkingControls.KEY_USE.includes(key)) {
+			this.#player.use();
+		} else if (WalkingControls.KEY_FLASH.includes(key)) {
+			this.#player.flashlight.toggle();
+		} else if (key === "l") {
+			//TODO delete
+			if (Map1.mainScene._activeMeshesFrozen)
+				Map1.mainScene.unfreezeActiveMeshes();
+			else Map1.mainScene.freezeActiveMeshes();
+		}
 
-    if (WalkingControls.KEY_DROP.includes(key)) {
-      const item =
-        this.#player.playerInventory.inventory[0][
-          this.#player.playerHud.selectedHotbarSlot
-        ]?.item;
-      if (item) {
-        if (this.#pressedKeysHas(WalkingControls.KEY_CTRL))
-          this.#player.playerInventory.dropItem(item, item.stackSize);
-        else this.#player.playerInventory.dropItem(item, 1);
-      }
-      return;
-    }
-  }
-  public onKeyUp(key: string) {
-    if (WalkingControls.KEY_JUMP.includes(key)) {
-      this.#controlledEntity.isJumpHeld = false;
-      this.#controlledEntity.wantJump = 0;
-    }
-    if (WalkingControls.KEY_SPRINT.includes(key)) {
-      this.#controlledEntity.isSprinting = false;
-    }
-    if (WalkingControls.MOUSE_WHEEL_UP.includes(key)) {
-      this.#player.playerHud.selectedHotbarSlot =
-        (this.#player.playerHud.selectedHotbarSlot - 1) % 10;
-      if (this.#player.playerHud.selectedHotbarSlot < 0)
-        this.#player.playerHud.selectedHotbarSlot = 9;
-    } else {
-      if (WalkingControls.MOUSE_WHEEL_DOWN.includes(key)) {
-        this.#player.playerHud.selectedHotbarSlot =
-          (this.#player.playerHud.selectedHotbarSlot + 1) % 10;
-      }
-    }
-    if (
-      WalkingControls.KEY_F5.includes(key) ||
-      (this.#pressedKeysHas(WalkingControls.KEY_ALT) &&
-        WalkingControls.MOUSE_WHEEL_DOWN.includes(key))
-    ) {
-      this.#controlledEntity.camera.zoomOut();
-    } else if (
-      WalkingControls.KEY_F6.includes(key) ||
-      (this.#pressedKeysHas(WalkingControls.KEY_ALT) &&
-        WalkingControls.MOUSE_WHEEL_UP.includes(key))
-    ) {
-      this.#controlledEntity.camera.zoomIn();
-    }
+		if (WalkingControls.KEY_DROP.includes(key)) {
+			const item =
+				this.#player.playerInventory.inventory[0][
+					this.#player.playerHud.selectedHotbarSlot
+				]?.item;
+			if (item) {
+				if (this.#pressedKeysHas(WalkingControls.KEY_CTRL))
+					this.#player.playerInventory.dropItem(item, item.stackSize);
+				else this.#player.playerInventory.dropItem(item, 1);
+			}
+			return;
+		}
+	}
+	public onKeyUp(key: string) {
+		if (WalkingControls.KEY_JUMP.includes(key)) {
+			this.#controlledEntity.isJumpHeld = false;
+			this.#controlledEntity.wantJump = 0;
+		}
+		if (WalkingControls.KEY_SPRINT.includes(key)) {
+			this.#controlledEntity.isSprinting = false;
+		}
+		if (WalkingControls.MOUSE_WHEEL_UP.includes(key)) {
+			this.#player.playerHud.selectedHotbarSlot =
+				(this.#player.playerHud.selectedHotbarSlot - 1) % 10;
+			if (this.#player.playerHud.selectedHotbarSlot < 0)
+				this.#player.playerHud.selectedHotbarSlot = 9;
+		} else {
+			if (WalkingControls.MOUSE_WHEEL_DOWN.includes(key)) {
+				this.#player.playerHud.selectedHotbarSlot =
+					(this.#player.playerHud.selectedHotbarSlot + 1) % 10;
+			}
+		}
+		if (
+			WalkingControls.KEY_F5.includes(key) ||
+			(this.#pressedKeysHas(WalkingControls.KEY_ALT) &&
+				WalkingControls.MOUSE_WHEEL_DOWN.includes(key))
+		) {
+			this.#controlledEntity.camera.zoomOut();
+		} else if (
+			WalkingControls.KEY_F6.includes(key) ||
+			(this.#pressedKeysHas(WalkingControls.KEY_ALT) &&
+				WalkingControls.MOUSE_WHEEL_UP.includes(key))
+		) {
+			this.#controlledEntity.camera.zoomIn();
+		}
 
-    if (
-      WalkingControls.KEY_PICK_BLOCK.includes(key) ||
-      WalkingControls.KEY_PICK_BLOCK_EXACT.includes(key)
-    ) {
-      this.#handlePickBlock(key);
-    }
+		if (
+			WalkingControls.KEY_PICK_BLOCK.includes(key) ||
+			WalkingControls.KEY_PICK_BLOCK_EXACT.includes(key)
+		) {
+			this.#handlePickBlock(key);
+		}
 
-    if (WalkingControls.KEY_INVENTORY.includes(key)) {
-      this.#player.playerHud.toggleInventory();
-      this.#player.playerInventory.inventoryControls.underlyingControls = this;
-      this.#player.keyboardControls =
-        this.#player.playerInventory.inventoryControls;
-    }
+		if (WalkingControls.KEY_INVENTORY.includes(key)) {
+			this.#player.playerHud.toggleInventory();
+			this.#player.playerInventory.inventoryControls.underlyingControls = this;
+			this.#player.keyboardControls =
+				this.#player.playerInventory.inventoryControls;
+		}
 
-    if (WalkingControls.KEY_PRINT_TRACE.includes(key)) {
-      console.log("Player position:", this.#player.position);
-      console.log("Player chunk:", {
-        x: Math.floor(this.#player.position.x / 32),
-        y: Math.floor(this.#player.position.y / 32),
-        z: Math.floor(this.#player.position.z / 32),
-      });
-      ChunkLoadingSystem.validateChunksAround(
-        Math.floor(this.#player.position.x / 32),
-        Math.floor(this.#player.position.y / 32),
-        Math.floor(this.#player.position.z / 32),
-      );
-    }
+		if (WalkingControls.KEY_PRINT_TRACE.includes(key)) {
+			console.log("Player position:", this.#player.position);
+			console.log("Player chunk:", {
+				x: Math.floor(this.#player.position.x / 32),
+				y: Math.floor(this.#player.position.y / 32),
+				z: Math.floor(this.#player.position.z / 32),
+			});
+			ChunkLoadingSystem.validateChunksAround(
+				Math.floor(this.#player.position.x / 32),
+				Math.floor(this.#player.position.y / 32),
+				Math.floor(this.#player.position.z / 32),
+			);
+		}
 
-    if (WalkingControls.KEY_1.includes(key)) {
-      this.#player.playerHud.selectedHotbarSlot = 0;
-    } else if (WalkingControls.KEY_2.includes(key)) {
-      this.#player.playerHud.selectedHotbarSlot = 1;
-    } else if (WalkingControls.KEY_3.includes(key)) {
-      this.#player.playerHud.selectedHotbarSlot = 2;
-    } else if (WalkingControls.KEY_4.includes(key)) {
-      this.#player.playerHud.selectedHotbarSlot = 3;
-    } else if (WalkingControls.KEY_5.includes(key)) {
-      this.#player.playerHud.selectedHotbarSlot = 4;
-    } else if (WalkingControls.KEY_6.includes(key)) {
-      this.#player.playerHud.selectedHotbarSlot = 5;
-    } else if (WalkingControls.KEY_7.includes(key)) {
-      this.#player.playerHud.selectedHotbarSlot = 6;
-    } else if (WalkingControls.KEY_8.includes(key)) {
-      this.#player.playerHud.selectedHotbarSlot = 7;
-    } else if (WalkingControls.KEY_9.includes(key)) {
-      this.#player.playerHud.selectedHotbarSlot = 8;
-    } else if (WalkingControls.KEY_0.includes(key)) {
-      this.#player.playerHud.selectedHotbarSlot = 9;
-    }
+		if (WalkingControls.KEY_1.includes(key)) {
+			this.#player.playerHud.selectedHotbarSlot = 0;
+		} else if (WalkingControls.KEY_2.includes(key)) {
+			this.#player.playerHud.selectedHotbarSlot = 1;
+		} else if (WalkingControls.KEY_3.includes(key)) {
+			this.#player.playerHud.selectedHotbarSlot = 2;
+		} else if (WalkingControls.KEY_4.includes(key)) {
+			this.#player.playerHud.selectedHotbarSlot = 3;
+		} else if (WalkingControls.KEY_5.includes(key)) {
+			this.#player.playerHud.selectedHotbarSlot = 4;
+		} else if (WalkingControls.KEY_6.includes(key)) {
+			this.#player.playerHud.selectedHotbarSlot = 5;
+		} else if (WalkingControls.KEY_7.includes(key)) {
+			this.#player.playerHud.selectedHotbarSlot = 6;
+		} else if (WalkingControls.KEY_8.includes(key)) {
+			this.#player.playerHud.selectedHotbarSlot = 7;
+		} else if (WalkingControls.KEY_9.includes(key)) {
+			this.#player.playerHud.selectedHotbarSlot = 8;
+		} else if (WalkingControls.KEY_0.includes(key)) {
+			this.#player.playerHud.selectedHotbarSlot = 9;
+		}
 
-    this.pressedKeys.delete(key);
-    this.#updateMovementAxesFromPressedKeys();
-  }
+		this.pressedKeys.delete(key);
+		this.#updateMovementAxesFromPressedKeys();
+	}
 
-  #handlePickBlock(key: string) {
-    const hit = CrossHair.pickTarget(this.#player);
-    if (!hit) return;
+	#handlePickBlock(key: string) {
+		const hit = CrossHair.pickTarget(this.#player);
+		if (!hit) return;
 
-    const blockId = ChunkLoadingSystem.getBlockByWorldCoords(
-      hit.x,
-      hit.y,
-      hit.z,
-    );
-    const blockState = ChunkLoadingSystem.getBlockStateByWorldCoords(
-      hit.x,
-      hit.y,
-      hit.z,
-    );
+		const blockId = ChunkLoadingSystem.getBlockByWorldCoords(
+			hit.x,
+			hit.y,
+			hit.z,
+		);
+		const blockState = ChunkLoadingSystem.getBlockStateByWorldCoords(
+			hit.x,
+			hit.y,
+			hit.z,
+		);
 
-    if (blockId === 0) return; // Don't pick air
+		if (blockId === 0) return; // Don't pick air
 
-    const isExactPickMode = WalkingControls.KEY_PICK_BLOCK_EXACT.includes(key);
+		const isExactPickMode = WalkingControls.KEY_PICK_BLOCK_EXACT.includes(key);
 
-    const matchesPickedBlock = (
-      item: Item | null | undefined,
-      requireExactState: boolean,
-    ): boolean => {
-      if (!item) return false;
-      const itemBlockId = item.blockId ?? item.itemId;
-      if (itemBlockId !== blockId) return false;
-      if (!requireExactState) return true;
-      return (item.blockState ?? 0) === blockState;
-    };
+		const matchesPickedBlock = (
+			item: Item | null | undefined,
+			requireExactState: boolean,
+		): boolean => {
+			if (!item) return false;
+			const itemBlockId = item.blockId ?? item.itemId;
+			if (itemBlockId !== blockId) return false;
+			if (!requireExactState) return true;
+			return (item.blockState ?? 0) === blockState;
+		};
 
-    const trySelectOrSwapMatchingItem = (
-      requireExactState: boolean,
-    ): boolean => {
-      // 1. Check hotbar first
-      for (let i = 0; i < 10; i++) {
-        const hotbarItem = this.#player.playerInventory.inventory[0][i].item;
-        if (matchesPickedBlock(hotbarItem, requireExactState)) {
-          this.#player.playerHud.selectedHotbarSlot = i;
-          return true;
-        }
-      }
+		const trySelectOrSwapMatchingItem = (
+			requireExactState: boolean,
+		): boolean => {
+			// 1. Check hotbar first
+			for (let i = 0; i < 10; i++) {
+				const hotbarItem = this.#player.playerInventory.inventory[0][i].item;
+				if (matchesPickedBlock(hotbarItem, requireExactState)) {
+					this.#player.playerHud.selectedHotbarSlot = i;
+					return true;
+				}
+			}
 
-      // 2. If not in hotbar, check main inventory and swap with current hotbar item
-      const inventory = this.#player.playerInventory.inventory;
-      for (let r = 1; r < inventory.length; r++) {
-        for (let c = 0; c < inventory[r].length; c++) {
-          if (matchesPickedBlock(inventory[r][c].item, requireExactState)) {
-            const selectedSlot = this.#player.playerHud.selectedHotbarSlot;
-            const hotbarSlot = inventory[0][selectedSlot];
-            const inventorySlot = inventory[r][c];
-            hotbarSlot.swapSlots(inventorySlot);
-            return true;
-          }
-        }
-      }
-      return false;
-    };
+			// 2. If not in hotbar, check main inventory and swap with current hotbar item
+			const inventory = this.#player.playerInventory.inventory;
+			for (let r = 1; r < inventory.length; r++) {
+				for (let c = 0; c < inventory[r].length; c++) {
+					if (matchesPickedBlock(inventory[r][c].item, requireExactState)) {
+						const selectedSlot = this.#player.playerHud.selectedHotbarSlot;
+						const hotbarSlot = inventory[0][selectedSlot];
+						const inventorySlot = inventory[r][c];
+						hotbarSlot.swapSlots(inventorySlot);
+						return true;
+					}
+				}
+			}
+			return false;
+		};
 
-    if (isExactPickMode) {
-      // T: exact state-aware picker (includes slice variants), then id fallback.
-      if (trySelectOrSwapMatchingItem(true)) return;
-      if (trySelectOrSwapMatchingItem(false)) return;
-    } else {
-      // R: classic picker by block id only.
-      if (trySelectOrSwapMatchingItem(false)) return;
-    }
-  }
-  #pressedKeysHas(keys: string[]) {
-    return keys.some((k) => this.pressedKeys.has(k));
-  }
+		if (isExactPickMode) {
+			// T: exact state-aware picker (includes slice variants), then id fallback.
+			if (trySelectOrSwapMatchingItem(true)) return;
+			if (trySelectOrSwapMatchingItem(false)) return;
+		} else {
+			// R: classic picker by block id only.
+			if (trySelectOrSwapMatchingItem(false)) return;
+		}
+	}
+	#pressedKeysHas(keys: string[]) {
+		return keys.some((k) => this.pressedKeys.has(k));
+	}
 
-  #updateMovementAxesFromPressedKeys() {
-    const forward = this.#pressedKeysHas(WalkingControls.KEY_UP);
-    const backward = this.#pressedKeysHas(WalkingControls.KEY_DOWN);
-    const right = this.#pressedKeysHas(WalkingControls.KEY_RIGHT);
-    const left = this.#pressedKeysHas(WalkingControls.KEY_LEFT);
+	#updateMovementAxesFromPressedKeys() {
+		const forward = this.#pressedKeysHas(WalkingControls.KEY_UP);
+		const backward = this.#pressedKeysHas(WalkingControls.KEY_DOWN);
+		const right = this.#pressedKeysHas(WalkingControls.KEY_RIGHT);
+		const left = this.#pressedKeysHas(WalkingControls.KEY_LEFT);
 
-    this.#inputDirection.z = forward === backward ? 0 : forward ? 1 : -1;
-    this.#inputDirection.x = right === left ? 0 : right ? 1 : -1;
-  }
+		this.#inputDirection.z = forward === backward ? 0 : forward ? 1 : -1;
+		this.#inputDirection.x = right === left ? 0 : right ? 1 : -1;
+	}
 
-  #breakBlock(
-    x: number,
-    y: number,
-    z: number,
-    blockId: number,
-    packedLight: number,
-  ) {
-    const info = getBlockInfo(blockId);
-    if (!info) return;
+	#breakBlock(
+		x: number,
+		y: number,
+		z: number,
+		blockId: number,
+		packedLight: number,
+	) {
+		const info = getBlockInfo(blockId);
+		if (!info) return;
 
-    const worldItem = Item.createById(blockId);
-    worldItem.stackSize = 1;
-    worldItem.itemId = blockId;
+		const worldItem = Item.createById(blockId);
+		worldItem.stackSize = 1;
+		worldItem.itemId = blockId;
 
-    const di = new DroppedItem(worldItem, x + 0.5, y + 0.5, z + 0.5);
+		const di = new DroppedItem(worldItem, x + 0.5, y + 0.5, z + 0.5);
 
-    BlockBreakParticles.play(
-      this.#player.playerVehicle.scene,
-      new Vector3(x + 0.5, y + 0.5, z + 0.5),
-      blockId,
-      packedLight,
-    );
-    this.#breakTimer = 0;
-    Map1.updateCrackingState(null, 0);
+		BlockBreakParticles.play(
+			this.#player.playerVehicle.scene,
+			new Vector3(x + 0.5, y + 0.5, z + 0.5),
+			blockId,
+			packedLight,
+		);
+		this.#breakTimer = 0;
+		Map1.updateCrackingState(null, 0);
 
-    ChunkLoadingSystem.deleteBlock(x, y, z);
+		ChunkLoadingSystem.deleteBlock(x, y, z);
 
-    if (this.#player.stats.gamemode === Gamemodes.Creative)
-      di.use(this.#player);
-  }
+		if (this.#player.stats.gamemode === Gamemodes.Creative)
+			di.use(this.#player);
+	}
 
-  public get controlledEntity(): PlayerVehicle {
-    return this.#controlledEntity;
-  }
+	public get controlledEntity(): PlayerVehicle {
+		return this.#controlledEntity;
+	}
 
-  public get inputDirection(): Vector3 {
-    return this.#inputDirection;
-  }
+	public get inputDirection(): Vector3 {
+		return this.#inputDirection;
+	}
 }

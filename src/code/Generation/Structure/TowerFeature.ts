@@ -3,234 +3,234 @@ import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
 import { IWorldFeature } from "./IWorldFeature";
 
 export class TowerFeature implements IWorldFeature {
-  public generate(
-    chunkX: number,
-    chunkY: number,
-    chunkZ: number,
-    biome: Biome,
-    placeBlock: (
-      x: number,
-      y: number,
-      z: number,
-      id: number,
-      ow: boolean,
-    ) => void,
-    seed: number,
-    chunkSize: number,
-    getTerrainHeight: (x: number, z: number, biome: Biome) => number,
-    generatingChunkX: number,
-    generatingChunkZ: number,
-  ) {
-    const TOWER_REGION_SIZE = 16; // in chunks
-    const TOWER_SPAWN_CHANCE = 100; // out of 100
+	public generate(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		biome: Biome,
+		placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void,
+		seed: number,
+		chunkSize: number,
+		getTerrainHeight: (x: number, z: number, biome: Biome) => number,
+		generatingChunkX: number,
+		generatingChunkZ: number,
+	) {
+		const TOWER_REGION_SIZE = 16; // in chunks
+		const TOWER_SPAWN_CHANCE = 100; // out of 100
 
-    const regionX = Math.floor(chunkX / TOWER_REGION_SIZE);
-    const regionZ = Math.floor(chunkZ / TOWER_REGION_SIZE);
+		const regionX = Math.floor(chunkX / TOWER_REGION_SIZE);
+		const regionZ = Math.floor(chunkZ / TOWER_REGION_SIZE);
 
-    const regionHash = Squirrel3.get(
-      regionX * 374761393 + regionZ * 678446653,
-      seed,
-    );
+		const regionHash = Squirrel3.get(
+			regionX * 374761393 + regionZ * 678446653,
+			seed,
+		);
 
-    if (Math.abs(regionHash) % 100 < TOWER_SPAWN_CHANCE) {
-      const offsetX =
-        Math.abs(Squirrel3.get(regionHash, seed)) %
-        (TOWER_REGION_SIZE * chunkSize);
-      const offsetZ =
-        Math.abs(Squirrel3.get(regionHash + 1, seed)) %
-        (TOWER_REGION_SIZE * chunkSize);
+		if (Math.abs(regionHash) % 100 < TOWER_SPAWN_CHANCE) {
+			const offsetX =
+				Math.abs(Squirrel3.get(regionHash, seed)) %
+				(TOWER_REGION_SIZE * chunkSize);
+			const offsetZ =
+				Math.abs(Squirrel3.get(regionHash + 1, seed)) %
+				(TOWER_REGION_SIZE * chunkSize);
 
-      const towerCenterX = regionX * TOWER_REGION_SIZE * chunkSize + offsetX;
-      const towerCenterZ = regionZ * TOWER_REGION_SIZE * chunkSize + offsetZ;
+			const towerCenterX = regionX * TOWER_REGION_SIZE * chunkSize + offsetX;
+			const towerCenterZ = regionZ * TOWER_REGION_SIZE * chunkSize + offsetZ;
 
-      const axisCorridorWidth = 20;
-      if (
-        Math.abs(towerCenterX) < axisCorridorWidth ||
-        Math.abs(towerCenterZ) < axisCorridorWidth
-      ) {
-        return;
-      }
+			const axisCorridorWidth = 20;
+			if (
+				Math.abs(towerCenterX) < axisCorridorWidth ||
+				Math.abs(towerCenterZ) < axisCorridorWidth
+			) {
+				return;
+			}
 
-      const towerRadius = 8 + (Squirrel3.get(towerCenterX, seed) % 4);
+			const towerRadius = 8 + (Squirrel3.get(towerCenterX, seed) % 4);
 
-      // --- Optimization: Bounding Box Check ---
-      const minX = towerCenterX - towerRadius;
-      const maxX = towerCenterX + towerRadius;
-      const minZ = towerCenterZ - towerRadius;
-      const maxZ = towerCenterZ + towerRadius;
+			// --- Optimization: Bounding Box Check ---
+			const minX = towerCenterX - towerRadius;
+			const maxX = towerCenterX + towerRadius;
+			const minZ = towerCenterZ - towerRadius;
+			const maxZ = towerCenterZ + towerRadius;
 
-      const chunkMinX = generatingChunkX * chunkSize;
-      const chunkMaxX = (generatingChunkX + 1) * chunkSize;
-      const chunkMinZ = generatingChunkZ * chunkSize;
-      const chunkMaxZ = (generatingChunkZ + 1) * chunkSize;
+			const chunkMinX = generatingChunkX * chunkSize;
+			const chunkMaxX = (generatingChunkX + 1) * chunkSize;
+			const chunkMinZ = generatingChunkZ * chunkSize;
+			const chunkMaxZ = (generatingChunkZ + 1) * chunkSize;
 
-      if (
-        maxX <= chunkMinX ||
-        minX >= chunkMaxX ||
-        maxZ <= chunkMinZ ||
-        minZ >= chunkMaxZ
-      )
-        return;
-      // ----------------------------------------
+			if (
+				maxX <= chunkMinX ||
+				minX >= chunkMaxX ||
+				maxZ <= chunkMinZ ||
+				minZ >= chunkMaxZ
+			)
+				return;
+			// ----------------------------------------
 
-      const groundHeight = this.findMinGroundHeightForTower(
-        towerCenterX,
-        towerCenterZ,
-        towerRadius,
-        biome,
-        getTerrainHeight,
-      );
+			const groundHeight = this.findMinGroundHeightForTower(
+				towerCenterX,
+				towerCenterZ,
+				towerRadius,
+				biome,
+				getTerrainHeight,
+			);
 
-      this.generateCylinderTower(
-        chunkX,
-        chunkY,
-        chunkZ,
-        towerCenterX,
-        towerCenterZ,
-        towerRadius,
-        groundHeight,
-        biome,
-        placeBlock,
-        chunkSize,
-        seed,
-        getTerrainHeight,
-      );
-      this.generateUndergroundCylinderTower(
-        chunkX,
-        chunkY,
-        chunkZ,
-        towerCenterX,
-        towerCenterZ,
-        towerRadius,
-        groundHeight,
-        placeBlock,
-        chunkSize,
-      );
-    }
-  }
+			this.generateCylinderTower(
+				chunkX,
+				chunkY,
+				chunkZ,
+				towerCenterX,
+				towerCenterZ,
+				towerRadius,
+				groundHeight,
+				biome,
+				placeBlock,
+				chunkSize,
+				seed,
+				getTerrainHeight,
+			);
+			this.generateUndergroundCylinderTower(
+				chunkX,
+				chunkY,
+				chunkZ,
+				towerCenterX,
+				towerCenterZ,
+				towerRadius,
+				groundHeight,
+				placeBlock,
+				chunkSize,
+			);
+		}
+	}
 
-  private generateCylinderTower(
-    chunkX: number,
-    chunkY: number,
-    chunkZ: number,
-    towerCenterX: number,
-    towerCenterZ: number,
-    towerRadius: number,
-    groundHeight: number,
-    biome: Biome,
-    placeBlock: (
-      x: number,
-      y: number,
-      z: number,
-      id: number,
-      ow: boolean,
-    ) => void,
-    chunkSize: number,
-    seed: number,
-    getTerrainHeight: (x: number, z: number, biome: Biome) => number,
-  ) {
-    const towerHeight = 76 + (Squirrel3.get(towerCenterZ, seed) % 8);
-    const wallBlockId = 1;
-    const radiusSq = towerRadius * towerRadius;
+	private generateCylinderTower(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		towerCenterX: number,
+		towerCenterZ: number,
+		towerRadius: number,
+		groundHeight: number,
+		biome: Biome,
+		placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void,
+		chunkSize: number,
+		seed: number,
+		getTerrainHeight: (x: number, z: number, biome: Biome) => number,
+	) {
+		const towerHeight = 76 + (Squirrel3.get(towerCenterZ, seed) % 8);
+		const wallBlockId = 1;
+		const radiusSq = towerRadius * towerRadius;
 
-    for (let dx = -towerRadius; dx <= towerRadius; dx++) {
-      for (let dz = -towerRadius; dz <= towerRadius; dz++) {
-        if (dx * dx + dz * dz > radiusSq) continue;
+		for (let dx = -towerRadius; dx <= towerRadius; dx++) {
+			for (let dz = -towerRadius; dz <= towerRadius; dz++) {
+				if (dx * dx + dz * dz > radiusSq) continue;
 
-        const worldX = towerCenterX + dx;
-        const worldZ = towerCenterZ + dz;
+				const worldX = towerCenterX + dx;
+				const worldZ = towerCenterZ + dz;
 
-        const originalHeight = getTerrainHeight(worldX, worldZ, biome);
-        for (let y = originalHeight; y < groundHeight; y++) {
-          placeBlock(worldX, y, worldZ, biome.undergroundBlock, true);
-        }
-      }
-    }
+				const originalHeight = getTerrainHeight(worldX, worldZ, biome);
+				for (let y = originalHeight; y < groundHeight; y++) {
+					placeBlock(worldX, y, worldZ, biome.undergroundBlock, true);
+				}
+			}
+		}
 
-    for (let localY = 0; localY < chunkSize; localY++) {
-      const worldY = chunkY * chunkSize + localY;
-      if (worldY < groundHeight || worldY >= groundHeight + towerHeight) {
-        continue;
-      }
+		for (let localY = 0; localY < chunkSize; localY++) {
+			const worldY = chunkY * chunkSize + localY;
+			if (worldY < groundHeight || worldY >= groundHeight + towerHeight) {
+				continue;
+			}
 
-      for (let dx = -towerRadius; dx <= towerRadius; dx++) {
-        for (let dz = -towerRadius; dz <= towerRadius; dz++) {
-          if (dx * dx + dz * dz > radiusSq) continue;
-          placeBlock(
-            towerCenterX + dx,
-            worldY,
-            towerCenterZ + dz,
-            wallBlockId,
-            true,
-          );
-        }
-      }
-    }
-  }
+			for (let dx = -towerRadius; dx <= towerRadius; dx++) {
+				for (let dz = -towerRadius; dz <= towerRadius; dz++) {
+					if (dx * dx + dz * dz > radiusSq) continue;
+					placeBlock(
+						towerCenterX + dx,
+						worldY,
+						towerCenterZ + dz,
+						wallBlockId,
+						true,
+					);
+				}
+			}
+		}
+	}
 
-  private generateUndergroundCylinderTower(
-    chunkX: number,
-    chunkY: number,
-    chunkZ: number,
-    towerCenterX: number,
-    towerCenterZ: number,
-    towerRadius: number,
-    groundHeight: number,
-    placeBlock: (
-      x: number,
-      y: number,
-      z: number,
-      id: number,
-      ow: boolean,
-    ) => void,
-    chunkSize: number,
-  ) {
-    const wallBlockId = 26;
-    const MIN_WORLD_Y = -16 * 100;
-    const radiusSq = towerRadius * towerRadius;
+	private generateUndergroundCylinderTower(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		towerCenterX: number,
+		towerCenterZ: number,
+		towerRadius: number,
+		groundHeight: number,
+		placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void,
+		chunkSize: number,
+	) {
+		const wallBlockId = 26;
+		const MIN_WORLD_Y = -16 * 100;
+		const radiusSq = towerRadius * towerRadius;
 
-    for (let localY = 0; localY < chunkSize; localY++) {
-      const worldY = chunkY * chunkSize + localY;
-      if (worldY < MIN_WORLD_Y || worldY >= groundHeight) {
-        continue;
-      }
+		for (let localY = 0; localY < chunkSize; localY++) {
+			const worldY = chunkY * chunkSize + localY;
+			if (worldY < MIN_WORLD_Y || worldY >= groundHeight) {
+				continue;
+			}
 
-      for (let dx = -towerRadius; dx <= towerRadius; dx++) {
-        for (let dz = -towerRadius; dz <= towerRadius; dz++) {
-          if (dx * dx + dz * dz > radiusSq) continue;
-          placeBlock(
-            towerCenterX + dx,
-            worldY,
-            towerCenterZ + dz,
-            wallBlockId,
-            true,
-          );
-        }
-      }
-    }
-  }
+			for (let dx = -towerRadius; dx <= towerRadius; dx++) {
+				for (let dz = -towerRadius; dz <= towerRadius; dz++) {
+					if (dx * dx + dz * dz > radiusSq) continue;
+					placeBlock(
+						towerCenterX + dx,
+						worldY,
+						towerCenterZ + dz,
+						wallBlockId,
+						true,
+					);
+				}
+			}
+		}
+	}
 
-  private findMinGroundHeightForTower(
-    towerCenterX: number,
-    towerCenterZ: number,
-    towerRadius: number,
-    biome: Biome,
-    getTerrainHeight: (x: number, z: number, biome: Biome) => number,
-  ): number {
-    let minGroundHeight = Infinity;
-    const radiusSq = towerRadius * towerRadius;
+	private findMinGroundHeightForTower(
+		towerCenterX: number,
+		towerCenterZ: number,
+		towerRadius: number,
+		biome: Biome,
+		getTerrainHeight: (x: number, z: number, biome: Biome) => number,
+	): number {
+		let minGroundHeight = Infinity;
+		const radiusSq = towerRadius * towerRadius;
 
-    for (let dx = -towerRadius; dx <= towerRadius; dx++) {
-      for (let dz = -towerRadius; dz <= towerRadius; dz++) {
-        if (dx * dx + dz * dz > radiusSq) continue;
-        const worldX = towerCenterX + dx;
-        const worldZ = towerCenterZ + dz;
-        const height = getTerrainHeight(worldX, worldZ, biome);
-        if (height < minGroundHeight) {
-          minGroundHeight = height;
-        }
-      }
-    }
-    return minGroundHeight;
-  }
+		for (let dx = -towerRadius; dx <= towerRadius; dx++) {
+			for (let dz = -towerRadius; dz <= towerRadius; dz++) {
+				if (dx * dx + dz * dz > radiusSq) continue;
+				const worldX = towerCenterX + dx;
+				const worldZ = towerCenterZ + dz;
+				const height = getTerrainHeight(worldX, worldZ, biome);
+				if (height < minGroundHeight) {
+					minGroundHeight = height;
+				}
+			}
+		}
+		return minGroundHeight;
+	}
 }

@@ -1,14 +1,14 @@
 // MeshPipeline/core/VoxelGreedyAdapter.ts
 
-import {
-  MeshContext,
-  WorkerInternalMeshData,
-  GreedyFaceDescriptor,
+import type {
+	GreedyFaceDescriptor,
+	MeshContext,
+	WorkerInternalMeshData,
 } from "../types/MeshTypes";
 
-import { greedyMesh } from "./GreedyPipeline";
-import { VoxelMaskExtractor } from "./VoxelMaskExtractor";
+import { greedyMesh, type WritableNumberArray } from "./GreedyPipeline";
 import { VoxelFaceEmitterAdapter } from "./VoxelFaceEmitterAdapter";
+import { VoxelMaskExtractor } from "./VoxelMaskExtractor";
 
 /**
  * Drives the greedy mesher across all 3 axes (X, Y, Z),
@@ -26,50 +26,50 @@ import { VoxelFaceEmitterAdapter } from "./VoxelFaceEmitterAdapter";
  *
  */
 export class VoxelGreedyAdapter {
-  private ctx: MeshContext;
-  private maskExtractor: VoxelMaskExtractor;
-  private faceEmitter: VoxelFaceEmitterAdapter;
+	private ctx: MeshContext;
+	private maskExtractor: VoxelMaskExtractor;
+	private faceEmitter: VoxelFaceEmitterAdapter;
 
-  constructor(ctx: MeshContext) {
-    this.ctx = ctx;
-    this.maskExtractor = new VoxelMaskExtractor(ctx);
-    this.faceEmitter = new VoxelFaceEmitterAdapter();
-  }
+	constructor(ctx: MeshContext) {
+		this.ctx = ctx;
+		this.maskExtractor = new VoxelMaskExtractor(ctx);
+		this.faceEmitter = new VoxelFaceEmitterAdapter();
+	}
 
-  /**
-   * Runs greedy meshing on all 3 axes.
-   * Emits quads for ALL voxel faces into the output.
-   */
-  public build(
-    opaqueOut: WorkerInternalMeshData,
-    transparentOut: WorkerInternalMeshData,
-  ): void {
-    for (let axis = 0; axis < 3; axis++) {
-      this.runForAxis(axis, opaqueOut, transparentOut);
-    }
-  }
+	/**
+	 * Runs greedy meshing on all 3 axes.
+	 * Emits quads for ALL voxel faces into the output.
+	 */
+	public build(
+		opaqueOut: WorkerInternalMeshData,
+		transparentOut: WorkerInternalMeshData,
+	): void {
+		for (let axis = 0; axis < 3; axis++) {
+			this.runForAxis(axis, opaqueOut, transparentOut);
+		}
+	}
 
-  /**
-   * Run greedy meshing for a single axis (0 = X, 1 = Y, 2 = Z).
-   */
+	/**
+	 * Run greedy meshing for a single axis (0 = X, 1 = Y, 2 = Z).
+	 */
 
-  private runForAxis(
-    axis: number,
-    opaqueOut: WorkerInternalMeshData,
-    transparentOut: WorkerInternalMeshData,
-  ): void {
-    const extractMask = (
-      slice: number,
-      maskBuf: number[],
-      lightBuf: number[],
-    ) => {
-      this.maskExtractor.extractSliceMask(axis, slice, maskBuf, lightBuf);
-    };
+	private runForAxis(
+		axis: number,
+		opaqueOut: WorkerInternalMeshData,
+		transparentOut: WorkerInternalMeshData,
+	): void {
+		const extractMask = (
+			slice: number,
+			maskBuf: WritableNumberArray,
+			lightBuf: WritableNumberArray,
+		) => {
+			this.maskExtractor.extractSliceMask(axis, slice, maskBuf, lightBuf);
+		};
 
-    const emitFace = (desc: GreedyFaceDescriptor) => {
-      this.faceEmitter.emitVoxelFace(axis, desc, opaqueOut, transparentOut);
-    };
+		const emitFace = (desc: GreedyFaceDescriptor) => {
+			this.faceEmitter.emitVoxelFace(axis, desc, opaqueOut, transparentOut);
+		};
 
-    greedyMesh(this.ctx, axis, extractMask, emitFace);
-  }
+		greedyMesh(this.ctx, extractMask, emitFace);
+	}
 }

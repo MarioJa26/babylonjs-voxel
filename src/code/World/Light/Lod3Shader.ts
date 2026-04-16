@@ -1,5 +1,5 @@
 export class Lod3Shader {
-  public static readonly chunkVertexShader = `
+	public static readonly chunkVertexShader = `
     #version 300 es
     precision mediump float;
 
@@ -91,7 +91,7 @@ export class Lod3Shader {
     }
   `;
 
-  public static readonly opaqueFragmentShader = `
+	public static readonly opaqueFragmentShader = `
     #version 300 es
     precision mediump float;
 
@@ -232,7 +232,7 @@ export class Lod3Shader {
     }
   `;
 
-  public static readonly transparentFragmentShader = `
+	public static readonly transparentFragmentShader = `
     #version 300 es
     precision mediump float;
 

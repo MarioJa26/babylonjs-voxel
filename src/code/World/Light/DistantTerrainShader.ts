@@ -1,5 +1,5 @@
 export class DistantTerrainShader {
-  static readonly distantTerrainVertexShader = `
+	static readonly distantTerrainVertexShader = `
         #version 300 es
         precision highp float; // lowp can cause issues on some hardware, highp is safer
         in vec3 position;
@@ -18,7 +18,7 @@ export class DistantTerrainShader {
         }
     `;
 
-  static readonly distantTerrainFragmentShader = `
+	static readonly distantTerrainFragmentShader = `
         #version 300 es
         precision highp float;
         in vec3 vNormal;
@@ -118,7 +118,7 @@ export class DistantTerrainShader {
         }
     `;
 
-  static readonly distantWaterVertexShader = `
+	static readonly distantWaterVertexShader = `
         #version 300 es
         precision highp float;
         in vec3 position;
@@ -132,7 +132,7 @@ export class DistantTerrainShader {
         }
     `;
 
-  static readonly distantWaterFragmentShader = `
+	static readonly distantWaterFragmentShader = `
         #version 300 es
         precision highp float;
         in vec3 vPositionW;
