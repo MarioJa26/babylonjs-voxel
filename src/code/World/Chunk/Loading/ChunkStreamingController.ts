@@ -224,8 +224,7 @@ export class ChunkStreamingController {
 					z++
 				) {
 					const chunk = Chunk.getChunk(x, y, z);
-					if (!chunk) continue;
-					if (!chunk.isLoaded) continue;
+					if (!chunk?.isLoaded) continue;
 
 					if (!this.loadedRefreshQueueSet.has(chunk.id)) {
 						this.loadedRefreshQueueSet.add(chunk.id);
@@ -345,7 +344,6 @@ export class ChunkStreamingController {
 
 				if (desiredLod <= 1) {
 					this.ensureChunkQueuedForLoad(chunk, desiredLod, revision, true);
-
 					if (!hasTargetCachedMesh) {
 						return;
 					}

@@ -701,15 +701,23 @@ export class ChunkMesher {
 		const hasTransparent =
 			!!transparentMeshData && transparentMeshData.faceCount > 0;
 
-		// Cache raw mesh data only for chunks that may need saving.
-		if (chunk.isModified) {
+		// Cache raw mesh data for any chunk that may be persisted.
+		//
+		// NOTE:
+		// `isLODMeshCacheDirty` is used to persist derived mesh cache deltas even when
+		// voxel storage was not modified (e.g. border geometry generated after
+		// neighbors become available).
+		const lodLevel = chunk.lodLevel ?? 0;
+
+		// Only persist base mesh fields for LOD0; other LODs should be persisted via
+		// the serialized LOD cache (lodMeshes) instead.
+		if (lodLevel === 0 && (chunk.isModified || chunk.isLODMeshCacheDirty)) {
 			chunk.opaqueMeshData = hasOpaque ? opaqueMeshData : null;
 			chunk.transparentMeshData = hasTransparent ? transparentMeshData : null;
 		} else {
 			chunk.opaqueMeshData = null;
 			chunk.transparentMeshData = null;
 		}
-		const lodLevel = chunk.lodLevel ?? 0;
 
 		const lodChangedOpaque =
 			previousOpaqueLod !== null && previousOpaqueLod !== lodLevel;

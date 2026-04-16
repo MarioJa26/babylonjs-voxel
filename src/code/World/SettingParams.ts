@@ -19,7 +19,7 @@ export class SettingParams {
 	public static LOD_PRECOMPUTE_SCHEDULE_THROTTLE_MS = 120;
 	public static LOD_PRECOMPUTE_MAX_ENQUEUE_PER_UPDATE = 48;
 	// 0 = unlimited dispatch while workers are idle
-	public static CHUNK_WORKER_DISPATCH_BUDGET_PER_TICK = 8;
+	public static CHUNK_WORKER_DISPATCH_BUDGET_PER_TICK = 10;
 
 	// --- Day/Night Cycle ---
 	public static DAY_DURATION_MS = 10 * 60 * 1000; // 10 minutes for a full day

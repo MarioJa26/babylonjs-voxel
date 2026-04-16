@@ -443,7 +443,7 @@ export class ChunkLoadingSystem {
 		ChunkLoadingSystem.pendingRemeshChunks.push(chunk);
 	}
 
-	public static processPendingRemeshes(maxChunks = 2): void {
+	public static processPendingRemeshes(maxChunks = 4): void {
 		const pool = ChunkWorkerPool.getInstance();
 
 		let processed = 0;

@@ -89,7 +89,11 @@ export class ChunkPersistenceCoordinator {
 		}
 
 		for (const chunk of this.adapter.getModifiedChunks()) {
-			if (!chunk.isModified) continue;
+			// Persist both voxel edits (isModified) and derived mesh cache deltas
+			// (isLODMeshCacheDirty). Border meshes are often generated after terrain
+			// generation once neighbors become available, so they would never be
+			// persisted if we only flushed isModified chunks.
+			if (!chunk.isModified && !chunk.isLODMeshCacheDirty) continue;
 
 			out.push(chunk);
 			if (out.length >= limit) {
