@@ -26,8 +26,8 @@ export class WorldEnvironment {
   private timeOfDay = 120000;
   public timeScale = 0;
   public isPaused = false;
-  public wetness = 0.2;
-
+  public wetness = 0.0;
+ 
   constructor(scene: Scene) {
     WorldEnvironment.instance = this;
     this.scene = scene;
@@ -154,7 +154,7 @@ export class WorldEnvironment {
       );
       // Scale base intensity with elevation (tune multiplier)
       this.dirLight.intensity = 1.0 * sunIntensity;
-      const reflectivity = sunIntensity * (0.05 + this.wetness * 0.95);
+      const reflectivity = sunIntensity * (this.wetness * 0.95);
       this.dirLight.specular.set(reflectivity, reflectivity, reflectivity);
     }
     // For debug display
