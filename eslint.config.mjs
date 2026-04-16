@@ -10,6 +10,7 @@ export default defineConfig([
       "**/dist/**",
       "**/node_modules/**",
       "src/BabylonExamples/**",
+      "src/code_js/**",
       "tests/**",
       "extract-footprint.cjs",
     ],

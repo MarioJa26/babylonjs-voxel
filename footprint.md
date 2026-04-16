@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-04-13T02:16:28.570Z
+Generated: 2026-04-16T00:13:42.137Z
 
-> **Summary:** 101 classes · 1776 members · 76 module-level functions · 27170 LOC
+> **Summary:** 101 classes · 1791 members · 77 module-level functions · 27471 LOC
 
 ---
 
@@ -283,7 +283,7 @@ Generated: 2026-04-13T02:16:28.570Z
 
 ---
 
-## `Generation/LightGenerator.ts` (237 LOC)
+## `Generation/LightGenerator.ts` (324 LOC)
 
 ### export class LightGenerator
 
@@ -301,13 +301,20 @@ Generated: 2026-04-13T02:16:28.570Z
 
 **Methods**
 - `public generate(chunkX: number, chunkY: number, chunkZ: number, _biome: Biome, blocks: Uint8Array, light: Uint8Array, topSunlightMask?: Uint8Array): void`
-- `private tryPropagate(nx: number, ny: number, nz: number, targetSky: number, targetBlock: number, blocks: Uint8Array, light: Uint8Array, tail: number, CHUNK_SIZE: number, CHUNK_SIZE_SQ: number): number`
+- `public seedInitialLight(chunkX: number, chunkY: number, chunkZ: number, _biome: Biome, blocks: Uint8Array, light: Uint8Array, topSunlightMask?: Uint8Array): LightSeedState`
+- `public propagateLight(blocks: Uint8Array, light: Uint8Array, seedState: LightSeedState): void`
+- `private seedInitialLightIntoSharedQueue(chunkX: number, chunkY: number, chunkZ: number, blocks: Uint8Array, light: Uint8Array, topSunlightMask?: Uint8Array): number`
+- `private propagateLightFromQueue(blocks: Uint8Array, light: Uint8Array, queue: Uint16Array, initialTail: number): void`
+- `private tryPropagate(nx: number, ny: number, nz: number, targetSky: number, targetBlock: number, blocks: Uint8Array, light: Uint8Array, queue: Uint16Array, tail: number, CHUNK_SIZE: number, CHUNK_SIZE_SQ: number): number`
 - `private static isTransparentBlock(blockId: number): boolean`
 - `private static isWaterBlock(blockId: number): boolean`
 - `private columnReceivesDirectSun(worldX: number, worldZ: number, topWorldY: number): boolean`
 
 **Module-level functions**
 - `function nextPowerOfTwo(n: number): number`
+
+**Types / Interfaces / Enums**
+- type `LightSeedState`
 
 ---
 
@@ -642,7 +649,7 @@ Generated: 2026-04-13T02:16:28.570Z
 
 ---
 
-## `Generation/SurfaceGenerator.ts` (676 LOC)
+## `Generation/SurfaceGenerator.ts` (759 LOC)
 
 ### export class SurfaceGenerator
 
@@ -661,13 +668,16 @@ Generated: 2026-04-13T02:16:28.570Z
 - `private static readonly SUBSURFACE_LAYER_DEPTH: unknown`
 - `private static readonly SURFACE_RESET_AIR_GAP: unknown`
 - `private static readonly NO_SURFACE_Y: unknown`
+- `private static readonly MAX_TREE_HEIGHT: unknown`
+- `private static readonly MAX_STRUCTURE_ABOVE_SURFACE: unknown`
+- `private static readonly MAX_STRUCTURE_BELOW_SURFACE: unknown`
 - `private static seedAsInt: number`
 - `private static readonly MAX_COLUMN_PREPASS_CACHE: unknown`
 - `private static readonly columnPrepassCache: unknown`
-- `private static readonly columnPrepassFifo: string[]`
+- `private static readonly columnPrepassFifo: bigint[]`
 - `private static readonly MAX_FLORA_COLUMN_CACHE: unknown`
 - `private static readonly floraColumnCache: unknown`
-- `private static readonly floraColumnCacheFifo: string[]`
+- `private static readonly floraColumnCacheFifo: bigint[]`
 - `private chunk_size: number`
 - `private riverGenerator: RiverGenerator`
 - `private features: IWorldFeature[]`
@@ -677,10 +687,12 @@ Generated: 2026-04-13T02:16:28.570Z
   ) => number`
 
 **Methods**
-- `private getColumnPrepassKey(chunkX: number, chunkZ: number): string`
+- `private packXZKey(x: number, z: number): bigint`
+- `private getColumnPrepassKey(chunkX: number, chunkZ: number): bigint`
 - `private getOrBuildColumnPrepass(chunkX: number, chunkZ: number): ColumnPrepassCacheEntry`
-- `private getFloraColumnKey(worldX: number, worldZ: number): string`
+- `private getFloraColumnKey(worldX: number, worldZ: number): bigint`
 - `private getOrBuildFloraColumnInfo(worldX: number, worldZ: number, knownTopSurfaceY?: number): FloraColumnCacheEntry`
+- `private chunkIntersectsVerticalBand(chunkMinY: number, chunkMaxY: number, bandMinY: number, bandMaxY: number): boolean`
 - `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
       x: number,
       y: number,
@@ -771,7 +783,7 @@ Generated: 2026-04-13T02:16:28.570Z
 
 ---
 
-## `Generation/WorldGenerator.ts` (114 LOC)
+## `Generation/WorldGenerator.ts` (145 LOC)
 
 ### export class WorldGenerator
 
@@ -784,14 +796,19 @@ Generated: 2026-04-13T02:16:28.570Z
 - `private seedAsInt: number`
 - `private chunkSizeSq: number`
 - `private chunk_size: number`
+- `private chunkVolume: number`
 - `private surfaceGenerator: SurfaceGenerator`
 - `private undergroundGenerator: UndergroundGenerator`
 - `private lightGenerator: LightGenerator`
 
 **Methods**
 - `private createBuffer(size: number): Uint8Array`
-- `public generateChunkData(chunkX: number, chunkY: number, chunkZ: number): { blocks: Uint8Array<ArrayBufferLike>; light: Uint8Array<ArrayBufferLike>; }`
+- `public generateChunkData(chunkX: number, chunkY: number, chunkZ: number, options: GenerateChunkOptions = {}): GenerateChunkResult`
 - `#getBiome(x: number, z: number): Biome`
+
+**Types / Interfaces / Enums**
+- type `GenerateChunkOptions`
+- type `GenerateChunkResult`
 
 ---
 
@@ -2368,7 +2385,7 @@ Generated: 2026-04-13T02:16:28.570Z
 
 ---
 
-## `World/Chunk/chunk.worker.ts` (110 LOC)
+## `World/Chunk/chunk.worker.ts` (106 LOC)
 
 **Module-level functions**
 - `function compressBlocks(blocks: Uint8Array): {
@@ -2464,7 +2481,7 @@ Generated: 2026-04-13T02:16:28.570Z
 
 ---
 
-## `World/Chunk/chunkWorker.ts` (164 LOC)
+## `World/Chunk/chunkWorker.ts` (162 LOC)
 
 ### export class ChunkWorker
 
@@ -2482,7 +2499,7 @@ Generated: 2026-04-13T02:16:28.570Z
 - `public setOnError(handler: (ev: ErrorEvent | Event) => void): void`
 - `public terminate(): void`
 - `public postFullRemesh(chunk: Chunk, forcedLod?: number): void`
-- `public postTerrainGeneration(chunk: Chunk): void`
+- `public postTerrainGeneration(chunk: Chunk, deferLighting: boolean = true): void`
 - `public postGenerateDistantTerrain(centerChunkX: number, centerChunkZ: number, radius: number, renderDistance: number, gridStep: number, oldData?: {
       positions: Int16Array;
       normals: Int8Array;
@@ -2491,7 +2508,7 @@ Generated: 2026-04-13T02:16:28.570Z
 
 ---
 
-## `World/Chunk/ChunkWorkerPool.ts` (866 LOC)
+## `World/Chunk/ChunkWorkerPool.ts` (953 LOC)
 
 ### export class ChunkWorkerPool
 
@@ -2507,10 +2524,13 @@ Generated: 2026-04-13T02:16:28.570Z
     chunk?: Chunk;
     lod?: number;
     distantTask?: DistantTerrainTask;
+    terrainDeferLighting?: boolean;
   } | null>`
 - `private workerRestartAtMs: number[]`
 - `private taskQueue: Chunk[]`
 - `private pendingRemeshQueue: Map<Chunk, boolean>`
+- `private pendingDeferredLight: unknown`
+- `private terrainTaskDeferLighting: unknown`
 - `private terrainTaskQueue: Set<Chunk>`
 - `private distantTerrainTaskQueue: DistantTerrainTask[]`
 - `private lodPrecomputeQueue: Array<{ chunk: Chunk; lod: number }>`
@@ -2551,10 +2571,13 @@ Generated: 2026-04-13T02:16:28.570Z
 - `private makeMeshMessageHandler(workerIndex: number, getWorker: () => ChunkWorker | undefined): (event: MessageEvent<MeshWorkerResponse>) => void`
 - `private getChunkLodLevel(chunk: Chunk | undefined): number`
 - `private compareRemeshPriority(aChunk: Chunk, aPriority: boolean, bChunk: Chunk, bPriority: boolean): number`
+- `private dequeueNextTerrainChunk(): Chunk | undefined`
 - `private insertChunkIntoRemeshQueue(chunk: Chunk, priority: boolean): void`
-- `public scheduleTerrainGeneration(chunk: Chunk): void`
-- `public scheduleTerrainGenerationBatch(chunks: Chunk[]): void`
+- `public scheduleTerrainGeneration(chunk: Chunk, deferLighting: boolean = true): void`
+- `public scheduleTerrainGenerationBatch(chunks: Chunk[], deferLighting: boolean = true): void`
+- `private getQueuedTerrainDeferLighting(chunk: Chunk): boolean`
 - `private getLodPrecomputeKey(chunk: Chunk, lod: number): string`
+- `private dispatchTerrainTaskToWorker(workerIndex: number, worker: ChunkWorker, chunk: Chunk): boolean`
 - `public scheduleBackgroundLodPrecompute(centerChunkX: number, centerChunkY: number, centerChunkZ: number): void`
 - `private scheduleChunkAndNeighborsRemesh(chunk: Chunk): void`
 - `public scheduleDistantTerrain(centerChunkX: number, centerChunkZ: number, radius: number, renderDistance: number, gridStep: number, oldData?: {
@@ -2567,6 +2590,7 @@ Generated: 2026-04-13T02:16:28.570Z
 **Types / Interfaces / Enums**
 - type `WorkerMessageData`
 - type `ChunkWorkerPoolDebugStats`
+- type `PendingDeferredLight`
 
 ---
 
@@ -2651,9 +2675,10 @@ Generated: 2026-04-13T02:16:28.570Z
 
 ---
 
-## `World/Chunk/DataStructures/WorkerMessageType.ts` (87 LOC)
+## `World/Chunk/DataStructures/WorkerMessageType.ts` (94 LOC)
 
 **Types / Interfaces / Enums**
+- interface `SerializedLightSeedState`
 - interface `DistantTerrainTask`
 - type `PackedBlockArray`
 - type `PackedPalette`
@@ -3066,7 +3091,7 @@ Generated: 2026-04-13T02:16:28.570Z
 
 ---
 
-## `World/Chunk/Worker/WorkerTaskHandlers.ts` (149 LOC)
+## `World/Chunk/Worker/WorkerTaskHandlers.ts` (161 LOC)
 
 ### export class WorkerTaskHandlers
 
@@ -3075,15 +3100,7 @@ Generated: 2026-04-13T02:16:28.570Z
       generator: WorldGenerator;
       compressBlocks: CompressBlocksFn;
     }): {
-    payload: {
-      chunkId: bigint;
-      type: number;
-      block_array: Uint8Array | Uint16Array | null;
-      light_array: Uint8Array;
-      isUniform: boolean;
-      uniformBlockId: number;
-      palette: Uint16Array | null;
-    };
+    payload: TerrainGeneratedMessage;
     transferables: Transferable[];
   }`
 - `public static handleGenerateDistantTerrain(request: GenerateDistantTerrainRequest): {
@@ -3097,6 +3114,9 @@ Generated: 2026-04-13T02:16:28.570Z
     };
     transferables: Transferable[];
   }`
+
+**Module-level functions**
+- `function pushTransferableBuffer(transferables: Transferable[], view: ArrayBufferView | null | undefined, label: string): void`
 
 **Types / Interfaces / Enums**
 - type `MeshBuilderLike`

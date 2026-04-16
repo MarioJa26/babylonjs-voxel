@@ -8,7 +8,17 @@ import {
 import { TerrainHeightMap } from "./TerrainHeightMap";
 import { SurfaceGenerator } from "./SurfaceGenerator";
 import { UndergroundGenerator } from "./UndergroundGenerator";
-import { LightGenerator } from "./LightGenerator";
+import { LightGenerator, LightSeedState } from "./LightGenerator";
+
+type GenerateChunkOptions = {
+  deferLighting?: boolean;
+};
+
+type GenerateChunkResult = {
+  blocks: Uint8Array;
+  light: Uint8Array;
+  lightSeedState?: LightSeedState;
+};
 
 export class WorldGenerator {
   private params: GenerationParamsType;
@@ -17,6 +27,7 @@ export class WorldGenerator {
   private seedAsInt: number;
   private chunkSizeSq: number;
   private chunk_size: number;
+  private chunkVolume: number;
 
   private surfaceGenerator: SurfaceGenerator;
   private undergroundGenerator: UndergroundGenerator;
@@ -26,23 +37,24 @@ export class WorldGenerator {
     this.params = params;
     this.prng = Alea(this.params.SEED);
     this.seedAsInt = Squirrel3.get(0, (this.prng() * 0xffffffff) | 0);
+
     this.chunk_size = this.params.CHUNK_SIZE;
-    this.chunkSizeSq = this.chunk_size ** 2;
+    this.chunkSizeSq = this.chunk_size * this.chunk_size;
+    this.chunkVolume = this.chunk_size * this.chunkSizeSq;
 
     const treeNoise = createFastNoise2D({
-      seed: Squirrel3.get(21, (this.prng() * 0xffffffff) | 0),
+      seed: Squirrel3.get(21, this.seedAsInt),
       frequency: 1,
     });
+
     const caveNoise = createFastNoise3D({
-      seed: Squirrel3.get(2, (this.prng() * 0xffffffff) | 0),
+      seed: Squirrel3.get(2, this.seedAsInt),
       frequency: 0.02,
     });
 
-    // OPTIMIZATION: density noise frequency is baked in here at 1.0 so the noise
-    // function itself handles frequency scaling internally (FastNoise is optimized for this).
-    // SurfaceGenerator already multiplies coordinates by the appropriate scales before calling.
+    // Density noise frequency is baked in here so FastNoise handles scaling internally.
     const densityNoise = createFastNoise3D({
-      seed: Squirrel3.get(999, (this.prng() * 0xffffffff) | 0),
+      seed: Squirrel3.get(23, this.seedAsInt),
       frequency: 0.3333,
     });
 
@@ -57,16 +69,34 @@ export class WorldGenerator {
   }
 
   private createBuffer(size: number): Uint8Array {
-    if (typeof SharedArrayBuffer !== "undefined") {
-      return new Uint8Array(new SharedArrayBuffer(size));
-    }
-    console.warn("buffer not created!");
-    return new Uint8Array(size);
+    // Worker-generated chunk payloads must be transferable back to the main thread.
+    // SharedArrayBuffer cannot be put into the worker postMessage transfer list.
+    // The main thread already upgrades incoming arrays to SharedArrayBuffer if needed.
+    return new Uint8Array(new ArrayBuffer(size));
   }
 
-  public generateChunkData(chunkX: number, chunkY: number, chunkZ: number) {
-    const blocks = this.createBuffer(this.chunk_size ** 3);
-    const light = this.createBuffer(this.chunk_size ** 3);
+  /**
+   * Backward compatible:
+   * - generateChunkData(x, y, z) => full terrain + full lighting
+   * - generateChunkData(x, y, z, { deferLighting: true }) => terrain now, light later
+   */
+  public generateChunkData(
+    chunkX: number,
+    chunkY: number,
+    chunkZ: number,
+    options: GenerateChunkOptions = {},
+  ): GenerateChunkResult {
+    const deferLighting = options.deferLighting === true;
+
+    const chunkSize = this.chunk_size;
+    const chunkSizeSq = this.chunkSizeSq;
+    const chunkVolume = this.chunkVolume;
+
+    const chunkWorldX = chunkX * chunkSize;
+    const chunkWorldY = chunkY * chunkSize;
+    const chunkWorldZ = chunkZ * chunkSize;
+
+    const blocks = this.createBuffer(chunkVolume);
 
     const placeBlock = (
       x: number,
@@ -75,36 +105,34 @@ export class WorldGenerator {
       blockId: number,
       overwrite = false,
     ) => {
-      const localX = x - chunkX * this.chunk_size;
-      const localY = y - chunkY * this.chunk_size;
-      const localZ = z - chunkZ * this.chunk_size;
+      const localX = x - chunkWorldX;
+      const localY = y - chunkWorldY;
+      const localZ = z - chunkWorldZ;
 
       if (
-        localX >= 0 &&
-        localX < this.chunk_size &&
-        localY >= 0 &&
-        localY < this.chunk_size &&
-        localZ >= 0 &&
-        localZ < this.chunk_size
+        localX < 0 ||
+        localX >= chunkSize ||
+        localY < 0 ||
+        localY >= chunkSize ||
+        localZ < 0 ||
+        localZ >= chunkSize
       ) {
-        const idx =
-          localX + localY * this.chunk_size + localZ * this.chunkSizeSq;
+        return;
+      }
 
-        // Don't let air replace water
-        if (blockId === 0 && blocks[idx] === 30) {
-          return;
-        }
+      const idx = localX + localY * chunkSize + localZ * chunkSizeSq;
 
-        if (blocks[idx] === 0 || overwrite) {
-          blocks[idx] = blockId;
-        }
+      // Don't let air replace water
+      if (blockId === 0 && blocks[idx] === 30) {
+        return;
+      }
+
+      if (blocks[idx] === 0 || overwrite) {
+        blocks[idx] = blockId;
       }
     };
 
-    const biome = this.#getBiome(
-      chunkX * this.chunk_size,
-      chunkZ * this.chunk_size,
-    );
+    const biome = this.#getBiome(chunkWorldX, chunkWorldZ);
 
     const surfaceGeneration = this.surfaceGenerator.generate(
       chunkX,
@@ -118,7 +146,23 @@ export class WorldGenerator {
       this.undergroundGenerator.generate(chunkX, chunkY, chunkZ, placeBlock);
     }
 
-    this.lightGenerator.generate(
+    const light = this.createBuffer(chunkVolume);
+
+    if (!deferLighting) {
+      this.lightGenerator.generate(
+        chunkX,
+        chunkY,
+        chunkZ,
+        biome,
+        blocks,
+        light,
+        surfaceGeneration.topSunlightMask,
+      );
+
+      return { blocks, light };
+    }
+
+    const lightSeedState = this.lightGenerator.seedInitialLight(
       chunkX,
       chunkY,
       chunkZ,
@@ -128,7 +172,11 @@ export class WorldGenerator {
       surfaceGeneration.topSunlightMask,
     );
 
-    return { blocks, light };
+    return {
+      blocks,
+      light,
+      lightSeedState,
+    };
   }
 
   #getBiome(x: number, z: number) {

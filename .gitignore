@@ -5,6 +5,9 @@
 /src/App.vue
 /src/BabylonExamples/
 
+/src/code_js
+convert.bat
+
 /public/texture
 
 *.zip

@@ -36,20 +36,31 @@ export type ChunkWorkerPoolDebugStats = {
   totalLodPrecomputeDispatches: number;
   totalDistantDispatches: number;
 };
+type PendingDeferredLight = {
+  blocks: Uint8Array | Uint16Array | null;
+  light: Uint8Array;
+  queue: Uint16Array;
+  length: number;
+};
 
 export class ChunkWorkerPool {
   private static instance: ChunkWorkerPool;
   private static readonly WORKER_ERROR_COOLDOWN_MS = 120;
   private workers: ChunkWorker[] = [];
+
   private workerTaskContext: Array<{
     taskType: "terrain" | "remesh" | "lodPrecompute" | "distantTerrain";
     chunk?: Chunk;
     lod?: number;
     distantTask?: DistantTerrainTask;
+    terrainDeferLighting?: boolean;
   } | null> = [];
+
   private workerRestartAtMs: number[] = [];
   private taskQueue: Chunk[] = [];
   private pendingRemeshQueue: Map<Chunk, boolean> = new Map();
+  private pendingDeferredLight = new Map<bigint, PendingDeferredLight>();
+  private terrainTaskDeferLighting = new Map<bigint, boolean>();
   private terrainTaskQueue: Set<Chunk> = new Set();
   private distantTerrainTaskQueue: DistantTerrainTask[] = [];
   private lodPrecomputeQueue: Array<{ chunk: Chunk; lod: number }> = [];
@@ -188,6 +199,7 @@ export class ChunkWorkerPool {
   private handleWorkerFailure(workerIndex: number, reason: unknown): void {
     const context = this.workerTaskContext[workerIndex];
     this.workerTaskContext[workerIndex] = null;
+
     if (
       (context?.taskType === "remesh" ||
         context?.taskType === "lodPrecompute") &&
@@ -198,9 +210,13 @@ export class ChunkWorkerPool {
         this.getRemeshInflightKey(context.chunk.id, context.lod),
       );
     }
+
     if (context?.taskType === "terrain" && context.chunk) {
       context.chunk.isTerrainScheduled = false;
-      this.scheduleTerrainGeneration(context.chunk);
+      this.scheduleTerrainGeneration(
+        context.chunk,
+        context.terrainDeferLighting ?? true,
+      );
     } else if (
       context?.taskType === "remesh" &&
       context.chunk &&
@@ -228,6 +244,7 @@ export class ChunkWorkerPool {
     this.idleWorkerIndices = this.idleWorkerIndices.filter(
       (idx) => idx !== workerIndex,
     );
+
     try {
       failedWorker?.terminate();
     } catch {
@@ -242,17 +259,14 @@ export class ChunkWorkerPool {
 
     const restart = () => {
       const holder: { worker?: ChunkWorker } = {};
-
       const onMessageTerrain = this.makeTerrainMessageHandler(
         workerIndex,
         () => holder.worker,
       );
-
       const onMessageMesh = this.makeMeshMessageHandler(
         workerIndex,
         () => holder.worker,
       );
-
       const onError = (ev: ErrorEvent | Event) => {
         console.error(`Chunk worker ${workerIndex} error`, ev, reason);
         this.handleWorkerFailure(workerIndex, ev);
@@ -509,9 +523,7 @@ export class ChunkWorkerPool {
         if (type === WorkerTaskType.GenerateFullMesh) {
           const meshData: FullMeshMessage = data;
 
-          // NEW: clear in-flight key for this exact (chunk, lod)
           this.clearInflightRemeshByMessage(meshData.chunkId, meshData.lod);
-
           this.meshResultQueue.push(meshData);
 
           const resolvedChunk = this.resolveChunkByMessageId(meshData.chunkId);
@@ -527,6 +539,7 @@ export class ChunkWorkerPool {
           }
         } else if (type === WorkerTaskType.GenerateTerrain) {
           const terrainData: TerrainGeneratedMessage = data;
+
           const {
             chunkId,
             block_array,
@@ -534,11 +547,14 @@ export class ChunkWorkerPool {
             isUniform,
             uniformBlockId,
             palette,
+            lightSeedQueue,
+            lightSeedLength,
           } = terrainData;
 
           const chunk = this.resolveChunkByMessageId(chunkId);
+
           if (chunk) {
-            let blocks: Uint8Array | Uint16Array | null = block_array;
+            let blocks: Uint8Array | Uint16Array | null = block_array ?? null;
             let light: Uint8Array = light_array;
 
             const typedPalette: Uint16Array | null =
@@ -546,6 +562,7 @@ export class ChunkWorkerPool {
 
             if (blocks && !(blocks.buffer instanceof SharedArrayBuffer)) {
               const shared = new SharedArrayBuffer(blocks.byteLength);
+
               if (blocks instanceof Uint16Array) {
                 new Uint16Array(shared).set(blocks);
                 blocks = new Uint16Array(shared);
@@ -569,10 +586,23 @@ export class ChunkWorkerPool {
               light,
               false,
             );
+
             chunk.isTerrainScheduled = false;
+            chunk.isLoaded = true;
+            chunk.colliderDirty = true;
+            chunk.isModified = true;
+
             this.scheduleChunkAndNeighborsRemesh(chunk);
 
-            chunk.isModified = true;
+            const needsLightingRefinement =
+              lightSeedQueue !== undefined &&
+              lightSeedLength !== undefined &&
+              lightSeedLength > 0;
+
+            if (needsLightingRefinement) {
+              this.scheduleTerrainGeneration(chunk, false);
+            }
+
             void WorldStorage.saveChunk(chunk).catch((error) => {
               console.error(
                 "Initial generated chunk persistence failed:",
@@ -598,9 +628,11 @@ export class ChunkWorkerPool {
       if (this.workers[workerIndex] !== getWorker()) return;
 
       this.workerTaskContext[workerIndex] = null;
+
       if (!this.idleWorkerIndices.includes(workerIndex)) {
         this.idleWorkerIndices.push(workerIndex);
       }
+
       this.processQueue();
     };
   }
@@ -688,6 +720,14 @@ export class ChunkWorkerPool {
     return 0;
   }
 
+  private dequeueNextTerrainChunk(): Chunk | undefined {
+    for (const chunk of this.terrainTaskQueue) {
+      this.terrainTaskQueue.delete(chunk);
+      return chunk;
+    }
+    return undefined;
+  }
+
   private insertChunkIntoRemeshQueue(chunk: Chunk, priority: boolean): void {
     // Remove if already present so we can reinsert in the right position
     const existingIndex = this.taskQueue.indexOf(chunk);
@@ -716,20 +756,83 @@ export class ChunkWorkerPool {
     this.taskQueue.splice(insertIndex, 0, chunk);
   }
 
-  public scheduleTerrainGeneration(chunk: Chunk) {
+  public scheduleTerrainGeneration(
+    chunk: Chunk,
+    deferLighting: boolean = true,
+  ): void {
+    if (!chunk) {
+      return;
+    }
+
     this.terrainTaskQueue.add(chunk);
-    this.processQueue();
+
+    const existing = this.terrainTaskDeferLighting.get(chunk.id);
+
+    // If already queued:
+    // - keep false if any caller requests full lighting
+    // - otherwise default to true for fast first pass
+    if (existing === undefined) {
+      this.terrainTaskDeferLighting.set(chunk.id, deferLighting);
+    } else if (existing && !deferLighting) {
+      this.terrainTaskDeferLighting.set(chunk.id, false);
+    }
+
+    chunk.isTerrainScheduled = true;
+    this.scheduleProcessQueuePump();
   }
 
-  public scheduleTerrainGenerationBatch(chunks: Chunk[]) {
+  public scheduleTerrainGenerationBatch(
+    chunks: Chunk[],
+    deferLighting: boolean = true,
+  ): void {
     for (const chunk of chunks) {
+      if (!chunk) continue;
+
       this.terrainTaskQueue.add(chunk);
+
+      const existing = this.terrainTaskDeferLighting.get(chunk.id);
+      if (existing === undefined) {
+        this.terrainTaskDeferLighting.set(chunk.id, deferLighting);
+      } else if (existing && !deferLighting) {
+        this.terrainTaskDeferLighting.set(chunk.id, false);
+      }
+
+      chunk.isTerrainScheduled = true;
     }
-    this.processQueue();
+
+    this.scheduleProcessQueuePump();
+  }
+
+  private getQueuedTerrainDeferLighting(chunk: Chunk): boolean {
+    return this.terrainTaskDeferLighting.get(chunk.id) ?? true;
   }
 
   private getLodPrecomputeKey(chunk: Chunk, lod: number): string {
     return `${chunk.id.toString()}:${lod}`;
+  }
+  private dispatchTerrainTaskToWorker(
+    workerIndex: number,
+    worker: ChunkWorker,
+    chunk: Chunk,
+  ): boolean {
+    if (!chunk) {
+      return false;
+    }
+
+    const deferLighting = this.getQueuedTerrainDeferLighting(chunk);
+
+    this.terrainTaskQueue.delete(chunk);
+    this.terrainTaskDeferLighting.delete(chunk.id);
+
+    this.workerTaskContext[workerIndex] = {
+      taskType: "terrain",
+      chunk,
+      terrainDeferLighting: deferLighting,
+    };
+
+    chunk.isTerrainScheduled = true;
+    worker.postTerrainGeneration(chunk, deferLighting);
+    return true;
   }
 
   public scheduleBackgroundLodPrecompute(
@@ -873,9 +976,8 @@ export class ChunkWorkerPool {
     }
 
     const dispatchBudget = this.getDispatchBudgetPerTick();
-    const dispatchedThisTick = 0;
+    let dispatchedThisTick = 0;
 
-    // Process tasks as long as there are idle workers and tasks in queues
     while (
       this.idleWorkerIndices.length > 0 &&
       dispatchedThisTick < dispatchBudget
@@ -887,16 +989,15 @@ export class ChunkWorkerPool {
 
       // 1) Terrain generation first
       if (this.terrainTaskQueue.size > 0) {
-        taskChunk = this.terrainTaskQueue.values().next().value;
-        this.terrainTaskQueue.delete(taskChunk!);
+        taskChunk = this.dequeueNextTerrainChunk();
         taskType = "terrain";
       }
-      // 2) Then remesh, already sorted by LOD priority
+      // 2) Then remesh
       else if (this.taskQueue.length > 0) {
         taskChunk = this.taskQueue.shift();
         taskType = "remesh";
       }
-      // 3) Then background LOD cache precompute
+      // 3) Then background LOD precompute
       else if (this.lodPrecomputeQueue.length > 0) {
         const task = this.lodPrecomputeQueue.shift()!;
         taskChunk = task.chunk;
@@ -914,89 +1015,109 @@ export class ChunkWorkerPool {
         break;
       }
 
-      if (taskChunk || distantTask) {
-        if (
-          taskType === "remesh" &&
-          taskChunk &&
-          this.isCompletelyEmptyChunk(taskChunk)
-        ) {
-          this.clearChunkMeshIfPresent(taskChunk);
+      if (!(taskChunk || distantTask)) {
+        break;
+      }
+
+      if (
+        taskType === "remesh" &&
+        taskChunk &&
+        this.isCompletelyEmptyChunk(taskChunk)
+      ) {
+        this.clearChunkMeshIfPresent(taskChunk);
+        continue;
+      }
+
+      if (taskType === "remesh" && taskChunk) {
+        if (this.tryApplyCachedLODMesh(taskChunk)) {
           continue;
         }
+      }
 
-        if (taskType === "remesh" && taskChunk) {
-          if (this.tryApplyCachedLODMesh(taskChunk)) {
+      if (taskType === "lodPrecompute" && taskChunk) {
+        if (
+          !taskChunk.isLoaded ||
+          !taskChunk.hasVoxelData ||
+          precomputeLod === undefined ||
+          taskChunk.hasCachedLODMesh(precomputeLod)
+        ) {
+          continue;
+        }
+      }
+
+      const workerIndex = this.idleWorkerIndices.shift()!;
+      const worker = this.workers[workerIndex];
+
+      try {
+        if (taskType === "terrain") {
+          if (!taskChunk) {
+            if (!this.idleWorkerIndices.includes(workerIndex)) {
+              this.idleWorkerIndices.push(workerIndex);
+            }
             continue;
           }
-        }
 
-        if (taskType === "lodPrecompute" && taskChunk) {
-          if (
-            !taskChunk.isLoaded ||
-            !taskChunk.hasVoxelData ||
-            precomputeLod === undefined ||
-            taskChunk.hasCachedLODMesh(precomputeLod)
-          ) {
-            continue;
-          }
-        }
+          this.dispatchTerrainTaskToWorker(workerIndex, worker, taskChunk);
+          this.debugStats.totalTerrainDispatches += 1;
+          dispatchedThisTick += 1;
+        } else if (taskType === "remesh") {
+          const lod = this.getChunkLodLevel(taskChunk);
 
-        const workerIndex = this.idleWorkerIndices.shift()!;
-        const worker = this.workers[workerIndex];
-        const dispatchedLod =
-          taskType === "remesh"
-            ? this.getChunkLodLevel(taskChunk)
-            : taskType === "lodPrecompute"
-              ? precomputeLod
-              : undefined;
+          this.workerTaskContext[workerIndex] = {
+            taskType,
+            chunk: taskChunk,
+            lod,
+          };
 
-        this.workerTaskContext[workerIndex] = {
-          taskType,
-          chunk: taskChunk,
-          lod: dispatchedLod,
-          distantTask,
-        };
-
-        try {
-          if (taskType === "terrain") {
-            worker.postTerrainGeneration(taskChunk!);
-            this.debugStats.totalTerrainDispatches += 1;
-          } else if (taskType === "remesh") {
-            const lod = this.getChunkLodLevel(taskChunk);
-            this.inFlightRemeshKeys.add(
-              this.getRemeshInflightKey(taskChunk!.id, lod),
-            );
-            worker.postFullRemesh(taskChunk!);
-            this.debugStats.totalRemeshDispatches += 1;
-          } else if (taskType === "lodPrecompute") {
-            const lod = precomputeLod!;
-            this.inFlightRemeshKeys.add(
-              this.getRemeshInflightKey(taskChunk!.id, lod),
-            );
-            worker.postFullRemesh(taskChunk!, lod);
-            this.debugStats.totalLodPrecomputeDispatches += 1;
-          } else {
-            worker.postGenerateDistantTerrain(
-              distantTask!.centerChunkX,
-              distantTask!.centerChunkZ,
-              distantTask!.radius,
-              distantTask!.renderDistance,
-              distantTask!.gridStep,
-              distantTask!.oldData,
-              distantTask!.oldCenterChunkX,
-              distantTask!.oldCenterChunkZ,
-            );
-            this.debugStats.totalDistantDispatches += 1;
-          }
-        } catch (dispatchError) {
-          console.error(
-            `Failed to dispatch worker task (${taskType}) on worker ${workerIndex}`,
-            dispatchError,
+          this.inFlightRemeshKeys.add(
+            this.getRemeshInflightKey(taskChunk!.id, lod),
           );
-          this.handleWorkerFailure(workerIndex, dispatchError);
+
+          worker.postFullRemesh(taskChunk!);
+          this.debugStats.totalRemeshDispatches += 1;
+          dispatchedThisTick += 1;
+        } else if (taskType === "lodPrecompute") {
+          const lod = precomputeLod!;
+
+          this.workerTaskContext[workerIndex] = {
+            taskType,
+            chunk: taskChunk,
+            lod,
+          };
+
+          this.inFlightRemeshKeys.add(
+            this.getRemeshInflightKey(taskChunk!.id, lod),
+          );
+
+          worker.postFullRemesh(taskChunk!, lod);
+          this.debugStats.totalLodPrecomputeDispatches += 1;
+          dispatchedThisTick += 1;
+        } else {
+          this.workerTaskContext[workerIndex] = {
+            taskType,
+            distantTask,
+          };
+
+          worker.postGenerateDistantTerrain(
+            distantTask!.centerChunkX,
+            distantTask!.centerChunkZ,
+            distantTask!.radius,
+            distantTask!.renderDistance,
+            distantTask!.gridStep,
+            distantTask!.oldData,
+            distantTask!.oldCenterChunkX,
+            distantTask!.oldCenterChunkZ,
+          );
+
+          this.debugStats.totalDistantDispatches += 1;
+          dispatchedThisTick += 1;
         }
-      } else {
-        break;
+      } catch (dispatchError) {
+        console.error(
+          `Failed to dispatch worker task (${taskType}) on worker ${workerIndex}`,
+          dispatchError,
+        );
+        this.handleWorkerFailure(workerIndex, dispatchError);
       }
     }
 

@@ -1,8 +1,6 @@
-import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { Chunk } from "./Chunk";
 import {
   GenerateDistantTerrainRequest,
-  GenerateTerrainRequest,
   MeshWorkerResponse,
   WorkerResponseData,
   WorkerTaskType,
@@ -152,18 +150,17 @@ export class ChunkWorker {
   }
 
   // ✅ Terrain generation stays on your old worker
-  public postTerrainGeneration(chunk: Chunk): void {
-    const message: GenerateTerrainRequest = {
+  public postTerrainGeneration(
+    chunk: Chunk,
+    deferLighting: boolean = true,
+  ): void {
+    this.terrainWorker.postMessage({
       type: WorkerTaskType.GenerateTerrain,
       chunkId: chunk.id,
       chunkX: chunk.chunkX,
       chunkY: chunk.chunkY,
       chunkZ: chunk.chunkZ,
-    };
-
-    this.terrainWorker.postMessage({
-      ...message,
-      ...GenerationParams,
+      deferLighting,
     });
   }
 

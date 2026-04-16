@@ -14,6 +14,8 @@ import { Biome } from "./Biome/BiomeTypes";
 export type SurfaceGenerationResult = {
   topSunlightMask: Uint8Array;
   topSurfaceYMap: Int16Array;
+  minSurfaceY: number;
+  maxSurfaceY: number;
 };
 
 type ColumnPrepassCacheEntry = {
@@ -21,6 +23,8 @@ type ColumnPrepassCacheEntry = {
   riverNoiseMap: Float32Array;
   yFreqMap: Float32Array;
   topSurfaceYMap: Int16Array;
+  minSurfaceY: number;
+  maxSurfaceY: number;
 };
 
 type FloraColumnCacheEntry = {
@@ -58,33 +62,42 @@ export class SurfaceGenerator {
   private static readonly SURFACE_RESET_AIR_GAP = 6;
   private static readonly NO_SURFACE_Y = -32768;
 
+  /**
+   * Conservative vertical budgets used to decide whether a chunkY slice
+   * can possibly contain any flora / structure blocks.
+   *
+   * You can tighten these later once you know the exact max extents of
+   * your tallest trees / largest structures.
+   */
+  private static readonly MAX_TREE_HEIGHT = 24;
+  private static readonly MAX_STRUCTURE_ABOVE_SURFACE = 48;
+  private static readonly MAX_STRUCTURE_BELOW_SURFACE = 24;
+
   private static seedAsInt: number;
 
   /**
    * Bounded cache of expensive horizontal column prepass data.
    *
-   * Keyed by "chunkX,chunkZ", because the expensive top-surface search depends
-   * on worldX/worldZ and noise parameters, not on chunkY.
+   * Keyed by (chunkX, chunkZ) packed into a bigint.
    */
   private static readonly MAX_COLUMN_PREPASS_CACHE = 128;
   private static readonly columnPrepassCache = new Map<
-    string,
+    bigint,
     ColumnPrepassCacheEntry
   >();
-  private static readonly columnPrepassFifo: string[] = [];
+  private static readonly columnPrepassFifo: bigint[] = [];
 
   /**
    * Bounded flora-column cache for overlapping flora scans.
    *
-   * Keyed by "worldX,worldZ" because flora scan overlap happens at world-column
-   * granularity across neighboring chunk generation.
+   * Keyed by (worldX, worldZ) packed into a bigint.
    */
   private static readonly MAX_FLORA_COLUMN_CACHE = 16384;
   private static readonly floraColumnCache = new Map<
-    string,
+    bigint,
     FloraColumnCacheEntry
   >();
-  private static readonly floraColumnCacheFifo: string[] = [];
+  private static readonly floraColumnCacheFifo: bigint[] = [];
 
   private chunk_size: number;
   private riverGenerator: RiverGenerator;
@@ -118,21 +131,17 @@ export class SurfaceGenerator {
     this.getFinalTerrainHeightBound = this.getFinalTerrainHeight.bind(this);
   }
 
-  private getColumnPrepassKey(chunkX: number, chunkZ: number): string {
-    return `${chunkX},${chunkZ}`;
+  private packXZKey(x: number, z: number): bigint {
+    return (BigInt(x) << 32n) ^ (BigInt(z) & 0xffffffffn);
+  }
+
+  private getColumnPrepassKey(chunkX: number, chunkZ: number): bigint {
+    return this.packXZKey(chunkX, chunkZ);
   }
 
   /**
    * Build or reuse the expensive horizontal column prepass for a given
    * (chunkX, chunkZ) column.
-   *
-   * This avoids recomputing:
-   * - TerrainHeightMap.getTerrainSample(...)
-   * - treeNoise(...)
-   * - yFreq
-   * - findTopSurfaceY(...)
-   *
-   * for every chunkY in the same horizontal chunk column.
    */
   private getOrBuildColumnPrepass(
     chunkX: number,
@@ -148,12 +157,16 @@ export class SurfaceGenerator {
     const chunkWorldX = chunkX * CHUNK_SIZE;
     const chunkWorldZ = chunkZ * CHUNK_SIZE;
     const area = CHUNK_SIZE * CHUNK_SIZE;
+    const NO_SURFACE_Y = SurfaceGenerator.NO_SURFACE_Y;
 
     const terrainHeightMap = new Int32Array(area);
     const riverNoiseMap = new Float32Array(area);
     const yFreqMap = new Float32Array(area);
     const topSurfaceYMap = new Int16Array(area);
-    topSurfaceYMap.fill(SurfaceGenerator.NO_SURFACE_Y);
+    topSurfaceYMap.fill(NO_SURFACE_Y);
+
+    let minSurfaceY = Number.POSITIVE_INFINITY;
+    let maxSurfaceY = Number.NEGATIVE_INFINITY;
 
     for (let localX = 0; localX < CHUNK_SIZE; localX++) {
       const worldX = chunkWorldX + localX;
@@ -183,7 +196,17 @@ export class SurfaceGenerator {
         riverNoiseMap[columnIndex] = riverNoise;
         yFreqMap[columnIndex] = yFreq;
         topSurfaceYMap[columnIndex] = topSurfaceY;
+
+        if (topSurfaceY !== NO_SURFACE_Y) {
+          if (topSurfaceY < minSurfaceY) minSurfaceY = topSurfaceY;
+          if (topSurfaceY > maxSurfaceY) maxSurfaceY = topSurfaceY;
+        }
       }
+    }
+
+    if (minSurfaceY === Number.POSITIVE_INFINITY) {
+      minSurfaceY = NO_SURFACE_Y;
+      maxSurfaceY = NO_SURFACE_Y;
     }
 
     const built: ColumnPrepassCacheEntry = {
@@ -191,6 +214,8 @@ export class SurfaceGenerator {
       riverNoiseMap,
       yFreqMap,
       topSurfaceYMap,
+      minSurfaceY,
+      maxSurfaceY,
     };
 
     SurfaceGenerator.columnPrepassCache.set(key, built);
@@ -209,21 +234,12 @@ export class SurfaceGenerator {
     return built;
   }
 
-  private getFloraColumnKey(worldX: number, worldZ: number): string {
-    return `${worldX},${worldZ}`;
+  private getFloraColumnKey(worldX: number, worldZ: number): bigint {
+    return this.packXZKey(worldX, worldZ);
   }
 
   /**
    * Build or reuse per-column flora data.
-   *
-   * This avoids recomputing:
-   * - TerrainHeightMap.getTerrainSample(...)
-   * - treeNoiseValue for density gating
-   * - tiny-scale treeNoise -> yFreq
-   * - findTopSurfaceY(...) for overlapping flora scan columns
-   *
-   * If a caller already knows the top surface (for example from the current
-   * chunk's topSurfaceYMap), pass it in and we will cache/use it directly.
    */
   private getOrBuildFloraColumnInfo(
     worldX: number,
@@ -280,6 +296,15 @@ export class SurfaceGenerator {
     return built;
   }
 
+  private chunkIntersectsVerticalBand(
+    chunkMinY: number,
+    chunkMaxY: number,
+    bandMinY: number,
+    bandMaxY: number,
+  ): boolean {
+    return !(chunkMaxY < bandMinY || chunkMinY > bandMaxY);
+  }
+
   public generate(
     chunkX: number,
     chunkY: number,
@@ -307,28 +332,57 @@ export class SurfaceGenerator {
       ) => void,
     );
 
-    this.generateFlora(
-      chunkX,
-      chunkY,
-      chunkZ,
-      biome,
-      placeBlock as (x: number, y: number, z: number, id: number) => void,
-      generationResult.topSurfaceYMap,
-    );
+    const chunkMinY = chunkY * this.chunk_size;
+    const chunkMaxY = chunkMinY + this.chunk_size - 1;
+    const hasAnySurface =
+      generationResult.maxSurfaceY !== SurfaceGenerator.NO_SURFACE_Y;
 
-    this.generateStructures(
-      chunkX,
-      chunkY,
-      chunkZ,
-      biome,
-      placeBlock as (
-        x: number,
-        y: number,
-        z: number,
-        id: number,
-        ow: boolean,
-      ) => void,
-    );
+    const canContainFlora =
+      hasAnySurface &&
+      this.chunkIntersectsVerticalBand(
+        chunkMinY,
+        chunkMaxY,
+        generationResult.minSurfaceY,
+        generationResult.maxSurfaceY + SurfaceGenerator.MAX_TREE_HEIGHT,
+      );
+
+    if (canContainFlora) {
+      this.generateFlora(
+        chunkX,
+        chunkY,
+        chunkZ,
+        biome,
+        placeBlock as (x: number, y: number, z: number, id: number) => void,
+        generationResult.topSurfaceYMap,
+      );
+    }
+
+    const canContainStructures =
+      hasAnySurface &&
+      this.chunkIntersectsVerticalBand(
+        chunkMinY,
+        chunkMaxY,
+        generationResult.minSurfaceY -
+          SurfaceGenerator.MAX_STRUCTURE_BELOW_SURFACE,
+        generationResult.maxSurfaceY +
+          SurfaceGenerator.MAX_STRUCTURE_ABOVE_SURFACE,
+      );
+
+    if (canContainStructures) {
+      this.generateStructures(
+        chunkX,
+        chunkY,
+        chunkZ,
+        biome,
+        placeBlock as (
+          x: number,
+          y: number,
+          z: number,
+          id: number,
+          ow: boolean,
+        ) => void,
+      );
+    }
 
     return generationResult;
   }
@@ -396,6 +450,8 @@ export class SurfaceGenerator {
 
     // Reuse expensive per-column data for all chunkY in the same (chunkX, chunkZ)
     const columnPrepass = this.getOrBuildColumnPrepass(chunkX, chunkZ);
+    const minSurfaceY = columnPrepass.minSurfaceY;
+    const maxSurfaceY = columnPrepass.maxSurfaceY;
 
     for (let localX = 0; localX < CHUNK_SIZE; localX++) {
       const worldX = chunkWorldX + localX;
@@ -421,7 +477,6 @@ export class SurfaceGenerator {
 
         /**
          * ChunkY band classification:
-         *
          * getDensity(...) already returns plain relativeHeight outside
          * +/- DENSITY_INFLUENCE_RANGE from terrainHeight, so the whole band
          * can be classified without per-voxel density noise in those cases.
@@ -433,33 +488,54 @@ export class SurfaceGenerator {
           topWorldY < terrainHeight - INFLUENCE;
 
         // ------------------------------------------------------------
-        // FAST PATH 1: Entire chunk band is above the density influence band
-        // => no solid terrain density anywhere in this chunk band.
-        // Still preserve river tunnel behavior and sea/bedrock fill.
+        // FAST PATH 1A: Entire chunk band is above influence, and the whole
+        // chunk is above sea level => guaranteed all air.
+        // ------------------------------------------------------------
+        if (chunkEntirelyAboveInfluence && chunkWorldY > SEA_LEVEL) {
+          continue;
+        }
+
+        // ------------------------------------------------------------
+        // FAST PATH 1B: Entire chunk band is above influence, and the whole
+        // chunk lies inside [0, SEA_LEVEL] => guaranteed all liquid.
+        // River-tunnel checks do not change the final result here because
+        // below sea level tunnel cells also become water.
+        // ------------------------------------------------------------
+        if (
+          chunkEntirelyAboveInfluence &&
+          chunkWorldY >= 0 &&
+          topWorldY <= SEA_LEVEL
+        ) {
+          for (let localY = 0; localY < CHUNK_SIZE; localY++) {
+            placeBlock(
+              worldX,
+              chunkWorldY + localY,
+              worldZ,
+              volcanicLiquidId,
+              false,
+            );
+          }
+          continue;
+        }
+
+        // ------------------------------------------------------------
+        // FAST PATH 1C: Entire chunk band is above influence, and the whole
+        // chunk lies below 0 => guaranteed block 29 fill.
+        // ------------------------------------------------------------
+        if (chunkEntirelyAboveInfluence && topWorldY < 0) {
+          for (let localY = 0; localY < CHUNK_SIZE; localY++) {
+            placeBlock(worldX, chunkWorldY + localY, worldZ, 29, false);
+          }
+          continue;
+        }
+
+        // ------------------------------------------------------------
+        // FAST PATH 1D: Entire chunk band is above the density influence band
+        // but spans mixed Y ranges. Keep the original water/bedrock logic.
         // ------------------------------------------------------------
         if (chunkEntirelyAboveInfluence) {
           for (let localY = CHUNK_SIZE - 1; localY >= 0; localY--) {
             const worldY = chunkWorldY + localY;
-
-            if (worldY < GenerationParams.SEA_LEVEL + 16) {
-              const isTunnel = this.riverGenerator.isRiver(
-                worldX,
-                worldY,
-                worldZ,
-                riverNoise,
-              );
-
-              if (isTunnel) {
-                placeBlock(
-                  worldX,
-                  worldY,
-                  worldZ,
-                  worldY <= SEA_LEVEL ? 30 : 0,
-                  true,
-                );
-                continue;
-              }
-            }
 
             if (worldY <= SEA_LEVEL) {
               if (worldY >= 0) {
@@ -474,7 +550,25 @@ export class SurfaceGenerator {
         }
 
         // ------------------------------------------------------------
-        // FAST PATH 2: Entire chunk band is below the density influence band
+        // FAST PATH 2A: Entire chunk band is below the density influence band,
+        // and entirely above the river-carving band => guaranteed uniform solid.
+        // No tunnels, no air gaps, no depth-reset logic needed.
+        // ------------------------------------------------------------
+        if (chunkEntirelyBelowInfluence && chunkWorldY >= SEA_LEVEL + 16) {
+          for (let localY = 0; localY < CHUNK_SIZE; localY++) {
+            placeBlock(
+              worldX,
+              chunkWorldY + localY,
+              worldZ,
+              currentBiome.stoneBlock,
+              true,
+            );
+          }
+          continue;
+        }
+
+        // ------------------------------------------------------------
+        // FAST PATH 2B: Entire chunk band is below the density influence band
         // => terrain density is positive everywhere in this chunk band,
         // except river tunnels can still carve through it.
         //
@@ -636,7 +730,12 @@ export class SurfaceGenerator {
       }
     }
 
-    return { topSunlightMask, topSurfaceYMap };
+    return {
+      topSunlightMask,
+      topSurfaceYMap,
+      minSurfaceY,
+      maxSurfaceY,
+    };
   }
 
   private generateFlora(

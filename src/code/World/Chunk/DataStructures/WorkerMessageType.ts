@@ -20,12 +20,25 @@ export type NeighborLightArray = Uint8Array | undefined;
  * Requests sent TO the worker
  * ========================================================= */
 
+export interface SerializedLightSeedState {
+  queue: Uint16Array;
+  length: number;
+}
+
 export type GenerateTerrainRequest = {
   type: WorkerTaskType.GenerateTerrain;
   chunkId: bigint;
   chunkX: number;
   chunkY: number;
   chunkZ: number;
+
+  /**
+   * If true, terrain generation should only seed initial light and return
+   * the queue snapshot for later propagation.
+   *
+   * If false/omitted, worker returns fully lit chunk data.
+   */
+  deferLighting?: boolean;
 };
 
 export type GenerateFullMeshRequest = {
@@ -93,6 +106,12 @@ export type TerrainGeneratedMessage = {
   isUniform: boolean;
   uniformBlockId: number;
   palette?: Uint8Array | Uint16Array | null;
+  /**
+   * Optional seeded-light queue snapshot used for deferred BFS propagation.
+   * Present only when request.deferLighting === true.
+   */
+  lightSeedQueue?: Uint16Array;
+  lightSeedLength?: number;
 };
 
 export type DistantTerrainGeneratedMessage = {

@@ -60,12 +60,7 @@ function compressBlocks(blocks: Uint8Array): {
     }
 
     const len = (blocks.length + 1) >> 1;
-    const buffer =
-      typeof SharedArrayBuffer !== "undefined"
-        ? new SharedArrayBuffer(len)
-        : new ArrayBuffer(len);
-
-    const packedArray = new Uint8Array(buffer);
+    const packedArray = new Uint8Array(new ArrayBuffer(len));
 
     for (let i = 0; i < blocks.length; i++) {
       const nibble = seen[blocks[i]];

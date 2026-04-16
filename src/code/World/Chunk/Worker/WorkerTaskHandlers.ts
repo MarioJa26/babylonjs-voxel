@@ -3,6 +3,8 @@ import { WorkerInternalMeshData } from "../DataStructures/WorkerInternalMeshData
 import {
   GenerateDistantTerrainRequest,
   GenerateTerrainRequest,
+  TerrainGeneratedMessage,
+  WorkerTaskType,
 } from "../DataStructures/WorkerMessageType";
 import { DistantTerrainGenerator } from "@/code/Generation/DistantTerrain/DistantTerrainGenerator";
 
@@ -49,62 +51,58 @@ export class WorkerTaskHandlers {
       compressBlocks: CompressBlocksFn;
     },
   ): {
-    payload: {
-      chunkId: bigint;
-      type: number;
-      block_array: Uint8Array | Uint16Array | null;
-      light_array: Uint8Array;
-      isUniform: boolean;
-      uniformBlockId: number;
-      palette: Uint16Array | null;
-    };
+    payload: TerrainGeneratedMessage;
     transferables: Transferable[];
   } {
-    const { generator, compressBlocks } = deps;
-    const { chunkId, chunkX, chunkY, chunkZ } = request;
-
-    const { blocks, light } = generator.generateChunkData(
-      chunkX,
-      chunkY,
-      chunkZ,
+    const result = deps.generator.generateChunkData(
+      request.chunkX,
+      request.chunkY,
+      request.chunkZ,
+      {
+        deferLighting: request.deferLighting === true,
+      },
     );
 
-    const { isUniform, uniformBlockId, palette, packedBlocks } =
-      compressBlocks(blocks);
+    const compressed = deps.compressBlocks(result.blocks);
+
+    const payload: TerrainGeneratedMessage = {
+      chunkId: request.chunkId,
+      type: WorkerTaskType.GenerateTerrain,
+      block_array: compressed.packedBlocks,
+      light_array: result.light,
+      isUniform: compressed.isUniform,
+      uniformBlockId: compressed.uniformBlockId,
+      palette: compressed.palette,
+    };
+
+    if (result.lightSeedState) {
+      payload.lightSeedQueue = result.lightSeedState.queue;
+      payload.lightSeedLength = result.lightSeedState.length;
+    }
 
     const transferables: Transferable[] = [];
 
-    if (
-      packedBlocks &&
-      !(
-        packedBlocks.buffer instanceof
-        (typeof SharedArrayBuffer !== "undefined" ? SharedArrayBuffer : Object)
-      )
-    ) {
-      transferables.push(packedBlocks.buffer);
-    }
-
-    if (
-      !(
-        light.buffer instanceof
-        (typeof SharedArrayBuffer !== "undefined" ? SharedArrayBuffer : Object)
-      )
-    ) {
-      transferables.push(light.buffer);
-    }
-
-    return {
-      payload: {
-        chunkId,
-        type: 0, // caller should overwrite with WorkerTaskType.GenerateTerrain if desired
-        block_array: packedBlocks,
-        light_array: light,
-        isUniform,
-        uniformBlockId,
-        palette,
-      },
+    pushTransferableBuffer(
       transferables,
-    };
+      compressed.packedBlocks ?? undefined,
+      "packedBlocks",
+    );
+
+    pushTransferableBuffer(transferables, result.light, "light_array");
+
+    pushTransferableBuffer(
+      transferables,
+      compressed.palette ?? undefined,
+      "palette",
+    );
+
+    pushTransferableBuffer(
+      transferables,
+      result.lightSeedState?.queue,
+      "lightSeedQueue",
+    );
+
+    return { payload, transferables };
   }
 
   public static handleGenerateDistantTerrain(
@@ -158,4 +156,24 @@ export class WorkerTaskHandlers {
       ],
     };
   }
+}
+function pushTransferableBuffer(
+  transferables: Transferable[],
+  view: ArrayBufferView | null | undefined,
+  label: string,
+): void {
+  if (!view) {
+    return;
+  }
+
+  const buffer = view.buffer;
+
+  if (!(buffer instanceof ArrayBuffer)) {
+    throw new Error(
+      `Non-transferable buffer detected for ${label}. ` +
+        `Worker terrain payloads must be ArrayBuffer-backed before posting.`,
+    );
+  }
+
+  transferables.push(buffer);
 }
