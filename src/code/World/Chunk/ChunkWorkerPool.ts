@@ -482,7 +482,36 @@ export class ChunkWorkerPool {
       transparent: transparent ?? null,
     });
   }
-
+  public scheduleDistantTerrain(
+    centerChunkX: number,
+    centerChunkZ: number,
+    radius: number,
+    renderDistance: number,
+    gridStep: number,
+    oldData?: {
+      positions: Int16Array;
+      normals: Int8Array;
+      surfaceTiles: Uint8Array;
+    },
+    oldCenterChunkX?: number,
+    oldCenterChunkZ?: number,
+  ) {
+    // Cancel pending distant terrain tasks by clearing the queue.
+    // We only care about the most recent request.
+    this.distantTerrainTaskQueue = [
+      {
+        centerChunkX,
+        centerChunkZ,
+        radius,
+        renderDistance,
+        gridStep,
+        oldData,
+        oldCenterChunkX,
+        oldCenterChunkZ,
+      },
+    ];
+    this.processQueue();
+  }
   private tryApplyCachedLODMesh(
     chunk: Chunk,
     allowDirtyReuse = false,
@@ -493,10 +522,27 @@ export class ChunkWorkerPool {
       return false;
     }
 
+    // IMPORTANT:
+    // If this chunk has real voxel data, only trust cached border geometry
+    // when all 6 direct neighbors are also loaded and voxel-backed.
+    //
+    // This prevents reusing stale cached meshes that were built while one or
+    // more border neighbors were missing, unloaded, or still mesh-only.
+    //
+    // We intentionally do NOT apply this rule to mesh-only far chunks
+    // (!chunk.hasVoxelData), because those rely on cached LOD meshes by design.
+    if (
+      chunk.hasVoxelData &&
+      !this.hasStableVoxelNeighborsForCachedMesh(chunk)
+    ) {
+      return false;
+    }
+
     const cached = chunk.getCachedLODMesh(chunk.lodLevel);
     if (!cached) {
       return false;
     }
+
     if (!cached.opaque && !cached.transparent) {
       return false;
     }
@@ -505,10 +551,11 @@ export class ChunkWorkerPool {
       opaque: cached.opaque,
       transparent: cached.transparent,
     });
-    chunk.isDirty = false;
 
+    chunk.isDirty = false;
     return true;
   }
+
   private makeTerrainMessageHandler(
     workerIndex: number,
     getWorker: () => ChunkWorker | undefined,
@@ -593,6 +640,12 @@ export class ChunkWorkerPool {
             chunk.isModified = true;
 
             this.scheduleChunkAndNeighborsRemesh(chunk);
+
+            // If this newly-loaded chunk provided voxel data for any adjacent
+            // neighbor that was previously missing a voxel neighbor, that
+            // neighbor may be displaying a cached LOD mesh that lacks border
+            // geometry. Force a remesh for such neighbors so borders get built.
+            this.maybeRemeshNeighborsNowStable(chunk);
 
             const needsLightingRefinement =
               lightSeedQueue !== undefined &&
@@ -928,36 +981,65 @@ export class ChunkWorkerPool {
       this.scheduleRemesh(target, this.getChunkLodLevel(target) === 0);
     }
   }
-
-  public scheduleDistantTerrain(
-    centerChunkX: number,
-    centerChunkZ: number,
-    radius: number,
-    renderDistance: number,
-    gridStep: number,
-    oldData?: {
-      positions: Int16Array;
-      normals: Int8Array;
-      surfaceTiles: Uint8Array;
-    },
-    oldCenterChunkX?: number,
-    oldCenterChunkZ?: number,
-  ) {
-    // Cancel pending distant terrain tasks by clearing the queue.
-    // We only care about the most recent request.
-    this.distantTerrainTaskQueue = [
-      {
-        centerChunkX,
-        centerChunkZ,
-        radius,
-        renderDistance,
-        gridStep,
-        oldData,
-        oldCenterChunkX,
-        oldCenterChunkZ,
-      },
+  private hasStableVoxelNeighborsForCachedMesh(chunk: Chunk): boolean {
+    const neighbors: Array<Chunk | undefined> = [
+      chunk.getNeighbor(-1, 0, 0),
+      chunk.getNeighbor(1, 0, 0),
+      chunk.getNeighbor(0, -1, 0),
+      chunk.getNeighbor(0, 1, 0),
+      chunk.getNeighbor(0, 0, -1),
+      chunk.getNeighbor(0, 0, 1),
     ];
-    this.processQueue();
+
+    for (const neighbor of neighbors) {
+      if (!neighbor) {
+        return false;
+      }
+
+      if (!neighbor.isLoaded) {
+        return false;
+      }
+
+      if (!neighbor.hasVoxelData) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  // When a chunk becomes loaded with voxel data, adjacent neighbors that
+  // currently have cached LOD meshes may have been built earlier while this
+  // chunk was missing. If those neighbors now have all 6 voxel-backed
+  // neighbors available, mark them dirty and schedule a remesh so border
+  // geometry is generated instead of reusing stale cached meshes.
+  private maybeRemeshNeighborsNowStable(chunk: Chunk): void {
+    const neighbors: Array<Chunk | undefined> = [
+      chunk.getNeighbor(-1, 0, 0),
+      chunk.getNeighbor(1, 0, 0),
+      chunk.getNeighbor(0, -1, 0),
+      chunk.getNeighbor(0, 1, 0),
+      chunk.getNeighbor(0, 0, -1),
+      chunk.getNeighbor(0, 0, 1),
+    ];
+
+    for (const neighbor of neighbors) {
+      if (!neighbor) continue;
+      // Only consider neighbors that are loaded and carry voxel data (not
+      // mesh-only far LOD chunks).
+      if (!neighbor.isLoaded || !neighbor.hasVoxelData) continue;
+
+      const cached = neighbor.getCachedLODMesh(neighbor.lodLevel);
+      if (!cached) continue;
+
+      // If this neighbor now has stable voxel neighbors, force a remesh.
+      if (this.hasStableVoxelNeighborsForCachedMesh(neighbor)) {
+        // Prevent reusing cached mesh by marking dirty so remesh will rebuild
+        // proper border geometry.
+        neighbor.isDirty = true;
+        this.scheduleRemesh(neighbor, (neighbor.lodLevel ?? 0) === 0);
+      }
+    }
   }
 
   private processQueue() {
