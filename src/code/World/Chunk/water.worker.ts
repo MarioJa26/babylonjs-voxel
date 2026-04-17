@@ -30,7 +30,7 @@ export interface WaterWorkerRequest {
 	 */
 	grid: WaterSampleGrid;
 }
-
+const opaque = null;
 self.onmessage = (event: MessageEvent<WaterWorkerRequest>): void => {
 	const data = event.data;
 	if (data.task !== "waterMesh") return;
@@ -60,7 +60,6 @@ self.onmessage = (event: MessageEvent<WaterWorkerRequest>): void => {
 	 * Water belongs in the transparent channel.
 	 */
 	const transparent = toTransferableMeshData(out);
-	const opaque = null;
 
 	const response: FullMeshMessage = {
 		type: WorkerTaskType.GenerateFullMesh,
@@ -76,4 +75,3 @@ self.onmessage = (event: MessageEvent<WaterWorkerRequest>): void => {
 		transparent.faceDataC.buffer,
 	]);
 };
-``;
