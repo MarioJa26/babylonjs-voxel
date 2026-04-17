@@ -1,25 +1,25 @@
 // World/MeshPipeline/core/VoxelFaceEmitterAdapter.ts
 
+import { unpackBlockId } from "../../BlockEncoding";
 import {
-	GreedyFaceDescriptor,
-	WorkerInternalMeshData,
+	FACE_NX,
+	FACE_NY,
+	FACE_NZ,
+	FACE_PX,
+	FACE_PY,
+	FACE_PZ,
+} from "../../Shape/BlockShapes";
+import {
+	type GreedyFaceDescriptor,
 	MaterialType,
+	type WorkerInternalMeshData,
 } from "../types/MeshTypes";
 import { emitQuad } from "./FaceEmitter";
 import {
+	getMaterialType,
 	getRuntimeShapeBoxes,
 	getShapeInfo,
-	getMaterialType,
 } from "./ShapePipeline";
-import {
-	FACE_PX,
-	FACE_NX,
-	FACE_PY,
-	FACE_NY,
-	FACE_PZ,
-	FACE_NZ,
-} from "../../Shape/BlockShapes";
-import { unpackBlockId } from "../../BlockEncoding";
 
 /**
  * Matches the mask bits emitted by VoxelMaskExtractor:

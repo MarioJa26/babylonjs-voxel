@@ -3,19 +3,19 @@
 import { unpackBlockId, unpackBlockState } from "../../BlockEncoding";
 import {
 	FACE_ALL,
-	FACE_PX,
 	FACE_NX,
-	FACE_PY,
 	FACE_NY,
-	FACE_PZ,
 	FACE_NZ,
+	FACE_PX,
+	FACE_PY,
+	FACE_PZ,
 	getShapeForBlockId,
 } from "../../Shape/BlockShapes";
 import {
 	getTransformedShapeBoxes,
 	type ShapeBounds,
 } from "../../Shape/BlockShapeTransforms";
-import { BlockShapeInfo, MaterialType } from "../types/MeshTypes";
+import { type BlockShapeInfo, MaterialType } from "../types/MeshTypes";
 
 /**
  * Dense-cache size for the current packed-block key space.
