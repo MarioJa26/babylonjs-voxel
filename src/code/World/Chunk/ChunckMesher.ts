@@ -60,11 +60,13 @@ export class ChunkMesher {
 	private static _tmpLightDir = new Vector3(0, 0, 0);
 
 	private static lastUpdateFrame = -1;
+	// Indexed quad: 4 vertices, 6 indices.
+	// `position.x` is used purely as a vertexId (0..3) in the chunk vertex shaders.
 	private static readonly FACE_VERTEX_TEMPLATE = new Float32Array([
-		0, 0, 0, 1, 0, 0, 2, 0, 0, 3, 0, 0, 4, 0, 0, 5, 0, 0,
+		0, 0, 0, 1, 0, 0, 2, 0, 0, 3, 0, 0,
 	]);
 	private static readonly FACE_INDEX_TEMPLATE = new Uint16Array([
-		0, 1, 2, 3, 4, 5,
+		0, 2, 1, 0, 3, 2,
 	]);
 
 	private static ensureMeshMetadata(mesh: Mesh): Record<string, unknown> {
@@ -347,12 +349,7 @@ export class ChunkMesher {
 				{ vertex: "chunk", fragment: "chunk" },
 				{
 					attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
-					uniforms: [
-						"world",
-						"worldViewProjection",
-						"atlasTileSize",
-						"maxAtlasTiles",
-					],
+					uniforms: ["world", "worldViewProjection", "atlasTileSize"],
 					uniformBuffers: ["GlobalUniforms"],
 					samplers: ["diffuseTexture", "normalTexture"],
 				},
@@ -362,10 +359,6 @@ export class ChunkMesher {
 			opaqueBlockShader.setFloat(
 				"atlasTileSize",
 				TextureAtlasFactory.atlasTileSize,
-			);
-			opaqueBlockShader.setFloat(
-				"maxAtlasTiles",
-				TextureAtlasFactory.atlasSize,
 			);
 			opaqueBlockShader.setTexture("diffuseTexture", diffuseAtlasTexture);
 			if (normalAtlasTexture) {
@@ -383,7 +376,6 @@ export class ChunkMesher {
 			if (opaqueMat.isFrozen) opaqueMat.unfreeze();
 			opaqueMat.wireframe = GLOBAL_VALUES.DEBUG;
 			opaqueMat.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
-			opaqueMat.setFloat("maxAtlasTiles", TextureAtlasFactory.atlasSize);
 			opaqueMat.setTexture("diffuseTexture", diffuseAtlasTexture);
 			if (normalAtlasTexture) {
 				opaqueMat.setTexture("normalTexture", normalAtlasTexture);

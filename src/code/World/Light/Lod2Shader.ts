@@ -36,11 +36,12 @@ export class Lod2Shader {
     out vec3 vFogColorCheap;
 
     int decodeCorner(int vertexId, int isBackFace, int flip) {
+      // Indexed quad path: 4 vertices (0..3) and a fixed index buffer [0,2,1, 0,3,2].
       const int cornerData[4] = int[](
-        2840, // isBackFace=0, flip=0: [0,2,1,0,3,2]
-        2908, // isBackFace=0, flip=1: [0,3,1,1,3,2]
-        3620, // isBackFace=1, flip=0: [0,1,2,0,2,3]
-        3700  // isBackFace=1, flip=1: [0,1,3,1,2,3]
+        228, // isBackFace=0, flip=0: [0,1,2,3]
+        147, // isBackFace=0, flip=1: [3,0,1,2]
+        198, // isBackFace=1, flip=0: [2,1,0,3]
+        177  // isBackFace=1, flip=1: [1,0,3,2]
       );
       int state = (isBackFace << 1) | flip;
       return (cornerData[state] >> (vertexId * 2)) & 3;

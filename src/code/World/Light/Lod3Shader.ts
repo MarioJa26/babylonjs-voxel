@@ -34,12 +34,13 @@ export class Lod3Shader {
       int isBackFace = axisFace & 1;
       int vertexId = int(position.x + 0.5);
 
-      // Fixed triangle layout for LOD3:
-      // front = [0,2,1, 0,3,2]
-      // back  = [0,1,2, 0,2,3]
-      const int frontCorners[6] = int[](0, 2, 1, 0, 3, 2);
-      const int backCorners[6] = int[](0, 1, 2, 0, 2, 3);
-      int corner = isBackFace == 1 ? backCorners[vertexId] : frontCorners[vertexId];
+      // Indexed quad path: 4 vertices (0..3) and a fixed index buffer [0,2,1, 0,3,2].
+      // LOD3 does not use per-face "flip", so flip=0 here.
+      const int cornerData[2] = int[](
+        228, // isBackFace=0, flip=0: [0,1,2,3]
+        198  // isBackFace=1, flip=0: [2,1,0,3]
+      );
+      int corner = (cornerData[isBackFace] >> (vertexId * 2)) & 3;
 
       const float invPosScale = 0.25;
       float faceWidth = faceDataB.x * invPosScale;

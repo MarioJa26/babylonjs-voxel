@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-04-16T06:28:31.868Z
+Generated: 2026-04-17T04:42:45.649Z
 
-> **Summary:** 100 classes · 1771 members · 77 module-level functions · 27702 LOC
+> **Summary:** 99 classes · 1744 members · 77 module-level functions · 27248 LOC
 
 ---
 
@@ -920,7 +920,7 @@ Generated: 2026-04-16T06:28:31.868Z
 
 ---
 
-## `Maps/UnderWaterEffect.ts` (302 LOC)
+## `Maps/UnderWaterEffect.ts` (330 LOC)
 
 ### export class UnderWaterEffect
 
@@ -939,6 +939,7 @@ Generated: 2026-04-16T06:28:31.868Z
 - `private static readonly VERTEX_SHADER: string`
 - `private static readonly FRAGMENT_SHADER: string`
 - `private static readonly BACKGROUND_POST_PROCESS_SHADER: string`
+- `private static readonly BACKGROUND_POST_PROCESS_VERTEX_SHADER: string`
 - `private update: unknown`
 
 **Methods**
@@ -2184,7 +2185,7 @@ Generated: 2026-04-16T06:28:31.868Z
 
 ---
 
-## `World/Chunk/ChunckMesher.ts` (925 LOC)
+## `World/Chunk/ChunckMesher.ts` (915 LOC)
 
 ### export class ChunkMesher
 
@@ -2241,7 +2242,7 @@ Generated: 2026-04-16T06:28:31.868Z
 
 ---
 
-## `World/Chunk/Chunk.ts` (1213 LOC)
+## `World/Chunk/Chunk.ts` (1242 LOC)
 
 ### export class Chunk
 
@@ -2390,7 +2391,7 @@ Generated: 2026-04-16T06:28:31.868Z
 
 ---
 
-## `World/Chunk/ChunkLoadingSystem.ts` (864 LOC)
+## `World/Chunk/ChunkLoadingSystem.ts` (774 LOC)
 
 ### export class ChunkLoadingSystem
 
@@ -2412,8 +2413,6 @@ Generated: 2026-04-16T06:28:31.868Z
 - `private static readiness: unknown`
 - `private static persistenceCoordinator: unknown`
 - `private static debugStats: ChunkLoadingDebugStats`
-- `private static readonly MAX_TRACE_EVENTS_PER_CHUNK: unknown`
-- `private static chunkTrace: unknown`
 - `private static _queuedIdSet: Set<bigint>`
 - `private static _meshData: {
 		opaque: MeshData | null;
@@ -2426,22 +2425,13 @@ Generated: 2026-04-16T06:28:31.868Z
 - `private static getUnloadBatchSize(): number`
 - `private static getProcessFrameBudgetMs(): number`
 - `private static refreshQueueDebugSnapshot(): void`
-- `public static traceChunk(chunkId: bigint, event: string, data?: Record<string, unknown>): void`
-- `public static getChunkTrace(chunkId: bigint): Array<{
-		t: number;
-		event: string;
-		data?: Record<string, unknown>;
-	}>`
-- `public static clearChunkTrace(chunkId?: bigint): void`
-- `public static dumpChunkTrace(chunkId: bigint): void`
-- `public static dumpChunkTraceByCoords(chunkX: number, chunkY: number, chunkZ: number): void`
-- `public static validateChunksAround(centerChunkX: number, centerChunkY: number, centerChunkZ: number, horizontalRadius: unknown = SettingParams.RENDER_DISTANCE, verticalRadius: unknown = SettingParams.VERTICAL_RENDER_DISTANCE): void`
+- `public static validateChunksAround(centerChunkX: number, centerChunkY: number, centerChunkZ: number, horizontalRadius: unknown = SETTING_PARAMS.RENDER_DISTANCE, verticalRadius: unknown = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE): void`
 - `private static scheduleChunkBorderRemeshOnLoad(chunk: Chunk): void`
 - `private static buildQueuedIdSet(): Set<bigint>`
 - `public static getDebugStats(): ChunkLoadingDebugStats`
 - `private static ensureChunkLoadedHook(): void`
 - `public static enqueueChunkRemesh(chunk: Chunk): void`
-- `public static processPendingRemeshes(maxChunks: unknown = 2): void`
+- `public static processPendingRemeshes(maxChunks: unknown = 4): void`
 - `public static processFrameBudgetedStreamingWork(playerChunkX: number, playerChunkY: number, playerChunkZ: number): void`
 - `public static registerChunkEntityLoader(type: string, loader: (payload: unknown, chunk: Chunk) => void): void`
 - `public static registerChunkBoundEntity(entity: ChunkBoundEntity): symbol`
@@ -2450,7 +2440,7 @@ Generated: 2026-04-16T06:28:31.868Z
 - `public static flushModifiedChunks(maxChunks: unknown = ChunkLoadingSystem.getUnloadBatchSize()): Promise<void>`
 - `public static flushChunkBoundEntities(): Promise<void>`
 - `private static scheduleChunkAndNeighborsRemesh(chunk: Chunk): void`
-- `public static async updateChunksAround(chunkX: number, chunkY: number, chunkZ: number, renderDistance: unknown = SettingParams.RENDER_DISTANCE, verticalRadius: unknown = SettingParams.VERTICAL_RENDER_DISTANCE, prevChunkX?: number, prevChunkY?: number, prevChunkZ?: number): Promise<void>`
+- `public static async updateChunksAround(chunkX: number, chunkY: number, chunkZ: number, renderDistance: unknown = SETTING_PARAMS.RENDER_DISTANCE, verticalRadius: unknown = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE, prevChunkX?: number, prevChunkY?: number, prevChunkZ?: number): Promise<void>`
 - `private static updateSliceDebugStats(state: InFlightProcessState): void`
 - `private static finalizeProcessState(state: InFlightProcessState): void`
 - `private static getReusableMeshData(opaque: MeshData | null, transparent: MeshData | null): { opaque: MeshData | null; transparent: MeshData | null; }`
@@ -2501,7 +2491,7 @@ Generated: 2026-04-16T06:28:31.868Z
 
 ---
 
-## `World/Chunk/ChunkWorkerPool.ts` (1002 LOC)
+## `World/Chunk/ChunkWorkerPool.ts` (995 LOC)
 
 ### export class ChunkWorkerPool
 
@@ -2522,7 +2512,6 @@ Generated: 2026-04-16T06:28:31.868Z
 - `private workerRestartAtMs: number[]`
 - `private taskQueue: Chunk[]`
 - `private pendingRemeshQueue: Map<Chunk, boolean>`
-- `private pendingDeferredLight: unknown`
 - `private terrainTaskDeferLighting: unknown`
 - `private terrainTaskQueue: Set<Chunk>`
 - `private distantTerrainTaskQueue: DistantTerrainTask[]`
@@ -2585,7 +2574,6 @@ Generated: 2026-04-16T06:28:31.868Z
 **Types / Interfaces / Enums**
 - type `WorkerMessageData`
 - type `ChunkWorkerPoolDebugStats`
-- type `PendingDeferredLight`
 
 ---
 
@@ -2815,7 +2803,7 @@ Generated: 2026-04-16T06:28:31.868Z
 
 ---
 
-## `World/Chunk/Loading/ChunkProcessScheduler.ts` (709 LOC)
+## `World/Chunk/Loading/ChunkProcessScheduler.ts` (437 LOC)
 
 ### export class ChunkProcessScheduler
 
@@ -2846,7 +2834,7 @@ Generated: 2026-04-16T06:28:31.868Z
 
 ---
 
-## `World/Chunk/Loading/ChunkQueueManager.ts` (153 LOC)
+## `World/Chunk/Loading/ChunkQueueManager.ts` (154 LOC)
 
 ### export class ChunkQueueManager
 
@@ -2902,7 +2890,7 @@ Generated: 2026-04-16T06:28:31.868Z
 
 ---
 
-## `World/Chunk/Loading/ChunkStreamingController.ts` (709 LOC)
+## `World/Chunk/Loading/ChunkStreamingController.ts` (586 LOC)
 
 ### export class ChunkStreamingController
 
@@ -2917,12 +2905,14 @@ Generated: 2026-04-16T06:28:31.868Z
 - `private loadQueueRequestMap: Map<bigint, QueuedChunkRequest>`
 - `private loadedRefreshQueue: Chunk[]`
 - `private loadedRefreshQueueSet: Set<bigint>`
+- `private loadedRefreshQueueHead: unknown`
 
 **Methods**
 - `public getDesiredState(chunkId: bigint): DesiredChunkState | undefined`
-- `public async updateChunksAround(chunkX: number, chunkY: number, chunkZ: number, renderDistance: unknown = SettingParams.RENDER_DISTANCE, verticalRadius: unknown = SettingParams.VERTICAL_RENDER_DISTANCE, prevChunkX?: number, prevChunkY?: number, prevChunkZ?: number): Promise<void>`
+- `public async updateChunksAround(chunkX: number, chunkY: number, chunkZ: number, renderDistance: unknown = SETTING_PARAMS.RENDER_DISTANCE, verticalRadius: unknown = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE, prevChunkX?: number, prevChunkY?: number, prevChunkZ?: number): Promise<void>`
 - `private enqueueLoadedChunksForRefresh(chunkX: number, chunkY: number, chunkZ: number, lodRuleSet: ChunkLodRuleSet): void`
-- `public processLoadedRefreshQueue(playerChunkX: number, playerChunkY: number, playerChunkZ: number, renderDistance: unknown = SettingParams.RENDER_DISTANCE, verticalRadius: unknown = SettingParams.VERTICAL_RENDER_DISTANCE, maxChunks: unknown = 8): void`
+- `public processLoadedRefreshQueue(playerChunkX: number, playerChunkY: number, playerChunkZ: number, renderDistance: unknown = SETTING_PARAMS.RENDER_DISTANCE, verticalRadius: unknown = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE, maxChunks: unknown = 8): void`
+- `private dequeueLoadedRefreshChunk(): Chunk | undefined`
 - `public processTargetChunkCoordinate(x: number, y: number, z: number, playerChunkX: number, playerChunkY: number, playerChunkZ: number, lodRuleSet: ChunkLodRuleSet): void`
 - `public processFullTargetVolume(chunkX: number, chunkY: number, chunkZ: number, lodRuleSet: ChunkLodRuleSet): void`
 - `public processDeltaSlabs(chunkX: number, chunkY: number, chunkZ: number, prevChunkX: number, prevChunkY: number, prevChunkZ: number, lodRuleSet: ChunkLodRuleSet): void`
@@ -3075,7 +3065,7 @@ Generated: 2026-04-16T06:28:31.868Z
 
 ---
 
-## `World/Chunk/water.worker.ts` (43 LOC)
+## `World/Chunk/water.worker.ts` (42 LOC)
 
 **Types / Interfaces / Enums**
 - interface `WaterWorkerRequest`
@@ -3217,7 +3207,7 @@ Generated: 2026-04-16T06:28:31.868Z
 
 ---
 
-## `World/GlobalValues.ts` (13 LOC)
+## `World/GLOBAL_VALUES.ts` (13 LOC)
 
 ---
 
@@ -3244,7 +3234,7 @@ Generated: 2026-04-16T06:28:31.868Z
 
 ---
 
-## `World/Light/Lod3Shader.ts` (305 LOC)
+## `World/Light/Lod3Shader.ts` (307 LOC)
 
 ### export class Lod3Shader
 
@@ -3255,7 +3245,7 @@ Generated: 2026-04-16T06:28:31.868Z
 
 ---
 
-## `World/Light/OpaqueShader.ts` (218 LOC)
+## `World/Light/OpaqueShader.ts` (211 LOC)
 
 ### export class OpaqueShader
 
@@ -3275,7 +3265,7 @@ Generated: 2026-04-16T06:28:31.868Z
 
 ---
 
-## `World/Light/TransparentShader.ts` (272 LOC)
+## `World/Light/TransparentShader.ts` (268 LOC)
 
 ### export class TransparentShader
 
@@ -3533,33 +3523,7 @@ Generated: 2026-04-16T06:28:31.868Z
 
 ---
 
-## `World/SettingParams.ts` (24 LOC)
-
-### export class SettingParams
-
-**Properties**
-- `public static RENDER_DISTANCE: unknown`
-- `public static VERTICAL_RENDER_DISTANCE: unknown`
-- `public static MAX_CHUNK_HEIGHT: unknown`
-- `public static CHUNK_UNLOAD_DISTANCE_BUFFER: unknown`
-- `public static CHUNK_LOAD_BATCH_LIMIT: unknown`
-- `public static CHUNK_UNLOAD_BATCH_LIMIT: unknown`
-- `public static CHUNK_LOADING_FRAME_BUDGET_MS: unknown`
-- `public static VERTICAL_CHUNK_CULLING_FACTOR: unknown`
-- `public static CAMERA_FOV: unknown`
-- `public static DISTANT_RENDER_DISTANCE: unknown`
-- `public static LOD_PRECOMPUTE_SCHEDULE_THROTTLE_MS: unknown`
-- `public static LOD_PRECOMPUTE_MAX_ENQUEUE_PER_UPDATE: unknown`
-- `public static CHUNK_WORKER_DISPATCH_BUDGET_PER_TICK: unknown`
-- `public static DAY_DURATION_MS: unknown`
-- `public static ENABLE_SSAO: unknown`
-- `public static SSAO_RATIO: unknown`
-- `public static SSAO_COMBINE_RATIO: unknown`
-- `public static HIGHLIGHT_ALPHA: unknown`
-- `public static HIGHLIGHT_COLOR: unknown`
-- `public static HIGHLIGHT_EDGE_WIDTH: unknown`
-- `public static HIGHLIGHT_EDGE_COLOR: unknown`
-- `public static HEMISPHERIC_LIGHT_INTENSITY: unknown`
+## `World/SETTINGS_PARAMS.ts` (24 LOC)
 
 ---
 

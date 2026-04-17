@@ -289,6 +289,51 @@ export class UnderWaterEffect {
             gl_FragColor = vec4(finalColor, 1.0);
         }`;
 
+	// Fullscreen-triangle post-process vertex shader:
+	// Babylon's PostProcessManager always draws a quad (4 vertices, 2 triangles),
+	// but we can turn the second triangle into a degenerate one and use a single
+	// oversized triangle to avoid the diagonal seam and reduce interpolation issues.
+	private static readonly BACKGROUND_POST_PROCESS_VERTEX_SHADER: string = `
+        precision highp float;
+
+        attribute vec2 position;
+        uniform vec2 scale;
+        varying vec2 vUV;
+
+        const vec2 madd = vec2(0.5, 0.5);
+
+        void main(void) {
+            // PostProcessManager quad vertices (in order):
+            //   0: ( 1,  1)
+            //   1: (-1,  1)
+            //   2: (-1, -1)
+            //   3: ( 1, -1)
+            //
+            // Indices:
+            //   (0,1,2) and (0,2,3)
+            //
+            // We remap vertices 0/1/2 into an oversized fullscreen triangle and
+            // collapse vertex 3 onto vertex 0 to make the second triangle degenerate.
+            vec2 outPos;
+
+            if (position.x > 0.0 && position.y > 0.0) {
+                // id 0
+                outPos = vec2(-1.0, -1.0);
+            } else if (position.x < 0.0 && position.y > 0.0) {
+                // id 1
+                outPos = vec2(3.0, -1.0);
+            } else if (position.x < 0.0 && position.y < 0.0) {
+                // id 2
+                outPos = vec2(-1.0, 3.0);
+            } else {
+                // id 3 (degenerate)
+                outPos = vec2(-1.0, -1.0);
+            }
+
+            vUV = (outPos * madd + madd) * scale;
+            gl_Position = vec4(outPos, 0.0, 1.0);
+        }`;
+
 	constructor(
 		scene: BABYLON.Scene,
 		camera: BABYLON.Camera,
@@ -319,6 +364,8 @@ export class UnderWaterEffect {
 			UnderWaterEffect.FRAGMENT_SHADER;
 		BABYLON.Effect.ShadersStore["underWaterBackGroundFragmentShader"] =
 			UnderWaterEffect.BACKGROUND_POST_PROCESS_SHADER;
+		BABYLON.Effect.ShadersStore["underWaterBackGroundTriangleVertexShader"] =
+			UnderWaterEffect.BACKGROUND_POST_PROCESS_VERTEX_SHADER;
 	}
 
 	private createShaderMaterial(
@@ -365,6 +412,12 @@ export class UnderWaterEffect {
 			["dPass"],
 			1.0,
 			this.camera,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			"underWaterBackGroundTriangle",
 		);
 
 		postProcess.onApply = (effect: BABYLON.Effect) => {
