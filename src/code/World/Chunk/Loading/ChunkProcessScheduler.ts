@@ -5,7 +5,9 @@ import { ProcessStage } from "./ChunkTypes";
 
 export type InFlightProcessState = {
 	stage: ProcessStage;
+
 	sliceStartMs: number;
+	sliceDeadlineMs: number;
 
 	loadedFromStorageCount: number;
 	generatedCount: number;
@@ -29,6 +31,7 @@ export type InFlightProcessState = {
 	chunksNeedingFullHydration: Set<bigint>;
 
 	hydrateIds: bigint[];
+	hydrateChunks: Chunk[];
 	hydrateMap: Map<bigint, SavedChunkData>;
 	hydrateIndex: number;
 };
@@ -79,10 +82,13 @@ export class ChunkProcessScheduler {
 	public get processing(): boolean {
 		return this.isProcessing;
 	}
+
 	private createReusableProcessState(): InFlightProcessState {
 		return {
 			stage: ProcessStage.Start,
+
 			sliceStartMs: 0,
+			sliceDeadlineMs: 0,
 
 			loadedFromStorageCount: 0,
 			generatedCount: 0,
@@ -106,10 +112,12 @@ export class ChunkProcessScheduler {
 			chunksNeedingFullHydration: new Set(),
 
 			hydrateIds: [],
+			hydrateChunks: [],
 			hydrateMap: new Map(),
 			hydrateIndex: 0,
 		};
 	}
+
 	private resetState(state: InFlightProcessState): void {
 		state.stage = ProcessStage.Start;
 
@@ -137,11 +145,13 @@ export class ChunkProcessScheduler {
 		state.chunksNeedingFullHydration.clear();
 
 		state.hydrateIds.length = 0;
+		state.hydrateChunks.length = 0;
 		state.hydrateMap.clear();
 		state.hydrateIndex = 0;
 	}
 
 	private _chunksToSave: Chunk[] = [];
+
 	public async processQueues(): Promise<void> {
 		if (!this.isProcessing) {
 			this.isProcessing = true;
@@ -220,6 +230,7 @@ export class ChunkProcessScheduler {
 						if (chunksToSave.length > 0) {
 							try {
 								await WorldStorage.saveChunks(chunksToSave);
+								this.beginSlice(state);
 
 								for (let i = 0; i < chunksToSave.length; i++) {
 									state.savedChunkIds.add(chunksToSave[i].id);
@@ -348,15 +359,17 @@ export class ChunkProcessScheduler {
 											state.nearRequests.map((r) => r.chunk.id),
 											{ includeVoxelData: true },
 										)
-									: Promise.resolve(new Map<bigint, SavedChunkData>()),
+									: Promise.resolve(new Map()),
 
 								state.farRequests.length > 0
 									? WorldStorage.loadChunks(
 											state.farRequests.map((r) => r.chunk.id),
 											{ includeVoxelData: false },
 										)
-									: Promise.resolve(new Map<bigint, SavedChunkData>()),
+									: Promise.resolve(new Map()),
 							]);
+
+							this.beginSlice(state);
 
 							state.nearLoadedDataMap.clear();
 							state.farLoadedDataMap.clear();
@@ -364,7 +377,6 @@ export class ChunkProcessScheduler {
 							for (const [k, v] of nearLoadedDataMap) {
 								state.nearLoadedDataMap.set(k, v);
 							}
-
 							for (const [k, v] of farLoadedDataMap) {
 								state.farLoadedDataMap.set(k, v);
 							}
@@ -372,19 +384,10 @@ export class ChunkProcessScheduler {
 							state.stage = ProcessStage.ApplyLoadedChunks;
 						} catch (error) {
 							console.warn("Failed to load chunks from storage", error);
-
-							for (const request of state.validLoadBatch) {
-								request.chunk.isTerrainScheduled = false;
-							}
-
-							state.stage =
-								this.adapter.getUnloadQueueSet().size > 0
-									? ProcessStage.PrepareUnloadBatch
-									: ProcessStage.Finalize;
+							state.stage = ProcessStage.Finalize;
 						}
 						break;
 					}
-
 					case ProcessStage.ApplyLoadedChunks: {
 						while (
 							state.applyLoadedIndex < state.validLoadBatch.length &&
@@ -429,18 +432,12 @@ export class ChunkProcessScheduler {
 					}
 
 					case ProcessStage.LoadHydrationData: {
-						state.hydrateIds.length = 0;
-
-						for (const id of state.chunksNeedingFullHydration) {
-							state.hydrateIds.push(id);
-						}
-						state.hydrateIndex = 0;
-
 						try {
 							state.hydrateMap = await WorldStorage.loadChunks(
 								state.hydrateIds,
 								{ includeVoxelData: true },
 							);
+							this.beginSlice(state);
 						} catch (error) {
 							console.warn("Failed to hydrate chunks from storage", error);
 							state.hydrateMap = new Map();
@@ -453,17 +450,14 @@ export class ChunkProcessScheduler {
 
 					case ProcessStage.ApplyHydration: {
 						while (
-							state.hydrateIndex < state.hydrateIds.length &&
+							state.hydrateIndex < state.hydrateChunks.length &&
 							this.hasBudget(state)
 						) {
-							const chunkId = state.hydrateIds[state.hydrateIndex++];
-							const chunk = Chunk.chunkInstances.get(chunkId);
+							const chunk = state.hydrateChunks[state.hydrateIndex++];
 
-							if (!chunk?.isTerrainScheduled) {
-								continue;
-							}
+							if (!chunk.isTerrainScheduled) continue;
 
-							const savedData = state.hydrateMap.get(chunkId);
+							const savedData = state.hydrateMap.get(chunk.id);
 							if (!savedData) {
 								state.chunksToGenerate.push(chunk);
 								continue;
@@ -472,7 +466,7 @@ export class ChunkProcessScheduler {
 							this.adapter.applyHydratedChunkFromSavedData(chunk, savedData);
 						}
 
-						if (state.hydrateIndex >= state.hydrateIds.length) {
+						if (state.hydrateIndex >= state.hydrateChunks.length) {
 							state.stage = ProcessStage.ScheduleGeneration;
 						}
 						break;
@@ -494,14 +488,12 @@ export class ChunkProcessScheduler {
 					case ProcessStage.Finalize: {
 						this.adapter.finalizeProcessState(state);
 						this.inFlightProcessState = null;
-
-						const hasMoreWork =
-							this.adapter.getLoadQueue().length > 0 ||
-							this.adapter.getUnloadQueueSet().size > 0;
-
 						this.isProcessing = false;
 
-						if (hasMoreWork) {
+						if (
+							this.adapter.getLoadQueue().length > 0 ||
+							this.adapter.getUnloadQueueSet().size > 0
+						) {
 							this.scheduleProcessContinuation();
 						}
 						return;
@@ -520,14 +512,14 @@ export class ChunkProcessScheduler {
 	}
 
 	public beginSlice(state: InFlightProcessState): void {
-		state.sliceStartMs = performance.now();
+		const budget = Math.max(0.5, this.adapter.getProcessFrameBudgetMs());
+		const now = performance.now();
+		state.sliceStartMs = now;
+		state.sliceDeadlineMs = now + budget;
 	}
 
 	public hasBudget(state: InFlightProcessState): boolean {
-		return (
-			performance.now() - state.sliceStartMs <
-			Math.max(0.5, this.adapter.getProcessFrameBudgetMs())
-		);
+		return performance.now() < state.sliceDeadlineMs;
 	}
 
 	public scheduleProcessContinuation(): void {

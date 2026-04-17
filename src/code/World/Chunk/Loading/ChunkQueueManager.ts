@@ -1,4 +1,4 @@
-import { SettingParams } from "../../SettingParams";
+import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
 import type { Chunk } from "../Chunk";
 import type { ChunkLoadingDebug } from "./ChunkLoadingDebug";
 
@@ -50,7 +50,8 @@ export class ChunkQueueManager {
 	public getLoadBatchSize(): number {
 		return Math.max(
 			1,
-			this.adapter.getLoadBatchSize?.() ?? SettingParams.CHUNK_LOAD_BATCH_LIMIT,
+			this.adapter.getLoadBatchSize?.() ??
+				SETTING_PARAMS.CHUNK_LOAD_BATCH_LIMIT,
 		);
 	}
 
@@ -58,7 +59,7 @@ export class ChunkQueueManager {
 		return Math.max(
 			1,
 			this.adapter.getUnloadBatchSize?.() ??
-				SettingParams.CHUNK_UNLOAD_BATCH_LIMIT,
+				SETTING_PARAMS.CHUNK_UNLOAD_BATCH_LIMIT,
 		);
 	}
 

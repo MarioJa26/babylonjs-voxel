@@ -1,7 +1,7 @@
 import { Map1 } from "@/code/Maps/Map1";
 import { VoxelAabbCollider } from "@/code/World/Collision/VoxelAabbCollider";
 import { VoxelObbCollider } from "@/code/World/Collision/VoxelObbCollider";
-import { GLOBAL_VALUES } from "@/code/World/GlobalValues";
+import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 import { PlayerHud } from "../Hud/PlayerHud";
 
 export class DebugControlHelper {

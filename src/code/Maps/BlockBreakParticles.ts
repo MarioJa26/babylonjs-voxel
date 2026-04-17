@@ -5,7 +5,7 @@ import {
 	type Texture,
 	Vector3,
 } from "@babylonjs/core";
-import { GLOBAL_VALUES } from "../World/GlobalValues";
+import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
 import { BlockTextures } from "../World/Texture/BlockTextures";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
 

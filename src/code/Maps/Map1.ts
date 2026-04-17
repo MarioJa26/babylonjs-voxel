@@ -10,8 +10,8 @@ import type { Player } from "../Player/Player";
 import { PlayerLoadingGate } from "../Player/PlayerLoadingGate";
 import { PlayerStatePersistence } from "../Player/PlayerStatePersistence";
 import { ChunkMesher } from "../World/Chunk/ChunckMesher";
-import { GLOBAL_VALUES } from "../World/GlobalValues";
-import { SettingParams } from "../World/SettingParams";
+import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
+import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 import { getTransformedShapeBoxes } from "../World/Shape/BlockShapeTransforms";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
 import { TextureDefinitions } from "../World/Texture/TextureDefinitions";
@@ -166,9 +166,9 @@ export class Map1 {
 		for (let i = 0; i < 10; i++) {
 			const mat = new StandardMaterial(`crackMat${i}`, Map1.mainScene);
 			mat.diffuseColor = new Color3(
-				SettingParams.HIGHLIGHT_COLOR[0],
-				SettingParams.HIGHLIGHT_COLOR[1],
-				SettingParams.HIGHLIGHT_COLOR[2],
+				SETTING_PARAMS.HIGHLIGHT_COLOR[0],
+				SETTING_PARAMS.HIGHLIGHT_COLOR[1],
+				SETTING_PARAMS.HIGHLIGHT_COLOR[2],
 			);
 			mat.alpha = 0.1 + (i / 9) * 0.6;
 			mat.backFaceCulling = false;

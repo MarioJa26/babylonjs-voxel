@@ -1,7 +1,7 @@
 import { Chunk } from "./Chunk/Chunk";
 import type { MeshData } from "./Chunk/DataStructures/MeshData";
 import { getCurrentLodCacheVersion } from "./Chunk/LOD/LodCacheVersion";
-import { GLOBAL_VALUES } from "./GlobalValues";
+import { GLOBAL_VALUES } from "./GLOBAL_VALUES";
 
 export type SavedChunkData = {
 	blocks: Uint8Array | Uint16Array | null;

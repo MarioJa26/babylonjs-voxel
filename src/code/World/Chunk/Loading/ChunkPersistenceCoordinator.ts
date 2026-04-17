@@ -1,4 +1,4 @@
-import { SettingParams } from "../../SettingParams";
+import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
 import { type SavedChunkEntityData, WorldStorage } from "../../WorldStorage";
 import type { Chunk } from "../Chunk";
 
@@ -67,7 +67,7 @@ export class ChunkPersistenceCoordinator {
 		return Math.max(
 			1,
 			this.adapter.getChunkSaveBatchSize?.() ??
-				SettingParams.CHUNK_UNLOAD_BATCH_LIMIT,
+				SETTING_PARAMS.CHUNK_UNLOAD_BATCH_LIMIT,
 		);
 	}
 
@@ -75,7 +75,7 @@ export class ChunkPersistenceCoordinator {
 		return Math.max(
 			1,
 			this.adapter.getChunkEntitySaveBatchSize?.() ??
-				SettingParams.CHUNK_UNLOAD_BATCH_LIMIT,
+				SETTING_PARAMS.CHUNK_UNLOAD_BATCH_LIMIT,
 		);
 	}
 

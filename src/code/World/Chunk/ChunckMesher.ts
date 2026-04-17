@@ -14,7 +14,7 @@ import {
 } from "@babylonjs/core";
 import { Map1 } from "@/code/Maps/Map1";
 import { WorldEnvironment } from "../../Maps/WorldEnvironment";
-import { GLOBAL_VALUES } from "../GlobalValues";
+import { GLOBAL_VALUES } from "../GLOBAL_VALUES";
 import { Lod2Shader } from "../Light/Lod2Shader";
 import { Lod3Shader } from "../Light/Lod3Shader";
 import { OpaqueShader } from "../Light/OpaqueShader";

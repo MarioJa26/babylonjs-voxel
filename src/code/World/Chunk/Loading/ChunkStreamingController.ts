@@ -1,5 +1,5 @@
 import { DistantTerrain } from "@/code/Generation/DistantTerrain/DistantTerrain";
-import { SettingParams } from "../../SettingParams";
+import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
 import { ChunkMesher } from "../ChunckMesher";
 import { Chunk } from "../Chunk";
 import { ChunkLoadingSystem } from "../ChunkLoadingSystem";
@@ -49,8 +49,8 @@ export class ChunkStreamingController {
 		chunkX: number,
 		chunkY: number,
 		chunkZ: number,
-		renderDistance = SettingParams.RENDER_DISTANCE,
-		verticalRadius = SettingParams.VERTICAL_RENDER_DISTANCE,
+		renderDistance = SETTING_PARAMS.RENDER_DISTANCE,
+		verticalRadius = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
 		prevChunkX?: number,
 		prevChunkY?: number,
 		prevChunkZ?: number,
@@ -210,7 +210,7 @@ export class ChunkStreamingController {
 		for (
 			let y = Math.max(0, chunkY - verticalRadius);
 			y <=
-			Math.min(SettingParams.MAX_CHUNK_HEIGHT - 1, chunkY + verticalRadius);
+			Math.min(SETTING_PARAMS.MAX_CHUNK_HEIGHT - 1, chunkY + verticalRadius);
 			y++
 		) {
 			for (
@@ -239,8 +239,8 @@ export class ChunkStreamingController {
 		playerChunkX: number,
 		playerChunkY: number,
 		playerChunkZ: number,
-		renderDistance = SettingParams.RENDER_DISTANCE,
-		verticalRadius = SettingParams.VERTICAL_RENDER_DISTANCE,
+		renderDistance = SETTING_PARAMS.RENDER_DISTANCE,
+		verticalRadius = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
 		maxChunks = 8,
 	): void {
 		if (this.loadedRefreshQueueHead >= this.loadedRefreshQueue.length) {
@@ -389,7 +389,7 @@ export class ChunkStreamingController {
 			y <= chunkY + lod3VerticalRadius;
 			y++
 		) {
-			if (y < 0 || y >= SettingParams.MAX_CHUNK_HEIGHT) {
+			if (y < 0 || y >= SETTING_PARAMS.MAX_CHUNK_HEIGHT) {
 				continue;
 			}
 
@@ -441,7 +441,7 @@ export class ChunkStreamingController {
 				y <= chunkY + lod3VerticalRadius;
 				y++
 			) {
-				if (y < 0 || y >= SettingParams.MAX_CHUNK_HEIGHT) continue;
+				if (y < 0 || y >= SETTING_PARAMS.MAX_CHUNK_HEIGHT) continue;
 
 				for (
 					let z = chunkZ - lod3HorizontalRadius;
@@ -470,7 +470,7 @@ export class ChunkStreamingController {
 				y <= chunkY + lod3VerticalRadius;
 				y++
 			) {
-				if (y < 0 || y >= SettingParams.MAX_CHUNK_HEIGHT) continue;
+				if (y < 0 || y >= SETTING_PARAMS.MAX_CHUNK_HEIGHT) continue;
 
 				for (
 					let x = chunkX - lod3HorizontalRadius;
@@ -504,7 +504,7 @@ export class ChunkStreamingController {
 			const slabY =
 				dy > 0 ? chunkY + lod3VerticalRadius : chunkY - lod3VerticalRadius;
 
-			if (slabY >= 0 && slabY < SettingParams.MAX_CHUNK_HEIGHT) {
+			if (slabY >= 0 && slabY < SETTING_PARAMS.MAX_CHUNK_HEIGHT) {
 				for (
 					let x = chunkX - lod3HorizontalRadius;
 					x <= chunkX + lod3HorizontalRadius;
@@ -560,9 +560,9 @@ export class ChunkStreamingController {
 		const unloadQueueSet = this.adapter.getUnloadQueueSet();
 
 		const removeRadius =
-			renderDistance + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER;
+			renderDistance + SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER;
 		const verticalRemoveRadius =
-			verticalRadius + SettingParams.CHUNK_UNLOAD_DISTANCE_BUFFER;
+			verticalRadius + SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER;
 
 		for (const chunk of Chunk.chunkInstances.values()) {
 			if (chunk.isPersistent) continue;

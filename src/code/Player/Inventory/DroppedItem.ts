@@ -15,7 +15,7 @@ import {
 	Axis,
 	VoxelAabbCollider,
 } from "@/code/World/Collision/VoxelAabbCollider";
-import { GLOBAL_VALUES } from "@/code/World/GlobalValues";
+import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
 import type { Player } from "../Player";
 import type { Item } from "./Item";

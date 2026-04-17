@@ -13,9 +13,9 @@ import {
 import { Map1 } from "@/code/Maps/Map1";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
-import { GLOBAL_VALUES } from "@/code/World/GlobalValues";
+import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 import { DistantTerrainShader } from "@/code/World/Light/DistantTerrainShader";
-import { SettingParams } from "@/code/World/SettingParams";
+import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { TextureAtlasFactory } from "@/code/World/Texture/TextureAtlasFactory";
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
 
@@ -52,7 +52,7 @@ export class DistantTerrain {
 	#lastCenterChunkZ: number | null = null;
 
 	constructor() {
-		this.#radius = SettingParams.DISTANT_RENDER_DISTANCE;
+		this.#radius = SETTING_PARAMS.DISTANT_RENDER_DISTANCE;
 		const segments = Math.floor((this.#radius * 2) / this.#gridStep);
 		this.#gridResolution = segments + 1;
 		const size = this.#radius * 2 * Chunk.SIZE;
@@ -351,7 +351,7 @@ export class DistantTerrain {
 			centerChunkX,
 			centerChunkZ,
 			this.#radius,
-			SettingParams.RENDER_DISTANCE,
+			SETTING_PARAMS.RENDER_DISTANCE,
 			this.#gridStep,
 			this.#lastPositions && this.#lastNormals && this.#lastSurfaceTiles
 				? {

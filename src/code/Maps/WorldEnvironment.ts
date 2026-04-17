@@ -11,9 +11,9 @@ import {
 } from "@babylonjs/core";
 
 import { PlayerHud } from "../Player/Hud/PlayerHud";
-import { GLOBAL_VALUES } from "../World/GlobalValues";
+import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
 import { SkyShader } from "../World/Light/SkyShader";
-import { SettingParams } from "../World/SettingParams";
+import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 
 export class WorldEnvironment {
 	public static instance: WorldEnvironment;
@@ -36,13 +36,13 @@ export class WorldEnvironment {
 	}
 
 	public initSSAO() {
-		if (SettingParams.ENABLE_SSAO && this.scene.activeCamera) {
+		if (SETTING_PARAMS.ENABLE_SSAO && this.scene.activeCamera) {
 			new SSAORenderingPipeline(
 				"ssaopipeline",
 				this.scene,
 				{
-					ssaoRatio: SettingParams.SSAO_RATIO,
-					combineRatio: SettingParams.SSAO_COMBINE_RATIO,
+					ssaoRatio: SETTING_PARAMS.SSAO_RATIO,
+					combineRatio: SETTING_PARAMS.SSAO_COMBINE_RATIO,
 				},
 				[this.scene.activeCamera],
 			);
@@ -57,7 +57,7 @@ export class WorldEnvironment {
 		);
 		// Hemispheric "up" should point toward the sky, not the ground.
 		this.hemiLight.direction = new Vector3(0.1, 1, 0.1);
-		this.hemiLight.intensity = SettingParams.HEMISPHERIC_LIGHT_INTENSITY;
+		this.hemiLight.intensity = SETTING_PARAMS.HEMISPHERIC_LIGHT_INTENSITY;
 
 		// Directional sun light used by non-chunk StandardMaterials (boats/items/etc.).
 		this.dirLight = new DirectionalLight(
@@ -119,10 +119,10 @@ export class WorldEnvironment {
 		if (this.isPaused) return;
 		// Increment time of day based on frame delta time
 		this.timeOfDay += this.scene.getEngine().getDeltaTime() * this.timeScale;
-		this.timeOfDay %= SettingParams.DAY_DURATION_MS;
+		this.timeOfDay %= SETTING_PARAMS.DAY_DURATION_MS;
 
 		// Compute smooth solar parameters (CPU)
-		const t = this.timeOfDay / SettingParams.DAY_DURATION_MS; // 0..1
+		const t = this.timeOfDay / SETTING_PARAMS.DAY_DURATION_MS; // 0..1
 		const angle = t * Math.PI * 2; // full orbit
 
 		// Use spherical coordinates:
@@ -158,7 +158,7 @@ export class WorldEnvironment {
 			this.dirLight.specular.set(reflectivity, reflectivity, reflectivity);
 		}
 		// For debug display
-		const timeAsHour = (this.timeOfDay / SettingParams.DAY_DURATION_MS) * 24;
+		const timeAsHour = (this.timeOfDay / SETTING_PARAMS.DAY_DURATION_MS) * 24;
 		const hour = Math.floor(timeAsHour);
 		const minute = Math.floor((timeAsHour - hour) * 60);
 		const second = Math.floor(((timeAsHour - hour) * 60 - minute) * 60);
@@ -177,12 +177,12 @@ export class WorldEnvironment {
 		) as HTMLInputElement;
 		if (timeSlider)
 			timeSlider.value = (
-				(this.timeOfDay / SettingParams.DAY_DURATION_MS) *
+				(this.timeOfDay / SETTING_PARAMS.DAY_DURATION_MS) *
 				1000
 			).toString();
 	}
 
 	public setTime(time: number): void {
-		this.timeOfDay = (time % 1) * SettingParams.DAY_DURATION_MS;
+		this.timeOfDay = (time % 1) * SETTING_PARAMS.DAY_DURATION_MS;
 	}
 }

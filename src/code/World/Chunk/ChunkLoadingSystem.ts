@@ -1,4 +1,4 @@
-import { SettingParams } from "../SettingParams";
+import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import type { SavedChunkData, SavedChunkEntityData } from "../WorldStorage";
 import { ChunkMesher } from "./ChunckMesher";
 import { Chunk } from "./Chunk";
@@ -259,12 +259,12 @@ export class ChunkLoadingSystem {
 	private static debugStats: ChunkLoadingDebugStats = {
 		loadQueueLength: 0,
 		unloadQueueLength: 0,
-		loadBatchLimit: Math.max(1, Math.floor(SettingParams.RENDER_DISTANCE * 4)),
+		loadBatchLimit: Math.max(1, Math.floor(SETTING_PARAMS.RENDER_DISTANCE * 4)),
 		unloadBatchLimit: Math.max(
 			1,
-			Math.floor(SettingParams.RENDER_DISTANCE * 4),
+			Math.floor(SETTING_PARAMS.RENDER_DISTANCE * 4),
 		),
-		frameBudgetMs: Math.max(0.5, SettingParams.CHUNK_LOADING_FRAME_BUDGET_MS),
+		frameBudgetMs: Math.max(0.5, SETTING_PARAMS.CHUNK_LOADING_FRAME_BUDGET_MS),
 		lastProcessMs: 0,
 		totalProcessLoops: 0,
 		lastLoadedFromStorage: 0,
@@ -282,23 +282,23 @@ export class ChunkLoadingSystem {
 	};
 
 	private static getLoadBatchSize(): number {
-		const configured = Math.floor(SettingParams.CHUNK_LOAD_BATCH_LIMIT);
+		const configured = Math.floor(SETTING_PARAMS.CHUNK_LOAD_BATCH_LIMIT);
 		if (configured > 0) {
 			return configured;
 		}
-		return Math.max(1, Math.floor(SettingParams.RENDER_DISTANCE * 4));
+		return Math.max(1, Math.floor(SETTING_PARAMS.RENDER_DISTANCE * 4));
 	}
 
 	private static getUnloadBatchSize(): number {
-		const configured = Math.floor(SettingParams.CHUNK_UNLOAD_BATCH_LIMIT);
+		const configured = Math.floor(SETTING_PARAMS.CHUNK_UNLOAD_BATCH_LIMIT);
 		if (configured > 0) {
 			return configured;
 		}
-		return Math.max(1, Math.floor(SettingParams.RENDER_DISTANCE * 4));
+		return Math.max(1, Math.floor(SETTING_PARAMS.RENDER_DISTANCE * 4));
 	}
 
 	private static getProcessFrameBudgetMs(): number {
-		return Math.max(0.5, SettingParams.CHUNK_LOADING_FRAME_BUDGET_MS);
+		return Math.max(0.5, SETTING_PARAMS.CHUNK_LOADING_FRAME_BUDGET_MS);
 	}
 
 	private static refreshQueueDebugSnapshot(): void {
@@ -327,8 +327,8 @@ export class ChunkLoadingSystem {
 		centerChunkX: number,
 		centerChunkY: number,
 		centerChunkZ: number,
-		horizontalRadius = SettingParams.RENDER_DISTANCE,
-		verticalRadius = SettingParams.VERTICAL_RENDER_DISTANCE,
+		horizontalRadius = SETTING_PARAMS.RENDER_DISTANCE,
+		verticalRadius = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
 	): void {
 		const queuedIds = ChunkLoadingSystem.buildQueuedIdSet();
 		const missing: Array<{
@@ -343,7 +343,7 @@ export class ChunkLoadingSystem {
 		}> = [];
 
 		const minChunkY = 0;
-		const maxChunkY = SettingParams.MAX_CHUNK_HEIGHT - 1;
+		const maxChunkY = SETTING_PARAMS.MAX_CHUNK_HEIGHT - 1;
 
 		for (
 			let y = Math.max(minChunkY, centerChunkY - verticalRadius);
@@ -470,8 +470,8 @@ export class ChunkLoadingSystem {
 			playerChunkX,
 			playerChunkY,
 			playerChunkZ,
-			SettingParams.RENDER_DISTANCE,
-			SettingParams.VERTICAL_RENDER_DISTANCE,
+			SETTING_PARAMS.RENDER_DISTANCE,
+			SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
 			16,
 		);
 
@@ -544,8 +544,8 @@ export class ChunkLoadingSystem {
 		chunkX: number,
 		chunkY: number,
 		chunkZ: number,
-		renderDistance = SettingParams.RENDER_DISTANCE,
-		verticalRadius = SettingParams.VERTICAL_RENDER_DISTANCE,
+		renderDistance = SETTING_PARAMS.RENDER_DISTANCE,
+		verticalRadius = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
 		prevChunkX?: number,
 		prevChunkY?: number,
 		prevChunkZ?: number,
@@ -737,7 +737,11 @@ export class ChunkLoadingSystem {
 			}
 
 			// No usable far mesh: fall back to full hydration later
-			state.chunksNeedingFullHydration.add(chunk.id);
+
+			if (!state.chunksNeedingFullHydration.has(chunk.id)) {
+				state.chunksNeedingFullHydration.add(chunk.id);
+				state.hydrateIds.push(chunk.id);
+			}
 
 			return;
 		}

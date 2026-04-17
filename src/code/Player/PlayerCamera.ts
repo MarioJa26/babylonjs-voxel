@@ -1,7 +1,7 @@
 import { type FreeCamera, type Scene, Vector3 } from "@babylonjs/core";
 import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
 import MapFog from "../Maps/MapFog";
-import { SettingParams } from "../World/SettingParams";
+import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 
 export class PlayerCamera {
 	#playerCamera: FreeCamera;
@@ -26,7 +26,7 @@ export class PlayerCamera {
 	) {
 		this.#playerCamera = playerCamera;
 
-		playerCamera.fov = SettingParams.CAMERA_FOV * (Math.PI / 180);
+		playerCamera.fov = SETTING_PARAMS.CAMERA_FOV * (Math.PI / 180);
 		playerCamera.minZ = 0.1;
 		playerCamera.maxZ = 100000;
 	}

@@ -1,6 +1,6 @@
 import { SSAO2RenderingPipeline } from "@babylonjs/core";
 import { Map1 } from "@/code/Maps/Map1";
-import { SettingParams } from "@/code/World/SettingParams";
+import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { ChunkLoadingSystem } from "../../World/Chunk/ChunkLoadingSystem";
 import { WorldStorage } from "../../World/WorldStorage";
 import type { Player } from "../Player"; // Import Player to access its methods
@@ -179,9 +179,9 @@ export class PauseMenu {
 			"Render Distance",
 			1,
 			32,
-			SettingParams.RENDER_DISTANCE,
+			SETTING_PARAMS.RENDER_DISTANCE,
 			(value) => {
-				SettingParams.RENDER_DISTANCE = value;
+				SETTING_PARAMS.RENDER_DISTANCE = value;
 				return `${value} chunks`;
 			},
 		);
@@ -199,9 +199,9 @@ export class PauseMenu {
 
 		const ssaoCheckbox = document.createElement("input");
 		ssaoCheckbox.type = "checkbox";
-		ssaoCheckbox.checked = SettingParams.ENABLE_SSAO;
+		ssaoCheckbox.checked = SETTING_PARAMS.ENABLE_SSAO;
 		ssaoCheckbox.onchange = () => {
-			SettingParams.ENABLE_SSAO = ssaoCheckbox.checked;
+			SETTING_PARAMS.ENABLE_SSAO = ssaoCheckbox.checked;
 			this.toggleSSAO(ssaoCheckbox.checked);
 		};
 		ssaoToggleLabel.appendChild(ssaoText);
@@ -283,7 +283,7 @@ export class PauseMenu {
 			const ssao = new SSAO2RenderingPipeline(
 				"ssao",
 				scene,
-				SettingParams.SSAO_RATIO,
+				SETTING_PARAMS.SSAO_RATIO,
 				[camera],
 			);
 			ssao.radius = 2;

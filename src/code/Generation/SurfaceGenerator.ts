@@ -846,7 +846,7 @@ export class SurfaceGenerator {
 				cz++
 			) {
 				for (let i = 0; i < features.length; i++) {
-					features[i]!.generate(
+					features[i].generate(
 						cx,
 						chunkY,
 						cz,

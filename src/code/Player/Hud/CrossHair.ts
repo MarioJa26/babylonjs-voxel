@@ -14,7 +14,7 @@ import * as GUI from "@babylonjs/gui";
 import { MetadataContainer } from "@/code/Entities/MetaDataContainer";
 import { BlockType, isCollidableBlock } from "@/code/World/BlockType";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
-import { SettingParams } from "@/code/World/SettingParams";
+import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { FACE_ALL, getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
 import { getTransformedShapeBoxes } from "@/code/World/Shape/BlockShapeTransforms";
 import { Player } from "../Player";
@@ -109,11 +109,11 @@ export class CrossHair {
 
 	#createHighlightMaterial(): StandardMaterial {
 		const highlightMaterial = new StandardMaterial("highlightMat", this.#scene);
-		highlightMaterial.alpha = SettingParams.HIGHLIGHT_ALPHA;
+		highlightMaterial.alpha = SETTING_PARAMS.HIGHLIGHT_ALPHA;
 		highlightMaterial.diffuseColor = new Color3(
-			SettingParams.HIGHLIGHT_COLOR[0],
-			SettingParams.HIGHLIGHT_COLOR[1],
-			SettingParams.HIGHLIGHT_COLOR[2],
+			SETTING_PARAMS.HIGHLIGHT_COLOR[0],
+			SETTING_PARAMS.HIGHLIGHT_COLOR[1],
+			SETTING_PARAMS.HIGHLIGHT_COLOR[2],
 		);
 		return highlightMaterial;
 	}
@@ -123,12 +123,12 @@ export class CrossHair {
 		mesh.renderingGroupId = 1;
 		mesh.material = this.#highlightMaterial;
 		mesh.enableEdgesRendering();
-		mesh.edgesWidth = SettingParams.HIGHLIGHT_EDGE_WIDTH;
+		mesh.edgesWidth = SETTING_PARAMS.HIGHLIGHT_EDGE_WIDTH;
 		mesh.edgesColor = new Color4(
-			SettingParams.HIGHLIGHT_EDGE_COLOR[0],
-			SettingParams.HIGHLIGHT_EDGE_COLOR[1],
-			SettingParams.HIGHLIGHT_EDGE_COLOR[2],
-			SettingParams.HIGHLIGHT_EDGE_COLOR[3],
+			SETTING_PARAMS.HIGHLIGHT_EDGE_COLOR[0],
+			SETTING_PARAMS.HIGHLIGHT_EDGE_COLOR[1],
+			SETTING_PARAMS.HIGHLIGHT_EDGE_COLOR[2],
+			SETTING_PARAMS.HIGHLIGHT_EDGE_COLOR[3],
 		);
 		mesh.visibility = 0;
 	}

@@ -1,4 +1,4 @@
-import { SettingParams } from "../SettingParams";
+import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import { WorldStorage } from "../WorldStorage";
 import { ChunkMesher } from "./ChunckMesher";
 import { Chunk } from "./Chunk";
@@ -35,12 +35,6 @@ export type ChunkWorkerPoolDebugStats = {
 	totalLodPrecomputeDispatches: number;
 	totalDistantDispatches: number;
 };
-type PendingDeferredLight = {
-	blocks: Uint8Array | Uint16Array | null;
-	light: Uint8Array;
-	queue: Uint16Array;
-	length: number;
-};
 
 export class ChunkWorkerPool {
 	private static instance: ChunkWorkerPool;
@@ -58,7 +52,6 @@ export class ChunkWorkerPool {
 	private workerRestartAtMs: number[] = [];
 	private taskQueue: Chunk[] = [];
 	private pendingRemeshQueue: Map<Chunk, boolean> = new Map();
-	private pendingDeferredLight = new Map<bigint, PendingDeferredLight>();
 	private terrainTaskDeferLighting = new Map<bigint, boolean>();
 	private terrainTaskQueue: Set<Chunk> = new Set();
 	private distantTerrainTaskQueue: DistantTerrainTask[] = [];
@@ -93,7 +86,7 @@ export class ChunkWorkerPool {
 
 	private getDispatchBudgetPerTick(): number {
 		const configured = Math.floor(
-			SettingParams.CHUNK_WORKER_DISPATCH_BUDGET_PER_TICK,
+			SETTING_PARAMS.CHUNK_WORKER_DISPATCH_BUDGET_PER_TICK,
 		);
 		return configured <= 0 ? Number.POSITIVE_INFINITY : configured;
 	}
@@ -895,7 +888,7 @@ export class ChunkWorkerPool {
 		const now = performance.now();
 		const throttleMs = Math.max(
 			0,
-			Math.floor(SettingParams.LOD_PRECOMPUTE_SCHEDULE_THROTTLE_MS),
+			Math.floor(SETTING_PARAMS.LOD_PRECOMPUTE_SCHEDULE_THROTTLE_MS),
 		);
 		// Throttle precompute scheduling to keep traversal overhead low.
 		if (throttleMs > 0 && now - this.lastPrecomputeScheduleTs < throttleMs) {
@@ -903,8 +896,8 @@ export class ChunkWorkerPool {
 		}
 		this.lastPrecomputeScheduleTs = now;
 
-		const horizontalRadius = SettingParams.RENDER_DISTANCE + 14;
-		const verticalRadius = SettingParams.VERTICAL_RENDER_DISTANCE + 4;
+		const horizontalRadius = SETTING_PARAMS.RENDER_DISTANCE + 14;
+		const verticalRadius = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE + 4;
 		const targetLods = [2, 3];
 		const candidates: Array<{ chunk: Chunk; lod: number; score: number }> = [];
 
@@ -943,7 +936,7 @@ export class ChunkWorkerPool {
 
 		const maxEnqueue = Math.max(
 			1,
-			Math.floor(SettingParams.LOD_PRECOMPUTE_MAX_ENQUEUE_PER_UPDATE),
+			Math.floor(SETTING_PARAMS.LOD_PRECOMPUTE_MAX_ENQUEUE_PER_UPDATE),
 		);
 		let added = 0;
 		for (const candidate of candidates) {

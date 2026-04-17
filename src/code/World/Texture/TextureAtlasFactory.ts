@@ -1,5 +1,5 @@
 import { type Scene, Texture } from "@babylonjs/core";
-import { GLOBAL_VALUES } from "../GlobalValues";
+import { GLOBAL_VALUES } from "../GLOBAL_VALUES";
 import { MaterialFactory } from "../Texture/MaterialFactory";
 
 export type TileUV = {
