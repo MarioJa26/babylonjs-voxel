@@ -611,6 +611,11 @@ export class ChunkWorkerPool {
 					const chunk = this.resolveChunkByMessageId(chunkId);
 
 					if (chunk) {
+						// Terrain came back for a chunk that's no longer wanted, populate
+						// the data so it's available if the chunk is needed again, but skip
+						// remesh and mark for unload instead of rendering it.
+						const isStale = !chunk.isTerrainScheduled && !chunk.isLoaded;
+
 						let blocks: Uint8Array | Uint16Array | null = block_array ?? null;
 						let light: Uint8Array = light_array;
 
@@ -643,18 +648,23 @@ export class ChunkWorkerPool {
 							light,
 							false,
 						);
-
 						chunk.isTerrainScheduled = false;
 						chunk.isLoaded = true;
 						chunk.colliderDirty = true;
 						chunk.isModified = true;
 
-						this.scheduleChunkAndNeighborsRemesh(chunk);
+						if (isStale) {
+							// Don't remesh, just save and let the unload queue clean it up.
+							void WorldStorage.saveChunk(chunk).catch((error) => {
+								console.error(
+									"Initial generated chunk persistence failed:",
+									error,
+								);
+							});
+							return;
+						}
 
-						// If this newly-loaded chunk provided voxel data for any adjacent
-						// neighbor that was previously missing a voxel neighbor, that
-						// neighbor may be displaying a cached LOD mesh that lacks border
-						// geometry. Force a remesh for such neighbors so borders get built.
+						this.scheduleChunkAndNeighborsRemesh(chunk);
 						this.maybeRemeshNeighborsNowStable(chunk);
 
 						const needsLightingRefinement =

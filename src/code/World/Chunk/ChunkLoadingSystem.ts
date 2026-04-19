@@ -472,7 +472,7 @@ export class ChunkLoadingSystem {
 			playerChunkZ,
 			SETTING_PARAMS.RENDER_DISTANCE,
 			SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
-			16,
+			32,
 		);
 
 		// Incrementally dispatch remesh work instead of submitting a burst in one frame.
@@ -736,7 +736,9 @@ export class ChunkLoadingSystem {
 				return;
 			}
 
-			// No usable far mesh: fall back to full hydration later
+			// No saved mesh, mark chunk as loaded so block mutations don't reject it,
+			// then queue for full hydration to get voxel data.
+			chunk.loadLodOnlyFromStorage(false);
 
 			if (!state.chunksNeedingFullHydration.has(chunk.id)) {
 				state.chunksNeedingFullHydration.add(chunk.id);
@@ -747,7 +749,6 @@ export class ChunkLoadingSystem {
 		}
 
 		// Near LOD path:
-		// Hydrate storage directly here so we do NOT restore the LOD cache twice.
 		chunk.loadFromStorage(
 			savedData.blocks,
 			savedData.palette,

@@ -404,6 +404,9 @@ export class ChunkProcessScheduler {
 								desired.revision !== request.revision ||
 								desired.desiredLod !== request.desiredLod
 							) {
+								if (!request.chunk.isLoaded) {
+									state.chunksToGenerate.push(request.chunk);
+								}
 								continue;
 							}
 
@@ -455,7 +458,12 @@ export class ChunkProcessScheduler {
 						) {
 							const chunk = state.hydrateChunks[state.hydrateIndex++];
 
-							if (!chunk.isTerrainScheduled) continue;
+							if (!chunk.isTerrainScheduled) {
+								if (!chunk.isLoaded) {
+									state.chunksToGenerate.push(chunk);
+								}
+								continue;
+							}
 
 							const savedData = state.hydrateMap.get(chunk.id);
 							if (!savedData) {
