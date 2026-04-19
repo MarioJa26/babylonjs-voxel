@@ -1,6 +1,6 @@
-import { Biome } from "../Biome/BiomeTypes";
+import type { Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-import { IWorldFeature } from "./IWorldFeature";
+import type { IWorldFeature } from "./IWorldFeature";
 
 export class DungeonFeature implements IWorldFeature {
 	public generate(

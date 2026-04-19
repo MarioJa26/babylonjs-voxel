@@ -1,35 +1,39 @@
 import { Chunk } from "./Chunk";
 import {
 	type GenerateDistantTerrainRequest,
+	type InitDistantTerrainSharedRequest,
 	type MeshWorkerResponse,
 	type WorkerResponseData,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
 
 export class ChunkWorker {
-	private terrainWorker: Worker; // old worker
-	private voxelWorker: Worker; // new
-	private waterWorker: Worker; // new
+	private terrainWorker: Worker; // terrain + distant terrain + lighting
+	private voxelWorker: Worker; // voxel mesh
+	private waterWorker: Worker; // water mesh
 
 	private warnedNonSharedRemeshPayload = false;
+	private distantTerrainSharedInitialized = false;
 
 	constructor(
 		onMessageTerrain: (event: MessageEvent<WorkerResponseData>) => void,
 		onMessageMesh: (event: MessageEvent<MeshWorkerResponse>) => void,
 	) {
-		// OLD WORKER → terrain, distant terrain, lighting
+		// Terrain / distant terrain / lighting worker
 		this.terrainWorker = new Worker(
 			new URL("./chunk.worker.ts", import.meta.url),
 			{ type: "module" },
 		);
 		this.terrainWorker.onmessage = onMessageTerrain;
 
+		// Voxel mesh worker
 		this.voxelWorker = new Worker(
 			new URL("./voxel.worker.ts", import.meta.url),
 			{ type: "module" },
 		);
 		this.voxelWorker.onmessage = (e) => onMessageMesh(e);
 
+		// Water mesh worker
 		this.waterWorker = new Worker(
 			new URL("./water.worker.ts", import.meta.url),
 			{ type: "module" },
@@ -44,6 +48,7 @@ export class ChunkWorker {
 	}
 
 	public terminate(): void {
+		this.distantTerrainSharedInitialized = false;
 		this.terrainWorker.terminate();
 		this.voxelWorker.terminate();
 		this.waterWorker.terminate();
@@ -86,7 +91,7 @@ export class ChunkWorker {
 			}
 		}
 
-		// Warn once if structured cloning may copy arrays instead of sharing them
+		// Warn once if structured cloning may copy instead of sharing
 		if (!this.warnedNonSharedRemeshPayload) {
 			const centerBlocks = chunk.block_array;
 			const centerLight = chunk.light_array;
@@ -149,7 +154,7 @@ export class ChunkWorker {
 		});
 	}
 
-	// ✅ Terrain generation stays on your old worker
+	// Terrain generation stays on terrainWorker
 	public postTerrainGeneration(
 		chunk: Chunk,
 		deferLighting: boolean = true,
@@ -164,40 +169,57 @@ export class ChunkWorker {
 		});
 	}
 
-	// ✅ Distant terrain also stays on old worker
+	// ---------------------------------------------------------------------
+	// One-time SharedArrayBuffer init for distant terrain
+	// Call this BEFORE the first distant terrain generation request.
+	// ---------------------------------------------------------------------
+	public initDistantTerrainShared(
+		positionsBuffer: SharedArrayBuffer,
+		normalsBuffer: SharedArrayBuffer,
+		surfaceTilesBuffer: SharedArrayBuffer,
+		radius: number,
+		gridStep: number,
+	): void {
+		const message: InitDistantTerrainSharedRequest = {
+			type: WorkerTaskType.InitDistantTerrainShared,
+			positionsBuffer,
+			normalsBuffer,
+			surfaceTilesBuffer,
+			radius,
+			gridStep,
+		};
+
+		// SharedArrayBuffer is shared, not transferred.
+		this.terrainWorker.postMessage(message);
+		this.distantTerrainSharedInitialized = true;
+	}
+
+	// Distant terrain generation also stays on terrainWorker
+	// No oldData, no transferables, no large typed-array payloads.
 	public postGenerateDistantTerrain(
+		requestId: number,
 		centerChunkX: number,
 		centerChunkZ: number,
 		radius: number,
 		renderDistance: number,
 		gridStep: number,
-		oldData?: {
-			positions: Int16Array;
-			normals: Int8Array;
-			surfaceTiles: Uint8Array;
-		},
-		oldCenterChunkX?: number,
-		oldCenterChunkZ?: number,
 	): void {
-		const transferables: Transferable[] = [];
-		if (oldData) {
-			transferables.push(oldData.positions.buffer);
-			transferables.push(oldData.normals.buffer);
-			transferables.push(oldData.surfaceTiles.buffer);
+		if (!this.distantTerrainSharedInitialized) {
+			throw new Error(
+				"ChunkWorker.postGenerateDistantTerrain called before initDistantTerrainShared().",
+			);
 		}
 
 		const message: GenerateDistantTerrainRequest = {
 			type: WorkerTaskType.GenerateDistantTerrain,
+			requestId,
 			centerChunkX,
 			centerChunkZ,
 			radius,
 			renderDistance,
 			gridStep,
-			oldData,
-			oldCenterChunkX,
-			oldCenterChunkZ,
 		};
 
-		this.terrainWorker.postMessage(message, transferables);
+		this.terrainWorker.postMessage(message);
 	}
 }

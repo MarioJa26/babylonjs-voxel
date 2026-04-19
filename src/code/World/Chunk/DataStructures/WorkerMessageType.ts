@@ -5,6 +5,7 @@ export enum WorkerTaskType {
 	GenerateFullMesh,
 	GenerateDistantTerrain_Generated,
 	GenerateDistantTerrain,
+	InitDistantTerrainShared,
 }
 
 /* =========================================================
@@ -63,29 +64,39 @@ export type GenerateFullMeshRequest = {
 	neighborPalettes?: (PackedPalette | undefined)[];
 };
 
-export interface DistantTerrainTask {
+export type DistantTerrainTask = {
+	requestId: number;
 	centerChunkX: number;
 	centerChunkZ: number;
 	radius: number;
 	renderDistance: number;
 	gridStep: number;
-	oldData?: {
-		positions: Int16Array;
-		normals: Int8Array;
-		surfaceTiles: Uint8Array;
-	};
-	oldCenterChunkX?: number;
-	oldCenterChunkZ?: number;
-}
+};
+
+export type InitDistantTerrainSharedRequest = {
+	type: WorkerTaskType.InitDistantTerrainShared;
+	positionsBuffer: SharedArrayBuffer;
+	normalsBuffer: SharedArrayBuffer;
+	surfaceTilesBuffer: SharedArrayBuffer;
+	radius: number;
+	gridStep: number;
+};
 
 export type GenerateDistantTerrainRequest = {
 	type: WorkerTaskType.GenerateDistantTerrain;
-} & DistantTerrainTask;
+	requestId: number;
+	centerChunkX: number;
+	centerChunkZ: number;
+	radius: number;
+	renderDistance: number;
+	gridStep: number;
+};
 
 export type WorkerRequestData =
 	| GenerateTerrainRequest
 	| GenerateFullMeshRequest
-	| GenerateDistantTerrainRequest;
+	| GenerateDistantTerrainRequest
+	| InitDistantTerrainSharedRequest;
 
 /* =========================================================
  * Responses sent FROM the worker
@@ -116,11 +127,9 @@ export type TerrainGeneratedMessage = {
 
 export type DistantTerrainGeneratedMessage = {
 	type: WorkerTaskType.GenerateDistantTerrain_Generated;
+	requestId: number;
 	centerChunkX: number;
 	centerChunkZ: number;
-	positions: Int16Array;
-	normals: Int8Array;
-	surfaceTiles: Uint8Array;
 };
 
 export type WorkerResponseData =

@@ -31,7 +31,7 @@ export class Squirrel3 {
 		mangled ^= mangled << 8;
 		mangled *= Squirrel3.NOISE3;
 		mangled ^= mangled >> 8;
-		this.HASH = mangled;
+		Squirrel3.HASH = mangled;
 		return mangled;
 	}
 }

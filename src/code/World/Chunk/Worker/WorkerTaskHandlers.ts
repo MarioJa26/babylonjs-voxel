@@ -46,14 +46,8 @@ export type CompressBlocksFn = (blocks: Uint8Array) => {
 export class WorkerTaskHandlers {
 	public static handleGenerateTerrain(
 		request: GenerateTerrainRequest,
-		deps: {
-			generator: WorldGenerator;
-			compressBlocks: CompressBlocksFn;
-		},
-	): {
-		payload: TerrainGeneratedMessage;
-		transferables: Transferable[];
-	} {
+		deps: { generator: WorldGenerator; compressBlocks: CompressBlocksFn },
+	): { payload: TerrainGeneratedMessage; transferables: Transferable[] } {
 		const result = deps.generator.generateChunkData(
 			request.chunkX,
 			request.chunkY,
@@ -81,22 +75,14 @@ export class WorkerTaskHandlers {
 		}
 
 		const transferables: Transferable[] = [];
-
-		pushTransferableBuffer(
+		pushTransferable(
 			transferables,
 			compressed.packedBlocks ?? undefined,
 			"packedBlocks",
 		);
-
-		pushTransferableBuffer(transferables, result.light, "light_array");
-
-		pushTransferableBuffer(
-			transferables,
-			compressed.palette ?? undefined,
-			"palette",
-		);
-
-		pushTransferableBuffer(
+		pushTransferable(transferables, result.light, "light_array");
+		pushTransferable(transferables, compressed.palette ?? undefined, "palette");
+		pushTransferable(
 			transferables,
 			result.lightSeedState?.queue,
 			"lightSeedQueue",
@@ -105,28 +91,45 @@ export class WorkerTaskHandlers {
 		return { payload, transferables };
 	}
 
+	public static handleInitDistantTerrainShared(request: {
+		positionsBuffer: SharedArrayBuffer;
+		normalsBuffer: SharedArrayBuffer;
+		surfaceTilesBuffer: SharedArrayBuffer;
+		radius: number;
+		gridStep: number;
+	}): { payload: { type: number }; transferables: Transferable[] } {
+		DistantTerrainGenerator.initSharedBuffers(
+			request.positionsBuffer,
+			request.normalsBuffer,
+			request.surfaceTilesBuffer,
+			request.radius,
+			request.gridStep,
+		);
+
+		return {
+			payload: { type: WorkerTaskType.InitDistantTerrainShared },
+			transferables: [],
+		};
+	}
+
 	public static handleGenerateDistantTerrain(
 		request: GenerateDistantTerrainRequest,
 	): {
 		payload: {
 			type: number;
+			requestId: number;
 			centerChunkX: number;
 			centerChunkZ: number;
-			positions: Int16Array;
-			normals: Int8Array;
-			surfaceTiles: Uint8Array;
 		};
 		transferables: Transferable[];
 	} {
 		const {
+			requestId,
 			centerChunkX,
 			centerChunkZ,
 			radius,
 			renderDistance,
 			gridStep,
-			oldData,
-			oldCenterChunkX,
-			oldCenterChunkZ,
 		} = request;
 
 		const data = DistantTerrainGenerator.generate(
@@ -135,45 +138,31 @@ export class WorkerTaskHandlers {
 			radius,
 			renderDistance,
 			gridStep,
-			oldData,
-			oldCenterChunkX,
-			oldCenterChunkZ,
 		);
 
 		return {
 			payload: {
-				type: 0, // caller should overwrite with WorkerTaskType.GenerateDistantTerrain_Generated if desired
-				centerChunkX,
-				centerChunkZ,
-				positions: data.positions,
-				normals: data.normals,
-				surfaceTiles: data.surfaceTiles,
+				type: WorkerTaskType.GenerateDistantTerrain,
+				requestId,
+				centerChunkX: data.centerChunkX,
+				centerChunkZ: data.centerChunkZ,
 			},
-			transferables: [
-				data.positions.buffer,
-				data.normals.buffer,
-				data.surfaceTiles.buffer,
-			],
+			transferables: [],
 		};
 	}
 }
-function pushTransferableBuffer(
+
+function pushTransferable(
 	transferables: Transferable[],
 	view: ArrayBufferView | null | undefined,
 	label: string,
 ): void {
-	if (!view) {
-		return;
-	}
+	if (!view) return;
 
-	const buffer = view.buffer;
-
-	if (!(buffer instanceof ArrayBuffer)) {
+	if (!(view.buffer instanceof ArrayBuffer))
 		throw new Error(
-			`Non-transferable buffer detected for ${label}. ` +
-				`Worker terrain payloads must be ArrayBuffer-backed before posting.`,
+			`Non-transferable buffer for "${label}". Must be ArrayBuffer-backed before posting.`,
 		);
-	}
 
-	transferables.push(buffer);
+	transferables.push(view.buffer);
 }

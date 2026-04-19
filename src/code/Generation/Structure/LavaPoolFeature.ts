@@ -1,7 +1,7 @@
-import { Biome } from "../Biome/BiomeTypes";
+import type { Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-import { IWorldFeature } from "./IWorldFeature";
 import { TerrainHeightMap } from "../TerrainHeightMap";
+import type { IWorldFeature } from "./IWorldFeature";
 
 export class LavaPoolFeature implements IWorldFeature {
 	public generate(

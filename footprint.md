@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-04-17T04:42:45.649Z
+Generated: 2026-04-19T08:12:19.618Z
 
-> **Summary:** 99 classes · 1744 members · 77 module-level functions · 27248 LOC
+> **Summary:** 99 classes · 1771 members · 77 module-level functions · 27543 LOC
 
 ---
 
@@ -233,7 +233,7 @@ Generated: 2026-04-17T04:42:45.649Z
 
 ---
 
-## `Generation/DistantTerrain/DistantTerrain.ts` (359 LOC)
+## `Generation/DistantTerrain/DistantTerrain.ts` (379 LOC)
 
 ### export class DistantTerrain
 
@@ -252,14 +252,12 @@ Generated: 2026-04-17T04:42:45.649Z
 - `#radius: number`
 - `#gridStep: unknown`
 - `#gridResolution: number`
+- `#sharedPositions: Int16Array`
+- `#sharedNormals: Int8Array`
+- `#sharedSurfaceTiles: Uint8Array`
 - `#gridOrigin: unknown`
 - `#positionVB?: VertexBuffer`
 - `#normalVB?: VertexBuffer`
-- `#lastPositions: Int16Array | null`
-- `#lastNormals: Int8Array | null`
-- `#lastSurfaceTiles: Uint8Array | null`
-- `#lastCenterChunkX: number | null`
-- `#lastCenterChunkZ: number | null`
 
 **Methods**
 - `private createEmptyGridMesh(name: string, scene: Scene): Mesh`
@@ -270,7 +268,7 @@ Generated: 2026-04-17T04:42:45.649Z
 
 ---
 
-## `Generation/DistantTerrain/DistantTerrainGenerator.ts` (155 LOC)
+## `Generation/DistantTerrain/DistantTerrainGenerator.ts` (375 LOC)
 
 ### export class DistantTerrainGenerator
 
@@ -278,13 +276,31 @@ Generated: 2026-04-17T04:42:45.649Z
 - `private static readonly DEFAULT_TILE_X: unknown`
 - `private static readonly DEFAULT_TILE_Y: unknown`
 - `private static readonly INSIDE_CLIP_Y: unknown`
+- `private static positions?: Int16Array`
+- `private static normals?: Int8Array`
+- `private static surfaceTiles?: Uint8Array`
+- `private static lastGridCenterChunkX: unknown`
+- `private static lastGridCenterChunkZ: unknown`
+- `private static lastCenterChunkX: unknown`
+- `private static lastCenterChunkZ: unknown`
+- `private static rowSize: unknown`
+- `private static segments: unknown`
+- `private static gridStep: unknown`
+- `private static radius: unknown`
+- `private static usingSharedBuffers: unknown`
 
 **Methods**
-- `public static generate(centerChunkX: number, centerChunkZ: number, radius: number, renderDistance: number, gridStep: number, oldData?: {
-			positions: Int16Array;
-			normals: Int8Array;
-			surfaceTiles: Uint8Array;
-		}, oldCenterChunkX?: number, oldCenterChunkZ?: number): { positions: Int16Array<ArrayBuffer>; normals: Int8Array<ArrayBuffer>; surfaceTiles: Uint8Array<ArrayBuffer>; }`
+- `public static initSharedBuffers(positionsBuffer: SharedArrayBuffer, normalsBuffer: SharedArrayBuffer, surfaceTilesBuffer: SharedArrayBuffer, radius: number, gridStep: number): void`
+- `public static generate(centerChunkX: number, centerChunkZ: number, radius: number, renderDistance: number, gridStep: number, forceFullRebuild: unknown = false): { positions: Int16Array<ArrayBufferLike>; normals: Int8Array<ArrayBufferLike>; surfaceTiles: Uint8Array<ArrayBufferLike>; centerChunkX: number; centerChunkZ: number; }`
+- `private static ensureBuffers(radius: number, gridStep: number): void`
+- `private static configureGrid(radius: number, gridStep: number): void`
+- `private static allocateLocalBuffers(): void`
+- `private static resetTracking(): void`
+- `private static fullGenerate(gridCenterChunkX: number, gridCenterChunkZ: number, centerChunkX: number, centerChunkZ: number, renderDistance: number): void`
+- `private static slideArrays(shiftX: number, shiftZ: number): void`
+- `private static regenerateEdges(shiftX: number, shiftZ: number, gridCenterChunkX: number, gridCenterChunkZ: number, centerChunkX: number, centerChunkZ: number, renderDistance: number): void`
+- `private static rewriteLocalXZ(centerChunkX: number, centerChunkZ: number, gridCenterChunkX: number, gridCenterChunkZ: number): void`
+- `private static generateVertex(x: number, z: number, gridCenterChunkX: number, gridCenterChunkZ: number, centerChunkX: number, centerChunkZ: number, renderDistance: number): void`
 - `private static getTopTileForBlock(blockId: number): [number, number]`
 
 ---
@@ -2379,7 +2395,7 @@ Generated: 2026-04-17T04:42:45.649Z
 
 ---
 
-## `World/Chunk/chunk.worker.ts` (106 LOC)
+## `World/Chunk/chunk.worker.ts` (110 LOC)
 
 **Module-level functions**
 - `function compressBlocks(blocks: Uint8Array): {
@@ -2464,7 +2480,7 @@ Generated: 2026-04-17T04:42:45.649Z
 
 ---
 
-## `World/Chunk/chunkWorker.ts` (162 LOC)
+## `World/Chunk/chunkWorker.ts` (174 LOC)
 
 ### export class ChunkWorker
 
@@ -2476,6 +2492,7 @@ Generated: 2026-04-17T04:42:45.649Z
 - `private voxelWorker: Worker`
 - `private waterWorker: Worker`
 - `private warnedNonSharedRemeshPayload: unknown`
+- `private distantTerrainSharedInitialized: unknown`
 - `private readonly paletteToTyped: unknown`
 
 **Methods**
@@ -2483,15 +2500,12 @@ Generated: 2026-04-17T04:42:45.649Z
 - `public terminate(): void`
 - `public postFullRemesh(chunk: Chunk, forcedLod?: number): void`
 - `public postTerrainGeneration(chunk: Chunk, deferLighting: boolean = true): void`
-- `public postGenerateDistantTerrain(centerChunkX: number, centerChunkZ: number, radius: number, renderDistance: number, gridStep: number, oldData?: {
-			positions: Int16Array;
-			normals: Int8Array;
-			surfaceTiles: Uint8Array;
-		}, oldCenterChunkX?: number, oldCenterChunkZ?: number): void`
+- `public initDistantTerrainShared(positionsBuffer: SharedArrayBuffer, normalsBuffer: SharedArrayBuffer, surfaceTilesBuffer: SharedArrayBuffer, radius: number, gridStep: number): void`
+- `public postGenerateDistantTerrain(requestId: number, centerChunkX: number, centerChunkZ: number, radius: number, renderDistance: number, gridStep: number): void`
 
 ---
 
-## `World/Chunk/ChunkWorkerPool.ts` (995 LOC)
+## `World/Chunk/ChunkWorkerPool.ts` (1035 LOC)
 
 ### export class ChunkWorkerPool
 
@@ -2509,6 +2523,13 @@ Generated: 2026-04-17T04:42:45.649Z
 		distantTask?: DistantTerrainTask;
 		terrainDeferLighting?: boolean;
 	} | null>`
+- `private distantTerrainSharedInit: {
+		positionsBuffer: SharedArrayBuffer;
+		normalsBuffer: SharedArrayBuffer;
+		surfaceTilesBuffer: SharedArrayBuffer;
+		radius: number;
+		gridStep: number;
+	} | null`
 - `private workerRestartAtMs: number[]`
 - `private taskQueue: Chunk[]`
 - `private pendingRemeshQueue: Map<Chunk, boolean>`
@@ -2525,6 +2546,8 @@ Generated: 2026-04-17T04:42:45.649Z
 - `private debugStats: ChunkWorkerPoolDebugStats`
 - `private inFlightRemeshKeys: unknown`
 - `private rerunRemeshAfterInflight: unknown`
+- `private distantTerrainInFlight: unknown`
+- `private nextDistantTerrainRequestId: unknown`
 - `public onDistantTerrainGenerated: | ((data: DistantTerrainGeneratedMessage) => void)
 		| null`
 - `private processMeshQueueLoop: unknown`
@@ -2548,11 +2571,7 @@ Generated: 2026-04-17T04:42:45.649Z
 - `private scheduleRemeshFlush(): void`
 - `private flushPendingRemeshQueue(): void`
 - `private storeReturnedLODMesh(chunk: Chunk, lod: number, opaque: MeshData | null, transparent: MeshData | null): void`
-- `public scheduleDistantTerrain(centerChunkX: number, centerChunkZ: number, radius: number, renderDistance: number, gridStep: number, oldData?: {
-			positions: Int16Array;
-			normals: Int8Array;
-			surfaceTiles: Uint8Array;
-		}, oldCenterChunkX?: number, oldCenterChunkZ?: number): void`
+- `public scheduleDistantTerrain(centerChunkX: number, centerChunkZ: number, radius: number, renderDistance: number, gridStep: number): void`
 - `private tryApplyCachedLODMesh(chunk: Chunk, allowDirtyReuse: unknown = false): boolean`
 - `private makeTerrainMessageHandler(workerIndex: number, getWorker: () => ChunkWorker | undefined): (event: MessageEvent<WorkerResponseData>) => void`
 - `private makeMeshMessageHandler(workerIndex: number, getWorker: () => ChunkWorker | undefined): (event: MessageEvent<MeshWorkerResponse>) => void`
@@ -2569,6 +2588,7 @@ Generated: 2026-04-17T04:42:45.649Z
 - `private scheduleChunkAndNeighborsRemesh(chunk: Chunk): void`
 - `private hasStableVoxelNeighborsForCachedMesh(chunk: Chunk): boolean`
 - `private maybeRemeshNeighborsNowStable(chunk: Chunk): void`
+- `public initDistantTerrainShared(positionsBuffer: SharedArrayBuffer, normalsBuffer: SharedArrayBuffer, surfaceTilesBuffer: SharedArrayBuffer, radius: number, gridStep: number): void`
 - `private processQueue(): void`
 
 **Types / Interfaces / Enums**
@@ -2658,17 +2678,18 @@ Generated: 2026-04-17T04:42:45.649Z
 
 ---
 
-## `World/Chunk/DataStructures/WorkerMessageType.ts` (94 LOC)
+## `World/Chunk/DataStructures/WorkerMessageType.ts` (102 LOC)
 
 **Types / Interfaces / Enums**
 - interface `SerializedLightSeedState`
-- interface `DistantTerrainTask`
 - type `PackedBlockArray`
 - type `PackedPalette`
 - type `NeighborBlockArray`
 - type `NeighborLightArray`
 - type `GenerateTerrainRequest`
 - type `GenerateFullMeshRequest`
+- type `DistantTerrainTask`
+- type `InitDistantTerrainSharedRequest`
 - type `GenerateDistantTerrainRequest`
 - type `WorkerRequestData`
 - type `FullMeshMessage`
@@ -3076,32 +3097,31 @@ Generated: 2026-04-17T04:42:45.649Z
 
 ---
 
-## `World/Chunk/Worker/WorkerTaskHandlers.ts` (161 LOC)
+## `World/Chunk/Worker/WorkerTaskHandlers.ts` (152 LOC)
 
 ### export class WorkerTaskHandlers
 
 **Methods**
-- `public static handleGenerateTerrain(request: GenerateTerrainRequest, deps: {
-			generator: WorldGenerator;
-			compressBlocks: CompressBlocksFn;
-		}): {
-		payload: TerrainGeneratedMessage;
-		transferables: Transferable[];
-	}`
+- `public static handleGenerateTerrain(request: GenerateTerrainRequest, deps: { generator: WorldGenerator; compressBlocks: CompressBlocksFn }): { payload: TerrainGeneratedMessage; transferables: Transferable[] }`
+- `public static handleInitDistantTerrainShared(request: {
+		positionsBuffer: SharedArrayBuffer;
+		normalsBuffer: SharedArrayBuffer;
+		surfaceTilesBuffer: SharedArrayBuffer;
+		radius: number;
+		gridStep: number;
+	}): { payload: { type: number }; transferables: Transferable[] }`
 - `public static handleGenerateDistantTerrain(request: GenerateDistantTerrainRequest): {
 		payload: {
 			type: number;
+			requestId: number;
 			centerChunkX: number;
 			centerChunkZ: number;
-			positions: Int16Array;
-			normals: Int8Array;
-			surfaceTiles: Uint8Array;
 		};
 		transferables: Transferable[];
 	}`
 
 **Module-level functions**
-- `function pushTransferableBuffer(transferables: Transferable[], view: ArrayBufferView | null | undefined, label: string): void`
+- `function pushTransferable(transferables: Transferable[], view: ArrayBufferView | null | undefined, label: string): void`
 
 **Types / Interfaces / Enums**
 - type `MeshBuilderLike`

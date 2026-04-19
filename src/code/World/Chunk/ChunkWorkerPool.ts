@@ -49,6 +49,14 @@ export class ChunkWorkerPool {
 		terrainDeferLighting?: boolean;
 	} | null> = [];
 
+	private distantTerrainSharedInit: {
+		positionsBuffer: SharedArrayBuffer;
+		normalsBuffer: SharedArrayBuffer;
+		surfaceTilesBuffer: SharedArrayBuffer;
+		radius: number;
+		gridStep: number;
+	} | null = null;
+
 	private workerRestartAtMs: number[] = [];
 	private taskQueue: Chunk[] = [];
 	private pendingRemeshQueue: Map<Chunk, boolean> = new Map();
@@ -83,6 +91,9 @@ export class ChunkWorkerPool {
 	};
 	private inFlightRemeshKeys = new Set<string>();
 	private rerunRemeshAfterInflight = new Map<Chunk, boolean>();
+
+	private distantTerrainInFlight = false;
+	private nextDistantTerrainRequestId = 1;
 
 	private getDispatchBudgetPerTick(): number {
 		const configured = Math.floor(
@@ -192,6 +203,10 @@ export class ChunkWorkerPool {
 		const context = this.workerTaskContext[workerIndex];
 		this.workerTaskContext[workerIndex] = null;
 
+		if (context?.taskType === "distantTerrain") {
+			this.distantTerrainInFlight = false;
+		}
+
 		if (
 			(context?.taskType === "remesh" ||
 				context?.taskType === "lodPrecompute") &&
@@ -271,6 +286,16 @@ export class ChunkWorkerPool {
 			this.workers[workerIndex] = replacement;
 			this.workerRestartAtMs[workerIndex] = performance.now();
 			this.workerTaskContext[workerIndex] = null;
+
+			if (this.distantTerrainSharedInit) {
+				replacement.initDistantTerrainShared(
+					this.distantTerrainSharedInit.positionsBuffer,
+					this.distantTerrainSharedInit.normalsBuffer,
+					this.distantTerrainSharedInit.surfaceTilesBuffer,
+					this.distantTerrainSharedInit.radius,
+					this.distantTerrainSharedInit.gridStep,
+				);
+			}
 
 			if (!this.idleWorkerIndices.includes(workerIndex)) {
 				this.idleWorkerIndices.push(workerIndex);
@@ -480,30 +505,23 @@ export class ChunkWorkerPool {
 		radius: number,
 		renderDistance: number,
 		gridStep: number,
-		oldData?: {
-			positions: Int16Array;
-			normals: Int8Array;
-			surfaceTiles: Uint8Array;
-		},
-		oldCenterChunkX?: number,
-		oldCenterChunkZ?: number,
 	) {
-		// Cancel pending distant terrain tasks by clearing the queue.
-		// We only care about the most recent request.
+		const requestId = this.nextDistantTerrainRequestId++;
+		// Only keep the newest request
 		this.distantTerrainTaskQueue = [
 			{
+				requestId,
 				centerChunkX,
 				centerChunkZ,
 				radius,
 				renderDistance,
 				gridStep,
-				oldData,
-				oldCenterChunkX,
-				oldCenterChunkZ,
 			},
 		];
+
 		this.processQueue();
 	}
+
 	private tryApplyCachedLODMesh(
 		chunk: Chunk,
 		allowDirtyReuse = false,
@@ -657,7 +675,9 @@ export class ChunkWorkerPool {
 					}
 				} else if (type === WorkerTaskType.GenerateDistantTerrain_Generated) {
 					const distantData: DistantTerrainGeneratedMessage = data;
+
 					this.onDistantTerrainGenerated?.(distantData);
+					this.distantTerrainInFlight = false;
 				}
 			} catch (messageError) {
 				failed = true;
@@ -1033,6 +1053,31 @@ export class ChunkWorkerPool {
 			}
 		}
 	}
+	public initDistantTerrainShared(
+		positionsBuffer: SharedArrayBuffer,
+		normalsBuffer: SharedArrayBuffer,
+		surfaceTilesBuffer: SharedArrayBuffer,
+		radius: number,
+		gridStep: number,
+	): void {
+		this.distantTerrainSharedInit = {
+			positionsBuffer,
+			normalsBuffer,
+			surfaceTilesBuffer,
+			radius,
+			gridStep,
+		};
+
+		for (const worker of this.workers) {
+			worker.initDistantTerrainShared(
+				positionsBuffer,
+				normalsBuffer,
+				surfaceTilesBuffer,
+				radius,
+				gridStep,
+			);
+		}
+	}
 
 	private processQueue() {
 		this.updateQueueDebugStats();
@@ -1082,7 +1127,10 @@ export class ChunkWorkerPool {
 				taskType = "lodPrecompute";
 			}
 			// 4) Then distant terrain
-			else if (this.distantTerrainTaskQueue.length > 0) {
+			else if (
+				this.distantTerrainTaskQueue.length > 0 &&
+				!this.distantTerrainInFlight
+			) {
 				distantTask = this.distantTerrainTaskQueue.shift();
 				taskType = "distantTerrain";
 			} else {
@@ -1172,15 +1220,15 @@ export class ChunkWorkerPool {
 						distantTask,
 					};
 
+					this.distantTerrainInFlight = true;
+
 					worker.postGenerateDistantTerrain(
+						distantTask!.requestId,
 						distantTask!.centerChunkX,
 						distantTask!.centerChunkZ,
 						distantTask!.radius,
 						distantTask!.renderDistance,
 						distantTask!.gridStep,
-						distantTask!.oldData,
-						distantTask!.oldCenterChunkX,
-						distantTask!.oldCenterChunkZ,
 					);
 
 					this.debugStats.totalDistantDispatches += 1;

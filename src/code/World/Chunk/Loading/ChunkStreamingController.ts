@@ -303,19 +303,18 @@ export class ChunkStreamingController {
 		lodRuleSet: ChunkLodRuleSet,
 	): void {
 		let chunk = Chunk.getChunk(x, y, z);
-		if (!chunk) {
-			chunk = new Chunk(x, y, z);
-		}
 
-		const previousLod = chunk.lodLevel ?? 0;
+		const previousLod = chunk?.lodLevel ?? 3;
 		const decision = lodRuleSet.resolveWithHysteresis(
 			{ chunkX: x, chunkY: y, chunkZ: z },
 			{ chunkX: playerChunkX, chunkY: playerChunkY, chunkZ: playerChunkZ },
 			previousLod,
 		);
 
-		if (!decision.allowsChunkCreation) {
-			return;
+		if (!decision.allowsChunkCreation) return;
+
+		if (!chunk) {
+			chunk = new Chunk(x, y, z);
 		}
 
 		const desiredLod = decision.lodLevel;
@@ -565,18 +564,20 @@ export class ChunkStreamingController {
 			verticalRadius + SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER;
 
 		for (const chunk of Chunk.chunkInstances.values()) {
-			if (chunk.isPersistent) continue;
-			if (!chunk.isLoaded) continue;
+			if (!chunk.isLoaded || chunk.isPersistent) continue;
 			if (unloadQueueSet.has(chunk)) continue;
 
-			const cx = chunk.chunkX;
-			const cy = chunk.chunkY;
-			const cz = chunk.chunkZ;
+			const dx = chunk.chunkX - chunkX;
+			const dy = chunk.chunkY - chunkY;
+			const dz = chunk.chunkZ - chunkZ;
 
 			if (
-				Math.abs(cx - chunkX) > removeRadius ||
-				Math.abs(cz - chunkZ) > removeRadius ||
-				Math.abs(cy - chunkY) > verticalRemoveRadius
+				dx > removeRadius ||
+				dx < -removeRadius ||
+				dz > removeRadius ||
+				dz < -removeRadius ||
+				dy > verticalRemoveRadius ||
+				dy < -verticalRemoveRadius
 			) {
 				unloadQueueSet.add(chunk);
 			}

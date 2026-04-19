@@ -1,4 +1,4 @@
-import { Biome } from "../Biome/BiomeTypes";
+import type { Biome } from "../Biome/BiomeTypes";
 
 export interface IWorldFeature {
 	generate(

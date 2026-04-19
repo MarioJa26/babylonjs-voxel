@@ -1,7 +1,7 @@
-import { IWorldFeature } from "./IWorldFeature";
+import type { Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-import { Structure, StructureData } from "./Structure";
-import { Biome } from "../Biome/BiomeTypes";
+import type { IWorldFeature } from "./IWorldFeature";
+import { Structure, type StructureData } from "./Structure";
 
 export class StructureSpawnerFeature implements IWorldFeature {
 	private static structures: Map<string, Structure> = new Map();

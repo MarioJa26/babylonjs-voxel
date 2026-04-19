@@ -27,35 +27,73 @@ export class DistantTerrain {
 	private diffuseAtlasTexture: Texture | null = null;
 
 	// --- Tile lookup texture ---
-	// Set to true if you also update the shader to sample .rg instead of .rgba
 	private static readonly USE_LA_TILE_TEXTURE = false;
 
 	#surfaceTileLookupTexture: RawTexture;
 	#surfaceTileLookupData: Uint8Array;
 
 	#radius: number;
-	#gridStep = 1; // 1 vertex per gridStep*chunkSize in each axis
+	#gridStep = 1;
 	#gridResolution: number;
 
-	// Reusable vector (avoid per-frame allocations)
+	// Shared worker-written terrain buffers
+	#sharedPositions: Int16Array;
+	#sharedNormals: Int8Array;
+	#sharedSurfaceTiles: Uint8Array;
+
+	// Reusable vector
 	#gridOrigin = new Vector2();
 
-	// GPU buffers (created once, updated later)
+	// GPU buffers (created once, updated)
 	#positionVB?: VertexBuffer;
 	#normalVB?: VertexBuffer;
-
-	// Store data for reuse (transferred to worker between updates)
-	#lastPositions: Int16Array | null = null;
-	#lastNormals: Int8Array | null = null;
-	#lastSurfaceTiles: Uint8Array | null = null;
-	#lastCenterChunkX: number | null = null;
-	#lastCenterChunkZ: number | null = null;
 
 	constructor() {
 		this.#radius = SETTING_PARAMS.DISTANT_RENDER_DISTANCE;
 		const segments = Math.floor((this.#radius * 2) / this.#gridStep);
 		this.#gridResolution = segments + 1;
 		const size = this.#radius * 2 * Chunk.SIZE;
+
+		// -----------------------------------------------------------------
+		// SharedArrayBuffer setup
+		// -----------------------------------------------------------------
+		if (
+			typeof SharedArrayBuffer === "undefined" ||
+			(typeof self !== "undefined" &&
+				"crossOriginIsolated" in self &&
+				!self.crossOriginIsolated)
+		) {
+			throw new Error(
+				"DistantTerrain requires SharedArrayBuffer. " +
+					"Make sure crossOriginIsolated is true and your dev server sends " +
+					"Cross-Origin-Opener-Policy: same-origin and " +
+					"Cross-Origin-Embedder-Policy: require-corp.",
+			);
+		}
+
+		const vertexCount = this.#gridResolution * this.#gridResolution;
+
+		const positionsBuffer = new SharedArrayBuffer(
+			vertexCount * 3 * Int16Array.BYTES_PER_ELEMENT,
+		);
+		const normalsBuffer = new SharedArrayBuffer(
+			vertexCount * 3 * Int8Array.BYTES_PER_ELEMENT,
+		);
+		const surfaceTilesBuffer = new SharedArrayBuffer(
+			vertexCount * 2 * Uint8Array.BYTES_PER_ELEMENT,
+		);
+
+		this.#sharedPositions = new Int16Array(positionsBuffer);
+		this.#sharedNormals = new Int8Array(normalsBuffer);
+		this.#sharedSurfaceTiles = new Uint8Array(surfaceTilesBuffer);
+
+		ChunkWorkerPool.getInstance().initDistantTerrainShared(
+			positionsBuffer,
+			normalsBuffer,
+			surfaceTilesBuffer,
+			this.#radius,
+			this.#gridStep,
+		);
 
 		// ---- Terrain mesh ----
 		this.mesh = this.createEmptyGridMesh("distantTerrain", Map1.mainScene);
@@ -73,9 +111,8 @@ export class DistantTerrain {
 			Map1.mainScene,
 		);
 
-		// ---- Tile lookup texture & backing array ----
+		// ---- Tile lookup texture ----
 		if (DistantTerrain.USE_LA_TILE_TEXTURE) {
-			// 2 channels (R=tileX, G=tileY)
 			this.#surfaceTileLookupData = new Uint8Array(
 				this.#gridResolution * this.#gridResolution * 2,
 			);
@@ -89,7 +126,6 @@ export class DistantTerrain {
 				Texture.NEAREST_SAMPLINGMODE,
 			);
 		} else {
-			// 4 channels (R=tileX, G=tileY, B=0, A=255)
 			this.#surfaceTileLookupData = new Uint8Array(
 				this.#gridResolution * this.#gridResolution * 4,
 			);
@@ -121,10 +157,7 @@ export class DistantTerrain {
 		this.material = new ShaderMaterial(
 			"distantTerrainMat",
 			Map1.mainScene,
-			{
-				vertex: "distantTerrain",
-				fragment: "distantTerrain",
-			},
+			{ vertex: "distantTerrain", fragment: "distantTerrain" },
 			{
 				attributes: ["position", "normal"],
 				uniforms: [
@@ -146,10 +179,10 @@ export class DistantTerrain {
 			},
 		);
 
-		this.material.onBind = (_mesh) => {
+		this.material.onBind = (mesh) => {
 			const effect = this.material.getEffect();
 			if (!effect) return;
-			this.bindCommonUniforms(effect, _mesh.getScene());
+			this.bindCommonUniforms(effect, mesh.getScene());
 		};
 
 		this.material.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
@@ -169,10 +202,7 @@ export class DistantTerrain {
 		this.waterMaterial = new ShaderMaterial(
 			"distantWaterMat",
 			Map1.mainScene,
-			{
-				vertex: "distantWater",
-				fragment: "distantWater",
-			},
+			{ vertex: "distantWater", fragment: "distantWater" },
 			{
 				attributes: ["position"],
 				uniforms: [
@@ -208,12 +238,13 @@ export class DistantTerrain {
 		this.waterMesh.doNotSyncBoundingInfo = true;
 		this.waterMesh.alwaysSelectAsActiveMesh = true;
 
-		// Listen for worker results
+		// ---- Worker callback ----
+		// Worker only returns center coords; data lives in shared buffers.
 		ChunkWorkerPool.getInstance().onDistantTerrainGenerated = (data) => {
 			this.applyTerrainData(
-				data.positions,
-				data.normals,
-				data.surfaceTiles,
+				this.#sharedPositions,
+				this.#sharedNormals,
+				this.#sharedSurfaceTiles,
 				data.centerChunkX,
 				data.centerChunkZ,
 			);
@@ -255,14 +286,11 @@ export class DistantTerrain {
 				indices[k++] = i3;
 			}
 		}
-
 		mesh.setIndices(indices);
 
-		// Allocate empty buffers
 		const positions = new Int16Array(vertexCount * 3);
 		const normals = new Int8Array(vertexCount * 3);
 
-		// Initialize normals upward so first frame isn't black
 		for (let i = 1; i < normals.length; i += 3) {
 			normals[i] = 127;
 		}
@@ -271,9 +299,9 @@ export class DistantTerrain {
 			engine,
 			positions,
 			VertexBuffer.PositionKind,
-			true, // updatable
-			false, // postpone
-			3, // stride
+			true,
+			false,
+			3,
 			false,
 			0,
 			undefined,
@@ -293,7 +321,7 @@ export class DistantTerrain {
 			0,
 			undefined,
 			VertexBuffer.BYTE,
-			true, // normalized
+			true,
 		);
 		mesh.setVerticesBuffer(this.#normalVB);
 
@@ -353,21 +381,7 @@ export class DistantTerrain {
 			this.#radius,
 			SETTING_PARAMS.RENDER_DISTANCE,
 			this.#gridStep,
-			this.#lastPositions && this.#lastNormals && this.#lastSurfaceTiles
-				? {
-						positions: this.#lastPositions,
-						normals: this.#lastNormals,
-						surfaceTiles: this.#lastSurfaceTiles,
-					}
-				: undefined,
-			this.#lastCenterChunkX ?? undefined,
-			this.#lastCenterChunkZ ?? undefined,
 		);
-
-		// transferred to worker
-		this.#lastPositions = null;
-		this.#lastNormals = null;
-		this.#lastSurfaceTiles = null;
 	}
 
 	private applyTerrainData(
@@ -377,13 +391,6 @@ export class DistantTerrain {
 		centerChunkX: number,
 		centerChunkZ: number,
 	) {
-		// Save data for next update reuse
-		this.#lastPositions = positions;
-		this.#lastNormals = normals;
-		this.#lastSurfaceTiles = surfaceTiles;
-		this.#lastCenterChunkX = centerChunkX;
-		this.#lastCenterChunkZ = centerChunkZ;
-
 		this.mesh.position.set(
 			centerChunkX * Chunk.SIZE,
 			-2,
@@ -395,16 +402,26 @@ export class DistantTerrain {
 			GenerationParams.SEA_LEVEL,
 			centerChunkZ * Chunk.SIZE,
 		);
-
+		const prevX = this.mesh.position.x;
+		const prevZ = this.mesh.position.z;
+		const newX = centerChunkX * Chunk.SIZE;
+		const newZ = centerChunkZ * Chunk.SIZE;
 		this.#gridOrigin.x = (centerChunkX - this.#radius) * Chunk.SIZE;
 		this.#gridOrigin.y = (centerChunkZ - this.#radius) * Chunk.SIZE;
 		this.material.setVector2("gridOriginWorld", this.#gridOrigin);
-
+		if (
+			Math.abs(newX - prevX) > Chunk.SIZE - 1 ||
+			Math.abs(newZ - prevZ) > Chunk.SIZE - 1
+		) {
+			console.warn(
+				`LARGE MESH JUMP | prev=(${prevX},${prevZ}) new=(${newX},${newZ}) delta=(${newX - prevX},${newZ - prevZ})`,
+			);
+		}
 		// Update existing GPU buffers only
 		this.#positionVB?.update(positions);
 		this.#normalVB?.update(normals);
 
-		// ---- Update tile lookup texture ----
+		// Update tile lookup texture
 		if (DistantTerrain.USE_LA_TILE_TEXTURE) {
 			if (surfaceTiles.length !== this.#surfaceTileLookupData.length) {
 				for (let i = 0, j = 0; i < surfaceTiles.length; i += 2, j += 2) {

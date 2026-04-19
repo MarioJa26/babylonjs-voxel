@@ -1,7 +1,7 @@
-import { Matrix, Mesh, Vector3 } from "@babylonjs/core";
-import { IControls } from "../../Inferface/IControls";
-import { Player } from "../Player";
-import { Mount } from "@/code/Entities/Mount";
+import { Matrix, type Mesh, Vector3 } from "@babylonjs/core";
+import type { Mount } from "@/code/Entities/Mount";
+import type { IControls } from "../../Inferface/IControls";
+import type { Player } from "../Player";
 import { DebugControlHelper } from "./DebugControlHelper";
 
 export type BoatControlEntity = {

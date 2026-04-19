@@ -476,7 +476,7 @@ export class ChunkLoadingSystem {
 		);
 
 		// Incrementally dispatch remesh work instead of submitting a burst in one frame.
-		ChunkLoadingSystem.processPendingRemeshes(5);
+		ChunkLoadingSystem.processPendingRemeshes(12);
 	}
 
 	public static registerChunkEntityLoader(

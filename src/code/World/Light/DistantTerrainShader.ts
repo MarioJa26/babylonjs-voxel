@@ -102,7 +102,7 @@ export class DistantTerrainShader {
             float dist = length(viewVec);
             float fogFactor = clamp((vFogInfos.z - dist) / (vFogInfos.z - vFogInfos.y), 0.0, 1.0);
             
-            float heightFactor = clamp((vPositionW.y - dist * HEIGHT_OFFSET) * HEIGHT_SCALE, 0.0, 1.0);
+            float heightFactor = clamp(vPositionW.y * HEIGHT_SCALE, 0.0, 1.0);
             vec3 atmosphereColor = getAtmosphereColor(heightFactor);
             vec3 baseFogColor = mix(vFogColor, atmosphereColor, 0.8);
 
@@ -185,7 +185,7 @@ export class DistantTerrainShader {
 
             float fogFactor = clamp((vFogInfos.z - dist) / (vFogInfos.z - vFogInfos.y), 0.0, 1.0);
             
-            float heightFactor = clamp((vPositionW.y - dist * HEIGHT_OFFSET) * HEIGHT_SCALE, 0.0, 1.0);
+            float heightFactor = clamp(vPositionW.y * HEIGHT_SCALE, 0.0, 1.0);
             vec3 atmosphereColor = getAtmosphereColor(heightFactor);
             vec3 baseFogColor = mix(vFogColor, atmosphereColor, 0.8);
 

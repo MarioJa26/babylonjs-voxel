@@ -93,6 +93,7 @@ function compressBlocks(blocks: Uint8Array): {
 // ---------------------------------------------------------------------------
 // Worker message handler
 // ---------------------------------------------------------------------------
+
 const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
 	const { type } = event.data;
 
@@ -111,6 +112,11 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
 				},
 				transferables,
 			);
+			return;
+		}
+
+		case WorkerTaskType.InitDistantTerrainShared: {
+			WorkerTaskHandlers.handleInitDistantTerrainShared(event.data);
 			return;
 		}
 

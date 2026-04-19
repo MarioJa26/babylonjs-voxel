@@ -1,4 +1,4 @@
-import { Client, Room } from "colyseus.js";
+import { Client, type Room } from "colyseus.js";
 
 export class MyConnection {
 	// ✅ Initialize Colyseus client
