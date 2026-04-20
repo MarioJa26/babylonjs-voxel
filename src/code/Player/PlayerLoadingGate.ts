@@ -4,9 +4,9 @@ import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
 import type { Player } from "./Player";
 
 export class PlayerLoadingGate {
-	private static readonly SPAWN_CHUNK_RADIUS = 1;
-	private static readonly SPAWN_READY_FRAME_THRESHOLD = 6;
-	private static readonly SPAWN_PROTECTION_TIMEOUT_MS = 15000;
+	private static readonly SPAWN_CHUNK_RADIUS = 2;
+	private static readonly SPAWN_READY_FRAME_THRESHOLD = 17;
+	private static readonly SPAWN_PROTECTION_TIMEOUT_MS = 16000;
 
 	private spawnReadyFrames = 0;
 	private isActive = true;

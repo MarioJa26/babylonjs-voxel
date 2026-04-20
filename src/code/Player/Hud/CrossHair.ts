@@ -17,7 +17,7 @@ import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { FACE_ALL, getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
 import { getTransformedShapeBoxes } from "@/code/World/Shape/BlockShapeTransforms";
-import { Player } from "../Player";
+import { type Player, REACH_DISTANCE } from "../Player";
 
 type BlockRaycastHit = {
 	x: number;
@@ -277,7 +277,7 @@ export class CrossHair {
 			blockId: number,
 		) => boolean,
 	): BlockRaycastHit | null {
-		const ray = CrossHair.#getSharedForwardRay(player, Player.REACH_DISTANCE);
+		const ray = CrossHair.#getSharedForwardRay(player, REACH_DISTANCE);
 
 		const ox = ray.origin.x;
 		const oy = ray.origin.y;
@@ -612,7 +612,7 @@ export class CrossHair {
 
 	public static pickUsableMesh(
 		player: Player,
-		maxDistance = Player.REACH_DISTANCE,
+		maxDistance = REACH_DISTANCE,
 	): AbstractMesh | null {
 		return CrossHair.#rayMarchFirstMesh(player, maxDistance, (mesh) => {
 			const metadata = mesh.metadata;
@@ -679,7 +679,7 @@ export class CrossHair {
 		);
 		if (!hit) return null;
 
-		const ray = CrossHair.#getSharedForwardRay(player, Player.REACH_DISTANCE);
+		const ray = CrossHair.#getSharedForwardRay(player, REACH_DISTANCE);
 
 		// exact world position where the ray struck the block face
 		const worldHitX = ray.origin.x + ray.direction.x * hit.t;

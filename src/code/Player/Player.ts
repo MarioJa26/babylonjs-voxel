@@ -20,6 +20,7 @@ import { PlayerVehicle } from "./PlayerVehicle";
 /**
  * Player class that handles character movement, physics, and camera controls
  */
+export const REACH_DISTANCE = 64;
 export class Player implements IUsable {
 	#playerCamera: PlayerCamera;
 	#playerVehicle: PlayerVehicle;
@@ -32,7 +33,6 @@ export class Player implements IUsable {
 	public flashlight: PlayerFlashLight;
 	public stats: PlayerStats;
 
-	static readonly REACH_DISTANCE = 64;
 	#pauseMenu: PauseMenu;
 
 	/**
