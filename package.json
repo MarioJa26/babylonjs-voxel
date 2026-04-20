@@ -10,29 +10,29 @@
 		"lint": "eslint ."
 	},
 	"dependencies": {
-		"@babylonjs/addons": "^8.24.0",
-		"@babylonjs/core": "^8.46.2",
-		"@babylonjs/gui": "^8.22.2",
-		"@babylonjs/inspector": "^8.46.2",
-		"@babylonjs/loaders": "^8.46.2",
-		"@babylonjs/materials": "^8.22.2",
+		"@babylonjs/addons": "^9.3.1",
+		"@babylonjs/core": "^9.3.1",
+		"@babylonjs/gui": "^9.3.1",
+		"@babylonjs/inspector": "^9.3.1",
+		"@babylonjs/loaders": "^9.3.1",
+		"@babylonjs/materials": "^9.3.1",
+		"@colyseus/sdk": "^0.17.41",
 		"alea": "^1.0.1",
-		"colyseus.js": "^0.16.22",
 		"idb": "^8.0.3",
-		"vue": "^3.2.13"
+		"vue": "^3.5.32"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.4.12",
-		"@types/node": "^25.2.0",
-		"@typescript-eslint/eslint-plugin": "^8.54.0",
-		"@typescript-eslint/parser": "^8.54.0",
-		"@vitejs/plugin-vue": "^6.0.4",
-		"@vue/eslint-config-typescript": "^14.6.0",
-		"eslint": "^9.39.2",
-		"eslint-plugin-vue": "^10.7.0",
-		"typescript": "^5.9.3",
-		"typescript-eslint": "^8.54.0",
-		"vite": "^7.3.1",
-		"vite-plugin-glsl": "^1.5.5"
+		"@types/node": "^25.6.0",
+		"@typescript-eslint/eslint-plugin": "^8.58.2",
+		"@typescript-eslint/parser": "^8.58.2",
+		"@vitejs/plugin-vue": "^6.0.6",
+		"@vue/eslint-config-typescript": "^14.7.0",
+		"eslint": "^10.2.1",
+		"eslint-plugin-vue": "^10.8.0",
+		"typescript": "^6.0.3",
+		"typescript-eslint": "^8.58.2",
+		"vite": "^8.0.9",
+		"vite-plugin-glsl": "^1.6.0"
 	}
 }
