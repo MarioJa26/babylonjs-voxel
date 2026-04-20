@@ -18,9 +18,7 @@
 		"@babylonjs/materials": "^8.22.2",
 		"alea": "^1.0.1",
 		"colyseus.js": "^0.16.22",
-		"fastnoise-lite": "^1.1.1",
 		"idb": "^8.0.3",
-		"simplex-noise": "^4.0.3",
 		"vue": "^3.2.13"
 	},
 	"devDependencies": {
