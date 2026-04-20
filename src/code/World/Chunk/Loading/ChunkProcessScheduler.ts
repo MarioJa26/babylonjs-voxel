@@ -150,17 +150,14 @@ export class ChunkProcessScheduler {
 		state.hydrateIndex = 0;
 	}
 
-	private _chunksToSave: Chunk[] = [];
-
 	public async processQueues(): Promise<void> {
-		if (!this.isProcessing) {
-			this.isProcessing = true;
+		if (this.isProcessing) {
+			return;
+		}
 
-			if (!this.inFlightProcessState) {
-				this.inFlightProcessState = this._state;
-				this.resetState(this.inFlightProcessState);
-			}
-		} else if (!this.inFlightProcessState) {
+		this.isProcessing = true;
+
+		if (!this.inFlightProcessState) {
 			this.inFlightProcessState = this._state;
 			this.resetState(this.inFlightProcessState);
 		}
@@ -211,15 +208,18 @@ export class ChunkProcessScheduler {
 					}
 
 					case ProcessStage.SaveUnloadBatch: {
-						const chunksToSave = this._chunksToSave;
-						chunksToSave.length = 0;
+						// Bug 2 fix — local scratch instead of instance-level _chunksToSave
+						const chunksToSave: Chunk[] = [];
 
 						for (let i = 0; i < state.unloadBatch.length; i++) {
 							const chunk = state.unloadBatch[i];
 							if (
 								chunk.isLoaded &&
 								!chunk.isPersistent &&
-								(chunk.isModified || chunk.isLODMeshCacheDirty)
+								// Bug 1 fix — add isLightDirty
+								(chunk.isModified ||
+									chunk.isLODMeshCacheDirty ||
+									chunk.isLightDirty)
 							) {
 								chunksToSave.push(chunk);
 							}
@@ -268,6 +268,7 @@ export class ChunkProcessScheduler {
 							await this.adapter.unloadChunkBoundEntitiesForChunk(chunk);
 
 							chunk.dispose();
+							//streamingController.onChunkDisposed(chunk.id);
 							chunk.isLoaded = false;
 							chunk.isTerrainScheduled = false;
 							Chunk.chunkInstances.delete(chunk.id);
@@ -301,6 +302,7 @@ export class ChunkProcessScheduler {
 						state.chunksNeedingFullHydration.clear();
 
 						state.hydrateIds.length = 0;
+						state.hydrateChunks.length = 0;
 						state.hydrateMap.clear();
 						state.hydrateIndex = 0;
 
@@ -436,17 +438,24 @@ export class ChunkProcessScheduler {
 
 					case ProcessStage.LoadHydrationData: {
 						try {
-							state.hydrateMap = await WorldStorage.loadChunks(
-								state.hydrateIds,
-								{ includeVoxelData: true },
-							);
+							// Bug 4 fix — copy into existing map instead of replacing it
+							const loaded = await WorldStorage.loadChunks(state.hydrateIds, {
+								includeVoxelData: true,
+							});
 							this.beginSlice(state);
+
+							state.hydrateMap.clear();
+							for (const [k, v] of loaded) {
+								state.hydrateMap.set(k, v);
+							}
+
+							// Bug 5 fix — only count on success
+							state.hydratedCount += state.hydrateIds.length;
 						} catch (error) {
 							console.warn("Failed to hydrate chunks from storage", error);
-							state.hydrateMap = new Map();
+							state.hydrateMap.clear();
 						}
 
-						state.hydratedCount += state.hydrateIds.length;
 						state.stage = ProcessStage.ApplyHydration;
 						break;
 					}
@@ -496,6 +505,7 @@ export class ChunkProcessScheduler {
 					case ProcessStage.Finalize: {
 						this.adapter.finalizeProcessState(state);
 						this.inFlightProcessState = null;
+						// isProcessing cleared here too, before the return
 						this.isProcessing = false;
 
 						if (
@@ -508,7 +518,7 @@ export class ChunkProcessScheduler {
 					}
 				}
 			}
-
+			this.isProcessing = false;
 			this.adapter.updateSliceDebugStats(state);
 			this.scheduleProcessContinuation();
 		} catch (error) {

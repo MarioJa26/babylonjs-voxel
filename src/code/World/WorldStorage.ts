@@ -203,6 +203,7 @@ export class WorldStorage {
 				for (const entry of prepared) {
 					entry.chunk.isModified = false;
 					entry.chunk.isLODMeshCacheDirty = false;
+					entry.chunk.isLightDirty = false;
 				}
 				resolve();
 			};
@@ -374,9 +375,12 @@ export class WorldStorage {
 			return Promise.resolve();
 		}
 
-		const fullSaveChunks = savableChunks.filter((chunk) => chunk.isModified);
+		const fullSaveChunks = savableChunks.filter(
+			(chunk) => chunk.isModified || chunk.isLightDirty,
+		);
 		const lodOnlyChunks = savableChunks.filter(
-			(chunk) => !chunk.isModified && chunk.isLODMeshCacheDirty,
+			(chunk) =>
+				!chunk.isModified && !chunk.isLightDirty && chunk.isLODMeshCacheDirty,
 		);
 
 		const lanePromises: Promise<void>[] = [];
@@ -449,10 +453,7 @@ export class WorldStorage {
 	public static async saveAllModifiedChunks(): Promise<void> {
 		const modifiedChunks: Chunk[] = [];
 		for (const chunk of Chunk.chunkInstances.values()) {
-			if (
-				(chunk.isModified || chunk.isLODMeshCacheDirty) &&
-				!chunk.isPersistent
-			) {
+			if (chunk.needsPersistence() && !chunk.isPersistent) {
 				modifiedChunks.push(chunk);
 			}
 		}

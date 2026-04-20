@@ -669,6 +669,13 @@ export class ChunkStreamingController {
 		}
 	}
 
+	public onChunkDisposed(chunkId: bigint): void {
+		this.loadedRefreshQueueSet.delete(chunkId);
+		// The chunk object remains in loadedRefreshQueue as a tombstone,
+		// but dequeueLoadedRefreshChunk will skip it because isLoaded=false
+		// and processTargetChunkCoordinate guards on that.
+	}
+
 	private sortLoadQueue(
 		playerChunkX: number,
 		playerChunkY: number,

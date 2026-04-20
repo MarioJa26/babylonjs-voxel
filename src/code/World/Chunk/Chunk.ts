@@ -68,6 +68,8 @@ export class Chunk {
 	public isTerrainScheduled = false;
 	public colliderDirty = true;
 
+	public isLightDirty = false;
+
 	private remeshQueued = false;
 	private remeshQueuedPriority = false;
 
@@ -1473,6 +1475,12 @@ export class Chunk {
 	): Chunk | undefined {
 		const key = Chunk.packCoords(chunkX, chunkY, chunkZ);
 		return Chunk.chunkInstances.get(key);
+	}
+	public markLightChanged(): void {
+		this.isLightDirty = true;
+	}
+	public needsPersistence(): boolean {
+		return this.isModified || this.isLODMeshCacheDirty || this.isLightDirty;
 	}
 
 	// --- Coordinate Packing for BigInt Keys ---
