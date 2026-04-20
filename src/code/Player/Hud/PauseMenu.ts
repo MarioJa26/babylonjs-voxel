@@ -174,6 +174,8 @@ export class PauseMenu {
 		container.appendChild(this.createSeparator("Graphics"));
 
 		// --- Graphics ---
+		let initialized = false;
+
 		this.createSlider(
 			container,
 			"Render Distance",
@@ -182,9 +184,28 @@ export class PauseMenu {
 			SETTING_PARAMS.RENDER_DISTANCE,
 			(value) => {
 				SETTING_PARAMS.RENDER_DISTANCE = value;
+
+				if (initialized) {
+					const pos = this.player.position;
+					const chunkX = ChunkLoadingSystem.worldToChunkCoord(pos.x);
+					const chunkY = ChunkLoadingSystem.worldToChunkCoord(pos.y);
+					const chunkZ = ChunkLoadingSystem.worldToChunkCoord(pos.z);
+
+					void ChunkLoadingSystem.updateChunksAround(
+						chunkX,
+						chunkY,
+						chunkZ,
+						value,
+						SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
+						// no prev coords → forces full volume scan
+					);
+				}
+
 				return `${value} chunks`;
 			},
 		);
+
+		initialized = true;
 
 		// --- SSAO Toggle ---
 		const ssaoToggleLabel = document.createElement("label");

@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-04-19T08:12:19.618Z
+Generated: 2026-04-20T03:26:16.320Z
 
-> **Summary:** 99 classes · 1771 members · 77 module-level functions · 27543 LOC
+> **Summary:** 99 classes · 1772 members · 77 module-level functions · 27596 LOC
 
 ---
 
@@ -671,7 +671,7 @@ Generated: 2026-04-19T08:12:19.618Z
 
 ---
 
-## `Generation/SurfaceGenerator.ts` (759 LOC)
+## `Generation/SurfaceGenerator.ts` (776 LOC)
 
 ### export class SurfaceGenerator
 
@@ -741,7 +741,8 @@ Generated: 2026-04-19T08:12:19.618Z
 - `private getFinalTerrainHeight(worldX: number, worldZ: number): number`
 - `private isBeachLocation(worldX: number, worldZ: number, terrainHeight: number): boolean`
 - `private isNearWater(x: number, z: number): boolean`
-- `private getDensity(x: number, y: number, z: number, baseHeight: number, yFreq: number): number`
+- `private getDensity(x: number, y: number, z: number, baseHeight: number, yFreq: number, cachedCliffNoise: number): number`
+- `private sampleCliffNoise(x: number, baseHeight: number, z: number): number`
 - `private findTopSurfaceY(worldX: number, worldZ: number, baseHeight: number, yFreq: number): number`
 
 **Types / Interfaces / Enums**
@@ -1331,7 +1332,7 @@ Generated: 2026-04-19T08:12:19.618Z
 
 ---
 
-## `Player/Hud/PauseMenu.ts` (311 LOC)
+## `Player/Hud/PauseMenu.ts` (326 LOC)
 
 ### export class PauseMenu
 
@@ -2407,7 +2408,7 @@ Generated: 2026-04-19T08:12:19.618Z
 
 ---
 
-## `World/Chunk/ChunkLoadingSystem.ts` (774 LOC)
+## `World/Chunk/ChunkLoadingSystem.ts` (775 LOC)
 
 ### export class ChunkLoadingSystem
 
@@ -2505,7 +2506,7 @@ Generated: 2026-04-19T08:12:19.618Z
 
 ---
 
-## `World/Chunk/ChunkWorkerPool.ts` (1035 LOC)
+## `World/Chunk/ChunkWorkerPool.ts` (1045 LOC)
 
 ### export class ChunkWorkerPool
 
@@ -2824,7 +2825,7 @@ Generated: 2026-04-19T08:12:19.618Z
 
 ---
 
-## `World/Chunk/Loading/ChunkProcessScheduler.ts` (437 LOC)
+## `World/Chunk/Loading/ChunkProcessScheduler.ts` (445 LOC)
 
 ### export class ChunkProcessScheduler
 
@@ -2911,7 +2912,7 @@ Generated: 2026-04-19T08:12:19.618Z
 
 ---
 
-## `World/Chunk/Loading/ChunkStreamingController.ts` (586 LOC)
+## `World/Chunk/Loading/ChunkStreamingController.ts` (588 LOC)
 
 ### export class ChunkStreamingController
 
@@ -2935,8 +2936,8 @@ Generated: 2026-04-19T08:12:19.618Z
 - `public processLoadedRefreshQueue(playerChunkX: number, playerChunkY: number, playerChunkZ: number, renderDistance: unknown = SETTING_PARAMS.RENDER_DISTANCE, verticalRadius: unknown = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE, maxChunks: unknown = 8): void`
 - `private dequeueLoadedRefreshChunk(): Chunk | undefined`
 - `public processTargetChunkCoordinate(x: number, y: number, z: number, playerChunkX: number, playerChunkY: number, playerChunkZ: number, lodRuleSet: ChunkLodRuleSet): void`
-- `public processFullTargetVolume(chunkX: number, chunkY: number, chunkZ: number, lodRuleSet: ChunkLodRuleSet): void`
-- `public processDeltaSlabs(chunkX: number, chunkY: number, chunkZ: number, prevChunkX: number, prevChunkY: number, prevChunkZ: number, lodRuleSet: ChunkLodRuleSet): void`
+- `private processMovementRings(chunkX: number, chunkY: number, chunkZ: number, prevChunkX: number, prevChunkY: number, prevChunkZ: number, lodRuleSet: ChunkLodRuleSet): void`
+- `private processInitialShell(chunkX: number, chunkY: number, chunkZ: number, lodRuleSet: ChunkLodRuleSet): void`
 - `public queueUnloading(chunkX: number, chunkY: number, chunkZ: number, renderDistance: number, verticalRadius: number): void`
 - `public tryApplyCachedLodTransitionMesh(chunk: Chunk, targetLod: number): boolean`
 - `public ensureChunkQueuedForLoad(chunk: Chunk, desiredLod: number, revision: number, includeVoxelData: unknown = desiredLod <= 1): void`

@@ -475,12 +475,6 @@ export class SurfaceGenerator {
 				topSunlightMask[columnIndex] =
 					!hasSurface || topSurfaceY <= topWorldY ? 1 : 0;
 
-				/**
-				 * ChunkY band classification:
-				 * getDensity(...) already returns plain relativeHeight outside
-				 * +/- DENSITY_INFLUENCE_RANGE from terrainHeight, so the whole band
-				 * can be classified without per-voxel density noise in those cases.
-				 */
 				const chunkEntirelyAboveInfluence =
 					chunkWorldY > terrainHeight + INFLUENCE;
 
@@ -536,7 +530,6 @@ export class SurfaceGenerator {
 				if (chunkEntirelyAboveInfluence) {
 					for (let localY = CHUNK_SIZE - 1; localY >= 0; localY--) {
 						const worldY = chunkWorldY + localY;
-
 						if (worldY <= SEA_LEVEL) {
 							if (worldY >= 0) {
 								placeBlock(worldX, worldY, worldZ, volcanicLiquidId, false);
@@ -545,7 +538,6 @@ export class SurfaceGenerator {
 							}
 						}
 					}
-
 					continue;
 				}
 
@@ -595,7 +587,6 @@ export class SurfaceGenerator {
 								worldZ,
 								riverNoise,
 							);
-
 							if (isTunnel) {
 								placeBlock(
 									worldX,
@@ -627,7 +618,6 @@ export class SurfaceGenerator {
 							worldY,
 							depthBelowSurface,
 						);
-
 						placeBlock(worldX, worldY, worldZ, blockId, true);
 						airGapSinceLastSolid = 0;
 					}
@@ -635,10 +625,15 @@ export class SurfaceGenerator {
 					continue;
 				}
 
-				// ------------------------------------------------------------
-				// SLOW PATH: chunk band intersects the density influence region
-				// => keep the original density-driven per-voxel evaluation
-				// ------------------------------------------------------------
+				// SLOW PATH — sample cliffNoise once at surface level, reuse for all Y.
+				// y * 0.004 shifts by only 0.256 across the entire 64-block influence range
+				// so this is visually identical to per-voxel sampling.
+				const cliffNoise = SurfaceGenerator.densityNoise(
+					worldX * 0.0035,
+					terrainHeight * 0.004,
+					worldZ * 0.0035,
+				);
+
 				let depthAnchorY = columnTopSurfaceY;
 
 				const densityAboveChunk = this.getDensity(
@@ -647,6 +642,7 @@ export class SurfaceGenerator {
 					worldZ,
 					terrainHeight,
 					yFreq,
+					cliffNoise,
 				);
 
 				const isTunnelAboveChunk =
@@ -671,7 +667,6 @@ export class SurfaceGenerator {
 							worldZ,
 							riverNoise,
 						);
-
 						if (isTunnel) {
 							placeBlock(
 								worldX,
@@ -691,6 +686,7 @@ export class SurfaceGenerator {
 						worldZ,
 						terrainHeight,
 						yFreq,
+						cliffNoise,
 					);
 
 					if (density > 0) {
@@ -699,7 +695,6 @@ export class SurfaceGenerator {
 						) {
 							depthAnchorY = worldY;
 						}
-
 						const depthBelowSurface =
 							depthAnchorY !== NO_SURFACE_Y
 								? depthAnchorY - worldY
@@ -712,7 +707,6 @@ export class SurfaceGenerator {
 							worldY,
 							depthBelowSurface,
 						);
-
 						placeBlock(worldX, worldY, worldZ, blockId, true);
 						airGapSinceLastSolid = 0;
 					} else {
@@ -723,7 +717,6 @@ export class SurfaceGenerator {
 								placeBlock(worldX, worldY, worldZ, 29, false);
 							}
 						}
-
 						airGapSinceLastSolid++;
 					}
 				}
@@ -898,6 +891,7 @@ export class SurfaceGenerator {
 		z: number,
 		baseHeight: number,
 		yFreq: number,
+		cachedCliffNoise: number,
 	): number {
 		const relativeHeight = baseHeight - y;
 
@@ -920,17 +914,19 @@ export class SurfaceGenerator {
 			(z - y * 0.45) * 0.008,
 		);
 
-		const cliffNoise = SurfaceGenerator.densityNoise(
-			x * 0.0035,
-			y * 0.004,
-			z * 0.0035,
-		);
-
 		return (
 			relativeHeight +
 			baseNoise * SurfaceGenerator.DENSITY_BASE_AMPLITUDE +
 			overhangNoise * SurfaceGenerator.DENSITY_OVERHANG_AMPLITUDE +
-			cliffNoise * SurfaceGenerator.DENSITY_CLIFF_AMPLITUDE
+			cachedCliffNoise * SurfaceGenerator.DENSITY_CLIFF_AMPLITUDE
+		);
+	}
+
+	private sampleCliffNoise(x: number, baseHeight: number, z: number): number {
+		return SurfaceGenerator.densityNoise(
+			x * 0.0035,
+			baseHeight * 0.004, // sampled at surface level, reused for all Y
+			z * 0.0035,
 		);
 	}
 
@@ -944,29 +940,33 @@ export class SurfaceGenerator {
 		const maxY = baseHeight + range;
 		const minY = baseHeight - range;
 
+		// Sample cliff noise once — y*0.004 barely moves across 64 blocks
+		const cliffNoise = this.sampleCliffNoise(worldX, baseHeight, worldZ);
+
 		let densityAbove = this.getDensity(
 			worldX,
 			maxY + 1,
 			worldZ,
 			baseHeight,
 			yFreq,
+			cliffNoise,
 		);
-
 		let highestSolid = SurfaceGenerator.NO_SURFACE_Y;
 
 		for (let y = maxY; y >= minY; y--) {
-			const densityHere = this.getDensity(worldX, y, worldZ, baseHeight, yFreq);
-
-			// First solid block directly below air = top surface
-			if (densityHere > 0 && densityAbove <= 0) {
-				return y;
-			}
-
+			const densityHere = this.getDensity(
+				worldX,
+				y,
+				worldZ,
+				baseHeight,
+				yFreq,
+				cliffNoise,
+			);
+			if (densityHere > 0 && densityAbove <= 0) return y;
 			// Fallback if no sharp transition was found
 			if (densityHere > 0 && highestSolid === SurfaceGenerator.NO_SURFACE_Y) {
 				highestSolid = y;
 			}
-
 			densityAbove = densityHere;
 		}
 
