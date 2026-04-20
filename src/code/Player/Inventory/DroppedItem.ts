@@ -1,10 +1,9 @@
 import {
-	Color3,
 	type Mesh,
 	MeshBuilder,
 	type Observer,
 	type Scene,
-	StandardMaterial,
+	type StandardMaterial,
 	Vector3,
 } from "@babylonjs/core";
 import { MetadataContainer } from "@/code/Entities/MetaDataContainer";
@@ -16,7 +15,6 @@ import {
 	VoxelAabbCollider,
 } from "@/code/World/Collision/VoxelAabbCollider";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
-import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
 import type { Player } from "../Player";
 import type { Item } from "./Item";
 
@@ -49,24 +47,9 @@ export class DroppedItem implements IUsable {
 
 		this.#boxMesh.isPickable = true;
 		this.#boxMesh.position = new Vector3(x, y, z);
-		const midMat = new StandardMaterial("midGrid", Map1.mainScene);
 
-		const concreteMat = MaterialFactory.createMaterialByFolder(
-			Map1.mainScene,
-			item.materialFolder || "", // folder
-			1, // uvScale
-			".png", // extension
-			true, // diff
-			true, // nor
-			true, // ao
-			false, // spec
-		);
-		midMat.diffuseTexture = concreteMat.diffuseTexture;
-		midMat.bumpTexture = concreteMat.bumpTexture;
-		midMat.ambientTexture = concreteMat.ambientTexture;
-		midMat.specularColor = Color3.Black();
-		this.#boxMesh.material = midMat;
-		this.#material = midMat;
+		this.#material = item.material!;
+		this.#boxMesh.material = this.#material;
 
 		this.#boxMesh.renderingGroupId = 1;
 		this.#halfSize = size * 0.5;

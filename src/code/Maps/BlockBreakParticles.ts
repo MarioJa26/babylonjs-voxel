@@ -93,7 +93,7 @@ export class BlockBreakParticles {
 	private static init(scene: Scene) {
 		BlockBreakParticles.particleSystem = new ParticleSystem(
 			"blockBreakParticles",
-			12000,
+			1200,
 			scene,
 		);
 
