@@ -5,7 +5,8 @@
 The project is served and developed using Vite.
 It focuses on procedural world generation, chunk-based streaming, voxel rendering, and player interaction systems.
 
-<img width="1851" height="834" alt="Game" src="https://github.com/user-attachments/assets/9935f7ac-24be-47f5-b4f7-ca9d2aa39ecd" />
+<img width="1864" height="841" alt="image" src="https://github.com/user-attachments/assets/13c4bfe3-e30d-4ae7-9490-f83f28aa9fd4" />
+
 
 ## Overview
 
