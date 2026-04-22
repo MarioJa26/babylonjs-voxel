@@ -207,8 +207,13 @@ export class LightGenerator {
 					}
 
 					light[idx] = (light[idx] & 0x0f) | (cellSkyLight << 4);
-					queue[tail & mask] = (x << 10) | (y << 5) | z;
-					tail++;
+					// Water blocks receive and pass light downward, but must not be
+					// seeded into the BFS queue — that would spread light sideways
+					// through water and cause a bright halo at chunk top borders.
+					if (!blockIsWater) {
+						queue[tail & mask] = (x << 10) | (y << 5) | z;
+						tail++;
+					}
 
 					incomingSkyLight = cellSkyLight;
 					sourceIsWater = blockIsWater;
@@ -380,6 +385,12 @@ export class LightGenerator {
 			return tail;
 		}
 
+		// Water only passes light downward (handled in the seeding loop).
+		// Block lateral BFS propagation into or through water.
+		if (LightGenerator.isWaterBlock(blocks[idx])) {
+			return tail;
+		}
+
 		const currentVal = light[idx];
 		const currentSky = (currentVal >> 4) & 0x0f;
 		const currentBlock = currentVal & 0x0f;
@@ -397,7 +408,13 @@ export class LightGenerator {
 	}
 
 	private static isTransparentBlock(blockId: number): boolean {
-		return blockId === 0 || blockId === 30 || blockId === 60 || blockId === 61;
+		return (
+			blockId === 0 ||
+			blockId === 30 ||
+			blockId === 60 ||
+			blockId === 61 ||
+			blockId === 64
+		);
 	}
 
 	private static isWaterBlock(blockId: number): boolean {

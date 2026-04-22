@@ -484,7 +484,11 @@ export class Chunk {
 						(this.light_array[idx] & Chunk.BLOCK_LIGHT_MASK) |
 						(cellSkyLight << Chunk.SKY_LIGHT_SHIFT);
 
-					Chunk.pushQ(Chunk.Q_A, this, x, y, z, cellSkyLight);
+					// Water passes light downward only — never seed it into BFS
+					// or it will spread skylight sideways at chunk borders.
+					if (!thisIsWater) {
+						Chunk.pushQ(Chunk.Q_A, this, x, y, z, cellSkyLight);
+					}
 
 					if (!this.isTransparent(blockPacked, 1, -1)) {
 						incomingSkyLight = 0;
@@ -1217,7 +1221,7 @@ export class Chunk {
 				if (
 					isSkyLight
 						? !chunk.isTransparent(sourcePacked, axis, dir) ||
-							(isDown === 1 && Chunk.isWaterBlock(sourceBlockId))
+							(isDown !== 1 && Chunk.isWaterBlock(sourceBlockId))
 						: !sourceEmits && !chunk.isTransparent(sourcePacked, axis, dir)
 				) {
 					continue;
@@ -1238,6 +1242,12 @@ export class Chunk {
 					: targetLightArr[tidx] & 0xf;
 
 				const targetBlockId = unpackBlockId(targetPacked);
+
+				// Water only receives skylight from directly above (handled in seeding).
+				// Block all lateral and upward BFS propagation into water.
+				if (isSkyLight && isDown !== 1 && Chunk.isWaterBlock(targetBlockId)) {
+					continue;
+				}
 
 				const preservesFullSun =
 					isSkyLight &&
@@ -1362,7 +1372,7 @@ export class Chunk {
 				if (
 					isSkyLight
 						? !chunk.isTransparent(sourcePacked, axis, dir) ||
-							(isDown === 1 && Chunk.isWaterBlock(sourceBlockId))
+							(isDown !== 1 && Chunk.isWaterBlock(sourceBlockId))
 						: !sourceEmits && !chunk.isTransparent(sourcePacked, axis, dir)
 				) {
 					continue;
@@ -1495,6 +1505,39 @@ export class Chunk {
 		const zBig = (BigInt(z) & Chunk.MASK) << Chunk.Z_SHIFT;
 		return xBig | yBig | zBig;
 	}
+	public propagateDeferredLight(seedState: {
+		queue: Uint16Array;
+		length: number;
+	}): void {
+		if (seedState.length <= 0) return;
+
+		Chunk.clearQ(Chunk.Q_A);
+
+		const size = Chunk.SIZE;
+		const size2 = Chunk.SIZE2;
+		const skyShift = Chunk.SKY_LIGHT_SHIFT;
+
+		for (let i = 0; i < seedState.length; i++) {
+			const val = seedState.queue[i];
+			const x = (val >> 10) & 0x1f;
+			const y = (val >> 5) & 0x1f;
+			const z = val & 0x1f;
+			const idx = x + y * size + z * size2;
+			const level = (this.light_array[idx] >> skyShift) & 0xf;
+			// Never seed water blocks into BFS — water passes light
+			// downward only, seeding it causes lateral spread at chunk borders.
+			const blockId = unpackBlockId(this.getBlockPacked(x, y, z));
+			if (level > 0 && !Chunk.isWaterBlock(blockId)) {
+				Chunk.pushQ(Chunk.Q_A, this, x, y, z, level);
+			}
+		}
+
+		if (Chunk.Q_A.c.length > 0) {
+			this.processLightPropagationQueue(Chunk.Q_A, true);
+			this.scheduleRemesh(false, true);
+		}
+	}
+
 	public dispose(): void {
 		this.clearCachedLODMeshes();
 		this.mesh?.dispose();

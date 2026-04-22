@@ -33,6 +33,7 @@ export interface Biome {
 	stoneBlock: number;
 	canSpawnTrees: boolean;
 	treeDensity: number;
+	grassDensity: number;
 	beachBlock: number;
 	seafloorBlock: number;
 	terrainHeightBase?: number;

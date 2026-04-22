@@ -776,12 +776,11 @@ export class SurfaceGenerator {
 				);
 
 				const colBiome = column.biome;
-				if (!colBiome.canSpawnTrees) continue;
-
-				if (column.treeNoiseValue > colBiome.treeDensity) continue;
 
 				const surfaceY = column.topSurfaceY;
 				if (surfaceY === NO_SURFACE_Y) continue;
+
+				if (surfaceY < this.params.SEA_LEVEL) continue;
 
 				if (
 					this.riverGenerator.isRiver(
@@ -794,20 +793,32 @@ export class SurfaceGenerator {
 					continue;
 				}
 
-				if (surfaceY < this.params.SEA_LEVEL) continue;
-
 				const isBeach = this.isBeachLocation(worldX, worldZ, surfaceY);
 				const topBlockId = isBeach ? colBiome.beachBlock : colBiome.topBlock;
 
-				colBiome
-					.getTreeForBlock(topBlockId)
-					?.generate(
-						worldX,
-						surfaceY + 1,
-						worldZ,
-						placeBlock,
-						SurfaceGenerator.seedAsInt,
-					);
+				// Grass (id 64) spawns on grass blocks (id 15) using noise density.
+				// treeNoiseValue is [0,1]; threshold of 0.6 gives ~60% coverage.
+				const GRASS_DENSITY = _biome.grassDensity;
+				if (
+					isInsideChunkColumn &&
+					topBlockId === 15 &&
+					column.treeNoiseValue < GRASS_DENSITY
+				) {
+					placeBlock(worldX, surfaceY + 1, worldZ, 64);
+				}
+
+				// Trees are gated by canSpawnTrees + noise density check
+				if (!colBiome.canSpawnTrees) continue;
+				if (column.treeNoiseValue > colBiome.treeDensity) continue;
+
+				const treeDefinition = colBiome.getTreeForBlock(topBlockId);
+				treeDefinition?.generate(
+					worldX,
+					surfaceY + 1,
+					worldZ,
+					placeBlock,
+					SurfaceGenerator.seedAsInt,
+				);
 			}
 		}
 	}
@@ -962,10 +973,12 @@ export class SurfaceGenerator {
 				yFreq,
 				cliffNoise,
 			);
-			if (densityHere > 0 && densityAbove <= 0) return y;
-			// Fallback if no sharp transition was found
-			if (densityHere > 0 && highestSolid === SurfaceGenerator.NO_SURFACE_Y) {
-				highestSolid = y;
+			if (densityHere > 0) {
+				if (densityAbove <= 0) return y;
+				// Fallback if no sharp transition was found
+				if (highestSolid === SurfaceGenerator.NO_SURFACE_Y) {
+					highestSolid = y;
+				}
 			}
 			densityAbove = densityHere;
 		}

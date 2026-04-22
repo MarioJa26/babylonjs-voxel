@@ -16,6 +16,7 @@ const FOREST: Biome = {
 	stoneBlock: 1,
 	canSpawnTrees: true,
 	treeDensity: 0.15,
+	grassDensity: 0.33,
 	beachBlock: 3,
 	seafloorBlock: 46,
 	terrainScale: GenerationParams.TERRAIN_SCALE,
@@ -37,6 +38,7 @@ const TUNDRA: Biome = {
 	stoneBlock: 1,
 	canSpawnTrees: true,
 	treeDensity: 0.0,
+	grassDensity: 0.0,
 	beachBlock: 8, // Gravel
 	seafloorBlock: 8, // Dirt
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.6,
@@ -58,6 +60,7 @@ const TUNDRA_MOUNTAINS: Biome = {
 	stoneBlock: 1,
 	canSpawnTrees: true,
 	treeDensity: 0.0,
+	grassDensity: 0.0,
 	beachBlock: 8, // Gravel
 	seafloorBlock: 8, // Dirt
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.6,
@@ -80,6 +83,7 @@ const DESERT: Biome = {
 	stoneBlock: 1,
 	canSpawnTrees: true,
 	treeDensity: 0.075,
+	grassDensity: 0.1,
 	beachBlock: 3, // Sand,
 	seafloorBlock: 3, // Sand
 	terrainScale: GenerationParams.TERRAIN_SCALE,
@@ -102,6 +106,7 @@ const JUNGLE: Biome = {
 	stoneBlock: 1,
 	canSpawnTrees: true,
 	treeDensity: 0.2,
+	grassDensity: 0.6,
 	beachBlock: 3, // Sand,
 	seafloorBlock: 3,
 	terrainScale: GenerationParams.TERRAIN_SCALE,
@@ -124,6 +129,7 @@ const PLAINS: Biome = {
 	stoneBlock: 1,
 	canSpawnTrees: true,
 	treeDensity: 0.06,
+	grassDensity: 0.4,
 	beachBlock: 3,
 	seafloorBlock: 46,
 	terrainScale: GenerationParams.TERRAIN_SCALE,
@@ -146,6 +152,7 @@ const SWAMP: Biome = {
 	stoneBlock: 1,
 	canSpawnTrees: true,
 	treeDensity: 0.08,
+	grassDensity: 0.6,
 	beachBlock: 8, // Muddy beach
 	seafloorBlock: 57, // Muddy bottom
 	terrainScale: GenerationParams.TERRAIN_SCALE * 16,
@@ -168,6 +175,7 @@ const GROVE: Biome = {
 	stoneBlock: 1,
 	canSpawnTrees: true,
 	treeDensity: 0.2,
+	grassDensity: 0.6,
 	beachBlock: 3, // Muddy beach
 	seafloorBlock: 14, // Muddy bottom
 	terrainScale: GenerationParams.TERRAIN_SCALE * 16,
@@ -190,6 +198,7 @@ const SANDY_SHORE: Biome = {
 	stoneBlock: 1,
 	canSpawnTrees: true,
 	treeDensity: 0.0,
+	grassDensity: 0.05,
 	beachBlock: 3, // Muddy beach
 	seafloorBlock: 3, // Muddy bottom
 	terrainScale: GenerationParams.TERRAIN_SCALE,
@@ -208,6 +217,7 @@ const ROCKY_SHORE: Biome = {
 	stoneBlock: 1,
 	canSpawnTrees: true,
 	treeDensity: 0.0,
+	grassDensity: 0.05,
 	beachBlock: 8, // Muddy beach
 	seafloorBlock: 8, // Muddy bottom
 	terrainScale: GenerationParams.TERRAIN_SCALE * 8,
@@ -227,6 +237,7 @@ const OCEAN: Biome = {
 	stoneBlock: 1,
 	canSpawnTrees: true,
 	treeDensity: 0.0,
+	grassDensity: 0.2,
 	beachBlock: 3, // Muddy beach
 	seafloorBlock: 57, // Muddy bottom
 	terrainScale: GenerationParams.TERRAIN_SCALE * 16,
@@ -246,6 +257,7 @@ const RIVER: Biome = {
 	stoneBlock: 1,
 	canSpawnTrees: false,
 	treeDensity: 0.0,
+	grassDensity: 0.5,
 	beachBlock: 8,
 	seafloorBlock: 8,
 	terrainScale: GenerationParams.TERRAIN_SCALE,
@@ -265,6 +277,7 @@ const GRASS_LAND: Biome = {
 	stoneBlock: 1,
 	canSpawnTrees: true,
 	treeDensity: 0.067,
+	grassDensity: 0.5,
 	beachBlock: 3,
 	seafloorBlock: 1,
 	terrainScale: GenerationParams.TERRAIN_SCALE,
@@ -285,6 +298,7 @@ const VOLCANIC_WASTELAND: Biome = {
 	stoneBlock: 1,
 	canSpawnTrees: false,
 	treeDensity: 0.0,
+	grassDensity: 0.01,
 	beachBlock: 8, // Gravel or similar
 	seafloorBlock: 1, // Stone bottom for lava lakes
 	terrainScale: GenerationParams.TERRAIN_SCALE,

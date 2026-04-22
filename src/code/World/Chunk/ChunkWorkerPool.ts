@@ -673,6 +673,13 @@ export class ChunkWorkerPool {
 							lightSeedLength > 0;
 
 						if (needsLightingRefinement) {
+							/* TODO should be done but is slow
+							const seedState = {
+								queue: lightSeedQueue as Uint16Array,
+								length: lightSeedLength as number,
+							};
+							chunk.propagateDeferredLight(seedState);
+*/
 							this.scheduleTerrainGeneration(chunk, false);
 						}
 
