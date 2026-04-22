@@ -25,6 +25,13 @@ import type {
 } from "./Loading/ChunkTypes";
 import { ChunkWorldMutations } from "./Loading/ChunkWorldMutations";
 
+type ResolvedSavedMeshSelection = {
+	selectedMesh: SelectedSavedMesh | null;
+	exactMesh: SelectedSavedMesh | null;
+	hasDesiredMesh: boolean;
+	hasExactDesiredMesh: boolean;
+};
+
 // biome-ignore lint/complexity/noStaticOnlyClass: <explanation>
 export class ChunkLoadingSystem {
 	private static loadQueue: QueuedChunkRequest[] = [];
@@ -47,88 +54,55 @@ export class ChunkLoadingSystem {
 
 	private static debug = new ChunkLoadingDebug();
 
-	private static chunkEntityRegistry =
-		new ChunkEntityRegistry<ChunkBoundEntity>({
-			getChunkId: (entity) => {
-				if (entity.isAlive && !entity.isAlive()) {
-					return null;
-				}
-
-				const worldPos = entity.getWorldPosition();
-				const chunkX = ChunkLoadingSystem.worldToChunkCoord(worldPos.x);
-				const chunkY = ChunkLoadingSystem.worldToChunkCoord(worldPos.y);
-				const chunkZ = ChunkLoadingSystem.worldToChunkCoord(worldPos.z);
-				return Chunk.packCoords(chunkX, chunkY, chunkZ);
-			},
-
-			serialize: (entity) => {
-				if (entity.isAlive && !entity.isAlive()) {
-					return null;
-				}
-				return entity.serializeForChunkReload?.() ?? null;
-			},
-
-			dispose: (entity) => {
-				entity.unload();
-			},
-		});
-	private static processScheduler = new ChunkProcessScheduler({
-		getLoadQueue: () => ChunkLoadingSystem.loadQueue,
-		getUnloadQueueSet: () => ChunkLoadingSystem.unloadQueueSet,
-
-		getLoadBatchSize: () => ChunkLoadingSystem.getLoadBatchSize(),
-		getUnloadBatchSize: () => ChunkLoadingSystem.getUnloadBatchSize(),
-		getProcessFrameBudgetMs: () => ChunkLoadingSystem.getProcessFrameBudgetMs(),
-
-		getDesiredState: (chunkId) =>
-			ChunkLoadingSystem.streamingController.getDesiredState(chunkId),
-
-		unloadChunkBoundEntitiesForChunk: (chunk) =>
-			ChunkLoadingSystem.unloadChunkBoundEntitiesForChunk(chunk),
-
-		applyLoadedChunkFromSavedData: (state, request, savedData) =>
-			ChunkLoadingSystem.applyLoadedChunkFromSavedData(
-				state,
-				request,
-				savedData,
-			),
-
-		applyHydratedChunkFromSavedData: (chunk, savedData) =>
-			ChunkLoadingSystem.applyHydratedChunkFromSavedData(chunk, savedData),
-
-		scheduleTerrainGenerationBatch: (chunks) =>
-			ChunkWorkerPool.getInstance().scheduleTerrainGenerationBatch(chunks),
-
-		updateSliceDebugStats: (state) =>
-			ChunkLoadingSystem.updateSliceDebugStats(state),
-
-		finalizeProcessState: (state) =>
-			ChunkLoadingSystem.finalizeProcessState(state),
-
-		onQueueSnapshotChanged: () =>
-			ChunkLoadingSystem.refreshQueueDebugSnapshot(),
-		onLoadRequestsDequeued: (requests) =>
-			ChunkLoadingSystem.streamingController.onLoadRequestsDequeued(requests),
-	});
-
-	private static _neighborBuffer: (Chunk | undefined)[] = new Array(6);
-
-	private static getNeighbors(chunk: Chunk): (Chunk | undefined)[] {
-		const n = ChunkLoadingSystem._neighborBuffer;
-
-		n[0] = chunk.getNeighbor(-1, 0, 0);
-		n[1] = chunk.getNeighbor(1, 0, 0);
-		n[2] = chunk.getNeighbor(0, -1, 0);
-		n[3] = chunk.getNeighbor(0, 1, 0);
-		n[4] = chunk.getNeighbor(0, 0, -1);
-		n[5] = chunk.getNeighbor(0, 0, 1);
-
-		return n;
-	}
 	private static readonly hydrationAvailableLodsCache = new WeakMap<
 		SavedChunkData,
 		readonly number[]
 	>();
+
+	private static _neighborBuffer: (Chunk | undefined)[] = new Array(6);
+
+	private static _queuedIdSet: Set<bigint> = new Set();
+
+	private static _meshData: {
+		opaque: MeshData | null;
+		transparent: MeshData | null;
+	} = { opaque: null, transparent: null };
+
+	private static debugStats: ChunkLoadingDebugStats = {
+		loadQueueLength: 0,
+		unloadQueueLength: 0,
+		loadBatchLimit: Math.max(1, Math.floor(SETTING_PARAMS.RENDER_DISTANCE * 4)),
+		unloadBatchLimit: Math.max(
+			1,
+			Math.floor(SETTING_PARAMS.RENDER_DISTANCE * 4),
+		),
+		frameBudgetMs: Math.max(0.5, SETTING_PARAMS.CHUNK_LOADING_FRAME_BUDGET_MS),
+		lastProcessMs: 0,
+		totalProcessLoops: 0,
+		lastLoadedFromStorage: 0,
+		lastGenerated: 0,
+		lastHydrated: 0,
+		lastUnloaded: 0,
+		lastSaved: 0,
+		totalLoadedFromStorage: 0,
+		totalGenerated: 0,
+		totalHydrated: 0,
+		totalUnloaded: 0,
+		totalSaved: 0,
+		lastLodCacheVersionMismatches: 0,
+		totalLodCacheVersionMismatches: 0,
+	};
+
+	private static chunkEntityRegistry =
+		new ChunkEntityRegistry<ChunkBoundEntity>({
+			getChunkId: (entity) => ChunkLoadingSystem.getEntityChunkId(entity),
+			serialize: (entity) =>
+				ChunkLoadingSystem.serializeEntityForReload(entity),
+			dispose: (entity) => {
+				entity.unload();
+			},
+		});
+
 	private static chunkHydration = new ChunkHydration({
 		getStoragePayload: (savedData) => ({
 			// IMPORTANT: zero-copy handoff
@@ -151,7 +125,6 @@ export class ChunkLoadingSystem {
 					return null;
 				}
 
-				// Prefer explicit base mesh fields first
 				if (savedData.opaqueMesh || savedData.transparentMesh) {
 					return {
 						opaque: savedData.opaqueMesh ?? null,
@@ -159,7 +132,6 @@ export class ChunkLoadingSystem {
 					};
 				}
 
-				// Fallback to lodMeshes[0] if present
 				const lod0 = savedData.lodMeshes?.[0];
 				if (!lod0) {
 					return null;
@@ -214,7 +186,6 @@ export class ChunkLoadingSystem {
 			}
 
 			lods.sort((a, b) => a - b);
-
 			ChunkLoadingSystem.hydrationAvailableLodsCache.set(savedData, lods);
 			return lods;
 		},
@@ -240,65 +211,208 @@ export class ChunkLoadingSystem {
 	private static readiness = new ChunkReadiness({
 		isChunkLoaded: (chunk: Chunk) => chunk.isLoaded,
 		isChunkLod0Ready: (chunk: Chunk) => {
-			// If lodLevel is null/undefined, it's definitely not ready yet
-			if (chunk.lodLevel === undefined || chunk.lodLevel === null) return false;
+			if (chunk.lodLevel === undefined || chunk.lodLevel === null) {
+				return false;
+			}
 			return chunk.isLoaded && chunk.hasVoxelData && chunk.lodLevel === 0;
 		},
 	});
 
 	private static persistenceCoordinator = new ChunkPersistenceCoordinator({
 		getModifiedChunks: () => Chunk.chunkInstances.values(),
-
 		getChunkEntityPayloads: () =>
 			ChunkLoadingSystem.collectChunkEntityPayloads(),
-
 		getChunkSaveBatchSize: () => ChunkLoadingSystem.getUnloadBatchSize(),
 		getChunkEntitySaveBatchSize: () => ChunkLoadingSystem.getUnloadBatchSize(),
 	});
 
-	private static debugStats: ChunkLoadingDebugStats = {
-		loadQueueLength: 0,
-		unloadQueueLength: 0,
-		loadBatchLimit: Math.max(1, Math.floor(SETTING_PARAMS.RENDER_DISTANCE * 4)),
-		unloadBatchLimit: Math.max(
-			1,
-			Math.floor(SETTING_PARAMS.RENDER_DISTANCE * 4),
-		),
-		frameBudgetMs: Math.max(0.5, SETTING_PARAMS.CHUNK_LOADING_FRAME_BUDGET_MS),
-		lastProcessMs: 0,
-		totalProcessLoops: 0,
-		lastLoadedFromStorage: 0,
-		lastGenerated: 0,
-		lastHydrated: 0,
-		lastUnloaded: 0,
-		lastSaved: 0,
-		totalLoadedFromStorage: 0,
-		totalGenerated: 0,
-		totalHydrated: 0,
-		totalUnloaded: 0,
-		totalSaved: 0,
-		lastLodCacheVersionMismatches: 0,
-		totalLodCacheVersionMismatches: 0,
-	};
+	private static processScheduler = new ChunkProcessScheduler({
+		getLoadQueue: () => ChunkLoadingSystem.loadQueue,
+		getUnloadQueueSet: () => ChunkLoadingSystem.unloadQueueSet,
+
+		getLoadBatchSize: () => ChunkLoadingSystem.getLoadBatchSize(),
+		getUnloadBatchSize: () => ChunkLoadingSystem.getUnloadBatchSize(),
+		getProcessFrameBudgetMs: () => ChunkLoadingSystem.getProcessFrameBudgetMs(),
+
+		getDesiredState: (chunkId) =>
+			ChunkLoadingSystem.streamingController.getDesiredState(chunkId),
+
+		unloadChunkBoundEntitiesForChunk: (chunk) =>
+			ChunkLoadingSystem.unloadChunkBoundEntitiesForChunk(chunk),
+
+		applyLoadedChunkFromSavedData: (state, request, savedData) =>
+			ChunkLoadingSystem.applyLoadedChunkFromSavedData(
+				state,
+				request,
+				savedData,
+			),
+
+		applyHydratedChunkFromSavedData: (chunk, savedData) =>
+			ChunkLoadingSystem.applyHydratedChunkFromSavedData(chunk, savedData),
+
+		scheduleTerrainGenerationBatch: (chunks) =>
+			ChunkWorkerPool.getInstance().scheduleTerrainGenerationBatch(chunks),
+
+		updateSliceDebugStats: (state) =>
+			ChunkLoadingSystem.updateSliceDebugStats(state),
+
+		finalizeProcessState: (state) =>
+			ChunkLoadingSystem.finalizeProcessState(state),
+
+		onQueueSnapshotChanged: () =>
+			ChunkLoadingSystem.refreshQueueDebugSnapshot(),
+
+		onLoadRequestsDequeued: (requests) =>
+			ChunkLoadingSystem.streamingController.onLoadRequestsDequeued(requests),
+	});
+
+	private static isEntityAlive(entity: ChunkBoundEntity): boolean {
+		return !(entity.isAlive && !entity.isAlive());
+	}
+
+	private static getEntityChunkId(entity: ChunkBoundEntity): bigint | null {
+		if (!ChunkLoadingSystem.isEntityAlive(entity)) {
+			return null;
+		}
+
+		const worldPos = entity.getWorldPosition();
+		const chunkX = ChunkLoadingSystem.worldToChunkCoord(worldPos.x);
+		const chunkY = ChunkLoadingSystem.worldToChunkCoord(worldPos.y);
+		const chunkZ = ChunkLoadingSystem.worldToChunkCoord(worldPos.z);
+
+		return Chunk.packCoords(chunkX, chunkY, chunkZ);
+	}
+
+	private static serializeEntityForReload(
+		entity: ChunkBoundEntity,
+	): SavedChunkEntityData | null {
+		if (!ChunkLoadingSystem.isEntityAlive(entity)) {
+			return null;
+		}
+
+		return entity.serializeForChunkReload?.() ?? null;
+	}
+
+	private static getConfiguredBatchSize(
+		configuredValue: number,
+		fallbackValue: number,
+	): number {
+		const configured = Math.floor(configuredValue);
+		return configured > 0 ? configured : Math.max(1, Math.floor(fallbackValue));
+	}
 
 	private static getLoadBatchSize(): number {
-		const configured = Math.floor(SETTING_PARAMS.CHUNK_LOAD_BATCH_LIMIT);
-		if (configured > 0) {
-			return configured;
-		}
-		return Math.max(1, Math.floor(SETTING_PARAMS.RENDER_DISTANCE * 4));
+		return ChunkLoadingSystem.getConfiguredBatchSize(
+			SETTING_PARAMS.CHUNK_LOAD_BATCH_LIMIT,
+			SETTING_PARAMS.RENDER_DISTANCE * 4,
+		);
 	}
 
 	private static getUnloadBatchSize(): number {
-		const configured = Math.floor(SETTING_PARAMS.CHUNK_UNLOAD_BATCH_LIMIT);
-		if (configured > 0) {
-			return configured;
-		}
-		return Math.max(1, Math.floor(SETTING_PARAMS.RENDER_DISTANCE * 4));
+		return ChunkLoadingSystem.getConfiguredBatchSize(
+			SETTING_PARAMS.CHUNK_UNLOAD_BATCH_LIMIT,
+			SETTING_PARAMS.RENDER_DISTANCE * 4,
+		);
 	}
 
 	private static getProcessFrameBudgetMs(): number {
 		return Math.max(0.5, SETTING_PARAMS.CHUNK_LOADING_FRAME_BUDGET_MS);
+	}
+
+	private static getNeighbors(chunk: Chunk): (Chunk | undefined)[] {
+		const n = ChunkLoadingSystem._neighborBuffer;
+
+		n[0] = chunk.getNeighbor(-1, 0, 0);
+		n[1] = chunk.getNeighbor(1, 0, 0);
+		n[2] = chunk.getNeighbor(0, -1, 0);
+		n[3] = chunk.getNeighbor(0, 1, 0);
+		n[4] = chunk.getNeighbor(0, 0, -1);
+		n[5] = chunk.getNeighbor(0, 0, 1);
+
+		return n;
+	}
+
+	private static scheduleRemeshForChunks(chunks: Chunk[]): void {
+		const pool = ChunkWorkerPool.getInstance();
+
+		for (const chunk of chunks) {
+			pool.scheduleRemesh(chunk, true);
+		}
+	}
+
+	private static getReusableMeshData(
+		opaque: MeshData | null,
+		transparent: MeshData | null,
+	): { opaque: MeshData | null; transparent: MeshData | null } {
+		const meshData = ChunkLoadingSystem._meshData;
+		meshData.opaque = opaque;
+		meshData.transparent = transparent;
+		return meshData;
+	}
+
+	private static resolveSavedMeshSelection(
+		savedData: SavedChunkData,
+		targetLod: number,
+	): ResolvedSavedMeshSelection {
+		const hasSelectedMesh =
+			ChunkLoadingSystem.chunkHydration.tryPickBestSavedMesh(
+				savedData,
+				targetLod,
+				ChunkLoadingSystem.hydrationScratchSelectedMesh,
+			);
+
+		const hasExactSavedMesh =
+			ChunkLoadingSystem.chunkHydration.tryGetSavedMeshForLod(
+				savedData,
+				targetLod,
+				ChunkLoadingSystem.hydrationScratchExactMesh,
+			);
+
+		const selectedMesh = hasSelectedMesh
+			? ChunkLoadingSystem.hydrationScratchSelectedMesh
+			: null;
+
+		const exactMesh = hasExactSavedMesh
+			? ChunkLoadingSystem.hydrationScratchExactMesh
+			: null;
+
+		return {
+			selectedMesh,
+			exactMesh,
+			hasDesiredMesh:
+				!!selectedMesh && (!!selectedMesh.opaque || !!selectedMesh.transparent),
+			hasExactDesiredMesh:
+				!!exactMesh && (!!exactMesh.opaque || !!exactMesh.transparent),
+		};
+	}
+
+	private static applyMeshToChunk(
+		chunk: Chunk,
+		mesh: SelectedSavedMesh | null,
+	): void {
+		if (!mesh || (!mesh.opaque && !mesh.transparent)) {
+			return;
+		}
+
+		ChunkMesher.createMeshFromData(
+			chunk,
+			ChunkLoadingSystem.getReusableMeshData(mesh.opaque, mesh.transparent),
+		);
+	}
+
+	private static restoreChunkLodCache(
+		chunk: Chunk,
+		savedData: SavedChunkData,
+	): void {
+		chunk.restoreLODMeshCache(savedData.lodMeshes);
+
+		if (savedData.opaqueMesh || savedData.transparentMesh) {
+			chunk.setCachedLODMesh(0, {
+				opaque: savedData.opaqueMesh ?? null,
+				transparent: savedData.transparentMesh ?? null,
+			});
+			chunk.isLODMeshCacheDirty = false;
+		}
 	}
 
 	private static refreshQueueDebugSnapshot(): void {
@@ -321,6 +435,26 @@ export class ChunkLoadingSystem {
 			ChunkLoadingSystem.getUnloadBatchSize();
 		ChunkLoadingSystem.debugStats.frameBudgetMs =
 			ChunkLoadingSystem.getProcessFrameBudgetMs();
+	}
+
+	public static getDebugStats(): ChunkLoadingDebugStats {
+		ChunkLoadingSystem.refreshQueueDebugSnapshot();
+		return { ...ChunkLoadingSystem.debugStats };
+	}
+
+	private static buildQueuedIdSet(): Set<bigint> {
+		const set = ChunkLoadingSystem._queuedIdSet;
+		set.clear();
+
+		for (let i = 0; i < ChunkLoadingSystem.loadQueue.length; i++) {
+			set.add(ChunkLoadingSystem.loadQueue[i].chunk.id);
+		}
+
+		return set;
+	}
+
+	private static ensureChunkLoadedHook(): void {
+		ChunkLoadingSystem.chunkEntityRegistry.ensureChunkLoadedHook();
 	}
 
 	public static validateChunksAround(
@@ -371,9 +505,6 @@ export class ChunkLoadingSystem {
 						ChunkLoadingSystem.streamingController.getDesiredState(chunkId) !==
 						undefined;
 
-					// Only consider a chunk 'missing' if the streaming controller
-					// actually desires it. This avoids false positives for cells
-					// outside the streamer window.
 					if (hasDesiredState && !isLoaded && !isQueued && !isUnloading) {
 						missing.push({
 							chunkX: x,
@@ -396,44 +527,17 @@ export class ChunkLoadingSystem {
 	}
 
 	private static scheduleChunkBorderRemeshOnLoad(chunk: Chunk): void {
-		const pool = ChunkWorkerPool.getInstance();
+		const readyNeighbors = ChunkLoadingSystem.getNeighbors(chunk).filter(
+			(neighbor): neighbor is Chunk =>
+				!!neighbor &&
+				neighbor.isLoaded &&
+				neighbor.hasVoxelData &&
+				(neighbor.lodLevel ?? 0) === 0,
+		);
 
-		// Always remesh the chunk that just became ready.
-		pool.scheduleRemesh(chunk, true);
-
-		// Only reconcile already-loaded detailed neighbors.
-		const neighbors = ChunkLoadingSystem.getNeighbors(chunk);
-
-		for (const neighbor of neighbors) {
-			if (!neighbor) continue;
-			if (!neighbor.isLoaded) continue;
-			if (!neighbor.hasVoxelData) continue;
-			if ((neighbor.lodLevel ?? 0) !== 0) continue;
-			pool.scheduleRemesh(neighbor, true);
-		}
+		ChunkLoadingSystem.scheduleRemeshForChunks([chunk, ...readyNeighbors]);
 	}
 
-	private static _queuedIdSet: Set<bigint> = new Set();
-
-	private static buildQueuedIdSet(): Set<bigint> {
-		const set = ChunkLoadingSystem._queuedIdSet;
-		set.clear();
-
-		for (let i = 0; i < ChunkLoadingSystem.loadQueue.length; i++) {
-			set.add(ChunkLoadingSystem.loadQueue[i].chunk.id);
-		}
-
-		return set;
-	}
-
-	public static getDebugStats(): ChunkLoadingDebugStats {
-		ChunkLoadingSystem.refreshQueueDebugSnapshot();
-		return { ...ChunkLoadingSystem.debugStats };
-	}
-
-	private static ensureChunkLoadedHook(): void {
-		ChunkLoadingSystem.chunkEntityRegistry.ensureChunkLoadedHook();
-	}
 	public static enqueueChunkRemesh(chunk: Chunk): void {
 		if (ChunkLoadingSystem.pendingRemeshChunkIds.has(chunk.id)) {
 			return;
@@ -443,20 +547,38 @@ export class ChunkLoadingSystem {
 		ChunkLoadingSystem.pendingRemeshChunks.push(chunk);
 	}
 
-	public static processPendingRemeshes(maxChunks = 4): void {
-		const pool = ChunkWorkerPool.getInstance();
+	private static pendingRemeshReadIndex = 0;
 
+	public static processPendingRemeshes(maxChunks = 12): void {
+		const pool = ChunkWorkerPool.getInstance();
 		let processed = 0;
+
 		while (
 			processed < maxChunks &&
-			ChunkLoadingSystem.pendingRemeshChunks.length > 0
+			ChunkLoadingSystem.pendingRemeshReadIndex <
+				ChunkLoadingSystem.pendingRemeshChunks.length
 		) {
-			const chunk = ChunkLoadingSystem.pendingRemeshChunks.shift()!;
+			const chunk =
+				ChunkLoadingSystem.pendingRemeshChunks[
+					ChunkLoadingSystem.pendingRemeshReadIndex++
+				];
+
 			ChunkLoadingSystem.pendingRemeshChunkIds.delete(chunk.id);
-
 			pool.scheduleRemesh(chunk, true);
-
 			processed++;
+		}
+
+		// compact occasionally
+		if (
+			ChunkLoadingSystem.pendingRemeshReadIndex > 64 &&
+			ChunkLoadingSystem.pendingRemeshReadIndex * 2 >
+				ChunkLoadingSystem.pendingRemeshChunks.length
+		) {
+			ChunkLoadingSystem.pendingRemeshChunks =
+				ChunkLoadingSystem.pendingRemeshChunks.slice(
+					ChunkLoadingSystem.pendingRemeshReadIndex,
+				);
+			ChunkLoadingSystem.pendingRemeshReadIndex = 0;
 		}
 	}
 
@@ -465,7 +587,6 @@ export class ChunkLoadingSystem {
 		playerChunkY: number,
 		playerChunkZ: number,
 	): void {
-		// Incrementally refresh a few already-loaded chunks whose LOD may need updating.
 		ChunkLoadingSystem.streamingController.processLoadedRefreshQueue(
 			playerChunkX,
 			playerChunkY,
@@ -475,7 +596,6 @@ export class ChunkLoadingSystem {
 			32,
 		);
 
-		// Incrementally dispatch remesh work instead of submitting a burst in one frame.
 		ChunkLoadingSystem.processPendingRemeshes(12);
 	}
 
@@ -526,20 +646,19 @@ export class ChunkLoadingSystem {
 
 	private static scheduleChunkAndNeighborsRemesh(chunk: Chunk): void {
 		const pool = ChunkWorkerPool.getInstance();
-		const neighbors = [
-			chunk,
-			chunk.getNeighbor(-1, 0, 0),
-			chunk.getNeighbor(1, 0, 0),
-			chunk.getNeighbor(0, -1, 0),
-			chunk.getNeighbor(0, 1, 0),
-			chunk.getNeighbor(0, 0, -1),
-			chunk.getNeighbor(0, 0, 1),
-		];
 
-		for (const neighbor of neighbors) {
-			pool.scheduleRemesh(neighbor, true);
-		}
+		pool.scheduleRemesh(chunk, true);
+
+		const n = ChunkLoadingSystem._neighborBuffer;
+
+		if (n[0]) pool.scheduleRemesh(n[0], true);
+		if (n[1]) pool.scheduleRemesh(n[1], true);
+		if (n[2]) pool.scheduleRemesh(n[2], true);
+		if (n[3]) pool.scheduleRemesh(n[3], true);
+		if (n[4]) pool.scheduleRemesh(n[4], true);
+		if (n[5]) pool.scheduleRemesh(n[5], true);
 	}
+
 	public static async updateChunksAround(
 		chunkX: number,
 		chunkY: number,
@@ -549,7 +668,7 @@ export class ChunkLoadingSystem {
 		prevChunkX?: number,
 		prevChunkY?: number,
 		prevChunkZ?: number,
-	) {
+	): Promise<void> {
 		ChunkLoadingSystem.ensureChunkLoadedHook();
 
 		await ChunkLoadingSystem.streamingController.updateChunksAround(
@@ -597,55 +716,14 @@ export class ChunkLoadingSystem {
 			state.lodCacheVersionMismatchCount;
 	}
 
-	private static _meshData: {
-		opaque: MeshData | null;
-		transparent: MeshData | null;
-	} = { opaque: null, transparent: null };
-
-	private static getReusableMeshData(
-		opaque: MeshData | null,
-		transparent: MeshData | null,
-	) {
-		const m = ChunkLoadingSystem._meshData;
-		m.opaque = opaque;
-		m.transparent = transparent;
-		return m;
-	}
-
 	private static applyHydratedChunkFromSavedData(
 		chunk: Chunk,
 		savedData: SavedChunkData,
 	): void {
 		const currentLod = chunk.lodLevel ?? 0;
 
-		const hasSelectedMesh =
-			ChunkLoadingSystem.chunkHydration.tryPickBestSavedMesh(
-				savedData,
-				currentLod,
-				ChunkLoadingSystem.hydrationScratchSelectedMesh,
-			);
-
-		const hasExactSavedMesh =
-			ChunkLoadingSystem.chunkHydration.tryGetSavedMeshForLod(
-				savedData,
-				currentLod,
-				ChunkLoadingSystem.hydrationScratchExactMesh,
-			);
-
-		const selectedMesh = hasSelectedMesh
-			? ChunkLoadingSystem.hydrationScratchSelectedMesh
-			: null;
-
-		const exactSavedMesh = hasExactSavedMesh
-			? ChunkLoadingSystem.hydrationScratchExactMesh
-			: null;
-
-		const hasDesiredMesh =
-			!!selectedMesh && (!!selectedMesh.opaque || !!selectedMesh.transparent);
-
-		const hasExactDesiredMesh =
-			!!exactSavedMesh &&
-			(!!exactSavedMesh.opaque || !!exactSavedMesh.transparent);
+		const { selectedMesh, hasDesiredMesh, hasExactDesiredMesh } =
+			ChunkLoadingSystem.resolveSavedMeshSelection(savedData, currentLod);
 
 		ChunkLoadingSystem.chunkHydration.applyHydratedChunkFromSavedData(
 			chunk,
@@ -654,101 +732,38 @@ export class ChunkLoadingSystem {
 		);
 
 		if (hasDesiredMesh) {
-			ChunkMesher.createMeshFromData(
-				chunk,
-				ChunkLoadingSystem.getReusableMeshData(
-					selectedMesh!.opaque,
-					selectedMesh!.transparent,
-				),
-			);
+			ChunkLoadingSystem.applyMeshToChunk(chunk, selectedMesh);
 		}
 	}
-	private static applyLoadedChunkFromSavedData(
+
+	private static loadFarLodChunk(
 		state: InFlightProcessState,
-		request: QueuedChunkRequest,
-		savedData: SavedChunkData,
+		chunk: Chunk,
+		selectedMesh: SelectedSavedMesh | null,
+		hasDesiredMesh: boolean,
 	): void {
-		const chunk = request.chunk;
-		const targetLod = request.desiredLod;
-
-		const expectedLodCacheVersion = getCurrentLodCacheVersion();
-		if (savedData.lodCacheVersion !== expectedLodCacheVersion) {
-			state.lodCacheVersionMismatchCount++;
-		}
-
-		state.loadedFromStorageCount++;
-
-		const hasSelectedMesh =
-			ChunkLoadingSystem.chunkHydration.tryPickBestSavedMesh(
-				savedData,
-				targetLod,
-				ChunkLoadingSystem.hydrationScratchSelectedMesh,
-			);
-
-		const hasExactSavedMesh =
-			ChunkLoadingSystem.chunkHydration.tryGetSavedMeshForLod(
-				savedData,
-				targetLod,
-				ChunkLoadingSystem.hydrationScratchExactMesh,
-			);
-
-		const selectedMesh = hasSelectedMesh
-			? ChunkLoadingSystem.hydrationScratchSelectedMesh
-			: null;
-
-		const exactSavedMesh = hasExactSavedMesh
-			? ChunkLoadingSystem.hydrationScratchExactMesh
-			: null;
-
-		const hasDesiredMesh =
-			!!selectedMesh && (!!selectedMesh.opaque || !!selectedMesh.transparent);
-
-		const hasExactDesiredMesh =
-			!!exactSavedMesh &&
-			(!!exactSavedMesh.opaque || !!exactSavedMesh.transparent);
-
-		chunk.lodLevel = targetLod;
-
-		// Restore serialized LOD cache ONCE here.
-		chunk.restoreLODMeshCache(savedData.lodMeshes);
-
-		// Keep explicit LOD0 cached if base meshes exist
-		if (savedData.opaqueMesh || savedData.transparentMesh) {
-			chunk.setCachedLODMesh(0, {
-				opaque: savedData.opaqueMesh ?? null,
-				transparent: savedData.transparentMesh ?? null,
-			});
-			chunk.isLODMeshCacheDirty = false;
-		}
-
-		if (targetLod >= 2) {
-			if (hasDesiredMesh) {
-				chunk.loadLodOnlyFromStorage(false);
-
-				ChunkMesher.createMeshFromData(
-					chunk,
-					ChunkLoadingSystem.getReusableMeshData(
-						selectedMesh!.opaque,
-						selectedMesh!.transparent,
-					),
-				);
-
-				return;
-			}
-
-			// No saved mesh, mark chunk as loaded so block mutations don't reject it,
-			// then queue for full hydration to get voxel data.
+		if (hasDesiredMesh) {
 			chunk.loadLodOnlyFromStorage(false);
-
-			if (!state.chunksNeedingFullHydration.has(chunk.id)) {
-				state.chunksNeedingFullHydration.add(chunk.id);
-				state.hydrateIds.push(chunk.id);
-			}
-
+			ChunkLoadingSystem.applyMeshToChunk(chunk, selectedMesh);
 			return;
 		}
 
-		// Near LOD path:
+		chunk.loadLodOnlyFromStorage(false);
+
+		if (!state.chunksNeedingFullHydration.has(chunk.id)) {
+			state.chunksNeedingFullHydration.add(chunk.id);
+			state.hydrateIds.push(chunk.id);
+		}
+	}
+
+	private static loadNearLodChunk(
+		chunk: Chunk,
+		savedData: SavedChunkData,
+		selectedMesh: SelectedSavedMesh | null,
+		hasDesiredMesh: boolean,
+		hasExactDesiredMesh: boolean,
+		targetLod: number,
+	): void {
 		chunk.loadFromStorage(
 			savedData.blocks,
 			savedData.palette,
@@ -758,19 +773,55 @@ export class ChunkLoadingSystem {
 			!hasExactDesiredMesh,
 		);
 
-		if (hasDesiredMesh) {
-			ChunkMesher.createMeshFromData(
-				chunk,
-				ChunkLoadingSystem.getReusableMeshData(
-					selectedMesh!.opaque,
-					selectedMesh!.transparent,
-				),
-			);
-
-			if (targetLod === 0) {
-				ChunkLoadingSystem.scheduleChunkBorderRemeshOnLoad(chunk);
-			}
+		if (!hasDesiredMesh) {
+			return;
 		}
+
+		ChunkLoadingSystem.applyMeshToChunk(chunk, selectedMesh);
+
+		if (targetLod === 0) {
+			ChunkLoadingSystem.scheduleChunkBorderRemeshOnLoad(chunk);
+		}
+	}
+
+	private static applyLoadedChunkFromSavedData(
+		state: InFlightProcessState,
+		request: QueuedChunkRequest,
+		savedData: SavedChunkData,
+	): void {
+		const chunk = request.chunk;
+		const targetLod = request.desiredLod;
+
+		if (savedData.lodCacheVersion !== getCurrentLodCacheVersion()) {
+			state.lodCacheVersionMismatchCount++;
+		}
+
+		state.loadedFromStorageCount++;
+		chunk.lodLevel = targetLod;
+
+		ChunkLoadingSystem.restoreChunkLodCache(chunk, savedData);
+
+		const { selectedMesh, hasDesiredMesh, hasExactDesiredMesh } =
+			ChunkLoadingSystem.resolveSavedMeshSelection(savedData, targetLod);
+
+		if (targetLod >= 2) {
+			ChunkLoadingSystem.loadFarLodChunk(
+				state,
+				chunk,
+				selectedMesh,
+				hasDesiredMesh,
+			);
+			return;
+		}
+
+		ChunkLoadingSystem.loadNearLodChunk(
+			chunk,
+			savedData,
+			selectedMesh,
+			hasDesiredMesh,
+			hasExactDesiredMesh,
+			targetLod,
+		);
 	}
 
 	public static deleteBlock(worldX: number, worldY: number, worldZ: number) {
@@ -888,30 +939,6 @@ export class ChunkLoadingSystem {
 		);
 	}
 
-	private static getRuntimeEntityChunkId(
-		entity: ChunkBoundEntity,
-	): bigint | null {
-		if (entity.isAlive && !entity.isAlive()) {
-			return null;
-		}
-
-		const worldPos = entity.getWorldPosition();
-		const chunkX = ChunkLoadingSystem.worldToChunkCoord(worldPos.x);
-		const chunkY = ChunkLoadingSystem.worldToChunkCoord(worldPos.y);
-		const chunkZ = ChunkLoadingSystem.worldToChunkCoord(worldPos.z);
-		return Chunk.packCoords(chunkX, chunkY, chunkZ);
-	}
-
-	private static serializeRuntimeEntity(
-		entity: ChunkBoundEntity,
-	): SavedChunkEntityData | null {
-		if (entity.isAlive && !entity.isAlive()) {
-			return null;
-		}
-
-		return entity.serializeForChunkReload?.() ?? null;
-	}
-
 	private static collectChunkEntityPayloads(): ReadonlyMap<
 		bigint,
 		SavedChunkEntityData[]
@@ -921,8 +948,8 @@ export class ChunkLoadingSystem {
 		for (const entity of ChunkLoadingSystem.chunkEntityRegistry
 			.getRegisteredEntities()
 			.values()) {
-			const chunkId = ChunkLoadingSystem.getRuntimeEntityChunkId(entity);
-			const serialized = ChunkLoadingSystem.serializeRuntimeEntity(entity);
+			const chunkId = ChunkLoadingSystem.getEntityChunkId(entity);
+			const serialized = ChunkLoadingSystem.serializeEntityForReload(entity);
 
 			if (chunkId === null || !serialized) {
 				continue;

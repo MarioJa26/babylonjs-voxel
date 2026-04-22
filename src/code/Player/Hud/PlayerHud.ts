@@ -5,9 +5,9 @@ import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
 import MapFog from "../../Maps/MapFog";
 import { WorldEnvironment } from "../../Maps/WorldEnvironment";
 import { type Recipe, Recipes } from "../Crafting/CraftingManager";
-import { CrossHair } from "../Hud/CrossHair";
 import { PlayerInventory } from "../Inventory/PlayerInventory";
 import type { Player } from "../Player";
+import { CrossHair } from "./Crosshair/CrossHair";
 
 export class PlayerHud {
 	#engine: Engine;

@@ -7,7 +7,10 @@ import {
 	getBlockInfo,
 } from "@/code/World/Texture/TextureDefinitions";
 import type { IControls } from "../../Inferface/IControls";
-import { CrossHair } from "../Hud/CrossHair";
+import {
+	getPlacementHit,
+	pickTarget,
+} from "../Hud/BlockHighlight/BlockRaycaster";
 import { DroppedItem } from "../Inventory/DroppedItem";
 import { Item } from "../Inventory/Item";
 import type { Player } from "../Player";
@@ -106,7 +109,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 		const dt =
 			this.#player.playerVehicle.scene.getEngine().getDeltaTime() / 1000;
 
-		const hit = CrossHair.getPlacementHit(this.#player);
+		const hit = getPlacementHit(this.#player);
 		if (!hit) {
 			this.#breakingBlock = null;
 			this.#breakTimer = 0;
@@ -310,7 +313,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 	}
 
 	#handlePickBlock(key: string) {
-		const hit = CrossHair.pickTarget(this.#player);
+		const hit = pickTarget(this.#player);
 		if (!hit) return;
 
 		const blockId = ChunkLoadingSystem.getBlockByWorldCoords(

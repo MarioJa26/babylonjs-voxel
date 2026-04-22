@@ -10,7 +10,10 @@ import { BlockTextures } from "@/code/World/Texture/BlockTextures";
 import { TextureAtlasFactory } from "@/code/World/Texture/TextureAtlasFactory";
 import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
 import { MaterialFactory } from "../../World/Texture/MaterialFactory";
-import { CrossHair } from "../Hud/CrossHair";
+import {
+	getPlacementHit,
+	pickBlock,
+} from "../Hud/BlockHighlight/BlockRaycaster";
 import type { Player } from "../Player";
 import { type ItemDefinition, ItemRegistry } from "./ItemRegistry";
 import { ItemUseActions } from "./ItemUseActions";
@@ -149,10 +152,10 @@ export class Item implements IUsable {
 	}
 
 	static place(player: Player) {
-		const blockNumber = CrossHair.pickBlock(player);
+		const blockNumber = pickBlock(player);
 		if (blockNumber === BlockType.CraftingTable) return;
 
-		const hit = CrossHair.getPlacementHit(player);
+		const hit = getPlacementHit(player);
 		if (!hit) return;
 
 		const { pos, nx, ny, nz, hitFracX, hitFracY, hitFracZ } = hit;

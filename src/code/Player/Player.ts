@@ -5,7 +5,7 @@ import type { IControls } from "../Inferface/IControls";
 import type { IUsable } from "../Inferface/IUsable";
 import { Map1 } from "../Maps/Map1";
 import { WalkingControls } from "../Player/Controls/WalkingControls";
-import { CrossHair } from "./Hud/CrossHair";
+import { CrossHair } from "./Hud/Crosshair/CrossHair";
 import { PauseMenu } from "./Hud/PauseMenu";
 import { PlayerHud } from "./Hud/PlayerHud";
 import { PlayerInventory } from "./Inventory/PlayerInventory";
@@ -135,7 +135,7 @@ export class Player implements IUsable {
 	}
 
 	use(): void {
-		const mesh = CrossHair.pickUsableMesh(this, 200);
+		const mesh = CrossHair.pickUsableMesh(this);
 		if (!mesh) return;
 
 		if (mesh.metadata) {

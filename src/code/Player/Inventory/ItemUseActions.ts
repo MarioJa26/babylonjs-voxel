@@ -4,14 +4,14 @@ import { GenerationParams } from "@/code/Generation/NoiseAndParameters/Generatio
 import { Map1 } from "@/code/Maps/Map1";
 import { BlockType, isCollidableBlock } from "@/code/World/BlockType";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
-import { CrossHair } from "../Hud/CrossHair";
+import { pickWaterTarget } from "../Hud/BlockHighlight/BlockRaycaster";
 import type { Player } from "../Player";
 
 export type ItemUseAction = (player: Player) => void;
 
 export const ItemUseActions: Record<string, ItemUseAction> = {
 	place_boat: (player: Player) => {
-		const hit = CrossHair.pickWaterPlacementTarget(player);
+		const hit = pickWaterTarget(player);
 		if (!hit) return;
 
 		const blockAtHit = ChunkLoadingSystem.getBlockByWorldCoords(
