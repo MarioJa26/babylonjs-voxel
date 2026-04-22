@@ -34,6 +34,10 @@ export class CrossHair {
 	static readonly #meshBoundsEpsilon = 0.001;
 	static readonly #sharedPoint = new Vector3(0, 0, 0);
 
+	static #isTargetableBlock(blockId: number): boolean {
+		return isCollidableBlock(blockId) || blockId === BlockType.GrassCross;
+	}
+
 	readonly #scene: Scene;
 	readonly #engine: Engine;
 	readonly #ui: GUI.AdvancedDynamicTexture =
@@ -633,11 +637,13 @@ export class CrossHair {
 		return ChunkLoadingSystem.getBlockByWorldCoords(pos.x, pos.y, pos.z);
 	}
 	/**
-	 * Returns the first solid non-water block position along the player's view ray.
+	 * Returns the first block position along the player's view ray that can be
+	 * targeted by the crosshair, including non-collidable breakable plants.
 	 */
 	public static pickTarget(player: Player): Vector3 | null {
-		const hit = CrossHair.#raycastFirstBlock(player, (_x, _y, _z, blockId) =>
-			isCollidableBlock(blockId),
+		const hit = CrossHair.#raycastFirstBlock(
+			player,
+			(_x, _y, _z, blockId) => CrossHair.#isTargetableBlock(blockId),
 		);
 		if (!hit) return null;
 		return new Vector3(hit.x, hit.y, hit.z);
@@ -653,8 +659,9 @@ export class CrossHair {
 	}
 
 	public static getPlacementPosition(player: Player): Vector3 | null {
-		const hit = CrossHair.#raycastFirstBlock(player, (_x, _y, _z, blockId) =>
-			isCollidableBlock(blockId),
+		const hit = CrossHair.#raycastFirstBlock(
+			player,
+			(_x, _y, _z, blockId) => CrossHair.#isTargetableBlock(blockId),
 		);
 		if (!hit) return null;
 
@@ -674,8 +681,9 @@ export class CrossHair {
 		hitFracY: number;
 		hitFracZ: number;
 	} | null {
-		const hit = CrossHair.#raycastFirstBlock(player, (_x, _y, _z, blockId) =>
-			isCollidableBlock(blockId),
+		const hit = CrossHair.#raycastFirstBlock(
+			player,
+			(_x, _y, _z, blockId) => CrossHair.#isTargetableBlock(blockId),
 		);
 		if (!hit) return null;
 

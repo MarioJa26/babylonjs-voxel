@@ -166,7 +166,7 @@ export class LightGenerator {
 						? 15
 						: 0;
 
-				let sourceIsWater = false;
+				let sourceFiltersFullSun = false;
 
 				for (let y = CHUNK_SIZE - 1; y >= 0; y--) {
 					const idx = x + y * CHUNK_SIZE + z * CHUNK_SIZE_SQ;
@@ -174,7 +174,7 @@ export class LightGenerator {
 
 					if (!LightGenerator.isTransparentBlock(blockId)) {
 						incomingSkyLight = 0;
-						sourceIsWater = false;
+						sourceFiltersFullSun = false;
 
 						// Lava emits block light
 						if (blockId === 24) {
@@ -187,14 +187,17 @@ export class LightGenerator {
 					}
 
 					if (incomingSkyLight <= 0) {
-						sourceIsWater = LightGenerator.isWaterBlock(blockId);
+						sourceFiltersFullSun = LightGenerator.filtersFullSunlight(blockId);
 						continue;
 					}
 
-					const blockIsWater = LightGenerator.isWaterBlock(blockId);
+					const blockFiltersFullSun =
+						LightGenerator.filtersFullSunlight(blockId);
 
 					const preservesFullSun =
-						incomingSkyLight === 15 && !sourceIsWater && !blockIsWater;
+						incomingSkyLight === 15 &&
+						!sourceFiltersFullSun &&
+						!blockFiltersFullSun;
 
 					const cellSkyLight = preservesFullSun
 						? 15
@@ -202,7 +205,7 @@ export class LightGenerator {
 
 					if (cellSkyLight === 0) {
 						incomingSkyLight = 0;
-						sourceIsWater = blockIsWater;
+						sourceFiltersFullSun = blockFiltersFullSun;
 						continue;
 					}
 
@@ -210,13 +213,13 @@ export class LightGenerator {
 					// Water blocks receive and pass light downward, but must not be
 					// seeded into the BFS queue — that would spread light sideways
 					// through water and cause a bright halo at chunk top borders.
-					if (!blockIsWater) {
+					if (!blockFiltersFullSun) {
 						queue[tail & mask] = (x << 10) | (y << 5) | z;
 						tail++;
 					}
 
 					incomingSkyLight = cellSkyLight;
-					sourceIsWater = blockIsWater;
+					sourceFiltersFullSun = blockFiltersFullSun;
 				}
 			}
 		}
@@ -314,8 +317,8 @@ export class LightGenerator {
 				const belowIdx = x + (y - 1) * CHUNK_SIZE + z * CHUNK_SIZE_SQ;
 				const preservesFullSunDown =
 					skyLight === 15 &&
-					!LightGenerator.isWaterBlock(blocks[idx]) &&
-					!LightGenerator.isWaterBlock(blocks[belowIdx]);
+					!LightGenerator.filtersFullSunlight(blocks[idx]) &&
+					!LightGenerator.filtersFullSunlight(blocks[belowIdx]);
 
 				tail = this.tryPropagate(
 					x,
@@ -385,9 +388,9 @@ export class LightGenerator {
 			return tail;
 		}
 
-		// Water only passes light downward (handled in the seeding loop).
-		// Block lateral BFS propagation into or through water.
-		if (LightGenerator.isWaterBlock(blocks[idx])) {
+		// Water-like skylight filters only pass full light downward in the
+		// seeding loop. Block BFS propagation into or through them.
+		if (LightGenerator.filtersFullSunlight(blocks[idx])) {
 			return tail;
 		}
 
@@ -417,7 +420,7 @@ export class LightGenerator {
 		);
 	}
 
-	private static isWaterBlock(blockId: number): boolean {
+	private static filtersFullSunlight(blockId: number): boolean {
 		return blockId === LightGenerator.WATER_BLOCK_ID;
 	}
 

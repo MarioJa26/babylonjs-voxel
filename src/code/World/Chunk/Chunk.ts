@@ -421,13 +421,15 @@ export class Chunk {
 			for (let z = 0; z < size; z++) {
 				const worldZ = chunkBaseZ + z;
 				let incomingSkyLight = 0;
-				let sourceIsWater = false;
+				let sourceFiltersFullSun = false;
 
 				if (hasLoadedAbove) {
 					const aboveBlockPacked = aboveChunk.getBlockPacked(x, 0, z);
 					if (aboveChunk.isTransparent(aboveBlockPacked, 1, -1)) {
 						incomingSkyLight = aboveChunk.getSkyLight(x, 0, z);
-						sourceIsWater = Chunk.isWaterBlock(unpackBlockId(aboveBlockPacked));
+						sourceFiltersFullSun = Chunk.filtersFullSunlight(
+							unpackBlockId(aboveBlockPacked),
+						);
 					}
 				} else {
 					const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(
@@ -450,7 +452,7 @@ export class Chunk {
 						worldY < Chunk.SKYLIGHT_GENERATION_MIN_WORLD_Y
 					) {
 						incomingSkyLight = 0;
-						sourceIsWater = false;
+						sourceFiltersFullSun = false;
 						continue;
 					}
 
@@ -458,7 +460,7 @@ export class Chunk {
 
 					if (!this.isTransparent(blockPacked, 1, 1)) {
 						incomingSkyLight = 0;
-						sourceIsWater = false;
+						sourceFiltersFullSun = false;
 						continue;
 					}
 
@@ -466,9 +468,13 @@ export class Chunk {
 						continue;
 					}
 
-					const thisIsWater = Chunk.isWaterBlock(unpackBlockId(blockPacked));
+					const thisFiltersFullSun = Chunk.filtersFullSunlight(
+						unpackBlockId(blockPacked),
+					);
 					const preservesFullSun =
-						incomingSkyLight === 15 && !sourceIsWater && !thisIsWater;
+						incomingSkyLight === 15 &&
+						!sourceFiltersFullSun &&
+						!thisFiltersFullSun;
 
 					const cellSkyLight = preservesFullSun
 						? 15
@@ -476,7 +482,7 @@ export class Chunk {
 
 					if (cellSkyLight === 0) {
 						incomingSkyLight = 0;
-						sourceIsWater = thisIsWater;
+						sourceFiltersFullSun = thisFiltersFullSun;
 						continue;
 					}
 					const idx = x + y * size + z * Chunk.SIZE2;
@@ -486,18 +492,18 @@ export class Chunk {
 
 					// Water passes light downward only — never seed it into BFS
 					// or it will spread skylight sideways at chunk borders.
-					if (!thisIsWater) {
+					if (!thisFiltersFullSun) {
 						Chunk.pushQ(Chunk.Q_A, this, x, y, z, cellSkyLight);
 					}
 
 					if (!this.isTransparent(blockPacked, 1, -1)) {
 						incomingSkyLight = 0;
-						sourceIsWater = thisIsWater;
+						sourceFiltersFullSun = thisFiltersFullSun;
 						continue;
 					}
 
 					incomingSkyLight = cellSkyLight;
-					sourceIsWater = thisIsWater;
+					sourceFiltersFullSun = thisFiltersFullSun;
 				}
 			}
 		}
@@ -828,7 +834,7 @@ export class Chunk {
 
 			const sourceAllows = isSkyLight
 				? sourceChunk.isTransparent(sourceBlockPacked, axis, dir) &&
-					(isDown === 1 || !Chunk.isWaterBlock(sourceBlockId))
+					(isDown === 1 || !Chunk.filtersFullSunlight(sourceBlockId))
 				: sourceEmits ||
 					sourceChunk.isTransparent(sourceBlockPacked, axis, dir);
 
@@ -847,8 +853,8 @@ export class Chunk {
 				isSkyLight &&
 				isDown === 1 &&
 				level === 15 &&
-				!Chunk.isWaterBlock(sourceBlockId) &&
-				!Chunk.isWaterBlock(targetBlockId);
+				!Chunk.filtersFullSunlight(sourceBlockId) &&
+				!Chunk.filtersFullSunlight(targetBlockId);
 
 			const nextLevel = preservesFullSun ? 15 : level - 1;
 			if (nextLevel <= 0 || nextLevel <= currentTargetLevel) continue;
@@ -1032,6 +1038,7 @@ export class Chunk {
 
 			const min = sliced.min;
 			const max = sliced.max;
+			const faceMask = box.faceMask ?? FACE_ALL;
 			if (
 				max[0] - min[0] <= Chunk.EPS ||
 				max[1] - min[1] <= Chunk.EPS ||
@@ -1040,25 +1047,26 @@ export class Chunk {
 				continue;
 			}
 
-			if (max[0] >= 1 - Chunk.EPS) {
+			if ((faceMask & FACE_PX) !== 0 && max[0] >= 1 - Chunk.EPS) {
 				Chunk.pushRect(pxRects, min[1], max[1], min[2], max[2]);
 			}
-			if (min[0] <= Chunk.EPS) {
+			if ((faceMask & FACE_NX) !== 0 && min[0] <= Chunk.EPS) {
 				Chunk.pushRect(nxRects, min[1], max[1], min[2], max[2]);
 			}
-			if (max[1] >= 1 - Chunk.EPS) {
+			if ((faceMask & FACE_PY) !== 0 && max[1] >= 1 - Chunk.EPS) {
 				Chunk.pushRect(pyRects, min[0], max[0], min[2], max[2]);
 			}
-			if (min[1] <= Chunk.EPS) {
+			if ((faceMask & FACE_NY) !== 0 && min[1] <= Chunk.EPS) {
 				Chunk.pushRect(nyRects, min[0], max[0], min[2], max[2]);
 			}
-			if (max[2] >= 1 - Chunk.EPS) {
+			if ((faceMask & FACE_PZ) !== 0 && max[2] >= 1 - Chunk.EPS) {
 				Chunk.pushRect(pzRects, min[0], max[0], min[1], max[1]);
 			}
-			if (min[2] <= Chunk.EPS) {
+			if ((faceMask & FACE_NZ) !== 0 && min[2] <= Chunk.EPS) {
 				Chunk.pushRect(nzRects, min[0], max[0], min[1], max[1]);
 			}
 		}
+		console.log("new face mask " + Chunk.CLOSED_FACE_MASK_CACHE.length);
 
 		let closedMask = 0;
 		if (Chunk.doesRectUnionCoverUnitSquare(pxRects)) closedMask |= FACE_PX;
@@ -1103,6 +1111,11 @@ export class Chunk {
 
 	private static isWaterBlock(blockId: number): boolean {
 		return unpackBlockId(blockId) === Chunk.WATER_BLOCK_ID;
+	}
+
+	private static filtersFullSunlight(blockId: number): boolean {
+		const unpacked = unpackBlockId(blockId);
+		return unpacked === Chunk.WATER_BLOCK_ID;
 	}
 
 	private cutSkyLightBelow(
@@ -1221,7 +1234,7 @@ export class Chunk {
 				if (
 					isSkyLight
 						? !chunk.isTransparent(sourcePacked, axis, dir) ||
-							(isDown !== 1 && Chunk.isWaterBlock(sourceBlockId))
+							(isDown !== 1 && Chunk.filtersFullSunlight(sourceBlockId))
 						: !sourceEmits && !chunk.isTransparent(sourcePacked, axis, dir)
 				) {
 					continue;
@@ -1243,9 +1256,12 @@ export class Chunk {
 
 				const targetBlockId = unpackBlockId(targetPacked);
 
-				// Water only receives skylight from directly above (handled in seeding).
-				// Block all lateral and upward BFS propagation into water.
-				if (isSkyLight && isDown !== 1 && Chunk.isWaterBlock(targetBlockId)) {
+				// Water-like skylight filters only receive skylight from directly above.
+				if (
+					isSkyLight &&
+					isDown !== 1 &&
+					Chunk.filtersFullSunlight(targetBlockId)
+				) {
 					continue;
 				}
 
@@ -1253,8 +1269,8 @@ export class Chunk {
 					isSkyLight &&
 					isDown === 1 &&
 					level === 15 &&
-					!Chunk.isWaterBlock(sourceBlockId) &&
-					!Chunk.isWaterBlock(targetBlockId);
+					!Chunk.filtersFullSunlight(sourceBlockId) &&
+					!Chunk.filtersFullSunlight(targetBlockId);
 
 				const nextLevel = preservesFullSun ? 15 : level - 1;
 				if (nextLevel <= 0 || currentLevel >= nextLevel) continue;
@@ -1372,7 +1388,7 @@ export class Chunk {
 				if (
 					isSkyLight
 						? !chunk.isTransparent(sourcePacked, axis, dir) ||
-							(isDown !== 1 && Chunk.isWaterBlock(sourceBlockId))
+							(isDown !== 1 && Chunk.filtersFullSunlight(sourceBlockId))
 						: !sourceEmits && !chunk.isTransparent(sourcePacked, axis, dir)
 				) {
 					continue;
@@ -1400,8 +1416,8 @@ export class Chunk {
 					isSkyLight &&
 					isDown === 1 &&
 					level === 15 &&
-					!Chunk.isWaterBlock(sourceBlockId) &&
-					!Chunk.isWaterBlock(targetBlockId);
+					!Chunk.filtersFullSunlight(sourceBlockId) &&
+					!Chunk.filtersFullSunlight(targetBlockId);
 
 				const isDependent =
 					neighborLevel < level || (preservesFullSun && neighborLevel === 15);
@@ -1527,7 +1543,7 @@ export class Chunk {
 			// Never seed water blocks into BFS — water passes light
 			// downward only, seeding it causes lateral spread at chunk borders.
 			const blockId = unpackBlockId(this.getBlockPacked(x, y, z));
-			if (level > 0 && !Chunk.isWaterBlock(blockId)) {
+			if (level > 0 && !Chunk.filtersFullSunlight(blockId)) {
 				Chunk.pushQ(Chunk.Q_A, this, x, y, z, level);
 			}
 		}

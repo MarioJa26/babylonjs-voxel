@@ -3,15 +3,15 @@
 		"id": "Cobble",
 		"name": "Cobble",
 		"path": "/texture/cobble/cobble05_1k",
-		"hardness": 1.5,
-		"shape": "cube"
+		"shape": "cube",
+		"hardness": 1.5
 	},
 	{
 		"id": "Cobble Slab",
 		"name": "Cobble Slab",
 		"path": "/texture/cobble/cobble05_1k",
-		"hardness": 1.5,
-		"shape": "slab"
+		"shape": "slab",
+		"hardness": 1.5
 	},
 	{
 		"id": "FactoryWall",
@@ -357,6 +357,7 @@
 		"id": "GrassCross",
 		"name": "grass_cross",
 		"path": "/texture/dirt/Grass002_1K",
-		"shape": "cross_diagonal"
+		"shape": "cross_diagonal",
+		"hardness": 0.01
 	}
 ]
