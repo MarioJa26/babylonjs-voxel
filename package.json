@@ -7,7 +7,10 @@
 		"dev": "\"F:\\NodeJs\\node.exe\" ./node_modules/vite/bin/vite.js",
 		"build": "\"F:\\NodeJs\\node.exe\" ./node_modules/vite/bin/vite.js build",
 		"preview": "\"F:\\NodeJs\\node.exe\" ./node_modules/vite/bin/vite.js preview",
-		"lint": "eslint ."
+		"lint": "eslint .",
+		"ts7:version": "tsgo --version",
+		"typecheck:ts7": "tsgo --noEmit",
+		"build:test-ts7": "tsgo --noEmit && \"F:\\NodeJs\\node.exe\" ./node_modules/vite/bin/vite.js build"
 	},
 	"dependencies": {
 		"@babylonjs/addons": "^9.3.1",
@@ -17,6 +20,7 @@
 		"@babylonjs/loaders": "^9.3.1",
 		"@babylonjs/materials": "^9.3.1",
 		"@colyseus/sdk": "^0.17.41",
+		"@typescript/native-preview": "^7.0.0-dev.20260421.2",
 		"alea": "^1.0.1",
 		"idb": "^8.0.3",
 		"vue": "^3.5.32"

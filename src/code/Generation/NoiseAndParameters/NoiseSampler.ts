@@ -1,5 +1,3 @@
-import type { createNoise3D } from "simplex-noise";
-
 export class NoiseSampler {
 	private noiseSamples: Float32Array;
 	private sampleRate: number;
@@ -13,7 +11,7 @@ export class NoiseSampler {
 		sampleRate: number,
 		scale: number,
 		xzFactor: number,
-		noiseFunction: ReturnType<typeof createNoise3D>,
+		noiseFunction: (x: number, y: number, z: number) => number,
 	) {
 		this.sampleRate = sampleRate;
 		const sampleCount = chunkSize / sampleRate;

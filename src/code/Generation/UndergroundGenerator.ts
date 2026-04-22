@@ -1,4 +1,3 @@
-import type { createNoise3D } from "simplex-noise";
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
 
 export class UndergroundGenerator {
@@ -7,7 +6,7 @@ export class UndergroundGenerator {
 
 	constructor(
 		params: GenerationParamsType,
-		caveNoise: ReturnType<typeof createNoise3D>,
+		caveNoise: (x: number, y: number, z: number) => number,
 	) {
 		this.params = params;
 		this.caveNoise = caveNoise;

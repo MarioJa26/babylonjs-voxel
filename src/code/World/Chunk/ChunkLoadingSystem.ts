@@ -5,7 +5,6 @@ import { Chunk } from "./Chunk";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import type { MeshData } from "./DataStructures/MeshData";
 import { getCurrentLodCacheVersion } from "./LOD/LodCacheVersion";
-
 import { ChunkEntityRegistry } from "./Loading/ChunkEntityRegistry";
 import {
 	ChunkHydration,
@@ -26,6 +25,7 @@ import type {
 } from "./Loading/ChunkTypes";
 import { ChunkWorldMutations } from "./Loading/ChunkWorldMutations";
 
+// biome-ignore lint/complexity/noStaticOnlyClass: <explanation>
 export class ChunkLoadingSystem {
 	private static loadQueue: QueuedChunkRequest[] = [];
 	private static unloadQueueSet: Set<Chunk> = new Set();
@@ -136,7 +136,7 @@ export class ChunkLoadingSystem {
 			palette: savedData.palette,
 			isUniform: savedData.isUniform,
 			uniformBlockId: savedData.uniformBlockId,
-			lightArray: savedData.light_array,
+			lightArray: savedData.lightArray,
 		}),
 
 		getSavedMeshForLod: (savedData, lod) => {
@@ -754,7 +754,7 @@ export class ChunkLoadingSystem {
 			savedData.palette,
 			savedData.isUniform,
 			savedData.uniformBlockId,
-			savedData.light_array,
+			savedData.lightArray,
 			!hasExactDesiredMesh,
 		);
 
@@ -827,7 +827,7 @@ export class ChunkLoadingSystem {
 		const chunkZ = ChunkLoadingSystem.worldToChunkCoord(worldZ);
 		const chunk = Chunk.getChunk(chunkX, chunkY, chunkZ);
 
-		if (!chunk || !chunk.isLoaded) {
+		if (!chunk?.isLoaded) {
 			return 15 << Chunk.SKY_LIGHT_SHIFT;
 		}
 
