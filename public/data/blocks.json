@@ -357,6 +357,6 @@
 		"id": "GrassCross",
 		"name": "grass_cross",
 		"path": "/texture/dirt/Grass002_1K",
-		"shape": "cross"
+		"shape": "cross_diagonal"
 	}
 ]
