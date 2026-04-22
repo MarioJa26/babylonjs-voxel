@@ -64,6 +64,13 @@ export interface Vector3 {
 	z: number;
 }
 
+// Add these types if not already defined
+type SingleNoiseFn2 = (seed: number, x: number, y: number) => number;
+type SingleNoiseFn3 = (seed: number, x: number, y: number, z: number) => number;
+
+type NoiseFn2 = (x: number, y: number) => number;
+type NoiseFn3 = (x: number, y: number, z: number) => number;
+
 export default class FastNoiseLite {
 	static NoiseType = NoiseType;
 	static RotationType3D = RotationType3D;
@@ -99,6 +106,75 @@ export default class FastNoiseLite {
 	private _DomainWarpType = DomainWarpType.OpenSimplex2;
 	private _WarpTransformType3D = TransformType3D.DefaultOpenSimplex2;
 
+	// Properties to store the direct function targets
+	private _activeSingleR2: SingleNoiseFn2 = this._SingleOpenSimplex2R2;
+	private _activeSingleR3: SingleNoiseFn3 = this._SingleOpenSimplex2R3;
+
+	// 2. Add a private property to hold the active path
+	private _activeR2: NoiseFn2 = (x, y) =>
+		this._GenNoiseSingleR2(this._Seed, x, y);
+	private _activeR3: NoiseFn3 = (x, y, z) =>
+		this._GenNoiseSingleR3(this._Seed, x, y, z);
+
+	private _updateRuntimeFunctions() {
+		// Selection for 2D
+		switch (this._FractalType) {
+			case FractalType.FBm:
+				this._activeR2 = this._GenFractalFBmR2;
+				this._activeR3 = this._GenFractalFBmR3;
+				break;
+			case FractalType.Ridged:
+				this._activeR2 = this._GenFractalRidgedR2;
+				this._activeR3 = this._GenFractalRidgedR3;
+				break;
+			case FractalType.PingPong:
+				this._activeR2 = this._GenFractalPingPongR2;
+				this._activeR3 = this._GenFractalPingPongR3;
+				break;
+			default:
+				this._activeR2 = (x, y) => this._GenNoiseSingleR2(this._Seed, x, y);
+				this._activeR3 = (x, y, z) =>
+					this._GenNoiseSingleR3(this._Seed, x, y, z);
+		}
+	}
+
+	private _updateSinglePointers() {
+		switch (this._NoiseType) {
+			case NoiseType.OpenSimplex2:
+				this._activeSingleR2 = (s, x, y) => this._SingleOpenSimplex2R2(s, x, y);
+				this._activeSingleR3 = (s, x, y, z) =>
+					this._SingleOpenSimplex2R3(s, x, y, z);
+				break;
+			case NoiseType.OpenSimplex2S:
+				this._activeSingleR2 = (s, x, y) =>
+					this._SingleOpenSimplex2SR2(s, x, y);
+				this._activeSingleR3 = (s, x, y, z) =>
+					this._SingleOpenSimplex2SR3(s, x, y, z);
+				break;
+			case NoiseType.Cellular:
+				this._activeSingleR2 = (s, x, y) => this._SingleCellularR2(s, x, y);
+				this._activeSingleR3 = (s, x, y, z) =>
+					this._SingleCellularR3(s, x, y, z);
+				break;
+			case NoiseType.Perlin:
+				this._activeSingleR2 = (s, x, y) => this._SinglePerlinR2(s, x, y);
+				this._activeSingleR3 = (s, x, y, z) => this._SinglePerlinR3(s, x, y, z);
+				break;
+			case NoiseType.ValueCubic:
+				this._activeSingleR2 = (s, x, y) => this._SingleValueCubicR2(s, x, y);
+				this._activeSingleR3 = (s, x, y, z) =>
+					this._SingleValueCubicR3(s, x, y, z);
+				break;
+			case NoiseType.Value:
+				this._activeSingleR2 = (s, x, y) => this._SingleValueR2(s, x, y);
+				this._activeSingleR3 = (s, x, y, z) => this._SingleValueR3(s, x, y, z);
+				break;
+			default:
+				this._activeSingleR2 = () => 0;
+				this._activeSingleR3 = () => 0;
+		}
+	}
+
 	/**
 	 * @description Create new FastNoiseLite object with optional seed
 	 */
@@ -130,6 +206,7 @@ export default class FastNoiseLite {
 	 */
 	SetNoiseType(noiseType: NoiseType) {
 		this._NoiseType = noiseType;
+		this._updateSinglePointers();
 		this._UpdateTransformType3D();
 	}
 
@@ -150,6 +227,7 @@ export default class FastNoiseLite {
 	 */
 	SetFractalType(fractalType: FractalType) {
 		this._FractalType = fractalType;
+		this._updateRuntimeFunctions();
 	}
 
 	/**
@@ -241,89 +319,66 @@ export default class FastNoiseLite {
 	 * @description 2D/3D noise at given position using current settings
 	 * @return Noise output bounded between -1...1
 	 */
-	GetNoise(x: number, y: number, z?: number) {
-		const R2 = (x: number, y: number) => {
-			x *= this._Frequency;
-			y *= this._Frequency;
+	private readonly F2 = 0.5 * (1.7320508075688772 - 1);
+	private readonly F3 = 2.0 / 3.0;
+	private readonly G3 = -0.211324865405187;
+	private readonly H3 = 0.577350269189626;
 
-			switch (this._NoiseType) {
-				case FastNoiseLite.NoiseType.OpenSimplex2:
-				case FastNoiseLite.NoiseType.OpenSimplex2S: {
-					const F2 = 0.5 * (this.SQRT3 - 1);
-					const t = (x + y) * F2;
-					x += t;
-					y += t;
-					break;
-				}
-				default:
-					break;
-			}
+	public GetNoise2D(x: number, y: number): number {
+		x *= this._Frequency;
+		y *= this._Frequency;
 
-			switch (this._FractalType) {
-				case FastNoiseLite.FractalType.FBm:
-					return this._GenFractalFBmR2(x, y);
-				case FastNoiseLite.FractalType.Ridged:
-					return this._GenFractalRidgedR2(x, y);
-				case FastNoiseLite.FractalType.PingPong:
-					return this._GenFractalPingPongR2(x, y);
-				default:
-					return this._GenNoiseSingleR2(this._Seed, x, y);
-			}
-		};
-
-		const R3 = (x: number, y: number, z: number) => {
-			x *= this._Frequency;
-			y *= this._Frequency;
-			z *= this._Frequency;
-
-			switch (this._TransformType3D) {
-				case FastNoiseLite.TransformType3D.ImproveXYPlanes: {
-					const xy = x + y;
-					const s2 = xy * -0.211324865405187;
-					z *= 0.577350269189626;
-					x += s2 - z;
-					y += s2 - z;
-					z += xy * 0.577350269189626;
-					break;
-				}
-				case FastNoiseLite.TransformType3D.ImproveXZPlanes: {
-					const xz = x + z;
-					const s2 = xz * -0.211324865405187;
-					y *= 0.577350269189626;
-					x += s2 - y;
-					z += s2 - y;
-					y += xz * 0.577350269189626;
-					break;
-				}
-				case FastNoiseLite.TransformType3D.DefaultOpenSimplex2: {
-					const R3 = 2.0 / 3.0;
-					const r = (x + y + z) * R3;
-					x = r - x;
-					y = r - y;
-					z = r - z;
-					break;
-				}
-				default:
-					break;
-			}
-
-			switch (this._FractalType) {
-				case FastNoiseLite.FractalType.FBm:
-					return this._GenFractalFBmR3(x, y, z);
-				case FastNoiseLite.FractalType.Ridged:
-					return this._GenFractalRidgedR3(x, y, z);
-				case FastNoiseLite.FractalType.PingPong:
-					return this._GenFractalPingPongR3(x, y, z);
-				default:
-					return this._GenNoiseSingleR3(this._Seed, x, y, z);
-			}
-		};
-
-		if (z === undefined) {
-			return R2(x, y);
-		} else {
-			return R3(x, y, z);
+		if (
+			this._NoiseType === NoiseType.OpenSimplex2 ||
+			this._NoiseType === NoiseType.OpenSimplex2S
+		) {
+			const t = (x + y) * this.F2;
+			x += t;
+			y += t;
 		}
+
+		return this._activeR2(x, y);
+	}
+
+	public GetNoise3D(x: number, y: number, z: number): number {
+		x *= this._Frequency;
+		y *= this._Frequency;
+		z *= this._Frequency;
+
+		switch (this._TransformType3D) {
+			case TransformType3D.ImproveXYPlanes: {
+				const xy = x + y;
+				const s2 = xy * this.G3;
+				const zH = z * this.H3;
+				x += s2 - zH;
+				y += s2 - zH;
+				z += xy * this.H3;
+				break;
+			}
+			case TransformType3D.ImproveXZPlanes: {
+				const xz = x + z;
+				const s2xz = xz * this.G3;
+				const yH = y * this.H3;
+				x += s2xz - yH;
+				z += s2xz - yH;
+				y += xz * this.H3;
+				break;
+			}
+			case TransformType3D.DefaultOpenSimplex2: {
+				const r = (x + y + z) * this.F3;
+				x = r - x;
+				y = r - y;
+				z = r - z;
+				break;
+			}
+		}
+
+		return this._activeR3(x, y, z);
+	}
+
+	// Keep this for backward compatibility, but discourage its use in hot loops
+	public GetNoise(x: number, y: number, z?: number): number {
+		return z === undefined ? this.GetNoise2D(x, y) : this.GetNoise3D(x, y, z);
 	}
 
 	/**
@@ -344,7 +399,7 @@ export default class FastNoiseLite {
 	}
 
 	// prettier-ignore
-	private _Gradients2D = [
+	private _Gradients2D = new Float16Array([
 		0.130526192220052, 0.99144486137381, 0.38268343236509, 0.923879532511287,
 		0.608761429008721, 0.793353340291235, 0.793353340291235, 0.608761429008721,
 		0.923879532511287, 0.38268343236509, 0.99144486137381, 0.130526192220051,
@@ -414,10 +469,10 @@ export default class FastNoiseLite {
 		-0.38268343236509, 0.38268343236509, -0.923879532511287, -0.38268343236509,
 		-0.923879532511287, -0.923879532511287, -0.38268343236509,
 		-0.923879532511287, 0.38268343236509, -0.38268343236509, 0.923879532511287,
-	];
+	]);
 
 	// prettier-ignore
-	private _RandVecs2D = [
+	private _RandVecs2D = new Float16Array([
 		-0.2700222198, -0.9628540911, 0.3863092627, -0.9223693152, 0.04444859006,
 		-0.999011673, -0.5992523158, -0.8005602176, -0.7819280288, 0.6233687174,
 		0.9464672271, 0.3227999196, -0.6514146797, -0.7587218957, 0.9378472289,
@@ -521,10 +576,10 @@ export default class FastNoiseLite {
 		0.639412098, -0.7688642071, 0.9211571421, 0.3891908523, -0.146637214,
 		-0.9891903394, -0.782318098, 0.6228791163, -0.5039610839, -0.8637263605,
 		-0.7743120191, -0.6328039957,
-	];
+	]);
 
 	// prettier-ignore
-	private _Gradients3D = [
+	private _Gradients3D = new Float16Array([
 		0, 1, 1, 0, 0, -1, 1, 0, 0, 1, -1, 0, 0, -1, -1, 0, 1, 0, 1, 0, -1, 0, 1, 0,
 		1, 0, -1, 0, -1, 0, -1, 0, 1, 1, 0, 0, -1, 1, 0, 0, 1, -1, 0, 0, -1, -1, 0,
 		0, 0, 1, 1, 0, 0, -1, 1, 0, 0, 1, -1, 0, 0, -1, -1, 0, 1, 0, 1, 0, -1, 0, 1,
@@ -536,10 +591,10 @@ export default class FastNoiseLite {
 		0, -1, -1, 0, 0, 0, 1, 1, 0, 0, -1, 1, 0, 0, 1, -1, 0, 0, -1, -1, 0, 1, 0,
 		1, 0, -1, 0, 1, 0, 1, 0, -1, 0, -1, 0, -1, 0, 1, 1, 0, 0, -1, 1, 0, 0, 1,
 		-1, 0, 0, -1, -1, 0, 0, 1, 1, 0, 0, 0, -1, 1, 0, -1, 1, 0, 0, 0, -1, -1, 0,
-	];
+	]);
 
 	// prettier-ignore
-	private _RandVecs3D = [
+	private _RandVecs3D = new Float16Array([
 		-0.7292736885, -0.6618439697, 0.1735581948, 0, 0.790292081, -0.5480887466,
 		-0.2739291014, 0, 0.7217578935, 0.6226212466, -0.3023380997, 0, 0.565683137,
 		-0.8208298145, -0.0790000257, 0, 0.760049034, -0.5555979497, -0.3370999617,
@@ -708,7 +763,7 @@ export default class FastNoiseLite {
 		-0.1842489331, -0.9777375055, -0.1004076743, 0, 0.0775473789, -0.9111505856,
 		0.4047110257, 0, 0.1399838409, 0.7601631212, -0.6344734459, 0, 0.4484419361,
 		-0.845289248, 0.2904925424, 0,
-	];
+	]);
 
 	private _PrimeX = 501125321;
 	private _PrimeY = 1136930381;
@@ -769,13 +824,13 @@ export default class FastNoiseLite {
 		hash = Math.imul(hash, 0x27d4eb2d);
 		return hash;
 	}
-
+	private readonly S = 1 / 2147483648.0;
 	private _ValCoordR2(seed: number, xPrimed: number, yPrimed: number) {
 		let hash = this._HashR2(seed, xPrimed, yPrimed);
 
 		hash = Math.imul(hash, hash);
 		hash ^= hash << 19;
-		return hash * (1 / 2147483648.0);
+		return hash * this.S;
 	}
 
 	private _ValCoordR3(
@@ -788,7 +843,7 @@ export default class FastNoiseLite {
 
 		hash = Math.imul(hash, hash);
 		hash ^= hash << 19;
-		return hash * (1 / 2147483648.0);
+		return hash * this.S;
 	}
 
 	private _GradCoordR2(
@@ -800,7 +855,7 @@ export default class FastNoiseLite {
 	) {
 		let hash = this._HashR2(seed, xPrimed, yPrimed);
 		hash ^= hash >> 15;
-		hash &= 127 << 1;
+		hash &= 254;
 
 		const xg = this._Gradients2D[hash];
 		const yg = this._Gradients2D[hash | 1];
@@ -819,7 +874,7 @@ export default class FastNoiseLite {
 	) {
 		let hash = this._HashR3(seed, xPrimed, yPrimed, zPrimed);
 		hash ^= hash >> 15;
-		hash &= 63 << 2;
+		hash &= 252;
 
 		const xg = this._Gradients3D[hash];
 		const yg = this._Gradients3D[hash | 1];
@@ -914,80 +969,144 @@ export default class FastNoiseLite {
 		}
 	}
 
-	private _GenFractalFBmR2(x: number, y: number) {
+	private _GenFractalFBmR2(x: number, y: number): number {
 		let seed = this._Seed;
-		let sum = 0;
+		let sum = 0.0;
 		let amp = this._FractalBounding;
 
-		for (let i = 0; i < this._Octaves; i++) {
-			const noise = this._GenNoiseSingleR2(seed++, x, y);
-			sum += noise * amp;
-			amp *= FastNoiseLite._Lerp(
-				1.0,
-				Math.min(noise + 1, 2) * 0.5,
-				this._WeightedStrength,
-			);
+		const octaves = this._Octaves;
+		const lacunarity = this._Lacunarity;
+		const gain = this._Gain;
+		const weightedStrength = this._WeightedStrength;
 
-			x *= this._Lacunarity;
-			y *= this._Lacunarity;
-			amp *= this._Gain;
+		// Fast path: no weighting
+		if (weightedStrength === 0) {
+			for (let i = 0; i < octaves; i++) {
+				sum += this._GenNoiseSingleR2(seed, x, y) * amp;
+				seed++;
+
+				x *= lacunarity;
+				y *= lacunarity;
+				amp *= gain;
+			}
+			return sum;
 		}
+
+		for (let i = 0; i < octaves; i++) {
+			const noise = this._GenNoiseSingleR2(seed, x, y);
+			seed++;
+
+			sum += noise * amp;
+
+			// If noise is guaranteed in [-1, 1], this is enough:
+			// const t = (noise + 1.0) * 0.5;
+
+			// Safe version preserving current clamp behavior:
+			const t = noise < 1.0 ? (noise + 1.0) * 0.5 : 1.0;
+
+			// lerp(1.0, t, weightedStrength)
+			amp *= 1.0 + (t - 1.0) * weightedStrength;
+
+			x *= lacunarity;
+			y *= lacunarity;
+			amp *= gain;
+		}
+
 		return sum;
 	}
 
-	private _GenFractalFBmR3(x: number, y: number, z: number) {
+	private _GenFractalFBmR3(x: number, y: number, z: number): number {
 		let seed = this._Seed;
-		let sum = 0;
+		let sum = 0.0;
 		let amp = this._FractalBounding;
 
-		for (let i = 0; i < this._Octaves; i++) {
-			const noise = this._GenNoiseSingleR3(seed++, x, y, z);
-			sum += noise * amp;
-			amp *= FastNoiseLite._Lerp(
-				1.0,
-				(noise + 1) * 0.5,
-				this._WeightedStrength,
-			);
+		const octaves = this._Octaves;
+		const lacunarity = this._Lacunarity;
+		const gain = this._Gain;
+		const weightedStrength = this._WeightedStrength;
 
-			x *= this._Lacunarity;
-			y *= this._Lacunarity;
-			z *= this._Lacunarity;
-			amp *= this._Gain;
+		if (weightedStrength === 0) {
+			for (let i = 0; i < octaves; i++) {
+				sum += this._GenNoiseSingleR3(seed, x, y, z) * amp;
+				seed++;
+				x *= lacunarity;
+				y *= lacunarity;
+				z *= lacunarity;
+				amp *= gain;
+			}
+			return sum;
 		}
+
+		for (let i = 0; i < octaves; i++) {
+			const noise = this._GenNoiseSingleR3(seed, x, y, z);
+			seed++;
+
+			sum += noise * amp;
+			amp *= 1.0 + (noise - 1.0) * 0.5 * weightedStrength;
+
+			x *= lacunarity;
+			y *= lacunarity;
+			z *= lacunarity;
+			amp *= gain;
+		}
+
 		return sum;
 	}
 
 	private _GenFractalRidgedR2(x: number, y: number) {
 		let seed = this._Seed;
+		const octaves = this._Octaves;
+		const lac = this._Lacunarity;
+		const gain = this._Gain;
+		const weight = this._WeightedStrength;
+		const singleFn = this._activeSingleR2; // Localize the function pointer
+
 		let sum = 0;
 		let amp = this._FractalBounding;
 
-		for (let i = 0; i < this._Octaves; i++) {
-			const noise = Math.abs(this._GenNoiseSingleR2(seed++, x, y));
+		for (let i = 0; i < octaves; i++) {
+			// V8 can now inline the target of singleFn directly here
+			const noise = Math.abs(singleFn.call(this, seed++, x, y));
 			sum += (noise * -2 + 1) * amp;
-			amp *= FastNoiseLite._Lerp(1.0, 1 - noise, this._WeightedStrength);
+			amp *= FastNoiseLite._Lerp(1.0, 1 - noise, weight);
 
-			x *= this._Lacunarity;
-			y *= this._Lacunarity;
-			amp *= this._Gain;
+			x *= lac;
+			y *= lac;
+			amp *= gain;
 		}
 		return sum;
 	}
 
 	private _GenFractalRidgedR3(x: number, y: number, z: number) {
+		// 1. Hoist properties to local constants
+		// This lets V8 keep these in CPU registers (extremely fast)
 		let seed = this._Seed;
+		const octaves = this._Octaves;
+		const lac = this._Lacunarity;
+		const gain = this._Gain;
+		const weight = this._WeightedStrength;
+		const bounding = this._FractalBounding;
+
+		// 2. Use the pre-selected function pointer
+		// This avoids the 'switch(this._NoiseType)' overhead on every octave
+		const singleFn = this._activeSingleR3;
+
 		let sum = 0;
-		let amp = this._FractalBounding;
+		let amp = bounding;
 
-		for (let i = 0; i < this._Octaves; i++) {
-			const noise = Math.abs(this._GenNoiseSingleR3(seed++, x, y, z));
+		for (let i = 0; i < octaves; i++) {
+			// V8 can now inline the specific noise logic (e.g. Perlin) directly here
+			const noise = Math.abs(singleFn.call(this, seed++, x, y, z));
+
 			sum += (noise * -2 + 1) * amp;
-			amp *= FastNoiseLite._Lerp(1.0, 1 - noise, this._WeightedStrength);
 
-			x *= this._Lacunarity;
-			y *= this._Lacunarity;
-			z *= this._Lacunarity;
-			amp *= this._Gain;
+			// Manual inline of Lerp or ensure _Lerp is a static/fast method
+			amp *= FastNoiseLite._Lerp(1.0, 1 - noise, weight);
+
+			x *= lac;
+			y *= lac;
+			z *= lac;
+			amp *= gain;
 		}
 		return sum;
 	}
@@ -1030,12 +1149,19 @@ export default class FastNoiseLite {
 		}
 		return sum;
 	}
-
+	private readonly G2 = (3 - this.SQRT3) / 6;
+	private readonly G2_2 = 2 * this.G2 - 1;
+	private readonly C1 = 2 * (1 - 2 * this.G2) * (1 / this.G2 - 2);
+	private readonly C2 = -2 * (1 - 2 * this.G2) * (1 - 2 * this.G2);
+	private readonly NORM = 99.83685446303647;
 	private _SingleOpenSimplex2R2(seed: number, x: number, y: number) {
-		const G2 = (3 - this.SQRT3) / 6;
+		const G2 = this.G2;
+		const G2_2 = this.G2_2;
 
-		let i = Math.floor(x);
-		let j = Math.floor(y);
+		// fast floor
+		let i = x >= 0 ? x | 0 : (x | 0) - 1;
+		let j = y >= 0 ? y | 0 : (y | 0) - 1;
+
 		const xi = x - i;
 		const yi = y - j;
 
@@ -1046,29 +1172,26 @@ export default class FastNoiseLite {
 		i = Math.imul(i, this._PrimeX);
 		j = Math.imul(j, this._PrimeY);
 
-		let n0: number, n1: number, n2: number;
+		let n0 = 0,
+			n1 = 0,
+			n2 = 0;
 
 		const a = 0.5 - x0 * x0 - y0 * y0;
 
-		if (a <= 0) {
-			n0 = 0;
-		} else {
-			n0 = a * a * (a * a) * this._GradCoordR2(seed, i, j, x0, y0);
+		if (a > 0) {
+			const a2 = a * a;
+			n0 = a2 * a2 * this._GradCoordR2(seed, i, j, x0, y0);
 		}
 
-		const c =
-			2 * (1 - 2 * G2) * (1 / G2 - 2) * t +
-			(-2 * (1 - 2 * G2) * (1 - 2 * G2) + a);
+		const c = this.C1 * t + (this.C2 + a);
 
-		if (c <= 0) {
-			n2 = 0;
-		} else {
-			const x2 = x0 + (2 * G2 - 1);
-			const y2 = y0 + (2 * G2 - 1);
+		if (c > 0) {
+			const x2 = x0 + G2_2;
+			const y2 = y0 + G2_2;
+			const c2 = c * c;
 			n2 =
-				c *
-				c *
-				(c * c) *
+				c2 *
+				c2 *
 				this._GradCoordR2(seed, i + this._PrimeX, j + this._PrimeY, x2, y2);
 		}
 
@@ -1076,146 +1199,158 @@ export default class FastNoiseLite {
 			const x1 = x0 + G2;
 			const y1 = y0 + (G2 - 1);
 			const b = 0.5 - x1 * x1 - y1 * y1;
-			if (b <= 0) {
-				n1 = 0;
-			} else {
-				n1 =
-					b *
-					b *
-					(b * b) *
-					this._GradCoordR2(seed, i, j + this._PrimeY, x1, y1);
+
+			if (b > 0) {
+				const b2 = b * b;
+				n1 = b2 * b2 * this._GradCoordR2(seed, i, j + this._PrimeY, x1, y1);
 			}
 		} else {
 			const x1 = x0 + (G2 - 1);
 			const y1 = y0 + G2;
 			const b = 0.5 - x1 * x1 - y1 * y1;
-			if (b <= 0) {
-				n1 = 0;
-			} else {
-				n1 =
-					b *
-					b *
-					(b * b) *
-					this._GradCoordR2(seed, i + this._PrimeX, j, x1, y1);
+
+			if (b > 0) {
+				const b2 = b * b;
+				n1 = b2 * b2 * this._GradCoordR2(seed, i + this._PrimeX, j, x1, y1);
 			}
 		}
-		return (n0 + n1 + n2) * 99.83685446303647;
+
+		return (n0 + n1 + n2) * this.NORM;
 	}
 
 	private _SingleOpenSimplex2R3(seed: number, x: number, y: number, z: number) {
 		let i = Math.round(x);
 		let j = Math.round(y);
 		let k = Math.round(z);
+
 		let x0 = x - i;
 		let y0 = y - j;
 		let z0 = z - k;
 
-		let yNSign = Math.trunc((-1.0 - y0) | 1);
-		let xNSign = Math.trunc((-1.0 - x0) | 1);
-		let zNSign = Math.trunc((-1.0 - z0) | 1);
+		let xNSign = (-1.0 - x0) | 1;
+		let yNSign = (-1.0 - y0) | 1;
+		let zNSign = (-1.0 - z0) | 1;
 
-		let ax0 = xNSign * -x0;
-		let ay0 = yNSign * -y0;
-		let az0 = zNSign * -z0;
-		i = Math.imul(i, this._PrimeX);
-		j = Math.imul(j, this._PrimeY);
-		k = Math.imul(k, this._PrimeZ);
+		let ax0 = -xNSign * x0;
+		let ay0 = -yNSign * y0;
+		let az0 = -zNSign * z0;
+
+		const px = this._PrimeX;
+		const py = this._PrimeY;
+		const pz = this._PrimeZ;
+
+		i = Math.imul(i, px);
+		j = Math.imul(j, py);
+		k = Math.imul(k, pz);
 
 		let value = 0;
+
+		// ---------- PASS 1 ----------
 		let a = 0.6 - x0 * x0 - (y0 * y0 + z0 * z0);
 
-		for (let l = 0; ; l++) {
-			if (a > 0) {
-				value += a * a * (a * a) * this._GradCoordR3(seed, i, j, k, x0, y0, z0);
-			}
-
-			if (ax0 >= ay0 && ax0 >= az0) {
-				let b = a + ax0 + ax0;
-				if (b > 1) {
-					b -= 1;
-					value +=
-						b *
-						b *
-						(b * b) *
-						this._GradCoordR3(
-							seed,
-							i - xNSign * this._PrimeX,
-							j,
-							k,
-							x0 + xNSign,
-							y0,
-							z0,
-						);
-				}
-			} else if (ay0 > ax0 && ay0 >= az0) {
-				let b = a + ay0 + ay0;
-				if (b > 1) {
-					b -= 1;
-					value +=
-						b *
-						b *
-						(b * b) *
-						this._GradCoordR3(
-							seed,
-							i,
-							j - yNSign * this._PrimeY,
-							k,
-							x0,
-							y0 + yNSign,
-							z0,
-						);
-				}
-			} else {
-				let b = a + az0 + az0;
-				if (b > 1) {
-					b -= 1;
-					value +=
-						b *
-						b *
-						(b * b) *
-						this._GradCoordR3(
-							seed,
-							i,
-							j,
-							k - zNSign * this._PrimeZ,
-							x0,
-							y0,
-							z0 + zNSign,
-						);
-				}
-			}
-
-			if (l === 1) {
-				break;
-			}
-
-			ax0 = 0.5 - ax0;
-			ay0 = 0.5 - ay0;
-			az0 = 0.5 - az0;
-
-			x0 = xNSign * ax0;
-			y0 = yNSign * ay0;
-			z0 = zNSign * az0;
-
-			a += 0.75 - ax0 - (ay0 + az0);
-
-			i += (xNSign >> 1) & this._PrimeX;
-			j += (yNSign >> 1) & this._PrimeY;
-			k += (zNSign >> 1) & this._PrimeZ;
-
-			xNSign = -xNSign;
-			yNSign = -yNSign;
-			zNSign = -zNSign;
-
-			seed = ~seed;
+		if (a > 0) {
+			const a2 = a * a;
+			value += a2 * a2 * this._GradCoordR3(seed, i, j, k, x0, y0, z0);
 		}
+
+		if (ax0 >= ay0 && ax0 >= az0) {
+			let b = a + ax0 + ax0;
+			if (b > 1) {
+				b -= 1;
+				const b2 = b * b;
+				value +=
+					b2 *
+					b2 *
+					this._GradCoordR3(seed, i - xNSign * px, j, k, x0 + xNSign, y0, z0);
+			}
+		} else if (ay0 >= az0) {
+			let b = a + ay0 + ay0;
+			if (b > 1) {
+				b -= 1;
+				const b2 = b * b;
+				value +=
+					b2 *
+					b2 *
+					this._GradCoordR3(seed, i, j - yNSign * py, k, x0, y0 + yNSign, z0);
+			}
+		} else {
+			let b = a + az0 + az0;
+			if (b > 1) {
+				b -= 1;
+				const b2 = b * b;
+				value +=
+					b2 *
+					b2 *
+					this._GradCoordR3(seed, i, j, k - zNSign * pz, x0, y0, z0 + zNSign);
+			}
+		}
+
+		// ---------- PREP PASS 2 ----------
+		ax0 = 0.5 - ax0;
+		ay0 = 0.5 - ay0;
+		az0 = 0.5 - az0;
+
+		x0 = xNSign * ax0;
+		y0 = yNSign * ay0;
+		z0 = zNSign * az0;
+
+		a += 0.75 - ax0 - (ay0 + az0);
+
+		i += (xNSign >> 1) & px;
+		j += (yNSign >> 1) & py;
+		k += (zNSign >> 1) & pz;
+
+		xNSign = -xNSign;
+		yNSign = -yNSign;
+		zNSign = -zNSign;
+
+		seed = ~seed;
+
+		// ---------- PASS 2 ----------
+		if (a > 0) {
+			const a2 = a * a;
+			value += a2 * a2 * this._GradCoordR3(seed, i, j, k, x0, y0, z0);
+		}
+
+		if (ax0 >= ay0 && ax0 >= az0) {
+			let b = a + ax0 + ax0;
+			if (b > 1) {
+				b -= 1;
+				const b2 = b * b;
+				value +=
+					b2 *
+					b2 *
+					this._GradCoordR3(seed, i - xNSign * px, j, k, x0 + xNSign, y0, z0);
+			}
+		} else if (ay0 >= az0) {
+			let b = a + ay0 + ay0;
+			if (b > 1) {
+				b -= 1;
+				const b2 = b * b;
+				value +=
+					b2 *
+					b2 *
+					this._GradCoordR3(seed, i, j - yNSign * py, k, x0, y0 + yNSign, z0);
+			}
+		} else {
+			let b = a + az0 + az0;
+			if (b > 1) {
+				b -= 1;
+				const b2 = b * b;
+				value +=
+					b2 *
+					b2 *
+					this._GradCoordR3(seed, i, j, k - zNSign * pz, x0, y0, z0 + zNSign);
+			}
+		}
+
 		return value * 32.69428253173828125;
 	}
 
 	private _SingleOpenSimplex2SR2(seed: number, x: number, y: number) {
 		// 2D OpenSimplex2S case is a modified 2D simplex noise.
 
-		const G2 = (3 - this.SQRT3) / 6;
+		const G2 = this.G2;
 
 		/*
 		 * --- Skew moved to TransformNoiseCoordinate method ---
@@ -1224,8 +1359,8 @@ export default class FastNoiseLite {
 		 * x += s; y += s;
 		 */
 
-		let i = Math.floor(x);
-		let j = Math.floor(y);
+		let i = x >= 0 ? x | 0 : (x | 0) - 1;
+		let j = y >= 0 ? y | 0 : (y | 0) - 1;
 		const xi = x - i;
 		const yi = y - j;
 
@@ -1368,125 +1503,135 @@ export default class FastNoiseLite {
 		y: number,
 		z: number,
 	) {
-		// 3D OpenSimplex2S case uses two offset rotated cube grids.
+		let i = x >= 0 ? x | 0 : (x | 0) - 1;
+		let j = y >= 0 ? y | 0 : (y | 0) - 1;
+		let k = z >= 0 ? z | 0 : (z | 0) - 1;
 
-		/*
-		 * --- Rotation moved to TransformNoiseCoordinate method ---
-		 * final FNLfloat R3 = (FNLfloat)(2.0 / 3.0);
-		 * FNLfloat r = (x + y + z) * R3; // Rotation, not skew
-		 * x = r - x; y = r - y; z = r - z;
-		 */
-
-		let i = Math.floor(x);
-		let j = Math.floor(y);
-		let k = Math.floor(z);
 		const xi = x - i;
 		const yi = y - j;
 		const zi = z - k;
 
-		i = Math.imul(i, this._PrimeX);
-		j = Math.imul(j, this._PrimeY);
-		k = Math.imul(k, this._PrimeZ);
+		const px = this._PrimeX;
+		const py = this._PrimeY;
+		const pz = this._PrimeZ;
+
+		i = Math.imul(i, px);
+		j = Math.imul(j, py);
+		k = Math.imul(k, pz);
+
 		const seed2 = seed + 1293373;
 
-		const xNMask = Math.trunc(-0.5 - xi);
-		const yNMask = Math.trunc(-0.5 - yi);
-		const zNMask = Math.trunc(-0.5 - zi);
+		const xNMask = (-0.5 - xi) | 0;
+		const yNMask = (-0.5 - yi) | 0;
+		const zNMask = (-0.5 - zi) | 0;
 
 		const x0 = xi + xNMask;
 		const y0 = yi + yNMask;
 		const z0 = zi + zNMask;
-		const a0 = 0.75 - x0 * x0 - y0 * y0 - z0 * z0;
-		let value =
-			a0 *
-			a0 *
-			(a0 * a0) *
-			this._GradCoordR3(
-				seed,
-				i + (xNMask & this._PrimeX),
-				j + (yNMask & this._PrimeY),
-				k + (zNMask & this._PrimeZ),
-				x0,
-				y0,
-				z0,
-			);
 
 		const x1 = xi - 0.5;
 		const y1 = yi - 0.5;
 		const z1 = zi - 0.5;
-		const a1 = 0.75 - x1 * x1 - y1 * y1 - z1 * z1;
-		value +=
-			a1 *
-			a1 *
-			(a1 * a1) *
-			this._GradCoordR3(
-				seed2,
-				i + this._PrimeX,
-				j + this._PrimeY,
-				k + this._PrimeZ,
-				x1,
-				y1,
-				z1,
-			);
 
-		const xAFlipMask0 = ((xNMask | 1) << 1) * x1;
-		const yAFlipMask0 = ((yNMask | 1) << 1) * y1;
-		const zAFlipMask0 = ((zNMask | 1) << 1) * z1;
-		const xAFlipMask1 = (-2 - (xNMask << 2)) * x1 - 1.0;
-		const yAFlipMask1 = (-2 - (yNMask << 2)) * y1 - 1.0;
-		const zAFlipMask1 = (-2 - (zNMask << 2)) * z1 - 1.0;
+		const xm = xNMask | 1;
+		const ym = yNMask | 1;
+		const zm = zNMask | 1;
 
-		let skip5 = false;
-		const a2 = xAFlipMask0 + a0;
-		if (a2 > 0) {
-			const x2 = x0 - (xNMask | 1);
+		const px2 = px << 1;
+		const py2 = py << 1;
+		const pz2 = pz << 1;
+
+		let value = 0;
+
+		// --- a0 ---
+		const a0 = 0.75 - x0 * x0 - y0 * y0 - z0 * z0;
+		if (a0 > 0) {
+			const a0_2 = a0 * a0;
 			value +=
-				a2 *
-				a2 *
-				(a2 * a2) *
+				a0_2 *
+				a0_2 *
 				this._GradCoordR3(
 					seed,
-					i + (~xNMask & this._PrimeX),
-					j + (yNMask & this._PrimeY),
-					k + (zNMask & this._PrimeZ),
+					i + (xNMask & px),
+					j + (yNMask & py),
+					k + (zNMask & pz),
+					x0,
+					y0,
+					z0,
+				);
+		}
+
+		// --- a1 ---
+		const a1 = 0.75 - x1 * x1 - y1 * y1 - z1 * z1;
+		if (a1 > 0) {
+			const a1_2 = a1 * a1;
+			value +=
+				a1_2 *
+				a1_2 *
+				this._GradCoordR3(seed2, i + px, j + py, k + pz, x1, y1, z1);
+		}
+
+		const xA0 = xm * x1;
+		const yA0 = ym * y1;
+		const zA0 = zm * z1;
+
+		const xA1 = (-2 - (xNMask << 2)) * x1 - 1;
+		const yA1 = (-2 - (yNMask << 2)) * y1 - 1;
+		const zA1 = (-2 - (zNMask << 2)) * z1 - 1;
+
+		let skip5 = false,
+			skip9 = false,
+			skipD = false;
+
+		// --- a2 ---
+		const a2 = xA0 + a0;
+		if (a2 > 0) {
+			const x2 = x0 - xm;
+			const a2_2 = a2 * a2;
+			value +=
+				a2_2 *
+				a2_2 *
+				this._GradCoordR3(
+					seed,
+					i + (~xNMask & px),
+					j + (yNMask & py),
+					k + (zNMask & pz),
 					x2,
 					y0,
 					z0,
 				);
 		} else {
-			const a3 = yAFlipMask0 + zAFlipMask0 + a0;
-
+			const a3 = yA0 + zA0 + a0;
 			if (a3 > 0) {
-				const x3 = x0;
-				const y3 = y0 - (yNMask | 1);
-				const z3 = z0 - (zNMask | 1);
+				const y3 = y0 - ym;
+				const z3 = z0 - zm;
+				const a3_2 = a3 * a3;
 				value +=
-					a3 *
-					a3 *
-					(a3 * a3) *
+					a3_2 *
+					a3_2 *
 					this._GradCoordR3(
 						seed,
-						i + (xNMask & this._PrimeX),
-						j + (~yNMask & this._PrimeY),
-						k + (~zNMask & this._PrimeZ),
-						x3,
+						i + (xNMask & px),
+						j + (~yNMask & py),
+						k + (~zNMask & pz),
+						x0,
 						y3,
 						z3,
 					);
 			}
 
-			const a4 = xAFlipMask1 + a1;
+			const a4 = xA1 + a1;
 			if (a4 > 0) {
-				const x4 = (xNMask | 1) + x1;
+				const x4 = xm + x1;
+				const a4_2 = a4 * a4;
 				value +=
-					a4 *
-					a4 *
-					(a4 * a4) *
+					a4_2 *
+					a4_2 *
 					this._GradCoordR3(
 						seed2,
-						i + (xNMask & (this._PrimeX * 2)),
-						j + this._PrimeY,
-						k + this._PrimeZ,
+						i + (xNMask & px2),
+						j + py,
+						k + pz,
 						x4,
 						y1,
 						z1,
@@ -1495,59 +1640,56 @@ export default class FastNoiseLite {
 			}
 		}
 
-		let skip9 = false;
-		const a6 = yAFlipMask0 + a0;
+		// --- a6 ---
+		const a6 = yA0 + a0;
 		if (a6 > 0) {
-			const x6 = x0;
-			const y6 = y0 - (yNMask | 1);
+			const y6 = y0 - ym;
+			const a6_2 = a6 * a6;
 			value +=
-				a6 *
-				a6 *
-				(a6 * a6) *
+				a6_2 *
+				a6_2 *
 				this._GradCoordR3(
 					seed,
-					i + (xNMask & this._PrimeX),
-					j + (~yNMask & this._PrimeY),
-					k + (zNMask & this._PrimeZ),
-					x6,
+					i + (xNMask & px),
+					j + (~yNMask & py),
+					k + (zNMask & pz),
+					x0,
 					y6,
 					z0,
 				);
 		} else {
-			const a7 = xAFlipMask0 + zAFlipMask0 + a0;
+			const a7 = xA0 + zA0 + a0;
 			if (a7 > 0) {
-				const x7 = x0 - (xNMask | 1);
-				const y7 = y0;
-				const z7 = z0 - (zNMask | 1);
+				const x7 = x0 - xm;
+				const z7 = z0 - zm;
+				const a7_2 = a7 * a7;
 				value +=
-					a7 *
-					a7 *
-					(a7 * a7) *
+					a7_2 *
+					a7_2 *
 					this._GradCoordR3(
 						seed,
-						i + (~xNMask & this._PrimeX),
-						j + (yNMask & this._PrimeY),
-						k + (~zNMask & this._PrimeZ),
+						i + (~xNMask & px),
+						j + (yNMask & py),
+						k + (~zNMask & pz),
 						x7,
-						y7,
+						y0,
 						z7,
 					);
 			}
 
-			const a8 = yAFlipMask1 + a1;
+			const a8 = yA1 + a1;
 			if (a8 > 0) {
-				const x8 = x1;
-				const y8 = (yNMask | 1) + y1;
+				const y8 = ym + y1;
+				const a8_2 = a8 * a8;
 				value +=
-					a8 *
-					a8 *
-					(a8 * a8) *
+					a8_2 *
+					a8_2 *
 					this._GradCoordR3(
 						seed2,
-						i + this._PrimeX,
-						j + (yNMask & (this._PrimeY << 1)),
-						k + this._PrimeZ,
-						x8,
+						i + px,
+						j + (yNMask & py2),
+						k + pz,
+						x1,
 						y8,
 						z1,
 					);
@@ -1555,61 +1697,57 @@ export default class FastNoiseLite {
 			}
 		}
 
-		let skipD = false;
-		const aA = zAFlipMask0 + a0;
+		// --- aA ---
+		const aA = zA0 + a0;
 		if (aA > 0) {
-			const xA = x0;
-			const yA = y0;
-			const zA = z0 - (zNMask | 1);
+			const zA2 = z0 - zm;
+			const aA_2 = aA * aA;
 			value +=
-				aA *
-				aA *
-				(aA * aA) *
+				aA_2 *
+				aA_2 *
 				this._GradCoordR3(
 					seed,
-					i + (xNMask & this._PrimeX),
-					j + (yNMask & this._PrimeY),
-					k + (~zNMask & this._PrimeZ),
-					xA,
-					yA,
-					zA,
+					i + (xNMask & px),
+					j + (yNMask & py),
+					k + (~zNMask & pz),
+					x0,
+					y0,
+					zA2,
 				);
 		} else {
-			const aB = xAFlipMask0 + yAFlipMask0 + a0;
+			const aB = xA0 + yA0 + a0;
 			if (aB > 0) {
-				const xB = x0 - (xNMask | 1);
-				const yB = y0 - (yNMask | 1);
+				const xB = x0 - xm;
+				const yB = y0 - ym;
+				const aB_2 = aB * aB;
 				value +=
-					aB *
-					aB *
-					(aB * aB) *
+					aB_2 *
+					aB_2 *
 					this._GradCoordR3(
 						seed,
-						i + (~xNMask & this._PrimeX),
-						j + (~yNMask & this._PrimeY),
-						k + (zNMask & this._PrimeZ),
+						i + (~xNMask & px),
+						j + (~yNMask & py),
+						k + (zNMask & pz),
 						xB,
 						yB,
 						z0,
 					);
 			}
 
-			const aC = zAFlipMask1 + a1;
+			const aC = zA1 + a1;
 			if (aC > 0) {
-				const xC = x1;
-				const yC = y1;
-				const zC = (zNMask | 1) + z1;
+				const zC = zm + z1;
+				const aC_2 = aC * aC;
 				value +=
-					aC *
-					aC *
-					(aC * aC) *
+					aC_2 *
+					aC_2 *
 					this._GradCoordR3(
 						seed2,
-						i + this._PrimeX,
-						j + this._PrimeY,
-						k + (zNMask & (this._PrimeZ << 1)),
-						xC,
-						yC,
+						i + px,
+						j + py,
+						k + (zNMask & pz2),
+						x1,
+						y1,
 						zC,
 					);
 				skipD = true;
@@ -1617,21 +1755,20 @@ export default class FastNoiseLite {
 		}
 
 		if (!skip5) {
-			const a5 = yAFlipMask1 + zAFlipMask1 + a1;
+			const a5 = yA1 + zA1 + a1;
 			if (a5 > 0) {
-				const x5 = x1;
-				const y5 = (yNMask | 1) + y1;
-				const z5 = (zNMask | 1) + z1;
+				const y5 = ym + y1;
+				const z5 = zm + z1;
+				const a5_2 = a5 * a5;
 				value +=
-					a5 *
-					a5 *
-					(a5 * a5) *
+					a5_2 *
+					a5_2 *
 					this._GradCoordR3(
 						seed2,
-						i + this._PrimeX,
-						j + (yNMask & (this._PrimeY << 1)),
-						k + (zNMask & (this._PrimeZ << 1)),
-						x5,
+						i + px,
+						j + (yNMask & py2),
+						k + (zNMask & pz2),
+						x1,
 						y5,
 						z5,
 					);
@@ -1639,41 +1776,40 @@ export default class FastNoiseLite {
 		}
 
 		if (!skip9) {
-			const a9 = xAFlipMask1 + zAFlipMask1 + a1;
+			const a9 = xA1 + zA1 + a1;
 			if (a9 > 0) {
-				const x9 = (xNMask | 1) + x1;
-				const y9 = y1;
-				const z9 = (zNMask | 1) + z1;
+				const x9 = xm + x1;
+				const z9 = zm + z1;
+				const a9_2 = a9 * a9;
 				value +=
-					a9 *
-					a9 *
-					(a9 * a9) *
+					a9_2 *
+					a9_2 *
 					this._GradCoordR3(
 						seed2,
-						i + (xNMask & (this._PrimeX * 2)),
-						j + this._PrimeY,
-						k + (zNMask & (this._PrimeZ << 1)),
+						i + (xNMask & px2),
+						j + py,
+						k + (zNMask & pz2),
 						x9,
-						y9,
+						y1,
 						z9,
 					);
 			}
 		}
 
 		if (!skipD) {
-			const aD = xAFlipMask1 + yAFlipMask1 + a1;
+			const aD = xA1 + yA1 + a1;
 			if (aD > 0) {
-				const xD = (xNMask | 1) + x1;
-				const yD = (yNMask | 1) + y1;
+				const xD = xm + x1;
+				const yD = ym + y1;
+				const aD_2 = aD * aD;
 				value +=
-					aD *
-					aD *
-					(aD * aD) *
+					aD_2 *
+					aD_2 *
 					this._GradCoordR3(
 						seed2,
-						i + (xNMask & (this._PrimeX << 1)),
-						j + (yNMask & (this._PrimeY << 1)),
-						k + this._PrimeZ,
+						i + (xNMask & px2),
+						j + (yNMask & py2),
+						k + pz,
 						xD,
 						yD,
 						z1,
@@ -1683,7 +1819,6 @@ export default class FastNoiseLite {
 
 		return value * 9.046026385208288;
 	}
-
 	private _SingleCellularR2(seed: number, x: number, y: number) {
 		/**
 		 *
@@ -1792,7 +1927,7 @@ export default class FastNoiseLite {
 
 		switch (this._CellularReturnType) {
 			case FastNoiseLite.CellularReturnType.CellValue:
-				return closestHash * (1 / 2147483648.0);
+				return closestHash * this.S;
 			case FastNoiseLite.CellularReturnType.Distance:
 				return distance0 - 1;
 			case FastNoiseLite.CellularReturnType.Distance2:
@@ -1937,7 +2072,7 @@ export default class FastNoiseLite {
 
 		switch (this._CellularReturnType) {
 			case FastNoiseLite.CellularReturnType.CellValue:
-				return closestHash * (1 / 2147483648.0);
+				return closestHash * this.S;
 			case FastNoiseLite.CellularReturnType.Distance:
 				return distance0 - 1;
 			case FastNoiseLite.CellularReturnType.Distance2:
@@ -1956,8 +2091,8 @@ export default class FastNoiseLite {
 	}
 
 	private _SinglePerlinR2(seed: number, x: number, y: number) {
-		let x0 = Math.floor(x);
-		let y0 = Math.floor(y);
+		let x0 = x >= 0 ? x | 0 : (x | 0) - 1;
+		let y0 = y >= 0 ? y | 0 : (y | 0) - 1;
 
 		const xd0 = x - x0;
 		const yd0 = y - y0;
@@ -1987,9 +2122,9 @@ export default class FastNoiseLite {
 	}
 
 	private _SinglePerlinR3(seed: number, x: number, y: number, z: number) {
-		let x0 = Math.floor(x);
-		let y0 = Math.floor(y);
-		let z0 = Math.floor(z);
+		let x0 = x >= 0 ? x | 0 : (x | 0) - 1;
+		let y0 = y >= 0 ? y | 0 : (y | 0) - 1;
+		let z0 = z >= 0 ? z | 0 : (z | 0) - 1;
 
 		const xd0 = x - x0;
 		const yd0 = y - y0;
@@ -2037,8 +2172,8 @@ export default class FastNoiseLite {
 	}
 
 	private _SingleValueCubicR2(seed: number, x: number, y: number) {
-		let x1 = Math.floor(x);
-		let y1 = Math.floor(y);
+		let x1 = x >= 0 ? x | 0 : (x | 0) - 1;
+		let y1 = y >= 0 ? y | 0 : (y | 0) - 1;
 
 		const xs = x - x1;
 		const ys = y - y1;
@@ -2089,9 +2224,9 @@ export default class FastNoiseLite {
 	}
 
 	private _SingleValueCubicR3(seed: number, x: number, y: number, z: number) {
-		let x1 = Math.floor(x);
-		let y1 = Math.floor(y);
-		let z1 = Math.floor(z);
+		let x1 = x >= 0 ? x | 0 : (x | 0) - 1;
+		let y1 = y >= 0 ? y | 0 : (y | 0) - 1;
+		let z1 = z >= 0 ? z | 0 : (z | 0) - 1;
 
 		const xs = x - x1;
 		const ys = y - y1;
@@ -2244,8 +2379,8 @@ export default class FastNoiseLite {
 	}
 
 	private _SingleValueR2(seed: number, x: number, y: number) {
-		let x0 = Math.floor(x);
-		let y0 = Math.floor(y);
+		let x0 = x >= 0 ? x | 0 : (x | 0) - 1;
+		let y0 = y >= 0 ? y | 0 : (y | 0) - 1;
 
 		const xs = FastNoiseLite._InterpHermite(x - x0);
 		const ys = FastNoiseLite._InterpHermite(y - y0);
@@ -2270,9 +2405,9 @@ export default class FastNoiseLite {
 	}
 
 	private _SingleValueR3(seed: number, x: number, y: number, z: number) {
-		let x0 = Math.floor(x);
-		let y0 = Math.floor(y);
-		let z0 = Math.floor(z);
+		let x0 = x >= 0 ? x | 0 : (x | 0) - 1;
+		let y0 = y >= 0 ? y | 0 : (y | 0) - 1;
+		let z0 = z >= 0 ? z | 0 : (z | 0) - 1;
 
 		const xs = FastNoiseLite._InterpHermite(x - x0);
 		const ys = FastNoiseLite._InterpHermite(y - y0);
@@ -2675,8 +2810,8 @@ export default class FastNoiseLite {
 			const xf = x * frequency;
 			const yf = y * frequency;
 
-			let x0 = Math.floor(xf);
-			let y0 = Math.floor(yf);
+			let x0 = x >= 0 ? x | 0 : (x | 0) - 1;
+			let y0 = yf >= 0 ? yf | 0 : (yf | 0) - 1;
 
 			const xs = FastNoiseLite._InterpHermite(xf - x0);
 			const ys = FastNoiseLite._InterpHermite(yf - y0);
@@ -2731,9 +2866,9 @@ export default class FastNoiseLite {
 			const yf = y * frequency;
 			const zf = z * frequency;
 
-			let x0 = Math.floor(xf);
-			let y0 = Math.floor(yf);
-			let z0 = Math.floor(zf);
+			let x0 = xf >= 0 ? xf | 0 : (xf | 0) - 1;
+			let y0 = yf >= 0 ? yf | 0 : (yf | 0) - 1;
+			let z0 = zf >= 0 ? zf | 0 : (zf | 0) - 1;
 
 			const xs = FastNoiseLite._InterpHermite(xf - x0);
 			const ys = FastNoiseLite._InterpHermite(yf - y0);
@@ -2863,13 +2998,13 @@ export default class FastNoiseLite {
 			x: number,
 			y: number,
 		) => {
-			const G2 = (3 - this.SQRT3) / 6;
+			const G2 = this.G2;
 
 			x *= frequency;
 			y *= frequency;
 
-			let i = Math.floor(x);
-			let j = Math.floor(y);
+			let i = x >= 0 ? x | 0 : (x | 0) - 1;
+			let j = y >= 0 ? y | 0 : (y | 0) - 1;
 			const xi = x - i;
 			const yi = y - j;
 
@@ -2893,7 +3028,7 @@ export default class FastNoiseLite {
 					yo = this._RandVecs2D[hash | 1];
 				} else {
 					const hash = this._HashR2(seed, i, j);
-					const index1 = hash & (127 << 1);
+					const index1 = hash & 254;
 					const index2 = (hash >> 7) & (255 << 1);
 					const xg = this._Gradients2D[index1];
 					const yg = this._Gradients2D[index1 | 1];
@@ -2922,7 +3057,7 @@ export default class FastNoiseLite {
 					yo = this._RandVecs2D[hash | 1];
 				} else {
 					const hash = this._HashR2(seed, i + this._PrimeX, j + this._PrimeY);
-					const index1 = hash & (127 << 1);
+					const index1 = hash & 254;
 					const index2 = (hash >> 7) & (255 << 1);
 					const xg = this._Gradients2D[index1];
 					const yg = this._Gradients2D[index1 | 1];
@@ -2949,7 +3084,7 @@ export default class FastNoiseLite {
 						yo = this._RandVecs2D[hash | 1];
 					} else {
 						const hash = this._HashR2(seed, i, j + this._PrimeY);
-						const index1 = hash & (127 << 1);
+						const index1 = hash & 254;
 						const index2 = (hash >> 7) & (255 << 1);
 						const xg = this._Gradients2D[index1];
 						const yg = this._Gradients2D[index1 | 1];
@@ -2975,7 +3110,7 @@ export default class FastNoiseLite {
 						yo = this._RandVecs2D[hash | 1];
 					} else {
 						const hash = this._HashR2(seed, i + this._PrimeX, j);
-						const index1 = hash & (127 << 1);
+						const index1 = hash & 254;
 						const index2 = (hash >> 7) & (255 << 1);
 						const xg = this._Gradients2D[index1];
 						const yg = this._Gradients2D[index1 | 1];
