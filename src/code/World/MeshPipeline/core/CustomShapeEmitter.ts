@@ -445,7 +445,7 @@ function emitBoxFace(
 			const uAxis = (axis + 1) % 3;
 			const vAxis = (axis + 2) % 3;
 
-			ao = computeAO(ctx, nx, ny, nz, uAxis, vAxis, getShapeInfo);
+			ao = computeAO(ctx, nx, ny, nz, uAxis, vAxis);
 		}
 	}
 

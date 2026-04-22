@@ -1,6 +1,7 @@
 // MeshPipeline/core/AOPipeline.ts
 
 import type { BlockShapeInfo, MeshContext } from "../types/MeshTypes";
+import { FLAG_PARTIAL, FLAG_SOLID, getCachedFlags } from "./BlockFlags";
 
 /**
  * Utility: determine if a block occludes light for AO.
@@ -42,47 +43,146 @@ export function computeAO(
 	faceZ: number,
 	uAxis: number,
 	vAxis: number,
-	getShapeInfo: (packedBlock: number) => BlockShapeInfo,
 ): number {
 	const getBlock = ctx.getBlock;
+
+	// Axis multipliers
+	const ux = uAxis === 0 ? 1 : 0;
+	const uy = uAxis === 1 ? 1 : 0;
+	const uz = uAxis === 2 ? 1 : 0;
+
+	const vx = vAxis === 0 ? 1 : 0;
+	const vy = vAxis === 1 ? 1 : 0;
+	const vz = vAxis === 2 ? 1 : 0;
+
 	let packedAO = 0;
 
-	for (let i = 0; i < 4; i++) {
-		// Corner pattern:
-		// 0 = (-u, -v)
-		// 1 = (+u, -v)
-		// 2 = (+u, +v)
-		// 3 = (-u, +v)
-		const du = i === 1 || i === 2 ? 1 : -1;
-		const dv = i === 2 || i === 3 ? 1 : -1;
+	// --------------------------------------------------
+	// Corner 0: (-u, -v)
+	// --------------------------------------------------
+	{
+		const sux = faceX - ux;
+		const suy = faceY - uy;
+		const suz = faceZ - uz;
 
-		// Side sample along U
-		const sux = faceX + (uAxis === 0 ? du : 0);
-		const suy = faceY + (uAxis === 1 ? du : 0);
-		const suz = faceZ + (uAxis === 2 ? du : 0);
+		const svx = faceX - vx;
+		const svy = faceY - vy;
+		const svz = faceZ - vz;
 
-		// Side sample along V
-		const svx = faceX + (vAxis === 0 ? dv : 0);
-		const svy = faceY + (vAxis === 1 ? dv : 0);
-		const svz = faceZ + (vAxis === 2 ? dv : 0);
+		const scx = faceX - ux - vx;
+		const scy = faceY - uy - vy;
+		const scz = faceZ - uz - vz;
 
-		// Corner sample along U+V
-		const scx = faceX + (uAxis === 0 ? du : 0) + (vAxis === 0 ? dv : 0);
-		const scy = faceY + (uAxis === 1 ? du : 0) + (vAxis === 1 ? dv : 0);
-		const scz = faceZ + (uAxis === 2 ? du : 0) + (vAxis === 2 ? dv : 0);
+		const fU = getCachedFlags(getBlock(sux, suy, suz, 0));
+		const fV = getCachedFlags(getBlock(svx, svy, svz, 0));
 
-		const sideU = getBlock(sux, suy, suz, 0);
-		const sideV = getBlock(svx, svy, svz, 0);
-		const corner = getBlock(scx, scy, scz, 0);
+		const occU = fU & FLAG_SOLID && !(fU & FLAG_PARTIAL) ? 1 : 0;
+		const occV = fV & FLAG_SOLID && !(fV & FLAG_PARTIAL) ? 1 : 0;
 
-		const occU = isOccluder(sideU, getShapeInfo(sideU)) ? 1 : 0;
-		const occV = isOccluder(sideV, getShapeInfo(sideV)) ? 1 : 0;
-		const occCorner =
-			occU && occV && isOccluder(corner, getShapeInfo(corner)) ? 1 : 0;
+		let ao = occU + occV;
 
-		const aoLevel = occU + occV + occCorner;
+		if (occU && occV) {
+			const fC = getCachedFlags(getBlock(scx, scy, scz, 0));
+			if (fC & FLAG_SOLID && !(fC & FLAG_PARTIAL)) ao++;
+		}
 
-		packedAO |= aoLevel << (i * 2);
+		packedAO |= ao;
+	}
+
+	// --------------------------------------------------
+	// Corner 1: (+u, -v)
+	// --------------------------------------------------
+	{
+		const sux = faceX + ux;
+		const suy = faceY + uy;
+		const suz = faceZ + uz;
+
+		const svx = faceX - vx;
+		const svy = faceY - vy;
+		const svz = faceZ - vz;
+
+		const scx = faceX + ux - vx;
+		const scy = faceY + uy - vy;
+		const scz = faceZ + uz - vz;
+
+		const fU = getCachedFlags(getBlock(sux, suy, suz, 0));
+		const fV = getCachedFlags(getBlock(svx, svy, svz, 0));
+
+		const occU = fU & FLAG_SOLID && !(fU & FLAG_PARTIAL) ? 1 : 0;
+		const occV = fV & FLAG_SOLID && !(fV & FLAG_PARTIAL) ? 1 : 0;
+
+		let ao = occU + occV;
+
+		if (occU && occV) {
+			const fC = getCachedFlags(getBlock(scx, scy, scz, 0));
+			if (fC & FLAG_SOLID && !(fC & FLAG_PARTIAL)) ao++;
+		}
+
+		packedAO |= ao << 2;
+	}
+
+	// --------------------------------------------------
+	// Corner 2: (+u, +v)
+	// --------------------------------------------------
+	{
+		const sux = faceX + ux;
+		const suy = faceY + uy;
+		const suz = faceZ + uz;
+
+		const svx = faceX + vx;
+		const svy = faceY + vy;
+		const svz = faceZ + vz;
+
+		const scx = faceX + ux + vx;
+		const scy = faceY + uy + vy;
+		const scz = faceZ + uz + vz;
+
+		const fU = getCachedFlags(getBlock(sux, suy, suz, 0));
+		const fV = getCachedFlags(getBlock(svx, svy, svz, 0));
+
+		const occU = fU & FLAG_SOLID && !(fU & FLAG_PARTIAL) ? 1 : 0;
+		const occV = fV & FLAG_SOLID && !(fV & FLAG_PARTIAL) ? 1 : 0;
+
+		let ao = occU + occV;
+
+		if (occU && occV) {
+			const fC = getCachedFlags(getBlock(scx, scy, scz, 0));
+			if (fC & FLAG_SOLID && !(fC & FLAG_PARTIAL)) ao++;
+		}
+
+		packedAO |= ao << 4;
+	}
+
+	// --------------------------------------------------
+	// Corner 3: (-u, +v)
+	// --------------------------------------------------
+	{
+		const sux = faceX - ux;
+		const suy = faceY - uy;
+		const suz = faceZ - uz;
+
+		const svx = faceX + vx;
+		const svy = faceY + vy;
+		const svz = faceZ + vz;
+
+		const scx = faceX - ux + vx;
+		const scy = faceY - uy + vy;
+		const scz = faceZ - uz + vz;
+
+		const fU = getCachedFlags(getBlock(sux, suy, suz, 0));
+		const fV = getCachedFlags(getBlock(svx, svy, svz, 0));
+
+		const occU = fU & FLAG_SOLID && !(fU & FLAG_PARTIAL) ? 1 : 0;
+		const occV = fV & FLAG_SOLID && !(fV & FLAG_PARTIAL) ? 1 : 0;
+
+		let ao = occU + occV;
+
+		if (occU && occV) {
+			const fC = getCachedFlags(getBlock(scx, scy, scz, 0));
+			if (fC & FLAG_SOLID && !(fC & FLAG_PARTIAL)) ao++;
+		}
+
+		packedAO |= ao << 6;
 	}
 
 	return packedAO;
