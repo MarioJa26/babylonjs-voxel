@@ -9,7 +9,7 @@ import {
 import type { Player } from "../Player/Player";
 import { PlayerLoadingGate } from "../Player/PlayerLoadingGate";
 import { PlayerStatePersistence } from "../Player/PlayerStatePersistence";
-import { ChunkMesher } from "../World/Chunk/ChunckMesher";
+import { initAtlas } from "../World/Chunk/ChunckMesher";
 import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
 import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 import { getTransformedShapeBoxes } from "../World/Shape/BlockShapeTransforms";
@@ -53,12 +53,11 @@ export class Map1 {
 
 		this.initPromise = this.asyncInit().then(async () => {
 			WorldStorage.initialize();
-			ChunkMesher.initAtlas();
+			initAtlas();
 		});
 
 		scene.onBeforeRenderObservable.add(() => {
 			Map1.environment.update();
-			ChunkMesher.updateGlobalUniforms(scene.getFrameId());
 			this.#playerStatePersistence?.update();
 		});
 	}

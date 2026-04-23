@@ -1,6 +1,6 @@
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import type { SavedChunkData, SavedChunkEntityData } from "../WorldStorage";
-import { ChunkMesher } from "./ChunckMesher";
+import { createMeshFromData } from "./ChunckMesher";
 import { Chunk } from "./Chunk";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import type { MeshData } from "./DataStructures/MeshData";
@@ -394,7 +394,7 @@ export class ChunkLoadingSystem {
 			return;
 		}
 
-		ChunkMesher.createMeshFromData(
+		createMeshFromData(
 			chunk,
 			ChunkLoadingSystem.getReusableMeshData(mesh.opaque, mesh.transparent),
 		);

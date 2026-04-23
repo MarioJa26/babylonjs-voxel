@@ -1,6 +1,6 @@
 import { DistantTerrain } from "@/code/Generation/DistantTerrain/DistantTerrain";
 import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
-import { ChunkMesher } from "../ChunckMesher";
+import { createMeshFromData } from "../ChunckMesher";
 import { Chunk } from "../Chunk";
 import { ChunkLoadingSystem } from "../ChunkLoadingSystem";
 import { ChunkWorkerPool } from "../ChunkWorkerPool";
@@ -607,7 +607,7 @@ export class ChunkStreamingController {
 			return false;
 		}
 
-		ChunkMesher.createMeshFromData(chunk, {
+		createMeshFromData(chunk, {
 			opaque: cached.opaque ?? null,
 			transparent: cached.transparent ?? null,
 		});

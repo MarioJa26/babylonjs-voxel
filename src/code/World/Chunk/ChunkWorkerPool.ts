@@ -1,6 +1,6 @@
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import { WorldStorage } from "../WorldStorage";
-import { ChunkMesher } from "./ChunckMesher";
+import { createMeshFromData } from "./ChunckMesher";
 import { Chunk } from "./Chunk";
 import { ChunkWorker } from "./chunkWorker";
 import type { MeshData } from "./DataStructures/MeshData";
@@ -353,7 +353,7 @@ export class ChunkWorkerPool {
 			chunk.transparentMeshData ||
 			chunk.colliderDirty
 		) {
-			ChunkMesher.createMeshFromData(chunk, {
+			createMeshFromData(chunk, {
 				opaque: null,
 				transparent: null,
 			});
@@ -381,7 +381,7 @@ export class ChunkWorkerPool {
 					// Only apply immediately if the chunk is still on the same LOD
 					// that produced this worker result.
 					if ((chunk.lodLevel ?? 0) === lod) {
-						ChunkMesher.createMeshFromData(chunk, {
+						createMeshFromData(chunk, {
 							opaque,
 							transparent,
 						});
@@ -557,7 +557,7 @@ export class ChunkWorkerPool {
 			return false;
 		}
 
-		ChunkMesher.createMeshFromData(chunk, {
+		createMeshFromData(chunk, {
 			opaque: cached.opaque,
 			transparent: cached.transparent,
 		});

@@ -6,7 +6,7 @@ import { GenerationParams } from "./Generation/NoiseAndParameters/GenerationPara
 import { Map1 } from "./Maps/Map1";
 import { Player } from "./Player/Player";
 import { PlayerCamera } from "./Player/PlayerCamera";
-import { ChunkMesher } from "./World/Chunk/ChunckMesher";
+import { updateGlobalUniforms } from "./World/Chunk/ChunckMesher";
 import { ChunkLoadingSystem } from "./World/Chunk/ChunkLoadingSystem";
 
 export class TestScene {
@@ -43,7 +43,7 @@ export class TestScene {
 		this.engine.runRenderLoop(() => {
 			// Update shader uniforms ONCE per frame
 			this.frameCounter++;
-			ChunkMesher.updateGlobalUniforms(this.frameCounter);
+			updateGlobalUniforms(this.frameCounter);
 
 			// Then render the scene
 			this.scene?.render();

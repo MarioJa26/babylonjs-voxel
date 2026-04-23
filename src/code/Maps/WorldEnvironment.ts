@@ -24,7 +24,7 @@ export class WorldEnvironment {
 
 	// Time cycle
 	private timeOfDay = 120000;
-	public timeScale = 0;
+	public timeScale = 1.0;
 	public isPaused = false;
 	public wetness = 0.0;
 
