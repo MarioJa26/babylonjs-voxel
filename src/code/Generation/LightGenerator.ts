@@ -27,6 +27,7 @@ export class LightGenerator {
 
 	private static readonly DENSITY_INFLUENCE_RANGE = 48;
 	private static readonly WATER_BLOCK_ID = 30;
+	private static readonly SKYLIGHT_GENERATION_MIN_WORLD_Y = 32;
 
 	constructor(params: GenerationParamsType) {
 		LightGenerator.chunkSize = params.CHUNK_SIZE;
@@ -144,8 +145,9 @@ export class LightGenerator {
 		const CHUNK_SIZE_SQ = LightGenerator.chunkSizeSq;
 
 		const chunkWorldX = chunkX * CHUNK_SIZE;
+		const chunkWorldY = chunkY * CHUNK_SIZE;
 		const chunkWorldZ = chunkZ * CHUNK_SIZE;
-		const topWorldY = chunkY * CHUNK_SIZE + CHUNK_SIZE - 1;
+		const topWorldY = chunkWorldY + CHUNK_SIZE - 1;
 
 		// Clear light buffer before seeding.
 		// If callers reuse buffers, this prevents old lighting data from leaking.
@@ -169,6 +171,13 @@ export class LightGenerator {
 				let sourceFiltersFullSun = false;
 
 				for (let y = CHUNK_SIZE - 1; y >= 0; y--) {
+					const worldY = chunkWorldY + y;
+					if (worldY < LightGenerator.SKYLIGHT_GENERATION_MIN_WORLD_Y) {
+						incomingSkyLight = 0;
+						sourceFiltersFullSun = false;
+						continue;
+					}
+
 					const idx = x + y * CHUNK_SIZE + z * CHUNK_SIZE_SQ;
 					const blockId = blocks[idx];
 
@@ -210,10 +219,13 @@ export class LightGenerator {
 					}
 
 					light[idx] = (light[idx] & 0x0f) | (cellSkyLight << 4);
-					// Water blocks receive and pass light downward, but must not be
-					// seeded into the BFS queue — that would spread light sideways
-					// through water and cause a bright halo at chunk top borders.
-					if (!blockFiltersFullSun) {
+					// Seed non-water lit cells as before.
+					// Additionally seed water only at air->water transitions so
+					// skylight can enter connected water bodies without flooding the
+					// queue with every water voxel in tall columns.
+					const shouldSeed =
+						!blockFiltersFullSun || !sourceFiltersFullSun;
+					if (shouldSeed) {
 						queue[tail & mask] = (x << 10) | (y << 5) | z;
 						tail++;
 					}
@@ -254,6 +266,7 @@ export class LightGenerator {
 			const z = val & 0x1f;
 
 			const idx = x + y * CHUNK_SIZE + z * CHUNK_SIZE_SQ;
+			const sourceBlockId = blocks[idx];
 			const lightVal = light[idx];
 			const skyLight = (lightVal >> 4) & 0x0f;
 			const blockLight = lightVal & 0x0f;
@@ -272,6 +285,8 @@ export class LightGenerator {
 					z,
 					skyM1,
 					blkM1,
+					sourceBlockId,
+					false,
 					blocks,
 					light,
 					queue,
@@ -288,6 +303,8 @@ export class LightGenerator {
 					z,
 					skyM1,
 					blkM1,
+					sourceBlockId,
+					false,
 					blocks,
 					light,
 					queue,
@@ -304,6 +321,8 @@ export class LightGenerator {
 					z,
 					skyM1,
 					blkM1,
+					sourceBlockId,
+					false,
 					blocks,
 					light,
 					queue,
@@ -326,6 +345,8 @@ export class LightGenerator {
 					z,
 					preservesFullSunDown ? 15 : skyM1,
 					blkM1,
+					sourceBlockId,
+					true,
 					blocks,
 					light,
 					queue,
@@ -342,6 +363,8 @@ export class LightGenerator {
 					z + 1,
 					skyM1,
 					blkM1,
+					sourceBlockId,
+					false,
 					blocks,
 					light,
 					queue,
@@ -358,6 +381,8 @@ export class LightGenerator {
 					z - 1,
 					skyM1,
 					blkM1,
+					sourceBlockId,
+					false,
 					blocks,
 					light,
 					queue,
@@ -375,6 +400,8 @@ export class LightGenerator {
 		nz: number,
 		targetSky: number,
 		targetBlock: number,
+		sourceBlockId: number,
+		isDown: boolean,
 		blocks: Uint8Array,
 		light: Uint8Array,
 		queue: Uint16Array,
@@ -387,11 +414,17 @@ export class LightGenerator {
 		if (!LightGenerator.isTransparentBlock(blocks[idx])) {
 			return tail;
 		}
+		const targetBlockId = blocks[idx];
 
-		// Water-like skylight filters only pass full light downward in the
-		// seeding loop. Block BFS propagation into or through them.
-		if (LightGenerator.filtersFullSunlight(blocks[idx])) {
-			return tail;
+		// Skylight water rules:
+		// - water receives lateral skylight only from water
+		// - water emits lateral skylight only into water
+		// - downward propagation is allowed
+		if (targetSky > 0 && !isDown) {
+			const sourceIsWater = LightGenerator.filtersFullSunlight(sourceBlockId);
+			const targetIsWater = LightGenerator.filtersFullSunlight(targetBlockId);
+			if (targetIsWater && !sourceIsWater) return tail;
+			if (sourceIsWater && !targetIsWater) return tail;
 		}
 
 		const currentVal = light[idx];
@@ -429,6 +462,10 @@ export class LightGenerator {
 		worldZ: number,
 		topWorldY: number,
 	): boolean {
+		if (topWorldY < LightGenerator.SKYLIGHT_GENERATION_MIN_WORLD_Y) {
+			return false;
+		}
+
 		const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(
 			worldX,
 			worldZ,

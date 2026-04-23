@@ -21,6 +21,9 @@ type GenerateChunkResult = {
 };
 
 export class WorldGenerator {
+	private static readonly FLOOR_Y = 1;
+	private static readonly FLOOR_BLOCK_ID = 1;
+
 	private params: GenerationParamsType;
 	private prng: ReturnType<typeof Alea>;
 
@@ -73,6 +76,27 @@ export class WorldGenerator {
 		// SharedArrayBuffer cannot be put into the worker postMessage transfer list.
 		// The main thread already upgrades incoming arrays to SharedArrayBuffer if needed.
 		return new Uint8Array(new ArrayBuffer(size));
+	}
+
+	private enforceGlobalFloor(
+		chunkWorldY: number,
+		blocks: Uint8Array,
+		chunkSize: number,
+		chunkSizeSq: number,
+	): void {
+		const localY = WorldGenerator.FLOOR_Y - chunkWorldY;
+		if (localY < 0) {
+			return;
+		}
+
+		const yOffset = localY * chunkSize;
+		for (let localZ = 0; localZ < chunkSize; localZ++) {
+			const zOffset = localZ * chunkSizeSq;
+			for (let localX = 0; localX < chunkSize; localX++) {
+				const idx = localX + yOffset + zOffset;
+				blocks[idx] = WorldGenerator.FLOOR_BLOCK_ID;
+			}
+		}
 	}
 
 	/**
@@ -144,7 +168,8 @@ export class WorldGenerator {
 
 		if (chunkY < 0) {
 			this.undergroundGenerator.generate(chunkX, chunkY, chunkZ, placeBlock);
-		}
+		} else if (chunkY === 0)
+			this.enforceGlobalFloor(chunkWorldY, blocks, chunkSize, chunkSizeSq);
 
 		const light = this.createBuffer(chunkVolume);
 
