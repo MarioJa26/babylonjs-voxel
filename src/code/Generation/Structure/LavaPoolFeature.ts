@@ -1,6 +1,6 @@
 import type { Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-import { TerrainHeightMap } from "../TerrainHeightMap";
+import { getBiome, getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { IWorldFeature } from "./IWorldFeature";
 
 export class LavaPoolFeature implements IWorldFeature {
@@ -18,7 +18,6 @@ export class LavaPoolFeature implements IWorldFeature {
 		) => void,
 		seed: number,
 		chunkSize: number,
-		getTerrainHeight: (x: number, z: number, biome: Biome) => number,
 		generatingChunkX: number,
 		generatingChunkZ: number,
 	) {
@@ -79,13 +78,12 @@ export class LavaPoolFeature implements IWorldFeature {
 			// ----------------------------------------
 
 			// Re-evaluate biome at the specific pool location for correctness
-			const poolBiome = TerrainHeightMap.getBiome(poolCenterX, poolCenterZ);
+			const poolBiome = getBiome(poolCenterX, poolCenterZ);
 			isSurface = poolBiome.name === "Volcanic_Wasteland";
 
-			let poolSurfaceY;
+			let poolSurfaceY = 0;
 			if (isSurface) {
-				poolSurfaceY =
-					getTerrainHeight(poolCenterX, poolCenterZ, poolBiome) - 1;
+				poolSurfaceY = getFinalTerrainHeight(poolCenterX, poolCenterZ) - 1;
 			} else {
 				poolSurfaceY =
 					-64 - (Math.abs(Squirrel3.get(baseHash + 2, seed)) % (1024 - 64));

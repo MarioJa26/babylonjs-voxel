@@ -1,6 +1,6 @@
 import { BlockTextures } from "@/code/World/Texture/BlockTextures";
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
-import { TerrainHeightMap } from "../TerrainHeightMap";
+import { getBiome, getFinalTerrainHeight } from "../TerrainHeightMap";
 
 export class DistantTerrainGenerator {
 	private static readonly DEFAULT_TILE_X = 14;
@@ -408,10 +408,10 @@ export class DistantTerrainGenerator {
 		} else {
 			const worldX = chunkX * CHUNK_SIZE;
 			const worldZ = chunkZ * CHUNK_SIZE;
-			y = TerrainHeightMap.getFinalTerrainHeight(worldX, worldZ);
+			y = getFinalTerrainHeight(worldX, worldZ);
 
-			const hRight = TerrainHeightMap.getFinalTerrainHeight(worldX + 1, worldZ);
-			const hDown = TerrainHeightMap.getFinalTerrainHeight(worldX, worldZ + 1);
+			const hRight = getFinalTerrainHeight(worldX + 1, worldZ);
+			const hDown = getFinalTerrainHeight(worldX, worldZ + 1);
 			const dy1 = hRight - y;
 			const dy2 = hDown - y;
 			const len = Math.sqrt(dy1 * dy1 + 1 + dy2 * dy2) || 1;
@@ -420,7 +420,7 @@ export class DistantTerrainGenerator {
 			normals[i3 + 1] = (1 / len) * 127;
 			normals[i3 + 2] = (-dy2 / len) * 127;
 
-			const topBlockId = TerrainHeightMap.getBiome(worldX, worldZ).topBlock;
+			const topBlockId = getBiome(worldX, worldZ).topBlock;
 			const [tileX, tileY] =
 				DistantTerrainGenerator.getTopTileForBlock(topBlockId);
 			surfaceTiles[i2] = tileX;

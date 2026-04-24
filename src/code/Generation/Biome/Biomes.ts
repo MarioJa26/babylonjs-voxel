@@ -1,5 +1,5 @@
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
-import type { Biome, TreeDefinition } from "./BiomeTypes";
+import { BIOME_ID, type Biome, type TreeDefinition } from "./BiomeTypes";
 import {
 	BIG_OAK_TREE,
 	CACTUS,
@@ -10,6 +10,7 @@ import {
 
 //Default
 const FOREST: Biome = {
+	id: BIOME_ID.FOREST,
 	name: "Forest",
 	topBlock: 15,
 	undergroundBlock: 19,
@@ -32,6 +33,7 @@ const FOREST: Biome = {
 	},
 };
 const TUNDRA: Biome = {
+	id: BIOME_ID.TUNDRA,
 	name: "Tundra",
 	topBlock: 9,
 	undergroundBlock: 19,
@@ -54,6 +56,7 @@ const TUNDRA: Biome = {
 	},
 };
 const TUNDRA_MOUNTAINS: Biome = {
+	id: BIOME_ID.TUNDRA_MOUNTAINS,
 	name: "Tundra_Mountains",
 	topBlock: 9,
 	undergroundBlock: 19,
@@ -77,6 +80,7 @@ const TUNDRA_MOUNTAINS: Biome = {
 };
 
 const DESERT: Biome = {
+	id: BIOME_ID.DESERT,
 	name: "Desert",
 	topBlock: 23,
 	undergroundBlock: 3,
@@ -100,6 +104,7 @@ const DESERT: Biome = {
 };
 
 const JUNGLE: Biome = {
+	id: BIOME_ID.JUNGLE,
 	name: "Jungle",
 	topBlock: 51,
 	undergroundBlock: 19,
@@ -123,6 +128,7 @@ const JUNGLE: Biome = {
 };
 
 const PLAINS: Biome = {
+	id: BIOME_ID.PLAINS,
 	name: "Plains",
 	topBlock: 57,
 	undergroundBlock: 19,
@@ -146,6 +152,7 @@ const PLAINS: Biome = {
 };
 
 const SWAMP: Biome = {
+	id: BIOME_ID.SWAMP,
 	name: "Swamp",
 	topBlock: 57, // Grass
 	undergroundBlock: 8, // Dirt/Mud
@@ -169,6 +176,7 @@ const SWAMP: Biome = {
 };
 
 const GROVE: Biome = {
+	id: BIOME_ID.GROVE,
 	name: "Grove",
 	topBlock: 14, // Grass
 	undergroundBlock: 46, // Dirt/Mud
@@ -192,6 +200,7 @@ const GROVE: Biome = {
 };
 
 const SANDY_SHORE: Biome = {
+	id: BIOME_ID.SANDY_SHORE,
 	name: "Sandy_Shore",
 	topBlock: 23, // Grass
 	undergroundBlock: 23, // Dirt/Mud
@@ -211,6 +220,7 @@ const SANDY_SHORE: Biome = {
 	},
 };
 const ROCKY_SHORE: Biome = {
+	id: BIOME_ID.ROCKY_SHORE,
 	name: "Rocky_Shore",
 	topBlock: 8, // Grass
 	undergroundBlock: 8, // Dirt/Mud
@@ -231,6 +241,7 @@ const ROCKY_SHORE: Biome = {
 };
 
 const OCEAN: Biome = {
+	id: BIOME_ID.OCEAN,
 	name: "Ocean",
 	topBlock: 46,
 	undergroundBlock: 46, // Dirt/Mud
@@ -251,6 +262,7 @@ const OCEAN: Biome = {
 };
 
 const RIVER: Biome = {
+	id: BIOME_ID.RIVER,
 	name: "River",
 	topBlock: 8, // Dirt
 	undergroundBlock: 8,
@@ -271,6 +283,7 @@ const RIVER: Biome = {
 };
 
 const GRASS_LAND: Biome = {
+	id: BIOME_ID.GRASS_LAND,
 	name: "Grass_Land",
 	topBlock: 15, // Grass
 	undergroundBlock: 46, // Dirt
@@ -292,6 +305,7 @@ const GRASS_LAND: Biome = {
 };
 
 const VOLCANIC_WASTELAND: Biome = {
+	id: BIOME_ID.VOLCANIC_WASTELAND,
 	name: "Volcanic_Wasteland",
 	topBlock: 1, // Stone (or Obsidian if you have a block ID for it)
 	undergroundBlock: 1, // Stone
@@ -309,6 +323,22 @@ const VOLCANIC_WASTELAND: Biome = {
 	getTreeForBlock(blockId: number): TreeDefinition | null {
 		return null;
 	},
+};
+export const BIOME_REGISTRY: Record<BIOME_ID, Biome> = {
+	[BIOME_ID.FOREST]: FOREST,
+	[BIOME_ID.TUNDRA]: TUNDRA,
+	[BIOME_ID.TUNDRA_MOUNTAINS]: TUNDRA_MOUNTAINS,
+	[BIOME_ID.DESERT]: DESERT,
+	[BIOME_ID.JUNGLE]: JUNGLE,
+	[BIOME_ID.PLAINS]: PLAINS,
+	[BIOME_ID.SWAMP]: SWAMP,
+	[BIOME_ID.GROVE]: GROVE,
+	[BIOME_ID.SANDY_SHORE]: SANDY_SHORE,
+	[BIOME_ID.ROCKY_SHORE]: ROCKY_SHORE,
+	[BIOME_ID.OCEAN]: OCEAN,
+	[BIOME_ID.RIVER]: RIVER,
+	[BIOME_ID.GRASS_LAND]: GRASS_LAND,
+	[BIOME_ID.VOLCANIC_WASTELAND]: VOLCANIC_WASTELAND,
 };
 
 export function getBiomeFor(

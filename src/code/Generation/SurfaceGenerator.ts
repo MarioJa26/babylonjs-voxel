@@ -9,7 +9,11 @@ import type { IWorldFeature } from "./Structure/IWorldFeature";
 import { LavaPoolFeature } from "./Structure/LavaPoolFeature";
 import { StructureSpawnerFeature } from "./Structure/StructureFeature";
 import { TowerFeature } from "./Structure/TowerFeature";
-import { TerrainHeightMap } from "./TerrainHeightMap";
+import {
+	getBiome,
+	getCachedRiverNoise,
+	getFinalTerrainHeight,
+} from "./TerrainHeightMap";
 
 export type SurfaceGenerationResult = {
 	topSunlightMask: Uint8Array;
@@ -102,10 +106,6 @@ export class SurfaceGenerator {
 	private chunk_size: number;
 	private riverGenerator: RiverGenerator;
 	private features: IWorldFeature[];
-	private readonly getFinalTerrainHeightBound: (
-		worldX: number,
-		worldZ: number,
-	) => number;
 
 	constructor(
 		params: GenerationParamsType,
@@ -127,8 +127,6 @@ export class SurfaceGenerator {
 			new StructureSpawnerFeature(),
 			new DungeonFeature(),
 		];
-
-		this.getFinalTerrainHeightBound = this.getFinalTerrainHeight.bind(this);
 	}
 
 	private packXZKey(x: number, z: number): bigint {
@@ -175,9 +173,8 @@ export class SurfaceGenerator {
 				const worldZ = chunkWorldZ + localZ;
 				const columnIndex = localX + localZ * CHUNK_SIZE;
 
-				const sample = TerrainHeightMap.getTerrainSample(worldX, worldZ);
-				const terrainHeight = sample.height;
-				const riverNoise = sample.riverNoise;
+				const terrainHeight = getFinalTerrainHeight(worldX, worldZ);
+				const riverNoise = getCachedRiverNoise(worldX, worldZ);
 
 				const treeMod = SurfaceGenerator.treeNoise(
 					worldX * 0.00001,
@@ -252,9 +249,8 @@ export class SurfaceGenerator {
 			return cached;
 		}
 
-		const sample = TerrainHeightMap.getTerrainSample(worldX, worldZ);
-		const biome = sample.biome;
-		const riverNoise = sample.riverNoise;
+		const biome = getBiome(worldX, worldZ);
+		const riverNoise = getCachedRiverNoise(worldX, worldZ);
 
 		const treeNoiseValue =
 			(SurfaceGenerator.treeNoise(worldX, worldZ) + 1) * 0.5;
@@ -270,7 +266,12 @@ export class SurfaceGenerator {
 			);
 			const yFreq = 0.04 + treeMod * 0.02;
 
-			topSurfaceY = this.findTopSurfaceY(worldX, worldZ, sample.height, yFreq);
+			topSurfaceY = this.findTopSurfaceY(
+				worldX,
+				worldZ,
+				getFinalTerrainHeight(worldX, worldZ),
+				yFreq,
+			);
 		}
 
 		const built: FloraColumnCacheEntry = {
@@ -858,17 +859,12 @@ export class SurfaceGenerator {
 						placeBlock,
 						SurfaceGenerator.seedAsInt,
 						this.chunk_size,
-						this.getFinalTerrainHeightBound,
 						chunkX,
 						chunkZ,
 					);
 				}
 			}
 		}
-	}
-
-	private getFinalTerrainHeight(worldX: number, worldZ: number): number {
-		return TerrainHeightMap.getFinalTerrainHeight(worldX, worldZ);
 	}
 
 	private isBeachLocation(
@@ -891,9 +887,7 @@ export class SurfaceGenerator {
 	}
 
 	private isNearWater(x: number, z: number): boolean {
-		return (
-			TerrainHeightMap.getFinalTerrainHeight(x, z) <= this.params.SEA_LEVEL
-		);
+		return getFinalTerrainHeight(x, z) <= this.params.SEA_LEVEL;
 	}
 
 	private getDensity(

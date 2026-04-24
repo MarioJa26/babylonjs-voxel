@@ -27,6 +27,7 @@ export type TreeDefinition = {
 };
 
 export interface Biome {
+	id: BIOME_ID;
 	name: string;
 	topBlock: number;
 	undergroundBlock: number;
@@ -44,4 +45,20 @@ export interface Biome {
 	lacunarity?: number;
 	heightExponent?: number;
 	getTreeForBlock(blockId: number): TreeDefinition | null;
+}
+export enum BIOME_ID {
+	FOREST,
+	TUNDRA,
+	TUNDRA_MOUNTAINS,
+	DESERT,
+	JUNGLE,
+	PLAINS,
+	SWAMP,
+	GROVE,
+	SANDY_SHORE,
+	ROCKY_SHORE,
+	OCEAN,
+	RIVER,
+	GRASS_LAND,
+	VOLCANIC_WASTELAND,
 }

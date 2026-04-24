@@ -15,7 +15,6 @@ export interface IWorldFeature {
 		) => void,
 		seed: number,
 		chunkSize: number,
-		getTerrainHeight: (x: number, z: number, biome: Biome) => number,
 		generatingChunkX: number,
 		generatingChunkZ: number,
 	): void;

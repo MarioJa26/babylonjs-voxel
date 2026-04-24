@@ -1,5 +1,6 @@
 import type { Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { IWorldFeature } from "./IWorldFeature";
 import { Structure, type StructureData } from "./Structure";
 
@@ -60,7 +61,6 @@ export class StructureSpawnerFeature implements IWorldFeature {
 		) => void,
 		seed: number,
 		chunkSize: number,
-		getTerrainHeight: (x: number, z: number, biome: Biome) => number,
 		generatingChunkX: number,
 		generatingChunkZ: number,
 	) {
@@ -117,10 +117,9 @@ export class StructureSpawnerFeature implements IWorldFeature {
 				return;
 			// ----------------------------------------
 
-			const groundHeight = getTerrainHeight(
+			const groundHeight = getFinalTerrainHeight(
 				structureOriginX,
 				structureOriginZ,
-				biome,
 			);
 
 			structure.place(

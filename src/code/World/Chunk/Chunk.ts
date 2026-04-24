@@ -1,6 +1,6 @@
 import type { Mesh } from "@babylonjs/core";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
-import { TerrainHeightMap } from "@/code/Generation/TerrainHeightMap";
+import { getFinalTerrainHeight } from "@/code/Generation/TerrainHeightMap";
 import {
 	packBlockValue,
 	unpackBlockId,
@@ -432,10 +432,7 @@ export class Chunk {
 						);
 					}
 				} else {
-					const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(
-						worldX,
-						worldZ,
-					);
+					const terrainHeight = getFinalTerrainHeight(worldX, worldZ);
 					if (
 						topWorldY >= Chunk.SKYLIGHT_GENERATION_MIN_WORLD_Y &&
 						topWorldY >= terrainHeight - 48

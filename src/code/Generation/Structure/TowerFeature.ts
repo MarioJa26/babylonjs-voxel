@@ -1,5 +1,6 @@
 import type { Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { IWorldFeature } from "./IWorldFeature";
 
 export class TowerFeature implements IWorldFeature {
@@ -17,7 +18,6 @@ export class TowerFeature implements IWorldFeature {
 		) => void,
 		seed: number,
 		chunkSize: number,
-		getTerrainHeight: (x: number, z: number, biome: Biome) => number,
 		generatingChunkX: number,
 		generatingChunkZ: number,
 	) {
@@ -78,7 +78,6 @@ export class TowerFeature implements IWorldFeature {
 				towerCenterZ,
 				towerRadius,
 				biome,
-				getTerrainHeight,
 			);
 
 			this.generateCylinderTower(
@@ -93,7 +92,6 @@ export class TowerFeature implements IWorldFeature {
 				placeBlock,
 				chunkSize,
 				seed,
-				getTerrainHeight,
 			);
 			this.generateUndergroundCylinderTower(
 				chunkX,
@@ -127,7 +125,6 @@ export class TowerFeature implements IWorldFeature {
 		) => void,
 		chunkSize: number,
 		seed: number,
-		getTerrainHeight: (x: number, z: number, biome: Biome) => number,
 	) {
 		const towerHeight = 76 + (Squirrel3.get(towerCenterZ, seed) % 8);
 		const wallBlockId = 1;
@@ -140,7 +137,7 @@ export class TowerFeature implements IWorldFeature {
 				const worldX = towerCenterX + dx;
 				const worldZ = towerCenterZ + dz;
 
-				const originalHeight = getTerrainHeight(worldX, worldZ, biome);
+				const originalHeight = getFinalTerrainHeight(worldX, worldZ);
 				for (let y = originalHeight; y < groundHeight; y++) {
 					placeBlock(worldX, y, worldZ, biome.undergroundBlock, true);
 				}
@@ -215,7 +212,6 @@ export class TowerFeature implements IWorldFeature {
 		towerCenterZ: number,
 		towerRadius: number,
 		biome: Biome,
-		getTerrainHeight: (x: number, z: number, biome: Biome) => number,
 	): number {
 		let minGroundHeight = Infinity;
 		const radiusSq = towerRadius * towerRadius;
@@ -225,7 +221,7 @@ export class TowerFeature implements IWorldFeature {
 				if (dx * dx + dz * dz > radiusSq) continue;
 				const worldX = towerCenterX + dx;
 				const worldZ = towerCenterZ + dz;
-				const height = getTerrainHeight(worldX, worldZ, biome);
+				const height = getFinalTerrainHeight(worldX, worldZ);
 				if (height < minGroundHeight) {
 					minGroundHeight = height;
 				}

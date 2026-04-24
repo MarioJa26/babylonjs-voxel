@@ -1,6 +1,6 @@
 import type { Biome } from "./Biome/BiomeTypes";
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
-import { TerrainHeightMap } from "./TerrainHeightMap";
+import { getFinalTerrainHeight } from "./TerrainHeightMap";
 
 export type LightSeedState = {
 	/**
@@ -223,8 +223,7 @@ export class LightGenerator {
 					// Additionally seed water only at air->water transitions so
 					// skylight can enter connected water bodies without flooding the
 					// queue with every water voxel in tall columns.
-					const shouldSeed =
-						!blockFiltersFullSun || !sourceFiltersFullSun;
+					const shouldSeed = !blockFiltersFullSun || !sourceFiltersFullSun;
 					if (shouldSeed) {
 						queue[tail & mask] = (x << 10) | (y << 5) | z;
 						tail++;
@@ -466,10 +465,7 @@ export class LightGenerator {
 			return false;
 		}
 
-		const terrainHeight = TerrainHeightMap.getFinalTerrainHeight(
-			worldX,
-			worldZ,
-		);
+		const terrainHeight = getFinalTerrainHeight(worldX, worldZ);
 		return topWorldY >= terrainHeight - LightGenerator.DENSITY_INFLUENCE_RANGE;
 	}
 }

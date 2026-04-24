@@ -7,7 +7,7 @@ import {
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
 import { Squirrel3 } from "./NoiseAndParameters/Squirrel13";
 import { SurfaceGenerator } from "./SurfaceGenerator";
-import { TerrainHeightMap } from "./TerrainHeightMap";
+import { getBiome } from "./TerrainHeightMap";
 import { UndergroundGenerator } from "./UndergroundGenerator";
 
 type GenerateChunkOptions = {
@@ -156,7 +156,7 @@ export class WorldGenerator {
 			}
 		};
 
-		const biome = this.#getBiome(chunkWorldX, chunkWorldZ);
+		const biome = getBiome(chunkWorldX, chunkWorldZ);
 
 		const surfaceGeneration = this.surfaceGenerator.generate(
 			chunkX,
@@ -202,9 +202,5 @@ export class WorldGenerator {
 			light,
 			lightSeedState,
 		};
-	}
-
-	#getBiome(x: number, z: number) {
-		return TerrainHeightMap.getBiome(x, z);
 	}
 }
