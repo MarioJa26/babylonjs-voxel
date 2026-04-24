@@ -154,6 +154,22 @@ export class PlayerVehicleMotor {
 
 		this.#camera.moveWithPlayer(this.getPositionInternal());
 		this.#displayCapsule.position.copyFrom(this.getPositionInternal());
+		if (!this.#getMount()) {
+			if (!this.#displayCapsule.rotationQuaternion) {
+				this.#displayCapsule.rotationQuaternion = Quaternion.Identity();
+			}
+			this.#displayCapsule.rotationQuaternion.copyFrom(
+				this.#characterOrientation,
+			);
+		} else {
+			//TODO Rotate according to the mount.
+			if (!this.#displayCapsule.rotationQuaternion) {
+				this.#displayCapsule.rotationQuaternion = Quaternion.Identity();
+			}
+			this.#displayCapsule.rotationQuaternion.copyFrom(
+				this.#characterOrientation,
+			);
+		}
 	}
 
 	public update(deltaTime: number): void {
