@@ -213,7 +213,7 @@ export function getFinalTerrainHeight(x: number, z: number): number {
 
 	const riverAbs = Math.abs(riverGenerator.getRiverNoise(x, z));
 
-	const detail = computeDetail(x, z, baseHeight, riverAbs);
+	const detail = computeDetail(x, z, riverAbs);
 
 	return Math.floor(baseHeight + detail);
 }
@@ -234,12 +234,7 @@ export function getOctaveNoise(x: number, z: number): number {
 // Detail (cheap, per‑block)
 // ---------------------------------------------------------------------------
 
-function computeDetail(
-	x: number,
-	z: number,
-	baseHeight: number,
-	riverAbs: number,
-): number {
+function computeDetail(x: number, z: number, riverAbs: number): number {
 	const erosion = erosionNoise(x, z);
 	const pv = peaksAndValleysNoise(x, z);
 
