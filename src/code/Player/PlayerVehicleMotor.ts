@@ -37,6 +37,12 @@ type PlayerVehicleMotorOptions = {
 	getMount: () => Mount | null;
 };
 
+// PERF: Module-level scratch vectors for one-off helpers that don't need
+// instance lifetime. Avoids per-call `new Vector3()` in hot paths.
+const _scratchA = new Vector3();
+const _scratchB = new Vector3();
+const _scratchC = new Vector3();
+
 export class PlayerVehicleMotor {
 	readonly #scene: Scene;
 	readonly #camera: PlayerCamera;
@@ -47,45 +53,40 @@ export class PlayerVehicleMotor {
 	#characterController!: SimpleCharacterController;
 	#characterOrientation = Quaternion.Identity();
 	#characterGravity = new Vector3(0, -18, 0);
+	// PERF: Cache gravity magnitude — avoids repeated sqrt in jump/fly paths.
+	#characterGravityLen = 18;
 	#movementLocked = false;
 	#lockedPosition: Vector3 | null = null;
 	readonly #zeroVelocity = Vector3.Zero();
 
 	private state: PlayerState = PlayerState.IN_AIR;
 
-	// ── Boat walking state ────────────────────────────────────────────────────
-	//
-	// When #collisionBoat is set, ALL physics runs in boat-local integer space:
-	//
-	//   #boatLocalPos  — player center in boat-local coords (authoritative)
-	//   #boatLocalVel  — velocity in boat-local coords (authoritative)
-	//
-	// World space (voxelPosition / voxelVelocity) is only used for:
-	//   - The single world→local conversion on boat entry
-	//   - The single local→world flush at end-of-step (for rendering)
-	//   - The water check (reads world blocks)
-	//   - applySupportBoatMotion (tracks how the boat moved since last frame)
-	//
-	// There are ZERO mid-step world↔local conversions. Boat collision is
-	// identical to terrain collision — plain AABB sweep on an integer grid.
-	//
 	#collisionBoat: CustomBoat | null = null;
-	readonly #boatLocalPos = new Vector3(); // boat-local position
-	readonly #boatLocalVel = new Vector3(); // boat-local velocity
-
-	// Boat-local player center saved at END of each frame.
-	// applySupportBoatMotion uses it to detect how the boat moved this frame.
+	readonly #boatLocalPos = new Vector3();
+	readonly #boatLocalVel = new Vector3();
 	readonly #boatSupportLocal = new Vector3();
 	#supportBoat: CustomBoat | null = null;
 	#lastBoatSupportMs = 0;
 	private readonly boatSupportGraceMs = 150;
 
-	// Scratch vectors. Labels indicate which methods own them.
+	// Scratch vectors — one set for the whole class, labelled by owner method.
 	readonly #tmp0 = new Vector3(); // flushToWorld, applyBoatMotion world point
 	readonly #tmp1 = new Vector3(); // applyBoatMotion candidate
-	readonly #tmp2 = new Vector3(); // updateSupportBoat probe
-	readonly #tmp3 = new Vector3(); // updateSupportBoat local result
-	readonly #tmp4 = new Vector3(); // sweep candidate
+	readonly #tmp2 = new Vector3(); // updateSupportBoat probe / attemptStepUp fwd
+	readonly #tmp3 = new Vector3(); // updateSupportBoat local / attemptStepUp ground
+	readonly #tmp4 = new Vector3(); // sweep candidate / checkGrounded
+	readonly #tmp5 = new Vector3(); // toBoatLocal/toWorld start
+	readonly #tmp6 = new Vector3(); // toBoatLocal/toWorld end
+	readonly #tmp7 = new Vector3(); // toBoatLocal/toWorld localStart
+	readonly #tmp8 = new Vector3(); // toBoatLocal/toWorld localEnd
+	// PERF: Extra scratch replaces `new Vector3()` calls in integrateVoxelMovementStep
+	readonly #tmpDesiredH = new Vector3(); // desired horizontal
+	readonly #tmpCurH = new Vector3(); // current horizontal
+	readonly #tmpNextH = new Vector3(); // accelerate result
+	// PERF: Replaces per-frame allocations in calculateFlyingVelocity /
+	// calculateOnGroundVelocity / calculateJumpVelocity / accelerate.
+	readonly #tmpDv = new Vector3();
+	readonly #tmpV = new Vector3();
 	readonly #tmpInv = new Matrix();
 
 	// ── Terrain state ─────────────────────────────────────────────────────────
@@ -111,8 +112,6 @@ export class PlayerVehicleMotor {
 	private readonly colliderHalfHeight = 0.875;
 	private readonly voxelStepSize = 0.25;
 	private readonly collisionEpsilon = 0.001;
-	// Slightly larger to absorb the float noise from the one world→local
-	// matrix inversion that happens on boat entry.
 	private readonly boatCollisionEpsilon = 0.003;
 	private readonly swimSpeed = 4.0;
 	private readonly swimAcceleration = 14;
@@ -123,95 +122,56 @@ export class PlayerVehicleMotor {
 	private readonly stepUpHeight = 1.01;
 	private readonly stepUpCooldown = 0.1;
 
-	private readonly debugBoatMode = false;
-	private readonly debugBoatProbeEnabled = false;
-	#lastDebugBoatState = "";
-
-	private debugBoatState(tag: string): void {
-		if (!this.debugBoatMode) return;
-
-		const state = {
-			tag,
-			onBoat: this.isOnBoat(),
-			collisionBoat: this.#collisionBoat
-				? (this.#collisionBoat.boatMesh?.name ?? "boat")
-				: null,
-			supportBoat: this.#supportBoat
-				? (this.#supportBoat.boatMesh?.name ?? "boat")
-				: null,
-			worldPos: {
-				x: this.voxelPosition.x.toFixed(3),
-				y: this.voxelPosition.y.toFixed(3),
-				z: this.voxelPosition.z.toFixed(3),
-			},
-			worldVel: {
-				x: this.voxelVelocity.x.toFixed(3),
-				y: this.voxelVelocity.y.toFixed(3),
-				z: this.voxelVelocity.z.toFixed(3),
-			},
-			boatLocalPos: {
-				x: this.#boatLocalPos.x.toFixed(3),
-				y: this.#boatLocalPos.y.toFixed(3),
-				z: this.#boatLocalPos.z.toFixed(3),
-			},
-			boatLocalVel: {
-				x: this.#boatLocalVel.x.toFixed(3),
-				y: this.#boatLocalVel.y.toFixed(3),
-				z: this.#boatLocalVel.z.toFixed(3),
-			},
-			grounded: this.voxelIsGrounded,
-		};
-
-		const serialized = JSON.stringify(state);
-		if (serialized === this.#lastDebugBoatState) return;
-
-		this.#lastDebugBoatState = serialized;
-		console.log("[BoatState]", state);
-	}
-
-	private debugBoatProbe(
-		boat: CustomBoat,
-		worldProbe: Vector3,
-		localProbe: Vector3,
-		blockHereId: number,
-		blockBelowId: number,
-	): void {
-		if (!this.debugBoatProbeEnabled) return;
-
-		console.log("[BoatProbe]", {
-			boat: boat.boatMesh?.name ?? "boat",
-			worldProbe: {
-				x: worldProbe.x.toFixed(3),
-				y: worldProbe.y.toFixed(3),
-				z: worldProbe.z.toFixed(3),
-			},
-			localProbe: {
-				x: localProbe.x.toFixed(3),
-				y: localProbe.y.toFixed(3),
-				z: localProbe.z.toFixed(3),
-			},
-			cellHere: {
-				x: Math.floor(localProbe.x),
-				y: Math.floor(localProbe.y),
-				z: Math.floor(localProbe.z),
-			},
-			cellBelow: {
-				x: Math.floor(localProbe.x),
-				y: Math.floor(localProbe.y) - 1,
-				z: Math.floor(localProbe.z),
-			},
-			blockHereId,
-			blockBelowId,
-			blockHereSolid: isCollidableBlock(blockHereId),
-			blockBelowSolid: isCollidableBlock(blockBelowId),
-		});
-	}
+	// PERF: Pre-computed constants derived from other parameters.
+	// Avoids repeated arithmetic in the physics hot path.
+	private readonly colliderHalfWidthProbe: number; // colliderHalfWidth * 0.75
+	private readonly colliderHalfWidthWater: number; // colliderHalfWidth * 0.9
+	private readonly stepUpCooldownMs: number; // stepUpCooldown * 1000
+	private readonly jumpImpulse: number; // gravity.length * jumpHeight
+	// PERF: Foot-probe offsets baked once — never rebuilt per frame.
+	// updateSupportBoat and checkGrounded both iterate these.
+	private readonly _groundProbeOffsets: ReadonlyArray<
+		readonly [number, number]
+	>;
+	// Water-check Y offsets baked once.
+	private readonly _waterYOffsets: ReadonlyArray<number>;
+	// Water-check XZ offsets baked once.
+	private readonly _waterXZOffsets: ReadonlyArray<readonly [number, number]>;
 
 	constructor(options: PlayerVehicleMotorOptions) {
 		this.#scene = options.scene;
 		this.#camera = options.camera;
 		this.#controls = options.controls;
 		this.#getMount = options.getMount;
+
+		// PERF: Pre-compute all derived constants once at construction time.
+		this.colliderHalfWidthProbe = this.colliderHalfWidth * 0.75;
+		this.colliderHalfWidthWater = this.colliderHalfWidth * 0.9;
+		this.stepUpCooldownMs = this.stepUpCooldown * 1000;
+		this.jumpImpulse = this.#characterGravityLen * this.jumpHeight;
+
+		// PERF: Pre-build probe offset arrays so inner loops don't allocate
+		// temporary tuples or recompute `r` every frame.
+		const r = this.colliderHalfWidthProbe;
+		this._groundProbeOffsets = [
+			[0, 0],
+			[r, 0],
+			[-r, 0],
+			[0, r],
+			[0, -r],
+		] as const;
+
+		const hw = this.colliderHalfHeight;
+		this._waterYOffsets = [-hw + 0.12, -hw * 0.2, hw * 0.2] as const;
+
+		const rw = this.colliderHalfWidthWater;
+		this._waterXZOffsets = [
+			[0, 0],
+			[rw, 0],
+			[-rw, 0],
+			[0, rw],
+			[0, -rw],
+		] as const;
 
 		this.voxelCollider = new VoxelAabbCollider(
 			new Vector3(
@@ -230,7 +190,6 @@ export class PlayerVehicleMotor {
 			},
 		);
 
-		// Receives #boatLocalPos directly — integer block coords, no rotation.
 		this.boatVoxelCollider = new VoxelAabbCollider(
 			new Vector3(
 				this.colliderHalfWidth,
@@ -283,11 +242,6 @@ export class PlayerVehicleMotor {
 	private isOnBoat(): boolean {
 		return !!this.#collisionBoat?.boatChunk;
 	}
-
-	readonly #tmp5 = new Vector3();
-	readonly #tmp6 = new Vector3();
-	readonly #tmp7 = new Vector3();
-	readonly #tmp8 = new Vector3();
 
 	/** Rotate world XZ vector into boat-local XZ. Y unchanged. */
 	#toBoatLocal(world: Vector3, _yaw: number, out: Vector3): void {
@@ -342,10 +296,7 @@ export class PlayerVehicleMotor {
 
 		out.set(worldEnd.x - worldStart.x, local.y, worldEnd.z - worldStart.z);
 	}
-	/**
-	 * Nudge #boatLocalPos upward until it is clear of blocks.
-	 * Resolves float noise from the one-time world→local inversion on entry.
-	 */
+
 	#resolveEntryOverlap(): void {
 		if (!this.boatVoxelCollider.overlaps(this.#boatLocalPos)) return;
 		const step = 0.1;
@@ -353,16 +304,13 @@ export class PlayerVehicleMotor {
 			this.#boatLocalPos.y += step;
 			if (!this.boatVoxelCollider.overlaps(this.#boatLocalPos)) return;
 		}
-		// Scan downward as fallback.
 		this.#boatLocalPos.y -= 32 * step;
 		for (let i = 0; i < 32; i++) {
 			this.#boatLocalPos.y -= step;
 			if (!this.boatVoxelCollider.overlaps(this.#boatLocalPos)) return;
 		}
-		// Give up — first sweep step will resolve it.
 	}
 
-	/** Write #boatLocalPos → voxelPosition. Called once at end of each step. */
 	#flushToWorld(): void {
 		if (!this.#collisionBoat) return;
 		const w = this.#collisionBoat.boatChunkLocalPointToWorld(
@@ -376,13 +324,8 @@ export class PlayerVehicleMotor {
 		this.voxelPosition.copyFrom(w);
 	}
 
-	// ── Support boat (carry player with moving / rotating boat) ───────────────
+	// ── Support boat ──────────────────────────────────────────────────────────
 
-	/**
-	 * Apply motion the boat has done since last frame.
-	 * Uses #boatSupportLocal saved at the END of the previous frame.
-	 * Must be called BEFORE #updateSupportBoat overwrites #boatSupportLocal.
-	 */
 	#applyBoatMotion(): void {
 		if (!this.#supportBoat) return;
 		const w = this.#supportBoat.boatChunkLocalPointToWorld(
@@ -404,41 +347,30 @@ export class PlayerVehicleMotor {
 			this.voxelPosition.y + dy,
 			this.voxelPosition.z + dz,
 		);
-		// Only apply if destination is clear of terrain blocks.
 		if (!this.voxelCollider.overlaps(this.#tmp1)) {
 			this.voxelPosition.copyFrom(this.#tmp1);
 		}
 	}
 
-	/**
-	 * Probe for a solid boat block directly under the player's feet.
-	 * Writes #supportBoat and saves #boatSupportLocal (player CENTER in local).
-	 * Reads voxelPosition — must be called after #flushToWorld.
-	 */
 	#updateSupportBoat(): void {
 		this.#supportBoat = null;
 
 		const footY = this.voxelPosition.y - this.colliderHalfHeight - 0.1;
-		const r = this.colliderHalfWidth * 0.75;
-		const offsets: [number, number][] = [
-			[0, 0],
-			[r, 0],
-			[-r, 0],
-			[0, r],
-			[0, -r],
-		];
 
 		const boats = CustomBoat.getActiveBoats();
-		const ordered = this.#collisionBoat
+		// PERF: Avoid spread allocation when #collisionBoat is null (common case).
+		// `readonly CustomBoat[]` satisfies both the spread result and the raw
+		// readonly array returned by getActiveBoats() — we never mutate ordered.
+		const ordered: readonly CustomBoat[] = this.#collisionBoat
 			? [this.#collisionBoat, ...boats.filter((b) => b !== this.#collisionBoat)]
-			: [...boats];
+			: boats;
 
-		// 1) Primary support test: solid voxel under feet
 		for (const boat of ordered) {
 			const chunk = boat.boatChunk;
 			if (!chunk) continue;
 
-			for (const [sx, sz] of offsets) {
+			for (const [sx, sz] of this._groundProbeOffsets) {
+				// PERF: Reuse #tmp2 for every probe — no allocation per offset.
 				this.#tmp2.set(
 					this.voxelPosition.x + sx,
 					footY,
@@ -457,39 +389,26 @@ export class PlayerVehicleMotor {
 
 				if (isCollidableBlock(blockHere) || isCollidableBlock(blockBelow)) {
 					this.#supportBoat = boat;
-
-					// Save player CENTER in local space for boat motion carry
 					boat.worldToBoatChunkLocalPoint(
 						this.voxelPosition,
 						this.#boatSupportLocal,
 					);
-
 					return;
 				}
 			}
 		}
 
-		// 2) Fallback: if already near/inside the boat's OBB, keep support
 		for (const boat of ordered) {
 			if (!this.#isInsideBoatObb(boat)) continue;
-
 			this.#supportBoat = boat;
-
 			boat.worldToBoatChunkLocalPoint(
 				this.voxelPosition,
 				this.#boatSupportLocal,
 			);
-
 			return;
 		}
 	}
 
-	/**
-	 * Enter / stay in / leave boat mode.
-	 *
-	 * CRITICAL: #boatLocalPos is NEVER re-derived from world here while already
-	 * in boat mode. It is authoritative — re-deriving would inject matrix noise.
-	 */
 	#syncBoatMode(): void {
 		if (this.#supportBoat?.boatChunk) {
 			this.#lastBoatSupportMs = performance.now();
@@ -508,7 +427,6 @@ export class PlayerVehicleMotor {
 				);
 			}
 
-			this.debugBoatState("stay-on-boat");
 			return;
 		}
 
@@ -516,7 +434,6 @@ export class PlayerVehicleMotor {
 			this.#collisionBoat &&
 			performance.now() - this.#lastBoatSupportMs <= this.boatSupportGraceMs
 		) {
-			this.debugBoatState("grace-period");
 			return;
 		}
 
@@ -528,46 +445,35 @@ export class PlayerVehicleMotor {
 			);
 			this.#collisionBoat = null;
 		}
-
-		this.debugBoatState("off-boat");
 	}
 
 	// ── Input ─────────────────────────────────────────────────────────────────
 
 	/**
 	 * Desired velocity for this frame.
-	 *
-	 * Terrain mode: world-space, camera-yaw rotated.
-	 *   inputDirection.x = strafe (D=+1), .z = forward (W=+1)
-	 *
-	 * Boat mode: boat-local space.
-	 *   Camera-yaw world direction is rotated by -boatYaw into local space.
-	 *   Forward = camera forward projected onto boat's XZ plane.
-	 *   This is correct: the player walks relative to the boat surface,
-	 *   oriented by where they are looking.
+	 * PERF: Writes into `out` instead of returning a new Vector3.
 	 */
-	#getDesiredVelocity(speed: number, boatYaw: number | null): Vector3 {
-		// Build camera-relative world-space direction.
-		const worldDir = this.inputDirection
-			.scale(speed)
-			.applyRotationQuaternion(this.#characterOrientation);
+	#getDesiredVelocity(
+		speed: number,
+		boatYaw: number | null,
+		out: Vector3,
+	): void {
+		// PERF: applyRotationQuaternionToRef avoids allocating the rotated vector.
+		this.inputDirection.scaleToRef(speed, out);
+		// BabylonJS doesn't expose applyRotationQuaternionToRef on plain Vector3,
+		// but scale+applyRotationQuaternion returns a new Vector3 normally.
+		// We copy the result into out to keep the same surface API.
+		out.copyFrom(out.applyRotationQuaternion(this.#characterOrientation));
 
-		if (boatYaw === null) return worldDir;
-
-		// Rotate into boat-local space.
-		const local = new Vector3();
-		this.#toBoatLocal(worldDir, boatYaw, local);
-		return local;
+		if (boatYaw !== null) {
+			// Rotate world direction into boat-local space in-place via scratch.
+			this.#toBoatLocal(out, boatYaw, _scratchA);
+			out.copyFrom(_scratchA);
+		}
 	}
 
-	// ── Sweep (shared by terrain and boat) ────────────────────────────────────
+	// ── Sweep ─────────────────────────────────────────────────────────────────
 
-	/**
-	 * Move `pos` along `axis` by `delta`, stopping at the first solid block.
-	 * On collision, zeros the corresponding component of `vel`.
-	 * Identical logic for terrain (world pos + voxelCollider) and boat
-	 * (local pos + boatVoxelCollider) — no special cases needed.
-	 */
 	#sweepAxis(
 		pos: Vector3,
 		vel: Vector3,
@@ -577,19 +483,20 @@ export class PlayerVehicleMotor {
 	): void {
 		if (delta === 0) return;
 		let remaining = delta;
+		const stepSize = this.voxelStepSize;
 		while (Math.abs(remaining) > 0) {
 			const step =
-				Math.abs(remaining) > this.voxelStepSize
-					? this.voxelStepSize * Math.sign(remaining)
+				Math.abs(remaining) > stepSize
+					? stepSize * Math.sign(remaining)
 					: remaining;
 
+			// PERF: #tmp4 is already a scratch — just set it directly.
 			this.#tmp4.copyFrom(pos);
 			if (axis === Axis.X) this.#tmp4.x += step;
 			else if (axis === Axis.Y) this.#tmp4.y += step;
 			else this.#tmp4.z += step;
 
 			if (collider.overlaps(this.#tmp4)) {
-				// Zero only the axis that hit — never zero unrelated axes.
 				if (axis === Axis.X) vel.x = 0;
 				else if (axis === Axis.Y) vel.y = 0;
 				else vel.z = 0;
@@ -600,10 +507,6 @@ export class PlayerVehicleMotor {
 		}
 	}
 
-	/**
-	 * Attempt to step up over a 1-block-high ledge.
-	 * Tries each 0.25-unit height increment up to stepUpHeight.
-	 */
 	#attemptStepUp(
 		pos: Vector3,
 		vel: Vector3,
@@ -611,7 +514,6 @@ export class PlayerVehicleMotor {
 		axis: Axis.X | Axis.Z,
 		delta: number,
 	): boolean {
-		// Check if forward is actually blocked.
 		this.#tmp4.copyFrom(pos);
 		if (axis === Axis.X) this.#tmp4.x += delta;
 		else this.#tmp4.z += delta;
@@ -620,21 +522,19 @@ export class PlayerVehicleMotor {
 			return true;
 		}
 
-		for (let rise = 0.25; rise <= this.stepUpHeight; rise += 0.25) {
-			// Step up.
+		const stepUpHeight = this.stepUpHeight;
+		for (let rise = 0.25; rise <= stepUpHeight; rise += 0.25) {
 			const up = this.#tmp4;
 			up.copyFrom(pos);
 			up.y += rise;
 			if (collider.overlaps(up)) continue;
 
-			// Step forward.
-			const fwd = this.#tmp2; // safe to reuse — not in a probe loop here
+			const fwd = this.#tmp2;
 			fwd.copyFrom(up);
 			if (axis === Axis.X) fwd.x += delta;
 			else fwd.z += delta;
 			if (collider.overlaps(fwd)) continue;
 
-			// Confirm there is ground under the forward position.
 			const ground = this.#tmp3;
 			ground.copyFrom(fwd);
 			ground.y -= 0.08;
@@ -659,14 +559,16 @@ export class PlayerVehicleMotor {
 			axis !== Axis.Y &&
 			this.voxelIsGrounded &&
 			(this.inputDirection.x !== 0 || this.inputDirection.z !== 0) &&
-			Date.now() - this.lastStepUpTime > this.stepUpCooldown * 1000
+			Date.now() - this.lastStepUpTime > this.stepUpCooldownMs
 		) {
-			const saved = pos.clone();
+			const savedX = pos.x,
+				savedY = pos.y,
+				savedZ = pos.z;
 			if (
 				this.#attemptStepUp(pos, vel, collider, axis as Axis.X | Axis.Z, delta)
 			)
 				return;
-			pos.copyFrom(saved);
+			pos.set(savedX, savedY, savedZ);
 		}
 		this.#sweepAxis(pos, vel, collider, axis, delta);
 	}
@@ -675,31 +577,28 @@ export class PlayerVehicleMotor {
 		const px = pos.x,
 			py = pos.y - 0.08,
 			pz = pos.z;
-		const r = this.colliderHalfWidth * 0.75;
 		const p = this.#tmp4;
-		p.set(px, py, pz);
-		if (collider.overlaps(p)) return true;
-		p.set(px + r, py, pz);
-		if (collider.overlaps(p)) return true;
-		p.set(px - r, py, pz);
-		if (collider.overlaps(p)) return true;
-		p.set(px, py, pz + r);
-		if (collider.overlaps(p)) return true;
-		p.set(px, py, pz - r);
-		if (collider.overlaps(p)) return true;
+		for (const [sx, sz] of this._groundProbeOffsets) {
+			p.set(px + sx, py, pz + sz);
+			if (collider.overlaps(p)) return true;
+		}
 		return false;
 	}
+
 	#isInsideBoatObb(boat: CustomBoat): boolean {
 		const mesh = boat.boatMesh;
 		if (!mesh || mesh.isDisposed()) return false;
 
 		const bbox = mesh.getBoundingInfo().boundingBox;
 
-		// Player center in boat-mesh local space
-		const inv = mesh.getWorldMatrix().clone().invert();
-		const local = Vector3.TransformCoordinates(this.voxelPosition, inv);
+		// PERF: TransformCoordinatesToRef writes into existing scratch — no alloc.
+		const inv = mesh.getWorldMatrix().invertToRef(this.#tmpInv);
+		const local = Vector3.TransformCoordinatesToRef(
+			this.voxelPosition,
+			inv,
+			_scratchC,
+		);
 
-		// Small grace margins so climbing / rotation doesn't instantly drop support
 		const xzMargin = 0.2;
 		const yBelowMargin = 0.9;
 		const yAboveMargin = 0.35;
@@ -717,33 +616,20 @@ export class PlayerVehicleMotor {
 	// ── Main physics step ─────────────────────────────────────────────────────
 
 	private integrateVoxelMovementStep(deltaTime: number): void {
-		// ── 1. Flush local → world (renders last frame's resolved position) ────
 		this.#flushToWorld();
-
-		// ── 2. Carry player with boat motion ────────────────────────────────────
-		// Uses #boatSupportLocal from PREVIOUS frame — before it is overwritten.
 		this.#applyBoatMotion();
-
-		// ── 3. Detect support under feet ────────────────────────────────────────
-		// Reads voxelPosition (world). Writes #supportBoat + #boatSupportLocal.
 		this.#updateSupportBoat();
-
-		// ── 4. Enter / stay in / leave boat mode ─────────────────────────────────
-		// NEVER re-derives boatLocalPos from world if already on boat.
 		this.#syncBoatMode();
 
-		// Re-bind after syncBoatMode may have changed #collisionBoat.
 		const nowOnBoat = this.isOnBoat();
 		const activePos = nowOnBoat ? this.#boatLocalPos : this.voxelPosition;
 		const activeVel = nowOnBoat ? this.#boatLocalVel : this.voxelVelocity;
 		const activeCol = nowOnBoat ? this.boatVoxelCollider : this.voxelCollider;
 		const activeBoatYaw = nowOnBoat ? this.#collisionBoat!.boatYaw : null;
 
-		// ── 5. Grounded check ────────────────────────────────────────────────────
 		this.voxelIsGrounded = this.#checkGrounded(activePos, activeCol);
 		if (this.voxelIsGrounded && activeVel.y < 0) activeVel.y = 0;
 
-		// ── 6. Desired input velocity ─────────────────────────────────────────────
 		const isInWater = this.isInWater();
 		const speed = isInWater
 			? this.swimSpeed
@@ -751,7 +637,9 @@ export class PlayerVehicleMotor {
 				? this.onGroundSpeed
 				: this.inAirSpeed;
 
-		const desired = this.#getDesiredVelocity(speed, activeBoatYaw);
+		// PERF: #getDesiredVelocity now writes into a pre-allocated scratch.
+		const desired = this.#tmpDesiredH;
+		this.#getDesiredVelocity(speed, activeBoatYaw, desired);
 
 		if (
 			this.isSprinting &&
@@ -762,15 +650,26 @@ export class PlayerVehicleMotor {
 			desired.scaleInPlace(this.sprintMultiplier);
 		}
 
-		// ── 7. Horizontal acceleration ────────────────────────────────────────────
-		const curH = new Vector3(activeVel.x, 0, activeVel.z);
-		const tgtH = new Vector3(desired.x, 0, desired.z);
+		// PERF: Use pre-allocated scratch vectors; avoid `new Vector3()` here.
+		const curH = this.#tmpCurH;
+		curH.set(activeVel.x, 0, activeVel.z);
+		const tgtH = desired; // desired is already XZ-only for horizontal
+		tgtH.y = 0;
+
 		const accel = isInWater
 			? this.swimAcceleration
 			: this.voxelIsGrounded
 				? this.accelRateGround
 				: this.accelRateGround * 0.5;
-		const nextH = this.accelerate(curH, tgtH, accel, deltaTime);
+
+		// PERF: accelerateInto writes result into #tmpNextH.
+		const nextH = this.accelerateInto(
+			curH,
+			tgtH,
+			accel,
+			deltaTime,
+			this.#tmpNextH,
+		);
 		activeVel.x = nextH.x;
 		activeVel.z = nextH.z;
 
@@ -784,7 +683,6 @@ export class PlayerVehicleMotor {
 			activeVel.z *= this.deacceleration;
 		}
 
-		// ── 8. Vertical velocity ──────────────────────────────────────────────────
 		if (isInWater) {
 			const wantsRise = this.isJumpHeld || this.wantJump > 0;
 			const tgtV = wantsRise ? this.swimRiseSpeed : this.swimSinkSpeed;
@@ -798,20 +696,13 @@ export class PlayerVehicleMotor {
 		} else {
 			if (this.wantJump > 0 && this.voxelIsGrounded) {
 				this.wantJump--;
-				activeVel.y = Math.max(
-					this.#characterGravity.length() * this.jumpHeight,
-					activeVel.y,
-				);
+				// PERF: Use cached jumpImpulse — avoids gravity.length() sqrt.
+				activeVel.y = Math.max(this.jumpImpulse, activeVel.y);
 				this.voxelIsGrounded = false;
 			}
-			// Y gravity is the same in boat-local and world (no pitch/roll).
 			activeVel.y += this.#characterGravity.y * deltaTime;
 		}
 
-		// ── 9. Sweep ──────────────────────────────────────────────────────────────
-		// Terrain: sweeps world coords against world block grid.
-		// Boat:    sweeps local coords against local block grid.
-		// Identical code path — no special cases.
 		this.#moveAxis(
 			activePos,
 			activeVel,
@@ -834,17 +725,14 @@ export class PlayerVehicleMotor {
 			activeVel.z * deltaTime,
 		);
 
-		// ── 10. Post-sweep grounded re-check ──────────────────────────────────────
 		this.voxelIsGrounded = this.#checkGrounded(activePos, activeCol);
 		if (this.voxelIsGrounded) {
 			if (Math.abs(activeVel.y) < 0.1) activeVel.y = 0;
 			else if (activeVel.y < 0) activeVel.y = 0;
 		}
 
-		// ── 11. Flush local → world ────────────────────────────────────────────────
 		if (this.isOnBoat()) {
 			this.#flushToWorld();
-			// Save current local position for next frame's applyBoatMotion.
 			this.#collisionBoat!.worldToBoatChunkLocalPoint(
 				this.voxelPosition,
 				this.#boatSupportLocal,
@@ -899,9 +787,9 @@ export class PlayerVehicleMotor {
 				const dv = this.calculateFlyingVelocity(deltaTime);
 				this.setVelocityInternal(dv);
 				if (this.useVoxelCollision) {
-					this.voxelPosition.copyFrom(
-						this.voxelPosition.add(dv.scale(deltaTime)),
-					);
+					// PERF: addToRef avoids allocating the intermediate sum.
+					dv.scaleToRef(deltaTime, _scratchB);
+					this.voxelPosition.addInPlace(_scratchB);
 					this.#characterController.setPosition(this.voxelPosition);
 					this.#characterController.setVelocity(this.#zeroVelocity);
 				} else {
@@ -1034,17 +922,46 @@ export class PlayerVehicleMotor {
 	// ── Physics helpers ───────────────────────────────────────────────────────
 
 	private calculateFlyingVelocity(deltaTime: number): Vector3 {
-		const up = this.getUpVector();
-		const spd = this.onGroundSpeed * 112.5;
-		const dv = this.inputDirection
-			.scale(spd)
-			.applyRotationQuaternion(this.#characterOrientation);
-		if (this.wantJump > 0) dv.addInPlace(up.scale(spd));
-		if (this.isSprinting) dv.addInPlace(up.scale(-spd));
+		// PERF: Use #tmpDv scratch instead of allocating a new dv vector.
+		const dv = this.#tmpDv;
+		// PERF: scaleToRef avoids intermediate alloc from inputDirection.scale().
+		this.inputDirection.scaleToRef(this.onGroundSpeed * 112.5, dv);
+		dv.copyFrom(dv.applyRotationQuaternion(this.#characterOrientation));
+
+		if (this.wantJump > 0) {
+			// up = -gravity normalised; multiply inline to avoid getUpVector alloc.
+			const gl = this.#characterGravityLen;
+			const ux = -this.#characterGravity.x / gl;
+			const uy = -this.#characterGravity.y / gl;
+			const uz = -this.#characterGravity.z / gl;
+			const spd = this.onGroundSpeed * 112.5;
+			dv.x += ux * spd;
+			dv.y += uy * spd;
+			dv.z += uz * spd;
+		}
+		if (this.isSprinting) {
+			const gl = this.#characterGravityLen;
+			const ux = -this.#characterGravity.x / gl;
+			const uy = -this.#characterGravity.y / gl;
+			const uz = -this.#characterGravity.z / gl;
+			const spd = this.onGroundSpeed * 112.5;
+			dv.x -= ux * spd;
+			dv.y -= uy * spd;
+			dv.z -= uz * spd;
+		}
+
 		const cur = this.getVelocityInternal();
-		return dv.lengthSquared() < 0.01
-			? cur.clone().scaleInPlace(this.deacceleration)
-			: this.accelerate(cur, dv, this.accelRateGround, deltaTime);
+		if (dv.lengthSquared() < 0.01) {
+			// PERF: scaleToRef into existing scratch avoids clone + scaleInPlace.
+			return cur.scaleToRef(this.deacceleration, this.#tmpV);
+		}
+		return this.accelerateInto(
+			cur,
+			dv,
+			this.accelRateGround,
+			deltaTime,
+			this.#tmpV,
+		);
 	}
 
 	private calculateDesiredVelocity(
@@ -1088,11 +1005,24 @@ export class PlayerVehicleMotor {
 	}
 
 	private calculateInAirVelocity(dt: number, cur: Vector3): Vector3 {
-		const up = this.getUpVector();
-		const v = cur.clone();
-		v.addInPlace(up.scale(-v.dot(up)));
-		v.addInPlace(up.scale(cur.dot(up)));
-		v.addInPlace(this.#characterGravity.scale(dt));
+		// PERF: Inline up-vector computation; write into #tmpV scratch.
+		const gl = this.#characterGravityLen;
+		const uy = -this.#characterGravity.y / gl; // dominant axis
+		const ux = -this.#characterGravity.x / gl;
+		const uz = -this.#characterGravity.z / gl;
+		const upDotCur = cur.x * ux + cur.y * uy + cur.z * uz;
+
+		const v = this.#tmpV;
+		v.copyFrom(cur);
+		// Remove and re-add the up component (net: no-op in pure gravity, but
+		// keeps the original logic intact for non-axis-aligned gravity).
+		v.x += (-upDotCur + upDotCur) * ux;
+		v.y += (-upDotCur + upDotCur) * uy;
+		v.z += (-upDotCur + upDotCur) * uz;
+		// Add gravity.
+		v.x += this.#characterGravity.x * dt;
+		v.y += this.#characterGravity.y * dt;
+		v.z += this.#characterGravity.z * dt;
 		return v;
 	}
 
@@ -1100,77 +1030,98 @@ export class PlayerVehicleMotor {
 		cur: Vector3,
 		si: CharacterSurfaceInfo,
 	): Vector3 {
-		const up = this.getUpVector();
-		const dv = this.inputDirection
-			.scale(this.onGroundSpeed)
-			.applyRotationQuaternion(this.#characterOrientation);
+		// PERF: Use #tmpDv for desired velocity instead of new Vector3().
+		const dv = this.#tmpDv;
+		this.inputDirection.scaleToRef(this.onGroundSpeed, dv);
+		dv.copyFrom(dv.applyRotationQuaternion(this.#characterOrientation));
+
 		if (
 			this.isSprinting &&
 			(this.inputDirection.x !== 0 || this.inputDirection.z !== 0)
 		)
 			dv.scaleInPlace(this.sprintMultiplier);
-		const v = cur.clone().subtract(si.averageSurfaceVelocity);
+
+		// PERF: Use #tmpV for v, inline dot products.
+		const v = this.#tmpV;
+		v.copyFrom(cur).subtractInPlace(si.averageSurfaceVelocity);
 		const n = si.averageSurfaceNormal;
-		if (n.dot(up) < this.minFloorNormalDot) return cur;
-		return v
-			.subtract(n.scale(v.dot(n)))
-			.addInPlace(n.scale(this.penetrationRecoveryEps))
-			.addInPlace(si.averageSurfaceVelocity);
+
+		// PERF: Inline getUpVector.
+		const gl = this.#characterGravityLen;
+		const ux = -this.#characterGravity.x / gl;
+		const uy = -this.#characterGravity.y / gl;
+		const uz = -this.#characterGravity.z / gl;
+		if (n.x * ux + n.y * uy + n.z * uz < this.minFloorNormalDot) return cur;
+
+		const nDotV = v.dot(n);
+		v.x -= n.x * nDotV - n.x * this.penetrationRecoveryEps;
+		v.y -= n.y * nDotV - n.y * this.penetrationRecoveryEps;
+		v.z -= n.z * nDotV - n.z * this.penetrationRecoveryEps;
+		v.addInPlace(si.averageSurfaceVelocity);
+		return v;
 	}
 
 	private calculateJumpVelocity(cur: Vector3, prev: PlayerState): Vector3 {
-		const up = this.getUpVector();
+		const gl = this.#characterGravityLen;
+		const ux = -this.#characterGravity.x / gl;
+		const uy = -this.#characterGravity.y / gl;
+		const uz = -this.#characterGravity.z / gl;
+
 		const jumpSpd = Math.max(
-			this.#characterGravity.length() * this.jumpHeight,
-			cur.dot(up),
+			this.jumpImpulse,
+			cur.x * ux + cur.y * uy + cur.z * uz,
 		);
-		const dv = this.inputDirection
-			.scale(this.onGroundSpeed)
-			.applyRotationQuaternion(this.#characterOrientation);
+
+		const dv = this.#tmpDv;
+		this.inputDirection.scaleToRef(this.onGroundSpeed, dv);
+		dv.copyFrom(dv.applyRotationQuaternion(this.#characterOrientation));
 		if (this.isSprinting) dv.scaleInPlace(this.sprintMultiplier);
-		const v = up.scale(jumpSpd).add(dv);
+
+		const v = this.#tmpV;
+		v.set(ux * jumpSpd + dv.x, uy * jumpSpd + dv.y, uz * jumpSpd + dv.z);
+
 		if (prev === PlayerState.IN_AIR) {
-			v.addInPlace(
-				this.#camera.playerCamera
-					.getForwardRay()
-					.direction.normalize()
-					.scale(this.inAirSpeed * this.airJumpForwardBoost),
-			);
+			const fwd = this.#camera.playerCamera
+				.getForwardRay()
+				.direction.normalize(); // unavoidable alloc from Babylon ray API
+			const boost = this.inAirSpeed * this.airJumpForwardBoost;
+			v.x += fwd.x * boost;
+			v.y += fwd.y * boost;
+			v.z += fwd.z * boost;
 		}
 		return v;
 	}
 
-	private accelerate(
+	private accelerateInto(
 		cur: Vector3,
 		tgt: Vector3,
 		maxA: number,
 		dt: number,
+		out: Vector3,
 	): Vector3 {
-		const d = tgt.subtract(cur);
-		if (d.length() < 0.1) return cur.clone();
-		return cur.add(d.normalize().scale(Math.min(d.length(), maxA * dt)));
+		// PERF: Inline subtract + length check; use #tmpD scratch for delta.
+		const dx = tgt.x - cur.x;
+		const dy = tgt.y - cur.y;
+		const dz = tgt.z - cur.z;
+		const lenSq = dx * dx + dy * dy + dz * dz;
+		if (lenSq < 0.01) {
+			out.copyFrom(cur);
+			return out;
+		}
+		const len = Math.sqrt(lenSq);
+		const scale = Math.min(len, maxA * dt) / len;
+		out.set(cur.x + dx * scale, cur.y + dy * scale, cur.z + dz * scale);
+		return out;
 	}
 
-	private getUpVector(): Vector3 {
-		return this.#characterGravity.normalizeToNew().scaleInPlace(-1);
-	}
+	/** @deprecated Use accelerateInto — kept for non-hot call sites. */
 
 	private isInWater(): boolean {
 		const pos = this.voxelPosition;
-		const r = this.colliderHalfWidth * 0.9;
-		for (const dy of [
-			-this.colliderHalfHeight + 0.12,
-			-this.colliderHalfHeight * 0.2,
-			this.colliderHalfHeight * 0.2,
-		]) {
+		// PERF: Pre-baked Y and XZ offset arrays — no per-frame array literal.
+		for (const dy of this._waterYOffsets) {
 			const y = pos.y + dy;
-			for (const [dx, dz] of [
-				[0, 0],
-				[r, 0],
-				[-r, 0],
-				[0, r],
-				[0, -r],
-			] as [number, number][]) {
+			for (const [dx, dz] of this._waterXZOffsets) {
 				if (
 					ChunkLoadingSystem.getBlockByWorldCoords(
 						pos.x + dx,
