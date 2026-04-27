@@ -5,23 +5,11 @@ import {
 	MeshBuilder,
 	type Scene,
 	StandardMaterial,
-	type TransformNode,
-	type Vector3,
 } from "@babylonjs/core";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { getTransformedShapeBoxes } from "@/code/World/Shape/BlockShapeTransforms";
 import type { BlockRaycastHit } from "./BlockRaycaster";
-
-type BoatBlockHitContext = {
-	kind: "boatChunk";
-	boatChunk: {
-		visualRoot: TransformNode;
-		center: Vector3;
-	};
-	localX: number;
-	localY: number;
-	localZ: number;
-};
+import type { BoatBlockHitContext } from "./BreakinBlockHandler";
 
 export class BlockHighlight {
 	readonly #scene: Scene;
@@ -109,7 +97,9 @@ export class BlockHighlight {
 			return null;
 		}
 
-		const boatChunk = value.boatChunk as BoatBlockHitContext["boatChunk"] | undefined;
+		const boatChunk = value.boatChunk as
+			| BoatBlockHitContext["boatChunk"]
+			| undefined;
 		if (!boatChunk?.visualRoot || !boatChunk?.center) {
 			return null;
 		}

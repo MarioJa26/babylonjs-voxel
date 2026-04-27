@@ -1,20 +1,11 @@
-import { Vector3 } from "@babylonjs/core";
-import { BlockBreakParticles } from "@/code/Maps/BlockBreakParticles";
+import type { Vector3 } from "@babylonjs/core";
 import { Map1 } from "@/code/Maps/Map1";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
-import {
-	getBlockBreakTime,
-	getBlockInfo,
-} from "@/code/World/Texture/TextureDefinitions";
 import type { IControls } from "../../Inferface/IControls";
-import {
-	getPlacementHit,
-	pickTarget,
-} from "../Hud/BlockHighlight/BlockRaycaster";
-import { DroppedItem } from "../Inventory/DroppedItem";
-import { Item } from "../Inventory/Item";
+import { pickTarget } from "../Hud/BlockHighlight/BlockRaycaster";
+import { BlockBreakingHandler } from "../Hud/BlockHighlight/BreakinBlockHandler";
+import type { Item } from "../Inventory/Item";
 import type { Player } from "../Player";
-import { Gamemodes } from "../PlayerStats";
 import type { PlayerVehicle } from "../PlayerVehicle";
 import { DebugControlHelper } from "./DebugControlHelper";
 
@@ -22,12 +13,9 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 	public pressedKeys = new Set<string>();
 	#controlledEntity: PlayerVehicle;
 	#inputDirection: Vector3;
-
 	#player: Player;
+	#blockBreaking: BlockBreakingHandler;
 
-	#isBreaking = false;
-	#breakingBlock: { x: number; y: number; z: number } | null = null;
-	#breakTimer = 0;
 	#lastJumpTapMs = 0;
 	static readonly DOUBLE_TAP_MS = 260;
 
@@ -71,6 +59,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 		this.#controlledEntity = player.playerVehicle;
 		this.#inputDirection = player.playerVehicle.inputDirection;
 		this.#player = player;
+		this.#blockBreaking = new BlockBreakingHandler(player);
 	}
 
 	public handleKeyEvent(key: string, isKeyDown: boolean) {
@@ -80,18 +69,18 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 			this.onKeyUp(key);
 		}
 	}
+
 	public handleMouseEvent(mouseEvent: MouseEvent, isKeyDown: boolean): void {
 		if (WalkingControls.MOUSE1.includes(mouseEvent.button)) {
-			this.#isBreaking = isKeyDown;
-			if (!isKeyDown) {
-				this.#breakingBlock = null;
-				this.#breakTimer = 0;
-				Map1.updateCrackingState(null, 0);
+			if (isKeyDown) {
+				this.#blockBreaking.start();
+			} else {
+				this.#blockBreaking.stop();
 			}
-		} else if (
-			WalkingControls.MOUSE2.includes(mouseEvent.button) &&
-			isKeyDown
-		) {
+			return;
+		}
+
+		if (WalkingControls.MOUSE2.includes(mouseEvent.button) && isKeyDown) {
 			const item =
 				this.#player.playerInventory.inventory[0][
 					this.#player.playerHud.selectedHotbarSlot
@@ -104,78 +93,14 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 	}
 
 	public update(): void {
-		if (!this.#isBreaking) return;
-
-		const dt =
-			this.#player.playerVehicle.scene.getEngine().getDeltaTime() / 1000;
-
-		const hit = getPlacementHit(this.#player);
-		if (!hit) {
-			this.#breakingBlock = null;
-			this.#breakTimer = 0;
-			Map1.updateCrackingState(null, 0);
-			return;
-		}
-
-		const x = hit.pos.x - hit.nx;
-		const y = hit.pos.y - hit.ny;
-		const z = hit.pos.z - hit.nz;
-
-		const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
-		const blockState = ChunkLoadingSystem.getBlockStateByWorldCoords(x, y, z);
-
-		const item =
-			this.#player.playerInventory.inventory[0][
-				this.#player.playerHud.selectedHotbarSlot
-			]?.item;
-
-		const breakTime =
-			this.#player.stats.gamemode === Gamemodes.Creative
-				? 0.1
-				: getBlockBreakTime(blockId, item?.itemId) || 0.001; // guard against 0
-
-		const isSameBlock =
-			this.#breakingBlock &&
-			this.#breakingBlock.x === x &&
-			this.#breakingBlock.y === y &&
-			this.#breakingBlock.z === z;
-
-		if (isSameBlock) {
-			this.#breakTimer += dt;
-
-			const frac = Math.min(this.#breakTimer / breakTime, 1);
-			Map1.updateCrackingState(this.#breakingBlock, frac, blockId, blockState);
-
-			if (this.#breakTimer >= breakTime) {
-				// Sample light from the neighbor in the face-normal direction
-				// (faces are lit by the adjacent cell, solids often store 0 light).
-				const lightPos = new Vector3(
-					x + 0.5 + hit.nx,
-					y + 0.5 + hit.ny,
-					z + 0.5 + hit.nz,
-				);
-
-				const packedLight = ChunkLoadingSystem.getLightByWorldCoords(
-					lightPos.x,
-					lightPos.y,
-					lightPos.z,
-				);
-
-				this.#breakBlock(x, y, z, blockId, packedLight);
-			}
-		} else {
-			// New target → reset cracking
-			this.#breakingBlock = { x, y, z };
-			this.#breakTimer = 0;
-			Map1.updateCrackingState(this.#breakingBlock, 0, blockId, blockState);
-		}
+		this.#blockBreaking.update();
 	}
 
 	public onKeyDown(key: string) {
 		const isAlreadyPressed = this.pressedKeys.has(key);
 		if (isAlreadyPressed && !WalkingControls.KEY_JUMP.includes(key)) return;
+
 		if (isAlreadyPressed && WalkingControls.KEY_JUMP.includes(key)) {
-			// Keep jump buffered while key is held.
 			this.#controlledEntity.isJumpHeld = true;
 			this.#controlledEntity.wantJump = Math.max(
 				this.#controlledEntity.wantJump,
@@ -183,14 +108,17 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 			);
 			return;
 		}
+
 		this.pressedKeys.add(key);
 
 		if (DebugControlHelper.handleKey(key)) return;
 
 		this.#updateMovementAxesFromPressedKeys();
+
 		if (WalkingControls.KEY_JUMP.includes(key)) {
 			this.#controlledEntity.isJumpHeld = true;
 			const now = performance.now();
+
 			if (now - this.#lastJumpTapMs <= WalkingControls.DOUBLE_TAP_MS) {
 				this.#controlledEntity.toggleFlying();
 				this.#controlledEntity.wantJump = 0;
@@ -206,10 +134,12 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 		} else if (WalkingControls.KEY_FLASH.includes(key)) {
 			this.#player.flashlight.toggle();
 		} else if (key === "l") {
-			//TODO delete
-			if (Map1.mainScene._activeMeshesFrozen)
+			// TODO delete
+			if (Map1.mainScene._activeMeshesFrozen) {
 				Map1.mainScene.unfreezeActiveMeshes();
-			else Map1.mainScene.freezeActiveMeshes();
+			} else {
+				Map1.mainScene.freezeActiveMeshes();
+			}
 		}
 
 		if (WalkingControls.KEY_DROP.includes(key)) {
@@ -217,33 +147,39 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 				this.#player.playerInventory.inventory[0][
 					this.#player.playerHud.selectedHotbarSlot
 				]?.item;
+
 			if (item) {
-				if (this.#pressedKeysHas(WalkingControls.KEY_CTRL))
+				if (this.#pressedKeysHas(WalkingControls.KEY_CTRL)) {
 					this.#player.playerInventory.dropItem(item, item.stackSize);
-				else this.#player.playerInventory.dropItem(item, 1);
+				} else {
+					this.#player.playerInventory.dropItem(item, 1);
+				}
 			}
 			return;
 		}
 	}
+
 	public onKeyUp(key: string) {
 		if (WalkingControls.KEY_JUMP.includes(key)) {
 			this.#controlledEntity.isJumpHeld = false;
 			this.#controlledEntity.wantJump = 0;
 		}
+
 		if (WalkingControls.KEY_SPRINT.includes(key)) {
 			this.#controlledEntity.isSprinting = false;
 		}
+
 		if (WalkingControls.MOUSE_WHEEL_UP.includes(key)) {
 			this.#player.playerHud.selectedHotbarSlot =
 				(this.#player.playerHud.selectedHotbarSlot - 1) % 10;
-			if (this.#player.playerHud.selectedHotbarSlot < 0)
+			if (this.#player.playerHud.selectedHotbarSlot < 0) {
 				this.#player.playerHud.selectedHotbarSlot = 9;
-		} else {
-			if (WalkingControls.MOUSE_WHEEL_DOWN.includes(key)) {
-				this.#player.playerHud.selectedHotbarSlot =
-					(this.#player.playerHud.selectedHotbarSlot + 1) % 10;
 			}
+		} else if (WalkingControls.MOUSE_WHEEL_DOWN.includes(key)) {
+			this.#player.playerHud.selectedHotbarSlot =
+				(this.#player.playerHud.selectedHotbarSlot + 1) % 10;
 		}
+
 		if (
 			WalkingControls.KEY_F5.includes(key) ||
 			(this.#pressedKeysHas(WalkingControls.KEY_ALT) &&
@@ -279,6 +215,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 				y: Math.floor(this.#player.position.y / 32),
 				z: Math.floor(this.#player.position.z / 32),
 			});
+
 			ChunkLoadingSystem.validateChunksAround(
 				Math.floor(this.#player.position.x / 32),
 				Math.floor(this.#player.position.y / 32),
@@ -316,18 +253,10 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 		const hit = pickTarget(this.#player);
 		if (!hit) return;
 
-		const blockId = ChunkLoadingSystem.getBlockByWorldCoords(
-			hit.x,
-			hit.y,
-			hit.z,
-		);
-		const blockState = ChunkLoadingSystem.getBlockStateByWorldCoords(
-			hit.x,
-			hit.y,
-			hit.z,
-		);
+		const blockId = hit.blockId;
+		const blockState = hit.blockState;
 
-		if (blockId === 0) return; // Don't pick air
+		if (blockId === 0) return;
 
 		const isExactPickMode = WalkingControls.KEY_PICK_BLOCK_EXACT.includes(key);
 
@@ -336,16 +265,17 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 			requireExactState: boolean,
 		): boolean => {
 			if (!item) return false;
+
 			const itemBlockId = item.blockId ?? item.itemId;
 			if (itemBlockId !== blockId) return false;
 			if (!requireExactState) return true;
+
 			return (item.blockState ?? 0) === blockState;
 		};
 
 		const trySelectOrSwapMatchingItem = (
 			requireExactState: boolean,
 		): boolean => {
-			// 1. Check hotbar first
 			for (let i = 0; i < 10; i++) {
 				const hotbarItem = this.#player.playerInventory.inventory[0][i].item;
 				if (matchesPickedBlock(hotbarItem, requireExactState)) {
@@ -354,7 +284,6 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 				}
 			}
 
-			// 2. If not in hotbar, check main inventory and swap with current hotbar item
 			const inventory = this.#player.playerInventory.inventory;
 			for (let r = 1; r < inventory.length; r++) {
 				for (let c = 0; c < inventory[r].length; c++) {
@@ -367,18 +296,18 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 					}
 				}
 			}
+
 			return false;
 		};
 
 		if (isExactPickMode) {
-			// T: exact state-aware picker (includes slice variants), then id fallback.
 			if (trySelectOrSwapMatchingItem(true)) return;
 			if (trySelectOrSwapMatchingItem(false)) return;
 		} else {
-			// R: classic picker by block id only.
 			if (trySelectOrSwapMatchingItem(false)) return;
 		}
 	}
+
 	#pressedKeysHas(keys: string[]) {
 		return keys.some((k) => this.pressedKeys.has(k));
 	}
@@ -391,37 +320,6 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 
 		this.#inputDirection.z = forward === backward ? 0 : forward ? 1 : -1;
 		this.#inputDirection.x = right === left ? 0 : right ? 1 : -1;
-	}
-
-	#breakBlock(
-		x: number,
-		y: number,
-		z: number,
-		blockId: number,
-		packedLight: number,
-	) {
-		const info = getBlockInfo(blockId);
-		if (!info) return;
-
-		const worldItem = Item.createById(blockId);
-		worldItem.stackSize = 1;
-		worldItem.itemId = blockId;
-
-		const di = new DroppedItem(worldItem, x + 0.5, y + 0.5, z + 0.5);
-
-		BlockBreakParticles.play(
-			this.#player.playerVehicle.scene,
-			new Vector3(x + 0.5, y + 0.5, z + 0.5),
-			blockId,
-			packedLight,
-		);
-		this.#breakTimer = 0;
-		Map1.updateCrackingState(null, 0);
-
-		ChunkLoadingSystem.deleteBlock(x, y, z);
-
-		if (this.#player.stats.gamemode === Gamemodes.Creative)
-			di.use(this.#player);
 	}
 
 	public get controlledEntity(): PlayerVehicle {
