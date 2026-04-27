@@ -1,5 +1,7 @@
-import { Ray, Vector3 } from "@babylonjs/core";
+import { Matrix, Ray, Vector3 } from "@babylonjs/core";
 import { BlockType, isCollidableBlock } from "@/code/World/BlockType";
+import { BoatChunk } from "@/code/World/Boat/BoatChunk";
+import { Chunk } from "@/code/World/Chunk/Chunk";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { FACE_ALL, getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
 import { getTransformedShapeBoxes } from "@/code/World/Shape/BlockShapeTransforms";
@@ -13,6 +15,9 @@ export type BlockRaycastHit = {
 	ny: number;
 	nz: number;
 	t: number;
+	blockId: number;
+	blockState: number;
+	dynamicContext: unknown | null;
 };
 
 type FaceHit = { t: number; nx: number; ny: number; nz: number };
@@ -26,9 +31,18 @@ const _sharedHit: BlockRaycastHit = {
 	ny: 0,
 	nz: 0,
 	t: 0,
+	blockId: 0,
+	blockState: 0,
+	dynamicContext: null,
 };
 const _sharedFaceHit: FaceHit = { t: 0, nx: 0, ny: 0, nz: 0 };
 const _sharedVec3 = new Vector3(0, 0, 0);
+const _sharedVec3b = new Vector3(0, 0, 0);
+const _sharedLocalOrigin = new Vector3(0, 0, 0);
+const _sharedLocalDir = new Vector3(0, 0, 0);
+const _sharedWorldNormal = new Vector3(0, 0, 0);
+const _sharedInvMatrix = new Matrix();
+const _sharedWorldMatrix = new Matrix();
 let _sharedRay: Ray | null = null;
 
 function getForwardRay(player: Player, length: number): Ray {
@@ -211,6 +225,17 @@ function raycastFirstBlock(
 	player: Player,
 	shouldHit: (x: number, y: number, z: number, blockId: number) => boolean,
 ): BlockRaycastHit | null {
+	const terrainHit = raycastFirstTerrainBlock(player, shouldHit);
+	const boatHit = raycastFirstBoatBlock(player, shouldHit);
+	if (!terrainHit) return boatHit;
+	if (!boatHit) return terrainHit;
+	return boatHit.t < terrainHit.t ? boatHit : terrainHit;
+}
+
+function raycastFirstTerrainBlock(
+	player: Player,
+	shouldHit: (x: number, y: number, z: number, blockId: number) => boolean,
+): BlockRaycastHit | null {
 	const ray = getForwardRay(player, REACH_DISTANCE);
 	const ox = ray.origin.x,
 		oy = ray.origin.y,
@@ -283,10 +308,14 @@ function raycastFirstBlock(
 
 		if (t > maxDist) return null;
 
-		const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
+		const blockId = ChunkLoadingSystem.getTerrainBlockByWorldCoords(x, y, z);
 		if (!shouldHit(x, y, z, blockId)) continue;
 
-		const blockState = ChunkLoadingSystem.getBlockStateByWorldCoords(x, y, z);
+		const blockState = ChunkLoadingSystem.getTerrainBlockStateByWorldCoords(
+			x,
+			y,
+			z,
+		);
 
 		if (isFullBlockShape(blockId, blockState)) {
 			_sharedHit.x = x;
@@ -296,6 +325,9 @@ function raycastFirstBlock(
 			_sharedHit.ny = ny;
 			_sharedHit.nz = nz;
 			_sharedHit.t = t;
+			_sharedHit.blockId = blockId;
+			_sharedHit.blockState = blockState;
+			_sharedHit.dynamicContext = null;
 			return _sharedHit;
 		}
 
@@ -326,9 +358,277 @@ function raycastFirstBlock(
 			_sharedHit.ny = shapeHit.ny;
 			_sharedHit.nz = shapeHit.nz;
 			_sharedHit.t = shapeHit.t;
+			_sharedHit.blockId = blockId;
+			_sharedHit.blockState = blockState;
+			_sharedHit.dynamicContext = null;
 			return _sharedHit;
 		}
 	}
+}
+
+function raycastFirstBoatBlock(
+	player: Player,
+	shouldHit: (x: number, y: number, z: number, blockId: number) => boolean,
+): BlockRaycastHit | null {
+	const ray = getForwardRay(player, REACH_DISTANCE);
+	let best:
+		| {
+				t: number;
+				x: number;
+				y: number;
+				z: number;
+				nx: number;
+				ny: number;
+				nz: number;
+				blockId: number;
+				blockState: number;
+				context: unknown;
+		  }
+		| null = null;
+
+	for (const boatChunk of BoatChunk.getActiveChunks()) {
+		const candidate = raycastSingleBoatChunk(ray, boatChunk, shouldHit);
+		if (!candidate) continue;
+		if (!best || candidate.t < best.t) {
+			best = candidate;
+		}
+	}
+
+	if (!best) return null;
+
+	_sharedHit.x = best.x;
+	_sharedHit.y = best.y;
+	_sharedHit.z = best.z;
+	_sharedHit.nx = best.nx;
+	_sharedHit.ny = best.ny;
+	_sharedHit.nz = best.nz;
+	_sharedHit.t = best.t;
+	_sharedHit.blockId = best.blockId;
+	_sharedHit.blockState = best.blockState;
+	_sharedHit.dynamicContext = best.context;
+	return _sharedHit;
+}
+
+function raycastSingleBoatChunk(
+	ray: Ray,
+	boatChunk: BoatChunk,
+	shouldHit: (x: number, y: number, z: number, blockId: number) => boolean,
+):
+	| {
+			t: number;
+			x: number;
+			y: number;
+			z: number;
+			nx: number;
+			ny: number;
+			nz: number;
+			blockId: number;
+			blockState: number;
+			context: unknown;
+	  }
+	| null {
+	const visualRoot = boatChunk.visualRoot;
+	const center = boatChunk.center;
+
+	visualRoot.computeWorldMatrix(true);
+	_sharedWorldMatrix.copyFrom(visualRoot.getWorldMatrix());
+	_sharedWorldMatrix.invertToRef(_sharedInvMatrix);
+
+	Vector3.TransformCoordinatesToRef(ray.origin, _sharedInvMatrix, _sharedLocalOrigin);
+	_sharedLocalOrigin.addInPlace(center);
+	Vector3.TransformNormalToRef(ray.direction, _sharedInvMatrix, _sharedLocalDir);
+
+	const localDirLen = _sharedLocalDir.length();
+	if (localDirLen <= 1e-8) return null;
+	_sharedLocalDir.scaleInPlace(1 / localDirLen);
+
+	const boundsHit = intersectRayAabb(
+		_sharedLocalOrigin.x,
+		_sharedLocalOrigin.y,
+		_sharedLocalOrigin.z,
+		_sharedLocalDir.x,
+		_sharedLocalDir.y,
+		_sharedLocalDir.z,
+		0,
+		0,
+		0,
+		Chunk.SIZE,
+		Chunk.SIZE,
+		Chunk.SIZE,
+		0,
+		ray.length,
+		0,
+		0,
+		0,
+	);
+	if (!boundsHit) return null;
+
+	const tStart = Math.max(0, boundsHit.t);
+	const entryNx = boundsHit.nx;
+	const entryNy = boundsHit.ny;
+	const entryNz = boundsHit.nz;
+
+	_sharedVec3.set(
+		_sharedLocalOrigin.x + _sharedLocalDir.x * (tStart + 1e-6),
+		_sharedLocalOrigin.y + _sharedLocalDir.y * (tStart + 1e-6),
+		_sharedLocalOrigin.z + _sharedLocalDir.z * (tStart + 1e-6),
+	);
+
+	let x = Math.floor(_sharedVec3.x);
+	let y = Math.floor(_sharedVec3.y);
+	let z = Math.floor(_sharedVec3.z);
+
+	if (!boatChunk.isInsideLocalBounds(x, y, z)) return null;
+
+	const dx = _sharedLocalDir.x;
+	const dy = _sharedLocalDir.y;
+	const dz = _sharedLocalDir.z;
+
+	const stepX = dx > 0 ? 1 : dx < 0 ? -1 : 0;
+	const stepY = dy > 0 ? 1 : dy < 0 ? -1 : 0;
+	const stepZ = dz > 0 ? 1 : dz < 0 ? -1 : 0;
+
+	const invDx = stepX === 0 ? Infinity : 1 / Math.abs(dx);
+	const invDy = stepY === 0 ? Infinity : 1 / Math.abs(dy);
+	const invDz = stepZ === 0 ? Infinity : 1 / Math.abs(dz);
+
+	const boundX = stepX > 0 ? x + 1 : x;
+	const boundY = stepY > 0 ? y + 1 : y;
+	const boundZ = stepZ > 0 ? z + 1 : z;
+
+	let tMaxX =
+		stepX === 0 ? Infinity : (boundX - _sharedLocalOrigin.x) / dx;
+	let tMaxY =
+		stepY === 0 ? Infinity : (boundY - _sharedLocalOrigin.y) / dy;
+	let tMaxZ =
+		stepZ === 0 ? Infinity : (boundZ - _sharedLocalOrigin.z) / dz;
+
+	let t = tStart;
+	let nx = entryNx;
+	let ny = entryNy;
+	let nz = entryNz;
+
+	while (t <= ray.length) {
+		if (!boatChunk.isInsideLocalBounds(x, y, z)) return null;
+
+		const blockId = boatChunk.getBlockLocal(x, y, z);
+		if (shouldHit(x, y, z, blockId)) {
+			const blockState = boatChunk.getBlockStateLocal(x, y, z);
+			let hitT = t;
+			let hitNx = nx;
+			let hitNy = ny;
+			let hitNz = nz;
+			let hasHit = isFullBlockShape(blockId, blockState);
+
+			if (!hasHit) {
+				const tExit = Math.min(tMaxX, tMaxY, tMaxZ, ray.length);
+				const shapeHit = raycastShapeInVoxel(
+					_sharedLocalOrigin.x,
+					_sharedLocalOrigin.y,
+					_sharedLocalOrigin.z,
+					dx,
+					dy,
+					dz,
+					x,
+					y,
+					z,
+					blockId,
+					blockState,
+					t,
+					tExit,
+					nx,
+					ny,
+					nz,
+				);
+				if (shapeHit) {
+					hitT = shapeHit.t;
+					hitNx = shapeHit.nx;
+					hitNy = shapeHit.ny;
+					hitNz = shapeHit.nz;
+					hasHit = true;
+				}
+			}
+
+			if (hasHit) {
+				_sharedWorldNormal.set(hitNx, hitNy, hitNz);
+				Vector3.TransformNormalToRef(
+					_sharedWorldNormal,
+					_sharedWorldMatrix,
+					_sharedVec3b,
+				);
+
+				const ax = Math.abs(_sharedVec3b.x);
+				const ay = Math.abs(_sharedVec3b.y);
+				const az = Math.abs(_sharedVec3b.z);
+				let worldNx = 0,
+					worldNy = 0,
+					worldNz = 0;
+				if (ax >= ay && ax >= az) worldNx = _sharedVec3b.x >= 0 ? 1 : -1;
+				else if (ay >= ax && ay >= az) worldNy = _sharedVec3b.y >= 0 ? 1 : -1;
+				else worldNz = _sharedVec3b.z >= 0 ? 1 : -1;
+
+				const worldCenter = boatChunk.localToWorldCenter(x, y, z);
+				const wx = Math.floor(worldCenter.x);
+				const wy = Math.floor(worldCenter.y);
+				const wz = Math.floor(worldCenter.z);
+
+				return {
+					t: hitT,
+					x: wx,
+					y: wy,
+					z: wz,
+					nx: worldNx,
+					ny: worldNy,
+					nz: worldNz,
+					blockId,
+					blockState,
+					context: {
+						kind: "boatChunk",
+						boatChunk,
+						localX: x,
+						localY: y,
+						localZ: z,
+					},
+				};
+			}
+		}
+
+		if (tMaxX < tMaxY) {
+			if (tMaxX < tMaxZ) {
+				x += stepX;
+				t = tMaxX;
+				tMaxX += invDx;
+				nx = -stepX;
+				ny = 0;
+				nz = 0;
+			} else {
+				z += stepZ;
+				t = tMaxZ;
+				tMaxZ += invDz;
+				nx = 0;
+				ny = 0;
+				nz = -stepZ;
+			}
+		} else {
+			if (tMaxY < tMaxZ) {
+				y += stepY;
+				t = tMaxY;
+				tMaxY += invDy;
+				nx = 0;
+				ny = -stepY;
+				nz = 0;
+			} else {
+				z += stepZ;
+				t = tMaxZ;
+				tMaxZ += invDz;
+				nx = 0;
+				ny = 0;
+				nz = -stepZ;
+			}
+		}
+	}
+
+	return null;
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -343,9 +643,7 @@ export function pickWaterTarget(player: Player): BlockRaycastHit | null {
 
 export function pickBlock(player: Player): number | null {
 	const hit = pickTarget(player);
-	return hit
-		? ChunkLoadingSystem.getBlockByWorldCoords(hit.x, hit.y, hit.z)
-		: null;
+	return hit ? hit.blockId : null;
 }
 
 /** Returns placement grid position (face-adjacent block), or null. */

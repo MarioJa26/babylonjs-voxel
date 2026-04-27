@@ -24,6 +24,7 @@ type ChunkCoords = {
 };
 
 export class BoatChunk {
+	private static activeChunks = new Set<BoatChunk>();
 	private static readonly CHUNK_COORD_BASE = 1_200_000;
 	private static readonly CHUNK_COORD_GRID_WIDTH = 256;
 	private static readonly CHUNK_COORD_SPACING = 4;
@@ -39,6 +40,7 @@ export class BoatChunk {
 	#attachedTransparentMesh: Mesh | null = null;
 
 	constructor(scene: Scene, blocks: BoatChunkBlock[], center: Vector3) {
+		BoatChunk.activeChunks.add(this);
 		this.#scene = scene;
 		this.#center = center.clone();
 		this.#visualRoot = new Mesh("boatChunkRoot", this.#scene);
@@ -275,6 +277,10 @@ export class BoatChunk {
 		return this.#centerChunk.getBlock(x, y, z);
 	}
 
+	public isInsideLocalBounds(x: number, y: number, z: number): boolean {
+		return this.isInsideChunkBounds(x, y, z);
+	}
+
 	public getBlockStateLocal(x: number, y: number, z: number): number {
 		if (!this.isInsideChunkBounds(x, y, z)) return 0;
 		return this.#centerChunk.getBlockState(x, y, z);
@@ -283,6 +289,11 @@ export class BoatChunk {
 	public getBlockPackedLocal(x: number, y: number, z: number): number {
 		if (!this.isInsideChunkBounds(x, y, z)) return 0;
 		return this.#centerChunk.getBlockPacked(x, y, z);
+	}
+
+	public getLightLocal(x: number, y: number, z: number): number {
+		if (!this.isInsideChunkBounds(x, y, z)) return 0;
+		return this.#centerChunk.getLight(x, y, z);
 	}
 
 	public setBlockPackedLocal(
@@ -378,6 +389,7 @@ export class BoatChunk {
 	}
 
 	public dispose(): void {
+		BoatChunk.activeChunks.delete(this);
 		if (this.#beforeRenderObserver) {
 			this.#scene.onBeforeRenderObservable.remove(this.#beforeRenderObserver);
 			this.#beforeRenderObserver = null;
@@ -404,5 +416,9 @@ export class BoatChunk {
 
 	public get center(): Vector3 {
 		return this.#center.clone();
+	}
+
+	public static getActiveChunks(): ReadonlySet<BoatChunk> {
+		return BoatChunk.activeChunks;
 	}
 }

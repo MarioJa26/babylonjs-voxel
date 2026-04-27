@@ -16,7 +16,10 @@ import type { IUsable } from "../Inferface/IUsable";
 import { CustomBoatControls } from "../Player/Controls/CustomBoatControls";
 import type { Player } from "../Player/Player";
 import { BlockType, isCollidableBlock } from "../World/BlockType";
-import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
+import {
+	ChunkLoadingSystem,
+	type DynamicBlockSample,
+} from "../World/Chunk/ChunkLoadingSystem";
 import { VoxelObbCollider } from "../World/Collision/VoxelObbCollider";
 import { MetadataContainer } from "./MetaDataContainer";
 import { Mount } from "./Mount";
@@ -53,6 +56,61 @@ export class CustomBoat implements IUsable {
 		waterLevel: number;
 	} | null = null;
 	static #chunkLoaderRegistered = false;
+
+	static #activeBoats = new Set<CustomBoat>();
+
+	public static getActiveBoats(): readonly CustomBoat[] {
+		return [...CustomBoat.#activeBoats];
+	}
+
+	public get boatChunk(): BoatChunk | undefined {
+		return this.#boatChunk;
+	}
+
+	public get boatYaw(): number {
+		return this.#currentYaw;
+	}
+
+	public worldToBoatChunkLocalPoint(
+		worldPoint: Vector3,
+		out = new Vector3(),
+	): Vector3 | null {
+		if (!this.#boatChunk) return null;
+
+		const inverse = this.#boatChunk.visualRoot
+			.getWorldMatrix()
+			.clone()
+			.invert();
+		const rootLocal = Vector3.TransformCoordinates(worldPoint, inverse);
+
+		out.set(
+			rootLocal.x + this.#boatChunk.center.x,
+			rootLocal.y + this.#boatChunk.center.y,
+			rootLocal.z + this.#boatChunk.center.z,
+		);
+		return out;
+	}
+
+	public boatChunkLocalPointToWorld(
+		localPoint: Vector3,
+		out = new Vector3(),
+	): Vector3 | null {
+		if (!this.#boatChunk) return null;
+
+		const rootLocal = new Vector3(
+			localPoint.x - this.#boatChunk.center.x,
+			localPoint.y - this.#boatChunk.center.y,
+			localPoint.z - this.#boatChunk.center.z,
+		);
+
+		const world = Vector3.TransformCoordinates(
+			rootLocal,
+			this.#boatChunk.visualRoot.getWorldMatrix(),
+		);
+
+		out.copyFrom(world);
+		return out;
+	}
 
 	public static configureChunkReloadContext(
 		scene: Scene,
@@ -155,6 +213,8 @@ export class CustomBoat implements IUsable {
 	#skipDefaultModel = false;
 
 	#boatChunk?: BoatChunk;
+	#boatChunkCollisionProviderHandle?: symbol;
+	#ignoredDynamicBlockProviders = new Set<symbol>();
 
 	#currentYaw = 0;
 	#linearVelocity = Vector3.Zero();
@@ -171,6 +231,7 @@ export class CustomBoat implements IUsable {
 	#tmpWorldPoint = new Vector3();
 	#tmpTorque = new Vector3();
 	#tmpLever = new Vector3();
+	#tmpBoatSampleWorld = new Vector3();
 
 	constructor(
 		scene: Scene,
@@ -203,11 +264,12 @@ export class CustomBoat implements IUsable {
 
 		// 2) Create hull & collider
 		this.#boat = this.#createHull(scene, position, waterLevel);
+		this.#registerBoatChunkCollisionProvider();
 
 		this.#voxelCollider = new VoxelObbCollider(
 			this.#collisionHalfExtents,
 			(x, y, z) => {
-				const id = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
+				const id = this.#getWorldBlockForBoatPhysics(x, y, z);
 				return isCollidableBlock(id);
 			},
 			this.#cfg.collisionEpsilon,
@@ -258,6 +320,7 @@ export class CustomBoat implements IUsable {
 
 		// 8) Cleanup
 		this.#boat.onDisposeObservable.add(() => this.dispose(scene));
+		CustomBoat.#activeBoats.add(this);
 	}
 
 	#createHull(
@@ -475,10 +538,10 @@ export class CustomBoat implements IUsable {
 		const y = Math.floor(worldPoint.y);
 		const z = Math.floor(worldPoint.z);
 
-		const id = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
+		const id = this.#getWorldBlockForBoatPhysics(x, y, z);
 		if (id !== BlockType.Water) return 0;
 
-		const above = ChunkLoadingSystem.getBlockByWorldCoords(x, y + 1, z);
+		const above = this.#getWorldBlockForBoatPhysics(x, y + 1, z);
 		if (above === BlockType.Water) return 1;
 
 		return Math.max(0, Math.min(1, y + 1 - worldPoint.y));
@@ -574,6 +637,11 @@ export class CustomBoat implements IUsable {
 
 		ChunkLoadingSystem.unregisterChunkBoundEntity(this.#chunkBindingHandle);
 		this.#chunkBindingHandle = undefined;
+		ChunkLoadingSystem.unregisterDynamicBlockProvider(
+			this.#boatChunkCollisionProviderHandle,
+		);
+		this.#boatChunkCollisionProviderHandle = undefined;
+		this.#ignoredDynamicBlockProviders.clear();
 
 		if (this.#mount?.isMounted()) {
 			this.#mount.dismount();
@@ -587,9 +655,102 @@ export class CustomBoat implements IUsable {
 		this.#voxelCollider?.dispose();
 		this.#boatChunk?.dispose();
 		this.#boatChunk = undefined;
+		CustomBoat.#activeBoats.delete(this);
 
 		if (!this.#boat.isDisposed()) {
 			this.#boat.dispose(false, true);
 		}
+	}
+
+	#registerBoatChunkCollisionProvider(): void {
+		if (!this.#boatChunk) {
+			return;
+		}
+
+		this.#boatChunkCollisionProviderHandle =
+			ChunkLoadingSystem.registerDynamicBlockProvider(
+				(worldX, worldY, worldZ) =>
+					this.#sampleBoatChunkBlock(worldX, worldY, worldZ),
+				(worldX, worldY, worldZ, blockId, blockState) =>
+					this.#setBoatChunkBlock(worldX, worldY, worldZ, blockId, blockState),
+			);
+		this.#ignoredDynamicBlockProviders.add(
+			this.#boatChunkCollisionProviderHandle,
+		);
+	}
+
+	#sampleBoatChunkBlock(
+		worldX: number,
+		worldY: number,
+		worldZ: number,
+	): DynamicBlockSample | null {
+		const local = this.#worldToBoatLocal(worldX, worldY, worldZ);
+		if (!local || !this.#boatChunk) {
+			return null;
+		}
+
+		const blockId = this.#boatChunk.getBlockLocal(local.x, local.y, local.z);
+		if (blockId === BlockType.Air) {
+			return null;
+		}
+
+		return {
+			blockId,
+			blockState: this.#boatChunk.getBlockStateLocal(local.x, local.y, local.z),
+			lightLevel: this.#boatChunk.getLightLocal(local.x, local.y, local.z),
+			context: {
+				kind: "boatChunk",
+				boatChunk: this.#boatChunk,
+				localX: local.x,
+				localY: local.y,
+				localZ: local.z,
+			},
+		};
+	}
+
+	#setBoatChunkBlock(
+		worldX: number,
+		worldY: number,
+		worldZ: number,
+		blockId: number,
+		blockState: number,
+	): boolean {
+		const local = this.#worldToBoatLocal(worldX, worldY, worldZ);
+		if (!local || !this.#boatChunk) {
+			return false;
+		}
+
+		this.#boatChunk.setBlockLocal(
+			local.x,
+			local.y,
+			local.z,
+			blockId,
+			blockState,
+		);
+		return true;
+	}
+
+	#worldToBoatLocal(
+		worldX: number,
+		worldY: number,
+		worldZ: number,
+	): Vector3 | null {
+		if (!this.#boatChunk) {
+			return null;
+		}
+
+		this.#tmpBoatSampleWorld.set(worldX + 0.5, worldY + 0.5, worldZ + 0.5);
+		const local = this.#boatChunk.worldToLocalBlock(this.#tmpBoatSampleWorld);
+		if (!this.#boatChunk.isInsideLocalBounds(local.x, local.y, local.z)) {
+			return null;
+		}
+
+		return local;
+	}
+
+	#getWorldBlockForBoatPhysics(x: number, y: number, z: number): number {
+		return ChunkLoadingSystem.getBlockByWorldCoords(x, y, z, {
+			ignoredDynamicBlockProviders: this.#ignoredDynamicBlockProviders,
+		});
 	}
 }

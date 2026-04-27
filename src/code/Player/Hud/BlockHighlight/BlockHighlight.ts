@@ -5,11 +5,23 @@ import {
 	MeshBuilder,
 	type Scene,
 	StandardMaterial,
+	type TransformNode,
+	type Vector3,
 } from "@babylonjs/core";
-import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { getTransformedShapeBoxes } from "@/code/World/Shape/BlockShapeTransforms";
 import type { BlockRaycastHit } from "./BlockRaycaster";
+
+type BoatBlockHitContext = {
+	kind: "boatChunk";
+	boatChunk: {
+		visualRoot: TransformNode;
+		center: Vector3;
+	};
+	localX: number;
+	localY: number;
+	localZ: number;
+};
 
 export class BlockHighlight {
 	readonly #scene: Scene;
@@ -33,18 +45,8 @@ export class BlockHighlight {
 		// Note: pickTarget returns a shared object — read all fields immediately.
 		const hit = this.#currentHit;
 		if (hit) {
-			const blockId = ChunkLoadingSystem.getBlockByWorldCoords(
-				hit.x,
-				hit.y,
-				hit.z,
-			);
-			const blockState = ChunkLoadingSystem.getBlockStateByWorldCoords(
-				hit.x,
-				hit.y,
-				hit.z,
-			);
-			this.#ensureShape(blockId, blockState);
-			this.#mesh.position.set(hit.x, hit.y, hit.z);
+			this.#ensureShape(hit.blockId, hit.blockState);
+			this.#applyHitTransform(hit);
 			this.#mesh.visibility = 1;
 		} else {
 			this.#mesh.visibility = 0;
@@ -63,11 +65,62 @@ export class BlockHighlight {
 		const key = `${blockId}:${blockState}`;
 		if (key === this.#shapeKey) return;
 
+		const previousParent = this.#mesh.parent;
 		const next = this.#buildForBlock(blockId, blockState);
 		next.position.copyFrom(this.#mesh.position);
+		next.parent = previousParent;
 		this.#mesh.dispose();
 		this.#mesh = next;
 		this.#shapeKey = key;
+	}
+
+	#applyHitTransform(hit: BlockRaycastHit): void {
+		const boatContext = this.#asBoatBlockContext(hit.dynamicContext);
+		if (boatContext) {
+			const center = boatContext.boatChunk.center;
+			this.#mesh.parent = boatContext.boatChunk.visualRoot;
+			this.#mesh.position.set(
+				boatContext.localX - center.x,
+				boatContext.localY - center.y,
+				boatContext.localZ - center.z,
+			);
+			return;
+		}
+
+		this.#mesh.parent = null;
+		this.#mesh.position.set(hit.x, hit.y, hit.z);
+	}
+
+	#asBoatBlockContext(context: unknown): BoatBlockHitContext | null {
+		if (!context || typeof context !== "object") {
+			return null;
+		}
+
+		const value = context as Partial<BoatBlockHitContext>;
+		if (value.kind !== "boatChunk") {
+			return null;
+		}
+
+		if (
+			typeof value.localX !== "number" ||
+			typeof value.localY !== "number" ||
+			typeof value.localZ !== "number"
+		) {
+			return null;
+		}
+
+		const boatChunk = value.boatChunk as BoatBlockHitContext["boatChunk"] | undefined;
+		if (!boatChunk?.visualRoot || !boatChunk?.center) {
+			return null;
+		}
+
+		return {
+			kind: "boatChunk",
+			boatChunk,
+			localX: value.localX,
+			localY: value.localY,
+			localZ: value.localZ,
+		};
 	}
 
 	#buildForBlock(blockId: number, blockState: number): Mesh {

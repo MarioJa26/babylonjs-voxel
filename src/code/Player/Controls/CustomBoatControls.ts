@@ -17,7 +17,7 @@ export type BoatControlEntity = {
 export class CustomBoatControls implements IControls<BoatControlEntity> {
 	public pressedKeys = new Set<string>();
 	#controlledEntity: BoatControlEntity;
-	#inputDirection = new Vector3(0, 0, 0);
+	#inputDirection: Vector3;
 
 	#player: Player;
 
@@ -36,9 +36,9 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 	#pushVectorUp = new Vector3(0, 0.5, 0);
 	#pushVectorDown = new Vector3(0, -0.5, 0);
 
-	#pushStrength = 2;
+	#pushStrength = 21;
 	#pushNoseUpStrength = -3;
-	#angularPushStrength = 1;
+	#angularPushStrength = 11;
 	#angularRotationStrength = 0.45;
 	#pushAngularVectorLeft = new Vector3(
 		this.#pushNoseUpStrength,
@@ -56,8 +56,15 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 
 	constructor(paddleBoat: BoatControlEntity, player: Player) {
 		this.#controlledEntity = paddleBoat;
+		// Share the same inputDirection Vector3 as WalkingControls so the motor
+		// always reads the current control state regardless of which is active.
 		this.#inputDirection = player.playerVehicle.inputDirection;
 		this.#player = player;
+
+		// Clear all axes on entry so stale values from WalkingControls don't
+		// persist into boat mode (WalkingControls uses .x and .z; we use the
+		// same axes so there is no cross-pollution).
+		this.#inputDirection.set(0, 0, 0);
 	}
 
 	public handleKeyEvent(key: string, isKeyDown: boolean) {
@@ -73,45 +80,15 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 
 		if (DebugControlHelper.handleKey(key)) return;
 
-		if (CustomBoatControls.KEY_RIGHT.includes(key)) {
-			this.#inputDirection.x = 1;
-		} else if (CustomBoatControls.KEY_LEFT.includes(key)) {
-			this.#inputDirection.x = -1;
-		} else if (CustomBoatControls.KEY_UP.includes(key)) {
-			this.#inputDirection.y = -1;
-		} else if (CustomBoatControls.KEY_DOWN.includes(key)) {
-			this.#inputDirection.y = 1;
-		} else if (CustomBoatControls.KEY_USE.includes(key)) {
+		this.#updateMovementAxesFromPressedKeys();
+
+		if (CustomBoatControls.KEY_USE.includes(key)) {
 			this.#player.use();
 		}
 	}
 
 	public onKeyUp(key: string) {
-		if (CustomBoatControls.KEY_UP.includes(key)) {
-			if (this.#pressedKeysHas(CustomBoatControls.KEY_DOWN)) {
-				this.#inputDirection.y = 1;
-			} else {
-				this.#inputDirection.y = 0;
-			}
-		} else if (CustomBoatControls.KEY_DOWN.includes(key)) {
-			if (this.#pressedKeysHas(CustomBoatControls.KEY_UP)) {
-				this.#inputDirection.y = -1;
-			} else {
-				this.#inputDirection.y = 0;
-			}
-		} else if (CustomBoatControls.KEY_RIGHT.includes(key)) {
-			if (this.#pressedKeysHas(CustomBoatControls.KEY_LEFT)) {
-				this.#inputDirection.x = -1;
-			} else {
-				this.#inputDirection.x = 0;
-			}
-		} else if (CustomBoatControls.KEY_LEFT.includes(key)) {
-			if (this.#pressedKeysHas(CustomBoatControls.KEY_RIGHT)) {
-				this.#inputDirection.x = 1;
-			} else {
-				this.#inputDirection.x = 0;
-			}
-		} else if (CustomBoatControls.KEY_FLASH.includes(key)) {
+		if (CustomBoatControls.KEY_FLASH.includes(key)) {
 			this.#player.flashlight.toggle();
 		}
 
@@ -122,7 +99,27 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 			this.#controlledEntity.mount.getMountedUser()?.playerCamera.zoomOut();
 			this.pressedKeys.delete(key);
 		}
+
 		this.pressedKeys.delete(key);
+		this.#updateMovementAxesFromPressedKeys();
+	}
+
+	/**
+	 * Mirror WalkingControls convention exactly:
+	 *   inputDirection.z  = forward/back  (+1 = forward / W, -1 = back / S)
+	 *   inputDirection.x  = strafe        (+1 = right  / D, -1 = left / A)
+	 *
+	 * This means PlayerVehicleMotor.getInputVelocity() works identically on the
+	 * boat deck and on terrain — no special-case rotation needed.
+	 */
+	#updateMovementAxesFromPressedKeys() {
+		const forward = this.#pressedKeysHas(CustomBoatControls.KEY_UP);
+		const backward = this.#pressedKeysHas(CustomBoatControls.KEY_DOWN);
+		const right = this.#pressedKeysHas(CustomBoatControls.KEY_RIGHT);
+		const left = this.#pressedKeysHas(CustomBoatControls.KEY_LEFT);
+
+		this.#inputDirection.z = forward === backward ? 0 : forward ? 1 : -1;
+		this.#inputDirection.x = right === left ? 0 : right ? 1 : -1;
 	}
 
 	#tick() {
@@ -148,7 +145,7 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 			CustomBoatControls.#rotationMatrix,
 		);
 
-		// Forward is +Z in local space, rotated by current yaw
+		// Forward is +Z in local space, rotated by current yaw.
 		const forward = Vector3.TransformNormal(
 			new Vector3(0, 0, 1),
 			CustomBoatControls.#rotationMatrix,
@@ -166,7 +163,7 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 			angularRightWorld.z = angularRightWorld.z >> 1;
 		}
 
-		this.#handleUpDown(forward, position);
+		this.#handleForwardBack(forward, position);
 		this.#handleLeftRight(
 			forward,
 			position,
@@ -175,11 +172,15 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 		);
 	}
 
-	#handleUpDown(forward: Vector3, position: Vector3) {
-		if (this.#inputDirection.y < 0) {
+	/**
+	 * W (z=1) = push boat forward/up, S (z=-1) = push boat back/down.
+	 * Previously used inputDirection.y; now uses .z to match WalkingControls.
+	 */
+	#handleForwardBack(forward: Vector3, position: Vector3) {
+		if (this.#inputDirection.z > 0) {
 			forward.scaleInPlace(0.4);
 			this.#controlledEntity.applyImpulse(this.#pushVectorUp, position);
-		} else if (this.#inputDirection.y > 0) {
+		} else if (this.#inputDirection.z < 0) {
 			forward.scaleInPlace(0.4);
 			this.#controlledEntity.applyImpulse(this.#pushVectorDown, position);
 		}

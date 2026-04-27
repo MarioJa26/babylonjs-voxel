@@ -32,10 +32,42 @@ type ResolvedSavedMeshSelection = {
 	hasExactDesiredMesh: boolean;
 };
 
+export type DynamicBlockSample = {
+	blockId: number;
+	blockState: number;
+	lightLevel: number;
+	context?: unknown;
+};
+
+type DynamicBlockProvider = (
+	worldX: number,
+	worldY: number,
+	worldZ: number,
+) => DynamicBlockSample | null;
+
+type DynamicBlockMutator = (
+	worldX: number,
+	worldY: number,
+	worldZ: number,
+	blockId: number,
+	blockState: number,
+) => boolean;
+
+type DynamicBlockProviderEntry = {
+	provider: DynamicBlockProvider;
+	mutator?: DynamicBlockMutator;
+};
+
+type DynamicBlockQueryOptions = {
+	ignoredDynamicBlockProviders?: ReadonlySet<symbol>;
+};
+
 // biome-ignore lint/complexity/noStaticOnlyClass: <explanation>
 export class ChunkLoadingSystem {
 	private static loadQueue: QueuedChunkRequest[] = [];
 	private static unloadQueueSet: Set<Chunk> = new Set();
+	private static dynamicBlockProviders: Map<symbol, DynamicBlockProviderEntry> =
+		new Map();
 
 	private static pendingRemeshChunks: Chunk[] = [];
 	private static pendingRemeshChunkIds: Set<bigint> = new Set();
@@ -624,6 +656,83 @@ export class ChunkLoadingSystem {
 		ChunkLoadingSystem.chunkEntityRegistry.unregisterEntity(handle);
 	}
 
+	public static registerDynamicBlockProvider(
+		provider: DynamicBlockProvider,
+		mutator?: DynamicBlockMutator,
+	): symbol {
+		const handle = Symbol("dynamicBlockProvider");
+		ChunkLoadingSystem.dynamicBlockProviders.set(handle, { provider, mutator });
+		return handle;
+	}
+
+	public static unregisterDynamicBlockProvider(handle: symbol | undefined): void {
+		if (!handle) {
+			return;
+		}
+		ChunkLoadingSystem.dynamicBlockProviders.delete(handle);
+	}
+
+	private static sampleDynamicBlock(
+		worldX: number,
+		worldY: number,
+		worldZ: number,
+		options?: DynamicBlockQueryOptions,
+	): DynamicBlockSample | null {
+		if (ChunkLoadingSystem.dynamicBlockProviders.size === 0) {
+			return null;
+		}
+
+		const ignored = options?.ignoredDynamicBlockProviders;
+		const providers = [...ChunkLoadingSystem.dynamicBlockProviders.entries()];
+
+		for (let i = providers.length - 1; i >= 0; i--) {
+			const [handle, entry] = providers[i];
+			if (ignored?.has(handle)) {
+				continue;
+			}
+
+			const sample = entry.provider(worldX, worldY, worldZ);
+			if (sample && sample.blockId !== 0) {
+				return sample;
+			}
+		}
+
+		return null;
+	}
+
+	public static getDynamicBlockSampleByWorldCoords(
+		worldX: number,
+		worldY: number,
+		worldZ: number,
+		options?: DynamicBlockQueryOptions,
+	): DynamicBlockSample | null {
+		return ChunkLoadingSystem.sampleDynamicBlock(worldX, worldY, worldZ, options);
+	}
+
+	private static tryMutateDynamicBlock(
+		worldX: number,
+		worldY: number,
+		worldZ: number,
+		blockId: number,
+		blockState: number,
+	): boolean {
+		if (ChunkLoadingSystem.dynamicBlockProviders.size === 0) {
+			return false;
+		}
+
+		const providers = [...ChunkLoadingSystem.dynamicBlockProviders.values()];
+		for (let i = providers.length - 1; i >= 0; i--) {
+			const handled =
+				providers[i].mutator?.(worldX, worldY, worldZ, blockId, blockState) ??
+				false;
+			if (handled) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	private static async unloadChunkBoundEntitiesForChunk(
 		chunk: Chunk,
 	): Promise<void> {
@@ -825,6 +934,12 @@ export class ChunkLoadingSystem {
 	}
 
 	public static deleteBlock(worldX: number, worldY: number, worldZ: number) {
+		if (
+			ChunkLoadingSystem.tryMutateDynamicBlock(worldX, worldY, worldZ, 0, 0)
+		) {
+			return;
+		}
+
 		ChunkLoadingSystem.worldMutations.deleteBlock(worldX, worldY, worldZ);
 	}
 
@@ -835,6 +950,18 @@ export class ChunkLoadingSystem {
 		blockId: number,
 		state = 0,
 	) {
+		if (
+			ChunkLoadingSystem.tryMutateDynamicBlock(
+				worldX,
+				worldY,
+				worldZ,
+				blockId,
+				state,
+			)
+		) {
+			return;
+		}
+
 		ChunkLoadingSystem.worldMutations.setBlock(
 			worldX,
 			worldY,
@@ -845,6 +972,29 @@ export class ChunkLoadingSystem {
 	}
 
 	public static getBlockByWorldCoords(
+		worldX: number,
+		worldY: number,
+		worldZ: number,
+		options?: DynamicBlockQueryOptions,
+	): number {
+		const dynamicSample = ChunkLoadingSystem.sampleDynamicBlock(
+			worldX,
+			worldY,
+			worldZ,
+			options,
+		);
+		if (dynamicSample) {
+			return dynamicSample.blockId;
+		}
+
+		return ChunkLoadingSystem.worldMutations.getBlockByWorldCoords(
+			worldX,
+			worldY,
+			worldZ,
+		);
+	}
+
+	public static getTerrainBlockByWorldCoords(
 		worldX: number,
 		worldY: number,
 		worldZ: number,
@@ -860,6 +1010,29 @@ export class ChunkLoadingSystem {
 		worldX: number,
 		worldY: number,
 		worldZ: number,
+		options?: DynamicBlockQueryOptions,
+	): number {
+		const dynamicSample = ChunkLoadingSystem.sampleDynamicBlock(
+			worldX,
+			worldY,
+			worldZ,
+			options,
+		);
+		if (dynamicSample) {
+			return dynamicSample.blockState;
+		}
+
+		return ChunkLoadingSystem.worldMutations.getBlockStateByWorldCoords(
+			worldX,
+			worldY,
+			worldZ,
+		);
+	}
+
+	public static getTerrainBlockStateByWorldCoords(
+		worldX: number,
+		worldY: number,
+		worldZ: number,
 	): number {
 		return ChunkLoadingSystem.worldMutations.getBlockStateByWorldCoords(
 			worldX,
@@ -872,7 +1045,18 @@ export class ChunkLoadingSystem {
 		worldX: number,
 		worldY: number,
 		worldZ: number,
+		options?: DynamicBlockQueryOptions,
 	): number {
+		const dynamicSample = ChunkLoadingSystem.sampleDynamicBlock(
+			worldX,
+			worldY,
+			worldZ,
+			options,
+		);
+		if (dynamicSample) {
+			return dynamicSample.lightLevel;
+		}
+
 		const chunkX = ChunkLoadingSystem.worldToChunkCoord(worldX);
 		const chunkY = ChunkLoadingSystem.worldToChunkCoord(worldY);
 		const chunkZ = ChunkLoadingSystem.worldToChunkCoord(worldZ);
