@@ -661,11 +661,16 @@ export class ChunkLoadingSystem {
 		mutator?: DynamicBlockMutator,
 	): symbol {
 		const handle = Symbol("dynamicBlockProvider");
-		ChunkLoadingSystem.dynamicBlockProviders.set(handle, { provider, mutator });
+		ChunkLoadingSystem.dynamicBlockProviders.set(handle, {
+			provider,
+			mutator,
+		});
 		return handle;
 	}
 
-	public static unregisterDynamicBlockProvider(handle: symbol | undefined): void {
+	public static unregisterDynamicBlockProvider(
+		handle: symbol | undefined,
+	): void {
 		if (!handle) {
 			return;
 		}
@@ -706,7 +711,12 @@ export class ChunkLoadingSystem {
 		worldZ: number,
 		options?: DynamicBlockQueryOptions,
 	): DynamicBlockSample | null {
-		return ChunkLoadingSystem.sampleDynamicBlock(worldX, worldY, worldZ, options);
+		return ChunkLoadingSystem.sampleDynamicBlock(
+			worldX,
+			worldY,
+			worldZ,
+			options,
+		);
 	}
 
 	private static tryMutateDynamicBlock(
