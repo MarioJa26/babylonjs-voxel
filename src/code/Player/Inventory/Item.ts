@@ -2,6 +2,7 @@ import { Color3, type StandardMaterial } from "@babylonjs/core";
 import type { IUsable } from "@/code/Inferface/IUsable";
 import { Map1 } from "@/code/Maps/Map1";
 import { BlockType } from "@/code/World/BlockType";
+import type { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { BoatCreatorSystem } from "@/code/World/Boat/BoatCreatorSystem";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
@@ -17,6 +18,17 @@ import {
 import type { Player } from "../Player";
 import { type ItemDefinition, ItemRegistry } from "./ItemRegistry";
 import { ItemUseActions } from "./ItemUseActions";
+
+type BoatPlacementContext = {
+	kind: "boatChunk";
+	boatChunk: BoatChunk;
+	localX: number;
+	localY: number;
+	localZ: number;
+	localHitNx: number;
+	localHitNy: number;
+	localHitNz: number;
+};
 
 export class Item implements IUsable {
 	private static readonly SLICE_SHAPE_ROTATION_POLICY: Record<
@@ -214,11 +226,63 @@ export class Item implements IUsable {
 				blockState = sliceBits | flipBit | rotation;
 			}
 
+			const boatContext = Item.#asBoatPlacementContext(hit.dynamicContext);
+			if (boatContext) {
+				const placeLocalX = boatContext.localX + boatContext.localHitNx;
+				const placeLocalY = boatContext.localY + boatContext.localHitNy;
+				const placeLocalZ = boatContext.localZ + boatContext.localHitNz;
+				if (
+					boatContext.boatChunk.isInsideLocalBounds(
+						placeLocalX,
+						placeLocalY,
+						placeLocalZ,
+					)
+				) {
+					boatContext.boatChunk.setBlockLocal(
+						placeLocalX,
+						placeLocalY,
+						placeLocalZ,
+						blockId,
+						blockState,
+					);
+					return;
+				}
+			}
+
 			ChunkLoadingSystem.setBlock(pos.x, pos.y, pos.z, blockId, blockState);
 			if (blockId === BlockType.BoatCreator) {
 				BoatCreatorSystem.tryCreateBoatFromMarker(player, pos.x, pos.y, pos.z);
 			}
 		}
+	}
+
+	static #asBoatPlacementContext(
+		context: unknown,
+	): BoatPlacementContext | null {
+		if (!context || typeof context !== "object") return null;
+		const value = context as Partial<BoatPlacementContext>;
+		if (value.kind !== "boatChunk") return null;
+		if (!value.boatChunk) return null;
+		if (
+			typeof value.localX !== "number" ||
+			typeof value.localY !== "number" ||
+			typeof value.localZ !== "number" ||
+			typeof value.localHitNx !== "number" ||
+			typeof value.localHitNy !== "number" ||
+			typeof value.localHitNz !== "number"
+		) {
+			return null;
+		}
+		return {
+			kind: "boatChunk",
+			boatChunk: value.boatChunk,
+			localX: value.localX,
+			localY: value.localY,
+			localZ: value.localZ,
+			localHitNx: value.localHitNx,
+			localHitNy: value.localHitNy,
+			localHitNz: value.localHitNz,
+		};
 	}
 
 	createDiv(): HTMLDivElement {

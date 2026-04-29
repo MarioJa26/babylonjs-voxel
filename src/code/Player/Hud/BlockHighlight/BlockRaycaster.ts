@@ -588,6 +588,9 @@ function raycastSingleBoatChunk(
 						localX: x,
 						localY: y,
 						localZ: z,
+						localHitNx: hitNx,
+						localHitNy: hitNy,
+						localHitNz: hitNz,
 					},
 				};
 			}
@@ -668,6 +671,7 @@ export type PlacementHit = {
 	hitFracX: number;
 	hitFracY: number;
 	hitFracZ: number;
+	dynamicContext?: unknown;
 };
 
 const _sharedPlacementHit: PlacementHit = {
@@ -678,6 +682,7 @@ const _sharedPlacementHit: PlacementHit = {
 	hitFracX: 0,
 	hitFracY: 0,
 	hitFracZ: 0,
+	dynamicContext: null,
 };
 
 export function getPlacementHit(player: Player): PlacementHit | null {
@@ -702,5 +707,6 @@ export function getPlacementHit(player: Player): PlacementHit | null {
 	_sharedPlacementHit.hitFracX = wx - Math.floor(wx);
 	_sharedPlacementHit.hitFracY = wy - Math.floor(wy);
 	_sharedPlacementHit.hitFracZ = wz - Math.floor(wz);
+	_sharedPlacementHit.dynamicContext = hit.dynamicContext;
 	return _sharedPlacementHit;
 }

@@ -214,6 +214,7 @@ export class CustomBoat implements IUsable {
 
 	#boatChunk?: BoatChunk;
 	#boatChunkCollisionProviderHandle?: symbol;
+	#boatChunkBlockChangeUnsubscribe?: () => void;
 	#ignoredDynamicBlockProviders = new Set<symbol>();
 
 	#currentYaw = 0;
@@ -280,6 +281,8 @@ export class CustomBoat implements IUsable {
 				renderingGroupId: 1,
 			},
 		);
+		this.#subscribeBoatChunkBlockChanges();
+		this.#syncCollisionFromBoatChunk();
 
 		// 3) Metadata
 		this.#boat.metadata = new MetadataContainer();
@@ -641,6 +644,8 @@ export class CustomBoat implements IUsable {
 			this.#boatChunkCollisionProviderHandle,
 		);
 		this.#boatChunkCollisionProviderHandle = undefined;
+		this.#boatChunkBlockChangeUnsubscribe?.();
+		this.#boatChunkBlockChangeUnsubscribe = undefined;
 		this.#ignoredDynamicBlockProviders.clear();
 
 		if (this.#mount?.isMounted()) {
@@ -660,6 +665,82 @@ export class CustomBoat implements IUsable {
 		if (!this.#boat.isDisposed()) {
 			this.#boat.dispose(false, true);
 		}
+	}
+
+	#subscribeBoatChunkBlockChanges(): void {
+		if (!this.#boatChunk) return;
+		this.#boatChunkBlockChangeUnsubscribe?.();
+		this.#boatChunkBlockChangeUnsubscribe = this.#boatChunk.onBlockChanged(
+			() => {
+				this.#syncCollisionFromBoatChunk();
+			},
+		);
+	}
+
+	#syncCollisionFromBoatChunk(): void {
+		if (!this.#boatChunk) return;
+		const occupied = this.#boatChunk.getOccupiedBoundsLocal();
+		if (!occupied) return;
+
+		const center = this.#boatChunk.center;
+		const pad = 0.05;
+		const minX = occupied.minX - center.x;
+		const maxX = occupied.maxX + 1 - center.x;
+		const minZ = occupied.minZ - center.z;
+		const maxZ = occupied.maxZ + 1 - center.z;
+
+		// Boat chunk visuals may have a fixed local yaw offset relative to the boat
+		// collider frame, so project occupied XZ bounds into boat-local space first.
+		const c = Math.cos(this.#customVisualLocalYaw);
+		const s = Math.sin(this.#customVisualLocalYaw);
+		const corners: readonly [number, number][] = [
+			[minX, minZ],
+			[minX, maxZ],
+			[maxX, minZ],
+			[maxX, maxZ],
+		];
+		let halfX = 0;
+		let halfZ = 0;
+		for (const [x, z] of corners) {
+			const bx = x * c + z * s;
+			const bz = -x * s + z * c;
+			halfX = Math.max(halfX, Math.abs(bx));
+			halfZ = Math.max(halfZ, Math.abs(bz));
+		}
+
+		const halfY = Math.max(
+			center.y - occupied.minY,
+			occupied.maxY + 1 - center.y,
+		);
+
+		this.#collisionHalfExtents.set(halfX + pad, halfY + pad, halfZ + pad);
+		this.#voxelCollider.setHalfExtents(this.#collisionHalfExtents);
+		this.#buildBuoyancyPoints();
+	}
+
+	#hasOccupiedBoatNeighbor(localX: number, localY: number, localZ: number): boolean {
+		if (!this.#boatChunk) return false;
+
+		const dirs: readonly [number, number, number][] = [
+			[1, 0, 0],
+			[-1, 0, 0],
+			[0, 1, 0],
+			[0, -1, 0],
+			[0, 0, 1],
+			[0, 0, -1],
+		];
+
+		for (const [dx, dy, dz] of dirs) {
+			const nx = localX + dx;
+			const ny = localY + dy;
+			const nz = localZ + dz;
+			if (!this.#boatChunk.isInsideLocalBounds(nx, ny, nz)) continue;
+			if (this.#boatChunk.getBlockLocal(nx, ny, nz) !== BlockType.Air) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	#registerBoatChunkCollisionProvider(): void {
@@ -717,6 +798,18 @@ export class CustomBoat implements IUsable {
 	): boolean {
 		const local = this.#worldToBoatLocal(worldX, worldY, worldZ);
 		if (!local || !this.#boatChunk) {
+			return false;
+		}
+
+		const existing = this.#boatChunk.getBlockLocal(local.x, local.y, local.z);
+		const targetIsOccupied = existing !== BlockType.Air;
+		const wantsDelete = blockId === BlockType.Air;
+		const isAttachToBoat =
+			!targetIsOccupied &&
+			!wantsDelete &&
+			this.#hasOccupiedBoatNeighbor(local.x, local.y, local.z);
+
+		if (!targetIsOccupied && !isAttachToBoat) {
 			return false;
 		}
 

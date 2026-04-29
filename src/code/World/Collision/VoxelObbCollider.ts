@@ -73,6 +73,19 @@ export class VoxelObbCollider {
 		this.#updateRotAxes();
 	}
 
+	public setHalfExtents(halfExtents: Vector3): void {
+		this.#halfExtents.copyFrom(halfExtents);
+
+		// Rebuild the debug wireframe so its dimensions match updated extents.
+		if (this.#debugMesh && !this.#debugMesh.isDisposed()) {
+			this.#debugMesh.dispose();
+			this.#debugMesh = null;
+			if (VoxelObbCollider.#debugEnabled) {
+				this.#ensureDebugMesh();
+			}
+		}
+	}
+
 	#updateRotAxes() {
 		const c = Math.cos(this.#yaw);
 		const s = Math.sin(this.#yaw);

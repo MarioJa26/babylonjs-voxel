@@ -17,6 +17,13 @@ export type BoatBlockHitContext = {
 	boatChunk: {
 		visualRoot: TransformNode;
 		center: Vector3;
+		setBlockLocal(
+			x: number,
+			y: number,
+			z: number,
+			blockId: number,
+			blockState?: number,
+		): void;
 	};
 	localX: number;
 	localY: number;
@@ -109,7 +116,7 @@ export class BlockBreakingHandler {
 					lightPos.z,
 				);
 
-				this.#breakBlock(x, y, z, blockId, packedLight);
+				this.#breakBlock(x, y, z, blockId, packedLight, hit.dynamicContext);
 			}
 		} else {
 			this.#breakingBlock = { x, y, z };
@@ -168,6 +175,7 @@ export class BlockBreakingHandler {
 		z: number,
 		blockId: number,
 		packedLight: number,
+		dynamicContext: unknown,
 	): void {
 		const info = getBlockInfo(blockId);
 		if (!info) return;
@@ -187,8 +195,18 @@ export class BlockBreakingHandler {
 
 		this.reset();
 
-		// aktuell nur world blocks
-		ChunkLoadingSystem.deleteBlock(x, y, z);
+		const boatContext = this.#asBoatBlockContext(dynamicContext);
+		if (boatContext) {
+			boatContext.boatChunk.setBlockLocal(
+				boatContext.localX,
+				boatContext.localY,
+				boatContext.localZ,
+				0,
+				0,
+			);
+		} else {
+			ChunkLoadingSystem.deleteBlock(x, y, z);
+		}
 
 		if (this.#player.stats.gamemode === Gamemodes.Creative) {
 			di.use(this.#player);

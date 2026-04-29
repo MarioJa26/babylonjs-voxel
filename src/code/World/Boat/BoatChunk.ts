@@ -23,6 +23,15 @@ type ChunkCoords = {
 	z: number;
 };
 
+type BoatChunkBlockChangeListener = (
+	chunk: BoatChunk,
+	localX: number,
+	localY: number,
+	localZ: number,
+	blockId: number,
+	blockState: number,
+) => void;
+
 export class BoatChunk {
 	private static activeChunks = new Set<BoatChunk>();
 	private static readonly CHUNK_COORD_BASE = 1_200_000;
@@ -38,6 +47,7 @@ export class BoatChunk {
 	#beforeRenderObserver: Observer<Scene> | null = null;
 	#attachedOpaqueMesh: Mesh | null = null;
 	#attachedTransparentMesh: Mesh | null = null;
+	#blockChangeListeners = new Set<BoatChunkBlockChangeListener>();
 
 	constructor(scene: Scene, blocks: BoatChunkBlock[], center: Vector3) {
 		BoatChunk.activeChunks.add(this);
@@ -315,7 +325,11 @@ export class BoatChunk {
 		blockState = 0,
 	): void {
 		if (!this.isInsideChunkBounds(x, y, z)) return;
+		const nextPacked = packBlockValue(blockId, blockState);
+		const prevPacked = this.#centerChunk.getBlockPacked(x, y, z);
+		if (prevPacked === nextPacked) return;
 		this.#centerChunk.setBlock(x, y, z, blockId, blockState);
+		this.#emitBlockChanged(x, y, z, blockId, blockState);
 	}
 
 	public setLightLocal(
@@ -357,6 +371,50 @@ export class BoatChunk {
 		);
 	}
 
+	public getOccupiedBoundsLocal():
+		| {
+				minX: number;
+				minY: number;
+				minZ: number;
+				maxX: number;
+				maxY: number;
+				maxZ: number;
+		  }
+		| null {
+		let minX = Infinity;
+		let minY = Infinity;
+		let minZ = Infinity;
+		let maxX = -Infinity;
+		let maxY = -Infinity;
+		let maxZ = -Infinity;
+		let found = false;
+
+		for (let y = 0; y < Chunk.SIZE; y++) {
+			for (let z = 0; z < Chunk.SIZE; z++) {
+				for (let x = 0; x < Chunk.SIZE; x++) {
+					if (this.#centerChunk.getBlock(x, y, z) === 0) continue;
+					found = true;
+					if (x < minX) minX = x;
+					if (y < minY) minY = y;
+					if (z < minZ) minZ = z;
+					if (x > maxX) maxX = x;
+					if (y > maxY) maxY = y;
+					if (z > maxZ) maxZ = z;
+				}
+			}
+		}
+
+		if (!found) return null;
+		return { minX, minY, minZ, maxX, maxY, maxZ };
+	}
+
+	public onBlockChanged(listener: BoatChunkBlockChangeListener): () => void {
+		this.#blockChangeListeners.add(listener);
+		return () => {
+			this.#blockChangeListeners.delete(listener);
+		};
+	}
+
 	public toSnapshot(): { blocks: BoatChunkBlock[]; center: Vector3 } {
 		const blocks: BoatChunkBlock[] = [];
 
@@ -390,6 +448,7 @@ export class BoatChunk {
 
 	public dispose(): void {
 		BoatChunk.activeChunks.delete(this);
+		this.#blockChangeListeners.clear();
 		if (this.#beforeRenderObserver) {
 			this.#scene.onBeforeRenderObservable.remove(this.#beforeRenderObserver);
 			this.#beforeRenderObserver = null;
@@ -420,5 +479,17 @@ export class BoatChunk {
 
 	public static getActiveChunks(): ReadonlySet<BoatChunk> {
 		return BoatChunk.activeChunks;
+	}
+
+	#emitBlockChanged(
+		localX: number,
+		localY: number,
+		localZ: number,
+		blockId: number,
+		blockState: number,
+	): void {
+		for (const listener of this.#blockChangeListeners) {
+			listener(this, localX, localY, localZ, blockId, blockState);
+		}
 	}
 }
