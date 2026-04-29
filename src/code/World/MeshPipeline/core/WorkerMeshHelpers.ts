@@ -14,6 +14,12 @@ export type WorkerMeshInput = {
 	neighbors: (Uint8Array | Uint16Array | undefined)[];
 	neighborLights?: (Uint8Array | undefined)[];
 };
+type NeighborSample = {
+	neighborIndex: number;
+	lx: number;
+	ly: number;
+	lz: number;
+};
 
 /**
  * Create an empty WorkerInternalMeshData inside the worker.
@@ -51,6 +57,7 @@ export function createMeshContextFromPayload(
 ): MeshContext {
 	const size = base.size;
 	const size2 = size * size;
+	const size3 = size2 * size;
 
 	// O(1) compact 26-neighbor index mapping
 	const getNeighborIndex = (dx: number, dy: number, dz: number): number => {
@@ -59,23 +66,27 @@ export function createMeshContextFromPayload(
 		return linear < 13 ? linear : linear - 1;
 	};
 
+	const isInBounds = (x: number, y: number, z: number): boolean => {
+		return x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size;
+	};
+
 	const hasNeighborChunk = (dx: number, dy: number, dz: number): boolean => {
 		const neighborIndex = getNeighborIndex(dx, dy, dz);
 		return neighborIndex >= 0 && !!input.neighbors[neighborIndex];
 	};
 
-	const readBlock = (x: number, y: number, z: number, fallback = 0): number => {
-		// Fast in-bounds path
-		if (x >>> 0 < size && y >>> 0 < size && z >>> 0 < size) {
-			return input.block_array[x + y * size + z * size2] ?? fallback;
-		}
+	const remapToNeighbor = (
+		x: number,
+		y: number,
+		z: number,
+	): NeighborSample | null => {
+		let ox = 0;
+		let oy = 0;
+		let oz = 0;
 
-		let ox = 0,
-			oy = 0,
-			oz = 0;
-		let lx = x,
-			ly = y,
-			lz = z;
+		let lx = x;
+		let ly = y;
+		let lz = z;
 
 		if (x < 0) {
 			ox = -1;
@@ -102,59 +113,74 @@ export function createMeshContextFromPayload(
 		}
 
 		const neighborIndex = getNeighborIndex(ox, oy, oz);
-		if (neighborIndex < 0) return fallback;
+		if (neighborIndex < 0) {
+			return null;
+		}
 
-		const neighbor = input.neighbors[neighborIndex];
-		if (!neighbor) return fallback;
+		// IMPORTANT:
+		// If the requested sample is still out of local bounds after a single
+		// neighbor remap, it means the caller asked for a position more than one
+		// chunk away. In that case we treat it as missing and return fallback.
+		if (!isInBounds(lx, ly, lz)) {
+			return null;
+		}
 
-		return neighbor[lx + ly * size + lz * size2] ?? fallback;
+		return { neighborIndex, lx, ly, lz };
+	};
+
+	const readArrayValue = (
+		array: Uint8Array | Uint16Array | undefined,
+		lx: number,
+		ly: number,
+		lz: number,
+		fallback: number,
+	): number => {
+		if (!array) return fallback;
+
+		const index = lx + ly * size + lz * size2;
+		if (index < 0 || index >= size3) return fallback;
+
+		return array[index] ?? fallback;
+	};
+
+	const readBlock = (x: number, y: number, z: number, fallback = 0): number => {
+		// Fast in-bounds path
+		if (isInBounds(x, y, z)) {
+			return input.block_array[x + y * size + z * size2] ?? fallback;
+		}
+
+		const sample = remapToNeighbor(x, y, z);
+		if (!sample) return fallback;
+
+		const neighbor = input.neighbors[sample.neighborIndex];
+		// Distinguish missing vs mesh-only neighbors:
+		// - undefined  => neighbor chunk truly missing, treat as air
+		// - length === 0 => loaded mesh-only neighbor sentinel, keep fallback
+		//                  (caller passes current block) to avoid seam walls
+		if (!neighbor) return 0;
+		if (neighbor.length === 0) return fallback;
+
+		return readArrayValue(neighbor, sample.lx, sample.ly, sample.lz, fallback);
 	};
 
 	const readLight = (x: number, y: number, z: number, fallback = 0): number => {
 		// Fast in-bounds path
-		if (x >>> 0 < size && y >>> 0 < size && z >>> 0 < size) {
+		if (isInBounds(x, y, z)) {
 			if (!input.light_array) return fallback;
 			return input.light_array[x + y * size + z * size2] ?? fallback;
 		}
 
-		let ox = 0,
-			oy = 0,
-			oz = 0;
-		let lx = x,
-			ly = y,
-			lz = z;
+		const sample = remapToNeighbor(x, y, z);
+		if (!sample) return fallback;
 
-		if (x < 0) {
-			ox = -1;
-			lx = x + size;
-		} else if (x >= size) {
-			ox = 1;
-			lx = x - size;
-		}
-
-		if (y < 0) {
-			oy = -1;
-			ly = y + size;
-		} else if (y >= size) {
-			oy = 1;
-			ly = y - size;
-		}
-
-		if (z < 0) {
-			oz = -1;
-			lz = z + size;
-		} else if (z >= size) {
-			oz = 1;
-			lz = z - size;
-		}
-
-		const neighborIndex = getNeighborIndex(ox, oy, oz);
-		if (neighborIndex < 0) return fallback;
-
-		const neighborLight = input.neighborLights?.[neighborIndex];
-		if (!neighborLight) return fallback;
-
-		return neighborLight[lx + ly * size + lz * size2] ?? fallback;
+		const neighborLight = input.neighborLights?.[sample.neighborIndex];
+		return readArrayValue(
+			neighborLight,
+			sample.lx,
+			sample.ly,
+			sample.lz,
+			fallback,
+		);
 	};
 
 	return {

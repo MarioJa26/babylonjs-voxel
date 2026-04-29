@@ -563,8 +563,7 @@ export class ChunkLoadingSystem {
 			(neighbor): neighbor is Chunk =>
 				!!neighbor &&
 				neighbor.isLoaded &&
-				neighbor.hasVoxelData &&
-				(neighbor.lodLevel ?? 0) === 0,
+				neighbor.hasVoxelData,
 		);
 
 		ChunkLoadingSystem.scheduleRemeshForChunks([chunk, ...readyNeighbors]);
@@ -768,7 +767,7 @@ export class ChunkLoadingSystem {
 
 		pool.scheduleRemesh(chunk, true);
 
-		const n = ChunkLoadingSystem._neighborBuffer;
+		const n = ChunkLoadingSystem.getNeighbors(chunk);
 
 		if (n[0]) pool.scheduleRemesh(n[0], true);
 		if (n[1]) pool.scheduleRemesh(n[1], true);
@@ -898,7 +897,7 @@ export class ChunkLoadingSystem {
 
 		ChunkLoadingSystem.applyMeshToChunk(chunk, selectedMesh);
 
-		if (targetLod === 0) {
+		if (targetLod <= 1) {
 			ChunkLoadingSystem.scheduleChunkBorderRemeshOnLoad(chunk);
 		}
 	}

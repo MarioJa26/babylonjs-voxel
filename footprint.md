@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-04-28T15:44:11.643Z
+Generated: 2026-04-29T17:18:18.055Z
 
-> **Summary:** 103 classes · 1819 members · 141 module-level functions · 28814 LOC
+> **Summary:** 103 classes · 1821 members · 141 module-level functions · 28847 LOC
 
 ---
 
@@ -2552,7 +2552,7 @@ Generated: 2026-04-28T15:44:11.643Z
 
 ---
 
-## `World/Chunk/ChunkLoadingSystem.ts` (982 LOC)
+## `World/Chunk/ChunkLoadingSystem.ts` (981 LOC)
 
 ### export class ChunkLoadingSystem
 
@@ -2650,7 +2650,7 @@ Generated: 2026-04-28T15:44:11.643Z
 
 ---
 
-## `World/Chunk/chunkWorker.ts` (174 LOC)
+## `World/Chunk/chunkWorker.ts` (189 LOC)
 
 ### export class ChunkWorker
 
@@ -2663,6 +2663,8 @@ Generated: 2026-04-28T15:44:11.643Z
 - `private waterWorker: Worker`
 - `private warnedNonSharedRemeshPayload: unknown`
 - `private distantTerrainSharedInitialized: unknown`
+- `private static readonly EMPTY_NEIGHBOR_BLOCKS: unknown`
+- `private static readonly EMPTY_NEIGHBOR_LIGHTS: unknown`
 - `private readonly paletteToTyped: unknown`
 
 **Methods**
@@ -3082,7 +3084,7 @@ Generated: 2026-04-28T15:44:11.643Z
 
 ---
 
-## `World/Chunk/Loading/ChunkStreamingController.ts` (591 LOC)
+## `World/Chunk/Loading/ChunkStreamingController.ts` (592 LOC)
 
 ### export class ChunkStreamingController
 
@@ -3159,7 +3161,7 @@ Generated: 2026-04-28T15:44:11.643Z
 
 ---
 
-## `World/Chunk/LOD/ChunkLodRules.ts` (220 LOC)
+## `World/Chunk/LOD/ChunkLodRules.ts` (223 LOC)
 
 ### export class Lod0ChunkCreationRule implements ChunkLodCreationRule
 
@@ -3695,7 +3697,7 @@ Generated: 2026-04-28T15:44:11.643Z
 
 ---
 
-## `World/MeshPipeline/core/WorkerMeshHelpers.ts` (129 LOC)
+## `World/MeshPipeline/core/WorkerMeshHelpers.ts` (144 LOC)
 
 **Module-level functions**
 - `export function createEmptyWorkerInternalMeshData(): WorkerInternalMeshData`
@@ -3705,6 +3707,7 @@ Generated: 2026-04-28T15:44:11.643Z
 **Types / Interfaces / Enums**
 - type `WorkerMeshBaseContext`
 - type `WorkerMeshInput`
+- type `NeighborSample`
 
 ---
 

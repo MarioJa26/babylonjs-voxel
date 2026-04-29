@@ -349,9 +349,9 @@ export class ChunkStreamingController {
 		chunk.lodLevel = desiredLod;
 
 		if (chunk.isLoaded && previousLod !== desiredLod) {
-			if (!chunk.hasVoxelData) {
-				const hasTargetCachedMesh = chunk.hasCachedLODMesh(desiredLod);
+			const hasTargetCachedMesh = chunk.hasCachedLODMesh(desiredLod);
 
+			if (!chunk.hasVoxelData) {
 				if (desiredLod <= 1) {
 					this.ensureChunkQueuedForLoad(chunk, desiredLod, revision, true);
 					if (!hasTargetCachedMesh) {
@@ -368,7 +368,8 @@ export class ChunkStreamingController {
 				return;
 			}
 
-			const requiresImmediateRemesh = previousLod <= 1 || desiredLod <= 1;
+			const requiresImmediateRemesh =
+				previousLod <= 1 || desiredLod <= 1 || !hasTargetCachedMesh;
 			if (requiresImmediateRemesh) {
 				ChunkLoadingSystem.enqueueChunkRemesh(chunk);
 			}

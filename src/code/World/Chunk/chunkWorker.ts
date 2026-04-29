@@ -14,6 +14,14 @@ export class ChunkWorker {
 
 	private warnedNonSharedRemeshPayload = false;
 	private distantTerrainSharedInitialized = false;
+	private static readonly EMPTY_NEIGHBOR_BLOCKS =
+		typeof SharedArrayBuffer !== "undefined"
+			? new Uint16Array(new SharedArrayBuffer(0))
+			: new Uint16Array(0);
+	private static readonly EMPTY_NEIGHBOR_LIGHTS =
+		typeof SharedArrayBuffer !== "undefined"
+			? new Uint8Array(new SharedArrayBuffer(0))
+			: new Uint8Array(0);
 
 	constructor(
 		onMessageTerrain: (event: MessageEvent<WorkerResponseData>) => void,
@@ -75,6 +83,17 @@ export class ChunkWorker {
 
 					const neighbor = chunk.getNeighbor(x, y, z);
 					if (neighbor?.isLoaded) {
+						if (!neighbor.hasVoxelData) {
+							// Mesh-only neighbors don't have block payloads. Use zero-length
+							// sentinels so worker sampling falls back to local values while
+							// still treating this neighbor as present.
+							neighbors.push(ChunkWorker.EMPTY_NEIGHBOR_BLOCKS);
+							neighborLights.push(ChunkWorker.EMPTY_NEIGHBOR_LIGHTS);
+							neighborUniformIds.push(undefined);
+							neighborPalettes.push(undefined);
+							continue;
+						}
+
 						neighbors.push(neighbor.block_array);
 						neighborLights.push(neighbor.light_array);
 						neighborUniformIds.push(

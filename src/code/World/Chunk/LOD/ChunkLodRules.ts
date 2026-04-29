@@ -200,6 +200,13 @@ export class ChunkLodRuleSet {
 			return baseDecision;
 		}
 
+		// Keep outer bands deterministic.
+		// LOD2 <-> LOD3 hysteresis causes visible "mixed ring" patches where
+		// neighboring chunks linger at different outer LODs.
+		if (previousLod >= 2 && baseDecision.lodLevel >= 2) {
+			return baseDecision;
+		}
+
 		const horizontalLeaveBuffer = 1;
 		const verticalLeaveBuffer = 1;
 
