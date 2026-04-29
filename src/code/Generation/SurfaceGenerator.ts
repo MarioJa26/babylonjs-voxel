@@ -73,8 +73,9 @@ export class SurfaceGenerator {
 	 * You can tighten these later once you know the exact max extents of
 	 * your tallest trees / largest structures.
 	 */
-	private static readonly MAX_TREE_HEIGHT = 24;
-	private static readonly MAX_STRUCTURE_ABOVE_SURFACE = 48;
+	private static readonly MAX_TREE_HEIGHT = GenerationParams.CHUNK_SIZE;
+	private static readonly MAX_STRUCTURE_ABOVE_SURFACE =
+		GenerationParams.CHUNK_SIZE * 2;
 	private static readonly MAX_STRUCTURE_BELOW_SURFACE = 24;
 
 	private static seedAsInt: number;
@@ -324,13 +325,7 @@ export class SurfaceGenerator {
 			chunkY,
 			chunkZ,
 			biome,
-			placeBlock as (
-				x: number,
-				y: number,
-				z: number,
-				id: number,
-				ow: boolean,
-			) => void,
+			placeBlock,
 		);
 
 		const chunkMinY = chunkY * this.chunk_size;
@@ -353,7 +348,7 @@ export class SurfaceGenerator {
 				chunkY,
 				chunkZ,
 				biome,
-				placeBlock as (x: number, y: number, z: number, id: number) => void,
+				placeBlock,
 				generationResult.topSurfaceYMap,
 			);
 		}
@@ -370,19 +365,7 @@ export class SurfaceGenerator {
 			);
 
 		if (canContainStructures) {
-			this.generateStructures(
-				chunkX,
-				chunkY,
-				chunkZ,
-				biome,
-				placeBlock as (
-					x: number,
-					y: number,
-					z: number,
-					id: number,
-					ow: boolean,
-				) => void,
-			);
+			this.generateStructures(chunkX, chunkY, chunkZ, biome, placeBlock);
 		}
 
 		return generationResult;
@@ -740,7 +723,7 @@ export class SurfaceGenerator {
 		placeBlock: (x: number, y: number, z: number, id: number) => void,
 		topSurfaceYMap: Int16Array,
 	) {
-		const SCAN_RADIUS = 8;
+		const SCAN_RADIUS = 6;
 		const chunkSize = this.chunk_size;
 		const chunkWorldX = chunkX * chunkSize;
 		const chunkWorldZ = chunkZ * chunkSize;
