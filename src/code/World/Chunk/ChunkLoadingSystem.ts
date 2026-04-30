@@ -561,9 +561,7 @@ export class ChunkLoadingSystem {
 	private static scheduleChunkBorderRemeshOnLoad(chunk: Chunk): void {
 		const readyNeighbors = ChunkLoadingSystem.getNeighbors(chunk).filter(
 			(neighbor): neighbor is Chunk =>
-				!!neighbor &&
-				neighbor.isLoaded &&
-				neighbor.hasVoxelData,
+				!!neighbor && neighbor.isLoaded && neighbor.hasVoxelData,
 		);
 
 		ChunkLoadingSystem.scheduleRemeshForChunks([chunk, ...readyNeighbors]);

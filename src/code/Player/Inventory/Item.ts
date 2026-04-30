@@ -1,16 +1,14 @@
-import { Color3, type StandardMaterial } from "@babylonjs/core";
+import type { StandardMaterial } from "@babylonjs/core";
 import type { IUsable } from "@/code/Inferface/IUsable";
-import { Map1 } from "@/code/Maps/Map1";
 import { BlockType } from "@/code/World/BlockType";
 import type { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { BoatCreatorSystem } from "@/code/World/Boat/BoatCreatorSystem";
 import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
 import { getSliceAxis } from "@/code/World/Shape/BlockShapeTransforms";
-import { BlockTextures } from "@/code/World/Texture/BlockTextures";
+import { getAtlasTile } from "@/code/World/Texture/BlockTextures";
 import { TextureAtlasFactory } from "@/code/World/Texture/TextureAtlasFactory";
 import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
-import { MaterialFactory } from "../../World/Texture/MaterialFactory";
 import {
 	getPlacementHit,
 	pickBlock,
@@ -42,7 +40,6 @@ export class Item implements IUsable {
 	name: string;
 	description: string;
 	icon: string;
-	materialFolder: string | undefined;
 	material: StandardMaterial | undefined;
 
 	itemId = 1;
@@ -62,7 +59,6 @@ export class Item implements IUsable {
 		icon: string,
 		row: number,
 		col: number,
-		materialFolder?: string,
 		maxStack?: number,
 	) {
 		if (typeof maxStack === "number") {
@@ -72,20 +68,6 @@ export class Item implements IUsable {
 		this.name = name;
 		this.description = description;
 		this.icon = icon;
-		if (materialFolder) {
-			this.materialFolder = materialFolder;
-			this.material = MaterialFactory.createMaterialByFolder(
-				Map1.mainScene,
-				materialFolder,
-				1,
-				".png",
-				true,
-				true,
-				true,
-				false,
-			);
-			this.material.specularColor = new Color3(0.24, 0.3, 0.3);
-		}
 		this.row = row;
 		this.col = col;
 		this.#div = this.createDiv();
@@ -96,11 +78,7 @@ export class Item implements IUsable {
 		row: number,
 		col: number,
 	): Item {
-		const icon =
-			def.icon ||
-			(def.materialFolder
-				? (MaterialFactory.getTexturePathFromFolder(def.materialFolder) ?? "")
-				: "");
+		const icon = def.icon ?? "";
 
 		const item = new Item(
 			def.name,
@@ -108,7 +86,6 @@ export class Item implements IUsable {
 			icon,
 			row,
 			col,
-			def.materialFolder,
 			def.maxStack,
 		);
 		item.itemId = def.id;
@@ -138,19 +115,8 @@ export class Item implements IUsable {
 
 		const textureDef = TextureDefinitions.find((t) => t.id === itemId);
 		if (!textureDef) throw new Error("Item not found");
-		const materialFolderPath = MaterialFactory.getTexturePathFromFolder(
-			textureDef.path,
-		);
-		if (!materialFolderPath) throw new Error("Material not found");
 
-		const item = new Item(
-			textureDef.name,
-			"Crafted Item",
-			materialFolderPath,
-			row,
-			col,
-			textureDef.path,
-		);
+		const item = new Item(textureDef.name, "Crafted Item", "", row, col);
 		item.itemId = itemId;
 		item.blockId = itemId;
 		item.blockState = 0;
@@ -308,7 +274,7 @@ export class Item implements IUsable {
 	}
 
 	public refreshIconStyle(): void {
-		const atlasTile = this.getAtlasTile();
+		const atlasTile = getAtlasTile(this.blockId);
 		if (atlasTile) {
 			const [tx, ty] = atlasTile;
 			const atlasSize = TextureAtlasFactory.atlasSize;
@@ -324,22 +290,6 @@ export class Item implements IUsable {
 		this.#div.style.backgroundSize = "contain";
 		this.#div.style.backgroundPosition = "center";
 		this.#div.style.backgroundRepeat = "no-repeat";
-	}
-
-	private getAtlasTile(): [number, number] | null {
-		if (this.blockId === null) return null;
-
-		const blockTexture = BlockTextures[this.blockId];
-		if (!blockTexture) return null;
-
-		const uv =
-			blockTexture.all ??
-			blockTexture.side ??
-			blockTexture.top ??
-			blockTexture.bottom;
-
-		if (!uv || uv.length < 2) return null;
-		return [uv[0], uv[1]];
 	}
 
 	public static stackItemAtoB(itemA: Item, itemB: Item): number {

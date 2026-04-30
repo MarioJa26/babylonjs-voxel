@@ -298,7 +298,6 @@ export class PlayerInventory {
 			item.icon,
 			-1, // No row
 			-1, // No col
-			item.materialFolder,
 		);
 		worldItem.itemId = item.itemId;
 		worldItem.blockId = item.blockId ?? item.itemId;

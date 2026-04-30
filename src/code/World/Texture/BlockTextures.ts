@@ -79,3 +79,18 @@ export const BlockTextures: (BlockTextureDef | null)[] = [
 	{ all: [13, 3] }, // 63: boat_creator
 	{ all: [15, 3] }, // 64: grass_cross
 ];
+export function getAtlasTile(blockId: number | null): [number, number] | null {
+	if (blockId === null) return null;
+
+	const blockTexture = BlockTextures[blockId];
+	if (!blockTexture) return null;
+
+	const uv =
+		blockTexture.all ??
+		blockTexture.side ??
+		blockTexture.top ??
+		blockTexture.bottom;
+
+	if (!uv || uv.length < 2) return null;
+	return [uv[0], uv[1]];
+}

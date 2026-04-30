@@ -1,9 +1,11 @@
 import {
+	Color3,
 	type Mesh,
 	MeshBuilder,
 	type Observer,
 	type Scene,
-	type StandardMaterial,
+	StandardMaterial,
+	Texture,
 	Vector3,
 } from "@babylonjs/core";
 import { MetadataContainer } from "@/code/Entities/MetaDataContainer";
@@ -15,6 +17,8 @@ import {
 	VoxelAabbCollider,
 } from "@/code/World/Collision/VoxelAabbCollider";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
+import { getAtlasTile } from "@/code/World/Texture/BlockTextures";
+import { TextureAtlasFactory } from "@/code/World/Texture/TextureAtlasFactory";
 import type { Player } from "../Player";
 import type { Item } from "./Item";
 
@@ -26,6 +30,7 @@ export class DroppedItem implements IUsable {
 	#halfSize = 0.25;
 	#voxelCollider!: VoxelAabbCollider;
 	#observer: Observer<Scene> | null = null;
+	#atlasTileTexture: Texture | null = null;
 	static readonly GRAVITY = -18;
 	static readonly STEP_SIZE = 0.2;
 	static readonly EPSILON = 0.001;
@@ -48,7 +53,12 @@ export class DroppedItem implements IUsable {
 		this.#boxMesh.isPickable = true;
 		this.#boxMesh.position = new Vector3(x, y, z);
 
-		this.#material = item.material!;
+		this.#material = new StandardMaterial(
+			`droppedItemMaterial_${item.itemId}}`,
+			Map1.mainScene,
+		);
+		this.#material.specularColor = Color3.Black();
+		this.#applyAtlasTexture(item);
 		this.#boxMesh.material = this.#material;
 
 		this.#boxMesh.renderingGroupId = 1;
@@ -92,6 +102,8 @@ export class DroppedItem implements IUsable {
 		}
 		this.#voxelCollider.dispose();
 		this.#boxMesh.dispose();
+		this.#atlasTileTexture?.dispose();
+		this.#material.dispose();
 	}
 
 	#updatePhysics(): void {
@@ -184,6 +196,45 @@ export class DroppedItem implements IUsable {
 		const finalB = Math.min(1, Math.max(0.3, skyB + blockB));
 
 		this.#material.diffuseColor.set(finalR, finalG, finalB);
+	}
+
+	#getOrCreateAtlasTexture(): Texture {
+		let atlas = TextureAtlasFactory.getDiffuse();
+		if (!atlas) {
+			console.warn("error atlas not saved");
+			atlas = new Texture("/texture/diffuse_atlas.png", Map1.mainScene, {
+				noMipmap: false,
+				samplingMode: Texture.NEAREST_SAMPLINGMODE,
+			});
+			atlas.wrapU = Texture.CLAMP_ADDRESSMODE;
+			atlas.wrapV = Texture.CLAMP_ADDRESSMODE;
+			TextureAtlasFactory.setDiffuse(atlas);
+		}
+		return atlas;
+	}
+
+	#applyAtlasTexture(item: Item): void {
+		const atlasTexture = this.#getOrCreateAtlasTexture();
+		const tile = getAtlasTile(item.blockId) ?? [0, 0];
+		const atlasSize = TextureAtlasFactory.atlasSize;
+		const tileSize = TextureAtlasFactory.atlasTileSize;
+		const clampedX = Math.max(0, Math.min(atlasSize - 1, tile[0]));
+		const clampedY = Math.max(0, Math.min(atlasSize - 1, tile[1]));
+		const atlasRow = atlasSize - 1 - clampedY;
+
+		this.#atlasTileTexture = atlasTexture.clone();
+		if (!this.#atlasTileTexture) {
+			this.#material.diffuseColor = Color3.White();
+			return;
+		}
+
+		this.#atlasTileTexture.wrapU = Texture.CLAMP_ADDRESSMODE;
+		this.#atlasTileTexture.wrapV = Texture.CLAMP_ADDRESSMODE;
+		this.#atlasTileTexture.uScale = tileSize;
+		this.#atlasTileTexture.vScale = tileSize;
+		this.#atlasTileTexture.uOffset = clampedX * tileSize;
+		this.#atlasTileTexture.vOffset = atlasRow * tileSize;
+		this.#material.diffuseTexture = this.#atlasTileTexture;
 	}
 
 	get boxMesh(): Mesh {

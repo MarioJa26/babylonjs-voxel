@@ -6,7 +6,6 @@ export type ItemDefinition = {
 	name: string;
 	description?: string;
 	icon?: string;
-	materialFolder?: string;
 	maxStack?: number;
 	useAction?: string;
 	blockId?: number;
@@ -50,7 +49,6 @@ export class ItemRegistry {
 				id: textureDef.id,
 				name: itemLabel,
 				description: `Shape: ${textureDef.shape || "cube"}\nID: ${textureDef.id}\nPath: ${textureDef.path}\nName: ${itemLabel}\nblockId: ${textureDef.id}\nblockState: ${defaultState}`,
-				materialFolder: textureDef.path,
 				useAction: "place_block",
 				blockId: textureDef.id,
 				blockState: defaultState,
@@ -133,7 +131,6 @@ export class ItemRegistry {
 					id: nextId++,
 					name: label,
 					description: `Block: ${label}`,
-					materialFolder: base.path,
 					useAction: "place_block",
 					blockId: base.id,
 					blockState: state,
