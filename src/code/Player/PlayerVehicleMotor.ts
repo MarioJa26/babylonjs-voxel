@@ -896,17 +896,10 @@ export class PlayerVehicleMotor {
 	}
 
 	private integrateMovementStep(deltaTime: number): void {
-		const support = this.#characterController.checkSupport(
-			deltaTime,
-			new Vector3(0, -1, 0),
-		);
+		const support = this.#characterController.checkSupport();
 		const dv = this.calculateDesiredVelocity(deltaTime, support);
 		this.#characterController.setVelocity(dv);
-		this.#characterController.integrate(
-			deltaTime,
-			support,
-			this.#characterGravity,
-		);
+		this.#characterController.integrate(deltaTime, this.#characterGravity);
 	}
 
 	private integrateVoxelMovement(deltaTime: number): void {

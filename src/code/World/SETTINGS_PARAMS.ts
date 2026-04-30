@@ -15,11 +15,11 @@ export const SETTING_PARAMS = {
 	VERTICAL_CHUNK_CULLING_FACTOR: 6, // Multiplier for CHUNK_SIZE to cull chunks above/below terrain
 	CAMERA_FOV: 93, // Default camera field of view in degrees
 
-	DISTANT_RENDER_DISTANCE: 128, //128,
+	DISTANT_RENDER_DISTANCE: 100, //128,
 	LOD_PRECOMPUTE_SCHEDULE_THROTTLE_MS: 120,
 	LOD_PRECOMPUTE_MAX_ENQUEUE_PER_UPDATE: 48,
 	// 0 = unlimited dispatch while workers are idle
-	CHUNK_WORKER_DISPATCH_BUDGET_PER_TICK: 0,
+	CHUNK_WORKER_DISPATCH_BUDGET_PER_TICK: 12,
 
 	// --- Day/Night Cycle ---
 	DAY_DURATION_MS: 10 * 60 * 1000, // 10 minutes for a full day

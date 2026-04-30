@@ -2,6 +2,7 @@ import type { Observer, Scene } from "@babylonjs/core";
 import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
 import type { SavedInventoryState } from "./Inventory/PlayerInventory";
 import type { Player } from "./Player";
+import { Gamemodes } from "./PlayerStats";
 import type { SavedPlayerPosition } from "./PlayerVehicle";
 
 export class PlayerStatePersistence {
@@ -166,28 +167,27 @@ export class PlayerStatePersistence {
 	}
 
 	private restoreInventory(): void {
-		return;
-		/*
-    try {
-      const raw = window.localStorage.getItem(
-        PlayerStatePersistence.PLAYER_INVENTORY_STORAGE_KEY,
-      );
-      if (!raw) return;
+		if (this.player.stats.gamemode === Gamemodes.Creative) return;
 
-      const savedInventory = JSON.parse(raw) as SavedInventoryState;
-      if (
-        !this.player.playerInventory.restoreSavedInventoryState(savedInventory)
-      ) {
-        console.warn(
-          "Saved player inventory data was invalid. Defaults were kept.",
-        );
-      }
-    } catch (error) {
-      console.warn(
-        "Failed to restore player inventory from localStorage.",
-        error,
-      );
-    }
-    */
+		try {
+			const raw = window.localStorage.getItem(
+				PlayerStatePersistence.PLAYER_INVENTORY_STORAGE_KEY,
+			);
+			if (!raw) return;
+
+			const savedInventory = JSON.parse(raw) as SavedInventoryState;
+			if (
+				!this.player.playerInventory.restoreSavedInventoryState(savedInventory)
+			) {
+				console.warn(
+					"Saved player inventory data was invalid. Defaults were kept.",
+				);
+			}
+		} catch (error) {
+			console.warn(
+				"Failed to restore player inventory from localStorage.",
+				error,
+			);
+		}
 	}
 }

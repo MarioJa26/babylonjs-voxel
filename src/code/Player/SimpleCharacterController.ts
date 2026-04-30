@@ -41,10 +41,7 @@ export class SimpleCharacterController {
 		this.#velocity.copyFrom(velocity);
 	}
 
-	public checkSupport(
-		_deltaTime: number,
-		_downDirection: Vector3,
-	): CharacterSurfaceInfo {
+	public checkSupport(): CharacterSurfaceInfo {
 		return {
 			supportedState:
 				this.#position.y <= 0.001
@@ -55,11 +52,7 @@ export class SimpleCharacterController {
 		};
 	}
 
-	public integrate(
-		deltaTime: number,
-		_supportInfo: CharacterSurfaceInfo,
-		gravity: Vector3,
-	): void {
+	public integrate(deltaTime: number, gravity: Vector3): void {
 		this.#velocity.addInPlace(gravity.scale(deltaTime));
 		this.#position.addInPlace(this.#velocity.scale(deltaTime));
 		if (this.#position.y < 0) {
