@@ -2,7 +2,10 @@ import type { Engine, Scene, Vector3 } from "@babylonjs/core";
 
 import type { IControls } from "../Inferface/IControls";
 import { Chunk } from "../World/Chunk/Chunk";
-import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
+import {
+	ChunkLoadingSystem,
+	worldToChunkCoord,
+} from "../World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
 import { CustomBoatControls } from "./Controls/CustomBoatControls";
 import { PaddleBoatControls } from "./Controls/PaddleBoatControls";
@@ -50,9 +53,9 @@ export class PlayerLoopController {
 			// Always drain a small amount of streaming work every frame.
 			// This is what smooths out chunk-boundary spikes.
 			const playerPos = this.getPlayerPosition();
-			const currentChunkX = ChunkLoadingSystem.worldToChunkCoord(playerPos.x);
-			const currentChunkY = ChunkLoadingSystem.worldToChunkCoord(playerPos.y);
-			const currentChunkZ = ChunkLoadingSystem.worldToChunkCoord(playerPos.z);
+			const currentChunkX = worldToChunkCoord(playerPos.x);
+			const currentChunkY = worldToChunkCoord(playerPos.y);
+			const currentChunkZ = worldToChunkCoord(playerPos.z);
 
 			ChunkLoadingSystem.processFrameBudgetedStreamingWork(
 				currentChunkX,
@@ -79,9 +82,9 @@ export class PlayerLoopController {
 
 	private updateChunksAroundPlayer(): void {
 		const playerPos = this.getPlayerPosition();
-		const currentChunkX = ChunkLoadingSystem.worldToChunkCoord(playerPos.x);
-		const currentChunkY = ChunkLoadingSystem.worldToChunkCoord(playerPos.y);
-		const currentChunkZ = ChunkLoadingSystem.worldToChunkCoord(playerPos.z);
+		const currentChunkX = worldToChunkCoord(playerPos.x);
+		const currentChunkY = worldToChunkCoord(playerPos.y);
+		const currentChunkZ = worldToChunkCoord(playerPos.z);
 
 		if (
 			currentChunkX !== this.#lastChunkX ||
@@ -110,9 +113,9 @@ export class PlayerLoopController {
 		if (PlayerHud.debugPanelDiv.style.display === "none") return;
 
 		const playerPos = this.getPlayerPosition();
-		const chunkX = ChunkLoadingSystem.worldToChunkCoord(playerPos.x);
-		const chunkY = ChunkLoadingSystem.worldToChunkCoord(playerPos.y);
-		const chunkZ = ChunkLoadingSystem.worldToChunkCoord(playerPos.z);
+		const chunkX = worldToChunkCoord(playerPos.x);
+		const chunkY = worldToChunkCoord(playerPos.y);
+		const chunkZ = worldToChunkCoord(playerPos.z);
 		const cameraPos = this.playerCamera.position;
 		const cameraYaw = this.playerCamera.cameraYaw;
 		const cameraPitch = this.playerCamera.cameraPitch;

@@ -1,4 +1,5 @@
 import { Chunk } from "../Chunk";
+import { worldToBlockCoord, worldToChunkCoord } from "../ChunkLoadingSystem";
 
 export interface WorldBlockCoordinates {
 	worldX: number;
@@ -36,15 +37,6 @@ export class ChunkWorldMutations {
 	public constructor(
 		private readonly adapter: ChunkWorldMutationsAdapter = {},
 	) {}
-
-	public worldToChunkCoord(value: number): number {
-		return Math.floor(value / Chunk.SIZE);
-	}
-
-	public worldToBlockCoord(value: number): number {
-		// Ensure we convert to integer local block coordinate in range [0, Chunk.SIZE-1]
-		return ((Math.floor(value) % Chunk.SIZE) + Chunk.SIZE) % Chunk.SIZE;
-	}
 
 	public getBlockByWorldCoords(
 		worldX: number,
@@ -183,13 +175,13 @@ export class ChunkWorldMutations {
 		worldY: number,
 		worldZ: number,
 	): LocalBlockCoordinates {
-		const chunkX = this.worldToChunkCoord(worldX);
-		const chunkY = this.worldToChunkCoord(worldY);
-		const chunkZ = this.worldToChunkCoord(worldZ);
+		const chunkX = worldToChunkCoord(worldX);
+		const chunkY = worldToChunkCoord(worldY);
+		const chunkZ = worldToChunkCoord(worldZ);
 
-		const localX = this.worldToBlockCoord(worldX);
-		const localY = this.worldToBlockCoord(worldY);
-		const localZ = this.worldToBlockCoord(worldZ);
+		const localX = worldToBlockCoord(worldX);
+		const localY = worldToBlockCoord(worldY);
+		const localZ = worldToBlockCoord(worldZ);
 
 		return {
 			worldX,

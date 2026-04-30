@@ -19,7 +19,7 @@ export const SETTING_PARAMS = {
 	LOD_PRECOMPUTE_SCHEDULE_THROTTLE_MS: 120,
 	LOD_PRECOMPUTE_MAX_ENQUEUE_PER_UPDATE: 48,
 	// 0 = unlimited dispatch while workers are idle
-	CHUNK_WORKER_DISPATCH_BUDGET_PER_TICK: 12,
+	CHUNK_WORKER_DISPATCH_BUDGET_PER_TICK: 0,
 
 	// --- Day/Night Cycle ---
 	DAY_DURATION_MS: 10 * 60 * 1000, // 10 minutes for a full day

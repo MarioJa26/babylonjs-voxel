@@ -1,7 +1,10 @@
 import { SSAO2RenderingPipeline } from "@babylonjs/core";
 import { Map1 } from "@/code/Maps/Map1";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
-import { ChunkLoadingSystem } from "../../World/Chunk/ChunkLoadingSystem";
+import {
+	ChunkLoadingSystem,
+	worldToChunkCoord,
+} from "../../World/Chunk/ChunkLoadingSystem";
 import { WorldStorage } from "../../World/WorldStorage";
 import type { Player } from "../Player"; // Import Player to access its methods
 
@@ -187,9 +190,9 @@ export class PauseMenu {
 
 				if (initialized) {
 					const pos = this.player.position;
-					const chunkX = ChunkLoadingSystem.worldToChunkCoord(pos.x);
-					const chunkY = ChunkLoadingSystem.worldToChunkCoord(pos.y);
-					const chunkZ = ChunkLoadingSystem.worldToChunkCoord(pos.z);
+					const chunkX = worldToChunkCoord(pos.x);
+					const chunkY = worldToChunkCoord(pos.y);
+					const chunkZ = worldToChunkCoord(pos.z);
 
 					void ChunkLoadingSystem.updateChunksAround(
 						chunkX,

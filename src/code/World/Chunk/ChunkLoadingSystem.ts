@@ -308,9 +308,9 @@ export class ChunkLoadingSystem {
 		}
 
 		const worldPos = entity.getWorldPosition();
-		const chunkX = ChunkLoadingSystem.worldToChunkCoord(worldPos.x);
-		const chunkY = ChunkLoadingSystem.worldToChunkCoord(worldPos.y);
-		const chunkZ = ChunkLoadingSystem.worldToChunkCoord(worldPos.z);
+		const chunkX = worldToChunkCoord(worldPos.x);
+		const chunkY = worldToChunkCoord(worldPos.y);
+		const chunkZ = worldToChunkCoord(worldPos.z);
 
 		return Chunk.packCoords(chunkX, chunkY, chunkZ);
 	}
@@ -625,7 +625,7 @@ export class ChunkLoadingSystem {
 			32,
 		);
 
-		ChunkLoadingSystem.processPendingRemeshes(12);
+		ChunkLoadingSystem.processPendingRemeshes(24);
 	}
 
 	public static registerChunkEntityLoader(
@@ -1064,9 +1064,9 @@ export class ChunkLoadingSystem {
 			return dynamicSample.lightLevel;
 		}
 
-		const chunkX = ChunkLoadingSystem.worldToChunkCoord(worldX);
-		const chunkY = ChunkLoadingSystem.worldToChunkCoord(worldY);
-		const chunkZ = ChunkLoadingSystem.worldToChunkCoord(worldZ);
+		const chunkX = worldToChunkCoord(worldX);
+		const chunkY = worldToChunkCoord(worldY);
+		const chunkZ = worldToChunkCoord(worldZ);
 		const chunk = Chunk.getChunk(chunkX, chunkY, chunkZ);
 
 		if (!chunk?.isLoaded) {
@@ -1078,24 +1078,6 @@ export class ChunkLoadingSystem {
 			worldY,
 			worldZ,
 		);
-	}
-
-	/**
-	 * Converts world coordinates to chunk coordinates.
-	 * @param value The world coordinate value (e.g., player's x position).
-	 * @returns The corresponding chunk coordinate.
-	 */
-	public static worldToChunkCoord(value: number): number {
-		return Math.floor(value / Chunk.SIZE);
-	}
-
-	/**
-	 * Converts world coordinates to local block coordinates within a chunk.
-	 * @param value The world coordinate value.
-	 * @returns The local block coordinate (0-63).
-	 */
-	public static worldToBlockCoord(value: number): number {
-		return ((Math.floor(value) % Chunk.SIZE) + Chunk.SIZE) % Chunk.SIZE;
 	}
 
 	public static areChunksLoadedAround(
@@ -1156,4 +1138,20 @@ export class ChunkLoadingSystem {
 
 		return entitiesByChunk;
 	}
+}
+/**
+ * Converts world coordinates to chunk coordinates.
+ * @param value The world coordinate value (e.g., player's x position).
+ * @returns The corresponding chunk coordinate.
+ */
+export function worldToChunkCoord(value: number): number {
+	return Math.floor(value / Chunk.SIZE);
+}
+/**
+ * Converts world coordinates to local block coordinates within a chunk.
+ * @param value The world coordinate value.
+ * @returns The local block coordinate (0-63).
+ */
+export function worldToBlockCoord(value: number): number {
+	return ((Math.floor(value) % Chunk.SIZE) + Chunk.SIZE) % Chunk.SIZE;
 }
