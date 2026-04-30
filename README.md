@@ -6,6 +6,9 @@ The project is served and developed using Vite.
 It focuses on procedural world generation, chunk-based streaming, voxel rendering, and player interaction systems.
 
 <img width="1864" height="841" alt="image" src="https://github.com/user-attachments/assets/13c4bfe3-e30d-4ae7-9490-f83f28aa9fd4" />
+Screenshot showing overhangs
+<img width="1864" height="841" alt="image" src="https://github.com/user-attachments/assets/80c4d683-7d18-4056-8f35-f5e5e19948f9" />
+Screenshot showing the terrain at 32 chunk renderdistance
 
 
 ## Overview
