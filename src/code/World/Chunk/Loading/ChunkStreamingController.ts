@@ -484,6 +484,12 @@ export class ChunkStreamingController {
 							const skipZ = dz > 0 ? chunkZ + r : chunkZ - r;
 							if (z === skipZ) continue;
 						}
+
+						if (dx !== 0 && dz !== 0) {
+							const skipX = dx > 0 ? chunkX + r : chunkX - r;
+							const skipZ = dz > 0 ? chunkZ + r : chunkZ - r;
+							if (x === skipX && z === skipZ) continue;
+						}
 						const chunk = Chunk.getChunk(x, y, z);
 
 						if (chunk?.isLoaded) {
@@ -663,10 +669,7 @@ export class ChunkStreamingController {
 		requests: ReadonlyArray<QueuedChunkRequest>,
 	): void {
 		for (const request of requests) {
-			const queued = this.loadQueueRequestMap.get(request.chunk.id);
-			if (queued === request) {
-				this.loadQueueRequestMap.delete(request.chunk.id);
-			}
+			this.loadQueueRequestMap.delete(request.chunk.id);
 		}
 	}
 

@@ -26,6 +26,7 @@ export enum ProcessStage {
 export type InFlightProcessState = {
 	stage: ProcessStage;
 	sliceStartMs: number;
+	sliceDeadlineMs: number;
 
 	loadedFromStorageCount: number;
 	generatedCount: number;
@@ -36,7 +37,7 @@ export type InFlightProcessState = {
 
 	unloadBatch: Chunk[];
 	unloadBatchIndex: number;
-	savedChunkIds: Set<bigint> | null;
+	savedChunkIds: Set<bigint>;
 
 	loadBatch: QueuedChunkRequest[];
 	validLoadBatch: QueuedChunkRequest[];
@@ -49,6 +50,7 @@ export type InFlightProcessState = {
 	chunksNeedingFullHydration: Set<bigint>;
 
 	hydrateIds: bigint[];
+	hydrateChunks: Chunk[];
 	hydrateMap: Map<bigint, SavedChunkData>;
 	hydrateIndex: number;
 };

@@ -60,6 +60,7 @@ export class ChunkWorkerPool {
 	private workerRestartAtMs: number[] = [];
 	private taskQueue: Chunk[] = [];
 	private pendingRemeshQueue: Map<Chunk, boolean> = new Map();
+	private pendingRemeshSet: Set<Chunk> = new Set();
 	private terrainTaskDeferLighting = new Map<bigint, boolean>();
 	private terrainTaskQueue: Set<Chunk> = new Set();
 	private distantTerrainTaskQueue: DistantTerrainTask[] = [];
@@ -422,6 +423,7 @@ export class ChunkWorkerPool {
 
 		if (this.isCompletelyEmptyChunk(chunk)) {
 			this.pendingRemeshQueue.delete(chunk);
+			this.pendingRemeshSet.delete(chunk);
 			const queuedIndex = this.taskQueue.indexOf(chunk);
 			if (queuedIndex !== -1) {
 				this.taskQueue.splice(queuedIndex, 1);
@@ -445,6 +447,7 @@ export class ChunkWorkerPool {
 			chunk,
 			existingPriority || priority || lodPriority,
 		);
+		this.pendingRemeshSet.add(chunk);
 
 		this.scheduleRemeshFlush();
 	}
@@ -480,6 +483,7 @@ export class ChunkWorkerPool {
 
 			if (this.isCompletelyEmptyChunk(chunk)) {
 				this.clearChunkMeshIfPresent(chunk);
+				this.pendingRemeshSet.delete(chunk);
 				continue;
 			}
 
@@ -1164,12 +1168,18 @@ export class ChunkWorkerPool {
 				this.isCompletelyEmptyChunk(taskChunk)
 			) {
 				this.clearChunkMeshIfPresent(taskChunk);
+				this.pendingRemeshSet.delete(taskChunk);
 				continue;
 			}
 
 			if (taskType === "remesh" && taskChunk) {
-				if (this.tryApplyCachedLODMesh(taskChunk)) {
-					continue;
+				// If this chunk was explicitly queued for remesh, never bypass it
+				// with the cached mesh — the mesh queue loop may have cleared isDirty
+				// while a previous mesh was applying.
+				if (!this.pendingRemeshSet.has(taskChunk)) {
+					if (this.tryApplyCachedLODMesh(taskChunk)) {
+						continue;
+					}
 				}
 			}
 
@@ -1208,6 +1218,7 @@ export class ChunkWorkerPool {
 						lod,
 					};
 
+					this.pendingRemeshSet.delete(taskChunk!);
 					this.inFlightRemeshKeys.add(
 						this.getRemeshInflightKey(taskChunk!.id, lod),
 					);

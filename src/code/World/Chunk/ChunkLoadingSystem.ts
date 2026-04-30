@@ -559,12 +559,7 @@ export class ChunkLoadingSystem {
 	}
 
 	private static scheduleChunkBorderRemeshOnLoad(chunk: Chunk): void {
-		const readyNeighbors = ChunkLoadingSystem.getNeighbors(chunk).filter(
-			(neighbor): neighbor is Chunk =>
-				!!neighbor && neighbor.isLoaded && neighbor.hasVoxelData,
-		);
-
-		ChunkLoadingSystem.scheduleRemeshForChunks([chunk, ...readyNeighbors]);
+		ChunkLoadingSystem.scheduleChunkAndNeighborsRemesh(chunk);
 	}
 
 	public static enqueueChunkRemesh(chunk: Chunk): void {
@@ -869,6 +864,7 @@ export class ChunkLoadingSystem {
 		if (!state.chunksNeedingFullHydration.has(chunk.id)) {
 			state.chunksNeedingFullHydration.add(chunk.id);
 			state.hydrateIds.push(chunk.id);
+			state.hydrateChunks.push(chunk);
 		}
 	}
 

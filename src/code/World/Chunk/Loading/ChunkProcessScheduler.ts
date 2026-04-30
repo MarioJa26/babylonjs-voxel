@@ -1,40 +1,7 @@
 import { type SavedChunkData, WorldStorage } from "../../WorldStorage";
 import { Chunk } from "../Chunk";
 import type { QueuedChunkRequest } from "./ChunkStreamingController";
-import { ProcessStage } from "./ChunkTypes";
-
-export type InFlightProcessState = {
-	stage: ProcessStage;
-
-	sliceStartMs: number;
-	sliceDeadlineMs: number;
-
-	loadedFromStorageCount: number;
-	generatedCount: number;
-	hydratedCount: number;
-	unloadedCount: number;
-	savedCount: number;
-	lodCacheVersionMismatchCount: number;
-
-	unloadBatch: Chunk[];
-	unloadBatchIndex: number;
-	savedChunkIds: Set<bigint>;
-
-	loadBatch: QueuedChunkRequest[];
-	validLoadBatch: QueuedChunkRequest[];
-	nearRequests: QueuedChunkRequest[];
-	farRequests: QueuedChunkRequest[];
-	nearLoadedDataMap: Map<bigint, SavedChunkData>;
-	farLoadedDataMap: Map<bigint, SavedChunkData>;
-	applyLoadedIndex: number;
-	chunksToGenerate: Chunk[];
-	chunksNeedingFullHydration: Set<bigint>;
-
-	hydrateIds: bigint[];
-	hydrateChunks: Chunk[];
-	hydrateMap: Map<bigint, SavedChunkData>;
-	hydrateIndex: number;
-};
+import { type InFlightProcessState, ProcessStage } from "./ChunkTypes";
 
 export interface ChunkProcessSchedulerAdapter {
 	getLoadQueue(): QueuedChunkRequest[];
@@ -454,6 +421,9 @@ export class ChunkProcessScheduler {
 						} catch (error) {
 							console.warn("Failed to hydrate chunks from storage", error);
 							state.hydrateMap.clear();
+							state.hydrateIds.length = 0;
+							state.hydrateChunks.length = 0;
+							state.chunksNeedingFullHydration.clear();
 						}
 
 						state.stage = ProcessStage.ApplyHydration;
