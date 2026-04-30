@@ -8,9 +8,12 @@
 /src/code_js
 convert.bat
 
-/public/texture
+/public/texture/*
+!/public/texture/diffuse_atlas.png
+!/public/texture/normal_atlas.png
 
 *.zip
+*.env
 
 
 # Build output folders from your project structure
