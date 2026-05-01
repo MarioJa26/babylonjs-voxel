@@ -2,7 +2,8 @@ import { SSAO2RenderingPipeline } from "@babylonjs/core";
 import { Map1 } from "@/code/Maps/Map1";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import {
-	ChunkLoadingSystem,
+	flushChunkBoundEntities,
+	updateChunksAround,
 	worldToChunkCoord,
 } from "../../World/Chunk/ChunkLoadingSystem";
 import { WorldStorage } from "../../World/WorldStorage";
@@ -66,7 +67,7 @@ export class PauseMenu {
 			saveButton.disabled = true;
 			try {
 				await WorldStorage.saveAllModifiedChunks();
-				await ChunkLoadingSystem.flushChunkBoundEntities();
+				await flushChunkBoundEntities();
 				saveButton.innerText = "Saved!";
 			} catch (e) {
 				console.error("Save failed", e);
@@ -194,7 +195,7 @@ export class PauseMenu {
 					const chunkY = worldToChunkCoord(pos.y);
 					const chunkZ = worldToChunkCoord(pos.z);
 
-					void ChunkLoadingSystem.updateChunksAround(
+					void updateChunksAround(
 						chunkX,
 						chunkY,
 						chunkZ,

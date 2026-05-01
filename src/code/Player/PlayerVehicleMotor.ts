@@ -15,7 +15,7 @@ import {
 import { CustomBoat } from "../Entities/CustomBoat";
 import type { Mount } from "../Entities/Mount";
 import { BlockType, isCollidableBlock } from "../World/BlockType";
-import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
+import { getBlockByWorldCoords } from "../World/Chunk/ChunkLoadingSystem";
 import type { PlayerBodyControlState, SavedBodyPosition } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
 import {
@@ -180,7 +180,7 @@ export class PlayerVehicleMotor {
 				this.colliderHalfWidth,
 			),
 			(x, y, z) =>
-				isCollidableBlock(ChunkLoadingSystem.getBlockByWorldCoords(x, y, z)),
+				isCollidableBlock(getBlockByWorldCoords(x, y, z)),
 			this.collisionEpsilon,
 			{
 				scene: this.#scene,
@@ -1116,7 +1116,7 @@ export class PlayerVehicleMotor {
 			const y = pos.y + dy;
 			for (const [dx, dz] of this._waterXZOffsets) {
 				if (
-					ChunkLoadingSystem.getBlockByWorldCoords(
+					getBlockByWorldCoords(
 						pos.x + dx,
 						y,
 						pos.z + dz,

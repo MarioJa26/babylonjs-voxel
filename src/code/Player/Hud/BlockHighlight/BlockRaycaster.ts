@@ -2,7 +2,8 @@ import { Matrix, Ray, Vector3 } from "@babylonjs/core";
 import { BlockType, isCollidableBlock } from "@/code/World/BlockType";
 import { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { Chunk } from "@/code/World/Chunk/Chunk";
-import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { getTerrainBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { getBlockStateByWorldCoords } from "@/code/World/Chunk/Loading/ChunkWorldMutations";
 import { FACE_ALL, getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
 import { getTransformedShapeBoxes } from "@/code/World/Shape/BlockShapeTransforms";
 import { type Player, REACH_DISTANCE } from "../../Player";
@@ -308,14 +309,10 @@ function raycastFirstTerrainBlock(
 
 		if (t > maxDist) return null;
 
-		const blockId = ChunkLoadingSystem.getTerrainBlockByWorldCoords(x, y, z);
+		const blockId = getTerrainBlockByWorldCoords(x, y, z);
 		if (!shouldHit(x, y, z, blockId)) continue;
 
-		const blockState = ChunkLoadingSystem.getTerrainBlockStateByWorldCoords(
-			x,
-			y,
-			z,
-		);
+		const blockState = getBlockStateByWorldCoords(x, y, z);
 
 		if (isFullBlockShape(blockId, blockState)) {
 			_sharedHit.x = x;
@@ -371,20 +368,18 @@ function raycastFirstBoatBlock(
 	shouldHit: (x: number, y: number, z: number, blockId: number) => boolean,
 ): BlockRaycastHit | null {
 	const ray = getForwardRay(player, REACH_DISTANCE);
-	let best:
-		| {
-				t: number;
-				x: number;
-				y: number;
-				z: number;
-				nx: number;
-				ny: number;
-				nz: number;
-				blockId: number;
-				blockState: number;
-				context: unknown;
-		  }
-		| null = null;
+	let best: {
+		t: number;
+		x: number;
+		y: number;
+		z: number;
+		nx: number;
+		ny: number;
+		nz: number;
+		blockId: number;
+		blockState: number;
+		context: unknown;
+	} | null = null;
 
 	for (const boatChunk of BoatChunk.getActiveChunks()) {
 		const candidate = raycastSingleBoatChunk(ray, boatChunk, shouldHit);
@@ -413,20 +408,18 @@ function raycastSingleBoatChunk(
 	ray: Ray,
 	boatChunk: BoatChunk,
 	shouldHit: (x: number, y: number, z: number, blockId: number) => boolean,
-):
-	| {
-			t: number;
-			x: number;
-			y: number;
-			z: number;
-			nx: number;
-			ny: number;
-			nz: number;
-			blockId: number;
-			blockState: number;
-			context: unknown;
-	  }
-	| null {
+): {
+	t: number;
+	x: number;
+	y: number;
+	z: number;
+	nx: number;
+	ny: number;
+	nz: number;
+	blockId: number;
+	blockState: number;
+	context: unknown;
+} | null {
 	const visualRoot = boatChunk.visualRoot;
 	const center = boatChunk.center;
 
@@ -434,9 +427,17 @@ function raycastSingleBoatChunk(
 	_sharedWorldMatrix.copyFrom(visualRoot.getWorldMatrix());
 	_sharedWorldMatrix.invertToRef(_sharedInvMatrix);
 
-	Vector3.TransformCoordinatesToRef(ray.origin, _sharedInvMatrix, _sharedLocalOrigin);
+	Vector3.TransformCoordinatesToRef(
+		ray.origin,
+		_sharedInvMatrix,
+		_sharedLocalOrigin,
+	);
 	_sharedLocalOrigin.addInPlace(center);
-	Vector3.TransformNormalToRef(ray.direction, _sharedInvMatrix, _sharedLocalDir);
+	Vector3.TransformNormalToRef(
+		ray.direction,
+		_sharedInvMatrix,
+		_sharedLocalDir,
+	);
 
 	const localDirLen = _sharedLocalDir.length();
 	if (localDirLen <= 1e-8) return null;
@@ -496,12 +497,9 @@ function raycastSingleBoatChunk(
 	const boundY = stepY > 0 ? y + 1 : y;
 	const boundZ = stepZ > 0 ? z + 1 : z;
 
-	let tMaxX =
-		stepX === 0 ? Infinity : (boundX - _sharedLocalOrigin.x) / dx;
-	let tMaxY =
-		stepY === 0 ? Infinity : (boundY - _sharedLocalOrigin.y) / dy;
-	let tMaxZ =
-		stepZ === 0 ? Infinity : (boundZ - _sharedLocalOrigin.z) / dz;
+	let tMaxX = stepX === 0 ? Infinity : (boundX - _sharedLocalOrigin.x) / dx;
+	let tMaxY = stepY === 0 ? Infinity : (boundY - _sharedLocalOrigin.y) / dy;
+	let tMaxZ = stepZ === 0 ? Infinity : (boundZ - _sharedLocalOrigin.z) / dz;
 
 	let t = tStart;
 	let nx = entryNx;

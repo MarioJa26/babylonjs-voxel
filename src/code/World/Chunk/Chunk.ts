@@ -191,7 +191,7 @@ export class Chunk {
 		this.#chunkX = chunkX;
 		this.#chunkY = chunkY;
 		this.#chunkZ = chunkZ;
-		this.id = Chunk.packCoords(chunkX, chunkY, chunkZ);
+		this.id = packCoords(chunkX, chunkY, chunkZ);
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
 		Chunk.chunkInstances.set(this.id, this);
 	}
@@ -1222,37 +1222,14 @@ export class Chunk {
 	}
 
 	public getNeighbor(dx: number, dy: number, dz: number): Chunk | undefined {
-		return Chunk.getChunk(
-			this.#chunkX + dx,
-			this.#chunkY + dy,
-			this.#chunkZ + dz,
-		);
+		return getChunk(this.#chunkX + dx, this.#chunkY + dy, this.#chunkZ + dz);
 	}
-	public static getChunk(
-		cx: number,
-		cy: number,
-		cz: number,
-	): Chunk | undefined {
-		return Chunk.chunkInstances.get(Chunk.packCoords(cx, cy, cz));
-	}
+
 	public markLightChanged(): void {
 		this.isLightDirty = true;
 	}
 	public needsPersistence(): boolean {
 		return this.isModified || this.isLODMeshCacheDirty || this.isLightDirty;
-	}
-
-	private static readonly BITS = 21n;
-	private static readonly MASK = (1n << Chunk.BITS) - 1n;
-	private static readonly Y_SHIFT = Chunk.BITS;
-	private static readonly Z_SHIFT = Chunk.BITS * 2n;
-
-	public static packCoords(x: number, y: number, z: number): bigint {
-		return (
-			(BigInt(x) & Chunk.MASK) |
-			((BigInt(y) & Chunk.MASK) << Chunk.Y_SHIFT) |
-			((BigInt(z) & Chunk.MASK) << Chunk.Z_SHIFT)
-		);
 	}
 
 	// =========================================================================
@@ -1541,4 +1518,24 @@ export class Chunk {
 		this.isTerrainScheduled = false;
 		this.colliderDirty = true;
 	}
+}
+
+const BITS = 21n;
+const MASK = (1n << BITS) - 1n;
+const Y_SHIFT = BITS;
+const Z_SHIFT = BITS * 2n;
+
+export function packCoords(x: number, y: number, z: number): bigint {
+	return (
+		(BigInt(x) & MASK) |
+		((BigInt(y) & MASK) << Y_SHIFT) |
+		((BigInt(z) & MASK) << Z_SHIFT)
+	);
+}
+export function getChunk(
+	cx: number,
+	cy: number,
+	cz: number,
+): Chunk | undefined {
+	return Chunk.chunkInstances.get(packCoords(cx, cy, cz));
 }

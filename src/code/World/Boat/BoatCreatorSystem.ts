@@ -6,7 +6,7 @@ import type { Player } from "@/code/Player/Player";
 import { BlockType } from "@/code/World/BlockType";
 import { BoatChunk, type BoatChunkBlock } from "@/code/World/Boat/BoatChunk";
 import { Chunk } from "@/code/World/Chunk/Chunk";
-import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { setBlock, getBlockByWorldCoords, getBlockStateByWorldCoords, getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 
 type VoxelBlock = {
 	x: number;
@@ -152,9 +152,9 @@ export class BoatCreatorSystem {
 
 		// Consume source blocks and the marker block from the world.
 		for (const block of hullBlocks) {
-			ChunkLoadingSystem.setBlock(block.x, block.y, block.z, BlockType.Air, 0);
+			setBlock(block.x, block.y, block.z, BlockType.Air, 0);
 		}
-		ChunkLoadingSystem.setBlock(markerX, markerY, markerZ, BlockType.Air, 0);
+		setBlock(markerX, markerY, markerZ, BlockType.Air, 0);
 
 		const paddedHalfExtents = halfExtents.add(new Vector3(0.05, 0.05, 0.05));
 		new CustomBoat(scene, player, GenerationParams.SEA_LEVEL, center, {
@@ -183,7 +183,7 @@ export class BoatCreatorSystem {
 			const nx = markerX + dx;
 			const ny = markerY + dy;
 			const nz = markerZ + dz;
-			const neighborId = ChunkLoadingSystem.getBlockByWorldCoords(nx, ny, nz);
+			const neighborId = getBlockByWorldCoords(nx, ny, nz);
 			if (!BoatCreatorSystem.sourceBlockIds.has(neighborId)) continue;
 			queue.push({ x: nx, y: ny, z: nz });
 		}
@@ -194,19 +194,19 @@ export class BoatCreatorSystem {
 			if (visited.has(key)) continue;
 			visited.add(key);
 
-			const blockId = ChunkLoadingSystem.getBlockByWorldCoords(
+			const blockId = getBlockByWorldCoords(
 				current.x,
 				current.y,
 				current.z,
 			);
 			if (!BoatCreatorSystem.sourceBlockIds.has(blockId)) continue;
 
-			const blockState = ChunkLoadingSystem.getBlockStateByWorldCoords(
+			const blockState = getBlockStateByWorldCoords(
 				current.x,
 				current.y,
 				current.z,
 			);
-			const lightLevel = ChunkLoadingSystem.getLightByWorldCoords(
+			const lightLevel = getLightByWorldCoords(
 				current.x,
 				current.y,
 				current.z,

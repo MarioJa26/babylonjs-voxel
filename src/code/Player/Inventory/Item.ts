@@ -3,7 +3,7 @@ import type { IUsable } from "@/code/Inferface/IUsable";
 import { BlockType } from "@/code/World/BlockType";
 import type { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { BoatCreatorSystem } from "@/code/World/Boat/BoatCreatorSystem";
-import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { setBlock } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
 import { getSliceAxis } from "@/code/World/Shape/BlockShapeTransforms";
 import { getAtlasTile } from "@/code/World/Texture/BlockTextures";
@@ -215,7 +215,7 @@ export class Item implements IUsable {
 				}
 			}
 
-			ChunkLoadingSystem.setBlock(pos.x, pos.y, pos.z, blockId, blockState);
+			setBlock(pos.x, pos.y, pos.z, blockId, blockState);
 			if (blockId === BlockType.BoatCreator) {
 				BoatCreatorSystem.tryCreateBoatFromMarker(player, pos.x, pos.y, pos.z);
 			}

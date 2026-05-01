@@ -1,8 +1,8 @@
 import { DistantTerrain } from "@/code/Generation/DistantTerrain/DistantTerrain";
 import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
 import { createMeshFromData } from "../ChunckMesher";
-import { Chunk } from "../Chunk";
-import { ChunkLoadingSystem } from "../ChunkLoadingSystem";
+import { Chunk, getChunk } from "../Chunk";
+import { enqueueChunkRemesh } from "../ChunkLoadingSystem";
 import { ChunkWorkerPool } from "../ChunkWorkerPool";
 import { ChunkLodRuleSet } from "../LOD/ChunkLodRules";
 
@@ -313,7 +313,7 @@ export class ChunkStreamingController {
 		playerChunkZ: number,
 		lodRuleSet: ChunkLodRuleSet,
 	): void {
-		let chunk = Chunk.getChunk(x, y, z);
+		let chunk = getChunk(x, y, z);
 
 		const previousLod = chunk?.lodLevel ?? 3;
 		const decision = lodRuleSet.resolveWithHysteresis(
@@ -371,7 +371,7 @@ export class ChunkStreamingController {
 			const requiresImmediateRemesh =
 				previousLod <= 1 || desiredLod <= 1 || !hasTargetCachedMesh;
 			if (requiresImmediateRemesh) {
-				ChunkLoadingSystem.enqueueChunkRemesh(chunk);
+				enqueueChunkRemesh(chunk);
 			}
 
 			return;
@@ -411,7 +411,7 @@ export class ChunkStreamingController {
 				if (y < 0 || y >= SETTING_PARAMS.MAX_CHUNK_HEIGHT) continue;
 
 				for (let z = chunkZ - r; z <= chunkZ + r; z++) {
-					const chunk = Chunk.getChunk(x, y, z);
+					const chunk = getChunk(x, y, z);
 
 					if (chunk?.isLoaded) {
 						if (!this.loadedRefreshQueueSet.has(chunk.id)) {
@@ -446,7 +446,7 @@ export class ChunkStreamingController {
 						const skipX = dx > 0 ? chunkX + r : chunkX - r;
 						if (x === skipX) continue;
 					}
-					const chunk = Chunk.getChunk(x, y, z);
+					const chunk = getChunk(x, y, z);
 
 					if (chunk?.isLoaded) {
 						if (!this.loadedRefreshQueueSet.has(chunk.id)) {
@@ -490,7 +490,7 @@ export class ChunkStreamingController {
 							const skipZ = dz > 0 ? chunkZ + r : chunkZ - r;
 							if (x === skipX && z === skipZ) continue;
 						}
-						const chunk = Chunk.getChunk(x, y, z);
+						const chunk = getChunk(x, y, z);
 
 						if (chunk?.isLoaded) {
 							if (!this.loadedRefreshQueueSet.has(chunk.id)) {
@@ -528,7 +528,7 @@ export class ChunkStreamingController {
 				if (worldY < 0 || worldY >= SETTING_PARAMS.MAX_CHUNK_HEIGHT) continue;
 
 				for (let z = -r; z <= r; z++) {
-					const existing = Chunk.getChunk(chunkX + x, worldY, chunkZ + z);
+					const existing = getChunk(chunkX + x, worldY, chunkZ + z);
 
 					// Skip if already loaded at the correct LOD with voxel data if needed
 					if (existing?.isLoaded) {

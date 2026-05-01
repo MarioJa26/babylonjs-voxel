@@ -1,7 +1,7 @@
 import type { Observer, Scene } from "@babylonjs/core";
-import { Chunk } from "../World/Chunk/Chunk";
+import { getChunk } from "../World/Chunk/Chunk";
 import {
-	ChunkLoadingSystem,
+	areChunksLod0ReadyAround,
 	worldToChunkCoord,
 } from "../World/Chunk/ChunkLoadingSystem";
 import type { Player } from "./Player";
@@ -51,7 +51,7 @@ export class PlayerLoadingGate {
 		const chunkY = worldToChunkCoord(playerPos.y);
 		const chunkZ = worldToChunkCoord(playerPos.z);
 
-		const chunksReady = ChunkLoadingSystem.areChunksLod0ReadyAround(
+		const chunksReady = areChunksLod0ReadyAround(
 			chunkX,
 			chunkY,
 			chunkZ,
@@ -82,7 +82,7 @@ export class PlayerLoadingGate {
 		chunkZ: number,
 	): boolean {
 		for (let dy = 0; dy <= 2; dy++) {
-			const chunk = Chunk.getChunk(chunkX, chunkY - dy, chunkZ);
+			const chunk = getChunk(chunkX, chunkY - dy, chunkZ);
 			if (!chunk?.isLoaded) {
 				continue;
 			}

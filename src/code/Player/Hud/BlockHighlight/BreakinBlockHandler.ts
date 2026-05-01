@@ -1,6 +1,9 @@
 import { type TransformNode, Vector3 } from "@babylonjs/core";
 import { BlockBreakParticles } from "@/code/Maps/BlockBreakParticles";
-import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
+import {
+	deleteBlock,
+	getLightByWorldCoords,
+} from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
 	getBlockBreakTime,
 	getBlockInfo,
@@ -110,7 +113,7 @@ export class BlockBreakingHandler {
 					z + 0.5 + hit.nz,
 				);
 
-				const packedLight = ChunkLoadingSystem.getLightByWorldCoords(
+				const packedLight = getLightByWorldCoords(
 					lightPos.x,
 					lightPos.y,
 					lightPos.z,
@@ -142,14 +145,15 @@ export class BlockBreakingHandler {
 		if (
 			typeof value.localX !== "number" ||
 			typeof value.localY !== "number" ||
-			typeof value.localZ !== "number"
+			typeof value.localZ !== "number" ||
+			!value.boatChunk
 		) {
 			return null;
 		}
 
 		return {
 			kind: "boatChunk",
-			boatChunk: value.boatChunk!,
+			boatChunk: value.boatChunk,
 			localX: value.localX,
 			localY: value.localY,
 			localZ: value.localZ,
@@ -205,7 +209,7 @@ export class BlockBreakingHandler {
 				0,
 			);
 		} else {
-			ChunkLoadingSystem.deleteBlock(x, y, z);
+			deleteBlock(x, y, z);
 		}
 
 		if (this.#player.stats.gamemode === Gamemodes.Creative) {

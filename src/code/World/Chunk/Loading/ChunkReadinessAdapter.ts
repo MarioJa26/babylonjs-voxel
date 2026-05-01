@@ -1,4 +1,4 @@
-import { Chunk } from "../Chunk";
+import { type Chunk, getChunk } from "../Chunk";
 
 export interface ChunkReadinessAdapter {
 	isChunkLoaded?(chunk: Chunk): boolean;
@@ -18,7 +18,7 @@ export class ChunkReadiness {
 		for (let dy = -verticalRadius; dy <= verticalRadius; dy++) {
 			for (let dz = -horizontalRadius; dz <= horizontalRadius; dz++) {
 				for (let dx = -horizontalRadius; dx <= horizontalRadius; dx++) {
-					const chunk = Chunk.getChunk(chunkX + dx, chunkY + dy, chunkZ + dz);
+					const chunk = getChunk(chunkX + dx, chunkY + dy, chunkZ + dz);
 					if (!chunk) return false;
 					if (!this.isLoaded(chunk)) return false;
 				}
@@ -38,7 +38,7 @@ export class ChunkReadiness {
 		for (let dy = -verticalRadius; dy <= verticalRadius; dy++) {
 			for (let dz = -horizontalRadius; dz <= horizontalRadius; dz++) {
 				for (let dx = -horizontalRadius; dx <= horizontalRadius; dx++) {
-					const chunk = Chunk.getChunk(chunkX + dx, chunkY + dy, chunkZ + dz);
+					const chunk = getChunk(chunkX + dx, chunkY + dy, chunkZ + dz);
 					if (!chunk) return false;
 					if (!this.isLod0Ready(chunk)) return false;
 				}

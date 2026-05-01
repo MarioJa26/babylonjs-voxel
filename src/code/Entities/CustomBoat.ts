@@ -17,9 +17,15 @@ import { CustomBoatControls } from "../Player/Controls/CustomBoatControls";
 import type { Player } from "../Player/Player";
 import { BlockType, isCollidableBlock } from "../World/BlockType";
 import {
-	ChunkLoadingSystem,
 	type DynamicBlockSample,
+	getBlockByWorldCoords,
+	registerChunkBoundEntity,
+	registerChunkEntityLoader,
+	registerDynamicBlockProvider,
+	unregisterChunkBoundEntity,
+	unregisterDynamicBlockProvider,
 } from "../World/Chunk/ChunkLoadingSystem";
+
 import { VoxelObbCollider } from "../World/Collision/VoxelObbCollider";
 import { MetadataContainer } from "./MetaDataContainer";
 import { Mount } from "./Mount";
@@ -123,66 +129,63 @@ export class CustomBoat implements IUsable {
 		}
 
 		CustomBoat.#chunkLoaderRegistered = true;
-		ChunkLoadingSystem.registerChunkEntityLoader(
-			CustomBoat.CHUNK_ENTITY_TYPE,
-			(payload) => {
-				const context = CustomBoat.#chunkReloadContext;
-				if (!context || context.scene.isDisposed) {
-					return;
-				}
+		registerChunkEntityLoader(CustomBoat.CHUNK_ENTITY_TYPE, (payload) => {
+			const context = CustomBoat.#chunkReloadContext;
+			if (!context || context.scene.isDisposed) {
+				return;
+			}
 
-				const data = payload as CustomBoatSerializedPayload | undefined;
-				if (!data?.position || !data.collisionHalfExtents) {
-					return;
-				}
+			const data = payload as CustomBoatSerializedPayload | undefined;
+			if (!data?.position || !data.collisionHalfExtents) {
+				return;
+			}
 
-				const spawnPosition = new Vector3(
-					data.position.x,
-					data.position.y,
-					data.position.z,
-				);
-				const collisionHalfExtents = new Vector3(
-					data.collisionHalfExtents.x,
-					data.collisionHalfExtents.y,
-					data.collisionHalfExtents.z,
-				);
+			const spawnPosition = new Vector3(
+				data.position.x,
+				data.position.y,
+				data.position.z,
+			);
+			const collisionHalfExtents = new Vector3(
+				data.collisionHalfExtents.x,
+				data.collisionHalfExtents.y,
+				data.collisionHalfExtents.z,
+			);
 
-				let restoredBoatChunk: BoatChunk | undefined;
-				let restoredCustomVisualRoot: Mesh | undefined;
+			let restoredBoatChunk: BoatChunk | undefined;
+			let restoredCustomVisualRoot: Mesh | undefined;
 
-				if (data.boatChunk) {
-					const snapshotBlocks = data.boatChunk.blocks.map((block) => ({
-						...block,
-					}));
-					restoredBoatChunk = new BoatChunk(
-						context.scene,
-						snapshotBlocks,
-						new Vector3(
-							data.boatChunk.center.x,
-							data.boatChunk.center.y,
-							data.boatChunk.center.z,
-						),
-					);
-					restoredCustomVisualRoot = restoredBoatChunk.visualRoot;
-				}
-
-				new CustomBoat(
+			if (data.boatChunk) {
+				const snapshotBlocks = data.boatChunk.blocks.map((block) => ({
+					...block,
+				}));
+				restoredBoatChunk = new BoatChunk(
 					context.scene,
-					context.player,
-					context.waterLevel,
-					spawnPosition,
-					{
-						collisionHalfExtents,
-						customVisualRoot: restoredCustomVisualRoot,
-						skipDefaultModel: !!restoredBoatChunk,
-						initialYaw: data.initialYaw,
-						customVisualLocalYaw: data.customVisualLocalYaw,
-						blockCount: data.blockCount,
-						boatChunk: restoredBoatChunk,
-					},
+					snapshotBlocks,
+					new Vector3(
+						data.boatChunk.center.x,
+						data.boatChunk.center.y,
+						data.boatChunk.center.z,
+					),
 				);
-			},
-		);
+				restoredCustomVisualRoot = restoredBoatChunk.visualRoot;
+			}
+
+			new CustomBoat(
+				context.scene,
+				context.player,
+				context.waterLevel,
+				spawnPosition,
+				{
+					collisionHalfExtents,
+					customVisualRoot: restoredCustomVisualRoot,
+					skipDefaultModel: !!restoredBoatChunk,
+					initialYaw: data.initialYaw,
+					customVisualLocalYaw: data.customVisualLocalYaw,
+					blockCount: data.blockCount,
+					boatChunk: restoredBoatChunk,
+				},
+			);
+		});
 	}
 
 	#cfg = {
@@ -314,7 +317,7 @@ export class CustomBoat implements IUsable {
 			this.#tick(scene),
 		);
 
-		this.#chunkBindingHandle = ChunkLoadingSystem.registerChunkBoundEntity({
+		this.#chunkBindingHandle = registerChunkBoundEntity({
 			getWorldPosition: () => this.#boat.position,
 			unload: () => this.dispose(scene),
 			isAlive: () => !this.#boat.isDisposed(),
@@ -638,11 +641,9 @@ export class CustomBoat implements IUsable {
 		}
 		this.#isDisposed = true;
 
-		ChunkLoadingSystem.unregisterChunkBoundEntity(this.#chunkBindingHandle);
+		unregisterChunkBoundEntity(this.#chunkBindingHandle);
 		this.#chunkBindingHandle = undefined;
-		ChunkLoadingSystem.unregisterDynamicBlockProvider(
-			this.#boatChunkCollisionProviderHandle,
-		);
+		unregisterDynamicBlockProvider(this.#boatChunkCollisionProviderHandle);
 		this.#boatChunkCollisionProviderHandle = undefined;
 		this.#boatChunkBlockChangeUnsubscribe?.();
 		this.#boatChunkBlockChangeUnsubscribe = undefined;
@@ -718,7 +719,11 @@ export class CustomBoat implements IUsable {
 		this.#buildBuoyancyPoints();
 	}
 
-	#hasOccupiedBoatNeighbor(localX: number, localY: number, localZ: number): boolean {
+	#hasOccupiedBoatNeighbor(
+		localX: number,
+		localY: number,
+		localZ: number,
+	): boolean {
 		if (!this.#boatChunk) return false;
 
 		const dirs: readonly [number, number, number][] = [
@@ -748,13 +753,12 @@ export class CustomBoat implements IUsable {
 			return;
 		}
 
-		this.#boatChunkCollisionProviderHandle =
-			ChunkLoadingSystem.registerDynamicBlockProvider(
-				(worldX, worldY, worldZ) =>
-					this.#sampleBoatChunkBlock(worldX, worldY, worldZ),
-				(worldX, worldY, worldZ, blockId, blockState) =>
-					this.#setBoatChunkBlock(worldX, worldY, worldZ, blockId, blockState),
-			);
+		this.#boatChunkCollisionProviderHandle = registerDynamicBlockProvider(
+			(worldX, worldY, worldZ) =>
+				this.#sampleBoatChunkBlock(worldX, worldY, worldZ),
+			(worldX, worldY, worldZ, blockId, blockState) =>
+				this.#setBoatChunkBlock(worldX, worldY, worldZ, blockId, blockState),
+		);
 		this.#ignoredDynamicBlockProviders.add(
 			this.#boatChunkCollisionProviderHandle,
 		);
@@ -842,7 +846,7 @@ export class CustomBoat implements IUsable {
 	}
 
 	#getWorldBlockForBoatPhysics(x: number, y: number, z: number): number {
-		return ChunkLoadingSystem.getBlockByWorldCoords(x, y, z, {
+		return getBlockByWorldCoords(x, y, z, {
 			ignoredDynamicBlockProviders: this.#ignoredDynamicBlockProviders,
 		});
 	}

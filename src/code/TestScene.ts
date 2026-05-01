@@ -7,7 +7,6 @@ import { Map1 } from "./Maps/Map1";
 import { Player } from "./Player/Player";
 import { PlayerCamera } from "./Player/PlayerCamera";
 import { updateGlobalUniforms } from "./World/Chunk/ChunckMesher";
-import { ChunkLoadingSystem } from "./World/Chunk/ChunkLoadingSystem";
 
 export class TestScene {
 	document: Document;
@@ -64,7 +63,7 @@ export class TestScene {
 		const camera = new FreeCamera("camera1", Vector3.Zero(), scene);
 
 		const playerCamera = new PlayerCamera(camera, scene);
-		new ChunkLoadingSystem(); // This will create all the initial chunks
+
 		const player = new Player(this.engine, scene, playerCamera, this.canvas);
 		CustomBoat.configureChunkReloadContext(
 			scene,

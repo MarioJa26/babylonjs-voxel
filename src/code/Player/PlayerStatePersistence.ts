@@ -1,5 +1,5 @@
 import type { Observer, Scene } from "@babylonjs/core";
-import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
+import { flushModifiedChunks, flushChunkBoundEntities } from "../World/Chunk/ChunkLoadingSystem";
 import type { SavedInventoryState } from "./Inventory/PlayerInventory";
 import type { Player } from "./Player";
 import { Gamemodes } from "./PlayerStats";
@@ -99,11 +99,11 @@ export class PlayerStatePersistence {
 	}
 
 	private requestChunkSave(batchSize: number): void {
-		void ChunkLoadingSystem.flushModifiedChunks(batchSize).catch((error) => {
-			console.warn("Failed to persist modified chunks.", error);
+		void flushModifiedChunks(batchSize).catch((err: unknown) => {
+			console.warn("Failed to persist modified chunks.", err);
 		});
-		void ChunkLoadingSystem.flushChunkBoundEntities().catch((error) => {
-			console.warn("Failed to persist chunk-bound entities.", error);
+		void flushChunkBoundEntities().catch((err: unknown) => {
+			console.warn("Failed to persist chunk-bound entities.", err);
 		});
 	}
 

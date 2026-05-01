@@ -1,6 +1,6 @@
 import type { Vector3 } from "@babylonjs/core";
 import { Map1 } from "@/code/Maps/Map1";
-import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { validateChunksAround } from "@/code/World/Chunk/ChunkLoadingSystem";
 import type { IControls } from "../../Inferface/IControls";
 import { pickTarget } from "../Hud/BlockHighlight/BlockRaycaster";
 import { BlockBreakingHandler } from "../Hud/BlockHighlight/BreakinBlockHandler";
@@ -216,7 +216,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 				z: Math.floor(this.#player.position.z / 32),
 			});
 
-			ChunkLoadingSystem.validateChunksAround(
+			validateChunksAround(
 				Math.floor(this.#player.position.x / 32),
 				Math.floor(this.#player.position.y / 32),
 				Math.floor(this.#player.position.z / 32),

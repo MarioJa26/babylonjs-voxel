@@ -3,7 +3,9 @@ import type { Engine, Scene, Vector3 } from "@babylonjs/core";
 import type { IControls } from "../Inferface/IControls";
 import { Chunk } from "../World/Chunk/Chunk";
 import {
-	ChunkLoadingSystem,
+	getDebugStats,
+	processFrameBudgetedStreamingWork,
+	updateChunksAround,
 	worldToChunkCoord,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
@@ -57,7 +59,7 @@ export class PlayerLoopController {
 			const currentChunkY = worldToChunkCoord(playerPos.y);
 			const currentChunkZ = worldToChunkCoord(playerPos.z);
 
-			ChunkLoadingSystem.processFrameBudgetedStreamingWork(
+			processFrameBudgetedStreamingWork(
 				currentChunkX,
 				currentChunkY,
 				currentChunkZ,
@@ -91,7 +93,7 @@ export class PlayerLoopController {
 			currentChunkY !== this.#lastChunkY ||
 			currentChunkZ !== this.#lastChunkZ
 		) {
-			void ChunkLoadingSystem.updateChunksAround(
+			void updateChunksAround(
 				currentChunkX,
 				currentChunkY,
 				currentChunkZ,
@@ -141,7 +143,7 @@ export class PlayerLoopController {
 			Array.from(Chunk.chunkInstances.values()).filter((c) => c.isLoaded)
 				.length,
 		);
-		const loadStats = ChunkLoadingSystem.getDebugStats();
+		const loadStats = getDebugStats();
 		const workerStats = ChunkWorkerPool.getInstance().getDebugStats();
 		PlayerHud.updateDebugInfo(
 			"Chunk Queues",

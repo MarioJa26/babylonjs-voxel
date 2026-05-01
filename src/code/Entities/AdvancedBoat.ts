@@ -17,7 +17,7 @@ import type { IUsable } from "../Inferface/IUsable";
 import { PaddleBoatControls } from "../Player/Controls/PaddleBoatControls";
 import type { Player } from "../Player/Player";
 import { BlockType, isCollidableBlock } from "../World/BlockType";
-import { ChunkLoadingSystem } from "../World/Chunk/ChunkLoadingSystem";
+import { getBlockByWorldCoords } from "../World/Chunk/ChunkLoadingSystem";
 import { MetadataContainer } from "./MetaDataContainer";
 import { Mount } from "./Mount";
 
@@ -96,7 +96,7 @@ export class AdvancedBoat implements IUsable {
 		this.#voxelCollider = new VoxelAabbCollider(
 			this.#collisionHalfExtents,
 			(x, y, z) => {
-				const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
+				const blockId = getBlockByWorldCoords(x, y, z);
 				return isCollidableBlock(blockId);
 			},
 			this.#collisionEpsilon,
@@ -268,12 +268,12 @@ export class AdvancedBoat implements IUsable {
 		const y = Math.floor(worldPoint.y);
 		const z = Math.floor(worldPoint.z);
 
-		const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
+		const blockId = getBlockByWorldCoords(x, y, z);
 		if (blockId !== BlockType.Water) {
 			return 0;
 		}
 
-		const aboveBlockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y + 1, z);
+		const aboveBlockId = getBlockByWorldCoords(x, y + 1, z);
 		if (aboveBlockId === BlockType.Water) {
 			return 1;
 		}

@@ -3,7 +3,7 @@ import { CustomBoat } from "@/code/Entities/CustomBoat";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { Map1 } from "@/code/Maps/Map1";
 import { BlockType, isCollidableBlock } from "@/code/World/BlockType";
-import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { getBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { pickWaterTarget } from "../Hud/BlockHighlight/BlockRaycaster";
 import type { Player } from "../Player";
 
@@ -14,7 +14,7 @@ export const ItemUseActions: Record<string, ItemUseAction> = {
 		const hit = pickWaterTarget(player);
 		if (!hit) return;
 
-		const blockAtHit = ChunkLoadingSystem.getBlockByWorldCoords(
+		const blockAtHit = getBlockByWorldCoords(
 			hit.x,
 			hit.y,
 			hit.z,
@@ -39,7 +39,7 @@ export const ItemUseActions: Record<string, ItemUseAction> = {
 					const checkY = spawnY + y;
 					const checkZ = hit.z + z;
 
-					const blockId = ChunkLoadingSystem.getBlockByWorldCoords(
+					const blockId = getBlockByWorldCoords(
 						checkX,
 						checkY,
 						checkZ,

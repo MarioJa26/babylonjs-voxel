@@ -11,7 +11,7 @@ import {
 import { MetadataContainer } from "@/code/Entities/MetaDataContainer";
 import type { IUsable } from "@/code/Inferface/IUsable";
 import { Map1 } from "@/code/Maps/Map1";
-import { ChunkLoadingSystem } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { getBlockByWorldCoords, getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
 	Axis,
 	VoxelAabbCollider,
@@ -67,7 +67,7 @@ export class DroppedItem implements IUsable {
 		this.#voxelCollider = new VoxelAabbCollider(
 			new Vector3(this.#halfSize, this.#halfSize, this.#halfSize),
 			(x, y, z) => {
-				const blockId = ChunkLoadingSystem.getBlockByWorldCoords(x, y, z);
+				const blockId = getBlockByWorldCoords(x, y, z);
 				return blockId !== 0 && blockId !== 30;
 			},
 			DroppedItem.EPSILON,
@@ -170,7 +170,7 @@ export class DroppedItem implements IUsable {
 	}
 
 	#updateLighting(): void {
-		const packedLight = ChunkLoadingSystem.getLightByWorldCoords(
+		const packedLight = getLightByWorldCoords(
 			this.#boxMesh.position.x,
 			this.#boxMesh.position.y,
 			this.#boxMesh.position.z,

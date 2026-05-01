@@ -1,4 +1,4 @@
-import { Chunk } from "../Chunk";
+import { Chunk, getChunk } from "../Chunk";
 import { worldToBlockCoord, worldToChunkCoord } from "../ChunkLoadingSystem";
 
 export interface WorldBlockCoordinates {
@@ -43,23 +43,9 @@ export class ChunkWorldMutations {
 		worldY: number,
 		worldZ: number,
 	): number {
-		const coords = this.toLocalBlockCoordinates(worldX, worldY, worldZ);
+		const coords = toLocalBlockCoordinates(worldX, worldY, worldZ);
 		if (!coords.chunk) return 0;
 		return coords.chunk.getBlock(coords.localX, coords.localY, coords.localZ);
-	}
-
-	public getBlockStateByWorldCoords(
-		worldX: number,
-		worldY: number,
-		worldZ: number,
-	): number {
-		const coords = this.toLocalBlockCoordinates(worldX, worldY, worldZ);
-		if (!coords.chunk) return 0;
-		return coords.chunk.getBlockState(
-			coords.localX,
-			coords.localY,
-			coords.localZ,
-		);
 	}
 
 	public getLightByWorldCoords(
@@ -67,7 +53,7 @@ export class ChunkWorldMutations {
 		worldY: number,
 		worldZ: number,
 	): number {
-		const coords = this.toLocalBlockCoordinates(worldX, worldY, worldZ);
+		const coords = toLocalBlockCoordinates(worldX, worldY, worldZ);
 		if (!coords.chunk) return 0;
 		return coords.chunk.getLight(coords.localX, coords.localY, coords.localZ);
 	}
@@ -79,7 +65,7 @@ export class ChunkWorldMutations {
 		blockId: number,
 		state: number = 0,
 	): boolean {
-		const coords = this.toLocalBlockCoordinates(worldX, worldY, worldZ);
+		const coords = toLocalBlockCoordinates(worldX, worldY, worldZ);
 
 		if (!coords.chunk) {
 			this.adapter.onMissingChunk?.(coords);
@@ -128,7 +114,7 @@ export class ChunkWorldMutations {
 	}
 
 	public deleteBlock(worldX: number, worldY: number, worldZ: number): boolean {
-		const coords = this.toLocalBlockCoordinates(worldX, worldY, worldZ);
+		const coords = toLocalBlockCoordinates(worldX, worldY, worldZ);
 
 		if (!coords.chunk) {
 			this.adapter.onMissingChunk?.(coords);
@@ -170,33 +156,6 @@ export class ChunkWorldMutations {
 		return true;
 	}
 
-	public toLocalBlockCoordinates(
-		worldX: number,
-		worldY: number,
-		worldZ: number,
-	): LocalBlockCoordinates {
-		const chunkX = worldToChunkCoord(worldX);
-		const chunkY = worldToChunkCoord(worldY);
-		const chunkZ = worldToChunkCoord(worldZ);
-
-		const localX = worldToBlockCoord(worldX);
-		const localY = worldToBlockCoord(worldY);
-		const localZ = worldToBlockCoord(worldZ);
-
-		return {
-			worldX,
-			worldY,
-			worldZ,
-			chunkX,
-			chunkY,
-			chunkZ,
-			localX,
-			localY,
-			localZ,
-			chunk: Chunk.getChunk(chunkX, chunkY, chunkZ),
-		};
-	}
-
 	private isBoundaryLocalCoord(
 		localX: number,
 		localY: number,
@@ -212,4 +171,45 @@ export class ChunkWorldMutations {
 			localZ === max
 		);
 	}
+}
+
+export function toLocalBlockCoordinates(
+	worldX: number,
+	worldY: number,
+	worldZ: number,
+): LocalBlockCoordinates {
+	const chunkX = worldToChunkCoord(worldX);
+	const chunkY = worldToChunkCoord(worldY);
+	const chunkZ = worldToChunkCoord(worldZ);
+
+	const localX = worldToBlockCoord(worldX);
+	const localY = worldToBlockCoord(worldY);
+	const localZ = worldToBlockCoord(worldZ);
+
+	return {
+		worldX,
+		worldY,
+		worldZ,
+		chunkX,
+		chunkY,
+		chunkZ,
+		localX,
+		localY,
+		localZ,
+		chunk: getChunk(chunkX, chunkY, chunkZ),
+	};
+}
+
+export function getBlockStateByWorldCoords(
+	worldX: number,
+	worldY: number,
+	worldZ: number,
+): number {
+	const coords = toLocalBlockCoordinates(worldX, worldY, worldZ);
+	if (!coords.chunk) return 0;
+	return coords.chunk.getBlockState(
+		coords.localX,
+		coords.localY,
+		coords.localZ,
+	);
 }
