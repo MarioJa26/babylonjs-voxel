@@ -364,14 +364,6 @@ export class ChunkLoadingSystem {
 		return n;
 	}
 
-	private static scheduleRemeshForChunks(chunks: Chunk[]): void {
-		const pool = ChunkWorkerPool.getInstance();
-
-		for (const chunk of chunks) {
-			pool.scheduleRemesh(chunk, true);
-		}
-	}
-
 	private static getReusableMeshData(
 		opaque: MeshData | null,
 		transparent: MeshData | null,
