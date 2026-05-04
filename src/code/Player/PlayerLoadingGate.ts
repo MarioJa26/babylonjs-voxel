@@ -2,8 +2,10 @@ import type { Observer, Scene } from "@babylonjs/core";
 import { getChunk } from "../World/Chunk/Chunk";
 import {
 	areChunksLod0ReadyAround,
+	updateChunksAround,
 	worldToChunkCoord,
 } from "../World/Chunk/ChunkLoadingSystem";
+import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 import type { Player } from "./Player";
 
 export class PlayerLoadingGate {
@@ -50,6 +52,12 @@ export class PlayerLoadingGate {
 		const chunkX = worldToChunkCoord(playerPos.x);
 		const chunkY = worldToChunkCoord(playerPos.y);
 		const chunkZ = worldToChunkCoord(playerPos.z);
+		updateChunksAround(
+			chunkX,
+			chunkY,
+			chunkZ,
+			SETTING_PARAMS.RENDER_DISTANCE * 2,
+		);
 
 		const chunksReady = areChunksLod0ReadyAround(
 			chunkX,
