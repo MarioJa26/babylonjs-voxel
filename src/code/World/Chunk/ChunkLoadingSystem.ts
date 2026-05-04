@@ -23,7 +23,11 @@ import type {
 	ChunkLoadingDebugStats,
 	InFlightProcessState,
 } from "./Loading/ChunkTypes";
-import { ChunkWorldMutations } from "./Loading/ChunkWorldMutations";
+// After
+import {
+	ChunkWorldMutations,
+	getBlockStateByWorldCoords as getBlockStateFromMutations,
+} from "./Loading/ChunkWorldMutations";
 
 type ResolvedSavedMeshSelection = {
 	selectedMesh: SelectedSavedMesh | null;
@@ -903,7 +907,7 @@ export function getBlockStateByWorldCoords(
 		return dynamicSample.blockState;
 	}
 
-	return getBlockStateByWorldCoords(worldX, worldY, worldZ);
+	return getBlockStateFromMutations(worldX, worldY, worldZ);
 }
 
 export function getLightByWorldCoords(

@@ -10,12 +10,18 @@ import {
 } from "@babylonjs/core";
 import {
 	Axis,
+	type BlockShapeInfo,
 	VoxelAabbCollider,
 } from "@/code/World/Collision/VoxelAabbCollider";
 import { CustomBoat } from "../Entities/CustomBoat";
 import type { Mount } from "../Entities/Mount";
+import {} from "../World/BlockEncoding";
 import { BlockType, isCollidableBlock } from "../World/BlockType";
-import { getBlockByWorldCoords } from "../World/Chunk/ChunkLoadingSystem";
+import {
+	getBlockByWorldCoords,
+	getBlockStateByWorldCoords,
+} from "../World/Chunk/ChunkLoadingSystem";
+import { getShapeForBlockId } from "../World/Shape/BlockShapes";
 import type { PlayerBodyControlState, SavedBodyPosition } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
 import {
@@ -112,7 +118,6 @@ export class PlayerVehicleMotor {
 	private readonly colliderHalfHeight = 0.875;
 	private readonly voxelStepSize = 0.25;
 	private readonly collisionEpsilon = 0.001;
-	private readonly boatCollisionEpsilon = 0.003;
 	private readonly swimSpeed = 4.0;
 	private readonly swimAcceleration = 14;
 	private readonly swimSinkSpeed = -2.2;
@@ -120,7 +125,7 @@ export class PlayerVehicleMotor {
 	private readonly swimVerticalAcceleration = 18;
 	private readonly swimHorizontalDrag = 0.97;
 	private readonly stepUpHeight = 1.01;
-	private readonly stepUpCooldown = 0.1;
+	private readonly stepUpCooldown = 0.01;
 
 	// PERF: Pre-computed constants derived from other parameters.
 	// Avoids repeated arithmetic in the physics hot path.
@@ -179,8 +184,20 @@ export class PlayerVehicleMotor {
 				this.colliderHalfHeight,
 				this.colliderHalfWidth,
 			),
-			(x, y, z) =>
-				isCollidableBlock(getBlockByWorldCoords(x, y, z)),
+			(x, y, z): BlockShapeInfo | null => {
+				const blockId = getBlockByWorldCoords(x, y, z);
+				if (!isCollidableBlock(blockId)) return null;
+				const state = getBlockStateByWorldCoords(x, y, z);
+				const shape = getShapeForBlockId(blockId);
+				const rotation = shape.rotateY ? state & 3 : 0;
+				const flipY = shape.allowFlipY && (state & 4) !== 0;
+				return {
+					shape,
+					rotation,
+					slice: 0,
+					flipY,
+				};
+			},
 			this.collisionEpsilon,
 			{
 				scene: this.#scene,
@@ -196,11 +213,23 @@ export class PlayerVehicleMotor {
 				this.colliderHalfHeight,
 				this.colliderHalfWidth,
 			),
-			(x, y, z) => {
+			(x, y, z): BlockShapeInfo | null => {
 				const chunk = this.#collisionBoat?.boatChunk;
-				return chunk ? isCollidableBlock(chunk.getBlockLocal(x, y, z)) : false;
+				if (!chunk) return null;
+				const packed = chunk.getBlockLocal(x, y, z);
+				const blockId = packed & 0x3ff;
+				if (!isCollidableBlock(blockId)) return null;
+				const state = (packed >>> 10) & 0x3f;
+				const shape = getShapeForBlockId(blockId);
+				const rotation = shape.rotateY ? state & 3 : 0;
+				const flipY = shape.allowFlipY && (state & 4) !== 0;
+				return {
+					shape,
+					rotation,
+					slice: 0,
+					flipY,
+				};
 			},
-			this.boatCollisionEpsilon,
 		);
 
 		this.initializeCharacter();
@@ -1116,11 +1145,7 @@ export class PlayerVehicleMotor {
 			const y = pos.y + dy;
 			for (const [dx, dz] of this._waterXZOffsets) {
 				if (
-					getBlockByWorldCoords(
-						pos.x + dx,
-						y,
-						pos.z + dz,
-					) === BlockType.Water
+					getBlockByWorldCoords(pos.x + dx, y, pos.z + dz) === BlockType.Water
 				)
 					return true;
 			}

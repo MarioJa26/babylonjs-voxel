@@ -2,7 +2,7 @@
 
 export const SETTING_PARAMS = {
 	// --- World Generation & Loading ---
-	RENDER_DISTANCE: 2,
+	RENDER_DISTANCE: 1,
 	VERTICAL_RENDER_DISTANCE: 5,
 	MAX_CHUNK_HEIGHT: 32,
 	CHUNK_UNLOAD_DISTANCE_BUFFER: 1, // How many extra chunks to keep before unloading
@@ -15,8 +15,8 @@ export const SETTING_PARAMS = {
 	VERTICAL_CHUNK_CULLING_FACTOR: 6, // Multiplier for CHUNK_SIZE to cull chunks above/below terrain
 	CAMERA_FOV: 93, // Default camera field of view in degrees
 
-	DISTANT_RENDER_DISTANCE: 100, //128,
-	LOD_PRECOMPUTE_SCHEDULE_THROTTLE_MS: 120,
+	DISTANT_RENDER_DISTANCE: 32, //128,
+	LOD_PRECOMPUTE_SCHEDULE_THROTTLE_MS: 220, //120
 	LOD_PRECOMPUTE_MAX_ENQUEUE_PER_UPDATE: 48,
 	// 0 = unlimited dispatch while workers are idle
 	CHUNK_WORKER_DISPATCH_BUDGET_PER_TICK: 12,

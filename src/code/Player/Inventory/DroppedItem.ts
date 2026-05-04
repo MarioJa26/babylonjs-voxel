@@ -11,12 +11,19 @@ import {
 import { MetadataContainer } from "@/code/Entities/MetaDataContainer";
 import type { IUsable } from "@/code/Inferface/IUsable";
 import { Map1 } from "@/code/Maps/Map1";
-import { getBlockByWorldCoords, getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { isCollidableBlock } from "@/code/World/BlockType";
+import {
+	getBlockByWorldCoords,
+	getBlockStateByWorldCoords,
+	getLightByWorldCoords,
+} from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
 	Axis,
+	type BlockShapeInfo,
 	VoxelAabbCollider,
 } from "@/code/World/Collision/VoxelAabbCollider";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
+import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
 import { getAtlasTile } from "@/code/World/Texture/BlockTextures";
 import { TextureAtlasFactory } from "@/code/World/Texture/TextureAtlasFactory";
 import type { Player } from "../Player";
@@ -66,9 +73,19 @@ export class DroppedItem implements IUsable {
 		this.#item = item;
 		this.#voxelCollider = new VoxelAabbCollider(
 			new Vector3(this.#halfSize, this.#halfSize, this.#halfSize),
-			(x, y, z) => {
+			(x, y, z): BlockShapeInfo | null => {
 				const blockId = getBlockByWorldCoords(x, y, z);
-				return blockId !== 0 && blockId !== 30;
+				if (!isCollidableBlock(blockId)) return null;
+				const state = getBlockStateByWorldCoords(x, y, z);
+				const shape = getShapeForBlockId(blockId);
+				const rotation = shape.rotateY ? state & 3 : 0;
+				const flipY = shape.allowFlipY && (state & 4) !== 0;
+				return {
+					shape,
+					rotation,
+					slice: 0,
+					flipY,
+				};
 			},
 			DroppedItem.EPSILON,
 			{

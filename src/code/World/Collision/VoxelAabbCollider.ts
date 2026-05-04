@@ -7,19 +7,81 @@ import {
 	StandardMaterial,
 	Vector3,
 } from "@babylonjs/core";
+import type { ShapeDefinition } from "../Shape/BlockShapes";
 
 export enum Axis {
 	X,
 	Y,
 	Z,
 }
-type IsSolidBlockAt = (x: number, y: number, z: number) => boolean;
+
+export type BlockShapeInfo = {
+	shape: ShapeDefinition;
+	rotation: number;
+	/** For usesSliceState shapes (slab): 0 = bottom half, 1 = top half. */
+	slice: number;
+	/** For allowFlipY shapes (stairs): true = upside-down. */
+	flipY: boolean;
+};
+
+type IsSolidBlockAt = (
+	x: number,
+	y: number,
+	z: number,
+) => BlockShapeInfo | null;
+
 type VoxelAabbDebugOptions = {
 	scene: Scene;
 	name?: string;
 	position?: Vector3;
 	renderingGroupId?: number;
 };
+
+/**
+ * Rotate a ShapeBox around the Y axis of the block cell (centre = 0.5, 0.5).
+ * rotation: 0 = 0°, 1 = 90° CW, 2 = 180°, 3 = 270° CW (looking down -Y).
+ */
+function rotateShapeBoxY(
+	minX: number,
+	minY: number,
+	minZ: number,
+	maxX: number,
+	maxY: number,
+	maxZ: number,
+	rotation: number,
+	out: [number, number, number, number, number, number],
+): void {
+	const steps = ((rotation % 4) + 4) % 4;
+
+	let ax = minX,
+		az = minZ,
+		bx = maxX,
+		bz = maxZ;
+
+	for (let i = 0; i < steps; i++) {
+		// 90° CW around centre (0.5, 0.5):  (x,z) → (1-z, x)
+		const newAx = 1 - bz;
+		const newAz = ax;
+		const newBx = 1 - az;
+		const newBz = bx;
+		ax = Math.min(newAx, newBx);
+		bx = Math.max(newAx, newBx);
+		az = Math.min(newAz, newBz);
+		bz = Math.max(newAz, newBz);
+	}
+
+	out[0] = ax;
+	out[1] = minY;
+	out[2] = az;
+	out[3] = bx;
+	out[4] = maxY;
+	out[5] = bz;
+}
+
+// Module-level scratch to avoid allocations inside overlaps().
+const _rotatedBox: [number, number, number, number, number, number] = [
+	0, 0, 0, 0, 0, 0,
+];
 
 export class VoxelAabbCollider {
 	#halfExtents: Vector3;
@@ -88,25 +150,94 @@ export class VoxelAabbCollider {
 	}
 
 	public overlaps(position: Vector3): boolean {
-		const minX = position.x - this.#halfExtents.x;
-		const maxX = position.x + this.#halfExtents.x;
-		const minY = position.y - this.#halfExtents.y;
-		const maxY = position.y + this.#halfExtents.y;
-		const minZ = position.z - this.#halfExtents.z;
-		const maxZ = position.z + this.#halfExtents.z;
+		const eps = this.#epsilon;
 
-		const x0 = Math.floor(minX + this.#epsilon);
-		const x1 = Math.floor(maxX - this.#epsilon);
-		const y0 = Math.floor(minY + this.#epsilon);
-		const y1 = Math.floor(maxY - this.#epsilon);
-		const z0 = Math.floor(minZ + this.#epsilon);
-		const z1 = Math.floor(maxZ - this.#epsilon);
+		const aMinX = position.x - this.#halfExtents.x;
+		const aMaxX = position.x + this.#halfExtents.x;
+		const aMinY = position.y - this.#halfExtents.y;
+		const aMaxY = position.y + this.#halfExtents.y;
+		const aMinZ = position.z - this.#halfExtents.z;
+		const aMaxZ = position.z + this.#halfExtents.z;
+
+		const x0 = Math.floor(aMinX + eps);
+		const x1 = Math.floor(aMaxX - eps);
+		const y0 = Math.floor(aMinY + eps);
+		const y1 = Math.floor(aMaxY - eps);
+		const z0 = Math.floor(aMinZ + eps);
+		const z1 = Math.floor(aMaxZ - eps);
 
 		for (let x = x0; x <= x1; x++) {
 			for (let y = y0; y <= y1; y++) {
 				for (let z = z0; z <= z1; z++) {
-					if (this.#isSolidBlockAt(x, y, z)) {
-						return true;
+					const info = this.#isSolidBlockAt(x, y, z);
+					if (!info) continue;
+
+					const { shape, rotation, slice, flipY } = info;
+					const needsRotation = shape.rotateY && rotation !== 0;
+
+					for (const box of shape.boxes) {
+						const minX = box.min[0];
+						let minY = box.min[1];
+						const minZ = box.min[2];
+						const maxX = box.max[0];
+						let maxY = box.max[1];
+						const maxZ = box.max[2];
+
+						// Slab: ignore the JSON box Y and derive from slice instead.
+						// slice=0 → bottom half [0, 0.5], slice=1 → top half [0.5, 1].
+						if (shape.usesSliceState) {
+							const offset = slice * 0.5;
+							minY = offset;
+							maxY = offset + 0.5;
+						}
+
+						// Upside-down shapes (e.g. inverted stairs): mirror Y within cell.
+						if (flipY) {
+							const flippedMin = 1 - maxY;
+							const flippedMax = 1 - minY;
+							minY = flippedMin;
+							maxY = flippedMax;
+						}
+
+						let bMinX: number, bMinY: number, bMinZ: number;
+						let bMaxX: number, bMaxY: number, bMaxZ: number;
+
+						if (needsRotation) {
+							rotateShapeBoxY(
+								minX,
+								minY,
+								minZ,
+								maxX,
+								maxY,
+								maxZ,
+								rotation,
+								_rotatedBox,
+							);
+							bMinX = x + _rotatedBox[0];
+							bMinY = y + _rotatedBox[1];
+							bMinZ = z + _rotatedBox[2];
+							bMaxX = x + _rotatedBox[3];
+							bMaxY = y + _rotatedBox[4];
+							bMaxZ = z + _rotatedBox[5];
+						} else {
+							bMinX = x + minX;
+							bMinY = y + minY;
+							bMinZ = z + minZ;
+							bMaxX = x + maxX;
+							bMaxY = y + maxY;
+							bMaxZ = z + maxZ;
+						}
+
+						if (
+							aMaxX - eps > bMinX &&
+							aMinX + eps < bMaxX &&
+							aMaxY - eps > bMinY &&
+							aMinY + eps < bMaxY &&
+							aMaxZ - eps > bMinZ &&
+							aMinZ + eps < bMaxZ
+						) {
+							return true;
+						}
 					}
 				}
 			}

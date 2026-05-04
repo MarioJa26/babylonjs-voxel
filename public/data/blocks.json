@@ -302,7 +302,7 @@
 		"id": "GraniteWall",
 		"name": "granite_wall",
 		"path": "/texture/stone/granite_wall_1k",
-		"shape": "slab"
+		"shape": "half_wall"
 	},
 	{
 		"id": "PatternedBrickWall03",
@@ -329,7 +329,8 @@
 	{
 		"id": "RedSandstoneWall",
 		"name": "red_sandstone_wall",
-		"path": "/texture/stone/red_sandstone_wall_1k"
+		"path": "/texture/stone/red_sandstone_wall_1k",
+		"shape": "slab"
 	},
 	{
 		"id": "Glass01",

@@ -402,6 +402,7 @@ export class ChunkWorkerPool {
 		poolSize = navigator.hardwareConcurrency || 4,
 	): ChunkWorkerPool {
 		if (!ChunkWorkerPool.instance) {
+			console.log(poolSize + " Workers");
 			ChunkWorkerPool.instance = new ChunkWorkerPool(poolSize);
 			Chunk.onRequestRemesh = (chunk: Chunk, priority: boolean) => {
 				ChunkWorkerPool.instance.scheduleRemesh(chunk, priority);

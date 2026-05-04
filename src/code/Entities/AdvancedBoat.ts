@@ -11,13 +11,18 @@ import { ImportMeshAsync } from "@babylonjs/core/Loading/sceneLoader";
 import "@babylonjs/loaders/glTF";
 import {
 	Axis,
+	type BlockShapeInfo,
 	VoxelAabbCollider,
 } from "@/code/World/Collision/VoxelAabbCollider";
 import type { IUsable } from "../Inferface/IUsable";
 import { PaddleBoatControls } from "../Player/Controls/PaddleBoatControls";
 import type { Player } from "../Player/Player";
 import { BlockType, isCollidableBlock } from "../World/BlockType";
-import { getBlockByWorldCoords } from "../World/Chunk/ChunkLoadingSystem";
+import {
+	getBlockByWorldCoords,
+	getBlockStateByWorldCoords,
+} from "../World/Chunk/ChunkLoadingSystem";
+import { getShapeForBlockId } from "../World/Shape/BlockShapes";
 import { MetadataContainer } from "./MetaDataContainer";
 import { Mount } from "./Mount";
 
@@ -95,9 +100,19 @@ export class AdvancedBoat implements IUsable {
 
 		this.#voxelCollider = new VoxelAabbCollider(
 			this.#collisionHalfExtents,
-			(x, y, z) => {
+			(x, y, z): BlockShapeInfo | null => {
 				const blockId = getBlockByWorldCoords(x, y, z);
-				return isCollidableBlock(blockId);
+				if (!isCollidableBlock(blockId)) return null;
+				const state = getBlockStateByWorldCoords(x, y, z);
+				const shape = getShapeForBlockId(blockId);
+				const rotation = shape.rotateY ? state & 3 : 0;
+				const flipY = shape.allowFlipY && (state & 4) !== 0;
+				return {
+					shape,
+					rotation,
+					slice: 0,
+					flipY,
+				};
 			},
 			this.#collisionEpsilon,
 			{

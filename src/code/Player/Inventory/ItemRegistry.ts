@@ -1,4 +1,3 @@
-import { packRotationSlice } from "@/code/World/BlockEncoding";
 import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
 
 export type ItemDefinition = {
@@ -19,13 +18,6 @@ export class ItemRegistry {
 	private static initialized = false;
 	private static loadPromise: Promise<void> | null = null;
 	private static definitions = new Map<number, ItemDefinition>();
-	private static variantsInitialized = false;
-
-	private static readonly SLAB_VARIANTS = [
-		{ rotation: 0, slice: 4, suffix: "Slab (Bottom)" },
-		{ rotation: 4, slice: 4, suffix: "Slab (Top)" },
-		{ rotation: 1, slice: 4, suffix: "Half Wall" },
-	];
 
 	private static toDisplayName(rawName: string): string {
 		return (
@@ -63,7 +55,6 @@ export class ItemRegistry {
 		if (ItemRegistry.loadPromise) return ItemRegistry.loadPromise;
 		ItemRegistry.loadPromise = (async () => {
 			await ItemRegistry.loadFromUrl(url);
-			ItemRegistry.ensureBlockStateVariants();
 		})();
 		return ItemRegistry.loadPromise;
 	}
@@ -105,39 +96,6 @@ export class ItemRegistry {
 	static getAll(): ItemDefinition[] {
 		ItemRegistry.initDefaults();
 		return [...ItemRegistry.definitions.values()].sort((a, b) => a.id - b.id);
-	}
-
-	private static ensureBlockStateVariants(): void {
-		if (ItemRegistry.variantsInitialized) return;
-		ItemRegistry.variantsInitialized = true;
-
-		let nextId = 1;
-		for (const id of ItemRegistry.definitions.keys()) {
-			if (id >= nextId) nextId = id + 1;
-		}
-
-		const variantBases = TextureDefinitions.filter(
-			(textureDef) => textureDef.shape === "slab",
-		);
-
-		for (const base of variantBases) {
-			const baseLabel =
-				ItemRegistry.toDisplayName(base.name) || `Block ${base.id}`;
-
-			for (const variant of ItemRegistry.SLAB_VARIANTS) {
-				const state = packRotationSlice(variant.rotation, variant.slice);
-				const label = `${baseLabel} ${variant.suffix}`;
-				ItemRegistry.register({
-					id: nextId++,
-					name: label,
-					description: `Block: ${label}`,
-					useAction: "place_block",
-					blockId: base.id,
-					blockState: state,
-					shape: "variant",
-				});
-			}
-		}
 	}
 
 	private static isValidDefinition(value: unknown): value is ItemDefinition {

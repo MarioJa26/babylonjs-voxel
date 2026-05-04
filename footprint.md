@@ -1,12 +1,12 @@
 # Project Footprint
 
-Generated: 2026-05-01T18:35:16.749Z
+Generated: 2026-05-04T02:50:50.271Z
 
-> **Summary:** 102 classes · 1749 members · 199 module-level functions · 28862 LOC
+> **Summary:** 102 classes · 1745 members · 200 module-level functions · 28994 LOC
 
 ---
 
-## `Entities/AdvancedBoat.ts` (272 LOC)
+## `Entities/AdvancedBoat.ts` (287 LOC)
 
 ### export class AdvancedBoat implements IUsable
 
@@ -1538,7 +1538,7 @@ Generated: 2026-05-01T18:35:16.749Z
 
 ---
 
-## `Player/Inventory/DroppedItem.ts` (214 LOC)
+## `Player/Inventory/DroppedItem.ts` (231 LOC)
 
 ### export class DroppedItem implements IUsable
 
@@ -1628,7 +1628,7 @@ Generated: 2026-05-01T18:35:16.749Z
 
 ---
 
-## `Player/Inventory/ItemRegistry.ts` (132 LOC)
+## `Player/Inventory/ItemRegistry.ts` (96 LOC)
 
 ### export class ItemRegistry
 
@@ -1636,8 +1636,6 @@ Generated: 2026-05-01T18:35:16.749Z
 - `private static initialized: unknown`
 - `private static loadPromise: Promise<void> | null`
 - `private static definitions: unknown`
-- `private static variantsInitialized: unknown`
-- `private static readonly SLAB_VARIANTS: unknown`
 
 **Methods**
 - `private static toDisplayName(rawName: string): string`
@@ -1647,7 +1645,6 @@ Generated: 2026-05-01T18:35:16.749Z
 - `static register(def: ItemDefinition): void`
 - `static get(id: number): ItemDefinition | undefined`
 - `static getAll(): ItemDefinition[]`
-- `private static ensureBlockStateVariants(): void`
 - `private static isValidDefinition(value: unknown): value is ItemDefinition`
 
 **Types / Interfaces / Enums**
@@ -1867,7 +1864,7 @@ Generated: 2026-05-01T18:35:16.749Z
 
 ---
 
-## `Player/PlayerLoadingGate.ts` (82 LOC)
+## `Player/PlayerLoadingGate.ts` (90 LOC)
 
 ### export class PlayerLoadingGate
 
@@ -2024,7 +2021,7 @@ Generated: 2026-05-01T18:35:16.749Z
 
 ---
 
-## `Player/PlayerVehicleMotor.ts` (961 LOC)
+## `Player/PlayerVehicleMotor.ts` (986 LOC)
 
 ### export class PlayerVehicleMotor
 
@@ -2087,7 +2084,6 @@ Generated: 2026-05-01T18:35:16.749Z
 - `private readonly colliderHalfHeight: unknown`
 - `private readonly voxelStepSize: unknown`
 - `private readonly collisionEpsilon: unknown`
-- `private readonly boatCollisionEpsilon: unknown`
 - `private readonly swimSpeed: unknown`
 - `private readonly swimAcceleration: unknown`
 - `private readonly swimSinkSpeed: unknown`
@@ -2211,7 +2207,7 @@ Generated: 2026-05-01T18:35:16.749Z
 
 ---
 
-## `TestScene.ts` (59 LOC)
+## `TestScene.ts` (57 LOC)
 
 ### export class TestScene
 
@@ -2381,7 +2377,7 @@ Generated: 2026-05-01T18:35:16.749Z
 
 ---
 
-## `World/Chunk/ChunckMesher.ts` (761 LOC)
+## `World/Chunk/ChunckMesher.ts` (758 LOC)
 
 **Module-level functions**
 - `function ensureMeshMetadata(mesh: Mesh): Record<string, unknown>`
@@ -2400,7 +2396,7 @@ Generated: 2026-05-01T18:35:16.749Z
 - `function getFaceBufferLengths(mesh: Mesh): Record<string, number>`
 - `function upsertFaceVertexBuffer(mesh: Mesh, engine: ReturnType<typeof Map1.mainScene.getEngine>, kind: string, data: Uint8Array): void`
 - `function upsertMesh(chunk: Chunk, existingMesh: Mesh | null, meshData: MeshData, name: string, material: Material, renderingGroupId: unknown = 1): Mesh`
-- `function createCachedTexture(url: string, scene: any, args: any): Texture`
+- `function createCachedTexture(url: string, scene: Scene, args: any): Texture`
 - `async function loadTextureToCache(url: string): Promise<string>`
 - `export function initAtlas(): void`
 - `export function createMeshFromData(chunk: Chunk, meshData: { opaque: MeshData | null; transparent: MeshData | null }): void`
@@ -2574,7 +2570,7 @@ Generated: 2026-05-01T18:35:16.749Z
 
 ---
 
-## `World/Chunk/ChunkLoadingSystem.ts` (831 LOC)
+## `World/Chunk/ChunkLoadingSystem.ts` (834 LOC)
 
 **Module-level functions**
 - `function isEntityAlive(entity: ChunkBoundEntity): boolean`
@@ -2668,7 +2664,7 @@ Generated: 2026-05-01T18:35:16.749Z
 
 ---
 
-## `World/Chunk/ChunkWorkerPool.ts` (1053 LOC)
+## `World/Chunk/ChunkWorkerPool.ts` (1054 LOC)
 
 ### export class ChunkWorkerPool
 
@@ -3294,7 +3290,7 @@ Generated: 2026-05-01T18:35:16.749Z
 
 ---
 
-## `World/Collision/VoxelAabbCollider.ts` (168 LOC)
+## `World/Collision/VoxelAabbCollider.ts` (272 LOC)
 
 ### export class VoxelAabbCollider
 
@@ -3324,7 +3320,11 @@ Generated: 2026-05-01T18:35:16.749Z
 - `public static toggleDebugEnabled(): void`
 - `public static setDebugEnabled(enabled: boolean): void`
 
+**Module-level functions**
+- `function rotateShapeBoxY(minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number, rotation: number, out: [number, number, number, number, number, number]): void`
+
 **Types / Interfaces / Enums**
+- type `BlockShapeInfo`
 - type `IsSolidBlockAt`
 - type `VoxelAabbDebugOptions`
 - enum `Axis`

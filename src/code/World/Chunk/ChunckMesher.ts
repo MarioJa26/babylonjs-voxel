@@ -5,6 +5,7 @@ import {
 	Effect,
 	type Material,
 	Mesh,
+	type Scene,
 	ShaderMaterial,
 	Texture,
 	UniformBuffer,
@@ -304,11 +305,7 @@ function upsertFaceVertexBuffer(
 	const nextLength = data.length;
 
 	// Fast path: same-sized updatable buffer -> update in place.
-	if (
-		existing &&
-		existing.isUpdatable() &&
-		bufferLengths[kind] === nextLength
-	) {
+	if (existing?.isUpdatable() && bufferLengths[kind] === nextLength) {
 		existing.update(data);
 		return;
 	}
@@ -405,7 +402,7 @@ function upsertMesh(
 	return mesh;
 }
 
-function createCachedTexture(url: string, scene: any, args: any): Texture {
+function createCachedTexture(url: string, scene: Scene, args: any): Texture {
 	const texture = new Texture(null, scene, args);
 
 	loadTextureToCache(url)
