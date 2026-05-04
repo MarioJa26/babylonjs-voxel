@@ -2,13 +2,13 @@
 
 export const SETTING_PARAMS = {
 	// --- World Generation & Loading ---
-	RENDER_DISTANCE: 1,
-	VERTICAL_RENDER_DISTANCE: 5,
+	RENDER_DISTANCE: 2,
+	VERTICAL_RENDER_DISTANCE: 6,
 	MAX_CHUNK_HEIGHT: 32,
 	CHUNK_UNLOAD_DISTANCE_BUFFER: 1, // How many extra chunks to keep before unloading
 	// 0 = auto (render-distance based), >0 = explicit per-cycle cap
-	CHUNK_LOAD_BATCH_LIMIT: 0,
-	CHUNK_UNLOAD_BATCH_LIMIT: 0,
+	CHUNK_LOAD_BATCH_LIMIT: 16,
+	CHUNK_UNLOAD_BATCH_LIMIT: 16,
 	// Soft budget used by chunk loading scheduler to decide whether to continue
 	// work in microtasks or yield to next frame.
 	CHUNK_LOADING_FRAME_BUDGET_MS: 8.0,

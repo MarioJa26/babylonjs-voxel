@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-05-04T02:50:50.271Z
+Generated: 2026-05-04T17:45:58.745Z
 
-> **Summary:** 102 classes · 1745 members · 200 module-level functions · 28994 LOC
+> **Summary:** 102 classes · 1746 members · 200 module-level functions · 29035 LOC
 
 ---
 
@@ -1451,6 +1451,27 @@ Generated: 2026-05-04T02:50:50.271Z
 
 ---
 
+## `Player/Hud/DebugPanel.ts` (43 LOC)
+
+### export class DebugPanel
+
+**Constructor**
+- `constructor()`
+
+**Properties**
+- `static instance: DebugPanel`
+- `static div: HTMLDivElement`
+- `private static infoLines: { [key: string]: string }`
+
+**Methods**
+- `static getInstance(): DebugPanel`
+- `public static show(): void`
+- `public static hide(): void`
+- `public static updateInfo(key: string, value: string | number): void`
+- `private static render(): void`
+
+---
+
 ## `Player/Hud/PauseMenu.ts` (330 LOC)
 
 ### export class PauseMenu
@@ -2782,7 +2803,7 @@ Generated: 2026-05-04T02:50:50.271Z
 
 ---
 
-## `World/Chunk/DataStructures/ResizableTypedArray.ts` (122 LOC)
+## `World/Chunk/DataStructures/ResizableTypedArray.ts` (131 LOC)
 
 ### export class ResizableTypedArray
 
@@ -2803,6 +2824,7 @@ Generated: 2026-05-04T02:50:50.271Z
 - `push8(a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number): void`
 - `push12(a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i1: number, j: number, k: number, l: number): void`
 - `private grow(minCapacity: number): void`
+- `bulkPush(src: T): void`
 
 ---
 
@@ -3372,27 +3394,6 @@ Generated: 2026-05-04T02:50:50.271Z
 
 ---
 
-## `World/DebugPanel.ts` (43 LOC)
-
-### export class DebugPanel
-
-**Constructor**
-- `constructor()`
-
-**Properties**
-- `static instance: DebugPanel`
-- `static div: HTMLDivElement`
-- `private static infoLines: { [key: string]: string }`
-
-**Methods**
-- `static getInstance(): DebugPanel`
-- `public static show(): void`
-- `public static hide(): void`
-- `public static updateInfo(key: string, value: string | number): void`
-- `private static render(): void`
-
----
-
 ## `World/GLOBAL_VALUES.ts` (13 LOC)
 
 ---
@@ -3533,7 +3534,7 @@ Generated: 2026-05-04T02:50:50.271Z
 
 ---
 
-## `World/MeshPipeline/core/MeshAssembler.ts` (20 LOC)
+## `World/MeshPipeline/core/MeshAssembler.ts` (14 LOC)
 
 **Module-level functions**
 - `export function mergeMeshData(target: WorkerInternalMeshData, source: WorkerInternalMeshData): void`
@@ -3559,7 +3560,7 @@ Generated: 2026-05-04T02:50:50.271Z
 
 ---
 
-## `World/MeshPipeline/core/ShapePipeline.ts` (328 LOC)
+## `World/MeshPipeline/core/ShapePipeline.ts` (330 LOC)
 
 **Module-level functions**
 - `function canUseDenseCache(packedBlock: number): boolean`
@@ -3630,7 +3631,7 @@ Generated: 2026-05-04T02:50:50.271Z
 
 ---
 
-## `World/MeshPipeline/core/VoxelMaskExtractor.ts` (437 LOC)
+## `World/MeshPipeline/core/VoxelMaskExtractor.ts` (439 LOC)
 
 ### export class VoxelMaskExtractor
 
@@ -3651,7 +3652,6 @@ Generated: 2026-05-04T02:50:50.271Z
 - `public extractSliceMask(axis: number, slice: number, mask: WritableNumberArray, lightMask: WritableNumberArray): void`
 
 **Module-level functions**
-- `function canUseDenseCache(packed: number): boolean`
 - `function getCachedBlockId(packed: number): number`
 - `function getCachedFlags(packed: number): number`
 
@@ -3689,11 +3689,12 @@ Generated: 2026-05-04T02:50:50.271Z
 
 ---
 
-## `World/MeshPipeline/core/WorkerMeshHelpers.ts` (144 LOC)
+## `World/MeshPipeline/core/WorkerMeshHelpers.ts` (177 LOC)
 
 **Module-level functions**
 - `export function createEmptyWorkerInternalMeshData(): WorkerInternalMeshData`
 - `export function toTransferableMeshData(data: WorkerInternalMeshData): MeshData`
+- `function getNeighborIndex(dx: number, dy: number, dz: number): number`
 - `export function createMeshContextFromPayload(base: WorkerMeshBaseContext, input: WorkerMeshInput): MeshContext`
 
 **Types / Interfaces / Enums**
@@ -3703,7 +3704,7 @@ Generated: 2026-05-04T02:50:50.271Z
 
 ---
 
-## `World/MeshPipeline/types/MeshTypes.ts` (86 LOC)
+## `World/MeshPipeline/types/MeshTypes.ts` (87 LOC)
 
 **Types / Interfaces / Enums**
 - interface `WorkerInternalMeshData`

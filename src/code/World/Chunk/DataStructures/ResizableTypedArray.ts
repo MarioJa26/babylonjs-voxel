@@ -131,4 +131,18 @@ export class ResizableTypedArray<
 	get finalArray(): T {
 		return this.array.slice(0, this.length) as T;
 	}
+
+	/**
+	 * Bulk push another typed array into this one.
+	 * More efficient than element-by-element pushing.
+	 */
+	bulkPush(src: T): void {
+		if (src.length === 0) return;
+		const newLength = this.length + src.length;
+		if (newLength > this.capacity) {
+			this.grow(newLength);
+		}
+		this.array.set(src, this.length);
+		this.length = newLength;
+	}
 }

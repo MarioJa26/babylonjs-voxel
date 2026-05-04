@@ -58,14 +58,10 @@ const BLOCK_FLAGS_CACHE = new Uint8Array(DENSE_CACHE_SIZE);
 const BLOCK_FLAGS_READY = new Uint8Array(DENSE_CACHE_SIZE);
 const BLOCK_ID_CACHE = new Uint16Array(DENSE_CACHE_SIZE);
 type WritableNumberArray = number[] | Int32Array | Uint16Array | Uint32Array;
-function canUseDenseCache(packed: number): boolean {
-	return packed >= 0 && packed <= DENSE_CACHE_MASK;
-}
-
 function getCachedBlockId(packed: number): number {
 	if (!packed) return 0;
 
-	if (canUseDenseCache(packed)) {
+	if (packed >= 0 && packed <= DENSE_CACHE_MASK) {
 		if (!BLOCK_FLAGS_READY[packed]) {
 			const id = unpackBlockId(packed);
 			BLOCK_ID_CACHE[packed] = id;
@@ -76,10 +72,14 @@ function getCachedBlockId(packed: number): number {
 	return unpackBlockId(packed);
 }
 
+/**
+ * Optimized flag lookup - inlines canUseDenseCache check
+ */
 function getCachedFlags(packed: number): number {
 	if (!packed) return 0;
 
-	if (canUseDenseCache(packed)) {
+	// Inline canUseDenseCache check to avoid function call overhead
+	if (packed >= 0 && packed <= DENSE_CACHE_MASK) {
 		if (BLOCK_FLAGS_READY[packed]) {
 			return BLOCK_FLAGS_CACHE[packed];
 		}
@@ -188,18 +188,25 @@ export class VoxelMaskExtractor {
 		const ny = by + dy;
 		const nz = bz + dz;
 
-		// --- inline samplePacked ---
+			// --- inline samplePacked ---
 		const currentPacked = ctx.getBlock(bx, by, bz, 0);
 		const neighborPacked = ctx.getBlock(nx, ny, nz, currentPacked);
 
-		// --- flags ---
-		const currFlags = getCachedFlags(currentPacked);
-		const nbrFlags = getCachedFlags(neighborPacked);
+		// --- early out: air-air (before flags) ---
+		if (!currentPacked && !neighborPacked) {
+			if (mask[outIndex]) mask[outIndex] = 0;
+			if (lightMask[outIndex]) lightMask[outIndex] = 0;
+			return;
+		}
+
+		// --- flags (optimized: avoid function call for air) ---
+		const currFlags = currentPacked ? getCachedFlags(currentPacked) : 0;
+		const nbrFlags = neighborPacked ? getCachedFlags(neighborPacked) : 0;
 
 		const currSolid = currFlags & FLAG_SOLID;
 		const nbrSolid = nbrFlags & FLAG_SOLID;
 
-		// --- early out: air-air ---
+		// --- early out: no solid blocks ---
 		if (!(currSolid | nbrSolid)) {
 			if (mask[outIndex]) mask[outIndex] = 0;
 			if (lightMask[outIndex]) lightMask[outIndex] = 0;

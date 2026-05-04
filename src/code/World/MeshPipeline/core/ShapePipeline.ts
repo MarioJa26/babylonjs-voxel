@@ -51,13 +51,14 @@ const EMPTY_SHAPE_INFO: BlockShapeInfo = {
 
 /**
  * Dense caches keyed by packedBlock (fast path).
+ * Pre-allocated with undefined to ensure dense arrays.
  */
 const SHAPE_INFO_CACHE: (BlockShapeInfo | undefined)[] = new Array(
 	DENSE_CACHE_SIZE,
-);
+).fill(undefined);
 const RUNTIME_BOX_CACHE: (readonly ShapeBounds[] | undefined)[] = new Array(
 	DENSE_CACHE_SIZE,
-);
+).fill(undefined);
 /**
  * 0 = unknown, 1 = false, 2 = true
  */
@@ -66,7 +67,9 @@ const GREEDY_COMPAT_CACHE = new Uint8Array(DENSE_CACHE_SIZE);
 /**
  * Optional tiny shape-name cache for the dense key range.
  */
-const SHAPE_NAME_CACHE: (string | undefined)[] = new Array(DENSE_CACHE_SIZE);
+const SHAPE_NAME_CACHE: (string | undefined)[] = new Array(
+	DENSE_CACHE_SIZE,
+).fill(undefined);
 
 /**
  * Sparse overflow fallback if a packed key ever exceeds the dense range.
