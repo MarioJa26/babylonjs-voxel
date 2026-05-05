@@ -24,6 +24,7 @@ import {
 import { getShapeForBlockId } from "../World/Shape/BlockShapes";
 import type { PlayerBodyControlState, SavedBodyPosition } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
+import { Gamemodes, type PlayerStats } from "./PlayerStats";
 import {
 	CharacterSupportedState,
 	type CharacterSurfaceInfo,
@@ -41,6 +42,7 @@ type PlayerVehicleMotorOptions = {
 	camera: PlayerCamera;
 	controls: PlayerBodyControlState;
 	getMount: () => Mount | null;
+	playerStats: PlayerStats;
 };
 
 // PERF: Module-level scratch vectors for one-off helpers that don't need
@@ -54,6 +56,7 @@ export class PlayerVehicleMotor {
 	readonly #camera: PlayerCamera;
 	readonly #controls: PlayerBodyControlState;
 	readonly #getMount: () => Mount | null;
+	readonly #playerStats: PlayerStats;
 
 	#displayCapsule!: Mesh;
 	#characterController!: SimpleCharacterController;
@@ -108,6 +111,7 @@ export class PlayerVehicleMotor {
 	private readonly inAirSpeed = 7.0;
 	private readonly onGroundSpeed = 5.0;
 	private readonly jumpHeight = 0.35;
+	private readonly jumpStaminaCost = 10;
 	private readonly accelRateGround = 36;
 	private readonly sprintMultiplier = 1.6;
 	private readonly penetrationRecoveryEps = 0.0001;
@@ -148,6 +152,7 @@ export class PlayerVehicleMotor {
 		this.#camera = options.camera;
 		this.#controls = options.controls;
 		this.#getMount = options.getMount;
+		this.#playerStats = options.playerStats;
 
 		// PERF: Pre-compute all derived constants once at construction time.
 		this.colliderHalfWidthProbe = this.colliderHalfWidth * 0.75;
@@ -725,9 +730,13 @@ export class PlayerVehicleMotor {
 		} else {
 			if (this.wantJump > 0 && this.voxelIsGrounded) {
 				this.wantJump--;
-				// PERF: Use cached jumpImpulse — avoids gravity.length() sqrt.
-				activeVel.y = Math.max(this.jumpImpulse, activeVel.y);
-				this.voxelIsGrounded = false;
+				const canJump = this.#playerStats.consumeStamina(this.jumpStaminaCost);
+				//Jump with 0 stamina in Creative
+				if (Gamemodes.Creative || canJump) {
+					// PERF: Use cached jumpImpulse — avoids gravity.length() sqrt.
+					activeVel.y = Math.max(this.jumpImpulse, activeVel.y);
+					this.voxelIsGrounded = false;
+				}
 			}
 			activeVel.y += this.#characterGravity.y * deltaTime;
 		}

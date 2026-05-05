@@ -48,10 +48,10 @@ export class Player implements IUsable {
 		private canvas: HTMLCanvasElement,
 	) {
 		this.#playerInventory = new PlayerInventory(scene, this, 10, 10);
-		this.#playerVehicle = new PlayerVehicle(this.scene, playerCam);
+		this.stats = new PlayerStats();
+		this.#playerVehicle = new PlayerVehicle(this.scene, playerCam, this.stats);
 		this.#playerCamera = playerCam;
 		this.flashlight = new PlayerFlashLight(this.scene, playerCam.playerCamera);
-		this.stats = new PlayerStats();
 
 		this.#pauseMenu = new PauseMenu(() => this.resumeGame(), this);
 		this.#playerHud = new PlayerHud(engine, this.scene, this);

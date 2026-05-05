@@ -8,6 +8,7 @@ import {
 } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
 import { PlayerVehicleMotor } from "./PlayerVehicleMotor";
+import type { PlayerStats } from "./PlayerStats";
 import type { SimpleCharacterController } from "./SimpleCharacterController";
 
 export type SavedPlayerPosition = SavedBodyPosition;
@@ -22,7 +23,7 @@ export class PlayerVehicle implements IPlayerBody {
 	private readonly controlState = new PlayerBodyControlState();
 	private readonly motor: PlayerVehicleMotor;
 
-	constructor(scene: Scene, camera: PlayerCamera) {
+	constructor(scene: Scene, camera: PlayerCamera, playerStats: PlayerStats) {
 		this.scene = scene;
 		this.camera = camera;
 		this.motor = new PlayerVehicleMotor({
@@ -30,6 +31,7 @@ export class PlayerVehicle implements IPlayerBody {
 			camera: this.camera,
 			controls: this.controlState,
 			getMount: () => this.mount,
+			playerStats,
 		});
 	}
 
