@@ -107,8 +107,10 @@ export default class FastNoiseLite {
 	private _WarpTransformType3D = TransformType3D.DefaultOpenSimplex2;
 
 	// Properties to store the direct function targets
-	private _activeSingleR2: SingleNoiseFn2 = this._SingleOpenSimplex2R2;
-	private _activeSingleR3: SingleNoiseFn3 = this._SingleOpenSimplex2R3;
+	private _activeSingleR2: SingleNoiseFn2 =
+		this._SingleOpenSimplex2R2.bind(this);
+	private _activeSingleR3: SingleNoiseFn3 =
+		this._SingleOpenSimplex2R3.bind(this);
 
 	// 2. Add a private property to hold the active path
 	private _activeR2: NoiseFn2 = (x, y) =>
@@ -117,57 +119,53 @@ export default class FastNoiseLite {
 		this._GenNoiseSingleR3(this._Seed, x, y, z);
 
 	private _updateRuntimeFunctions() {
-		// Selection for 2D
 		switch (this._FractalType) {
 			case FractalType.FBm:
-				this._activeR2 = this._GenFractalFBmR2;
-				this._activeR3 = this._GenFractalFBmR3;
+				this._activeR2 = this._GenFractalFBmR2.bind(this);
+				this._activeR3 = this._GenFractalFBmR3.bind(this);
 				break;
 			case FractalType.Ridged:
-				this._activeR2 = this._GenFractalRidgedR2;
-				this._activeR3 = this._GenFractalRidgedR3;
+				this._activeR2 = this._GenFractalRidgedR2.bind(this);
+				this._activeR3 = this._GenFractalRidgedR3.bind(this);
 				break;
 			case FractalType.PingPong:
-				this._activeR2 = this._GenFractalPingPongR2;
-				this._activeR3 = this._GenFractalPingPongR3;
+				this._activeR2 = this._GenFractalPingPongR2.bind(this);
+				this._activeR3 = this._GenFractalPingPongR3.bind(this);
 				break;
 			default:
-				this._activeR2 = (x, y) => this._GenNoiseSingleR2(this._Seed, x, y);
-				this._activeR3 = (x, y, z) =>
-					this._GenNoiseSingleR3(this._Seed, x, y, z);
+				// Read this._Seed at call time (not captured in a stale closure).
+				this._activeR2 = (x, y) => this._activeSingleR2(this._Seed, x, y);
+				this._activeR3 = (x, y, z) => this._activeSingleR3(this._Seed, x, y, z);
 		}
 	}
 
 	private _updateSinglePointers() {
+		// Use .bind(this) to avoid allocating a new arrow-function closure on every
+		// config change. The bound ref is stable and V8 can specialize the call site.
 		switch (this._NoiseType) {
 			case NoiseType.OpenSimplex2:
-				this._activeSingleR2 = (s, x, y) => this._SingleOpenSimplex2R2(s, x, y);
-				this._activeSingleR3 = (s, x, y, z) =>
-					this._SingleOpenSimplex2R3(s, x, y, z);
+				this._activeSingleR2 = this._SingleOpenSimplex2R2.bind(this);
+				this._activeSingleR3 = this._SingleOpenSimplex2R3.bind(this);
 				break;
 			case NoiseType.OpenSimplex2S:
-				this._activeSingleR2 = (s, x, y) =>
-					this._SingleOpenSimplex2SR2(s, x, y);
-				this._activeSingleR3 = (s, x, y, z) =>
-					this._SingleOpenSimplex2SR3(s, x, y, z);
+				this._activeSingleR2 = this._SingleOpenSimplex2SR2.bind(this);
+				this._activeSingleR3 = this._SingleOpenSimplex2SR3.bind(this);
 				break;
 			case NoiseType.Cellular:
-				this._activeSingleR2 = (s, x, y) => this._SingleCellularR2(s, x, y);
-				this._activeSingleR3 = (s, x, y, z) =>
-					this._SingleCellularR3(s, x, y, z);
+				this._activeSingleR2 = this._SingleCellularR2.bind(this);
+				this._activeSingleR3 = this._SingleCellularR3.bind(this);
 				break;
 			case NoiseType.Perlin:
-				this._activeSingleR2 = (s, x, y) => this._SinglePerlinR2(s, x, y);
-				this._activeSingleR3 = (s, x, y, z) => this._SinglePerlinR3(s, x, y, z);
+				this._activeSingleR2 = this._SinglePerlinR2.bind(this);
+				this._activeSingleR3 = this._SinglePerlinR3.bind(this);
 				break;
 			case NoiseType.ValueCubic:
-				this._activeSingleR2 = (s, x, y) => this._SingleValueCubicR2(s, x, y);
-				this._activeSingleR3 = (s, x, y, z) =>
-					this._SingleValueCubicR3(s, x, y, z);
+				this._activeSingleR2 = this._SingleValueCubicR2.bind(this);
+				this._activeSingleR3 = this._SingleValueCubicR3.bind(this);
 				break;
 			case NoiseType.Value:
-				this._activeSingleR2 = (s, x, y) => this._SingleValueR2(s, x, y);
-				this._activeSingleR3 = (s, x, y, z) => this._SingleValueR3(s, x, y, z);
+				this._activeSingleR2 = this._SingleValueR2.bind(this);
+				this._activeSingleR3 = this._SingleValueR3.bind(this);
 				break;
 			default:
 				this._activeSingleR2 = () => 0;
@@ -399,7 +397,7 @@ export default class FastNoiseLite {
 	}
 
 	// prettier-ignore
-	private _Gradients2D = new Float16Array([
+	private _Gradients2D = new Float32Array([
 		0.130526192220052, 0.99144486137381, 0.38268343236509, 0.923879532511287,
 		0.608761429008721, 0.793353340291235, 0.793353340291235, 0.608761429008721,
 		0.923879532511287, 0.38268343236509, 0.99144486137381, 0.130526192220051,
@@ -472,7 +470,7 @@ export default class FastNoiseLite {
 	]);
 
 	// prettier-ignore
-	private _RandVecs2D = new Float16Array([
+	private _RandVecs2D = new Float32Array([
 		-0.2700222198, -0.9628540911, 0.3863092627, -0.9223693152, 0.04444859006,
 		-0.999011673, -0.5992523158, -0.8005602176, -0.7819280288, 0.6233687174,
 		0.9464672271, 0.3227999196, -0.6514146797, -0.7587218957, 0.9378472289,
@@ -579,7 +577,7 @@ export default class FastNoiseLite {
 	]);
 
 	// prettier-ignore
-	private _Gradients3D = new Float16Array([
+	private _Gradients3D = new Float32Array([
 		0, 1, 1, 0, 0, -1, 1, 0, 0, 1, -1, 0, 0, -1, -1, 0, 1, 0, 1, 0, -1, 0, 1, 0,
 		1, 0, -1, 0, -1, 0, -1, 0, 1, 1, 0, 0, -1, 1, 0, 0, 1, -1, 0, 0, -1, -1, 0,
 		0, 0, 1, 1, 0, 0, -1, 1, 0, 0, 1, -1, 0, 0, -1, -1, 0, 1, 0, 1, 0, -1, 0, 1,
@@ -594,7 +592,7 @@ export default class FastNoiseLite {
 	]);
 
 	// prettier-ignore
-	private _RandVecs3D = new Float16Array([
+	private _RandVecs3D = new Float32Array([
 		-0.7292736885, -0.6618439697, 0.1735581948, 0, 0.790292081, -0.5480887466,
 		-0.2739291014, 0, 0.7217578935, 0.6226212466, -0.3023380997, 0, 0.565683137,
 		-0.8208298145, -0.0790000257, 0, 0.760049034, -0.5555979497, -0.3370999617,
@@ -978,13 +976,13 @@ export default class FastNoiseLite {
 		const lacunarity = this._Lacunarity;
 		const gain = this._Gain;
 		const weightedStrength = this._WeightedStrength;
+		// Use the pre-selected single-noise function to avoid a switch per octave.
+		const singleFn = this._activeSingleR2;
 
 		// Fast path: no weighting
 		if (weightedStrength === 0) {
 			for (let i = 0; i < octaves; i++) {
-				sum += this._GenNoiseSingleR2(seed, x, y) * amp;
-				seed++;
-
+				sum += singleFn(seed++, x, y) * amp;
 				x *= lacunarity;
 				y *= lacunarity;
 				amp *= gain;
@@ -993,20 +991,10 @@ export default class FastNoiseLite {
 		}
 
 		for (let i = 0; i < octaves; i++) {
-			const noise = this._GenNoiseSingleR2(seed, x, y);
-			seed++;
-
+			const noise = singleFn(seed++, x, y);
 			sum += noise * amp;
-
-			// If noise is guaranteed in [-1, 1], this is enough:
-			// const t = (noise + 1.0) * 0.5;
-
-			// Safe version preserving current clamp behavior:
 			const t = noise < 1.0 ? (noise + 1.0) * 0.5 : 1.0;
-
-			// lerp(1.0, t, weightedStrength)
 			amp *= 1.0 + (t - 1.0) * weightedStrength;
-
 			x *= lacunarity;
 			y *= lacunarity;
 			amp *= gain;
@@ -1024,11 +1012,11 @@ export default class FastNoiseLite {
 		const lacunarity = this._Lacunarity;
 		const gain = this._Gain;
 		const weightedStrength = this._WeightedStrength;
+		const singleFn = this._activeSingleR3;
 
 		if (weightedStrength === 0) {
 			for (let i = 0; i < octaves; i++) {
-				sum += this._GenNoiseSingleR3(seed, x, y, z) * amp;
-				seed++;
+				sum += singleFn(seed++, x, y, z) * amp;
 				x *= lacunarity;
 				y *= lacunarity;
 				z *= lacunarity;
@@ -1038,12 +1026,9 @@ export default class FastNoiseLite {
 		}
 
 		for (let i = 0; i < octaves; i++) {
-			const noise = this._GenNoiseSingleR3(seed, x, y, z);
-			seed++;
-
+			const noise = singleFn(seed++, x, y, z);
 			sum += noise * amp;
 			amp *= 1.0 + (noise - 1.0) * 0.5 * weightedStrength;
-
 			x *= lacunarity;
 			y *= lacunarity;
 			z *= lacunarity;
@@ -1116,16 +1101,22 @@ export default class FastNoiseLite {
 		let sum = 0;
 		let amp = this._FractalBounding;
 
-		for (let i = 0; i < this._Octaves; i++) {
+		const octaves = this._Octaves;
+		const lacunarity = this._Lacunarity;
+		const gain = this._Gain;
+		const pingPongStrength = this._PingPongStrength;
+		const weightedStrength = this._WeightedStrength;
+		const singleFn = this._activeSingleR2;
+
+		for (let i = 0; i < octaves; i++) {
 			const noise = FastNoiseLite._PingPong(
-				(this._GenNoiseSingleR2(seed++, x, y) + 1) * this._PingPongStrength,
+				(singleFn(seed++, x, y) + 1) * pingPongStrength,
 			);
 			sum += (noise - 0.5) * 2 * amp;
-			amp *= FastNoiseLite._Lerp(1.0, noise, this._WeightedStrength);
-
-			x *= this._Lacunarity;
-			y *= this._Lacunarity;
-			amp *= this._Gain;
+			amp *= FastNoiseLite._Lerp(1.0, noise, weightedStrength);
+			x *= lacunarity;
+			y *= lacunarity;
+			amp *= gain;
 		}
 		return sum;
 	}
@@ -1135,17 +1126,23 @@ export default class FastNoiseLite {
 		let sum = 0;
 		let amp = this._FractalBounding;
 
-		for (let i = 0; i < this._Octaves; i++) {
+		const octaves = this._Octaves;
+		const lacunarity = this._Lacunarity;
+		const gain = this._Gain;
+		const pingPongStrength = this._PingPongStrength;
+		const weightedStrength = this._WeightedStrength;
+		const singleFn = this._activeSingleR3;
+
+		for (let i = 0; i < octaves; i++) {
 			const noise = FastNoiseLite._PingPong(
-				(this._GenNoiseSingleR3(seed++, x, y, z) + 1) * this._PingPongStrength,
+				(singleFn(seed++, x, y, z) + 1) * pingPongStrength,
 			);
 			sum += (noise - 0.5) * 2 * amp;
-			amp *= FastNoiseLite._Lerp(1.0, noise, this._WeightedStrength);
-
-			x *= this._Lacunarity;
-			y *= this._Lacunarity;
-			z *= this._Lacunarity;
-			amp *= this._Gain;
+			amp *= FastNoiseLite._Lerp(1.0, noise, weightedStrength);
+			x *= lacunarity;
+			y *= lacunarity;
+			z *= lacunarity;
+			amp *= gain;
 		}
 		return sum;
 	}
@@ -3279,6 +3276,115 @@ export default class FastNoiseLite {
 			R2(seed, warpAmp, frequency, coord as Vector2, outGradOnly, x, y);
 		} else {
 			R3(seed, warpAmp, frequency, coord as Vector3, outGradOnly, x, y, z);
+		}
+	}
+
+	/**
+	 * @description Fills a pre-allocated Float32Array with 2D noise values.
+	 * Significantly faster than calling GetNoise2D in a loop — properties are
+	 * hoisted to locals once and the JIT can keep them in registers.
+	 * @param out Pre-allocated output buffer of size width * height
+	 * @param width Number of columns
+	 * @param height Number of rows
+	 * @param offsetX World-space X offset for the top-left sample (default 0)
+	 * @param offsetY World-space Y offset for the top-left sample (default 0)
+	 */
+	public FillNoise2D(
+		out: Float32Array,
+		width: number,
+		height: number,
+		offsetX = 0,
+		offsetY = 0,
+	): void {
+		const freq = this._Frequency;
+		const noiseType = this._NoiseType;
+		const isOpenSimplex =
+			noiseType === NoiseType.OpenSimplex2 ||
+			noiseType === NoiseType.OpenSimplex2S;
+		const F2 = this.F2;
+		const activeR2 = this._activeR2;
+
+		let idx = 0;
+		for (let row = 0; row < height; row++) {
+			for (let col = 0; col < width; col++) {
+				let x = (col + offsetX) * freq;
+				let y = (row + offsetY) * freq;
+				if (isOpenSimplex) {
+					const t = (x + y) * F2;
+					x += t;
+					y += t;
+				}
+				out[idx++] = activeR2(x, y);
+			}
+		}
+	}
+
+	/**
+	 * @description Fills a pre-allocated Float32Array with 3D noise values.
+	 * Significantly faster than calling GetNoise3D in a loop.
+	 * @param out Pre-allocated output buffer of size width * height * depth
+	 * @param width Number of columns (X)
+	 * @param height Number of rows (Y)
+	 * @param depth Number of slices (Z)
+	 * @param offsetX World-space X offset (default 0)
+	 * @param offsetY World-space Y offset (default 0)
+	 * @param offsetZ World-space Z offset (default 0)
+	 */
+	public FillNoise3D(
+		out: Float32Array,
+		width: number,
+		height: number,
+		depth: number,
+		offsetX = 0,
+		offsetY = 0,
+		offsetZ = 0,
+	): void {
+		const freq = this._Frequency;
+		const transformType = this._TransformType3D;
+		const G3 = this.G3;
+		const H3 = this.H3;
+		const F3 = this.F3;
+		const activeR3 = this._activeR3;
+
+		let idx = 0;
+		for (let slice = 0; slice < depth; slice++) {
+			for (let row = 0; row < height; row++) {
+				for (let col = 0; col < width; col++) {
+					let x = (col + offsetX) * freq;
+					let y = (row + offsetY) * freq;
+					let z = (slice + offsetZ) * freq;
+
+					switch (transformType) {
+						case TransformType3D.ImproveXYPlanes: {
+							const xy = x + y;
+							const s2 = xy * G3;
+							const zH = z * H3;
+							x += s2 - zH;
+							y += s2 - zH;
+							z += xy * H3;
+							break;
+						}
+						case TransformType3D.ImproveXZPlanes: {
+							const xz = x + z;
+							const s2xz = xz * G3;
+							const yH = y * H3;
+							x += s2xz - yH;
+							z += s2xz - yH;
+							y += xz * H3;
+							break;
+						}
+						case TransformType3D.DefaultOpenSimplex2: {
+							const r = (x + y + z) * F3;
+							x = r - x;
+							y = r - y;
+							z = r - z;
+							break;
+						}
+					}
+
+					out[idx++] = activeR3(x, y, z);
+				}
+			}
 		}
 	}
 }

@@ -167,6 +167,12 @@ export class SurfaceGenerator {
 		let minSurfaceY = Number.POSITIVE_INFINITY;
 		let maxSurfaceY = Number.NEGATIVE_INFINITY;
 
+		const treeMod = SurfaceGenerator.treeNoise(
+			chunkWorldX * 0.00001,
+			chunkWorldZ * 0.00001,
+		);
+		const yFreq = 0.04 + treeMod * 0.02;
+
 		for (let localX = 0; localX < CHUNK_SIZE; localX++) {
 			const worldX = chunkWorldX + localX;
 
@@ -176,12 +182,6 @@ export class SurfaceGenerator {
 
 				const terrainHeight = getFinalTerrainHeight(worldX, worldZ);
 				const riverNoise = getCachedRiverNoise(worldX, worldZ);
-
-				const treeMod = SurfaceGenerator.treeNoise(
-					worldX * 0.00001,
-					worldZ * 0.00001,
-				);
-				const yFreq = 0.04 + treeMod * 0.02;
 
 				const topSurfaceY = this.findTopSurfaceY(
 					worldX,

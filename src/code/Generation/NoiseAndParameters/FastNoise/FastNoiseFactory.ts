@@ -8,6 +8,16 @@ export interface FastNoiseOptions {
 	frequency?: number;
 }
 
+export type FastNoise2DResult = {
+	fn: (x: number, z: number) => number;
+	instance: FastNoiseLite;
+};
+
+export type FastNoise3DResult = {
+	fn: (x: number, y: number, z: number) => number;
+	instance: FastNoiseLite;
+};
+
 export function createFastNoise(
 	seed: number,
 	fractalType?: FractalType,
@@ -35,7 +45,7 @@ export function createFastNoise(
 
 	const noise = new FastNoiseLite(seed);
 	noise.SetNoiseType(FastNoiseLite.NoiseType.OpenSimplex2);
-	noise.SetFrequency(localFrequency || DEFAULT_FREQUENCY);
+	noise.SetFrequency(localFrequency ?? DEFAULT_FREQUENCY);
 	if (localFractalType) {
 		noise.SetFractalType(localFractalType);
 	} else {
@@ -43,6 +53,8 @@ export function createFastNoise(
 	}
 	return noise;
 }
+
+// ─── Legacy scalar wrappers (unchanged API) ──────────────────────────────────
 
 export function createFastNoise2D(
 	seed: number,
@@ -57,13 +69,11 @@ export function createFastNoise2D(
 	fractalType?: FractalType,
 	frequency?: number,
 ): (x: number, z: number) => number {
-	let noise: FastNoiseLite;
-	if (typeof seedOrOptions === "object") {
-		noise = createFastNoise(seedOrOptions);
-	} else {
-		noise = createFastNoise(seedOrOptions, fractalType, frequency);
-	}
-	return (x: number, z: number) => noise.GetNoise(x, z);
+	const noise =
+		typeof seedOrOptions === "object"
+			? createFastNoise(seedOrOptions)
+			: createFastNoise(seedOrOptions, fractalType, frequency);
+	return (x: number, z: number) => noise.GetNoise2D(x, z);
 }
 
 export function createFastNoise3D(
@@ -74,11 +84,49 @@ export function createFastNoise3D(
 	fractalType?: FractalType,
 	frequency?: number,
 ): (x: number, y: number, z: number) => number {
-	let noise: FastNoiseLite;
-	if (typeof seedOrOptions === "object") {
-		noise = createFastNoise(seedOrOptions);
-	} else {
-		noise = createFastNoise(seedOrOptions, fractalType, frequency);
-	}
-	return (x: number, y: number, z: number) => noise.GetNoise(x, y, z);
+	const noise =
+		typeof seedOrOptions === "object"
+			? createFastNoise(seedOrOptions)
+			: createFastNoise(seedOrOptions, fractalType, frequency);
+	return (x: number, y: number, z: number) => noise.GetNoise3D(x, y, z);
+}
+
+// ─── New "with instance" variants — expose the FNL object for batch fills ────
+
+/**
+ * Like createFastNoise2D but also returns the underlying FastNoiseLite
+ * instance so callers can use FillNoise2D for batch generation.
+ */
+export function createFastNoise2DWithInstance(
+	seedOrOptions: number | FastNoiseOptions,
+	fractalType?: FractalType,
+	frequency?: number,
+): FastNoise2DResult {
+	const instance =
+		typeof seedOrOptions === "object"
+			? createFastNoise(seedOrOptions)
+			: createFastNoise(seedOrOptions, fractalType, frequency);
+	return {
+		fn: (x: number, z: number) => instance.GetNoise2D(x, z),
+		instance,
+	};
+}
+
+/**
+ * Like createFastNoise3D but also returns the underlying FastNoiseLite
+ * instance so callers can use FillNoise3D for batch generation.
+ */
+export function createFastNoise3DWithInstance(
+	seedOrOptions: number | FastNoiseOptions,
+	fractalType?: FractalType,
+	frequency?: number,
+): FastNoise3DResult {
+	const instance =
+		typeof seedOrOptions === "object"
+			? createFastNoise(seedOrOptions)
+			: createFastNoise(seedOrOptions, fractalType, frequency);
+	return {
+		fn: (x: number, y: number, z: number) => instance.GetNoise3D(x, y, z),
+		instance,
+	};
 }
