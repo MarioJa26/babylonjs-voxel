@@ -242,6 +242,103 @@ export class VoxelAabbCollider {
 				}
 			}
 		}
+		return false;
+	}
+
+	/**
+	 * Check if the AABB at the given position would overlap with a specific block.
+	 * This uses the same collision logic as overlaps(), but only checks one block.
+	 */
+	public wouldOverlapBlock(
+		position: Vector3,
+		blockX: number,
+		blockY: number,
+		blockZ: number,
+		blockShape: { boxes: Array<{ min: [number, number, number]; max: [number, number, number] }>; rotateY: boolean; usesSliceState: boolean },
+		rotation: number,
+		slice: number,
+		flipY: boolean,
+	): boolean {
+		const eps = this.#epsilon;
+
+		const aMinX = position.x - this.#halfExtents.x;
+		const aMaxX = position.x + this.#halfExtents.x;
+		const aMinY = position.y - this.#halfExtents.y;
+		const aMaxY = position.y + this.#halfExtents.y;
+		const aMinZ = position.z - this.#halfExtents.z;
+		const aMaxZ = position.z + this.#halfExtents.z;
+
+		const info: BlockShapeInfo = {
+			shape: blockShape as ShapeDefinition,
+			rotation,
+			slice,
+			flipY,
+		};
+
+		const { shape, rotation: rot, slice: sl, flipY: fy } = info;
+		const needsRotation = shape.rotateY && rot !== 0;
+
+		for (const box of shape.boxes) {
+			const minX = box.min[0];
+			let minY = box.min[1];
+			const minZ = box.min[2];
+			const maxX = box.max[0];
+			let maxY = box.max[1];
+			const maxZ = box.max[2];
+
+			if (shape.usesSliceState) {
+				const offset = sl * 0.5;
+				minY = offset;
+				maxY = offset + 0.5;
+			}
+
+			if (fy) {
+				const flippedMin = 1 - maxY;
+				const flippedMax = 1 - minY;
+				minY = flippedMin;
+				maxY = flippedMax;
+			}
+
+			let bMinX: number, bMinY: number, bMinZ: number;
+			let bMaxX: number, bMaxY: number, bMaxZ: number;
+
+			if (needsRotation) {
+				rotateShapeBoxY(
+					minX,
+					minY,
+					minZ,
+					maxX,
+					maxY,
+					maxZ,
+					rot,
+					_rotatedBox,
+				);
+				bMinX = blockX + _rotatedBox[0];
+				bMinY = blockY + _rotatedBox[1];
+				bMinZ = blockZ + _rotatedBox[2];
+				bMaxX = blockX + _rotatedBox[3];
+				bMaxY = blockY + _rotatedBox[4];
+				bMaxZ = blockZ + _rotatedBox[5];
+			} else {
+				bMinX = blockX + minX;
+				bMinY = blockY + minY;
+				bMinZ = blockZ + minZ;
+				bMaxX = blockX + maxX;
+				bMaxY = blockY + maxY;
+				bMaxZ = blockZ + maxZ;
+			}
+
+			if (
+				aMaxX - eps > bMinX &&
+				aMinX + eps < bMaxX &&
+				aMaxY - eps > bMinY &&
+				aMinY + eps < bMaxY &&
+				aMaxZ - eps > bMinZ &&
+				aMinZ + eps < bMaxZ
+			) {
+				return true;
+			}
+		}
 
 		return false;
 	}

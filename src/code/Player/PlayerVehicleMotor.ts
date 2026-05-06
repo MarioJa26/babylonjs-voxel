@@ -358,6 +358,33 @@ export class PlayerVehicleMotor {
 		this.voxelPosition.copyFrom(w);
 	}
 
+	/**
+	 * Check if placing a block at the given world coordinates would overlap with the player.
+	 * Uses the voxel collider's collision logic for accurate detection.
+	 */
+	public wouldBlockOverlapPlayer(
+		blockX: number,
+		blockY: number,
+		blockZ: number,
+		blockShape: { boxes: Array<{ min: [number, number, number]; max: [number, number, number] }>; rotateY: boolean; usesSliceState: boolean },
+		rotation: number,
+		slice: number,
+		flipY: boolean,
+	): boolean {
+		// Use the character controller's current position (most up-to-date)
+		const pos = this.#characterController.getPosition();
+		return this.voxelCollider.wouldOverlapBlock(
+			pos,
+			blockX,
+			blockY,
+			blockZ,
+			blockShape,
+			rotation,
+			slice,
+			flipY,
+		);
+	}
+
 	// ── Support boat ──────────────────────────────────────────────────────────
 
 	#applyBoatMotion(): void {

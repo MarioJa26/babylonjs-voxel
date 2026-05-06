@@ -58,7 +58,7 @@ export class WorldGenerator {
 		// Density noise frequency is baked in here so FastNoise handles scaling internally.
 		const densityNoise = createFastNoise3D({
 			seed: Squirrel3.get(23, this.seedAsInt),
-			frequency: 0.3333,
+			frequency: 0.33333,
 		});
 
 		this.surfaceGenerator = new SurfaceGenerator(

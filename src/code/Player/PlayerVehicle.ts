@@ -7,8 +7,8 @@ import {
 	type SavedBodyPosition,
 } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
-import { PlayerVehicleMotor } from "./PlayerVehicleMotor";
 import type { PlayerStats } from "./PlayerStats";
+import { PlayerVehicleMotor } from "./PlayerVehicleMotor";
 import type { SimpleCharacterController } from "./SimpleCharacterController";
 
 export type SavedPlayerPosition = SavedBodyPosition;
@@ -117,5 +117,17 @@ export class PlayerVehicle implements IPlayerBody {
 
 	public setMount(mount: Mount): void {
 		this.mount = mount;
+	}
+
+	public wouldBlockOverlapPlayer(
+		blockX: number,
+		blockY: number,
+		blockZ: number,
+		blockShape: { boxes: Array<{ min: [number, number, number]; max: [number, number, number] }>; rotateY: boolean; usesSliceState: boolean },
+		rotation: number,
+		slice: number,
+		flipY: boolean,
+	): boolean {
+		return this.motor.wouldBlockOverlapPlayer(blockX, blockY, blockZ, blockShape, rotation, slice, flipY);
 	}
 }

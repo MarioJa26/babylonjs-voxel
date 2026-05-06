@@ -134,6 +134,18 @@ export class Player implements IUsable {
 		return this.#playerVehicle.characterController.getPosition();
 	}
 
+	public wouldBlockOverlapPlayer(
+		blockX: number,
+		blockY: number,
+		blockZ: number,
+		blockShape: { boxes: Array<{ min: [number, number, number]; max: [number, number, number] }>; rotateY: boolean; usesSliceState: boolean },
+		rotation: number,
+		slice: number,
+		flipY: boolean,
+	): boolean {
+		return this.#playerVehicle.wouldBlockOverlapPlayer(blockX, blockY, blockZ, blockShape, rotation, slice, flipY);
+	}
+
 	use(): void {
 		const mesh = CrossHair.pickUsableMesh(this);
 		if (!mesh) return;

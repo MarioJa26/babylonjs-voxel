@@ -149,6 +149,10 @@ export class Item implements IUsable {
 			const yaw = player.playerCamera.cameraYaw;
 			const hasSlice = (blockState >> 3) & 7;
 
+			let rotation = 0;
+			let slice = 0;
+			let flipY = false;
+
 			if (hasSlice > 0) {
 				const sliceBits = blockState & ~7;
 				const existingRotation = blockState & 7;
@@ -157,39 +161,45 @@ export class Item implements IUsable {
 					rotateVerticalByYaw: true,
 				};
 
-				let rotation = existingRotation & 3;
+				rotation = existingRotation & 3;
 				if (originalSliceAxis !== 1 && policy.rotateVerticalByYaw) {
 					rotation = Item.getWallRotationFromYaw(yaw);
 				}
 				const sliceAxis = getSliceAxis(rotation);
 
-				let flip = (existingRotation & 4) !== 0;
+				flipY = (existingRotation & 4) !== 0;
 				if (sliceAxis === 1) {
 					// Horizontal slabs: only top/bottom.
-					if (ny === -1) flip = true;
-					else if (ny === 1) flip = false;
-					else flip = hitFracY > 0.5;
+					if (ny === -1) flipY = true;
+					else if (ny === 1) flipY = false;
+					else flipY = hitFracY > 0.5;
 				} else if (sliceAxis === 0) {
 					// Vertical slabs on X: only +/-X side.
-					flip = nx !== 0 ? nx < 0 : hitFracX > 0.5;
+					flipY = nx !== 0 ? nx < 0 : hitFracX > 0.5;
 				} else {
 					// Vertical slabs on Z: only +/-Z side.
-					flip = nz !== 0 ? nz < 0 : hitFracZ > 0.5;
+					flipY = nz !== 0 ? nz < 0 : hitFracZ > 0.5;
 				}
 
-				const flipBit = flip ? 4 : 0;
+				const flipBit = flipY ? 4 : 0;
 				blockState = sliceBits | flipBit | rotation;
+				slice = (blockState >> 3) & 7;
 			} else if (shape.rotateY) {
 				const quarterTurn = Math.PI / 2;
 				const normalized =
 					((yaw % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
-				let rotation =
+				rotation =
 					(Math.floor((normalized + quarterTurn / 2) / quarterTurn) & 3) ^ 2;
 				rotation = (4 - rotation) & 3;
-				const flipY = (shape.allowFlipY && ny === -1) || hitFracY > 0.5;
+				flipY = (shape.allowFlipY && ny === -1) || hitFracY > 0.5;
 				const flipBit = flipY ? 4 : 0;
 				const sliceBits = blockState & ~7;
 				blockState = sliceBits | flipBit | rotation;
+			}
+
+			// Prevent placing a block inside the player - use actual voxel collider
+			if (player.wouldBlockOverlapPlayer(pos.x, pos.y, pos.z, shape, rotation, slice, flipY)) {
+				return;
 			}
 
 			const boatContext = Item.#asBoatPlacementContext(hit.dynamicContext);

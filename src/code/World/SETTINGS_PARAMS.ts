@@ -2,7 +2,7 @@
 
 export const SETTING_PARAMS = {
 	// --- World Generation & Loading ---
-	RENDER_DISTANCE: 2,
+	RENDER_DISTANCE: 12,
 	VERTICAL_RENDER_DISTANCE: 6,
 	MAX_CHUNK_HEIGHT: 32,
 	CHUNK_UNLOAD_DISTANCE_BUFFER: 1, // How many extra chunks to keep before unloading
@@ -17,9 +17,9 @@ export const SETTING_PARAMS = {
 
 	// --- LOD Settings ---
 	LOD_0_OFFSET: 0,
-	LOD_1_OFFSET: 4,
-	LOD_2_OFFSET: 8,
-	LOD_3_OFFSET: 10,
+	LOD_1_OFFSET: 0,
+	LOD_2_OFFSET: 0,
+	LOD_3_OFFSET: 0,
 	LOD_VERTICAL_0_OFFSET: 0,
 	LOD_VERTICAL_1_OFFSET: 2,
 	LOD_VERTICAL_2_OFFSET: 4,
