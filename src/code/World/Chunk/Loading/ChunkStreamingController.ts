@@ -54,6 +54,8 @@ export class ChunkStreamingController {
 		prevChunkX?: number,
 		prevChunkY?: number,
 		prevChunkZ?: number,
+		playerWorldX?: number,
+		playerWorldZ?: number,
 	): Promise<void> {
 		this.streamRevision++;
 
@@ -61,7 +63,12 @@ export class ChunkStreamingController {
 			this.distantTerrain = new DistantTerrain();
 		}
 
-		this.distantTerrain.update(chunkX, chunkZ);
+		// Use exact player position for distant terrain if available, fallback to chunk coordinates
+		const distantTerrainX =
+			playerWorldX !== undefined ? playerWorldX : chunkX * Chunk.SIZE;
+		const distantTerrainZ =
+			playerWorldZ !== undefined ? playerWorldZ : chunkZ * Chunk.SIZE;
+		this.distantTerrain.update(distantTerrainX, distantTerrainZ);
 
 		const lodRuleSet = ChunkLodRuleSet.fromRenderRadii(
 			renderDistance,

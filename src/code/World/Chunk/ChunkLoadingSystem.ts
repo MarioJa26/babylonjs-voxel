@@ -704,6 +704,8 @@ export async function updateChunksAround(
 	prevChunkX?: number,
 	prevChunkY?: number,
 	prevChunkZ?: number,
+	playerWorldX?: number,
+	playerWorldZ?: number,
 ): Promise<void> {
 	ensureChunkLoadedHook();
 
@@ -716,6 +718,8 @@ export async function updateChunksAround(
 		prevChunkX,
 		prevChunkY,
 		prevChunkZ,
+		playerWorldX,
+		playerWorldZ,
 	);
 
 	if (!processScheduler.processing) {

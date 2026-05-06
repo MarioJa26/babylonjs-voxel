@@ -938,8 +938,8 @@ export class ChunkWorkerPool {
 		}
 		this.lastPrecomputeScheduleTs = now;
 
-		const horizontalRadius = SETTING_PARAMS.RENDER_DISTANCE + 14;
-		const verticalRadius = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE + 4;
+		const horizontalRadius = SETTING_PARAMS.RENDER_DISTANCE + SETTING_PARAMS.LOD_PRECOMPUTE_HORIZONTAL_OFFSET;
+		const verticalRadius = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE + SETTING_PARAMS.LOD_PRECOMPUTE_VERTICAL_OFFSET;
 		const targetLods = [2, 3];
 		const candidates: Array<{ chunk: Chunk; lod: number; score: number }> = [];
 

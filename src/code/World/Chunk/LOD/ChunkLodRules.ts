@@ -1,3 +1,5 @@
+import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
+
 export type ChunkLodCoordinates = {
 	chunkX: number;
 	chunkY: number;
@@ -115,14 +117,14 @@ export class ChunkLodRuleSet {
 		verticalRadius: number,
 	): ChunkLodRuleSet {
 		const radii: ChunkLodRadii = {
-			lod0HorizontalRadius: renderDistance,
-			lod1HorizontalRadius: renderDistance + 4, //6
-			lod2HorizontalRadius: renderDistance + 8,
-			lod3HorizontalRadius: renderDistance + 10,
-			lod0VerticalRadius: verticalRadius,
-			lod1VerticalRadius: verticalRadius + 2,
-			lod2VerticalRadius: verticalRadius + 4,
-			lod3VerticalRadius: verticalRadius + 6,
+			lod0HorizontalRadius: renderDistance + SETTING_PARAMS.LOD_0_OFFSET,
+			lod1HorizontalRadius: renderDistance + SETTING_PARAMS.LOD_1_OFFSET,
+			lod2HorizontalRadius: renderDistance + SETTING_PARAMS.LOD_2_OFFSET,
+			lod3HorizontalRadius: renderDistance + SETTING_PARAMS.LOD_3_OFFSET,
+			lod0VerticalRadius: verticalRadius + SETTING_PARAMS.LOD_VERTICAL_0_OFFSET,
+			lod1VerticalRadius: verticalRadius + SETTING_PARAMS.LOD_VERTICAL_1_OFFSET,
+			lod2VerticalRadius: verticalRadius + SETTING_PARAMS.LOD_VERTICAL_2_OFFSET,
+			lod3VerticalRadius: verticalRadius + SETTING_PARAMS.LOD_VERTICAL_3_OFFSET,
 		};
 
 		return new ChunkLodRuleSet(radii, [

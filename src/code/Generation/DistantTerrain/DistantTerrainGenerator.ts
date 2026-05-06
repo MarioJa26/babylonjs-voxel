@@ -1,3 +1,4 @@
+import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { BlockTextures } from "@/code/World/Texture/BlockTextures";
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
 import { getBiome, getFinalTerrainHeight } from "../TerrainHeightMap";
@@ -136,7 +137,6 @@ export class DistantTerrainGenerator {
 						gridCenterChunkZ,
 						centerChunkX,
 						centerChunkZ,
-						renderDistance,
 					);
 				}
 				if (snappedGridMoved || exactCenterMoved) {
@@ -229,7 +229,6 @@ export class DistantTerrainGenerator {
 					gridCenterChunkZ,
 					centerChunkX,
 					centerChunkZ,
-					renderDistance,
 				);
 	}
 
@@ -301,7 +300,6 @@ export class DistantTerrainGenerator {
 		gridCenterChunkZ: number,
 		centerChunkX: number,
 		centerChunkZ: number,
-		renderDistance: number,
 	) {
 		const r = DistantTerrainGenerator.rowSize;
 		const gen = (x: number, z: number) =>
@@ -312,7 +310,6 @@ export class DistantTerrainGenerator {
 				gridCenterChunkZ,
 				centerChunkX,
 				centerChunkZ,
-				renderDistance,
 			);
 
 		if (shiftZ > 0)
@@ -368,7 +365,6 @@ export class DistantTerrainGenerator {
 		gridCenterChunkZ: number,
 		centerChunkX: number,
 		centerChunkZ: number,
-		renderDistance: number,
 	) {
 		const { CHUNK_SIZE } = GenerationParams;
 		const r = DistantTerrainGenerator.rowSize;
@@ -385,7 +381,8 @@ export class DistantTerrainGenerator {
 			z * DistantTerrainGenerator.gridStep;
 		const localChunkX = chunkX - centerChunkX;
 		const localChunkZ = chunkZ - centerChunkZ;
-
+		const renderDistance =
+			SETTING_PARAMS.RENDER_DISTANCE + SETTING_PARAMS.LOD_1_OFFSET;
 		const isInsideRealTerrain =
 			localChunkX > -renderDistance &&
 			localChunkX <= renderDistance &&

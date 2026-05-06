@@ -12,6 +12,7 @@ import {
 } from "@babylonjs/core";
 import { Map1 } from "@/code/Maps/Map1";
 import { Chunk } from "@/code/World/Chunk/Chunk";
+import { worldToChunkCoord } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 import { DistantTerrainShader } from "@/code/World/Light/DistantTerrainShader";
@@ -241,12 +242,15 @@ export class DistantTerrain {
 		// ---- Worker callback ----
 		// Worker only returns center coords; data lives in shared buffers.
 		ChunkWorkerPool.getInstance().onDistantTerrainGenerated = (data) => {
+			// Convert chunk coordinates back to world coordinates for positioning
+			const worldX = data.centerChunkX * Chunk.SIZE;
+			const worldZ = data.centerChunkZ * Chunk.SIZE;
 			this.applyTerrainData(
 				this.#sharedPositions,
 				this.#sharedNormals,
 				this.#sharedSurfaceTiles,
-				data.centerChunkX,
-				data.centerChunkZ,
+				worldX,
+				worldZ,
 			);
 		};
 	}
@@ -374,10 +378,10 @@ export class DistantTerrain {
 		effect.setColor3("vFogColor", scene.fogColor);
 	}
 
-	public update(centerChunkX: number, centerChunkZ: number) {
+	public update(worldX: number, worldZ: number) {
 		ChunkWorkerPool.getInstance().scheduleDistantTerrain(
-			centerChunkX,
-			centerChunkZ,
+			worldToChunkCoord(worldX),
+			worldToChunkCoord(worldZ),
 			this.#radius,
 			SETTING_PARAMS.RENDER_DISTANCE,
 			this.#gridStep,
@@ -388,26 +392,18 @@ export class DistantTerrain {
 		positions: Int16Array,
 		normals: Int8Array,
 		surfaceTiles: Uint8Array,
-		centerChunkX: number,
-		centerChunkZ: number,
+		worldX: number,
+		worldZ: number,
 	) {
-		this.mesh.position.set(
-			centerChunkX * Chunk.SIZE,
-			-2,
-			centerChunkZ * Chunk.SIZE,
-		);
+		this.mesh.position.set(worldX, -2, worldZ);
 
-		this.waterMesh.position.set(
-			centerChunkX * Chunk.SIZE,
-			GenerationParams.SEA_LEVEL,
-			centerChunkZ * Chunk.SIZE,
-		);
+		this.waterMesh.position.set(worldX, GenerationParams.SEA_LEVEL, worldZ);
 		const prevX = this.mesh.position.x;
 		const prevZ = this.mesh.position.z;
-		const newX = centerChunkX * Chunk.SIZE;
-		const newZ = centerChunkZ * Chunk.SIZE;
-		this.#gridOrigin.x = (centerChunkX - this.#radius) * Chunk.SIZE;
-		this.#gridOrigin.y = (centerChunkZ - this.#radius) * Chunk.SIZE;
+		const newX = worldX;
+		const newZ = worldZ;
+		this.#gridOrigin.x = worldX - this.#radius * Chunk.SIZE;
+		this.#gridOrigin.y = worldZ - this.#radius * Chunk.SIZE;
 		this.material.setVector2("gridOriginWorld", this.#gridOrigin);
 		if (
 			Math.abs(newX - prevX) > Chunk.SIZE - 1 ||

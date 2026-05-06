@@ -57,6 +57,11 @@ export class PlayerLoadingGate {
 			chunkY,
 			chunkZ,
 			SETTING_PARAMS.RENDER_DISTANCE * 2,
+			chunkX,
+			chunkY,
+			chunkZ,
+			playerPos.x,
+			playerPos.z,
 		);
 
 		const chunksReady = areChunksLod0ReadyAround(

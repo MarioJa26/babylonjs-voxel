@@ -102,6 +102,8 @@ export class PlayerLoopController {
 				this.#lastChunkX,
 				this.#lastChunkY,
 				this.#lastChunkZ,
+				playerPos.x,
+				playerPos.z,
 			);
 
 			this.#lastChunkX = currentChunkX;
