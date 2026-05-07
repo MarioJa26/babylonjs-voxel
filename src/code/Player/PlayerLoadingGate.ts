@@ -47,7 +47,6 @@ export class PlayerLoadingGate {
 		if (!this.isActive) {
 			return;
 		}
-
 		const playerPos = this.player.position;
 		const chunkX = worldToChunkCoord(playerPos.x);
 		const chunkY = worldToChunkCoord(playerPos.y);
@@ -57,9 +56,10 @@ export class PlayerLoadingGate {
 			chunkY,
 			chunkZ,
 			SETTING_PARAMS.RENDER_DISTANCE * 2,
-			chunkX,
-			chunkY,
-			chunkZ,
+			SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
+			undefined,
+			undefined,
+			undefined,
 			playerPos.x,
 			playerPos.z,
 		);

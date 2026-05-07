@@ -7,13 +7,6 @@
 		"hardness": 1.5
 	},
 	{
-		"id": "CobbleSlab",
-		"name": "Cobble_Slab",
-		"path": "/texture/cobble/cobble05_1k",
-		"shape": "slab",
-		"hardness": 1.5
-	},
-	{
 		"id": "FactoryWall",
 		"name": "factory_wall",
 		"path": "/texture/metal/factory_wall_1k",
@@ -358,6 +351,19 @@
 		"id": "GrassCross",
 		"name": "grass_cross",
 		"path": "/texture/dirt/Grass002_1K",
+		"shape": "cross_diagonal",
+		"hardness": 0.01
+	},
+	{
+		"id": "SavannahGrass",
+		"name": "savannah_grass",
+		"path": "/texture/dirt/Grass004_1K",
+		"hardness": 0.6
+	},
+	{
+		"id": "SavannahGrassCross",
+		"name": "savannah_grass_cross",
+		"path": "/texture/dirt/Grass003_1K",
 		"shape": "cross_diagonal",
 		"hardness": 0.01
 	}

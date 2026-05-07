@@ -91,7 +91,13 @@ export function getMaterialTintBucket(blockId: number): number {
 	if (blockId === 30 || blockId === 60 || blockId === 61) return 4;
 
 	// vegetation
-	if (blockId === 15 || blockId === 43 || blockId === 44 || blockId === 64)
+	if (
+		blockId === 15 ||
+		blockId === 43 ||
+		blockId === 44 ||
+		blockId === 64 ||
+		blockId === 66
+	)
 		return 3;
 
 	// sand/dirt/soil
@@ -129,7 +135,11 @@ export function getMaterialTintBucket(blockId: number): number {
  * Transparent/water bucket selection.
  */
 export function getMaterialType(blockId: number): MaterialType {
-	return blockId === 30 || blockId === 60 || blockId === 61 || blockId === 64
+	return blockId === 30 ||
+		blockId === 60 ||
+		blockId === 61 ||
+		blockId === 64 ||
+		blockId === 66
 		? MaterialType.WaterOrGlass
 		: MaterialType.Default;
 }

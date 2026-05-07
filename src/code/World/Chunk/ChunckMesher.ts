@@ -20,8 +20,10 @@ import { Lod2Shader } from "../Light/Lod2Shader";
 import { Lod3Shader } from "../Light/Lod3Shader";
 import { OpaqueShader } from "../Light/OpaqueShader";
 import { TransparentShader } from "../Light/TransparentShader";
+import { updateBlockTexturesUV } from "../Texture/BlockTextures";
 import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
 import { TextureCache } from "../Texture/TextureCache";
+import { TextureDefinitions } from "../Texture/TextureDefinitions";
 import { Chunk } from "./Chunk";
 import type { MeshData } from "./DataStructures/MeshData";
 
@@ -446,10 +448,22 @@ async function loadTextureToCache(url: string): Promise<string> {
 // Public API
 // ---------------------------------------------------------------------------
 
-export function initAtlas(): void {
+export async function initAtlas(): Promise<void> {
 	const scene = Map1.mainScene;
 	if (!scene) {
 		console.error("initAtlas(): scene is not available.");
+		return;
+	}
+
+	// If CREATE_ATLAS flag is set, rebuild the atlas instead of loading from files
+	if (GLOBAL_VALUES.CREATE_ATLAS) {
+		const atlas = await TextureAtlasFactory.buildAtlas(
+			scene,
+			TextureDefinitions,
+		);
+		if (atlas?.uvMap) {
+			updateBlockTexturesUV(atlas.uvMap);
+		}
 		return;
 	}
 

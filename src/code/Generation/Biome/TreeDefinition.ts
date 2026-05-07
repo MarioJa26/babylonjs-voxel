@@ -578,3 +578,63 @@ export const CACTUS: TreeDefinition = {
 		}
 	},
 };
+
+export const SAVANNAH_TREE: TreeDefinition = {
+	woodId: 31, // Acacia wood
+	leavesId: 43, // Acacia leaves
+	baseHeight: 7,
+	heightVariance: 3,
+	generate(
+		worldX: number,
+		worldY: number,
+		worldZ: number,
+		placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			blockId: number,
+			overwrite?: boolean,
+		) => void,
+		seedAsInt: number,
+	): void {
+		const heightHash = Squirrel3.get(
+			worldX * 374761393 + worldZ * 678446653,
+			seedAsInt,
+		);
+		const height =
+			this.baseHeight + (Math.abs(heightHash) % (this.heightVariance + 1));
+		const woodId = this.woodId;
+		const leavesId = this.leavesId;
+
+		// Tall trunk
+		for (let i = 0; i < height; i++) {
+			placeBlock(worldX, worldY + i, worldZ, woodId, true);
+		}
+
+		// Flat umbrella-shaped canopy at the top
+		const canopyY = worldY + height - 1;
+		const canopyRadius = 3;
+
+		// Flat layer of leaves (the umbrella top)
+		for (let x = -canopyRadius; x <= canopyRadius; x++) {
+			for (let z = -canopyRadius; z <= canopyRadius; z++) {
+				if (Math.abs(x) + Math.abs(z) <= canopyRadius + 1) {
+					placeBlock(worldX + x, canopyY, worldZ + z, leavesId, false);
+				}
+			}
+		}
+
+		// Slightly smaller layer above
+		const upperY = canopyY + 1;
+		for (let x = -2; x <= 2; x++) {
+			for (let z = -2; z <= 2; z++) {
+				if (Math.abs(x) + Math.abs(z) <= 3) {
+					placeBlock(worldX + x, upperY, worldZ + z, leavesId, false);
+				}
+			}
+		}
+
+		// Small top
+		placeBlock(worldX, canopyY + 2, worldZ, leavesId, false);
+	},
+};

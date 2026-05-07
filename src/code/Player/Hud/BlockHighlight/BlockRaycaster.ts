@@ -55,7 +55,11 @@ function getForwardRay(player: Player, length: number): Ray {
 }
 
 function isTargetableBlock(blockId: number): boolean {
-	return isCollidableBlock(blockId) || blockId === BlockType.GrassCross;
+	return (
+		isCollidableBlock(blockId) ||
+		blockId === BlockType.GrassCross ||
+		blockId === BlockType.SavannahGrassCross
+	);
 }
 
 function isFullBlockShape(blockId: number, blockState: number): boolean {

@@ -64,10 +64,8 @@ export class ChunkStreamingController {
 		}
 
 		// Use exact player position for distant terrain if available, fallback to chunk coordinates
-		const distantTerrainX =
-			playerWorldX !== undefined ? playerWorldX : chunkX * Chunk.SIZE;
-		const distantTerrainZ =
-			playerWorldZ !== undefined ? playerWorldZ : chunkZ * Chunk.SIZE;
+		const distantTerrainX = playerWorldX !== undefined ? playerWorldX : chunkX;
+		const distantTerrainZ = playerWorldZ !== undefined ? playerWorldZ : chunkZ;
 		this.distantTerrain.update(distantTerrainX, distantTerrainZ);
 
 		const lodRuleSet = ChunkLodRuleSet.fromRenderRadii(

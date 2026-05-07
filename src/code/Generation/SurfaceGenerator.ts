@@ -783,12 +783,12 @@ export class SurfaceGenerator {
 				// Grass (id 64) spawns on grass blocks (id 15) using noise density.
 				// treeNoiseValue is [0,1]; threshold of 0.6 gives ~60% coverage.
 				const GRASS_DENSITY = _biome.grassDensity;
-				if (
-					isInsideChunkColumn &&
-					topBlockId === 15 &&
-					column.treeNoiseValue < GRASS_DENSITY
-				) {
-					placeBlock(worldX, surfaceY + 1, worldZ, 64);
+				if (isInsideChunkColumn && column.treeNoiseValue < GRASS_DENSITY) {
+					if (topBlockId === 15) {
+						placeBlock(worldX, surfaceY + 1, worldZ, 64);
+					} else {
+						if (topBlockId === 65) placeBlock(worldX, surfaceY + 1, worldZ, 66);
+					}
 				}
 
 				// Trees are gated by canSpawnTrees + noise density check

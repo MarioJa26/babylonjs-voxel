@@ -448,7 +448,8 @@ export class LightGenerator {
 			blockId === 30 ||
 			blockId === 60 ||
 			blockId === 61 ||
-			blockId === 64
+			blockId === 64 ||
+			blockId === 66
 		);
 	}
 

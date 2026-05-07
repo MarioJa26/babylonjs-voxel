@@ -6,6 +6,7 @@ import {
 	JUNGLE_TREE,
 	OAK_TREE,
 	PLAINS_TREE,
+	SAVANNAH_TREE,
 } from "./TreeDefinition";
 
 //Default
@@ -324,6 +325,51 @@ const VOLCANIC_WASTELAND: Biome = {
 		return null;
 	},
 };
+
+const BASALT_DELTAS: Biome = {
+	id: BIOME_ID.BASALT_DELTAS,
+	name: "Basalt_Deltas",
+	topBlock: 1, // Stone
+	undergroundBlock: 1, // Stone
+	stoneBlock: 1,
+	canSpawnTrees: false,
+	treeDensity: 0.0,
+	grassDensity: 0.0,
+	beachBlock: 8, // Gravel
+	seafloorBlock: 1, // Stone
+	terrainScale: GenerationParams.TERRAIN_SCALE,
+	persistence: 0.45,
+	heightExponent: 1.1,
+	terrainHeightBase: 48,
+	terrainHeightAmplitude: 120,
+	getTreeForBlock(blockId: number): TreeDefinition | null {
+		return null;
+	},
+};
+
+const SAVANNAH: Biome = {
+	id: BIOME_ID.SAVANNAH,
+	name: "Savannah",
+	topBlock: 65, // Grass
+	undergroundBlock: 19, // Dirt
+	stoneBlock: 1,
+	canSpawnTrees: true,
+	treeDensity: 0.05, // Sparse trees
+	grassDensity: 0.45, // Moderate-high grass
+	beachBlock: 3, // Sand
+	seafloorBlock: 3, // Sand
+	terrainScale: GenerationParams.TERRAIN_SCALE,
+	persistence: 0.28,
+	heightExponent: 0.85,
+	terrainHeightBase: 45,
+	terrainHeightAmplitude: 180,
+	getTreeForBlock(blockId: number): TreeDefinition | null {
+		if (blockId === this.topBlock) {
+			return SAVANNAH_TREE;
+		}
+		return null;
+	},
+};
 export const BIOME_REGISTRY: Record<BIOME_ID, Biome> = {
 	[BIOME_ID.FOREST]: FOREST,
 	[BIOME_ID.TUNDRA]: TUNDRA,
@@ -339,6 +385,8 @@ export const BIOME_REGISTRY: Record<BIOME_ID, Biome> = {
 	[BIOME_ID.RIVER]: RIVER,
 	[BIOME_ID.GRASS_LAND]: GRASS_LAND,
 	[BIOME_ID.VOLCANIC_WASTELAND]: VOLCANIC_WASTELAND,
+	[BIOME_ID.BASALT_DELTAS]: BASALT_DELTAS,
+	[BIOME_ID.SAVANNAH]: SAVANNAH,
 };
 
 export function getBiomeFor(
@@ -354,6 +402,7 @@ export function getBiomeFor(
   }
   */
 
+	// Deep ocean
 	if (
 		continentalness < -0.33 &&
 		terrainShapedHeight < GenerationParams.SEA_LEVEL
@@ -361,16 +410,32 @@ export function getBiomeFor(
 		return OCEAN;
 	}
 
+	// Shore biomes - near coastline (continentalness close to 0)
+	const isNearShore = continentalness > -0.3 && continentalness < 0.2;
+	if (isNearShore && terrainShapedHeight < GenerationParams.SEA_LEVEL + 10) {
+		if (temperature > 0.6) {
+			return SANDY_SHORE; // Hot coasts
+		} else if (temperature < 0.4) {
+			return ROCKY_SHORE; // Cold coasts
+		}
+		return SANDY_SHORE; // Default shore
+	}
+
+	// High altitude / far inland
 	if (continentalness > 0.75) {
 		return TUNDRA_MOUNTAINS;
 	}
 
-	// Temperate regions (0.3 <= temperature <= 0.7)
-	if (humidity > 0.45) {
-		if (temperature < 0.15) {
-			return ROCKY_SHORE; // Temperate and humid
-		}
+	// Swamp - low lying areas with high humidity
+	if (humidity > 0.6 && terrainShapedHeight < GenerationParams.SEA_LEVEL + 15) {
+		return SWAMP;
 	}
+
+	// Grove - humid temperate areas
+	if (humidity > 0.55 && temperature > 0.4 && temperature < 0.7) {
+		return GROVE;
+	}
+
 	// Tundra: Cold regions
 	if (temperature < 0.45 && continentalness > 0.5) {
 		if (humidity < 0.5) {
@@ -382,23 +447,32 @@ export function getBiomeFor(
 
 	// Hot regions
 	if (temperature > 0.67) {
-		if (humidity < 0.4) {
+		if (humidity < 0.35) {
 			if (temperature > 0.85 && continentalness > -0.3) {
+				// Basalt Deltas - extremely hot areas near volcanic regions
+				if (continentalness > 0.2 && continentalness < 0.6) {
+					return BASALT_DELTAS;
+				}
 				return VOLCANIC_WASTELAND; // Extremely hot and dry
 			}
 			return DESERT; // Hot and dry
+		} else if (humidity < 0.55) {
+			return SAVANNAH; // Hot and moderately dry (savannah)
 		} else {
 			return JUNGLE; // Hot and wet
 		}
 	}
 
+	// Dry regions
 	if (humidity < 0.24) {
 		return PLAINS;
 	}
 
+	// Temperate-cold regions
 	if (temperature < 0.5) {
 		return GRASS_LAND;
 	}
 
+	// Default
 	return FOREST;
 }

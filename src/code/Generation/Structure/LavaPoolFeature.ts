@@ -79,7 +79,9 @@ export class LavaPoolFeature implements IWorldFeature {
 
 			// Re-evaluate biome at the specific pool location for correctness
 			const poolBiome = getBiome(poolCenterX, poolCenterZ);
-			isSurface = poolBiome.name === "Volcanic_Wasteland";
+			isSurface =
+				poolBiome.name === "Volcanic_Wasteland" ||
+				poolBiome.name === "Basalt_Deltas";
 
 			let poolSurfaceY = 0;
 			if (isSurface) {

@@ -7,9 +7,7 @@ import type { Player } from "../Player/Player";
 import { PlayerLoadingGate } from "../Player/PlayerLoadingGate";
 import { PlayerStatePersistence } from "../Player/PlayerStatePersistence";
 import { initAtlas } from "../World/Chunk/ChunckMesher";
-import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
-import { TextureDefinitions } from "../World/Texture/TextureDefinitions";
 import { WorldStorage } from "../World/WorldStorage";
 import { BlockBreakParticles } from "./BlockBreakParticles";
 import { WorldEnvironment } from "./WorldEnvironment";
@@ -54,7 +52,6 @@ export class Map1 {
 
 		this.initPromise = this.asyncInit().then(async () => {
 			WorldStorage.initialize();
-			initAtlas();
 		});
 
 		scene.onBeforeRenderObservable.add(() => {
@@ -72,6 +69,13 @@ export class Map1 {
 			console.log("Environment and textures loaded successfully.");
 		} catch (error) {
 			console.error("Error loading environment or textures:", error);
+		}
+	}
+	async loadTextures(): Promise<void> {
+		await initAtlas();
+		const atlas = TextureAtlasFactory.getDiffuse();
+		if (atlas) {
+			BlockBreakParticles.setAtlasTexture(atlas);
 		}
 	}
 
@@ -110,15 +114,5 @@ export class Map1 {
 			material.wireframe = enabled;
 			if (wasFrozen) material.freeze();
 		});
-	}
-
-	async loadTextures(): Promise<void> {
-		if (GLOBAL_VALUES.CREATE_ATLAS) {
-			await TextureAtlasFactory.buildAtlas(Map1.mainScene, TextureDefinitions);
-			const atlas = TextureAtlasFactory.getDiffuse();
-			if (atlas) {
-				BlockBreakParticles.setAtlasTexture(atlas);
-			}
-		}
 	}
 }
