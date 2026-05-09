@@ -19,6 +19,8 @@ export type WorkerMessageData = WorkerResponseData;
 export type ChunkWorkerPoolDebugStats = {
 	workerCount: number;
 	idleWorkers: number;
+	busyWorkers: number;
+	peakBusyWorkers: number;
 	remeshQueueLength: number;
 	terrainQueueLength: number;
 	lodPrecomputeQueueLength: number;
@@ -34,11 +36,15 @@ export type ChunkWorkerPoolDebugStats = {
 	totalRemeshDispatches: number;
 	totalLodPrecomputeDispatches: number;
 	totalDistantDispatches: number;
+	workerDispatchCounts: number[];
+	lastDispatchWorkerIndices: number[];
 };
 
 export class ChunkWorkerPool {
 	private static instance: ChunkWorkerPool;
 	private static readonly WORKER_ERROR_COOLDOWN_MS = 120;
+	private static readonly MIN_AUTO_POOL_SIZE = 2;
+	private static readonly MAX_AUTO_POOL_SIZE = 12;
 	private workers: ChunkWorker[] = [];
 
 	private workerTaskContext: Array<{
@@ -59,6 +65,8 @@ export class ChunkWorkerPool {
 
 	private workerRestartAtMs: number[] = [];
 	private taskQueue: Chunk[] = [];
+	private workerDispatchCounts: number[] = [];
+	private lastDispatchWorkerIndices: number[] = [];
 	private pendingRemeshQueue: Map<Chunk, boolean> = new Map();
 	private pendingRemeshSet: Set<Chunk> = new Set();
 	private terrainTaskDeferLighting = new Map<bigint, boolean>();
@@ -74,6 +82,8 @@ export class ChunkWorkerPool {
 	private debugStats: ChunkWorkerPoolDebugStats = {
 		workerCount: 0,
 		idleWorkers: 0,
+		busyWorkers: 0,
+		peakBusyWorkers: 0,
 		remeshQueueLength: 0,
 		terrainQueueLength: 0,
 		lodPrecomputeQueueLength: 0,
@@ -89,6 +99,8 @@ export class ChunkWorkerPool {
 		totalRemeshDispatches: 0,
 		totalLodPrecomputeDispatches: 0,
 		totalDistantDispatches: 0,
+		workerDispatchCounts: [],
+		lastDispatchWorkerIndices: [],
 	};
 	private inFlightRemeshKeys = new Set<string>();
 	private rerunRemeshAfterInflight = new Map<Chunk, boolean>();
@@ -126,6 +138,13 @@ export class ChunkWorkerPool {
 	private updateQueueDebugStats(): void {
 		this.debugStats.workerCount = this.workers.length;
 		this.debugStats.idleWorkers = this.idleWorkerIndices.length;
+		this.debugStats.busyWorkers = Math.max(
+			0,
+			this.debugStats.workerCount - this.debugStats.idleWorkers,
+		);
+		if (this.debugStats.busyWorkers > this.debugStats.peakBusyWorkers) {
+			this.debugStats.peakBusyWorkers = this.debugStats.busyWorkers;
+		}
 		this.debugStats.remeshQueueLength = this.taskQueue.length;
 		this.debugStats.terrainQueueLength = this.terrainTaskQueue.size;
 		this.debugStats.lodPrecomputeQueueLength = this.lodPrecomputeQueue.length;
@@ -140,7 +159,27 @@ export class ChunkWorkerPool {
 
 	public getDebugStats(): ChunkWorkerPoolDebugStats {
 		this.updateQueueDebugStats();
-		return { ...this.debugStats };
+		return {
+			...this.debugStats,
+			workerDispatchCounts: [...this.workerDispatchCounts],
+			lastDispatchWorkerIndices: [...this.lastDispatchWorkerIndices],
+		};
+	}
+
+	private recordWorkerDispatch(workerIndex: number): void {
+		if (workerIndex < 0) {
+			return;
+		}
+		if (workerIndex >= this.workerDispatchCounts.length) {
+			this.workerDispatchCounts.length = workerIndex + 1;
+		}
+		this.workerDispatchCounts[workerIndex] =
+			(this.workerDispatchCounts[workerIndex] ?? 0) + 1;
+
+		this.lastDispatchWorkerIndices.push(workerIndex);
+		if (this.lastDispatchWorkerIndices.length > 24) {
+			this.lastDispatchWorkerIndices.shift();
+		}
 	}
 
 	private resolveChunkByMessageId(chunkId: unknown): Chunk | undefined {
@@ -280,7 +319,11 @@ export class ChunkWorkerPool {
 				this.handleWorkerFailure(workerIndex, ev);
 			};
 
-			const replacement = new ChunkWorker(onMessageTerrain, onMessageMesh);
+			const replacement = new ChunkWorker(
+				workerIndex,
+				onMessageTerrain,
+				onMessageMesh,
+			);
 			replacement.setOnError(onError);
 			holder.worker = replacement;
 
@@ -328,7 +371,7 @@ export class ChunkWorkerPool {
 				this.handleWorkerFailure(i, ev);
 			};
 
-			const workerWrapper = new ChunkWorker(onMessageTerrain, onMessageMesh);
+			const workerWrapper = new ChunkWorker(i, onMessageTerrain, onMessageMesh);
 			workerWrapper.setOnError(onError);
 			holder.worker = workerWrapper;
 
@@ -336,6 +379,7 @@ export class ChunkWorkerPool {
 			this.idleWorkerIndices.push(i);
 			this.workerTaskContext.push(null);
 			this.workerRestartAtMs.push(0);
+			this.workerDispatchCounts.push(0);
 		}
 
 		this.updateQueueDebugStats();
@@ -398,12 +442,37 @@ export class ChunkWorkerPool {
 		requestAnimationFrame(this.processMeshQueueLoop);
 	};
 
-	public static getInstance(
-		poolSize = navigator.hardwareConcurrency || 4,
-	): ChunkWorkerPool {
+	private static resolvePoolSize(explicitPoolSize?: number): number {
+		const explicit =
+			typeof explicitPoolSize === "number"
+				? Math.floor(explicitPoolSize)
+				: Number.NaN;
+		if (Number.isFinite(explicit) && explicit > 0) {
+			return explicit;
+		}
+
+		const configured = Math.floor(SETTING_PARAMS.CHUNK_WORKER_POOL_SIZE);
+		if (Number.isFinite(configured) && configured > 0) {
+			return configured;
+		}
+
+		const detected = Math.max(
+			1,
+			Math.floor((navigator.hardwareConcurrency ?? 0) || 0),
+		);
+		return Math.max(
+			ChunkWorkerPool.MIN_AUTO_POOL_SIZE,
+			Math.min(ChunkWorkerPool.MAX_AUTO_POOL_SIZE, detected),
+		);
+	}
+
+	public static getInstance(poolSize?: number): ChunkWorkerPool {
 		if (!ChunkWorkerPool.instance) {
-			console.log(poolSize + " Workers");
-			ChunkWorkerPool.instance = new ChunkWorkerPool(poolSize);
+			const resolvedPoolSize = ChunkWorkerPool.resolvePoolSize(poolSize);
+			console.log(
+				`ChunkWorkerPool initialized with ${resolvedPoolSize} workers (hw=${navigator.hardwareConcurrency ?? "n/a"})`,
+			);
+			ChunkWorkerPool.instance = new ChunkWorkerPool(resolvedPoolSize);
 			Chunk.onRequestRemesh = (chunk: Chunk, priority: boolean) => {
 				ChunkWorkerPool.instance.scheduleRemesh(chunk, priority);
 			};
@@ -510,7 +579,7 @@ export class ChunkWorkerPool {
 		radius: number,
 		renderDistance: number,
 		gridStep: number,
-	) {
+	): number {
 		const requestId = this.nextDistantTerrainRequestId++;
 		// Only keep the newest request
 		this.distantTerrainTaskQueue = [
@@ -525,6 +594,7 @@ export class ChunkWorkerPool {
 		];
 
 		this.processQueue();
+		return requestId;
 	}
 
 	private tryApplyCachedLODMesh(
@@ -677,7 +747,14 @@ export class ChunkWorkerPool {
 							lightSeedLength !== undefined &&
 							lightSeedLength > 0;
 
-						if (needsLightingRefinement) {
+						const terrainQueuePressureCap = Math.max(this.workers.length, 4);
+
+						const shouldQueueLightingRefinement =
+							needsLightingRefinement &&
+							(chunk.lodLevel ?? 0) <= 1 &&
+							this.terrainTaskQueue.size < terrainQueuePressureCap;
+
+						if (shouldQueueLightingRefinement) {
 							/* TODO should be done but is slow
 							const seedState = {
 								queue: lightSeedQueue as Uint16Array,
@@ -938,8 +1015,12 @@ export class ChunkWorkerPool {
 		}
 		this.lastPrecomputeScheduleTs = now;
 
-		const horizontalRadius = SETTING_PARAMS.RENDER_DISTANCE + SETTING_PARAMS.LOD_PRECOMPUTE_HORIZONTAL_OFFSET;
-		const verticalRadius = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE + SETTING_PARAMS.LOD_PRECOMPUTE_VERTICAL_OFFSET;
+		const horizontalRadius =
+			SETTING_PARAMS.RENDER_DISTANCE +
+			SETTING_PARAMS.LOD_PRECOMPUTE_HORIZONTAL_OFFSET;
+		const verticalRadius =
+			SETTING_PARAMS.VERTICAL_RENDER_DISTANCE +
+			SETTING_PARAMS.LOD_PRECOMPUTE_VERTICAL_OFFSET;
 		const targetLods = [2, 3];
 		const candidates: Array<{ chunk: Chunk; lod: number; score: number }> = [];
 
@@ -1133,12 +1214,20 @@ export class ChunkWorkerPool {
 				taskChunk = this.dequeueNextTerrainChunk();
 				taskType = "terrain";
 			}
-			// 2) Then remesh
+			// 2) Then distant terrain (keep horizon responsive under heavy remesh load)
+			else if (
+				this.distantTerrainTaskQueue.length > 0 &&
+				!this.distantTerrainInFlight
+			) {
+				distantTask = this.distantTerrainTaskQueue.shift();
+				taskType = "distantTerrain";
+			}
+			// 3) Then remesh
 			else if (this.taskQueue.length > 0) {
 				taskChunk = this.taskQueue.shift();
 				taskType = "remesh";
 			}
-			// 3) Then background LOD precompute
+			// 4) Then background LOD precompute
 			else if (this.lodPrecomputeQueue.length > 0) {
 				const task = this.lodPrecomputeQueue.shift()!;
 				taskChunk = task.chunk;
@@ -1147,14 +1236,6 @@ export class ChunkWorkerPool {
 					this.getLodPrecomputeKey(task.chunk, task.lod),
 				);
 				taskType = "lodPrecompute";
-			}
-			// 4) Then distant terrain
-			else if (
-				this.distantTerrainTaskQueue.length > 0 &&
-				!this.distantTerrainInFlight
-			) {
-				distantTask = this.distantTerrainTaskQueue.shift();
-				taskType = "distantTerrain";
 			} else {
 				break;
 			}
@@ -1208,6 +1289,7 @@ export class ChunkWorkerPool {
 					}
 
 					this.dispatchTerrainTaskToWorker(workerIndex, worker, taskChunk);
+					this.recordWorkerDispatch(workerIndex);
 					this.debugStats.totalTerrainDispatches += 1;
 					dispatchedThisTick += 1;
 				} else if (taskType === "remesh") {
@@ -1225,6 +1307,7 @@ export class ChunkWorkerPool {
 					);
 
 					worker.postFullRemesh(taskChunk!);
+					this.recordWorkerDispatch(workerIndex);
 					this.debugStats.totalRemeshDispatches += 1;
 					dispatchedThisTick += 1;
 				} else if (taskType === "lodPrecompute") {
@@ -1241,6 +1324,7 @@ export class ChunkWorkerPool {
 					);
 
 					worker.postFullRemesh(taskChunk!, lod);
+					this.recordWorkerDispatch(workerIndex);
 					this.debugStats.totalLodPrecomputeDispatches += 1;
 					dispatchedThisTick += 1;
 				} else {
@@ -1259,6 +1343,7 @@ export class ChunkWorkerPool {
 						distantTask!.renderDistance,
 						distantTask!.gridStep,
 					);
+					this.recordWorkerDispatch(workerIndex);
 
 					this.debugStats.totalDistantDispatches += 1;
 					dispatchedThisTick += 1;

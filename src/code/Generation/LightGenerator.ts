@@ -44,34 +44,6 @@ export class LightGenerator {
 	}
 
 	/**
-	 * Backward-compatible full lighting path:
-	 * - seed skylight / emissive light
-	 * - propagate via BFS
-	 */
-	public generate(
-		chunkX: number,
-		chunkY: number,
-		chunkZ: number,
-		_biome: Biome,
-		blocks: Uint8Array,
-		light: Uint8Array,
-		topSunlightMask?: Uint8Array,
-	): void {
-		const initialTail = this.seedInitialLightIntoSharedQueue(
-			chunkX,
-			chunkY,
-			chunkZ,
-			blocks,
-			light,
-			topSunlightMask,
-		);
-
-		if (initialTail > 0) {
-			this.propagateLightFromQueue(blocks, light, this.lightQueue, initialTail);
-		}
-	}
-
-	/**
 	 * First-paint lighting path:
 	 * Performs only the initial top-down light seeding and returns a compact
 	 * queue snapshot that can be propagated later.

@@ -48,6 +48,7 @@ export class DistantTerrain {
 	// GPU buffers (created once, updated)
 	#positionVB?: VertexBuffer;
 	#normalVB?: VertexBuffer;
+	#latestRequestedRequestId = 0;
 
 	constructor() {
 		this.#radius = SETTING_PARAMS.DISTANT_RENDER_DISTANCE;
@@ -238,10 +239,19 @@ export class DistantTerrain {
 		this.waterMesh.receiveShadows = false;
 		this.waterMesh.doNotSyncBoundingInfo = true;
 		this.waterMesh.alwaysSelectAsActiveMesh = true;
+		// If active mesh list was frozen for debugging, include these newly
+		// created meshes by rebuilding the frozen list once.
+		if (Map1.mainScene._activeMeshesFrozen) {
+			Map1.mainScene.unfreezeActiveMeshes();
+			Map1.mainScene.freezeActiveMeshes();
+		}
 
 		// ---- Worker callback ----
 		// Worker only returns center coords; data lives in shared buffers.
 		ChunkWorkerPool.getInstance().onDistantTerrainGenerated = (data) => {
+			if (data.requestId < this.#latestRequestedRequestId) {
+				return;
+			}
 			// Convert chunk coordinates back to world coordinates for positioning
 			const worldX = data.centerChunkX * Chunk.SIZE;
 			const worldZ = data.centerChunkZ * Chunk.SIZE;
@@ -379,13 +389,14 @@ export class DistantTerrain {
 	}
 
 	public update(worldX: number, worldZ: number) {
-		ChunkWorkerPool.getInstance().scheduleDistantTerrain(
-			worldToChunkCoord(worldX),
-			worldToChunkCoord(worldZ),
-			this.#radius,
-			SETTING_PARAMS.RENDER_DISTANCE,
-			this.#gridStep,
-		);
+		this.#latestRequestedRequestId =
+			ChunkWorkerPool.getInstance().scheduleDistantTerrain(
+				worldToChunkCoord(worldX),
+				worldToChunkCoord(worldZ),
+				this.#radius,
+				SETTING_PARAMS.RENDER_DISTANCE + SETTING_PARAMS.LOD_1_OFFSET,
+				this.#gridStep,
+			);
 	}
 
 	private applyTerrainData(

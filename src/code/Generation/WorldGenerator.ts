@@ -174,7 +174,7 @@ export class WorldGenerator {
 		const light = this.createBuffer(chunkVolume);
 
 		if (!deferLighting) {
-			this.lightGenerator.generate(
+			const lightSeedState = this.lightGenerator.seedInitialLight(
 				chunkX,
 				chunkY,
 				chunkZ,
@@ -183,6 +183,7 @@ export class WorldGenerator {
 				light,
 				surfaceGeneration.topSunlightMask,
 			);
+			this.lightGenerator.propagateLight(blocks, light, lightSeedState);
 
 			return { blocks, light };
 		}
