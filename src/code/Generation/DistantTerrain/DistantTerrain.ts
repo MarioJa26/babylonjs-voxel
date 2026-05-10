@@ -48,7 +48,6 @@ export class DistantTerrain {
 	// GPU buffers (created once, updated)
 	#positionVB?: VertexBuffer;
 	#normalVB?: VertexBuffer;
-	#latestRequestedRequestId = 0;
 
 	constructor() {
 		this.#radius = SETTING_PARAMS.DISTANT_RENDER_DISTANCE;
@@ -249,9 +248,6 @@ export class DistantTerrain {
 		// ---- Worker callback ----
 		// Worker only returns center coords; data lives in shared buffers.
 		ChunkWorkerPool.getInstance().onDistantTerrainGenerated = (data) => {
-			if (data.requestId < this.#latestRequestedRequestId) {
-				return;
-			}
 			// Convert chunk coordinates back to world coordinates for positioning
 			const worldX = data.centerChunkX * Chunk.SIZE;
 			const worldZ = data.centerChunkZ * Chunk.SIZE;
@@ -389,14 +385,13 @@ export class DistantTerrain {
 	}
 
 	public update(worldX: number, worldZ: number) {
-		this.#latestRequestedRequestId =
-			ChunkWorkerPool.getInstance().scheduleDistantTerrain(
-				worldToChunkCoord(worldX),
-				worldToChunkCoord(worldZ),
-				this.#radius,
-				SETTING_PARAMS.RENDER_DISTANCE + SETTING_PARAMS.LOD_1_OFFSET,
-				this.#gridStep,
-			);
+		ChunkWorkerPool.getInstance().scheduleDistantTerrain(
+			worldToChunkCoord(worldX),
+			worldToChunkCoord(worldZ),
+			this.#radius,
+			SETTING_PARAMS.RENDER_DISTANCE + SETTING_PARAMS.LOD_1_OFFSET,
+			this.#gridStep,
+		);
 	}
 
 	private applyTerrainData(

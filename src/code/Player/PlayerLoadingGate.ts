@@ -55,7 +55,7 @@ export class PlayerLoadingGate {
 			chunkX,
 			chunkY,
 			chunkZ,
-			SETTING_PARAMS.RENDER_DISTANCE,
+			SETTING_PARAMS.RENDER_DISTANCE * 2,
 			SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
 			undefined,
 			undefined,
@@ -69,7 +69,7 @@ export class PlayerLoadingGate {
 			chunkY,
 			chunkZ,
 			PlayerLoadingGate.SPAWN_CHUNK_RADIUS,
-			0,
+			2,
 		);
 		const colliderReady = this.isSpawnColliderReady(chunkX, chunkY, chunkZ);
 		const timedOut =

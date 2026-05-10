@@ -579,7 +579,7 @@ export class ChunkWorkerPool {
 		radius: number,
 		renderDistance: number,
 		gridStep: number,
-	): number {
+	): void {
 		const requestId = this.nextDistantTerrainRequestId++;
 		// Only keep the newest request
 		this.distantTerrainTaskQueue = [
@@ -594,7 +594,6 @@ export class ChunkWorkerPool {
 		];
 
 		this.processQueue();
-		return requestId;
 	}
 
 	private tryApplyCachedLODMesh(
@@ -1214,18 +1213,17 @@ export class ChunkWorkerPool {
 				taskChunk = this.dequeueNextTerrainChunk();
 				taskType = "terrain";
 			}
-			// 2) Then distant terrain (keep horizon responsive under heavy remesh load)
+			// 3) Then remesh
+			else if (this.taskQueue.length > 0) {
+				taskChunk = this.taskQueue.shift();
+				taskType = "remesh";
+			} // 2) Then distant terrain (keep horizon responsive under heavy remesh load)
 			else if (
 				this.distantTerrainTaskQueue.length > 0 &&
 				!this.distantTerrainInFlight
 			) {
 				distantTask = this.distantTerrainTaskQueue.shift();
 				taskType = "distantTerrain";
-			}
-			// 3) Then remesh
-			else if (this.taskQueue.length > 0) {
-				taskChunk = this.taskQueue.shift();
-				taskType = "remesh";
 			}
 			// 4) Then background LOD precompute
 			else if (this.lodPrecomputeQueue.length > 0) {
