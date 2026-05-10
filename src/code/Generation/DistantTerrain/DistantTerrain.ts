@@ -406,17 +406,15 @@ export class DistantTerrain {
 		this.waterMesh.position.set(worldX, GenerationParams.SEA_LEVEL, worldZ);
 		const prevX = this.mesh.position.x;
 		const prevZ = this.mesh.position.z;
-		const newX = worldX;
-		const newZ = worldZ;
 		this.#gridOrigin.x = worldX - this.#radius * Chunk.SIZE;
 		this.#gridOrigin.y = worldZ - this.#radius * Chunk.SIZE;
 		this.material.setVector2("gridOriginWorld", this.#gridOrigin);
 		if (
-			Math.abs(newX - prevX) > Chunk.SIZE - 1 ||
-			Math.abs(newZ - prevZ) > Chunk.SIZE - 1
+			Math.abs(worldX - prevX) > Chunk.SIZE - 1 ||
+			Math.abs(worldZ - prevZ) > Chunk.SIZE - 1
 		) {
 			console.warn(
-				`LARGE MESH JUMP | prev=(${prevX},${prevZ}) new=(${newX},${newZ}) delta=(${newX - prevX},${newZ - prevZ})`,
+				`LARGE MESH JUMP | prev=(${prevX},${prevZ}) new=(${worldX},${worldZ}) delta=(${worldX - prevX},${worldZ - prevZ})`,
 			);
 		}
 		// Update existing GPU buffers only
