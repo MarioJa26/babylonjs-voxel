@@ -65,7 +65,9 @@ export class ChunkStreamingController {
 			playerWorldX !== undefined ? playerWorldX : chunkX * Chunk.SIZE;
 		const distantTerrainZ =
 			playerWorldZ !== undefined ? playerWorldZ : chunkZ * Chunk.SIZE;
-		DistantTerrain.getInstance().update(distantTerrainX, distantTerrainZ);
+		if (DistantTerrain.checkInstance()) {
+			DistantTerrain.getInstance().update(distantTerrainX, distantTerrainZ);
+		}
 
 		const lodRuleSet = ChunkLodRuleSet.fromRenderRadii(
 			renderDistance,

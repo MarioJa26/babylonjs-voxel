@@ -145,6 +145,18 @@ export class DistantTerrain {
 		this.#surfaceTileLookupTexture.wrapU = Texture.CLAMP_ADDRESSMODE;
 		this.#surfaceTileLookupTexture.wrapV = Texture.CLAMP_ADDRESSMODE;
 
+		ChunkWorkerPool.getInstance().onDistantTerrainGenerated = (data) => {
+			// Convert chunk coordinates back to world coordinates for positioning
+			const worldX = data.centerChunkX * Chunk.SIZE;
+			const worldZ = data.centerChunkZ * Chunk.SIZE;
+			this.applyTerrainData(
+				this.#sharedPositions,
+				this.#sharedNormals,
+				this.#sharedSurfaceTiles,
+				worldX,
+				worldZ,
+			);
+		};
 		// ---- Shaders ----
 		Effect.ShadersStore["distantTerrainVertexShader"] =
 			DistantTerrainShader.distantTerrainVertexShader;
@@ -248,18 +260,6 @@ export class DistantTerrain {
 
 		// ---- Worker callback ----
 		// Worker only returns center coords; data lives in shared buffers.
-		ChunkWorkerPool.getInstance().onDistantTerrainGenerated = (data) => {
-			// Convert chunk coordinates back to world coordinates for positioning
-			const worldX = data.centerChunkX * Chunk.SIZE;
-			const worldZ = data.centerChunkZ * Chunk.SIZE;
-			this.applyTerrainData(
-				this.#sharedPositions,
-				this.#sharedNormals,
-				this.#sharedSurfaceTiles,
-				worldX,
-				worldZ,
-			);
-		};
 	}
 
 	public static getInstance(): DistantTerrain {
@@ -400,7 +400,7 @@ export class DistantTerrain {
 			worldToChunkCoord(worldX),
 			worldToChunkCoord(worldZ),
 			this.#radius,
-			SETTING_PARAMS.RENDER_DISTANCE + SETTING_PARAMS.LOD_1_OFFSET,
+			SETTING_PARAMS.RENDER_DISTANCE,
 			this.#gridStep,
 		);
 	}
@@ -456,5 +456,8 @@ export class DistantTerrain {
 		}
 
 		this.#surfaceTileLookupTexture.update(this.#surfaceTileLookupData);
+	}
+	public static resetInstance(): void {
+		DistantTerrain.instance = undefined!;
 	}
 }

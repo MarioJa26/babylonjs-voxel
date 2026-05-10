@@ -117,20 +117,29 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
 
 		case WorkerTaskType.InitDistantTerrainShared: {
 			WorkerTaskHandlers.handleInitDistantTerrainShared(event.data);
+			self.postMessage({ type: WorkerTaskType.InitDistantTerrainShared }); // ← ack
 			return;
 		}
 
 		case WorkerTaskType.GenerateDistantTerrain: {
-			const { payload, transferables } =
-				WorkerTaskHandlers.handleGenerateDistantTerrain(event.data);
-
-			self.postMessage(
-				{
-					...payload,
+			try {
+				const { payload, transferables } =
+					WorkerTaskHandlers.handleGenerateDistantTerrain(event.data);
+				self.postMessage(
+					{ ...payload, type: WorkerTaskType.GenerateDistantTerrain_Generated },
+					transferables,
+				);
+			} catch (err) {
+				console.error("GenerateDistantTerrain failed:", err);
+				// Post back a failure so main thread doesn't hang
+				self.postMessage({
 					type: WorkerTaskType.GenerateDistantTerrain_Generated,
-				},
-				transferables,
-			);
+					requestId: (event.data as any).requestId,
+					centerChunkX: (event.data as any).centerChunkX,
+					centerChunkZ: (event.data as any).centerChunkZ,
+					failed: true,
+				});
+			}
 			return;
 		}
 

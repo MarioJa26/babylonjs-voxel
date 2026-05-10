@@ -229,7 +229,6 @@ export class ChunkWorker {
 				"ChunkWorker.postGenerateDistantTerrain called before initDistantTerrainShared().",
 			);
 		}
-
 		const message: GenerateDistantTerrainRequest = {
 			type: WorkerTaskType.GenerateDistantTerrain,
 			requestId,

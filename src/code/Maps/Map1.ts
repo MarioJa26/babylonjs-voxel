@@ -7,8 +7,10 @@ import {
 import type { Player } from "../Player/Player";
 import { PlayerLoadingGate } from "../Player/PlayerLoadingGate";
 import { PlayerStatePersistence } from "../Player/PlayerStatePersistence";
-import { initAtlas } from "../World/Chunk/ChunckMesher";
+import { disposeSharedResources, initAtlas } from "../World/Chunk/ChunckMesher";
+import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
+import { TextureDefinitions } from "../World/Texture/TextureDefinitions";
 import { WorldStorage } from "../World/WorldStorage";
 import { BlockBreakParticles } from "./BlockBreakParticles";
 import { WorldEnvironment } from "./WorldEnvironment";
@@ -36,10 +38,6 @@ export class Map1 {
 			Map1.mainScene,
 			this.#player,
 		);
-		this.#playerLoadingGate = new PlayerLoadingGate(
-			Map1.mainScene,
-			this.#player,
-		);
 
 		Map1.mainScene.onDisposeObservable.add(() => {
 			this.#playerStatePersistence?.dispose();
@@ -49,9 +47,12 @@ export class Map1 {
 			this.#playerLoadingGate = null;
 
 			disposeBlockBreakingVisuals();
+			disposeSharedResources();
+			DistantTerrain.resetInstance();
+			console.log("Map1 disposed and resources cleaned up.");
 		});
 
-		this.initPromise = this.asyncInit().then(async () => {
+		this.initPromise = this.asyncInit().then(() => {
 			WorldStorage.initialize();
 		});
 
@@ -65,20 +66,34 @@ export class Map1 {
 		if (!Map1.mainScene.activeCamera) return;
 
 		try {
+			// 1. Build atlas first — DistantTerrain constructor needs it
 			await this.loadTextures();
+			await initAtlas();
+			// 2. Now safe to construct DistantTerrain (atlas is ready)
+			DistantTerrain.getInstance();
 
-			const distantTerrain = new DistantTerrain();
+			// 3. Start chunk streaming — PlayerLoadingGate calls updateChunksAround
+			//    which calls DistantTerrain.getInstance().update(), so it must come
+			//    after step 2.
+			this.#playerLoadingGate = new PlayerLoadingGate(
+				Map1.mainScene,
+				this.#player,
+			);
+
 			Map1.environment.initSSAO();
 			console.log("Environment and textures loaded successfully.");
 		} catch (error) {
 			console.error("Error loading environment or textures:", error);
 		}
 	}
+
 	async loadTextures(): Promise<void> {
-		await initAtlas();
-		const atlas = TextureAtlasFactory.getDiffuse();
-		if (atlas) {
-			BlockBreakParticles.setAtlasTexture(atlas);
+		if (GLOBAL_VALUES.CREATE_ATLAS) {
+			await TextureAtlasFactory.buildAtlas(Map1.mainScene, TextureDefinitions);
+			const atlas = TextureAtlasFactory.getDiffuse();
+			if (atlas) {
+				BlockBreakParticles.setAtlasTexture(atlas);
+			}
 		}
 	}
 
