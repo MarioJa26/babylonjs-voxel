@@ -26,7 +26,6 @@ export interface ChunkStreamingControllerAdapter {
 }
 
 export class ChunkStreamingController {
-	private distantTerrain: DistantTerrain | null = null;
 	private static readonly DESIRED_STATE_REVISION_RETENTION = 8;
 	private streamRevision = 0;
 	private desiredStates = new Map<bigint, DesiredChunkState>();
@@ -59,14 +58,16 @@ export class ChunkStreamingController {
 	): Promise<void> {
 		this.streamRevision++;
 
-		if (!this.distantTerrain) {
-			this.distantTerrain = new DistantTerrain();
+		// Use exact player position for distant terrain if available.
+		// Fallback must stay in world space because DistantTerrain.update() converts
+		// world -> chunk internally.
+		const distantTerrainX =
+			playerWorldX !== undefined ? playerWorldX : chunkX * Chunk.SIZE;
+		const distantTerrainZ =
+			playerWorldZ !== undefined ? playerWorldZ : chunkZ * Chunk.SIZE;
+		if (DistantTerrain.checkInstance()) {
+			DistantTerrain.getInstance().update(distantTerrainX, distantTerrainZ);
 		}
-
-		// Use exact player position for distant terrain if available, fallback to chunk coordinates
-		const distantTerrainX = playerWorldX !== undefined ? playerWorldX : chunkX;
-		const distantTerrainZ = playerWorldZ !== undefined ? playerWorldZ : chunkZ;
-		this.distantTerrain.update(distantTerrainX, distantTerrainZ);
 
 		const lodRuleSet = ChunkLodRuleSet.fromRenderRadii(
 			renderDistance,

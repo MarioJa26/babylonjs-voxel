@@ -27,11 +27,13 @@ export const SETTING_PARAMS = {
 	LOD_PRECOMPUTE_HORIZONTAL_OFFSET: 14,
 	LOD_PRECOMPUTE_VERTICAL_OFFSET: 4,
 
-	DISTANT_RENDER_DISTANCE: 32, //128,
+	DISTANT_RENDER_DISTANCE: 128, //128,
 	LOD_PRECOMPUTE_SCHEDULE_THROTTLE_MS: 220, //120
 	LOD_PRECOMPUTE_MAX_ENQUEUE_PER_UPDATE: 48,
 	// 0 = unlimited dispatch while workers are idle
 	CHUNK_WORKER_DISPATCH_BUDGET_PER_TICK: 12,
+	// 0 = auto (derived from hardware concurrency); >0 = explicit worker pool size
+	CHUNK_WORKER_POOL_SIZE: 0,
 
 	// --- Day/Night Cycle ---
 	DAY_DURATION_MS: 10 * 60 * 1000, // 10 minutes for a full day

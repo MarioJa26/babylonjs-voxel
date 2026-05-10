@@ -69,7 +69,7 @@ export class PlayerLoadingGate {
 			chunkY,
 			chunkZ,
 			PlayerLoadingGate.SPAWN_CHUNK_RADIUS,
-			0,
+			2,
 		);
 		const colliderReady = this.isSpawnColliderReady(chunkX, chunkY, chunkZ);
 		const timedOut =

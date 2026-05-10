@@ -39,71 +39,38 @@ export class TextureAtlasFactory {
 		const diffuseCtx = diffuseCanvas.getContext("2d")!;
 		const normalCtx = normalCanvas.getContext("2d")!;
 
-		// --- Load all diffuse + normal images, preserving original indices ---
-		const loadPromises = images.map(async (img, index) => {
-			try {
-				const diffuseSrc = MaterialFactory.getTexturePathFromFolder(
-					img.path,
-					"diff",
-				);
-				if (!diffuseSrc) {
-					throw new Error(
-						`Invalid texture diffuseSrc path for block ${img.name}: ${img.path}`,
-					);
-				}
+		// --- Load all diffuse + normal images ---
+		const loadedImages = await Promise.all(
+			images.map(async (img) => {
+				const diffuseSrc = MaterialFactory.getTexturePathFromFolder(img.path)!;
 				const normalSrc = MaterialFactory.getTexturePathFromFolder(
 					img.path,
 					"nor",
-				);
-				if (!normalSrc) {
-					throw new Error(
-						`Invalid texture normalSrc path for block ${img.name}: ${img.path}`,
-					);
-				}
+				)!;
+
 				const [diffuseImg, normalImg] = await Promise.all([
 					TextureAtlasFactory.loadImage(diffuseSrc),
 					TextureAtlasFactory.loadImageSafe(normalSrc),
 				]);
 
-				return {
-					index,
-					name: img.name,
-					diffuseImg,
-					normalImg,
-					success: true as const,
-				};
-			} catch (error) {
-				console.warn(
-					`Skipping block "${img.name}" (path: ${img.path}):`,
-					error,
-				);
-				return { index, name: img.name, success: false as const };
-			}
-		});
+				return { name: img.name, diffuseImg, normalImg };
+			}),
+		);
 
-		const loadedResults = await Promise.all(loadPromises);
-
-		loadedResults.forEach((result) => {
-			if (!result.success) return;
-
-			const i = result.index;
+		loadedImages.forEach((entry, i) => {
 			const col = i % atlasSize;
 			const row = Math.floor(i / atlasSize);
 			const x = col * tileSize;
 			const y = row * tileSize;
 
-			diffuseCtx.drawImage(result.diffuseImg, x, y, tileSize, tileSize);
-			if (result.normalImg) {
-				normalCtx.drawImage(result.normalImg, x, y, tileSize, tileSize);
+			diffuseCtx.drawImage(entry.diffuseImg, x, y, tileSize, tileSize);
+			if (entry.normalImg) {
+				normalCtx.drawImage(entry.normalImg, x, y, tileSize, tileSize);
 			}
 
 			const u = col / atlasSize;
 			const v = row / atlasSize;
-			TextureAtlasFactory.uvMap[result.name] = {
-				u,
-				v,
-				tileSize: 1 / atlasSize,
-			};
+			TextureAtlasFactory.uvMap[entry.name] = { u, v, tileSize: 1 / atlasSize };
 		});
 
 		// --- Create Babylon textures ---

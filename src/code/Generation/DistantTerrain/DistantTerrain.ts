@@ -21,6 +21,7 @@ import { TextureAtlasFactory } from "@/code/World/Texture/TextureAtlasFactory";
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
 
 export class DistantTerrain {
+	public static instance: DistantTerrain;
 	private mesh: Mesh;
 	private waterMesh: Mesh;
 	private material: ShaderMaterial;
@@ -144,6 +145,18 @@ export class DistantTerrain {
 		this.#surfaceTileLookupTexture.wrapU = Texture.CLAMP_ADDRESSMODE;
 		this.#surfaceTileLookupTexture.wrapV = Texture.CLAMP_ADDRESSMODE;
 
+		ChunkWorkerPool.getInstance().onDistantTerrainGenerated = (data) => {
+			// Convert chunk coordinates back to world coordinates for positioning
+			const worldX = data.centerChunkX * Chunk.SIZE;
+			const worldZ = data.centerChunkZ * Chunk.SIZE;
+			this.applyTerrainData(
+				this.#sharedPositions,
+				this.#sharedNormals,
+				this.#sharedSurfaceTiles,
+				worldX,
+				worldZ,
+			);
+		};
 		// ---- Shaders ----
 		Effect.ShadersStore["distantTerrainVertexShader"] =
 			DistantTerrainShader.distantTerrainVertexShader;
@@ -238,21 +251,25 @@ export class DistantTerrain {
 		this.waterMesh.receiveShadows = false;
 		this.waterMesh.doNotSyncBoundingInfo = true;
 		this.waterMesh.alwaysSelectAsActiveMesh = true;
+		// If active mesh list was frozen for debugging, include these newly
+		// created meshes by rebuilding the frozen list once.
+		if (Map1.mainScene._activeMeshesFrozen) {
+			Map1.mainScene.unfreezeActiveMeshes();
+			Map1.mainScene.freezeActiveMeshes();
+		}
 
 		// ---- Worker callback ----
 		// Worker only returns center coords; data lives in shared buffers.
-		ChunkWorkerPool.getInstance().onDistantTerrainGenerated = (data) => {
-			// Convert chunk coordinates back to world coordinates for positioning
-			const worldX = data.centerChunkX * Chunk.SIZE;
-			const worldZ = data.centerChunkZ * Chunk.SIZE;
-			this.applyTerrainData(
-				this.#sharedPositions,
-				this.#sharedNormals,
-				this.#sharedSurfaceTiles,
-				worldX,
-				worldZ,
-			);
-		};
+	}
+
+	public static getInstance(): DistantTerrain {
+		if (!DistantTerrain.instance) {
+			DistantTerrain.instance = new DistantTerrain();
+		}
+		return DistantTerrain.instance;
+	}
+	public static checkInstance(): boolean {
+		return !!DistantTerrain.instance;
 	}
 
 	private createEmptyGridMesh(name: string, scene: Scene): Mesh {
@@ -400,17 +417,15 @@ export class DistantTerrain {
 		this.waterMesh.position.set(worldX, GenerationParams.SEA_LEVEL, worldZ);
 		const prevX = this.mesh.position.x;
 		const prevZ = this.mesh.position.z;
-		const newX = worldX;
-		const newZ = worldZ;
 		this.#gridOrigin.x = worldX - this.#radius * Chunk.SIZE;
 		this.#gridOrigin.y = worldZ - this.#radius * Chunk.SIZE;
 		this.material.setVector2("gridOriginWorld", this.#gridOrigin);
 		if (
-			Math.abs(newX - prevX) > Chunk.SIZE - 1 ||
-			Math.abs(newZ - prevZ) > Chunk.SIZE - 1
+			Math.abs(worldX - prevX) > Chunk.SIZE - 1 ||
+			Math.abs(worldZ - prevZ) > Chunk.SIZE - 1
 		) {
 			console.warn(
-				`LARGE MESH JUMP | prev=(${prevX},${prevZ}) new=(${newX},${newZ}) delta=(${newX - prevX},${newZ - prevZ})`,
+				`LARGE MESH JUMP | prev=(${prevX},${prevZ}) new=(${worldX},${worldZ}) delta=(${worldX - prevX},${worldZ - prevZ})`,
 			);
 		}
 		// Update existing GPU buffers only
@@ -441,5 +456,8 @@ export class DistantTerrain {
 		}
 
 		this.#surfaceTileLookupTexture.update(this.#surfaceTileLookupData);
+	}
+	public static resetInstance(): void {
+		DistantTerrain.instance = undefined!;
 	}
 }

@@ -19,6 +19,8 @@ export type WorkerMessageData = WorkerResponseData;
 export type ChunkWorkerPoolDebugStats = {
 	workerCount: number;
 	idleWorkers: number;
+	busyWorkers: number;
+	peakBusyWorkers: number;
 	remeshQueueLength: number;
 	terrainQueueLength: number;
 	lodPrecomputeQueueLength: number;
@@ -34,11 +36,15 @@ export type ChunkWorkerPoolDebugStats = {
 	totalRemeshDispatches: number;
 	totalLodPrecomputeDispatches: number;
 	totalDistantDispatches: number;
+	workerDispatchCounts: number[];
+	lastDispatchWorkerIndices: number[];
 };
 
 export class ChunkWorkerPool {
 	private static instance: ChunkWorkerPool;
 	private static readonly WORKER_ERROR_COOLDOWN_MS = 120;
+	private static readonly MIN_AUTO_POOL_SIZE = 2;
+	private static readonly MAX_AUTO_POOL_SIZE = 12;
 	private workers: ChunkWorker[] = [];
 
 	private workerTaskContext: Array<{
@@ -59,10 +65,16 @@ export class ChunkWorkerPool {
 
 	private workerRestartAtMs: number[] = [];
 	private taskQueue: Chunk[] = [];
+	private workerDispatchCounts: number[] = [];
+	private lastDispatchWorkerIndices: number[] = [];
 	private pendingRemeshQueue: Map<Chunk, boolean> = new Map();
 	private pendingRemeshSet: Set<Chunk> = new Set();
 	private terrainTaskDeferLighting = new Map<bigint, boolean>();
 	private terrainTaskQueue: Set<Chunk> = new Set();
+
+	// Tracks which worker indices have ACKed their InitDistantTerrainShared message
+	private distantTerrainReadyWorkers = new Set<number>();
+
 	private distantTerrainTaskQueue: DistantTerrainTask[] = [];
 	private lodPrecomputeQueue: Array<{ chunk: Chunk; lod: number }> = [];
 	private pendingLodPrecomputeKeys = new Set<string>();
@@ -74,6 +86,8 @@ export class ChunkWorkerPool {
 	private debugStats: ChunkWorkerPoolDebugStats = {
 		workerCount: 0,
 		idleWorkers: 0,
+		busyWorkers: 0,
+		peakBusyWorkers: 0,
 		remeshQueueLength: 0,
 		terrainQueueLength: 0,
 		lodPrecomputeQueueLength: 0,
@@ -89,6 +103,8 @@ export class ChunkWorkerPool {
 		totalRemeshDispatches: 0,
 		totalLodPrecomputeDispatches: 0,
 		totalDistantDispatches: 0,
+		workerDispatchCounts: [],
+		lastDispatchWorkerIndices: [],
 	};
 	private inFlightRemeshKeys = new Set<string>();
 	private rerunRemeshAfterInflight = new Map<Chunk, boolean>();
@@ -126,6 +142,13 @@ export class ChunkWorkerPool {
 	private updateQueueDebugStats(): void {
 		this.debugStats.workerCount = this.workers.length;
 		this.debugStats.idleWorkers = this.idleWorkerIndices.length;
+		this.debugStats.busyWorkers = Math.max(
+			0,
+			this.debugStats.workerCount - this.debugStats.idleWorkers,
+		);
+		if (this.debugStats.busyWorkers > this.debugStats.peakBusyWorkers) {
+			this.debugStats.peakBusyWorkers = this.debugStats.busyWorkers;
+		}
 		this.debugStats.remeshQueueLength = this.taskQueue.length;
 		this.debugStats.terrainQueueLength = this.terrainTaskQueue.size;
 		this.debugStats.lodPrecomputeQueueLength = this.lodPrecomputeQueue.length;
@@ -140,7 +163,27 @@ export class ChunkWorkerPool {
 
 	public getDebugStats(): ChunkWorkerPoolDebugStats {
 		this.updateQueueDebugStats();
-		return { ...this.debugStats };
+		return {
+			...this.debugStats,
+			workerDispatchCounts: [...this.workerDispatchCounts],
+			lastDispatchWorkerIndices: [...this.lastDispatchWorkerIndices],
+		};
+	}
+
+	private recordWorkerDispatch(workerIndex: number): void {
+		if (workerIndex < 0) {
+			return;
+		}
+		if (workerIndex >= this.workerDispatchCounts.length) {
+			this.workerDispatchCounts.length = workerIndex + 1;
+		}
+		this.workerDispatchCounts[workerIndex] =
+			(this.workerDispatchCounts[workerIndex] ?? 0) + 1;
+
+		this.lastDispatchWorkerIndices.push(workerIndex);
+		if (this.lastDispatchWorkerIndices.length > 24) {
+			this.lastDispatchWorkerIndices.shift();
+		}
 	}
 
 	private resolveChunkByMessageId(chunkId: unknown): Chunk | undefined {
@@ -253,6 +296,9 @@ export class ChunkWorkerPool {
 			(idx) => idx !== workerIndex,
 		);
 
+		// Worker is no longer ready for distant terrain, must re-ack after restart
+		this.distantTerrainReadyWorkers.delete(workerIndex);
+
 		try {
 			failedWorker?.terminate();
 		} catch {
@@ -280,7 +326,11 @@ export class ChunkWorkerPool {
 				this.handleWorkerFailure(workerIndex, ev);
 			};
 
-			const replacement = new ChunkWorker(onMessageTerrain, onMessageMesh);
+			const replacement = new ChunkWorker(
+				workerIndex,
+				onMessageTerrain,
+				onMessageMesh,
+			);
 			replacement.setOnError(onError);
 			holder.worker = replacement;
 
@@ -296,6 +346,7 @@ export class ChunkWorkerPool {
 					this.distantTerrainSharedInit.radius,
 					this.distantTerrainSharedInit.gridStep,
 				);
+				// distantTerrainReadyWorkers will be updated when the ACK arrives
 			}
 
 			if (!this.idleWorkerIndices.includes(workerIndex)) {
@@ -328,7 +379,7 @@ export class ChunkWorkerPool {
 				this.handleWorkerFailure(i, ev);
 			};
 
-			const workerWrapper = new ChunkWorker(onMessageTerrain, onMessageMesh);
+			const workerWrapper = new ChunkWorker(i, onMessageTerrain, onMessageMesh);
 			workerWrapper.setOnError(onError);
 			holder.worker = workerWrapper;
 
@@ -336,6 +387,7 @@ export class ChunkWorkerPool {
 			this.idleWorkerIndices.push(i);
 			this.workerTaskContext.push(null);
 			this.workerRestartAtMs.push(0);
+			this.workerDispatchCounts.push(0);
 		}
 
 		this.updateQueueDebugStats();
@@ -364,7 +416,6 @@ export class ChunkWorkerPool {
 	private processMeshQueueLoop = () => {
 		const start = performance.now();
 		let processed = 0;
-		// Process meshes for up to 4ms per frame to prevent stutter
 		while (this.meshResultQueue.length > 0 && performance.now() - start < 5) {
 			const data = this.meshResultQueue.shift();
 			if (data) {
@@ -379,8 +430,6 @@ export class ChunkWorkerPool {
 						transparent ?? null,
 					);
 
-					// Only apply immediately if the chunk is still on the same LOD
-					// that produced this worker result.
 					if ((chunk.lodLevel ?? 0) === lod) {
 						createMeshFromData(chunk, {
 							opaque,
@@ -398,25 +447,49 @@ export class ChunkWorkerPool {
 		requestAnimationFrame(this.processMeshQueueLoop);
 	};
 
-	public static getInstance(
-		poolSize = navigator.hardwareConcurrency || 4,
-	): ChunkWorkerPool {
+	private static resolvePoolSize(explicitPoolSize?: number): number {
+		const explicit =
+			typeof explicitPoolSize === "number"
+				? Math.floor(explicitPoolSize)
+				: Number.NaN;
+		if (Number.isFinite(explicit) && explicit > 0) {
+			return explicit;
+		}
+
+		const configured = Math.floor(SETTING_PARAMS.CHUNK_WORKER_POOL_SIZE);
+		if (Number.isFinite(configured) && configured > 0) {
+			return configured;
+		}
+
+		const detected = Math.max(
+			1,
+			Math.floor((navigator.hardwareConcurrency ?? 0) || 0),
+		);
+		return Math.max(
+			ChunkWorkerPool.MIN_AUTO_POOL_SIZE,
+			Math.min(ChunkWorkerPool.MAX_AUTO_POOL_SIZE, detected),
+		);
+	}
+
+	public static getInstance(poolSize?: number): ChunkWorkerPool {
 		if (!ChunkWorkerPool.instance) {
-			console.log(poolSize + " Workers");
-			ChunkWorkerPool.instance = new ChunkWorkerPool(poolSize);
+			const resolvedPoolSize = ChunkWorkerPool.resolvePoolSize(poolSize);
+			console.log(
+				`ChunkWorkerPool initialized with ${resolvedPoolSize} workers (hw=${navigator.hardwareConcurrency ?? "n/a"})`,
+			);
+			ChunkWorkerPool.instance = new ChunkWorkerPool(resolvedPoolSize);
 			Chunk.onRequestRemesh = (chunk: Chunk, priority: boolean) => {
 				ChunkWorkerPool.instance.scheduleRemesh(chunk, priority);
 			};
 		}
 		return ChunkWorkerPool.instance;
 	}
+
 	public scheduleRemesh(chunk: Chunk | undefined, priority = false) {
 		if (!chunk?.isLoaded) {
 			return;
 		}
 
-		// Mesh-only far LOD chunks do not carry voxel data, so worker remesh would
-		// collapse to empty geometry. Keep cached mesh instead until hydrated.
 		if (!chunk.hasVoxelData) {
 			this.tryApplyCachedLODMesh(chunk, true);
 			return;
@@ -433,8 +506,6 @@ export class ChunkWorkerPool {
 			return;
 		}
 
-		// NEW: if the same chunk at the same current LOD is already being meshed,
-		// do not queue duplicate work. Remember one follow-up rerun instead.
 		if (this.isSameLodRemeshInflight(chunk)) {
 			this.rerunRemeshAfterInflight.set(chunk, true);
 			return;
@@ -443,7 +514,6 @@ export class ChunkWorkerPool {
 		const lodPriority = this.getChunkLodLevel(chunk) === 0;
 		const existingPriority = this.pendingRemeshQueue.get(chunk) ?? false;
 
-		// LOD0 chunks automatically get promoted
 		this.pendingRemeshQueue.set(
 			chunk,
 			existingPriority || priority || lodPriority,
@@ -472,7 +542,6 @@ export class ChunkWorkerPool {
 		const pending = Array.from(this.pendingRemeshQueue.entries());
 		this.pendingRemeshQueue.clear();
 
-		// Sort before inserting so LOD0 + explicit priority goes first
 		pending.sort(([chunkA, priorityA], [chunkB, priorityB]) =>
 			this.compareRemeshPriority(chunkA, priorityA, chunkB, priorityB),
 		);
@@ -493,6 +562,7 @@ export class ChunkWorkerPool {
 
 		this.processQueue();
 	}
+
 	private storeReturnedLODMesh(
 		chunk: Chunk,
 		lod: number,
@@ -504,13 +574,14 @@ export class ChunkWorkerPool {
 			transparent: transparent ?? null,
 		});
 	}
+
 	public scheduleDistantTerrain(
 		centerChunkX: number,
 		centerChunkZ: number,
 		radius: number,
 		renderDistance: number,
 		gridStep: number,
-	) {
+	): void {
 		const requestId = this.nextDistantTerrainRequestId++;
 		// Only keep the newest request
 		this.distantTerrainTaskQueue = [
@@ -581,6 +652,15 @@ export class ChunkWorkerPool {
 			try {
 				const data = event.data;
 				const { type } = data;
+
+				if (type === WorkerTaskType.InitDistantTerrainShared) {
+					// Worker ACK — shared buffers are now initialized on the worker side.
+					// Mark it ready for distant terrain dispatch and trigger queue.
+					// Do NOT touch idleWorkerIndices here — the worker was already idle.
+					this.distantTerrainReadyWorkers.add(workerIndex);
+					this.processQueue();
+					return;
+				}
 
 				if (type === WorkerTaskType.GenerateFullMesh) {
 					const meshData: FullMeshMessage = data;
@@ -677,7 +757,14 @@ export class ChunkWorkerPool {
 							lightSeedLength !== undefined &&
 							lightSeedLength > 0;
 
-						if (needsLightingRefinement) {
+						const terrainQueuePressureCap = Math.max(this.workers.length, 4);
+
+						const shouldQueueLightingRefinement =
+							needsLightingRefinement &&
+							(chunk.lodLevel ?? 0) <= 1 &&
+							this.terrainTaskQueue.size < terrainQueuePressureCap;
+
+						if (shouldQueueLightingRefinement) {
 							/* TODO should be done but is slow
 							const seedState = {
 								queue: lightSeedQueue as Uint16Array,
@@ -697,7 +784,6 @@ export class ChunkWorkerPool {
 					}
 				} else if (type === WorkerTaskType.GenerateDistantTerrain_Generated) {
 					const distantData: DistantTerrainGeneratedMessage = data;
-
 					this.onDistantTerrainGenerated?.(distantData);
 					this.distantTerrainInFlight = false;
 				}
@@ -733,7 +819,6 @@ export class ChunkWorkerPool {
 			try {
 				const data = event.data;
 
-				// NEW: clear the in-flight remesh key for this exact (chunk, lod)
 				this.clearInflightRemeshByMessage(data.chunkId, data.lod);
 
 				const fullMeshMessage: FullMeshMessage = {
@@ -787,19 +872,16 @@ export class ChunkWorkerPool {
 		bChunk: Chunk,
 		bPriority: boolean,
 	): number {
-		// Explicit priority always wins first
 		if (aPriority !== bPriority) {
 			return aPriority ? -1 : 1;
 		}
 
-		// Then prefer lower LOD value (LOD0 before LOD1)
 		const aLod = this.getChunkLodLevel(aChunk);
 		const bLod = this.getChunkLodLevel(bChunk);
 		if (aLod !== bLod) {
 			return aLod - bLod;
 		}
 
-		// Then prefer modified chunks
 		if (aChunk.isModified !== bChunk.isModified) {
 			return aChunk.isModified ? -1 : 1;
 		}
@@ -897,6 +979,7 @@ export class ChunkWorkerPool {
 	private getLodPrecomputeKey(chunk: Chunk, lod: number): string {
 		return `${chunk.id.toString()}:${lod}`;
 	}
+
 	private dispatchTerrainTaskToWorker(
 		workerIndex: number,
 		worker: ChunkWorker,
@@ -938,8 +1021,12 @@ export class ChunkWorkerPool {
 		}
 		this.lastPrecomputeScheduleTs = now;
 
-		const horizontalRadius = SETTING_PARAMS.RENDER_DISTANCE + SETTING_PARAMS.LOD_PRECOMPUTE_HORIZONTAL_OFFSET;
-		const verticalRadius = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE + SETTING_PARAMS.LOD_PRECOMPUTE_VERTICAL_OFFSET;
+		const horizontalRadius =
+			SETTING_PARAMS.RENDER_DISTANCE +
+			SETTING_PARAMS.LOD_PRECOMPUTE_HORIZONTAL_OFFSET;
+		const verticalRadius =
+			SETTING_PARAMS.VERTICAL_RENDER_DISTANCE +
+			SETTING_PARAMS.LOD_PRECOMPUTE_VERTICAL_OFFSET;
 		const targetLods = [2, 3];
 		const candidates: Array<{ chunk: Chunk; lod: number; score: number }> = [];
 
@@ -1015,6 +1102,7 @@ export class ChunkWorkerPool {
 			this.scheduleRemesh(target, this.getChunkLodLevel(target) === 0);
 		}
 	}
+
 	private hasStableVoxelNeighborsForCachedMesh(chunk: Chunk): boolean {
 		const neighbors: Array<Chunk | undefined> = [
 			chunk.getNeighbor(-1, 0, 0),
@@ -1026,27 +1114,14 @@ export class ChunkWorkerPool {
 		];
 
 		for (const neighbor of neighbors) {
-			if (!neighbor) {
-				return false;
-			}
-
-			if (!neighbor.isLoaded) {
-				return false;
-			}
-
-			if (!neighbor.hasVoxelData) {
-				return false;
-			}
+			if (!neighbor) return false;
+			if (!neighbor.isLoaded) return false;
+			if (!neighbor.hasVoxelData) return false;
 		}
 
 		return true;
 	}
 
-	// When a chunk becomes loaded with voxel data, adjacent neighbors that
-	// currently have cached LOD meshes may have been built earlier while this
-	// chunk was missing. If those neighbors now have all 6 voxel-backed
-	// neighbors available, mark them dirty and schedule a remesh so border
-	// geometry is generated instead of reusing stale cached meshes.
 	private maybeRemeshNeighborsNowStable(chunk: Chunk): void {
 		const neighbors: Array<Chunk | undefined> = [
 			chunk.getNeighbor(-1, 0, 0),
@@ -1059,22 +1134,18 @@ export class ChunkWorkerPool {
 
 		for (const neighbor of neighbors) {
 			if (!neighbor) continue;
-			// Only consider neighbors that are loaded and carry voxel data (not
-			// mesh-only far LOD chunks).
 			if (!neighbor.isLoaded || !neighbor.hasVoxelData) continue;
 
 			const cached = neighbor.getCachedLODMesh(neighbor.lodLevel);
 			if (!cached) continue;
 
-			// If this neighbor now has stable voxel neighbors, force a remesh.
 			if (this.hasStableVoxelNeighborsForCachedMesh(neighbor)) {
-				// Prevent reusing cached mesh by marking dirty so remesh will rebuild
-				// proper border geometry.
 				neighbor.isDirty = true;
 				this.scheduleRemesh(neighbor, (neighbor.lodLevel ?? 0) === 0);
 			}
 		}
 	}
+
 	public initDistantTerrainShared(
 		positionsBuffer: SharedArrayBuffer,
 		normalsBuffer: SharedArrayBuffer,
@@ -1090,8 +1161,11 @@ export class ChunkWorkerPool {
 			gridStep,
 		};
 
-		for (const worker of this.workers) {
-			worker.initDistantTerrainShared(
+		// Send init to all workers. Each will ACK via InitDistantTerrainShared
+		// message, at which point we add them to distantTerrainReadyWorkers.
+		for (let i = 0; i < this.workers.length; i++) {
+			this.distantTerrainReadyWorkers.delete(i); // clear stale ready state
+			this.workers[i].initDistantTerrainShared(
 				positionsBuffer,
 				normalsBuffer,
 				surfaceTilesBuffer,
@@ -1104,7 +1178,6 @@ export class ChunkWorkerPool {
 	private processQueue() {
 		this.updateQueueDebugStats();
 
-		// Keep remesh queue stable and LOD-aware before dispatching
 		if (this.taskQueue.length > 1) {
 			this.taskQueue.sort((a, b) =>
 				this.compareRemeshPriority(
@@ -1138,7 +1211,16 @@ export class ChunkWorkerPool {
 				taskChunk = this.taskQueue.shift();
 				taskType = "remesh";
 			}
-			// 3) Then background LOD precompute
+			// 3) Then distant terrain — only if a ready worker exists
+			else if (
+				this.distantTerrainTaskQueue.length > 0 &&
+				!this.distantTerrainInFlight &&
+				this.distantTerrainReadyWorkers.size > 0
+			) {
+				distantTask = this.distantTerrainTaskQueue.shift();
+				taskType = "distantTerrain";
+			}
+			// 4) Then background LOD precompute
 			else if (this.lodPrecomputeQueue.length > 0) {
 				const task = this.lodPrecomputeQueue.shift()!;
 				taskChunk = task.chunk;
@@ -1147,14 +1229,6 @@ export class ChunkWorkerPool {
 					this.getLodPrecomputeKey(task.chunk, task.lod),
 				);
 				taskType = "lodPrecompute";
-			}
-			// 4) Then distant terrain
-			else if (
-				this.distantTerrainTaskQueue.length > 0 &&
-				!this.distantTerrainInFlight
-			) {
-				distantTask = this.distantTerrainTaskQueue.shift();
-				taskType = "distantTerrain";
 			} else {
 				break;
 			}
@@ -1174,9 +1248,6 @@ export class ChunkWorkerPool {
 			}
 
 			if (taskType === "remesh" && taskChunk) {
-				// If this chunk was explicitly queued for remesh, never bypass it
-				// with the cached mesh — the mesh queue loop may have cleared isDirty
-				// while a previous mesh was applying.
 				if (!this.pendingRemeshSet.has(taskChunk)) {
 					if (this.tryApplyCachedLODMesh(taskChunk)) {
 						continue;
@@ -1195,6 +1266,25 @@ export class ChunkWorkerPool {
 				}
 			}
 
+			// For distant terrain, find a worker that has ACKed its shared init.
+			// Swap the chosen idle worker for a ready one if needed.
+			if (taskType === "distantTerrain") {
+				const readyIdleIndex = this.idleWorkerIndices.findIndex((idx) =>
+					this.distantTerrainReadyWorkers.has(idx),
+				);
+
+				if (readyIdleIndex === -1) {
+					// No ready worker is idle right now — re-queue and stop
+					this.distantTerrainTaskQueue.unshift(distantTask!);
+					break;
+				}
+
+				// Swap the ready worker to the front so the shift below picks it
+				const tmp = this.idleWorkerIndices[0];
+				this.idleWorkerIndices[0] = this.idleWorkerIndices[readyIdleIndex];
+				this.idleWorkerIndices[readyIdleIndex] = tmp;
+			}
+
 			const workerIndex = this.idleWorkerIndices.shift()!;
 			const worker = this.workers[workerIndex];
 
@@ -1208,6 +1298,7 @@ export class ChunkWorkerPool {
 					}
 
 					this.dispatchTerrainTaskToWorker(workerIndex, worker, taskChunk);
+					this.recordWorkerDispatch(workerIndex);
 					this.debugStats.totalTerrainDispatches += 1;
 					dispatchedThisTick += 1;
 				} else if (taskType === "remesh") {
@@ -1225,6 +1316,7 @@ export class ChunkWorkerPool {
 					);
 
 					worker.postFullRemesh(taskChunk!);
+					this.recordWorkerDispatch(workerIndex);
 					this.debugStats.totalRemeshDispatches += 1;
 					dispatchedThisTick += 1;
 				} else if (taskType === "lodPrecompute") {
@@ -1241,9 +1333,11 @@ export class ChunkWorkerPool {
 					);
 
 					worker.postFullRemesh(taskChunk!, lod);
+					this.recordWorkerDispatch(workerIndex);
 					this.debugStats.totalLodPrecomputeDispatches += 1;
 					dispatchedThisTick += 1;
 				} else {
+					// distantTerrain — worker is guaranteed ready here
 					this.workerTaskContext[workerIndex] = {
 						taskType,
 						distantTask,
@@ -1259,7 +1353,7 @@ export class ChunkWorkerPool {
 						distantTask!.renderDistance,
 						distantTask!.gridStep,
 					);
-
+					this.recordWorkerDispatch(workerIndex);
 					this.debugStats.totalDistantDispatches += 1;
 					dispatchedThisTick += 1;
 				}

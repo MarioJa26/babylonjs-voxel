@@ -135,7 +135,8 @@ export type DistantTerrainGeneratedMessage = {
 export type WorkerResponseData =
 	| FullMeshMessage
 	| TerrainGeneratedMessage
-	| DistantTerrainGeneratedMessage;
+	| DistantTerrainGeneratedMessage
+	| { type: WorkerTaskType.InitDistantTerrainShared }; // ← ack only, no payload
 
 export type MeshWorkerResponse = {
 	chunkId: bigint;

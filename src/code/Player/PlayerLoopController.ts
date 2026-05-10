@@ -165,11 +165,25 @@ export class PlayerLoopController {
 		);
 		PlayerHud.updateDebugInfo(
 			"Worker Queues",
-			`T:${workerStats.terrainQueueLength} R:${workerStats.remeshQueueLength} P:${workerStats.lodPrecomputeQueueLength} D:${workerStats.distantTerrainQueueLength} idle:${workerStats.idleWorkers}/${workerStats.workerCount}`,
+			`T:${workerStats.terrainQueueLength} R:${workerStats.remeshQueueLength} P:${workerStats.lodPrecomputeQueueLength} D:${workerStats.distantTerrainQueueLength} busy:${workerStats.busyWorkers}/${workerStats.workerCount} idle:${workerStats.idleWorkers}`,
 		);
 		PlayerHud.updateDebugInfo(
 			"Worker Dispatch",
 			`last:${workerStats.lastDispatchCount} total:${workerStats.totalDispatchCount} budget:${workerStats.dispatchBudgetPerTick || "inf"}`,
+		);
+		const dispatchHistogram = workerStats.workerDispatchCounts
+			.map((count, index) => ({ count, index }))
+			.filter((entry) => entry.count > 0)
+			.sort((a, b) => b.count - a.count)
+			.slice(0, 4)
+			.map((entry) => `${entry.index}:${entry.count}`)
+			.join(" ");
+		const recentWorkers = workerStats.lastDispatchWorkerIndices
+			.slice(-8)
+			.join(",");
+		PlayerHud.updateDebugInfo(
+			"Worker Dist",
+			`peakBusy:${workerStats.peakBusyWorkers} top:[${dispatchHistogram || "-"}] recent:[${recentWorkers || "-"}]`,
 		);
 		PlayerHud.updateDebugInfo(
 			"Mesh Drain",

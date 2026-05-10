@@ -24,27 +24,28 @@ export class ChunkWorker {
 			: new Uint8Array(0);
 
 	constructor(
+		workerIndex: number,
 		onMessageTerrain: (event: MessageEvent<WorkerResponseData>) => void,
 		onMessageMesh: (event: MessageEvent<MeshWorkerResponse>) => void,
 	) {
 		// Terrain / distant terrain / lighting worker
 		this.terrainWorker = new Worker(
 			new URL("./chunk.worker.ts", import.meta.url),
-			{ type: "module" },
+			{ type: "module", name: `chunk-terrain-${workerIndex}` },
 		);
 		this.terrainWorker.onmessage = onMessageTerrain;
 
 		// Voxel mesh worker
 		this.voxelWorker = new Worker(
 			new URL("./voxel.worker.ts", import.meta.url),
-			{ type: "module" },
+			{ type: "module", name: `chunk-voxel-${workerIndex}` },
 		);
 		this.voxelWorker.onmessage = (e) => onMessageMesh(e);
 
 		// Water mesh worker
 		this.waterWorker = new Worker(
 			new URL("./water.worker.ts", import.meta.url),
-			{ type: "module" },
+			{ type: "module", name: `chunk-water-${workerIndex}` },
 		);
 		this.waterWorker.onmessage = (e) => onMessageMesh(e);
 	}
@@ -228,7 +229,6 @@ export class ChunkWorker {
 				"ChunkWorker.postGenerateDistantTerrain called before initDistantTerrainShared().",
 			);
 		}
-
 		const message: GenerateDistantTerrainRequest = {
 			type: WorkerTaskType.GenerateDistantTerrain,
 			requestId,

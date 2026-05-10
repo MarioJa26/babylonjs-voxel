@@ -71,7 +71,12 @@ export class TestScene {
 			GenerationParams.SEA_LEVEL,
 		);
 		const map = new Map1(scene, player);
-		map.initPromise;
+		await map.initPromise;
 		return scene;
+	}
+	public dispose(): void {
+		this.engine.stopRenderLoop();
+		this.scene?.dispose(); // fires onDisposeObservable → your cleanup runs
+		this.engine.dispose();
 	}
 }
