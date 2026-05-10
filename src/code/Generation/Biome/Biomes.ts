@@ -49,7 +49,7 @@ const TUNDRA: Biome = {
 	seafloorBlock: 8,
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.5,
-	persistence: 0.22,
+	persistence: 0.221,
 	heightExponent: 1.1,
 	terrainHeightBase: 50,
 	terrainHeightAmplitude: 90,
