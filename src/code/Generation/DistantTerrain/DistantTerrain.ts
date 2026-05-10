@@ -21,6 +21,7 @@ import { TextureAtlasFactory } from "@/code/World/Texture/TextureAtlasFactory";
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
 
 export class DistantTerrain {
+	public static instance: DistantTerrain;
 	private mesh: Mesh;
 	private waterMesh: Mesh;
 	private material: ShaderMaterial;
@@ -259,6 +260,16 @@ export class DistantTerrain {
 				worldZ,
 			);
 		};
+	}
+
+	public static getInstance(): DistantTerrain {
+		if (!DistantTerrain.instance) {
+			DistantTerrain.instance = new DistantTerrain();
+		}
+		return DistantTerrain.instance;
+	}
+	public static checkInstance(): boolean {
+		return !!DistantTerrain.instance;
 	}
 
 	private createEmptyGridMesh(name: string, scene: Scene): Mesh {

@@ -1,4 +1,5 @@
 import type { Observer, Scene } from "@babylonjs/core";
+import { DistantTerrain } from "../Generation/DistantTerrain/DistantTerrain";
 import { getChunk } from "../World/Chunk/Chunk";
 import {
 	areChunksLod0ReadyAround,

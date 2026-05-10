@@ -1,4 +1,5 @@
 import { type Scene, ShaderMaterial } from "@babylonjs/core";
+import { DistantTerrain } from "../Generation/DistantTerrain/DistantTerrain";
 import {
 	disposeBlockBreakingVisuals,
 	initializeBlockBreakingVisuals,
@@ -65,6 +66,8 @@ export class Map1 {
 
 		try {
 			await this.loadTextures();
+
+			const distantTerrain = new DistantTerrain();
 			Map1.environment.initSSAO();
 			console.log("Environment and textures loaded successfully.");
 		} catch (error) {
