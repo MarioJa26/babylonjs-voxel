@@ -5,7 +5,7 @@ export const GLOBAL_VALUES = {
 	CREATE_ATLAS: false,
 
 	INIT_CONNECTION: false,
-	CACHE_TEXTURES: true,
+	CACHE_TEXTURES: false,
 	TEXTURE_VERSION: 1,
 
 	// When true, prevents chunks from being saved to IndexedDB. Useful for testing generation.

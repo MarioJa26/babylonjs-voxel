@@ -1,3 +1,4 @@
+import { BlockType } from "@/code/World/BlockType";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
 import type { TreeDefinition } from "./BiomeTypes";
 
@@ -636,5 +637,578 @@ export const SAVANNAH_TREE: TreeDefinition = {
 
 		// Small top
 		placeBlock(worldX, canopyY + 2, worldZ, leavesId, false);
+	},
+};
+// ---------------------------------------------------------------------------
+// generateBaobab
+// ---------------------------------------------------------------------------
+
+export function generateBaobab(
+	worldX: number,
+	worldY: number,
+	worldZ: number,
+	placeBlock: (
+		x: number,
+		y: number,
+		z: number,
+		blockId: number,
+		overwrite?: boolean,
+	) => void,
+	seedAsInt: number,
+	woodId: number,
+	leavesId: number,
+	baseHeight: number,
+	heightVariance: number,
+): void {
+	woodSet.clear();
+
+	const heightHash = Squirrel3.get(
+		worldX * 374761393 + worldZ * 678446653,
+		seedAsInt,
+	);
+	const height = baseHeight + (Math.abs(heightHash) % (heightVariance + 1));
+
+	function placeWood(x: number, y: number, z: number): void {
+		placeBlock(x, y, z, woodId, true);
+		woodSet.add(packXYZ(x, y, z));
+	}
+
+	// Tap root
+	const tapRootDepth = 3 + (Math.abs(heightHash) % 2);
+	for (let d = 1; d <= tapRootDepth; d++) {
+		placeWood(worldX, worldY - d, worldZ);
+	}
+
+	// ── Trunk ──────────────────────────────────────────────────────────────────
+	// Baobab trunks are very wide at the base and taper sharply toward the crown.
+	// We compute radius per layer using an inverse-curve so it's fat low and thin high.
+	const baseTrunkRadius = 3; // widest point at ground level
+	const topTrunkRadius = 1; // narrowest point just before the canopy
+
+	for (let i = 0; i < height; i++) {
+		const t = i / Math.max(1, height - 1); // 0 at base, 1 at top
+		// Ease-out curve: wide base tapers quickly in the lower half
+		const taper = 1 - t ** 0.5;
+		const radius = Math.round(
+			topTrunkRadius + (baseTrunkRadius - topTrunkRadius) * taper,
+		);
+		const radiusSq = radius * radius;
+		const y = worldY + i;
+
+		for (let x = -radius; x <= radius; x++) {
+			for (let z = -radius; z <= radius; z++) {
+				if (x * x + z * z <= radiusSq) {
+					placeWood(worldX + x, y, worldZ + z);
+				}
+			}
+		}
+	}
+
+	// ── Branch forks ───────────────────────────────────────────────────────────
+	// At the crown, baobabs split into several thick stubby branches.
+	const branchCount = 4 + (Math.abs(heightHash) % 3); // 4–6 branches
+	const crownY = worldY + height;
+
+	for (let b = 0; b < branchCount; b++) {
+		const branchHash = Squirrel3.get(
+			worldX * 15731 + worldZ * 789221 + b * 1013,
+			seedAsInt,
+		);
+		const branchDir = Math.abs(branchHash) % 8;
+		const branchLength = 2 + (Math.abs(branchHash >> 3) % 3); // 2–4 blocks
+		const branchRise = 1 + (Math.abs(branchHash >> 6) % 2); // 1–2 blocks up
+
+		let bx = worldX;
+		let by = crownY;
+		let bz = worldZ;
+
+		for (let step = 0; step < branchLength; step++) {
+			// Move outward each step, rise on first step only
+			bx += DIAG_X[branchDir];
+			bz += DIAG_Z[branchDir];
+			if (step < branchRise) by++;
+
+			placeWood(bx, by, bz);
+			// Give the branch a little girth
+			placeWood(bx, by - 1, bz);
+		}
+
+		// ── Leaf cluster at branch tip ──────────────────────────────────────────
+		const leafRadius = 2 + (Math.abs(branchHash >> 9) % 2); // 2–3
+		const leafRadiusSq = leafRadius * leafRadius + 1;
+
+		for (let dy = -1; dy <= 2; dy++) {
+			for (let x = -leafRadius; x <= leafRadius; x++) {
+				const x2 = x * x;
+				for (let z = -leafRadius; z <= leafRadius; z++) {
+					if (x2 + z * z <= leafRadiusSq) {
+						// Skip positions already occupied by wood
+						if (!woodSet.has(packXYZ(bx + x, by + dy, bz + z))) {
+							const leafHash = Squirrel3.get(
+								(bx + x) * 11939 + (bz + z) * 15485863 + (by + dy) * 29791,
+								seedAsInt,
+							);
+							// Sparse canopy — baobabs aren't leafy
+							if (Math.abs(leafHash) % 5 !== 0) {
+								placeBlock(bx + x, by + dy, bz + z, leavesId, false);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BAOBAB_TREE definition
+// ---------------------------------------------------------------------------
+
+export const BAOBAB_TREE: TreeDefinition = {
+	woodId: 31, // acacia wood — replace with a baobab-specific block when available
+	leavesId: 43, // acacia leaves — replace with baobab leaves when available
+	baseHeight: 8,
+	heightVariance: 3,
+	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
+		generateBaobab(
+			worldX,
+			worldY,
+			worldZ,
+			placeBlock,
+			seedAsInt,
+			this.woodId,
+			this.leavesId,
+			this.baseHeight,
+			this.heightVariance,
+		);
+	},
+}; // ---------------------------------------------------------------------------
+// DEAD_TREE — Snowy Plains, Scorched Savannah, Peat Bog
+// Leafless bare trunk with a few broken branch stubs
+// ---------------------------------------------------------------------------
+
+export const DEAD_TREE: TreeDefinition = {
+	woodId: 28, // oak wood — replace with dead/grey wood block
+	leavesId: 0, // no leaves
+	baseHeight: 5,
+	heightVariance: 3,
+	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
+		const heightHash = Squirrel3.get(
+			worldX * 374761393 + worldZ * 678446653,
+			seedAsInt,
+		);
+		const height =
+			this.baseHeight + (Math.abs(heightHash) % (this.heightVariance + 1));
+		const woodId = this.woodId;
+
+		// Trunk — slight lean using DIAG offsets
+		const leanDir = Math.abs(heightHash) % 8;
+		const leanStart = Math.floor(height * 0.6); // lean begins 60% up
+		let tx = worldX;
+		let tz = worldZ;
+
+		for (let i = 0; i < height; i++) {
+			if (i === leanStart) {
+				tx += DIAG_X[leanDir];
+				tz += DIAG_Z[leanDir];
+			}
+			placeBlock(tx, worldY + i, tz, woodId, true);
+		}
+
+		// Broken branch stubs — 2–4 stubs at random heights
+		const stubCount = 2 + (Math.abs(heightHash >> 4) % 3);
+		for (let s = 0; s < stubCount; s++) {
+			const stubHash = Squirrel3.get(
+				worldX * 9719 + worldZ * 19997 + s * 53,
+				seedAsInt,
+			);
+			const stubY = worldY + 2 + (Math.abs(stubHash) % (height - 2));
+			const stubDir = Math.abs(stubHash >> 3) % 8;
+			const stubLen = 1 + (Math.abs(stubHash >> 6) % 2); // 1–2 blocks
+
+			let sx = tx;
+			let sz = tz;
+			for (let step = 0; step < stubLen; step++) {
+				sx += DIAG_X[stubDir];
+				sz += DIAG_Z[stubDir];
+				placeBlock(sx, stubY, sz, woodId, true);
+			}
+		}
+	},
+};
+
+// ---------------------------------------------------------------------------
+// ICE_SPIKE_COLUMN — Ice Spikes biome
+// Tall tapered column of packed ice, wider at base
+// ---------------------------------------------------------------------------
+
+export const ICE_SPIKE_COLUMN: TreeDefinition = {
+	woodId: 101, // packed ice
+	leavesId: 0,
+	baseHeight: 10,
+	heightVariance: 15,
+	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
+		const heightHash = Squirrel3.get(
+			worldX * 374761393 + worldZ * 678446653,
+			seedAsInt,
+		);
+		const height =
+			this.baseHeight + (Math.abs(heightHash) % (this.heightVariance + 1));
+		const iceId = this.woodId;
+
+		// Wide base tapering to a single point at the tip
+		for (let i = 0; i < height; i++) {
+			const t = i / Math.max(1, height - 1); // 0 = base, 1 = tip
+			const radius = Math.round((1 - t) * 2); // radius 2 → 0
+			const radiusSq = radius * radius;
+			const y = worldY + i;
+
+			for (let x = -radius; x <= radius; x++) {
+				for (let z = -radius; z <= radius; z++) {
+					if (x * x + z * z <= radiusSq) {
+						placeBlock(worldX + x, y, worldZ + z, iceId, true);
+					}
+				}
+			}
+		}
+	},
+};
+
+// ---------------------------------------------------------------------------
+// MAPLE_TREE — Maple Forest
+// Rounded full crown, slightly shorter than BIG_OAK, dense leaves
+// ---------------------------------------------------------------------------
+
+export const MAPLE_TREE: TreeDefinition = {
+	woodId: 28, // oak wood — replace with maple wood block
+	leavesId: 2, // oak leaves — replace with maple leaves (autumn colours)
+	baseHeight: 8,
+	heightVariance: 4,
+	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
+		generateBigTopBentOak(
+			worldX,
+			worldY,
+			worldZ,
+			placeBlock,
+			seedAsInt,
+			this.woodId,
+			this.leavesId,
+			this.baseHeight,
+			this.heightVariance,
+		);
+	},
+};
+
+// ---------------------------------------------------------------------------
+// BIRCH_TREE — Birch Forest
+// Tall slim straight trunk, small tight oval crown
+// ---------------------------------------------------------------------------
+
+export const BIRCH_TREE: TreeDefinition = {
+	woodId: 73, // birch wood — replace with birch-specific block
+	leavesId: BlockType.FactoryWall, // birch leaves
+	baseHeight: 8,
+	heightVariance: 3,
+	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
+		const heightHash = Squirrel3.get(
+			worldX * 374761393 + worldZ * 678446653,
+			seedAsInt,
+		);
+		const height =
+			this.baseHeight + (Math.abs(heightHash) % (this.heightVariance + 1));
+		const woodId = this.woodId;
+		const leavesId = this.leavesId;
+
+		// Straight slim trunk — no lean, no taper
+		for (let i = 0; i < height; i++) {
+			placeBlock(worldX, worldY + i, worldZ, woodId, true);
+		}
+
+		// Tight oval crown — tall and narrow, birches aren't wide
+		const crownBottom = worldY + height - 4;
+		const crownTop = worldY + height + 1;
+		for (let y = crownBottom; y <= crownTop; y++) {
+			const dy = y - (worldY + height - 1);
+			// Oval: wide in the middle, narrow at top and bottom
+			const radius = dy === 0 || dy === 1 ? 2 : 1;
+			const radiusSq = radius * radius;
+			for (let x = -radius; x <= radius; x++) {
+				for (let z = -radius; z <= radius; z++) {
+					if (x * x + z * z <= radiusSq) {
+						placeBlock(worldX + x, y, worldZ + z, leavesId, false);
+					}
+				}
+			}
+		}
+	},
+};
+
+// ---------------------------------------------------------------------------
+// GIANT_MUSHROOM — Mushroom Fields
+// Wide flat cap on a tall stem, cap underside left open
+// ---------------------------------------------------------------------------
+
+export const GIANT_MUSHROOM: TreeDefinition = {
+	woodId: 117, // mushroom stem block
+	leavesId: 118, // mushroom cap block
+	baseHeight: 6,
+	heightVariance: 4,
+	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
+		const heightHash = Squirrel3.get(
+			worldX * 374761393 + worldZ * 678446653,
+			seedAsInt,
+		);
+		const height =
+			this.baseHeight + (Math.abs(heightHash) % (this.heightVariance + 1));
+		const stemId = this.woodId;
+		const capId = this.leavesId;
+
+		// Stem — single block wide
+		for (let i = 0; i < height; i++) {
+			placeBlock(worldX, worldY + i, worldZ, stemId, true);
+		}
+
+		// Cap — flat disc with a slight dome, 1–2 layers thick
+		const capY = worldY + height;
+		const capRadius = 3 + (Math.abs(heightHash >> 4) % 2); // 3–4
+		const capRadiusSq = capRadius * capRadius;
+
+		// Bottom flat layer
+		for (let x = -capRadius; x <= capRadius; x++) {
+			for (let z = -capRadius; z <= capRadius; z++) {
+				if (x * x + z * z <= capRadiusSq) {
+					placeBlock(worldX + x, capY, worldZ + z, capId, true);
+				}
+			}
+		}
+
+		// Dome top layer — slightly smaller radius
+		const domeRadius = capRadius - 1;
+		const domeRadiusSq = domeRadius * domeRadius;
+		for (let x = -domeRadius; x <= domeRadius; x++) {
+			for (let z = -domeRadius; z <= domeRadius; z++) {
+				if (x * x + z * z <= domeRadiusSq) {
+					placeBlock(worldX + x, capY + 1, worldZ + z, capId, true);
+				}
+			}
+		}
+
+		// Tiny tip
+		placeBlock(worldX, capY + 2, worldZ, capId, true);
+	},
+};
+
+// ---------------------------------------------------------------------------
+// CRYSTAL_SPIRE — Crystal Caves
+// Tapered hexagonal-ish spire of crystal, clusters of 3 at varying heights
+// ---------------------------------------------------------------------------
+
+export const CRYSTAL_SPIRE: TreeDefinition = {
+	woodId: 111, // crystal stone
+	leavesId: 119, // glowing crystal tip block — replace when available
+	baseHeight: 5,
+	heightVariance: 8,
+	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
+		const heightHash = Squirrel3.get(
+			worldX * 374761393 + worldZ * 678446653,
+			seedAsInt,
+		);
+
+		// Spawn a cluster of 2–3 spires offset from the origin
+		const spireCount = 2 + (Math.abs(heightHash) % 2);
+		for (let s = 0; s < spireCount; s++) {
+			const spireHash = Squirrel3.get(
+				worldX * 15731 + worldZ * 789221 + s * 1013,
+				seedAsInt,
+			);
+			const spireHeight =
+				this.baseHeight + (Math.abs(spireHash) % (this.heightVariance + 1));
+			const offsetX = s === 0 ? 0 : (Math.abs(spireHash >> 2) % 3) - 1; // -1,0,1
+			const offsetZ = s === 0 ? 0 : (Math.abs(spireHash >> 4) % 3) - 1;
+			const cx = worldX + offsetX;
+			const cz = worldZ + offsetZ;
+			const crystalId = this.woodId;
+			const tipId = this.leavesId;
+
+			for (let i = 0; i < spireHeight; i++) {
+				const t = i / Math.max(1, spireHeight - 1);
+				// Sharp taper — only wide at the very base
+				const radius = t < 0.3 ? 1 : 0;
+				const y = worldY + i;
+
+				if (radius === 0) {
+					placeBlock(cx, y, cz, crystalId, true);
+				} else {
+					for (let x = -radius; x <= radius; x++) {
+						for (let z = -radius; z <= radius; z++) {
+							placeBlock(cx + x, y, cz + z, crystalId, true);
+						}
+					}
+				}
+			}
+
+			// Glowing tip — top 2 blocks use the tip block
+			placeBlock(cx, worldY + spireHeight - 1, cz, tipId, true);
+			placeBlock(cx, worldY + spireHeight, cz, tipId, true);
+		}
+	},
+};
+
+// ---------------------------------------------------------------------------
+// PETRIFIED_TREE — Petrified Forest
+// Stone trunk, no leaves, broken top, looks ancient and fossilised
+// ---------------------------------------------------------------------------
+
+export const PETRIFIED_TREE: TreeDefinition = {
+	woodId: 1, // stone — the trunk is fully petrified
+	leavesId: 0, // no leaves
+	baseHeight: 6,
+	heightVariance: 4,
+	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
+		const heightHash = Squirrel3.get(
+			worldX * 374761393 + worldZ * 678446653,
+			seedAsInt,
+		);
+		const height =
+			this.baseHeight + (Math.abs(heightHash) % (this.heightVariance + 1));
+		const stoneId = this.woodId;
+
+		// Wide stone trunk — 2 blocks wide at base, tapers to 1
+		for (let i = 0; i < height; i++) {
+			const t = i / Math.max(1, height - 1);
+			const radius = t < 0.4 ? 1 : 0; // wide base, slim top
+			const y = worldY + i;
+
+			if (radius === 0) {
+				placeBlock(worldX, y, worldZ, stoneId, true);
+			} else {
+				for (let x = -radius; x <= radius; x++) {
+					for (let z = -radius; z <= radius; z++) {
+						placeBlock(worldX + x, y, worldZ + z, stoneId, true);
+					}
+				}
+			}
+		}
+
+		// Broken crown — a few stone stub branches, no symmetry
+		const stubCount = 2 + (Math.abs(heightHash >> 4) % 3);
+		for (let s = 0; s < stubCount; s++) {
+			const stubHash = Squirrel3.get(
+				worldX * 9719 + worldZ * 19997 + s * 53,
+				seedAsInt,
+			);
+			const stubDir = Math.abs(stubHash) % 8;
+			const stubLen = 1 + (Math.abs(stubHash >> 3) % 3); // 1–3 blocks
+			const stubY = worldY + height - 1;
+
+			let sx = worldX;
+			let sz = worldZ;
+			for (let step = 0; step < stubLen; step++) {
+				sx += DIAG_X[stubDir];
+				sz += DIAG_Z[stubDir];
+				placeBlock(sx, stubY, sz, stoneId, true);
+				// Droop slightly
+				if (step === stubLen - 1) {
+					placeBlock(sx, stubY - 1, sz, stoneId, true);
+				}
+			}
+		}
+	},
+};
+
+// ---------------------------------------------------------------------------
+// MANGROVE_TREE — Mangrove biome
+// Uses generateSlinkyTree with prop roots that spread wide into the water
+// ---------------------------------------------------------------------------
+
+export const MANGROVE_TREE: TreeDefinition = {
+	woodId: 33, // jungle wood — replace with mangrove wood block
+	leavesId: 34, // jungle leaves — replace with mangrove leaves
+	baseHeight: 7,
+	heightVariance: 3,
+	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
+		generateSlinkyTree(
+			worldX,
+			worldY,
+			worldZ,
+			placeBlock,
+			seedAsInt,
+			this.woodId,
+			this.leavesId,
+			this.baseHeight,
+			this.heightVariance,
+		);
+	},
+};
+
+// ---------------------------------------------------------------------------
+// PALM_TREE — Tropical Island, Oasis
+// Tall curved trunk with no branches and a single top frond burst
+// ---------------------------------------------------------------------------
+
+export const PALM_TREE: TreeDefinition = {
+	woodId: 31, // acacia wood — replace with palm wood block
+	leavesId: 43, // acacia leaves — replace with palm frond block
+	baseHeight: 9,
+	heightVariance: 4,
+	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
+		const heightHash = Squirrel3.get(
+			worldX * 374761393 + worldZ * 678446653,
+			seedAsInt,
+		);
+		const height =
+			this.baseHeight + (Math.abs(heightHash) % (this.heightVariance + 1));
+		const woodId = this.woodId;
+		const leavesId = this.leavesId;
+
+		// Curved trunk — leans in one direction the whole way up
+		const leanDir = Math.abs(heightHash >> 3) % 8;
+		const maxLean = 2 + (Math.abs(heightHash >> 6) % 2); // 2–3 block lean total
+		let tx = worldX;
+		let tz = worldZ;
+
+		for (let i = 0; i < height; i++) {
+			const t = i / Math.max(1, height - 1);
+			// Lean increases with height using a smooth curve
+			const leanAmount = Math.round(t * t * maxLean);
+			const targetX = worldX + DIAG_X[leanDir] * leanAmount;
+			const targetZ = worldZ + DIAG_Z[leanDir] * leanAmount;
+
+			// Clamp movement to ±1 per step
+			tx += Math.max(-1, Math.min(1, targetX - tx));
+			tz += Math.max(-1, Math.min(1, targetZ - tz));
+
+			placeBlock(tx, worldY + i, tz, woodId, true);
+		}
+
+		// Frond burst at the crown — 6–8 fronds radiating outward
+		const crownY = worldY + height - 1;
+		const frondCount = 6 + (Math.abs(heightHash >> 9) % 3);
+
+		for (let f = 0; f < frondCount; f++) {
+			const frondHash = Squirrel3.get(
+				worldX * 15731 + worldZ * 789221 + f * 1013,
+				seedAsInt,
+			);
+			const frondDir = f % 8; // evenly space around compass
+			const frondLen = 3 + (Math.abs(frondHash) % 2); // 3–4 blocks
+
+			let fx = tx;
+			let fz = tz;
+			let fy = crownY;
+
+			for (let step = 0; step < frondLen; step++) {
+				fx += DIAG_X[frondDir];
+				fz += DIAG_Z[frondDir];
+				// Fronds droop: rise on step 0, flat on 1, drop on 2+
+				if (step === 0) fy++;
+				else if (step >= 2) fy--;
+				placeBlock(fx, fy, fz, leavesId, false);
+			}
+		}
+
+		// Central top tuft
+		placeBlock(tx, crownY + 1, tz, leavesId, false);
+		placeBlock(tx, crownY + 2, tz, leavesId, false);
 	},
 };
