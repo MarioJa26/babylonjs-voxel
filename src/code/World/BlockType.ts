@@ -73,7 +73,8 @@ export enum BlockType {
 	Peat = 71,
 	AncientCrackedStone = 72,
 	BirchBark = 73,
-	IceBlock = 74,
+	BirchLeaves = 74,
+	IceBlock = 75,
 }
 
 export const Hardness = {

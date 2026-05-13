@@ -906,7 +906,7 @@ export const MAPLE_TREE: TreeDefinition = {
 
 export const BIRCH_TREE: TreeDefinition = {
 	woodId: 73, // birch wood — replace with birch-specific block
-	leavesId: BlockType.FactoryWall, // birch leaves
+	leavesId: 74, // birch leaves
 	baseHeight: 8,
 	heightVariance: 3,
 	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {

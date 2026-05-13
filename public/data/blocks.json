@@ -410,6 +410,12 @@
 		"hardness": 1.3
 	},
 	{
+		"id": "BirchLeaves",
+		"name": "birch_leaves",
+		"path": "/texture/transparent/birchleaves_01_1k",
+		"hardness": 0.2
+	},
+	{
 		"id": "IceBlock",
 		"name": "ice_block",
 		"path": "/texture/water/ice_01_1k",
