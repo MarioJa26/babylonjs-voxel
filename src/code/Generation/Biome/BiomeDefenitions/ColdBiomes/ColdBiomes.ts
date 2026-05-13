@@ -1,7 +1,10 @@
 // ColdBiomes.ts
-import { GenerationParams } from "../../NoiseAndParameters/GenerationParams";
-import { BIOME_ID, type Biome, type TreeDefinition } from "../BiomeTypes";
-import { DEAD_TREE, ICE_SPIKE_COLUMN, OAK_TREE } from "../TreeDefinition";
+import { BlockType } from "@/code/World/BlockType";
+import { GenerationParams } from "../../../NoiseAndParameters/GenerationParams";
+import { BIOME_ID, type Biome, type TreeDefinition } from "../../BiomeTypes";
+import { DEAD_TREE } from "../HotBiomes/HotTrees";
+import { OAK_TREE } from "../TemperateBiomes/TemperateTrees";
+import { ICE_SPIKE_COLUMN } from "./ColdTrees";
 
 // ── Existing ──────────────────────────────────────────────────────────────────
 
@@ -58,7 +61,7 @@ export const TUNDRA_MOUNTAINS: Biome = {
 export const FROZEN_OCEAN: Biome = {
 	id: BIOME_ID.FROZEN_OCEAN,
 	name: "Frozen_Ocean",
-	topBlock: 74, // ice block (surface layer floating on water)
+	topBlock: 75, // ice block (surface layer floating on water)
 	undergroundBlock: 1, // packed ice
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
@@ -73,7 +76,7 @@ export const FROZEN_OCEAN: Biome = {
 	terrainHeightBase: 0,
 	terrainHeightAmplitude: 0.3,
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return null;
 	},
 };
@@ -81,11 +84,11 @@ export const FROZEN_OCEAN: Biome = {
 export const ICE_SPIKES: Biome = {
 	id: BIOME_ID.ICE_SPIKES,
 	name: "Ice_Spikes",
-	topBlock: 74, // packed ice (forms the spike columns)
-	undergroundBlock: 9, // snow
+	topBlock: 75, // packed ice (forms the spike columns)
+	undergroundBlock: 75, // snow
 	stoneBlock: 1, // stone
-	canSpawnTrees: false,
-	treeDensity: 0.0,
+	canSpawnTrees: true,
+	treeDensity: 0.08,
 	grassDensity: 0.0,
 	beachBlock: 9, // snow
 	seafloorBlock: 8, // packed ice
@@ -96,7 +99,7 @@ export const ICE_SPIKES: Biome = {
 	terrainHeightBase: 55,
 	terrainHeightAmplitude: 120,
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return ICE_SPIKE_COLUMN;
 	},
 };
@@ -119,7 +122,7 @@ export const SNOWY_PLAINS: Biome = {
 	terrainHeightBase: 43,
 	terrainHeightAmplitude: 14, // very flat
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return DEAD_TREE;
 	},
 };
@@ -127,8 +130,8 @@ export const SNOWY_PLAINS: Biome = {
 export const PERMAFROST_BOG: Biome = {
 	id: BIOME_ID.PERMAFROST_BOG,
 	name: "Permafrost_Bog",
-	topBlock: 69, // frozen mud / permafrost dirt
-	undergroundBlock: 64, // frozen mud
+	topBlock: BlockType.Peat, // frozen mud / permafrost dirt
+	undergroundBlock: 19, // frozen mud
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
 	treeDensity: 0.0,
@@ -142,7 +145,7 @@ export const PERMAFROST_BOG: Biome = {
 	terrainHeightBase: GenerationParams.SEA_LEVEL,
 	terrainHeightAmplitude: 7,
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return null;
 	},
 };
@@ -150,22 +153,22 @@ export const PERMAFROST_BOG: Biome = {
 export const GLACIER: Biome = {
 	id: BIOME_ID.GLACIER,
 	name: "Glacier",
-	topBlock: 101, // packed ice
-	undergroundBlock: 103, // blue ice (dense glacier core)
-	stoneBlock: 1, // stone
-	canSpawnTrees: false,
-	treeDensity: 0.0,
+	topBlock: BlockType.GlacierIce, // packed ice
+	undergroundBlock: BlockType.GlacierIce, // blue ice (dense glacier core)
+	stoneBlock: 75, // stone
+	canSpawnTrees: true,
+	treeDensity: 0.01,
 	grassDensity: 0.0,
-	beachBlock: 101, // packed ice
-	seafloorBlock: 103, // blue ice
+	beachBlock: BlockType.IceBlock, // packed ice
+	seafloorBlock: 8, // blue ice
 
-	terrainScale: GenerationParams.TERRAIN_SCALE * 0.5,
-	persistence: 0.26,
-	heightExponent: 1.4,
-	terrainHeightBase: 58,
-	terrainHeightAmplitude: 70, // large slow rolling hills of ice
+	terrainScale: GenerationParams.TERRAIN_SCALE * 0.3,
+	persistence: 0.2,
+	heightExponent: 2.2,
+	terrainHeightBase: 156,
+	terrainHeightAmplitude: 128, // large slow rolling hills of ice
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return ICE_SPIKE_COLUMN;
 	},
 };

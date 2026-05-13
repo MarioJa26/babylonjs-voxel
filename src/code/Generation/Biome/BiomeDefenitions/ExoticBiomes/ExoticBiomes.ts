@@ -1,19 +1,21 @@
 // ExoticBiomes.ts
-import { GenerationParams } from "../../NoiseAndParameters/GenerationParams";
-import { BIOME_ID, type Biome, type TreeDefinition } from "../BiomeTypes";
-import { BIG_OAK_TREE, PETRIFIED_TREE } from "../TreeDefinition";
+import { BlockType } from "@/code/World/BlockType";
+import { GenerationParams } from "../../../NoiseAndParameters/GenerationParams";
+import { BIOME_ID, type Biome, type TreeDefinition } from "../../BiomeTypes";
+import { BIG_OAK_TREE } from "../TemperateBiomes/TemperateTrees";
+import { PETRIFIED_TREE } from "./ExoticTrees";
 
 export const ANCIENT_RUINS_BIOME: Biome = {
 	id: BIOME_ID.ANCIENT_RUINS_BIOME,
 	name: "Ancient_Ruins",
-	topBlock: 114, // cracked stone brick / ancient stone
+	topBlock: BlockType.AncientCrackedStone, // cracked stone brick / ancient stone
 	undergroundBlock: 19, // dirt (nature reclaiming the ruins)
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.08, // trees growing through the ruins
 	grassDensity: 0.35, // overgrown vegetation
 	beachBlock: 3, // sand
-	seafloorBlock: 114, // submerged ruins floor
+	seafloorBlock: BlockType.AncientCrackedStone, // submerged ruins floor
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.65,
 	persistence: 0.26,
@@ -46,7 +48,6 @@ export const PETRIFIED_FOREST: Biome = {
 	terrainHeightAmplitude: 38,
 
 	getTreeForBlock(blockId: number): TreeDefinition | null {
-		// TODO: replace with PETRIFIED_TREE (stone trunk, no leaves) once defined
 		if (blockId === this.topBlock) return PETRIFIED_TREE;
 		return null;
 	},

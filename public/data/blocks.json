@@ -420,5 +420,23 @@
 		"name": "ice_block",
 		"path": "/texture/water/ice_01_1k",
 		"hardness": 0.5
+	},
+	{
+		"id": "MushroomStem",
+		"name": "mushroom_stem",
+		"path": "/texture/wood/mushroom_bark_1k",
+		"hardness": 0.8
+	},
+	{
+		"id": "MushroomAmanitacap",
+		"name": "mushroom_amanitacap",
+		"path": "/texture/wood/mushroom_amanitacap_1k",
+		"hardness": 0.8
+	},
+	{
+		"id": "GlacierIce",
+		"name": "glacier_ice",
+		"path": "/texture/water/ice_02_1k",
+		"hardness": 0.5
 	}
 ]

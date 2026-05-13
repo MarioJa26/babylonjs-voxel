@@ -1,13 +1,13 @@
 // TemperateBiomes.ts
-import { GenerationParams } from "../../NoiseAndParameters/GenerationParams";
-import { BIOME_ID, type Biome, type TreeDefinition } from "../BiomeTypes";
+import { GenerationParams } from "../../../NoiseAndParameters/GenerationParams";
+import { BIOME_ID, type Biome, type TreeDefinition } from "../../BiomeTypes";
 import {
 	BIG_OAK_TREE,
 	BIRCH_TREE,
 	MAPLE_TREE,
 	OAK_TREE,
 	PLAINS_TREE,
-} from "../TreeDefinition";
+} from "./TemperateTrees";
 
 // ── Existing ──────────────────────────────────────────────────────────────────
 
@@ -223,7 +223,7 @@ export const MEADOW: Biome = {
 	terrainHeightBase: 44,
 	terrainHeightAmplitude: 20, // gently rolling hills
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return null;
 	},
 };

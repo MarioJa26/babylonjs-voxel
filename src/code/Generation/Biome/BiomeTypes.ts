@@ -44,7 +44,7 @@ export interface Biome {
 	persistence?: number;
 	lacunarity?: number;
 	heightExponent?: number;
-	getTreeForBlock(blockId: number): TreeDefinition | null;
+	getTreeForBlock(blockId?: number, noiseValue?: number): TreeDefinition | null;
 }
 export enum BIOME_ID {
 	// Existing

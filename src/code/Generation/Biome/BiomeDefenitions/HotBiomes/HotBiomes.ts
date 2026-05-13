@@ -1,7 +1,8 @@
 // HotBiomes.ts
-import { GenerationParams } from "../../NoiseAndParameters/GenerationParams";
-import { BIOME_ID, type Biome, type TreeDefinition } from "../BiomeTypes";
-import { BAOBAB_TREE, CACTUS, DEAD_TREE, PALM_TREE } from "../TreeDefinition";
+import { GenerationParams } from "../../../NoiseAndParameters/GenerationParams";
+import { BIOME_ID, type Biome, type TreeDefinition } from "../../BiomeTypes";
+import { PALM_TREE } from "../TropicalBiomes/TropicalTrees";
+import { BAOBAB_TREE, CACTUS, DEAD_TREE } from "./HotTrees";
 
 // ── Existing ──────────────────────────────────────────────────────────────────
 
@@ -71,7 +72,7 @@ export const VOLCANIC_WASTELAND: Biome = {
 	terrainHeightBase: 55,
 	terrainHeightAmplitude: 95,
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return DEAD_TREE;
 	},
 };
@@ -94,7 +95,7 @@ export const BASALT_DELTAS: Biome = {
 	terrainHeightBase: 52,
 	terrainHeightAmplitude: 75,
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return DEAD_TREE;
 	},
 };
@@ -119,7 +120,7 @@ export const BADLANDS: Biome = {
 	terrainHeightBase: 52,
 	terrainHeightAmplitude: 80,
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return DEAD_TREE;
 	},
 };
@@ -142,7 +143,7 @@ export const RED_ROCK_CANYON: Biome = {
 	terrainHeightBase: 48,
 	terrainHeightAmplitude: 110,
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return DEAD_TREE;
 	},
 };
@@ -190,7 +191,7 @@ export const SALT_FLATS: Biome = {
 	terrainHeightBase: 42,
 	terrainHeightAmplitude: 5, // almost perfectly flat
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return null;
 	},
 };
@@ -213,7 +214,7 @@ export const DUNE_SEA: Biome = {
 	terrainHeightBase: 46,
 	terrainHeightAmplitude: 65,
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return CACTUS;
 	},
 };

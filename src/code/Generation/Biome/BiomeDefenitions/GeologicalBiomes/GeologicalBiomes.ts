@@ -1,17 +1,25 @@
 // GeologicalBiomes.ts
 import { BlockType } from "@/code/World/BlockType";
-import { GenerationParams } from "../../NoiseAndParameters/GenerationParams";
-import { BIOME_ID, type Biome, type TreeDefinition } from "../BiomeTypes";
-import { CRYSTAL_SPIRE, GIANT_MUSHROOM } from "../TreeDefinition";
+import { GenerationParams } from "../../../NoiseAndParameters/GenerationParams";
+import { BIOME_ID, type Biome, type TreeDefinition } from "../../BiomeTypes";
+import {
+	CRYSTAL_SPIRE,
+	GIANT_MUSHROOM,
+	MEDIUM_MUSHROOM,
+	MINI_MUSHROOM,
+	SMALL_MUSHROOM,
+	SPHERE_MUSHROOM,
+	TINY_MUSHROOM,
+} from "./GeologicalTrees";
 
 export const MUSHROOM_FIELDS: Biome = {
 	id: BIOME_ID.MUSHROOM_FIELDS,
 	name: "Mushroom_Fields",
-	topBlock: BlockType.Mycelium, // mycelium
-	undergroundBlock: 19, // dirt
+	topBlock: BlockType.Grass001, // mycelium
+	undergroundBlock: BlockType.Mycelium, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
-	treeDensity: 0.12, // giant mushrooms instead of trees
+	treeDensity: 0.2, // giant mushrooms instead of trees
 	grassDensity: 0.5, // small mushrooms as grass replacement
 	beachBlock: 110, // mycelium beach
 	seafloorBlock: 46, // gravel
@@ -22,7 +30,31 @@ export const MUSHROOM_FIELDS: Biome = {
 	terrainHeightBase: 46,
 	terrainHeightAmplitude: 40,
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(
+		blockId: number,
+		noiseValue: number = 0.0,
+	): TreeDefinition | null {
+		if (blockId !== this.topBlock) return null;
+
+		const MAX_NOISE = this.treeDensity;
+
+		// Revised weighting: Mini Mushroom takes up 70% of the spawn range
+		if (noiseValue < MAX_NOISE * 0.7) return MINI_MUSHROOM; // 0.000 – 0.140 (70%)
+
+		if (noiseValue < MAX_NOISE * 0.8)
+			// 0.140 – 0.160 (10%)
+			return TINY_MUSHROOM;
+		if (noiseValue < MAX_NOISE * 0.85)
+			// 0.160 – 0.170 (5%)
+			return SMALL_MUSHROOM;
+		if (noiseValue < MAX_NOISE * 0.9)
+			// 0.170 – 0.180 (5%)
+			return MEDIUM_MUSHROOM;
+		if (noiseValue < MAX_NOISE * 0.96)
+			// 0.180 – 0.192 (6%)
+			return SPHERE_MUSHROOM;
+
+		// 0.192 – 0.200 (4%)
 		return GIANT_MUSHROOM;
 	},
 };
@@ -45,7 +77,7 @@ export const CRYSTAL_CAVES: Biome = {
 	terrainHeightBase: 50,
 	terrainHeightAmplitude: 85,
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return CRYSTAL_SPIRE;
 	},
 };
@@ -68,7 +100,7 @@ export const OBSIDIAN_FLATS: Biome = {
 	terrainHeightBase: 50,
 	terrainHeightAmplitude: 20, // relatively flat glassy plains
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return null;
 	},
 };
@@ -91,7 +123,7 @@ export const GEOTHERMAL_FIELD: Biome = {
 	terrainHeightBase: 52,
 	terrainHeightAmplitude: 55,
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return null;
 	},
 };

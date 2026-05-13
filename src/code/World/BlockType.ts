@@ -75,6 +75,9 @@ export enum BlockType {
 	BirchBark = 73,
 	BirchLeaves = 74,
 	IceBlock = 75,
+	MushroomStem = 76,
+	MushroomAmanitacap = 77,
+	GlacierIce = 78,
 }
 
 export const Hardness = {

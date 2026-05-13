@@ -1,7 +1,7 @@
 // CoastalBiomes.ts
-import { GenerationParams } from "../../NoiseAndParameters/GenerationParams";
-import { BIOME_ID, type Biome, type TreeDefinition } from "../BiomeTypes";
-import { OAK_TREE } from "../TreeDefinition";
+import { GenerationParams } from "../../../NoiseAndParameters/GenerationParams";
+import { BIOME_ID, type Biome, type TreeDefinition } from "../../BiomeTypes";
+import { OAK_TREE } from "../TemperateBiomes/TemperateTrees";
 
 // ── Existing ──────────────────────────────────────────────────────────────────
 
@@ -47,7 +47,7 @@ export const RIVER: Biome = {
 	terrainHeightBase: GenerationParams.SEA_LEVEL - 6,
 	terrainHeightAmplitude: 4,
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return null;
 	},
 };
@@ -55,8 +55,8 @@ export const RIVER: Biome = {
 export const SANDY_SHORE: Biome = {
 	id: BIOME_ID.SANDY_SHORE,
 	name: "Sandy_Shore",
-	topBlock: 23, // sand
-	undergroundBlock: 23, // sand
+	topBlock: 3, // sand
+	undergroundBlock: 3, // sand
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.0,
@@ -70,7 +70,7 @@ export const SANDY_SHORE: Biome = {
 	terrainHeightBase: GenerationParams.SEA_LEVEL + 2,
 	terrainHeightAmplitude: 4,
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return null;
 	},
 };
@@ -93,7 +93,7 @@ export const ROCKY_SHORE: Biome = {
 	terrainHeightBase: GenerationParams.SEA_LEVEL + 3,
 	terrainHeightAmplitude: 20,
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return null;
 	},
 };
@@ -104,7 +104,7 @@ export const CORAL_REEF: Biome = {
 	id: BIOME_ID.CORAL_REEF,
 	name: "Coral_Reef",
 	topBlock: 64, // coral block
-	undergroundBlock: 23, // sand (reef base)
+	undergroundBlock: 3, // sand (reef base)
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
 	treeDensity: 0.0,
@@ -118,7 +118,7 @@ export const CORAL_REEF: Biome = {
 	terrainHeightBase: 0,
 	terrainHeightAmplitude: 0.4, // shallow underwater structures
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return null;
 	},
 };
@@ -141,7 +141,7 @@ export const KELP_FOREST: Biome = {
 	terrainHeightBase: 0,
 	terrainHeightAmplitude: 0.3,
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return null;
 	},
 };
@@ -164,7 +164,7 @@ export const TIDAL_FLATS: Biome = {
 	terrainHeightBase: GenerationParams.SEA_LEVEL,
 	terrainHeightAmplitude: 3, // nearly flat, right at sea level
 
-	getTreeForBlock(blockId: number): TreeDefinition | null {
+	getTreeForBlock(): TreeDefinition | null {
 		return null;
 	},
 };

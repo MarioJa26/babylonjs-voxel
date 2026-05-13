@@ -1,7 +1,7 @@
 // TropicalBiomes.ts
-import { GenerationParams } from "../../NoiseAndParameters/GenerationParams";
-import { BIOME_ID, type Biome, type TreeDefinition } from "../BiomeTypes";
-import { JUNGLE_TREE, MANGROVE_TREE, PALM_TREE } from "../TreeDefinition";
+import { GenerationParams } from "../../../NoiseAndParameters/GenerationParams";
+import { BIOME_ID, type Biome, type TreeDefinition } from "../../BiomeTypes";
+import { JUNGLE_TREE, MANGROVE_TREE, PALM_TREE } from "./TropicalTrees";
 
 // ── Existing ──────────────────────────────────────────────────────────────────
 
@@ -50,7 +50,6 @@ export const MANGROVE: Biome = {
 	terrainHeightAmplitude: 6,
 
 	getTreeForBlock(blockId: number): TreeDefinition | null {
-		// TODO: replace with MANGROVE_TREE once defined
 		if (blockId === this.topBlock) return MANGROVE_TREE;
 		return null;
 	},
@@ -100,7 +99,6 @@ export const TROPICAL_ISLAND: Biome = {
 	terrainHeightAmplitude: 35, // small hills, island peaks
 
 	getTreeForBlock(blockId: number): TreeDefinition | null {
-		// TODO: replace with PALM_TREE once defined
 		if (blockId === this.topBlock) return PALM_TREE;
 		return null;
 	},

@@ -795,7 +795,10 @@ export class SurfaceGenerator {
 				if (!colBiome.canSpawnTrees) continue;
 				if (column.treeNoiseValue > colBiome.treeDensity) continue;
 
-				const treeDefinition = colBiome.getTreeForBlock(topBlockId);
+				const treeDefinition = colBiome.getTreeForBlock(
+					topBlockId,
+					column.treeNoiseValue,
+				);
 				treeDefinition?.generate(
 					worldX,
 					surfaceY + 1,

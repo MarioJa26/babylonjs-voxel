@@ -8,7 +8,7 @@ import {
 	ROCKY_SHORE,
 	SANDY_SHORE,
 	TIDAL_FLATS,
-} from "./BiomeDefenitions/CoastalBiomes";
+} from "./BiomeDefenitions/CoastalBiomes/CoastalBiomes";
 import {
 	FROZEN_OCEAN,
 	GLACIER,
@@ -17,17 +17,17 @@ import {
 	SNOWY_PLAINS,
 	TUNDRA,
 	TUNDRA_MOUNTAINS,
-} from "./BiomeDefenitions/ColdBiomes";
+} from "./BiomeDefenitions/ColdBiomes/ColdBiomes";
 import {
 	ANCIENT_RUINS_BIOME,
 	PETRIFIED_FOREST,
-} from "./BiomeDefenitions/ExoticBiomes";
+} from "./BiomeDefenitions/ExoticBiomes/ExoticBiomes";
 import {
 	CRYSTAL_CAVES,
 	GEOTHERMAL_FIELD,
 	MUSHROOM_FIELDS,
 	OBSIDIAN_FLATS,
-} from "./BiomeDefenitions/GeologicalBiomes";
+} from "./BiomeDefenitions/GeologicalBiomes/GeologicalBiomes";
 import {
 	BADLANDS,
 	BASALT_DELTAS,
@@ -39,7 +39,7 @@ import {
 	SAVANNAH,
 	SCORCHED_SAVANNAH,
 	VOLCANIC_WASTELAND,
-} from "./BiomeDefenitions/HotBiomes";
+} from "./BiomeDefenitions/HotBiomes/HotBiomes";
 import {
 	BIRCH_FOREST,
 	FOREST,
@@ -53,14 +53,14 @@ import {
 	SWAMP,
 	TEMPERATE_RAINFOREST,
 	WETLANDS,
-} from "./BiomeDefenitions/TemperateBiomes";
+} from "./BiomeDefenitions/TemperateBiomes/TemperateBiomes";
 import {
 	BAMBOO_FOREST,
 	CLOUD_FOREST,
 	JUNGLE,
 	MANGROVE,
 	TROPICAL_ISLAND,
-} from "./BiomeDefenitions/TropicalBiomes";
+} from "./BiomeDefenitions/TropicalBiomes/TropicalBiomes";
 import { BIOME_ID, type Biome } from "./BiomeTypes";
 
 export const BIOME_REGISTRY: Record<BIOME_ID, Biome> = {
