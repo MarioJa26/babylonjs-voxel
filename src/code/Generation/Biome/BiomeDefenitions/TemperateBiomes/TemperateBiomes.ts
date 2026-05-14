@@ -7,6 +7,7 @@ import {
 	MAPLE_TREE,
 	OAK_TREE,
 	PLAINS_TREE,
+	TEMPERATE_RAINFOREST_TREE,
 } from "./TemperateTrees";
 
 // ── Existing ──────────────────────────────────────────────────────────────────
@@ -140,19 +141,19 @@ export const TEMPERATE_RAINFOREST: Biome = {
 	undergroundBlock: 19, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
-	treeDensity: 0.28, // very dense trees
+	treeDensity: 0.15, // very dense trees
 	grassDensity: 0.7, // thick undergrowth
 	beachBlock: 8, // gravel beach (cold coast)
 	seafloorBlock: 46, // gravel seafloor
 
-	terrainScale: GenerationParams.TERRAIN_SCALE * 0.6,
+	terrainScale: GenerationParams.TERRAIN_SCALE * 0.3,
 	persistence: 0.28,
 	heightExponent: 1.1,
-	terrainHeightBase: 48,
-	terrainHeightAmplitude: 60,
+	terrainHeightBase: 46,
+	terrainHeightAmplitude: 66,
 
 	getTreeForBlock(blockId: number): TreeDefinition | null {
-		if (blockId === this.topBlock) return BIG_OAK_TREE;
+		if (blockId === this.topBlock) return TEMPERATE_RAINFOREST_TREE;
 		return null;
 	},
 };

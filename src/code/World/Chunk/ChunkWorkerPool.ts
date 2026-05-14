@@ -26,6 +26,14 @@ export type ChunkWorkerPoolDebugStats = {
 	lodPrecomputeQueueLength: number;
 	distantTerrainQueueLength: number;
 	meshResultQueueLength: number;
+	deferredLightingQueueLength: number;
+	deferredLightingSeedStateCount: number;
+	deferredLightingPumpScheduled: boolean;
+	deferredLightingEnqueuedTotal: number;
+	deferredLightingSeedReplacedTotal: number;
+	deferredLightingProcessedLastFrame: number;
+	deferredLightingProcessedTotal: number;
+	deferredLightingDroppedTotal: number;
 	dispatchBudgetPerTick: number;
 	lastDispatchCount: number;
 	totalDispatchCount: number;
@@ -71,6 +79,13 @@ export class ChunkWorkerPool {
 	private pendingRemeshSet: Set<Chunk> = new Set();
 	private terrainTaskDeferLighting = new Map<bigint, boolean>();
 	private terrainTaskQueue: Set<Chunk> = new Set();
+	private deferredLightingQueue: Chunk[] = [];
+	private deferredLightingQueuedIds = new Set<bigint>();
+	private deferredLightingSeedStates = new Map<
+		bigint,
+		{ queue: Uint16Array; length: number }
+	>();
+	private deferredLightingPumpScheduled = false;
 
 	// Tracks which worker indices have ACKed their InitDistantTerrainShared message
 	private distantTerrainReadyWorkers = new Set<number>();
@@ -93,6 +108,14 @@ export class ChunkWorkerPool {
 		lodPrecomputeQueueLength: 0,
 		distantTerrainQueueLength: 0,
 		meshResultQueueLength: 0,
+		deferredLightingQueueLength: 0,
+		deferredLightingSeedStateCount: 0,
+		deferredLightingPumpScheduled: false,
+		deferredLightingEnqueuedTotal: 0,
+		deferredLightingSeedReplacedTotal: 0,
+		deferredLightingProcessedLastFrame: 0,
+		deferredLightingProcessedTotal: 0,
+		deferredLightingDroppedTotal: 0,
 		dispatchBudgetPerTick: 0,
 		lastDispatchCount: 0,
 		totalDispatchCount: 0,
@@ -108,6 +131,8 @@ export class ChunkWorkerPool {
 	};
 	private inFlightRemeshKeys = new Set<string>();
 	private rerunRemeshAfterInflight = new Map<Chunk, boolean>();
+	private static readonly DEFERRED_LIGHTING_BUDGET_MS = 2.5;
+	private static readonly DEFERRED_LIGHTING_MAX_CHUNKS_PER_FRAME = 1;
 
 	private distantTerrainInFlight = false;
 	private nextDistantTerrainRequestId = 1;
@@ -155,6 +180,12 @@ export class ChunkWorkerPool {
 		this.debugStats.distantTerrainQueueLength =
 			this.distantTerrainTaskQueue.length;
 		this.debugStats.meshResultQueueLength = this.meshResultQueue.length;
+		this.debugStats.deferredLightingQueueLength =
+			this.deferredLightingQueue.length;
+		this.debugStats.deferredLightingSeedStateCount =
+			this.deferredLightingSeedStates.size;
+		this.debugStats.deferredLightingPumpScheduled =
+			this.deferredLightingPumpScheduled;
 		const dispatchBudget = this.getDispatchBudgetPerTick();
 		this.debugStats.dispatchBudgetPerTick = Number.isFinite(dispatchBudget)
 			? dispatchBudget
@@ -411,6 +442,136 @@ export class ChunkWorkerPool {
 				transparent: null,
 			});
 		}
+	}
+
+	private enqueueDeferredLightingRefinement(
+		chunk: Chunk,
+		seedQueue: Uint16Array,
+		seedLength: number,
+	): void {
+		if (!chunk || seedLength <= 0) {
+			return;
+		}
+
+		if (this.deferredLightingSeedStates.has(chunk.id)) {
+			this.debugStats.deferredLightingSeedReplacedTotal += 1;
+		}
+
+		this.deferredLightingSeedStates.set(chunk.id, {
+			queue: seedQueue,
+			length: seedLength,
+		});
+
+		if (!this.deferredLightingQueuedIds.has(chunk.id)) {
+			this.deferredLightingQueuedIds.add(chunk.id);
+			this.deferredLightingQueue.push(chunk);
+			this.debugStats.deferredLightingEnqueuedTotal += 1;
+		}
+
+		this.scheduleDeferredLightingPump();
+	}
+
+	private scheduleDeferredLightingPump(): void {
+		if (this.deferredLightingPumpScheduled) {
+			return;
+		}
+		this.deferredLightingPumpScheduled = true;
+		requestAnimationFrame(() => {
+			this.deferredLightingPumpScheduled = false;
+			this.processDeferredLightingQueue();
+		});
+	}
+
+	private processDeferredLightingQueue(): void {
+		const start = performance.now();
+		let processed = 0;
+		let dropped = 0;
+
+		while (
+			this.deferredLightingQueue.length > 0 &&
+			processed < ChunkWorkerPool.DEFERRED_LIGHTING_MAX_CHUNKS_PER_FRAME &&
+			performance.now() - start < ChunkWorkerPool.DEFERRED_LIGHTING_BUDGET_MS
+		) {
+			const chunk = this.deferredLightingQueue.shift();
+			if (!chunk) {
+				continue;
+			}
+
+			this.deferredLightingQueuedIds.delete(chunk.id);
+
+			const seedState = this.deferredLightingSeedStates.get(chunk.id);
+			this.deferredLightingSeedStates.delete(chunk.id);
+			if (!seedState) {
+				dropped++;
+				continue;
+			}
+
+			if (!chunk.isLoaded || !chunk.hasVoxelData) {
+				dropped++;
+				continue;
+			}
+
+			chunk.propagateDeferredLight(seedState);
+			this.reconcileSkyLightAcrossLoadedNeighbors(chunk);
+			void WorldStorage.saveChunk(chunk).catch((error) => {
+				console.error("Deferred-light chunk persistence failed:", error);
+			});
+			processed++;
+		}
+
+		this.debugStats.deferredLightingProcessedLastFrame = processed;
+		this.debugStats.deferredLightingProcessedTotal += processed;
+		this.debugStats.deferredLightingDroppedTotal += dropped;
+
+		if (this.deferredLightingQueue.length > 0) {
+			this.scheduleDeferredLightingPump();
+		}
+	}
+
+	private reconcileSkyLightAcrossLoadedNeighbors(chunk: Chunk): void {
+		if (!chunk.isLoaded || !chunk.hasVoxelData) {
+			return;
+		}
+
+		const size = Chunk.SIZE;
+		const last = size - 1;
+
+		const syncFace = (
+			neighbor: Chunk | undefined,
+			mapCell: (
+				u: number,
+				v: number,
+			) => [number, number, number, number, number, number],
+		): void => {
+			if (!neighbor || !neighbor.isLoaded || !neighbor.hasVoxelData) {
+				return;
+			}
+
+			for (let u = 0; u < size; u++) {
+				for (let v = 0; v < size; v++) {
+					const [x, y, z, nx, ny, nz] = mapCell(u, v);
+					const selfSky = chunk.getSkyLight(x, y, z);
+					const neighborSky = neighbor.getSkyLight(nx, ny, nz);
+
+					if (selfSky === neighborSky) {
+						continue;
+					}
+
+					if (selfSky > neighborSky) {
+						neighbor.updateLightFromNeighbors(nx, ny, nz, true);
+					} else {
+						chunk.updateLightFromNeighbors(x, y, z, true);
+					}
+				}
+			}
+		};
+
+		syncFace(chunk.getNeighbor(-1, 0, 0), (u, v) => [0, u, v, last, u, v]);
+		syncFace(chunk.getNeighbor(1, 0, 0), (u, v) => [last, u, v, 0, u, v]);
+		syncFace(chunk.getNeighbor(0, -1, 0), (u, v) => [u, 0, v, u, last, v]);
+		syncFace(chunk.getNeighbor(0, 1, 0), (u, v) => [u, last, v, u, 0, v]);
+		syncFace(chunk.getNeighbor(0, 0, -1), (u, v) => [u, v, 0, u, v, last]);
+		syncFace(chunk.getNeighbor(0, 0, 1), (u, v) => [u, v, last, u, v, 0]);
 	}
 
 	private processMeshQueueLoop = () => {
@@ -738,49 +899,48 @@ export class ChunkWorkerPool {
 						chunk.colliderDirty = true;
 						chunk.isModified = true;
 
+						const needsLightingRefinement =
+							lightSeedQueue !== undefined &&
+							lightSeedLength !== undefined &&
+							lightSeedLength > 0;
+
 						if (isStale) {
-							// Don't remesh, just save and let the unload queue clean it up.
-							void WorldStorage.saveChunk(chunk).catch((error) => {
-								console.error(
-									"Initial generated chunk persistence failed:",
-									error,
-								);
-							});
+							// Don't remesh stale chunks. Also avoid persisting partially-lit
+							// deferred chunks; they can regenerate later with full refinement.
+							if (!needsLightingRefinement) {
+								void WorldStorage.saveChunk(chunk).catch((error) => {
+									console.error(
+										"Initial generated chunk persistence failed:",
+										error,
+									);
+								});
+							}
 							return;
 						}
 
 						this.scheduleChunkAndNeighborsRemesh(chunk);
 						this.maybeRemeshNeighborsNowStable(chunk);
 
-						const needsLightingRefinement =
-							lightSeedQueue !== undefined &&
-							lightSeedLength !== undefined &&
-							lightSeedLength > 0;
-
-						const terrainQueuePressureCap = Math.max(this.workers.length, 4);
-
-						const shouldQueueLightingRefinement =
-							needsLightingRefinement &&
-							(chunk.lodLevel ?? 0) <= 1 &&
-							this.terrainTaskQueue.size < terrainQueuePressureCap;
+						const shouldQueueLightingRefinement = needsLightingRefinement;
 
 						if (shouldQueueLightingRefinement) {
-							/* TODO should be done but is slow
 							const seedState = {
 								queue: lightSeedQueue as Uint16Array,
 								length: lightSeedLength as number,
 							};
-							chunk.propagateDeferredLight(seedState);
-*/
-							this.scheduleTerrainGeneration(chunk, false);
-						}
-
-						void WorldStorage.saveChunk(chunk).catch((error) => {
-							console.error(
-								"Initial generated chunk persistence failed:",
-								error,
+							this.enqueueDeferredLightingRefinement(
+								chunk,
+								seedState.queue,
+								seedState.length,
 							);
-						});
+						} else {
+							void WorldStorage.saveChunk(chunk).catch((error) => {
+								console.error(
+									"Initial generated chunk persistence failed:",
+									error,
+								);
+							});
+						}
 					}
 				} else if (type === WorkerTaskType.GenerateDistantTerrain_Generated) {
 					const distantData: DistantTerrainGeneratedMessage = data;

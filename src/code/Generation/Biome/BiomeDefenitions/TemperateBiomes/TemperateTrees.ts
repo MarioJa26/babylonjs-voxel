@@ -1,8 +1,8 @@
 import { Squirrel3 } from "@/code/Generation/NoiseAndParameters/Squirrel13";
 import type { TreeDefinition } from "../../BiomeTypes";
 import {
-	DIAG_X,
-	DIAG_Z,
+	DIR_X,
+	DIR_Z,
 	generateBigTopBentOak,
 	generateSlinkyTree,
 } from "../../TreeDefinition";
@@ -189,6 +189,163 @@ export const PLAINS_TREE: TreeDefinition = {
 				for (let z = -radius; z <= radius; z++) {
 					placeBlock(worldX + x, y, worldZ + z, leavesId, false);
 				}
+			}
+		}
+	},
+};
+
+// ---------------------------------------------------------------------------
+// TEMPERATE_RAINFOREST_TREE
+// Tall moss-draped tree with buttress roots, thick trunk, large irregular canopy
+// ---------------------------------------------------------------------------
+export const TEMPERATE_RAINFOREST_TREE: TreeDefinition = {
+	woodId: 28,
+	leavesId: 2,
+	baseHeight: 14,
+	heightVariance: 8,
+	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
+		const h = Squirrel3.get(worldX * 374761393 + worldZ * 678446653, seedAsInt);
+		const height = this.baseHeight + (Math.abs(h) % (this.heightVariance + 1));
+		const woodId = this.woodId;
+		const leavesId = this.leavesId;
+		const heightM1 = Math.max(1, height - 1);
+
+		function placeWood(x: number, y: number, z: number): void {
+			placeBlock(x, y, z, woodId, true);
+		}
+
+		// ── Deep tap root ─────────────────────────────────────────────────────
+		const tapDepth = 4 + (Math.abs(h) % 3);
+		for (let d = 1; d <= tapDepth; d++) {
+			placeWood(worldX, worldY - d, worldZ);
+		}
+
+		// ── Buttress roots — droop as they extend outward ─────────────────────
+		const buttressCount = 4 + (Math.abs(h >> 2) % 2);
+		for (let b = 0; b < buttressCount; b++) {
+			const bHash = Squirrel3.get(
+				worldX * 31337 + worldZ * 6971 + b * 101,
+				seedAsInt,
+			);
+			const dir = b % 4;
+			const length = 3 + (Math.abs(bHash) % 3);
+
+			let rootY = worldY;
+
+			for (let step = 1; step <= length; step++) {
+				const bx = worldX + DIR_X[dir] * step;
+				const bz = worldZ + DIR_Z[dir] * step;
+
+				if (step > 1) {
+					rootY--;
+					// Connect vertically — face-connected, no gap
+					placeWood(bx, rootY + 1, bz);
+				}
+
+				const finHeight = Math.max(1, length - step + 1);
+				for (let rise = 0; rise < finHeight; rise++) {
+					placeWood(bx, rootY + rise, bz);
+				}
+			}
+		}
+
+		// ── Trunk ─────────────────────────────────────────────────────────────
+		const bendDir = Math.abs(h >> 6) % 4;
+		const bendDirX = DIR_X[bendDir];
+		const bendDirZ = DIR_Z[bendDir];
+		const maxBend = 2 + (Math.abs(h >> 8) % 2);
+
+		let tx = worldX;
+		let tz = worldZ;
+		let bendStepsDone = 0;
+
+		for (let i = 0; i < height; i++) {
+			const target = Math.round((i / heightM1) * maxBend);
+			const prevTarget = Math.round(((i - 1) / heightM1) * maxBend);
+
+			if (target > prevTarget && bendStepsDone < maxBend) {
+				tx += bendDirX;
+				tz += bendDirZ;
+				bendStepsDone++;
+			}
+
+			const trunkR = i < Math.floor(height * 0.4) ? 2 : 1;
+			const rSq = trunkR * trunkR;
+			for (let x = -trunkR; x <= trunkR; x++) {
+				const x2 = x * x;
+				for (let z = -trunkR; z <= trunkR; z++) {
+					if (x2 + z * z <= rSq) {
+						placeWood(tx + x, worldY + i, tz + z);
+					}
+				}
+			}
+		}
+
+		// ── Main canopy — solid sphere, no shell check ────────────────────────
+		const canopyR = 6 + (Math.abs(h >> 10) % 3);
+		const canopyCY = worldY + height + 1;
+		const canopyRSq = canopyR * canopyR;
+
+		for (let dy = -canopyR; dy <= canopyR; dy++) {
+			const dy2 = dy * dy;
+			if (dy2 > canopyRSq) continue;
+			const ly = canopyCY + dy;
+			for (let x = -canopyR; x <= canopyR; x++) {
+				const x2 = x * x;
+				if (x2 + dy2 > canopyRSq) continue;
+				for (let z = -canopyR; z <= canopyR; z++) {
+					if (x2 + z * z + dy2 <= canopyRSq) {
+						placeBlock(tx + x, ly, tz + z, leavesId, false);
+					}
+				}
+			}
+		}
+
+		// ── Secondary canopy lobes — solid spheres ────────────────────────────
+		const lobeCount = 3 + (Math.abs(h >> 12) % 2);
+		for (let l = 0; l < lobeCount; l++) {
+			const lHash = Squirrel3.get(
+				worldX * 9719 + worldZ * 19997 + l * 53,
+				seedAsInt,
+			);
+			const lobeDir = l % 4;
+			const lobeDist = 4 + (Math.abs(lHash >> 2) % 3);
+			const lobeCX = tx + DIR_X[lobeDir] * lobeDist;
+			const lobeCZ = tz + DIR_Z[lobeDir] * lobeDist;
+			const lobeCY = canopyCY - 2 + (Math.abs(lHash >> 5) % 4);
+			const lobeR = 3 + (Math.abs(lHash >> 8) % 2);
+			const lobeRSq = lobeR * lobeR;
+
+			for (let dy = -lobeR; dy <= lobeR; dy++) {
+				const dy2 = dy * dy;
+				if (dy2 > lobeRSq) continue;
+				for (let x = -lobeR; x <= lobeR; x++) {
+					const x2 = x * x;
+					if (x2 + dy2 > lobeRSq) continue;
+					for (let z = -lobeR; z <= lobeR; z++) {
+						if (x2 + z * z + dy2 <= lobeRSq) {
+							placeBlock(lobeCX + x, lobeCY + dy, lobeCZ + z, leavesId, false);
+						}
+					}
+				}
+			}
+		}
+
+		// ── Hanging moss ──────────────────────────────────────────────────────
+		const mossCount = 8 + (Math.abs(h >> 14) % 8);
+		for (let m = 0; m < mossCount; m++) {
+			const mHash = Squirrel3.get(
+				worldX * 7919 + worldZ * 6271 + m * 37,
+				seedAsInt,
+			);
+			const mossR = canopyR - 1;
+			const mossX = tx + ((Math.abs(mHash) % (mossR * 2 + 1)) - mossR);
+			const mossZ = tz + ((Math.abs(mHash >> 4) % (mossR * 2 + 1)) - mossR);
+			const mossY = canopyCY - 1;
+			const mossLen = 1 + (Math.abs(mHash >> 8) % 3);
+
+			for (let d = 0; d < mossLen; d++) {
+				placeBlock(mossX, mossY - d, mossZ, leavesId, false);
 			}
 		}
 	},
