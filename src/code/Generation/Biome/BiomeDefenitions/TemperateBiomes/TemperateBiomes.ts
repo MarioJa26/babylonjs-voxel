@@ -191,7 +191,7 @@ export const BIRCH_FOREST: Biome = {
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.2,
-	grassDensity: 0.25, // lighter undergrowth, birch forests are bright
+	grassDensity: 0.33, // lighter undergrowth, birch forests are bright
 	beachBlock: 3, // sand
 	seafloorBlock: 46, // gravel seafloor
 

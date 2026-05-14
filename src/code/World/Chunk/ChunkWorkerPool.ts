@@ -487,9 +487,7 @@ export class ChunkWorkerPool {
 		// neighbors may still be generating, leading to incorrect border reconciliation
 		if (
 			this.terrainTaskQueue.size > 0 ||
-			this.workerTaskContext.some(
-				(ctx) => ctx?.taskType === "terrain",
-			)
+			this.workerTaskContext.some((ctx) => ctx?.taskType === "terrain")
 		) {
 			this.scheduleDeferredLightingPump();
 			return;
@@ -555,7 +553,7 @@ export class ChunkWorkerPool {
 				v: number,
 			) => [number, number, number, number, number, number],
 		): void => {
-			if (!neighbor || !neighbor.isLoaded || !neighbor.hasVoxelData) {
+			if (!neighbor?.isLoaded || !neighbor.hasVoxelData) {
 				return;
 			}
 
