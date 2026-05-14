@@ -396,12 +396,27 @@ export class DistantTerrainGenerator {
 		let y: number;
 
 		if (isInsideRealTerrain) {
-			y = DistantTerrainGenerator.INSIDE_CLIP_Y;
-			normals[i3] = 0;
-			normals[i3 + 1] = 127;
-			normals[i3 + 2] = 0;
-			surfaceTiles[i2] = DistantTerrainGenerator.DEFAULT_TILE_X;
-			surfaceTiles[i2 + 1] = DistantTerrainGenerator.DEFAULT_TILE_Y;
+			// Get actual terrain height but offset slightly underground to prevent z-fighting
+			const worldX = chunkX * CHUNK_SIZE;
+			const worldZ = chunkZ * CHUNK_SIZE;
+			y = getFinalTerrainHeight(worldX, worldZ) - 1.0;
+			
+			// Calculate normals based on actual terrain for smooth transition
+			const hRight = getFinalTerrainHeight(worldX + 1, worldZ);
+			const hDown = getFinalTerrainHeight(worldX, worldZ + 1);
+			const dy1 = hRight - y;
+			const dy2 = hDown - y;
+			const len = Math.sqrt(dy1 * dy1 + 1 + dy2 * dy2) || 1;
+
+			normals[i3] = (-dy1 / len) * 127;
+			normals[i3 + 1] = (1 / len) * 127;
+			normals[i3 + 2] = (-dy2 / len) * 127;
+
+			const topBlockId = getBiome(worldX, worldZ).topBlock;
+			const [tileX, tileY] =
+				DistantTerrainGenerator.getTopTileForBlock(topBlockId);
+			surfaceTiles[i2] = tileX;
+			surfaceTiles[i2 + 1] = tileY;
 		} else {
 			const worldX = chunkX * CHUNK_SIZE;
 			const worldZ = chunkZ * CHUNK_SIZE;

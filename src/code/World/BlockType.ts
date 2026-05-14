@@ -66,6 +66,18 @@ export enum BlockType {
 	GrassCross = 64,
 	SavannahGrass = 65,
 	SavannahGrassCross = 66,
+	Obsidian = 67,
+	Mycelium = 68,
+	Sulphur = 69,
+	MossyCobble = 70,
+	Peat = 71,
+	AncientCrackedStone = 72,
+	BirchBark = 73,
+	BirchLeaves = 74,
+	IceBlock = 75,
+	MushroomStem = 76,
+	MushroomAmanitacap = 77,
+	GlacierIce = 78,
 }
 
 export const Hardness = {

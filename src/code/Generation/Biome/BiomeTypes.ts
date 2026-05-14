@@ -44,9 +44,10 @@ export interface Biome {
 	persistence?: number;
 	lacunarity?: number;
 	heightExponent?: number;
-	getTreeForBlock(blockId: number): TreeDefinition | null;
+	getTreeForBlock(blockId?: number, noiseValue?: number): TreeDefinition | null;
 }
 export enum BIOME_ID {
+	// Existing
 	FOREST,
 	TUNDRA,
 	TUNDRA_MOUNTAINS,
@@ -63,4 +64,50 @@ export enum BIOME_ID {
 	VOLCANIC_WASTELAND,
 	BASALT_DELTAS,
 	SAVANNAH,
+
+	// Cold / Arctic
+	FROZEN_OCEAN,
+	ICE_SPIKES,
+	SNOWY_PLAINS,
+	PERMAFROST_BOG,
+	GLACIER,
+
+	// Temperate
+	TEMPERATE_RAINFOREST,
+	MAPLE_FOREST,
+	BIRCH_FOREST,
+	MEADOW,
+	HEDGEROW,
+	PEAT_BOG,
+	WETLANDS,
+
+	// Hot / Arid
+	BADLANDS,
+	RED_ROCK_CANYON,
+	OASIS,
+	SALT_FLATS,
+	DUNE_SEA,
+	SCORCHED_SAVANNAH,
+
+	// Tropical
+	MANGROVE,
+	BAMBOO_FOREST,
+	TROPICAL_ISLAND,
+	CLOUD_FOREST,
+
+	// Underground / Geological
+	MUSHROOM_FIELDS,
+	CRYSTAL_CAVES,
+	OBSIDIAN_FLATS,
+	GEOTHERMAL_FIELD,
+
+	// Coastal / Aquatic
+	CORAL_REEF,
+	KELP_FOREST,
+	TIDAL_FLATS,
+	ARCHIPELAGO,
+
+	// Rare / Exotic
+	ANCIENT_RUINS_BIOME,
+	PETRIFIED_FOREST,
 }

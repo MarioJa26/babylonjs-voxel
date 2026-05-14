@@ -3,10 +3,10 @@ import type { TreeDefinition } from "./BiomeTypes";
 
 // --- Shared constants hoisted to module scope ---
 // V8: avoid re-allocating identical arrays on every function call
-const DIR_X = [1, 0, -1, 0] as const;
-const DIR_Z = [0, 1, 0, -1] as const;
-const DIAG_X = [1, 1, 0, -1, -1, -1, 0, 1] as const;
-const DIAG_Z = [0, 1, 1, 1, 0, -1, -1, -1] as const;
+export const DIR_X = [1, 0, -1, 0] as const;
+export const DIR_Z = [0, 1, 0, -1] as const;
+export const DIAG_X = [1, 1, 0, -1, -1, -1, 0, 1] as const;
+export const DIAG_Z = [0, 1, 1, 1, 0, -1, -1, -1] as const;
 
 // --- Shared packed-int spatial set ---
 // V8: integer keys in a Set are far cheaper than string concatenation.
@@ -28,56 +28,6 @@ function packXYZ(x: number, y: number, z: number): number {
 // Module-level reusable Set – cleared before each tree that needs it.
 // V8: avoids GC pressure from allocating/discarding large Sets per tree.
 const woodSet = new Set<number>();
-
-// ---------------------------------------------------------------------------
-// OAK_TREE
-// ---------------------------------------------------------------------------
-
-export const OAK_TREE: TreeDefinition = {
-	woodId: 28,
-	leavesId: 2,
-	baseHeight: 5,
-	heightVariance: 2,
-	generate(
-		worldX: number,
-		worldY: number,
-		worldZ: number,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			blockId: number,
-			overwrite?: boolean,
-		) => void,
-		seedAsInt: number,
-	): void {
-		const heightHash = Squirrel3.get(
-			worldX * 374761393 + worldZ * 678446653,
-			seedAsInt,
-		);
-		const height =
-			this.baseHeight + (Math.abs(heightHash) % (this.heightVariance + 1));
-		const woodId = this.woodId;
-		const leavesId = this.leavesId;
-
-		// Trunk
-		for (let i = 0; i < height; i++) {
-			placeBlock(worldX, worldY + i, worldZ, woodId, true);
-		}
-
-		const leafYStart = worldY + height - 3;
-
-		// V8: flatten radius logic into the loop condition rather than branching inside
-		for (let y = leafYStart; y < leafYStart + 4; y++) {
-			const radius = y < leafYStart + 2 ? 2 : 1;
-			for (let x = -radius; x <= radius; x++) {
-				for (let z = -radius; z <= radius; z++) {
-					placeBlock(worldX + x, y, worldZ + z, leavesId, false);
-				}
-			}
-		}
-	},
-};
 
 // ---------------------------------------------------------------------------
 // generateSlinkyTree
@@ -448,193 +398,122 @@ export function generateBigTopBentOak(
 }
 
 // ---------------------------------------------------------------------------
-// Tree definitions
+// generateBaobab
 // ---------------------------------------------------------------------------
 
-export const SLINKY_TREE: TreeDefinition = {
-	woodId: 28,
-	leavesId: 2,
-	baseHeight: 10,
-	heightVariance: 10,
-	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
-		generateSlinkyTree(
-			worldX,
-			worldY,
-			worldZ,
-			placeBlock,
-			seedAsInt,
-			this.woodId,
-			this.leavesId,
-			this.baseHeight,
-			this.heightVariance,
+export function generateBaobab(
+	worldX: number,
+	worldY: number,
+	worldZ: number,
+	placeBlock: (
+		x: number,
+		y: number,
+		z: number,
+		blockId: number,
+		overwrite?: boolean,
+	) => void,
+	seedAsInt: number,
+	woodId: number,
+	leavesId: number,
+	baseHeight: number,
+	heightVariance: number,
+): void {
+	woodSet.clear();
+
+	const heightHash = Squirrel3.get(
+		worldX * 374761393 + worldZ * 678446653,
+		seedAsInt,
+	);
+	const height = baseHeight + (Math.abs(heightHash) % (heightVariance + 1));
+
+	function placeWood(x: number, y: number, z: number): void {
+		placeBlock(x, y, z, woodId, true);
+		woodSet.add(packXYZ(x, y, z));
+	}
+
+	// Tap root
+	const tapRootDepth = 3 + (Math.abs(heightHash) % 2);
+	for (let d = 1; d <= tapRootDepth; d++) {
+		placeWood(worldX, worldY - d, worldZ);
+	}
+
+	// ── Trunk ──────────────────────────────────────────────────────────────────
+	// Baobab trunks are very wide at the base and taper sharply toward the crown.
+	// We compute radius per layer using an inverse-curve so it's fat low and thin high.
+	const baseTrunkRadius = 3; // widest point at ground level
+	const topTrunkRadius = 1; // narrowest point just before the canopy
+
+	for (let i = 0; i < height; i++) {
+		const t = i / Math.max(1, height - 1); // 0 at base, 1 at top
+		// Ease-out curve: wide base tapers quickly in the lower half
+		const taper = 1 - t ** 0.5;
+		const radius = Math.round(
+			topTrunkRadius + (baseTrunkRadius - topTrunkRadius) * taper,
 		);
-	},
-};
+		const radiusSq = radius * radius;
+		const y = worldY + i;
 
-export const BIG_OAK_TREE: TreeDefinition = {
-	woodId: 28,
-	leavesId: 2,
-	baseHeight: 10,
-	heightVariance: 10,
-	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
-		generateBigTopBentOak(
-			worldX,
-			worldY,
-			worldZ,
-			placeBlock,
-			seedAsInt,
-			this.woodId,
-			this.leavesId,
-			this.baseHeight,
-			this.heightVariance,
-		);
-	},
-};
-
-export const PLAINS_TREE: TreeDefinition = {
-	woodId: 31,
-	leavesId: 43,
-	baseHeight: 6,
-	heightVariance: 2,
-	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
-		const heightHash = Squirrel3.get(
-			worldX * 374761393 + worldZ * 678446653,
-			seedAsInt,
-		);
-		const height =
-			this.baseHeight + (Math.abs(heightHash) % (this.heightVariance + 1));
-		const woodId = this.woodId;
-		const leavesId = this.leavesId;
-
-		for (let i = 0; i < height; i++) {
-			placeBlock(worldX, worldY + i, worldZ, woodId, true);
-		}
-
-		const leafYStart = worldY + height - 3;
-		for (let y = leafYStart; y < leafYStart + 4; y++) {
-			const radius = y < leafYStart + 2 ? 2 : 1;
-			for (let x = -radius; x <= radius; x++) {
-				for (let z = -radius; z <= radius; z++) {
-					placeBlock(worldX + x, y, worldZ + z, leavesId, false);
+		for (let x = -radius; x <= radius; x++) {
+			for (let z = -radius; z <= radius; z++) {
+				if (x * x + z * z <= radiusSq) {
+					placeWood(worldX + x, y, worldZ + z);
 				}
 			}
 		}
-	},
-};
+	}
 
-export const JUNGLE_TREE: TreeDefinition = {
-	woodId: 33,
-	leavesId: 34,
-	baseHeight: 20,
-	heightVariance: 20,
-	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
-		const heightHash = Squirrel3.get(
-			worldX * 374761393 + worldZ * 678446653,
+	// ── Branch forks ───────────────────────────────────────────────────────────
+	// At the crown, baobabs split into several thick stubby branches.
+	const branchCount = 4 + (Math.abs(heightHash) % 3); // 4–6 branches
+	const crownY = worldY + height;
+
+	for (let b = 0; b < branchCount; b++) {
+		const branchHash = Squirrel3.get(
+			worldX * 15731 + worldZ * 789221 + b * 1013,
 			seedAsInt,
 		);
-		const height =
-			this.baseHeight + (Math.abs(heightHash) % (this.heightVariance + 1));
-		const woodId = this.woodId;
-		const leavesId = this.leavesId;
+		const branchDir = Math.abs(branchHash) % 8;
+		const branchLength = 2 + (Math.abs(branchHash >> 3) % 3); // 2–4 blocks
+		const branchRise = 1 + (Math.abs(branchHash >> 6) % 2); // 1–2 blocks up
 
-		for (let i = 0; i < height; i++) {
-			placeBlock(worldX, worldY + i, worldZ, woodId, true);
+		let bx = worldX;
+		let by = crownY;
+		let bz = worldZ;
+
+		for (let step = 0; step < branchLength; step++) {
+			// Move outward each step, rise on first step only
+			bx += DIAG_X[branchDir];
+			bz += DIAG_Z[branchDir];
+			if (step < branchRise) by++;
+
+			placeWood(bx, by, bz);
+			// Give the branch a little girth
+			placeWood(bx, by - 1, bz);
 		}
 
-		const canopyRadius = 4;
-		for (let conopie = 1; conopie <= 2; conopie++) {
-			const leafYStart = worldY + height - 5 * conopie - (conopie - 1) * 3;
-			for (let y = leafYStart; y < leafYStart + 8; y++) {
-				const currentRadius = canopyRadius - Math.floor((y - leafYStart) / 2);
-				const radiusSqP1 = currentRadius * currentRadius + 1;
-				for (let x = -currentRadius; x <= currentRadius; x++) {
-					const x2 = x * x;
-					for (let z = -currentRadius; z <= currentRadius; z++) {
-						if (x2 + z * z <= radiusSqP1) {
-							placeBlock(worldX + x, y, worldZ + z, leavesId, false);
+		// ── Leaf cluster at branch tip ──────────────────────────────────────────
+		const leafRadius = 2 + (Math.abs(branchHash >> 9) % 2); // 2–3
+		const leafRadiusSq = leafRadius * leafRadius + 1;
+
+		for (let dy = -1; dy <= 2; dy++) {
+			for (let x = -leafRadius; x <= leafRadius; x++) {
+				const x2 = x * x;
+				for (let z = -leafRadius; z <= leafRadius; z++) {
+					if (x2 + z * z <= leafRadiusSq) {
+						// Skip positions already occupied by wood
+						if (!woodSet.has(packXYZ(bx + x, by + dy, bz + z))) {
+							const leafHash = Squirrel3.get(
+								(bx + x) * 11939 + (bz + z) * 15485863 + (by + dy) * 29791,
+								seedAsInt,
+							);
+							// Sparse canopy — baobabs aren't leafy
+							if (Math.abs(leafHash) % 5 !== 0) {
+								placeBlock(bx + x, by + dy, bz + z, leavesId, false);
+							}
 						}
 					}
 				}
 			}
 		}
-	},
-};
-
-export const CACTUS: TreeDefinition = {
-	woodId: 34,
-	leavesId: 0,
-	baseHeight: 3,
-	heightVariance: 2,
-	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
-		const heightHash = Squirrel3.get(
-			worldX * 374761393 + worldZ * 678446653,
-			seedAsInt,
-		);
-		const height =
-			this.baseHeight + (Math.abs(heightHash) % (this.heightVariance + 1));
-		const woodId = this.woodId;
-		for (let i = 0; i < height; i++) {
-			placeBlock(worldX, worldY + i, worldZ, woodId);
-		}
-	},
-};
-
-export const SAVANNAH_TREE: TreeDefinition = {
-	woodId: 31, // Acacia wood
-	leavesId: 43, // Acacia leaves
-	baseHeight: 7,
-	heightVariance: 3,
-	generate(
-		worldX: number,
-		worldY: number,
-		worldZ: number,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			blockId: number,
-			overwrite?: boolean,
-		) => void,
-		seedAsInt: number,
-	): void {
-		const heightHash = Squirrel3.get(
-			worldX * 374761393 + worldZ * 678446653,
-			seedAsInt,
-		);
-		const height =
-			this.baseHeight + (Math.abs(heightHash) % (this.heightVariance + 1));
-		const woodId = this.woodId;
-		const leavesId = this.leavesId;
-
-		// Tall trunk
-		for (let i = 0; i < height; i++) {
-			placeBlock(worldX, worldY + i, worldZ, woodId, true);
-		}
-
-		// Flat umbrella-shaped canopy at the top
-		const canopyY = worldY + height - 1;
-		const canopyRadius = 3;
-
-		// Flat layer of leaves (the umbrella top)
-		for (let x = -canopyRadius; x <= canopyRadius; x++) {
-			for (let z = -canopyRadius; z <= canopyRadius; z++) {
-				if (Math.abs(x) + Math.abs(z) <= canopyRadius + 1) {
-					placeBlock(worldX + x, canopyY, worldZ + z, leavesId, false);
-				}
-			}
-		}
-
-		// Slightly smaller layer above
-		const upperY = canopyY + 1;
-		for (let x = -2; x <= 2; x++) {
-			for (let z = -2; z <= 2; z++) {
-				if (Math.abs(x) + Math.abs(z) <= 3) {
-					placeBlock(worldX + x, upperY, worldZ + z, leavesId, false);
-				}
-			}
-		}
-
-		// Small top
-		placeBlock(worldX, canopyY + 2, worldZ, leavesId, false);
-	},
-};
+	}
+}
