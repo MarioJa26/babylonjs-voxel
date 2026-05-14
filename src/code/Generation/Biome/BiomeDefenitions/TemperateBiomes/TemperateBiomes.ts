@@ -1,4 +1,5 @@
 // TemperateBiomes.ts
+import { BlockType } from "@/code/World/BlockType";
 import { GenerationParams } from "../../../NoiseAndParameters/GenerationParams";
 import { BIOME_ID, type Biome, type TreeDefinition } from "../../BiomeTypes";
 import {
@@ -256,14 +257,14 @@ export const HEDGEROW: Biome = {
 export const PEAT_BOG: Biome = {
 	id: BIOME_ID.PEAT_BOG,
 	name: "Peat_Bog",
-	topBlock: 104, // peat / dark soggy dirt
-	undergroundBlock: 104, // peat
+	topBlock: BlockType.Peat, // peat / dark soggy dirt
+	undergroundBlock: BlockType.Peat, // peat
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.05, // sparse dead/mossy trees
 	grassDensity: 0.45, // reeds and bog grass
-	beachBlock: 104, // peat shoreline
-	seafloorBlock: 104, // peat bog floor
+	beachBlock: 8, // peat shoreline
+	seafloorBlock: BlockType.Peat, // peat bog floor
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.75,
 	persistence: 0.19,

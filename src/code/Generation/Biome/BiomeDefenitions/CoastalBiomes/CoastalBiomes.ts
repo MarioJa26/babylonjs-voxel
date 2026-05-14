@@ -126,7 +126,7 @@ export const CORAL_REEF: Biome = {
 export const KELP_FOREST: Biome = {
 	id: BIOME_ID.KELP_FOREST,
 	name: "Kelp_Forest",
-	topBlock: 71, // gravel
+	topBlock: 71, // MossyCobble
 	undergroundBlock: 46,
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
