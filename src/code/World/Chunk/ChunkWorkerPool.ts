@@ -132,7 +132,7 @@ export class ChunkWorkerPool {
 	private inFlightRemeshKeys = new Set<string>();
 	private rerunRemeshAfterInflight = new Map<Chunk, boolean>();
 	private static readonly DEFERRED_LIGHTING_BUDGET_MS = 2.5;
-	private static readonly DEFERRED_LIGHTING_MAX_CHUNKS_PER_FRAME = 1;
+	private static readonly DEFERRED_LIGHTING_MAX_CHUNKS_PER_FRAME = 16;
 
 	private distantTerrainInFlight = false;
 	private nextDistantTerrainRequestId = 1;
@@ -483,6 +483,18 @@ export class ChunkWorkerPool {
 	}
 
 	private processDeferredLightingQueue(): void {
+		// Don't process deferred lighting while terrain generation is in progress —
+		// neighbors may still be generating, leading to incorrect border reconciliation
+		if (
+			this.terrainTaskQueue.size > 0 ||
+			this.workerTaskContext.some(
+				(ctx) => ctx?.taskType === "terrain",
+			)
+		) {
+			this.scheduleDeferredLightingPump();
+			return;
+		}
+
 		const start = performance.now();
 		let processed = 0;
 		let dropped = 0;
