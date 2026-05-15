@@ -1,4 +1,5 @@
 // HotBiomes.ts
+import { BlockType } from "@/code/World/BlockType";
 import { GenerationParams } from "../../../NoiseAndParameters/GenerationParams";
 import { BIOME_ID, type Biome, type TreeDefinition } from "../../BiomeTypes";
 import { PALM_TREE } from "../TropicalBiomes/TropicalTrees";
@@ -105,13 +106,13 @@ export const BASALT_DELTAS: Biome = {
 export const BADLANDS: Biome = {
 	id: BIOME_ID.BADLANDS,
 	name: "Badlands",
-	topBlock: 105, // red sand / terracotta
-	undergroundBlock: 106, // layered terracotta / hardened clay
+	topBlock: BlockType.TerracottaBlock, // red sand / terracotta
+	undergroundBlock: BlockType.TerracottaBlock, // layered terracotta / hardened clay
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
 	treeDensity: 0.0,
 	grassDensity: 0.05, // almost no vegetation
-	beachBlock: 105, // red sand
+	beachBlock: 3, // red sand
 	seafloorBlock: 3, // sandstone
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.6,
@@ -128,14 +129,14 @@ export const BADLANDS: Biome = {
 export const RED_ROCK_CANYON: Biome = {
 	id: BIOME_ID.RED_ROCK_CANYON,
 	name: "Red_Rock_Canyon",
-	topBlock: 106, // red sandstone / terracotta
-	undergroundBlock: 106, // layered red rock
+	topBlock: BlockType.TerracottaBlock, // red sandstone / terracotta
+	undergroundBlock: BlockType.TerracottaBlock, // layered red rock
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
 	treeDensity: 0.0,
 	grassDensity: 0.03,
-	beachBlock: 105, // red sand
-	seafloorBlock: 106, // red rock floor
+	beachBlock: 3, // red sand
+	seafloorBlock: 3, // red rock floor
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.5,
 	persistence: 0.32,

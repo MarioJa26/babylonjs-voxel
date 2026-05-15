@@ -62,14 +62,14 @@ export const MUSHROOM_FIELDS: Biome = {
 export const CRYSTAL_CAVES: Biome = {
 	id: BIOME_ID.CRYSTAL_CAVES,
 	name: "Crystal_Caves",
-	topBlock: 111, // crystal-encrusted stone surface
-	undergroundBlock: 111, // crystal stone
-	stoneBlock: 1, // stone
+	topBlock: BlockType.ExposedCrystalBlock, // crystal-encrusted stone surface
+	undergroundBlock: BlockType.CrystalBlock, // crystal stone
+	stoneBlock: BlockType.Cobble, // stone
 	canSpawnTrees: false,
 	treeDensity: 0.0,
 	grassDensity: 0.2, // glowing crystal growths as grass replacement
-	beachBlock: 1, // stone
-	seafloorBlock: 111, // crystal seafloor
+	beachBlock: BlockType.Cobble, // stone
+	seafloorBlock: BlockType.CrystalBlock, // crystal seafloor
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.5,
 	persistence: 0.32,
@@ -85,14 +85,14 @@ export const CRYSTAL_CAVES: Biome = {
 export const OBSIDIAN_FLATS: Biome = {
 	id: BIOME_ID.OBSIDIAN_FLATS,
 	name: "Obsidian_Flats",
-	topBlock: 112, // obsidian
+	topBlock: BlockType.Obsidian, // obsidian
 	undergroundBlock: 1, // stone
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
 	treeDensity: 0.0,
 	grassDensity: 0.0, // nothing grows on obsidian
-	beachBlock: 112, // obsidian
-	seafloorBlock: 112, // obsidian
+	beachBlock: BlockType.Obsidian, // obsidian
+	seafloorBlock: BlockType.Obsidian, // obsidian
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.65,
 	persistence: 0.25,
@@ -109,7 +109,7 @@ export const GEOTHERMAL_FIELD: Biome = {
 	id: BIOME_ID.GEOTHERMAL_FIELD,
 	name: "Geothermal_Field",
 	topBlock: 1, // stone / mineral-stained rock
-	undergroundBlock: 113, // sulfurous / geothermal rock
+	undergroundBlock: BlockType.Sulphur, // sulfurous / geothermal rock
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
 	treeDensity: 0.0,

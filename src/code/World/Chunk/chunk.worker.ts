@@ -149,3 +149,4 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
 };
 
 self.onmessage = onMessageHandler;
+self.postMessage({ type: WorkerTaskType.WorkerReady });

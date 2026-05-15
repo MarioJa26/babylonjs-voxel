@@ -1,8 +1,9 @@
 import Alea from "alea";
 import {
-	createFastNoise2D,
+	createFastNoise2DWithInstance,
 	createFastNoise3D,
 } from "./NoiseAndParameters/FastNoise/FastNoiseFactory";
+import type FastNoiseLite from "./NoiseAndParameters/FastNoise/FastNoiseLite";
 import {
 	GenerationParams,
 	type GenerationParamsType,
@@ -15,6 +16,7 @@ export class RiverGenerator {
 	private readonly TUNNEL_CENTER_Y: number;
 
 	private static riverNoise: (x: number, z: number) => number;
+	private static riverNoiseInst: FastNoiseLite;
 	private static wallNoise: (x: number, y: number, z: number) => number;
 
 	private riverSpline: Spline;
@@ -30,10 +32,12 @@ export class RiverGenerator {
 			seed,
 			frequency: 0.1,
 		});
-		RiverGenerator.riverNoise = createFastNoise2D({
+		const r = createFastNoise2DWithInstance({
 			seed,
 			frequency: GenerationParams.RIVER_SCALE,
 		});
+		RiverGenerator.riverNoise = r.fn;
+		RiverGenerator.riverNoiseInst = r.instance;
 
 		this.riverSpline = new Spline([
 			{ t: 0, v: this.TUNNEL_RADIUS },
@@ -78,5 +82,15 @@ export class RiverGenerator {
 
 	public getRiverDepth(riverValue: number): number {
 		return this.riverDepthSpline.getValue(riverValue);
+	}
+
+	public fillRiverNoise2D(
+		out: Float32Array,
+		width: number,
+		height: number,
+		offsetX: number,
+		offsetY: number,
+	): void {
+		RiverGenerator.riverNoiseInst.FillNoise2D(out, width, height, offsetX, offsetY);
 	}
 }

@@ -6,6 +6,7 @@ export enum WorkerTaskType {
 	GenerateDistantTerrain_Generated,
 	GenerateDistantTerrain,
 	InitDistantTerrainShared,
+	WorkerReady,
 }
 
 /* =========================================================
@@ -136,7 +137,8 @@ export type WorkerResponseData =
 	| FullMeshMessage
 	| TerrainGeneratedMessage
 	| DistantTerrainGeneratedMessage
-	| { type: WorkerTaskType.InitDistantTerrainShared }; // ← ack only, no payload
+	| { type: WorkerTaskType.InitDistantTerrainShared } // ← ack only, no payload
+	| { type: WorkerTaskType.WorkerReady };
 
 export type MeshWorkerResponse = {
 	chunkId: bigint;

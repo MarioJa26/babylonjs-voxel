@@ -399,8 +399,8 @@ export class DistantTerrainGenerator {
 			// Get actual terrain height but offset slightly underground to prevent z-fighting
 			const worldX = chunkX * CHUNK_SIZE;
 			const worldZ = chunkZ * CHUNK_SIZE;
-			y = getFinalTerrainHeight(worldX, worldZ) - 1.0;
-			
+			y = DistantTerrainGenerator.INSIDE_CLIP_Y;
+
 			// Calculate normals based on actual terrain for smooth transition
 			const hRight = getFinalTerrainHeight(worldX + 1, worldZ);
 			const hDown = getFinalTerrainHeight(worldX, worldZ + 1);

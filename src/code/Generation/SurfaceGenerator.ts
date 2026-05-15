@@ -13,6 +13,7 @@ import {
 	getBiome,
 	getCachedRiverNoise,
 	getFinalTerrainHeight,
+	prefetchChunkCorners,
 } from "./TerrainHeightMap";
 
 export type SurfaceGenerationResult = {
@@ -157,6 +158,10 @@ export class SurfaceGenerator {
 		const chunkWorldZ = chunkZ * CHUNK_SIZE;
 		const area = CHUNK_SIZE * CHUNK_SIZE;
 		const NO_SURFACE_Y = SurfaceGenerator.NO_SURFACE_Y;
+
+		// Pre-fill the biome-corner cache for this chunk so the per-column
+		// loop never hits a cache miss on fillCorner.
+		prefetchChunkCorners(chunkWorldX, chunkWorldZ);
 
 		const terrainHeightMap = new Int32Array(area);
 		const riverNoiseMap = new Float32Array(area);

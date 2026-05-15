@@ -104,8 +104,14 @@ const _meshData: {
 const debugStats: ChunkLoadingDebugStats = {
 	loadQueueLength: 0,
 	unloadQueueLength: 0,
-	loadBatchLimit: Math.max(1, Math.floor(SETTING_PARAMS.RENDER_DISTANCE * 4)),
-	unloadBatchLimit: Math.max(1, Math.floor(SETTING_PARAMS.RENDER_DISTANCE * 4)),
+	loadBatchLimit: Math.max(
+		1,
+		Math.floor(SETTING_PARAMS.CHUNK_LOAD_BATCH_LIMIT),
+	),
+	unloadBatchLimit: Math.max(
+		1,
+		Math.floor(SETTING_PARAMS.CHUNK_UNLOAD_BATCH_LIMIT),
+	),
 	frameBudgetMs: Math.max(0.5, SETTING_PARAMS.CHUNK_LOADING_FRAME_BUDGET_MS),
 	lastProcessMs: 0,
 	totalProcessLoops: 0,

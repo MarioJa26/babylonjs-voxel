@@ -438,5 +438,29 @@
 		"name": "glacier_ice",
 		"path": "/texture/water/ice_02_1k",
 		"hardness": 0.5
+	},
+	{
+		"id": "ExposedCrystalBlock",
+		"name": "exposed_crystal_block",
+		"path": "/texture/stone/crystal_block_01_1k",
+		"hardness": 3
+	},
+	{
+		"id": "CrystalBlock",
+		"name": "crystal_block",
+		"path": "/texture/stone/crystal_block_02_1k",
+		"hardness": 5
+	},
+	{
+		"id": "BasaltBlock",
+		"name": "basalt_block",
+		"path": "/texture/stone/basalt_block_1k",
+		"hardness": 3
+	},
+	{
+		"id": "TerracottaBlock",
+		"name": "terracotta_block",
+		"path": "/texture/stone/terracotta_block_1k",
+		"hardness": 1.5
 	}
 ]

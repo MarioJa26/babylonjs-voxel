@@ -78,6 +78,10 @@ export enum BlockType {
 	MushroomStem = 76,
 	MushroomAmanitacap = 77,
 	GlacierIce = 78,
+	ExposedCrystalBlock = 79,
+	CrystalBlock = 80,
+	BasaltBlock = 81,
+	TerracottaBlock = 82,
 }
 
 export const Hardness = {

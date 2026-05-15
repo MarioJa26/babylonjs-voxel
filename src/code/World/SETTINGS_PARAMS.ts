@@ -2,13 +2,13 @@
 
 export const SETTING_PARAMS = {
 	// --- World Generation & Loading ---
-	RENDER_DISTANCE: 12,
+	RENDER_DISTANCE: 8,
 	VERTICAL_RENDER_DISTANCE: 6,
 	MAX_CHUNK_HEIGHT: 32,
 	CHUNK_UNLOAD_DISTANCE_BUFFER: 1, // How many extra chunks to keep before unloading
 	// 0 = auto (render-distance based), >0 = explicit per-cycle cap
-	CHUNK_LOAD_BATCH_LIMIT: 16,
-	CHUNK_UNLOAD_BATCH_LIMIT: 16,
+	CHUNK_LOAD_BATCH_LIMIT: 32,
+	CHUNK_UNLOAD_BATCH_LIMIT: 32,
 	// Soft budget used by chunk loading scheduler to decide whether to continue
 	// work in microtasks or yield to next frame.
 	CHUNK_LOADING_FRAME_BUDGET_MS: 8.0,
@@ -17,9 +17,9 @@ export const SETTING_PARAMS = {
 
 	// --- LOD Settings ---
 	LOD_0_OFFSET: 0,
-	LOD_1_OFFSET: 0,
-	LOD_2_OFFSET: 0,
-	LOD_3_OFFSET: 0,
+	LOD_1_OFFSET: 4,
+	LOD_2_OFFSET: 6,
+	LOD_3_OFFSET: 6,
 	LOD_VERTICAL_0_OFFSET: 0,
 	LOD_VERTICAL_1_OFFSET: 2,
 	LOD_VERTICAL_2_OFFSET: 4,
@@ -27,7 +27,7 @@ export const SETTING_PARAMS = {
 	LOD_PRECOMPUTE_HORIZONTAL_OFFSET: 14,
 	LOD_PRECOMPUTE_VERTICAL_OFFSET: 4,
 
-	DISTANT_RENDER_DISTANCE: 128, //128,
+	DISTANT_RENDER_DISTANCE: 228, //128,
 	LOD_PRECOMPUTE_SCHEDULE_THROTTLE_MS: 220, //120
 	LOD_PRECOMPUTE_MAX_ENQUEUE_PER_UPDATE: 48,
 	// 0 = unlimited dispatch while workers are idle

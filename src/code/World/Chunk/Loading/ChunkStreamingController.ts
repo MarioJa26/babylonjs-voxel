@@ -257,7 +257,7 @@ export class ChunkStreamingController {
 		playerChunkZ: number,
 		renderDistance = SETTING_PARAMS.RENDER_DISTANCE,
 		verticalRadius = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
-		maxChunks = 8,
+		maxChunks = SETTING_PARAMS.CHUNK_LOAD_BATCH_LIMIT,
 	): void {
 		if (this.loadedRefreshQueueHead >= this.loadedRefreshQueue.length) {
 			return;
