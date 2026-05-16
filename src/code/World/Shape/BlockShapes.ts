@@ -1,4 +1,4 @@
-import { BlockType } from "../BlockType";
+import { BlockType } from "../Texture/BlockType";
 
 // Face mask bits: +X=0, -X=1, +Y=2, -Y=3, +Z=4, -Z=5
 export const FACE_PX = 1 << 0; // +X right

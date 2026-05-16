@@ -2,11 +2,6 @@ import type { Mesh } from "@babylonjs/core";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { getFinalTerrainHeight } from "@/code/Generation/TerrainHeightMap";
 import {
-	packBlockValue,
-	unpackBlockId,
-	unpackBlockState,
-} from "../BlockEncoding";
-import {
 	CUBE_SHAPE_INDEX,
 	FACE_ALL,
 	FACE_NX,
@@ -19,6 +14,11 @@ import {
 	ShapeDefinitions,
 } from "../Shape/BlockShapes";
 import { getSliceAxis, transformBox } from "../Shape/BlockShapeTransforms";
+import {
+	packBlockValue,
+	unpackBlockId,
+	unpackBlockState,
+} from "./DataStructures/BlockEncoding";
 import type { MeshData } from "./DataStructures/MeshData";
 
 // ---------------------------------------------------------------------------

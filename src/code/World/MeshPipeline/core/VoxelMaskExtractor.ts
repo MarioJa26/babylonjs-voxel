@@ -1,6 +1,6 @@
 // MeshPipeline/core/VoxelMaskExtractor.ts
 
-import { unpackBlockId } from "../../BlockEncoding";
+import { unpackBlockId } from "../../Chunk/DataStructures/BlockEncoding";
 import { BLOCK_TYPE } from "../../Chunk/Worker/ChunkMesherConstants";
 import {
 	FACE_NX,
@@ -188,7 +188,7 @@ export class VoxelMaskExtractor {
 		const ny = by + dy;
 		const nz = bz + dz;
 
-			// --- inline samplePacked ---
+		// --- inline samplePacked ---
 		const currentPacked = ctx.getBlock(bx, by, bz, 0);
 		const neighborPacked = ctx.getBlock(nx, ny, nz, currentPacked);
 

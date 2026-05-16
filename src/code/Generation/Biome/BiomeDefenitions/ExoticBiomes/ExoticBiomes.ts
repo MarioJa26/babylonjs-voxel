@@ -1,5 +1,5 @@
 // ExoticBiomes.ts
-import { BlockType } from "@/code/World/BlockType";
+import { BlockType } from "@/code/World/Texture/BlockType";
 import { GenerationParams } from "../../../NoiseAndParameters/GenerationParams";
 import { BIOME_ID, type Biome, type TreeDefinition } from "../../BiomeTypes";
 import { BIG_OAK_TREE } from "../TemperateBiomes/TemperateTrees";

@@ -1,12 +1,12 @@
 import type { StandardMaterial } from "@babylonjs/core";
 import type { IUsable } from "@/code/Inferface/IUsable";
-import { BlockType } from "@/code/World/BlockType";
 import type { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { BoatCreatorSystem } from "@/code/World/Boat/BoatCreatorSystem";
 import { setBlock } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
 import { getSliceAxis } from "@/code/World/Shape/BlockShapeTransforms";
 import { getAtlasTile } from "@/code/World/Texture/BlockTextures";
+import { BlockType } from "@/code/World/Texture/BlockType";
 import { TextureAtlasFactory } from "@/code/World/Texture/TextureAtlasFactory";
 import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
 import {
@@ -198,7 +198,17 @@ export class Item implements IUsable {
 			}
 
 			// Prevent placing a block inside the player - use actual voxel collider
-			if (player.wouldBlockOverlapPlayer(pos.x, pos.y, pos.z, shape, rotation, slice, flipY)) {
+			if (
+				player.wouldBlockOverlapPlayer(
+					pos.x,
+					pos.y,
+					pos.z,
+					shape,
+					rotation,
+					slice,
+					flipY,
+				)
+			) {
 				return;
 			}
 

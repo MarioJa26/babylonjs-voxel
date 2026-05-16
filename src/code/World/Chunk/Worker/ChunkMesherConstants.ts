@@ -2,7 +2,7 @@ import {
 	BLOCK_ID_MASK,
 	BLOCK_STATE_MASK,
 	BLOCK_STATE_SHIFT,
-} from "../../BlockEncoding";
+} from "../DataStructures/BlockEncoding";
 
 export const BLOCK_TYPE = new Uint8Array(65536);
 export const BLOCK_TYPE_TRANSPARENT = 1;

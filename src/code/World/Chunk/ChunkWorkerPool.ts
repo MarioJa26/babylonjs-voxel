@@ -520,7 +520,9 @@ export class ChunkWorkerPool {
 	private processDeferredLightingQueue(): void {
 		if (
 			this.terrainTaskQueue.size > 0 ||
-			this.workerTaskContext.some((ctx) => ctx?.taskType === "terrain")
+			this.taskQueue.length > 0 ||
+			this.lodPrecomputeQueue.length > 0 ||
+			this.distantTerrainTaskQueue.length > 0
 		) {
 			this.scheduleDeferredLightingPump();
 			return;

@@ -44,6 +44,9 @@ export interface Biome {
 	persistence?: number;
 	lacunarity?: number;
 	heightExponent?: number;
+	pvNoiseScale?: number; // Multiplier for peaks & valleys noise amplitude
+	erosionNoiseScale?: number; // Multiplier for erosion noise amplitude
+	continentalNoiseScale?: number; // Multiplier for continentalness noise
 	getTreeForBlock(blockId?: number, noiseValue?: number): TreeDefinition | null;
 }
 export enum BIOME_ID {

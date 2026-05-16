@@ -1,5 +1,5 @@
 // HotBiomes.ts
-import { BlockType } from "@/code/World/BlockType";
+import { BlockType } from "@/code/World/Texture/BlockType";
 import { GenerationParams } from "../../../NoiseAndParameters/GenerationParams";
 import { BIOME_ID, type Biome, type TreeDefinition } from "../../BiomeTypes";
 import { PALM_TREE } from "../TropicalBiomes/TropicalTrees";
@@ -177,20 +177,20 @@ export const OASIS: Biome = {
 export const SALT_FLATS: Biome = {
 	id: BIOME_ID.SALT_FLATS,
 	name: "Salt_Flats",
-	topBlock: 107, // salt / white cracked ground
+	topBlock: BlockType.SaltBlock, // salt / white cracked ground
 	undergroundBlock: 3, // sandstone
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
 	treeDensity: 0.0,
 	grassDensity: 0.0, // nothing grows here
-	beachBlock: 107, // salt
-	seafloorBlock: 107, // salt flat floor (dried lake bed)
+	beachBlock: BlockType.SaltBlock, // salt
+	seafloorBlock: 8, // salt flat floor (dried lake bed)
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.95,
 	persistence: 0.12,
 	heightExponent: 1.02,
 	terrainHeightBase: 42,
-	terrainHeightAmplitude: 5, // almost perfectly flat
+	terrainHeightAmplitude: 1, // almost perfectly flat
 
 	getTreeForBlock(): TreeDefinition | null {
 		return null;
@@ -213,7 +213,7 @@ export const DUNE_SEA: Biome = {
 	persistence: 0.26,
 	heightExponent: 1.45, // rolling dune shapes
 	terrainHeightBase: 46,
-	terrainHeightAmplitude: 65,
+	terrainHeightAmplitude: 1,
 
 	getTreeForBlock(): TreeDefinition | null {
 		return CACTUS;

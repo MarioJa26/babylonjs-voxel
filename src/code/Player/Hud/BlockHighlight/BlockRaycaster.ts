@@ -1,11 +1,11 @@
 import { Matrix, Ray, Vector3 } from "@babylonjs/core";
-import { BlockType, isCollidableBlock } from "@/code/World/BlockType";
 import { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import { getTerrainBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { getBlockStateByWorldCoords } from "@/code/World/Chunk/Loading/ChunkWorldMutations";
 import { FACE_ALL, getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
 import { getTransformedShapeBoxes } from "@/code/World/Shape/BlockShapeTransforms";
+import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
 import { type Player, REACH_DISTANCE } from "../../Player";
 
 export type BlockRaycastHit = {

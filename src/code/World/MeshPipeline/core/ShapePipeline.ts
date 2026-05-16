@@ -1,6 +1,9 @@
 // World/MeshPipeline/core/ShapePipeline.ts
 
-import { unpackBlockId, unpackBlockState } from "../../BlockEncoding";
+import {
+	unpackBlockId,
+	unpackBlockState,
+} from "../../Chunk/DataStructures/BlockEncoding";
 import {
 	FACE_ALL,
 	FACE_NX,

@@ -1,6 +1,6 @@
 // World/MeshPipeline/core/CustomShapeEmitter.ts
 
-import { unpackBlockId } from "../../BlockEncoding";
+import { unpackBlockId } from "../../Chunk/DataStructures/BlockEncoding";
 import {
 	FACE_NX,
 	FACE_NY,

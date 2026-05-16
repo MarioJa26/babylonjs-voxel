@@ -15,7 +15,6 @@ import { Axis } from "@/code/World/Collision/VoxelAabbCollider";
 import type { IUsable } from "../Inferface/IUsable";
 import { CustomBoatControls } from "../Player/Controls/CustomBoatControls";
 import type { Player } from "../Player/Player";
-import { BlockType, isCollidableBlock } from "../World/BlockType";
 import {
 	type DynamicBlockSample,
 	getBlockByWorldCoords,
@@ -25,8 +24,8 @@ import {
 	unregisterChunkBoundEntity,
 	unregisterDynamicBlockProvider,
 } from "../World/Chunk/ChunkLoadingSystem";
-
 import { VoxelObbCollider } from "../World/Collision/VoxelObbCollider";
+import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
 import { MetadataContainer } from "./MetaDataContainer";
 import { Mount } from "./Mount";
 

@@ -217,7 +217,7 @@ export function getBiomeFor(
 
 	// ── Near sea level — shore-adjacent flat biomes ───────────────────────────
 	if (terrainShapedHeight < SEA + 12) {
-		if (temperature > 0.6 && humidity < 0.3) return SALT_FLATS;
+		if (temperature > 0.7 && humidity < 0.1) return SALT_FLATS;
 		if (temperature > 0.55 && humidity < 0.4) return TIDAL_FLATS;
 		if (humidity > 0.55 && temperature < 0.5) return PEAT_BOG;
 	}
@@ -241,7 +241,7 @@ export function getBiomeFor(
 		}
 		if (humidity < 0.38) {
 			// Small oasis pockets — low lying, moderate humidity in the desert band
-			if (terrainShapedHeight < SEA + 10) return OASIS;
+			if (terrainShapedHeight < SEA + 20) return OASIS;
 			return SALT_FLATS;
 		}
 		if (humidity < 0.5) {

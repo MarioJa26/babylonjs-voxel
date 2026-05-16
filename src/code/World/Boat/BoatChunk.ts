@@ -1,11 +1,11 @@
 import { Mesh, type Observer, type Scene, Vector3 } from "@babylonjs/core";
+import { Chunk } from "../Chunk/Chunk";
+import { ChunkWorkerPool } from "../Chunk/ChunkWorkerPool";
 import {
 	packBlockValue,
 	unpackBlockId,
 	unpackBlockState,
-} from "../BlockEncoding";
-import { Chunk } from "../Chunk/Chunk";
-import { ChunkWorkerPool } from "../Chunk/ChunkWorkerPool";
+} from "../Chunk/DataStructures/BlockEncoding";
 
 export type BoatChunkBlock = {
 	x: number;
@@ -371,16 +371,14 @@ export class BoatChunk {
 		);
 	}
 
-	public getOccupiedBoundsLocal():
-		| {
-				minX: number;
-				minY: number;
-				minZ: number;
-				maxX: number;
-				maxY: number;
-				maxZ: number;
-		  }
-		| null {
+	public getOccupiedBoundsLocal(): {
+		minX: number;
+		minY: number;
+		minZ: number;
+		maxX: number;
+		maxY: number;
+		maxZ: number;
+	} | null {
 		let minX = Infinity;
 		let minY = Infinity;
 		let minZ = Infinity;

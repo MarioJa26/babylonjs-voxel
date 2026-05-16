@@ -17,12 +17,12 @@ import {
 import type { IUsable } from "../Inferface/IUsable";
 import { PaddleBoatControls } from "../Player/Controls/PaddleBoatControls";
 import type { Player } from "../Player/Player";
-import { BlockType, isCollidableBlock } from "../World/BlockType";
 import {
 	getBlockByWorldCoords,
 	getBlockStateByWorldCoords,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { getShapeForBlockId } from "../World/Shape/BlockShapes";
+import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
 import { MetadataContainer } from "./MetaDataContainer";
 import { Mount } from "./Mount";
 

@@ -82,6 +82,7 @@ export enum BlockType {
 	CrystalBlock = 80,
 	BasaltBlock = 81,
 	TerracottaBlock = 82,
+	SaltBlock = 83,
 }
 
 export const Hardness = {

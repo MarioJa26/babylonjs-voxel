@@ -3,10 +3,15 @@ import { CustomBoat } from "@/code/Entities/CustomBoat";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { Map1 } from "@/code/Maps/Map1";
 import type { Player } from "@/code/Player/Player";
-import { BlockType } from "@/code/World/BlockType";
 import { BoatChunk, type BoatChunkBlock } from "@/code/World/Boat/BoatChunk";
 import { Chunk } from "@/code/World/Chunk/Chunk";
-import { setBlock, getBlockByWorldCoords, getBlockStateByWorldCoords, getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
+import {
+	getBlockByWorldCoords,
+	getBlockStateByWorldCoords,
+	getLightByWorldCoords,
+	setBlock,
+} from "@/code/World/Chunk/ChunkLoadingSystem";
+import { BlockType } from "@/code/World/Texture/BlockType";
 
 type VoxelBlock = {
 	x: number;
@@ -194,11 +199,7 @@ export class BoatCreatorSystem {
 			if (visited.has(key)) continue;
 			visited.add(key);
 
-			const blockId = getBlockByWorldCoords(
-				current.x,
-				current.y,
-				current.z,
-			);
+			const blockId = getBlockByWorldCoords(current.x, current.y, current.z);
 			if (!BoatCreatorSystem.sourceBlockIds.has(blockId)) continue;
 
 			const blockState = getBlockStateByWorldCoords(
@@ -206,11 +207,7 @@ export class BoatCreatorSystem {
 				current.y,
 				current.z,
 			);
-			const lightLevel = getLightByWorldCoords(
-				current.x,
-				current.y,
-				current.z,
-			);
+			const lightLevel = getLightByWorldCoords(current.x, current.y, current.z);
 
 			out.push({
 				x: current.x,

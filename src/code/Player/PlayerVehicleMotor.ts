@@ -15,13 +15,13 @@ import {
 } from "@/code/World/Collision/VoxelAabbCollider";
 import { CustomBoat } from "../Entities/CustomBoat";
 import type { Mount } from "../Entities/Mount";
-import {} from "../World/BlockEncoding";
-import { BlockType, isCollidableBlock } from "../World/BlockType";
 import {
 	getBlockByWorldCoords,
 	getBlockStateByWorldCoords,
 } from "../World/Chunk/ChunkLoadingSystem";
+import {} from "../World/Chunk/DataStructures/BlockEncoding";
 import { getShapeForBlockId } from "../World/Shape/BlockShapes";
+import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
 import type { PlayerBodyControlState, SavedBodyPosition } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
 import { Gamemodes, type PlayerStats } from "./PlayerStats";
@@ -366,7 +366,14 @@ export class PlayerVehicleMotor {
 		blockX: number,
 		blockY: number,
 		blockZ: number,
-		blockShape: { boxes: Array<{ min: [number, number, number]; max: [number, number, number] }>; rotateY: boolean; usesSliceState: boolean },
+		blockShape: {
+			boxes: Array<{
+				min: [number, number, number];
+				max: [number, number, number];
+			}>;
+			rotateY: boolean;
+			usesSliceState: boolean;
+		},
 		rotation: number,
 		slice: number,
 		flipY: boolean,

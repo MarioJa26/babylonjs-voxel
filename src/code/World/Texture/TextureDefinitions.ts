@@ -1,4 +1,4 @@
-import { BlockType } from "../BlockType";
+import { BlockType } from "./BlockType";
 
 export interface TextureDefinition {
 	id: BlockType;

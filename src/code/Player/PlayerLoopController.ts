@@ -73,11 +73,11 @@ export class PlayerLoopController {
 
 	private updateControls(): void {
 		const controls = this.getKeyboardControls();
-		if (controls instanceof CustomBoatControls) {
-			controls.update();
-		} else if (controls instanceof PaddleBoatControls) {
-			controls.update();
-		} else if (controls instanceof WalkingControls) {
+		if (
+			controls instanceof WalkingControls ||
+			controls instanceof CustomBoatControls ||
+			controls instanceof PaddleBoatControls
+		) {
 			controls.update();
 		}
 	}

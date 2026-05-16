@@ -2,8 +2,8 @@ import { Vector3 } from "@babylonjs/core";
 import { CustomBoat } from "@/code/Entities/CustomBoat";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { Map1 } from "@/code/Maps/Map1";
-import { BlockType, isCollidableBlock } from "@/code/World/BlockType";
 import { getBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
 import { pickWaterTarget } from "../Hud/BlockHighlight/BlockRaycaster";
 import type { Player } from "../Player";
 
@@ -14,11 +14,7 @@ export const ItemUseActions: Record<string, ItemUseAction> = {
 		const hit = pickWaterTarget(player);
 		if (!hit) return;
 
-		const blockAtHit = getBlockByWorldCoords(
-			hit.x,
-			hit.y,
-			hit.z,
-		);
+		const blockAtHit = getBlockByWorldCoords(hit.x, hit.y, hit.z);
 
 		if (blockAtHit !== BlockType.Water) {
 			console.log("Boat must be placed on water.");
@@ -39,11 +35,7 @@ export const ItemUseActions: Record<string, ItemUseAction> = {
 					const checkY = spawnY + y;
 					const checkZ = hit.z + z;
 
-					const blockId = getBlockByWorldCoords(
-						checkX,
-						checkY,
-						checkZ,
-					);
+					const blockId = getBlockByWorldCoords(checkX, checkY, checkZ);
 
 					if (isCollidableBlock(blockId)) {
 						console.log("Not enough space to place the boat.");

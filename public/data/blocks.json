@@ -462,5 +462,11 @@
 		"name": "terracotta_block",
 		"path": "/texture/stone/terracotta_block_1k",
 		"hardness": 1.5
+	},
+	{
+		"id": "SaltBlock",
+		"name": "salt_block",
+		"path": "/texture/stone/salt_block_1k",
+		"hardness": 0.5
 	}
 ]

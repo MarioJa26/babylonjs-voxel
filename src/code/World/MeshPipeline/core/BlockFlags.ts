@@ -1,4 +1,4 @@
-import { unpackBlockId } from "../../BlockEncoding";
+import { unpackBlockId } from "../../Chunk/DataStructures/BlockEncoding";
 import { BLOCK_TYPE } from "../../Chunk/Worker/ChunkMesherConstants";
 import { MaterialType } from "../types/MeshTypes";
 import {

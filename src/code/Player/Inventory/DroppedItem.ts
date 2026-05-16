@@ -11,7 +11,6 @@ import {
 import { MetadataContainer } from "@/code/Entities/MetaDataContainer";
 import type { IUsable } from "@/code/Inferface/IUsable";
 import { Map1 } from "@/code/Maps/Map1";
-import { isCollidableBlock } from "@/code/World/BlockType";
 import {
 	getBlockByWorldCoords,
 	getBlockStateByWorldCoords,
@@ -25,6 +24,7 @@ import {
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
 import { getAtlasTile } from "@/code/World/Texture/BlockTextures";
+import { isCollidableBlock } from "@/code/World/Texture/BlockType";
 import { TextureAtlasFactory } from "@/code/World/Texture/TextureAtlasFactory";
 import type { Player } from "../Player";
 import type { Item } from "./Item";
