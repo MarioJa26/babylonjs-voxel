@@ -147,10 +147,10 @@ const peaksAndValleysSpline = new Spline([
 
 // ---------------------------------------------------------------------------
 // Biome terrain settings — packed Float32 arrays, direct-mapped cache.
-// Layout per slot: [base, amplitude, scale, exponent]
+// Layout per slot: [base, amplitude, scale, exponent, pvNoiseScale, erosionNoiseScale]
 // ---------------------------------------------------------------------------
 
-const SETTINGS_STRIDE = 4; // keep for documentation; not used as a runtime mul
+const SETTINGS_STRIDE = 6;
 const CORNER_CACHE_MASK = MAX_BIOME_CORNERS - 1;
 const cornerKey = new Int32Array(MAX_BIOME_CORNERS);
 const cornerValid = new Uint8Array(MAX_BIOME_CORNERS);
@@ -158,6 +158,8 @@ const cornerBase = new Float32Array(MAX_BIOME_CORNERS);
 const cornerAmp = new Float32Array(MAX_BIOME_CORNERS);
 const cornerScale = new Float32Array(MAX_BIOME_CORNERS);
 const cornerExp = new Float32Array(MAX_BIOME_CORNERS);
+const cornerPvScale = new Float32Array(MAX_BIOME_CORNERS);
+const cornerErosionScale = new Float32Array(MAX_BIOME_CORNERS);
 
 // ---------------------------------------------------------------------------
 // Chunk sample cache — direct-mapped.
@@ -238,13 +240,10 @@ function getChunkCacheIdx(worldX: number, worldZ: number): number {
 // ---------------------------------------------------------------------------
 
 export function getFinalTerrainHeight(x: number, z: number): number {
-	// River noise is needed both for chunk-level biome selection (getChunkCacheIdx
-	// uses chunk-centre coords) and for per-column detail. We call getRiverNoise
-	// once here at the exact column coordinate.
 	const riverAbs = Math.abs(riverGenerator.getRiverNoise(x, z));
 	const settings = getBlendedBiomeTerrainSettings(x, z);
 	const baseHeight = computeHeightFromSettings(x, z, settings);
-	const detail = computeDetail(x, z, riverAbs);
+	const detail = computeDetail(x, z, riverAbs, settings);
 	return Math.floor(baseHeight + detail);
 }
 
@@ -267,15 +266,13 @@ export function getOctaveNoise(x: number, z: number): number {
 // Detail (per-column)
 // ---------------------------------------------------------------------------
 
-function computeDetail(x: number, z: number, riverAbs: number): number {
+function computeDetail(x: number, z: number, riverAbs: number, s: Float32Array): number {
 	const erosion = erosionNoise(x, z);
 	const pv = peaksAndValleysNoise(x, z);
 
-	// riverFactor: ramp from 0→1 over [0, 0.1], clamped to 1 above.
-	// Avoids the branch by using min/multiply; compiles well in V8.
 	const riverFactor = riverAbs < 0.1 ? riverAbs * 10 : 1;
-	const roughness = erosionSpline.getValue(erosion) * riverFactor;
-	const detail = peaksAndValleysSpline.getValue(pv) * roughness;
+	const roughness = erosionSpline.getValue(erosion) * riverFactor * s[5];
+	const detail = peaksAndValleysSpline.getValue(pv) * roughness * s[4];
 	const riverDepth = riverGenerator.getRiverDepth(riverAbs);
 
 	return detail + riverDepth;
@@ -305,6 +302,14 @@ function getBiomeScale(b: Biome): number {
 }
 function getBiomeExp(b: Biome): number {
 	const v = (b as unknown as Record<string, unknown>).heightExponent;
+	return typeof v === "number" ? v : 1;
+}
+function getBiomePvScale(b: Biome): number {
+	const v = (b as unknown as Record<string, unknown>).pvNoiseScale;
+	return typeof v === "number" ? v : 1;
+}
+function getBiomeErosionScale(b: Biome): number {
+	const v = (b as unknown as Record<string, unknown>).erosionNoiseScale;
 	return typeof v === "number" ? v : 1;
 }
 
@@ -352,6 +357,10 @@ function getBlendedBiomeTerrainSettings(x: number, z: number): Float32Array {
 		(_s00[2] * itx + _s10[2] * tx) * itz + (_s01[2] * itx + _s11[2] * tx) * tz;
 	_out[3] =
 		(_s00[3] * itx + _s10[3] * tx) * itz + (_s01[3] * itx + _s11[3] * tx) * tz;
+	_out[4] =
+		(_s00[4] * itx + _s10[4] * tx) * itz + (_s01[4] * itx + _s11[4] * tx) * tz;
+	_out[5] =
+		(_s00[5] * itx + _s10[5] * tx) * itz + (_s01[5] * itx + _s11[5] * tx) * tz;
 
 	return _out;
 }
@@ -367,11 +376,12 @@ function fillCorner(
 	const idx = key & CORNER_CACHE_MASK;
 
 	if (cornerValid[idx] && cornerKey[idx] === key) {
-		// Hot path — typed-array reads, no object property lookup.
 		out[0] = cornerBase[idx];
 		out[1] = cornerAmp[idx];
 		out[2] = cornerScale[idx];
 		out[3] = cornerExp[idx];
+		out[4] = cornerPvScale[idx];
+		out[5] = cornerErosionScale[idx];
 		return;
 	}
 
@@ -396,18 +406,24 @@ function fillCorner(
 	const amp = getBiomeAmp(biome);
 	const scale = getBiomeScale(biome);
 	const exp = getBiomeExp(biome);
+	const pvScale = getBiomePvScale(biome);
+	const erosionScale = getBiomeErosionScale(biome);
 
 	cornerKey[idx] = key;
 	cornerBase[idx] = base;
 	cornerAmp[idx] = amp;
 	cornerScale[idx] = scale;
 	cornerExp[idx] = exp;
+	cornerPvScale[idx] = pvScale;
+	cornerErosionScale[idx] = erosionScale;
 	cornerValid[idx] = 1;
 
 	out[0] = base;
 	out[1] = amp;
 	out[2] = scale;
 	out[3] = exp;
+	out[4] = pvScale;
+	out[5] = erosionScale;
 }
 
 // ---------------------------------------------------------------------------
@@ -502,6 +518,8 @@ export function prefetchChunkCorners(
 			cornerAmp[slot] = getBiomeAmp(biome);
 			cornerScale[slot] = getBiomeScale(biome);
 			cornerExp[slot] = getBiomeExp(biome);
+			cornerPvScale[slot] = getBiomePvScale(biome);
+			cornerErosionScale[slot] = getBiomeErosionScale(biome);
 			cornerValid[slot] = 1;
 		}
 	}

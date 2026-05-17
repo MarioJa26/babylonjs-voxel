@@ -230,18 +230,18 @@ function raycastFirstBlock(
 	player: Player,
 	shouldHit: (x: number, y: number, z: number, blockId: number) => boolean,
 ): BlockRaycastHit | null {
-	const terrainHit = raycastFirstTerrainBlock(player, shouldHit);
-	const boatHit = raycastFirstBoatBlock(player, shouldHit);
+	const ray = getForwardRay(player, REACH_DISTANCE);
+	const terrainHit = raycastFirstTerrainBlock(ray, shouldHit);
+	const boatHit = raycastFirstBoatBlock(ray, shouldHit);
 	if (!terrainHit) return boatHit;
 	if (!boatHit) return terrainHit;
 	return boatHit.t < terrainHit.t ? boatHit : terrainHit;
 }
 
 function raycastFirstTerrainBlock(
-	player: Player,
+	ray: Ray,
 	shouldHit: (x: number, y: number, z: number, blockId: number) => boolean,
 ): BlockRaycastHit | null {
-	const ray = getForwardRay(player, REACH_DISTANCE);
 	const ox = ray.origin.x,
 		oy = ray.origin.y,
 		oz = ray.origin.z;
@@ -368,10 +368,9 @@ function raycastFirstTerrainBlock(
 }
 
 function raycastFirstBoatBlock(
-	player: Player,
+	ray: Ray,
 	shouldHit: (x: number, y: number, z: number, blockId: number) => boolean,
 ): BlockRaycastHit | null {
-	const ray = getForwardRay(player, REACH_DISTANCE);
 	let best: {
 		t: number;
 		x: number;

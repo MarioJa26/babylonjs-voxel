@@ -1,5 +1,5 @@
 import type { Engine, Scene, Vector3 } from "@babylonjs/core";
-
+import { getBiome } from "../Generation/TerrainHeightMap";
 import type { IControls } from "../Inferface/IControls";
 import { Chunk } from "../World/Chunk/Chunk";
 import {
@@ -124,56 +124,84 @@ export class PlayerLoopController {
 		const cameraYaw = this.playerCamera.cameraYaw;
 		const cameraPitch = this.playerCamera.cameraPitch;
 
-		PlayerHud.updateDebugInfo("FPS", this.engine.getFps().toFixed());
-		PlayerHud.updateDebugInfo("Faces", this.scene.getActiveIndices() / 3);
+		PlayerHud.updateDebugInfo(
+			"FPS",
+			this.engine.getFps().toFixed(),
+			"performance",
+		);
+		PlayerHud.updateDebugInfo(
+			"Faces",
+			this.scene.getActiveIndices() / 3,
+			"performance",
+		);
 		PlayerHud.updateDebugInfo(
 			"Player Pos",
 			`${playerPos.x.toFixed(2)}, ${playerPos.y.toFixed(2)}, ${playerPos.z.toFixed(2)}`,
+			"position",
 		);
-		PlayerHud.updateDebugInfo("Chunk Pos", `${chunkX}, ${chunkY}, ${chunkZ}`);
+		PlayerHud.updateDebugInfo(
+			"Chunk Pos",
+			`${chunkX}, ${chunkY}, ${chunkZ}`,
+			"position",
+		);
 		PlayerHud.updateDebugInfo(
 			"Camera Pos",
 			`${cameraPos.x.toFixed(2)}, ${cameraPos.y.toFixed(2)}, ${cameraPos.z.toFixed(2)}`,
+			"position",
 		);
 		PlayerHud.updateDebugInfo(
 			"Camera Angle",
 			`Yaw: ${cameraYaw.toFixed(2)}, Pitch: ${cameraPitch.toFixed(2)}`,
+			"position",
 		);
-		PlayerHud.updateDebugInfo("Facing", this.getDirectionFromYaw(cameraYaw));
+		PlayerHud.updateDebugInfo(
+			"Facing",
+			this.getDirectionFromYaw(cameraYaw),
+			"position",
+		);
+		const biome = getBiome(Math.floor(playerPos.x), Math.floor(playerPos.z));
+		PlayerHud.updateDebugInfo("Biome", biome.name, "biome");
 		PlayerHud.updateDebugInfo(
 			"Loaded Chunks",
-			Array.from(Chunk.chunkInstances.values()).filter((c) => c.isLoaded)
-				.length,
+			Chunk.loadedChunks.size,
+			"chunks",
 		);
 		const loadStats = getDebugStats();
 		const workerStats = ChunkWorkerPool.getInstance().getDebugStats();
 		PlayerHud.updateDebugInfo(
 			"Chunk Queues",
 			`L:${loadStats.loadQueueLength} U:${loadStats.unloadQueueLength} B:${loadStats.loadBatchLimit}/${loadStats.unloadBatchLimit}`,
+			"chunks",
 		);
 		PlayerHud.updateDebugInfo(
 			"Chunk Loop",
 			`${loadStats.lastProcessMs.toFixed(2)}ms (budget ${loadStats.frameBudgetMs.toFixed(1)}ms)`,
+			"chunks",
 		);
 		PlayerHud.updateDebugInfo(
 			"Chunk I/O",
 			`load:${loadStats.lastLoadedFromStorage} gen:${loadStats.lastGenerated} hyd:${loadStats.lastHydrated} unload:${loadStats.lastUnloaded} save:${loadStats.lastSaved}`,
+			"chunks",
 		);
 		PlayerHud.updateDebugInfo(
 			"LOD Cache Ver",
 			`mismatch:${loadStats.lastLodCacheVersionMismatches}`,
+			"chunks",
 		);
 		PlayerHud.updateDebugInfo(
 			"Worker Queues",
 			`T:${workerStats.terrainQueueLength} R:${workerStats.remeshQueueLength} P:${workerStats.lodPrecomputeQueueLength} D:${workerStats.distantTerrainQueueLength} DL:${workerStats.deferredLightingQueueLength} busy:${workerStats.busyWorkers}/${workerStats.workerCount} idle:${workerStats.idleWorkers}`,
+			"workers",
 		);
 		PlayerHud.updateDebugInfo(
 			"Deferred Light",
 			`seed:${workerStats.deferredLightingSeedStateCount} pump:${workerStats.deferredLightingPumpScheduled ? "on" : "off"} enq:${workerStats.deferredLightingEnqueuedTotal} repl:${workerStats.deferredLightingSeedReplacedTotal} proc:${workerStats.deferredLightingProcessedLastFrame}/${workerStats.deferredLightingProcessedTotal} drop:${workerStats.deferredLightingDroppedTotal}`,
+			"workers",
 		);
 		PlayerHud.updateDebugInfo(
 			"Worker Dispatch",
 			`last:${workerStats.lastDispatchCount} total:${workerStats.totalDispatchCount} budget:${workerStats.dispatchBudgetPerTick || "inf"}`,
+			"workers",
 		);
 		const dispatchHistogram = workerStats.workerDispatchCounts
 			.map((count, index) => ({ count, index }))
@@ -188,15 +216,33 @@ export class PlayerLoopController {
 		PlayerHud.updateDebugInfo(
 			"Worker Dist",
 			`peakBusy:${workerStats.peakBusyWorkers} top:[${dispatchHistogram || "-"}] recent:[${recentWorkers || "-"}]`,
+			"workers",
 		);
 		PlayerHud.updateDebugInfo(
 			"Mesh Drain",
 			`${workerStats.lastMeshProcessed} in ${workerStats.lastMeshDrainMs.toFixed(2)}ms`,
+			"workers",
 		);
-		PlayerHud.updateDebugInfo("Health", Math.ceil(this.playerStats.health));
-		PlayerHud.updateDebugInfo("Hunger", Math.ceil(this.playerStats.hunger));
-		PlayerHud.updateDebugInfo("Stamina", Math.ceil(this.playerStats.stamina));
-		PlayerHud.updateDebugInfo("Mana", Math.ceil(this.playerStats.mana));
+		PlayerHud.updateDebugInfo(
+			"Health",
+			Math.ceil(this.playerStats.health),
+			"stats",
+		);
+		PlayerHud.updateDebugInfo(
+			"Hunger",
+			Math.ceil(this.playerStats.hunger),
+			"stats",
+		);
+		PlayerHud.updateDebugInfo(
+			"Stamina",
+			Math.ceil(this.playerStats.stamina),
+			"stats",
+		);
+		PlayerHud.updateDebugInfo(
+			"Mana",
+			Math.ceil(this.playerStats.mana),
+			"stats",
+		);
 	}
 
 	private getDirectionFromYaw(yaw: number): string {

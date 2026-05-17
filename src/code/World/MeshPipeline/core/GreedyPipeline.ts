@@ -144,10 +144,8 @@ export function greedyMesh(
 				// Clear the merged region so it won’t be processed again
 				for (let dv = 0; dv < height; dv++) {
 					const clearRowBase = index + dv * size;
-					for (let du = 0; du < width; du++) {
-						mask[clearRowBase + du] = 0;
-						lights[clearRowBase + du] = 0;
-					}
+					mask.fill(0, clearRowBase, clearRowBase + width);
+					lights.fill(0, clearRowBase, clearRowBase + width);
 				}
 
 				u += width;

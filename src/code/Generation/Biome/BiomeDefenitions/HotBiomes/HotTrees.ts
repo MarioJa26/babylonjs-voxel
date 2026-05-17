@@ -16,7 +16,7 @@ export const CACTUS: TreeDefinition = {
 			this.baseHeight + (Math.abs(heightHash) % (this.heightVariance + 1));
 		const woodId = this.woodId;
 		for (let i = 0; i < height; i++) {
-			placeBlock(worldX, worldY + i, worldZ, woodId);
+			placeBlock(worldX, worldY + i, worldZ, woodId, true);
 		}
 	},
 };

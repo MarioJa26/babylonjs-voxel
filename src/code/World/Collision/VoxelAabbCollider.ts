@@ -83,6 +83,84 @@ const _rotatedBox: [number, number, number, number, number, number] = [
 	0, 0, 0, 0, 0, 0,
 ];
 
+function testShapeBoxOverlap(
+	aMinX: number,
+	aMaxX: number,
+	aMinY: number,
+	aMaxY: number,
+	aMinZ: number,
+	aMaxZ: number,
+	eps: number,
+	shape: ShapeDefinition,
+	rotation: number,
+	slice: number,
+	flipY: boolean,
+	blockX: number,
+	blockY: number,
+	blockZ: number,
+): boolean {
+	const needsRotation = shape.rotateY && rotation !== 0;
+
+	for (const box of shape.boxes) {
+		let minY = box.min[1];
+		let maxY = box.max[1];
+
+		if (shape.usesSliceState) {
+			const offset = slice * 0.5;
+			minY = offset;
+			maxY = offset + 0.5;
+		}
+
+		if (flipY) {
+			const flippedMin = 1 - maxY;
+			const flippedMax = 1 - minY;
+			minY = flippedMin;
+			maxY = flippedMax;
+		}
+
+		let bMinX: number, bMinY: number, bMinZ: number;
+		let bMaxX: number, bMaxY: number, bMaxZ: number;
+
+		if (needsRotation) {
+			rotateShapeBoxY(
+				box.min[0],
+				minY,
+				box.min[2],
+				box.max[0],
+				maxY,
+				box.max[2],
+				rotation,
+				_rotatedBox,
+			);
+			bMinX = blockX + _rotatedBox[0];
+			bMinY = blockY + _rotatedBox[1];
+			bMinZ = blockZ + _rotatedBox[2];
+			bMaxX = blockX + _rotatedBox[3];
+			bMaxY = blockY + _rotatedBox[4];
+			bMaxZ = blockZ + _rotatedBox[5];
+		} else {
+			bMinX = blockX + box.min[0];
+			bMinY = blockY + minY;
+			bMinZ = blockZ + box.min[2];
+			bMaxX = blockX + box.max[0];
+			bMaxY = blockY + maxY;
+			bMaxZ = blockZ + box.max[2];
+		}
+
+		if (
+			aMaxX - eps > bMinX &&
+			aMinX + eps < bMaxX &&
+			aMaxY - eps > bMinY &&
+			aMinY + eps < bMaxY &&
+			aMaxZ - eps > bMinZ &&
+			aMinZ + eps < bMaxZ
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
 export class VoxelAabbCollider {
 	#halfExtents: Vector3;
 	#epsilon: number;
@@ -172,72 +250,25 @@ export class VoxelAabbCollider {
 					const info = this.#isSolidBlockAt(x, y, z);
 					if (!info) continue;
 
-					const { shape, rotation, slice, flipY } = info;
-					const needsRotation = shape.rotateY && rotation !== 0;
-
-					for (const box of shape.boxes) {
-						const minX = box.min[0];
-						let minY = box.min[1];
-						const minZ = box.min[2];
-						const maxX = box.max[0];
-						let maxY = box.max[1];
-						const maxZ = box.max[2];
-
-						// Slab: ignore the JSON box Y and derive from slice instead.
-						// slice=0 → bottom half [0, 0.5], slice=1 → top half [0.5, 1].
-						if (shape.usesSliceState) {
-							const offset = slice * 0.5;
-							minY = offset;
-							maxY = offset + 0.5;
-						}
-
-						// Upside-down shapes (e.g. inverted stairs): mirror Y within cell.
-						if (flipY) {
-							const flippedMin = 1 - maxY;
-							const flippedMax = 1 - minY;
-							minY = flippedMin;
-							maxY = flippedMax;
-						}
-
-						let bMinX: number, bMinY: number, bMinZ: number;
-						let bMaxX: number, bMaxY: number, bMaxZ: number;
-
-						if (needsRotation) {
-							rotateShapeBoxY(
-								minX,
-								minY,
-								minZ,
-								maxX,
-								maxY,
-								maxZ,
-								rotation,
-								_rotatedBox,
-							);
-							bMinX = x + _rotatedBox[0];
-							bMinY = y + _rotatedBox[1];
-							bMinZ = z + _rotatedBox[2];
-							bMaxX = x + _rotatedBox[3];
-							bMaxY = y + _rotatedBox[4];
-							bMaxZ = z + _rotatedBox[5];
-						} else {
-							bMinX = x + minX;
-							bMinY = y + minY;
-							bMinZ = z + minZ;
-							bMaxX = x + maxX;
-							bMaxY = y + maxY;
-							bMaxZ = z + maxZ;
-						}
-
-						if (
-							aMaxX - eps > bMinX &&
-							aMinX + eps < bMaxX &&
-							aMaxY - eps > bMinY &&
-							aMinY + eps < bMaxY &&
-							aMaxZ - eps > bMinZ &&
-							aMinZ + eps < bMaxZ
-						) {
-							return true;
-						}
+					if (
+						testShapeBoxOverlap(
+							aMinX,
+							aMaxX,
+							aMinY,
+							aMaxY,
+							aMinZ,
+							aMaxZ,
+							eps,
+							info.shape,
+							info.rotation,
+							info.slice,
+							info.flipY,
+							x,
+							y,
+							z,
+						)
+					) {
+						return true;
 					}
 				}
 			}
@@ -254,7 +285,14 @@ export class VoxelAabbCollider {
 		blockX: number,
 		blockY: number,
 		blockZ: number,
-		blockShape: { boxes: Array<{ min: [number, number, number]; max: [number, number, number] }>; rotateY: boolean; usesSliceState: boolean },
+		blockShape: {
+			boxes: Array<{
+				min: [number, number, number];
+				max: [number, number, number];
+			}>;
+			rotateY: boolean;
+			usesSliceState: boolean;
+		},
 		rotation: number,
 		slice: number,
 		flipY: boolean,
@@ -303,16 +341,7 @@ export class VoxelAabbCollider {
 			let bMaxX: number, bMaxY: number, bMaxZ: number;
 
 			if (needsRotation) {
-				rotateShapeBoxY(
-					minX,
-					minY,
-					minZ,
-					maxX,
-					maxY,
-					maxZ,
-					rot,
-					_rotatedBox,
-				);
+				rotateShapeBoxY(minX, minY, minZ, maxX, maxY, maxZ, rot, _rotatedBox);
 				bMinX = blockX + _rotatedBox[0];
 				bMinY = blockY + _rotatedBox[1];
 				bMinZ = blockZ + _rotatedBox[2];

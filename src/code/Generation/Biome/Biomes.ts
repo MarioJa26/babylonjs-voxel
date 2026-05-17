@@ -1,7 +1,9 @@
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
 import {
 	ARCHIPELAGO,
+	BIOLUMINESCENT_BAY,
 	CORAL_REEF,
+	DEEP_OCEAN_TRENCH,
 	KELP_FOREST,
 	OCEAN,
 	RIVER,
@@ -10,7 +12,9 @@ import {
 	TIDAL_FLATS,
 } from "./BiomeDefenitions/CoastalBiomes/CoastalBiomes";
 import {
+	AURORA_TUNDRA,
 	FROZEN_OCEAN,
+	FROZEN_TUNDRA_PLAINS,
 	GLACIER,
 	ICE_SPIKES,
 	PERMAFROST_BOG,
@@ -20,6 +24,7 @@ import {
 } from "./BiomeDefenitions/ColdBiomes/ColdBiomes";
 import {
 	ANCIENT_RUINS_BIOME,
+	ASHEN_WASTELAND,
 	PETRIFIED_FOREST,
 } from "./BiomeDefenitions/ExoticBiomes/ExoticBiomes";
 import {
@@ -31,8 +36,10 @@ import {
 import {
 	BADLANDS,
 	BASALT_DELTAS,
+	CRACKED_EARTH,
 	DESERT,
 	DUNE_SEA,
+	DUST_BOWL,
 	OASIS,
 	RED_ROCK_CANYON,
 	SALT_FLATS,
@@ -41,7 +48,17 @@ import {
 	VOLCANIC_WASTELAND,
 } from "./BiomeDefenitions/HotBiomes/HotBiomes";
 import {
+	ALPINE_MEADOW,
+	CLOUD_PEAKS,
+	MESA_PLATEAU,
+	ROCKY_HIGHLANDS,
+	VOLCANIC_CALDERA,
+} from "./BiomeDefenitions/MountainBiomes/MountainBiomes";
+import {
+	AUTUMN_FOREST,
 	BIRCH_FOREST,
+	CHERRY_BLOSSOM_FOREST,
+	FERN_GULLY,
 	FOREST,
 	GRASS_LAND,
 	GROVE,
@@ -49,6 +66,7 @@ import {
 	MAPLE_FOREST,
 	MEADOW,
 	PEAT_BOG,
+	PINE_FOREST,
 	PLAINS,
 	SWAMP,
 	TEMPERATE_RAINFOREST,
@@ -127,6 +145,34 @@ export const BIOME_REGISTRY: Record<BIOME_ID, Biome> = {
 	// Rare / Exotic
 	[BIOME_ID.ANCIENT_RUINS_BIOME]: ANCIENT_RUINS_BIOME,
 	[BIOME_ID.PETRIFIED_FOREST]: PETRIFIED_FOREST,
+
+	// Mountain / Highland
+	[BIOME_ID.ALPINE_MEADOW]: ALPINE_MEADOW,
+	[BIOME_ID.ROCKY_HIGHLANDS]: ROCKY_HIGHLANDS,
+	[BIOME_ID.MESA_PLATEAU]: MESA_PLATEAU,
+	[BIOME_ID.CLOUD_PEAKS]: CLOUD_PEAKS,
+	[BIOME_ID.VOLCANIC_CALDERA]: VOLCANIC_CALDERA,
+
+	// Cold / Arctic (new)
+	[BIOME_ID.FROZEN_TUNDRA_PLAINS]: FROZEN_TUNDRA_PLAINS,
+	[BIOME_ID.AURORA_TUNDRA]: AURORA_TUNDRA,
+
+	// Temperate (new)
+	[BIOME_ID.CHERRY_BLOSSOM_FOREST]: CHERRY_BLOSSOM_FOREST,
+	[BIOME_ID.AUTUMN_FOREST]: AUTUMN_FOREST,
+	[BIOME_ID.PINE_FOREST]: PINE_FOREST,
+	[BIOME_ID.FERN_GULLY]: FERN_GULLY,
+
+	// Hot / Arid (new)
+	[BIOME_ID.CRACKED_EARTH]: CRACKED_EARTH,
+	[BIOME_ID.DUST_BOWL]: DUST_BOWL,
+
+	// Aquatic / Coastal (new)
+	[BIOME_ID.DEEP_OCEAN_TRENCH]: DEEP_OCEAN_TRENCH,
+	[BIOME_ID.BIOLUMINESCENT_BAY]: BIOLUMINESCENT_BAY,
+
+	// Exotic / Rare (new)
+	[BIOME_ID.ASHEN_WASTELAND]: ASHEN_WASTELAND,
 };
 
 export function getBiomeFor(
@@ -152,10 +198,28 @@ export function getBiomeFor(
 		return KELP_FOREST;
 	}
 
+	// Deep ocean trench — very low continentalness, any temperature
+	if (continentalness < -0.5 && terrainShapedHeight < SEA - 5) {
+		return DEEP_OCEAN_TRENCH;
+	}
+
 	// Shallow ocean (not deep, not yet shore)
 	if (continentalness < -0.1 && terrainShapedHeight < SEA) {
 		if (temperature < 0.2) return FROZEN_OCEAN;
 		return OCEAN;
+	}
+
+	// Bioluminescent Bay — warm shallow water, moderate humidity, low continentalness
+	if (
+		continentalness > -0.15 &&
+		continentalness < 0.0 &&
+		terrainShapedHeight < SEA + 2 &&
+		terrainShapedHeight >= SEA &&
+		temperature > 0.5 &&
+		humidity > 0.5 &&
+		humidity < 0.7
+	) {
+		return BIOLUMINESCENT_BAY;
 	}
 
 	// ── Shore biomes ──────────────────────────────────────────────────────────
@@ -185,11 +249,31 @@ export function getBiomeFor(
 		return TUNDRA_MOUNTAINS;
 	}
 
+	// ── Mountain / Highland biomes ────────────────────────────────────────────
+	if (terrainShapedHeight > SEA + 50 && continentalness > 0.4) {
+		if (temperature < 0.25) return CLOUD_PEAKS;
+		if (temperature > 0.85) return VOLCANIC_CALDERA;
+		if (humidity < 0.15 && temperature > 0.6) return MESA_PLATEAU;
+		if (humidity < 0.25) return ROCKY_HIGHLANDS;
+		if (humidity > 0.4 && temperature < 0.6) return ALPINE_MEADOW;
+		return ROCKY_HIGHLANDS;
+	}
+
+	if (terrainShapedHeight > SEA + 35 && continentalness > 0.3) {
+		if (temperature < 0.3) return CLOUD_PEAKS;
+		if (temperature > 0.8 && humidity < 0.2) return VOLCANIC_CALDERA;
+		if (humidity < 0.2 && temperature > 0.55) return MESA_PLATEAU;
+		if (humidity < 0.3) return ROCKY_HIGHLANDS;
+		if (humidity > 0.45) return ALPINE_MEADOW;
+	}
+
 	// ── Freezing temperature — cold biomes ────────────────────────────────────
 	if (temperature < 0.2) {
 		if (terrainShapedHeight > SEA + 40) return ICE_SPIKES;
+		if (humidity < 0.15) return FROZEN_TUNDRA_PLAINS;
 		if (humidity < 0.3) return SNOWY_PLAINS;
 		if (humidity < 0.55) return GLACIER;
+		if (humidity > 0.6) return AURORA_TUNDRA;
 		return PERMAFROST_BOG;
 	}
 
@@ -198,10 +282,12 @@ export function getBiomeFor(
 		if (continentalness > 0.5) {
 			return humidity < 0.5 ? TUNDRA : TUNDRA_MOUNTAINS;
 		}
+		if (humidity < 0.12) return FROZEN_TUNDRA_PLAINS;
 		if (humidity < 0.2) return SNOWY_PLAINS;
 		if (humidity < 0.45) return GRASS_LAND;
 		if (humidity > 0.65 && terrainShapedHeight < SEA + 15)
 			return PERMAFROST_BOG;
+		if (humidity > 0.55 && terrainShapedHeight < SEA + 30) return AURORA_TUNDRA;
 		return TUNDRA;
 	}
 
@@ -228,7 +314,24 @@ export function getBiomeFor(
 		if (continentalness > -0.3) return VOLCANIC_WASTELAND;
 	}
 
+	// Ashen Wasteland — very hot, very dry, mid continentalness
+	if (
+		temperature > 0.75 &&
+		humidity < 0.1 &&
+		continentalness > 0.15 &&
+		continentalness < 0.55 &&
+		terrainShapedHeight > SEA + 10 &&
+		terrainShapedHeight < SEA + 45
+	) {
+		return ASHEN_WASTELAND;
+	}
+
 	if (temperature > 0.67) {
+		if (humidity < 0.08) {
+			// Extremely dry — dust bowl
+			if (terrainShapedHeight < SEA + 20) return DUST_BOWL;
+			return CRACKED_EARTH;
+		}
 		if (humidity < 0.2) {
 			// Very dry + hot
 			if (terrainShapedHeight > SEA + 50) return RED_ROCK_CANYON;
@@ -265,6 +368,17 @@ export function getBiomeFor(
 		if (temperature > 0.4 && temperature < 0.7) return GROVE;
 		if (temperature >= 0.7) return BAMBOO_FOREST;
 		return TEMPERATE_RAINFOREST;
+	}
+
+	// Fern Gully — temperate, very wet, low-lying
+	if (
+		humidity > 0.5 &&
+		temperature > 0.4 &&
+		temperature < 0.65 &&
+		terrainShapedHeight < SEA + 10 &&
+		terrainShapedHeight >= SEA
+	) {
+		return FERN_GULLY;
 	}
 
 	// ── Rare / exotic biomes — narrow parameter windows ──────────────────────
@@ -351,6 +465,44 @@ export function getBiomeFor(
 
 	// ── Temperate standard biomes ─────────────────────────────────────────────
 	if (temperature < 0.5) return GRASS_LAND;
+
+	// Pine Forest — cool temperate, moderate humidity, mid elevation
+	if (
+		temperature > 0.4 &&
+		temperature < 0.55 &&
+		humidity > 0.3 &&
+		humidity < 0.5 &&
+		terrainShapedHeight > SEA + 15 &&
+		terrainShapedHeight < SEA + 50
+	) {
+		return PINE_FOREST;
+	}
+
+	// Cherry Blossom Forest — warm temperate, moderate humidity, narrow window
+	if (
+		temperature > 0.5 &&
+		temperature < 0.62 &&
+		humidity > 0.35 &&
+		humidity < 0.55 &&
+		terrainShapedHeight > SEA + 10 &&
+		terrainShapedHeight < SEA + 40 &&
+		continentalness > 0.05 &&
+		continentalness < 0.45
+	) {
+		return CHERRY_BLOSSOM_FOREST;
+	}
+
+	// Autumn Forest — warm temperate, moderate-dry humidity
+	if (
+		temperature > 0.48 &&
+		temperature < 0.6 &&
+		humidity > 0.28 &&
+		humidity < 0.45 &&
+		terrainShapedHeight > SEA + 10 &&
+		terrainShapedHeight < SEA + 45
+	) {
+		return AUTUMN_FOREST;
+	}
 
 	if (humidity > 0.45) {
 		if (temperature > 0.55) return MAPLE_FOREST;

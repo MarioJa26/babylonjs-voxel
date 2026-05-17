@@ -192,3 +192,53 @@ export const ARCHIPELAGO: Biome = {
 		return null;
 	},
 };
+
+export const DEEP_OCEAN_TRENCH: Biome = {
+	id: BIOME_ID.DEEP_OCEAN_TRENCH,
+	name: "Deep_Ocean_Trench",
+	topBlock: 8, // GrayRocks
+	undergroundBlock: 1, // stone
+	stoneBlock: 1, // stone
+	canSpawnTrees: false,
+	treeDensity: 0.0,
+	grassDensity: 0.1, // sparse deep-sea plants
+	beachBlock: 8, // gray rocks
+	seafloorBlock: 8, // gray rocks
+
+	terrainScale: GenerationParams.TERRAIN_SCALE,
+	persistence: 0.3,
+	heightExponent: 0.03,
+	terrainHeightBase: 0,
+	terrainHeightAmplitude: 0.2, // flat trench floor
+	pvNoiseScale: 0.05,
+	erosionNoiseScale: 0.1,
+
+	getTreeForBlock(): TreeDefinition | null {
+		return null;
+	},
+};
+
+export const BIOLUMINESCENT_BAY: Biome = {
+	id: BIOME_ID.BIOLUMINESCENT_BAY,
+	name: "Bioluminescent_Bay",
+	topBlock: 30, // Water surface with bioluminescence
+	undergroundBlock: 46, // gravel bay floor
+	stoneBlock: 1, // stone
+	canSpawnTrees: false,
+	treeDensity: 0.0,
+	grassDensity: 0.5, // bioluminescent sea grass
+	beachBlock: 3, // sand shoreline
+	seafloorBlock: 46, // gravel bay floor
+
+	terrainScale: GenerationParams.TERRAIN_SCALE,
+	persistence: 0.15,
+	heightExponent: 0.05,
+	terrainHeightBase: 0,
+	terrainHeightAmplitude: 0.3, // shallow calm bay
+	pvNoiseScale: 0.1,
+	erosionNoiseScale: 0.15,
+
+	getTreeForBlock(): TreeDefinition | null {
+		return null;
+	},
+};

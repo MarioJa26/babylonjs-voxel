@@ -153,12 +153,9 @@ export class ChunkLodRuleSet {
 		private readonly rules: ChunkLodCreationRule[],
 	) {}
 
-	public resolve(
-		target: ChunkLodCoordinates,
-		player: ChunkLodCoordinates,
+	private resolveWithDistance(
+		distance: ChunkLodDistance,
 	): ChunkLodDecision {
-		const distance = this.measureDistance(target, player);
-
 		for (const rule of this.rules) {
 			if (rule.matches(distance)) {
 				return {
@@ -175,6 +172,14 @@ export class ChunkLodRuleSet {
 			lodLevel: fallback?.lodLevel ?? 4,
 			allowsChunkCreation: fallback?.allowsChunkCreation ?? false,
 		};
+	}
+
+	public resolve(
+		target: ChunkLodCoordinates,
+		player: ChunkLodCoordinates,
+	): ChunkLodDecision {
+		const distance = this.measureDistance(target, player);
+		return this.resolveWithDistance(distance);
 	}
 
 	private measureDistance(
@@ -196,7 +201,7 @@ export class ChunkLodRuleSet {
 		previousLod: number | null | undefined,
 	): ChunkLodDecision {
 		const distance = this.measureDistance(target, player);
-		const baseDecision = this.resolve(target, player);
+		const baseDecision = this.resolveWithDistance(distance);
 
 		if (previousLod === null || previousLod === undefined) {
 			return baseDecision;

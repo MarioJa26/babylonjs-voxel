@@ -14,6 +14,10 @@ for (const id of [30, 60, 61, 64, 66]) {
 
 export const WATER_BLOCK_ID = 30;
 
+export function filtersFullSunlight(blockId: number): boolean {
+	return blockId === WATER_BLOCK_ID;
+}
+
 export const BLOCK_PACK_MASK =
 	BLOCK_ID_MASK | (BLOCK_STATE_MASK << BLOCK_STATE_SHIFT);
 

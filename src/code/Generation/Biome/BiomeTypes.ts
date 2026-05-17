@@ -113,4 +113,32 @@ export enum BIOME_ID {
 	// Rare / Exotic
 	ANCIENT_RUINS_BIOME,
 	PETRIFIED_FOREST,
+
+	// Mountain / Highland
+	ALPINE_MEADOW,
+	ROCKY_HIGHLANDS,
+	MESA_PLATEAU,
+	CLOUD_PEAKS,
+	VOLCANIC_CALDERA,
+
+	// Cold / Arctic (new)
+	FROZEN_TUNDRA_PLAINS,
+	AURORA_TUNDRA,
+
+	// Temperate (new)
+	CHERRY_BLOSSOM_FOREST,
+	AUTUMN_FOREST,
+	PINE_FOREST,
+	FERN_GULLY,
+
+	// Hot / Arid (new)
+	CRACKED_EARTH,
+	DUST_BOWL,
+
+	// Aquatic / Coastal (new)
+	DEEP_OCEAN_TRENCH,
+	BIOLUMINESCENT_BAY,
+
+	// Exotic / Rare (new)
+	ASHEN_WASTELAND,
 }

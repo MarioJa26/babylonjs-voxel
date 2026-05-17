@@ -168,8 +168,13 @@ export class WorldEnvironment {
 				2,
 				"0",
 			)}:${String(second).padStart(2, "0")}`,
+			"world",
 		);
-		PlayerHud.updateDebugInfo("Time Scale", this.timeScale.toFixed(2) + "x");
+		PlayerHud.updateDebugInfo(
+			"Time Scale",
+			`${this.timeScale.toFixed(2)}x`,
+			"world",
+		);
 
 		// Update the time slider's position
 		const timeSlider = document.getElementById(

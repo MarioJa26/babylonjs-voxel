@@ -1,7 +1,7 @@
 export class Lod3Shader {
 	public static readonly chunkVertexShader = `
     #version 300 es
-    precision mediump float;
+    precision highp float;
 
     in vec3 position;
     in vec4 faceDataA; // x,y,z origin, w = axisFace(0..5)
@@ -12,6 +12,17 @@ export class Lod3Shader {
     uniform mat4 worldViewProjection;
     uniform float atlasTileSize;
 
+    uniform vec4 vFogInfos;
+    uniform vec3 vFogColor;
+
+    uniform GlobalUniforms {
+      vec3 lightDirection;
+      vec3 cameraPosition;
+      float sunLightIntensity;
+      float wetness;
+      float time;
+    };
+
     out vec2 vUV;
     flat out vec2 vUV2;
     flat out float vSkyLight;
@@ -20,6 +31,9 @@ export class Lod3Shader {
     flat out vec3 vFaceNormalW;
     flat out float vTintBucket;
     out vec3 vPositionW;
+
+    out float vFogFactor;
+    out vec3 vFogColorCheap;
 
     vec2 cornerToUV(int corner) {
       return vec2(
@@ -34,8 +48,6 @@ export class Lod3Shader {
       int isBackFace = axisFace & 1;
       int vertexId = int(position.x + 0.5);
 
-      // Indexed quad path: 4 vertices (0..3) and a fixed index buffer [0,2,1, 0,3,2].
-      // LOD3 does not use per-face "flip", so flip=0 here.
       const int cornerData[2] = int[](
         228, // isBackFace=0, flip=0: [0,1,2,3]
         198  // isBackFace=1, flip=0: [2,1,0,3]
@@ -82,13 +94,42 @@ export class Lod3Shader {
       else normal.z = isBackFace == 1 ? -1.0 : 1.0;
       vFaceNormalW = normalize(mat3(world) * normal);
 
-      // AO impostor by face axis:
-      // top=1.0, side=0.78, bottom=0.58
       if (axis == 1) {
         vFaceShade = isBackFace == 1 ? 0.58 : 1.0;
       } else {
         vFaceShade = 0.78;
       }
+
+      // Fog computed per-vertex (matches LOD2 approach)
+      vec3 viewVec = vPositionW - cameraPosition;
+      float dist = length(viewVec);
+
+      vFogFactor = clamp(
+        (vFogInfos.z - dist) / max(vFogInfos.z - vFogInfos.y, 1.0),
+        0.0, 1.0
+      );
+
+      float heightFactor = clamp(
+        (vPositionW.y - dist * 0.04) * 0.003,
+        0.0, 1.0
+      );
+
+      vec3 atmosphereColor = mix(
+        vec3(0.6, 0.75, 0.95), vec3(0.1, 0.2, 0.4), heightFactor
+      ) * (sunLightIntensity * sunLightIntensity);
+
+      vec3 viewDir = viewVec / max(dist, 1e-4);
+      float skyFactor = smoothstep(0.0, 0.4, max(viewDir.y, 0.0));
+      vec3 skyboxColor = mix(vec3(0.5, 0.7, 0.9), vec3(0.1, 0.3, 0.6), skyFactor);
+
+      vec3 skyDir = -lightDirection;
+      if (skyDir.y > 0.0) {
+        skyboxColor = mix(skyboxColor, vec3(0.1, 0.1, 0.2), skyDir.y * 2.0);
+      }
+
+      vec3 baseFogColor = mix(vFogColor, atmosphereColor, 0.8);
+      float skyBlend = clamp((dist - 1400.0) * 0.0003333, 0.0, 1.0);
+      vFogColorCheap = mix(baseFogColor, skyboxColor, skyBlend);
     }
   `;
 
@@ -105,10 +146,11 @@ export class Lod3Shader {
     flat in float vTintBucket;
     in vec3 vPositionW;
 
+    in float vFogFactor;
+    in vec3 vFogColorCheap;
+
     uniform sampler2D diffuseTexture;
     uniform float atlasTileSize;
-    uniform vec4 vFogInfos;
-    uniform vec3 vFogColor;
     uniform float lodFadeProgress;
     uniform float lodFadeDirection;
     uniform float lodFadeSeed;
@@ -168,48 +210,6 @@ export class Lod3Shader {
       return saturated * tint;
     }
 
-    const vec3 DEEP_BLUE = vec3(0.1, 0.2, 0.4);
-    const vec3 LIGHT_BLUE = vec3(0.6, 0.75, 0.95);
-    const vec3 DARK_SKY = vec3(0.1, 0.1, 0.2);
-    const vec3 MID_SKY = vec3(0.5, 0.7, 0.9);
-    const vec3 DAY_SKY = vec3(0.1, 0.3, 0.6);
-    const float HEIGHT_SCALE = 0.003;
-    const float HEIGHT_OFFSET = 0.04;
-    const float SKYBLEND_DIST = 1400.0;
-    const float SKYBLEND_FACTOR = 0.0003333;
-
-    vec3 getAtmosphereColor(float heightFactor) {
-      return mix(LIGHT_BLUE, DEEP_BLUE, heightFactor) * (sunLightIntensity * sunLightIntensity);
-    }
-
-    vec3 getSkyboxColor(float viewDirY) {
-      float skyFactor = smoothstep(0.0, 0.4, max(viewDirY, 0.0));
-      vec3 skyboxColor = mix(MID_SKY, DAY_SKY, skyFactor);
-      vec3 skyDir = -lightDirection;
-      if (skyDir.y > 0.0) {
-        skyboxColor = mix(skyboxColor, DARK_SKY, skyDir.y * 2.0);
-      }
-      return skyboxColor;
-    }
-
-    vec3 applyDistantFog(vec3 inputColor) {
-      vec3 viewVec = vPositionW - cameraPosition;
-      float dist = length(viewVec);
-      float fogFactor = clamp((vFogInfos.z - dist) / max(vFogInfos.z - vFogInfos.y, 1.0), 0.0, 1.0);
-
-      float heightFactor = clamp((vPositionW.y - dist * HEIGHT_OFFSET) * HEIGHT_SCALE, 0.0, 1.0);
-      vec3 atmosphereColor = getAtmosphereColor(heightFactor);
-      vec3 baseFogColor = mix(vFogColor, atmosphereColor, 0.8);
-
-      float viewDirY = viewVec.y / max(dist, 1e-4);
-      vec3 skyboxColor = getSkyboxColor(viewDirY);
-
-      float skyBlend = clamp((dist - SKYBLEND_DIST) * SKYBLEND_FACTOR, 0.0, 1.0);
-      vec3 effectiveFogColor = mix(baseFogColor, skyboxColor, skyBlend);
-
-      return mix(effectiveFogColor, inputColor, fogFactor);
-    }
-
     void main(void) {
       applyDitherFade();
 
@@ -227,7 +227,7 @@ export class Lod3Shader {
 
       vec3 color = applyTintBucket(tex.rgb, vTintBucket) * light;
 
-      color = applyDistantFog(color);
+      color = mix(vFogColorCheap, color, vFogFactor);
 
       fragColor = vec4(color, 1.0);
     }
@@ -246,10 +246,11 @@ export class Lod3Shader {
     flat in float vTintBucket;
     in vec3 vPositionW;
 
+    in float vFogFactor;
+    in vec3 vFogColorCheap;
+
     uniform sampler2D diffuseTexture;
     uniform float atlasTileSize;
-    uniform vec4 vFogInfos;
-    uniform vec3 vFogColor;
     uniform float lodFadeProgress;
     uniform float lodFadeDirection;
     uniform float lodFadeSeed;
@@ -309,56 +310,14 @@ export class Lod3Shader {
       return saturated * tint;
     }
 
-    const vec3 DEEP_BLUE = vec3(0.1, 0.2, 0.4);
-    const vec3 LIGHT_BLUE = vec3(0.6, 0.75, 0.95);
-    const vec3 DARK_SKY = vec3(0.1, 0.1, 0.2);
-    const vec3 MID_SKY = vec3(0.5, 0.7, 0.9);
-    const vec3 DAY_SKY = vec3(0.1, 0.3, 0.6);
-    const float HEIGHT_SCALE = 0.003;
-    const float HEIGHT_OFFSET = 0.04;
-    const float SKYBLEND_DIST = 1400.0;
-    const float SKYBLEND_FACTOR = 0.0003333;
-
-    vec3 getAtmosphereColor(float heightFactor) {
-      return mix(LIGHT_BLUE, DEEP_BLUE, heightFactor) * (sunLightIntensity * sunLightIntensity);
-    }
-
-    vec3 getSkyboxColor(float viewDirY) {
-      float skyFactor = smoothstep(0.0, 0.4, max(viewDirY, 0.0));
-      vec3 skyboxColor = mix(MID_SKY, DAY_SKY, skyFactor);
-      vec3 skyDir = -lightDirection;
-      if (skyDir.y > 0.0) {
-        skyboxColor = mix(skyboxColor, DARK_SKY, skyDir.y * 2.0);
-      }
-      return skyboxColor;
-    }
-
-    vec3 applyDistantFog(vec3 inputColor) {
-      vec3 viewVec = vPositionW - cameraPosition;
-      float dist = length(viewVec);
-      float fogFactor = clamp((vFogInfos.z - dist) / max(vFogInfos.z - vFogInfos.y, 1.0), 0.0, 1.0);
-
-      float heightFactor = clamp((vPositionW.y - dist * HEIGHT_OFFSET) * HEIGHT_SCALE, 0.0, 1.0);
-      vec3 atmosphereColor = getAtmosphereColor(heightFactor);
-      vec3 baseFogColor = mix(vFogColor, atmosphereColor, 0.8);
-
-      float viewDirY = viewVec.y / max(dist, 1e-4);
-      vec3 skyboxColor = getSkyboxColor(viewDirY);
-
-      float skyBlend = clamp((dist - SKYBLEND_DIST) * SKYBLEND_FACTOR, 0.0, 1.0);
-      vec3 effectiveFogColor = mix(baseFogColor, skyboxColor, skyBlend);
-
-      return mix(effectiveFogColor, inputColor, fogFactor);
-    }
-
     void main(void) {
       vec2 atlasUV = vUV2 + vUV * atlasTileSize;
       vec4 tex = texture(diffuseTexture, atlasUV);
+
+      applyDitherFade();
       if (tex.a < 0.02) {
         discard;
       }
-
-      applyDitherFade();
 
       float sun = clamp(sunLightIntensity, 0.0, 1.0);
       float skyTerm = vSkyLight * (0.15 + 0.85 * sun);
@@ -371,7 +330,7 @@ export class Lod3Shader {
 
       vec3 color = applyTintBucket(tex.rgb, vTintBucket) * light;
 
-      color = applyDistantFog(color);
+      color = mix(vFogColorCheap, color, vFogFactor);
 
       fragColor = vec4(color, tex.a);
     }

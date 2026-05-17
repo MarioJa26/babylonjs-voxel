@@ -1,3 +1,7 @@
+import {
+	filtersFullSunlight,
+	WATER_BLOCK_ID,
+} from "../World/Chunk/Worker/ChunkMesherConstants";
 import type { Biome } from "./Biome/BiomeTypes";
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
 import { getFinalTerrainHeight } from "./TerrainHeightMap";
@@ -26,7 +30,6 @@ export class LightGenerator {
 	private static queueMask: number;
 
 	private static readonly DENSITY_INFLUENCE_RANGE = 48;
-	private static readonly WATER_BLOCK_ID = 30;
 	private static readonly SKYLIGHT_GENERATION_MIN_WORLD_Y = 32;
 
 	constructor(params: GenerationParamsType) {
@@ -168,12 +171,11 @@ export class LightGenerator {
 					}
 
 					if (incomingSkyLight <= 0) {
-						sourceFiltersFullSun = LightGenerator.filtersFullSunlight(blockId);
+						sourceFiltersFullSun = filtersFullSunlight(blockId);
 						continue;
 					}
 
-					const blockFiltersFullSun =
-						LightGenerator.filtersFullSunlight(blockId);
+					const blockFiltersFullSun = filtersFullSunlight(blockId);
 
 					const preservesFullSun =
 						incomingSkyLight === 15 &&
@@ -307,8 +309,8 @@ export class LightGenerator {
 				const belowIdx = x + (y - 1) * CHUNK_SIZE + z * CHUNK_SIZE_SQ;
 				const preservesFullSunDown =
 					skyLight === 15 &&
-					!LightGenerator.filtersFullSunlight(blocks[idx]) &&
-					!LightGenerator.filtersFullSunlight(blocks[belowIdx]);
+					!filtersFullSunlight(blocks[idx]) &&
+					!filtersFullSunlight(blocks[belowIdx]);
 
 				tail = this.tryPropagate(
 					x,
@@ -392,8 +394,8 @@ export class LightGenerator {
 		// - water emits lateral skylight only into water
 		// - downward propagation is allowed
 		if (targetSky > 0 && !isDown) {
-			const sourceIsWater = LightGenerator.filtersFullSunlight(sourceBlockId);
-			const targetIsWater = LightGenerator.filtersFullSunlight(targetBlockId);
+			const sourceIsWater = filtersFullSunlight(sourceBlockId);
+			const targetIsWater = filtersFullSunlight(targetBlockId);
 			if (targetIsWater && !sourceIsWater) return tail;
 			if (sourceIsWater && !targetIsWater) return tail;
 		}
@@ -417,16 +419,12 @@ export class LightGenerator {
 	private static isTransparentBlock(blockId: number): boolean {
 		return (
 			blockId === 0 ||
-			blockId === 30 ||
+			blockId === WATER_BLOCK_ID ||
 			blockId === 60 ||
 			blockId === 61 ||
 			blockId === 64 ||
 			blockId === 66
 		);
-	}
-
-	private static filtersFullSunlight(blockId: number): boolean {
-		return blockId === LightGenerator.WATER_BLOCK_ID;
 	}
 
 	private columnReceivesDirectSun(

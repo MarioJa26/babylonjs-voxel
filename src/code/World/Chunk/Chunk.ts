@@ -20,6 +20,10 @@ import {
 	unpackBlockState,
 } from "./DataStructures/BlockEncoding";
 import type { MeshData } from "./DataStructures/MeshData";
+import {
+	filtersFullSunlight,
+	WATER_BLOCK_ID,
+} from "./Worker/ChunkMesherConstants";
 
 // ---------------------------------------------------------------------------
 // LIGHT_DIRS – flattened into a typed array for cache-friendly iteration.
@@ -111,6 +115,7 @@ export class Chunk {
 	public static readonly SIZE2 = Chunk.SIZE * Chunk.SIZE;
 	public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
 	public static readonly chunkInstances = new Map<bigint, Chunk>();
+	public static readonly loadedChunks = new Set<Chunk>();
 
 	public isModified = false;
 	/** Persistent chunks are managed by systems outside world streaming
@@ -124,6 +129,8 @@ export class Chunk {
 
 	private remeshQueued = false;
 	private remeshQueuedPriority = false;
+
+	public static DEBUG_REMESH = false;
 
 	public static onRequestRemesh:
 		| ((chunk: Chunk, priority: boolean) => void)
@@ -150,7 +157,6 @@ export class Chunk {
 	public static readonly SKY_LIGHT_SHIFT = 4;
 	public static readonly BLOCK_LIGHT_MASK = 0xf;
 	private static readonly SKYLIGHT_GENERATION_MIN_WORLD_Y = 32;
-	private static readonly WATER_BLOCK_ID = 30;
 	private static readonly GLASS_01_BLOCK_ID = 60;
 	private static readonly GLASS_02_BLOCK_ID = 61;
 	private static readonly EPS = 1e-6;
@@ -172,6 +178,7 @@ export class Chunk {
 	private static remeshFlushScheduled = false;
 	private static remeshQueue = [] as Chunk[];
 	private static remeshQueueSet = new Set<bigint>();
+	private static remeshReadIndex = 0;
 
 	// Block ID → emitted light level.
 	public static readonly LIGHT_EMISSION: Record<number, number> = {
@@ -297,6 +304,7 @@ export class Chunk {
 		}
 
 		this.isLoaded = true;
+		Chunk.loadedChunks.add(this);
 		this.isTerrainScheduled = false;
 		this.colliderDirty = true;
 		Chunk.onChunkLoaded?.(this);
@@ -311,6 +319,7 @@ export class Chunk {
 		this._palette = null;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
 		this.isLoaded = true;
+		Chunk.loadedChunks.add(this);
 		this.isTerrainScheduled = false;
 		this.colliderDirty = false;
 		if (scheduleRemesh) this.scheduleRemesh();
@@ -325,6 +334,7 @@ export class Chunk {
 		this._hasVoxelData = false;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
 		this.isLoaded = false;
+		Chunk.loadedChunks.delete(this);
 		this.isTerrainScheduled = false;
 		this.isModified = false;
 		this.colliderDirty = true;
@@ -427,7 +437,7 @@ export class Chunk {
 					const aboveBlockPacked = aboveChunk!.getBlockPacked(x, 0, z);
 					if (aboveChunk!.isTransparent(aboveBlockPacked, 1, -1)) {
 						incomingSkyLight = aboveChunk!.getSkyLight(x, 0, z);
-						sourceFiltersFullSun = Chunk.filtersFullSunlight(
+						sourceFiltersFullSun = filtersFullSunlight(
 							unpackBlockId(aboveBlockPacked),
 						);
 					}
@@ -460,7 +470,7 @@ export class Chunk {
 					}
 					if (incomingSkyLight <= 0) continue;
 
-					const thisFiltersFullSun = Chunk.filtersFullSunlight(
+					const thisFiltersFullSun = filtersFullSunlight(
 						unpackBlockId(blockPacked),
 					);
 					const preservesFullSun =
@@ -569,13 +579,34 @@ export class Chunk {
 
 	private static flushRemeshQueue(): void {
 		Chunk.remeshFlushScheduled = false;
-		while (Chunk.remeshQueue.length > 0) {
-			const chunk = Chunk.remeshQueue.shift()!;
+		const queue = Chunk.remeshQueue;
+		const processed: string[] = [];
+		const skipped: string[] = [];
+		while (Chunk.remeshReadIndex < queue.length) {
+			const chunk = queue[Chunk.remeshReadIndex++]!;
 			Chunk.remeshQueueSet.delete(chunk.id);
 			chunk.remeshQueued = false;
 			const p = chunk.remeshQueuedPriority;
 			chunk.remeshQueuedPriority = false;
-			Chunk.onRequestRemesh?.(chunk, p);
+			if (chunk.isLoaded) {
+				processed.push(`${chunk.id}(lod${chunk.lodLevel})`);
+				Chunk.onRequestRemesh?.(chunk, p);
+			} else {
+				skipped.push(`${chunk.id}`);
+			}
+		}
+		if (Chunk.DEBUG_REMESH && (processed.length > 0 || skipped.length > 0)) {
+			console.log(
+				`[Remesh] flushRemeshQueue processed=${processed.length} [${processed.join(", ")}] skipped=${skipped.length} [${skipped.join(", ")}] readIdx=${Chunk.remeshReadIndex} queueLen=${queue.length}`,
+			);
+		}
+		// Compact when read-index exceeds threshold
+		if (
+			Chunk.remeshReadIndex > 64 &&
+			Chunk.remeshReadIndex * 2 > queue.length
+		) {
+			Chunk.remeshQueue = queue.slice(Chunk.remeshReadIndex);
+			Chunk.remeshReadIndex = 0;
 		}
 	}
 
@@ -606,6 +637,7 @@ export class Chunk {
 			if (oldPacked === packedBlock) return;
 
 			this._isUniform = false;
+			this._hasVoxelData = true;
 			this._palette = new Uint16Array([this._uniformBlockId]);
 			let newIndex = 0;
 			if (this._palette[0] !== packedBlock) {
@@ -750,7 +782,7 @@ export class Chunk {
 			// Skip water blocks — seeding them causes lateral spread at chunk borders.
 			if (
 				level > 0 &&
-				!Chunk.filtersFullSunlight(unpackBlockId(this.getBlockPacked(x, y, z)))
+				!filtersFullSunlight(unpackBlockId(this.getBlockPacked(x, y, z)))
 			)
 				Q_A.push(this, x, y, z, level);
 		}
@@ -799,31 +831,11 @@ export class Chunk {
 			let sy = y + dy;
 			let sz = z + dz;
 
-			if (sx < 0) {
-				sourceChunk = sourceChunk.getNeighbor(-1, 0, 0);
-				sx = size - 1;
-			} else if (sx >= size) {
-				sourceChunk = sourceChunk.getNeighbor(1, 0, 0);
-				sx = 0;
-			}
+			[sourceChunk, sx] = Chunk.resolveNeighborCoord(sourceChunk, sx, 0, size);
 			if (!sourceChunk) continue;
-
-			if (sy < 0) {
-				sourceChunk = sourceChunk.getNeighbor(0, -1, 0);
-				sy = size - 1;
-			} else if (sy >= size) {
-				sourceChunk = sourceChunk.getNeighbor(0, 1, 0);
-				sy = 0;
-			}
+			[sourceChunk, sy] = Chunk.resolveNeighborCoord(sourceChunk, sy, 1, size);
 			if (!sourceChunk) continue;
-
-			if (sz < 0) {
-				sourceChunk = sourceChunk.getNeighbor(0, 0, -1);
-				sz = size - 1;
-			} else if (sz >= size) {
-				sourceChunk = sourceChunk.getNeighbor(0, 0, 1);
-				sz = 0;
-			}
+			[sourceChunk, sz] = Chunk.resolveNeighborCoord(sourceChunk, sz, 2, size);
 			if (!sourceChunk) continue;
 
 			const sourceBlockPacked = sourceChunk.getBlockPacked(sx, sy, sz);
@@ -836,13 +848,13 @@ export class Chunk {
 			const lateralWaterToWater =
 				isSkyLight &&
 				!sourceIsAbove &&
-				Chunk.filtersFullSunlight(sourceBlockId) &&
-				Chunk.filtersFullSunlight(targetBlockId2);
+				filtersFullSunlight(sourceBlockId) &&
+				filtersFullSunlight(targetBlockId2);
 
 			const sourceAllows = isSkyLight
 				? sourceChunk.isTransparent(sourceBlockPacked, axis, dir) &&
 					(sourceIsAbove ||
-						!Chunk.filtersFullSunlight(sourceBlockId) ||
+						!filtersFullSunlight(sourceBlockId) ||
 						lateralWaterToWater)
 				: sourceEmits ||
 					sourceChunk.isTransparent(sourceBlockPacked, axis, dir);
@@ -860,8 +872,8 @@ export class Chunk {
 				isSkyLight &&
 				sourceIsAbove &&
 				level === 15 &&
-				!Chunk.filtersFullSunlight(sourceBlockId) &&
-				!Chunk.filtersFullSunlight(targetBlockId);
+				!filtersFullSunlight(sourceBlockId) &&
+				!filtersFullSunlight(targetBlockId);
 
 			const nextLevel = preservesFullSun ? 15 : level - 1;
 			if (nextLevel <= 0 || nextLevel <= currentTargetLevel) continue;
@@ -919,31 +931,26 @@ export class Chunk {
 
 				let targetChunk: Chunk | undefined = chunk;
 
-				if (tx < 0) {
-					targetChunk = targetChunk.getNeighbor(-1, 0, 0);
-					tx = size - 1;
-				} else if (tx >= size) {
-					targetChunk = targetChunk.getNeighbor(1, 0, 0);
-					tx = 0;
-				}
+				[targetChunk, tx] = Chunk.resolveNeighborCoord(
+					targetChunk,
+					tx,
+					0,
+					size,
+				);
 				if (!targetChunk) continue;
-
-				if (ty < 0) {
-					targetChunk = targetChunk.getNeighbor(0, -1, 0);
-					ty = size - 1;
-				} else if (ty >= size) {
-					targetChunk = targetChunk.getNeighbor(0, 1, 0);
-					ty = 0;
-				}
+				[targetChunk, ty] = Chunk.resolveNeighborCoord(
+					targetChunk,
+					ty,
+					1,
+					size,
+				);
 				if (!targetChunk) continue;
-
-				if (tz < 0) {
-					targetChunk = targetChunk.getNeighbor(0, 0, -1);
-					tz = size - 1;
-				} else if (tz >= size) {
-					targetChunk = targetChunk.getNeighbor(0, 0, 1);
-					tz = 0;
-				}
+				[targetChunk, tz] = Chunk.resolveNeighborCoord(
+					targetChunk,
+					tz,
+					2,
+					size,
+				);
 				if (!targetChunk?.isLoaded) continue;
 
 				// Can light leave source?
@@ -951,13 +958,9 @@ export class Chunk {
 				// to prevent artificial full-sun columns.  Exception: water→water
 				// lateral flow is allowed with -1 attenuation so that a column
 				// below a placed block can be re-lit by horizontal neighbours.
-				if (
-					isSkyLight &&
-					isDown !== 1 &&
-					Chunk.filtersFullSunlight(sourceBlockId)
-				) {
+				if (isSkyLight && isDown !== 1 && filtersFullSunlight(sourceBlockId)) {
 					const peekId = unpackBlockId(targetChunk.getBlockPacked(tx, ty, tz));
-					if (!Chunk.filtersFullSunlight(peekId)) continue; // non-water: block
+					if (!filtersFullSunlight(peekId)) continue; // non-water: block
 					// Both water: fall through for attenuated lateral propagation.
 				} else if (
 					isSkyLight
@@ -980,12 +983,8 @@ export class Chunk {
 
 				// Water-like blocks normally only receive skylight from directly
 				// above.  Exception: water→water lateral with attenuation.
-				if (
-					isSkyLight &&
-					isDown !== 1 &&
-					Chunk.filtersFullSunlight(targetBlockId)
-				) {
-					if (!Chunk.filtersFullSunlight(sourceBlockId)) continue;
+				if (isSkyLight && isDown !== 1 && filtersFullSunlight(targetBlockId)) {
+					if (!filtersFullSunlight(sourceBlockId)) continue;
 					// Both water: fall through.
 				}
 
@@ -993,8 +992,8 @@ export class Chunk {
 					isSkyLight &&
 					isDown === 1 &&
 					level === 15 &&
-					!Chunk.filtersFullSunlight(sourceBlockId) &&
-					!Chunk.filtersFullSunlight(targetBlockId);
+					!filtersFullSunlight(sourceBlockId) &&
+					!filtersFullSunlight(targetBlockId);
 
 				const nextLevel = preservesFullSun ? 15 : level - 1;
 				if (nextLevel <= 0 || currentLevel >= nextLevel) continue;
@@ -1075,37 +1074,32 @@ export class Chunk {
 
 				let targetChunk: Chunk | undefined = chunk;
 
-				if (tx < 0) {
-					targetChunk = targetChunk.getNeighbor(-1, 0, 0);
-					tx = size - 1;
-				} else if (tx >= size) {
-					targetChunk = targetChunk.getNeighbor(1, 0, 0);
-					tx = 0;
-				}
+				[targetChunk, tx] = Chunk.resolveNeighborCoord(
+					targetChunk,
+					tx,
+					0,
+					size,
+				);
 				if (!targetChunk) continue;
-
-				if (ty < 0) {
-					targetChunk = targetChunk.getNeighbor(0, -1, 0);
-					ty = size - 1;
-				} else if (ty >= size) {
-					targetChunk = targetChunk.getNeighbor(0, 1, 0);
-					ty = 0;
-				}
+				[targetChunk, ty] = Chunk.resolveNeighborCoord(
+					targetChunk,
+					ty,
+					1,
+					size,
+				);
 				if (!targetChunk) continue;
-
-				if (tz < 0) {
-					targetChunk = targetChunk.getNeighbor(0, 0, -1);
-					tz = size - 1;
-				} else if (tz >= size) {
-					targetChunk = targetChunk.getNeighbor(0, 0, 1);
-					tz = 0;
-				}
+				[targetChunk, tz] = Chunk.resolveNeighborCoord(
+					targetChunk,
+					tz,
+					2,
+					size,
+				);
 				if (!targetChunk?.isLoaded) continue;
 
 				if (
 					isSkyLight
 						? !chunk.isTransparent(sourcePacked, axis, dir) ||
-							(isDown !== 1 && Chunk.filtersFullSunlight(sourceBlockId))
+							(isDown !== 1 && filtersFullSunlight(sourceBlockId))
 						: !sourceEmits && !chunk.isTransparent(sourcePacked, axis, dir)
 				)
 					continue;
@@ -1125,8 +1119,8 @@ export class Chunk {
 					isSkyLight &&
 					isDown === 1 &&
 					level === 15 &&
-					!Chunk.filtersFullSunlight(sourceBlockId) &&
-					!Chunk.filtersFullSunlight(targetBlockId);
+					!filtersFullSunlight(sourceBlockId) &&
+					!filtersFullSunlight(targetBlockId);
 				const isDependent =
 					neighborLevel < level || (preservesFullSun && neighborLevel === 15);
 
@@ -1185,7 +1179,14 @@ export class Chunk {
 		if (!this.isLoaded) return;
 		this.isDirty = true;
 		if (priority) this.remeshQueuedPriority = true;
-		if (this.remeshQueued) return;
+		if (this.remeshQueued) {
+			if (Chunk.DEBUG_REMESH) {
+				console.log(
+					`[Remesh] scheduleRemesh EARLY EXIT (already queued) chunk=${this.id} dirty=${this.isDirty} lod=${this.lodLevel} hasVoxel=${this._hasVoxelData} uniform=${this._isUniform}`,
+				);
+			}
+			return;
+		}
 		this.remeshQueued = true;
 
 		if (includeNeighbors) {
@@ -1204,6 +1205,11 @@ export class Chunk {
 		if (!Chunk.remeshFlushScheduled) {
 			Chunk.remeshFlushScheduled = true;
 			requestAnimationFrame(Chunk.flushRemeshQueue);
+		}
+		if (Chunk.DEBUG_REMESH) {
+			console.log(
+				`[Remesh] scheduleRemesh QUEUED chunk=${this.id} priority=${priority} lod=${this.lodLevel} hasVoxel=${this._hasVoxelData} uniform=${this._isUniform} queueLen=${Chunk.remeshQueue.length}`,
+			);
 		}
 	}
 
@@ -1225,6 +1231,20 @@ export class Chunk {
 		return getChunk(this.#chunkX + dx, this.#chunkY + dy, this.#chunkZ + dz);
 	}
 
+	private static resolveNeighborCoord(
+		chunk: Chunk | undefined,
+		coord: number,
+		axis: number,
+		size: number,
+	): [Chunk | undefined, number] {
+		if (coord >= 0 && coord < size) return [chunk, coord];
+		const dir = coord < 0 ? -1 : 1;
+		const dx = axis === 0 ? dir : 0;
+		const dy = axis === 1 ? dir : 0;
+		const dz = axis === 2 ? dir : 0;
+		return [chunk?.getNeighbor(dx, dy, dz), coord < 0 ? size - 1 : 0];
+	}
+
 	public markLightChanged(): void {
 		this.isLightDirty = true;
 	}
@@ -1236,10 +1256,6 @@ export class Chunk {
 	// Face-mask geometry (closed-face checks for lighting)
 	// =========================================================================
 
-	private static filtersFullSunlight(blockId: number): boolean {
-		return unpackBlockId(blockId) === Chunk.WATER_BLOCK_ID;
-	}
-
 	private static getClosedFaceMaskForPacked(blockPacked: number): number {
 		const cacheIndex = blockPacked & 0xffff;
 		const cached = Chunk.CLOSED_FACE_MASK_CACHE[cacheIndex];
@@ -1248,7 +1264,7 @@ export class Chunk {
 		const blockId = unpackBlockId(blockPacked);
 		if (
 			blockId === 0 ||
-			blockId === Chunk.WATER_BLOCK_ID ||
+			blockId === WATER_BLOCK_ID ||
 			blockId === Chunk.GLASS_01_BLOCK_ID ||
 			blockId === Chunk.GLASS_02_BLOCK_ID
 		) {
@@ -1515,8 +1531,12 @@ export class Chunk {
 		this._hasVoxelData = false;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
 		this.isLoaded = false;
+		Chunk.loadedChunks.delete(this);
 		this.isTerrainScheduled = false;
 		this.colliderDirty = true;
+		Chunk.remeshQueueSet.delete(this.id);
+		this.remeshQueued = false;
+		this.remeshQueuedPriority = false;
 	}
 }
 

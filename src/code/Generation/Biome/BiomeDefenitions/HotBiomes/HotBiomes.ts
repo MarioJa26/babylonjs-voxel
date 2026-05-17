@@ -186,11 +186,13 @@ export const SALT_FLATS: Biome = {
 	beachBlock: BlockType.SaltBlock, // salt
 	seafloorBlock: 8, // salt flat floor (dried lake bed)
 
-	terrainScale: GenerationParams.TERRAIN_SCALE * 0.95,
+	terrainScale: GenerationParams.TERRAIN_SCALE,
 	persistence: 0.12,
 	heightExponent: 1.02,
 	terrainHeightBase: 42,
-	terrainHeightAmplitude: 1, // almost perfectly flat
+	terrainHeightAmplitude: 1,
+	pvNoiseScale: 0.05,
+	erosionNoiseScale: 0.1,
 
 	getTreeForBlock(): TreeDefinition | null {
 		return null;
@@ -241,6 +243,56 @@ export const SCORCHED_SAVANNAH: Biome = {
 	getTreeForBlock(blockId: number): TreeDefinition | null {
 		// DEAD_TREE
 		if (blockId === this.topBlock) return BAOBAB_TREE;
+		return null;
+	},
+};
+
+export const CRACKED_EARTH: Biome = {
+	id: BIOME_ID.CRACKED_EARTH,
+	name: "Cracked_Earth",
+	topBlock: 23, // MudCrackedDry03
+	undergroundBlock: 19, // dirt
+	stoneBlock: 1, // stone
+	canSpawnTrees: false,
+	treeDensity: 0.0,
+	grassDensity: 0.02, // almost nothing grows
+	beachBlock: 8, // gravel
+	seafloorBlock: 8, // gravel
+
+	terrainScale: GenerationParams.TERRAIN_SCALE * 0.9,
+	persistence: 0.12,
+	heightExponent: 1.03,
+	terrainHeightBase: 44,
+	terrainHeightAmplitude: 8, // nearly flat cracked plains
+	pvNoiseScale: 0.1,
+	erosionNoiseScale: 0.15,
+
+	getTreeForBlock(): TreeDefinition | null {
+		return null;
+	},
+};
+
+export const DUST_BOWL: Biome = {
+	id: BIOME_ID.DUST_BOWL,
+	name: "Dust_Bowl",
+	topBlock: 3, // GravellySand
+	undergroundBlock: 3, // sand
+	stoneBlock: 1, // stone
+	canSpawnTrees: false,
+	treeDensity: 0.0,
+	grassDensity: 0.0, // nothing grows in the dust bowl
+	beachBlock: 3, // sand
+	seafloorBlock: 8, // gravel
+
+	terrainScale: GenerationParams.TERRAIN_SCALE * 0.85,
+	persistence: 0.13,
+	heightExponent: 1.04,
+	terrainHeightBase: 43,
+	terrainHeightAmplitude: 6, // extremely flat
+	pvNoiseScale: 0.08,
+	erosionNoiseScale: 0.1,
+
+	getTreeForBlock(): TreeDefinition | null {
 		return null;
 	},
 };

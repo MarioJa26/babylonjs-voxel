@@ -30,6 +30,8 @@ export class PlayerHud {
 		[key: string]: {
 			container: HTMLDivElement;
 			valueNode: Text;
+			valueSpan?: HTMLSpanElement;
+			keySpan?: HTMLSpanElement;
 		};
 	} = {};
 	private static itemTooltipDiv: HTMLDivElement;
@@ -355,17 +357,85 @@ export class PlayerHud {
 	private initializeDebugPanel(): void {
 		if (PlayerHud.debugPanelDiv) return;
 
+		const style = document.createElement("style");
+		style.textContent = `
+			.debug-info-container {
+				display: flex;
+				flex-direction: column;
+				gap: 1px;
+			}
+			.debug-row {
+				display: flex;
+				gap: 4px;
+				line-height: 1.3;
+			}
+			.debug-key {
+				font-weight: bold;
+				color: #e0e0e0;
+				-webkit-text-stroke: 0.6px #000;
+				text-stroke: 0.6px #000;
+				paint-order: stroke fill;
+				text-shadow:
+					-1px -1px 0 #000,
+					 1px -1px 0 #000,
+					-1px  1px 0 #000,
+					 1px  1px 0 #000,
+					 0px  1px 0 #000,
+					 0px -1px 0 #000,
+					-1px  0px 0 #000,
+					 1px  0px 0 #000;
+			}
+			.debug-value {
+				color: #fff;
+				-webkit-text-stroke: 0.4px #000;
+				text-stroke: 0.4px #000;
+				paint-order: stroke fill;
+				text-shadow:
+					-1px -1px 0 #000,
+					 1px -1px 0 #000,
+					-1px  1px 0 #000,
+					 1px  1px 0 #000,
+					 0px  1px 0 #000,
+					 0px -1px 0 #000,
+					-1px  0px 0 #000,
+					 1px  0px 0 #000;
+			}
+			.debug-key[data-cat="performance"] { color: #00ff88; }
+			.debug-key[data-cat="position"]    { color: #44aaff; }
+			.debug-key[data-cat="world"]       { color: #ffcc44; }
+			.debug-key[data-cat="chunks"]      { color: #ff8844; }
+			.debug-key[data-cat="workers"]     { color: #cc66ff; }
+			.debug-key[data-cat="stats"]       { color: #ff6688; }
+			.debug-key[data-cat="biome"]       { color: #88ff44; }
+			.debug-slider-label {
+				color: #ffcc44;
+				font-weight: bold;
+				-webkit-text-stroke: 0.6px #000;
+				text-stroke: 0.6px #000;
+				paint-order: stroke fill;
+				text-shadow:
+					-1px -1px 0 #000,
+					 1px -1px 0 #000,
+					-1px  1px 0 #000,
+					 1px  1px 0 #000,
+					 0px  1px 0 #000,
+					 0px -1px 0 #000,
+					-1px  0px 0 #000,
+					 1px  0px 0 #000;
+			}
+		`;
+		document.head.appendChild(style);
+
 		const div = document.createElement("div");
 		div.style.position = "absolute";
 		div.style.top = "10px";
 		div.style.left = "10px";
 		div.style.padding = "10px";
-		div.style.backgroundColor = "rgba(0, 0, 0, 0.6)";
-		div.style.color = "white";
+		div.style.backgroundColor = "rgba(0, 0, 0, 0.5)";
 		div.style.fontFamily = "monospace";
-		div.style.fontSize = "16px";
+		div.style.fontSize = "14px";
 		div.style.zIndex = "100";
-		div.style.display = "block"; // Initially hidden
+		div.style.display = "block";
 		div.style.borderRadius = "5px";
 		document.body.appendChild(div);
 		PlayerHud.debugPanelDiv = div;
@@ -373,6 +443,7 @@ export class PlayerHud {
 		// Add time of day slider
 		const timeLabel = document.createElement("div");
 		timeLabel.innerText = "Time of Day";
+		timeLabel.className = "debug-slider-label";
 		div.appendChild(timeLabel);
 		const timeSlider = document.createElement("input");
 		timeSlider.id = "timeSlider";
@@ -390,6 +461,7 @@ export class PlayerHud {
 		// Add time scale slider
 		const timeScaleLabel = document.createElement("div");
 		timeScaleLabel.innerText = "Time Scale";
+		timeScaleLabel.className = "debug-slider-label";
 		timeScaleLabel.style.marginTop = "10px";
 		div.appendChild(timeScaleLabel);
 		const timeScaleSlider = document.createElement("input");
@@ -406,6 +478,7 @@ export class PlayerHud {
 		// Add Fog Start slider
 		const fogStartLabel = document.createElement("div");
 		fogStartLabel.innerText = "Fog Start";
+		fogStartLabel.className = "debug-slider-label";
 		fogStartLabel.style.marginTop = "10px";
 		div.appendChild(fogStartLabel);
 		const fogStartSlider = document.createElement("input");
@@ -429,6 +502,7 @@ export class PlayerHud {
 		// Add Fog End slider
 		const fogEndLabel = document.createElement("div");
 		fogEndLabel.innerText = "Fog End";
+		fogEndLabel.className = "debug-slider-label";
 		fogEndLabel.style.marginTop = "10px";
 		div.appendChild(fogEndLabel);
 		const fogEndSlider = document.createElement("input");
@@ -452,6 +526,7 @@ export class PlayerHud {
 		// Add Wetness slider
 		const wetnessLabel = document.createElement("div");
 		wetnessLabel.innerText = "Wetness";
+		wetnessLabel.className = "debug-slider-label";
 		wetnessLabel.style.marginTop = "10px";
 		div.appendChild(wetnessLabel);
 		const wetnessSlider = document.createElement("input");
@@ -490,7 +565,11 @@ export class PlayerHud {
 		if (PlayerHud.debugPanelDiv) PlayerHud.debugPanelDiv.style.display = "none";
 	}
 
-	public static updateDebugInfo(key: string, value: string | number): void {
+	public static updateDebugInfo(
+		key: string,
+		value: string | number,
+		category?: string,
+	): void {
 		if (!PlayerHud.debugPanelDiv) return;
 
 		const stringValue = String(value);
@@ -498,35 +577,42 @@ export class PlayerHud {
 		const row = PlayerHud.infoRows[key];
 
 		if (!row) {
-			// Create row once
 			const container = document.createElement("div");
+			container.className = "debug-row";
 
-			const strong = document.createElement("strong");
-			strong.textContent = key + ": ";
+			const keySpan = document.createElement("span");
+			keySpan.className = "debug-key";
+			if (category) keySpan.dataset.cat = category;
+			keySpan.textContent = key + ": ";
 
-			const valueNode = document.createTextNode(stringValue);
+			const valueSpan = document.createElement("span");
+			valueSpan.className = "debug-value";
+			valueSpan.textContent = stringValue;
 
-			container.appendChild(strong);
-			container.appendChild(valueNode);
+			container.appendChild(keySpan);
+			container.appendChild(valueSpan);
 
-			// Create info container once
 			let textContainer = PlayerHud.debugPanelDiv.querySelector(
-				".info-container",
+				".debug-info-container",
 			) as HTMLDivElement;
 
 			if (!textContainer) {
 				textContainer = document.createElement("div");
-				textContainer.className = "info-container";
+				textContainer.className = "debug-info-container";
 				PlayerHud.debugPanelDiv.prepend(textContainer);
 			}
 
 			textContainer.appendChild(container);
 
-			PlayerHud.infoRows[key] = { container, valueNode };
+			PlayerHud.infoRows[key] = {
+				container,
+				valueNode: valueSpan as unknown as Text,
+				valueSpan,
+				keySpan,
+			};
 		} else {
-			// Only update text node if changed
-			if (row.valueNode.nodeValue !== stringValue) {
-				row.valueNode.nodeValue = stringValue;
+			if (row.valueSpan && row.valueSpan.textContent !== stringValue) {
+				row.valueSpan.textContent = stringValue;
 			}
 		}
 	}

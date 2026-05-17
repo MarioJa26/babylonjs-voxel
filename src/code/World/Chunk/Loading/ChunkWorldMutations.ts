@@ -100,8 +100,6 @@ export class ChunkWorldMutations {
 			blockId,
 			state,
 		);
-		coords.chunk.isModified = true;
-		coords.chunk.scheduleRemesh(true);
 
 		if (
 			this.isBoundaryLocalCoord(coords.localX, coords.localY, coords.localZ)
@@ -143,8 +141,6 @@ export class ChunkWorldMutations {
 		this.adapter.onBeforeDeleteBlock?.(ctx);
 
 		coords.chunk.deleteBlock(coords.localX, coords.localY, coords.localZ);
-		coords.chunk.isModified = true;
-		coords.chunk.scheduleRemesh(true);
 
 		if (
 			this.isBoundaryLocalCoord(coords.localX, coords.localY, coords.localZ)

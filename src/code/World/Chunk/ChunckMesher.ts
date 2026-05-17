@@ -182,6 +182,7 @@ function shouldUseLodCrossFade(
 // one per call. Callers must not hold a reference across frames.
 function getMeshFadeUniforms(
 	mesh: Mesh | undefined,
+	nowMs?: number,
 ): typeof scratchFadeUniforms {
 	if (!mesh) {
 		scratchFadeUniforms.progress = 1;
@@ -198,7 +199,8 @@ function getMeshFadeUniforms(
 		return scratchFadeUniforms;
 	}
 
-	const elapsed = (performance.now() - state.startMs) / state.durationMs;
+	const elapsed =
+		((nowMs ?? performance.now()) - state.startMs) / state.durationMs;
 	scratchFadeUniforms.progress = elapsed < 0 ? 0 : elapsed > 1 ? 1 : elapsed;
 	scratchFadeUniforms.direction = state.direction;
 	scratchFadeUniforms.seed = state.seed;
@@ -306,8 +308,8 @@ function upsertFaceVertexBuffer(
 	const existing = mesh.getVertexBuffer(kind);
 	const nextLength = data.length;
 
-	// Fast path: same-sized updatable buffer -> update in place.
-	if (existing?.isUpdatable() && bufferLengths[kind] === nextLength) {
+	// Only recreate when the buffer needs to GROW.
+	if (existing?.isUpdatable() && bufferLengths[kind] >= nextLength) {
 		existing.update(data);
 		return;
 	}

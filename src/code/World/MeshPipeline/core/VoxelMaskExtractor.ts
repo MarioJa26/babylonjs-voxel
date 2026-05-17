@@ -57,6 +57,8 @@ const FLAG_WATER_GLASS = 1 << 4;
 const BLOCK_FLAGS_CACHE = new Uint8Array(DENSE_CACHE_SIZE);
 const BLOCK_FLAGS_READY = new Uint8Array(DENSE_CACHE_SIZE);
 const BLOCK_ID_CACHE = new Uint16Array(DENSE_CACHE_SIZE);
+const BLOCK_IS_CUBE_CACHE = new Uint8Array(DENSE_CACHE_SIZE);
+const BLOCK_IS_CUBE_READY = new Uint8Array(DENSE_CACHE_SIZE);
 type WritableNumberArray = number[] | Int32Array | Uint16Array | Uint32Array;
 function getCachedBlockId(packed: number): number {
 	if (!packed) return 0;
@@ -70,6 +72,24 @@ function getCachedBlockId(packed: number): number {
 	}
 
 	return unpackBlockId(packed);
+}
+
+function getCachedIsCube(packed: number): boolean {
+	if (!packed) return false;
+
+	if (packed >= 0 && packed <= DENSE_CACHE_MASK) {
+		if (BLOCK_IS_CUBE_READY[packed]) {
+			return BLOCK_IS_CUBE_CACHE[packed] !== 0;
+		}
+
+		const shape = getShapeInfo(packed);
+		const isCube = shape.isCube;
+		BLOCK_IS_CUBE_CACHE[packed] = isCube ? 1 : 0;
+		BLOCK_IS_CUBE_READY[packed] = 1;
+		return isCube;
+	}
+
+	return getShapeInfo(packed).isCube;
 }
 
 /**
@@ -183,6 +203,7 @@ export class VoxelMaskExtractor {
 		lightMask: WritableNumberArray,
 	): void {
 		const ctx = this.ctx;
+		const disableAO = ctx.disableAO;
 
 		const nx = bx + dx;
 		const ny = by + dy;
@@ -194,8 +215,8 @@ export class VoxelMaskExtractor {
 
 		// --- early out: air-air (before flags) ---
 		if (!currentPacked && !neighborPacked) {
-			if (mask[outIndex]) mask[outIndex] = 0;
-			if (lightMask[outIndex]) lightMask[outIndex] = 0;
+			mask[outIndex] = 0;
+			lightMask[outIndex] = 0;
 			return;
 		}
 
@@ -208,8 +229,8 @@ export class VoxelMaskExtractor {
 
 		// --- early out: no solid blocks ---
 		if (!(currSolid | nbrSolid)) {
-			if (mask[outIndex]) mask[outIndex] = 0;
-			if (lightMask[outIndex]) lightMask[outIndex] = 0;
+			mask[outIndex] = 0;
+			lightMask[outIndex] = 0;
 			return;
 		}
 
@@ -252,8 +273,8 @@ export class VoxelMaskExtractor {
 
 		if (bothCube) {
 			if (!preserveInterface && !currTransparent && !nbrTransparent) {
-				if (mask[outIndex]) mask[outIndex] = 0;
-				if (lightMask[outIndex]) lightMask[outIndex] = 0;
+				mask[outIndex] = 0;
+				lightMask[outIndex] = 0;
 				return;
 			}
 		}
@@ -278,8 +299,8 @@ export class VoxelMaskExtractor {
 			}
 
 			if (!preserveInterface && currCloses && nbrCloses) {
-				if (mask[outIndex]) mask[outIndex] = 0;
-				if (lightMask[outIndex]) lightMask[outIndex] = 0;
+				mask[outIndex] = 0;
+				lightMask[outIndex] = 0;
 				return;
 			}
 		}
@@ -287,10 +308,10 @@ export class VoxelMaskExtractor {
 		// --- light (inline pickLight) ---
 		const currLight = ctx.getLight(bx, by, bz, 0);
 		const nbrLight = ctx.getLight(nx, ny, nz, currLight);
-		const packedLightOnly = quantizeLightForLOD(
-			currLight > nbrLight ? currLight : nbrLight,
-			ctx.disableAO,
-		);
+		const maxLight = currLight > nbrLight ? currLight : nbrLight;
+		const packedLightOnly = disableAO
+			? quantizeLightForLOD(maxLight, true)
+			: maxLight & 0xff;
 
 		// ============================================================
 		// TRANSPARENT INTERFACE EMISSION
@@ -323,7 +344,7 @@ export class VoxelMaskExtractor {
 					(currentPacked & PACKED_ID_STATE_MASK) |
 					(currShapeInfo.isCube ? 0 : NON_CUBE_MASK);
 
-				packedAO = ctx.disableAO ? 0 : computeAO(ctx, nx, ny, nz, uAxis, vAxis);
+				packedAO = disableAO ? 0 : computeAO(ctx, nx, ny, nz, uAxis, vAxis);
 			} else if (!preferCurrent && nbrParticipates) {
 				if (!nbrShapeInfo && nbrSolid) {
 					nbrShapeInfo = getShapeInfo(neighborPacked);
@@ -334,12 +355,13 @@ export class VoxelMaskExtractor {
 					return;
 				}
 
+				const nbrIsCube = getCachedIsCube(neighborPacked);
 				packedMask =
 					(neighborPacked & PACKED_ID_STATE_MASK) |
-					(nbrShapeInfo.isCube ? 0 : NON_CUBE_MASK) |
+					(nbrIsCube ? 0 : NON_CUBE_MASK) |
 					BACK_FACE_MASK;
 
-				packedAO = ctx.disableAO ? 0 : computeAO(ctx, bx, by, bz, uAxis, vAxis);
+				packedAO = disableAO ? 0 : computeAO(ctx, bx, by, bz, uAxis, vAxis);
 			} else {
 				mask[outIndex] = 0;
 				lightMask[outIndex] = 0;
@@ -380,8 +402,8 @@ export class VoxelMaskExtractor {
 			(!currSolid || (currTransparent && !nbrTransparent) || !currClosesFace);
 
 		if (!emitCurrent && !emitNeighbor) {
-			if (mask[outIndex]) mask[outIndex] = 0;
-			if (lightMask[outIndex]) lightMask[outIndex] = 0;
+			mask[outIndex] = 0;
+			lightMask[outIndex] = 0;
 			return;
 		}
 
@@ -393,14 +415,15 @@ export class VoxelMaskExtractor {
 				(currentPacked & PACKED_ID_STATE_MASK) |
 				(currShapeInfo.isCube ? 0 : NON_CUBE_MASK);
 
-			packedAO = ctx.disableAO ? 0 : computeAO(ctx, nx, ny, nz, uAxis, vAxis);
+			packedAO = disableAO ? 0 : computeAO(ctx, nx, ny, nz, uAxis, vAxis);
 		} else if (nbrShapeInfo) {
+			const nbrIsCube = getCachedIsCube(neighborPacked);
 			packedMask =
 				(neighborPacked & PACKED_ID_STATE_MASK) |
-				(nbrShapeInfo.isCube ? 0 : NON_CUBE_MASK) |
+				(nbrIsCube ? 0 : NON_CUBE_MASK) |
 				BACK_FACE_MASK;
 
-			packedAO = ctx.disableAO ? 0 : computeAO(ctx, bx, by, bz, uAxis, vAxis);
+			packedAO = disableAO ? 0 : computeAO(ctx, bx, by, bz, uAxis, vAxis);
 		} else {
 			mask[outIndex] = 0;
 			lightMask[outIndex] = 0;

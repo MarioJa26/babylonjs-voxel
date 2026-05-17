@@ -52,3 +52,28 @@ export const PETRIFIED_FOREST: Biome = {
 		return null;
 	},
 };
+
+export const ASHEN_WASTELAND: Biome = {
+	id: BIOME_ID.ASHEN_WASTELAND,
+	name: "Ashen_Wasteland",
+	topBlock: 1, // stone (ash-covered ground)
+	undergroundBlock: 1, // stone
+	stoneBlock: 1, // stone
+	canSpawnTrees: false,
+	treeDensity: 0.0,
+	grassDensity: 0.0, // nothing grows in the ash
+	beachBlock: 8, // ash/gravel shoreline
+	seafloorBlock: 1, // stone
+
+	terrainScale: GenerationParams.TERRAIN_SCALE * 0.65,
+	persistence: 0.25,
+	heightExponent: 1.2,
+	terrainHeightBase: 50,
+	terrainHeightAmplitude: 60,
+	pvNoiseScale: 0.8,
+	erosionNoiseScale: 0.7,
+
+	getTreeForBlock(): TreeDefinition | null {
+		return null;
+	},
+};

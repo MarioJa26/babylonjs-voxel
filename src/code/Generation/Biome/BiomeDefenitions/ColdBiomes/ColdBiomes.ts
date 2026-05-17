@@ -123,7 +123,58 @@ export const SNOWY_PLAINS: Biome = {
 	terrainHeightAmplitude: 14, // very flat
 
 	getTreeForBlock(): TreeDefinition | null {
-		return DEAD_TREE;
+		return ICE_SPIKE_COLUMN;
+	},
+};
+
+export const FROZEN_TUNDRA_PLAINS: Biome = {
+	id: BIOME_ID.FROZEN_TUNDRA_PLAINS,
+	name: "Frozen_Tundra_Plains",
+	topBlock: 9, // snow
+	undergroundBlock: 19, // dirt
+	stoneBlock: 1, // stone
+	canSpawnTrees: false,
+	treeDensity: 0.0,
+	grassDensity: 0.05, // sparse frozen grass
+	beachBlock: 9, // snow
+	seafloorBlock: 8, // gravel
+
+	terrainScale: GenerationParams.TERRAIN_SCALE * 0.85,
+	persistence: 0.14,
+	heightExponent: 1.05,
+	terrainHeightBase: 48,
+	terrainHeightAmplitude: 12, // very flat frozen plains
+	pvNoiseScale: 0.15,
+	erosionNoiseScale: 0.2,
+
+	getTreeForBlock(): TreeDefinition | null {
+		return null;
+	},
+};
+
+export const AURORA_TUNDRA: Biome = {
+	id: BIOME_ID.AURORA_TUNDRA,
+	name: "Aurora_Tundra",
+	topBlock: 9, // snow
+	undergroundBlock: 19, // dirt
+	stoneBlock: 1, // stone
+	canSpawnTrees: true,
+	treeDensity: 0.04, // very sparse conifers
+	grassDensity: 0.1, // sparse frozen grass
+	beachBlock: 9, // snow
+	seafloorBlock: 8, // gravel
+
+	terrainScale: GenerationParams.TERRAIN_SCALE * 0.6,
+	persistence: 0.22,
+	heightExponent: 1.15,
+	terrainHeightBase: 52,
+	terrainHeightAmplitude: 40,
+	pvNoiseScale: 0.5,
+	erosionNoiseScale: 0.4,
+
+	getTreeForBlock(blockId: number): TreeDefinition | null {
+		if (blockId === this.topBlock) return DEAD_TREE;
+		return null;
 	},
 };
 

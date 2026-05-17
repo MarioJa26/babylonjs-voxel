@@ -350,3 +350,169 @@ export const TEMPERATE_RAINFOREST_TREE: TreeDefinition = {
 		}
 	},
 };
+
+// ---------------------------------------------------------------------------
+// CHERRY_BLOSSOM_TREE — Cherry Blossom Forest
+// Wide spreading canopy, drooping branches, pink leaves
+// Wood: BarkBrown02 (28), Leaves: TODO cherry blossom pink block (using Grass001 15 as placeholder)
+// ---------------------------------------------------------------------------
+export const CHERRY_BLOSSOM_TREE: TreeDefinition = {
+	woodId: 28, // BarkBrown02
+	leavesId: 15, // TODO: cherry blossom pink block — replace when available
+	baseHeight: 6,
+	heightVariance: 3,
+	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
+		const h = Squirrel3.get(worldX * 374761393 + worldZ * 678446653, seedAsInt);
+		const height = this.baseHeight + (Math.abs(h) % (this.heightVariance + 1));
+		const woodId = this.woodId;
+		const leavesId = this.leavesId;
+
+		for (let i = 0; i < height; i++) {
+			placeBlock(worldX, worldY + i, worldZ, woodId, true);
+		}
+
+		const canopyBaseY = worldY + height - 2;
+		const canopyTopY = worldY + height + 2;
+
+		for (let y = canopyBaseY; y <= canopyTopY; y++) {
+			const dy = y - (worldY + height);
+			const radius = dy <= 0 ? 3 : dy === 1 ? 2 : 1;
+			for (let x = -radius; x <= radius; x++) {
+				for (let z = -radius; z <= radius; z++) {
+					if (x * x + z * z <= radius * radius + 1) {
+						placeBlock(worldX + x, y, worldZ + z, leavesId, false);
+					}
+				}
+			}
+		}
+
+		const droopCount = 4 + (Math.abs(h >> 4) % 3);
+		for (let d = 0; d < droopCount; d++) {
+			const dHash = Squirrel3.get(
+				worldX * 7919 + worldZ * 6271 + d * 47,
+				seedAsInt,
+			);
+			const dir = d % 4;
+			const dx = DIR_X[dir];
+			const dz = DIR_Z[dir];
+			const droopLen = 2 + (Math.abs(dHash) % 3);
+
+			for (let step = 1; step <= droopLen; step++) {
+				const bx = worldX + dx * step;
+				const bz = worldZ + dz * step;
+				const by = canopyBaseY - (step > 1 ? 1 : 0);
+				placeBlock(bx, by, bz, leavesId, false);
+				if (step === droopLen) {
+					placeBlock(bx, by - 1, bz, leavesId, false);
+				}
+			}
+		}
+	},
+};
+
+// ---------------------------------------------------------------------------
+// AUTUMN_TREE — Autumn Forest
+// Full round crown, warm-colored leaves
+// Wood: BarkBrown01 (31), Leaves: TODO autumn orange/red block (using ForestLeaves02 43 as placeholder)
+// ---------------------------------------------------------------------------
+export const AUTUMN_TREE: TreeDefinition = {
+	woodId: 31, // BarkBrown01
+	leavesId: 43, // TODO: autumn orange/red leaves — replace when available
+	baseHeight: 8,
+	heightVariance: 4,
+	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
+		const h = Squirrel3.get(worldX * 374761393 + worldZ * 678446653, seedAsInt);
+		const height = this.baseHeight + (Math.abs(h) % (this.heightVariance + 1));
+		const woodId = this.woodId;
+		const leavesId = this.leavesId;
+
+		for (let i = 0; i < height; i++) {
+			placeBlock(worldX, worldY + i, worldZ, woodId, true);
+		}
+
+		const cy = worldY + height;
+		const r = 4 + (Math.abs(h >> 4) % 2);
+		const rSq = r * r;
+
+		for (let dy = -r + 1; dy <= r; dy++) {
+			const dy2 = dy * dy;
+			if (dy2 > rSq) continue;
+			const ly = cy + dy;
+			for (let x = -r; x <= r; x++) {
+				const x2 = x * x;
+				if (x2 + dy2 > rSq) continue;
+				for (let z = -r; z <= r; z++) {
+					if (x2 + z * z + dy2 <= rSq) {
+						placeBlock(worldX + x, ly, worldZ + z, leavesId, false);
+					}
+				}
+			}
+		}
+
+		const lobeCount = 2 + (Math.abs(h >> 8) % 2);
+		for (let l = 0; l < lobeCount; l++) {
+			const lHash = Squirrel3.get(
+				worldX * 9719 + worldZ * 19997 + l * 53,
+				seedAsInt,
+			);
+			const lobeDir = l % 4;
+			const lobeDist = 3 + (Math.abs(lHash >> 2) % 2);
+			const lobeCX = worldX + DIR_X[lobeDir] * lobeDist;
+			const lobeCZ = worldZ + DIR_Z[lobeDir] * lobeDist;
+			const lobeCY = cy - 1 + (Math.abs(lHash >> 5) % 3);
+			const lobeR = 2 + (Math.abs(lHash >> 8) % 2);
+			const lobeRSq = lobeR * lobeR;
+
+			for (let dy = -lobeR; dy <= lobeR; dy++) {
+				const dy2 = dy * dy;
+				if (dy2 > lobeRSq) continue;
+				for (let x = -lobeR; x <= lobeR; x++) {
+					const x2 = x * x;
+					if (x2 + dy2 > lobeRSq) continue;
+					for (let z = -lobeR; z <= lobeR; z++) {
+						if (x2 + z * z + dy2 <= lobeRSq) {
+							placeBlock(lobeCX + x, lobeCY + dy, lobeCZ + z, leavesId, false);
+						}
+					}
+				}
+			}
+		}
+	},
+};
+
+// ---------------------------------------------------------------------------
+// PINE_TREE — Pine Forest
+// Tall conical shape, dense dark foliage
+// Wood: PineBark (22), Leaves: ForestLeaves02 (43)
+// ---------------------------------------------------------------------------
+export const PINE_TREE: TreeDefinition = {
+	woodId: 22, // PineBark
+	leavesId: 43, // ForestLeaves02
+	baseHeight: 10,
+	heightVariance: 5,
+	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
+		const h = Squirrel3.get(worldX * 374761393 + worldZ * 678446653, seedAsInt);
+		const height = this.baseHeight + (Math.abs(h) % (this.heightVariance + 1));
+		const woodId = this.woodId;
+		const leavesId = this.leavesId;
+
+		for (let i = 0; i < height; i++) {
+			placeBlock(worldX, worldY + i, worldZ, woodId, true);
+		}
+
+		const coneStart = Math.floor(height * 0.35);
+		const coneEnd = height + 2;
+
+		for (let y = coneStart; y <= coneEnd; y++) {
+			const progress = (y - coneStart) / (coneEnd - coneStart);
+			const radius = Math.max(1, Math.floor(4 * (1 - progress * 0.8)));
+			for (let x = -radius; x <= radius; x++) {
+				for (let z = -radius; z <= radius; z++) {
+					if (x * x + z * z <= radius * radius + 1) {
+						placeBlock(worldX + x, worldY + y, worldZ + z, leavesId, false);
+					}
+				}
+			}
+		}
+	},
+};

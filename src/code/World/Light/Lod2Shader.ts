@@ -386,10 +386,10 @@ export class Lod2Shader {
       vec2 atlasUV = vUV2 + singleTileUV * atlasTileSize;
 
       vec4 diffuseColor = textureLod(diffuseTexture, atlasUV, lod);
+      applyDitherFade();
       if (diffuseColor.a < 0.02) {
         discard;
       }
-      applyDitherFade();
 
       diffuseColor.rgb *= mix(1.0, 0.55, wetness);
 

@@ -3,10 +3,12 @@ import { BlockType } from "@/code/World/Texture/BlockType";
 import { GenerationParams } from "../../../NoiseAndParameters/GenerationParams";
 import { BIOME_ID, type Biome, type TreeDefinition } from "../../BiomeTypes";
 import {
-	BIG_OAK_TREE,
+	AUTUMN_TREE,
 	BIRCH_TREE,
+	CHERRY_BLOSSOM_TREE,
 	MAPLE_TREE,
 	OAK_TREE,
+	PINE_TREE,
 	PLAINS_TREE,
 	TEMPERATE_RAINFOREST_TREE,
 } from "./TemperateTrees";
@@ -32,7 +34,110 @@ export const FOREST: Biome = {
 	terrainHeightAmplitude: 33,
 
 	getTreeForBlock(blockId: number): TreeDefinition | null {
-		if (blockId === this.topBlock) return BIG_OAK_TREE;
+		if (blockId === this.topBlock) return OAK_TREE;
+		return null;
+	},
+};
+
+export const CHERRY_BLOSSOM_FOREST: Biome = {
+	id: BIOME_ID.CHERRY_BLOSSOM_FOREST,
+	name: "Cherry_Blossom_Forest",
+	topBlock: 15, // grass
+	undergroundBlock: 19, // dirt
+	stoneBlock: 1, // stone
+	canSpawnTrees: true,
+	treeDensity: 0.22, // dense cherry trees
+	grassDensity: 0.5, // lush undergrowth
+	beachBlock: 3, // sand
+	seafloorBlock: 46, // gravel seafloor
+
+	terrainScale: GenerationParams.TERRAIN_SCALE * 0.65,
+	persistence: 0.2,
+	heightExponent: 1.08,
+	terrainHeightBase: 44,
+	terrainHeightAmplitude: 35,
+	pvNoiseScale: 0.7,
+	erosionNoiseScale: 0.5,
+
+	getTreeForBlock(blockId: number): TreeDefinition | null {
+		if (blockId === this.topBlock) return CHERRY_BLOSSOM_TREE;
+		return null;
+	},
+};
+
+export const AUTUMN_FOREST: Biome = {
+	id: BIOME_ID.AUTUMN_FOREST,
+	name: "Autumn_Forest",
+	topBlock: 15, // grass
+	undergroundBlock: 19, // dirt
+	stoneBlock: 1, // stone
+	canSpawnTrees: true,
+	treeDensity: 0.2, // dense autumn trees
+	grassDensity: 0.35,
+	beachBlock: 3, // sand
+	seafloorBlock: 46, // gravel seafloor
+
+	terrainScale: GenerationParams.TERRAIN_SCALE * 0.6,
+	persistence: 0.24,
+	heightExponent: 1.1,
+	terrainHeightBase: 45,
+	terrainHeightAmplitude: 40,
+	pvNoiseScale: 0.8,
+	erosionNoiseScale: 0.6,
+
+	getTreeForBlock(blockId: number): TreeDefinition | null {
+		if (blockId === this.topBlock) return AUTUMN_TREE;
+		return null;
+	},
+};
+
+export const PINE_FOREST: Biome = {
+	id: BIOME_ID.PINE_FOREST,
+	name: "Pine_Forest",
+	topBlock: 14, // mossy grass
+	undergroundBlock: 19, // dirt
+	stoneBlock: 1, // stone
+	canSpawnTrees: true,
+	treeDensity: 0.2, // very dense pine trees
+	grassDensity: 0.15, // sparse undergrowth under dense canopy
+	beachBlock: 3, // sand
+	seafloorBlock: 46, // gravel seafloor
+
+	terrainScale: GenerationParams.TERRAIN_SCALE * 0.55,
+	persistence: 0.26,
+	heightExponent: 1.15,
+	terrainHeightBase: 46,
+	terrainHeightAmplitude: 48,
+	pvNoiseScale: 0.6,
+	erosionNoiseScale: 0.5,
+
+	getTreeForBlock(blockId: number): TreeDefinition | null {
+		if (blockId === this.topBlock) return PINE_TREE;
+		return null;
+	},
+};
+
+export const FERN_GULLY: Biome = {
+	id: BIOME_ID.FERN_GULLY,
+	name: "Fern_Gully",
+	topBlock: 14, // mossy grass
+	undergroundBlock: 8, // damp dirt / mud
+	stoneBlock: 1, // stone
+	canSpawnTrees: false,
+	treeDensity: 0.0,
+	grassDensity: 0.85, // extremely dense ferns and moss
+	beachBlock: 8, // mud
+	seafloorBlock: 8, // mud
+
+	terrainScale: GenerationParams.TERRAIN_SCALE * 0.7,
+	persistence: 0.2,
+	heightExponent: 1.3, // gully shapes
+	terrainHeightBase: GenerationParams.SEA_LEVEL + 3,
+	terrainHeightAmplitude: 15, // low-lying gully
+	pvNoiseScale: 0.4,
+	erosionNoiseScale: 0.7,
+
+	getTreeForBlock(): TreeDefinition | null {
 		return null;
 	},
 };

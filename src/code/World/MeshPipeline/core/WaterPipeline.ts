@@ -1,5 +1,6 @@
 // MeshPipeline/core/WaterPipeline.ts
 
+import { WATER_BLOCK_ID } from "../../Chunk/Worker/ChunkMesherConstants";
 import {
 	MaterialType,
 	type MeshContext,
@@ -145,7 +146,7 @@ export function buildWaterMesh(
 					width: baseDepth * mergeH,
 					height: baseWidth * mergeW,
 
-					blockId: 30, // WATER_BLOCK_ID
+					blockId: WATER_BLOCK_ID,
 					isBackFace: false,
 
 					light: baseSample.packedLight,

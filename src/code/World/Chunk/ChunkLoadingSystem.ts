@@ -517,10 +517,6 @@ export function validateChunksAround(
 	}
 }
 
-function scheduleChunkBorderRemeshOnLoad(chunk: Chunk): void {
-	scheduleChunkAndNeighborsRemesh(chunk);
-}
-
 export function enqueueChunkRemesh(chunk: Chunk): void {
 	if (pendingRemeshChunkIds.has(chunk.id)) {
 		return;
@@ -540,8 +536,19 @@ export function processPendingRemeshes(maxChunks = 12): void {
 		processed < maxChunks &&
 		pendingRemeshReadIndex < pendingRemeshChunks.length
 	) {
-		const chunk = pendingRemeshChunks[pendingRemeshReadIndex++];
+		const chunk = pendingRemeshChunks[pendingRemeshReadIndex];
 
+		// If chunk isn't ready for remesh yet, move it to the end of the
+		// queue so it can be retried later without blocking other chunks.
+		if (!chunk.isLoaded || !chunk.hasVoxelData) {
+			pendingRemeshChunks.push(
+				pendingRemeshChunks.splice(pendingRemeshReadIndex, 1)[0],
+			);
+			processed++;
+			continue;
+		}
+
+		pendingRemeshReadIndex++;
 		pendingRemeshChunkIds.delete(chunk.id);
 		pool.scheduleRemesh(chunk, true);
 		processed++;
@@ -629,10 +636,8 @@ function sampleDynamicBlock(
 	}
 
 	const ignored = options?.ignoredDynamicBlockProviders;
-	const providers = [...dynamicBlockProviders.entries()];
 
-	for (let i = providers.length - 1; i >= 0; i--) {
-		const [handle, entry] = providers[i];
+	for (const [handle, entry] of dynamicBlockProviders) {
 		if (ignored?.has(handle)) {
 			continue;
 		}
@@ -657,10 +662,9 @@ function tryMutateDynamicBlock(
 		return false;
 	}
 
-	const providers = [...dynamicBlockProviders.values()];
-	for (let i = providers.length - 1; i >= 0; i--) {
+	for (const entry of dynamicBlockProviders.values()) {
 		const handled =
-			providers[i].mutator?.(worldX, worldY, worldZ, blockId, blockState) ??
+			entry.mutator?.(worldX, worldY, worldZ, blockId, blockState) ??
 			false;
 		if (handled) {
 			return true;
@@ -823,7 +827,7 @@ function loadNearLodChunk(
 	applyMeshToChunk(chunk, selectedMesh);
 
 	if (targetLod <= 1) {
-		scheduleChunkBorderRemeshOnLoad(chunk);
+		scheduleChunkAndNeighborsRemesh(chunk);
 	}
 }
 
