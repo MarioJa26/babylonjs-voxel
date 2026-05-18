@@ -19,7 +19,6 @@ import {
 	getBlockByWorldCoords,
 	getBlockStateByWorldCoords,
 } from "../World/Chunk/ChunkLoadingSystem";
-import {} from "../World/Chunk/DataStructures/BlockEncoding";
 import { getShapeForBlockId } from "../World/Shape/BlockShapes";
 import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
 import type { PlayerBodyControlState, SavedBodyPosition } from "./PlayerBody";
@@ -109,11 +108,11 @@ export class PlayerVehicleMotor {
 	// ── Parameters ────────────────────────────────────────────────────────────
 	private readonly deacceleration = 0.85;
 	private readonly inAirSpeed = 7.0;
-	private readonly onGroundSpeed = 5.0;
+	private readonly onGroundSpeed = 5.67;
 	private readonly jumpHeight = 0.35;
 	private readonly jumpStaminaCost = 10;
 	private readonly accelRateGround = 36;
-	private readonly sprintMultiplier = 1.6;
+	private readonly sprintMultiplier = 2.1;
 	private readonly penetrationRecoveryEps = 0.0001;
 	private readonly airJumpForwardBoost = 5.5;
 	private readonly minFloorNormalDot = 0.55;
@@ -420,53 +419,69 @@ export class PlayerVehicleMotor {
 		}
 	}
 
+	#tryBoatSupport(boat: CustomBoat, chunk: any, footY: number): boolean {
+		for (const [sx, sz] of this._groundProbeOffsets) {
+			this.#tmp2.set(
+				this.voxelPosition.x + sx,
+				footY,
+				this.voxelPosition.z + sz,
+			);
+
+			const local = boat.worldToBoatChunkLocalPoint(this.#tmp2, this.#tmp3);
+			if (!local) continue;
+
+			const bx = Math.floor(local.x);
+			const by = Math.floor(local.y);
+			const bz = Math.floor(local.z);
+
+			const blockHere = chunk.getBlockLocal(bx, by, bz);
+			const blockBelow = chunk.getBlockLocal(bx, by - 1, bz);
+
+			if (isCollidableBlock(blockHere) || isCollidableBlock(blockBelow)) {
+				this.#supportBoat = boat;
+				boat.worldToBoatChunkLocalPoint(
+					this.voxelPosition,
+					this.#boatSupportLocal,
+				);
+				return true;
+			}
+		}
+		return false;
+	}
+
 	#updateSupportBoat(): void {
 		this.#supportBoat = null;
 
 		const footY = this.voxelPosition.y - this.colliderHalfHeight - 0.1;
 
 		const boats = CustomBoat.getActiveBoats();
-		// PERF: Avoid spread allocation when #collisionBoat is null (common case).
-		// `readonly CustomBoat[]` satisfies both the spread result and the raw
-		// readonly array returned by getActiveBoats() — we never mutate ordered.
-		const ordered: readonly CustomBoat[] = this.#collisionBoat
-			? [this.#collisionBoat, ...boats.filter((b) => b !== this.#collisionBoat)]
-			: boats;
+		const collisionBoat = this.#collisionBoat;
 
-		for (const boat of ordered) {
+		// Check collision boat first (avoids allocation of reordered array).
+		if (collisionBoat) {
+			const chunk = collisionBoat.boatChunk;
+			if (chunk && this.#tryBoatSupport(collisionBoat, chunk, footY)) return;
+		}
+		for (const boat of boats) {
+			if (boat === collisionBoat) continue;
 			const chunk = boat.boatChunk;
 			if (!chunk) continue;
-
-			for (const [sx, sz] of this._groundProbeOffsets) {
-				// PERF: Reuse #tmp2 for every probe — no allocation per offset.
-				this.#tmp2.set(
-					this.voxelPosition.x + sx,
-					footY,
-					this.voxelPosition.z + sz,
-				);
-
-				const local = boat.worldToBoatChunkLocalPoint(this.#tmp2, this.#tmp3);
-				if (!local) continue;
-
-				const bx = Math.floor(local.x);
-				const by = Math.floor(local.y);
-				const bz = Math.floor(local.z);
-
-				const blockHere = chunk.getBlockLocal(bx, by, bz);
-				const blockBelow = chunk.getBlockLocal(bx, by - 1, bz);
-
-				if (isCollidableBlock(blockHere) || isCollidableBlock(blockBelow)) {
-					this.#supportBoat = boat;
-					boat.worldToBoatChunkLocalPoint(
-						this.voxelPosition,
-						this.#boatSupportLocal,
-					);
-					return;
-				}
-			}
+			if (this.#tryBoatSupport(boat, chunk, footY)) return;
 		}
 
-		for (const boat of ordered) {
+		// OBB check: collision boat first, then others.
+		if (collisionBoat) {
+			if (this.#isInsideBoatObb(collisionBoat)) {
+				this.#supportBoat = collisionBoat;
+				collisionBoat.worldToBoatChunkLocalPoint(
+					this.voxelPosition,
+					this.#boatSupportLocal,
+				);
+				return;
+			}
+		}
+		for (const boat of boats) {
+			if (boat === collisionBoat) continue;
 			if (!this.#isInsideBoatObb(boat)) continue;
 			this.#supportBoat = boat;
 			boat.worldToBoatChunkLocalPoint(

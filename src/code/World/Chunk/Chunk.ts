@@ -20,6 +20,7 @@ import {
 	unpackBlockState,
 } from "./DataStructures/BlockEncoding";
 import type { MeshData } from "./DataStructures/MeshData";
+import { LoadedChunkIndex } from "./Loading/LoadedChunkIndex";
 import {
 	filtersFullSunlight,
 	WATER_BLOCK_ID,
@@ -88,6 +89,12 @@ class LightQueue {
 const Q_A = new LightQueue();
 const Q_B = new LightQueue();
 
+// Scratch object for resolveNeighborCoord – avoids tuple allocation per call.
+const _resolveScratch: { chunk: Chunk | undefined; coord: number } = {
+	chunk: undefined,
+	coord: 0,
+};
+
 // ---------------------------------------------------------------------------
 // Face-rect scratch buffers – reused inside getClosedFaceMaskForPacked to
 // avoid allocating new FaceRect[] arrays on every call.
@@ -116,6 +123,7 @@ export class Chunk {
 	public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
 	public static readonly chunkInstances = new Map<bigint, Chunk>();
 	public static readonly loadedChunks = new Set<Chunk>();
+	public static readonly loadedChunkIndex = new LoadedChunkIndex();
 
 	public isModified = false;
 	/** Persistent chunks are managed by systems outside world streaming
@@ -141,6 +149,7 @@ export class Chunk {
 	private _isUniform = true;
 	private _uniformBlockId = 0;
 	private _palette: Uint16Array | null = null;
+	private _paletteIndexMap: Map<number, number> | null = null;
 	private _hasVoxelData = false;
 
 	#chunkY: number;
@@ -280,21 +289,25 @@ export class Chunk {
 			this._uniformBlockId = uniformBlockId;
 			this._block_array = null;
 			this._palette = null;
+			this._paletteIndexMap = null;
 		} else if (palette && blocks instanceof Uint8Array) {
 			this._isUniform = false;
 			this._uniformBlockId = 0;
 			this._palette = palette;
+			this._paletteIndexMap = null;
 			this._block_array = blocks;
 		} else if (blocks) {
 			this._isUniform = false;
 			this._uniformBlockId = 0;
 			this._palette = null;
+			this._paletteIndexMap = null;
 			this._block_array = blocks;
 		} else {
 			this._isUniform = true;
 			this._uniformBlockId = 0;
 			this._block_array = null;
 			this._palette = null;
+			this._paletteIndexMap = null;
 		}
 
 		if (light_array) {
@@ -305,6 +318,7 @@ export class Chunk {
 
 		this.isLoaded = true;
 		Chunk.loadedChunks.add(this);
+		Chunk.loadedChunkIndex.register(this);
 		this.isTerrainScheduled = false;
 		this.colliderDirty = true;
 		Chunk.onChunkLoaded?.(this);
@@ -317,9 +331,11 @@ export class Chunk {
 		this._uniformBlockId = 0;
 		this._block_array = null;
 		this._palette = null;
+		this._paletteIndexMap = null;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
 		this.isLoaded = true;
 		Chunk.loadedChunks.add(this);
+		Chunk.loadedChunkIndex.register(this);
 		this.isTerrainScheduled = false;
 		this.colliderDirty = false;
 		if (scheduleRemesh) this.scheduleRemesh();
@@ -331,10 +347,12 @@ export class Chunk {
 		this._isUniform = true;
 		this._uniformBlockId = 0;
 		this._palette = null;
+		this._paletteIndexMap = null;
 		this._hasVoxelData = false;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
 		this.isLoaded = false;
 		Chunk.loadedChunks.delete(this);
+		Chunk.loadedChunkIndex.unregister(this);
 		this.isTerrainScheduled = false;
 		this.isModified = false;
 		this.colliderDirty = true;
@@ -639,12 +657,14 @@ export class Chunk {
 			this._isUniform = false;
 			this._hasVoxelData = true;
 			this._palette = new Uint16Array([this._uniformBlockId]);
+			this._paletteIndexMap = null;
 			let newIndex = 0;
 			if (this._palette[0] !== packedBlock) {
 				const ep = new Uint16Array(2);
 				ep[0] = this._palette[0];
 				ep[1] = packedBlock;
 				this._palette = ep;
+				this._paletteIndexMap = null;
 				newIndex = 1;
 			}
 			this._block_array = new Uint8Array(
@@ -657,14 +677,24 @@ export class Chunk {
 			oldPacked = this._palette[paletteIndex];
 			if (oldPacked === packedBlock) return;
 
-			let npi = this._palette.indexOf(packedBlock);
-			if (npi === -1) {
+			// Lazy-init palette index map for O(1) lookups.
+			let pm = this._paletteIndexMap;
+			if (!pm) {
+				pm = new Map();
+				for (let i = 0; i < this._palette.length; i++) {
+					pm.set(this._palette[i], i);
+				}
+				this._paletteIndexMap = pm;
+			}
+			let npi = pm.get(packedBlock);
+			if (npi === undefined) {
 				if (this._palette.length < 16) {
 					npi = this._palette.length;
 					const ep = new Uint16Array(npi + 1);
 					ep.set(this._palette);
 					ep[npi] = packedBlock;
 					this._palette = ep;
+					pm.set(packedBlock, npi);
 					this.setNibble(index, npi);
 				} else {
 					// Palette full → expand to raw Uint16Array.
@@ -674,6 +704,7 @@ export class Chunk {
 					na[index] = packedBlock;
 					this._block_array = na;
 					this._palette = null;
+					this._paletteIndexMap = null;
 				}
 			} else {
 				this.setNibble(index, npi);
@@ -831,12 +862,18 @@ export class Chunk {
 			let sy = y + dy;
 			let sz = z + dz;
 
-			[sourceChunk, sx] = Chunk.resolveNeighborCoord(sourceChunk, sx, 0, size);
+			let r = Chunk.resolveNeighborCoord(sourceChunk, sx, 0, size);
+			sourceChunk = r.chunk;
 			if (!sourceChunk) continue;
-			[sourceChunk, sy] = Chunk.resolveNeighborCoord(sourceChunk, sy, 1, size);
+			sx = r.coord;
+			r = Chunk.resolveNeighborCoord(sourceChunk, sy, 1, size);
+			sourceChunk = r.chunk;
 			if (!sourceChunk) continue;
-			[sourceChunk, sz] = Chunk.resolveNeighborCoord(sourceChunk, sz, 2, size);
+			sy = r.coord;
+			r = Chunk.resolveNeighborCoord(sourceChunk, sz, 2, size);
+			sourceChunk = r.chunk;
 			if (!sourceChunk) continue;
+			sz = r.coord;
 
 			const sourceBlockPacked = sourceChunk.getBlockPacked(sx, sy, sz);
 			const sourceBlockId = unpackBlockId(sourceBlockPacked);
@@ -882,6 +919,25 @@ export class Chunk {
 
 		if (Q_A.head !== Q_A.tail)
 			this.processLightPropagationQueue(Q_A, isSkyLight);
+	}
+
+	// =========================================================================
+	// batchPropagateSkyLight – seeds multiple cells and runs ONE BFS pass
+	// =========================================================================
+
+	public batchPropagateSkyLight(
+		seeds: { chunk: Chunk; x: number; y: number; z: number; level: number }[],
+	): void {
+		if (seeds.length === 0) return;
+		Q_A.clear();
+		for (let i = 0; i < seeds.length; i++) {
+			const s = seeds[i];
+			Q_A.push(s.chunk, s.x, s.y, s.z, s.level);
+		}
+		if (Q_A.head !== Q_A.tail) {
+			this.processLightPropagationQueue(Q_A, true);
+			this.scheduleRemesh(false, true);
+		}
 	}
 
 	// =========================================================================
@@ -931,27 +987,18 @@ export class Chunk {
 
 				let targetChunk: Chunk | undefined = chunk;
 
-				[targetChunk, tx] = Chunk.resolveNeighborCoord(
-					targetChunk,
-					tx,
-					0,
-					size,
-				);
+				let r = Chunk.resolveNeighborCoord(targetChunk, tx, 0, size);
+				targetChunk = r.chunk;
 				if (!targetChunk) continue;
-				[targetChunk, ty] = Chunk.resolveNeighborCoord(
-					targetChunk,
-					ty,
-					1,
-					size,
-				);
+				tx = r.coord;
+				r = Chunk.resolveNeighborCoord(targetChunk, ty, 1, size);
+				targetChunk = r.chunk;
 				if (!targetChunk) continue;
-				[targetChunk, tz] = Chunk.resolveNeighborCoord(
-					targetChunk,
-					tz,
-					2,
-					size,
-				);
+				ty = r.coord;
+				r = Chunk.resolveNeighborCoord(targetChunk, tz, 2, size);
+				targetChunk = r.chunk;
 				if (!targetChunk?.isLoaded) continue;
+				tz = r.coord;
 
 				// Can light leave source?
 				// Water-like blocks cannot emit skylight sideways (only downward)
@@ -1074,27 +1121,18 @@ export class Chunk {
 
 				let targetChunk: Chunk | undefined = chunk;
 
-				[targetChunk, tx] = Chunk.resolveNeighborCoord(
-					targetChunk,
-					tx,
-					0,
-					size,
-				);
+				let r = Chunk.resolveNeighborCoord(targetChunk, tx, 0, size);
+				targetChunk = r.chunk;
 				if (!targetChunk) continue;
-				[targetChunk, ty] = Chunk.resolveNeighborCoord(
-					targetChunk,
-					ty,
-					1,
-					size,
-				);
+				tx = r.coord;
+				r = Chunk.resolveNeighborCoord(targetChunk, ty, 1, size);
+				targetChunk = r.chunk;
 				if (!targetChunk) continue;
-				[targetChunk, tz] = Chunk.resolveNeighborCoord(
-					targetChunk,
-					tz,
-					2,
-					size,
-				);
+				ty = r.coord;
+				r = Chunk.resolveNeighborCoord(targetChunk, tz, 2, size);
+				targetChunk = r.chunk;
 				if (!targetChunk?.isLoaded) continue;
+				tz = r.coord;
 
 				if (
 					isSkyLight
@@ -1236,13 +1274,19 @@ export class Chunk {
 		coord: number,
 		axis: number,
 		size: number,
-	): [Chunk | undefined, number] {
-		if (coord >= 0 && coord < size) return [chunk, coord];
+	): { chunk: Chunk | undefined; coord: number } {
+		if (coord >= 0 && coord < size) {
+			_resolveScratch.chunk = chunk;
+			_resolveScratch.coord = coord;
+			return _resolveScratch;
+		}
 		const dir = coord < 0 ? -1 : 1;
 		const dx = axis === 0 ? dir : 0;
 		const dy = axis === 1 ? dir : 0;
 		const dz = axis === 2 ? dir : 0;
-		return [chunk?.getNeighbor(dx, dy, dz), coord < 0 ? size - 1 : 0];
+		_resolveScratch.chunk = chunk?.getNeighbor(dx, dy, dz);
+		_resolveScratch.coord = coord < 0 ? size - 1 : 0;
+		return _resolveScratch;
 	}
 
 	public markLightChanged(): void {
@@ -1416,17 +1460,9 @@ export class Chunk {
 		return true;
 	}
 
-	/** In-place insertion sort on a region of _edgeScratch[start..start+len). */
+	/** Sort a region of _edgeScratch[start..start+len). Avoids O(n²) insertion sort. */
 	private static insertionSortEdges(start: number, len: number): void {
-		for (let i = 1; i < len; i++) {
-			const key = _edgeScratch[start + i];
-			let j = i - 1;
-			while (j >= 0 && _edgeScratch[start + j] > key) {
-				_edgeScratch[start + j + 1] = _edgeScratch[start + j];
-				j--;
-			}
-			_edgeScratch[start + j + 1] = key;
-		}
+		_edgeScratch.subarray(start, start + len).sort();
 	}
 
 	/**
@@ -1528,10 +1564,12 @@ export class Chunk {
 		this._isUniform = true;
 		this._uniformBlockId = 0;
 		this._palette = null;
+		this._paletteIndexMap = null;
 		this._hasVoxelData = false;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
 		this.isLoaded = false;
 		Chunk.loadedChunks.delete(this);
+		Chunk.loadedChunkIndex.unregister(this);
 		this.isTerrainScheduled = false;
 		this.colliderDirty = true;
 		Chunk.remeshQueueSet.delete(this.id);

@@ -42,6 +42,7 @@ const _sharedVec3b = new Vector3(0, 0, 0);
 const _sharedLocalOrigin = new Vector3(0, 0, 0);
 const _sharedLocalDir = new Vector3(0, 0, 0);
 const _sharedWorldNormal = new Vector3(0, 0, 0);
+const _sharedWorldCenter = new Vector3(0, 0, 0);
 const _sharedInvMatrix = new Matrix();
 const _sharedWorldMatrix = new Matrix();
 let _sharedRay: Ray | null = null;
@@ -568,10 +569,10 @@ function raycastSingleBoatChunk(
 				else if (ay >= ax && ay >= az) worldNy = _sharedVec3b.y >= 0 ? 1 : -1;
 				else worldNz = _sharedVec3b.z >= 0 ? 1 : -1;
 
-				const worldCenter = boatChunk.localToWorldCenter(x, y, z);
-				const wx = Math.floor(worldCenter.x);
-				const wy = Math.floor(worldCenter.y);
-				const wz = Math.floor(worldCenter.z);
+				boatChunk.localToWorldCenterToRef(x, y, z, _sharedWorldCenter);
+				const wx = Math.floor(_sharedWorldCenter.x);
+				const wy = Math.floor(_sharedWorldCenter.y);
+				const wz = Math.floor(_sharedWorldCenter.z);
 
 				return {
 					t: hitT,

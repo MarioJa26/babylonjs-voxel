@@ -43,6 +43,13 @@ export class AdvancedBoat implements IUsable {
 	#angularVelocity = Vector3.Zero();
 	#voxelCollider!: VoxelAabbCollider;
 
+	// Scratch vectors for per-frame physics (avoids allocation)
+	readonly #_worldPt = Vector3.Zero();
+	readonly #_buoyVec = Vector3.Zero();
+	readonly #_accel = Vector3.Zero();
+	readonly #_lever = Vector3.Zero();
+	readonly #_torque = Vector3.Zero();
+
 	static #boatControls: PaddleBoatControls;
 
 	#submergedPoints = 0;
@@ -178,22 +185,20 @@ export class AdvancedBoat implements IUsable {
 			const totalBuoyancyMultiplier = this.#baseBuoyancyForce;
 
 			// Check each buoyancy point for submersion
-			this.#buoyancyPoints.forEach((localPoint) => {
-				const worldPoint = Vector3.TransformCoordinates(
-					localPoint,
-					worldMatrix,
-				);
+			const pts = this.#buoyancyPoints;
+			for (let i = 0; i < pts.length; i++) {
+				Vector3.TransformCoordinatesToRef(pts[i], worldMatrix, this.#_worldPt);
 
-				const submersion = this.getWaterSubmersionAtPoint(worldPoint);
+				const submersion = this.getWaterSubmersionAtPoint(this.#_worldPt);
 				if (submersion > 0) {
 					const buoyancyForce = submersion * totalBuoyancyMultiplier;
-					const buoyancyVector = new Vector3(0, buoyancyForce, 0);
+					this.#_buoyVec.copyFromFloats(0, buoyancyForce, 0);
 
-					this.applyForceAtPoint(buoyancyVector, worldPoint, dt);
+					this.applyForceAtPoint(this.#_buoyVec, this.#_worldPt, dt);
 
 					this.#submergedPoints++;
 				}
-			});
+			}
 
 			// Water Resistance (Drag)
 			if (this.#submergedPoints > 0) {
@@ -223,14 +228,15 @@ export class AdvancedBoat implements IUsable {
 		dt: number,
 	): void {
 		const invMass = 1 / this.#mass;
-		const linearAcceleration = force.scale(invMass);
-		this.#linearVelocity.addInPlace(linearAcceleration.scale(dt));
 
-		const lever = worldPoint.subtract(this.#boat.position);
-		const torque = Vector3.Cross(lever, force).scale(
-			this.#buoyancyTorqueScale * invMass * dt,
-		);
-		this.#angularVelocity.addInPlace(torque);
+		force.scaleToRef(invMass, this.#_accel);
+		this.#_accel.scaleInPlace(dt);
+		this.#linearVelocity.addInPlace(this.#_accel);
+
+		worldPoint.subtractToRef(this.#boat.position, this.#_lever);
+		Vector3.CrossToRef(this.#_lever, force, this.#_torque);
+		this.#_torque.scaleInPlace(this.#buoyancyTorqueScale * invMass * dt);
+		this.#angularVelocity.addInPlace(this.#_torque);
 	}
 
 	private integrateRotation(dt: number): void {
@@ -310,7 +316,7 @@ export class AdvancedBoat implements IUsable {
 		return this.#boat;
 	}
 	public get boatPosition(): Vector3 {
-		return this.#boat.position.clone();
+		return this.#boat.position;
 	}
 	public get mount(): Mount {
 		return this.#mount;

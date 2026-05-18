@@ -12,6 +12,7 @@ export class BouyantObject {
 	public waterMaterial: WaterMaterial;
 	public waterHeight: number;
 	private verticalVelocity = 0;
+	readonly #renderHandle: () => void;
 
 	constructor(
 		scene: Scene,
@@ -30,17 +31,19 @@ export class BouyantObject {
 		this.mesh.material = boatMat;
 
 		let time = 0;
-		this.scene.onBeforeRenderObservable.add(() => {
+		this.#renderHandle = () => {
 			time += this.scene.getEngine().getDeltaTime() / 100000;
 			const dt = this.scene.getEngine().getDeltaTime() / 1000;
 			const x = this.mesh.position.x;
 			const z = this.mesh.position.z;
+			const inv05 = 1 / 0.05;
+			const waveTime = time * waterMaterial.waveSpeed;
 			const targetY = Math.abs(
-				Math.sin(x / 0.05 + time * waterMaterial.waveSpeed) *
+				Math.sin(x * inv05 + waveTime) *
 					waterMaterial.waveHeight *
 					waterMaterial.windDirection.x *
 					5.0 +
-					Math.cos(z / 0.05 + time * waterMaterial.waveSpeed) *
+					Math.cos(z * inv05 + waveTime) *
 						waterMaterial.waveHeight *
 						waterMaterial.windDirection.y *
 						5.0,
@@ -50,10 +53,14 @@ export class BouyantObject {
 			if (deltaY > 2) deltaY = 2;
 			if (deltaY < -2) deltaY = -2;
 
-			// Simple spring + damping buoyancy.
 			this.verticalVelocity += deltaY * 2.5 * dt;
 			this.verticalVelocity *= 0.94;
 			this.mesh.position.y += this.verticalVelocity;
-		});
+		};
+		this.scene.onBeforeRenderObservable.add(this.#renderHandle);
+	}
+
+	dispose(): void {
+		this.scene.onBeforeRenderObservable.removeCallback(this.#renderHandle);
 	}
 }

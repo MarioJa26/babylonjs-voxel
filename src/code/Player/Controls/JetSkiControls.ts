@@ -5,11 +5,17 @@ import { DebugControlHelper } from "./DebugControlHelper";
 import type { BoatControlEntity } from "./PaddleBoatControls";
 
 export class JetSkiControls implements IControls<BoatControlEntity> {
+	readonly controlType = "jetSki";
 	public pressedKeys = new Set<string>();
 	#controlledEntity: BoatControlEntity;
 	#inputDirection = new Vector3(0, 0, 0);
 
 	#player: Player;
+
+	// Scratch vectors for per-frame #tick (avoids allocation)
+	readonly #_angularLeft = Vector3.Zero();
+	readonly #_angularRight = Vector3.Zero();
+	readonly #_forward = Vector3.Zero();
 
 	public static KEY_LEFT = ["a", "arrowleft"];
 	public static KEY_RIGHT = ["d", "arrowright"];
@@ -113,6 +119,7 @@ export class JetSkiControls implements IControls<BoatControlEntity> {
 	}
 
 	static readonly #rotationMatrix = new Matrix();
+	static readonly #_localForward = new Vector3(0, 0, 1);
 	#tick() {
 		if (this.#controlledEntity.submergedPoints <= 1) {
 			return;
@@ -121,36 +128,41 @@ export class JetSkiControls implements IControls<BoatControlEntity> {
 		this.#controlledEntity.boatMesh.rotationQuaternion!.toRotationMatrix(
 			JetSkiControls.#rotationMatrix,
 		);
-		const angularLeftWorld = Vector3.TransformNormal(
+		Vector3.TransformNormalToRef(
 			this.#pushAngularVectorLeft,
 			JetSkiControls.#rotationMatrix,
+			this.#_angularLeft,
 		);
-		const angularRightWorld = Vector3.TransformNormal(
+		Vector3.TransformNormalToRef(
 			this.#pushAngularVectorRight,
 			JetSkiControls.#rotationMatrix,
+			this.#_angularRight,
 		);
 
-		const forward = this.#controlledEntity.boatMesh.forward.scale(
-			this.#pushStrength,
+		Vector3.TransformNormalToRef(
+			JetSkiControls.#_localForward,
+			JetSkiControls.#rotationMatrix,
+			this.#_forward,
 		);
+		this.#_forward.scaleInPlace(this.#pushStrength);
 
 		// Sprint cancels push
 		if (this.#pressedKeysHas(JetSkiControls.KEY_SPRINT)) {
-			forward.copyFrom(Vector3.Zero());
-			angularLeftWorld.x = angularLeftWorld.x >> 1;
-			angularLeftWorld.y = angularLeftWorld.y << 1;
-			angularLeftWorld.z = angularLeftWorld.z >> 1;
+			this.#_forward.copyFrom(Vector3.Zero());
+			this.#_angularLeft.x = this.#_angularLeft.x >> 1;
+			this.#_angularLeft.y = this.#_angularLeft.y << 1;
+			this.#_angularLeft.z = this.#_angularLeft.z >> 1;
 
-			angularRightWorld.x = angularRightWorld.x >> 1;
-			angularRightWorld.y = angularRightWorld.y << 1;
-			angularRightWorld.z = angularRightWorld.z >> 1;
+			this.#_angularRight.x = this.#_angularRight.x >> 1;
+			this.#_angularRight.y = this.#_angularRight.y << 1;
+			this.#_angularRight.z = this.#_angularRight.z >> 1;
 		}
-		this.#handleUpDown(forward, position);
+		this.#handleUpDown(this.#_forward, position);
 		this.#handleLeftRight(
-			forward,
+			this.#_forward,
 			position,
-			angularLeftWorld,
-			angularRightWorld,
+			this.#_angularLeft,
+			this.#_angularRight,
 		);
 	}
 	#handleUpDown(forward: Vector3, position: Vector3) {

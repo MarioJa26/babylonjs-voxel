@@ -1,4 +1,4 @@
-import { Mesh, type Observer, type Scene, Vector3 } from "@babylonjs/core";
+import { Mesh, type Scene, Vector3 } from "@babylonjs/core";
 import { Chunk } from "../Chunk/Chunk";
 import { ChunkWorkerPool } from "../Chunk/ChunkWorkerPool";
 import {
@@ -44,7 +44,6 @@ export class BoatChunk {
 	#visualRoot: Mesh;
 	#centerChunk: Chunk;
 	#neighborChunks: Chunk[] = [];
-	#beforeRenderObserver: Observer<Scene> | null = null;
 	#attachedOpaqueMesh: Mesh | null = null;
 	#attachedTransparentMesh: Mesh | null = null;
 	#blockChangeListeners = new Set<BoatChunkBlockChangeListener>();
@@ -68,12 +67,6 @@ export class BoatChunk {
 		this.populateNeighborChunks();
 		this.populateCenterChunk(blocks);
 		this.initializeCenterChunkLighting(blocks);
-
-		this.#beforeRenderObserver = this.#scene.onBeforeRenderObservable.add(
-			() => {
-				this.#syncVisualMeshes();
-			},
-		);
 
 		this.remesh();
 	}
@@ -261,7 +254,7 @@ export class BoatChunk {
 		mesh.position.set(-this.#center.x, -this.#center.y, -this.#center.z);
 	}
 
-	#syncVisualMeshes(): void {
+	public syncVisualMeshes(): void {
 		this.#attachedOpaqueMesh = this.syncMeshRef(
 			this.#centerChunk.mesh,
 			this.#attachedOpaqueMesh,
@@ -371,6 +364,24 @@ export class BoatChunk {
 		);
 	}
 
+	public localToWorldCenterToRef(
+		x: number,
+		y: number,
+		z: number,
+		ref: Vector3,
+	): void {
+		const lx = x + 0.5 - this.#center.x;
+		const ly = y + 0.5 - this.#center.y;
+		const lz = z + 0.5 - this.#center.z;
+		Vector3.TransformCoordinatesFromFloatsToRef(
+			lx,
+			ly,
+			lz,
+			this.#visualRoot.getWorldMatrix(),
+			ref,
+		);
+	}
+
 	public getOccupiedBoundsLocal(): {
 		minX: number;
 		minY: number;
@@ -447,10 +458,6 @@ export class BoatChunk {
 	public dispose(): void {
 		BoatChunk.activeChunks.delete(this);
 		this.#blockChangeListeners.clear();
-		if (this.#beforeRenderObserver) {
-			this.#scene.onBeforeRenderObservable.remove(this.#beforeRenderObserver);
-			this.#beforeRenderObserver = null;
-		}
 
 		this.#centerChunk.dispose();
 		Chunk.chunkInstances.delete(this.#centerChunk.id);

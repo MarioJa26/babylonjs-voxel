@@ -255,6 +255,49 @@ function isUint8Array(
 	return !!value && value.BYTES_PER_ELEMENT === 1;
 }
 
+function detachSharedArrayBuffer<T extends ArrayBufferView>(view: T): T {
+	if (!view || !(view.buffer instanceof SharedArrayBuffer)) return view;
+
+	if (view instanceof Uint16Array) {
+		const copy = new Uint16Array(view.length);
+		copy.set(view);
+		return copy as unknown as T;
+	}
+	if (view instanceof Uint8Array) {
+		const copy = new Uint8Array(view.length);
+		copy.set(view);
+		return copy as unknown as T;
+	}
+	const copy = new Uint8Array(view.byteLength);
+	copy.set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+	return copy as unknown as T;
+}
+
+function detachMeshData(mesh: MeshData | null): MeshData | null {
+	if (!mesh) return null;
+	return {
+		faceDataA: detachSharedArrayBuffer(mesh.faceDataA),
+		faceDataB: detachSharedArrayBuffer(mesh.faceDataB),
+		faceDataC: detachSharedArrayBuffer(mesh.faceDataC),
+		faceCount: mesh.faceCount,
+	} as MeshData;
+}
+
+function detachLodMeshes(
+	lodMeshes: SavedChunkData["lodMeshes"],
+): SavedChunkData["lodMeshes"] {
+	if (!lodMeshes) return lodMeshes;
+	const result: SavedChunkData["lodMeshes"] = {};
+	for (const key of Object.keys(lodMeshes)) {
+		const entry = lodMeshes[Number(key)];
+		result[Number(key)] = {
+			opaque: detachMeshData(entry.opaque ?? null),
+			transparent: detachMeshData(entry.transparent ?? null),
+		};
+	}
+	return result;
+}
+
 async function prepareFullChunkSave(
 	chunk: Chunk,
 ): Promise<PreparedFullChunkSave> {
@@ -268,13 +311,13 @@ async function prepareFullChunkSave(
 		data: {
 			id,
 			blocks: blocks ? await compress(blocks) : null,
-			palette: chunk.palette,
+			palette: chunk.palette ? detachSharedArrayBuffer(chunk.palette) : null,
 			uniformBlockId: chunk.uniformBlockId,
 			isUniform: chunk.isUniform,
 			lightArray: light ? await compress(light) : null,
-			opaqueMesh: chunk.opaqueMeshData ?? null,
-			transparentMesh: chunk.transparentMeshData ?? null,
-			lodMeshes: chunk.getSerializableLODMeshCache(),
+			opaqueMesh: detachMeshData(chunk.opaqueMeshData),
+			transparentMesh: detachMeshData(chunk.transparentMeshData),
+			lodMeshes: detachLodMeshes(chunk.getSerializableLODMeshCache()),
 			lodCacheVersion: getCurrentLodCacheVersion(),
 			compressed: true,
 		},
@@ -624,8 +667,17 @@ class WorldStorageImpl {
 
 		if (fullSave.length > 0) {
 			// Compress up-front to capture data before async lane execution.
-			const prepared = await Promise.all(fullSave.map(prepareFullChunkSave));
-			const ids = prepared.map((e) => e.id);
+			const prepared: PreparedFullChunkSave[] = new Array(fullSave.length);
+			const ids: string[] = new Array(fullSave.length);
+			const jobs: Promise<void>[] = new Array(fullSave.length);
+			for (let i = 0; i < fullSave.length; i++) {
+				const idx = i;
+				jobs[i] = prepareFullChunkSave(fullSave[i]!).then((entry) => {
+					prepared[idx] = entry;
+					ids[idx] = entry.id;
+				});
+			}
+			await Promise.all(jobs);
 
 			lanePromises.push(
 				this.enqueuePersistenceJob("critical", ids, () =>
@@ -635,8 +687,13 @@ class WorldStorageImpl {
 		}
 
 		if (lodOnly.length > 0) {
-			const prepared = lodOnly.map(prepareLodOnlySave);
-			const ids = prepared.map((e) => e.id);
+			const prepared: PreparedLodOnlySave[] = new Array(lodOnly.length);
+			const ids: string[] = new Array(lodOnly.length);
+			for (let i = 0; i < lodOnly.length; i++) {
+				const entry = prepareLodOnlySave(lodOnly[i]!);
+				prepared[i] = entry;
+				ids[i] = entry.id;
+			}
 
 			lanePromises.push(
 				this.enqueuePersistenceJob("background", ids, () =>
@@ -751,16 +808,18 @@ class WorldStorageImpl {
 		type Hit = { chunkId: bigint; data: SavedChunkData };
 		const hits: Hit[] = [];
 
-		await Promise.all(
-			chunkIds.map(async (chunkId) => {
-				const data = await idbRequest<SavedChunkData | undefined>(
-					store.get(chunkId.toString()),
-				);
+		const fetches: Promise<void>[] = new Array(chunkIds.length);
+		for (let i = 0; i < chunkIds.length; i++) {
+			const chunkId = chunkIds[i]!;
+			fetches[i] = idbRequest<SavedChunkData | undefined>(
+				store.get(chunkId.toString()),
+			).then((data) => {
 				if (data !== undefined && data !== null) {
 					hits.push({ chunkId, data });
 				}
-			}),
-		);
+			});
+		}
+		await Promise.all(fetches);
 
 		// Process in batches without slice — track window with indices.
 		for (let i = 0; i < hits.length; i += WorldStorageImpl.CONCURRENCY) {

@@ -105,16 +105,10 @@ export class CrossHair {
 		maxDistance: number,
 		predicate?: (mesh: AbstractMesh) => boolean,
 	): AbstractMesh | null {
-		// Reuse the shared ray from BlockRaycaster — import the helper directly.
-		// We reconstruct it here via the player camera to stay self-contained.
 		const camera = player.playerCamera.playerCamera;
 		const tempRay = camera.getForwardRay(maxDistance);
 
-		const candidates = player.playerVehicle.scene.meshes.filter(
-			(m) => m.isPickable && m.isEnabled() && (!predicate || predicate(m)),
-		);
-		if (candidates.length === 0) return null;
-
+		const meshes = player.playerVehicle.scene.meshes;
 		const { origin, direction, length } = tempRay;
 
 		for (let t = 0; t <= length; t += MESH_MARCH_STEP) {
@@ -123,9 +117,17 @@ export class CrossHair {
 				origin.y + direction.y * t,
 				origin.z + direction.z * t,
 			);
-			for (const mesh of candidates) {
-				if (!mesh.isDisposed() && isInsideBounds(mesh, _marchPoint))
+			for (let i = 0; i < meshes.length; i++) {
+				const mesh = meshes[i]!;
+				if (
+					mesh.isPickable &&
+					mesh.isEnabled() &&
+					!mesh.isDisposed() &&
+					(!predicate || predicate(mesh)) &&
+					isInsideBounds(mesh, _marchPoint)
+				) {
 					return mesh;
+				}
 			}
 		}
 		return null;

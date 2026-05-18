@@ -432,7 +432,7 @@ function refreshQueueDebugSnapshot(): void {
 
 export function getDebugStats(): ChunkLoadingDebugStats {
 	refreshQueueDebugSnapshot();
-	return { ...debugStats };
+	return debugStats;
 }
 
 function buildQueuedIdSet(): Set<bigint> {
@@ -538,12 +538,10 @@ export function processPendingRemeshes(maxChunks = 12): void {
 	) {
 		const chunk = pendingRemeshChunks[pendingRemeshReadIndex];
 
-		// If chunk isn't ready for remesh yet, move it to the end of the
-		// queue so it can be retried later without blocking other chunks.
+		// If chunk isn't ready for remesh yet, skip it. It will be
+		// retried on the next processPendingRemeshes call.
 		if (!chunk.isLoaded || !chunk.hasVoxelData) {
-			pendingRemeshChunks.push(
-				pendingRemeshChunks.splice(pendingRemeshReadIndex, 1)[0],
-			);
+			pendingRemeshReadIndex++;
 			processed++;
 			continue;
 		}
@@ -664,8 +662,7 @@ function tryMutateDynamicBlock(
 
 	for (const entry of dynamicBlockProviders.values()) {
 		const handled =
-			entry.mutator?.(worldX, worldY, worldZ, blockId, blockState) ??
-			false;
+			entry.mutator?.(worldX, worldY, worldZ, blockId, blockState) ?? false;
 		if (handled) {
 			return true;
 		}

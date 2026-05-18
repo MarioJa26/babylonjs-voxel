@@ -20,6 +20,11 @@ export class PlayerCamera {
 	readonly #maxZoom = 10000;
 	readonly #zoomSpeed = 20.333;
 
+	// Scratch vectors to avoid per-frame allocation
+	readonly #_forward = Vector3.Zero();
+	readonly #_eyeOffset = Vector3.Zero();
+	readonly #_tmp1 = Vector3.Zero();
+
 	constructor(
 		playerCamera: FreeCamera,
 		private scene: Scene,
@@ -32,12 +37,12 @@ export class PlayerCamera {
 	}
 
 	public moveWithPlayer(characterPosition: Vector3): void {
-		// Compute forward direction from yaw/pitch
-		const forward = new Vector3(
-			Math.sin(this.#cameraYaw) * Math.cos(this.#cameraPitch),
+		const cosP = Math.cos(this.#cameraPitch);
+		this.#_forward.set(
+			Math.sin(this.#cameraYaw) * cosP,
 			-Math.sin(this.#cameraPitch),
-			Math.cos(this.#cameraYaw) * Math.cos(this.#cameraPitch),
-		).normalize();
+			Math.cos(this.#cameraYaw) * cosP,
+		);
 
 		if (this.#followDistance > this.#minZoom) {
 			this.#eyeHeight = 1.8;
@@ -45,17 +50,20 @@ export class PlayerCamera {
 			this.#eyeHeight = 0.66;
 		}
 
-		// Place camera behind the character
-		this.#playerCamera.position = characterPosition
-			.add(new Vector3(0, this.#eyeHeight, 0))
-			.subtract(forward.scale(this.#followDistance));
+		this.#_eyeOffset.copyFromFloats(0, this.#eyeHeight, 0);
 
-		// Make the camera look at the character
-		this.#playerCamera.target = characterPosition.add(
-			new Vector3(0, this.#eyeHeight, 0),
-		);
+		// Camera position = character + eyeOffset - forward * followDistance
+		this.#_forward.scaleToRef(this.#followDistance, this.#_tmp1);
+		characterPosition.addToRef(this.#_eyeOffset, this.#playerCamera.position);
+		this.#playerCamera.position.subtractInPlace(this.#_tmp1);
 
-		const isUnderWater = this.position.y < GenerationParams.SEA_LEVEL;
+		// Camera target = character + eyeOffset — use setTarget() so rotation is recomputed.
+		// Reuse #_tmp1 (now free after position calc) as a scratch target vector.
+		characterPosition.addToRef(this.#_eyeOffset, this.#_tmp1);
+		this.#playerCamera.setTarget(this.#_tmp1);
+
+		const isUnderWater =
+			this.#playerCamera.position.y < GenerationParams.SEA_LEVEL;
 		if (this.#isUnderWater !== isUnderWater) {
 			MapFog.applyToScene(this.scene, isUnderWater);
 			this.#isUnderWater = isUnderWater;
@@ -102,7 +110,7 @@ export class PlayerCamera {
 	}
 
 	get position(): Vector3 {
-		return this.#playerCamera.position.clone();
+		return this.#playerCamera.position;
 	}
 
 	set position(position: Vector3) {

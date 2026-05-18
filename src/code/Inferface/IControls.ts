@@ -4,6 +4,7 @@ export interface IControls<type> {
 	controlledEntity: type;
 	pressedKeys: Set<string>;
 	inputDirection: Vector3;
+	readonly controlType: string;
 
 	handleKeyEvent(key: string, isKeyDown: boolean): void;
 	onKeyUp(key?: string): void;

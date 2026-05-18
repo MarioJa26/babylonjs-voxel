@@ -33,6 +33,30 @@ export interface ChunkWorldMutationsAdapter {
 	onBoundaryMutation?(ctx: BlockMutationContext): void;
 }
 
+class ResolvedChunkCoords {
+	chunkX = 0;
+	chunkY = 0;
+	chunkZ = 0;
+	localX = 0;
+	localY = 0;
+	localZ = 0;
+	chunk: Chunk | undefined;
+}
+
+const _coordScratch = new ResolvedChunkCoords();
+
+function resolveCoords(worldX: number, worldY: number, worldZ: number): ResolvedChunkCoords {
+	const scratch = _coordScratch;
+	scratch.chunkX = worldToChunkCoord(worldX);
+	scratch.chunkY = worldToChunkCoord(worldY);
+	scratch.chunkZ = worldToChunkCoord(worldZ);
+	scratch.localX = worldToBlockCoord(worldX);
+	scratch.localY = worldToBlockCoord(worldY);
+	scratch.localZ = worldToBlockCoord(worldZ);
+	scratch.chunk = getChunk(scratch.chunkX, scratch.chunkY, scratch.chunkZ);
+	return scratch;
+}
+
 export class ChunkWorldMutations {
 	public constructor(
 		private readonly adapter: ChunkWorldMutationsAdapter = {},
@@ -43,7 +67,7 @@ export class ChunkWorldMutations {
 		worldY: number,
 		worldZ: number,
 	): number {
-		const coords = toLocalBlockCoordinates(worldX, worldY, worldZ);
+		const coords = resolveCoords(worldX, worldY, worldZ);
 		if (!coords.chunk) return 0;
 		return coords.chunk.getBlock(coords.localX, coords.localY, coords.localZ);
 	}
@@ -53,7 +77,7 @@ export class ChunkWorldMutations {
 		worldY: number,
 		worldZ: number,
 	): number {
-		const coords = toLocalBlockCoordinates(worldX, worldY, worldZ);
+		const coords = resolveCoords(worldX, worldY, worldZ);
 		if (!coords.chunk) return 0;
 		return coords.chunk.getLight(coords.localX, coords.localY, coords.localZ);
 	}
@@ -65,10 +89,9 @@ export class ChunkWorldMutations {
 		blockId: number,
 		state: number = 0,
 	): boolean {
-		const coords = toLocalBlockCoordinates(worldX, worldY, worldZ);
+		const coords = resolveCoords(worldX, worldY, worldZ);
 
 		if (!coords.chunk) {
-			this.adapter.onMissingChunk?.(coords);
 			return false;
 		}
 
@@ -84,6 +107,9 @@ export class ChunkWorldMutations {
 		);
 
 		const ctx: BlockMutationContext = {
+			worldX,
+			worldY,
+			worldZ,
 			...coords,
 			previousBlockId,
 			previousBlockState,
@@ -112,10 +138,9 @@ export class ChunkWorldMutations {
 	}
 
 	public deleteBlock(worldX: number, worldY: number, worldZ: number): boolean {
-		const coords = toLocalBlockCoordinates(worldX, worldY, worldZ);
+		const coords = resolveCoords(worldX, worldY, worldZ);
 
 		if (!coords.chunk) {
-			this.adapter.onMissingChunk?.(coords);
 			return false;
 		}
 
@@ -131,6 +156,9 @@ export class ChunkWorldMutations {
 		);
 
 		const ctx: BlockMutationContext = {
+			worldX,
+			worldY,
+			worldZ,
 			...coords,
 			previousBlockId,
 			previousBlockState,

@@ -210,7 +210,16 @@ export class ChunkStreamingController {
 			lod2VerticalRadius,
 		} = lodRuleSet.radii;
 
-		for (const chunk of Chunk.loadedChunks) {
+		const queryRadius = lod2HorizontalRadius + 2;
+		const queryVertical = lod2VerticalRadius + 2;
+
+		for (const chunk of Chunk.loadedChunkIndex.query(
+			chunkX,
+			chunkY,
+			chunkZ,
+			queryRadius,
+			queryVertical,
+		)) {
 			if (this.loadedRefreshQueueSet.has(chunk.id)) continue;
 
 			const hdist = Math.max(
@@ -581,7 +590,16 @@ export class ChunkStreamingController {
 		const verticalRemoveRadius =
 			verticalRadius + SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER;
 
-		for (const chunk of Chunk.loadedChunks) {
+		const scanRadius = removeRadius + 8;
+		const scanVertical = verticalRemoveRadius + 8;
+
+		for (const chunk of Chunk.loadedChunkIndex.query(
+			chunkX,
+			chunkY,
+			chunkZ,
+			scanRadius,
+			scanVertical,
+		)) {
 			if (chunk.isPersistent) continue;
 			if (unloadQueueSet.has(chunk)) continue;
 

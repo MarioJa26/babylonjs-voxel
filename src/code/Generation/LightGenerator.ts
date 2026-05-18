@@ -26,8 +26,13 @@ export class LightGenerator {
 	 */
 	private lightQueue: Uint16Array;
 
-	private static queueCapacity: number;
 	private static queueMask: number;
+
+	/**
+	 * Static scratch buffer reused across all propagateLight calls.
+	 * Eliminates the 64KB allocation per deferred lighting refinement.
+	 */
+	private static scratchQueue: Uint16Array | null = null;
 
 	private static readonly DENSITY_INFLUENCE_RANGE = 48;
 	private static readonly SKYLIGHT_GENERATION_MIN_WORLD_Y = 32;
@@ -40,10 +45,10 @@ export class LightGenerator {
 		const rawCap = LightGenerator.chunkSize ** 3;
 		const pot = nextPowerOfTwo(rawCap);
 
-		LightGenerator.queueCapacity = pot;
 		LightGenerator.queueMask = pot - 1;
 
 		this.lightQueue = new Uint16Array(pot);
+		LightGenerator.scratchQueue = new Uint16Array(pot);
 	}
 
 	/**
@@ -90,8 +95,7 @@ export class LightGenerator {
 			return;
 		}
 
-		// Allocate a full-capacity queue for BFS expansion and seed it with the snapshot.
-		const queue = new Uint16Array(LightGenerator.queueCapacity);
+		const queue = LightGenerator.scratchQueue!;
 		queue.set(seedState.queue, 0);
 
 		this.propagateLightFromQueue(blocks, light, queue, seedState.length);

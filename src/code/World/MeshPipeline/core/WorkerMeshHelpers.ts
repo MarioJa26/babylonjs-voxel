@@ -13,13 +13,46 @@ export type WorkerMeshInput = {
 	light_array?: Uint8Array;
 	neighbors: (Uint8Array | Uint16Array | undefined)[];
 	neighborLights?: (Uint8Array | undefined)[];
+	neighborPalettes?: (Uint8Array | Uint16Array | null | undefined)[];
+	neighborUniformIds?: (number | undefined)[];
 };
+
 type NeighborSample = {
 	neighborIndex: number;
 	lx: number;
 	ly: number;
 	lz: number;
 };
+
+function readPackedNibble(packed: Uint8Array, index: number): number {
+	const byte = packed[index >>> 1];
+	return (index & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
+}
+
+function readNeighborBlock(
+	neighbor: Uint8Array | Uint16Array | undefined,
+	palette: Uint8Array | Uint16Array | null | undefined,
+	uniformId: number | undefined,
+	index: number,
+	totalBlocks: number,
+	fallback: number,
+): number {
+	if (uniformId !== undefined) return uniformId;
+
+	if (!neighbor) return fallback;
+
+	if (neighbor.length === 0) return fallback;
+
+	if (palette && palette.length > 1) {
+		const packed = neighbor as Uint8Array;
+		if (index < 0 || index >= totalBlocks) return fallback;
+		const paletteIndex = readPackedNibble(packed, index);
+		return palette[paletteIndex] ?? fallback;
+	}
+
+	if (index < 0 || index >= neighbor.length) return fallback;
+	return neighbor[index] ?? fallback;
+}
 
 /**
  * Create an empty WorkerInternalMeshData inside the worker.
@@ -75,7 +108,10 @@ export function createMeshContextFromPayload(
 
 	const hasNeighborChunk = (dx: number, dy: number, dz: number): boolean => {
 		const neighborIndex = getNeighborIndex(dx, dy, dz);
-		return neighborIndex >= 0 && !!input.neighbors[neighborIndex];
+		if (neighborIndex < 0) return false;
+		const n = input.neighbors[neighborIndex];
+		if (n) return true;
+		return input.neighborUniformIds?.[neighborIndex] !== undefined;
 	};
 
 	// Remap to neighbor chunk - defined inline since it captures size
@@ -198,12 +234,19 @@ export function createMeshContextFromPayload(
 
 		if (nIdx < 0) return fallback;
 
+		const uniformId = input.neighborUniformIds?.[nIdx];
+		const palette = input.neighborPalettes?.[nIdx];
 		const neighbor = input.neighbors[nIdx];
-		if (!neighbor) return 0;
-		if (neighbor.length === 0) return fallback;
-
 		const idx = lx + ly * size + lz * size2;
-		return neighbor[idx] ?? fallback;
+
+		return readNeighborBlock(
+			neighbor,
+			palette,
+			uniformId,
+			idx,
+			size3,
+			fallback,
+		);
 	};
 
 	const readLight = (x: number, y: number, z: number, fallback = 0): number => {

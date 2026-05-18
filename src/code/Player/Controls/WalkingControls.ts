@@ -10,6 +10,7 @@ import type { PlayerVehicle } from "../PlayerVehicle";
 import { DebugControlHelper } from "./DebugControlHelper";
 
 export class WalkingControls implements IControls<PlayerVehicle> {
+	readonly controlType = "walking";
 	public pressedKeys = new Set<string>();
 	#controlledEntity: PlayerVehicle;
 	#inputDirection: Vector3;

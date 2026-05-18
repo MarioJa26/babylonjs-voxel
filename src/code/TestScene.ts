@@ -1,4 +1,10 @@
-import { Engine, FreeCamera, Scene, Vector3 } from "@babylonjs/core";
+import {
+	Engine,
+	FreeCamera,
+	Scene,
+	ScenePerformancePriority,
+	Vector3,
+} from "@babylonjs/core";
 import "@babylonjs/core/Debug/debugLayer";
 import "@babylonjs/inspector";
 import { CustomBoat } from "./Entities/CustomBoat";
@@ -15,6 +21,7 @@ export class TestScene {
 	engine: Engine;
 	public readonly initPromise: Promise<void>;
 	private frameCounter = 0;
+	readonly #onKeyDown: (ev: KeyboardEvent) => void;
 
 	constructor(
 		document: Document,
@@ -24,7 +31,7 @@ export class TestScene {
 		this.engine = new Engine(this.canvas);
 		//this.connection = new MyConnection();
 
-		window.addEventListener("keydown", (ev) => {
+		this.#onKeyDown = (ev) => {
 			// Ctrl+F
 			if (ev.ctrlKey && ev.key.toLowerCase() === "f") {
 				if (this.scene) {
@@ -35,7 +42,8 @@ export class TestScene {
 					}
 				}
 			}
-		});
+		};
+		window.addEventListener("keydown", this.#onKeyDown);
 
 		this.initPromise = this.init();
 
@@ -59,6 +67,8 @@ export class TestScene {
 		// This creates a basic Babylon Scene object (non-mesh)
 		const scene = new Scene(this.engine);
 
+		scene.performancePriority = ScenePerformancePriority.BackwardCompatible;
+
 		// This creates and positions a free camera (non-mesh)
 		const camera = new FreeCamera("camera1", Vector3.Zero(), scene);
 
@@ -75,8 +85,9 @@ export class TestScene {
 		return scene;
 	}
 	public dispose(): void {
+		window.removeEventListener("keydown", this.#onKeyDown);
 		this.engine.stopRenderLoop();
-		this.scene?.dispose(); // fires onDisposeObservable → your cleanup runs
+		this.scene?.dispose();
 		this.engine.dispose();
 	}
 }

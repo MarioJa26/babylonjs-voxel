@@ -72,10 +72,7 @@ export class WorldGenerator {
 	}
 
 	private createBuffer(size: number): Uint8Array {
-		// Worker-generated chunk payloads must be transferable back to the main thread.
-		// SharedArrayBuffer cannot be put into the worker postMessage transfer list.
-		// The main thread already upgrades incoming arrays to SharedArrayBuffer if needed.
-		return new Uint8Array(new ArrayBuffer(size));
+		return new Uint8Array(new SharedArrayBuffer(size));
 	}
 
 	private enforceGlobalFloor(

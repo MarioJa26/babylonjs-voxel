@@ -219,13 +219,16 @@ export class ChunkWorkerPool {
 
 	public getDebugStats(): ChunkWorkerPoolDebugStats {
 		this.updateQueueDebugStats();
-		// Shallow-clone only the snapshot arrays; everything else is read from
-		// the live stats object which is already up-to-date.
-		return {
-			...this.debugStats,
-			workerDispatchCounts: this.workerDispatchCounts.slice(),
-			lastDispatchWorkerIndices: this.lastDispatchRing.toArray(),
-		};
+		const stats = this.debugStats;
+		// Write array snapshots into the live stats object directly, avoiding
+		// a spread-copy of the whole stats structure each frame.
+		const src = this.workerDispatchCounts;
+		const dst = stats.workerDispatchCounts;
+		dst.length = 0;
+		for (let i = 0; i < src.length; i++) dst.push(src[i]);
+
+		stats.lastDispatchWorkerIndices = this.lastDispatchRing.toArray();
+		return stats;
 	}
 
 	private recordWorkerDispatch(workerIndex: number): void {
@@ -538,8 +541,7 @@ export class ChunkWorkerPool {
 		if (
 			this.terrainTaskQueue.size > 0 ||
 			this.taskQueue.length > 0 ||
-			this.lodPrecomputeQueue.length > 0 ||
-			this.distantTerrainTaskQueue.length > 0
+			this.lodPrecomputeQueue.length > 0
 		) {
 			this.scheduleDeferredLightingPump();
 			return;
@@ -590,39 +592,93 @@ export class ChunkWorkerPool {
 		const size = Chunk.SIZE;
 		const last = size - 1;
 
-		// Inline face-sync to avoid closure allocation per call. Each tuple
-		// encodes [dx, dy, dz, isAxisX, isAxisY, isAxisZ, selfEdge, neighborEdge].
-		// We iterate over the 6 faces directly with a helper to keep code clear.
-		const syncFace = (
+		// Pre-cache all 6 neighbors to avoid repeated getChunk Map lookups.
+		const negX = chunk.getNeighbor(-1, 0, 0);
+		const posX = chunk.getNeighbor(1, 0, 0);
+		const negY = chunk.getNeighbor(0, -1, 0);
+		const posY = chunk.getNeighbor(0, 1, 0);
+		const negZ = chunk.getNeighbor(0, 0, -1);
+		const posZ = chunk.getNeighbor(0, 0, 1);
+
+		// Collect all mismatched cells into a single seed batch.
+		// Instead of calling updateLightFromNeighbors per cell (each triggering
+		// its own 6-neighbor scan + BFS), we seed one unified BFS pass.
+		type Seed = {
+			chunk: Chunk;
+			x: number;
+			y: number;
+			z: number;
+			level: number;
+		};
+		const seeds: Seed[] = [];
+
+		const collectFace = (
+			selfChunk: Chunk,
 			neighbor: Chunk | undefined,
-			mapCell: (
-				u: number,
-				v: number,
-			) => [number, number, number, number, number, number],
+			selfEdge: number,
+			neighborEdge: number,
+			axis: 0 | 1 | 2,
 		): void => {
 			if (!neighbor?.isLoaded || !neighbor.hasVoxelData) return;
 
 			for (let u = 0; u < size; u++) {
 				for (let v = 0; v < size; v++) {
-					const [x, y, z, nx, ny, nz] = mapCell(u, v);
-					const selfSky = chunk.getSkyLight(x, y, z);
+					let x: number, y: number, z: number;
+					let nx: number, ny: number, nz: number;
+
+					if (axis === 0) {
+						x = selfEdge;
+						y = u;
+						z = v;
+						nx = neighborEdge;
+						ny = u;
+						nz = v;
+					} else if (axis === 1) {
+						x = u;
+						y = selfEdge;
+						z = v;
+						nx = u;
+						ny = neighborEdge;
+						nz = v;
+					} else {
+						x = u;
+						y = v;
+						z = selfEdge;
+						nx = u;
+						ny = v;
+						nz = neighborEdge;
+					}
+
+					const selfSky = selfChunk.getSkyLight(x, y, z);
 					const neighborSky = neighbor.getSkyLight(nx, ny, nz);
 					if (selfSky === neighborSky) continue;
+
+					// Seed the darker side with the brighter side's level.
 					if (selfSky > neighborSky) {
-						neighbor.updateLightFromNeighbors(nx, ny, nz, true);
+						seeds.push({
+							chunk: neighbor,
+							x: nx,
+							y: ny,
+							z: nz,
+							level: selfSky,
+						});
 					} else {
-						chunk.updateLightFromNeighbors(x, y, z, true);
+						seeds.push({ chunk: selfChunk, x, y, z, level: neighborSky });
 					}
 				}
 			}
 		};
 
-		syncFace(chunk.getNeighbor(-1, 0, 0), (u, v) => [0, u, v, last, u, v]);
-		syncFace(chunk.getNeighbor(1, 0, 0), (u, v) => [last, u, v, 0, u, v]);
-		syncFace(chunk.getNeighbor(0, -1, 0), (u, v) => [u, 0, v, u, last, v]);
-		syncFace(chunk.getNeighbor(0, 1, 0), (u, v) => [u, last, v, u, 0, v]);
-		syncFace(chunk.getNeighbor(0, 0, -1), (u, v) => [u, v, 0, u, v, last]);
-		syncFace(chunk.getNeighbor(0, 0, 1), (u, v) => [u, v, last, u, v, 0]);
+		collectFace(chunk, negX, 0, last, 0);
+		collectFace(chunk, posX, last, 0, 0);
+		collectFace(chunk, negY, 0, last, 1);
+		collectFace(chunk, posY, last, 0, 1);
+		collectFace(chunk, negZ, 0, last, 2);
+		collectFace(chunk, posZ, last, 0, 2);
+
+		if (seeds.length > 0) {
+			chunk.batchPropagateSkyLight(seeds);
+		}
 	}
 
 	// -------------------------------------------------------------------------
@@ -645,17 +701,23 @@ export class ChunkWorkerPool {
 				if ((chunk.lodLevel ?? 0) === lod) {
 					createMeshFromData(chunk, { opaque, transparent });
 					chunk.isDirty = false;
-					if (Chunk.DEBUG_REMESH) console.log(`[Pool] mesh APPLIED chunk=${chunkId} lod=${lod} dirty=false`);
+					if (Chunk.DEBUG_REMESH)
+						console.log(
+							`[Pool] mesh APPLIED chunk=${chunkId} lod=${lod} dirty=false`,
+						);
 				} else {
 					chunk.isDirty = true;
-					this.scheduleRemesh(
-						chunk,
-						(chunk.lodLevel ?? 0) === 0,
-					);
-					if (Chunk.DEBUG_REMESH) console.log(`[Pool] mesh LOD MISMATCH chunk=${chunkId} msgLod=${lod} curLod=${chunk.lodLevel} dirty=true rescheduled`);
+					this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);
+					if (Chunk.DEBUG_REMESH)
+						console.log(
+							`[Pool] mesh LOD MISMATCH chunk=${chunkId} msgLod=${lod} curLod=${chunk.lodLevel} dirty=true rescheduled`,
+						);
 				}
 			} else {
-				if (Chunk.DEBUG_REMESH) console.log(`[Pool] mesh CHUNK NOT FOUND chunkId=${chunkId} lod=${lod}`);
+				if (Chunk.DEBUG_REMESH)
+					console.log(
+						`[Pool] mesh CHUNK NOT FOUND chunkId=${chunkId} lod=${lod}`,
+					);
 			}
 		}
 		this.debugStats.lastMeshProcessed = processed;
@@ -704,12 +766,18 @@ export class ChunkWorkerPool {
 
 	public scheduleRemesh(chunk: Chunk | undefined, priority = false) {
 		if (!chunk?.isLoaded) {
-			if (Chunk.DEBUG_REMESH) console.log(`[Pool] scheduleRemesh REJECTED (not loaded) chunk=${chunk?.id}`);
+			if (Chunk.DEBUG_REMESH)
+				console.log(
+					`[Pool] scheduleRemesh REJECTED (not loaded) chunk=${chunk?.id}`,
+				);
 			return;
 		}
 
 		if (!chunk.hasVoxelData) {
-			if (Chunk.DEBUG_REMESH) console.log(`[Pool] scheduleRemesh REJECTED (no voxel data) chunk=${chunk.id} lod=${chunk.lodLevel}`);
+			if (Chunk.DEBUG_REMESH)
+				console.log(
+					`[Pool] scheduleRemesh REJECTED (no voxel data) chunk=${chunk.id} lod=${chunk.lodLevel}`,
+				);
 			this.tryApplyCachedLODMesh(chunk, true);
 			return;
 		}
@@ -718,12 +786,13 @@ export class ChunkWorkerPool {
 			if (this.isSameLodRemeshInflight(chunk)) {
 				this.rerunRemeshAfterInflight.set(chunk.id, true);
 			}
-			if (Chunk.DEBUG_REMESH) console.log(`[Pool] scheduleRemesh REJECTED (empty chunk) chunk=${chunk.id}`);
+			if (Chunk.DEBUG_REMESH)
+				console.log(
+					`[Pool] scheduleRemesh REJECTED (empty chunk) chunk=${chunk.id}`,
+				);
 			this.pendingRemeshMap.delete(chunk);
-			// Remove from sorted task queue in O(n) — acceptable since this is a
-			// cold path (fully-air chunks are uncommon after first pass).
-			const qi = this.taskQueue.indexOf(chunk);
-			if (qi !== -1) this.taskQueue.splice(qi, 1);
+			// Empty chunk — will be skipped and shifted out during processQueue.
+			// No need for O(n) indexOf + splice removal.
 			this.taskQueuePriority.delete(chunk);
 			this.clearChunkMeshIfPresent(chunk);
 			return;
@@ -731,7 +800,10 @@ export class ChunkWorkerPool {
 
 		if (this.isSameLodRemeshInflight(chunk)) {
 			this.rerunRemeshAfterInflight.set(chunk.id, true);
-			if (Chunk.DEBUG_REMESH) console.log(`[Pool] scheduleRemesh DEFERRED (in-flight) chunk=${chunk.id} lod=${chunk.lodLevel}`);
+			if (Chunk.DEBUG_REMESH)
+				console.log(
+					`[Pool] scheduleRemesh DEFERRED (in-flight) chunk=${chunk.id} lod=${chunk.lodLevel}`,
+				);
 			return;
 		}
 
@@ -745,7 +817,9 @@ export class ChunkWorkerPool {
 
 		this.scheduleRemeshFlush();
 		if (Chunk.DEBUG_REMESH && wasNew) {
-			console.log(`[Pool] scheduleRemesh ACCEPTED chunk=${chunk.id} lod=${chunk.lodLevel} priority=${priority || lodPriority} mapSize=${this.pendingRemeshMap.size}`);
+			console.log(
+				`[Pool] scheduleRemesh ACCEPTED chunk=${chunk.id} lod=${chunk.lodLevel} priority=${priority || lodPriority} mapSize=${this.pendingRemeshMap.size}`,
+			);
 		}
 	}
 
@@ -777,7 +851,10 @@ export class ChunkWorkerPool {
 		let skipped = 0;
 		for (let i = 0; i < pending.length; i++) {
 			const [chunk, priority] = pending[i]!;
-			if (!chunk.isLoaded) { skipped++; continue; }
+			if (!chunk.isLoaded) {
+				skipped++;
+				continue;
+			}
 
 			if (this.isCompletelyEmptyChunk(chunk)) {
 				this.clearChunkMeshIfPresent(chunk);
@@ -789,7 +866,9 @@ export class ChunkWorkerPool {
 			enqueued++;
 		}
 		if (Chunk.DEBUG_REMESH) {
-			console.log(`[Pool] flushPendingRemeshQueue enqueued=${enqueued} skipped=${skipped} totalTaskQueue=${this.taskQueue.length}`);
+			console.log(
+				`[Pool] flushPendingRemeshQueue enqueued=${enqueued} skipped=${skipped} totalTaskQueue=${this.taskQueue.length}`,
+			);
 		}
 
 		this.processQueue();
@@ -920,27 +999,19 @@ export class ChunkWorkerPool {
 					if (chunk) {
 						const isStale = !chunk.isTerrainScheduled && !chunk.isLoaded;
 
-						let blocks: Uint8Array | Uint16Array | null = block_array ?? null;
-						let light: Uint8Array = light_array;
+						const blocks: Uint8Array | Uint16Array | null = block_array ?? null;
+						const light: Uint8Array = light_array;
 
-						const typedPalette: Uint16Array | null =
+						let typedPalette: Uint16Array | null =
 							palette instanceof Uint16Array ? palette : null;
 
-						if (blocks && !(blocks.buffer instanceof SharedArrayBuffer)) {
-							const shared = new SharedArrayBuffer(blocks.byteLength);
-							if (blocks instanceof Uint16Array) {
-								new Uint16Array(shared).set(blocks);
-								blocks = new Uint16Array(shared);
-							} else {
-								new Uint8Array(shared).set(blocks);
-								blocks = new Uint8Array(shared);
-							}
-						}
-
-						if (!(light.buffer instanceof SharedArrayBuffer)) {
-							const shared = new SharedArrayBuffer(light.byteLength);
-							new Uint8Array(shared).set(light);
-							light = new Uint8Array(shared);
+						if (
+							typedPalette &&
+							!(typedPalette.buffer instanceof SharedArrayBuffer)
+						) {
+							const shared = new SharedArrayBuffer(typedPalette.byteLength);
+							new Uint16Array(shared).set(typedPalette);
+							typedPalette = new Uint16Array(shared);
 						}
 
 						chunk.populate(
@@ -1020,7 +1091,8 @@ export class ChunkWorkerPool {
 			if (this.workers[workerIndex] !== getWorker()) return;
 
 			this._markWorkerIdle(workerIndex);
-			if (Chunk.DEBUG_REMESH) console.log(`[Pool] WORKER ${workerIndex} IDLE (terrain complete)`);
+			if (Chunk.DEBUG_REMESH)
+				console.log(`[Pool] WORKER ${workerIndex} IDLE (terrain complete)`);
 			this.processQueue();
 		};
 	}
@@ -1074,7 +1146,10 @@ export class ChunkWorkerPool {
 
 			this.workerTaskContext[workerIndex] = null;
 			this._markWorkerIdle(workerIndex);
-			if (Chunk.DEBUG_REMESH) console.log(`[Pool] WORKER ${workerIndex} IDLE (mesh complete) chunkId=${meshChunkId} lod=${meshLod}`);
+			if (Chunk.DEBUG_REMESH)
+				console.log(
+					`[Pool] WORKER ${workerIndex} IDLE (mesh complete) chunkId=${meshChunkId} lod=${meshLod}`,
+				);
 			this.processQueue();
 		};
 	}
@@ -1158,7 +1233,7 @@ export class ChunkWorkerPool {
 				lo = mid + 1;
 			}
 		}
-		this.taskQueue.splice(lo, 0, chunk);
+		this.taskQueue.push(chunk);
 	}
 
 	// -------------------------------------------------------------------------
@@ -1246,7 +1321,13 @@ export class ChunkWorkerPool {
 		const targetLods = [2, 3];
 		const candidates: Array<{ chunk: Chunk; lod: number; score: number }> = [];
 
-		for (const chunk of Chunk.loadedChunks) {
+		for (const chunk of Chunk.loadedChunkIndex.query(
+			centerChunkX,
+			centerChunkY,
+			centerChunkZ,
+			horizontalRadius + 1,
+			verticalRadius + 1,
+		)) {
 			if (!chunk.hasVoxelData || chunk.isDirty || !chunk.isModified) {
 				continue;
 			}
@@ -1392,7 +1473,9 @@ export class ChunkWorkerPool {
 		this.updateQueueDebugStats();
 
 		if (Chunk.DEBUG_REMESH) {
-			console.log(`[Pool] processQueue idle=${this.idleWorkerIndices.length} taskQueue=${this.taskQueue.length} terrain=${this.terrainTaskQueue.size} lodPrecompute=${this.lodPrecomputeQueue.length} distant=${this.distantTerrainTaskQueue.length} pumpScheduled=${this.processQueuePumpScheduled}`);
+			console.log(
+				`[Pool] processQueue idle=${this.idleWorkerIndices.length} taskQueue=${this.taskQueue.length} terrain=${this.terrainTaskQueue.size} lodPrecompute=${this.lodPrecomputeQueue.length} distant=${this.distantTerrainTaskQueue.length} pumpScheduled=${this.processQueuePumpScheduled}`,
+			);
 		}
 
 		// Sort only when there's more than one item. taskQueue is maintained
@@ -1450,14 +1533,20 @@ export class ChunkWorkerPool {
 					this.clearChunkMeshIfPresent(taskChunk);
 					this.pendingRemeshMap.delete(taskChunk);
 					this.taskQueuePriority.delete(taskChunk);
-					if (Chunk.DEBUG_REMESH) console.log(`[Pool] processQueue SKIPPED empty chunk=${taskChunk.id}`);
+					if (Chunk.DEBUG_REMESH)
+						console.log(
+							`[Pool] processQueue SKIPPED empty chunk=${taskChunk.id}`,
+						);
 					continue;
 				}
 				// Only try cache if the chunk wasn't explicitly dirtied via scheduleRemesh
 				if (!this.pendingRemeshMap.has(taskChunk)) {
 					if (this.tryApplyCachedLODMesh(taskChunk)) {
 						this.taskQueuePriority.delete(taskChunk);
-						if (Chunk.DEBUG_REMESH) console.log(`[Pool] processQueue SKIPPED cached mesh chunk=${taskChunk.id}`);
+						if (Chunk.DEBUG_REMESH)
+							console.log(
+								`[Pool] processQueue SKIPPED cached mesh chunk=${taskChunk.id}`,
+							);
 						continue;
 					}
 				}
@@ -1514,7 +1603,10 @@ export class ChunkWorkerPool {
 					this.taskQueuePriority.delete(taskChunk!);
 					this.inFlightRemeshKeys.add(packInflightKey(taskChunk!.id, lod));
 					worker.postFullRemesh(taskChunk!);
-					if (Chunk.DEBUG_REMESH) console.log(`[Pool] DISPATCHED remesh chunk=${taskChunk!.id} lod=${lod} worker=${workerIndex} queueLen=${this.taskQueue.length} inFlight=${this.inFlightRemeshKeys.size}`);
+					if (Chunk.DEBUG_REMESH)
+						console.log(
+							`[Pool] DISPATCHED remesh chunk=${taskChunk!.id} lod=${lod} worker=${workerIndex} queueLen=${this.taskQueue.length} inFlight=${this.inFlightRemeshKeys.size}`,
+						);
 					this.recordWorkerDispatch(workerIndex);
 					this.debugStats.totalRemeshDispatches++;
 					dispatchedThisTick++;
@@ -1560,7 +1652,9 @@ export class ChunkWorkerPool {
 		this.updateQueueDebugStats();
 
 		if (Chunk.DEBUG_REMESH && dispatchedThisTick > 0) {
-			console.log(`[Pool] processQueue dispatched=${dispatchedThisTick} remaining idle=${this.idleWorkerIndices.length} taskQueue=${this.taskQueue.length} terrain=${this.terrainTaskQueue.size}`);
+			console.log(
+				`[Pool] processQueue dispatched=${dispatchedThisTick} remaining idle=${this.idleWorkerIndices.length} taskQueue=${this.taskQueue.length} terrain=${this.terrainTaskQueue.size}`,
+			);
 		}
 
 		if (this.idleWorkerIndices.length > 0 && this.hasPendingTasks()) {

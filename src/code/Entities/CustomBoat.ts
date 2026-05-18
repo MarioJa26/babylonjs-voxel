@@ -9,7 +9,6 @@ import {
 } from "@babylonjs/core";
 import { ImportMeshAsync } from "@babylonjs/core/Loading/sceneLoader";
 import "@babylonjs/loaders/glTF";
-import type { Observer } from "@babylonjs/core/Misc/observable";
 import { BoatChunk, type BoatChunkBlock } from "@/code/World/Boat/BoatChunk";
 import { Axis } from "@/code/World/Collision/VoxelAabbCollider";
 import type { IUsable } from "../Inferface/IUsable";
@@ -66,6 +65,12 @@ export class CustomBoat implements IUsable {
 
 	public static getActiveBoats(): readonly CustomBoat[] {
 		return [...CustomBoat.#activeBoats];
+	}
+
+	public static tickAllActiveBoats(scene: Scene): void {
+		for (const boat of CustomBoat.#activeBoats) {
+			boat.#tick(scene);
+		}
 	}
 
 	public get boatChunk(): BoatChunk | undefined {
@@ -227,7 +232,6 @@ export class CustomBoat implements IUsable {
 	#buoyancyPoints: Vector3[] = [];
 	#submergedPoints = 0;
 
-	#beforeRenderObs?: Observer<Scene>;
 	#chunkBindingHandle?: symbol;
 	#isDisposed = false;
 
@@ -311,10 +315,7 @@ export class CustomBoat implements IUsable {
 		CustomBoat.#boatControls = new CustomBoatControls(this, player);
 		this.#mount = new Mount(this.#boat, CustomBoat.#boatControls);
 
-		// 7) Tick loop
-		this.#beforeRenderObs = scene.onBeforeRenderObservable.add(() =>
-			this.#tick(scene),
-		);
+		// 7) Tick loop (centralized via tickAllActiveBoats)
 
 		this.#chunkBindingHandle = registerChunkBoundEntity({
 			getWorldPosition: () => this.#boat.position,
@@ -485,6 +486,12 @@ export class CustomBoat implements IUsable {
 		// Always update collider orientation
 		this.#voxelCollider.setYaw(this.#currentYaw);
 
+		// Sync mounted player to new position
+		this.#mount.update();
+
+		// Sync boat chunk visuals
+		this.#boatChunk?.syncVisualMeshes();
+
 		// Debug
 		this.#voxelCollider.syncDebugMesh(this.#boat.position);
 	}
@@ -568,7 +575,7 @@ export class CustomBoat implements IUsable {
 	}
 
 	public get boatPosition(): Vector3 {
-		return this.#boat.position.clone();
+		return this.#boat.position;
 	}
 
 	public get mount(): Mount {
@@ -650,11 +657,6 @@ export class CustomBoat implements IUsable {
 
 		if (this.#mount?.isMounted()) {
 			this.#mount.dismount();
-		}
-
-		if (this.#beforeRenderObs) {
-			scene.onBeforeRenderObservable.remove(this.#beforeRenderObs);
-			this.#beforeRenderObs = undefined;
 		}
 
 		this.#voxelCollider?.dispose();

@@ -159,6 +159,8 @@ function pushTransferable(
 ): void {
 	if (!view) return;
 
+	if (view.buffer instanceof SharedArrayBuffer) return;
+
 	if (!(view.buffer instanceof ArrayBuffer))
 		throw new Error(
 			`Non-transferable buffer for "${label}". Must be ArrayBuffer-backed before posting.`,

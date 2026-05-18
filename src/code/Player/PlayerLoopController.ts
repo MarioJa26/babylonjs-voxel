@@ -1,4 +1,5 @@
 import type { Engine, Scene, Vector3 } from "@babylonjs/core";
+import { CustomBoat } from "../Entities/CustomBoat";
 import { getBiome } from "../Generation/TerrainHeightMap";
 import type { IControls } from "../Inferface/IControls";
 import { Chunk } from "../World/Chunk/Chunk";
@@ -9,9 +10,6 @@ import {
 	worldToChunkCoord,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
-import { CustomBoatControls } from "./Controls/CustomBoatControls";
-import { PaddleBoatControls } from "./Controls/PaddleBoatControls";
-import { WalkingControls } from "./Controls/WalkingControls";
 import { PlayerHud } from "./Hud/PlayerHud";
 import type { IPlayerBody } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
@@ -21,6 +19,11 @@ export class PlayerLoopController {
 	#lastChunkX = 0;
 	#lastChunkY = 0;
 	#lastChunkZ = 0;
+
+	#prevCameraYaw = 0;
+	#prevCameraPitch = 0;
+	#frameCount = 0;
+	#rebuildActiveMeshes = false;
 
 	static readonly DEBUG_HUD_INTERVAL_MS = 250;
 
@@ -45,6 +48,7 @@ export class PlayerLoopController {
 				}
 			}
 
+			CustomBoat.tickAllActiveBoats(this.scene);
 			this.playerVehicle.update(dt);
 			this.playerStats.update(dt, this.playerVehicle.isSprinting);
 			this.playerVehicle.updateCameraAndVisuals();
@@ -64,21 +68,21 @@ export class PlayerLoopController {
 				currentChunkY,
 				currentChunkZ,
 			);
+
+			this.#updateActiveMeshSelection();
 		});
 
 		this.scene.onAfterRenderObservable.add(() => {
 			this.updateDebugHud();
+			this.#freezeActiveMeshes();
 		});
 	}
 
 	private updateControls(): void {
 		const controls = this.getKeyboardControls();
-		if (
-			controls instanceof WalkingControls ||
-			controls instanceof CustomBoatControls ||
-			controls instanceof PaddleBoatControls
-		) {
-			controls.update();
+		const type = controls.controlType;
+		if (type === "walking" || type === "customBoat" || type === "paddleBoat") {
+			(controls as unknown as { update(): void }).update();
 		}
 	}
 
@@ -109,6 +113,57 @@ export class PlayerLoopController {
 			this.#lastChunkX = currentChunkX;
 			this.#lastChunkY = currentChunkY;
 			this.#lastChunkZ = currentChunkZ;
+		}
+	}
+
+	#updateActiveMeshSelection(): void {
+		const pos = this.getPlayerPosition();
+		const cx = worldToChunkCoord(pos.x);
+		const cy = worldToChunkCoord(pos.y);
+		const cz = worldToChunkCoord(pos.z);
+		const yaw = this.playerCamera.cameraYaw;
+		const pitch = this.playerCamera.cameraPitch;
+
+		const chunkChanged =
+			cx !== this.#lastChunkX ||
+			cy !== this.#lastChunkY ||
+			cz !== this.#lastChunkZ;
+		const cameraMoved =
+			yaw !== this.#prevCameraYaw || pitch !== this.#prevCameraPitch;
+
+		if (chunkChanged) {
+			this.#lastChunkX = cx;
+			this.#lastChunkY = cy;
+			this.#lastChunkZ = cz;
+		}
+		if (cameraMoved) {
+			this.#prevCameraYaw = yaw;
+			this.#prevCameraPitch = pitch;
+		}
+
+		this.#rebuildActiveMeshes = false;
+
+		if (chunkChanged || cameraMoved) {
+			this.#frameCount++;
+			if (this.#frameCount % 2 === 0) {
+				this.#rebuildActiveMeshes = true;
+			}
+		}
+
+		if (
+			this.#rebuildActiveMeshes &&
+			(this.scene as Scene)._activeMeshesFrozen
+		) {
+			this.scene.unfreezeActiveMeshes();
+		}
+	}
+
+	#freezeActiveMeshes(): void {
+		if (this.#rebuildActiveMeshes) {
+			this.scene.freezeActiveMeshes();
+			this.#rebuildActiveMeshes = false;
+		} else if (!(this.scene as Scene)._activeMeshesFrozen) {
+			this.scene.freezeActiveMeshes();
 		}
 	}
 
@@ -203,16 +258,26 @@ export class PlayerLoopController {
 			`last:${workerStats.lastDispatchCount} total:${workerStats.totalDispatchCount} budget:${workerStats.dispatchBudgetPerTick || "inf"}`,
 			"workers",
 		);
-		const dispatchHistogram = workerStats.workerDispatchCounts
-			.map((count, index) => ({ count, index }))
-			.filter((entry) => entry.count > 0)
-			.sort((a, b) => b.count - a.count)
-			.slice(0, 4)
-			.map((entry) => `${entry.index}:${entry.count}`)
-			.join(" ");
-		const recentWorkers = workerStats.lastDispatchWorkerIndices
-			.slice(-8)
-			.join(",");
+		const counts = workerStats.workerDispatchCounts;
+		const top4: string[] = [];
+		const indexed: { count: number; index: number }[] = [];
+		for (let i = 0; i < counts.length; i++) {
+			if (counts[i] > 0) indexed.push({ count: counts[i], index: i });
+		}
+		indexed.sort((a, b) => b.count - a.count);
+		const limit = indexed.length < 4 ? indexed.length : 4;
+		for (let i = 0; i < limit; i++) {
+			top4.push(`${indexed[i].index}:${indexed[i].count}`);
+		}
+		const dispatchHistogram = top4.join(" ");
+		const indices = workerStats.lastDispatchWorkerIndices;
+		const len = indices.length;
+		const recentStart = len > 8 ? len - 8 : 0;
+		let recentWorkers = "";
+		for (let i = recentStart; i < len; i++) {
+			if (i > recentStart) recentWorkers += ",";
+			recentWorkers += String(indices[i]);
+		}
 		PlayerHud.updateDebugInfo(
 			"Worker Dist",
 			`peakBusy:${workerStats.peakBusyWorkers} top:[${dispatchHistogram || "-"}] recent:[${recentWorkers || "-"}]`,

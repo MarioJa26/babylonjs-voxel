@@ -6,12 +6,40 @@ export class ItemSlot {
 	#item: Item | null = null;
 	#divItemSlot: HTMLDivElement = document.createElement("div");
 
+	#onDragStart: () => void;
+	#onDragOver: (e: DragEvent) => void;
+	#onDrop: (e: DragEvent) => void;
+	#onMouseOver: (e: MouseEvent) => void;
+	#onMouseOut: () => void;
+
 	row: number;
 	col: number;
 
 	constructor(row: number, col: number) {
 		this.row = row;
 		this.col = col;
+
+		this.#onDragStart = () => {
+			(window as any).draggedItem = this;
+		};
+		this.#onDragOver = (e) => {
+			e.preventDefault();
+		};
+		this.#onDrop = (e) => {
+			e.preventDefault();
+			const dragged = (window as any).draggedItem as ItemSlot;
+			if (dragged !== this) this.swapSlots(dragged);
+		};
+		this.#onMouseOver = (e) => {
+			PlayerInventory.currentlyHoveredSlot = this;
+			if (this.item) {
+				PlayerHud.showItemTooltip(this.item.name, e);
+			}
+		};
+		this.#onMouseOut = () => {
+			PlayerInventory.currentlyHoveredSlot = null;
+			PlayerHud.hideItemTooltip();
+		};
 
 		this.initalize();
 	}
@@ -83,30 +111,19 @@ export class ItemSlot {
 	public initalize() {
 		const div = this.#divItemSlot;
 		div.classList.add("inventory-slot");
-		div.addEventListener("dragstart", () => {
-			(window as any).draggedItem = this;
-		});
+		div.addEventListener("dragstart", this.#onDragStart);
+		div.addEventListener("dragover", this.#onDragOver);
+		div.addEventListener("drop", this.#onDrop);
+		div.addEventListener("mouseover", this.#onMouseOver);
+		div.addEventListener("mouseout", this.#onMouseOut);
+	}
 
-		div.addEventListener("dragover", (e) => {
-			e.preventDefault();
-		});
-
-		div.addEventListener("drop", (e) => {
-			e.preventDefault();
-			const dragged = (window as any).draggedItem as ItemSlot;
-			if (dragged !== this) this.swapSlots(dragged);
-		});
-
-		div.addEventListener("mouseover", (e) => {
-			PlayerInventory.currentlyHoveredSlot = this;
-			if (this.item) {
-				PlayerHud.showItemTooltip(this.item.name, e);
-			}
-		});
-
-		div.addEventListener("mouseout", () => {
-			PlayerInventory.currentlyHoveredSlot = null;
-			PlayerHud.hideItemTooltip();
-		});
+	public dispose(): void {
+		const div = this.#divItemSlot;
+		div.removeEventListener("dragstart", this.#onDragStart);
+		div.removeEventListener("dragover", this.#onDragOver);
+		div.removeEventListener("drop", this.#onDrop);
+		div.removeEventListener("mouseover", this.#onMouseOver);
+		div.removeEventListener("mouseout", this.#onMouseOut);
 	}
 }

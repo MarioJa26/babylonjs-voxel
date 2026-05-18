@@ -178,7 +178,7 @@ export const SALT_FLATS: Biome = {
 	id: BIOME_ID.SALT_FLATS,
 	name: "Salt_Flats",
 	topBlock: BlockType.SaltBlock, // salt / white cracked ground
-	undergroundBlock: 3, // sandstone
+	undergroundBlock: 1, // sandstone
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
 	treeDensity: 0.0,

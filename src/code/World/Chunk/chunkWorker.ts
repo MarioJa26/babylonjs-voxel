@@ -14,6 +14,23 @@ export class ChunkWorker {
 
 	private warnedNonSharedRemeshPayload = false;
 	private distantTerrainSharedInitialized = false;
+	// Pre-allocated arrays for remesh dispatch — avoids 4 allocations per call.
+	private readonly _neighborScratch: (
+		| Uint8Array
+		| Uint16Array
+		| null
+		| undefined
+	)[] = new Array(27);
+	private readonly _neighborLightScratch: (Uint8Array | undefined)[] =
+		new Array(27);
+	private readonly _neighborUniformIdScratch: (number | undefined)[] =
+		new Array(27);
+	private readonly _neighborPaletteScratch: (
+		| Uint8Array
+		| Uint16Array
+		| null
+		| undefined
+	)[] = new Array(27);
 	private static readonly EMPTY_NEIGHBOR_BLOCKS =
 		typeof SharedArrayBuffer !== "undefined"
 			? new Uint16Array(new SharedArrayBuffer(0))
@@ -71,11 +88,11 @@ export class ChunkWorker {
 	};
 
 	public postFullRemesh(chunk: Chunk, forcedLod?: number): void {
-		const neighbors: (Uint8Array | Uint16Array | null | undefined)[] = [];
-		const neighborLights: (Uint8Array | undefined)[] = [];
-		const neighborUniformIds: (number | undefined)[] = [];
-		const neighborPalettes: (Uint8Array | Uint16Array | null | undefined)[] =
-			[];
+		const neighbors = this._neighborScratch;
+		const neighborLights = this._neighborLightScratch;
+		const neighborUniformIds = this._neighborUniformIdScratch;
+		const neighborPalettes = this._neighborPaletteScratch;
+		let idx = 0;
 
 		for (let z = -1; z <= 1; z++) {
 			for (let y = -1; y <= 1; y++) {
@@ -85,28 +102,27 @@ export class ChunkWorker {
 					const neighbor = chunk.getNeighbor(x, y, z);
 					if (neighbor?.isLoaded) {
 						if (!neighbor.hasVoxelData) {
-							// Mesh-only neighbors don't have block payloads. Use zero-length
-							// sentinels so worker sampling falls back to local values while
-							// still treating this neighbor as present.
-							neighbors.push(ChunkWorker.EMPTY_NEIGHBOR_BLOCKS);
-							neighborLights.push(ChunkWorker.EMPTY_NEIGHBOR_LIGHTS);
-							neighborUniformIds.push(undefined);
-							neighborPalettes.push(undefined);
+							neighbors[idx] = ChunkWorker.EMPTY_NEIGHBOR_BLOCKS;
+							neighborLights[idx] = ChunkWorker.EMPTY_NEIGHBOR_LIGHTS;
+							neighborUniformIds[idx] = undefined;
+							neighborPalettes[idx] = undefined;
+							idx++;
 							continue;
 						}
 
-						neighbors.push(neighbor.block_array);
-						neighborLights.push(neighbor.light_array);
-						neighborUniformIds.push(
-							neighbor.isUniform ? neighbor.uniformBlockId : undefined,
-						);
-						neighborPalettes.push(this.paletteToTyped(neighbor.palette));
+						neighbors[idx] = neighbor.block_array;
+						neighborLights[idx] = neighbor.light_array;
+						neighborUniformIds[idx] = neighbor.isUniform
+							? neighbor.uniformBlockId
+							: undefined;
+						neighborPalettes[idx] = this.paletteToTyped(neighbor.palette);
 					} else {
-						neighbors.push(undefined);
-						neighborLights.push(undefined);
-						neighborUniformIds.push(undefined);
-						neighborPalettes.push(undefined);
+						neighbors[idx] = undefined;
+						neighborLights[idx] = undefined;
+						neighborUniformIds[idx] = undefined;
+						neighborPalettes[idx] = undefined;
 					}
+					idx++;
 				}
 			}
 		}

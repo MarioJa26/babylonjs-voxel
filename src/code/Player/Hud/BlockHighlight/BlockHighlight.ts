@@ -17,6 +17,7 @@ export class BlockHighlight {
 
 	#mesh: Mesh;
 	#shapeKey = "";
+	readonly #renderHandle: () => void;
 
 	constructor(scene: Scene) {
 		this.#scene = scene;
@@ -24,7 +25,12 @@ export class BlockHighlight {
 		this.#mesh = this.#buildUnitCube();
 		this.#shapeKey = "default";
 
-		scene.onBeforeRenderObservable.add(() => this.#update());
+		this.#renderHandle = () => this.#update();
+		scene.onBeforeRenderObservable.add(this.#renderHandle);
+	}
+
+	dispose(): void {
+		this.#scene.onBeforeRenderObservable.removeCallback(this.#renderHandle);
 	}
 
 	// ─── Per-frame update ────────────────────────────────────────────────────

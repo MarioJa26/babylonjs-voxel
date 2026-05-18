@@ -4,6 +4,7 @@ import { PlayerInventory } from "../Inventory/PlayerInventory";
 import type { Player } from "../Player";
 
 export class InventoryControls implements IControls<unknown> {
+	readonly controlType = "inventory";
 	controlledEntity: unknown;
 	pressedKeys: Set<string>;
 	inputDirection: Vector3;
