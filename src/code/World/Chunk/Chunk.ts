@@ -940,6 +940,30 @@ export class Chunk {
 		}
 	}
 
+	public batchPropagateSkyLightFlat(
+		chunks: Chunk[],
+		coords: Int32Array,
+		count: number,
+		levels: Uint8Array,
+	): void {
+		if (count === 0) return;
+		Q_A.clear();
+		for (let i = 0; i < count; i++) {
+			const base = i * 3;
+			Q_A.push(
+				chunks[i],
+				coords[base],
+				coords[base + 1],
+				coords[base + 2],
+				levels[i],
+			);
+		}
+		if (Q_A.head !== Q_A.tail) {
+			this.processLightPropagationQueue(Q_A, true);
+			this.scheduleRemesh(false, true);
+		}
+	}
+
 	// =========================================================================
 	// processLightPropagationQueue  (BFS forward pass)
 	// =========================================================================

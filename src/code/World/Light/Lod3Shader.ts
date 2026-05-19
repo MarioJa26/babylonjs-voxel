@@ -135,7 +135,7 @@ export class Lod3Shader {
 
 	public static readonly opaqueFragmentShader = `
     #version 300 es
-    precision mediump float;
+    precision highp float;
 
     in vec2 vUV;
     flat in vec2 vUV2;
@@ -235,7 +235,7 @@ export class Lod3Shader {
 
 	public static readonly transparentFragmentShader = `
     #version 300 es
-    precision mediump float;
+    precision highp float;
 
     in vec2 vUV;
     flat in vec2 vUV2;

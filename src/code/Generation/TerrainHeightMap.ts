@@ -97,32 +97,33 @@ function applyRidged(raw: number): number {
 }
 
 const continentalnessSpline = new Spline([
-	{ t: -0.995, v: -90 },
-	{ t: -0.366, v: -74 },
-	{ t: -0.315, v: -70 },
-	{ t: -0.294, v: -62 },
-	{ t: -0.238, v: -51 },
-	{ t: -0.195, v: -11 },
-	{ t: -0.179, v: 0 },
-	{ t: -0.113, v: 1 },
-	{ t: -0.051, v: 33 },
-	{ t: -0.029, v: 43 },
-	{ t: 0.088, v: 43 },
-	{ t: 0.116, v: 81 },
-	{ t: 0.17, v: 143 },
-	{ t: 0.246, v: 170 },
-	{ t: 0.374, v: 230 },
-	{ t: 0.435, v: 296 },
-	{ t: 0.513, v: 318 },
-	{ t: 0.578, v: 321 },
-	{ t: 0.704, v: 391 },
-	{ t: 0.738, v: 429 },
-	{ t: 0.771, v: 458 },
-	{ t: 0.822, v: 492 },
-	{ t: 0.924, v: 550 },
-	{ t: 0.968, v: 560 },
-	{ t: 0.988, v: 560 },
-	{ t: 1.0, v: 562 },
+	// Deep ocean trenches
+	{ t: -1.0, v: -100 },
+	{ t: -0.8, v: -80 },
+	{ t: -0.6, v: -60 },
+	{ t: -0.4, v: -40 },
+	{ t: -0.3, v: -25 },
+	{ t: -0.25, v: -15 },
+	// Coastline / sea level
+	{ t: -0.18, v: 0 },
+	// Lowlands / plains
+	{ t: -0.1, v: 5 },
+	{ t: 0.0, v: 15 },
+	{ t: 0.1, v: 40 },
+	{ t: 0.2, v: 80 },
+	// Hills
+	{ t: 0.3, v: 130 },
+	{ t: 0.4, v: 200 },
+	{ t: 0.5, v: 280 },
+	// Mountains
+	{ t: 0.6, v: 380 },
+	{ t: 0.7, v: 500 },
+	{ t: 0.8, v: 650 },
+	// High peaks
+	{ t: 0.85, v: 750 },
+	{ t: 0.9, v: 850 },
+	{ t: 0.95, v: 950 },
+	{ t: 1.0, v: 1000 },
 ]);
 
 const erosionSpline = new Spline([
@@ -242,9 +243,15 @@ function getChunkCacheIdx(worldX: number, worldZ: number): number {
 export function getFinalTerrainHeight(x: number, z: number): number {
 	const riverAbs = Math.abs(riverGenerator.getRiverNoise(x, z));
 	const settings = getBlendedBiomeTerrainSettings(x, z);
-	const baseHeight = computeHeightFromSettings(x, z, settings);
+
+	const rawContinent = continentalnessNoise(x, z);
+	const continent = applyRidged(rawContinent);
+	const splineBaseHeight =
+		GenerationParams.SEA_LEVEL + continentalnessSpline.getValue(continent);
+
+	const noiseHeight = computeHeightNoiseOnly(x, z, settings);
 	const detail = computeDetail(x, z, riverAbs, settings);
-	return Math.floor(baseHeight + detail);
+	return Math.floor(splineBaseHeight + noiseHeight + detail);
 }
 
 export function getBiome(x: number, z: number): Biome {
@@ -266,7 +273,12 @@ export function getOctaveNoise(x: number, z: number): number {
 // Detail (per-column)
 // ---------------------------------------------------------------------------
 
-function computeDetail(x: number, z: number, riverAbs: number, s: Float32Array): number {
+function computeDetail(
+	x: number,
+	z: number,
+	riverAbs: number,
+	s: Float32Array,
+): number {
 	const erosion = erosionNoise(x, z);
 	const pv = peaksAndValleysNoise(x, z);
 
@@ -540,6 +552,28 @@ export function prefetchChunkCorners(
 //              — equivalent to Math.pow but avoids the polymorphic dispatch
 //                overhead of the ** operator in V8 (TurboFan does not always
 //                reduce ** for non-literal exponents).
+
+function computeHeightNoiseOnly(x: number, z: number, s: Float32Array): number {
+	const noise = heightNoise(x * s[2], z * s[2]);
+
+	let n01 = (noise + 1) * 0.5;
+	if (n01 < 0) n01 = 0;
+	else if (n01 > 1) n01 = 1;
+
+	const exp = s[3];
+	let shaped: number;
+	if (exp === 1) {
+		shaped = n01;
+	} else if (exp === 2) {
+		shaped = n01 * n01;
+	} else if (exp === 0.5) {
+		shaped = Math.sqrt(n01);
+	} else {
+		shaped = n01 === 0 ? 0 : Math.exp(exp * Math.log(n01));
+	}
+
+	return shaped * s[1];
+}
 
 function computeHeightFromSettings(
 	x: number,

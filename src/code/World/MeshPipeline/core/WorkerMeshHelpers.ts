@@ -39,9 +39,7 @@ function readNeighborBlock(
 ): number {
 	if (uniformId !== undefined) return uniformId;
 
-	if (!neighbor) return fallback;
-
-	if (neighbor.length === 0) return fallback;
+	if (!neighbor || neighbor.length === 0) return 0;
 
 	if (palette && palette.length > 1) {
 		const packed = neighbor as Uint8Array;

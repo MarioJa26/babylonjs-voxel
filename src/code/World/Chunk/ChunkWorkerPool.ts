@@ -129,6 +129,11 @@ export class ChunkWorkerPool {
 	private remeshFlushScheduled = false;
 	private processQueuePumpScheduled = false;
 
+	// Debounced save queue for post-remesh chunk persistence
+	private pendingRemeshSaveIds = new Set<bigint>();
+	private pendingRemeshSaveTimer: ReturnType<typeof setTimeout> | null = null;
+	private readonly REMESH_SAVE_DEBOUNCE_MS = 500;
+
 	// In-flight keys: bigint-packed (chunkId << 4 | lod) — no string allocs
 	private inFlightRemeshKeys = new Set<bigint>();
 	private rerunRemeshAfterInflight = new Map<bigint, boolean>();
@@ -538,11 +543,7 @@ export class ChunkWorkerPool {
 	}
 
 	private processDeferredLightingQueue(): void {
-		if (
-			this.terrainTaskQueue.size > 0 ||
-			this.taskQueue.length > 0 ||
-			this.lodPrecomputeQueue.length > 0
-		) {
+		if (this.terrainTaskQueue.size > 0) {
 			this.scheduleDeferredLightingPump();
 			return;
 		}
@@ -600,17 +601,12 @@ export class ChunkWorkerPool {
 		const negZ = chunk.getNeighbor(0, 0, -1);
 		const posZ = chunk.getNeighbor(0, 0, 1);
 
-		// Collect all mismatched cells into a single seed batch.
-		// Instead of calling updateLightFromNeighbors per cell (each triggering
-		// its own 6-neighbor scan + BFS), we seed one unified BFS pass.
-		type Seed = {
-			chunk: Chunk;
-			x: number;
-			y: number;
-			z: number;
-			level: number;
-		};
-		const seeds: Seed[] = [];
+		// Flat arrays avoid per-cell object allocation.
+		// Max: 6 faces * 32*32 cells = 6144 seeds
+		const seedChunks: Chunk[] = [];
+		const seedCoords = new Int32Array(6144 * 3);
+		const seedLevels = new Uint8Array(6144);
+		let seedCount = 0;
 
 		const collectFace = (
 			selfChunk: Chunk,
@@ -653,18 +649,23 @@ export class ChunkWorkerPool {
 					const neighborSky = neighbor.getSkyLight(nx, ny, nz);
 					if (selfSky === neighborSky) continue;
 
+					if (seedCount >= 6144) return;
+
 					// Seed the darker side with the brighter side's level.
 					if (selfSky > neighborSky) {
-						seeds.push({
-							chunk: neighbor,
-							x: nx,
-							y: ny,
-							z: nz,
-							level: selfSky,
-						});
+						seedChunks[seedCount] = neighbor;
+						seedCoords[seedCount * 3] = nx;
+						seedCoords[seedCount * 3 + 1] = ny;
+						seedCoords[seedCount * 3 + 2] = nz;
+						seedLevels[seedCount] = selfSky;
 					} else {
-						seeds.push({ chunk: selfChunk, x, y, z, level: neighborSky });
+						seedChunks[seedCount] = selfChunk;
+						seedCoords[seedCount * 3] = x;
+						seedCoords[seedCount * 3 + 1] = y;
+						seedCoords[seedCount * 3 + 2] = z;
+						seedLevels[seedCount] = neighborSky;
 					}
+					seedCount++;
 				}
 			}
 		};
@@ -676,8 +677,13 @@ export class ChunkWorkerPool {
 		collectFace(chunk, negZ, 0, last, 2);
 		collectFace(chunk, posZ, last, 0, 2);
 
-		if (seeds.length > 0) {
-			chunk.batchPropagateSkyLight(seeds);
+		if (seedCount > 0) {
+			chunk.batchPropagateSkyLightFlat(
+				seedChunks,
+				seedCoords,
+				seedCount,
+				seedLevels,
+			);
 		}
 	}
 
@@ -701,6 +707,7 @@ export class ChunkWorkerPool {
 				if ((chunk.lodLevel ?? 0) === lod) {
 					createMeshFromData(chunk, { opaque, transparent });
 					chunk.isDirty = false;
+					this.queuePostRemeshSave(chunk);
 					if (Chunk.DEBUG_REMESH)
 						console.log(
 							`[Pool] mesh APPLIED chunk=${chunkId} lod=${lod} dirty=false`,
@@ -726,6 +733,35 @@ export class ChunkWorkerPool {
 		this.updateQueueDebugStats();
 		requestAnimationFrame(this.processMeshQueueLoop);
 	};
+
+	private queuePostRemeshSave(chunk: Chunk): void {
+		if (chunk.isPersistent) return;
+		if (this.deferredLightingQueuedIds.has(chunk.id)) return;
+
+		this.pendingRemeshSaveIds.add(chunk.id);
+
+		if (this.pendingRemeshSaveTimer !== null) return;
+
+		this.pendingRemeshSaveTimer = setTimeout(() => {
+			this.pendingRemeshSaveTimer = null;
+			const ids = Array.from(this.pendingRemeshSaveIds);
+			this.pendingRemeshSaveIds.clear();
+
+			const chunksToSave: Chunk[] = [];
+			for (let i = 0; i < ids.length; i++) {
+				const chunk = Chunk.chunkInstances.get(ids[i]);
+				if (chunk && chunk.isLoaded && chunk.needsPersistence()) {
+					chunksToSave.push(chunk);
+				}
+			}
+
+			if (chunksToSave.length > 0) {
+				void WorldStorage.saveChunks(chunksToSave).catch((error) => {
+					console.error("Post-remesh chunk save failed:", error);
+				});
+			}
+		}, this.REMESH_SAVE_DEBOUNCE_MS);
+	}
 
 	// -------------------------------------------------------------------------
 	// Pool size resolution
