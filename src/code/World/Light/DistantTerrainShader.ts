@@ -14,7 +14,7 @@ export class DistantTerrainShader {
         void main() {
             gl_Position = worldViewProjection * vec4(position, 1.0);
             vPositionW = (world * vec4(position, 1.0)).xyz;
-            vNormal = normalize(mat3(world) * normal);
+            vNormal = normal;
         }
     `;
 

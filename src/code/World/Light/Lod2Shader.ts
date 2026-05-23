@@ -53,6 +53,15 @@ export class Lod2Shader {
       swapUV = int(axisFace < 4);
     }
 
+    const mat3 TBN_TABLE[6] = mat3[](
+        mat3(0,1,0, 0,0,1, 1,0,0),   // 0: +X
+        mat3(0,1,0, 0,0,1, -1,0,0),  // 1: -X
+        mat3(0,0,1, 1,0,0, 0,1,0),   // 2: +Y
+        mat3(0,0,1, 1,0,0, 0,-1,0),  // 3: -Y
+        mat3(1,0,0, 0,1,0, 0,0,1),   // 4: +Z
+        mat3(1,0,0, 0,1,0, 0,0,-1)   // 5: -Z
+    );
+
     void main(void) {
       int axisFace = int(faceDataA.w + 0.5);
       int axis = axisFace >> 1;
@@ -109,21 +118,8 @@ export class Lod2Shader {
 
       vPositionW = (world * vec4(localPosition, 1.0)).xyz;
 
-      vec3 normal = vec3(0.0);
-      if (axis == 0) normal.x = isBackFace == 1 ? -1.0 : 1.0;
-      else if (axis == 1) normal.y = isBackFace == 1 ? -1.0 : 1.0;
-      else normal.z = isBackFace == 1 ? -1.0 : 1.0;
-
-      vec3 N = normalize(mat3(world) * normal);
-
-      float isX = axis == 0 ? 1.0 : 0.0;
-      float isY = axis == 1 ? 1.0 : 0.0;
-      vec3 tObj = vec3(1.0 - isX - isY, isX, isY);
-
-      float handedness = sign(normal.x + normal.y + normal.z);
-      vec3 T = normalize(mat3(world) * tObj);
-      vec3 B = normalize(cross(N, T) * handedness);
-      vTBN = mat3(T, B, N);
+      mat3 tbn = TBN_TABLE[axisFace];
+      vTBN = tbn;
 
       int light = int(faceDataC.y);
       vSkyLight = float(light >> 4) * 0.0666666;
@@ -258,15 +254,12 @@ export class Lod2Shader {
       applyDitherFade();
 
       vec2 singleTileUV = fract(vUV);
-      vec2 dx = dFdx(vUV) * atlasTileSize;
-      vec2 dy = dFdy(vUV) * atlasTileSize;
-      float lod = log2(max(length(dx), length(dy)));
       vec2 atlasUV = vUV2 + singleTileUV * atlasTileSize;
 
-      vec4 diffuseColor = textureLod(diffuseTexture, atlasUV, lod);
+      vec4 diffuseColor = texture(diffuseTexture, atlasUV);
       diffuseColor.rgb *= mix(1.0, 0.55, wetness);
 
-      vec3 normalMap = textureLod(normalTexture, atlasUV, lod).rgb;
+      vec3 normalMap = texture(normalTexture, atlasUV).rgb;
       normalMap = normalize(normalMap * 2.0 - 1.0);
       vec3 worldNormal = normalize(vTBN * normalMap);
 
@@ -380,12 +373,9 @@ export class Lod2Shader {
 
     void main(void) {
       vec2 singleTileUV = fract(vUV);
-      vec2 dx = dFdx(vUV) * atlasTileSize;
-      vec2 dy = dFdy(vUV) * atlasTileSize;
-      float lod = log2(max(length(dx), length(dy)));
       vec2 atlasUV = vUV2 + singleTileUV * atlasTileSize;
 
-      vec4 diffuseColor = textureLod(diffuseTexture, atlasUV, lod);
+      vec4 diffuseColor = texture(diffuseTexture, atlasUV);
       applyDitherFade();
       if (diffuseColor.a < 0.02) {
         discard;
@@ -393,7 +383,7 @@ export class Lod2Shader {
 
       diffuseColor.rgb *= mix(1.0, 0.55, wetness);
 
-      vec3 normalMap = textureLod(normalTexture, atlasUV, lod).rgb;
+      vec3 normalMap = texture(normalTexture, atlasUV).rgb;
       normalMap = normalize(normalMap * 2.0 - 1.0);
       vec3 worldNormal = normalize(vTBN * normalMap);
 

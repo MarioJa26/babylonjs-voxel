@@ -92,7 +92,7 @@ export class Lod3Shader {
       if (axis == 0) normal.x = isBackFace == 1 ? -1.0 : 1.0;
       else if (axis == 1) normal.y = isBackFace == 1 ? -1.0 : 1.0;
       else normal.z = isBackFace == 1 ? -1.0 : 1.0;
-      vFaceNormalW = normalize(mat3(world) * normal);
+      vFaceNormalW = normal;
 
       if (axis == 1) {
         vFaceShade = isBackFace == 1 ? 0.58 : 1.0;
@@ -222,7 +222,7 @@ export class Lod3Shader {
       float light = clamp(max(skyTerm, blockTerm), 0.0, 1.0);
 
       float faceShade = vFaceShade;
-      float horizon = clamp(dot(normalize(vFaceNormalW), lightDirection) * 0.5 + 0.5, 0.65, 1.0);
+      float horizon = clamp(dot(vFaceNormalW, lightDirection) * 0.5 + 0.5, 0.65, 1.0);
       light = clamp(light * faceShade * horizon, 0.0, 1.0);
 
       vec3 color = applyTintBucket(tex.rgb, vTintBucket) * light;
@@ -325,7 +325,7 @@ export class Lod3Shader {
       float light = clamp(max(skyTerm, blockTerm), 0.0, 1.0);
 
       float faceShade = vFaceShade;
-      float horizon = clamp(dot(normalize(vFaceNormalW), lightDirection) * 0.5 + 0.5, 0.65, 1.0);
+      float horizon = clamp(dot(vFaceNormalW, lightDirection) * 0.5 + 0.5, 0.65, 1.0);
       light = clamp(light * faceShade * horizon, 0.0, 1.0);
 
       vec3 color = applyTintBucket(tex.rgb, vTintBucket) * light;

@@ -50,6 +50,7 @@ export interface ResizableTypedArray<T extends Uint8Array> {
 	): void;
 	readonly finalArray: T;
 	bulkPush(src: T): void;
+	length: number;
 }
 
 /**
