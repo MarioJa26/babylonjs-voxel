@@ -28,7 +28,7 @@ export class PlayerCamera {
 
 		playerCamera.fov = SETTING_PARAMS.CAMERA_FOV * (Math.PI / 180);
 		playerCamera.minZ = 0.1;
-		playerCamera.maxZ = 100000;
+		playerCamera.maxZ = 1100000;
 	}
 
 	public moveWithPlayer(characterPosition: Vector3): void {

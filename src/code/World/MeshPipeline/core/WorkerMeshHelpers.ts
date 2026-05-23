@@ -235,3 +235,252 @@ export function createMeshContextFromPayload(
 		hasNeighborChunk,
 	};
 }
+
+// =========================================================================
+// SVO-aware mesh context
+// =========================================================================
+
+const SVO_LEAF_MASK = 0x80000000;
+const SVO_DATA_MASK = 0x0000ffff;
+
+type SvoWorkerRequest = {
+	svo: Uint32Array | null;
+	light_array?: Uint8Array;
+	neighbors: (Uint32Array | null | undefined)[];
+	neighborLights?: (Uint8Array | undefined)[];
+};
+
+function svoGetBlock(
+	svo: Uint32Array | null,
+	size: number,
+	x: number,
+	y: number,
+	z: number,
+	fallback: number,
+): number {
+	if (!svo || svo.length === 0) return fallback;
+	let node = svo[0];
+	let s = size;
+	let cx = 0, cy = 0, cz = 0;
+
+	while ((node & SVO_LEAF_MASK) === 0) {
+		s /= 2;
+		const rx = x - cx >= s ? 1 : 0;
+		const ry = y - cy >= s ? 1 : 0;
+		const rz = z - cz >= s ? 1 : 0;
+		if (rx) cx += s;
+		if (ry) cy += s;
+		if (rz) cz += s;
+		const childOffset = rx + ry * 2 + rz * 4;
+		node = svo[node + childOffset];
+	}
+	return node & SVO_DATA_MASK;
+}
+
+/**
+ * Creates a MeshContext that reads blocks from SVO data.
+ */
+export function createSvoMeshContext(
+	base: WorkerMeshBaseContext,
+	input: SvoWorkerRequest,
+): MeshContext {
+	const size = base.size;
+	const size2 = size * size;
+
+	const isInBounds = (x: number, y: number, z: number): boolean => {
+		return x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size;
+	};
+
+	const hasNeighborChunk = (dx: number, dy: number, dz: number): boolean => {
+		const neighborIndex = getNeighborIndex(dx, dy, dz);
+		if (neighborIndex < 0) return false;
+		const n = input.neighbors[neighborIndex];
+		return !!n && n.length > 0;
+	};
+
+	const readBlock = (x: number, y: number, z: number, fallback = 0): number => {
+		if (x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size) {
+			return svoGetBlock(input.svo, size, x, y, z, fallback);
+		}
+
+		let ox = 0, oy = 0, oz = 0;
+		let lx = x, ly = y, lz = z;
+
+		if (x < 0) { ox = -1; lx = x + size; }
+		else if (x >= size) { ox = 1; lx = x - size; }
+
+		if (y < 0) { oy = -1; ly = y + size; }
+		else if (y >= size) { oy = 1; ly = y - size; }
+
+		if (z < 0) { oz = -1; lz = z + size; }
+		else if (z >= size) { oz = 1; lz = z - size; }
+
+		if (lx < 0 || lx >= size || ly < 0 || ly >= size || lz < 0 || lz >= size) {
+			return fallback;
+		}
+
+		const neighborIndex = ox + 1 + (oy + 1) * 3 + (oz + 1) * 9;
+		const nIdx = neighborIndex < 13 ? neighborIndex : neighborIndex - 1;
+		if (nIdx < 0) return fallback;
+
+		const neighbor = input.neighbors[nIdx];
+		return svoGetBlock(neighbor ?? null, size, lx, ly, lz, fallback);
+	};
+
+	const readLight = (x: number, y: number, z: number, fallback = 0): number => {
+		if (isInBounds(x, y, z)) {
+			if (!input.light_array) return fallback;
+			return input.light_array[x + y * size + z * size2] ?? fallback;
+		}
+
+		let ox = 0, oy = 0, oz = 0;
+		let lx = x, ly = y, lz = z;
+
+		if (x < 0) { ox = -1; lx = x + size; }
+		else if (x >= size) { ox = 1; lx = x - size; }
+		if (y < 0) { oy = -1; ly = y + size; }
+		else if (y >= size) { oy = 1; ly = y - size; }
+		if (z < 0) { oz = -1; lz = z + size; }
+		else if (z >= size) { oz = 1; lz = z - size; }
+
+		if (lx < 0 || lx >= size || ly < 0 || ly >= size || lz < 0 || lz >= size) {
+			return fallback;
+		}
+
+		const neighborIndex = ox + 1 + (oy + 1) * 3 + (oz + 1) * 9;
+		const nIdx = neighborIndex < 13 ? neighborIndex : neighborIndex - 1;
+		if (nIdx < 0) return fallback;
+
+		const neighborLight = input.neighborLights?.[nIdx];
+		if (!neighborLight) return fallback;
+		const idx = lx + ly * size + lz * size2;
+		if (idx < 0 || idx >= neighborLight.length) return fallback;
+		return neighborLight[idx] ?? fallback;
+	};
+
+	return {
+		size,
+		lod: base.lod,
+		disableAO: base.lod >= 2,
+		getBlock: readBlock,
+		getLight: readLight,
+		hasNeighborChunk,
+	};
+}
+
+// =========================================================================
+// Flat voxel array mesh context (O(1) block reads, no SVO traversal)
+// =========================================================================
+
+type FlatVoxelWorkerRequest = {
+	voxels: Uint16Array | null;
+	light_array?: Uint8Array;
+	neighbors: (Uint16Array | null | undefined)[];
+	neighborLights?: (Uint8Array | undefined)[];
+};
+
+function flatGetBlock(
+	voxels: Uint16Array | null,
+	size: number,
+	x: number,
+	y: number,
+	z: number,
+	fallback: number,
+): number {
+	if (!voxels || voxels.length === 0) return fallback;
+	const idx = x + y * size + z * size * size;
+	if (idx < 0 || idx >= voxels.length) return fallback;
+	return voxels[idx];
+}
+
+/**
+ * Creates a MeshContext that reads blocks from a flat Uint16Array voxel buffer.
+ * This is O(1) per block read — no SVO tree traversal.
+ */
+export function createFlatVoxelMeshContext(
+	base: WorkerMeshBaseContext,
+	input: FlatVoxelWorkerRequest,
+): MeshContext {
+	const size = base.size;
+	const size2 = size * size;
+
+	const isInBounds = (x: number, y: number, z: number): boolean => {
+		return x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size;
+	};
+
+	const hasNeighborChunk = (dx: number, dy: number, dz: number): boolean => {
+		const neighborIndex = getNeighborIndex(dx, dy, dz);
+		if (neighborIndex < 0) return false;
+		const n = input.neighbors[neighborIndex];
+		return !!n && n.length > 0;
+	};
+
+	const readBlock = (x: number, y: number, z: number, fallback = 0): number => {
+		if (x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size) {
+			return flatGetBlock(input.voxels, size, x, y, z, fallback);
+		}
+
+		let ox = 0, oy = 0, oz = 0;
+		let lx = x, ly = y, lz = z;
+
+		if (x < 0) { ox = -1; lx = x + size; }
+		else if (x >= size) { ox = 1; lx = x - size; }
+
+		if (y < 0) { oy = -1; ly = y + size; }
+		else if (y >= size) { oy = 1; ly = y - size; }
+
+		if (z < 0) { oz = -1; lz = z + size; }
+		else if (z >= size) { oz = 1; lz = z - size; }
+
+		if (lx < 0 || lx >= size || ly < 0 || ly >= size || lz < 0 || lz >= size) {
+			return fallback;
+		}
+
+		const neighborIndex = ox + 1 + (oy + 1) * 3 + (oz + 1) * 9;
+		const nIdx = neighborIndex < 13 ? neighborIndex : neighborIndex - 1;
+		if (nIdx < 0) return fallback;
+
+		const neighbor = input.neighbors[nIdx];
+		return flatGetBlock(neighbor ?? null, size, lx, ly, lz, fallback);
+	};
+
+	const readLight = (x: number, y: number, z: number, fallback = 0): number => {
+		if (isInBounds(x, y, z)) {
+			if (!input.light_array) return fallback;
+			return input.light_array[x + y * size + z * size2] ?? fallback;
+		}
+
+		let ox = 0, oy = 0, oz = 0;
+		let lx = x, ly = y, lz = z;
+
+		if (x < 0) { ox = -1; lx = x + size; }
+		else if (x >= size) { ox = 1; lx = x - size; }
+		if (y < 0) { oy = -1; ly = y + size; }
+		else if (y >= size) { oy = 1; ly = y - size; }
+		if (z < 0) { oz = -1; lz = z + size; }
+		else if (z >= size) { oz = 1; lz = z - size; }
+
+		if (lx < 0 || lx >= size || ly < 0 || ly >= size || lz < 0 || lz >= size) {
+			return fallback;
+		}
+
+		const neighborIndex = ox + 1 + (oy + 1) * 3 + (oz + 1) * 9;
+		const nIdx = neighborIndex < 13 ? neighborIndex : neighborIndex - 1;
+		if (nIdx < 0) return fallback;
+
+		const neighborLight = input.neighborLights?.[nIdx];
+		if (!neighborLight) return fallback;
+		const idx = lx + ly * size + lz * size2;
+		if (idx < 0 || idx >= neighborLight.length) return fallback;
+		return neighborLight[idx] ?? fallback;
+	};
+
+	return {
+		size,
+		lod: base.lod,
+		disableAO: base.lod >= 2,
+		getBlock: readBlock,
+		getLight: readLight,
+		hasNeighborChunk,
+	};
+}

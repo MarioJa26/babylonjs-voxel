@@ -18,13 +18,24 @@ import { WorldEnvironment } from "../../Maps/WorldEnvironment";
 import { GLOBAL_VALUES } from "../GLOBAL_VALUES";
 import { Lod2Shader } from "../Light/Lod2Shader";
 import { Lod3Shader } from "../Light/Lod3Shader";
+import { Lod4Shader } from "../Light/Lod4Shader";
+import { Lod4TerrainShader } from "../Light/Lod4TerrainShader";
 import { OpaqueShader } from "../Light/OpaqueShader";
 import { TransparentShader } from "../Light/TransparentShader";
+import { COLOR_PALETTE } from "../MeshPipeline/core/BlockColorPalette";
 import { updateBlockTexturesUV } from "../Texture/BlockTextures";
 import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
 import { TextureCache } from "../Texture/TextureCache";
 import { TextureDefinitions } from "../Texture/TextureDefinitions";
+import type { VoxelImpostorManager } from "../VoxelImpostor/VoxelImpostorManager";
 import { Chunk } from "./Chunk";
+
+let impostorManager: VoxelImpostorManager | null = null;
+
+export function setImpostorManager(manager: VoxelImpostorManager): void {
+	impostorManager = manager;
+}
+
 import type { MeshData } from "./DataStructures/MeshData";
 
 // ---------------------------------------------------------------------------
@@ -48,6 +59,10 @@ let lod3OpaqueMaterial: Material | null = null;
 let lod3TransparentMaterial: Material | null = null;
 let lod2OpaqueMaterial: Material | null = null;
 let lod2TransparentMaterial: Material | null = null;
+let lod4OpaqueMaterial: Material | null = null;
+let lod4TransparentMaterial: Material | null = null;
+let lod4TerrainOpaqueMaterial: Material | null = null;
+let lod4TerrainTransparentMaterial: Material | null = null;
 
 let globalUniformBuffer: UniformBuffer | null = null;
 let sharedFacePositionBuffer: Buffer | null = null;
@@ -387,6 +402,7 @@ function upsertMesh(
 			),
 		);
 		mesh.cullingStrategy = AbstractMesh.CULLINGSTRATEGY_OPTIMISTIC_INCLUSION;
+		mesh.alwaysSelectAsActiveMesh = true;
 
 		mesh.freezeWorldMatrix();
 	}
@@ -533,6 +549,19 @@ export async function initAtlas(): Promise<void> {
 		Lod2Shader.opaqueFragmentShader;
 	Effect.ShadersStore["lod2TransparentChunkFragmentShader"] =
 		Lod2Shader.transparentFragmentShader;
+
+	Effect.ShadersStore["lod4ChunkVertexShader"] = Lod4Shader.chunkVertexShader;
+	Effect.ShadersStore["lod4ChunkFragmentShader"] =
+		Lod4Shader.opaqueFragmentShader;
+	Effect.ShadersStore["lod4TransparentChunkFragmentShader"] =
+		Lod4Shader.transparentFragmentShader;
+
+	Effect.ShadersStore["lod4TerrainVertexShader"] =
+		Lod4TerrainShader.vertexShader;
+	Effect.ShadersStore["lod4TerrainFragmentShader"] =
+		Lod4TerrainShader.opaqueFragmentShader;
+	Effect.ShadersStore["lod4TerrainTransparentFragmentShader"] =
+		Lod4TerrainShader.transparentFragmentShader;
 
 	if (!globalUniformBuffer) {
 		globalUniformBuffer = new UniformBuffer(
@@ -768,6 +797,126 @@ export async function initAtlas(): Promise<void> {
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
 		applyLodShaderBindings(mat);
 	}
+
+	// -------------------------------------------------------------------------
+	// LOD4 opaque material (super-block impostors)
+	// -------------------------------------------------------------------------
+	if (!lod4OpaqueMaterial) {
+		const mat = new ShaderMaterial(
+			"lod4ChunkShaderMaterial",
+			scene,
+			{ vertex: "lod4Chunk", fragment: "lod4Chunk" },
+			{
+				attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
+				uniforms: lodUniforms,
+				uniformBuffers: ["GlobalUniforms"],
+				samplers: ["diffuseTexture"],
+			},
+		);
+		mat.backFaceCulling = true;
+		mat.setFloat("atlasTileSize", tileSize);
+		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
+		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
+		applyLodShaderBindings(mat);
+		mat.wireframe = GLOBAL_VALUES.DEBUG;
+		lod4OpaqueMaterial = mat;
+	} else {
+		const mat = lod4OpaqueMaterial as ShaderMaterial;
+		mat.wireframe = GLOBAL_VALUES.DEBUG;
+		mat.setFloat("atlasTileSize", tileSize);
+		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
+		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
+		applyLodShaderBindings(mat);
+	}
+
+	// -------------------------------------------------------------------------
+	// LOD4 transparent material
+	// -------------------------------------------------------------------------
+	if (!lod4TransparentMaterial) {
+		const mat = new ShaderMaterial(
+			"lod4TransparentChunkShaderMaterial",
+			scene,
+			{ vertex: "lod4Chunk", fragment: "lod4TransparentChunk" },
+			{
+				attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
+				uniforms: lodUniforms,
+				uniformBuffers: ["GlobalUniforms"],
+				samplers: ["diffuseTexture"],
+			},
+		);
+		mat.backFaceCulling = true;
+		mat.setFloat("atlasTileSize", tileSize);
+		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
+		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
+		applyLodShaderBindings(mat);
+		mat.wireframe = GLOBAL_VALUES.DEBUG;
+		lod4TransparentMaterial = mat;
+	} else {
+		const mat = lod4TransparentMaterial as ShaderMaterial;
+		mat.wireframe = GLOBAL_VALUES.DEBUG;
+		mat.setFloat("atlasTileSize", tileSize);
+		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
+		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
+		applyLodShaderBindings(mat);
+	}
+
+	// -------------------------------------------------------------------------
+	// LOD4 Terrain opaque material (unicolor, vertex-lit)
+	// -------------------------------------------------------------------------
+	if (!lod4TerrainOpaqueMaterial) {
+		const mat = new ShaderMaterial(
+			"lod4TerrainChunkShaderMaterial",
+			scene,
+			{ vertex: "lod4Terrain", fragment: "lod4Terrain" },
+			{
+				attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
+				uniforms: [...lodUniforms, "uColorPalette"],
+				uniformBuffers: ["GlobalUniforms"],
+				samplers: [],
+			},
+		);
+		mat.backFaceCulling = true;
+		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
+		mat.setArray3("uColorPalette", Array.from(COLOR_PALETTE));
+		applyLodShaderBindings(mat);
+		mat.wireframe = GLOBAL_VALUES.DEBUG;
+		lod4TerrainOpaqueMaterial = mat;
+	} else {
+		const mat = lod4TerrainOpaqueMaterial as ShaderMaterial;
+		mat.wireframe = GLOBAL_VALUES.DEBUG;
+		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
+		mat.setArray3("uColorPalette", Array.from(COLOR_PALETTE));
+		applyLodShaderBindings(mat);
+	}
+
+	// -------------------------------------------------------------------------
+	// LOD4 Terrain transparent material
+	// -------------------------------------------------------------------------
+	if (!lod4TerrainTransparentMaterial) {
+		const mat = new ShaderMaterial(
+			"lod4TerrainTransparentChunkShaderMaterial",
+			scene,
+			{ vertex: "lod4Terrain", fragment: "lod4TerrainTransparent" },
+			{
+				attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
+				uniforms: [...lodUniforms, "uColorPalette"],
+				uniformBuffers: ["GlobalUniforms"],
+				samplers: [],
+			},
+		);
+		mat.backFaceCulling = true;
+		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
+		mat.setArray3("uColorPalette", Array.from(COLOR_PALETTE));
+		applyLodShaderBindings(mat);
+		mat.wireframe = GLOBAL_VALUES.DEBUG;
+		lod4TerrainTransparentMaterial = mat;
+	} else {
+		const mat = lod4TerrainTransparentMaterial as ShaderMaterial;
+		mat.wireframe = GLOBAL_VALUES.DEBUG;
+		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
+		mat.setArray3("uColorPalette", Array.from(COLOR_PALETTE));
+		applyLodShaderBindings(mat);
+	}
 }
 
 export function createMeshFromData(
@@ -811,11 +960,13 @@ export function createMeshFromData(
 
 	if (hasOpaque) {
 		const mat =
-			lodLevel >= 3
-				? lod3OpaqueMaterial!
-				: lodLevel >= 2
-					? lod2OpaqueMaterial!
-					: atlasMaterial!;
+			lodLevel >= 4
+				? lod4TerrainOpaqueMaterial!
+				: lodLevel >= 3
+					? lod3OpaqueMaterial!
+					: lodLevel >= 2
+						? lod2OpaqueMaterial!
+						: atlasMaterial!;
 
 		chunk.mesh = upsertMesh(
 			chunk,
@@ -833,11 +984,13 @@ export function createMeshFromData(
 
 	if (hasTransparent) {
 		const mat =
-			lodLevel >= 3
-				? lod3TransparentMaterial!
-				: lodLevel >= 2
-					? lod2TransparentMaterial!
-					: transparentMaterial!;
+			lodLevel >= 4
+				? lod4TerrainTransparentMaterial!
+				: lodLevel >= 3
+					? lod3TransparentMaterial!
+					: lodLevel >= 2
+						? lod2TransparentMaterial!
+						: transparentMaterial!;
 
 		chunk.transparentMesh = upsertMesh(
 			chunk,
@@ -878,7 +1031,10 @@ export function createMeshFromData(
 	}
 }
 
-export function updateGlobalUniforms(frameId: number): void {
+export function updateGlobalUniforms(
+	frameId: number,
+	playerPosition?: Vector3,
+): void {
 	if (lastUpdateFrame === frameId) return;
 	lastUpdateFrame = frameId;
 
@@ -918,6 +1074,13 @@ export function updateGlobalUniforms(frameId: number): void {
 	globalUniformBuffer.update();
 
 	updateLodCrossFades(nowMs);
+
+	if (impostorManager) {
+		const center = playerPosition || camera?.position;
+		if (center) {
+			impostorManager.update(center.x, center.y, center.z);
+		}
+	}
 }
 
 export function disposeSharedResources(): void {
@@ -944,6 +1107,18 @@ export function disposeSharedResources(): void {
 
 	lod2TransparentMaterial?.dispose();
 	lod2TransparentMaterial = null;
+
+	lod4OpaqueMaterial?.dispose();
+	lod4OpaqueMaterial = null;
+
+	lod4TransparentMaterial?.dispose();
+	lod4TransparentMaterial = null;
+
+	lod4TerrainOpaqueMaterial?.dispose();
+	lod4TerrainOpaqueMaterial = null;
+
+	lod4TerrainTransparentMaterial?.dispose();
+	lod4TerrainTransparentMaterial = null;
 
 	activeLodFadeMeshes.clear();
 	fadeMeshSnapshot.length = 0;

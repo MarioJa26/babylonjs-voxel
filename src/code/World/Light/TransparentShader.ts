@@ -61,6 +61,15 @@ export class TransparentShader {
       return vec2(0.0, 1.0);
     }
 
+    const mat3 TBN_TABLE[6] = mat3[](
+        mat3(0,1,0, 0,0,1, 1,0,0),   // 0: +X
+        mat3(0,1,0, 0,0,1, -1,0,0),  // 1: -X
+        mat3(0,0,1, 1,0,0, 0,1,0),   // 2: +Y
+        mat3(0,0,1, 1,0,0, 0,-1,0),  // 3: -Y
+        mat3(1,0,0, 0,1,0, 0,0,1),   // 4: +Z
+        mat3(1,0,0, 0,1,0, 0,0,-1)   // 5: -Z
+    );
+
     void buildDiagonalQuad(
       vec3 centerBottom,
       float width,
@@ -76,13 +85,13 @@ export class TransparentShader {
       // diagonalVariant == 0 => NW -> SE
       // diagonalVariant == 1 => NE -> SW
       vec2 dirXZ = diagonalVariant == 0
-        ? normalize(vec2(1.0, 1.0))
-        : normalize(vec2(1.0, -1.0));
+        ? vec2(0.707106769, 0.707106769)
+        : vec2(0.707106769, -0.707106769);
 
-      vec3 tangent = normalize(vec3(dirXZ.x, 0.0, dirXZ.y));
+      vec3 tangent = vec3(dirXZ.x, 0.0, dirXZ.y);
       vec3 bitangent = vec3(0.0, 1.0, 0.0);
 
-      vec3 normal = normalize(cross(bitangent, tangent));
+      vec3 normal = cross(bitangent, tangent);
       if (isBackFace) {
         normal = -normal;
       }
@@ -185,20 +194,10 @@ int diagonalVariant = (meta >> 5) & 1;
           swapUV == 1 ? uvOffU : uvOffV
         );
 
-        vec3 normal = vec3(0.0);
-        if (axis == 0) normal.x = isBackFace ? -1.0 : 1.0;
-        else if (axis == 1) normal.y = isBackFace ? -1.0 : 1.0;
-        else normal.z = isBackFace ? -1.0 : 1.0;
-
-        N = normalize(mat3(world) * normal);
-
-        float isX = axis == 0 ? 1.0 : 0.0;
-        float isY = axis == 1 ? 1.0 : 0.0;
-        vec3 tObj = vec3(1.0 - isX - isY, isX, isY);
-
-        float handedness = sign(normal.x + normal.y + normal.z);
-        T = normalize(mat3(world) * tObj);
-        B = normalize(cross(N, T) * handedness);
+        mat3 tbn = TBN_TABLE[axisFace];
+        T = tbn[0];
+        B = tbn[1];
+        N = tbn[2];
       }
 
       gl_Position = worldViewProjection * vec4(localPosition, 1.0);
@@ -274,14 +273,11 @@ float isWater = step(0.5, vIsWater);
     vec2 animatedUV = vUV + animationOffset;
     vec2 singleTileUV = fract(animatedUV);
 
-    // --- 2. LOD / UV setup ---
-    vec2 dx = dFdx(vUV) * atlasTileSize;
-    vec2 dy = dFdy(vUV) * atlasTileSize;
-    float lod = log2(max(length(dx), length(dy)));
+    // --- 2. Atlas UV setup ---
     vec2 atlasUV = vUV2 + singleTileUV * atlasTileSize;
 
     // --- 3. Diffuse sampling ---
-    vec4 diffuseColor = textureLod(diffuseTexture, atlasUV, lod);
+    vec4 diffuseColor = texture(diffuseTexture, atlasUV);
 
     // --- 4. Normal selection ---
     vec3 worldNormal;
@@ -307,7 +303,7 @@ float isWater = step(0.5, vIsWater);
         -(wCDZ - wC) / eps * waveStrength
       ));
     } else {
-      vec3 normalMapBase = textureLod(normalTexture, atlasUV, lod).rgb;
+      vec3 normalMapBase = texture(normalTexture, atlasUV).rgb;
       worldNormal = normalize(vTBN * (normalMapBase * 2.0 - 1.0));
     }
 

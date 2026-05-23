@@ -7,33 +7,21 @@ import type {
 } from "../types/MeshTypes";
 
 import { greedyMesh, type WritableNumberArray } from "./GreedyPipeline";
-import { VoxelFaceEmitterAdapter } from "./VoxelFaceEmitterAdapter";
+import {
+	type IFaceEmitter,
+	VoxelFaceEmitterAdapter,
+} from "./VoxelFaceEmitterAdapter";
 import { VoxelMaskExtractor } from "./VoxelMaskExtractor";
 
-/**
- * Drives the greedy mesher across all 3 axes (X, Y, Z),
- * using VoxelMaskExtractor and VoxelFaceEmitterAdapter.
- *
- * This is the "middle layer" of the voxel meshing pipeline:
- *
- * Input:
- *   - ctx            → block/light access
- *   - block_array    → packed voxel data
- *   - neighbors      → array of neighbor chunk voxel arrays
- *
- * Output:
- *   - WorkerInternalMeshData filled with quads
- *
- */
 export class VoxelGreedyAdapter {
 	private ctx: MeshContext;
 	private maskExtractor: VoxelMaskExtractor;
-	private faceEmitter: VoxelFaceEmitterAdapter;
+	private faceEmitter: IFaceEmitter;
 
-	constructor(ctx: MeshContext) {
+	constructor(ctx: MeshContext, faceEmitter?: IFaceEmitter) {
 		this.ctx = ctx;
 		this.maskExtractor = new VoxelMaskExtractor(ctx);
-		this.faceEmitter = new VoxelFaceEmitterAdapter();
+		this.faceEmitter = faceEmitter ?? new VoxelFaceEmitterAdapter();
 	}
 
 	/**

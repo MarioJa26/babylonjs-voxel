@@ -20,6 +20,13 @@ import {
 } from "../Shape/BlockShapes";
 import { getSliceAxis, transformBox } from "../Shape/BlockShapeTransforms";
 import type { MeshData } from "./DataStructures/MeshData";
+import { SparseVoxelOctree } from "./DataStructures/SparseVoxelOctree";
+import { LoadedChunkIndex } from "./Loading/LoadedChunkIndex";
+import { WorldChunkOctree } from "./Loading/WorldChunkOctree";
+import {
+	filtersFullSunlight,
+	WATER_BLOCK_ID,
+} from "./Worker/ChunkMesherConstants";
 
 // ---------------------------------------------------------------------------
 // LIGHT_DIRS – flattened into a typed array for cache-friendly iteration.
@@ -111,6 +118,9 @@ export class Chunk {
 	public static readonly SIZE2 = Chunk.SIZE * Chunk.SIZE;
 	public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
 	public static readonly chunkInstances = new Map<bigint, Chunk>();
+	public static readonly loadedChunks = new Set<Chunk>();
+	public static readonly loadedChunkIndex = new LoadedChunkIndex();
+	public static readonly worldChunkOctree = new WorldChunkOctree();
 
 	public isModified = false;
 	/** Persistent chunks are managed by systems outside world streaming
@@ -121,6 +131,7 @@ export class Chunk {
 	public isTerrainScheduled = false;
 	public colliderDirty = true;
 	public isLightDirty = false;
+	public _octreeVisible = false;
 
 	private remeshQueued = false;
 	private remeshQueuedPriority = false;
@@ -130,10 +141,7 @@ export class Chunk {
 		| null = null;
 	public static onChunkLoaded: ((chunk: Chunk) => void) | null = null;
 
-	private _block_array: Uint8Array | Uint16Array | null = null;
-	private _isUniform = true;
-	private _uniformBlockId = 0;
-	private _palette: Uint16Array | null = null;
+	private _voxels: Uint16Array | null = null;
 	private _hasVoxelData = false;
 
 	#chunkY: number;
@@ -165,6 +173,21 @@ export class Chunk {
 		typeof SharedArrayBuffer !== "undefined"
 			? new Uint8Array(new SharedArrayBuffer(0))
 			: new Uint8Array(0);
+
+	private static _allocSharedVoxels(): Uint16Array {
+		if (typeof SharedArrayBuffer !== "undefined") {
+			return new Uint16Array(new SharedArrayBuffer(Chunk.SIZE3 * 2));
+		}
+		return new Uint16Array(Chunk.SIZE3);
+	}
+
+	private static _copyToSharedVoxels(
+		source: Uint16Array | Uint8Array,
+	): Uint16Array {
+		const buf = Chunk._allocSharedVoxels();
+		for (let i = 0; i < Chunk.SIZE3; i++) buf[i] = source[i];
+		return buf;
+	}
 
 	public cachedLODMeshes = new Map<number, CachedLODMesh>();
 	public isLODMeshCacheDirty = false;
@@ -200,39 +223,23 @@ export class Chunk {
 	// Block storage – accessors & nibble helpers
 	// =========================================================================
 
-	get block_array(): Uint8Array | Uint16Array | null {
-		return this._block_array;
-	}
-	get palette(): Uint16Array | null {
-		return this._palette;
+	get block_array(): Uint16Array | null {
+		return this._voxels;
 	}
 	get isUniform(): boolean {
-		return this._isUniform;
+		if (!this._voxels) return true;
+		const first = this._voxels[0];
+		for (let i = 1; i < this._voxels.length; i++) {
+			if (this._voxels[i] !== first) return false;
+		}
+		return true;
 	}
 	get uniformBlockId(): number {
-		return this._uniformBlockId;
+		if (!this._voxels) return 0;
+		return this._voxels[0] & 0xffff;
 	}
 	get hasVoxelData(): boolean {
 		return this._hasVoxelData;
-	}
-
-	private getNibble(index: number): number {
-		const arr = this._block_array as Uint8Array | null;
-		if (!arr) return 0;
-		const byte = arr[index >>> 1];
-		return (index & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
-	}
-
-	private setNibble(index: number, value: number): void {
-		const arr = this._block_array as Uint8Array | null;
-		if (!arr) return;
-		const byteIndex = index >>> 1;
-		const nibble = value & 0x0f;
-		const byte = arr[byteIndex];
-		arr[byteIndex] =
-			(index & 1) === 0
-				? (byte & 0xf0) | nibble
-				: (byte & 0x0f) | (nibble << 4);
 	}
 
 	// =========================================================================
@@ -240,7 +247,7 @@ export class Chunk {
 	// =========================================================================
 
 	public populate(
-		blocks: Uint8Array | Uint16Array | null,
+		blocks: Uint8Array | Uint16Array | Uint32Array | null,
 		palette: Uint16Array | null,
 		isUniform: boolean,
 		uniformBlockId: number,
@@ -258,7 +265,7 @@ export class Chunk {
 	}
 
 	public loadFromStorage(
-		blocks: Uint8Array | Uint16Array | null,
+		blocks: Uint8Array | Uint16Array | Uint32Array | null,
 		palette: Uint16Array | null | undefined,
 		isUniform: boolean | undefined,
 		uniformBlockId: number | undefined,
@@ -268,26 +275,25 @@ export class Chunk {
 		this.clearCachedLODMeshes();
 		this._hasVoxelData = true;
 
-		if (isUniform && typeof uniformBlockId === "number") {
-			this._isUniform = true;
-			this._uniformBlockId = uniformBlockId;
-			this._block_array = null;
-			this._palette = null;
+		if (blocks instanceof Uint32Array) {
+			// SVO format → decompress to flat array → copy to SAB
+			this._voxels = Chunk._copyToSharedVoxels(
+				SparseVoxelOctree.extractFlat(blocks, Chunk.SIZE),
+			);
+		} else if (isUniform && typeof uniformBlockId === "number") {
+			this._voxels = Chunk._allocSharedVoxels();
+			this._voxels.fill(uniformBlockId & 0xffff);
 		} else if (palette && blocks instanceof Uint8Array) {
-			this._isUniform = false;
-			this._uniformBlockId = 0;
-			this._palette = palette;
-			this._block_array = blocks;
-		} else if (blocks) {
-			this._isUniform = false;
-			this._uniformBlockId = 0;
-			this._palette = null;
-			this._block_array = blocks;
+			this._voxels = Chunk._copyToSharedVoxels(
+				this._expandPalette(blocks, palette),
+			);
+		} else if (blocks instanceof Uint16Array) {
+			this._voxels = Chunk._copyToSharedVoxels(blocks);
+		} else if (blocks instanceof Uint8Array) {
+			this._voxels = Chunk._allocSharedVoxels();
+			for (let i = 0; i < Chunk.SIZE3; i++) this._voxels[i] = blocks[i];
 		} else {
-			this._isUniform = true;
-			this._uniformBlockId = 0;
-			this._block_array = null;
-			this._palette = null;
+			this._voxels = Chunk._allocSharedVoxels();
 		}
 
 		if (light_array) {
@@ -297,20 +303,37 @@ export class Chunk {
 		}
 
 		this.isLoaded = true;
+		Chunk.loadedChunks.add(this);
+		Chunk.loadedChunkIndex.register(this);
+		Chunk.worldChunkOctree.insert(this);
 		this.isTerrainScheduled = false;
 		this.colliderDirty = true;
 		Chunk.onChunkLoaded?.(this);
 		if (scheduleRemesh) this.scheduleRemesh(true, true);
 	}
 
+	private _expandPalette(
+		packed: Uint8Array,
+		palette: Uint16Array,
+	): Uint16Array {
+		const total = Chunk.SIZE3;
+		const expanded = new Uint16Array(total);
+		for (let i = 0; i < total; i++) {
+			const byte = packed[i >>> 1];
+			const paletteIndex = (i & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
+			expanded[i] = palette[paletteIndex];
+		}
+		return expanded;
+	}
+
 	public loadLodOnlyFromStorage(scheduleRemesh = false): void {
 		this._hasVoxelData = false;
-		this._isUniform = true;
-		this._uniformBlockId = 0;
-		this._block_array = null;
-		this._palette = null;
+		this._voxels = null;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
 		this.isLoaded = true;
+		Chunk.loadedChunks.add(this);
+		Chunk.loadedChunkIndex.register(this);
+		Chunk.worldChunkOctree.insert(this);
 		this.isTerrainScheduled = false;
 		this.colliderDirty = false;
 		if (scheduleRemesh) this.scheduleRemesh();
@@ -318,10 +341,8 @@ export class Chunk {
 
 	public unload(): void {
 		if (!this.isLoaded) return;
-		this._block_array = null;
-		this._isUniform = true;
-		this._uniformBlockId = 0;
-		this._palette = null;
+		Chunk.worldChunkOctree.remove(this);
+		this._voxels = null;
 		this._hasVoxelData = false;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
 		this.isLoaded = false;
@@ -560,11 +581,8 @@ export class Chunk {
 		return unpackBlockState(this.getBlockPacked(lx, ly, lz));
 	}
 	public getBlockPacked(lx: number, ly: number, lz: number): number {
-		if (!this.isLoaded) return 0;
-		if (this._isUniform) return this._uniformBlockId;
-		const index = lx + ly * Chunk.SIZE + lz * Chunk.SIZE2;
-		if (this._palette) return this._palette[this.getNibble(index)];
-		return this._block_array![index];
+		if (!this.isLoaded || !this._voxels) return 0;
+		return this._voxels[lx + ly * Chunk.SIZE + lz * Chunk.SIZE2];
 	}
 
 	private static flushRemeshQueue(): void {
@@ -597,65 +615,16 @@ export class Chunk {
 			return;
 		}
 
-		const index = localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2;
-		const packedBlock = packBlockValue(blockId, state);
-		let oldPacked = 0;
-
-		if (this._isUniform) {
-			oldPacked = this._uniformBlockId;
-			if (oldPacked === packedBlock) return;
-
-			this._isUniform = false;
-			this._palette = new Uint16Array([this._uniformBlockId]);
-			let newIndex = 0;
-			if (this._palette[0] !== packedBlock) {
-				const ep = new Uint16Array(2);
-				ep[0] = this._palette[0];
-				ep[1] = packedBlock;
-				this._palette = ep;
-				newIndex = 1;
-			}
-			this._block_array = new Uint8Array(
-				new SharedArrayBuffer(Chunk.SIZE3 / 2),
-			);
-			this._block_array.fill(0);
-			this.setNibble(index, newIndex);
-		} else if (this._palette) {
-			const paletteIndex = this.getNibble(index);
-			oldPacked = this._palette[paletteIndex];
-			if (oldPacked === packedBlock) return;
-
-			let npi = this._palette.indexOf(packedBlock);
-			if (npi === -1) {
-				if (this._palette.length < 16) {
-					npi = this._palette.length;
-					const ep = new Uint16Array(npi + 1);
-					ep.set(this._palette);
-					ep[npi] = packedBlock;
-					this._palette = ep;
-					this.setNibble(index, npi);
-				} else {
-					// Palette full → expand to raw Uint16Array.
-					const na = new Uint16Array(new SharedArrayBuffer(Chunk.SIZE3 * 2));
-					for (let i = 0; i < Chunk.SIZE3; i++)
-						na[i] = this._palette[this.getNibble(i)];
-					na[index] = packedBlock;
-					this._block_array = na;
-					this._palette = null;
-				}
-			} else {
-				this.setNibble(index, npi);
-			}
-		} else {
-			if (packedBlock > 255 && this._block_array instanceof Uint8Array) {
-				const na = new Uint16Array(new SharedArrayBuffer(Chunk.SIZE3 * 2));
-				na.set(this._block_array);
-				this._block_array = na;
-			}
-			oldPacked = this._block_array![index];
-			if (oldPacked === packedBlock) return;
-			this._block_array![index] = packedBlock;
+		if (!this._voxels) {
+			this._voxels = Chunk._allocSharedVoxels();
 		}
+
+		const packedBlock = packBlockValue(blockId, state);
+		const idx = localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2;
+		const oldPacked = this._voxels[idx];
+		if (oldPacked === packedBlock) return;
+
+		this._voxels[idx] = packedBlock;
 
 		const oldBlockLight = this.getBlockLight(localX, localY, localZ);
 		const oldSkyLight = this.getSkyLight(localX, localY, localZ);
@@ -1185,7 +1154,14 @@ export class Chunk {
 		if (!this.isLoaded) return;
 		this.isDirty = true;
 		if (priority) this.remeshQueuedPriority = true;
-		if (this.remeshQueued) return;
+		if (this.remeshQueued) {
+			if (Chunk.DEBUG_REMESH) {
+				console.log(
+					`[Remesh] scheduleRemesh EARLY EXIT (already queued) chunk=${this.id} dirty=${this.isDirty} lod=${this.lodLevel} hasVoxel=${this._hasVoxelData}`,
+				);
+			}
+			return;
+		}
 		this.remeshQueued = true;
 
 		if (includeNeighbors) {
@@ -1204,6 +1180,11 @@ export class Chunk {
 		if (!Chunk.remeshFlushScheduled) {
 			Chunk.remeshFlushScheduled = true;
 			requestAnimationFrame(Chunk.flushRemeshQueue);
+		}
+		if (Chunk.DEBUG_REMESH) {
+			console.log(
+				`[Remesh] scheduleRemesh QUEUED chunk=${this.id} priority=${priority} lod=${this.lodLevel} hasVoxel=${this._hasVoxelData} queueLen=${Chunk.remeshQueue.length}`,
+			);
 		}
 	}
 
@@ -1508,10 +1489,8 @@ export class Chunk {
 		this.transparentMesh = null;
 		this.opaqueMeshData = null;
 		this.transparentMeshData = null;
-		this._block_array = null;
-		this._isUniform = true;
-		this._uniformBlockId = 0;
-		this._palette = null;
+		Chunk.worldChunkOctree.remove(this);
+		this._voxels = null;
 		this._hasVoxelData = false;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
 		this.isLoaded = false;

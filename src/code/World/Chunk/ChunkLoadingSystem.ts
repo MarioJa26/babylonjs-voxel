@@ -16,6 +16,7 @@ import { ChunkProcessScheduler } from "./Loading/ChunkProcessScheduler";
 import { ChunkReadiness } from "./Loading/ChunkReadinessAdapter";
 import {
 	ChunkStreamingController,
+	type ChunkStreamingDebugStats,
 	type QueuedChunkRequest,
 } from "./Loading/ChunkStreamingController";
 import type {
@@ -133,8 +134,7 @@ const chunkEntityRegistry = new ChunkEntityRegistry<ChunkBoundEntity>({
 
 const chunkHydration = new ChunkHydration({
 	getStoragePayload: (savedData) => ({
-		// IMPORTANT: zero-copy handoff
-		blocks: savedData.blocks,
+		blocks: savedData.svo ?? savedData.blocks,
 		palette: savedData.palette,
 		isUniform: savedData.isUniform,
 		uniformBlockId: savedData.uniformBlockId,
@@ -427,6 +427,10 @@ function refreshQueueDebugSnapshot(): void {
 export function getDebugStats(): ChunkLoadingDebugStats {
 	refreshQueueDebugSnapshot();
 	return { ...debugStats };
+}
+
+export function getStreamingDebugStats(): ChunkStreamingDebugStats {
+	return streamingController.getDebugStats();
 }
 
 function buildQueuedIdSet(): Set<bigint> {
@@ -841,7 +845,7 @@ function applyLoadedChunkFromSavedData(
 	const { selectedMesh, hasDesiredMesh, hasExactDesiredMesh } =
 		resolveSavedMeshSelection(savedData, targetLod);
 
-	if (targetLod >= 2) {
+	if (targetLod === 2 || targetLod === 3) {
 		loadFarLodChunk(state, chunk, selectedMesh, hasDesiredMesh);
 		return;
 	}

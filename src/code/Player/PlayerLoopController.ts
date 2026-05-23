@@ -4,7 +4,7 @@ import type { IControls } from "../Inferface/IControls";
 import { Chunk } from "../World/Chunk/Chunk";
 import {
 	getDebugStats,
-	processFrameBudgetedStreamingWork,
+	getStreamingDebugStats,
 	updateChunksAround,
 	worldToChunkCoord,
 } from "../World/Chunk/ChunkLoadingSystem";
@@ -49,6 +49,8 @@ export class PlayerLoopController {
 			this.playerStats.update(dt, this.playerVehicle.isSprinting);
 			this.playerVehicle.updateCameraAndVisuals();
 			this.updateControls();
+
+			Chunk.worldChunkOctree.traverseFrustum(this.playerCamera.playerCamera);
 
 			this.updateChunksAroundPlayer();
 

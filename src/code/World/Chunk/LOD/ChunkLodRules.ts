@@ -11,10 +11,18 @@ export type ChunkLodRadii = {
 	lod1HorizontalRadius: number;
 	lod2HorizontalRadius: number;
 	lod3HorizontalRadius: number;
+	lod4HorizontalRadius: number;
+	lod5HorizontalRadius: number;
+	lod6HorizontalRadius: number;
+	lod7HorizontalRadius: number;
 	lod0VerticalRadius: number;
 	lod1VerticalRadius: number;
 	lod2VerticalRadius: number;
 	lod3VerticalRadius: number;
+	lod4VerticalRadius: number;
+	lod5VerticalRadius: number;
+	lod6VerticalRadius: number;
+	lod7VerticalRadius: number;
 };
 
 export type ChunkLodDistance = {
@@ -101,6 +109,74 @@ export class Lod3ChunkCreationRule implements ChunkLodCreationRule {
 	}
 }
 
+export class Lod4ChunkCreationRule implements ChunkLodCreationRule {
+	public readonly lodLevel = 4;
+	public readonly allowsChunkCreation = true;
+
+	public constructor(
+		private readonly horizontalRadius: number,
+		private readonly verticalRadius: number,
+	) {}
+
+	public matches(distance: ChunkLodDistance): boolean {
+		return (
+			distance.horizontalDist <= this.horizontalRadius &&
+			distance.verticalDist <= this.verticalRadius
+		);
+	}
+}
+
+export class Lod5ChunkCreationRule implements ChunkLodCreationRule {
+	public readonly lodLevel = 5;
+	public readonly allowsChunkCreation = true;
+
+	public constructor(
+		private readonly horizontalRadius: number,
+		private readonly verticalRadius: number,
+	) {}
+
+	public matches(distance: ChunkLodDistance): boolean {
+		return (
+			distance.horizontalDist <= this.horizontalRadius &&
+			distance.verticalDist <= this.verticalRadius
+		);
+	}
+}
+
+export class Lod6ChunkCreationRule implements ChunkLodCreationRule {
+	public readonly lodLevel = 6;
+	public readonly allowsChunkCreation = true;
+
+	public constructor(
+		private readonly horizontalRadius: number,
+		private readonly verticalRadius: number,
+	) {}
+
+	public matches(distance: ChunkLodDistance): boolean {
+		return (
+			distance.horizontalDist <= this.horizontalRadius &&
+			distance.verticalDist <= this.verticalRadius
+		);
+	}
+}
+
+export class Lod7ChunkCreationRule implements ChunkLodCreationRule {
+	public readonly lodLevel = 7;
+	public readonly allowsChunkCreation = false;
+
+	public constructor(
+		private readonly horizontalRadius: number,
+		private readonly verticalRadius: number,
+	) {}
+
+	public matches(distance: ChunkLodDistance): boolean {
+		return (
+			distance.horizontalDist <= this.horizontalRadius &&
+			distance.verticalDist <= this.verticalRadius
+		);
+	}
+}
+
 export class DistantOnlyChunkCreationRule implements ChunkLodCreationRule {
 	public readonly allowsChunkCreation = false;
 
@@ -121,10 +197,18 @@ export class ChunkLodRuleSet {
 			lod1HorizontalRadius: renderDistance + SETTING_PARAMS.LOD_1_OFFSET,
 			lod2HorizontalRadius: renderDistance + SETTING_PARAMS.LOD_2_OFFSET,
 			lod3HorizontalRadius: renderDistance + SETTING_PARAMS.LOD_3_OFFSET,
+			lod4HorizontalRadius: renderDistance + SETTING_PARAMS.LOD_4_OFFSET,
+			lod5HorizontalRadius: renderDistance + SETTING_PARAMS.LOD_5_OFFSET,
+			lod6HorizontalRadius: renderDistance + SETTING_PARAMS.LOD_6_OFFSET,
+			lod7HorizontalRadius: renderDistance + SETTING_PARAMS.LOD_7_OFFSET,
 			lod0VerticalRadius: verticalRadius + SETTING_PARAMS.LOD_VERTICAL_0_OFFSET,
 			lod1VerticalRadius: verticalRadius + SETTING_PARAMS.LOD_VERTICAL_1_OFFSET,
 			lod2VerticalRadius: verticalRadius + SETTING_PARAMS.LOD_VERTICAL_2_OFFSET,
 			lod3VerticalRadius: verticalRadius + SETTING_PARAMS.LOD_VERTICAL_3_OFFSET,
+			lod4VerticalRadius: verticalRadius + SETTING_PARAMS.LOD_VERTICAL_4_OFFSET,
+			lod5VerticalRadius: verticalRadius + SETTING_PARAMS.LOD_VERTICAL_5_OFFSET,
+			lod6VerticalRadius: verticalRadius + SETTING_PARAMS.LOD_VERTICAL_6_OFFSET,
+			lod7VerticalRadius: verticalRadius + SETTING_PARAMS.LOD_VERTICAL_7_OFFSET,
 		};
 
 		return new ChunkLodRuleSet(radii, [
@@ -144,7 +228,23 @@ export class ChunkLodRuleSet {
 				radii.lod3HorizontalRadius,
 				radii.lod3VerticalRadius,
 			),
-			new DistantOnlyChunkCreationRule(4),
+			new Lod4ChunkCreationRule(
+				radii.lod4HorizontalRadius,
+				radii.lod4VerticalRadius,
+			),
+			new Lod5ChunkCreationRule(
+				radii.lod5HorizontalRadius,
+				radii.lod5VerticalRadius,
+			),
+			new Lod6ChunkCreationRule(
+				radii.lod6HorizontalRadius,
+				radii.lod6VerticalRadius,
+			),
+			new Lod7ChunkCreationRule(
+				radii.lod7HorizontalRadius,
+				radii.lod7VerticalRadius,
+			),
+			new DistantOnlyChunkCreationRule(7),
 		]);
 	}
 
@@ -153,12 +253,7 @@ export class ChunkLodRuleSet {
 		private readonly rules: ChunkLodCreationRule[],
 	) {}
 
-	public resolve(
-		target: ChunkLodCoordinates,
-		player: ChunkLodCoordinates,
-	): ChunkLodDecision {
-		const distance = this.measureDistance(target, player);
-
+	private resolveWithDistance(distance: ChunkLodDistance): ChunkLodDecision {
 		for (const rule of this.rules) {
 			if (rule.matches(distance)) {
 				return {
@@ -243,6 +338,34 @@ export class ChunkLodRuleSet {
 							this.radii.lod3HorizontalRadius + horizontalLeaveBuffer &&
 						distance.verticalDist <=
 							this.radii.lod3VerticalRadius + verticalLeaveBuffer
+					);
+				case 4:
+					return (
+						distance.horizontalDist <=
+							this.radii.lod4HorizontalRadius + horizontalLeaveBuffer &&
+						distance.verticalDist <=
+							this.radii.lod4VerticalRadius + verticalLeaveBuffer
+					);
+				case 5:
+					return (
+						distance.horizontalDist <=
+							this.radii.lod5HorizontalRadius + horizontalLeaveBuffer &&
+						distance.verticalDist <=
+							this.radii.lod5VerticalRadius + verticalLeaveBuffer
+					);
+				case 6:
+					return (
+						distance.horizontalDist <=
+							this.radii.lod6HorizontalRadius + horizontalLeaveBuffer &&
+						distance.verticalDist <=
+							this.radii.lod6VerticalRadius + verticalLeaveBuffer
+					);
+				case 7:
+					return (
+						distance.horizontalDist <=
+							this.radii.lod7HorizontalRadius + horizontalLeaveBuffer &&
+						distance.verticalDist <=
+							this.radii.lod7VerticalRadius + verticalLeaveBuffer
 					);
 				default:
 					return false;

@@ -19,7 +19,7 @@ export interface SelectedSavedMesh {
  * Normalized storage payload required to restore chunk voxel/light state.
  */
 export interface HydrationStoragePayload {
-	blocks: Uint8Array | Uint16Array | null;
+	blocks: Uint8Array | Uint16Array | Uint32Array | null;
 	palette?: Uint16Array | null;
 	isUniform?: boolean;
 	uniformBlockId?: number;

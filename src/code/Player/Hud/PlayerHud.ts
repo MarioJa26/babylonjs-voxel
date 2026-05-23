@@ -355,6 +355,76 @@ export class PlayerHud {
 	private initializeDebugPanel(): void {
 		if (PlayerHud.debugPanelDiv) return;
 
+		const style = document.createElement("style");
+		style.textContent = `
+			.debug-info-container {
+				display: flex;
+				flex-direction: column;
+				gap: 1px;
+			}
+			.debug-row {
+				display: flex;
+				gap: 4px;
+				line-height: 1.3;
+			}
+			.debug-key {
+				font-weight: bold;
+				color: #e0e0e0;
+				-webkit-text-stroke: 0.6px #000;
+				text-stroke: 0.6px #000;
+				paint-order: stroke fill;
+				text-shadow:
+					-1px -1px 0 #000,
+					 1px -1px 0 #000,
+					-1px  1px 0 #000,
+					 1px  1px 0 #000,
+					 0px  1px 0 #000,
+					 0px -1px 0 #000,
+					-1px  0px 0 #000,
+					 1px  0px 0 #000;
+			}
+			.debug-value {
+				color: #fff;
+				-webkit-text-stroke: 0.4px #000;
+				text-stroke: 0.4px #000;
+				paint-order: stroke fill;
+				text-shadow:
+					-1px -1px 0 #000,
+					 1px -1px 0 #000,
+					-1px  1px 0 #000,
+					 1px  1px 0 #000,
+					 0px  1px 0 #000,
+					 0px -1px 0 #000,
+					-1px  0px 0 #000,
+					 1px  0px 0 #000;
+			}
+			.debug-key[data-cat="performance"] { color: #00ff88; }
+			.debug-key[data-cat="position"]    { color: #44aaff; }
+			.debug-key[data-cat="world"]       { color: #ffcc44; }
+			.debug-key[data-cat="chunks"]      { color: #ff8844; }
+			.debug-key[data-cat="workers"]     { color: #cc66ff; }
+			.debug-key[data-cat="stats"]       { color: #ff6688; }
+			.debug-key[data-cat="biome"]       { color: #88ff44; }
+			.debug-key[data-cat="lod4+"]       { color: #ff44aa; }
+			.debug-slider-label {
+				color: #ffcc44;
+				font-weight: bold;
+				-webkit-text-stroke: 0.6px #000;
+				text-stroke: 0.6px #000;
+				paint-order: stroke fill;
+				text-shadow:
+					-1px -1px 0 #000,
+					 1px -1px 0 #000,
+					-1px  1px 0 #000,
+					 1px  1px 0 #000,
+					 0px  1px 0 #000,
+					 0px -1px 0 #000,
+					-1px  0px 0 #000,
+					 1px  0px 0 #000;
+			}
+		`;
+		document.head.appendChild(style);
+
 		const div = document.createElement("div");
 		div.style.position = "absolute";
 		div.style.top = "10px";

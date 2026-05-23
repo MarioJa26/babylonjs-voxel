@@ -251,12 +251,6 @@ export class DistantTerrain {
 		this.waterMesh.receiveShadows = false;
 		this.waterMesh.doNotSyncBoundingInfo = true;
 		this.waterMesh.alwaysSelectAsActiveMesh = true;
-		// If active mesh list was frozen for debugging, include these newly
-		// created meshes by rebuilding the frozen list once.
-		if (Map1.mainScene._activeMeshesFrozen) {
-			Map1.mainScene.unfreezeActiveMeshes();
-			Map1.mainScene.freezeActiveMeshes();
-		}
 
 		// ---- Worker callback ----
 		// Worker only returns center coords; data lives in shared buffers.

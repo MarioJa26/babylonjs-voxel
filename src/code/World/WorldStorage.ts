@@ -8,7 +8,8 @@ import { GLOBAL_VALUES } from "./GLOBAL_VALUES";
 // ---------------------------------------------------------------------------
 
 export type SavedChunkData = {
-	blocks: Uint8Array | Uint16Array | null;
+	blocks: Uint8Array | Uint16Array | Uint32Array | null;
+	svo?: Uint32Array | null;
 	palette?: Uint16Array | null;
 	uniformBlockId?: number;
 	isUniform?: boolean;
@@ -53,6 +54,7 @@ type PreparedFullChunkSave = {
 	data: {
 		id: string;
 		blocks: Uint8Array | null;
+		svo: Uint32Array | null;
 		palette: Uint16Array | null;
 		uniformBlockId: number;
 		isUniform: boolean;
@@ -135,7 +137,9 @@ function openDatabase(): Promise<IDBDatabase> {
 // ChunkSerializer — compression / decompression helpers
 // ---------------------------------------------------------------------------
 
-async function compress(data: Uint8Array | Uint16Array): Promise<Uint8Array> {
+async function compress(
+	data: Uint8Array | Uint16Array | Uint32Array,
+): Promise<Uint8Array> {
 	// View raw bytes without copying. byteOffset/byteLength handle sliced arrays.
 	const inputBytes = new Uint8Array(
 		data.buffer,
@@ -259,7 +263,7 @@ async function prepareFullChunkSave(
 	chunk: Chunk,
 ): Promise<PreparedFullChunkSave> {
 	const id = chunk.id.toString();
-	const blocks = chunk.block_array;
+	const voxels = chunk.block_array;
 	const light = chunk.light_array;
 
 	return {
@@ -267,8 +271,9 @@ async function prepareFullChunkSave(
 		chunk,
 		data: {
 			id,
-			blocks: blocks ? await compress(blocks) : null,
-			palette: chunk.palette,
+			blocks: voxels ? await compress(voxels) : null,
+			svo: null,
+			palette: null,
 			uniformBlockId: chunk.uniformBlockId,
 			isUniform: chunk.isUniform,
 			lightArray: light ? await compress(light) : null,
@@ -550,10 +555,25 @@ class WorldStorageImpl {
 		if (data.compressed && includeVoxelData) {
 			const jobs: Promise<void>[] = [];
 
-			if (isUint8Array(data.blocks)) {
+			if (
+				data.blocks &&
+				(data.blocks instanceof Uint8Array ||
+					data.blocks instanceof Uint16Array)
+			) {
+				const compressedBlock = data.blocks as Uint8Array;
+				if (compressedBlock.BYTES_PER_ELEMENT === 1) {
+					jobs.push(
+						decompressToShared(compressedBlock).then((result) => {
+							data.blocks = result;
+						}),
+					);
+				}
+			}
+
+			if (data.svo && data.svo instanceof Uint8Array) {
 				jobs.push(
-					decompressToShared(data.blocks).then((result) => {
-						data.blocks = result;
+					decompressToShared(data.svo).then((result) => {
+						data.svo = new Uint32Array(result.buffer);
 					}),
 				);
 			}
@@ -569,6 +589,7 @@ class WorldStorageImpl {
 			await Promise.all(jobs);
 		} else if (!includeVoxelData) {
 			data.blocks = null;
+			data.svo = null;
 			data.palette = null;
 			data.isUniform = undefined;
 			data.uniformBlockId = undefined;

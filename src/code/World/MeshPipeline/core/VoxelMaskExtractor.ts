@@ -190,7 +190,7 @@ export class VoxelMaskExtractor {
 
 			// --- inline samplePacked ---
 		const currentPacked = ctx.getBlock(bx, by, bz, 0);
-		const neighborPacked = ctx.getBlock(nx, ny, nz, currentPacked);
+		const neighborPacked = ctx.getBlock(nx, ny, nz, ctx.lod >= 4 ? 0 : currentPacked);
 
 		// --- early out: air-air (before flags) ---
 		if (!currentPacked && !neighborPacked) {
@@ -428,8 +428,13 @@ export class VoxelMaskExtractor {
 		const currentFaceBit = this.getCurrentFaceBit(axis);
 		const neighborFaceBit = this.getNeighborFaceBit(axis);
 
-		// Only the positive boundary can cross for this extractor.
-		if (slice === size - 1 && !this.ctx.hasNeighborChunk(1, 0, 0)) {
+		// Base LODs still suppress positive-edge faces until the neighbor arrives
+		// to avoid visible border seams while chunk streaming catches up.
+		if (
+			this.ctx.lod < 4 &&
+			slice === size - 1 &&
+			!this.ctx.hasNeighborChunk(1, 0, 0)
+		) {
 			this.clearSlice(mask, lightMask, size);
 			return;
 		}
@@ -480,7 +485,11 @@ export class VoxelMaskExtractor {
 		const currentFaceBit = this.getCurrentFaceBit(axis);
 		const neighborFaceBit = this.getNeighborFaceBit(axis);
 
-		if (slice === size - 1 && !this.ctx.hasNeighborChunk(0, 1, 0)) {
+		if (
+			this.ctx.lod < 4 &&
+			slice === size - 1 &&
+			!this.ctx.hasNeighborChunk(0, 1, 0)
+		) {
 			this.clearSlice(mask, lightMask, size);
 			return;
 		}
@@ -531,7 +540,11 @@ export class VoxelMaskExtractor {
 		const currentFaceBit = this.getCurrentFaceBit(axis);
 		const neighborFaceBit = this.getNeighborFaceBit(axis);
 
-		if (slice === size - 1 && !this.ctx.hasNeighborChunk(0, 0, 1)) {
+		if (
+			this.ctx.lod < 4 &&
+			slice === size - 1 &&
+			!this.ctx.hasNeighborChunk(0, 0, 1)
+		) {
 			this.clearSlice(mask, lightMask, size);
 			return;
 		}

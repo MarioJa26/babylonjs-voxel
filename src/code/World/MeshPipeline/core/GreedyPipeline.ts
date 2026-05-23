@@ -79,13 +79,14 @@ export function greedyMesh(
 ): void {
 	const size = ctx.size;
 	const area = size * size;
+	const sliceStart = ctx.lod >= 4 ? -1 : 0;
 
 	const scratch = ensureScratchCapacity(area);
 	const mask = scratch.mask;
 	const lights = scratch.lights;
 
 	// axis-slice iteration
-	for (let slice = 0; slice < size; slice++) {
+	for (let slice = sliceStart; slice < size; slice++) {
 		// Fill mask & light data for this slice.
 		// IMPORTANT:
 		// extractMask MUST overwrite every entry in mask/lights for the slice.

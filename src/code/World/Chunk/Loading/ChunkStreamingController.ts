@@ -25,16 +25,36 @@ export interface ChunkStreamingControllerAdapter {
 	onQueueSnapshotChanged?(): void;
 }
 
+export interface ChunkStreamingDebugStats {
+	lodTransitionCounts: Map<string, number>;
+	farLodScanRadius: number;
+	farLodChunksProcessedThisFrame: number;
+	cachedLodHitCounts: number[];
+	cachedLodMissCounts: number[];
+}
+
 export class ChunkStreamingController {
 	private static readonly DESIRED_STATE_REVISION_RETENTION = 8;
+	private static readonly FAR_LOD_CHUNKS_PER_FRAME = 64;
 	private streamRevision = 0;
 	private desiredStates = new Map<bigint, DesiredChunkState>();
-	// Map from chunkId -> queued request object for O(1) updates without relying
-	// on unstable queue indices (the scheduler dequeues from the head).
 	private loadQueueRequestMap: Map<bigint, QueuedChunkRequest> = new Map();
 	private loadedRefreshQueue: Chunk[] = [];
 	private loadedRefreshQueueSet: Set<bigint> = new Set();
 	private loadedRefreshQueueHead = 0;
+
+	private farLodScanRadius = 0;
+	private farLodVerticalRadius = 0;
+	private lastPlayerChunkX = Number.NaN;
+	private lastPlayerChunkZ = Number.NaN;
+
+	private debugStats: ChunkStreamingDebugStats = {
+		lodTransitionCounts: new Map(),
+		farLodScanRadius: 0,
+		farLodChunksProcessedThisFrame: 0,
+		cachedLodHitCounts: [0, 0, 0, 0, 0, 0, 0],
+		cachedLodMissCounts: [0, 0, 0, 0, 0, 0, 0],
+	};
 
 	public constructor(
 		private readonly adapter: ChunkStreamingControllerAdapter,
@@ -73,7 +93,20 @@ export class ChunkStreamingController {
 			renderDistance,
 			verticalRadius,
 		);
-		const { lod3HorizontalRadius, lod3VerticalRadius } = lodRuleSet.radii;
+		const { lod6HorizontalRadius, lod6VerticalRadius } = lodRuleSet.radii;
+
+		const movedFar =
+			!Number.isNaN(this.lastPlayerChunkX) &&
+			(Math.abs(chunkX - this.lastPlayerChunkX) > 3 ||
+				Math.abs(chunkZ - this.lastPlayerChunkZ) > 3);
+
+		if (movedFar) {
+			this.farLodScanRadius = 0;
+			this.farLodVerticalRadius = 0;
+		}
+
+		this.lastPlayerChunkX = chunkX;
+		this.lastPlayerChunkZ = chunkZ;
 
 		const loadQueue = this.adapter.getLoadQueue();
 		const unloadQueueSet = this.adapter.getUnloadQueueSet();
@@ -132,8 +165,8 @@ export class ChunkStreamingController {
 			const verticalDist = Math.abs(chunk.chunkY - chunkY);
 
 			if (
-				horizontalDist <= lod3HorizontalRadius &&
-				verticalDist <= lod3VerticalRadius
+				horizontalDist <= lod6HorizontalRadius &&
+				verticalDist <= lod6VerticalRadius
 			) {
 				unloadQueueSet.delete(chunk);
 			}
@@ -161,6 +194,14 @@ export class ChunkStreamingController {
 			this.processInitialShell(chunkX, chunkY, chunkZ, lodRuleSet);
 		}
 
+		this.processFarLodRing(
+			chunkX,
+			chunkY,
+			chunkZ,
+			lodRuleSet,
+			ChunkStreamingController.FAR_LOD_CHUNKS_PER_FRAME,
+		);
+
 		// Enqueue loaded chunks near LOD boundaries for re-evaluation.
 		// This is what drives LOD transitions as the player moves closer/further.
 		this.enqueueLoadedChunksForRefresh(chunkX, chunkY, chunkZ, lodRuleSet);
@@ -171,8 +212,8 @@ export class ChunkStreamingController {
 			chunkX,
 			chunkY,
 			chunkZ,
-			lod3HorizontalRadius,
-			lod3VerticalRadius,
+			lod6HorizontalRadius,
+			lod6VerticalRadius,
 		);
 
 		ChunkWorkerPool.getInstance().scheduleBackgroundLodPrecompute(
@@ -208,10 +249,26 @@ export class ChunkStreamingController {
 			lod1VerticalRadius,
 			lod2HorizontalRadius,
 			lod2VerticalRadius,
+			lod3HorizontalRadius,
+			lod3VerticalRadius,
+			lod4HorizontalRadius,
+			lod4VerticalRadius,
+			lod5HorizontalRadius,
+			lod5VerticalRadius,
+			lod6HorizontalRadius,
+			lod6VerticalRadius,
 		} = lodRuleSet.radii;
 
-		for (const chunk of Chunk.chunkInstances.values()) {
-			if (!chunk.isLoaded) continue;
+		const queryRadius = lod6HorizontalRadius + 2;
+		const queryVertical = lod6VerticalRadius + 2;
+
+		for (const chunk of Chunk.worldChunkOctree.queryLoadedChunksInRadius(
+			chunkX,
+			chunkY,
+			chunkZ,
+			queryRadius,
+			queryVertical,
+		)) {
 			if (this.loadedRefreshQueueSet.has(chunk.id)) continue;
 
 			const hdist = Math.max(
@@ -220,17 +277,31 @@ export class ChunkStreamingController {
 			);
 			const vdist = Math.abs(chunk.chunkY - chunkY);
 
-			// Only enqueue chunks that sit near a LOD transition boundary
-			// (+/- 2 chunks of each boundary). Skip chunks deep in LOD0 or
-			// far out in LOD3 — they don't need re-evaluation.
 			const nearLod0 =
 				hdist <= lod0HorizontalRadius + 2 && vdist <= lod0VerticalRadius + 2;
 			const nearLod1 =
 				hdist <= lod1HorizontalRadius + 2 && vdist <= lod1VerticalRadius + 2;
 			const nearLod2 =
 				hdist <= lod2HorizontalRadius + 2 && vdist <= lod2VerticalRadius + 2;
+			const nearLod3 =
+				hdist <= lod3HorizontalRadius + 2 && vdist <= lod3VerticalRadius + 2;
+			const nearLod4 =
+				hdist <= lod4HorizontalRadius + 2 && vdist <= lod4VerticalRadius + 2;
+			const nearLod5 =
+				hdist <= lod5HorizontalRadius + 2 && vdist <= lod5VerticalRadius + 2;
+			const nearLod6 =
+				hdist <= lod6HorizontalRadius + 2 && vdist <= lod6VerticalRadius + 2;
 
-			if (!nearLod0 && !nearLod1 && !nearLod2) continue;
+			if (
+				!nearLod0 &&
+				!nearLod1 &&
+				!nearLod2 &&
+				!nearLod3 &&
+				!nearLod4 &&
+				!nearLod5 &&
+				!nearLod6
+			)
+				continue;
 
 			// Skip chunks already at the correct LOD with no pending work
 			const decision = lodRuleSet.resolveWithHysteresis(
@@ -310,6 +381,11 @@ export class ChunkStreamingController {
 		return chunk;
 	}
 
+	public getDebugStats(): ChunkStreamingDebugStats {
+		this.debugStats.farLodScanRadius = this.farLodScanRadius;
+		return this.debugStats;
+	}
+
 	public processTargetChunkCoordinate(
 		x: number,
 		y: number,
@@ -355,6 +431,10 @@ export class ChunkStreamingController {
 		chunk.lodLevel = desiredLod;
 
 		if (chunk.isLoaded && previousLod !== desiredLod) {
+			const key = `${previousLod}->${desiredLod}`;
+			const prev = this.debugStats.lodTransitionCounts.get(key) ?? 0;
+			this.debugStats.lodTransitionCounts.set(key, prev + 1);
+
 			const hasTargetCachedMesh = chunk.hasCachedLODMesh(desiredLod);
 
 			if (!chunk.hasVoxelData) {
@@ -408,8 +488,6 @@ export class ChunkStreamingController {
 
 		const { lod3HorizontalRadius: r, lod3VerticalRadius: ry } =
 			lodRuleSet.radii;
-
-		// 👉 X movement
 		if (dx !== 0) {
 			const x = dx > 0 ? chunkX + r : chunkX - r;
 
@@ -568,6 +646,81 @@ export class ChunkStreamingController {
 		}
 	}
 
+	private processFarLodRing(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		lodRuleSet: ChunkLodRuleSet,
+		maxChunks: number,
+	): void {
+		const {
+			lod3HorizontalRadius,
+			lod3VerticalRadius,
+			lod6HorizontalRadius,
+			lod6VerticalRadius,
+		} = lodRuleSet.radii;
+
+		if (this.farLodScanRadius === 0) {
+			this.farLodScanRadius = lod3HorizontalRadius + 1;
+			this.farLodVerticalRadius = lod3VerticalRadius + 1;
+		}
+
+		if (this.farLodScanRadius > lod6HorizontalRadius) return;
+
+		let queued = 0;
+		const r = this.farLodScanRadius;
+		const ry = Math.min(this.farLodVerticalRadius, lod6VerticalRadius);
+
+		for (let y = chunkY - ry; y <= chunkY + ry && queued < maxChunks; y++) {
+			if (y < 0 || y >= SETTING_PARAMS.MAX_CHUNK_HEIGHT) continue;
+
+			for (let x = chunkX - r; x <= chunkX + r && queued < maxChunks; x++) {
+				for (const z of [chunkZ - r, chunkZ + r]) {
+					if (queued >= maxChunks) break;
+					const chunk = getChunk(x, y, z);
+					if (!chunk?.isLoaded) {
+						this.processTargetChunkCoordinate(
+							x,
+							y,
+							z,
+							chunkX,
+							chunkY,
+							chunkZ,
+							lodRuleSet,
+						);
+						queued++;
+					}
+				}
+			}
+
+			for (let z = chunkZ - r + 1; z < chunkZ + r && queued < maxChunks; z++) {
+				for (const x of [chunkX - r, chunkX + r]) {
+					if (queued >= maxChunks) break;
+					const chunk = getChunk(x, y, z);
+					if (!chunk?.isLoaded) {
+						this.processTargetChunkCoordinate(
+							x,
+							y,
+							z,
+							chunkX,
+							chunkY,
+							chunkZ,
+							lodRuleSet,
+						);
+						queued++;
+					}
+				}
+			}
+		}
+
+		this.debugStats.farLodChunksProcessedThisFrame = queued;
+
+		if (queued < maxChunks) {
+			this.farLodScanRadius++;
+			this.farLodVerticalRadius++;
+		}
+	}
+
 	public queueUnloading(
 		chunkX: number,
 		chunkY: number,
@@ -613,11 +766,30 @@ export class ChunkStreamingController {
 
 		const cached = chunk.getCachedLODMesh(targetLod);
 		if (!cached) {
+			if (
+				targetLod >= 0 &&
+				targetLod < this.debugStats.cachedLodMissCounts.length
+			) {
+				this.debugStats.cachedLodMissCounts[targetLod]++;
+			}
 			return false;
 		}
 
 		if (!cached.opaque && !cached.transparent) {
+			if (
+				targetLod >= 0 &&
+				targetLod < this.debugStats.cachedLodMissCounts.length
+			) {
+				this.debugStats.cachedLodMissCounts[targetLod]++;
+			}
 			return false;
+		}
+
+		if (
+			targetLod >= 0 &&
+			targetLod < this.debugStats.cachedLodHitCounts.length
+		) {
+			this.debugStats.cachedLodHitCounts[targetLod]++;
 		}
 
 		createMeshFromData(chunk, {
@@ -714,10 +886,10 @@ export class ChunkStreamingController {
 		playerChunkZ: number,
 	): number {
 		const lodBias = desiredLod * 1_000_000;
-		const dist =
-			(chunk.chunkX - playerChunkX) ** 2 +
-			(chunk.chunkY - playerChunkY) ** 2 +
-			(chunk.chunkZ - playerChunkZ) ** 2;
+		const dx = chunk.chunkX - playerChunkX;
+		const dy = chunk.chunkY - playerChunkY;
+		const dz = chunk.chunkZ - playerChunkZ;
+		const dist = dx * dx + dy * dy + dz * dz;
 
 		return lodBias + dist;
 	}

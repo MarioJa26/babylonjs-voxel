@@ -7,10 +7,11 @@ import {
 import type { Player } from "../Player/Player";
 import { PlayerLoadingGate } from "../Player/PlayerLoadingGate";
 import { PlayerStatePersistence } from "../Player/PlayerStatePersistence";
-import { disposeSharedResources, initAtlas } from "../World/Chunk/ChunckMesher";
+import { disposeSharedResources, initAtlas, setImpostorManager } from "../World/Chunk/ChunckMesher";
 import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
 import { TextureDefinitions } from "../World/Texture/TextureDefinitions";
+import { VoxelImpostorManager } from "../World/VoxelImpostor/VoxelImpostorManager";
 import { WorldStorage } from "../World/WorldStorage";
 import { BlockBreakParticles } from "./BlockBreakParticles";
 import { WorldEnvironment } from "./WorldEnvironment";
@@ -32,6 +33,8 @@ export class Map1 {
 		initializeBlockBreakingVisuals(scene);
 
 		Map1.mainScene.skipPointerMovePicking = true;
+		Map1.mainScene.skipFrustumClipping = true;
+
 		Map1.environment = new WorldEnvironment(Map1.mainScene);
 
 		this.#playerStatePersistence = new PlayerStatePersistence(
@@ -71,6 +74,10 @@ export class Map1 {
 			await initAtlas();
 			// 2. Now safe to construct DistantTerrain (atlas is ready)
 			DistantTerrain.getInstance();
+
+			// 2.5. Initialize voxel impostor manager for far terrain
+			const impostorManager = VoxelImpostorManager.getInstance(Map1.mainScene);
+			setImpostorManager(impostorManager);
 
 			// 3. Start chunk streaming — PlayerLoadingGate calls updateChunksAround
 			//    which calls DistantTerrain.getInstance().update(), so it must come

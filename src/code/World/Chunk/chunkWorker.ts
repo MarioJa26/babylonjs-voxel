@@ -8,13 +8,17 @@ import {
 } from "./DataStructures/WorkerMessageType";
 
 export class ChunkWorker {
-	private terrainWorker: Worker; // terrain + distant terrain + lighting
-	private voxelWorker: Worker; // voxel mesh
-	private waterWorker: Worker; // water mesh
+	private terrainWorker: Worker;
+	private voxelWorker: Worker;
+	private waterWorker: Worker;
 
 	private warnedNonSharedRemeshPayload = false;
 	private distantTerrainSharedInitialized = false;
-	private static readonly EMPTY_NEIGHBOR_BLOCKS =
+	private readonly _neighborScratch: (Uint16Array | null | undefined)[] =
+		new Array(27);
+	private readonly _neighborLightScratch: (Uint8Array | undefined)[] =
+		new Array(27);
+	private static readonly EMPTY_NEIGHBOR_VOXELS =
 		typeof SharedArrayBuffer !== "undefined"
 			? new Uint16Array(new SharedArrayBuffer(0))
 			: new Uint16Array(0);
@@ -63,19 +67,10 @@ export class ChunkWorker {
 		this.waterWorker.terminate();
 	}
 
-	private readonly paletteToTyped = (
-		palette: Uint8Array | Uint16Array | null | undefined,
-	) => {
-		if (!palette || palette.length === 0) return palette;
-		return palette;
-	};
-
 	public postFullRemesh(chunk: Chunk, forcedLod?: number): void {
-		const neighbors: (Uint8Array | Uint16Array | null | undefined)[] = [];
-		const neighborLights: (Uint8Array | undefined)[] = [];
-		const neighborUniformIds: (number | undefined)[] = [];
-		const neighborPalettes: (Uint8Array | Uint16Array | null | undefined)[] =
-			[];
+		const neighbors = this._neighborScratch;
+		const neighborLights = this._neighborLightScratch;
+		let idx = 0;
 
 		for (let z = -1; z <= 1; z++) {
 			for (let y = -1; y <= 1; y++) {
@@ -85,33 +80,22 @@ export class ChunkWorker {
 					const neighbor = chunk.getNeighbor(x, y, z);
 					if (neighbor?.isLoaded) {
 						if (!neighbor.hasVoxelData) {
-							// Mesh-only neighbors don't have block payloads. Use zero-length
-							// sentinels so worker sampling falls back to local values while
-							// still treating this neighbor as present.
-							neighbors.push(ChunkWorker.EMPTY_NEIGHBOR_BLOCKS);
-							neighborLights.push(ChunkWorker.EMPTY_NEIGHBOR_LIGHTS);
-							neighborUniformIds.push(undefined);
-							neighborPalettes.push(undefined);
+							neighbors[idx] = ChunkWorker.EMPTY_NEIGHBOR_VOXELS;
+							neighborLights[idx] = ChunkWorker.EMPTY_NEIGHBOR_LIGHTS;
+							idx++;
 							continue;
 						}
 
-						neighbors.push(neighbor.block_array);
-						neighborLights.push(neighbor.light_array);
-						neighborUniformIds.push(
-							neighbor.isUniform ? neighbor.uniformBlockId : undefined,
-						);
-						neighborPalettes.push(this.paletteToTyped(neighbor.palette));
+						neighbors[idx] = neighbor.block_array;
+						neighborLights[idx] = neighbor.light_array;
 					} else {
-						neighbors.push(undefined);
-						neighborLights.push(undefined);
-						neighborUniformIds.push(undefined);
-						neighborPalettes.push(undefined);
+						neighbors[idx] = undefined;
+						neighborLights[idx] = undefined;
 					}
 				}
 			}
 		}
 
-		// Warn once if structured cloning may copy instead of sharing
 		if (!this.warnedNonSharedRemeshPayload) {
 			const centerBlocks = chunk.block_array;
 			const centerLight = chunk.light_array;
@@ -143,18 +127,6 @@ export class ChunkWorker {
 			}
 		}
 
-		/**
-		 * IMPORTANT:
-		 * We do NOT send MeshContext/getBlock/getLight from the main thread.
-		 * The worker reconstructs those from the raw payload.
-		 *
-		 * We also send the same rich shape your old mesh worker pipeline used,
-		 * so the worker can expand:
-		 *  - uniform chunks
-		 *  - palette-packed chunks
-		 *  - uniform neighbors
-		 *  - palette-packed neighbors
-		 */
 		this.voxelWorker.postMessage({
 			task: "voxelMesh",
 
@@ -162,15 +134,11 @@ export class ChunkWorker {
 			lod: forcedLod ?? chunk.lodLevel ?? 0,
 			chunk_size: Chunk.SIZE,
 
-			block_array: chunk.block_array,
-			uniformBlockId: chunk.isUniform ? chunk.uniformBlockId : undefined,
-			palette: this.paletteToTyped(chunk.palette),
+			voxels: chunk.block_array,
 			light_array: chunk.light_array,
 
 			neighbors,
 			neighborLights,
-			neighborUniformIds,
-			neighborPalettes,
 		});
 	}
 
