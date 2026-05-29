@@ -2,6 +2,7 @@ import type { Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
 import { getBiome, getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { IWorldFeature } from "./IWorldFeature";
+import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 
 export class LavaPoolFeature implements IWorldFeature {
 	public generate(
@@ -21,87 +22,76 @@ export class LavaPoolFeature implements IWorldFeature {
 		generatingChunkX: number,
 		generatingChunkZ: number,
 	) {
-		const POOL_REGION_SIZE = 9;
-
-		const regionX = Math.floor(chunkX / POOL_REGION_SIZE);
-		const regionZ = Math.floor(chunkZ / POOL_REGION_SIZE);
-
-		const regionHash = Squirrel3.get(
-			regionX * 873461393 + regionZ * 178246653,
-			seed,
-		);
-
-		// We must check the biome at the *region* location or the specific pool location,
-		// not just the biome passed in (which is the center of the neighbor chunk being iterated).
-		// However, for the spawn chance logic, we'll defer the biome check until we have coordinates.
-
 		let spawnChance = 2;
 		let isSurface = false;
 
-		// We use the passed biome for a quick check, but ideally we check the specific location later
 		if (biome.name === "Volcanic_Wasteland" || biome.name === "Basalt_Deltas") {
 			spawnChance = 100;
 			isSurface = true;
 		}
 
-		if (Math.abs(regionHash) % 100 < spawnChance) {
-			const baseHash = Squirrel3.get(regionHash, seed);
-			const offsetX =
-				Math.abs(Squirrel3.get(baseHash, seed)) %
-				(POOL_REGION_SIZE * chunkSize);
-			const offsetZ =
-				Math.abs(Squirrel3.get(baseHash + 1, seed)) %
-				(POOL_REGION_SIZE * chunkSize);
+		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
+			regionSize: 9,
+			magicA: 873461393,
+			magicB: 178246653,
+			spawnChance,
+			earlyReturn: false,
+		});
+		if (!region) return;
 
-			const poolCenterX = regionX * POOL_REGION_SIZE * chunkSize + offsetX;
-			const poolCenterZ = regionZ * POOL_REGION_SIZE * chunkSize + offsetZ;
+		const { regionHash } = region;
 
-			// --- Optimization: Bounding Box Check ---
-			const MAX_POOL_RADIUS = 30; // Approximate max radius
-			const minX = poolCenterX - MAX_POOL_RADIUS;
-			const maxX = poolCenterX + MAX_POOL_RADIUS;
-			const minZ = poolCenterZ - MAX_POOL_RADIUS;
-			const maxZ = poolCenterZ + MAX_POOL_RADIUS;
+		// LavaPool uses a different offset derivation via intermediate baseHash
+		const baseHash = Squirrel3.get(regionHash, seed);
+		const offsetX = Math.abs(Squirrel3.get(baseHash, seed)) % (9 * chunkSize);
+		const offsetZ =
+			Math.abs(Squirrel3.get(baseHash + 1, seed)) % (9 * chunkSize);
+		const poolCenterX = region.regionX * 9 * chunkSize + offsetX;
+		const poolCenterZ = region.regionZ * 9 * chunkSize + offsetZ;
 
-			const chunkMinX = generatingChunkX * chunkSize;
-			const chunkMaxX = (generatingChunkX + 1) * chunkSize;
-			const chunkMinZ = generatingChunkZ * chunkSize;
-			const chunkMaxZ = (generatingChunkZ + 1) * chunkSize;
-
-			if (
-				maxX <= chunkMinX ||
-				minX >= chunkMaxX ||
-				maxZ <= chunkMinZ ||
-				minZ >= chunkMaxZ
+		const MAX_POOL_RADIUS = 30;
+		const bounds = chunkWorldBounds(
+			generatingChunkX,
+			generatingChunkZ,
+			chunkSize,
+		);
+		if (
+			!aabbOverlaps(
+				poolCenterX - MAX_POOL_RADIUS,
+				poolCenterX + MAX_POOL_RADIUS,
+				poolCenterZ - MAX_POOL_RADIUS,
+				poolCenterZ + MAX_POOL_RADIUS,
+				bounds.minX,
+				bounds.maxX,
+				bounds.minZ,
+				bounds.maxZ,
 			)
-				return;
-			// ----------------------------------------
+		)
+			return;
 
-			// Re-evaluate biome at the specific pool location for correctness
-			const poolBiome = getBiome(poolCenterX, poolCenterZ);
-			isSurface =
-				poolBiome.name === "Volcanic_Wasteland" ||
-				poolBiome.name === "Basalt_Deltas";
+		const poolBiome = getBiome(poolCenterX, poolCenterZ);
+		isSurface =
+			poolBiome.name === "Volcanic_Wasteland" ||
+			poolBiome.name === "Basalt_Deltas";
 
-			let poolSurfaceY = 0;
-			if (isSurface) {
-				poolSurfaceY = getFinalTerrainHeight(poolCenterX, poolCenterZ) - 1;
-			} else {
-				poolSurfaceY =
-					-64 - (Math.abs(Squirrel3.get(baseHash + 2, seed)) % (1024 - 64));
-			}
-
-			this.generateLavaPool(
-				chunkX,
-				chunkY,
-				chunkZ,
-				poolCenterX,
-				poolSurfaceY,
-				poolCenterZ,
-				placeBlock,
-				seed,
-			);
+		let poolSurfaceY = 0;
+		if (isSurface) {
+			poolSurfaceY = getFinalTerrainHeight(poolCenterX, poolCenterZ) - 1;
+		} else {
+			poolSurfaceY =
+				-64 - (Math.abs(Squirrel3.get(baseHash + 2, seed)) % (1024 - 64));
 		}
+
+		this.generateLavaPool(
+			chunkX,
+			chunkY,
+			chunkZ,
+			poolCenterX,
+			poolSurfaceY,
+			poolCenterZ,
+			placeBlock,
+			seed,
+		);
 	}
 
 	private generateLavaPool(

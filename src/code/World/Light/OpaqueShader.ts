@@ -18,6 +18,7 @@ export class OpaqueShader {
             vec3 lightDirection;
             vec3 cameraPosition;
             float sunLightIntensity;
+            float sunLightIntensitySq;
             float wetness;
         };
 
@@ -76,15 +77,21 @@ export class OpaqueShader {
         ) {
             // diagonalVariant == 0 => NW -> SE
             // diagonalVariant == 1 => NE -> SW
-            vec2 dirXZ = diagonalVariant == 0
-                ? normalize(vec2(1.0, 1.0))
-                : normalize(vec2(1.0, -1.0));
+            const vec2 DIR_XZ[2] = vec2[](
+                vec2(0.70710678, 0.70710678),
+                vec2(0.70710678, -0.70710678)
+            );
+            vec2 dirXZ = DIR_XZ[diagonalVariant];
 
-            vec3 tangent = normalize(vec3(dirXZ.x, 0.0, dirXZ.y));
+            vec3 tangent = vec3(dirXZ.x, 0.0, dirXZ.y);
             vec3 bitangent = vec3(0.0, 1.0, 0.0);
 
-            // Plane normal is perpendicular to the vertical diagonal plane
-            vec3 normal = normalize(cross(bitangent, tangent));
+            // Precomputed normals for each variant (cross(bitangent, tangent))
+            const vec3 DIAG_NORMALS[2] = vec3[](
+                vec3(0.70710678, 0.0, -0.70710678),
+                vec3(-0.70710678, 0.0, -0.70710678)
+            );
+            vec3 normal = DIAG_NORMALS[diagonalVariant];
 
             if (isBackFace) {
                 normal = -normal;
@@ -245,22 +252,19 @@ int diagonalVariant = (meta >> 5) & 1;
         vec3 lightDirection;
         vec3 cameraPosition;
         float sunLightIntensity;
+        float sunLightIntensitySq;
         float wetness;
     };
 
     void main(void) {
         // 1. UV setup
         vec2 singleTileUV = fract(vUV);
-        vec2 dx = dFdx(vUV) * atlasTileSize;
-        vec2 dy = dFdy(vUV) * atlasTileSize;
-        float lod = log2(max(length(dx), length(dy)));
         vec2 atlasUV = vUV2 + singleTileUV * atlasTileSize;
 
-        // 2. Sampling
-        vec4 diffuseColor = textureLod(diffuseTexture, atlasUV, lod);
+        vec4 diffuseColor = texture(diffuseTexture, atlasUV);
         diffuseColor.rgb *= mix(1.0, 0.5, wetness);
 
-        vec3 normalMap = textureLod(normalTexture, atlasUV, lod).rgb;
+        vec3 normalMap = texture(normalTexture, atlasUV).rgb;
         normalMap = normalize(normalMap * 2.0 - 1.0); 
         vec3 worldNormal = normalize(vTBN * normalMap);
 

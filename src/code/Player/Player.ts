@@ -1,8 +1,8 @@
 import type { Engine, Scene, Vector3 } from "@babylonjs/core";
 
 import { MetadataContainer } from "../Entities/MetaDataContainer";
-import type { IControls } from "../Inferface/IControls";
-import type { IUsable } from "../Inferface/IUsable";
+import type { IControls } from "../Interface/IControls";
+import type { IUsable } from "../Interface/IUsable";
 import { Map1 } from "../Maps/Map1";
 import { WalkingControls } from "../Player/Controls/WalkingControls";
 import { CrossHair } from "./Hud/Crosshair/CrossHair";
@@ -138,12 +138,27 @@ export class Player implements IUsable {
 		blockX: number,
 		blockY: number,
 		blockZ: number,
-		blockShape: { boxes: Array<{ min: [number, number, number]; max: [number, number, number] }>; rotateY: boolean; usesSliceState: boolean },
+		blockShape: {
+			boxes: Array<{
+				min: [number, number, number];
+				max: [number, number, number];
+			}>;
+			rotateY: boolean;
+			usesSliceState: boolean;
+		},
 		rotation: number,
 		slice: number,
 		flipY: boolean,
 	): boolean {
-		return this.#playerVehicle.wouldBlockOverlapPlayer(blockX, blockY, blockZ, blockShape, rotation, slice, flipY);
+		return this.#playerVehicle.wouldBlockOverlapPlayer(
+			blockX,
+			blockY,
+			blockZ,
+			blockShape,
+			rotation,
+			slice,
+			flipY,
+		);
 	}
 
 	use(): void {

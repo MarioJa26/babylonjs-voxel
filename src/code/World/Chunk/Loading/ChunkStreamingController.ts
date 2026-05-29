@@ -1,10 +1,15 @@
 import { DistantTerrain } from "@/code/Generation/DistantTerrain/DistantTerrain";
+import { isInCave } from "@/code/Player/PlayerLoopController";
 import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
 import { createMeshFromData } from "../ChunckMesher";
 import { Chunk, getChunk } from "../Chunk";
 import { enqueueChunkRemesh } from "../ChunkLoadingSystem";
 import { ChunkWorkerPool } from "../ChunkWorkerPool";
-import { ChunkLodRuleSet } from "../LOD/ChunkLodRules";
+import {
+	ChunkLodRuleSet,
+	DistantOnlyChunkCreationRule,
+	Lod0ChunkCreationRule,
+} from "../LOD/ChunkLodRules";
 
 export type QueuedChunkRequest = {
 	chunk: Chunk;
@@ -19,11 +24,28 @@ type DesiredChunkState = {
 	revision: number;
 };
 
+function chunkDist(
+	chunkX: number,
+	chunkY: number,
+	chunkZ: number,
+	centerX: number,
+	centerY: number,
+	centerZ: number,
+): { hDist: number; vDist: number } {
+	return {
+		hDist: Math.max(Math.abs(chunkX - centerX), Math.abs(chunkZ - centerZ)),
+		vDist: Math.abs(chunkY - centerY),
+	};
+}
+
 export interface ChunkStreamingControllerAdapter {
 	getLoadQueue(): QueuedChunkRequest[];
 	getUnloadQueueSet(): Set<Chunk>;
 	onQueueSnapshotChanged?(): void;
 }
+
+// Scratch array for LoadedChunkIndex.queryCollect — avoids generator overhead.
+const _queryScratch: Chunk[] = [];
 
 export class ChunkStreamingController {
 	private static readonly DESIRED_STATE_REVISION_RETENTION = 8;
@@ -69,10 +91,24 @@ export class ChunkStreamingController {
 			DistantTerrain.getInstance().update(distantTerrainX, distantTerrainZ);
 		}
 
-		const lodRuleSet = ChunkLodRuleSet.fromRenderRadii(
-			renderDistance,
-			verticalRadius,
-		);
+		const lodRuleSet = isInCave
+			? new ChunkLodRuleSet(
+					{
+						lod0HorizontalRadius: renderDistance + 2,
+						lod0VerticalRadius: verticalRadius + 2,
+						lod1HorizontalRadius: 0,
+						lod1VerticalRadius: 0,
+						lod2HorizontalRadius: 0,
+						lod2VerticalRadius: 0,
+						lod3HorizontalRadius: 0,
+						lod3VerticalRadius: 0,
+					},
+					[
+						new Lod0ChunkCreationRule(renderDistance + 2, verticalRadius + 2),
+						new DistantOnlyChunkCreationRule(),
+					],
+				)
+			: ChunkLodRuleSet.fromRenderRadii(renderDistance, verticalRadius);
 		const { lod3HorizontalRadius, lod3VerticalRadius } = lodRuleSet.radii;
 
 		const loadQueue = this.adapter.getLoadQueue();
@@ -125,15 +161,26 @@ export class ChunkStreamingController {
 
 		// Cancel pending unloads for chunks that are back in range.
 		for (const chunk of unloadQueueSet) {
-			const horizontalDist = Math.max(
-				Math.abs(chunk.chunkX - chunkX),
-				Math.abs(chunk.chunkZ - chunkZ),
+			const { hDist, vDist } = chunkDist(
+				chunk.chunkX,
+				chunk.chunkY,
+				chunk.chunkZ,
+				chunkX,
+				chunkY,
+				chunkZ,
 			);
-			const verticalDist = Math.abs(chunk.chunkY - chunkY);
+			const isBelowZero = chunk.chunkY < 0;
+			const effectiveVerticalAllowance =
+				!isInCave && isBelowZero
+					? Math.min(
+							lod3VerticalRadius,
+							SETTING_PARAMS.CAVE_VERTICAL_RENDER_DISTANCE,
+						)
+					: lod3VerticalRadius;
 
 			if (
-				horizontalDist <= lod3HorizontalRadius &&
-				verticalDist <= lod3VerticalRadius
+				hDist <= lod3HorizontalRadius &&
+				vDist <= effectiveVerticalAllowance
 			) {
 				unloadQueueSet.delete(chunk);
 			}
@@ -175,11 +222,13 @@ export class ChunkStreamingController {
 			lod3VerticalRadius,
 		);
 
-		ChunkWorkerPool.getInstance().scheduleBackgroundLodPrecompute(
-			chunkX,
-			chunkY,
-			chunkZ,
-		);
+		if (!isInCave) {
+			ChunkWorkerPool.getInstance().scheduleBackgroundLodPrecompute(
+				chunkX,
+				chunkY,
+				chunkZ,
+			);
+		}
 
 		const oldestKeptRevision = Math.max(
 			0,
@@ -213,30 +262,37 @@ export class ChunkStreamingController {
 		const queryRadius = lod2HorizontalRadius + 2;
 		const queryVertical = lod2VerticalRadius + 2;
 
-		for (const chunk of Chunk.loadedChunkIndex.query(
+		_queryScratch.length = 0;
+		Chunk.loadedChunkIndex.queryCollect(
 			chunkX,
 			chunkY,
 			chunkZ,
 			queryRadius,
 			queryVertical,
-		)) {
+			_queryScratch,
+		);
+		for (let _qi = 0; _qi < _queryScratch.length; _qi++) {
+			const chunk = _queryScratch[_qi]!;
 			if (this.loadedRefreshQueueSet.has(chunk.id)) continue;
 
-			const hdist = Math.max(
-				Math.abs(chunk.chunkX - chunkX),
-				Math.abs(chunk.chunkZ - chunkZ),
+			const { hDist, vDist } = chunkDist(
+				chunk.chunkX,
+				chunk.chunkY,
+				chunk.chunkZ,
+				chunkX,
+				chunkY,
+				chunkZ,
 			);
-			const vdist = Math.abs(chunk.chunkY - chunkY);
 
 			// Only enqueue chunks that sit near a LOD transition boundary
 			// (+/- 2 chunks of each boundary). Skip chunks deep in LOD0 or
 			// far out in LOD3 — they don't need re-evaluation.
 			const nearLod0 =
-				hdist <= lod0HorizontalRadius + 2 && vdist <= lod0VerticalRadius + 2;
+				hDist <= lod0HorizontalRadius + 2 && vDist <= lod0VerticalRadius + 2;
 			const nearLod1 =
-				hdist <= lod1HorizontalRadius + 2 && vdist <= lod1VerticalRadius + 2;
+				hDist <= lod1HorizontalRadius + 2 && vDist <= lod1VerticalRadius + 2;
 			const nearLod2 =
-				hdist <= lod2HorizontalRadius + 2 && vdist <= lod2VerticalRadius + 2;
+				hDist <= lod2HorizontalRadius + 2 && vDist <= lod2VerticalRadius + 2;
 
 			if (!nearLod0 && !nearLod1 && !nearLod2) continue;
 
@@ -413,27 +469,22 @@ export class ChunkStreamingController {
 		const dx = chunkX - prevChunkX;
 		const dy = chunkY - prevChunkY;
 		const dz = chunkZ - prevChunkZ;
-
 		const { lod3HorizontalRadius: r, lod3VerticalRadius: ry } =
 			lodRuleSet.radii;
+		const downwardRy = isInCave
+			? ry
+			: Math.min(
+					ry,
+					Math.max(chunkY, 0) + SETTING_PARAMS.CAVE_VERTICAL_RENDER_DISTANCE,
+				);
+		const minY = SETTING_PARAMS.MIN_CHUNK_Y;
+		const maxY = minY + SETTING_PARAMS.MAX_CHUNK_HEIGHT;
 
-		// 👉 X movement
 		if (dx !== 0) {
 			const x = dx > 0 ? chunkX + r : chunkX - r;
-
-			for (let y = chunkY - ry; y <= chunkY + ry; y++) {
-				if (y < 0 || y >= SETTING_PARAMS.MAX_CHUNK_HEIGHT) continue;
-
+			for (let y = chunkY - downwardRy; y <= chunkY + ry; y++) {
+				if (y < minY || y >= maxY) continue;
 				for (let z = chunkZ - r; z <= chunkZ + r; z++) {
-					const chunk = getChunk(x, y, z);
-
-					if (chunk?.isLoaded) {
-						if (!this.loadedRefreshQueueSet.has(chunk.id)) {
-							this.loadedRefreshQueueSet.add(chunk.id);
-							this.loadedRefreshQueue.push(chunk);
-						}
-						continue;
-					}
 					this.processTargetChunkCoordinate(
 						x,
 						y,
@@ -447,28 +498,15 @@ export class ChunkStreamingController {
 			}
 		}
 
-		// 👉 Z movement
 		if (dz !== 0) {
 			const z = dz > 0 ? chunkZ + r : chunkZ - r;
-
-			for (let y = chunkY - ry; y <= chunkY + ry; y++) {
-				if (y < 0 || y >= SETTING_PARAMS.MAX_CHUNK_HEIGHT) continue;
-
+			for (let y = chunkY - downwardRy; y <= chunkY + ry; y++) {
+				if (y < minY || y >= maxY) continue;
 				for (let x = chunkX - r; x <= chunkX + r; x++) {
-					// overlap skip (already handled by X)
 					if (dx !== 0) {
 						const skipX = dx > 0 ? chunkX + r : chunkX - r;
 						if (x === skipX) continue;
 					}
-					const chunk = getChunk(x, y, z);
-
-					if (chunk?.isLoaded) {
-						if (!this.loadedRefreshQueueSet.has(chunk.id)) {
-							this.loadedRefreshQueueSet.add(chunk.id);
-							this.loadedRefreshQueue.push(chunk);
-						}
-						continue;
-					}
 					this.processTargetChunkCoordinate(
 						x,
 						y,
@@ -482,36 +520,18 @@ export class ChunkStreamingController {
 			}
 		}
 
-		// 👉 Y movement
 		if (dy !== 0) {
-			const y = dy > 0 ? chunkY + ry : chunkY - ry;
-
-			if (y >= 0 && y < SETTING_PARAMS.MAX_CHUNK_HEIGHT) {
+			const y = dy > 0 ? chunkY + ry : chunkY - downwardRy;
+			if (y >= minY && y < maxY) {
 				for (let x = chunkX - r; x <= chunkX + r; x++) {
+					if (dx !== 0) {
+						const skipX = dx > 0 ? chunkX + r : chunkX - r;
+						if (x === skipX) continue;
+					}
 					for (let z = chunkZ - r; z <= chunkZ + r; z++) {
-						if (dx !== 0) {
-							const skipX = dx > 0 ? chunkX + r : chunkX - r;
-							if (x === skipX) continue;
-						}
-
 						if (dz !== 0) {
 							const skipZ = dz > 0 ? chunkZ + r : chunkZ - r;
 							if (z === skipZ) continue;
-						}
-
-						if (dx !== 0 && dz !== 0) {
-							const skipX = dx > 0 ? chunkX + r : chunkX - r;
-							const skipZ = dz > 0 ? chunkZ + r : chunkZ - r;
-							if (x === skipX && z === skipZ) continue;
-						}
-						const chunk = getChunk(x, y, z);
-
-						if (chunk?.isLoaded) {
-							if (!this.loadedRefreshQueueSet.has(chunk.id)) {
-								this.loadedRefreshQueueSet.add(chunk.id);
-								this.loadedRefreshQueue.push(chunk);
-							}
-							continue;
 						}
 						this.processTargetChunkCoordinate(
 							x,
@@ -535,11 +555,21 @@ export class ChunkStreamingController {
 	): void {
 		const { lod3HorizontalRadius: r, lod3VerticalRadius: ry } =
 			lodRuleSet.radii;
+		const downwardRy = isInCave
+			? ry
+			: Math.min(
+					ry,
+					Math.max(chunkY, 0) + SETTING_PARAMS.CAVE_VERTICAL_RENDER_DISTANCE,
+				);
 
 		for (let x = -r; x <= r; x++) {
-			for (let y = -ry; y <= ry; y++) {
+			for (let y = -downwardRy; y <= ry; y++) {
 				const worldY = chunkY + y;
-				if (worldY < 0 || worldY >= SETTING_PARAMS.MAX_CHUNK_HEIGHT) continue;
+				if (
+					worldY < SETTING_PARAMS.MIN_CHUNK_Y ||
+					worldY >= SETTING_PARAMS.MIN_CHUNK_Y + SETTING_PARAMS.MAX_CHUNK_HEIGHT
+				)
+					continue;
 
 				for (let z = -r; z <= r; z++) {
 					const existing = getChunk(chunkX + x, worldY, chunkZ + z);
@@ -593,23 +623,35 @@ export class ChunkStreamingController {
 		const scanRadius = removeRadius + 8;
 		const scanVertical = verticalRemoveRadius + 8;
 
-		for (const chunk of Chunk.loadedChunkIndex.query(
+		_queryScratch.length = 0;
+		Chunk.loadedChunkIndex.queryCollect(
 			chunkX,
 			chunkY,
 			chunkZ,
 			scanRadius,
 			scanVertical,
-		)) {
+			_queryScratch,
+		);
+		for (let _qi = 0; _qi < _queryScratch.length; _qi++) {
+			const chunk = _queryScratch[_qi]!;
 			if (chunk.isPersistent) continue;
 			if (unloadQueueSet.has(chunk)) continue;
 
-			const hDist = Math.max(
-				Math.abs(chunk.chunkX - chunkX),
-				Math.abs(chunk.chunkZ - chunkZ),
+			const { hDist, vDist } = chunkDist(
+				chunk.chunkX,
+				chunk.chunkY,
+				chunk.chunkZ,
+				chunkX,
+				chunkY,
+				chunkZ,
 			);
-			const vDist = Math.abs(chunk.chunkY - chunkY);
 
-			if (hDist > removeRadius || vDist > verticalRemoveRadius) {
+			if (
+				hDist > removeRadius ||
+				vDist > verticalRemoveRadius ||
+				(!isInCave &&
+					chunk.chunkY < -SETTING_PARAMS.CAVE_VERTICAL_RENDER_DISTANCE)
+			) {
 				unloadQueueSet.add(chunk);
 			}
 		}

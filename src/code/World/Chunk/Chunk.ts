@@ -95,6 +95,9 @@ const _resolveScratch: { chunk: Chunk | undefined; coord: number } = {
 	coord: 0,
 };
 
+// Scratch set to batch remesh scheduling during BFS passes — avoids per-cell scheduleRemesh calls.
+const _bfsDirtyChunks = new Set<bigint>();
+
 // ---------------------------------------------------------------------------
 // Face-rect scratch buffers – reused inside getClosedFaceMaskForPacked to
 // avoid allocating new FaceRect[] arrays on every call.
@@ -112,9 +115,12 @@ const _rectBufs = Array.from(
 const _rectCounts = new Int32Array(6);
 /** Scratch space for edge deduplication; sized for 2*MAX_RECTS+2 edges × 2 axes. */
 const _edgeScratch = new Float64Array((MAX_RECTS * 2 + 4) * 2);
+// PERF: Reusable 2-element palette scratch to avoid new Uint16Array(2) per transition.
+const _twoEntryPalette = new Uint16Array(2);
 
 export class Chunk {
 	public readonly id: bigint;
+	public readonly neighborIds: readonly bigint[];
 
 	public lodLevel = 0;
 
@@ -132,7 +138,6 @@ export class Chunk {
 	public isDirty = false;
 	public isLoaded = false;
 	public isTerrainScheduled = false;
-	public colliderDirty = true;
 	public isLightDirty = false;
 
 	private remeshQueued = false;
@@ -208,6 +213,14 @@ export class Chunk {
 		this.#chunkY = chunkY;
 		this.#chunkZ = chunkZ;
 		this.id = packCoords(chunkX, chunkY, chunkZ);
+		this.neighborIds = [
+			packCoords(chunkX + 1, chunkY, chunkZ),
+			packCoords(chunkX - 1, chunkY, chunkZ),
+			packCoords(chunkX, chunkY + 1, chunkZ),
+			packCoords(chunkX, chunkY - 1, chunkZ),
+			packCoords(chunkX, chunkY, chunkZ + 1),
+			packCoords(chunkX, chunkY, chunkZ - 1),
+		];
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
 		Chunk.chunkInstances.set(this.id, this);
 	}
@@ -320,7 +333,6 @@ export class Chunk {
 		Chunk.loadedChunks.add(this);
 		Chunk.loadedChunkIndex.register(this);
 		this.isTerrainScheduled = false;
-		this.colliderDirty = true;
 		Chunk.onChunkLoaded?.(this);
 		if (scheduleRemesh) this.scheduleRemesh(true, true);
 	}
@@ -337,25 +349,7 @@ export class Chunk {
 		Chunk.loadedChunks.add(this);
 		Chunk.loadedChunkIndex.register(this);
 		this.isTerrainScheduled = false;
-		this.colliderDirty = false;
 		if (scheduleRemesh) this.scheduleRemesh();
-	}
-
-	public unload(): void {
-		if (!this.isLoaded) return;
-		this._block_array = null;
-		this._isUniform = true;
-		this._uniformBlockId = 0;
-		this._palette = null;
-		this._paletteIndexMap = null;
-		this._hasVoxelData = false;
-		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
-		this.isLoaded = false;
-		Chunk.loadedChunks.delete(this);
-		Chunk.loadedChunkIndex.unregister(this);
-		this.isTerrainScheduled = false;
-		this.isModified = false;
-		this.colliderDirty = true;
 	}
 
 	// =========================================================================
@@ -623,7 +617,9 @@ export class Chunk {
 			Chunk.remeshReadIndex > 64 &&
 			Chunk.remeshReadIndex * 2 > queue.length
 		) {
-			Chunk.remeshQueue = queue.slice(Chunk.remeshReadIndex);
+			// PERF: Use copyWithin + length truncation instead of slice() to avoid allocating a new array.
+			queue.copyWithin(0, Chunk.remeshReadIndex);
+			queue.length -= Chunk.remeshReadIndex;
 			Chunk.remeshReadIndex = 0;
 		}
 	}
@@ -660,10 +656,10 @@ export class Chunk {
 			this._paletteIndexMap = null;
 			let newIndex = 0;
 			if (this._palette[0] !== packedBlock) {
-				const ep = new Uint16Array(2);
-				ep[0] = this._palette[0];
-				ep[1] = packedBlock;
-				this._palette = ep;
+				// PERF: Reuse scratch palette to avoid new Uint16Array(2) allocation.
+				_twoEntryPalette[0] = this._palette[0];
+				_twoEntryPalette[1] = packedBlock;
+				this._palette = new Uint16Array(_twoEntryPalette);
 				this._paletteIndexMap = null;
 				newIndex = 1;
 			}
@@ -745,7 +741,6 @@ export class Chunk {
 		if (emission > 0) this.addLight(localX, localY, localZ, emission);
 
 		this.isModified = true;
-		this.colliderDirty = true;
 		this.clearCachedLODMeshes();
 		this.scheduleRemesh(true);
 
@@ -1077,10 +1072,17 @@ export class Chunk {
 						(targetLightArr[tidx] & ~blockMask) | nextLevel;
 				}
 
-				targetChunk.scheduleRemesh();
+				_bfsDirtyChunks.add(targetChunk.id);
 				q.push(targetChunk, tx, ty, tz, nextLevel);
 			}
 		}
+
+		// Flush batched remesh scheduling.
+		for (const id of _bfsDirtyChunks) {
+			const c = Chunk.chunkInstances.get(id);
+			if (c) c.scheduleRemesh();
+		}
+		_bfsDirtyChunks.clear();
 	}
 
 	// =========================================================================
@@ -1111,7 +1113,7 @@ export class Chunk {
 
 		if (isSkyLight) this.light_array[startIdx] &= blockMask;
 		else this.light_array[startIdx] &= ~blockMask;
-		this.scheduleRemesh();
+		_bfsDirtyChunks.add(this.id);
 
 		// Indexed loop so we can keep appending to Q_A while iterating.
 		// tail advances as we push; we read from [head..tail).
@@ -1189,13 +1191,20 @@ export class Chunk {
 				if (isDependent) {
 					if (isSkyLight) tArr[tIdx] &= blockMask;
 					else tArr[tIdx] &= ~blockMask;
-					targetChunk.scheduleRemesh();
+					_bfsDirtyChunks.add(targetChunk.id);
 					Q_A.push(targetChunk, tx, ty, tz, neighborLevel);
 				} else {
 					Q_B.push(targetChunk, tx, ty, tz, neighborLevel);
 				}
 			}
 		}
+
+		// Flush batched remesh scheduling.
+		for (const id of _bfsDirtyChunks) {
+			const c = Chunk.chunkInstances.get(id);
+			if (c) c.scheduleRemesh();
+		}
+		_bfsDirtyChunks.clear();
 
 		if (Q_B.head !== Q_B.tail)
 			this.processLightPropagationQueue(Q_B, isSkyLight);
@@ -1595,7 +1604,6 @@ export class Chunk {
 		Chunk.loadedChunks.delete(this);
 		Chunk.loadedChunkIndex.unregister(this);
 		this.isTerrainScheduled = false;
-		this.colliderDirty = true;
 		Chunk.remeshQueueSet.delete(this.id);
 		this.remeshQueued = false;
 		this.remeshQueuedPriority = false;

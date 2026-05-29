@@ -16,14 +16,19 @@ export class BlockHighlight {
 	readonly #material: StandardMaterial;
 
 	#mesh: Mesh;
-	#shapeKey = "";
+	#shapeKey = -1;
+	#prevVisible = false;
+	#prevHitX = 0;
+	#prevHitY = 0;
+	#prevHitZ = 0;
+	#prevIsBoat = false;
 	readonly #renderHandle: () => void;
 
 	constructor(scene: Scene) {
 		this.#scene = scene;
 		this.#material = this.#createMaterial();
 		this.#mesh = this.#buildUnitCube();
-		this.#shapeKey = "default";
+		this.#shapeKey = -1;
 
 		this.#renderHandle = () => this.#update();
 		scene.onBeforeRenderObservable.add(this.#renderHandle);
@@ -36,14 +41,24 @@ export class BlockHighlight {
 	// ─── Per-frame update ────────────────────────────────────────────────────
 
 	#update(): void {
-		// Note: pickTarget returns a shared object — read all fields immediately.
 		const hit = this.#currentHit;
+		const visible = hit !== null;
+		if (visible !== this.#prevVisible) {
+			this.#mesh.visibility = visible ? 1 : 0;
+			this.#prevVisible = visible;
+		}
 		if (hit) {
 			this.#ensureShape(hit.blockId, hit.blockState);
-			this.#applyHitTransform(hit);
-			this.#mesh.visibility = 1;
-		} else {
-			this.#mesh.visibility = 0;
+			if (
+				hit.x !== this.#prevHitX ||
+				hit.y !== this.#prevHitY ||
+				hit.z !== this.#prevHitZ
+			) {
+				this.#applyHitTransform(hit);
+				this.#prevHitX = hit.x;
+				this.#prevHitY = hit.y;
+				this.#prevHitZ = hit.z;
+			}
 		}
 	}
 
@@ -56,7 +71,7 @@ export class BlockHighlight {
 	// ─── Shape management ────────────────────────────────────────────────────
 
 	#ensureShape(blockId: number, blockState: number): void {
-		const key = `${blockId}:${blockState}`;
+		const key = (blockId << 6) | blockState;
 		if (key === this.#shapeKey) return;
 
 		const previousParent = this.#mesh.parent;

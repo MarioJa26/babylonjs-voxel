@@ -14,5 +14,4 @@ export const GLOBAL_VALUES = {
 
 	skyLightDirection: new Vector3(-1, -2, -1),
 	GLOBAL_TIME: 0,
-	DAY_DURATION_MS: 10 * 60 * 1000,
 };

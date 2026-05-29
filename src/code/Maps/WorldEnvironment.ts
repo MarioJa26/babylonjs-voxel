@@ -21,6 +21,8 @@ export class WorldEnvironment {
 	private dirLight!: DirectionalLight;
 	private hemiLight!: HemisphericLight;
 	private skybox!: Mesh;
+	private timeSlider: HTMLInputElement | null = null;
+	private negateScratch = new Vector3();
 
 	// Time cycle
 	private timeOfDay = 120000;
@@ -31,6 +33,9 @@ export class WorldEnvironment {
 	constructor(scene: Scene) {
 		WorldEnvironment.instance = this;
 		this.scene = scene;
+		this.timeSlider = document.getElementById(
+			"timeSlider",
+		) as HTMLInputElement | null;
 		this.createLights();
 		this.createSkybox();
 	}
@@ -104,10 +109,8 @@ export class WorldEnvironment {
 		skyboxMaterial.onBind = () => {
 			const effect = skyboxMaterial.getEffect();
 			if (effect) {
-				effect.setVector3(
-					"sunDirection",
-					GLOBAL_VALUES.skyLightDirection.negate(),
-				);
+				GLOBAL_VALUES.skyLightDirection.negateToRef(this.negateScratch);
+				effect.setVector3("sunDirection", this.negateScratch);
 			}
 		};
 
@@ -147,11 +150,7 @@ export class WorldEnvironment {
 
 		// Update engine directional light if present (direction points FROM light)
 		if (this.dirLight) {
-			this.dirLight.direction = new Vector3(
-				GLOBAL_VALUES.skyLightDirection.x,
-				GLOBAL_VALUES.skyLightDirection.y,
-				GLOBAL_VALUES.skyLightDirection.z,
-			);
+			this.dirLight.direction.copyFrom(GLOBAL_VALUES.skyLightDirection);
 			// Scale base intensity with elevation (tune multiplier)
 			this.dirLight.intensity = 1.0 * sunIntensity;
 			const reflectivity = sunIntensity * (this.wetness * 0.95);
@@ -177,11 +176,8 @@ export class WorldEnvironment {
 		);
 
 		// Update the time slider's position
-		const timeSlider = document.getElementById(
-			"timeSlider",
-		) as HTMLInputElement;
-		if (timeSlider)
-			timeSlider.value = (
+		if (this.timeSlider)
+			this.timeSlider.value = (
 				(this.timeOfDay / SETTING_PARAMS.DAY_DURATION_MS) *
 				1000
 			).toString();

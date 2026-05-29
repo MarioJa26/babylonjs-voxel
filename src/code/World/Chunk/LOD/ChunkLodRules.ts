@@ -153,9 +153,7 @@ export class ChunkLodRuleSet {
 		private readonly rules: ChunkLodCreationRule[],
 	) {}
 
-	private resolveWithDistance(
-		distance: ChunkLodDistance,
-	): ChunkLodDecision {
+	private resolveWithDistance(distance: ChunkLodDistance): ChunkLodDecision {
 		for (const rule of this.rules) {
 			if (rule.matches(distance)) {
 				return {

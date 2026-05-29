@@ -18,6 +18,7 @@ export class TransparentShader {
       vec3 lightDirection;
       vec3 cameraPosition;
       float sunLightIntensity;
+      float sunLightIntensitySq;
       float wetness;
       float time;
     };
@@ -111,11 +112,10 @@ export class TransparentShader {
       int meta = int(faceDataC.w + 0.5);
       int flip = meta & 1;
 
-int materialType = (meta >> 1) & 3;
-int isWater = (meta >> 3) & 1;
-bool diagonalEnabled = ((meta >> 4) & 1) != 0;
-int diagonalVariant = (meta >> 5) & 1;
-
+      int materialType = (meta >> 1) & 3;
+      int isWater = (meta >> 3) & 1;
+      bool diagonalEnabled = ((meta >> 4) & 1) != 0;
+      int diagonalVariant = (meta >> 5) & 1;
 
       int corner = decodeCorner(vertexId, isBackFaceInt, flip);
       vec2 cornerUV = getQuadCornerUV(corner);
@@ -241,6 +241,7 @@ int diagonalVariant = (meta >> 5) & 1;
     vec3 lightDirection; // pre-normalized on CPU
     vec3 cameraPosition;
     float sunLightIntensity;
+    float sunLightIntensitySq;
     float wetness;
     float time;
   };
@@ -265,8 +266,7 @@ int diagonalVariant = (meta >> 5) & 1;
   }
 
   void main(void) {
-    // Only real water should scroll
-float isWater = step(0.5, vIsWater);
+    float isWater = step(0.5, vIsWater);
 
     // --- 1. Animation ---
     vec2 scrollDir = vec2(-time * 0.3, time * 0.4);
@@ -274,20 +274,17 @@ float isWater = step(0.5, vIsWater);
     vec2 animatedUV = vUV + animationOffset;
     vec2 singleTileUV = fract(animatedUV);
 
-    // --- 2. LOD / UV setup ---
-    vec2 dx = dFdx(vUV) * atlasTileSize;
-    vec2 dy = dFdy(vUV) * atlasTileSize;
-    float lod = log2(max(length(dx), length(dy)));
+    // --- 2. UV setup ---
     vec2 atlasUV = vUV2 + singleTileUV * atlasTileSize;
 
     // --- 3. Diffuse sampling ---
-    vec4 diffuseColor = textureLod(diffuseTexture, atlasUV, lod);
+    vec4 diffuseColor = texture(diffuseTexture, atlasUV);
 
     // --- 4. Normal selection ---
     vec3 worldNormal;
 
     if (isWater > 0.5) {
-      // Water normal: procedural world-space wave normal only
+      // Procedural water wave normal
       vec2 wavePos = vPositionW.xz * 0.3 + scrollDir;
       vec2 wavePosB = wavePos * 1.314 + 4.7;
 
@@ -307,7 +304,7 @@ float isWater = step(0.5, vIsWater);
         -(wCDZ - wC) / eps * waveStrength
       ));
     } else {
-      vec3 normalMapBase = textureLod(normalTexture, atlasUV, lod).rgb;
+      vec3 normalMapBase = texture(normalTexture, atlasUV).rgb;
       worldNormal = normalize(vTBN * (normalMapBase * 2.0 - 1.0));
     }
 

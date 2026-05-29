@@ -45,7 +45,11 @@ class ResolvedChunkCoords {
 
 const _coordScratch = new ResolvedChunkCoords();
 
-function resolveCoords(worldX: number, worldY: number, worldZ: number): ResolvedChunkCoords {
+function resolveCoords(
+	worldX: number,
+	worldY: number,
+	worldZ: number,
+): ResolvedChunkCoords {
 	const scratch = _coordScratch;
 	scratch.chunkX = worldToChunkCoord(worldX);
 	scratch.chunkY = worldToChunkCoord(worldY);

@@ -12,7 +12,12 @@ import type { BoatBlockHitContext } from "./BreakinBlockHandler";
 let scene: Scene | null = null;
 let crackingMesh: Mesh | null = null;
 let crackMaterials: StandardMaterial[] = [];
-let crackingShapeKey = "";
+let crackingShapeKey = -1;
+let crackingLastStage = -1;
+let crackingLastBlockX = 0;
+let crackingLastBlockY = 0;
+let crackingLastBlockZ = 0;
+let crackingLastContext: unknown = null;
 
 export function initializeBlockBreakingVisuals(targetScene: Scene): void {
 	if (scene === targetScene && crackingMesh) {
@@ -51,7 +56,8 @@ export function disposeBlockBreakingVisuals(): void {
 	}
 
 	crackMaterials = [];
-	crackingShapeKey = "";
+	crackingShapeKey = -1;
+	crackingLastStage = -1;
 	scene = null;
 }
 
@@ -77,11 +83,25 @@ export function updateCrackingState(
 	}
 
 	crackingMesh.isVisible = true;
-	applyCrackingTransform(block, dynamicContext);
+	if (
+		block.x !== crackingLastBlockX ||
+		block.y !== crackingLastBlockY ||
+		block.z !== crackingLastBlockZ ||
+		dynamicContext !== crackingLastContext
+	) {
+		applyCrackingTransform(block, dynamicContext);
+		crackingLastBlockX = block.x;
+		crackingLastBlockY = block.y;
+		crackingLastBlockZ = block.z;
+		crackingLastContext = dynamicContext;
+	}
 
 	const stage = Math.min(9, Math.floor(progress * 10));
-	if (crackMaterials[stage]) {
-		crackingMesh.material = crackMaterials[stage];
+	if (stage !== crackingLastStage) {
+		crackingLastStage = stage;
+		if (crackMaterials[stage]) {
+			crackingMesh.material = crackMaterials[stage];
+		}
 	}
 }
 
@@ -162,7 +182,7 @@ function buildCrackingMeshForBlock(blockId: number, blockState: number): Mesh {
 }
 
 function ensureCrackingShape(blockId: number, blockState: number): void {
-	const shapeKey = `${blockId}:${blockState}`;
+	const shapeKey = (blockId << 6) | blockState;
 	if (shapeKey === crackingShapeKey) return;
 	if (!crackingMesh) return;
 
@@ -172,6 +192,7 @@ function ensureCrackingShape(blockId: number, blockState: number): void {
 	newMesh.position.copyFrom(oldMesh.position);
 	newMesh.parent = oldMesh.parent;
 	newMesh.isPickable = false;
+
 	newMesh.isVisible = oldMesh.isVisible;
 	newMesh.renderingGroupId = oldMesh.renderingGroupId;
 	newMesh.material = oldMesh.material;
@@ -179,7 +200,7 @@ function ensureCrackingShape(blockId: number, blockState: number): void {
 	crackingMesh = newMesh;
 	crackingShapeKey = shapeKey;
 
-	oldMesh.dispose();
+	oldMesh?.dispose();
 }
 
 function applyCrackingTransform(

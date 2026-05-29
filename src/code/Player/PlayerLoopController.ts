@@ -1,7 +1,7 @@
 import type { Engine, Scene, Vector3 } from "@babylonjs/core";
 import { CustomBoat } from "../Entities/CustomBoat";
 import { getBiome } from "../Generation/TerrainHeightMap";
-import type { IControls } from "../Inferface/IControls";
+import type { IControls } from "../Interface/IControls";
 import { Chunk } from "../World/Chunk/Chunk";
 import {
 	getDebugStats,
@@ -10,21 +10,36 @@ import {
 	worldToChunkCoord,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
+import {
+	type BlockRaycastHit,
+	pickTarget,
+} from "./Hud/BlockHighlight/BlockRaycaster";
 import { PlayerHud } from "./Hud/PlayerHud";
 import type { IPlayerBody } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
 import type { PlayerStats } from "./PlayerStats";
 
-export class PlayerLoopController {
-	#lastChunkX = 0;
-	#lastChunkY = 0;
-	#lastChunkZ = 0;
+export let isInCave = false;
 
+export class PlayerLoopController {
+	// ---- chunk-loading position tracking ----
+	#loadLastCx = 0;
+	#loadLastCy = 0;
+	#loadLastCz = 0;
+
+	// ---- active-mesh selection position tracking (separate from loading) ----
+	#amLastCx = 0;
+	#amLastCy = 0;
+	#amLastCz = 0;
 	#prevCameraYaw = 0;
 	#prevCameraPitch = 0;
-	#frameCount = 0;
 	#rebuildActiveMeshes = false;
 
+	// ---- cave state ----
+	#lastCaveState = false;
+
+	// ---- debug HUD throttle ----
+	#lastDebugHudUpdateMs = 0;
 	static readonly DEBUG_HUD_INTERVAL_MS = 250;
 
 	constructor(
@@ -48,128 +63,160 @@ export class PlayerLoopController {
 				}
 			}
 
-			CustomBoat.tickAllActiveBoats(this.scene);
+			// Raycast once per frame — shared by crosshair highlight and block breaking.
+			const pickHit = pickTarget(this.playerHud.player);
+			this.playerHud.crossHair.setTargetHit(pickHit);
+
+			CustomBoat.tickAllActiveBoats(this.scene, this.getPlayerPosition());
 			this.playerVehicle.update(dt);
 			this.playerStats.update(dt, this.playerVehicle.isSprinting);
 			this.playerVehicle.updateCameraAndVisuals();
-			this.updateControls();
+			this.#updateControls(pickHit);
+			this.#updateCaveState();
 
-			this.updateChunksAroundPlayer();
-
-			// Always drain a small amount of streaming work every frame.
-			// This is what smooths out chunk-boundary spikes.
+			// Compute chunk coords once — shared by all sub-systems this frame.
 			const playerPos = this.getPlayerPosition();
-			const currentChunkX = worldToChunkCoord(playerPos.x);
-			const currentChunkY = worldToChunkCoord(playerPos.y);
-			const currentChunkZ = worldToChunkCoord(playerPos.z);
+			const cx = worldToChunkCoord(playerPos.x);
+			const cy = worldToChunkCoord(playerPos.y);
+			const cz = worldToChunkCoord(playerPos.z);
 
-			processFrameBudgetedStreamingWork(
-				currentChunkX,
-				currentChunkY,
-				currentChunkZ,
-			);
-
-			this.#updateActiveMeshSelection();
+			this.#updateChunksAroundPlayer(cx, cy, cz);
+			processFrameBudgetedStreamingWork(cx, cy, cz);
+			this.#updateActiveMeshSelection(cx, cy, cz);
 		});
 
 		this.scene.onAfterRenderObservable.add(() => {
-			this.updateDebugHud();
+			this.#updateDebugHud();
 			this.#freezeActiveMeshes();
 		});
 	}
 
-	private updateControls(): void {
+	// ---------------------------------------------------------------------------
+	// Controls
+	// ---------------------------------------------------------------------------
+
+	#updateControls(hit?: BlockRaycastHit | null): void {
 		const controls = this.getKeyboardControls();
 		const type = controls.controlType;
 		if (type === "walking" || type === "customBoat" || type === "paddleBoat") {
-			(controls as unknown as { update(): void }).update();
+			(
+				controls as unknown as { update(hit?: BlockRaycastHit | null): void }
+			).update(hit);
 		}
 	}
 
-	private updateChunksAroundPlayer(): void {
-		const playerPos = this.getPlayerPosition();
-		const currentChunkX = worldToChunkCoord(playerPos.x);
-		const currentChunkY = worldToChunkCoord(playerPos.y);
-		const currentChunkZ = worldToChunkCoord(playerPos.z);
+	// ---------------------------------------------------------------------------
+	// Cave state
+	// ---------------------------------------------------------------------------
 
+	#updateCaveState(): void {
+		const inCave = this.getPlayerPosition().y <= -16;
+		if (inCave !== this.#lastCaveState) {
+			this.#lastCaveState = inCave;
+			isInCave = inCave;
+		}
+	}
+
+	// ---------------------------------------------------------------------------
+	// Chunk loading
+	// ---------------------------------------------------------------------------
+
+	#updateChunksAroundPlayer(cx: number, cy: number, cz: number): void {
 		if (
-			currentChunkX !== this.#lastChunkX ||
-			currentChunkY !== this.#lastChunkY ||
-			currentChunkZ !== this.#lastChunkZ
+			cx !== this.#loadLastCx ||
+			cy !== this.#loadLastCy ||
+			cz !== this.#loadLastCz
 		) {
+			const playerPos = this.getPlayerPosition();
 			void updateChunksAround(
-				currentChunkX,
-				currentChunkY,
-				currentChunkZ,
+				cx,
+				cy,
+				cz,
 				undefined,
 				undefined,
-				this.#lastChunkX,
-				this.#lastChunkY,
-				this.#lastChunkZ,
+				this.#loadLastCx,
+				this.#loadLastCy,
+				this.#loadLastCz,
 				playerPos.x,
 				playerPos.z,
 			);
-
-			this.#lastChunkX = currentChunkX;
-			this.#lastChunkY = currentChunkY;
-			this.#lastChunkZ = currentChunkZ;
+			this.#loadLastCx = cx;
+			this.#loadLastCy = cy;
+			this.#loadLastCz = cz;
 		}
 	}
 
-	#updateActiveMeshSelection(): void {
-		const pos = this.getPlayerPosition();
-		const cx = worldToChunkCoord(pos.x);
-		const cy = worldToChunkCoord(pos.y);
-		const cz = worldToChunkCoord(pos.z);
+	// ---------------------------------------------------------------------------
+	// Active mesh selection
+	// Uses its own #amLastCx/Y/Z — never touches chunk-loading state.
+	// ---------------------------------------------------------------------------
+
+	#frozenOnce = false;
+	#cameraStillFrames = 0;
+	static readonly FREEZE_DELAY_FRAMES = 4; // freeze after N still frames
+
+	#updateActiveMeshSelection(cx: number, cy: number, cz: number): void {
 		const yaw = this.playerCamera.cameraYaw;
 		const pitch = this.playerCamera.cameraPitch;
 
 		const chunkChanged =
-			cx !== this.#lastChunkX ||
-			cy !== this.#lastChunkY ||
-			cz !== this.#lastChunkZ;
+			cx !== this.#amLastCx || cy !== this.#amLastCy || cz !== this.#amLastCz;
 		const cameraMoved =
 			yaw !== this.#prevCameraYaw || pitch !== this.#prevCameraPitch;
 
 		if (chunkChanged) {
-			this.#lastChunkX = cx;
-			this.#lastChunkY = cy;
-			this.#lastChunkZ = cz;
+			this.#amLastCx = cx;
+			this.#amLastCy = cy;
+			this.#amLastCz = cz;
 		}
 		if (cameraMoved) {
 			this.#prevCameraYaw = yaw;
 			this.#prevCameraPitch = pitch;
 		}
 
-		this.#rebuildActiveMeshes = false;
-
 		if (chunkChanged || cameraMoved) {
-			this.#frameCount++;
-			if (this.#frameCount % 2 === 0) {
+			this.#cameraStillFrames = 0;
+			this.#rebuildActiveMeshes = false;
+			// Unfreeze so Babylon rebuilds the active mesh list this frame.
+			if ((this.scene as Scene)._activeMeshesFrozen) {
+				(this.scene as Scene)._activeMeshesFrozen = false;
+				this.#frozenOnce = false;
+			}
+		} else {
+			this.#cameraStillFrames++;
+			// Schedule ONE freeze after the player has been still long enough.
+			if (
+				this.#cameraStillFrames === PlayerLoopController.FREEZE_DELAY_FRAMES &&
+				!this.#frozenOnce
+			) {
 				this.#rebuildActiveMeshes = true;
 			}
-		}
-
-		if (
-			this.#rebuildActiveMeshes &&
-			(this.scene as Scene)._activeMeshesFrozen
-		) {
-			this.scene.unfreezeActiveMeshes();
 		}
 	}
 
 	#freezeActiveMeshes(): void {
-		if (this.#rebuildActiveMeshes) {
-			this.scene.freezeActiveMeshes();
+		if (this.#rebuildActiveMeshes && !this.#frozenOnce) {
+			this.scene.freezeActiveMeshes(true, undefined, undefined, false);
+			this.#frozenOnce = true;
 			this.#rebuildActiveMeshes = false;
-		} else if (!(this.scene as Scene)._activeMeshesFrozen) {
-			this.scene.freezeActiveMeshes();
 		}
 	}
 
-	private updateDebugHud(): void {
+	// ---------------------------------------------------------------------------
+	// Debug HUD
+	// ---------------------------------------------------------------------------
+
+	#updateDebugHud(): void {
 		this.playerHud.updateStats();
 		if (PlayerHud.debugPanelDiv.style.display === "none") return;
+
+		const now = performance.now();
+		if (
+			now - this.#lastDebugHudUpdateMs <
+			PlayerLoopController.DEBUG_HUD_INTERVAL_MS
+		)
+			return;
+		this.#lastDebugHudUpdateMs = now;
 
 		const playerPos = this.getPlayerPosition();
 		const chunkX = worldToChunkCoord(playerPos.x);
@@ -211,18 +258,23 @@ export class PlayerLoopController {
 		);
 		PlayerHud.updateDebugInfo(
 			"Facing",
-			this.getDirectionFromYaw(cameraYaw),
+			this.#directionFromYaw(cameraYaw),
 			"position",
 		);
-		const biome = getBiome(Math.floor(playerPos.x), Math.floor(playerPos.z));
-		PlayerHud.updateDebugInfo("Biome", biome.name, "biome");
+		PlayerHud.updateDebugInfo(
+			"Biome",
+			getBiome(Math.floor(playerPos.x), Math.floor(playerPos.z)).name,
+			"biome",
+		);
 		PlayerHud.updateDebugInfo(
 			"Loaded Chunks",
 			Chunk.loadedChunks.size,
 			"chunks",
 		);
+
 		const loadStats = getDebugStats();
 		const workerStats = ChunkWorkerPool.getInstance().getDebugStats();
+
 		PlayerHud.updateDebugInfo(
 			"Chunk Queues",
 			`L:${loadStats.loadQueueLength} U:${loadStats.unloadQueueLength} B:${loadStats.loadBatchLimit}/${loadStats.unloadBatchLimit}`,
@@ -258,18 +310,20 @@ export class PlayerLoopController {
 			`last:${workerStats.lastDispatchCount} total:${workerStats.totalDispatchCount} budget:${workerStats.dispatchBudgetPerTick || "inf"}`,
 			"workers",
 		);
+
 		const counts = workerStats.workerDispatchCounts;
-		const top4: string[] = [];
 		const indexed: { count: number; index: number }[] = [];
 		for (let i = 0; i < counts.length; i++) {
 			if (counts[i] > 0) indexed.push({ count: counts[i], index: i });
 		}
 		indexed.sort((a, b) => b.count - a.count);
 		const limit = indexed.length < 4 ? indexed.length : 4;
+		let dispatchHistogram = "";
 		for (let i = 0; i < limit; i++) {
-			top4.push(`${indexed[i].index}:${indexed[i].count}`);
+			if (i > 0) dispatchHistogram += " ";
+			dispatchHistogram += `${indexed[i].index}:${indexed[i].count}`;
 		}
-		const dispatchHistogram = top4.join(" ");
+
 		const indices = workerStats.lastDispatchWorkerIndices;
 		const len = indices.length;
 		const recentStart = len > 8 ? len - 8 : 0;
@@ -278,6 +332,7 @@ export class PlayerLoopController {
 			if (i > recentStart) recentWorkers += ",";
 			recentWorkers += String(indices[i]);
 		}
+
 		PlayerHud.updateDebugInfo(
 			"Worker Dist",
 			`peakBusy:${workerStats.peakBusyWorkers} top:[${dispatchHistogram || "-"}] recent:[${recentWorkers || "-"}]`,
@@ -310,21 +365,23 @@ export class PlayerLoopController {
 		);
 	}
 
-	private getDirectionFromYaw(yaw: number): string {
-		const degrees = (yaw * (180 / Math.PI)) % 360;
-		const normalizedDegrees = (degrees + 360) % 360;
+	// Lookup table is faster than the original Math.round(degrees/45) path
+	// because it avoids floating-point modular arithmetic at call-site.
+	static readonly #DIRECTION_NAMES = [
+		"West",
+		"North-West",
+		"North",
+		"North-East",
+		"East",
+		"South-East",
+		"South",
+		"South-West",
+	] as const;
 
-		const directions = [
-			"West",
-			"North-West",
-			"North",
-			"North-East",
-			"East",
-			"South-East",
-			"South",
-			"South-West",
-		];
-		const index = Math.round(normalizedDegrees / 45) % 8;
-		return directions[index];
+	#directionFromYaw(yaw: number): string {
+		const degrees = (yaw * (180 / Math.PI)) % 360;
+		const normalizedDeg = (degrees + 360) % 360;
+		const index = Math.round(normalizedDeg / 45) % 8;
+		return PlayerLoopController.#DIRECTION_NAMES[index];
 	}
 }

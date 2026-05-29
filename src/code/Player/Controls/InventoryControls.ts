@@ -1,5 +1,5 @@
 import { Vector3 } from "@babylonjs/core";
-import type { IControls } from "../../Inferface/IControls";
+import type { IControls } from "@/code/Interface/IControls";
 import { PlayerInventory } from "../Inventory/PlayerInventory";
 import type { Player } from "../Player";
 

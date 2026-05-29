@@ -20,6 +20,9 @@ const BLOCKS_URL = "/data/blocks.json";
 
 export const TextureDefinitions: TextureDefinition[] =
 	await loadBlockDefinitions();
+export const TextureDefinitionMap: Map<number, TextureDefinition> = new Map(
+	TextureDefinitions.map((d) => [d.id, d]),
+);
 
 async function loadBlockDefinitions(): Promise<TextureDefinition[]> {
 	try {
@@ -88,5 +91,5 @@ export function getBlockBreakTime(id: number, toolItemId?: number): number {
 }
 
 export function getBlockInfo(id: number): TextureDefinition | undefined {
-	return TextureDefinitions.find((d) => d.id === id);
+	return TextureDefinitionMap.get(id);
 }

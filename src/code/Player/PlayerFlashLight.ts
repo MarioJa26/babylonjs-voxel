@@ -22,7 +22,6 @@ export class PlayerFlashLight {
 			scene,
 		);
 		this.#flashlight.intensity = 1.5;
-		this.#flashlight.range = 100;
 		this.#flashlight.diffuse = new Color3(1, 1, 0.5);
 		this.#flashlight.specular = new Color3(1, 1, 1);
 		this.#flashlight.range = 210;

@@ -6,7 +6,7 @@ import {
 	Vector3,
 } from "@babylonjs/core";
 import type { WaterMaterial } from "@babylonjs/materials";
-export class BouyantObject {
+export class BuoyantObject {
 	public scene: Scene;
 	public mesh: Mesh;
 	public waterMaterial: WaterMaterial;
@@ -32,8 +32,8 @@ export class BouyantObject {
 
 		let time = 0;
 		this.#renderHandle = () => {
-			time += this.scene.getEngine().getDeltaTime() / 100000;
 			const dt = this.scene.getEngine().getDeltaTime() / 1000;
+			time += dt;
 			const x = this.mesh.position.x;
 			const z = this.mesh.position.z;
 			const inv05 = 1 / 0.05;

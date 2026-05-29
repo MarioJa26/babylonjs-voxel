@@ -1,7 +1,7 @@
 import js from "@eslint/js";
+import { defineConfig } from "eslint/config";
 import vuePlugin from "eslint-plugin-vue";
 import tsEslint from "typescript-eslint";
-import { defineConfig } from "eslint/config";
 
 export default defineConfig([
 	// 1. Global ignores

@@ -41,7 +41,7 @@ export class ItemSlot {
 			PlayerHud.hideItemTooltip();
 		};
 
-		this.initalize();
+		this.initialize();
 	}
 
 	public swapSlots(slot: ItemSlot) {
@@ -108,7 +108,7 @@ export class ItemSlot {
 		this.#item = null;
 	}
 
-	public initalize() {
+	public initialize() {
 		const div = this.#divItemSlot;
 		div.classList.add("inventory-slot");
 		div.addEventListener("dragstart", this.#onDragStart);

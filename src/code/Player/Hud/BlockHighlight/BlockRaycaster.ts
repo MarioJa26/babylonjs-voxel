@@ -45,6 +45,25 @@ const _sharedWorldNormal = new Vector3(0, 0, 0);
 const _sharedWorldCenter = new Vector3(0, 0, 0);
 const _sharedInvMatrix = new Matrix();
 const _sharedWorldMatrix = new Matrix();
+const _sharedBoatContext: {
+	kind: string;
+	boatChunk: BoatChunk | null;
+	localX: number;
+	localY: number;
+	localZ: number;
+	localHitNx: number;
+	localHitNy: number;
+	localHitNz: number;
+} = {
+	kind: "boatChunk",
+	boatChunk: null,
+	localX: 0,
+	localY: 0,
+	localZ: 0,
+	localHitNx: 0,
+	localHitNy: 0,
+	localHitNz: 0,
+};
 let _sharedRay: Ray | null = null;
 
 function getForwardRay(player: Player, length: number): Ray {
@@ -111,46 +130,106 @@ function intersectRayAabb(
 		hitNy = 0,
 		hitNz = 0;
 
-	const origins = [ox, oy, oz];
-	const dirs = [dx, dy, dz];
-	const mins = [minX, minY, minZ];
-	const maxs = [maxX, maxY, maxZ];
-
-	for (let axis = 0; axis < 3; axis++) {
-		const o = origins[axis],
-			d = dirs[axis];
-		const mn = mins[axis],
-			mx = maxs[axis];
-
+	// X axis
+	{
+		const o = ox,
+			d = dx,
+			mn = minX,
+			mx = maxX;
 		if (Math.abs(d) < eps) {
 			if (o < mn || o > mx) return null;
-			continue;
+		} else {
+			const tToMin = (mn - o) / d;
+			const tToMax = (mx - o) / d;
+			let near = tToMin,
+				far = tToMax;
+			let nearNx = -1,
+				nearNy = 0,
+				nearNz = 0;
+			if (tToMin > tToMax) {
+				near = tToMax;
+				far = tToMin;
+				nearNx = 1;
+				nearNy = 0;
+				nearNz = 0;
+			}
+			if (near > t0) {
+				t0 = near;
+				hitNx = nearNx;
+				hitNy = nearNy;
+				hitNz = nearNz;
+			}
+			if (far < t1) t1 = far;
+			if (t0 > t1) return null;
 		}
+	}
 
-		const tToMin = (mn - o) / d;
-		const tToMax = (mx - o) / d;
-		let near = tToMin,
-			far = tToMax;
-		let nearNx = axis === 0 ? -1 : 0;
-		let nearNy = axis === 1 ? -1 : 0;
-		let nearNz = axis === 2 ? -1 : 0;
-
-		if (tToMin > tToMax) {
-			near = tToMax;
-			far = tToMin;
-			nearNx = -nearNx;
-			nearNy = -nearNy;
-			nearNz = -nearNz;
+	// Y axis
+	{
+		const o = oy,
+			d = dy,
+			mn = minY,
+			mx = maxY;
+		if (Math.abs(d) < eps) {
+			if (o < mn || o > mx) return null;
+		} else {
+			const tToMin = (mn - o) / d;
+			const tToMax = (mx - o) / d;
+			let near = tToMin,
+				far = tToMax;
+			let nearNx = 0,
+				nearNy = -1,
+				nearNz = 0;
+			if (tToMin > tToMax) {
+				near = tToMax;
+				far = tToMin;
+				nearNx = 0;
+				nearNy = 1;
+				nearNz = 0;
+			}
+			if (near > t0) {
+				t0 = near;
+				hitNx = nearNx;
+				hitNy = nearNy;
+				hitNz = nearNz;
+			}
+			if (far < t1) t1 = far;
+			if (t0 > t1) return null;
 		}
+	}
 
-		if (near > t0) {
-			t0 = near;
-			hitNx = nearNx;
-			hitNy = nearNy;
-			hitNz = nearNz;
+	// Z axis
+	{
+		const o = oz,
+			d = dz,
+			mn = minZ,
+			mx = maxZ;
+		if (Math.abs(d) < eps) {
+			if (o < mn || o > mx) return null;
+		} else {
+			const tToMin = (mn - o) / d;
+			const tToMax = (mx - o) / d;
+			let near = tToMin,
+				far = tToMax;
+			let nearNx = 0,
+				nearNy = 0,
+				nearNz = -1;
+			if (tToMin > tToMax) {
+				near = tToMax;
+				far = tToMin;
+				nearNx = 0;
+				nearNy = 0;
+				nearNz = 1;
+			}
+			if (near > t0) {
+				t0 = near;
+				hitNx = nearNx;
+				hitNy = nearNy;
+				hitNz = nearNz;
+			}
+			if (far < t1) t1 = far;
+			if (t0 > t1) return null;
 		}
-		if (far < t1) t1 = far;
-		if (t0 > t1) return null;
 	}
 
 	if (t0 < tMin || t0 > tMax) return null;
@@ -239,23 +318,32 @@ function raycastFirstBlock(
 	return boatHit.t < terrainHit.t ? boatHit : terrainHit;
 }
 
-function raycastFirstTerrainBlock(
-	ray: Ray,
-	shouldHit: (x: number, y: number, z: number, blockId: number) => boolean,
-): BlockRaycastHit | null {
-	const ox = ray.origin.x,
-		oy = ray.origin.y,
-		oz = ray.origin.z;
-	const dx = ray.direction.x,
-		dy = ray.direction.y,
-		dz = ray.direction.z;
-	const maxDist = ray.length;
-	if (!(maxDist > 0)) return null;
+type DdaVisitResult = "hit" | "skip" | "stop";
 
-	let x = Math.floor(ox),
-		y = Math.floor(oy),
-		z = Math.floor(oz);
-
+function traceRayDda(
+	ox: number,
+	oy: number,
+	oz: number,
+	dx: number,
+	dy: number,
+	dz: number,
+	startX: number,
+	startY: number,
+	startZ: number,
+	tStart: number,
+	maxDist: number,
+	checkStart: boolean,
+	visit: (
+		x: number,
+		y: number,
+		z: number,
+		t: number,
+		nx: number,
+		ny: number,
+		nz: number,
+		tExit: number,
+	) => DdaVisitResult,
+): void {
 	const stepX = dx > 0 ? 1 : dx < 0 ? -1 : 0;
 	const stepY = dy > 0 ? 1 : dy < 0 ? -1 : 0;
 	const stepZ = dz > 0 ? 1 : dz < 0 ? -1 : 0;
@@ -264,18 +352,27 @@ function raycastFirstTerrainBlock(
 	const invDy = stepY === 0 ? Infinity : 1 / Math.abs(dy);
 	const invDz = stepZ === 0 ? Infinity : 1 / Math.abs(dz);
 
-	const boundX = stepX > 0 ? x + 1 : x;
-	const boundY = stepY > 0 ? y + 1 : y;
-	const boundZ = stepZ > 0 ? z + 1 : z;
+	const boundX = stepX > 0 ? startX + 1 : startX;
+	const boundY = stepY > 0 ? startY + 1 : startY;
+	const boundZ = stepZ > 0 ? startZ + 1 : startZ;
 
 	let tMaxX = stepX === 0 ? Infinity : (boundX - ox) / dx;
 	let tMaxY = stepY === 0 ? Infinity : (boundY - oy) / dy;
 	let tMaxZ = stepZ === 0 ? Infinity : (boundZ - oz) / dz;
 
-	let t = 0,
+	let x = startX,
+		y = startY,
+		z = startZ;
+	let t = tStart,
 		nx = 0,
 		ny = 0,
 		nz = 0;
+
+	if (checkStart) {
+		const tExit = Math.min(tMaxX, tMaxY, tMaxZ, maxDist);
+		const r = visit(x, y, z, t, nx, ny, nz, tExit);
+		if (r === "hit" || r === "stop") return;
+	}
 
 	while (true) {
 		if (tMaxX < tMaxY) {
@@ -312,99 +409,121 @@ function raycastFirstTerrainBlock(
 			}
 		}
 
-		if (t > maxDist) return null;
-
-		const blockId = getTerrainBlockByWorldCoords(x, y, z);
-		if (!shouldHit(x, y, z, blockId)) continue;
-
-		const blockState = getBlockStateByWorldCoords(x, y, z);
-
-		if (isFullBlockShape(blockId, blockState)) {
-			_sharedHit.x = x;
-			_sharedHit.y = y;
-			_sharedHit.z = z;
-			_sharedHit.nx = nx;
-			_sharedHit.ny = ny;
-			_sharedHit.nz = nz;
-			_sharedHit.t = t;
-			_sharedHit.blockId = blockId;
-			_sharedHit.blockState = blockState;
-			_sharedHit.dynamicContext = null;
-			return _sharedHit;
-		}
+		if (t > maxDist) return;
 
 		const tExit = Math.min(tMaxX, tMaxY, tMaxZ, maxDist);
-		const shapeHit = raycastShapeInVoxel(
-			ox,
-			oy,
-			oz,
-			dx,
-			dy,
-			dz,
-			x,
-			y,
-			z,
-			blockId,
-			blockState,
-			t,
-			tExit,
-			nx,
-			ny,
-			nz,
-		);
-		if (shapeHit) {
-			_sharedHit.x = x;
-			_sharedHit.y = y;
-			_sharedHit.z = z;
-			_sharedHit.nx = shapeHit.nx;
-			_sharedHit.ny = shapeHit.ny;
-			_sharedHit.nz = shapeHit.nz;
-			_sharedHit.t = shapeHit.t;
-			_sharedHit.blockId = blockId;
-			_sharedHit.blockState = blockState;
-			_sharedHit.dynamicContext = null;
-			return _sharedHit;
-		}
+		const r = visit(x, y, z, t, nx, ny, nz, tExit);
+		if (r === "hit" || r === "stop") return;
 	}
+}
+
+function raycastFirstTerrainBlock(
+	ray: Ray,
+	shouldHit: (x: number, y: number, z: number, blockId: number) => boolean,
+): BlockRaycastHit | null {
+	const ox = ray.origin.x,
+		oy = ray.origin.y,
+		oz = ray.origin.z;
+	const dx = ray.direction.x,
+		dy = ray.direction.y,
+		dz = ray.direction.z;
+	const maxDist = ray.length;
+	if (!(maxDist > 0)) return null;
+
+	let hit = false;
+
+	traceRayDda(
+		ox,
+		oy,
+		oz,
+		dx,
+		dy,
+		dz,
+		Math.floor(ox),
+		Math.floor(oy),
+		Math.floor(oz),
+		0,
+		maxDist,
+		false,
+		(x, y, z, t, nx, ny, nz, tExit) => {
+			const blockId = getTerrainBlockByWorldCoords(x, y, z);
+			if (!shouldHit(x, y, z, blockId)) return "skip";
+
+			const blockState = getBlockStateByWorldCoords(x, y, z);
+
+			if (isFullBlockShape(blockId, blockState)) {
+				_sharedHit.x = x;
+				_sharedHit.y = y;
+				_sharedHit.z = z;
+				_sharedHit.nx = nx;
+				_sharedHit.ny = ny;
+				_sharedHit.nz = nz;
+				_sharedHit.t = t;
+				_sharedHit.blockId = blockId;
+				_sharedHit.blockState = blockState;
+				_sharedHit.dynamicContext = null;
+				hit = true;
+				return "hit";
+			}
+
+			const shapeHit = raycastShapeInVoxel(
+				ox,
+				oy,
+				oz,
+				dx,
+				dy,
+				dz,
+				x,
+				y,
+				z,
+				blockId,
+				blockState,
+				t,
+				tExit,
+				nx,
+				ny,
+				nz,
+			);
+			if (shapeHit) {
+				_sharedHit.x = x;
+				_sharedHit.y = y;
+				_sharedHit.z = z;
+				_sharedHit.nx = shapeHit.nx;
+				_sharedHit.ny = shapeHit.ny;
+				_sharedHit.nz = shapeHit.nz;
+				_sharedHit.t = shapeHit.t;
+				_sharedHit.blockId = blockId;
+				_sharedHit.blockState = blockState;
+				_sharedHit.dynamicContext = null;
+				hit = true;
+				return "hit";
+			}
+
+			return "skip";
+		},
+	);
+
+	return hit ? _sharedHit : null;
 }
 
 function raycastFirstBoatBlock(
 	ray: Ray,
 	shouldHit: (x: number, y: number, z: number, blockId: number) => boolean,
 ): BlockRaycastHit | null {
-	let best: {
-		t: number;
-		x: number;
-		y: number;
-		z: number;
-		nx: number;
-		ny: number;
-		nz: number;
-		blockId: number;
-		blockState: number;
-		context: unknown;
-	} | null = null;
+	let bestT = Infinity;
+	let hasHit = false;
 
 	for (const boatChunk of BoatChunk.getActiveChunks()) {
-		const candidate = raycastSingleBoatChunk(ray, boatChunk, shouldHit);
-		if (!candidate) continue;
-		if (!best || candidate.t < best.t) {
-			best = candidate;
+		if (!raycastSingleBoatChunk(ray, boatChunk, shouldHit)) continue;
+		if (!hasHit || _sharedHit.t < bestT) {
+			bestT = _sharedHit.t;
+			hasHit = true;
 		}
 	}
 
-	if (!best) return null;
+	if (!hasHit) return null;
 
-	_sharedHit.x = best.x;
-	_sharedHit.y = best.y;
-	_sharedHit.z = best.z;
-	_sharedHit.nx = best.nx;
-	_sharedHit.ny = best.ny;
-	_sharedHit.nz = best.nz;
-	_sharedHit.t = best.t;
-	_sharedHit.blockId = best.blockId;
-	_sharedHit.blockState = best.blockState;
-	_sharedHit.dynamicContext = best.context;
+	_sharedHit.dynamicContext = _sharedBoatContext;
 	return _sharedHit;
 }
 
@@ -412,22 +531,11 @@ function raycastSingleBoatChunk(
 	ray: Ray,
 	boatChunk: BoatChunk,
 	shouldHit: (x: number, y: number, z: number, blockId: number) => boolean,
-): {
-	t: number;
-	x: number;
-	y: number;
-	z: number;
-	nx: number;
-	ny: number;
-	nz: number;
-	blockId: number;
-	blockState: number;
-	context: unknown;
-} | null {
+): boolean {
 	const visualRoot = boatChunk.visualRoot;
 	const center = boatChunk.center;
 
-	visualRoot.computeWorldMatrix(true);
+	visualRoot.computeWorldMatrix(false);
 	_sharedWorldMatrix.copyFrom(visualRoot.getWorldMatrix());
 	_sharedWorldMatrix.invertToRef(_sharedInvMatrix);
 
@@ -444,7 +552,7 @@ function raycastSingleBoatChunk(
 	);
 
 	const localDirLen = _sharedLocalDir.length();
-	if (localDirLen <= 1e-8) return null;
+	if (localDirLen <= 1e-8) return false;
 	_sharedLocalDir.scaleInPlace(1 / localDirLen);
 
 	const boundsHit = intersectRayAabb(
@@ -466,12 +574,9 @@ function raycastSingleBoatChunk(
 		0,
 		0,
 	);
-	if (!boundsHit) return null;
+	if (!boundsHit) return false;
 
 	const tStart = Math.max(0, boundsHit.t);
-	const entryNx = boundsHit.nx;
-	const entryNy = boundsHit.ny;
-	const entryNz = boundsHit.nz;
 
 	_sharedVec3.set(
 		_sharedLocalOrigin.x + _sharedLocalDir.x * (tStart + 1e-6),
@@ -479,51 +584,45 @@ function raycastSingleBoatChunk(
 		_sharedLocalOrigin.z + _sharedLocalDir.z * (tStart + 1e-6),
 	);
 
-	let x = Math.floor(_sharedVec3.x);
-	let y = Math.floor(_sharedVec3.y);
-	let z = Math.floor(_sharedVec3.z);
+	const x = Math.floor(_sharedVec3.x);
+	const y = Math.floor(_sharedVec3.y);
+	const z = Math.floor(_sharedVec3.z);
 
-	if (!boatChunk.isInsideLocalBounds(x, y, z)) return null;
+	if (!boatChunk.isInsideLocalBounds(x, y, z)) return false;
 
 	const dx = _sharedLocalDir.x;
 	const dy = _sharedLocalDir.y;
 	const dz = _sharedLocalDir.z;
 
-	const stepX = dx > 0 ? 1 : dx < 0 ? -1 : 0;
-	const stepY = dy > 0 ? 1 : dy < 0 ? -1 : 0;
-	const stepZ = dz > 0 ? 1 : dz < 0 ? -1 : 0;
+	let hitResult = false;
 
-	const invDx = stepX === 0 ? Infinity : 1 / Math.abs(dx);
-	const invDy = stepY === 0 ? Infinity : 1 / Math.abs(dy);
-	const invDz = stepZ === 0 ? Infinity : 1 / Math.abs(dz);
+	traceRayDda(
+		_sharedLocalOrigin.x,
+		_sharedLocalOrigin.y,
+		_sharedLocalOrigin.z,
+		dx,
+		dy,
+		dz,
+		x,
+		y,
+		z,
+		tStart,
+		ray.length,
+		true,
+		(lx, ly, lz, t, _nx, _ny, _nz, tExit) => {
+			if (!boatChunk.isInsideLocalBounds(lx, ly, lz)) return "stop";
 
-	const boundX = stepX > 0 ? x + 1 : x;
-	const boundY = stepY > 0 ? y + 1 : y;
-	const boundZ = stepZ > 0 ? z + 1 : z;
+			const blockId = boatChunk.getBlockLocal(lx, ly, lz);
+			if (!shouldHit(lx, ly, lz, blockId)) return "skip";
 
-	let tMaxX = stepX === 0 ? Infinity : (boundX - _sharedLocalOrigin.x) / dx;
-	let tMaxY = stepY === 0 ? Infinity : (boundY - _sharedLocalOrigin.y) / dy;
-	let tMaxZ = stepZ === 0 ? Infinity : (boundZ - _sharedLocalOrigin.z) / dz;
-
-	let t = tStart;
-	let nx = entryNx;
-	let ny = entryNy;
-	let nz = entryNz;
-
-	while (t <= ray.length) {
-		if (!boatChunk.isInsideLocalBounds(x, y, z)) return null;
-
-		const blockId = boatChunk.getBlockLocal(x, y, z);
-		if (shouldHit(x, y, z, blockId)) {
-			const blockState = boatChunk.getBlockStateLocal(x, y, z);
+			const blockState = boatChunk.getBlockStateLocal(lx, ly, lz);
 			let hitT = t;
-			let hitNx = nx;
-			let hitNy = ny;
-			let hitNz = nz;
+			let hitNx = _nx;
+			let hitNy = _ny;
+			let hitNz = _nz;
 			let hasHit = isFullBlockShape(blockId, blockState);
 
 			if (!hasHit) {
-				const tExit = Math.min(tMaxX, tMaxY, tMaxZ, ray.length);
 				const shapeHit = raycastShapeInVoxel(
 					_sharedLocalOrigin.x,
 					_sharedLocalOrigin.y,
@@ -531,16 +630,16 @@ function raycastSingleBoatChunk(
 					dx,
 					dy,
 					dz,
-					x,
-					y,
-					z,
+					lx,
+					ly,
+					lz,
 					blockId,
 					blockState,
 					t,
 					tExit,
-					nx,
-					ny,
-					nz,
+					_nx,
+					_ny,
+					_nz,
 				);
 				if (shapeHit) {
 					hitT = shapeHit.t;
@@ -551,89 +650,52 @@ function raycastSingleBoatChunk(
 				}
 			}
 
-			if (hasHit) {
-				_sharedWorldNormal.set(hitNx, hitNy, hitNz);
-				Vector3.TransformNormalToRef(
-					_sharedWorldNormal,
-					_sharedWorldMatrix,
-					_sharedVec3b,
-				);
+			if (!hasHit) return "skip";
 
-				const ax = Math.abs(_sharedVec3b.x);
-				const ay = Math.abs(_sharedVec3b.y);
-				const az = Math.abs(_sharedVec3b.z);
-				let worldNx = 0,
-					worldNy = 0,
-					worldNz = 0;
-				if (ax >= ay && ax >= az) worldNx = _sharedVec3b.x >= 0 ? 1 : -1;
-				else if (ay >= ax && ay >= az) worldNy = _sharedVec3b.y >= 0 ? 1 : -1;
-				else worldNz = _sharedVec3b.z >= 0 ? 1 : -1;
+			_sharedWorldNormal.set(hitNx, hitNy, hitNz);
+			Vector3.TransformNormalToRef(
+				_sharedWorldNormal,
+				_sharedWorldMatrix,
+				_sharedVec3b,
+			);
 
-				boatChunk.localToWorldCenterToRef(x, y, z, _sharedWorldCenter);
-				const wx = Math.floor(_sharedWorldCenter.x);
-				const wy = Math.floor(_sharedWorldCenter.y);
-				const wz = Math.floor(_sharedWorldCenter.z);
+			const ax = Math.abs(_sharedVec3b.x);
+			const ay = Math.abs(_sharedVec3b.y);
+			const az = Math.abs(_sharedVec3b.z);
+			let worldNx = 0,
+				worldNy = 0,
+				worldNz = 0;
+			if (ax >= ay && ax >= az) worldNx = _sharedVec3b.x >= 0 ? 1 : -1;
+			else if (ay >= ax && ay >= az) worldNy = _sharedVec3b.y >= 0 ? 1 : -1;
+			else worldNz = _sharedVec3b.z >= 0 ? 1 : -1;
 
-				return {
-					t: hitT,
-					x: wx,
-					y: wy,
-					z: wz,
-					nx: worldNx,
-					ny: worldNy,
-					nz: worldNz,
-					blockId,
-					blockState,
-					context: {
-						kind: "boatChunk",
-						boatChunk,
-						localX: x,
-						localY: y,
-						localZ: z,
-						localHitNx: hitNx,
-						localHitNy: hitNy,
-						localHitNz: hitNz,
-					},
-				};
-			}
-		}
+			boatChunk.localToWorldCenterToRef(lx, ly, lz, _sharedWorldCenter);
+			const wx = Math.floor(_sharedWorldCenter.x);
+			const wy = Math.floor(_sharedWorldCenter.y);
+			const wz = Math.floor(_sharedWorldCenter.z);
 
-		if (tMaxX < tMaxY) {
-			if (tMaxX < tMaxZ) {
-				x += stepX;
-				t = tMaxX;
-				tMaxX += invDx;
-				nx = -stepX;
-				ny = 0;
-				nz = 0;
-			} else {
-				z += stepZ;
-				t = tMaxZ;
-				tMaxZ += invDz;
-				nx = 0;
-				ny = 0;
-				nz = -stepZ;
-			}
-		} else {
-			if (tMaxY < tMaxZ) {
-				y += stepY;
-				t = tMaxY;
-				tMaxY += invDy;
-				nx = 0;
-				ny = -stepY;
-				nz = 0;
-			} else {
-				z += stepZ;
-				t = tMaxZ;
-				tMaxZ += invDz;
-				nx = 0;
-				ny = 0;
-				nz = -stepZ;
-			}
-		}
-	}
+			_sharedHit.t = hitT;
+			_sharedHit.x = wx;
+			_sharedHit.y = wy;
+			_sharedHit.z = wz;
+			_sharedHit.nx = worldNx;
+			_sharedHit.ny = worldNy;
+			_sharedHit.nz = worldNz;
+			_sharedHit.blockId = blockId;
+			_sharedHit.blockState = blockState;
+			_sharedBoatContext.boatChunk = boatChunk;
+			_sharedBoatContext.localX = lx;
+			_sharedBoatContext.localY = ly;
+			_sharedBoatContext.localZ = lz;
+			_sharedBoatContext.localHitNx = hitNx;
+			_sharedBoatContext.localHitNy = hitNy;
+			_sharedBoatContext.localHitNz = hitNz;
+			hitResult = true;
+			return "hit";
+		},
+	);
 
-	return null;
+	return hitResult;
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────

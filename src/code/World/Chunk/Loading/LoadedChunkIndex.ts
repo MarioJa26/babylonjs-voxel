@@ -67,6 +67,34 @@ export class LoadedChunkIndex {
 		}
 	}
 
+	queryCollect(
+		centerX: number,
+		centerY: number,
+		centerZ: number,
+		horizontalRadius: number,
+		verticalRadius: number,
+		out: Chunk[],
+	): void {
+		const minCX = Math.floor((centerX - horizontalRadius) / CELL_SIZE);
+		const maxCX = Math.floor((centerX + horizontalRadius) / CELL_SIZE);
+		const minCY = Math.floor((centerY - verticalRadius) / CELL_SIZE);
+		const maxCY = Math.floor((centerY + verticalRadius) / CELL_SIZE);
+		const minCZ = Math.floor((centerZ - horizontalRadius) / CELL_SIZE);
+		const maxCZ = Math.floor((centerZ + horizontalRadius) / CELL_SIZE);
+
+		for (let cx = minCX; cx <= maxCX; cx++) {
+			for (let cy = minCY; cy <= maxCY; cy++) {
+				for (let cz = minCZ; cz <= maxCZ; cz++) {
+					const cell = this.cells.get(hashCellKey(cx, cy, cz));
+					if (!cell) continue;
+					for (const chunk of cell) {
+						out.push(chunk);
+					}
+				}
+			}
+		}
+	}
+
 	*all(): IterableIterator<Chunk> {
 		for (const cell of this.cells.values()) {
 			for (const chunk of cell) {

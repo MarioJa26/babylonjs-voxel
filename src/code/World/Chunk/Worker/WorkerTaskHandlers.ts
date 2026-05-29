@@ -54,6 +54,7 @@ export class WorkerTaskHandlers {
 			request.chunkZ,
 			{
 				deferLighting: request.deferLighting === true,
+				skipDecorations: request.skipDecorations === true,
 			},
 		);
 

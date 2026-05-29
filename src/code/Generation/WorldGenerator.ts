@@ -1,17 +1,21 @@
 import Alea from "alea";
 import { LightGenerator, type LightSeedState } from "./LightGenerator";
 import {
+	createFastNoise,
 	createFastNoise2D,
 	createFastNoise3D,
 } from "./NoiseAndParameters/FastNoise/FastNoiseFactory";
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
 import { Squirrel3 } from "./NoiseAndParameters/Squirrel13";
+import { OreGenerator } from "./OreGenerator";
 import { SurfaceGenerator } from "./SurfaceGenerator";
 import { getBiome } from "./TerrainHeightMap";
+import { UndergroundBiomeSelector } from "./UndergroundBiomes";
 import { UndergroundGenerator } from "./UndergroundGenerator";
 
 type GenerateChunkOptions = {
 	deferLighting?: boolean;
+	skipDecorations?: boolean;
 };
 
 type GenerateChunkResult = {
@@ -20,13 +24,15 @@ type GenerateChunkResult = {
 	lightSeedState?: LightSeedState;
 };
 
-export class WorldGenerator {
-	private static readonly FLOOR_Y = 1;
-	private static readonly FLOOR_BLOCK_ID = 1;
+const ORE_IDS = new Set([14, 16, 18, 19, 21, 25, 26, 79]);
 
+// ---------------------------------------------------------------------------
+// Smoothing constants — mirror the same values as UndergroundGenerator.
+// ---------------------------------------------------------------------------
+
+export class WorldGenerator {
 	private params: GenerationParamsType;
 	private prng: ReturnType<typeof Alea>;
-
 	private seedAsInt: number;
 	private chunkSizeSq: number;
 	private chunk_size: number;
@@ -34,7 +40,13 @@ export class WorldGenerator {
 
 	private surfaceGenerator: SurfaceGenerator;
 	private undergroundGenerator: UndergroundGenerator;
+	private oreGenerator: OreGenerator;
+	private undergroundBiomeSelector: UndergroundBiomeSelector;
 	private lightGenerator: LightGenerator;
+
+	private cheeseNoise: (x: number, y: number, z: number) => number;
+	private tunnelNoise: (x: number, y: number, z: number) => number;
+	private detailNoise: (x: number, y: number, z: number) => number;
 
 	constructor(params: GenerationParamsType) {
 		this.params = params;
@@ -50,12 +62,29 @@ export class WorldGenerator {
 			frequency: 1,
 		});
 
-		const caveNoise = createFastNoise3D({
+		// PERF: Use 2 octaves instead of 3 for cave noise — finest octave adds
+		// minimal visual value but costs 33% more simplex evaluations.
+		const cheeseInstance = createFastNoise({
 			seed: Squirrel3.get(2, this.seedAsInt),
-			frequency: 0.02,
+			frequency: this.params.CAVE_CHEESE_FREQ,
 		});
+		cheeseInstance.SetFractalOctaves(2);
+		this.cheeseNoise = (x, y, z) => cheeseInstance.GetNoise3D(x, y, z);
 
-		// Density noise frequency is baked in here so FastNoise handles scaling internally.
+		const tunnelInstance = createFastNoise({
+			seed: Squirrel3.get(22, this.seedAsInt),
+			frequency: this.params.CAVE_TUNNEL_FREQ,
+		});
+		tunnelInstance.SetFractalOctaves(2);
+		this.tunnelNoise = (x, y, z) => tunnelInstance.GetNoise3D(x, y, z);
+
+		const detailInstance = createFastNoise({
+			seed: Squirrel3.get(24, this.seedAsInt),
+			frequency: this.params.CAVE_DETAIL_FREQ,
+		});
+		detailInstance.SetFractalOctaves(2);
+		this.detailNoise = (x, y, z) => detailInstance.GetNoise3D(x, y, z);
+
 		const densityNoise = createFastNoise3D({
 			seed: Squirrel3.get(23, this.seedAsInt),
 			frequency: 0.33333,
@@ -66,40 +95,153 @@ export class WorldGenerator {
 			treeNoise,
 			densityNoise,
 			this.seedAsInt,
+			this.cheeseNoise,
+			this.tunnelNoise,
+			this.detailNoise,
 		);
-		this.undergroundGenerator = new UndergroundGenerator(params, caveNoise);
+		this.undergroundGenerator = new UndergroundGenerator(
+			params,
+			this.cheeseNoise,
+			this.tunnelNoise,
+			this.detailNoise,
+		);
+
+		const oreNoise = createFastNoise3D({
+			seed: Squirrel3.get(25, this.seedAsInt),
+			frequency: 1,
+		});
+		this.oreGenerator = new OreGenerator(params, oreNoise, this.seedAsInt);
+
+		const undergroundBiomeNoise = createFastNoise2D({
+			seed: Squirrel3.get(26, this.seedAsInt),
+			frequency: 0.001,
+		});
+		this.undergroundBiomeSelector = new UndergroundBiomeSelector(
+			undergroundBiomeNoise,
+			this.seedAsInt,
+		);
+
 		this.lightGenerator = new LightGenerator(params);
 	}
 
 	private createBuffer(size: number): Uint8Array {
-		return new Uint8Array(new SharedArrayBuffer(size));
+		// PERF: Use regular ArrayBuffer instead of SharedArrayBuffer for generation.
+		// The buffer is transferred (not shared) to the main thread, so SAB overhead
+		// (OS shared memory page setup) is unnecessary.
+		return new Uint8Array(new ArrayBuffer(size));
 	}
 
-	private enforceGlobalFloor(
-		chunkWorldY: number,
+	// ---------------------------------------------------------------------------
+	// Phase 3: Underground biome replacement (kept as a standalone pass for the
+	// refineBlocks path).
+	// ---------------------------------------------------------------------------
+	private applyUndergroundBiomes(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
 		blocks: Uint8Array,
+		chunkWorldX: number,
+		chunkWorldY: number,
+		chunkWorldZ: number,
 		chunkSize: number,
 		chunkSizeSq: number,
 	): void {
-		const localY = WorldGenerator.FLOOR_Y - chunkWorldY;
-		if (localY < 0) {
-			return;
-		}
+		if (chunkWorldY >= 16) return;
 
-		const yOffset = localY * chunkSize;
-		for (let localZ = 0; localZ < chunkSize; localZ++) {
-			const zOffset = localZ * chunkSizeSq;
-			for (let localX = 0; localX < chunkSize; localX++) {
-				const idx = localX + yOffset + zOffset;
-				blocks[idx] = WorldGenerator.FLOOR_BLOCK_ID;
+		const midY = Math.min(chunkWorldY + (chunkSize >> 1), -1);
+		let allDefault = true;
+		for (let dx = 0; dx < chunkSize && allDefault; dx += chunkSize >> 1) {
+			for (let dz = 0; dz < chunkSize && allDefault; dz += chunkSize >> 1) {
+				if (
+					this.undergroundBiomeSelector.getBiome(
+						chunkWorldX + dx,
+						midY,
+						chunkWorldZ + dz,
+					).stoneBlock !== 29
+				) {
+					allDefault = false;
+				}
 			}
 		}
+		if (allDefault) return;
+
+		for (let localY = 0; localY < chunkSize; localY++) {
+			const worldY = chunkWorldY + localY;
+			if (worldY >= 0) continue;
+			for (let localZ = 0; localZ < chunkSize; localZ++) {
+				const worldZ = chunkWorldZ + localZ;
+				const zOffset = localZ * chunkSizeSq;
+				// PERF: Cache biome per column (worldY + worldZ are constant across X).
+				const colBiome = this.undergroundBiomeSelector.getBiome(
+					chunkWorldX,
+					worldY,
+					worldZ,
+				);
+				for (let localX = 0; localX < chunkSize; localX++) {
+					const idx = localX + localY * chunkSize + zOffset;
+					const blockId = blocks[idx]!;
+					if (blockId === 0 || ORE_IDS.has(blockId)) continue;
+					// PERF: Use column-cached biome (X offset is negligible for biome selection).
+					blocks[idx] = this.undergroundBiomeSelector.getStoneReplacement(
+						blockId,
+						colBiome,
+					);
+				}
+			}
+		}
+	}
+
+	// ---------------------------------------------------------------------------
+	// Phase 6+8: Combined underground pass — biome + cave + aquifer in one loop,
+	// followed by a smoothing pass that eliminates isolated air pockets.
+	//
+	// CROSS-CHUNK CONTINUITY
+	// ──────────────────────
+	// All noise is sampled at world-space coordinates, so caves are naturally
+	// continuous across chunk boundaries.  No extra seaming is required.
+	//
+	// SMOOTHING (pocket elimination)
+	// ───────────────────────────────
+	// After carving we run a single pass over the interior voxels (skipping the
+	// 1-voxel border on all 6 faces) and fill back any carved voxel that has
+	// MIN_SOLID_NEIGHBORS or more solid face-neighbours.  This eliminates tiny
+	// isolated air pockets without touching chunk-boundary voxels (which must
+	// remain consistent with adjacent chunks).
+	// ---------------------------------------------------------------------------
+
+	// ---------------------------------------------------------------------------
+	// Phase 2: refineBlocks — called when skipDecorations was used on first pass.
+	// ---------------------------------------------------------------------------
+	public refineBlocks(
+		blocks: Uint8Array,
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+	): void {
+		const chunkSize = this.chunk_size;
+		const chunkSizeSq = this.chunkSizeSq;
+		const chunkWorldX = chunkX * chunkSize;
+		const chunkWorldY = chunkY * chunkSize;
+		const chunkWorldZ = chunkZ * chunkSize;
+
+		this.applyUndergroundBiomes(
+			chunkX,
+			chunkY,
+			chunkZ,
+			blocks,
+			chunkWorldX,
+			chunkWorldY,
+			chunkWorldZ,
+			chunkSize,
+			chunkSizeSq,
+		);
 	}
 
 	/**
 	 * Backward compatible:
 	 * - generateChunkData(x, y, z) => full terrain + full lighting
 	 * - generateChunkData(x, y, z, { deferLighting: true }) => terrain now, light later
+	 * - generateChunkData(x, y, z, { skipDecorations: true }) => terrain + caves now, biomes + aquifers + light later
 	 */
 	public generateChunkData(
 		chunkX: number,
@@ -108,6 +250,7 @@ export class WorldGenerator {
 		options: GenerateChunkOptions = {},
 	): GenerateChunkResult {
 		const deferLighting = options.deferLighting === true;
+		const skipDecorations = options.skipDecorations === true;
 
 		const chunkSize = this.chunk_size;
 		const chunkSizeSq = this.chunkSizeSq;
@@ -119,6 +262,7 @@ export class WorldGenerator {
 
 		const blocks = this.createBuffer(chunkVolume);
 
+		// ── placeBlock closure ────────────────────────────────────────────
 		const placeBlock = (
 			x: number,
 			y: number,
@@ -137,20 +281,12 @@ export class WorldGenerator {
 				localY >= chunkSize ||
 				localZ < 0 ||
 				localZ >= chunkSize
-			) {
+			)
 				return;
-			}
 
 			const idx = localX + localY * chunkSize + localZ * chunkSizeSq;
-
-			// Don't let air replace water
-			if (blockId === 0 && blocks[idx] === 30) {
-				return;
-			}
-
-			if (blocks[idx] === 0 || overwrite) {
-				blocks[idx] = blockId;
-			}
+			if (blockId === 0 && blocks[idx] === 30) return;
+			if (blocks[idx] === 0 || overwrite) blocks[idx] = blockId;
 		};
 
 		const biome = getBiome(chunkWorldX, chunkWorldZ);
@@ -163,12 +299,25 @@ export class WorldGenerator {
 			placeBlock,
 		);
 
-		if (chunkY < 0) {
-			this.undergroundGenerator.generate(chunkX, chunkY, chunkZ, placeBlock);
-		} else if (chunkY === 0)
-			this.enforceGlobalFloor(chunkWorldY, blocks, chunkSize, chunkSizeSq);
+		this.oreGenerator.generate(chunkX, chunkY, chunkZ, blocks);
+
+		this.undergroundGenerator.generate(
+			chunkX,
+			chunkY,
+			chunkZ,
+			surfaceGeneration.topSurfaceYMap,
+			placeBlock,
+			blocks,
+		);
+		if (!skipDecorations) {
+			this.refineBlocks(blocks, chunkX, chunkY, chunkZ);
+		}
 
 		const light = this.createBuffer(chunkVolume);
+
+		if (chunkWorldY + chunkSize - 1 < -128) {
+			return { blocks, light };
+		}
 
 		if (!deferLighting) {
 			const lightSeedState = this.lightGenerator.seedInitialLight(
@@ -181,7 +330,6 @@ export class WorldGenerator {
 				surfaceGeneration.topSunlightMask,
 			);
 			this.lightGenerator.propagateLight(blocks, light, lightSeedState);
-
 			return { blocks, light };
 		}
 
@@ -194,11 +342,6 @@ export class WorldGenerator {
 			light,
 			surfaceGeneration.topSunlightMask,
 		);
-
-		return {
-			blocks,
-			light,
-			lightSeedState,
-		};
+		return { blocks, light, lightSeedState };
 	}
 }

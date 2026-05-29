@@ -2,9 +2,11 @@
 
 export const SETTING_PARAMS = {
 	// --- World Generation & Loading ---
-	RENDER_DISTANCE: 8,
+	RENDER_DISTANCE: 6,
 	VERTICAL_RENDER_DISTANCE: 6,
-	MAX_CHUNK_HEIGHT: 32,
+	CAVE_VERTICAL_RENDER_DISTANCE: 2,
+	MIN_CHUNK_Y: -32,
+	MAX_CHUNK_HEIGHT: 64,
 	CHUNK_UNLOAD_DISTANCE_BUFFER: 1, // How many extra chunks to keep before unloading
 	// 0 = auto (render-distance based), >0 = explicit per-cycle cap
 	CHUNK_LOAD_BATCH_LIMIT: 32,
@@ -27,7 +29,7 @@ export const SETTING_PARAMS = {
 	LOD_PRECOMPUTE_HORIZONTAL_OFFSET: 14,
 	LOD_PRECOMPUTE_VERTICAL_OFFSET: 4,
 
-	DISTANT_RENDER_DISTANCE: 228, //128,
+	DISTANT_RENDER_DISTANCE: 128, //128,
 	LOD_PRECOMPUTE_SCHEDULE_THROTTLE_MS: 220, //120
 	LOD_PRECOMPUTE_MAX_ENQUEUE_PER_UPDATE: 48,
 	// 0 = unlimited dispatch while workers are idle

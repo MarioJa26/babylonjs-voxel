@@ -9,7 +9,6 @@ import {
 	ShaderMaterial,
 	Texture,
 	UniformBuffer,
-	Vector2,
 	Vector3,
 	VertexBuffer,
 } from "@babylonjs/core";
@@ -59,10 +58,11 @@ const LOD_FADE_DURATION_MS = 150;
 const cachedUniforms = {
 	lightDirection: new Vector3(0, 1, 0),
 	cameraPosition: new Vector3(0, 0, 0),
-	cameraPlanes: new Vector2(0.1, 1000),
 	time: 0,
 	sunLightIntensity: 1.0,
 	wetness: 0,
+	vFogInfos: new Float32Array(4),
+	vFogColor: new Float32Array(3),
 };
 
 // Indexed quad: 4 vertices, 6 indices.
@@ -253,19 +253,17 @@ function applyLodShaderBindings(material: ShaderMaterial): void {
 		const effect = material.getEffect();
 		if (!effect) return;
 
-		const fade = getMeshFadeUniforms(mesh as Mesh | undefined);
+		if (!activeLodFadeMeshes.has(mesh as Mesh)) {
+			effect.setFloat("lodFadeProgress", 1);
+			effect.setFloat("lodFadeDirection", 0);
+			effect.setFloat("lodFadeSeed", 0);
+			return;
+		}
+
+		const fade = getMeshFadeUniforms(mesh as Mesh);
 		effect.setFloat("lodFadeProgress", fade.progress);
 		effect.setFloat("lodFadeDirection", fade.direction);
 		effect.setFloat("lodFadeSeed", fade.seed);
-		const scene = (mesh as Mesh | undefined)?.getScene() ?? Map1.mainScene;
-		effect.setFloat4(
-			"vFogInfos",
-			scene.fogMode,
-			scene.fogStart,
-			scene.fogEnd,
-			scene.fogDensity,
-		);
-		effect.setColor3("vFogColor", scene.fogColor);
 	};
 }
 
@@ -391,17 +389,20 @@ function upsertMesh(
 		mesh.cullingStrategy = AbstractMesh.CULLINGSTRATEGY_OPTIMISTIC_INCLUSION;
 
 		mesh.freezeWorldMatrix();
-	}
 
-	mesh.renderingGroupId = renderingGroupId;
-	mesh.material = material;
-	mesh.name = `${name}_${chunk.chunkX}_${chunk.chunkY}_${chunk.chunkZ}`;
+		mesh.material = material;
+		mesh.name = `${name}_${chunk.chunkX}_${chunk.chunkY}_${chunk.chunkZ}`;
+	} else {
+		if (mesh.material !== material) mesh.material = material;
+	}
 
 	upsertFaceVertexBuffer(mesh, engine, "faceDataA", meshData.faceDataA);
 	upsertFaceVertexBuffer(mesh, engine, "faceDataB", meshData.faceDataB);
 	upsertFaceVertexBuffer(mesh, engine, "faceDataC", meshData.faceDataC);
 
 	mesh.overridenInstanceCount = meshData.faceCount;
+
+	mesh.isVisible = true;
 
 	return mesh;
 }
@@ -546,12 +547,16 @@ export async function initAtlas(): Promise<void> {
 		globalUniformBuffer.addUniform("lightDirection", 3);
 		globalUniformBuffer.addUniform("cameraPosition", 3);
 		globalUniformBuffer.addUniform("sunLightIntensity", 1);
+		globalUniformBuffer.addUniform("sunLightIntensitySq", 1);
 		globalUniformBuffer.addUniform("wetness", 1);
 		globalUniformBuffer.addUniform("time", 1);
+		globalUniformBuffer.addUniform("vFogInfos", 4);
+		globalUniformBuffer.addUniform("vFogColor", 3);
 		globalUniformBuffer.create();
 	}
 
 	const tileSize = TextureAtlasFactory.atlasTileSize;
+	const atlasMaxTiles = Math.floor(1.0 / tileSize + 0.5);
 
 	// The LOD materials share the same uniform list — hoist it to avoid
 	// repeating the array literal six times.
@@ -559,11 +564,11 @@ export async function initAtlas(): Promise<void> {
 		"world",
 		"worldViewProjection",
 		"atlasTileSize",
-		"vFogInfos",
-		"vFogColor",
+		"atlasMaxTiles",
 		"lodFadeProgress",
 		"lodFadeDirection",
 		"lodFadeSeed",
+		"tintLUT",
 	];
 
 	// -------------------------------------------------------------------------
@@ -602,14 +607,23 @@ export async function initAtlas(): Promise<void> {
 	}
 
 	// -------------------------------------------------------------------------
+	// Tint LUT data (constant, used by LOD2/LOD3)
+	// -------------------------------------------------------------------------
+	// PERF: Hoist Array.from() once instead of calling it 8 times per initAtlas.
+	const tintLUTArray = Array.from(
+		new Float32Array([
+			1.0, 1.0, 1.0, 1.0, 0.96, 0.98, 1.02, 0.88, 1.04, 1.0, 0.92, 0.9, 0.92,
+			1.06, 0.92, 1.05, 0.9, 0.98, 1.08, 0.9, 1.05, 0.97, 0.9, 0.95,
+		]),
+	);
+
+	// -------------------------------------------------------------------------
 	// Transparent material
 	// -------------------------------------------------------------------------
 	if (!transparentMaterial) {
 		const mat = new ShaderMaterial(
 			"transparentChunkShaderMaterial",
 			scene,
-			// IMPORTANT FIX:
-			// Use the transparent vertex shader, not the shared "chunk" vertex shader.
 			{ vertex: "transparentChunk", fragment: "transparentChunk" },
 			{
 				attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
@@ -656,15 +670,20 @@ export async function initAtlas(): Promise<void> {
 		);
 		mat.backFaceCulling = true;
 		mat.setFloat("atlasTileSize", tileSize);
+		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
+		mat.setArray4("tintLUT", tintLUTArray);
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
 		applyLodShaderBindings(mat);
 		mat.wireframe = GLOBAL_VALUES.DEBUG;
+		mat.freeze();
 		lod3OpaqueMaterial = mat;
 	} else {
 		const mat = lod3OpaqueMaterial as ShaderMaterial;
 		mat.wireframe = GLOBAL_VALUES.DEBUG;
 		mat.setFloat("atlasTileSize", tileSize);
+		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
+		mat.setArray4("tintLUT", tintLUTArray);
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
 		applyLodShaderBindings(mat);
@@ -689,15 +708,20 @@ export async function initAtlas(): Promise<void> {
 		mat.forceDepthWrite = false;
 		mat.needAlphaBlending = () => true;
 		mat.setFloat("atlasTileSize", tileSize);
+		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
+		mat.setArray4("tintLUT", tintLUTArray);
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
 		applyLodShaderBindings(mat);
 		mat.wireframe = GLOBAL_VALUES.DEBUG;
+		mat.freeze();
 		lod3TransparentMaterial = mat;
 	} else {
 		const mat = lod3TransparentMaterial as ShaderMaterial;
 		mat.wireframe = GLOBAL_VALUES.DEBUG;
 		mat.setFloat("atlasTileSize", tileSize);
+		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
+		mat.setArray4("tintLUT", tintLUTArray);
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
 		applyLodShaderBindings(mat);
@@ -720,16 +744,21 @@ export async function initAtlas(): Promise<void> {
 		);
 		mat.backFaceCulling = true;
 		mat.setFloat("atlasTileSize", tileSize);
+		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
+		mat.setArray4("tintLUT", tintLUTArray);
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
 		if (normalAtlasTexture) mat.setTexture("normalTexture", normalAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
 		applyLodShaderBindings(mat);
 		mat.wireframe = GLOBAL_VALUES.DEBUG;
+		mat.freeze();
 		lod2OpaqueMaterial = mat;
 	} else {
 		const mat = lod2OpaqueMaterial as ShaderMaterial;
 		mat.wireframe = GLOBAL_VALUES.DEBUG;
 		mat.setFloat("atlasTileSize", tileSize);
+		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
+		mat.setArray4("tintLUT", tintLUTArray);
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
 		if (normalAtlasTexture) mat.setTexture("normalTexture", normalAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
@@ -755,16 +784,21 @@ export async function initAtlas(): Promise<void> {
 		mat.forceDepthWrite = false;
 		mat.needAlphaBlending = () => true;
 		mat.setFloat("atlasTileSize", tileSize);
+		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
+		mat.setArray4("tintLUT", tintLUTArray);
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
 		if (normalAtlasTexture) mat.setTexture("normalTexture", normalAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
 		applyLodShaderBindings(mat);
 		mat.wireframe = GLOBAL_VALUES.DEBUG;
+		mat.freeze();
 		lod2TransparentMaterial = mat;
 	} else {
 		const mat = lod2TransparentMaterial as ShaderMaterial;
 		mat.wireframe = GLOBAL_VALUES.DEBUG;
 		mat.setFloat("atlasTileSize", tileSize);
+		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
+		mat.setArray4("tintLUT", tintLUTArray);
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
 		if (normalAtlasTexture) mat.setTexture("normalTexture", normalAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
@@ -874,10 +908,6 @@ export function createMeshFromData(
 			previousTransparentMesh.dispose();
 		}
 	}
-
-	if (chunk.colliderDirty) {
-		chunk.colliderDirty = false;
-	}
 }
 
 export function updateGlobalUniforms(frameId: number): void {
@@ -900,7 +930,6 @@ export function updateGlobalUniforms(frameId: number): void {
 
 	const camPos = camera.position;
 	u.cameraPosition.set(camPos.x, camPos.y, camPos.z);
-	u.cameraPlanes.set(camera.minZ, camera.maxZ);
 
 	const nowMs = performance.now();
 	u.time = nowMs / 1000.0;
@@ -912,11 +941,37 @@ export function updateGlobalUniforms(frameId: number): void {
 
 	u.wetness = WorldEnvironment.instance ? WorldEnvironment.instance.wetness : 0;
 
+	const fog = scene.fogColor;
+	u.vFogInfos[0] = scene.fogMode;
+	u.vFogInfos[1] = scene.fogStart;
+	u.vFogInfos[2] = scene.fogEnd;
+	u.vFogInfos[3] = scene.fogDensity;
+	u.vFogColor[0] = fog.r;
+	u.vFogColor[1] = fog.g;
+	u.vFogColor[2] = fog.b;
+
 	globalUniformBuffer.updateVector3("lightDirection", u.lightDirection);
 	globalUniformBuffer.updateVector3("cameraPosition", u.cameraPosition);
 	globalUniformBuffer.updateFloat("sunLightIntensity", u.sunLightIntensity);
+	globalUniformBuffer.updateFloat(
+		"sunLightIntensitySq",
+		u.sunLightIntensity * u.sunLightIntensity,
+	);
 	globalUniformBuffer.updateFloat("wetness", u.wetness);
 	globalUniformBuffer.updateFloat("time", u.time);
+	globalUniformBuffer.updateFloat4(
+		"vFogInfos",
+		u.vFogInfos[0],
+		u.vFogInfos[1],
+		u.vFogInfos[2],
+		u.vFogInfos[3],
+	);
+	globalUniformBuffer.updateFloat3(
+		"vFogColor",
+		u.vFogColor[0],
+		u.vFogColor[1],
+		u.vFogColor[2],
+	);
 	globalUniformBuffer.update();
 
 	updateLodCrossFades(nowMs);

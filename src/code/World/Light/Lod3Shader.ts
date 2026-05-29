@@ -11,16 +11,17 @@ export class Lod3Shader {
     uniform mat4 world;
     uniform mat4 worldViewProjection;
     uniform float atlasTileSize;
-
-    uniform vec4 vFogInfos;
-    uniform vec3 vFogColor;
+    uniform float atlasMaxTiles;
 
     uniform GlobalUniforms {
       vec3 lightDirection;
       vec3 cameraPosition;
       float sunLightIntensity;
+      float sunLightIntensitySq;
       float wetness;
       float time;
+      vec4 vFogInfos;
+      vec3 vFogColor;
     };
 
     out vec2 vUV;
@@ -80,8 +81,7 @@ export class Lod3Shader {
 
       vUV = cornerToUV(corner);
 
-      float maxTiles = floor(1.0 / atlasTileSize + 0.5);
-      vUV2 = vec2(faceDataB.z, maxTiles - 1.0 - faceDataB.w) * atlasTileSize;
+      vUV2 = vec2(faceDataB.z, atlasMaxTiles - 1.0 - faceDataB.w) * atlasTileSize;
 
       int light = int(faceDataC.y);
       vSkyLight = float(light >> 4) * 0.0666666;
@@ -116,7 +116,7 @@ export class Lod3Shader {
 
       vec3 atmosphereColor = mix(
         vec3(0.6, 0.75, 0.95), vec3(0.1, 0.2, 0.4), heightFactor
-      ) * (sunLightIntensity * sunLightIntensity);
+      ) * sunLightIntensitySq;
 
       vec3 viewDir = viewVec / max(dist, 1e-4);
       float skyFactor = smoothstep(0.0, 0.4, max(viewDir.y, 0.0));
@@ -154,13 +154,17 @@ export class Lod3Shader {
     uniform float lodFadeProgress;
     uniform float lodFadeDirection;
     uniform float lodFadeSeed;
+    uniform vec4 tintLUT[6];
 
     uniform GlobalUniforms {
       vec3 lightDirection;
       vec3 cameraPosition;
       float sunLightIntensity;
+      float sunLightIntensitySq;
       float wetness;
       float time;
+      vec4 vFogInfos;
+      vec3 vFogColor;
     };
 
     out vec4 fragColor;
@@ -184,30 +188,9 @@ export class Lod3Shader {
     }
 
     vec3 applyTintBucket(vec3 color, float bucket) {
-      float b = floor(bucket + 0.5);
-      vec3 tint = vec3(1.0);
-      float sat = 1.0;
-
-      if (b == 1.0) {
-        tint = vec3(0.96, 0.98, 1.02);
-        sat = 0.88;
-      } else if (b == 2.0) {
-        tint = vec3(1.04, 1.00, 0.92);
-        sat = 0.90;
-      } else if (b == 3.0) {
-        tint = vec3(0.92, 1.06, 0.92);
-        sat = 1.05;
-      } else if (b == 4.0) {
-        tint = vec3(0.90, 0.98, 1.08);
-        sat = 0.90;
-      } else if (b == 5.0) {
-        tint = vec3(1.05, 0.97, 0.90);
-        sat = 0.95;
-      }
-
+      int idx = int(min(floor(bucket + 0.5), 5.0));
       float lum = dot(color, vec3(0.299, 0.587, 0.114));
-      vec3 saturated = mix(vec3(lum), color, sat);
-      return saturated * tint;
+      return mix(vec3(lum), color, tintLUT[idx].a) * tintLUT[idx].rgb;
     }
 
     void main(void) {
@@ -254,13 +237,17 @@ export class Lod3Shader {
     uniform float lodFadeProgress;
     uniform float lodFadeDirection;
     uniform float lodFadeSeed;
+    uniform vec4 tintLUT[6];
 
     uniform GlobalUniforms {
       vec3 lightDirection;
       vec3 cameraPosition;
       float sunLightIntensity;
+      float sunLightIntensitySq;
       float wetness;
       float time;
+      vec4 vFogInfos;
+      vec3 vFogColor;
     };
 
     out vec4 fragColor;
@@ -284,37 +271,17 @@ export class Lod3Shader {
     }
 
     vec3 applyTintBucket(vec3 color, float bucket) {
-      float b = floor(bucket + 0.5);
-      vec3 tint = vec3(1.0);
-      float sat = 1.0;
-
-      if (b == 1.0) {
-        tint = vec3(0.96, 0.98, 1.02);
-        sat = 0.88;
-      } else if (b == 2.0) {
-        tint = vec3(1.04, 1.00, 0.92);
-        sat = 0.90;
-      } else if (b == 3.0) {
-        tint = vec3(0.92, 1.06, 0.92);
-        sat = 1.05;
-      } else if (b == 4.0) {
-        tint = vec3(0.90, 0.98, 1.08);
-        sat = 0.90;
-      } else if (b == 5.0) {
-        tint = vec3(1.05, 0.97, 0.90);
-        sat = 0.95;
-      }
-
+      int idx = int(min(floor(bucket + 0.5), 5.0));
       float lum = dot(color, vec3(0.299, 0.587, 0.114));
-      vec3 saturated = mix(vec3(lum), color, sat);
-      return saturated * tint;
+      return mix(vec3(lum), color, tintLUT[idx].a) * tintLUT[idx].rgb;
     }
 
     void main(void) {
+      applyDitherFade();
+
       vec2 atlasUV = vUV2 + vUV * atlasTileSize;
       vec4 tex = texture(diffuseTexture, atlasUV);
 
-      applyDitherFade();
       if (tex.a < 0.02) {
         discard;
       }

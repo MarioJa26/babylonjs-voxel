@@ -14,7 +14,7 @@ import {
 	type BlockShapeInfo,
 	VoxelAabbCollider,
 } from "@/code/World/Collision/VoxelAabbCollider";
-import type { IUsable } from "../Inferface/IUsable";
+import type { IUsable } from "../Interface/IUsable";
 import { PaddleBoatControls } from "../Player/Controls/PaddleBoatControls";
 import type { Player } from "../Player/Player";
 import {
@@ -49,6 +49,9 @@ export class AdvancedBoat implements IUsable {
 	readonly #_accel = Vector3.Zero();
 	readonly #_lever = Vector3.Zero();
 	readonly #_torque = Vector3.Zero();
+	readonly #_deltaRot = new Quaternion();
+	readonly #_nextRot = new Quaternion();
+	readonly #_euler = Vector3.Zero();
 
 	static #boatControls: PaddleBoatControls;
 
@@ -240,27 +243,32 @@ export class AdvancedBoat implements IUsable {
 	}
 
 	private integrateRotation(dt: number): void {
-		const currentRotation =
-			this.#boat.rotationQuaternion ?? Quaternion.Identity();
-		const deltaRotation = Quaternion.RotationYawPitchRoll(
+		if (!this.#boat.rotationQuaternion) {
+			this.#boat.rotationQuaternion = new Quaternion();
+		}
+		const currentRotation = this.#boat.rotationQuaternion;
+		Quaternion.RotationYawPitchRollToRef(
 			this.#angularVelocity.y * dt,
 			this.#lockPitch ? 0 : this.#angularVelocity.x * dt,
 			this.#lockRoll ? 0 : this.#angularVelocity.z * dt,
+			this.#_deltaRot,
 		);
-		const nextRotation = deltaRotation.multiply(currentRotation);
-		nextRotation.normalize();
-		const euler = nextRotation.toEulerAngles();
+		this.#_deltaRot.multiplyToRef(currentRotation, this.#_nextRot);
+		this.#_nextRot.normalize();
+		this.#_nextRot.toEulerAnglesToRef(this.#_euler);
 		if (this.#lockPitch) {
-			euler.x = 0;
+			this.#_euler.x = 0;
 		}
 		if (this.#lockRoll) {
-			euler.z = 0;
+			this.#_euler.z = 0;
 		}
-		this.#boat.rotationQuaternion = Quaternion.RotationYawPitchRoll(
-			euler.y,
-			euler.x,
-			euler.z,
+		Quaternion.RotationYawPitchRollToRef(
+			this.#_euler.y,
+			this.#_euler.x,
+			this.#_euler.z,
+			currentRotation,
 		);
+		this.#boat.rotationQuaternion = currentRotation;
 
 		if (this.#lockPitch) {
 			this.#angularVelocity.x = 0;

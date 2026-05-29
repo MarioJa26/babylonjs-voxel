@@ -31,6 +31,9 @@ export class DistantTerrain {
 	// --- Tile lookup texture ---
 	private static readonly USE_LA_TILE_TEXTURE = false;
 
+	// PERF: Cached zero vector to avoid Vector3.Zero() allocation in bindCommonUniforms.
+	private static readonly _cachedZeroVec = new Vector3(0, 0, 0);
+
 	#surfaceTileLookupTexture: RawTexture;
 	#surfaceTileLookupData: Uint8Array;
 
@@ -383,7 +386,7 @@ export class DistantTerrain {
 
 		effect.setVector3(
 			"cameraPosition",
-			scene.activeCamera?.position || Vector3.Zero(),
+			scene.activeCamera?.position || DistantTerrain._cachedZeroVec,
 		);
 		effect.setFloat4(
 			"vFogInfos",
@@ -412,11 +415,13 @@ export class DistantTerrain {
 		worldX: number,
 		worldZ: number,
 	) {
+		// PERF: Read previous position BEFORE overwriting to detect jumps.
+		const prevX = this.mesh.position.x;
+		const prevZ = this.mesh.position.z;
+
 		this.mesh.position.set(worldX, -2, worldZ);
 
 		this.waterMesh.position.set(worldX, GenerationParams.SEA_LEVEL, worldZ);
-		const prevX = this.mesh.position.x;
-		const prevZ = this.mesh.position.z;
 		this.#gridOrigin.x = worldX - this.#radius * Chunk.SIZE;
 		this.#gridOrigin.y = worldZ - this.#radius * Chunk.SIZE;
 		this.material.setVector2("gridOriginWorld", this.#gridOrigin);

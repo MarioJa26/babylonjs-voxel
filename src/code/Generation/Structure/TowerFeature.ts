@@ -2,6 +2,7 @@ import type { Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
 import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { IWorldFeature } from "./IWorldFeature";
+import { computeRegion, chunkWorldBounds, aabbOverlaps } from "./RegionFeature";
 
 export class TowerFeature implements IWorldFeature {
 	public generate(
@@ -21,90 +22,77 @@ export class TowerFeature implements IWorldFeature {
 		generatingChunkX: number,
 		generatingChunkZ: number,
 	) {
-		const TOWER_REGION_SIZE = 16; // in chunks
-		const TOWER_SPAWN_CHANCE = 100; // out of 100
+		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
+			regionSize: 16,
+			magicA: 374761393,
+			magicB: 678446653,
+			spawnChance: 100,
+			earlyReturn: false,
+		});
+		if (!region) return;
 
-		const regionX = Math.floor(chunkX / TOWER_REGION_SIZE);
-		const regionZ = Math.floor(chunkZ / TOWER_REGION_SIZE);
+		const { centerX: towerCenterX, centerZ: towerCenterZ } = region;
 
-		const regionHash = Squirrel3.get(
-			regionX * 374761393 + regionZ * 678446653,
-			seed,
+		const axisCorridorWidth = 20;
+		if (
+			Math.abs(towerCenterX) < axisCorridorWidth ||
+			Math.abs(towerCenterZ) < axisCorridorWidth
+		) {
+			return;
+		}
+
+		const towerRadius = 8 + (Squirrel3.get(towerCenterX, seed) % 4);
+
+		const bounds = chunkWorldBounds(
+			generatingChunkX,
+			generatingChunkZ,
+			chunkSize,
+		);
+		if (
+			!aabbOverlaps(
+				towerCenterX - towerRadius,
+				towerCenterX + towerRadius,
+				towerCenterZ - towerRadius,
+				towerCenterZ + towerRadius,
+				bounds.minX,
+				bounds.maxX,
+				bounds.minZ,
+				bounds.maxZ,
+			)
+		)
+			return;
+
+		const groundHeight = this.findMinGroundHeightForTower(
+			towerCenterX,
+			towerCenterZ,
+			towerRadius,
+			biome,
 		);
 
-		if (Math.abs(regionHash) % 100 < TOWER_SPAWN_CHANCE) {
-			const offsetX =
-				Math.abs(Squirrel3.get(regionHash, seed)) %
-				(TOWER_REGION_SIZE * chunkSize);
-			const offsetZ =
-				Math.abs(Squirrel3.get(regionHash + 1, seed)) %
-				(TOWER_REGION_SIZE * chunkSize);
-
-			const towerCenterX = regionX * TOWER_REGION_SIZE * chunkSize + offsetX;
-			const towerCenterZ = regionZ * TOWER_REGION_SIZE * chunkSize + offsetZ;
-
-			const axisCorridorWidth = 20;
-			if (
-				Math.abs(towerCenterX) < axisCorridorWidth ||
-				Math.abs(towerCenterZ) < axisCorridorWidth
-			) {
-				return;
-			}
-
-			const towerRadius = 8 + (Squirrel3.get(towerCenterX, seed) % 4);
-
-			// --- Optimization: Bounding Box Check ---
-			const minX = towerCenterX - towerRadius;
-			const maxX = towerCenterX + towerRadius;
-			const minZ = towerCenterZ - towerRadius;
-			const maxZ = towerCenterZ + towerRadius;
-
-			const chunkMinX = generatingChunkX * chunkSize;
-			const chunkMaxX = (generatingChunkX + 1) * chunkSize;
-			const chunkMinZ = generatingChunkZ * chunkSize;
-			const chunkMaxZ = (generatingChunkZ + 1) * chunkSize;
-
-			if (
-				maxX <= chunkMinX ||
-				minX >= chunkMaxX ||
-				maxZ <= chunkMinZ ||
-				minZ >= chunkMaxZ
-			)
-				return;
-			// ----------------------------------------
-
-			const groundHeight = this.findMinGroundHeightForTower(
-				towerCenterX,
-				towerCenterZ,
-				towerRadius,
-				biome,
-			);
-
-			this.generateCylinderTower(
-				chunkX,
-				chunkY,
-				chunkZ,
-				towerCenterX,
-				towerCenterZ,
-				towerRadius,
-				groundHeight,
-				biome,
-				placeBlock,
-				chunkSize,
-				seed,
-			);
-			this.generateUndergroundCylinderTower(
-				chunkX,
-				chunkY,
-				chunkZ,
-				towerCenterX,
-				towerCenterZ,
-				towerRadius,
-				groundHeight,
-				placeBlock,
-				chunkSize,
-			);
-		}
+		this.generateCylinderTower(
+			chunkX,
+			chunkY,
+			chunkZ,
+			towerCenterX,
+			towerCenterZ,
+			towerRadius,
+			groundHeight,
+			biome,
+			placeBlock,
+			chunkSize,
+			seed,
+		);
+		this.generateUndergroundCylinderTower(
+			chunkX,
+			chunkY,
+			chunkZ,
+			towerCenterX,
+			towerCenterZ,
+			towerRadius,
+			groundHeight,
+			placeBlock,
+			chunkSize,
+		);
 	}
 
 	private generateCylinderTower(

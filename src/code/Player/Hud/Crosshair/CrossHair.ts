@@ -7,18 +7,16 @@ import {
 import { MetadataContainer } from "@/code/Entities/MetaDataContainer";
 import { type Player, REACH_DISTANCE } from "../../Player";
 import { BlockHighlight } from "../BlockHighlight/BlockHighlight";
+import type { BlockRaycastHit } from "../BlockHighlight/BlockRaycaster";
 import {
 	type PlacementHit,
 	pickTarget,
 	pickWaterTarget,
+	getPlacementHit as raycastGetPlacementHit,
+	getPlacementPosition as raycastGetPlacementPosition,
+	pickBlock as raycastPickBlock,
 } from "../BlockHighlight/BlockRaycaster";
 import { CrosshairUI } from "./CrosshairUI";
-
-const MESH_MARCH_STEP = 0.25;
-const MESH_BOUNDS_EPS = 0.001;
-
-/** Shared point reused for mesh ray-march to avoid per-step allocation. */
-const _marchPoint = new Vector3(0, 0, 0);
 
 export class CrossHair {
 	readonly #ui: CrosshairUI;
@@ -31,11 +29,11 @@ export class CrossHair {
 		this.#highlight = new BlockHighlight(scene);
 
 		engine.enterPointerlock();
+	}
 
-		scene.onBeforeRenderObservable.add(() => {
-			// pickTarget returns a shared object; BlockHighlight reads it synchronously.
-			this.#highlight.setHit(pickTarget(this.#player));
-		});
+	/** Set the pre-computed pick target hit from PlayerLoopController. */
+	public setTargetHit(hit: BlockRaycastHit | null): void {
+		this.#highlight.setHit(hit);
 	}
 
 	// ─── UI delegation ───────────────────────────────────────────────────────
@@ -50,7 +48,7 @@ export class CrossHair {
 	// ─── Static raycasting API (unchanged public surface) ────────────────────
 
 	static pickBlock(player: Player): number | null {
-		return CrossHair.pickBlock(player);
+		return raycastPickBlock(player);
 	}
 
 	static pickTarget(player: Player): Vector3 | null {
@@ -67,14 +65,14 @@ export class CrossHair {
 	}
 
 	static getPlacementPosition(player: Player): Vector3 | null {
-		const pos = CrossHair.getPlacementPosition(player);
+		const pos = raycastGetPlacementPosition(player);
 		if (!pos) return null;
 		// getPlacementPosition returns a shared Vector3 — copy it for the caller.
 		return pos.clone();
 	}
 
 	static getPlacementHit(player: Player): PlacementHit | null {
-		const hit = CrossHair.getPlacementHit(player);
+		const hit = raycastGetPlacementHit(player);
 		if (!hit) return null;
 		// Clone mutable fields so callers retain a stable snapshot.
 		return {
@@ -98,7 +96,7 @@ export class CrossHair {
 		});
 	}
 
-	// ─── Mesh ray-march ──────────────────────────────────────────────────────
+	// ─── Mesh ray pick ──────────────────────────────────────────────────────
 
 	static #rayMarchFirstMesh(
 		player: Player,
@@ -107,43 +105,11 @@ export class CrossHair {
 	): AbstractMesh | null {
 		const camera = player.playerCamera.playerCamera;
 		const tempRay = camera.getForwardRay(maxDistance);
-
-		const meshes = player.playerVehicle.scene.meshes;
-		const { origin, direction, length } = tempRay;
-
-		for (let t = 0; t <= length; t += MESH_MARCH_STEP) {
-			_marchPoint.set(
-				origin.x + direction.x * t,
-				origin.y + direction.y * t,
-				origin.z + direction.z * t,
-			);
-			for (let i = 0; i < meshes.length; i++) {
-				const mesh = meshes[i]!;
-				if (
-					mesh.isPickable &&
-					mesh.isEnabled() &&
-					!mesh.isDisposed() &&
-					(!predicate || predicate(mesh)) &&
-					isInsideBounds(mesh, _marchPoint)
-				) {
-					return mesh;
-				}
-			}
-		}
-		return null;
+		const hit = player.playerVehicle.scene.pickWithRay(
+			tempRay,
+			predicate,
+			true,
+		);
+		return hit?.pickedMesh ?? null;
 	}
-}
-
-function isInsideBounds(mesh: AbstractMesh, point: Vector3): boolean {
-	const { minimumWorld: mn, maximumWorld: mx } =
-		mesh.getBoundingInfo().boundingBox;
-	const e = MESH_BOUNDS_EPS;
-	return (
-		point.x >= mn.x - e &&
-		point.x <= mx.x + e &&
-		point.y >= mn.y - e &&
-		point.y <= mx.y + e &&
-		point.z >= mn.z - e &&
-		point.z <= mx.z + e
-	);
 }

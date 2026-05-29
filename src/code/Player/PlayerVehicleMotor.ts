@@ -4,6 +4,7 @@ import {
 	type Mesh,
 	MeshBuilder,
 	Quaternion,
+	Ray,
 	type Scene,
 	StandardMaterial,
 	Vector3,
@@ -15,9 +16,10 @@ import {
 } from "@/code/World/Collision/VoxelAabbCollider";
 import { CustomBoat } from "../Entities/CustomBoat";
 import type { Mount } from "../Entities/Mount";
+import type { BoatChunk } from "../World/Boat/BoatChunk";
 import {
+	getBlockAndStateByWorldCoords,
 	getBlockByWorldCoords,
-	getBlockStateByWorldCoords,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { getShapeForBlockId } from "../World/Shape/BlockShapes";
 import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
@@ -49,6 +51,28 @@ type PlayerVehicleMotorOptions = {
 const _scratchA = new Vector3();
 const _scratchB = new Vector3();
 const _scratchC = new Vector3();
+const _scratchRay = new Ray(Vector3.Zero(), Vector3.Forward());
+
+// PERF: Inline quaternion rotation to avoid `applyRotationQuaternion`
+// allocating a new Vector3 on every call. Uses the standard Hamilton product.
+function _rotateVec3ByQuat(
+	vx: number,
+	vy: number,
+	vz: number,
+	qx: number,
+	qy: number,
+	qz: number,
+	qw: number,
+	out: Vector3,
+): void {
+	const ix = qw * vx + qy * vz - qz * vy;
+	const iy = qw * vy + qz * vx - qx * vz;
+	const iz = qw * vz + qx * vy - qy * vx;
+	const iw = -qx * vx - qy * vy - qz * vz;
+	out.x = ix * qw + iw * -qx + iy * -qz - iz * -qy;
+	out.y = iy * qw + iw * -qy + iz * -qx - ix * -qz;
+	out.z = iz * qw + iw * -qz + ix * -qy - iy * -qx;
+}
 
 export class PlayerVehicleMotor {
 	readonly #scene: Scene;
@@ -63,6 +87,10 @@ export class PlayerVehicleMotor {
 	#characterGravity = new Vector3(0, -18, 0);
 	// PERF: Cache gravity magnitude — avoids repeated sqrt in jump/fly paths.
 	#characterGravityLen = 18;
+	// PERF: Pre-computed gravity up vector — avoids 12 divisions per physics step.
+	readonly #upX = -this.#characterGravity.x / this.#characterGravityLen;
+	readonly #upY = -this.#characterGravity.y / this.#characterGravityLen;
+	readonly #upZ = -this.#characterGravity.z / this.#characterGravityLen;
 	#movementLocked = false;
 	#lockedPosition: Vector3 | null = null;
 	readonly #zeroVelocity = Vector3.Zero();
@@ -104,9 +132,10 @@ export class PlayerVehicleMotor {
 	private voxelVelocity = Vector3.Zero();
 	private voxelIsGrounded = false;
 	private lastStepUpTime = 0;
+	private now = 0;
 
 	// ── Parameters ────────────────────────────────────────────────────────────
-	private readonly deacceleration = 0.85;
+	private readonly deceleration = 0.85;
 	private readonly inAirSpeed = 7.0;
 	private readonly onGroundSpeed = 5.67;
 	private readonly jumpHeight = 0.35;
@@ -189,9 +218,12 @@ export class PlayerVehicleMotor {
 				this.colliderHalfWidth,
 			),
 			(x, y, z): BlockShapeInfo | null => {
-				const blockId = getBlockByWorldCoords(x, y, z);
+				const { blockId, blockState: state } = getBlockAndStateByWorldCoords(
+					x,
+					y,
+					z,
+				);
 				if (!isCollidableBlock(blockId)) return null;
-				const state = getBlockStateByWorldCoords(x, y, z);
 				const shape = getShapeForBlockId(blockId);
 				const rotation = shape.rotateY ? state & 3 : 0;
 				const flipY = shape.allowFlipY && (state & 4) !== 0;
@@ -419,7 +451,7 @@ export class PlayerVehicleMotor {
 		}
 	}
 
-	#tryBoatSupport(boat: CustomBoat, chunk: any, footY: number): boolean {
+	#tryBoatSupport(boat: CustomBoat, chunk: BoatChunk, footY: number): boolean {
 		for (const [sx, sz] of this._groundProbeOffsets) {
 			this.#tmp2.set(
 				this.voxelPosition.x + sx,
@@ -541,12 +573,10 @@ export class PlayerVehicleMotor {
 		boatYaw: number | null,
 		out: Vector3,
 	): void {
-		// PERF: applyRotationQuaternionToRef avoids allocating the rotated vector.
 		this.inputDirection.scaleToRef(speed, out);
-		// BabylonJS doesn't expose applyRotationQuaternionToRef on plain Vector3,
-		// but scale+applyRotationQuaternion returns a new Vector3 normally.
-		// We copy the result into out to keep the same surface API.
-		out.copyFrom(out.applyRotationQuaternion(this.#characterOrientation));
+		// PERF: Inline quaternion rotation avoids Vector3 alloc from applyRotationQuaternion.
+		const q = this.#characterOrientation;
+		_rotateVec3ByQuat(out.x, out.y, out.z, q.x, q.y, q.z, q.w, out);
 
 		if (boatYaw !== null) {
 			// Rotate world direction into boat-local space in-place via scratch.
@@ -625,7 +655,7 @@ export class PlayerVehicleMotor {
 
 			pos.copyFrom(fwd);
 			vel.y = 0;
-			this.lastStepUpTime = Date.now();
+			this.lastStepUpTime = this.now;
 			return true;
 		}
 		return false;
@@ -642,7 +672,7 @@ export class PlayerVehicleMotor {
 			axis !== Axis.Y &&
 			this.voxelIsGrounded &&
 			(this.inputDirection.x !== 0 || this.inputDirection.z !== 0) &&
-			Date.now() - this.lastStepUpTime > this.stepUpCooldownMs
+			this.now - this.lastStepUpTime > this.stepUpCooldownMs
 		) {
 			const savedX = pos.x,
 				savedY = pos.y,
@@ -762,8 +792,8 @@ export class PlayerVehicleMotor {
 			this.inputDirection.x === 0 &&
 			this.inputDirection.z === 0
 		) {
-			activeVel.x *= this.deacceleration;
-			activeVel.z *= this.deacceleration;
+			activeVel.x *= this.deceleration;
+			activeVel.z *= this.deceleration;
 		}
 
 		if (isInWater) {
@@ -781,7 +811,7 @@ export class PlayerVehicleMotor {
 				this.wantJump--;
 				const canJump = this.#playerStats.consumeStamina(this.jumpStaminaCost);
 				//Jump with 0 stamina in Creative
-				if (Gamemodes.Creative || canJump) {
+				if (this.#playerStats.gamemode === Gamemodes.Creative || canJump) {
 					// PERF: Use cached jumpImpulse — avoids gravity.length() sqrt.
 					activeVel.y = Math.max(this.jumpImpulse, activeVel.y);
 					this.voxelIsGrounded = false;
@@ -833,10 +863,11 @@ export class PlayerVehicleMotor {
 	// ── Public update ─────────────────────────────────────────────────────────
 
 	public updateCameraAndVisuals(): void {
-		this.#characterOrientation = Quaternion.RotationYawPitchRoll(
+		Quaternion.RotationYawPitchRollToRef(
 			this.#camera.cameraYaw,
 			0,
 			0,
+			this.#characterOrientation,
 		);
 		this.#camera.moveWithPlayer(this.getPositionInternal());
 		this.#displayCapsule.position.copyFrom(this.getPositionInternal());
@@ -990,6 +1021,7 @@ export class PlayerVehicleMotor {
 	}
 
 	private integrateVoxelMovement(deltaTime: number): void {
+		this.now = performance.now();
 		if (deltaTime <= 1 / 60) {
 			this.integrateVoxelMovementStep(deltaTime);
 			return;
@@ -1004,36 +1036,28 @@ export class PlayerVehicleMotor {
 	private calculateFlyingVelocity(deltaTime: number): Vector3 {
 		// PERF: Use #tmpDv scratch instead of allocating a new dv vector.
 		const dv = this.#tmpDv;
-		// PERF: scaleToRef avoids intermediate alloc from inputDirection.scale().
 		this.inputDirection.scaleToRef(this.onGroundSpeed * 112.5, dv);
-		dv.copyFrom(dv.applyRotationQuaternion(this.#characterOrientation));
+		const q = this.#characterOrientation;
+		_rotateVec3ByQuat(dv.x, dv.y, dv.z, q.x, q.y, q.z, q.w, dv);
 
 		if (this.wantJump > 0) {
 			// up = -gravity normalised; multiply inline to avoid getUpVector alloc.
-			const gl = this.#characterGravityLen;
-			const ux = -this.#characterGravity.x / gl;
-			const uy = -this.#characterGravity.y / gl;
-			const uz = -this.#characterGravity.z / gl;
 			const spd = this.onGroundSpeed * 112.5;
-			dv.x += ux * spd;
-			dv.y += uy * spd;
-			dv.z += uz * spd;
+			dv.x += this.#upX * spd;
+			dv.y += this.#upY * spd;
+			dv.z += this.#upZ * spd;
 		}
 		if (this.isSprinting) {
-			const gl = this.#characterGravityLen;
-			const ux = -this.#characterGravity.x / gl;
-			const uy = -this.#characterGravity.y / gl;
-			const uz = -this.#characterGravity.z / gl;
 			const spd = this.onGroundSpeed * 112.5;
-			dv.x -= ux * spd;
-			dv.y -= uy * spd;
-			dv.z -= uz * spd;
+			dv.x -= this.#upX * spd;
+			dv.y -= this.#upY * spd;
+			dv.z -= this.#upZ * spd;
 		}
 
 		const cur = this.getVelocityInternal();
 		if (dv.lengthSquared() < 0.01) {
 			// PERF: scaleToRef into existing scratch avoids clone + scaleInPlace.
-			return cur.scaleToRef(this.deacceleration, this.#tmpV);
+			return cur.scaleToRef(this.deceleration, this.#tmpV);
 		}
 		return this.accelerateInto(
 			cur,
@@ -1085,20 +1109,8 @@ export class PlayerVehicleMotor {
 	}
 
 	private calculateInAirVelocity(dt: number, cur: Vector3): Vector3 {
-		// PERF: Inline up-vector computation; write into #tmpV scratch.
-		const gl = this.#characterGravityLen;
-		const uy = -this.#characterGravity.y / gl; // dominant axis
-		const ux = -this.#characterGravity.x / gl;
-		const uz = -this.#characterGravity.z / gl;
-		const upDotCur = cur.x * ux + cur.y * uy + cur.z * uz;
-
 		const v = this.#tmpV;
 		v.copyFrom(cur);
-		// Remove and re-add the up component (net: no-op in pure gravity, but
-		// keeps the original logic intact for non-axis-aligned gravity).
-		v.x += (-upDotCur + upDotCur) * ux;
-		v.y += (-upDotCur + upDotCur) * uy;
-		v.z += (-upDotCur + upDotCur) * uz;
 		// Add gravity.
 		v.x += this.#characterGravity.x * dt;
 		v.y += this.#characterGravity.y * dt;
@@ -1110,10 +1122,10 @@ export class PlayerVehicleMotor {
 		cur: Vector3,
 		si: CharacterSurfaceInfo,
 	): Vector3 {
-		// PERF: Use #tmpDv for desired velocity instead of new Vector3().
 		const dv = this.#tmpDv;
 		this.inputDirection.scaleToRef(this.onGroundSpeed, dv);
-		dv.copyFrom(dv.applyRotationQuaternion(this.#characterOrientation));
+		const q = this.#characterOrientation;
+		_rotateVec3ByQuat(dv.x, dv.y, dv.z, q.x, q.y, q.z, q.w, dv);
 
 		if (
 			this.isSprinting &&
@@ -1126,12 +1138,12 @@ export class PlayerVehicleMotor {
 		v.copyFrom(cur).subtractInPlace(si.averageSurfaceVelocity);
 		const n = si.averageSurfaceNormal;
 
-		// PERF: Inline getUpVector.
-		const gl = this.#characterGravityLen;
-		const ux = -this.#characterGravity.x / gl;
-		const uy = -this.#characterGravity.y / gl;
-		const uz = -this.#characterGravity.z / gl;
-		if (n.x * ux + n.y * uy + n.z * uz < this.minFloorNormalDot) return cur;
+		// PERF: Use precomputed up vector.
+		if (
+			n.x * this.#upX + n.y * this.#upY + n.z * this.#upZ <
+			this.minFloorNormalDot
+		)
+			return cur;
 
 		const nDotV = v.dot(n);
 		v.x -= n.x * nDotV - n.x * this.penetrationRecoveryEps;
@@ -1142,32 +1154,37 @@ export class PlayerVehicleMotor {
 	}
 
 	private calculateJumpVelocity(cur: Vector3, prev: PlayerState): Vector3 {
-		const gl = this.#characterGravityLen;
-		const ux = -this.#characterGravity.x / gl;
-		const uy = -this.#characterGravity.y / gl;
-		const uz = -this.#characterGravity.z / gl;
-
 		const jumpSpd = Math.max(
 			this.jumpImpulse,
-			cur.x * ux + cur.y * uy + cur.z * uz,
+			cur.x * this.#upX + cur.y * this.#upY + cur.z * this.#upZ,
 		);
 
 		const dv = this.#tmpDv;
 		this.inputDirection.scaleToRef(this.onGroundSpeed, dv);
-		dv.copyFrom(dv.applyRotationQuaternion(this.#characterOrientation));
+		const q = this.#characterOrientation;
+		_rotateVec3ByQuat(dv.x, dv.y, dv.z, q.x, q.y, q.z, q.w, dv);
 		if (this.isSprinting) dv.scaleInPlace(this.sprintMultiplier);
 
 		const v = this.#tmpV;
-		v.set(ux * jumpSpd + dv.x, uy * jumpSpd + dv.y, uz * jumpSpd + dv.z);
+		v.set(
+			this.#upX * jumpSpd + dv.x,
+			this.#upY * jumpSpd + dv.y,
+			this.#upZ * jumpSpd + dv.z,
+		);
 
 		if (prev === PlayerState.IN_AIR) {
-			const fwd = this.#camera.playerCamera
-				.getForwardRay()
-				.direction.normalize(); // unavoidable alloc from Babylon ray API
+			// PERF: Reuse scratch Ray + manual normalize avoids allocating a
+			// new Ray and a new Vector3 from getForwardRay().direction.normalize().
+			this.#camera.playerCamera.getForwardRayToRef(_scratchRay, 100);
+			const dir = _scratchRay.direction;
+			const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
 			const boost = this.inAirSpeed * this.airJumpForwardBoost;
-			v.x += fwd.x * boost;
-			v.y += fwd.y * boost;
-			v.z += fwd.z * boost;
+			if (len > 1e-6) {
+				const inv = boost / len;
+				v.x += dir.x * inv;
+				v.y += dir.y * inv;
+				v.z += dir.z * inv;
+			}
 		}
 		return v;
 	}

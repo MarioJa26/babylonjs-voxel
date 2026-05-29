@@ -1,5 +1,5 @@
 import type { StandardMaterial } from "@babylonjs/core";
-import type { IUsable } from "@/code/Inferface/IUsable";
+import type { IUsable } from "@/code/Interface/IUsable";
 import type { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { BoatCreatorSystem } from "@/code/World/Boat/BoatCreatorSystem";
 import { setBlock } from "@/code/World/Chunk/ChunkLoadingSystem";
@@ -47,7 +47,7 @@ export class Item implements IUsable {
 	blockState = 0;
 
 	#maxStack = 64;
-	#stackSize = Math.round(Math.random() * this.#maxStack);
+	#stackSize = 1;
 	#div: HTMLDivElement = document.createElement("div");
 	#stackLabel: HTMLSpanElement = document.createElement("span");
 	row: number;

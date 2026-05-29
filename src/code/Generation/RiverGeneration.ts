@@ -91,6 +91,12 @@ export class RiverGenerator {
 		offsetX: number,
 		offsetY: number,
 	): void {
-		RiverGenerator.riverNoiseInst.FillNoise2D(out, width, height, offsetX, offsetY);
+		RiverGenerator.riverNoiseInst.FillNoise2D(
+			out,
+			width,
+			height,
+			offsetX,
+			offsetY,
+		);
 	}
 }

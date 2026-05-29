@@ -123,11 +123,26 @@ export class PlayerVehicle implements IPlayerBody {
 		blockX: number,
 		blockY: number,
 		blockZ: number,
-		blockShape: { boxes: Array<{ min: [number, number, number]; max: [number, number, number] }>; rotateY: boolean; usesSliceState: boolean },
+		blockShape: {
+			boxes: Array<{
+				min: [number, number, number];
+				max: [number, number, number];
+			}>;
+			rotateY: boolean;
+			usesSliceState: boolean;
+		},
 		rotation: number,
 		slice: number,
 		flipY: boolean,
 	): boolean {
-		return this.motor.wouldBlockOverlapPlayer(blockX, blockY, blockZ, blockShape, rotation, slice, flipY);
+		return this.motor.wouldBlockOverlapPlayer(
+			blockX,
+			blockY,
+			blockZ,
+			blockShape,
+			rotation,
+			slice,
+			flipY,
+		);
 	}
 }

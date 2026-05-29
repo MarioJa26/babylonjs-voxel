@@ -305,16 +305,22 @@ async function prepareFullChunkSave(
 	const blocks = chunk.block_array;
 	const light = chunk.light_array;
 
+	// PERF: Compress blocks and light in parallel instead of sequentially.
+	const [compressedBlocks, compressedLight] = await Promise.all([
+		blocks ? compress(blocks) : Promise.resolve(null),
+		light ? compress(light) : Promise.resolve(null),
+	]);
+
 	return {
 		id,
 		chunk,
 		data: {
 			id,
-			blocks: blocks ? await compress(blocks) : null,
+			blocks: compressedBlocks,
 			palette: chunk.palette ? detachSharedArrayBuffer(chunk.palette) : null,
 			uniformBlockId: chunk.uniformBlockId,
 			isUniform: chunk.isUniform,
-			lightArray: light ? await compress(light) : null,
+			lightArray: compressedLight,
 			opaqueMesh: detachMeshData(chunk.opaqueMeshData),
 			transparentMesh: detachMeshData(chunk.transparentMeshData),
 			lodMeshes: detachLodMeshes(chunk.getSerializableLODMeshCache()),
@@ -344,6 +350,9 @@ class PersistenceQueue {
 		critical: [],
 		background: [],
 	};
+	// PERF: Read indices to avoid O(n) shift() on dequeue.
+	private criticalReadIdx = 0;
+	private backgroundReadIdx = 0;
 	private isRunning = false;
 
 	enqueue(lane: PersistenceLane, run: () => Promise<void>): Promise<void> {
@@ -353,14 +362,25 @@ class PersistenceQueue {
 		});
 	}
 
+	private compact(lane: PersistenceLane): void {
+		const arr = this.queues[lane];
+		const readIdx =
+			lane === "critical" ? this.criticalReadIdx : this.backgroundReadIdx;
+		if (readIdx > 32 && readIdx * 2 > arr.length) {
+			arr.copyWithin(0, readIdx);
+			arr.length -= readIdx;
+			if (lane === "critical") this.criticalReadIdx = 0;
+			else this.backgroundReadIdx = 0;
+		}
+	}
+
 	private drain(): void {
 		if (this.isRunning) return;
 		this.isRunning = true;
 
 		const step = async () => {
 			while (true) {
-				const job =
-					this.queues.critical.shift() ?? this.queues.background.shift();
+				const job = this.dequeue();
 				if (!job) break;
 
 				try {
@@ -374,14 +394,30 @@ class PersistenceQueue {
 			this.isRunning = false;
 
 			if (
-				this.queues.critical.length > 0 ||
-				this.queues.background.length > 0
+				this.criticalReadIdx < this.queues.critical.length ||
+				this.backgroundReadIdx < this.queues.background.length
 			) {
 				this.drain();
 			}
 		};
 
 		void step();
+	}
+
+	private dequeue(): PersistenceJob | null {
+		const q = this.queues.critical;
+		if (this.criticalReadIdx < q.length) {
+			const job = q[this.criticalReadIdx++]!;
+			this.compact("critical");
+			return job;
+		}
+		const bq = this.queues.background;
+		if (this.backgroundReadIdx < bq.length) {
+			const job = bq[this.backgroundReadIdx++]!;
+			this.compact("background");
+			return job;
+		}
+		return null;
 	}
 }
 

@@ -12,7 +12,13 @@ import { CrossHair } from "./Crosshair/CrossHair";
 export class PlayerHud {
 	#engine: Engine;
 	#scene: Scene;
-	#player: Player;
+	readonly #player: Player;
+
+	public readonly crossHair: CrossHair;
+
+	public get player(): Player {
+		return this.#player;
+	}
 
 	static #inventory: PlayerInventory;
 	#inventoryOpen = false;
@@ -22,6 +28,13 @@ export class PlayerHud {
 	#hotbarSlots: HTMLDivElement[] = [];
 	static #heldItemNameDiv: HTMLDivElement = document.createElement("div");
 	#heldItemNameTimeout?: number;
+	// PERF: Cache held item name div width to avoid redundant getBoundingClientRect().
+	#heldItemNameDivCachedWidth = 0;
+	// PERF: Cache previous stat percentages to skip DOM writes when unchanged.
+	#prevHealthPct = -1;
+	#prevHungerPct = -1;
+	#prevStaminaPct = -1;
+	#prevManaPct = -1;
 
 	#overlayDiv: HTMLDivElement;
 
@@ -47,7 +60,7 @@ export class PlayerHud {
 		this.#scene = scene;
 		this.#player = player;
 		PlayerHud.#inventory = player.playerInventory;
-		new CrossHair(engine, scene, player);
+		this.crossHair = new CrossHair(engine, scene, player);
 		this.#overlayDiv = this.initializeHUD();
 		this.createHotbarUI();
 		this.createStatsUI();
@@ -339,13 +352,16 @@ export class PlayerHud {
 					PlayerHud.#heldItemNameDiv.classList.remove("visible");
 				}, 2000);
 
-				// Calculate position relative to the hotbar container
+				// PERF: Cache heldItemNameDiv width to avoid second getBoundingClientRect().
+				if (this.#heldItemNameDivCachedWidth === 0) {
+					this.#heldItemNameDivCachedWidth =
+						PlayerHud.#heldItemNameDiv.getBoundingClientRect().width;
+				}
 				const slotRect = itemSlot.divItemSlot.getBoundingClientRect();
-				const leftOffset = itemSlot.divItemSlot.getBoundingClientRect().left;
 				const widthOffset =
-					leftOffset +
+					slotRect.left +
 					slotRect.width / 2 -
-					PlayerHud.#heldItemNameDiv.getBoundingClientRect().width / 2;
+					this.#heldItemNameDivCachedWidth / 2;
 
 				PlayerHud.#heldItemNameDiv.style.left = `${widthOffset}px`;
 			} else {
@@ -685,15 +701,26 @@ export class PlayerHud {
 		const stats = this.#player.stats;
 		if (!stats) return;
 
-		this.#healthBarFill.style.width = `${
-			(stats.health / stats.maxHealth) * 100
-		}%`;
-		this.#hungerBarFill.style.width = `${
-			(stats.hunger / stats.maxHunger) * 100
-		}%`;
-		this.#staminaBarFill.style.width = `${
-			(stats.stamina / stats.maxStamina) * 100
-		}%`;
-		this.#manaBarFill.style.width = `${(stats.mana / stats.maxMana) * 100}%`;
+		// PERF: Only write to DOM when stat percentages actually change.
+		const healthPct = (stats.health / stats.maxHealth) * 100;
+		if (healthPct !== this.#prevHealthPct) {
+			this.#prevHealthPct = healthPct;
+			this.#healthBarFill.style.width = `${healthPct}%`;
+		}
+		const hungerPct = (stats.hunger / stats.maxHunger) * 100;
+		if (hungerPct !== this.#prevHungerPct) {
+			this.#prevHungerPct = hungerPct;
+			this.#hungerBarFill.style.width = `${hungerPct}%`;
+		}
+		const staminaPct = (stats.stamina / stats.maxStamina) * 100;
+		if (staminaPct !== this.#prevStaminaPct) {
+			this.#prevStaminaPct = staminaPct;
+			this.#staminaBarFill.style.width = `${staminaPct}%`;
+		}
+		const manaPct = (stats.mana / stats.maxMana) * 100;
+		if (manaPct !== this.#prevManaPct) {
+			this.#prevManaPct = manaPct;
+			this.#manaBarFill.style.width = `${manaPct}%`;
+		}
 	}
 }

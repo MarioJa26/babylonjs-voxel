@@ -1,5 +1,8 @@
 import type { Observer, Scene } from "@babylonjs/core";
-import { flushModifiedChunks, flushChunkBoundEntities } from "../World/Chunk/ChunkLoadingSystem";
+import {
+	flushChunkBoundEntities,
+	flushModifiedChunks,
+} from "../World/Chunk/ChunkLoadingSystem";
 import type { SavedInventoryState } from "./Inventory/PlayerInventory";
 import type { Player } from "./Player";
 import { Gamemodes } from "./PlayerStats";

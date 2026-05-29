@@ -320,7 +320,7 @@ export const MEADOW: Biome = {
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
 	treeDensity: 0.0,
-	grassDensity: 0.75, // very dense flowers and tall grass
+	grassDensity: 0.55, // very dense flowers and tall grass
 	beachBlock: 3, // sand
 	seafloorBlock: 46, // gravel seafloor
 

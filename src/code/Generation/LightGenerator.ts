@@ -4,7 +4,6 @@ import {
 } from "../World/Chunk/Worker/ChunkMesherConstants";
 import type { Biome } from "./Biome/BiomeTypes";
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
-import { getFinalTerrainHeight } from "./TerrainHeightMap";
 
 export type LightSeedState = {
 	/**
@@ -34,7 +33,6 @@ export class LightGenerator {
 	 */
 	private static scratchQueue: Uint16Array | null = null;
 
-	private static readonly DENSITY_INFLUENCE_RANGE = 48;
 	private static readonly SKYLIGHT_GENERATION_MIN_WORLD_Y = 32;
 
 	constructor(params: GenerationParamsType) {
@@ -143,9 +141,7 @@ export class LightGenerator {
 					? topSunlightMask[columnIndex] !== 0
 						? 15
 						: 0
-					: this.columnReceivesDirectSun(worldX, worldZ, topWorldY)
-						? 15
-						: 0;
+					: 15;
 
 				let sourceFiltersFullSun = false;
 
@@ -429,19 +425,6 @@ export class LightGenerator {
 			blockId === 64 ||
 			blockId === 66
 		);
-	}
-
-	private columnReceivesDirectSun(
-		worldX: number,
-		worldZ: number,
-		topWorldY: number,
-	): boolean {
-		if (topWorldY < LightGenerator.SKYLIGHT_GENERATION_MIN_WORLD_Y) {
-			return false;
-		}
-
-		const terrainHeight = getFinalTerrainHeight(worldX, worldZ);
-		return topWorldY >= terrainHeight - LightGenerator.DENSITY_INFLUENCE_RANGE;
 	}
 }
 

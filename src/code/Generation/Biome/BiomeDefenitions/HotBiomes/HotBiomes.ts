@@ -225,7 +225,7 @@ export const DUNE_SEA: Biome = {
 export const SCORCHED_SAVANNAH: Biome = {
 	id: BIOME_ID.SCORCHED_SAVANNAH,
 	name: "Scorched_Savannah",
-	topBlock: 108, // scorched / cracked dry grass
+	topBlock: 72, // scorched / cracked dry grass
 	undergroundBlock: 19, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,

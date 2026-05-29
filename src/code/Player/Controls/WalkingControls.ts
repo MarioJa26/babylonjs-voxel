@@ -1,7 +1,8 @@
 import type { Vector3 } from "@babylonjs/core";
+import type { IControls } from "@/code/Interface/IControls";
 import { Map1 } from "@/code/Maps/Map1";
 import { validateChunksAround } from "@/code/World/Chunk/ChunkLoadingSystem";
-import type { IControls } from "../../Inferface/IControls";
+import type { BlockRaycastHit } from "../Hud/BlockHighlight/BlockRaycaster";
 import { pickTarget } from "../Hud/BlockHighlight/BlockRaycaster";
 import { BlockBreakingHandler } from "../Hud/BlockHighlight/BreakinBlockHandler";
 import type { Item } from "../Inventory/Item";
@@ -93,8 +94,8 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 		}
 	}
 
-	public update(): void {
-		this.#blockBreaking.update();
+	public update(hit?: BlockRaycastHit | null): void {
+		this.#blockBreaking.update(hit);
 	}
 
 	public onKeyDown(key: string) {

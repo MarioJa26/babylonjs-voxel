@@ -1,12 +1,21 @@
 import type { Biome } from "./Biome/BiomeTypes";
 import {
+	NO_SURFACE_Y as CAVE_NO_SURFACE_Y,
+	evaluateCaveCarve,
+	getSurfaceCarveBlend,
+} from "./CaveCarver";
+import {
 	GenerationParams,
 	type GenerationParamsType,
 } from "./NoiseAndParameters/GenerationParams";
 import { RiverGenerator } from "./RiverGeneration";
 import { DungeonFeature } from "./Structure/DungeonFeature";
+import { GeodeFeature } from "./Structure/GeodeFeature";
+import { InfernalPitFeature } from "./Structure/InfernalPitFeature";
 import type { IWorldFeature } from "./Structure/IWorldFeature";
 import { LavaPoolFeature } from "./Structure/LavaPoolFeature";
+import { MineshaftFeature } from "./Structure/MineshaftFeature";
+import { RavineFeature } from "./Structure/RavineFeature";
 import { StructureSpawnerFeature } from "./Structure/StructureFeature";
 import { TowerFeature } from "./Structure/TowerFeature";
 import {
@@ -45,8 +54,12 @@ export class SurfaceGenerator {
 	private static treeNoise: (x: number, z: number) => number;
 	private static densityNoise: (x: number, y: number, z: number) => number;
 
+	private cheeseNoise: (x: number, y: number, z: number) => number;
+	private tunnelNoise: (x: number, y: number, z: number) => number;
+	private detailNoise: (x: number, y: number, z: number) => number;
+
 	private static readonly DENSITY_BASE_AMPLITUDE = 32;
-	private static readonly DENSITY_OVERHANG_AMPLITUDE = 32;
+	private static readonly DENSITY_OVERHANG_AMPLITUDE = 64;
 	private static readonly DENSITY_CLIFF_AMPLITUDE = 32;
 	private static readonly DENSITY_INFLUENCE_RANGE = 32;
 
@@ -65,8 +78,6 @@ export class SurfaceGenerator {
 
 	private static readonly SUBSURFACE_LAYER_DEPTH = 5;
 	private static readonly SURFACE_RESET_AIR_GAP = 6;
-	private static readonly NO_SURFACE_Y = -32768;
-
 	/**
 	 * Conservative vertical budgets used to decide whether a chunkY slice
 	 * can possibly contain any flora / structure blocks.
@@ -86,12 +97,11 @@ export class SurfaceGenerator {
 	 *
 	 * Keyed by (chunkX, chunkZ) packed into a bigint.
 	 */
-	private static readonly MAX_COLUMN_PREPASS_CACHE = 128;
+	private static readonly MAX_COLUMN_PREPASS_CACHE = 512;
 	private static readonly columnPrepassCache = new Map<
 		bigint,
 		ColumnPrepassCacheEntry
 	>();
-	private static readonly columnPrepassFifo: bigint[] = [];
 
 	/**
 	 * Bounded flora-column cache for overlapping flora scans.
@@ -103,7 +113,6 @@ export class SurfaceGenerator {
 		bigint,
 		FloraColumnCacheEntry
 	>();
-	private static readonly floraColumnCacheFifo: bigint[] = [];
 
 	private chunk_size: number;
 	private riverGenerator: RiverGenerator;
@@ -114,6 +123,9 @@ export class SurfaceGenerator {
 		treeNoise: (x: number, z: number) => number,
 		densityNoise: (x: number, y: number, z: number) => number,
 		seedAsInt: number,
+		cheeseNoise: (x: number, y: number, z: number) => number,
+		tunnelNoise: (x: number, y: number, z: number) => number,
+		detailNoise: (x: number, y: number, z: number) => number,
 	) {
 		this.params = params;
 		SurfaceGenerator.treeNoise = treeNoise;
@@ -123,11 +135,19 @@ export class SurfaceGenerator {
 		this.chunk_size = this.params.CHUNK_SIZE;
 		this.riverGenerator = new RiverGenerator(params);
 
+		this.cheeseNoise = cheeseNoise;
+		this.tunnelNoise = tunnelNoise;
+		this.detailNoise = detailNoise;
+
 		this.features = [
 			new TowerFeature(),
 			new LavaPoolFeature(),
 			new StructureSpawnerFeature(),
 			new DungeonFeature(),
+			new RavineFeature(),
+			new GeodeFeature(),
+			new MineshaftFeature(),
+			new InfernalPitFeature(),
 		];
 	}
 
@@ -157,7 +177,7 @@ export class SurfaceGenerator {
 		const chunkWorldX = chunkX * CHUNK_SIZE;
 		const chunkWorldZ = chunkZ * CHUNK_SIZE;
 		const area = CHUNK_SIZE * CHUNK_SIZE;
-		const NO_SURFACE_Y = SurfaceGenerator.NO_SURFACE_Y;
+		const NO_SURFACE_Y = CAVE_NO_SURFACE_Y;
 
 		// Pre-fill the biome-corner cache for this chunk so the per-column
 		// loop never hits a cache miss on fillCorner.
@@ -222,15 +242,14 @@ export class SurfaceGenerator {
 		};
 
 		SurfaceGenerator.columnPrepassCache.set(key, built);
-		SurfaceGenerator.columnPrepassFifo.push(key);
 
 		while (
-			SurfaceGenerator.columnPrepassFifo.length >
+			SurfaceGenerator.columnPrepassCache.size >
 			SurfaceGenerator.MAX_COLUMN_PREPASS_CACHE
 		) {
-			const evictKey = SurfaceGenerator.columnPrepassFifo.shift();
-			if (evictKey !== undefined) {
-				SurfaceGenerator.columnPrepassCache.delete(evictKey);
+			const firstKey = SurfaceGenerator.columnPrepassCache.keys().next().value;
+			if (firstKey !== undefined) {
+				SurfaceGenerator.columnPrepassCache.delete(firstKey);
 			}
 		}
 
@@ -288,15 +307,14 @@ export class SurfaceGenerator {
 		};
 
 		SurfaceGenerator.floraColumnCache.set(key, built);
-		SurfaceGenerator.floraColumnCacheFifo.push(key);
 
 		while (
-			SurfaceGenerator.floraColumnCacheFifo.length >
+			SurfaceGenerator.floraColumnCache.size >
 			SurfaceGenerator.MAX_FLORA_COLUMN_CACHE
 		) {
-			const evictKey = SurfaceGenerator.floraColumnCacheFifo.shift();
-			if (evictKey !== undefined) {
-				SurfaceGenerator.floraColumnCache.delete(evictKey);
+			const firstKey = SurfaceGenerator.floraColumnCache.keys().next().value;
+			if (firstKey !== undefined) {
+				SurfaceGenerator.floraColumnCache.delete(firstKey);
 			}
 		}
 
@@ -335,8 +353,7 @@ export class SurfaceGenerator {
 
 		const chunkMinY = chunkY * this.chunk_size;
 		const chunkMaxY = chunkMinY + this.chunk_size - 1;
-		const hasAnySurface =
-			generationResult.maxSurfaceY !== SurfaceGenerator.NO_SURFACE_Y;
+		const hasAnySurface = generationResult.maxSurfaceY !== CAVE_NO_SURFACE_Y;
 
 		const canContainFlora =
 			hasAnySurface &&
@@ -422,7 +439,7 @@ export class SurfaceGenerator {
 	): SurfaceGenerationResult {
 		const CHUNK_SIZE = this.params.CHUNK_SIZE;
 		const SEA_LEVEL = this.params.SEA_LEVEL;
-		const NO_SURFACE_Y = SurfaceGenerator.NO_SURFACE_Y;
+		const NO_SURFACE_Y = CAVE_NO_SURFACE_Y;
 		const INFLUENCE = SurfaceGenerator.DENSITY_INFLUENCE_RANGE;
 
 		const chunkWorldX = chunkX * CHUNK_SIZE;
@@ -436,6 +453,29 @@ export class SurfaceGenerator {
 
 		const volcanicLiquidId =
 			currentBiome.name === "Volcanic_Wasteland" ? 24 : 30;
+
+		// Fast-path: if entire chunk is well below any possible surface, skip expensive prepass
+		// Minimum surface Y: SEA_LEVEL + continentalnessSpline(-1.0) - INFLUENCE ≈ -90
+		// Use -128 for a safe margin — only affects very deep chunks
+		if (topWorldY < -128) {
+			for (let localX = 0; localX < CHUNK_SIZE; localX++) {
+				const worldX = chunkWorldX + localX;
+				for (let localZ = 0; localZ < CHUNK_SIZE; localZ++) {
+					const worldZ = chunkWorldZ + localZ;
+					for (let localY = 0; localY < CHUNK_SIZE; localY++) {
+						const worldY = chunkWorldY + localY;
+						const blockId = worldY < 0 ? 29 : currentBiome.stoneBlock;
+						placeBlock(worldX, worldY, worldZ, blockId, true);
+					}
+				}
+			}
+			return {
+				topSunlightMask,
+				topSurfaceYMap,
+				minSurfaceY: NO_SURFACE_Y,
+				maxSurfaceY: NO_SURFACE_Y,
+			};
+		}
 
 		// Reuse expensive per-column data for all chunkY in the same (chunkX, chunkZ)
 		const columnPrepass = this.getOrBuildColumnPrepass(chunkX, chunkZ);
@@ -633,6 +673,16 @@ export class SurfaceGenerator {
 					yFreq,
 					cliffNoise,
 				);
+				const caveModAbove =
+					densityAboveChunk > 0
+						? this.computeCaveModifier(
+								worldX,
+								topWorldY + 1,
+								worldZ,
+								columnTopSurfaceY,
+							)
+						: 0;
+				const effectiveDensityAbove = densityAboveChunk - caveModAbove;
 
 				const isTunnelAboveChunk =
 					topWorldY + 1 < GenerationParams.SEA_LEVEL + 16 &&
@@ -644,7 +694,7 @@ export class SurfaceGenerator {
 					);
 
 				let airGapSinceLastSolid =
-					!isTunnelAboveChunk && densityAboveChunk > 0 ? 0 : 1;
+					!isTunnelAboveChunk && effectiveDensityAbove > 0 ? 0 : 1;
 
 				for (let localY = CHUNK_SIZE - 1; localY >= 0; localY--) {
 					const worldY = chunkWorldY + localY;
@@ -677,8 +727,18 @@ export class SurfaceGenerator {
 						yFreq,
 						cliffNoise,
 					);
+					const caveMod =
+						density > 0
+							? this.computeCaveModifier(
+									worldX,
+									worldY,
+									worldZ,
+									columnTopSurfaceY,
+								)
+							: 0;
+					const effectiveDensity = density - caveMod;
 
-					if (density > 0) {
+					if (effectiveDensity > 0) {
 						if (
 							airGapSinceLastSolid >= SurfaceGenerator.SURFACE_RESET_AIR_GAP
 						) {
@@ -732,7 +792,7 @@ export class SurfaceGenerator {
 		const chunkSize = this.chunk_size;
 		const chunkWorldX = chunkX * chunkSize;
 		const chunkWorldZ = chunkZ * chunkSize;
-		const NO_SURFACE_Y = SurfaceGenerator.NO_SURFACE_Y;
+		const NO_SURFACE_Y = CAVE_NO_SURFACE_Y;
 
 		for (
 			let localX = -SCAN_RADIUS;
@@ -918,6 +978,48 @@ export class SurfaceGenerator {
 		);
 	}
 
+	// ---------------------------------------------------------------------------
+	// computeCaveModifier
+	//
+	// Evaluates the cave carving influence at a surface-terrain voxel using the
+	// same world-space noise functions as UndergroundGenerator and
+	// WorldGenerator.processCombinedUndergroundPass.
+	//
+	// CROSS-CHUNK CONTINUITY: x/y/z are world coordinates — the noise functions
+	// are purely positional, so caves generated here are automatically continuous
+	// with those generated in the underground pass of adjacent chunks.  No
+	// extra seaming is needed.
+	//
+	// V8 NOTES:
+	//   - All params are hoisted to locals to avoid repeated property-chain
+	//     lookups inside the hot surface-terrain loop that calls this method.
+	//   - The early-out on caveBlend ≤ 0 is kept to skip the three noise calls
+	//     entirely for the majority of above-ground voxels.
+	// ---------------------------------------------------------------------------
+
+	// Cached primitive constants — set once in the ctor to avoid re-reading
+	// `this.params` on every call inside the per-voxel hot loop.
+	private computeCaveModifier(
+		x: number,
+		y: number,
+		z: number,
+		surfaceY: number,
+	): number {
+		const cave = evaluateCaveCarve(
+			this.params,
+			y,
+			surfaceY,
+			this.cheeseNoise(x, y, z),
+			this.tunnelNoise(x, y, z),
+			this.detailNoise(x, y, z),
+		);
+		if (!cave.shouldCarve) return 0;
+
+		return (
+			cave.carveStrength * getSurfaceCarveBlend(cave.depthBelowSurface) * 40
+		);
+	}
+
 	private sampleCliffNoise(x: number, baseHeight: number, z: number): number {
 		return SurfaceGenerator.densityNoise(
 			x * 0.0035,
@@ -947,7 +1049,7 @@ export class SurfaceGenerator {
 			yFreq,
 			cliffNoise,
 		);
-		let highestSolid = SurfaceGenerator.NO_SURFACE_Y;
+		let highestSolid = CAVE_NO_SURFACE_Y;
 
 		for (let y = maxY; y >= minY; y--) {
 			const densityHere = this.getDensity(
@@ -961,7 +1063,7 @@ export class SurfaceGenerator {
 			if (densityHere > 0) {
 				if (densityAbove <= 0) return y;
 				// Fallback if no sharp transition was found
-				if (highestSolid === SurfaceGenerator.NO_SURFACE_Y) {
+				if (highestSolid === CAVE_NO_SURFACE_Y) {
 					highestSolid = y;
 				}
 			}

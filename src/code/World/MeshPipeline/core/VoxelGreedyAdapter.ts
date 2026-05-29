@@ -36,6 +36,12 @@ export class VoxelGreedyAdapter {
 		this.faceEmitter = new VoxelFaceEmitterAdapter();
 	}
 
+	/** PERF: Update context reference instead of creating a new adapter. */
+	public setCtx(ctx: MeshContext): void {
+		this.ctx = ctx;
+		this.maskExtractor.setCtx(ctx);
+	}
+
 	/**
 	 * Runs greedy meshing on all 3 axes.
 	 * Emits quads for ALL voxel faces into the output.

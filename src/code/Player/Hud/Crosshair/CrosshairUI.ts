@@ -1,4 +1,4 @@
-import { type Engine, type Scene } from "@babylonjs/core";
+import type { Engine, Scene } from "@babylonjs/core";
 import * as GUI from "@babylonjs/gui";
 
 const CROSSHAIR_TEXTURE_PATH = (id: string) =>
@@ -16,11 +16,21 @@ export class CrosshairUI {
 
 	constructor(engine: Engine, scene: Scene, initialCrosshairId = "179") {
 		this.#engine = engine;
-		this.#scene  = scene;
-		this.#ui     = GUI.AdvancedDynamicTexture.CreateFullscreenUI("UI");
+		this.#scene = scene;
+		this.#ui = GUI.AdvancedDynamicTexture.CreateFullscreenUI("UI");
 
-		this.#crosshair  = this.#addImage("crossHair", CROSSHAIR_TEXTURE_PATH(initialCrosshairId), "48px", 1);
-		this.#hitMarker  = this.#addImage("hitMarker",  "/texture/gui/hitmarker01.png",             "28px", 0);
+		this.#crosshair = this.#addImage(
+			"crossHair",
+			CROSSHAIR_TEXTURE_PATH(initialCrosshairId),
+			"48px",
+			1,
+		);
+		this.#hitMarker = this.#addImage(
+			"hitMarker",
+			"/texture/gui/hitmarker01.png",
+			"28px",
+			0,
+		);
 	}
 
 	setCrosshair(id: string): void {
@@ -45,11 +55,16 @@ export class CrosshairUI {
 
 	// ─── Helpers ─────────────────────────────────────────────────────────────
 
-	#addImage(name: string, source: string, size: string, alpha: number): GUI.Image {
-		const img    = new GUI.Image(name, source);
-		img.width    = size;
-		img.height   = size;
-		img.alpha    = alpha;
+	#addImage(
+		name: string,
+		source: string,
+		size: string,
+		alpha: number,
+	): GUI.Image {
+		const img = new GUI.Image(name, source);
+		img.width = size;
+		img.height = size;
+		img.alpha = alpha;
 		this.#ui.addControl(img);
 		return img;
 	}

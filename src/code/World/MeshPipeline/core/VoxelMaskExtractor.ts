@@ -159,6 +159,11 @@ export class VoxelMaskExtractor {
 		this.ctx = ctx;
 	}
 
+	/** PERF: Update context reference instead of creating a new instance. */
+	public setCtx(ctx: MeshContext): void {
+		this.ctx = ctx;
+	}
+
 	/**
 	 * Return the face bit on the CURRENT block that points toward the neighbor.
 	 */

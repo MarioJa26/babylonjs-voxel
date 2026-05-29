@@ -3,6 +3,7 @@ export class DebugPanel {
 
 	static div: HTMLDivElement = document.createElement("div");
 	private static infoLines: { [key: string]: string } = {};
+	private static elements = new Map<string, HTMLDivElement>();
 
 	private constructor() {
 		const div = DebugPanel.div;
@@ -36,15 +37,16 @@ export class DebugPanel {
 	}
 
 	public static updateInfo(key: string, value: string | number): void {
-		DebugPanel.infoLines[key] = String(value);
-		DebugPanel.render();
-	}
+		const strValue = String(value);
+		if (DebugPanel.infoLines[key] === strValue) return;
+		DebugPanel.infoLines[key] = strValue;
 
-	private static render(): void {
-		let html = "";
-		for (const key in DebugPanel.infoLines) {
-			html += `<div><strong>${key}:</strong> ${DebugPanel.infoLines[key]}</div>`;
+		let el = DebugPanel.elements.get(key);
+		if (!el) {
+			el = document.createElement("div");
+			DebugPanel.div.appendChild(el);
+			DebugPanel.elements.set(key, el);
 		}
-		DebugPanel.div.innerHTML = html;
+		el.textContent = `${key}: ${strValue}`;
 	}
 }

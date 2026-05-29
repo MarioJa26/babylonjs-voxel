@@ -46,15 +46,6 @@ export class RingBuffer<T> {
 		return out;
 	}
 
-	/** Returns a snapshot of elements as a new array. */
-	toArrayReversed(): T[] {
-		const out: T[] = new Array(this._size);
-		for (let i = 0; i < this._size; i++) {
-			out[this._size - 1 - i] = this.buf[(this.head + i) % this.capacity] as T;
-		}
-		return out;
-	}
-
 	/**
 	 * Calls `fn` for each element in order (oldest to newest).
 	 * Avoids allocating a new array.
@@ -62,6 +53,17 @@ export class RingBuffer<T> {
 	forEach(fn: (value: T) => void): void {
 		for (let i = 0; i < this._size; i++) {
 			fn(this.buf[(this.head + i) % this.capacity] as T);
+		}
+	}
+
+	/**
+	 * Appends each element (oldest to newest) into `dest`, clearing it first.
+	 * Reuses the destination array across calls to avoid per-frame allocation.
+	 */
+	forEachInto(dest: T[]): void {
+		dest.length = 0;
+		for (let i = 0; i < this._size; i++) {
+			dest.push(this.buf[(this.head + i) % this.capacity] as T);
 		}
 	}
 }

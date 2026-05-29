@@ -27,9 +27,12 @@ export interface VoxelPipelineInput {
  */
 export class VoxelPipeline {
 	private ctx: MeshContext;
+	// PERF: Cache VoxelGreedyAdapter to avoid per-build allocations of adapter + sub-objects.
+	private greedy: VoxelGreedyAdapter;
 
 	constructor(ctx: MeshContext) {
 		this.ctx = ctx;
+		this.greedy = new VoxelGreedyAdapter(ctx);
 	}
 
 	/**
@@ -39,16 +42,10 @@ export class VoxelPipeline {
 		opaqueOut: WorkerInternalMeshData,
 		transparentOut: WorkerInternalMeshData,
 	): void {
-		// PRIMARY VOXEL MESHER
-		const greedy = new VoxelGreedyAdapter(this.ctx);
+		// PERF: Reuse cached adapter, just update the context reference.
+		this.greedy.setCtx(this.ctx);
 
-		greedy.build(opaqueOut, transparentOut);
+		this.greedy.build(opaqueOut, transparentOut);
 		emitCustomShapes(this.ctx, opaqueOut, transparentOut);
-
-		// After this, `out` contains:
-		// - faceDataA (x,y,z,axisFace)
-		// - faceDataB (width,height,uvX,uvY)
-		// - faceDataC (ao,light,tint,meta)
-		// - faceCount
 	}
 }

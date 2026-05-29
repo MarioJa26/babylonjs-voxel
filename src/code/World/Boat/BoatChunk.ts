@@ -1,4 +1,4 @@
-import { Mesh, type Scene, Vector3 } from "@babylonjs/core";
+import { Matrix, Mesh, type Scene, Vector3 } from "@babylonjs/core";
 import { Chunk } from "../Chunk/Chunk";
 import { ChunkWorkerPool } from "../Chunk/ChunkWorkerPool";
 import {
@@ -43,6 +43,8 @@ export class BoatChunk {
 	#center: Vector3;
 	#visualRoot: Mesh;
 	#centerChunk: Chunk;
+	#scratchInverse = new Matrix();
+	#scratchLocal = new Vector3();
 	#neighborChunks: Chunk[] = [];
 	#attachedOpaqueMesh: Mesh | null = null;
 	#attachedTransparentMesh: Mesh | null = null;
@@ -343,12 +345,25 @@ export class BoatChunk {
 	}
 
 	public worldToLocalBlock(worldPosition: Vector3): Vector3 {
-		const inverse = this.#visualRoot.getWorldMatrix().clone().invert();
-		const local = Vector3.TransformCoordinates(worldPosition, inverse);
+		this.worldToLocalBlockToRef(worldPosition, this.#scratchLocal);
 		return new Vector3(
-			Math.floor(local.x + this.#center.x),
-			Math.floor(local.y + this.#center.y),
-			Math.floor(local.z + this.#center.z),
+			Math.floor(this.#scratchLocal.x),
+			Math.floor(this.#scratchLocal.y),
+			Math.floor(this.#scratchLocal.z),
+		);
+	}
+
+	public worldToLocalBlockToRef(worldPosition: Vector3, ref: Vector3): void {
+		this.#visualRoot.getWorldMatrix().invertToRef(this.#scratchInverse);
+		Vector3.TransformCoordinatesToRef(
+			worldPosition,
+			this.#scratchInverse,
+			this.#scratchLocal,
+		);
+		ref.set(
+			Math.floor(this.#scratchLocal.x + this.#center.x),
+			Math.floor(this.#scratchLocal.y + this.#center.y),
+			Math.floor(this.#scratchLocal.z + this.#center.z),
 		);
 	}
 
@@ -479,7 +494,7 @@ export class BoatChunk {
 	}
 
 	public get center(): Vector3 {
-		return this.#center.clone();
+		return this.#center;
 	}
 
 	public static getActiveChunks(): ReadonlySet<BoatChunk> {

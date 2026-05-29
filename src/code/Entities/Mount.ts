@@ -1,6 +1,6 @@
 import { Quaternion, type TransformNode, Vector3 } from "@babylonjs/core";
-import type { IControls } from "../Inferface/IControls";
-import type { IMountable } from "../Inferface/IMountable";
+import type { IControls } from "../Interface/IControls";
+import type { IMountable } from "../Interface/IMountable";
 import { Player } from "../Player/Player";
 import type { IPlayerBody } from "../Player/PlayerBody";
 import type MountOptions from "./MountOptions";
@@ -16,6 +16,8 @@ export class Mount implements IMountable {
 
 	// Track if physics is disabled
 	#physicsDisabled = false;
+	#scratchPos = new Vector3();
+	#scratchRot = new Quaternion();
 
 	constructor(
 		vehicle: TransformNode,
@@ -131,14 +133,14 @@ export class Mount implements IMountable {
 	private updateMountedPosition(): void {
 		if (!this.user) return;
 		const playerBody = this.user.playerVehicle;
-		playerBody.characterController.setPosition(
-			this.vehicle.position.clone().add(this.#mountOffset),
-		);
+		this.#scratchPos
+			.copyFrom(this.vehicle.position)
+			.addInPlace(this.#mountOffset);
+		playerBody.characterController.setPosition(this.#scratchPos);
 		const vehicleRotation =
 			this.vehicle.rotationQuaternion ?? Quaternion.Identity();
-		playerBody.displayCapsule.rotationQuaternion = vehicleRotation.multiply(
-			this.#mountRotationOffset,
-		);
+		vehicleRotation.multiplyToRef(this.#mountRotationOffset, this.#scratchRot);
+		playerBody.displayCapsule.rotationQuaternion = this.#scratchRot;
 	}
 
 	private disablePlayerPhysics(player: IPlayerBody): void {

@@ -41,6 +41,12 @@ export interface WaterSampleGrid {
  * - Water top faces should use the "top" texture face
  * - We do NOT hardcode texX/texY anymore; FaceEmitter resolves atlas tiles
  */
+
+// PERF: Version-stamp tracking array — reused across builds to avoid
+// allocating + zeroing a new Uint8Array per water mesh build.
+let _waterUsedStamp: Uint8Array | null = null;
+let _waterVersion = 0;
+
 export function buildWaterMesh(
 	_ctx: MeshContext,
 	grid: WaterSampleGrid,
@@ -50,14 +56,20 @@ export function buildWaterMesh(
 
 	const { samples, cellsX, cellsY, cellsZ } = grid;
 
-	// Prevent reprocessing cells already merged into a larger water quad
-	const used = new Uint8Array(samples.length);
+	// PERF: Use version stamp instead of allocating + zeroing a Uint8Array per build.
+	// Each build increments the stamp; cells are "used" if their stamp matches.
+	if (!_waterUsedStamp || _waterUsedStamp.length < samples.length) {
+		_waterUsedStamp = new Uint8Array(samples.length);
+	}
+	_waterVersion++;
+	const version = _waterVersion;
+	const used = _waterUsedStamp;
 
 	for (let cellY = 0; cellY < cellsY; cellY++) {
 		for (let cellZ = 0; cellZ < cellsZ; cellZ++) {
 			for (let cellX = 0; cellX < cellsX; cellX++) {
 				const idx = cellX + cellZ * cellsX + cellY * cellsX * cellsZ;
-				if (used[idx]) continue;
+				if (used[idx] === version) continue;
 
 				const baseSample = samples[idx];
 				if (!baseSample) continue;
@@ -75,7 +87,7 @@ export function buildWaterMesh(
 					const nextIdx =
 						cellX + mergeW + cellZ * cellsX + cellY * cellsX * cellsZ;
 
-					if (used[nextIdx]) break;
+					if (used[nextIdx] === version) break;
 
 					const s = samples[nextIdx];
 					if (
@@ -102,7 +114,7 @@ export function buildWaterMesh(
 						const checkIdx =
 							cellX + dx + rowZ * cellsX + cellY * cellsX * cellsZ;
 
-						if (used[checkIdx]) break outer;
+						if (used[checkIdx] === version) break outer;
 
 						const s = samples[checkIdx];
 						if (
@@ -124,7 +136,7 @@ export function buildWaterMesh(
 					for (let dx = 0; dx < mergeW; dx++) {
 						const markIdx =
 							cellX + dx + (cellZ + dz) * cellsX + cellY * cellsX * cellsZ;
-						used[markIdx] = 1;
+						used[markIdx] = version;
 					}
 				}
 

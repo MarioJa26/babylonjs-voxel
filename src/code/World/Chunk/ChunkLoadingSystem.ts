@@ -70,7 +70,7 @@ const loadQueue: QueuedChunkRequest[] = [];
 const unloadQueueSet: Set<Chunk> = new Set();
 const dynamicBlockProviders: Map<symbol, DynamicBlockProviderEntry> = new Map();
 
-let pendingRemeshChunks: Chunk[] = [];
+const pendingRemeshChunks: Chunk[] = [];
 const pendingRemeshChunkIds: Set<bigint> = new Set();
 
 const hydrationScratchSelectedMesh: SelectedSavedMesh = {
@@ -469,8 +469,8 @@ export function validateChunksAround(
 		hasDesiredState: boolean;
 	}> = [];
 
-	const minChunkY = 0;
-	const maxChunkY = SETTING_PARAMS.MAX_CHUNK_HEIGHT - 1;
+	const minChunkY = SETTING_PARAMS.MIN_CHUNK_Y;
+	const maxChunkY = minChunkY + SETTING_PARAMS.MAX_CHUNK_HEIGHT - 1;
 
 	for (
 		let y = Math.max(minChunkY, centerChunkY - verticalRadius);
@@ -552,12 +552,13 @@ export function processPendingRemeshes(maxChunks = 12): void {
 		processed++;
 	}
 
-	// compact occasionally
+	// PERF: Use copyWithin + length truncation instead of slice() to avoid allocating a new array.
 	if (
 		pendingRemeshReadIndex > 64 &&
 		pendingRemeshReadIndex * 2 > pendingRemeshChunks.length
 	) {
-		pendingRemeshChunks = pendingRemeshChunks.slice(pendingRemeshReadIndex);
+		pendingRemeshChunks.copyWithin(0, pendingRemeshReadIndex);
+		pendingRemeshChunks.length -= pendingRemeshReadIndex;
 		pendingRemeshReadIndex = 0;
 	}
 }
@@ -885,18 +886,32 @@ export function setBlock(
 	worldMutations.setBlock(worldX, worldY, worldZ, blockId, state);
 }
 
+function withDynamicBlock<T>(
+	worldX: number,
+	worldY: number,
+	worldZ: number,
+	options: DynamicBlockQueryOptions | undefined,
+	extract: (sample: DynamicBlockSample) => T,
+	fallback: () => T,
+): T {
+	const sample = sampleDynamicBlock(worldX, worldY, worldZ, options);
+	return sample ? extract(sample) : fallback();
+}
+
 export function getBlockByWorldCoords(
 	worldX: number,
 	worldY: number,
 	worldZ: number,
 	options?: DynamicBlockQueryOptions,
 ): number {
-	const dynamicSample = sampleDynamicBlock(worldX, worldY, worldZ, options);
-	if (dynamicSample) {
-		return dynamicSample.blockId;
-	}
-
-	return worldMutations.getBlockByWorldCoords(worldX, worldY, worldZ);
+	return withDynamicBlock(
+		worldX,
+		worldY,
+		worldZ,
+		options,
+		(s) => s.blockId,
+		() => worldMutations.getBlockByWorldCoords(worldX, worldY, worldZ),
+	);
 }
 
 export function getTerrainBlockByWorldCoords(
@@ -913,12 +928,35 @@ export function getBlockStateByWorldCoords(
 	worldZ: number,
 	options?: DynamicBlockQueryOptions,
 ): number {
-	const dynamicSample = sampleDynamicBlock(worldX, worldY, worldZ, options);
-	if (dynamicSample) {
-		return dynamicSample.blockState;
-	}
+	return withDynamicBlock(
+		worldX,
+		worldY,
+		worldZ,
+		options,
+		(s) => s.blockState,
+		() => getBlockStateFromMutations(worldX, worldY, worldZ),
+	);
+}
 
-	return getBlockStateFromMutations(worldX, worldY, worldZ);
+// PERF: Combined lookup avoids calling sampleDynamicBlock + worldMutations twice
+// when both blockId and blockState are needed (e.g. voxel collision queries).
+export function getBlockAndStateByWorldCoords(
+	worldX: number,
+	worldY: number,
+	worldZ: number,
+	options?: DynamicBlockQueryOptions,
+): { blockId: number; blockState: number } {
+	return withDynamicBlock(
+		worldX,
+		worldY,
+		worldZ,
+		options,
+		(s) => ({ blockId: s.blockId, blockState: s.blockState }),
+		() => ({
+			blockId: worldMutations.getBlockByWorldCoords(worldX, worldY, worldZ),
+			blockState: getBlockStateFromMutations(worldX, worldY, worldZ),
+		}),
+	);
 }
 
 export function getLightByWorldCoords(

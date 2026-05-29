@@ -75,10 +75,6 @@ export class ChunkPersistenceCoordinator {
 		} while (this.pendingEntityFlushRequested);
 	}
 
-	public getLastPersistedEntityChunkIds(): ReadonlySet<bigint> {
-		return this.lastPersistedEntityChunkIds;
-	}
-
 	private getChunkSaveBatchSize(): number {
 		return Math.max(
 			1,

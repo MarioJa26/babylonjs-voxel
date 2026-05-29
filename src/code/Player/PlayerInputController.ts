@@ -1,5 +1,5 @@
 import { PointerEventTypes, type Scene } from "@babylonjs/core";
-import type { IControls } from "../Inferface/IControls";
+import type { IControls } from "../Interface/IControls";
 import { Map1 } from "../Maps/Map1";
 import type { InventoryControls } from "./Controls/InventoryControls";
 import type { WalkingControls } from "./Controls/WalkingControls";

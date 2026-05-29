@@ -175,7 +175,7 @@ export class ChunkQueueManager {
 
 	public removeChunk(chunk: Chunk): void {
 		if (this.loadQueueSet.delete(chunk.id)) {
-			const index = this.loadQueue.findIndex((c) => c.id === chunk.id);
+			const index = this.loadQueue.indexOf(chunk);
 			if (index >= 0) {
 				this.loadQueue.splice(index, 1);
 			}

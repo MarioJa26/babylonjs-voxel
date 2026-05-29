@@ -1,5 +1,5 @@
 import { Matrix, Vector3 } from "@babylonjs/core";
-import type { IControls } from "../../Inferface/IControls";
+import type { IControls } from "@/code/Interface/IControls";
 import type { Player } from "../Player";
 import { DebugControlHelper } from "./DebugControlHelper";
 import type { BoatControlEntity } from "./PaddleBoatControls";
@@ -189,7 +189,10 @@ export class JetSkiControls implements IControls<BoatControlEntity> {
 		}
 	}
 	#pressedKeysHas(keys: string[]) {
-		return keys.some((k) => this.pressedKeys.has(k));
+		for (const k of keys) {
+			if (this.pressedKeys.has(k)) return true;
+		}
+		return false;
 	}
 	public get controlledEntity(): BoatControlEntity {
 		return this.#controlledEntity;

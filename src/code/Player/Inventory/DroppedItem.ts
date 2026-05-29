@@ -9,7 +9,7 @@ import {
 	Vector3,
 } from "@babylonjs/core";
 import { MetadataContainer } from "@/code/Entities/MetaDataContainer";
-import type { IUsable } from "@/code/Inferface/IUsable";
+import type { IUsable } from "@/code/Interface/IUsable";
 import { Map1 } from "@/code/Maps/Map1";
 import {
 	getBlockByWorldCoords,
@@ -36,8 +36,20 @@ export class DroppedItem implements IUsable {
 	#velocity = Vector3.Zero();
 	#halfSize = 0.25;
 	#voxelCollider!: VoxelAabbCollider;
-	#observer: Observer<Scene> | null = null;
+	#scratchProbe = new Vector3();
 	#atlasTileTexture: Texture | null = null;
+
+	static readonly #allItems = new Set<DroppedItem>();
+	static #observer: Observer<Scene> | null = null;
+	static #ensureObserver(): void {
+		if (DroppedItem.#observer) return;
+		DroppedItem.#observer = Map1.mainScene.onBeforeRenderObservable.add(() => {
+			for (const item of DroppedItem.#allItems) {
+				item.#updatePhysics();
+			}
+		});
+	}
+
 	static readonly GRAVITY = -18;
 	static readonly STEP_SIZE = 0.2;
 	static readonly EPSILON = 0.001;
@@ -61,7 +73,7 @@ export class DroppedItem implements IUsable {
 		this.#boxMesh.position = new Vector3(x, y, z);
 
 		this.#material = new StandardMaterial(
-			`droppedItemMaterial_${item.itemId}}`,
+			`droppedItemMaterial_${item.itemId}`,
 			Map1.mainScene,
 		);
 		this.#material.specularColor = Color3.Black();
@@ -96,9 +108,8 @@ export class DroppedItem implements IUsable {
 			},
 		);
 
-		this.#observer = Map1.mainScene.onBeforeRenderObservable.add(() => {
-			this.#updatePhysics();
-		});
+		DroppedItem.#ensureObserver();
+		DroppedItem.#allItems.add(this);
 		this.#updateLighting();
 	}
 
@@ -113,10 +124,7 @@ export class DroppedItem implements IUsable {
 		}
 	}
 	#dispose(): void {
-		if (this.#observer) {
-			Map1.mainScene.onBeforeRenderObservable.remove(this.#observer);
-			this.#observer = null;
-		}
+		DroppedItem.#allItems.delete(this);
 		this.#voxelCollider.dispose();
 		this.#boxMesh.dispose();
 		this.#atlasTileTexture?.dispose();
@@ -125,10 +133,7 @@ export class DroppedItem implements IUsable {
 
 	#updatePhysics(): void {
 		if (this.#boxMesh.isDisposed()) {
-			if (this.#observer) {
-				Map1.mainScene.onBeforeRenderObservable.remove(this.#observer);
-				this.#observer = null;
-			}
+			DroppedItem.#allItems.delete(this);
 			return;
 		}
 
@@ -181,9 +186,9 @@ export class DroppedItem implements IUsable {
 	}
 
 	#isGrounded(): boolean {
-		const probe = this.#boxMesh.position.clone();
-		probe.y -= 0.01;
-		return this.#overlapsSolid(probe);
+		this.#scratchProbe.copyFrom(this.#boxMesh.position);
+		this.#scratchProbe.y -= 0.01;
+		return this.#overlapsSolid(this.#scratchProbe);
 	}
 
 	#updateLighting(): void {

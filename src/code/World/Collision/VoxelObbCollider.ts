@@ -40,6 +40,7 @@ export class VoxelObbCollider {
 	#rotZ = new Vector3(); // Rotated Z axis vector
 
 	#tmpCandidate = new Vector3();
+	#debugRot = new Quaternion();
 	#debugMesh: Mesh | null = null;
 	#debugOptions: VoxelObbDebugOptions | null = null;
 
@@ -254,11 +255,8 @@ export class VoxelObbCollider {
 
 		this.#debugMesh.position.copyFrom(position);
 
-		this.#debugMesh.rotationQuaternion = Quaternion.FromEulerAngles(
-			0,
-			this.#yaw,
-			0,
-		);
+		Quaternion.RotationYawPitchRollToRef(this.#yaw, 0, 0, this.#debugRot);
+		this.#debugMesh.rotationQuaternion = this.#debugRot;
 	}
 
 	public dispose(): void {

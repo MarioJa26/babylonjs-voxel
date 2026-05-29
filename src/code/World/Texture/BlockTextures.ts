@@ -32,16 +32,24 @@ function buildBlockTextures(): (BlockTextureDef | null)[] {
 
 // Call this after the atlas is built to update UV coordinates
 // Pass the UV map from TextureAtlasFactory to avoid importing it (worker compatibility)
-export function updateBlockTexturesUV(uvMap: Record<string, { u: number; v: number; tileSize: number }>): void {
+export function updateBlockTexturesUV(
+	uvMap: Record<string, { u: number; v: number; tileSize: number }>,
+): void {
 	if (BlockTextures.length <= 1) return;
 
-	for (let i = 1; i < BlockTextures.length && i <= TextureDefinitions.length; i++) {
+	for (
+		let i = 1;
+		i < BlockTextures.length && i <= TextureDefinitions.length;
+		i++
+	) {
 		const def = TextureDefinitions[i - 1];
 		if (!def || !BlockTextures[i]) continue;
 
 		const uv = uvMap[def.name];
 		if (uv) {
-			BlockTextures[i] = { all: [Math.round(uv.u * 16), Math.round(uv.v * 16)] };
+			BlockTextures[i] = {
+				all: [Math.round(uv.u * 16), Math.round(uv.v * 16)],
+			};
 		}
 	}
 }

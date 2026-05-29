@@ -13,6 +13,7 @@ import { Item } from "../../Inventory/Item";
 import type { Player } from "../../Player";
 import { Gamemodes } from "../../PlayerStats";
 import { updateCrackingState } from "./BlockBreakingVisuals";
+import type { BlockRaycastHit } from "./BlockRaycaster";
 import { pickTarget } from "./BlockRaycaster";
 
 export type BoatBlockHitContext = {
@@ -61,13 +62,13 @@ export class BlockBreakingHandler {
 		updateCrackingState(null, 0);
 	}
 
-	public update(): void {
+	public update(hit?: BlockRaycastHit | null): void {
 		if (!this.#active) return;
 
 		const dt =
 			this.#player.playerVehicle.scene.getEngine().getDeltaTime() / 1000;
 
-		const hit = pickTarget(this.#player);
+		hit ??= pickTarget(this.#player);
 		if (!hit) {
 			this.reset();
 			return;

@@ -41,6 +41,13 @@ export type GenerateTerrainRequest = {
 	 * If false/omitted, worker returns fully lit chunk data.
 	 */
 	deferLighting?: boolean;
+
+	/**
+	 * If true, skip underground biome decoration and aquifer flooding.
+	 * Used alongside deferLighting to defer non-critical work.
+	 * Caller must call refineBlocks on the returned blocks to complete decoration.
+	 */
+	skipDecorations?: boolean;
 };
 
 export type GenerateFullMeshRequest = {
