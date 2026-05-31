@@ -45,6 +45,24 @@ class ResolvedChunkCoords {
 
 const _coordScratch = new ResolvedChunkCoords();
 
+// M4: Reusable BlockMutationContext — avoids per-mutation object allocation
+const _ctxScratch: BlockMutationContext = {
+	worldX: 0,
+	worldY: 0,
+	worldZ: 0,
+	chunkX: 0,
+	chunkY: 0,
+	chunkZ: 0,
+	localX: 0,
+	localY: 0,
+	localZ: 0,
+	chunk: undefined,
+	previousBlockId: 0,
+	previousBlockState: 0,
+	nextBlockId: 0,
+	nextBlockState: 0,
+};
+
 function resolveCoords(
 	worldX: number,
 	worldY: number,
@@ -110,16 +128,21 @@ export class ChunkWorldMutations {
 			coords.localZ,
 		);
 
-		const ctx: BlockMutationContext = {
-			worldX,
-			worldY,
-			worldZ,
-			...coords,
-			previousBlockId,
-			previousBlockState,
-			nextBlockId: blockId,
-			nextBlockState: state,
-		};
+		const ctx = _ctxScratch;
+		ctx.worldX = worldX;
+		ctx.worldY = worldY;
+		ctx.worldZ = worldZ;
+		ctx.chunkX = coords.chunkX;
+		ctx.chunkY = coords.chunkY;
+		ctx.chunkZ = coords.chunkZ;
+		ctx.localX = coords.localX;
+		ctx.localY = coords.localY;
+		ctx.localZ = coords.localZ;
+		ctx.chunk = coords.chunk;
+		ctx.previousBlockId = previousBlockId;
+		ctx.previousBlockState = previousBlockState;
+		ctx.nextBlockId = blockId;
+		ctx.nextBlockState = state;
 
 		this.adapter.onBeforeSetBlock?.(ctx);
 
@@ -159,16 +182,21 @@ export class ChunkWorldMutations {
 			coords.localZ,
 		);
 
-		const ctx: BlockMutationContext = {
-			worldX,
-			worldY,
-			worldZ,
-			...coords,
-			previousBlockId,
-			previousBlockState,
-			nextBlockId: 0,
-			nextBlockState: 0,
-		};
+		const ctx = _ctxScratch;
+		ctx.worldX = worldX;
+		ctx.worldY = worldY;
+		ctx.worldZ = worldZ;
+		ctx.chunkX = coords.chunkX;
+		ctx.chunkY = coords.chunkY;
+		ctx.chunkZ = coords.chunkZ;
+		ctx.localX = coords.localX;
+		ctx.localY = coords.localY;
+		ctx.localZ = coords.localZ;
+		ctx.chunk = coords.chunk;
+		ctx.previousBlockId = previousBlockId;
+		ctx.previousBlockState = previousBlockState;
+		ctx.nextBlockId = 0;
+		ctx.nextBlockState = 0;
 
 		this.adapter.onBeforeDeleteBlock?.(ctx);
 

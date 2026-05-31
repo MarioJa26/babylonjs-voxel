@@ -139,11 +139,11 @@ export class WorldEnvironment {
 		const sz = Math.cos(elevationAngle) * Math.sin(angle);
 		const sy = Math.sin(elevationAngle);
 
-		const len = Math.hypot(sx, sy, sz) || 1;
 		// GLOBAL_VALUES.skyLightDirection is expected normalized
-		GLOBAL_VALUES.skyLightDirection.x = -sx / len;
-		GLOBAL_VALUES.skyLightDirection.y = -sy / len;
-		GLOBAL_VALUES.skyLightDirection.z = -sz / len;
+		// (sx,sy,sz) is already unit-length by trig identity
+		GLOBAL_VALUES.skyLightDirection.x = -sx;
+		GLOBAL_VALUES.skyLightDirection.y = -sy;
+		GLOBAL_VALUES.skyLightDirection.z = -sz;
 
 		// Sun intensity driven by elevation (zero below horizon)
 		const sunIntensity = Math.max(0.0, Math.sin(angle)); // 0..1, tune multiplier below

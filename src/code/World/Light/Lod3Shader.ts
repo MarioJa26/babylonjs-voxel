@@ -17,7 +17,6 @@ export class Lod3Shader {
       vec3 lightDirection;
       vec3 cameraPosition;
       float sunLightIntensity;
-      float sunLightIntensitySq;
       float wetness;
       float time;
       vec4 vFogInfos;
@@ -37,10 +36,7 @@ export class Lod3Shader {
     out vec3 vFogColorCheap;
 
     vec2 cornerToUV(int corner) {
-      return vec2(
-        (corner == 1 || corner == 2) ? 1.0 : 0.0,
-        corner >= 2 ? 1.0 : 0.0
-      );
+      return vec2(float((corner ^ (corner >> 1)) & 1), float(corner >> 1));
     }
 
     void main(void) {
@@ -53,7 +49,7 @@ export class Lod3Shader {
         228, // isBackFace=0, flip=0: [0,1,2,3]
         198  // isBackFace=1, flip=0: [2,1,0,3]
       );
-      int corner = (cornerData[isBackFace] >> (vertexId * 2)) & 3;
+      int corner = (cornerData[isBackFace] >> (vertexId << 1)) & 3;
 
       const float invPosScale = 0.25;
       float faceWidth = faceDataB.x * invPosScale;
@@ -67,31 +63,23 @@ export class Lod3Shader {
       int vAxis = (axis + 2) % 3;
 
       vec3 localPosition = faceDataA.xyz * invPosScale;
-
-      if (uAxis == 0) localPosition.x += du;
-      else if (uAxis == 1) localPosition.y += du;
-      else localPosition.z += du;
-
-      if (vAxis == 0) localPosition.x += dv;
-      else if (vAxis == 1) localPosition.y += dv;
-      else localPosition.z += dv;
+      localPosition[uAxis] += du;
+      localPosition[vAxis] += dv;
 
       gl_Position = worldViewProjection * vec4(localPosition, 1.0);
-      vPositionW = (world * vec4(localPosition, 1.0)).xyz;
+      vPositionW = localPosition + world[3].xyz;
 
-      vUV = cornerToUV(corner);
+      vUV = cornerUV;
 
       vUV2 = vec2(faceDataB.z, atlasMaxTiles - 1.0 - faceDataB.w) * atlasTileSize;
 
       int light = int(faceDataC.y);
-      vSkyLight = float(light >> 4) * 0.0666666;
-      vBlockLight = float(light & 0xF) * 0.0666666;
+      vSkyLight = float((light >> 4) & 0xF) * (1.0 / 15.0);
+      vBlockLight = float(light & 0xF) * (1.0 / 15.0);
       vTintBucket = faceDataC.z;
 
       vec3 normal = vec3(0.0);
-      if (axis == 0) normal.x = isBackFace == 1 ? -1.0 : 1.0;
-      else if (axis == 1) normal.y = isBackFace == 1 ? -1.0 : 1.0;
-      else normal.z = isBackFace == 1 ? -1.0 : 1.0;
+      normal[axis] = isBackFace == 1 ? -1.0 : 1.0;
       vFaceNormalW = normal;
 
       if (axis == 1) {
@@ -116,7 +104,7 @@ export class Lod3Shader {
 
       vec3 atmosphereColor = mix(
         vec3(0.6, 0.75, 0.95), vec3(0.1, 0.2, 0.4), heightFactor
-      ) * sunLightIntensitySq;
+      ) * (sunLightIntensity * sunLightIntensity);
 
       vec3 viewDir = viewVec / max(dist, 1e-4);
       float skyFactor = smoothstep(0.0, 0.4, max(viewDir.y, 0.0));
@@ -160,7 +148,6 @@ export class Lod3Shader {
       vec3 lightDirection;
       vec3 cameraPosition;
       float sunLightIntensity;
-      float sunLightIntensitySq;
       float wetness;
       float time;
       vec4 vFogInfos;
@@ -243,7 +230,6 @@ export class Lod3Shader {
       vec3 lightDirection;
       vec3 cameraPosition;
       float sunLightIntensity;
-      float sunLightIntensitySq;
       float wetness;
       float time;
       vec4 vFogInfos;

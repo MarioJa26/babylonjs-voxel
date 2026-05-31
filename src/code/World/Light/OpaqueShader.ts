@@ -13,12 +13,12 @@ export class OpaqueShader {
         uniform mat4 world;
         uniform mat4 worldViewProjection;
         uniform float atlasTileSize;
+        uniform float atlasMaxTiles;
 
         uniform GlobalUniforms {
             vec3 lightDirection;
             vec3 cameraPosition;
             float sunLightIntensity;
-            float sunLightIntensitySq;
             float wetness;
         };
 
@@ -30,11 +30,9 @@ export class OpaqueShader {
         out float vAO;
         flat out float vSkyLight;
         flat out float vBlockLight;
-        
+        out vec3 vViewDir;
+
         int decodeCorner(int vertexId, int isBackFace, int flip) {
-            // Indexed quad path: 4 vertices (0..3) and a fixed index buffer [0,2,1, 0,3,2].
-            // This lookup preserves the old 6-vertex corner order (including diagonal flip)
-            // while reducing vertex shader work to 4 unique vertices per face.
             const int cornerData[4] = int[](
                 228, // isBackFace=0, flip=0: [0,1,2,3]
                 147, // isBackFace=0, flip=1: [3,0,1,2]
@@ -42,25 +40,17 @@ export class OpaqueShader {
                 177  // isBackFace=1, flip=1: [1,0,3,2]
             );
             int state = (isBackFace << 1) | flip;
-            return (cornerData[state] >> (vertexId * 2)) & 3;
+            return (cornerData[state] >> (vertexId << 1)) & 3;
         }
 
         void decodeAtlasCorner(int axisFace, int corner, out int cornerId, out int swapUV) {
-            // Packed corner mappings for faces 0-5 (2 bits per corner)
             const int cornerLookup[6] = int[](108, 57, 108, 147, 177, 228);
             cornerId = (cornerLookup[axisFace] >> (corner << 1)) & 3;
             swapUV = int(axisFace < 4);
         }
 
-        vec2 getQuadCornerUV(int cornerIndex) {
-            // 0 = bottom-left
-            // 1 = bottom-right
-            // 2 = top-right
-            // 3 = top-left
-            if (cornerIndex == 0) return vec2(0.0, 0.0);
-            if (cornerIndex == 1) return vec2(1.0, 0.0);
-            if (cornerIndex == 2) return vec2(1.0, 1.0);
-            return vec2(0.0, 1.0);
+        vec2 getQuadCornerUV(int i) {
+            return vec2(float((i ^ (i >> 1)) & 1), float(i >> 1));
         }
 
         void buildDiagonalQuad(
@@ -75,8 +65,6 @@ export class OpaqueShader {
             out vec3 outTangent,
             out vec3 outBitangent
         ) {
-            // diagonalVariant == 0 => NW -> SE
-            // diagonalVariant == 1 => NE -> SW
             const vec2 DIR_XZ[2] = vec2[](
                 vec2(0.70710678, 0.70710678),
                 vec2(0.70710678, -0.70710678)
@@ -86,7 +74,6 @@ export class OpaqueShader {
             vec3 tangent = vec3(dirXZ.x, 0.0, dirXZ.y);
             vec3 bitangent = vec3(0.0, 1.0, 0.0);
 
-            // Precomputed normals for each variant (cross(bitangent, tangent))
             const vec3 DIAG_NORMALS[2] = vec3[](
                 vec3(0.70710678, 0.0, -0.70710678),
                 vec3(-0.70710678, 0.0, -0.70710678)
@@ -111,123 +98,103 @@ export class OpaqueShader {
             outBitangent = bitangent;
         }
 
-void main(void) {
-    int axisFace = int(faceDataA.w + 0.5);
-    int axis = axisFace >> 1;
-    int isBackFaceInt = axisFace & 1;
-    bool isBackFace = isBackFaceInt == 1;
+        void main(void) {
+            int axisFace = int(faceDataA.w + 0.5);
+            int axis = axisFace >> 1;
+            int isBackFaceInt = axisFace & 1;
+            bool isBackFace = isBackFaceInt == 1;
 
-    int vertexId = int(position.x + 0.5);
+            int vertexId = int(position.x + 0.5);
 
-    int meta = int(faceDataC.w + 0.5);
-    int flip = meta & 1;
+            int meta = int(faceDataC.w + 0.5);
+            int flip = meta & 1;
 
-int materialType = (meta >> 1) & 3;
-bool diagonalEnabled = ((meta >> 4) & 1) != 0;
-int diagonalVariant = (meta >> 5) & 1;
+            bool diagonalEnabled = ((meta >> 4) & 1) != 0;
+            int diagonalVariant = (meta >> 5) & 1;
 
+            int corner = decodeCorner(vertexId, isBackFaceInt, flip);
+            vec2 cornerUV = getQuadCornerUV(corner);
 
-    int corner = decodeCorner(vertexId, isBackFaceInt, flip);
-    vec2 cornerUV = getQuadCornerUV(corner);
+            const float invPosScale = 0.25;
+            float faceWidth = faceDataB.x * invPosScale;
+            float faceHeight = faceDataB.y * invPosScale;
 
-    const float invPosScale = 0.25;
-    float faceWidth = faceDataB.x * invPosScale;
-    float faceHeight = faceDataB.y * invPosScale;
+            vec3 localPosition;
+            vec3 N;
+            vec3 T;
+            vec3 B;
 
-    vec3 localPosition;
-    vec3 N;
-    vec3 T;
-    vec3 B;
+            if (diagonalEnabled) {
+                vec3 centerBottom = faceDataA.xyz * invPosScale;
 
-    if (diagonalEnabled) {
-        // For diagonal quads, faceDataA.xyz encodes the CENTER of the plant at the bottom
-        vec3 centerBottom = faceDataA.xyz * invPosScale;
+                buildDiagonalQuad(
+                    centerBottom,
+                    faceWidth,
+                    faceHeight,
+                    diagonalVariant,
+                    isBackFace,
+                    cornerUV,
+                    localPosition,
+                    N,
+                    T,
+                    B
+                );
 
-        buildDiagonalQuad(
-            centerBottom,
-            faceWidth,
-            faceHeight,
-            diagonalVariant,
-            isBackFace,
-            cornerUV,
-            localPosition,
-            N,
-            T,
-            B
-        );
+                vUV = cornerUV;
+            } else {
+                float du = float((corner ^ (corner >> 1)) & 1) * faceWidth;
+                float dv = float(corner >> 1) * faceHeight;
 
-        // For diagonal plants, use normalized 0..1 UVs across the quad once.
-        // DO NOT scale UV by width=sqrt(2), otherwise the texture repeats/twists.
-        vUV = cornerUV;
-    } else {
-        float du = (corner == 1 || corner == 2) ? faceWidth : 0.0;
-        float dv = (corner >= 2) ? faceHeight : 0.0;
+                int uAxis = (axis + 1) % 3;
+                int vAxisLocal = (axis + 2) % 3;
 
-        int uAxis = (axis + 1) % 3;
-        int vAxisLocal = (axis + 2) % 3;
+                localPosition = faceDataA.xyz * invPosScale;
+                localPosition[uAxis] += du;
+                localPosition[vAxisLocal] += dv;
 
-        localPosition = faceDataA.xyz * invPosScale;
-        if (uAxis == 0) localPosition.x += du;
-        else if (uAxis == 1) localPosition.y += du;
-        else localPosition.z += du;
+                int atlasCornerId;
+                int swapUV;
+                decodeAtlasCorner(axisFace, corner, atlasCornerId, swapUV);
 
-        if (vAxisLocal == 0) localPosition.x += dv;
-        else if (vAxisLocal == 1) localPosition.y += dv;
-        else localPosition.z += dv;
+                float u = float((atlasCornerId ^ (atlasCornerId >> 1)) & 1);
+                float v = float(atlasCornerId >> 1);
 
-        int atlasCornerId;
-        int swapUV;
-        decodeAtlasCorner(axisFace, corner, atlasCornerId, swapUV);
+                float uDim = swapUV == 1 ? faceHeight : faceWidth;
+                float vDim = swapUV == 1 ? faceWidth : faceHeight;
+                vUV = vec2(u, v) * vec2(uDim, vDim);
 
-        float u = (atlasCornerId == 1 || atlasCornerId == 2) ? 1.0 : 0.0;
-        float v = (atlasCornerId >= 2) ? 1.0 : 0.0;
+                vec3 faceOrigin = faceDataA.xyz * invPosScale;
+                vec2 uvOff = vec2(fract(faceOrigin[uAxis]), fract(faceOrigin[vAxisLocal]));
+                vUV += swapUV == 1 ? uvOff.yx : uvOff;
 
-        float uDim = swapUV == 1 ? faceHeight : faceWidth;
-        float vDim = swapUV == 1 ? faceWidth : faceHeight;
-        vUV = vec2(u, v) * vec2(uDim, vDim);
+                float fSign = isBackFace ? -1.0 : 1.0;
+                vec3 normal = vec3(0.0);
+                normal[axis] = fSign;
 
-        // UV offset for sub-block faces: the face origin's fractional block position
-        // tells us exactly where within the tile this face starts — no extra data needed.
-        vec3 faceOrigin = faceDataA.xyz * invPosScale;
-        float uvOffU = fract(faceOrigin[uAxis]);
-        float uvOffV = fract(faceOrigin[vAxisLocal]);
-        vUV += vec2(
-            swapUV == 1 ? uvOffV : uvOffU,
-            swapUV == 1 ? uvOffU : uvOffV
-        );
+                N = normal;
 
-        vec3 normal = vec3(0.0);
-        if (axis == 0) normal.x = isBackFace ? -1.0 : 1.0;
-        else if (axis == 1) normal.y = isBackFace ? -1.0 : 1.0;
-        else normal.z = isBackFace ? -1.0 : 1.0;
+                vec3 tObj = vec3(0.0);
+                tObj[uAxis] = 1.0;
 
-        N = normalize(mat3(world) * normal);
+                T = tObj;
+                B = cross(N, T) * fSign;
+            }
 
-        float isX = axis == 0 ? 1.0 : 0.0;
-        float isY = axis == 1 ? 1.0 : 0.0;
-        vec3 tObj = vec3(1.0 - isX - isY, isX, isY);
+            gl_Position = worldViewProjection * vec4(localPosition, 1.0);
 
-        float handedness = sign(normal.x + normal.y + normal.z);
-        T = normalize(mat3(world) * tObj);
-        B = normalize(cross(N, T) * handedness);
-    }
+            vUV2 = vec2(faceDataB.z, atlasMaxTiles - 1.0 - faceDataB.w) * atlasTileSize;
 
-    gl_Position = worldViewProjection * vec4(localPosition, 1.0);
+            vPositionW = localPosition + world[3].xyz;
+            vTBN = mat3(T, B, N);
+            vViewDir = normalize(cameraPosition - vPositionW);
 
-    float maxTiles = floor(1.0 / atlasTileSize + 0.5);
-    vUV2 = vec2(faceDataB.z, maxTiles - 1.0 - faceDataB.w) * atlasTileSize;
+            int packedAO = int(faceDataC.x + 0.5);
+            vAO = float((packedAO >> (corner << 1)) & 3);
 
-    vPositionW = (world * vec4(localPosition, 1.0)).xyz;
-    vTBN = mat3(T, B, N);
-
-    int packedAO = int(faceDataC.x + 0.5);
-    vAO = float((packedAO >> (corner * 2)) & 3);
-
-    int light = int(faceDataC.y + 0.5);
-    vSkyLight = float(light >> 4) * 0.0666666;
-    vBlockLight = float(light & 0xF) * 0.0666666;
-
-}
+            int light = int(faceDataC.y + 0.5);
+            vSkyLight = float((light >> 4) & 0xF) * (1.0 / 15.0);
+            vBlockLight = float(light & 0xF) * (1.0 / 15.0);
+        }
 `;
 
 	static readonly chunkFragmentShader = `
@@ -241,6 +208,7 @@ int diagonalVariant = (meta >> 5) & 1;
     in float vAO;
     flat in float vSkyLight;
     flat in float vBlockLight;
+    in vec3 vViewDir;
 
     uniform sampler2D diffuseTexture;
     uniform sampler2D normalTexture;
@@ -252,7 +220,6 @@ int diagonalVariant = (meta >> 5) & 1;
         vec3 lightDirection;
         vec3 cameraPosition;
         float sunLightIntensity;
-        float sunLightIntensitySq;
         float wetness;
     };
 
@@ -262,36 +229,33 @@ int diagonalVariant = (meta >> 5) & 1;
         vec2 atlasUV = vUV2 + singleTileUV * atlasTileSize;
 
         vec4 diffuseColor = texture(diffuseTexture, atlasUV);
+
         diffuseColor.rgb *= mix(1.0, 0.5, wetness);
 
         vec3 normalMap = texture(normalTexture, atlasUV).rgb;
         normalMap = normalize(normalMap * 2.0 - 1.0); 
         vec3 worldNormal = normalize(vTBN * normalMap);
 
-        // 3. Diffuse Lighting
+        // 2. Diffuse Lighting
         float diffuseIntensity = max(0.0, dot(worldNormal, lightDirection));
-        vec3 diffuse = diffuseColor.rgb * diffuseIntensity;
 
-        // 4. Specular
-        vec3 viewDirection = normalize(cameraPosition - vPositionW);
-        vec3 halfwayDir = normalize(viewDirection + lightDirection);
+        // 3. Specular — cheap Blinn-Phong approximation
+        //    pow(NdotH, s) ≈ exp2(-s * 1.4427 * (1 - NdotH))
+        vec3 halfwayDir = normalize(vViewDir + lightDirection);
         float shininess = mix(16.0, 128.0, wetness);
-        float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), shininess);
+        float NH = max(dot(worldNormal, halfwayDir), 0.0);
+        float spec = exp2(clamp(shininess * 1.4427 * (NH - 1.0), -126.0, 0.0));
         
         float specIntensity = mix(0.05, 2.0, wetness) * vSkyLight;
         vec3 specular = vec3(specIntensity) * spec * max(sunLightIntensity - 0.1, 0.0);
 
-        // 5. Final Coloring
+        // 4. Final Coloring
         float aoFactor = 1.0 - vAO * 0.23; 
 
-        vec3 vSkyColor = vec3(0.8, 0.8, 0.8) * (sunLightIntensity + 0.2);
-        vec3 vBlockColor = vec3(0.9, 0.6, 0.2);
+        float skyScale = vSkyLight * 0.8 * (sunLightIntensity + 0.2);
+        vec3 lightMix = clamp(skyScale + vBlockLight * vec3(0.9, 0.6, 0.2), 0.2, 1.0);
         
-        vec3 lightMix = clamp((vSkyLight * vSkyColor) + (vBlockLight * vBlockColor), 0.2, 1.0);
-        
-        vec3 finalColor = (diffuseColor.rgb + diffuse + specular) * lightMix * aoFactor;
-
-        fragColor = vec4(finalColor, diffuseColor.a);
+        fragColor = vec4((diffuseColor.rgb * (1.0 + diffuseIntensity) + specular) * lightMix * aoFactor, 1.0);
     }
 `;
 }

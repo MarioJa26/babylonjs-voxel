@@ -381,7 +381,8 @@ export class DistantTerrain {
 		effect.setVector3("lightDirection", GLOBAL_VALUES.skyLightDirection);
 
 		const sunElevation = -GLOBAL_VALUES.skyLightDirection.y + 0.1;
-		const sunLightIntensity = Math.min(1.0, Math.max(0.1, sunElevation * 4));
+		const _raw = sunElevation * 4;
+		const sunLightIntensity = _raw < 0.1 ? 0.1 : _raw > 1.0 ? 1.0 : _raw;
 		effect.setFloat("sunLightIntensity", sunLightIntensity);
 
 		effect.setVector3(
@@ -415,24 +416,13 @@ export class DistantTerrain {
 		worldX: number,
 		worldZ: number,
 	) {
-		// PERF: Read previous position BEFORE overwriting to detect jumps.
-		const prevX = this.mesh.position.x;
-		const prevZ = this.mesh.position.z;
-
 		this.mesh.position.set(worldX, -2, worldZ);
 
 		this.waterMesh.position.set(worldX, GenerationParams.SEA_LEVEL, worldZ);
 		this.#gridOrigin.x = worldX - this.#radius * Chunk.SIZE;
 		this.#gridOrigin.y = worldZ - this.#radius * Chunk.SIZE;
 		this.material.setVector2("gridOriginWorld", this.#gridOrigin);
-		if (
-			Math.abs(worldX - prevX) > Chunk.SIZE - 1 ||
-			Math.abs(worldZ - prevZ) > Chunk.SIZE - 1
-		) {
-			console.warn(
-				`LARGE MESH JUMP | prev=(${prevX},${prevZ}) new=(${worldX},${worldZ}) delta=(${worldX - prevX},${worldZ - prevZ})`,
-			);
-		}
+
 		// Update existing GPU buffers only
 		this.#positionVB?.update(positions);
 		this.#normalVB?.update(normals);

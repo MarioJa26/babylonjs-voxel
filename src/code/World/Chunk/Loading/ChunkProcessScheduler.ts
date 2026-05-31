@@ -44,6 +44,13 @@ export class ChunkProcessScheduler {
 	private _state: InFlightProcessState = this.createReusableProcessState();
 	private processContinuationScheduled = false;
 
+	// M2: Reusable scratch for SaveUnloadBatch — avoids per-stage array allocation
+	private _saveScratch: Chunk[] = [];
+
+	// M3: Reusable ID arrays for WorldStorage.loadChunks — avoids .map() allocation
+	private _nearIdScratch: bigint[] = [];
+	private _farIdScratch: bigint[] = [];
+
 	public constructor(private readonly adapter: ChunkProcessSchedulerAdapter) {}
 
 	public get processing(): boolean {
@@ -175,34 +182,33 @@ export class ChunkProcessScheduler {
 					}
 
 					case ProcessStage.SaveUnloadBatch: {
-						// Bug 2 fix — local scratch instead of instance-level _chunksToSave
-						const chunksToSave: Chunk[] = [];
+						// M2: Reuse scratch array — avoids per-stage allocation
+						this._saveScratch.length = 0;
 
 						for (let i = 0; i < state.unloadBatch.length; i++) {
 							const chunk = state.unloadBatch[i];
 							if (
 								chunk.isLoaded &&
 								!chunk.isPersistent &&
-								// Bug 1 fix — add isLightDirty
 								(chunk.isModified ||
 									chunk.isLODMeshCacheDirty ||
 									chunk.isLightDirty)
 							) {
-								chunksToSave.push(chunk);
+								this._saveScratch.push(chunk);
 							}
 						}
 
 						state.savedChunkIds.clear();
 
-						if (chunksToSave.length > 0) {
+						if (this._saveScratch.length > 0) {
 							try {
-								await WorldStorage.saveChunks(chunksToSave);
+								await WorldStorage.saveChunks(this._saveScratch);
 								this.beginSlice(state);
 
-								for (let i = 0; i < chunksToSave.length; i++) {
-									state.savedChunkIds.add(chunksToSave[i].id);
+								for (let i = 0; i < this._saveScratch.length; i++) {
+									state.savedChunkIds.add(this._saveScratch[i].id);
 								}
-								state.savedCount += chunksToSave.length;
+								state.savedCount += this._saveScratch.length;
 							} catch (error) {
 								console.error("Background save failed:", error);
 								state.savedChunkIds.clear();
@@ -322,19 +328,25 @@ export class ChunkProcessScheduler {
 
 					case ProcessStage.LoadFromStorage: {
 						try {
+							// M3: Reuse scratch arrays — avoids .map() allocation per batch
+							this._nearIdScratch.length = 0;
+							this._farIdScratch.length = 0;
+							for (const r of state.nearRequests)
+								this._nearIdScratch.push(r.chunk.id);
+							for (const r of state.farRequests)
+								this._farIdScratch.push(r.chunk.id);
+
 							const [nearLoadedDataMap, farLoadedDataMap] = await Promise.all([
 								state.nearRequests.length > 0
-									? WorldStorage.loadChunks(
-											state.nearRequests.map((r) => r.chunk.id),
-											{ includeVoxelData: true },
-										)
+									? WorldStorage.loadChunks(this._nearIdScratch, {
+											includeVoxelData: true,
+										})
 									: Promise.resolve(new Map()),
 
 								state.farRequests.length > 0
-									? WorldStorage.loadChunks(
-											state.farRequests.map((r) => r.chunk.id),
-											{ includeVoxelData: false },
-										)
+									? WorldStorage.loadChunks(this._farIdScratch, {
+											includeVoxelData: false,
+										})
 									: Promise.resolve(new Map()),
 							]);
 

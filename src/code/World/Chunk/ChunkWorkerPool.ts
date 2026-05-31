@@ -144,6 +144,8 @@ export class ChunkWorkerPool {
 	private idleWorkerSet: Set<number> = new Set();
 	private idleWorkerIndices: number[] = [];
 	private idleWorkerIndexPositions: Map<number, number> = new Map();
+	// M5: Read-index for idleWorkerIndices — avoids O(N) shift() on dispatch
+	private _idleReadIdx = 0;
 
 	private meshResultQueue: FullMeshMessage[] = [];
 	private meshResultQueueReadIdx = 0;
@@ -1628,7 +1630,7 @@ export class ChunkWorkerPool {
 		let dispatchedThisTick = 0;
 
 		while (
-			this.idleWorkerIndices.length > 0 &&
+			this._idleReadIdx < this.idleWorkerIndices.length &&
 			dispatchedThisTick < dispatchBudget
 		) {
 			let taskChunk: Chunk | undefined;
@@ -1712,14 +1714,25 @@ export class ChunkWorkerPool {
 					this.distantTerrainTaskQueueReadIdx--;
 					break;
 				}
-				// Swap selected worker to front for shift()
-				const tmp = this.idleWorkerIndices[0];
-				this.idleWorkerIndices[0] = this.idleWorkerIndices[readyIdleIndex]!;
-				this.idleWorkerIndices[readyIdleIndex] = tmp!;
+				// M5: Swap selected worker to read-index position
+				if (readyIdleIndex !== this._idleReadIdx) {
+					const tmp = this.idleWorkerIndices[this._idleReadIdx]!;
+					this.idleWorkerIndices[this._idleReadIdx] =
+						this.idleWorkerIndices[readyIdleIndex]!;
+					this.idleWorkerIndices[readyIdleIndex] = tmp;
+					this.idleWorkerIndexPositions.set(
+						this.idleWorkerIndices[this._idleReadIdx]!,
+						this._idleReadIdx,
+					);
+					this.idleWorkerIndexPositions.set(tmp, readyIdleIndex);
+				}
 			}
 
-			const workerIndex = this.idleWorkerIndices.shift()!;
+			// M5: Read-index instead of O(N) shift()
+			const workerIndex = this.idleWorkerIndices[this._idleReadIdx]!;
+			this._idleReadIdx++;
 			this.idleWorkerSet.delete(workerIndex);
+			this.idleWorkerIndexPositions.delete(workerIndex);
 			const worker = this.workers[workerIndex]!;
 
 			try {
@@ -1798,6 +1811,25 @@ export class ChunkWorkerPool {
 			this.lodPrecomputeQueue.copyWithin(0, this.lodPrecomputeQueueReadIdx);
 			this.lodPrecomputeQueue.length -= this.lodPrecomputeQueueReadIdx;
 			this.lodPrecomputeQueueReadIdx = 0;
+		}
+
+		// M5: Compact idleWorkerIndices when read-index exceeds threshold
+		if (
+			this._idleReadIdx > 8 &&
+			this._idleReadIdx * 2 >= this.idleWorkerIndices.length
+		) {
+			const toCompact = Math.min(
+				this._idleReadIdx,
+				this.idleWorkerIndices.length,
+			);
+			this.idleWorkerIndices.copyWithin(0, toCompact);
+			this.idleWorkerIndices.length -= toCompact;
+			this._idleReadIdx = 0;
+			// Rebuild position map for remaining idle workers
+			this.idleWorkerIndexPositions.clear();
+			for (let i = 0; i < this.idleWorkerIndices.length; i++) {
+				this.idleWorkerIndexPositions.set(this.idleWorkerIndices[i]!, i);
+			}
 		}
 
 		this.updateQueueDebugStats();

@@ -51,12 +51,19 @@ export class ChunkStreamingController {
 	private static readonly DESIRED_STATE_REVISION_RETENTION = 8;
 	private streamRevision = 0;
 	private desiredStates = new Map<bigint, DesiredChunkState>();
+	// H1: Lazy prune — only scan desiredStates when stale entries have accumulated
+	private _needsDesiredStatePrune = false;
 	// Map from chunkId -> queued request object for O(1) updates without relying
 	// on unstable queue indices (the scheduler dequeues from the head).
 	private loadQueueRequestMap: Map<bigint, QueuedChunkRequest> = new Map();
 	private loadedRefreshQueue: Chunk[] = [];
 	private loadedRefreshQueueSet: Set<bigint> = new Set();
 	private loadedRefreshQueueHead = 0;
+
+	// H2: Cache LOD rule sets — only rebuild when cave state or render distance changes
+	private _cachedCaveLodRuleSet: ChunkLodRuleSet | null = null;
+	private _cachedOutdoorLodRuleSet: ChunkLodRuleSet | null = null;
+	private _lastCaveState: boolean | null = null;
 
 	public constructor(
 		private readonly adapter: ChunkStreamingControllerAdapter,
@@ -79,6 +86,7 @@ export class ChunkStreamingController {
 		playerWorldZ?: number,
 	): Promise<void> {
 		this.streamRevision++;
+		this._needsDesiredStatePrune = true;
 
 		// Use exact player position for distant terrain if available.
 		// Fallback must stay in world space because DistantTerrain.update() converts
@@ -91,8 +99,10 @@ export class ChunkStreamingController {
 			DistantTerrain.getInstance().update(distantTerrainX, distantTerrainZ);
 		}
 
-		const lodRuleSet = isInCave
-			? new ChunkLodRuleSet(
+		let lodRuleSet: ChunkLodRuleSet;
+		if (isInCave) {
+			if (!this._cachedCaveLodRuleSet || this._lastCaveState !== true) {
+				this._cachedCaveLodRuleSet = new ChunkLodRuleSet(
 					{
 						lod0HorizontalRadius: renderDistance + 2,
 						lod0VerticalRadius: verticalRadius + 2,
@@ -107,8 +117,19 @@ export class ChunkStreamingController {
 						new Lod0ChunkCreationRule(renderDistance + 2, verticalRadius + 2),
 						new DistantOnlyChunkCreationRule(),
 					],
-				)
-			: ChunkLodRuleSet.fromRenderRadii(renderDistance, verticalRadius);
+				);
+			}
+			lodRuleSet = this._cachedCaveLodRuleSet;
+		} else {
+			if (!this._cachedOutdoorLodRuleSet || this._lastCaveState !== false) {
+				this._cachedOutdoorLodRuleSet = ChunkLodRuleSet.fromRenderRadii(
+					renderDistance,
+					verticalRadius,
+				);
+			}
+			lodRuleSet = this._cachedOutdoorLodRuleSet;
+		}
+		this._lastCaveState = isInCave;
 		const { lod3HorizontalRadius, lod3VerticalRadius } = lodRuleSet.radii;
 
 		const loadQueue = this.adapter.getLoadQueue();
@@ -236,10 +257,13 @@ export class ChunkStreamingController {
 				ChunkStreamingController.DESIRED_STATE_REVISION_RETENTION,
 		);
 
-		for (const [id, state] of this.desiredStates) {
-			if (state.revision < oldestKeptRevision) {
-				this.desiredStates.delete(id);
+		if (this._needsDesiredStatePrune) {
+			for (const [id, state] of this.desiredStates) {
+				if (state.revision < oldestKeptRevision) {
+					this.desiredStates.delete(id);
+				}
 			}
+			this._needsDesiredStatePrune = false;
 		}
 
 		this.adapter.onQueueSnapshotChanged?.();
@@ -327,10 +351,9 @@ export class ChunkStreamingController {
 			return;
 		}
 
-		const lodRuleSet = ChunkLodRuleSet.fromRenderRadii(
-			renderDistance,
-			verticalRadius,
-		);
+		const lodRuleSet =
+			this._cachedOutdoorLodRuleSet ??
+			ChunkLodRuleSet.fromRenderRadii(renderDistance, verticalRadius);
 
 		let processed = 0;
 
@@ -365,9 +388,8 @@ export class ChunkStreamingController {
 			this.loadedRefreshQueueHead > 1024 &&
 			this.loadedRefreshQueueHead * 2 >= this.loadedRefreshQueue.length
 		) {
-			this.loadedRefreshQueue = this.loadedRefreshQueue.slice(
-				this.loadedRefreshQueueHead,
-			);
+			this.loadedRefreshQueue.copyWithin(0, this.loadedRefreshQueueHead);
+			this.loadedRefreshQueue.length -= this.loadedRefreshQueueHead;
 			this.loadedRefreshQueueHead = 0;
 		}
 

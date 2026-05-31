@@ -13,7 +13,7 @@ export class DistantTerrainShader {
 
         void main() {
             gl_Position = worldViewProjection * vec4(position, 1.0);
-            vPositionW = (world * vec4(position, 1.0)).xyz;
+            vPositionW = position + world[3].xyz;
             vNormal = normal;
         }
     `;
@@ -128,7 +128,7 @@ export class DistantTerrainShader {
 
         void main() {
             gl_Position = worldViewProjection * vec4(position, 1.0);
-            vPositionW = (world * vec4(position, 1.0)).xyz;
+            vPositionW = position + world[3].xyz;
         }
     `;
 
@@ -178,7 +178,8 @@ export class DistantTerrainShader {
             vec3 viewDir = -viewVec / dist;
             
             vec3 reflectDir = reflect(lightDirection, normal);
-            float spec = pow(max(dot(viewDir, reflectDir), 0.0), SPEC_POWER);
+            float RV = max(dot(viewDir, reflectDir), 0.0);
+            float spec = exp2(clamp(64.0 * 1.4427 * (RV - 1.0), -126.0, 0.0));
             vec3 specular = vec3(spec * sunLightIntensity);
             
             vec3 finalColor = WATER_COLOR * (sunLightIntensity * 0.8 + 0.1) + specular;

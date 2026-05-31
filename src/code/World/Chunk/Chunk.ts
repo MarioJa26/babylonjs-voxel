@@ -22,6 +22,7 @@ import {
 import type { MeshData } from "./DataStructures/MeshData";
 import { LoadedChunkIndex } from "./Loading/LoadedChunkIndex";
 import {
+	BLOCK_TYPE,
 	filtersFullSunlight,
 	WATER_BLOCK_ID,
 } from "./Worker/ChunkMesherConstants";
@@ -48,24 +49,15 @@ type SerializedLODMeshCache = Record<
 
 // ---------------------------------------------------------------------------
 // BFS queue – flat, interleaved typed arrays; no per-node heap allocation.
-//
-// Capacity must be a power of two for the bitwise ring-buffer mask.
-// 32 768 slots covers the worst-case full-chunk BFS (SIZE^3 ≤ 32^3 = 32 768)
-// plus cross-chunk spill.
 // ---------------------------------------------------------------------------
-const BFS_CAPACITY = 32768; // power of two
+const BFS_CAPACITY = 32768;
 
 class LightQueue {
-	/** Chunk object references – one per slot (cannot live in TypedArray). */
 	readonly chunks = new Array<Chunk | null>(BFS_CAPACITY).fill(null);
-	/** Packed local coords: x | (y<<5) | (z<<10).  Fits in int32; 5 bits each. */
 	readonly coords = new Int32Array(BFS_CAPACITY);
-	/** Queued light level – stored so removal BFS can read it without re-fetching. */
 	readonly levels = new Int32Array(BFS_CAPACITY);
 
-	/** Next-read index (ring pointer). */
 	head = 0;
-	/** Next-write index (ring pointer). */
 	tail = 0;
 
 	get length(): number {
@@ -85,38 +77,31 @@ class LightQueue {
 	}
 }
 
-// Two permanent instances shared across all BFS calls – zero allocation per call.
 const Q_A = new LightQueue();
 const Q_B = new LightQueue();
 
-// Scratch object for resolveNeighborCoord – avoids tuple allocation per call.
 const _resolveScratch: { chunk: Chunk | undefined; coord: number } = {
 	chunk: undefined,
 	coord: 0,
 };
 
-// Scratch set to batch remesh scheduling during BFS passes — avoids per-cell scheduleRemesh calls.
 const _bfsDirtyChunks = new Set<bigint>();
 
 // ---------------------------------------------------------------------------
-// Face-rect scratch buffers – reused inside getClosedFaceMaskForPacked to
-// avoid allocating new FaceRect[] arrays on every call.
-//
-// Layout per rect (RECT_STRIDE=4 floats): u0, u1, v0, v1
+// Face-rect scratch buffers
 // ---------------------------------------------------------------------------
 const MAX_RECTS = 64;
 const RECT_STRIDE = 4;
-/** Six flat buffers, one per face direction (PX NX PY NY PZ NZ). */
 const _rectBufs = Array.from(
 	{ length: 6 },
 	() => new Float32Array(MAX_RECTS * RECT_STRIDE),
 );
-/** Number of valid rects currently stored in each face buffer. */
 const _rectCounts = new Int32Array(6);
-/** Scratch space for edge deduplication; sized for 2*MAX_RECTS+2 edges × 2 axes. */
 const _edgeScratch = new Float64Array((MAX_RECTS * 2 + 4) * 2);
-// PERF: Reusable 2-element palette scratch to avoid new Uint16Array(2) per transition.
 const _twoEntryPalette = new Uint16Array(2);
+
+const _ccVisited = new Uint8Array(GenerationParams.CHUNK_SIZE ** 3);
+const _ccStack = new Int32Array(GenerationParams.CHUNK_SIZE ** 3);
 
 export class Chunk {
 	public readonly id: bigint;
@@ -132,13 +117,15 @@ export class Chunk {
 	public static readonly loadedChunkIndex = new LoadedChunkIndex();
 
 	public isModified = false;
-	/** Persistent chunks are managed by systems outside world streaming
-	 *  (e.g. movable boat chunks) and must never be auto-unloaded/saved. */
 	public isPersistent = false;
 	public isDirty = false;
 	public isLoaded = false;
 	public isTerrainScheduled = false;
 	public isLightDirty = false;
+
+	public get isSolidOccluder(): boolean {
+		return this.isLoaded && this._isUniform && this._uniformBlockId !== 0;
+	}
 
 	private remeshQueued = false;
 	private remeshQueuedPriority = false;
@@ -166,7 +153,63 @@ export class Chunk {
 	public opaqueMeshData: MeshData | null = null;
 	public transparentMeshData: MeshData | null = null;
 
+	// --- Face connectivity for occlusion BFS ---
+	public faceConnectivity = 0;
+	public connectivityDirty = true;
+
+	// PERF: Cached "is chunk dark" flag.
+	_isDarkCached: boolean | undefined = undefined;
+
+	// PERF: Pre-allocated per-face BFS step counts — avoids new Uint8Array(6) in hot BFS loop.
+	public _fSteps: Uint8Array = new Uint8Array(6);
+
 	light_array: Uint8Array;
+
+	// -------------------------------------------------------------------------
+	// BFS fields — declared here as class fields so they are part of the initial
+	// hidden class shape. Every Chunk instance has the same shape from the moment
+	// of construction, which means V8 never transitions to dictionary mode and
+	// all IC call sites stay monomorphic.
+	//
+	// These replace the dynamic property injection that the OcclusionCuller
+	// previously performed with `(chunk as any)._bfsXxx = ...`.
+	// -------------------------------------------------------------------------
+
+	/** Dense integer ID for this chunk, assigned from a static counter.
+	 *  Stable and strictly increasing — safe to use as a typed-array index
+	 *  in any system that wants to side-channel data onto chunks. */
+	public readonly numericId: number;
+	private static _nextNumericId = 0;
+
+	/** BFS pass stamp — compared against OcclusionCuller._currentQueryId. */
+	public bfsQueryId: number = 0;
+
+	/** Bitfield: bits 0–5 = face visited flags, bit 7 = BFS origin marker. */
+	public bfsVisitedFaces: number = 0;
+
+	/** True when this chunk is enqueued in OcclusionCuller._dirtyConnectivityChunks. */
+	public bfsQueuedForConnectivity: boolean = false;
+
+	/**
+	 * Cached direct references to the 6 face-adjacent neighbours.
+	 * Populated lazily by the OcclusionCuller on first BFS traversal and
+	 * nulled eagerly in dispose() so there are no dangling references.
+	 *
+	 * Direction layout matches neighborIds / the culler's face constants:
+	 *   [0]=+X  [1]=-X  [2]=+Y  [3]=-Y  [4]=+Z  [5]=-Z
+	 *
+	 * Declared as a fixed-length 6-null array literal so V8 gives it
+	 * PACKED_ELEMENTS (object references) from the start — no element-kind
+	 * transitions, no holey-array penalties.
+	 */
+	public readonly neighborRefs: (Chunk | null)[] = [
+		null,
+		null,
+		null,
+		null,
+		null,
+		null,
+	];
 
 	public static readonly SKY_LIGHT_SHIFT = 4;
 	public static readonly BLOCK_LIGHT_MASK = 0xf;
@@ -194,11 +237,10 @@ export class Chunk {
 	private static remeshQueueSet = new Set<bigint>();
 	private static remeshReadIndex = 0;
 
-	// Block ID → emitted light level.
 	public static readonly LIGHT_EMISSION: Record<number, number> = {
-		10: 15, // Lava
-		11: 15, // Glowstone
-		24: 15, // Lava
+		10: 15,
+		11: 15,
+		24: 15,
 	};
 	public static getLightEmission(blockId: number): number {
 		return Chunk.LIGHT_EMISSION[blockId] || 0;
@@ -213,6 +255,9 @@ export class Chunk {
 		this.#chunkY = chunkY;
 		this.#chunkZ = chunkZ;
 		this.id = packCoords(chunkX, chunkY, chunkZ);
+		// numericId is a class field initializer, runs before this line,
+		// but we assign here to use the static counter correctly.
+		this.numericId = Chunk._nextNumericId++;
 		this.neighborIds = [
 			packCoords(chunkX + 1, chunkY, chunkZ),
 			packCoords(chunkX - 1, chunkY, chunkZ),
@@ -222,6 +267,7 @@ export class Chunk {
 			packCoords(chunkX, chunkY, chunkZ - 1),
 		];
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
+		this._isDarkCached = false;
 		Chunk.chunkInstances.set(this.id, this);
 	}
 
@@ -328,6 +374,7 @@ export class Chunk {
 		} else {
 			this.initializeSunlight();
 		}
+		this.recomputeDarkCache();
 
 		this.isLoaded = true;
 		Chunk.loadedChunks.add(this);
@@ -345,6 +392,7 @@ export class Chunk {
 		this._palette = null;
 		this._paletteIndexMap = null;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
+		this._isDarkCached = false;
 		this.isLoaded = true;
 		Chunk.loadedChunks.add(this);
 		Chunk.loadedChunkIndex.register(this);
@@ -428,7 +476,6 @@ export class Chunk {
 					: new Uint8Array(Chunk.SIZE3);
 		}
 
-		// Preserve block-light nibble; zero sky-light nibble.
 		const la = this.light_array;
 		for (let i = 0; i < Chunk.SIZE3; i++) la[i] &= blockMask;
 
@@ -502,8 +549,6 @@ export class Chunk {
 					const idx = x + y * size + z * size2;
 					la[idx] = (la[idx] & blockMask) | (cellSkyLight << skyShift);
 
-					// Water passes light downward only — never seed into BFS to
-					// prevent sideways spreading at chunk borders.
 					if (!thisFiltersFullSun) Q_A.push(this, x, y, z, cellSkyLight);
 
 					if (!this.isTransparent(blockPacked, 1, -1)) {
@@ -549,7 +594,23 @@ export class Chunk {
 		if (this.light_array[idx] !== level) {
 			this.light_array[idx] = level;
 			this.isModified = true;
+			this._isDarkCached = undefined;
 		}
+	}
+
+	public recomputeDarkCache(): void {
+		const la = this.light_array;
+		if (!la || la.length === 0) {
+			this._isDarkCached = false;
+			return;
+		}
+		for (let i = 0; i < la.length; i++) {
+			if ((la[i]! & 0xf0) !== 0) {
+				this._isDarkCached = false;
+				return;
+			}
+		}
+		this._isDarkCached = true;
 	}
 	public setBlockLight(x: number, y: number, z: number, level: number): void {
 		const cur = this.getLight(x, y, z);
@@ -612,12 +673,10 @@ export class Chunk {
 				`[Remesh] flushRemeshQueue processed=${processed.length} [${processed.join(", ")}] skipped=${skipped.length} [${skipped.join(", ")}] readIdx=${Chunk.remeshReadIndex} queueLen=${queue.length}`,
 			);
 		}
-		// Compact when read-index exceeds threshold
 		if (
 			Chunk.remeshReadIndex > 64 &&
 			Chunk.remeshReadIndex * 2 > queue.length
 		) {
-			// PERF: Use copyWithin + length truncation instead of slice() to avoid allocating a new array.
 			queue.copyWithin(0, Chunk.remeshReadIndex);
 			queue.length -= Chunk.remeshReadIndex;
 			Chunk.remeshReadIndex = 0;
@@ -656,7 +715,6 @@ export class Chunk {
 			this._paletteIndexMap = null;
 			let newIndex = 0;
 			if (this._palette[0] !== packedBlock) {
-				// PERF: Reuse scratch palette to avoid new Uint16Array(2) allocation.
 				_twoEntryPalette[0] = this._palette[0];
 				_twoEntryPalette[1] = packedBlock;
 				this._palette = new Uint16Array(_twoEntryPalette);
@@ -673,7 +731,6 @@ export class Chunk {
 			oldPacked = this._palette[paletteIndex];
 			if (oldPacked === packedBlock) return;
 
-			// Lazy-init palette index map for O(1) lookups.
 			let pm = this._paletteIndexMap;
 			if (!pm) {
 				pm = new Map();
@@ -693,7 +750,6 @@ export class Chunk {
 					pm.set(packedBlock, npi);
 					this.setNibble(index, npi);
 				} else {
-					// Palette full → expand to raw Uint16Array.
 					const na = new Uint16Array(new SharedArrayBuffer(Chunk.SIZE3 * 2));
 					for (let i = 0; i < Chunk.SIZE3; i++)
 						na[i] = this._palette[this.getNibble(i)];
@@ -723,13 +779,11 @@ export class Chunk {
 		const oldWasSkyTransparent = this.isTransparent(oldPacked, 1);
 		const newIsSkyTransparent = this.isTransparent(packedBlock, 1);
 
-		// Block light
 		if (oldBlockLight > 0)
 			this.removeLight(localX, localY, localZ, false, oldPacked);
 		if (newIsTransparent)
 			this.updateLightFromNeighbors(localX, localY, localZ, false);
 
-		// Sky light
 		if (oldSkyLight > 0)
 			this.removeLight(localX, localY, localZ, true, oldPacked);
 		if (newIsSkyTransparent)
@@ -741,6 +795,7 @@ export class Chunk {
 		if (emission > 0) this.addLight(localX, localY, localZ, emission);
 
 		this.isModified = true;
+		this.connectivityDirty = true;
 		this.clearCachedLODMeshes();
 		this.scheduleRemesh(true);
 
@@ -805,7 +860,6 @@ export class Chunk {
 			const z = val & 0x1f;
 			const level =
 				(this.light_array[x + y * size + z * size2] >> skyShift) & 0xf;
-			// Skip water blocks — seeding them causes lateral spread at chunk borders.
 			if (
 				level > 0 &&
 				!filtersFullSunlight(unpackBlockId(this.getBlockPacked(x, y, z)))
@@ -844,12 +898,7 @@ export class Chunk {
 			const dy = LIGHT_DIRS_FLAT[base + 1];
 			const dz = LIGHT_DIRS_FLAT[base + 2];
 			const axis = LIGHT_DIRS_FLAT[base + 3];
-			// dir in the table is the outgoing travel direction; invert for incoming.
 			const dir = -LIGHT_DIRS_FLAT[base + 4] as -1 | 1;
-			// In updateLightFromNeighbors (dx,dy,dz) points target→source,
-			// so dy>0 means the source is ABOVE the target (incoming downward
-			// light). isDown in LIGHT_DIRS_FLAT marks the dy=-1 entry (outgoing
-			// downward) — use sourceIsAbove for water/sun checks here instead.
 			const sourceIsAbove = dy > 0;
 
 			let sourceChunk: Chunk | undefined = this;
@@ -875,8 +924,6 @@ export class Chunk {
 			const sourceEmits =
 				!isSkyLight && Chunk.getLightEmission(sourceBlockId) > 0;
 
-			// Allow water→water lateral flow only (both sides water).
-			// sourceIsAbove=true means downward light which water CAN pass freely.
 			const lateralWaterToWater =
 				isSkyLight &&
 				!sourceIsAbove &&
@@ -917,7 +964,7 @@ export class Chunk {
 	}
 
 	// =========================================================================
-	// batchPropagateSkyLight – seeds multiple cells and runs ONE BFS pass
+	// batchPropagateSkyLight
 	// =========================================================================
 
 	public batchPropagateSkyLight(
@@ -960,7 +1007,7 @@ export class Chunk {
 	}
 
 	// =========================================================================
-	// processLightPropagationQueue  (BFS forward pass)
+	// processLightPropagationQueue
 	// =========================================================================
 
 	private processLightPropagationQueue(
@@ -1019,15 +1066,9 @@ export class Chunk {
 				if (!targetChunk?.isLoaded) continue;
 				tz = r.coord;
 
-				// Can light leave source?
-				// Water-like blocks cannot emit skylight sideways (only downward)
-				// to prevent artificial full-sun columns.  Exception: water→water
-				// lateral flow is allowed with -1 attenuation so that a column
-				// below a placed block can be re-lit by horizontal neighbours.
 				if (isSkyLight && isDown !== 1 && filtersFullSunlight(sourceBlockId)) {
 					const peekId = unpackBlockId(targetChunk.getBlockPacked(tx, ty, tz));
-					if (!filtersFullSunlight(peekId)) continue; // non-water: block
-					// Both water: fall through for attenuated lateral propagation.
+					if (!filtersFullSunlight(peekId)) continue;
 				} else if (
 					isSkyLight
 						? !chunk.isTransparent(sourcePacked, axis, dir)
@@ -1047,11 +1088,8 @@ export class Chunk {
 
 				const targetBlockId = unpackBlockId(targetPacked);
 
-				// Water-like blocks normally only receive skylight from directly
-				// above.  Exception: water→water lateral with attenuation.
 				if (isSkyLight && isDown !== 1 && filtersFullSunlight(targetBlockId)) {
 					if (!filtersFullSunlight(sourceBlockId)) continue;
-					// Both water: fall through.
 				}
 
 				const preservesFullSun =
@@ -1077,7 +1115,6 @@ export class Chunk {
 			}
 		}
 
-		// Flush batched remesh scheduling.
 		for (const id of _bfsDirtyChunks) {
 			const c = Chunk.chunkInstances.get(id);
 			if (c) c.scheduleRemesh();
@@ -1086,7 +1123,7 @@ export class Chunk {
 	}
 
 	// =========================================================================
-	// removeLight  (BFS removal pass)
+	// removeLight
 	// =========================================================================
 
 	public removeLight(
@@ -1115,8 +1152,6 @@ export class Chunk {
 		else this.light_array[startIdx] &= ~blockMask;
 		_bfsDirtyChunks.add(this.id);
 
-		// Indexed loop so we can keep appending to Q_A while iterating.
-		// tail advances as we push; we read from [head..tail).
 		let head = 0;
 		while (head !== Q_A.tail) {
 			const slot = head & (BFS_CAPACITY - 1);
@@ -1199,7 +1234,6 @@ export class Chunk {
 			}
 		}
 
-		// Flush batched remesh scheduling.
 		for (const id of _bfsDirtyChunks) {
 			const c = Chunk.chunkInstances.get(id);
 			if (c) c.scheduleRemesh();
@@ -1237,8 +1271,6 @@ export class Chunk {
 		if (targetChunk.getSkyLight(tx, ty, tz) > 0)
 			targetChunk.removeLight(tx, ty, tz, true);
 
-		// Re-propagate into the block directly below the placed block so that
-		// any water column below it can recover light from horizontal neighbours.
 		targetChunk.updateLightFromNeighbors(tx, ty, tz, true);
 	}
 
@@ -1330,7 +1362,7 @@ export class Chunk {
 	}
 
 	// =========================================================================
-	// Face-mask geometry (closed-face checks for lighting)
+	// Face-mask geometry
 	// =========================================================================
 
 	private static getClosedFaceMaskForPacked(blockPacked: number): number {
@@ -1385,7 +1417,6 @@ export class Chunk {
 			)
 				continue;
 
-			// Face index: 0=PX 1=NX 2=PY 3=NY 4=PZ 5=NZ
 			if (faceMask & FACE_PX && max[0] >= 1 - EPS)
 				Chunk.pushRectFlat(0, min[1], max[1], min[2], max[2]);
 			if (faceMask & FACE_NX && min[0] <= EPS)
@@ -1412,7 +1443,6 @@ export class Chunk {
 		return closedMask;
 	}
 
-	/** Write a clamped rect into the flat scratch buffer for face index `f`. */
 	private static pushRectFlat(
 		f: number,
 		u0: number,
@@ -1437,16 +1467,13 @@ export class Chunk {
 		_rectCounts[f] = cnt + 1;
 	}
 
-	/** Returns true if the rects stored for face `f` fully cover the unit square. */
 	private static doesFlatRectsCoverUnitSquare(f: number): boolean {
 		const count = _rectCounts[f];
 		if (count === 0) return false;
 
 		const buf = _rectBufs[f];
 		const EPS = Chunk.EPS;
-		// U edges go into _edgeScratch[0 .. uLen),
-		// V edges go into _edgeScratch[HALF .. HALF+vLen).
-		const HALF = MAX_RECTS * 2 + 2; // guaranteed to not overlap
+		const HALF = MAX_RECTS * 2 + 2;
 
 		let uLen = 0;
 		let vLen = 0;
@@ -1458,11 +1485,9 @@ export class Chunk {
 			_edgeScratch[HALF + vLen++] = buf[b + 3];
 		}
 
-		// Sort (insertion sort; tiny N, avoids closure/array alloc).
 		Chunk.insertionSortEdges(0, uLen);
 		Chunk.insertionSortEdges(HALF, vLen);
 
-		// Deduplicate and bracket with 0 and 1.
 		uLen = Chunk.dedupeEdges(0, uLen);
 		vLen = Chunk.dedupeEdges(HALF, vLen);
 
@@ -1493,30 +1518,22 @@ export class Chunk {
 		return true;
 	}
 
-	/** Sort a region of _edgeScratch[start..start+len). Avoids O(n²) insertion sort. */
 	private static insertionSortEdges(start: number, len: number): void {
 		_edgeScratch.subarray(start, start + len).sort();
 	}
 
-	/**
-	 * Deduplicates a sorted region of _edgeScratch in-place and ensures it is
-	 * bracketed by 0 and 1.  Returns the new element count.
-	 */
 	private static dedupeEdges(start: number, len: number): number {
 		const EPS = Chunk.EPS;
-		// Prepend 0 if needed.
 		if (len === 0 || _edgeScratch[start] > EPS) {
 			for (let i = len; i > 0; i--)
 				_edgeScratch[start + i] = _edgeScratch[start + i - 1];
 			_edgeScratch[start] = 0;
 			len++;
 		}
-		// Append 1 if needed.
 		if (_edgeScratch[start + len - 1] < 1 - EPS) {
 			_edgeScratch[start + len] = 1;
 			len++;
 		}
-		// Deduplicate in-place.
 		let write = 1;
 		for (let read = 1; read < len; read++) {
 			if (
@@ -1582,10 +1599,171 @@ export class Chunk {
 	}
 
 	// =========================================================================
+	// Face connectivity for occlusion BFS
+	// =========================================================================
+
+	public static facePairIndex(i: number, j: number): number {
+		return 4 * i - ((i * (i - 1)) >> 1) + j - 1;
+	}
+
+	private static isBlockOpaque(packed: number): boolean {
+		if (packed === 0) return false;
+		return BLOCK_TYPE[unpackBlockId(packed)] === 0;
+	}
+
+	private static connectFacesMask(faceMask: number): number {
+		let result = 0;
+		const faces: number[] = [];
+		for (let f = 0; f < 6; f++) {
+			if (faceMask & (1 << f)) faces.push(f);
+		}
+		for (let a = 0; a < faces.length; a++) {
+			for (let b = a + 1; b < faces.length; b++) {
+				const i = faces[a]!;
+				const j = faces[b]!;
+				result |= 1 << Chunk.facePairIndex(i, j);
+			}
+		}
+		return result;
+	}
+
+	public computeFaceConnectivity(): number {
+		if (!this._hasVoxelData || this._isUniform) {
+			const mask =
+				this._isUniform && this._uniformBlockId === 0
+					? Chunk.connectFacesMask(0x3f)
+					: 0;
+			this.faceConnectivity = mask;
+			this.connectivityDirty = false;
+			return mask;
+		}
+
+		const S = Chunk.SIZE;
+		const S2 = S * S;
+		const S3 = S * S * S;
+
+		_ccVisited.fill(0, 0, S3);
+		const visited = _ccVisited;
+		const stack = _ccStack;
+		let connectivity = 0;
+
+		for (let z = 0; z < S; z++) {
+			for (let y = 0; y < S; y++) {
+				for (let x = 0; x < S; x++) {
+					const idx = x + y * S + z * S2;
+					if (visited[idx]) continue;
+
+					const packed = this.getBlockPacked(x, y, z);
+					if (Chunk.isBlockOpaque(packed)) {
+						visited[idx] = 1;
+						continue;
+					}
+
+					let stackTop = 0;
+					stack[stackTop++] = idx;
+					visited[idx] = 1;
+					let regionFaces = 0;
+
+					while (stackTop > 0) {
+						const cur = stack[--stackTop];
+						const cx = cur % S;
+						const cy = ((cur / S) | 0) % S;
+						const cz = (cur / S2) | 0;
+
+						if (cx === 0) regionFaces |= 1 << 1;
+						if (cx === S - 1) regionFaces |= 1 << 0;
+						if (cy === 0) regionFaces |= 1 << 3;
+						if (cy === S - 1) regionFaces |= 1 << 2;
+						if (cz === 0) regionFaces |= 1 << 5;
+						if (cz === S - 1) regionFaces |= 1 << 4;
+
+						if (cx > 0) {
+							const n = cur - 1;
+							if (
+								!visited[n] &&
+								!Chunk.isBlockOpaque(this.getBlockPacked(cx - 1, cy, cz))
+							) {
+								visited[n] = 1;
+								stack[stackTop++] = n;
+							}
+						}
+						if (cx < S - 1) {
+							const n = cur + 1;
+							if (
+								!visited[n] &&
+								!Chunk.isBlockOpaque(this.getBlockPacked(cx + 1, cy, cz))
+							) {
+								visited[n] = 1;
+								stack[stackTop++] = n;
+							}
+						}
+						if (cy > 0) {
+							const n = cur - S;
+							if (
+								!visited[n] &&
+								!Chunk.isBlockOpaque(this.getBlockPacked(cx, cy - 1, cz))
+							) {
+								visited[n] = 1;
+								stack[stackTop++] = n;
+							}
+						}
+						if (cy < S - 1) {
+							const n = cur + S;
+							if (
+								!visited[n] &&
+								!Chunk.isBlockOpaque(this.getBlockPacked(cx, cy + 1, cz))
+							) {
+								visited[n] = 1;
+								stack[stackTop++] = n;
+							}
+						}
+						if (cz > 0) {
+							const n = cur - S2;
+							if (
+								!visited[n] &&
+								!Chunk.isBlockOpaque(this.getBlockPacked(cx, cy, cz - 1))
+							) {
+								visited[n] = 1;
+								stack[stackTop++] = n;
+							}
+						}
+						if (cz < S - 1) {
+							const n = cur + S2;
+							if (
+								!visited[n] &&
+								!Chunk.isBlockOpaque(this.getBlockPacked(cx, cy, cz + 1))
+							) {
+								visited[n] = 1;
+								stack[stackTop++] = n;
+							}
+						}
+					}
+
+					connectivity |= Chunk.connectFacesMask(regionFaces);
+				}
+			}
+		}
+
+		this.faceConnectivity = connectivity;
+		this.connectivityDirty = false;
+		return connectivity;
+	}
+
+	// =========================================================================
 	// Dispose
 	// =========================================================================
 
 	public dispose(): void {
+		// Null our slot in each live neighbour's neighborRefs before removing
+		// ourselves from chunkInstances, so no chunk holds a dangling ref to us.
+		// d ^ 1 gives the opposite direction (the face pointing back toward us).
+		const ids = this.neighborIds;
+		for (let d = 0; d < 6; d++) {
+			const nbr = Chunk.chunkInstances.get(ids[d]!);
+			if (nbr) nbr.neighborRefs[d ^ 1] = null;
+		}
+		this.neighborRefs.fill(null);
+
 		this.clearCachedLODMeshes();
 		this.mesh?.dispose();
 		this.transparentMesh?.dispose();
@@ -1600,6 +1778,7 @@ export class Chunk {
 		this._paletteIndexMap = null;
 		this._hasVoxelData = false;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
+		this._isDarkCached = false;
 		this.isLoaded = false;
 		Chunk.loadedChunks.delete(this);
 		Chunk.loadedChunkIndex.unregister(this);
@@ -1607,6 +1786,10 @@ export class Chunk {
 		Chunk.remeshQueueSet.delete(this.id);
 		this.remeshQueued = false;
 		this.remeshQueuedPriority = false;
+		Chunk.chunkInstances.delete(this.id);
+		this.bfsQueryId = 0;
+		this.bfsVisitedFaces = 0;
+		this.bfsQueuedForConnectivity = false;
 	}
 }
 

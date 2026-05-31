@@ -547,7 +547,6 @@ export async function initAtlas(): Promise<void> {
 		globalUniformBuffer.addUniform("lightDirection", 3);
 		globalUniformBuffer.addUniform("cameraPosition", 3);
 		globalUniformBuffer.addUniform("sunLightIntensity", 1);
-		globalUniformBuffer.addUniform("sunLightIntensitySq", 1);
 		globalUniformBuffer.addUniform("wetness", 1);
 		globalUniformBuffer.addUniform("time", 1);
 		globalUniformBuffer.addUniform("vFogInfos", 4);
@@ -581,14 +580,20 @@ export async function initAtlas(): Promise<void> {
 			{ vertex: "chunk", fragment: "chunk" },
 			{
 				attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
-				uniforms: ["world", "worldViewProjection", "atlasTileSize"],
+				uniforms: [
+					"world",
+					"worldViewProjection",
+					"atlasTileSize",
+					"atlasMaxTiles",
+				],
 				uniformBuffers: ["GlobalUniforms"],
 				samplers: ["diffuseTexture", "normalTexture"],
 			},
 		);
 		mat.backFaceCulling = true;
-		mat.setPrePassRenderer(scene.prePassRenderer!);
+		//mat.setPrePassRenderer(scene.prePassRenderer!);
 		mat.setFloat("atlasTileSize", tileSize);
+		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
 		if (normalAtlasTexture) mat.setTexture("normalTexture", normalAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
@@ -600,6 +605,7 @@ export async function initAtlas(): Promise<void> {
 		if (mat.isFrozen) mat.unfreeze();
 		mat.wireframe = GLOBAL_VALUES.DEBUG;
 		mat.setFloat("atlasTileSize", tileSize);
+		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
 		if (normalAtlasTexture) mat.setTexture("normalTexture", normalAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
@@ -627,7 +633,12 @@ export async function initAtlas(): Promise<void> {
 			{ vertex: "transparentChunk", fragment: "transparentChunk" },
 			{
 				attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
-				uniforms: ["world", "worldViewProjection", "atlasTileSize"],
+				uniforms: [
+					"world",
+					"worldViewProjection",
+					"atlasTileSize",
+					"atlasMaxTiles",
+				],
 				uniformBuffers: ["GlobalUniforms"],
 				samplers: ["diffuseTexture", "normalTexture"],
 			},
@@ -636,6 +647,7 @@ export async function initAtlas(): Promise<void> {
 		mat.forceDepthWrite = false;
 		mat.needAlphaBlending = () => true;
 		mat.setFloat("atlasTileSize", tileSize);
+		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
 		if (normalAtlasTexture) mat.setTexture("normalTexture", normalAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
@@ -647,6 +659,7 @@ export async function initAtlas(): Promise<void> {
 		if (mat.isFrozen) mat.unfreeze();
 		mat.wireframe = GLOBAL_VALUES.DEBUG;
 		mat.setFloat("atlasTileSize", tileSize);
+		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
 		if (normalAtlasTexture) mat.setTexture("normalTexture", normalAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
@@ -953,10 +966,6 @@ export function updateGlobalUniforms(frameId: number): void {
 	globalUniformBuffer.updateVector3("lightDirection", u.lightDirection);
 	globalUniformBuffer.updateVector3("cameraPosition", u.cameraPosition);
 	globalUniformBuffer.updateFloat("sunLightIntensity", u.sunLightIntensity);
-	globalUniformBuffer.updateFloat(
-		"sunLightIntensitySq",
-		u.sunLightIntensity * u.sunLightIntensity,
-	);
 	globalUniformBuffer.updateFloat("wetness", u.wetness);
 	globalUniformBuffer.updateFloat("time", u.time);
 	globalUniformBuffer.updateFloat4(

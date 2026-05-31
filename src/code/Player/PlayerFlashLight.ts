@@ -1,6 +1,7 @@
 import {
 	Color3,
 	type FreeCamera,
+	Ray,
 	type Scene,
 	SpotLight,
 	Vector3,
@@ -29,11 +30,11 @@ export class PlayerFlashLight {
 		this.#flashlight.parent = this.#camera;
 
 		// Update flashlight position on camera movement
+		const scratchRay = new Ray(Vector3.Zero(), Vector3.Zero());
 		this.#camera.onViewMatrixChangedObservable.add(() => {
 			this.#flashlight.position.copyFrom(this.#camera.position);
-			this.#flashlight.direction.copyFrom(
-				this.#camera.getForwardRay().direction,
-			);
+			this.#camera.getForwardRayToRef(scratchRay, 0);
+			this.#flashlight.direction.copyFrom(scratchRay.direction);
 		});
 	}
 

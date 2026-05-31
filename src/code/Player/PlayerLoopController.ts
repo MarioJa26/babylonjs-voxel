@@ -10,6 +10,7 @@ import {
 	worldToChunkCoord,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
+import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
 import {
 	type BlockRaycastHit,
 	pickTarget,
@@ -38,6 +39,10 @@ export class PlayerLoopController {
 	// ---- cave state ----
 	#lastCaveState = false;
 
+	// ---- occlusion culling ----
+	#occlusionCuller = new OcclusionCuller();
+	#lastOcclusionStats = { total: 0, occluded: 0, timeMs: 0 };
+
 	// ---- debug HUD throttle ----
 	#lastDebugHudUpdateMs = 0;
 	static readonly DEBUG_HUD_INTERVAL_MS = 250;
@@ -54,6 +59,13 @@ export class PlayerLoopController {
 	) {}
 
 	public bind(): void {
+		// Wire incremental occlusion culling for individual chunk loads
+		const previousOnChunkLoaded = Chunk.onChunkLoaded;
+		Chunk.onChunkLoaded = (chunk: Chunk) => {
+			previousOnChunkLoaded?.(chunk);
+			this.#occlusionCuller.incrementalAdd(chunk);
+		};
+
 		this.scene.onBeforeRenderObservable.add(() => {
 			const dt = (this.scene.deltaTime || 0) / 1000;
 
@@ -67,22 +79,25 @@ export class PlayerLoopController {
 			const pickHit = pickTarget(this.playerHud.player);
 			this.playerHud.crossHair.setTargetHit(pickHit);
 
-			CustomBoat.tickAllActiveBoats(this.scene, this.getPlayerPosition());
+			// L1: Cache position once — reused by all sub-systems this frame.
+			const playerPos = this.getPlayerPosition();
+
+			CustomBoat.tickAllActiveBoats(this.scene, playerPos);
 			this.playerVehicle.update(dt);
 			this.playerStats.update(dt, this.playerVehicle.isSprinting);
 			this.playerVehicle.updateCameraAndVisuals();
 			this.#updateControls(pickHit);
-			this.#updateCaveState();
-
-			// Compute chunk coords once — shared by all sub-systems this frame.
-			const playerPos = this.getPlayerPosition();
+			this.#updateCaveState(playerPos.y);
 			const cx = worldToChunkCoord(playerPos.x);
 			const cy = worldToChunkCoord(playerPos.y);
 			const cz = worldToChunkCoord(playerPos.z);
 
-			this.#updateChunksAroundPlayer(cx, cy, cz);
+			this.#updateChunksAroundPlayer(cx, cy, cz, playerPos);
 			processFrameBudgetedStreamingWork(cx, cy, cz);
 			this.#updateActiveMeshSelection(cx, cy, cz);
+
+			// Occlusion culling – must run after chunk loading and before Babylon evaluates the scene.
+			this.#lastOcclusionStats = this.#occlusionCuller.update(this.scene);
 		});
 
 		this.scene.onAfterRenderObservable.add(() => {
@@ -109,8 +124,8 @@ export class PlayerLoopController {
 	// Cave state
 	// ---------------------------------------------------------------------------
 
-	#updateCaveState(): void {
-		const inCave = this.getPlayerPosition().y <= -16;
+	#updateCaveState(playerY: number): void {
+		const inCave = playerY <= -16;
 		if (inCave !== this.#lastCaveState) {
 			this.#lastCaveState = inCave;
 			isInCave = inCave;
@@ -121,13 +136,17 @@ export class PlayerLoopController {
 	// Chunk loading
 	// ---------------------------------------------------------------------------
 
-	#updateChunksAroundPlayer(cx: number, cy: number, cz: number): void {
+	#updateChunksAroundPlayer(
+		cx: number,
+		cy: number,
+		cz: number,
+		playerPos: { x: number; z: number },
+	): void {
 		if (
 			cx !== this.#loadLastCx ||
 			cy !== this.#loadLastCy ||
 			cz !== this.#loadLastCz
 		) {
-			const playerPos = this.getPlayerPosition();
 			void updateChunksAround(
 				cx,
 				cy,
@@ -269,6 +288,13 @@ export class PlayerLoopController {
 		PlayerHud.updateDebugInfo(
 			"Loaded Chunks",
 			Chunk.loadedChunks.size,
+			"chunks",
+		);
+
+		const occ = this.#lastOcclusionStats;
+		PlayerHud.updateDebugInfo(
+			"Occlusion",
+			`${occ.occluded}/${occ.total} culled (${occ.timeMs.toFixed(1)}ms)`,
 			"chunks",
 		);
 

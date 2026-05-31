@@ -47,6 +47,25 @@ export class CrossHair {
 
 	// ─── Static raycasting API (unchanged public surface) ────────────────────
 
+	/** Allocation-free pickTarget — writes into caller-provided vector. Returns true on hit. */
+	static pickTargetInto(player: Player, target: Vector3): boolean {
+		const hit = pickTarget(player);
+		if (!hit) return false;
+		target.set(hit.x, hit.y, hit.z);
+		return true;
+	}
+
+	/** Allocation-free pickWaterPlacementTarget — writes into caller-provided vector. */
+	static pickWaterPlacementTargetInto(
+		player: Player,
+		target: Vector3,
+	): boolean {
+		const hit = pickWaterTarget(player);
+		if (!hit) return false;
+		target.set(hit.x, hit.y, hit.z);
+		return true;
+	}
+
 	static pickBlock(player: Player): number | null {
 		return raycastPickBlock(player);
 	}

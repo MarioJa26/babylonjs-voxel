@@ -5,8 +5,6 @@ import {
 	ScenePerformancePriority,
 	Vector3,
 } from "@babylonjs/core";
-import "@babylonjs/core/Debug/debugLayer";
-import "@babylonjs/inspector";
 import { CustomBoat } from "./Entities/CustomBoat";
 import { GenerationParams } from "./Generation/NoiseAndParameters/GenerationParams";
 import { Map1 } from "./Maps/Map1";
@@ -31,13 +29,15 @@ export class TestScene {
 		this.engine = new Engine(this.canvas);
 		//this.connection = new MyConnection();
 
-		this.#onKeyDown = (ev) => {
+		this.#onKeyDown = async (ev) => {
 			// Ctrl+F
 			if (ev.ctrlKey && ev.key.toLowerCase() === "f") {
 				if (this.scene) {
 					if (this.scene.debugLayer.isVisible()) {
 						this.scene.debugLayer.hide();
 					} else {
+						await import("@babylonjs/core/Debug/debugLayer");
+						await import("@babylonjs/inspector");
 						this.scene.debugLayer.show();
 					}
 				}

@@ -17,7 +17,6 @@ export class Lod2Shader {
       vec3 lightDirection;
       vec3 cameraPosition;
       float sunLightIntensity;
-      float sunLightIntensitySq;
       float wetness;
       float time;
       vec4 vFogInfos;
@@ -37,7 +36,6 @@ export class Lod2Shader {
     out vec3 vFogColorCheap;
 
     int decodeCorner(int vertexId, int isBackFace, int flip) {
-      // Indexed quad path: 4 vertices (0..3) and a fixed index buffer [0,2,1, 0,3,2].
       const int cornerData[4] = int[](
         228, // isBackFace=0, flip=0: [0,1,2,3]
         147, // isBackFace=0, flip=1: [3,0,1,2]
@@ -45,13 +43,17 @@ export class Lod2Shader {
         177  // isBackFace=1, flip=1: [1,0,3,2]
       );
       int state = (isBackFace << 1) | flip;
-      return (cornerData[state] >> (vertexId * 2)) & 3;
+      return (cornerData[state] >> (vertexId << 1)) & 3;
     }
 
     void decodeAtlasCorner(int axisFace, int corner, out int cornerId, out int swapUV) {
       const int cornerLookup[6] = int[](108, 57, 108, 147, 177, 228);
       cornerId = (cornerLookup[axisFace] >> (corner << 1)) & 3;
       swapUV = int(axisFace < 4);
+    }
+
+    vec2 getQuadCornerUV(int i) {
+      return vec2(float((i ^ (i >> 1)) & 1), float(i >> 1));
     }
 
     const mat3 TBN_TABLE[6] = mat3[](
@@ -77,20 +79,17 @@ export class Lod2Shader {
       const float invPosScale = 0.25;
       float faceWidth = faceDataB.x * invPosScale;
       float faceHeight = faceDataB.y * invPosScale;
-      float du = (corner == 1 || corner == 2) ? faceWidth : 0.0;
-      float dv = (corner >= 2) ? faceHeight : 0.0;
+
+      vec2 cornerUV = getQuadCornerUV(corner);
+      float du = cornerUV.x * faceWidth;
+      float dv = cornerUV.y * faceHeight;
 
       int uAxis = (axis + 1) % 3;
       int vAxis = (axis + 2) % 3;
 
       vec3 localPosition = faceDataA.xyz * invPosScale;
-      if (uAxis == 0) localPosition.x += du;
-      else if (uAxis == 1) localPosition.y += du;
-      else localPosition.z += du;
-
-      if (vAxis == 0) localPosition.x += dv;
-      else if (vAxis == 1) localPosition.y += dv;
-      else localPosition.z += dv;
+      localPosition[uAxis] += du;
+      localPosition[vAxis] += dv;
 
       gl_Position = worldViewProjection * vec4(localPosition, 1.0);
 
@@ -98,32 +97,28 @@ export class Lod2Shader {
       int swapUV;
       decodeAtlasCorner(axisFace, corner, atlasCornerId, swapUV);
 
-      float u = (atlasCornerId == 1 || atlasCornerId == 2) ? 1.0 : 0.0;
-      float v = (atlasCornerId >= 2) ? 1.0 : 0.0;
+      float u = float((atlasCornerId ^ (atlasCornerId >> 1)) & 1);
+      float v = float(atlasCornerId >> 1);
 
       float uDim = swapUV == 1 ? faceHeight : faceWidth;
       float vDim = swapUV == 1 ? faceWidth : faceHeight;
       vUV = vec2(u, v) * vec2(uDim, vDim);
 
       vec3 faceOrigin = faceDataA.xyz * invPosScale;
-      float uvOffU = fract(faceOrigin[uAxis]);
-      float uvOffV = fract(faceOrigin[vAxis]);
-      vUV += vec2(
-        swapUV == 1 ? uvOffV : uvOffU,
-        swapUV == 1 ? uvOffU : uvOffV
-      );
+      vec2 uvOff = vec2(fract(faceOrigin[uAxis]), fract(faceOrigin[vAxis]));
+      vUV += swapUV == 1 ? uvOff.yx : uvOff;
 
       vUV2 = vec2(faceDataB.z, atlasMaxTiles - 1.0 - faceDataB.w) * atlasTileSize;
       vTintBucket = faceDataC.z;
 
-      vPositionW = (world * vec4(localPosition, 1.0)).xyz;
+      vPositionW = localPosition + world[3].xyz;
 
       mat3 tbn = TBN_TABLE[axisFace];
       vTBN = tbn;
 
       int light = int(faceDataC.y);
-      vSkyLight = float(light >> 4) * 0.0666666;
-      vBlockLight = float(light & 0xF) * 0.0666666;
+      vSkyLight = float((light >> 4) & 0xF) * (1.0 / 15.0);
+      vBlockLight = float(light & 0xF) * (1.0 / 15.0);
 
       // AO impostor by face axis:
       // top=1.0, side=0.78, bottom=0.58
@@ -133,9 +128,7 @@ export class Lod2Shader {
         vFaceShade = 0.78;
       }
 
-      // -------------------------------
       // Fog moved from fragment to vertex
-      // -------------------------------
       vec3 viewVec = vPositionW - cameraPosition;
       float dist = length(viewVec);
 
@@ -153,7 +146,7 @@ export class Lod2Shader {
 
       vec3 atmosphereColor =
         mix(vec3(0.6, 0.75, 0.95), vec3(0.1, 0.2, 0.4), heightFactor) *
-        sunLightIntensitySq;
+        (sunLightIntensity * sunLightIntensity);
 
       vec3 viewDir = viewVec / max(dist, 1e-4);
       float skyFactor = smoothstep(0.0, 0.4, max(viewDir.y, 0.0));
@@ -198,7 +191,6 @@ export class Lod2Shader {
       vec3 lightDirection;
       vec3 cameraPosition;
       float sunLightIntensity;
-      float sunLightIntensitySq;
       float wetness;
       float time;
       vec4 vFogInfos;
@@ -238,6 +230,9 @@ export class Lod2Shader {
       vec2 atlasUV = vUV2 + singleTileUV * atlasTileSize;
 
       vec4 diffuseColor = texture(diffuseTexture, atlasUV);
+
+      if (diffuseColor.a < 0.01) discard;
+
       diffuseColor.rgb *= mix(1.0, 0.55, wetness);
 
       vec3 normalMap = texture(normalTexture, atlasUV).rgb;
@@ -245,24 +240,24 @@ export class Lod2Shader {
       vec3 worldNormal = normalize(vTBN * normalMap);
 
       float diffuseIntensity = max(0.0, dot(worldNormal, lightDirection));
-      vec3 diffuse = diffuseColor.rgb * diffuseIntensity;
 
-      vec3 viewDirection = normalize(cameraPosition - vPositionW);
+      // Cheap Blinn-Phong: pow(NdotH, s) ≈ exp2(-s * 1.4427 * (1 - NdotH))
+      vec3 viewDirection = cameraPosition - vPositionW;
       vec3 halfwayDir = normalize(viewDirection + lightDirection);
       float shininess = mix(16.0, 96.0, wetness);
-      float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), shininess);
+      float NH = max(dot(worldNormal, halfwayDir), 0.0);
+      float spec = exp2(clamp(shininess * 1.4427 * (NH - 1.0), -126.0, 0.0));
 
       float specIntensity = mix(0.03, 1.2, wetness) * vSkyLight;
       vec3 specular = vec3(specIntensity) * spec * max(sunLightIntensity - 0.1, 0.0);
 
-      vec3 skyColor = vec3(0.8, 0.8, 0.8) * (sunLightIntensity + 0.2);
-      vec3 blockColor = vec3(0.9, 0.6, 0.2);
-      vec3 lightMix = clamp((vSkyLight * skyColor) + (vBlockLight * blockColor), 0.18, 1.0);
+      float skyScale = vSkyLight * 0.8 * (sunLightIntensity + 0.2);
+      vec3 lightMix = clamp(skyScale + vBlockLight * vec3(0.9, 0.6, 0.2), 0.18, 1.0);
 
       float horizon = clamp(dot(worldNormal, lightDirection) * 0.5 + 0.5, 0.65, 1.0);
       float faceShade = vFaceShade;
 
-      vec3 color = (diffuseColor.rgb + diffuse + specular) * lightMix * horizon * faceShade;
+      vec3 color = (diffuseColor.rgb * (1.0 + diffuseIntensity) + specular) * lightMix * horizon * faceShade;
       color = applyTintBucket(color, vTintBucket);
 
       // Fog now uses interpolated vertex result
@@ -300,7 +295,6 @@ export class Lod2Shader {
       vec3 lightDirection;
       vec3 cameraPosition;
       float sunLightIntensity;
-      float sunLightIntensitySq;
       float wetness;
       float time;
       vec4 vFogInfos;
@@ -350,24 +344,23 @@ export class Lod2Shader {
       vec3 worldNormal = normalize(vTBN * normalMap);
 
       float diffuseIntensity = max(0.0, dot(worldNormal, lightDirection));
-      vec3 diffuse = diffuseColor.rgb * diffuseIntensity;
 
-      vec3 viewDirection = normalize(cameraPosition - vPositionW);
+      vec3 viewDirection = cameraPosition - vPositionW;
       vec3 halfwayDir = normalize(viewDirection + lightDirection);
       float shininess = mix(16.0, 96.0, wetness);
-      float spec = pow(max(dot(worldNormal, halfwayDir), 0.0), shininess);
+      float NH = max(dot(worldNormal, halfwayDir), 0.0);
+      float spec = exp2(clamp(shininess * 1.4427 * (NH - 1.0), -126.0, 0.0));
 
       float specIntensity = mix(0.03, 1.2, wetness) * vSkyLight;
       vec3 specular = vec3(specIntensity) * spec * max(sunLightIntensity - 0.1, 0.0);
 
-      vec3 skyColor = vec3(0.8, 0.8, 0.8) * (sunLightIntensity + 0.2);
-      vec3 blockColor = vec3(0.9, 0.6, 0.2);
-      vec3 lightMix = clamp((vSkyLight * skyColor) + (vBlockLight * blockColor), 0.18, 1.0);
+      float skyScale = vSkyLight * 0.8 * (sunLightIntensity + 0.2);
+      vec3 lightMix = clamp(skyScale + vBlockLight * vec3(0.9, 0.6, 0.2), 0.18, 1.0);
 
       float horizon = clamp(dot(worldNormal, lightDirection) * 0.5 + 0.5, 0.65, 1.0);
       float faceShade = vFaceShade;
 
-      vec3 color = (diffuseColor.rgb + diffuse + specular) * lightMix * horizon * faceShade;
+      vec3 color = (diffuseColor.rgb * (1.0 + diffuseIntensity) + specular) * lightMix * horizon * faceShade;
       color = applyTintBucket(color, vTintBucket);
 
       // Fog now uses interpolated vertex result

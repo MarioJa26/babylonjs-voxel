@@ -137,7 +137,8 @@ export class MaterialFactory {
 			mat.specularTexture = MaterialFactory.createTexture(scene, path, uvScale);
 		}
 
-		// 5. Save the new material to the cache and return it
+		// 5. Save the new material to the cache, freeze it, and return it
+		mat.freeze();
 		MaterialFactory.materialCache.set(cacheKey, mat);
 		return mat;
 	}
