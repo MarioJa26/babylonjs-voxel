@@ -22,7 +22,10 @@ import { TransparentShader } from "../Light/TransparentShader";
 import { updateBlockTexturesUV } from "../Texture/BlockTextures";
 import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
 import { TextureCache } from "../Texture/TextureCache";
-import { TextureDefinitions } from "../Texture/TextureDefinitions";
+import {
+	TextureDefinitions,
+	TextureDefinitionsReady,
+} from "../Texture/TextureDefinitions";
 import { Chunk } from "./Chunk";
 import type { MeshData } from "./DataStructures/MeshData";
 
@@ -460,12 +463,13 @@ export async function initAtlas(): Promise<void> {
 
 	// If CREATE_ATLAS flag is set, rebuild the atlas instead of loading from files
 	if (GLOBAL_VALUES.CREATE_ATLAS) {
+		await TextureDefinitionsReady;
 		const atlas = await TextureAtlasFactory.buildAtlas(
 			scene,
 			TextureDefinitions,
 		);
 		if (atlas?.uvMap) {
-			updateBlockTexturesUV(atlas.uvMap);
+			updateBlockTexturesUV(atlas.uvMap, TextureDefinitions);
 		}
 		return;
 	}

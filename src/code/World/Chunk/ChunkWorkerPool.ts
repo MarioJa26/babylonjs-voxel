@@ -50,7 +50,7 @@ export type ChunkWorkerPoolDebugStats = {
 
 // ---------------------------------------------------------------------------
 // Packed in-flight key: (chunkId << 4n | BigInt(lod)) avoids string alloc.
-// LOD values are expected to be 0-15 so 4 bits is sufficient.
+// LOD values are expected to be 0–15 so 4 bits is sufficient.
 // ---------------------------------------------------------------------------
 function packInflightKey(chunkId: bigint, lod: number): bigint {
 	return (chunkId << 4n) | BigInt(lod & 0xf);
@@ -86,9 +86,11 @@ export class ChunkWorkerPool {
 	private static readonly DEFERRED_LIGHTING_BUDGET_MS = 2.5;
 	private static readonly DEFERRED_LIGHTING_MAX_CHUNKS_PER_FRAME = 48;
 	private static readonly LAST_DISPATCH_RING_SIZE = 24;
+	private static readonly WORKER_TASK_TIMEOUT_MS = 15000;
 
 	private workers: ChunkWorker[] = [];
 	private workerTaskContext: WorkerTaskContext[] = [];
+	private workerTaskTimeouts: Array<ReturnType<typeof setTimeout> | null> = [];
 
 	private distantTerrainSharedInit: {
 		positionsBuffer: SharedArrayBuffer;
@@ -102,20 +104,16 @@ export class ChunkWorkerPool {
 
 	// --- Remesh queue: sorted array, insertion-sort maintained ---
 	private taskQueue: Chunk[] = [];
-	// Read index to avoid O(n) Array.shift() — items before this index are consumed.
 	private taskQueueReadIdx = 0;
-	// Priority flag per chunk — stored alongside via parallel Map to avoid
-	// repeated indexOf scans
 	private taskQueuePriority: Map<Chunk, boolean> = new Map();
 
 	private workerDispatchCounts: number[] = [];
-	// Fixed-size ring buffer replaces the shift()-based sliding window
+	private _lastHeartbeatSeq: number[] = [];
+	private _heartbeatLogCount = 0;
 	private lastDispatchRing = new RingBuffer<number>(
 		ChunkWorkerPool.LAST_DISPATCH_RING_SIZE,
 	);
 
-	// pendingRemeshQueue and pendingRemeshSet merged: Map<Chunk, priority>
-	// The Set membership is implicit: chunk is pending iff it's in the Map.
 	private pendingRemeshMap: Map<Chunk, boolean> = new Map();
 
 	private terrainTaskDeferLighting = new Map<bigint, boolean>();
@@ -131,49 +129,56 @@ export class ChunkWorkerPool {
 
 	private distantTerrainReadyWorkers = new Set<number>();
 	private distantTerrainTaskQueue: DistantTerrainTask[] = [];
-	// Read index to avoid O(n) Array.shift() — items before this index are consumed.
 	private distantTerrainTaskQueueReadIdx = 0;
 	private lodPrecomputeQueue: Array<{ chunk: Chunk; lod: number }> = [];
 	private lodPrecomputeQueueReadIdx = 0;
 	private pendingLodPrecomputeKeys = new Set<bigint>();
 	private lastPrecomputeScheduleTs = 0;
 
-	// idleWorkers as a Set for O(1) has/add/delete, plus array for shift access.
-	// idleWorkerIndexPositions maps workerIndex -> position in idleWorkerIndices
-	// for O(1) swap-remove.
+	// ---------------------------------------------------------------------------
+	// Idle-worker tracking
+	//
+	// Invariant: a worker is idle iff it appears in idleWorkerSet.
+	//
+	// idleWorkerIndices is a flat array used as a queue; _idleReadIdx is the
+	// consume pointer.  Only indices in [_idleReadIdx, length) are live idle
+	// workers.  Indices before _idleReadIdx have already been dispatched and
+	// must never be touched by swap-remove or position-map lookups.
+	//
+	// idleWorkerIndexPositions maps workerIndex → its position in
+	// idleWorkerIndices.  It is only populated for the LIVE portion
+	// ([_idleReadIdx, length)), so handleWorkerFailure's swap-remove is always
+	// safe to use.
+	// ---------------------------------------------------------------------------
 	private idleWorkerSet: Set<number> = new Set();
 	private idleWorkerIndices: number[] = [];
 	private idleWorkerIndexPositions: Map<number, number> = new Map();
-	// M5: Read-index for idleWorkerIndices — avoids O(N) shift() on dispatch
 	private _idleReadIdx = 0;
+	private _processQueueCallCount = 0;
 
 	private meshResultQueue: FullMeshMessage[] = [];
 	private meshResultQueueReadIdx = 0;
 	private remeshFlushScheduled = false;
 	private processQueuePumpScheduled = false;
 
-	// Debounced save queue for post-remesh chunk persistence
 	private pendingRemeshSaveIds = new Set<bigint>();
 	private pendingRemeshSaveTimer: ReturnType<typeof setTimeout> | null = null;
 	private readonly REMESH_SAVE_DEBOUNCE_MS = 500;
 
-	// In-flight keys: bigint-packed (chunkId << 4 | lod) — no string allocs
 	private inFlightRemeshKeys = new Set<bigint>();
 	private rerunRemeshAfterInflight = new Map<bigint, boolean>();
 
 	private distantTerrainInFlight = false;
 	private nextDistantTerrainRequestId = 1;
 
-	// Debug stats object — mutated in place to avoid allocations
-	// Scratch buffers for reconcileSkyLightAcrossLoadedNeighbors — avoids per-call allocation.
+	// ---------------------------------------------------------------------------
+	// Static scratch buffers — avoids per-call allocation on hot paths
+	// ---------------------------------------------------------------------------
 	private static readonly _reconcileSeedChunks: Chunk[] = [];
 	private static readonly _reconcileSeedCoords = new Int32Array(6144 * 3);
 	private static readonly _reconcileSeedLevels = new Uint8Array(6144);
-	// Scratch array for flushPendingRemeshQueue — avoids per-flush array allocation.
 	private static readonly _flushPendingScratch: Array<[Chunk, boolean]> = [];
-	// Scratch array for LoadedChunkIndex.queryCollect — avoids generator overhead.
 	private static readonly _queryScratch: Chunk[] = [];
-	// PERF: Reusable scratch array for LOD precompute candidates.
 	private static readonly _lodCandidateScratch: Array<{
 		chunk: Chunk;
 		lod: number;
@@ -219,10 +224,9 @@ export class ChunkWorkerPool {
 	private getDispatchBudgetPerTick(): number {
 		const configured = SETTING_PARAMS.CHUNK_WORKER_DISPATCH_BUDGET_PER_TICK | 0;
 		if (configured <= 0) return Number.POSITIVE_INFINITY;
-		// Ensure budget is at least the number of workers so all workers get
-		// dispatched in one batch — avoids starvation when budget < poolSize.
 		return Math.max(configured, this.workers.length);
 	}
+
 	private hasPendingTasks(): boolean {
 		return (
 			this.terrainTaskQueue.size > 0 ||
@@ -231,6 +235,11 @@ export class ChunkWorkerPool {
 			this.distantTerrainTaskQueueReadIdx < this.distantTerrainTaskQueue.length
 		);
 	}
+
+	private getEffectiveIdleWorkerCount(): number {
+		return Math.max(0, this.idleWorkerIndices.length - this._idleReadIdx);
+	}
+
 	private scheduleProcessQueuePump(): void {
 		if (this.processQueuePumpScheduled) return;
 		this.processQueuePumpScheduled = true;
@@ -240,11 +249,10 @@ export class ChunkWorkerPool {
 		});
 	}
 
-	/** Update only the fields that callers read; avoid touching cumulative totals. */
 	private updateQueueDebugStats(): void {
 		const stats = this.debugStats;
 		stats.workerCount = this.workers.length;
-		stats.idleWorkers = this.idleWorkerIndices.length;
+		stats.idleWorkers = this.getEffectiveIdleWorkerCount();
 		const busy = Math.max(0, stats.workerCount - stats.idleWorkers);
 		stats.busyWorkers = busy;
 		if (busy > stats.peakBusyWorkers) stats.peakBusyWorkers = busy;
@@ -267,13 +275,10 @@ export class ChunkWorkerPool {
 	public getDebugStats(): ChunkWorkerPoolDebugStats {
 		this.updateQueueDebugStats();
 		const stats = this.debugStats;
-		// Write array snapshots into the live stats object directly, avoiding
-		// a spread-copy of the whole stats structure each frame.
 		const src = this.workerDispatchCounts;
 		const dst = stats.workerDispatchCounts;
 		dst.length = 0;
 		for (let i = 0; i < src.length; i++) dst.push(src[i]);
-
 		this.lastDispatchRing.forEachInto(
 			this.debugStats.lastDispatchWorkerIndices,
 		);
@@ -283,7 +288,6 @@ export class ChunkWorkerPool {
 	private recordWorkerDispatch(workerIndex: number): void {
 		if (workerIndex < 0) return;
 		if (workerIndex >= this.workerDispatchCounts.length) {
-			// Ensure no holes
 			while (this.workerDispatchCounts.length <= workerIndex) {
 				this.workerDispatchCounts.push(0);
 			}
@@ -292,8 +296,36 @@ export class ChunkWorkerPool {
 		this.lastDispatchRing.push(workerIndex);
 	}
 
+	private clearWorkerTaskTimeout(workerIndex: number): void {
+		const timeout = this.workerTaskTimeouts[workerIndex];
+		if (timeout !== null && timeout !== undefined) {
+			clearTimeout(timeout);
+		}
+		this.workerTaskTimeouts[workerIndex] = null;
+	}
+
+	private assignWorkerTaskContext(
+		workerIndex: number,
+		context: WorkerTaskContext,
+	): void {
+		this.clearWorkerTaskTimeout(workerIndex);
+		this.workerTaskContext[workerIndex] = context;
+		if (!context) return;
+
+		this.workerTaskTimeouts[workerIndex] = setTimeout(() => {
+			if (this.workerTaskContext[workerIndex] !== context) return;
+			console.warn(
+				`Chunk worker ${workerIndex} timed out during ${context.taskType}; respawning`,
+			);
+			this.handleWorkerFailure(
+				workerIndex,
+				new Error(`Worker task timed out: ${context.taskType}`),
+			);
+		}, ChunkWorkerPool.WORKER_TASK_TIMEOUT_MS);
+	}
+
 	// -------------------------------------------------------------------------
-	// Chunk / ID resolution — kept as tight as possible; hot path for messages
+	// Chunk / ID resolution
 	// -------------------------------------------------------------------------
 
 	private resolveChunkByMessageId(chunkId: unknown): Chunk | undefined {
@@ -329,12 +361,13 @@ export class ChunkWorkerPool {
 	}
 
 	// -------------------------------------------------------------------------
-	// In-flight key management (bigint-packed, no string alloc)
+	// In-flight key management
 	// -------------------------------------------------------------------------
 
 	private isSameLodRemeshInflight(chunk: Chunk): boolean {
-		const lod = chunk.lodLevel ?? 0;
-		return this.inFlightRemeshKeys.has(packInflightKey(chunk.id, lod));
+		return this.inFlightRemeshKeys.has(
+			packInflightKey(chunk.id, chunk.lodLevel ?? 0),
+		);
 	}
 
 	private clearInflightRemeshByMessage(chunkId: unknown, lod: number): void {
@@ -353,12 +386,108 @@ export class ChunkWorkerPool {
 		| null = null;
 
 	// -------------------------------------------------------------------------
+	// Idle-worker management
+	//
+	// All mutations of the idle structures go through these two methods to keep
+	// the invariants described at the field declarations in one place.
+	// -------------------------------------------------------------------------
+
+	/**
+	 * Mark a worker idle.  Idempotent — safe to call even if the worker is
+	 * already idle (the set guard short-circuits).
+	 *
+	 * The worker is appended to idleWorkerIndices and its position is recorded
+	 * in idleWorkerIndexPositions so that a later swap-remove in
+	 * handleWorkerFailure can find it in O(1).
+	 */
+	private _markWorkerIdle(workerIndex: number): void {
+		if (this.idleWorkerSet.has(workerIndex)) return;
+		this.idleWorkerSet.add(workerIndex);
+		const pos = this.idleWorkerIndices.length;
+		this.idleWorkerIndices.push(workerIndex);
+		this.idleWorkerIndexPositions.set(workerIndex, pos);
+	}
+
+	/**
+	 * Remove a worker from the idle structures entirely.
+	 * Uses O(1) swap-remove, but only within the LIVE portion of
+	 * idleWorkerIndices (indices >= _idleReadIdx).
+	 *
+	 * If the worker's recorded position is in the already-consumed prefix
+	 * (pos < _idleReadIdx) the entry there is stale — the worker was already
+	 * dispatched via the read-index path and idleWorkerSet was cleared then, so
+	 * this branch should never be reached.  We guard against it anyway.
+	 */
+	private _removeWorkerFromIdle(workerIndex: number): void {
+		if (!this.idleWorkerSet.has(workerIndex)) return;
+		this.idleWorkerSet.delete(workerIndex);
+
+		const pos = this.idleWorkerIndexPositions.get(workerIndex);
+		this.idleWorkerIndexPositions.delete(workerIndex);
+
+		if (pos === undefined) return;
+
+		// Guard: position is in the consumed prefix — nothing live to fix up.
+		if (pos < this._idleReadIdx) return;
+
+		// Swap-remove within the live portion only.
+		const liveEnd = this.idleWorkerIndices.length - 1;
+		if (pos !== liveEnd) {
+			const swapped = this.idleWorkerIndices[liveEnd]!;
+			this.idleWorkerIndices[pos] = swapped;
+			this.idleWorkerIndexPositions.set(swapped, pos);
+		}
+		this.idleWorkerIndices.length = liveEnd;
+	}
+
+	/**
+	 * Consume the next idle worker index from the front of the queue.
+	 * Advances _idleReadIdx and clears the worker from the idle set/map.
+	 * Returns -1 if no idle workers remain.
+	 *
+	 * Unlike _removeWorkerFromIdle, this intentionally does NOT call
+	 * swap-remove — the read-index approach is how the dispatch loop
+	 * efficiently walks forward without mutating the array on every pop.
+	 * The position map entry is deleted so a subsequent handleWorkerFailure
+	 * swap-remove cannot accidentally touch this consumed slot.
+	 */
+	private _consumeNextIdleWorker(): number {
+		if (this._idleReadIdx >= this.idleWorkerIndices.length) return -1;
+		const workerIndex = this.idleWorkerIndices[this._idleReadIdx]!;
+		this._idleReadIdx++;
+		this.idleWorkerSet.delete(workerIndex);
+		this.idleWorkerIndexPositions.delete(workerIndex);
+		return workerIndex;
+	}
+
+	/**
+	 * Compact the idleWorkerIndices array by discarding the consumed prefix.
+	 * Called opportunistically inside processQueue when the consumed portion
+	 * exceeds half the array length.
+	 *
+	 * After compaction the position map is rebuilt for the remaining live
+	 * entries so swap-remove remains correct.
+	 */
+	private _compactIdleWorkers(): void {
+		if (this._idleReadIdx === 0) return;
+		const toDiscard = this._idleReadIdx;
+		this.idleWorkerIndices.copyWithin(0, toDiscard);
+		this.idleWorkerIndices.length -= toDiscard;
+		this._idleReadIdx = 0;
+		// Rebuild position map for the compacted live portion.
+		this.idleWorkerIndexPositions.clear();
+		for (let i = 0; i < this.idleWorkerIndices.length; i++) {
+			this.idleWorkerIndexPositions.set(this.idleWorkerIndices[i]!, i);
+		}
+	}
+
+	// -------------------------------------------------------------------------
 	// Worker failure / restart
 	// -------------------------------------------------------------------------
 
 	private handleWorkerFailure(workerIndex: number, reason: unknown): void {
 		const context = this.workerTaskContext[workerIndex];
-		this.workerTaskContext[workerIndex] = null;
+		this.assignWorkerTaskContext(workerIndex, null);
 
 		if (context?.taskType === "distantTerrain") {
 			this.distantTerrainInFlight = false;
@@ -375,6 +504,7 @@ export class ChunkWorkerPool {
 			);
 		}
 
+		// Re-queue interrupted tasks.
 		if (context?.taskType === "terrain" && context.chunk) {
 			context.chunk.isTerrainScheduled = false;
 			this.scheduleTerrainGeneration(
@@ -397,8 +527,6 @@ export class ChunkWorkerPool {
 				});
 			}
 		} else if (context?.taskType === "distantTerrain" && context.distantTask) {
-			// Return task to the front of the queue. If we have consumed items
-			// (readIdx > 0), just roll back one slot; otherwise insert at position 0.
 			if (this.distantTerrainTaskQueueReadIdx > 0) {
 				this.distantTerrainTaskQueueReadIdx--;
 				this.distantTerrainTaskQueue[this.distantTerrainTaskQueueReadIdx] =
@@ -408,20 +536,8 @@ export class ChunkWorkerPool {
 			}
 		}
 
-		// Remove from idle structures — O(1) swap-remove using position map
-		this.idleWorkerSet.delete(workerIndex);
-		const pos = this.idleWorkerIndexPositions.get(workerIndex);
-		if (pos !== undefined) {
-			const lastIdx = this.idleWorkerIndices.length - 1;
-			if (pos !== lastIdx) {
-				const swapped = this.idleWorkerIndices[lastIdx]!;
-				this.idleWorkerIndices[pos] = swapped;
-				this.idleWorkerIndexPositions.set(swapped, pos);
-			}
-			this.idleWorkerIndices.length = lastIdx;
-			this.idleWorkerIndexPositions.delete(workerIndex);
-		}
-
+		// Remove from idle structures using the safe helper.
+		this._removeWorkerFromIdle(workerIndex);
 		this.distantTerrainReadyWorkers.delete(workerIndex);
 
 		try {
@@ -461,7 +577,7 @@ export class ChunkWorkerPool {
 
 			this.workers[workerIndex] = replacement;
 			this.workerRestartAtMs[workerIndex] = performance.now();
-			this.workerTaskContext[workerIndex] = null;
+			this.assignWorkerTaskContext(workerIndex, null);
 
 			if (this.distantTerrainSharedInit) {
 				const {
@@ -480,15 +596,7 @@ export class ChunkWorkerPool {
 				);
 			}
 
-			if (!this.idleWorkerSet.has(workerIndex)) {
-				this.idleWorkerSet.add(workerIndex);
-				this.idleWorkerIndices.push(workerIndex);
-				this.idleWorkerIndexPositions.set(
-					workerIndex,
-					this.idleWorkerIndices.length - 1,
-				);
-			}
-
+			this._markWorkerIdle(workerIndex);
 			this.processQueue();
 		};
 
@@ -506,14 +614,11 @@ export class ChunkWorkerPool {
 	private constructor(poolSize: number) {
 		for (let i = 0; i < poolSize; i++) {
 			const holder: { worker?: ChunkWorker } = {};
-
 			const onMessageTerrain = this.makeTerrainMessageHandler(
 				i,
 				() => holder.worker,
 			);
-
 			const onMessageMesh = this.makeMeshMessageHandler(i, () => holder.worker);
-
 			const onError = (ev: ErrorEvent | Event) => {
 				console.error(`Chunk worker ${i} error`, ev);
 				this.handleWorkerFailure(i, ev);
@@ -524,12 +629,12 @@ export class ChunkWorkerPool {
 			holder.worker = workerWrapper;
 
 			this.workers.push(workerWrapper);
-			this.idleWorkerSet.add(i);
-			this.idleWorkerIndices.push(i);
-			this.idleWorkerIndexPositions.set(i, i);
+			this._markWorkerIdle(i);
 			this.workerTaskContext.push(null);
+			this.workerTaskTimeouts.push(null);
 			this.workerRestartAtMs.push(0);
 			this.workerDispatchCounts.push(0);
+			this._lastHeartbeatSeq.push(0);
 		}
 
 		this.updateQueueDebugStats();
@@ -634,7 +739,6 @@ export class ChunkWorkerPool {
 		this.debugStats.deferredLightingProcessedTotal += processed;
 		this.debugStats.deferredLightingDroppedTotal += dropped;
 
-		// PERF: Compact when read-index exceeds threshold to reclaim memory.
 		if (
 			this.deferredLightingQueueReadIdx > 64 &&
 			this.deferredLightingQueueReadIdx * 2 > this.deferredLightingQueue.length
@@ -658,7 +762,6 @@ export class ChunkWorkerPool {
 		const size = Chunk.SIZE;
 		const last = size - 1;
 
-		// Pre-cache all 6 neighbors to avoid repeated getChunk Map lookups.
 		const negX = chunk.getNeighbor(-1, 0, 0);
 		const posX = chunk.getNeighbor(1, 0, 0);
 		const negY = chunk.getNeighbor(0, -1, 0);
@@ -666,7 +769,6 @@ export class ChunkWorkerPool {
 		const negZ = chunk.getNeighbor(0, 0, -1);
 		const posZ = chunk.getNeighbor(0, 0, 1);
 
-		// Reusable scratch buffers — avoids per-call allocation.
 		const seedChunks = ChunkWorkerPool._reconcileSeedChunks;
 		const seedCoords = ChunkWorkerPool._reconcileSeedCoords;
 		const seedLevels = ChunkWorkerPool._reconcileSeedLevels;
@@ -713,10 +815,8 @@ export class ChunkWorkerPool {
 					const selfSky = selfChunk.getSkyLight(x, y, z);
 					const neighborSky = neighbor.getSkyLight(nx, ny, nz);
 					if (selfSky === neighborSky) continue;
-
 					if (seedCount >= 6144) return;
 
-					// Seed the darker side with the brighter side's level.
 					if (selfSky > neighborSky) {
 						seedChunks[seedCount] = neighbor;
 						seedCoords[seedCount * 3] = nx;
@@ -776,26 +876,13 @@ export class ChunkWorkerPool {
 					createMeshFromData(chunk, { opaque, transparent });
 					chunk.isDirty = false;
 					this.queuePostRemeshSave(chunk);
-					if (Chunk.DEBUG_REMESH)
-						console.log(
-							`[Pool] mesh APPLIED chunk=${chunkId} lod=${lod} dirty=false`,
-						);
 				} else {
 					chunk.isDirty = true;
 					this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);
-					if (Chunk.DEBUG_REMESH)
-						console.log(
-							`[Pool] mesh LOD MISMATCH chunk=${chunkId} msgLod=${lod} curLod=${chunk.lodLevel} dirty=true rescheduled`,
-						);
 				}
-			} else {
-				if (Chunk.DEBUG_REMESH)
-					console.log(
-						`[Pool] mesh CHUNK NOT FOUND chunkId=${chunkId} lod=${lod}`,
-					);
 			}
 		}
-		// PERF: Compact when read-index exceeds threshold to reclaim memory.
+
 		if (
 			this.meshResultQueueReadIdx > 64 &&
 			this.meshResultQueueReadIdx * 2 > this.meshResultQueue.length
@@ -804,11 +891,12 @@ export class ChunkWorkerPool {
 			this.meshResultQueue.length -= this.meshResultQueueReadIdx;
 			this.meshResultQueueReadIdx = 0;
 		}
+
 		this.debugStats.lastMeshProcessed = processed;
 		this.debugStats.totalMeshProcessed += processed;
 		this.debugStats.lastMeshDrainMs = performance.now() - start;
 		this.updateQueueDebugStats();
-		// PERF: Only reschedule if there are more results to drain.
+
 		if (this.meshResultQueueReadIdx < this.meshResultQueue.length) {
 			requestAnimationFrame(this.processMeshQueueLoop);
 		}
@@ -819,7 +907,6 @@ export class ChunkWorkerPool {
 		if (this.deferredLightingQueuedIds.has(chunk.id)) return;
 
 		this.pendingRemeshSaveIds.add(chunk.id);
-
 		if (this.pendingRemeshSaveTimer !== null) return;
 
 		this.pendingRemeshSaveTimer = setTimeout(() => {
@@ -880,20 +967,10 @@ export class ChunkWorkerPool {
 	// Remesh scheduling
 	// -------------------------------------------------------------------------
 
-	public scheduleRemesh(chunk: Chunk | undefined, priority = false) {
-		if (!chunk?.isLoaded) {
-			if (Chunk.DEBUG_REMESH)
-				console.log(
-					`[Pool] scheduleRemesh REJECTED (not loaded) chunk=${chunk?.id}`,
-				);
-			return;
-		}
+	public scheduleRemesh(chunk: Chunk | undefined, priority = false): void {
+		if (!chunk?.isLoaded) return;
 
 		if (!chunk.hasVoxelData) {
-			if (Chunk.DEBUG_REMESH)
-				console.log(
-					`[Pool] scheduleRemesh REJECTED (no voxel data) chunk=${chunk.id} lod=${chunk.lodLevel}`,
-				);
 			this.tryApplyCachedLODMesh(chunk, true);
 			return;
 		}
@@ -902,13 +979,7 @@ export class ChunkWorkerPool {
 			if (this.isSameLodRemeshInflight(chunk)) {
 				this.rerunRemeshAfterInflight.set(chunk.id, true);
 			}
-			if (Chunk.DEBUG_REMESH)
-				console.log(
-					`[Pool] scheduleRemesh REJECTED (empty chunk) chunk=${chunk.id}`,
-				);
 			this.pendingRemeshMap.delete(chunk);
-			// Empty chunk — will be skipped and shifted out during processQueue.
-			// No need for O(n) indexOf + splice removal.
 			this.taskQueuePriority.delete(chunk);
 			this.clearChunkMeshIfPresent(chunk);
 			return;
@@ -916,27 +987,16 @@ export class ChunkWorkerPool {
 
 		if (this.isSameLodRemeshInflight(chunk)) {
 			this.rerunRemeshAfterInflight.set(chunk.id, true);
-			if (Chunk.DEBUG_REMESH)
-				console.log(
-					`[Pool] scheduleRemesh DEFERRED (in-flight) chunk=${chunk.id} lod=${chunk.lodLevel}`,
-				);
 			return;
 		}
 
 		const lodPriority = (chunk.lodLevel ?? 0) === 0;
 		const existingPriority = this.pendingRemeshMap.get(chunk) ?? false;
-		const wasNew = !this.pendingRemeshMap.has(chunk);
 		this.pendingRemeshMap.set(
 			chunk,
 			existingPriority || priority || lodPriority,
 		);
-
 		this.scheduleRemeshFlush();
-		if (Chunk.DEBUG_REMESH && wasNew) {
-			console.log(
-				`[Pool] scheduleRemesh ACCEPTED chunk=${chunk.id} lod=${chunk.lodLevel} priority=${priority || lodPriority} mapSize=${this.pendingRemeshMap.size}`,
-			);
-		}
 	}
 
 	private scheduleRemeshFlush(): void {
@@ -951,8 +1011,6 @@ export class ChunkWorkerPool {
 	private flushPendingRemeshQueue(): void {
 		if (this.pendingRemeshMap.size === 0) return;
 
-		// Iterate the Map directly — no Array.from allocation needed for sort.
-		// Copy entries into a reusable scratch array.
 		const pending = ChunkWorkerPool._flushPendingScratch;
 		pending.length = 0;
 		for (const entry of this.pendingRemeshMap) {
@@ -964,28 +1022,14 @@ export class ChunkWorkerPool {
 			this.compareRemeshPriority(ca, pa, cb, pb),
 		);
 
-		let enqueued = 0;
-		let skipped = 0;
 		for (let i = 0; i < pending.length; i++) {
 			const [chunk, priority] = pending[i]!;
-			if (!chunk.isLoaded) {
-				skipped++;
-				continue;
-			}
-
+			if (!chunk.isLoaded) continue;
 			if (this.isCompletelyEmptyChunk(chunk)) {
 				this.clearChunkMeshIfPresent(chunk);
-				skipped++;
 				continue;
 			}
-
 			this.insertChunkIntoRemeshQueue(chunk, priority);
-			enqueued++;
-		}
-		if (Chunk.DEBUG_REMESH) {
-			console.log(
-				`[Pool] flushPendingRemeshQueue enqueued=${enqueued} skipped=${skipped} totalTaskQueue=${this.taskQueue.length - this.taskQueueReadIdx}`,
-			);
 		}
 
 		this.processQueue();
@@ -1003,14 +1047,7 @@ export class ChunkWorkerPool {
 		gridStep: number,
 	): void {
 		const requestId = this.nextDistantTerrainRequestId++;
-		// Only truncate the queue when no task is in-flight; otherwise just
-		// replace the pending slot so the in-flight task's completion handler
-		// still finds a valid queue entry.
-		if (!this.distantTerrainInFlight) {
-			this.distantTerrainTaskQueue.length = 1;
-			this.distantTerrainTaskQueueReadIdx = 0;
-		}
-		this.distantTerrainTaskQueue[0] = {
+		const task = {
 			requestId,
 			centerChunkX,
 			centerChunkZ,
@@ -1018,6 +1055,14 @@ export class ChunkWorkerPool {
 			renderDistance,
 			gridStep,
 		};
+		if (this.distantTerrainInFlight) {
+			this.distantTerrainTaskQueue.length = this.distantTerrainTaskQueueReadIdx;
+			this.distantTerrainTaskQueue.push(task);
+		} else {
+			this.distantTerrainTaskQueue.length = 1;
+			this.distantTerrainTaskQueueReadIdx = 0;
+			this.distantTerrainTaskQueue[0] = task;
+		}
 		this.processQueue();
 	}
 
@@ -1065,16 +1110,7 @@ export class ChunkWorkerPool {
 				const type = data.type;
 
 				if (type === WorkerTaskType.WorkerReady) {
-					console.warn(
-						`[WORKER_READY] worker[${workerIndex}] terrain worker initialized`,
-					);
 					this.scheduleProcessQueuePump();
-					// Keep pump alive while idle workers exist, even if no tasks
-					// yet (e.g. tiny render distance). Tasks added later via
-					// scheduleTerrainGenerationBatch will dispatch immediately.
-					if (this.idleWorkerIndices.length > 0) {
-						this.scheduleProcessQueuePump();
-					}
 					return;
 				}
 
@@ -1117,7 +1153,6 @@ export class ChunkWorkerPool {
 					const chunk = this.resolveChunkByMessageId(chunkId);
 					if (chunk) {
 						const isStale = !chunk.isTerrainScheduled && !chunk.isLoaded;
-
 						const blocks: Uint8Array | Uint16Array | null = block_array ?? null;
 						const light: Uint8Array = light_array;
 
@@ -1151,8 +1186,7 @@ export class ChunkWorkerPool {
 							lightSeedLength > 0;
 
 						if (isStale) {
-							// Fix: clear context so deferred lighting pump isn't permanently blocked
-							this.workerTaskContext[workerIndex] = null;
+							this.assignWorkerTaskContext(workerIndex, null);
 							this._markWorkerIdle(workerIndex);
 							if (!needsLightRefinement) {
 								void WorldStorage.saveChunk(chunk).catch((error) => {
@@ -1201,16 +1235,10 @@ export class ChunkWorkerPool {
 			}
 
 			if (failed) return;
-
-			// Fix: always clear context regardless of whether the worker reference
-			// still matches, so a replaced worker never leaves a stale terrain context.
-			this.workerTaskContext[workerIndex] = null;
-
 			if (this.workers[workerIndex] !== getWorker()) return;
 
+			this.assignWorkerTaskContext(workerIndex, null);
 			this._markWorkerIdle(workerIndex);
-			if (Chunk.DEBUG_REMESH)
-				console.log(`[Pool] WORKER ${workerIndex} IDLE (terrain complete)`);
 			this.scheduleProcessQueuePump();
 		};
 	}
@@ -1221,12 +1249,28 @@ export class ChunkWorkerPool {
 	) {
 		return (event: MessageEvent<MeshWorkerResponse>) => {
 			let failed = false;
-			let meshChunkId: unknown = null;
-			let meshLod = 0;
+			const data = event.data as MeshWorkerResponse & { type?: string };
+			const type = data.type as string | undefined;
+
 			try {
-				const data = event.data;
-				meshChunkId = data.chunkId;
-				meshLod = data.lod;
+				if (type === (WorkerTaskType.WorkerReady as unknown as string)) {
+					return;
+				}
+
+				if (type === ("HEARTBEAT" as string)) {
+					const seq = (data as unknown as { seq?: number }).seq ?? 0;
+					this._lastHeartbeatSeq[workerIndex] = seq;
+					return;
+				}
+
+				if (type !== (WorkerTaskType.GenerateFullMesh as unknown as string)) {
+					console.warn(
+						`Ignoring unexpected mesh worker message from ${workerIndex}:`,
+						data,
+					);
+					return;
+				}
+
 				this.clearInflightRemeshByMessage(data.chunkId, data.lod);
 
 				const fullMeshMessage: FullMeshMessage = {
@@ -1263,31 +1307,16 @@ export class ChunkWorkerPool {
 			if (failed) return;
 			if (this.workers[workerIndex] !== getWorker()) return;
 
-			this.workerTaskContext[workerIndex] = null;
+			this.assignWorkerTaskContext(workerIndex, null);
 			this._markWorkerIdle(workerIndex);
-			if (Chunk.DEBUG_REMESH)
-				console.log(
-					`[Pool] WORKER ${workerIndex} IDLE (mesh complete) chunkId=${meshChunkId} lod=${meshLod}`,
-				);
 			this.scheduleProcessQueuePump();
 		};
-	}
-
-	/** Mark a worker idle in both the Set and the array, idempotent. */
-	private _markWorkerIdle(workerIndex: number): void {
-		if (!this.idleWorkerSet.has(workerIndex)) {
-			this.idleWorkerSet.add(workerIndex);
-			this.idleWorkerIndices.push(workerIndex);
-			this.idleWorkerIndexPositions.set(
-				workerIndex,
-				this.idleWorkerIndices.length - 1,
-			);
-		}
 	}
 
 	// -------------------------------------------------------------------------
 	// Priority comparator
 	// -------------------------------------------------------------------------
+
 	private compareRemeshPriority(
 		aChunk: Chunk,
 		aPriority: boolean,
@@ -1295,14 +1324,11 @@ export class ChunkWorkerPool {
 		bPriority: boolean,
 	): number {
 		if (aPriority !== bPriority) return aPriority ? -1 : 1;
-
 		const aLod = aChunk.lodLevel ?? 0;
 		const bLod = bChunk.lodLevel ?? 0;
 		if (aLod !== bLod) return aLod - bLod;
-
 		if (aChunk.isModified !== bChunk.isModified)
 			return aChunk.isModified ? -1 : 1;
-
 		return 0;
 	}
 
@@ -1318,10 +1344,6 @@ export class ChunkWorkerPool {
 		return undefined;
 	}
 
-	/**
-	 * Compact the taskQueue by removing the consumed prefix. Called when the
-	 * consumed portion exceeds half the array to amortize the O(n) splice cost.
-	 */
 	private compactTaskQueue(): void {
 		if (this.taskQueueReadIdx === 0) return;
 		if (this.taskQueueReadIdx > this.taskQueue.length >> 1) {
@@ -1330,18 +1352,9 @@ export class ChunkWorkerPool {
 		}
 	}
 
-	/**
-	 * Binary-search insertion into the sorted taskQueue.
-	 * If the chunk is already queued, only updates its priority — the safety
-	 * sort in processQueue will reposition it if needed. This avoids the
-	 * O(n) indexOf + splice that would negate the binary-search benefit.
-	 * Searches only the unconsumed portion (from taskQueueReadIdx onward).
-	 */
 	private insertChunkIntoRemeshQueue(chunk: Chunk, priority: boolean): void {
 		const existingPriority = this.taskQueuePriority.get(chunk);
 		if (existingPriority !== undefined) {
-			// Already in queue — only promote if new priority is higher.
-			// The sort in processQueue will fix ordering if needed.
 			if (priority && !existingPriority) {
 				this.taskQueuePriority.set(chunk, true);
 			}
@@ -1349,11 +1362,8 @@ export class ChunkWorkerPool {
 		}
 
 		this.taskQueuePriority.set(chunk, priority);
-
-		// Compact consumed prefix before insertion if >50% consumed
 		this.compactTaskQueue();
 
-		// Binary search for insertion point within the unconsumed portion
 		let lo = this.taskQueueReadIdx;
 		let hi = this.taskQueue.length;
 		while (lo < hi) {
@@ -1419,11 +1429,11 @@ export class ChunkWorkerPool {
 		const deferLighting = this.getQueuedTerrainDeferLighting(chunk);
 		this.terrainTaskQueue.delete(chunk);
 		this.terrainTaskDeferLighting.delete(chunk.id);
-		this.workerTaskContext[workerIndex] = {
+		this.assignWorkerTaskContext(workerIndex, {
 			taskType: "terrain",
 			chunk,
 			terrainDeferLighting: deferLighting,
-		};
+		});
 		chunk.isTerrainScheduled = true;
 		worker.postTerrainGeneration(chunk, deferLighting);
 		return true;
@@ -1454,7 +1464,7 @@ export class ChunkWorkerPool {
 			SETTING_PARAMS.VERTICAL_RENDER_DISTANCE +
 			SETTING_PARAMS.LOD_PRECOMPUTE_VERTICAL_OFFSET;
 		const targetLods = [2, 3];
-		// PERF: Reuse scratch array for candidates instead of allocating per call.
+
 		const candidates = ChunkWorkerPool._lodCandidateScratch;
 		candidates.length = 0;
 
@@ -1468,11 +1478,10 @@ export class ChunkWorkerPool {
 			verticalRadius + 1,
 			queryScratch,
 		);
+
 		for (let _qi = 0; _qi < queryScratch.length; _qi++) {
 			const chunk = queryScratch[_qi]!;
-			if (!chunk.hasVoxelData || chunk.isDirty || !chunk.isModified) {
-				continue;
-			}
+			if (!chunk.hasVoxelData || chunk.isDirty || !chunk.isModified) continue;
 
 			const { hDist, vDist } = chunkDist(
 				chunk.chunkX,
@@ -1482,19 +1491,14 @@ export class ChunkWorkerPool {
 				centerChunkY,
 				centerChunkZ,
 			);
-			if (hDist > horizontalRadius) continue;
-			if (vDist > verticalRadius) continue;
+			if (hDist > horizontalRadius || vDist > verticalRadius) continue;
 
 			for (let li = 0; li < targetLods.length; li++) {
 				const lod = targetLods[li]!;
 				if (chunk.hasCachedLODMesh(lod)) continue;
 				const key = packInflightKey(chunk.id, lod);
 				if (this.pendingLodPrecomputeKeys.has(key)) continue;
-				candidates.push({
-					chunk,
-					lod,
-					score: hDist * 100 + vDist * 10 + lod,
-				});
+				candidates.push({ chunk, lod, score: hDist * 100 + vDist * 10 + lod });
 			}
 		}
 
@@ -1526,7 +1530,6 @@ export class ChunkWorkerPool {
 	// -------------------------------------------------------------------------
 
 	private scheduleChunkAndNeighborsRemesh(chunk: Chunk): void {
-		// Unrolled — avoids array allocation
 		this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);
 		const n0 = chunk.getNeighbor(-1, 0, 0);
 		const n1 = chunk.getNeighbor(0, 0, -1);
@@ -1543,7 +1546,6 @@ export class ChunkWorkerPool {
 	}
 
 	private hasStableVoxelNeighborsForCachedMesh(chunk: Chunk): boolean {
-		// Unrolled for V8 — avoids array allocation on hot path
 		const n0 = chunk.getNeighbor(-1, 0, 0);
 		if (!n0?.isLoaded || !n0.hasVoxelData) return false;
 		const n1 = chunk.getNeighbor(1, 0, 0);
@@ -1615,22 +1617,14 @@ export class ChunkWorkerPool {
 	// -------------------------------------------------------------------------
 
 	private processQueue(): void {
+		this._processQueueCallCount++;
 		this.updateQueueDebugStats();
-
-		if (Chunk.DEBUG_REMESH) {
-			console.log(
-				`[Pool] processQueue idle=${this.idleWorkerIndices.length} taskQueue=${this.taskQueue.length - this.taskQueueReadIdx} terrain=${this.terrainTaskQueue.size} lodPrecompute=${this.lodPrecomputeQueue.length - this.lodPrecomputeQueueReadIdx} distant=${this.distantTerrainTaskQueue.length - this.distantTerrainTaskQueueReadIdx} pumpScheduled=${this.processQueuePumpScheduled}`,
-			);
-		}
-
-		// Queue is maintained in sorted order by insertChunkIntoRemeshQueue
-		// (binary-search insertion), so no full sort is needed here.
 
 		const dispatchBudget = this.getDispatchBudgetPerTick();
 		let dispatchedThisTick = 0;
 
 		while (
-			this._idleReadIdx < this.idleWorkerIndices.length &&
+			this.getEffectiveIdleWorkerCount() > 0 &&
 			dispatchedThisTick < dispatchBudget
 		) {
 			let taskChunk: Chunk | undefined;
@@ -1667,27 +1661,19 @@ export class ChunkWorkerPool {
 				break;
 			}
 
-			if (!(taskChunk || distantTask)) break;
+			if (!taskChunk && !distantTask) break;
 
+			// Per-type pre-dispatch validation.
 			if (taskType === "remesh" && taskChunk) {
 				if (this.isCompletelyEmptyChunk(taskChunk)) {
 					this.clearChunkMeshIfPresent(taskChunk);
 					this.pendingRemeshMap.delete(taskChunk);
 					this.taskQueuePriority.delete(taskChunk);
-					if (Chunk.DEBUG_REMESH)
-						console.log(
-							`[Pool] processQueue SKIPPED empty chunk=${taskChunk.id}`,
-						);
 					continue;
 				}
-				// Only try cache if the chunk wasn't explicitly dirtied via scheduleRemesh
 				if (!this.pendingRemeshMap.has(taskChunk)) {
 					if (this.tryApplyCachedLODMesh(taskChunk)) {
 						this.taskQueuePriority.delete(taskChunk);
-						if (Chunk.DEBUG_REMESH)
-							console.log(
-								`[Pool] processQueue SKIPPED cached mesh chunk=${taskChunk.id}`,
-							);
 						continue;
 					}
 				}
@@ -1704,35 +1690,42 @@ export class ChunkWorkerPool {
 				}
 			}
 
-			// For distantTerrain, find a ready idle worker
+			// For distantTerrain, find a ready idle worker within the live portion.
 			if (taskType === "distantTerrain") {
-				const readyIdleIndex = this.idleWorkerIndices.findIndex((idx) =>
-					this.distantTerrainReadyWorkers.has(idx),
-				);
+				let readyIdleIndex = -1;
+				for (
+					let i = this._idleReadIdx;
+					i < this.idleWorkerIndices.length;
+					i++
+				) {
+					if (this.distantTerrainReadyWorkers.has(this.idleWorkerIndices[i]!)) {
+						readyIdleIndex = i;
+						break;
+					}
+				}
 				if (readyIdleIndex === -1) {
-					// No ready worker — unconsume the task by rolling back the read index
 					this.distantTerrainTaskQueueReadIdx--;
 					break;
 				}
-				// M5: Swap selected worker to read-index position
+				// Swap the ready worker to the front of the live portion so
+				// _consumeNextIdleWorker picks it up.
 				if (readyIdleIndex !== this._idleReadIdx) {
-					const tmp = this.idleWorkerIndices[this._idleReadIdx]!;
-					this.idleWorkerIndices[this._idleReadIdx] =
-						this.idleWorkerIndices[readyIdleIndex]!;
-					this.idleWorkerIndices[readyIdleIndex] = tmp;
-					this.idleWorkerIndexPositions.set(
-						this.idleWorkerIndices[this._idleReadIdx]!,
-						this._idleReadIdx,
-					);
-					this.idleWorkerIndexPositions.set(tmp, readyIdleIndex);
+					const frontIdx = this._idleReadIdx;
+					const frontWorker = this.idleWorkerIndices[frontIdx]!;
+					const readyWorker = this.idleWorkerIndices[readyIdleIndex]!;
+					this.idleWorkerIndices[frontIdx] = readyWorker;
+					this.idleWorkerIndices[readyIdleIndex] = frontWorker;
+					this.idleWorkerIndexPositions.set(readyWorker, frontIdx);
+					this.idleWorkerIndexPositions.set(frontWorker, readyIdleIndex);
 				}
 			}
 
-			// M5: Read-index instead of O(N) shift()
-			const workerIndex = this.idleWorkerIndices[this._idleReadIdx]!;
-			this._idleReadIdx++;
-			this.idleWorkerSet.delete(workerIndex);
-			this.idleWorkerIndexPositions.delete(workerIndex);
+			// Consume the next idle worker — this clears it from idleWorkerSet
+			// and idleWorkerIndexPositions atomically so swap-remove in
+			// handleWorkerFailure can never see a stale consumed entry.
+			const workerIndex = this._consumeNextIdleWorker();
+			if (workerIndex === -1) break;
+
 			const worker = this.workers[workerIndex]!;
 
 			try {
@@ -1747,29 +1740,25 @@ export class ChunkWorkerPool {
 					dispatchedThisTick++;
 				} else if (taskType === "remesh") {
 					const lod = taskChunk!.lodLevel ?? 0;
-					this.workerTaskContext[workerIndex] = {
+					this.assignWorkerTaskContext(workerIndex, {
 						taskType,
 						chunk: taskChunk,
 						lod,
-					};
+					});
 					this.pendingRemeshMap.delete(taskChunk!);
 					this.taskQueuePriority.delete(taskChunk!);
 					this.inFlightRemeshKeys.add(packInflightKey(taskChunk!.id, lod));
 					worker.postFullRemesh(taskChunk!);
-					if (Chunk.DEBUG_REMESH)
-						console.log(
-							`[Pool] DISPATCHED remesh chunk=${taskChunk!.id} lod=${lod} worker=${workerIndex} queueLen=${this.taskQueue.length - this.taskQueueReadIdx} inFlight=${this.inFlightRemeshKeys.size}`,
-						);
 					this.recordWorkerDispatch(workerIndex);
 					this.debugStats.totalRemeshDispatches++;
 					dispatchedThisTick++;
 				} else if (taskType === "lodPrecompute") {
 					const lod = precomputeLod!;
-					this.workerTaskContext[workerIndex] = {
+					this.assignWorkerTaskContext(workerIndex, {
 						taskType,
 						chunk: taskChunk,
 						lod,
-					};
+					});
 					this.inFlightRemeshKeys.add(packInflightKey(taskChunk!.id, lod));
 					worker.postFullRemesh(taskChunk!, lod);
 					this.recordWorkerDispatch(workerIndex);
@@ -1777,7 +1766,7 @@ export class ChunkWorkerPool {
 					dispatchedThisTick++;
 				} else {
 					// distantTerrain
-					this.workerTaskContext[workerIndex] = { taskType, distantTask };
+					this.assignWorkerTaskContext(workerIndex, { taskType, distantTask });
 					this.distantTerrainInFlight = true;
 					worker.postGenerateDistantTerrain(
 						distantTask!.requestId,
@@ -1803,7 +1792,7 @@ export class ChunkWorkerPool {
 		this.debugStats.lastDispatchCount = dispatchedThisTick;
 		this.debugStats.totalDispatchCount += dispatchedThisTick;
 
-		// PERF: Compact lodPrecomputeQueue when read-index exceeds threshold.
+		// Compact lodPrecomputeQueue when read-index exceeds threshold.
 		if (
 			this.lodPrecomputeQueueReadIdx > 64 &&
 			this.lodPrecomputeQueueReadIdx * 2 > this.lodPrecomputeQueue.length
@@ -1813,34 +1802,17 @@ export class ChunkWorkerPool {
 			this.lodPrecomputeQueueReadIdx = 0;
 		}
 
-		// M5: Compact idleWorkerIndices when read-index exceeds threshold
+		// Compact idleWorkerIndices when the consumed prefix is large enough.
 		if (
 			this._idleReadIdx > 8 &&
 			this._idleReadIdx * 2 >= this.idleWorkerIndices.length
 		) {
-			const toCompact = Math.min(
-				this._idleReadIdx,
-				this.idleWorkerIndices.length,
-			);
-			this.idleWorkerIndices.copyWithin(0, toCompact);
-			this.idleWorkerIndices.length -= toCompact;
-			this._idleReadIdx = 0;
-			// Rebuild position map for remaining idle workers
-			this.idleWorkerIndexPositions.clear();
-			for (let i = 0; i < this.idleWorkerIndices.length; i++) {
-				this.idleWorkerIndexPositions.set(this.idleWorkerIndices[i]!, i);
-			}
+			this._compactIdleWorkers();
 		}
 
 		this.updateQueueDebugStats();
 
-		if (Chunk.DEBUG_REMESH && dispatchedThisTick > 0) {
-			console.log(
-				`[Pool] processQueue dispatched=${dispatchedThisTick} remaining idle=${this.idleWorkerIndices.length} taskQueue=${this.taskQueue.length - this.taskQueueReadIdx} terrain=${this.terrainTaskQueue.size}`,
-			);
-		}
-
-		if (this.idleWorkerIndices.length > 0 && this.hasPendingTasks()) {
+		if (this.getEffectiveIdleWorkerCount() > 0 && this.hasPendingTasks()) {
 			this.scheduleProcessQueuePump();
 		}
 	}

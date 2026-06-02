@@ -314,6 +314,8 @@ export class OcclusionCuller {
 					const mesh = chunk.mesh;
 					if (mesh && mesh.isVisible) {
 						mesh.isVisible = false;
+						const tm = chunk.transparentMesh;
+						if (tm) tm.isVisible = false;
 						hidden++;
 					}
 				}
@@ -400,7 +402,11 @@ export class OcclusionCuller {
 				}
 			}
 
-			if (mesh.isVisible !== visible) mesh.isVisible = visible;
+			if (mesh.isVisible !== visible) {
+				mesh.isVisible = visible;
+				const tm = chunk.transparentMesh;
+				if (tm) tm.isVisible = visible;
+			}
 			if (visible) visibleCount++;
 		}
 
@@ -413,7 +419,11 @@ export class OcclusionCuller {
 				const pc = prev[i]!;
 				if (pc.bfsQueryId !== queryId) {
 					const pm = pc.mesh;
-					if (pm && pm.isVisible) pm.isVisible = false;
+					const ptm = pc.transparentMesh;
+					if (pm && pm.isVisible) {
+						pm.isVisible = false;
+						if (ptm) ptm.isVisible = false;
+					}
 				}
 			}
 		}
@@ -546,31 +556,29 @@ export class OcclusionCuller {
 				const exitFace = d;
 				const nextEntry = exitFace ^ 1;
 
-				if (nbr.bfsQueryId !== queryId) {
-					resetChunkBfs(nbr, queryId);
-					this._topoVisibleChunks.push(nbr);
-				}
-
 				let newSteps = steps + 1;
 				if (ny * SIZE < SEA_LEVEL) newSteps++;
 				if (nbr._isDarkCached === true) newSteps += 3;
 				if (newSteps > MAX_BFS_STEPS) continue;
 
+				// Connectivity gate
+				if (entryFace >= 0) {
+					const bit = FACE_PAIR_FLAT[entryFace * 6 + exitFace];
+					if (!(curFc & (1 << bit))) continue;
+				}
+				if (nbr.bfsQueryId !== queryId) {
+					resetChunkBfs(nbr, queryId);
+					this._topoVisibleChunks.push(nbr);
+				}
 				const faceBit = 1 << nextEntry;
 				if ((nbr.bfsVisitedFaces & faceBit) !== 0) {
 					if (newSteps >= nbr._fSteps[nextEntry]) continue;
 				}
-				nbr.bfsVisitedFaces |= faceBit;
-				nbr._fSteps[nextEntry] = newSteps;
 
 				if (nbr.connectivityDirty) (nbr as any).computeFaceConnectivity?.();
 
-				// Connectivity gate
-				if (entryFace >= 0) {
-					const bit = FACE_PAIR_FLAT[entryFace * 6 + exitFace]!;
-					if (!(curFc & (1 << bit))) continue;
-				}
-
+				nbr.bfsVisitedFaces |= faceBit;
+				nbr._fSteps[nextEntry] = newSteps;
 				const nextTail = (qTail + 1) & BFS_MASK;
 				if (nextTail !== qHead) {
 					_incBfsChunks[qTail] = nbr;
@@ -583,6 +591,7 @@ export class OcclusionCuller {
 
 		if (newChunk.bfsQueryId === queryId && newChunk.mesh) {
 			newChunk.mesh.isVisible = true;
+			if (newChunk.transparentMesh) newChunk.transparentMesh.isVisible = true;
 		}
 	}
 
@@ -708,28 +717,26 @@ export class OcclusionCuller {
 				const exitFace = d;
 				const nextEntry = exitFace ^ 1;
 
-				if (nbr.bfsQueryId !== queryId) {
-					resetChunkBfs(nbr, queryId);
-					this._topoVisibleChunks.push(nbr);
-				}
-
 				let newSteps = steps + 1;
 				if (ny * SIZE < SEA_LEVEL) newSteps++;
 				if (nbr._isDarkCached === true) newSteps += 3;
 				if (newSteps > MAX_BFS_STEPS) continue;
-
-				const faceBit = 1 << nextEntry;
-				if ((nbr.bfsVisitedFaces & faceBit) !== 0) {
-					if (newSteps >= nbr._fSteps[nextEntry]) continue;
-				}
-				nbr.bfsVisitedFaces |= faceBit;
-				nbr._fSteps[nextEntry] = newSteps;
 
 				// Connectivity gate
 				if (entryFace >= 0) {
 					const bit = FACE_PAIR_FLAT[entryFace * 6 + exitFace]!;
 					if (!(curFc & (1 << bit))) continue;
 				}
+				if (nbr.bfsQueryId !== queryId) {
+					resetChunkBfs(nbr, queryId);
+					this._topoVisibleChunks.push(nbr);
+				}
+				const faceBit = 1 << nextEntry;
+				if ((nbr.bfsVisitedFaces & faceBit) !== 0) {
+					if (newSteps >= nbr._fSteps[nextEntry]) continue;
+				}
+				nbr.bfsVisitedFaces |= faceBit;
+				nbr._fSteps[nextEntry] = newSteps;
 
 				const nextTail = (qTail + 1) & BFS_MASK;
 				if (nextTail !== qHead) {

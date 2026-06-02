@@ -48,7 +48,7 @@ const BLOCKS_URL = "/data/blocks.json";
 const SHAPES_URL = "/data/block-shapes.json";
 const SHAPE_SCALE = 16;
 
-const FALLBACK_CUBE: ShapeDefinition = {
+export const FALLBACK_CUBE: ShapeDefinition = {
 	name: "cube",
 	boxes: [{ min: [0, 0, 0], max: [1, 1, 1], faceMask: FACE_ALL }],
 	rotateY: false,
@@ -172,13 +172,45 @@ const loadBlockShapeMap = async (
 	return map;
 };
 
-export const ShapeDefinitions: ShapeDefinition[] = await loadShapeDefinitions();
-export const ShapeByBlockId: Uint16Array =
-	await loadBlockShapeMap(ShapeDefinitions);
-const cubeIndex = ShapeDefinitions.findIndex((shape) => shape.name === "cube");
-export const CUBE_SHAPE_INDEX = cubeIndex === -1 ? 0 : cubeIndex;
+let _shapeDefinitions: ShapeDefinition[] | null = null;
+let _shapeByBlockId: Uint16Array | null = null;
+let _shapeInitPromise: Promise<void> | null = null;
+
+function ensureShapeInit(): Promise<void> {
+	if (_shapeInitPromise === null) {
+		_shapeInitPromise = (async () => {
+			const defs = await loadShapeDefinitions();
+			const map = await loadBlockShapeMap(defs);
+			_shapeDefinitions = defs;
+			_shapeByBlockId = map;
+		})();
+	}
+	return _shapeInitPromise;
+}
+
+export const shapeInitPromise: Promise<void> = ensureShapeInit();
+
+export function getShapeDefinitions(): ShapeDefinition[] {
+	return _shapeDefinitions ?? [];
+}
+
+export function getShapeByBlockId(): Uint16Array {
+	return _shapeByBlockId ?? new Uint16Array(65536);
+}
+
+export function getCubeShapeIndex(): number {
+	const defs = _shapeDefinitions;
+	if (!defs) return 0;
+	const idx = defs.findIndex((shape) => shape.name === "cube");
+	return idx === -1 ? 0 : idx;
+}
 
 export const getShapeForBlockId = (id: number): ShapeDefinition => {
-	const shapeIndex = ShapeByBlockId[id] ?? CUBE_SHAPE_INDEX;
-	return ShapeDefinitions[shapeIndex] ?? ShapeDefinitions[CUBE_SHAPE_INDEX];
+	const defs = _shapeDefinitions;
+	const map = _shapeByBlockId;
+	const cubeIndex = defs ? defs.findIndex((shape) => shape.name === "cube") : 0;
+	const safeCubeIndex = cubeIndex === -1 ? 0 : cubeIndex;
+	if (!map || !defs) return FALLBACK_CUBE;
+	const shapeIndex = map[id] ?? safeCubeIndex;
+	return defs[shapeIndex] ?? defs[safeCubeIndex] ?? FALLBACK_CUBE;
 };

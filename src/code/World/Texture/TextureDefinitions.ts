@@ -18,11 +18,18 @@ type RawBlockDefinition = {
 
 const BLOCKS_URL = "/data/blocks.json";
 
-export const TextureDefinitions: TextureDefinition[] =
-	await loadBlockDefinitions();
-export const TextureDefinitionMap: Map<number, TextureDefinition> = new Map(
-	TextureDefinitions.map((d) => [d.id, d]),
-);
+export const TextureDefinitions: TextureDefinition[] = [];
+export const TextureDefinitionMap: Map<number, TextureDefinition> = new Map();
+
+export const TextureDefinitionsReady: Promise<TextureDefinition[]> =
+	loadBlockDefinitions().then((definitions) => {
+		TextureDefinitions.splice(0, TextureDefinitions.length, ...definitions);
+		TextureDefinitionMap.clear();
+		for (const definition of definitions) {
+			TextureDefinitionMap.set(definition.id, definition);
+		}
+		return TextureDefinitions;
+	});
 
 async function loadBlockDefinitions(): Promise<TextureDefinition[]> {
 	try {

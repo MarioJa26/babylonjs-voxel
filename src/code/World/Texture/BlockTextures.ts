@@ -1,4 +1,5 @@
-import { TextureDefinitions } from "./TextureDefinitions";
+import { BlockType } from "./BlockType";
+import type { TextureDefinition } from "./TextureDefinitions";
 
 type BlockTextureDef = {
 	top?: number[];
@@ -13,36 +14,39 @@ type BlockTextureDef = {
 export const BlockTextures: (BlockTextureDef | null)[] = buildBlockTextures();
 
 function buildBlockTextures(): (BlockTextureDef | null)[] {
-	const result: (BlockTextureDef | null)[] = [null]; // index 0 = air
+	const maxId = getMaxBlockTypeId();
+	const result: (BlockTextureDef | null)[] = new Array(maxId + 1).fill(null);
 
-	for (let i = 0; i < TextureDefinitions.length; i++) {
-		const def = TextureDefinitions[i];
-		if (!def) {
-			result.push(null);
-			continue;
-		}
-		// Calculate UV based on index position (col, row in 16x16 atlas)
-		const col = i % 16;
-		const row = Math.floor(i / 16);
-		result.push({ all: [col, row] });
+	for (let id = 1; id <= maxId; id++) {
+		const atlasIndex = id - 1;
+		result[id] = { all: [atlasIndex % 16, Math.floor(atlasIndex / 16)] };
 	}
 
 	return result;
+}
+
+function getMaxBlockTypeId(): number {
+	let maxId = 0;
+	for (const value of Object.values(BlockType)) {
+		if (typeof value === "number" && value > maxId) maxId = value;
+	}
+	return maxId;
 }
 
 // Call this after the atlas is built to update UV coordinates
 // Pass the UV map from TextureAtlasFactory to avoid importing it (worker compatibility)
 export function updateBlockTexturesUV(
 	uvMap: Record<string, { u: number; v: number; tileSize: number }>,
+	textureDefinitions: TextureDefinition[],
 ): void {
 	if (BlockTextures.length <= 1) return;
 
 	for (
 		let i = 1;
-		i < BlockTextures.length && i <= TextureDefinitions.length;
+		i < BlockTextures.length && i <= textureDefinitions.length;
 		i++
 	) {
-		const def = TextureDefinitions[i - 1];
+		const def = textureDefinitions[i - 1];
 		if (!def || !BlockTextures[i]) continue;
 
 		const uv = uvMap[def.name];

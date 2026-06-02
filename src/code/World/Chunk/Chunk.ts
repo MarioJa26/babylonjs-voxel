@@ -2,7 +2,6 @@ import type { Mesh } from "@babylonjs/core";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { getFinalTerrainHeight } from "@/code/Generation/TerrainHeightMap";
 import {
-	CUBE_SHAPE_INDEX,
 	FACE_ALL,
 	FACE_NX,
 	FACE_NY,
@@ -10,8 +9,10 @@ import {
 	FACE_PX,
 	FACE_PY,
 	FACE_PZ,
-	ShapeByBlockId,
-	ShapeDefinitions,
+	FALLBACK_CUBE,
+	getCubeShapeIndex,
+	getShapeByBlockId,
+	getShapeDefinitions,
 } from "../Shape/BlockShapes";
 import { getSliceAxis, transformBox } from "../Shape/BlockShapeTransforms";
 import {
@@ -1382,9 +1383,12 @@ export class Chunk {
 		}
 
 		const state = unpackBlockState(blockPacked);
-		const shapeIndex = ShapeByBlockId[blockId] ?? CUBE_SHAPE_INDEX;
+		const shapeMap = getShapeByBlockId();
+		const shapeDefs = getShapeDefinitions();
+		const cubeIndex = getCubeShapeIndex();
+		const shapeIndex = shapeMap[blockId] ?? cubeIndex;
 		const shape =
-			ShapeDefinitions[shapeIndex] ?? ShapeDefinitions[CUBE_SHAPE_INDEX];
+			shapeDefs[shapeIndex] ?? shapeDefs[cubeIndex] ?? FALLBACK_CUBE;
 		if (!shape) {
 			Chunk.CLOSED_FACE_MASK_CACHE[cacheIndex] = FACE_ALL;
 			return FACE_ALL;
