@@ -9,6 +9,7 @@ import {
 	FACE_PY,
 	FACE_PZ,
 } from "../../Shape/BlockShapes";
+import { FaceName, getFaceName } from "../../Texture/FaceName";
 import {
 	MaterialType,
 	type MeshContext,
@@ -79,13 +80,6 @@ function parseBlock(packed: number): ParsedBlock {
 		isTransparent: materialType === MaterialType.WaterOrGlass,
 		greedyCompatible: isGreedyCompatiblePackedBlock(packed),
 	};
-}
-
-function getFaceName(axis: number, isBackFace: boolean): string {
-	// Match the old working worker mesher convention
-	if (axis === 0) return isBackFace ? "east" : "west";
-	if (axis === 1) return isBackFace ? "bottom" : "top";
-	return isBackFace ? "north" : "south";
 }
 
 function getFaceBit(axis: number, isBackFace: boolean): number {
@@ -220,7 +214,7 @@ function emitCrossShapeAtBlock(
 		isBackFace: false,
 		light: baseLight,
 		ao: 0,
-		faceName: "+x",
+		faceName: FaceName.PX,
 		materialType: materialType,
 		flip: false,
 	});
@@ -236,7 +230,7 @@ function emitCrossShapeAtBlock(
 		isBackFace: true,
 		light: baseLight,
 		ao: 0,
-		faceName: "-x",
+		faceName: FaceName.NX,
 		materialType: materialType,
 		flip: false,
 	});
@@ -253,7 +247,7 @@ function emitCrossShapeAtBlock(
 		isBackFace: false,
 		light: baseLight,
 		ao: 0,
-		faceName: "+z",
+		faceName: FaceName.PZ,
 		materialType: materialType,
 		flip: false,
 	});
@@ -269,7 +263,7 @@ function emitCrossShapeAtBlock(
 		isBackFace: true,
 		light: baseLight,
 		ao: 0,
-		faceName: "-z",
+		faceName: FaceName.NZ,
 		materialType: materialType,
 		flip: false,
 	});
@@ -306,7 +300,7 @@ function emitCrossDiagonalAtBlock(
 		isBackFace: false,
 		light: baseLight,
 		ao: 0,
-		faceName: "west",
+		faceName: FaceName.West,
 		materialType: materialType,
 		flip: false,
 		diagonal: 1,
@@ -323,7 +317,7 @@ function emitCrossDiagonalAtBlock(
 		isBackFace: true,
 		light: baseLight,
 		ao: 0,
-		faceName: "east",
+		faceName: FaceName.East,
 		materialType: materialType,
 		flip: false,
 		diagonal: 1,
@@ -341,7 +335,7 @@ function emitCrossDiagonalAtBlock(
 		isBackFace: false,
 		light: baseLight,
 		ao: 0,
-		faceName: "south",
+		faceName: FaceName.South,
 		materialType: materialType,
 		flip: false,
 		diagonal: 2,
@@ -358,7 +352,7 @@ function emitCrossDiagonalAtBlock(
 		isBackFace: true,
 		light: baseLight,
 		ao: 0,
-		faceName: "north",
+		faceName: FaceName.North,
 		materialType: materialType,
 		flip: false,
 		diagonal: 2,

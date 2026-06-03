@@ -4,6 +4,12 @@ import type { IWorldFeature } from "./IWorldFeature";
 import { chunkWorldBounds, computeRegion } from "./RegionFeature";
 
 export class MineshaftFeature implements IWorldFeature {
+	// baseY = -16 - random % 128 (-16..-143), plus a few cells of vertical carving.
+	public readonly verticalBounds = {
+		minWorldY: -150,
+		maxWorldY: 0,
+	};
+
 	public generate(
 		chunkX: number,
 		chunkY: number,

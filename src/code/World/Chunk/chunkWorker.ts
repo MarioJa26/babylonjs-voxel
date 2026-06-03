@@ -10,7 +10,6 @@ import {
 export class ChunkWorker {
 	private terrainWorker: Worker; // terrain + distant terrain + lighting
 	private voxelWorker: Worker; // voxel mesh
-	private waterWorker: Worker; // water mesh
 
 	private warnedNonSharedRemeshPayload = false;
 	private distantTerrainSharedInitialized = false;
@@ -58,26 +57,17 @@ export class ChunkWorker {
 			{ type: "module", name: `chunk-voxel-${workerIndex}` },
 		);
 		this.voxelWorker.onmessage = (e) => onMessageMesh(e);
-
-		// Water mesh worker
-		this.waterWorker = new Worker(
-			new URL("./water.worker.ts", import.meta.url),
-			{ type: "module", name: `chunk-water-${workerIndex}` },
-		);
-		this.waterWorker.onmessage = (e) => onMessageMesh(e);
 	}
 
 	public setOnError(handler: (ev: ErrorEvent | Event) => void): void {
 		this.terrainWorker.onerror = handler;
 		this.voxelWorker.onerror = handler;
-		this.waterWorker.onerror = handler;
 	}
 
 	public terminate(): void {
 		this.distantTerrainSharedInitialized = false;
 		this.terrainWorker.terminate();
 		this.voxelWorker.terminate();
-		this.waterWorker.terminate();
 	}
 
 	private readonly paletteToTyped = (

@@ -16,13 +16,20 @@ const generator = new WorldGenerator(GenerationParams);
 // ---------------------------------------------------------------------------
 // Block compression
 // ---------------------------------------------------------------------------
+
+// Reused across calls in this worker; cleared at the start of each
+// compressBlocks invocation. Allocating a fresh 64 KiB Uint8Array per
+// chunk gen was measurable in profiling.
+const _compressSeen = new Uint8Array(65536);
+
 function compressBlocks(blocks: Uint8Array): {
 	isUniform: boolean;
 	uniformBlockId: number;
 	palette: Uint16Array | null;
 	packedBlocks: Uint8Array | Uint16Array | null;
 } {
-	const seen = new Uint8Array(65536);
+	const seen = _compressSeen;
+	seen.fill(0);
 	let uniqueCount = 0;
 	const firstId = blocks[0];
 
@@ -59,7 +66,7 @@ function compressBlocks(blocks: Uint8Array): {
 		}
 
 		const len = (blocks.length + 1) >> 1;
-		const packedArray = new Uint8Array(new SharedArrayBuffer(len));
+		const packedArray = new Uint8Array(new ArrayBuffer(len));
 
 		for (let i = 0; i < blocks.length; i++) {
 			const nibble = seen[blocks[i]];

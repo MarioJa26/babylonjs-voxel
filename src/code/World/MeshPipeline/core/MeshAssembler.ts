@@ -12,13 +12,9 @@ export function mergeMeshData(
 ): void {
 	if (source.faceCount === 0) return;
 
-	const A = source.faceDataA.finalArray;
-	const B = source.faceDataB.finalArray;
-	const C = source.faceDataC.finalArray;
-
-	target.faceDataA.bulkPush(A);
-	target.faceDataB.bulkPush(B);
-	target.faceDataC.bulkPush(C);
+	target.faceDataA.pushFrom(source.faceDataA);
+	target.faceDataB.pushFrom(source.faceDataB);
+	target.faceDataC.pushFrom(source.faceDataC);
 
 	target.faceCount += source.faceCount;
 }

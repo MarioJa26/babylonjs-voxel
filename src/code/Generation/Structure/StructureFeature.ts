@@ -6,6 +6,12 @@ import { Structure, type StructureData } from "./Structure";
 import { computeRegion, chunkWorldBounds, aabbOverlaps } from "./RegionFeature";
 
 export class StructureSpawnerFeature implements IWorldFeature {
+	// Opulent House is 4 tall, placed at surface. Keep margin for neighbor surface range.
+	public readonly verticalBounds = {
+		minWorldY: -200,
+		maxWorldY: 500,
+	};
+
 	private static structures: Map<string, Structure> = new Map();
 
 	constructor() {

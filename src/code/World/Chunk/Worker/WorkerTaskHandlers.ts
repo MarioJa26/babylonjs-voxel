@@ -1,5 +1,6 @@
 import { DistantTerrainGenerator } from "@/code/Generation/DistantTerrain/DistantTerrainGenerator";
 import type { WorldGenerator } from "@/code/Generation/WorldGenerator";
+import { FaceName } from "@/code/World/Texture/FaceName";
 import type { WorkerInternalMeshData } from "../DataStructures/WorkerInternalMeshData";
 import {
 	type GenerateDistantTerrainRequest,
@@ -29,7 +30,7 @@ export type MeshBuilderLike = {
 		height: number,
 		blockId: number,
 		isBackFace: boolean,
-		faceName: string,
+		faceName: FaceName,
 		lightLevel: number,
 		packedAO: number,
 		meshData: WorkerInternalMeshData,

@@ -1,10 +1,16 @@
-import type { Biome } from "../Biome/BiomeTypes";
+import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
 import { getBiome, getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 
 export class LavaPoolFeature implements IWorldFeature {
+	// Underground pools: -64..-1087. Surface pools: surface-17..surface-1 (max ~400).
+	public readonly verticalBounds = {
+		minWorldY: -1100,
+		maxWorldY: 400,
+	};
+
 	public generate(
 		chunkX: number,
 		chunkY: number,
@@ -25,7 +31,10 @@ export class LavaPoolFeature implements IWorldFeature {
 		let spawnChance = 2;
 		let isSurface = false;
 
-		if (biome.name === "Volcanic_Wasteland" || biome.name === "Basalt_Deltas") {
+		if (
+			biome.id === BIOME_ID.VOLCANIC_WASTELAND ||
+			biome.id === BIOME_ID.BASALT_DELTAS
+		) {
 			spawnChance = 100;
 			isSurface = true;
 		}
@@ -71,8 +80,8 @@ export class LavaPoolFeature implements IWorldFeature {
 
 		const poolBiome = getBiome(poolCenterX, poolCenterZ);
 		isSurface =
-			poolBiome.name === "Volcanic_Wasteland" ||
-			poolBiome.name === "Basalt_Deltas";
+			poolBiome.id === BIOME_ID.VOLCANIC_WASTELAND ||
+			poolBiome.id === BIOME_ID.BASALT_DELTAS;
 
 		let poolSurfaceY = 0;
 		if (isSurface) {

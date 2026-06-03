@@ -1,4 +1,4 @@
-import type { Biome } from "./Biome/BiomeTypes";
+import { BIOME_ID, type Biome } from "./Biome/BiomeTypes";
 import {
 	NO_SURFACE_Y as CAVE_NO_SURFACE_Y,
 	evaluateCaveCarve,
@@ -157,6 +157,33 @@ export class SurfaceGenerator {
 
 	private getColumnPrepassKey(chunkX: number, chunkZ: number): bigint {
 		return this.packXZKey(chunkX, chunkZ);
+	}
+
+	/**
+	 * Resolve the column prepass that contains the given world column, returning
+	 * the prepass entry plus the column's local indices within it. The prepass
+	 * is built on demand (it is also built by the terrain path), so the first
+	 * caller pays the build cost and every subsequent caller hits the cache.
+	 *
+	 * Used by the flora loop to look up border-column data without recomputing
+	 * `findTopSurfaceY` (which would otherwise duplicate the ~130 noise calls
+	 * that the prepass already does once per (chunkX, chunkZ) globally).
+	 */
+	private resolveColumnPrepassForWorld(
+		worldX: number,
+		worldZ: number,
+	): {
+		entry: ColumnPrepassCacheEntry;
+		localX: number;
+		localZ: number;
+	} {
+		const CHUNK_SIZE = this.params.CHUNK_SIZE;
+		const chunkX = Math.floor(worldX / CHUNK_SIZE);
+		const chunkZ = Math.floor(worldZ / CHUNK_SIZE);
+		const entry = this.getOrBuildColumnPrepass(chunkX, chunkZ);
+		const localX = worldX - chunkX * CHUNK_SIZE;
+		const localZ = worldZ - chunkZ * CHUNK_SIZE;
+		return { entry, localX, localZ };
 	}
 
 	/**
@@ -452,7 +479,7 @@ export class SurfaceGenerator {
 		topSurfaceYMap.fill(NO_SURFACE_Y);
 
 		const volcanicLiquidId =
-			currentBiome.name === "Volcanic_Wasteland" ? 24 : 30;
+			currentBiome.id === BIOME_ID.VOLCANIC_WASTELAND ? 24 : 30;
 
 		// Fast-path: if entire chunk is well below any possible surface, skip expensive prepass
 		// Minimum surface Y: SEA_LEVEL + continentalnessSpline(-1.0) - INFLUENCE ≈ -90
@@ -814,9 +841,25 @@ export class SurfaceGenerator {
 					localZ >= 0 &&
 					localZ < chunkSize;
 
-				const knownTopSurfaceY = isInsideChunkColumn
-					? topSurfaceYMap[localX + localZ * chunkSize]
-					: undefined;
+				// Border columns: topSurfaceY lives in the neighbouring chunk's
+				// column prepass (which is shared globally and already built by
+				// terrain generation or by an earlier flora pass). Reading from
+				// the prepass avoids the slow `findTopSurfaceY` path inside
+				// `getOrBuildFloraColumnInfo`, which would otherwise spend ~130
+				// noise calls per border column.
+				let knownTopSurfaceY: number | undefined;
+				if (isInsideChunkColumn) {
+					knownTopSurfaceY = topSurfaceYMap[localX + localZ * chunkSize];
+				} else {
+					const resolved = this.resolveColumnPrepassForWorld(worldX, worldZ);
+					const neighbourTop =
+						resolved.entry.topSurfaceYMap[
+							resolved.localX + resolved.localZ * chunkSize
+						];
+					if (neighbourTop !== NO_SURFACE_Y) {
+						knownTopSurfaceY = neighbourTop;
+					}
+				}
 
 				const column = this.getOrBuildFloraColumnInfo(
 					worldX,
@@ -890,6 +933,9 @@ export class SurfaceGenerator {
 	) {
 		const STRUCTURE_SEARCH_RADIUS = 2;
 		const features = this.features;
+		const chunkSize = this.chunk_size;
+		const chunkMinY = chunkY * chunkSize;
+		const chunkMaxY = chunkMinY + chunkSize - 1;
 
 		for (
 			let cx = chunkX - STRUCTURE_SEARCH_RADIUS;
@@ -902,14 +948,20 @@ export class SurfaceGenerator {
 				cz++
 			) {
 				for (let i = 0; i < features.length; i++) {
-					features[i].generate(
+					const feature = features[i];
+					const bounds = feature.verticalBounds;
+					if (bounds !== undefined) {
+						if (chunkMaxY < bounds.minWorldY) continue;
+						if (chunkMinY > bounds.maxWorldY) continue;
+					}
+					feature.generate(
 						cx,
 						chunkY,
 						cz,
 						biome,
 						placeBlock,
 						SurfaceGenerator.seedAsInt,
-						this.chunk_size,
+						chunkSize,
 						chunkX,
 						chunkZ,
 					);

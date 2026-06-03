@@ -133,16 +133,18 @@ export class ResizableTypedArray<
 	}
 
 	/**
-	 * Bulk push another typed array into this one.
-	 * More efficient than element-by-element pushing.
+	 * Append the populated portion of another ResizableTypedArray directly
+	 * into our backing buffer. Avoids allocating a sliced copy of `other`
+	 * (which `finalArray` would force) — same allocation cost as a memcpy.
 	 */
-	bulkPush(src: T): void {
-		if (src.length === 0) return;
-		const newLength = this.length + src.length;
+	pushFrom(other: ResizableTypedArray<T>): void {
+		const n = other.length;
+		if (n === 0) return;
+		const newLength = this.length + n;
 		if (newLength > this.capacity) {
 			this.grow(newLength);
 		}
-		this.array.set(src, this.length);
+		this.array.set(other.array.subarray(0, n), this.length);
 		this.length = newLength;
 	}
 }

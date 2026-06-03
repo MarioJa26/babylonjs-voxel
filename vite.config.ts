@@ -29,6 +29,8 @@ export default defineConfig({
 		},
 	},
 	build: {
-		sourcemap: true,
+		// Sourcemaps double build size and slow rebuilds. Off by default
+		// for production; set VITE_SOURCEMAP=1 to re-enable for debugging.
+		sourcemap: process.env.VITE_SOURCEMAP === "1",
 	},
 });

@@ -9,6 +9,7 @@ import {
 	FACE_PY,
 	FACE_PZ,
 } from "../../Shape/BlockShapes";
+import { getFaceName } from "../../Texture/FaceName";
 import {
 	type GreedyFaceDescriptor,
 	MaterialType,
@@ -95,17 +96,6 @@ export class VoxelFaceEmitterAdapter {
 		);
 	}
 
-	public getFaceName(axis: number, isBackFace: boolean): string {
-		// Match the old working worker mesher convention
-		if (axis === 0) {
-			return isBackFace ? "east" : "west";
-		}
-		if (axis === 1) {
-			return isBackFace ? "bottom" : "top";
-		}
-		return isBackFace ? "north" : "south";
-	}
-
 	private emitCubeFace(
 		out: WorkerInternalMeshData,
 		axis: number,
@@ -129,7 +119,7 @@ export class VoxelFaceEmitterAdapter {
 			isBackFace,
 			light,
 			ao,
-			faceName: this.getFaceName(axis, isBackFace),
+			faceName: getFaceName(axis, isBackFace),
 			materialType,
 			flip: false,
 		});
@@ -153,7 +143,7 @@ export class VoxelFaceEmitterAdapter {
 
 		const origin = this.toWorldBlockOrigin(axis, desc, isBackFace);
 		const faceBit = this.getFaceBit(axis, isBackFace);
-		const faceName = this.getFaceName(axis, isBackFace);
+		const faceName = getFaceName(axis, isBackFace);
 
 		for (let i = 0; i < boxes.length; i++) {
 			const box = boxes[i];

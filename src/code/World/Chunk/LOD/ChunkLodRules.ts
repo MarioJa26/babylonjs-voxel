@@ -115,6 +115,7 @@ export class ChunkLodRuleSet {
 	public static fromRenderRadii(
 		renderDistance: number,
 		verticalRadius: number,
+		revision: number = 0,
 	): ChunkLodRuleSet {
 		const radii: ChunkLodRadii = {
 			lod0HorizontalRadius: renderDistance + SETTING_PARAMS.LOD_0_OFFSET,
@@ -127,30 +128,40 @@ export class ChunkLodRuleSet {
 			lod3VerticalRadius: verticalRadius + SETTING_PARAMS.LOD_VERTICAL_3_OFFSET,
 		};
 
-		return new ChunkLodRuleSet(radii, [
-			new Lod0ChunkCreationRule(
-				radii.lod0HorizontalRadius,
-				radii.lod0VerticalRadius,
-			),
-			new Lod1ChunkCreationRule(
-				radii.lod1HorizontalRadius,
-				radii.lod1VerticalRadius,
-			),
-			new Lod2ChunkCreationRule(
-				radii.lod2HorizontalRadius,
-				radii.lod2VerticalRadius,
-			),
-			new Lod3ChunkCreationRule(
-				radii.lod3HorizontalRadius,
-				radii.lod3VerticalRadius,
-			),
-			new DistantOnlyChunkCreationRule(4),
-		]);
+		return new ChunkLodRuleSet(
+			radii,
+			[
+				new Lod0ChunkCreationRule(
+					radii.lod0HorizontalRadius,
+					radii.lod0VerticalRadius,
+				),
+				new Lod1ChunkCreationRule(
+					radii.lod1HorizontalRadius,
+					radii.lod1VerticalRadius,
+				),
+				new Lod2ChunkCreationRule(
+					radii.lod2HorizontalRadius,
+					radii.lod2VerticalRadius,
+				),
+				new Lod3ChunkCreationRule(
+					radii.lod3HorizontalRadius,
+					radii.lod3VerticalRadius,
+				),
+				new DistantOnlyChunkCreationRule(4),
+			],
+			revision,
+		);
 	}
 
 	public constructor(
 		public readonly radii: ChunkLodRadii,
 		private readonly rules: ChunkLodCreationRule[],
+		/**
+		 * Monotonic counter bumped by callers (typically ChunkStreamingController)
+		 * when the rule set is rebuilt. Consumers that cache decisions derived
+		 * from this rule set can use `revision` to invalidate their cache.
+		 */
+		public readonly revision: number = 0,
 	) {}
 
 	private resolveWithDistance(distance: ChunkLodDistance): ChunkLodDecision {

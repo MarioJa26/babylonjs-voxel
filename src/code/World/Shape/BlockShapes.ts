@@ -176,6 +176,10 @@ let _shapeDefinitions: ShapeDefinition[] | null = null;
 let _shapeByBlockId: Uint16Array | null = null;
 let _shapeInitPromise: Promise<void> | null = null;
 
+let _cubeShapeIndex = 0;
+let _crossShapeIndex = -1;
+let _crossDiagonalShapeIndex = -1;
+
 function ensureShapeInit(): Promise<void> {
 	if (_shapeInitPromise === null) {
 		_shapeInitPromise = (async () => {
@@ -183,6 +187,12 @@ function ensureShapeInit(): Promise<void> {
 			const map = await loadBlockShapeMap(defs);
 			_shapeDefinitions = defs;
 			_shapeByBlockId = map;
+			_cubeShapeIndex = defs.findIndex((d) => d.name === "cube");
+			if (_cubeShapeIndex === -1) _cubeShapeIndex = 0;
+			_crossShapeIndex = defs.findIndex((d) => d.name === "cross");
+			_crossDiagonalShapeIndex = defs.findIndex(
+				(d) => d.name === "cross_diagonal",
+			);
 		})();
 	}
 	return _shapeInitPromise;
@@ -199,18 +209,23 @@ export function getShapeByBlockId(): Uint16Array {
 }
 
 export function getCubeShapeIndex(): number {
-	const defs = _shapeDefinitions;
-	if (!defs) return 0;
-	const idx = defs.findIndex((shape) => shape.name === "cube");
-	return idx === -1 ? 0 : idx;
+	return _cubeShapeIndex;
 }
 
 export const getShapeForBlockId = (id: number): ShapeDefinition => {
 	const defs = _shapeDefinitions;
 	const map = _shapeByBlockId;
-	const cubeIndex = defs ? defs.findIndex((shape) => shape.name === "cube") : 0;
-	const safeCubeIndex = cubeIndex === -1 ? 0 : cubeIndex;
 	if (!map || !defs) return FALLBACK_CUBE;
-	const shapeIndex = map[id] ?? safeCubeIndex;
-	return defs[shapeIndex] ?? defs[safeCubeIndex] ?? FALLBACK_CUBE;
+	const shapeIndex = map[id] ?? _cubeShapeIndex;
+	return defs[shapeIndex] ?? defs[_cubeShapeIndex] ?? FALLBACK_CUBE;
 };
+
+export function isCrossBlockId(blockId: number): boolean {
+	if (_crossShapeIndex < 0 || !_shapeByBlockId) return false;
+	return _shapeByBlockId[blockId] === _crossShapeIndex;
+}
+
+export function isCrossDiagonalBlockId(blockId: number): boolean {
+	if (_crossDiagonalShapeIndex < 0 || !_shapeByBlockId) return false;
+	return _shapeByBlockId[blockId] === _crossDiagonalShapeIndex;
+}

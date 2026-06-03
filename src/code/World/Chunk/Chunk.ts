@@ -104,6 +104,36 @@ const _twoEntryPalette = new Uint16Array(2);
 const _ccVisited = new Uint8Array(GenerationParams.CHUNK_SIZE ** 3);
 const _ccStack = new Int32Array(GenerationParams.CHUNK_SIZE ** 3);
 
+// ---------------------------------------------------------------------------
+// Chunk dispose hooks
+//
+// Other modules (worker pool, loading system) hold strong references to
+// Chunks in their internal queues. When a chunk is disposed we must give
+// those modules a chance to drop the reference, otherwise the chunk and
+// all of its voxel/light/palette SharedArrayBuffers stay alive forever.
+//
+// Hooks are registered via addChunkDisposeHook() at module load. They run
+// at the tail of Chunk.dispose(). Exceptions are logged but do not abort
+// the dispose itself.
+// ---------------------------------------------------------------------------
+export type ChunkDisposeHook = (chunk: Chunk) => void;
+const _chunkDisposeHooks: ChunkDisposeHook[] = [];
+
+export function addChunkDisposeHook(hook: ChunkDisposeHook): void {
+	_chunkDisposeHooks.push(hook);
+}
+
+function runChunkDisposeHooks(chunk: Chunk): void {
+	for (let i = 0; i < _chunkDisposeHooks.length; i++) {
+		const hook = _chunkDisposeHooks[i]!;
+		try {
+			hook(chunk);
+		} catch (err) {
+			console.error("Chunk dispose hook threw", err);
+		}
+	}
+}
+
 export class Chunk {
 	public readonly id: bigint;
 	public readonly neighborIds: readonly bigint[];
@@ -1794,6 +1824,8 @@ export class Chunk {
 		this.bfsQueryId = 0;
 		this.bfsVisitedFaces = 0;
 		this.bfsQueuedForConnectivity = false;
+
+		runChunkDisposeHooks(this);
 	}
 }
 

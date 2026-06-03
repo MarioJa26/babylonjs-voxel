@@ -4,6 +4,12 @@ import type { IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 
 export class GeodeFeature implements IWorldFeature {
+	// cy = -32 - random % 256 (-32..-288), plus outerRadius (6..10) + shell 2.
+	public readonly verticalBounds = {
+		minWorldY: -300,
+		maxWorldY: -20,
+	};
+
 	public generate(
 		chunkX: number,
 		chunkY: number,

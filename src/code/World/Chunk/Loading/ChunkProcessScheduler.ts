@@ -224,9 +224,13 @@ export class ChunkProcessScheduler {
 							state.unloadBatchIndex < state.unloadBatch.length &&
 							this.hasBudget(state)
 						) {
-							const chunk = state.unloadBatch[state.unloadBatchIndex++];
+							const chunk = state.unloadBatch[state.unloadBatchIndex];
 
+							// Permanent skip — already disposed by another path, or a
+							// persistent chunk (boat chunk) that should never be unloaded.
+							// Advance the index without re-queueing.
 							if (chunk.isPersistent || !chunk.isLoaded) {
+								state.unloadBatchIndex++;
 								continue;
 							}
 
@@ -235,6 +239,13 @@ export class ChunkProcessScheduler {
 								state.savedChunkIds.has(chunk.id);
 
 							if (!canUnload) {
+								// The chunk is still dirty AND wasn't saved (e.g. it was
+								// modified again between SaveUnloadBatch and now, or the
+								// save failed). Put it back into the unload queue set so
+								// the next processQueues() invocation re-runs SaveUnloadBatch
+								// for it and gets a chance to dispose it.
+								this.adapter.getUnloadQueueSet().add(chunk);
+								state.unloadBatchIndex++;
 								continue;
 							}
 
@@ -246,6 +257,7 @@ export class ChunkProcessScheduler {
 							chunk.isTerrainScheduled = false;
 							Chunk.chunkInstances.delete(chunk.id);
 
+							state.unloadBatchIndex++;
 							state.unloadedCount++;
 						}
 

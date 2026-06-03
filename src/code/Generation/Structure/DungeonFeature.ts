@@ -4,6 +4,12 @@ import type { IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds } from "./RegionFeature";
 
 export class DungeonFeature implements IWorldFeature {
+	// dungeonY = 15 + random % 20, so 15..34 absolute.
+	public readonly verticalBounds = {
+		minWorldY: 15,
+		maxWorldY: 34,
+	};
+
 	public generate(
 		chunkX: number,
 		chunkY: number,

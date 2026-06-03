@@ -2,9 +2,16 @@ import type { Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
 import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { IWorldFeature } from "./IWorldFeature";
-import { computeRegion, chunkWorldBounds, aabbOverlaps } from "./RegionFeature";
+import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 
 export class TowerFeature implements IWorldFeature {
+	// Above-surface tower is 76-83 tall; underground reaches MIN_WORLD_Y = -1600.
+	// Conservative: max surface ~400 + tower 84.
+	public readonly verticalBounds = {
+		minWorldY: -1600,
+		maxWorldY: 500,
+	};
+
 	public generate(
 		chunkX: number,
 		chunkY: number,

@@ -4,6 +4,13 @@ import type { IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 
 export class RavineFeature implements IWorldFeature {
+	// depth = 30 + random % 50 (30..79) carved downward from neighbor surface.
+	// Worst case: neighbor surface ~400, depth 80 -> floor at 320; surface ~ -200, depth 80 -> -280.
+	public readonly verticalBounds = {
+		minWorldY: -300,
+		maxWorldY: 400,
+	};
+
 	public generate(
 		chunkX: number,
 		chunkY: number,

@@ -1,13 +1,13 @@
 import { BlockType } from "./BlockType";
+import { FaceName } from "./FaceName";
 import type { TextureDefinition } from "./TextureDefinitions";
 
-type BlockTextureDef = {
-	top?: number[];
-	bottom?: number[];
-	side?: number[];
-	all?: number[];
-	[key: string]: number[] | undefined;
-};
+/**
+ * Per-block texture table, fixed-length array indexed by `FaceName`.
+ * The `All` slot is always populated when a block has data; per-face
+ * slots are `undefined` unless a per-face UV was explicitly set.
+ */
+export type BlockTextureDef = ([number, number] | undefined)[];
 
 // Build BlockTextures from TextureDefinitions index order.
 // UV coordinates are initially based on index position in the atlas.
@@ -19,7 +19,9 @@ function buildBlockTextures(): (BlockTextureDef | null)[] {
 
 	for (let id = 1; id <= maxId; id++) {
 		const atlasIndex = id - 1;
-		result[id] = { all: [atlasIndex % 16, Math.floor(atlasIndex / 16)] };
+		const def: BlockTextureDef = new Array(FaceName.Count).fill(undefined);
+		def[FaceName.All] = [atlasIndex % 16, Math.floor(atlasIndex / 16)];
+		result[id] = def;
 	}
 
 	return result;
@@ -51,9 +53,8 @@ export function updateBlockTexturesUV(
 
 		const uv = uvMap[def.name];
 		if (uv) {
-			BlockTextures[i] = {
-				all: [Math.round(uv.u * 16), Math.round(uv.v * 16)],
-			};
+			const existing = BlockTextures[i]!;
+			existing[FaceName.All] = [Math.round(uv.u * 16), Math.round(uv.v * 16)];
 		}
 	}
 }
@@ -64,10 +65,10 @@ export function getAtlasTile(blockId: number | null): [number, number] | null {
 	if (!blockTexture) return null;
 
 	const uv =
-		blockTexture.all ??
-		blockTexture.side ??
-		blockTexture.top ??
-		blockTexture.bottom;
+		blockTexture[FaceName.All] ??
+		blockTexture[FaceName.Side] ??
+		blockTexture[FaceName.Top] ??
+		blockTexture[FaceName.Bottom];
 
 	if (!uv || uv.length < 2) return null;
 	return [uv[0], uv[1]];

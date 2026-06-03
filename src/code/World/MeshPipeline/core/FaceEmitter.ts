@@ -2,6 +2,7 @@
 
 import { POS_SCALE } from "../../Chunk/Worker/ChunkMesherConstants";
 import { BlockTextures } from "../../Texture/BlockTextures";
+import { FaceName } from "../../Texture/FaceName";
 import {
 	type EmitQuadParams,
 	MaterialType,
@@ -32,9 +33,7 @@ export function emitQuad(
 
 	const tex = BlockTextures[blockId];
 	if (!tex) return;
-
-	const tile = tex[faceName] ?? tex.all;
-	if (!tile) return;
+	const tile = tex[faceName] ?? tex[FaceName.All]!;
 
 	const tx = tile[0];
 	const ty = tile[1];

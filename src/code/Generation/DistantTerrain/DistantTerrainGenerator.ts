@@ -1,5 +1,6 @@
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { BlockTextures } from "@/code/World/Texture/BlockTextures";
+import { FaceName } from "@/code/World/Texture/FaceName";
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
 import { getBiome, getFinalTerrainHeight } from "../TerrainHeightMap";
 
@@ -449,13 +450,8 @@ export class DistantTerrainGenerator {
 	// =====================================================================
 
 	private static getTopTileForBlock(blockId: number): [number, number] {
-		const tex = (
-			BlockTextures as Record<
-				number,
-				{ top?: [number, number]; all?: [number, number] }
-			>
-		)[blockId];
-		const tile = tex?.top ?? tex?.all;
+		const tex = BlockTextures[blockId];
+		const tile = tex?.[FaceName.Top] ?? tex?.[FaceName.All];
 		return (
 			tile ?? [
 				DistantTerrainGenerator.DEFAULT_TILE_X,

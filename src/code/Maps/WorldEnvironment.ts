@@ -30,6 +30,14 @@ export class WorldEnvironment {
 	public isPaused = false;
 	public wetness = 0.0;
 
+	// HUD update throttle: debug strings and slider are visible to the user
+	// at most ~6 Hz, so we recompute them at this rate instead of every frame.
+	private static readonly HUD_UPDATE_INTERVAL_MS = 150;
+	private lastHudUpdateMs = 0;
+	private lastDebugTimeText = "";
+	private lastDebugTimeScaleText = "";
+	private lastSliderValue = "";
+
 	constructor(scene: Scene) {
 		WorldEnvironment.instance = this;
 		this.scene = scene;
@@ -156,31 +164,43 @@ export class WorldEnvironment {
 			const reflectivity = sunIntensity * (this.wetness * 0.95);
 			this.dirLight.specular.set(reflectivity, reflectivity, reflectivity);
 		}
-		// For debug display
-		const timeAsHour = (this.timeOfDay / SETTING_PARAMS.DAY_DURATION_MS) * 24;
-		const hour = Math.floor(timeAsHour);
-		const minute = Math.floor((timeAsHour - hour) * 60);
-		const second = Math.floor(((timeAsHour - hour) * 60 - minute) * 60);
-		PlayerHud.updateDebugInfo(
-			"Time of Day",
-			`${String(hour).padStart(2, "0")}:${String(minute).padStart(
-				2,
-				"0",
-			)}:${String(second).padStart(2, "0")}`,
-			"world",
-		);
-		PlayerHud.updateDebugInfo(
-			"Time Scale",
-			`${this.timeScale.toFixed(2)}x`,
-			"world",
-		);
-
-		// Update the time slider's position
-		if (this.timeSlider)
-			this.timeSlider.value = (
-				(this.timeOfDay / SETTING_PARAMS.DAY_DURATION_MS) *
-				1000
-			).toString();
+		// For debug display (throttled to ~6 Hz; the actual sun motion is
+		// computed above at full frame rate).
+		const nowMs = performance.now();
+		if (
+			nowMs - this.lastHudUpdateMs >=
+			WorldEnvironment.HUD_UPDATE_INTERVAL_MS
+		) {
+			this.lastHudUpdateMs = nowMs;
+			const timeAsHour = (this.timeOfDay / SETTING_PARAMS.DAY_DURATION_MS) * 24;
+			const hour = Math.floor(timeAsHour);
+			const minute = Math.floor((timeAsHour - hour) * 60);
+			const second = Math.floor(((timeAsHour - hour) * 60 - minute) * 60);
+			const timeText = `${String(hour).padStart(2, "0")}:${String(
+				minute,
+			).padStart(2, "0")}:${String(second).padStart(2, "0")}`;
+			if (timeText !== this.lastDebugTimeText) {
+				PlayerHud.updateDebugInfo("Time of Day", timeText, "world");
+				this.lastDebugTimeText = timeText;
+			}
+			const scaleText = `${this.timeScale.toFixed(2)}x`;
+			if (scaleText !== this.lastDebugTimeScaleText) {
+				PlayerHud.updateDebugInfo("Time Scale", scaleText, "world");
+				this.lastDebugTimeScaleText = scaleText;
+			}
+			// Update the time slider's position (skip while the user is
+			// actively dragging so we don't fight their input).
+			if (this.timeSlider && document.activeElement !== this.timeSlider) {
+				const sliderValue = (
+					(this.timeOfDay / SETTING_PARAMS.DAY_DURATION_MS) *
+					1000
+				).toString();
+				if (sliderValue !== this.lastSliderValue) {
+					this.timeSlider.value = sliderValue;
+					this.lastSliderValue = sliderValue;
+				}
+			}
+		}
 	}
 
 	public setTime(time: number): void {

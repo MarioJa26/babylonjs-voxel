@@ -38,6 +38,28 @@ function chunkDist(
 	};
 }
 
+// Scratch target for chunkDist to avoid per-call object allocation in hot
+// enqueue loops. Callers must consume hDist/vDist before the next call.
+const _chunkDistScratch: { hDist: number; vDist: number } = {
+	hDist: 0,
+	vDist: 0,
+};
+function chunkDistScratch(
+	chunkX: number,
+	chunkY: number,
+	chunkZ: number,
+	centerX: number,
+	centerY: number,
+	centerZ: number,
+): { hDist: number; vDist: number } {
+	_chunkDistScratch.hDist = Math.max(
+		Math.abs(chunkX - centerX),
+		Math.abs(chunkZ - centerZ),
+	);
+	_chunkDistScratch.vDist = Math.abs(chunkY - centerY);
+	return _chunkDistScratch;
+}
+
 export interface ChunkStreamingControllerAdapter {
 	getLoadQueue(): QueuedChunkRequest[];
 	getUnloadQueueSet(): Set<Chunk>;
@@ -63,6 +85,24 @@ export class ChunkStreamingController {
 	// H2: Cache LOD rule sets — only rebuild when cave state or render distance changes
 	private _cachedCaveLodRuleSet: ChunkLodRuleSet | null = null;
 	private _cachedOutdoorLodRuleSet: ChunkLodRuleSet | null = null;
+	// Bumped every time a LOD rule set is rebuilt; used as the cache key for
+	// per-chunk refresh decisions so stale entries are detected.
+	private _ruleSetGeneration = 0;
+	// Per-chunk cache of the last refresh decision: {player pos, ruleRev,
+	// chunkLod, decisionLod}. Lets us skip resolveWithHysteresis when the
+	// player hasn't moved into a new chunk and the chunk's LOD/dirty state
+	// is unchanged.
+	private _lastRefreshDecision: Map<
+		bigint,
+		{
+			playerX: number;
+			playerY: number;
+			playerZ: number;
+			ruleRev: number;
+			chunkLod: number;
+			decisionLod: number;
+		}
+	> = new Map();
 	private _lastCaveState: boolean | null = null;
 
 	public constructor(
@@ -102,6 +142,7 @@ export class ChunkStreamingController {
 		let lodRuleSet: ChunkLodRuleSet;
 		if (isInCave) {
 			if (!this._cachedCaveLodRuleSet || this._lastCaveState !== true) {
+				this._ruleSetGeneration++;
 				this._cachedCaveLodRuleSet = new ChunkLodRuleSet(
 					{
 						lod0HorizontalRadius: renderDistance + 2,
@@ -117,14 +158,17 @@ export class ChunkStreamingController {
 						new Lod0ChunkCreationRule(renderDistance + 2, verticalRadius + 2),
 						new DistantOnlyChunkCreationRule(),
 					],
+					this._ruleSetGeneration,
 				);
 			}
 			lodRuleSet = this._cachedCaveLodRuleSet;
 		} else {
 			if (!this._cachedOutdoorLodRuleSet || this._lastCaveState !== false) {
+				this._ruleSetGeneration++;
 				this._cachedOutdoorLodRuleSet = ChunkLodRuleSet.fromRenderRadii(
 					renderDistance,
 					verticalRadius,
+					this._ruleSetGeneration,
 				);
 			}
 			lodRuleSet = this._cachedOutdoorLodRuleSet;
@@ -299,7 +343,7 @@ export class ChunkStreamingController {
 			const chunk = _queryScratch[_qi]!;
 			if (this.loadedRefreshQueueSet.has(chunk.id)) continue;
 
-			const { hDist, vDist } = chunkDist(
+			const { hDist, vDist } = chunkDistScratch(
 				chunk.chunkX,
 				chunk.chunkY,
 				chunk.chunkZ,
@@ -320,6 +364,29 @@ export class ChunkStreamingController {
 
 			if (!nearLod0 && !nearLod1 && !nearLod2) continue;
 
+			// Dirty-track: if the player position, LOD rule set, chunk LOD,
+			// and dirty flag are all unchanged since the last refresh pass,
+			// the previous decision is still valid and we can skip the
+			// expensive resolveWithHysteresis call entirely.
+			const cached = this._lastRefreshDecision.get(chunk.id);
+			const ruleRev = lodRuleSet.revision;
+			if (
+				cached !== undefined &&
+				cached.playerX === chunkX &&
+				cached.playerY === chunkY &&
+				cached.playerZ === chunkZ &&
+				cached.ruleRev === ruleRev &&
+				cached.chunkLod === chunk.lodLevel &&
+				!chunk.isDirty
+			) {
+				if (
+					chunk.lodLevel === cached.decisionLod &&
+					!(cached.decisionLod <= 1 && !chunk.hasVoxelData)
+				) {
+					continue;
+				}
+			}
+
 			// Skip chunks already at the correct LOD with no pending work
 			const decision = lodRuleSet.resolveWithHysteresis(
 				{ chunkX: chunk.chunkX, chunkY: chunk.chunkY, chunkZ: chunk.chunkZ },
@@ -332,9 +399,25 @@ export class ChunkStreamingController {
 				!chunk.isDirty &&
 				!(decision.lodLevel <= 1 && !chunk.hasVoxelData)
 			) {
+				this._lastRefreshDecision.set(chunk.id, {
+					playerX: chunkX,
+					playerY: chunkY,
+					playerZ: chunkZ,
+					ruleRev,
+					chunkLod: chunk.lodLevel ?? 3,
+					decisionLod: decision.lodLevel,
+				});
 				continue;
 			}
 
+			this._lastRefreshDecision.set(chunk.id, {
+				playerX: chunkX,
+				playerY: chunkY,
+				playerZ: chunkZ,
+				ruleRev,
+				chunkLod: chunk.lodLevel ?? 3,
+				decisionLod: decision.lodLevel,
+			});
 			this.loadedRefreshQueueSet.add(chunk.id);
 			this.loadedRefreshQueue.push(chunk);
 		}
@@ -353,7 +436,14 @@ export class ChunkStreamingController {
 
 		const lodRuleSet =
 			this._cachedOutdoorLodRuleSet ??
-			ChunkLodRuleSet.fromRenderRadii(renderDistance, verticalRadius);
+			(() => {
+				this._ruleSetGeneration++;
+				return ChunkLodRuleSet.fromRenderRadii(
+					renderDistance,
+					verticalRadius,
+					this._ruleSetGeneration,
+				);
+			})();
 
 		let processed = 0;
 
@@ -757,6 +847,7 @@ export class ChunkStreamingController {
 
 	public onChunkDisposed(chunkId: bigint): void {
 		this.loadedRefreshQueueSet.delete(chunkId);
+		this._lastRefreshDecision.delete(chunkId);
 		// The chunk object remains in loadedRefreshQueue as a tombstone,
 		// but dequeueLoadedRefreshChunk will skip it because isLoaded=false
 		// and processTargetChunkCoordinate guards on that.

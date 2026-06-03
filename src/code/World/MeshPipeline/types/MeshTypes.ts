@@ -1,5 +1,7 @@
 // MeshPipeline/types/MeshTypes.ts
 
+import type { FaceName } from "../../Texture/FaceName";
+
 /**
  * Data structure used by WorkerInternalMeshData in your engine.
  * This mirrors exactly what your JS code produces.
@@ -50,6 +52,7 @@ export interface ResizableTypedArray<T extends Uint8Array> {
 	): void;
 	readonly finalArray: T;
 	bulkPush(src: T): void;
+	pushFrom(other: ResizableTypedArray<T>): void;
 	length: number;
 }
 
@@ -79,7 +82,7 @@ export interface EmitQuadParams {
 	isBackFace: boolean;
 	light: number;
 	ao: number;
-	faceName: string;
+	faceName: FaceName;
 	materialType: number;
 	flip: boolean;
 	diagonal?: 0 | 1 | 2;

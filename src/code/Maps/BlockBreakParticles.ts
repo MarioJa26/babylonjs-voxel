@@ -7,6 +7,7 @@ import {
 } from "@babylonjs/core";
 import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
 import { BlockTextures } from "../World/Texture/BlockTextures";
+import { FaceName } from "../World/Texture/FaceName";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
 
 export class BlockBreakParticles {
@@ -28,10 +29,10 @@ export class BlockBreakParticles {
 		const blockTex = BlockTextures[blockId];
 		if (blockTex) {
 			const uv =
-				blockTex.all ||
-				blockTex.side ||
-				blockTex.top ||
-				blockTex.bottom ||
+				blockTex[FaceName.All] ||
+				blockTex[FaceName.Side] ||
+				blockTex[FaceName.Top] ||
+				blockTex[FaceName.Bottom] ||
 				Object.values(blockTex)[0];
 			if (uv) {
 				// Invert row index because ParticleSystem starts from top-left (V=1)

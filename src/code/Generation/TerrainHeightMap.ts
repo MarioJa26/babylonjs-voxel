@@ -240,7 +240,31 @@ function getChunkCacheIdx(worldX: number, worldZ: number): number {
 // Public API
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Per-column final height cache.
+//
+// `getFinalTerrainHeight` performs ~3 noise samples + 2 splines + a biome
+// blend per call. Callers like the flora loop invoke it 4 times per column
+// (via isBeachLocation → isNearWater) and the structure features invoke it
+// several times per chunk. Caching is behaviour-preserving: the function
+// still returns the same deterministic value for any (x, z) pair.
+//
+// Implementation: a Map<bigint, number> with simple FIFO eviction. BigInt
+// keys avoid string-alloc cost vs. "x,z" string keys and pack tightly.
+// ---------------------------------------------------------------------------
+const _finalHeightCache = new Map<bigint, number>();
+const MAX_FINAL_HEIGHT_CACHE = 131072; // 128K entries (~2 MB of map slots)
+const _FHC_MASK = 0xffffffffn;
+
+function finalHeightCacheKey(x: number, z: number): bigint {
+	return (BigInt(x) << 32n) | (BigInt(z) & _FHC_MASK);
+}
+
 export function getFinalTerrainHeight(x: number, z: number): number {
+	const key = finalHeightCacheKey(x, z);
+	const cached = _finalHeightCache.get(key);
+	if (cached !== undefined) return cached;
+
 	const riverAbs = Math.abs(riverGenerator.getRiverNoise(x, z));
 	const settings = getBlendedBiomeTerrainSettings(x, z);
 
@@ -251,7 +275,14 @@ export function getFinalTerrainHeight(x: number, z: number): number {
 
 	const noiseHeight = computeHeightNoiseOnly(x, z, settings);
 	const detail = computeDetail(x, z, riverAbs, settings);
-	return Math.floor(splineBaseHeight + noiseHeight + detail);
+	const result = Math.floor(splineBaseHeight + noiseHeight + detail);
+
+	if (_finalHeightCache.size >= MAX_FINAL_HEIGHT_CACHE) {
+		const oldest = _finalHeightCache.keys().next().value;
+		if (oldest !== undefined) _finalHeightCache.delete(oldest);
+	}
+	_finalHeightCache.set(key, result);
+	return result;
 }
 
 export function getBiome(x: number, z: number): Biome {

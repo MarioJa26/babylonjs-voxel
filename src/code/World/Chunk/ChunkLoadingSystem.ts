@@ -1,7 +1,7 @@
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import type { SavedChunkData, SavedChunkEntityData } from "../WorldStorage";
 import { createMeshFromData } from "./ChunckMesher";
-import { Chunk, getChunk, packCoords } from "./Chunk";
+import { addChunkDisposeHook, Chunk, getChunk, packCoords } from "./Chunk";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import type { MeshData } from "./DataStructures/MeshData";
 import { getCurrentLodCacheVersion } from "./LOD/LodCacheVersion";
@@ -562,6 +562,30 @@ export function processPendingRemeshes(maxChunks = 12): void {
 		pendingRemeshReadIndex = 0;
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Chunk disposal hook
+//
+// Releases the strong reference this module holds to the disposed chunk in
+// pendingRemeshChunks/Ids so the chunk can be GC'd.
+// ---------------------------------------------------------------------------
+export function onChunkDisposed(chunk: Chunk): void {
+	if (chunk.isPersistent) return;
+	pendingRemeshChunkIds.delete(chunk.id);
+	for (
+		let i = pendingRemeshChunks.length - 1;
+		i >= pendingRemeshReadIndex;
+		i--
+	) {
+		if (pendingRemeshChunks[i] === chunk) {
+			pendingRemeshChunks.splice(i, 1);
+		}
+	}
+}
+
+addChunkDisposeHook((chunk) => {
+	onChunkDisposed(chunk);
+});
 
 export function processFrameBudgetedStreamingWork(
 	playerChunkX: number,

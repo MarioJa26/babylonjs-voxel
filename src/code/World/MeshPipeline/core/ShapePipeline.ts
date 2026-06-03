@@ -13,6 +13,8 @@ import {
 	FACE_PY,
 	FACE_PZ,
 	getShapeForBlockId,
+	isCrossBlockId,
+	isCrossDiagonalBlockId,
 } from "../../Shape/BlockShapes";
 import {
 	getTransformedShapeBoxes,
@@ -68,19 +70,11 @@ const RUNTIME_BOX_CACHE: (readonly ShapeBounds[] | undefined)[] = new Array(
 const GREEDY_COMPAT_CACHE = new Uint8Array(DENSE_CACHE_SIZE);
 
 /**
- * Optional tiny shape-name cache for the dense key range.
- */
-const SHAPE_NAME_CACHE: (string | undefined)[] = new Array(
-	DENSE_CACHE_SIZE,
-).fill(undefined);
-
-/**
  * Sparse overflow fallback if a packed key ever exceeds the dense range.
  */
 const SHAPE_INFO_OVERFLOW = new Map<number, BlockShapeInfo>();
 const RUNTIME_BOX_OVERFLOW = new Map<number, readonly ShapeBounds[]>();
 const GREEDY_COMPAT_OVERFLOW = new Map<number, boolean>();
-const SHAPE_NAME_OVERFLOW = new Map<number, string>();
 
 function canUseDenseCache(packedBlock: number): boolean {
 	return packedBlock >= 0 && packedBlock <= DENSE_CACHE_MASK;
@@ -88,50 +82,29 @@ function canUseDenseCache(packedBlock: number): boolean {
 
 /**
  * Material bucket rules used by the voxel mesh pipeline.
+ *
+ * Implemented as a 128-entry Uint8Array LUT (sized to cover the BlockType
+ * enum) so each call is a single typed-array load. Bucket values:
+ *   0 = reserved / default
+ *   1 = stone / mineral (default)
+ *   2 = sand / dirt / soil
+ *   3 = vegetation
+ *   4 = water / glass
+ *   5 = wood / logs / planks
  */
+const TINT_BUCKET_LUT_SIZE = 128;
+const TINT_BUCKET_LUT: Uint8Array = new Uint8Array(TINT_BUCKET_LUT_SIZE).fill(
+	1,
+);
+
+for (const id of [30, 60, 61]) TINT_BUCKET_LUT[id] = 4;
+for (const id of [15, 43, 44, 64, 66]) TINT_BUCKET_LUT[id] = 3;
+for (const id of [3, 8, 14, 23, 45, 46, 47]) TINT_BUCKET_LUT[id] = 2;
+for (const id of [10, 11, 12, 13, 22, 28, 31]) TINT_BUCKET_LUT[id] = 5;
+for (let id = 32; id <= 42; id++) TINT_BUCKET_LUT[id] = 5;
+
 export function getMaterialTintBucket(blockId: number): number {
-	// water/glass
-	if (blockId === 30 || blockId === 60 || blockId === 61) return 4;
-
-	// vegetation
-	if (
-		blockId === 15 ||
-		blockId === 43 ||
-		blockId === 44 ||
-		blockId === 64 ||
-		blockId === 66
-	)
-		return 3;
-
-	// sand/dirt/soil
-	if (
-		blockId === 3 ||
-		blockId === 8 ||
-		blockId === 14 ||
-		blockId === 23 ||
-		blockId === 45 ||
-		blockId === 46 ||
-		blockId === 47
-	) {
-		return 2;
-	}
-
-	// wood, logs, planks
-	if (
-		blockId === 10 ||
-		blockId === 11 ||
-		blockId === 12 ||
-		blockId === 13 ||
-		blockId === 22 ||
-		blockId === 28 ||
-		blockId === 31 ||
-		(blockId >= 32 && blockId <= 42)
-	) {
-		return 5;
-	}
-
-	// default: stone/mineral
-	return 1;
+	return TINT_BUCKET_LUT[blockId] ?? 1;
 }
 
 /**
@@ -152,14 +125,11 @@ export function getMaterialTypeForPackedBlock(
 ): MaterialType {
 	if (!packedBlock) return MaterialType.Default;
 
-	if (
-		isCrossShapePackedBlock(packedBlock) ||
-		isCrossDiagonalShapePackedBlock(packedBlock)
-	) {
+	const { blockId } = getPackedBlockParts(packedBlock);
+	if (isCrossBlockId(blockId) || isCrossDiagonalBlockId(blockId)) {
 		return MaterialType.Cutout;
 	}
 
-	const { blockId } = getPackedBlockParts(packedBlock);
 	return getMaterialType(blockId);
 }
 
@@ -177,39 +147,18 @@ export function getPackedBlockParts(packedBlock: number): {
 }
 
 /**
- * Runtime helper: get the authored shape name for a packed block.
- */
-export function getShapeNameForPackedBlock(packedBlock: number): string {
-	if (!packedBlock) return "cube";
-
-	if (canUseDenseCache(packedBlock)) {
-		const cached = SHAPE_NAME_CACHE[packedBlock];
-		if (cached) return cached;
-
-		const { blockId } = getPackedBlockParts(packedBlock);
-		const name = getShapeForBlockId(blockId).name;
-		SHAPE_NAME_CACHE[packedBlock] = name;
-		return name;
-	}
-
-	const overflow = SHAPE_NAME_OVERFLOW.get(packedBlock);
-	if (overflow) return overflow;
-
-	const { blockId } = getPackedBlockParts(packedBlock);
-	const name = getShapeForBlockId(blockId).name;
-	SHAPE_NAME_OVERFLOW.set(packedBlock, name);
-	return name;
-}
-
-/**
  * Runtime helper: whether this packed block should render as a crossed plant shape.
  */
 export function isCrossShapePackedBlock(packedBlock: number): boolean {
-	return getShapeNameForPackedBlock(packedBlock) === "cross";
+	if (!packedBlock) return false;
+	const { blockId } = getPackedBlockParts(packedBlock);
+	return isCrossBlockId(blockId);
 }
 
 export function isCrossDiagonalShapePackedBlock(packedBlock: number): boolean {
-	return getShapeNameForPackedBlock(packedBlock) === "cross_diagonal";
+	if (!packedBlock) return false;
+	const { blockId } = getPackedBlockParts(packedBlock);
+	return isCrossDiagonalBlockId(blockId);
 }
 
 /**

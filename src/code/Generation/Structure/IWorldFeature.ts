@@ -1,6 +1,33 @@
 import type { Biome } from "../Biome/BiomeTypes";
 
+/**
+ * Optional absolute vertical bounds for an IWorldFeature, expressed in world
+ * Y coordinates. When set, SurfaceGenerator will skip this feature for any
+ * chunkY whose Y-range cannot possibly intersect these bounds — turning 8×N
+ * feature invocations per chunk slice into a handful.
+ *
+ * Bounds must be conservative: `minWorldY` should be the lowest Y the
+ * feature can ever place a block at, and `maxWorldY` the highest. The check
+ * uses these as hard absolute limits, so features that pick a location
+ * based on neighbor surface Y (e.g. ravines) must account for the
+ * neighbor's worst-case surface.
+ *
+ * If `undefined`, the feature is invoked for every chunkY (preserving the
+ * previous always-run behaviour for features that don't expose bounds).
+ */
+export type FeatureVerticalBounds = {
+	minWorldY: number;
+	maxWorldY: number;
+};
+
 export interface IWorldFeature {
+	/**
+	 * Vertical bounds relative to the local surface. Optional — features that
+	 * don't know their Y range (or that legitimately span any height) should
+	 * leave this `undefined`.
+	 */
+	readonly verticalBounds?: FeatureVerticalBounds;
+
 	generate(
 		chunkX: number,
 		chunkY: number,

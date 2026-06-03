@@ -1,6 +1,7 @@
 // MeshPipeline/core/WaterPipeline.ts
 
 import { WATER_BLOCK_ID } from "../../Chunk/Worker/ChunkMesherConstants";
+import { FaceName } from "../../Texture/FaceName";
 import {
 	MaterialType,
 	type MeshContext,
@@ -165,7 +166,7 @@ export function buildWaterMesh(
 					ao: 0,
 
 					//Let FaceEmitter resolve the atlas tile from BlockTextures
-					faceName: "top",
+					faceName: FaceName.Top,
 
 					materialType: MaterialType.WaterOrGlass,
 					flip: false,

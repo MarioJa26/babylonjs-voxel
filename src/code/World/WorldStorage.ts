@@ -538,9 +538,17 @@ class WorldStorageImpl {
 		const store = tx.objectStore(CHUNK_STORE);
 		const updatedChunks = new Set<Chunk>();
 
-		for (const entry of prepared) {
-			const existing = await idbRequest(store.get(entry.id));
+		// Issue all gets in parallel; the original sequential `await` serialised
+		// N round-trips to IDB. With the transaction already open, the browser
+		// can pipeline these requests.
+		const lookups = await Promise.all(
+			prepared.map(async (entry) => ({
+				entry,
+				existing: await idbRequest(store.get(entry.id)),
+			})),
+		);
 
+		for (const { entry, existing } of lookups) {
 			if (!existing) {
 				// No base record yet — escalate to a full save on the next pass.
 				entry.chunk.isModified = true;

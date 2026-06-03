@@ -4,6 +4,12 @@ import type { IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 
 export class InfernalPitFeature implements IWorldFeature {
+	// pitTopY = -64 - random % 128 (-64..-192), pit extends downward 30+ cells.
+	public readonly verticalBounds = {
+		minWorldY: -230,
+		maxWorldY: -50,
+	};
+
 	public generate(
 		chunkX: number,
 		chunkY: number,

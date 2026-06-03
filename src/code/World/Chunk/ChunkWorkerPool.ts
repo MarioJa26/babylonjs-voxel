@@ -1,7 +1,7 @@
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import { WorldStorage } from "../WorldStorage";
 import { createMeshFromData } from "./ChunckMesher";
-import { Chunk } from "./Chunk";
+import { addChunkDisposeHook, Chunk } from "./Chunk";
 import { ChunkWorker } from "./chunkWorker";
 import { RingBuffer } from "./DataStructures/RingBuffer";
 import {
@@ -86,11 +86,9 @@ export class ChunkWorkerPool {
 	private static readonly DEFERRED_LIGHTING_BUDGET_MS = 2.5;
 	private static readonly DEFERRED_LIGHTING_MAX_CHUNKS_PER_FRAME = 48;
 	private static readonly LAST_DISPATCH_RING_SIZE = 24;
-	private static readonly WORKER_TASK_TIMEOUT_MS = 15000;
 
 	private workers: ChunkWorker[] = [];
 	private workerTaskContext: WorkerTaskContext[] = [];
-	private workerTaskTimeouts: Array<ReturnType<typeof setTimeout> | null> = [];
 
 	private distantTerrainSharedInit: {
 		positionsBuffer: SharedArrayBuffer;
@@ -296,32 +294,11 @@ export class ChunkWorkerPool {
 		this.lastDispatchRing.push(workerIndex);
 	}
 
-	private clearWorkerTaskTimeout(workerIndex: number): void {
-		const timeout = this.workerTaskTimeouts[workerIndex];
-		if (timeout !== null && timeout !== undefined) {
-			clearTimeout(timeout);
-		}
-		this.workerTaskTimeouts[workerIndex] = null;
-	}
-
-	private assignWorkerTaskContext(
+	private setWorkerTaskContext(
 		workerIndex: number,
 		context: WorkerTaskContext,
 	): void {
-		this.clearWorkerTaskTimeout(workerIndex);
 		this.workerTaskContext[workerIndex] = context;
-		if (!context) return;
-
-		this.workerTaskTimeouts[workerIndex] = setTimeout(() => {
-			if (this.workerTaskContext[workerIndex] !== context) return;
-			console.warn(
-				`Chunk worker ${workerIndex} timed out during ${context.taskType}; respawning`,
-			);
-			this.handleWorkerFailure(
-				workerIndex,
-				new Error(`Worker task timed out: ${context.taskType}`),
-			);
-		}, ChunkWorkerPool.WORKER_TASK_TIMEOUT_MS);
 	}
 
 	// -------------------------------------------------------------------------
@@ -487,7 +464,7 @@ export class ChunkWorkerPool {
 
 	private handleWorkerFailure(workerIndex: number, reason: unknown): void {
 		const context = this.workerTaskContext[workerIndex];
-		this.assignWorkerTaskContext(workerIndex, null);
+		this.workerTaskContext[workerIndex] = null;
 
 		if (context?.taskType === "distantTerrain") {
 			this.distantTerrainInFlight = false;
@@ -577,7 +554,7 @@ export class ChunkWorkerPool {
 
 			this.workers[workerIndex] = replacement;
 			this.workerRestartAtMs[workerIndex] = performance.now();
-			this.assignWorkerTaskContext(workerIndex, null);
+			this.setWorkerTaskContext(workerIndex, null);
 
 			if (this.distantTerrainSharedInit) {
 				const {
@@ -631,7 +608,6 @@ export class ChunkWorkerPool {
 			this.workers.push(workerWrapper);
 			this._markWorkerIdle(i);
 			this.workerTaskContext.push(null);
-			this.workerTaskTimeouts.push(null);
 			this.workerRestartAtMs.push(0);
 			this.workerDispatchCounts.push(0);
 			this._lastHeartbeatSeq.push(0);
@@ -1186,7 +1162,7 @@ export class ChunkWorkerPool {
 							lightSeedLength > 0;
 
 						if (isStale) {
-							this.assignWorkerTaskContext(workerIndex, null);
+							this.setWorkerTaskContext(workerIndex, null);
 							this._markWorkerIdle(workerIndex);
 							if (!needsLightRefinement) {
 								void WorldStorage.saveChunk(chunk).catch((error) => {
@@ -1237,7 +1213,7 @@ export class ChunkWorkerPool {
 			if (failed) return;
 			if (this.workers[workerIndex] !== getWorker()) return;
 
-			this.assignWorkerTaskContext(workerIndex, null);
+			this.setWorkerTaskContext(workerIndex, null);
 			this._markWorkerIdle(workerIndex);
 			this.scheduleProcessQueuePump();
 		};
@@ -1307,7 +1283,7 @@ export class ChunkWorkerPool {
 			if (failed) return;
 			if (this.workers[workerIndex] !== getWorker()) return;
 
-			this.assignWorkerTaskContext(workerIndex, null);
+			this.setWorkerTaskContext(workerIndex, null);
 			this._markWorkerIdle(workerIndex);
 			this.scheduleProcessQueuePump();
 		};
@@ -1429,7 +1405,7 @@ export class ChunkWorkerPool {
 		const deferLighting = this.getQueuedTerrainDeferLighting(chunk);
 		this.terrainTaskQueue.delete(chunk);
 		this.terrainTaskDeferLighting.delete(chunk.id);
-		this.assignWorkerTaskContext(workerIndex, {
+		this.setWorkerTaskContext(workerIndex, {
 			taskType: "terrain",
 			chunk,
 			terrainDeferLighting: deferLighting,
@@ -1740,7 +1716,7 @@ export class ChunkWorkerPool {
 					dispatchedThisTick++;
 				} else if (taskType === "remesh") {
 					const lod = taskChunk!.lodLevel ?? 0;
-					this.assignWorkerTaskContext(workerIndex, {
+					this.setWorkerTaskContext(workerIndex, {
 						taskType,
 						chunk: taskChunk,
 						lod,
@@ -1754,7 +1730,7 @@ export class ChunkWorkerPool {
 					dispatchedThisTick++;
 				} else if (taskType === "lodPrecompute") {
 					const lod = precomputeLod!;
-					this.assignWorkerTaskContext(workerIndex, {
+					this.setWorkerTaskContext(workerIndex, {
 						taskType,
 						chunk: taskChunk,
 						lod,
@@ -1766,7 +1742,7 @@ export class ChunkWorkerPool {
 					dispatchedThisTick++;
 				} else {
 					// distantTerrain
-					this.assignWorkerTaskContext(workerIndex, { taskType, distantTask });
+					this.setWorkerTaskContext(workerIndex, { taskType, distantTask });
 					this.distantTerrainInFlight = true;
 					worker.postGenerateDistantTerrain(
 						distantTask!.requestId,
@@ -1816,4 +1792,81 @@ export class ChunkWorkerPool {
 			this.scheduleProcessQueuePump();
 		}
 	}
+
+	// -------------------------------------------------------------------------
+	// Chunk disposal
+	//
+	// Called by Chunk.dispose() via the addChunkDisposeHook registered below.
+	// Releases every strong reference the pool holds to the disposed chunk
+	// so the chunk (and its voxel/light/palette SharedArrayBuffers) can be
+	// reclaimed by the GC. Persistent chunks (boat chunks) are intentionally
+	// skipped — they live as long as the boat does.
+	// -------------------------------------------------------------------------
+	public onChunkDisposed(chunk: Chunk): void {
+		if (chunk.isPersistent) return;
+
+		// Map cleanups (O(1) each).
+		this.pendingRemeshMap.delete(chunk);
+		this.taskQueuePriority.delete(chunk);
+		this.terrainTaskDeferLighting.delete(chunk.id);
+		this.deferredLightingQueuedIds.delete(chunk.id);
+		this.deferredLightingSeedStates.delete(chunk.id);
+		this.rerunRemeshAfterInflight.delete(chunk.id);
+
+		// Set cleanup.
+		this.terrainTaskQueue.delete(chunk);
+
+		// Array cleanups — splice any matching entry whose index is at or
+		// after the current read pointer. Entries before the read pointer
+		// have already been consumed and cannot remain in the array because
+		// the dequeue loops always advance past them.
+		spliceMatchingFromArray(this.taskQueue, chunk, this.taskQueueReadIdx);
+		spliceMatchingFromArray(
+			this.deferredLightingQueue,
+			chunk,
+			this.deferredLightingQueueReadIdx,
+		);
+		spliceLodPrecomputeMatching(
+			this.lodPrecomputeQueue,
+			chunk,
+			this.lodPrecomputeQueueReadIdx,
+		);
+
+		// pendingLodPrecomputeKeys uses packInflightKey(chunkId, lod).
+		// LOD values are 0–15, so 16 deletes is cheap.
+		for (let lod = 0; lod < 16; lod++) {
+			this.pendingLodPrecomputeKeys.delete(packInflightKey(chunk.id, lod));
+		}
+	}
 }
+
+// ---------------------------------------------------------------------------
+// Module-level helpers used by onChunkDisposed.
+// ---------------------------------------------------------------------------
+function spliceMatchingFromArray(
+	arr: Chunk[],
+	chunk: Chunk,
+	startIdx: number,
+): void {
+	for (let i = arr.length - 1; i >= startIdx; i--) {
+		if (arr[i] === chunk) arr.splice(i, 1);
+	}
+}
+
+function spliceLodPrecomputeMatching(
+	arr: Array<{ chunk: Chunk; lod: number }>,
+	chunk: Chunk,
+	startIdx: number,
+): void {
+	for (let i = arr.length - 1; i >= startIdx; i--) {
+		if (arr[i]!.chunk === chunk) arr.splice(i, 1);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Register a chunk-dispose hook so the pool can drop its strong references
+// to the chunk the moment Chunk.dispose() runs.
+// ---------------------------------------------------------------------------
+addChunkDisposeHook((chunk) => {
+	ChunkWorkerPool.getInstance().onChunkDisposed(chunk);
+});
