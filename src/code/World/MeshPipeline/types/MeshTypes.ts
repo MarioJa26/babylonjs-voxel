@@ -1,60 +1,9 @@
 // MeshPipeline/types/MeshTypes.ts
 
+import type { WorkerInternalMeshData as WIMD } from "../../Chunk/DataStructures/WorkerInternalMeshData";
 import type { FaceName } from "../../Texture/FaceName";
 
-/**
- * Data structure used by WorkerInternalMeshData in your engine.
- * This mirrors exactly what your JS code produces.
- */
-export interface WorkerInternalMeshData {
-	faceDataA: ResizableTypedArray<Uint8Array>;
-	faceDataB: ResizableTypedArray<Uint8Array>;
-	faceDataC: ResizableTypedArray<Uint8Array>;
-	faceCount: number;
-}
-
-/**
- * Typed wrapper for your dynamic typed array implementation.
- */
-export interface ResizableTypedArray<T extends Uint8Array> {
-	push4(a: number, b: number, c: number, d: number): void;
-	push6?(
-		a: number,
-		b: number,
-		c: number,
-		d: number,
-		e: number,
-		f: number,
-	): void;
-	push8?(
-		a: number,
-		b: number,
-		c: number,
-		d: number,
-		e: number,
-		f: number,
-		g: number,
-		h: number,
-	): void;
-	push12?(
-		a: number,
-		b: number,
-		c: number,
-		d: number,
-		e: number,
-		f: number,
-		g: number,
-		h: number,
-		i1: number,
-		j: number,
-		k: number,
-		l: number,
-	): void;
-	readonly finalArray: T;
-	bulkPush(src: T): void;
-	pushFrom(other: ResizableTypedArray<T>): void;
-	length: number;
-}
+export type WorkerInternalMeshData = WIMD;
 
 /**
  * Core meshing context used by all pipelines.

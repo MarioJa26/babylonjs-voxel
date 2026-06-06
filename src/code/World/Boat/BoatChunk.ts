@@ -74,10 +74,16 @@ export class BoatChunk {
 	}
 	private initializeCenterChunkLighting(blocks: BoatChunkBlock[]): void {
 		// Rebuild skylight properly using the actual boat blocks plus the already
-		// populated empty neighbor chunks around it.
+		// populated empty neighbor chunks around it.  initializeSunlight now
+		// posts its BFS seed queue to the worker pool.
 		this.#centerChunk.initializeSunlight();
 
-		// Add explicit/custom light data or infer block emission from block IDs.
+		// Collect all emission / explicit light sources so we can dispatch a
+		// single batched LightAddEmission message per block instead of
+		// running an inline BFS per cell.
+		const emissions: Array<{ x: number; y: number; z: number; level: number }> = [];
+		const pool = Chunk._lightPool;
+
 		for (const block of blocks) {
 			const bx = Math.floor(block.x);
 			const by = Math.floor(block.y);
@@ -107,7 +113,7 @@ export class BoatChunk {
 				}
 
 				if (blockLight > 0) {
-					this.#centerChunk.addLight(bx, by, bz, blockLight);
+					emissions.push({ x: bx, y: by, z: bz, level: blockLight });
 				}
 
 				continue;
@@ -115,7 +121,21 @@ export class BoatChunk {
 
 			const emission = Chunk.getLightEmission(unpackBlockId(packed));
 			if (emission > 0) {
-				this.#centerChunk.addLight(bx, by, bz, emission);
+				emissions.push({ x: bx, y: by, z: bz, level: emission });
+			}
+		}
+
+		if (pool && emissions.length > 0) {
+			for (const e of emissions) {
+				pool.postLightAddEmission({
+					chunkId: this.#centerChunk.id,
+					headerSlot: this.#centerChunk.lightHeaderSlot,
+					x: e.x,
+					y: e.y,
+					z: e.z,
+					level: e.level,
+					seq: pool.nextLightSeq(),
+				});
 			}
 		}
 

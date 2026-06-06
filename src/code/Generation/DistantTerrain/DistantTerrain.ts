@@ -49,6 +49,12 @@ export class DistantTerrain {
 	// Reusable vector
 	#gridOrigin = new Vector2();
 
+	// Last chunk column we scheduled for; skip the postMessage if the
+	// player hasn't crossed a chunk boundary this frame.  NaN forces
+	// the first call to fire.
+	lastChunkX: number = Number.NaN;
+	lastChunkZ: number = Number.NaN;
+
 	// GPU buffers (created once, updated)
 	#positionVB?: VertexBuffer;
 	#normalVB?: VertexBuffer;
@@ -400,9 +406,14 @@ export class DistantTerrain {
 	}
 
 	public update(worldX: number, worldZ: number) {
+		const cx = worldToChunkCoord(worldX);
+		const cz = worldToChunkCoord(worldZ);
+		if (cx === this.lastChunkX && cz === this.lastChunkZ) return;
+		this.lastChunkX = cx;
+		this.lastChunkZ = cz;
 		ChunkWorkerPool.getInstance().scheduleDistantTerrain(
-			worldToChunkCoord(worldX),
-			worldToChunkCoord(worldZ),
+			cx,
+			cz,
 			this.#radius,
 			SETTING_PARAMS.RENDER_DISTANCE,
 			this.#gridStep,

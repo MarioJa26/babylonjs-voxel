@@ -1,7 +1,8 @@
 // MeshPipeline/core/MeshEmitters.ts
 
 import { ResizableTypedArray } from "../../Chunk/DataStructures/ResizableTypedArray";
-import type { MeshContext, WorkerInternalMeshData } from "../types/MeshTypes";
+import type { WorkerInternalMeshData } from "../../Chunk/DataStructures/WorkerInternalMeshData";
+import type { MeshContext } from "../types/MeshTypes";
 import { mergeMeshData } from "./MeshAssembler";
 import { createMeshContext } from "./MeshContext";
 import { VoxelPipeline } from "./VoxelPipeline";

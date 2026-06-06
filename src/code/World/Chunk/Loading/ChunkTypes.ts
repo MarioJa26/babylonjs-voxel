@@ -33,7 +33,6 @@ export type InFlightProcessState = {
 	hydratedCount: number;
 	unloadedCount: number;
 	savedCount: number;
-	lodCacheVersionMismatchCount: number;
 
 	unloadBatch: Chunk[];
 	unloadBatchIndex: number;
@@ -73,6 +72,12 @@ export type ChunkLoadingDebugStats = {
 	totalHydrated: number;
 	totalUnloaded: number;
 	totalSaved: number;
-	lastLodCacheVersionMismatches: number;
-	totalLodCacheVersionMismatches: number;
+	lastOpfsHits: number;
+	lastOpfsMisses: number;
+	totalOpfsHits: number;
+	totalOpfsMisses: number;
+	opfsUsedBytes: number;
+	opfsTotalBytes: number;
+	opfsSlotCount: number;
+	opfsEvictionCount: number;
 };

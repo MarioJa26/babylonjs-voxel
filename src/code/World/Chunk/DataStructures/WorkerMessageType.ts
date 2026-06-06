@@ -7,6 +7,16 @@ export enum WorkerTaskType {
 	GenerateDistantTerrain,
 	InitDistantTerrainShared,
 	WorkerReady,
+	// --- Light worker tasks ---
+	InitLightShared,
+	LightRegisterChunk,
+	LightUnregisterChunk,
+	LightUpdateChunkBuffers,
+	LightMutate,
+	LightAddEmission,
+	LightSkyReconcile,
+	LightPropagateDeferred,
+	LightDirty,
 }
 
 /* =========================================================
@@ -104,7 +114,97 @@ export type WorkerRequestData =
 	| GenerateTerrainRequest
 	| GenerateFullMeshRequest
 	| GenerateDistantTerrainRequest
-	| InitDistantTerrainSharedRequest;
+	| InitDistantTerrainSharedRequest
+	| InitLightSharedRequest
+	| LightRegisterChunkRequest
+	| LightUnregisterChunkRequest
+	| LightUpdateChunkBuffersRequest
+	| LightMutateRequest
+	| LightAddEmissionRequest
+	| LightSkyReconcileRequest
+	| LightPropagateDeferredRequest;
+
+/* =========================================================
+ * Light-task messages
+ * ========================================================= */
+
+export type InitLightSharedRequest = {
+	type: WorkerTaskType.InitLightShared;
+	headerBuffer: SharedArrayBuffer;
+};
+
+export type LightRegisterChunkRequest = {
+	type: WorkerTaskType.LightRegisterChunk;
+	chunkId: bigint;
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+	headerSlot: number;
+	blockSAB: SharedArrayBuffer | null;
+	lightSAB: SharedArrayBuffer;
+	paletteSAB: SharedArrayBuffer | null;
+	blockStorageBytesPerElement: 1 | 2;
+};
+
+export type LightUnregisterChunkRequest = {
+	type: WorkerTaskType.LightUnregisterChunk;
+	chunkId: bigint;
+};
+
+export type LightUpdateChunkBuffersRequest = {
+	type: WorkerTaskType.LightUpdateChunkBuffers;
+	chunkId: bigint;
+	headerSlot: number;
+	blockSAB: SharedArrayBuffer | null;
+	paletteSAB: SharedArrayBuffer | null;
+	lightSAB: SharedArrayBuffer;
+	blockStorageBytesPerElement: 1 | 2;
+};
+
+export type LightMutateRequest = {
+	type: WorkerTaskType.LightMutate;
+	chunkId: bigint;
+	headerSlot: number;
+	x: number;
+	y: number;
+	z: number;
+	oldPacked: number;
+	newPacked: number;
+	seq: number;
+};
+
+export type LightAddEmissionRequest = {
+	type: WorkerTaskType.LightAddEmission;
+	chunkId: bigint;
+	headerSlot: number;
+	x: number;
+	y: number;
+	z: number;
+	level: number;
+	seq: number;
+};
+
+export type LightSkyReconcileRequest = {
+	type: WorkerTaskType.LightSkyReconcile;
+	chunkId: bigint;
+	headerSlot: number;
+	seq: number;
+};
+
+export type LightPropagateDeferredRequest = {
+	type: WorkerTaskType.LightPropagateDeferred;
+	chunkId: bigint;
+	headerSlot: number;
+	seedQueue: Uint16Array;
+	seedLength: number;
+	seq: number;
+};
+
+export type LightDirtyMessage = {
+	type: WorkerTaskType.LightDirty;
+	seq: number;
+	dirtySlots: Uint32Array;
+};
 
 /* =========================================================
  * Responses sent FROM the worker
@@ -145,7 +245,9 @@ export type WorkerResponseData =
 	| TerrainGeneratedMessage
 	| DistantTerrainGeneratedMessage
 	| { type: WorkerTaskType.InitDistantTerrainShared } // ← ack only, no payload
-	| { type: WorkerTaskType.WorkerReady };
+	| { type: WorkerTaskType.InitLightShared } // ← ack only
+	| { type: WorkerTaskType.WorkerReady }
+	| LightDirtyMessage;
 
 export type MeshWorkerResponse = {
 	chunkId: bigint;

@@ -1,0 +1,138 @@
+import { MeshData } from "../Chunk/DataStructures/MeshData";
+
+/**
+ * Serializes a MeshData into a single Uint8Array for OPFS storage.
+ * Format (no version, no compression per design decision):
+ *   [faceCount: u32 LE]
+ *   [aLen: u32 LE]
+ *   [bLen: u32 LE]
+ *   [cLen: u32 LE]
+ *   [aData: aLen bytes]
+ *   [bData: bLen bytes]
+ *   [cData: cLen bytes]
+ */
+export function serializeMesh(
+	mesh: MeshData | null | undefined,
+): Uint8Array | null {
+	if (!mesh) return null;
+	const a = mesh.faceDataA ?? new Uint8Array();
+	const b = mesh.faceDataB ?? new Uint8Array();
+	const c = mesh.faceDataC ?? new Uint8Array();
+	const aLen = a.length;
+	const bLen = b.length;
+	const cLen = c.length;
+	const total = 16 + aLen + bLen + cLen;
+	const out = new Uint8Array(total);
+	const dv = new DataView(out.buffer);
+	dv.setUint32(0, mesh.faceCount >>> 0, true);
+	dv.setUint32(4, aLen, true);
+	dv.setUint32(8, bLen, true);
+	dv.setUint32(12, cLen, true);
+	out.set(a, 16);
+	out.set(b, 16 + aLen);
+	out.set(c, 16 + aLen + bLen);
+	return out;
+}
+
+/**
+ * Deserializes a Uint8Array (as written by serializeMesh) into a MeshData.
+ * Throws if the data is too short or declares more bytes than available.
+ */
+export function deserializeMesh(bytes: Uint8Array): MeshData {
+	if (bytes.byteLength < 16) {
+		throw new Error("Invalid mesh data: too short");
+	}
+	const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	const faceCount = dv.getUint32(0, true);
+	const aLen = dv.getUint32(4, true);
+	const bLen = dv.getUint32(8, true);
+	const cLen = dv.getUint32(12, true);
+	const total = 16 + aLen + bLen + cLen;
+	if (total > bytes.byteLength) {
+		throw new Error(
+			`Invalid mesh data: declared ${total} bytes, got ${bytes.byteLength}`,
+		);
+	}
+	const mesh = new MeshData();
+	mesh.faceCount = faceCount;
+	mesh.faceDataA = aLen > 0 ? bytes.slice(16, 16 + aLen) : new Uint8Array();
+	mesh.faceDataB =
+		bLen > 0 ? bytes.slice(16 + aLen, 16 + aLen + bLen) : new Uint8Array();
+	mesh.faceDataC =
+		cLen > 0
+			? bytes.slice(16 + aLen + bLen, 16 + aLen + bLen + cLen)
+			: new Uint8Array();
+	return mesh;
+}
+
+/**
+ * Combines an opaque + transparent mesh into a single Uint8Array for storage.
+ * Format:
+ *   [hasOpaque: u8]
+ *   [hasTransparent: u8]
+ *   [oLen: u32 LE]
+ *   [tLen: u32 LE]
+ *   [oData: oLen bytes (only if hasOpaque)]
+ *   [tData: tLen bytes (only if hasTransparent)]
+ */
+export function serializeMeshPair(
+	opaque: MeshData | null | undefined,
+	transparent: MeshData | null | undefined,
+): Uint8Array | null {
+	const o = serializeMesh(opaque);
+	const t = serializeMesh(transparent);
+	if (!o && !t) return null;
+	const oLen = o?.length ?? 0;
+	const tLen = t?.length ?? 0;
+	const total = 10 + oLen + tLen;
+	const out = new Uint8Array(total);
+	const dv = new DataView(out.buffer);
+	dv.setUint8(0, o ? 1 : 0);
+	dv.setUint8(1, t ? 1 : 0);
+	dv.setUint32(2, oLen, true);
+	dv.setUint32(6, tLen, true);
+	if (o) out.set(o, 10);
+	if (t) out.set(t, 10 + oLen);
+	return out;
+}
+
+export type DeserializedMeshPair = {
+	opaque: MeshData | null;
+	transparent: MeshData | null;
+	lod: number;
+};
+
+/**
+ * Deserializes a mesh pair from a Uint8Array (as written by serializeMeshPair).
+ * Throws if the data is too short or declares more bytes than available.
+ */
+export function deserializeMeshPair(
+	bytes: Uint8Array,
+	lod: number,
+): DeserializedMeshPair {
+	if (bytes.byteLength < 10) {
+		throw new Error("Invalid mesh pair: too short");
+	}
+	const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	const hasO = dv.getUint8(0) !== 0;
+	const hasT = dv.getUint8(1) !== 0;
+	const oLen = dv.getUint32(2, true);
+	const tLen = dv.getUint32(6, true);
+	const total = 10 + oLen + tLen;
+	if (total > bytes.byteLength) {
+		throw new Error(
+			`Invalid mesh pair: declared ${total} bytes, got ${bytes.byteLength}`,
+		);
+	}
+	let off = 10;
+	let opaque: MeshData | null = null;
+	let transparent: MeshData | null = null;
+	if (hasO && oLen > 0) {
+		opaque = deserializeMesh(bytes.slice(off, off + oLen));
+		off += oLen;
+	}
+	if (hasT && tLen > 0) {
+		transparent = deserializeMesh(bytes.slice(off, off + tLen));
+	}
+	return { opaque, transparent, lod };
+}

@@ -1,4 +1,7 @@
-import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
+import {
+	TextureDefinitions,
+	TextureDefinitionsReady,
+} from "@/code/World/Texture/TextureDefinitions";
 
 export type ItemDefinition = {
 	id: number;
@@ -50,6 +53,7 @@ export class ItemRegistry {
 	}
 
 	static async ensureLoaded(url = DEFAULT_ITEMS_URL): Promise<void> {
+		await TextureDefinitionsReady;
 		ItemRegistry.initDefaults();
 
 		if (ItemRegistry.loadPromise) return ItemRegistry.loadPromise;

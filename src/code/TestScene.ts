@@ -68,6 +68,8 @@ export class TestScene {
 		const scene = new Scene(this.engine);
 
 		scene.performancePriority = ScenePerformancePriority.BackwardCompatible;
+		scene.autoClear = false; // Color buffer
+		scene.autoClearDepthAndStencil = false; // Depth and stencil
 
 		// This creates and positions a free camera (non-mesh)
 		const camera = new FreeCamera("camera1", Vector3.Zero(), scene);

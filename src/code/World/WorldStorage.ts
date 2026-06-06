@@ -1,668 +1,168 @@
 import { Chunk } from "./Chunk/Chunk";
-import type { MeshData } from "./Chunk/DataStructures/MeshData";
-import { getCurrentLodCacheVersion } from "./Chunk/LOD/LodCacheVersion";
+import { ChunkWorkerPool } from "./Chunk/ChunkWorkerPool";
 import { GLOBAL_VALUES } from "./GLOBAL_VALUES";
+import { packChunkKey } from "./Storage/ChunkKey";
+import type { OpfsClient } from "./Storage/OpfsClient";
+import {
+	deserializeEntities,
+	deserializeVoxelData,
+	type SavedChunkData,
+	type SavedChunkEntityData,
+	serializeEntities,
+	serializeVoxelData,
+} from "./Storage/VoxelSerializer";
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
-export type SavedChunkData = {
-	blocks: Uint8Array | Uint16Array | null;
-	palette?: Uint16Array | null;
-	uniformBlockId?: number;
-	isUniform?: boolean;
-	lightArray?: Uint8Array;
-	opaqueMesh?: MeshData;
-	transparentMesh?: MeshData;
-	lodMeshes?: Record<
-		number,
-		{
-			opaque?: MeshData | null;
-			transparent?: MeshData | null;
-		}
-	>;
-	lodCacheVersion?: string;
-	compressed?: boolean;
-};
+export type { SavedChunkData, SavedChunkEntityData };
 
 export type LoadChunkOptions = {
 	includeVoxelData?: boolean;
 };
 
-export type SavedChunkEntityData = {
-	type: string;
-	payload: unknown;
-};
-
-// ---------------------------------------------------------------------------
-// Internal types
-// ---------------------------------------------------------------------------
-
-type PersistenceLane = "critical" | "background";
-
-type PersistenceJob = {
-	run: () => Promise<void>;
-	resolve: () => void;
-	reject: (reason?: unknown) => void;
-};
-
-type PreparedFullChunkSave = {
-	id: string;
-	chunk: Chunk;
-	data: {
-		id: string;
-		blocks: Uint8Array | null;
-		palette: Uint16Array | null;
-		uniformBlockId: number;
-		isUniform: boolean;
-		lightArray: Uint8Array | null;
-		opaqueMesh: MeshData | null;
-		transparentMesh: MeshData | null;
-		lodMeshes: SavedChunkData["lodMeshes"];
-		lodCacheVersion: string;
-		compressed: true;
-	};
-};
-
-type PreparedLodOnlySave = {
-	id: string;
-	chunk: Chunk;
-	opaqueMesh: MeshData | null;
-	transparentMesh: MeshData | null;
-	lodMeshes: SavedChunkData["lodMeshes"];
-	lodCacheVersion: string;
-};
-
-// ---------------------------------------------------------------------------
-// DB constants
-// ---------------------------------------------------------------------------
-
-const DB_NAME = "VoxelWorldDB";
-const DB_VERSION = 2;
-const CHUNK_STORE = "chunks";
-const CHUNK_ENTITY_STORE = "chunk_entities";
-
-// ---------------------------------------------------------------------------
-// IDBHelper — thin promise wrappers around raw IndexedDB operations
-// ---------------------------------------------------------------------------
-
-function idbRequest<T>(req: IDBRequest<T>): Promise<T> {
-	return new Promise((resolve, reject) => {
-		req.onsuccess = () => resolve(req.result);
-		req.onerror = () => reject(req.error);
-	});
-}
-
-function idbTransaction(tx: IDBTransaction): Promise<void> {
-	return new Promise((resolve, reject) => {
-		tx.oncomplete = () => resolve();
-		tx.onerror = () => reject(tx.error);
-	});
-}
-
-function openDatabase(): Promise<IDBDatabase> {
-	return new Promise((resolve, reject) => {
-		const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-		request.onerror = () => {
-			console.error("IndexedDB error:", request.error);
-			reject(new Error("Failed to open IndexedDB."));
-		};
-
-		request.onsuccess = () => {
-			console.log("IndexedDB initialized successfully.");
-			resolve(request.result);
-		};
-
-		request.onupgradeneeded = (event) => {
-			const db = (event.target as IDBOpenDBRequest).result;
-
-			if (!db.objectStoreNames.contains(CHUNK_STORE)) {
-				db.createObjectStore(CHUNK_STORE, { keyPath: "id" });
-				console.log(`Object store '${CHUNK_STORE}' created.`);
-			}
-
-			if (!db.objectStoreNames.contains(CHUNK_ENTITY_STORE)) {
-				db.createObjectStore(CHUNK_ENTITY_STORE, { keyPath: "chunkId" });
-				console.log(`Object store '${CHUNK_ENTITY_STORE}' created.`);
-			}
-		};
-	});
-}
-
-// ---------------------------------------------------------------------------
-// ChunkSerializer — compression / decompression helpers
-// ---------------------------------------------------------------------------
-
-async function compress(data: Uint8Array | Uint16Array): Promise<Uint8Array> {
-	// View raw bytes without copying. byteOffset/byteLength handle sliced arrays.
-	const inputBytes = new Uint8Array(
-		data.buffer,
-		data.byteOffset,
-		data.byteLength,
-	);
-
-	// Only copy when the source is a SharedArrayBuffer — the Streams API rejects SABs.
-	const chunk =
-		data.buffer instanceof SharedArrayBuffer
-			? new Uint8Array(inputBytes)
-			: inputBytes;
-
-	const readable = new ReadableStream<Uint8Array>({
-		start(controller) {
-			controller.enqueue(chunk);
-			controller.close();
-		},
-	});
-
-	// Drain the compressed stream manually instead of going through Response.arrayBuffer().
-	// Response buffers internally before handing back the ArrayBuffer, meaning the data
-	// exists in memory twice at peak. Draining directly means only the output chunks
-	// and the final concat are alive at the same time.
-	const reader = readable
-		.pipeThrough(
-			new CompressionStream("gzip") as unknown as ReadableWritablePair<
-				Uint8Array,
-				Uint8Array
-			>,
-		)
-		.getReader();
-
-	const chunks: Uint8Array[] = [];
-	let totalBytes = 0;
-
-	try {
-		while (true) {
-			const { value, done } = await reader.read();
-			if (done) break;
-			chunks.push(value);
-			totalBytes += value.byteLength;
-		}
-	} finally {
-		reader.releaseLock();
-	}
-
-	// Single allocation + single pass of memcpy to assemble the final buffer.
-	const result = new Uint8Array(totalBytes);
-	let offset = 0;
-	for (const c of chunks) {
-		result.set(c, offset);
-		offset += c.byteLength;
-	}
-	return result;
-}
-
-function getGzipISize(data: Uint8Array): number {
-	if (data.byteLength < 18) {
-		throw new Error("Invalid gzip data: too small");
-	}
-	return (
-		(data[data.byteLength - 4] |
-			(data[data.byteLength - 3] << 8) |
-			(data[data.byteLength - 2] << 16) |
-			(data[data.byteLength - 1] << 24)) >>>
-		0
-	);
-}
-
-async function decompressToShared(
-	data: Uint8Array,
-): Promise<Uint8Array | Uint16Array> {
-	const outputByteLength = getGzipISize(data);
-
-	const body: Uint8Array<ArrayBuffer> =
-		data.buffer instanceof ArrayBuffer
-			? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
-			: new Uint8Array(data);
-
-	const sab = new SharedArrayBuffer(outputByteLength);
-	const out = new Uint8Array(sab);
-
-	const reader = new Response(body)
-		.body!.pipeThrough(new DecompressionStream("gzip"))
-		.getReader();
-
-	let offset = 0;
-
-	try {
-		while (true) {
-			const { value, done } = await reader.read();
-			if (done) break;
-			if (value) {
-				out.set(value, offset);
-				offset += value.byteLength;
-			}
-		}
-	} finally {
-		reader.releaseLock();
-	}
-
-	if (offset !== outputByteLength) {
-		throw new Error(
-			`Decompressed size mismatch: expected ${outputByteLength}, got ${offset}`,
-		);
-	}
-
-	return sab.byteLength === Chunk.SIZE3 * 2
-		? new Uint16Array(sab)
-		: new Uint8Array(sab);
-}
-
-function isUint8Array(
-	value: Uint8Array | Uint16Array | null | undefined,
-): value is Uint8Array {
-	return !!value && value.BYTES_PER_ELEMENT === 1;
-}
-
-function detachSharedArrayBuffer<T extends ArrayBufferView>(view: T): T {
-	if (!view || !(view.buffer instanceof SharedArrayBuffer)) return view;
-
-	if (view instanceof Uint16Array) {
-		const copy = new Uint16Array(view.length);
-		copy.set(view);
-		return copy as unknown as T;
-	}
-	if (view instanceof Uint8Array) {
-		const copy = new Uint8Array(view.length);
-		copy.set(view);
-		return copy as unknown as T;
-	}
-	const copy = new Uint8Array(view.byteLength);
-	copy.set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
-	return copy as unknown as T;
-}
-
-function detachMeshData(mesh: MeshData | null): MeshData | null {
-	if (!mesh) return null;
-	return {
-		faceDataA: detachSharedArrayBuffer(mesh.faceDataA),
-		faceDataB: detachSharedArrayBuffer(mesh.faceDataB),
-		faceDataC: detachSharedArrayBuffer(mesh.faceDataC),
-		faceCount: mesh.faceCount,
-	} as MeshData;
-}
-
-function detachLodMeshes(
-	lodMeshes: SavedChunkData["lodMeshes"],
-): SavedChunkData["lodMeshes"] {
-	if (!lodMeshes) return lodMeshes;
-	const result: SavedChunkData["lodMeshes"] = {};
-	for (const key of Object.keys(lodMeshes)) {
-		const entry = lodMeshes[Number(key)];
-		result[Number(key)] = {
-			opaque: detachMeshData(entry.opaque ?? null),
-			transparent: detachMeshData(entry.transparent ?? null),
-		};
-	}
-	return result;
-}
-
-async function prepareFullChunkSave(
-	chunk: Chunk,
-): Promise<PreparedFullChunkSave> {
-	const id = chunk.id.toString();
-	const blocks = chunk.block_array;
-	const light = chunk.light_array;
-
-	// PERF: Compress blocks and light in parallel instead of sequentially.
-	const [compressedBlocks, compressedLight] = await Promise.all([
-		blocks ? compress(blocks) : Promise.resolve(null),
-		light ? compress(light) : Promise.resolve(null),
-	]);
-
-	return {
-		id,
-		chunk,
-		data: {
-			id,
-			blocks: compressedBlocks,
-			palette: chunk.palette ? detachSharedArrayBuffer(chunk.palette) : null,
-			uniformBlockId: chunk.uniformBlockId,
-			isUniform: chunk.isUniform,
-			lightArray: compressedLight,
-			opaqueMesh: detachMeshData(chunk.opaqueMeshData),
-			transparentMesh: detachMeshData(chunk.transparentMeshData),
-			lodMeshes: detachLodMeshes(chunk.getSerializableLODMeshCache()),
-			lodCacheVersion: getCurrentLodCacheVersion(),
-			compressed: true,
-		},
-	};
-}
-
-function prepareLodOnlySave(chunk: Chunk): PreparedLodOnlySave {
-	return {
-		id: chunk.id.toString(),
-		chunk,
-		opaqueMesh: chunk.opaqueMeshData ?? null,
-		transparentMesh: chunk.transparentMeshData ?? null,
-		lodMeshes: chunk.getSerializableLODMeshCache(),
-		lodCacheVersion: getCurrentLodCacheVersion(),
-	};
-}
-
-// ---------------------------------------------------------------------------
-// PersistenceQueue — serialised job runner with critical / background lanes
-// ---------------------------------------------------------------------------
-
-class PersistenceQueue {
-	private queues: Record<PersistenceLane, PersistenceJob[]> = {
-		critical: [],
-		background: [],
-	};
-	// PERF: Read indices to avoid O(n) shift() on dequeue.
-	private criticalReadIdx = 0;
-	private backgroundReadIdx = 0;
-	private isRunning = false;
-
-	enqueue(lane: PersistenceLane, run: () => Promise<void>): Promise<void> {
-		return new Promise<void>((resolve, reject) => {
-			this.queues[lane].push({ run, resolve, reject });
-			this.drain();
-		});
-	}
-
-	private compact(lane: PersistenceLane): void {
-		const arr = this.queues[lane];
-		const readIdx =
-			lane === "critical" ? this.criticalReadIdx : this.backgroundReadIdx;
-		if (readIdx > 32 && readIdx * 2 > arr.length) {
-			arr.copyWithin(0, readIdx);
-			arr.length -= readIdx;
-			if (lane === "critical") this.criticalReadIdx = 0;
-			else this.backgroundReadIdx = 0;
-		}
-	}
-
-	private drain(): void {
-		if (this.isRunning) return;
-		this.isRunning = true;
-
-		const step = async () => {
-			while (true) {
-				const job = this.dequeue();
-				if (!job) break;
-
-				try {
-					await job.run();
-					job.resolve();
-				} catch (error) {
-					job.reject(error);
-				}
-			}
-
-			this.isRunning = false;
-
-			if (
-				this.criticalReadIdx < this.queues.critical.length ||
-				this.backgroundReadIdx < this.queues.background.length
-			) {
-				this.drain();
-			}
-		};
-
-		void step();
-	}
-
-	private dequeue(): PersistenceJob | null {
-		const q = this.queues.critical;
-		if (this.criticalReadIdx < q.length) {
-			const job = q[this.criticalReadIdx++]!;
-			this.compact("critical");
-			return job;
-		}
-		const bq = this.queues.background;
-		if (this.backgroundReadIdx < bq.length) {
-			const job = bq[this.backgroundReadIdx++]!;
-			this.compact("background");
-			return job;
-		}
-		return null;
-	}
-}
-
-// ---------------------------------------------------------------------------
-// WorldStorage — public API
-// ---------------------------------------------------------------------------
+const VOXEL_SENTINEL = 255;
+const ENTITY_SENTINEL = 254;
 
 class WorldStorageImpl {
-	private db: IDBDatabase | null = null;
 	private initPromise: Promise<void> | null = null;
-
-	private pendingChunkSaves = new Map<string, Promise<void>>();
-	private pendingLodInvalidationIds = new Set<string>();
-	private queue = new PersistenceQueue();
-
-	// -------------------------------------------------------------------------
-	// Initialisation
-	// -------------------------------------------------------------------------
 
 	initialize(): Promise<void> {
 		if (this.initPromise) return this.initPromise;
-
-		this.initPromise = openDatabase().then((db) => {
-			this.db = db;
-		});
-
+		this.initPromise = (async () => {
+			try {
+				await this.clearOldOpfsData();
+			} catch (err) {
+				console.warn("[WorldStorage] OPFS clear failed:", err);
+			}
+		})();
 		return this.initPromise;
 	}
 
-	private async ensureInitialized(): Promise<boolean> {
-		if (this.db) return true;
-		try {
-			await this.initialize();
-			return !!this.db;
-		} catch (error) {
-			console.warn("WorldStorage initialization failed.", error);
-			return false;
-		}
+	private async getClient(): Promise<OpfsClient | null> {
+		await this.initialize();
+		const pool = ChunkWorkerPool.getInstance();
+		return pool.getOpfsClient();
 	}
 
 	// -------------------------------------------------------------------------
-	// Pending-save tracking
+	// Compression helpers (kept from old WorldStorage)
 	// -------------------------------------------------------------------------
 
-	private trackPendingChunkSaves(
-		chunkIds: string[],
-		savePromise: Promise<void>,
-	): Promise<void> {
-		// Register first so the finally closure captures the right reference,
-		// then clean up only entries that still point at this promise.
-		const tracked = savePromise.finally(() => {
-			for (const id of chunkIds) {
-				if (this.pendingChunkSaves.get(id) === tracked) {
-					this.pendingChunkSaves.delete(id);
+	private async compress(data: Uint8Array | Uint16Array): Promise<Uint8Array> {
+		const inputBytes = new Uint8Array(
+			data.buffer,
+			data.byteOffset,
+			data.byteLength,
+		);
+		const chunk =
+			data.buffer instanceof SharedArrayBuffer
+				? new Uint8Array(inputBytes)
+				: inputBytes;
+		const readable = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(chunk);
+				controller.close();
+			},
+		});
+		const reader = readable
+			.pipeThrough(
+				new CompressionStream("gzip") as unknown as ReadableWritablePair<
+					Uint8Array,
+					Uint8Array
+				>,
+			)
+			.getReader();
+		const chunks: Uint8Array[] = [];
+		let totalBytes = 0;
+		try {
+			while (true) {
+				const { value, done } = await reader.read();
+				if (done) break;
+				chunks.push(value);
+				totalBytes += value.byteLength;
+			}
+		} finally {
+			reader.releaseLock();
+		}
+		const result = new Uint8Array(totalBytes);
+		let offset = 0;
+		for (const c of chunks) {
+			result.set(c, offset);
+			offset += c.byteLength;
+		}
+		return result;
+	}
+
+	private async decompressToShared(
+		data: Uint8Array,
+	): Promise<Uint8Array | Uint16Array> {
+		const outputByteLength = this.getGzipISize(data);
+		const body: Uint8Array<ArrayBuffer> =
+			data.buffer instanceof ArrayBuffer
+				? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+				: new Uint8Array(data);
+		const sab = new SharedArrayBuffer(outputByteLength);
+		const out = new Uint8Array(sab);
+		const reader = new Response(body)
+			.body!.pipeThrough(new DecompressionStream("gzip"))
+			.getReader();
+		let offset = 0;
+		try {
+			while (true) {
+				const { value, done } = await reader.read();
+				if (done) break;
+				if (value) {
+					out.set(value, offset);
+					offset += value.byteLength;
 				}
 			}
-		});
-
-		for (const id of chunkIds) {
-			this.pendingChunkSaves.set(id, tracked);
+		} finally {
+			reader.releaseLock();
 		}
-
-		return tracked;
+		if (offset !== outputByteLength) {
+			throw new Error(
+				`Decompressed size mismatch: expected ${outputByteLength}, got ${offset}`,
+			);
+		}
+		return sab.byteLength === Chunk.SIZE3 * 2
+			? new Uint16Array(sab)
+			: new Uint8Array(sab);
 	}
 
-	private async awaitPendingChunkSaves(chunkIds: string[]): Promise<void> {
-		// Collect distinct pending promises without building intermediate arrays.
-		const seen = new Set<Promise<void>>();
-		for (const id of chunkIds) {
-			const p = this.pendingChunkSaves.get(id);
-			if (p !== undefined) seen.add(p);
-		}
-		if (seen.size > 0) {
-			await Promise.allSettled(seen);
-		}
-	}
-
-	private enqueuePersistenceJob(
-		lane: PersistenceLane,
-		chunkIds: string[],
-		run: () => Promise<void>,
-	): Promise<void> {
-		const savePromise = this.queue.enqueue(lane, run);
-		return this.trackPendingChunkSaves(chunkIds, savePromise);
-	}
-
-	// -------------------------------------------------------------------------
-	// Persist helpers
-	// -------------------------------------------------------------------------
-
-	private async persistFullChunks(
-		prepared: PreparedFullChunkSave[],
-	): Promise<void> {
-		if (prepared.length === 0) return;
-
-		const tx = this.db!.transaction(CHUNK_STORE, "readwrite");
-		const store = tx.objectStore(CHUNK_STORE);
-
-		for (const entry of prepared) {
-			store.put(entry.data);
-		}
-
-		await idbTransaction(tx);
-
-		for (const entry of prepared) {
-			entry.chunk.isModified = false;
-			entry.chunk.isLODMeshCacheDirty = false;
-			entry.chunk.isLightDirty = false;
-		}
-	}
-
-	private async persistLodOnlyChunks(
-		prepared: PreparedLodOnlySave[],
-	): Promise<void> {
-		if (prepared.length === 0) return;
-
-		const tx = this.db!.transaction(CHUNK_STORE, "readwrite");
-		const store = tx.objectStore(CHUNK_STORE);
-		const updatedChunks = new Set<Chunk>();
-
-		// Issue all gets in parallel; the original sequential `await` serialised
-		// N round-trips to IDB. With the transaction already open, the browser
-		// can pipeline these requests.
-		const lookups = await Promise.all(
-			prepared.map(async (entry) => ({
-				entry,
-				existing: await idbRequest(store.get(entry.id)),
-			})),
+	private getGzipISize(data: Uint8Array): number {
+		if (data.byteLength < 18) throw new Error("Invalid gzip data: too small");
+		return (
+			(data[data.byteLength - 4] |
+				(data[data.byteLength - 3] << 8) |
+				(data[data.byteLength - 2] << 16) |
+				(data[data.byteLength - 1] << 24)) >>>
+			0
 		);
-
-		for (const { entry, existing } of lookups) {
-			if (!existing) {
-				// No base record yet — escalate to a full save on the next pass.
-				entry.chunk.isModified = true;
-				continue;
-			}
-
-			existing.opaqueMesh = entry.opaqueMesh;
-			existing.transparentMesh = entry.transparentMesh;
-			existing.lodMeshes = entry.lodMeshes;
-			existing.lodCacheVersion = entry.lodCacheVersion;
-			store.put(existing);
-			updatedChunks.add(entry.chunk);
-		}
-
-		await idbTransaction(tx);
-
-		for (const chunk of updatedChunks) {
-			if (!chunk.isModified) {
-				chunk.isLODMeshCacheDirty = false;
-			}
-		}
 	}
 
-	private async persistLodCacheInvalidation(
-		chunkId: string,
-		targetVersion: string,
-	): Promise<void> {
-		const tx = this.db!.transaction(CHUNK_STORE, "readwrite");
-		const store = tx.objectStore(CHUNK_STORE);
-		const existing = await idbRequest(store.get(chunkId));
+	private isUint8Array(
+		value: Uint8Array | Uint16Array | null | undefined,
+	): value is Uint8Array {
+		return !!value && value.BYTES_PER_ELEMENT === 1;
+	}
 
-		if (existing && existing.lodCacheVersion !== targetVersion) {
-			existing.lodMeshes = undefined;
-			existing.lodCacheVersion = targetVersion;
-			store.put(existing);
+	private detachSharedArrayBuffer<T extends ArrayBufferView>(view: T): T {
+		if (!view || !(view.buffer instanceof SharedArrayBuffer)) return view;
+		if (view instanceof Uint16Array) {
+			const copy = new Uint16Array(view.length);
+			copy.set(view);
+			return copy as unknown as T;
 		}
-
-		await idbTransaction(tx);
-	}
-
-	// -------------------------------------------------------------------------
-	// LOD cache version policy
-	// -------------------------------------------------------------------------
-
-	private applyLodCacheVersionPolicy(
-		chunkId: string,
-		data: SavedChunkData,
-	): SavedChunkData {
-		const currentVersion = getCurrentLodCacheVersion();
-		if (data.lodCacheVersion === currentVersion) return data;
-
-		data.lodMeshes = undefined;
-		this.scheduleLodCacheInvalidation(chunkId, currentVersion);
-		return data;
-	}
-
-	private scheduleLodCacheInvalidation(
-		chunkId: string,
-		targetVersion: string,
-	): void {
-		if (this.pendingLodInvalidationIds.has(chunkId)) return;
-
-		this.pendingLodInvalidationIds.add(chunkId);
-
-		const job = this.enqueuePersistenceJob("background", [chunkId], () =>
-			this.persistLodCacheInvalidation(chunkId, targetVersion),
-		);
-
-		void job.finally(() => {
-			this.pendingLodInvalidationIds.delete(chunkId);
-		});
-	}
-
-	// -------------------------------------------------------------------------
-	// Chunk decompression / post-processing
-	// -------------------------------------------------------------------------
-
-	private async processLoadedChunk(
-		chunkId: bigint,
-		data: SavedChunkData,
-		options?: LoadChunkOptions,
-	): Promise<SavedChunkData> {
-		const chunkIdKey = chunkId.toString();
-		const includeVoxelData = options?.includeVoxelData ?? true;
-
-		if (data.compressed && includeVoxelData) {
-			const jobs: Promise<void>[] = [];
-
-			if (isUint8Array(data.blocks)) {
-				jobs.push(
-					decompressToShared(data.blocks).then((result) => {
-						data.blocks = result;
-					}),
-				);
-			}
-
-			if (isUint8Array(data.lightArray)) {
-				jobs.push(
-					decompressToShared(data.lightArray).then((result) => {
-						data.lightArray = result as Uint8Array;
-					}),
-				);
-			}
-
-			await Promise.all(jobs);
-		} else if (!includeVoxelData) {
-			data.blocks = null;
-			data.palette = null;
-			data.isUniform = undefined;
-			data.uniformBlockId = undefined;
-			data.lightArray = undefined;
+		if (view instanceof Uint8Array) {
+			const copy = new Uint8Array(view.length);
+			copy.set(view);
+			return copy as unknown as T;
 		}
+		const copy = new Uint8Array(view.byteLength);
+		copy.set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+		return copy as unknown as T;
+	}
 
-		return this.applyLodCacheVersionPolicy(chunkIdKey, data);
+	private packKey(chunkX: number, chunkY: number, chunkZ: number): bigint {
+		return packChunkKey(chunkX, chunkY, chunkZ);
 	}
 
 	// -------------------------------------------------------------------------
@@ -671,93 +171,64 @@ class WorldStorageImpl {
 
 	async saveChunk(chunk: Chunk): Promise<void> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_SAVING) return;
-		if (chunk.isPersistent || (!chunk.isModified && !chunk.isLODMeshCacheDirty))
-			return;
-		if (!(await this.ensureInitialized())) return;
+		if (chunk.isPersistent) return;
+		if (!chunk.isModified && !chunk.isLightDirty) return;
 
-		if (chunk.isModified || chunk.isLightDirty) {
-			const prepared = await prepareFullChunkSave(chunk);
-			await this.enqueuePersistenceJob("critical", [prepared.id], () =>
-				this.persistFullChunks([prepared]),
-			);
-		} else {
-			const prepared = prepareLodOnlySave(chunk);
-			await this.enqueuePersistenceJob("background", [prepared.id], () =>
-				this.persistLodOnlyChunks([prepared]),
-			);
+		const client = await this.getClient();
+		if (!client) return;
+
+		const key = this.packKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+		const blocks = chunk.block_array;
+		const light = chunk.light_array;
+
+		const [compressedBlocks, compressedLight] = await Promise.all([
+			blocks ? this.compress(blocks) : Promise.resolve(null),
+			light ? this.compress(light) : Promise.resolve(null),
+		]);
+
+		const bytes = serializeVoxelData(
+			compressedBlocks,
+			chunk.palette ? this.detachSharedArrayBuffer(chunk.palette) : null,
+			chunk.isUniform,
+			chunk.uniformBlockId,
+			compressedLight,
+			true,
+		);
+
+		try {
+			await client.writeVoxel(key, VOXEL_SENTINEL, bytes);
+			chunk.isModified = false;
+			chunk.isLightDirty = false;
+		} catch (err) {
+			console.error("[WorldStorage] OPFS voxel write failed:", err);
 		}
 	}
 
 	async saveChunks(chunks: Chunk[]): Promise<void> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_SAVING) return;
 
-		// Single pass: partition into full-save vs lod-only, skip non-savable.
-		const fullSave: Chunk[] = [];
-		const lodOnly: Chunk[] = [];
-
+		const toSave: Chunk[] = [];
 		for (const c of chunks) {
 			if (c.isPersistent) continue;
 			if (c.isModified || c.isLightDirty) {
-				fullSave.push(c);
-			} else if (c.isLODMeshCacheDirty) {
-				lodOnly.push(c);
+				toSave.push(c);
 			}
 		}
+		if (toSave.length === 0) return;
 
-		if (fullSave.length === 0 && lodOnly.length === 0) return;
-		if (!(await this.ensureInitialized())) return;
+		const client = await this.getClient();
+		if (!client) return;
 
-		const lanePromises: Promise<void>[] = [];
-
-		if (fullSave.length > 0) {
-			// Compress up-front to capture data before async lane execution.
-			const prepared: PreparedFullChunkSave[] = new Array(fullSave.length);
-			const ids: string[] = new Array(fullSave.length);
-			const jobs: Promise<void>[] = new Array(fullSave.length);
-			for (let i = 0; i < fullSave.length; i++) {
-				const idx = i;
-				jobs[i] = prepareFullChunkSave(fullSave[i]!).then((entry) => {
-					prepared[idx] = entry;
-					ids[idx] = entry.id;
-				});
-			}
-			await Promise.all(jobs);
-
-			lanePromises.push(
-				this.enqueuePersistenceJob("critical", ids, () =>
-					this.persistFullChunks(prepared),
-				),
-			);
-		}
-
-		if (lodOnly.length > 0) {
-			const prepared: PreparedLodOnlySave[] = new Array(lodOnly.length);
-			const ids: string[] = new Array(lodOnly.length);
-			for (let i = 0; i < lodOnly.length; i++) {
-				const entry = prepareLodOnlySave(lodOnly[i]!);
-				prepared[i] = entry;
-				ids[i] = entry.id;
-			}
-
-			lanePromises.push(
-				this.enqueuePersistenceJob("background", ids, () =>
-					this.persistLodOnlyChunks(prepared),
-				),
-			);
-		}
-
-		await Promise.all(lanePromises);
+		await Promise.all(toSave.map((chunk) => this.saveChunk(chunk)));
 	}
 
 	async saveAllModifiedChunks(): Promise<void> {
 		const modified: Chunk[] = [];
-
 		for (const chunk of Chunk.chunkInstances.values()) {
 			if (chunk.needsPersistence() && !chunk.isPersistent) {
 				modified.push(chunk);
 			}
 		}
-
 		if (modified.length > 0) {
 			await this.saveChunks(modified);
 		}
@@ -768,33 +239,36 @@ class WorldStorageImpl {
 		entities: SavedChunkEntityData[],
 	): Promise<void> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_SAVING) return;
-		if (!(await this.ensureInitialized())) return;
 
-		const key = chunkId.toString();
-		const tx = this.db!.transaction(CHUNK_ENTITY_STORE, "readwrite");
-		const store = tx.objectStore(CHUNK_ENTITY_STORE);
+		const client = await this.getClient();
+		if (!client) return;
 
 		if (entities.length === 0) {
-			store.delete(key);
+			try {
+				await client.removeVoxel(chunkId, ENTITY_SENTINEL);
+			} catch {}
 		} else {
-			store.put({ chunkId: key, entities });
+			const bytes = serializeEntities(entities);
+			try {
+				await client.writeVoxel(chunkId, ENTITY_SENTINEL, bytes);
+			} catch (err) {
+				console.error("[WorldStorage] Entity write failed:", err);
+			}
 		}
-
-		return this.trackPendingChunkSaves([key], idbTransaction(tx));
 	}
 
 	async loadChunkEntities(chunkId: bigint): Promise<SavedChunkEntityData[]> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_LOADING) return [];
-		if (!(await this.ensureInitialized())) return [];
+		const client = await this.getClient();
+		if (!client) return [];
 
-		const key = chunkId.toString();
-		await this.awaitPendingChunkSaves([key]);
-
-		const tx = this.db!.transaction(CHUNK_ENTITY_STORE, "readonly");
-		const store = tx.objectStore(CHUNK_ENTITY_STORE);
-		const result = await idbRequest(store.get(key));
-		const entities = result?.entities as SavedChunkEntityData[] | undefined;
-		return Array.isArray(entities) ? entities : [];
+		try {
+			const bytes = await client.readVoxel(chunkId, ENTITY_SENTINEL);
+			if (!bytes) return [];
+			return deserializeEntities(bytes);
+		} catch {
+			return [];
+		}
 	}
 
 	async loadChunk(
@@ -803,82 +277,111 @@ class WorldStorageImpl {
 	): Promise<SavedChunkData | null> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_LOADING) return null;
 
-		if (!(await this.ensureInitialized())) {
-			console.warn("DB not initialized, cannot load chunk.");
+		const client = await this.getClient();
+		if (!client) return null;
+
+		try {
+			const bytes = await client.readVoxel(chunkId, VOXEL_SENTINEL);
+			if (!bytes) return null;
+			const data = deserializeVoxelData(bytes);
+			const includeVoxelData = options?.includeVoxelData ?? true;
+
+			if (data.compressed && includeVoxelData) {
+				const jobs: Promise<void>[] = [];
+				if (this.isUint8Array(data.blocks)) {
+					jobs.push(
+						this.decompressToShared(data.blocks).then((result) => {
+							data.blocks = result;
+						}),
+					);
+				}
+				if (this.isUint8Array(data.lightArray)) {
+					jobs.push(
+						this.decompressToShared(data.lightArray).then((result) => {
+							data.lightArray = result as Uint8Array;
+						}),
+					);
+				}
+				await Promise.all(jobs);
+			} else if (!includeVoxelData) {
+				data.blocks = null;
+				data.palette = null;
+				data.isUniform = undefined;
+				data.uniformBlockId = undefined;
+				data.lightArray = undefined;
+			}
+			return data;
+		} catch (err) {
+			console.warn("[WorldStorage] OPFS voxel read failed:", err);
 			return null;
 		}
-
-		const key = chunkId.toString();
-		await this.awaitPendingChunkSaves([key]);
-
-		const tx = this.db!.transaction(CHUNK_STORE, "readonly");
-		const data = await idbRequest(tx.objectStore(CHUNK_STORE).get(key));
-
-		if (!data) return null;
-		return this.processLoadedChunk(chunkId, data, options);
 	}
-
-	private static readonly CONCURRENCY = Math.max(
-		1,
-		Math.min(4, Math.floor(navigator.hardwareConcurrency || 4)),
-	);
 
 	async loadChunks(
 		chunkIds: bigint[],
 		options?: LoadChunkOptions,
 	): Promise<Map<bigint, SavedChunkData>> {
 		const result = new Map<bigint, SavedChunkData>();
-
-		if (
-			GLOBAL_VALUES.DISABLE_CHUNK_LOADING ||
-			chunkIds.length === 0 ||
-			!(await this.ensureInitialized())
-		) {
+		if (GLOBAL_VALUES.DISABLE_CHUNK_LOADING || chunkIds.length === 0) {
 			return result;
 		}
 
-		// Await pending saves without allocating a separate string array.
-		const seen = new Set<Promise<void>>();
-		for (const id of chunkIds) {
-			const p = this.pendingChunkSaves.get(id.toString());
-			if (p !== undefined) seen.add(p);
-		}
-		if (seen.size > 0) await Promise.allSettled(seen);
+		const client = await this.getClient();
+		if (!client) return result;
 
-		const tx = this.db!.transaction(CHUNK_STORE, "readonly");
-		const store = tx.objectStore(CHUNK_STORE);
-
-		// Fetch all records in parallel, keeping only hits.
-		type Hit = { chunkId: bigint; data: SavedChunkData };
-		const hits: Hit[] = [];
-
-		const fetches: Promise<void>[] = new Array(chunkIds.length);
-		for (let i = 0; i < chunkIds.length; i++) {
-			const chunkId = chunkIds[i]!;
-			fetches[i] = idbRequest<SavedChunkData | undefined>(
-				store.get(chunkId.toString()),
-			).then((data) => {
-				if (data !== undefined && data !== null) {
-					hits.push({ chunkId, data });
-				}
-			});
-		}
+		const hits: { chunkId: bigint; data: SavedChunkData }[] = [];
+		const fetches = chunkIds.map(async (chunkId) => {
+			try {
+				const bytes = await client.readVoxel(chunkId, VOXEL_SENTINEL);
+				if (!bytes) return;
+				const raw = deserializeVoxelData(bytes);
+				hits.push({ chunkId, data: raw });
+			} catch {}
+		});
 		await Promise.all(fetches);
 
-		// Process in batches without slice — track window with indices.
-		for (let i = 0; i < hits.length; i += WorldStorageImpl.CONCURRENCY) {
-			const end = Math.min(i + WorldStorageImpl.CONCURRENCY, hits.length);
+		const CONCURRENCY = Math.max(
+			1,
+			Math.min(4, Math.floor(navigator.hardwareConcurrency || 4)),
+		);
+		for (let i = 0; i < hits.length; i += CONCURRENCY) {
+			const end = Math.min(i + CONCURRENCY, hits.length);
 			const batch: Promise<void>[] = [];
-
 			for (let j = i; j < end; j++) {
-				const { chunkId, data } = hits[j];
-				batch.push(
-					this.processLoadedChunk(chunkId, data, options).then((processed) => {
-						result.set(chunkId, processed);
-					}),
-				);
+				const { chunkId, data } = hits[j]!;
+				const includeVoxelData = options?.includeVoxelData ?? true;
+				if (data.compressed && includeVoxelData) {
+					const jobs: Promise<void>[] = [];
+					if (this.isUint8Array(data.blocks)) {
+						jobs.push(
+							this.decompressToShared(data.blocks).then((r) => {
+								data.blocks = r;
+							}),
+						);
+					}
+					if (this.isUint8Array(data.lightArray)) {
+						jobs.push(
+							this.decompressToShared(data.lightArray).then((r) => {
+								data.lightArray = r as Uint8Array;
+							}),
+						);
+					}
+					batch.push(
+						Promise.all(jobs).then(() => {
+							result.set(chunkId, data);
+						}),
+					);
+				} else if (!includeVoxelData) {
+					data.blocks = null;
+					data.palette = null;
+					data.isUniform = undefined;
+					data.uniformBlockId = undefined;
+					data.lightArray = undefined;
+					result.set(chunkId, data);
+				} else {
+					result.set(chunkId, data);
+				}
 			}
-
 			await Promise.all(batch);
 		}
 
@@ -886,27 +389,36 @@ class WorldStorageImpl {
 	}
 
 	async clearWorldData(): Promise<void> {
-		this.db?.close();
+		try {
+			const root = await navigator.storage.getDirectory();
+			const dirHandle = await root.getDirectoryHandle("b102");
+			await dirHandle.removeEntry("meshes.bin");
+			await dirHandle.removeEntry("regions", { recursive: true });
+			console.log("[WorldStorage] World data cleared (OPFS files removed)");
+		} catch (err) {
+			console.error("[WorldStorage] Failed to clear world data:", err);
+		}
+	}
 
-		return new Promise((resolve, reject) => {
-			const request = indexedDB.deleteDatabase(DB_NAME);
+	private async clearOldOpfsData(): Promise<void> {
+		const FLAG = "b102_opfs_v2_cleared";
+		if (localStorage.getItem(FLAG)) return;
 
-			request.onsuccess = () => {
-				console.log("World data cleared.");
-				resolve();
-			};
+		const root = await navigator.storage.getDirectory();
+		const dirHandle = await root.getDirectoryHandle("b102");
+		try {
+			await dirHandle.removeEntry("voxels.bin");
+		} catch {}
+		try {
+			await dirHandle.removeEntry("regions", { recursive: true });
+		} catch {}
+		try {
+			await dirHandle.removeEntry("meshes.bin");
+		} catch {}
 
-			request.onerror = () => {
-				console.error("Failed to clear world data:", request.error);
-				reject(request.error);
-			};
-
-			request.onblocked = () => {
-				console.warn("Delete database blocked.");
-			};
-		});
+		localStorage.setItem(FLAG, "1");
+		console.log("[WorldStorage] Old OPFS data cleared");
 	}
 }
 
-// Singleton export — matches the original static-class usage surface.
 export const WorldStorage = new WorldStorageImpl();

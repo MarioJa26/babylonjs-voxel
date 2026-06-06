@@ -99,12 +99,7 @@ export class ChunkPersistenceCoordinator {
 		if (limit === 0) return;
 
 		for (const chunk of this.adapter.getModifiedChunks()) {
-			if (
-				!chunk.isModified &&
-				!chunk.isLODMeshCacheDirty &&
-				!chunk.isLightDirty
-			)
-				continue;
+			if (!chunk.isModified && !chunk.isLightDirty) continue;
 
 			scratch.push(chunk);
 			if (scratch.length >= limit) break;

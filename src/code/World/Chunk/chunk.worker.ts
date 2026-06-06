@@ -6,6 +6,7 @@ import {
 	type WorkerRequestData,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
+import { LightTaskHandlers } from "./Worker/LightTaskHandlers";
 import { WorkerTaskHandlers } from "./Worker/WorkerTaskHandlers";
 
 // ---------------------------------------------------------------------------
@@ -147,6 +148,39 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
 					failed: true,
 				});
 			}
+			return;
+		}
+
+		case WorkerTaskType.InitLightShared: {
+			LightTaskHandlers.handleInitLightShared(event.data);
+			return;
+		}
+		case WorkerTaskType.LightRegisterChunk: {
+			LightTaskHandlers.handleRegisterChunk(event.data);
+			return;
+		}
+		case WorkerTaskType.LightUnregisterChunk: {
+			LightTaskHandlers.handleUnregisterChunk(event.data);
+			return;
+		}
+		case WorkerTaskType.LightUpdateChunkBuffers: {
+			LightTaskHandlers.handleUpdateBuffers(event.data);
+			return;
+		}
+		case WorkerTaskType.LightMutate: {
+			LightTaskHandlers.handleMutate(event.data);
+			return;
+		}
+		case WorkerTaskType.LightAddEmission: {
+			LightTaskHandlers.handleAddEmission(event.data);
+			return;
+		}
+		case WorkerTaskType.LightSkyReconcile: {
+			LightTaskHandlers.handleSkyReconcile(event.data);
+			return;
+		}
+		case WorkerTaskType.LightPropagateDeferred: {
+			LightTaskHandlers.handlePropagateDeferred(event.data);
 			return;
 		}
 

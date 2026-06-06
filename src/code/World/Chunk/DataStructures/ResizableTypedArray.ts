@@ -137,6 +137,17 @@ export class ResizableTypedArray<
 	 * into our backing buffer. Avoids allocating a sliced copy of `other`
 	 * (which `finalArray` would force) — same allocation cost as a memcpy.
 	 */
+	bulkPush(src: T): void {
+		const n = src.length;
+		if (n === 0) return;
+		const newLength = this.length + n;
+		if (newLength > this.capacity) {
+			this.grow(newLength);
+		}
+		this.array.set(src, this.length);
+		this.length = newLength;
+	}
+
 	pushFrom(other: ResizableTypedArray<T>): void {
 		const n = other.length;
 		if (n === 0) return;

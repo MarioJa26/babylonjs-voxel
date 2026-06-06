@@ -2,17 +2,23 @@ import { Chunk } from "./Chunk";
 import {
 	type GenerateDistantTerrainRequest,
 	type InitDistantTerrainSharedRequest,
+	type InitLightSharedRequest,
+	type LightAddEmissionRequest,
+	type LightMutateRequest,
+	type LightPropagateDeferredRequest,
+	type LightSkyReconcileRequest,
 	type MeshWorkerResponse,
 	type WorkerResponseData,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
 
 export class ChunkWorker {
-	private terrainWorker: Worker; // terrain + distant terrain + lighting
+	private terrainWorker: Worker; // terrain + distant terrain + light
 	private voxelWorker: Worker; // voxel mesh
 
 	private warnedNonSharedRemeshPayload = false;
 	private distantTerrainSharedInitialized = false;
+	private lightSharedInitialized = false;
 	// Pre-allocated arrays for remesh dispatch — avoids 4 allocations per call.
 	private readonly _neighborScratch: (
 		| Uint8Array
@@ -245,6 +251,121 @@ export class ChunkWorker {
 			gridStep,
 		};
 
+		this.terrainWorker.postMessage(message);
+	}
+
+	// ---------------------------------------------------------------------
+	// Light-task post helpers.  The terrain worker (chunk.worker.ts) owns
+	// the light registry and BFS, and the post helpers simply forward
+	// messages.  SharedArrayBuffers for chunk state are not transferred —
+	// they live for the lifetime of the page and are referenced by all
+	// workers via the registration messages posted by the pool.
+	// ---------------------------------------------------------------------
+
+	public initLightShared(headerBuffer: SharedArrayBuffer): void {
+		if (this.lightSharedInitialized) return;
+		const message: InitLightSharedRequest = {
+			type: WorkerTaskType.InitLightShared,
+			headerBuffer,
+		};
+		this.terrainWorker.postMessage(message);
+		this.lightSharedInitialized = true;
+	}
+
+	public postLightRegisterChunk(req: {
+		chunkId: bigint;
+		chunkX: number;
+		chunkY: number;
+		chunkZ: number;
+		headerSlot: number;
+		blockSAB: SharedArrayBuffer | null;
+		lightSAB: SharedArrayBuffer | null;
+		paletteSAB: SharedArrayBuffer | null;
+		blockStorageBytesPerElement: 1 | 2;
+	}): void {
+		this.terrainWorker.postMessage({
+			type: WorkerTaskType.LightRegisterChunk,
+			...req,
+		});
+	}
+
+	public postLightUnregisterChunk(chunkId: bigint): void {
+		this.terrainWorker.postMessage({
+			type: WorkerTaskType.LightUnregisterChunk,
+			chunkId,
+		});
+	}
+
+	public postLightUpdateBuffers(req: {
+		chunkId: bigint;
+		headerSlot: number;
+		blockSAB: SharedArrayBuffer | null;
+		paletteSAB: SharedArrayBuffer | null;
+		lightSAB: SharedArrayBuffer | null;
+		blockStorageBytesPerElement: 1 | 2;
+	}): void {
+		this.terrainWorker.postMessage({
+			type: WorkerTaskType.LightUpdateChunkBuffers,
+			...req,
+		});
+	}
+
+	public postLightMutate(req: {
+		chunkId: bigint;
+		headerSlot: number;
+		x: number;
+		y: number;
+		z: number;
+		oldPacked: number;
+		newPacked: number;
+		seq: number;
+	}): void {
+		const message: LightMutateRequest = {
+			type: WorkerTaskType.LightMutate,
+			...req,
+		};
+		this.terrainWorker.postMessage(message);
+	}
+
+	public postLightAddEmission(req: {
+		chunkId: bigint;
+		headerSlot: number;
+		x: number;
+		y: number;
+		z: number;
+		level: number;
+		seq: number;
+	}): void {
+		const message: LightAddEmissionRequest = {
+			type: WorkerTaskType.LightAddEmission,
+			...req,
+		};
+		this.terrainWorker.postMessage(message);
+	}
+
+	public postLightSkyReconcile(req: {
+		chunkId: bigint;
+		headerSlot: number;
+		seq: number;
+	}): void {
+		const message: LightSkyReconcileRequest = {
+			type: WorkerTaskType.LightSkyReconcile,
+			...req,
+		};
+		this.terrainWorker.postMessage(message);
+	}
+
+	public postLightPropagateDeferred(req: {
+		chunkId: bigint;
+		headerSlot: number;
+		seedQueue: Uint16Array;
+		seedLength: number;
+		seq: number;
+	}): void {
+		const message: LightPropagateDeferredRequest = {
+			type: WorkerTaskType.LightPropagateDeferred,
+			...req,
+		};
 		this.terrainWorker.postMessage(message);
 	}
 }

@@ -20,24 +20,22 @@ import {
 	unpackBlockId,
 	unpackBlockState,
 } from "./DataStructures/BlockEncoding";
+import { packCoords } from "./DataStructures/ChunkCoords";
 import type { MeshData } from "./DataStructures/MeshData";
 import { LoadedChunkIndex } from "./Loading/LoadedChunkIndex";
+import {
+	clearHeaderRow,
+	LIGHT_HEADER_ROW_SIZE,
+	type LightHeaderView,
+	MAX_HEADER_SLOTS,
+	wrapLightHeader,
+	writeHeaderRow,
+} from "./Worker/ChunkLightHeader";
 import {
 	BLOCK_TYPE,
 	filtersFullSunlight,
 	WATER_BLOCK_ID,
 } from "./Worker/ChunkMesherConstants";
-
-// ---------------------------------------------------------------------------
-// LIGHT_DIRS – flattened into a typed array for cache-friendly iteration.
-// Layout per entry (stride 6):  dx, dy, dz, axis, dir, isDown
-// ---------------------------------------------------------------------------
-const LIGHT_DIRS_FLAT = new Int8Array([
-	1, 0, 0, 0, 1, 0, -1, 0, 0, 0, -1, 0, 0, 1, 0, 1, 1, 0, 0, -1, 0, 1, -1, 1, 0,
-	0, 1, 2, 1, 0, 0, 0, -1, 2, -1, 0,
-]);
-const LIGHT_DIR_STRIDE = 6;
-const LIGHT_DIR_COUNT = 6;
 
 type CachedLODMesh = {
 	opaque: MeshData | null;
@@ -49,47 +47,7 @@ type SerializedLODMeshCache = Record<
 >;
 
 // ---------------------------------------------------------------------------
-// BFS queue – flat, interleaved typed arrays; no per-node heap allocation.
-// ---------------------------------------------------------------------------
-const BFS_CAPACITY = 32768;
-
-class LightQueue {
-	readonly chunks = new Array<Chunk | null>(BFS_CAPACITY).fill(null);
-	readonly coords = new Int32Array(BFS_CAPACITY);
-	readonly levels = new Int32Array(BFS_CAPACITY);
-
-	head = 0;
-	tail = 0;
-
-	get length(): number {
-		return (this.tail - this.head + BFS_CAPACITY) & (BFS_CAPACITY - 1);
-	}
-
-	clear(): void {
-		this.head = this.tail = 0;
-	}
-
-	push(chunk: Chunk, x: number, y: number, z: number, level: number): void {
-		const slot = this.tail & (BFS_CAPACITY - 1);
-		this.chunks[slot] = chunk;
-		this.coords[slot] = x | (y << 5) | (z << 10);
-		this.levels[slot] = level;
-		this.tail = (this.tail + 1) & (BFS_CAPACITY - 1);
-	}
-}
-
-const Q_A = new LightQueue();
-const Q_B = new LightQueue();
-
-const _resolveScratch: { chunk: Chunk | undefined; coord: number } = {
-	chunk: undefined,
-	coord: 0,
-};
-
-const _bfsDirtyChunks = new Set<bigint>();
-
-// ---------------------------------------------------------------------------
-// Face-rect scratch buffers
+// Face-rect scratch buffers (used by getClosedFaceMaskForPacked).
 // ---------------------------------------------------------------------------
 const MAX_RECTS = 64;
 const RECT_STRIDE = 4;
@@ -168,6 +126,45 @@ export class Chunk {
 		| null = null;
 	public static onChunkLoaded: ((chunk: Chunk) => void) | null = null;
 
+	// -------------------------------------------------------------------------
+	// Light-worker integration.
+	//
+	// Each loaded chunk owns a slot in a workspace-wide SharedArrayBuffer
+	// (Chunk.lightHeaderBuffer) that the worker reads on every BFS visit
+	// to learn the chunk's block-storage layout (uniform / palette /
+	// Uint8-vs-Uint16).  Slot allocation is done here; the pool's
+	// static onLightChunk* hooks translate these calls into broadcast
+	// postMessages.
+	// -------------------------------------------------------------------------
+
+	public static lightHeaderBuffer: SharedArrayBuffer | null = null;
+	public static lightHeaderView: LightHeaderView | null = null;
+	private static _lightHeaderNextSlot = 0;
+
+	public static initLightHeader(): SharedArrayBuffer {
+		if (Chunk.lightHeaderBuffer) return Chunk.lightHeaderBuffer;
+		const buffer = new SharedArrayBuffer(
+			LIGHT_HEADER_ROW_SIZE * MAX_HEADER_SLOTS,
+		);
+		Chunk.lightHeaderBuffer = buffer;
+		Chunk.lightHeaderView = wrapLightHeader(buffer);
+		return buffer;
+	}
+
+	private static allocLightHeaderSlot(): number {
+		if (Chunk._lightHeaderNextSlot >= MAX_HEADER_SLOTS) {
+			throw new Error(
+				`Chunk light header slots exhausted (max ${MAX_HEADER_SLOTS}).`,
+			);
+		}
+		return Chunk._lightHeaderNextSlot++;
+	}
+
+	public static onLightChunkLoaded: ((chunk: Chunk) => void) | null = null;
+	public static onLightChunkLayoutChanged: ((chunk: Chunk) => void) | null =
+		null;
+	public static onLightChunkDisposed: ((chunk: Chunk) => void) | null = null;
+
 	private _block_array: Uint8Array | Uint16Array | null = null;
 	private _isUniform = true;
 	private _uniformBlockId = 0;
@@ -196,6 +193,40 @@ export class Chunk {
 
 	light_array: Uint8Array;
 
+	/**
+	 * Snapshot of the worker-visible block/palette storage.  Used by
+	 * ChunkWorkerPool to broadcast new SharedArrayBuffer handles after a
+	 * storage layout transition (uniform->palette, palette->u16, ...).
+	 * Centralised here so the pool never touches private fields directly.
+	 */
+	public getLightStorageSnapshot(): {
+		lightSAB: SharedArrayBuffer | null;
+		blockSAB: SharedArrayBuffer | null;
+		paletteSAB: SharedArrayBuffer | null;
+		blockStorageBytesPerElement: 1 | 2;
+	} {
+		const lightBuffer = this.light_array?.buffer as
+			| SharedArrayBuffer
+			| ArrayBuffer
+			| undefined;
+		const blockBuffer = this._block_array?.buffer as
+			| SharedArrayBuffer
+			| ArrayBuffer
+			| undefined;
+		const paletteBuffer = this._palette?.buffer as
+			| SharedArrayBuffer
+			| ArrayBuffer
+			| undefined;
+		return {
+			lightSAB: lightBuffer instanceof SharedArrayBuffer ? lightBuffer : null,
+			blockSAB: blockBuffer instanceof SharedArrayBuffer ? blockBuffer : null,
+			paletteSAB:
+				paletteBuffer instanceof SharedArrayBuffer ? paletteBuffer : null,
+			blockStorageBytesPerElement:
+				this._block_array instanceof Uint16Array ? 2 : 1,
+		};
+	}
+
 	// -------------------------------------------------------------------------
 	// BFS fields — declared here as class fields so they are part of the initial
 	// hidden class shape. Every Chunk instance has the same shape from the moment
@@ -211,6 +242,11 @@ export class Chunk {
 	 *  in any system that wants to side-channel data onto chunks. */
 	public readonly numericId: number;
 	private static _nextNumericId = 0;
+
+	/** Header SAB slot index for light-worker integration.  Allocated on
+	 *  construction, released in dispose().  Index 0xFFFF means "not
+	 *  allocated" so callers can cheaply detect uninitialised chunks. */
+	public lightHeaderSlot: number = 0xffff_ffff;
 
 	/** BFS pass stamp — compared against OcclusionCuller._currentQueryId. */
 	public bfsQueryId: number = 0;
@@ -261,7 +297,6 @@ export class Chunk {
 			: new Uint8Array(0);
 
 	public cachedLODMeshes = new Map<number, CachedLODMesh>();
-	public isLODMeshCacheDirty = false;
 
 	private static remeshFlushScheduled = false;
 	private static remeshQueue = [] as Chunk[];
@@ -298,6 +333,7 @@ export class Chunk {
 			packCoords(chunkX, chunkY, chunkZ - 1),
 		];
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
+		this.lightHeaderSlot = Chunk.allocLightHeaderSlot();
 		this._isDarkCached = false;
 		Chunk.chunkInstances.set(this.id, this);
 	}
@@ -411,8 +447,75 @@ export class Chunk {
 		Chunk.loadedChunks.add(this);
 		Chunk.loadedChunkIndex.register(this);
 		this.isTerrainScheduled = false;
+
+		// Storage hydration (VoxelSerializer.deserialize) hands us
+		// _block_array / _palette / light_array as views into a regular
+		// ArrayBuffer.  The worker can only see live mutations through a
+		// SharedArrayBuffer, so copy each non-Shared buffer into a fresh
+		// SAB before broadcasting to the worker pool.
+		this.ensureSharedBacking();
+
+		this.writeLightHeaderRow();
+		Chunk.onLightChunkLoaded?.(this);
 		Chunk.onChunkLoaded?.(this);
 		if (scheduleRemesh) this.scheduleRemesh(true, true);
+	}
+
+	private writeLightHeaderRow(): void {
+		const view = Chunk.lightHeaderView;
+		if (!view) return;
+		const blockArr = this._block_array;
+		const storageIsUint16 = blockArr instanceof Uint16Array;
+		const hasPalette = this._palette !== null && !this._isUniform;
+		writeHeaderRow(view, this.lightHeaderSlot, {
+			chunkId: this.id,
+			isUniform: this._isUniform,
+			uniformBlockId: this._uniformBlockId,
+			storageIsUint16,
+			hasPalette,
+			isLoaded: this.isLoaded,
+		});
+	}
+
+	/**
+	 * Copy the chunk's light_array, _block_array and _palette into fresh
+	 * SharedArrayBuffers if they aren't already Shared-backed.  Storage
+	 * hydration (VoxelSerializer.deserialize) hands us views into a
+	 * regular ArrayBuffer, but the terrain worker can only observe
+	 * future main-thread mutations through a SharedArrayBuffer.  Safe
+	 * to call from loadFromStorage because that's the single synchronous
+	 * choke-point before any worker broadcast.
+	 */
+	private ensureSharedBacking(): void {
+		const light = this.light_array;
+		if (light && !(light.buffer instanceof SharedArrayBuffer)) {
+			const sab = new SharedArrayBuffer(Chunk.SIZE3);
+			new Uint8Array(sab).set(light);
+			this.light_array = new Uint8Array(sab);
+		}
+
+		const block = this._block_array;
+		if (block && !(block.buffer instanceof SharedArrayBuffer)) {
+			const len = block.byteLength;
+			const sab = new SharedArrayBuffer(len);
+			new Uint8Array(sab).set(
+				new Uint8Array(block.buffer, block.byteOffset, len),
+			);
+			this._block_array =
+				block instanceof Uint16Array
+					? new Uint16Array(sab)
+					: new Uint8Array(sab);
+		}
+
+		const palette = this._palette;
+		if (palette && !(palette.buffer instanceof SharedArrayBuffer)) {
+			const byteLen = palette.byteLength;
+			const sab = new SharedArrayBuffer(byteLen);
+			new Uint8Array(sab).set(
+				new Uint8Array(palette.buffer, palette.byteOffset, byteLen),
+			);
+			this._palette = new Uint16Array(sab, 0, palette.length);
+		}
 	}
 
 	public loadLodOnlyFromStorage(scheduleRemesh = false): void {
@@ -447,15 +550,12 @@ export class Chunk {
 			opaque: mesh.opaque ?? null,
 			transparent: mesh.transparent ?? null,
 		});
-		this.isLODMeshCacheDirty = true;
 	}
 	public clearCachedLODMeshes(): void {
 		this.cachedLODMeshes.clear();
-		this.isLODMeshCacheDirty = false;
 	}
 	public invalidateLODMeshCaches(): void {
 		if (this.cachedLODMeshes.size > 0) this.cachedLODMeshes.clear();
-		this.isLODMeshCacheDirty = true;
 	}
 	public getSerializableLODMeshCache(): SerializedLODMeshCache | undefined {
 		if (this.cachedLODMeshes.size === 0) return undefined;
@@ -471,10 +571,7 @@ export class Chunk {
 	}
 	public restoreLODMeshCache(cache?: SerializedLODMeshCache): void {
 		this.cachedLODMeshes.clear();
-		if (!cache) {
-			this.isLODMeshCacheDirty = false;
-			return;
-		}
+		if (!cache) return;
 		for (const key of Object.keys(cache)) {
 			const lod = Number(key);
 			if (!Number.isFinite(lod)) continue;
@@ -485,7 +582,6 @@ export class Chunk {
 				transparent: entry?.transparent ?? null,
 			});
 		}
-		this.isLODMeshCacheDirty = false;
 	}
 
 	// =========================================================================
@@ -495,6 +591,7 @@ export class Chunk {
 	public initializeSunlight(): void {
 		const size = Chunk.SIZE;
 		const size2 = Chunk.SIZE2;
+		const size3 = Chunk.SIZE3;
 		const skyShift = Chunk.SKY_LIGHT_SHIFT;
 		const blockMask = Chunk.BLOCK_LIGHT_MASK;
 		const topWorldY = this.#chunkY * size + size - 1;
@@ -510,11 +607,14 @@ export class Chunk {
 		const la = this.light_array;
 		for (let i = 0; i < Chunk.SIZE3; i++) la[i] &= blockMask;
 
-		Q_A.clear();
-
 		const chunkBaseX = this.#chunkX * size;
 		const chunkBaseZ = this.#chunkZ * size;
 		const hasLoadedAbove = !!aboveChunk?.isLoaded;
+
+		// Reusable seed queue shared with the worker's deferred-light BFS.
+		const seedCapacity = Math.max(8, 1 << Math.ceil(Math.log2(size3 + 1)));
+		const seedQueue = new Uint16Array(seedCapacity);
+		let seedLength = 0;
 
 		for (let x = 0; x < size; x++) {
 			const worldX = chunkBaseX + x;
@@ -580,7 +680,9 @@ export class Chunk {
 					const idx = x + y * size + z * size2;
 					la[idx] = (la[idx] & blockMask) | (cellSkyLight << skyShift);
 
-					if (!thisFiltersFullSun) Q_A.push(this, x, y, z, cellSkyLight);
+					if (!thisFiltersFullSun && seedLength < seedCapacity) {
+						seedQueue[seedLength++] = (x << 10) | (y << 5) | z;
+					}
 
 					if (!this.isTransparent(blockPacked, 1, -1)) {
 						incomingSkyLight = 0;
@@ -593,7 +695,18 @@ export class Chunk {
 			}
 		}
 
-		this.processLightPropagationQueue(Q_A, true);
+		// Hand the seed queue off to the worker pool's deferred-light pump
+		// which forwards it to a worker thread for the BFS pass.
+		if (seedLength > 0) {
+			const pool = Chunk._lightPool;
+			if (pool) {
+				(pool as any).enqueueDeferredLightFromSunlightInit?.(
+					this,
+					seedQueue,
+					seedLength,
+				);
+			}
+		}
 	}
 
 	// =========================================================================
@@ -735,6 +848,7 @@ export class Chunk {
 		const index = localX + localY * Chunk.SIZE + localZ * Chunk.SIZE2;
 		const packedBlock = packBlockValue(blockId, state);
 		let oldPacked = 0;
+		let storageLayoutChanged = false;
 
 		if (this._isUniform) {
 			oldPacked = this._uniformBlockId;
@@ -757,6 +871,7 @@ export class Chunk {
 			);
 			this._block_array.fill(0);
 			this.setNibble(index, newIndex);
+			storageLayoutChanged = true;
 		} else if (this._palette) {
 			const paletteIndex = this.getNibble(index);
 			oldPacked = this._palette[paletteIndex];
@@ -788,6 +903,7 @@ export class Chunk {
 					this._block_array = na;
 					this._palette = null;
 					this._paletteIndexMap = null;
+					storageLayoutChanged = true;
 				}
 			} else {
 				this.setNibble(index, npi);
@@ -797,33 +913,22 @@ export class Chunk {
 				const na = new Uint16Array(new SharedArrayBuffer(Chunk.SIZE3 * 2));
 				na.set(this._block_array);
 				this._block_array = na;
+				storageLayoutChanged = true;
 			}
 			oldPacked = this._block_array![index];
 			if (oldPacked === packedBlock) return;
 			this._block_array![index] = packedBlock;
 		}
 
-		const oldBlockLight = this.getBlockLight(localX, localY, localZ);
-		const oldSkyLight = this.getSkyLight(localX, localY, localZ);
-		const newBlockId = unpackBlockId(packedBlock);
-		const newIsTransparent = this.isTransparent(packedBlock);
-		const oldWasSkyTransparent = this.isTransparent(oldPacked, 1);
-		const newIsSkyTransparent = this.isTransparent(packedBlock, 1);
+		// Block storage layout changed — refresh the worker-visible header
+		// row BEFORE the light BFS dispatches, so any in-flight BFS picks
+		// up the new layout on its next cell access.
+		if (storageLayoutChanged) {
+			this.writeLightHeaderRow();
+			Chunk.onLightChunkLayoutChanged?.(this);
+		}
 
-		if (oldBlockLight > 0)
-			this.removeLight(localX, localY, localZ, false, oldPacked);
-		if (newIsTransparent)
-			this.updateLightFromNeighbors(localX, localY, localZ, false);
-
-		if (oldSkyLight > 0)
-			this.removeLight(localX, localY, localZ, true, oldPacked);
-		if (newIsSkyTransparent)
-			this.updateLightFromNeighbors(localX, localY, localZ, true);
-		if (oldWasSkyTransparent && !newIsSkyTransparent && oldSkyLight > 0)
-			this.cutSkyLightBelow(localX, localY, localZ);
-
-		const emission = Chunk.getLightEmission(newBlockId);
-		if (emission > 0) this.addLight(localX, localY, localZ, emission);
+		this.dispatchLightMutate(localX, localY, localZ, oldPacked, packedBlock);
 
 		this.isModified = true;
 		this.connectivityDirty = true;
@@ -839,470 +944,51 @@ export class Chunk {
 		else if (localZ === S - 1) this.getNeighbor(0, 0, 1)?.scheduleRemesh(true);
 	}
 
-	public deleteBlock(localX: number, localY: number, localZ: number): void {
-		this.setBlock(localX, localY, localZ, 0);
-	}
-
-	// =========================================================================
-	// Public light manipulation
-	// =========================================================================
-
-	public addLight(x: number, y: number, z: number, level: number): void {
-		if (!this.isLoaded) return;
-		level &= Chunk.BLOCK_LIGHT_MASK;
-		if (level <= 0 || this.getBlockLight(x, y, z) >= level) return;
-		this.setBlockLight(x, y, z, level);
-		Q_A.clear();
-		Q_A.push(this, x, y, z, level);
-		this.processLightPropagationQueue(Q_A, false);
-	}
-
-	public propagateLight(
-		queue: Array<{
-			chunk: Chunk;
-			x: number;
-			y: number;
-			z: number;
-			level: number;
-		}>,
-		isSkyLight = true,
-	): void {
-		Q_A.clear();
-		for (let i = 0; i < queue.length; i++) {
-			const n = queue[i];
-			Q_A.push(n.chunk, n.x, n.y, n.z, n.level);
-		}
-		this.processLightPropagationQueue(Q_A, isSkyLight);
-	}
-
-	public propagateDeferredLight(seedState: {
-		queue: Uint16Array;
-		length: number;
-	}): void {
-		if (seedState.length <= 0) return;
-		Q_A.clear();
-		const size = Chunk.SIZE;
-		const size2 = Chunk.SIZE2;
-		const skyShift = Chunk.SKY_LIGHT_SHIFT;
-		for (let i = 0; i < seedState.length; i++) {
-			const val = seedState.queue[i];
-			const x = (val >> 10) & 0x1f;
-			const y = (val >> 5) & 0x1f;
-			const z = val & 0x1f;
-			const level =
-				(this.light_array[x + y * size + z * size2] >> skyShift) & 0xf;
-			if (
-				level > 0 &&
-				!filtersFullSunlight(unpackBlockId(this.getBlockPacked(x, y, z)))
-			)
-				Q_A.push(this, x, y, z, level);
-		}
-		if (Q_A.head !== Q_A.tail) {
-			this.processLightPropagationQueue(Q_A, true);
-			this.scheduleRemesh(false, true);
-		}
-	}
-
-	// =========================================================================
-	// updateLightFromNeighbors
-	// =========================================================================
-
-	public updateLightFromNeighbors(
-		x: number,
-		y: number,
-		z: number,
-		isSkyLight = false,
-	): void {
-		if (!this.isLoaded) return;
-		Q_A.clear();
-
-		const size = Chunk.SIZE;
-		const targetBlockPacked = this.getBlockPacked(x, y, z);
-		const currentTargetLevel = isSkyLight
-			? this.getSkyLight(x, y, z)
-			: this.getBlockLight(x, y, z);
-		const targetBlockId2 = unpackBlockId(targetBlockPacked);
-
-		for (let i = 0; i < LIGHT_DIR_COUNT; i++) {
-			const base = i * LIGHT_DIR_STRIDE;
-			const dx = LIGHT_DIRS_FLAT[base];
-			const dy = LIGHT_DIRS_FLAT[base + 1];
-			const dz = LIGHT_DIRS_FLAT[base + 2];
-			const axis = LIGHT_DIRS_FLAT[base + 3];
-			const dir = -LIGHT_DIRS_FLAT[base + 4] as -1 | 1;
-			const sourceIsAbove = dy > 0;
-
-			let sourceChunk: Chunk | undefined = this;
-			let sx = x + dx;
-			let sy = y + dy;
-			let sz = z + dz;
-
-			let r = Chunk.resolveNeighborCoord(sourceChunk, sx, 0, size);
-			sourceChunk = r.chunk;
-			if (!sourceChunk) continue;
-			sx = r.coord;
-			r = Chunk.resolveNeighborCoord(sourceChunk, sy, 1, size);
-			sourceChunk = r.chunk;
-			if (!sourceChunk) continue;
-			sy = r.coord;
-			r = Chunk.resolveNeighborCoord(sourceChunk, sz, 2, size);
-			sourceChunk = r.chunk;
-			if (!sourceChunk) continue;
-			sz = r.coord;
-
-			const sourceBlockPacked = sourceChunk.getBlockPacked(sx, sy, sz);
-			const sourceBlockId = unpackBlockId(sourceBlockPacked);
-			const sourceEmits =
-				!isSkyLight && Chunk.getLightEmission(sourceBlockId) > 0;
-
-			const lateralWaterToWater =
-				isSkyLight &&
-				!sourceIsAbove &&
-				filtersFullSunlight(sourceBlockId) &&
-				filtersFullSunlight(targetBlockId2);
-
-			const sourceAllows = isSkyLight
-				? sourceChunk.isTransparent(sourceBlockPacked, axis, dir) &&
-					(sourceIsAbove ||
-						!filtersFullSunlight(sourceBlockId) ||
-						lateralWaterToWater)
-				: sourceEmits ||
-					sourceChunk.isTransparent(sourceBlockPacked, axis, dir);
-			if (!sourceAllows) continue;
-
-			if (!this.isTransparent(targetBlockPacked, axis, -dir)) continue;
-
-			const level = isSkyLight
-				? sourceChunk.getSkyLight(sx, sy, sz)
-				: sourceChunk.getBlockLight(sx, sy, sz);
-			if (level <= 0) continue;
-
-			const targetBlockId = unpackBlockId(targetBlockPacked);
-			const preservesFullSun =
-				isSkyLight &&
-				sourceIsAbove &&
-				level === 15 &&
-				!filtersFullSunlight(sourceBlockId) &&
-				!filtersFullSunlight(targetBlockId);
-
-			const nextLevel = preservesFullSun ? 15 : level - 1;
-			if (nextLevel <= 0 || nextLevel <= currentTargetLevel) continue;
-			Q_A.push(sourceChunk, sx, sy, sz, level);
-		}
-
-		if (Q_A.head !== Q_A.tail)
-			this.processLightPropagationQueue(Q_A, isSkyLight);
-	}
-
-	// =========================================================================
-	// batchPropagateSkyLight
-	// =========================================================================
-
-	public batchPropagateSkyLight(
-		seeds: { chunk: Chunk; x: number; y: number; z: number; level: number }[],
-	): void {
-		if (seeds.length === 0) return;
-		Q_A.clear();
-		for (let i = 0; i < seeds.length; i++) {
-			const s = seeds[i];
-			Q_A.push(s.chunk, s.x, s.y, s.z, s.level);
-		}
-		if (Q_A.head !== Q_A.tail) {
-			this.processLightPropagationQueue(Q_A, true);
-			this.scheduleRemesh(false, true);
-		}
-	}
-
-	public batchPropagateSkyLightFlat(
-		chunks: Chunk[],
-		coords: Int32Array,
-		count: number,
-		levels: Uint8Array,
-	): void {
-		if (count === 0) return;
-		Q_A.clear();
-		for (let i = 0; i < count; i++) {
-			const base = i * 3;
-			Q_A.push(
-				chunks[i],
-				coords[base],
-				coords[base + 1],
-				coords[base + 2],
-				levels[i],
-			);
-		}
-		if (Q_A.head !== Q_A.tail) {
-			this.processLightPropagationQueue(Q_A, true);
-			this.scheduleRemesh(false, true);
-		}
-	}
-
-	// =========================================================================
-	// processLightPropagationQueue
-	// =========================================================================
-
-	private processLightPropagationQueue(
-		q: LightQueue,
-		isSkyLight: boolean,
-	): void {
-		const size = Chunk.SIZE;
-		const size2 = Chunk.SIZE2;
-		const skyShift = Chunk.SKY_LIGHT_SHIFT;
-		const blockMask = Chunk.BLOCK_LIGHT_MASK;
-
-		while (q.head !== q.tail) {
-			const slot = q.head & (BFS_CAPACITY - 1);
-			q.head = (q.head + 1) & (BFS_CAPACITY - 1);
-			const chunk = q.chunks[slot]!;
-			const coord = q.coords[slot];
-			const x = coord & 0x1f;
-			const y = (coord >> 5) & 0x1f;
-			const z = (coord >> 10) & 0x1f;
-
-			const lightArr = chunk.light_array;
-			if (lightArr.length === 0) continue;
-
-			const idx = x + y * size + z * size2;
-			const level = isSkyLight
-				? (lightArr[idx] >> skyShift) & 0xf
-				: lightArr[idx] & 0xf;
-			if (level <= 0) continue;
-
-			const sourcePacked = chunk.getBlockPacked(x, y, z);
-			const sourceBlockId = unpackBlockId(sourcePacked);
-			const sourceEmits =
-				!isSkyLight && Chunk.getLightEmission(sourceBlockId) > 0;
-
-			for (let i = 0; i < LIGHT_DIR_COUNT; i++) {
-				const base = i * LIGHT_DIR_STRIDE;
-				let tx = x + LIGHT_DIRS_FLAT[base];
-				let ty = y + LIGHT_DIRS_FLAT[base + 1];
-				let tz = z + LIGHT_DIRS_FLAT[base + 2];
-				const axis = LIGHT_DIRS_FLAT[base + 3];
-				const dir = LIGHT_DIRS_FLAT[base + 4];
-				const isDown = LIGHT_DIRS_FLAT[base + 5];
-
-				let targetChunk: Chunk | undefined = chunk;
-
-				let r = Chunk.resolveNeighborCoord(targetChunk, tx, 0, size);
-				targetChunk = r.chunk;
-				if (!targetChunk) continue;
-				tx = r.coord;
-				r = Chunk.resolveNeighborCoord(targetChunk, ty, 1, size);
-				targetChunk = r.chunk;
-				if (!targetChunk) continue;
-				ty = r.coord;
-				r = Chunk.resolveNeighborCoord(targetChunk, tz, 2, size);
-				targetChunk = r.chunk;
-				if (!targetChunk?.isLoaded) continue;
-				tz = r.coord;
-
-				if (isSkyLight && isDown !== 1 && filtersFullSunlight(sourceBlockId)) {
-					const peekId = unpackBlockId(targetChunk.getBlockPacked(tx, ty, tz));
-					if (!filtersFullSunlight(peekId)) continue;
-				} else if (
-					isSkyLight
-						? !chunk.isTransparent(sourcePacked, axis, dir)
-						: !sourceEmits && !chunk.isTransparent(sourcePacked, axis, dir)
-				) {
-					continue;
-				}
-
-				const targetPacked = targetChunk.getBlockPacked(tx, ty, tz);
-				if (!targetChunk.isTransparent(targetPacked, axis, -dir)) continue;
-
-				const tidx = tx + ty * size + tz * size2;
-				const targetLightArr = targetChunk.light_array;
-				const currentLevel = isSkyLight
-					? (targetLightArr[tidx] >> skyShift) & 0xf
-					: targetLightArr[tidx] & 0xf;
-
-				const targetBlockId = unpackBlockId(targetPacked);
-
-				if (isSkyLight && isDown !== 1 && filtersFullSunlight(targetBlockId)) {
-					if (!filtersFullSunlight(sourceBlockId)) continue;
-				}
-
-				const preservesFullSun =
-					isSkyLight &&
-					isDown === 1 &&
-					level === 15 &&
-					!filtersFullSunlight(sourceBlockId) &&
-					!filtersFullSunlight(targetBlockId);
-
-				const nextLevel = preservesFullSun ? 15 : level - 1;
-				if (nextLevel <= 0 || currentLevel >= nextLevel) continue;
-
-				if (isSkyLight) {
-					targetLightArr[tidx] =
-						(targetLightArr[tidx] & blockMask) | (nextLevel << skyShift);
-				} else {
-					targetLightArr[tidx] =
-						(targetLightArr[tidx] & ~blockMask) | nextLevel;
-				}
-
-				_bfsDirtyChunks.add(targetChunk.id);
-				q.push(targetChunk, tx, ty, tz, nextLevel);
-			}
-		}
-
-		for (const id of _bfsDirtyChunks) {
-			const c = Chunk.chunkInstances.get(id);
-			if (c) c.scheduleRemesh();
-		}
-		_bfsDirtyChunks.clear();
-	}
-
-	// =========================================================================
-	// removeLight
-	// =========================================================================
-
-	public removeLight(
-		x: number,
-		y: number,
-		z: number,
-		isSkyLight = false,
-		sourcePackedOverride?: number,
-	): void {
-		const size = Chunk.SIZE;
-		const size2 = Chunk.SIZE2;
-		const skyShift = Chunk.SKY_LIGHT_SHIFT;
-		const blockMask = Chunk.BLOCK_LIGHT_MASK;
-
-		const startIdx = x + y * size + z * size2;
-		const startLevel = isSkyLight
-			? (this.light_array[startIdx] >> skyShift) & 0xf
-			: this.light_array[startIdx] & 0xf;
-		if (startLevel === 0) return;
-
-		Q_A.clear();
-		Q_B.clear();
-		Q_A.push(this, x, y, z, startLevel);
-
-		if (isSkyLight) this.light_array[startIdx] &= blockMask;
-		else this.light_array[startIdx] &= ~blockMask;
-		_bfsDirtyChunks.add(this.id);
-
-		let head = 0;
-		while (head !== Q_A.tail) {
-			const slot = head & (BFS_CAPACITY - 1);
-			head = (head + 1) & (BFS_CAPACITY - 1);
-			const chunk = Q_A.chunks[slot]!;
-			const coord = Q_A.coords[slot];
-			const cx = coord & 0x1f;
-			const cy = (coord >> 5) & 0x1f;
-			const cz = (coord >> 10) & 0x1f;
-			const level = Q_A.levels[slot];
-
-			const sourcePacked =
-				head === 1 && sourcePackedOverride !== undefined
-					? sourcePackedOverride
-					: chunk.getBlockPacked(cx, cy, cz);
-			const sourceBlockId = unpackBlockId(sourcePacked);
-			const sourceEmits =
-				!isSkyLight && Chunk.getLightEmission(sourceBlockId) > 0;
-
-			for (let i = 0; i < LIGHT_DIR_COUNT; i++) {
-				const base = i * LIGHT_DIR_STRIDE;
-				let tx = cx + LIGHT_DIRS_FLAT[base];
-				let ty = cy + LIGHT_DIRS_FLAT[base + 1];
-				let tz = cz + LIGHT_DIRS_FLAT[base + 2];
-				const axis = LIGHT_DIRS_FLAT[base + 3];
-				const dir = LIGHT_DIRS_FLAT[base + 4];
-				const isDown = LIGHT_DIRS_FLAT[base + 5];
-
-				let targetChunk: Chunk | undefined = chunk;
-
-				let r = Chunk.resolveNeighborCoord(targetChunk, tx, 0, size);
-				targetChunk = r.chunk;
-				if (!targetChunk) continue;
-				tx = r.coord;
-				r = Chunk.resolveNeighborCoord(targetChunk, ty, 1, size);
-				targetChunk = r.chunk;
-				if (!targetChunk) continue;
-				ty = r.coord;
-				r = Chunk.resolveNeighborCoord(targetChunk, tz, 2, size);
-				targetChunk = r.chunk;
-				if (!targetChunk?.isLoaded) continue;
-				tz = r.coord;
-
-				if (
-					isSkyLight
-						? !chunk.isTransparent(sourcePacked, axis, dir) ||
-							(isDown !== 1 && filtersFullSunlight(sourceBlockId))
-						: !sourceEmits && !chunk.isTransparent(sourcePacked, axis, dir)
-				)
-					continue;
-
-				const targetPacked = targetChunk.getBlockPacked(tx, ty, tz);
-				if (!targetChunk.isTransparent(targetPacked, axis, -dir)) continue;
-
-				const tIdx = tx + ty * size + tz * size2;
-				const tArr = targetChunk.light_array;
-				const neighborLevel = isSkyLight
-					? (tArr[tIdx] >> skyShift) & 0xf
-					: tArr[tIdx] & 0xf;
-				if (neighborLevel === 0) continue;
-
-				const targetBlockId = unpackBlockId(targetPacked);
-				const preservesFullSun =
-					isSkyLight &&
-					isDown === 1 &&
-					level === 15 &&
-					!filtersFullSunlight(sourceBlockId) &&
-					!filtersFullSunlight(targetBlockId);
-				const isDependent =
-					neighborLevel < level || (preservesFullSun && neighborLevel === 15);
-
-				if (isDependent) {
-					if (isSkyLight) tArr[tIdx] &= blockMask;
-					else tArr[tIdx] &= ~blockMask;
-					_bfsDirtyChunks.add(targetChunk.id);
-					Q_A.push(targetChunk, tx, ty, tz, neighborLevel);
-				} else {
-					Q_B.push(targetChunk, tx, ty, tz, neighborLevel);
-				}
-			}
-		}
-
-		for (const id of _bfsDirtyChunks) {
-			const c = Chunk.chunkInstances.get(id);
-			if (c) c.scheduleRemesh();
-		}
-		_bfsDirtyChunks.clear();
-
-		if (Q_B.head !== Q_B.tail)
-			this.processLightPropagationQueue(Q_B, isSkyLight);
-	}
-
-	// =========================================================================
-	// cutSkyLightBelow
-	// =========================================================================
-
-	private cutSkyLightBelow(
+	/**
+	 * Dispatch a single LightMutate message to the worker pool, replacing
+	 * the inline BFS that used to run on the main thread.  No return
+	 * value: scheduling of neighbour remeshes is driven by the worker's
+	 * LightDirty reply.
+	 */
+	private dispatchLightMutate(
 		localX: number,
 		localY: number,
 		localZ: number,
+		oldPacked: number,
+		newPacked: number,
 	): void {
-		// eslint-disable-next-line @typescript-eslint/no-this-alias
-		let targetChunk: Chunk | undefined = this;
-		const tx = localX;
-		let ty = localY - 1;
-		const tz = localZ;
+		const pool = Chunk._lightPool;
+		if (!pool) return;
+		pool.postLightMutate({
+			chunkId: this.id,
+			headerSlot: this.lightHeaderSlot,
+			x: localX,
+			y: localY,
+			z: localZ,
+			oldPacked,
+			newPacked,
+			seq: pool.nextLightSeq(),
+		});
+	}
 
-		if (ty < 0) {
-			targetChunk = targetChunk.getNeighbor(0, -1, 0);
-			ty = Chunk.SIZE - 1;
-		}
-		if (!targetChunk?.isLoaded) return;
+	/**
+	 * Set by ChunkWorkerPool.getInstance() once the pool is alive.
+	 * Resolved lazily inside dispatchLightMutate so importing order
+	 * doesn't matter.
+	 */
+	public static _lightPool: {
+		postLightMutate(req: any): void;
+		postLightAddEmission(req: any): void;
+		nextLightSeq(): number;
+		enqueueDeferredLightFromSunlightInit?(
+			chunk: Chunk,
+			queue: Uint16Array,
+			length: number,
+		): void;
+	} | null = null;
 
-		const belowBlockPacked = targetChunk.getBlockPacked(tx, ty, tz);
-		if (!targetChunk.isTransparent(belowBlockPacked, 1, 1)) return;
-
-		if (targetChunk.getSkyLight(tx, ty, tz) > 0)
-			targetChunk.removeLight(tx, ty, tz, true);
-
-		targetChunk.updateLightFromNeighbors(tx, ty, tz, true);
+	public deleteBlock(localX: number, localY: number, localZ: number): void {
+		this.setBlock(localX, localY, localZ, 0);
 	}
 
 	// =========================================================================
@@ -1365,31 +1051,11 @@ export class Chunk {
 		return getChunk(this.#chunkX + dx, this.#chunkY + dy, this.#chunkZ + dz);
 	}
 
-	private static resolveNeighborCoord(
-		chunk: Chunk | undefined,
-		coord: number,
-		axis: number,
-		size: number,
-	): { chunk: Chunk | undefined; coord: number } {
-		if (coord >= 0 && coord < size) {
-			_resolveScratch.chunk = chunk;
-			_resolveScratch.coord = coord;
-			return _resolveScratch;
-		}
-		const dir = coord < 0 ? -1 : 1;
-		const dx = axis === 0 ? dir : 0;
-		const dy = axis === 1 ? dir : 0;
-		const dz = axis === 2 ? dir : 0;
-		_resolveScratch.chunk = chunk?.getNeighbor(dx, dy, dz);
-		_resolveScratch.coord = coord < 0 ? size - 1 : 0;
-		return _resolveScratch;
-	}
-
 	public markLightChanged(): void {
 		this.isLightDirty = true;
 	}
 	public needsPersistence(): boolean {
-		return this.isModified || this.isLODMeshCacheDirty || this.isLightDirty;
+		return this.isModified || this.isLightDirty;
 	}
 
 	// =========================================================================
@@ -1814,6 +1480,13 @@ export class Chunk {
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
 		this._isDarkCached = false;
 		this.isLoaded = false;
+
+		const view = Chunk.lightHeaderView;
+		if (view && this.lightHeaderSlot !== 0xffff_ffff) {
+			clearHeaderRow(view, this.lightHeaderSlot);
+		}
+		Chunk.onLightChunkDisposed?.(this);
+
 		Chunk.loadedChunks.delete(this);
 		Chunk.loadedChunkIndex.unregister(this);
 		this.isTerrainScheduled = false;
@@ -1829,18 +1502,6 @@ export class Chunk {
 	}
 }
 
-const BITS = 21n;
-const MASK = (1n << BITS) - 1n;
-const Y_SHIFT = BITS;
-const Z_SHIFT = BITS * 2n;
-
-export function packCoords(x: number, y: number, z: number): bigint {
-	return (
-		(BigInt(x) & MASK) |
-		((BigInt(y) & MASK) << Y_SHIFT) |
-		((BigInt(z) & MASK) << Z_SHIFT)
-	);
-}
 export function getChunk(
 	cx: number,
 	cy: number,
@@ -1848,3 +1509,6 @@ export function getChunk(
 ): Chunk | undefined {
 	return Chunk.chunkInstances.get(packCoords(cx, cy, cz));
 }
+
+// Re-export packCoords for callers that imported it from "./Chunk".
+export { packCoords } from "./DataStructures/ChunkCoords";

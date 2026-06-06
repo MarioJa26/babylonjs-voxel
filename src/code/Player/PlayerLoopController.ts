@@ -6,6 +6,7 @@ import { Chunk } from "../World/Chunk/Chunk";
 import {
 	getDebugStats,
 	processFrameBudgetedStreamingWork,
+	refreshOpfsDebugStats,
 	updateChunksAround,
 	worldToChunkCoord,
 } from "../World/Chunk/ChunkLoadingSystem";
@@ -300,6 +301,7 @@ export class PlayerLoopController {
 
 		const loadStats = getDebugStats();
 		const workerStats = ChunkWorkerPool.getInstance().getDebugStats();
+		void refreshOpfsDebugStats();
 
 		PlayerHud.updateDebugInfo(
 			"Chunk Queues",
@@ -317,8 +319,11 @@ export class PlayerLoopController {
 			"chunks",
 		);
 		PlayerHud.updateDebugInfo(
-			"LOD Cache Ver",
-			`mismatch:${loadStats.lastLodCacheVersionMismatches}`,
+			"OPFS Mesh",
+			`hits:${loadStats.lastOpfsHits} miss:${loadStats.lastOpfsMisses} ` +
+				`used:${(loadStats.opfsUsedBytes / 1024 / 1024).toFixed(1)}MB / ` +
+				`${(loadStats.opfsTotalBytes / 1024 / 1024).toFixed(0)}MB ` +
+				`slots:${loadStats.opfsSlotCount} evicts:${loadStats.opfsEvictionCount}`,
 			"chunks",
 		);
 		PlayerHud.updateDebugInfo(

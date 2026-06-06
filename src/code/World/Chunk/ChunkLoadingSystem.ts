@@ -1,10 +1,11 @@
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
+import { packChunkKey } from "../Storage/ChunkKey";
+import { deserializeMeshPair } from "../Storage/MeshSerializer";
 import type { SavedChunkData, SavedChunkEntityData } from "../WorldStorage";
 import { createMeshFromData } from "./ChunckMesher";
 import { addChunkDisposeHook, Chunk, getChunk, packCoords } from "./Chunk";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import type { MeshData } from "./DataStructures/MeshData";
-import { getCurrentLodCacheVersion } from "./LOD/LodCacheVersion";
 import { ChunkEntityRegistry } from "./Loading/ChunkEntityRegistry";
 import {
 	ChunkHydration,
@@ -28,13 +29,6 @@ import {
 	ChunkWorldMutations,
 	getBlockStateByWorldCoords as getBlockStateFromMutations,
 } from "./Loading/ChunkWorldMutations";
-
-type ResolvedSavedMeshSelection = {
-	selectedMesh: SelectedSavedMesh | null;
-	exactMesh: SelectedSavedMesh | null;
-	hasDesiredMesh: boolean;
-	hasExactDesiredMesh: boolean;
-};
 
 export type DynamicBlockSample = {
 	blockId: number;
@@ -73,24 +67,7 @@ const dynamicBlockProviders: Map<symbol, DynamicBlockProviderEntry> = new Map();
 const pendingRemeshChunks: Chunk[] = [];
 const pendingRemeshChunkIds: Set<bigint> = new Set();
 
-const hydrationScratchSelectedMesh: SelectedSavedMesh = {
-	opaque: null,
-	transparent: null,
-	lod: 0,
-};
-
-const hydrationScratchExactMesh: SelectedSavedMesh = {
-	opaque: null,
-	transparent: null,
-	lod: 0,
-};
-
 const debug = new ChunkLoadingDebug();
-
-const hydrationAvailableLodsCache = new WeakMap<
-	SavedChunkData,
-	readonly number[]
->();
 
 const _neighborBuffer: (Chunk | undefined)[] = new Array(6);
 
@@ -100,6 +77,14 @@ const _meshData: {
 	opaque: MeshData | null;
 	transparent: MeshData | null;
 } = { opaque: null, transparent: null };
+
+// OPFS mesh cache: chunkId (bigint) -> deserialized mesh pair from OPFS.
+// Populated by prefetchOpfsMeshes (called by ChunkProcessScheduler in parallel
+// with IDB voxel loads) and read by applyLoadedChunkFromSavedData. Cleared at
+// the start of each process cycle.
+const opfsMeshCache = new Map<bigint, SelectedSavedMesh>();
+let opfsCacheHydratedThisCycle = 0;
+let opfsCacheMissedThisCycle = 0;
 
 const debugStats: ChunkLoadingDebugStats = {
 	loadQueueLength: 0,
@@ -125,8 +110,14 @@ const debugStats: ChunkLoadingDebugStats = {
 	totalHydrated: 0,
 	totalUnloaded: 0,
 	totalSaved: 0,
-	lastLodCacheVersionMismatches: 0,
-	totalLodCacheVersionMismatches: 0,
+	lastOpfsHits: 0,
+	lastOpfsMisses: 0,
+	totalOpfsHits: 0,
+	totalOpfsMisses: 0,
+	opfsUsedBytes: 0,
+	opfsTotalBytes: 0,
+	opfsSlotCount: 0,
+	opfsEvictionCount: 0,
 };
 
 const chunkEntityRegistry = new ChunkEntityRegistry<ChunkBoundEntity>({
@@ -147,83 +138,11 @@ const chunkHydration = new ChunkHydration({
 		lightArray: savedData.lightArray,
 	}),
 
-	getSavedMeshForLod: (savedData, lod) => {
-		if (lod === 0) {
-			const hasBaseMesh =
-				!!savedData.opaqueMesh ||
-				!!savedData.transparentMesh ||
-				!!savedData.lodMeshes?.[0]?.opaque ||
-				!!savedData.lodMeshes?.[0]?.transparent;
-
-			if (!hasBaseMesh) {
-				return null;
-			}
-
-			if (savedData.opaqueMesh || savedData.transparentMesh) {
-				return {
-					opaque: savedData.opaqueMesh ?? null,
-					transparent: savedData.transparentMesh ?? null,
-				};
-			}
-
-			const lod0 = savedData.lodMeshes?.[0];
-			if (!lod0) {
-				return null;
-			}
-
-			return {
-				opaque: lod0.opaque ?? null,
-				transparent: lod0.transparent ?? null,
-			};
-		}
-
-		const entry = savedData.lodMeshes?.[lod];
-		if (!entry) {
-			return null;
-		}
-
-		return {
-			opaque: entry.opaque ?? null,
-			transparent: entry.transparent ?? null,
-		};
-	},
-
-	getAvailableMeshLods: (savedData) => {
-		const cached = hydrationAvailableLodsCache.get(savedData);
-		if (cached) {
-			return cached;
-		}
-
-		const lods: number[] = [];
-
-		const hasBaseMesh =
-			!!savedData.opaqueMesh ||
-			!!savedData.transparentMesh ||
-			!!savedData.lodMeshes?.[0]?.opaque ||
-			!!savedData.lodMeshes?.[0]?.transparent;
-
-		if (hasBaseMesh) {
-			lods.push(0);
-		}
-
-		if (savedData.lodMeshes) {
-			for (const key of Object.keys(savedData.lodMeshes)) {
-				const lod = Number(key);
-				if (!Number.isInteger(lod) || lod === 0) continue;
-
-				const entry = savedData.lodMeshes[lod];
-				if (entry?.opaque || entry?.transparent) {
-					lods.push(lod);
-				}
-			}
-		}
-
-		lods.sort((a, b) => a - b);
-		hydrationAvailableLodsCache.set(savedData, lods);
-		return lods;
-	},
-
-	getSerializedLodCache: (savedData) => savedData.lodMeshes,
+	// Mesh data now lives in OPFS, not IDB. The OPFS cache is consulted
+	// directly by applyLoadedChunkFromSavedData (via opfsMeshCache).
+	getSavedMeshForLod: () => null,
+	getAvailableMeshLods: () => [],
+	getSerializedLodCache: () => undefined,
 });
 
 const streamingController = new ChunkStreamingController({
@@ -272,6 +191,10 @@ const processScheduler = new ChunkProcessScheduler({
 
 	applyLoadedChunkFromSavedData: (state, request, savedData) =>
 		applyLoadedChunkFromSavedData(state, request, savedData),
+
+	prefetchOpfsMeshes: (requests) => prefetchOpfsMeshes(requests),
+
+	resetOpfsMeshCache: () => resetCycleOpfsCache(),
 
 	applyHydratedChunkFromSavedData: (chunk, savedData) =>
 		applyHydratedChunkFromSavedData(chunk, savedData),
@@ -365,54 +288,12 @@ function getReusableMeshData(
 	return meshData;
 }
 
-function resolveSavedMeshSelection(
-	savedData: SavedChunkData,
-	targetLod: number,
-): ResolvedSavedMeshSelection {
-	const hasSelectedMesh = chunkHydration.tryPickBestSavedMesh(
-		savedData,
-		targetLod,
-		hydrationScratchSelectedMesh,
-	);
-
-	const hasExactSavedMesh = chunkHydration.tryGetSavedMeshForLod(
-		savedData,
-		targetLod,
-		hydrationScratchExactMesh,
-	);
-
-	const selectedMesh = hasSelectedMesh ? hydrationScratchSelectedMesh : null;
-
-	const exactMesh = hasExactSavedMesh ? hydrationScratchExactMesh : null;
-
-	return {
-		selectedMesh,
-		exactMesh,
-		hasDesiredMesh:
-			!!selectedMesh && (!!selectedMesh.opaque || !!selectedMesh.transparent),
-		hasExactDesiredMesh:
-			!!exactMesh && (!!exactMesh.opaque || !!exactMesh.transparent),
-	};
-}
-
 function applyMeshToChunk(chunk: Chunk, mesh: SelectedSavedMesh | null): void {
 	if (!mesh || (!mesh.opaque && !mesh.transparent)) {
 		return;
 	}
 
 	createMeshFromData(chunk, getReusableMeshData(mesh.opaque, mesh.transparent));
-}
-
-function restoreChunkLodCache(chunk: Chunk, savedData: SavedChunkData): void {
-	chunk.restoreLODMeshCache(savedData.lodMeshes);
-
-	if (savedData.opaqueMesh || savedData.transparentMesh) {
-		chunk.setCachedLODMesh(0, {
-			opaque: savedData.opaqueMesh ?? null,
-			transparent: savedData.transparentMesh ?? null,
-		});
-		chunk.isLODMeshCacheDirty = false;
-	}
 }
 
 function refreshQueueDebugSnapshot(): void {
@@ -428,11 +309,64 @@ function refreshQueueDebugSnapshot(): void {
 	debugStats.loadBatchLimit = getLoadBatchSize();
 	debugStats.unloadBatchLimit = getUnloadBatchSize();
 	debugStats.frameBudgetMs = getProcessFrameBudgetMs();
+
+	refreshOpfsPrefetchSnapshot();
 }
 
 export function getDebugStats(): ChunkLoadingDebugStats {
 	refreshQueueDebugSnapshot();
 	return debugStats;
+}
+
+let lastOpfsHitCount = 0;
+let lastOpfsMissCount = 0;
+let lastOpfsEvictionCount = 0;
+let lastOpfsRefreshMs = 0;
+const OPFS_REFRESH_INTERVAL_MS = 250;
+
+export async function refreshOpfsDebugStats(): Promise<void> {
+	// Throttle: OPFS stats require a worker round-trip.
+	const now = performance.now();
+	if (now - lastOpfsRefreshMs < OPFS_REFRESH_INTERVAL_MS) return;
+	lastOpfsRefreshMs = now;
+
+	const client = ChunkWorkerPool.getInstance().getOpfsClient();
+	if (!client) {
+		debugStats.opfsTotalBytes = 0;
+		debugStats.opfsUsedBytes = 0;
+		debugStats.opfsSlotCount = 0;
+		debugStats.opfsEvictionCount = 0;
+		return;
+	}
+
+	try {
+		const stats = await client.getStats();
+		debugStats.opfsTotalBytes = stats.totalBytes;
+		debugStats.opfsUsedBytes = stats.usedBytes;
+		debugStats.opfsSlotCount = stats.slotCount;
+		debugStats.opfsEvictionCount = stats.evictionCount;
+
+		// Cumulative deltas (worker tracks totals; we accumulate UI-side).
+		const newHits = stats.hitCount - lastOpfsHitCount;
+		const newMisses = stats.missCount - lastOpfsMissCount;
+		const newEvicts = stats.evictionCount - lastOpfsEvictionCount;
+		if (newHits > 0) debugStats.totalOpfsHits += newHits;
+		if (newMisses > 0) debugStats.totalOpfsMisses += newMisses;
+		if (newEvicts > 0) debugStats.opfsEvictionCount = newEvicts; // display total
+		lastOpfsHitCount = stats.hitCount;
+		lastOpfsMissCount = stats.missCount;
+		lastOpfsEvictionCount = stats.evictionCount;
+	} catch {
+		// worker may be transiently unavailable; leave previous values
+	}
+}
+
+function refreshOpfsPrefetchSnapshot(): void {
+	// lastOpfsHits / lastOpfsMisses are per-process-cycle values captured
+	// in prefetchOpfsMeshes(). Snapshot them here so the HUD sees fresh
+	// values on each frame.
+	debugStats.lastOpfsHits = opfsCacheHydratedThisCycle;
+	debugStats.lastOpfsMisses = opfsCacheMissedThisCycle;
 }
 
 function buildQueuedIdSet(): Set<bigint> {
@@ -766,7 +700,6 @@ function updateSliceDebugStats(state: InFlightProcessState): void {
 	debugStats.lastHydrated = state.hydratedCount;
 	debugStats.lastUnloaded = state.unloadedCount;
 	debugStats.lastSaved = state.savedCount;
-	debugStats.lastLodCacheVersionMismatches = state.lodCacheVersionMismatchCount;
 
 	refreshQueueDebugSnapshot();
 }
@@ -780,28 +713,17 @@ function finalizeProcessState(state: InFlightProcessState): void {
 	debugStats.totalHydrated += state.hydratedCount;
 	debugStats.totalUnloaded += state.unloadedCount;
 	debugStats.totalSaved += state.savedCount;
-	debugStats.totalLodCacheVersionMismatches +=
-		state.lodCacheVersionMismatchCount;
 }
 
 function applyHydratedChunkFromSavedData(
 	chunk: Chunk,
 	savedData: SavedChunkData,
 ): void {
-	const currentLod = chunk.lodLevel ?? 0;
-
-	const { selectedMesh, hasDesiredMesh, hasExactDesiredMesh } =
-		resolveSavedMeshSelection(savedData, currentLod);
-
-	chunkHydration.applyHydratedChunkFromSavedData(
-		chunk,
-		savedData,
-		!hasExactDesiredMesh,
-	);
-
-	if (hasDesiredMesh) {
-		applyMeshToChunk(chunk, selectedMesh);
-	}
+	// Mesh lookup is purely OPFS-based (see applyLoadedChunkFromSavedData).
+	// Hydration re-runs never re-fetch OPFS; the chunk already has whatever
+	// mesh it had after applyLoadedChunkFromSavedData, and the worker pool
+	// will overwrite/regenerate as needed.
+	chunkHydration.applyHydratedChunkFromSavedData(chunk, savedData, true);
 }
 
 function loadFarLodChunk(
@@ -830,7 +752,6 @@ function loadNearLodChunk(
 	savedData: SavedChunkData,
 	selectedMesh: SelectedSavedMesh | null,
 	hasDesiredMesh: boolean,
-	hasExactDesiredMesh: boolean,
 	targetLod: number,
 ): void {
 	chunk.loadFromStorage(
@@ -839,7 +760,7 @@ function loadNearLodChunk(
 		savedData.isUniform,
 		savedData.uniformBlockId,
 		savedData.lightArray,
-		!hasExactDesiredMesh,
+		!hasDesiredMesh,
 	);
 
 	if (!hasDesiredMesh) {
@@ -861,31 +782,69 @@ function applyLoadedChunkFromSavedData(
 	const chunk = request.chunk;
 	const targetLod = request.desiredLod;
 
-	if (savedData.lodCacheVersion !== getCurrentLodCacheVersion()) {
-		state.lodCacheVersionMismatchCount++;
-	}
-
 	state.loadedFromStorageCount++;
 	chunk.lodLevel = targetLod;
 
-	restoreChunkLodCache(chunk, savedData);
-
-	const { selectedMesh, hasDesiredMesh, hasExactDesiredMesh } =
-		resolveSavedMeshSelection(savedData, targetLod);
+	// Mesh comes from OPFS, populated by prefetchOpfsMeshes in parallel with
+	// the IDB voxel load. If absent, loadNearLodChunk will fall through to
+	// remesh, which writes the freshly generated mesh to OPFS for next time.
+	const selectedMesh = opfsMeshCache.get(chunk.id) ?? null;
+	const hasDesiredMesh = !!selectedMesh;
 
 	if (targetLod >= 2) {
 		loadFarLodChunk(state, chunk, selectedMesh, hasDesiredMesh);
 		return;
 	}
 
-	loadNearLodChunk(
-		chunk,
-		savedData,
-		selectedMesh,
-		hasDesiredMesh,
-		hasExactDesiredMesh,
-		targetLod,
-	);
+	loadNearLodChunk(chunk, savedData, selectedMesh, hasDesiredMesh, targetLod);
+}
+
+async function prefetchOpfsMeshes(
+	requests: QueuedChunkRequest[],
+): Promise<void> {
+	// Reset cycle counters; cache cleared in resetCycleOpfsCache().
+	opfsCacheHydratedThisCycle = 0;
+	opfsCacheMissedThisCycle = 0;
+
+	const client = ChunkWorkerPool.getInstance().getOpfsClient();
+	if (!client) return;
+
+	const promises: Promise<void>[] = [];
+	for (const request of requests) {
+		const chunk = request.chunk;
+		const lod = request.desiredLod;
+		const key = packChunkKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+		promises.push(
+			client
+				.readMesh(key, lod)
+				.then((bytes) => {
+					if (!bytes) {
+						opfsCacheMissedThisCycle++;
+						return;
+					}
+					const mesh = deserializeMeshPair(bytes, lod);
+					if (mesh) {
+						opfsMeshCache.set(chunk.id, mesh);
+						opfsCacheHydratedThisCycle++;
+					} else {
+						opfsCacheMissedThisCycle++;
+					}
+				})
+				.catch((err: any) => {
+					console.warn(
+						`[ChunkLoadingSystem] OPFS read failed for chunk ${chunk.id}:`,
+						err,
+					);
+				}),
+		);
+	}
+	await Promise.all(promises);
+}
+
+function resetCycleOpfsCache(): void {
+	if (opfsMeshCache.size > 0) {
+		opfsMeshCache.clear();
+	}
 }
 
 export function deleteBlock(worldX: number, worldY: number, worldZ: number) {

@@ -23,6 +23,10 @@ export interface ChunkProcessSchedulerAdapter {
 		savedData: SavedChunkData,
 	): void;
 
+	prefetchOpfsMeshes(requests: QueuedChunkRequest[]): Promise<void>;
+
+	resetOpfsMeshCache(): void;
+
 	applyHydratedChunkFromSavedData(
 		chunk: Chunk,
 		savedData: SavedChunkData,
@@ -69,7 +73,6 @@ export class ChunkProcessScheduler {
 			hydratedCount: 0,
 			unloadedCount: 0,
 			savedCount: 0,
-			lodCacheVersionMismatchCount: 0,
 
 			unloadBatch: [],
 			unloadBatchIndex: 0,
@@ -100,7 +103,6 @@ export class ChunkProcessScheduler {
 		state.hydratedCount = 0;
 		state.unloadedCount = 0;
 		state.savedCount = 0;
-		state.lodCacheVersionMismatchCount = 0;
 
 		state.unloadBatch.length = 0;
 		state.unloadBatchIndex = 0;
@@ -190,9 +192,7 @@ export class ChunkProcessScheduler {
 							if (
 								chunk.isLoaded &&
 								!chunk.isPersistent &&
-								(chunk.isModified ||
-									chunk.isLODMeshCacheDirty ||
-									chunk.isLightDirty)
+								(chunk.isModified || chunk.isLightDirty)
 							) {
 								this._saveScratch.push(chunk);
 							}
@@ -235,8 +235,7 @@ export class ChunkProcessScheduler {
 							}
 
 							const canUnload =
-								(!chunk.isModified && !chunk.isLODMeshCacheDirty) ||
-								state.savedChunkIds.has(chunk.id);
+								!chunk.isModified || state.savedChunkIds.has(chunk.id);
 
 							if (!canUnload) {
 								// The chunk is still dirty AND wasn't saved (e.g. it was
@@ -290,6 +289,10 @@ export class ChunkProcessScheduler {
 						state.hydrateChunks.length = 0;
 						state.hydrateMap.clear();
 						state.hydrateIndex = 0;
+
+						// Clear OPFS mesh cache from previous cycle; prefetchOpfsMeshes
+						// repopulates it during LoadFromStorage.
+						this.adapter.resetOpfsMeshCache();
 
 						const takeCount = Math.min(batchSize, loadQueue.length);
 						if (takeCount > 0) {
@@ -360,6 +363,11 @@ export class ChunkProcessScheduler {
 											includeVoxelData: false,
 										})
 									: Promise.resolve(new Map()),
+
+								// Fire OPFS mesh prefetch in parallel with the IDB voxel load.
+								// This populates the OPFS mesh cache so applyLoadedChunkFromSavedData
+								// can apply cached meshes synchronously, skipping remesh.
+								this.adapter.prefetchOpfsMeshes(state.validLoadBatch),
 							]);
 
 							this.beginSlice(state);
