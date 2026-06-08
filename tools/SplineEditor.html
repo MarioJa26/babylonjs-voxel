@@ -65,11 +65,11 @@
   <body>
     <h2>Terrain Spline Editor (Linear)</h2>
     <div class="controls">
-      <button onclick="parseInput()">Load from Text</button>
-      <button onclick="sortAndRender()">Sort Points</button>
-      <button onclick="undo()">Undo (Ctrl+Z)</button>
-      <button onclick="redo()">Redo (Ctrl+Y)</button>
-      <button onclick="resetView()">Reset View</button>
+      <button type="button" onclick="parseInput()">Load from Text</button>
+      <button type="button" onclick="sortAndRender()">Sort Points</button>
+      <button type="button" onclick="undo()">Undo (Ctrl+Z)</button>
+      <button type="button" onclick="redo()">Redo (Ctrl+Y)</button>
+      <button type="button" onclick="resetView()">Reset View</button>
       <label>Left: Move | DblClick: Add/Del | Right: Pan | Wheel: Zoom</label>
     </div>
     <div class="container">
@@ -116,7 +116,7 @@
         maxT = 1.2;
       let minV = -50,
         maxV = 600;
-      let seaLevel = 42;
+      const seaLevel = 42;
       let draggingPoint = null;
       let isPanning = false;
       let lastMouseX = 0;
@@ -151,7 +151,7 @@
         ctx.lineWidth = 1;
         ctx.beginPath();
         // Zero lines
-        let zero = toScreen(0, 0);
+        const zero = toScreen(0, 0);
         ctx.moveTo(0, zero.y);
         ctx.lineTo(canvas.width, zero.y);
         ctx.moveTo(zero.x, 0);
@@ -159,7 +159,7 @@
         ctx.stroke();
 
         // Draw Sea Level
-        let sea = toScreen(0, seaLevel);
+        const sea = toScreen(0, seaLevel);
         ctx.strokeStyle = "rgba(64, 164, 255, 0.8)";
         ctx.lineWidth = 2;
         ctx.beginPath();
@@ -171,8 +171,8 @@
         ctx.strokeStyle = "#888";
         ctx.lineWidth = 2;
         ctx.beginPath();
-        let b1 = toScreen(-1, 0);
-        let b2 = toScreen(1, 0);
+        const b1 = toScreen(-1, 0);
+        const b2 = toScreen(1, 0);
         ctx.moveTo(b1.x, 0);
         ctx.lineTo(b1.x, canvas.height);
         ctx.moveTo(b2.x, 0);
@@ -185,10 +185,10 @@
           ctx.strokeStyle = "#0af";
           ctx.lineWidth = 2;
           ctx.beginPath();
-          let start = toScreen(points[0].t, points[0].v);
+          const start = toScreen(points[0].t, points[0].v);
           ctx.moveTo(start.x, start.y);
           for (let i = 1; i < points.length; i++) {
-            let p = toScreen(points[i].t, points[i].v);
+            const p = toScreen(points[i].t, points[i].v);
             ctx.lineTo(p.x, p.y);
           }
           ctx.stroke();
@@ -196,7 +196,7 @@
 
         // Draw Points
         points.forEach((p) => {
-          let pos = toScreen(p.t, p.v);
+          const pos = toScreen(p.t, p.v);
           ctx.fillStyle = "#fff";
           ctx.beginPath();
           ctx.arc(pos.x, pos.y, 4, 0, Math.PI * 2);
@@ -233,9 +233,9 @@
           // This is a hacky parser for the specific TS format provided
           const rawLines = output.value.split("\n");
           const newPoints = [];
-          for (let line of rawLines) {
-            const tMatch = line.match(/t:\s*(-?[\d\.]+)/);
-            const vMatch = line.match(/v:\s*(-?[\d\.]+)/);
+          for (const line of rawLines) {
+            const tMatch = line.match(/t:\s*(-?[\d.]+)/);
+            const vMatch = line.match(/v:\s*(-?[\d.]+)/);
             if (tMatch && vMatch) {
               newPoints.push({
                 t: parseFloat(tMatch[1]),
@@ -306,8 +306,8 @@
         // Check collision
         let clickedIndex = -1;
         for (let i = 0; i < points.length; i++) {
-          let pos = toScreen(points[i].t, points[i].v);
-          let dist = Math.hypot(pos.x - x, pos.y - y);
+          const pos = toScreen(points[i].t, points[i].v);
+          const dist = Math.hypot(pos.x - x, pos.y - y);
           if (dist < 10) {
             clickedIndex = i;
             break;
@@ -336,8 +336,8 @@
         // Check collision
         let clickedIndex = -1;
         for (let i = 0; i < points.length; i++) {
-          let pos = toScreen(points[i].t, points[i].v);
-          let dist = Math.hypot(pos.x - x, pos.y - y);
+          const pos = toScreen(points[i].t, points[i].v);
+          const dist = Math.hypot(pos.x - x, pos.y - y);
           if (dist < 10) {
             clickedIndex = i;
             break;
@@ -351,8 +351,8 @@
           commitState();
         } else {
           // Add
-          let world = toWorld(x, y);
-          let newP = {
+          const world = toWorld(x, y);
+          const newP = {
             t: Math.max(-1, Math.min(1, world.t)),
             v: Math.round(world.v),
           };
@@ -385,7 +385,7 @@
         }
 
         if (draggingPoint) {
-          let world = toWorld(x, y);
+          const world = toWorld(x, y);
           draggingPoint.t = Math.max(-1, Math.min(1, world.t));
           draggingPoint.v = Math.round(world.v);
           isDirty = true;
