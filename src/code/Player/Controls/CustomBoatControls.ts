@@ -2,7 +2,7 @@ import { Matrix, type Mesh, Vector3 } from "@babylonjs/core";
 import type { Mount } from "@/code/Entities/Mount";
 import type { IControls } from "@/code/Interface/IControls";
 import type { Player } from "../Player";
-import { DebugControlHelper } from "./DebugControlHelper";
+import { handleDebugKey } from "./DebugControlHelper";
 
 export type BoatControlEntity = {
 	mount: Mount;
@@ -85,7 +85,7 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 	public onKeyDown(key: string) {
 		this.pressedKeys.add(key);
 
-		if (DebugControlHelper.handleKey(key)) return;
+		if (handleDebugKey(key)) return;
 
 		this.#updateMovementAxesFromPressedKeys();
 

@@ -1,10 +1,6 @@
 export class MetadataContainer {
 	private entries = new Map<string, unknown>();
 
-	add<T>(type: string, data: T): void {
-		this.entries.set(type, data);
-	}
-
 	set<T>(type: string, data: T): void {
 		this.entries.set(type, data);
 	}

@@ -3,8 +3,8 @@ import { packChunkKey } from "../Storage/ChunkKey";
 import { serializeMeshPair } from "../Storage/MeshSerializer";
 import { OpfsClient } from "../Storage/OpfsClient";
 import { WorldStorage } from "../WorldStorage";
-import { createMeshFromData } from "./ChunckMesher";
 import { addChunkDisposeHook, Chunk } from "./Chunk";
+import { createMeshFromData } from "./ChunkMesher";
 import { ChunkWorker } from "./chunkWorker";
 import { RingBuffer } from "./DataStructures/RingBuffer";
 import {
@@ -87,7 +87,7 @@ function chunkDist(
 }
 
 export class ChunkWorkerPool {
-	private static instance: ChunkWorkerPool;
+	private static instance: ChunkWorkerPool | undefined;
 	private static readonly WORKER_ERROR_COOLDOWN_MS = 120;
 	private static readonly MIN_AUTO_POOL_SIZE = 2;
 	private static readonly MAX_AUTO_POOL_SIZE = 12;
@@ -589,6 +589,26 @@ export class ChunkWorkerPool {
 			this.workerRestartAtMs[workerIndex] = performance.now();
 			this.setWorkerTaskContext(workerIndex, null);
 
+			if (this.lightHeaderBuffer && workerIndex === 0) {
+				replacement.initLightShared(this.lightHeaderBuffer);
+				for (const [, chunk] of Chunk.chunkInstances) {
+					if (chunk.isLoaded) {
+						const snap = chunk.getLightStorageSnapshot();
+						replacement.postLightRegisterChunk({
+							chunkId: chunk.id,
+							chunkX: chunk.chunkX,
+							chunkY: chunk.chunkY,
+							chunkZ: chunk.chunkZ,
+							headerSlot: chunk.lightHeaderSlot,
+							blockSAB: snap.blockSAB,
+							lightSAB: snap.lightSAB,
+							paletteSAB: snap.paletteSAB,
+							blockStorageBytesPerElement: snap.blockStorageBytesPerElement,
+						});
+					}
+				}
+			}
+
 			if (this.distantTerrainSharedInit) {
 				const {
 					positionsBuffer,
@@ -635,12 +655,7 @@ export class ChunkWorkerPool {
 		newPacked: number;
 		seq: number;
 	}): void {
-		// Chunk-affinity: hash the source chunk's numericId-ish id into a
-		// worker.  Chunks with the same id always go to the same worker so
-		// the per-chunk BFS order is preserved.  Cross-chunk writes inside
-		// the BFS are protected by Atomics.compareExchange in LightCore.
-		const worker = this.pickWorkerForChunkId(req.chunkId);
-		worker.postLightMutate(req);
+		this.getLightWorker().postLightMutate(req);
 		this.debugStats.lightDispatches++;
 	}
 
@@ -653,8 +668,7 @@ export class ChunkWorkerPool {
 		level: number;
 		seq: number;
 	}): void {
-		const worker = this.pickWorkerForChunkId(req.chunkId);
-		worker.postLightAddEmission(req);
+		this.getLightWorker().postLightAddEmission(req);
 		this.debugStats.lightDispatches++;
 	}
 
@@ -663,8 +677,7 @@ export class ChunkWorkerPool {
 		headerSlot: number;
 		seq: number;
 	}): void {
-		const worker = this.pickWorkerForChunkId(req.chunkId);
-		worker.postLightSkyReconcile(req);
+		this.getLightWorker().postLightSkyReconcile(req);
 		this.debugStats.lightDispatches++;
 	}
 
@@ -675,8 +688,7 @@ export class ChunkWorkerPool {
 		seedLength: number;
 		seq: number;
 	}): void {
-		const worker = this.pickWorkerForChunkId(req.chunkId);
-		worker.postLightPropagateDeferred(req);
+		this.getLightWorker().postLightPropagateDeferred(req);
 		this.debugStats.lightDispatches++;
 	}
 
@@ -699,24 +711,18 @@ export class ChunkWorkerPool {
 		});
 	}
 
-	private pickWorkerForChunkId(chunkId: bigint): ChunkWorker {
-		// Stable hash of the chunkId into the worker index range.  BigInt
-		// modulo via repeated xor/shift to avoid the BigInt -> Number
-		// rounding for ids above 2^53.
-		const workerCount = this.workers.length;
-		if (workerCount === 0) {
+	private getLightWorker(): ChunkWorker {
+		if (this.workers.length === 0) {
 			throw new Error(
 				"ChunkWorkerPool has no workers; cannot post light task.",
 			);
 		}
-		const h = Number(chunkId & 0xfffn) ^ Number((chunkId >> 16n) & 0xfffn);
-		const idx = ((h % workerCount) + workerCount) % workerCount;
-		return this.workers[idx]!;
+		return this.workers[0]!;
 	}
 
 	private broadcastLightRegister(chunk: Chunk): void {
 		const snap = chunk.getLightStorageSnapshot();
-		const req = {
+		this.getLightWorker().postLightRegisterChunk({
 			chunkId: chunk.id,
 			chunkX: chunk.chunkX,
 			chunkY: chunk.chunkY,
@@ -726,31 +732,23 @@ export class ChunkWorkerPool {
 			lightSAB: snap.lightSAB,
 			paletteSAB: snap.paletteSAB,
 			blockStorageBytesPerElement: snap.blockStorageBytesPerElement,
-		};
-		for (let i = 0; i < this.workers.length; i++) {
-			this.workers[i]!.postLightRegisterChunk(req);
-		}
+		});
 	}
 
 	private broadcastLightUpdateBuffers(chunk: Chunk): void {
 		const snap = chunk.getLightStorageSnapshot();
-		const req = {
+		this.getLightWorker().postLightUpdateBuffers({
 			chunkId: chunk.id,
 			headerSlot: chunk.lightHeaderSlot,
 			blockSAB: snap.blockSAB,
 			paletteSAB: snap.paletteSAB,
 			lightSAB: snap.lightSAB,
 			blockStorageBytesPerElement: snap.blockStorageBytesPerElement,
-		};
-		for (let i = 0; i < this.workers.length; i++) {
-			this.workers[i]!.postLightUpdateBuffers(req);
-		}
+		});
 	}
 
 	private broadcastLightUnregister(chunk: Chunk): void {
-		for (let i = 0; i < this.workers.length; i++) {
-			this.workers[i]!.postLightUnregisterChunk(chunk.id);
-		}
+		this.getLightWorker().postLightUnregisterChunk(chunk.id);
 		this.lightSlotPendingSeq.delete(chunk.lightHeaderSlot);
 	}
 
@@ -806,26 +804,17 @@ export class ChunkWorkerPool {
 			this.scheduleLightDirtyPump();
 		}
 
-		// Now that we've merged all the freshly-arrived dirty slots, walk
-		// through them and schedule remesh on the matching chunks.  The
-		// slot -> chunk map is populated in onLightChunkLoaded and
-		// cleared in onLightChunkDisposed, so the lookup is O(1).
-		for (const slot of slotMap.keys()) {
+		// Walk the merged dirty slots and schedule remesh.  Only delete the
+		// entry when the schedule actually succeeded, so slots for chunks
+		// that are mid-terrain-generation or not yet loaded remain in the
+		// map and will be retried on the next pump (or when a future
+		// LightDirty arrives).
+		for (const [slot] of slotMap) {
 			const chunk = this.lightChunkByHeaderSlot.get(slot);
-			if (chunk && chunk.isLoaded && chunk.isTerrainScheduled === false) {
-				// Only schedule once per coalesced dirty batch; the per-slot
-				// seq map advances beyond any previously-scheduled seq, so
-				// re-scheduling on the same slot twice in quick succession
-				// is safe (the second one is a no-op due to dedupe in
-				// scheduleRemesh).
+			if (chunk && chunk.isLoaded && !chunk.isTerrainScheduled) {
 				this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);
+				slotMap.delete(slot);
 			}
-			// Drop the slot once we've scheduled its remesh — the
-			// remesh drain will pick it up.  A new BFS may dirty it
-			// again before the remesh completes, in which case the
-			// worker will post another LightDirty and we'll re-add the
-			// slot to slotMap.
-			slotMap.delete(slot);
 		}
 	};
 
@@ -867,7 +856,7 @@ export class ChunkWorkerPool {
 			this.workerDispatchCounts.push(0);
 			this._lastHeartbeatSeq.push(0);
 
-			if (this.lightHeaderBuffer) {
+			if (this.lightHeaderBuffer && i === 0) {
 				workerWrapper.initLightShared(this.lightHeaderBuffer);
 			}
 		}
@@ -897,10 +886,7 @@ export class ChunkWorkerPool {
 				this.opfsReady = true;
 			})
 			.catch((err: any) => {
-				console.warn(
-					"[ChunkWorkerPool] OPFS unavailable, mesh cache disabled:",
-					err,
-				);
+				console.warn("[ChunkWorkerPool] OPFS unavailable:", err);
 				this.opfsReady = false;
 			});
 	}
@@ -1087,6 +1073,7 @@ export class ChunkWorkerPool {
 				if ((chunk.lodLevel ?? 0) === lod) {
 					createMeshFromData(chunk, { opaque, transparent });
 					chunk.isDirty = false;
+					chunk.remeshQueued = false;
 					this.queuePostRemeshSave(chunk);
 				} else {
 					chunk.isDirty = true;
@@ -1123,16 +1110,15 @@ export class ChunkWorkerPool {
 
 		this.pendingRemeshSaveTimer = setTimeout(() => {
 			this.pendingRemeshSaveTimer = null;
-			const ids = Array.from(this.pendingRemeshSaveIds);
-			this.pendingRemeshSaveIds.clear();
 
 			const chunksToSave: Chunk[] = [];
-			for (let i = 0; i < ids.length; i++) {
-				const chunk = Chunk.chunkInstances.get(ids[i]);
+			for (const id of this.pendingRemeshSaveIds) {
+				const chunk = Chunk.chunkInstances.get(id);
 				if (chunk && chunk.isLoaded && chunk.needsPersistence()) {
 					chunksToSave.push(chunk);
 				}
 			}
+			this.pendingRemeshSaveIds.clear();
 
 			if (chunksToSave.length > 0) {
 				void WorldStorage.saveChunks(chunksToSave).catch((error) => {
@@ -1164,12 +1150,10 @@ export class ChunkWorkerPool {
 	public static getInstance(poolSize?: number): ChunkWorkerPool {
 		if (!ChunkWorkerPool.instance) {
 			const resolvedPoolSize = ChunkWorkerPool.resolvePoolSize(poolSize);
-			console.log(
-				`ChunkWorkerPool initialized with ${resolvedPoolSize} workers (hw=${navigator.hardwareConcurrency ?? "n/a"})`,
-			);
-			ChunkWorkerPool.instance = new ChunkWorkerPool(resolvedPoolSize);
+			const instance = new ChunkWorkerPool(resolvedPoolSize);
+			ChunkWorkerPool.instance = instance;
 			Chunk.onRequestRemesh = (chunk: Chunk, priority: boolean) => {
-				ChunkWorkerPool.instance.scheduleRemesh(chunk, priority);
+				instance.scheduleRemesh(chunk, priority);
 			};
 		}
 		return ChunkWorkerPool.instance;
@@ -1390,7 +1374,7 @@ export class ChunkWorkerPool {
 							typedPalette = new Uint16Array(shared);
 						}
 
-						chunk.populate(
+						chunk.loadFromStorage(
 							blocks,
 							typedPalette,
 							isUniform,
@@ -1720,7 +1704,11 @@ export class ChunkWorkerPool {
 				if (chunk.hasCachedLODMesh(lod)) continue;
 				const key = packInflightKey(chunk.id, lod);
 				if (this.pendingLodPrecomputeKeys.has(key)) continue;
-				candidates.push({ chunk, lod, score: hDist * 100 + vDist * 10 + lod });
+				candidates.push({
+					chunk,
+					lod,
+					score: hDist * 100 + vDist * 10 + lod,
+				});
 			}
 		}
 
@@ -1887,6 +1875,13 @@ export class ChunkWorkerPool {
 
 			// Per-type pre-dispatch validation.
 			if (taskType === "remesh" && taskChunk) {
+				// Skip disposed chunks — onChunkDisposed clears pendingRemeshMap and
+				// taskQueuePriority but leaves stale entries in taskQueue to avoid
+				// the O(n) splice.  The isLoaded check is the tombstone guard.
+				if (!taskChunk.isLoaded) {
+					this.taskQueuePriority.delete(taskChunk);
+					continue;
+				}
 				if (this.isCompletelyEmptyChunk(taskChunk)) {
 					this.clearChunkMeshIfPresent(taskChunk);
 					this.pendingRemeshMap.delete(taskChunk);
@@ -2062,21 +2057,12 @@ export class ChunkWorkerPool {
 		// Set cleanup.
 		this.terrainTaskQueue.delete(chunk);
 
-		// Array cleanups — splice any matching entry whose index is at or
-		// after the current read pointer. Entries before the read pointer
-		// have already been consumed and cannot remain in the array because
-		// the dequeue loops always advance past them.
-		spliceMatchingFromArray(this.taskQueue, chunk, this.taskQueueReadIdx);
-		spliceMatchingFromArray(
-			this.deferredLightingQueue,
-			chunk,
-			this.deferredLightingQueueReadIdx,
-		);
-		spliceLodPrecomputeMatching(
-			this.lodPrecomputeQueue,
-			chunk,
-			this.lodPrecomputeQueueReadIdx,
-		);
+		// taskQueue, deferredLightingQueue, and lodPrecomputeQueue are intentionally
+		// NOT spliced here.  Splicing is O(n) and causes O(n²) behaviour during
+		// large unload storms.  Instead, stale entries are skipped at dequeue time
+		// in processQueue and processDeferredLightingQueue via isLoaded / seedState
+		// guards.  lodPrecomputeQueue entries are also skipped via the isLoaded guard
+		// in processQueue, so we only clear the tracking set here.
 
 		// pendingLodPrecomputeKeys uses packInflightKey(chunkId, lod).
 		// LOD values are 0–15, so 16 deletes is cheap.
@@ -2092,28 +2078,17 @@ export class ChunkWorkerPool {
 			}
 		}
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Module-level helpers used by onChunkDisposed.
-// ---------------------------------------------------------------------------
-function spliceMatchingFromArray(
-	arr: Chunk[],
-	chunk: Chunk,
-	startIdx: number,
-): void {
-	for (let i = arr.length - 1; i >= startIdx; i--) {
-		if (arr[i] === chunk) arr.splice(i, 1);
-	}
-}
-
-function spliceLodPrecomputeMatching(
-	arr: Array<{ chunk: Chunk; lod: number }>,
-	chunk: Chunk,
-	startIdx: number,
-): void {
-	for (let i = arr.length - 1; i >= startIdx; i--) {
-		if (arr[i]!.chunk === chunk) arr.splice(i, 1);
+	public static async teardownForHmr(): Promise<void> {
+		const instance = ChunkWorkerPool.instance;
+		if (!instance) return;
+		ChunkWorkerPool.instance = undefined;
+		const client = instance.opfsClient;
+		if (!client) return;
+		try {
+			await client.close();
+		} catch {
+			// terminate() was already called inside close()
+		}
 	}
 }
 
@@ -2124,3 +2099,6 @@ function spliceLodPrecomputeMatching(
 addChunkDisposeHook((chunk) => {
 	ChunkWorkerPool.getInstance().onChunkDisposed(chunk);
 });
+if (import.meta.hot) {
+	import.meta.hot.dispose(() => ChunkWorkerPool.teardownForHmr());
+}

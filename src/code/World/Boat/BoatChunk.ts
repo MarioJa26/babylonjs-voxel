@@ -81,7 +81,8 @@ export class BoatChunk {
 		// Collect all emission / explicit light sources so we can dispatch a
 		// single batched LightAddEmission message per block instead of
 		// running an inline BFS per cell.
-		const emissions: Array<{ x: number; y: number; z: number; level: number }> = [];
+		const emissions: Array<{ x: number; y: number; z: number; level: number }> =
+			[];
 		const pool = Chunk._lightPool;
 
 		for (const block of blocks) {
@@ -205,7 +206,14 @@ export class BoatChunk {
 
 	private populateNeighborChunks(): void {
 		for (const neighbor of this.#neighborChunks) {
-			neighbor.populate(null, null, true, 0, this.createSkyLightArray(), false);
+			neighbor.loadFromStorage(
+				null,
+				null,
+				true,
+				0,
+				this.createSkyLightArray(),
+				false,
+			);
 			neighbor.isModified = false;
 		}
 	}
@@ -233,7 +241,14 @@ export class BoatChunk {
 		}
 
 		// Start dark; skylight/block light are initialized in initializeCenterChunkLighting().
-		this.#centerChunk.populate(blockArray, null, false, 0, lightArray, false);
+		this.#centerChunk.loadFromStorage(
+			blockArray,
+			null,
+			false,
+			0,
+			lightArray,
+			false,
+		);
 	}
 
 	private isAliveMesh(mesh: Mesh | null): mesh is Mesh {

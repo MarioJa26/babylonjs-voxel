@@ -46,9 +46,7 @@ function initFacePairTable(): void {
 		for (let j = 0; j < 6; j++) {
 			const min = Math.min(i, j);
 			const max = Math.max(i, j);
-			FACE_PAIR_FLAT[i * 6 + j] = (Chunk as any).facePairIndex
-				? (Chunk as any).facePairIndex(min, max)
-				: 0;
+			FACE_PAIR_FLAT[i * 6 + j] = Chunk.facePairIndex(min, max);
 		}
 	}
 	_facePairTableInitialized = true;
@@ -460,8 +458,7 @@ export class OcclusionCuller {
 		)
 			return;
 
-		if (newChunk.connectivityDirty)
-			(newChunk as any).computeFaceConnectivity?.();
+		if (newChunk.connectivityDirty) newChunk.computeFaceConnectivity();
 
 		let qHead = 0;
 		let qTail = 0;
@@ -575,7 +572,7 @@ export class OcclusionCuller {
 					if (newSteps >= nbr._fSteps[nextEntry]) continue;
 				}
 
-				if (nbr.connectivityDirty) (nbr as any).computeFaceConnectivity?.();
+				if (nbr.connectivityDirty) nbr.computeFaceConnectivity();
 
 				nbr.bfsVisitedFaces |= faceBit;
 				nbr._fSteps[nextEntry] = newSteps;
@@ -618,7 +615,7 @@ export class OcclusionCuller {
 		const dirtyLen = dirty.length;
 		for (let i = 0; i < dirtyLen; i++) {
 			const c = dirty[i]!;
-			if (c.connectivityDirty) (c as any).computeFaceConnectivity?.();
+			if (c.connectivityDirty) c.computeFaceConnectivity();
 			c.bfsQueuedForConnectivity = false;
 		}
 		dirty.length = 0;
@@ -628,8 +625,7 @@ export class OcclusionCuller {
 		const originChunk: Chunk | null = getChunk(camCX, camCY, camCZ) ?? null;
 
 		if (originChunk) {
-			if (originChunk.connectivityDirty)
-				(originChunk as any).computeFaceConnectivity?.();
+			if (originChunk.connectivityDirty) originChunk.computeFaceConnectivity();
 			resetChunkBfs(originChunk, queryId);
 			originChunk.bfsVisitedFaces = 1 << 7; // origin marker
 			this._topoVisibleChunks.push(originChunk);

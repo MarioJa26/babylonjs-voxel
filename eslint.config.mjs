@@ -1,6 +1,5 @@
 import js from "@eslint/js";
 import { defineConfig } from "eslint/config";
-import vuePlugin from "eslint-plugin-vue";
 import tsEslint from "typescript-eslint";
 
 export default defineConfig([
@@ -19,17 +18,15 @@ export default defineConfig([
 	// 2. Base configs
 	js.configs.recommended,
 	...tsEslint.configs.recommended,
-	...vuePlugin.configs["flat/essential"],
 
-	// 3. TS / Vue files
+	// 3. TS files
 	{
-		files: ["**/*.ts", "**/*.tsx", "**/*.vue"],
+		files: ["**/*.ts", "**/*.tsx"],
 		languageOptions: {
 			parserOptions: {
 				parser: tsEslint.parser,
 				ecmaVersion: "latest",
 				sourceType: "module",
-				extraFileExtensions: [".vue"],
 			},
 		},
 		rules: {

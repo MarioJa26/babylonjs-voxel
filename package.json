@@ -4,13 +4,13 @@
 	"type": "module",
 	"private": true,
 	"scripts": {
-		"dev": "\"F:\\NodeJs\\node.exe\" ./node_modules/vite/bin/vite.js",
-		"build": "\"F:\\NodeJs\\node.exe\" ./node_modules/vite/bin/vite.js build",
-		"preview": "\"F:\\NodeJs\\node.exe\" ./node_modules/vite/bin/vite.js preview",
+		"dev": "node ./node_modules/vite/bin/vite.js",
+		"build": "node ./node_modules/vite/bin/vite.js build",
+		"preview": "node ./node_modules/vite/bin/vite.js preview",
 		"lint": "eslint .",
 		"ts7:version": "tsgo --version",
 		"typecheck:ts7": "tsgo --noEmit",
-		"build:test-ts7": "tsgo --noEmit && \"F:\\NodeJs\\node.exe\" ./node_modules/vite/bin/vite.js build"
+		"build:test-ts7": "tsgo --noEmit && node ./node_modules/vite/bin/vite.js build"
 	},
 	"dependencies": {
 		"@babylonjs/addons": "^9.3.1",
@@ -22,18 +22,14 @@
 		"@colyseus/sdk": "^0.17.41",
 		"@typescript/native-preview": "^7.0.0-dev.20260421.2",
 		"alea": "^1.0.1",
-		"idb": "^8.0.3",
-		"vue": "^3.5.32"
+		"idb": "^8.0.3"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.4.12",
 		"@types/node": "^25.6.0",
 		"@typescript-eslint/eslint-plugin": "^8.58.2",
 		"@typescript-eslint/parser": "^8.58.2",
-		"@vitejs/plugin-vue": "^6.0.6",
-		"@vue/eslint-config-typescript": "^14.7.0",
 		"eslint": "^10.2.1",
-		"eslint-plugin-vue": "^10.8.0",
 		"typescript": "^6.0.3",
 		"typescript-eslint": "^8.58.2",
 		"vite": "^8.0.9",

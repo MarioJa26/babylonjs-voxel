@@ -14,7 +14,8 @@ export class PauseMenu {
 	private mainButtonsContainer: HTMLElement;
 	private settingsContainer: HTMLElement;
 	private onResume: () => void;
-	private player: Player; // Store the player instance
+	private player: Player;
+	private ssaoPipeline: SSAO2RenderingPipeline | null = null;
 
 	constructor(onResume: () => void, player: Player) {
 		this.onResume = onResume;
@@ -303,8 +304,12 @@ export class PauseMenu {
 		const scene = this.player.playerCamera.playerCamera.getScene();
 		const camera = this.player.playerCamera.playerCamera;
 
+		if (this.ssaoPipeline) {
+			this.ssaoPipeline.dispose();
+			this.ssaoPipeline = null;
+		}
+
 		if (enabled) {
-			// Create new SSAO pipeline
 			const ssao = new SSAO2RenderingPipeline(
 				"ssao",
 				scene,
@@ -314,6 +319,7 @@ export class PauseMenu {
 			ssao.radius = 2;
 			ssao.totalStrength = 1.3;
 			ssao.expensiveBlur = true;
+			this.ssaoPipeline = ssao;
 		}
 	}
 

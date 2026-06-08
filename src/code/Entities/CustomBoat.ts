@@ -28,7 +28,7 @@ import {
 } from "../World/Chunk/ChunkLoadingSystem";
 import { VoxelObbCollider } from "../World/Collision/VoxelObbCollider";
 import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
-import { MetadataContainer } from "./MetaDataContainer";
+import { MetadataContainer } from "./MetadataContainer";
 import { Mount } from "./Mount";
 
 export type CustomBoatOptions = {
@@ -324,10 +324,10 @@ export class CustomBoat implements IUsable {
 
 		// 3) Metadata
 		this.#boat.metadata = new MetadataContainer();
-		this.#boat.metadata.add("use", (p: Player) => this.use(p));
+		this.#boat.metadata.set("use", (p: Player) => this.use(p));
 
 		if (this.#boatChunk) {
-			this.#boat.metadata.add("boatChunk", this.#boatChunk);
+			this.#boat.metadata.set("boatChunk", this.#boatChunk);
 		}
 
 		// 4) Visuals

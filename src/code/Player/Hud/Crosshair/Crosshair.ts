@@ -4,7 +4,7 @@ import {
 	type Scene,
 	Vector3,
 } from "@babylonjs/core";
-import { MetadataContainer } from "@/code/Entities/MetaDataContainer";
+import { MetadataContainer } from "@/code/Entities/MetadataContainer";
 import { type Player, REACH_DISTANCE } from "../../Player";
 import { BlockHighlight } from "../BlockHighlight/BlockHighlight";
 import type { BlockRaycastHit } from "../BlockHighlight/BlockRaycaster";
@@ -18,7 +18,7 @@ import {
 } from "../BlockHighlight/BlockRaycaster";
 import { CrosshairUI } from "./CrosshairUI";
 
-export class CrossHair {
+export class Crosshair {
 	readonly #ui: CrosshairUI;
 	readonly #highlight: BlockHighlight;
 	readonly #player: Player;
@@ -109,7 +109,7 @@ export class CrossHair {
 		player: Player,
 		maxDistance = REACH_DISTANCE,
 	): AbstractMesh | null {
-		return CrossHair.#rayMarchFirstMesh(player, maxDistance, (mesh) => {
+		return Crosshair.#rayMarchFirstMesh(player, maxDistance, (mesh) => {
 			const meta = mesh.metadata;
 			return meta instanceof MetadataContainer && meta.has("use");
 		});

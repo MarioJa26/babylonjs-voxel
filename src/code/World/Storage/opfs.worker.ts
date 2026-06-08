@@ -84,35 +84,43 @@ async function getRegionFile(
 	rz: number,
 ): Promise<RegionFile> {
 	const key = regionKey(rx, ry, rz);
+
 	const cached = regionFiles.get(key);
 	if (cached) return cached;
 
 	const inflight = regionOpenInflight.get(key);
 	if (inflight) return inflight;
 
-	const promise = (async () => {
-		try {
-			const dir = await ensureRegionsDir();
-			const fileName = `r.${rx}.${ry}.${rz}.bin`;
-			const fileHandle = await dir.getFileHandle(fileName, { create: true });
-			const accessHandle = await fileHandle.createSyncAccessHandle();
-			try {
-				const rf = await RegionFile.open(accessHandle, rx, ry, rz);
-				regionFiles.set(key, rf);
-				return rf;
-			} catch (openErr) {
-				// Close the access handle so a subsequent getRegionFile call
-				// for the same file can create a new one.
-				accessHandle.close();
-				throw openErr;
-			}
-		} finally {
-			regionOpenInflight.delete(key);
-		}
-	})();
+	// Set BEFORE the async work starts so subsequent calls see it immediately.
+	let resolveInflight!: (rf: RegionFile) => void;
+	let rejectInflight!: (err: unknown) => void;
+	const inflightPromise = new Promise<RegionFile>((res, rej) => {
+		resolveInflight = res;
+		rejectInflight = rej;
+	});
+	regionOpenInflight.set(key, inflightPromise);
 
-	regionOpenInflight.set(key, promise);
-	return promise;
+	try {
+		const dir = await ensureRegionsDir();
+		const fileName = `r.${rx}.${ry}.${rz}.bin`;
+		const fileHandle = await dir.getFileHandle(fileName, { create: true });
+		const accessHandle = await fileHandle.createSyncAccessHandle();
+		let rf: RegionFile;
+		try {
+			rf = await RegionFile.open(accessHandle, rx, ry, rz);
+		} catch (openErr) {
+			accessHandle.close();
+			throw openErr;
+		}
+		regionFiles.set(key, rf);
+		resolveInflight(rf);
+		return rf;
+	} catch (err) {
+		rejectInflight(err);
+		throw err;
+	} finally {
+		regionOpenInflight.delete(key);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -177,10 +185,10 @@ self.addEventListener("message", (event: MessageEvent) => {
 	const id = data.id ?? 0;
 
 	const postResult = (result: any): void => {
-		(self as any).postMessage({ id, result });
+		(self as DedicatedWorkerGlobalScope).postMessage({ id, result });
 	};
 	const postError = (message: string): void => {
-		(self as any).postMessage({ id, error: message });
+		(self as DedicatedWorkerGlobalScope).postMessage({ id, error: message });
 	};
 
 	void _enqueueOp(async () => {
@@ -188,7 +196,7 @@ self.addEventListener("message", (event: MessageEvent) => {
 			// ---- Ping (readiness probe) ----
 			case OpfsMsg.Ping: {
 				postResult("pong");
-				(self as any).postMessage({ type: "ready" });
+				(self as DedicatedWorkerGlobalScope).postMessage({ type: "ready" });
 				break;
 			}
 

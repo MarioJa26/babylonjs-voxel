@@ -10,11 +10,10 @@ import { GenerationParams } from "./Generation/NoiseAndParameters/GenerationPara
 import { Map1 } from "./Maps/Map1";
 import { Player } from "./Player/Player";
 import { PlayerCamera } from "./Player/PlayerCamera";
-import { updateGlobalUniforms } from "./World/Chunk/ChunckMesher";
+import { updateGlobalUniforms } from "./World/Chunk/ChunkMesher";
 
 export class TestScene {
 	document: Document;
-	//connection: MyConnection;
 	scene?: Scene;
 	engine: Engine;
 	public readonly initPromise: Promise<void>;
@@ -27,8 +26,6 @@ export class TestScene {
 	) {
 		this.document = document;
 		this.engine = new Engine(this.canvas);
-		//this.connection = new MyConnection();
-
 		this.#onKeyDown = async (ev) => {
 			// Ctrl+F
 			if (ev.ctrlKey && ev.key.toLowerCase() === "f") {
@@ -59,7 +56,6 @@ export class TestScene {
 
 	async init() {
 		this.scene = await this.createScene();
-		//if (GLOBAL_VALUES.INIT_CONNECTION) await this.connection.connect();
 	}
 
 	// Playground scene creation

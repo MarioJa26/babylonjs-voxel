@@ -249,39 +249,110 @@ function getChunkCacheIdx(worldX: number, worldZ: number): number {
 // several times per chunk. Caching is behaviour-preserving: the function
 // still returns the same deterministic value for any (x, z) pair.
 //
-// Implementation: a Map<bigint, number> with simple FIFO eviction. BigInt
-// keys avoid string-alloc cost vs. "x,z" string keys and pack tightly.
+// Implementation: direct-mapped typed-array cache with Int32 key storage.
+// Replaces the previous Map<bigint, number> to eliminate BigInt allocation
+// on every cache probe — BigInt(x) triggers a heap allocation in V8 even
+// when the value is already a small integer (no SMI fast-path for bigint).
+// A direct-mapped open-addressing scheme gives O(1) probe with zero GC
+// pressure; collision rate is negligible for the spatially-coherent access
+// pattern of chunk generation.
 // ---------------------------------------------------------------------------
-const _finalHeightCache = new Map<bigint, number>();
-const MAX_FINAL_HEIGHT_CACHE = 131072; // 128K entries (~2 MB of map slots)
-const _FHC_MASK = 0xffffffffn;
-
-function finalHeightCacheKey(x: number, z: number): bigint {
-	return (BigInt(x) << 32n) | (BigInt(z) & _FHC_MASK);
-}
+const MAX_FINAL_HEIGHT_CACHE = 131072; // power-of-two, ~2 MB of typed arrays
+const _FHC_MASK = MAX_FINAL_HEIGHT_CACHE - 1;
+const _fhcKeyX = new Int32Array(MAX_FINAL_HEIGHT_CACHE);
+const _fhcKeyZ = new Int32Array(MAX_FINAL_HEIGHT_CACHE);
+const _fhcValue = new Int32Array(MAX_FINAL_HEIGHT_CACHE); // floor() → always integer
+const _fhcValid = new Uint8Array(MAX_FINAL_HEIGHT_CACHE);
 
 export function getFinalTerrainHeight(x: number, z: number): number {
-	const key = finalHeightCacheKey(x, z);
-	const cached = _finalHeightCache.get(key);
-	if (cached !== undefined) return cached;
+	// Hash: multiply-xor keeps distribution flat for axis-aligned grid access.
+	const slot = (((x * 1619) ^ (z * 31337)) & _FHC_MASK) >>> 0;
+
+	if (_fhcValid[slot] && _fhcKeyX[slot] === x && _fhcKeyZ[slot] === z) {
+		return _fhcValue[slot];
+	}
+
+	// Inline getBlendedBiomeTerrainSettings to avoid shared-scratch Float32Array
+	// indirection and extra function-call overhead on this already-hot path.
+	const gx = Math.floor(x * INV_BIOME_TERRAIN_GRID);
+	const gz = Math.floor(z * INV_BIOME_TERRAIN_GRID);
+	const x0 = gx * BIOME_TERRAIN_GRID;
+	const z0 = gz * BIOME_TERRAIN_GRID;
+
+	let tx = (x - x0) * INV_BIOME_TERRAIN_GRID;
+	tx = tx < 0 ? 0 : tx > 1 ? 1 : tx;
+	tx = tx * tx * tx * (tx * (tx * 6 - 15) + 10);
+	let tz = (z - z0) * INV_BIOME_TERRAIN_GRID;
+	tz = tz < 0 ? 0 : tz > 1 ? 1 : tz;
+	tz = tz * tz * tz * (tz * (tz * 6 - 15) + 10);
+
+	fillCorner(gx, gz, x0, z0, _s00);
+	fillCorner(gx + 1, gz, x0 + BIOME_TERRAIN_GRID, z0, _s10);
+	fillCorner(gx, gz + 1, x0, z0 + BIOME_TERRAIN_GRID, _s01);
+	fillCorner(
+		gx + 1,
+		gz + 1,
+		x0 + BIOME_TERRAIN_GRID,
+		z0 + BIOME_TERRAIN_GRID,
+		_s11,
+	);
+
+	const itx = 1 - tx;
+	const itz = 1 - tz;
+
+	// Read all 6 blended settings as locals — keeps them in registers.
+	const sBase =
+		(_s00[0] * itx + _s10[0] * tx) * itz + (_s01[0] * itx + _s11[0] * tx) * tz;
+	const sAmp =
+		(_s00[1] * itx + _s10[1] * tx) * itz + (_s01[1] * itx + _s11[1] * tx) * tz;
+	const sScale =
+		(_s00[2] * itx + _s10[2] * tx) * itz + (_s01[2] * itx + _s11[2] * tx) * tz;
+	const sExp =
+		(_s00[3] * itx + _s10[3] * tx) * itz + (_s01[3] * itx + _s11[3] * tx) * tz;
+	const sPvScale =
+		(_s00[4] * itx + _s10[4] * tx) * itz + (_s01[4] * itx + _s11[4] * tx) * tz;
+	const sErosScale =
+		(_s00[5] * itx + _s10[5] * tx) * itz + (_s01[5] * itx + _s11[5] * tx) * tz;
+
+	// computeHeightNoiseOnly — inline to avoid re-reading settings via Float32Array index.
+	const rawNoise = heightNoise(x * sScale, z * sScale);
+	let n01 = (rawNoise + 1) * 0.5;
+	if (n01 < 0) n01 = 0;
+	else if (n01 > 1) n01 = 1;
+	let shaped: number;
+	if (sExp === 1) {
+		shaped = n01;
+	} else if (sExp === 2) {
+		shaped = n01 * n01;
+	} else if (sExp === 0.5) {
+		shaped = Math.sqrt(n01);
+	} else {
+		shaped = n01 === 0 ? 0 : Math.exp(sExp * Math.log(n01));
+	}
+	const noiseHeight = shaped * sAmp;
 
 	const riverAbs = Math.abs(riverGenerator.getRiverNoise(x, z));
-	const settings = getBlendedBiomeTerrainSettings(x, z);
+
+	// computeDetail — inline.
+	const erosion = erosionNoise(x, z);
+	const pv = peaksAndValleysNoise(x, z);
+	const riverFactor = riverAbs < 0.1 ? riverAbs * 10 : 1;
+	const roughness = erosionSpline.getValue(erosion) * riverFactor * sErosScale;
+	const detail =
+		peaksAndValleysSpline.getValue(pv) * roughness * sPvScale +
+		riverGenerator.getRiverDepth(riverAbs);
 
 	const rawContinent = continentalnessNoise(x, z);
 	const continent = applyRidged(rawContinent);
 	const splineBaseHeight =
 		GenerationParams.SEA_LEVEL + continentalnessSpline.getValue(continent);
 
-	const noiseHeight = computeHeightNoiseOnly(x, z, settings);
-	const detail = computeDetail(x, z, riverAbs, settings);
-	const result = Math.floor(splineBaseHeight + noiseHeight + detail);
+	const result = Math.floor(splineBaseHeight + sBase + noiseHeight + detail);
 
-	if (_finalHeightCache.size >= MAX_FINAL_HEIGHT_CACHE) {
-		const oldest = _finalHeightCache.keys().next().value;
-		if (oldest !== undefined) _finalHeightCache.delete(oldest);
-	}
-	_finalHeightCache.set(key, result);
+	_fhcKeyX[slot] = x;
+	_fhcKeyZ[slot] = z;
+	_fhcValue[slot] = result;
+	_fhcValid[slot] = 1;
 	return result;
 }
 
@@ -298,27 +369,6 @@ export function getCachedRiverNoise(x: number, z: number): number {
 // Alias kept for call-site compatibility.
 export function getOctaveNoise(x: number, z: number): number {
 	return getFinalTerrainHeight(x, z);
-}
-
-// ---------------------------------------------------------------------------
-// Detail (per-column)
-// ---------------------------------------------------------------------------
-
-function computeDetail(
-	x: number,
-	z: number,
-	riverAbs: number,
-	s: Float32Array,
-): number {
-	const erosion = erosionNoise(x, z);
-	const pv = peaksAndValleysNoise(x, z);
-
-	const riverFactor = riverAbs < 0.1 ? riverAbs * 10 : 1;
-	const roughness = erosionSpline.getValue(erosion) * riverFactor * s[5];
-	const detail = peaksAndValleysSpline.getValue(pv) * roughness * s[4];
-	const riverDepth = riverGenerator.getRiverDepth(riverAbs);
-
-	return detail + riverDepth;
 }
 
 // ---------------------------------------------------------------------------
@@ -361,52 +411,6 @@ const _s00 = new Float32Array(SETTINGS_STRIDE);
 const _s10 = new Float32Array(SETTINGS_STRIDE);
 const _s01 = new Float32Array(SETTINGS_STRIDE);
 const _s11 = new Float32Array(SETTINGS_STRIDE);
-const _out = new Float32Array(SETTINGS_STRIDE);
-
-function getBlendedBiomeTerrainSettings(x: number, z: number): Float32Array {
-	// Grid cell indices — integer division by BIOME_TERRAIN_GRID.
-	const gx = Math.floor(x * INV_BIOME_TERRAIN_GRID);
-	const gz = Math.floor(z * INV_BIOME_TERRAIN_GRID);
-
-	const x0 = gx * BIOME_TERRAIN_GRID;
-	const z0 = gz * BIOME_TERRAIN_GRID;
-	const x1 = x0 + BIOME_TERRAIN_GRID;
-	const z1 = z0 + BIOME_TERRAIN_GRID;
-
-	// Smoothstep weights — computed once, reused for all 4 fields.
-	let tx = (x - x0) * INV_BIOME_TERRAIN_GRID;
-	tx = tx < 0 ? 0 : tx > 1 ? 1 : tx;
-	tx = tx * tx * tx * (tx * (tx * 6 - 15) + 10);
-
-	let tz = (z - z0) * INV_BIOME_TERRAIN_GRID;
-	tz = tz < 0 ? 0 : tz > 1 ? 1 : tz;
-	tz = tz * tz * tz * (tz * (tz * 6 - 15) + 10);
-
-	fillCorner(gx, gz, x0, z0, _s00);
-	fillCorner(gx + 1, gz, x1, z0, _s10);
-	fillCorner(gx, gz + 1, x0, z1, _s01);
-	fillCorner(gx + 1, gz + 1, x1, z1, _s11);
-
-	// Bilinear interpolation — fused into 4 scalar ops, no loop overhead.
-	// V8 can keep all of these in registers when inlined by the JIT.
-	const itx = 1 - tx;
-	const itz = 1 - tz;
-
-	_out[0] =
-		(_s00[0] * itx + _s10[0] * tx) * itz + (_s01[0] * itx + _s11[0] * tx) * tz;
-	_out[1] =
-		(_s00[1] * itx + _s10[1] * tx) * itz + (_s01[1] * itx + _s11[1] * tx) * tz;
-	_out[2] =
-		(_s00[2] * itx + _s10[2] * tx) * itz + (_s01[2] * itx + _s11[2] * tx) * tz;
-	_out[3] =
-		(_s00[3] * itx + _s10[3] * tx) * itz + (_s01[3] * itx + _s11[3] * tx) * tz;
-	_out[4] =
-		(_s00[4] * itx + _s10[4] * tx) * itz + (_s01[4] * itx + _s11[4] * tx) * tz;
-	_out[5] =
-		(_s00[5] * itx + _s10[5] * tx) * itz + (_s01[5] * itx + _s11[5] * tx) * tz;
-
-	return _out;
-}
 
 function fillCorner(
 	gx: number,
@@ -537,11 +541,11 @@ export function prefetchChunkCorners(
 		const rowOff = (gz - gz0) * width;
 		for (let gx = gx0; gx <= gx1; gx++) {
 			const bufIdx = rowOff + (gx - gx0);
-			const rawContinent = _prefetchContinentBuf[bufIdx]!;
+			const rawContinent = _prefetchContinentBuf[bufIdx];
 			const continent = applyRidged(rawContinent);
-			const temperature = (_prefetchTempBuf[bufIdx]! + 1) * 0.5;
-			const humidity = (_prefetchHumidBuf[bufIdx]! + 1) * 0.5;
-			const riverAbs = Math.abs(_prefetchRiverBuf[bufIdx]!);
+			const temperature = (_prefetchTempBuf[bufIdx] + 1) * 0.5;
+			const humidity = (_prefetchHumidBuf[bufIdx] + 1) * 0.5;
+			const riverAbs = Math.abs(_prefetchRiverBuf[bufIdx]);
 			const baseHeight =
 				GenerationParams.SEA_LEVEL + continentalnessSpline.getValue(continent);
 			const effectiveRiver = continent > 0.07 ? 1.0 : riverAbs;
@@ -566,72 +570,4 @@ export function prefetchChunkCorners(
 			cornerValid[slot] = 1;
 		}
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Height from blended settings
-// ---------------------------------------------------------------------------
-//
-// Exponent shaping: `n01 ** exp` calls Math.pow internally, which is slow for
-// non-integer exponents (a full exp/log round-trip in libm). We special-case
-// the most common values to avoid it:
-//
-//   exp === 1  → identity (most biomes)
-//   exp === 2  → single multiply
-//   exp === 0.5 → Math.sqrt (hardware-accelerated on all V8 targets)
-//   otherwise  → Math.exp(exp * Math.log(n01))
-//              — equivalent to Math.pow but avoids the polymorphic dispatch
-//                overhead of the ** operator in V8 (TurboFan does not always
-//                reduce ** for non-literal exponents).
-
-function computeHeightNoiseOnly(x: number, z: number, s: Float32Array): number {
-	const noise = heightNoise(x * s[2], z * s[2]);
-
-	let n01 = (noise + 1) * 0.5;
-	if (n01 < 0) n01 = 0;
-	else if (n01 > 1) n01 = 1;
-
-	const exp = s[3];
-	let shaped: number;
-	if (exp === 1) {
-		shaped = n01;
-	} else if (exp === 2) {
-		shaped = n01 * n01;
-	} else if (exp === 0.5) {
-		shaped = Math.sqrt(n01);
-	} else {
-		shaped = n01 === 0 ? 0 : Math.exp(exp * Math.log(n01));
-	}
-
-	return shaped * s[1];
-}
-
-function computeHeightFromSettings(
-	x: number,
-	z: number,
-	s: Float32Array,
-): number {
-	const noise = heightNoise(x * s[2], z * s[2]);
-
-	// Remap [-1,1] → [0,1], clamped.
-	let n01 = (noise + 1) * 0.5;
-	if (n01 < 0) n01 = 0;
-	else if (n01 > 1) n01 = 1;
-
-	const exp = s[3];
-	let shaped: number;
-	if (exp === 1) {
-		shaped = n01;
-	} else if (exp === 2) {
-		shaped = n01 * n01;
-	} else if (exp === 0.5) {
-		shaped = Math.sqrt(n01);
-	} else {
-		// Math.exp(exp * Math.log(n01)) is equivalent to n01 ** exp but avoids
-		// V8's slow polymorphic ** path when exp is a runtime float.
-		// Guard against n01 === 0 to avoid log(0) = -Infinity.
-		shaped = n01 === 0 ? 0 : Math.exp(exp * Math.log(n01));
-	}
-
-	return s[0] + shaped * s[1];
 }

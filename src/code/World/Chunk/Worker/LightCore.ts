@@ -10,10 +10,9 @@
 // Designed to run inside a Web Worker but with no BabylonJS or other
 // browser-only deps so it can also be unit-tested on Node.
 //
-// Cross-worker safety: light_array writes use Atomics.compareExchange so
-// multiple workers can run overlapping BFS tasks against the same chunk
-// without corrupting each other's data.  block_array is written only by
-// the main thread so reads from workers don't need to be atomic.
+// Light tasks are routed to a single designated worker (worker index 0),
+// so there is never cross-worker contention on light_array writes.
+// Direct array reads/writes are used instead of Atomics.
 // ---------------------------------------------------------------------------
 
 import { unpackBlockId } from "../DataStructures/BlockEncoding";
@@ -103,6 +102,7 @@ const WATER_BLOCK_ID = 30;
 const GLASS_01_BLOCK_ID = 60;
 const GLASS_02_BLOCK_ID = 61;
 
+//TODO
 const LIGHT_EMISSION: Record<number, number> = {
 	10: 15,
 	11: 15,
@@ -135,6 +135,8 @@ const QUICK_CLOSED_MASK: Record<number, number> = {
 	[WATER_BLOCK_ID]: 0,
 	[GLASS_01_BLOCK_ID]: 0,
 	[GLASS_02_BLOCK_ID]: 0,
+	64: 0, // GrassCross
+	66: 0, // SavannahGrassCross
 };
 
 /**
@@ -288,6 +290,48 @@ export function unregisterChunk(
 	registry.views.delete(chunkId);
 }
 
+/**
+ * If the cell at (x, y, z) in `view` touches a chunk border, look up the
+ * adjacent chunk across that border and add its header slot to dirtySlots.
+ * This ensures the neighbour's mesh is rebuilt with the updated lighting
+ * at the shared face.
+ */
+function addAdjacentBorderSlots(
+	registry: ChunkViewRegistry,
+	dirtySlots: Set<number>,
+	view: ChunkView,
+	x: number,
+	y: number,
+	z: number,
+): void {
+	const size = LIGHT_CHUNK_SIZE;
+	if (x === 0) _tryAddNeighbour(registry, dirtySlots, view, -1, 0, 0);
+	else if (x === size - 1)
+		_tryAddNeighbour(registry, dirtySlots, view, 1, 0, 0);
+	if (y === 0) _tryAddNeighbour(registry, dirtySlots, view, 0, -1, 0);
+	else if (y === size - 1)
+		_tryAddNeighbour(registry, dirtySlots, view, 0, 1, 0);
+	if (z === 0) _tryAddNeighbour(registry, dirtySlots, view, 0, 0, -1);
+	else if (z === size - 1)
+		_tryAddNeighbour(registry, dirtySlots, view, 0, 0, 1);
+}
+
+function _tryAddNeighbour(
+	registry: ChunkViewRegistry,
+	dirtySlots: Set<number>,
+	view: ChunkView,
+	dx: number,
+	dy: number,
+	dz: number,
+): void {
+	const next = registry.views.get(
+		packCoords(view.chunkX + dx, view.chunkY + dy, view.chunkZ + dz),
+	);
+	if (next) {
+		dirtySlots.add(next.headerSlot);
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Per-view helpers — re-read the header row at the start of every BFS so
 // layout changes that happened mid-task (e.g. Uint8 → Uint16 promotion)
@@ -324,7 +368,7 @@ function getSkyLight(view: ChunkView, idx: number): number {
 type WriteResult = "wrote" | "skipped" | "aborted";
 
 /**
- * Atomically update a light byte if `next` strictly improves it.
+ * Update a light byte if `next` strictly improves it.
  * `mask` is the bits of the other channel to preserve.
  * `shift` is the bit position of the channel we're writing.
  * Returns "wrote" on success, "skipped" if no improvement needed, or
@@ -344,28 +388,22 @@ function casLightByte(
 		? LIGHT_BLOCK_MASK << LIGHT_SKY_SHIFT
 		: LIGHT_BLOCK_MASK;
 
-	while (true) {
-		const cur = Atomics.load(light, idx);
-		const curLevel = (cur & currentMask) >> shift;
-		if (curLevel >= nextLevel) return "skipped";
-		const newByte = (cur & mask) | (nextLevel << shift);
-		const prev = Atomics.compareExchange(light, idx, cur, newByte);
-		if (prev === cur) return "wrote";
-		// Lost the race — re-read and retry.
-	}
+	const cur = light[idx];
+	const curLevel = (cur & currentMask) >> shift;
+	if (curLevel >= nextLevel) return "skipped";
+	light[idx] = (cur & mask) | (nextLevel << shift);
+	return "wrote";
 }
 
 function clearLightByte(view: ChunkView, idx: number, isSky: boolean): boolean {
 	if (!view.isLoaded) return false;
 	const light = view.light_array;
 	const mask = isSky ? LIGHT_BLOCK_MASK : LIGHT_BLOCK_MASK << LIGHT_SKY_SHIFT;
-	while (true) {
-		const cur = Atomics.load(light, idx);
-		const newByte = cur & mask;
-		if (newByte === cur) return false;
-		const prev = Atomics.compareExchange(light, idx, cur, newByte);
-		if (prev === cur) return true;
-	}
+	const cur = light[idx];
+	const newByte = cur & mask;
+	if (newByte === cur) return false;
+	light[idx] = newByte;
+	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -392,8 +430,9 @@ function processQueue(
 		const z = (coord >> 10) & 0x1f;
 
 		const view = registry.views.get(chunkId);
-		if (!view || !view.isLoaded) continue;
+		if (!view) continue;
 		refreshLayout(registry, view);
+		if (!view.isLoaded) continue;
 
 		const lightArr = view.light_array;
 		if (lightArr.length === 0) continue;
@@ -462,9 +501,8 @@ function processQueue(
 				targetView = next;
 				tz = tz < 0 ? size - 1 : 0;
 			}
-			if (!targetView.isLoaded) continue;
-
 			refreshLayout(registry, targetView);
+			if (!targetView.isLoaded) continue;
 
 			if (isSkyLight && isDown !== 1 && filtersFullSunlight(sourceBlockId)) {
 				const peekId = unpackBlockId(
@@ -506,6 +544,7 @@ function processQueue(
 			const result = casLightByte(targetView, tidx, isSkyLight, nextLevel);
 			if (result === "wrote") {
 				dirtySlots.add(targetView.headerSlot);
+				addAdjacentBorderSlots(registry, dirtySlots, targetView, tx, ty, tz);
 				q.push(targetView.chunkId, tx, ty, tz, nextLevel);
 			}
 		}
@@ -533,11 +572,12 @@ function processRemoveQueue(
 		const cx = coord & 0x1f;
 		const cy = (coord >> 5) & 0x1f;
 		const cz = (coord >> 10) & 0x1f;
-		const level = q.levels[slot]!;
-
 		const view = registry.views.get(chunkId);
-		if (!view || !view.isLoaded) continue;
+		if (!view) continue;
 		refreshLayout(registry, view);
+		if (!view.isLoaded) continue;
+
+		const level = q.levels[slot]!;
 
 		const sourcePacked = getViewBlockPacked(view, cx, cy, cz);
 		const sourceBlockId = unpackBlockId(sourcePacked);
@@ -596,9 +636,8 @@ function processRemoveQueue(
 				targetView = next;
 				tz = tz < 0 ? size - 1 : 0;
 			}
-			if (!targetView.isLoaded) continue;
-
 			refreshLayout(registry, targetView);
+			if (!targetView.isLoaded) continue;
 
 			if (
 				isSkyLight
@@ -631,6 +670,7 @@ function processRemoveQueue(
 			if (isDependent) {
 				if (clearLightByte(targetView, tIdx, isSkyLight)) {
 					dirtySlots.add(targetView.headerSlot);
+					addAdjacentBorderSlots(registry, dirtySlots, targetView, tx, ty, tz);
 				}
 				q.push(targetView.chunkId, tx, ty, tz, neighborLevel);
 			} else {
@@ -667,8 +707,9 @@ export function lightMutate(
 	_newPacked: number,
 ): Set<number> {
 	const view = registry.views.get(chunkId);
-	if (!view || !view.isLoaded) return new Set();
+	if (!view) return new Set();
 	refreshLayout(registry, view);
+	if (!view.isLoaded) return new Set();
 
 	const idx = x + y * LIGHT_CHUNK_SIZE + z * LIGHT_CHUNK_SIZE2;
 	const dirtySlots = new Set<number>();
@@ -679,6 +720,13 @@ export function lightMutate(
 	if (oldBlockLight > 0) {
 		removeLightAt(registry, view, x, y, z, oldBlockLight, false, dirtySlots);
 	}
+
+	const newBlockId = unpackBlockId(_newPacked);
+	const emission = getLightEmission(newBlockId);
+	if (emission > 0) {
+		addLightAt(registry, view, x, y, z, emission, dirtySlots);
+	}
+
 	updateLightFromNeighborsAt(registry, view, x, y, z, false, dirtySlots);
 
 	if (oldSkyLight > 0) {
@@ -686,16 +734,10 @@ export function lightMutate(
 	}
 	updateLightFromNeighborsAt(registry, view, x, y, z, true, dirtySlots);
 
-	const newBlockId = unpackBlockId(_newPacked);
 	const newIsSkyTransparent = isTargetTransparent(_newPacked, 1, 1);
 	const oldWasSkyTransparent = isTargetTransparent(oldPacked, 1, 1);
 	if (oldWasSkyTransparent && !newIsSkyTransparent && oldSkyLight > 0) {
 		cutSkyLightBelowAt(registry, view, x, y, z, dirtySlots);
-	}
-
-	const emission = getLightEmission(newBlockId);
-	if (emission > 0) {
-		addLightAt(registry, view, x, y, z, emission, dirtySlots);
 	}
 
 	return dirtySlots;
@@ -716,6 +758,7 @@ function removeLightAt(
 
 	if (clearLightByte(view, idx, isSkyLight)) {
 		dirtySlots.add(view.headerSlot);
+		addAdjacentBorderSlots(registry, dirtySlots, view, x, y, z);
 	}
 
 	Q_A.clear();
@@ -804,9 +847,8 @@ function updateLightFromNeighborsAt(
 			sourceView = next;
 			sz = sz < 0 ? size - 1 : 0;
 		}
-		if (!sourceView.isLoaded) continue;
-
 		refreshLayout(registry, sourceView);
+		if (!sourceView.isLoaded) continue;
 
 		const sourceBlockPacked = getViewBlockPacked(sourceView, sx, sy, sz);
 		const sourceBlockId = unpackBlockId(sourceBlockPacked);
@@ -844,7 +886,17 @@ function updateLightFromNeighborsAt(
 
 		const nextLevel = preservesFullSun ? 15 : level - 1;
 		if (nextLevel <= 0 || nextLevel <= currentTargetLevel) continue;
-		Q_A.push(sourceView.chunkId, sx, sy, sz, level);
+		const result3 = casLightByte(
+			view,
+			x + y * size + z * size2,
+			isSkyLight,
+			nextLevel,
+		);
+		if (result3 === "wrote") {
+			dirtySlots.add(view.headerSlot);
+			addAdjacentBorderSlots(registry, dirtySlots, view, x, y, z);
+		}
+		Q_A.push(view.chunkId, x, y, z, nextLevel);
 	}
 
 	if (Q_A.head !== Q_A.tail) {
@@ -852,7 +904,7 @@ function updateLightFromNeighborsAt(
 	}
 }
 
-function addLightAt(
+export function addLightAt(
 	registry: ChunkViewRegistry,
 	view: ChunkView,
 	x: number,
@@ -870,6 +922,7 @@ function addLightAt(
 
 	if (casLightByte(view, idx, false, level) === "wrote") {
 		dirtySlots.add(view.headerSlot);
+		addAdjacentBorderSlots(registry, dirtySlots, view, x, y, z);
 	}
 	Q_A.clear();
 	Q_A.push(view.chunkId, x, y, z, level);
@@ -887,6 +940,7 @@ function cutSkyLightBelowAt(
 	if (!view.isLoaded) return;
 	refreshLayout(registry, view);
 	const size = LIGHT_CHUNK_SIZE;
+	const size2 = size * size;
 
 	let targetView: ChunkView | undefined = view;
 	const tx = x;
@@ -901,10 +955,10 @@ function cutSkyLightBelowAt(
 		targetView = next;
 		ty = size - 1;
 	}
-	if (!targetView.isLoaded) return;
 	refreshLayout(registry, targetView);
+	if (!targetView.isLoaded) return;
 
-	const tidx = tx + ty * size + tz * size;
+	const tidx = tx + ty * size + tz * size2;
 	const belowBlockPacked = getViewBlockPacked(targetView, tx, ty, tz);
 	if (!isTargetTransparent(belowBlockPacked, 1, 1)) return;
 
@@ -935,8 +989,9 @@ export function lightSkyReconcile(
 ): Set<number> {
 	const dirtySlots = new Set<number>();
 	const view = registry.views.get(chunkId);
-	if (!view || !view.isLoaded) return dirtySlots;
+	if (!view) return dirtySlots;
 	refreshLayout(registry, view);
+	if (!view.isLoaded) return dirtySlots;
 
 	const size = LIGHT_CHUNK_SIZE;
 	const last = size - 1;
@@ -959,9 +1014,10 @@ export function lightSkyReconcile(
 
 	for (let f = 0; f < 6; f++) {
 		const neighbor = registry.views.get(neighborIds[f]!);
-		if (!neighbor || !neighbor.isLoaded) continue;
+		if (!neighbor) continue;
 		refreshLayout(registry, neighbor);
 		refreshLayout(registry, view);
+		if (!neighbor.isLoaded) continue;
 
 		const selfEdge = selfEdges[f]!;
 		const neighborEdge = neighborEdges[f]!;
@@ -1063,8 +1119,9 @@ export function propagateDeferred(
 ): Set<number> {
 	const dirtySlots = new Set<number>();
 	const view = registry.views.get(chunkId);
-	if (!view || !view.isLoaded) return dirtySlots;
+	if (!view) return dirtySlots;
 	refreshLayout(registry, view);
+	if (!view.isLoaded) return dirtySlots;
 	if (seedState.length <= 0) return dirtySlots;
 
 	const size = LIGHT_CHUNK_SIZE;
@@ -1099,5 +1156,5 @@ export function bumpLightVersion(
 	registry: ChunkViewRegistry,
 	slot: number,
 ): void {
-	Atomics.add(registry.header.lightSeq, slot, 1);
+	registry.header.lightSeq[slot]++;
 }

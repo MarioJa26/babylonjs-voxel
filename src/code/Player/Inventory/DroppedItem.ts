@@ -8,7 +8,7 @@ import {
 	Texture,
 	Vector3,
 } from "@babylonjs/core";
-import { MetadataContainer } from "@/code/Entities/MetaDataContainer";
+import { MetadataContainer } from "@/code/Entities/MetadataContainer";
 import type { IUsable } from "@/code/Interface/IUsable";
 import { Map1 } from "@/code/Maps/Map1";
 import {
@@ -67,7 +67,7 @@ export class DroppedItem implements IUsable {
 			Map1.mainScene,
 		);
 		this.#boxMesh.metadata = new MetadataContainer();
-		this.#boxMesh.metadata.add("use", (player: Player) => this.use(player));
+		this.#boxMesh.metadata.set("use", (player: Player) => this.use(player));
 
 		this.#boxMesh.isPickable = true;
 		this.#boxMesh.position = new Vector3(x, y, z);

@@ -151,18 +151,37 @@ function beginLodCrossFade(
 	const seed = makeFadeSeed(chunk);
 
 	newMesh.visibility = 0;
-	oldMesh.visibility = 1;
+
+	// If the old mesh is already mid-fade, continue from its current
+	// visibility instead of snapping to 1 (which causes a visible pop).
+	const oldState = getMeshFadeState(oldMesh);
+	if (oldState) {
+		const elapsed = (now - oldState.startMs) / oldState.durationMs;
+		const currentProgress = elapsed < 0 ? 0 : elapsed > 1 ? 1 : elapsed;
+		const currentVis =
+			oldState.direction > 0 ? currentProgress : 1 - currentProgress;
+		// Rewind startMs so the fade-out continues from currentVis.
+		const rewoundStart = now - (1 - currentVis) * LOD_FADE_DURATION_MS;
+		setMeshFadeState(oldMesh, {
+			startMs: rewoundStart,
+			durationMs: LOD_FADE_DURATION_MS,
+			direction: -1,
+			seed,
+		});
+	} else {
+		oldMesh.visibility = 1;
+		setMeshFadeState(oldMesh, {
+			startMs: now,
+			durationMs: LOD_FADE_DURATION_MS,
+			direction: -1,
+			seed,
+		});
+	}
 
 	setMeshFadeState(newMesh, {
 		startMs: now,
 		durationMs: LOD_FADE_DURATION_MS,
 		direction: 1,
-		seed,
-	});
-	setMeshFadeState(oldMesh, {
-		startMs: now,
-		durationMs: LOD_FADE_DURATION_MS,
-		direction: -1,
 		seed,
 	});
 }

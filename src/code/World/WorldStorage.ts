@@ -348,7 +348,7 @@ class WorldStorageImpl {
 			const end = Math.min(i + CONCURRENCY, hits.length);
 			const batch: Promise<void>[] = [];
 			for (let j = i; j < end; j++) {
-				const { chunkId, data } = hits[j]!;
+				const { chunkId, data } = hits[j];
 				const includeVoxelData = options?.includeVoxelData ?? true;
 				if (data.compressed && includeVoxelData) {
 					const jobs: Promise<void>[] = [];
@@ -394,7 +394,6 @@ class WorldStorageImpl {
 			const dirHandle = await root.getDirectoryHandle("b102");
 			await dirHandle.removeEntry("meshes.bin");
 			await dirHandle.removeEntry("regions", { recursive: true });
-			console.log("[WorldStorage] World data cleared (OPFS files removed)");
 		} catch (err) {
 			console.error("[WorldStorage] Failed to clear world data:", err);
 		}
@@ -417,7 +416,6 @@ class WorldStorageImpl {
 		} catch {}
 
 		localStorage.setItem(FLAG, "1");
-		console.log("[WorldStorage] Old OPFS data cleared");
 	}
 }
 

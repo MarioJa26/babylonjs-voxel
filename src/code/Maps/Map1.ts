@@ -7,7 +7,7 @@ import {
 import type { Player } from "../Player/Player";
 import { PlayerLoadingGate } from "../Player/PlayerLoadingGate";
 import { PlayerStatePersistence } from "../Player/PlayerStatePersistence";
-import { disposeSharedResources, initAtlas } from "../World/Chunk/ChunckMesher";
+import { disposeSharedResources, initAtlas } from "../World/Chunk/ChunkMesher";
 import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
 import { TextureDefinitions } from "../World/Texture/TextureDefinitions";
@@ -49,7 +49,6 @@ export class Map1 {
 			disposeBlockBreakingVisuals();
 			disposeSharedResources();
 			DistantTerrain.resetInstance();
-			console.log("Map1 disposed and resources cleaned up.");
 		});
 
 		this.initPromise = this.asyncInit().then(() => {
@@ -81,7 +80,6 @@ export class Map1 {
 			);
 
 			Map1.environment.initSSAO();
-			console.log("Environment and textures loaded successfully.");
 		} catch (error) {
 			console.error("Error loading environment or textures:", error);
 		}

@@ -111,13 +111,11 @@ export class Chunk {
 	public isLoaded = false;
 	public isTerrainScheduled = false;
 	public isLightDirty = false;
+	public remeshQueued = false;
 
 	public get isSolidOccluder(): boolean {
 		return this.isLoaded && this._isUniform && this._uniformBlockId !== 0;
 	}
-
-	private remeshQueued = false;
-	private remeshQueuedPriority = false;
 
 	public static DEBUG_REMESH = false;
 
@@ -140,6 +138,7 @@ export class Chunk {
 	public static lightHeaderBuffer: SharedArrayBuffer | null = null;
 	public static lightHeaderView: LightHeaderView | null = null;
 	private static _lightHeaderNextSlot = 0;
+	private static _lightHeaderFreeSlots: number[] = [];
 
 	public static initLightHeader(): SharedArrayBuffer {
 		if (Chunk.lightHeaderBuffer) return Chunk.lightHeaderBuffer;
@@ -152,6 +151,9 @@ export class Chunk {
 	}
 
 	private static allocLightHeaderSlot(): number {
+		if (Chunk._lightHeaderFreeSlots.length > 0) {
+			return Chunk._lightHeaderFreeSlots.pop()!;
+		}
 		if (Chunk._lightHeaderNextSlot >= MAX_HEADER_SLOTS) {
 			throw new Error(
 				`Chunk light header slots exhausted (max ${MAX_HEADER_SLOTS}).`,
@@ -298,11 +300,6 @@ export class Chunk {
 
 	public cachedLODMeshes = new Map<number, CachedLODMesh>();
 
-	private static remeshFlushScheduled = false;
-	private static remeshQueue = [] as Chunk[];
-	private static remeshQueueSet = new Set<bigint>();
-	private static remeshReadIndex = 0;
-
 	public static readonly LIGHT_EMISSION: Record<number, number> = {
 		10: 15,
 		11: 15,
@@ -380,24 +377,6 @@ export class Chunk {
 	// =========================================================================
 	// Load / unload
 	// =========================================================================
-
-	public populate(
-		blocks: Uint8Array | Uint16Array | null,
-		palette: Uint16Array | null,
-		isUniform: boolean,
-		uniformBlockId: number,
-		light_array?: Uint8Array,
-		scheduleRemesh = true,
-	): void {
-		this.loadFromStorage(
-			blocks,
-			palette,
-			isUniform,
-			uniformBlockId,
-			light_array,
-			scheduleRemesh,
-		);
-	}
 
 	public loadFromStorage(
 		blocks: Uint8Array | Uint16Array | null,
@@ -554,9 +533,6 @@ export class Chunk {
 	public clearCachedLODMeshes(): void {
 		this.cachedLODMeshes.clear();
 	}
-	public invalidateLODMeshCaches(): void {
-		if (this.cachedLODMeshes.size > 0) this.cachedLODMeshes.clear();
-	}
 	public getSerializableLODMeshCache(): SerializedLODMeshCache | undefined {
 		if (this.cachedLODMeshes.size === 0) return undefined;
 		const out: SerializedLODMeshCache = {};
@@ -624,9 +600,9 @@ export class Chunk {
 				let sourceFiltersFullSun = false;
 
 				if (hasLoadedAbove) {
-					const aboveBlockPacked = aboveChunk!.getBlockPacked(x, 0, z);
-					if (aboveChunk!.isTransparent(aboveBlockPacked, 1, -1)) {
-						incomingSkyLight = aboveChunk!.getSkyLight(x, 0, z);
+					const aboveBlockPacked = aboveChunk.getBlockPacked(x, 0, z);
+					if (aboveChunk.isTransparent(aboveBlockPacked, 1, -1)) {
+						incomingSkyLight = aboveChunk.getSkyLight(x, 0, z);
 						sourceFiltersFullSun = filtersFullSunlight(
 							unpackBlockId(aboveBlockPacked),
 						);
@@ -700,7 +676,7 @@ export class Chunk {
 		if (seedLength > 0) {
 			const pool = Chunk._lightPool;
 			if (pool) {
-				(pool as any).enqueueDeferredLightFromSunlightInit?.(
+				pool.enqueueDeferredLightFromSunlightInit?.(
 					this,
 					seedQueue,
 					seedLength,
@@ -792,39 +768,6 @@ export class Chunk {
 		const index = lx + ly * Chunk.SIZE + lz * Chunk.SIZE2;
 		if (this._palette) return this._palette[this.getNibble(index)];
 		return this._block_array![index];
-	}
-
-	private static flushRemeshQueue(): void {
-		Chunk.remeshFlushScheduled = false;
-		const queue = Chunk.remeshQueue;
-		const processed: string[] = [];
-		const skipped: string[] = [];
-		while (Chunk.remeshReadIndex < queue.length) {
-			const chunk = queue[Chunk.remeshReadIndex++]!;
-			Chunk.remeshQueueSet.delete(chunk.id);
-			chunk.remeshQueued = false;
-			const p = chunk.remeshQueuedPriority;
-			chunk.remeshQueuedPriority = false;
-			if (chunk.isLoaded) {
-				processed.push(`${chunk.id}(lod${chunk.lodLevel})`);
-				Chunk.onRequestRemesh?.(chunk, p);
-			} else {
-				skipped.push(`${chunk.id}`);
-			}
-		}
-		if (Chunk.DEBUG_REMESH && (processed.length > 0 || skipped.length > 0)) {
-			console.log(
-				`[Remesh] flushRemeshQueue processed=${processed.length} [${processed.join(", ")}] skipped=${skipped.length} [${skipped.join(", ")}] readIdx=${Chunk.remeshReadIndex} queueLen=${queue.length}`,
-			);
-		}
-		if (
-			Chunk.remeshReadIndex > 64 &&
-			Chunk.remeshReadIndex * 2 > queue.length
-		) {
-			queue.copyWithin(0, Chunk.remeshReadIndex);
-			queue.length -= Chunk.remeshReadIndex;
-			Chunk.remeshReadIndex = 0;
-		}
 	}
 
 	public setBlock(
@@ -998,13 +941,7 @@ export class Chunk {
 	public scheduleRemesh(priority = false, includeNeighbors = false): void {
 		if (!this.isLoaded) return;
 		this.isDirty = true;
-		if (priority) this.remeshQueuedPriority = true;
 		if (this.remeshQueued) {
-			if (Chunk.DEBUG_REMESH) {
-				console.log(
-					`[Remesh] scheduleRemesh EARLY EXIT (already queued) chunk=${this.id} dirty=${this.isDirty} lod=${this.lodLevel} hasVoxel=${this._hasVoxelData} uniform=${this._isUniform}`,
-				);
-			}
 			return;
 		}
 		this.remeshQueued = true;
@@ -1018,19 +955,7 @@ export class Chunk {
 			this.getNeighbor(0, 0, 1)?.scheduleRemesh(priority);
 		}
 
-		if (!Chunk.remeshQueueSet.has(this.id)) {
-			Chunk.remeshQueueSet.add(this.id);
-			Chunk.remeshQueue.push(this);
-		}
-		if (!Chunk.remeshFlushScheduled) {
-			Chunk.remeshFlushScheduled = true;
-			requestAnimationFrame(Chunk.flushRemeshQueue);
-		}
-		if (Chunk.DEBUG_REMESH) {
-			console.log(
-				`[Remesh] scheduleRemesh QUEUED chunk=${this.id} priority=${priority} lod=${this.lodLevel} hasVoxel=${this._hasVoxelData} uniform=${this._isUniform} queueLen=${Chunk.remeshQueue.length}`,
-			);
-		}
+		Chunk.onRequestRemesh?.(this, priority);
 	}
 
 	// =========================================================================
@@ -1484,15 +1409,15 @@ export class Chunk {
 		const view = Chunk.lightHeaderView;
 		if (view && this.lightHeaderSlot !== 0xffff_ffff) {
 			clearHeaderRow(view, this.lightHeaderSlot);
+			Chunk._lightHeaderFreeSlots.push(this.lightHeaderSlot);
+			this.lightHeaderSlot = 0xffff_ffff;
 		}
 		Chunk.onLightChunkDisposed?.(this);
 
 		Chunk.loadedChunks.delete(this);
 		Chunk.loadedChunkIndex.unregister(this);
 		this.isTerrainScheduled = false;
-		Chunk.remeshQueueSet.delete(this.id);
 		this.remeshQueued = false;
-		this.remeshQueuedPriority = false;
 		Chunk.chunkInstances.delete(this.id);
 		this.bfsQueryId = 0;
 		this.bfsVisitedFaces = 0;

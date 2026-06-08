@@ -1,7 +1,7 @@
 import { Matrix, Vector3 } from "@babylonjs/core";
 import type { IControls } from "@/code/Interface/IControls";
 import type { Player } from "../Player";
-import { DebugControlHelper } from "./DebugControlHelper";
+import { handleDebugKey } from "./DebugControlHelper";
 import type { BoatControlEntity } from "./PaddleBoatControls";
 
 export class JetSkiControls implements IControls<BoatControlEntity> {
@@ -64,7 +64,7 @@ export class JetSkiControls implements IControls<BoatControlEntity> {
 	public onKeyDown(key: string) {
 		this.pressedKeys.add(key);
 
-		if (DebugControlHelper.handleKey(key)) return;
+		if (handleDebugKey(key)) return;
 
 		if (JetSkiControls.KEY_RIGHT.includes(key)) {
 			this.#inputDirection.x = 1;

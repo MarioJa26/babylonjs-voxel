@@ -10,7 +10,7 @@ import {
 	ROCKY_SHORE,
 	SANDY_SHORE,
 	TIDAL_FLATS,
-} from "./BiomeDefenitions/CoastalBiomes/CoastalBiomes";
+} from "./BiomeDefinitions/CoastalBiomes/CoastalBiomes";
 import {
 	AURORA_TUNDRA,
 	FROZEN_OCEAN,
@@ -21,18 +21,18 @@ import {
 	SNOWY_PLAINS,
 	TUNDRA,
 	TUNDRA_MOUNTAINS,
-} from "./BiomeDefenitions/ColdBiomes/ColdBiomes";
+} from "./BiomeDefinitions/ColdBiomes/ColdBiomes";
 import {
 	ANCIENT_RUINS_BIOME,
 	ASHEN_WASTELAND,
 	PETRIFIED_FOREST,
-} from "./BiomeDefenitions/ExoticBiomes/ExoticBiomes";
+} from "./BiomeDefinitions/ExoticBiomes/ExoticBiomes";
 import {
 	CRYSTAL_CAVES,
 	GEOTHERMAL_FIELD,
 	MUSHROOM_FIELDS,
 	OBSIDIAN_FLATS,
-} from "./BiomeDefenitions/GeologicalBiomes/GeologicalBiomes";
+} from "./BiomeDefinitions/GeologicalBiomes/GeologicalBiomes";
 import {
 	BADLANDS,
 	BASALT_DELTAS,
@@ -46,14 +46,14 @@ import {
 	SAVANNAH,
 	SCORCHED_SAVANNAH,
 	VOLCANIC_WASTELAND,
-} from "./BiomeDefenitions/HotBiomes/HotBiomes";
+} from "./BiomeDefinitions/HotBiomes/HotBiomes";
 import {
 	ALPINE_MEADOW,
 	CLOUD_PEAKS,
 	MESA_PLATEAU,
 	ROCKY_HIGHLANDS,
 	VOLCANIC_CALDERA,
-} from "./BiomeDefenitions/MountainBiomes/MountainBiomes";
+} from "./BiomeDefinitions/MountainBiomes/MountainBiomes";
 import {
 	AUTUMN_FOREST,
 	BIRCH_FOREST,
@@ -71,14 +71,14 @@ import {
 	SWAMP,
 	TEMPERATE_RAINFOREST,
 	WETLANDS,
-} from "./BiomeDefenitions/TemperateBiomes/TemperateBiomes";
+} from "./BiomeDefinitions/TemperateBiomes/TemperateBiomes";
 import {
 	BAMBOO_FOREST,
 	CLOUD_FOREST,
 	JUNGLE,
 	MANGROVE,
 	TROPICAL_ISLAND,
-} from "./BiomeDefenitions/TropicalBiomes/TropicalBiomes";
+} from "./BiomeDefinitions/TropicalBiomes/TropicalBiomes";
 import { BIOME_ID, type Biome } from "./BiomeTypes";
 
 export const BIOME_REGISTRY: Record<BIOME_ID, Biome> = {

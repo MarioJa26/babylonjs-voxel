@@ -1,9 +1,9 @@
 import { DistantTerrain } from "@/code/Generation/DistantTerrain/DistantTerrain";
 import { isInCave } from "@/code/Player/PlayerLoopController";
 import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
-import { createMeshFromData } from "../ChunckMesher";
 import { Chunk, getChunk } from "../Chunk";
-import { enqueueChunkRemesh } from "../ChunkLoadingSystem";
+import { createMeshFromData } from "../ChunkMesher";
+
 import { ChunkWorkerPool } from "../ChunkWorkerPool";
 import {
 	ChunkLodRuleSet,
@@ -528,13 +528,12 @@ export class ChunkStreamingController {
 			revision,
 		});
 
-		chunk.lodLevel = desiredLod;
-
 		if (chunk.isLoaded && previousLod !== desiredLod) {
 			const hasTargetCachedMesh = chunk.hasCachedLODMesh(desiredLod);
 
 			if (!chunk.hasVoxelData) {
 				if (desiredLod <= 1) {
+					chunk.lodLevel = desiredLod;
 					this.ensureChunkQueuedForLoad(chunk, desiredLod, revision, true);
 					if (!hasTargetCachedMesh) {
 						return;
@@ -546,18 +545,25 @@ export class ChunkStreamingController {
 				}
 			}
 
+			chunk.lodLevel = desiredLod;
+
 			if (this.tryApplyCachedLodTransitionMesh(chunk, desiredLod)) {
 				return;
 			}
 
 			const requiresImmediateRemesh =
-				previousLod <= 1 || desiredLod <= 1 || !hasTargetCachedMesh;
+				previousLod <= 1 ||
+				desiredLod <= 1 ||
+				!hasTargetCachedMesh ||
+				chunk.isDirty;
 			if (requiresImmediateRemesh) {
-				enqueueChunkRemesh(chunk);
+				chunk.scheduleRemesh(true);
 			}
 
 			return;
 		}
+
+		chunk.lodLevel = desiredLod;
 
 		if (!chunk.isLoaded) {
 			this.ensureChunkQueuedForLoad(

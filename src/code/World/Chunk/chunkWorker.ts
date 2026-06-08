@@ -1,4 +1,4 @@
-import { Chunk } from "./Chunk";
+import { Chunk, packCoords } from "./Chunk";
 import {
 	type GenerateDistantTerrainRequest,
 	type InitDistantTerrainSharedRequest,
@@ -83,43 +83,77 @@ export class ChunkWorker {
 		return palette;
 	};
 
+	private static readonly _REMESH_OFFSETS: readonly {
+		readonly dx: number;
+		readonly dy: number;
+		readonly dz: number;
+		readonly faceIdx: number;
+	}[] = (() => {
+		const out: { dx: number; dy: number; dz: number; faceIdx: number }[] = [];
+		for (let z = -1; z <= 1; z++) {
+			for (let y = -1; y <= 1; y++) {
+				for (let x = -1; x <= 1; x++) {
+					if (x === 0 && y === 0 && z === 0) continue;
+					const nz = (x !== 0 ? 1 : 0) + (y !== 0 ? 1 : 0) + (z !== 0 ? 1 : 0);
+					let faceIdx = -1;
+					if (nz === 1)
+						faceIdx =
+							x === 1
+								? 0
+								: x === -1
+									? 1
+									: y === 1
+										? 2
+										: y === -1
+											? 3
+											: z === 1
+												? 4
+												: 5;
+					out.push({ dx: x, dy: y, dz: z, faceIdx });
+				}
+			}
+		}
+		return out;
+	})();
+
 	public postFullRemesh(chunk: Chunk, forcedLod?: number): void {
 		const neighbors = this._neighborScratch;
 		const neighborLights = this._neighborLightScratch;
 		const neighborUniformIds = this._neighborUniformIdScratch;
 		const neighborPalettes = this._neighborPaletteScratch;
-		let idx = 0;
+		const inst = Chunk.chunkInstances;
+		const neighborIds = chunk.neighborIds;
+		const cx = chunk.chunkX;
+		const cy = chunk.chunkY;
+		const cz = chunk.chunkZ;
 
-		for (let z = -1; z <= 1; z++) {
-			for (let y = -1; y <= 1; y++) {
-				for (let x = -1; x <= 1; x++) {
-					if (x === 0 && y === 0 && z === 0) continue;
+		for (let i = 0; i < ChunkWorker._REMESH_OFFSETS.length; i++) {
+			const { dx, dy, dz, faceIdx } = ChunkWorker._REMESH_OFFSETS[i];
+			const neighbor =
+				faceIdx >= 0
+					? inst.get(neighborIds[faceIdx])
+					: inst.get(packCoords(cx + dx, cy + dy, cz + dz));
 
-					const neighbor = chunk.getNeighbor(x, y, z);
-					if (neighbor?.isLoaded) {
-						if (!neighbor.hasVoxelData) {
-							neighbors[idx] = ChunkWorker.EMPTY_NEIGHBOR_BLOCKS;
-							neighborLights[idx] = ChunkWorker.EMPTY_NEIGHBOR_LIGHTS;
-							neighborUniformIds[idx] = undefined;
-							neighborPalettes[idx] = undefined;
-							idx++;
-							continue;
-						}
-
-						neighbors[idx] = neighbor.block_array;
-						neighborLights[idx] = neighbor.light_array;
-						neighborUniformIds[idx] = neighbor.isUniform
-							? neighbor.uniformBlockId
-							: undefined;
-						neighborPalettes[idx] = this.paletteToTyped(neighbor.palette);
-					} else {
-						neighbors[idx] = undefined;
-						neighborLights[idx] = undefined;
-						neighborUniformIds[idx] = undefined;
-						neighborPalettes[idx] = undefined;
-					}
-					idx++;
+			if (neighbor?.isLoaded) {
+				if (!neighbor.hasVoxelData) {
+					neighbors[i] = ChunkWorker.EMPTY_NEIGHBOR_BLOCKS;
+					neighborLights[i] = ChunkWorker.EMPTY_NEIGHBOR_LIGHTS;
+					neighborUniformIds[i] = undefined;
+					neighborPalettes[i] = undefined;
+					continue;
 				}
+
+				neighbors[i] = neighbor.block_array;
+				neighborLights[i] = neighbor.light_array;
+				neighborUniformIds[i] = neighbor.isUniform
+					? neighbor.uniformBlockId
+					: undefined;
+				neighborPalettes[i] = this.paletteToTyped(neighbor.palette);
+			} else {
+				neighbors[i] = undefined;
+				neighborLights[i] = undefined;
+				neighborUniformIds[i] = undefined;
+				neighborPalettes[i] = undefined;
 			}
 		}
 

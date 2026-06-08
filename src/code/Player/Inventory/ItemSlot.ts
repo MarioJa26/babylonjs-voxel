@@ -2,6 +2,8 @@ import { PlayerHud } from "../Hud/PlayerHud";
 import { Item } from "./Item";
 import { PlayerInventory } from "./PlayerInventory";
 
+let draggedItem: ItemSlot | null = null;
+
 export class ItemSlot {
 	#item: Item | null = null;
 	#divItemSlot: HTMLDivElement = document.createElement("div");
@@ -20,15 +22,15 @@ export class ItemSlot {
 		this.col = col;
 
 		this.#onDragStart = () => {
-			(window as any).draggedItem = this;
+			draggedItem = this;
 		};
 		this.#onDragOver = (e) => {
 			e.preventDefault();
 		};
 		this.#onDrop = (e) => {
 			e.preventDefault();
-			const dragged = (window as any).draggedItem as ItemSlot;
-			if (dragged !== this) this.swapSlots(dragged);
+			if (draggedItem !== null && draggedItem !== this)
+				this.swapSlots(draggedItem);
 		};
 		this.#onMouseOver = (e) => {
 			PlayerInventory.currentlyHoveredSlot = this;

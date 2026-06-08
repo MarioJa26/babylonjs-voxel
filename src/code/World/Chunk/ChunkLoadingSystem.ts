@@ -2,8 +2,8 @@ import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import { packChunkKey } from "../Storage/ChunkKey";
 import { deserializeMeshPair } from "../Storage/MeshSerializer";
 import type { SavedChunkData, SavedChunkEntityData } from "../WorldStorage";
-import { createMeshFromData } from "./ChunckMesher";
-import { addChunkDisposeHook, Chunk, getChunk, packCoords } from "./Chunk";
+import { Chunk, getChunk, packCoords } from "./Chunk";
+import { createMeshFromData } from "./ChunkMesher";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import type { MeshData } from "./DataStructures/MeshData";
 import { ChunkEntityRegistry } from "./Loading/ChunkEntityRegistry";
@@ -63,9 +63,6 @@ type DynamicBlockQueryOptions = {
 const loadQueue: QueuedChunkRequest[] = [];
 const unloadQueueSet: Set<Chunk> = new Set();
 const dynamicBlockProviders: Map<symbol, DynamicBlockProviderEntry> = new Map();
-
-const pendingRemeshChunks: Chunk[] = [];
-const pendingRemeshChunkIds: Set<bigint> = new Set();
 
 const debug = new ChunkLoadingDebug();
 
@@ -451,76 +448,6 @@ export function validateChunksAround(
 	}
 }
 
-export function enqueueChunkRemesh(chunk: Chunk): void {
-	if (pendingRemeshChunkIds.has(chunk.id)) {
-		return;
-	}
-
-	pendingRemeshChunkIds.add(chunk.id);
-	pendingRemeshChunks.push(chunk);
-}
-
-let pendingRemeshReadIndex = 0;
-
-export function processPendingRemeshes(maxChunks = 12): void {
-	const pool = ChunkWorkerPool.getInstance();
-	let processed = 0;
-
-	while (
-		processed < maxChunks &&
-		pendingRemeshReadIndex < pendingRemeshChunks.length
-	) {
-		const chunk = pendingRemeshChunks[pendingRemeshReadIndex];
-
-		// If chunk isn't ready for remesh yet, skip it. It will be
-		// retried on the next processPendingRemeshes call.
-		if (!chunk.isLoaded || !chunk.hasVoxelData) {
-			pendingRemeshReadIndex++;
-			processed++;
-			continue;
-		}
-
-		pendingRemeshReadIndex++;
-		pendingRemeshChunkIds.delete(chunk.id);
-		pool.scheduleRemesh(chunk, true);
-		processed++;
-	}
-
-	// PERF: Use copyWithin + length truncation instead of slice() to avoid allocating a new array.
-	if (
-		pendingRemeshReadIndex > 64 &&
-		pendingRemeshReadIndex * 2 > pendingRemeshChunks.length
-	) {
-		pendingRemeshChunks.copyWithin(0, pendingRemeshReadIndex);
-		pendingRemeshChunks.length -= pendingRemeshReadIndex;
-		pendingRemeshReadIndex = 0;
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Chunk disposal hook
-//
-// Releases the strong reference this module holds to the disposed chunk in
-// pendingRemeshChunks/Ids so the chunk can be GC'd.
-// ---------------------------------------------------------------------------
-export function onChunkDisposed(chunk: Chunk): void {
-	if (chunk.isPersistent) return;
-	pendingRemeshChunkIds.delete(chunk.id);
-	for (
-		let i = pendingRemeshChunks.length - 1;
-		i >= pendingRemeshReadIndex;
-		i--
-	) {
-		if (pendingRemeshChunks[i] === chunk) {
-			pendingRemeshChunks.splice(i, 1);
-		}
-	}
-}
-
-addChunkDisposeHook((chunk) => {
-	onChunkDisposed(chunk);
-});
-
 export function processFrameBudgetedStreamingWork(
 	playerChunkX: number,
 	playerChunkY: number,
@@ -534,8 +461,6 @@ export function processFrameBudgetedStreamingWork(
 		SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
 		32,
 	);
-
-	processPendingRemeshes(32);
 }
 
 export function registerChunkEntityLoader(

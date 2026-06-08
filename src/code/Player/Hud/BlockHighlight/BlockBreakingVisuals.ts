@@ -7,7 +7,7 @@ import {
 } from "@babylonjs/core";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { getTransformedShapeBoxes } from "@/code/World/Shape/BlockShapeTransforms";
-import type { BoatBlockHitContext } from "./BreakinBlockHandler";
+import type { BoatBlockHitContext } from "./BreakingBlockHandler";
 
 let scene: Scene | null = null;
 let crackingMesh: Mesh | null = null;

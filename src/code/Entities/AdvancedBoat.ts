@@ -23,7 +23,7 @@ import {
 } from "../World/Chunk/ChunkLoadingSystem";
 import { getShapeForBlockId } from "../World/Shape/BlockShapes";
 import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
-import { MetadataContainer } from "./MetaDataContainer";
+import { MetadataContainer } from "./MetadataContainer";
 import { Mount } from "./Mount";
 
 export class AdvancedBoat implements IUsable {
@@ -66,7 +66,7 @@ export class AdvancedBoat implements IUsable {
 		this.createBoat(scene, position, waterLevel);
 
 		this.#boat.metadata = new MetadataContainer();
-		this.#boat.metadata.add("use", (player: Player) => this.use(player));
+		this.#boat.metadata.set("use", (player: Player) => this.use(player));
 
 		this.setupBuoyancyPoints();
 		this.setupAdvancedPhysics(scene);

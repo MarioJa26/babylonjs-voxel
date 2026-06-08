@@ -1,14 +1,14 @@
 import type { Vector3 } from "@babylonjs/core";
 import type { IControls } from "@/code/Interface/IControls";
-import { Map1 } from "@/code/Maps/Map1";
+import { Chunk } from "@/code/World/Chunk/Chunk";
 import { validateChunksAround } from "@/code/World/Chunk/ChunkLoadingSystem";
 import type { BlockRaycastHit } from "../Hud/BlockHighlight/BlockRaycaster";
 import { pickTarget } from "../Hud/BlockHighlight/BlockRaycaster";
-import { BlockBreakingHandler } from "../Hud/BlockHighlight/BreakinBlockHandler";
+import { BlockBreakingHandler } from "../Hud/BlockHighlight/BreakingBlockHandler";
 import type { Item } from "../Inventory/Item";
 import type { Player } from "../Player";
 import type { PlayerVehicle } from "../PlayerVehicle";
-import { DebugControlHelper } from "./DebugControlHelper";
+import { handleDebugKey } from "./DebugControlHelper";
 
 export class WalkingControls implements IControls<PlayerVehicle> {
 	readonly controlType = "walking";
@@ -20,6 +20,29 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 
 	#lastJumpTapMs = 0;
 	static readonly DOUBLE_TAP_MS = 260;
+
+	static readonly #HOTBAR_KEY_MAP = new Map<string, number>([
+		["1", 0],
+		["!", 0],
+		["2", 1],
+		['"', 1],
+		["3", 2],
+		["§", 2],
+		["4", 3],
+		["$", 3],
+		["5", 4],
+		["%", 4],
+		["6", 5],
+		["&", 5],
+		["7", 6],
+		["/", 6],
+		["8", 7],
+		["(", 7],
+		["9", 8],
+		[")", 8],
+		["0", 9],
+		["=", 9],
+	]);
 
 	public static KEY_LEFT = ["a", "arrowleft"];
 	public static KEY_RIGHT = ["d", "arrowright"];
@@ -42,17 +65,6 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 
 	public static MOUSE1 = [0];
 	public static MOUSE2 = [2];
-
-	public static KEY_1 = ["1", "!"];
-	public static KEY_2 = ["2", '"'];
-	public static KEY_3 = ["3", "§"];
-	public static KEY_4 = ["4", "$"];
-	public static KEY_5 = ["5", "%"];
-	public static KEY_6 = ["6", "&"];
-	public static KEY_7 = ["7", "/"];
-	public static KEY_8 = ["8", "("];
-	public static KEY_9 = ["9", ")"];
-	public static KEY_0 = ["0", "="];
 
 	public static KEY_F5 = ["f5"];
 	public static KEY_F6 = ["f6"];
@@ -113,7 +125,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 
 		this.pressedKeys.add(key);
 
-		if (DebugControlHelper.handleKey(key)) return;
+		if (handleDebugKey(key)) return;
 
 		this.#updateMovementAxesFromPressedKeys();
 
@@ -135,13 +147,6 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 			this.#player.use();
 		} else if (WalkingControls.KEY_FLASH.includes(key)) {
 			this.#player.flashlight.toggle();
-		} else if (key === "l") {
-			// TODO delete
-			if (Map1.mainScene._activeMeshesFrozen) {
-				Map1.mainScene.unfreezeActiveMeshes();
-			} else {
-				Map1.mainScene.freezeActiveMeshes();
-			}
 		}
 
 		if (WalkingControls.KEY_DROP.includes(key)) {
@@ -211,40 +216,16 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 		}
 
 		if (WalkingControls.KEY_PRINT_TRACE.includes(key)) {
-			console.log("Player position:", this.#player.position);
-			console.log("Player chunk:", {
-				x: Math.floor(this.#player.position.x / 32),
-				y: Math.floor(this.#player.position.y / 32),
-				z: Math.floor(this.#player.position.z / 32),
-			});
-
 			validateChunksAround(
-				Math.floor(this.#player.position.x / 32),
-				Math.floor(this.#player.position.y / 32),
-				Math.floor(this.#player.position.z / 32),
+				Math.floor(this.#player.position.x / Chunk.SIZE),
+				Math.floor(this.#player.position.y / Chunk.SIZE),
+				Math.floor(this.#player.position.z / Chunk.SIZE),
 			);
 		}
 
-		if (WalkingControls.KEY_1.includes(key)) {
-			this.#player.playerHud.selectedHotbarSlot = 0;
-		} else if (WalkingControls.KEY_2.includes(key)) {
-			this.#player.playerHud.selectedHotbarSlot = 1;
-		} else if (WalkingControls.KEY_3.includes(key)) {
-			this.#player.playerHud.selectedHotbarSlot = 2;
-		} else if (WalkingControls.KEY_4.includes(key)) {
-			this.#player.playerHud.selectedHotbarSlot = 3;
-		} else if (WalkingControls.KEY_5.includes(key)) {
-			this.#player.playerHud.selectedHotbarSlot = 4;
-		} else if (WalkingControls.KEY_6.includes(key)) {
-			this.#player.playerHud.selectedHotbarSlot = 5;
-		} else if (WalkingControls.KEY_7.includes(key)) {
-			this.#player.playerHud.selectedHotbarSlot = 6;
-		} else if (WalkingControls.KEY_8.includes(key)) {
-			this.#player.playerHud.selectedHotbarSlot = 7;
-		} else if (WalkingControls.KEY_9.includes(key)) {
-			this.#player.playerHud.selectedHotbarSlot = 8;
-		} else if (WalkingControls.KEY_0.includes(key)) {
-			this.#player.playerHud.selectedHotbarSlot = 9;
+		const hotbarSlot = WalkingControls.#HOTBAR_KEY_MAP.get(key);
+		if (hotbarSlot !== undefined) {
+			this.#player.playerHud.selectedHotbarSlot = hotbarSlot;
 		}
 
 		this.pressedKeys.delete(key);

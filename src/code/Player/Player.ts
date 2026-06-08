@@ -1,11 +1,11 @@
 import type { Engine, Scene, Vector3 } from "@babylonjs/core";
 
-import { MetadataContainer } from "../Entities/MetaDataContainer";
+import { MetadataContainer } from "../Entities/MetadataContainer";
 import type { IControls } from "../Interface/IControls";
 import type { IUsable } from "../Interface/IUsable";
 import { Map1 } from "../Maps/Map1";
 import { WalkingControls } from "../Player/Controls/WalkingControls";
-import { CrossHair } from "./Hud/Crosshair/CrossHair";
+import { Crosshair } from "./Hud/Crosshair/Crosshair";
 import { PauseMenu } from "./Hud/PauseMenu";
 import { PlayerHud } from "./Hud/PlayerHud";
 import { PlayerInventory } from "./Inventory/PlayerInventory";
@@ -162,7 +162,7 @@ export class Player implements IUsable {
 	}
 
 	use(): void {
-		const mesh = CrossHair.pickUsableMesh(this);
+		const mesh = Crosshair.pickUsableMesh(this);
 		if (!mesh) return;
 
 		if (mesh.metadata) {

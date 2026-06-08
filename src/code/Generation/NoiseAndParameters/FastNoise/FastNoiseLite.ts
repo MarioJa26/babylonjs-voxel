@@ -1,3 +1,8 @@
+/**
+ * FastNoiseLite — Vendored copy of the single-file noise library.
+ * Source: https://github.com/Auburn/FastNoiseLite
+ * This file should not be hand-edited; update by replacing from upstream.
+ */
 /** biome-ignore-all lint/correctness/noPrecisionLoss: <Default FastNoiseLite Values> */
 export enum NoiseType {
 	OpenSimplex2 = 1,

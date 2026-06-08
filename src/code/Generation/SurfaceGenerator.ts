@@ -35,8 +35,11 @@ export type SurfaceGenerationResult = {
 type ColumnPrepassCacheEntry = {
 	terrainHeightMap: Int32Array;
 	riverNoiseMap: Float32Array;
-	yFreqMap: Float32Array;
+	yFreqMap: number;
 	topSurfaceYMap: Int16Array;
+	// Bit-packed beach flag per column (1 = is beach) — computed once in the
+	// prepass so resolveSolidBlockId never calls isBeachLocation per voxel.
+	isBeachMap: Uint8Array;
 	minSurfaceY: number;
 	maxSurfaceY: number;
 };
@@ -95,22 +98,22 @@ export class SurfaceGenerator {
 	/**
 	 * Bounded cache of expensive horizontal column prepass data.
 	 *
-	 * Keyed by (chunkX, chunkZ) packed into a bigint.
+	 * Keyed by (chunkX, chunkZ) packed into a number.
 	 */
 	private static readonly MAX_COLUMN_PREPASS_CACHE = 512;
 	private static readonly columnPrepassCache = new Map<
-		bigint,
+		number,
 		ColumnPrepassCacheEntry
 	>();
 
 	/**
 	 * Bounded flora-column cache for overlapping flora scans.
 	 *
-	 * Keyed by (worldX, worldZ) packed into a bigint.
+	 * Keyed by (worldX, worldZ) packed into a number.
 	 */
 	private static readonly MAX_FLORA_COLUMN_CACHE = 16384;
 	private static readonly floraColumnCache = new Map<
-		bigint,
+		number,
 		FloraColumnCacheEntry
 	>();
 
@@ -151,12 +154,17 @@ export class SurfaceGenerator {
 		];
 	}
 
-	private packXZKey(x: number, z: number): bigint {
-		return (BigInt(x) << 32n) ^ (BigInt(z) & 0xffffffffn);
+	// Number-only key — eliminates BigInt heap allocation on every cache probe.
+	// For columnPrepassCache (chunkX/Z, small integers): shift-pack is
+	// collision-free within ±32768 chunk range.
+	// For floraColumnCache (worldX/Z, larger range): multiply-xor spreads bits.
+	private packXZKey(x: number, z: number): number {
+		return ((x * 73856093) ^ (z * 19349663)) | 0;
 	}
 
-	private getColumnPrepassKey(chunkX: number, chunkZ: number): bigint {
-		return this.packXZKey(chunkX, chunkZ);
+	private getColumnPrepassKey(chunkX: number, chunkZ: number): number {
+		// Chunk coords are small; direct shift-pack is bijective within ±32768.
+		return (((chunkX & 0xffff) << 16) | (chunkZ & 0xffff)) >>> 0;
 	}
 
 	/**
@@ -201,6 +209,7 @@ export class SurfaceGenerator {
 		}
 
 		const CHUNK_SIZE = this.params.CHUNK_SIZE;
+		const SEA_LEVEL = this.params.SEA_LEVEL;
 		const chunkWorldX = chunkX * CHUNK_SIZE;
 		const chunkWorldZ = chunkZ * CHUNK_SIZE;
 		const area = CHUNK_SIZE * CHUNK_SIZE;
@@ -212,8 +221,9 @@ export class SurfaceGenerator {
 
 		const terrainHeightMap = new Int32Array(area);
 		const riverNoiseMap = new Float32Array(area);
-		const yFreqMap = new Float32Array(area);
+
 		const topSurfaceYMap = new Int16Array(area);
+		const isBeachMap = new Uint8Array(area);
 		topSurfaceYMap.fill(NO_SURFACE_Y);
 
 		let minSurfaceY = Number.POSITIVE_INFINITY;
@@ -223,7 +233,7 @@ export class SurfaceGenerator {
 			chunkWorldX * 0.00001,
 			chunkWorldZ * 0.00001,
 		);
-		const yFreq = 0.04 + treeMod * 0.02;
+		const yFreqMap = 0.04 + treeMod * 0.02;
 
 		for (let localX = 0; localX < CHUNK_SIZE; localX++) {
 			const worldX = chunkWorldX + localX;
@@ -239,13 +249,27 @@ export class SurfaceGenerator {
 					worldX,
 					worldZ,
 					terrainHeight,
-					yFreq,
+					yFreqMap,
 				);
 
 				terrainHeightMap[columnIndex] = terrainHeight;
 				riverNoiseMap[columnIndex] = riverNoise;
-				yFreqMap[columnIndex] = yFreq;
+
 				topSurfaceYMap[columnIndex] = topSurfaceY;
+
+				// Beach check — only meaningful when the surface is near sea level.
+				// Compute here in the prepass so resolveSolidBlockId never calls
+				// isBeachLocation (which fires 4 getFinalTerrainHeight lookups each).
+				if (
+					terrainHeight >= SEA_LEVEL - 2 &&
+					terrainHeight <= SEA_LEVEL + 2 &&
+					(getFinalTerrainHeight(worldX + 1, worldZ) <= SEA_LEVEL ||
+						getFinalTerrainHeight(worldX - 1, worldZ) <= SEA_LEVEL ||
+						getFinalTerrainHeight(worldX, worldZ + 1) <= SEA_LEVEL ||
+						getFinalTerrainHeight(worldX, worldZ - 1) <= SEA_LEVEL)
+				) {
+					isBeachMap[columnIndex] = 1;
+				}
 
 				if (topSurfaceY !== NO_SURFACE_Y) {
 					if (topSurfaceY < minSurfaceY) minSurfaceY = topSurfaceY;
@@ -264,6 +288,7 @@ export class SurfaceGenerator {
 			riverNoiseMap,
 			yFreqMap,
 			topSurfaceYMap,
+			isBeachMap,
 			minSurfaceY,
 			maxSurfaceY,
 		};
@@ -283,7 +308,7 @@ export class SurfaceGenerator {
 		return built;
 	}
 
-	private getFloraColumnKey(worldX: number, worldZ: number): bigint {
+	private getFloraColumnKey(worldX: number, worldZ: number): number {
 		return this.packXZKey(worldX, worldZ);
 	}
 
@@ -422,18 +447,15 @@ export class SurfaceGenerator {
 
 	private resolveSolidBlockId(
 		currentBiome: Biome,
-		worldX: number,
-		worldZ: number,
 		worldY: number,
 		depthBelowSurface: number,
+		isBeach: boolean,
 	): number {
 		const SEA_LEVEL = this.params.SEA_LEVEL;
 
 		let blockId = currentBiome.stoneBlock;
 
 		if (depthBelowSurface === 0) {
-			const isBeach = this.isBeachLocation(worldX, worldZ, worldY);
-
 			if (worldY < SEA_LEVEL - 1) {
 				blockId = currentBiome.seafloorBlock;
 			} else if (isBeach) {
@@ -508,7 +530,8 @@ export class SurfaceGenerator {
 		const columnPrepass = this.getOrBuildColumnPrepass(chunkX, chunkZ);
 		const minSurfaceY = columnPrepass.minSurfaceY;
 		const maxSurfaceY = columnPrepass.maxSurfaceY;
-
+		const isBeachMap = columnPrepass.isBeachMap;
+		const yFreq = columnPrepass.yFreqMap;
 		for (let localX = 0; localX < CHUNK_SIZE; localX++) {
 			const worldX = chunkWorldX + localX;
 
@@ -518,7 +541,7 @@ export class SurfaceGenerator {
 
 				const terrainHeight = columnPrepass.terrainHeightMap[columnIndex];
 				const riverNoise = columnPrepass.riverNoiseMap[columnIndex];
-				const yFreq = columnPrepass.yFreqMap[columnIndex];
+
 				const topSurfaceY = columnPrepass.topSurfaceYMap[columnIndex];
 
 				const hasSurface = topSurfaceY !== NO_SURFACE_Y;
@@ -669,10 +692,9 @@ export class SurfaceGenerator {
 
 						const blockId = this.resolveSolidBlockId(
 							currentBiome,
-							worldX,
-							worldZ,
 							worldY,
 							depthBelowSurface,
+							isBeachMap[columnIndex] === 1,
 						);
 						placeBlock(worldX, worldY, worldZ, blockId, true);
 						airGapSinceLastSolid = 0;
@@ -778,10 +800,9 @@ export class SurfaceGenerator {
 
 						const blockId = this.resolveSolidBlockId(
 							currentBiome,
-							worldX,
-							worldZ,
 							worldY,
 							depthBelowSurface,
+							isBeachMap[columnIndex] === 1,
 						);
 						placeBlock(worldX, worldY, worldZ, blockId, true);
 						airGapSinceLastSolid = 0;
@@ -820,6 +841,8 @@ export class SurfaceGenerator {
 		const chunkWorldX = chunkX * chunkSize;
 		const chunkWorldZ = chunkZ * chunkSize;
 		const NO_SURFACE_Y = CAVE_NO_SURFACE_Y;
+		// O(1) cache hit — generateTerrain already built this entry.
+		const columnPrepass = this.getOrBuildColumnPrepass(chunkX, chunkZ);
 
 		for (
 			let localX = -SCAN_RADIUS;
@@ -885,7 +908,18 @@ export class SurfaceGenerator {
 					continue;
 				}
 
-				const isBeach = this.isBeachLocation(worldX, worldZ, surfaceY);
+				// Beach flag — read from prepass instead of calling isBeachLocation
+				// (which fires 4 getFinalTerrainHeight lookups per column).
+				let isBeach: boolean;
+				if (isInsideChunkColumn) {
+					isBeach = columnPrepass.isBeachMap[localX + localZ * chunkSize] === 1;
+				} else {
+					const resolved = this.resolveColumnPrepassForWorld(worldX, worldZ);
+					isBeach =
+						resolved.entry.isBeachMap[
+							resolved.localX + resolved.localZ * chunkSize
+						] === 1;
+				}
 				const topBlockId = isBeach ? colBiome.beachBlock : colBiome.topBlock;
 
 				// Grass (id 64) spawns on grass blocks (id 15) using noise density.
@@ -968,29 +1002,6 @@ export class SurfaceGenerator {
 				}
 			}
 		}
-	}
-
-	private isBeachLocation(
-		worldX: number,
-		worldZ: number,
-		terrainHeight: number,
-	): boolean {
-		const SEA_LEVEL = this.params.SEA_LEVEL;
-
-		if (!(terrainHeight >= SEA_LEVEL - 2 && terrainHeight <= SEA_LEVEL + 2)) {
-			return false;
-		}
-
-		return (
-			this.isNearWater(worldX + 1, worldZ) ||
-			this.isNearWater(worldX - 1, worldZ) ||
-			this.isNearWater(worldX, worldZ + 1) ||
-			this.isNearWater(worldX, worldZ - 1)
-		);
-	}
-
-	private isNearWater(x: number, z: number): boolean {
-		return getFinalTerrainHeight(x, z) <= this.params.SEA_LEVEL;
 	}
 
 	private getDensity(

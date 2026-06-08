@@ -7,14 +7,14 @@ import { WorldEnvironment } from "../../Maps/WorldEnvironment";
 import { type Recipe, Recipes } from "../Crafting/CraftingManager";
 import { PlayerInventory } from "../Inventory/PlayerInventory";
 import type { Player } from "../Player";
-import { CrossHair } from "./Crosshair/CrossHair";
+import { Crosshair } from "./Crosshair/Crosshair";
 
 export class PlayerHud {
 	#engine: Engine;
 	#scene: Scene;
 	readonly #player: Player;
 
-	public readonly crossHair: CrossHair;
+	public readonly crossHair: Crosshair;
 
 	public get player(): Player {
 		return this.#player;
@@ -60,7 +60,7 @@ export class PlayerHud {
 		this.#scene = scene;
 		this.#player = player;
 		PlayerHud.#inventory = player.playerInventory;
-		this.crossHair = new CrossHair(engine, scene, player);
+		this.crossHair = new Crosshair(engine, scene, player);
 		this.#overlayDiv = this.initializeHUD();
 		this.createHotbarUI();
 		this.createStatsUI();

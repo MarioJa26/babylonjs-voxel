@@ -1,11 +1,9 @@
 import { fileURLToPath, URL } from "node:url";
-import vue from "@vitejs/plugin-vue";
 import { defineConfig } from "vite";
 import glsl from "vite-plugin-glsl"; // npm install vite-plugin-glsl --save-dev
 
 export default defineConfig({
 	plugins: [
-		vue(),
 		glsl(), // This replaces your old 'raw-loader' for .glsl files
 	],
 	resolve: {

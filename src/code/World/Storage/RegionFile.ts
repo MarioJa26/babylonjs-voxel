@@ -21,6 +21,12 @@ const H_FREE_LIST_HEAD = 28;
 const FREE_LIST_NONE = 0xffffffff;
 const HEADROOM_MIN = 1024 * 1024;
 
+// Compaction threshold: compact on open when orphaned bytes exceed this fraction.
+// 0.5 means compact when live data is less than half of usedBytes.
+const COMPACT_RATIO_THRESHOLD = 0.5;
+// Minimum orphaned bytes before bothering to compact (avoid work on tiny files).
+const COMPACT_MIN_ORPHANED_BYTES = 256 * 1024; // 256 KB
+
 // PERF: inline slot index — branchless for both voxel and entity layers.
 function slotIndex(
 	lx: number,
@@ -46,9 +52,6 @@ export class RegionFile {
 	private freeListHead: number;
 	private fileSize: number;
 	private headerDirty = false;
-
-	// FIX: per-instance scratch (was module-level, causing flush() cross-instance clobber).
-	private readonly _slotScratch = new Uint8Array(SLOT_SIZE);
 
 	// MEMORY: Uint8Array bitfield instead of Set<number> — 1 KB vs O(n) boxed ints.
 	private readonly _dirtyBits = new Uint8Array(Math.ceil(SLOT_ENTRIES / 8));
@@ -89,7 +92,7 @@ export class RegionFile {
 		regionY: number,
 		regionZ: number,
 	): Promise<RegionFile> {
-		let fileSize = (accessHandle as any).getSize() as number;
+		let fileSize = accessHandle.getSize() as number;
 		const isNew = fileSize === 0;
 
 		const headerBuf = new ArrayBuffer(HEADER_SIZE);
@@ -114,15 +117,15 @@ export class RegionFile {
 			// but we keep it for compatibility with the format.
 			headerDv.setUint32(H_FREE_LIST_HEAD, FREE_LIST_NONE, true);
 
-			(accessHandle as any).write(headerU8, { at: 0 });
-			(accessHandle as any).write(new Uint8Array(slotTable), {
+			accessHandle.write(headerU8, { at: 0 });
+			accessHandle.write(new Uint8Array(slotTable), {
 				at: HEADER_SIZE,
 			});
-			(accessHandle as any).truncate(DATA_START);
-			(accessHandle as any).flush();
+			accessHandle.truncate(DATA_START);
+			accessHandle.flush();
 			fileSize = DATA_START;
 		} else {
-			(accessHandle as any).read(headerU8, { at: 0 });
+			accessHandle.read(headerU8, { at: 0 });
 
 			const magic = headerDv.getUint32(H_MAGIC, true);
 			if (magic !== MAGIC) {
@@ -137,7 +140,7 @@ export class RegionFile {
 				);
 			}
 
-			(accessHandle as any).read(new Uint8Array(slotTable), {
+			accessHandle.read(new Uint8Array(slotTable), {
 				at: HEADER_SIZE,
 			});
 
@@ -149,6 +152,7 @@ export class RegionFile {
 			// validating each slot's data range against the actual file size.
 			// Clear any slots whose data extends beyond the file.
 			let computedUsedBytes = 0;
+			let liveBytes = 0;
 			let computedOccupied = 0;
 			let repairedSlots = false;
 			for (let i = 0; i < SLOT_ENTRIES; i++) {
@@ -159,6 +163,7 @@ export class RegionFile {
 					const absoluteEnd = DATA_START + dataOffset + size;
 					if (absoluteEnd <= fileSize) {
 						computedOccupied++;
+						liveBytes += size;
 						if (dataOffset + size > computedUsedBytes) {
 							computedUsedBytes = dataOffset + size;
 						}
@@ -175,29 +180,7 @@ export class RegionFile {
 			headerDv.setUint32(H_USED_BYTES, usedBytes, true);
 			headerDv.setUint32(H_OCCUPIED, occupiedCount, true);
 
-			// Mark dirty so the corrected header + any repaired slots get written.
-			if (repairedSlots) {
-				const rf = new RegionFile(
-					accessHandle,
-					headerBuf,
-					headerU8,
-					headerDv,
-					slotTable,
-					slotDv,
-					regionX,
-					regionY,
-					regionZ,
-					usedBytes,
-					occupiedCount,
-					freeListHead,
-					fileSize,
-				);
-				rf.headerDirty = true;
-				rf.markAllSlotsDirty();
-				return rf;
-			}
-
-			// Old file without repair — still rewrite header with corrected values.
+			// Collapse into a single construction; mark dirty and compact if needed.
 			const rf = new RegionFile(
 				accessHandle,
 				headerBuf,
@@ -214,6 +197,17 @@ export class RegionFile {
 				fileSize,
 			);
 			rf.headerDirty = true;
+			if (repairedSlots) rf.markAllSlotsDirty();
+
+			// Compact if there is significant orphaned space from old append-only writes.
+			const orphanedBytes = usedBytes - liveBytes;
+			if (
+				orphanedBytes >= COMPACT_MIN_ORPHANED_BYTES &&
+				liveBytes < usedBytes * (1 - COMPACT_RATIO_THRESHOLD)
+			) {
+				RegionFile._compact(rf, accessHandle);
+			}
+
 			return rf;
 		}
 
@@ -266,6 +260,83 @@ export class RegionFile {
 		this._dirtyBits.fill(0xff);
 	}
 
+	// ── Compaction ────────────────────────────────────────────────────────────
+	//
+	// Rewrites all live slot data contiguously from DATA_START, eliminating
+	// orphaned bytes left by the append-only write strategy.  Called on open
+	// when the orphaned fraction exceeds COMPACT_RATIO_THRESHOLD.
+	//
+	// Algorithm: collect live slots sorted by current disk offset, then slide
+	// each slot's data down to the current write head using a small copy
+	// window.  Update slot offsets in-memory; flush is deferred to the normal
+	// flush() path (headerDirty + markAllSlotsDirty are set before returning).
+
+	private static _compact(
+		rf: RegionFile,
+		accessHandle: FileSystemSyncAccessHandle,
+	): void {
+		type LiveSlot = { idx: number; offset: number; size: number };
+		const live: LiveSlot[] = [];
+		for (let i = 0; i < SLOT_ENTRIES; i++) {
+			const size = rf.slotDv.getUint32(i * SLOT_SIZE + 4, true);
+			if (size === 0) continue;
+			live.push({
+				idx: i,
+				offset: rf.slotDv.getUint32(i * SLOT_SIZE, true),
+				size,
+			});
+		}
+		// Sort by current disk offset so we copy forward without clobbering
+		// data we haven't copied yet.
+		live.sort((a, b) => a.offset - b.offset);
+
+		// 64 KB copy window — small enough to avoid GC pressure, large enough
+		// to amortise per-read/write overhead.
+		const copyBuf = new Uint8Array(64 * 1024);
+		let writeHead = 0;
+
+		for (const slot of live) {
+			if (slot.offset === writeHead) {
+				// Already in place — just advance the write head.
+				writeHead += slot.size;
+				continue;
+			}
+
+			// Copy slot data down in chunks.
+			let remaining = slot.size;
+			let srcOff = slot.offset;
+			let dstOff = writeHead;
+			while (remaining > 0) {
+				const chunk = Math.min(remaining, copyBuf.length);
+				accessHandle.read(copyBuf.subarray(0, chunk), {
+					at: DATA_START + srcOff,
+				});
+				accessHandle.write(copyBuf.subarray(0, chunk), {
+					at: DATA_START + dstOff,
+				});
+				srcOff += chunk;
+				dstOff += chunk;
+				remaining -= chunk;
+			}
+
+			// Update the in-memory slot offset.
+			rf.slotDv.setUint32(slot.idx * SLOT_SIZE, writeHead, true);
+			writeHead += slot.size;
+		}
+
+		// Truncate the file to remove the now-orphaned tail.
+		const newDataEnd = DATA_START + writeHead;
+		if (newDataEnd < rf.fileSize) {
+			accessHandle.truncate(newDataEnd);
+			rf.fileSize = newDataEnd;
+		}
+
+		rf.usedBytes = writeHead;
+		rf.headerDv.setUint32(H_USED_BYTES, writeHead, true);
+		rf.markAllSlotsDirty();
+		rf.headerDirty = true;
+	}
+
 	readChunk(
 		lx: number,
 		ly: number,
@@ -283,19 +354,20 @@ export class RegionFile {
 		}
 
 		const buf = new Uint8Array(size);
-		const got = (this.accessHandle as any).read(buf, { at: readAt });
+		const got = this.accessHandle.read(buf, { at: readAt });
 		return got === size ? buf : null;
 	}
 
 	/**
-	 * FIX: Each chunk has a *fixed* slot index (slotIndex(lx, ly, lz, isEntity)).
-	 * The original code freed the old slot, pushed it to the free list, then
-	 * called allocSlot() — which returned the same slot it just freed, then
-	 * immediately overwrote the offset field with dataOffset, clobbering the
-	 * free-list pointer it had just written.
+	 * Each chunk has a *fixed* slot index (slotIndex(lx, ly, lz, isEntity)).
 	 *
-	 * The correct approach: each chunk always lives at its fixed slot index.
-	 * Only the data region (bump pointer) uses the usedBytes counter.
+	 * Write strategy (in priority order):
+	 *   1. In-place reuse — if the new data fits within the old allocation,
+	 *      overwrite it at the same offset.  This is the common case for
+	 *      repeated edits to the same chunk and produces zero orphaned bytes.
+	 *   2. Append — otherwise bump the usedBytes pointer and write at the end.
+	 *      Orphaned bytes from the old allocation are reclaimed at the next
+	 *      compaction (triggered on open when the orphaned fraction is large).
 	 */
 	writeChunk(
 		lx: number,
@@ -306,6 +378,7 @@ export class RegionFile {
 	): void {
 		const idx = slotIndex(lx, ly, lz, isEntity);
 		const oldSize = this.readSlotSize(idx);
+		const oldOffset = this.readSlotOffset(idx);
 		const wasOccupied = oldSize > 0;
 
 		if (data.length === 0) {
@@ -317,24 +390,27 @@ export class RegionFile {
 			throw new Error("[RegionFile] Region data exceeds 4GB u32 offset limit");
 		}
 
-		const dataOffset = this.usedBytes;
-		this.writeSlotInMemory(idx, dataOffset, data.length);
-		this.usedBytes += data.length;
+		// Reuse the existing allocation if the new data fits — avoids orphaning.
+		const canReuse = wasOccupied && data.length <= oldSize;
+		const dataOffset = canReuse ? oldOffset : this.usedBytes;
 
-		if (!wasOccupied) {
-			this.occupiedCount++;
-		}
+		this.writeSlotInMemory(idx, dataOffset, data.length);
+		if (!canReuse) this.usedBytes += data.length;
+		if (!wasOccupied) this.occupiedCount++;
 		this.commitHeader();
 
-		const neededEnd = DATA_START + this.usedBytes;
+		// Only extend the file if the write would go past the current end.
+		// For in-place rewrites this is almost always a no-op.
+		const neededEnd =
+			DATA_START + (canReuse ? oldOffset + oldSize : this.usedBytes);
 		if (neededEnd > this.fileSize) {
 			const headroom = Math.max(data.length, HEADROOM_MIN);
 			const newSize = neededEnd + headroom;
-			(this.accessHandle as any).truncate(newSize);
+			this.accessHandle.truncate(newSize);
 			this.fileSize = newSize;
 		}
 
-		(this.accessHandle as any).write(data, { at: DATA_START + dataOffset });
+		this.accessHandle.write(data, { at: DATA_START + dataOffset });
 	}
 
 	removeChunk(lx: number, ly: number, lz: number, isEntity: boolean): void {
@@ -355,7 +431,7 @@ export class RegionFile {
 	 */
 	flush(): void {
 		if (this.headerDirty) {
-			(this.accessHandle as any).write(this.headerU8, { at: 0 });
+			this.accessHandle.write(this.headerU8, { at: 0 });
 			this.headerDirty = false;
 		}
 
@@ -373,7 +449,7 @@ export class RegionFile {
 				// Flush the contiguous run [runStart, i) in one write.
 				const byteOffset = runStart * SLOT_SIZE;
 				const byteLen = (i - runStart) * SLOT_SIZE;
-				(this.accessHandle as any).write(
+				this.accessHandle.write(
 					new Uint8Array(this.slotTable, byteOffset, byteLen),
 					{ at: HEADER_SIZE + byteOffset },
 				);
@@ -382,13 +458,13 @@ export class RegionFile {
 		}
 
 		bits.fill(0);
-		(this.accessHandle as any).flush();
+		this.accessHandle.flush();
 	}
 
 	close(): void {
 		this.flush();
-		if (typeof (this.accessHandle as any).close === "function") {
-			(this.accessHandle as any).close();
+		if (typeof this.accessHandle.close === "function") {
+			this.accessHandle.close();
 		}
 	}
 }

@@ -1,5 +1,3 @@
-// import { Color3, Color4 } from "@babylonjs/core"; // Removed to prevent worker crash
-
 export const SETTING_PARAMS = {
 	// --- World Generation & Loading ---
 	RENDER_DISTANCE: 2,

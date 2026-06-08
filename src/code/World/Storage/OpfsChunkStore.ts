@@ -22,18 +22,23 @@ export class OpfsChunkStore {
 	private _opQueue: PendingOp[] = [];
 	private _processing = false;
 
-	// Per-instance scratch buffers — avoids sharing mutable state across instances
-	// (module-level shared scratch caused stale-byte bugs in remove() / write()).
-	private readonly _scratch = new ArrayBuffer(SLOT_SIZE_U);
-	private readonly _scratchDv = new DataView(new ArrayBuffer(SLOT_SIZE_U));
-	private readonly _scratchU8 = new Uint8Array(new ArrayBuffer(SLOT_SIZE_U));
+	// Per-instance scratch buffers — all three views share the same backing
+	// ArrayBuffer so writes through _scratchDv / _scratchU8 are visible to
+	// each other and to the write() call.
+	// NOTE: readonly fields may only be assigned in the constructor body, not
+	// via Object.assign — Object.assign calls [[Set]] which is a no-op on
+	// non-writable properties and silently corrupts the buffer wiring.
+	private readonly _scratch: ArrayBuffer;
+	private readonly _scratchDv: DataView;
+	private readonly _scratchU8: Uint8Array;
+
+	// Cached file size — avoids a getSize() syscall on every write().
+	private _fileSize = 0;
 
 	constructor() {
-		// Wire up the per-instance scratch views to the same buffer.
-		Object.assign(this, {
-			_scratchDv: new DataView(this._scratch),
-			_scratchU8: new Uint8Array(this._scratch),
-		});
+		this._scratch = new ArrayBuffer(SLOT_SIZE_U);
+		this._scratchDv = new DataView(this._scratch);
+		this._scratchU8 = new Uint8Array(this._scratch);
 	}
 
 	private get _dataStartOffset(): number {
@@ -44,9 +49,7 @@ export class OpfsChunkStore {
 		const root = await navigator.storage.getDirectory();
 		this._fileHandle = await root.getFileHandle(name, { create: true });
 		const file = await this._fileHandle.getFile();
-		this._accessHandle = await (
-			this._fileHandle as any
-		).createSyncAccessHandle();
+		this._accessHandle = await this._fileHandle.createSyncAccessHandle();
 
 		try {
 			if (file.size === 0) {
@@ -112,18 +115,21 @@ export class OpfsChunkStore {
 			const slotAt = HEADER_SIZE_U + off;
 			const dataAt = this._dataStartOffset + Number(diskOffset);
 			const neededEnd = Math.max(slotAt + SLOT_SIZE_U, dataAt + size);
-			const fileSize = (this._accessHandle as any).getSize() as number;
-			if (neededEnd > fileSize) {
+
+			// Use cached _fileSize — avoids a getSize() syscall on every write.
+			if (neededEnd > this._fileSize) {
 				const headroom = Math.max(size, 1024 * 1024);
-				(this._accessHandle as any).truncate(neededEnd + headroom);
-				(this._accessHandle as any).flush();
+				const newSize = neededEnd + headroom;
+				this._accessHandle!.truncate(newSize);
+				this._fileSize = newSize;
+				this._accessHandle!.flush();
 			}
 
 			// Also update the in-memory table view so subsequent findSlot probes work.
 			new Uint8Array(this._tableBuffer, off, SLOT_SIZE_U).set(this._scratchU8);
 
-			(this._accessHandle as any).write(this._scratchU8, { at: slotAt });
-			(this._accessHandle as any).write(data, { at: dataAt });
+			this._accessHandle!.write(this._scratchU8, { at: slotAt });
+			this._accessHandle!.write(data, { at: dataAt });
 
 			// FIX: only increment _size when slot was previously empty/removed.
 			// Never decrement _dataSize — it's an append-only bump pointer.
@@ -155,7 +161,7 @@ export class OpfsChunkStore {
 
 			const buf = new Uint8Array(size);
 			const at = this._dataStartOffset + Number(offset);
-			const got = (this._accessHandle as any).read(buf, { at });
+			const got = this._accessHandle!.read(buf, { at });
 			if (got !== size) {
 				result = null;
 				return;
@@ -186,13 +192,13 @@ export class OpfsChunkStore {
 			// We write flag byte and size field independently — minimal I/O.
 			const flagByte = new Uint8Array(1);
 			flagByte[0] = SLOT_FLAG_REMOVED;
-			(this._accessHandle as any).write(flagByte, {
+			this._accessHandle!.write(flagByte, {
 				at: HEADER_SIZE_U + off + 9,
 			});
 
 			const sizeBuf = new Uint8Array(4);
 			new DataView(sizeBuf.buffer).setUint32(0, 0, true);
-			(this._accessHandle as any).write(sizeBuf, {
+			this._accessHandle!.write(sizeBuf, {
 				at: HEADER_SIZE_U + off + 16,
 			});
 
@@ -211,7 +217,7 @@ export class OpfsChunkStore {
 		await this.enqueue(async () => {
 			if (!this._dirty) return;
 			this._writeHeader();
-			(this._accessHandle as any).flush();
+			this._accessHandle!.flush();
 			this._dirty = false;
 		});
 	}
@@ -226,18 +232,18 @@ export class OpfsChunkStore {
 		this._dataSize = 0n;
 		this._tableBuffer = new ArrayBuffer(this._capacity * SLOT_SIZE_U);
 		this._tableView = new DataView(this._tableBuffer);
-		this._writeHeader();
-		// Write empty slot table.
-		(this._accessHandle as any).write(new Uint8Array(this._tableBuffer), {
-			at: HEADER_SIZE_U,
-		});
-		(this._accessHandle as any).truncate(this._dataStartOffset);
-		(this._accessHandle as any).flush();
+		this._writeHeader(); // writes 4 KB header
+		// Use truncate to extend the file to the full table region.
+		// The OS zero-fills implicitly — avoids writing a 32 MB zero buffer
+		// through JS, which is slow on some OPFS implementations.
+		this._accessHandle!.truncate(this._dataStartOffset);
+		this._fileSize = this._dataStartOffset;
+		this._accessHandle!.flush();
 	}
 
 	private async _load(): Promise<void> {
 		const header = new Uint8Array(HEADER_SIZE_U);
-		(this._accessHandle as any).read(header, { at: 0 });
+		this._accessHandle!.read(header, { at: 0 });
 		const dv = new DataView(header.buffer);
 		// Ignore stored _size and _dataSize — recompute from table.
 		this._capacity = dv.getUint32(12, true);
@@ -251,7 +257,7 @@ export class OpfsChunkStore {
 		const tableBytes = this._capacity * SLOT_SIZE_U;
 		this._tableBuffer = new ArrayBuffer(tableBytes);
 		const tableU8 = new Uint8Array(this._tableBuffer);
-		(this._accessHandle as any).read(tableU8, { at: HEADER_SIZE_U });
+		this._accessHandle!.read(tableU8, { at: HEADER_SIZE_U });
 		this._tableView = new DataView(this._tableBuffer);
 
 		// FIX: recompute _size and _dataSize from the slot table to recover
@@ -270,6 +276,10 @@ export class OpfsChunkStore {
 		}
 		this._size = liveCount;
 		this._dataSize = dataEnd;
+
+		// Cache the actual file size so write() doesn't call getSize() per op.
+		this._fileSize = this._accessHandle!.getSize() as number;
+
 		this._dirty = true;
 	}
 
@@ -341,7 +351,7 @@ export class OpfsChunkStore {
 		dv.setUint32(0, this._size, true);
 		dv.setBigUint64(4, this._dataSize, true);
 		dv.setUint32(12, this._capacity, true);
-		(this._accessHandle as any).write(header, { at: 0 });
+		this._accessHandle!.write(header, { at: 0 });
 	}
 
 	/**

@@ -9,7 +9,7 @@ import {
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { getTransformedShapeBoxes } from "@/code/World/Shape/BlockShapeTransforms";
 import type { BlockRaycastHit } from "./BlockRaycaster";
-import type { BoatBlockHitContext } from "./BreakinBlockHandler";
+import type { BoatBlockHitContext } from "./BreakingBlockHandler";
 
 export class BlockHighlight {
 	readonly #scene: Scene;

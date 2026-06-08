@@ -18,9 +18,15 @@ const generator = new WorldGenerator(GenerationParams);
 // Block compression
 // ---------------------------------------------------------------------------
 
-// Reused across calls in this worker; cleared at the start of each
-// compressBlocks invocation. Allocating a fresh 64 KiB Uint8Array per
-// chunk gen was measurable in profiling.
+// _compressSeen dual-use in compressBlocks:
+//   Pass 1: seen[id] = 1 for each unique block ID encountered.
+//   Pass 2: seen[palette[i]] = i overwrites flags with palette indices
+//           for O(1) nibble lookup in the packing loop.
+//   Safe because palette index 0 sets seen[id] = 0 (falsy), but the
+//   packing loop only reads seen[blocks[i]] for block IDs that were
+//   already confirmed to be in the palette — and index 0 is the correct
+//   nibble value for palette[0].  The zero-fill at the start of each
+//   call clears both passes' state.
 const _compressSeen = new Uint8Array(65536);
 
 function compressBlocks(blocks: Uint8Array): {
@@ -56,12 +62,15 @@ function compressBlocks(blocks: Uint8Array): {
 		const palette = new Uint16Array(uniqueCount);
 		let pi = 0;
 
+		// Build palette from the seen flags set in the first pass.
+		// This loop completes before seen[] is overwritten with palette indices.
 		for (let id = 0; id < 65536 && pi < uniqueCount; id++) {
 			if (seen[id]) {
 				palette[pi++] = id;
 			}
 		}
 
+		// Overwrite seen[] with palette indices for O(1) lookup in the pack loop.
 		for (let i = 0; i < palette.length; i++) {
 			seen[palette[i]] = i;
 		}
@@ -69,17 +78,19 @@ function compressBlocks(blocks: Uint8Array): {
 		const len = (blocks.length + 1) >> 1;
 		const packedArray = new Uint8Array(new ArrayBuffer(len));
 
-		for (let i = 0; i < blocks.length; i++) {
-			const nibble = seen[blocks[i]];
-			const byteIndex = i >> 1;
-
-			if (i & 1) {
-				packedArray[byteIndex] =
-					(packedArray[byteIndex] & 0x0f) | ((nibble & 0x0f) << 4);
-			} else {
-				packedArray[byteIndex] =
-					(packedArray[byteIndex] & 0xf0) | (nibble & 0x0f);
-			}
+		// PERF: process pairs to eliminate the per-voxel branch and let V8
+		// auto-vectorise the inner loop.  For 32³ = 32768 voxels this halves
+		// the iteration count (32768 → 16384) and removes the branch predictor
+		// pressure entirely.
+		const len32 = blocks.length >> 1;
+		for (let i = 0; i < len32; i++) {
+			packedArray[i] =
+				(seen[blocks[i * 2]!]! & 0x0f) |
+				((seen[blocks[i * 2 + 1]!]! & 0x0f) << 4);
+		}
+		// Handle a trailing odd element if blocks.length is odd.
+		if (blocks.length & 1) {
+			packedArray[len32] = seen[blocks[blocks.length - 1]!]! & 0x0f;
 		}
 
 		return {
@@ -139,12 +150,12 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
 				);
 			} catch (err) {
 				console.error("GenerateDistantTerrain failed:", err);
-				// Post back a failure so main thread doesn't hang
+				const { requestId, centerChunkX, centerChunkZ } = event.data;
 				self.postMessage({
 					type: WorkerTaskType.GenerateDistantTerrain_Generated,
-					requestId: (event.data as any).requestId,
-					centerChunkX: (event.data as any).centerChunkX,
-					centerChunkZ: (event.data as any).centerChunkZ,
+					requestId,
+					centerChunkX,
+					centerChunkZ,
 					failed: true,
 				});
 			}

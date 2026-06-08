@@ -17,7 +17,6 @@ export const ItemUseActions: Record<string, ItemUseAction> = {
 		const blockAtHit = getBlockByWorldCoords(hit.x, hit.y, hit.z);
 
 		if (blockAtHit !== BlockType.Water) {
-			console.log("Boat must be placed on water.");
 			return;
 		}
 
@@ -38,7 +37,6 @@ export const ItemUseActions: Record<string, ItemUseAction> = {
 					const blockId = getBlockByWorldCoords(checkX, checkY, checkZ);
 
 					if (isCollidableBlock(blockId)) {
-						console.log("Not enough space to place the boat.");
 						return;
 					}
 				}

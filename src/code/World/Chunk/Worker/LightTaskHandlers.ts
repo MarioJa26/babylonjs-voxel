@@ -23,14 +23,14 @@ import {
 	wrapLightHeader,
 } from "./ChunkLightHeader";
 import {
+	addLightAt,
 	bumpLightVersion,
+	type ChunkViewRegistry,
 	createRegistry,
 	lightMutate,
 	lightSkyReconcile,
 	propagateDeferred,
 	registerChunk,
-	type ChunkView,
-	type ChunkViewRegistry,
 	unregisterChunk,
 	updateChunkBuffers,
 } from "./LightCore";
@@ -40,6 +40,11 @@ type LightState = {
 };
 
 const state: LightState = { registry: null };
+
+// Pending LightMutate requests that arrived before the target chunk was
+// registered.  Replayed in handleRegisterChunk once the chunk view exists.
+const pendingMutations = new Map<bigint, LightMutateRequest[]>();
+const MAX_PENDING_PER_CHUNK = 100;
 
 /**
  * Wrap a SharedArrayBuffer as the appropriate TypedArray view based on
@@ -111,10 +116,20 @@ function handleRegisterChunk(req: LightRegisterChunkRequest): void {
 		palette,
 		light_array,
 	});
+
+	// Replay light mutations that arrived before this chunk was registered.
+	const queue = pendingMutations.get(req.chunkId);
+	if (queue) {
+		pendingMutations.delete(req.chunkId);
+		for (const mutation of queue) {
+			handleMutate(mutation);
+		}
+	}
 }
 
 function handleUnregisterChunk(req: LightUnregisterChunkRequest): void {
 	if (!state.registry) return;
+	pendingMutations.delete(req.chunkId);
 	unregisterChunk(state.registry, req.chunkId);
 }
 
@@ -140,6 +155,19 @@ function handleUpdateBuffers(req: LightUpdateChunkBuffersRequest): void {
 
 function handleMutate(req: LightMutateRequest): void {
 	if (!state.registry) return;
+	const view = state.registry.views.get(req.chunkId);
+	if (!view || !view.isLoaded) {
+		// Chunk not yet registered (mid-terrain-generation); replay later.
+		let queue = pendingMutations.get(req.chunkId);
+		if (!queue) {
+			queue = [];
+			pendingMutations.set(req.chunkId, queue);
+		}
+		if (queue.length < MAX_PENDING_PER_CHUNK) {
+			queue.push(req);
+		}
+		return;
+	}
 	const dirty = lightMutate(
 		state.registry,
 		req.chunkId,
@@ -155,19 +183,10 @@ function handleMutate(req: LightMutateRequest): void {
 
 function handleAddEmission(req: LightAddEmissionRequest): void {
 	if (!state.registry) return;
-	const view: ChunkView | undefined = state.registry.views.get(req.chunkId);
-	if (!view) return;
+	const view = state.registry.views.get(req.chunkId);
+	if (!view || !view.isLoaded) return;
 	const dirty = new Set<number>();
-	// Inlined "addLightAt" without the queue.push so we don't need an
-	// extra public export.
-	const size = 32;
-	const idx = req.x + req.y * size + req.z * size * size;
-	const cur = view.light_array[idx]! & 0xf;
-	if (req.level > cur) {
-		const newByte = (view.light_array[idx]! & 0xf0) | req.level;
-		view.light_array[idx] = newByte;
-		dirty.add(view.headerSlot);
-	}
+	addLightAt(state.registry, view, req.x, req.y, req.z, req.level, dirty);
 	for (const slot of dirty) bumpLightVersion(state.registry, slot);
 	postDirty(req.seq, dirty);
 }
@@ -201,6 +220,7 @@ export const LightTaskHandlers = {
 	// Test-only helpers — not used from chunk.worker.ts at runtime.
 	_resetStateForTests(): void {
 		state.registry = null;
+		pendingMutations.clear();
 	},
 	_getRegistryForTests(): ChunkViewRegistry | null {
 		return state.registry;
