@@ -19,7 +19,7 @@ import {
 import { PlayerHud } from "./Hud/PlayerHud";
 import type { IPlayerBody } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
-import type { PlayerStats } from "./PlayerStats";
+import { Gamemodes, type PlayerStats } from "./PlayerStats";
 
 export let isInCave = false;
 
@@ -71,7 +71,10 @@ export class PlayerLoopController {
 			const dt = (this.scene.deltaTime || 0) / 1000;
 
 			if (this.playerVehicle.isSprinting) {
-				if (!this.playerStats.consumeStamina(4 * dt)) {
+				if (
+					!this.playerStats.consumeStamina(4 * dt) &&
+					this.playerStats.gamemode !== Gamemodes.Creative
+				) {
 					this.playerVehicle.isSprinting = false;
 				}
 			}
