@@ -34,7 +34,7 @@ type BoatChunkBlockChangeListener = (
 
 export class BoatChunk {
 	private static activeChunks = new Set<BoatChunk>();
-	private static readonly CHUNK_COORD_BASE = 1_200_000;
+	private static readonly CHUNK_Y_BASE = 670_000;
 	private static readonly CHUNK_COORD_GRID_WIDTH = 256;
 	private static readonly CHUNK_COORD_SPACING = 4;
 	private static nextChunkSlot = 0;
@@ -149,9 +149,9 @@ export class BoatChunk {
 		const gx = slot % BoatChunk.CHUNK_COORD_GRID_WIDTH;
 		const gz = Math.floor(slot / BoatChunk.CHUNK_COORD_GRID_WIDTH);
 		return {
-			x: BoatChunk.CHUNK_COORD_BASE + gx * BoatChunk.CHUNK_COORD_SPACING,
-			y: 32,
-			z: BoatChunk.CHUNK_COORD_BASE + gz * BoatChunk.CHUNK_COORD_SPACING,
+			x: gx * BoatChunk.CHUNK_COORD_SPACING,
+			y: BoatChunk.CHUNK_Y_BASE + gz * BoatChunk.CHUNK_COORD_SPACING,
+			z: 0,
 		};
 	}
 

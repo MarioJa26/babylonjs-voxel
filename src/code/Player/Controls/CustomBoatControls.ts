@@ -42,9 +42,9 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 	#pushVectorUp = new Vector3(0, 0.5, 0);
 	#pushVectorDown = new Vector3(0, -0.5, 0);
 
-	#pushStrength = 2;
+	#pushStrength = 3;
 	#pushNoseUpStrength = -3;
-	#angularPushStrength = 11;
+	#angularPushStrength = 1;
 	#angularRotationStrength = 0.45;
 	#pushAngularVectorLeft = new Vector3(
 		this.#pushNoseUpStrength,

@@ -302,39 +302,30 @@ function ensureSharedFacePositionBuffer(): void {
 	);
 }
 
-function getFaceBufferLengths(mesh: Mesh): Record<string, number> {
-	if (!mesh.metadata || typeof mesh.metadata !== "object") {
-		mesh.metadata = {};
-	}
-	const metadata = mesh.metadata as {
-		__chunkMesherFaceBufferLengths?: Record<string, number>;
-	};
-	if (!metadata.__chunkMesherFaceBufferLengths) {
-		metadata.__chunkMesherFaceBufferLengths = Object.create(null) as Record<
-			string,
-			number
-		>;
-	}
-	return metadata.__chunkMesherFaceBufferLengths;
-}
-
 function upsertFaceVertexBuffer(
 	mesh: Mesh,
 	engine: ReturnType<typeof Map1.mainScene.getEngine>,
 	kind: string,
 	data: Uint8Array,
 ): void {
-	const bufferLengths = getFaceBufferLengths(mesh);
 	const existing = mesh.getVertexBuffer(kind);
 	const nextLength = data.length;
 
-	// Only recreate when the buffer needs to GROW.
-	if (existing?.isUpdatable() && bufferLengths[kind] >= nextLength) {
-		existing.update(data);
-		return;
+	if (existing?.isUpdatable()) {
+		// Check actual WebGL buffer capacity from the raw data byteLength.
+		// getData() returns the internal data array whose byteLength reflects
+		// the GPU buffer's allocation size.
+		const rawData = existing.getData();
+		const capacity = rawData
+			? ((rawData as ArrayBufferView).byteLength ?? 0)
+			: 0;
+		if (capacity >= nextLength) {
+			existing.update(data);
+			return;
+		}
 	}
 
-	// Size changed or old buffer is not updatable -> recreate.
+	// Buffer too small or not updatable -> recreate.
 	existing?.dispose();
 
 	mesh.setVerticesBuffer(
@@ -352,8 +343,6 @@ function upsertFaceVertexBuffer(
 			false,
 		),
 	);
-
-	bufferLengths[kind] = nextLength;
 }
 
 function upsertMesh(
