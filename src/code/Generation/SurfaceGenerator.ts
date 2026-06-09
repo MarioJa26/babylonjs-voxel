@@ -260,9 +260,13 @@ export class SurfaceGenerator {
 				// Beach check — only meaningful when the surface is near sea level.
 				// Compute here in the prepass so resolveSolidBlockId never calls
 				// isBeachLocation (which fires 4 getFinalTerrainHeight lookups each).
+				// Uses topSurfaceY (actual surface height from findTopSurfaceY),
+				// not terrainHeight (base heightmap value), so columns whose
+				// surface is eroded/raised to water height are correctly flagged.
 				if (
-					terrainHeight >= SEA_LEVEL - 2 &&
-					terrainHeight <= SEA_LEVEL + 2 &&
+					topSurfaceY !== NO_SURFACE_Y &&
+					topSurfaceY >= SEA_LEVEL - 2 &&
+					topSurfaceY <= SEA_LEVEL + 2 &&
 					(getFinalTerrainHeight(worldX + 1, worldZ) <= SEA_LEVEL ||
 						getFinalTerrainHeight(worldX - 1, worldZ) <= SEA_LEVEL ||
 						getFinalTerrainHeight(worldX, worldZ + 1) <= SEA_LEVEL ||
@@ -458,7 +462,11 @@ export class SurfaceGenerator {
 		if (depthBelowSurface === 0) {
 			if (worldY < SEA_LEVEL - 1) {
 				blockId = currentBiome.seafloorBlock;
-			} else if (isBeach) {
+			} else if (
+				isBeach &&
+				worldY >= SEA_LEVEL - 2 &&
+				worldY <= SEA_LEVEL + 2
+			) {
 				blockId = currentBiome.beachBlock;
 			} else {
 				blockId = currentBiome.topBlock;
@@ -920,7 +928,12 @@ export class SurfaceGenerator {
 							resolved.localX + resolved.localZ * chunkSize
 						] === 1;
 				}
-				const topBlockId = isBeach ? colBiome.beachBlock : colBiome.topBlock;
+				const topBlockId =
+					isBeach &&
+					surfaceY >= this.params.SEA_LEVEL - 2 &&
+					surfaceY <= this.params.SEA_LEVEL + 2
+						? colBiome.beachBlock
+						: colBiome.topBlock;
 
 				// Grass (id 64) spawns on grass blocks (id 15) using noise density.
 				// treeNoiseValue is [0,1]; threshold of 0.6 gives ~60% coverage.

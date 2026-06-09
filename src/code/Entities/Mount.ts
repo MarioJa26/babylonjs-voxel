@@ -42,7 +42,7 @@ export class Mount implements IMountable {
 	 */
 	mount(user: unknown): boolean {
 		if (user instanceof Player) {
-			return this.#mountVehicle(user as Player);
+			return this.#mountVehicle(user satisfies Player);
 		}
 		return false;
 	}

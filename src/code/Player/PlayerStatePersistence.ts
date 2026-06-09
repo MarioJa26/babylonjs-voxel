@@ -153,7 +153,7 @@ export class PlayerStatePersistence {
 			);
 			if (!raw) return;
 
-			const savedPosition = JSON.parse(raw) as SavedPlayerPosition;
+			const savedPosition = JSON.parse(raw) satisfies SavedPlayerPosition;
 			if (this.player.playerVehicle.restoreSavedPosition(savedPosition)) {
 				this.player.playerVehicle.updateCameraAndVisuals();
 			} else {
@@ -178,7 +178,7 @@ export class PlayerStatePersistence {
 			);
 			if (!raw) return;
 
-			const savedInventory = JSON.parse(raw) as SavedInventoryState;
+			const savedInventory = JSON.parse(raw) satisfies SavedInventoryState;
 			if (
 				!this.player.playerInventory.restoreSavedInventoryState(savedInventory)
 			) {

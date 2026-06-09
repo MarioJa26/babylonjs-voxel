@@ -1,4 +1,5 @@
-import { Chunk, packCoords } from "./Chunk";
+import { Chunk } from "./Chunk";
+import { packCoords } from "./DataStructures/ChunkCoords";
 import {
 	type GenerateDistantTerrainRequest,
 	type InitDistantTerrainSharedRequest,

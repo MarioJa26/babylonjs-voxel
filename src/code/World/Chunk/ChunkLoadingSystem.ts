@@ -2,9 +2,10 @@ import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import { packChunkKey } from "../Storage/ChunkKey";
 import { deserializeMeshPair } from "../Storage/MeshSerializer";
 import type { SavedChunkData, SavedChunkEntityData } from "../WorldStorage";
-import { Chunk, getChunk, packCoords } from "./Chunk";
+import { Chunk, getChunk } from "./Chunk";
 import { createMeshFromData } from "./ChunkMesher";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
+import { packCoords } from "./DataStructures/ChunkCoords";
 import type { MeshData } from "./DataStructures/MeshData";
 import { ChunkEntityRegistry } from "./Loading/ChunkEntityRegistry";
 import {

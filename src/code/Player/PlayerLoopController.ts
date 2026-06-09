@@ -201,8 +201,8 @@ export class PlayerLoopController {
 			this.#cameraStillFrames = 0;
 			this.#rebuildActiveMeshes = false;
 			// Unfreeze so Babylon rebuilds the active mesh list this frame.
-			if ((this.scene as Scene)._activeMeshesFrozen) {
-				(this.scene as Scene)._activeMeshesFrozen = false;
+			if (this.scene._activeMeshesFrozen) {
+				this.scene._activeMeshesFrozen = false;
 				this.#frozenOnce = false;
 			}
 		} else {

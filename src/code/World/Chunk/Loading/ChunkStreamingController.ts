@@ -517,6 +517,10 @@ export class ChunkStreamingController {
 			if (desiredLod <= 1 && !chunk.hasVoxelData) {
 				this.ensureChunkQueuedForLoad(chunk, desiredLod, revision, true);
 				this.tryApplyCachedLodTransitionMesh(chunk, desiredLod);
+			} else if (chunk.isDirty && !chunk.hasVoxelData && desiredLod >= 2) {
+				if (this.tryApplyCachedLodTransitionMesh(chunk, desiredLod)) {
+					chunk.isDirty = false;
+				}
 			}
 			return;
 		}
@@ -541,6 +545,11 @@ export class ChunkStreamingController {
 				}
 
 				if (desiredLod >= 2 && !hasTargetCachedMesh) {
+					chunk.lodLevel = desiredLod;
+					if (this.tryApplyCachedLodTransitionMesh(chunk, desiredLod)) {
+						return;
+					}
+					chunk.scheduleRemesh(true);
 					return;
 				}
 			}

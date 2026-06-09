@@ -174,9 +174,9 @@ export class Chunk {
 	private _paletteIndexMap: Map<number, number> | null = null;
 	private _hasVoxelData = false;
 
-	#chunkY: number;
-	#chunkX: number;
-	#chunkZ: number;
+	public chunkY: number;
+	public chunkX: number;
+	public chunkZ: number;
 
 	public mesh: Mesh | null = null;
 	public transparentMesh: Mesh | null = null;
@@ -314,9 +314,9 @@ export class Chunk {
 	// =========================================================================
 
 	constructor(chunkX: number, chunkY: number, chunkZ: number) {
-		this.#chunkX = chunkX;
-		this.#chunkY = chunkY;
-		this.#chunkZ = chunkZ;
+		this.chunkX = chunkX;
+		this.chunkY = chunkY;
+		this.chunkZ = chunkZ;
 		this.id = packCoords(chunkX, chunkY, chunkZ);
 		// numericId is a class field initializer, runs before this line,
 		// but we assign here to use the static counter correctly.
@@ -570,7 +570,7 @@ export class Chunk {
 		const size3 = Chunk.SIZE3;
 		const skyShift = Chunk.SKY_LIGHT_SHIFT;
 		const blockMask = Chunk.BLOCK_LIGHT_MASK;
-		const topWorldY = this.#chunkY * size + size - 1;
+		const topWorldY = this.chunkY * size + size - 1;
 		const aboveChunk = this.getNeighbor(0, 1, 0);
 
 		if (this.light_array.length !== Chunk.SIZE3) {
@@ -583,8 +583,8 @@ export class Chunk {
 		const la = this.light_array;
 		for (let i = 0; i < Chunk.SIZE3; i++) la[i] &= blockMask;
 
-		const chunkBaseX = this.#chunkX * size;
-		const chunkBaseZ = this.#chunkZ * size;
+		const chunkBaseX = this.chunkX * size;
+		const chunkBaseZ = this.chunkZ * size;
 		const hasLoadedAbove = !!aboveChunk?.isLoaded;
 
 		// Reusable seed queue shared with the worker's deferred-light BFS.
@@ -618,7 +618,7 @@ export class Chunk {
 				}
 
 				for (let y = size - 1; y >= 0; y--) {
-					const worldY = this.#chunkY * size + y;
+					const worldY = this.chunkY * size + y;
 					if (
 						!hasLoadedAbove &&
 						worldY < Chunk.SKYLIGHT_GENERATION_MIN_WORLD_Y
@@ -962,18 +962,8 @@ export class Chunk {
 	// Neighbour / coordinate helpers
 	// =========================================================================
 
-	get chunkX(): number {
-		return this.#chunkX;
-	}
-	get chunkY(): number {
-		return this.#chunkY;
-	}
-	get chunkZ(): number {
-		return this.#chunkZ;
-	}
-
 	public getNeighbor(dx: number, dy: number, dz: number): Chunk | undefined {
-		return getChunk(this.#chunkX + dx, this.#chunkY + dy, this.#chunkZ + dz);
+		return getChunk(this.chunkX + dx, this.chunkY + dy, this.chunkZ + dz);
 	}
 
 	public markLightChanged(): void {
@@ -1434,6 +1424,3 @@ export function getChunk(
 ): Chunk | undefined {
 	return Chunk.chunkInstances.get(packCoords(cx, cy, cz));
 }
-
-// Re-export packCoords for callers that imported it from "./Chunk".
-export { packCoords } from "./DataStructures/ChunkCoords";
