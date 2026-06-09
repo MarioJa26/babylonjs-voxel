@@ -101,11 +101,11 @@ const continentalnessSpline = new Spline([
 	{ t: -1.0, v: -100 },
 	{ t: -0.8, v: -80 },
 	{ t: -0.6, v: -60 },
-	{ t: -0.4, v: -40 },
-	{ t: -0.3, v: -25 },
-	{ t: -0.25, v: -15 },
+	{ t: -0.4, v: -50 },
+	{ t: -0.3, v: -45 },
+	{ t: -0.25, v: -35 },
 	// Coastline / sea level
-	{ t: -0.18, v: 0 },
+	{ t: -0.18, v: -30 },
 	// Lowlands / plains
 	{ t: -0.1, v: 5 },
 	{ t: 0.0, v: 15 },
