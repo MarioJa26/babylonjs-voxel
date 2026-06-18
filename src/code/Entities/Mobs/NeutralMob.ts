@@ -36,7 +36,10 @@ const DROWN_DAMAGE = 1;
 const SWIM_BUOYANCY = 6.0;
 const SWIM_SPEED_FACTOR = 0.6;
 
-type NeutralMobState = "wander" | "idle";
+enum NeutralMobState {
+	Idle,
+	Wander,
+}
 
 export abstract class NeutralMob {
 	abstract readonly mobType: string;
@@ -47,7 +50,7 @@ export abstract class NeutralMob {
 	#bodyMesh!: Mesh;
 	#velocity = new Vector3();
 	#collider: VoxelAabbCollider;
-	#state: NeutralMobState = "idle";
+	#state: NeutralMobState = NeutralMobState.Idle;
 	#stateTimer = 0;
 	#facingAngle = 0;
 	#scene: Scene;
@@ -263,7 +266,7 @@ export abstract class NeutralMob {
 			if (this.#fleeTimer > 0) {
 				fleeing = true;
 				currentSpeed = PANIC_SPEED;
-				this.#state = "wander";
+				this.#state = NeutralMobState.Wander;
 				this.#fleeTimer -= dt;
 				const away = this.#tmpAway;
 				away.copyFrom(this.#bodyMesh.position);
@@ -281,13 +284,13 @@ export abstract class NeutralMob {
 		if (!fleeing) {
 			this.#stateTimer -= dt;
 			if (this.#stateTimer <= 0) {
-				if (this.#state === "wander") {
-					this.#state = "idle";
+				if (this.#state === NeutralMobState.Wander) {
+					this.#state = NeutralMobState.Idle;
 					this.#stateTimer = 2 + Math.random() * 3;
 					this.#velocity.x = 0;
 					this.#velocity.z = 0;
 				} else {
-					this.#state = "wander";
+					this.#state = NeutralMobState.Wander;
 					this.#stateTimer = 1 + Math.random() * 4;
 					this.#facingAngle += (Math.random() - 0.5) * Math.PI;
 				}
@@ -295,7 +298,7 @@ export abstract class NeutralMob {
 		}
 
 		// Apply movement
-		if (this.#state === "wander") {
+		if (this.#state === NeutralMobState.Wander) {
 			this.#velocity.x = Math.sin(this.#facingAngle) * currentSpeed;
 			this.#velocity.z = Math.cos(this.#facingAngle) * currentSpeed;
 		}
@@ -331,7 +334,7 @@ export abstract class NeutralMob {
 		}
 
 		// Edge detection — skip while swimming
-		if (this.#state === "wander" && !inWater) {
+		if (this.#state === NeutralMobState.Wander && !inWater) {
 			const aheadX = Math.floor(
 				this.#bodyMesh.position.x + Math.sin(this.#facingAngle) * 1.5,
 			);
@@ -368,7 +371,7 @@ export abstract class NeutralMob {
 		if (Math.abs(this.#velocity.z) < 0.03) this.#velocity.z = 0;
 
 		// Rotate body to face movement direction
-		if (this.#state === "wander") {
+		if (this.#state === NeutralMobState.Wander) {
 			this.#bodyMesh.rotation.y = this.#facingAngle;
 		}
 	}
