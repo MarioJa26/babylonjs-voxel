@@ -1,6 +1,8 @@
 import {
+	type Camera,
 	Color3,
 	type FreeCamera,
+	type Observer,
 	Ray,
 	type Scene,
 	SpotLight,
@@ -10,6 +12,7 @@ import {
 export class PlayerFlashLight {
 	#flashlight: SpotLight;
 	#camera: FreeCamera;
+	#viewMatrixObs: Observer<Camera> | null = null;
 
 	constructor(scene: Scene, playerCamera: FreeCamera) {
 		// Create flashlight (SpotLight)
@@ -31,7 +34,7 @@ export class PlayerFlashLight {
 
 		// Update flashlight position on camera movement
 		const scratchRay = new Ray(Vector3.Zero(), Vector3.Zero());
-		this.#camera.onViewMatrixChangedObservable.add(() => {
+		this.#viewMatrixObs = this.#camera.onViewMatrixChangedObservable.add(() => {
 			this.#flashlight.position.copyFrom(this.#camera.position);
 			this.#camera.getForwardRayToRef(scratchRay, 0);
 			this.#flashlight.direction.copyFrom(scratchRay.direction);
@@ -40,5 +43,13 @@ export class PlayerFlashLight {
 
 	public toggle() {
 		this.#flashlight.setEnabled(!this.#flashlight.isEnabled());
+	}
+
+	public dispose(): void {
+		if (this.#viewMatrixObs) {
+			this.#camera.onViewMatrixChangedObservable.remove(this.#viewMatrixObs);
+			this.#viewMatrixObs = null;
+		}
+		this.#flashlight.dispose();
 	}
 }

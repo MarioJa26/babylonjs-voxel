@@ -36,6 +36,8 @@ export class BlockHighlight {
 
 	dispose(): void {
 		this.#scene.onBeforeRenderObservable.removeCallback(this.#renderHandle);
+		this.#mesh.dispose();
+		this.#material.dispose();
 	}
 
 	// ─── Per-frame update ────────────────────────────────────────────────────

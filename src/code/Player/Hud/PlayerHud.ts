@@ -423,6 +423,7 @@ export class PlayerHud {
 			.debug-key[data-cat="workers"]     { color: #cc66ff; }
 			.debug-key[data-cat="stats"]       { color: #ff6688; }
 			.debug-key[data-cat="biome"]       { color: #88ff44; }
+			.debug-key[data-cat="mobs"]        { color: #44ffff; }
 			.debug-slider-label {
 				color: #ffcc44;
 				font-weight: bold;

@@ -8,7 +8,7 @@ import type { MeshContext } from "../types/MeshTypes";
 export function quantizeNibble(v: number): number {
 	if (v >= 12) return 15;
 	if (v >= 8) return 11;
-	if (v >= 4) return 6;
+	if (v >= 4) return 4;
 	return 0;
 }
 

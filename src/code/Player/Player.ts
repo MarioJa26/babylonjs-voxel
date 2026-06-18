@@ -29,6 +29,8 @@ export class Player implements IUsable {
 
 	#defaultKeyboardControls!: WalkingControls;
 	#keyboardControls!: IControls<unknown>;
+	#inputController!: PlayerInputController;
+	#loopController!: PlayerLoopController;
 
 	public flashlight: PlayerFlashLight;
 	public stats: PlayerStats;
@@ -81,6 +83,8 @@ export class Player implements IUsable {
 
 		inputController.bind();
 		loopController.bind();
+		this.#inputController = inputController;
+		this.#loopController = loopController;
 	}
 
 	private pauseGame() {
@@ -96,6 +100,12 @@ export class Player implements IUsable {
 		if (document.activeElement === canvas) {
 			(Map1.mainScene.getEngine() as Engine).enterPointerlock();
 		}
+	}
+
+	public dispose(): void {
+		this.#inputController.dispose();
+		this.#loopController.dispose();
+		this.flashlight.dispose();
 	}
 
 	public get playerVehicle(): PlayerVehicle {

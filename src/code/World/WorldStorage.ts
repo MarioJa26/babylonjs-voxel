@@ -404,7 +404,13 @@ class WorldStorageImpl {
 		if (localStorage.getItem(FLAG)) return;
 
 		const root = await navigator.storage.getDirectory();
-		const dirHandle = await root.getDirectoryHandle("b102");
+		let dirHandle: FileSystemDirectoryHandle;
+		try {
+			dirHandle = await root.getDirectoryHandle("b102");
+		} catch {
+			localStorage.setItem(FLAG, "1");
+			return;
+		}
 		try {
 			await dirHandle.removeEntry("voxels.bin");
 		} catch {}

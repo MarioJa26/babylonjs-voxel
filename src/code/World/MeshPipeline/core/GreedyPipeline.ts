@@ -38,6 +38,15 @@ export type FaceEmitterCallback = (desc: GreedyFaceDescriptor) => void;
  */
 let SCRATCH_MASK = new Int32Array(0);
 let SCRATCH_LIGHTS = new Uint16Array(0);
+const _greedyFaceScratch: GreedyFaceDescriptor = {
+	slice: 0,
+	uStart: 0,
+	vStart: 0,
+	width: 0,
+	height: 0,
+	idState: 0,
+	light: 0,
+};
 
 /**
  * Ensure the reusable scratch buffers are at least the required size.
@@ -85,7 +94,8 @@ export function greedyMesh(
 	const lights = scratch.lights;
 
 	// axis-slice iteration
-	for (let slice = 0; slice < size; slice++) {
+	// Start at -1 to handle the negative boundary (face at position 0).
+	for (let slice = -1; slice < size; slice++) {
 		// Fill mask & light data for this slice.
 		// IMPORTANT:
 		// extractMask MUST overwrite every entry in mask/lights for the slice.
@@ -131,15 +141,14 @@ export function greedyMesh(
 				}
 
 				// Emit the merged face descriptor
-				emitFace({
-					slice,
-					uStart: u,
-					vStart: v,
-					width,
-					height,
-					idState,
-					light,
-				});
+				_greedyFaceScratch.slice = slice;
+				_greedyFaceScratch.uStart = u;
+				_greedyFaceScratch.vStart = v;
+				_greedyFaceScratch.width = width;
+				_greedyFaceScratch.height = height;
+				_greedyFaceScratch.idState = idState;
+				_greedyFaceScratch.light = light;
+				emitFace(_greedyFaceScratch);
 
 				// Clear the merged region so it won’t be processed again
 				for (let dv = 0; dv < height; dv++) {

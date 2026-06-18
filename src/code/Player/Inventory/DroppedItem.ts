@@ -17,12 +17,18 @@ import {
 	getLightByWorldCoords,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
+	_blockShapeInfoScratch,
 	Axis,
 	type BlockShapeInfo,
 	VoxelAabbCollider,
 } from "@/code/World/Collision/VoxelAabbCollider";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
+import {
+	computeFenceNeighborMask,
+	getFenceDynamicShape,
+	isFenceBlockId,
+} from "@/code/World/Shape/FenceConnect";
 import { getAtlasTile } from "@/code/World/Texture/BlockTextures";
 import { isCollidableBlock } from "@/code/World/Texture/BlockType";
 import { TextureAtlasFactory } from "@/code/World/Texture/TextureAtlasFactory";
@@ -37,7 +43,6 @@ export class DroppedItem implements IUsable {
 	#halfSize = 0.25;
 	#voxelCollider!: VoxelAabbCollider;
 	#scratchProbe = new Vector3();
-	#atlasTileTexture: Texture | null = null;
 
 	static readonly #allItems = new Set<DroppedItem>();
 	static #observer: Observer<Scene> | null = null;
@@ -58,6 +63,8 @@ export class DroppedItem implements IUsable {
 	static readonly MIN_SPEED = 0.03;
 	static readonly SKY_LIGHT_COLOR = new Vector3(0.8, 0.8, 0.8);
 	static readonly BLOCK_LIGHT_COLOR = new Vector3(0.9, 0.6, 0.2);
+
+	static readonly #tileTextures = new Map<number, Texture>();
 
 	constructor(item: Item, x: number, y: number, z: number) {
 		const size = 0.5 + item.stackSize * 0.005;
@@ -88,16 +95,25 @@ export class DroppedItem implements IUsable {
 			(x, y, z): BlockShapeInfo | null => {
 				const blockId = getBlockByWorldCoords(x, y, z);
 				if (!isCollidableBlock(blockId)) return null;
+
+				if (isFenceBlockId(blockId)) {
+					const mask = computeFenceNeighborMask(x, y, z, (wx, wy, wz) => {
+						return getBlockByWorldCoords(wx, wy, wz);
+					});
+					_blockShapeInfoScratch.shape = getFenceDynamicShape(mask);
+					_blockShapeInfoScratch.rotation = 0;
+					_blockShapeInfoScratch.slice = 0;
+					_blockShapeInfoScratch.flipY = false;
+					return _blockShapeInfoScratch;
+				}
+
 				const state = getBlockStateByWorldCoords(x, y, z);
 				const shape = getShapeForBlockId(blockId);
-				const rotation = shape.rotateY ? state & 3 : 0;
-				const flipY = shape.allowFlipY && (state & 4) !== 0;
-				return {
-					shape,
-					rotation,
-					slice: 0,
-					flipY,
-				};
+				_blockShapeInfoScratch.shape = shape;
+				_blockShapeInfoScratch.rotation = shape.rotateY ? state & 3 : 0;
+				_blockShapeInfoScratch.slice = 0;
+				_blockShapeInfoScratch.flipY = shape.allowFlipY && (state & 4) !== 0;
+				return _blockShapeInfoScratch;
 			},
 			DroppedItem.EPSILON,
 			{
@@ -127,7 +143,6 @@ export class DroppedItem implements IUsable {
 		DroppedItem.#allItems.delete(this);
 		this.#voxelCollider.dispose();
 		this.#boxMesh.dispose();
-		this.#atlasTileTexture?.dispose();
 		this.#material.dispose();
 	}
 
@@ -236,7 +251,19 @@ export class DroppedItem implements IUsable {
 	}
 
 	#applyAtlasTexture(item: Item): void {
-		const atlasTexture = this.#getOrCreateAtlasTexture();
+		const blockId = item.blockId ?? 0;
+		let tileTex = DroppedItem.#tileTextures.get(blockId);
+		if (!tileTex) {
+			const atlasTexture = this.#getOrCreateAtlasTexture();
+			tileTex = atlasTexture.clone();
+			if (!tileTex) {
+				this.#material.diffuseColor = Color3.White();
+				return;
+			}
+			tileTex.wrapU = Texture.CLAMP_ADDRESSMODE;
+			tileTex.wrapV = Texture.CLAMP_ADDRESSMODE;
+			DroppedItem.#tileTextures.set(blockId, tileTex);
+		}
 		const tile = getAtlasTile(item.blockId) ?? [0, 0];
 		const atlasSize = TextureAtlasFactory.atlasSize;
 		const tileSize = TextureAtlasFactory.atlasTileSize;
@@ -244,19 +271,11 @@ export class DroppedItem implements IUsable {
 		const clampedY = Math.max(0, Math.min(atlasSize - 1, tile[1]));
 		const atlasRow = atlasSize - 1 - clampedY;
 
-		this.#atlasTileTexture = atlasTexture.clone();
-		if (!this.#atlasTileTexture) {
-			this.#material.diffuseColor = Color3.White();
-			return;
-		}
-
-		this.#atlasTileTexture.wrapU = Texture.CLAMP_ADDRESSMODE;
-		this.#atlasTileTexture.wrapV = Texture.CLAMP_ADDRESSMODE;
-		this.#atlasTileTexture.uScale = tileSize;
-		this.#atlasTileTexture.vScale = tileSize;
-		this.#atlasTileTexture.uOffset = clampedX * tileSize;
-		this.#atlasTileTexture.vOffset = atlasRow * tileSize;
-		this.#material.diffuseTexture = this.#atlasTileTexture;
+		tileTex.uScale = tileSize;
+		tileTex.vScale = tileSize;
+		tileTex.uOffset = clampedX * tileSize;
+		tileTex.vOffset = atlasRow * tileSize;
+		this.#material.diffuseTexture = tileTex;
 	}
 
 	get boxMesh(): Mesh {
@@ -265,5 +284,22 @@ export class DroppedItem implements IUsable {
 
 	get item(): Item {
 		return this.#item;
+	}
+
+	static disposeAll(): void {
+		for (const item of [...DroppedItem.#allItems]) {
+			item.#dispose();
+		}
+		if (DroppedItem.#observer) {
+			Map1.mainScene.onBeforeRenderObservable.remove(DroppedItem.#observer);
+			DroppedItem.#observer = null;
+		}
+	}
+
+	static disposeTileTextures(): void {
+		for (const tex of DroppedItem.#tileTextures.values()) {
+			tex.dispose();
+		}
+		DroppedItem.#tileTextures.clear();
 	}
 }

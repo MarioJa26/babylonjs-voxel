@@ -300,13 +300,15 @@ export class Chunk {
 
 	public cachedLODMeshes = new Map<number, CachedLODMesh>();
 
-	public static readonly LIGHT_EMISSION: Record<number, number> = {
-		10: 15,
-		11: 15,
-		24: 15,
-	};
+	private static readonly _lightEmissionLUT = (() => {
+		const lut = new Uint8Array(256);
+		lut[10] = 15;
+		lut[11] = 15;
+		lut[24] = 15;
+		return lut;
+	})();
 	public static getLightEmission(blockId: number): number {
-		return Chunk.LIGHT_EMISSION[blockId] || 0;
+		return blockId >= 0 && blockId < 256 ? Chunk._lightEmissionLUT[blockId] : 0;
 	}
 
 	// =========================================================================
@@ -536,19 +538,21 @@ export class Chunk {
 	public getSerializableLODMeshCache(): SerializedLODMeshCache | undefined {
 		if (this.cachedLODMeshes.size === 0) return undefined;
 		const out: SerializedLODMeshCache = {};
+		let count = 0;
 		for (const [lod, mesh] of this.cachedLODMeshes.entries()) {
 			if (!mesh.opaque && !mesh.transparent) continue;
 			out[lod] = {
 				opaque: mesh.opaque ?? null,
 				transparent: mesh.transparent ?? null,
 			};
+			count++;
 		}
-		return Object.keys(out).length === 0 ? undefined : out;
+		return count === 0 ? undefined : out;
 	}
 	public restoreLODMeshCache(cache?: SerializedLODMeshCache): void {
 		this.cachedLODMeshes.clear();
 		if (!cache) return;
-		for (const key of Object.keys(cache)) {
+		for (const key in cache) {
 			const lod = Number(key);
 			if (!Number.isFinite(lod)) continue;
 			const entry = cache[lod];
@@ -792,6 +796,7 @@ export class Chunk {
 		const packedBlock = packBlockValue(blockId, state);
 		let oldPacked = 0;
 		let storageLayoutChanged = false;
+		let paletteChanged = false;
 
 		if (this._isUniform) {
 			oldPacked = this._uniformBlockId;
@@ -815,6 +820,7 @@ export class Chunk {
 			this._block_array.fill(0);
 			this.setNibble(index, newIndex);
 			storageLayoutChanged = true;
+			paletteChanged = true;
 		} else if (this._palette) {
 			const paletteIndex = this.getNibble(index);
 			oldPacked = this._palette[paletteIndex];
@@ -838,6 +844,7 @@ export class Chunk {
 					this._palette = ep;
 					pm.set(packedBlock, npi);
 					this.setNibble(index, npi);
+					paletteChanged = true;
 				} else {
 					const na = new Uint16Array(new SharedArrayBuffer(Chunk.SIZE3 * 2));
 					for (let i = 0; i < Chunk.SIZE3; i++)
@@ -863,11 +870,33 @@ export class Chunk {
 			this._block_array![index] = packedBlock;
 		}
 
+		// Ensure any newly created palette is backed by SharedArrayBuffer so
+		// the light worker can read block IDs through its view.
+		if (paletteChanged && this._palette) {
+			const buf = this._palette.buffer;
+			if (!(buf instanceof SharedArrayBuffer)) {
+				const sab = new SharedArrayBuffer(this._palette.byteLength);
+				new Uint8Array(sab).set(
+					new Uint8Array(
+						buf,
+						this._palette.byteOffset,
+						this._palette.byteLength,
+					),
+				);
+				this._palette = new Uint16Array(sab, 0, this._palette.length);
+			}
+		}
+
 		// Block storage layout changed — refresh the worker-visible header
 		// row BEFORE the light BFS dispatches, so any in-flight BFS picks
 		// up the new layout on its next cell access.
 		if (storageLayoutChanged) {
 			this.writeLightHeaderRow();
+		}
+		// Broadcast updated buffer references to the light worker whenever
+		// the palette changed (even without a layout change), so the worker
+		// can resolve nibble indices to block IDs.
+		if (storageLayoutChanged || paletteChanged) {
 			Chunk.onLightChunkLayoutChanged?.(this);
 		}
 
@@ -1226,9 +1255,12 @@ export class Chunk {
 		return BLOCK_TYPE[unpackBlockId(packed)] === 0;
 	}
 
+	private static readonly _faceScratch: number[] = [];
+
 	private static connectFacesMask(faceMask: number): number {
 		let result = 0;
-		const faces: number[] = [];
+		const faces = Chunk._faceScratch;
+		faces.length = 0;
 		for (let f = 0; f < 6; f++) {
 			if (faceMask & (1 << f)) faces.push(f);
 		}

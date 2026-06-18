@@ -1,27 +1,36 @@
-import { type Scene, ShaderMaterial } from "@babylonjs/core";
+import { type Observer, type Scene, ShaderMaterial } from "@babylonjs/core";
+import type { MobRegistry } from "../Entities/Mobs/Mob";
+import { createMobCoordinator } from "../Entities/Mobs/MobSetup";
+import { NeutralMob } from "../Entities/Mobs/NeutralMob";
+import type { SpawnCoordinator } from "../Entities/SpawnCoordinator";
 import { DistantTerrain } from "../Generation/DistantTerrain/DistantTerrain";
 import {
 	disposeBlockBreakingVisuals,
 	initializeBlockBreakingVisuals,
 } from "../Player/Hud/BlockHighlight/BlockBreakingVisuals";
+import { DroppedItem } from "../Player/Inventory/DroppedItem";
 import type { Player } from "../Player/Player";
 import { PlayerLoadingGate } from "../Player/PlayerLoadingGate";
 import { PlayerStatePersistence } from "../Player/PlayerStatePersistence";
 import { disposeSharedResources, initAtlas } from "../World/Chunk/ChunkMesher";
 import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
+import { MaterialFactory } from "../World/Texture/MaterialFactory";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
 import { TextureDefinitions } from "../World/Texture/TextureDefinitions";
 import { WorldStorage } from "../World/WorldStorage";
-import { BlockBreakParticles } from "./BlockBreakParticles";
+import { setAtlasTexture } from "./BlockBreakParticles";
 import { WorldEnvironment } from "./WorldEnvironment";
 
 export class Map1 {
 	public static mainScene: Scene;
 	public static environment: WorldEnvironment;
+	public static mobRegistry: MobRegistry | null = null;
 
 	#player: Player;
 	#playerStatePersistence: PlayerStatePersistence | null = null;
 	#playerLoadingGate: PlayerLoadingGate | null = null;
+	#spawnCoordinator: SpawnCoordinator | null = null;
+	#renderObs: Observer<Scene> | null = null;
 
 	public readonly initPromise: Promise<void>;
 
@@ -40,11 +49,25 @@ export class Map1 {
 		);
 
 		Map1.mainScene.onDisposeObservable.add(() => {
+			if (this.#renderObs) {
+				Map1.mainScene.onBeforeRenderObservable.remove(this.#renderObs);
+				this.#renderObs = null;
+			}
+			this.#spawnCoordinator?.dispose();
+			this.#spawnCoordinator = null;
+
 			this.#playerStatePersistence?.dispose();
 			this.#playerStatePersistence = null;
 
 			this.#playerLoadingGate?.dispose();
 			this.#playerLoadingGate = null;
+
+			DroppedItem.disposeAll();
+			DroppedItem.disposeTileTextures();
+			NeutralMob.disposeAll();
+			Map1.environment?.dispose();
+			MaterialFactory.disposeAll();
+			this.#player.dispose();
 
 			disposeBlockBreakingVisuals();
 			disposeSharedResources();
@@ -55,7 +78,7 @@ export class Map1 {
 			WorldStorage.initialize();
 		});
 
-		scene.onBeforeRenderObservable.add(() => {
+		this.#renderObs = scene.onBeforeRenderObservable.add(() => {
 			Map1.environment.update();
 			this.#playerStatePersistence?.update();
 		});
@@ -79,6 +102,12 @@ export class Map1 {
 				this.#player,
 			);
 
+			// 4. Register mob types and start spawning
+			this.#spawnCoordinator = createMobCoordinator(
+				Map1.mainScene,
+				() => this.#player.position,
+			);
+
 			Map1.environment.initSSAO();
 		} catch (error) {
 			console.error("Error loading environment or textures:", error);
@@ -90,7 +119,7 @@ export class Map1 {
 			await TextureAtlasFactory.buildAtlas(Map1.mainScene, TextureDefinitions);
 			const atlas = TextureAtlasFactory.getDiffuse();
 			if (atlas) {
-				BlockBreakParticles.setAtlasTexture(atlas);
+				setAtlasTexture(atlas);
 			}
 		}
 	}

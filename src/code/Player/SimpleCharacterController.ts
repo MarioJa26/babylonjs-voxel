@@ -21,6 +21,14 @@ export class SimpleCharacterController {
 	#position: Vector3;
 	#velocity = Vector3.Zero();
 
+	static readonly #cachedSurfaceNormal = Vector3.Up();
+	static readonly #cachedSurfaceVelocity = Vector3.Zero();
+	static readonly #cachedSurfaceInfo: CharacterSurfaceInfo = {
+		supportedState: CharacterSupportedState.UNSUPPORTED,
+		averageSurfaceNormal: SimpleCharacterController.#cachedSurfaceNormal,
+		averageSurfaceVelocity: SimpleCharacterController.#cachedSurfaceVelocity,
+	};
+
 	constructor(startPosition: Vector3) {
 		this.#position = startPosition.clone();
 	}
@@ -42,19 +50,21 @@ export class SimpleCharacterController {
 	}
 
 	public checkSupport(): CharacterSurfaceInfo {
-		return {
-			supportedState:
-				this.#position.y <= 0.001
-					? CharacterSupportedState.SUPPORTED
-					: CharacterSupportedState.UNSUPPORTED,
-			averageSurfaceNormal: Vector3.Up(),
-			averageSurfaceVelocity: Vector3.Zero(),
-		};
+		const info = SimpleCharacterController.#cachedSurfaceInfo;
+		info.supportedState =
+			this.#position.y <= 0.001
+				? CharacterSupportedState.SUPPORTED
+				: CharacterSupportedState.UNSUPPORTED;
+		return info;
 	}
 
 	public integrate(deltaTime: number, gravity: Vector3): void {
-		this.#velocity.addInPlace(gravity.scale(deltaTime));
-		this.#position.addInPlace(this.#velocity.scale(deltaTime));
+		this.#velocity.x += gravity.x * deltaTime;
+		this.#velocity.y += gravity.y * deltaTime;
+		this.#velocity.z += gravity.z * deltaTime;
+		this.#position.x += this.#velocity.x * deltaTime;
+		this.#position.y += this.#velocity.y * deltaTime;
+		this.#position.z += this.#velocity.z * deltaTime;
 		if (this.#position.y < 0) {
 			this.#position.y = 0;
 			if (this.#velocity.y < 0) {

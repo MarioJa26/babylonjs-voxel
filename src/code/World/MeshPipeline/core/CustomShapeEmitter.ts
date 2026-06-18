@@ -9,6 +9,11 @@ import {
 	FACE_PY,
 	FACE_PZ,
 } from "../../Shape/BlockShapes";
+import {
+	computeFenceNeighborMask,
+	getFenceDynamicShape,
+	isFenceBlockId,
+} from "../../Shape/FenceConnect";
 import { FaceName, getFaceName } from "../../Texture/FaceName";
 import {
 	MaterialType,
@@ -54,32 +59,44 @@ const FACE_DESCRIPTORS: readonly FaceDescriptor[] = [
 	{ bit: FACE_NZ, axis: 2, isBackFace: true },
 ] as const;
 
-function parseBlock(packed: number): ParsedBlock {
+const _parsedBlockScratch1: ParsedBlock = {
+	packed: 0,
+	blockId: 0,
+	shape: getShapeInfo(0),
+	materialType: MaterialType.Default,
+	isSolid: false,
+	isTransparent: true,
+	greedyCompatible: false,
+};
+const _parsedBlockScratch2: ParsedBlock = {
+	packed: 0,
+	blockId: 0,
+	shape: getShapeInfo(0),
+	materialType: MaterialType.Default,
+	isSolid: false,
+	isTransparent: true,
+	greedyCompatible: false,
+};
+
+function parseBlockInto(packed: number, out: ParsedBlock): void {
 	if (!packed) {
-		return {
-			packed: 0,
-			blockId: 0,
-			shape: getShapeInfo(0),
-			materialType: MaterialType.Default,
-			isSolid: false,
-			isTransparent: true,
-			greedyCompatible: false,
-		};
+		out.packed = 0;
+		out.blockId = 0;
+		out.shape = getShapeInfo(0);
+		out.materialType = MaterialType.Default;
+		out.isSolid = false;
+		out.isTransparent = true;
+		out.greedyCompatible = false;
+		return;
 	}
 
-	const blockId = unpackBlockId(packed);
-	const shape = getShapeInfo(packed);
-	const materialType = getMaterialType(blockId);
-
-	return {
-		packed,
-		blockId,
-		shape,
-		materialType,
-		isSolid: blockId !== 0,
-		isTransparent: materialType === MaterialType.WaterOrGlass,
-		greedyCompatible: isGreedyCompatiblePackedBlock(packed),
-	};
+	out.packed = packed;
+	out.blockId = unpackBlockId(packed);
+	out.shape = getShapeInfo(packed);
+	out.materialType = getMaterialType(out.blockId);
+	out.isSolid = out.blockId !== 0;
+	out.isTransparent = out.materialType === MaterialType.WaterOrGlass;
+	out.greedyCompatible = isGreedyCompatiblePackedBlock(packed);
 }
 
 function getFaceBit(axis: number, isBackFace: boolean): number {
@@ -149,15 +166,55 @@ export function emitCustomShapes(
 
 				// New true diagonal cross
 				if (isCrossDiagonalShapePackedBlock(packed)) {
-					emitCrossDiagonalAtBlock(
-						x,
-						y,
-						z,
-						blockId,
-						baseLight,
-						materialType,
-						transparentOut,
+					if (ctx.lod >= 2) {
+						emitLOD2CrossBillboard(
+							x,
+							y,
+							z,
+							blockId,
+							baseLight,
+							materialType,
+							transparentOut,
+						);
+					} else {
+						emitCrossDiagonalAtBlock(
+							x,
+							y,
+							z,
+							blockId,
+							baseLight,
+							materialType,
+							transparentOut,
+						);
+					}
+					continue;
+				}
+
+				if (isFenceBlockId(blockId)) {
+					const neighborMask = computeFenceNeighborMask(x, y, z, (nx, ny, nz) =>
+						getBlock(nx, ny, nz, 0),
 					);
+					const fenceShape = getFenceDynamicShape(neighborMask);
+
+					for (let i = 0; i < fenceShape.boxes.length; i++) {
+						const box = fenceShape.boxes[i];
+						for (const face of FACE_DESCRIPTORS) {
+							if ((box.faceMask & face.bit) === 0) continue;
+							emitBoxFace(
+								ctx,
+								x,
+								y,
+								z,
+								blockId,
+								packed,
+								box,
+								face.axis,
+								face.isBackFace,
+								baseLight,
+								out,
+							);
+						}
+					}
 					continue;
 				}
 
@@ -359,6 +416,89 @@ function emitCrossDiagonalAtBlock(
 	});
 }
 
+/**
+ * Emit a wider crossed-billboard for LOD2+ vegetation.
+ * Two axis-aligned planes (X-facing, Z-facing) slightly wider than 1.0
+ * so the plant doesn't look too thin compared to the sqrt(2) diagonal cross.
+ */
+function emitLOD2CrossBillboard(
+	x: number,
+	y: number,
+	z: number,
+	blockId: number,
+	baseLight: number,
+	materialType: MaterialType,
+	out: WorkerInternalMeshData,
+): void {
+	const W = 1.2;
+
+	// X-aligned plane
+	emitQuad(out, {
+		x: x + 0.5,
+		y,
+		z,
+		axis: 0,
+		width: W,
+		height: 1,
+		blockId,
+		isBackFace: false,
+		light: baseLight,
+		ao: 0,
+		faceName: FaceName.PX,
+		materialType,
+		flip: false,
+	});
+
+	emitQuad(out, {
+		x: x + 0.5,
+		y,
+		z,
+		axis: 0,
+		width: W,
+		height: 1,
+		blockId,
+		isBackFace: true,
+		light: baseLight,
+		ao: 0,
+		faceName: FaceName.NX,
+		materialType,
+		flip: false,
+	});
+
+	// Z-aligned plane
+	emitQuad(out, {
+		x,
+		y,
+		z: z + 0.5,
+		axis: 2,
+		width: W,
+		height: 1,
+		blockId,
+		isBackFace: false,
+		light: baseLight,
+		ao: 0,
+		faceName: FaceName.PZ,
+		materialType,
+		flip: false,
+	});
+
+	emitQuad(out, {
+		x,
+		y,
+		z: z + 0.5,
+		axis: 2,
+		width: W,
+		height: 1,
+		blockId,
+		isBackFace: true,
+		light: baseLight,
+		ao: 0,
+		faceName: FaceName.NZ,
+		materialType,
+		flip: false,
+	});
+}
+
 function emitBoxFace(
 	ctx: MeshContext,
 	voxelX: number,
@@ -383,18 +523,16 @@ function emitBoxFace(
 
 	const min = box.min;
 	const max = box.max;
-	const currentBlock = parseBlock(packedBlock);
+	parseBlockInto(packedBlock, _parsedBlockScratch1);
+	const currentBlock = _parsedBlockScratch1;
 
-	const dir =
-		axis === 0
-			? [isBackFace ? -1 : 1, 0, 0]
-			: axis === 1
-				? [0, isBackFace ? -1 : 1, 0]
-				: [0, 0, isBackFace ? -1 : 1];
+	const dirX = axis === 0 ? (isBackFace ? -1 : 1) : 0;
+	const dirY = axis === 1 ? (isBackFace ? -1 : 1) : 0;
+	const dirZ = axis === 2 ? (isBackFace ? -1 : 1) : 0;
 
-	const nx = voxelX + dir[0];
-	const ny = voxelY + dir[1];
-	const nz = voxelZ + dir[2];
+	const nx = voxelX + dirX;
+	const ny = voxelY + dirY;
+	const nz = voxelZ + dirZ;
 
 	const onBoundary =
 		axis === 0
@@ -414,7 +552,8 @@ function emitBoxFace(
 
 	if (onBoundary) {
 		const neighborPacked = ctx.getBlock(nx, ny, nz, 0);
-		const neighbor = parseBlock(neighborPacked);
+		parseBlockInto(neighborPacked, _parsedBlockScratch2);
+		const neighbor = _parsedBlockScratch2;
 
 		const oppositeFaceBit = getFaceBit(axis, !isBackFace);
 		const neighborCloses =

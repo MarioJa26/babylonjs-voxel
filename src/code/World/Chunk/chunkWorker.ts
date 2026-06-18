@@ -46,6 +46,43 @@ export class ChunkWorker {
 			? new Uint8Array(new SharedArrayBuffer(0))
 			: new Uint8Array(0);
 
+	// Pre-allocated message objects for light dispatch — avoids spread allocation per call.
+	readonly #lightMutateMsg: LightMutateRequest = {
+		type: WorkerTaskType.LightMutate,
+		chunkId: 0n,
+		headerSlot: 0,
+		x: 0,
+		y: 0,
+		z: 0,
+		oldPacked: 0,
+		newPacked: 0,
+		seq: 0,
+	};
+	readonly #lightEmissionMsg: LightAddEmissionRequest = {
+		type: WorkerTaskType.LightAddEmission,
+		chunkId: 0n,
+		headerSlot: 0,
+		x: 0,
+		y: 0,
+		z: 0,
+		level: 0,
+		seq: 0,
+	};
+	readonly #lightSkyReconcileMsg: LightSkyReconcileRequest = {
+		type: WorkerTaskType.LightSkyReconcile,
+		chunkId: 0n,
+		headerSlot: 0,
+		seq: 0,
+	};
+	readonly #lightPropagateMsg: LightPropagateDeferredRequest = {
+		type: WorkerTaskType.LightPropagateDeferred,
+		chunkId: 0n,
+		headerSlot: 0,
+		seedQueue: new Uint16Array(0),
+		seedLength: 0,
+		seq: 0,
+	};
+
 	constructor(
 		workerIndex: number,
 		onMessageTerrain: (event: MessageEvent<WorkerResponseData>) => void,
@@ -308,6 +345,7 @@ export class ChunkWorker {
 	}
 
 	public postLightRegisterChunk(req: {
+		seq: number;
 		chunkId: bigint;
 		chunkX: number;
 		chunkY: number;
@@ -355,11 +393,16 @@ export class ChunkWorker {
 		newPacked: number;
 		seq: number;
 	}): void {
-		const message: LightMutateRequest = {
-			type: WorkerTaskType.LightMutate,
-			...req,
-		};
-		this.terrainWorker.postMessage(message);
+		const msg = this.#lightMutateMsg;
+		msg.chunkId = req.chunkId;
+		msg.headerSlot = req.headerSlot;
+		msg.x = req.x;
+		msg.y = req.y;
+		msg.z = req.z;
+		msg.oldPacked = req.oldPacked;
+		msg.newPacked = req.newPacked;
+		msg.seq = req.seq;
+		this.terrainWorker.postMessage(msg);
 	}
 
 	public postLightAddEmission(req: {
@@ -371,11 +414,15 @@ export class ChunkWorker {
 		level: number;
 		seq: number;
 	}): void {
-		const message: LightAddEmissionRequest = {
-			type: WorkerTaskType.LightAddEmission,
-			...req,
-		};
-		this.terrainWorker.postMessage(message);
+		const msg = this.#lightEmissionMsg;
+		msg.chunkId = req.chunkId;
+		msg.headerSlot = req.headerSlot;
+		msg.x = req.x;
+		msg.y = req.y;
+		msg.z = req.z;
+		msg.level = req.level;
+		msg.seq = req.seq;
+		this.terrainWorker.postMessage(msg);
 	}
 
 	public postLightSkyReconcile(req: {
@@ -383,11 +430,11 @@ export class ChunkWorker {
 		headerSlot: number;
 		seq: number;
 	}): void {
-		const message: LightSkyReconcileRequest = {
-			type: WorkerTaskType.LightSkyReconcile,
-			...req,
-		};
-		this.terrainWorker.postMessage(message);
+		const msg = this.#lightSkyReconcileMsg;
+		msg.chunkId = req.chunkId;
+		msg.headerSlot = req.headerSlot;
+		msg.seq = req.seq;
+		this.terrainWorker.postMessage(msg);
 	}
 
 	public postLightPropagateDeferred(req: {
@@ -397,10 +444,12 @@ export class ChunkWorker {
 		seedLength: number;
 		seq: number;
 	}): void {
-		const message: LightPropagateDeferredRequest = {
-			type: WorkerTaskType.LightPropagateDeferred,
-			...req,
-		};
-		this.terrainWorker.postMessage(message);
+		const msg = this.#lightPropagateMsg;
+		msg.chunkId = req.chunkId;
+		msg.headerSlot = req.headerSlot;
+		msg.seedQueue = req.seedQueue;
+		msg.seedLength = req.seedLength;
+		msg.seq = req.seq;
+		this.terrainWorker.postMessage(msg);
 	}
 }

@@ -1,10 +1,21 @@
 import { Matrix, Ray, Vector3 } from "@babylonjs/core";
 import { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { Chunk } from "@/code/World/Chunk/Chunk";
-import { getTerrainBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
+import {
+	getBlockAndStateByWorldCoords,
+	getTerrainBlockByWorldCoords,
+} from "@/code/World/Chunk/ChunkLoadingSystem";
 import { getBlockStateByWorldCoords } from "@/code/World/Chunk/Loading/ChunkWorldMutations";
 import { FACE_ALL, getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
-import { getTransformedShapeBoxes } from "@/code/World/Shape/BlockShapeTransforms";
+import {
+	getTransformedShapeBoxes,
+	type ShapeBounds,
+} from "@/code/World/Shape/BlockShapeTransforms";
+import {
+	computeFenceNeighborMask,
+	getFenceDynamicShape,
+	isFenceBlockId,
+} from "@/code/World/Shape/FenceConnect";
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
 import { type Player, REACH_DISTANCE } from "../../Player";
 
@@ -267,7 +278,17 @@ function raycastShapeInVoxel(
 		bestNy = 0,
 		bestNz = 0;
 
-	for (const box of getTransformedShapeBoxes(blockId, blockState)) {
+	let boxes: ShapeBounds[];
+	if (isFenceBlockId(blockId)) {
+		const mask = computeFenceNeighborMask(vx, vy, vz, (wx, wy, wz) => {
+			return getBlockAndStateByWorldCoords(wx, wy, wz).blockId;
+		});
+		boxes = getFenceDynamicShape(mask).boxes;
+	} else {
+		boxes = getTransformedShapeBoxes(blockId, blockState);
+	}
+
+	for (const box of boxes) {
 		const hit = intersectRayAabb(
 			ox,
 			oy,

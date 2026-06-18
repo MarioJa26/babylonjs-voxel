@@ -115,9 +115,10 @@ export class OpaqueShader {
             int corner = decodeCorner(vertexId, isBackFaceInt, flip);
             vec2 cornerUV = getQuadCornerUV(corner);
 
-            const float invPosScale = 0.25;
-            float faceWidth = faceDataB.x * invPosScale;
-            float faceHeight = faceDataB.y * invPosScale;
+            const float invPosScale = 0.125;
+            int rawDim = (meta >> 6) & 1;
+            float faceWidth = rawDim == 1 ? float(faceDataB.x) : faceDataB.x * invPosScale;
+            float faceHeight = rawDim == 1 ? float(faceDataB.y) : faceDataB.y * invPosScale;
 
             vec3 localPosition;
             vec3 N;

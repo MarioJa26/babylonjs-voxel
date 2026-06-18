@@ -382,28 +382,22 @@ const _biomeDefaultAmplitude = params.TERRAIN_HEIGHT_AMPLITUDE;
 const _biomeDefaultScale = params.TERRAIN_SCALE;
 
 function getBiomeBase(b: Biome): number {
-	const v = (b as unknown as Record<string, unknown>).terrainHeightBase;
-	return typeof v === "number" ? v : _biomeDefaultBase;
+	return b.terrainHeightBase ?? _biomeDefaultBase;
 }
 function getBiomeAmp(b: Biome): number {
-	const v = (b as unknown as Record<string, unknown>).terrainHeightAmplitude;
-	return typeof v === "number" ? v : _biomeDefaultAmplitude;
+	return b.terrainHeightAmplitude ?? _biomeDefaultAmplitude;
 }
 function getBiomeScale(b: Biome): number {
-	const v = (b as unknown as Record<string, unknown>).terrainScale;
-	return typeof v === "number" ? v : _biomeDefaultScale;
+	return b.terrainScale ?? _biomeDefaultScale;
 }
 function getBiomeExp(b: Biome): number {
-	const v = (b as unknown as Record<string, unknown>).heightExponent;
-	return typeof v === "number" ? v : 1;
+	return b.heightExponent ?? 1;
 }
 function getBiomePvScale(b: Biome): number {
-	const v = (b as unknown as Record<string, unknown>).pvNoiseScale;
-	return typeof v === "number" ? v : 1;
+	return b.pvNoiseScale ?? 1;
 }
 function getBiomeErosionScale(b: Biome): number {
-	const v = (b as unknown as Record<string, unknown>).erosionNoiseScale;
-	return typeof v === "number" ? v : 1;
+	return b.erosionNoiseScale ?? 1;
 }
 
 // Module-level scratch arrays — zero allocation on the hot path.

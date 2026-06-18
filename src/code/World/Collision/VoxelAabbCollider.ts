@@ -83,6 +83,16 @@ const _rotatedBox: [number, number, number, number, number, number] = [
 	0, 0, 0, 0, 0, 0,
 ];
 
+// Module-level scratch BlockShapeInfo — avoids per-voxel allocations in
+// the isSolidBlockAt callback.  Safe because overlaps() consumes the
+// result immediately (no retained references across frames).
+export const _blockShapeInfoScratch: BlockShapeInfo = {
+	shape: null as unknown as ShapeDefinition,
+	rotation: 0,
+	slice: 0,
+	flipY: false,
+};
+
 function testShapeBoxOverlap(
 	aMinX: number,
 	aMaxX: number,

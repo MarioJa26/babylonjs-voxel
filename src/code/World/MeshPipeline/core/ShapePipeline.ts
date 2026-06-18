@@ -45,6 +45,35 @@ type FaceRect = {
 };
 
 /**
+ * Pre-allocated FaceRect pool to avoid per-push allocations.
+ * Safe because computeClosedFaceMaskFromBoxes reads all rects
+ * before the pool is reused.
+ */
+const FACE_RECT_POOL: FaceRect[] = [];
+for (let i = 0; i < 64; i++) {
+	FACE_RECT_POOL.push({ u0: 0, u1: 0, v0: 0, v1: 0 });
+}
+let _faceRectPoolIndex = 0;
+
+function obtainFaceRect(): FaceRect {
+	if (_faceRectPoolIndex < FACE_RECT_POOL.length) {
+		return FACE_RECT_POOL[_faceRectPoolIndex++];
+	}
+	// Overflow: allocate (should not happen in practice)
+	const r: FaceRect = { u0: 0, u1: 0, v0: 0, v1: 0 };
+	FACE_RECT_POOL.push(r);
+	_faceRectPoolIndex++;
+	return r;
+}
+
+function resetFaceRectPool(): void {
+	_faceRectPoolIndex = 0;
+}
+
+const _uEdgesScratch: number[] = [0, 1];
+const _vEdgesScratch: number[] = [0, 1];
+
+/**
  * Empty shape info singleton to avoid reallocating identical objects.
  */
 const EMPTY_SHAPE_INFO: BlockShapeInfo = {
@@ -125,7 +154,7 @@ export function getMaterialTypeForPackedBlock(
 ): MaterialType {
 	if (!packedBlock) return MaterialType.Default;
 
-	const { blockId } = getPackedBlockParts(packedBlock);
+	const blockId = unpackBlockId(packedBlock);
 	if (isCrossBlockId(blockId) || isCrossDiagonalBlockId(blockId)) {
 		return MaterialType.Cutout;
 	}
@@ -134,30 +163,17 @@ export function getMaterialTypeForPackedBlock(
 }
 
 /**
- * Helper: decode packed block into id + state.
- */
-export function getPackedBlockParts(packedBlock: number): {
-	blockId: number;
-	blockState: number;
-} {
-	return {
-		blockId: unpackBlockId(packedBlock),
-		blockState: unpackBlockState(packedBlock),
-	};
-}
-
-/**
  * Runtime helper: whether this packed block should render as a crossed plant shape.
  */
 export function isCrossShapePackedBlock(packedBlock: number): boolean {
 	if (!packedBlock) return false;
-	const { blockId } = getPackedBlockParts(packedBlock);
+	const blockId = unpackBlockId(packedBlock);
 	return isCrossBlockId(blockId);
 }
 
 export function isCrossDiagonalShapePackedBlock(packedBlock: number): boolean {
 	if (!packedBlock) return false;
-	const { blockId } = getPackedBlockParts(packedBlock);
+	const blockId = unpackBlockId(packedBlock);
 	return isCrossDiagonalBlockId(blockId);
 }
 
@@ -185,7 +201,12 @@ function pushRect(
 
 	if (cu1 - cu0 <= EPS || cv1 - cv0 <= EPS) return;
 
-	rects.push({ u0: cu0, u1: cu1, v0: cv0, v1: cv1 });
+	const r = obtainFaceRect();
+	r.u0 = cu0;
+	r.u1 = cu1;
+	r.v0 = cv0;
+	r.v1 = cv1;
+	rects.push(r);
 }
 
 /**
@@ -194,25 +215,29 @@ function pushRect(
 function doesRectUnionCoverUnitSquare(rects: FaceRect[]): boolean {
 	if (rects.length === 0) return false;
 
-	const uEdges: number[] = [0, 1];
-	const vEdges: number[] = [0, 1];
+	_uEdgesScratch.length = 2;
+	_uEdgesScratch[0] = 0;
+	_uEdgesScratch[1] = 1;
+	_vEdgesScratch.length = 2;
+	_vEdgesScratch[0] = 0;
+	_vEdgesScratch[1] = 1;
 
 	for (const r of rects) {
-		uEdges.push(r.u0, r.u1);
-		vEdges.push(r.v0, r.v1);
+		_uEdgesScratch.push(r.u0, r.u1);
+		_vEdgesScratch.push(r.v0, r.v1);
 	}
 
-	uEdges.sort((a, b) => a - b);
-	vEdges.sort((a, b) => a - b);
+	_uEdgesScratch.sort((a, b) => a - b);
+	_vEdgesScratch.sort((a, b) => a - b);
 
-	for (let ui = 0; ui < uEdges.length - 1; ui++) {
-		const u0 = uEdges[ui];
-		const u1 = uEdges[ui + 1];
+	for (let ui = 0; ui < _uEdgesScratch.length - 1; ui++) {
+		const u0 = _uEdgesScratch[ui];
+		const u1 = _uEdgesScratch[ui + 1];
 		if (u1 - u0 <= EPS) continue;
 
-		for (let vi = 0; vi < vEdges.length - 1; vi++) {
-			const v0 = vEdges[vi];
-			const v1 = vEdges[vi + 1];
+		for (let vi = 0; vi < _vEdgesScratch.length - 1; vi++) {
+			const v0 = _vEdgesScratch[vi];
+			const v1 = _vEdgesScratch[vi + 1];
 			if (v1 - v0 <= EPS) continue;
 
 			let covered = false;
@@ -242,7 +267,8 @@ function doesRectUnionCoverUnitSquare(rects: FaceRect[]): boolean {
 function buildRuntimeShapeBoxes(packedBlock: number): readonly ShapeBounds[] {
 	if (!packedBlock) return [];
 
-	const { blockId, blockState } = getPackedBlockParts(packedBlock);
+	const blockId = unpackBlockId(packedBlock);
+	const blockState = unpackBlockState(packedBlock);
 	return getTransformedShapeBoxes(blockId, blockState);
 }
 
@@ -281,6 +307,7 @@ export function getRuntimeShapeBoxes(
 function computeClosedFaceMaskFromBoxes(boxes: readonly ShapeBounds[]): number {
 	if (boxes.length === 0) return 0;
 
+	resetFaceRectPool();
 	const px: FaceRect[] = [];
 	const nx: FaceRect[] = [];
 	const py: FaceRect[] = [];
@@ -361,7 +388,8 @@ function buildShapeInfo(packedBlock: number): BlockShapeInfo {
 		return EMPTY_SHAPE_INFO;
 	}
 
-	const { blockId, blockState } = getPackedBlockParts(packedBlock);
+	const blockId = unpackBlockId(packedBlock);
+	const blockState = unpackBlockState(packedBlock);
 	const shape = getShapeForBlockId(blockId);
 	const boxes = getRuntimeShapeBoxes(packedBlock);
 
@@ -435,7 +463,7 @@ export function isGreedyCompatiblePackedBlock(packedBlock: number): boolean {
 function buildGreedyCompatible(packedBlock: number): boolean {
 	if (!packedBlock) return false;
 
-	const { blockId } = getPackedBlockParts(packedBlock);
+	const blockId = unpackBlockId(packedBlock);
 	const shape = getShapeForBlockId(blockId);
 
 	// Full cube is always greedy-compatible.

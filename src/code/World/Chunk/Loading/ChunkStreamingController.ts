@@ -104,6 +104,8 @@ export class ChunkStreamingController {
 		}
 	> = new Map();
 	private _lastCaveState: boolean | null = null;
+	private _lastRenderDistance = 0;
+	private _lastVerticalRadius = 0;
 
 	public constructor(
 		private readonly adapter: ChunkStreamingControllerAdapter,
@@ -141,7 +143,12 @@ export class ChunkStreamingController {
 
 		let lodRuleSet: ChunkLodRuleSet;
 		if (isInCave) {
-			if (!this._cachedCaveLodRuleSet || this._lastCaveState !== true) {
+			if (
+				!this._cachedCaveLodRuleSet ||
+				this._lastCaveState !== true ||
+				this._lastRenderDistance !== renderDistance ||
+				this._lastVerticalRadius !== verticalRadius
+			) {
 				this._ruleSetGeneration++;
 				this._cachedCaveLodRuleSet = new ChunkLodRuleSet(
 					{
@@ -160,16 +167,25 @@ export class ChunkStreamingController {
 					],
 					this._ruleSetGeneration,
 				);
+				this._lastRenderDistance = renderDistance;
+				this._lastVerticalRadius = verticalRadius;
 			}
 			lodRuleSet = this._cachedCaveLodRuleSet;
 		} else {
-			if (!this._cachedOutdoorLodRuleSet || this._lastCaveState !== false) {
+			if (
+				!this._cachedOutdoorLodRuleSet ||
+				this._lastCaveState !== false ||
+				this._lastRenderDistance !== renderDistance ||
+				this._lastVerticalRadius !== verticalRadius
+			) {
 				this._ruleSetGeneration++;
 				this._cachedOutdoorLodRuleSet = ChunkLodRuleSet.fromRenderRadii(
 					renderDistance,
 					verticalRadius,
 					this._ruleSetGeneration,
 				);
+				this._lastRenderDistance = renderDistance;
+				this._lastVerticalRadius = verticalRadius;
 			}
 			lodRuleSet = this._cachedOutdoorLodRuleSet;
 		}
@@ -435,15 +451,18 @@ export class ChunkStreamingController {
 		}
 
 		const lodRuleSet =
-			this._cachedOutdoorLodRuleSet ??
-			(() => {
-				this._ruleSetGeneration++;
-				return ChunkLodRuleSet.fromRenderRadii(
-					renderDistance,
-					verticalRadius,
-					this._ruleSetGeneration,
-				);
-			})();
+			this._cachedOutdoorLodRuleSet !== null &&
+			this._lastRenderDistance === renderDistance &&
+			this._lastVerticalRadius === verticalRadius
+				? this._cachedOutdoorLodRuleSet
+				: (() => {
+						this._ruleSetGeneration++;
+						return ChunkLodRuleSet.fromRenderRadii(
+							renderDistance,
+							verticalRadius,
+							this._ruleSetGeneration,
+						);
+					})();
 
 		let processed = 0;
 

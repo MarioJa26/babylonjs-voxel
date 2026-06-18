@@ -1,10 +1,13 @@
 import type { Vector3 } from "@babylonjs/core";
+import type { Mob } from "@/code/Entities/Mobs/Mob";
 import type { IControls } from "@/code/Interface/IControls";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import { validateChunksAround } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { MetadataContainer } from "../../Entities/MetadataContainer";
 import type { BlockRaycastHit } from "../Hud/BlockHighlight/BlockRaycaster";
 import { pickTarget } from "../Hud/BlockHighlight/BlockRaycaster";
 import { BlockBreakingHandler } from "../Hud/BlockHighlight/BreakingBlockHandler";
+import { Crosshair } from "../Hud/Crosshair/Crosshair";
 import type { Item } from "../Inventory/Item";
 import type { Player } from "../Player";
 import type { PlayerVehicle } from "../PlayerVehicle";
@@ -87,6 +90,12 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 	public handleMouseEvent(mouseEvent: MouseEvent, isKeyDown: boolean): void {
 		if (WalkingControls.MOUSE1.includes(mouseEvent.button)) {
 			if (isKeyDown) {
+				const mobMesh = Crosshair.pickMobMesh(this.#player);
+				if (mobMesh?.metadata instanceof MetadataContainer) {
+					const mob = mobMesh.metadata.get<Mob>("mob");
+					mob?.takeDamage(1);
+					return;
+				}
 				this.#blockBreaking.start();
 			} else {
 				this.#blockBreaking.stop();

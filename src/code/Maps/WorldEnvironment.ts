@@ -206,4 +206,10 @@ export class WorldEnvironment {
 	public setTime(time: number): void {
 		this.timeOfDay = (time % 1) * SETTING_PARAMS.DAY_DURATION_MS;
 	}
+
+	public dispose(): void {
+		this.skybox.dispose();
+		this.dirLight.dispose();
+		this.hemiLight.dispose();
+	}
 }

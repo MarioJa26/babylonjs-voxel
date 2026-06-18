@@ -9,6 +9,7 @@ import { getAtlasTile } from "@/code/World/Texture/BlockTextures";
 import { BlockType } from "@/code/World/Texture/BlockType";
 import { TextureAtlasFactory } from "@/code/World/Texture/TextureAtlasFactory";
 import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
+import { Map1 } from "../../Maps/Map1";
 import {
 	getPlacementHit,
 	pickBlock,
@@ -50,6 +51,7 @@ export class Item implements IUsable {
 	#stackSize = 1;
 	#div: HTMLDivElement = document.createElement("div");
 	#stackLabel: HTMLSpanElement = document.createElement("span");
+	#useAction: ((player: Player) => void) | null = null;
 	row: number;
 	col: number;
 
@@ -94,11 +96,11 @@ export class Item implements IUsable {
 		item.refreshIconStyle();
 
 		if (def.useAction === "place_block") {
-			item.use = (player: Player) => Item.place(player);
+			item.#useAction = (player: Player) => Item.place(player);
 		} else if (def.useAction) {
 			const action = ItemUseActions[def.useAction];
 			if (action) {
-				item.use = action;
+				item.#useAction = action;
 			} else {
 				console.warn(`Unknown item use action: ${def.useAction}`);
 			}
@@ -126,7 +128,11 @@ export class Item implements IUsable {
 	}
 
 	use(player: Player): void {
-		Item.place(player);
+		if (this.#useAction) {
+			this.#useAction(player);
+		} else {
+			Item.place(player);
+		}
 	}
 
 	static place(player: Player) {
@@ -210,6 +216,23 @@ export class Item implements IUsable {
 				)
 			) {
 				return;
+			}
+
+			// Prevent placing a block inside a mob
+			if (Map1.mobRegistry) {
+				for (const mob of Map1.mobRegistry.getAllMobs()) {
+					const mpos = mob.position;
+					if (
+						mpos.x >= pos.x &&
+						mpos.x < pos.x + 1 &&
+						mpos.y >= pos.y &&
+						mpos.y < pos.y + 1 &&
+						mpos.z >= pos.z &&
+						mpos.z < pos.z + 1
+					) {
+						return;
+					}
+				}
 			}
 
 			const boatContext = Item.#asBoatPlacementContext(hit.dynamicContext);

@@ -182,4 +182,11 @@ export class MaterialFactory {
 		}
 		return `${folder}/${baseName}_${type}${resolution}${extension}`;
 	}
+
+	static disposeAll(): void {
+		for (const mat of MaterialFactory.materialCache.values()) {
+			mat.dispose();
+		}
+		MaterialFactory.materialCache.clear();
+	}
 }

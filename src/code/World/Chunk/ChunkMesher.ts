@@ -40,6 +40,11 @@ type LodCrossFadeState = {
 	seed: number;
 };
 
+class LodMeshMeta {
+	__lodLevel = 0;
+	__lodCrossFade: LodCrossFadeState | null = null;
+}
+
 // ---------------------------------------------------------------------------
 // Module-level state  (replaces static class fields)
 // ---------------------------------------------------------------------------
@@ -56,6 +61,13 @@ let sharedFacePositionBuffer: Buffer | null = null;
 const activeLodFadeMeshes = new Set<Mesh>();
 
 const LOD_FADE_DURATION_MS = 150;
+
+const _lodFadeScratch: LodCrossFadeState = {
+	startMs: 0,
+	durationMs: 0,
+	direction: 1,
+	seed: 0,
+};
 
 // Cache global uniforms — updated once per frame.
 const cachedUniforms = {
@@ -86,17 +98,18 @@ let lastUpdateFrame = -1;
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-function ensureMeshMetadata(mesh: Mesh): Record<string, unknown> {
-	if (!mesh.metadata || typeof mesh.metadata !== "object") {
-		mesh.metadata = {};
+function ensureMeshMetadata(mesh: Mesh): LodMeshMeta {
+	if (mesh.metadata instanceof LodMeshMeta) {
+		return mesh.metadata;
 	}
-	return mesh.metadata as Record<string, unknown>;
+	const meta = new LodMeshMeta();
+	mesh.metadata = meta;
+	return meta;
 }
 
 function getMeshLodLevel(mesh: Mesh | null): number | null {
-	if (!mesh?.metadata || typeof mesh.metadata !== "object") return null;
-	const lod = (mesh.metadata as Record<string, unknown>).__lodLevel;
-	return typeof lod === "number" ? lod : null;
+	if (!(mesh?.metadata instanceof LodMeshMeta)) return null;
+	return mesh.metadata.__lodLevel;
 }
 
 function setMeshLodLevel(mesh: Mesh, lod: number): void {
@@ -104,10 +117,8 @@ function setMeshLodLevel(mesh: Mesh, lod: number): void {
 }
 
 function getMeshFadeState(mesh: Mesh): LodCrossFadeState | null {
-	if (!mesh.metadata || typeof mesh.metadata !== "object") return null;
-	const state = (mesh.metadata as Record<string, unknown>).__lodCrossFade as
-		| LodCrossFadeState
-		| undefined;
+	if (!(mesh.metadata instanceof LodMeshMeta)) return null;
+	const state = mesh.metadata.__lodCrossFade;
 	if (!state) return null;
 	if (
 		typeof state.startMs !== "number" ||
@@ -121,12 +132,19 @@ function getMeshFadeState(mesh: Mesh): LodCrossFadeState | null {
 }
 
 function clearMeshFadeState(mesh: Mesh): void {
-	if (!mesh.metadata || typeof mesh.metadata !== "object") return;
-	delete (mesh.metadata as Record<string, unknown>).__lodCrossFade;
+	if (!(mesh.metadata instanceof LodMeshMeta)) return;
+	mesh.metadata.__lodCrossFade = null;
 }
 
 function setMeshFadeState(mesh: Mesh, state: LodCrossFadeState): void {
-	ensureMeshMetadata(mesh).__lodCrossFade = state;
+	const meta = ensureMeshMetadata(mesh);
+	if (!meta.__lodCrossFade) {
+		meta.__lodCrossFade = { startMs: 0, durationMs: 0, direction: 1, seed: 0 };
+	}
+	meta.__lodCrossFade.startMs = state.startMs;
+	meta.__lodCrossFade.durationMs = state.durationMs;
+	meta.__lodCrossFade.direction = state.direction;
+	meta.__lodCrossFade.seed = state.seed;
 	activeLodFadeMeshes.add(mesh);
 }
 
@@ -162,28 +180,25 @@ function beginLodCrossFade(
 			oldState.direction > 0 ? currentProgress : 1 - currentProgress;
 		// Rewind startMs so the fade-out continues from currentVis.
 		const rewoundStart = now - (1 - currentVis) * LOD_FADE_DURATION_MS;
-		setMeshFadeState(oldMesh, {
-			startMs: rewoundStart,
-			durationMs: LOD_FADE_DURATION_MS,
-			direction: -1,
-			seed,
-		});
+		_lodFadeScratch.startMs = rewoundStart;
+		_lodFadeScratch.durationMs = LOD_FADE_DURATION_MS;
+		_lodFadeScratch.direction = -1;
+		_lodFadeScratch.seed = seed;
+		setMeshFadeState(oldMesh, _lodFadeScratch);
 	} else {
 		oldMesh.visibility = 1;
-		setMeshFadeState(oldMesh, {
-			startMs: now,
-			durationMs: LOD_FADE_DURATION_MS,
-			direction: -1,
-			seed,
-		});
+		_lodFadeScratch.startMs = now;
+		_lodFadeScratch.durationMs = LOD_FADE_DURATION_MS;
+		_lodFadeScratch.direction = -1;
+		_lodFadeScratch.seed = seed;
+		setMeshFadeState(oldMesh, _lodFadeScratch);
 	}
 
-	setMeshFadeState(newMesh, {
-		startMs: now,
-		durationMs: LOD_FADE_DURATION_MS,
-		direction: 1,
-		seed,
-	});
+	_lodFadeScratch.startMs = now;
+	_lodFadeScratch.durationMs = LOD_FADE_DURATION_MS;
+	_lodFadeScratch.direction = 1;
+	_lodFadeScratch.seed = seed;
+	setMeshFadeState(newMesh, _lodFadeScratch);
 }
 
 function shouldUseLodCrossFade(
@@ -307,6 +322,7 @@ function upsertFaceVertexBuffer(
 	engine: ReturnType<typeof Map1.mainScene.getEngine>,
 	kind: string,
 	data: Uint8Array,
+	updatable = true,
 ): void {
 	const existing = mesh.getVertexBuffer(kind);
 	const nextLength = data.length;
@@ -333,7 +349,7 @@ function upsertFaceVertexBuffer(
 			engine,
 			data,
 			kind,
-			true,
+			updatable,
 			undefined,
 			4,
 			true,
@@ -352,6 +368,7 @@ function upsertMesh(
 	name: string,
 	material: Material,
 	renderingGroupId = 1,
+	lod = 0,
 ): Mesh {
 	const scene = Map1.mainScene;
 	const engine = scene.getEngine();
@@ -407,9 +424,28 @@ function upsertMesh(
 		if (mesh.material !== material) mesh.material = material;
 	}
 
-	upsertFaceVertexBuffer(mesh, engine, "faceDataA", meshData.faceDataA);
-	upsertFaceVertexBuffer(mesh, engine, "faceDataB", meshData.faceDataB);
-	upsertFaceVertexBuffer(mesh, engine, "faceDataC", meshData.faceDataC);
+	const updatable = lod < 2;
+	upsertFaceVertexBuffer(
+		mesh,
+		engine,
+		"faceDataA",
+		meshData.faceDataA,
+		updatable,
+	);
+	upsertFaceVertexBuffer(
+		mesh,
+		engine,
+		"faceDataB",
+		meshData.faceDataB,
+		updatable,
+	);
+	upsertFaceVertexBuffer(
+		mesh,
+		engine,
+		"faceDataC",
+		meshData.faceDataC,
+		updatable,
+	);
 
 	mesh.overridenInstanceCount = meshData.faceCount;
 
@@ -712,6 +748,7 @@ export async function initAtlas(): Promise<void> {
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
 		applyLodShaderBindings(mat);
+		mat.freeze();
 	}
 
 	// -------------------------------------------------------------------------
@@ -750,6 +787,7 @@ export async function initAtlas(): Promise<void> {
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
 		applyLodShaderBindings(mat);
+		mat.freeze();
 	}
 
 	// -------------------------------------------------------------------------
@@ -788,6 +826,7 @@ export async function initAtlas(): Promise<void> {
 		if (normalAtlasTexture) mat.setTexture("normalTexture", normalAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
 		applyLodShaderBindings(mat);
+		mat.freeze();
 	}
 
 	// -------------------------------------------------------------------------
@@ -828,6 +867,7 @@ export async function initAtlas(): Promise<void> {
 		if (normalAtlasTexture) mat.setTexture("normalTexture", normalAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
 		applyLodShaderBindings(mat);
+		mat.freeze();
 	}
 }
 
@@ -880,6 +920,7 @@ export function createMeshFromData(
 			"c_opaque",
 			mat,
 			1,
+			lodLevel,
 		);
 		setMeshLodLevel(chunk.mesh!, lodLevel);
 	} else if (chunk.mesh) {
@@ -902,6 +943,7 @@ export function createMeshFromData(
 			"c_transparent",
 			mat,
 			1,
+			lodLevel,
 		);
 		setMeshLodLevel(chunk.transparentMesh!, lodLevel);
 	} else if (chunk.transparentMesh) {

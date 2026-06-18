@@ -248,9 +248,14 @@ export class OcclusionCuller {
 	private _bfsQTail = 0;
 
 	// ─── update ────────────────────────────────────────────────────────────────
-	update(_scene: Scene): OcclusionStats {
+	update(_scene: Scene, out: OcclusionStats): OcclusionStats {
 		const camera = Map1.mainScene?.activeCamera;
-		if (!camera) return { total: 0, occluded: 0, timeMs: 0 };
+		if (!camera) {
+			out.total = 0;
+			out.occluded = 0;
+			out.timeMs = 0;
+			return out;
+		}
 
 		const t0 = performance.now();
 		const SIZE = Chunk.SIZE;
@@ -426,11 +431,10 @@ export class OcclusionCuller {
 			}
 		}
 
-		return {
-			total,
-			occluded: total - visibleCount,
-			timeMs: performance.now() - t0,
-		};
+		out.total = total;
+		out.occluded = total - visibleCount;
+		out.timeMs = performance.now() - t0;
+		return out;
 	}
 
 	// ─── incrementalAdd ────────────────────────────────────────────────────────

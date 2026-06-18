@@ -8,12 +8,7 @@ import {
 	StandardMaterial,
 	Vector3,
 } from "@babylonjs/core";
-
-export enum Axis {
-	X,
-	Y,
-	Z,
-}
+import { Axis } from "./VoxelAabbCollider";
 
 type IsSolidBlockAt = (x: number, y: number, z: number) => boolean;
 

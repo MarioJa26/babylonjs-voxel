@@ -10,6 +10,7 @@ import {
 	Vector3,
 } from "@babylonjs/core";
 import {
+	_blockShapeInfoScratch,
 	Axis,
 	type BlockShapeInfo,
 	VoxelAabbCollider,
@@ -22,6 +23,11 @@ import {
 	getBlockByWorldCoords,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { getShapeForBlockId } from "../World/Shape/BlockShapes";
+import {
+	computeFenceNeighborMask,
+	getFenceDynamicShape,
+	isFenceBlockId,
+} from "../World/Shape/FenceConnect";
 import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
 import type { PlayerBodyControlState, SavedBodyPosition } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
@@ -224,15 +230,24 @@ export class PlayerVehicleMotor {
 					z,
 				);
 				if (!isCollidableBlock(blockId)) return null;
+
+				if (isFenceBlockId(blockId)) {
+					const mask = computeFenceNeighborMask(x, y, z, (wx, wy, wz) => {
+						return getBlockAndStateByWorldCoords(wx, wy, wz).blockId;
+					});
+					_blockShapeInfoScratch.shape = getFenceDynamicShape(mask);
+					_blockShapeInfoScratch.rotation = 0;
+					_blockShapeInfoScratch.slice = 0;
+					_blockShapeInfoScratch.flipY = false;
+					return _blockShapeInfoScratch;
+				}
+
 				const shape = getShapeForBlockId(blockId);
-				const rotation = shape.rotateY ? state & 3 : 0;
-				const flipY = shape.allowFlipY && (state & 4) !== 0;
-				return {
-					shape,
-					rotation,
-					slice: 0,
-					flipY,
-				};
+				_blockShapeInfoScratch.shape = shape;
+				_blockShapeInfoScratch.rotation = shape.rotateY ? state & 3 : 0;
+				_blockShapeInfoScratch.slice = 0;
+				_blockShapeInfoScratch.flipY = shape.allowFlipY && (state & 4) !== 0;
+				return _blockShapeInfoScratch;
 			},
 			this.collisionEpsilon,
 			{
@@ -256,15 +271,25 @@ export class PlayerVehicleMotor {
 				const blockId = packed & 0x3ff;
 				if (!isCollidableBlock(blockId)) return null;
 				const state = (packed >>> 10) & 0x3f;
+
+				if (isFenceBlockId(blockId)) {
+					const mask = computeFenceNeighborMask(x, y, z, (wx, wy, wz) => {
+						const p = chunk.getBlockLocal(wx, wy, wz);
+						return p & 0x3ff;
+					});
+					_blockShapeInfoScratch.shape = getFenceDynamicShape(mask);
+					_blockShapeInfoScratch.rotation = 0;
+					_blockShapeInfoScratch.slice = 0;
+					_blockShapeInfoScratch.flipY = false;
+					return _blockShapeInfoScratch;
+				}
+
 				const shape = getShapeForBlockId(blockId);
-				const rotation = shape.rotateY ? state & 3 : 0;
-				const flipY = shape.allowFlipY && (state & 4) !== 0;
-				return {
-					shape,
-					rotation,
-					slice: 0,
-					flipY,
-				};
+				_blockShapeInfoScratch.shape = shape;
+				_blockShapeInfoScratch.rotation = shape.rotateY ? state & 3 : 0;
+				_blockShapeInfoScratch.slice = 0;
+				_blockShapeInfoScratch.flipY = shape.allowFlipY && (state & 4) !== 0;
+				return _blockShapeInfoScratch;
 			},
 		);
 

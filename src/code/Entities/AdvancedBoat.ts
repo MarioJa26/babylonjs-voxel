@@ -2,6 +2,7 @@ import {
 	Color3,
 	type Mesh,
 	MeshBuilder,
+	type Observer,
 	Quaternion,
 	type Scene,
 	StandardMaterial,
@@ -10,6 +11,7 @@ import {
 import { ImportMeshAsync } from "@babylonjs/core/Loading/sceneLoader";
 import "@babylonjs/loaders/glTF";
 import {
+	_blockShapeInfoScratch,
 	Axis,
 	type BlockShapeInfo,
 	VoxelAabbCollider,
@@ -22,6 +24,11 @@ import {
 	getBlockStateByWorldCoords,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { getShapeForBlockId } from "../World/Shape/BlockShapes";
+import {
+	computeFenceNeighborMask,
+	getFenceDynamicShape,
+	isFenceBlockId,
+} from "../World/Shape/FenceConnect";
 import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
 import { MetadataContainer } from "./MetadataContainer";
 import { Mount } from "./Mount";
@@ -52,6 +59,8 @@ export class AdvancedBoat implements IUsable {
 	readonly #_deltaRot = new Quaternion();
 	readonly #_nextRot = new Quaternion();
 	readonly #_euler = Vector3.Zero();
+
+	#renderObserver: Observer<Scene> | null = null;
 
 	static #boatControls: PaddleBoatControls;
 
@@ -113,16 +122,25 @@ export class AdvancedBoat implements IUsable {
 			(x, y, z): BlockShapeInfo | null => {
 				const blockId = getBlockByWorldCoords(x, y, z);
 				if (!isCollidableBlock(blockId)) return null;
+
+				if (isFenceBlockId(blockId)) {
+					const mask = computeFenceNeighborMask(x, y, z, (wx, wy, wz) => {
+						return getBlockByWorldCoords(wx, wy, wz);
+					});
+					_blockShapeInfoScratch.shape = getFenceDynamicShape(mask);
+					_blockShapeInfoScratch.rotation = 0;
+					_blockShapeInfoScratch.slice = 0;
+					_blockShapeInfoScratch.flipY = false;
+					return _blockShapeInfoScratch;
+				}
+
 				const state = getBlockStateByWorldCoords(x, y, z);
 				const shape = getShapeForBlockId(blockId);
-				const rotation = shape.rotateY ? state & 3 : 0;
-				const flipY = shape.allowFlipY && (state & 4) !== 0;
-				return {
-					shape,
-					rotation,
-					slice: 0,
-					flipY,
-				};
+				_blockShapeInfoScratch.shape = shape;
+				_blockShapeInfoScratch.rotation = shape.rotateY ? state & 3 : 0;
+				_blockShapeInfoScratch.slice = 0;
+				_blockShapeInfoScratch.flipY = shape.allowFlipY && (state & 4) !== 0;
+				return _blockShapeInfoScratch;
 			},
 			this.#collisionEpsilon,
 			{
@@ -132,7 +150,13 @@ export class AdvancedBoat implements IUsable {
 				renderingGroupId: 1,
 			},
 		);
-		this.#boat.onDisposeObservable.add(() => this.#voxelCollider.dispose());
+		this.#boat.onDisposeObservable.add(() => {
+			this.#voxelCollider.dispose();
+			if (this.#renderObserver) {
+				scene.onBeforeRenderObservable.remove(this.#renderObserver);
+				this.#renderObserver = null;
+			}
+		});
 
 		ImportMeshAsync("models/boat-row-small.glb", scene)
 			.then((result) => {
@@ -172,7 +196,7 @@ export class AdvancedBoat implements IUsable {
 	}
 
 	private setupAdvancedPhysics(scene: Scene): void {
-		scene.registerBeforeRender(() => {
+		this.#renderObserver = scene.onBeforeRenderObservable.add(() => {
 			const dt = scene.getEngine().getDeltaTime() / 1000;
 			if (dt <= 0) {
 				return;
@@ -331,6 +355,13 @@ export class AdvancedBoat implements IUsable {
 	}
 	public get submergedPoints(): number {
 		return this.#submergedPoints;
+	}
+
+	public getBoatTopYToRef(out: Vector3): void {
+		const boatBounds = this.#boat.getBoundingInfo();
+		out.x = this.#boat.position.x;
+		out.y = boatBounds.boundingBox.maximumWorld.y;
+		out.z = this.#boat.position.z;
 	}
 
 	public getBoatTopY(): Vector3 {

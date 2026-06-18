@@ -40,6 +40,13 @@ type FaceRect3D = {
 	height: number;
 };
 
+const _originScratch: { x: number; y: number; z: number } = {
+	x: 0,
+	y: 0,
+	z: 0,
+};
+const _rectScratch: FaceRect3D = { x: 0, y: 0, z: 0, width: 0, height: 0 };
+
 export class VoxelFaceEmitterAdapter {
 	public emitVoxelFace(
 		axis: number,
@@ -122,6 +129,7 @@ export class VoxelFaceEmitterAdapter {
 			faceName: getFaceName(axis, isBackFace),
 			materialType,
 			flip: false,
+			rawDim: true,
 		});
 	}
 
@@ -201,26 +209,19 @@ export class VoxelFaceEmitterAdapter {
 		const faceBlockCoord = isBackFace ? desc.slice + 1 : desc.slice;
 
 		if (axis === 0) {
-			return {
-				x: faceBlockCoord,
-				y: desc.uStart,
-				z: desc.vStart,
-			};
+			_originScratch.x = faceBlockCoord;
+			_originScratch.y = desc.uStart;
+			_originScratch.z = desc.vStart;
+		} else if (axis === 1) {
+			_originScratch.x = desc.vStart;
+			_originScratch.y = faceBlockCoord;
+			_originScratch.z = desc.uStart;
+		} else {
+			_originScratch.x = desc.uStart;
+			_originScratch.y = desc.vStart;
+			_originScratch.z = faceBlockCoord;
 		}
-
-		if (axis === 1) {
-			return {
-				x: desc.vStart,
-				y: faceBlockCoord,
-				z: desc.uStart,
-			};
-		}
-
-		return {
-			x: desc.uStart,
-			y: desc.vStart,
-			z: faceBlockCoord,
-		};
+		return _originScratch;
 	}
 
 	private getFaceBit(axis: number, isBackFace: boolean): number {
@@ -254,33 +255,24 @@ export class VoxelFaceEmitterAdapter {
 		greedyHeight: number,
 	): FaceRect3D | null {
 		if (axis === 0) {
-			return {
-				x: baseX + (isBackFace ? box.min[0] : box.max[0]),
-				y: baseY + box.min[1],
-				z: baseZ + box.min[2],
-				width: greedyWidth * (box.max[1] - box.min[1]),
-				height: greedyHeight * (box.max[2] - box.min[2]),
-			};
+			_rectScratch.x = baseX + (isBackFace ? box.min[0] : box.max[0]);
+			_rectScratch.y = baseY + box.min[1];
+			_rectScratch.z = baseZ + box.min[2];
+			_rectScratch.width = greedyWidth * (box.max[1] - box.min[1]);
+			_rectScratch.height = greedyHeight * (box.max[2] - box.min[2]);
+		} else if (axis === 1) {
+			_rectScratch.x = baseX + box.min[0];
+			_rectScratch.y = baseY + (isBackFace ? box.min[1] : box.max[1]);
+			_rectScratch.z = baseZ + box.min[2];
+			_rectScratch.width = greedyWidth * (box.max[2] - box.min[2]);
+			_rectScratch.height = greedyHeight * (box.max[0] - box.min[0]);
+		} else {
+			_rectScratch.x = baseX + box.min[0];
+			_rectScratch.y = baseY + box.min[1];
+			_rectScratch.z = baseZ + (isBackFace ? box.min[2] : box.max[2]);
+			_rectScratch.width = greedyWidth * (box.max[0] - box.min[0]);
+			_rectScratch.height = greedyHeight * (box.max[1] - box.min[1]);
 		}
-
-		if (axis === 1) {
-			// Match the old working worker mesher convention for Y faces:
-			// width = Z extent, height = X extent
-			return {
-				x: baseX + box.min[0],
-				y: baseY + (isBackFace ? box.min[1] : box.max[1]),
-				z: baseZ + box.min[2],
-				width: greedyWidth * (box.max[2] - box.min[2]),
-				height: greedyHeight * (box.max[0] - box.min[0]),
-			};
-		}
-
-		return {
-			x: baseX + box.min[0],
-			y: baseY + box.min[1],
-			z: baseZ + (isBackFace ? box.min[2] : box.max[2]),
-			width: greedyWidth * (box.max[0] - box.min[0]),
-			height: greedyHeight * (box.max[1] - box.min[1]),
-		};
+		return _rectScratch;
 	}
 }

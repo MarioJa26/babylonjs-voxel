@@ -135,6 +135,7 @@ export type InitLightSharedRequest = {
 
 export type LightRegisterChunkRequest = {
 	type: WorkerTaskType.LightRegisterChunk;
+	seq: number;
 	chunkId: bigint;
 	chunkX: number;
 	chunkY: number;

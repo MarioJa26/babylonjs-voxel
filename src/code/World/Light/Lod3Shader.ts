@@ -51,9 +51,11 @@ export class Lod3Shader {
       );
       int corner = (cornerData[isBackFace] >> (vertexId << 1)) & 3;
 
-      const float invPosScale = 0.25;
-      float faceWidth = faceDataB.x * invPosScale;
-      float faceHeight = faceDataB.y * invPosScale;
+      int meta = int(faceDataC.w + 0.5);
+      const float invPosScale = 0.125;
+      int rawDim = (meta >> 6) & 1;
+      float faceWidth = rawDim == 1 ? float(faceDataB.x) : faceDataB.x * invPosScale;
+      float faceHeight = rawDim == 1 ? float(faceDataB.y) : faceDataB.y * invPosScale;
 
       vec2 cornerUV = cornerToUV(corner);
       float du = cornerUV.x * faceWidth;

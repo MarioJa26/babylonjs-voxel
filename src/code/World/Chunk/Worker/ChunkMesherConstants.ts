@@ -23,7 +23,7 @@ export const BLOCK_PACK_MASK =
 
 export const TRANSPARENT_FLAG = 1 << 16;
 export const BACKFACE_FLAG = 1 << 17;
-export const POS_SCALE = 4;
+export const POS_SCALE = 8;
 
 export const ROTATE_Y_FACE_MASK_1 = new Uint8Array(64);
 export const ROTATE_Y_FACE_MASK_2 = new Uint8Array(64);

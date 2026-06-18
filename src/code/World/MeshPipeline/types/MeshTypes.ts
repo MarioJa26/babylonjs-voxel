@@ -35,6 +35,7 @@ export interface EmitQuadParams {
 	materialType: number;
 	flip: boolean;
 	diagonal?: 0 | 1 | 2;
+	rawDim?: boolean;
 }
 
 /**

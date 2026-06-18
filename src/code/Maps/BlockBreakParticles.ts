@@ -10,157 +10,122 @@ import { BlockTextures } from "../World/Texture/BlockTextures";
 import { FaceName } from "../World/Texture/FaceName";
 import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
 
-export class BlockBreakParticles {
-	private static particleSystem: ParticleSystem;
+let particleSystem: ParticleSystem;
+const _scratchColor1 = new Color4(0, 0, 0, 0);
+const _scratchColor2 = new Color4(0, 0, 0, 0);
+const _scratchColorDead = new Color4(0, 0, 0, 0);
 
-	public static play(
-		scene: Scene,
-		position: Vector3,
-		blockId: number,
-		packedLight: number,
-	) {
-		if (!BlockBreakParticles.particleSystem) {
-			BlockBreakParticles.init(scene);
-		}
-
-		BlockBreakParticles.particleSystem.emitter = position;
-		const lightTint = BlockBreakParticles.computeLightTint(packedLight);
-
-		const blockTex = BlockTextures[blockId];
-		if (blockTex) {
-			const uv =
-				blockTex[FaceName.All] ||
-				blockTex[FaceName.Side] ||
-				blockTex[FaceName.Top] ||
-				blockTex[FaceName.Bottom] ||
-				Object.values(blockTex)[0];
-			if (uv) {
-				// Invert row index because ParticleSystem starts from top-left (V=1)
-				// but our atlas with invertY=true puts row 0 at bottom-left (V=0)
-				const row = TextureAtlasFactory.atlasSize - 1 - uv[1];
-				const cellId = row * TextureAtlasFactory.atlasSize + uv[0];
-				BlockBreakParticles.particleSystem.startSpriteCellID = cellId;
-				BlockBreakParticles.particleSystem.endSpriteCellID = cellId;
-				BlockBreakParticles.particleSystem.spriteCellChangeSpeed = 0;
-			}
-			BlockBreakParticles.particleSystem.color1 = new Color4(
-				lightTint.r,
-				lightTint.g,
-				lightTint.b,
-				1,
-			);
-			BlockBreakParticles.particleSystem.color2 = new Color4(
-				lightTint.r,
-				lightTint.g,
-				lightTint.b,
-				1,
-			);
-			BlockBreakParticles.particleSystem.colorDead = new Color4(
-				lightTint.r * 0.9,
-				lightTint.g * 0.9,
-				lightTint.b * 0.9,
-				0,
-			);
-		} else {
-			// Fallback to a default cell (e.g. cobble at 0,0 -> row 15) if no texture found
-			const defaultCell =
-				(TextureAtlasFactory.atlasSize - 1) * TextureAtlasFactory.atlasSize;
-			BlockBreakParticles.particleSystem.startSpriteCellID = defaultCell;
-			BlockBreakParticles.particleSystem.endSpriteCellID = defaultCell;
-			BlockBreakParticles.particleSystem.color1 = new Color4(
-				lightTint.r,
-				lightTint.g,
-				lightTint.b,
-				1,
-			);
-			BlockBreakParticles.particleSystem.color2 = new Color4(
-				lightTint.r,
-				lightTint.g,
-				lightTint.b,
-				1,
-			);
-			BlockBreakParticles.particleSystem.colorDead = new Color4(
-				lightTint.r * 0.9,
-				lightTint.g * 0.9,
-				lightTint.b * 0.9,
-				0,
-			);
-		}
-
-		BlockBreakParticles.particleSystem.manualEmitCount = 64;
-		BlockBreakParticles.particleSystem.start();
+export function play(
+	scene: Scene,
+	position: Vector3,
+	blockId: number,
+	packedLight: number,
+) {
+	if (!particleSystem) {
+		init(scene);
 	}
 
-	private static init(scene: Scene) {
-		BlockBreakParticles.particleSystem = new ParticleSystem(
-			"blockBreakParticles",
-			1200,
-			scene,
+	particleSystem.emitter = position;
+
+	const skyLight = ((packedLight >> 4) & 0xf) / 15;
+	const blockLight = (packedLight & 0xf) / 15;
+
+	const sunElevation = -GLOBAL_VALUES.skyLightDirection.y + 0.1;
+	const sunLightIntensity = Math.min(1.0, Math.max(0.1, sunElevation * 4.0));
+	const skyScale = sunLightIntensity + 0.3;
+
+	const skyR = skyLight * 0.8 * skyScale;
+	const skyG = skyLight * 0.8 * skyScale;
+	const skyB = skyLight * 0.8 * skyScale;
+
+	const blockR = blockLight * 0.9;
+	const blockG = blockLight * 0.6;
+	const blockB = blockLight * 0.2;
+
+	const finalR = Math.min(1, Math.max(0.2, skyR + blockR));
+	const finalG = Math.min(1, Math.max(0.2, skyG + blockG));
+	const finalB = Math.min(1, Math.max(0.2, skyB + blockB));
+
+	const blockTex = BlockTextures[blockId];
+	if (blockTex) {
+		const uv =
+			blockTex[FaceName.All] ||
+			blockTex[FaceName.Side] ||
+			blockTex[FaceName.Top] ||
+			blockTex[FaceName.Bottom] ||
+			Object.values(blockTex)[0];
+		if (uv) {
+			const row = TextureAtlasFactory.atlasSize - 1 - uv[1];
+			const cellId = row * TextureAtlasFactory.atlasSize + uv[0];
+			particleSystem.startSpriteCellID = cellId;
+			particleSystem.endSpriteCellID = cellId;
+			particleSystem.spriteCellChangeSpeed = 0;
+		}
+		particleSystem.color1 = _scratchColor1;
+		_scratchColor1.copyFromFloats(finalR, finalG, finalB, 1);
+		particleSystem.color2 = _scratchColor2;
+		_scratchColor2.copyFromFloats(finalR, finalG, finalB, 1);
+		particleSystem.colorDead = _scratchColorDead;
+		_scratchColorDead.copyFromFloats(
+			finalR * 0.9,
+			finalG * 0.9,
+			finalB * 0.9,
+			0,
 		);
-
-		const atlas = TextureAtlasFactory.getDiffuse();
-		if (atlas) {
-			BlockBreakParticles.particleSystem.particleTexture = atlas;
-			BlockBreakParticles.particleSystem.isAnimationSheetEnabled = true;
-			BlockBreakParticles.particleSystem.spriteCellWidth =
-				TextureAtlasFactory.tileSize;
-			BlockBreakParticles.particleSystem.spriteCellHeight =
-				TextureAtlasFactory.tileSize;
-		}
-
-		BlockBreakParticles.particleSystem.minSize = 0.05;
-		BlockBreakParticles.particleSystem.maxSize = 0.1;
-		BlockBreakParticles.particleSystem.minLifeTime = 0.5;
-		BlockBreakParticles.particleSystem.maxLifeTime = 1.0;
-		BlockBreakParticles.particleSystem.emitRate = 1000;
-		BlockBreakParticles.particleSystem.gravity = new Vector3(0, -10, 0);
-		BlockBreakParticles.particleSystem.direction1 = new Vector3(-1, 1, -1);
-		BlockBreakParticles.particleSystem.direction2 = new Vector3(1, 2, 1);
-		BlockBreakParticles.particleSystem.minEmitPower = 0;
-		BlockBreakParticles.particleSystem.maxEmitPower = 1;
-		BlockBreakParticles.particleSystem.updateSpeed = 0.0166;
-		BlockBreakParticles.particleSystem.renderingGroupId = 1;
-		BlockBreakParticles.particleSystem.blendMode =
-			ParticleSystem.BLENDMODE_STANDARD;
-		BlockBreakParticles.particleSystem.billboardMode =
-			ParticleSystem.BILLBOARDMODE_ALL;
+	} else {
+		const defaultCell =
+			(TextureAtlasFactory.atlasSize - 1) * TextureAtlasFactory.atlasSize;
+		particleSystem.startSpriteCellID = defaultCell;
+		particleSystem.endSpriteCellID = defaultCell;
+		particleSystem.color1 = _scratchColor1;
+		_scratchColor1.copyFromFloats(finalR, finalG, finalB, 1);
+		particleSystem.color2 = _scratchColor2;
+		_scratchColor2.copyFromFloats(finalR, finalG, finalB, 1);
+		particleSystem.colorDead = _scratchColorDead;
+		_scratchColorDead.copyFromFloats(
+			finalR * 0.9,
+			finalG * 0.9,
+			finalB * 0.9,
+			0,
+		);
 	}
 
-	public static setAtlasTexture(texture: Texture) {
-		if (BlockBreakParticles.particleSystem) {
-			BlockBreakParticles.particleSystem.particleTexture = texture;
-			BlockBreakParticles.particleSystem.isAnimationSheetEnabled = true;
-			BlockBreakParticles.particleSystem.spriteCellWidth =
-				TextureAtlasFactory.tileSize;
-			BlockBreakParticles.particleSystem.spriteCellHeight =
-				TextureAtlasFactory.tileSize;
-		}
+	particleSystem.manualEmitCount = 64;
+	particleSystem.start();
+}
+
+function init(scene: Scene) {
+	particleSystem = new ParticleSystem("blockBreakParticles", 1200, scene);
+
+	const atlas = TextureAtlasFactory.getDiffuse();
+	if (atlas) {
+		particleSystem.particleTexture = atlas;
+		particleSystem.isAnimationSheetEnabled = true;
+		particleSystem.spriteCellWidth = TextureAtlasFactory.tileSize;
+		particleSystem.spriteCellHeight = TextureAtlasFactory.tileSize;
 	}
 
-	private static computeLightTint(packedLight: number): {
-		r: number;
-		g: number;
-		b: number;
-	} {
-		const skyLight = ((packedLight >> 4) & 0xf) / 15;
-		const blockLight = (packedLight & 0xf) / 15;
+	particleSystem.minSize = 0.05;
+	particleSystem.maxSize = 0.1;
+	particleSystem.minLifeTime = 0.5;
+	particleSystem.maxLifeTime = 1.0;
+	particleSystem.emitRate = 1000;
+	particleSystem.gravity = new Vector3(0, -10, 0);
+	particleSystem.direction1 = new Vector3(-1, 1, -1);
+	particleSystem.direction2 = new Vector3(1, 2, 1);
+	particleSystem.minEmitPower = 0;
+	particleSystem.maxEmitPower = 1;
+	particleSystem.updateSpeed = 0.0166;
+	particleSystem.renderingGroupId = 1;
+	particleSystem.blendMode = ParticleSystem.BLENDMODE_STANDARD;
+	particleSystem.billboardMode = ParticleSystem.BILLBOARDMODE_ALL;
+}
 
-		const sunElevation = -GLOBAL_VALUES.skyLightDirection.y + 0.1;
-		const sunLightIntensity = Math.min(1.0, Math.max(0.1, sunElevation * 4.0));
-		const skyScale = sunLightIntensity + 0.3;
-
-		const skyR = skyLight * 0.8 * skyScale;
-		const skyG = skyLight * 0.8 * skyScale;
-		const skyB = skyLight * 0.8 * skyScale;
-
-		const blockR = blockLight * 0.9;
-		const blockG = blockLight * 0.6;
-		const blockB = blockLight * 0.2;
-
-		const finalR = Math.min(1, Math.max(0.2, skyR + blockR));
-		const finalG = Math.min(1, Math.max(0.2, skyG + blockG));
-		const finalB = Math.min(1, Math.max(0.2, skyB + blockB));
-
-		return { r: finalR, g: finalG, b: finalB };
+export function setAtlasTexture(texture: Texture) {
+	if (particleSystem) {
+		particleSystem.particleTexture = texture;
+		particleSystem.isAnimationSheetEnabled = true;
+		particleSystem.spriteCellWidth = TextureAtlasFactory.tileSize;
+		particleSystem.spriteCellHeight = TextureAtlasFactory.tileSize;
 	}
 }

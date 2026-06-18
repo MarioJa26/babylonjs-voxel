@@ -29,6 +29,7 @@ export function emitQuad(
 		materialType,
 		flip,
 		diagonal = 0,
+		rawDim = false,
 	} = params;
 
 	const tex = BlockTextures[blockId];
@@ -51,15 +52,21 @@ export function emitQuad(
 		((materialType & 0x3) << 1) |
 		(isWater << 3) |
 		(diagEnabled << 4) |
-		(diagVariant << 5);
+		(diagVariant << 5) |
+		(rawDim ? 64 : 0);
 
 	const tint = getMaterialTintBucket(blockId);
 
 	const sx = Math.round(x * POS_SCALE);
 	const sy = Math.round(y * POS_SCALE);
 	const sz = Math.round(z * POS_SCALE);
-	const sw = Math.round(width * POS_SCALE);
-	const sh = Math.round(height * POS_SCALE);
+
+	// Faces at chunk boundary (position >= size) overflow Uint8Array.
+	// These should be rendered by the adjacent chunk at position 0.
+	if (sx >= 256 || sy >= 256 || sz >= 256) return;
+
+	const sw = rawDim ? Math.round(width) : Math.round(width * POS_SCALE);
+	const sh = rawDim ? Math.round(height) : Math.round(height * POS_SCALE);
 
 	out.faceDataA.push4(sx, sy, sz, axisFace);
 	out.faceDataB.push4(sw, sh, tx, ty);

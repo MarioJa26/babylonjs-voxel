@@ -456,8 +456,39 @@ export class VoxelMaskExtractor {
 		const currentFaceBit = this.getCurrentFaceBit(axis);
 		const neighborFaceBit = this.getNeighborFaceBit(axis);
 
-		// Only the positive boundary can cross for this extractor.
-		if (slice === size - 1 && !this.ctx.hasNeighborChunk(1, 0, 0)) {
+		// Negative boundary: face at position 0 (between prev chunk's last block and this chunk's first block).
+		if (slice === -1) {
+			if (!this.ctx.hasNeighborChunk(-1, 0, 0)) {
+				this.clearSlice(mask, lightMask, size);
+				return;
+			}
+			let idx = 0;
+			for (let v = 0; v < size; v++) {
+				for (let u = 0; u < size; u++) {
+					this.processCell(
+						-1,
+						u,
+						v,
+						dx,
+						dy,
+						dz,
+						uAxis,
+						vAxis,
+						currentFaceBit,
+						neighborFaceBit,
+						idx,
+						mask,
+						lightMask,
+					);
+					idx++;
+				}
+			}
+			return;
+		}
+
+		// Positive boundary: faces at position 32 overflow Uint8Array.
+		// The next chunk renders these faces at its position 0.
+		if (slice === size - 1) {
 			this.clearSlice(mask, lightMask, size);
 			return;
 		}
@@ -508,7 +539,38 @@ export class VoxelMaskExtractor {
 		const currentFaceBit = this.getCurrentFaceBit(axis);
 		const neighborFaceBit = this.getNeighborFaceBit(axis);
 
-		if (slice === size - 1 && !this.ctx.hasNeighborChunk(0, 1, 0)) {
+		// Negative boundary: face at position 0.
+		if (slice === -1) {
+			if (!this.ctx.hasNeighborChunk(0, -1, 0)) {
+				this.clearSlice(mask, lightMask, size);
+				return;
+			}
+			let idx = 0;
+			for (let v = 0; v < size; v++) {
+				for (let u = 0; u < size; u++) {
+					this.processCell(
+						v,
+						-1,
+						u,
+						dx,
+						dy,
+						dz,
+						uAxis,
+						vAxis,
+						currentFaceBit,
+						neighborFaceBit,
+						idx,
+						mask,
+						lightMask,
+					);
+					idx++;
+				}
+			}
+			return;
+		}
+
+		// Positive boundary: faces at position size overflow Uint8Array.
+		if (slice === size - 1) {
 			this.clearSlice(mask, lightMask, size);
 			return;
 		}
@@ -559,7 +621,37 @@ export class VoxelMaskExtractor {
 		const currentFaceBit = this.getCurrentFaceBit(axis);
 		const neighborFaceBit = this.getNeighborFaceBit(axis);
 
-		if (slice === size - 1 && !this.ctx.hasNeighborChunk(0, 0, 1)) {
+		// Negative boundary: face at position 0.
+		if (slice === -1) {
+			if (!this.ctx.hasNeighborChunk(0, 0, -1)) {
+				this.clearSlice(mask, lightMask, size);
+				return;
+			}
+			let idx = 0;
+			for (let v = 0; v < size; v++) {
+				for (let u = 0; u < size; u++) {
+					this.processCell(
+						u,
+						v,
+						-1,
+						dx,
+						dy,
+						dz,
+						uAxis,
+						vAxis,
+						currentFaceBit,
+						neighborFaceBit,
+						idx,
+						mask,
+						lightMask,
+					);
+					idx++;
+				}
+			}
+			return;
+		}
+
+		if (slice === size - 1) {
 			this.clearSlice(mask, lightMask, size);
 			return;
 		}

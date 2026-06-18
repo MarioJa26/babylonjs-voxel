@@ -595,6 +595,7 @@ export class ChunkWorkerPool {
 					if (chunk.isLoaded) {
 						const snap = chunk.getLightStorageSnapshot();
 						replacement.postLightRegisterChunk({
+							seq: this.nextLightSeq(),
 							chunkId: chunk.id,
 							chunkX: chunk.chunkX,
 							chunkY: chunk.chunkY,
@@ -728,6 +729,7 @@ export class ChunkWorkerPool {
 	private broadcastLightRegister(chunk: Chunk): void {
 		const snap = chunk.getLightStorageSnapshot();
 		this.getLightWorker().postLightRegisterChunk({
+			seq: this.nextLightSeq(),
 			chunkId: chunk.id,
 			chunkX: chunk.chunkX,
 			chunkY: chunk.chunkY,
@@ -816,10 +818,15 @@ export class ChunkWorkerPool {
 		// LightDirty arrives).
 		for (const [slot] of slotMap) {
 			const chunk = this.lightChunkByHeaderSlot.get(slot);
-			if (chunk && chunk.isLoaded && !chunk.isTerrainScheduled) {
+			if (chunk?.isLoaded && !chunk.isTerrainScheduled) {
 				this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);
 				slotMap.delete(slot);
+			} else if (!chunk) {
+				slotMap.delete(slot);
 			}
+		}
+		if (slotMap.size > 0) {
+			console.log("LIGHT_DIRTY_REMAINING", [...slotMap.keys()]);
 		}
 	};
 
@@ -1201,8 +1208,10 @@ export class ChunkWorkerPool {
 			return;
 		}
 
+		const inflight = this.isSameLodRemeshInflight(chunk);
+
 		if (this.isCompletelyEmptyChunk(chunk)) {
-			if (this.isSameLodRemeshInflight(chunk)) {
+			if (inflight) {
 				this.rerunRemeshAfterInflight.set(chunk.id, true);
 			}
 			this.pendingRemeshMap.delete(chunk);
@@ -1211,7 +1220,7 @@ export class ChunkWorkerPool {
 			return;
 		}
 
-		if (this.isSameLodRemeshInflight(chunk)) {
+		if (inflight) {
 			this.rerunRemeshAfterInflight.set(chunk.id, true);
 			return;
 		}
@@ -1924,12 +1933,6 @@ export class ChunkWorkerPool {
 					this.pendingRemeshMap.delete(taskChunk);
 					this.taskQueuePriority.delete(taskChunk);
 					continue;
-				}
-				if (!this.pendingRemeshMap.has(taskChunk)) {
-					if (this.tryApplyCachedLODMesh(taskChunk)) {
-						this.taskQueuePriority.delete(taskChunk);
-						continue;
-					}
 				}
 			}
 

@@ -1,7 +1,8 @@
-import type { Engine, Scene, Vector3 } from "@babylonjs/core";
+import type { Engine, Observer, Scene, Vector3 } from "@babylonjs/core";
 import { CustomBoat } from "../Entities/CustomBoat";
 import { getBiome } from "../Generation/TerrainHeightMap";
 import type { IControls } from "../Interface/IControls";
+import { Map1 } from "../Maps/Map1";
 import { Chunk } from "../World/Chunk/Chunk";
 import {
 	getDebugStats,
@@ -48,6 +49,10 @@ export class PlayerLoopController {
 	#lastDebugHudUpdateMs = 0;
 	static readonly DEBUG_HUD_INTERVAL_MS = 250;
 
+	// ---- observer references for cleanup ----
+	#onBeforeRenderObs: Observer<Scene> | null = null;
+	#onAfterRenderObs: Observer<Scene> | null = null;
+
 	constructor(
 		private readonly engine: Engine,
 		private readonly scene: Scene,
@@ -67,7 +72,7 @@ export class PlayerLoopController {
 			this.#occlusionCuller.incrementalAdd(chunk);
 		};
 
-		this.scene.onBeforeRenderObservable.add(() => {
+		this.#onBeforeRenderObs = this.scene.onBeforeRenderObservable.add(() => {
 			const dt = (this.scene.deltaTime || 0) / 1000;
 
 			if (this.playerVehicle.isSprinting) {
@@ -101,13 +106,24 @@ export class PlayerLoopController {
 			this.#updateActiveMeshSelection(cx, cy, cz);
 
 			// Occlusion culling – must run after chunk loading and before Babylon evaluates the scene.
-			this.#lastOcclusionStats = this.#occlusionCuller.update(this.scene);
+			this.#occlusionCuller.update(this.scene, this.#lastOcclusionStats);
 		});
 
-		this.scene.onAfterRenderObservable.add(() => {
+		this.#onAfterRenderObs = this.scene.onAfterRenderObservable.add(() => {
 			this.#updateDebugHud();
 			this.#freezeActiveMeshes();
 		});
+	}
+
+	public dispose(): void {
+		if (this.#onBeforeRenderObs) {
+			this.scene.onBeforeRenderObservable.remove(this.#onBeforeRenderObs);
+			this.#onBeforeRenderObs = null;
+		}
+		if (this.#onAfterRenderObs) {
+			this.scene.onAfterRenderObservable.remove(this.#onAfterRenderObs);
+			this.#onAfterRenderObs = null;
+		}
 	}
 
 	// ---------------------------------------------------------------------------
@@ -397,6 +413,19 @@ export class PlayerLoopController {
 			Math.ceil(this.playerStats.mana),
 			"stats",
 		);
+
+		if (Map1.mobRegistry) {
+			const mobStats = Map1.mobRegistry.getDebugStats();
+			PlayerHud.updateDebugInfo(
+				"Mobs",
+				`${mobStats.total}/${mobStats.cap}`,
+				"mobs",
+			);
+			const breakdown = mobStats.perType
+				.map((t) => `${t.type}:${t.count}/${t.max}`)
+				.join("  ");
+			PlayerHud.updateDebugInfo("Mob Types", breakdown || "-", "mobs");
+		}
 	}
 
 	// Lookup table is faster than the original Math.round(degrees/45) path

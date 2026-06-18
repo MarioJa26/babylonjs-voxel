@@ -27,6 +27,7 @@ import {
 	bumpLightVersion,
 	type ChunkViewRegistry,
 	createRegistry,
+	lightBlockReconcile,
 	lightMutate,
 	lightSkyReconcile,
 	propagateDeferred,
@@ -125,6 +126,21 @@ function handleRegisterChunk(req: LightRegisterChunkRequest): void {
 			handleMutate(mutation);
 		}
 	}
+
+	// Reconcile both block and sky light after registration.
+	// Catches propagation that was skipped earlier because this chunk
+	// was not visible in the worker registry yet.
+	const dirty = new Set<number>();
+	for (const slot of lightBlockReconcile(registry, req.chunkId)) {
+		dirty.add(slot);
+	}
+	for (const slot of lightSkyReconcile(registry, req.chunkId)) {
+		dirty.add(slot);
+	}
+	if (dirty.size > 0) {
+		for (const slot of dirty) bumpLightVersion(registry, slot);
+		postDirty(req.seq, dirty);
+	}
 }
 
 function handleUnregisterChunk(req: LightUnregisterChunkRequest): void {
@@ -193,7 +209,13 @@ function handleAddEmission(req: LightAddEmissionRequest): void {
 
 function handleSkyReconcile(req: LightSkyReconcileRequest): void {
 	if (!state.registry) return;
-	const dirty = lightSkyReconcile(state.registry, req.chunkId);
+	const dirty = new Set<number>();
+	for (const slot of lightSkyReconcile(state.registry, req.chunkId)) {
+		dirty.add(slot);
+	}
+	for (const slot of lightBlockReconcile(state.registry, req.chunkId)) {
+		dirty.add(slot);
+	}
 	for (const slot of dirty) bumpLightVersion(state.registry, slot);
 	postDirty(req.seq, dirty);
 }

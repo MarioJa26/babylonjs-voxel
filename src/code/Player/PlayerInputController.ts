@@ -1,4 +1,9 @@
-import { PointerEventTypes, type Scene } from "@babylonjs/core";
+import {
+	type Observer,
+	PointerEventTypes,
+	type PointerInfo,
+	type Scene,
+} from "@babylonjs/core";
 import type { IControls } from "../Interface/IControls";
 import { Map1 } from "../Maps/Map1";
 import type { InventoryControls } from "./Controls/InventoryControls";
@@ -14,6 +19,7 @@ export class PlayerInputController {
 	#onPointerLockChange: () => void;
 	#onMouseDown: (event: MouseEvent) => void;
 	#onMouseUp: (event: MouseEvent) => void;
+	#pointerObs: Observer<PointerInfo> | null = null;
 
 	constructor(
 		private readonly scene: Scene,
@@ -77,10 +83,14 @@ export class PlayerInputController {
 		);
 		window.removeEventListener("mousedown", this.#onMouseDown);
 		window.removeEventListener("mouseup", this.#onMouseUp);
+		if (this.#pointerObs) {
+			this.scene.onPointerObservable.remove(this.#pointerObs);
+			this.#pointerObs = null;
+		}
 	}
 
 	private bindPointerObserver(): void {
-		this.scene.onPointerObservable.add((pointerInfo) => {
+		this.#pointerObs = this.scene.onPointerObservable.add((pointerInfo) => {
 			if (document.pointerLockElement !== this.canvas) return;
 
 			switch (pointerInfo.type) {

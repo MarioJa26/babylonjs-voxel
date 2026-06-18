@@ -1,5 +1,5 @@
 import { type TransformNode, Vector3 } from "@babylonjs/core";
-import { BlockBreakParticles } from "@/code/Maps/BlockBreakParticles";
+import { play } from "@/code/Maps/BlockBreakParticles";
 import {
 	deleteBlock,
 	getLightByWorldCoords,
@@ -15,6 +15,9 @@ import { Gamemodes } from "../../PlayerStats";
 import { updateCrackingState } from "./BlockBreakingVisuals";
 import type { BlockRaycastHit } from "./BlockRaycaster";
 import { pickTarget } from "./BlockRaycaster";
+
+const _scratchLightPos = new Vector3();
+const _scratchParticlePos = new Vector3();
 
 export type BoatBlockHitContext = {
 	kind: "boatChunk";
@@ -38,8 +41,10 @@ export class BlockBreakingHandler {
 	#player: Player;
 
 	#active = false;
-	#breakingBlock: { x: number; y: number; z: number } | null = null;
-	#breakingTargetKey = "";
+	#cachedX = 0;
+	#cachedY = 0;
+	#cachedZ = 0;
+	#hasCachedBlock = false;
 	#breakTimer = 0;
 
 	constructor(player: Player) {
@@ -56,8 +61,7 @@ export class BlockBreakingHandler {
 	}
 
 	public reset(): void {
-		this.#breakingBlock = null;
-		this.#breakingTargetKey = "";
+		this.#hasCachedBlock = false;
 		this.#breakTimer = 0;
 		updateCrackingState(null, 0);
 	}
@@ -91,16 +95,18 @@ export class BlockBreakingHandler {
 				? 0.1
 				: getBlockBreakTime(blockId, item?.itemId) || 0.001;
 
-		const targetKey = this.#getBreakingTargetKey(hit);
-		const isSameBlock = this.#breakingTargetKey === targetKey;
+		const isSameBlock =
+			this.#hasCachedBlock &&
+			x === this.#cachedX &&
+			y === this.#cachedY &&
+			z === this.#cachedZ;
 
 		if (isSameBlock) {
 			this.#breakTimer += dt;
-			this.#breakingBlock = { x, y, z };
 
 			const frac = Math.min(this.#breakTimer / breakTime, 1);
 			updateCrackingState(
-				this.#breakingBlock,
+				{ x: this.#cachedX, y: this.#cachedY, z: this.#cachedZ },
 				frac,
 				blockId,
 				blockState,
@@ -108,11 +114,8 @@ export class BlockBreakingHandler {
 			);
 
 			if (this.#breakTimer >= breakTime) {
-				const lightPos = new Vector3(
-					x + 0.5 + hit.nx,
-					y + 0.5 + hit.ny,
-					z + 0.5 + hit.nz,
-				);
+				const lightPos = _scratchLightPos;
+				lightPos.set(x + 0.5 + hit.nx, y + 0.5 + hit.ny, z + 0.5 + hit.nz);
 
 				const packedLight = getLightByWorldCoords(
 					lightPos.x,
@@ -123,12 +126,14 @@ export class BlockBreakingHandler {
 				this.#breakBlock(x, y, z, blockId, packedLight, hit.dynamicContext);
 			}
 		} else {
-			this.#breakingBlock = { x, y, z };
-			this.#breakingTargetKey = targetKey;
+			this.#cachedX = x;
+			this.#cachedY = y;
+			this.#cachedZ = z;
+			this.#hasCachedBlock = true;
 			this.#breakTimer = 0;
 
 			updateCrackingState(
-				this.#breakingBlock,
+				{ x, y, z },
 				0,
 				blockId,
 				blockState,
@@ -161,19 +166,6 @@ export class BlockBreakingHandler {
 		};
 	}
 
-	#getBreakingTargetKey(hit: {
-		x: number;
-		y: number;
-		z: number;
-		dynamicContext?: unknown;
-	}): string {
-		const boatContext = this.#asBoatBlockContext(hit.dynamicContext);
-		if (boatContext) {
-			return `boat:${boatContext.localX}:${boatContext.localY}:${boatContext.localZ}`;
-		}
-		return `world:${hit.x}:${hit.y}:${hit.z}`;
-	}
-
 	#breakBlock(
 		x: number,
 		y: number,
@@ -191,12 +183,9 @@ export class BlockBreakingHandler {
 
 		const di = new DroppedItem(worldItem, x + 0.5, y + 0.5, z + 0.5);
 
-		BlockBreakParticles.play(
-			this.#player.playerVehicle.scene,
-			new Vector3(x + 0.5, y + 0.5, z + 0.5),
-			blockId,
-			packedLight,
-		);
+		const particlePos = _scratchParticlePos;
+		particlePos.set(x + 0.5, y + 0.5, z + 0.5);
+		play(this.#player.playerVehicle.scene, particlePos, blockId, packedLight);
 
 		this.reset();
 

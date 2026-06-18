@@ -115,6 +115,16 @@ export class Crosshair {
 		});
 	}
 
+	static pickMobMesh(
+		player: Player,
+		maxDistance = REACH_DISTANCE,
+	): AbstractMesh | null {
+		return Crosshair.#rayMarchFirstMesh(player, maxDistance, (mesh) => {
+			const meta = mesh.metadata;
+			return meta instanceof MetadataContainer && meta.has("mob");
+		});
+	}
+
 	// ─── Mesh ray pick ──────────────────────────────────────────────────────
 
 	static #rayMarchFirstMesh(
