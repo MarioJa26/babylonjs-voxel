@@ -6,7 +6,12 @@ import {
 	getTerrainBlockByWorldCoords,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { getBlockStateByWorldCoords } from "@/code/World/Chunk/Loading/ChunkWorldMutations";
-import { FACE_ALL, getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
+import {
+	FACE_ALL,
+	getCubeShapeIndex,
+	getShapeByBlockId,
+	getShapeForBlockId,
+} from "@/code/World/Shape/BlockShapes";
 import {
 	getTransformedShapeBoxes,
 	type ShapeBounds,
@@ -96,8 +101,9 @@ function isTargetableBlock(blockId: number): boolean {
 function isFullBlockShape(blockId: number, blockState: number): boolean {
 	const slice = (blockState >> 3) & 7;
 	if (slice !== 0) return false;
+	const shapeIndex = getShapeByBlockId()[blockId] ?? 0;
+	if (shapeIndex === getCubeShapeIndex()) return true;
 	const shape = getShapeForBlockId(blockId);
-	if (shape.name === "cube") return true;
 	if (!shape.usesSliceState || shape.boxes.length !== 1) return false;
 	const box = shape.boxes[0];
 	return (
@@ -339,7 +345,11 @@ function raycastFirstBlock(
 	return boatHit.t < terrainHit.t ? boatHit : terrainHit;
 }
 
-type DdaVisitResult = "hit" | "skip" | "stop";
+const enum DdaVisitResult {
+	Hit,
+	Skip,
+	Stop,
+}
 
 function traceRayDda(
 	ox: number,
@@ -392,7 +402,7 @@ function traceRayDda(
 	if (checkStart) {
 		const tExit = Math.min(tMaxX, tMaxY, tMaxZ, maxDist);
 		const r = visit(x, y, z, t, nx, ny, nz, tExit);
-		if (r === "hit" || r === "stop") return;
+		if (r === DdaVisitResult.Hit || r === DdaVisitResult.Stop) return;
 	}
 
 	while (true) {
@@ -434,7 +444,7 @@ function traceRayDda(
 
 		const tExit = Math.min(tMaxX, tMaxY, tMaxZ, maxDist);
 		const r = visit(x, y, z, t, nx, ny, nz, tExit);
-		if (r === "hit" || r === "stop") return;
+		if (r === DdaVisitResult.Hit || r === DdaVisitResult.Stop) return;
 	}
 }
 
@@ -468,7 +478,7 @@ function raycastFirstTerrainBlock(
 		false,
 		(x, y, z, t, nx, ny, nz, tExit) => {
 			const blockId = getTerrainBlockByWorldCoords(x, y, z);
-			if (!shouldHit(x, y, z, blockId)) return "skip";
+			if (!shouldHit(x, y, z, blockId)) return DdaVisitResult.Skip;
 
 			const blockState = getBlockStateByWorldCoords(x, y, z);
 
@@ -484,7 +494,7 @@ function raycastFirstTerrainBlock(
 				_sharedHit.blockState = blockState;
 				_sharedHit.dynamicContext = null;
 				hit = true;
-				return "hit";
+				return DdaVisitResult.Hit;
 			}
 
 			const shapeHit = raycastShapeInVoxel(
@@ -517,10 +527,10 @@ function raycastFirstTerrainBlock(
 				_sharedHit.blockState = blockState;
 				_sharedHit.dynamicContext = null;
 				hit = true;
-				return "hit";
+				return DdaVisitResult.Hit;
 			}
 
-			return "skip";
+			return DdaVisitResult.Skip;
 		},
 	);
 
@@ -631,10 +641,11 @@ function raycastSingleBoatChunk(
 		ray.length,
 		true,
 		(lx, ly, lz, t, _nx, _ny, _nz, tExit) => {
-			if (!boatChunk.isInsideLocalBounds(lx, ly, lz)) return "stop";
+			if (!boatChunk.isInsideLocalBounds(lx, ly, lz))
+				return DdaVisitResult.Stop;
 
 			const blockId = boatChunk.getBlockLocal(lx, ly, lz);
-			if (!shouldHit(lx, ly, lz, blockId)) return "skip";
+			if (!shouldHit(lx, ly, lz, blockId)) return DdaVisitResult.Skip;
 
 			const blockState = boatChunk.getBlockStateLocal(lx, ly, lz);
 			let hitT = t;
@@ -671,7 +682,7 @@ function raycastSingleBoatChunk(
 				}
 			}
 
-			if (!hasHit) return "skip";
+			if (!hasHit) return DdaVisitResult.Skip;
 
 			_sharedWorldNormal.set(hitNx, hitNy, hitNz);
 			Vector3.TransformNormalToRef(
@@ -712,7 +723,7 @@ function raycastSingleBoatChunk(
 			_sharedBoatContext.localHitNy = hitNy;
 			_sharedBoatContext.localHitNz = hitNz;
 			hitResult = true;
-			return "hit";
+			return DdaVisitResult.Hit;
 		},
 	);
 

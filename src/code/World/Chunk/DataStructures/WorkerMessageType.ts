@@ -1,6 +1,13 @@
 import type { MeshData } from "./MeshData";
 
-export enum WorkerTaskType {
+export const enum TaskType {
+	Terrain,
+	Remesh,
+	LodPrecompute,
+	DistantTerrain,
+}
+
+export const enum WorkerTaskType {
 	GenerateTerrain,
 	GenerateFullMesh,
 	GenerateDistantTerrain_Generated,
@@ -9,6 +16,7 @@ export enum WorkerTaskType {
 	WorkerReady,
 	// --- Light worker tasks ---
 	InitLightShared,
+	LightSetClosedFaceMask,
 	LightRegisterChunk,
 	LightUnregisterChunk,
 	LightUpdateChunkBuffers,
@@ -116,6 +124,7 @@ export type WorkerRequestData =
 	| GenerateDistantTerrainRequest
 	| InitDistantTerrainSharedRequest
 	| InitLightSharedRequest
+	| LightSetClosedFaceMaskRequest
 	| LightRegisterChunkRequest
 	| LightUnregisterChunkRequest
 	| LightUpdateChunkBuffersRequest
@@ -131,6 +140,11 @@ export type WorkerRequestData =
 export type InitLightSharedRequest = {
 	type: WorkerTaskType.InitLightShared;
 	headerBuffer: SharedArrayBuffer;
+};
+
+export type LightSetClosedFaceMaskRequest = {
+	type: WorkerTaskType.LightSetClosedFaceMask;
+	maskBuffer: SharedArrayBuffer;
 };
 
 export type LightRegisterChunkRequest = {
@@ -247,6 +261,7 @@ export type WorkerResponseData =
 	| DistantTerrainGeneratedMessage
 	| { type: WorkerTaskType.InitDistantTerrainShared } // ← ack only, no payload
 	| { type: WorkerTaskType.InitLightShared } // ← ack only
+	| { type: WorkerTaskType.LightSetClosedFaceMask } // ← ack only
 	| { type: WorkerTaskType.WorkerReady }
 	| LightDirtyMessage;
 

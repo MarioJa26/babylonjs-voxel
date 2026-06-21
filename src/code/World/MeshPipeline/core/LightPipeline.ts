@@ -16,16 +16,15 @@ export function quantizeLightForLOD(
 	packed: number,
 	disableAO: boolean,
 ): number {
-	// If AO is NOT disabled, leave the original packed light
-	if (!disableAO) return packed & 0xff;
+	const light = packed & 0xff;
 
-	const sky = (packed >> 4) & 0xf;
-	const block = packed & 0xf;
+	// LOD0/LOD1: keep full precision lighting/AO-compatible packed byte.
+	if (!disableAO) return light;
 
-	const qs = quantizeNibble(sky);
-	const qb = quantizeNibble(block);
+	const block = quantizeNibble(light & 0x0f);
+	const sky = quantizeNibble((light >> 4) & 0x0f);
 
-	return ((qs & 0xf) << 4) | (qb & 0xf);
+	return block | (sky << 4);
 }
 
 /**

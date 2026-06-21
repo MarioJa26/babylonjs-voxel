@@ -60,7 +60,7 @@ export class BoatChunk {
 
 		const chunkCoords = BoatChunk.allocateChunkCoords();
 		this.#centerChunk = new Chunk(chunkCoords.x, chunkCoords.y, chunkCoords.z);
-		this.#centerChunk.isPersistent = true;
+		this.#centerChunk.isBoatChunk = true;
 
 		this.createNeighborChunks(chunkCoords);
 
@@ -197,7 +197,7 @@ export class BoatChunk {
 						center.y + dy,
 						center.z + dz,
 					);
-					neighbor.isPersistent = true;
+					neighbor.isBoatChunk = true;
 					this.#neighborChunks.push(neighbor);
 				}
 			}

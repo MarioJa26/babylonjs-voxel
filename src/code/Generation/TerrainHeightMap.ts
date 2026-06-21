@@ -119,11 +119,13 @@ const continentalnessSpline = new Spline([
 	{ t: 0.6, v: 380 },
 	{ t: 0.7, v: 500 },
 	{ t: 0.8, v: 650 },
+	/*
 	// High peaks
 	{ t: 0.85, v: 750 },
 	{ t: 0.9, v: 850 },
 	{ t: 0.95, v: 950 },
 	{ t: 1.0, v: 1000 },
+	 */
 ]);
 
 const erosionSpline = new Spline([

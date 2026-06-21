@@ -388,7 +388,7 @@ export class DistantTerrain {
 
 		const sunElevation = -GLOBAL_VALUES.skyLightDirection.y + 0.1;
 		const _raw = sunElevation * 4;
-		const sunLightIntensity = _raw < 0.1 ? 0.1 : _raw > 1.0 ? 1.0 : _raw;
+		const sunLightIntensity = _raw < 0.0 ? 0.0 : _raw > 1.0 ? 1.0 : _raw;
 		effect.setFloat("sunLightIntensity", sunLightIntensity);
 
 		effect.setVector3(

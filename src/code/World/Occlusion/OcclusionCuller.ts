@@ -14,8 +14,10 @@
  */
 
 import { Frustum, Matrix, type Scene, Vector3 } from "@babylonjs/core";
+import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { Map1 } from "@/code/Maps/Map1";
 import { Chunk, getChunk } from "../Chunk/Chunk";
+import { getAllGroups } from "../Chunk/MergedMeshManager";
 
 // ---------------------------------------------------------------------------
 export interface OcclusionStats {
@@ -30,8 +32,10 @@ export interface OcclusionStats {
 const NEAR_CHUNKS = 1;
 const MAX_BFS_STEPS = 32;
 const MAX_RENDER_RADIUS = 20;
-const SEA_LEVEL = Chunk.SIZE;
-const BFS_FRAME_BUDGET = 1000;
+const UNDERGROUND_RENDER_RADIUS = 6;
+const SEA_LEVEL = GenerationParams.SEA_LEVEL;
+const FRUSTUM_MARGIN = 32.0;
+const BFS_FRAME_BUDGET = 3000;
 const BFS_CAP = 32768; // must be power-of-2
 const BFS_MASK = BFS_CAP - 1;
 
@@ -104,7 +108,7 @@ function aabbInFrustum(
 			ny * (ny >= 0 ? maxY : minY) +
 			nz * (nz >= 0 ? maxZ : minZ) +
 			d <
-		0
+		-FRUSTUM_MARGIN
 	)
 		return false;
 	off = 4;
@@ -117,7 +121,7 @@ function aabbInFrustum(
 			ny * (ny >= 0 ? maxY : minY) +
 			nz * (nz >= 0 ? maxZ : minZ) +
 			d <
-		0
+		-FRUSTUM_MARGIN
 	)
 		return false;
 	off = 8;
@@ -130,7 +134,7 @@ function aabbInFrustum(
 			ny * (ny >= 0 ? maxY : minY) +
 			nz * (nz >= 0 ? maxZ : minZ) +
 			d <
-		0
+		-FRUSTUM_MARGIN
 	)
 		return false;
 	off = 12;
@@ -143,7 +147,7 @@ function aabbInFrustum(
 			ny * (ny >= 0 ? maxY : minY) +
 			nz * (nz >= 0 ? maxZ : minZ) +
 			d <
-		0
+		-FRUSTUM_MARGIN
 	)
 		return false;
 	off = 16;
@@ -156,7 +160,7 @@ function aabbInFrustum(
 			ny * (ny >= 0 ? maxY : minY) +
 			nz * (nz >= 0 ? maxZ : minZ) +
 			d <
-		0
+		-FRUSTUM_MARGIN
 	)
 		return false;
 	off = 20;
@@ -169,7 +173,7 @@ function aabbInFrustum(
 			ny * (ny >= 0 ? maxY : minY) +
 			nz * (nz >= 0 ? maxZ : minZ) +
 			d <
-		0
+		-FRUSTUM_MARGIN
 	)
 		return false;
 	return true;
@@ -232,6 +236,7 @@ export class OcclusionCuller {
 	private _topoVisibleChunks: Chunk[] = [];
 	private _prevTopoChunks: Chunk[] = [];
 	private _currentQueryId = 0;
+	private _lastCompletedQueryId = 0;
 
 	private _lastCamCX = -99999;
 	private _lastCamCY = -99999;
@@ -314,6 +319,7 @@ export class OcclusionCuller {
 			for (let i = 0; i < len && hidden < 100; i++) {
 				const chunk = vis[i]!;
 				if (chunk.bfsQueryId !== qid) {
+					if (chunk.mergedGroupKey) continue;
 					const mesh = chunk.mesh;
 					if (mesh && mesh.isVisible) {
 						mesh.isVisible = false;
@@ -326,7 +332,7 @@ export class OcclusionCuller {
 		}
 
 		// VP matrix hash
-		const view = camera.getViewMatrix();
+		const view = camera.getViewMatrix(true);
 		const proj = camera.getProjectionMatrix();
 		view.multiplyToRef(proj, _vpMatrix);
 		const m = _vpMatrix.m;
@@ -359,6 +365,7 @@ export class OcclusionCuller {
 			if (!mesh) continue;
 			if (mesh.isDisposed()) continue;
 			if (!chunk.isLoaded) continue;
+			if (chunk.mergedGroupKey) continue;
 
 			const cx = chunk.chunkX;
 			const cy = chunk.chunkY;
@@ -421,6 +428,7 @@ export class OcclusionCuller {
 			for (let i = 0; i < prevLen; i++) {
 				const pc = prev[i]!;
 				if (pc.bfsQueryId !== queryId) {
+					if (pc.mergedGroupKey) continue;
 					const pm = pc.mesh;
 					const ptm = pc.transparentMesh;
 					if (pm && pm.isVisible) {
@@ -428,6 +436,101 @@ export class OcclusionCuller {
 						if (ptm) ptm.isVisible = false;
 					}
 				}
+			}
+		}
+
+		// Merged group visibility — frustum AABB + BFS topology cull.
+		const allGroups = getAllGroups();
+		const G = 4;
+		const groupExtent = G * SIZE;
+		const gHalf = groupExtent * 0.5;
+		const queryId = this._currentQueryId;
+		const bfsInProgress = this._bfsInProgress;
+		const cameraUnderground = camera.position.y < SEA_LEVEL;
+
+		for (let i = 0; i < allGroups.length; i++) {
+			const group = allGroups[i]!;
+			const minGX = group.gridX * groupExtent;
+			const minGY = group.gridY * groupExtent;
+			const minGZ = group.gridZ * groupExtent;
+
+			// Underground groups use smaller render radius.
+			const groupCenterY = minGY + gHalf;
+			const isSurfaceGroup = groupCenterY >= SEA_LEVEL;
+			const R_chunks =
+				cameraUnderground || !isSurfaceGroup
+					? UNDERGROUND_RENDER_RADIUS
+					: MAX_RENDER_RADIUS;
+
+			// Distance check between group AABB and camera chunk range in chunk coordinates.
+			const minChunkX = group.gridX * G;
+			const maxChunkX = minChunkX + G - 1;
+			const minChunkY = group.gridY * G;
+			const maxChunkY = minChunkY + G - 1;
+			const minChunkZ = group.gridZ * G;
+			const maxChunkZ = minChunkZ + G - 1;
+
+			const inRange =
+				minChunkX <= camCX + R_chunks &&
+				camCX - maxChunkX <= R_chunks &&
+				minChunkY <= camCY + R_chunks &&
+				camCY - maxChunkY <= R_chunks &&
+				minChunkZ <= camCZ + R_chunks &&
+				camCZ - maxChunkZ <= R_chunks;
+
+			const inFrustum =
+				inRange &&
+				aabbInFrustum(
+					minGX,
+					minGY,
+					minGZ,
+					minGX + groupExtent,
+					minGY + groupExtent,
+					minGZ + groupExtent,
+				);
+
+			// BFS reachability — hide groups sealed underground.
+			const bypassBFS = isSurfaceGroup && !cameraUnderground;
+
+			let vis: boolean;
+			if (bypassBFS) {
+				vis = inFrustum;
+			} else {
+				let bfsReachable = false;
+				let bfsPrevious = false;
+				const members = group.membersArray;
+				for (let j = 0, mlen = members.length; j < mlen; j++) {
+					const chunk = members[j]!.chunk;
+					if (chunk.isLoaded) {
+						if (chunk.bfsQueryId === queryId) {
+							bfsReachable = true;
+							break;
+						}
+						if (
+							(this._lastCompletedQueryId > 0 &&
+								chunk.bfsQueryId === this._lastCompletedQueryId) ||
+							chunk.bfsQueryId === queryId - 1
+						) {
+							bfsPrevious = true;
+						}
+					}
+				}
+
+				if (!bfsReachable && bfsPrevious && bfsInProgress) {
+					continue;
+				}
+
+				vis = inFrustum && bfsReachable;
+			}
+
+			if (group.opaqueMeshRef && group.opaqueMeshRef.isVisible !== vis) {
+				group.opaqueMeshRef.isVisible = vis;
+			}
+			if (
+				group.transparentMeshRef &&
+				group.transparentMeshRef.isVisible !== vis
+			) {
+				group.transparentMeshRef.isVisible = vis;
 			}
 		}
 
@@ -763,6 +866,7 @@ export class OcclusionCuller {
 				}
 			}
 			vis.length = writeIdx;
+			this._lastCompletedQueryId = queryId;
 		}
 	}
 }

@@ -1,0 +1,660 @@
+import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
+import type { Chunk } from "./Chunk";
+import type { MeshData } from "./DataStructures/MeshData";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface ChunkMemberData {
+	chunkId: bigint;
+	chunk: Chunk;
+	opaqueData: MeshData | null;
+	transparentData: MeshData | null;
+	localIndex: number; // 0-63 within the group
+}
+
+export interface MergedVertexData {
+	faceDataA: Uint8Array;
+	faceDataB: Uint8Array;
+	faceDataC: Uint8Array;
+	chunkIndex: Uint8Array;
+	faceCount: number;
+}
+
+interface MergedBuffers {
+	a: Uint8Array;
+	b: Uint8Array;
+	c: Uint8Array;
+	d: Uint8Array;
+}
+
+export interface MergedMeshGroup {
+	groupKey: string;
+	gridX: number;
+	gridY: number;
+	gridZ: number;
+	/**
+	 * Render encoding bucket.
+	 * 0 = LOD0/LOD1 full AO path
+	 * 2 = LOD2 path
+	 * 3 = LOD3+ path
+	 */
+	lodBucket: number;
+	minLodLevel: number;
+	members: Map<bigint, ChunkMemberData>;
+	membersArray: ChunkMemberData[];
+	totalOpaqueFaces: number;
+	totalTransparentFaces: number;
+	chunkOffsets: Float32Array; // 64 * 3 = 192 floats
+	cachedOpaque: MergedVertexData | null;
+	cachedTransparent: MergedVertexData | null;
+
+	opaqueCapacityFaces: number;
+	transparentCapacityFaces: number;
+
+	opaqueA: Uint8Array | null;
+	opaqueB: Uint8Array | null;
+	opaqueC: Uint8Array | null;
+	opaqueD: Uint8Array | null;
+
+	transparentA: Uint8Array | null;
+	transparentB: Uint8Array | null;
+	transparentC: Uint8Array | null;
+	transparentD: Uint8Array | null;
+
+	// Cached wrappers to avoid allocating `{ a, b, c, d }` every rebuild.
+	opaqueBuffers: MergedBuffers | null;
+	transparentBuffers: MergedBuffers | null;
+
+	dirty: boolean;
+
+	// Mesh references — set by ChunkMesher.ts after creating/updating.
+	// These are NOT owned by MergedMeshManager; ownership stays with ChunkMesher.
+	opaqueMeshRef: any | null;
+	transparentMeshRef: any | null;
+}
+
+// Metadata stored on merged meshes for onBind callbacks.
+export class MergedMeshMeta {
+	chunkOffsets: Float32Array | null = null;
+	chunkOffsetsArray: number[] | null = null;
+	isMerged = true;
+	__lodLevel = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const GROUP_SIZE = 4;
+const MAX_GROUP_MEMBERS = GROUP_SIZE * GROUP_SIZE * GROUP_SIZE;
+const CHUNK_SIZE = GenerationParams.CHUNK_SIZE;
+
+// ---------------------------------------------------------------------------
+// Module state
+// ---------------------------------------------------------------------------
+
+const groups = new Map<string, MergedMeshGroup>();
+const dirtyGroups = new Set<MergedMeshGroup>();
+
+function markGroupDirty(group: MergedMeshGroup): void {
+	group.dirty = true;
+	dirtyGroups.add(group);
+}
+
+/**
+ * Copy `byteCount` bytes from `src` into `dst` at `writeByte`.
+ *
+ * `src.subarray(0, byteCount)` allocates a new TypedArray view object on
+ * every call. In the overwhelmingly common case the mesher already hands
+ * us a tightly-packed buffer (`src.length === byteCount`), so we can pass
+ * `src` straight to `.set()` and skip the view allocation entirely. This
+ * is called 3x per member per rebuild (a/b/c), so for a full 64-member
+ * group that's up to 192 avoided allocations per buffer type per rebuild.
+ */
+function copyFaceBytes(
+	dst: Uint8Array,
+	src: Uint8Array,
+	byteCount: number,
+	writeByte: number,
+): void {
+	if (src.length === byteCount) {
+		dst.set(src, writeByte);
+	} else {
+		dst.set(src.subarray(0, byteCount), writeByte);
+	}
+}
+
+// Pre-computed chunk offsets for localIndex 0-63.
+const _precomputedOffsets = (() => {
+	const offsets = new Float32Array(MAX_GROUP_MEMBERS * 3);
+
+	for (let i = 0; i < MAX_GROUP_MEMBERS; i++) {
+		const lx = i % GROUP_SIZE;
+		const ly = Math.floor(i / GROUP_SIZE) % GROUP_SIZE;
+		const lz = Math.floor(i / (GROUP_SIZE * GROUP_SIZE));
+		const base = i * 3;
+
+		offsets[base] = lx * CHUNK_SIZE;
+		offsets[base + 1] = ly * CHUNK_SIZE;
+		offsets[base + 2] = lz * CHUNK_SIZE;
+	}
+
+	return offsets;
+})();
+
+// Reusable array for getAllGroups to avoid per-frame allocation.
+const _allGroupsReuse: MergedMeshGroup[] = [];
+
+// Cached chunkOffsets array for non-merged meshes.
+// Prevents per-frame Array.from.
+export const PRECOMPUTED_CHUNK_OFFSETS_ARRAY = Array.from(_precomputedOffsets);
+
+// ---------------------------------------------------------------------------
+// Callback: notify ChunkMesher when a group's mesh needs vertex buffer update
+// ---------------------------------------------------------------------------
+
+export type GroupMeshRebuildCallback = (group: MergedMeshGroup) => void;
+
+let _onGroupMeshNeedsRebuild: GroupMeshRebuildCallback | null = null;
+
+export function setOnGroupMeshNeedsRebuild(cb: GroupMeshRebuildCallback): void {
+	_onGroupMeshNeedsRebuild = cb;
+}
+
+// ---------------------------------------------------------------------------
+// Coordinate helpers
+// ---------------------------------------------------------------------------
+
+// Reused across calls — getGroupGridCoords is synchronous and never
+// re-entrant (no call site invokes it again before consuming the result),
+// so a single scratch object avoids an allocation on every chunk
+// assign/lookup instead of a fresh `{ gx, gy, gz }` literal each time.
+const _gridCoordsScratch = { gx: 0, gy: 0, gz: 0 };
+
+function getGroupGridCoords(
+	chunkX: number,
+	chunkY: number,
+	chunkZ: number,
+): { gx: number; gy: number; gz: number } {
+	_gridCoordsScratch.gx = Math.floor(chunkX / GROUP_SIZE);
+	_gridCoordsScratch.gy = Math.floor(chunkY / GROUP_SIZE);
+	_gridCoordsScratch.gz = Math.floor(chunkZ / GROUP_SIZE);
+	return _gridCoordsScratch;
+}
+
+function getLodRenderBucket(lod: number): number {
+	if (lod <= 1) return 0;
+	if (lod === 2) return 2;
+	return 3;
+}
+
+function makeGroupKey(
+	gx: number,
+	gy: number,
+	gz: number,
+	lodBucket: number,
+): string {
+	return `${gx}_${gy}_${gz}_${lodBucket}`;
+}
+
+function getLocalIndex(chunkX: number, chunkY: number, chunkZ: number): number {
+	const lx = chunkX & (GROUP_SIZE - 1);
+	const ly = chunkY & (GROUP_SIZE - 1);
+	const lz = chunkZ & (GROUP_SIZE - 1);
+
+	return lx + (ly << 2) + (lz << 4);
+}
+
+// ---------------------------------------------------------------------------
+// Public: group lookup
+// ---------------------------------------------------------------------------
+
+export function getGroupKeyForChunk(chunk: Chunk): string {
+	const { gx, gy, gz } = getGroupGridCoords(
+		chunk.chunkX,
+		chunk.chunkY,
+		chunk.chunkZ,
+	);
+
+	const lodBucket = getLodRenderBucket(chunk.lodLevel ?? 0);
+
+	return makeGroupKey(gx, gy, gz, lodBucket);
+}
+
+export function getGroup(groupKey: string): MergedMeshGroup | undefined {
+	return groups.get(groupKey);
+}
+
+export function getAllGroups(): MergedMeshGroup[] {
+	_allGroupsReuse.length = 0;
+
+	for (const group of groups.values()) {
+		_allGroupsReuse.push(group);
+	}
+
+	return _allGroupsReuse;
+}
+
+// ---------------------------------------------------------------------------
+// Public: data management
+// ---------------------------------------------------------------------------
+
+/**
+ * Assign a chunk's mesh data to its merged group.
+ * Returns the group, creating it if needed.
+ * The group's cached vertex data is rebuilt from all members only when data
+ * actually changes.
+ */
+export function assignChunkToGroup(
+	chunk: Chunk,
+	opaqueData: MeshData | null,
+	transparentData: MeshData | null,
+): MergedMeshGroup {
+	const groupKey = getGroupKeyForChunk(chunk);
+
+	// If LOD bucket changed, remove stale faces from the old merged mesh first.
+	if (chunk.mergedGroupKey && chunk.mergedGroupKey !== groupKey) {
+		removeChunkFromGroup(chunk);
+	}
+
+	let group = groups.get(groupKey);
+
+	if (!group) {
+		const { gx, gy, gz } = getGroupGridCoords(
+			chunk.chunkX,
+			chunk.chunkY,
+			chunk.chunkZ,
+		);
+
+		const chunkLod = chunk.lodLevel ?? 0;
+		const lodBucket = getLodRenderBucket(chunkLod);
+
+		group = {
+			groupKey,
+			gridX: gx,
+			gridY: gy,
+			gridZ: gz,
+			lodBucket,
+			minLodLevel: chunkLod,
+			members: new Map(),
+			membersArray: [],
+			totalOpaqueFaces: 0,
+			totalTransparentFaces: 0,
+			chunkOffsets: _precomputedOffsets,
+			cachedOpaque: null,
+			cachedTransparent: null,
+
+			opaqueCapacityFaces: 0,
+			transparentCapacityFaces: 0,
+
+			opaqueA: null,
+			opaqueB: null,
+			opaqueC: null,
+			opaqueD: null,
+
+			transparentA: null,
+			transparentB: null,
+			transparentC: null,
+			transparentD: null,
+
+			opaqueBuffers: null,
+			transparentBuffers: null,
+
+			dirty: true,
+
+			opaqueMeshRef: null,
+			transparentMeshRef: null,
+		};
+
+		groups.set(groupKey, group);
+	}
+
+	const localIndex = getLocalIndex(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+	const chunkLod = chunk.lodLevel ?? 0;
+
+	const existing = group.members.get(chunk.id);
+
+	if (existing) {
+		const dataUnchanged =
+			existing.opaqueData === opaqueData &&
+			existing.transparentData === transparentData;
+
+		existing.opaqueData = opaqueData;
+		existing.transparentData = transparentData;
+
+		if (dataUnchanged && chunk.mergedGroupKey === groupKey) {
+			return group;
+		}
+	} else {
+		const memberData: ChunkMemberData = {
+			chunkId: chunk.id,
+			chunk,
+			opaqueData,
+			transparentData,
+			localIndex,
+		};
+
+		group.members.set(chunk.id, memberData);
+		group.membersArray.push(memberData);
+	}
+
+	if (chunkLod < group.minLodLevel) {
+		group.minLodLevel = chunkLod;
+	}
+
+	chunk.mergedGroupKey = groupKey;
+
+	markGroupDirty(group);
+
+	return group;
+}
+
+/**
+ * Remove a chunk from its merged group.
+ * Disposes the group if empty.
+ */
+export function removeChunkFromGroup(chunk: Chunk): void {
+	const groupKey = chunk.mergedGroupKey;
+
+	if (!groupKey) return;
+
+	const group = groups.get(groupKey);
+
+	chunk.mergedGroupKey = null;
+
+	if (!group) return;
+
+	group.members.delete(chunk.id);
+
+	if (group.members.size === 0) {
+		if (group.opaqueMeshRef) {
+			group.opaqueMeshRef.dispose();
+			group.opaqueMeshRef = null;
+		}
+
+		if (group.transparentMeshRef) {
+			group.transparentMeshRef.dispose();
+			group.transparentMeshRef = null;
+		}
+
+		groups.delete(groupKey);
+		dirtyGroups.delete(group);
+
+		return;
+	}
+
+	// Compact membersArray without allocating a replacement array.
+	const arr = group.membersArray;
+	let w = 0;
+
+	for (let i = 0, len = arr.length; i < len; i++) {
+		const m = arr[i]!;
+
+		if (m.chunkId !== chunk.id) {
+			arr[w++] = m;
+		}
+	}
+
+	arr.length = w;
+
+	let minLod = Infinity;
+
+	for (let i = 0; i < w; i++) {
+		const lod = arr[i]!.chunk.lodLevel ?? 0;
+
+		if (lod < minLod) {
+			minLod = lod;
+		}
+	}
+
+	group.minLodLevel = minLod;
+
+	markGroupDirty(group);
+}
+
+/**
+ * Flush all pending group rebuilds.
+ * Call once per frame/batch after assignChunkToGroup calls to avoid redundant
+ * per-chunk rebuilds.
+ */
+export function flushDirtyMergedGroups(): void {
+	if (dirtyGroups.size === 0) return;
+
+	for (const group of dirtyGroups) {
+		if (!groups.has(group.groupKey)) continue;
+		if (!group.dirty) continue;
+
+		rebuildGroupData(group);
+
+		_onGroupMeshNeedsRebuild?.(group);
+	}
+
+	dirtyGroups.clear();
+}
+
+/**
+ * Dispose all group data.
+ * Call on world unload.
+ */
+export function disposeAll(): void {
+	for (const group of groups.values()) {
+		if (group.opaqueMeshRef) {
+			group.opaqueMeshRef.dispose();
+			group.opaqueMeshRef = null;
+		}
+
+		if (group.transparentMeshRef) {
+			group.transparentMeshRef.dispose();
+			group.transparentMeshRef = null;
+		}
+
+		group.cachedOpaque = null;
+		group.cachedTransparent = null;
+
+		group.opaqueA = null;
+		group.opaqueB = null;
+		group.opaqueC = null;
+		group.opaqueD = null;
+		group.opaqueBuffers = null;
+		group.opaqueCapacityFaces = 0;
+
+		group.transparentA = null;
+		group.transparentB = null;
+		group.transparentC = null;
+		group.transparentD = null;
+		group.transparentBuffers = null;
+		group.transparentCapacityFaces = 0;
+
+		group.members.clear();
+		group.membersArray.length = 0;
+	}
+
+	groups.clear();
+	dirtyGroups.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Internal: rebuild combined vertex data
+// ---------------------------------------------------------------------------
+
+function ensureOpaqueMergedCapacity(
+	group: MergedMeshGroup,
+	faceCount: number,
+): MergedBuffers {
+	let capacity = group.opaqueCapacityFaces;
+
+	if (capacity < faceCount) {
+		capacity = Math.max(faceCount, capacity * 2, 256);
+		group.opaqueCapacityFaces = capacity;
+
+		const byte4 = capacity << 2;
+
+		const a = new Uint8Array(byte4);
+		const b = new Uint8Array(byte4);
+		const c = new Uint8Array(byte4);
+		const d = new Uint8Array(capacity);
+
+		group.opaqueA = a;
+		group.opaqueB = b;
+		group.opaqueC = c;
+		group.opaqueD = d;
+
+		group.opaqueBuffers = { a, b, c, d };
+	}
+
+	return group.opaqueBuffers!;
+}
+
+function ensureTransparentMergedCapacity(
+	group: MergedMeshGroup,
+	faceCount: number,
+): MergedBuffers {
+	let capacity = group.transparentCapacityFaces;
+
+	if (capacity < faceCount) {
+		capacity = Math.max(faceCount, capacity * 2, 256);
+		group.transparentCapacityFaces = capacity;
+
+		const byte4 = capacity << 2;
+
+		const a = new Uint8Array(byte4);
+		const b = new Uint8Array(byte4);
+		const c = new Uint8Array(byte4);
+		const d = new Uint8Array(capacity);
+
+		group.transparentA = a;
+		group.transparentB = b;
+		group.transparentC = c;
+		group.transparentD = d;
+
+		group.transparentBuffers = { a, b, c, d };
+	}
+
+	return group.transparentBuffers!;
+}
+
+function rebuildGroupData(group: MergedMeshGroup): void {
+	const members = group.membersArray;
+	const memberCount = members.length;
+
+	// Single pass to compute both totals instead of scanning membersArray
+	// twice (once per face-data kind). Member count is bounded at 64, so
+	// this isn't about a single rebuild being slow — it's a free win with
+	// no tradeoff, and better cache locality since opaqueData and
+	// transparentData live on the same member object.
+	let totalOpaque = 0;
+	let totalTransparent = 0;
+
+	for (let i = 0; i < memberCount; i++) {
+		const m = members[i]!;
+		if (m.opaqueData) totalOpaque += m.opaqueData.faceCount;
+		if (m.transparentData) totalTransparent += m.transparentData.faceCount;
+	}
+
+	group.totalOpaqueFaces = totalOpaque;
+	group.totalTransparentFaces = totalTransparent;
+
+	// -----------------------------------------------------------------------
+	// Opaque
+	// -----------------------------------------------------------------------
+
+	if (totalOpaque > 0) {
+		const buffers = ensureOpaqueMergedCapacity(group, totalOpaque);
+
+		const mergedA = buffers.a;
+		const mergedB = buffers.b;
+		const mergedC = buffers.c;
+		const mergedD = buffers.d;
+
+		let writeByte = 0;
+		let writeFace = 0;
+
+		for (let i = 0; i < memberCount; i++) {
+			const m = members[i]!;
+			const data = m.opaqueData;
+
+			if (!data) continue;
+
+			const fc = data.faceCount;
+
+			if (fc === 0) continue;
+
+			const byteCount = fc << 2;
+
+			copyFaceBytes(mergedA, data.faceDataA, byteCount, writeByte);
+			copyFaceBytes(mergedB, data.faceDataB, byteCount, writeByte);
+			copyFaceBytes(mergedC, data.faceDataC, byteCount, writeByte);
+
+			mergedD.fill(m.localIndex, writeFace, writeFace + fc);
+
+			writeByte += byteCount;
+			writeFace += fc;
+		}
+
+		const totalBytes = totalOpaque << 2;
+
+		group.cachedOpaque = {
+			faceDataA: mergedA.subarray(0, totalBytes),
+			faceDataB: mergedB.subarray(0, totalBytes),
+			faceDataC: mergedC.subarray(0, totalBytes),
+			chunkIndex: mergedD.subarray(0, totalOpaque),
+			faceCount: totalOpaque,
+		};
+	} else {
+		group.cachedOpaque = null;
+	}
+
+	// -----------------------------------------------------------------------
+	// Transparent
+	// -----------------------------------------------------------------------
+
+	if (totalTransparent > 0) {
+		const buffers = ensureTransparentMergedCapacity(group, totalTransparent);
+
+		const mergedA = buffers.a;
+		const mergedB = buffers.b;
+		const mergedC = buffers.c;
+		const mergedD = buffers.d;
+
+		let writeByte = 0;
+		let writeFace = 0;
+
+		for (let i = 0; i < memberCount; i++) {
+			const m = members[i]!;
+			const data = m.transparentData;
+
+			if (!data) continue;
+
+			const fc = data.faceCount;
+
+			if (fc === 0) continue;
+
+			const byteCount = fc << 2;
+
+			copyFaceBytes(mergedA, data.faceDataA, byteCount, writeByte);
+			copyFaceBytes(mergedB, data.faceDataB, byteCount, writeByte);
+			copyFaceBytes(mergedC, data.faceDataC, byteCount, writeByte);
+
+			mergedD.fill(m.localIndex, writeFace, writeFace + fc);
+
+			writeByte += byteCount;
+			writeFace += fc;
+		}
+
+		const totalBytes = totalTransparent << 2;
+
+		group.cachedTransparent = {
+			faceDataA: mergedA.subarray(0, totalBytes),
+			faceDataB: mergedB.subarray(0, totalBytes),
+			faceDataC: mergedC.subarray(0, totalBytes),
+			chunkIndex: mergedD.subarray(0, totalTransparent),
+			faceCount: totalTransparent,
+		};
+	} else {
+		group.cachedTransparent = null;
+	}
+
+	group.dirty = false;
+}

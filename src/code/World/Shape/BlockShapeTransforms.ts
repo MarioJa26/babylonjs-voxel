@@ -1,4 +1,5 @@
 import {
+	areShapesInitialized,
 	FACE_NX,
 	FACE_NY,
 	FACE_NZ,
@@ -6,7 +7,6 @@ import {
 	FACE_PY,
 	FACE_PZ,
 	getShapeForBlockId,
-	type ShapeBox,
 } from "./BlockShapes";
 
 export type ShapeBounds = {
@@ -95,7 +95,7 @@ export const transformBox = (
  * This is what fixes upside-down stairs:
  * the quarter-box mask must change from hiding bottom to hiding top.
  */
-const transformFaceMask = (
+const transformFaceMaskSlow = (
 	faceMask: number,
 	rotation: number,
 	flipY: boolean,
@@ -172,6 +172,30 @@ const transformFaceMask = (
 	return out;
 };
 
+const FACE_MASK_TRANSFORM_LUT = new Uint8Array(64 * 4 * 2);
+for (let mask = 0; mask < 64; mask++) {
+	for (let rot = 0; rot < 4; rot++) {
+		for (let flip = 0; flip < 2; flip++) {
+			const index = mask | (rot << 6) | (flip << 8);
+			FACE_MASK_TRANSFORM_LUT[index] = transformFaceMaskSlow(
+				mask,
+				rot,
+				flip === 1,
+			);
+		}
+	}
+}
+
+const transformFaceMask = (
+	faceMask: number,
+	rotation: number,
+	flipY: boolean,
+): number => {
+	return FACE_MASK_TRANSFORM_LUT[
+		(faceMask & 63) | ((rotation & 3) << 6) | ((flipY ? 1 : 0) << 8)
+	];
+};
+
 const applySliceToBox = (
 	min: [number, number, number],
 	max: [number, number, number],
@@ -213,28 +237,73 @@ const applySliceToBox = (
 	};
 };
 
+const transformedShapeCache = new Map<number, ShapeBounds[]>();
+
+function getRelevantStateForShape(
+	blockState: number,
+	shape: {
+		rotateY: boolean;
+		allowFlipY: boolean;
+		usesSliceState: boolean;
+	},
+): number {
+	let relevant = 0;
+	if (shape.rotateY) {
+		relevant |= blockState & 3;
+	}
+	if (shape.allowFlipY) {
+		relevant |= blockState & 4;
+	}
+	if (shape.usesSliceState) {
+		relevant |= blockState & 0x38;
+	}
+	return relevant;
+}
+
 export const getTransformedShapeBoxes = (
 	blockId: number,
 	blockState: number,
 ): ShapeBounds[] => {
 	const shape = getShapeForBlockId(blockId);
+	const relevantState = getRelevantStateForShape(blockState, shape);
+	const canCache = areShapesInitialized();
+	const cacheKey = ((blockId & 0xffff) << 6) | (relevantState & 63);
+
+	if (canCache) {
+		const cached = transformedShapeCache.get(cacheKey);
+		if (cached !== undefined) return cached;
+	}
+
 	const rotation = shape.rotateY ? blockState & 3 : 0;
 	const flipY = shape.allowFlipY && (blockState & 4) !== 0;
+	const noTransform = rotation === 0 && !flipY && !shape.usesSliceState;
 
-	const boxes: ShapeBounds[] = [];
+	const sourceBoxes = shape.boxes;
+	const out: ShapeBounds[] = new Array(sourceBoxes.length);
+	let outLen = 0;
 
-	for (let i = 0; i < shape.boxes.length; i++) {
-		const box: ShapeBox = shape.boxes[i];
+	for (let i = 0; i < sourceBoxes.length; i++) {
+		const box = sourceBoxes[i];
 
-		let transformed = transformBox(box.min, box.max, rotation, flipY);
+		if (noTransform) {
+			out[outLen++] = {
+				min: box.min,
+				max: box.max,
+				faceMask: box.faceMask,
+			};
+			continue;
+		}
+
+		let min = box.min;
+		let max = box.max;
 
 		if (shape.usesSliceState) {
-			transformed = applySliceToBox(
-				transformed.min,
-				transformed.max,
-				blockState,
-			);
+			const sliced = applySliceToBox(min, max, blockState);
+			min = sliced.min;
+			max = sliced.max;
 		}
+
+		const transformed = transformBox(min, max, rotation, flipY);
 
 		if (
 			transformed.max[0] <= transformed.min[0] ||
@@ -244,18 +313,18 @@ export const getTransformedShapeBoxes = (
 			continue;
 		}
 
-		const transformedFaceMask = transformFaceMask(
-			box.faceMask,
-			rotation,
-			flipY,
-		);
-
-		boxes.push({
+		out[outLen++] = {
 			min: transformed.min,
 			max: transformed.max,
-			faceMask: transformedFaceMask,
-		});
+			faceMask: transformFaceMask(box.faceMask, rotation, flipY),
+		};
 	}
 
-	return boxes;
+	out.length = outLen;
+
+	if (canCache) {
+		transformedShapeCache.set(cacheKey, out);
+	}
+
+	return out;
 };

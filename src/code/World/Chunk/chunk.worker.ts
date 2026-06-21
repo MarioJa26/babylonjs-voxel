@@ -166,6 +166,10 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
 			LightTaskHandlers.handleInitLightShared(event.data);
 			return;
 		}
+		case WorkerTaskType.LightSetClosedFaceMask: {
+			LightTaskHandlers.handleSetClosedFaceMask(event.data);
+			return;
+		}
 		case WorkerTaskType.LightRegisterChunk: {
 			LightTaskHandlers.handleRegisterChunk(event.data);
 			return;

@@ -1,4 +1,5 @@
 import {
+	type AbstractEngine,
 	AbstractMesh,
 	BoundingInfo,
 	Buffer,
@@ -28,6 +29,13 @@ import {
 } from "../Texture/TextureDefinitions";
 import { Chunk } from "./Chunk";
 import type { MeshData } from "./DataStructures/MeshData";
+import {
+	assignChunkToGroup,
+	disposeAll,
+	MergedMeshMeta,
+	PRECOMPUTED_CHUNK_OFFSETS_ARRAY,
+	setOnGroupMeshNeedsRebuild,
+} from "./MergedMeshManager";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -108,11 +116,17 @@ function ensureMeshMetadata(mesh: Mesh): LodMeshMeta {
 }
 
 function getMeshLodLevel(mesh: Mesh | null): number | null {
-	if (!(mesh?.metadata instanceof LodMeshMeta)) return null;
-	return mesh.metadata.__lodLevel;
+	if (!mesh?.metadata) return null;
+	if (mesh.metadata instanceof MergedMeshMeta) return mesh.metadata.__lodLevel;
+	if (mesh.metadata instanceof LodMeshMeta) return mesh.metadata.__lodLevel;
+	return null;
 }
 
 function setMeshLodLevel(mesh: Mesh, lod: number): void {
+	if (mesh.metadata instanceof MergedMeshMeta) {
+		mesh.metadata.__lodLevel = lod;
+		return;
+	}
 	ensureMeshMetadata(mesh).__lodLevel = lod;
 }
 
@@ -294,13 +308,35 @@ function applyLodShaderBindings(material: ShaderMaterial): void {
 			effect.setFloat("lodFadeProgress", 1);
 			effect.setFloat("lodFadeDirection", 0);
 			effect.setFloat("lodFadeSeed", 0);
-			return;
+		} else {
+			const fade = getMeshFadeUniforms(mesh as Mesh);
+			effect.setFloat("lodFadeProgress", fade.progress);
+			effect.setFloat("lodFadeDirection", fade.direction);
+			effect.setFloat("lodFadeSeed", fade.seed);
 		}
 
-		const fade = getMeshFadeUniforms(mesh as Mesh);
-		effect.setFloat("lodFadeProgress", fade.progress);
-		effect.setFloat("lodFadeDirection", fade.direction);
-		effect.setFloat("lodFadeSeed", fade.seed);
+		// Chunk offsets for merged meshes - use cached array to avoid allocation.
+		const meta = (mesh as Mesh).metadata;
+		const arr =
+			meta instanceof MergedMeshMeta && meta.chunkOffsetsArray
+				? meta.chunkOffsetsArray
+				: PRECOMPUTED_CHUNK_OFFSETS_ARRAY;
+		effect.setArray3("chunkOffsets", arr);
+	};
+}
+
+function applyMergedMeshBindings(material: ShaderMaterial): void {
+	material.onBind = (mesh) => {
+		const effect = material.getEffect();
+		if (!effect) return;
+
+		// Chunk offsets for merged meshes - use cached array to avoid allocation.
+		const meta = (mesh as Mesh).metadata;
+		const arr =
+			meta instanceof MergedMeshMeta && meta.chunkOffsetsArray
+				? meta.chunkOffsetsArray
+				: PRECOMPUTED_CHUNK_OFFSETS_ARRAY;
+		effect.setArray3("chunkOffsets", arr);
 	};
 }
 
@@ -317,20 +353,21 @@ function ensureSharedFacePositionBuffer(): void {
 	);
 }
 
-function upsertFaceVertexBuffer(
+// ---------------------------------------------------------------------------
+// Merged mesh upsert — creates/updates a single mesh for a group of chunks.
+// ---------------------------------------------------------------------------
+
+function upsertFaceVertexBufferMerged(
 	mesh: Mesh,
-	engine: ReturnType<typeof Map1.mainScene.getEngine>,
+	engine: AbstractEngine,
 	kind: string,
 	data: Uint8Array,
-	updatable = true,
+	itemSize: number,
 ): void {
 	const existing = mesh.getVertexBuffer(kind);
 	const nextLength = data.length;
 
 	if (existing?.isUpdatable()) {
-		// Check actual WebGL buffer capacity from the raw data byteLength.
-		// getData() returns the internal data array whose byteLength reflects
-		// the GPU buffer's allocation size.
 		const rawData = existing.getData();
 		const capacity = rawData
 			? ((rawData as ArrayBufferView).byteLength ?? 0)
@@ -341,7 +378,6 @@ function upsertFaceVertexBuffer(
 		}
 	}
 
-	// Buffer too small or not updatable -> recreate.
 	existing?.dispose();
 
 	mesh.setVerticesBuffer(
@@ -349,26 +385,138 @@ function upsertFaceVertexBuffer(
 			engine,
 			data,
 			kind,
-			updatable,
-			undefined,
-			4,
 			true,
 			undefined,
-			4,
+			itemSize,
+			true,
+			undefined,
+			itemSize,
 			VertexBuffer.UNSIGNED_BYTE,
 			false,
 		),
 	);
 }
 
-function upsertMesh(
-	chunk: Chunk,
+// ---------------------------------------------------------------------------
+// Material helpers
+// ---------------------------------------------------------------------------
+
+function getOpaqueMaterialForLodBucket(lod: number): Material {
+	return lod >= 3
+		? lod3OpaqueMaterial!
+		: lod >= 2
+			? lod2OpaqueMaterial!
+			: atlasMaterial!;
+}
+
+function getTransparentMaterialForLodBucket(lod: number): Material {
+	return lod >= 3
+		? lod3TransparentMaterial!
+		: lod >= 2
+			? lod2TransparentMaterial!
+			: transparentMaterial!;
+}
+
+function beginGroupLodCrossFadeIfNeeded(
+	group: {
+		membersArray: { chunk: Chunk }[];
+	},
+	previousLod: number | null,
+	nextLod: number,
+	oldMesh: Mesh | null,
+	newMesh: Mesh | null,
+): void {
+	if (!shouldUseLodCrossFade(previousLod, nextLod)) return;
+	const firstMember = group.membersArray[0];
+	if (!firstMember) return;
+	beginLodCrossFade(firstMember.chunk, oldMesh, newMesh);
+}
+
+// ---------------------------------------------------------------------------
+// Register callback: update group mesh vertex buffers when a chunk is removed
+// ---------------------------------------------------------------------------
+
+setOnGroupMeshNeedsRebuild((group) => {
+	const scene = Map1.mainScene;
+	if (!scene) return;
+
+	const lod = group.lodBucket;
+
+	// -----------------------------------------------------------------------
+	// Opaque
+	// -----------------------------------------------------------------------
+	if (group.cachedOpaque && group.cachedOpaque.faceCount > 0) {
+		const previousMesh = group.opaqueMeshRef;
+		const previousLod = getMeshLodLevel(previousMesh);
+		const mat = getOpaqueMaterialForLodBucket(lod);
+		group.opaqueMeshRef = upsertMergedMesh(
+			group,
+			group.opaqueMeshRef,
+			group.cachedOpaque,
+			`merged_opaque_${group.groupKey}`,
+			mat,
+		);
+		setMeshLodLevel(group.opaqueMeshRef, lod);
+		group.opaqueMeshRef.isVisible = true;
+		beginGroupLodCrossFadeIfNeeded(
+			group,
+			previousLod,
+			lod,
+			previousMesh,
+			group.opaqueMeshRef,
+		);
+	} else if (group.opaqueMeshRef) {
+		group.opaqueMeshRef.overridenInstanceCount = 0;
+		group.opaqueMeshRef.isVisible = false;
+	}
+
+	// -----------------------------------------------------------------------
+	// Transparent
+	// -----------------------------------------------------------------------
+	if (group.cachedTransparent && group.cachedTransparent.faceCount > 0) {
+		const previousMesh = group.transparentMeshRef;
+		const previousLod = getMeshLodLevel(previousMesh);
+		const mat = getTransparentMaterialForLodBucket(lod);
+		group.transparentMeshRef = upsertMergedMesh(
+			group,
+			group.transparentMeshRef,
+			group.cachedTransparent,
+			`merged_transparent_${group.groupKey}`,
+			mat,
+		);
+		setMeshLodLevel(group.transparentMeshRef, lod);
+		group.transparentMeshRef.isVisible = true;
+		beginGroupLodCrossFadeIfNeeded(
+			group,
+			previousLod,
+			lod,
+			previousMesh,
+			group.transparentMeshRef,
+		);
+	} else if (group.transparentMeshRef) {
+		group.transparentMeshRef.overridenInstanceCount = 0;
+		group.transparentMeshRef.isVisible = false;
+	}
+});
+
+function upsertMergedMesh(
+	group: {
+		gridX: number;
+		gridY: number;
+		gridZ: number;
+		groupKey: string;
+		chunkOffsets: Float32Array;
+	},
 	existingMesh: Mesh | null,
-	meshData: MeshData,
+	mergedData: {
+		faceDataA: Uint8Array;
+		faceDataB: Uint8Array;
+		faceDataC: Uint8Array;
+		chunkIndex: Uint8Array;
+		faceCount: number;
+	},
 	name: string,
 	material: Material,
-	renderingGroupId = 1,
-	lod = 0,
 ): Mesh {
 	const scene = Map1.mainScene;
 	const engine = scene.getEngine();
@@ -379,7 +527,7 @@ function upsertMesh(
 
 	if (!mesh) {
 		mesh = new Mesh(name, scene);
-		mesh.renderingGroupId = renderingGroupId;
+		mesh.renderingGroupId = 1;
 		mesh.material = material;
 		mesh.checkCollisions = false;
 		mesh.isPickable = false;
@@ -399,19 +547,23 @@ function upsertMesh(
 			),
 		);
 
-		// Index buffer is created once per mesh.
 		mesh.setIndices(FACE_INDEX_TEMPLATE);
 
+		// Position at group origin.
+		const S = Chunk.SIZE;
+		const G = 4; // GROUP_SIZE
 		mesh.position.set(
-			chunk.chunkX * Chunk.SIZE,
-			chunk.chunkY * Chunk.SIZE,
-			chunk.chunkZ * Chunk.SIZE,
+			group.gridX * G * S,
+			group.gridY * G * S,
+			group.gridZ * G * S,
 		);
 
+		// Bounding box covers all chunks in the group.
+		const groupExtent = G * S;
 		mesh.setBoundingInfo(
 			new BoundingInfo(
 				Vector3.Zero(),
-				new Vector3(Chunk.SIZE, Chunk.SIZE, Chunk.SIZE),
+				new Vector3(groupExtent, groupExtent, groupExtent),
 			),
 		);
 		mesh.cullingStrategy = AbstractMesh.CULLINGSTRATEGY_OPTIMISTIC_INCLUSION;
@@ -419,37 +571,47 @@ function upsertMesh(
 		mesh.freezeWorldMatrix();
 
 		mesh.material = material;
-		mesh.name = `${name}_${chunk.chunkX}_${chunk.chunkY}_${chunk.chunkZ}`;
+		mesh.name = name;
+
+		// Store chunkOffsets in metadata for onBind callback.
+		const meta = new MergedMeshMeta();
+		meta.chunkOffsets = group.chunkOffsets;
+		meta.chunkOffsetsArray = PRECOMPUTED_CHUNK_OFFSETS_ARRAY;
+		mesh.metadata = meta;
 	} else {
 		if (mesh.material !== material) mesh.material = material;
 	}
 
-	const updatable = lod < 2;
-	upsertFaceVertexBuffer(
+	upsertFaceVertexBufferMerged(
 		mesh,
 		engine,
 		"faceDataA",
-		meshData.faceDataA,
-		updatable,
+		mergedData.faceDataA,
+		4,
 	);
-	upsertFaceVertexBuffer(
+	upsertFaceVertexBufferMerged(
 		mesh,
 		engine,
 		"faceDataB",
-		meshData.faceDataB,
-		updatable,
+		mergedData.faceDataB,
+		4,
 	);
-	upsertFaceVertexBuffer(
+	upsertFaceVertexBufferMerged(
 		mesh,
 		engine,
 		"faceDataC",
-		meshData.faceDataC,
-		updatable,
+		mergedData.faceDataC,
+		4,
+	);
+	upsertFaceVertexBufferMerged(
+		mesh,
+		engine,
+		"chunkIndex",
+		mergedData.chunkIndex,
+		1,
 	);
 
-	mesh.overridenInstanceCount = meshData.faceCount;
-
-	mesh.isVisible = true;
+	mesh.overridenInstanceCount = mergedData.faceCount;
 
 	return mesh;
 }
@@ -616,6 +778,7 @@ export async function initAtlas(): Promise<void> {
 		"lodFadeDirection",
 		"lodFadeSeed",
 		"tintLUT",
+		"chunkOffsets",
 	];
 
 	// -------------------------------------------------------------------------
@@ -627,12 +790,19 @@ export async function initAtlas(): Promise<void> {
 			scene,
 			{ vertex: "chunk", fragment: "chunk" },
 			{
-				attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
+				attributes: [
+					"position",
+					"faceDataA",
+					"faceDataB",
+					"faceDataC",
+					"chunkIndex",
+				],
 				uniforms: [
 					"world",
 					"worldViewProjection",
 					"atlasTileSize",
 					"atlasMaxTiles",
+					"chunkOffsets",
 				],
 				uniformBuffers: ["GlobalUniforms"],
 				samplers: ["diffuseTexture", "normalTexture"],
@@ -645,6 +815,7 @@ export async function initAtlas(): Promise<void> {
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
 		if (normalAtlasTexture) mat.setTexture("normalTexture", normalAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
+		applyMergedMeshBindings(mat);
 		mat.wireframe = GLOBAL_VALUES.DEBUG;
 		mat.freeze();
 		atlasMaterial = mat;
@@ -680,12 +851,19 @@ export async function initAtlas(): Promise<void> {
 			scene,
 			{ vertex: "transparentChunk", fragment: "transparentChunk" },
 			{
-				attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
+				attributes: [
+					"position",
+					"faceDataA",
+					"faceDataB",
+					"faceDataC",
+					"chunkIndex",
+				],
 				uniforms: [
 					"world",
 					"worldViewProjection",
 					"atlasTileSize",
 					"atlasMaxTiles",
+					"chunkOffsets",
 				],
 				uniformBuffers: ["GlobalUniforms"],
 				samplers: ["diffuseTexture", "normalTexture"],
@@ -699,6 +877,7 @@ export async function initAtlas(): Promise<void> {
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
 		if (normalAtlasTexture) mat.setTexture("normalTexture", normalAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
+		applyMergedMeshBindings(mat);
 		mat.wireframe = GLOBAL_VALUES.DEBUG;
 		mat.freeze();
 		transparentMaterial = mat;
@@ -723,7 +902,13 @@ export async function initAtlas(): Promise<void> {
 			scene,
 			{ vertex: "lod3Chunk", fragment: "lod3Chunk" },
 			{
-				attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
+				attributes: [
+					"position",
+					"faceDataA",
+					"faceDataB",
+					"faceDataC",
+					"chunkIndex",
+				],
 				uniforms: lodUniforms,
 				uniformBuffers: ["GlobalUniforms"],
 				samplers: ["diffuseTexture"],
@@ -741,6 +926,7 @@ export async function initAtlas(): Promise<void> {
 		lod3OpaqueMaterial = mat;
 	} else {
 		const mat = lod3OpaqueMaterial as ShaderMaterial;
+		if (mat.isFrozen) mat.unfreeze();
 		mat.wireframe = GLOBAL_VALUES.DEBUG;
 		mat.setFloat("atlasTileSize", tileSize);
 		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
@@ -760,7 +946,13 @@ export async function initAtlas(): Promise<void> {
 			scene,
 			{ vertex: "lod3Chunk", fragment: "lod3TransparentChunk" },
 			{
-				attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
+				attributes: [
+					"position",
+					"faceDataA",
+					"faceDataB",
+					"faceDataC",
+					"chunkIndex",
+				],
 				uniforms: lodUniforms,
 				uniformBuffers: ["GlobalUniforms"],
 				samplers: ["diffuseTexture"],
@@ -780,6 +972,7 @@ export async function initAtlas(): Promise<void> {
 		lod3TransparentMaterial = mat;
 	} else {
 		const mat = lod3TransparentMaterial as ShaderMaterial;
+		if (mat.isFrozen) mat.unfreeze();
 		mat.wireframe = GLOBAL_VALUES.DEBUG;
 		mat.setFloat("atlasTileSize", tileSize);
 		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
@@ -799,7 +992,13 @@ export async function initAtlas(): Promise<void> {
 			scene,
 			{ vertex: "lod2Chunk", fragment: "lod2Chunk" },
 			{
-				attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
+				attributes: [
+					"position",
+					"faceDataA",
+					"faceDataB",
+					"faceDataC",
+					"chunkIndex",
+				],
 				uniforms: lodUniforms,
 				uniformBuffers: ["GlobalUniforms"],
 				samplers: ["diffuseTexture", "normalTexture"],
@@ -818,6 +1017,7 @@ export async function initAtlas(): Promise<void> {
 		lod2OpaqueMaterial = mat;
 	} else {
 		const mat = lod2OpaqueMaterial as ShaderMaterial;
+		if (mat.isFrozen) mat.unfreeze();
 		mat.wireframe = GLOBAL_VALUES.DEBUG;
 		mat.setFloat("atlasTileSize", tileSize);
 		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
@@ -838,7 +1038,13 @@ export async function initAtlas(): Promise<void> {
 			scene,
 			{ vertex: "lod2Chunk", fragment: "lod2TransparentChunk" },
 			{
-				attributes: ["position", "faceDataA", "faceDataB", "faceDataC"],
+				attributes: [
+					"position",
+					"faceDataA",
+					"faceDataB",
+					"faceDataC",
+					"chunkIndex",
+				],
 				uniforms: lodUniforms,
 				uniformBuffers: ["GlobalUniforms"],
 				samplers: ["diffuseTexture", "normalTexture"],
@@ -859,6 +1065,7 @@ export async function initAtlas(): Promise<void> {
 		lod2TransparentMaterial = mat;
 	} else {
 		const mat = lod2TransparentMaterial as ShaderMaterial;
+		if (mat.isFrozen) mat.unfreeze();
 		mat.wireframe = GLOBAL_VALUES.DEBUG;
 		mat.setFloat("atlasTileSize", tileSize);
 		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
@@ -871,15 +1078,158 @@ export async function initAtlas(): Promise<void> {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Boat chunk standalone mesh — creates individual meshes for chunks that live
+// at far-away virtual coordinates (Y=670000) but are rendered via a parent
+// hierarchy at the boat's actual world position.
+// ---------------------------------------------------------------------------
+
+const BOAT_CHUNK_OFFSETS_ARRAY = [0, 0, 0];
+
+function createBoatChunkStandaloneMesh(
+	name: string,
+	material: Material,
+	faceData: {
+		faceDataA: Uint8Array;
+		faceDataB: Uint8Array;
+		faceDataC: Uint8Array;
+		chunkIndex: Uint8Array;
+		faceCount: number;
+	},
+): Mesh {
+	const scene = Map1.mainScene;
+	const engine = scene.getEngine();
+
+	ensureSharedFacePositionBuffer();
+
+	const mesh = new Mesh(name, scene);
+	mesh.renderingGroupId = 1;
+	mesh.material = material;
+	mesh.checkCollisions = false;
+	mesh.isPickable = false;
+	mesh.ignoreNonUniformScaling = true;
+
+	mesh.setVerticesBuffer(
+		sharedFacePositionBuffer!.createVertexBuffer(
+			VertexBuffer.PositionKind,
+			0,
+			3,
+			3,
+			false,
+			false,
+			0,
+		),
+	);
+
+	mesh.setIndices(FACE_INDEX_TEMPLATE);
+
+	mesh.position.set(0, 0, 0);
+
+	const S = Chunk.SIZE;
+	mesh.setBoundingInfo(new BoundingInfo(Vector3.Zero(), new Vector3(S, S, S)));
+	mesh.cullingStrategy = AbstractMesh.CULLINGSTRATEGY_OPTIMISTIC_INCLUSION;
+
+	const meta = new MergedMeshMeta();
+	meta.chunkOffsetsArray = BOAT_CHUNK_OFFSETS_ARRAY;
+	mesh.metadata = meta;
+
+	upsertFaceVertexBufferMerged(
+		mesh,
+		engine,
+		"faceDataA",
+		faceData.faceDataA,
+		4,
+	);
+	upsertFaceVertexBufferMerged(
+		mesh,
+		engine,
+		"faceDataB",
+		faceData.faceDataB,
+		4,
+	);
+	upsertFaceVertexBufferMerged(
+		mesh,
+		engine,
+		"faceDataC",
+		faceData.faceDataC,
+		4,
+	);
+	upsertFaceVertexBufferMerged(
+		mesh,
+		engine,
+		"chunkIndex",
+		faceData.chunkIndex,
+		1,
+	);
+
+	mesh.overridenInstanceCount = faceData.faceCount;
+
+	return mesh;
+}
+
+function createBoatChunkMesh(
+	chunk: Chunk,
+	opaqueData: MeshData | null,
+	transparentData: MeshData | null,
+): void {
+	const hasOpaque = !!opaqueData && opaqueData.faceCount > 0;
+	const hasTransparent = !!transparentData && transparentData.faceCount > 0;
+
+	// Dispose previous standalone meshes if they exist.
+	if (chunk.mesh) {
+		chunk.mesh.dispose();
+		chunk.mesh = null;
+	}
+	if (chunk.transparentMesh) {
+		chunk.transparentMesh.dispose();
+		chunk.transparentMesh = null;
+	}
+
+	if (hasOpaque) {
+		const data = opaqueData!;
+		const chunkIndex = new Uint8Array(data.faceCount);
+		const mat = getOpaqueMaterialForLodBucket(0);
+		chunk.mesh = createBoatChunkStandaloneMesh(
+			`boat_chunk_opaque_${chunk.chunkX}_${chunk.chunkY}_${chunk.chunkZ}`,
+			mat,
+			{
+				faceDataA: data.faceDataA,
+				faceDataB: data.faceDataB,
+				faceDataC: data.faceDataC,
+				chunkIndex,
+				faceCount: data.faceCount,
+			},
+		);
+		chunk.mesh.isVisible = true;
+	}
+
+	if (hasTransparent) {
+		const data = transparentData!;
+		const chunkIndex = new Uint8Array(data.faceCount);
+		const mat = getTransparentMaterialForLodBucket(0);
+		chunk.transparentMesh = createBoatChunkStandaloneMesh(
+			`boat_chunk_transparent_${chunk.chunkX}_${chunk.chunkY}_${chunk.chunkZ}`,
+			mat,
+			{
+				faceDataA: data.faceDataA,
+				faceDataB: data.faceDataB,
+				faceDataC: data.faceDataC,
+				chunkIndex,
+				faceCount: data.faceCount,
+			},
+		);
+		chunk.transparentMesh.isVisible = true;
+	}
+
+	// Store cached data for re-creation on remesh.
+	chunk.opaqueMeshData = hasOpaque ? opaqueData : null;
+	chunk.transparentMeshData = hasTransparent ? transparentData : null;
+}
+
 export function createMeshFromData(
 	chunk: Chunk,
 	meshData: { opaque: MeshData | null; transparent: MeshData | null },
 ): void {
-	const previousOpaqueMesh = chunk.mesh;
-	const previousTransparentMesh = chunk.transparentMesh;
-	const previousOpaqueLod = getMeshLodLevel(previousOpaqueMesh);
-	const previousTransparentLod = getMeshLodLevel(previousTransparentMesh);
-
 	const opaqueMeshData = meshData.opaque;
 	const transparentMeshData = meshData.transparent;
 
@@ -887,11 +1237,20 @@ export function createMeshFromData(
 	const hasTransparent =
 		!!transparentMeshData && transparentMeshData.faceCount > 0;
 
-	// Cache raw mesh data for chunks that may need remesh (only when voxel data
-	// changed). The OPFS worker pool handles persistent mesh storage; the
-	// in-memory MeshData is kept here only for the mesher hot path.
-	const lodLevel = chunk.lodLevel ?? 0;
+	// Boat chunks need standalone meshes parented to a visual root.
+	// They live at far-away virtual coordinates (Y=670000) for the chunk system
+	// but are rendered at the boat's actual position via the parent hierarchy.
+	if (chunk.isBoatChunk) {
+		createBoatChunkMesh(
+			chunk,
+			hasOpaque ? opaqueMeshData : null,
+			hasTransparent ? transparentMeshData : null,
+		);
+		return;
+	}
 
+	// Cache raw mesh data for LOD0 modified chunks.
+	const lodLevel = chunk.lodLevel ?? 0;
 	if (lodLevel === 0 && chunk.isModified) {
 		chunk.opaqueMeshData = hasOpaque ? opaqueMeshData : null;
 		chunk.transparentMeshData = hasTransparent ? transparentMeshData : null;
@@ -900,76 +1259,14 @@ export function createMeshFromData(
 		chunk.transparentMeshData = null;
 	}
 
-	const lodChangedOpaque =
-		previousOpaqueLod !== null && previousOpaqueLod !== lodLevel;
-	const lodChangedTransparent =
-		previousTransparentLod !== null && previousTransparentLod !== lodLevel;
-
-	if (hasOpaque) {
-		const mat =
-			lodLevel >= 3
-				? lod3OpaqueMaterial!
-				: lodLevel >= 2
-					? lod2OpaqueMaterial!
-					: atlasMaterial!;
-
-		chunk.mesh = upsertMesh(
-			chunk,
-			lodChangedOpaque ? null : chunk.mesh,
-			opaqueMeshData!,
-			"c_opaque",
-			mat,
-			1,
-			lodLevel,
-		);
-		setMeshLodLevel(chunk.mesh!, lodLevel);
-	} else if (chunk.mesh) {
-		chunk.mesh.dispose();
-		chunk.mesh = null;
-	}
-
-	if (hasTransparent) {
-		const mat =
-			lodLevel >= 3
-				? lod3TransparentMaterial!
-				: lodLevel >= 2
-					? lod2TransparentMaterial!
-					: transparentMaterial!;
-
-		chunk.transparentMesh = upsertMesh(
-			chunk,
-			lodChangedTransparent ? null : chunk.transparentMesh,
-			transparentMeshData!,
-			"c_transparent",
-			mat,
-			1,
-			lodLevel,
-		);
-		setMeshLodLevel(chunk.transparentMesh!, lodLevel);
-	} else if (chunk.transparentMesh) {
-		chunk.transparentMesh.dispose();
-		chunk.transparentMesh = null;
-	}
-
-	if (lodChangedOpaque && previousOpaqueMesh && chunk.mesh) {
-		if (shouldUseLodCrossFade(previousOpaqueLod, lodLevel)) {
-			beginLodCrossFade(chunk, previousOpaqueMesh, chunk.mesh);
-		} else {
-			previousOpaqueMesh.dispose();
-		}
-	}
-
-	if (
-		lodChangedTransparent &&
-		previousTransparentMesh &&
-		chunk.transparentMesh
-	) {
-		if (shouldUseLodCrossFade(previousTransparentLod, lodLevel)) {
-			beginLodCrossFade(chunk, previousTransparentMesh, chunk.transparentMesh);
-		} else {
-			previousTransparentMesh.dispose();
-		}
-	}
+	// Only assign data to the group.
+	// Actual mesh creation/update happens in flushDirtyMergedGroups()
+	// through setOnGroupMeshNeedsRebuild().
+	assignChunkToGroup(
+		chunk,
+		hasOpaque ? opaqueMeshData! : null,
+		hasTransparent ? transparentMeshData! : null,
+	);
 }
 
 export function updateGlobalUniforms(frameId: number): void {
@@ -988,7 +1285,19 @@ export function updateGlobalUniforms(frameId: number): void {
 		.normalizeToRef(tmpLightDir);
 
 	const u = cachedUniforms;
-	u.lightDirection.set(-tmpLightDir.x, -tmpLightDir.y, -tmpLightDir.z);
+
+	// Blend the light direction toward straight-up (0, 1, 0) as the sun
+	// approaches the horizon, so blocks are never lit from below.
+	const shaderDirY = -tmpLightDir.y; // positive when sun is above
+	const rawBlend = 1 - Math.min(1, Math.max(0, (shaderDirY + 0.2) / 0.4));
+	const blend = rawBlend * rawBlend * (3 - 2 * rawBlend); // smoothstep
+
+	u.lightDirection.set(
+		-tmpLightDir.x * (1 - blend),
+		-tmpLightDir.y * (1 - blend) + blend,
+		-tmpLightDir.z * (1 - blend),
+	);
+	u.lightDirection.normalize();
 
 	const camPos = camera.position;
 	u.cameraPosition.set(camPos.x, camPos.y, camPos.z);
@@ -999,7 +1308,7 @@ export function updateGlobalUniforms(frameId: number): void {
 	// PERF: Inline clamp avoids Math.min/Math.max call overhead.
 	const rawIntensity = (-lightDir.y + 0.1) * 4.0;
 	u.sunLightIntensity =
-		rawIntensity < 0.1 ? 0.1 : rawIntensity > 1.0 ? 1.0 : rawIntensity;
+		rawIntensity < 0.0 ? 0.0 : rawIntensity > 1.0 ? 1.0 : rawIntensity;
 
 	u.wetness = WorldEnvironment.instance ? WorldEnvironment.instance.wetness : 0;
 
@@ -1036,6 +1345,9 @@ export function updateGlobalUniforms(frameId: number): void {
 }
 
 export function disposeSharedResources(): void {
+	// Dispose all merged mesh groups first (they hold shared meshes).
+	disposeAll();
+
 	sharedFacePositionBuffer?.dispose();
 	sharedFacePositionBuffer = null;
 

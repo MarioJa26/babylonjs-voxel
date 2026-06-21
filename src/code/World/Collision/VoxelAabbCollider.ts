@@ -9,7 +9,7 @@ import {
 } from "@babylonjs/core";
 import type { ShapeDefinition } from "../Shape/BlockShapes";
 
-export enum Axis {
+export const enum Axis {
 	X,
 	Y,
 	Z,

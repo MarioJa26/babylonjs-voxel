@@ -12,6 +12,7 @@ import type {
 	LightMutateRequest,
 	LightPropagateDeferredRequest,
 	LightRegisterChunkRequest,
+	LightSetClosedFaceMaskRequest,
 	LightSkyReconcileRequest,
 	LightUnregisterChunkRequest,
 	LightUpdateChunkBuffersRequest,
@@ -24,6 +25,7 @@ import {
 } from "./ChunkLightHeader";
 import {
 	addLightAt,
+	applyClosedFaceMaskLUT,
 	bumpLightVersion,
 	type ChunkViewRegistry,
 	createRegistry,
@@ -90,6 +92,13 @@ function postDirty(seq: number, dirtySlots: Set<number>): void {
 function handleInitLightShared(req: InitLightSharedRequest): void {
 	ensureState(req);
 	self.postMessage({ type: WorkerTaskType.InitLightShared });
+}
+
+function handleSetClosedFaceMask(req: LightSetClosedFaceMaskRequest): void {
+	if (!state.registry) return;
+	const lut = new Uint8Array(req.maskBuffer);
+	applyClosedFaceMaskLUT(lut);
+	self.postMessage({ type: WorkerTaskType.LightSetClosedFaceMask });
 }
 
 function handleRegisterChunk(req: LightRegisterChunkRequest): void {
@@ -232,6 +241,7 @@ function handlePropagateDeferred(req: LightPropagateDeferredRequest): void {
 
 export const LightTaskHandlers = {
 	handleInitLightShared,
+	handleSetClosedFaceMask,
 	handleRegisterChunk,
 	handleUnregisterChunk,
 	handleUpdateBuffers,

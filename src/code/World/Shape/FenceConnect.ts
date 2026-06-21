@@ -9,10 +9,8 @@ import {
 	type ShapeDefinition,
 } from "./BlockShapes";
 
-const FENCE_IDS = new Set<number>([50, 56]);
-
 export function isFenceBlockId(blockId: number): boolean {
-	return FENCE_IDS.has(blockId);
+	return blockId === 50 || blockId === 56;
 }
 
 export function isFencePackedBlock(packed: number): boolean {
@@ -27,36 +25,47 @@ const WEST = 1 << 3; // -X
 
 // Arm boxes: extend from post edge to cell boundary, world-aligned
 // faceMask hides the face at the cell boundary (neighbor's arm renders it instead)
+
 const ARM_NORTH: ShapeBox = {
 	min: [0.375, 0, 0],
 	max: [0.625, 1, 0.375],
-	faceMask: FACE_ALL & ~FACE_NZ, // hide -Z face (at cell boundary z=0)
+	// hide boundary face -Z and inner face touching post +Z
+	faceMask: FACE_ALL & ~FACE_NZ & ~FACE_PZ,
 };
 
 const ARM_SOUTH: ShapeBox = {
 	min: [0.375, 0, 0.625],
 	max: [0.625, 1, 1],
-	faceMask: FACE_ALL & ~FACE_PZ, // hide +Z face (at cell boundary z=1)
+	// hide boundary face +Z and inner face touching post -Z
+	faceMask: FACE_ALL & ~FACE_PZ & ~FACE_NZ,
 };
 
 const ARM_EAST: ShapeBox = {
 	min: [0.625, 0, 0.375],
 	max: [1, 1, 0.625],
-	faceMask: FACE_ALL & ~FACE_PX, // hide +X face (at cell boundary x=1)
+	// hide boundary face +X and inner face touching post -X
+	faceMask: FACE_ALL & ~FACE_PX & ~FACE_NX,
 };
 
 const ARM_WEST: ShapeBox = {
 	min: [0, 0, 0.375],
 	max: [0.375, 1, 0.625],
-	faceMask: FACE_ALL & ~FACE_NX, // hide -X face (at cell boundary x=0)
+	// hide boundary face -X and inner face touching post +X
+	faceMask: FACE_ALL & ~FACE_NX & ~FACE_PX,
 };
 
-const ARM_BOXES_BY_BIT: ShapeBox[] = [
-	ARM_NORTH, // bit 0 = -Z
-	ARM_SOUTH, // bit 1 = +Z
-	ARM_EAST, // bit 2 = +X
-	ARM_WEST, // bit 3 = -X
-];
+const FENCE_ARM_BOXES_BY_MASK: readonly ShapeBox[][] = (() => {
+	const out: ShapeBox[][] = new Array(16);
+	for (let mask = 0; mask < 16; mask++) {
+		const boxes: ShapeBox[] = [];
+		if (mask & NORTH) boxes.push(ARM_NORTH);
+		if (mask & SOUTH) boxes.push(ARM_SOUTH);
+		if (mask & EAST) boxes.push(ARM_EAST);
+		if (mask & WEST) boxes.push(ARM_WEST);
+		out[mask] = boxes;
+	}
+	return out;
+})();
 
 type GetBlockFn = (x: number, y: number, z: number) => number;
 
@@ -68,65 +77,57 @@ export function computeFenceNeighborMask(
 ): number {
 	let mask = 0;
 
-	const north = getBlock(x, y, z - 1);
-	if (north && isFenceBlockId(unpackBlockId(north))) mask |= NORTH;
+	let b = getBlock(x, y, z - 1);
+	if (b && isFenceBlockId(unpackBlockId(b))) mask |= NORTH;
 
-	const south = getBlock(x, y, z + 1);
-	if (south && isFenceBlockId(unpackBlockId(south))) mask |= SOUTH;
+	b = getBlock(x, y, z + 1);
+	if (b && isFenceBlockId(unpackBlockId(b))) mask |= SOUTH;
 
-	const east = getBlock(x + 1, y, z);
-	if (east && isFenceBlockId(unpackBlockId(east))) mask |= EAST;
+	b = getBlock(x + 1, y, z);
+	if (b && isFenceBlockId(unpackBlockId(b))) mask |= EAST;
 
-	const west = getBlock(x - 1, y, z);
-	if (west && isFenceBlockId(unpackBlockId(west))) mask |= WEST;
+	b = getBlock(x - 1, y, z);
+	if (b && isFenceBlockId(unpackBlockId(b))) mask |= WEST;
 
 	return mask;
 }
 
 export function getFenceArmBoxes(mask: number): ShapeBox[] {
-	const boxes: ShapeBox[] = [];
-	for (let i = 0; i < 4; i++) {
-		if (mask & (1 << i)) {
-			boxes.push(ARM_BOXES_BY_BIT[i]);
-		}
-	}
-	return boxes;
+	return FENCE_ARM_BOXES_BY_MASK[mask & 15] as ShapeBox[];
 }
 
-const shapeCache = new Map<number, ShapeDefinition>();
+const FENCE_SHAPES_BY_MASK: readonly ShapeDefinition[] = (() => {
+	const out: ShapeDefinition[] = new Array(16);
+	for (let mask = 0; mask < 16; mask++) {
+		let postFaceMask = FACE_ALL;
+		if (mask & NORTH) postFaceMask &= ~FACE_NZ;
+		if (mask & SOUTH) postFaceMask &= ~FACE_PZ;
+		if (mask & EAST) postFaceMask &= ~FACE_PX;
+		if (mask & WEST) postFaceMask &= ~FACE_NX;
+
+		const boxes: ShapeBox[] = [
+			{
+				min: [0.375, 0, 0.375],
+				max: [0.625, 1, 0.625],
+				faceMask: postFaceMask,
+			},
+		];
+		if (mask & NORTH) boxes.push(ARM_NORTH);
+		if (mask & SOUTH) boxes.push(ARM_SOUTH);
+		if (mask & EAST) boxes.push(ARM_EAST);
+		if (mask & WEST) boxes.push(ARM_WEST);
+
+		out[mask] = {
+			name: "fence",
+			boxes,
+			rotateY: false,
+			allowFlipY: false,
+			usesSliceState: false,
+		};
+	}
+	return out;
+})();
 
 export function getFenceDynamicShape(mask: number): ShapeDefinition {
-	let shape = shapeCache.get(mask);
-	if (shape) return shape;
-
-	// Post hides faces in directions where arms are present
-	let postFaceMask = FACE_ALL;
-	if (mask & NORTH) postFaceMask &= ~FACE_NZ;
-	if (mask & SOUTH) postFaceMask &= ~FACE_PZ;
-	if (mask & EAST) postFaceMask &= ~FACE_PX;
-	if (mask & WEST) postFaceMask &= ~FACE_NX;
-
-	const postBox: ShapeBox = {
-		min: [0.375, 0, 0.375],
-		max: [0.625, 1, 0.625],
-		faceMask: postFaceMask,
-	};
-
-	const boxes: ShapeBox[] = [postBox];
-	for (let i = 0; i < 4; i++) {
-		if (mask & (1 << i)) {
-			boxes.push(ARM_BOXES_BY_BIT[i]);
-		}
-	}
-
-	shape = {
-		name: "fence",
-		boxes,
-		rotateY: false,
-		allowFlipY: false,
-		usesSliceState: false,
-	};
-
-	shapeCache.set(mask, shape);
-	return shape;
+	return FENCE_SHAPES_BY_MASK[mask & 15];
 }

@@ -8,12 +8,14 @@ export class OpaqueShader {
         in vec4 faceDataA; // x,y,z origin/center, w = axisFace(0..5)
         in vec4 faceDataB; // x=width, y=height, z=tileX, w=tileY
         in vec4 faceDataC; // x=packedAO, y=light, z=unused, w=meta
+        in float chunkIndex; // index into chunkOffsets[] for merged meshes
 
         // Uniforms
         uniform mat4 world;
         uniform mat4 worldViewProjection;
         uniform float atlasTileSize;
         uniform float atlasMaxTiles;
+        uniform vec3 chunkOffsets[64]; // per-chunk world offsets for merged meshes
 
         uniform GlobalUniforms {
             vec3 lightDirection;
@@ -181,6 +183,8 @@ export class OpaqueShader {
                 B = cross(N, T) * fSign;
             }
 
+            localPosition += chunkOffsets[int(chunkIndex + 0.5)];
+
             gl_Position = worldViewProjection * vec4(localPosition, 1.0);
 
             vUV2 = vec2(faceDataB.z, atlasMaxTiles - 1.0 - faceDataB.w) * atlasTileSize;
@@ -256,7 +260,7 @@ export class OpaqueShader {
         float skyScale = vSkyLight * 0.8 * (sunLightIntensity + 0.2);
         vec3 lightMix = clamp(skyScale + vBlockLight * vec3(0.9, 0.6, 0.2), 0.2, 1.0);
         
-        fragColor = vec4((diffuseColor.rgb * (1.0 + diffuseIntensity) + specular) * lightMix * aoFactor, 1.0);
+        fragColor = vec4((diffuseColor.rgb * (1.0 + diffuseIntensity * sunLightIntensity) + specular) * lightMix * aoFactor, 1.0);
     }
 `;
 }

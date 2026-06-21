@@ -25,7 +25,11 @@ export class TestScene {
 		private canvas: HTMLCanvasElement,
 	) {
 		this.document = document;
-		this.engine = new Engine(this.canvas);
+		this.engine = new Engine(this.canvas, false, {
+			stencil: false,
+			doNotHandleContextLost: true,
+			preserveDrawingBuffer: false,
+		});
 		this.#onKeyDown = async (ev) => {
 			// Ctrl+F
 			if (ev.ctrlKey && ev.key.toLowerCase() === "f") {

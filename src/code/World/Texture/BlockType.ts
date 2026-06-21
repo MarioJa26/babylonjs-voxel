@@ -111,3 +111,9 @@ export function isPassThroughBlock(blockId: number): boolean {
 export function isCollidableBlock(blockId: number): boolean {
 	return !isPassThroughBlock(blockId);
 }
+
+export function getMovementCost(blockId: number): number {
+	if (blockId === BlockType.Water) return 15;
+	if (isCollidableBlock(blockId)) return 1;
+	return Infinity;
+}

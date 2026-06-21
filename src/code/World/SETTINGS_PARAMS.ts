@@ -1,7 +1,7 @@
 export const SETTING_PARAMS = {
 	// --- World Generation & Loading ---
-	RENDER_DISTANCE: 2,
-	VERTICAL_RENDER_DISTANCE: 6,
+	RENDER_DISTANCE: 5,
+	VERTICAL_RENDER_DISTANCE: 5,
 	CAVE_VERTICAL_RENDER_DISTANCE: 2,
 	MIN_CHUNK_Y: -32,
 	MAX_CHUNK_HEIGHT: 64,
@@ -36,7 +36,7 @@ export const SETTING_PARAMS = {
 	CHUNK_WORKER_POOL_SIZE: 0,
 
 	// --- Day/Night Cycle ---
-	DAY_DURATION_MS: 10 * 60 * 1000, // 10 minutes for a full day
+	DAY_DURATION_MS: 10 * 60 * 2000, // 20 minutes for a full day
 
 	// --- Graphics & Rendering ---
 	ENABLE_SSAO: false,

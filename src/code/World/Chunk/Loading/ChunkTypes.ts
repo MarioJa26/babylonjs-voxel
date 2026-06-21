@@ -9,7 +9,7 @@ export type ChunkBoundEntity = {
 	serializeForChunkReload?: () => SavedChunkEntityData | null;
 };
 
-export enum ProcessStage {
+export const enum ProcessStage {
 	Start,
 	PrepareUnloadBatch,
 	SaveUnloadBatch,

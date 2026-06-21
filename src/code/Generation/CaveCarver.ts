@@ -81,8 +81,8 @@ export function evaluateCaveCarve(
 	const tunnelDelta = tunnel - tunnelThreshold;
 	const cheeseDelta = cheese - cheeseThreshold;
 
-	const connectedTunnelStrength = tunnelDelta + Math.max(0, cheeseDelta) * 0.45;
-	const chamberStrength = cheeseDelta * (0.15 + cheeseDepthT * 0.85);
+	const connectedTunnelStrength = tunnelDelta + Math.max(0, cheeseDelta) * 0.25;
+	const chamberStrength = cheeseDelta * (0.15 + cheeseDepthT * 0.4);
 	const bridgeStrength =
 		Math.min(
 			tunnelDelta + CONNECTIVITY_MARGIN,

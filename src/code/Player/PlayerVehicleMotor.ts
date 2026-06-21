@@ -38,7 +38,7 @@ import {
 	SimpleCharacterController,
 } from "./SimpleCharacterController";
 
-enum PlayerState {
+const enum PlayerState {
 	IN_AIR,
 	ON_GROUND,
 	START_JUMP,

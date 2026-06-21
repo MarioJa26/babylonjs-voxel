@@ -49,7 +49,7 @@ export interface Biome {
 	continentalNoiseScale?: number;
 	getTreeForBlock(blockId?: number, noiseValue?: number): TreeDefinition | null;
 }
-export enum BIOME_ID {
+export const enum BIOME_ID {
 	// Existing
 	FOREST,
 	TUNDRA,

@@ -96,7 +96,9 @@ export class PlayerLoopController {
 			this.playerStats.update(dt, this.playerVehicle.isSprinting);
 			this.playerVehicle.updateCameraAndVisuals();
 			this.#updateControls(pickHit);
-			this.#updateCaveState(playerPos.y);
+			if (this.#updateCaveState(playerPos.y)) {
+				this.#loadLastCx = -99999;
+			}
 			const cx = worldToChunkCoord(playerPos.x);
 			const cy = worldToChunkCoord(playerPos.y);
 			const cz = worldToChunkCoord(playerPos.z);
@@ -144,12 +146,14 @@ export class PlayerLoopController {
 	// Cave state
 	// ---------------------------------------------------------------------------
 
-	#updateCaveState(playerY: number): void {
+	#updateCaveState(playerY: number): boolean {
 		const inCave = playerY <= -16;
 		if (inCave !== this.#lastCaveState) {
 			this.#lastCaveState = inCave;
 			isInCave = inCave;
+			return true;
 		}
+		return false;
 	}
 
 	// ---------------------------------------------------------------------------

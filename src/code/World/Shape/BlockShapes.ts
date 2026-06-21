@@ -180,6 +180,8 @@ let _cubeShapeIndex = 0;
 let _crossShapeIndex = -1;
 let _crossDiagonalShapeIndex = -1;
 
+const EMPTY_SHAPE_BY_BLOCK_ID = new Uint16Array(65536);
+
 function ensureShapeInit(): Promise<void> {
 	if (_shapeInitPromise === null) {
 		_shapeInitPromise = (async () => {
@@ -205,7 +207,11 @@ export function getShapeDefinitions(): ShapeDefinition[] {
 }
 
 export function getShapeByBlockId(): Uint16Array {
-	return _shapeByBlockId ?? new Uint16Array(65536);
+	return _shapeByBlockId ?? EMPTY_SHAPE_BY_BLOCK_ID;
+}
+
+export function areShapesInitialized(): boolean {
+	return _shapeDefinitions !== null && _shapeByBlockId !== null;
 }
 
 export function getCubeShapeIndex(): number {

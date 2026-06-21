@@ -64,7 +64,7 @@ export interface GreedyFaceDescriptor {
 /**
  * Enum for material types (blockId → material bucket)
  */
-export enum MaterialType {
+export const enum MaterialType {
 	Default = 0,
 	WaterOrGlass = 1,
 	Cutout = 2,

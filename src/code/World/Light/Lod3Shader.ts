@@ -7,11 +7,13 @@ export class Lod3Shader {
     in vec4 faceDataA; // x,y,z origin, w = axisFace(0..5)
     in vec4 faceDataB; // x=width, y=height, z=tileX, w=tileY
     in vec4 faceDataC; // x=packedAO (unused), y=light, z=tintBucket, w=meta
+    in float chunkIndex;
 
     uniform mat4 world;
     uniform mat4 worldViewProjection;
     uniform float atlasTileSize;
     uniform float atlasMaxTiles;
+    uniform vec3 chunkOffsets[64];
 
     uniform GlobalUniforms {
       vec3 lightDirection;
@@ -67,6 +69,8 @@ export class Lod3Shader {
       vec3 localPosition = faceDataA.xyz * invPosScale;
       localPosition[uAxis] += du;
       localPosition[vAxis] += dv;
+
+      localPosition += chunkOffsets[int(chunkIndex + 0.5)];
 
       gl_Position = worldViewProjection * vec4(localPosition, 1.0);
       vPositionW = localPosition + world[3].xyz;

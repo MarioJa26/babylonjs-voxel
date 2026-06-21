@@ -14,6 +14,12 @@ import {
 	type BlockShapeInfo,
 	VoxelAabbCollider,
 } from "@/code/World/Collision/VoxelAabbCollider";
+import {
+	findLandSurface,
+	findPathInto,
+	PathNodeKind,
+	type PathWaypoint,
+} from "@/code/World/Pathfinding/Pathfinding";
 import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
 import {
 	computeFenceNeighborMask,
@@ -34,9 +40,18 @@ const BREATH_MAX = 5.0;
 const DROWN_INTERVAL = 2.0;
 const DROWN_DAMAGE = 1;
 const SWIM_BUOYANCY = 6.0;
-const SWIM_SPEED_FACTOR = 0.6;
+const SWIM_SPEED_FACTOR = 0.75;
+const WATER_ESCAPE_BUOYANCY = 3.5;
+const WATER_ESCAPE_MAX_UP_SPEED = 1.6;
+const WATER_GRAVITY = -3.0;
+const WATER_FLOAT_ACCEL = 18.0;
+const WATER_SURFACE_OFFSET = 0.1;
+const WATER_MAX_UP_SPEED = 1.25;
+const WATER_MAX_DOWN_SPEED = -0.35;
+const WATER_HORIZONTAL_DAMPING = 2.0;
+const WATER_VERTICAL_DAMPING = 3.3;
 
-enum NeutralMobState {
+const enum NeutralMobState {
 	Idle,
 	Wander,
 }
@@ -66,6 +81,15 @@ export abstract class NeutralMob {
 	#tmpGround = new Vector3();
 	#tmpAway = new Vector3();
 	#tmpProbe = new Vector3();
+
+	#path: PathWaypoint[] = [];
+	#pathIndex = 0;
+	#shoreSearchTimer = 0;
+	#waterWanderTimer = 0;
+	readonly #requiredHeadroom: number;
+	#inWaterCached = false;
+	#headSubmergedCached = false;
+	#waterSurfaceY = 0;
 
 	// --- Abstract hooks for subclasses ---
 
@@ -114,6 +138,7 @@ export abstract class NeutralMob {
 		this.#scene = scene;
 		this.#wanderSpeed = this.getWanderSpeed();
 		this.#halfHeight = halfSize.y;
+		this.#requiredHeadroom = Math.max(1, Math.ceil(halfSize.y * 2));
 
 		this.#collider = new VoxelAabbCollider(
 			halfSize,
@@ -148,7 +173,10 @@ export abstract class NeutralMob {
 
 	protected setBodyMesh(mesh: Mesh): void {
 		this.#bodyMesh = mesh;
-		mesh.metadata?.set("mob", this);
+		if (!mesh.metadata) {
+			mesh.metadata = new Map<string, unknown>();
+		}
+		mesh.metadata.set("mob", this);
 
 		this.configureChunkLoader(this.#scene);
 
@@ -208,6 +236,7 @@ export abstract class NeutralMob {
 	dispose(): void {
 		if (this.#isDisposed) return;
 		this.#isDisposed = true;
+		this.#bodyMesh.metadata?.delete("mob");
 		unregisterChunkBoundEntity(this.#chunkBindingHandle);
 		this.#chunkBindingHandle = undefined;
 		NeutralMob.#allMobs.delete(this);
@@ -221,26 +250,41 @@ export abstract class NeutralMob {
 
 	// --- Water detection ---
 
-	protected isInWater(): boolean {
+	#updateWaterState(): boolean {
 		const pos = this.#bodyMesh.position;
-		return (
-			getBlockByWorldCoords(
-				Math.floor(pos.x),
-				Math.floor(pos.y),
-				Math.floor(pos.z),
-			) === BlockType.Water
-		);
+		const x = Math.floor(pos.x);
+		const z = Math.floor(pos.z);
+		const feetY = Math.floor(pos.y - this.#halfHeight + 0.05);
+		const centerY = Math.floor(pos.y);
+		const headY = Math.floor(pos.y + this.#halfHeight - 0.05);
+
+		const feetInWater = getBlockByWorldCoords(x, feetY, z) === BlockType.Water;
+		const centerInWater =
+			getBlockByWorldCoords(x, centerY, z) === BlockType.Water;
+		const headInWater = getBlockByWorldCoords(x, headY, z) === BlockType.Water;
+
+		this.#inWaterCached = feetInWater || centerInWater || headInWater;
+		this.#headSubmergedCached = headInWater;
+
+		if (headInWater) {
+			this.#waterSurfaceY = headY + 1;
+		} else if (centerInWater) {
+			this.#waterSurfaceY = centerY + 1;
+		} else if (feetInWater) {
+			this.#waterSurfaceY = feetY + 1;
+		} else {
+			this.#waterSurfaceY = 0;
+		}
+
+		return this.#inWaterCached;
+	}
+
+	protected isInWater(): boolean {
+		return this.#inWaterCached;
 	}
 
 	protected isHeadSubmerged(): boolean {
-		const pos = this.#bodyMesh.position;
-		return (
-			getBlockByWorldCoords(
-				Math.floor(pos.x),
-				Math.floor(pos.y + this.#halfHeight),
-				Math.floor(pos.z),
-			) === BlockType.Water
-		);
+		return this.#headSubmergedCached;
 	}
 
 	// --- Core tick ---
@@ -267,6 +311,8 @@ export abstract class NeutralMob {
 				fleeing = true;
 				currentSpeed = PANIC_SPEED;
 				this.#state = NeutralMobState.Wander;
+				this.#path.length = 0;
+				this.#pathIndex = 0;
 				this.#fleeTimer -= dt;
 				const away = this.#tmpAway;
 				away.copyFrom(this.#bodyMesh.position);
@@ -280,8 +326,11 @@ export abstract class NeutralMob {
 			}
 		}
 
-		// State machine — only when not fleeing
-		if (!fleeing) {
+		// Water detection (used early for water escape)
+		const inWater = this.#updateWaterState();
+
+		// State machine — only when not fleeing and not in water
+		if (!fleeing && !inWater) {
 			this.#stateTimer -= dt;
 			if (this.#stateTimer <= 0) {
 				if (this.#state === NeutralMobState.Wander) {
@@ -289,52 +338,120 @@ export abstract class NeutralMob {
 					this.#stateTimer = 2 + Math.random() * 3;
 					this.#velocity.x = 0;
 					this.#velocity.z = 0;
+					this.#path.length = 0;
+					this.#pathIndex = 0;
 				} else {
 					this.#state = NeutralMobState.Wander;
 					this.#stateTimer = 1 + Math.random() * 4;
-					this.#facingAngle += (Math.random() - 0.5) * Math.PI;
+					this.#pickWanderTarget();
 				}
 			}
 		}
 
-		// Apply movement
+		// Water behavior — always wander/swim while in water.
+		if (inWater && !fleeing) {
+			this.#state = NeutralMobState.Wander;
+			this.#stateTimer = 1.0;
+			if (this.#path.length === 0 || this.#pathIndex >= this.#path.length) {
+				this.#path.length = 0;
+				this.#pathIndex = 0;
+				this.#shoreSearchTimer -= dt;
+				if (this.#shoreSearchTimer <= 0) {
+					this.#findNearestShore();
+					if (this.#path.length === 0) {
+						this.#shoreSearchTimer = 0.5;
+					}
+				}
+				if (this.#path.length === 0) {
+					this.#waterWander(dt);
+				}
+			}
+		}
+
+		// Apply movement — pathfinding or free wander
 		if (this.#state === NeutralMobState.Wander) {
-			this.#velocity.x = Math.sin(this.#facingAngle) * currentSpeed;
-			this.#velocity.z = Math.cos(this.#facingAngle) * currentSpeed;
+			if (this.#path.length > 0 && this.#pathIndex < this.#path.length) {
+				this.#advanceOnPath(currentSpeed, dt);
+			} else if (inWater && !fleeing) {
+				this.#waterWander(dt);
+			} else {
+				this.#velocity.x = Math.sin(this.#facingAngle) * currentSpeed;
+				this.#velocity.z = Math.cos(this.#facingAngle) * currentSpeed;
+			}
 		}
 
 		// Gravity / Water physics
-		const inWater = this.isInWater();
 		if (inWater) {
-			this.#velocity.y += SWIM_BUOYANCY * dt;
-			if (this.#velocity.y > 2.0) this.#velocity.y = 2.0;
-			const maxH = this.#wanderSpeed * SWIM_SPEED_FACTOR;
-			const hLen = Math.sqrt(
+			const escapingWater = this.#path.length > 0 && !fleeing;
+			const headSubmerged = this.#headSubmergedCached;
+
+			this.#velocity.y += WATER_GRAVITY * dt;
+
+			const targetCenterY =
+				this.#waterSurfaceY - this.#halfHeight + WATER_SURFACE_OFFSET;
+			const surfaceError = targetCenterY - this.#bodyMesh.position.y;
+
+			if (headSubmerged) {
+				this.#velocity.y += SWIM_BUOYANCY * dt;
+			} else if (surfaceError > 0) {
+				const floatAccel = Math.min(
+					surfaceError * WATER_FLOAT_ACCEL,
+					SWIM_BUOYANCY,
+				);
+				this.#velocity.y += floatAccel * dt;
+			} else {
+				this.#velocity.y += Math.max(surfaceError * 2.0, -1.0) * dt;
+			}
+
+			if (escapingWater) {
+				this.#velocity.y += WATER_ESCAPE_BUOYANCY * dt;
+			}
+
+			const verticalKeep = Math.max(0, 1 - WATER_VERTICAL_DAMPING * dt);
+			this.#velocity.y *= verticalKeep;
+
+			const maxUpSpeed = escapingWater
+				? WATER_ESCAPE_MAX_UP_SPEED
+				: WATER_MAX_UP_SPEED;
+			if (this.#velocity.y > maxUpSpeed) {
+				this.#velocity.y = maxUpSpeed;
+			} else if (this.#velocity.y < WATER_MAX_DOWN_SPEED) {
+				this.#velocity.y = WATER_MAX_DOWN_SPEED;
+			}
+
+			const swimPathCap =
+				this.#path.length > 0
+					? this.#wanderSpeed * 0.9
+					: this.#wanderSpeed * SWIM_SPEED_FACTOR;
+			const hLenSq =
 				this.#velocity.x * this.#velocity.x +
-					this.#velocity.z * this.#velocity.z,
-			);
-			if (hLen > maxH) {
-				const scale = maxH / hLen;
+				this.#velocity.z * this.#velocity.z;
+			if (hLenSq > swimPathCap * swimPathCap) {
+				const scale = swimPathCap / Math.sqrt(hLenSq);
 				this.#velocity.x *= scale;
 				this.#velocity.z *= scale;
 			}
-			this.#breathTimer = BREATH_MAX;
 		} else {
 			this.#velocity.y += GRAVITY * dt;
-			this.#breathTimer = BREATH_MAX;
 		}
 
 		// Drowning
-		if (inWater && this.isHeadSubmerged()) {
+		if (inWater && this.#headSubmergedCached) {
 			this.#breathTimer -= dt;
 			if (this.#breathTimer <= 0) {
 				this.takeDamage(DROWN_DAMAGE);
 				this.#breathTimer = DROWN_INTERVAL;
 			}
+		} else {
+			this.#breathTimer = BREATH_MAX;
 		}
 
-		// Edge detection — skip while swimming
-		if (this.#state === NeutralMobState.Wander && !inWater) {
+		// Edge detection — skip while swimming or pathfinding
+		if (
+			this.#state === NeutralMobState.Wander &&
+			!inWater &&
+			this.#path.length === 0
+		) {
 			const aheadX = Math.floor(
 				this.#bodyMesh.position.x + Math.sin(this.#facingAngle) * 1.5,
 			);
@@ -350,9 +467,11 @@ export abstract class NeutralMob {
 		}
 
 		// Move with collision
-		this.#moveAxis(Axis.X, this.#velocity.x * dt);
-		this.#moveAxis(Axis.Y, this.#velocity.y * dt);
-		this.#moveAxis(Axis.Z, this.#velocity.z * dt);
+		const wasGrounded = this.#isGrounded();
+		const canStepUp = wasGrounded || (inWater && this.#path.length > 0);
+		this.#moveAxis(Axis.X, this.#velocity.x * dt, canStepUp);
+		this.#moveAxis(Axis.Y, this.#velocity.y * dt, canStepUp);
+		this.#moveAxis(Axis.Z, this.#velocity.z * dt, canStepUp);
 
 		// Ground check
 		const grounded = this.#isGrounded();
@@ -361,7 +480,7 @@ export abstract class NeutralMob {
 		}
 
 		// Damping
-		const damping = grounded ? 8.0 : 1.8;
+		const damping = inWater ? WATER_HORIZONTAL_DAMPING : grounded ? 8.0 : 1.8;
 		const keep = Math.max(0, 1 - damping * dt);
 		this.#velocity.x *= keep;
 		this.#velocity.z *= keep;
@@ -394,10 +513,10 @@ export abstract class NeutralMob {
 		return {};
 	}
 
-	#moveAxis(axis: Axis, delta: number): void {
+	#moveAxis(axis: Axis, delta: number, canStepUp: boolean): void {
 		if (
 			axis !== Axis.Y &&
-			this.#isGrounded() &&
+			canStepUp &&
 			(this.#velocity.x !== 0 || this.#velocity.z !== 0)
 		) {
 			const pos = this.#bodyMesh.position;
@@ -447,5 +566,165 @@ export abstract class NeutralMob {
 		probe.copyFrom(this.#bodyMesh.position);
 		probe.y -= 0.01;
 		return this.#collider.overlaps(probe);
+	}
+
+	#findNearestShore(): void {
+		const pos = this.#bodyMesh.position;
+		const sx = Math.round(pos.x);
+		const sz = Math.round(pos.z);
+		const sy =
+			this.isInWater() && this.#waterSurfaceY > 0
+				? Math.floor(this.#waterSurfaceY - 1)
+				: Math.floor(pos.y - 0.5);
+
+		let attempts = 0;
+		for (let r = 1; r <= 20 && attempts < 6; r++) {
+			for (let dx = -r; dx <= r && attempts < 6; dx++) {
+				for (let dz = -r; dz <= r && attempts < 6; dz++) {
+					if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
+					const tx = sx + dx;
+					const tz = sz + dz;
+					const land = findLandSurface(tx, tz, sy, this.#requiredHeadroom);
+					if (!land) continue;
+					attempts++;
+					if (
+						findPathInto(
+							this.#path,
+							sx,
+							sz,
+							sy,
+							tx,
+							tz,
+							this.#requiredHeadroom,
+							700,
+							land.groundY,
+						)
+					) {
+						this.#pathIndex = 0;
+						this.#state = NeutralMobState.Wander;
+						this.#stateTimer = this.#path.length * 0.5 + 1;
+						const first = this.#path[0];
+						this.#facingAngle = Math.atan2(
+							first.x + 0.5 - pos.x,
+							first.z + 0.5 - pos.z,
+						);
+						return;
+					}
+				}
+			}
+		}
+		this.#path.length = 0;
+		this.#pathIndex = 0;
+	}
+
+	#pickWanderTarget(): void {
+		const pos = this.#bodyMesh.position;
+		const sx = Math.round(pos.x);
+		const sz = Math.round(pos.z);
+		const startGroundY = Math.floor(pos.y - 0.5);
+
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const angle = Math.random() * Math.PI * 2;
+			const dist = 5 + Math.random() * 15;
+			const tx = Math.round(pos.x + Math.sin(angle) * dist);
+			const tz = Math.round(pos.z + Math.cos(angle) * dist);
+
+			if (
+				findPathInto(
+					this.#path,
+					sx,
+					sz,
+					startGroundY,
+					tx,
+					tz,
+					this.#requiredHeadroom,
+					250,
+				)
+			) {
+				this.#pathIndex = 0;
+				const first = this.#path[0];
+				this.#facingAngle = Math.atan2(
+					first.x + 0.5 - pos.x,
+					first.z + 0.5 - pos.z,
+				);
+				return;
+			}
+		}
+
+		// No reachable target — go idle early
+		this.#state = NeutralMobState.Idle;
+		this.#stateTimer = 1 + Math.random() * 2;
+		this.#velocity.x = 0;
+		this.#velocity.z = 0;
+		this.#path.length = 0;
+		this.#pathIndex = 0;
+	}
+
+	#waterWander(dt: number): void {
+		this.#waterWanderTimer -= dt;
+		const hSpeedSq =
+			this.#velocity.x * this.#velocity.x + this.#velocity.z * this.#velocity.z;
+		if (this.#waterWanderTimer <= 0 || hSpeedSq < 0.0025) {
+			this.#waterWanderTimer = 0.75 + Math.random() * 1.25;
+			this.#facingAngle += -1.5 + Math.random() * 3.0;
+		}
+		const swimSpeed = this.#wanderSpeed * SWIM_SPEED_FACTOR;
+		this.#velocity.x = Math.sin(this.#facingAngle) * swimSpeed;
+		this.#velocity.z = Math.cos(this.#facingAngle) * swimSpeed;
+	}
+
+	#advanceOnPath(speed: number, dt: number): void {
+		const pos = this.#bodyMesh.position;
+
+		const inWater = this.isInWater();
+		while (this.#pathIndex < this.#path.length) {
+			const wp = this.#path[this.#pathIndex];
+			const dx = wp.x + 0.5 - pos.x;
+			const dz = wp.z + 0.5 - pos.z;
+			if (
+				inWater &&
+				this.#pathIndex === this.#path.length - 1 &&
+				this.#path[this.#pathIndex].kind === PathNodeKind.Land
+			) {
+				break;
+			}
+			if (dx * dx + dz * dz >= (inWater ? 0.25 : 0.04)) break;
+			this.#pathIndex++;
+		}
+
+		if (this.#pathIndex >= this.#path.length) {
+			this.#path.length = 0;
+			this.#pathIndex = 0;
+			this.#velocity.x = 0;
+			this.#velocity.z = 0;
+			if (this.isInWater() || !this.#isGrounded()) {
+				this.#state = NeutralMobState.Wander;
+				this.#shoreSearchTimer = 0;
+			} else {
+				this.#state = NeutralMobState.Idle;
+				this.#stateTimer = 2 + Math.random() * 3;
+			}
+			return;
+		}
+
+		const wp = this.#path[this.#pathIndex];
+		if (wp.kind === PathNodeKind.Water) {
+			const targetY = wp.groundY + 0.45;
+			const dy = targetY - pos.y;
+			const clampedDy = Math.max(-1, Math.min(1, dy));
+			this.#velocity.y += clampedDy * 4.0 * dt;
+		}
+		const dx = wp.x + 0.5 - pos.x;
+		const dz = wp.z + 0.5 - pos.z;
+		const distSq = dx * dx + dz * dz;
+		if (distSq < 0.0001) {
+			this.#velocity.x = 0;
+			this.#velocity.z = 0;
+			return;
+		}
+		const invDist = 1 / Math.sqrt(distSq);
+		this.#velocity.x = dx * invDist * speed;
+		this.#velocity.z = dz * invDist * speed;
+		this.#facingAngle = Math.atan2(dx, dz);
 	}
 }

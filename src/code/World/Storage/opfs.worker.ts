@@ -161,6 +161,29 @@ async function ensureMeshStore(): Promise<OpfsChunkStore> {
 	return openStores().then(() => meshStore!);
 }
 
+/** Invalidate cached handles and force re-open on next access. */
+function resetMeshStore(): void {
+	if (meshStore) {
+		meshStore.close().catch(() => {});
+		meshStore = null;
+	}
+	initInFlight = null;
+}
+
+/** Run a mesh-store op; on stale-handle error, reset and retry once. */
+async function withMeshRetry<T>(
+	fn: (s: OpfsChunkStore) => Promise<T>,
+): Promise<T> {
+	try {
+		const s = await ensureMeshStore();
+		return await fn(s);
+	} catch (err) {
+		resetMeshStore();
+		const s = await ensureMeshStore();
+		return await fn(s);
+	}
+}
+
 async function openStores(): Promise<void> {
 	if (initInFlight) {
 		await initInFlight;
@@ -202,35 +225,29 @@ self.addEventListener("message", (event: MessageEvent) => {
 
 			// ---- Mesh store (OpfsChunkStore — evictable LRU) ----
 			case OpfsMsg.ReadMesh: {
-				const s = await ensureMeshStore();
-				const result = await s.read(
-					data.keyHi >>> 0,
-					data.keyLo >>> 0,
-					data.lod | 0,
+				const result = await withMeshRetry((s) =>
+					s.read(data.keyHi >>> 0, data.keyLo >>> 0, data.lod | 0),
 				);
 				postResult(result);
 				break;
 			}
 			case OpfsMsg.WriteMesh: {
-				const s = await ensureMeshStore();
 				const bytes = toUint8Array(data.data);
-				await s.write(data.keyHi >>> 0, data.keyLo >>> 0, data.lod | 0, bytes);
+				await withMeshRetry((s) =>
+					s.write(data.keyHi >>> 0, data.keyLo >>> 0, data.lod | 0, bytes),
+				);
 				postResult(true);
 				break;
 			}
 			case OpfsMsg.RemoveMesh: {
-				const s = await ensureMeshStore();
-				const ok = await s.remove(
-					data.keyHi >>> 0,
-					data.keyLo >>> 0,
-					data.lod | 0,
+				const ok = await withMeshRetry((s) =>
+					s.remove(data.keyHi >>> 0, data.keyLo >>> 0, data.lod | 0),
 				);
 				postResult(ok);
 				break;
 			}
 			case OpfsMsg.FlushMeshes: {
-				const s = await ensureMeshStore();
-				await s.flush();
+				await withMeshRetry((s) => s.flush());
 				postResult(true);
 				break;
 			}

@@ -7,6 +7,7 @@ import {
 	type LightAddEmissionRequest,
 	type LightMutateRequest,
 	type LightPropagateDeferredRequest,
+	type LightSetClosedFaceMaskRequest,
 	type LightSkyReconcileRequest,
 	type MeshWorkerResponse,
 	type WorkerResponseData,
@@ -342,6 +343,14 @@ export class ChunkWorker {
 		};
 		this.terrainWorker.postMessage(message);
 		this.lightSharedInitialized = true;
+	}
+
+	public postLightSetClosedFaceMask(maskBuffer: SharedArrayBuffer): void {
+		const message: LightSetClosedFaceMaskRequest = {
+			type: WorkerTaskType.LightSetClosedFaceMask,
+			maskBuffer,
+		};
+		this.terrainWorker.postMessage(message);
 	}
 
 	public postLightRegisterChunk(req: {

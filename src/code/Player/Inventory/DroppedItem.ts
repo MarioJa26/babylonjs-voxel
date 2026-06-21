@@ -217,7 +217,7 @@ export class DroppedItem implements IUsable {
 		const blockLight = (packedLight & 0xf) / 15;
 
 		const sunElevation = -GLOBAL_VALUES.skyLightDirection.y + 0.1;
-		const sunLightIntensity = Math.min(1.0, Math.max(0.1, sunElevation * 4.0));
+		const sunLightIntensity = Math.min(1.0, Math.max(0.0, sunElevation * 4.0));
 		const skyScale = sunLightIntensity + 0.3;
 
 		const skyR = skyLight * DroppedItem.SKY_LIGHT_COLOR.x * skyScale;

@@ -1,4 +1,4 @@
-export enum Gamemodes {
+export const enum Gamemodes {
 	Survival = 0,
 	Creative = 1,
 	Adventure = 2,

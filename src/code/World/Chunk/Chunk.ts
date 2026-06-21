@@ -23,6 +23,7 @@ import {
 import { packCoords } from "./DataStructures/ChunkCoords";
 import type { MeshData } from "./DataStructures/MeshData";
 import { LoadedChunkIndex } from "./Loading/LoadedChunkIndex";
+import { removeChunkFromGroup } from "./MergedMeshManager";
 import {
 	clearHeaderRow,
 	LIGHT_HEADER_ROW_SIZE,
@@ -61,6 +62,7 @@ const _twoEntryPalette = new Uint16Array(2);
 
 const _ccVisited = new Uint8Array(GenerationParams.CHUNK_SIZE ** 3);
 const _ccStack = new Int32Array(GenerationParams.CHUNK_SIZE ** 3);
+const _ccFaceCounts = new Uint16Array(6);
 
 // ---------------------------------------------------------------------------
 // Chunk dispose hooks
@@ -75,15 +77,14 @@ const _ccStack = new Int32Array(GenerationParams.CHUNK_SIZE ** 3);
 // the dispose itself.
 // ---------------------------------------------------------------------------
 export type ChunkDisposeHook = (chunk: Chunk) => void;
-const _chunkDisposeHooks: ChunkDisposeHook[] = [];
+const _chunkDisposeHooks = new Set<ChunkDisposeHook>();
 
 export function addChunkDisposeHook(hook: ChunkDisposeHook): void {
-	_chunkDisposeHooks.push(hook);
+	_chunkDisposeHooks.add(hook);
 }
 
 function runChunkDisposeHooks(chunk: Chunk): void {
-	for (let i = 0; i < _chunkDisposeHooks.length; i++) {
-		const hook = _chunkDisposeHooks[i]!;
+	for (const hook of _chunkDisposeHooks) {
 		try {
 			hook(chunk);
 		} catch (err) {
@@ -106,7 +107,7 @@ export class Chunk {
 	public static readonly loadedChunkIndex = new LoadedChunkIndex();
 
 	public isModified = false;
-	public isPersistent = false;
+	public isBoatChunk = false;
 	public isDirty = false;
 	public isLoaded = false;
 	public isTerrainScheduled = false;
@@ -182,6 +183,9 @@ export class Chunk {
 	public transparentMesh: Mesh | null = null;
 	public opaqueMeshData: MeshData | null = null;
 	public transparentMeshData: MeshData | null = null;
+
+	// Merged mesh group key (e.g., "gx_gy_gz_lod"). null if not merged.
+	public mergedGroupKey: string | null = null;
 
 	// --- Face connectivity for occlusion BFS ---
 	public faceConnectivity = 0;
@@ -1087,6 +1091,21 @@ export class Chunk {
 		return closedMask;
 	}
 
+	/**
+	 * Precompute the closed-face mask for every possible packed block value
+	 * (blockId << BLOCK_STATE_SHIFT | state) and return the result as a
+	 * compact Uint8Array.  Called once at startup after shapes are loaded
+	 * and sent to the light worker so it can do per-face transparency
+	 * checks without importing shape definitions.
+	 */
+	public static precomputeClosedFaceMasks(): Uint8Array {
+		const lut = new Uint8Array(1 << 16);
+		for (let i = 0; i < 1 << 16; i++) {
+			lut[i] = Chunk.getClosedFaceMaskForPacked(i) & 0xff;
+		}
+		return lut;
+	}
+
 	private static pushRectFlat(
 		f: number,
 		u0: number,
@@ -1274,6 +1293,12 @@ export class Chunk {
 		return result;
 	}
 
+	// Minimum air voxels on a chunk face for that face to count as connected.
+	// A 32×32 face has 1024 voxels; threshold of S/2 = 16 filters out
+	// single-block cracks and thin slivers while allowing real passages.
+	private static readonly FACE_CONNECT_THRESHOLD =
+		GenerationParams.CHUNK_SIZE / 2;
+
 	public computeFaceConnectivity(): number {
 		if (!this._hasVoxelData || this._isUniform) {
 			const mask =
@@ -1309,7 +1334,13 @@ export class Chunk {
 					let stackTop = 0;
 					stack[stackTop++] = idx;
 					visited[idx] = 1;
-					let regionFaces = 0;
+					const fc = _ccFaceCounts;
+					fc[0] = 0;
+					fc[1] = 0;
+					fc[2] = 0;
+					fc[3] = 0;
+					fc[4] = 0;
+					fc[5] = 0;
 
 					while (stackTop > 0) {
 						const cur = stack[--stackTop];
@@ -1317,12 +1348,12 @@ export class Chunk {
 						const cy = ((cur / S) | 0) % S;
 						const cz = (cur / S2) | 0;
 
-						if (cx === 0) regionFaces |= 1 << 1;
-						if (cx === S - 1) regionFaces |= 1 << 0;
-						if (cy === 0) regionFaces |= 1 << 3;
-						if (cy === S - 1) regionFaces |= 1 << 2;
-						if (cz === 0) regionFaces |= 1 << 5;
-						if (cz === S - 1) regionFaces |= 1 << 4;
+						if (cx === 0) fc[1]++;
+						if (cx === S - 1) fc[0]++;
+						if (cy === 0) fc[3]++;
+						if (cy === S - 1) fc[2]++;
+						if (cz === 0) fc[5]++;
+						if (cz === S - 1) fc[4]++;
 
 						if (cx > 0) {
 							const n = cur - 1;
@@ -1386,7 +1417,16 @@ export class Chunk {
 						}
 					}
 
-					connectivity |= Chunk.connectFacesMask(regionFaces);
+					// Only count faces with enough air voxels as connected.
+					let openFaces = 0;
+					const thresh = Chunk.FACE_CONNECT_THRESHOLD;
+					if (fc[0] >= thresh) openFaces |= 1 << 0;
+					if (fc[1] >= thresh) openFaces |= 1 << 1;
+					if (fc[2] >= thresh) openFaces |= 1 << 2;
+					if (fc[3] >= thresh) openFaces |= 1 << 3;
+					if (fc[4] >= thresh) openFaces |= 1 << 4;
+					if (fc[5] >= thresh) openFaces |= 1 << 5;
+					connectivity |= Chunk.connectFacesMask(openFaces);
 				}
 			}
 		}
@@ -1411,9 +1451,16 @@ export class Chunk {
 		}
 		this.neighborRefs.fill(null);
 
+		// Remove from merged mesh group — the group manager handles mesh disposal.
+		if (this.mergedGroupKey) {
+			removeChunkFromGroup(this);
+		}
+
+		if (!this.mergedGroupKey) {
+			this.mesh?.dispose();
+			this.transparentMesh?.dispose();
+		}
 		this.clearCachedLODMeshes();
-		this.mesh?.dispose();
-		this.transparentMesh?.dispose();
 		this.mesh = null;
 		this.transparentMesh = null;
 		this.opaqueMeshData = null;

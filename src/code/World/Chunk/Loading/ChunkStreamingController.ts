@@ -190,7 +190,28 @@ export class ChunkStreamingController {
 			lodRuleSet = this._cachedOutdoorLodRuleSet;
 		}
 		this._lastCaveState = isInCave;
-		const { lod3HorizontalRadius, lod3VerticalRadius } = lodRuleSet.radii;
+		const {
+			lod3HorizontalRadius,
+			lod3VerticalRadius,
+			lod0HorizontalRadius,
+			lod0VerticalRadius,
+			lod1HorizontalRadius,
+			lod1VerticalRadius,
+			lod2HorizontalRadius,
+			lod2VerticalRadius,
+		} = lodRuleSet.radii;
+		const operationalRadius = Math.max(
+			lod0HorizontalRadius,
+			lod1HorizontalRadius,
+			lod2HorizontalRadius,
+			lod3HorizontalRadius,
+		);
+		const operationalVerticalRadius = Math.max(
+			lod0VerticalRadius,
+			lod1VerticalRadius,
+			lod2VerticalRadius,
+			lod3VerticalRadius,
+		);
 
 		const loadQueue = this.adapter.getLoadQueue();
 		const unloadQueueSet = this.adapter.getUnloadQueueSet();
@@ -299,8 +320,8 @@ export class ChunkStreamingController {
 			chunkX,
 			chunkY,
 			chunkZ,
-			lod3HorizontalRadius,
-			lod3VerticalRadius,
+			operationalRadius,
+			operationalVerticalRadius,
 		);
 
 		if (!isInCave) {
@@ -615,8 +636,19 @@ export class ChunkStreamingController {
 		const dx = chunkX - prevChunkX;
 		const dy = chunkY - prevChunkY;
 		const dz = chunkZ - prevChunkZ;
-		const { lod3HorizontalRadius: r, lod3VerticalRadius: ry } =
-			lodRuleSet.radii;
+		const radii = lodRuleSet.radii;
+		const r = Math.max(
+			radii.lod0HorizontalRadius,
+			radii.lod1HorizontalRadius,
+			radii.lod2HorizontalRadius,
+			radii.lod3HorizontalRadius,
+		);
+		const ry = Math.max(
+			radii.lod0VerticalRadius,
+			radii.lod1VerticalRadius,
+			radii.lod2VerticalRadius,
+			radii.lod3VerticalRadius,
+		);
 		const downwardRy = isInCave
 			? ry
 			: Math.min(
@@ -699,8 +731,19 @@ export class ChunkStreamingController {
 		chunkZ: number,
 		lodRuleSet: ChunkLodRuleSet,
 	): void {
-		const { lod3HorizontalRadius: r, lod3VerticalRadius: ry } =
-			lodRuleSet.radii;
+		const radii = lodRuleSet.radii;
+		const r = Math.max(
+			radii.lod0HorizontalRadius,
+			radii.lod1HorizontalRadius,
+			radii.lod2HorizontalRadius,
+			radii.lod3HorizontalRadius,
+		);
+		const ry = Math.max(
+			radii.lod0VerticalRadius,
+			radii.lod1VerticalRadius,
+			radii.lod2VerticalRadius,
+			radii.lod3VerticalRadius,
+		);
 		const downwardRy = isInCave
 			? ry
 			: Math.min(
@@ -780,7 +823,7 @@ export class ChunkStreamingController {
 		);
 		for (let _qi = 0; _qi < _queryScratch.length; _qi++) {
 			const chunk = _queryScratch[_qi]!;
-			if (chunk.isPersistent) continue;
+			if (chunk.isBoatChunk) continue;
 			if (unloadQueueSet.has(chunk)) continue;
 
 			const { hDist, vDist } = chunkDist(

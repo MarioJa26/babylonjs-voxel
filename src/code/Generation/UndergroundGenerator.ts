@@ -7,7 +7,7 @@ import {
 import { CaveNoiseGrid } from "./CaveNoiseGrid";
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
 
-const MIN_SOLID_NEIGHBORS = 4;
+const MIN_SOLID_NEIGHBORS = 5;
 const SMOOTHING_PASSES = 2;
 
 const MAX_CHUNK_VOLUME = 32 * 32 * 32;

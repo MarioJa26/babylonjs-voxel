@@ -18,12 +18,13 @@
 import { unpackBlockId } from "../DataStructures/BlockEncoding";
 import { packCoords } from "../DataStructures/ChunkCoords";
 import {
+	bumpHeaderLightSeq,
 	LIGHT_HEADER_FLAG_HAS_PALETTE,
 	LIGHT_HEADER_FLAG_LOADED,
 	LIGHT_HEADER_FLAG_STORAGE_U16,
 	LIGHT_HEADER_FLAG_UNIFORM,
 	type LightHeaderView,
-	readHeaderFlags,
+	readHeaderMeta,
 } from "./ChunkLightHeader";
 import { filtersFullSunlight } from "./ChunkMesherConstants";
 
@@ -177,6 +178,18 @@ function getClosedFaceMaskForPacked(packed: number): number {
 	return FACE_ALL;
 }
 
+/**
+ * Populate the closed-face mask cache from a precomputed lookup table
+ * (generated on the main thread using the full shape geometry).  Called
+ * once after block shapes finish loading so that non-full blocks
+ * (slabs, stairs, fences, etc.) get correct per-face transparency.
+ */
+export function applyClosedFaceMaskLUT(lut: Uint8Array): void {
+	for (let i = 0; i < lut.length && i < CLOSED_FACE_MASK_CACHE.length; i++) {
+		CLOSED_FACE_MASK_CACHE[i] = lut[i];
+	}
+}
+
 function isSourceTransparent(
 	packed: number,
 	axis: number,
@@ -228,11 +241,12 @@ export function refreshLayout(
 	registry: ChunkViewRegistry,
 	view: ChunkView,
 ): void {
-	const flags = readHeaderFlags(registry.header, view.headerSlot);
-	view.isUniform = (flags & LIGHT_HEADER_FLAG_UNIFORM) !== 0;
-	view.storageIsUint16 = (flags & LIGHT_HEADER_FLAG_STORAGE_U16) !== 0;
-	view.hasPalette = (flags & LIGHT_HEADER_FLAG_HAS_PALETTE) !== 0;
-	view.isLoaded = (flags & LIGHT_HEADER_FLAG_LOADED) !== 0;
+	const meta = readHeaderMeta(registry.header, view.headerSlot);
+	view.isUniform = (meta & LIGHT_HEADER_FLAG_UNIFORM) !== 0;
+	view.storageIsUint16 = (meta & LIGHT_HEADER_FLAG_STORAGE_U16) !== 0;
+	view.hasPalette = (meta & LIGHT_HEADER_FLAG_HAS_PALETTE) !== 0;
+	view.isLoaded = (meta & LIGHT_HEADER_FLAG_LOADED) !== 0;
+	view.uniformBlockId = (meta >>> 16) & 0xffff;
 }
 
 export function registerChunk(
@@ -367,7 +381,11 @@ function getSkyLight(view: ChunkView, idx: number): number {
 	return (view.light_array[idx]! >> LIGHT_SKY_SHIFT) & LIGHT_BLOCK_MASK;
 }
 
-type WriteResult = "wrote" | "skipped" | "aborted";
+const enum WriteResult {
+	Wrote,
+	Skipped,
+	Aborted,
+}
 
 /**
  * Update a light byte if `next` strictly improves it.
@@ -382,7 +400,7 @@ function casLightByte(
 	isSky: boolean,
 	nextLevel: number,
 ): WriteResult {
-	if (!view.isLoaded) return "aborted";
+	if (!view.isLoaded) return WriteResult.Aborted;
 	const light = view.light_array;
 	const mask = isSky ? LIGHT_BLOCK_MASK : LIGHT_BLOCK_MASK << LIGHT_SKY_SHIFT;
 	const shift = isSky ? LIGHT_SKY_SHIFT : 0;
@@ -392,9 +410,9 @@ function casLightByte(
 
 	const cur = light[idx];
 	const curLevel = (cur & currentMask) >> shift;
-	if (curLevel >= nextLevel) return "skipped";
+	if (curLevel >= nextLevel) return WriteResult.Skipped;
 	light[idx] = (cur & mask) | (nextLevel << shift);
-	return "wrote";
+	return WriteResult.Wrote;
 }
 
 function clearLightByte(view: ChunkView, idx: number, isSky: boolean): boolean {
@@ -544,7 +562,7 @@ function processQueue(
 			if (nextLevel <= 0 || currentLevel >= nextLevel) continue;
 
 			const result = casLightByte(targetView, tidx, isSkyLight, nextLevel);
-			if (result === "wrote") {
+			if (result === WriteResult.Wrote) {
 				dirtySlots.add(targetView.headerSlot);
 				addAdjacentBorderSlots(registry, dirtySlots, targetView, tx, ty, tz);
 				q.push(targetView.chunkId, tx, ty, tz, nextLevel);
@@ -562,9 +580,12 @@ function processRemoveQueue(
 	q: LightQueue,
 	isSkyLight: boolean,
 	dirtySlots: Set<number>,
+	initialOldPacked?: number,
 ): void {
 	const size = LIGHT_CHUNK_SIZE;
 	const size2 = LIGHT_CHUNK_SIZE2;
+
+	let isFirstDequeue = true;
 
 	while (q.head !== q.tail) {
 		const slot = q.head & (BFS_CAPACITY - 1);
@@ -581,7 +602,11 @@ function processRemoveQueue(
 
 		const level = q.levels[slot]!;
 
-		const sourcePacked = getViewBlockPacked(view, cx, cy, cz);
+		const sourcePacked =
+			isFirstDequeue && initialOldPacked !== undefined
+				? initialOldPacked
+				: getViewBlockPacked(view, cx, cy, cz);
+		isFirstDequeue = false;
 		const sourceBlockId = unpackBlockId(sourcePacked);
 		const sourceEmits = !isSkyLight && getLightEmission(sourceBlockId) > 0;
 
@@ -720,7 +745,17 @@ export function lightMutate(
 	const oldSkyLight = getSkyLight(view, idx);
 
 	if (oldBlockLight > 0) {
-		removeLightAt(registry, view, x, y, z, oldBlockLight, false, dirtySlots);
+		removeLightAt(
+			registry,
+			view,
+			x,
+			y,
+			z,
+			oldBlockLight,
+			false,
+			dirtySlots,
+			oldPacked,
+		);
 	}
 
 	const newBlockId = unpackBlockId(_newPacked);
@@ -732,7 +767,17 @@ export function lightMutate(
 	updateLightFromNeighborsAt(registry, view, x, y, z, false, dirtySlots);
 
 	if (oldSkyLight > 0) {
-		removeLightAt(registry, view, x, y, z, oldSkyLight, true, dirtySlots);
+		removeLightAt(
+			registry,
+			view,
+			x,
+			y,
+			z,
+			oldSkyLight,
+			true,
+			dirtySlots,
+			oldPacked,
+		);
 	}
 	updateLightFromNeighborsAt(registry, view, x, y, z, true, dirtySlots);
 
@@ -754,6 +799,7 @@ function removeLightAt(
 	startLevel: number,
 	isSkyLight: boolean,
 	dirtySlots: Set<number>,
+	oldPacked?: number,
 ): void {
 	const idx = x + y * LIGHT_CHUNK_SIZE + z * LIGHT_CHUNK_SIZE2;
 	if (startLevel === 0) return;
@@ -767,7 +813,7 @@ function removeLightAt(
 	Q_B.clear();
 	Q_A.push(view.chunkId, x, y, z, startLevel);
 
-	processRemoveQueue(registry, Q_A, isSkyLight, dirtySlots);
+	processRemoveQueue(registry, Q_A, isSkyLight, dirtySlots, oldPacked);
 
 	if (Q_B.head !== Q_B.tail) {
 		processQueue(registry, Q_B, isSkyLight, dirtySlots);
@@ -894,7 +940,7 @@ function updateLightFromNeighborsAt(
 			isSkyLight,
 			nextLevel,
 		);
-		if (result3 === "wrote") {
+		if (result3 === WriteResult.Wrote) {
 			currentTargetLevel = nextLevel;
 			dirtySlots.add(view.headerSlot);
 			addAdjacentBorderSlots(registry, dirtySlots, view, x, y, z);
@@ -923,7 +969,7 @@ export function addLightAt(
 	const idx = x + y * LIGHT_CHUNK_SIZE + z * LIGHT_CHUNK_SIZE2;
 	if (getBlockLight(view, idx) >= level) return;
 
-	if (casLightByte(view, idx, false, level) === "wrote") {
+	if (casLightByte(view, idx, false, level) === WriteResult.Wrote) {
 		dirtySlots.add(view.headerSlot);
 		addAdjacentBorderSlots(registry, dirtySlots, view, x, y, z);
 	}
@@ -1279,5 +1325,5 @@ export function bumpLightVersion(
 	registry: ChunkViewRegistry,
 	slot: number,
 ): void {
-	registry.header.lightSeq[slot]++;
+	bumpHeaderLightSeq(registry.header, slot);
 }

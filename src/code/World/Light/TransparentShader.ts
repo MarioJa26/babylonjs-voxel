@@ -8,12 +8,14 @@ export class TransparentShader {
     in vec4 faceDataA; // x,y,z origin/center, w = axisFace(0..5)
     in vec4 faceDataB; // x=width, y=height, z=tileX, w=tileY
     in vec4 faceDataC; // x=packedAO, y=light, z=tint, w=meta
+    in float chunkIndex;
 
     // Uniforms
     uniform mat4 world;
     uniform mat4 worldViewProjection;
     uniform float atlasTileSize;
     uniform float atlasMaxTiles;
+    uniform vec3 chunkOffsets[64];
 
     uniform GlobalUniforms {
       vec3 lightDirection;
@@ -182,6 +184,8 @@ export class TransparentShader {
         T = tObj;
         B = cross(N, T) * fSign;
       }
+
+      localPosition += chunkOffsets[int(chunkIndex + 0.5)];
 
       gl_Position = worldViewProjection * vec4(localPosition, 1.0);
 

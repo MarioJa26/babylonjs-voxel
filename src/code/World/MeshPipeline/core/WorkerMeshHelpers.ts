@@ -98,26 +98,38 @@ export function createMeshContextFromPayload(
 ): MeshContext {
 	const size = base.size;
 	const size2 = size * size;
-	const size3 = size2 * size;
 
-	const isInBounds = (x: number, y: number, z: number): boolean => {
-		return x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size;
-	};
+	const blockArray = input.block_array;
+	const lightArray = input.light_array;
+
+	const neighbors = input.neighbors;
+	const neighborLights = input.neighborLights;
+	const neighborPalettes = input.neighborPalettes;
+	const neighborUniformIds = input.neighborUniformIds;
+
+	const lod = base.lod;
 
 	const hasNeighborChunk = (dx: number, dy: number, dz: number): boolean => {
-		const neighborIndex = getNeighborIndex(dx, dy, dz);
-		if (neighborIndex < 0) return false;
-		const n = input.neighbors[neighborIndex];
+		if (dx === 0 && dy === 0 && dz === 0) return false;
+
+		const linear = dx + 1 + (dy + 1) * 3 + (dz + 1) * 9;
+		const neighborIndex = linear < 13 ? linear : linear - 1;
+
+		const n = neighbors[neighborIndex];
 		if (n) return true;
-		return input.neighborUniformIds?.[neighborIndex] !== undefined;
+
+		return (
+			neighborUniformIds !== undefined &&
+			neighborUniformIds[neighborIndex] !== undefined
+		);
 	};
 
-	// Remap to neighbor chunk - defined inline since it captures size
-	const remapToNeighbor = (
-		x: number,
-		y: number,
-		z: number,
-	): NeighborSample | null => {
+	const readBlock = (x: number, y: number, z: number, fallback = 0): number => {
+		// Fast in-bounds path
+		if (x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size) {
+			return blockArray[x + y * size + z * size2];
+		}
+
 		let ox = 0;
 		let oy = 0;
 		let oz = 0;
@@ -150,53 +162,60 @@ export function createMeshContextFromPayload(
 			lz = z - size;
 		}
 
-		const neighborIndex = getNeighborIndex(ox, oy, oz);
-		if (neighborIndex < 0) {
-			return null;
+		// More than one chunk away
+		if (lx < 0 || lx >= size || ly < 0 || ly >= size || lz < 0 || lz >= size) {
+			return fallback;
 		}
 
-		// IMPORTANT:
-		// If the requested sample is still out of local bounds after a single
-		// neighbor remap, it means the caller asked for a position more than one
-		// chunk away. In that case we treat it as missing and return fallback.
-		if (!isInBounds(lx, ly, lz)) {
-			return null;
+		const linear = ox + 1 + (oy + 1) * 3 + (oz + 1) * 9;
+		const nIdx = linear < 13 ? linear : linear - 1;
+
+		if (nIdx < 0) return fallback;
+
+		const uniformId =
+			neighborUniformIds !== undefined ? neighborUniformIds[nIdx] : undefined;
+
+		if (uniformId !== undefined) {
+			return uniformId;
 		}
 
-		return { neighborIndex, lx, ly, lz };
+		const neighbor = neighbors[nIdx];
+		if (!neighbor || neighbor.length === 0) {
+			return 0;
+		}
+
+		const idx = lx + ly * size + lz * size2;
+
+		const palette =
+			neighborPalettes !== undefined ? neighborPalettes[nIdx] : undefined;
+
+		if (palette && palette.length > 1) {
+			const packed = neighbor as Uint8Array;
+			const byte = packed[idx >>> 1];
+			const paletteIndex = (idx & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
+
+			return palette[paletteIndex] ?? fallback;
+		}
+
+		return neighbor[idx] ?? fallback;
 	};
 
-	const readArrayValue = (
-		array: Uint8Array | Uint16Array | undefined,
-		lx: number,
-		ly: number,
-		lz: number,
-		fallback: number,
-	): number => {
-		if (!array) return fallback;
+	const readLight = (x: number, y: number, z: number, fallback = 0): number => {
+		const centerLight = lightArray;
 
-		const index = lx + ly * size + lz * size2;
-		if (index < 0 || index >= size3) return fallback;
-
-		return array[index] ?? fallback;
-	};
-
-	// Inlined readBlock for performance - called millions of times
-	// Returns block data, with fallback for out-of-bounds
-	const readBlock = (x: number, y: number, z: number, fallback = 0): number => {
-		// Inline isInBounds check for fast path (most common case)
+		// Fast in-bounds path
 		if (x >= 0 && x < size && y >= 0 && y < size && z >= 0 && z < size) {
-			const idx = x + y * size + z * size2;
-			return input.block_array[idx] ?? fallback;
+			if (!centerLight) return fallback;
+			return centerLight[x + y * size + z * size2];
 		}
 
-		// Slow path: out of bounds, need neighbor lookup
-		let ox = 0,
-			oy = 0,
-			oz = 0;
-		let lx = x,
-			ly = y,
-			lz = z;
+		let ox = 0;
+		let oy = 0;
+		let oz = 0;
+
+		let lx = x;
+		let ly = y;
+		let lz = z;
 
 		if (x < 0) {
 			ox = -1;
@@ -222,55 +241,27 @@ export function createMeshContextFromPayload(
 			lz = z - size;
 		}
 
-		// Check if within one neighbor (not more than one chunk away)
 		if (lx < 0 || lx >= size || ly < 0 || ly >= size || lz < 0 || lz >= size) {
 			return fallback;
 		}
 
-		const neighborIndex = ox + 1 + (oy + 1) * 3 + (oz + 1) * 9;
-		const nIdx = neighborIndex < 13 ? neighborIndex : neighborIndex - 1;
+		const linear = ox + 1 + (oy + 1) * 3 + (oz + 1) * 9;
+		const nIdx = linear < 13 ? linear : linear - 1;
 
-		if (nIdx < 0) return fallback;
-
-		const uniformId = input.neighborUniformIds?.[nIdx];
-		const palette = input.neighborPalettes?.[nIdx];
-		const neighbor = input.neighbors[nIdx];
-		const idx = lx + ly * size + lz * size2;
-
-		return readNeighborBlock(
-			neighbor,
-			palette,
-			uniformId,
-			idx,
-			size3,
-			fallback,
-		);
-	};
-
-	const readLight = (x: number, y: number, z: number, fallback = 0): number => {
-		// Fast in-bounds path
-		if (isInBounds(x, y, z)) {
-			if (!input.light_array) return fallback;
-			return input.light_array[x + y * size + z * size2] ?? fallback;
+		if (nIdx < 0 || neighborLights === undefined) {
+			return fallback;
 		}
 
-		const sample = remapToNeighbor(x, y, z);
-		if (!sample) return fallback;
+		const nLight = neighborLights[nIdx];
+		if (!nLight) return fallback;
 
-		const neighborLight = input.neighborLights?.[sample.neighborIndex];
-		return readArrayValue(
-			neighborLight,
-			sample.lx,
-			sample.ly,
-			sample.lz,
-			fallback,
-		);
+		return nLight[lx + ly * size + lz * size2];
 	};
 
 	return {
 		size,
-		lod: base.lod,
-		disableAO: base.lod >= 2,
+		lod,
+		disableAO: lod >= 2,
 		getBlock: readBlock,
 		getLight: readLight,
 		hasNeighborChunk,

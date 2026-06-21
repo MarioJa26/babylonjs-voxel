@@ -24,7 +24,10 @@ type GenerateChunkResult = {
 	lightSeedState?: LightSeedState;
 };
 
-const ORE_IDS = new Set([14, 16, 18, 19, 21, 25, 26, 79]);
+const IS_ORE = new Uint8Array(128);
+for (const id of [14, 16, 18, 19, 21, 25, 26, 79]) {
+	IS_ORE[id] = 1;
+}
 
 // ---------------------------------------------------------------------------
 // Smoothing constants — mirror the same values as UndergroundGenerator.
@@ -62,8 +65,6 @@ export class WorldGenerator {
 			frequency: 1,
 		});
 
-		// PERF: Use 2 octaves instead of 3 for cave noise — finest octave adds
-		// minimal visual value but costs 33% more simplex evaluations.
 		const cheeseInstance = createFastNoise({
 			seed: Squirrel3.get(2, this.seedAsInt),
 			frequency: this.params.CAVE_CHEESE_FREQ,
@@ -136,9 +137,6 @@ export class WorldGenerator {
 	// refineBlocks path).
 	// ---------------------------------------------------------------------------
 	private applyUndergroundBiomes(
-		chunkX: number,
-		chunkY: number,
-		chunkZ: number,
 		blocks: Uint8Array,
 		chunkWorldX: number,
 		chunkWorldY: number,
@@ -180,7 +178,7 @@ export class WorldGenerator {
 				for (let localX = 0; localX < chunkSize; localX++) {
 					const idx = localX + localY * chunkSize + zOffset;
 					const blockId = blocks[idx]!;
-					if (blockId === 0 || ORE_IDS.has(blockId)) continue;
+					if (blockId === 0 || IS_ORE[blockId]) continue;
 					// PERF: Use column-cached biome (X offset is negligible for biome selection).
 					blocks[idx] = this.undergroundBiomeSelector.getStoneReplacement(
 						blockId,
@@ -225,9 +223,6 @@ export class WorldGenerator {
 		const chunkWorldZ = chunkZ * chunkSize;
 
 		this.applyUndergroundBiomes(
-			chunkX,
-			chunkY,
-			chunkZ,
 			blocks,
 			chunkWorldX,
 			chunkWorldY,

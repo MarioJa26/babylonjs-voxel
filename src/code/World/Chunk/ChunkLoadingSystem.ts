@@ -795,32 +795,16 @@ export function setBlock(
 	worldMutations.setBlock(worldX, worldY, worldZ, blockId, state);
 }
 
-function withDynamicBlock<T>(
-	worldX: number,
-	worldY: number,
-	worldZ: number,
-	options: DynamicBlockQueryOptions | undefined,
-	extract: (sample: DynamicBlockSample) => T,
-	fallback: () => T,
-): T {
-	const sample = sampleDynamicBlock(worldX, worldY, worldZ, options);
-	return sample ? extract(sample) : fallback();
-}
-
 export function getBlockByWorldCoords(
 	worldX: number,
 	worldY: number,
 	worldZ: number,
 	options?: DynamicBlockQueryOptions,
 ): number {
-	return withDynamicBlock(
-		worldX,
-		worldY,
-		worldZ,
-		options,
-		(s) => s.blockId,
-		() => worldMutations.getBlockByWorldCoords(worldX, worldY, worldZ),
-	);
+	const sample = sampleDynamicBlock(worldX, worldY, worldZ, options);
+	return sample
+		? sample.blockId
+		: worldMutations.getBlockByWorldCoords(worldX, worldY, worldZ);
 }
 
 export function getTerrainBlockByWorldCoords(
@@ -837,34 +821,46 @@ export function getBlockStateByWorldCoords(
 	worldZ: number,
 	options?: DynamicBlockQueryOptions,
 ): number {
-	return withDynamicBlock(
-		worldX,
-		worldY,
-		worldZ,
-		options,
-		(s) => s.blockState,
-		() => getBlockStateFromMutations(worldX, worldY, worldZ),
-	);
+	const sample = sampleDynamicBlock(worldX, worldY, worldZ, options);
+	return sample
+		? sample.blockState
+		: getBlockStateFromMutations(worldX, worldY, worldZ);
 }
 
-// PERF: Combined lookup avoids calling sampleDynamicBlock + worldMutations twice
-// when both blockId and blockState are needed (e.g. voxel collision queries).
+// PERF: Allocation-free combined lookup. Writes into a reusable out object
+// to avoid per-call object allocation in hot paths (collision, raycasting).
+export type BlockAndStateOut = { blockId: number; blockState: number };
+
+export function getBlockAndStateByWorldCoordsInto(
+	worldX: number,
+	worldY: number,
+	worldZ: number,
+	out: BlockAndStateOut,
+	options?: DynamicBlockQueryOptions,
+): BlockAndStateOut {
+	const sample = sampleDynamicBlock(worldX, worldY, worldZ, options);
+	if (sample) {
+		out.blockId = sample.blockId;
+		out.blockState = sample.blockState;
+		return out;
+	}
+	out.blockId = worldMutations.getBlockByWorldCoords(worldX, worldY, worldZ);
+	out.blockState = getBlockStateFromMutations(worldX, worldY, worldZ);
+	return out;
+}
+
 export function getBlockAndStateByWorldCoords(
 	worldX: number,
 	worldY: number,
 	worldZ: number,
 	options?: DynamicBlockQueryOptions,
-): { blockId: number; blockState: number } {
-	return withDynamicBlock(
+): BlockAndStateOut {
+	return getBlockAndStateByWorldCoordsInto(
 		worldX,
 		worldY,
 		worldZ,
+		{ blockId: 0, blockState: 0 },
 		options,
-		(s) => ({ blockId: s.blockId, blockState: s.blockState }),
-		() => ({
-			blockId: worldMutations.getBlockByWorldCoords(worldX, worldY, worldZ),
-			blockState: getBlockStateFromMutations(worldX, worldY, worldZ),
-		}),
 	);
 }
 

@@ -171,7 +171,7 @@ class WorldStorageImpl {
 
 	async saveChunk(chunk: Chunk): Promise<void> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_SAVING) return;
-		if (chunk.isPersistent) return;
+		if (chunk.isBoatChunk) return;
 		if (!chunk.isModified && !chunk.isLightDirty) return;
 
 		const client = await this.getClient();
@@ -209,7 +209,7 @@ class WorldStorageImpl {
 
 		const toSave: Chunk[] = [];
 		for (const c of chunks) {
-			if (c.isPersistent) continue;
+			if (c.isBoatChunk) continue;
 			if (c.isModified || c.isLightDirty) {
 				toSave.push(c);
 			}
@@ -225,7 +225,7 @@ class WorldStorageImpl {
 	async saveAllModifiedChunks(): Promise<void> {
 		const modified: Chunk[] = [];
 		for (const chunk of Chunk.chunkInstances.values()) {
-			if (chunk.needsPersistence() && !chunk.isPersistent) {
+			if (chunk.needsPersistence() && !chunk.isBoatChunk) {
 				modified.push(chunk);
 			}
 		}

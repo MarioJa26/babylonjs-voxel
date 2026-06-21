@@ -7,11 +7,13 @@ export class Lod2Shader {
     in vec4 faceDataA; // x,y,z origin, w = axisFace(0..5)
     in vec4 faceDataB; // x=width, y=height, z=tileX, w=tileY
     in vec4 faceDataC; // x=packedAO, y=light, z=tintBucket, w=meta
+    in float chunkIndex;
 
     uniform mat4 world;
     uniform mat4 worldViewProjection;
     uniform float atlasTileSize;
     uniform float atlasMaxTiles;
+    uniform vec3 chunkOffsets[64];
 
     uniform GlobalUniforms {
       vec3 lightDirection;
@@ -91,6 +93,8 @@ export class Lod2Shader {
       vec3 localPosition = faceDataA.xyz * invPosScale;
       localPosition[uAxis] += du;
       localPosition[vAxis] += dv;
+
+      localPosition += chunkOffsets[int(chunkIndex + 0.5)];
 
       gl_Position = worldViewProjection * vec4(localPosition, 1.0);
 
@@ -258,7 +262,7 @@ export class Lod2Shader {
       float horizon = clamp(dot(worldNormal, lightDirection) * 0.5 + 0.5, 0.65, 1.0);
       float faceShade = vFaceShade;
 
-      vec3 color = (diffuseColor.rgb * (1.0 + diffuseIntensity) + specular) * lightMix * horizon * faceShade;
+      vec3 color = (diffuseColor.rgb * (1.0 + diffuseIntensity * sunLightIntensity) + specular) * lightMix * horizon * faceShade;
       color = applyTintBucket(color, vTintBucket);
 
       // Fog now uses interpolated vertex result
@@ -361,7 +365,7 @@ export class Lod2Shader {
       float horizon = clamp(dot(worldNormal, lightDirection) * 0.5 + 0.5, 0.65, 1.0);
       float faceShade = vFaceShade;
 
-      vec3 color = (diffuseColor.rgb * (1.0 + diffuseIntensity) + specular) * lightMix * horizon * faceShade;
+      vec3 color = (diffuseColor.rgb * (1.0 + diffuseIntensity * sunLightIntensity) + specular) * lightMix * horizon * faceShade;
       color = applyTintBucket(color, vTintBucket);
 
       // Fog now uses interpolated vertex result

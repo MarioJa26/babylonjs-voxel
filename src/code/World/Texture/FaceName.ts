@@ -16,8 +16,8 @@
  * Slot order is stable. `Count` is the array length used to size
  * `BlockTextureDef` arrays.
  */
-export enum FaceName {
-	Top = 0,
+export const enum FaceName {
+	Top,
 	Bottom,
 	North,
 	South,

@@ -191,7 +191,7 @@ export class ChunkProcessScheduler {
 							const chunk = state.unloadBatch[i];
 							if (
 								chunk.isLoaded &&
-								!chunk.isPersistent &&
+								!chunk.isBoatChunk &&
 								(chunk.isModified || chunk.isLightDirty)
 							) {
 								this._saveScratch.push(chunk);
@@ -229,7 +229,7 @@ export class ChunkProcessScheduler {
 							// Permanent skip — already disposed by another path, or a
 							// persistent chunk (boat chunk) that should never be unloaded.
 							// Advance the index without re-queueing.
-							if (chunk.isPersistent || !chunk.isLoaded) {
+							if (!chunk.isLoaded || chunk.isBoatChunk) {
 								state.unloadBatchIndex++;
 								continue;
 							}
