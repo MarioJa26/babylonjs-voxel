@@ -1,10 +1,4 @@
-import {
-	Color4,
-	ParticleSystem,
-	type Scene,
-	type Texture,
-	Vector3,
-} from "@babylonjs/core";
+import { Color4, ParticleSystem, type Scene, Vector3 } from "@babylonjs/core";
 import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
 import { BlockTextures } from "../World/Texture/BlockTextures";
 import { FaceName } from "../World/Texture/FaceName";
@@ -119,13 +113,4 @@ function init(scene: Scene) {
 	particleSystem.renderingGroupId = 1;
 	particleSystem.blendMode = ParticleSystem.BLENDMODE_STANDARD;
 	particleSystem.billboardMode = ParticleSystem.BILLBOARDMODE_ALL;
-}
-
-export function setAtlasTexture(texture: Texture) {
-	if (particleSystem) {
-		particleSystem.particleTexture = texture;
-		particleSystem.isAnimationSheetEnabled = true;
-		particleSystem.spriteCellWidth = TextureAtlasFactory.tileSize;
-		particleSystem.spriteCellHeight = TextureAtlasFactory.tileSize;
-	}
 }

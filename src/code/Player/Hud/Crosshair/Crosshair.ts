@@ -21,11 +21,9 @@ import { CrosshairUI } from "./CrosshairUI";
 export class Crosshair {
 	readonly #ui: CrosshairUI;
 	readonly #highlight: BlockHighlight;
-	readonly #player: Player;
 
-	constructor(engine: Engine, scene: Scene, player: Player) {
-		this.#player = player;
-		this.#ui = new CrosshairUI(engine, scene);
+	constructor(engine: Engine, scene: Scene) {
+		this.#ui = new CrosshairUI();
 		this.#highlight = new BlockHighlight(scene);
 
 		engine.enterPointerlock();

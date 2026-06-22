@@ -75,20 +75,6 @@ type WorkerTaskContext = {
 	terrainDeferLighting?: boolean;
 } | null;
 
-function chunkDist(
-	chunkX: number,
-	chunkY: number,
-	chunkZ: number,
-	centerX: number,
-	centerY: number,
-	centerZ: number,
-): { hDist: number; vDist: number } {
-	return {
-		hDist: Math.max(Math.abs(chunkX - centerX), Math.abs(chunkZ - centerZ)),
-		vDist: Math.abs(chunkY - centerY),
-	};
-}
-
 export class ChunkWorkerPool {
 	private static instance: ChunkWorkerPool | undefined;
 	private static readonly WORKER_ERROR_COOLDOWN_MS = 120;
@@ -162,7 +148,6 @@ export class ChunkWorkerPool {
 	private idleWorkerIndices: number[] = [];
 	private idleWorkerIndexPositions: Map<number, number> = new Map();
 	private _idleReadIdx = 0;
-	private _processQueueCallCount = 0;
 
 	private meshResultQueue: FullMeshMessage[] = [];
 	private meshResultQueueReadIdx = 0;
@@ -191,11 +176,15 @@ export class ChunkWorkerPool {
 	// ---------------------------------------------------------------------------
 	private static readonly _flushPendingScratch: Array<[Chunk, boolean]> = [];
 	private static readonly _queryScratch: Chunk[] = [];
-	private static readonly _lodCandidateScratch: Array<{
-		chunk: Chunk;
-		lod: number;
-		score: number;
-	}> = [];
+	private static readonly _dedupScratch: Set<number> = new Set();
+	// SoA scratch for scheduleBackgroundLodPrecompute — avoids per-candidate
+	// object allocation.  Indices are grown via .push() to stay on
+	// PACKED_SMI_ELEMENTS (array.length = N followed by fill triggers a
+	// one-way HOLEY transition in V8).
+	private static readonly _lodCandidateChunks: Chunk[] = [];
+	private static readonly _lodCandidateLods: number[] = [];
+	private static readonly _lodCandidateScores: number[] = [];
+	private static readonly _lodCandidateIndices: number[] = [];
 
 	// ---------------------------------------------------------------------------
 	// Light-worker integration state
@@ -937,24 +926,25 @@ export class ChunkWorkerPool {
 		const existing = this.deferredLightingSeedStates.get(chunk.id);
 		if (existing) {
 			// Merge new seeds into the existing queue, deduplicating.
-			const merged = new Uint16Array(existing.length + seedLength);
-			let writeIdx = 0;
-			for (let i = 0; i < existing.length; i++) {
-				merged[writeIdx++] = existing.queue[i]!;
+			// Uses a reusable scratch Set to avoid per-merge allocation.
+			const existingLen = existing.length;
+			const seen = ChunkWorkerPool._dedupScratch;
+			seen.clear();
+			for (let i = 0; i < existingLen; i++) {
+				seen.add(existing.queue[i]!);
 			}
+			const merged = new Uint16Array(existingLen + seedLength);
+			merged.set(existing.queue.subarray(0, existingLen));
+			let writeIdx = existingLen;
 			for (let i = 0; i < seedLength; i++) {
 				const val = seedQueue[i]!;
-				let isDup = false;
-				for (let j = 0; j < existing.length; j++) {
-					if (existing.queue[j] === val) {
-						isDup = true;
-						break;
-					}
+				if (!seen.has(val)) {
+					merged[writeIdx++] = val;
 				}
-				if (!isDup) merged[writeIdx++] = val;
 			}
 			existing.queue = merged.subarray(0, writeIdx);
 			existing.length = writeIdx;
+			seen.clear();
 			this.debugStats.deferredLightingSeedReplacedTotal++;
 		} else {
 			this.deferredLightingSeedStates.set(chunk.id, {
@@ -1745,8 +1735,13 @@ export class ChunkWorkerPool {
 			SETTING_PARAMS.LOD_PRECOMPUTE_VERTICAL_OFFSET;
 		const targetLods = [2, 3];
 
-		const candidates = ChunkWorkerPool._lodCandidateScratch;
-		candidates.length = 0;
+		const candidateChunks = ChunkWorkerPool._lodCandidateChunks;
+		const candidateLods = ChunkWorkerPool._lodCandidateLods;
+		const candidateScores = ChunkWorkerPool._lodCandidateScores;
+		const candidateIndices = ChunkWorkerPool._lodCandidateIndices;
+		candidateChunks.length = 0;
+		candidateLods.length = 0;
+		candidateScores.length = 0;
 
 		const queryScratch = ChunkWorkerPool._queryScratch;
 		queryScratch.length = 0;
@@ -1767,14 +1762,11 @@ export class ChunkWorkerPool {
 			// Do not precompute LOD2/LOD3 for them.
 			if (chunk.chunkY < 0) continue;
 
-			const { hDist, vDist } = chunkDist(
-				chunk.chunkX,
-				chunk.chunkY,
-				chunk.chunkZ,
-				centerChunkX,
-				centerChunkY,
-				centerChunkZ,
+			const hDist = Math.max(
+				Math.abs(chunk.chunkX - centerChunkX),
+				Math.abs(chunk.chunkZ - centerChunkZ),
 			);
+			const vDist = Math.abs(chunk.chunkY - centerChunkY);
 			if (hDist > horizontalRadius || vDist > verticalRadius) continue;
 
 			for (let li = 0; li < targetLods.length; li++) {
@@ -1782,24 +1774,30 @@ export class ChunkWorkerPool {
 				if (chunk.hasCachedLODMesh(lod)) continue;
 				const key = packInflightKey(chunk.id, lod);
 				if (this.pendingLodPrecomputeKeys.has(key)) continue;
-				candidates.push({
-					chunk,
-					lod,
-					score: hDist * 100 + vDist * 10 + lod,
-				});
+				candidateChunks.push(chunk);
+				candidateLods.push(lod);
+				candidateScores.push(hDist * 100 + vDist * 10 + lod);
 			}
 		}
 
-		if (candidates.length === 0) return;
-		candidates.sort((a, b) => a.score - b.score);
+		const candidateCount = candidateChunks.length;
+		if (candidateCount === 0) return;
+
+		// Sort via an index array so we never touch the parallel data arrays
+		// during the sort — only the lightweight integer indices move.
+		for (let i = 0; i < candidateCount; i++) candidateIndices[i] = i;
+		candidateIndices.length = candidateCount;
+		candidateIndices.sort((a, b) => candidateScores[a] - candidateScores[b]);
 
 		const maxEnqueue = Math.max(
 			1,
 			SETTING_PARAMS.LOD_PRECOMPUTE_MAX_ENQUEUE_PER_UPDATE | 0,
 		);
 		let added = 0;
-		for (let i = 0; i < candidates.length && added < maxEnqueue; i++) {
-			const { chunk, lod } = candidates[i]!;
+		for (let i = 0; i < candidateCount && added < maxEnqueue; i++) {
+			const idx = candidateIndices[i]!;
+			const chunk = candidateChunks[idx]!;
+			const lod = candidateLods[idx]!;
 			const key = packInflightKey(chunk.id, lod);
 			if (this.pendingLodPrecomputeKeys.has(key)) continue;
 			this.pendingLodPrecomputeKeys.add(key);
@@ -1905,7 +1903,6 @@ export class ChunkWorkerPool {
 	// -------------------------------------------------------------------------
 
 	private processQueue(): void {
-		this._processQueueCallCount++;
 		this.updateQueueDebugStats();
 
 		const dispatchBudget = this.getDispatchBudgetPerTick();

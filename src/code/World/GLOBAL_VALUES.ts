@@ -2,10 +2,8 @@ import { Vector3 } from "@babylonjs/core";
 
 export const GLOBAL_VALUES = {
 	DEBUG: false,
-	CREATE_ATLAS: false,
-
 	INIT_CONNECTION: false,
-	CACHE_TEXTURES: false,
+	CACHE_TEXTURES: true,
 	TEXTURE_VERSION: 1,
 
 	// When true, prevents chunks from being saved to IndexedDB. Useful for testing generation.

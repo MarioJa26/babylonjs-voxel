@@ -1,6 +1,5 @@
 import { BlockType } from "./BlockType";
 import { FaceName } from "./FaceName";
-import type { TextureDefinition } from "./TextureDefinitions";
 
 /**
  * Per-block texture table, fixed-length array indexed by `FaceName`.
@@ -35,29 +34,6 @@ function getMaxBlockTypeId(): number {
 	return maxId;
 }
 
-// Call this after the atlas is built to update UV coordinates
-// Pass the UV map from TextureAtlasFactory to avoid importing it (worker compatibility)
-export function updateBlockTexturesUV(
-	uvMap: Record<string, { u: number; v: number; tileSize: number }>,
-	textureDefinitions: TextureDefinition[],
-): void {
-	if (BlockTextures.length <= 1) return;
-
-	for (
-		let i = 1;
-		i < BlockTextures.length && i <= textureDefinitions.length;
-		i++
-	) {
-		const def = textureDefinitions[i - 1];
-		if (!def || !BlockTextures[i]) continue;
-
-		const uv = uvMap[def.name];
-		if (uv) {
-			const existing = BlockTextures[i]!;
-			existing[FaceName.All] = [Math.round(uv.u * 16), Math.round(uv.v * 16)];
-		}
-	}
-}
 export function getAtlasTile(blockId: number | null): [number, number] | null {
 	if (blockId === null) return null;
 

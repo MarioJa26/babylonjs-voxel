@@ -12,10 +12,12 @@ export default defineConfig({
 		},
 	},
 	// Optimize Worker loading
+
 	worker: {
 		format: "es",
-		plugins: () => [glsl()], // Allows workers to also import shaders
+		plugins: () => [glsl()],
 	},
+
 	server: {
 		hmr: false,
 		port: 8080,
@@ -23,12 +25,30 @@ export default defineConfig({
 		// These enable SharedArrayBuffer (Fastest chunk loading)
 		headers: {
 			"Cross-Origin-Opener-Policy": "same-origin",
+			"Cross-Origin-Resource-Policy": "same-origin",
 			"Cross-Origin-Embedder-Policy": "require-corp",
 		},
 	},
 	build: {
-		// Sourcemaps double build size and slow rebuilds. Off by default
-		// for production; set VITE_SOURCEMAP=1 to re-enable for debugging.
-		sourcemap: process.env.VITE_SOURCEMAP === "1",
+		target: "esnext",
+		minify: "oxc",
+		sourcemap: false,
+		assetsInlineLimit: 0,
+		cssCodeSplit: true,
+		rollupOptions: {
+			output: {
+				manualChunks(id) {
+					if (id.includes("node_modules")) {
+						if (id.includes("@babylonjs/core")) return "babylon-core";
+						if (id.includes("@babylonjs/loaders")) return "babylon-loaders";
+						if (id.includes("@babylonjs/materials")) return "babylon-materials";
+						return "vendor";
+					}
+				},
+			},
+		},
+	},
+	json: {
+		stringify: true,
 	},
 });

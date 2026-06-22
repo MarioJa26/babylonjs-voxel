@@ -292,3 +292,31 @@
 .stat-bar-fill.mana {
 	background-color: #3498db;
 }
+
+/* Crosshair */
+.crosshair {
+	position: fixed;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+	width: 48px;
+	height: 48px;
+	pointer-events: none;
+	z-index: 10;
+	image-rendering: auto;
+}
+
+/* Hit marker */
+.hit-marker {
+	position: fixed;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+	width: 28px;
+	height: 28px;
+	pointer-events: none;
+	z-index: 10;
+	opacity: 0;
+	transition: opacity 0.15s ease-out;
+	image-rendering: auto;
+}

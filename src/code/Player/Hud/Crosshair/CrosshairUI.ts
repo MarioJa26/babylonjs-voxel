@@ -1,71 +1,36 @@
-import type { Engine, Scene } from "@babylonjs/core";
-import * as GUI from "@babylonjs/gui";
-
 const CROSSHAIR_TEXTURE_PATH = (id: string) =>
 	`/texture/gui/kenney_crosshair-pack/PNG/Outline Retina/crosshair${id}.png`;
 
-const HIT_MARKER_DURATION_S = 0.33;
+const HIT_MARKER_DURATION_MS = 330;
 
 export class CrosshairUI {
-	readonly #engine: Engine;
-	readonly #scene: Scene;
-	readonly #ui: GUI.AdvancedDynamicTexture;
+	#crosshair: HTMLImageElement;
+	#hitMarker: HTMLImageElement;
+	#hitMarkerTimeout?: ReturnType<typeof setTimeout>;
 
-	#crosshair: GUI.Image;
-	#hitMarker: GUI.Image;
+	constructor(initialCrosshairId = "179") {
+		this.#crosshair = document.createElement("img");
+		this.#crosshair.src = CROSSHAIR_TEXTURE_PATH(initialCrosshairId);
+		this.#crosshair.className = "crosshair";
+		document.body.appendChild(this.#crosshair);
 
-	constructor(engine: Engine, scene: Scene, initialCrosshairId = "179") {
-		this.#engine = engine;
-		this.#scene = scene;
-		this.#ui = GUI.AdvancedDynamicTexture.CreateFullscreenUI("UI");
-
-		this.#crosshair = this.#addImage(
-			"crossHair",
-			CROSSHAIR_TEXTURE_PATH(initialCrosshairId),
-			"48px",
-			1,
-		);
-		this.#hitMarker = this.#addImage(
-			"hitMarker",
-			"/texture/gui/hitmarker01.png",
-			"28px",
-			0,
-		);
+		this.#hitMarker = document.createElement("img");
+		this.#hitMarker.src = "/texture/gui/hitmarker01.png";
+		this.#hitMarker.className = "hit-marker";
+		document.body.appendChild(this.#hitMarker);
 	}
 
 	setCrosshair(id: string): void {
-		this.#crosshair.source = CROSSHAIR_TEXTURE_PATH(id);
+		this.#crosshair.src = CROSSHAIR_TEXTURE_PATH(id);
 	}
 
 	showHitMarker(): void {
-		let elapsed = 0;
+		if (this.#hitMarkerTimeout) clearTimeout(this.#hitMarkerTimeout);
 
-		const onRender = (): void => {
-			elapsed += this.#engine.getDeltaTime() / 1000;
-			this.#hitMarker.alpha = Math.max(0, 1 - elapsed / HIT_MARKER_DURATION_S);
+		this.#hitMarker.style.opacity = "1";
 
-			if (elapsed >= HIT_MARKER_DURATION_S) {
-				this.#scene.onBeforeRenderObservable.removeCallback(onRender);
-				this.#hitMarker.alpha = 0;
-			}
-		};
-
-		this.#scene.onBeforeRenderObservable.add(onRender);
-	}
-
-	// ─── Helpers ─────────────────────────────────────────────────────────────
-
-	#addImage(
-		name: string,
-		source: string,
-		size: string,
-		alpha: number,
-	): GUI.Image {
-		const img = new GUI.Image(name, source);
-		img.width = size;
-		img.height = size;
-		img.alpha = alpha;
-		this.#ui.addControl(img);
-		return img;
+		this.#hitMarkerTimeout = setTimeout(() => {
+			this.#hitMarker.style.opacity = "0";
+		}, HIT_MARKER_DURATION_MS);
 	}
 }

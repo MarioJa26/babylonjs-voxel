@@ -64,6 +64,13 @@ const _ccVisited = new Uint8Array(GenerationParams.CHUNK_SIZE ** 3);
 const _ccStack = new Int32Array(GenerationParams.CHUNK_SIZE ** 3);
 const _ccFaceCounts = new Uint16Array(6);
 
+// Reusable seed queue for initializeSunlight().  Sized once from the
+// build-time CHUNK_SIZE constant; shared across all chunk loads because
+// the function is synchronous and never re-enters itself.
+const _sunlightSeedQueue = new Uint16Array(
+	Math.max(8, 1 << Math.ceil(Math.log2(GenerationParams.CHUNK_SIZE ** 3 + 1))),
+);
+
 // ---------------------------------------------------------------------------
 // Chunk dispose hooks
 //
@@ -575,7 +582,6 @@ export class Chunk {
 	public initializeSunlight(): void {
 		const size = Chunk.SIZE;
 		const size2 = Chunk.SIZE2;
-		const size3 = Chunk.SIZE3;
 		const skyShift = Chunk.SKY_LIGHT_SHIFT;
 		const blockMask = Chunk.BLOCK_LIGHT_MASK;
 		const topWorldY = this.chunkY * size + size - 1;
@@ -595,9 +601,14 @@ export class Chunk {
 		const chunkBaseZ = this.chunkZ * size;
 		const hasLoadedAbove = !!aboveChunk?.isLoaded;
 
-		// Reusable seed queue shared with the worker's deferred-light BFS.
-		const seedCapacity = Math.max(8, 1 << Math.ceil(Math.log2(size3 + 1)));
-		const seedQueue = new Uint16Array(seedCapacity);
+		// Reuse the module-level scratch seed queue.  The function is
+		// synchronous and never re-enters, so sharing is safe.  At the
+		// hand-off we .slice() to give the pool an array it can safely
+		// own/transfer — passing the raw scratch would detach it if
+		// postMessage uses a transfer list, and would be overwritten if
+		// a second chunk loads before the deferred-light pump fires.
+		const seedCapacity = _sunlightSeedQueue.length;
+		const seedQueue = _sunlightSeedQueue;
 		let seedLength = 0;
 
 		for (let x = 0; x < size; x++) {
@@ -686,7 +697,7 @@ export class Chunk {
 			if (pool) {
 				pool.enqueueDeferredLightFromSunlightInit?.(
 					this,
-					seedQueue,
+					seedQueue.slice(0, seedLength),
 					seedLength,
 				);
 			}

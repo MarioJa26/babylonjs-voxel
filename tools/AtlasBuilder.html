@@ -1,0 +1,588 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Atlas Builder</title>
+
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #1a1a2e;
+        color: #e0e0e0;
+        padding: 20px;
+      }
+
+      h1 {
+        font-size: 1.4em;
+        margin-bottom: 4px;
+        color: #fff;
+      }
+
+      .subtitle {
+        font-size: 0.85em;
+        color: #888;
+        margin-bottom: 16px;
+      }
+
+      .toolbar {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 16px;
+        padding: 12px;
+        background: #16213e;
+        border-radius: 8px;
+      }
+
+      label {
+        font-size: 0.85em;
+        color: #aaa;
+      }
+
+      input[type="number"] {
+        width: 60px;
+        padding: 4px 6px;
+        background: #0f3460;
+        border: 1px solid #444;
+        color: #fff;
+        border-radius: 4px;
+      }
+
+      button {
+        padding: 8px 16px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 0.9em;
+        background: #0f3460;
+        color: #fff;
+        transition: background 0.15s;
+      }
+
+      button:hover { background: #1a5276; }
+
+      button:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+
+      button.primary {
+        background: #27ae60;
+      }
+
+      button.primary:hover {
+        background: #2ecc71;
+      }
+
+      #progress {
+        width: 100%;
+        height: 6px;
+        background: #0f3460;
+        border-radius: 3px;
+        overflow: hidden;
+        margin-bottom: 16px;
+        display: none;
+      }
+
+      #progressBar {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #3498db, #2ecc71);
+        transition: width 0.1s;
+      }
+
+      #status {
+        font-size: 0.85em;
+        color: #aaa;
+        margin-bottom: 12px;
+        min-height: 1.2em;
+      }
+
+      .atlas-row {
+        display: flex;
+        gap: 20px;
+        flex-wrap: wrap;
+        margin-bottom: 20px;
+      }
+
+      .atlas-panel {
+        flex: 1;
+        min-width: 300px;
+      }
+
+      .atlas-panel h2 {
+        font-size: 1em;
+        margin-bottom: 8px;
+        color: #ccc;
+      }
+
+      .atlas-container {
+        position: relative;
+        display: inline-block;
+        width: fit-content;
+        max-width: 100%;
+        border: 1px solid #333;
+        border-radius: 4px;
+        overflow: auto;
+        max-height: 500px;
+
+        /* Checkerboard so transparency is visible */
+        background-color: #222;
+        background-image:
+          linear-gradient(45deg, #333 25%, transparent 25%),
+          linear-gradient(-45deg, #333 25%, transparent 25%),
+          linear-gradient(45deg, transparent 75%, #333 75%),
+          linear-gradient(-45deg, transparent 75%, #333 75%);
+        background-size: 20px 20px;
+        background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+      }
+
+      /* Updated to target images instead of canvas in the preview */
+      .atlas-container img {
+        display: block;
+        image-rendering: pixelated;
+      }
+
+      .block-list {
+        margin-top: 20px;
+      }
+
+      .block-list h2 {
+        font-size: 1em;
+        margin-bottom: 8px;
+        color: #ccc;
+      }
+
+      .block-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.8em;
+      }
+
+      .block-table th,
+      .block-table td {
+        padding: 4px 8px;
+        border: 1px solid #333;
+        text-align: left;
+      }
+
+      .block-table th {
+        background: #16213e;
+        color: #aaa;
+        position: sticky;
+        top: 0;
+      }
+
+      .block-table tr:hover {
+        background: #16213e;
+      }
+
+      .block-table .err {
+        color: #e74c3c;
+      }
+
+      .block-table .ok {
+        color: #2ecc71;
+      }
+    </style>
+  </head>
+
+  <body>
+    <h1>Atlas Builder</h1>
+
+    <p class="subtitle">
+      Composites individual block textures into atlas spritesheets.
+      Run the Vite dev server first: <code>npm run dev</code>
+    </p>
+
+    <div class="toolbar">
+      <label>
+        Tile Size:
+        <input type="number" id="tileSize" value="25" min="8" max="128" />
+      </label>
+
+      <label>
+        Atlas Grid:
+        <input type="number" id="atlasSize" value="16" min="2" max="256" />
+      </label>
+
+      <button type="button" id="buildBtn" class="primary" onclick="buildAtlas()">
+        Build Atlas
+      </button>
+
+      <button type="button" id="dlDiffuse" onclick="download('diffuse')" disabled>
+        Download Diffuse
+      </button>
+
+      <button type="button" id="dlNormal" onclick="download('normal')" disabled>
+        Download Normal
+      </button>
+    </div>
+
+    <div id="progress">
+      <div id="progressBar"></div>
+    </div>
+
+    <div id="status"></div>
+
+    <div class="atlas-row">
+      <div class="atlas-panel">
+        <h2>Diffuse Atlas</h2>
+        <div class="atlas-container" id="diffuseContainer"></div>
+      </div>
+
+      <div class="atlas-panel">
+        <h2>Normal Atlas</h2>
+        <div class="atlas-container" id="normalContainer"></div>
+      </div>
+    </div>
+
+    <div class="block-list">
+      <h2>Block Tiles</h2>
+
+      <div style="max-height:400px; overflow:auto; border:1px solid #333; border-radius:4px;">
+        <table class="block-table" id="blockTable">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Name</th>
+              <th>Col</th>
+              <th>Row</th>
+              <th>Diffuse</th>
+              <th>Normal</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <script>
+      document.title = `Atlas Builder ${new Date().toLocaleTimeString()}`;
+
+      const BLOCKS_URL = "/data/blocks.json";
+
+      const CONCURRENT_LOADS = Math.min(
+        32,
+        Math.max(8, (navigator.hardwareConcurrency || 8) * 2)
+      );
+
+      const MAX_CANVAS_SIZE = 8192;
+
+      let diffuseCanvas = null;
+      let normalCanvas = null;
+
+      function getTexturePathFromFolder(folder, type = "diff", ext = ".png") {
+        const base = folder.split("/").pop();
+        if (!base) return null;
+
+        const parts = base.split("_");
+        const res = parts.length >= 2 ? "_" + parts.pop() : "";
+        const name = parts.join("_");
+
+        return `${folder}/${name}_${type}${res}${ext}`;
+      }
+
+      async function loadImageFast(src) {
+        if (!src) return null;
+
+        try {
+          const res = await fetch(src);
+          if (!res.ok) return null;
+
+          const blob = await res.blob();
+
+          if ("createImageBitmap" in window) {
+            return await createImageBitmap(blob);
+          }
+
+          const url = URL.createObjectURL(blob);
+          const img = new Image();
+
+          img.src = url;
+          await img.decode();
+
+          URL.revokeObjectURL(url);
+
+          return img;
+        } catch {
+          return null;
+        }
+      }
+
+      function makeCanvas(width, height) {
+        if ("OffscreenCanvas" in window) {
+          return new OffscreenCanvas(width, height);
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        return canvas;
+      }
+
+      function setStatus(msg) {
+        document.getElementById("status").textContent = msg;
+      }
+
+      function setProgress(pct) {
+        document.getElementById("progressBar").style.width = pct + "%";
+      }
+
+      // --- FIX #1: The Download Function ---
+      function download(which) {
+        const canvas = which === "diffuse" ? diffuseCanvas : normalCanvas;
+        if (!canvas) return;
+        
+        const name = which === "diffuse" ? "diffuse_atlas.png" : "normal_atlas.png";
+        const link = document.createElement("a");
+        
+        link.download = name;
+        link.href = canvas.toDataURL("image/png");
+        
+        // Firefox strictly requires the link to be in the DOM to trigger a click
+        document.body.appendChild(link);
+        link.click();
+        
+        // Clean up immediately after clicking
+        document.body.removeChild(link);
+      }
+
+      async function loadBatch(batch) {
+        return Promise.all(
+          batch.map(async (block) => {
+            const diffusePath = getTexturePathFromFolder(block.path, "diff");
+            const normalPath = getTexturePathFromFolder(block.path, "nor");
+
+            const [diffuseImg, normalImg] = await Promise.all([
+              loadImageFast(diffusePath),
+              loadImageFast(normalPath)
+            ]);
+
+            return {
+              id: block.id,
+              name: block.name,
+              diffuseImg,
+              normalImg
+            };
+          })
+        );
+      }
+
+      async function buildAtlas() {
+        const tileSz = +document.getElementById("tileSize").value || 25;
+        const gridSz = +document.getElementById("atlasSize").value || 16;
+        const totalSize = tileSz * gridSz;
+
+        if (totalSize > MAX_CANVAS_SIZE) {
+          setStatus(`❌ Atlas too large: ${totalSize}x${totalSize}. Max is ${MAX_CANVAS_SIZE}x${MAX_CANVAS_SIZE}.`);
+          return;
+        }
+
+        const buildBtn = document.getElementById("buildBtn");
+        const dlDiffuse = document.getElementById("dlDiffuse");
+        const dlNormal = document.getElementById("dlNormal");
+
+        buildBtn.disabled = true;
+        dlDiffuse.disabled = true;
+        dlNormal.disabled = true;
+
+        document.getElementById("progress").style.display = "block";
+
+        setProgress(0);
+        setStatus("Loading blocks...");
+
+        document.querySelector("#blockTable tbody").innerHTML = "";
+        document.getElementById("diffuseContainer").innerHTML = "";
+        document.getElementById("normalContainer").innerHTML = "";
+
+        let blocks;
+
+        try {
+          const res = await fetch(BLOCKS_URL);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          blocks = await res.json();
+        } catch (e) {
+          setStatus("❌ Failed to load blocks.json. Use localhost/Vite. Error: " + e.message);
+          buildBtn.disabled = false;
+          return;
+        }
+
+        if (!Array.isArray(blocks)) {
+          setStatus("❌ blocks.json is not an array.");
+          buildBtn.disabled = false;
+          return;
+        }
+
+        if (blocks.length > gridSz * gridSz) {
+          setStatus(`❌ Atlas grid too small. ${blocks.length} blocks need more than ${gridSz}x${gridSz} slots.`);
+          buildBtn.disabled = false;
+          return;
+        }
+
+        setStatus("Creating atlas canvases...");
+
+        const diffuseWorkCanvas = makeCanvas(totalSize, totalSize);
+        const normalWorkCanvas = makeCanvas(totalSize, totalSize);
+
+        const dctx = diffuseWorkCanvas.getContext("2d", { alpha: true });
+        const nctx = normalWorkCanvas.getContext("2d", { alpha: true });
+
+        dctx.imageSmoothingEnabled = false;
+        nctx.imageSmoothingEnabled = false;
+
+        dctx.clearRect(0, 0, totalSize, totalSize);
+        nctx.clearRect(0, 0, totalSize, totalSize);
+
+        const entries = [];
+        let loaded = 0;
+
+        setStatus(`Loading textures with concurrency ${CONCURRENT_LOADS}...`);
+
+        for (let i = 0; i < blocks.length; i += CONCURRENT_LOADS) {
+          const batch = blocks.slice(i, i + CONCURRENT_LOADS);
+          const results = await loadBatch(batch);
+
+          results.forEach((entry, j) => {
+            const index = i + j;
+            const col = index % gridSz;
+            const row = Math.floor(index / gridSz);
+            const x = col * tileSz;
+            const y = row * tileSz;
+
+            const hasDiffuse = !!entry.diffuseImg;
+            const hasNormal = !!entry.normalImg;
+
+            if (entry.diffuseImg) {
+              dctx.drawImage(entry.diffuseImg, x, y, tileSz, tileSz);
+              entry.diffuseImg.close?.();
+              entry.diffuseImg = null;
+            }
+
+            if (entry.normalImg) {
+              nctx.drawImage(entry.normalImg, x, y, tileSz, tileSz);
+              entry.normalImg.close?.();
+              entry.normalImg = null;
+            }
+
+            entries.push({
+              id: entry.id,
+              name: entry.name,
+              col,
+              row,
+              hasDiffuse,
+              hasNormal
+            });
+          });
+
+          loaded += results.length;
+
+          setProgress((loaded / blocks.length) * 85);
+          setStatus(`Loading and drawing textures... ${loaded}/${blocks.length}`);
+
+          await new Promise(requestAnimationFrame);
+        }
+
+        setStatus("Preparing preview...");
+        setProgress(90);
+
+        diffuseCanvas = convertToVisibleCanvas(diffuseWorkCanvas);
+        normalCanvas = convertToVisibleCanvas(normalWorkCanvas);
+
+        requestAnimationFrame(() => {
+          // Pass the desired filename to the preview generator
+          renderPreview("diffuseContainer", diffuseCanvas, "diffuse_atlas.png");
+          renderPreview("normalContainer", normalCanvas, "normal_atlas.png");
+
+          renderTable(entries);
+
+          setProgress(100);
+          setStatus(`✅ Done. ${entries.length} tiles composited into ${totalSize}x${totalSize} atlas.`);
+
+          buildBtn.disabled = false;
+          dlDiffuse.disabled = false;
+          dlNormal.disabled = false;
+        });
+      }
+
+      function convertToVisibleCanvas(source) {
+        const canvas = document.createElement("canvas");
+        canvas.width = source.width;
+        canvas.height = source.height;
+
+        const ctx = canvas.getContext("2d", { alpha: true });
+        ctx.imageSmoothingEnabled = false;
+
+        /* Keep background transparent */
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(source, 0, 0);
+
+        return canvas;
+      }
+
+      // --- FIX #2: The Preview and Right-Click function ---
+      function renderPreview(containerId, sourceCanvas, fileName) {
+        const container = document.getElementById(containerId);
+        container.innerHTML = "";
+
+        // Create an actual image tag. This allows proper "Right click -> Save Image As"
+        const img = document.createElement("img");
+        
+        // Pass the full resolution data to the image
+        img.src = sourceCanvas.toDataURL("image/png");
+        
+        // These properties instruct the browser on what to name it when right-clicked
+        img.title = fileName; 
+        img.alt = fileName;
+
+        // Use CSS to visually scale the image down to a 400px preview while keeping the data full-res
+        img.style.maxWidth = "100%";
+        if (sourceCanvas.width > 400) {
+            img.style.width = "400px";
+        }
+        img.style.height = "auto";
+        img.style.imageRendering = "pixelated";
+        
+        // Optional: Wrap it in an anchor tag so clicking the preview ALSO downloads it
+        const linkWrapper = document.createElement("a");
+        linkWrapper.href = img.src;
+        linkWrapper.download = fileName;
+        linkWrapper.appendChild(img);
+
+        container.appendChild(linkWrapper);
+      }
+
+      function renderTable(entries) {
+        const tbody = document.querySelector("#blockTable tbody");
+        let html = "";
+
+        for (const entry of entries) {
+          html += `
+            <tr>
+              <td>${escapeHtml(entry.id)}</td>
+              <td>${escapeHtml(entry.name)}</td>
+              <td>${entry.col}</td>
+              <td>${entry.row}</td>
+              <td class="${entry.hasDiffuse ? "ok" : "err"}">${entry.hasDiffuse ? "OK" : "Missing"}</td>
+              <td class="${entry.hasNormal ? "ok" : "err"}">${entry.hasNormal ? "OK" : "Missing"}</td>
+            </tr>
+          `;
+        }
+
+        tbody.innerHTML = html;
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+    </script>
+  </body>
+</html>

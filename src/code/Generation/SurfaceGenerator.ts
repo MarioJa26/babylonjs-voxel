@@ -880,16 +880,17 @@ export class SurfaceGenerator {
 				// noise calls per border column.
 				let knownTopSurfaceY: number | undefined;
 				if (isInsideChunkColumn) {
-					knownTopSurfaceY = topSurfaceYMap[localX + localZ * chunkSize];
+					const sv = topSurfaceYMap[localX + localZ * chunkSize];
+					if (sv === NO_SURFACE_Y || sv < this.params.SEA_LEVEL) continue;
+					knownTopSurfaceY = sv;
 				} else {
 					const resolved = this.resolveColumnPrepassForWorld(worldX, worldZ);
-					const neighbourTop =
+					const sv =
 						resolved.entry.topSurfaceYMap[
 							resolved.localX + resolved.localZ * chunkSize
 						];
-					if (neighbourTop !== NO_SURFACE_Y) {
-						knownTopSurfaceY = neighbourTop;
-					}
+					if (sv === NO_SURFACE_Y || sv < this.params.SEA_LEVEL) continue;
+					knownTopSurfaceY = sv;
 				}
 
 				const column = this.getOrBuildFloraColumnInfo(
@@ -983,6 +984,19 @@ export class SurfaceGenerator {
 		const chunkSize = this.chunk_size;
 		const chunkMinY = chunkY * chunkSize;
 		const chunkMaxY = chunkMinY + chunkSize - 1;
+
+		let hasRelevantFeature = false;
+		for (let i = 0; i < features.length; i++) {
+			const b = features[i].verticalBounds;
+			if (
+				b === undefined ||
+				!(chunkMaxY < b.minWorldY || chunkMinY > b.maxWorldY)
+			) {
+				hasRelevantFeature = true;
+				break;
+			}
+		}
+		if (!hasRelevantFeature) return;
 
 		for (
 			let cx = chunkX - STRUCTURE_SEARCH_RADIUS;

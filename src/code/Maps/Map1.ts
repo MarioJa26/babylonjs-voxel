@@ -13,12 +13,8 @@ import type { Player } from "../Player/Player";
 import { PlayerLoadingGate } from "../Player/PlayerLoadingGate";
 import { PlayerStatePersistence } from "../Player/PlayerStatePersistence";
 import { disposeSharedResources, initAtlas } from "../World/Chunk/ChunkMesher";
-import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
 import { MaterialFactory } from "../World/Texture/MaterialFactory";
-import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
-import { TextureDefinitions } from "../World/Texture/TextureDefinitions";
 import { WorldStorage } from "../World/WorldStorage";
-import { setAtlasTexture } from "./BlockBreakParticles";
 import { WorldEnvironment } from "./WorldEnvironment";
 
 export class Map1 {
@@ -88,8 +84,6 @@ export class Map1 {
 		if (!Map1.mainScene.activeCamera) return;
 
 		try {
-			// 1. Build atlas first — DistantTerrain constructor needs it
-			await this.loadTextures();
 			await initAtlas();
 			// 2. Now safe to construct DistantTerrain (atlas is ready)
 			DistantTerrain.getInstance();
@@ -111,16 +105,6 @@ export class Map1 {
 			Map1.environment.initSSAO();
 		} catch (error) {
 			console.error("Error loading environment or textures:", error);
-		}
-	}
-
-	async loadTextures(): Promise<void> {
-		if (GLOBAL_VALUES.CREATE_ATLAS) {
-			await TextureAtlasFactory.buildAtlas(Map1.mainScene, TextureDefinitions);
-			const atlas = TextureAtlasFactory.getDiffuse();
-			if (atlas) {
-				setAtlasTexture(atlas);
-			}
 		}
 	}
 
