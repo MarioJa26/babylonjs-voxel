@@ -486,5 +486,17 @@
 		"name": "palm_leaves",
 		"path": "/texture/transparent/palmleaves_01_1k",
 		"hardness": 0.2
+	},
+	{
+		"id": "SierranConiferBark",
+		"name": "sierran_conifer_bark",
+		"path": "/texture/wood/sierranconifer_bark_1k",
+		"hardness": 1.5
+	},
+	{
+		"id": "SierranConiferLeaves",
+		"name": "sierran_conifer_leaves",
+		"path": "/texture/transparent/sierracorniferleaves_01_1k",
+		"hardness": 0.2
 	}
 ]

@@ -4,8 +4,8 @@ import { Squirrel3 } from "../../../NoiseAndParameters/Squirrel13";
 import type { TreeDefinition } from "../../BiomeTypes";
 
 export const CONIFER_TREE: TreeDefinition = {
-	woodId: 22, // PineBark
-	leavesId: 43, // ForestLeaves02
+	woodId: 87, // SierranConiferBark
+	leavesId: 88, // SierranConiferLeaves
 	baseHeight: 6,
 	heightVariance: 4,
 

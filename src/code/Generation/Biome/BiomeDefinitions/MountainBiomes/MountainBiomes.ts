@@ -39,17 +39,17 @@ export const ROCKY_HIGHLANDS: Biome = {
 	undergroundBlock: 1, // stone
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
-	treeDensity: 0.0,
+	treeDensity: 0.01,
 	grassDensity: 0.05, // almost no vegetation
 	beachBlock: BlockType.GrayRocks, // gray rock shoreline
 	seafloorBlock: BlockType.GrayRocks, // gray rock floor
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.4,
-	persistence: 0.35,
-	heightExponent: 2.4, // jagged rocky terrain
+	persistence: 0.4,
+	heightExponent: 3.4, // jagged rocky terrain
 	terrainHeightBase: GenerationParams.SEA_LEVEL + 60,
 	terrainHeightAmplitude: 90,
-	pvNoiseScale: 1.5, // high detail for rocky texture
+	pvNoiseScale: 1.9, // high detail for rocky texture
 	erosionNoiseScale: 0.8,
 
 	getTreeForBlock(): TreeDefinition | null {

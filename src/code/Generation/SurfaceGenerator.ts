@@ -959,8 +959,8 @@ export class SurfaceGenerator {
 
 				// Grass (id 64) spawns on grass blocks (id 15) using noise density.
 				// treeNoiseValue is [0,1]; threshold of 0.6 gives ~60% coverage.
-				const GRASS_DENSITY = _biome.grassDensity;
 				if (isInsideChunkColumn) {
+					const GRASS_DENSITY = _biome.grassDensity;
 					if (column.treeNoiseValue < GRASS_DENSITY) {
 						if (
 							topBlockId === BlockType.Grass001 ||

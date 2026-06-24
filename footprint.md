@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-06-24T06:17:14.541Z
+Generated: 2026-06-24T08:00:30.500Z
 
-> **Summary:** 119 classes · 2276 members · 376 module-level functions · 41615 LOC
+> **Summary:** 119 classes · 2276 members · 375 module-level functions · 41595 LOC
 
 ---
 
@@ -562,17 +562,16 @@ Generated: 2026-06-24T06:17:14.541Z
 
 ---
 
-## `Generation/Biome/BiomeDefinitions/TropicalBiomes/TropicalTrees.ts` (204 LOC)
+## `Generation/Biome/BiomeDefinitions/TropicalBiomes/TropicalTrees.ts` (182 LOC)
 
 **Module-level functions**
-- `function placeFaceConnected(fromX: number, fromY: number, fromZ: number, toX: number, toY: number, toZ: number, blockId: number, replace: boolean): { x: number; y: number; z: number }`
 - `function placeFaceConnected(fromX: number, fromY: number, fromZ: number, toX: number, toY: number, toZ: number, blockId: number, replace: boolean, placeBlock: (
 		x: number,
 		y: number,
 		z: number,
 		blockId: number,
 		replace: boolean,
-	) => void): { x: number; y: number; z: number }`
+	) => void): void`
 
 ---
 
@@ -5177,7 +5176,7 @@ Generated: 2026-06-24T06:17:14.541Z
 
 ---
 
-## `World/Texture/BlockType.ts` (115 LOC)
+## `World/Texture/BlockType.ts` (117 LOC)
 
 **Module-level functions**
 - `export function isPassThroughBlock(blockId: number): boolean`

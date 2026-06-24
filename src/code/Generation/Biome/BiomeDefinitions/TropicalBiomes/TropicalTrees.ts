@@ -74,53 +74,21 @@ export const PALM_TREE: TreeDefinition = {
 	leavesId: 86, // palm leaves
 	baseHeight: 9,
 	heightVariance: 4,
-	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
-		const heightHash = Squirrel3.get(
-			worldX * 374761393 + worldZ * 678446653,
-			seedAsInt,
-		);
 
-		const height =
-			this.baseHeight + (Math.abs(heightHash) % (this.heightVariance + 1));
+	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
+		const hash =
+			Squirrel3.get(worldX * 374761393 + worldZ * 678446653, seedAsInt) >>> 0;
+
+		const height = this.baseHeight + (hash % (this.heightVariance + 1));
 
 		const woodId = this.woodId;
 		const leavesId = this.leavesId;
 
-		function placeFaceConnected(
-			fromX: number,
-			fromY: number,
-			fromZ: number,
-			toX: number,
-			toY: number,
-			toZ: number,
-			blockId: number,
-			replace: boolean,
-		): { x: number; y: number; z: number } {
-			let x = fromX;
-			let y = fromY;
-			let z = fromZ;
+		const leanDir = (hash >>> 3) & 7;
+		const maxLean = 2 + ((hash >>> 6) & 1);
 
-			while (y !== toY) {
-				y += Math.sign(toY - y);
-				placeBlock(x, y, z, blockId, replace);
-			}
-
-			while (x !== toX) {
-				x += Math.sign(toX - x);
-				placeBlock(x, y, z, blockId, replace);
-			}
-
-			while (z !== toZ) {
-				z += Math.sign(toZ - z);
-				placeBlock(x, y, z, blockId, replace);
-			}
-
-			return { x, y, z };
-		}
-
-		// Curved trunk — leans in one direction, but always face-connected
-		const leanDir = Math.abs(heightHash >> 3) % 8;
-		const maxLean = 2 + (Math.abs(heightHash >> 6) % 2); // 2–3 block lean total
+		const dirX = DIAG_X[leanDir];
+		const dirZ = DIAG_Z[leanDir];
 
 		let tx = worldX;
 		let tz = worldZ;
@@ -132,17 +100,20 @@ export const PALM_TREE: TreeDefinition = {
 		placeBlock(prevX, prevY, prevZ, woodId, true);
 
 		for (let i = 1; i < height; i++) {
-			const t = i / Math.max(1, height - 1);
+			const t = i / (height - 1);
 			const leanAmount = Math.round(t * t * maxLean);
 
-			const targetX = worldX + DIAG_X[leanDir] * leanAmount;
-			const targetZ = worldZ + DIAG_Z[leanDir] * leanAmount;
+			const targetX = worldX + dirX * leanAmount;
+			const targetZ = worldZ + dirZ * leanAmount;
 			const targetY = worldY + i;
 
-			tx += Math.max(-1, Math.min(1, targetX - tx));
-			tz += Math.max(-1, Math.min(1, targetZ - tz));
+			if (tx < targetX) tx++;
+			else if (tx > targetX) tx--;
 
-			const p = placeFaceConnected(
+			if (tz < targetZ) tz++;
+			else if (tz > targetZ) tz--;
+
+			placeFaceConnected(
 				prevX,
 				prevY,
 				prevZ,
@@ -151,48 +122,51 @@ export const PALM_TREE: TreeDefinition = {
 				tz,
 				woodId,
 				true,
+				placeBlock,
 			);
 
-			prevX = p.x;
-			prevY = p.y;
-			prevZ = p.z;
+			prevX = tx;
+			prevY = targetY;
+			prevZ = tz;
 		}
 
-		// Final trunk/crown position
 		const crownX = prevX;
 		const crownY = prevY;
 		const crownZ = prevZ;
 
 		// Frond burst at the crown — 6–8 fronds radiating outward
-		const frondCount = 6 + (Math.abs(heightHash >> 9) % 3);
+		const frondCount = 6 + ((hash >>> 9) % 3);
 
 		for (let f = 0; f < frondCount; f++) {
-			const frondHash = Squirrel3.get(
-				worldX * 15731 + worldZ * 789221 + f * 1013,
-				seedAsInt,
-			);
+			const frondHash =
+				Squirrel3.get(
+					worldX * 15731 + worldZ * 789221 + f * 1013,
+					seedAsInt,
+				) >>> 0;
 
-			const frondDir = f % 8;
-			const frondLen = 3 + (Math.abs(frondHash) % 2); // 3–4 blocks
+			const frondDir = f & 7;
+			const frondLen = 3 + (frondHash & 1);
+
+			const frondDirX = DIAG_X[frondDir];
+			const frondDirZ = DIAG_Z[frondDir];
 
 			let prevFx = crownX;
 			let prevFy = crownY;
 			let prevFz = crownZ;
 
 			for (let step = 0; step < frondLen; step++) {
-				const nextX = prevFx + DIAG_X[frondDir];
-				const nextZ = prevFz + DIAG_Z[frondDir];
+				const nextX = prevFx + frondDirX;
+				const nextZ = prevFz + frondDirZ;
 
 				let nextY = prevFy;
 
-				// Fronds droop: rise first, then fall outward
 				if (step === 0) {
 					nextY++;
 				} else if (step >= 2) {
 					nextY--;
 				}
 
-				const p = placeFaceConnected(
+				placeFaceConnected(
 					prevFx,
 					prevFy,
 					prevFz,
@@ -201,19 +175,20 @@ export const PALM_TREE: TreeDefinition = {
 					nextZ,
 					leavesId,
 					false,
+					placeBlock,
 				);
 
-				prevFx = p.x;
-				prevFy = p.y;
-				prevFz = p.z;
+				prevFx = nextX;
+				prevFy = nextY;
+				prevFz = nextZ;
 			}
 		}
 
-		// Central top tuft
 		placeBlock(crownX, crownY + 1, crownZ, leavesId, false);
 		placeBlock(crownX, crownY + 2, crownZ, leavesId, false);
 	},
 };
+
 function placeFaceConnected(
 	fromX: number,
 	fromY: number,
@@ -230,28 +205,23 @@ function placeFaceConnected(
 		blockId: number,
 		replace: boolean,
 	) => void,
-): { x: number; y: number; z: number } {
+): void {
 	let x = fromX;
 	let y = fromY;
 	let z = fromZ;
 
-	// Move vertically first
 	while (y !== toY) {
-		y += Math.sign(toY - y);
+		y += y < toY ? 1 : -1;
 		placeBlock(x, y, z, blockId, replace);
 	}
 
-	// Then move on X axis
 	while (x !== toX) {
-		x += Math.sign(toX - x);
+		x += x < toX ? 1 : -1;
 		placeBlock(x, y, z, blockId, replace);
 	}
 
-	// Then move on Z axis
 	while (z !== toZ) {
-		z += Math.sign(toZ - z);
+		z += z < toZ ? 1 : -1;
 		placeBlock(x, y, z, blockId, replace);
 	}
-
-	return { x, y, z };
 }
