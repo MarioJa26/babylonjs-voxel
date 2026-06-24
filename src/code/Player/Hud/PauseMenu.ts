@@ -7,6 +7,7 @@ import {
 	worldToChunkCoord,
 } from "../../World/Chunk/ChunkLoadingSystem";
 import { WorldStorage } from "../../World/WorldStorage";
+import { ChunkWorkerPool } from "../../World/Chunk/ChunkWorkerPool";
 import type { Player } from "../Player"; // Import Player to access its methods
 
 export class PauseMenu {
@@ -101,6 +102,11 @@ export class PauseMenu {
 				resetButton.innerText = "Deleting...";
 				resetButton.disabled = true;
 				try {
+					const pool = ChunkWorkerPool.getInstance();
+					const client = pool.getOpfsClient();
+					if (client) {
+						await client.close();
+					}
 					await WorldStorage.clearWorldData();
 					window.location.reload();
 				} catch (e) {

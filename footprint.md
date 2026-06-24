@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-06-21T09:50:57.684Z
+Generated: 2026-06-24T06:17:14.541Z
 
-> **Summary:** 119 classes · 2270 members · 379 module-level functions · 44145 LOC
+> **Summary:** 119 classes · 2276 members · 376 module-level functions · 41615 LOC
 
 ---
 
@@ -485,92 +485,11 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `Generation/Biome/BiomeDefenitions/CoastalBiomes/CoastalBiomes.ts` (209 LOC)
+## `Generation/Biome/BiomeDefinitions/CoastalBiomes/CoastalBiomes.ts` (213 LOC)
 
 ---
 
-## `Generation/Biome/BiomeDefenitions/ColdBiomes/ColdBiomes.ts` (193 LOC)
-
----
-
-## `Generation/Biome/BiomeDefenitions/ColdBiomes/ColdTrees.ts` (62 LOC)
-
----
-
-## `Generation/Biome/BiomeDefenitions/ExoticBiomes/ExoticBiomes.ts` (69 LOC)
-
----
-
-## `Generation/Biome/BiomeDefenitions/ExoticBiomes/ExoticTrees.ts` (52 LOC)
-
----
-
-## `Generation/Biome/BiomeDefenitions/GeologicalBiomes/GeologicalBiomes.ts` (106 LOC)
-
----
-
-## `Generation/Biome/BiomeDefenitions/GeologicalBiomes/GeologicalTrees.ts` (315 LOC)
-
-**Module-level functions**
-- `function heightHash(worldX: number, worldZ: number, seedAsInt: number): number`
-- `function leafHash(x: number, y: number, z: number, seedAsInt: number): number`
-- `function placedisc(cx: number, cy: number, cz: number, r: number, blockId: number, overwrite: boolean, placeBlock: (
-		x: number,
-		y: number,
-		z: number,
-		id: number,
-		ow?: boolean,
-	) => void): void`
-- `function placeDiscHoley(cx: number, cy: number, cz: number, r: number, blockId: number, skip: number, seedAsInt: number, placeBlock: (
-		x: number,
-		y: number,
-		z: number,
-		id: number,
-		ow?: boolean,
-	) => void): void`
-
----
-
-## `Generation/Biome/BiomeDefenitions/HotBiomes/HotBiomes.ts` (255 LOC)
-
----
-
-## `Generation/Biome/BiomeDefenitions/HotBiomes/HotTrees.ts` (132 LOC)
-
----
-
-## `Generation/Biome/BiomeDefenitions/MountainBiomes/MountainBiomes.ts` (115 LOC)
-
----
-
-## `Generation/Biome/BiomeDefenitions/MountainBiomes/MountainTrees.ts` (106 LOC)
-
----
-
-## `Generation/Biome/BiomeDefenitions/TemperateBiomes/TemperateBiomes.ts` (355 LOC)
-
----
-
-## `Generation/Biome/BiomeDefenitions/TemperateBiomes/TemperateTrees.ts` (428 LOC)
-
-**Module-level functions**
-- `function placeWood(x: number, y: number, z: number): void`
-
----
-
-## `Generation/Biome/BiomeDefenitions/TropicalBiomes/TropicalBiomes.ts` (108 LOC)
-
----
-
-## `Generation/Biome/BiomeDefenitions/TropicalBiomes/TropicalTrees.ts` (108 LOC)
-
----
-
-## `Generation/Biome/BiomeDefinitions/CoastalBiomes/CoastalBiomes.ts` (209 LOC)
-
----
-
-## `Generation/Biome/BiomeDefinitions/ColdBiomes/ColdBiomes.ts` (193 LOC)
+## `Generation/Biome/BiomeDefinitions/ColdBiomes/ColdBiomes.ts` (195 LOC)
 
 ---
 
@@ -643,18 +562,28 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `Generation/Biome/BiomeDefinitions/TropicalBiomes/TropicalTrees.ts` (108 LOC)
+## `Generation/Biome/BiomeDefinitions/TropicalBiomes/TropicalTrees.ts` (204 LOC)
+
+**Module-level functions**
+- `function placeFaceConnected(fromX: number, fromY: number, fromZ: number, toX: number, toY: number, toZ: number, blockId: number, replace: boolean): { x: number; y: number; z: number }`
+- `function placeFaceConnected(fromX: number, fromY: number, fromZ: number, toX: number, toY: number, toZ: number, blockId: number, replace: boolean, placeBlock: (
+		x: number,
+		y: number,
+		z: number,
+		blockId: number,
+		replace: boolean,
+	) => void): { x: number; y: number; z: number }`
 
 ---
 
-## `Generation/Biome/Biomes.ts` (415 LOC)
+## `Generation/Biome/Biomes.ts` (409 LOC)
 
 **Module-level functions**
 - `export function getBiomeFor(temperature: number, humidity: number, continentalness: number, river: number, terrainShapedHeight: number): Biome`
 
 ---
 
-## `Generation/Biome/BiomeTypes.ts` (108 LOC)
+## `Generation/Biome/BiomeTypes.ts` (110 LOC)
 
 **Types / Interfaces / Enums**
 - interface `Biome`
@@ -666,7 +595,7 @@ Generated: 2026-06-21T09:50:57.684Z
 ## `Generation/Biome/TreeDefinition.ts` (414 LOC)
 
 **Module-level functions**
-- `function packXYZ(x: number, y: number, z: number): number`
+- `function packLocal(dx: number, dy: number, dz: number): number`
 - `export function generateSlinkyTree(worldX: number, worldY: number, worldZ: number, placeBlock: (
 		x: number,
 		y: number,
@@ -694,13 +623,13 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `Generation/CaveCarver.ts` (93 LOC)
+## `Generation/CaveCarver.ts` (99 LOC)
 
 **Module-level functions**
 - `function clamp01(value: number): number`
 - `export function getDepthBelowSurface(surfaceY: number, worldY: number): number`
 - `export function getSurfaceCarveBlend(depthBelowSurface: number): number`
-- `export function evaluateCaveCarve(params: GenerationParamsType, worldY: number, surfaceY: number, cheese: number, tunnel: number, detail: number): CaveCarveEvaluation`
+- `export function evaluateCaveCarve(params: GenerationParamsType, worldY: number, surfaceY: number, cheese: number, tunnel: number, detail: number, out?: CaveCarveEvaluation): CaveCarveEvaluation`
 
 **Types / Interfaces / Enums**
 - type `CaveCarveEvaluation`
@@ -805,7 +734,7 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `Generation/LightGenerator.ts` (330 LOC)
+## `Generation/LightGenerator.ts` (328 LOC)
 
 ### export class LightGenerator
 
@@ -819,6 +748,7 @@ Generated: 2026-06-21T09:50:57.684Z
 - `private static queueMask: number`
 - `private static scratchQueue: Uint16Array | null`
 - `private static readonly SKYLIGHT_GENERATION_MIN_WORLD_Y: unknown`
+- `private static readonly _transparentLUT: Uint8Array`
 
 **Methods**
 - `public seedInitialLight(chunkX: number, chunkY: number, chunkZ: number, _biome: Biome, blocks: Uint8Array, light: Uint8Array, topSunlightMask?: Uint8Array): LightSeedState`
@@ -1019,7 +949,7 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `Generation/NoiseAndParameters/Spline.ts` (30 LOC)
+## `Generation/NoiseAndParameters/Spline.ts` (39 LOC)
 
 ### export class Spline
 
@@ -1264,7 +1194,7 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `Generation/Structure/StructureFeature.ts` (107 LOC)
+## `Generation/Structure/StructureFeature.ts` (108 LOC)
 
 ### export class StructureSpawnerFeature implements IWorldFeature
 
@@ -1274,6 +1204,7 @@ Generated: 2026-06-21T09:50:57.684Z
 **Properties**
 - `public readonly verticalBounds: unknown`
 - `private static structures: Map<string, Structure>`
+- `private static structureNames: string[]`
 
 **Methods**
 - `private loadStructures(): void`
@@ -1320,7 +1251,7 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `Generation/SurfaceGenerator.ts` (888 LOC)
+## `Generation/SurfaceGenerator.ts` (1043 LOC)
 
 ### export class SurfaceGenerator
 
@@ -1381,6 +1312,7 @@ Generated: 2026-06-21T09:50:57.684Z
 			ow: boolean,
 		) => void): SurfaceGenerationResult`
 - `private generateFlora(chunkX: number, chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (x: number, y: number, z: number, id: number) => void, topSurfaceYMap: Int16Array): void`
+- `private generateFindlinge(worldX: number, worldZ: number, surfaceY: number, colBiome: Biome, placeBlock: (x: number, y: number, z: number, id: number) => void): void`
 - `private generateStructures(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
@@ -1392,6 +1324,7 @@ Generated: 2026-06-21T09:50:57.684Z
 - `private computeCaveModifier(x: number, y: number, z: number, surfaceY: number): number`
 - `private sampleCliffNoise(x: number, baseHeight: number, z: number): number`
 - `private findTopSurfaceY(worldX: number, worldZ: number, baseHeight: number, yFreq: number): number`
+- `private hashColumn(x: number, z: number, seed: number): number`
 
 **Types / Interfaces / Enums**
 - type `SurfaceGenerationResult`
@@ -1400,7 +1333,7 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `Generation/TerrainHeightMap.ts` (410 LOC)
+## `Generation/TerrainHeightMap.ts` (431 LOC)
 
 **Module-level functions**
 - `function applyRidged(raw: number): number`
@@ -1410,6 +1343,14 @@ Generated: 2026-06-21T09:50:57.684Z
 - `export function getBiome(x: number, z: number): Biome`
 - `export function getCachedRiverNoise(x: number, z: number): number`
 - `export function getOctaveNoise(x: number, z: number): number`
+- `export function getTerrainNoiseDebug(x: number, z: number): {
+	continent: number;
+	temperature: number;
+	humidity: number;
+	river: number;
+	erosion: number;
+	pv: number;
+}`
 - `function getBiomeBase(b: Biome): number`
 - `function getBiomeAmp(b: Biome): number`
 - `function getBiomeScale(b: Biome): number`
@@ -1523,16 +1464,15 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `Maps/BlockBreakParticles.ts` (117 LOC)
+## `Maps/BlockBreakParticles.ts` (103 LOC)
 
 **Module-level functions**
 - `export function play(scene: Scene, position: Vector3, blockId: number, packedLight: number): void`
 - `function init(scene: Scene): void`
-- `export function setAtlasTexture(texture: Texture): void`
 
 ---
 
-## `Maps/Map1.ts` (131 LOC)
+## `Maps/Map1.ts` (117 LOC)
 
 ### export class Map1
 
@@ -1558,7 +1498,6 @@ Generated: 2026-06-21T09:50:57.684Z
 
 **Methods**
 - `async asyncInit(): Promise<void>`
-- `async loadTextures(): Promise<void>`
 - `public static setTime(time: number): void`
 - `public static setDebug(enabled: boolean): void`
 
@@ -2037,17 +1976,16 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `Player/Hud/Crosshair/Crosshair.ts` (117 LOC)
+## `Player/Hud/Crosshair/Crosshair.ts` (115 LOC)
 
 ### export class Crosshair
 
 **Constructor**
-- `constructor(engine: Engine, scene: Scene, player: Player)`
+- `constructor(engine: Engine, scene: Scene)`
 
 **Properties**
 - `readonly #ui: CrosshairUI`
 - `readonly #highlight: BlockHighlight`
-- `readonly #player: Player`
 
 **Methods**
 - `public setTargetHit(hit: BlockRaycastHit | null): void`
@@ -2066,24 +2004,21 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `Player/Hud/Crosshair/CrosshairUI.ts` (57 LOC)
+## `Player/Hud/Crosshair/CrosshairUI.ts` (28 LOC)
 
 ### export class CrosshairUI
 
 **Constructor**
-- `constructor(engine: Engine, scene: Scene, initialCrosshairId: unknown = "179")`
+- `constructor(initialCrosshairId: unknown = "179")`
 
 **Properties**
-- `readonly #engine: Engine`
-- `readonly #scene: Scene`
-- `readonly #ui: GUI.AdvancedDynamicTexture`
-- `#crosshair: GUI.Image`
-- `#hitMarker: GUI.Image`
+- `#crosshair: HTMLImageElement`
+- `#hitMarker: HTMLImageElement`
+- `#hitMarkerTimeout?: ReturnType<typeof setTimeout>`
 
 **Methods**
 - `setCrosshair(id: string): void`
 - `showHitMarker(): void`
-- `#addImage(name: string, source: string, size: string, alpha: number): GUI.Image`
 
 ---
 
@@ -2108,7 +2043,7 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `Player/Hud/PauseMenu.ts` (336 LOC)
+## `Player/Hud/PauseMenu.ts` (342 LOC)
 
 ### export class PauseMenu
 
@@ -2589,7 +2524,7 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `Player/PlayerLoopController.ts` (379 LOC)
+## `Player/PlayerLoopController.ts` (419 LOC)
 
 ### export class PlayerLoopController
 
@@ -3092,7 +3027,7 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `World/Chunk/Chunk.ts` (1199 LOC)
+## `World/Chunk/Chunk.ts` (1201 LOC)
 
 ### export class Chunk
 
@@ -3263,7 +3198,7 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `World/Chunk/ChunkLoadingSystem.ts` (792 LOC)
+## `World/Chunk/ChunkLoadingSystem.ts` (789 LOC)
 
 **Module-level functions**
 - `function isEntityAlive(entity: ChunkBoundEntity): boolean`
@@ -3331,7 +3266,7 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `World/Chunk/ChunkMesher.ts` (1135 LOC)
+## `World/Chunk/ChunkMesher.ts` (1119 LOC)
 
 ### class LodMeshMeta
 
@@ -3498,7 +3433,7 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `World/Chunk/ChunkWorkerPool.ts` (1739 LOC)
+## `World/Chunk/ChunkWorkerPool.ts` (1721 LOC)
 
 ### export class ChunkWorkerPool
 
@@ -3548,7 +3483,6 @@ Generated: 2026-06-21T09:50:57.684Z
 - `private idleWorkerIndices: number[]`
 - `private idleWorkerIndexPositions: Map<number, number>`
 - `private _idleReadIdx: unknown`
-- `private _processQueueCallCount: unknown`
 - `private meshResultQueue: FullMeshMessage[]`
 - `private meshResultQueueReadIdx: unknown`
 - `private remeshFlushScheduled: unknown`
@@ -3565,11 +3499,11 @@ Generated: 2026-06-21T09:50:57.684Z
 - `private opfsInitPromise: Promise<void> | null`
 - `private static readonly _flushPendingScratch: Array<[Chunk, boolean]>`
 - `private static readonly _queryScratch: Chunk[]`
-- `private static readonly _lodCandidateScratch: Array<{
-		chunk: Chunk;
-		lod: number;
-		score: number;
-	}>`
+- `private static readonly _dedupScratch: Set<number>`
+- `private static readonly _lodCandidateChunks: Chunk[]`
+- `private static readonly _lodCandidateLods: number[]`
+- `private static readonly _lodCandidateScores: number[]`
+- `private static readonly _lodCandidateIndices: number[]`
 - `private nextLightSeqCounter: unknown`
 - `private lightDirtyQueue: { seq: number; dirtySlots: Uint32Array }[]`
 - `private lightDirtyQueueReadIdx: unknown`
@@ -3683,7 +3617,6 @@ Generated: 2026-06-21T09:50:57.684Z
 
 **Module-level functions**
 - `function packInflightKey(chunkId: bigint, lod: number): bigint`
-- `function chunkDist(chunkX: number, chunkY: number, chunkZ: number, centerX: number, centerY: number, centerZ: number): { hDist: number; vDist: number }`
 
 **Types / Interfaces / Enums**
 - type `WorkerMessageData`
@@ -4101,7 +4034,7 @@ Generated: 2026-06-21T09:50:57.684Z
 - `private computePriority(chunk: Chunk, desiredLod: number, playerChunkX: number, playerChunkY: number, playerChunkZ: number): number`
 
 **Module-level functions**
-- `function chunkDist(chunkX: number, chunkY: number, chunkZ: number, centerX: number, centerY: number, centerZ: number): { hDist: number; vDist: number }`
+- `function _chunkDist(chunkX: number, chunkY: number, chunkZ: number, centerX: number, centerY: number, centerZ: number): { hDist: number; vDist: number }`
 - `function chunkDistScratch(chunkX: number, chunkY: number, chunkZ: number, centerX: number, centerY: number, centerZ: number): { hDist: number; vDist: number }`
 
 **Types / Interfaces / Enums**
@@ -4555,7 +4488,7 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `World/GLOBAL_VALUES.ts` (12 LOC)
+## `World/GLOBAL_VALUES.ts` (11 LOC)
 
 ---
 
@@ -4631,11 +4564,12 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `World/MeshPipeline/core/BlockFlags.ts` (69 LOC)
+## `World/MeshPipeline/core/BlockFlags.ts` (85 LOC)
 
 **Module-level functions**
 - `function canUseDenseCache(packed: number): boolean`
 - `export function getCachedBlockId(packed: number): number`
+- `export function getCachedIsCube(packed: number): boolean`
 - `export function getCachedFlags(packed: number): number`
 
 ---
@@ -4712,7 +4646,7 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `World/MeshPipeline/core/MeshEmitters.ts` (37 LOC)
+## `World/MeshPipeline/core/MeshEmitters.ts` (44 LOC)
 
 **Module-level functions**
 - `export function createEmptyMeshData(): WorkerInternalMeshData`
@@ -4721,7 +4655,7 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `World/MeshPipeline/core/ShapePipeline.ts` (324 LOC)
+## `World/MeshPipeline/core/ShapePipeline.ts` (330 LOC)
 
 **Module-level functions**
 - `function obtainFaceRect(): FaceRect`
@@ -4770,7 +4704,7 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `World/MeshPipeline/core/VoxelGreedyAdapter.ts` (47 LOC)
+## `World/MeshPipeline/core/VoxelGreedyAdapter.ts` (62 LOC)
 
 ### export class VoxelGreedyAdapter
 
@@ -4781,15 +4715,23 @@ Generated: 2026-06-21T09:50:57.684Z
 - `private ctx: MeshContext`
 - `private maskExtractor: VoxelMaskExtractor`
 - `private faceEmitter: VoxelFaceEmitterAdapter`
+- `private readonly _extractMask: (
+		slice: number,
+		maskBuf: WritableNumberArray,
+		lightBuf: WritableNumberArray,
+	) => void`
+- `private readonly _emitFace: (desc: GreedyFaceDescriptor) => void`
+- `private _opaqueOut: WorkerInternalMeshData`
+- `private _transparentOut: WorkerInternalMeshData`
+- `private _currentAxis: unknown`
 
 **Methods**
 - `public setCtx(ctx: MeshContext): void`
 - `public build(opaqueOut: WorkerInternalMeshData, transparentOut: WorkerInternalMeshData): void`
-- `private runForAxis(axis: number, opaqueOut: WorkerInternalMeshData, transparentOut: WorkerInternalMeshData): void`
 
 ---
 
-## `World/MeshPipeline/core/VoxelMaskExtractor.ts` (545 LOC)
+## `World/MeshPipeline/core/VoxelMaskExtractor.ts` (328 LOC)
 
 ### export class VoxelMaskExtractor
 
@@ -4798,6 +4740,15 @@ Generated: 2026-06-21T09:50:57.684Z
 
 **Properties**
 - `private ctx: MeshContext`
+- `private static readonly _bxPerm: unknown`
+- `private static readonly _byPerm: unknown`
+- `private static readonly _bzPerm: unknown`
+- `private static readonly _ndxDx: unknown`
+- `private static readonly _ndyDy: unknown`
+- `private static readonly _ndzDz: unknown`
+- `private static readonly _negNbrDx: unknown`
+- `private static readonly _negNbrDy: unknown`
+- `private static readonly _negNbrDz: unknown`
 
 **Methods**
 - `public setCtx(ctx: MeshContext): void`
@@ -4805,15 +4756,7 @@ Generated: 2026-06-21T09:50:57.684Z
 - `private getNeighborFaceBit(axis: number): number`
 - `private clearSlice(mask: WritableNumberArray, lightMask: WritableNumberArray, size: number): void`
 - `private processCell(bx: number, by: number, bz: number, dx: number, dy: number, dz: number, uAxis: number, vAxis: number, currentFaceBit: number, neighborFaceBit: number, outIndex: number, mask: WritableNumberArray, lightMask: WritableNumberArray): void`
-- `private extractSliceMaskX(slice: number, mask: WritableNumberArray, lightMask: WritableNumberArray): void`
-- `private extractSliceMaskY(slice: number, mask: WritableNumberArray, lightMask: WritableNumberArray): void`
-- `private extractSliceMaskZ(slice: number, mask: WritableNumberArray, lightMask: WritableNumberArray): void`
 - `public extractSliceMask(axis: number, slice: number, mask: WritableNumberArray, lightMask: WritableNumberArray): void`
-
-**Module-level functions**
-- `function getCachedBlockId(packed: number): number`
-- `function getCachedIsCube(packed: number): boolean`
-- `function getCachedFlags(packed: number): number`
 
 **Types / Interfaces / Enums**
 - type `WritableNumberArray`
@@ -4850,20 +4793,17 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `World/MeshPipeline/core/WorkerMeshHelpers.ts` (201 LOC)
+## `World/MeshPipeline/core/WorkerMeshHelpers.ts` (190 LOC)
 
 **Module-level functions**
-- `function readPackedNibble(packed: Uint8Array, index: number): number`
-- `function readNeighborBlock(neighbor: Uint8Array | Uint16Array | undefined, palette: Uint8Array | Uint16Array | null | undefined, uniformId: number | undefined, index: number, totalBlocks: number, fallback: number): number`
 - `export function createEmptyWorkerInternalMeshData(): WorkerInternalMeshData`
 - `export function toTransferableMeshData(data: WorkerInternalMeshData): MeshData`
-- `function getNeighborIndex(dx: number, dy: number, dz: number): number`
+- `function resolveNeighborBlock(neighbor: Uint8Array | Uint16Array | undefined, palette: Uint8Array | Uint16Array | null | undefined, uniformId: number | undefined, lx: number, ly: number, lz: number, size: number, size2: number): number`
 - `export function createMeshContextFromPayload(base: WorkerMeshBaseContext, input: WorkerMeshInput): MeshContext`
 
 **Types / Interfaces / Enums**
 - type `WorkerMeshBaseContext`
 - type `WorkerMeshInput`
-- type `NeighborSample`
 
 ---
 
@@ -5018,9 +4958,10 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `World/Storage/MeshSerializer.ts` (104 LOC)
+## `World/Storage/MeshSerializer.ts` (109 LOC)
 
 **Module-level functions**
+- `function writeU32LE(buf: Uint8Array, off: number, val: number): void`
 - `export function serializeMesh(mesh: MeshData | null | undefined): Uint8Array | null`
 - `export function deserializeMesh(bytes: Uint8Array): MeshData`
 - `export function serializeMeshPair(opaque: MeshData | null | undefined, transparent: MeshData | null | undefined): Uint8Array | null`
@@ -5031,7 +4972,7 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `World/Storage/opfs.worker.ts` (277 LOC)
+## `World/Storage/opfs.worker.ts` (332 LOC)
 
 **Module-level functions**
 - `function _enqueueOp(fn: () => Promise<void>): Promise<void>`
@@ -5039,13 +4980,17 @@ Generated: 2026-06-21T09:50:57.684Z
 - `function toUint8Array(data: ArrayBuffer | Uint8Array): Uint8Array`
 - `function localCoord(chunk: number): number`
 - `function regionKey(rx: number, ry: number, rz: number): string`
+- `function touchRegion(key: string): void`
 - `async function ensureRegionsDir(): Promise<FileSystemDirectoryHandle>`
 - `async function getRegionFile(rx: number, ry: number, rz: number): Promise<RegionFile>`
+- `function queueFlush(): void`
+- `function _scheduleFlush(): void`
 - `function markDirty(): void`
 - `function flushAllRegions(): void`
+- `async function closeRegionFile(rf: RegionFile): Promise<void>`
 - `async function ensureMeshStore(): Promise<OpfsChunkStore>`
 - `function resetMeshStore(): void`
-- `async function withMeshRetry(fn: (s: OpfsChunkStore) => Promise<T>): Promise<T>`
+- `async function withMeshRetry(fn: (s: OpfsChunkStore) => T): Promise<T>`
 - `async function openStores(): Promise<void>`
 
 **Types / Interfaces / Enums**
@@ -5053,7 +4998,7 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `World/Storage/OpfsChunkStore.ts` (287 LOC)
+## `World/Storage/OpfsChunkStore.ts` (342 LOC)
 
 ### export class OpfsChunkStore
 
@@ -5069,12 +5014,15 @@ Generated: 2026-06-21T09:50:57.684Z
 - `private _capacity: number`
 - `private _dataSize: bigint`
 - `private _dirty: unknown`
-- `private _opQueue: PendingOp[]`
-- `private _processing: unknown`
 - `private readonly _scratch: ArrayBuffer`
 - `private readonly _scratchDv: DataView`
 - `private readonly _scratchU8: Uint8Array`
+- `private readonly _readSlab: Uint8Array`
+- `private readonly _headerBuf: Uint8Array`
 - `private _fileSize: unknown`
+- `private _hitCount: unknown`
+- `private _missCount: unknown`
+- `private _evictionCount: unknown`
 - `private static readonly INITIAL_CAPACITY: unknown`
 
 **Accessors**
@@ -5082,25 +5030,33 @@ Generated: 2026-06-21T09:50:57.684Z
 
 **Methods**
 - `async open(name: string): Promise<void>`
-- `async close(): Promise<void>`
-- `async write(keyHi: number, keyLo: number, lod: number, data: Uint8Array): Promise<void>`
-- `async read(keyHi: number, keyLo: number, lod: number): Promise<Uint8Array | null>`
-- `async remove(keyHi: number, keyLo: number, lod: number): Promise<boolean>`
-- `async flush(): Promise<void>`
-- `private async _init(): Promise<void>`
-- `private async _load(): Promise<void>`
-- `private _findSlot(keyHi: number, keyLo: number, lod: number): { dv: DataView; index: number }`
+- `close(): void`
+- `write(keyHi: number, keyLo: number, lod: number, data: Uint8Array): void`
+- `read(keyHi: number, keyLo: number, lod: number): Uint8Array | null`
+- `remove(keyHi: number, keyLo: number, lod: number): boolean`
+- `flush(): void`
+- `getStats(): {
+		slotCount: number;
+		usedBytes: number;
+		totalBytes: number;
+		capacity: number;
+		hitCount: number;
+		missCount: number;
+		evictionCount: number;
+	}`
+- `private _init(): void`
+- `private _load(): void`
+- `private _findSlot(keyHi: number, keyLo: number, lod: number): number`
 - `private _grow(): void`
 - `private _writeHeader(): void`
-- `private async enqueue(fn: () => Promise<void>): Promise<void>`
-- `private async _drainQueue(): Promise<void>`
+- `compact(): void`
 
 **Types / Interfaces / Enums**
-- interface `PendingOp`
+- type `LiveEntry`
 
 ---
 
-## `World/Storage/OpfsClient.ts` (145 LOC)
+## `World/Storage/OpfsClient.ts` (178 LOC)
 
 ### export class OpfsClient
 
@@ -5109,7 +5065,8 @@ Generated: 2026-06-21T09:50:57.684Z
 
 **Properties**
 - `private _worker: Worker`
-- `private _ops: unknown`
+- `private _opResolves: (((v: any) => void) | null)[]`
+- `private _opRejects: (((e: any) => void) | null)[]`
 - `private _nextId: unknown`
 - `private _ready: Promise<void>`
 
@@ -5130,39 +5087,43 @@ Generated: 2026-06-21T09:50:57.684Z
 - `async writeVoxel(key: bigint, lod: number, data: Uint8Array): Promise<void>`
 - `async removeVoxel(key: bigint, lod: number): Promise<void>`
 - `async flush(): Promise<void>`
-- `getStats(): any`
+- `async getStats(): Promise<{
+		slotCount: number;
+		usedBytes: number;
+		totalBytes: number;
+		capacity: number;
+		hitCount: number;
+		missCount: number;
+		evictionCount: number;
+	}>`
 - `static async create(): Promise<OpfsClient>`
 - `async close(): Promise<void>`
 
-**Types / Interfaces / Enums**
-- interface `PendingOp`
+**Module-level functions**
+- `function transferableBytes(data: Uint8Array): Uint8Array`
 
 ---
 
-## `World/Storage/OpfsMessageTypes.ts` (12 LOC)
+## `World/Storage/OpfsMessageTypes.ts` (13 LOC)
 
 **Types / Interfaces / Enums**
 - enum `OpfsMsg`
 
 ---
 
-## `World/Storage/RegionFile.ts` (361 LOC)
+## `World/Storage/RegionFile.ts` (367 LOC)
 
 ### export class RegionFile
 
 **Constructor**
-- `constructor(accessHandle: FileSystemSyncAccessHandle, headerBuf: ArrayBuffer, headerU8: Uint8Array, headerDv: DataView, slotTable: ArrayBuffer, slotDv: DataView, regionX: number, regionY: number, regionZ: number, usedBytes: number, occupiedCount: number, freeListHead: number, fileSize: number)`
+- `constructor(accessHandle: FileSystemSyncAccessHandle, headerU8: Uint8Array, headerDv: DataView, slotDv: DataView, slotTableU8: Uint8Array, usedBytes: number, occupiedCount: number, freeListHead: number, fileSize: number)`
 
 **Properties**
 - `private accessHandle: FileSystemSyncAccessHandle`
-- `private headerBuf: ArrayBuffer`
 - `private headerU8: Uint8Array`
 - `private headerDv: DataView`
-- `private slotTable: ArrayBuffer`
 - `private slotDv: DataView`
-- `private regionX: number`
-- `private regionY: number`
-- `private regionZ: number`
+- `private readonly _slotTableU8: Uint8Array`
 - `private usedBytes: number`
 - `private occupiedCount: number`
 - `private freeListHead: number`
@@ -5188,9 +5149,6 @@ Generated: 2026-06-21T09:50:57.684Z
 **Module-level functions**
 - `function slotIndex(lx: number, ly: number, lz: number, isEntity: boolean): number`
 
-**Types / Interfaces / Enums**
-- type `LiveSlot`
-
 ---
 
 ## `World/Storage/VoxelSerializer.ts` (167 LOC)
@@ -5207,12 +5165,11 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `World/Texture/BlockTextures.ts` (54 LOC)
+## `World/Texture/BlockTextures.ts` (34 LOC)
 
 **Module-level functions**
 - `function buildBlockTextures(): (BlockTextureDef | null)[]`
 - `function getMaxBlockTypeId(): number`
-- `export function updateBlockTexturesUV(uvMap: Record<string, { u: number; v: number; tileSize: number }>, textureDefinitions: TextureDefinition[]): void`
 - `export function getAtlasTile(blockId: number | null): [number, number] | null`
 
 **Types / Interfaces / Enums**
@@ -5220,7 +5177,7 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `World/Texture/BlockType.ts` (112 LOC)
+## `World/Texture/BlockType.ts` (115 LOC)
 
 **Module-level functions**
 - `export function isPassThroughBlock(blockId: number): boolean`
@@ -5258,24 +5215,18 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `World/Texture/TextureAtlasFactory.ts` (131 LOC)
+## `World/Texture/TextureAtlasFactory.ts` (25 LOC)
 
 ### export class TextureAtlasFactory
 
 **Properties**
 - `private static diffuseAtlas: Texture | null`
 - `private static normalAtlas: Texture | null`
-- `private static uvMap: Record<string, TileUV>`
 - `public static readonly tileSize: unknown`
 - `public static readonly atlasSize: unknown`
 - `public static readonly atlasTileSize: unknown`
 
 **Methods**
-- `static async buildAtlas(scene: Scene, images: { name: string; path: string }[], tileSize: unknown = TextureAtlasFactory.tileSize, atlasSize: unknown = TextureAtlasFactory.atlasSize): Promise<{ diffuse: Texture; normal: Texture; uvMap: Record<string, TileUV>; } | undefined>`
-- `private static saveCanvasAsImage(canvas: HTMLCanvasElement, filename: string): void`
-- `private static async loadImageSafe(src: string): Promise<HTMLImageElement | null>`
-- `private static loadImage(src: string): Promise<HTMLImageElement>`
-- `static getUV(name: string): TileUV | undefined`
 - `static getDiffuse(): Texture | null`
 - `static setDiffuse(texture: Texture): void`
 - `static getNormal(): Texture | null`
@@ -5316,7 +5267,7 @@ Generated: 2026-06-21T09:50:57.684Z
 
 ---
 
-## `World/WorldStorage.ts` (378 LOC)
+## `World/WorldStorage.ts` (374 LOC)
 
 ### class WorldStorageImpl
 

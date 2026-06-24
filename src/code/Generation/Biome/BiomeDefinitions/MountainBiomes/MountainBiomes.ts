@@ -20,7 +20,7 @@ export const ALPINE_MEADOW: Biome = {
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.5,
 	persistence: 0.25,
-	heightExponent: 1.5, // rolling highland shape
+	heightExponent: 1.9, // sharper alpine peaks
 	terrainHeightBase: GenerationParams.SEA_LEVEL + 55,
 	terrainHeightAmplitude: 67,
 	pvNoiseScale: 0.6,
@@ -46,7 +46,7 @@ export const ROCKY_HIGHLANDS: Biome = {
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.4,
 	persistence: 0.35,
-	heightExponent: 1.8, // jagged rocky terrain
+	heightExponent: 2.4, // jagged rocky terrain
 	terrainHeightBase: GenerationParams.SEA_LEVEL + 60,
 	terrainHeightAmplitude: 90,
 	pvNoiseScale: 1.5, // high detail for rocky texture
@@ -71,7 +71,7 @@ export const MESA_PLATEAU: Biome = {
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.45,
 	persistence: 0.28,
-	heightExponent: 2.0, // flat-topped mesa with steep walls
+	heightExponent: 2.3, // flat-topped mesa with steep walls
 	terrainHeightBase: GenerationParams.SEA_LEVEL + 50,
 	terrainHeightAmplitude: 70,
 	pvNoiseScale: 0.3, // smoother plateau tops
@@ -96,7 +96,7 @@ export const CLOUD_PEAKS: Biome = {
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.3,
 	persistence: 0.4,
-	heightExponent: 2.5, // dramatic mountain peaks
+	heightExponent: 3.2, // dramatic mountain peaks
 	terrainHeightBase: GenerationParams.SEA_LEVEL + 80,
 	terrainHeightAmplitude: 120,
 	pvNoiseScale: 1.8, // extreme detail for craggy peaks
@@ -121,7 +121,7 @@ export const VOLCANIC_CALDERA: Biome = {
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.35,
 	persistence: 0.38,
-	heightExponent: 2.2, // steep volcanic cone
+	heightExponent: 2.9, // steep volcanic cone
 	terrainHeightBase: GenerationParams.SEA_LEVEL + 70,
 	terrainHeightAmplitude: 110,
 	pvNoiseScale: 1.3, // rough volcanic texture

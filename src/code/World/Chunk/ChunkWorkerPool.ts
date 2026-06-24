@@ -787,9 +787,6 @@ export class ChunkWorkerPool {
 				slotMap.delete(slot);
 			}
 		}
-		if (slotMap.size > 0) {
-			console.log("LIGHT_DIRTY_REMAINING", [...slotMap.keys()]);
-		}
 	};
 
 	private scheduleLightDirtyPump(): void {
@@ -1107,6 +1104,7 @@ export class ChunkWorkerPool {
 					chunk.remeshQueued = false;
 					this.queuePostRemeshSave(chunk);
 				} else {
+					chunk.setCachedLODMesh(lod, { opaque, transparent });
 					chunk.isDirty = true;
 					chunk.remeshQueued = false;
 					this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);
@@ -1202,7 +1200,7 @@ export class ChunkWorkerPool {
 		ChunkWorkerPool.normalizeChunkLod(chunk);
 		if (!chunk.hasVoxelData) {
 			if (!this.tryApplyCachedLODMesh(chunk, true)) {
-				chunk.isDirty = false;
+				chunk.isDirty = true;
 				chunk.remeshQueued = false;
 			}
 			return;
@@ -2140,14 +2138,6 @@ export class ChunkWorkerPool {
 		// LOD values are 0–15, so 16 deletes is cheap.
 		for (let lod = 0; lod < 16; lod++) {
 			this.pendingLodPrecomputeKeys.delete(packInflightKey(chunk.id, lod));
-		}
-
-		// Evict OPFS mesh entries for this chunk to prevent unbounded growth.
-		if (this.opfsReady && this.opfsClient) {
-			const key = packChunkKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-			for (const lod of chunk.cachedLODMeshes.keys()) {
-				void this.opfsClient.removeMesh(key, lod).catch(() => {});
-			}
 		}
 	}
 	public static async teardownForHmr(): Promise<void> {

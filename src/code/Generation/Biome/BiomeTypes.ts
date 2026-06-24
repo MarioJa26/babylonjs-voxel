@@ -47,6 +47,8 @@ export interface Biome {
 	pvNoiseScale?: number;
 	erosionNoiseScale?: number;
 	continentalNoiseScale?: number;
+	findlingChance?: number;
+	findlingBlockId?: number;
 	getTreeForBlock(blockId?: number, noiseValue?: number): TreeDefinition | null;
 }
 export const enum BIOME_ID {

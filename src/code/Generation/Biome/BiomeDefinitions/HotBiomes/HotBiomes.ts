@@ -10,7 +10,7 @@ import { BAOBAB_TREE, CACTUS, DEAD_TREE } from "./HotTrees";
 export const DESERT: Biome = {
 	id: BIOME_ID.DESERT,
 	name: "Desert",
-	topBlock: 23, // sand
+	topBlock: 3, // sand
 	undergroundBlock: 3, // sandstone
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
@@ -158,7 +158,7 @@ export const OASIS: Biome = {
 	canSpawnTrees: true,
 	treeDensity: 0.12, // palm-like trees clustered around water
 	grassDensity: 0.5,
-	beachBlock: 23, // sand shore around the pool
+	beachBlock: 3, // sand shore around the pool
 	seafloorBlock: 46, // gravel pool floor
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.9,
@@ -202,13 +202,13 @@ export const SALT_FLATS: Biome = {
 export const DUNE_SEA: Biome = {
 	id: BIOME_ID.DUNE_SEA,
 	name: "Dune_Sea",
-	topBlock: 23, // sand
-	undergroundBlock: 23, // sand (deep dunes, no sandstone underneath)
+	topBlock: 3, // sand
+	undergroundBlock: 3, // sand (deep dunes, no sandstone underneath)
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
 	treeDensity: 0.0,
 	grassDensity: 0.02, // occasional dry shrub
-	beachBlock: 23, // sand
+	beachBlock: 3, // sand
 	seafloorBlock: 3, // sandstone below the dunes
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.7,
@@ -250,7 +250,7 @@ export const SCORCHED_SAVANNAH: Biome = {
 export const CRACKED_EARTH: Biome = {
 	id: BIOME_ID.CRACKED_EARTH,
 	name: "Cracked_Earth",
-	topBlock: 23, // MudCrackedDry03
+	topBlock: 1, // MudCrackedDry03
 	undergroundBlock: 19, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
@@ -261,9 +261,9 @@ export const CRACKED_EARTH: Biome = {
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.9,
 	persistence: 0.12,
-	heightExponent: 1.03,
+	heightExponent: 1.01,
 	terrainHeightBase: 44,
-	terrainHeightAmplitude: 8, // nearly flat cracked plains
+	terrainHeightAmplitude: 3, // nearly flat cracked plains
 	pvNoiseScale: 0.1,
 	erosionNoiseScale: 0.15,
 
@@ -286,9 +286,9 @@ export const DUST_BOWL: Biome = {
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.85,
 	persistence: 0.13,
-	heightExponent: 1.04,
+	heightExponent: 1.01,
 	terrainHeightBase: 43,
-	terrainHeightAmplitude: 6, // extremely flat
+	terrainHeightAmplitude: 3, // extremely flat
 	pvNoiseScale: 0.08,
 	erosionNoiseScale: 0.1,
 

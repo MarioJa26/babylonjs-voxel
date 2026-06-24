@@ -44,6 +44,8 @@ let meshStore: OpfsChunkStore | null = null;
 let regionsDir: FileSystemDirectoryHandle | null = null;
 const regionFiles = new Map<string, RegionFile>();
 const regionOpenInflight = new Map<string, Promise<RegionFile>>();
+const regionAccessOrder: string[] = []; // LRU tracking — newest at end
+const MAX_OPEN_REGIONS = 128;
 
 let initInFlight: Promise<void> | null = null;
 
@@ -52,6 +54,7 @@ let dirtyRegionCount = 0;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 const FLUSH_INTERVAL_MS = 500;
 const DIRTY_FLUSH_THRESHOLD = 8;
+let flushQueued = false;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -70,6 +73,12 @@ function regionKey(rx: number, ry: number, rz: number): string {
 	return `${rx},${ry},${rz}`;
 }
 
+function touchRegion(key: string): void {
+	const idx = regionAccessOrder.indexOf(key);
+	if (idx !== -1) regionAccessOrder.splice(idx, 1);
+	regionAccessOrder.push(key);
+}
+
 async function ensureRegionsDir(): Promise<FileSystemDirectoryHandle> {
 	if (regionsDir) return regionsDir;
 	const root = await navigator.storage.getDirectory();
@@ -86,10 +95,23 @@ async function getRegionFile(
 	const key = regionKey(rx, ry, rz);
 
 	const cached = regionFiles.get(key);
-	if (cached) return cached;
+	if (cached) {
+		touchRegion(key);
+		return cached;
+	}
 
 	const inflight = regionOpenInflight.get(key);
 	if (inflight) return inflight;
+
+	// Evict LRU region if at capacity.
+	if (regionFiles.size >= MAX_OPEN_REGIONS && regionAccessOrder.length > 0) {
+		const lruKey = regionAccessOrder.shift()!;
+		const lru = regionFiles.get(lruKey);
+		if (lru) {
+			lru.close();
+			regionFiles.delete(lruKey);
+		}
+	}
 
 	// Set BEFORE the async work starts so subsequent calls see it immediately.
 	let resolveInflight!: (rf: RegionFile) => void;
@@ -113,6 +135,7 @@ async function getRegionFile(
 			throw openErr;
 		}
 		regionFiles.set(key, rf);
+		touchRegion(key);
 		resolveInflight(rf);
 		return rf;
 	} catch (err) {
@@ -126,30 +149,46 @@ async function getRegionFile(
 // ---------------------------------------------------------------------------
 // Batch flush helpers
 // ---------------------------------------------------------------------------
+function queueFlush(): void {
+	if (flushQueued) return;
+	flushQueued = true;
+	void _enqueueOp(async () => {
+		flushQueued = false;
+		flushAllRegions();
+	});
+}
+
+function _scheduleFlush(): void {
+	flushTimer = null;
+	queueFlush();
+}
+
 function markDirty(): void {
 	dirtyRegionCount++;
 	if (dirtyRegionCount >= DIRTY_FLUSH_THRESHOLD) {
-		flushAllRegions();
+		queueFlush();
 	} else if (!flushTimer) {
-		flushTimer = setTimeout(() => {
-			flushTimer = null;
-			// Enqueue the flush so it runs inside the serial op queue
-			// and never races with read/write operations.
-			void _enqueueOp(async () => {
-				flushAllRegions();
-			});
-		}, FLUSH_INTERVAL_MS);
+		flushTimer = setTimeout(_scheduleFlush, FLUSH_INTERVAL_MS);
 	}
 }
 
 function flushAllRegions(): void {
-	for (const [, rf] of regionFiles) {
+	regionFiles.forEach((rf) => {
 		rf.flush();
-	}
+	});
 	dirtyRegionCount = 0;
 	if (flushTimer) {
 		clearTimeout(flushTimer);
 		flushTimer = null;
+	}
+}
+
+async function closeRegionFile(rf: RegionFile): Promise<void> {
+	try {
+		rf.flush();
+		await Promise.resolve(rf.close());
+	} catch {
+		// ignore close errors
 	}
 }
 
@@ -164,23 +203,21 @@ async function ensureMeshStore(): Promise<OpfsChunkStore> {
 /** Invalidate cached handles and force re-open on next access. */
 function resetMeshStore(): void {
 	if (meshStore) {
-		meshStore.close().catch(() => {});
+		meshStore.close();
 		meshStore = null;
 	}
 	initInFlight = null;
 }
 
 /** Run a mesh-store op; on stale-handle error, reset and retry once. */
-async function withMeshRetry<T>(
-	fn: (s: OpfsChunkStore) => Promise<T>,
-): Promise<T> {
+async function withMeshRetry<T>(fn: (s: OpfsChunkStore) => T): Promise<T> {
 	try {
 		const s = await ensureMeshStore();
-		return await fn(s);
+		return fn(s);
 	} catch (err) {
 		resetMeshStore();
 		const s = await ensureMeshStore();
-		return await fn(s);
+		return fn(s);
 	}
 }
 
@@ -251,6 +288,21 @@ self.addEventListener("message", (event: MessageEvent) => {
 				postResult(true);
 				break;
 			}
+			case OpfsMsg.GetStats: {
+				const stats = meshStore
+					? meshStore.getStats()
+					: {
+							slotCount: 0,
+							usedBytes: 0,
+							totalBytes: 0,
+							capacity: 0,
+							hitCount: 0,
+							missCount: 0,
+							evictionCount: 0,
+						};
+				postResult(stats);
+				break;
+			}
 
 			// ---- Voxel store (RegionFile — persistent) ----
 			case OpfsMsg.ReadVoxel: {
@@ -266,7 +318,16 @@ self.addEventListener("message", (event: MessageEvent) => {
 				const isEntity = (data.lod | 0) === 254;
 				const rf = await getRegionFile(rx, ry, rz);
 				const result = rf.readChunk(lx, ly, lz, isEntity);
-				postResult(result);
+
+				if (result) {
+					postMessage(
+						{ id, result },
+						[result.buffer], // ✅ still transfer
+					);
+				} else {
+					postMessage({ id, result: null });
+				}
+
 				break;
 			}
 			case OpfsMsg.WriteVoxel: {
@@ -318,9 +379,10 @@ self.addEventListener("message", (event: MessageEvent) => {
 					meshStore = null;
 				}
 				for (const rf of regionFiles.values()) {
-					rf.close();
+					await closeRegionFile(rf);
 				}
 				regionFiles.clear();
+				regionAccessOrder.length = 0;
 				regionOpenInflight.clear();
 				regionsDir = null;
 				initInFlight = null;

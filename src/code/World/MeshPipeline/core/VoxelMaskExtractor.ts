@@ -1,7 +1,5 @@
 // MeshPipeline/core/VoxelMaskExtractor.ts
 
-import { unpackBlockId } from "../../Chunk/DataStructures/BlockEncoding";
-import { BLOCK_TYPE } from "../../Chunk/Worker/ChunkMesherConstants";
 import {
 	FACE_NX,
 	FACE_NY,
@@ -10,18 +8,20 @@ import {
 	FACE_PY,
 	FACE_PZ,
 } from "../../Shape/BlockShapes";
-import {
-	type BlockShapeInfo,
-	MaterialType,
-	type MeshContext,
-} from "../types/MeshTypes";
+import type { BlockShapeInfo, MeshContext } from "../types/MeshTypes";
 import { computeAO } from "./AOPipeline";
-import { quantizeLightForLOD } from "./LightPipeline";
 import {
-	getMaterialType,
-	getShapeInfo,
-	isGreedyCompatiblePackedBlock,
-} from "./ShapePipeline";
+	FLAG_GREEDY,
+	FLAG_PARTIAL,
+	FLAG_SOLID,
+	FLAG_TRANSPARENT,
+	FLAG_WATER_GLASS,
+	getCachedBlockId,
+	getCachedFlags,
+	getCachedIsCube,
+} from "./BlockFlags";
+import { quantizeLightForLOD } from "./LightPipeline";
+import { getShapeInfo } from "./ShapePipeline";
 
 /**
  * Marker bit used so non-cube faces do not greedily merge with cube faces.
@@ -31,118 +31,7 @@ const NON_CUBE_MASK = 0x40000000;
 const BACK_FACE_MASK = 0x80000000;
 const PACKED_ID_STATE_MASK = 0x0000ffff;
 
-/**
- * Small dense local caches to avoid rebuilding trivial runtime flags.
- *
- * This assumes your current packed-block key space is effectively <= 16 bits.
- * If a wider packed value ever appears, we fall back to direct computation.
- */
-const DENSE_CACHE_SIZE = 1 << 16;
-const DENSE_CACHE_MASK = DENSE_CACHE_SIZE - 1;
-
-/**
- * Flags:
- * 1 = solid
- * 2 = transparent
- * 4 = partial (non-cube)
- * 8 = greedy-compatible
- * 16 = water/glass material bucket
- */
-const FLAG_SOLID = 1 << 0;
-const FLAG_TRANSPARENT = 1 << 1;
-const FLAG_PARTIAL = 1 << 2;
-const FLAG_GREEDY = 1 << 3;
-const FLAG_WATER_GLASS = 1 << 4;
-
-const BLOCK_FLAGS_CACHE = new Uint8Array(DENSE_CACHE_SIZE);
-const BLOCK_FLAGS_READY = new Uint8Array(DENSE_CACHE_SIZE);
-const BLOCK_ID_CACHE = new Uint16Array(DENSE_CACHE_SIZE);
-const BLOCK_IS_CUBE_CACHE = new Uint8Array(DENSE_CACHE_SIZE);
-const BLOCK_IS_CUBE_READY = new Uint8Array(DENSE_CACHE_SIZE);
 type WritableNumberArray = number[] | Int32Array | Uint16Array | Uint32Array;
-function getCachedBlockId(packed: number): number {
-	if (!packed) return 0;
-
-	if (packed >= 0 && packed <= DENSE_CACHE_MASK) {
-		if (!BLOCK_FLAGS_READY[packed]) {
-			const id = unpackBlockId(packed);
-			BLOCK_ID_CACHE[packed] = id;
-		}
-		return BLOCK_ID_CACHE[packed];
-	}
-
-	return unpackBlockId(packed);
-}
-
-function getCachedIsCube(packed: number): boolean {
-	if (!packed) return false;
-
-	if (packed >= 0 && packed <= DENSE_CACHE_MASK) {
-		if (BLOCK_IS_CUBE_READY[packed]) {
-			return BLOCK_IS_CUBE_CACHE[packed] !== 0;
-		}
-
-		const shape = getShapeInfo(packed);
-		const isCube = shape.isCube;
-		BLOCK_IS_CUBE_CACHE[packed] = isCube ? 1 : 0;
-		BLOCK_IS_CUBE_READY[packed] = 1;
-		return isCube;
-	}
-
-	return getShapeInfo(packed).isCube;
-}
-
-/**
- * Optimized flag lookup - inlines canUseDenseCache check
- */
-function getCachedFlags(packed: number): number {
-	if (!packed) return 0;
-
-	// Inline canUseDenseCache check to avoid function call overhead
-	if (packed >= 0 && packed <= DENSE_CACHE_MASK) {
-		if (BLOCK_FLAGS_READY[packed]) {
-			return BLOCK_FLAGS_CACHE[packed];
-		}
-
-		const id = unpackBlockId(packed);
-		const shape = getShapeInfo(packed);
-		const materialType = getMaterialType(id);
-		const greedyCompatible = isGreedyCompatiblePackedBlock(packed);
-
-		let flags = 0;
-
-		if (id !== 0) flags |= FLAG_SOLID;
-		if (materialType === MaterialType.WaterOrGlass || BLOCK_TYPE[id] !== 0) {
-			flags |= FLAG_TRANSPARENT;
-		}
-		if (!shape.isCube) flags |= FLAG_PARTIAL;
-		if (greedyCompatible) flags |= FLAG_GREEDY;
-		if (materialType === MaterialType.WaterOrGlass) flags |= FLAG_WATER_GLASS;
-
-		BLOCK_FLAGS_CACHE[packed] = flags;
-		BLOCK_FLAGS_READY[packed] = 1;
-		BLOCK_ID_CACHE[packed] = id;
-
-		return flags;
-	}
-
-	// Sparse fallback if a packed key exceeds the dense range
-	const id = unpackBlockId(packed);
-	const shape = getShapeInfo(packed);
-	const materialType = getMaterialType(id);
-	const greedyCompatible = isGreedyCompatiblePackedBlock(packed);
-
-	let flags = 0;
-	if (id !== 0) flags |= FLAG_SOLID;
-	if (materialType === MaterialType.WaterOrGlass || BLOCK_TYPE[id] !== 0) {
-		flags |= FLAG_TRANSPARENT;
-	}
-	if (!shape.isCube) flags |= FLAG_PARTIAL;
-	if (greedyCompatible) flags |= FLAG_GREEDY;
-	if (materialType === MaterialType.WaterOrGlass) flags |= FLAG_WATER_GLASS;
-
-	return flags;
-}
 
 /**
  * Extracts the 2D slice mask for greedy meshing on one axis.
@@ -439,251 +328,20 @@ export class VoxelMaskExtractor {
 		lightMask[outIndex] = (packedAO & 0xff) | ((packedLightOnly & 0xff) << 8);
 	}
 
-	private extractSliceMaskX(
-		slice: number,
-		mask: WritableNumberArray,
-		lightMask: WritableNumberArray,
-	): void {
-		const size = this.ctx.size;
-		const axis = 0;
-		const dx = 1;
-		const dy = 0;
-		const dz = 0;
-
-		const uAxis = 1;
-		const vAxis = 2;
-
-		const currentFaceBit = this.getCurrentFaceBit(axis);
-		const neighborFaceBit = this.getNeighborFaceBit(axis);
-
-		// Negative boundary: face at position 0 (between prev chunk's last block and this chunk's first block).
-		if (slice === -1) {
-			if (!this.ctx.hasNeighborChunk(-1, 0, 0)) {
-				this.clearSlice(mask, lightMask, size);
-				return;
-			}
-			let idx = 0;
-			for (let v = 0; v < size; v++) {
-				for (let u = 0; u < size; u++) {
-					this.processCell(
-						-1,
-						u,
-						v,
-						dx,
-						dy,
-						dz,
-						uAxis,
-						vAxis,
-						currentFaceBit,
-						neighborFaceBit,
-						idx,
-						mask,
-						lightMask,
-					);
-					idx++;
-				}
-			}
-			return;
-		}
-
-		// Positive boundary: faces at position 32 overflow Uint8Array.
-		// The next chunk renders these faces at its position 0.
-		if (slice === size - 1) {
-			this.clearSlice(mask, lightMask, size);
-			return;
-		}
-
-		let idx = 0;
-
-		for (let v = 0; v < size; v++) {
-			for (let u = 0; u < size; u++) {
-				const bx = slice;
-				const by = u;
-				const bz = v;
-
-				this.processCell(
-					bx,
-					by,
-					bz,
-					dx,
-					dy,
-					dz,
-					uAxis,
-					vAxis,
-					currentFaceBit,
-					neighborFaceBit,
-					idx,
-					mask,
-					lightMask,
-				);
-
-				idx++;
-			}
-		}
-	}
-
-	private extractSliceMaskY(
-		slice: number,
-		mask: WritableNumberArray,
-		lightMask: WritableNumberArray,
-	): void {
-		const size = this.ctx.size;
-		const axis = 1;
-		const dx = 0;
-		const dy = 1;
-		const dz = 0;
-
-		const uAxis = 2;
-		const vAxis = 0;
-
-		const currentFaceBit = this.getCurrentFaceBit(axis);
-		const neighborFaceBit = this.getNeighborFaceBit(axis);
-
-		// Negative boundary: face at position 0.
-		if (slice === -1) {
-			if (!this.ctx.hasNeighborChunk(0, -1, 0)) {
-				this.clearSlice(mask, lightMask, size);
-				return;
-			}
-			let idx = 0;
-			for (let v = 0; v < size; v++) {
-				for (let u = 0; u < size; u++) {
-					this.processCell(
-						v,
-						-1,
-						u,
-						dx,
-						dy,
-						dz,
-						uAxis,
-						vAxis,
-						currentFaceBit,
-						neighborFaceBit,
-						idx,
-						mask,
-						lightMask,
-					);
-					idx++;
-				}
-			}
-			return;
-		}
-
-		// Positive boundary: faces at position size overflow Uint8Array.
-		if (slice === size - 1) {
-			this.clearSlice(mask, lightMask, size);
-			return;
-		}
-
-		let idx = 0;
-
-		for (let v = 0; v < size; v++) {
-			for (let u = 0; u < size; u++) {
-				const bx = v;
-				const by = slice;
-				const bz = u;
-
-				this.processCell(
-					bx,
-					by,
-					bz,
-					dx,
-					dy,
-					dz,
-					uAxis,
-					vAxis,
-					currentFaceBit,
-					neighborFaceBit,
-					idx,
-					mask,
-					lightMask,
-				);
-
-				idx++;
-			}
-		}
-	}
-
-	private extractSliceMaskZ(
-		slice: number,
-		mask: WritableNumberArray,
-		lightMask: WritableNumberArray,
-	): void {
-		const size = this.ctx.size;
-		const axis = 2;
-		const dx = 0;
-		const dy = 0;
-		const dz = 1;
-
-		const uAxis = 0;
-		const vAxis = 1;
-
-		const currentFaceBit = this.getCurrentFaceBit(axis);
-		const neighborFaceBit = this.getNeighborFaceBit(axis);
-
-		// Negative boundary: face at position 0.
-		if (slice === -1) {
-			if (!this.ctx.hasNeighborChunk(0, 0, -1)) {
-				this.clearSlice(mask, lightMask, size);
-				return;
-			}
-			let idx = 0;
-			for (let v = 0; v < size; v++) {
-				for (let u = 0; u < size; u++) {
-					this.processCell(
-						u,
-						v,
-						-1,
-						dx,
-						dy,
-						dz,
-						uAxis,
-						vAxis,
-						currentFaceBit,
-						neighborFaceBit,
-						idx,
-						mask,
-						lightMask,
-					);
-					idx++;
-				}
-			}
-			return;
-		}
-
-		if (slice === size - 1) {
-			this.clearSlice(mask, lightMask, size);
-			return;
-		}
-
-		let idx = 0;
-
-		for (let v = 0; v < size; v++) {
-			for (let u = 0; u < size; u++) {
-				const bx = u;
-				const by = v;
-				const bz = slice;
-
-				this.processCell(
-					bx,
-					by,
-					bz,
-					dx,
-					dy,
-					dz,
-					uAxis,
-					vAxis,
-					currentFaceBit,
-					neighborFaceBit,
-					idx,
-					mask,
-					lightMask,
-				);
-
-				idx++;
-			}
-		}
-	}
+	// PERF: Axis permutation tables for extractSliceMaskAxis.
+	// Maps (slice_or_m1, u, v) → (bx, by, bz) for each axis.
+	// [0]=slice, [1]=u, [2]=v
+	private static readonly _bxPerm = [0, 2, 1];
+	private static readonly _byPerm = [1, 0, 2];
+	private static readonly _bzPerm = [2, 1, 0];
+	// Neighbor direction for negative boundary check.
+	private static readonly _ndxDx = [1, 0, 0];
+	private static readonly _ndyDy = [0, 1, 0];
+	private static readonly _ndzDz = [0, 0, 1];
+	// hasNeighborChunk args for negative boundary.
+	private static readonly _negNbrDx = [-1, 0, 0];
+	private static readonly _negNbrDy = [0, -1, 0];
+	private static readonly _negNbrDz = [0, 0, -1];
 
 	public extractSliceMask(
 		axis: number,
@@ -691,16 +349,82 @@ export class VoxelMaskExtractor {
 		mask: WritableNumberArray,
 		lightMask: WritableNumberArray,
 	): void {
-		if (axis === 0) {
-			this.extractSliceMaskX(slice, mask, lightMask);
+		const size = this.ctx.size;
+		const currentFaceBit = this.getCurrentFaceBit(axis);
+		const neighborFaceBit = this.getNeighborFaceBit(axis);
+		const bxPerm = VoxelMaskExtractor._bxPerm;
+		const byPerm = VoxelMaskExtractor._byPerm;
+		const bzPerm = VoxelMaskExtractor._bzPerm;
+
+		// Negative boundary: face at position 0.
+		if (slice === -1) {
+			if (
+				!this.ctx.hasNeighborChunk(
+					VoxelMaskExtractor._negNbrDx[axis],
+					VoxelMaskExtractor._negNbrDy[axis],
+					VoxelMaskExtractor._negNbrDz[axis],
+				)
+			) {
+				this.clearSlice(mask, lightMask, size);
+				return;
+			}
+			let idx = 0;
+			for (let v = 0; v < size; v++) {
+				for (let u = 0; u < size; u++) {
+					this.processCell(
+						bxPerm[axis] === 0 ? -1 : bxPerm[axis] === 1 ? u : v,
+						byPerm[axis] === 0 ? -1 : byPerm[axis] === 1 ? u : v,
+						bzPerm[axis] === 0 ? -1 : bzPerm[axis] === 1 ? u : v,
+						VoxelMaskExtractor._ndxDx[axis],
+						VoxelMaskExtractor._ndyDy[axis],
+						VoxelMaskExtractor._ndzDz[axis],
+						axis === 0 ? 1 : axis === 2 ? 0 : 2,
+						axis === 0 ? 2 : axis === 2 ? 1 : 0,
+						currentFaceBit,
+						neighborFaceBit,
+						idx,
+						mask,
+						lightMask,
+					);
+					idx++;
+				}
+			}
 			return;
 		}
 
-		if (axis === 1) {
-			this.extractSliceMaskY(slice, mask, lightMask);
+		// Positive boundary: faces at position size overflow.
+		// The next chunk renders these faces at its position 0.
+		if (slice === size - 1) {
+			this.clearSlice(mask, lightMask, size);
 			return;
 		}
 
-		this.extractSliceMaskZ(slice, mask, lightMask);
+		const uAxis = axis === 0 ? 1 : axis === 2 ? 0 : 2;
+		const vAxis = axis === 0 ? 2 : axis === 2 ? 1 : 0;
+		const dx = axis === 0 ? 1 : 0;
+		const dy = axis === 1 ? 1 : 0;
+		const dz = axis === 2 ? 1 : 0;
+
+		let idx = 0;
+		for (let v = 0; v < size; v++) {
+			for (let u = 0; u < size; u++) {
+				this.processCell(
+					bxPerm[axis] === 0 ? slice : bxPerm[axis] === 1 ? u : v,
+					byPerm[axis] === 0 ? slice : byPerm[axis] === 1 ? u : v,
+					bzPerm[axis] === 0 ? slice : bzPerm[axis] === 1 ? u : v,
+					dx,
+					dy,
+					dz,
+					uAxis,
+					vAxis,
+					currentFaceBit,
+					neighborFaceBit,
+					idx,
+					mask,
+					lightMask,
+				);
+				idx++;
+			}
+		}
 	}
 }

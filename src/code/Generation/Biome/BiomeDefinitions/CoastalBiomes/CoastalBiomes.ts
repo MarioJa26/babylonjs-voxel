@@ -2,6 +2,7 @@
 import { GenerationParams } from "../../../NoiseAndParameters/GenerationParams";
 import { BIOME_ID, type Biome, type TreeDefinition } from "../../BiomeTypes";
 import { OAK_TREE } from "../TemperateBiomes/TemperateTrees";
+import { PALM_TREE } from "../TropicalBiomes/TropicalTrees";
 
 // ── Existing ──────────────────────────────────────────────────────────────────
 
@@ -22,6 +23,8 @@ export const OCEAN: Biome = {
 	heightExponent: 0.04,
 	terrainHeightBase: 0,
 	terrainHeightAmplitude: 0.1,
+
+	findlingChance: 0.0008,
 
 	getTreeForBlock(blockId: number): TreeDefinition | null {
 		if (blockId === this.topBlock) return OAK_TREE;
@@ -59,7 +62,7 @@ export const SANDY_SHORE: Biome = {
 	undergroundBlock: 3, // sand
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
-	treeDensity: 0.0,
+	treeDensity: 0.12,
 	grassDensity: 0.05, // sparse beach grass
 	beachBlock: 3, // sandstone
 	seafloorBlock: 3, // sandstone
@@ -67,10 +70,11 @@ export const SANDY_SHORE: Biome = {
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.7,
 	persistence: 0.16,
 	heightExponent: 1.2,
-	terrainHeightBase: GenerationParams.SEA_LEVEL + 2,
-	terrainHeightAmplitude: 4,
+	terrainHeightBase: GenerationParams.SEA_LEVEL - 22,
+	terrainHeightAmplitude: 1,
 
-	getTreeForBlock(): TreeDefinition | null {
+	getTreeForBlock(blockId: number): TreeDefinition | null {
+		if (blockId === this.topBlock) return PALM_TREE;
 		return null;
 	},
 };
@@ -89,9 +93,11 @@ export const ROCKY_SHORE: Biome = {
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.55,
 	persistence: 0.22,
-	heightExponent: 1.05,
-	terrainHeightBase: GenerationParams.SEA_LEVEL + 3,
-	terrainHeightAmplitude: 20,
+	heightExponent: 1.5,
+	terrainHeightBase: GenerationParams.SEA_LEVEL - 25,
+	terrainHeightAmplitude: 2,
+
+	findlingChance: 0.0006,
 
 	getTreeForBlock(): TreeDefinition | null {
 		return null;
@@ -103,14 +109,14 @@ export const ROCKY_SHORE: Biome = {
 export const CORAL_REEF: Biome = {
 	id: BIOME_ID.CORAL_REEF,
 	name: "Coral_Reef",
-	topBlock: 64, // coral block
+	topBlock: 3, // sand
 	undergroundBlock: 3, // sand (reef base)
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
 	treeDensity: 0.0,
-	grassDensity: 0.6, // dense sea grass and coral plants
-	beachBlock: 23, // sand
-	seafloorBlock: 109, // coral seafloor
+	grassDensity: 0.3, // dense sea grass and coral plants
+	beachBlock: 3, // sand
+	seafloorBlock: 84, // coral seafloor
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.8,
 	persistence: 0.21,
@@ -178,8 +184,8 @@ export const ARCHIPELAGO: Biome = {
 	canSpawnTrees: true,
 	treeDensity: 0.1, // small scattered trees on island tops
 	grassDensity: 0.35,
-	beachBlock: 23, // sand beach around each islet
-	seafloorBlock: 23, // sandy shallow between islands
+	beachBlock: 2, // sand beach around each islet
+	seafloorBlock: 2, // sandy shallow between islands
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.6,
 	persistence: 0.28,

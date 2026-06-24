@@ -1,6 +1,10 @@
 import type { Engine, Observer, Scene, Vector3 } from "@babylonjs/core";
 import { CustomBoat } from "../Entities/CustomBoat";
-import { getBiome } from "../Generation/TerrainHeightMap";
+import {
+	getBiome,
+	getFinalTerrainHeight,
+	getTerrainNoiseDebug,
+} from "../Generation/TerrainHeightMap";
 import type { IControls } from "../Interface/IControls";
 import { Map1 } from "../Maps/Map1";
 import { Chunk } from "../World/Chunk/Chunk";
@@ -23,6 +27,9 @@ import type { PlayerCamera } from "./PlayerCamera";
 import { Gamemodes, type PlayerStats } from "./PlayerStats";
 
 export let isInCave = false;
+
+// PERF: Reusable scratch for debug HUD dispatch histogram — avoids per-tick allocation.
+const _indexedScratch: { count: number; index: number }[] = [];
 
 export class PlayerLoopController {
 	// ---- chunk-loading position tracking ----
@@ -309,6 +316,43 @@ export class PlayerLoopController {
 			getBiome(Math.floor(playerPos.x), Math.floor(playerPos.z)).name,
 			"biome",
 		);
+
+		const terrainNoise = getTerrainNoiseDebug(
+			Math.floor(playerPos.x),
+			Math.floor(playerPos.z),
+		);
+		PlayerHud.updateDebugInfo(
+			"Continent",
+			terrainNoise.continent.toFixed(3),
+			"biome",
+		);
+		PlayerHud.updateDebugInfo(
+			"Temperature",
+			terrainNoise.temperature.toFixed(3),
+			"biome",
+		);
+		PlayerHud.updateDebugInfo(
+			"Humidity",
+			terrainNoise.humidity.toFixed(3),
+			"biome",
+		);
+		PlayerHud.updateDebugInfo(
+			"Erosion",
+			terrainNoise.erosion.toFixed(3),
+			"biome",
+		);
+		PlayerHud.updateDebugInfo("P&V", terrainNoise.pv.toFixed(3), "biome");
+		PlayerHud.updateDebugInfo(
+			"River Noise",
+			terrainNoise.river.toFixed(3),
+			"biome",
+		);
+		PlayerHud.updateDebugInfo(
+			"Height",
+			getFinalTerrainHeight(Math.floor(playerPos.x), Math.floor(playerPos.z)),
+			"biome",
+		);
+
 		PlayerHud.updateDebugInfo(
 			"Loaded Chunks",
 			Chunk.loadedChunks.size,
@@ -366,16 +410,17 @@ export class PlayerLoopController {
 		);
 
 		const counts = workerStats.workerDispatchCounts;
-		const indexed: { count: number; index: number }[] = [];
+		// PERF: Reuse scratch array to avoid per-tick allocation.
+		_indexedScratch.length = 0;
 		for (let i = 0; i < counts.length; i++) {
-			if (counts[i] > 0) indexed.push({ count: counts[i], index: i });
+			if (counts[i] > 0) _indexedScratch.push({ count: counts[i], index: i });
 		}
-		indexed.sort((a, b) => b.count - a.count);
-		const limit = indexed.length < 4 ? indexed.length : 4;
+		_indexedScratch.sort((a, b) => b.count - a.count);
+		const limit = _indexedScratch.length < 4 ? _indexedScratch.length : 4;
 		let dispatchHistogram = "";
 		for (let i = 0; i < limit; i++) {
 			if (i > 0) dispatchHistogram += " ";
-			dispatchHistogram += `${indexed[i].index}:${indexed[i].count}`;
+			dispatchHistogram += `${_indexedScratch[i].index}:${_indexedScratch[i].count}`;
 		}
 
 		const indices = workerStats.lastDispatchWorkerIndices;

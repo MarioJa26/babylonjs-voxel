@@ -25,7 +25,7 @@ export class TestScene {
 		private canvas: HTMLCanvasElement,
 	) {
 		this.document = document;
-		this.engine = new Engine(this.canvas, false, {
+		this.engine = new Engine(this.canvas, true, {
 			stencil: false,
 			doNotHandleContextLost: true,
 			preserveDrawingBuffer: false,

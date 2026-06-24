@@ -1,3 +1,4 @@
+import { BlockType } from "../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "./Biome/BiomeTypes";
 import {
 	NO_SURFACE_Y as CAVE_NO_SURFACE_Y,
@@ -936,36 +937,188 @@ export class SurfaceGenerator {
 						? colBiome.beachBlock
 						: colBiome.topBlock;
 
-				// Grass (id 64) spawns on grass blocks (id 15) using noise density.
-				// treeNoiseValue is [0,1]; threshold of 0.6 gives ~60% coverage.
-				const GRASS_DENSITY = _biome.grassDensity;
-				if (isInsideChunkColumn && column.treeNoiseValue < GRASS_DENSITY) {
-					if (topBlockId === 15) {
-						placeBlock(worldX, surfaceY + 1, worldZ, 64);
-					} else {
-						if (topBlockId === 65) placeBlock(worldX, surfaceY + 1, worldZ, 66);
+				// Trees are gated by canSpawnTrees + noise density check
+				if (colBiome.canSpawnTrees) {
+					if (column.treeNoiseValue < colBiome.treeDensity) {
+						const treeDefinition = colBiome.getTreeForBlock(
+							topBlockId,
+							column.treeNoiseValue,
+						);
+						treeDefinition?.generate(
+							worldX,
+							surfaceY + 1,
+							worldZ,
+							placeBlock,
+							SurfaceGenerator.seedAsInt,
+						);
+
+						//Skip grass
+						continue;
 					}
 				}
 
-				// Trees are gated by canSpawnTrees + noise density check
-				if (!colBiome.canSpawnTrees) continue;
-				if (column.treeNoiseValue > colBiome.treeDensity) continue;
+				// Grass (id 64) spawns on grass blocks (id 15) using noise density.
+				// treeNoiseValue is [0,1]; threshold of 0.6 gives ~60% coverage.
+				const GRASS_DENSITY = _biome.grassDensity;
+				if (isInsideChunkColumn) {
+					if (column.treeNoiseValue < GRASS_DENSITY) {
+						if (
+							topBlockId === BlockType.Grass001 ||
+							topBlockId === BlockType.RockyTerrain02 ||
+							topBlockId === BlockType.ConcreteMoss
+						) {
+							placeBlock(worldX, surfaceY + 1, worldZ, 64);
+						} else {
+							if (topBlockId === 65)
+								placeBlock(worldX, surfaceY + 1, worldZ, 66);
+						}
+					}
 
-				const treeDefinition = colBiome.getTreeForBlock(
-					topBlockId,
-					column.treeNoiseValue,
-				);
-				treeDefinition?.generate(
-					worldX,
-					surfaceY + 1,
-					worldZ,
-					placeBlock,
-					SurfaceGenerator.seedAsInt,
-				);
+					// Findlinge (glacial erratics) — noise-displaced irregular boulders.
+					const findlingeChance = colBiome.findlingChance ?? 0.00005;
+					if (findlingeChance > 0) {
+						this.generateFindlinge(
+							worldX,
+							worldZ,
+							surfaceY,
+							colBiome,
+							placeBlock,
+						);
+					}
+				}
 			}
 		}
 	}
+	private generateFindlinge(
+		worldX: number,
+		worldZ: number,
+		surfaceY: number,
+		colBiome: Biome,
+		placeBlock: (x: number, y: number, z: number, id: number) => void,
+	): void {
+		const findlingeChance = colBiome.findlingChance ?? 0.00005;
+		const h = this.hashColumn(worldX, worldZ, SurfaceGenerator.seedAsInt);
+		if (h >= findlingeChance) return;
 
+		const MAX_HALF = 6;
+		const localX = worldX & 31;
+		const localZ = worldZ & 31;
+		if (
+			localX < MAX_HALF ||
+			localX > 31 - MAX_HALF ||
+			localZ < MAX_HALF ||
+			localZ > 31 - MAX_HALF
+		)
+			return;
+
+		const wHash = this.hashColumn(
+			worldX + 1000,
+			worldZ,
+			SurfaceGenerator.seedAsInt,
+		);
+		const dHash = this.hashColumn(
+			worldX,
+			worldZ + 1000,
+			SurfaceGenerator.seedAsInt,
+		);
+		const hHash = this.hashColumn(
+			worldX + 1000,
+			worldZ + 1000,
+			SurfaceGenerator.seedAsInt,
+		);
+		const tHash = this.hashColumn(
+			worldX + 2000,
+			worldZ + 2000,
+			SurfaceGenerator.seedAsInt,
+		);
+
+		const halfW = 3 + Math.floor(wHash * 8);
+		const halfD = 3 + Math.floor(dHash * 8);
+		const halfH = 3 + Math.floor(hHash * 9);
+		const tiltX = (tHash - 0.5) * 0.8;
+		const tiltZ =
+			(this.hashColumn(worldX + 3000, worldZ, SurfaceGenerator.seedAsInt) -
+				0.5) *
+			0.8;
+
+		const burialDepth = Math.floor(halfH * 0.15);
+		const cx = worldX;
+		const cy = surfaceY - burialDepth;
+		const cz = worldZ;
+
+		const warpAmt = 1.2 + tHash * 0.8;
+		const invW = 1 / halfW;
+		const invD = 1 / halfD;
+		const invH = 1 / halfH;
+
+		const dxRange = halfW + 1;
+		const dzRange = halfD + 1;
+		const dyMin = -(halfH + 1);
+		const dyMax = halfH + 1;
+
+		const dxCount = 2 * dxRange + 1;
+		const dzCount = 2 * dzRange + 1;
+		const dyCount = dyMax - dyMin + 1;
+
+		const warpW = warpAmt * invW;
+		const warpD = warpAmt * invD;
+		const warpH = warpAmt * 0.5 * invH;
+
+		const wxArr = new Float32Array(dxCount);
+		for (let i = 0; i < dxCount; i++) {
+			const dx = i - dxRange;
+			wxArr[i] = SurfaceGenerator.densityNoise(
+				(cx + dx) * 0.18,
+				cy * 0.22,
+				cz * 0.18,
+			);
+		}
+
+		const wzArr = new Float32Array(dzCount);
+		for (let i = 0; i < dzCount; i++) {
+			const dz = i - dzRange;
+			wzArr[i] = SurfaceGenerator.densityNoise(
+				cx * 0.22,
+				cy * 0.18,
+				(cz + dz) * 0.22 + 17.3,
+			);
+		}
+
+		const wyArr = new Float32Array(dyCount);
+		for (let i = 0; i < dyCount; i++) {
+			const dy = dyMin + i;
+			wyArr[i] = SurfaceGenerator.densityNoise(
+				cx * 0.2 + 7.1,
+				(cy + dy) * 0.2,
+				cz * 0.2,
+			);
+		}
+
+		const blockId = colBiome.findlingBlockId ?? 1;
+
+		for (let dy = dyMin; dy <= dyMax; dy++) {
+			const ny = dy * invH;
+			const wny = ny + wyArr[dy - dyMin] * warpH;
+			const wny2 = wny * wny;
+			const flatBase = wny < 0 ? wny2 * 0.5 : 0;
+			if (wny2 + flatBase >= 1.0) continue;
+
+			for (let dx = -dxRange; dx <= dxRange; dx++) {
+				const nx = dx * invW;
+				const wnx = nx + wxArr[dx + dxRange] * warpW + tiltX * ny;
+				const wnx2 = wnx * wnx;
+				if (wnx2 + wny2 + flatBase >= 1.0) continue;
+
+				for (let dz = -dzRange; dz <= dzRange; dz++) {
+					const nz = dz * invD;
+					const wnz = nz + wzArr[dz + dzRange] * warpD + tiltZ * ny;
+					if (wnx2 + wny2 + wnz * wnz + flatBase < 1.0) {
+						placeBlock(cx + dx, cy + dy, cz + dz, blockId);
+					}
+				}
+			}
+		}
+	}
 	private generateStructures(
 		chunkX: number,
 		chunkY: number,
@@ -1161,5 +1314,12 @@ export class SurfaceGenerator {
 		}
 
 		return highestSolid;
+	}
+
+	private hashColumn(x: number, z: number, seed: number): number {
+		let h = (x * 374761393 + z * 668265263 + seed) | 0;
+		h = ((h ^ (h >> 13)) * 1274126177) | 0;
+		h = (h ^ (h >> 16)) >>> 0;
+		return h / 4294967296;
 	}
 }

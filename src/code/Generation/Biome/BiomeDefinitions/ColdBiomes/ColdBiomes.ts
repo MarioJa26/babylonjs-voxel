@@ -46,7 +46,7 @@ export const TUNDRA_MOUNTAINS: Biome = {
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.4,
 	persistence: 0.2,
-	heightExponent: 2,
+	heightExponent: 2.5,
 	terrainHeightBase: 80,
 	terrainHeightAmplitude: 180,
 
@@ -75,6 +75,8 @@ export const FROZEN_OCEAN: Biome = {
 	heightExponent: 0.05,
 	terrainHeightBase: 0,
 	terrainHeightAmplitude: 0.3,
+	pvNoiseScale: 0.05,
+	erosionNoiseScale: 0.1,
 
 	getTreeForBlock(): TreeDefinition | null {
 		return null;
@@ -95,7 +97,7 @@ export const ICE_SPIKES: Biome = {
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.45,
 	persistence: 0.35,
-	heightExponent: 2.8, // very spiky exponent for dramatic vertical terrain
+	heightExponent: 3.5, // very spiky exponent for dramatic vertical terrain
 	terrainHeightBase: 55,
 	terrainHeightAmplitude: 120,
 
@@ -118,9 +120,9 @@ export const SNOWY_PLAINS: Biome = {
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.9,
 	persistence: 0.15,
-	heightExponent: 1.05,
+	heightExponent: 1.01,
 	terrainHeightBase: 43,
-	terrainHeightAmplitude: 14, // very flat
+	terrainHeightAmplitude: 6, // very flat
 
 	getTreeForBlock(): TreeDefinition | null {
 		return ICE_SPIKE_COLUMN;
@@ -141,9 +143,9 @@ export const FROZEN_TUNDRA_PLAINS: Biome = {
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.85,
 	persistence: 0.14,
-	heightExponent: 1.05,
+	heightExponent: 1.01,
 	terrainHeightBase: 48,
-	terrainHeightAmplitude: 12, // very flat frozen plains
+	terrainHeightAmplitude: 5, // very flat frozen plains
 	pvNoiseScale: 0.15,
 	erosionNoiseScale: 0.2,
 

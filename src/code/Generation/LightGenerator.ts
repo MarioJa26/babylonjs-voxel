@@ -121,20 +121,14 @@ export class LightGenerator {
 		const CHUNK_SIZE = LightGenerator.chunkSize;
 		const CHUNK_SIZE_SQ = LightGenerator.chunkSizeSq;
 
-		const chunkWorldX = chunkX * CHUNK_SIZE;
 		const chunkWorldY = chunkY * CHUNK_SIZE;
-		const chunkWorldZ = chunkZ * CHUNK_SIZE;
-		const topWorldY = chunkWorldY + CHUNK_SIZE - 1;
 
 		// Clear light buffer before seeding.
 		// If callers reuse buffers, this prevents old lighting data from leaking.
 		light.fill(0);
 
 		for (let x = 0; x < CHUNK_SIZE; x++) {
-			const worldX = chunkWorldX + x;
-
 			for (let z = 0; z < CHUNK_SIZE; z++) {
-				const worldZ = chunkWorldZ + z;
 				const columnIndex = x + z * CHUNK_SIZE;
 
 				let incomingSkyLight = topSunlightMask
@@ -416,15 +410,19 @@ export class LightGenerator {
 		return tail;
 	}
 
+	private static readonly _transparentLUT: Uint8Array = (() => {
+		const lut = new Uint8Array(128);
+		lut[0] = 1;
+		lut[WATER_BLOCK_ID] = 1;
+		lut[60] = 1;
+		lut[61] = 1;
+		lut[64] = 1;
+		lut[66] = 1;
+		return lut;
+	})();
+
 	private static isTransparentBlock(blockId: number): boolean {
-		return (
-			blockId === 0 ||
-			blockId === WATER_BLOCK_ID ||
-			blockId === 60 ||
-			blockId === 61 ||
-			blockId === 64 ||
-			blockId === 66
-		);
+		return blockId < 128 && LightGenerator._transparentLUT[blockId] === 1;
 	}
 }
 

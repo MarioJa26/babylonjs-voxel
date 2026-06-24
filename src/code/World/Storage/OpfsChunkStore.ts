@@ -1,13 +1,13 @@
-interface PendingOp {
-	execute: () => Promise<void>;
-	resolve: () => void;
-	reject: (err: unknown) => void;
-}
+const _rwOpts = { at: 0 };
 
 const SLOT_SIZE_U = 32;
 const HEADER_SIZE_U = 4096;
 const SLOT_FLAG_DIRTY = 0x01;
+const SLOT_FLAG_OCCUPIED = 0x02;
 const SLOT_FLAG_REMOVED = 0x04;
+
+const COMPACT_MIN_ORPHANED = 4 * 1024 * 1024; // 4 MB minimum before compacting
+const COMPACT_RATIO_THRESHOLD = 0.5; // compact when live < 50% of file
 
 export class OpfsChunkStore {
 	private _fileHandle: FileSystemFileHandle | null = null;
@@ -19,26 +19,24 @@ export class OpfsChunkStore {
 	private _dataSize: bigint = 0n;
 	private _dirty = false;
 
-	private _opQueue: PendingOp[] = [];
-	private _processing = false;
-
-	// Per-instance scratch buffers — all three views share the same backing
-	// ArrayBuffer so writes through _scratchDv / _scratchU8 are visible to
-	// each other and to the write() call.
-	// NOTE: readonly fields may only be assigned in the constructor body, not
-	// via Object.assign — Object.assign calls [[Set]] which is a no-op on
-	// non-writable properties and silently corrupts the buffer wiring.
 	private readonly _scratch: ArrayBuffer;
 	private readonly _scratchDv: DataView;
 	private readonly _scratchU8: Uint8Array;
+	private readonly _readSlab: Uint8Array;
+	private readonly _headerBuf: Uint8Array;
 
-	// Cached file size — avoids a getSize() syscall on every write().
 	private _fileSize = 0;
+
+	private _hitCount = 0;
+	private _missCount = 0;
+	private _evictionCount = 0;
 
 	constructor() {
 		this._scratch = new ArrayBuffer(SLOT_SIZE_U);
 		this._scratchDv = new DataView(this._scratch);
 		this._scratchU8 = new Uint8Array(this._scratch);
+		this._readSlab = new Uint8Array(256 * 1024);
+		this._headerBuf = new Uint8Array(HEADER_SIZE_U);
 	}
 
 	private get _dataStartOffset(): number {
@@ -53,13 +51,11 @@ export class OpfsChunkStore {
 
 		try {
 			if (file.size === 0) {
-				await this._init();
+				this._init();
 			} else {
-				await this._load();
+				this._load();
 			}
 		} catch (err) {
-			// Close the access handle so it doesn't block a future
-			// createSyncAccessHandle() call for the same file.
 			if (this._accessHandle) {
 				this._accessHandle.close();
 				this._accessHandle = null;
@@ -69,164 +65,160 @@ export class OpfsChunkStore {
 		}
 	}
 
-	async close(): Promise<void> {
-		await this.enqueue(async () => {
-			if (this._accessHandle) {
-				this._accessHandle.close();
-				this._accessHandle = null;
-			}
-			this._fileHandle = null;
-		});
+	close(): void {
+		if (this._accessHandle) {
+			this._accessHandle.close();
+			this._accessHandle = null;
+		}
+		this._fileHandle = null;
 	}
 
-	async write(
-		keyHi: number,
-		keyLo: number,
-		lod: number,
-		data: Uint8Array,
-	): Promise<void> {
-		await this.enqueue(async () => {
-			const { dv, index } = this._findSlot(keyHi, keyLo, lod);
-			const off = index * SLOT_SIZE_U;
-			const existingFlags = dv.getUint8(off + 9);
-			const existingSize = dv.getUint32(off + 16, true);
-			const storedHi = dv.getUint32(off, true);
-			const storedLo = dv.getUint32(off + 4, true);
+	write(keyHi: number, keyLo: number, lod: number, data: Uint8Array): void {
+		const index = this._findSlot(keyHi, keyLo, lod);
+		const dv = this._tableView;
+		const off = index * SLOT_SIZE_U;
+		const existingFlags = dv.getUint8(off + 9);
+		const existingSize = dv.getUint32(off + 16, true);
 
-			const wasLive =
-				existingSize > 0 &&
-				(existingFlags & SLOT_FLAG_REMOVED) === 0 &&
-				!(storedHi === 0 && storedLo === 0);
+		const wasLive =
+			existingSize > 0 &&
+			(existingFlags & SLOT_FLAG_REMOVED) === 0 &&
+			(existingFlags & SLOT_FLAG_OCCUPIED) !== 0;
 
-			const diskOffset = this._dataSize;
-			const size = data.length;
+		const diskOffset = this._dataSize;
+		const size = data.length;
 
-			// FIX: zero the scratch before use so reserved / checksum fields are clean.
-			this._scratchU8.fill(0);
-			this._scratchDv.setUint32(0, keyHi, true);
-			this._scratchDv.setUint32(4, keyLo, true);
-			this._scratchDv.setUint8(8, lod);
-			this._scratchDv.setUint8(9, SLOT_FLAG_DIRTY);
-			// bytes 10-11: reserved = 0 (already zeroed)
-			this._scratchDv.setUint32(16, size, true);
-			this._scratchDv.setBigUint64(20, diskOffset, true);
-			// bytes 28-31: checksum = 0 (already zeroed)
+		this._scratchU8.fill(0);
+		this._scratchDv.setUint32(0, keyHi, true);
+		this._scratchDv.setUint32(4, keyLo, true);
+		this._scratchDv.setUint8(8, lod);
+		this._scratchDv.setUint8(9, SLOT_FLAG_DIRTY | SLOT_FLAG_OCCUPIED);
+		this._scratchDv.setUint32(16, size, true);
+		this._scratchDv.setBigUint64(20, diskOffset, true);
 
-			const slotAt = HEADER_SIZE_U + off;
-			const dataAt = this._dataStartOffset + Number(diskOffset);
-			const neededEnd = Math.max(slotAt + SLOT_SIZE_U, dataAt + size);
+		const slotAt = HEADER_SIZE_U + off;
+		const dataAt = this._dataStartOffset + Number(diskOffset);
+		const neededEnd = Math.max(slotAt + SLOT_SIZE_U, dataAt + size);
 
-			// Use cached _fileSize — avoids a getSize() syscall on every write.
-			if (neededEnd > this._fileSize) {
-				const headroom = Math.max(size, 1024 * 1024);
-				const newSize = neededEnd + headroom;
-				this._accessHandle!.truncate(newSize);
-				this._fileSize = newSize;
-				this._accessHandle!.flush();
-			}
+		if (neededEnd > this._fileSize) {
+			const headroom = Math.max(size, 1024 * 1024);
+			const newSize = neededEnd + headroom;
+			this._accessHandle!.truncate(newSize);
+			this._fileSize = newSize;
+		}
 
-			// Also update the in-memory table view so subsequent findSlot probes work.
-			new Uint8Array(this._tableBuffer, off, SLOT_SIZE_U).set(this._scratchU8);
+		new Uint8Array(this._tableBuffer, off, SLOT_SIZE_U).set(this._scratchU8);
 
-			this._accessHandle!.write(this._scratchU8, { at: slotAt });
-			this._accessHandle!.write(data, { at: dataAt });
+		_rwOpts.at = slotAt;
+		this._accessHandle!.write(this._scratchU8, _rwOpts);
+		_rwOpts.at = dataAt;
+		this._accessHandle!.write(data, _rwOpts);
 
-			// FIX: only increment _size when slot was previously empty/removed.
-			// Never decrement _dataSize — it's an append-only bump pointer.
-			if (!wasLive) {
-				this._size++;
-			}
-			this._dataSize += BigInt(size);
-			this._dirty = true;
-		});
+		if (!wasLive) {
+			this._size++;
+		}
+		this._dataSize += BigInt(size);
+		this._dirty = true;
 	}
 
-	async read(
-		keyHi: number,
-		keyLo: number,
-		lod: number,
-	): Promise<Uint8Array | null> {
-		let result: Uint8Array | null = null;
-		await this.enqueue(async () => {
-			const { dv, index } = this._findSlot(keyHi, keyLo, lod);
-			const off = index * SLOT_SIZE_U;
-			const flags = dv.getUint8(off + 9);
-			const size = dv.getUint32(off + 16, true);
-			const offset = dv.getBigUint64(off + 20, true);
+	read(keyHi: number, keyLo: number, lod: number): Uint8Array | null {
+		const index = this._findSlot(keyHi, keyLo, lod);
+		const dv = this._tableView;
+		const off = index * SLOT_SIZE_U;
+		const flags = dv.getUint8(off + 9);
+		const size = dv.getUint32(off + 16, true);
+		const offset = dv.getBigUint64(off + 20, true);
 
-			if (size === 0 || (flags & SLOT_FLAG_REMOVED) !== 0) {
-				result = null;
-				return;
-			}
+		if (
+			size === 0 ||
+			(flags & SLOT_FLAG_REMOVED) !== 0 ||
+			(flags & SLOT_FLAG_OCCUPIED) === 0
+		) {
+			this._missCount++;
+			return null;
+		}
 
-			const buf = new Uint8Array(size);
-			const at = this._dataStartOffset + Number(offset);
-			const got = this._accessHandle!.read(buf, { at });
+		const at = this._dataStartOffset + Number(offset);
+		// NOTE: slice() is intentional here — _readSlab is reused across reads,
+		// so returning a subarray would silently corrupt previous results.
+		if (size <= this._readSlab.byteLength) {
+			_rwOpts.at = at;
+			const got = this._accessHandle!.read(this._readSlab, _rwOpts);
 			if (got !== size) {
-				result = null;
-				return;
+				this._missCount++;
+				return null;
 			}
-
-			result = buf;
-		});
-		return result;
+			this._hitCount++;
+			return this._readSlab.slice(0, size);
+		}
+		const buf = new Uint8Array(size);
+		_rwOpts.at = at;
+		const got = this._accessHandle!.read(buf, _rwOpts);
+		if (got !== size) {
+			this._missCount++;
+			return null;
+		}
+		this._hitCount++;
+		return buf;
 	}
 
-	async remove(keyHi: number, keyLo: number, lod: number): Promise<boolean> {
-		let removed = false;
-		await this.enqueue(async () => {
-			const { dv, index } = this._findSlot(keyHi, keyLo, lod);
-			const off = index * SLOT_SIZE_U;
-			const existingFlags = dv.getUint8(off + 9);
-			if (existingFlags & SLOT_FLAG_REMOVED) return;
+	remove(keyHi: number, keyLo: number, lod: number): boolean {
+		const index = this._findSlot(keyHi, keyLo, lod);
+		const dv = this._tableView;
+		const off = index * SLOT_SIZE_U;
+		const existingFlags = dv.getUint8(off + 9);
+		if (existingFlags & SLOT_FLAG_REMOVED) return false;
+		if ((existingFlags & SLOT_FLAG_OCCUPIED) === 0) return false;
 
-			// Check it's actually an occupied slot (not an empty probe stop).
-			const storedHi = dv.getUint32(off, true);
-			const storedLo = dv.getUint32(off + 4, true);
-			if (storedHi === 0 && storedLo === 0) return;
+		// Write flag byte and zeroed size via existing scratch buffer.
+		this._scratchU8[0] = SLOT_FLAG_REMOVED;
+		_rwOpts.at = HEADER_SIZE_U + off + 9;
+		this._accessHandle!.write(this._scratchU8.subarray(0, 1), _rwOpts);
 
-			const existingSize = dv.getUint32(off + 16, true);
+		this._scratchDv.setUint32(0, 0, true);
+		_rwOpts.at = HEADER_SIZE_U + off + 16;
+		this._accessHandle!.write(this._scratchU8.subarray(0, 4), _rwOpts);
 
-			// FIX: write only the two fields we're changing; zero scratch first so
-			// no stale bytes from a prior write() call bleed into the disk write.
-			// We write flag byte and size field independently — minimal I/O.
-			const flagByte = new Uint8Array(1);
-			flagByte[0] = SLOT_FLAG_REMOVED;
-			this._accessHandle!.write(flagByte, {
-				at: HEADER_SIZE_U + off + 9,
-			});
+		dv.setUint8(off + 9, SLOT_FLAG_REMOVED);
+		dv.setUint32(off + 16, 0, true);
 
-			const sizeBuf = new Uint8Array(4);
-			new DataView(sizeBuf.buffer).setUint32(0, 0, true);
-			this._accessHandle!.write(sizeBuf, {
-				at: HEADER_SIZE_U + off + 16,
-			});
-
-			// Mirror into in-memory table.
-			dv.setUint8(off + 9, SLOT_FLAG_REMOVED);
-			dv.setUint32(off + 16, 0, true);
-
-			this._size--;
-			// FIX: do NOT subtract from _dataSize — it's an append-only bump pointer.
-			removed = true;
-		});
-		return removed;
+		this._size--;
+		this._evictionCount++;
+		return true;
 	}
 
-	async flush(): Promise<void> {
-		await this.enqueue(async () => {
-			if (!this._dirty) return;
-			this._writeHeader();
-			this._accessHandle!.flush();
-			this._dirty = false;
-		});
+	flush(): void {
+		if (!this._dirty) return;
+		this._writeHeader();
+		this._accessHandle!.flush();
+		this._dirty = false;
+	}
+
+	getStats(): {
+		slotCount: number;
+		usedBytes: number;
+		totalBytes: number;
+		capacity: number;
+		hitCount: number;
+		missCount: number;
+		evictionCount: number;
+	} {
+		return {
+			slotCount: this._size,
+			usedBytes: Number(this._dataSize),
+			totalBytes: this._fileSize,
+			capacity: this._capacity,
+			hitCount: this._hitCount,
+			missCount: this._missCount,
+			evictionCount: this._evictionCount,
+		};
 	}
 
 	// ── Private ──────────────────────────────────────────────────────
 
 	private static readonly INITIAL_CAPACITY = 1 << 20; // 1,048,576 slots, ~32MB table
 
-	private async _init(): Promise<void> {
+	private _init(): void {
 		this._capacity = OpfsChunkStore.INITIAL_CAPACITY;
 		this._size = 0;
 		this._dataSize = 0n;
@@ -241,27 +233,24 @@ export class OpfsChunkStore {
 		this._accessHandle!.flush();
 	}
 
-	private async _load(): Promise<void> {
-		const header = new Uint8Array(HEADER_SIZE_U);
-		this._accessHandle!.read(header, { at: 0 });
-		const dv = new DataView(header.buffer);
-		// Ignore stored _size and _dataSize — recompute from table.
+	private _load(): void {
+		_rwOpts.at = 0;
+		this._accessHandle!.read(this._headerBuf, _rwOpts);
+		const dv = new DataView(this._headerBuf.buffer);
 		this._capacity = dv.getUint32(12, true);
 
-		// Force reinit for old/incompatible files (wrong capacity, corrupted data).
 		if (this._capacity < OpfsChunkStore.INITIAL_CAPACITY) {
-			await this._init();
+			this._init();
 			return;
 		}
 
 		const tableBytes = this._capacity * SLOT_SIZE_U;
 		this._tableBuffer = new ArrayBuffer(tableBytes);
 		const tableU8 = new Uint8Array(this._tableBuffer);
-		this._accessHandle!.read(tableU8, { at: HEADER_SIZE_U });
+		_rwOpts.at = HEADER_SIZE_U;
+		this._accessHandle!.read(tableU8, _rwOpts);
 		this._tableView = new DataView(this._tableBuffer);
 
-		// FIX: recompute _size and _dataSize from the slot table to recover
-		// from any corruption caused by old append-pointer bugs.
 		let liveCount = 0;
 		let dataEnd = 0n;
 		for (let i = 0; i < this._capacity; i++) {
@@ -269,7 +258,12 @@ export class OpfsChunkStore {
 			const flags = this._tableView.getUint8(off + 9);
 			const size = this._tableView.getUint32(off + 16, true);
 			const diskOffset = this._tableView.getBigUint64(off + 20, true);
-			if (size === 0 || (flags & SLOT_FLAG_REMOVED) !== 0) continue;
+			if (
+				size === 0 ||
+				(flags & SLOT_FLAG_REMOVED) !== 0 ||
+				(flags & SLOT_FLAG_OCCUPIED) === 0
+			)
+				continue;
 			liveCount++;
 			const end = diskOffset + BigInt(size);
 			if (end > dataEnd) dataEnd = end;
@@ -277,24 +271,24 @@ export class OpfsChunkStore {
 		this._size = liveCount;
 		this._dataSize = dataEnd;
 
-		// Cache the actual file size so write() doesn't call getSize() per op.
 		this._fileSize = this._accessHandle!.getSize() as number;
 
 		this._dirty = true;
 	}
 
-	private _findSlot(
-		keyHi: number,
-		keyLo: number,
-		lod: number,
-	): { dv: DataView; index: number } {
+	private _findSlot(keyHi: number, keyLo: number, lod: number): number {
 		if (this._capacity === 0) {
 			this._grow();
 			return this._findSlot(keyHi, keyLo, lod);
 		}
 
+		if (this._size * 100 > this._capacity * 70) {
+			throw new Error(
+				`[OpfsChunkStore] Mesh table too full (${this._size}/${this._capacity})`,
+			);
+		}
+
 		const capacity = this._capacity;
-		// PERF: use bitwise AND for power-of-two capacities (always true after _grow).
 		const mask = capacity - 1;
 		const isPow2 = (capacity & mask) === 0;
 
@@ -314,22 +308,25 @@ export class OpfsChunkStore {
 			const f = dv.getUint8(off + 9);
 
 			const isRemoved = (f & SLOT_FLAG_REMOVED) !== 0;
-			const isEmpty = h === 0 && l === 0 && !isRemoved;
+			const isEmpty = (f & SLOT_FLAG_OCCUPIED) === 0 && !isRemoved;
 
-			if (!isRemoved && h === keyHi && l === keyLo && ld === lod) {
-				// Found the live slot.
-				return { dv, index };
+			if (
+				!isRemoved &&
+				(f & SLOT_FLAG_OCCUPIED) !== 0 &&
+				h === keyHi &&
+				l === keyLo &&
+				ld === lod
+			) {
+				return index;
 			}
 			if (isRemoved && firstRemoved === -1) {
 				firstRemoved = index;
 			}
 			if (isEmpty) {
-				// Key not present; return the first removed slot (for reuse) or this empty slot.
-				return { dv, index: firstRemoved !== -1 ? firstRemoved : index };
+				return firstRemoved !== -1 ? firstRemoved : index;
 			}
 		}
 
-		// Table full — grow and retry.
 		this._grow();
 		return this._findSlot(keyHi, keyLo, lod);
 	}
@@ -346,38 +343,72 @@ export class OpfsChunkStore {
 	}
 
 	private _writeHeader(): void {
-		const header = new Uint8Array(HEADER_SIZE_U);
-		const dv = new DataView(header.buffer);
+		const dv = new DataView(this._headerBuf.buffer);
 		dv.setUint32(0, this._size, true);
 		dv.setBigUint64(4, this._dataSize, true);
 		dv.setUint32(12, this._capacity, true);
-		this._accessHandle!.write(header, { at: 0 });
+		_rwOpts.at = 0;
+		this._accessHandle!.write(this._headerBuf, _rwOpts);
 	}
 
-	/**
-	 * PERF: The queue drainer avoids re-scheduling via microtasks when there are
-	 * already items waiting — it just continues the while loop inline.
-	 */
-	private async enqueue(fn: () => Promise<void>): Promise<void> {
-		return new Promise<void>((resolve, reject) => {
-			this._opQueue.push({ execute: fn, resolve, reject });
-			if (!this._processing) {
-				void this._drainQueue();
-			}
-		});
-	}
+	compact(): void {
+		if (!this._accessHandle) return;
 
-	private async _drainQueue(): Promise<void> {
-		this._processing = true;
-		while (this._opQueue.length > 0) {
-			const op = this._opQueue.shift()!;
-			try {
-				await op.execute();
-				op.resolve();
-			} catch (err) {
-				op.reject(err);
-			}
+		type LiveEntry = { index: number; offset: bigint; size: number };
+		const liveEntries: LiveEntry[] = [];
+
+		for (let i = 0; i < this._capacity; i++) {
+			const off = i * SLOT_SIZE_U;
+			const flags = this._tableView.getUint8(off + 9);
+			const size = this._tableView.getUint32(off + 16, true);
+			const offset = this._tableView.getBigUint64(off + 20, true);
+			if (
+				size === 0 ||
+				(flags & SLOT_FLAG_REMOVED) !== 0 ||
+				(flags & SLOT_FLAG_OCCUPIED) === 0
+			)
+				continue;
+			liveEntries.push({ index: i, offset, size });
 		}
-		this._processing = false;
+
+		liveEntries.sort((a, b) => Number(a.offset) - Number(b.offset));
+
+		const dataStart = this._dataStartOffset;
+		const copyBuf = new Uint8Array(64 * 1024);
+		let writeHead = 0n;
+
+		for (const entry of liveEntries) {
+			const srcOff = dataStart + Number(entry.offset);
+			const dstOff = dataStart + Number(writeHead);
+
+			if (Number(writeHead) !== Number(entry.offset)) {
+				let remaining = entry.size;
+				let src = srcOff;
+				let dst = dstOff;
+				while (remaining > 0) {
+					const chunk = Math.min(remaining, copyBuf.length);
+					_rwOpts.at = src;
+					this._accessHandle.read(copyBuf.subarray(0, chunk), _rwOpts);
+					_rwOpts.at = dst;
+					this._accessHandle.write(copyBuf.subarray(0, chunk), _rwOpts);
+					src += chunk;
+					dst += chunk;
+					remaining -= chunk;
+				}
+			}
+
+			const slotOff = entry.index * SLOT_SIZE_U;
+			this._tableView.setBigUint64(slotOff + 20, writeHead, true);
+			writeHead += BigInt(entry.size);
+		}
+
+		const newDataEnd = this._dataStartOffset + Number(writeHead);
+		if (newDataEnd < this._fileSize) {
+			this._accessHandle.truncate(newDataEnd);
+			this._fileSize = newDataEnd;
+		}
+
+		this._dataSize = writeHead;
+		this._dirty = true;
 	}
 }

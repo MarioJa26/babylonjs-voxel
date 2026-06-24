@@ -35,13 +35,23 @@ export function createEmptyMeshData(): WorkerInternalMeshData {
  * For now we define the signature.
  */
 
+// PERF: Cache VoxelPipeline instance to avoid per-build allocations of
+// VoxelPipeline + VoxelGreedyAdapter + VoxelMaskExtractor + VoxelFaceEmitterAdapter.
+let _cachedPipeline: VoxelPipeline | null = null;
+let _cachedPipelineCtx: MeshContext | null = null;
+
 export function buildVoxelMesh(
 	ctx: MeshContext,
 	opaqueOut: WorkerInternalMeshData,
 	transparentOut: WorkerInternalMeshData,
 ): void {
-	const pipeline = new VoxelPipeline(ctx);
-	pipeline.build(opaqueOut, transparentOut);
+	if (_cachedPipeline && _cachedPipelineCtx === ctx) {
+		_cachedPipeline.build(opaqueOut, transparentOut);
+	} else {
+		_cachedPipeline = new VoxelPipeline(ctx);
+		_cachedPipelineCtx = ctx;
+		_cachedPipeline.build(opaqueOut, transparentOut);
+	}
 }
 
 /**

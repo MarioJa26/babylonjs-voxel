@@ -27,11 +27,13 @@ class WorldStorageImpl {
 	initialize(): Promise<void> {
 		if (this.initPromise) return this.initPromise;
 		this.initPromise = (async () => {
+			/*
 			try {
 				await this.clearOldOpfsData();
 			} catch (err) {
 				console.warn("[WorldStorage] OPFS clear failed:", err);
 			}
+				*/
 		})();
 		return this.initPromise;
 	}
@@ -392,7 +394,8 @@ class WorldStorageImpl {
 		try {
 			const root = await navigator.storage.getDirectory();
 			const dirHandle = await root.getDirectoryHandle("b102");
-			await dirHandle.removeEntry("meshes.bin");
+			await dirHandle.removeEntry("voxels.bin");
+			await dirHandle.removeEntry("meshes.bin", { recursive: true });
 			await dirHandle.removeEntry("regions", { recursive: true });
 		} catch (err) {
 			console.error("[WorldStorage] Failed to clear world data:", err);

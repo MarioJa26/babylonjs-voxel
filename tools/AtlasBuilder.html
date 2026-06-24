@@ -431,8 +431,8 @@
         const dctx = diffuseWorkCanvas.getContext("2d", { alpha: true });
         const nctx = normalWorkCanvas.getContext("2d", { alpha: true });
 
-        dctx.imageSmoothingEnabled = false;
-        nctx.imageSmoothingEnabled = false;
+        dctx.imageSmoothingEnabled = true;
+        nctx.imageSmoothingEnabled = true;
 
         dctx.clearRect(0, 0, totalSize, totalSize);
         nctx.clearRect(0, 0, totalSize, totalSize);

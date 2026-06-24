@@ -89,8 +89,8 @@ export const TROPICAL_ISLAND: Biome = {
 	canSpawnTrees: true,
 	treeDensity: 0.14, // palm trees scattered across the island
 	grassDensity: 0.45,
-	beachBlock: 23, // white sand beach
-	seafloorBlock: 109, // coral / tropical seafloor
+	beachBlock: 3, // white sand beach
+	seafloorBlock: 84, // coral / tropical seafloor
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.8,
 	persistence: 0.19,

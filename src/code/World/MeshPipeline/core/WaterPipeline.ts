@@ -45,7 +45,9 @@ export interface WaterSampleGrid {
 
 // PERF: Version-stamp tracking array — reused across builds to avoid
 // allocating + zeroing a new Uint8Array per water mesh build.
-let _waterUsedStamp: Uint8Array | null = null;
+// Uses Uint16Array to avoid overflow (Uint8Array wraps at 255, causing
+// version collision with the "unused" sentinel 0 and duplicate quads).
+let _waterUsedStamp: Uint16Array | null = null;
 let _waterVersion = 0;
 
 export function buildWaterMesh(
@@ -60,7 +62,7 @@ export function buildWaterMesh(
 	// PERF: Use version stamp instead of allocating + zeroing a Uint8Array per build.
 	// Each build increments the stamp; cells are "used" if their stamp matches.
 	if (!_waterUsedStamp || _waterUsedStamp.length < samples.length) {
-		_waterUsedStamp = new Uint8Array(samples.length);
+		_waterUsedStamp = new Uint16Array(samples.length);
 	}
 	_waterVersion++;
 	const version = _waterVersion;

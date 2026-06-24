@@ -17,6 +17,18 @@ export type CaveCarveEvaluation = {
 	depthBelowSurface: number;
 };
 
+/**
+ * PERF: Pre-allocated scratch object reused across all evaluateCaveCarve calls.
+ * Eliminates ~32K object allocations per chunk during cave generation.
+ * Callers must read all fields before the next call.
+ */
+export const caveCarveScratch: CaveCarveEvaluation = {
+	shouldCarve: false,
+	carveStrength: 0,
+	tunnelCore: false,
+	depthBelowSurface: 0,
+};
+
 function clamp01(value: number): number {
 	return value < 0 ? 0 : value > 1 ? 1 : value;
 }
@@ -39,15 +51,16 @@ export function evaluateCaveCarve(
 	cheese: number,
 	tunnel: number,
 	detail: number,
+	out?: CaveCarveEvaluation,
 ): CaveCarveEvaluation {
+	const o = out ?? caveCarveScratch;
 	const depthBelowSurface = getDepthBelowSurface(surfaceY, worldY);
 	if (Number.isFinite(depthBelowSurface) && depthBelowSurface < 0) {
-		return {
-			shouldCarve: false,
-			carveStrength: 0,
-			tunnelCore: false,
-			depthBelowSurface,
-		};
+		o.shouldCarve = false;
+		o.carveStrength = 0;
+		o.tunnelCore = false;
+		o.depthBelowSurface = depthBelowSurface;
+		return o;
 	}
 
 	const fullDepthDenom = Math.max(
@@ -97,10 +110,9 @@ export function evaluateCaveCarve(
 		connectedTunnelStrength > -0.015 ||
 		(tunnelDelta > -0.05 && cheeseDelta > 0.02);
 
-	return {
-		shouldCarve: carveStrength > 0,
-		carveStrength: carveStrength > 0 ? carveStrength : 0,
-		tunnelCore,
-		depthBelowSurface,
-	};
+	o.shouldCarve = carveStrength > 0;
+	o.carveStrength = carveStrength > 0 ? carveStrength : 0;
+	o.tunnelCore = tunnelCore;
+	o.depthBelowSurface = depthBelowSurface;
+	return o;
 }

@@ -19,6 +19,8 @@ const DENSE_CACHE_MASK = DENSE_CACHE_SIZE - 1;
 const BLOCK_FLAGS_CACHE = new Uint8Array(DENSE_CACHE_SIZE);
 const BLOCK_FLAGS_READY = new Uint8Array(DENSE_CACHE_SIZE);
 const BLOCK_ID_CACHE = new Uint16Array(DENSE_CACHE_SIZE);
+const BLOCK_IS_CUBE_CACHE = new Uint8Array(DENSE_CACHE_SIZE);
+const BLOCK_IS_CUBE_READY = new Uint8Array(DENSE_CACHE_SIZE);
 
 function canUseDenseCache(packed: number): boolean {
 	return packed >= 0 && packed <= DENSE_CACHE_MASK;
@@ -36,6 +38,24 @@ export function getCachedBlockId(packed: number): number {
 	}
 
 	return unpackBlockId(packed);
+}
+
+export function getCachedIsCube(packed: number): boolean {
+	if (!packed) return false;
+
+	if (canUseDenseCache(packed)) {
+		if (BLOCK_IS_CUBE_READY[packed]) {
+			return BLOCK_IS_CUBE_CACHE[packed] !== 0;
+		}
+
+		const shape = getShapeInfo(packed);
+		const isCube = shape.isCube;
+		BLOCK_IS_CUBE_CACHE[packed] = isCube ? 1 : 0;
+		BLOCK_IS_CUBE_READY[packed] = 1;
+		return isCube;
+	}
+
+	return getShapeInfo(packed).isCube;
 }
 
 export function getCachedFlags(packed: number): number {

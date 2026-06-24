@@ -73,6 +73,14 @@ function resetFaceRectPool(): void {
 const _uEdgesScratch: number[] = [0, 1];
 const _vEdgesScratch: number[] = [0, 1];
 
+// PERF: Module-level FaceRect arrays reused across computeClosedFaceMaskFromBoxes calls.
+const pxArr: FaceRect[] = [];
+const nxArr: FaceRect[] = [];
+const pyArr: FaceRect[] = [];
+const nyArr: FaceRect[] = [];
+const pzArr: FaceRect[] = [];
+const nzArr: FaceRect[] = [];
+
 /**
  * Empty shape info singleton to avoid reallocating identical objects.
  */
@@ -308,12 +316,13 @@ function computeClosedFaceMaskFromBoxes(boxes: readonly ShapeBounds[]): number {
 	if (boxes.length === 0) return 0;
 
 	resetFaceRectPool();
-	const px: FaceRect[] = [];
-	const nx: FaceRect[] = [];
-	const py: FaceRect[] = [];
-	const ny: FaceRect[] = [];
-	const pz: FaceRect[] = [];
-	const nz: FaceRect[] = [];
+	// PERF: Reuse module-level arrays instead of allocating 6 new arrays per call.
+	pxArr.length = 0;
+	nxArr.length = 0;
+	pyArr.length = 0;
+	nyArr.length = 0;
+	pzArr.length = 0;
+	nzArr.length = 0;
 
 	for (const box of boxes) {
 		const min = box.min;
@@ -322,36 +331,36 @@ function computeClosedFaceMaskFromBoxes(boxes: readonly ShapeBounds[]): number {
 
 		// +X / -X faces map to YZ
 		if ((faceMask & FACE_PX) !== 0 && max[0] >= 1 - EPS) {
-			pushRect(px, min[1], max[1], min[2], max[2]);
+			pushRect(pxArr, min[1], max[1], min[2], max[2]);
 		}
 		if ((faceMask & FACE_NX) !== 0 && min[0] <= EPS) {
-			pushRect(nx, min[1], max[1], min[2], max[2]);
+			pushRect(nxArr, min[1], max[1], min[2], max[2]);
 		}
 
 		// +Y / -Y faces map to XZ
 		if ((faceMask & FACE_PY) !== 0 && max[1] >= 1 - EPS) {
-			pushRect(py, min[0], max[0], min[2], max[2]);
+			pushRect(pyArr, min[0], max[0], min[2], max[2]);
 		}
 		if ((faceMask & FACE_NY) !== 0 && min[1] <= EPS) {
-			pushRect(ny, min[0], max[0], min[2], max[2]);
+			pushRect(nyArr, min[0], max[0], min[2], max[2]);
 		}
 
 		// +Z / -Z faces map to XY
 		if ((faceMask & FACE_PZ) !== 0 && max[2] >= 1 - EPS) {
-			pushRect(pz, min[0], max[0], min[1], max[1]);
+			pushRect(pzArr, min[0], max[0], min[1], max[1]);
 		}
 		if ((faceMask & FACE_NZ) !== 0 && min[2] <= EPS) {
-			pushRect(nz, min[0], max[0], min[1], max[1]);
+			pushRect(nzArr, min[0], max[0], min[1], max[1]);
 		}
 	}
 
 	let mask = 0;
-	if (doesRectUnionCoverUnitSquare(px)) mask |= FACE_PX;
-	if (doesRectUnionCoverUnitSquare(nx)) mask |= FACE_NX;
-	if (doesRectUnionCoverUnitSquare(py)) mask |= FACE_PY;
-	if (doesRectUnionCoverUnitSquare(ny)) mask |= FACE_NY;
-	if (doesRectUnionCoverUnitSquare(pz)) mask |= FACE_PZ;
-	if (doesRectUnionCoverUnitSquare(nz)) mask |= FACE_NZ;
+	if (doesRectUnionCoverUnitSquare(pxArr)) mask |= FACE_PX;
+	if (doesRectUnionCoverUnitSquare(nxArr)) mask |= FACE_NX;
+	if (doesRectUnionCoverUnitSquare(pyArr)) mask |= FACE_PY;
+	if (doesRectUnionCoverUnitSquare(nyArr)) mask |= FACE_NY;
+	if (doesRectUnionCoverUnitSquare(pzArr)) mask |= FACE_PZ;
+	if (doesRectUnionCoverUnitSquare(nzArr)) mask |= FACE_NZ;
 
 	return mask;
 }

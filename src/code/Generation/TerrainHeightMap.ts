@@ -98,14 +98,14 @@ function applyRidged(raw: number): number {
 
 const continentalnessSpline = new Spline([
 	// Deep ocean trenches
-	{ t: -1.0, v: -100 },
-	{ t: -0.8, v: -80 },
-	{ t: -0.6, v: -60 },
-	{ t: -0.4, v: -50 },
-	{ t: -0.3, v: -45 },
-	{ t: -0.25, v: -35 },
+	{ t: -1.0, v: -150 },
+	{ t: -0.8, v: -120 },
+	{ t: -0.6, v: -90 },
+	{ t: -0.4, v: -70 },
+	{ t: -0.3, v: -60 },
+	{ t: -0.25, v: -50 },
 	// Coastline / sea level
-	{ t: -0.18, v: -30 },
+	{ t: -0.18, v: -42 },
 	// Lowlands / plains
 	{ t: -0.1, v: 5 },
 	{ t: 0.0, v: 15 },
@@ -118,7 +118,7 @@ const continentalnessSpline = new Spline([
 	// Mountains
 	{ t: 0.6, v: 380 },
 	{ t: 0.7, v: 500 },
-	{ t: 0.8, v: 650 },
+	{ t: 0.8, v: 550 },
 	/*
 	// High peaks
 	{ t: 0.85, v: 750 },
@@ -371,6 +371,28 @@ export function getCachedRiverNoise(x: number, z: number): number {
 // Alias kept for call-site compatibility.
 export function getOctaveNoise(x: number, z: number): number {
 	return getFinalTerrainHeight(x, z);
+}
+
+export function getTerrainNoiseDebug(
+	x: number,
+	z: number,
+): {
+	continent: number;
+	temperature: number;
+	humidity: number;
+	river: number;
+	erosion: number;
+	pv: number;
+} {
+	const idx = getChunkCacheIdx(x, z);
+	return {
+		continent: _ccContinent[idx],
+		temperature: _ccTemperature[idx],
+		humidity: _ccHumidity[idx],
+		river: _ccRiverAbs[idx],
+		erosion: erosionNoise(x, z),
+		pv: peaksAndValleysNoise(x, z),
+	};
 }
 
 // ---------------------------------------------------------------------------

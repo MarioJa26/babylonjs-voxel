@@ -6,6 +6,9 @@ const SLOT_SIZE = 8; // dataOffset(u32) + size(u32)
 const SLOTS_BYTES = SLOT_ENTRIES * SLOT_SIZE; // 65536
 const DATA_START = HEADER_SIZE + SLOTS_BYTES; // 69632
 
+const _rfAtOpts = { at: 0 };
+const _rfReadSlab = new Uint8Array(64 * 1024);
+
 const MAGIC = 0x5245474e; // "REGN"
 const VERSION = 2;
 
@@ -27,6 +30,11 @@ const COMPACT_RATIO_THRESHOLD = 0.5;
 // Minimum orphaned bytes before bothering to compact (avoid work on tiny files).
 const COMPACT_MIN_ORPHANED_BYTES = 256 * 1024; // 256 KB
 
+// Pre-allocated typed arrays for _compact — reused across all compaction calls.
+const _compactIdx = new Int32Array(SLOT_ENTRIES);
+const _compactOff = new Uint32Array(SLOT_ENTRIES);
+const _compactSize = new Uint32Array(SLOT_ENTRIES);
+
 // PERF: inline slot index — branchless for both voxel and entity layers.
 function slotIndex(
 	lx: number,
@@ -39,14 +47,10 @@ function slotIndex(
 
 export class RegionFile {
 	private accessHandle: FileSystemSyncAccessHandle;
-	private headerBuf: ArrayBuffer;
 	private headerU8: Uint8Array;
 	private headerDv: DataView;
-	private slotTable: ArrayBuffer;
 	private slotDv: DataView;
-	private regionX: number;
-	private regionY: number;
-	private regionZ: number;
+	private readonly _slotTableU8: Uint8Array;
 	private usedBytes: number;
 	private occupiedCount: number;
 	private freeListHead: number;
@@ -58,28 +62,20 @@ export class RegionFile {
 
 	private constructor(
 		accessHandle: FileSystemSyncAccessHandle,
-		headerBuf: ArrayBuffer,
 		headerU8: Uint8Array,
 		headerDv: DataView,
-		slotTable: ArrayBuffer,
 		slotDv: DataView,
-		regionX: number,
-		regionY: number,
-		regionZ: number,
+		slotTableU8: Uint8Array,
 		usedBytes: number,
 		occupiedCount: number,
 		freeListHead: number,
 		fileSize: number,
 	) {
 		this.accessHandle = accessHandle;
-		this.headerBuf = headerBuf;
 		this.headerU8 = headerU8;
 		this.headerDv = headerDv;
-		this.slotTable = slotTable;
 		this.slotDv = slotDv;
-		this.regionX = regionX;
-		this.regionY = regionY;
-		this.regionZ = regionZ;
+		this._slotTableU8 = slotTableU8;
 		this.usedBytes = usedBytes;
 		this.occupiedCount = occupiedCount;
 		this.freeListHead = freeListHead;
@@ -100,6 +96,7 @@ export class RegionFile {
 		const headerDv = new DataView(headerBuf);
 		const slotTable = new ArrayBuffer(SLOTS_BYTES);
 		const slotDv = new DataView(slotTable);
+		const slotTableU8 = new Uint8Array(slotTable);
 
 		let usedBytes = 0;
 		let occupiedCount = 0;
@@ -113,19 +110,18 @@ export class RegionFile {
 			headerDv.setInt32(H_REGION_Z, regionZ, true);
 			headerDv.setUint32(H_USED_BYTES, 0, true);
 			headerDv.setUint32(H_OCCUPIED, 0, true);
-			// For the fixed-index scheme the free list is unused for slot allocation,
-			// but we keep it for compatibility with the format.
 			headerDv.setUint32(H_FREE_LIST_HEAD, FREE_LIST_NONE, true);
 
-			accessHandle.write(headerU8, { at: 0 });
-			accessHandle.write(new Uint8Array(slotTable), {
-				at: HEADER_SIZE,
-			});
+			_rfAtOpts.at = 0;
+			accessHandle.write(headerU8, _rfAtOpts);
+			_rfAtOpts.at = HEADER_SIZE;
+			accessHandle.write(slotTableU8, _rfAtOpts);
 			accessHandle.truncate(DATA_START);
 			accessHandle.flush();
 			fileSize = DATA_START;
 		} else {
-			accessHandle.read(headerU8, { at: 0 });
+			_rfAtOpts.at = 0;
+			accessHandle.read(headerU8, _rfAtOpts);
 
 			const magic = headerDv.getUint32(H_MAGIC, true);
 			if (magic !== MAGIC) {
@@ -140,9 +136,8 @@ export class RegionFile {
 				);
 			}
 
-			accessHandle.read(new Uint8Array(slotTable), {
-				at: HEADER_SIZE,
-			});
+			_rfAtOpts.at = HEADER_SIZE;
+			accessHandle.read(slotTableU8, _rfAtOpts);
 
 			// FIX: free list is unused in the fixed-index design — always reset.
 			freeListHead = FREE_LIST_NONE;
@@ -183,14 +178,10 @@ export class RegionFile {
 			// Collapse into a single construction; mark dirty and compact if needed.
 			const rf = new RegionFile(
 				accessHandle,
-				headerBuf,
 				headerU8,
 				headerDv,
-				slotTable,
 				slotDv,
-				regionX,
-				regionY,
-				regionZ,
+				slotTableU8,
 				usedBytes,
 				occupiedCount,
 				freeListHead,
@@ -213,14 +204,10 @@ export class RegionFile {
 
 		return new RegionFile(
 			accessHandle,
-			headerBuf,
 			headerU8,
 			headerDv,
-			slotTable,
 			slotDv,
-			regionX,
-			regionY,
-			regionZ,
+			slotTableU8,
 			usedBytes,
 			occupiedCount,
 			freeListHead,
@@ -275,53 +262,72 @@ export class RegionFile {
 		rf: RegionFile,
 		accessHandle: FileSystemSyncAccessHandle,
 	): void {
-		type LiveSlot = { idx: number; offset: number; size: number };
-		const live: LiveSlot[] = [];
+		// Parallel typed arrays — zero heap allocation vs LiveSlot[].
+		const idxBuf = _compactIdx;
+		const offBuf = _compactOff;
+		const sizeBuf = _compactSize;
+		let liveCount = 0;
+
 		for (let i = 0; i < SLOT_ENTRIES; i++) {
 			const size = rf.slotDv.getUint32(i * SLOT_SIZE + 4, true);
 			if (size === 0) continue;
-			live.push({
-				idx: i,
-				offset: rf.slotDv.getUint32(i * SLOT_SIZE, true),
-				size,
-			});
+			idxBuf[liveCount] = i;
+			offBuf[liveCount] = rf.slotDv.getUint32(i * SLOT_SIZE, true);
+			sizeBuf[liveCount] = size;
+			liveCount++;
 		}
-		// Sort by current disk offset so we copy forward without clobbering
-		// data we haven't copied yet.
-		live.sort((a, b) => a.offset - b.offset);
+
+		// Insertion sort by offset — faster than Array.sort for small N,
+		// avoids closure allocation.
+		for (let i = 1; i < liveCount; i++) {
+			const oi = offBuf[i];
+			const si = sizeBuf[i];
+			const ii = idxBuf[i];
+			let j = i - 1;
+			while (j >= 0 && offBuf[j] > oi) {
+				offBuf[j + 1] = offBuf[j];
+				sizeBuf[j + 1] = sizeBuf[j];
+				idxBuf[j + 1] = idxBuf[j];
+				j--;
+			}
+			offBuf[j + 1] = oi;
+			sizeBuf[j + 1] = si;
+			idxBuf[j + 1] = ii;
+		}
 
 		// 64 KB copy window — small enough to avoid GC pressure, large enough
 		// to amortise per-read/write overhead.
 		const copyBuf = new Uint8Array(64 * 1024);
 		let writeHead = 0;
 
-		for (const slot of live) {
-			if (slot.offset === writeHead) {
-				// Already in place — just advance the write head.
-				writeHead += slot.size;
+		for (let k = 0; k < liveCount; k++) {
+			const slotOff = offBuf[k];
+			const slotSize = sizeBuf[k];
+			const slotIdx = idxBuf[k];
+
+			if (slotOff === writeHead) {
+				writeHead += slotSize;
 				continue;
 			}
 
 			// Copy slot data down in chunks.
-			let remaining = slot.size;
-			let srcOff = slot.offset;
+			let remaining = slotSize;
+			let srcOff = slotOff;
 			let dstOff = writeHead;
 			while (remaining > 0) {
 				const chunk = Math.min(remaining, copyBuf.length);
-				accessHandle.read(copyBuf.subarray(0, chunk), {
-					at: DATA_START + srcOff,
-				});
-				accessHandle.write(copyBuf.subarray(0, chunk), {
-					at: DATA_START + dstOff,
-				});
+				_rfAtOpts.at = DATA_START + srcOff;
+				accessHandle.read(copyBuf.subarray(0, chunk), _rfAtOpts);
+				_rfAtOpts.at = DATA_START + dstOff;
+				accessHandle.write(copyBuf.subarray(0, chunk), _rfAtOpts);
 				srcOff += chunk;
 				dstOff += chunk;
 				remaining -= chunk;
 			}
 
 			// Update the in-memory slot offset.
-			rf.slotDv.setUint32(slot.idx * SLOT_SIZE, writeHead, true);
-			writeHead += slot.size;
+			rf.slotDv.setUint32(slotIdx * SLOT_SIZE, writeHead, true);
+			writeHead += slotSize;
 		}
 
 		// Truncate the file to remove the now-orphaned tail.
@@ -354,7 +360,9 @@ export class RegionFile {
 		}
 
 		const buf = new Uint8Array(size);
-		const got = this.accessHandle.read(buf, { at: readAt });
+		_rfAtOpts.at = readAt;
+		const got = this.accessHandle.read(buf, _rfAtOpts);
+
 		return got === size ? buf : null;
 	}
 
@@ -410,7 +418,8 @@ export class RegionFile {
 			this.fileSize = newSize;
 		}
 
-		this.accessHandle.write(data, { at: DATA_START + dataOffset });
+		_rfAtOpts.at = DATA_START + dataOffset;
+		this.accessHandle.write(data, _rfAtOpts);
 	}
 
 	removeChunk(lx: number, ly: number, lz: number, isEntity: boolean): void {
@@ -431,7 +440,8 @@ export class RegionFile {
 	 */
 	flush(): void {
 		if (this.headerDirty) {
-			this.accessHandle.write(this.headerU8, { at: 0 });
+			_rfAtOpts.at = 0;
+			this.accessHandle.write(this.headerU8, _rfAtOpts);
 			this.headerDirty = false;
 		}
 
@@ -441,7 +451,7 @@ export class RegionFile {
 
 		for (let i = 0; i <= SLOT_ENTRIES; i++) {
 			const isDirty =
-				i < SLOT_ENTRIES && (bits[i >>> 3]! & (1 << (i & 7))) !== 0;
+				i < SLOT_ENTRIES && (bits[i >>> 3] & (1 << (i & 7))) !== 0;
 
 			if (isDirty && runStart === -1) {
 				runStart = i;
@@ -449,9 +459,10 @@ export class RegionFile {
 				// Flush the contiguous run [runStart, i) in one write.
 				const byteOffset = runStart * SLOT_SIZE;
 				const byteLen = (i - runStart) * SLOT_SIZE;
+				_rfAtOpts.at = HEADER_SIZE + byteOffset;
 				this.accessHandle.write(
-					new Uint8Array(this.slotTable, byteOffset, byteLen),
-					{ at: HEADER_SIZE + byteOffset },
+					this._slotTableU8.subarray(byteOffset, byteOffset + byteLen),
+					_rfAtOpts,
 				);
 				runStart = -1;
 			}

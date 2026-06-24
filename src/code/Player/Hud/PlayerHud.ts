@@ -600,7 +600,7 @@ export class PlayerHud {
 			const keySpan = document.createElement("span");
 			keySpan.className = "debug-key";
 			if (category) keySpan.dataset.cat = category;
-			keySpan.textContent = key + ": ";
+			keySpan.textContent = `${key}: `;
 
 			const valueSpan = document.createElement("span");
 			valueSpan.className = "debug-value";

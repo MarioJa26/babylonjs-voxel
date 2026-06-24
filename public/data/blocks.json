@@ -468,5 +468,23 @@
 		"name": "salt_block",
 		"path": "/texture/stone/salt_block_1k",
 		"hardness": 0.5
+	},
+	{
+		"id": "CoralBlock",
+		"name": "coral_block",
+		"path": "/texture/stone/coral_block_1k",
+		"hardness": 0.5
+	},
+	{
+		"id": "PalmTrunk",
+		"name": "palm_trunk",
+		"path": "/texture/wood/palm_trunk_1k",
+		"hardness": 1.5
+	},
+	{
+		"id": "PalmLeaves",
+		"name": "palm_leaves",
+		"path": "/texture/transparent/palmleaves_01_1k",
+		"hardness": 0.2
 	}
 ]

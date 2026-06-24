@@ -318,7 +318,6 @@ export function getDebugStats(): ChunkLoadingDebugStats {
 
 let lastOpfsHitCount = 0;
 let lastOpfsMissCount = 0;
-let lastOpfsEvictionCount = 0;
 let lastOpfsRefreshMs = 0;
 const OPFS_REFRESH_INTERVAL_MS = 250;
 
@@ -347,13 +346,11 @@ export async function refreshOpfsDebugStats(): Promise<void> {
 		// Cumulative deltas (worker tracks totals; we accumulate UI-side).
 		const newHits = stats.hitCount - lastOpfsHitCount;
 		const newMisses = stats.missCount - lastOpfsMissCount;
-		const newEvicts = stats.evictionCount - lastOpfsEvictionCount;
 		if (newHits > 0) debugStats.totalOpfsHits += newHits;
 		if (newMisses > 0) debugStats.totalOpfsMisses += newMisses;
-		if (newEvicts > 0) debugStats.opfsEvictionCount = newEvicts; // display total
+
 		lastOpfsHitCount = stats.hitCount;
 		lastOpfsMissCount = stats.missCount;
-		lastOpfsEvictionCount = stats.evictionCount;
 	} catch {
 		// worker may be transiently unavailable; leave previous values
 	}
@@ -667,6 +664,7 @@ function loadFarLodChunk(
 	chunk.loadLodOnlyFromStorage(false);
 
 	if (!state.chunksNeedingFullHydration.has(chunk.id)) {
+		chunk.isTerrainScheduled = true;
 		state.chunksNeedingFullHydration.add(chunk.id);
 		state.hydrateIds.push(chunk.id);
 		state.hydrateChunks.push(chunk);
@@ -732,7 +730,7 @@ async function prefetchOpfsMeshes(
 	opfsCacheHydratedThisCycle = 0;
 	opfsCacheMissedThisCycle = 0;
 
-	const client = ChunkWorkerPool.getInstance().getOpfsClient();
+	const client = await ChunkWorkerPool.getInstance().ensureOpfsReady();
 	if (!client) return;
 
 	const promises: Promise<void>[] = [];

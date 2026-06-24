@@ -1,9 +1,8 @@
 import type { Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
 import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { IWorldFeature } from "./IWorldFeature";
+import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 import { Structure, type StructureData } from "./Structure";
-import { computeRegion, chunkWorldBounds, aabbOverlaps } from "./RegionFeature";
 
 export class StructureSpawnerFeature implements IWorldFeature {
 	// Opulent House is 4 tall, placed at surface. Keep margin for neighbor surface range.
@@ -13,6 +12,8 @@ export class StructureSpawnerFeature implements IWorldFeature {
 	};
 
 	private static structures: Map<string, Structure> = new Map();
+	// PERF: Cached keys array — avoids Array.from() allocation on every generate() call.
+	private static structureNames: string[] = [];
 
 	constructor() {
 		this.loadStructures();
@@ -43,6 +44,9 @@ export class StructureSpawnerFeature implements IWorldFeature {
 		StructureSpawnerFeature.structures.set(
 			"Opulent House",
 			new Structure(opulentHouseData),
+		);
+		StructureSpawnerFeature.structureNames = Array.from(
+			StructureSpawnerFeature.structures.keys(),
 		);
 	}
 
@@ -75,9 +79,7 @@ export class StructureSpawnerFeature implements IWorldFeature {
 		if (!region) return;
 
 		const { regionHash } = region;
-		const structureNames = Array.from(
-			StructureSpawnerFeature.structures.keys(),
-		);
+		const structureNames = StructureSpawnerFeature.structureNames;
 		const structureName =
 			structureNames[Math.abs(regionHash) % structureNames.length];
 		const structure = StructureSpawnerFeature.structures.get(structureName);

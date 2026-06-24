@@ -21,7 +21,7 @@
 
 export const LIGHT_HEADER_ROW_WORDS = 4;
 export const LIGHT_HEADER_ROW_SIZE = LIGHT_HEADER_ROW_WORDS * 4;
-export const MAX_HEADER_SLOTS = 65536;
+export const MAX_HEADER_SLOTS = 4 * 65536;
 
 export const LIGHT_HEADER_FLAG_UNIFORM = 1 << 0;
 export const LIGHT_HEADER_FLAG_STORAGE_U16 = 1 << 1;

@@ -248,7 +248,7 @@ export const TEMPERATE_RAINFOREST: Biome = {
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.15, // very dense trees
-	grassDensity: 0.7, // thick undergrowth
+	grassDensity: 0.34, // thick undergrowth
 	beachBlock: 8, // gravel beach (cold coast)
 	seafloorBlock: 46, // gravel seafloor
 
@@ -373,9 +373,9 @@ export const PEAT_BOG: Biome = {
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.75,
 	persistence: 0.19,
-	heightExponent: 1.15,
+	heightExponent: 1.02,
 	terrainHeightBase: GenerationParams.SEA_LEVEL + 1,
-	terrainHeightAmplitude: 8, // nearly flat, waterlogged
+	terrainHeightAmplitude: 4, // nearly flat, waterlogged
 
 	getTreeForBlock(blockId: number): TreeDefinition | null {
 		if (blockId === this.topBlock) return OAK_TREE;
@@ -397,9 +397,9 @@ export const WETLANDS: Biome = {
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.75,
 	persistence: 0.17,
-	heightExponent: 1.2,
+	heightExponent: 1.03,
 	terrainHeightBase: GenerationParams.SEA_LEVEL + 2,
-	terrainHeightAmplitude: 9,
+	terrainHeightAmplitude: 4,
 
 	getTreeForBlock(blockId: number): TreeDefinition | null {
 		if (blockId === this.topBlock) return OAK_TREE;

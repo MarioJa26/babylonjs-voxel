@@ -24,7 +24,7 @@ type DesiredChunkState = {
 	revision: number;
 };
 
-function chunkDist(
+function _chunkDist(
 	chunkX: number,
 	chunkY: number,
 	chunkZ: number,
@@ -263,7 +263,7 @@ export class ChunkStreamingController {
 
 		// Cancel pending unloads for chunks that are back in range.
 		for (const chunk of unloadQueueSet) {
-			const { hDist, vDist } = chunkDist(
+			const { hDist, vDist } = chunkDistScratch(
 				chunk.chunkX,
 				chunk.chunkY,
 				chunk.chunkZ,
@@ -589,7 +589,7 @@ export class ChunkStreamingController {
 					if (this.tryApplyCachedLodTransitionMesh(chunk, desiredLod)) {
 						return;
 					}
-					chunk.scheduleRemesh(true);
+					this.ensureChunkQueuedForLoad(chunk, desiredLod, revision, true);
 					return;
 				}
 			}
@@ -826,7 +826,7 @@ export class ChunkStreamingController {
 			if (chunk.isBoatChunk) continue;
 			if (unloadQueueSet.has(chunk)) continue;
 
-			const { hDist, vDist } = chunkDist(
+			const { hDist, vDist } = chunkDistScratch(
 				chunk.chunkX,
 				chunk.chunkY,
 				chunk.chunkZ,

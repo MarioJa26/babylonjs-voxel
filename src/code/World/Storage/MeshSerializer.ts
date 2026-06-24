@@ -1,5 +1,14 @@
 import { MeshData } from "../Chunk/DataStructures/MeshData";
 
+const _emptyU8 = new Uint8Array(0);
+
+function writeU32LE(buf: Uint8Array, off: number, val: number): void {
+	buf[off] = val & 0xff;
+	buf[off + 1] = (val >> 8) & 0xff;
+	buf[off + 2] = (val >> 16) & 0xff;
+	buf[off + 3] = (val >> 24) & 0xff;
+}
+
 /**
  * Serializes a MeshData into a single Uint8Array for OPFS storage.
  * Format (no version, no compression per design decision):
@@ -15,19 +24,18 @@ export function serializeMesh(
 	mesh: MeshData | null | undefined,
 ): Uint8Array | null {
 	if (!mesh) return null;
-	const a = mesh.faceDataA ?? new Uint8Array();
-	const b = mesh.faceDataB ?? new Uint8Array();
-	const c = mesh.faceDataC ?? new Uint8Array();
+	const a = mesh.faceDataA ?? _emptyU8;
+	const b = mesh.faceDataB ?? _emptyU8;
+	const c = mesh.faceDataC ?? _emptyU8;
 	const aLen = a.length;
 	const bLen = b.length;
 	const cLen = c.length;
 	const total = 16 + aLen + bLen + cLen;
 	const out = new Uint8Array(total);
-	const dv = new DataView(out.buffer);
-	dv.setUint32(0, mesh.faceCount >>> 0, true);
-	dv.setUint32(4, aLen, true);
-	dv.setUint32(8, bLen, true);
-	dv.setUint32(12, cLen, true);
+	writeU32LE(out, 0, mesh.faceCount >>> 0);
+	writeU32LE(out, 4, aLen);
+	writeU32LE(out, 8, bLen);
+	writeU32LE(out, 12, cLen);
 	out.set(a, 16);
 	out.set(b, 16 + aLen);
 	out.set(c, 16 + aLen + bLen);
@@ -55,13 +63,13 @@ export function deserializeMesh(bytes: Uint8Array): MeshData {
 	}
 	const mesh = new MeshData();
 	mesh.faceCount = faceCount;
-	mesh.faceDataA = aLen > 0 ? bytes.slice(16, 16 + aLen) : new Uint8Array();
+	mesh.faceDataA = aLen > 0 ? bytes.subarray(16, 16 + aLen) : _emptyU8;
 	mesh.faceDataB =
-		bLen > 0 ? bytes.slice(16 + aLen, 16 + aLen + bLen) : new Uint8Array();
+		bLen > 0 ? bytes.subarray(16 + aLen, 16 + aLen + bLen) : _emptyU8;
 	mesh.faceDataC =
 		cLen > 0
-			? bytes.slice(16 + aLen + bLen, 16 + aLen + bLen + cLen)
-			: new Uint8Array();
+			? bytes.subarray(16 + aLen + bLen, 16 + aLen + bLen + cLen)
+			: _emptyU8;
 	return mesh;
 }
 
@@ -86,11 +94,10 @@ export function serializeMeshPair(
 	const tLen = t?.length ?? 0;
 	const total = 10 + oLen + tLen;
 	const out = new Uint8Array(total);
-	const dv = new DataView(out.buffer);
-	dv.setUint8(0, o ? 1 : 0);
-	dv.setUint8(1, t ? 1 : 0);
-	dv.setUint32(2, oLen, true);
-	dv.setUint32(6, tLen, true);
+	out[0] = o ? 1 : 0;
+	out[1] = t ? 1 : 0;
+	writeU32LE(out, 2, oLen);
+	writeU32LE(out, 6, tLen);
 	if (o) out.set(o, 10);
 	if (t) out.set(t, 10 + oLen);
 	return out;
@@ -128,11 +135,11 @@ export function deserializeMeshPair(
 	let opaque: MeshData | null = null;
 	let transparent: MeshData | null = null;
 	if (hasO && oLen > 0) {
-		opaque = deserializeMesh(bytes.slice(off, off + oLen));
+		opaque = deserializeMesh(bytes.subarray(off, off + oLen));
 		off += oLen;
 	}
 	if (hasT && tLen > 0) {
-		transparent = deserializeMesh(bytes.slice(off, off + tLen));
+		transparent = deserializeMesh(bytes.subarray(off, off + tLen));
 	}
 	return { opaque, transparent, lod };
 }

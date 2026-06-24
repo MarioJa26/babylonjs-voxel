@@ -4,6 +4,7 @@ export const enum OpfsMsg {
 	WriteMesh,
 	RemoveMesh,
 	FlushMeshes,
+	GetStats,
 	ReadVoxel,
 	WriteVoxel,
 	RemoveVoxel,

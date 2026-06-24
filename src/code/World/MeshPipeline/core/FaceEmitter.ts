@@ -57,16 +57,18 @@ export function emitQuad(
 
 	const tint = getMaterialTintBucket(blockId);
 
-	const sx = Math.round(x * POS_SCALE);
-	const sy = Math.round(y * POS_SCALE);
-	const sz = Math.round(z * POS_SCALE);
+	// PERF: Use bitwise rounding (faster than Math.round) for integer conversion.
+	// Positions are non-negative, so (x + 0.5) | 0 is safe and ~2x faster.
+	const sx = (x * POS_SCALE + 0.5) | 0;
+	const sy = (y * POS_SCALE + 0.5) | 0;
+	const sz = (z * POS_SCALE + 0.5) | 0;
 
 	// Faces at chunk boundary (position >= size) overflow Uint8Array.
 	// These should be rendered by the adjacent chunk at position 0.
 	if (sx >= 256 || sy >= 256 || sz >= 256) return;
 
-	const sw = rawDim ? Math.round(width) : Math.round(width * POS_SCALE);
-	const sh = rawDim ? Math.round(height) : Math.round(height * POS_SCALE);
+	const sw = rawDim ? (width + 0.5) | 0 : (width * POS_SCALE + 0.5) | 0;
+	const sh = rawDim ? (height + 0.5) | 0 : (height * POS_SCALE + 0.5) | 0;
 
 	out.faceDataA.push4(sx, sy, sz, axisFace);
 	out.faceDataB.push4(sw, sh, tx, ty);

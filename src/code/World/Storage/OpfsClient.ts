@@ -7,17 +7,24 @@
 
 import { OpfsMsg } from "./OpfsMessageTypes";
 
-interface PendingOp {
-	resolve: (value: any) => void;
-	reject: (error: any) => void;
+const _packScratch = { hi: 0, lo: 0 };
+const MAX_INFLIGHT = 1024;
+
+if ((MAX_INFLIGHT & (MAX_INFLIGHT - 1)) !== 0) {
+	throw new Error("MAX_INFLIGHT must be a power of two");
 }
 
-// ── Scratch objects for hot-path key packing ────────────────────────
-const _packScratch = { hi: 0, lo: 0 };
+function transferableBytes(data: Uint8Array): Uint8Array {
+	if (data.byteOffset === 0 && data.byteLength === data.buffer.byteLength) {
+		return data;
+	}
+	return data.slice();
+}
 
 export class OpfsClient {
 	private _worker: Worker;
-	private _ops = new Map<number, PendingOp>();
+	private _opResolves: (((v: any) => void) | null)[];
+	private _opRejects: (((e: any) => void) | null)[];
 	private _nextId = 1;
 	private _ready: Promise<void>;
 
@@ -25,6 +32,12 @@ export class OpfsClient {
 		this._worker = new Worker(new URL("./opfs.worker.ts", import.meta.url), {
 			type: "module",
 		});
+		this._opResolves = new Array<((v: any) => void) | null>(MAX_INFLIGHT).fill(
+			null,
+		);
+		this._opRejects = new Array<((e: any) => void) | null>(MAX_INFLIGHT).fill(
+			null,
+		);
 
 		this._ready = new Promise<void>((resolve) => {
 			this._worker.onmessage = (e: MessageEvent) => {
@@ -50,17 +63,27 @@ export class OpfsClient {
 	): Promise<any> {
 		return new Promise((resolve, reject) => {
 			const id = this._nextId++;
-			this._ops.set(id, { resolve, reject });
+			const slot = (id - 1) & (MAX_INFLIGHT - 1);
+			if (this._opResolves[slot] !== null) {
+				throw new Error(
+					`[OpfsClient] inflight slot ${slot} still pending (>${MAX_INFLIGHT} concurrent ops)`,
+				);
+			}
+			this._opResolves[slot] = resolve;
+			this._opRejects[slot] = reject;
 			this._worker.postMessage({ id, type, ...payload }, transfer);
 		});
 	}
 
 	private _onMessage(msg: { id: number; error?: string; result?: any }): void {
-		const op = this._ops.get(msg.id);
-		if (!op) return;
-		this._ops.delete(msg.id);
-		if (msg.error) op.reject(new Error(msg.error));
-		else op.resolve(msg.result);
+		const slot = (msg.id - 1) & (MAX_INFLIGHT - 1);
+		const res = this._opResolves[slot];
+		const rej = this._opRejects[slot];
+		this._opResolves[slot] = null;
+		this._opRejects[slot] = null;
+		if (!res) return;
+		if (msg.error) rej?.(new Error(msg.error));
+		else res(msg.result);
 	}
 
 	// ── Key packing ─────────────────────────────────────────────
@@ -102,10 +125,11 @@ export class OpfsClient {
 
 	async writeMesh(key: bigint, lod: number, data: Uint8Array): Promise<void> {
 		const { hi, lo } = this._packKey(key);
+		const bytes = transferableBytes(data);
 		await this._postMessage(
 			OpfsMsg.WriteMesh,
-			{ keyHi: hi, keyLo: lo, lod, data },
-			[data.buffer],
+			{ keyHi: hi, keyLo: lo, lod, data: bytes },
+			[bytes.buffer],
 		);
 	}
 
@@ -132,6 +156,7 @@ export class OpfsClient {
 
 	async writeVoxel(key: bigint, lod: number, data: Uint8Array): Promise<void> {
 		const { chunkX, chunkY, chunkZ } = this._unpackKey(key);
+		const bytes = transferableBytes(data);
 		await this._postMessage(
 			OpfsMsg.WriteVoxel,
 			{
@@ -139,9 +164,9 @@ export class OpfsClient {
 				chunkY,
 				chunkZ,
 				lod,
-				data,
+				data: bytes,
 			},
-			[data.buffer],
+			[bytes.buffer],
 		);
 	}
 
@@ -164,8 +189,16 @@ export class OpfsClient {
 		]);
 	}
 
-	getStats(): any {
-		return { slotCount: 0, usedBytes: 0 };
+	async getStats(): Promise<{
+		slotCount: number;
+		usedBytes: number;
+		totalBytes: number;
+		capacity: number;
+		hitCount: number;
+		missCount: number;
+		evictionCount: number;
+	}> {
+		return await this._postMessage(OpfsMsg.GetStats);
 	}
 
 	// ── Lifecycle ───────────────────────────────────────────────

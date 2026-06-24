@@ -184,61 +184,52 @@ export function getBiomeFor(
 ): Biome {
 	const SEA = GenerationParams.SEA_LEVEL;
 
-	// ── River ─────────────────────────────────────────────────────────────────
-	/*
-	if (river < 0.1 && continentalness > -0.28 && continentalness < 0.67) {
-		return RIVER;
-	}
-	*/
-
-	// ── Deep ocean / underwater biomes ────────────────────────────────────────
-	if (continentalness < -0.33 && terrainShapedHeight < SEA) {
-		if (temperature > 0.6) return CORAL_REEF;
-		if (temperature < 0.2) return FROZEN_OCEAN;
-		return KELP_FOREST;
-	}
-
-	// Deep ocean trench — very low continentalness, any temperature
-	if (continentalness < -0.5 && terrainShapedHeight < SEA - 5) {
+	// ── Deep ocean trench ─────────────────────────────────────────────────────
+	if (continentalness < -0.9) {
 		return DEEP_OCEAN_TRENCH;
 	}
 
-	// Shallow ocean (not deep, not yet shore)
-	if (continentalness < -0.1 && terrainShapedHeight < SEA) {
+	// ── Open ocean ────────────────────────────────────────────────────────────
+	if (continentalness < -0.27 && terrainShapedHeight < SEA) {
 		if (temperature < 0.2) return FROZEN_OCEAN;
+		if (temperature > 0.6) return CORAL_REEF;
+		if (temperature < 0.45) return KELP_FOREST;
+		// ── Archipelago ───────────────────────────────────────────────────────────
+		if (
+			continentalness < -0.8 &&
+			continentalness > -0.84 &&
+			temperature > 0.55
+		) {
+			return ARCHIPELAGO;
+		}
 		return OCEAN;
 	}
 
-	// Bioluminescent Bay — warm shallow water, moderate humidity, low continentalness
-	if (
-		continentalness > -0.15 &&
-		continentalness < 0.0 &&
-		terrainShapedHeight < SEA + 2 &&
-		terrainShapedHeight >= SEA &&
-		temperature > 0.5 &&
-		humidity > 0.5 &&
-		humidity < 0.7
-	) {
-		return BIOLUMINESCENT_BAY;
+	/*
+	// ── Hard gate: nothing below sea level gets a land biome ─────────────────
+	if (terrainShapedHeight < SEA) {
+		return OCEAN;
 	}
+	*/
 
-	// ── Shore biomes ──────────────────────────────────────────────────────────
-	const isNearShore = continentalness > -0.3 && continentalness < 0.2;
-	if (isNearShore && terrainShapedHeight < SEA + 10) {
-		if (temperature > 0.65) return SANDY_SHORE;
+	// ── Shore band above water ────────────────────────────────────────────────
+	if (continentalness < -0.15) {
 		if (temperature < 0.25) return TIDAL_FLATS;
 		if (temperature < 0.4) return ROCKY_SHORE;
 		return SANDY_SHORE;
 	}
 
-	// Archipelago — small land fragments just above sea level near ocean
+	// ── Bioluminescent Bay ────────────────────────────────────────────────────
 	if (
-		continentalness > -0.15 &&
-		continentalness < 0.1 &&
-		terrainShapedHeight < SEA + 15 &&
-		terrainShapedHeight >= SEA
+		continentalness >= -0.5 &&
+		continentalness < 0.0 &&
+		terrainShapedHeight >= SEA &&
+		terrainShapedHeight < SEA + 4 &&
+		temperature > 0.5 &&
+		humidity > 0.5 &&
+		humidity < 0.7
 	) {
-		if (temperature > 0.55) return ARCHIPELAGO;
+		return BIOLUMINESCENT_BAY;
 	}
 
 	// ── Extreme altitude / far inland ─────────────────────────────────────────
@@ -267,7 +258,7 @@ export function getBiomeFor(
 		if (humidity > 0.45) return ALPINE_MEADOW;
 	}
 
-	// ── Freezing temperature — cold biomes ────────────────────────────────────
+	// ── Freezing temperature ──────────────────────────────────────────────────
 	if (temperature < 0.2) {
 		if (terrainShapedHeight > SEA + 40) return ICE_SPIKES;
 		if (humidity < 0.15) return FROZEN_TUNDRA_PLAINS;
@@ -314,7 +305,7 @@ export function getBiomeFor(
 		if (continentalness > -0.3) return VOLCANIC_WASTELAND;
 	}
 
-	// Ashen Wasteland — very hot, very dry, mid continentalness
+	// ── Ashen Wasteland ───────────────────────────────────────────────────────
 	if (
 		temperature > 0.75 &&
 		humidity < 0.1 &&
@@ -326,14 +317,13 @@ export function getBiomeFor(
 		return ASHEN_WASTELAND;
 	}
 
+	// ── Hot + dry gradients ───────────────────────────────────────────────────
 	if (temperature > 0.67) {
 		if (humidity < 0.08) {
-			// Extremely dry — dust bowl
 			if (terrainShapedHeight < SEA + 20) return DUST_BOWL;
 			return CRACKED_EARTH;
 		}
 		if (humidity < 0.2) {
-			// Very dry + hot
 			if (terrainShapedHeight > SEA + 50) return RED_ROCK_CANYON;
 			if (terrainShapedHeight > SEA + 25) return BADLANDS;
 			return DUNE_SEA;
@@ -343,7 +333,6 @@ export function getBiomeFor(
 			return DESERT;
 		}
 		if (humidity < 0.38) {
-			// Small oasis pockets — low lying, moderate humidity in the desert band
 			if (terrainShapedHeight < SEA + 20) return OASIS;
 			return SALT_FLATS;
 		}
@@ -352,7 +341,6 @@ export function getBiomeFor(
 			return SCORCHED_SAVANNAH;
 		}
 		if (humidity < 0.62) return SAVANNAH;
-		// Hot + very wet
 		if (terrainShapedHeight > SEA + 55) return CLOUD_FOREST;
 		return JUNGLE;
 	}
@@ -370,7 +358,7 @@ export function getBiomeFor(
 		return TEMPERATE_RAINFOREST;
 	}
 
-	// Fern Gully — temperate, very wet, low-lying
+	// ── Fern Gully ────────────────────────────────────────────────────────────
 	if (
 		humidity > 0.5 &&
 		temperature > 0.4 &&
@@ -381,8 +369,7 @@ export function getBiomeFor(
 		return FERN_GULLY;
 	}
 
-	// ── Rare / exotic biomes — narrow parameter windows ──────────────────────
-	// Mushroom Fields: temperate, moderate humidity, low continentalness islands
+	// ── Rare / exotic biomes ──────────────────────────────────────────────────
 	if (
 		humidity > 0.45 &&
 		humidity < 0.58 &&
@@ -394,7 +381,6 @@ export function getBiomeFor(
 		return MUSHROOM_FIELDS;
 	}
 
-	// Crystal Caves: expressed as surface biome on very high, dry, mid-temp terrain
 	if (
 		temperature > 0.35 &&
 		temperature < 0.6 &&
@@ -404,7 +390,6 @@ export function getBiomeFor(
 		return CRYSTAL_CAVES;
 	}
 
-	// Obsidian Flats: hot, dry, mid continentalness flat terrain
 	if (
 		temperature > 0.6 &&
 		humidity < 0.25 &&
@@ -415,7 +400,6 @@ export function getBiomeFor(
 		return OBSIDIAN_FLATS;
 	}
 
-	// Geothermal Field: hot inland, moderate humidity
 	if (
 		temperature > 0.7 &&
 		humidity > 0.3 &&
@@ -425,7 +409,6 @@ export function getBiomeFor(
 		return GEOTHERMAL_FIELD;
 	}
 
-	// Petrified Forest: dry, mid-temp, mid-altitude
 	if (
 		humidity < 0.22 &&
 		temperature > 0.35 &&
@@ -436,7 +419,6 @@ export function getBiomeFor(
 		return PETRIFIED_FOREST;
 	}
 
-	// Ancient Ruins: temperate, moderate humidity, slightly elevated
 	if (
 		temperature > 0.4 &&
 		temperature < 0.65 &&
@@ -450,7 +432,6 @@ export function getBiomeFor(
 		return ANCIENT_RUINS_BIOME;
 	}
 
-	// Tropical Island: warm, near sea level, low continentalness
 	if (
 		temperature > 0.55 &&
 		continentalness > -0.05 &&
@@ -460,13 +441,12 @@ export function getBiomeFor(
 		return TROPICAL_ISLAND;
 	}
 
-	// ── Temperate dry regions ─────────────────────────────────────────────────
+	// ── Temperate dry ─────────────────────────────────────────────────────────
 	if (humidity < 0.24) return PLAINS;
 
-	// ── Temperate standard biomes ─────────────────────────────────────────────
+	// ── Temperate standard ────────────────────────────────────────────────────
 	if (temperature < 0.5) return GRASS_LAND;
 
-	// Pine Forest — cool temperate, moderate humidity, mid elevation
 	if (
 		temperature > 0.4 &&
 		temperature < 0.55 &&
@@ -478,7 +458,6 @@ export function getBiomeFor(
 		return PINE_FOREST;
 	}
 
-	// Cherry Blossom Forest — warm temperate, moderate humidity, narrow window
 	if (
 		temperature > 0.5 &&
 		temperature < 0.62 &&
@@ -492,7 +471,6 @@ export function getBiomeFor(
 		return CHERRY_BLOSSOM_FOREST;
 	}
 
-	// Autumn Forest — warm temperate, moderate-dry humidity
 	if (
 		temperature > 0.48 &&
 		temperature < 0.6 &&
