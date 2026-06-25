@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-06-24T08:00:30.500Z
+Generated: 2026-06-25T03:24:36.890Z
 
-> **Summary:** 119 classes · 2276 members · 375 module-level functions · 41595 LOC
+> **Summary:** 119 classes · 2288 members · 383 module-level functions · 41912 LOC
 
 ---
 
@@ -551,7 +551,7 @@ Generated: 2026-06-24T08:00:30.500Z
 
 ---
 
-## `Generation/Biome/BiomeDefinitions/TemperateBiomes/TemperateTrees.ts` (428 LOC)
+## `Generation/Biome/BiomeDefinitions/TemperateBiomes/TemperateTrees.ts` (446 LOC)
 
 **Module-level functions**
 - `function placeWood(x: number, y: number, z: number): void`
@@ -696,7 +696,7 @@ Generated: 2026-06-24T08:00:30.500Z
 
 ---
 
-## `Generation/DistantTerrain/DistantTerrainGenerator.ts` (379 LOC)
+## `Generation/DistantTerrain/DistantTerrainGenerator.ts` (413 LOC)
 
 ### export class DistantTerrainGenerator
 
@@ -716,8 +716,12 @@ Generated: 2026-06-24T08:00:30.500Z
 - `private static gridStep: unknown`
 - `private static radius: unknown`
 - `private static usingSharedBuffers: unknown`
+- `private static _heightCache: unknown`
+- `private static _heightCacheKeys: unknown`
+- `private static _heightCacheMask: unknown`
 
 **Methods**
+- `private static cachedHeight(wx: number, wz: number): number`
 - `public static initSharedBuffers(positionsBuffer: SharedArrayBuffer, normalsBuffer: SharedArrayBuffer, surfaceTilesBuffer: SharedArrayBuffer, radius: number, gridStep: number): void`
 - `public static generate(centerChunkX: number, centerChunkZ: number, radius: number, renderDistance: number, gridStep: number, forceFullRebuild: unknown = false): { positions: Int16Array<ArrayBufferLike>; normals: Int8Array<ArrayBufferLike>; surfaceTiles: Uint8Array<ArrayBufferLike>; centerChunkX: number; centerChunkZ: number; }`
 - `private static ensureBuffers(radius: number, gridStep: number): void`
@@ -733,7 +737,7 @@ Generated: 2026-06-24T08:00:30.500Z
 
 ---
 
-## `Generation/LightGenerator.ts` (328 LOC)
+## `Generation/LightGenerator.ts` (334 LOC)
 
 ### export class LightGenerator
 
@@ -1250,7 +1254,7 @@ Generated: 2026-06-24T08:00:30.500Z
 
 ---
 
-## `Generation/SurfaceGenerator.ts` (1043 LOC)
+## `Generation/SurfaceGenerator.ts` (1085 LOC)
 
 ### export class SurfaceGenerator
 
@@ -1275,10 +1279,14 @@ Generated: 2026-06-24T08:00:30.500Z
 - `private static readonly MAX_STRUCTURE_ABOVE_SURFACE: unknown`
 - `private static readonly MAX_STRUCTURE_BELOW_SURFACE: unknown`
 - `private static seedAsInt: number`
-- `private static readonly MAX_COLUMN_PREPASS_CACHE: unknown`
-- `private static readonly columnPrepassCache: unknown`
-- `private static readonly MAX_FLORA_COLUMN_CACHE: unknown`
-- `private static readonly floraColumnCache: unknown`
+- `private static readonly COLUMN_CACHE_SIZE: unknown`
+- `private static readonly COLUMN_CACHE_MASK: unknown`
+- `private static readonly columnCacheKeys: unknown`
+- `private static readonly columnCacheEntries: (ColumnPrepassCacheEntry | null)[]`
+- `private static readonly FLORA_CACHE_SIZE: unknown`
+- `private static readonly FLORA_CACHE_MASK: unknown`
+- `private static readonly floraCacheKeys: unknown`
+- `private static readonly floraCacheEntries: (FloraColumnCacheEntry | null)[]`
 - `private chunk_size: number`
 - `private riverGenerator: RiverGenerator`
 - `private features: IWorldFeature[]`
@@ -3185,7 +3193,7 @@ Generated: 2026-06-24T08:00:30.500Z
 
 ---
 
-## `World/Chunk/chunk.worker.ts` (158 LOC)
+## `World/Chunk/chunk.worker.ts` (153 LOC)
 
 **Module-level functions**
 - `function compressBlocks(blocks: Uint8Array): {
@@ -3432,7 +3440,7 @@ Generated: 2026-06-24T08:00:30.500Z
 
 ---
 
-## `World/Chunk/ChunkWorkerPool.ts` (1721 LOC)
+## `World/Chunk/ChunkWorkerPool.ts` (1754 LOC)
 
 ### export class ChunkWorkerPool
 
@@ -3486,6 +3494,7 @@ Generated: 2026-06-24T08:00:30.500Z
 - `private meshResultQueueReadIdx: unknown`
 - `private remeshFlushScheduled: unknown`
 - `private processQueuePumpScheduled: unknown`
+- `private meshDrainScheduled: unknown`
 - `private pendingRemeshSaveIds: unknown`
 - `private pendingRemeshSaveTimer: ReturnType<typeof setTimeout> | null`
 - `private readonly REMESH_SAVE_DEBOUNCE_MS: unknown`
@@ -3496,6 +3505,7 @@ Generated: 2026-06-24T08:00:30.500Z
 - `private opfsClient: OpfsClient | null`
 - `private opfsReady: unknown`
 - `private opfsInitPromise: Promise<void> | null`
+- `private opfsFlushCounter: unknown`
 - `private static readonly _flushPendingScratch: Array<[Chunk, boolean]>`
 - `private static readonly _queryScratch: Chunk[]`
 - `private static readonly _dedupScratch: Set<number>`
@@ -4525,7 +4535,7 @@ Generated: 2026-06-24T08:00:30.500Z
 
 ---
 
-## `World/Light/OpaqueShader.ts` (203 LOC)
+## `World/Light/OpaqueShader.ts` (213 LOC)
 
 ### export class OpaqueShader
 
@@ -4545,7 +4555,7 @@ Generated: 2026-06-24T08:00:30.500Z
 
 ---
 
-## `World/Light/TransparentShader.ts` (262 LOC)
+## `World/Light/TransparentShader.ts` (271 LOC)
 
 ### export class TransparentShader
 
@@ -4555,7 +4565,7 @@ Generated: 2026-06-24T08:00:30.500Z
 
 ---
 
-## `World/MeshPipeline/core/AOPipeline.ts` (88 LOC)
+## `World/MeshPipeline/core/AOPipeline.ts` (72 LOC)
 
 **Module-level functions**
 - `export function isOccluder(packedBlock: number, shape: BlockShapeInfo): boolean`
@@ -4971,33 +4981,42 @@ Generated: 2026-06-24T08:00:30.500Z
 
 ---
 
-## `World/Storage/opfs.worker.ts` (332 LOC)
+## `World/Storage/opfs.worker.ts` (494 LOC)
 
 **Module-level functions**
 - `function _enqueueOp(fn: () => Promise<void>): Promise<void>`
 - `async function _drainOpQueue(): Promise<void>`
-- `function toUint8Array(data: ArrayBuffer | Uint8Array): Uint8Array`
+- `function _lruTouch(key: number): void`
+- `function _lruEvict(): number | null`
+- `function _lruDelete(key: number): void`
+- `function packRegionKey(rx: number, ry: number, rz: number): number`
+- `function regionFileName(rx: number, ry: number, rz: number): string`
 - `function localCoord(chunk: number): number`
-- `function regionKey(rx: number, ry: number, rz: number): string`
-- `function touchRegion(key: string): void`
-- `async function ensureRegionsDir(): Promise<FileSystemDirectoryHandle>`
-- `async function getRegionFile(rx: number, ry: number, rz: number): Promise<RegionFile>`
+- `function viewOf(data: ArrayBuffer | Uint8Array): Uint8Array`
+- `async function compressGzip(data: Uint8Array): Promise<Uint8Array>`
+- `async function decompressGzip(data: Uint8Array): Promise<Uint8Array>`
 - `function queueFlush(): void`
+- `async function _flushOp(): Promise<void>`
 - `function _scheduleFlush(): void`
 - `function markDirty(): void`
-- `function flushAllRegions(): void`
-- `async function closeRegionFile(rf: RegionFile): Promise<void>`
+- `function _flushAllRegions(): void`
+- `async function _closeRegionFile(rf: RegionFile): Promise<void>`
 - `async function ensureMeshStore(): Promise<OpfsChunkStore>`
 - `function resetMeshStore(): void`
 - `async function withMeshRetry(fn: (s: OpfsChunkStore) => T): Promise<T>`
+- `async function ensureRegionsDir(): Promise<FileSystemDirectoryHandle>`
+- `async function getRegionFile(rx: number, ry: number, rz: number): Promise<RegionFile>`
 - `async function openStores(): Promise<void>`
+- `function postResult(id: number, result: unknown): void`
+- `function postError(id: number, message: string): void`
 
 **Types / Interfaces / Enums**
 - type `QueuedOp`
+- type `LruNode`
 
 ---
 
-## `World/Storage/OpfsChunkStore.ts` (342 LOC)
+## `World/Storage/OpfsChunkStore.ts` (365 LOC)
 
 ### export class OpfsChunkStore
 
@@ -5012,6 +5031,7 @@ Generated: 2026-06-24T08:00:30.500Z
 - `private _size: number`
 - `private _capacity: number`
 - `private _dataSize: bigint`
+- `private _liveDataSize: bigint`
 - `private _dirty: unknown`
 - `private readonly _scratch: ArrayBuffer`
 - `private readonly _scratchDv: DataView`
@@ -5048,6 +5068,7 @@ Generated: 2026-06-24T08:00:30.500Z
 - `private _findSlot(keyHi: number, keyLo: number, lod: number): number`
 - `private _grow(): void`
 - `private _writeHeader(): void`
+- `compactIfNeeded(): void`
 - `compact(): void`
 
 **Types / Interfaces / Enums**
@@ -5176,7 +5197,7 @@ Generated: 2026-06-24T08:00:30.500Z
 
 ---
 
-## `World/Texture/BlockType.ts` (117 LOC)
+## `World/Texture/BlockType.ts` (118 LOC)
 
 **Module-level functions**
 - `export function isPassThroughBlock(blockId: number): boolean`

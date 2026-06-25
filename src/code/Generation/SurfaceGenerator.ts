@@ -97,26 +97,32 @@ export class SurfaceGenerator {
 	private static seedAsInt: number;
 
 	/**
-	 * Bounded cache of expensive horizontal column prepass data.
+	 * Direct-mapped cache of expensive horizontal column prepass data.
 	 *
 	 * Keyed by (chunkX, chunkZ) packed into a number.
 	 */
-	private static readonly MAX_COLUMN_PREPASS_CACHE = 512;
-	private static readonly columnPrepassCache = new Map<
-		number,
-		ColumnPrepassCacheEntry
-	>();
+	private static readonly COLUMN_CACHE_SIZE = 512;
+	private static readonly COLUMN_CACHE_MASK =
+		SurfaceGenerator.COLUMN_CACHE_SIZE - 1;
+	private static readonly columnCacheKeys = new Uint32Array(
+		SurfaceGenerator.COLUMN_CACHE_SIZE,
+	);
+	private static readonly columnCacheEntries: (ColumnPrepassCacheEntry | null)[] =
+		new Array(SurfaceGenerator.COLUMN_CACHE_SIZE).fill(null);
 
 	/**
-	 * Bounded flora-column cache for overlapping flora scans.
+	 * Direct-mapped flora-column cache for overlapping flora scans.
 	 *
 	 * Keyed by (worldX, worldZ) packed into a number.
 	 */
-	private static readonly MAX_FLORA_COLUMN_CACHE = 16384;
-	private static readonly floraColumnCache = new Map<
-		number,
-		FloraColumnCacheEntry
-	>();
+	private static readonly FLORA_CACHE_SIZE = 16384;
+	private static readonly FLORA_CACHE_MASK =
+		SurfaceGenerator.FLORA_CACHE_SIZE - 1;
+	private static readonly floraCacheKeys = new Uint32Array(
+		SurfaceGenerator.FLORA_CACHE_SIZE,
+	);
+	private static readonly floraCacheEntries: (FloraColumnCacheEntry | null)[] =
+		new Array(SurfaceGenerator.FLORA_CACHE_SIZE).fill(null);
 
 	private chunk_size: number;
 	private riverGenerator: RiverGenerator;
@@ -156,9 +162,9 @@ export class SurfaceGenerator {
 	}
 
 	// Number-only key — eliminates BigInt heap allocation on every cache probe.
-	// For columnPrepassCache (chunkX/Z, small integers): shift-pack is
+	// For columnCache (chunkX/Z, small integers): shift-pack is
 	// collision-free within ±32768 chunk range.
-	// For floraColumnCache (worldX/Z, larger range): multiply-xor spreads bits.
+	// For floraCache (worldX/Z, larger range): multiply-xor spreads bits.
 	private packXZKey(x: number, z: number): number {
 		return ((x * 73856093) ^ (z * 19349663)) | 0;
 	}
@@ -204,8 +210,9 @@ export class SurfaceGenerator {
 		chunkZ: number,
 	): ColumnPrepassCacheEntry {
 		const key = this.getColumnPrepassKey(chunkX, chunkZ);
-		const cached = SurfaceGenerator.columnPrepassCache.get(key);
-		if (cached) {
+		const slot = key & SurfaceGenerator.COLUMN_CACHE_MASK;
+		const cached = SurfaceGenerator.columnCacheEntries[slot];
+		if (cached && SurfaceGenerator.columnCacheKeys[slot] === key) {
 			return cached;
 		}
 
@@ -222,7 +229,6 @@ export class SurfaceGenerator {
 
 		const terrainHeightMap = new Int32Array(area);
 		const riverNoiseMap = new Float32Array(area);
-
 		const topSurfaceYMap = new Int16Array(area);
 		const isBeachMap = new Uint8Array(area);
 		topSurfaceYMap.fill(NO_SURFACE_Y);
@@ -236,6 +242,9 @@ export class SurfaceGenerator {
 		);
 		const yFreqMap = 0.04 + treeMod * 0.02;
 
+		// ------------------------------------------------------------------
+		// PASS 1: build terrain/rivers/top-surface maps
+		// ------------------------------------------------------------------
 		for (let localX = 0; localX < CHUNK_SIZE; localX++) {
 			const worldX = chunkWorldX + localX;
 
@@ -255,26 +264,7 @@ export class SurfaceGenerator {
 
 				terrainHeightMap[columnIndex] = terrainHeight;
 				riverNoiseMap[columnIndex] = riverNoise;
-
 				topSurfaceYMap[columnIndex] = topSurfaceY;
-
-				// Beach check — only meaningful when the surface is near sea level.
-				// Compute here in the prepass so resolveSolidBlockId never calls
-				// isBeachLocation (which fires 4 getFinalTerrainHeight lookups each).
-				// Uses topSurfaceY (actual surface height from findTopSurfaceY),
-				// not terrainHeight (base heightmap value), so columns whose
-				// surface is eroded/raised to water height are correctly flagged.
-				if (
-					topSurfaceY !== NO_SURFACE_Y &&
-					topSurfaceY >= SEA_LEVEL - 2 &&
-					topSurfaceY <= SEA_LEVEL + 2 &&
-					(getFinalTerrainHeight(worldX + 1, worldZ) <= SEA_LEVEL ||
-						getFinalTerrainHeight(worldX - 1, worldZ) <= SEA_LEVEL ||
-						getFinalTerrainHeight(worldX, worldZ + 1) <= SEA_LEVEL ||
-						getFinalTerrainHeight(worldX, worldZ - 1) <= SEA_LEVEL)
-				) {
-					isBeachMap[columnIndex] = 1;
-				}
 
 				if (topSurfaceY !== NO_SURFACE_Y) {
 					if (topSurfaceY < minSurfaceY) minSurfaceY = topSurfaceY;
@@ -288,6 +278,63 @@ export class SurfaceGenerator {
 			maxSurfaceY = NO_SURFACE_Y;
 		}
 
+		// ------------------------------------------------------------------
+		// PASS 2: compute beach map
+		//
+		// This uses already-built terrainHeightMap for in-chunk neighbors,
+		// and only falls back to getFinalTerrainHeight on chunk borders.
+		// ------------------------------------------------------------------
+		for (let localX = 0; localX < CHUNK_SIZE; localX++) {
+			const worldX = chunkWorldX + localX;
+
+			for (let localZ = 0; localZ < CHUNK_SIZE; localZ++) {
+				const worldZ = chunkWorldZ + localZ;
+				const columnIndex = localX + localZ * CHUNK_SIZE;
+				const topSurfaceY = topSurfaceYMap[columnIndex];
+
+				// Beach check — only meaningful when the surface is near sea level.
+				// Uses topSurfaceY (actual surface height from findTopSurfaceY),
+				// not terrainHeight (base heightmap value), so columns whose
+				// surface is eroded/raised to water height are correctly flagged.
+				if (
+					topSurfaceY === NO_SURFACE_Y ||
+					topSurfaceY < SEA_LEVEL - 2 ||
+					topSurfaceY > SEA_LEVEL + 2
+				) {
+					continue;
+				}
+
+				const left =
+					localX > 0
+						? terrainHeightMap[columnIndex - 1]
+						: getFinalTerrainHeight(worldX - 1, worldZ);
+
+				const right =
+					localX < CHUNK_SIZE - 1
+						? terrainHeightMap[columnIndex + 1]
+						: getFinalTerrainHeight(worldX + 1, worldZ);
+
+				const down =
+					localZ > 0
+						? terrainHeightMap[columnIndex - CHUNK_SIZE]
+						: getFinalTerrainHeight(worldX, worldZ - 1);
+
+				const up =
+					localZ < CHUNK_SIZE - 1
+						? terrainHeightMap[columnIndex + CHUNK_SIZE]
+						: getFinalTerrainHeight(worldX, worldZ + 1);
+
+				if (
+					left <= SEA_LEVEL ||
+					right <= SEA_LEVEL ||
+					down <= SEA_LEVEL ||
+					up <= SEA_LEVEL
+				) {
+					isBeachMap[columnIndex] = 1;
+				}
+			}
+		}
+
 		const built: ColumnPrepassCacheEntry = {
 			terrainHeightMap,
 			riverNoiseMap,
@@ -298,17 +345,8 @@ export class SurfaceGenerator {
 			maxSurfaceY,
 		};
 
-		SurfaceGenerator.columnPrepassCache.set(key, built);
-
-		while (
-			SurfaceGenerator.columnPrepassCache.size >
-			SurfaceGenerator.MAX_COLUMN_PREPASS_CACHE
-		) {
-			const firstKey = SurfaceGenerator.columnPrepassCache.keys().next().value;
-			if (firstKey !== undefined) {
-				SurfaceGenerator.columnPrepassCache.delete(firstKey);
-			}
-		}
+		SurfaceGenerator.columnCacheKeys[slot] = key;
+		SurfaceGenerator.columnCacheEntries[slot] = built;
 
 		return built;
 	}
@@ -326,8 +364,9 @@ export class SurfaceGenerator {
 		knownTopSurfaceY?: number,
 	): FloraColumnCacheEntry {
 		const key = this.getFloraColumnKey(worldX, worldZ);
-		const cached = SurfaceGenerator.floraColumnCache.get(key);
-		if (cached) {
+		const slot = key & SurfaceGenerator.FLORA_CACHE_MASK;
+		const cached = SurfaceGenerator.floraCacheEntries[slot];
+		if (cached && SurfaceGenerator.floraCacheKeys[slot] === key) {
 			return cached;
 		}
 
@@ -363,17 +402,8 @@ export class SurfaceGenerator {
 			treeNoiseValue,
 		};
 
-		SurfaceGenerator.floraColumnCache.set(key, built);
-
-		while (
-			SurfaceGenerator.floraColumnCache.size >
-			SurfaceGenerator.MAX_FLORA_COLUMN_CACHE
-		) {
-			const firstKey = SurfaceGenerator.floraColumnCache.keys().next().value;
-			if (firstKey !== undefined) {
-				SurfaceGenerator.floraColumnCache.delete(firstKey);
-			}
-		}
+		SurfaceGenerator.floraCacheKeys[slot] = key;
+		SurfaceGenerator.floraCacheEntries[slot] = built;
 
 		return built;
 	}
@@ -1281,36 +1311,62 @@ export class SurfaceGenerator {
 		const maxY = baseHeight + range;
 		const minY = baseHeight - range;
 
-		// Sample cliff noise once — y*0.004 barely moves across 64 blocks
 		const cliffNoise = this.sampleCliffNoise(worldX, baseHeight, worldZ);
 
-		let densityAbove = this.getDensity(
-			worldX,
-			maxY + 1,
-			worldZ,
-			baseHeight,
-			yFreq,
-			cliffNoise,
-		);
-		let highestSolid = CAVE_NO_SURFACE_Y;
+		const baseAmp = SurfaceGenerator.DENSITY_BASE_AMPLITUDE;
+		const overhangAmp = SurfaceGenerator.DENSITY_OVERHANG_AMPLITUDE;
+		const cliffContribution =
+			cliffNoise * SurfaceGenerator.DENSITY_CLIFF_AMPLITUDE;
 
-		for (let y = maxY; y >= minY; y--) {
-			const densityHere = this.getDensity(
-				worldX,
-				y,
-				worldZ,
-				baseHeight,
-				yFreq,
-				cliffNoise,
+		const baseNoiseX = worldX * 0.002;
+		const baseNoiseZ = worldZ * 0.01;
+
+		const overhangBaseX = worldX * 0.008;
+		const overhangBaseZ = worldZ * 0.008;
+
+		const evalDensity = (y: number): number => {
+			const baseNoise = SurfaceGenerator.densityNoise(
+				baseNoiseX,
+				y * yFreq,
+				baseNoiseZ,
 			);
-			if (densityHere > 0) {
+			const overhangNoise = SurfaceGenerator.densityNoise(
+				overhangBaseX + y * 0.0044,
+				y * 0.012,
+				overhangBaseZ - y * 0.0036,
+			);
+			return (
+				baseHeight -
+				y +
+				baseNoise * baseAmp +
+				overhangNoise * overhangAmp +
+				cliffContribution
+			);
+		};
+
+		// Pass 1: coarse scan at step=4 to find a bracket
+		let coarseHigh = CAVE_NO_SURFACE_Y;
+		for (let y = maxY; y >= minY; y -= 4) {
+			if (evalDensity(y) > 0) {
+				coarseHigh = y;
+				break;
+			}
+		}
+		if (coarseHigh === CAVE_NO_SURFACE_Y) return CAVE_NO_SURFACE_Y;
+
+		// Pass 2: fine scan within the coarse bracket
+		let densityAbove = -1;
+		let highestSolid = CAVE_NO_SURFACE_Y;
+		const fineMin = Math.max(coarseHigh - 4, minY);
+		for (let y = coarseHigh; y >= fineMin; y--) {
+			const d = evalDensity(y);
+			if (d > 0) {
 				if (densityAbove <= 0) return y;
-				// Fallback if no sharp transition was found
 				if (highestSolid === CAVE_NO_SURFACE_Y) {
 					highestSolid = y;
 				}
 			}
-			densityAbove = densityHere;
+			densityAbove = d;
 		}
 
 		return highestSolid;

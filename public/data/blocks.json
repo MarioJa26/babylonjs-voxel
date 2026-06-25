@@ -498,5 +498,11 @@
 		"name": "sierran_conifer_leaves",
 		"path": "/texture/transparent/sierracorniferleaves_01_1k",
 		"hardness": 0.2
+	},
+	{
+		"id": "PineLeaves",
+		"name": "pine_leaves",
+		"path": "/texture/transparent/pineleaves_01_1k",
+		"hardness": 0.2
 	}
 ]

@@ -17,6 +17,7 @@ export class OpfsChunkStore {
 	private _size: number = 0;
 	private _capacity: number = 0;
 	private _dataSize: bigint = 0n;
+	private _liveDataSize: bigint = 0n;
 	private _dirty = false;
 
 	private readonly _scratch: ArrayBuffer;
@@ -116,8 +117,11 @@ export class OpfsChunkStore {
 
 		if (!wasLive) {
 			this._size++;
+		} else {
+			this._liveDataSize -= BigInt(existingSize);
 		}
 		this._dataSize += BigInt(size);
+		this._liveDataSize += BigInt(size);
 		this._dirty = true;
 	}
 
@@ -170,6 +174,8 @@ export class OpfsChunkStore {
 		if (existingFlags & SLOT_FLAG_REMOVED) return false;
 		if ((existingFlags & SLOT_FLAG_OCCUPIED) === 0) return false;
 
+		const existingSize = dv.getUint32(off + 16, true);
+
 		// Write flag byte and zeroed size via existing scratch buffer.
 		this._scratchU8[0] = SLOT_FLAG_REMOVED;
 		_rwOpts.at = HEADER_SIZE_U + off + 9;
@@ -183,11 +189,13 @@ export class OpfsChunkStore {
 		dv.setUint32(off + 16, 0, true);
 
 		this._size--;
+		this._liveDataSize -= BigInt(existingSize);
 		this._evictionCount++;
 		return true;
 	}
 
 	flush(): void {
+		this.compactIfNeeded();
 		if (!this._dirty) return;
 		this._writeHeader();
 		this._accessHandle!.flush();
@@ -222,6 +230,7 @@ export class OpfsChunkStore {
 		this._capacity = OpfsChunkStore.INITIAL_CAPACITY;
 		this._size = 0;
 		this._dataSize = 0n;
+		this._liveDataSize = 0n;
 		this._tableBuffer = new ArrayBuffer(this._capacity * SLOT_SIZE_U);
 		this._tableView = new DataView(this._tableBuffer);
 		this._writeHeader(); // writes 4 KB header
@@ -253,6 +262,7 @@ export class OpfsChunkStore {
 
 		let liveCount = 0;
 		let dataEnd = 0n;
+		let liveDataSize = 0n;
 		for (let i = 0; i < this._capacity; i++) {
 			const off = i * SLOT_SIZE_U;
 			const flags = this._tableView.getUint8(off + 9);
@@ -265,11 +275,13 @@ export class OpfsChunkStore {
 			)
 				continue;
 			liveCount++;
+			liveDataSize += BigInt(size);
 			const end = diskOffset + BigInt(size);
 			if (end > dataEnd) dataEnd = end;
 		}
 		this._size = liveCount;
 		this._dataSize = dataEnd;
+		this._liveDataSize = liveDataSize;
 
 		this._fileSize = this._accessHandle!.getSize() as number;
 
@@ -351,6 +363,18 @@ export class OpfsChunkStore {
 		this._accessHandle!.write(this._headerBuf, _rwOpts);
 	}
 
+	compactIfNeeded(): void {
+		const orphanedBytes = this._dataSize - this._liveDataSize;
+		if (
+			orphanedBytes >= BigInt(COMPACT_MIN_ORPHANED) &&
+			this._liveDataSize < this._dataSize - BigInt(COMPACT_MIN_ORPHANED) &&
+			this._liveDataSize * 100n <
+				this._dataSize * BigInt((1 - COMPACT_RATIO_THRESHOLD) * 100)
+		) {
+			this.compact();
+		}
+	}
+
 	compact(): void {
 		if (!this._accessHandle) return;
 
@@ -409,6 +433,7 @@ export class OpfsChunkStore {
 		}
 
 		this._dataSize = writeHead;
+		this._liveDataSize = writeHead;
 		this._dirty = true;
 	}
 }

@@ -28,6 +28,7 @@ const generator = new WorldGenerator(GenerationParams);
 //   nibble value for palette[0].  The zero-fill at the start of each
 //   call clears both passes' state.
 const _compressSeen = new Uint8Array(65536);
+const _compressUniqueIds = new Uint16Array(17);
 
 function compressBlocks(blocks: Uint8Array): {
 	isUniform: boolean;
@@ -38,12 +39,14 @@ function compressBlocks(blocks: Uint8Array): {
 	const seen = _compressSeen;
 	seen.fill(0);
 	let uniqueCount = 0;
+	let uniqueIdCount = 0;
 	const firstId = blocks[0];
 
 	for (let i = 0; i < blocks.length; i++) {
 		const id = blocks[i];
 		if (!seen[id]) {
 			seen[id] = 1;
+			_compressUniqueIds[uniqueIdCount++] = id;
 			uniqueCount++;
 			if (uniqueCount > 16) break;
 		}
@@ -62,12 +65,9 @@ function compressBlocks(blocks: Uint8Array): {
 		const palette = new Uint16Array(uniqueCount);
 		let pi = 0;
 
-		// Build palette from the seen flags set in the first pass.
-		// This loop completes before seen[] is overwritten with palette indices.
-		for (let id = 0; id < 65536 && pi < uniqueCount; id++) {
-			if (seen[id]) {
-				palette[pi++] = id;
-			}
+		// Build palette from tracked unique IDs (avoids scanning all 65536 entries).
+		for (let i = 0; i < uniqueIdCount && pi < uniqueCount; i++) {
+			palette[pi++] = _compressUniqueIds[i];
 		}
 
 		// Overwrite seen[] with palette indices for O(1) lookup in the pack loop.
@@ -124,13 +124,7 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
 					compressBlocks,
 				});
 
-			self.postMessage(
-				{
-					...payload,
-					type: WorkerTaskType.GenerateTerrain,
-				},
-				transferables,
-			);
+			self.postMessage(payload, transferables);
 			return;
 		}
 

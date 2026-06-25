@@ -153,6 +153,7 @@ export class ChunkWorkerPool {
 	private meshResultQueueReadIdx = 0;
 	private remeshFlushScheduled = false;
 	private processQueuePumpScheduled = false;
+	private meshDrainScheduled = false;
 
 	private pendingRemeshSaveIds = new Set<bigint>();
 	private pendingRemeshSaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -170,6 +171,7 @@ export class ChunkWorkerPool {
 	private opfsClient: OpfsClient | null = null;
 	private opfsReady = false;
 	private opfsInitPromise: Promise<void> | null = null;
+	private opfsFlushCounter = 0;
 
 	// ---------------------------------------------------------------------------
 	// Static scratch buffers — avoids per-call allocation on hot paths
@@ -267,10 +269,15 @@ export class ChunkWorkerPool {
 	private scheduleProcessQueuePump(): void {
 		if (this.processQueuePumpScheduled) return;
 		this.processQueuePumpScheduled = true;
-		requestAnimationFrame(() => {
-			this.processQueuePumpScheduled = false;
+		if (this.getEffectiveIdleWorkerCount() > 0 && this.hasPendingTasks()) {
 			this.processQueue();
-		});
+			this.processQueuePumpScheduled = false;
+		} else {
+			requestAnimationFrame(() => {
+				this.processQueuePumpScheduled = false;
+				this.processQueue();
+			});
+		}
 	}
 
 	private updateQueueDebugStats(): void {
@@ -741,10 +748,11 @@ export class ChunkWorkerPool {
 		let processed = 0;
 		const budget = 4; // ms
 		const slotMap = this.lightSlotPendingSeq;
+		let iterCount = 0;
 
 		while (
 			this.lightDirtyQueueReadIdx < this.lightDirtyQueue.length &&
-			performance.now() - start < budget
+			((iterCount++ & 15) !== 0 || performance.now() - start < budget)
 		) {
 			const entry = this.lightDirtyQueue[this.lightDirtyQueueReadIdx++]!;
 			const slots = entry.dirtySlots;
@@ -760,7 +768,8 @@ export class ChunkWorkerPool {
 			this.lightDirtyQueueReadIdx > 64 &&
 			this.lightDirtyQueueReadIdx * 2 > this.lightDirtyQueue.length
 		) {
-			this.lightDirtyQueue.splice(0, this.lightDirtyQueueReadIdx);
+			this.lightDirtyQueue.copyWithin(0, this.lightDirtyQueueReadIdx);
+			this.lightDirtyQueue.length -= this.lightDirtyQueueReadIdx;
 			this.lightDirtyQueueReadIdx = 0;
 		}
 
@@ -980,11 +989,12 @@ export class ChunkWorkerPool {
 		const maxChunks = terrainBusy
 			? Math.min(4, ChunkWorkerPool.DEFERRED_LIGHTING_MAX_CHUNKS_PER_FRAME)
 			: ChunkWorkerPool.DEFERRED_LIGHTING_MAX_CHUNKS_PER_FRAME;
+		let iterCount = 0;
 
 		while (
 			this.deferredLightingQueueReadIdx < this.deferredLightingQueue.length &&
 			processed < maxChunks &&
-			performance.now() - start < budget
+			((iterCount++ & 15) !== 0 || performance.now() - start < budget)
 		) {
 			const chunk =
 				this.deferredLightingQueue[this.deferredLightingQueueReadIdx++]!;
@@ -1047,9 +1057,10 @@ export class ChunkWorkerPool {
 	private processMeshQueueLoop = () => {
 		const start = performance.now();
 		let processed = 0;
+		let iterCount = 0;
 		while (
 			this.meshResultQueueReadIdx < this.meshResultQueue.length &&
-			performance.now() - start < 5
+			((iterCount++ & 15) !== 0 || performance.now() - start < 5)
 		) {
 			const data = this.meshResultQueue[this.meshResultQueueReadIdx++]!;
 			processed++;
@@ -1113,6 +1124,16 @@ export class ChunkWorkerPool {
 		}
 
 		flushDirtyMergedGroups();
+
+		if (processed > 0 && this.opfsReady && this.opfsClient) {
+			this.opfsFlushCounter++;
+			if (this.opfsFlushCounter >= 60) {
+				this.opfsFlushCounter = 0;
+				void this.opfsClient.flush().catch((err: any) => {
+					console.warn("[ChunkWorkerPool] OPFS flush failed:", err);
+				});
+			}
+		}
 
 		if (
 			this.meshResultQueueReadIdx > 64 &&
@@ -1376,7 +1397,13 @@ export class ChunkWorkerPool {
 					} else {
 						this.meshResultQueue.push(meshData);
 					}
-					requestAnimationFrame(this.processMeshQueueLoop);
+					if (!this.meshDrainScheduled) {
+						this.meshDrainScheduled = true;
+						requestAnimationFrame(() => {
+							this.meshDrainScheduled = false;
+							this.processMeshQueueLoop();
+						});
+					}
 
 					const resolvedChunk = this.resolveChunkByMessageId(meshData.chunkId);
 					if (
@@ -1549,7 +1576,13 @@ export class ChunkWorkerPool {
 				} else {
 					this.meshResultQueue.push(fullMeshMessage);
 				}
-				requestAnimationFrame(this.processMeshQueueLoop);
+				if (!this.meshDrainScheduled) {
+					this.meshDrainScheduled = true;
+					requestAnimationFrame(() => {
+						this.meshDrainScheduled = false;
+						this.processMeshQueueLoop();
+					});
+				}
 
 				const resolvedChunk = this.resolveChunkByMessageId(data.chunkId);
 				if (
@@ -1615,7 +1648,8 @@ export class ChunkWorkerPool {
 	private compactTaskQueue(): void {
 		if (this.taskQueueReadIdx === 0) return;
 		if (this.taskQueueReadIdx > this.taskQueue.length >> 1) {
-			this.taskQueue.splice(0, this.taskQueueReadIdx);
+			this.taskQueue.copyWithin(0, this.taskQueueReadIdx);
+			this.taskQueue.length -= this.taskQueueReadIdx;
 			this.taskQueueReadIdx = 0;
 		}
 	}

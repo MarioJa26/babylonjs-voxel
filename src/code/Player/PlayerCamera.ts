@@ -63,7 +63,7 @@ export class PlayerCamera {
 		this.#playerCamera.setTarget(this.#_tmp1);
 
 		const isUnderWater =
-			this.#playerCamera.position.y < GenerationParams.SEA_LEVEL;
+			this.#playerCamera.position.y < GenerationParams.SEA_LEVEL + 1;
 		if (this.#isUnderWater !== isUnderWater) {
 			MapFog.applyToScene(this.scene, isUnderWater);
 			this.#isUnderWater = isUnderWater;

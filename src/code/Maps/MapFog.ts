@@ -34,10 +34,10 @@ export default class MapFog {
 		if (scene.fogEnd !== nextEnd) scene.fogEnd = nextEnd;
 	}
 
-	constructor(private scene: Scene) {
+	constructor(scene: Scene) {
 		scene.fogMode = Scene.FOGMODE_LINEAR;
 		MapFog.applyToScene(scene, true);
 		// scene.fogColor = new Color3(1.0, 0.0, 0.1);
-		scene.fogDensity = 0.9;
+		scene.fogDensity = 0.8;
 	}
 }

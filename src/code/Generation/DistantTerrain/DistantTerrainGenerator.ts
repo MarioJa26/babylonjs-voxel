@@ -24,6 +24,23 @@ export class DistantTerrainGenerator {
 	private static radius = 0;
 	private static usingSharedBuffers = false;
 
+	// Height cache — avoids redundant getFinalTerrainHeight calls for normals.
+	private static _heightCache = new Float32Array(131072);
+	private static _heightCacheKeys = new Int32Array(131072);
+	private static _heightCacheMask = 131071;
+
+	private static cachedHeight(wx: number, wz: number): number {
+		const key = (wx & 0x3fff) | ((wz & 0x3fff) << 14);
+		const slot = key & DistantTerrainGenerator._heightCacheMask;
+		if (DistantTerrainGenerator._heightCacheKeys[slot] === key) {
+			return DistantTerrainGenerator._heightCache[slot];
+		}
+		const h = getFinalTerrainHeight(wx, wz);
+		DistantTerrainGenerator._heightCacheKeys[slot] = key;
+		DistantTerrainGenerator._heightCache[slot] = h;
+		return h;
+	}
+
 	// =====================================================================
 	// SharedArrayBuffer initialization
 	// =====================================================================
@@ -117,8 +134,7 @@ export class DistantTerrainGenerator {
 				!Number.isInteger(shiftZ) ||
 				(exactCenterMoved && !snappedGridMoved) ||
 				Math.abs(shiftX) > 1 ||
-				Math.abs(shiftZ) > 1 ||
-				(shiftX !== 0 && shiftZ !== 0);
+				Math.abs(shiftZ) > 1;
 
 			if (needsFullRebuild) {
 				DistantTerrainGenerator.fullGenerate(
@@ -130,15 +146,36 @@ export class DistantTerrainGenerator {
 				);
 			} else {
 				if (snappedGridMoved) {
-					DistantTerrainGenerator.slideArrays(shiftX, shiftZ);
-					DistantTerrainGenerator.regenerateEdges(
-						shiftX,
-						shiftZ,
-						gridCenterChunkX,
-						gridCenterChunkZ,
-						centerChunkX,
-						centerChunkZ,
-					);
+					if (shiftX !== 0 && shiftZ !== 0) {
+						DistantTerrainGenerator.slideArrays(shiftX, 0);
+						DistantTerrainGenerator.regenerateEdges(
+							shiftX,
+							0,
+							gridCenterChunkX,
+							gridCenterChunkZ,
+							centerChunkX,
+							centerChunkZ,
+						);
+						DistantTerrainGenerator.slideArrays(0, shiftZ);
+						DistantTerrainGenerator.regenerateEdges(
+							0,
+							shiftZ,
+							gridCenterChunkX,
+							gridCenterChunkZ,
+							centerChunkX,
+							centerChunkZ,
+						);
+					} else {
+						DistantTerrainGenerator.slideArrays(shiftX, shiftZ);
+						DistantTerrainGenerator.regenerateEdges(
+							shiftX,
+							shiftZ,
+							gridCenterChunkX,
+							gridCenterChunkZ,
+							centerChunkX,
+							centerChunkZ,
+						);
+					}
 				}
 				if (snappedGridMoved || exactCenterMoved) {
 					DistantTerrainGenerator.rewriteLocalXZ(
@@ -403,8 +440,8 @@ export class DistantTerrainGenerator {
 			y = DistantTerrainGenerator.INSIDE_CLIP_Y;
 
 			// Calculate normals based on actual terrain for smooth transition
-			const hRight = getFinalTerrainHeight(worldX + 1, worldZ);
-			const hDown = getFinalTerrainHeight(worldX, worldZ + 1);
+			const hRight = DistantTerrainGenerator.cachedHeight(worldX + 1, worldZ);
+			const hDown = DistantTerrainGenerator.cachedHeight(worldX, worldZ + 1);
 			const dy1 = hRight - y;
 			const dy2 = hDown - y;
 			const len = Math.sqrt(dy1 * dy1 + 1 + dy2 * dy2) || 1;
@@ -421,10 +458,10 @@ export class DistantTerrainGenerator {
 		} else {
 			const worldX = chunkX * CHUNK_SIZE;
 			const worldZ = chunkZ * CHUNK_SIZE;
-			y = getFinalTerrainHeight(worldX, worldZ);
+			y = DistantTerrainGenerator.cachedHeight(worldX, worldZ);
 
-			const hRight = getFinalTerrainHeight(worldX + 1, worldZ);
-			const hDown = getFinalTerrainHeight(worldX, worldZ + 1);
+			const hRight = DistantTerrainGenerator.cachedHeight(worldX + 1, worldZ);
+			const hDown = DistantTerrainGenerator.cachedHeight(worldX, worldZ + 1);
 			const dy1 = hRight - y;
 			const dy2 = hDown - y;
 			const len = Math.sqrt(dy1 * dy1 + 1 + dy2 * dy2) || 1;

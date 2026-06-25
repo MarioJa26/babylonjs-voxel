@@ -88,6 +88,7 @@ export enum BlockType {
 	PalmLeaves = 86,
 	SierranConiferBark = 87,
 	SierranConiferLeaves = 88,
+	PineLeaves = 89,
 }
 
 export const Hardness = {

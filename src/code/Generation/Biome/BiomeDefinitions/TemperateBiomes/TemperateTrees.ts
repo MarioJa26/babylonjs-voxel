@@ -480,37 +480,60 @@ export const AUTUMN_TREE: TreeDefinition = {
 	},
 };
 
-// ---------------------------------------------------------------------------
-// PINE_TREE — Pine Forest
-// Tall conical shape, dense dark foliage
-// Wood: PineBark (22), Leaves: ForestLeaves02 (43)
-// ---------------------------------------------------------------------------
 export const PINE_TREE: TreeDefinition = {
 	woodId: 22, // PineBark
-	leavesId: 43, // ForestLeaves02
-	baseHeight: 10,
-	heightVariance: 5,
+	leavesId: 89, // PineLeaves
+	baseHeight: 12,
+	heightVariance: 6,
+
 	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
-		const h = Squirrel3.get(worldX * 374761393 + worldZ * 678446653, seedAsInt);
-		const height = this.baseHeight + (Math.abs(h) % (this.heightVariance + 1));
+		const h = Squirrel3.get(
+			(worldX * 374761393 + worldZ * 678446653) | 0,
+			seedAsInt,
+		);
+		const hAbs = h < 0 ? -h : h;
+		const height = (this.baseHeight + (hAbs % (this.heightVariance + 1))) | 0;
+
 		const woodId = this.woodId;
 		const leavesId = this.leavesId;
 
+		// Trunk
 		for (let i = 0; i < height; i++) {
 			placeBlock(worldX, worldY + i, worldZ, woodId, true);
 		}
 
-		const coneStart = Math.floor(height * 0.35);
-		const coneEnd = height + 2;
+		// Guaranteed tip: leaf on top and 4 cardinal sides of top wood block
+		const tipY = worldY + height;
+		placeBlock(worldX, tipY, worldZ, leavesId, false); // top
+		placeBlock(worldX + 1, tipY - 1, worldZ, leavesId, false); // sides
+		placeBlock(worldX - 1, tipY - 1, worldZ, leavesId, false);
+		placeBlock(worldX, tipY - 1, worldZ + 1, leavesId, false);
+		placeBlock(worldX, tipY - 1, worldZ - 1, leavesId, false);
 
-		for (let y = coneStart; y <= coneEnd; y++) {
-			const progress = (y - coneStart) / (coneEnd - coneStart);
-			const radius = Math.max(1, Math.floor(4 * (1 - progress * 0.8)));
-			for (let x = -radius; x <= radius; x++) {
-				for (let z = -radius; z <= radius; z++) {
-					if (x * x + z * z <= radius * radius + 1) {
-						placeBlock(worldX + x, worldY + y, worldZ + z, leavesId, false);
-					}
+		// Whorl cone — stop at height - 1 so cone never touches tip y
+		const bareBase = (height * 0.3) | 0;
+		const coneTop = height - 1; // cone stops well below tip
+		const coneSpan = (coneTop - bareBase) | 0;
+		const TIER_STEP = 2;
+
+		for (let y = bareBase; y <= coneTop; y++) {
+			const progress = (y - bareBase) / coneSpan;
+			const rawRadius = 4.5 * (1.0 - progress * progress * 0.9);
+			const radius = rawRadius | 0;
+
+			if (radius <= 0) continue;
+
+			const isMajorTier = (y - bareBase) % TIER_STEP === 0;
+			const fillRadius = isMajorTier ? radius : (radius - 1) | 0;
+			if (fillRadius <= 0) continue;
+
+			const r2 = (fillRadius * fillRadius) | 0;
+
+			for (let dx = -fillRadius; dx <= fillRadius; dx++) {
+				const dx2 = (dx * dx) | 0;
+				for (let dz = -fillRadius; dz <= fillRadius; dz++) {
+					if (dx2 + dz * dz > r2) continue;
+					placeBlock(worldX + dx, worldY + y, worldZ + dz, leavesId, false);
 				}
 			}
 		}

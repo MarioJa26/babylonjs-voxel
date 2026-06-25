@@ -11,7 +11,7 @@ function writeU32LE(buf: Uint8Array, off: number, val: number): void {
 
 /**
  * Serializes a MeshData into a single Uint8Array for OPFS storage.
- * Format (no version, no compression per design decision):
+ * Format (no version — gzip compression is applied by the OPFS worker):
  *   [faceCount: u32 LE]
  *   [aLen: u32 LE]
  *   [bLen: u32 LE]

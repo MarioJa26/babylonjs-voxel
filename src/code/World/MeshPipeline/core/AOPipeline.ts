@@ -56,39 +56,22 @@ export function computeAO(
 
 	// 8 unique positions — edge-adjacent cells shared by two corners each,
 	// plus four corner-diagonal cells. Fetched once, reused across all corners.
-	const muX = faceX - ux;
-	const muY = faceY - uy;
-	const muZ = faceZ - uz;
-	const puX = faceX + ux;
-	const puY = faceY + uy;
-	const puZ = faceZ + uz;
-	const mvX = faceX - vx;
-	const mvY = faceY - vy;
-	const mvZ = faceZ - vz;
-	const pvX = faceX + vx;
-	const pvY = faceY + vy;
-	const pvZ = faceZ + vz;
-	const mumvX = muX - vx;
-	const mumvY = muY - vy;
-	const mumvZ = muZ - vz;
-	const pumvX = puX - vx;
-	const pumvY = puY - vy;
-	const pumvZ = puZ - vz;
-	const pupvX = puX + vx;
-	const pupvY = puY + vy;
-	const pupvZ = puZ + vz;
-	const mupvX = muX + vx;
-	const mupvY = muY + vy;
-	const mupvZ = muZ + vz;
-
-	const fMu = getCachedFlags(getBlock(muX, muY, muZ, 0));
-	const fPu = getCachedFlags(getBlock(puX, puY, puZ, 0));
-	const fMv = getCachedFlags(getBlock(mvX, mvY, mvZ, 0));
-	const fPv = getCachedFlags(getBlock(pvX, pvY, pvZ, 0));
-	const fMumv = getCachedFlags(getBlock(mumvX, mumvY, mumvZ, 0));
-	const fPumv = getCachedFlags(getBlock(pumvX, pumvY, pumvZ, 0));
-	const fPupv = getCachedFlags(getBlock(pupvX, pupvY, pupvZ, 0));
-	const fMupv = getCachedFlags(getBlock(mupvX, mupvY, mupvZ, 0));
+	const fMu = getCachedFlags(getBlock(faceX - ux, faceY - uy, faceZ - uz, 0));
+	const fPu = getCachedFlags(getBlock(faceX + ux, faceY + uy, faceZ + uz, 0));
+	const fMv = getCachedFlags(getBlock(faceX - vx, faceY - vy, faceZ - vz, 0));
+	const fPv = getCachedFlags(getBlock(faceX + vx, faceY + vy, faceZ + vz, 0));
+	const fMumv = getCachedFlags(
+		getBlock(faceX - ux - vx, faceY - uy - vy, faceZ - uz - vz, 0),
+	);
+	const fPumv = getCachedFlags(
+		getBlock(faceX + ux - vx, faceY + uy - vy, faceZ + uz - vz, 0),
+	);
+	const fPupv = getCachedFlags(
+		getBlock(faceX + ux + vx, faceY + uy + vy, faceZ + uz + vz, 0),
+	);
+	const fMupv = getCachedFlags(
+		getBlock(faceX - ux + vx, faceY - uy + vy, faceZ - uz + vz, 0),
+	);
 
 	const isSolid = (f: number) => f & FLAG_SOLID && !(f & FLAG_PARTIAL);
 

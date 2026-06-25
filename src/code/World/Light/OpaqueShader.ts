@@ -28,7 +28,7 @@ export class OpaqueShader {
         out vec2 vUV;
         flat out vec2 vUV2;
         out vec3 vPositionW;
-        out mat3 vTBN;
+        flat out int vAxisFace;
         out float vAO;
         flat out float vSkyLight;
         flat out float vBlockLight;
@@ -190,7 +190,7 @@ export class OpaqueShader {
             vUV2 = vec2(faceDataB.z, atlasMaxTiles - 1.0 - faceDataB.w) * atlasTileSize;
 
             vPositionW = localPosition + world[3].xyz;
-            vTBN = mat3(T, B, N);
+            vAxisFace = diagonalEnabled ? 6 + diagonalVariant : axisFace;
             vViewDir = normalize(cameraPosition - vPositionW);
 
             int packedAO = int(faceDataC.x + 0.5);
@@ -209,7 +209,7 @@ export class OpaqueShader {
     in vec2 vUV;
     flat in vec2 vUV2;
     in vec3 vPositionW;
-    in mat3 vTBN;
+    flat in int vAxisFace;
     in float vAO;
     flat in float vSkyLight;
     flat in float vBlockLight;
@@ -237,9 +237,21 @@ export class OpaqueShader {
 
         diffuseColor.rgb *= mix(1.0, 0.5, wetness);
 
-        vec3 normalMap = texture(normalTexture, atlasUV).rgb;
-        normalMap = normalize(normalMap * 2.0 - 1.0); 
-        vec3 worldNormal = normalize(vTBN * normalMap);
+        // Reconstruct face normal from axisFace (flat — no interpolation cost)
+        vec3 worldNormal;
+        if (vAxisFace >= 6) {
+            // Diagonal cross-shape: encode normal in vertex data
+            const vec3 DIAG_NORMALS[2] = vec3[](
+                vec3(0.70710678, 0.0, -0.70710678),
+                vec3(-0.70710678, 0.0, -0.70710678)
+            );
+            worldNormal = DIAG_NORMALS[vAxisFace - 6];
+        } else {
+            int axis = vAxisFace >> 1;
+            float sign = (vAxisFace & 1) == 0 ? 1.0 : -1.0;
+            worldNormal = vec3(0.0);
+            worldNormal[axis] = sign;
+        }
 
         // 2. Diffuse Lighting
         float diffuseIntensity = max(0.0, dot(worldNormal, lightDirection));

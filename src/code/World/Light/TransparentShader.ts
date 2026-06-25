@@ -29,7 +29,7 @@ export class TransparentShader {
     out vec2 vUV;
     flat out vec2 vUV2;
     out vec3 vPositionW;
-    out mat3 vTBN;
+    flat out int vAxisFace;
     out float vAO;
     flat out float vSkyLight;
     flat out float vBlockLight;
@@ -192,7 +192,7 @@ export class TransparentShader {
       vUV2 = vec2(faceDataB.z, atlasMaxTiles - 1.0 - faceDataB.w) * atlasTileSize;
 
       vPositionW = localPosition + world[3].xyz;
-      vTBN = mat3(T, B, N);
+      vAxisFace = diagonalEnabled ? 6 + diagonalVariant : axisFace;
       vViewDir = normalize(cameraPosition - vPositionW);
 
       int packedAO = int(faceDataC.x + 0.5);
@@ -213,7 +213,7 @@ export class TransparentShader {
   in vec3 vPositionW;
   in vec2 vUV;
   flat in vec2 vUV2;
-  in mat3 vTBN;
+  flat in int vAxisFace;
   in float vAO;
   flat in float vSkyLight;
   flat in float vBlockLight;
@@ -273,17 +273,16 @@ export class TransparentShader {
     vec3 worldNormal;
 
     if (isWater > 0.5) {
-      // Procedural water wave normal
+      // Procedural water wave normal — single octave for performance
       vec2 wavePos = vPositionW.xz * 0.3 + scrollDir;
-      vec2 wavePosB = wavePos * 1.314 + 4.7;
 
       float eps = 0.05;
       vec2 epsDX = vec2(eps, 0.0);
       vec2 epsDZ = vec2(0.0, eps);
 
-      float wC = valueNoise(wavePos) + valueNoise(wavePosB);
-      float wCDX = valueNoise(wavePos + epsDX) + valueNoise(wavePosB + epsDX);
-      float wCDZ = valueNoise(wavePos + epsDZ) + valueNoise(wavePosB + epsDZ);
+      float wC = valueNoise(wavePos);
+      float wCDX = valueNoise(wavePos + epsDX);
+      float wCDZ = valueNoise(wavePos + epsDZ);
 
       float waveStrength = 0.15;
 
@@ -293,8 +292,19 @@ export class TransparentShader {
         -(wCDZ - wC) / eps * waveStrength
       ));
     } else {
-      vec3 normalMapBase = texture(normalTexture, atlasUV).rgb;
-      worldNormal = normalize(vTBN * (normalMapBase * 2.0 - 1.0));
+      // Reconstruct face normal from axisFace (flat — no interpolation cost)
+      if (vAxisFace >= 6) {
+        const vec3 DIAG_NORMALS[2] = vec3[](
+          vec3(0.70710678, 0.0, -0.70710678),
+          vec3(-0.70710678, 0.0, -0.70710678)
+        );
+        worldNormal = DIAG_NORMALS[vAxisFace - 6];
+      } else {
+        int axis = vAxisFace >> 1;
+        float sign = (vAxisFace & 1) == 0 ? 1.0 : -1.0;
+        worldNormal = vec3(0.0);
+        worldNormal[axis] = sign;
+      }
     }
 
     // --- 5. Direct Lighting ---

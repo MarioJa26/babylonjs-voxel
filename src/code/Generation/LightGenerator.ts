@@ -127,6 +127,14 @@ export class LightGenerator {
 		// If callers reuse buffers, this prevents old lighting data from leaking.
 		light.fill(0);
 
+		// Early-out: entire chunk is below minimum skylight Y — no sky light to seed.
+		if (
+			chunkWorldY + CHUNK_SIZE - 1 <
+			LightGenerator.SKYLIGHT_GENERATION_MIN_WORLD_Y
+		) {
+			return 0;
+		}
+
 		for (let x = 0; x < CHUNK_SIZE; x++) {
 			for (let z = 0; z < CHUNK_SIZE; z++) {
 				const columnIndex = x + z * CHUNK_SIZE;

@@ -68,9 +68,9 @@ const _incBfsEntry = new Int8Array(BFS_CAP);
 const _incBfsSteps = new Uint16Array(BFS_CAP);
 
 // ---------------------------------------------------------------------------
-// Frustum plane cache — packed Float64Array
+// Frustum plane cache — packed Float32Array
 // ---------------------------------------------------------------------------
-const _frustumPacked = new Float64Array(24);
+const _frustumPacked = new Float32Array(24);
 let _frustumValid = false;
 let _lastVPHash = -1;
 

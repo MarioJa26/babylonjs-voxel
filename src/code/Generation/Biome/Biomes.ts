@@ -334,7 +334,7 @@ export function getBiomeFor(
 		}
 		if (humidity < 0.38) {
 			if (terrainShapedHeight < SEA + 20) return OASIS;
-			return SALT_FLATS;
+			if (continentalness < 0.3) return SALT_FLATS;
 		}
 		if (humidity < 0.5) {
 			if (terrainShapedHeight > SEA + 35) return RED_ROCK_CANYON;
