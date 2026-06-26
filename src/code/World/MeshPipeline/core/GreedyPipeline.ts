@@ -150,11 +150,17 @@ export function greedyMesh(
 				_greedyFaceScratch.light = light;
 				emitFace(_greedyFaceScratch);
 
-				// Clear the merged region so it won’t be processed again
-				for (let dv = 0; dv < height; dv++) {
-					const clearRowBase = index + dv * size;
-					mask.fill(0, clearRowBase, clearRowBase + width);
-					lights.fill(0, clearRowBase, clearRowBase + width);
+				// Clear the merged region so it wont be processed again
+				if (width === size) {
+					const clearEnd = index + height * size;
+					mask.fill(0, index, clearEnd);
+					lights.fill(0, index, clearEnd);
+				} else {
+					for (let dv = 0; dv < height; dv++) {
+						const clearRowBase = index + dv * size;
+						mask.fill(0, clearRowBase, clearRowBase + width);
+						lights.fill(0, clearRowBase, clearRowBase + width);
+					}
 				}
 
 				u += width;

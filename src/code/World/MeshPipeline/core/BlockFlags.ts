@@ -1,5 +1,10 @@
 import { unpackBlockId } from "../../Chunk/DataStructures/BlockEncoding";
 import { BLOCK_TYPE } from "../../Chunk/Worker/ChunkMesherConstants";
+import {
+	isCrossBlockId,
+	isCrossDiagonalBlockId,
+} from "../../Shape/BlockShapes";
+import { isFenceBlockId } from "../../Shape/FenceConnect";
 import { MaterialType } from "../types/MeshTypes";
 import {
 	getMaterialType,
@@ -12,6 +17,9 @@ export const FLAG_TRANSPARENT = 1 << 1;
 export const FLAG_PARTIAL = 1 << 2;
 export const FLAG_GREEDY = 1 << 3;
 export const FLAG_WATER_GLASS = 1 << 4;
+export const FLAG_CUSTOM_CROSS = 1 << 5;
+export const FLAG_CUSTOM_CROSS_DIAGONAL = 1 << 6;
+export const FLAG_CUSTOM_FENCE = 1 << 7;
 
 const DENSE_CACHE_SIZE = 1 << 16;
 const DENSE_CACHE_MASK = DENSE_CACHE_SIZE - 1;
@@ -19,6 +27,7 @@ const DENSE_CACHE_MASK = DENSE_CACHE_SIZE - 1;
 const BLOCK_FLAGS_CACHE = new Uint8Array(DENSE_CACHE_SIZE);
 const BLOCK_FLAGS_READY = new Uint8Array(DENSE_CACHE_SIZE);
 const BLOCK_ID_CACHE = new Uint16Array(DENSE_CACHE_SIZE);
+const BLOCK_ID_READY = new Uint8Array(DENSE_CACHE_SIZE);
 const BLOCK_IS_CUBE_CACHE = new Uint8Array(DENSE_CACHE_SIZE);
 const BLOCK_IS_CUBE_READY = new Uint8Array(DENSE_CACHE_SIZE);
 
@@ -30,11 +39,14 @@ export function getCachedBlockId(packed: number): number {
 	if (!packed) return 0;
 
 	if (canUseDenseCache(packed)) {
-		if (!BLOCK_FLAGS_READY[packed]) {
-			const id = unpackBlockId(packed);
-			BLOCK_ID_CACHE[packed] = id;
+		if (BLOCK_ID_READY[packed]) {
+			return BLOCK_ID_CACHE[packed];
 		}
-		return BLOCK_ID_CACHE[packed];
+
+		const id = unpackBlockId(packed);
+		BLOCK_ID_CACHE[packed] = id;
+		BLOCK_ID_READY[packed] = 1;
+		return id;
 	}
 
 	return unpackBlockId(packed);
@@ -80,10 +92,16 @@ export function getCachedFlags(packed: number): number {
 		if (!shape.isCube) flags |= FLAG_PARTIAL;
 		if (greedyCompatible) flags |= FLAG_GREEDY;
 		if (materialType === MaterialType.WaterOrGlass) flags |= FLAG_WATER_GLASS;
+		if (!greedyCompatible) {
+			if (isCrossBlockId(id)) flags |= FLAG_CUSTOM_CROSS;
+			else if (isCrossDiagonalBlockId(id)) flags |= FLAG_CUSTOM_CROSS_DIAGONAL;
+			else if (isFenceBlockId(id)) flags |= FLAG_CUSTOM_FENCE;
+		}
 
 		BLOCK_FLAGS_CACHE[packed] = flags;
 		BLOCK_FLAGS_READY[packed] = 1;
 		BLOCK_ID_CACHE[packed] = id;
+		BLOCK_ID_READY[packed] = 1;
 
 		return flags;
 	}
@@ -102,6 +120,11 @@ export function getCachedFlags(packed: number): number {
 	if (!shape.isCube) flags |= FLAG_PARTIAL;
 	if (greedyCompatible) flags |= FLAG_GREEDY;
 	if (materialType === MaterialType.WaterOrGlass) flags |= FLAG_WATER_GLASS;
+	if (!greedyCompatible) {
+		if (isCrossBlockId(id)) flags |= FLAG_CUSTOM_CROSS;
+		else if (isCrossDiagonalBlockId(id)) flags |= FLAG_CUSTOM_CROSS_DIAGONAL;
+		else if (isFenceBlockId(id)) flags |= FLAG_CUSTOM_FENCE;
+	}
 
 	return flags;
 }

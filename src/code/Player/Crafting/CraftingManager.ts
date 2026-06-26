@@ -24,3 +24,12 @@ export const Recipes: Recipe[] = [
 	},
 	// Add more recipes here
 ];
+
+export interface MasonRecipe {
+	sourceBlockId: number;
+	targetShape: string;
+	resultBlockId: number;
+	resultBlockState: number;
+}
+
+export const MasonRecipes: MasonRecipe[] = [];

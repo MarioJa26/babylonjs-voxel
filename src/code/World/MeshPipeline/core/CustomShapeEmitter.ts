@@ -12,7 +12,6 @@ import {
 import {
 	computeFenceNeighborMask,
 	getFenceDynamicShape,
-	isFenceBlockId,
 } from "../../Shape/FenceConnect";
 import { FaceName, getFaceName } from "../../Texture/FaceName";
 import {
@@ -22,13 +21,20 @@ import {
 } from "../types/MeshTypes";
 
 import { computeAO } from "./AOPipeline";
+import {
+	FLAG_CUSTOM_CROSS,
+	FLAG_CUSTOM_CROSS_DIAGONAL,
+	FLAG_CUSTOM_FENCE,
+	FLAG_GREEDY,
+	FLAG_WATER_GLASS,
+	getCachedBlockId,
+	getCachedFlags,
+} from "./BlockFlags";
 import { emitQuad } from "./FaceEmitter";
 import {
 	getMaterialType,
 	getRuntimeShapeBoxes,
 	getShapeInfo,
-	isCrossDiagonalShapePackedBlock,
-	isCrossShapePackedBlock,
 	isGreedyCompatiblePackedBlock,
 } from "./ShapePipeline";
 
@@ -121,6 +127,10 @@ function isWaterGlassInterface(curr: ParsedBlock, nbr: ParsedBlock): boolean {
  *
  * Greedy-compatible blocks are skipped here because they are already handled
  * by the fast greedy path.
+ *
+ * Border blocks (from adjacent chunks, at positions -1 and size) are also
+ * processed. For these, only faces that point INTO the current chunk are emitted
+ * so the adjacent chunk's own mesher handles the outward-facing side.
  */
 export function emitCustomShapes(
 	ctx: MeshContext,
@@ -131,41 +141,37 @@ export function emitCustomShapes(
 	const getBlock = ctx.getBlock;
 	const getLight = ctx.getLight;
 
-	for (let y = 0; y < size; y++) {
-		for (let z = 0; z < size; z++) {
-			for (let x = 0; x < size; x++) {
+	for (let y = -1; y <= size; y++) {
+		for (let z = -1; z <= size; z++) {
+			for (let x = -1; x <= size; x++) {
 				const packed = getBlock(x, y, z, 0);
 				if (!packed) continue;
 
-				if (isGreedyCompatiblePackedBlock(packed)) {
+				const flags = getCachedFlags(packed);
+
+				if (flags & FLAG_GREEDY) {
 					continue;
 				}
 
-				const blockId = unpackBlockId(packed);
-				const materialType = getMaterialType(blockId);
-				const out =
-					materialType === MaterialType.WaterOrGlass
-						? transparentOut
-						: opaqueOut;
+				const blockId = getCachedBlockId(packed);
+				const out = flags & FLAG_WATER_GLASS ? transparentOut : opaqueOut;
 
 				const baseLight = getLight(x, y, z, 0);
 
-				// Cross-shape vegetation lives here now too.
-				if (isCrossShapePackedBlock(packed)) {
+				if (flags & FLAG_CUSTOM_CROSS) {
 					emitCrossShapeAtBlock(
 						x,
 						y,
 						z,
 						blockId,
 						baseLight,
-						materialType,
+						getMaterialType(blockId),
 						transparentOut,
 					);
 					continue;
 				}
 
-				// New true diagonal cross
-				if (isCrossDiagonalShapePackedBlock(packed)) {
+				if (flags & FLAG_CUSTOM_CROSS_DIAGONAL) {
 					if (ctx.lod >= 2) {
 						emitLOD2CrossBillboard(
 							x,
@@ -173,7 +179,7 @@ export function emitCustomShapes(
 							z,
 							blockId,
 							baseLight,
-							materialType,
+							getMaterialType(blockId),
 							transparentOut,
 						);
 					} else {
@@ -183,14 +189,14 @@ export function emitCustomShapes(
 							z,
 							blockId,
 							baseLight,
-							materialType,
+							getMaterialType(blockId),
 							transparentOut,
 						);
 					}
 					continue;
 				}
 
-				if (isFenceBlockId(blockId)) {
+				if (flags & FLAG_CUSTOM_FENCE) {
 					const neighborMask = computeFenceNeighborMask(x, y, z, (nx, ny, nz) =>
 						getBlock(nx, ny, nz, 0),
 					);
@@ -198,8 +204,13 @@ export function emitCustomShapes(
 
 					for (let i = 0; i < fenceShape.boxes.length; i++) {
 						const box = fenceShape.boxes[i];
-						for (const face of FACE_DESCRIPTORS) {
+						for (let fi = 0; fi < 6; fi++) {
+							const face = FACE_DESCRIPTORS[fi];
 							if ((box.faceMask & face.bit) === 0) continue;
+							if (
+								isBorderOutwardFace(x, y, z, size, face.axis, face.isBackFace)
+							)
+								continue;
 							emitBoxFace(
 								ctx,
 								x,
@@ -224,8 +235,11 @@ export function emitCustomShapes(
 				for (let i = 0; i < boxes.length; i++) {
 					const box = boxes[i];
 
-					for (const face of FACE_DESCRIPTORS) {
+					for (let fi = 0; fi < 6; fi++) {
+						const face = FACE_DESCRIPTORS[fi];
 						if ((box.faceMask & face.bit) === 0) continue;
+						if (isBorderOutwardFace(x, y, z, size, face.axis, face.isBackFace))
+							continue;
 
 						emitBoxFace(
 							ctx,
@@ -245,6 +259,38 @@ export function emitCustomShapes(
 			}
 		}
 	}
+}
+
+/**
+ * Returns true when a face on a border block points away from the chunk
+ * (i.e. into the adjacent chunk that owns the block). Those faces are
+ * rendered by the adjacent chunk's own mesher.
+ *
+ * Border positions: x/y/z === -1 or x/y/z === size.
+ */
+function isBorderOutwardFace(
+	x: number,
+	y: number,
+	z: number,
+	size: number,
+	axis: number,
+	isBackFace: boolean,
+): boolean {
+	// Face normal direction: +1 for front face, -1 for back face on the given axis.
+	const dir = isBackFace ? -1 : 1;
+
+	if (axis === 0) {
+		// +X face (dir=+1) is outward when x >= size; -X face (dir=-1) is outward when x < 0
+		if (x < 0 && dir < 0) return true;
+		if (x >= size && dir > 0) return true;
+	} else if (axis === 1) {
+		if (y < 0 && dir < 0) return true;
+		if (y >= size && dir > 0) return true;
+	} else {
+		if (z < 0 && dir < 0) return true;
+		if (z >= size && dir > 0) return true;
+	}
+	return false;
 }
 
 /**

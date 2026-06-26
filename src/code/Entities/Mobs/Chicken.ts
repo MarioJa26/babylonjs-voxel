@@ -79,7 +79,7 @@ export class Chicken extends NeutralMob {
 		// Wire up body mesh to base class
 		this.#bodyMesh.metadata = new MetadataContainer();
 		this.setBodyMesh(this.#bodyMesh);
-		this.#bodyMesh.metadata!.set("use", (player: Player) => this.use(player));
+		this.#bodyMesh.metadata.set("use", (player: Player) => this.use(player));
 	}
 
 	// --- Abstract implementations ---

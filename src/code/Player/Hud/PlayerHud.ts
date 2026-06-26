@@ -4,7 +4,12 @@ import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
 import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
 import MapFog from "../../Maps/MapFog";
 import { WorldEnvironment } from "../../Maps/WorldEnvironment";
-import { type Recipe, Recipes } from "../Crafting/CraftingManager";
+import {
+	type MasonRecipe,
+	MasonRecipes,
+	type Recipe,
+	Recipes,
+} from "../Crafting/CraftingManager";
 import { PlayerInventory } from "../Inventory/PlayerInventory";
 import type { Player } from "../Player";
 import { Crosshair } from "./Crosshair/Crosshair";
@@ -23,6 +28,15 @@ export class PlayerHud {
 	static #inventory: PlayerInventory;
 	#inventoryOpen = false;
 	#craftingRecipeDivs: { recipe: Recipe; div: HTMLDivElement }[] = [];
+
+	#masonTableOpen = false;
+	#masonTableDiv: HTMLDivElement | null = null;
+	#selectedSourceBlockId: number | null = null;
+	#selectedShape: string | null = null;
+	#masonRecipeDivs: {
+		recipe: MasonRecipe;
+		div: HTMLDivElement;
+	}[] = [];
 
 	#selectedHotbarSlot = 0;
 	#hotbarSlots: HTMLDivElement[] = [];
@@ -308,6 +322,9 @@ export class PlayerHud {
 	}
 
 	public toggleInventory(): void {
+		if (this.#masonTableOpen) {
+			this.hideMasonTableUI();
+		}
 		this.#inventoryOpen = !this.#inventoryOpen;
 		if (this.#inventoryOpen) {
 			this.updateCraftingAvailability();
@@ -318,6 +335,266 @@ export class PlayerHud {
 			this.#overlayDiv.style.display = "none";
 			this.#engine.enterPointerlock();
 		}
+	}
+
+	public showMasonTableUI(): void {
+		if (this.#masonTableOpen) return;
+		this.#masonTableOpen = true;
+		this.#selectedSourceBlockId = null;
+		this.#selectedShape = null;
+
+		if (!this.#masonTableDiv) {
+			this.#masonTableDiv = this.createMasonTableUI();
+		}
+
+		this.updateMasonTableAvailability();
+		this.#masonTableDiv.style.display = "flex";
+		this.#engine.exitPointerlock();
+	}
+
+	public hideMasonTableUI(): void {
+		if (!this.#masonTableOpen) return;
+		this.#masonTableOpen = false;
+		if (this.#masonTableDiv) {
+			this.#masonTableDiv.style.display = "none";
+		}
+		this.#engine.enterPointerlock();
+	}
+
+	public get isMasonTableOpen(): boolean {
+		return this.#masonTableOpen;
+	}
+
+	private createMasonTableUI(): HTMLDivElement {
+		const overlay = document.createElement("div");
+		overlay.id = "mason-overlay";
+		overlay.classList.add("mason-overlay");
+
+		const closeButton = document.createElement("button");
+		closeButton.innerHTML = "&times;";
+		closeButton.classList.add("hud-close-button");
+		closeButton.onclick = () => this.hideMasonTableUI();
+
+		const title = document.createElement("div");
+		title.classList.add("mason-title");
+		title.textContent = "Mason Table";
+
+		const content = document.createElement("div");
+		content.classList.add("mason-content");
+
+		const sourcePanel = document.createElement("div");
+		sourcePanel.classList.add("mason-panel", "mason-source-panel");
+
+		const sourceTitle = document.createElement("div");
+		sourceTitle.classList.add("mason-panel-title");
+		sourceTitle.textContent = "Source Block";
+		sourcePanel.appendChild(sourceTitle);
+
+		const sourceGrid = document.createElement("div");
+		sourceGrid.classList.add("mason-source-grid");
+
+		const sourceBlocks = this.getMasonSourceBlocks();
+		for (const def of sourceBlocks) {
+			const btn = document.createElement("div");
+			btn.classList.add("mason-source-btn");
+
+			const icon = document.createElement("img");
+			icon.src = MaterialFactory.getTexturePathFromFolder(def.path) ?? "";
+			icon.classList.add("mason-icon");
+
+			const label = document.createElement("div");
+			label.classList.add("mason-source-label");
+			label.textContent = def.name
+				.split("_")
+				.map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+				.join(" ");
+
+			btn.appendChild(icon);
+			btn.appendChild(label);
+
+			btn.onclick = () => {
+				sourceGrid.querySelectorAll(".mason-source-btn").forEach((b) => {
+					b.classList.remove("selected");
+				});
+				btn.classList.add("selected");
+				this.#selectedSourceBlockId = def.id;
+				this.updateMasonTableAvailability();
+			};
+
+			sourceGrid.appendChild(btn);
+		}
+		sourcePanel.appendChild(sourceGrid);
+
+		const shapePanel = document.createElement("div");
+		shapePanel.classList.add("mason-panel", "mason-shape-panel");
+
+		const shapeTitle = document.createElement("div");
+		shapeTitle.classList.add("mason-panel-title");
+		shapeTitle.textContent = "Shape";
+		shapePanel.appendChild(shapeTitle);
+
+		const shapeGrid = document.createElement("div");
+		shapeGrid.classList.add("mason-shape-grid");
+
+		const shapes = ["slab", "stairs", "half_wall", "pane", "fence"];
+		for (const shape of shapes) {
+			const btn = document.createElement("div");
+			btn.classList.add("mason-shape-btn");
+			btn.dataset.shape = shape;
+
+			const label = document.createElement("div");
+			label.classList.add("mason-shape-label");
+			label.textContent = shape
+				.split("_")
+				.map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+				.join(" ");
+
+			btn.appendChild(label);
+
+			btn.onclick = () => {
+				shapeGrid.querySelectorAll(".mason-shape-btn").forEach((b) => {
+					b.classList.remove("selected");
+				});
+				btn.classList.add("selected");
+				this.#selectedShape = shape;
+				this.updateMasonTableAvailability();
+			};
+
+			shapeGrid.appendChild(btn);
+		}
+		shapePanel.appendChild(shapeGrid);
+
+		const resultPanel = document.createElement("div");
+		resultPanel.classList.add("mason-panel", "mason-result-panel");
+
+		const resultTitle = document.createElement("div");
+		resultTitle.classList.add("mason-panel-title");
+		resultTitle.textContent = "Result";
+		resultPanel.appendChild(resultTitle);
+
+		const resultPreview = document.createElement("div");
+		resultPreview.classList.add("mason-result-preview");
+		resultPreview.id = "mason-result-preview";
+		resultPanel.appendChild(resultPreview);
+
+		const craftButton = document.createElement("button");
+		craftButton.classList.add("mason-craft-btn");
+		craftButton.textContent = "Craft";
+		craftButton.id = "mason-craft-btn";
+		craftButton.onclick = () => this.craftMasonRecipe();
+		resultPanel.appendChild(craftButton);
+
+		content.appendChild(sourcePanel);
+		content.appendChild(shapePanel);
+		content.appendChild(resultPanel);
+
+		overlay.appendChild(title);
+		overlay.appendChild(content);
+		overlay.appendChild(closeButton);
+		document.body.appendChild(overlay);
+
+		this.#scene.onDisposeObservable.add(() => {
+			overlay.remove();
+		});
+
+		return overlay;
+	}
+
+	private getMasonSourceBlocks() {
+		const sourceBlocks: {
+			id: number;
+			name: string;
+			path: string;
+		}[] = [];
+
+		const seen = new Set<number>();
+		for (const recipe of MasonRecipes) {
+			if (seen.has(recipe.sourceBlockId)) continue;
+			seen.add(recipe.sourceBlockId);
+
+			const def = TextureDefinitions.find((t) => t.id === recipe.sourceBlockId);
+			if (def) {
+				sourceBlocks.push({
+					id: def.id,
+					name: def.name,
+					path: def.path,
+				});
+			}
+		}
+
+		return sourceBlocks.sort((a, b) => a.name.localeCompare(b.name));
+	}
+
+	public updateMasonTableAvailability(): void {
+		const resultPreview = document.getElementById("mason-result-preview");
+		const craftButton = document.getElementById("mason-craft-btn");
+		if (!resultPreview || !craftButton) return;
+
+		if (this.#selectedSourceBlockId === null || this.#selectedShape === null) {
+			resultPreview.textContent = "Select a source block and shape";
+			craftButton.classList.remove("available");
+			return;
+		}
+
+		const recipe = MasonRecipes.find(
+			(r) =>
+				r.sourceBlockId === this.#selectedSourceBlockId &&
+				r.targetShape === this.#selectedShape,
+		);
+
+		if (!recipe) {
+			resultPreview.textContent = "No recipe found";
+			craftButton.classList.remove("available");
+			return;
+		}
+
+		const resultDef = TextureDefinitions.find(
+			(t) => t.id === recipe.resultBlockId,
+		);
+		const resultName = resultDef
+			? resultDef.name
+					.split("_")
+					.map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+					.join(" ")
+			: "Unknown";
+
+		const hasItem = PlayerHud.#inventory.hasItem(recipe.sourceBlockId, 1);
+
+		resultPreview.textContent = hasItem
+			? `Result: ${resultName}`
+			: `Need: ${resultName.split(" ").slice(0, -1).join(" ") || "source block"}`;
+
+		if (hasItem) {
+			craftButton.classList.add("available");
+		} else {
+			craftButton.classList.remove("available");
+		}
+	}
+
+	private craftMasonRecipe(): void {
+		if (this.#selectedSourceBlockId === null || this.#selectedShape === null)
+			return;
+
+		const recipe = MasonRecipes.find(
+			(r) =>
+				r.sourceBlockId === this.#selectedSourceBlockId &&
+				r.targetShape === this.#selectedShape,
+		);
+
+		if (!recipe) return;
+
+		if (!PlayerHud.#inventory.hasItem(recipe.sourceBlockId, 1)) {
+			const craftButton = document.getElementById("mason-craft-btn");
+			if (craftButton) {
+				craftButton.classList.add("shake");
+				setTimeout(() => craftButton.classList.remove("shake"), 300);
+			}
+			return;
+		}
+
+		PlayerHud.#inventory.removeItems(recipe.sourceBlockId, 1);
+		PlayerHud.#inventory.createAndAddItem(recipe.resultBlockId, 1);
+		this.updateMasonTableAvailability();
 	}
 
 	public get selectedHotbarSlot(): number {

@@ -77,7 +77,7 @@ function resolveNeighborBlock(
 		const packed = neighbor as Uint8Array;
 		const byte = packed[idx >>> 1];
 		const paletteIndex = (idx & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
-		return palette[paletteIndex] ?? 0;
+		return palette[paletteIndex];
 	}
 
 	return neighbor[idx] ?? 0;

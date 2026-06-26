@@ -311,7 +311,7 @@ export class LightGenerator {
 				const belowIdx = x + (y - 1) * CHUNK_SIZE + z * CHUNK_SIZE_SQ;
 				const preservesFullSunDown =
 					skyLight === 15 &&
-					!filtersFullSunlight(blocks[idx]) &&
+					!filtersFullSunlight(sourceBlockId) &&
 					!filtersFullSunlight(blocks[belowIdx]);
 
 				tail = this.tryPropagate(

@@ -1,6 +1,7 @@
 import { Observable, Ray, type Scene, Vector3 } from "@babylonjs/core";
 import { InventoryControls } from "../Controls/InventoryControls";
 import type { Player } from "../Player";
+import { generateShapeVariants } from "../Crafting/ShapeVariantGenerator";
 import { DroppedItem } from "./DroppedItem";
 import { Item } from "./Item";
 import { ItemRegistry } from "./ItemRegistry";
@@ -56,6 +57,7 @@ export class PlayerInventory {
 
 	async #loadInitialItems() {
 		await ItemRegistry.ensureLoaded();
+		await generateShapeVariants();
 		this.#generateFakeItems();
 	}
 

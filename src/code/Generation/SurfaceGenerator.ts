@@ -52,6 +52,11 @@ type FloraColumnCacheEntry = {
 	treeNoiseValue: number;
 };
 
+// Reusable scratch buffers for findlinge generation (max counts: 23/23/25).
+const _findlingeWx = new Float32Array(23);
+const _findlingeWz = new Float32Array(23);
+const _findlingeWy = new Float32Array(25);
+
 export class SurfaceGenerator {
 	private params: GenerationParamsType;
 
@@ -1094,7 +1099,7 @@ export class SurfaceGenerator {
 		const warpD = warpAmt * invD;
 		const warpH = warpAmt * 0.5 * invH;
 
-		const wxArr = new Float32Array(dxCount);
+		const wxArr = _findlingeWx;
 		for (let i = 0; i < dxCount; i++) {
 			const dx = i - dxRange;
 			wxArr[i] = SurfaceGenerator.densityNoise(
@@ -1104,7 +1109,7 @@ export class SurfaceGenerator {
 			);
 		}
 
-		const wzArr = new Float32Array(dzCount);
+		const wzArr = _findlingeWz;
 		for (let i = 0; i < dzCount; i++) {
 			const dz = i - dzRange;
 			wzArr[i] = SurfaceGenerator.densityNoise(
@@ -1114,7 +1119,7 @@ export class SurfaceGenerator {
 			);
 		}
 
-		const wyArr = new Float32Array(dyCount);
+		const wyArr = _findlingeWy;
 		for (let i = 0; i < dyCount; i++) {
 			const dy = dyMin + i;
 			wyArr[i] = SurfaceGenerator.densityNoise(

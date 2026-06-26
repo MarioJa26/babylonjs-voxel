@@ -67,6 +67,10 @@ export interface MergedMeshGroup {
 	opaqueBuffers: MergedBuffers | null;
 	transparentBuffers: MergedBuffers | null;
 
+	// Cached vertex data wrappers to avoid allocating new objects every rebuild.
+	opaqueVertexData: MergedVertexData | null;
+	transparentVertexData: MergedVertexData | null;
+
 	dirty: boolean;
 
 	// Mesh references — set by ChunkMesher.ts after creating/updating.
@@ -301,6 +305,9 @@ export function assignChunkToGroup(
 
 			opaqueBuffers: null,
 			transparentBuffers: null,
+
+			opaqueVertexData: null,
+			transparentVertexData: null,
 
 			dirty: true,
 
@@ -595,13 +602,22 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 
 		const totalBytes = totalOpaque << 2;
 
-		group.cachedOpaque = {
-			faceDataA: mergedA.subarray(0, totalBytes),
-			faceDataB: mergedB.subarray(0, totalBytes),
-			faceDataC: mergedC.subarray(0, totalBytes),
-			chunkIndex: mergedD.subarray(0, totalOpaque),
-			faceCount: totalOpaque,
-		};
+		if (!group.opaqueVertexData) {
+			group.opaqueVertexData = {
+				faceDataA: new Uint8Array(0),
+				faceDataB: new Uint8Array(0),
+				faceDataC: new Uint8Array(0),
+				chunkIndex: new Uint8Array(0),
+				faceCount: 0,
+			};
+		}
+		const vd = group.opaqueVertexData;
+		vd.faceDataA = mergedA.subarray(0, totalBytes);
+		vd.faceDataB = mergedB.subarray(0, totalBytes);
+		vd.faceDataC = mergedC.subarray(0, totalBytes);
+		vd.chunkIndex = mergedD.subarray(0, totalOpaque);
+		vd.faceCount = totalOpaque;
+		group.cachedOpaque = vd;
 	} else {
 		group.cachedOpaque = null;
 	}
@@ -645,13 +661,22 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 
 		const totalBytes = totalTransparent << 2;
 
-		group.cachedTransparent = {
-			faceDataA: mergedA.subarray(0, totalBytes),
-			faceDataB: mergedB.subarray(0, totalBytes),
-			faceDataC: mergedC.subarray(0, totalBytes),
-			chunkIndex: mergedD.subarray(0, totalTransparent),
-			faceCount: totalTransparent,
-		};
+		if (!group.transparentVertexData) {
+			group.transparentVertexData = {
+				faceDataA: new Uint8Array(0),
+				faceDataB: new Uint8Array(0),
+				faceDataC: new Uint8Array(0),
+				chunkIndex: new Uint8Array(0),
+				faceCount: 0,
+			};
+		}
+		const vd = group.transparentVertexData;
+		vd.faceDataA = mergedA.subarray(0, totalBytes);
+		vd.faceDataB = mergedB.subarray(0, totalBytes);
+		vd.faceDataC = mergedC.subarray(0, totalBytes);
+		vd.chunkIndex = mergedD.subarray(0, totalTransparent);
+		vd.faceCount = totalTransparent;
+		group.cachedTransparent = vd;
 	} else {
 		group.cachedTransparent = null;
 	}

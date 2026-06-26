@@ -320,3 +320,203 @@
 	transition: opacity 0.15s ease-out;
 	image-rendering: auto;
 }
+
+/* Mason Table UI */
+.mason-overlay {
+	position: absolute;
+	top: 5%;
+	left: 50%;
+	transform: translateX(-50%);
+	width: 90vw;
+	max-width: 1200px;
+	height: 80vh;
+	max-height: 800px;
+	background-color: rgba(0, 0, 0, 0.85);
+	padding: 1em;
+	z-index: 100;
+	display: none;
+	flex-direction: column;
+	font-family: var(--ui-font-family);
+	font-size: 1em;
+	border: 2px solid rgba(96, 96, 64, 0.9);
+	border-radius: 8px;
+}
+
+.mason-title {
+	color: white;
+	font-size: 1.5em;
+	font-weight: bold;
+	text-align: center;
+	padding: 0.5em;
+	text-shadow: 2px 2px 2px black;
+}
+
+.mason-content {
+	display: flex;
+	flex: 1;
+	gap: 1em;
+	overflow: hidden;
+}
+
+.mason-panel {
+	display: flex;
+	flex-direction: column;
+	background-color: rgba(0, 0, 0, 0.4);
+	padding: 0.5em;
+	border-radius: 4px;
+}
+
+.mason-panel-title {
+	color: #ccc;
+	font-weight: bold;
+	padding: 0.5em;
+	text-align: center;
+	border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+	margin-bottom: 0.5em;
+}
+
+.mason-source-panel {
+	flex: 2;
+	overflow-y: auto;
+}
+
+.mason-shape-panel {
+	flex: 1;
+}
+
+.mason-result-panel {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+}
+
+.mason-source-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+	gap: 0.5em;
+	padding: 0.5em;
+}
+
+.mason-source-btn {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	padding: 0.5em;
+	background-color: rgba(0, 0, 0, 0.6);
+	border: 2px solid rgba(96, 96, 64, 0.9);
+	border-radius: 4px;
+	cursor: pointer;
+	transition: 0.1s;
+}
+
+.mason-source-btn:hover {
+	border-color: rgb(0, 187, 255);
+	background-color: rgba(50, 50, 50, 0.8);
+}
+
+.mason-source-btn.selected {
+	border-color: rgb(0, 187, 255);
+	background-color: rgba(0, 187, 255, 0.2);
+}
+
+.mason-icon {
+	width: 48px;
+	height: 48px;
+	object-fit: contain;
+}
+
+.mason-source-label {
+	color: white;
+	font-size: 0.75em;
+	text-align: center;
+	margin-top: 0.25em;
+	word-break: break-word;
+}
+
+.mason-shape-grid {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5em;
+	padding: 0.5em;
+}
+
+.mason-shape-btn {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0.75em;
+	background-color: rgba(0, 0, 0, 0.6);
+	border: 2px solid rgba(96, 96, 64, 0.9);
+	border-radius: 4px;
+	cursor: pointer;
+	transition: 0.1s;
+}
+
+.mason-shape-btn:hover {
+	border-color: rgb(0, 187, 255);
+	background-color: rgba(50, 50, 50, 0.8);
+}
+
+.mason-shape-btn.selected {
+	border-color: rgb(0, 187, 255);
+	background-color: rgba(0, 187, 255, 0.2);
+}
+
+.mason-shape-label {
+	color: white;
+	font-weight: bold;
+}
+
+.mason-result-preview {
+	color: white;
+	font-size: 1.1em;
+	text-align: center;
+	padding: 1em;
+	min-height: 3em;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+.mason-craft-btn {
+	padding: 0.75em 2em;
+	background-color: rgba(0, 0, 0, 0.6);
+	border: 2px solid rgba(96, 96, 64, 0.9);
+	border-radius: 4px;
+	color: #888;
+	font-size: 1em;
+	font-weight: bold;
+	cursor: not-allowed;
+	transition: 0.1s;
+	margin-top: 1em;
+}
+
+.mason-craft-btn.available {
+	background-color: rgba(0, 187, 255, 0.3);
+	border-color: rgb(0, 187, 255);
+	color: white;
+	cursor: pointer;
+}
+
+.mason-craft-btn.available:hover {
+	background-color: rgba(0, 187, 255, 0.5);
+}
+
+.mason-craft-btn.shake {
+	animation: mason-shake 0.3s ease-in-out;
+}
+
+@keyframes mason-shake {
+	0%,
+	100% {
+		transform: translateX(0);
+	}
+	25% {
+		transform: translateX(-5px);
+	}
+	75% {
+		transform: translateX(5px);
+	}
+}

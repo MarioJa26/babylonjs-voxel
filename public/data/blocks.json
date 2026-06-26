@@ -504,5 +504,11 @@
 		"name": "pine_leaves",
 		"path": "/texture/transparent/pineleaves_01_1k",
 		"hardness": 0.2
+	},
+	{
+		"id": "MasonTable",
+		"name": "mason_table",
+		"path": "/texture/wood/wood_planks_1k",
+		"hardness": 1.3
 	}
 ]

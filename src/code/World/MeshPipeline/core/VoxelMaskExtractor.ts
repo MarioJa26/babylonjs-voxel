@@ -356,6 +356,10 @@ export class VoxelMaskExtractor {
 		const byPerm = VoxelMaskExtractor._byPerm;
 		const bzPerm = VoxelMaskExtractor._bzPerm;
 
+		const bxVal = bxPerm[axis];
+		const byVal = byPerm[axis];
+		const bzVal = bzPerm[axis];
+
 		// Negative boundary: face at position 0.
 		if (slice === -1) {
 			if (
@@ -368,18 +372,23 @@ export class VoxelMaskExtractor {
 				this.clearSlice(mask, lightMask, size);
 				return;
 			}
+			const ndx = VoxelMaskExtractor._ndxDx[axis];
+			const ndy = VoxelMaskExtractor._ndyDy[axis];
+			const ndz = VoxelMaskExtractor._ndzDz[axis];
+			const uA = axis === 0 ? 1 : axis === 2 ? 0 : 2;
+			const vA = axis === 0 ? 2 : axis === 2 ? 1 : 0;
 			let idx = 0;
 			for (let v = 0; v < size; v++) {
 				for (let u = 0; u < size; u++) {
 					this.processCell(
-						bxPerm[axis] === 0 ? -1 : bxPerm[axis] === 1 ? u : v,
-						byPerm[axis] === 0 ? -1 : byPerm[axis] === 1 ? u : v,
-						bzPerm[axis] === 0 ? -1 : bzPerm[axis] === 1 ? u : v,
-						VoxelMaskExtractor._ndxDx[axis],
-						VoxelMaskExtractor._ndyDy[axis],
-						VoxelMaskExtractor._ndzDz[axis],
-						axis === 0 ? 1 : axis === 2 ? 0 : 2,
-						axis === 0 ? 2 : axis === 2 ? 1 : 0,
+						bxVal === 0 ? -1 : bxVal === 1 ? u : v,
+						byVal === 0 ? -1 : byVal === 1 ? u : v,
+						bzVal === 0 ? -1 : bzVal === 1 ? u : v,
+						ndx,
+						ndy,
+						ndz,
+						uA,
+						vA,
 						currentFaceBit,
 						neighborFaceBit,
 						idx,
@@ -409,9 +418,9 @@ export class VoxelMaskExtractor {
 		for (let v = 0; v < size; v++) {
 			for (let u = 0; u < size; u++) {
 				this.processCell(
-					bxPerm[axis] === 0 ? slice : bxPerm[axis] === 1 ? u : v,
-					byPerm[axis] === 0 ? slice : byPerm[axis] === 1 ? u : v,
-					bzPerm[axis] === 0 ? slice : bzPerm[axis] === 1 ? u : v,
+					bxVal === 0 ? slice : bxVal === 1 ? u : v,
+					byVal === 0 ? slice : byVal === 1 ? u : v,
+					bzVal === 0 ? slice : bzVal === 1 ? u : v,
 					dx,
 					dy,
 					dz,

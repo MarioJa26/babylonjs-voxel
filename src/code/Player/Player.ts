@@ -5,6 +5,7 @@ import type { IControls } from "../Interface/IControls";
 import type { IUsable } from "../Interface/IUsable";
 import { Map1 } from "../Maps/Map1";
 import { WalkingControls } from "../Player/Controls/WalkingControls";
+import { BlockType } from "../World/Texture/BlockType";
 import { Crosshair } from "./Hud/Crosshair/Crosshair";
 import { PauseMenu } from "./Hud/PauseMenu";
 import { PlayerHud } from "./Hud/PlayerHud";
@@ -172,20 +173,32 @@ export class Player implements IUsable {
 	}
 
 	use(): void {
-		const mesh = Crosshair.pickUsableMesh(this);
-		if (!mesh) return;
+		if (this.#playerHud.isMasonTableOpen) {
+			this.#playerHud.hideMasonTableUI();
+			return;
+		}
 
-		if (mesh.metadata) {
-			const metadataContainer = mesh.metadata as MetadataContainer;
-			if (
-				metadataContainer instanceof MetadataContainer &&
-				metadataContainer.has("use")
-			) {
-				const useFunc = metadataContainer.get<(player: Player) => void>("use");
-				if (useFunc) {
-					useFunc(this);
+		const mesh = Crosshair.pickUsableMesh(this);
+		if (mesh) {
+			if (mesh.metadata) {
+				const metadataContainer = mesh.metadata as MetadataContainer;
+				if (
+					metadataContainer instanceof MetadataContainer &&
+					metadataContainer.has("use")
+				) {
+					const useFunc =
+						metadataContainer.get<(player: Player) => void>("use");
+					if (useFunc) {
+						useFunc(this);
+					}
 				}
 			}
+			return;
+		}
+
+		const blockId = Crosshair.pickBlock(this);
+		if (blockId === BlockType.MasonTable) {
+			this.#playerHud.showMasonTableUI();
 		}
 	}
 }

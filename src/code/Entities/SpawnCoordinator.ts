@@ -3,7 +3,7 @@ import {
 	getBlockByWorldCoords,
 	getLightByWorldCoords,
 } from "../World/Chunk/ChunkLoadingSystem";
-import type { MobRegistry, MobSpawnConfig } from "./Mobs/Mob";
+import type { Mob, MobRegistry, MobSpawnConfig } from "./Mobs/Mob";
 
 const SPAWN_MIN_RADIUS = 24;
 const SPAWN_MAX_RADIUS = 96;
@@ -17,6 +17,8 @@ const DESPAWN_CHANCE_PER_SEC = 0.3;
 const SPAWN_CHECK_INTERVAL = 3000;
 const MIN_SPAWN_HEIGHT = 1;
 const MAX_SPAWN_HEIGHT = 200;
+
+const _mobSnapshot: Mob[] = [];
 
 export class SpawnCoordinator {
 	#scene: Scene;
@@ -71,7 +73,13 @@ export class SpawnCoordinator {
 	}
 
 	#despawnDistant(playerPos: Vector3): void {
-		for (const mob of [...this.#registry.getAllMobs()]) {
+		_mobSnapshot.length = 0;
+		for (const mob of this.#registry.getAllMobs()) {
+			_mobSnapshot.push(mob);
+		}
+		for (let i = 0; i < _mobSnapshot.length; i++) {
+			const mob = _mobSnapshot[i];
+			if (!mob) continue;
 			const config = this.#registry.getConfig(mob.mobType);
 			if (config && config.despawnable === false) continue;
 
@@ -136,6 +144,11 @@ export class SpawnCoordinator {
 		const wx = Math.floor(playerPos.x + Math.cos(angle) * dist);
 		const wz = Math.floor(playerPos.z + Math.sin(angle) * dist);
 
+		_mobSnapshot.length = 0;
+		for (const mob of this.#registry.getAllMobs()) {
+			_mobSnapshot.push(mob);
+		}
+
 		for (let wy = MAX_SPAWN_HEIGHT; wy >= MIN_SPAWN_HEIGHT; wy--) {
 			const blockBelow = getBlockByWorldCoords(wx, wy, wz);
 			const blockAbove = getBlockByWorldCoords(wx, wy + 1, wz);
@@ -147,7 +160,9 @@ export class SpawnCoordinator {
 
 				const spawnY = wy + 1;
 				let tooClose = false;
-				for (const existing of this.#registry.getAllMobs()) {
+				for (let i = 0; i < _mobSnapshot.length; i++) {
+					const existing = _mobSnapshot[i];
+					if (!existing) continue;
 					const dx = existing.position.x - wx;
 					const dz = existing.position.z - wz;
 					if (dx * dx + dz * dz < 4) {

@@ -64,8 +64,9 @@ export function emitQuad(
 	const sz = (z * POS_SCALE + 0.5) | 0;
 
 	// Faces at chunk boundary (position >= size) overflow Uint8Array.
-	// These should be rendered by the adjacent chunk at position 0.
-	if (sx >= 256 || sy >= 256 || sz >= 256) return;
+	// Faces at negative positions also overflow (Uint8Array wraps).
+	// These should be rendered by the adjacent chunk.
+	if (sx < 0 || sy < 0 || sz < 0 || sx >= 256 || sy >= 256 || sz >= 256) return;
 
 	const sw = rawDim ? (width + 0.5) | 0 : (width * POS_SCALE + 0.5) | 0;
 	const sh = rawDim ? (height + 0.5) | 0 : (height * POS_SCALE + 0.5) | 0;

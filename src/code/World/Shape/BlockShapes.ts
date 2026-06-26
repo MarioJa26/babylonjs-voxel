@@ -136,6 +136,9 @@ const loadShapeDefinitions = async (): Promise<ShapeDefinition[]> => {
 	}
 };
 
+const VIRTUAL_BLOCK_ID_START = 500;
+const VIRTUAL_SHAPES = ["slab", "stairs", "half_wall", "pane", "fence"];
+
 const loadBlockShapeMap = async (
 	shapes: ShapeDefinition[],
 ): Promise<Uint16Array> => {
@@ -164,6 +167,29 @@ const loadBlockShapeMap = async (
 			const shapeIndex = shapeIndexByName.get(shapeName);
 			if (shapeIndex === undefined) continue;
 			map[id] = shapeIndex;
+		}
+
+		// Pre-compute virtual block shape entries for mason table shape variants.
+		// Uses the same deterministic ID scheme as BlockTextures.ts.
+		for (const entry of data as RawBlockDefinition[]) {
+			if (!entry || typeof entry !== "object") continue;
+			const id = normalizeBlockId(entry.id);
+			if (id === null) continue;
+			const sourceShape =
+				typeof entry.shape === "string" && entry.shape.length > 0
+					? entry.shape
+					: "cube";
+			if (sourceShape !== "cube") continue;
+
+			for (let si = 0; si < VIRTUAL_SHAPES.length; si++) {
+				const targetShape = VIRTUAL_SHAPES[si];
+				if (targetShape === sourceShape) continue;
+				const targetIndex = shapeIndexByName.get(targetShape);
+				if (targetIndex === undefined) continue;
+				const virtualId =
+					VIRTUAL_BLOCK_ID_START + (id - 1) * VIRTUAL_SHAPES.length + si;
+				map[virtualId] = targetIndex;
+			}
 		}
 	} catch (error) {
 		console.warn("Block shape map failed to load:", error);

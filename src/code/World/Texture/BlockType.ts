@@ -89,6 +89,7 @@ export enum BlockType {
 	SierranConiferBark = 87,
 	SierranConiferLeaves = 88,
 	PineLeaves = 89,
+	MasonTable = 90,
 }
 
 export const Hardness = {
