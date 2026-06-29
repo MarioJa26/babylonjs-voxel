@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-06-25T03:24:36.890Z
+Generated: 2026-06-29T11:31:47.084Z
 
-> **Summary:** 119 classes · 2288 members · 383 module-level functions · 41912 LOC
+> **Summary:** 116 classes · 2241 members · 427 module-level functions · 42772 LOC
 
 ---
 
@@ -382,7 +382,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `Entities/Mount.ts` (110 LOC)
+## `Entities/Mount.ts` (120 LOC)
 
 ### export class Mount implements IMountable
 
@@ -390,7 +390,7 @@ Generated: 2026-06-25T03:24:36.890Z
 - `constructor(vehicle: TransformNode, keyBoardControls: IControls<unknown>, options: MountOptions = {})`
 
 **Properties**
-- `public user: Player | null`
+- `public user: IMountableUser | null`
 - `public vehicle: TransformNode`
 - `#keyBoardControls: IControls<unknown>`
 - `#mountOffset: Vector3`
@@ -398,20 +398,24 @@ Generated: 2026-06-25T03:24:36.890Z
 - `#physicsDisabled: unknown`
 - `#scratchPos: unknown`
 - `#scratchRot: unknown`
+- `static isMountableUser: (value: unknown) => value is IMountableUser`
 
 **Methods**
 - `isMounted(): boolean`
 - `mount(user: unknown): boolean`
 - `dismount(): boolean`
-- `getMountedUser(): Player | null`
+- `getMountedUser(): IMountableUser | null`
 - `getKeyBoardControls(): IControls<unknown>`
 - `setMountOffset(offset: Vector3): void`
 - `setMountRotationOffset(rotationOffset: Quaternion): void`
 - `update(): void`
-- `#mountVehicle(player: Player): boolean`
+- `#mountVehicle(player: IMountableUser): boolean`
 - `private updateMountedPosition(): void`
 - `private disablePlayerPhysics(player: IPlayerBody): void`
 - `private enablePlayerPhysics(playerVehicle: IPlayerBody): void`
+
+**Types / Interfaces / Enums**
+- interface `IMountableUser`
 
 ---
 
@@ -456,7 +460,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `Entities/SpawnCoordinator.ts` (147 LOC)
+## `Entities/SpawnCoordinator.ts` (160 LOC)
 
 ### export class SpawnCoordinator
 
@@ -575,7 +579,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `Generation/Biome/Biomes.ts` (409 LOC)
+## `Generation/Biome/Biomes.ts` (408 LOC)
 
 **Module-level functions**
 - `export function getBiomeFor(temperature: number, humidity: number, continentalness: number, river: number, terrainShapedHeight: number): Biome`
@@ -654,86 +658,36 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `Generation/DistantTerrain/DistantTerrain.ts` (388 LOC)
+## `Generation/DistantTerrain/DistantTerrain.ts` (375 LOC)
 
-### export class DistantTerrain
-
-**Constructor**
-- `constructor()`
-
-**Properties**
-- `public static instance: DistantTerrain`
-- `private mesh: Mesh`
-- `private waterMesh: Mesh`
-- `private material: ShaderMaterial`
-- `private waterMaterial: ShaderMaterial`
-- `private diffuseAtlasTexture: Texture | null`
-- `private static readonly USE_LA_TILE_TEXTURE: unknown`
-- `private static readonly _cachedZeroVec: unknown`
-- `#surfaceTileLookupTexture: RawTexture`
-- `#surfaceTileLookupData: Uint8Array`
-- `#radius: number`
-- `#gridStep: unknown`
-- `#gridResolution: number`
-- `#sharedPositions: Int16Array`
-- `#sharedNormals: Int8Array`
-- `#sharedSurfaceTiles: Uint8Array`
-- `#gridOrigin: unknown`
-- `lastChunkX: number`
-- `lastChunkZ: number`
-- `#positionVB?: VertexBuffer`
-- `#normalVB?: VertexBuffer`
-
-**Methods**
-- `public static getInstance(): DistantTerrain`
-- `public static checkInstance(): boolean`
-- `private createEmptyGridMesh(name: string, scene: Scene): Mesh`
-- `private bindDiffuseTexture(): void`
-- `private bindCommonUniforms(effect: Effect, scene: Scene): void`
-- `public update(worldX: number, worldZ: number): void`
-- `private applyTerrainData(positions: Int16Array, normals: Int8Array, surfaceTiles: Uint8Array, worldX: number, worldZ: number): void`
-- `public static resetInstance(): void`
+**Module-level functions**
+- `function createEmptyGridMesh(name: string, scene: Scene): Mesh`
+- `function bindDiffuseTexture(): void`
+- `function bindCommonUniforms(effect: Effect, scene: Scene): void`
+- `function applyTerrainData(pos: Int16Array, nrm: Int8Array, tiles: Uint8Array, worldX: number, worldZ: number): void`
+- `export function init(): void`
+- `export function isInitialized(): boolean`
+- `export function update(worldX: number, worldZ: number): void`
+- `export function dispose(): void`
 
 ---
 
-## `Generation/DistantTerrain/DistantTerrainGenerator.ts` (413 LOC)
+## `Generation/DistantTerrain/DistantTerrainGenerator.ts` (363 LOC)
 
-### export class DistantTerrainGenerator
-
-**Properties**
-- `private static readonly DEFAULT_TILE_X: unknown`
-- `private static readonly DEFAULT_TILE_Y: unknown`
-- `private static readonly INSIDE_CLIP_Y: unknown`
-- `private static positions?: Int16Array`
-- `private static normals?: Int8Array`
-- `private static surfaceTiles?: Uint8Array`
-- `private static lastGridCenterChunkX: unknown`
-- `private static lastGridCenterChunkZ: unknown`
-- `private static lastCenterChunkX: unknown`
-- `private static lastCenterChunkZ: unknown`
-- `private static rowSize: unknown`
-- `private static segments: unknown`
-- `private static gridStep: unknown`
-- `private static radius: unknown`
-- `private static usingSharedBuffers: unknown`
-- `private static _heightCache: unknown`
-- `private static _heightCacheKeys: unknown`
-- `private static _heightCacheMask: unknown`
-
-**Methods**
-- `private static cachedHeight(wx: number, wz: number): number`
-- `public static initSharedBuffers(positionsBuffer: SharedArrayBuffer, normalsBuffer: SharedArrayBuffer, surfaceTilesBuffer: SharedArrayBuffer, radius: number, gridStep: number): void`
-- `public static generate(centerChunkX: number, centerChunkZ: number, radius: number, renderDistance: number, gridStep: number, forceFullRebuild: unknown = false): { positions: Int16Array<ArrayBufferLike>; normals: Int8Array<ArrayBufferLike>; surfaceTiles: Uint8Array<ArrayBufferLike>; centerChunkX: number; centerChunkZ: number; }`
-- `private static ensureBuffers(radius: number, gridStep: number): void`
-- `private static configureGrid(radius: number, gridStep: number): void`
-- `private static allocateLocalBuffers(): void`
-- `private static resetTracking(): void`
-- `private static fullGenerate(gridCenterChunkX: number, gridCenterChunkZ: number, centerChunkX: number, centerChunkZ: number, renderDistance: number): void`
-- `private static slideArrays(shiftX: number, shiftZ: number): void`
-- `private static regenerateEdges(shiftX: number, shiftZ: number, gridCenterChunkX: number, gridCenterChunkZ: number, centerChunkX: number, centerChunkZ: number): void`
-- `private static rewriteLocalXZ(centerChunkX: number, centerChunkZ: number, gridCenterChunkX: number, gridCenterChunkZ: number): void`
-- `private static generateVertex(x: number, z: number, gridCenterChunkX: number, gridCenterChunkZ: number, centerChunkX: number, centerChunkZ: number): void`
-- `private static getTopTileForBlock(blockId: number): [number, number]`
+**Module-level functions**
+- `function cachedHeight(wx: number, wz: number): number`
+- `export function initSharedBuffers(positionsBuffer: SharedArrayBuffer, normalsBuffer: SharedArrayBuffer, surfaceTilesBuffer: SharedArrayBuffer, r: number, gStep: number): void`
+- `export function generate(centerChunkX: number, centerChunkZ: number, r: number, gStep: number, forceFullRebuild: unknown = false): { positions: Int16Array<ArrayBufferLike>; normals: Int8Array<ArrayBufferLike>; surfaceTiles: Uint8Array<ArrayBufferLike>; centerChunkX: number; centerChunkZ: number; }`
+- `function ensureBuffers(r: number, gStep: number): void`
+- `function configureGrid(r: number, gStep: number): void`
+- `function allocateLocalBuffers(): void`
+- `function resetTracking(): void`
+- `function fullGenerate(gcx: number, gcz: number, ccx: number, ccz: number): void`
+- `function slideArrays(shiftX: number, shiftZ: number): void`
+- `function regenerateEdges(shiftX: number, shiftZ: number, gcx: number, gcz: number, ccx: number, ccz: number): void`
+- `function rewriteLocalXZ(ccx: number, ccz: number, gcx: number, gcz: number): void`
+- `function generateVertex(x: number, z: number, gcx: number, gcz: number, ccx: number, ccz: number): void`
+- `function getTopTileForBlock(blockId: number): [number, number]`
 
 ---
 
@@ -1031,6 +985,41 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
+## `Generation/Structure/BadlandsSpireFeature.ts` (283 LOC)
+
+### export class BadlandsSpireFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number): void`
+- `private generateSpire(chunkX: number, chunkY: number, chunkZ: number, spireX: number, spireZ: number, groundHeight: number, spireHeight: number, tierHeight: number, halfFp: number, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, chunkSize: number, seed: number): void`
+- `private generateTierSlice(worldY: number, groundHeight: number, tierHeight: number, centerX: number, centerZ: number, noiseOffX: number, noiseOffZ: number, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number): void`
+- `private getLayerBlock(spireLocalY: number, seed: number): number`
+- `private findGroundHeight(x: number, z: number, halfFp: number): number`
+
+---
+
 ## `Generation/Structure/DungeonFeature.ts` (166 LOC)
 
 ### export class DungeonFeature implements IWorldFeature
@@ -1086,7 +1075,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `Generation/Structure/IWorldFeature.ts` (25 LOC)
+## `Generation/Structure/IWorldFeature.ts` (26 LOC)
 
 **Types / Interfaces / Enums**
 - interface `IWorldFeature`
@@ -1254,7 +1243,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `Generation/SurfaceGenerator.ts` (1085 LOC)
+## `Generation/SurfaceGenerator.ts` (1100 LOC)
 
 ### export class SurfaceGenerator
 
@@ -1278,6 +1267,7 @@ Generated: 2026-06-25T03:24:36.890Z
 - `private static readonly MAX_TREE_HEIGHT: unknown`
 - `private static readonly MAX_STRUCTURE_ABOVE_SURFACE: unknown`
 - `private static readonly MAX_STRUCTURE_BELOW_SURFACE: unknown`
+- `private readonly maxStructureAboveSurface: number`
 - `private static seedAsInt: number`
 - `private static readonly COLUMN_CACHE_SIZE: unknown`
 - `private static readonly COLUMN_CACHE_MASK: unknown`
@@ -1340,7 +1330,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `Generation/TerrainHeightMap.ts` (431 LOC)
+## `Generation/TerrainHeightMap.ts` (453 LOC)
 
 **Module-level functions**
 - `function applyRidged(raw: number): number`
@@ -1464,6 +1454,13 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
+## `Interface/IPlayerContext.ts` (7 LOC)
+
+**Types / Interfaces / Enums**
+- interface `IPlayerContext`
+
+---
+
 ## `Interface/IUsable.ts` (4 LOC)
 
 **Types / Interfaces / Enums**
@@ -1479,7 +1476,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `Maps/Map1.ts` (117 LOC)
+## `Maps/Map1.ts` (123 LOC)
 
 ### export class Map1
 
@@ -1860,11 +1857,19 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `Player/Crafting/CraftingManager.ts` (21 LOC)
+## `Player/Crafting/CraftingManager.ts` (28 LOC)
 
 **Types / Interfaces / Enums**
 - interface `Ingredient`
 - interface `Recipe`
+- interface `MasonRecipe`
+
+---
+
+## `Player/Crafting/ShapeVariantGenerator.ts` (82 LOC)
+
+**Module-level functions**
+- `export async function generateShapeVariants(): Promise<void>`
 
 ---
 
@@ -1918,7 +1923,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `Player/Hud/BlockHighlight/BlockRaycaster.ts` (725 LOC)
+## `Player/Hud/BlockHighlight/BlockRaycaster.ts` (726 LOC)
 
 **Module-level functions**
 - `function getForwardRay(player: Player, length: number): Ray`
@@ -1983,7 +1988,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `Player/Hud/Crosshair/Crosshair.ts` (115 LOC)
+## `Player/Hud/Crosshair/Crosshair.ts` (116 LOC)
 
 ### export class Crosshair
 
@@ -2050,7 +2055,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `Player/Hud/PauseMenu.ts` (342 LOC)
+## `Player/Hud/PauseMenu.ts` (344 LOC)
 
 ### export class PauseMenu
 
@@ -2079,7 +2084,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `Player/Hud/PlayerHud.ts` (614 LOC)
+## `Player/Hud/PlayerHud.ts` (839 LOC)
 
 ### export class PlayerHud
 
@@ -2094,6 +2099,14 @@ Generated: 2026-06-25T03:24:36.890Z
 - `static #inventory: PlayerInventory`
 - `#inventoryOpen: unknown`
 - `#craftingRecipeDivs: { recipe: Recipe; div: HTMLDivElement }[]`
+- `#masonTableOpen: unknown`
+- `#masonTableDiv: HTMLDivElement | null`
+- `#selectedSourceBlockId: number | null`
+- `#selectedShape: string | null`
+- `#masonRecipeDivs: {
+		recipe: MasonRecipe;
+		div: HTMLDivElement;
+	}[]`
 - `#selectedHotbarSlot: unknown`
 - `#hotbarSlots: HTMLDivElement[]`
 - `static #heldItemNameDiv: HTMLDivElement`
@@ -2122,6 +2135,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 **Accessors**
 - `public get player(): Player`
+- `public get isMasonTableOpen(): boolean`
 - `public get selectedHotbarSlot(): number`
 - `public set selectedHotbarSlot(slot: number)`
 
@@ -2134,6 +2148,12 @@ Generated: 2026-06-25T03:24:36.890Z
 - `private createStatsUI(): void`
 - `private getSlot(column: number, row: number): HTMLDivElement | null`
 - `public toggleInventory(): void`
+- `public showMasonTableUI(): void`
+- `public hideMasonTableUI(): void`
+- `private createMasonTableUI(): HTMLDivElement`
+- `private getMasonSourceBlocks(): { id: number; name: string; path: string; }[]`
+- `public updateMasonTableAvailability(): void`
+- `private craftMasonRecipe(): void`
 - `private updateHotbarSelection(): void`
 - `private initializeDebugPanel(): void`
 - `public static toggleDebugInfo(): void`
@@ -2306,7 +2326,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `Player/Inventory/PlayerInventory.ts` (354 LOC)
+## `Player/Inventory/PlayerInventory.ts` (356 LOC)
 
 ### export class PlayerInventory
 
@@ -2357,7 +2377,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `Player/Player.ts` (155 LOC)
+## `Player/Player.ts` (178 LOC)
 
 ### export class Player implements IUsable
 
@@ -2482,7 +2502,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `Player/PlayerInputController.ts` (108 LOC)
+## `Player/PlayerInputController.ts` (111 LOC)
 
 ### export class PlayerInputController
 
@@ -2883,6 +2903,45 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
+## `Shared/ChunkCoordUtils.ts` (8 LOC)
+
+**Module-level functions**
+- `export function worldToChunkCoord(value: number): number`
+- `export function worldToBlockCoord(value: number): number`
+
+---
+
+## `Shared/Constants.ts` (1 LOC)
+
+---
+
+## `Shared/EventBus.ts` (26 LOC)
+
+**Module-level functions**
+- `export function on(event: K, fn: Listener<K>): () => void`
+- `export function emit(event: K, data: EventMap[K]): void`
+
+**Types / Interfaces / Enums**
+- type `EventMap`
+- type `EventKey`
+- type `Listener`
+
+---
+
+## `Shared/GameRuntimeState.ts` (30 LOC)
+
+**Module-level functions**
+- `export function isInCave(): boolean`
+- `export function setInCave(value: boolean): void`
+- `export function getGameTimeScale(): number`
+- `export function setGameTimeScale(value: number): void`
+- `export function getIsPaused(): boolean`
+- `export function setIsPaused(value: boolean): void`
+- `export function setSceneAccessor(fn: () => import("@babylonjs/core").Scene): void`
+- `export function getScene(): import("@babylonjs/core").Scene | null`
+
+---
+
 ## `TestScene.ts` (78 LOC)
 
 ### export class TestScene
@@ -3193,7 +3252,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `World/Chunk/chunk.worker.ts` (153 LOC)
+## `World/Chunk/chunk.worker.ts` (157 LOC)
 
 **Module-level functions**
 - `function compressBlocks(blocks: Uint8Array): {
@@ -3202,6 +3261,10 @@ Generated: 2026-06-25T03:24:36.890Z
 	palette: Uint16Array | null;
 	packedBlocks: Uint8Array | Uint16Array | null;
 }`
+
+---
+
+## `World/Chunk/ChunkEntityAPI.ts` (13 LOC)
 
 ---
 
@@ -3273,7 +3336,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `World/Chunk/ChunkMesher.ts` (1119 LOC)
+## `World/Chunk/ChunkMesher.ts` (1115 LOC)
 
 ### class LodMeshMeta
 
@@ -3335,7 +3398,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `World/Chunk/chunkWorker.ts` (394 LOC)
+## `World/Chunk/chunkWorker.ts` (392 LOC)
 
 ### export class ChunkWorker
 
@@ -3382,7 +3445,7 @@ Generated: 2026-06-25T03:24:36.890Z
 - `public postFullRemesh(chunk: Chunk, forcedLod?: number): void`
 - `public postTerrainGeneration(chunk: Chunk, deferLighting: boolean = true): void`
 - `public initDistantTerrainShared(positionsBuffer: SharedArrayBuffer, normalsBuffer: SharedArrayBuffer, surfaceTilesBuffer: SharedArrayBuffer, radius: number, gridStep: number): void`
-- `public postGenerateDistantTerrain(requestId: number, centerChunkX: number, centerChunkZ: number, radius: number, renderDistance: number, gridStep: number): void`
+- `public postGenerateDistantTerrain(requestId: number, centerChunkX: number, centerChunkZ: number, radius: number, gridStep: number): void`
 - `public initLightShared(headerBuffer: SharedArrayBuffer): void`
 - `public postLightSetClosedFaceMask(maskBuffer: SharedArrayBuffer): void`
 - `public postLightRegisterChunk(req: {
@@ -3440,7 +3503,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `World/Chunk/ChunkWorkerPool.ts` (1754 LOC)
+## `World/Chunk/ChunkWorkerPool.ts` (1755 LOC)
 
 ### export class ChunkWorkerPool
 
@@ -3745,7 +3808,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `World/Chunk/DataStructures/WorkerMessageType.ts` (208 LOC)
+## `World/Chunk/DataStructures/WorkerMessageType.ts` (207 LOC)
 
 **Types / Interfaces / Enums**
 - interface `SerializedLightSeedState`
@@ -3991,7 +4054,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `World/Chunk/Loading/ChunkStreamingController.ts` (833 LOC)
+## `World/Chunk/Loading/ChunkStreamingController.ts` (836 LOC)
 
 ### export class ChunkStreamingController
 
@@ -4204,7 +4267,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `World/Chunk/MergedMeshManager.ts` (430 LOC)
+## `World/Chunk/MergedMeshManager.ts` (452 LOC)
 
 ### export class MergedMeshMeta
 
@@ -4283,7 +4346,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `World/Chunk/Worker/LightCore.ts` (1062 LOC)
+## `World/Chunk/Worker/LightCore.ts` (1050 LOC)
 
 ### class LightQueue
 
@@ -4306,8 +4369,7 @@ Generated: 2026-06-25T03:24:36.890Z
 - `function getFaceBit(axis: number, dir: number): number`
 - `function getClosedFaceMaskForPacked(packed: number): number`
 - `export function applyClosedFaceMaskLUT(lut: Uint8Array): void`
-- `function isSourceTransparent(packed: number, axis: number, dir: number): boolean`
-- `function isTargetTransparent(packed: number, axis: number, dir: number): boolean`
+- `function isTransparent(packed: number, axis: number, dir: number): boolean`
 - `export function createRegistry(header: LightHeaderView): ChunkViewRegistry`
 - `export function refreshLayout(registry: ChunkViewRegistry, view: ChunkView): void`
 - `export function registerChunk(registry: ChunkViewRegistry, args: {
@@ -4341,7 +4403,7 @@ Generated: 2026-06-25T03:24:36.890Z
 - `export function addLightAt(registry: ChunkViewRegistry, view: ChunkView, x: number, y: number, z: number, level: number, dirtySlots: Set<number>): void`
 - `function cutSkyLightBelowAt(registry: ChunkViewRegistry, view: ChunkView, x: number, y: number, z: number, dirtySlots: Set<number>): void`
 - `export function lightSkyReconcile(registry: ChunkViewRegistry, chunkId: bigint): Set<number>`
-- `function batchPropagate(registry: ChunkViewRegistry, chunks: bigint[], coords: Int32Array, levels: Uint8Array, count: number, dirty: Set<number>): Set<number>`
+- `function batchPropagate(registry: ChunkViewRegistry, chunks: BigInt64Array, coords: Int32Array, levels: Uint8Array, count: number, dirty: Set<number>): Set<number>`
 - `export function lightBlockReconcile(registry: ChunkViewRegistry, chunkId: bigint): Set<number>`
 - `export function propagateDeferred(registry: ChunkViewRegistry, chunkId: bigint, seedState: { queue: Uint16Array; length: number }): Set<number>`
 - `export function bumpLightVersion(registry: ChunkViewRegistry, slot: number): void`
@@ -4374,30 +4436,26 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `World/Chunk/Worker/WorkerTaskHandlers.ts` (155 LOC)
-
-### export class WorkerTaskHandlers
-
-**Methods**
-- `public static handleGenerateTerrain(request: GenerateTerrainRequest, deps: { generator: WorldGenerator; compressBlocks: CompressBlocksFn }): { payload: TerrainGeneratedMessage; transferables: Transferable[] }`
-- `public static handleInitDistantTerrainShared(request: {
-		positionsBuffer: SharedArrayBuffer;
-		normalsBuffer: SharedArrayBuffer;
-		surfaceTilesBuffer: SharedArrayBuffer;
-		radius: number;
-		gridStep: number;
-	}): { payload: { type: number }; transferables: Transferable[] }`
-- `public static handleGenerateDistantTerrain(request: GenerateDistantTerrainRequest): {
-		payload: {
-			type: number;
-			requestId: number;
-			centerChunkX: number;
-			centerChunkZ: number;
-		};
-		transferables: Transferable[];
-	}`
+## `World/Chunk/Worker/WorkerTaskHandlers.ts` (143 LOC)
 
 **Module-level functions**
+- `export function handleGenerateTerrain(request: GenerateTerrainRequest, deps: { generator: WorldGenerator; compressBlocks: CompressBlocksFn }): { payload: TerrainGeneratedMessage; transferables: Transferable[] }`
+- `export function handleInitDistantTerrainShared(request: {
+	positionsBuffer: SharedArrayBuffer;
+	normalsBuffer: SharedArrayBuffer;
+	surfaceTilesBuffer: SharedArrayBuffer;
+	radius: number;
+	gridStep: number;
+}): { payload: { type: number }; transferables: Transferable[] }`
+- `export function handleGenerateDistantTerrain(request: GenerateDistantTerrainRequest): {
+	payload: {
+		type: number;
+		requestId: number;
+		centerChunkX: number;
+		centerChunkZ: number;
+	};
+	transferables: Transferable[];
+}`
 - `function pushTransferable(transferables: Transferable[], view: ArrayBufferView | null | undefined, label: string): void`
 
 **Types / Interfaces / Enums**
@@ -4501,19 +4559,11 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `World/Light/DistantTerrainShader.ts` (164 LOC)
-
-### export class DistantTerrainShader
-
-**Properties**
-- `static readonly distantTerrainVertexShader: unknown`
-- `static readonly distantTerrainFragmentShader: unknown`
-- `static readonly distantWaterVertexShader: unknown`
-- `static readonly distantWaterFragmentShader: unknown`
+## `World/Light/DistantTerrainShader.ts` (162 LOC)
 
 ---
 
-## `World/Light/Lod2Shader.ts` (293 LOC)
+## `World/Light/Lod2Shader.ts` (287 LOC)
 
 ### export class Lod2Shader
 
@@ -4535,7 +4585,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `World/Light/OpaqueShader.ts` (213 LOC)
+## `World/Light/OpaqueShader.ts` (203 LOC)
 
 ### export class OpaqueShader
 
@@ -4573,7 +4623,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `World/MeshPipeline/core/BlockFlags.ts` (85 LOC)
+## `World/MeshPipeline/core/BlockFlags.ts` (107 LOC)
 
 **Module-level functions**
 - `function canUseDenseCache(packed: number): boolean`
@@ -4583,13 +4633,14 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `World/MeshPipeline/core/CustomShapeEmitter.ts` (552 LOC)
+## `World/MeshPipeline/core/CustomShapeEmitter.ts` (584 LOC)
 
 **Module-level functions**
 - `function parseBlockInto(packed: number, out: ParsedBlock): void`
 - `function getFaceBit(axis: number, isBackFace: boolean): number`
 - `function isWaterGlassInterface(curr: ParsedBlock, nbr: ParsedBlock): boolean`
 - `export function emitCustomShapes(ctx: MeshContext, opaqueOut: WorkerInternalMeshData, transparentOut: WorkerInternalMeshData): void`
+- `function isBorderOutwardFace(x: number, y: number, z: number, size: number, axis: number, isBackFace: boolean): boolean`
 - `function emitCrossShapeAtBlock(x: number, y: number, z: number, blockId: number, baseLight: number, materialType: MaterialType = MaterialType.Cutout, out: WorkerInternalMeshData): void`
 - `function emitCrossDiagonalAtBlock(x: number, y: number, z: number, blockId: number, baseLight: number, materialType: MaterialType = MaterialType.Cutout, out: WorkerInternalMeshData): void`
 - `function emitLOD2CrossBillboard(x: number, y: number, z: number, blockId: number, baseLight: number, materialType: MaterialType, out: WorkerInternalMeshData): void`
@@ -4612,7 +4663,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `World/MeshPipeline/core/GreedyPipeline.ts` (97 LOC)
+## `World/MeshPipeline/core/GreedyPipeline.ts` (103 LOC)
 
 **Module-level functions**
 - `function ensureScratchCapacity(area: number): {
@@ -4740,7 +4791,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `World/MeshPipeline/core/VoxelMaskExtractor.ts` (328 LOC)
+## `World/MeshPipeline/core/VoxelMaskExtractor.ts` (336 LOC)
 
 ### export class VoxelMaskExtractor
 
@@ -4906,7 +4957,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `World/Shape/BlockShapes.ts` (204 LOC)
+## `World/Shape/BlockShapes.ts` (225 LOC)
 
 **Module-level functions**
 - `function ensureShapeInit(): Promise<void>`
@@ -5185,19 +5236,26 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `World/Texture/BlockTextures.ts` (34 LOC)
+## `World/Texture/BlockTextures.ts` (96 LOC)
 
 **Module-level functions**
 - `function buildBlockTextures(): (BlockTextureDef | null)[]`
+- `function createTileDef(col: number, row: number): BlockTextureDef`
+- `function getTileFromResult(result: (BlockTextureDef | null)[], blockId: number): [number, number] | null`
 - `function getMaxBlockTypeId(): number`
+- `function getAtlasTileForBlockId(id: number): [number, number] | null`
+- `export function getVirtualBlockId(sourceBlockId: number, shape: string): number | null`
+- `function getVirtualBlockIdSync(sourceBlockId: number, shape: string): number`
+- `export function setBlockAtlasTile(blockId: number, col: number, row: number): void`
 - `export function getAtlasTile(blockId: number | null): [number, number] | null`
 
 **Types / Interfaces / Enums**
 - type `BlockTextureDef`
+- type `MasonShape`
 
 ---
 
-## `World/Texture/BlockType.ts` (118 LOC)
+## `World/Texture/BlockType.ts` (119 LOC)
 
 **Module-level functions**
 - `export function isPassThroughBlock(blockId: number): boolean`
@@ -5287,7 +5345,7 @@ Generated: 2026-06-25T03:24:36.890Z
 
 ---
 
-## `World/WorldStorage.ts` (374 LOC)
+## `World/WorldStorage.ts` (384 LOC)
 
 ### class WorldStorageImpl
 
@@ -5311,7 +5369,10 @@ Generated: 2026-06-25T03:24:36.890Z
 - `async loadChunk(chunkId: bigint, options?: LoadChunkOptions): Promise<SavedChunkData | null>`
 - `async loadChunks(chunkIds: bigint[], options?: LoadChunkOptions): Promise<Map<bigint, SavedChunkData>>`
 - `async clearWorldData(): Promise<void>`
-- `private async clearOldOpfsData(): Promise<void>`
+- `private async saveChunkWithClient(client: OpfsClient, chunk: Chunk): Promise<void>`
+
+**Module-level functions**
+- `async function mapLimit(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<void>): Promise<void>`
 
 **Types / Interfaces / Enums**
 - type `LoadChunkOptions`

@@ -179,49 +179,35 @@ class WorldStorageImpl {
 		const client = await this.getClient();
 		if (!client) return;
 
-		const key = this.packKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-		const blocks = chunk.block_array;
-		const light = chunk.light_array;
-
-		const [compressedBlocks, compressedLight] = await Promise.all([
-			blocks ? this.compress(blocks) : Promise.resolve(null),
-			light ? this.compress(light) : Promise.resolve(null),
-		]);
-
-		const bytes = serializeVoxelData(
-			compressedBlocks,
-			chunk.palette ? this.detachSharedArrayBuffer(chunk.palette) : null,
-			chunk.isUniform,
-			chunk.uniformBlockId,
-			compressedLight,
-			true,
-		);
-
-		try {
-			await client.writeVoxel(key, VOXEL_SENTINEL, bytes);
-			chunk.isModified = false;
-			chunk.isLightDirty = false;
-		} catch (err) {
-			console.error("[WorldStorage] OPFS voxel write failed:", err);
-		}
+		await this.saveChunkWithClient(client, chunk);
 	}
 
 	async saveChunks(chunks: Chunk[]): Promise<void> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_SAVING) return;
 
 		const toSave: Chunk[] = [];
-		for (const c of chunks) {
-			if (c.isBoatChunk) continue;
-			if (c.isModified || c.isLightDirty) {
-				toSave.push(c);
+
+		for (let i = 0; i < chunks.length; i++) {
+			const chunk = chunks[i];
+			if (chunk.isBoatChunk) continue;
+			if (chunk.isModified || chunk.isLightDirty) {
+				toSave.push(chunk);
 			}
 		}
+
 		if (toSave.length === 0) return;
 
 		const client = await this.getClient();
 		if (!client) return;
 
-		await Promise.all(toSave.map((chunk) => this.saveChunk(chunk)));
+		const concurrency = Math.max(
+			1,
+			Math.min(4, Math.floor(navigator.hardwareConcurrency || 4)),
+		);
+
+		await mapLimit(toSave, concurrency, async (chunk) => {
+			await this.saveChunkWithClient(client, chunk);
+		});
 	}
 
 	async saveAllModifiedChunks(): Promise<void> {
@@ -324,6 +310,7 @@ class WorldStorageImpl {
 		options?: LoadChunkOptions,
 	): Promise<Map<bigint, SavedChunkData>> {
 		const result = new Map<bigint, SavedChunkData>();
+
 		if (GLOBAL_VALUES.DISABLE_CHUNK_LOADING || chunkIds.length === 0) {
 			return result;
 		}
@@ -331,101 +318,143 @@ class WorldStorageImpl {
 		const client = await this.getClient();
 		if (!client) return result;
 
+		const includeVoxelData = options?.includeVoxelData ?? true;
 		const hits: { chunkId: bigint; data: SavedChunkData }[] = [];
-		const fetches = chunkIds.map(async (chunkId) => {
+
+		const hardwareConcurrency = Math.floor(navigator.hardwareConcurrency || 4);
+
+		const readConcurrency = Math.max(2, Math.min(16, hardwareConcurrency * 2));
+
+		await mapLimit(chunkIds, readConcurrency, async (chunkId) => {
 			try {
 				const bytes = await client.readVoxel(chunkId, VOXEL_SENTINEL);
 				if (!bytes) return;
+
 				const raw = deserializeVoxelData(bytes);
 				hits.push({ chunkId, data: raw });
-			} catch {}
+			} catch {
+				console.warn(
+					`[WorldStorage] Failed to read chunk ${chunkId.toString()}`,
+				);
+			}
 		});
-		await Promise.all(fetches);
 
-		const CONCURRENCY = Math.max(
-			1,
-			Math.min(4, Math.floor(navigator.hardwareConcurrency || 4)),
-		);
-		for (let i = 0; i < hits.length; i += CONCURRENCY) {
-			const end = Math.min(i + CONCURRENCY, hits.length);
-			const batch: Promise<void>[] = [];
-			for (let j = i; j < end; j++) {
-				const { chunkId, data } = hits[j];
-				const includeVoxelData = options?.includeVoxelData ?? true;
-				if (data.compressed && includeVoxelData) {
-					const jobs: Promise<void>[] = [];
-					if (this.isUint8Array(data.blocks)) {
-						jobs.push(
-							this.decompressToShared(data.blocks).then((r) => {
-								data.blocks = r;
-							}),
-						);
-					}
-					if (this.isUint8Array(data.lightArray)) {
-						jobs.push(
-							this.decompressToShared(data.lightArray).then((r) => {
-								data.lightArray = r as Uint8Array;
-							}),
-						);
-					}
-					batch.push(
-						Promise.all(jobs).then(() => {
-							result.set(chunkId, data);
+		if (hits.length === 0) return result;
+
+		if (!includeVoxelData) {
+			for (let i = 0; i < hits.length; i++) {
+				const { chunkId, data } = hits[i];
+
+				data.blocks = null;
+				data.palette = null;
+				data.isUniform = undefined;
+				data.uniformBlockId = undefined;
+				data.lightArray = undefined;
+
+				result.set(chunkId, data);
+			}
+
+			return result;
+		}
+
+		const decompressConcurrency = Math.max(1, Math.min(4, hardwareConcurrency));
+
+		await mapLimit(hits, decompressConcurrency, async ({ chunkId, data }) => {
+			if (data.compressed) {
+				const jobs: Promise<void>[] = [];
+
+				if (this.isUint8Array(data.blocks)) {
+					jobs.push(
+						this.decompressToShared(data.blocks).then((r) => {
+							data.blocks = r;
 						}),
 					);
-				} else if (!includeVoxelData) {
-					data.blocks = null;
-					data.palette = null;
-					data.isUniform = undefined;
-					data.uniformBlockId = undefined;
-					data.lightArray = undefined;
-					result.set(chunkId, data);
-				} else {
-					result.set(chunkId, data);
+				}
+
+				if (this.isUint8Array(data.lightArray)) {
+					jobs.push(
+						this.decompressToShared(data.lightArray).then((r) => {
+							data.lightArray = r as Uint8Array;
+						}),
+					);
+				}
+
+				if (jobs.length > 0) {
+					await Promise.all(jobs);
 				}
 			}
-			await Promise.all(batch);
-		}
+
+			result.set(chunkId, data);
+		});
 
 		return result;
 	}
 
 	async clearWorldData(): Promise<void> {
-		try {
+		if ("storage" in navigator && "getDirectory" in navigator.storage) {
 			const root = await navigator.storage.getDirectory();
-			const dirHandle = await root.getDirectoryHandle("b102");
-			await dirHandle.removeEntry("voxels.bin");
-			await dirHandle.removeEntry("meshes.bin", { recursive: true });
-			await dirHandle.removeEntry("regions", { recursive: true });
-		} catch (err) {
-			console.error("[WorldStorage] Failed to clear world data:", err);
+			for await (const entry of root.values()) {
+				await root.removeEntry(entry.name, { recursive: true });
+			}
 		}
 	}
+	private async saveChunkWithClient(
+		client: OpfsClient,
+		chunk: Chunk,
+	): Promise<void> {
+		if (GLOBAL_VALUES.DISABLE_CHUNK_SAVING) return;
+		if (chunk.isBoatChunk) return;
+		if (!chunk.isModified && !chunk.isLightDirty) return;
 
-	private async clearOldOpfsData(): Promise<void> {
-		const FLAG = "b102_opfs_v2_cleared";
-		if (localStorage.getItem(FLAG)) return;
+		const key = this.packKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+		const blocks = chunk.block_array;
+		const light = chunk.light_array;
 
-		const root = await navigator.storage.getDirectory();
-		let dirHandle: FileSystemDirectoryHandle;
+		const [compressedBlocks, compressedLight] = await Promise.all([
+			blocks ? this.compress(blocks) : Promise.resolve(null),
+			light ? this.compress(light) : Promise.resolve(null),
+		]);
+
+		const bytes = serializeVoxelData(
+			compressedBlocks,
+			chunk.palette ? this.detachSharedArrayBuffer(chunk.palette) : null,
+			chunk.isUniform,
+			chunk.uniformBlockId,
+			compressedLight,
+			true,
+		);
+
 		try {
-			dirHandle = await root.getDirectoryHandle("b102");
-		} catch {
-			localStorage.setItem(FLAG, "1");
-			return;
+			await client.writeVoxel(key, VOXEL_SENTINEL, bytes);
+			chunk.isModified = false;
+			chunk.isLightDirty = false;
+		} catch (err) {
+			console.error("[WorldStorage] OPFS voxel write failed:", err);
 		}
-		try {
-			await dirHandle.removeEntry("voxels.bin");
-		} catch {}
-		try {
-			await dirHandle.removeEntry("regions", { recursive: true });
-		} catch {}
-		try {
-			await dirHandle.removeEntry("meshes.bin");
-		} catch {}
-
-		localStorage.setItem(FLAG, "1");
 	}
 }
+async function mapLimit<T>(
+	items: readonly T[],
+	limit: number,
+	fn: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+	if (items.length === 0) return;
 
+	let nextIndex = 0;
+	const workerCount = Math.min(limit, items.length);
+
+	const workers = new Array<Promise<void>>(workerCount);
+
+	for (let worker = 0; worker < workerCount; worker++) {
+		workers[worker] = (async () => {
+			while (true) {
+				const index = nextIndex++;
+				if (index >= items.length) return;
+				await fn(items[index], index);
+			}
+		})();
+	}
+
+	await Promise.all(workers);
+}
 export const WorldStorage = new WorldStorageImpl();

@@ -79,7 +79,7 @@ export const UNDERGROUND_BIOMES: UndergroundBiome[] = [
 	},
 ];
 
-const DEFAULT_BIOME = UNDERGROUND_BIOMES[0]!;
+const DEFAULT_BIOME = UNDERGROUND_BIOMES[0];
 
 // Depth bands (world Y)
 const UPPER_MIN = -256;

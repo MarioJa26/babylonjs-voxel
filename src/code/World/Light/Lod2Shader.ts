@@ -185,7 +185,6 @@ export class Lod2Shader {
     in vec3 vFogColorCheap;
 
     uniform sampler2D diffuseTexture;
-    uniform sampler2D normalTexture;
     uniform float atlasTileSize;
     uniform float lodFadeProgress;
     uniform float lodFadeDirection;
@@ -240,9 +239,7 @@ export class Lod2Shader {
 
       diffuseColor.rgb *= mix(1.0, 0.55, wetness);
 
-      vec3 normalMap = texture(normalTexture, atlasUV).rgb;
-      normalMap = normalize(normalMap * 2.0 - 1.0);
-      vec3 worldNormal = normalize(vTBN * normalMap);
+      vec3 worldNormal = vTBN[2];
 
       float diffuseIntensity = max(0.0, dot(worldNormal, lightDirection));
 
@@ -289,7 +286,6 @@ export class Lod2Shader {
     in vec3 vFogColorCheap;
 
     uniform sampler2D diffuseTexture;
-    uniform sampler2D normalTexture;
     uniform float atlasTileSize;
     uniform float lodFadeProgress;
     uniform float lodFadeDirection;
@@ -344,9 +340,7 @@ export class Lod2Shader {
 
       diffuseColor.rgb *= mix(1.0, 0.55, wetness);
 
-      vec3 normalMap = texture(normalTexture, atlasUV).rgb;
-      normalMap = normalize(normalMap * 2.0 - 1.0);
-      vec3 worldNormal = normalize(vTBN * normalMap);
+      vec3 worldNormal = vTBN[2];
 
       float diffuseIntensity = max(0.0, dot(worldNormal, lightDirection));
 

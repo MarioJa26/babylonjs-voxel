@@ -3,7 +3,11 @@ import type { MobRegistry } from "../Entities/Mobs/Mob";
 import { createMobCoordinator } from "../Entities/Mobs/MobSetup";
 import { NeutralMob } from "../Entities/Mobs/NeutralMob";
 import type { SpawnCoordinator } from "../Entities/SpawnCoordinator";
-import { DistantTerrain } from "../Generation/DistantTerrain/DistantTerrain";
+import { setSceneAccessor, setGameTimeScale } from "../Shared/GameRuntimeState";
+import {
+	dispose as disposeDistantTerrain,
+	init as initDistantTerrain,
+} from "../Generation/DistantTerrain/DistantTerrain";
 import {
 	disposeBlockBreakingVisuals,
 	initializeBlockBreakingVisuals,
@@ -33,6 +37,7 @@ export class Map1 {
 	constructor(scene: Scene, player: Player) {
 		this.#player = player;
 		Map1.mainScene = scene;
+		setSceneAccessor(() => scene);
 
 		initializeBlockBreakingVisuals(scene);
 
@@ -67,7 +72,7 @@ export class Map1 {
 
 			disposeBlockBreakingVisuals();
 			disposeSharedResources();
-			DistantTerrain.resetInstance();
+			disposeDistantTerrain();
 		});
 
 		this.initPromise = this.asyncInit().then(() => {
@@ -86,10 +91,10 @@ export class Map1 {
 		try {
 			await initAtlas();
 			// 2. Now safe to construct DistantTerrain (atlas is ready)
-			DistantTerrain.getInstance();
+			initDistantTerrain();
 
 			// 3. Start chunk streaming — PlayerLoadingGate calls updateChunksAround
-			//    which calls DistantTerrain.getInstance().update(), so it must come
+			//    which calls distant terrain's update(), so it must come
 			//    after step 2.
 			this.#playerLoadingGate = new PlayerLoadingGate(
 				Map1.mainScene,
@@ -119,6 +124,7 @@ export class Map1 {
 	}
 	public static set timeScale(v: number) {
 		if (Map1.environment) Map1.environment.timeScale = v;
+		setGameTimeScale(v);
 	}
 
 	public static get isPaused() {

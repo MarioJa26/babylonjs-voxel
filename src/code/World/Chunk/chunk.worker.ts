@@ -7,7 +7,11 @@ import {
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
 import { LightTaskHandlers } from "./Worker/LightTaskHandlers";
-import { WorkerTaskHandlers } from "./Worker/WorkerTaskHandlers";
+import {
+	handleGenerateDistantTerrain,
+	handleGenerateTerrain,
+	handleInitDistantTerrainShared,
+} from "./Worker/WorkerTaskHandlers";
 
 // ---------------------------------------------------------------------------
 // Shared instances
@@ -118,26 +122,26 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
 
 	switch (type) {
 		case WorkerTaskType.GenerateTerrain: {
-			const { payload, transferables } =
-				WorkerTaskHandlers.handleGenerateTerrain(event.data, {
-					generator,
-					compressBlocks,
-				});
+			const { payload, transferables } = handleGenerateTerrain(event.data, {
+				generator,
+				compressBlocks,
+			});
 
 			self.postMessage(payload, transferables);
 			return;
 		}
 
 		case WorkerTaskType.InitDistantTerrainShared: {
-			WorkerTaskHandlers.handleInitDistantTerrainShared(event.data);
+			handleInitDistantTerrainShared(event.data);
 			self.postMessage({ type: WorkerTaskType.InitDistantTerrainShared }); // ← ack
 			return;
 		}
 
 		case WorkerTaskType.GenerateDistantTerrain: {
 			try {
-				const { payload, transferables } =
-					WorkerTaskHandlers.handleGenerateDistantTerrain(event.data);
+				const { payload, transferables } = handleGenerateDistantTerrain(
+					event.data,
+				);
 				self.postMessage(
 					{ ...payload, type: WorkerTaskType.GenerateDistantTerrain_Generated },
 					transferables,

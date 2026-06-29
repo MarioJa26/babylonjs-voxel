@@ -28,6 +28,16 @@ export interface IWorldFeature {
 	 */
 	readonly verticalBounds?: FeatureVerticalBounds;
 
+	/**
+	 * How far above the highest surface Y in the chunk this feature may
+	 * place blocks.  Used by SurfaceGenerator's canContainStructures gate
+	 * so that tall features (e.g. a 500-block butte) are not silently
+	 * truncated.
+	 *
+	 * Defaults to 64 (CHUNK_SIZE * 2) when omitted.
+	 */
+	readonly maxAboveSurface?: number;
+
 	generate(
 		chunkX: number,
 		chunkY: number,

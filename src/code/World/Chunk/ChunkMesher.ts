@@ -983,7 +983,7 @@ export async function initAtlas(): Promise<void> {
 				],
 				uniforms: lodUniforms,
 				uniformBuffers: ["GlobalUniforms"],
-				samplers: ["diffuseTexture", "normalTexture"],
+				samplers: ["diffuseTexture"],
 			},
 		);
 		mat.backFaceCulling = true;
@@ -991,7 +991,6 @@ export async function initAtlas(): Promise<void> {
 		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
 		mat.setArray4("tintLUT", tintLUTArray);
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
-		if (normalAtlasTexture) mat.setTexture("normalTexture", normalAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
 		applyLodShaderBindings(mat);
 		mat.wireframe = GLOBAL_VALUES.DEBUG;
@@ -1005,7 +1004,6 @@ export async function initAtlas(): Promise<void> {
 		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
 		mat.setArray4("tintLUT", tintLUTArray);
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
-		if (normalAtlasTexture) mat.setTexture("normalTexture", normalAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
 		applyLodShaderBindings(mat);
 		mat.freeze();
@@ -1029,7 +1027,7 @@ export async function initAtlas(): Promise<void> {
 				],
 				uniforms: lodUniforms,
 				uniformBuffers: ["GlobalUniforms"],
-				samplers: ["diffuseTexture", "normalTexture"],
+				samplers: ["diffuseTexture"],
 			},
 		);
 		mat.backFaceCulling = true;
@@ -1039,7 +1037,6 @@ export async function initAtlas(): Promise<void> {
 		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
 		mat.setArray4("tintLUT", tintLUTArray);
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
-		if (normalAtlasTexture) mat.setTexture("normalTexture", normalAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
 		applyLodShaderBindings(mat);
 		mat.wireframe = GLOBAL_VALUES.DEBUG;
@@ -1053,7 +1050,6 @@ export async function initAtlas(): Promise<void> {
 		mat.setFloat("atlasMaxTiles", atlasMaxTiles);
 		mat.setArray4("tintLUT", tintLUTArray);
 		mat.setTexture("diffuseTexture", diffuseAtlasTexture);
-		if (normalAtlasTexture) mat.setTexture("normalTexture", normalAtlasTexture);
 		mat.setUniformBuffer("GlobalUniforms", globalUniformBuffer);
 		applyLodShaderBindings(mat);
 		mat.freeze();

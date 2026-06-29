@@ -114,7 +114,6 @@ export type GenerateDistantTerrainRequest = {
 	centerChunkX: number;
 	centerChunkZ: number;
 	radius: number;
-	renderDistance: number;
 	gridStep: number;
 };
 

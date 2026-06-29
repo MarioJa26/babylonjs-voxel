@@ -8,7 +8,7 @@
 import { OpfsMsg } from "./OpfsMessageTypes";
 
 const _packScratch = { hi: 0, lo: 0 };
-const MAX_INFLIGHT = 1024;
+const MAX_INFLIGHT = 2048;
 
 if ((MAX_INFLIGHT & (MAX_INFLIGHT - 1)) !== 0) {
 	throw new Error("MAX_INFLIGHT must be a power of two");

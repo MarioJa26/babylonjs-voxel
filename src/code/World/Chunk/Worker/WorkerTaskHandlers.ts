@@ -1,6 +1,9 @@
-import { DistantTerrainGenerator } from "@/code/Generation/DistantTerrain/DistantTerrainGenerator";
+import {
+	generate,
+	initSharedBuffers,
+} from "@/code/Generation/DistantTerrain/DistantTerrainGenerator";
 import type { WorldGenerator } from "@/code/Generation/WorldGenerator";
-import { FaceName } from "@/code/World/Texture/FaceName";
+import type { FaceName } from "@/code/World/Texture/FaceName";
 import type { WorkerInternalMeshData } from "../DataStructures/WorkerInternalMeshData";
 import {
 	type GenerateDistantTerrainRequest,
@@ -44,114 +47,99 @@ export type CompressBlocksFn = (blocks: Uint8Array) => {
 	packedBlocks: Uint8Array | Uint16Array | null;
 };
 
-export class WorkerTaskHandlers {
-	public static handleGenerateTerrain(
-		request: GenerateTerrainRequest,
-		deps: { generator: WorldGenerator; compressBlocks: CompressBlocksFn },
-	): { payload: TerrainGeneratedMessage; transferables: Transferable[] } {
-		const result = deps.generator.generateChunkData(
-			request.chunkX,
-			request.chunkY,
-			request.chunkZ,
-			{
-				deferLighting: request.deferLighting === true,
-				skipDecorations: request.skipDecorations === true,
-			},
-		);
+export function handleGenerateTerrain(
+	request: GenerateTerrainRequest,
+	deps: { generator: WorldGenerator; compressBlocks: CompressBlocksFn },
+): { payload: TerrainGeneratedMessage; transferables: Transferable[] } {
+	const result = deps.generator.generateChunkData(
+		request.chunkX,
+		request.chunkY,
+		request.chunkZ,
+		{
+			deferLighting: request.deferLighting === true,
+			skipDecorations: request.skipDecorations === true,
+		},
+	);
 
-		const compressed = deps.compressBlocks(result.blocks);
+	const compressed = deps.compressBlocks(result.blocks);
 
-		const payload: TerrainGeneratedMessage = {
-			chunkId: request.chunkId,
-			type: WorkerTaskType.GenerateTerrain,
-			block_array: compressed.packedBlocks,
-			light_array: result.light,
-			isUniform: compressed.isUniform,
-			uniformBlockId: compressed.uniformBlockId,
-			palette: compressed.palette,
-		};
+	const payload: TerrainGeneratedMessage = {
+		chunkId: request.chunkId,
+		type: WorkerTaskType.GenerateTerrain,
+		block_array: compressed.packedBlocks,
+		light_array: result.light,
+		isUniform: compressed.isUniform,
+		uniformBlockId: compressed.uniformBlockId,
+		palette: compressed.palette,
+	};
 
-		if (result.lightSeedState) {
-			payload.lightSeedQueue = result.lightSeedState.queue;
-			payload.lightSeedLength = result.lightSeedState.length;
-		}
-
-		const transferables: Transferable[] = [];
-		pushTransferable(
-			transferables,
-			compressed.packedBlocks ?? undefined,
-			"packedBlocks",
-		);
-		pushTransferable(transferables, result.light, "light_array");
-		pushTransferable(transferables, compressed.palette ?? undefined, "palette");
-		pushTransferable(
-			transferables,
-			result.lightSeedState?.queue,
-			"lightSeedQueue",
-		);
-
-		return { payload, transferables };
+	if (result.lightSeedState) {
+		payload.lightSeedQueue = result.lightSeedState.queue;
+		payload.lightSeedLength = result.lightSeedState.length;
 	}
 
-	public static handleInitDistantTerrainShared(request: {
-		positionsBuffer: SharedArrayBuffer;
-		normalsBuffer: SharedArrayBuffer;
-		surfaceTilesBuffer: SharedArrayBuffer;
-		radius: number;
-		gridStep: number;
-	}): { payload: { type: number }; transferables: Transferable[] } {
-		DistantTerrainGenerator.initSharedBuffers(
-			request.positionsBuffer,
-			request.normalsBuffer,
-			request.surfaceTilesBuffer,
-			request.radius,
-			request.gridStep,
-		);
+	const transferables: Transferable[] = [];
+	pushTransferable(
+		transferables,
+		compressed.packedBlocks ?? undefined,
+		"packedBlocks",
+	);
+	pushTransferable(transferables, result.light, "light_array");
+	pushTransferable(transferables, compressed.palette ?? undefined, "palette");
+	pushTransferable(
+		transferables,
+		result.lightSeedState?.queue,
+		"lightSeedQueue",
+	);
 
-		return {
-			payload: { type: WorkerTaskType.InitDistantTerrainShared },
-			transferables: [],
-		};
-	}
+	return { payload, transferables };
+}
 
-	public static handleGenerateDistantTerrain(
-		request: GenerateDistantTerrainRequest,
-	): {
+export function handleInitDistantTerrainShared(request: {
+	positionsBuffer: SharedArrayBuffer;
+	normalsBuffer: SharedArrayBuffer;
+	surfaceTilesBuffer: SharedArrayBuffer;
+	radius: number;
+	gridStep: number;
+}): { payload: { type: number }; transferables: Transferable[] } {
+	initSharedBuffers(
+		request.positionsBuffer,
+		request.normalsBuffer,
+		request.surfaceTilesBuffer,
+		request.radius,
+		request.gridStep,
+	);
+
+	return {
+		payload: { type: WorkerTaskType.InitDistantTerrainShared },
+		transferables: [],
+	};
+}
+
+export function handleGenerateDistantTerrain(
+	request: GenerateDistantTerrainRequest,
+): {
+	payload: {
+		type: number;
+		requestId: number;
+		centerChunkX: number;
+		centerChunkZ: number;
+	};
+	transferables: Transferable[];
+} {
+	const { requestId, centerChunkX, centerChunkZ, radius, gridStep } = request;
+
+	const data = generate(centerChunkX, centerChunkZ, radius, gridStep);
+
+	return {
 		payload: {
-			type: number;
-			requestId: number;
-			centerChunkX: number;
-			centerChunkZ: number;
-		};
-		transferables: Transferable[];
-	} {
-		const {
+			type: WorkerTaskType.GenerateDistantTerrain,
 			requestId,
-			centerChunkX,
-			centerChunkZ,
-			radius,
-			renderDistance,
-			gridStep,
-		} = request;
-
-		const data = DistantTerrainGenerator.generate(
-			centerChunkX,
-			centerChunkZ,
-			radius,
-			renderDistance,
-			gridStep,
-		);
-
-		return {
-			payload: {
-				type: WorkerTaskType.GenerateDistantTerrain,
-				requestId,
-				centerChunkX: data.centerChunkX,
-				centerChunkZ: data.centerChunkZ,
-			},
-			transferables: [],
-		};
-	}
+			centerChunkX: data.centerChunkX,
+			centerChunkZ: data.centerChunkZ,
+		},
+		transferables: [],
+	};
 }
 
 function pushTransferable(

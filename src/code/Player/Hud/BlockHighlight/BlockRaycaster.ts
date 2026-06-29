@@ -1,4 +1,5 @@
 import { Matrix, Ray, Vector3 } from "@babylonjs/core";
+import { REACH_DISTANCE } from "@/code/Shared/Constants";
 import { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import {
@@ -22,7 +23,7 @@ import {
 	isFenceBlockId,
 } from "@/code/World/Shape/FenceConnect";
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
-import { type Player, REACH_DISTANCE } from "../../Player";
+import type { Player } from "../../Player";
 
 export type BlockRaycastHit = {
 	x: number;

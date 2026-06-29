@@ -4,496 +4,443 @@ import { FaceName } from "@/code/World/Texture/FaceName";
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
 import { getBiome, getFinalTerrainHeight } from "../TerrainHeightMap";
 
-export class DistantTerrainGenerator {
-	private static readonly DEFAULT_TILE_X = 14;
-	private static readonly DEFAULT_TILE_Y = 0;
-	private static readonly INSIDE_CLIP_Y = -200;
+const DEFAULT_TILE_X = 14;
+const DEFAULT_TILE_Y = 0;
+const INSIDE_CLIP_Y = -200;
 
-	private static positions?: Int16Array;
-	private static normals?: Int8Array;
-	private static surfaceTiles?: Uint8Array;
+let positions: Int16Array | undefined;
+let normals: Int8Array | undefined;
+let surfaceTiles: Uint8Array | undefined;
 
-	private static lastGridCenterChunkX = Number.NaN;
-	private static lastGridCenterChunkZ = Number.NaN;
-	private static lastCenterChunkX = Number.NaN;
-	private static lastCenterChunkZ = Number.NaN;
+let lastGridCenterChunkX = Number.NaN;
+let lastGridCenterChunkZ = Number.NaN;
+let lastCenterChunkX = Number.NaN;
+let lastCenterChunkZ = Number.NaN;
 
-	private static rowSize = 0;
-	private static segments = 0;
-	private static gridStep = 1;
-	private static radius = 0;
-	private static usingSharedBuffers = false;
+let rowSize = 0;
+let segments = 0;
+let gridStep = 1;
+let radius = 0;
+let usingSharedBuffers = false;
 
-	// Height cache — avoids redundant getFinalTerrainHeight calls for normals.
-	private static _heightCache = new Float32Array(131072);
-	private static _heightCacheKeys = new Int32Array(131072);
-	private static _heightCacheMask = 131071;
+const _heightCache = new Float32Array(131072);
+const _heightCacheKeys = new Int32Array(131072);
+const _heightCacheMask = 131071;
 
-	private static cachedHeight(wx: number, wz: number): number {
-		const key = (wx & 0x3fff) | ((wz & 0x3fff) << 14);
-		const slot = key & DistantTerrainGenerator._heightCacheMask;
-		if (DistantTerrainGenerator._heightCacheKeys[slot] === key) {
-			return DistantTerrainGenerator._heightCache[slot];
-		}
-		const h = getFinalTerrainHeight(wx, wz);
-		DistantTerrainGenerator._heightCacheKeys[slot] = key;
-		DistantTerrainGenerator._heightCache[slot] = h;
-		return h;
+function cachedHeight(wx: number, wz: number): number {
+	const key = (wx & 0x3fff) | ((wz & 0x3fff) << 14);
+	const slot = key & _heightCacheMask;
+	if (_heightCacheKeys[slot] === key) {
+		return _heightCache[slot];
 	}
+	const h = getFinalTerrainHeight(wx, wz);
+	_heightCacheKeys[slot] = key;
+	_heightCache[slot] = h;
+	return h;
+}
 
-	// =====================================================================
-	// SharedArrayBuffer initialization
-	// =====================================================================
+// =====================================================================
+// SharedArrayBuffer initialization
+// =====================================================================
 
-	public static initSharedBuffers(
-		positionsBuffer: SharedArrayBuffer,
-		normalsBuffer: SharedArrayBuffer,
-		surfaceTilesBuffer: SharedArrayBuffer,
-		radius: number,
-		gridStep: number,
-	) {
-		DistantTerrainGenerator.configureGrid(radius, gridStep);
+export function initSharedBuffers(
+	positionsBuffer: SharedArrayBuffer,
+	normalsBuffer: SharedArrayBuffer,
+	surfaceTilesBuffer: SharedArrayBuffer,
+	r: number,
+	gStep: number,
+) {
+	configureGrid(r, gStep);
 
-		const vertexCount = DistantTerrainGenerator.rowSize ** 2;
-		const expectedPositionsBytes =
-			vertexCount * 3 * Int16Array.BYTES_PER_ELEMENT;
-		const expectedNormalsBytes = vertexCount * 3 * Int8Array.BYTES_PER_ELEMENT;
-		const expectedSurfaceTilesBytes =
-			vertexCount * 2 * Uint8Array.BYTES_PER_ELEMENT;
+	const vertexCount = rowSize ** 2;
+	const expectedPositionsBytes = vertexCount * 3 * Int16Array.BYTES_PER_ELEMENT;
+	const expectedNormalsBytes = vertexCount * 3 * Int8Array.BYTES_PER_ELEMENT;
+	const expectedSurfaceTilesBytes =
+		vertexCount * 2 * Uint8Array.BYTES_PER_ELEMENT;
 
-		if (positionsBuffer.byteLength !== expectedPositionsBytes)
-			throw new Error(
-				`Shared positions buffer size mismatch. Expected ${expectedPositionsBytes}, got ${positionsBuffer.byteLength}.`,
-			);
-		if (normalsBuffer.byteLength !== expectedNormalsBytes)
-			throw new Error(
-				`Shared normals buffer size mismatch. Expected ${expectedNormalsBytes}, got ${normalsBuffer.byteLength}.`,
-			);
-		if (surfaceTilesBuffer.byteLength !== expectedSurfaceTilesBytes)
-			throw new Error(
-				`Shared surfaceTiles buffer size mismatch. Expected ${expectedSurfaceTilesBytes}, got ${surfaceTilesBuffer.byteLength}.`,
-			);
+	if (positionsBuffer.byteLength !== expectedPositionsBytes)
+		throw new Error(
+			`Shared positions buffer size mismatch. Expected ${expectedPositionsBytes}, got ${positionsBuffer.byteLength}.`,
+		);
+	if (normalsBuffer.byteLength !== expectedNormalsBytes)
+		throw new Error(
+			`Shared normals buffer size mismatch. Expected ${expectedNormalsBytes}, got ${normalsBuffer.byteLength}.`,
+		);
+	if (surfaceTilesBuffer.byteLength !== expectedSurfaceTilesBytes)
+		throw new Error(
+			`Shared surfaceTiles buffer size mismatch. Expected ${expectedSurfaceTilesBytes}, got ${surfaceTilesBuffer.byteLength}.`,
+		);
 
-		DistantTerrainGenerator.positions = new Int16Array(positionsBuffer);
-		DistantTerrainGenerator.normals = new Int8Array(normalsBuffer);
-		DistantTerrainGenerator.surfaceTiles = new Uint8Array(surfaceTilesBuffer);
-		DistantTerrainGenerator.usingSharedBuffers = true;
-		DistantTerrainGenerator.resetTracking();
-	}
+	positions = new Int16Array(positionsBuffer);
+	normals = new Int8Array(normalsBuffer);
+	surfaceTiles = new Uint8Array(surfaceTilesBuffer);
+	usingSharedBuffers = true;
+	resetTracking();
+}
 
-	// =====================================================================
-	// Public generation entry point
-	// =====================================================================
+// =====================================================================
+// Public generation entry point
+// =====================================================================
 
-	public static generate(
-		centerChunkX: number,
-		centerChunkZ: number,
-		radius: number,
-		renderDistance: number,
-		gridStep: number,
-		forceFullRebuild = false,
-	) {
-		const gridCenterChunkX = Math.floor(centerChunkX / gridStep) * gridStep;
-		const gridCenterChunkZ = Math.floor(centerChunkZ / gridStep) * gridStep;
+export function generate(
+	centerChunkX: number,
+	centerChunkZ: number,
+	r: number,
+	gStep: number,
+	forceFullRebuild = false,
+) {
+	const gridCenterChunkX = Math.floor(centerChunkX / gStep) * gStep;
+	const gridCenterChunkZ = Math.floor(centerChunkZ / gStep) * gStep;
 
-		DistantTerrainGenerator.ensureBuffers(radius, gridStep);
+	ensureBuffers(r, gStep);
 
-		const positions = DistantTerrainGenerator.positions!;
-		const normals = DistantTerrainGenerator.normals!;
-		const surfaceTiles = DistantTerrainGenerator.surfaceTiles!;
+	const pos = positions!;
+	const nrm = normals!;
+	const tiles = surfaceTiles!;
 
-		const firstBuild =
-			forceFullRebuild ||
-			Number.isNaN(DistantTerrainGenerator.lastGridCenterChunkX) ||
-			Number.isNaN(DistantTerrainGenerator.lastGridCenterChunkZ);
+	const firstBuild =
+		forceFullRebuild ||
+		Number.isNaN(lastGridCenterChunkX) ||
+		Number.isNaN(lastGridCenterChunkZ);
 
-		if (firstBuild) {
-			DistantTerrainGenerator.fullGenerate(
+	if (firstBuild) {
+		fullGenerate(
+			gridCenterChunkX,
+			gridCenterChunkZ,
+			centerChunkX,
+			centerChunkZ,
+		);
+	} else {
+		const shiftX = (gridCenterChunkX - lastGridCenterChunkX) / gridStep;
+		const shiftZ = (gridCenterChunkZ - lastGridCenterChunkZ) / gridStep;
+		const exactCenterMoved =
+			centerChunkX !== lastCenterChunkX || centerChunkZ !== lastCenterChunkZ;
+		const snappedGridMoved = shiftX !== 0 || shiftZ !== 0;
+
+		const needsFullRebuild =
+			Math.abs(shiftX) >= rowSize ||
+			Math.abs(shiftZ) >= rowSize ||
+			!Number.isInteger(shiftX) ||
+			!Number.isInteger(shiftZ) ||
+			(exactCenterMoved && !snappedGridMoved) ||
+			Math.abs(shiftX) > 1 ||
+			Math.abs(shiftZ) > 1;
+
+		if (needsFullRebuild) {
+			fullGenerate(
 				gridCenterChunkX,
 				gridCenterChunkZ,
 				centerChunkX,
 				centerChunkZ,
-				renderDistance,
 			);
 		} else {
-			const shiftX =
-				(gridCenterChunkX - DistantTerrainGenerator.lastGridCenterChunkX) /
-				DistantTerrainGenerator.gridStep;
-			const shiftZ =
-				(gridCenterChunkZ - DistantTerrainGenerator.lastGridCenterChunkZ) /
-				DistantTerrainGenerator.gridStep;
-			const exactCenterMoved =
-				centerChunkX !== DistantTerrainGenerator.lastCenterChunkX ||
-				centerChunkZ !== DistantTerrainGenerator.lastCenterChunkZ;
-			const snappedGridMoved = shiftX !== 0 || shiftZ !== 0;
-
-			const needsFullRebuild =
-				Math.abs(shiftX) >= DistantTerrainGenerator.rowSize ||
-				Math.abs(shiftZ) >= DistantTerrainGenerator.rowSize ||
-				!Number.isInteger(shiftX) ||
-				!Number.isInteger(shiftZ) ||
-				(exactCenterMoved && !snappedGridMoved) ||
-				Math.abs(shiftX) > 1 ||
-				Math.abs(shiftZ) > 1;
-
-			if (needsFullRebuild) {
-				DistantTerrainGenerator.fullGenerate(
-					gridCenterChunkX,
-					gridCenterChunkZ,
-					centerChunkX,
-					centerChunkZ,
-					renderDistance,
-				);
-			} else {
-				if (snappedGridMoved) {
-					if (shiftX !== 0 && shiftZ !== 0) {
-						DistantTerrainGenerator.slideArrays(shiftX, 0);
-						DistantTerrainGenerator.regenerateEdges(
-							shiftX,
-							0,
-							gridCenterChunkX,
-							gridCenterChunkZ,
-							centerChunkX,
-							centerChunkZ,
-						);
-						DistantTerrainGenerator.slideArrays(0, shiftZ);
-						DistantTerrainGenerator.regenerateEdges(
-							0,
-							shiftZ,
-							gridCenterChunkX,
-							gridCenterChunkZ,
-							centerChunkX,
-							centerChunkZ,
-						);
-					} else {
-						DistantTerrainGenerator.slideArrays(shiftX, shiftZ);
-						DistantTerrainGenerator.regenerateEdges(
-							shiftX,
-							shiftZ,
-							gridCenterChunkX,
-							gridCenterChunkZ,
-							centerChunkX,
-							centerChunkZ,
-						);
-					}
-				}
-				if (snappedGridMoved || exactCenterMoved) {
-					DistantTerrainGenerator.rewriteLocalXZ(
-						centerChunkX,
-						centerChunkZ,
+			if (snappedGridMoved) {
+				if (shiftX !== 0 && shiftZ !== 0) {
+					slideArrays(shiftX, 0);
+					regenerateEdges(
+						shiftX,
+						0,
 						gridCenterChunkX,
 						gridCenterChunkZ,
+						centerChunkX,
+						centerChunkZ,
+					);
+					slideArrays(0, shiftZ);
+					regenerateEdges(
+						0,
+						shiftZ,
+						gridCenterChunkX,
+						gridCenterChunkZ,
+						centerChunkX,
+						centerChunkZ,
+					);
+				} else {
+					slideArrays(shiftX, shiftZ);
+					regenerateEdges(
+						shiftX,
+						shiftZ,
+						gridCenterChunkX,
+						gridCenterChunkZ,
+						centerChunkX,
+						centerChunkZ,
 					);
 				}
 			}
-		}
-
-		DistantTerrainGenerator.lastGridCenterChunkX = gridCenterChunkX;
-		DistantTerrainGenerator.lastGridCenterChunkZ = gridCenterChunkZ;
-		DistantTerrainGenerator.lastCenterChunkX = centerChunkX;
-		DistantTerrainGenerator.lastCenterChunkZ = centerChunkZ;
-
-		return { positions, normals, surfaceTiles, centerChunkX, centerChunkZ };
-	}
-
-	// =====================================================================
-	// Buffer / grid helpers
-	// =====================================================================
-
-	private static ensureBuffers(radius: number, gridStep: number) {
-		const buffersMissing =
-			!DistantTerrainGenerator.positions ||
-			!DistantTerrainGenerator.normals ||
-			!DistantTerrainGenerator.surfaceTiles ||
-			DistantTerrainGenerator.positions.buffer.byteLength === 0 ||
-			DistantTerrainGenerator.normals.buffer.byteLength === 0 ||
-			DistantTerrainGenerator.surfaceTiles.buffer.byteLength === 0;
-
-		const configChanged =
-			DistantTerrainGenerator.radius !== radius ||
-			DistantTerrainGenerator.gridStep !== gridStep;
-
-		if (buffersMissing || configChanged) {
-			if (DistantTerrainGenerator.usingSharedBuffers)
-				throw new Error(
-					"DistantTerrainGenerator: shared buffers missing or config changed — recreate shared buffers.",
-				);
-			DistantTerrainGenerator.configureGrid(radius, gridStep);
-			DistantTerrainGenerator.allocateLocalBuffers();
-			DistantTerrainGenerator.resetTracking();
-		}
-	}
-
-	private static configureGrid(radius: number, gridStep: number) {
-		DistantTerrainGenerator.radius = radius;
-		DistantTerrainGenerator.gridStep = gridStep;
-		DistantTerrainGenerator.segments = Math.floor((radius * 2) / gridStep);
-		DistantTerrainGenerator.rowSize = DistantTerrainGenerator.segments + 1;
-	}
-
-	private static allocateLocalBuffers() {
-		const vertexCount = DistantTerrainGenerator.rowSize ** 2;
-		DistantTerrainGenerator.positions = new Int16Array(vertexCount * 3);
-		DistantTerrainGenerator.normals = new Int8Array(vertexCount * 3);
-		DistantTerrainGenerator.surfaceTiles = new Uint8Array(vertexCount * 2);
-		DistantTerrainGenerator.usingSharedBuffers = false;
-	}
-
-	private static resetTracking() {
-		DistantTerrainGenerator.lastGridCenterChunkX = Number.NaN;
-		DistantTerrainGenerator.lastGridCenterChunkZ = Number.NaN;
-		DistantTerrainGenerator.lastCenterChunkX = Number.NaN;
-		DistantTerrainGenerator.lastCenterChunkZ = Number.NaN;
-	}
-
-	// =====================================================================
-	// Full generation
-	// =====================================================================
-
-	private static fullGenerate(
-		gridCenterChunkX: number,
-		gridCenterChunkZ: number,
-		centerChunkX: number,
-		centerChunkZ: number,
-		renderDistance: number,
-	) {
-		const r = DistantTerrainGenerator.rowSize;
-		for (let z = 0; z < r; z++)
-			for (let x = 0; x < r; x++)
-				DistantTerrainGenerator.generateVertex(
-					x,
-					z,
-					gridCenterChunkX,
-					gridCenterChunkZ,
+			if (snappedGridMoved || exactCenterMoved) {
+				rewriteLocalXZ(
 					centerChunkX,
 					centerChunkZ,
-				);
-	}
-
-	// =====================================================================
-	// Sliding-window copy (single-axis shifts of 1 only)
-	// =====================================================================
-
-	private static slideArrays(shiftX: number, shiftZ: number) {
-		const r = DistantTerrainGenerator.rowSize;
-		const positions = DistantTerrainGenerator.positions!;
-		const normals = DistantTerrainGenerator.normals!;
-		const surfaceTiles = DistantTerrainGenerator.surfaceTiles!;
-
-		if (shiftZ !== 0) {
-			const rowsToCopy = r - Math.abs(shiftZ);
-			const srcRow = shiftZ > 0 ? shiftZ : 0;
-			const dstRow = shiftZ > 0 ? 0 : -shiftZ;
-			positions.copyWithin(
-				dstRow * r * 3,
-				srcRow * r * 3,
-				(srcRow + rowsToCopy) * r * 3,
-			);
-			normals.copyWithin(
-				dstRow * r * 3,
-				srcRow * r * 3,
-				(srcRow + rowsToCopy) * r * 3,
-			);
-			surfaceTiles.copyWithin(
-				dstRow * r * 2,
-				srcRow * r * 2,
-				(srcRow + rowsToCopy) * r * 2,
-			);
-		}
-
-		if (shiftX !== 0) {
-			const colsToCopy = r - Math.abs(shiftX);
-			const srcCol = shiftX > 0 ? shiftX : 0;
-			const dstCol = shiftX > 0 ? 0 : -shiftX;
-			for (let z = 0; z < r; z++) {
-				const base3 = z * r * 3;
-				const base2 = z * r * 2;
-				positions.copyWithin(
-					base3 + dstCol * 3,
-					base3 + srcCol * 3,
-					base3 + (srcCol + colsToCopy) * 3,
-				);
-				normals.copyWithin(
-					base3 + dstCol * 3,
-					base3 + srcCol * 3,
-					base3 + (srcCol + colsToCopy) * 3,
-				);
-				surfaceTiles.copyWithin(
-					base2 + dstCol * 2,
-					base2 + srcCol * 2,
-					base2 + (srcCol + colsToCopy) * 2,
+					gridCenterChunkX,
+					gridCenterChunkZ,
 				);
 			}
 		}
 	}
 
-	// =====================================================================
-	// Regenerate newly exposed border vertices
-	// =====================================================================
+	lastGridCenterChunkX = gridCenterChunkX;
+	lastGridCenterChunkZ = gridCenterChunkZ;
+	lastCenterChunkX = centerChunkX;
+	lastCenterChunkZ = centerChunkZ;
 
-	private static regenerateEdges(
-		shiftX: number,
-		shiftZ: number,
-		gridCenterChunkX: number,
-		gridCenterChunkZ: number,
-		centerChunkX: number,
-		centerChunkZ: number,
-	) {
-		const r = DistantTerrainGenerator.rowSize;
-		const gen = (x: number, z: number) =>
-			DistantTerrainGenerator.generateVertex(
-				x,
-				z,
-				gridCenterChunkX,
-				gridCenterChunkZ,
-				centerChunkX,
-				centerChunkZ,
+	return {
+		positions: pos,
+		normals: nrm,
+		surfaceTiles: tiles,
+		centerChunkX,
+		centerChunkZ,
+	};
+}
+
+// =====================================================================
+// Buffer / grid helpers
+// =====================================================================
+
+function ensureBuffers(r: number, gStep: number) {
+	const buffersMissing =
+		!positions ||
+		!normals ||
+		!surfaceTiles ||
+		positions.buffer.byteLength === 0 ||
+		normals.buffer.byteLength === 0 ||
+		surfaceTiles.buffer.byteLength === 0;
+
+	const configChanged = radius !== r || gridStep !== gStep;
+
+	if (buffersMissing || configChanged) {
+		if (usingSharedBuffers)
+			throw new Error(
+				"DistantTerrainGenerator: shared buffers missing or config changed — recreate shared buffers.",
 			);
-
-		if (shiftZ > 0)
-			for (let z = r - shiftZ; z < r; z++)
-				for (let x = 0; x < r; x++) gen(x, z);
-		else if (shiftZ < 0)
-			for (let z = 0; z < -shiftZ; z++) for (let x = 0; x < r; x++) gen(x, z);
-
-		if (shiftX > 0)
-			for (let x = r - shiftX; x < r; x++)
-				for (let z = 0; z < r; z++) gen(x, z);
-		else if (shiftX < 0)
-			for (let x = 0; x < -shiftX; x++) for (let z = 0; z < r; z++) gen(x, z);
+		configureGrid(r, gStep);
+		allocateLocalBuffers();
+		resetTracking();
 	}
+}
 
-	// =====================================================================
-	// Rewrite local X/Z after sliding or center movement
-	// =====================================================================
+function configureGrid(r: number, gStep: number) {
+	radius = r;
+	gridStep = gStep;
+	segments = Math.floor((r * 2) / gStep);
+	rowSize = segments + 1;
+}
 
-	private static rewriteLocalXZ(
-		centerChunkX: number,
-		centerChunkZ: number,
-		gridCenterChunkX: number,
-		gridCenterChunkZ: number,
-	) {
-		const { CHUNK_SIZE } = GenerationParams;
-		const r = DistantTerrainGenerator.rowSize;
-		const step = DistantTerrainGenerator.gridStep;
-		const radius = DistantTerrainGenerator.radius;
-		const positions = DistantTerrainGenerator.positions!;
+function allocateLocalBuffers() {
+	const vertexCount = rowSize ** 2;
+	positions = new Int16Array(vertexCount * 3);
+	normals = new Int8Array(vertexCount * 3);
+	surfaceTiles = new Uint8Array(vertexCount * 2);
+	usingSharedBuffers = false;
+}
 
-		let i3 = 0;
-		for (let z = 0; z < r; z++) {
-			const localZ =
-				(gridCenterChunkZ - radius + z * step - centerChunkZ) * CHUNK_SIZE;
-			for (let x = 0; x < r; x++, i3 += 3) {
-				const localX =
-					(gridCenterChunkX - radius + x * step - centerChunkX) * CHUNK_SIZE;
-				positions[i3] = localX;
-				positions[i3 + 2] = localZ;
-			}
-		}
-	}
+function resetTracking() {
+	lastGridCenterChunkX = Number.NaN;
+	lastGridCenterChunkZ = Number.NaN;
+	lastCenterChunkX = Number.NaN;
+	lastCenterChunkZ = Number.NaN;
+}
 
-	// =====================================================================
-	// Single vertex generation
-	// =====================================================================
+// =====================================================================
+// Full generation
+// =====================================================================
 
-	private static generateVertex(
-		x: number,
-		z: number,
-		gridCenterChunkX: number,
-		gridCenterChunkZ: number,
-		centerChunkX: number,
-		centerChunkZ: number,
-	) {
-		const { CHUNK_SIZE } = GenerationParams;
-		const r = DistantTerrainGenerator.rowSize;
-		const i3 = (z * r + x) * 3;
-		const i2 = (z * r + x) * 2;
+function fullGenerate(gcx: number, gcz: number, ccx: number, ccz: number) {
+	const r = rowSize;
+	for (let z = 0; z < r; z++)
+		for (let x = 0; x < r; x++) generateVertex(x, z, gcx, gcz, ccx, ccz);
+}
 
-		const chunkX =
-			gridCenterChunkX -
-			DistantTerrainGenerator.radius +
-			x * DistantTerrainGenerator.gridStep;
-		const chunkZ =
-			gridCenterChunkZ -
-			DistantTerrainGenerator.radius +
-			z * DistantTerrainGenerator.gridStep;
-		const localChunkX = chunkX - centerChunkX;
-		const localChunkZ = chunkZ - centerChunkZ;
-		const renderDistance =
-			SETTING_PARAMS.RENDER_DISTANCE + SETTING_PARAMS.LOD_1_OFFSET;
-		const isInsideRealTerrain =
-			localChunkX > -renderDistance &&
-			localChunkX <= renderDistance &&
-			localChunkZ > -renderDistance &&
-			localChunkZ <= renderDistance;
+// =====================================================================
+// Sliding-window copy (single-axis shifts of 1 only)
+// =====================================================================
 
-		const positions = DistantTerrainGenerator.positions!;
-		const normals = DistantTerrainGenerator.normals!;
-		const surfaceTiles = DistantTerrainGenerator.surfaceTiles!;
+function slideArrays(shiftX: number, shiftZ: number) {
+	const r = rowSize;
+	const pos = positions!;
+	const nrm = normals!;
+	const tiles = surfaceTiles!;
 
-		let y: number;
-
-		if (isInsideRealTerrain) {
-			// Get actual terrain height but offset slightly underground to prevent z-fighting
-			const worldX = chunkX * CHUNK_SIZE;
-			const worldZ = chunkZ * CHUNK_SIZE;
-			y = DistantTerrainGenerator.INSIDE_CLIP_Y;
-
-			// Calculate normals based on actual terrain for smooth transition
-			const hRight = DistantTerrainGenerator.cachedHeight(worldX + 1, worldZ);
-			const hDown = DistantTerrainGenerator.cachedHeight(worldX, worldZ + 1);
-			const dy1 = hRight - y;
-			const dy2 = hDown - y;
-			const len = Math.sqrt(dy1 * dy1 + 1 + dy2 * dy2) || 1;
-
-			normals[i3] = (-dy1 / len) * 127;
-			normals[i3 + 1] = (1 / len) * 127;
-			normals[i3 + 2] = (-dy2 / len) * 127;
-
-			const topBlockId = getBiome(worldX, worldZ).topBlock;
-			const [tileX, tileY] =
-				DistantTerrainGenerator.getTopTileForBlock(topBlockId);
-			surfaceTiles[i2] = tileX;
-			surfaceTiles[i2 + 1] = tileY;
-		} else {
-			const worldX = chunkX * CHUNK_SIZE;
-			const worldZ = chunkZ * CHUNK_SIZE;
-			y = DistantTerrainGenerator.cachedHeight(worldX, worldZ);
-
-			const hRight = DistantTerrainGenerator.cachedHeight(worldX + 1, worldZ);
-			const hDown = DistantTerrainGenerator.cachedHeight(worldX, worldZ + 1);
-			const dy1 = hRight - y;
-			const dy2 = hDown - y;
-			const len = Math.sqrt(dy1 * dy1 + 1 + dy2 * dy2) || 1;
-
-			normals[i3] = (-dy1 / len) * 127;
-			normals[i3 + 1] = (1 / len) * 127;
-			normals[i3 + 2] = (-dy2 / len) * 127;
-
-			const topBlockId = getBiome(worldX, worldZ).topBlock;
-			const [tileX, tileY] =
-				DistantTerrainGenerator.getTopTileForBlock(topBlockId);
-			surfaceTiles[i2] = tileX;
-			surfaceTiles[i2 + 1] = tileY;
-		}
-
-		positions[i3] = localChunkX * CHUNK_SIZE;
-		positions[i3 + 1] = y;
-		positions[i3 + 2] = localChunkZ * CHUNK_SIZE;
-	}
-
-	// =====================================================================
-	// Tile lookup
-	// =====================================================================
-
-	private static getTopTileForBlock(blockId: number): [number, number] {
-		const tex = BlockTextures[blockId];
-		const tile = tex?.[FaceName.Top] ?? tex?.[FaceName.All];
-		return (
-			tile ?? [
-				DistantTerrainGenerator.DEFAULT_TILE_X,
-				DistantTerrainGenerator.DEFAULT_TILE_Y,
-			]
+	if (shiftZ !== 0) {
+		const rowsToCopy = r - Math.abs(shiftZ);
+		const srcRow = shiftZ > 0 ? shiftZ : 0;
+		const dstRow = shiftZ > 0 ? 0 : -shiftZ;
+		pos.copyWithin(
+			dstRow * r * 3,
+			srcRow * r * 3,
+			(srcRow + rowsToCopy) * r * 3,
+		);
+		nrm.copyWithin(
+			dstRow * r * 3,
+			srcRow * r * 3,
+			(srcRow + rowsToCopy) * r * 3,
+		);
+		tiles.copyWithin(
+			dstRow * r * 2,
+			srcRow * r * 2,
+			(srcRow + rowsToCopy) * r * 2,
 		);
 	}
+
+	if (shiftX !== 0) {
+		const colsToCopy = r - Math.abs(shiftX);
+		const srcCol = shiftX > 0 ? shiftX : 0;
+		const dstCol = shiftX > 0 ? 0 : -shiftX;
+		for (let z = 0; z < r; z++) {
+			const base3 = z * r * 3;
+			const base2 = z * r * 2;
+			pos.copyWithin(
+				base3 + dstCol * 3,
+				base3 + srcCol * 3,
+				base3 + (srcCol + colsToCopy) * 3,
+			);
+			nrm.copyWithin(
+				base3 + dstCol * 3,
+				base3 + srcCol * 3,
+				base3 + (srcCol + colsToCopy) * 3,
+			);
+			tiles.copyWithin(
+				base2 + dstCol * 2,
+				base2 + srcCol * 2,
+				base2 + (srcCol + colsToCopy) * 2,
+			);
+		}
+	}
+}
+
+// =====================================================================
+// Regenerate newly exposed border vertices
+// =====================================================================
+
+function regenerateEdges(
+	shiftX: number,
+	shiftZ: number,
+	gcx: number,
+	gcz: number,
+	ccx: number,
+	ccz: number,
+) {
+	const r = rowSize;
+	const gen = (x: number, z: number) =>
+		generateVertex(x, z, gcx, gcz, ccx, ccz);
+
+	if (shiftZ > 0)
+		for (let z = r - shiftZ; z < r; z++) for (let x = 0; x < r; x++) gen(x, z);
+	else if (shiftZ < 0)
+		for (let z = 0; z < -shiftZ; z++) for (let x = 0; x < r; x++) gen(x, z);
+
+	if (shiftX > 0)
+		for (let x = r - shiftX; x < r; x++) for (let z = 0; z < r; z++) gen(x, z);
+	else if (shiftX < 0)
+		for (let x = 0; x < -shiftX; x++) for (let z = 0; z < r; z++) gen(x, z);
+}
+
+// =====================================================================
+// Rewrite local X/Z after sliding or center movement
+// =====================================================================
+
+function rewriteLocalXZ(ccx: number, ccz: number, gcx: number, gcz: number) {
+	const { CHUNK_SIZE } = GenerationParams;
+	const r = rowSize;
+	const step = gridStep;
+	const rad = radius;
+	const pos = positions!;
+
+	let i3 = 0;
+	for (let z = 0; z < r; z++) {
+		const localZ = (gcz - rad + z * step - ccz) * CHUNK_SIZE;
+		for (let x = 0; x < r; x++, i3 += 3) {
+			const localX = (gcx - rad + x * step - ccx) * CHUNK_SIZE;
+			pos[i3] = localX;
+			pos[i3 + 2] = localZ;
+		}
+	}
+}
+
+// =====================================================================
+// Single vertex generation
+// =====================================================================
+
+function generateVertex(
+	x: number,
+	z: number,
+	gcx: number,
+	gcz: number,
+	ccx: number,
+	ccz: number,
+) {
+	const { CHUNK_SIZE } = GenerationParams;
+	const r = rowSize;
+	const i3 = (z * r + x) * 3;
+	const i2 = (z * r + x) * 2;
+
+	const chunkX = gcx - radius + x * gridStep;
+	const chunkZ = gcz - radius + z * gridStep;
+	const localChunkX = chunkX - ccx;
+	const localChunkZ = chunkZ - ccz;
+	const renderDistance =
+		SETTING_PARAMS.RENDER_DISTANCE + SETTING_PARAMS.LOD_1_OFFSET;
+	const isInsideRealTerrain =
+		localChunkX > -renderDistance &&
+		localChunkX <= renderDistance &&
+		localChunkZ > -renderDistance &&
+		localChunkZ <= renderDistance;
+
+	const pos = positions!;
+	const nrm = normals!;
+	const tiles = surfaceTiles!;
+
+	let y: number;
+
+	if (isInsideRealTerrain) {
+		const worldX = chunkX * CHUNK_SIZE;
+		const worldZ = chunkZ * CHUNK_SIZE;
+		y = INSIDE_CLIP_Y;
+
+		const hRight = cachedHeight(worldX + 1, worldZ);
+		const hDown = cachedHeight(worldX, worldZ + 1);
+		const dy1 = hRight - y;
+		const dy2 = hDown - y;
+		const len = Math.sqrt(dy1 * dy1 + 1 + dy2 * dy2) || 1;
+
+		nrm[i3] = (-dy1 / len) * 127;
+		nrm[i3 + 1] = (1 / len) * 127;
+		nrm[i3 + 2] = (-dy2 / len) * 127;
+
+		const topBlockId = getBiome(worldX, worldZ).topBlock;
+		const [tileX, tileY] = getTopTileForBlock(topBlockId);
+		tiles[i2] = tileX;
+		tiles[i2 + 1] = tileY;
+	} else {
+		const worldX = chunkX * CHUNK_SIZE;
+		const worldZ = chunkZ * CHUNK_SIZE;
+		y = cachedHeight(worldX, worldZ);
+
+		const hRight = cachedHeight(worldX + 1, worldZ);
+		const hDown = cachedHeight(worldX, worldZ + 1);
+		const dy1 = hRight - y;
+		const dy2 = hDown - y;
+		const len = Math.sqrt(dy1 * dy1 + 1 + dy2 * dy2) || 1;
+
+		nrm[i3] = (-dy1 / len) * 127;
+		nrm[i3 + 1] = (1 / len) * 127;
+		nrm[i3 + 2] = (-dy2 / len) * 127;
+
+		const topBlockId = getBiome(worldX, worldZ).topBlock;
+		const [tileX, tileY] = getTopTileForBlock(topBlockId);
+		tiles[i2] = tileX;
+		tiles[i2 + 1] = tileY;
+	}
+
+	pos[i3] = localChunkX * CHUNK_SIZE;
+	pos[i3 + 1] = y;
+	pos[i3 + 2] = localChunkZ * CHUNK_SIZE;
+}
+
+// =====================================================================
+// Tile lookup
+// =====================================================================
+
+function getTopTileForBlock(blockId: number): [number, number] {
+	const tex = BlockTextures[blockId];
+	const tile = tex?.[FaceName.Top] ?? tex?.[FaceName.All];
+	return tile ?? [DEFAULT_TILE_X, DEFAULT_TILE_Y];
 }

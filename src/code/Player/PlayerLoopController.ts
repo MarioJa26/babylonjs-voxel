@@ -13,8 +13,9 @@ import {
 	processFrameBudgetedStreamingWork,
 	refreshOpfsDebugStats,
 	updateChunksAround,
-	worldToChunkCoord,
 } from "../World/Chunk/ChunkLoadingSystem";
+import { worldToChunkCoord } from "../Shared/ChunkCoordUtils";
+import { setInCave } from "../Shared/GameRuntimeState";
 import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
 import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
 import {
@@ -25,8 +26,6 @@ import { PlayerHud } from "./Hud/PlayerHud";
 import type { IPlayerBody } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
 import { Gamemodes, type PlayerStats } from "./PlayerStats";
-
-export let isInCave = false;
 
 // PERF: Reusable scratch for debug HUD dispatch histogram — avoids per-tick allocation.
 const _indexedScratch: { count: number; index: number }[] = [];
@@ -157,7 +156,7 @@ export class PlayerLoopController {
 		const inCave = playerY <= -16;
 		if (inCave !== this.#lastCaveState) {
 			this.#lastCaveState = inCave;
-			isInCave = inCave;
+			setInCave(inCave);
 			return true;
 		}
 		return false;

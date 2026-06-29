@@ -1,12 +1,22 @@
 import { Quaternion, type TransformNode, Vector3 } from "@babylonjs/core";
 import type { IControls } from "../Interface/IControls";
 import type { IMountable } from "../Interface/IMountable";
-import { Player } from "../Player/Player";
 import type { IPlayerBody } from "../Player/PlayerBody";
 import type MountOptions from "./MountOptions";
 
+/**
+ * Minimal interface for the Player properties that Mount needs.
+ * Avoids a direct import of Player, breaking the Mount ↔ Player cycle.
+ */
+interface IMountableUser {
+	readonly playerVehicle: IPlayerBody;
+	readonly playerCamera: { zoomIn(): void; zoomOut(): void };
+	keyboardControls: IControls<unknown>;
+	readonly defaultKeyboardControls: IControls<unknown>;
+}
+
 export class Mount implements IMountable {
-	public user: Player | null = null;
+	public user: IMountableUser | null = null;
 	public vehicle: TransformNode;
 	#keyBoardControls: IControls<unknown>;
 
@@ -18,6 +28,16 @@ export class Mount implements IMountable {
 	#physicsDisabled = false;
 	#scratchPos = new Vector3();
 	#scratchRot = new Quaternion();
+
+	/**
+	 * Predicate to check if a value is a mountable user.
+	 * Set by Player (or other callers) to avoid Mount importing Player.
+	 */
+	static isMountableUser: (value: unknown) => value is IMountableUser = ((
+		v: unknown,
+	): v is IMountableUser => false) as (
+		value: unknown,
+	) => value is IMountableUser;
 
 	constructor(
 		vehicle: TransformNode,
@@ -41,8 +61,8 @@ export class Mount implements IMountable {
 	 * @returns True if mounting was successful, false otherwise
 	 */
 	mount(user: unknown): boolean {
-		if (user instanceof Player) {
-			return this.#mountVehicle(user satisfies Player);
+		if (Mount.isMountableUser(user)) {
+			return this.#mountVehicle(user);
 		}
 		return false;
 	}
@@ -70,7 +90,7 @@ export class Mount implements IMountable {
 		return true;
 	}
 
-	getMountedUser(): Player | null {
+	getMountedUser(): IMountableUser | null {
 		return this.user;
 	}
 
@@ -111,7 +131,7 @@ export class Mount implements IMountable {
 	 * @param player The player to mount
 	 * @returns True if mounting was successful, false otherwise
 	 */
-	#mountVehicle(player: Player): boolean {
+	#mountVehicle(player: IMountableUser): boolean {
 		if (this.user) {
 			if (this.user === player) this.dismount();
 			return false;

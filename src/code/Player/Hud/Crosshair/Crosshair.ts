@@ -5,7 +5,8 @@ import {
 	Vector3,
 } from "@babylonjs/core";
 import { MetadataContainer } from "@/code/Entities/MetadataContainer";
-import { type Player, REACH_DISTANCE } from "../../Player";
+import { REACH_DISTANCE } from "@/code/Shared/Constants";
+import type { Player } from "../../Player";
 import { BlockHighlight } from "../BlockHighlight/BlockHighlight";
 import type { BlockRaycastHit } from "../BlockHighlight/BlockRaycaster";
 import {

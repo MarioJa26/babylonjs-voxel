@@ -6,8 +6,8 @@ import {
 	updateChunksAround,
 	worldToChunkCoord,
 } from "../../World/Chunk/ChunkLoadingSystem";
-import { WorldStorage } from "../../World/WorldStorage";
 import { ChunkWorkerPool } from "../../World/Chunk/ChunkWorkerPool";
+import { WorldStorage } from "../../World/WorldStorage";
 import type { Player } from "../Player"; // Import Player to access its methods
 
 export class PauseMenu {
@@ -108,6 +108,8 @@ export class PauseMenu {
 						await client.close();
 					}
 					await WorldStorage.clearWorldData();
+					localStorage.removeItem("b102.playerPosition.v1");
+					localStorage.removeItem("b102.playerInventory.v1");
 					window.location.reload();
 				} catch (e) {
 					console.error("Failed to reset world", e);

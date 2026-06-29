@@ -10,6 +10,7 @@ import {
 	type GenerationParamsType,
 } from "./NoiseAndParameters/GenerationParams";
 import { RiverGenerator } from "./RiverGeneration";
+import { BadlandsSpireFeature } from "./Structure/BadlandsSpireFeature";
 import { DungeonFeature } from "./Structure/DungeonFeature";
 import { GeodeFeature } from "./Structure/GeodeFeature";
 import { InfernalPitFeature } from "./Structure/InfernalPitFeature";
@@ -99,6 +100,13 @@ export class SurfaceGenerator {
 		GenerationParams.CHUNK_SIZE * 2;
 	private static readonly MAX_STRUCTURE_BELOW_SURFACE = 24;
 
+	/**
+	 * Per-construction cached maximum of all features' maxAboveSurface
+	 * values.  Falls back to MAX_STRUCTURE_ABOVE_SURFACE for features
+	 * that don't declare one.
+	 */
+	private readonly maxStructureAboveSurface: number;
+
 	private static seedAsInt: number;
 
 	/**
@@ -163,15 +171,21 @@ export class SurfaceGenerator {
 			new GeodeFeature(),
 			new MineshaftFeature(),
 			new InfernalPitFeature(),
+			new BadlandsSpireFeature(),
 		];
+
+		this.maxStructureAboveSurface = Math.max(
+			...this.features.map(
+				(f) =>
+					f.maxAboveSurface ?? SurfaceGenerator.MAX_STRUCTURE_ABOVE_SURFACE,
+			),
+		);
 	}
 
-	// Number-only key — eliminates BigInt heap allocation on every cache probe.
-	// For columnCache (chunkX/Z, small integers): shift-pack is
-	// collision-free within ±32768 chunk range.
-	// For floraCache (worldX/Z, larger range): multiply-xor spreads bits.
 	private packXZKey(x: number, z: number): number {
-		return ((x * 73856093) ^ (z * 19349663)) | 0;
+		let h = (Math.imul(x, 374761393) + Math.imul(z, 668265263)) | 0;
+		h = Math.imul(h ^ (h >>> 13), 1274126177);
+		return (h ^ (h >>> 16)) >>> 0;
 	}
 
 	private getColumnPrepassKey(chunkX: number, chunkZ: number): number {
@@ -474,8 +488,7 @@ export class SurfaceGenerator {
 				chunkMaxY,
 				generationResult.minSurfaceY -
 					SurfaceGenerator.MAX_STRUCTURE_BELOW_SURFACE,
-				generationResult.maxSurfaceY +
-					SurfaceGenerator.MAX_STRUCTURE_ABOVE_SURFACE,
+				generationResult.maxSurfaceY + this.maxStructureAboveSurface,
 			);
 
 		if (canContainStructures) {
@@ -1024,6 +1037,7 @@ export class SurfaceGenerator {
 			}
 		}
 	}
+
 	private generateFindlinge(
 		worldX: number,
 		worldZ: number,
@@ -1137,23 +1151,32 @@ export class SurfaceGenerator {
 			const wny2 = wny * wny;
 			const flatBase = wny < 0 ? wny2 * 0.5 : 0;
 			if (wny2 + flatBase >= 1.0) continue;
+			// Remaining budget after Y — shared across all (dx, dz) in this dy slice.
+			const budgetAfterY = 1.0 - (wny2 + flatBase);
 
 			for (let dx = -dxRange; dx <= dxRange; dx++) {
 				const nx = dx * invW;
 				const wnx = nx + wxArr[dx + dxRange] * warpW + tiltX * ny;
 				const wnx2 = wnx * wnx;
-				if (wnx2 + wny2 + flatBase >= 1.0) continue;
+				// Early-out: X+Y contribution alone fills or exceeds the ellipsoid —
+				// skip the entire dz row without entering the inner loop.
+				if (wnx2 >= budgetAfterY) continue;
+				// Remaining budget for the Z axis on this (dy, dx) pair.
+				const budgetAfterXY = budgetAfterY - wnx2;
 
 				for (let dz = -dzRange; dz <= dzRange; dz++) {
 					const nz = dz * invD;
 					const wnz = nz + wzArr[dz + dzRange] * warpD + tiltZ * ny;
-					if (wnx2 + wny2 + wnz * wnz + flatBase < 1.0) {
+					// Single multiply + compare — no addition needed since
+					// budgetAfterXY already accounts for the X and Y terms.
+					if (wnz * wnz < budgetAfterXY) {
 						placeBlock(cx + dx, cy + dy, cz + dz, blockId);
 					}
 				}
 			}
 		}
 	}
+
 	private generateStructures(
 		chunkX: number,
 		chunkY: number,
@@ -1360,9 +1383,10 @@ export class SurfaceGenerator {
 		if (coarseHigh === CAVE_NO_SURFACE_Y) return CAVE_NO_SURFACE_Y;
 
 		// Pass 2: fine scan within the coarse bracket
+		// The coarse step is 4, so the true surface is within [coarseHigh-3, coarseHigh].
 		let densityAbove = -1;
 		let highestSolid = CAVE_NO_SURFACE_Y;
-		const fineMin = Math.max(coarseHigh - 4, minY);
+		const fineMin = Math.max(coarseHigh - 3, minY);
 		for (let y = coarseHigh; y >= fineMin; y--) {
 			const d = evalDensity(y);
 			if (d > 0) {

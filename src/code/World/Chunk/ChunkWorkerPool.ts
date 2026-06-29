@@ -63,8 +63,11 @@ export type ChunkWorkerPoolDebugStats = {
 // Packed in-flight key: (chunkId << 4n | BigInt(lod)) avoids string alloc.
 // LOD values are expected to be 0–15 so 4 bits is sufficient.
 // ---------------------------------------------------------------------------
+const _lodBigInts: bigint[] = [];
+for (let i = 0; i < 16; i++) _lodBigInts[i] = BigInt(i);
+
 function packInflightKey(chunkId: bigint, lod: number): bigint {
-	return (chunkId << 4n) | BigInt(lod & 0xf);
+	return (chunkId << 4n) | _lodBigInts[lod & 0xf];
 }
 
 type WorkerTaskContext = {
@@ -2094,7 +2097,6 @@ export class ChunkWorkerPool {
 						distantTask!.centerChunkX,
 						distantTask!.centerChunkZ,
 						distantTask!.radius,
-						distantTask!.renderDistance,
 						distantTask!.gridStep,
 					);
 					this.recordWorkerDispatch(workerIndex);

@@ -155,7 +155,7 @@ const peaksAndValleysSpline = new Spline([
 
 const SETTINGS_STRIDE = 6;
 const CORNER_CACHE_MASK = MAX_BIOME_CORNERS - 1;
-const cornerKey = new Int32Array(MAX_BIOME_CORNERS);
+const cornerKey = new Uint32Array(MAX_BIOME_CORNERS);
 const cornerValid = new Uint8Array(MAX_BIOME_CORNERS);
 const cornerBase = new Float32Array(MAX_BIOME_CORNERS);
 const cornerAmp = new Float32Array(MAX_BIOME_CORNERS);
@@ -267,8 +267,10 @@ const _fhcValue = new Int32Array(MAX_FINAL_HEIGHT_CACHE); // floor() → always 
 const _fhcValid = new Uint8Array(MAX_FINAL_HEIGHT_CACHE);
 
 export function getFinalTerrainHeight(x: number, z: number): number {
-	// Hash: multiply-xor keeps distribution flat for axis-aligned grid access.
-	const slot = (((x * 1619) ^ (z * 31337)) & _FHC_MASK) >>> 0;
+	const slot =
+		(((Math.imul(x, 2246822519) ^ Math.imul(z, 3266489917)) >>> 0) &
+			_FHC_MASK) >>>
+		0;
 
 	if (_fhcValid[slot] && _fhcKeyX[slot] === x && _fhcKeyZ[slot] === z) {
 		return _fhcValue[slot];
@@ -554,6 +556,16 @@ export function prefetchChunkCorners(
 	humidityInst.FillNoise2D(_prefetchHumidBuf, width, height, offX, offZ);
 	riverGenerator.fillRiverNoise2D(_prefetchRiverBuf, width, height, offX, offZ);
 
+	// Chunk origin in chunk-coordinate space (for chunk cache warming below).
+	const chunkCx = chunkWorldX >> CHUNK_SHIFT;
+	const chunkCz = chunkWorldZ >> CHUNK_SHIFT;
+	const chunkCacheKey = encodeChunkKey(chunkCx, chunkCz);
+	const chunkCacheIdx = chunkCacheKey & CHUNK_CACHE_MASK;
+	const chunkCacheAlreadyValid =
+		chunkCacheValid[chunkCacheIdx] &&
+		chunkCacheKeyX[chunkCacheIdx] === chunkCx &&
+		chunkCacheKeyZ[chunkCacheIdx] === chunkCz;
+
 	// Walk the grid in row-major order (matches FillNoise2D layout).
 	for (let gz = gz0; gz <= gz1; gz++) {
 		const rowOff = (gz - gz0) * width;
@@ -586,6 +598,25 @@ export function prefetchChunkCorners(
 			cornerPvScale[slot] = getBiomePvScale(biome);
 			cornerErosionScale[slot] = getBiomeErosionScale(biome);
 			cornerValid[slot] = 1;
+
+			// FIX #3: Warm the chunk-sample cache from already-computed batch data.
+			// The chunk origin (chunkWorldX, chunkWorldZ) corresponds to grid cell
+			// (gx0, gz0) when chunkWorldX is a multiple of BIOME_TERRAIN_GRID, or
+			// falls inside the first cell otherwise. Either way, the first batch
+			// entry (bufIdx=0) is the closest pre-computed sample to the chunk
+			// origin. We use it to fill the chunk cache for this chunk so that
+			// fillChunkCache is never called for it — saving 4 noise dispatches.
+			if (!chunkCacheAlreadyValid && gx === gx0 && gz === gz0) {
+				_ccContinent[chunkCacheIdx] = continent;
+				_ccTemperature[chunkCacheIdx] = temperature;
+				_ccHumidity[chunkCacheIdx] = humidity;
+				_ccRiverAbs[chunkCacheIdx] = riverAbs;
+				_ccBaseHeight[chunkCacheIdx] = baseHeight;
+				_ccBiome[chunkCacheIdx] = biome;
+				chunkCacheKeyX[chunkCacheIdx] = chunkCx;
+				chunkCacheKeyZ[chunkCacheIdx] = chunkCz;
+				chunkCacheValid[chunkCacheIdx] = 1;
+			}
 		}
 	}
 }

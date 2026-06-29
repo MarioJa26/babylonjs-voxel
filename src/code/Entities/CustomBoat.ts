@@ -25,7 +25,7 @@ import {
 	registerDynamicBlockProvider,
 	unregisterChunkBoundEntity,
 	unregisterDynamicBlockProvider,
-} from "../World/Chunk/ChunkLoadingSystem";
+} from "../World/Chunk/ChunkEntityAPI";
 import { VoxelObbCollider } from "../World/Collision/VoxelObbCollider";
 import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
 import { MetadataContainer } from "./MetadataContainer";

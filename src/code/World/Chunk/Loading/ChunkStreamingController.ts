@@ -1,5 +1,8 @@
-import { DistantTerrain } from "@/code/Generation/DistantTerrain/DistantTerrain";
-import { isInCave } from "@/code/Player/PlayerLoopController";
+import {
+	isInitialized as isDistantTerrainReady,
+	update as updateDistantTerrain,
+} from "@/code/Generation/DistantTerrain/DistantTerrain";
+import { isInCave } from "@/code/Shared/GameRuntimeState";
 import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
 import { Chunk, getChunk } from "../Chunk";
 import { createMeshFromData } from "../ChunkMesher";
@@ -131,18 +134,18 @@ export class ChunkStreamingController {
 		this._needsDesiredStatePrune = true;
 
 		// Use exact player position for distant terrain if available.
-		// Fallback must stay in world space because DistantTerrain.update() converts
+		// Fallback must stay in world space because update() converts
 		// world -> chunk internally.
 		const distantTerrainX =
 			playerWorldX !== undefined ? playerWorldX : chunkX * Chunk.SIZE;
 		const distantTerrainZ =
 			playerWorldZ !== undefined ? playerWorldZ : chunkZ * Chunk.SIZE;
-		if (DistantTerrain.checkInstance()) {
-			DistantTerrain.getInstance().update(distantTerrainX, distantTerrainZ);
+		if (isDistantTerrainReady()) {
+			updateDistantTerrain(distantTerrainX, distantTerrainZ);
 		}
 
 		let lodRuleSet: ChunkLodRuleSet;
-		if (isInCave) {
+		if (isInCave()) {
 			if (
 				!this._cachedCaveLodRuleSet ||
 				this._lastCaveState !== true ||
@@ -189,7 +192,7 @@ export class ChunkStreamingController {
 			}
 			lodRuleSet = this._cachedOutdoorLodRuleSet;
 		}
-		this._lastCaveState = isInCave;
+		this._lastCaveState = isInCave();
 		const {
 			lod3HorizontalRadius,
 			lod3VerticalRadius,
@@ -273,7 +276,7 @@ export class ChunkStreamingController {
 			);
 			const isBelowZero = chunk.chunkY < 0;
 			const effectiveVerticalAllowance =
-				!isInCave && isBelowZero
+				!isInCave() && isBelowZero
 					? Math.min(
 							lod3VerticalRadius,
 							SETTING_PARAMS.CAVE_VERTICAL_RENDER_DISTANCE,
@@ -324,7 +327,7 @@ export class ChunkStreamingController {
 			operationalVerticalRadius,
 		);
 
-		if (!isInCave) {
+		if (!isInCave()) {
 			ChunkWorkerPool.getInstance().scheduleBackgroundLodPrecompute(
 				chunkX,
 				chunkY,
@@ -649,7 +652,7 @@ export class ChunkStreamingController {
 			radii.lod2VerticalRadius,
 			radii.lod3VerticalRadius,
 		);
-		const downwardRy = isInCave
+		const downwardRy = isInCave()
 			? ry
 			: Math.min(
 					ry,
@@ -744,7 +747,7 @@ export class ChunkStreamingController {
 			radii.lod2VerticalRadius,
 			radii.lod3VerticalRadius,
 		);
-		const downwardRy = isInCave
+		const downwardRy = isInCave()
 			? ry
 			: Math.min(
 					ry,
@@ -838,7 +841,7 @@ export class ChunkStreamingController {
 			if (
 				hDist > removeRadius ||
 				vDist > verticalRemoveRadius ||
-				(!isInCave &&
+				(!isInCave() &&
 					chunk.chunkY < -SETTING_PARAMS.CAVE_VERTICAL_RENDER_DISTANCE)
 			) {
 				unloadQueueSet.add(chunk);

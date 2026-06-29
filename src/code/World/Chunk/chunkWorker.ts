@@ -306,7 +306,6 @@ export class ChunkWorker {
 		centerChunkX: number,
 		centerChunkZ: number,
 		radius: number,
-		renderDistance: number,
 		gridStep: number,
 	): void {
 		if (!this.distantTerrainSharedInitialized) {
@@ -320,7 +319,6 @@ export class ChunkWorker {
 			centerChunkX,
 			centerChunkZ,
 			radius,
-			renderDistance,
 			gridStep,
 		};
 

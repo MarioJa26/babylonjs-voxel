@@ -37,6 +37,16 @@ export const LIGHT_CHUNK_SIZE2 = LIGHT_CHUNK_SIZE * LIGHT_CHUNK_SIZE;
 export const LIGHT_CHUNK_SIZE3 =
 	LIGHT_CHUNK_SIZE * LIGHT_CHUNK_SIZE * LIGHT_CHUNK_SIZE;
 
+// Reusable face descriptors for lightBlockReconcile (size = 32, last = 31).
+const RECONCILE_FACES = [
+	{ dx: -1, dy: 0, dz: 0, axis: 0, selfEdge: 0, neighborEdge: 31, dir: -1 },
+	{ dx: 1, dy: 0, dz: 0, axis: 0, selfEdge: 31, neighborEdge: 0, dir: 1 },
+	{ dx: 0, dy: -1, dz: 0, axis: 1, selfEdge: 0, neighborEdge: 31, dir: -1 },
+	{ dx: 0, dy: 1, dz: 0, axis: 1, selfEdge: 31, neighborEdge: 0, dir: 1 },
+	{ dx: 0, dy: 0, dz: -1, axis: 2, selfEdge: 0, neighborEdge: 31, dir: -1 },
+	{ dx: 0, dy: 0, dz: 1, axis: 2, selfEdge: 31, neighborEdge: 0, dir: 1 },
+] as const;
+
 export const LIGHT_SKY_SHIFT = 4;
 export const LIGHT_BLOCK_MASK = 0xf;
 
@@ -85,6 +95,13 @@ class LightQueue {
 
 const Q_A = new LightQueue();
 const Q_B = new LightQueue();
+
+// Reusable seed buffers for lightSkyReconcile — hoisted to module level to
+// avoid per-call allocation (safe: single worker thread).
+const SEED_CAPACITY = 6144;
+const seedChunks = new BigInt64Array(SEED_CAPACITY);
+const seedCoords = new Int32Array(SEED_CAPACITY * 3);
+const seedLevels = new Uint8Array(SEED_CAPACITY);
 
 // ---------------------------------------------------------------------------
 // Face / transparency tables — duplicated from Chunk.ts so LightCore has no
@@ -190,20 +207,7 @@ export function applyClosedFaceMaskLUT(lut: Uint8Array): void {
 	}
 }
 
-function isSourceTransparent(
-	packed: number,
-	axis: number,
-	dir: number,
-): boolean {
-	const closedMask = getClosedFaceMaskForPacked(packed);
-	return (closedMask & getFaceBit(axis, dir)) === 0;
-}
-
-function isTargetTransparent(
-	packed: number,
-	axis: number,
-	dir: number,
-): boolean {
+function isTransparent(packed: number, axis: number, dir: number): boolean {
 	const closedMask = getClosedFaceMaskForPacked(packed);
 	return (closedMask & getFaceBit(axis, dir)) === 0;
 }
@@ -531,14 +535,14 @@ function processQueue(
 				if (!filtersFullSunlight(peekId)) continue;
 			} else if (
 				isSkyLight
-					? !isSourceTransparent(sourcePacked, axis, dir)
-					: !sourceEmits && !isSourceTransparent(sourcePacked, axis, dir)
+					? !isTransparent(sourcePacked, axis, dir)
+					: !sourceEmits && !isTransparent(sourcePacked, axis, dir)
 			) {
 				continue;
 			}
 
 			const targetPacked = getViewBlockPacked(targetView, tx, ty, tz);
-			if (!isTargetTransparent(targetPacked, axis, -dir)) continue;
+			if (!isTransparent(targetPacked, axis, -dir)) continue;
 
 			const tidx = tx + ty * size + tz * size2;
 			const currentLevel = isSkyLight
@@ -668,14 +672,14 @@ function processRemoveQueue(
 
 			if (
 				isSkyLight
-					? !isSourceTransparent(sourcePacked, axis, dir) ||
+					? !isTransparent(sourcePacked, axis, dir) ||
 						(isDown !== 1 && filtersFullSunlight(sourceBlockId))
-					: !sourceEmits && !isSourceTransparent(sourcePacked, axis, dir)
+					: !sourceEmits && !isTransparent(sourcePacked, axis, dir)
 			)
 				continue;
 
 			const targetPacked = getViewBlockPacked(targetView, tx, ty, tz);
-			if (!isTargetTransparent(targetPacked, axis, -dir)) continue;
+			if (!isTransparent(targetPacked, axis, -dir)) continue;
 
 			const tIdx = tx + ty * size + tz * size2;
 			const tArr = targetView.light_array;
@@ -781,8 +785,8 @@ export function lightMutate(
 	}
 	updateLightFromNeighborsAt(registry, view, x, y, z, true, dirtySlots);
 
-	const newIsSkyTransparent = isTargetTransparent(_newPacked, 1, 1);
-	const oldWasSkyTransparent = isTargetTransparent(oldPacked, 1, 1);
+	const newIsSkyTransparent = isTransparent(_newPacked, 1, 1);
+	const oldWasSkyTransparent = isTransparent(oldPacked, 1, 1);
 	if (oldWasSkyTransparent && !newIsSkyTransparent && oldSkyLight > 0) {
 		cutSkyLightBelowAt(registry, view, x, y, z, dirtySlots);
 	}
@@ -909,14 +913,14 @@ function updateLightFromNeighborsAt(
 			filtersFullSunlight(targetBlockId2);
 
 		const sourceAllows = isSkyLight
-			? isSourceTransparent(sourceBlockPacked, axis, dir) &&
+			? isTransparent(sourceBlockPacked, axis, dir) &&
 				(sourceIsAbove ||
 					!filtersFullSunlight(sourceBlockId) ||
 					lateralWaterToWater)
-			: sourceEmits || isSourceTransparent(sourceBlockPacked, axis, dir);
+			: sourceEmits || isTransparent(sourceBlockPacked, axis, dir);
 		if (!sourceAllows) continue;
 
-		if (!isTargetTransparent(targetBlockPacked, axis, -dir)) continue;
+		if (!isTransparent(targetBlockPacked, axis, -dir)) continue;
 
 		const sidx = sx + sy * size + sz * size2;
 		const level = isSkyLight
@@ -1010,7 +1014,7 @@ function cutSkyLightBelowAt(
 	while (true) {
 		const tidx = tx + ty * size + tz * size2;
 		const belowBlockPacked = getViewBlockPacked(targetView, tx, ty, tz);
-		if (!isTargetTransparent(belowBlockPacked, 1, 1)) break;
+		if (!isTransparent(belowBlockPacked, 1, 1)) break;
 
 		const belowSky = getSkyLight(targetView, tidx);
 		if (belowSky <= 0) break;
@@ -1070,9 +1074,6 @@ export function lightSkyReconcile(
 	const selfEdges = [0, last, 0, last, 0, last];
 	const neighborEdges = [last, 0, last, 0, last, 0];
 
-	const seedChunks: bigint[] = [];
-	const seedCoords: Int32Array = new Int32Array(6144 * 3);
-	const seedLevels: Uint8Array = new Uint8Array(6144);
 	let seedCount = 0;
 
 	for (let f = 0; f < 6; f++) {
@@ -1145,7 +1146,7 @@ export function lightSkyReconcile(
 
 	function batchPropagate(
 		registry: ChunkViewRegistry,
-		chunks: bigint[],
+		chunks: BigInt64Array,
 		coords: Int32Array,
 		levels: Uint8Array,
 		count: number,
@@ -1185,20 +1186,11 @@ export function lightBlockReconcile(
 	if (!view.isLoaded) return dirtySlots;
 
 	const size = LIGHT_CHUNK_SIZE;
-	const last = size - 1;
 
 	Q_A.clear();
 
-	const faces = [
-		{ dx: -1, dy: 0, dz: 0, axis: 0, selfEdge: 0, neighborEdge: last, dir: -1 },
-		{ dx: 1, dy: 0, dz: 0, axis: 0, selfEdge: last, neighborEdge: 0, dir: 1 },
-		{ dx: 0, dy: -1, dz: 0, axis: 1, selfEdge: 0, neighborEdge: last, dir: -1 },
-		{ dx: 0, dy: 1, dz: 0, axis: 1, selfEdge: last, neighborEdge: 0, dir: 1 },
-		{ dx: 0, dy: 0, dz: -1, axis: 2, selfEdge: 0, neighborEdge: last, dir: -1 },
-		{ dx: 0, dy: 0, dz: 1, axis: 2, selfEdge: last, neighborEdge: 0, dir: 1 },
-	];
-
-	for (const f of faces) {
+	for (let fi = 0; fi < 6; fi++) {
+		const f = RECONCILE_FACES[fi];
 		const neighbor = registry.views.get(
 			packCoords(view.chunkX + f.dx, view.chunkY + f.dy, view.chunkZ + f.dz),
 		);
@@ -1245,8 +1237,8 @@ export function lightBlockReconcile(
 					const sourceBlockId = unpackBlockId(sourcePacked);
 					const sourceEmits = getLightEmission(sourceBlockId) > 0;
 					if (
-						(sourceEmits || isSourceTransparent(sourcePacked, f.axis, f.dir)) &&
-						isTargetTransparent(targetPacked, f.axis, -f.dir)
+						(sourceEmits || isTransparent(sourcePacked, f.axis, f.dir)) &&
+						isTransparent(targetPacked, f.axis, -f.dir)
 					) {
 						Q_A.push(view.chunkId, sx, sy, sz, selfLevel);
 					}
@@ -1259,9 +1251,8 @@ export function lightBlockReconcile(
 					const sourceBlockId = unpackBlockId(sourcePacked);
 					const sourceEmits = getLightEmission(sourceBlockId) > 0;
 					if (
-						(sourceEmits ||
-							isSourceTransparent(sourcePacked, f.axis, -f.dir)) &&
-						isTargetTransparent(targetPacked, f.axis, f.dir)
+						(sourceEmits || isTransparent(sourcePacked, f.axis, -f.dir)) &&
+						isTransparent(targetPacked, f.axis, f.dir)
 					) {
 						Q_A.push(neighbor.chunkId, nx, ny, nz, neighborLevel);
 					}

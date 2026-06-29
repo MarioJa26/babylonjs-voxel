@@ -322,8 +322,7 @@
 	{
 		"id": "RedSandstoneWall",
 		"name": "red_sandstone_wall",
-		"path": "/texture/stone/red_sandstone_wall_1k",
-		"shape": "slab"
+		"path": "/texture/stone/red_sandstone_wall_1k"
 	},
 	{
 		"id": "Glass01",

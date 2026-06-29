@@ -5,7 +5,7 @@ import {
 	type Scene,
 } from "@babylonjs/core";
 import type { IControls } from "../Interface/IControls";
-import { Map1 } from "../Maps/Map1";
+import { getGameTimeScale } from "../Shared/GameRuntimeState";
 import type { InventoryControls } from "./Controls/InventoryControls";
 import type { WalkingControls } from "./Controls/WalkingControls";
 import type { PlayerCamera } from "./PlayerCamera";
@@ -43,7 +43,10 @@ export class PlayerInputController {
 			}
 		};
 		this.#onPointerLockChange = () => {
-			if (document.pointerLockElement !== this.canvas && Map1.timeScale > 0) {
+			if (
+				document.pointerLockElement !== this.canvas &&
+				getGameTimeScale() > 0
+			) {
 				this.onPauseRequested();
 			}
 		};

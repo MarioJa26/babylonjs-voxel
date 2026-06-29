@@ -1,10 +1,10 @@
 import type { Engine, Scene, Vector3 } from "@babylonjs/core";
-
 import { MetadataContainer } from "../Entities/MetadataContainer";
+import { Mount } from "../Entities/Mount";
 import type { IControls } from "../Interface/IControls";
 import type { IUsable } from "../Interface/IUsable";
-import { Map1 } from "../Maps/Map1";
 import { WalkingControls } from "../Player/Controls/WalkingControls";
+import { getScene, setIsPaused } from "../Shared/GameRuntimeState";
 import { BlockType } from "../World/Texture/BlockType";
 import { Crosshair } from "./Hud/Crosshair/Crosshair";
 import { PauseMenu } from "./Hud/PauseMenu";
@@ -21,7 +21,6 @@ import { PlayerVehicle } from "./PlayerVehicle";
 /**
  * Player class that handles character movement, physics, and camera controls
  */
-export const REACH_DISTANCE = 64;
 export class Player implements IUsable {
 	#playerCamera: PlayerCamera;
 	#playerVehicle: PlayerVehicle;
@@ -50,6 +49,16 @@ export class Player implements IUsable {
 		playerCam: PlayerCamera,
 		private canvas: HTMLCanvasElement,
 	) {
+		// Register Player as a mountable user for Mount (breaks Mount ↔ Player cycle)
+		Mount.isMountableUser = (
+			value: unknown,
+		): value is {
+			playerVehicle: IPlayerBody;
+			playerCamera: { zoomIn(): void; zoomOut(): void };
+			keyboardControls: IControls<unknown>;
+			defaultKeyboardControls: IControls<unknown>;
+		} => value instanceof Player;
+
 		this.#playerInventory = new PlayerInventory(scene, this, 10, 10);
 		this.stats = new PlayerStats();
 		this.#playerVehicle = new PlayerVehicle(this.scene, playerCam, this.stats);
@@ -89,17 +98,20 @@ export class Player implements IUsable {
 	}
 
 	private pauseGame() {
-		Map1.isPaused = true;
+		setIsPaused(true);
 		this.#pauseMenu.show();
 	}
 
 	private resumeGame() {
-		Map1.isPaused = false;
+		setIsPaused(false);
 		this.#pauseMenu.hide();
 		// Request pointer lock only if the canvas has focus
-		const canvas = Map1.mainScene.getEngine().getRenderingCanvas();
-		if (document.activeElement === canvas) {
-			(Map1.mainScene.getEngine() as Engine).enterPointerlock();
+		const mapScene = getScene();
+		if (mapScene) {
+			const canvas = mapScene.getEngine().getRenderingCanvas();
+			if (document.activeElement === canvas) {
+				(mapScene.getEngine() as Engine).enterPointerlock();
+			}
 		}
 	}
 

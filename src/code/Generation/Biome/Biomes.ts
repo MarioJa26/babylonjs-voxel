@@ -433,9 +433,8 @@ export function getBiomeFor(
 	}
 
 	if (
-		temperature > 0.55 &&
-		continentalness > -0.05 &&
-		continentalness < 0.12 &&
+		temperature > 0.6 &&
+		continentalness > -0.33 &&
 		terrainShapedHeight < SEA + 20
 	) {
 		return TROPICAL_ISLAND;

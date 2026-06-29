@@ -15,455 +15,427 @@ import { Chunk } from "@/code/World/Chunk/Chunk";
 import { worldToChunkCoord } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
-import { DistantTerrainShader } from "@/code/World/Light/DistantTerrainShader";
+import {
+	distantTerrainFragmentShader,
+	distantTerrainVertexShader,
+	distantWaterFragmentShader,
+	distantWaterVertexShader,
+} from "@/code/World/Light/DistantTerrainShader";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { TextureAtlasFactory } from "@/code/World/Texture/TextureAtlasFactory";
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
 
-export class DistantTerrain {
-	public static instance: DistantTerrain;
-	private mesh: Mesh;
-	private waterMesh: Mesh;
-	private material: ShaderMaterial;
-	private waterMaterial: ShaderMaterial;
-	private diffuseAtlasTexture: Texture | null = null;
+const USE_LA_TILE_TEXTURE = false;
+const _cachedZeroVec = new Vector3(0, 0, 0);
 
-	// --- Tile lookup texture ---
-	private static readonly USE_LA_TILE_TEXTURE = false;
+let mesh: Mesh;
+let waterMesh: Mesh;
+let material: ShaderMaterial;
+let waterMaterial: ShaderMaterial;
+let diffuseAtlasTexture: Texture | null = null;
 
-	// PERF: Cached zero vector to avoid Vector3.Zero() allocation in bindCommonUniforms.
-	private static readonly _cachedZeroVec = new Vector3(0, 0, 0);
+let surfaceTileLookupTexture: RawTexture;
+let surfaceTileLookupData: Uint8Array;
 
-	#surfaceTileLookupTexture: RawTexture;
-	#surfaceTileLookupData: Uint8Array;
+let radius: number;
+const gridStep = 1;
+let gridResolution: number;
 
-	#radius: number;
-	#gridStep = 1;
-	#gridResolution: number;
+let sharedPositions: Int16Array;
+let sharedNormals: Int8Array;
+let sharedSurfaceTiles: Uint8Array;
 
-	// Shared worker-written terrain buffers
-	#sharedPositions: Int16Array;
-	#sharedNormals: Int8Array;
-	#sharedSurfaceTiles: Uint8Array;
+const gridOrigin = new Vector2();
 
-	// Reusable vector
-	#gridOrigin = new Vector2();
+let lastChunkX: number = Number.NaN;
+let lastChunkZ: number = Number.NaN;
 
-	// Last chunk column we scheduled for; skip the postMessage if the
-	// player hasn't crossed a chunk boundary this frame.  NaN forces
-	// the first call to fire.
-	lastChunkX: number = Number.NaN;
-	lastChunkZ: number = Number.NaN;
+let positionVB: VertexBuffer | undefined;
+let normalVB: VertexBuffer | undefined;
 
-	// GPU buffers (created once, updated)
-	#positionVB?: VertexBuffer;
-	#normalVB?: VertexBuffer;
+let initialized = false;
 
-	constructor() {
-		this.#radius = SETTING_PARAMS.DISTANT_RENDER_DISTANCE;
-		const segments = Math.floor((this.#radius * 2) / this.#gridStep);
-		this.#gridResolution = segments + 1;
-		const size = this.#radius * 2 * Chunk.SIZE;
+// =====================================================================
+// Helpers
+// =====================================================================
 
-		// -----------------------------------------------------------------
-		// SharedArrayBuffer setup
-		// -----------------------------------------------------------------
-		if (
-			typeof SharedArrayBuffer === "undefined" ||
-			(typeof self !== "undefined" &&
-				"crossOriginIsolated" in self &&
-				!self.crossOriginIsolated)
-		) {
-			throw new Error(
-				"DistantTerrain requires SharedArrayBuffer. " +
-					"Make sure crossOriginIsolated is true and your dev server sends " +
-					"Cross-Origin-Opener-Policy: same-origin and " +
-					"Cross-Origin-Embedder-Policy: require-corp.",
-			);
+function createEmptyGridMesh(name: string, scene: Scene): Mesh {
+	const m = new Mesh(name, scene);
+	const engine = scene.getEngine();
+
+	const res = gridResolution;
+	const vertexCount = res * res;
+	const quadCount = (res - 1) * (res - 1);
+	const indexCount = quadCount * 6;
+
+	const useUint32 = vertexCount > 65535 && !!engine.getCaps().uintIndices;
+	const indices = useUint32
+		? new Uint32Array(indexCount)
+		: new Uint16Array(indexCount);
+
+	let k = 0;
+	for (let z = 0; z < res - 1; z++) {
+		const row = z * res;
+		const next = (z + 1) * res;
+		for (let x = 0; x < res - 1; x++) {
+			const i0 = row + x;
+			const i1 = i0 + 1;
+			const i2 = next + x;
+			const i3 = i2 + 1;
+
+			indices[k++] = i0;
+			indices[k++] = i2;
+			indices[k++] = i1;
+
+			indices[k++] = i1;
+			indices[k++] = i2;
+			indices[k++] = i3;
 		}
+	}
+	m.setIndices(indices);
 
-		const vertexCount = this.#gridResolution * this.#gridResolution;
+	const positions = new Int16Array(vertexCount * 3);
+	const normals = new Int8Array(vertexCount * 3);
 
-		const positionsBuffer = new SharedArrayBuffer(
-			vertexCount * 3 * Int16Array.BYTES_PER_ELEMENT,
-		);
-		const normalsBuffer = new SharedArrayBuffer(
-			vertexCount * 3 * Int8Array.BYTES_PER_ELEMENT,
-		);
-		const surfaceTilesBuffer = new SharedArrayBuffer(
-			vertexCount * 2 * Uint8Array.BYTES_PER_ELEMENT,
-		);
-
-		this.#sharedPositions = new Int16Array(positionsBuffer);
-		this.#sharedNormals = new Int8Array(normalsBuffer);
-		this.#sharedSurfaceTiles = new Uint8Array(surfaceTilesBuffer);
-
-		ChunkWorkerPool.getInstance().initDistantTerrainShared(
-			positionsBuffer,
-			normalsBuffer,
-			surfaceTilesBuffer,
-			this.#radius,
-			this.#gridStep,
-		);
-
-		// ---- Terrain mesh ----
-		this.mesh = this.createEmptyGridMesh("distantTerrain", Map1.mainScene);
-		this.mesh.sideOrientation = Mesh.FRONTSIDE;
-
-		// ---- Water mesh ----
-		this.waterMesh = MeshBuilder.CreateGround(
-			"distantWater",
-			{
-				width: size,
-				height: size,
-				subdivisions: 1,
-				updatable: false,
-			},
-			Map1.mainScene,
-		);
-
-		// ---- Tile lookup texture ----
-		if (DistantTerrain.USE_LA_TILE_TEXTURE) {
-			this.#surfaceTileLookupData = new Uint8Array(
-				this.#gridResolution * this.#gridResolution * 2,
-			);
-			this.#surfaceTileLookupTexture = RawTexture.CreateLuminanceAlphaTexture(
-				this.#surfaceTileLookupData,
-				this.#gridResolution,
-				this.#gridResolution,
-				Map1.mainScene,
-				false,
-				false,
-				Texture.NEAREST_SAMPLINGMODE,
-			);
-		} else {
-			this.#surfaceTileLookupData = new Uint8Array(
-				this.#gridResolution * this.#gridResolution * 4,
-			);
-			this.#surfaceTileLookupTexture = RawTexture.CreateRGBATexture(
-				this.#surfaceTileLookupData,
-				this.#gridResolution,
-				this.#gridResolution,
-				Map1.mainScene,
-				false,
-				false,
-				Texture.NEAREST_SAMPLINGMODE,
-			);
-		}
-
-		this.#surfaceTileLookupTexture.wrapU = Texture.CLAMP_ADDRESSMODE;
-		this.#surfaceTileLookupTexture.wrapV = Texture.CLAMP_ADDRESSMODE;
-
-		ChunkWorkerPool.getInstance().onDistantTerrainGenerated = (data) => {
-			// Convert chunk coordinates back to world coordinates for positioning
-			const worldX = data.centerChunkX * Chunk.SIZE;
-			const worldZ = data.centerChunkZ * Chunk.SIZE;
-			this.applyTerrainData(
-				this.#sharedPositions,
-				this.#sharedNormals,
-				this.#sharedSurfaceTiles,
-				worldX,
-				worldZ,
-			);
-		};
-		// ---- Shaders ----
-		Effect.ShadersStore["distantTerrainVertexShader"] =
-			DistantTerrainShader.distantTerrainVertexShader;
-		Effect.ShadersStore["distantTerrainFragmentShader"] =
-			DistantTerrainShader.distantTerrainFragmentShader;
-		Effect.ShadersStore["distantWaterVertexShader"] =
-			DistantTerrainShader.distantWaterVertexShader;
-		Effect.ShadersStore["distantWaterFragmentShader"] =
-			DistantTerrainShader.distantWaterFragmentShader;
-
-		// ---- Terrain material ----
-		this.material = new ShaderMaterial(
-			"distantTerrainMat",
-			Map1.mainScene,
-			{ vertex: "distantTerrain", fragment: "distantTerrain" },
-			{
-				attributes: ["position", "normal"],
-				uniforms: [
-					"world",
-					"worldViewProjection",
-					"lightDirection",
-					"sunLightIntensity",
-					"atlasTileSize",
-					"textureScale",
-					"useTexture",
-					"tileGridResolution",
-					"gridOriginWorld",
-					"gridWorldStep",
-					"vFogInfos",
-					"vFogColor",
-					"cameraPosition",
-				],
-				samplers: ["diffuseTexture", "tileLookupTexture"],
-			},
-		);
-
-		this.material.onBind = (mesh) => {
-			const effect = this.material.getEffect();
-			if (!effect) return;
-			this.bindCommonUniforms(effect, mesh.getScene());
-		};
-
-		this.material.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
-		this.material.setFloat("textureScale", 32);
-		this.material.setFloat("tileGridResolution", this.#gridResolution);
-		this.material.setFloat("gridWorldStep", Chunk.SIZE * this.#gridStep);
-		this.material.setFloat("useTexture", 0);
-		this.material.setTexture(
-			"tileLookupTexture",
-			this.#surfaceTileLookupTexture,
-		);
-
-		this.bindDiffuseTexture();
-		this.mesh.material = this.material;
-
-		// ---- Water material ----
-		this.waterMaterial = new ShaderMaterial(
-			"distantWaterMat",
-			Map1.mainScene,
-			{ vertex: "distantWater", fragment: "distantWater" },
-			{
-				attributes: ["position"],
-				uniforms: [
-					"world",
-					"worldViewProjection",
-					"lightDirection",
-					"sunLightIntensity",
-					"vFogInfos",
-					"vFogColor",
-					"cameraPosition",
-				],
-			},
-		);
-
-		this.waterMaterial.onBind = (mesh) => {
-			const effect = this.waterMaterial.getEffect();
-			if (!effect) return;
-			this.bindCommonUniforms(effect, mesh.getScene());
-		};
-
-		this.waterMesh.material = this.waterMaterial;
-
-		// ---- Mesh flags ----
-		this.mesh.isPickable = false;
-		this.mesh.checkCollisions = false;
-		this.mesh.receiveShadows = false;
-		this.mesh.doNotSyncBoundingInfo = true;
-		this.mesh.alwaysSelectAsActiveMesh = true;
-
-		this.waterMesh.isPickable = false;
-		this.waterMesh.checkCollisions = false;
-		this.waterMesh.receiveShadows = false;
-		this.waterMesh.doNotSyncBoundingInfo = true;
-		this.waterMesh.alwaysSelectAsActiveMesh = true;
-		// If active mesh list was frozen for debugging, include these newly
-		// created meshes by rebuilding the frozen list once.
-		if (Map1.mainScene._activeMeshesFrozen) {
-			Map1.mainScene.unfreezeActiveMeshes();
-			Map1.mainScene.freezeActiveMeshes();
-		}
-
-		// ---- Worker callback ----
-		// Worker only returns center coords; data lives in shared buffers.
+	for (let i = 1; i < normals.length; i += 3) {
+		normals[i] = 127;
 	}
 
-	public static getInstance(): DistantTerrain {
-		if (!DistantTerrain.instance) {
-			DistantTerrain.instance = new DistantTerrain();
-		}
-		return DistantTerrain.instance;
+	positionVB = new VertexBuffer(
+		engine,
+		positions,
+		VertexBuffer.PositionKind,
+		true,
+		false,
+		3,
+		false,
+		0,
+		undefined,
+		VertexBuffer.SHORT,
+		false,
+	);
+	m.setVerticesBuffer(positionVB);
+
+	normalVB = new VertexBuffer(
+		engine,
+		normals,
+		VertexBuffer.NormalKind,
+		true,
+		false,
+		3,
+		false,
+		0,
+		undefined,
+		VertexBuffer.BYTE,
+		true,
+	);
+	m.setVerticesBuffer(normalVB);
+
+	return m;
+}
+
+function bindDiffuseTexture() {
+	if (!diffuseAtlasTexture) {
+		diffuseAtlasTexture = TextureAtlasFactory.getDiffuse();
 	}
-	public static checkInstance(): boolean {
-		return !!DistantTerrain.instance;
+
+	if (!diffuseAtlasTexture) {
+		diffuseAtlasTexture = new Texture(
+			"/texture/diffuse_atlas.png",
+			Map1.mainScene,
+			{
+				noMipmap: false,
+				samplingMode: Texture.NEAREST_SAMPLINGMODE,
+			},
+		);
+		TextureAtlasFactory.setDiffuse(diffuseAtlasTexture);
 	}
 
-	private createEmptyGridMesh(name: string, scene: Scene): Mesh {
-		const mesh = new Mesh(name, scene);
-		const engine = scene.getEngine();
+	if (diffuseAtlasTexture) {
+		diffuseAtlasTexture.wrapU = Texture.CLAMP_ADDRESSMODE;
+		diffuseAtlasTexture.wrapV = Texture.CLAMP_ADDRESSMODE;
+		material.setTexture("diffuseTexture", diffuseAtlasTexture);
+		material.setFloat("useTexture", 1);
+	}
+}
 
-		const res = this.#gridResolution;
-		const vertexCount = res * res;
-		const quadCount = (res - 1) * (res - 1);
-		const indexCount = quadCount * 6;
+function bindCommonUniforms(effect: Effect, scene: Scene) {
+	effect.setVector3("lightDirection", GLOBAL_VALUES.skyLightDirection);
 
-		// Choose 16-bit or 32-bit index buffer
-		const useUint32 = vertexCount > 65535 && !!engine.getCaps().uintIndices;
-		const indices = useUint32
-			? new Uint32Array(indexCount)
-			: new Uint16Array(indexCount);
+	const sunElevation = -GLOBAL_VALUES.skyLightDirection.y + 0.1;
+	const _raw = sunElevation * 4;
+	const sunLightIntensity = _raw < 0.0 ? 0.0 : _raw > 1.0 ? 1.0 : _raw;
+	effect.setFloat("sunLightIntensity", sunLightIntensity);
 
-		// Build indices once
-		let k = 0;
-		for (let z = 0; z < res - 1; z++) {
-			const row = z * res;
-			const next = (z + 1) * res;
-			for (let x = 0; x < res - 1; x++) {
-				const i0 = row + x;
-				const i1 = i0 + 1;
-				const i2 = next + x;
-				const i3 = i2 + 1;
+	effect.setVector3(
+		"cameraPosition",
+		scene.activeCamera?.position || _cachedZeroVec,
+	);
+	effect.setFloat4(
+		"vFogInfos",
+		scene.fogMode,
+		scene.fogStart,
+		scene.fogEnd,
+		scene.fogDensity,
+	);
+	effect.setColor3("vFogColor", scene.fogColor);
+}
 
-				indices[k++] = i0;
-				indices[k++] = i2;
-				indices[k++] = i1;
+function applyTerrainData(
+	pos: Int16Array,
+	nrm: Int8Array,
+	tiles: Uint8Array,
+	worldX: number,
+	worldZ: number,
+) {
+	mesh.position.set(worldX, -2, worldZ);
 
-				indices[k++] = i1;
-				indices[k++] = i2;
-				indices[k++] = i3;
+	waterMesh.position.set(worldX, GenerationParams.SEA_LEVEL, worldZ);
+	gridOrigin.x = worldX - radius * Chunk.SIZE;
+	gridOrigin.y = worldZ - radius * Chunk.SIZE;
+	material.setVector2("gridOriginWorld", gridOrigin);
+
+	positionVB?.update(pos);
+	normalVB?.update(nrm);
+
+	if (USE_LA_TILE_TEXTURE) {
+		if (tiles.length !== surfaceTileLookupData.length) {
+			for (let i = 0, j = 0; i < tiles.length; i += 2, j += 2) {
+				surfaceTileLookupData[j] = tiles[i];
+				surfaceTileLookupData[j + 1] = tiles[i + 1];
 			}
+		} else {
+			surfaceTileLookupData.set(tiles);
 		}
-		mesh.setIndices(indices);
-
-		const positions = new Int16Array(vertexCount * 3);
-		const normals = new Int8Array(vertexCount * 3);
-
-		for (let i = 1; i < normals.length; i += 3) {
-			normals[i] = 127;
-		}
-
-		this.#positionVB = new VertexBuffer(
-			engine,
-			positions,
-			VertexBuffer.PositionKind,
-			true,
-			false,
-			3,
-			false,
-			0,
-			undefined,
-			VertexBuffer.SHORT,
-			false,
-		);
-		mesh.setVerticesBuffer(this.#positionVB);
-
-		this.#normalVB = new VertexBuffer(
-			engine,
-			normals,
-			VertexBuffer.NormalKind,
-			true,
-			false,
-			3,
-			false,
-			0,
-			undefined,
-			VertexBuffer.BYTE,
-			true,
-		);
-		mesh.setVerticesBuffer(this.#normalVB);
-
-		return mesh;
-	}
-
-	private bindDiffuseTexture() {
-		if (!this.diffuseAtlasTexture) {
-			this.diffuseAtlasTexture = TextureAtlasFactory.getDiffuse();
-		}
-
-		if (!this.diffuseAtlasTexture) {
-			this.diffuseAtlasTexture = new Texture(
-				"/texture/diffuse_atlas.png",
-				Map1.mainScene,
-				{
-					noMipmap: false,
-					samplingMode: Texture.NEAREST_SAMPLINGMODE,
-				},
-			);
-			TextureAtlasFactory.setDiffuse(this.diffuseAtlasTexture);
-		}
-
-		if (this.diffuseAtlasTexture) {
-			this.diffuseAtlasTexture.wrapU = Texture.CLAMP_ADDRESSMODE;
-			this.diffuseAtlasTexture.wrapV = Texture.CLAMP_ADDRESSMODE;
-			this.material.setTexture("diffuseTexture", this.diffuseAtlasTexture);
-			this.material.setFloat("useTexture", 1);
+	} else {
+		for (let src = 0, dst = 0; src < tiles.length; src += 2, dst += 4) {
+			surfaceTileLookupData[dst] = tiles[src];
+			surfaceTileLookupData[dst + 1] = tiles[src + 1];
+			surfaceTileLookupData[dst + 2] = 0;
+			surfaceTileLookupData[dst + 3] = 255;
 		}
 	}
 
-	private bindCommonUniforms(effect: Effect, scene: Scene) {
-		effect.setVector3("lightDirection", GLOBAL_VALUES.skyLightDirection);
+	surfaceTileLookupTexture.update(surfaceTileLookupData);
+}
 
-		const sunElevation = -GLOBAL_VALUES.skyLightDirection.y + 0.1;
-		const _raw = sunElevation * 4;
-		const sunLightIntensity = _raw < 0.0 ? 0.0 : _raw > 1.0 ? 1.0 : _raw;
-		effect.setFloat("sunLightIntensity", sunLightIntensity);
+// =====================================================================
+// Public API
+// =====================================================================
 
-		effect.setVector3(
-			"cameraPosition",
-			scene.activeCamera?.position || DistantTerrain._cachedZeroVec,
-		);
-		effect.setFloat4(
-			"vFogInfos",
-			scene.fogMode,
-			scene.fogStart,
-			scene.fogEnd,
-			scene.fogDensity,
-		);
-		effect.setColor3("vFogColor", scene.fogColor);
-	}
+export function init() {
+	if (initialized) return;
 
-	public update(worldX: number, worldZ: number) {
-		const cx = worldToChunkCoord(worldX);
-		const cz = worldToChunkCoord(worldZ);
-		if (cx === this.lastChunkX && cz === this.lastChunkZ) return;
-		this.lastChunkX = cx;
-		this.lastChunkZ = cz;
-		ChunkWorkerPool.getInstance().scheduleDistantTerrain(
-			cx,
-			cz,
-			this.#radius,
-			SETTING_PARAMS.RENDER_DISTANCE,
-			this.#gridStep,
-		);
-	}
+	radius = SETTING_PARAMS.DISTANT_RENDER_DISTANCE;
+	const segments = Math.floor((radius * 2) / gridStep);
+	gridResolution = segments + 1;
+	const size = radius * 2 * Chunk.SIZE;
 
-	private applyTerrainData(
-		positions: Int16Array,
-		normals: Int8Array,
-		surfaceTiles: Uint8Array,
-		worldX: number,
-		worldZ: number,
+	if (
+		typeof SharedArrayBuffer === "undefined" ||
+		(typeof self !== "undefined" &&
+			"crossOriginIsolated" in self &&
+			!self.crossOriginIsolated)
 	) {
-		this.mesh.position.set(worldX, -2, worldZ);
-
-		this.waterMesh.position.set(worldX, GenerationParams.SEA_LEVEL, worldZ);
-		this.#gridOrigin.x = worldX - this.#radius * Chunk.SIZE;
-		this.#gridOrigin.y = worldZ - this.#radius * Chunk.SIZE;
-		this.material.setVector2("gridOriginWorld", this.#gridOrigin);
-
-		// Update existing GPU buffers only
-		this.#positionVB?.update(positions);
-		this.#normalVB?.update(normals);
-
-		// Update tile lookup texture
-		if (DistantTerrain.USE_LA_TILE_TEXTURE) {
-			if (surfaceTiles.length !== this.#surfaceTileLookupData.length) {
-				for (let i = 0, j = 0; i < surfaceTiles.length; i += 2, j += 2) {
-					this.#surfaceTileLookupData[j] = surfaceTiles[i];
-					this.#surfaceTileLookupData[j + 1] = surfaceTiles[i + 1];
-				}
-			} else {
-				this.#surfaceTileLookupData.set(surfaceTiles);
-			}
-		} else {
-			for (
-				let src = 0, dst = 0;
-				src < surfaceTiles.length;
-				src += 2, dst += 4
-			) {
-				this.#surfaceTileLookupData[dst] = surfaceTiles[src];
-				this.#surfaceTileLookupData[dst + 1] = surfaceTiles[src + 1];
-				this.#surfaceTileLookupData[dst + 2] = 0;
-				this.#surfaceTileLookupData[dst + 3] = 255;
-			}
-		}
-
-		this.#surfaceTileLookupTexture.update(this.#surfaceTileLookupData);
+		throw new Error(
+			"DistantTerrain requires SharedArrayBuffer. " +
+				"Make sure crossOriginIsolated is true and your dev server sends " +
+				"Cross-Origin-Opener-Policy: same-origin and " +
+				"Cross-Origin-Embedder-Policy: require-corp.",
+		);
 	}
-	public static resetInstance(): void {
-		DistantTerrain.instance = undefined!;
+
+	const vertexCount = gridResolution * gridResolution;
+
+	const positionsBuffer = new SharedArrayBuffer(
+		vertexCount * 3 * Int16Array.BYTES_PER_ELEMENT,
+	);
+	const normalsBuffer = new SharedArrayBuffer(
+		vertexCount * 3 * Int8Array.BYTES_PER_ELEMENT,
+	);
+	const surfaceTilesBuffer = new SharedArrayBuffer(
+		vertexCount * 2 * Uint8Array.BYTES_PER_ELEMENT,
+	);
+
+	sharedPositions = new Int16Array(positionsBuffer);
+	sharedNormals = new Int8Array(normalsBuffer);
+	sharedSurfaceTiles = new Uint8Array(surfaceTilesBuffer);
+
+	ChunkWorkerPool.getInstance().initDistantTerrainShared(
+		positionsBuffer,
+		normalsBuffer,
+		surfaceTilesBuffer,
+		radius,
+		gridStep,
+	);
+
+	mesh = createEmptyGridMesh("distantTerrain", Map1.mainScene);
+	mesh.sideOrientation = Mesh.FRONTSIDE;
+
+	waterMesh = MeshBuilder.CreateGround(
+		"distantWater",
+		{
+			width: size,
+			height: size,
+			subdivisions: 1,
+			updatable: false,
+		},
+		Map1.mainScene,
+	);
+
+	if (USE_LA_TILE_TEXTURE) {
+		surfaceTileLookupData = new Uint8Array(gridResolution * gridResolution * 2);
+		surfaceTileLookupTexture = RawTexture.CreateLuminanceAlphaTexture(
+			surfaceTileLookupData,
+			gridResolution,
+			gridResolution,
+			Map1.mainScene,
+			false,
+			false,
+			Texture.NEAREST_SAMPLINGMODE,
+		);
+	} else {
+		surfaceTileLookupData = new Uint8Array(gridResolution * gridResolution * 4);
+		surfaceTileLookupTexture = RawTexture.CreateRGBATexture(
+			surfaceTileLookupData,
+			gridResolution,
+			gridResolution,
+			Map1.mainScene,
+			false,
+			false,
+			Texture.NEAREST_SAMPLINGMODE,
+		);
 	}
+
+	surfaceTileLookupTexture.wrapU = Texture.CLAMP_ADDRESSMODE;
+	surfaceTileLookupTexture.wrapV = Texture.CLAMP_ADDRESSMODE;
+
+	ChunkWorkerPool.getInstance().onDistantTerrainGenerated = (data) => {
+		const worldX = data.centerChunkX * Chunk.SIZE;
+		const worldZ = data.centerChunkZ * Chunk.SIZE;
+		applyTerrainData(
+			sharedPositions,
+			sharedNormals,
+			sharedSurfaceTiles,
+			worldX,
+			worldZ,
+		);
+	};
+
+	Effect.ShadersStore["distantTerrainVertexShader"] =
+		distantTerrainVertexShader;
+	Effect.ShadersStore["distantTerrainFragmentShader"] =
+		distantTerrainFragmentShader;
+	Effect.ShadersStore["distantWaterVertexShader"] = distantWaterVertexShader;
+	Effect.ShadersStore["distantWaterFragmentShader"] =
+		distantWaterFragmentShader;
+
+	material = new ShaderMaterial(
+		"distantTerrainMat",
+		Map1.mainScene,
+		{ vertex: "distantTerrain", fragment: "distantTerrain" },
+		{
+			attributes: ["position", "normal"],
+			uniforms: [
+				"world",
+				"worldViewProjection",
+				"lightDirection",
+				"sunLightIntensity",
+				"atlasTileSize",
+				"textureScale",
+				"useTexture",
+				"tileGridResolution",
+				"gridOriginWorld",
+				"gridWorldStep",
+				"vFogInfos",
+				"vFogColor",
+				"cameraPosition",
+			],
+			samplers: ["diffuseTexture", "tileLookupTexture"],
+		},
+	);
+
+	material.onBind = (m) => {
+		const effect = material.getEffect();
+		if (!effect) return;
+		bindCommonUniforms(effect, m.getScene());
+	};
+
+	material.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
+	material.setFloat("textureScale", 32);
+	material.setFloat("tileGridResolution", gridResolution);
+	material.setFloat("gridWorldStep", Chunk.SIZE * gridStep);
+	material.setFloat("useTexture", 0);
+	material.setTexture("tileLookupTexture", surfaceTileLookupTexture);
+
+	bindDiffuseTexture();
+	mesh.material = material;
+
+	waterMaterial = new ShaderMaterial(
+		"distantWaterMat",
+		Map1.mainScene,
+		{ vertex: "distantWater", fragment: "distantWater" },
+		{
+			attributes: ["position"],
+			uniforms: [
+				"world",
+				"worldViewProjection",
+				"lightDirection",
+				"sunLightIntensity",
+				"vFogInfos",
+				"vFogColor",
+				"cameraPosition",
+			],
+		},
+	);
+
+	waterMaterial.onBind = (m) => {
+		const effect = waterMaterial.getEffect();
+		if (!effect) return;
+		bindCommonUniforms(effect, m.getScene());
+	};
+
+	waterMesh.material = waterMaterial;
+
+	mesh.isPickable = false;
+	mesh.checkCollisions = false;
+	mesh.receiveShadows = false;
+	mesh.doNotSyncBoundingInfo = true;
+	mesh.alwaysSelectAsActiveMesh = true;
+
+	waterMesh.isPickable = false;
+	waterMesh.checkCollisions = false;
+	waterMesh.receiveShadows = false;
+	waterMesh.doNotSyncBoundingInfo = true;
+	waterMesh.alwaysSelectAsActiveMesh = true;
+
+	if (Map1.mainScene._activeMeshesFrozen) {
+		Map1.mainScene.unfreezeActiveMeshes();
+		Map1.mainScene.freezeActiveMeshes();
+	}
+
+	initialized = true;
+}
+
+export function isInitialized(): boolean {
+	return initialized;
+}
+
+export function update(worldX: number, worldZ: number) {
+	const cx = worldToChunkCoord(worldX);
+	const cz = worldToChunkCoord(worldZ);
+	if (cx === lastChunkX && cz === lastChunkZ) return;
+	lastChunkX = cx;
+	lastChunkZ = cz;
+	ChunkWorkerPool.getInstance().scheduleDistantTerrain(
+		cx,
+		cz,
+		radius,
+		SETTING_PARAMS.RENDER_DISTANCE,
+		gridStep,
+	);
+}
+
+export function dispose(): void {
+	initialized = false;
 }
