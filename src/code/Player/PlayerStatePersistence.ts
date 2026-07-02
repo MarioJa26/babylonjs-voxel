@@ -2,6 +2,7 @@ import type { Observer, Scene } from "@babylonjs/core";
 import {
 	flushChunkBoundEntities,
 	flushModifiedChunks,
+	flushOpfsStorage,
 } from "../World/Chunk/ChunkLoadingSystem";
 import type { SavedInventoryState } from "./Inventory/PlayerInventory";
 import type { Player } from "./Player";
@@ -22,10 +23,12 @@ export class PlayerStatePersistence {
 	private sceneDisposeObserver: Observer<Scene> | null = null;
 	private isDisposed = false;
 
-	private readonly onBeforeUnload = () => this.saveNow();
+	private readonly onBeforeUnload = () => {
+		this.saveNow();
+	};
 	private readonly onVisibilityChange = () => {
 		if (document.visibilityState === "hidden") {
-			this.saveNow();
+			void this.saveNow();
 		}
 	};
 
@@ -52,12 +55,22 @@ export class PlayerStatePersistence {
 		this.lastPositionSaveMs = now;
 	}
 
-	public saveNow(): void {
+	public async saveNow(): Promise<void> {
 		if (this.isDisposed || typeof window === "undefined") return;
 
 		this.savePosition();
 		this.saveInventory();
-		this.requestChunkSave(PlayerStatePersistence.CHUNK_SAVE_NOW_BATCH_SIZE);
+
+		try {
+			await flushModifiedChunks(
+				PlayerStatePersistence.CHUNK_SAVE_NOW_BATCH_SIZE,
+			);
+			await flushChunkBoundEntities();
+			await flushOpfsStorage();
+		} catch (err) {
+			console.warn("Failed to persist chunks on save-now.", err);
+		}
+
 		this.lastPositionSaveMs = Date.now();
 	}
 
@@ -81,7 +94,13 @@ export class PlayerStatePersistence {
 
 		if (typeof window !== "undefined") {
 			window.removeEventListener("beforeunload", this.onBeforeUnload);
-			document.removeEventListener("visibilitychange", this.onVisibilityChange);
+			document.removeEventListener(
+				"visibilitychange",
+				this.onVisibilityChange,
+				{
+					capture: true,
+				},
+			);
 		}
 	}
 
@@ -94,7 +113,9 @@ export class PlayerStatePersistence {
 			});
 
 		window.addEventListener("beforeunload", this.onBeforeUnload);
-		document.addEventListener("visibilitychange", this.onVisibilityChange);
+		document.addEventListener("visibilitychange", this.onVisibilityChange, {
+			capture: true,
+		});
 
 		this.sceneDisposeObserver = this.scene.onDisposeObservable.add(() => {
 			this.dispose();

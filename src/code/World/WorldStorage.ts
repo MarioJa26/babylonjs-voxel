@@ -41,7 +41,7 @@ class WorldStorageImpl {
 	private async getClient(): Promise<OpfsClient | null> {
 		await this.initialize();
 		const pool = ChunkWorkerPool.getInstance();
-		return pool.getOpfsClient();
+		return await pool.ensureOpfsReady();
 	}
 
 	// -------------------------------------------------------------------------
@@ -208,6 +208,8 @@ class WorldStorageImpl {
 		await mapLimit(toSave, concurrency, async (chunk) => {
 			await this.saveChunkWithClient(client, chunk);
 		});
+
+		await client.flush();
 	}
 
 	async saveAllModifiedChunks(): Promise<void> {

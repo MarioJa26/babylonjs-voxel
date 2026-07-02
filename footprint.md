@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-06-29T11:31:47.084Z
+Generated: 2026-07-01T23:55:07.116Z
 
-> **Summary:** 116 classes · 2241 members · 427 module-level functions · 42772 LOC
+> **Summary:** 116 classes · 2236 members · 436 module-level functions · 42917 LOC
 
 ---
 
@@ -1243,7 +1243,7 @@ Generated: 2026-06-29T11:31:47.084Z
 
 ---
 
-## `Generation/SurfaceGenerator.ts` (1100 LOC)
+## `Generation/SurfaceGenerator.ts` (1047 LOC)
 
 ### export class SurfaceGenerator
 
@@ -1262,8 +1262,6 @@ Generated: 2026-06-29T11:31:47.084Z
 - `private static readonly DENSITY_CLIFF_AMPLITUDE: unknown`
 - `private static readonly DENSITY_INFLUENCE_RANGE: unknown`
 - `private static readonly DENSITY_VERTICAL_SCAN_RANGE: unknown`
-- `private static readonly SUBSURFACE_LAYER_DEPTH: unknown`
-- `private static readonly SURFACE_RESET_AIR_GAP: unknown`
 - `private static readonly MAX_TREE_HEIGHT: unknown`
 - `private static readonly MAX_STRUCTURE_ABOVE_SURFACE: unknown`
 - `private static readonly MAX_STRUCTURE_BELOW_SURFACE: unknown`
@@ -1327,6 +1325,26 @@ Generated: 2026-06-29T11:31:47.084Z
 - type `SurfaceGenerationResult`
 - type `ColumnPrepassCacheEntry`
 - type `FloraColumnCacheEntry`
+
+---
+
+## `Generation/Terrain/StructurePlacer.ts` (65 LOC)
+
+**Module-level functions**
+- `export function generateStructures(chunkX: number, chunkY: number, chunkZ: number, chunkSize: number, biome: Biome, features: IWorldFeature[], seedAsInt: number, placeBlock: (
+		x: number,
+		y: number,
+		z: number,
+		id: number,
+		ow: boolean,
+	) => void): void`
+
+---
+
+## `Generation/Terrain/SurfaceBlockResolver.ts` (27 LOC)
+
+**Module-level functions**
+- `export function resolveSolidBlockId(currentBiome: Biome, worldY: number, depthBelowSurface: number, isBeach: boolean, seaLevel: number): number`
 
 ---
 
@@ -2593,7 +2611,7 @@ Generated: 2026-06-29T11:31:47.084Z
 
 ---
 
-## `Player/PlayerStatePersistence.ts` (168 LOC)
+## `Player/PlayerStatePersistence.ts` (187 LOC)
 
 ### export class PlayerStatePersistence
 
@@ -2615,7 +2633,7 @@ Generated: 2026-06-29T11:31:47.084Z
 
 **Methods**
 - `public update(): void`
-- `public saveNow(): void`
+- `public async saveNow(): Promise<void>`
 - `public dispose(): void`
 - `private setupPersistence(): void`
 - `private requestChunkSave(batchSize: number): void`
@@ -3093,7 +3111,7 @@ Generated: 2026-06-29T11:31:47.084Z
 
 ---
 
-## `World/Chunk/Chunk.ts` (1201 LOC)
+## `World/Chunk/Chunk.ts` (1227 LOC)
 
 ### export class Chunk
 
@@ -3121,6 +3139,7 @@ Generated: 2026-06-29T11:31:47.084Z
 - `public static onRequestRemesh: | ((chunk: Chunk, priority: boolean) => void)
 		| null`
 - `public static onChunkLoaded: ((chunk: Chunk) => void) | null`
+- `public static onBlockModified: ((chunk: Chunk) => void) | null`
 - `public static lightHeaderBuffer: SharedArrayBuffer | null`
 - `public static lightHeaderView: LightHeaderView | null`
 - `private static _lightHeaderNextSlot: unknown`
@@ -3218,6 +3237,7 @@ Generated: 2026-06-29T11:31:47.084Z
 - `public getBlock(lx: number, ly: number, lz: number): number`
 - `public getBlockState(lx: number, ly: number, lz: number): number`
 - `public getBlockPacked(lx: number, ly: number, lz: number): number`
+- `private _expandBlocksToDense(out: Uint16Array): void`
 - `public setBlock(localX: number, localY: number, localZ: number, blockId: number, state: unknown = 0): void`
 - `private dispatchLightMutate(localX: number, localY: number, localZ: number, oldPacked: number, newPacked: number): void`
 - `public deleteBlock(localX: number, localY: number, localZ: number): void`
@@ -3268,7 +3288,7 @@ Generated: 2026-06-29T11:31:47.084Z
 
 ---
 
-## `World/Chunk/ChunkLoadingSystem.ts` (789 LOC)
+## `World/Chunk/ChunkLoadingSystem.ts` (807 LOC)
 
 **Module-level functions**
 - `function isEntityAlive(entity: ChunkBoundEntity): boolean`
@@ -3299,6 +3319,7 @@ Generated: 2026-06-29T11:31:47.084Z
 - `async function unloadChunkBoundEntitiesForChunkImpl(chunk: Chunk): Promise<void>`
 - `export function flushModifiedChunks(maxChunks: unknown = getUnloadBatchSize()): Promise<void>`
 - `export function flushChunkBoundEntities(): Promise<void>`
+- `export async function flushOpfsStorage(): Promise<void>`
 - `function scheduleChunkAndNeighborsRemesh(chunk: Chunk): void`
 - `export async function updateChunksAround(chunkX: number, chunkY: number, chunkZ: number, renderDistance: unknown = SETTING_PARAMS.RENDER_DISTANCE, verticalRadius: unknown = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE, prevChunkX?: number, prevChunkY?: number, prevChunkZ?: number, playerWorldX?: number, playerWorldZ?: number): Promise<void>`
 - `function updateSliceDebugStats(state: InFlightProcessState): void`
@@ -3503,7 +3524,7 @@ Generated: 2026-06-29T11:31:47.084Z
 
 ---
 
-## `World/Chunk/ChunkWorkerPool.ts` (1755 LOC)
+## `World/Chunk/ChunkWorkerPool.ts` (1706 LOC)
 
 ### export class ChunkWorkerPool
 
@@ -3572,6 +3593,8 @@ Generated: 2026-06-29T11:31:47.084Z
 - `private static readonly _flushPendingScratch: Array<[Chunk, boolean]>`
 - `private static readonly _queryScratch: Chunk[]`
 - `private static readonly _dedupScratch: Set<number>`
+- `private readonly _boundScheduleRemesh: unknown`
+- `private readonly _compareRemeshPriorityFn: unknown`
 - `private static readonly _lodCandidateChunks: Chunk[]`
 - `private static readonly _lodCandidateLods: number[]`
 - `private static readonly _lodCandidateScores: number[]`
@@ -3589,7 +3612,6 @@ Generated: 2026-06-29T11:31:47.084Z
 		| null`
 - `private processLightDirtyQueue: unknown`
 - `private processMeshQueueLoop: unknown`
-- `private static readonly UNDERGROUND_MAX_LOD: unknown`
 - `private static readonly MAX_MESH_QUEUE: unknown`
 
 **Methods**
@@ -3676,16 +3698,10 @@ Generated: 2026-06-29T11:31:47.084Z
 - `private getQueuedTerrainDeferLighting(chunk: Chunk): boolean`
 - `private dispatchTerrainTaskToWorker(workerIndex: number, worker: ChunkWorker, chunk: Chunk): boolean`
 - `public scheduleBackgroundLodPrecompute(centerChunkX: number, centerChunkY: number, centerChunkZ: number): void`
-- `private scheduleChunkAndNeighborsRemesh(chunk: Chunk): void`
-- `private hasStableVoxelNeighborsForCachedMesh(chunk: Chunk): boolean`
-- `private maybeRemeshNeighborsNowStable(chunk: Chunk): void`
 - `public initDistantTerrainShared(positionsBuffer: SharedArrayBuffer, normalsBuffer: SharedArrayBuffer, surfaceTilesBuffer: SharedArrayBuffer, radius: number, gridStep: number): void`
 - `private processQueue(): void`
 - `public onChunkDisposed(chunk: Chunk): void`
 - `public static async teardownForHmr(): Promise<void>`
-- `private static shouldSkipLodForChunk(chunk: Chunk, lod: number): boolean`
-- `private static clampLodForChunk(chunk: Chunk, lod: number): number`
-- `private static normalizeChunkLod(chunk: Chunk): void`
 
 **Module-level functions**
 - `function packInflightKey(chunkId: bigint, lod: number): bigint`
@@ -3966,7 +3982,7 @@ Generated: 2026-06-29T11:31:47.084Z
 
 ---
 
-## `World/Chunk/Loading/ChunkProcessScheduler.ts` (434 LOC)
+## `World/Chunk/Loading/ChunkProcessScheduler.ts` (423 LOC)
 
 ### export class ChunkProcessScheduler
 
@@ -4126,7 +4142,7 @@ Generated: 2026-06-29T11:31:47.084Z
 
 ---
 
-## `World/Chunk/Loading/ChunkWorldMutations.ts` (238 LOC)
+## `World/Chunk/Loading/ChunkWorldMutations.ts` (244 LOC)
 
 ### class ResolvedChunkCoords
 
@@ -4346,7 +4362,7 @@ Generated: 2026-06-29T11:31:47.084Z
 
 ---
 
-## `World/Chunk/Worker/LightCore.ts` (1050 LOC)
+## `World/Chunk/Worker/LightCore.ts` (1057 LOC)
 
 ### class LightQueue
 
@@ -4433,6 +4449,24 @@ Generated: 2026-06-29T11:31:47.084Z
 
 **Types / Interfaces / Enums**
 - type `LightState`
+
+---
+
+## `World/Chunk/Worker/LODUtilities.ts` (17 LOC)
+
+**Module-level functions**
+- `export function shouldSkipLodForChunk(chunk: Chunk, lod: number): boolean`
+- `export function clampLodForChunk(chunk: Chunk, lod: number): number`
+- `export function normalizeChunkLod(chunk: Chunk): void`
+
+---
+
+## `World/Chunk/Worker/NeighborHelpers.ts` (56 LOC)
+
+**Module-level functions**
+- `export function scheduleChunkAndNeighborsRemesh(chunk: Chunk, scheduleRemesh: (chunk: Chunk, priority: boolean) => void): void`
+- `export function hasStableVoxelNeighborsForCachedMesh(chunk: Chunk): boolean`
+- `export function maybeRemeshNeighborsNowStable(chunk: Chunk, scheduleRemesh: (chunk: Chunk, priority: boolean) => void): void`
 
 ---
 
@@ -5182,7 +5216,7 @@ Generated: 2026-06-29T11:31:47.084Z
 
 ---
 
-## `World/Storage/RegionFile.ts` (367 LOC)
+## `World/Storage/RegionFile.ts` (383 LOC)
 
 ### export class RegionFile
 
@@ -5345,7 +5379,7 @@ Generated: 2026-06-29T11:31:47.084Z
 
 ---
 
-## `World/WorldStorage.ts` (384 LOC)
+## `World/WorldStorage.ts` (385 LOC)
 
 ### class WorldStorageImpl
 

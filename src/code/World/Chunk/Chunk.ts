@@ -60,9 +60,15 @@ const _rectCounts = new Int32Array(6);
 const _edgeScratch = new Float64Array((MAX_RECTS * 2 + 4) * 2);
 const _twoEntryPalette = new Uint16Array(2);
 
+const _sliceMin: [number, number, number] = [0, 0, 0];
+const _sliceMax: [number, number, number] = [0, 0, 0];
+const _sliceResult = { min: _sliceMin, max: _sliceMax };
+
 const _ccVisited = new Uint8Array(GenerationParams.CHUNK_SIZE ** 3);
 const _ccStack = new Int32Array(GenerationParams.CHUNK_SIZE ** 3);
 const _ccFaceCounts = new Uint16Array(6);
+const _ccDenseBlocks = new Uint16Array(GenerationParams.CHUNK_SIZE ** 3);
+const _ccOpaque = new Uint8Array(GenerationParams.CHUNK_SIZE ** 3);
 
 // Reusable seed queue for initializeSunlight().  Sized once from the
 // build-time CHUNK_SIZE constant; shared across all chunk loads because
@@ -131,6 +137,7 @@ export class Chunk {
 		| ((chunk: Chunk, priority: boolean) => void)
 		| null = null;
 	public static onChunkLoaded: ((chunk: Chunk) => void) | null = null;
+	public static onBlockModified: ((chunk: Chunk) => void) | null = null;
 
 	// -------------------------------------------------------------------------
 	// Light-worker integration.
@@ -789,6 +796,29 @@ export class Chunk {
 		return this._block_array![index];
 	}
 
+	private _expandBlocksToDense(out: Uint16Array): void {
+		const S3 = Chunk.SIZE3;
+		if (this._isUniform) {
+			out.fill(this._uniformBlockId, 0, S3);
+			return;
+		}
+		if (this._palette) {
+			const blockArr = this._block_array as Uint8Array;
+			const palette = this._palette;
+			for (let i = 0; i < S3; i++) {
+				const byte = blockArr[i >>> 1];
+				const nibble = (i & 1) === 0 ? byte & 0x0f : byte >>> 4;
+				out[i] = palette[nibble];
+			}
+			return;
+		}
+		if (this._block_array) {
+			out.set(this._block_array as Uint16Array);
+			return;
+		}
+		out.fill(0, 0, S3);
+	}
+
 	public setBlock(
 		localX: number,
 		localY: number,
@@ -921,6 +951,7 @@ export class Chunk {
 		this.connectivityDirty = true;
 		this.clearCachedLODMeshes();
 		this.scheduleRemesh(true);
+		Chunk.onBlockModified?.(this);
 
 		const S = Chunk.SIZE;
 		if (localX === 0) this.getNeighbor(-1, 0, 0)?.scheduleRemesh(true);
@@ -1248,28 +1279,38 @@ export class Chunk {
 		state: number,
 	): { min: [number, number, number]; max: [number, number, number] } {
 		const slice = (state >>> 3) & 7;
-		if (slice === 0) return { min, max };
+		if (slice === 0) {
+			_sliceResult.min = min;
+			_sliceResult.max = max;
+			return _sliceResult;
+		}
 
 		const rotation = state & 7;
 		const sliceAxis = getSliceAxis(rotation);
 		const flip = (rotation & 4) !== 0;
 		const heightScale = slice / 8;
-		const outMin: [number, number, number] = [min[0], min[1], min[2]];
-		const outMax: [number, number, number] = [max[0], max[1], max[2]];
+		_sliceMin[0] = min[0];
+		_sliceMin[1] = min[1];
+		_sliceMin[2] = min[2];
+		_sliceMax[0] = max[0];
+		_sliceMax[1] = max[1];
+		_sliceMax[2] = max[2];
 
 		if (flip) {
-			outMin[sliceAxis] = 1 - (1 - min[sliceAxis]) * heightScale;
-			outMax[sliceAxis] = 1 - (1 - max[sliceAxis]) * heightScale;
+			_sliceMin[sliceAxis] = 1 - (1 - min[sliceAxis]) * heightScale;
+			_sliceMax[sliceAxis] = 1 - (1 - max[sliceAxis]) * heightScale;
 		} else {
-			outMin[sliceAxis] = min[sliceAxis] * heightScale;
-			outMax[sliceAxis] = max[sliceAxis] * heightScale;
+			_sliceMin[sliceAxis] = min[sliceAxis] * heightScale;
+			_sliceMax[sliceAxis] = max[sliceAxis] * heightScale;
 		}
-		if (outMin[sliceAxis] > outMax[sliceAxis]) {
-			const tmp = outMin[sliceAxis];
-			outMin[sliceAxis] = outMax[sliceAxis];
-			outMax[sliceAxis] = tmp;
+		if (_sliceMin[sliceAxis] > _sliceMax[sliceAxis]) {
+			const tmp = _sliceMin[sliceAxis];
+			_sliceMin[sliceAxis] = _sliceMax[sliceAxis];
+			_sliceMax[sliceAxis] = tmp;
 		}
-		return { min: outMin, max: outMax };
+		_sliceResult.min = _sliceMin;
+		_sliceResult.max = _sliceMax;
+		return _sliceResult;
 	}
 
 	// =========================================================================
@@ -1323,11 +1364,17 @@ export class Chunk {
 
 		const S = Chunk.SIZE;
 		const S2 = S * S;
-		const S3 = S * S * S;
+		const S3 = Chunk.SIZE3;
 
 		_ccVisited.fill(0, 0, S3);
 		const visited = _ccVisited;
 		const stack = _ccStack;
+		const dense = _ccDenseBlocks;
+		const opaque = _ccOpaque;
+		this._expandBlocksToDense(dense);
+		for (let i = 0; i < S3; i++) {
+			opaque[i] = Chunk.isBlockOpaque(dense[i]) ? 1 : 0;
+		}
 		let connectivity = 0;
 
 		for (let z = 0; z < S; z++) {
@@ -1336,8 +1383,7 @@ export class Chunk {
 					const idx = x + y * S + z * S2;
 					if (visited[idx]) continue;
 
-					const packed = this.getBlockPacked(x, y, z);
-					if (Chunk.isBlockOpaque(packed)) {
+					if (opaque[idx]) {
 						visited[idx] = 1;
 						continue;
 					}
@@ -1368,60 +1414,42 @@ export class Chunk {
 
 						if (cx > 0) {
 							const n = cur - 1;
-							if (
-								!visited[n] &&
-								!Chunk.isBlockOpaque(this.getBlockPacked(cx - 1, cy, cz))
-							) {
+							if (!visited[n] && !opaque[n]) {
 								visited[n] = 1;
 								stack[stackTop++] = n;
 							}
 						}
 						if (cx < S - 1) {
 							const n = cur + 1;
-							if (
-								!visited[n] &&
-								!Chunk.isBlockOpaque(this.getBlockPacked(cx + 1, cy, cz))
-							) {
+							if (!visited[n] && !opaque[n]) {
 								visited[n] = 1;
 								stack[stackTop++] = n;
 							}
 						}
 						if (cy > 0) {
 							const n = cur - S;
-							if (
-								!visited[n] &&
-								!Chunk.isBlockOpaque(this.getBlockPacked(cx, cy - 1, cz))
-							) {
+							if (!visited[n] && !opaque[n]) {
 								visited[n] = 1;
 								stack[stackTop++] = n;
 							}
 						}
 						if (cy < S - 1) {
 							const n = cur + S;
-							if (
-								!visited[n] &&
-								!Chunk.isBlockOpaque(this.getBlockPacked(cx, cy + 1, cz))
-							) {
+							if (!visited[n] && !opaque[n]) {
 								visited[n] = 1;
 								stack[stackTop++] = n;
 							}
 						}
 						if (cz > 0) {
 							const n = cur - S2;
-							if (
-								!visited[n] &&
-								!Chunk.isBlockOpaque(this.getBlockPacked(cx, cy, cz - 1))
-							) {
+							if (!visited[n] && !opaque[n]) {
 								visited[n] = 1;
 								stack[stackTop++] = n;
 							}
 						}
 						if (cz < S - 1) {
 							const n = cur + S2;
-							if (
-								!visited[n] &&
-								!Chunk.isBlockOpaque(this.getBlockPacked(cx, cy, cz + 1))
-							) {
+							if (!visited[n] && !opaque[n]) {
 								visited[n] = 1;
 								stack[stackTop++] = n;
 							}

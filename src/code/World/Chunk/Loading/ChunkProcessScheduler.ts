@@ -398,19 +398,10 @@ export class ChunkProcessScheduler {
 							if (!request.chunk.isTerrainScheduled) {
 								continue;
 							}
-							const desired = this.adapter.getDesiredState(request.chunk.id);
 
-							if (
-								!desired ||
-								desired.revision !== request.revision ||
-								desired.desiredLod !== request.desiredLod
-							) {
-								if (!request.chunk.isLoaded) {
-									state.chunksToGenerate.push(request.chunk);
-								}
-								continue;
-							}
-
+							// Check savedData FIRST — if OPFS has data, always use it
+							// regardless of revision mismatch caused by frame-budget
+							// splitting between PrepareLoadBatch and ApplyLoadedChunks.
 							const savedData = request.includeVoxelData
 								? state.nearLoadedDataMap.get(request.chunk.id)
 								: state.farLoadedDataMap.get(request.chunk.id);
@@ -421,7 +412,7 @@ export class ChunkProcessScheduler {
 									request,
 									savedData,
 								);
-							} else {
+							} else if (!request.chunk.isLoaded) {
 								state.chunksToGenerate.push(request.chunk);
 							}
 						}

@@ -1,7 +1,11 @@
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import { packChunkKey } from "../Storage/ChunkKey";
 import { deserializeMeshPair } from "../Storage/MeshSerializer";
-import type { SavedChunkData, SavedChunkEntityData } from "../WorldStorage";
+import {
+	type SavedChunkData,
+	type SavedChunkEntityData,
+	WorldStorage,
+} from "../WorldStorage";
 import { Chunk, getChunk } from "./Chunk";
 import { createMeshFromData } from "./ChunkMesher";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
@@ -83,6 +87,8 @@ const _meshData: {
 const opfsMeshCache = new Map<bigint, SelectedSavedMesh>();
 let opfsCacheHydratedThisCycle = 0;
 let opfsCacheMissedThisCycle = 0;
+
+const _entityPayloadMap = new Map<bigint, SavedChunkEntityData[]>();
 
 const debugStats: ChunkLoadingDebugStats = {
 	loadQueueLength: 0,
@@ -173,6 +179,10 @@ const persistenceCoordinator = new ChunkPersistenceCoordinator({
 	getChunkSaveBatchSize: () => getUnloadBatchSize(),
 	getChunkEntitySaveBatchSize: () => getUnloadBatchSize(),
 });
+
+Chunk.onBlockModified = (chunk) => {
+	void WorldStorage.saveChunk(chunk).catch(() => {});
+};
 
 const processScheduler = new ChunkProcessScheduler({
 	getLoadQueue: () => loadQueue,
@@ -569,6 +579,16 @@ export function flushChunkBoundEntities(): Promise<void> {
 	return persistenceCoordinator.flushChunkBoundEntities(getUnloadBatchSize());
 }
 
+export async function flushOpfsStorage(): Promise<void> {
+	const client = ChunkWorkerPool.getInstance().getOpfsClient();
+	if (!client) return;
+	try {
+		await client.flush();
+	} catch {
+		// best-effort; ignore errors
+	}
+}
+
 function scheduleChunkAndNeighborsRemesh(chunk: Chunk): void {
 	const pool = ChunkWorkerPool.getInstance();
 
@@ -847,6 +867,8 @@ export function getBlockAndStateByWorldCoordsInto(
 	return out;
 }
 
+const _blockAndStateScratch: BlockAndStateOut = { blockId: 0, blockState: 0 };
+
 export function getBlockAndStateByWorldCoords(
 	worldX: number,
 	worldY: number,
@@ -857,7 +879,7 @@ export function getBlockAndStateByWorldCoords(
 		worldX,
 		worldY,
 		worldZ,
-		{ blockId: 0, blockState: 0 },
+		_blockAndStateScratch,
 		options,
 	);
 }
@@ -921,7 +943,8 @@ function collectChunkEntityPayloads(): ReadonlyMap<
 	bigint,
 	SavedChunkEntityData[]
 > {
-	const entitiesByChunk = new Map<bigint, SavedChunkEntityData[]>();
+	_entityPayloadMap.clear();
+	const entitiesByChunk = _entityPayloadMap;
 
 	for (const entity of chunkEntityRegistry.getRegisteredEntities().values()) {
 		const chunkId = getEntityChunkId(entity);

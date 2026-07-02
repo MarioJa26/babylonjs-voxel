@@ -20,6 +20,11 @@ import { MineshaftFeature } from "./Structure/MineshaftFeature";
 import { RavineFeature } from "./Structure/RavineFeature";
 import { StructureSpawnerFeature } from "./Structure/StructureFeature";
 import { TowerFeature } from "./Structure/TowerFeature";
+import { generateStructures } from "./Terrain/StructurePlacer";
+import {
+	resolveSolidBlockId,
+	SURFACE_RESET_AIR_GAP,
+} from "./Terrain/SurfaceBlockResolver";
 import {
 	getBiome,
 	getCachedRiverNoise,
@@ -86,8 +91,6 @@ export class SurfaceGenerator {
 	private static readonly DENSITY_VERTICAL_SCAN_RANGE =
 		SurfaceGenerator.DENSITY_INFLUENCE_RANGE;
 
-	private static readonly SUBSURFACE_LAYER_DEPTH = 5;
-	private static readonly SURFACE_RESET_AIR_GAP = 6;
 	/**
 	 * Conservative vertical budgets used to decide whether a chunkY slice
 	 * can possibly contain any flora / structure blocks.
@@ -504,30 +507,13 @@ export class SurfaceGenerator {
 		depthBelowSurface: number,
 		isBeach: boolean,
 	): number {
-		const SEA_LEVEL = this.params.SEA_LEVEL;
-
-		let blockId = currentBiome.stoneBlock;
-
-		if (depthBelowSurface === 0) {
-			if (worldY < SEA_LEVEL - 1) {
-				blockId = currentBiome.seafloorBlock;
-			} else if (
-				isBeach &&
-				worldY >= SEA_LEVEL - 2 &&
-				worldY <= SEA_LEVEL + 2
-			) {
-				blockId = currentBiome.beachBlock;
-			} else {
-				blockId = currentBiome.topBlock;
-			}
-		} else if (
-			depthBelowSurface > 0 &&
-			depthBelowSurface <= SurfaceGenerator.SUBSURFACE_LAYER_DEPTH
-		) {
-			blockId = currentBiome.undergroundBlock;
-		}
-
-		return blockId;
+		return resolveSolidBlockId(
+			currentBiome,
+			worldY,
+			depthBelowSurface,
+			isBeach,
+			this.params.SEA_LEVEL,
+		);
 	}
 
 	private generateTerrain(
@@ -736,9 +722,7 @@ export class SurfaceGenerator {
 							}
 						}
 
-						if (
-							airGapSinceLastSolid >= SurfaceGenerator.SURFACE_RESET_AIR_GAP
-						) {
+						if (airGapSinceLastSolid >= SURFACE_RESET_AIR_GAP) {
 							depthAnchorY = worldY;
 						}
 
@@ -845,9 +829,7 @@ export class SurfaceGenerator {
 					const effectiveDensity = density - caveMod;
 
 					if (effectiveDensity > 0) {
-						if (
-							airGapSinceLastSolid >= SurfaceGenerator.SURFACE_RESET_AIR_GAP
-						) {
+						if (airGapSinceLastSolid >= SURFACE_RESET_AIR_GAP) {
 							depthAnchorY = worldY;
 						}
 						const depthBelowSurface =
@@ -1189,57 +1171,17 @@ export class SurfaceGenerator {
 			id: number,
 			ow: boolean,
 		) => void,
-	) {
-		const STRUCTURE_SEARCH_RADIUS = 2;
-		const features = this.features;
-		const chunkSize = this.chunk_size;
-		const chunkMinY = chunkY * chunkSize;
-		const chunkMaxY = chunkMinY + chunkSize - 1;
-
-		let hasRelevantFeature = false;
-		for (let i = 0; i < features.length; i++) {
-			const b = features[i].verticalBounds;
-			if (
-				b === undefined ||
-				!(chunkMaxY < b.minWorldY || chunkMinY > b.maxWorldY)
-			) {
-				hasRelevantFeature = true;
-				break;
-			}
-		}
-		if (!hasRelevantFeature) return;
-
-		for (
-			let cx = chunkX - STRUCTURE_SEARCH_RADIUS;
-			cx <= chunkX + STRUCTURE_SEARCH_RADIUS;
-			cx++
-		) {
-			for (
-				let cz = chunkZ - STRUCTURE_SEARCH_RADIUS;
-				cz <= chunkZ + STRUCTURE_SEARCH_RADIUS;
-				cz++
-			) {
-				for (let i = 0; i < features.length; i++) {
-					const feature = features[i];
-					const bounds = feature.verticalBounds;
-					if (bounds !== undefined) {
-						if (chunkMaxY < bounds.minWorldY) continue;
-						if (chunkMinY > bounds.maxWorldY) continue;
-					}
-					feature.generate(
-						cx,
-						chunkY,
-						cz,
-						biome,
-						placeBlock,
-						SurfaceGenerator.seedAsInt,
-						chunkSize,
-						chunkX,
-						chunkZ,
-					);
-				}
-			}
-		}
+	): void {
+		generateStructures(
+			chunkX,
+			chunkY,
+			chunkZ,
+			this.chunk_size,
+			biome,
+			this.features,
+			SurfaceGenerator.seedAsInt,
+			placeBlock,
+		);
 	}
 
 	private getDensity(

@@ -420,6 +420,17 @@ export class RegionFile {
 
 		_rfAtOpts.at = DATA_START + dataOffset;
 		this.accessHandle.write(data, _rfAtOpts);
+
+		// Persist slot entry + header immediately so the chunk is findable on
+		// reload even if flush() hasn't run yet.
+		_rfAtOpts.at = HEADER_SIZE + idx * SLOT_SIZE;
+		this.accessHandle.write(
+			this._slotTableU8.subarray(idx * SLOT_SIZE, (idx + 1) * SLOT_SIZE),
+			_rfAtOpts,
+		);
+		_rfAtOpts.at = 0;
+		this.accessHandle.write(this.headerU8, _rfAtOpts);
+		this.accessHandle.flush();
 	}
 
 	removeChunk(lx: number, ly: number, lz: number, isEntity: boolean): void {
@@ -432,6 +443,17 @@ export class RegionFile {
 		this.writeSlotInMemory(idx, 0, 0);
 		this.occupiedCount--;
 		this.commitHeader();
+
+		// Persist slot entry + header immediately so the removal is visible on
+		// reload even if flush() hasn't run yet.
+		_rfAtOpts.at = HEADER_SIZE + idx * SLOT_SIZE;
+		this.accessHandle.write(
+			this._slotTableU8.subarray(idx * SLOT_SIZE, (idx + 1) * SLOT_SIZE),
+			_rfAtOpts,
+		);
+		_rfAtOpts.at = 0;
+		this.accessHandle.write(this.headerU8, _rfAtOpts);
+		this.accessHandle.flush();
 	}
 
 	/**

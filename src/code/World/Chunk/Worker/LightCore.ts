@@ -28,6 +28,11 @@ import {
 } from "./ChunkLightHeader";
 import { filtersFullSunlight } from "./ChunkMesherConstants";
 
+// Reusable scratch Set for dirtySlots — avoids per-call allocation.
+// Safe because the light worker is single-threaded and each function
+// consumes the Set synchronously before returning.
+const _dirtySlotsScratch = new Set<number>();
+
 // ---------------------------------------------------------------------------
 // Layout constants
 // ---------------------------------------------------------------------------
@@ -743,7 +748,8 @@ export function lightMutate(
 	if (!view.isLoaded) return _emptyNumberSet;
 
 	const idx = x + y * LIGHT_CHUNK_SIZE + z * LIGHT_CHUNK_SIZE2;
-	const dirtySlots = new Set<number>();
+	_dirtySlotsScratch.clear();
+	const dirtySlots = _dirtySlotsScratch;
 
 	const oldBlockLight = getBlockLight(view, idx);
 	const oldSkyLight = getSkyLight(view, idx);
@@ -1054,13 +1060,15 @@ export function lightSkyReconcile(
 	registry: ChunkViewRegistry,
 	chunkId: bigint,
 ): Set<number> {
-	const dirtySlots = new Set<number>();
+	_dirtySlotsScratch.clear();
+	const dirtySlots = _dirtySlotsScratch;
 	const view = registry.views.get(chunkId);
 	if (!view) return dirtySlots;
 	refreshLayout(registry, view);
 	if (!view.isLoaded) return dirtySlots;
 
 	const size = LIGHT_CHUNK_SIZE;
+	const size2 = size * size;
 	const last = size - 1;
 
 	const neighborIds = [
@@ -1114,8 +1122,8 @@ export function lightSkyReconcile(
 					nz = neighborEdge;
 				}
 
-				const sidx = x + y * size + z * size * size;
-				const nidx = nx + ny * size + nz * size * size;
+				const sidx = x + y * size + z * size2;
+				const nidx = nx + ny * size + nz * size2;
 				const selfSky = (view.light_array[sidx]! >> LIGHT_SKY_SHIFT) & 0xf;
 				const neighborSky =
 					(neighbor.light_array[nidx]! >> LIGHT_SKY_SHIFT) & 0xf;
@@ -1179,13 +1187,15 @@ export function lightBlockReconcile(
 	registry: ChunkViewRegistry,
 	chunkId: bigint,
 ): Set<number> {
-	const dirtySlots = new Set<number>();
+	_dirtySlotsScratch.clear();
+	const dirtySlots = _dirtySlotsScratch;
 	const view = registry.views.get(chunkId);
 	if (!view) return dirtySlots;
 	refreshLayout(registry, view);
 	if (!view.isLoaded) return dirtySlots;
 
 	const size = LIGHT_CHUNK_SIZE;
+	const size2 = size * size;
 
 	Q_A.clear();
 
@@ -1225,8 +1235,8 @@ export function lightBlockReconcile(
 					nz = f.neighborEdge;
 				}
 
-				const sidx = sx + sy * size + sz * size * size;
-				const nidx = nx + ny * size + nz * size * size;
+				const sidx = sx + sy * size + sz * size2;
+				const nidx = nx + ny * size + nz * size2;
 				const selfLevel = getBlockLight(view, sidx);
 				const neighborLevel = getBlockLight(neighbor, nidx);
 
@@ -1277,7 +1287,8 @@ export function propagateDeferred(
 	chunkId: bigint,
 	seedState: { queue: Uint16Array; length: number },
 ): Set<number> {
-	const dirtySlots = new Set<number>();
+	_dirtySlotsScratch.clear();
+	const dirtySlots = _dirtySlotsScratch;
 	const view = registry.views.get(chunkId);
 	if (!view) return dirtySlots;
 	refreshLayout(registry, view);

@@ -20,6 +20,15 @@ import {
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
 import { flushDirtyMergedGroups } from "./MergedMeshManager";
+import {
+	normalizeChunkLod,
+	shouldSkipLodForChunk,
+} from "./Worker/LODUtilities";
+import {
+	hasStableVoxelNeighborsForCachedMesh,
+	maybeRemeshNeighborsNowStable,
+	scheduleChunkAndNeighborsRemesh,
+} from "./Worker/NeighborHelpers";
 
 export type WorkerMessageData = WorkerResponseData;
 
@@ -182,6 +191,13 @@ export class ChunkWorkerPool {
 	private static readonly _flushPendingScratch: Array<[Chunk, boolean]> = [];
 	private static readonly _queryScratch: Chunk[] = [];
 	private static readonly _dedupScratch: Set<number> = new Set();
+
+	// Pre-bound methods — avoids per-call .bind(this) allocation
+	private readonly _boundScheduleRemesh = this.scheduleRemesh.bind(this);
+	private readonly _compareRemeshPriorityFn = (
+		[ca, pa]: [Chunk, boolean],
+		[cb, pb]: [Chunk, boolean],
+	) => this.compareRemeshPriority(ca, pa, cb, pb);
 	// SoA scratch for scheduleBackgroundLodPrecompute — avoids per-candidate
 	// object allocation.  Indices are grown via .push() to stay on
 	// PACKED_SMI_ELEMENTS (array.length = N followed by fill triggers a
@@ -1070,9 +1086,9 @@ export class ChunkWorkerPool {
 			const { chunkId, lod, opaque, transparent } = data;
 			const chunk = this.resolveChunkByMessageId(chunkId);
 			if (chunk) {
-				if (ChunkWorkerPool.shouldSkipLodForChunk(chunk, lod)) {
+				if (shouldSkipLodForChunk(chunk, lod)) {
 					// Drop stale/old underground LOD2+ results.
-					ChunkWorkerPool.normalizeChunkLod(chunk);
+					normalizeChunkLod(chunk);
 					chunk.isDirty = true;
 					chunk.remeshQueued = false;
 					this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);
@@ -1080,7 +1096,7 @@ export class ChunkWorkerPool {
 				}
 
 				const canCacheMesh =
-					lod === 0 || this.hasStableVoxelNeighborsForCachedMesh(chunk);
+					lod === 0 || hasStableVoxelNeighborsForCachedMesh(chunk);
 
 				if (canCacheMesh) {
 					chunk.setCachedLODMesh(lod, {
@@ -1092,7 +1108,7 @@ export class ChunkWorkerPool {
 				if (this.opfsReady && this.opfsClient) {
 					const shouldPersistMesh =
 						lod === 0 ||
-						(lod >= 1 && this.hasStableVoxelNeighborsForCachedMesh(chunk));
+						(lod >= 1 && hasStableVoxelNeighborsForCachedMesh(chunk));
 					if (shouldPersistMesh) {
 						const bytes = serializeMeshPair(opaque, transparent);
 						if (bytes) {
@@ -1221,7 +1237,7 @@ export class ChunkWorkerPool {
 
 	public scheduleRemesh(chunk: Chunk | undefined, priority = false): void {
 		if (!chunk?.isLoaded) return;
-		ChunkWorkerPool.normalizeChunkLod(chunk);
+		normalizeChunkLod(chunk);
 		if (!chunk.hasVoxelData) {
 			if (!this.tryApplyCachedLODMesh(chunk, true)) {
 				chunk.isDirty = true;
@@ -1275,9 +1291,7 @@ export class ChunkWorkerPool {
 		}
 		this.pendingRemeshMap.clear();
 
-		pending.sort(([ca, pa], [cb, pb]) =>
-			this.compareRemeshPriority(ca, pa, cb, pb),
-		);
+		pending.sort(this._compareRemeshPriorityFn);
 
 		for (let i = 0; i < pending.length; i++) {
 			const [chunk, priority] = pending[i]!;
@@ -1333,10 +1347,7 @@ export class ChunkWorkerPool {
 	): boolean {
 		if (!allowDirtyReuse && chunk.isDirty) return false;
 
-		if (
-			chunk.hasVoxelData &&
-			!this.hasStableVoxelNeighborsForCachedMesh(chunk)
-		) {
+		if (chunk.hasVoxelData && !hasStableVoxelNeighborsForCachedMesh(chunk)) {
 			return false;
 		}
 
@@ -1471,7 +1482,10 @@ export class ChunkWorkerPool {
 							this.setWorkerTaskContext(workerIndex, null);
 							this._markWorkerIdle(workerIndex);
 							if (needsLightRefinement) {
-								this.scheduleChunkAndNeighborsRemesh(chunk);
+								scheduleChunkAndNeighborsRemesh(
+									chunk,
+									this._boundScheduleRemesh,
+								);
 								this.enqueueDeferredLightingRefinement(
 									chunk,
 									lightSeedQueue as Uint16Array,
@@ -1489,8 +1503,8 @@ export class ChunkWorkerPool {
 							return;
 						}
 
-						this.scheduleChunkAndNeighborsRemesh(chunk);
-						this.maybeRemeshNeighborsNowStable(chunk);
+						scheduleChunkAndNeighborsRemesh(chunk, this._boundScheduleRemesh);
+						maybeRemeshNeighborsNowStable(chunk, this._boundScheduleRemesh);
 
 						if (needsLightRefinement) {
 							this.enqueueDeferredLightingRefinement(
@@ -1562,13 +1576,7 @@ export class ChunkWorkerPool {
 
 				this.clearInflightRemeshByMessage(data.chunkId, data.lod);
 
-				const fullMeshMessage: FullMeshMessage = {
-					type: WorkerTaskType.GenerateFullMesh,
-					chunkId: data.chunkId,
-					lod: data.lod,
-					opaque: data.opaque,
-					transparent: data.transparent,
-				};
+				const fullMeshMessage = data as unknown as FullMeshMessage;
 				const pending2 =
 					this.meshResultQueue.length - this.meshResultQueueReadIdx;
 				if (
@@ -1847,62 +1855,6 @@ export class ChunkWorkerPool {
 	}
 
 	// -------------------------------------------------------------------------
-	// Neighbor remesh helpers
-	// -------------------------------------------------------------------------
-
-	private scheduleChunkAndNeighborsRemesh(chunk: Chunk): void {
-		this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);
-		const n0 = chunk.getNeighbor(-1, 0, 0);
-		const n1 = chunk.getNeighbor(0, 0, -1);
-		const n2 = chunk.getNeighbor(0, -1, 0);
-		const n3 = chunk.getNeighbor(1, 0, 0);
-		const n4 = chunk.getNeighbor(0, 0, 1);
-		const n5 = chunk.getNeighbor(0, 1, 0);
-		if (n0) this.scheduleRemesh(n0, (n0.lodLevel ?? 0) === 0);
-		if (n1) this.scheduleRemesh(n1, (n1.lodLevel ?? 0) === 0);
-		if (n2) this.scheduleRemesh(n2, (n2.lodLevel ?? 0) === 0);
-		if (n3) this.scheduleRemesh(n3, (n3.lodLevel ?? 0) === 0);
-		if (n4) this.scheduleRemesh(n4, (n4.lodLevel ?? 0) === 0);
-		if (n5) this.scheduleRemesh(n5, (n5.lodLevel ?? 0) === 0);
-	}
-
-	private hasStableVoxelNeighborsForCachedMesh(chunk: Chunk): boolean {
-		const n0 = chunk.getNeighbor(-1, 0, 0);
-		if (!n0?.isLoaded || !n0.hasVoxelData) return false;
-		const n1 = chunk.getNeighbor(1, 0, 0);
-		if (!n1?.isLoaded || !n1.hasVoxelData) return false;
-		const n2 = chunk.getNeighbor(0, -1, 0);
-		if (!n2?.isLoaded || !n2.hasVoxelData) return false;
-		const n3 = chunk.getNeighbor(0, 1, 0);
-		if (!n3?.isLoaded || !n3.hasVoxelData) return false;
-		const n4 = chunk.getNeighbor(0, 0, -1);
-		if (!n4?.isLoaded || !n4.hasVoxelData) return false;
-		const n5 = chunk.getNeighbor(0, 0, 1);
-		if (!n5?.isLoaded || !n5.hasVoxelData) return false;
-		return true;
-	}
-
-	private maybeRemeshNeighborsNowStable(chunk: Chunk): void {
-		const neighbors = [
-			chunk.getNeighbor(-1, 0, 0),
-			chunk.getNeighbor(1, 0, 0),
-			chunk.getNeighbor(0, -1, 0),
-			chunk.getNeighbor(0, 1, 0),
-			chunk.getNeighbor(0, 0, -1),
-			chunk.getNeighbor(0, 0, 1),
-		];
-		for (let i = 0; i < neighbors.length; i++) {
-			const neighbor = neighbors[i];
-			if (!neighbor?.isLoaded || !neighbor.hasVoxelData) continue;
-			if (!neighbor.getCachedLODMesh(neighbor.lodLevel)) continue;
-			if (this.hasStableVoxelNeighborsForCachedMesh(neighbor)) {
-				neighbor.isDirty = true;
-				this.scheduleRemesh(neighbor, (neighbor.lodLevel ?? 0) === 0);
-			}
-		}
-	}
-
-	// -------------------------------------------------------------------------
 	// Distant terrain shared init
 	// -------------------------------------------------------------------------
 
@@ -2005,7 +1957,7 @@ export class ChunkWorkerPool {
 					!taskChunk.isLoaded ||
 					!taskChunk.hasVoxelData ||
 					precomputeLod === undefined ||
-					ChunkWorkerPool.shouldSkipLodForChunk(taskChunk, precomputeLod) ||
+					shouldSkipLodForChunk(taskChunk, precomputeLod) ||
 					taskChunk.hasCachedLODMesh(precomputeLod)
 				) {
 					continue;
@@ -2061,7 +2013,7 @@ export class ChunkWorkerPool {
 					this.debugStats.totalTerrainDispatches++;
 					dispatchedThisTick++;
 				} else if (taskType === TaskType.Remesh) {
-					ChunkWorkerPool.normalizeChunkLod(taskChunk!);
+					normalizeChunkLod(taskChunk!);
 
 					const lod = taskChunk!.lodLevel ?? 0;
 					this.setWorkerTaskContext(workerIndex, {
@@ -2189,26 +2141,7 @@ export class ChunkWorkerPool {
 		}
 	}
 
-	private static readonly UNDERGROUND_MAX_LOD = 1;
 	private static readonly MAX_MESH_QUEUE = 512;
-
-	private static shouldSkipLodForChunk(chunk: Chunk, lod: number): boolean {
-		return chunk.chunkY < 0 && lod > ChunkWorkerPool.UNDERGROUND_MAX_LOD;
-	}
-
-	private static clampLodForChunk(chunk: Chunk, lod: number): number {
-		return chunk.chunkY < 0 && lod > ChunkWorkerPool.UNDERGROUND_MAX_LOD
-			? ChunkWorkerPool.UNDERGROUND_MAX_LOD
-			: lod;
-	}
-
-	private static normalizeChunkLod(chunk: Chunk): void {
-		const lod = chunk.lodLevel ?? 0;
-		const clamped = ChunkWorkerPool.clampLodForChunk(chunk, lod);
-		if (clamped !== lod) {
-			chunk.lodLevel = clamped;
-		}
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -2221,3 +2154,15 @@ addChunkDisposeHook((chunk) => {
 if (import.meta.hot) {
 	import.meta.hot.dispose(() => ChunkWorkerPool.teardownForHmr());
 }
+
+// Re-export extracted utilities for backward compatibility
+export {
+	clampLodForChunk,
+	normalizeChunkLod,
+	shouldSkipLodForChunk,
+} from "./Worker/LODUtilities";
+export {
+	hasStableVoxelNeighborsForCachedMesh,
+	maybeRemeshNeighborsNowStable,
+	scheduleChunkAndNeighborsRemesh,
+} from "./Worker/NeighborHelpers";

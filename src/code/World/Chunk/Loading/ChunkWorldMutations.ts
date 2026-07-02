@@ -45,6 +45,19 @@ class ResolvedChunkCoords {
 
 const _coordScratch = new ResolvedChunkCoords();
 
+const _localCoordsScratch: LocalBlockCoordinates = {
+	worldX: 0,
+	worldY: 0,
+	worldZ: 0,
+	chunkX: 0,
+	chunkY: 0,
+	chunkZ: 0,
+	localX: 0,
+	localY: 0,
+	localZ: 0,
+	chunk: undefined,
+};
+
 // M4: Reusable BlockMutationContext — avoids per-mutation object allocation
 const _ctxScratch: BlockMutationContext = {
 	worldX: 0,
@@ -234,26 +247,18 @@ export function toLocalBlockCoordinates(
 	worldY: number,
 	worldZ: number,
 ): LocalBlockCoordinates {
-	const chunkX = worldToChunkCoord(worldX);
-	const chunkY = worldToChunkCoord(worldY);
-	const chunkZ = worldToChunkCoord(worldZ);
-
-	const localX = worldToBlockCoord(worldX);
-	const localY = worldToBlockCoord(worldY);
-	const localZ = worldToBlockCoord(worldZ);
-
-	return {
-		worldX,
-		worldY,
-		worldZ,
-		chunkX,
-		chunkY,
-		chunkZ,
-		localX,
-		localY,
-		localZ,
-		chunk: getChunk(chunkX, chunkY, chunkZ),
-	};
+	const s = _localCoordsScratch;
+	s.worldX = worldX;
+	s.worldY = worldY;
+	s.worldZ = worldZ;
+	s.chunkX = worldToChunkCoord(worldX);
+	s.chunkY = worldToChunkCoord(worldY);
+	s.chunkZ = worldToChunkCoord(worldZ);
+	s.localX = worldToBlockCoord(worldX);
+	s.localY = worldToBlockCoord(worldY);
+	s.localZ = worldToBlockCoord(worldZ);
+	s.chunk = getChunk(s.chunkX, s.chunkY, s.chunkZ);
+	return s;
 }
 
 export function getBlockStateByWorldCoords(
