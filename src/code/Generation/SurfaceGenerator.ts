@@ -35,11 +35,13 @@ import {
 export type SurfaceGenerationResult = {
 	topSunlightMask: Uint8Array;
 	topSurfaceYMap: Int16Array;
+	biomeMap: Uint8Array;
+	riverNoiseMap: Float32Array;
 	minSurfaceY: number;
 	maxSurfaceY: number;
 };
 
-type ColumnPrepassCacheEntry = {
+export type ColumnPrepassCacheEntry = {
 	terrainHeightMap: Int32Array;
 	riverNoiseMap: Float32Array;
 	yFreqMap: number;
@@ -541,6 +543,8 @@ export class SurfaceGenerator {
 
 		const topSunlightMask = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE);
 		const topSurfaceYMap = new Int16Array(CHUNK_SIZE * CHUNK_SIZE);
+		const biomeMap = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE);
+		const riverNoiseMap = new Float32Array(CHUNK_SIZE * CHUNK_SIZE);
 		topSurfaceYMap.fill(NO_SURFACE_Y);
 
 		const volcanicLiquidId =
@@ -564,6 +568,8 @@ export class SurfaceGenerator {
 			return {
 				topSunlightMask,
 				topSurfaceYMap,
+				biomeMap,
+				riverNoiseMap,
 				minSurfaceY: NO_SURFACE_Y,
 				maxSurfaceY: NO_SURFACE_Y,
 			};
@@ -593,6 +599,9 @@ export class SurfaceGenerator {
 				if (hasSurface) {
 					topSurfaceYMap[columnIndex] = topSurfaceY;
 				}
+
+				biomeMap[columnIndex] = getBiome(worldX, worldZ).id;
+				riverNoiseMap[columnIndex] = riverNoise;
 
 				topSunlightMask[columnIndex] =
 					!hasSurface || topSurfaceY <= topWorldY ? 1 : 0;
@@ -862,6 +871,8 @@ export class SurfaceGenerator {
 		return {
 			topSunlightMask,
 			topSurfaceYMap,
+			biomeMap,
+			riverNoiseMap,
 			minSurfaceY,
 			maxSurfaceY,
 		};
@@ -1181,6 +1192,8 @@ export class SurfaceGenerator {
 			this.features,
 			SurfaceGenerator.seedAsInt,
 			placeBlock,
+			(worldX: number, worldZ: number) =>
+				this.resolveColumnPrepassForWorld(worldX, worldZ),
 		);
 	}
 

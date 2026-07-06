@@ -1,6 +1,6 @@
 import type { Biome } from "../Biome/BiomeTypes";
 import { getFinalTerrainHeight } from "../TerrainHeightMap";
-import type { IWorldFeature } from "./IWorldFeature";
+import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 import { Structure, type StructureData } from "./Structure";
 
@@ -66,6 +66,7 @@ export class StructureSpawnerFeature implements IWorldFeature {
 		chunkSize: number,
 		generatingChunkX: number,
 		generatingChunkZ: number,
+		columnPrepassResolver?: ColumnPrepassResolver,
 	) {
 		if (StructureSpawnerFeature.structures.size === 0) return;
 
@@ -107,10 +108,17 @@ export class StructureSpawnerFeature implements IWorldFeature {
 		)
 			return;
 
-		const groundHeight = getFinalTerrainHeight(
-			structureOriginX,
-			structureOriginZ,
-		);
+		let groundHeight: number;
+		if (columnPrepassResolver) {
+			const resolved = columnPrepassResolver(
+				structureOriginX,
+				structureOriginZ,
+			);
+			groundHeight =
+				resolved.entry.terrainHeightMap[resolved.localX + resolved.localZ * 32];
+		} else {
+			groundHeight = getFinalTerrainHeight(structureOriginX, structureOriginZ);
+		}
 
 		structure.place(
 			structureOriginX,

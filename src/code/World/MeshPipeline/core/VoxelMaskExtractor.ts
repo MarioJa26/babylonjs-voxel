@@ -1,5 +1,6 @@
 // MeshPipeline/core/VoxelMaskExtractor.ts
 
+import { WATER_BLOCK_ID } from "../../Chunk/Worker/ChunkMesherConstants";
 import {
 	FACE_NX,
 	FACE_NY,
@@ -30,6 +31,8 @@ import { getShapeInfo } from "./ShapePipeline";
 const NON_CUBE_MASK = 0x40000000;
 const BACK_FACE_MASK = 0x80000000;
 const PACKED_ID_STATE_MASK = 0x0000ffff;
+const WATER_ABOVE_MASK = 0x10000;
+const WATER_LEVEL_PAIR_MASK = 0x20000; // bit 17 — indicates water level pair is set
 
 type WritableNumberArray = number[] | Int32Array | Uint16Array | Uint32Array;
 
@@ -140,6 +143,25 @@ export class VoxelMaskExtractor {
 		const currWaterGlass = currFlags & FLAG_WATER_GLASS;
 		const nbrWaterGlass = nbrFlags & FLAG_WATER_GLASS;
 
+		// --- participation ---
+		const currParticipates = currSolid && currGreedy;
+		const nbrParticipates = nbrSolid && nbrGreedy;
+
+		// --- cube fast path ---
+		// Two opaque participating cubes never produce a face. This is the
+		// dominant interior case, so short-circuit before any id / interface /
+		// shape lookups to keep the common path branch-light.
+		const bothCube =
+			currParticipates && nbrParticipates && !currPartial && !nbrPartial;
+		if (bothCube && !currTransparent && !nbrTransparent) {
+			mask[outIndex] = 0;
+			lightMask[outIndex] = 0;
+			return;
+		}
+
+		const currId = getCachedBlockId(currentPacked);
+		const nbrId = getCachedBlockId(neighborPacked);
+
 		// --- transparent interface (water/glass) ---
 		let preserveInterface = 0;
 		if (
@@ -150,26 +172,21 @@ export class VoxelMaskExtractor {
 			currWaterGlass &&
 			nbrWaterGlass
 		) {
-			if (
-				getCachedBlockId(currentPacked) !== getCachedBlockId(neighborPacked)
-			) {
+			if (currId !== nbrId) {
 				preserveInterface = 1;
 			}
 		}
 
-		// --- participation ---
-		const currParticipates = currSolid && currGreedy;
-		const nbrParticipates = nbrSolid && nbrGreedy;
-
-		// --- cube fast path ---
-		const bothCube =
-			currParticipates && nbrParticipates && !currPartial && !nbrPartial;
-
 		if (bothCube) {
-			if (!preserveInterface && !currTransparent && !nbrTransparent) {
-				mask[outIndex] = 0;
-				lightMask[outIndex] = 0;
-				return;
+			// Water-to-water same level: no face needed
+			if (currWaterGlass && nbrWaterGlass && currId === nbrId) {
+				const currLevel = (currentPacked >> 10) & 0xf;
+				const nbrLevel = (neighborPacked >> 10) & 0xf;
+				if (currLevel === nbrLevel) {
+					mask[outIndex] = 0;
+					lightMask[outIndex] = 0;
+					return;
+				}
 			}
 		}
 
@@ -211,9 +228,6 @@ export class VoxelMaskExtractor {
 		// TRANSPARENT INTERFACE EMISSION
 		// ============================================================
 		if (preserveInterface) {
-			const currId = getCachedBlockId(currentPacked);
-			const nbrId = getCachedBlockId(neighborPacked);
-
 			const preferCurrent =
 				currId === 60 || currId === 61
 					? 1
@@ -262,6 +276,13 @@ export class VoxelMaskExtractor {
 				return;
 			}
 
+			if ((packedMask & 0x3ff) === WATER_BLOCK_ID) {
+				packedMask &= ~(0x7 << 13);
+				if ((ctx.getBlock(bx, by + 1, bz, 0) & 0x3ff) === WATER_BLOCK_ID) {
+					packedMask |= WATER_ABOVE_MASK;
+				}
+			}
+
 			mask[outIndex] = packedMask;
 			lightMask[outIndex] = (packedAO & 0xff) | ((packedLightOnly & 0xff) << 8);
 
@@ -287,13 +308,35 @@ export class VoxelMaskExtractor {
 			currShapeInfo &&
 			currShapeInfo.closedFaceMask & currentFaceBit;
 
-		const emitCurrent =
+		let emitCurrent =
 			currParticipates &&
 			(!nbrSolid || (nbrTransparent && !currTransparent) || !nbrClosesFace);
 
-		const emitNeighbor =
+		let emitNeighbor =
 			nbrParticipates &&
 			(!currSolid || (currTransparent && !nbrTransparent) || !currClosesFace);
+
+		let waterCurrLevel = -1;
+		let waterNbrLevel = -1;
+		if (
+			currWaterGlass &&
+			nbrWaterGlass &&
+			currId === WATER_BLOCK_ID &&
+			nbrId === WATER_BLOCK_ID
+		) {
+			waterCurrLevel = (currentPacked >> 10) & 0xf;
+			waterNbrLevel = (neighborPacked >> 10) & 0xf;
+		}
+
+		if (!emitCurrent && !emitNeighbor) {
+			if (waterCurrLevel >= 0 && waterCurrLevel !== waterNbrLevel) {
+				if (waterCurrLevel > waterNbrLevel) {
+					emitCurrent = true;
+				} else {
+					emitNeighbor = true;
+				}
+			}
+		}
 
 		if (!emitCurrent && !emitNeighbor) {
 			mask[outIndex] = 0;
@@ -322,6 +365,49 @@ export class VoxelMaskExtractor {
 			mask[outIndex] = 0;
 			lightMask[outIndex] = 0;
 			return;
+		}
+
+		if ((packedMask & 0x3ff) === WATER_BLOCK_ID) {
+			packedMask &= ~(0x7 << 13);
+			// waterAbove must reflect the block whose top defines the face.
+			// For a level-pair face that is the SHALLOWER column (min level);
+			// otherwise it is the emitting block (current or neighbor).
+			let aboveX = bx;
+			let aboveY = by;
+			let aboveZ = bz;
+			if (waterCurrLevel >= 0 && waterCurrLevel !== waterNbrLevel) {
+				if (waterCurrLevel > waterNbrLevel) {
+					aboveX = nx;
+					aboveY = ny;
+					aboveZ = nz;
+				}
+				// else current is the shallower column -> keep (bx,by,bz)
+			} else if (emitNeighbor) {
+				aboveX = nx;
+				aboveY = ny;
+				aboveZ = nz;
+			}
+			if (
+				(ctx.getBlock(aboveX, aboveY + 1, aboveZ, 0) & 0x3ff) ===
+				WATER_BLOCK_ID
+			) {
+				packedMask |= WATER_ABOVE_MASK;
+			}
+		}
+
+		if (waterCurrLevel >= 0 && waterCurrLevel !== waterNbrLevel) {
+			const tallerLevel = Math.max(waterCurrLevel, waterNbrLevel);
+			const shallowerLevel = Math.min(waterCurrLevel, waterNbrLevel);
+			// Bit layout (must match FaceEmitter.decode):
+			//   tallerLevel   -> bits 10-12 (3 bits, 0-7)
+			//   shallowerLevel -> bits 13-15 (3 bits, 0-7)
+			// These ranges are adjacent and MUST NOT overlap; the decoder reads
+			// tallerLevel with & 0x7 (3 bits), so bit 13 is exclusively shallowerLevel's.
+			packedMask =
+				(packedMask & ~(0x7 << 10) & ~(0x7 << 13)) |
+				(tallerLevel << 10) |
+				(shallowerLevel << 13) |
+				WATER_LEVEL_PAIR_MASK;
 		}
 
 		mask[outIndex] = packedMask;

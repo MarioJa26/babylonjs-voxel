@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-01T23:55:07.116Z
+Generated: 2026-07-06T19:28:21.591Z
 
-> **Summary:** 116 classes · 2236 members · 436 module-level functions · 42917 LOC
+> **Summary:** 117 classes · 2270 members · 461 module-level functions · 43792 LOC
 
 ---
 
@@ -83,7 +83,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `Entities/CustomBoat.ts` (759 LOC)
+## `Entities/CustomBoat.ts` (774 LOC)
 
 ### export class CustomBoat implements IUsable
 
@@ -103,6 +103,7 @@ Generated: 2026-07-01T23:55:07.116Z
 - `static #boatCullDistSq: unknown`
 - `#cfg: unknown`
 - `#collisionHalfExtents: unknown`
+- `#collisionCenterOffset: unknown`
 - `#boat: Mesh`
 - `#voxelCollider: VoxelObbCollider`
 - `#mount: Mount`
@@ -639,7 +640,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `Generation/CaveNoiseGrid.ts` (58 LOC)
+## `Generation/CaveNoiseGrid.ts` (68 LOC)
 
 ### export class CaveNoiseGrid
 
@@ -652,6 +653,7 @@ Generated: 2026-07-01T23:55:07.116Z
 - `private readonly detail: NoiseSampler`
 
 **Methods**
+- `public reset(chunkX: number, chunkY: number, chunkZ: number, chunkSize: number): void`
 - `public getCheese(localX: number, localY: number, localZ: number): number`
 - `public getTunnel(localX: number, localY: number, localZ: number): number`
 - `public getDetail(localX: number, localY: number, localZ: number): number`
@@ -889,7 +891,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `Generation/NoiseAndParameters/NoiseSampler.ts` (79 LOC)
+## `Generation/NoiseAndParameters/NoiseSampler.ts` (104 LOC)
 
 ### export class NoiseSampler
 
@@ -900,13 +902,18 @@ Generated: 2026-07-01T23:55:07.116Z
 - `private noiseSamples: Float32Array`
 - `private sampleRate: number`
 - `private pointsPerDim: number`
+- `private noiseFunction: (x: number, y: number, z: number) => number`
+- `private scale: number`
+- `private xzFactor: number`
 
 **Methods**
+- `public reset(chunkX: number, chunkY: number, chunkZ: number, chunkSize: number): void`
+- `private sampleNoise(chunkX: number, chunkY: number, chunkZ: number, chunkSize: number): void`
 - `public get(localX: number, localY: number, localZ: number): number`
 
 ---
 
-## `Generation/NoiseAndParameters/Spline.ts` (39 LOC)
+## `Generation/NoiseAndParameters/Spline.ts` (62 LOC)
 
 ### export class Spline
 
@@ -915,8 +922,13 @@ Generated: 2026-07-01T23:55:07.116Z
 
 **Properties**
 - `private points: SplinePoint[]`
+- `private tMin: number`
+- `private tMax: number`
+- `private lut: Float32Array`
+- `private static readonly LUT_SIZE: unknown`
 
 **Methods**
+- `private evaluate(t: number): number`
 - `public getValue(t: number): number`
 
 **Types / Interfaces / Enums**
@@ -985,7 +997,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `Generation/Structure/BadlandsSpireFeature.ts` (283 LOC)
+## `Generation/Structure/BadlandsSpireFeature.ts` (303 LOC)
 
 ### export class BadlandsSpireFeature implements IWorldFeature
 
@@ -1000,7 +1012,7 @@ Generated: 2026-07-01T23:55:07.116Z
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
 - `private generateSpire(chunkX: number, chunkY: number, chunkZ: number, spireX: number, spireZ: number, groundHeight: number, spireHeight: number, tierHeight: number, halfFp: number, placeBlock: (
 			x: number,
 			y: number,
@@ -1016,7 +1028,7 @@ Generated: 2026-07-01T23:55:07.116Z
 			ow: boolean,
 		) => void, seed: number): void`
 - `private getLayerBlock(spireLocalY: number, seed: number): number`
-- `private findGroundHeight(x: number, z: number, halfFp: number): number`
+- `private findGroundHeight(x: number, z: number, halfFp: number, columnPrepassResolver?: ColumnPrepassResolver): number`
 
 ---
 
@@ -1075,15 +1087,16 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `Generation/Structure/IWorldFeature.ts` (26 LOC)
+## `Generation/Structure/IWorldFeature.ts` (36 LOC)
 
 **Types / Interfaces / Enums**
 - interface `IWorldFeature`
 - type `FeatureVerticalBounds`
+- type `ColumnPrepassResolver`
 
 ---
 
-## `Generation/Structure/LavaPoolFeature.ts` (142 LOC)
+## `Generation/Structure/LavaPoolFeature.ts` (151 LOC)
 
 ### export class LavaPoolFeature implements IWorldFeature
 
@@ -1097,7 +1110,7 @@ Generated: 2026-07-01T23:55:07.116Z
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
 - `private generateLavaPool(chunkX: number, chunkY: number, chunkZ: number, poolCenterX: number, poolCenterY: number, poolCenterZ: number, placeBlock: (
 			x: number,
 			y: number,
@@ -1186,7 +1199,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `Generation/Structure/StructureFeature.ts` (108 LOC)
+## `Generation/Structure/StructureFeature.ts` (116 LOC)
 
 ### export class StructureSpawnerFeature implements IWorldFeature
 
@@ -1206,11 +1219,11 @@ Generated: 2026-07-01T23:55:07.116Z
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
 
 ---
 
-## `Generation/Structure/TowerFeature.ts` (206 LOC)
+## `Generation/Structure/TowerFeature.ts` (229 LOC)
 
 ### export class TowerFeature implements IWorldFeature
 
@@ -1224,14 +1237,14 @@ Generated: 2026-07-01T23:55:07.116Z
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
 - `private generateCylinderTower(chunkX: number, chunkY: number, chunkZ: number, towerCenterX: number, towerCenterZ: number, towerRadius: number, groundHeight: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, chunkSize: number, seed: number): void`
+		) => void, chunkSize: number, seed: number, columnPrepassResolver?: ColumnPrepassResolver): void`
 - `private generateUndergroundCylinderTower(chunkX: number, chunkY: number, chunkZ: number, towerCenterX: number, towerCenterZ: number, towerRadius: number, groundHeight: number, placeBlock: (
 			x: number,
 			y: number,
@@ -1239,11 +1252,11 @@ Generated: 2026-07-01T23:55:07.116Z
 			id: number,
 			ow: boolean,
 		) => void, chunkSize: number): void`
-- `private findMinGroundHeightForTower(towerCenterX: number, towerCenterZ: number, towerRadius: number, biome: Biome): number`
+- `private findMinGroundHeightForTower(towerCenterX: number, towerCenterZ: number, towerRadius: number, biome: Biome, columnPrepassResolver?: ColumnPrepassResolver): number`
 
 ---
 
-## `Generation/SurfaceGenerator.ts` (1047 LOC)
+## `Generation/SurfaceGenerator.ts` (1059 LOC)
 
 ### export class SurfaceGenerator
 
@@ -1328,7 +1341,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `Generation/Terrain/StructurePlacer.ts` (65 LOC)
+## `Generation/Terrain/StructurePlacer.ts` (70 LOC)
 
 **Module-level functions**
 - `export function generateStructures(chunkX: number, chunkY: number, chunkZ: number, chunkSize: number, biome: Biome, features: IWorldFeature[], seedAsInt: number, placeBlock: (
@@ -1337,7 +1350,7 @@ Generated: 2026-07-01T23:55:07.116Z
 		z: number,
 		id: number,
 		ow: boolean,
-	) => void): void`
+	) => void, columnPrepassResolver?: ColumnPrepassResolver): void`
 
 ---
 
@@ -1397,7 +1410,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `Generation/UndergroundGenerator.ts` (136 LOC)
+## `Generation/UndergroundGenerator.ts` (138 LOC)
 
 ### export class UndergroundGenerator
 
@@ -1411,6 +1424,7 @@ Generated: 2026-07-01T23:55:07.116Z
 - `private readonly cheeseNoise: (x: number, y: number, z: number) => number`
 - `private readonly tunnelNoise: (x: number, y: number, z: number) => number`
 - `private readonly detailNoise: (x: number, y: number, z: number) => number`
+- `private readonly caveGrid: CaveNoiseGrid`
 
 **Methods**
 - `public generate(chunkX: number, chunkY: number, chunkZ: number, topSurfaceYMap: Int16Array, placeBlock: (
@@ -1423,7 +1437,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `Generation/WorldGenerator.ts` (263 LOC)
+## `Generation/WorldGenerator.ts` (264 LOC)
 
 ### export class WorldGenerator
 
@@ -2102,7 +2116,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `Player/Hud/PlayerHud.ts` (839 LOC)
+## `Player/Hud/PlayerHud.ts` (847 LOC)
 
 ### export class PlayerHud
 
@@ -2135,6 +2149,7 @@ Generated: 2026-07-01T23:55:07.116Z
 - `#prevStaminaPct: unknown`
 - `#prevManaPct: unknown`
 - `#overlayDiv: HTMLDivElement`
+- `#craftingContainer: HTMLDivElement`
 - `static debugPanelDiv: HTMLDivElement`
 - `private static infoRows: {
 		[key: string]: {
@@ -2158,8 +2173,9 @@ Generated: 2026-07-01T23:55:07.116Z
 - `public set selectedHotbarSlot(slot: number)`
 
 **Methods**
+- `async #initCraftingUI(): Promise<void>`
 - `private initializeHUD(): HTMLDivElement`
-- `private createCraftingUI(): HTMLDivElement`
+- `private createCraftingUI(container: HTMLDivElement): void`
 - `public updateCraftingAvailability(): void`
 - `private createInventoryUI(): HTMLDivElement`
 - `private createHotbarUI(): HTMLDivElement`
@@ -2233,7 +2249,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `Player/Inventory/Item.ts` (315 LOC)
+## `Player/Inventory/Item.ts` (316 LOC)
 
 ### export class Item implements IUsable
 
@@ -2569,7 +2585,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `Player/PlayerLoopController.ts` (419 LOC)
+## `Player/PlayerLoopController.ts` (423 LOC)
 
 ### export class PlayerLoopController
 
@@ -3111,7 +3127,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/Chunk/Chunk.ts` (1227 LOC)
+## `World/Chunk/Chunk.ts` (1222 LOC)
 
 ### export class Chunk
 
@@ -3237,7 +3253,7 @@ Generated: 2026-07-01T23:55:07.116Z
 - `public getBlock(lx: number, ly: number, lz: number): number`
 - `public getBlockState(lx: number, ly: number, lz: number): number`
 - `public getBlockPacked(lx: number, ly: number, lz: number): number`
-- `private _expandBlocksToDense(out: Uint16Array): void`
+- `private isOpaqueAtIndex(i: number): number`
 - `public setBlock(localX: number, localY: number, localZ: number, blockId: number, state: unknown = 0): void`
 - `private dispatchLightMutate(localX: number, localY: number, localZ: number, oldPacked: number, newPacked: number): void`
 - `public deleteBlock(localX: number, localY: number, localZ: number): void`
@@ -3255,7 +3271,6 @@ Generated: 2026-07-01T23:55:07.116Z
 - `private isTransparent(blockPacked: number, axis?: number, dir?: number): boolean`
 - `private static applySliceStateToBoxForLight(min: [number, number, number], max: [number, number, number], state: number): { min: [number, number, number]; max: [number, number, number] }`
 - `public static facePairIndex(i: number, j: number): number`
-- `private static isBlockOpaque(packed: number): boolean`
 - `private static connectFacesMask(faceMask: number): number`
 - `public computeFaceConnectivity(): number`
 - `public dispose(): void`
@@ -3272,7 +3287,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/Chunk/chunk.worker.ts` (157 LOC)
+## `World/Chunk/chunk.worker.ts` (175 LOC)
 
 **Module-level functions**
 - `function compressBlocks(blocks: Uint8Array): {
@@ -3288,7 +3303,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/Chunk/ChunkLoadingSystem.ts` (807 LOC)
+## `World/Chunk/ChunkLoadingSystem.ts` (815 LOC)
 
 **Module-level functions**
 - `function isEntityAlive(entity: ChunkBoundEntity): boolean`
@@ -3765,7 +3780,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/Chunk/DataStructures/ResizableTypedArray.ts` (142 LOC)
+## `World/Chunk/DataStructures/ResizableTypedArray.ts` (156 LOC)
 
 ### export class ResizableTypedArray
 
@@ -3778,6 +3793,8 @@ Generated: 2026-07-01T23:55:07.116Z
 - `public length: unknown`
 
 **Accessors**
+- `get backingArray(): T`
+- `get currentCapacity(): number`
 - `get finalArray(): T`
 
 **Methods**
@@ -3786,6 +3803,8 @@ Generated: 2026-07-01T23:55:07.116Z
 - `push8(a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number): void`
 - `push12(a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i1: number, j: number, k: number, l: number): void`
 - `private grow(minCapacity: number): void`
+- `ensureCapacity(minCapacity: number): void`
+- `reset(): void`
 - `bulkPush(src: T): void`
 - `pushFrom(other: ResizableTypedArray<T>): void`
 
@@ -4331,6 +4350,40 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
+## `World/Chunk/Worker/BlockTickScheduler.ts` (112 LOC)
+
+### export class BlockTickScheduler
+
+**Properties**
+- `#pending: unknown`
+- `#buckets: number[][]`
+- `#overflow: number[]`
+- `currentTick: unknown`
+- `safetyCeiling: unknown`
+- `#processCallback: | ((worldX: number, worldY: number, worldZ: number) => void)
+		| null`
+
+**Accessors**
+- `get pendingCount(): number`
+
+**Methods**
+- `static getInstance(): BlockTickScheduler`
+- `setProcessCallback(cb: (worldX: number, worldY: number, worldZ: number) => void): void`
+- `setBudget(budget: number): void`
+- `schedule(worldX: number, worldY: number, worldZ: number, delay: number): void`
+- `removeAt(worldX: number, worldY: number, worldZ: number): void`
+- `processFrame(): void`
+- `getDiagnostics(): { pendingCount: number; overflowCount: number }`
+- `clear(): void`
+
+**Module-level functions**
+- `function packKey(x: number, y: number, z: number): number`
+
+**Types / Interfaces / Enums**
+- interface `ScheduledTick`
+
+---
+
 ## `World/Chunk/Worker/ChunkLightHeader.ts` (78 LOC)
 
 **Module-level functions**
@@ -4362,7 +4415,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/Chunk/Worker/LightCore.ts` (1057 LOC)
+## `World/Chunk/Worker/LightCore.ts` (1037 LOC)
 
 ### class LightQueue
 
@@ -4387,6 +4440,8 @@ Generated: 2026-07-01T23:55:07.116Z
 - `export function applyClosedFaceMaskLUT(lut: Uint8Array): void`
 - `function isTransparent(packed: number, axis: number, dir: number): boolean`
 - `export function createRegistry(header: LightHeaderView): ChunkViewRegistry`
+- `function linkNeighborViews(registry: ChunkViewRegistry, view: ChunkView): void`
+- `function resolveNeighborView(startView: ChunkView, tx: number, ty: number, tz: number, size: number): { view: ChunkView; x: number; y: number; z: number } | null`
 - `export function refreshLayout(registry: ChunkViewRegistry, view: ChunkView): void`
 - `export function registerChunk(registry: ChunkViewRegistry, args: {
 		chunkId: bigint;
@@ -4404,8 +4459,8 @@ Generated: 2026-07-01T23:55:07.116Z
 		light_array?: Uint8Array;
 	}): void`
 - `export function unregisterChunk(registry: ChunkViewRegistry, chunkId: bigint): void`
-- `function addAdjacentBorderSlots(registry: ChunkViewRegistry, dirtySlots: Set<number>, view: ChunkView, x: number, y: number, z: number): void`
-- `function _tryAddNeighbour(registry: ChunkViewRegistry, dirtySlots: Set<number>, view: ChunkView, dx: number, dy: number, dz: number): void`
+- `function addAdjacentBorderSlots(dirtySlots: Set<number>, view: ChunkView, x: number, y: number, z: number): void`
+- `function _tryAddNeighbour(dirtySlots: Set<number>, view: ChunkView, dx: number, dy: number, dz: number): void`
 - `function getViewBlockPacked(view: ChunkView, x: number, y: number, z: number): number`
 - `function getBlockLight(view: ChunkView, idx: number): number`
 - `function getSkyLight(view: ChunkView, idx: number): number`
@@ -4467,6 +4522,30 @@ Generated: 2026-07-01T23:55:07.116Z
 - `export function scheduleChunkAndNeighborsRemesh(chunk: Chunk, scheduleRemesh: (chunk: Chunk, priority: boolean) => void): void`
 - `export function hasStableVoxelNeighborsForCachedMesh(chunk: Chunk): boolean`
 - `export function maybeRemeshNeighborsNowStable(chunk: Chunk, scheduleRemesh: (chunk: Chunk, priority: boolean) => void): void`
+
+---
+
+## `World/Chunk/Worker/WaterSimulation.ts` (389 LOC)
+
+**Module-level functions**
+- `function scheduleNeighborUpdates(worldX: number, worldY: number, worldZ: number, scheduler: BlockTickScheduler, excludeDx: unknown = 0, excludeDy: unknown = 0, excludeDz: unknown = 0): void`
+- `function isSolidBlock(blockId: number): boolean`
+- `function canWaterPass(x: number, y: number, z: number): boolean`
+- `function isHole(x: number, y: number, z: number): boolean`
+- `function findFlowCosts(worldX: number, worldY: number, worldZ: number): void`
+- `function getFlowDirectionMask(worldX: number, worldY: number, worldZ: number): number`
+- `function placeWaterSource(worldX: number, worldY: number, worldZ: number): void`
+- `function placeWaterFlowing(worldX: number, worldY: number, worldZ: number, level: number): void`
+- `function removeWater(worldX: number, worldY: number, worldZ: number): void`
+- `function flowInto(worldX: number, worldY: number, worldZ: number, newLevel: number, scheduler: BlockTickScheduler, excludeDx: number, excludeDy: number, excludeDz: number): boolean`
+- `function checkRetract(worldX: number, worldY: number, worldZ: number, level: number, scheduler: BlockTickScheduler): boolean`
+- `function checkInfiniteSource(worldX: number, worldY: number, worldZ: number): boolean`
+- `export function processWaterUpdate(worldX: number, worldY: number, worldZ: number): void`
+- `function scheduleWaterNeighbors(worldX: number, worldY: number, worldZ: number, scheduler: BlockTickScheduler): void`
+- `export function scheduleWaterNeighborUpdate(worldX: number, worldY: number, worldZ: number): void`
+- `export function scheduleBlockBreakWaterUpdates(worldX: number, worldY: number, worldZ: number): void`
+- `export function scheduleBlockPlaceWaterUpdates(worldX: number, worldY: number, worldZ: number, blockId: number): void`
+- `export function checkNewInfiniteSource(worldX: number, worldY: number, worldZ: number): void`
 
 ---
 
@@ -4548,7 +4627,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/Collision/VoxelObbCollider.ts` (217 LOC)
+## `World/Collision/VoxelObbCollider.ts` (225 LOC)
 
 ### export class VoxelObbCollider
 
@@ -4557,6 +4636,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 **Properties**
 - `#halfExtents: Vector3`
+- `#centerOffset: unknown`
 - `#epsilon: number`
 - `#isSolidBlockAt: IsSolidBlockAt`
 - `#yaw: unknown`
@@ -4572,6 +4652,7 @@ Generated: 2026-07-01T23:55:07.116Z
 **Methods**
 - `public setYaw(yaw: number): void`
 - `public setHalfExtents(halfExtents: Vector3): void`
+- `public setCenterOffset(offset: Vector3): void`
 - `#updateRotAxes(): void`
 - `#createDebugMesh(options: VoxelObbDebugOptions): void`
 - `#ensureDebugMesh(): void`
@@ -4597,7 +4678,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/Light/Lod2Shader.ts` (287 LOC)
+## `World/Light/Lod2Shader.ts` (289 LOC)
 
 ### export class Lod2Shader
 
@@ -4608,7 +4689,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/Light/Lod3Shader.ts` (237 LOC)
+## `World/Light/Lod3Shader.ts` (239 LOC)
 
 ### export class Lod3Shader
 
@@ -4619,7 +4700,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/Light/OpaqueShader.ts` (203 LOC)
+## `World/Light/OpaqueShader.ts` (202 LOC)
 
 ### export class OpaqueShader
 
@@ -4639,7 +4720,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/Light/TransparentShader.ts` (271 LOC)
+## `World/Light/TransparentShader.ts` (225 LOC)
 
 ### export class TransparentShader
 
@@ -4667,7 +4748,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/MeshPipeline/core/CustomShapeEmitter.ts` (584 LOC)
+## `World/MeshPipeline/core/CustomShapeEmitter.ts` (625 LOC)
 
 **Module-level functions**
 - `function parseBlockInto(packed: number, out: ParsedBlock): void`
@@ -4690,10 +4771,11 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/MeshPipeline/core/FaceEmitter.ts` (59 LOC)
+## `World/MeshPipeline/core/FaceEmitter.ts` (152 LOC)
 
 **Module-level functions**
-- `export function emitQuad(out: WorkerInternalMeshData, params: EmitQuadParams): void`
+- `export function emitQuadFast(out: WorkerInternalMeshData, x: number, y: number, z: number, axis: number, width: number, height: number, blockId: number, backFace: number, light: number, ao: number, faceName: FaceName, materialType: number, flip: number, diagonal: number, rawDim: number): void`
+- `export function emitWaterQuad(out: WorkerInternalMeshData, x: number, y: number, z: number, axis: number, width: number, height: number, blockId: number, backFace: number, light: number, ao: number, faceName: FaceName, materialType: number, packedBlock: number): void`
 
 ---
 
@@ -4740,16 +4822,15 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/MeshPipeline/core/MeshEmitters.ts` (44 LOC)
+## `World/MeshPipeline/core/MeshEmitters.ts` (35 LOC)
 
 **Module-level functions**
 - `export function createEmptyMeshData(): WorkerInternalMeshData`
 - `export function buildVoxelMesh(ctx: MeshContext, opaqueOut: WorkerInternalMeshData, transparentOut: WorkerInternalMeshData): void`
-- `export function buildWaterSurfaceMesh(ctx: MeshContext, grid: WaterSampleGrid, out: WorkerInternalMeshData): void`
 
 ---
 
-## `World/MeshPipeline/core/ShapePipeline.ts` (330 LOC)
+## `World/MeshPipeline/core/ShapePipeline.ts` (334 LOC)
 
 **Module-level functions**
 - `function obtainFaceRect(): FaceRect`
@@ -4777,24 +4858,20 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/MeshPipeline/core/VoxelFaceEmitterAdapter.ts` (230 LOC)
+## `World/MeshPipeline/core/VoxelFaceEmitterAdapter.ts` (320 LOC)
 
 ### export class VoxelFaceEmitterAdapter
 
 **Methods**
 - `public emitVoxelFace(axis: number, desc: GreedyFaceDescriptor, opaqueOut: WorkerInternalMeshData, transparentOut: WorkerInternalMeshData): void`
-- `private emitCubeFace(out: WorkerInternalMeshData, axis: number, desc: GreedyFaceDescriptor, blockId: number, materialType: MaterialType, isBackFace: boolean, light: number, ao: number): void`
-- `private emitCustomShapeFace(out: WorkerInternalMeshData, axis: number, desc: GreedyFaceDescriptor, packedBlock: number, blockId: number, materialType: MaterialType, isBackFace: boolean, light: number, ao: number): void`
-- `private toWorldBlockOrigin(axis: number, desc: GreedyFaceDescriptor, isBackFace: boolean): { x: number; y: number; z: number }`
-- `private getFaceBit(axis: number, isBackFace: boolean): number`
-- `private computeFaceRect(axis: number, isBackFace: boolean, box: {
-			min: [number, number, number];
-			max: [number, number, number];
-			faceMask: number;
-		}, baseX: number, baseY: number, baseZ: number, greedyWidth: number, greedyHeight: number): FaceRect3D | null`
+- `private emitCubeFace(out: WorkerInternalMeshData, axis: number, desc: GreedyFaceDescriptor, blockId: number, back: number, light: number, ao: number, faceName: FaceName): void`
+- `private emitWaterFace(out: WorkerInternalMeshData, axis: number, desc: GreedyFaceDescriptor, blockId: number, packedBlock: number, back: number, light: number, ao: number, faceName: FaceName): void`
+- `private emitCustomShapeFace(out: WorkerInternalMeshData, axis: number, desc: GreedyFaceDescriptor, packedBlock: number, blockId: number, back: number, light: number, ao: number, faceName: FaceName, faceBit: number): void`
+- `private emitWaterCustomShapeFace(out: WorkerInternalMeshData, axis: number, desc: GreedyFaceDescriptor, packedBlock: number, blockId: number, back: number, light: number, ao: number, faceName: FaceName, faceBit: number): void`
 
-**Types / Interfaces / Enums**
-- type `FaceRect3D`
+**Module-level functions**
+- `function needsRawDim(blockId: number, width: number, height: number): boolean`
+- `function inlineOrigin(axis: number, isBackFace: boolean, desc: GreedyFaceDescriptor): { ox: number; oy: number; oz: number }`
 
 ---
 
@@ -4825,7 +4902,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/MeshPipeline/core/VoxelMaskExtractor.ts` (336 LOC)
+## `World/MeshPipeline/core/VoxelMaskExtractor.ts` (404 LOC)
 
 ### export class VoxelMaskExtractor
 
@@ -4876,17 +4953,6 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/MeshPipeline/core/WaterPipeline.ts` (114 LOC)
-
-**Module-level functions**
-- `export function buildWaterMesh(_ctx: MeshContext, grid: WaterSampleGrid, out: WorkerInternalMeshData): void`
-
-**Types / Interfaces / Enums**
-- interface `WaterSurfaceSample`
-- interface `WaterSampleGrid`
-
----
-
 ## `World/MeshPipeline/core/WorkerMeshHelpers.ts` (190 LOC)
 
 **Module-level functions**
@@ -4901,7 +4967,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/MeshPipeline/types/MeshTypes.ts` (48 LOC)
+## `World/MeshPipeline/types/MeshTypes.ts` (50 LOC)
 
 **Types / Interfaces / Enums**
 - interface `MeshContext`
@@ -4913,7 +4979,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/Occlusion/OcclusionCuller.ts` (707 LOC)
+## `World/Occlusion/OcclusionCuller.ts` (717 LOC)
 
 ### export class OcclusionCuller
 
@@ -4944,6 +5010,7 @@ Generated: 2026-07-01T23:55:07.116Z
 - `function cacheFrustumPlanes(vp: Matrix): void`
 - `function aabbInFrustum(minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number): boolean`
 - `function resetChunkBfs(chunk: Chunk, queryId: number): void`
+- `function ensureNeighborRefs(chunk: Chunk): void`
 - `function minFSteps(fs: Uint8Array): number`
 - `function hasConnectivity(neighborVisited: number, exitFace: number, fc: number): boolean`
 
@@ -5270,7 +5337,7 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/Texture/BlockTextures.ts` (96 LOC)
+## `World/Texture/BlockTextures.ts` (123 LOC)
 
 **Module-level functions**
 - `function buildBlockTextures(): (BlockTextureDef | null)[]`
@@ -5289,12 +5356,14 @@ Generated: 2026-07-01T23:55:07.116Z
 
 ---
 
-## `World/Texture/BlockType.ts` (119 LOC)
+## `World/Texture/BlockType.ts` (125 LOC)
 
 **Module-level functions**
 - `export function isPassThroughBlock(blockId: number): boolean`
 - `export function isCollidableBlock(blockId: number): boolean`
 - `export function getMovementCost(blockId: number): number`
+- `export function getWaterLevel(blockId: number, state: number): number`
+- `export function isWaterSource(blockId: number, state: number): boolean`
 
 **Types / Interfaces / Enums**
 - enum `BlockType`

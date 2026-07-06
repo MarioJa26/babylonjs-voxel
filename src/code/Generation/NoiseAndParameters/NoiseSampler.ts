@@ -2,6 +2,9 @@ export class NoiseSampler {
 	private noiseSamples: Float32Array;
 	private sampleRate: number;
 	private pointsPerDim: number;
+	private noiseFunction: (x: number, y: number, z: number) => number;
+	private scale: number;
+	private xzFactor: number;
 
 	constructor(
 		chunkX: number,
@@ -14,31 +17,56 @@ export class NoiseSampler {
 		noiseFunction: (x: number, y: number, z: number) => number,
 	) {
 		this.sampleRate = sampleRate;
+		this.noiseFunction = noiseFunction;
+		this.scale = scale;
+		this.xzFactor = xzFactor;
 		const sampleCount = chunkSize / sampleRate;
 		this.pointsPerDim = sampleCount + 1;
 		this.noiseSamples = new Float32Array(this.pointsPerDim ** 3);
+
+		this.sampleNoise(chunkX, chunkY, chunkZ, chunkSize);
+	}
+
+	public reset(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		chunkSize: number,
+	): void {
+		this.sampleNoise(chunkX, chunkY, chunkZ, chunkSize);
+	}
+
+	private sampleNoise(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		chunkSize: number,
+	): void {
+		const sampleRate = this.sampleRate;
+		const pointsPerDim = this.pointsPerDim;
+		const noiseSamples = this.noiseSamples;
+		const noiseFunction = this.noiseFunction;
+		const scale = this.scale;
+		const xzFactor = this.xzFactor;
 
 		const chunkWorldX = chunkX * chunkSize;
 		const chunkWorldY = chunkY * chunkSize;
 		const chunkWorldZ = chunkZ * chunkSize;
 
 		// Generate noise samples at grid points
-		for (let y = 0; y < this.pointsPerDim; y++) {
+		for (let y = 0; y < pointsPerDim; y++) {
 			const wy = chunkWorldY + y * sampleRate;
-			for (let z = 0; z < this.pointsPerDim; z++) {
+			for (let z = 0; z < pointsPerDim; z++) {
 				const wz = chunkWorldZ + z * sampleRate;
-				for (let x = 0; x < this.pointsPerDim; x++) {
+				for (let x = 0; x < pointsPerDim; x++) {
 					const wx = chunkWorldX + x * sampleRate;
 					const val = noiseFunction(
 						wx * scale * xzFactor,
 						wy * scale,
 						wz * scale * xzFactor,
 					);
-					this.noiseSamples[
-						x +
-							z * this.pointsPerDim +
-							y * this.pointsPerDim * this.pointsPerDim
-					] = val;
+					noiseSamples[x + z * pointsPerDim + y * pointsPerDim * pointsPerDim] =
+						val;
 				}
 			}
 		}

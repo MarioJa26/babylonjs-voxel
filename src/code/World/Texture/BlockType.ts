@@ -124,3 +124,11 @@ export function getMovementCost(blockId: number): number {
 	if (isCollidableBlock(blockId)) return 1;
 	return Infinity;
 }
+
+export function getWaterLevel(blockId: number, state: number): number {
+	return blockId === BlockType.Water ? state & 0xf : 0;
+}
+
+export function isWaterSource(blockId: number, state: number): boolean {
+	return blockId === BlockType.Water && (state & 0xf) === 0;
+}

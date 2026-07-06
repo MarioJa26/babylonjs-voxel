@@ -1,7 +1,7 @@
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
 import { getBiome, getFinalTerrainHeight } from "../TerrainHeightMap";
-import type { IWorldFeature } from "./IWorldFeature";
+import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 
 export class LavaPoolFeature implements IWorldFeature {
@@ -27,6 +27,7 @@ export class LavaPoolFeature implements IWorldFeature {
 		chunkSize: number,
 		generatingChunkX: number,
 		generatingChunkZ: number,
+		columnPrepassResolver?: ColumnPrepassResolver,
 	) {
 		let spawnChance = 2;
 		let isSurface = false;
@@ -85,7 +86,15 @@ export class LavaPoolFeature implements IWorldFeature {
 
 		let poolSurfaceY = 0;
 		if (isSurface) {
-			poolSurfaceY = getFinalTerrainHeight(poolCenterX, poolCenterZ) - 1;
+			if (columnPrepassResolver) {
+				const resolved = columnPrepassResolver(poolCenterX, poolCenterZ);
+				poolSurfaceY =
+					resolved.entry.terrainHeightMap[
+						resolved.localX + resolved.localZ * 32
+					] - 1;
+			} else {
+				poolSurfaceY = getFinalTerrainHeight(poolCenterX, poolCenterZ) - 1;
+			}
 		} else {
 			poolSurfaceY =
 				-64 - (Math.abs(Squirrel3.get(baseHash + 2, seed)) % (1024 - 64));

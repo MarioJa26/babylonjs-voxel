@@ -66,9 +66,8 @@ const _sliceResult = { min: _sliceMin, max: _sliceMax };
 
 const _ccVisited = new Uint8Array(GenerationParams.CHUNK_SIZE ** 3);
 const _ccStack = new Int32Array(GenerationParams.CHUNK_SIZE ** 3);
-const _ccFaceCounts = new Uint16Array(6);
-const _ccDenseBlocks = new Uint16Array(GenerationParams.CHUNK_SIZE ** 3);
 const _ccOpaque = new Uint8Array(GenerationParams.CHUNK_SIZE ** 3);
+const _ccFaceCounts = new Uint16Array(6);
 
 // Reusable seed queue for initializeSunlight().  Sized once from the
 // build-time CHUNK_SIZE constant; shared across all chunk loads because
@@ -793,30 +792,39 @@ export class Chunk {
 		if (this._isUniform) return this._uniformBlockId;
 		const index = lx + ly * Chunk.SIZE + lz * Chunk.SIZE2;
 		if (this._palette) return this._palette[this.getNibble(index)];
-		return this._block_array![index];
+		const raw = this._block_array![index];
+		// Dense Uint8Array stores only block IDs (no state). Water level 0 = source.
+		// Uint16Array already stores the full packed value — no synthesis needed.
+		if (raw === WATER_BLOCK_ID && this._block_array instanceof Uint8Array) {
+			return WATER_BLOCK_ID;
+		}
+		return raw;
 	}
 
-	private _expandBlocksToDense(out: Uint16Array): void {
-		const S3 = Chunk.SIZE3;
+	/**
+	 * Read the packed block value at a flat index and return 1 if opaque, 0 if not.
+	 * Avoids expanding blocks to a dense array — reads directly from palette/nibble
+	 * or dense storage, keeping the result in cache.
+	 */
+	private isOpaqueAtIndex(i: number): number {
 		if (this._isUniform) {
-			out.fill(this._uniformBlockId, 0, S3);
-			return;
+			return this._uniformBlockId !== 0 &&
+				BLOCK_TYPE[unpackBlockId(this._uniformBlockId)] === 0
+				? 1
+				: 0;
 		}
 		if (this._palette) {
 			const blockArr = this._block_array as Uint8Array;
-			const palette = this._palette;
-			for (let i = 0; i < S3; i++) {
-				const byte = blockArr[i >>> 1];
-				const nibble = (i & 1) === 0 ? byte & 0x0f : byte >>> 4;
-				out[i] = palette[nibble];
-			}
-			return;
+			const byte = blockArr[i >>> 1];
+			const nibble = (i & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
+			const packed = this._palette[nibble];
+			return packed !== 0 && BLOCK_TYPE[unpackBlockId(packed)] === 0 ? 1 : 0;
 		}
 		if (this._block_array) {
-			out.set(this._block_array as Uint16Array);
-			return;
+			const packed = this._block_array[i];
+			return packed !== 0 && BLOCK_TYPE[unpackBlockId(packed)] === 0 ? 1 : 0;
 		}
-		out.fill(0, 0, S3);
+		return 0;
 	}
 
 	public setBlock(
@@ -1321,11 +1329,6 @@ export class Chunk {
 		return 4 * i - ((i * (i - 1)) >> 1) + j - 1;
 	}
 
-	private static isBlockOpaque(packed: number): boolean {
-		if (packed === 0) return false;
-		return BLOCK_TYPE[unpackBlockId(packed)] === 0;
-	}
-
 	private static readonly _faceScratch: number[] = [];
 
 	private static connectFacesMask(faceMask: number): number {
@@ -1369,11 +1372,9 @@ export class Chunk {
 		_ccVisited.fill(0, 0, S3);
 		const visited = _ccVisited;
 		const stack = _ccStack;
-		const dense = _ccDenseBlocks;
 		const opaque = _ccOpaque;
-		this._expandBlocksToDense(dense);
 		for (let i = 0; i < S3; i++) {
-			opaque[i] = Chunk.isBlockOpaque(dense[i]) ? 1 : 0;
+			opaque[i] = this.isOpaqueAtIndex(i);
 		}
 		let connectivity = 0;
 

@@ -41,6 +41,9 @@ export class Lod3Shader {
       return vec2(float((corner ^ (corner >> 1)) & 1), float(corner >> 1));
     }
 
+    const int U_AXIS[3] = int[](1, 2, 0);
+    const int V_AXIS[3] = int[](2, 0, 1);
+
     void main(void) {
       int axisFace = int(faceDataA.w + 0.5);
       int axis = axisFace >> 1;
@@ -63,8 +66,8 @@ export class Lod3Shader {
       float du = cornerUV.x * faceWidth;
       float dv = cornerUV.y * faceHeight;
 
-      int uAxis = (axis + 1) % 3;
-      int vAxis = (axis + 2) % 3;
+      int uAxis = U_AXIS[axis];
+      int vAxis = V_AXIS[axis];
 
       vec3 localPosition = faceDataA.xyz * invPosScale;
       localPosition[uAxis] += du;

@@ -1,4 +1,5 @@
 import Alea from "alea";
+import { WATER_BLOCK_ID } from "../World/Chunk/Worker/ChunkMesherConstants";
 import { LightGenerator, type LightSeedState } from "./LightGenerator";
 import {
 	createFastNoise,
@@ -280,7 +281,7 @@ export class WorldGenerator {
 				return;
 
 			const idx = localX + localY * chunkSize + localZ * chunkSizeSq;
-			if (blockId === 0 && blocks[idx] === 30) return;
+			if (blockId === 0 && blocks[idx] === WATER_BLOCK_ID) return;
 			if (blocks[idx] === 0 || overwrite) blocks[idx] = blockId;
 		};
 

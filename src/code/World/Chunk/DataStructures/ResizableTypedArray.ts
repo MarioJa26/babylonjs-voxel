@@ -128,6 +128,24 @@ export class ResizableTypedArray<
 		this.capacity = newCapacity;
 	}
 
+	get backingArray(): T {
+		return this.array;
+	}
+
+	get currentCapacity(): number {
+		return this.capacity;
+	}
+
+	ensureCapacity(minCapacity: number): void {
+		if (minCapacity > this.capacity) {
+			this.grow(minCapacity);
+		}
+	}
+
+	reset(): void {
+		this.length = 0;
+	}
+
 	get finalArray(): T {
 		return this.array.slice(0, this.length) as T;
 	}

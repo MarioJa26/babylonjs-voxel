@@ -11,6 +11,13 @@ export type BlockTextureDef = ([number, number] | undefined)[];
 const MAX_BLOCK_TEXTURES = 1024;
 const VIRTUAL_BLOCK_ID_START = 500;
 
+export const BlockFaceTileX = new Uint8Array(
+	MAX_BLOCK_TEXTURES * FaceName.Count,
+);
+export const BlockFaceTileY = new Uint8Array(
+	MAX_BLOCK_TEXTURES * FaceName.Count,
+);
+
 const MASON_SHAPES = ["slab", "stairs", "half_wall", "pane", "fence"] as const;
 type MasonShape = (typeof MASON_SHAPES)[number];
 
@@ -46,6 +53,19 @@ function buildBlockTextures(): (BlockTextureDef | null)[] {
 			if (virtualId < size) {
 				result[virtualId] = createTileDef(sourceTile[0], sourceTile[1]);
 			}
+		}
+	}
+
+	// Build packed texture lookup tables for hot-path access.
+	for (let blockId = 0; blockId < size; blockId++) {
+		const tex = result[blockId];
+		if (!tex) continue;
+		for (let face = 0; face < FaceName.Count; face++) {
+			const tile = tex[face] ?? tex[FaceName.All];
+			if (!tile) continue;
+			const idx = blockId * FaceName.Count + face;
+			BlockFaceTileX[idx] = tile[0];
+			BlockFaceTileY[idx] = tile[1];
 		}
 	}
 
@@ -113,6 +133,18 @@ export function setBlockAtlasTile(
 		BlockTextures.push(null);
 	}
 	BlockTextures[blockId] = createTileDef(col, row);
+
+	// Update packed lookup tables.
+	const def = BlockTextures[blockId];
+	if (def) {
+		for (let face = 0; face < FaceName.Count; face++) {
+			const tile = def[face] ?? def[FaceName.All];
+			if (!tile) continue;
+			const idx = blockId * FaceName.Count + face;
+			BlockFaceTileX[idx] = tile[0];
+			BlockFaceTileY[idx] = tile[1];
+		}
+	}
 }
 
 export function getAtlasTile(blockId: number | null): [number, number] | null {

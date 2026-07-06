@@ -57,6 +57,17 @@ export class CaveNoiseGrid {
 		);
 	}
 
+	public reset(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		chunkSize: number,
+	): void {
+		this.cheese.reset(chunkX, chunkY, chunkZ, chunkSize);
+		this.tunnel.reset(chunkX, chunkY, chunkZ, chunkSize);
+		this.detail.reset(chunkX, chunkY, chunkZ, chunkSize);
+	}
+
 	public getCheese(localX: number, localY: number, localZ: number): number {
 		return this.cheese.get(localX, localY, localZ);
 	}

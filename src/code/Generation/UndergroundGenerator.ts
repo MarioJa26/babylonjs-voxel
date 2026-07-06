@@ -22,6 +22,8 @@ export class UndergroundGenerator {
 	private readonly tunnelNoise: (x: number, y: number, z: number) => number;
 	private readonly detailNoise: (x: number, y: number, z: number) => number;
 
+	private readonly caveGrid: CaveNoiseGrid;
+
 	constructor(
 		params: GenerationParamsType,
 		cheeseNoise: (x: number, y: number, z: number) => number,
@@ -35,6 +37,17 @@ export class UndergroundGenerator {
 		this.cheeseNoise = cheeseNoise;
 		this.tunnelNoise = tunnelNoise;
 		this.detailNoise = detailNoise;
+
+		this.caveGrid = new CaveNoiseGrid(
+			0,
+			0,
+			0,
+			this.CHUNK_SIZE,
+			4,
+			this.cheeseNoise,
+			this.tunnelNoise,
+			this.detailNoise,
+		);
 	}
 
 	public generate(
@@ -63,18 +76,8 @@ export class UndergroundGenerator {
 		const cs2 = cs * cs;
 		const vol = cs * cs2;
 
-		// PERF: Pre-sample all 3 cave noise functions at a coarse grid (sampleRate=4)
-		// and interpolate per-voxel. Reduces simplex evaluations from ~295K to ~2K.
-		const caveGrid = new CaveNoiseGrid(
-			chunkX,
-			chunkY,
-			chunkZ,
-			cs,
-			4,
-			this.cheeseNoise,
-			this.tunnelNoise,
-			this.detailNoise,
-		);
+		// PERF: Reuse pre-sampled cave noise grid instead of allocating new one per chunk.
+		this.caveGrid.reset(chunkX, chunkY, chunkZ, cs);
 
 		_carve.fill(0, 0, vol);
 
@@ -98,9 +101,9 @@ export class UndergroundGenerator {
 						params,
 						worldY,
 						surfaceY,
-						caveGrid.getCheese(localX, localY, localZ),
-						caveGrid.getTunnel(localX, localY, localZ),
-						caveGrid.getDetail(localX, localY, localZ),
+						this.caveGrid.getCheese(localX, localY, localZ),
+						this.caveGrid.getTunnel(localX, localY, localZ),
+						this.caveGrid.getDetail(localX, localY, localZ),
 					);
 					if (!cave.shouldCarve) continue;
 

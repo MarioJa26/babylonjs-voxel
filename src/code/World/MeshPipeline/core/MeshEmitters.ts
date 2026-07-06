@@ -6,7 +6,6 @@ import type { MeshContext } from "../types/MeshTypes";
 import { mergeMeshData } from "./MeshAssembler";
 import { createMeshContext } from "./MeshContext";
 import { VoxelPipeline } from "./VoxelPipeline";
-import { buildWaterMesh, type WaterSampleGrid } from "./WaterPipeline";
 
 /**
  * Create an empty WorkerInternalMeshData object (strict TS).
@@ -55,18 +54,6 @@ export function buildVoxelMesh(
 }
 
 /**
- * Water mesh builder façade.
- * Internally calls the WaterPipeline module.
- */
-export function buildWaterSurfaceMesh(
-	ctx: MeshContext,
-	grid: WaterSampleGrid, // Strict type imported in Phase 4: WaterSampleGrid
-	out: WorkerInternalMeshData,
-): void {
-	buildWaterMesh(ctx, grid, out);
-}
-
-/**
  * Public API object exposing all meshing entry points.
  */
 export const MeshEmitters = {
@@ -74,8 +61,7 @@ export const MeshEmitters = {
 
 	createEmptyMeshData,
 
-	buildVoxelMesh, // stub until Phase 7
-	buildWaterMesh: buildWaterSurfaceMesh,
+	buildVoxelMesh,
 
 	mergeMeshData,
 };

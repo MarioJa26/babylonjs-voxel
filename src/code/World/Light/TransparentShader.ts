@@ -57,51 +57,6 @@ export class TransparentShader {
       return vec2(float((i ^ (i >> 1)) & 1), float(i >> 1));
     }
 
-    void buildDiagonalQuad(
-      vec3 centerBottom,
-      float width,
-      float height,
-      int diagonalVariant,
-      bool isBackFace,
-      vec2 cornerUV,
-      out vec3 outPosition,
-      out vec3 outNormal,
-      out vec3 outTangent,
-      out vec3 outBitangent
-    ) {
-      const vec2 DIR_XZ[2] = vec2[](
-        vec2(0.70710678, 0.70710678),
-        vec2(0.70710678, -0.70710678)
-      );
-      vec2 dirXZ = DIR_XZ[diagonalVariant];
-
-      vec3 tangent = vec3(dirXZ.x, 0.0, dirXZ.y);
-      vec3 bitangent = vec3(0.0, 1.0, 0.0);
-
-      const vec3 DIAG_NORMALS[2] = vec3[](
-        vec3(0.70710678, 0.0, -0.70710678),
-        vec3(-0.70710678, 0.0, -0.70710678)
-      );
-      vec3 normal = DIAG_NORMALS[diagonalVariant];
-
-      if (isBackFace) {
-        normal = -normal;
-      }
-
-      vec3 bottomA = centerBottom - tangent * (width * 0.5);
-      vec3 bottomB = centerBottom + tangent * (width * 0.5);
-      vec3 topA = bottomA + bitangent * height;
-      vec3 topB = bottomB + bitangent * height;
-
-      vec3 edgeBottom = mix(bottomA, bottomB, cornerUV.x);
-      vec3 edgeTop = mix(topA, topB, cornerUV.x);
-      outPosition = mix(edgeBottom, edgeTop, cornerUV.y);
-
-      outNormal = normal;
-      outTangent = tangent;
-      outBitangent = bitangent;
-    }
-
     void main(void) {
       int axisFace = int(faceDataA.w + 0.5);
       int axis = axisFace >> 1;
@@ -125,33 +80,36 @@ export class TransparentShader {
       float faceHeight = rawDim == 1 ? float(faceDataB.y) : faceDataB.y * invPosScale;
 
       vec3 localPosition;
-      vec3 N;
-      vec3 T;
-      vec3 B;
+
+      const int U_AXIS[3] = int[](1, 2, 0);
+      const int V_AXIS[3] = int[](2, 0, 1);
 
       if (diagonalEnabled) {
         vec3 centerBottom = faceDataA.xyz * invPosScale;
 
-        buildDiagonalQuad(
-          centerBottom,
-          faceWidth,
-          faceHeight,
-          diagonalVariant,
-          isBackFace,
-          cornerUV,
-          localPosition,
-          N,
-          T,
-          B
+        const vec2 DIR_XZ[2] = vec2[](
+          vec2(0.70710678, 0.70710678),
+          vec2(0.70710678, -0.70710678)
         );
+        vec2 dirXZ = DIR_XZ[diagonalVariant];
+        vec3 tangent = vec3(dirXZ.x, 0.0, dirXZ.y);
+
+        vec3 bottomA = centerBottom - tangent * (faceWidth * 0.5);
+        vec3 bottomB = centerBottom + tangent * (faceWidth * 0.5);
+        vec3 topA = bottomA + vec3(0.0, 1.0, 0.0) * faceHeight;
+        vec3 topB = bottomB + vec3(0.0, 1.0, 0.0) * faceHeight;
+
+        vec3 edgeBottom = mix(bottomA, bottomB, cornerUV.x);
+        vec3 edgeTop = mix(topA, topB, cornerUV.x);
+        localPosition = mix(edgeBottom, edgeTop, cornerUV.y);
 
         vUV = cornerUV;
       } else {
         float du = float((corner ^ (corner >> 1)) & 1) * faceWidth;
         float dv = float(corner >> 1) * faceHeight;
 
-        int uAxis = (axis + 1) % 3;
-        int vAxisLocal = (axis + 2) % 3;
+        int uAxis = U_AXIS[axis];
+        int vAxisLocal = V_AXIS[axis];
 
         localPosition = faceDataA.xyz * invPosScale;
         localPosition[uAxis] += du;
@@ -171,18 +129,6 @@ export class TransparentShader {
         vec3 faceOrigin = faceDataA.xyz * invPosScale;
         vec2 uvOff = vec2(fract(faceOrigin[uAxis]), fract(faceOrigin[vAxisLocal]));
         vUV += swapUV == 1 ? uvOff.yx : uvOff;
-
-        float fSign = isBackFace ? -1.0 : 1.0;
-        vec3 normal = vec3(0.0);
-        normal[axis] = fSign;
-
-        N = normal;
-
-        vec3 tObj = vec3(0.0);
-        tObj[uAxis] = 1.0;
-
-        T = tObj;
-        B = cross(N, T) * fSign;
       }
 
       localPosition += chunkOffsets[int(chunkIndex + 0.5)];

@@ -7,6 +7,8 @@ import {
 } from "../Generation/TerrainHeightMap";
 import type { IControls } from "../Interface/IControls";
 import { Map1 } from "../Maps/Map1";
+import { worldToChunkCoord } from "../Shared/ChunkCoordUtils";
+import { setInCave } from "../Shared/GameRuntimeState";
 import { Chunk } from "../World/Chunk/Chunk";
 import {
 	getDebugStats,
@@ -14,9 +16,9 @@ import {
 	refreshOpfsDebugStats,
 	updateChunksAround,
 } from "../World/Chunk/ChunkLoadingSystem";
-import { worldToChunkCoord } from "../Shared/ChunkCoordUtils";
-import { setInCave } from "../Shared/GameRuntimeState";
 import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
+import { BlockTickScheduler } from "../World/Chunk/Worker/BlockTickScheduler";
+import { processWaterUpdate } from "../World/Chunk/Worker/WaterSimulation";
 import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
 import {
 	type BlockRaycastHit,
@@ -71,6 +73,9 @@ export class PlayerLoopController {
 	) {}
 
 	public bind(): void {
+		// Initialize water tick scheduler
+		BlockTickScheduler.getInstance().setProcessCallback(processWaterUpdate);
+
 		// Wire incremental occlusion culling for individual chunk loads
 		const previousOnChunkLoaded = Chunk.onChunkLoaded;
 		Chunk.onChunkLoaded = (chunk: Chunk) => {
@@ -80,6 +85,8 @@ export class PlayerLoopController {
 
 		this.#onBeforeRenderObs = this.scene.onBeforeRenderObservable.add(() => {
 			const dt = (this.scene.deltaTime || 0) / 1000;
+
+			BlockTickScheduler.getInstance().processFrame();
 
 			if (this.playerVehicle.isSprinting) {
 				if (

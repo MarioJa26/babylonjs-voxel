@@ -234,6 +234,7 @@ export class CustomBoat implements IUsable {
 	} as const;
 
 	#collisionHalfExtents = new Vector3(1.15, 0.6, 1.15);
+	#collisionCenterOffset = new Vector3();
 	#boat!: Mesh;
 	#voxelCollider!: VoxelObbCollider;
 
@@ -432,21 +433,23 @@ export class CustomBoat implements IUsable {
 		const oz = this.#collisionHalfExtents.z * 0.85;
 		const ix = this.#collisionHalfExtents.x * 0.45;
 		const iz = this.#collisionHalfExtents.z * 0.45;
+		const cox = this.#collisionCenterOffset.x;
+		const coz = this.#collisionCenterOffset.z;
 
 		// PERF: Pre-allocate array once, update in-place on subsequent calls.
 		if (this.#buoyancyPoints.length === 0) {
 			for (let i = 0; i < 9; i++) this.#buoyancyPoints.push(new Vector3());
 		}
 		const bp = this.#buoyancyPoints;
-		bp[0].set(-ox, y, -oz);
-		bp[1].set(ox, y, -oz);
-		bp[2].set(-ox, y, oz);
-		bp[3].set(ox, y, oz);
-		bp[4].set(0, y, 0);
-		bp[5].set(-ix, y, -iz);
-		bp[6].set(ix, y, -iz);
-		bp[7].set(-ix, y, iz);
-		bp[8].set(ix, y, iz);
+		bp[0].set(cox - ox, y, coz - oz);
+		bp[1].set(cox + ox, y, coz - oz);
+		bp[2].set(cox - ox, y, coz + oz);
+		bp[3].set(cox + ox, y, coz + oz);
+		bp[4].set(cox, y, coz);
+		bp[5].set(cox - ix, y, coz - iz);
+		bp[6].set(cox + ix, y, coz - iz);
+		bp[7].set(cox - ix, y, coz + iz);
+		bp[8].set(cox + ix, y, coz + iz);
 	}
 
 	#tick(scene: Scene): void {
@@ -750,14 +753,27 @@ export class CustomBoat implements IUsable {
 			[maxX, minZ],
 			[maxX, maxZ],
 		];
-		let halfX = 0;
-		let halfZ = 0;
+		let obbMinX = Infinity;
+		let obbMaxX = -Infinity;
+		let obbMinZ = Infinity;
+		let obbMaxZ = -Infinity;
 		for (const [x, z] of corners) {
 			const bx = x * c + z * s;
 			const bz = -x * s + z * c;
-			halfX = Math.max(halfX, Math.abs(bx));
-			halfZ = Math.max(halfZ, Math.abs(bz));
+			if (bx < obbMinX) obbMinX = bx;
+			if (bx > obbMaxX) obbMaxX = bx;
+			if (bz < obbMinZ) obbMinZ = bz;
+			if (bz > obbMaxZ) obbMaxZ = bz;
 		}
+
+		this.#collisionCenterOffset.set(
+			(obbMaxX + obbMinX) / 2,
+			0,
+			(obbMaxZ + obbMinZ) / 2,
+		);
+
+		const halfX = (obbMaxX - obbMinX) / 2;
+		const halfZ = (obbMaxZ - obbMinZ) / 2;
 
 		const halfY = Math.max(
 			center.y - occupied.minY,
@@ -766,6 +782,7 @@ export class CustomBoat implements IUsable {
 
 		this.#collisionHalfExtents.set(halfX + pad, halfY + pad, halfZ + pad);
 		this.#voxelCollider.setHalfExtents(this.#collisionHalfExtents);
+		this.#voxelCollider.setCenterOffset(this.#collisionCenterOffset);
 		this.#buildBuoyancyPoints();
 	}
 

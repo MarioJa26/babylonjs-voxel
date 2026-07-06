@@ -4,7 +4,7 @@ import { createFastNoise3DWithInstance } from "../NoiseAndParameters/FastNoise/F
 import { FractalType } from "../NoiseAndParameters/FastNoise/FastNoiseLite";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
 import { getBiome, getFinalTerrainHeight } from "../TerrainHeightMap";
-import type { IWorldFeature } from "./IWorldFeature";
+import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 
 const MIN_SPIRE_HEIGHT = 120;
@@ -82,6 +82,7 @@ export class BadlandsSpireFeature implements IWorldFeature {
 		chunkSize: number,
 		generatingChunkX: number,
 		generatingChunkZ: number,
+		columnPrepassResolver?: ColumnPrepassResolver,
 	) {
 		if (biome.id !== BIOME_ID.BADLANDS) return;
 
@@ -139,7 +140,12 @@ export class BadlandsSpireFeature implements IWorldFeature {
 			(Math.abs(heightHash) % (MAX_SPIRE_HEIGHT - MIN_SPIRE_HEIGHT + 1));
 		const tierHeight = Math.floor(spireHeight / TIER_COUNT);
 
-		const groundHeight = this.findGroundHeight(spireX, spireZ, halfFp);
+		const groundHeight = this.findGroundHeight(
+			spireX,
+			spireZ,
+			halfFp,
+			columnPrepassResolver,
+		);
 
 		this.generateSpire(
 			chunkX,
@@ -327,8 +333,23 @@ export class BadlandsSpireFeature implements IWorldFeature {
 		return LAYERS[layerIndex % LAYERS.length];
 	}
 
-	private findGroundHeight(x: number, z: number, halfFp: number): number {
-		let minH = getFinalTerrainHeight(x + halfFp, z + halfFp);
+	private findGroundHeight(
+		x: number,
+		z: number,
+		halfFp: number,
+		columnPrepassResolver?: ColumnPrepassResolver,
+	): number {
+		const getH = (wx: number, wz: number): number => {
+			if (columnPrepassResolver) {
+				const resolved = columnPrepassResolver(wx, wz);
+				return resolved.entry.terrainHeightMap[
+					resolved.localX + resolved.localZ * 32
+				];
+			}
+			return getFinalTerrainHeight(wx, wz);
+		};
+
+		let minH = getH(x + halfFp, z + halfFp);
 		const offsets: [number, number][] = [
 			[halfFp, 0],
 			[-halfFp, 0],
@@ -340,7 +361,7 @@ export class BadlandsSpireFeature implements IWorldFeature {
 			[-halfFp, -halfFp],
 		];
 		for (const [dx, dz] of offsets) {
-			const h = getFinalTerrainHeight(x + halfFp + dx, z + halfFp + dz);
+			const h = getH(x + halfFp + dx, z + halfFp + dz);
 			if (h < minH) minH = h;
 		}
 		return minH;

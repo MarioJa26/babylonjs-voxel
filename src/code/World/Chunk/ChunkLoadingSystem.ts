@@ -34,6 +34,11 @@ import {
 	ChunkWorldMutations,
 	getBlockStateByWorldCoords as getBlockStateFromMutations,
 } from "./Loading/ChunkWorldMutations";
+import {
+	scheduleBlockBreakWaterUpdates,
+	scheduleBlockPlaceWaterUpdates,
+	checkNewInfiniteSource,
+} from "./Worker/WaterSimulation";
 
 export type DynamicBlockSample = {
 	blockId: number;
@@ -797,6 +802,8 @@ export function deleteBlock(worldX: number, worldY: number, worldZ: number) {
 	}
 
 	worldMutations.deleteBlock(worldX, worldY, worldZ);
+	scheduleBlockBreakWaterUpdates(worldX, worldY, worldZ);
+	checkNewInfiniteSource(worldX, worldY, worldZ);
 }
 
 export function setBlock(
@@ -811,6 +818,7 @@ export function setBlock(
 	}
 
 	worldMutations.setBlock(worldX, worldY, worldZ, blockId, state);
+	scheduleBlockPlaceWaterUpdates(worldX, worldY, worldZ, blockId);
 }
 
 export function getBlockByWorldCoords(

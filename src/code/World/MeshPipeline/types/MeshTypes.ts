@@ -36,6 +36,8 @@ export interface EmitQuadParams {
 	flip: boolean;
 	diagonal?: 0 | 1 | 2;
 	rawDim?: boolean;
+	waterLevel?: number;
+	waterLevelBase?: number;
 }
 
 /**

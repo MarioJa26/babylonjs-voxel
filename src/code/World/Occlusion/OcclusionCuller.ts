@@ -192,6 +192,24 @@ function resetChunkBfs(chunk: Chunk, queryId: number): void {
 	chunk._fSteps[5] = 0;
 }
 
+/**
+ * Lazily populate a chunk's neighborRefs array from chunkInstances.
+ * Called once per chunk on first BFS encounter. After this, the refs
+ * are kept up to date via the dispose hook (nulling) and new-chunk load
+ * (re-populating both sides).
+ */
+function ensureNeighborRefs(chunk: Chunk): void {
+	const refs = chunk.neighborRefs;
+	if (refs[0] !== null || refs[1] !== null) return; // already populated
+	const ids = chunk.neighborIds;
+	for (let d = 0; d < 6; d++) {
+		const id = ids[d];
+		if (id !== undefined) {
+			refs[d] = Chunk.chunkInstances.get(id) ?? null;
+		}
+	}
+}
+
 /** Find minimum non-zero fSteps value across 6 faces. */
 function minFSteps(fs: Uint8Array): number {
 	let m = 255;
@@ -566,18 +584,16 @@ export class OcclusionCuller {
 			return;
 
 		if (newChunk.connectivityDirty) newChunk.computeFaceConnectivity();
+		ensureNeighborRefs(newChunk);
 
 		let qHead = 0;
 		let qTail = 0;
 
-		const neighborIds = newChunk.neighborIds;
+		const neighborRefs = newChunk.neighborRefs;
 
 		// Scan neighbours that already belong to this BFS pass
 		for (let d = 0; d < 6; d++) {
-			const nId = neighborIds[d];
-			if (nId === undefined) continue;
-
-			const neighbor = Chunk.chunkInstances.get(nId);
+			const neighbor = neighborRefs[d];
 			if (!neighbor) continue;
 
 			if (neighbor.bfsQueryId !== queryId) continue;
@@ -634,13 +650,10 @@ export class OcclusionCuller {
 			qHead = (qHead + 1) & BFS_MASK;
 
 			const curFc = current.faceConnectivity;
-			const curNeighborIds = current.neighborIds;
+			const curNeighborRefs = current.neighborRefs;
 
 			for (let d = 0; d < 6; d++) {
-				const nbrId = curNeighborIds[d];
-				if (nbrId === undefined) continue;
-
-				const nbr = Chunk.chunkInstances.get(nbrId);
+				const nbr = curNeighborRefs[d];
 				if (!nbr) continue;
 
 				const nx = nbr.chunkX;
@@ -671,6 +684,7 @@ export class OcclusionCuller {
 					if (!(curFc & (1 << bit))) continue;
 				}
 				if (nbr.bfsQueryId !== queryId) {
+					ensureNeighborRefs(nbr);
 					resetChunkBfs(nbr, queryId);
 					this._topoVisibleChunks.push(nbr);
 				}
@@ -733,6 +747,7 @@ export class OcclusionCuller {
 
 		if (originChunk) {
 			if (originChunk.connectivityDirty) originChunk.computeFaceConnectivity();
+			ensureNeighborRefs(originChunk);
 			resetChunkBfs(originChunk, queryId);
 			originChunk.bfsVisitedFaces = 1 << 7; // origin marker
 			this._topoVisibleChunks.push(originChunk);
@@ -753,6 +768,7 @@ export class OcclusionCuller {
 			for (let i = 0; i < _nearbyChunks.length; i++) {
 				const chunk = _nearbyChunks[i]!;
 				if (chunk.bfsQueryId === queryId) continue;
+				ensureNeighborRefs(chunk);
 				resetChunkBfs(chunk, queryId);
 				chunk.bfsVisitedFaces = 1 << 7;
 				this._topoVisibleChunks.push(chunk);
@@ -794,13 +810,10 @@ export class OcclusionCuller {
 			processed++;
 
 			const curFc = current.faceConnectivity;
-			const curNeighborIds = current.neighborIds;
+			const curNeighborRefs = current.neighborRefs;
 
 			for (let d = 0; d < 6; d++) {
-				const nbrId = curNeighborIds[d];
-				if (nbrId === undefined) continue;
-
-				const nbr = Chunk.chunkInstances.get(nbrId);
+				const nbr = curNeighborRefs[d];
 				if (!nbr) continue;
 
 				const nx = nbr.chunkX;
@@ -831,6 +844,7 @@ export class OcclusionCuller {
 					if (!(curFc & (1 << bit))) continue;
 				}
 				if (nbr.bfsQueryId !== queryId) {
+					ensureNeighborRefs(nbr);
 					resetChunkBfs(nbr, queryId);
 					this._topoVisibleChunks.push(nbr);
 				}

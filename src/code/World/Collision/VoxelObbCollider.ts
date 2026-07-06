@@ -27,6 +27,7 @@ type VoxelObbDebugOptions = {
  */
 export class VoxelObbCollider {
 	#halfExtents: Vector3; // Local-space extents
+	#centerOffset = new Vector3(); // Local-space offset of OBB center from position
 	#epsilon: number;
 	#isSolidBlockAt: IsSolidBlockAt;
 
@@ -80,6 +81,10 @@ export class VoxelObbCollider {
 				this.#ensureDebugMesh();
 			}
 		}
+	}
+
+	public setCenterOffset(offset: Vector3): void {
+		this.#centerOffset.copyFrom(offset);
 	}
 
 	#updateRotAxes() {
@@ -139,9 +144,16 @@ export class VoxelObbCollider {
 		const hy = this.#halfExtents.y;
 		const hz = this.#halfExtents.z;
 
-		const px = position.x;
-		const py = position.y;
-		const pz = position.z;
+		// Apply local-space center offset (rotate by yaw into world space)
+		const px =
+			position.x +
+			this.#centerOffset.x * this.#rotX.x +
+			this.#centerOffset.z * this.#rotZ.x;
+		const py = position.y + this.#centerOffset.y;
+		const pz =
+			position.z +
+			this.#centerOffset.x * this.#rotX.z +
+			this.#centerOffset.z * this.#rotZ.z;
 
 		// Expand into AABB to identify candidate voxels (coarse test)
 		const extX = Math.abs(this.#rotX.x) * hx + Math.abs(this.#rotZ.x) * hz;
@@ -248,7 +260,16 @@ export class VoxelObbCollider {
 		}
 		if (!this.#debugMesh || this.#debugMesh.isDisposed()) return;
 
-		this.#debugMesh.position.copyFrom(position);
+		// Position at the offset center (rotate local offset into world space)
+		this.#debugMesh.position.set(
+			position.x +
+				this.#centerOffset.x * this.#rotX.x +
+				this.#centerOffset.z * this.#rotZ.x,
+			position.y + this.#centerOffset.y,
+			position.z +
+				this.#centerOffset.x * this.#rotX.z +
+				this.#centerOffset.z * this.#rotZ.z,
+		);
 
 		Quaternion.RotationYawPitchRollToRef(this.#yaw, 0, 0, this.#debugRot);
 		this.#debugMesh.rotationQuaternion = this.#debugRot;

@@ -1,4 +1,5 @@
 import type { Biome } from "../Biome/BiomeTypes";
+import type { ColumnPrepassCacheEntry } from "../SurfaceGenerator";
 
 /**
  * Optional absolute vertical bounds for an IWorldFeature, expressed in world
@@ -18,6 +19,15 @@ import type { Biome } from "../Biome/BiomeTypes";
 export type FeatureVerticalBounds = {
 	minWorldY: number;
 	maxWorldY: number;
+};
+
+export type ColumnPrepassResolver = (
+	worldX: number,
+	worldZ: number,
+) => {
+	entry: ColumnPrepassCacheEntry;
+	localX: number;
+	localZ: number;
 };
 
 export interface IWorldFeature {
@@ -54,5 +64,6 @@ export interface IWorldFeature {
 		chunkSize: number,
 		generatingChunkX: number,
 		generatingChunkZ: number,
+		columnPrepassResolver?: ColumnPrepassResolver,
 	): void;
 }

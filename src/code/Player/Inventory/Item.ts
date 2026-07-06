@@ -151,6 +151,8 @@ export class Item implements IUsable {
 		if (item) {
 			const blockId = item.blockId ?? item.itemId;
 			let blockState = item.blockState ?? 0;
+			// Water always placed as source: level 0
+			if (blockId === BlockType.Water) blockState = 0;
 			const shape = getShapeForBlockId(blockId);
 			const yaw = player.playerCamera.cameraYaw;
 			const hasSlice = (blockState >> 3) & 7;

@@ -30,7 +30,7 @@ import {
 	getCachedBlockId,
 	getCachedFlags,
 } from "./BlockFlags";
-import { emitQuad } from "./FaceEmitter";
+import { emitQuadFast } from "./FaceEmitter";
 import {
 	getMaterialType,
 	getRuntimeShapeBoxes,
@@ -306,70 +306,82 @@ function emitCrossShapeAtBlock(
 	out: WorkerInternalMeshData,
 ): void {
 	// X-aligned plane (perpendicular to X axis)
-	emitQuad(out, {
-		x: x + 0.5,
+	emitQuadFast(
+		out,
+		x + 0.5,
 		y,
 		z,
-		axis: 0,
-		width: 1,
-		height: 1,
+		0,
+		1,
+		1,
 		blockId,
-		isBackFace: false,
-		light: baseLight,
-		ao: 0,
-		faceName: FaceName.PX,
-		materialType: materialType,
-		flip: false,
-	});
+		0,
+		baseLight,
+		0,
+		FaceName.PX,
+		materialType,
+		0,
+		0,
+		0,
+	);
 
-	emitQuad(out, {
-		x: x + 0.5,
+	emitQuadFast(
+		out,
+		x + 0.5,
 		y,
 		z,
-		axis: 0,
-		width: 1,
-		height: 1,
+		0,
+		1,
+		1,
 		blockId,
-		isBackFace: true,
-		light: baseLight,
-		ao: 0,
-		faceName: FaceName.NX,
-		materialType: materialType,
-		flip: false,
-	});
+		1,
+		baseLight,
+		0,
+		FaceName.NX,
+		materialType,
+		0,
+		0,
+		0,
+	);
 
 	// Z-aligned plane (perpendicular to Z axis)
-	emitQuad(out, {
+	emitQuadFast(
+		out,
 		x,
 		y,
-		z: z + 0.5,
-		axis: 2,
-		width: 1,
-		height: 1,
+		z + 0.5,
+		2,
+		1,
+		1,
 		blockId,
-		isBackFace: false,
-		light: baseLight,
-		ao: 0,
-		faceName: FaceName.PZ,
-		materialType: materialType,
-		flip: false,
-	});
+		0,
+		baseLight,
+		0,
+		FaceName.PZ,
+		materialType,
+		0,
+		0,
+		0,
+	);
 
-	emitQuad(out, {
+	emitQuadFast(
+		out,
 		x,
 		y,
-		z: z + 0.5,
-		axis: 2,
-		width: 1,
-		height: 1,
+		z + 0.5,
+		2,
+		1,
+		1,
 		blockId,
-		isBackFace: true,
-		light: baseLight,
-		ao: 0,
-		faceName: FaceName.NZ,
-		materialType: materialType,
-		flip: false,
-	});
+		1,
+		baseLight,
+		0,
+		FaceName.NZ,
+		materialType,
+		0,
+		0,
+		0,
+	);
 } /**
  * Emit a true diagonal "X" cross centered in the block.
  *
@@ -392,74 +404,82 @@ function emitCrossDiagonalAtBlock(
 	const diagWidth = Math.SQRT2;
 
 	// Diagonal A: NW -> SE
-	emitQuad(out, {
-		x: cx,
+	emitQuadFast(
+		out,
+		cx,
 		y,
-		z: cz,
-		axis: 0,
-		width: diagWidth,
-		height: 1,
+		cz,
+		0,
+		diagWidth,
+		1,
 		blockId,
-		isBackFace: false,
-		light: baseLight,
-		ao: 0,
-		faceName: FaceName.West,
-		materialType: materialType,
-		flip: false,
-		diagonal: 1,
-	});
+		0,
+		baseLight,
+		0,
+		FaceName.West,
+		materialType,
+		0,
+		1,
+		0,
+	);
 
-	emitQuad(out, {
-		x: cx,
+	emitQuadFast(
+		out,
+		cx,
 		y,
-		z: cz,
-		axis: 0,
-		width: diagWidth,
-		height: 1,
+		cz,
+		0,
+		diagWidth,
+		1,
 		blockId,
-		isBackFace: true,
-		light: baseLight,
-		ao: 0,
-		faceName: FaceName.East,
-		materialType: materialType,
-		flip: false,
-		diagonal: 1,
-	});
+		1,
+		baseLight,
+		0,
+		FaceName.East,
+		materialType,
+		0,
+		1,
+		0,
+	);
 
 	// Diagonal B: NE -> SW
-	emitQuad(out, {
-		x: cx,
+	emitQuadFast(
+		out,
+		cx,
 		y,
-		z: cz,
-		axis: 0,
-		width: diagWidth,
-		height: 1,
+		cz,
+		0,
+		diagWidth,
+		1,
 		blockId,
-		isBackFace: false,
-		light: baseLight,
-		ao: 0,
-		faceName: FaceName.South,
-		materialType: materialType,
-		flip: false,
-		diagonal: 2,
-	});
+		0,
+		baseLight,
+		0,
+		FaceName.South,
+		materialType,
+		0,
+		2,
+		0,
+	);
 
-	emitQuad(out, {
-		x: cx,
+	emitQuadFast(
+		out,
+		cx,
 		y,
-		z: cz,
-		axis: 0,
-		width: diagWidth,
-		height: 1,
+		cz,
+		0,
+		diagWidth,
+		1,
 		blockId,
-		isBackFace: true,
-		light: baseLight,
-		ao: 0,
-		faceName: FaceName.North,
-		materialType: materialType,
-		flip: false,
-		diagonal: 2,
-	});
+		1,
+		baseLight,
+		0,
+		FaceName.North,
+		materialType,
+		0,
+		2,
+		0,
+	);
 }
 
 /**
@@ -479,70 +499,82 @@ function emitLOD2CrossBillboard(
 	const W = 1.2;
 
 	// X-aligned plane
-	emitQuad(out, {
-		x: x + 0.5,
+	emitQuadFast(
+		out,
+		x + 0.5,
 		y,
 		z,
-		axis: 0,
-		width: W,
-		height: 1,
+		0,
+		W,
+		1,
 		blockId,
-		isBackFace: false,
-		light: baseLight,
-		ao: 0,
-		faceName: FaceName.PX,
+		0,
+		baseLight,
+		0,
+		FaceName.PX,
 		materialType,
-		flip: false,
-	});
+		0,
+		0,
+		0,
+	);
 
-	emitQuad(out, {
-		x: x + 0.5,
+	emitQuadFast(
+		out,
+		x + 0.5,
 		y,
 		z,
-		axis: 0,
-		width: W,
-		height: 1,
+		0,
+		W,
+		1,
 		blockId,
-		isBackFace: true,
-		light: baseLight,
-		ao: 0,
-		faceName: FaceName.NX,
+		1,
+		baseLight,
+		0,
+		FaceName.NX,
 		materialType,
-		flip: false,
-	});
+		0,
+		0,
+		0,
+	);
 
 	// Z-aligned plane
-	emitQuad(out, {
+	emitQuadFast(
+		out,
 		x,
 		y,
-		z: z + 0.5,
-		axis: 2,
-		width: W,
-		height: 1,
+		z + 0.5,
+		2,
+		W,
+		1,
 		blockId,
-		isBackFace: false,
-		light: baseLight,
-		ao: 0,
-		faceName: FaceName.PZ,
+		0,
+		baseLight,
+		0,
+		FaceName.PZ,
 		materialType,
-		flip: false,
-	});
+		0,
+		0,
+		0,
+	);
 
-	emitQuad(out, {
+	emitQuadFast(
+		out,
 		x,
 		y,
-		z: z + 0.5,
-		axis: 2,
-		width: W,
-		height: 1,
+		z + 0.5,
+		2,
+		W,
+		1,
 		blockId,
-		isBackFace: true,
-		light: baseLight,
-		ao: 0,
-		faceName: FaceName.NZ,
+		1,
+		baseLight,
+		0,
+		FaceName.NZ,
 		materialType,
-		flip: false,
-	});
+		0,
+		0,
+		0,
+	);
 }
 
 function emitBoxFace(
@@ -631,59 +663,68 @@ function emitBoxFace(
 	const faceName = getFaceName(axis, isBackFace);
 
 	if (axis === 0) {
-		emitQuad(out, {
-			x: voxelX + (isBackFace ? min[0] : max[0]),
-			y: voxelY + min[1],
-			z: voxelZ + min[2],
+		emitQuadFast(
+			out,
+			voxelX + (isBackFace ? min[0] : max[0]),
+			voxelY + min[1],
+			voxelZ + min[2],
 			axis,
-			width: max[1] - min[1],
-			height: max[2] - min[2],
+			max[1] - min[1],
+			max[2] - min[2],
 			blockId,
-			isBackFace,
+			isBackFace ? 1 : 0,
 			light,
 			ao,
 			faceName,
-			materialType: currentBlock.materialType,
-			flip: false,
-		});
+			currentBlock.materialType,
+			0,
+			0,
+			0,
+		);
 		return;
 	}
 
 	if (axis === 1) {
 		// axis 1 convention matches the old worker:
 		// width = Z extent, height = X extent
-		emitQuad(out, {
-			x: voxelX + min[0],
-			y: voxelY + (isBackFace ? min[1] : max[1]),
-			z: voxelZ + min[2],
+		emitQuadFast(
+			out,
+			voxelX + min[0],
+			voxelY + (isBackFace ? min[1] : max[1]),
+			voxelZ + min[2],
 			axis,
-			width: max[2] - min[2],
-			height: max[0] - min[0],
+			max[2] - min[2],
+			max[0] - min[0],
 			blockId,
-			isBackFace,
+			isBackFace ? 1 : 0,
 			light,
 			ao,
 			faceName,
-			materialType: currentBlock.materialType,
-			flip: false,
-		});
+			currentBlock.materialType,
+			0,
+			0,
+			0,
+		);
 		return;
 	}
 
 	// axis === 2
-	emitQuad(out, {
-		x: voxelX + min[0],
-		y: voxelY + min[1],
-		z: voxelZ + (isBackFace ? min[2] : max[2]),
+	emitQuadFast(
+		out,
+		voxelX + min[0],
+		voxelY + min[1],
+		voxelZ + (isBackFace ? min[2] : max[2]),
 		axis,
-		width: max[0] - min[0],
-		height: max[1] - min[1],
+		max[0] - min[0],
+		max[1] - min[1],
 		blockId,
-		isBackFace,
+		isBackFace ? 1 : 0,
 		light,
 		ao,
 		faceName,
-		materialType: currentBlock.materialType,
-		flip: false,
-	});
+		currentBlock.materialType,
+		0,
+		0,
+		0,
+	);
 }

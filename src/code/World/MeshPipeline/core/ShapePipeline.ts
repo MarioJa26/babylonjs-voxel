@@ -4,6 +4,7 @@ import {
 	unpackBlockId,
 	unpackBlockState,
 } from "../../Chunk/DataStructures/BlockEncoding";
+import { WATER_BLOCK_ID } from "../../Chunk/Worker/ChunkMesherConstants";
 import {
 	FACE_ALL,
 	FACE_NX,
@@ -134,7 +135,7 @@ const TINT_BUCKET_LUT: Uint8Array = new Uint8Array(TINT_BUCKET_LUT_SIZE).fill(
 	1,
 );
 
-for (const id of [30, 60, 61]) TINT_BUCKET_LUT[id] = 4;
+for (const id of [WATER_BLOCK_ID, 60, 61]) TINT_BUCKET_LUT[id] = 4;
 for (const id of [15, 43, 44, 64, 66]) TINT_BUCKET_LUT[id] = 3;
 for (const id of [3, 8, 14, 23, 45, 46, 47]) TINT_BUCKET_LUT[id] = 2;
 for (const id of [10, 11, 12, 13, 22, 28, 31]) TINT_BUCKET_LUT[id] = 5;
@@ -145,16 +146,25 @@ export function getMaterialTintBucket(blockId: number): number {
 }
 
 /**
+ * Packed tint lookup table for hot-path access.
+ * Sized to cover BlockType enum range. Built once at module load.
+ */
+export const BlockTint: Uint8Array = new Uint8Array(TINT_BUCKET_LUT_SIZE);
+for (let id = 0; id < TINT_BUCKET_LUT_SIZE; id++) {
+	BlockTint[id] = TINT_BUCKET_LUT[id];
+}
+
+const MATERIAL_TYPE_LUT_SIZE = 128;
+const MATERIAL_TYPE_LUT: Uint8Array = new Uint8Array(MATERIAL_TYPE_LUT_SIZE);
+for (const id of [WATER_BLOCK_ID, 60, 61, 64, 66]) {
+	MATERIAL_TYPE_LUT[id] = MaterialType.WaterOrGlass;
+}
+
+/**
  * Transparent/water bucket selection.
  */
 export function getMaterialType(blockId: number): MaterialType {
-	return blockId === 30 ||
-		blockId === 60 ||
-		blockId === 61 ||
-		blockId === 64 ||
-		blockId === 66
-		? MaterialType.WaterOrGlass
-		: MaterialType.Default;
+	return (MATERIAL_TYPE_LUT[blockId] ?? MaterialType.Default) as MaterialType;
 }
 
 export function getMaterialTypeForPackedBlock(

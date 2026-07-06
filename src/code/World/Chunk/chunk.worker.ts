@@ -6,6 +6,7 @@ import {
 	type WorkerRequestData,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
+import { WATER_BLOCK_ID } from "./Worker/ChunkMesherConstants";
 import { LightTaskHandlers } from "./Worker/LightTaskHandlers";
 import {
 	handleGenerateDistantTerrain,
@@ -57,9 +58,11 @@ function compressBlocks(blocks: Uint8Array): {
 	}
 
 	if (uniqueCount === 1) {
+		// Water blocks get source state: bit 3 = source marker, bits 0-2 = level 0
+		const packedId = firstId === WATER_BLOCK_ID ? WATER_BLOCK_ID : firstId;
 		return {
 			isUniform: true,
-			uniformBlockId: firstId,
+			uniformBlockId: packedId,
 			palette: null,
 			packedBlocks: null,
 		};
@@ -71,12 +74,16 @@ function compressBlocks(blocks: Uint8Array): {
 
 		// Build palette from tracked unique IDs (avoids scanning all 65536 entries).
 		for (let i = 0; i < uniqueIdCount && pi < uniqueCount; i++) {
-			palette[pi++] = _compressUniqueIds[i];
+			const rawId = _compressUniqueIds[i];
+			// Water blocks use raw ID — level 0 = source
+			palette[pi++] = rawId === WATER_BLOCK_ID ? WATER_BLOCK_ID : rawId;
 		}
 
 		// Overwrite seen[] with palette indices for O(1) lookup in the pack loop.
-		for (let i = 0; i < palette.length; i++) {
-			seen[palette[i]] = i;
+		// Key by raw block ID (not palette entry) so water blocks (ID 30) map to
+		// their correct palette index instead of the stale pass-1 sentinel.
+		for (let i = 0; i < uniqueIdCount; i++) {
+			seen[_compressUniqueIds[i]] = i;
 		}
 
 		const len = (blocks.length + 1) >> 1;
@@ -89,12 +96,11 @@ function compressBlocks(blocks: Uint8Array): {
 		const len32 = blocks.length >> 1;
 		for (let i = 0; i < len32; i++) {
 			packedArray[i] =
-				(seen[blocks[i * 2]!]! & 0x0f) |
-				((seen[blocks[i * 2 + 1]!]! & 0x0f) << 4);
+				(seen[blocks[i * 2]] & 0x0f) | ((seen[blocks[i * 2 + 1]] & 0x0f) << 4);
 		}
 		// Handle a trailing odd element if blocks.length is odd.
 		if (blocks.length & 1) {
-			packedArray[len32] = seen[blocks[blocks.length - 1]!]! & 0x0f;
+			packedArray[len32] = seen[blocks[blocks.length - 1]] & 0x0f;
 		}
 
 		return {
@@ -102,6 +108,23 @@ function compressBlocks(blocks: Uint8Array): {
 			uniformBlockId: 0,
 			palette,
 			packedBlocks: packedArray,
+		};
+	}
+
+	// Dense path: >16 unique block types. Convert to Uint16Array and pack
+	// water source state so state survives serialization round-trips.
+	const hasWater = seen[WATER_BLOCK_ID] !== 0;
+	if (hasWater) {
+		const u16 = new Uint16Array(blocks.length);
+		for (let i = 0; i < blocks.length; i++) {
+			const id = blocks[i];
+			u16[i] = id === WATER_BLOCK_ID ? WATER_BLOCK_ID : id;
+		}
+		return {
+			isUniform: false,
+			uniformBlockId: 0,
+			palette: null,
+			packedBlocks: u16,
 		};
 	}
 

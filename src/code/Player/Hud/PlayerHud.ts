@@ -1,7 +1,10 @@
 import { type Engine, Scene } from "@babylonjs/core";
 import { Map1 } from "@/code/Maps/Map1";
 import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
-import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
+import {
+	TextureDefinitions,
+	TextureDefinitionsReady,
+} from "@/code/World/Texture/TextureDefinitions";
 import MapFog from "../../Maps/MapFog";
 import { WorldEnvironment } from "../../Maps/WorldEnvironment";
 import {
@@ -51,6 +54,7 @@ export class PlayerHud {
 	#prevManaPct = -1;
 
 	#overlayDiv: HTMLDivElement;
+	#craftingContainer!: HTMLDivElement;
 
 	static debugPanelDiv: HTMLDivElement;
 	private static infoRows: {
@@ -86,6 +90,13 @@ export class PlayerHud {
 				this.updateCraftingAvailability();
 			}
 		});
+
+		void this.#initCraftingUI();
+	}
+
+	async #initCraftingUI(): Promise<void> {
+		await TextureDefinitionsReady;
+		this.createCraftingUI(this.#craftingContainer);
 	}
 
 	private initializeHUD(): HTMLDivElement {
@@ -109,10 +120,12 @@ export class PlayerHud {
 		contentWrapper.classList.add("hud-content-wrapper");
 
 		const inventoryUI = this.createInventoryUI();
-		const craftingUI = this.createCraftingUI();
+
+		this.#craftingContainer = document.createElement("div");
+		this.#craftingContainer.classList.add("crafting-container");
 
 		contentWrapper.appendChild(inventoryUI);
-		contentWrapper.appendChild(craftingUI);
+		contentWrapper.appendChild(this.#craftingContainer);
 
 		overlayDiv.appendChild(contentWrapper);
 		overlayDiv.appendChild(closeButton);
@@ -126,9 +139,8 @@ export class PlayerHud {
 		return overlayDiv;
 	}
 
-	private createCraftingUI(): HTMLDivElement {
-		const container = document.createElement("div");
-		container.classList.add("crafting-container");
+	private createCraftingUI(container: HTMLDivElement): void {
+		container.innerHTML = "";
 		this.#craftingRecipeDivs = [];
 
 		const viewSwitcher = document.createElement("div");
@@ -215,7 +227,6 @@ export class PlayerHud {
 			container.appendChild(recipeDiv);
 		}
 		this.updateCraftingAvailability();
-		return container;
 	}
 
 	public updateCraftingAvailability(): void {

@@ -1,5 +1,8 @@
 import type { Biome } from "../Biome/BiomeTypes";
-import type { IWorldFeature } from "../Structure/IWorldFeature";
+import type {
+	ColumnPrepassResolver,
+	IWorldFeature,
+} from "../Structure/IWorldFeature";
 
 const STRUCTURE_SEARCH_RADIUS = 2;
 
@@ -18,6 +21,7 @@ export function generateStructures(
 		id: number,
 		ow: boolean,
 	) => void,
+	columnPrepassResolver?: ColumnPrepassResolver,
 ): void {
 	const chunkMinY = chunkY * chunkSize;
 	const chunkMaxY = chunkMinY + chunkSize - 1;
@@ -62,6 +66,7 @@ export function generateStructures(
 					chunkSize,
 					chunkX,
 					chunkZ,
+					columnPrepassResolver,
 				);
 			}
 		}

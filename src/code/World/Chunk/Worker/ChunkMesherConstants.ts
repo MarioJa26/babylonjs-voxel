@@ -6,13 +6,11 @@ import {
 
 export const BLOCK_TYPE = new Uint8Array(65536);
 export const BLOCK_TYPE_TRANSPARENT = 1;
-
+export const WATER_BLOCK_ID = 30;
 // 0 = opaque / air
-for (const id of [30, 60, 61, 64, 66]) {
+for (const id of [WATER_BLOCK_ID, 60, 61, 64, 66]) {
 	BLOCK_TYPE[id] = BLOCK_TYPE_TRANSPARENT;
 }
-
-export const WATER_BLOCK_ID = 30;
 
 export function filtersFullSunlight(blockId: number): boolean {
 	return blockId === WATER_BLOCK_ID;

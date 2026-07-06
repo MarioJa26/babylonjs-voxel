@@ -1,7 +1,7 @@
 import type { Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
 import { getFinalTerrainHeight } from "../TerrainHeightMap";
-import type { IWorldFeature } from "./IWorldFeature";
+import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 
 export class TowerFeature implements IWorldFeature {
@@ -28,6 +28,7 @@ export class TowerFeature implements IWorldFeature {
 		chunkSize: number,
 		generatingChunkX: number,
 		generatingChunkZ: number,
+		columnPrepassResolver?: ColumnPrepassResolver,
 	) {
 		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
 			regionSize: 16,
@@ -74,6 +75,7 @@ export class TowerFeature implements IWorldFeature {
 			towerCenterZ,
 			towerRadius,
 			biome,
+			columnPrepassResolver,
 		);
 
 		this.generateCylinderTower(
@@ -88,6 +90,7 @@ export class TowerFeature implements IWorldFeature {
 			placeBlock,
 			chunkSize,
 			seed,
+			columnPrepassResolver,
 		);
 		this.generateUndergroundCylinderTower(
 			chunkX,
@@ -120,6 +123,7 @@ export class TowerFeature implements IWorldFeature {
 		) => void,
 		chunkSize: number,
 		seed: number,
+		columnPrepassResolver?: ColumnPrepassResolver,
 	) {
 		const towerHeight = 76 + (Squirrel3.get(towerCenterZ, seed) % 8);
 		const wallBlockId = 1;
@@ -132,7 +136,17 @@ export class TowerFeature implements IWorldFeature {
 				const worldX = towerCenterX + dx;
 				const worldZ = towerCenterZ + dz;
 
-				const originalHeight = getFinalTerrainHeight(worldX, worldZ);
+				let originalHeight: number;
+				if (columnPrepassResolver) {
+					const resolved = columnPrepassResolver(worldX, worldZ);
+					originalHeight =
+						resolved.entry.terrainHeightMap[
+							resolved.localX + resolved.localZ * 32
+						];
+				} else {
+					originalHeight = getFinalTerrainHeight(worldX, worldZ);
+				}
+
 				for (let y = originalHeight; y < groundHeight; y++) {
 					placeBlock(worldX, y, worldZ, biome.undergroundBlock, true);
 				}
@@ -207,6 +221,7 @@ export class TowerFeature implements IWorldFeature {
 		towerCenterZ: number,
 		towerRadius: number,
 		biome: Biome,
+		columnPrepassResolver?: ColumnPrepassResolver,
 	): number {
 		let minGroundHeight = Infinity;
 		const radiusSq = towerRadius * towerRadius;
@@ -216,7 +231,18 @@ export class TowerFeature implements IWorldFeature {
 				if (dx * dx + dz * dz > radiusSq) continue;
 				const worldX = towerCenterX + dx;
 				const worldZ = towerCenterZ + dz;
-				const height = getFinalTerrainHeight(worldX, worldZ);
+
+				let height: number;
+				if (columnPrepassResolver) {
+					const resolved = columnPrepassResolver(worldX, worldZ);
+					height =
+						resolved.entry.terrainHeightMap[
+							resolved.localX + resolved.localZ * 32
+						];
+				} else {
+					height = getFinalTerrainHeight(worldX, worldZ);
+				}
+
 				if (height < minGroundHeight) {
 					minGroundHeight = height;
 				}
