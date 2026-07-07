@@ -63,6 +63,125 @@ function inlineOrigin(
 	return { ox: desc.uStart, oy: desc.vStart, oz: faceBlockCoord };
 }
 
+type EmitFn = (
+	adapter: VoxelFaceEmitterAdapter,
+	out: WorkerInternalMeshData,
+	axis: number,
+	desc: GreedyFaceDescriptor,
+	packedBlock: number,
+	blockId: number,
+	back: number,
+	light: number,
+	ao: number,
+	faceName: FaceName,
+	faceBit: number,
+) => void;
+
+function emitCubeWrap(
+	a: VoxelFaceEmitterAdapter,
+	out: WorkerInternalMeshData,
+	axis: number,
+	desc: GreedyFaceDescriptor,
+	_packed: number,
+	blockId: number,
+	back: number,
+	light: number,
+	ao: number,
+	faceName: FaceName,
+	_faceBit: number,
+): void {
+	a["emitCubeFace"](out, axis, desc, blockId, back, light, ao, faceName);
+}
+
+function emitWaterWrap(
+	a: VoxelFaceEmitterAdapter,
+	out: WorkerInternalMeshData,
+	axis: number,
+	desc: GreedyFaceDescriptor,
+	packedBlock: number,
+	blockId: number,
+	back: number,
+	light: number,
+	ao: number,
+	faceName: FaceName,
+	_faceBit: number,
+): void {
+	a["emitWaterFace"](
+		out,
+		axis,
+		desc,
+		blockId,
+		packedBlock,
+		back,
+		light,
+		ao,
+		faceName,
+	);
+}
+
+function emitCustomWrap(
+	a: VoxelFaceEmitterAdapter,
+	out: WorkerInternalMeshData,
+	axis: number,
+	desc: GreedyFaceDescriptor,
+	packedBlock: number,
+	blockId: number,
+	back: number,
+	light: number,
+	ao: number,
+	faceName: FaceName,
+	faceBit: number,
+): void {
+	a["emitCustomShapeFace"](
+		out,
+		axis,
+		desc,
+		packedBlock,
+		blockId,
+		back,
+		light,
+		ao,
+		faceName,
+		faceBit,
+	);
+}
+
+function emitWaterCustomWrap(
+	a: VoxelFaceEmitterAdapter,
+	out: WorkerInternalMeshData,
+	axis: number,
+	desc: GreedyFaceDescriptor,
+	packedBlock: number,
+	blockId: number,
+	back: number,
+	light: number,
+	ao: number,
+	faceName: FaceName,
+	faceBit: number,
+): void {
+	a["emitWaterCustomShapeFace"](
+		out,
+		axis,
+		desc,
+		packedBlock,
+		blockId,
+		back,
+		light,
+		ao,
+		faceName,
+		faceBit,
+	);
+}
+
+// Dispatch LUT indexed by (isWater << 1) | isCube:
+//   0 = custom shape non-water, 1 = cube non-water, 2 = custom shape water, 3 = cube water
+const EMIT_DISPATCH: EmitFn[] = [
+	emitCustomWrap,
+	emitCubeWrap,
+	emitWaterCustomWrap,
+	emitWaterWrap,
+];
+
 export class VoxelFaceEmitterAdapter {
 	public emitVoxelFace(
 		axis: number,
@@ -96,52 +215,21 @@ export class VoxelFaceEmitterAdapter {
 		const faceName = FACE_NAME_TABLE[faceIndex];
 		const faceBit = FACE_BIT_TABLE[faceIndex];
 
-		if (shapeInfo.isCube && !isNonCube) {
-			if (isWater) {
-				this.emitWaterFace(
-					out,
-					axis,
-					desc,
-					blockId,
-					packedBlock,
-					back,
-					light,
-					ao,
-					faceName,
-				);
-			} else {
-				this.emitCubeFace(out, axis, desc, blockId, back, light, ao, faceName);
-			}
-			return;
-		}
-
-		if (isWater) {
-			this.emitWaterCustomShapeFace(
-				out,
-				axis,
-				desc,
-				packedBlock,
-				blockId,
-				back,
-				light,
-				ao,
-				faceName,
-				faceBit,
-			);
-		} else {
-			this.emitCustomShapeFace(
-				out,
-				axis,
-				desc,
-				packedBlock,
-				blockId,
-				back,
-				light,
-				ao,
-				faceName,
-				faceBit,
-			);
-		}
+		const isCube = shapeInfo.isCube && !isNonCube;
+		const dispatchKey = (isWater ? 2 : 0) | (isCube ? 1 : 0);
+		EMIT_DISPATCH[dispatchKey](
+			this,
+			out,
+			axis,
+			desc,
+			packedBlock,
+			blockId,
+			back,
+			light,
+			ao,
+			faceName,
+			faceBit,
+		);
 	}
 
 	private emitCubeFace(

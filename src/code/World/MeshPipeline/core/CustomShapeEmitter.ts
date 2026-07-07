@@ -140,6 +140,7 @@ export function emitCustomShapes(
 	const size = ctx.size;
 	const getBlock = ctx.getBlock;
 	const getLight = ctx.getLight;
+	const isLOD2 = ctx.lod >= 2;
 
 	for (let y = -1; y <= size; y++) {
 		for (let z = -1; z <= size; z++) {
@@ -172,7 +173,7 @@ export function emitCustomShapes(
 				}
 
 				if (flags & FLAG_CUSTOM_CROSS_DIAGONAL) {
-					if (ctx.lod >= 2) {
+					if (isLOD2) {
 						emitLOD2CrossBillboard(
 							x,
 							y,

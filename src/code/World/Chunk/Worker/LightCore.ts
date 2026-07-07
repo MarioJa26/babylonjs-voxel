@@ -137,10 +137,18 @@ function getLightEmission(blockId: number): number {
 	return blockId >= 0 && blockId < 256 ? _lightEmissionLUT[blockId] : 0;
 }
 
+// LUT: index = axis * 2 + (dir >= 0 ? 0 : 1)
+const FACE_BIT_LUT = new Uint8Array([
+	FACE_PX,
+	FACE_NX,
+	FACE_PY,
+	FACE_NY,
+	FACE_PZ,
+	FACE_NZ,
+]);
+
 function getFaceBit(axis: number, dir: number): number {
-	if (axis === 0) return dir >= 0 ? FACE_PX : FACE_NX;
-	if (axis === 1) return dir >= 0 ? FACE_PY : FACE_NY;
-	return dir >= 0 ? FACE_PZ : FACE_NZ;
+	return FACE_BIT_LUT[axis * 2 + (dir >= 0 ? 0 : 1)];
 }
 
 // Closed-face mask cache — the lookup table is dense per (blockId << 8 |
@@ -574,27 +582,21 @@ function processQueue(
 			let tz = z + dz;
 			let targetView: ChunkView = view;
 
-			// Resolve cross-chunk boundaries along each axis via cached neighbor views.
-			if (tx < 0 || tx >= size) {
-				const next: ChunkView | null =
-					view.neighborViews[tx < 0 ? DIR_NX : DIR_PX];
-				if (!next) continue;
-				targetView = next;
-				tx = tx < 0 ? size - 1 : 0;
-			}
-			if (ty < 0 || ty >= size) {
-				const next: ChunkView | null =
-					targetView.neighborViews[ty < 0 ? DIR_NY : DIR_PY];
-				if (!next) continue;
-				targetView = next;
-				ty = ty < 0 ? size - 1 : 0;
-			}
-			if (tz < 0 || tz >= size) {
-				const next: ChunkView | null =
-					targetView.neighborViews[tz < 0 ? DIR_NZ : DIR_PZ];
-				if (!next) continue;
-				targetView = next;
-				tz = tz < 0 ? size - 1 : 0;
+			// Resolve cross-chunk boundaries via cached neighbor views.
+			if (
+				tx < 0 ||
+				tx >= size ||
+				ty < 0 ||
+				ty >= size ||
+				tz < 0 ||
+				tz >= size
+			) {
+				const resolved = resolveNeighborView(view, tx, ty, tz, size);
+				if (!resolved) continue;
+				targetView = resolved.view;
+				tx = resolved.x;
+				ty = resolved.y;
+				tz = resolved.z;
 			}
 			if (targetView !== view) {
 				refreshLayout(registry, targetView);
@@ -1099,47 +1101,68 @@ export function lightSkyReconcile(
 		const neighborEdge = neighborEdges[f];
 		const axis = f < 2 ? 0 : f < 4 ? 1 : 2;
 
-		for (let u = 0; u < size; u++) {
-			for (let v = 0; v < size; v++) {
-				let x: number, y: number, z: number;
-				let nx: number, ny: number, nz: number;
-				if (axis === 0) {
-					x = selfEdge;
-					y = u;
-					z = v;
-					nx = neighborEdge;
-					ny = u;
-					nz = v;
-				} else if (axis === 1) {
-					x = u;
-					y = selfEdge;
-					z = v;
-					nx = u;
-					ny = neighborEdge;
-					nz = v;
-				} else {
-					x = u;
-					y = v;
-					z = selfEdge;
-					nx = u;
-					ny = v;
-					nz = neighborEdge;
+		if (axis === 0) {
+			const selfX = selfEdge;
+			const nbrX = neighborEdge;
+			for (let u = 0; u < size; u++) {
+				for (let v = 0; v < size; v++) {
+					const sidx = selfX + u * size + v * size2;
+					const nidx = nbrX + u * size + v * size2;
+					const selfSky = (view.light_array[sidx] >> LIGHT_SKY_SHIFT) & 0xf;
+					const neighborSky =
+						(neighbor.light_array[nidx] >> LIGHT_SKY_SHIFT) & 0xf;
+					if (selfSky === neighborSky) continue;
+					if (seedCount >= 6144) return dirtySlots;
+					const selfHigher = selfSky > neighborSky;
+					seedChunks[seedCount] = selfHigher ? view.chunkId : neighbor.chunkId;
+					seedCoords[seedCount * 3] = selfHigher ? selfX : nbrX;
+					seedCoords[seedCount * 3 + 1] = selfHigher ? u : u;
+					seedCoords[seedCount * 3 + 2] = selfHigher ? v : v;
+					seedLevels[seedCount] = selfHigher ? selfSky : neighborSky;
+					seedCount++;
 				}
-
-				const sidx = x + y * size + z * size2;
-				const nidx = nx + ny * size + nz * size2;
-				const selfSky = (view.light_array[sidx] >> LIGHT_SKY_SHIFT) & 0xf;
-				const neighborSky =
-					(neighbor.light_array[nidx] >> LIGHT_SKY_SHIFT) & 0xf;
-				if (selfSky === neighborSky) continue;
-				if (seedCount >= 6144) return dirtySlots;
-				seedChunks[seedCount] =
-					selfSky > neighborSky ? view.chunkId : neighbor.chunkId;
-				seedCoords[seedCount * 3] = selfSky > neighborSky ? x : nx;
-				seedCoords[seedCount * 3 + 1] = selfSky > neighborSky ? y : ny;
-				seedCoords[seedCount * 3 + 2] = selfSky > neighborSky ? z : nz;
-				seedLevels[seedCount] = selfSky > neighborSky ? selfSky : neighborSky;
-				seedCount++;
+			}
+		} else if (axis === 1) {
+			const selfY = selfEdge;
+			const nbrY = neighborEdge;
+			for (let u = 0; u < size; u++) {
+				for (let v = 0; v < size; v++) {
+					const sidx = u + selfY * size + v * size2;
+					const nidx = u + nbrY * size + v * size2;
+					const selfSky = (view.light_array[sidx] >> LIGHT_SKY_SHIFT) & 0xf;
+					const neighborSky =
+						(neighbor.light_array[nidx] >> LIGHT_SKY_SHIFT) & 0xf;
+					if (selfSky === neighborSky) continue;
+					if (seedCount >= 6144) return dirtySlots;
+					const selfHigher = selfSky > neighborSky;
+					seedChunks[seedCount] = selfHigher ? view.chunkId : neighbor.chunkId;
+					seedCoords[seedCount * 3] = selfHigher ? u : u;
+					seedCoords[seedCount * 3 + 1] = selfHigher ? selfY : nbrY;
+					seedCoords[seedCount * 3 + 2] = selfHigher ? v : v;
+					seedLevels[seedCount] = selfHigher ? selfSky : neighborSky;
+					seedCount++;
+				}
+			}
+		} else {
+			const selfZ = selfEdge;
+			const nbrZ = neighborEdge;
+			for (let u = 0; u < size; u++) {
+				for (let v = 0; v < size; v++) {
+					const sidx = u + v * size + selfZ * size2;
+					const nidx = u + v * size + nbrZ * size2;
+					const selfSky = (view.light_array[sidx] >> LIGHT_SKY_SHIFT) & 0xf;
+					const neighborSky =
+						(neighbor.light_array[nidx] >> LIGHT_SKY_SHIFT) & 0xf;
+					if (selfSky === neighborSky) continue;
+					if (seedCount >= 6144) return dirtySlots;
+					const selfHigher = selfSky > neighborSky;
+					seedChunks[seedCount] = selfHigher ? view.chunkId : neighbor.chunkId;
+					seedCoords[seedCount * 3] = selfHigher ? u : u;
+					seedCoords[seedCount * 3 + 1] = selfHigher ? v : v;
+					seedCoords[seedCount * 3 + 2] = selfHigher ? selfZ : nbrZ;
+					seedLevels[seedCount] = selfHigher ? selfSky : neighborSky;
+					seedCount++;
+				}
 			}
 		}
 	}
@@ -1210,63 +1233,119 @@ export function lightBlockReconcile(
 		refreshLayout(registry, neighbor);
 		if (!neighbor.isLoaded) continue;
 
-		for (let u = 0; u < size; u++) {
-			for (let v = 0; v < size; v++) {
-				let sx: number, sy: number, sz: number;
-				let nx: number, ny: number, nz: number;
-				if (f.axis === 0) {
-					sx = f.selfEdge;
-					sy = u;
-					sz = v;
-					nx = f.neighborEdge;
-					ny = u;
-					nz = v;
-				} else if (f.axis === 1) {
-					sx = u;
-					sy = f.selfEdge;
-					sz = v;
-					nx = u;
-					ny = f.neighborEdge;
-					nz = v;
-				} else {
-					sx = u;
-					sy = v;
-					sz = f.selfEdge;
-					nx = u;
-					ny = v;
-					nz = f.neighborEdge;
-				}
+		const fAxis = f.axis;
+		const fDir = f.dir;
+		const fSelfEdge = f.selfEdge;
+		const fNbrEdge = f.neighborEdge;
 
-				const sidx = sx + sy * size + sz * size2;
-				const nidx = nx + ny * size + nz * size2;
-				const selfLevel = getBlockLight(view, sidx);
-				const neighborLevel = getBlockLight(neighbor, nidx);
+		if (fAxis === 0) {
+			const selfX = fSelfEdge;
+			const nbrX = fNbrEdge;
+			for (let u = 0; u < size; u++) {
+				for (let v = 0; v < size; v++) {
+					const sidx = selfX + u * size + v * size2;
+					const nidx = nbrX + u * size + v * size2;
+					const selfLevel = getBlockLight(view, sidx);
+					const neighborLevel = getBlockLight(neighbor, nidx);
 
-				// self -> neighbor
-				if (selfLevel > 1 && neighborLevel < selfLevel - 1) {
-					const sourcePacked = getViewBlockPacked(view, sx, sy, sz);
-					const targetPacked = getViewBlockPacked(neighbor, nx, ny, nz);
-					const sourceBlockId = unpackBlockId(sourcePacked);
-					const sourceEmits = getLightEmission(sourceBlockId) > 0;
-					if (
-						(sourceEmits || isTransparent(sourcePacked, f.axis, f.dir)) &&
-						isTransparent(targetPacked, f.axis, -f.dir)
-					) {
-						Q_A.push(view.chunkId, sx, sy, sz, selfLevel);
+					if (selfLevel > 1 && neighborLevel < selfLevel - 1) {
+						const sourcePacked = getViewBlockPacked(view, selfX, u, v);
+						const targetPacked = getViewBlockPacked(neighbor, nbrX, u, v);
+						const sourceBlockId = unpackBlockId(sourcePacked);
+						const sourceEmits = getLightEmission(sourceBlockId) > 0;
+						if (
+							(sourceEmits || isTransparent(sourcePacked, fAxis, fDir)) &&
+							isTransparent(targetPacked, fAxis, -fDir)
+						) {
+							Q_A.push(view.chunkId, selfX, u, v, selfLevel);
+						}
+					}
+
+					if (neighborLevel > 1 && selfLevel < neighborLevel - 1) {
+						const sourcePacked = getViewBlockPacked(neighbor, nbrX, u, v);
+						const targetPacked = getViewBlockPacked(view, selfX, u, v);
+						const sourceBlockId = unpackBlockId(sourcePacked);
+						const sourceEmits = getLightEmission(sourceBlockId) > 0;
+						if (
+							(sourceEmits || isTransparent(sourcePacked, fAxis, -fDir)) &&
+							isTransparent(targetPacked, fAxis, fDir)
+						) {
+							Q_A.push(neighbor.chunkId, nbrX, u, v, neighborLevel);
+						}
 					}
 				}
+			}
+		} else if (fAxis === 1) {
+			const selfY = fSelfEdge;
+			const nbrY = fNbrEdge;
+			for (let u = 0; u < size; u++) {
+				for (let v = 0; v < size; v++) {
+					const sidx = u + selfY * size + v * size2;
+					const nidx = u + nbrY * size + v * size2;
+					const selfLevel = getBlockLight(view, sidx);
+					const neighborLevel = getBlockLight(neighbor, nidx);
 
-				// neighbor -> self
-				if (neighborLevel > 1 && selfLevel < neighborLevel - 1) {
-					const sourcePacked = getViewBlockPacked(neighbor, nx, ny, nz);
-					const targetPacked = getViewBlockPacked(view, sx, sy, sz);
-					const sourceBlockId = unpackBlockId(sourcePacked);
-					const sourceEmits = getLightEmission(sourceBlockId) > 0;
-					if (
-						(sourceEmits || isTransparent(sourcePacked, f.axis, -f.dir)) &&
-						isTransparent(targetPacked, f.axis, f.dir)
-					) {
-						Q_A.push(neighbor.chunkId, nx, ny, nz, neighborLevel);
+					if (selfLevel > 1 && neighborLevel < selfLevel - 1) {
+						const sourcePacked = getViewBlockPacked(view, u, selfY, v);
+						const targetPacked = getViewBlockPacked(neighbor, u, nbrY, v);
+						const sourceBlockId = unpackBlockId(sourcePacked);
+						const sourceEmits = getLightEmission(sourceBlockId) > 0;
+						if (
+							(sourceEmits || isTransparent(sourcePacked, fAxis, fDir)) &&
+							isTransparent(targetPacked, fAxis, -fDir)
+						) {
+							Q_A.push(view.chunkId, u, selfY, v, selfLevel);
+						}
+					}
+
+					if (neighborLevel > 1 && selfLevel < neighborLevel - 1) {
+						const sourcePacked = getViewBlockPacked(neighbor, u, nbrY, v);
+						const targetPacked = getViewBlockPacked(view, u, selfY, v);
+						const sourceBlockId = unpackBlockId(sourcePacked);
+						const sourceEmits = getLightEmission(sourceBlockId) > 0;
+						if (
+							(sourceEmits || isTransparent(sourcePacked, fAxis, -fDir)) &&
+							isTransparent(targetPacked, fAxis, fDir)
+						) {
+							Q_A.push(neighbor.chunkId, u, nbrY, v, neighborLevel);
+						}
+					}
+				}
+			}
+		} else {
+			const selfZ = fSelfEdge;
+			const nbrZ = fNbrEdge;
+			for (let u = 0; u < size; u++) {
+				for (let v = 0; v < size; v++) {
+					const sidx = u + v * size + selfZ * size2;
+					const nidx = u + v * size + nbrZ * size2;
+					const selfLevel = getBlockLight(view, sidx);
+					const neighborLevel = getBlockLight(neighbor, nidx);
+
+					if (selfLevel > 1 && neighborLevel < selfLevel - 1) {
+						const sourcePacked = getViewBlockPacked(view, u, v, selfZ);
+						const targetPacked = getViewBlockPacked(neighbor, u, v, nbrZ);
+						const sourceBlockId = unpackBlockId(sourcePacked);
+						const sourceEmits = getLightEmission(sourceBlockId) > 0;
+						if (
+							(sourceEmits || isTransparent(sourcePacked, fAxis, fDir)) &&
+							isTransparent(targetPacked, fAxis, -fDir)
+						) {
+							Q_A.push(view.chunkId, u, v, selfZ, selfLevel);
+						}
+					}
+
+					if (neighborLevel > 1 && selfLevel < neighborLevel - 1) {
+						const sourcePacked = getViewBlockPacked(neighbor, u, v, nbrZ);
+						const targetPacked = getViewBlockPacked(view, u, v, selfZ);
+						const sourceBlockId = unpackBlockId(sourcePacked);
+						const sourceEmits = getLightEmission(sourceBlockId) > 0;
+						if (
+							(sourceEmits || isTransparent(sourcePacked, fAxis, -fDir)) &&
+							isTransparent(targetPacked, fAxis, fDir)
+						) {
+							Q_A.push(neighbor.chunkId, u, v, nbrZ, neighborLevel);
+						}
 					}
 				}
 			}

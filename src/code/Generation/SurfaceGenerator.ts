@@ -10,16 +10,42 @@ import {
 	type GenerationParamsType,
 } from "./NoiseAndParameters/GenerationParams";
 import { RiverGenerator } from "./RiverGeneration";
+import { AbandonedCabinFeature } from "./Structure/AbandonedCabinFeature";
+import { AbyssalTempleFeature } from "./Structure/AbyssalTempleFeature";
 import { BadlandsSpireFeature } from "./Structure/BadlandsSpireFeature";
+import { BambooShrineFeature } from "./Structure/BambooShrineFeature";
+import { CaravanCampFeature } from "./Structure/CaravanCampFeature";
+import { CliffDwellingFeature } from "./Structure/CliffDwellingFeature";
+import { CrystalShrineFeature } from "./Structure/CrystalShrineFeature";
+import { DesertOasisFeature } from "./Structure/DesertOasisFeature";
+import { DockFeature } from "./Structure/DockFeature";
 import { DungeonFeature } from "./Structure/DungeonFeature";
+import { FossilBedFeature } from "./Structure/FossilBedFeature";
+import { FrozenShrineFeature } from "./Structure/FrozenShrineFeature";
 import { GeodeFeature } from "./Structure/GeodeFeature";
+import { IglooFeature } from "./Structure/IglooFeature";
 import { InfernalPitFeature } from "./Structure/InfernalPitFeature";
 import type { IWorldFeature } from "./Structure/IWorldFeature";
 import { LavaPoolFeature } from "./Structure/LavaPoolFeature";
+import { LighthouseFeature } from "./Structure/LighthouseFeature";
 import { MineshaftFeature } from "./Structure/MineshaftFeature";
+import { MountainCabinFeature } from "./Structure/MountainCabinFeature";
+import { MushroomHutFeature } from "./Structure/MushroomHutFeature";
+import { ObservatoryFeature } from "./Structure/ObservatoryFeature";
+import { PetrifiedShrineFeature } from "./Structure/PetrifiedShrineFeature";
+import { PyramidFeature } from "./Structure/PyramidFeature";
 import { RavineFeature } from "./Structure/RavineFeature";
+import { RuinFeature } from "./Structure/RuinFeature";
+import { ShipwreckFeature } from "./Structure/ShipwreckFeature";
+import { SnowFortFeature } from "./Structure/SnowFortFeature";
+import { StoneCircleFeature } from "./Structure/StoneCircleFeature";
 import { StructureSpawnerFeature } from "./Structure/StructureFeature";
 import { TowerFeature } from "./Structure/TowerFeature";
+import { TreehouseFeature } from "./Structure/TreehouseFeature";
+import { TropicalTempleFeature } from "./Structure/TropicalTempleFeature";
+import { WatchtowerFeature } from "./Structure/WatchtowerFeature";
+import { WellFeature } from "./Structure/WellFeature";
+import { WindmillFeature } from "./Structure/WindmillFeature";
 import { generateStructures } from "./Terrain/StructurePlacer";
 import {
 	resolveSolidBlockId,
@@ -177,6 +203,41 @@ export class SurfaceGenerator {
 			new MineshaftFeature(),
 			new InfernalPitFeature(),
 			new BadlandsSpireFeature(),
+			// Coastal
+			new ShipwreckFeature(),
+			new LighthouseFeature(),
+			new DockFeature(),
+			// Cold
+			new IglooFeature(),
+			new FrozenShrineFeature(),
+			new SnowFortFeature(),
+			// Temperate
+			new AbandonedCabinFeature(),
+			new WindmillFeature(),
+			new StoneCircleFeature(),
+			new WellFeature(),
+			// Hot
+			new PyramidFeature(),
+			new DesertOasisFeature(),
+			new WatchtowerFeature(),
+			new CaravanCampFeature(),
+			// Tropical
+			new TropicalTempleFeature(),
+			new TreehouseFeature(),
+			new BambooShrineFeature(),
+			// Mountain
+			new MountainCabinFeature(),
+			new CliffDwellingFeature(),
+			new ObservatoryFeature(),
+			// Geological
+			new CrystalShrineFeature(),
+			new MushroomHutFeature(),
+			// Exotic
+			new RuinFeature(),
+			new PetrifiedShrineFeature(),
+			// Underground
+			new AbyssalTempleFeature(),
+			new FossilBedFeature(),
 		];
 
 		this.maxStructureAboveSurface = Math.max(

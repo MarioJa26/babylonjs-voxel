@@ -21,6 +21,19 @@ export const FLAG_CUSTOM_CROSS = 1 << 5;
 export const FLAG_CUSTOM_CROSS_DIAGONAL = 1 << 6;
 export const FLAG_CUSTOM_FENCE = 1 << 7;
 
+// Glass-specific flag — set for block IDs that are glass (not water).
+// Used by VoxelMaskExtractor for transparent interface preference.
+const GLASS_BLOCK_IDS = new Set([60, 61]);
+const GLASS_LUT = (() => {
+	const lut = new Uint8Array(256);
+	for (const id of GLASS_BLOCK_IDS) lut[id] = 1;
+	return lut;
+})();
+
+export function isGlassBlock(blockId: number): boolean {
+	return blockId >= 0 && blockId < 256 && GLASS_LUT[blockId] !== 0;
+}
+
 const DENSE_CACHE_SIZE = 1 << 16;
 const DENSE_CACHE_MASK = DENSE_CACHE_SIZE - 1;
 

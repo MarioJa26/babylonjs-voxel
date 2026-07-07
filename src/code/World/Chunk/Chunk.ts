@@ -1259,10 +1259,17 @@ export class Chunk {
 		return write;
 	}
 
+	private static readonly _faceBitLUT = new Uint8Array([
+		FACE_PX,
+		FACE_NX,
+		FACE_PY,
+		FACE_NY,
+		FACE_PZ,
+		FACE_NZ,
+	]);
+
 	private static getFaceBit(axis: number, dir: number): number {
-		if (axis === 0) return dir >= 0 ? FACE_PX : FACE_NX;
-		if (axis === 1) return dir >= 0 ? FACE_PY : FACE_NY;
-		return dir >= 0 ? FACE_PZ : FACE_NZ;
+		return Chunk._faceBitLUT[axis * 2 + (dir >= 0 ? 0 : 1)];
 	}
 
 	private isTransparent(

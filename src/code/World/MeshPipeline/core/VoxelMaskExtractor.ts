@@ -20,6 +20,7 @@ import {
 	getCachedBlockId,
 	getCachedFlags,
 	getCachedIsCube,
+	isGlassBlock,
 } from "./BlockFlags";
 import { quantizeLightForLOD } from "./LightPipeline";
 import { getShapeInfo } from "./ShapePipeline";
@@ -228,12 +229,11 @@ export class VoxelMaskExtractor {
 		// TRANSPARENT INTERFACE EMISSION
 		// ============================================================
 		if (preserveInterface) {
-			const preferCurrent =
-				currId === 60 || currId === 61
-					? 1
-					: nbrId === 60 || nbrId === 61
-						? 0
-						: 1;
+			const preferCurrent = isGlassBlock(currId)
+				? 1
+				: isGlassBlock(nbrId)
+					? 0
+					: 1;
 
 			let packedMask = 0;
 			let packedAO = 0;

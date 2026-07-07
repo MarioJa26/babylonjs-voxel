@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-06T19:28:21.591Z
+Generated: 2026-07-07T01:08:21.698Z
 
-> **Summary:** 117 classes · 2270 members · 461 module-level functions · 43792 LOC
+> **Summary:** 143 classes · 2343 members · 466 module-level functions · 46800 LOC
 
 ---
 
@@ -913,7 +913,7 @@ Generated: 2026-07-06T19:28:21.591Z
 
 ---
 
-## `Generation/NoiseAndParameters/Spline.ts` (62 LOC)
+## `Generation/NoiseAndParameters/Spline.ts` (63 LOC)
 
 ### export class Spline
 
@@ -997,6 +997,43 @@ Generated: 2026-07-06T19:28:21.591Z
 
 ---
 
+## `Generation/Structure/AbandonedCabinFeature.ts` (108 LOC)
+
+### export class AbandonedCabinFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
+## `Generation/Structure/AbyssalTempleFeature.ts` (109 LOC)
+
+### export class AbyssalTempleFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number): void`
+
+---
+
 ## `Generation/Structure/BadlandsSpireFeature.ts` (303 LOC)
 
 ### export class BadlandsSpireFeature implements IWorldFeature
@@ -1032,6 +1069,118 @@ Generated: 2026-07-06T19:28:21.591Z
 
 ---
 
+## `Generation/Structure/BambooShrineFeature.ts` (112 LOC)
+
+### export class BambooShrineFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
+## `Generation/Structure/CaravanCampFeature.ts` (109 LOC)
+
+### export class CaravanCampFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
+## `Generation/Structure/CliffDwellingFeature.ts` (110 LOC)
+
+### export class CliffDwellingFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
+## `Generation/Structure/CrystalShrineFeature.ts` (101 LOC)
+
+### export class CrystalShrineFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
+## `Generation/Structure/DesertOasisFeature.ts` (104 LOC)
+
+### export class DesertOasisFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
+## `Generation/Structure/DockFeature.ts` (107 LOC)
+
+### export class DockFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
 ## `Generation/Structure/DungeonFeature.ts` (166 LOC)
 
 ### export class DungeonFeature implements IWorldFeature
@@ -1051,6 +1200,43 @@ Generated: 2026-07-06T19:28:21.591Z
 
 ---
 
+## `Generation/Structure/FossilBedFeature.ts` (98 LOC)
+
+### export class FossilBedFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number): void`
+
+---
+
+## `Generation/Structure/FrozenShrineFeature.ts` (115 LOC)
+
+### export class FrozenShrineFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
 ## `Generation/Structure/GeodeFeature.ts` (79 LOC)
 
 ### export class GeodeFeature implements IWorldFeature
@@ -1066,6 +1252,24 @@ Generated: 2026-07-06T19:28:21.591Z
 			id: number,
 			ow: boolean,
 		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number): void`
+
+---
+
+## `Generation/Structure/IglooFeature.ts` (106 LOC)
+
+### export class IglooFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
 
 ---
 
@@ -1121,6 +1325,25 @@ Generated: 2026-07-06T19:28:21.591Z
 
 ---
 
+## `Generation/Structure/LighthouseFeature.ts` (96 LOC)
+
+### export class LighthouseFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
 ## `Generation/Structure/MineshaftFeature.ts` (129 LOC)
 
 ### export class MineshaftFeature implements IWorldFeature
@@ -1143,6 +1366,101 @@ Generated: 2026-07-06T19:28:21.591Z
 			id: number,
 			ow: boolean,
 		) => void): void`
+
+---
+
+## `Generation/Structure/MountainCabinFeature.ts` (102 LOC)
+
+### export class MountainCabinFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
+## `Generation/Structure/MushroomHutFeature.ts` (112 LOC)
+
+### export class MushroomHutFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
+## `Generation/Structure/ObservatoryFeature.ts` (103 LOC)
+
+### export class ObservatoryFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
+## `Generation/Structure/PetrifiedShrineFeature.ts` (114 LOC)
+
+### export class PetrifiedShrineFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
+## `Generation/Structure/PyramidFeature.ts` (101 LOC)
+
+### export class PyramidFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
 
 ---
 
@@ -1174,6 +1492,81 @@ Generated: 2026-07-06T19:28:21.591Z
 **Types / Interfaces / Enums**
 - interface `RegionConfig`
 - interface `RegionResult`
+
+---
+
+## `Generation/Structure/RuinFeature.ts` (112 LOC)
+
+### export class RuinFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
+## `Generation/Structure/ShipwreckFeature.ts` (125 LOC)
+
+### export class ShipwreckFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
+## `Generation/Structure/SnowFortFeature.ts` (104 LOC)
+
+### export class SnowFortFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
+## `Generation/Structure/StoneCircleFeature.ts` (98 LOC)
+
+### export class StoneCircleFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
 
 ---
 
@@ -1256,7 +1649,102 @@ Generated: 2026-07-06T19:28:21.591Z
 
 ---
 
-## `Generation/SurfaceGenerator.ts` (1059 LOC)
+## `Generation/Structure/TreehouseFeature.ts` (109 LOC)
+
+### export class TreehouseFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
+## `Generation/Structure/TropicalTempleFeature.ts` (109 LOC)
+
+### export class TropicalTempleFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
+## `Generation/Structure/WatchtowerFeature.ts` (118 LOC)
+
+### export class WatchtowerFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
+## `Generation/Structure/WellFeature.ts` (109 LOC)
+
+### export class WellFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
+## `Generation/Structure/WindmillFeature.ts` (105 LOC)
+
+### export class WindmillFeature implements IWorldFeature
+
+**Properties**
+- `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
+
+**Methods**
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+			x: number,
+			y: number,
+			z: number,
+			id: number,
+			ow: boolean,
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+
+---
+
+## `Generation/SurfaceGenerator.ts` (1111 LOC)
 
 ### export class SurfaceGenerator
 
@@ -1361,7 +1849,7 @@ Generated: 2026-07-06T19:28:21.591Z
 
 ---
 
-## `Generation/TerrainHeightMap.ts` (453 LOC)
+## `Generation/TerrainHeightMap.ts` (434 LOC)
 
 **Module-level functions**
 - `function applyRidged(raw: number): number`
@@ -3127,7 +3615,7 @@ Generated: 2026-07-06T19:28:21.591Z
 
 ---
 
-## `World/Chunk/Chunk.ts` (1222 LOC)
+## `World/Chunk/Chunk.ts` (1228 LOC)
 
 ### export class Chunk
 
@@ -3209,6 +3697,7 @@ Generated: 2026-07-06T19:28:21.591Z
 			length: number,
 		): void;
 	} | null`
+- `private static readonly _faceBitLUT: unknown`
 - `private static readonly _faceScratch: number[]`
 - `private static readonly FACE_CONNECT_THRESHOLD: unknown`
 
@@ -3287,7 +3776,7 @@ Generated: 2026-07-06T19:28:21.591Z
 
 ---
 
-## `World/Chunk/chunk.worker.ts` (175 LOC)
+## `World/Chunk/chunk.worker.ts` (173 LOC)
 
 **Module-level functions**
 - `function compressBlocks(blocks: Uint8Array): {
@@ -4415,7 +4904,7 @@ Generated: 2026-07-06T19:28:21.591Z
 
 ---
 
-## `World/Chunk/Worker/LightCore.ts` (1037 LOC)
+## `World/Chunk/Worker/LightCore.ts` (1113 LOC)
 
 ### class LightQueue
 
@@ -4525,7 +5014,7 @@ Generated: 2026-07-06T19:28:21.591Z
 
 ---
 
-## `World/Chunk/Worker/WaterSimulation.ts` (389 LOC)
+## `World/Chunk/Worker/WaterSimulation.ts` (386 LOC)
 
 **Module-level functions**
 - `function scheduleNeighborUpdates(worldX: number, worldY: number, worldZ: number, scheduler: BlockTickScheduler, excludeDx: unknown = 0, excludeDy: unknown = 0, excludeDz: unknown = 0): void`
@@ -4627,7 +5116,7 @@ Generated: 2026-07-06T19:28:21.591Z
 
 ---
 
-## `World/Collision/VoxelObbCollider.ts` (225 LOC)
+## `World/Collision/VoxelObbCollider.ts` (235 LOC)
 
 ### export class VoxelObbCollider
 
@@ -4738,9 +5227,10 @@ Generated: 2026-07-06T19:28:21.591Z
 
 ---
 
-## `World/MeshPipeline/core/BlockFlags.ts` (107 LOC)
+## `World/MeshPipeline/core/BlockFlags.ts` (116 LOC)
 
 **Module-level functions**
+- `export function isGlassBlock(blockId: number): boolean`
 - `function canUseDenseCache(packed: number): boolean`
 - `export function getCachedBlockId(packed: number): number`
 - `export function getCachedIsCube(packed: number): boolean`
@@ -4748,7 +5238,7 @@ Generated: 2026-07-06T19:28:21.591Z
 
 ---
 
-## `World/MeshPipeline/core/CustomShapeEmitter.ts` (625 LOC)
+## `World/MeshPipeline/core/CustomShapeEmitter.ts` (626 LOC)
 
 **Module-level functions**
 - `function parseBlockInto(packed: number, out: ParsedBlock): void`
@@ -4858,7 +5348,7 @@ Generated: 2026-07-06T19:28:21.591Z
 
 ---
 
-## `World/MeshPipeline/core/VoxelFaceEmitterAdapter.ts` (320 LOC)
+## `World/MeshPipeline/core/VoxelFaceEmitterAdapter.ts` (401 LOC)
 
 ### export class VoxelFaceEmitterAdapter
 
@@ -4872,6 +5362,13 @@ Generated: 2026-07-06T19:28:21.591Z
 **Module-level functions**
 - `function needsRawDim(blockId: number, width: number, height: number): boolean`
 - `function inlineOrigin(axis: number, isBackFace: boolean, desc: GreedyFaceDescriptor): { ox: number; oy: number; oz: number }`
+- `function emitCubeWrap(a: VoxelFaceEmitterAdapter, out: WorkerInternalMeshData, axis: number, desc: GreedyFaceDescriptor, _packed: number, blockId: number, back: number, light: number, ao: number, faceName: FaceName, _faceBit: number): void`
+- `function emitWaterWrap(a: VoxelFaceEmitterAdapter, out: WorkerInternalMeshData, axis: number, desc: GreedyFaceDescriptor, packedBlock: number, blockId: number, back: number, light: number, ao: number, faceName: FaceName, _faceBit: number): void`
+- `function emitCustomWrap(a: VoxelFaceEmitterAdapter, out: WorkerInternalMeshData, axis: number, desc: GreedyFaceDescriptor, packedBlock: number, blockId: number, back: number, light: number, ao: number, faceName: FaceName, faceBit: number): void`
+- `function emitWaterCustomWrap(a: VoxelFaceEmitterAdapter, out: WorkerInternalMeshData, axis: number, desc: GreedyFaceDescriptor, packedBlock: number, blockId: number, back: number, light: number, ao: number, faceName: FaceName, faceBit: number): void`
+
+**Types / Interfaces / Enums**
+- type `EmitFn`
 
 ---
 
