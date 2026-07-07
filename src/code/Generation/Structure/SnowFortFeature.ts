@@ -39,7 +39,7 @@ export class SnowFortFeature implements IWorldFeature {
 			regionSize: 12,
 			magicA: 6089012345,
 			magicB: 556677889,
-			spawnChance: 6,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

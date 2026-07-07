@@ -28,7 +28,7 @@ export class FossilBedFeature implements IWorldFeature {
 			regionSize: 10,
 			magicA: 8989012345,
 			magicB: 666768696,
-			spawnChance: 5,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

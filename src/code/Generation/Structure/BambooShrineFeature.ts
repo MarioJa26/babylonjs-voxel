@@ -33,7 +33,7 @@ export class BambooShrineFeature implements IWorldFeature {
 			regionSize: 12,
 			magicA: 8090123456,
 			magicB: 767778797,
-			spawnChance: 8,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

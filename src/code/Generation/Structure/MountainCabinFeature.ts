@@ -58,7 +58,7 @@ export class MountainCabinFeature implements IWorldFeature {
 			regionSize: 14,
 			magicA: 9101234567,
 			magicB: 878889808,
-			spawnChance: 8,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

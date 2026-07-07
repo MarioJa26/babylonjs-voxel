@@ -28,7 +28,7 @@ export class AbyssalTempleFeature implements IWorldFeature {
 			regionSize: 16,
 			magicA: 7878901234,
 			magicB: 555657585,
-			spawnChance: 2,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

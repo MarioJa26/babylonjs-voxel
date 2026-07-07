@@ -48,7 +48,7 @@ export class WellFeature implements IWorldFeature {
 			regionSize: 12,
 			magicA: 1323456789,
 			magicB: 990011223,
-			spawnChance: 12,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

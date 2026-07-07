@@ -41,7 +41,7 @@ export class CliffDwellingFeature implements IWorldFeature {
 			regionSize: 14,
 			magicA: 1212345678,
 			magicB: 989900112,
-			spawnChance: 5,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

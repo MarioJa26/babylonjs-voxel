@@ -41,7 +41,7 @@ export class RuinFeature implements IWorldFeature {
 			regionSize: 12,
 			magicA: 5656789012,
 			magicB: 333435363,
-			spawnChance: 12,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

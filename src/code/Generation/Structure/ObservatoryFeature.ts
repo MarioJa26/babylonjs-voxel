@@ -40,7 +40,7 @@ export class ObservatoryFeature implements IWorldFeature {
 			regionSize: 18,
 			magicA: 2323456789,
 			magicB: 101011121,
-			spawnChance: 3,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

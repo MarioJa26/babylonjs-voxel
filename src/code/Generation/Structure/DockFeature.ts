@@ -40,7 +40,7 @@ export class DockFeature implements IWorldFeature {
 			regionSize: 12,
 			magicA: 3056789012,
 			magicB: 223344556,
-			spawnChance: 12,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

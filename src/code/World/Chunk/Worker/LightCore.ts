@@ -1039,9 +1039,24 @@ function cutSkyLightBelowAt(
 		if (!isTransparent(belowBlockPacked, 1, 1)) break;
 
 		const belowSky = getSkyLight(targetView, tidx);
-		if (belowSky <= 0) break;
-
-		removeLightAt(registry, targetView, tx, ty, tz, belowSky, true, dirtySlots);
+		// Always re-seed from lateral neighbours.  The cell's sky light may
+		// have been cleared by the preceding removeLightAt (or was already
+		// dark); without this re-seed, light from a side source (torch or a
+		// connected pool) would never reach the cell during placement, so the
+		// water below a placed block would stay black even when lit from the
+		// side.
+		if (belowSky > 0) {
+			removeLightAt(
+				registry,
+				targetView,
+				tx,
+				ty,
+				tz,
+				belowSky,
+				true,
+				dirtySlots,
+			);
+		}
 		updateLightFromNeighborsAt(
 			registry,
 			targetView,
@@ -1051,6 +1066,11 @@ function cutSkyLightBelowAt(
 			true,
 			dirtySlots,
 		);
+
+		// Only stop descending once the cell cannot hold any light — its
+		// neighbours (including the one below it) cannot be lit either, since
+		// any lit neighbour would have propagated back up into this cell.
+		if (getSkyLight(targetView, tidx) <= 0) break;
 
 		ty--;
 		if (ty < 0) {

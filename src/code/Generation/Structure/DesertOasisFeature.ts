@@ -40,7 +40,7 @@ export class DesertOasisFeature implements IWorldFeature {
 			regionSize: 14,
 			magicA: 3545678901,
 			magicB: 212223242,
-			spawnChance: 5,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

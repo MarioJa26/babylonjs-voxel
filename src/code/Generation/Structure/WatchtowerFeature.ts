@@ -42,7 +42,7 @@ export class WatchtowerFeature implements IWorldFeature {
 			regionSize: 14,
 			magicA: 4656789012,
 			magicB: 323334353,
-			spawnChance: 6,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

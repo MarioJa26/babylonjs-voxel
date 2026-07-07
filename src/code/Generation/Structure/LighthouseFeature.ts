@@ -40,7 +40,7 @@ export class LighthouseFeature implements IWorldFeature {
 			regionSize: 16,
 			magicA: 2045678901,
 			magicB: 112233445,
-			spawnChance: 4,
+			spawnChance: 80,
 			earlyReturn: false,
 		});
 		if (!region) return;

@@ -42,7 +42,7 @@ export class CaravanCampFeature implements IWorldFeature {
 			regionSize: 12,
 			magicA: 5767890123,
 			magicB: 434445464,
-			spawnChance: 8,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

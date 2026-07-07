@@ -40,7 +40,7 @@ export class TropicalTempleFeature implements IWorldFeature {
 			regionSize: 16,
 			magicA: 6878901234,
 			magicB: 545556575,
-			spawnChance: 4,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

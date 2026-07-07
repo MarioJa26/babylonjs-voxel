@@ -40,7 +40,7 @@ export class CrystalShrineFeature implements IWorldFeature {
 			regionSize: 12,
 			magicA: 3434567890,
 			magicB: 111213141,
-			spawnChance: 8,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-07T01:08:21.698Z
+Generated: 2026-07-07T21:28:57.233Z
 
-> **Summary:** 143 classes · 2343 members · 466 module-level functions · 46800 LOC
+> **Summary:** 143 classes · 2343 members · 467 module-level functions · 46822 LOC
 
 ---
 
@@ -3792,7 +3792,7 @@ Generated: 2026-07-07T01:08:21.698Z
 
 ---
 
-## `World/Chunk/ChunkLoadingSystem.ts` (815 LOC)
+## `World/Chunk/ChunkLoadingSystem.ts` (828 LOC)
 
 **Module-level functions**
 - `function isEntityAlive(entity: ChunkBoundEntity): boolean`
@@ -3825,6 +3825,7 @@ Generated: 2026-07-07T01:08:21.698Z
 - `export function flushChunkBoundEntities(): Promise<void>`
 - `export async function flushOpfsStorage(): Promise<void>`
 - `function scheduleChunkAndNeighborsRemesh(chunk: Chunk): void`
+- `function scheduleNeighborsOnlyRemesh(chunk: Chunk): void`
 - `export async function updateChunksAround(chunkX: number, chunkY: number, chunkZ: number, renderDistance: unknown = SETTING_PARAMS.RENDER_DISTANCE, verticalRadius: unknown = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE, prevChunkX?: number, prevChunkY?: number, prevChunkZ?: number, playerWorldX?: number, playerWorldZ?: number): Promise<void>`
 - `function updateSliceDebugStats(state: InFlightProcessState): void`
 - `function finalizeProcessState(state: InFlightProcessState): void`
@@ -4490,7 +4491,7 @@ Generated: 2026-07-07T01:08:21.698Z
 
 ---
 
-## `World/Chunk/Loading/ChunkProcessScheduler.ts` (423 LOC)
+## `World/Chunk/Loading/ChunkProcessScheduler.ts` (420 LOC)
 
 ### export class ChunkProcessScheduler
 
@@ -4904,7 +4905,7 @@ Generated: 2026-07-07T01:08:21.698Z
 
 ---
 
-## `World/Chunk/Worker/LightCore.ts` (1113 LOC)
+## `World/Chunk/Worker/LightCore.ts` (1124 LOC)
 
 ### class LightQueue
 
@@ -5348,7 +5349,7 @@ Generated: 2026-07-07T01:08:21.698Z
 
 ---
 
-## `World/MeshPipeline/core/VoxelFaceEmitterAdapter.ts` (401 LOC)
+## `World/MeshPipeline/core/VoxelFaceEmitterAdapter.ts` (402 LOC)
 
 ### export class VoxelFaceEmitterAdapter
 

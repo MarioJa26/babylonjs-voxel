@@ -33,7 +33,7 @@ export class PetrifiedShrineFeature implements IWorldFeature {
 			regionSize: 12,
 			magicA: 6767890123,
 			magicB: 444546474,
-			spawnChance: 8,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

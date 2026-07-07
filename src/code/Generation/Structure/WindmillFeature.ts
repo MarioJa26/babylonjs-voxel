@@ -41,7 +41,7 @@ export class WindmillFeature implements IWorldFeature {
 			regionSize: 16,
 			magicA: 8101234567,
 			magicB: 778899001,
-			spawnChance: 6,
+			spawnChance: 80,
 			earlyReturn: false,
 		});
 		if (!region) return;

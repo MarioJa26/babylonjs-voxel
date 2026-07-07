@@ -41,7 +41,7 @@ export class FrozenShrineFeature implements IWorldFeature {
 			regionSize: 14,
 			magicA: 5078901234,
 			magicB: 445566778,
-			spawnChance: 5,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

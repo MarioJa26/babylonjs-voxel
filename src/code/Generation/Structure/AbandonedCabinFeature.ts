@@ -64,7 +64,7 @@ export class AbandonedCabinFeature implements IWorldFeature {
 			regionSize: 14,
 			magicA: 7090123456,
 			magicB: 667788990,
-			spawnChance: 10,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

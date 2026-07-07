@@ -44,7 +44,7 @@ export class StoneCircleFeature implements IWorldFeature {
 			regionSize: 14,
 			magicA: 9212345678,
 			magicB: 889900112,
-			spawnChance: 4,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

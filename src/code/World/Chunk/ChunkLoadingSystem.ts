@@ -6,7 +6,7 @@ import {
 	type SavedChunkEntityData,
 	WorldStorage,
 } from "../WorldStorage";
-import { Chunk, getChunk } from "./Chunk";
+import { addChunkDisposeHook, Chunk, getChunk } from "./Chunk";
 import { createMeshFromData } from "./ChunkMesher";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import { packCoords } from "./DataStructures/ChunkCoords";
@@ -35,9 +35,9 @@ import {
 	getBlockStateByWorldCoords as getBlockStateFromMutations,
 } from "./Loading/ChunkWorldMutations";
 import {
+	checkNewInfiniteSource,
 	scheduleBlockBreakWaterUpdates,
 	scheduleBlockPlaceWaterUpdates,
-	checkNewInfiniteSource,
 } from "./Worker/WaterSimulation";
 
 export type DynamicBlockSample = {
@@ -158,6 +158,10 @@ const streamingController = new ChunkStreamingController({
 	getLoadQueue: () => loadQueue,
 	getUnloadQueueSet: () => unloadQueueSet,
 	onQueueSnapshotChanged: () => refreshQueueDebugSnapshot(),
+});
+
+addChunkDisposeHook((chunk) => {
+	streamingController.onChunkDisposed(chunk.id);
 });
 
 const worldMutations = new ChunkWorldMutations({
@@ -609,6 +613,18 @@ function scheduleChunkAndNeighborsRemesh(chunk: Chunk): void {
 	if (n[5]) pool.scheduleRemesh(n[5], true);
 }
 
+function scheduleNeighborsOnlyRemesh(chunk: Chunk): void {
+	const pool = ChunkWorkerPool.getInstance();
+	const n = getNeighbors(chunk);
+
+	if (n[0]) pool.scheduleRemesh(n[0], true);
+	if (n[1]) pool.scheduleRemesh(n[1], true);
+	if (n[2]) pool.scheduleRemesh(n[2], true);
+	if (n[3]) pool.scheduleRemesh(n[3], true);
+	if (n[4]) pool.scheduleRemesh(n[4], true);
+	if (n[5]) pool.scheduleRemesh(n[5], true);
+}
+
 export async function updateChunksAround(
 	chunkX: number,
 	chunkY: number,
@@ -719,7 +735,9 @@ function loadNearLodChunk(
 	applyMeshToChunk(chunk, selectedMesh);
 
 	if (targetLod <= 1) {
-		scheduleChunkAndNeighborsRemesh(chunk);
+		// Chunk already has a valid mesh from OPFS — only remesh
+		// neighbors so they update face culling for this newly loaded chunk.
+		scheduleNeighborsOnlyRemesh(chunk);
 	}
 }
 

@@ -40,7 +40,7 @@ export class IglooFeature implements IWorldFeature {
 			regionSize: 10,
 			magicA: 4067890123,
 			magicB: 334455667,
-			spawnChance: 15,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

@@ -42,7 +42,7 @@ export class ShipwreckFeature implements IWorldFeature {
 			regionSize: 12,
 			magicA: 1023456789,
 			magicB: 987654321,
-			spawnChance: 8,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

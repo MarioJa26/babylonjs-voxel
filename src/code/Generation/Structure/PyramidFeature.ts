@@ -43,7 +43,7 @@ export class PyramidFeature implements IWorldFeature {
 			regionSize: 18,
 			magicA: 2434567890,
 			magicB: 101112131,
-			spawnChance: 3,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

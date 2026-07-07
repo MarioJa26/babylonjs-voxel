@@ -205,7 +205,8 @@ export class VoxelFaceEmitterAdapter {
 		const isWater =
 			materialType === MaterialType.WaterOrGlass && blockId === WATER_BLOCK_ID;
 
-		const out = isWater ? transparentOut : opaqueOut;
+		const out =
+			materialType === MaterialType.WaterOrGlass ? transparentOut : opaqueOut;
 
 		const ao = desc.light & 0xff;
 		const light = (desc.light >> 8) & 0xff;

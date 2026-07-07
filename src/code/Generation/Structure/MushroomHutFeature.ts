@@ -33,7 +33,7 @@ export class MushroomHutFeature implements IWorldFeature {
 			regionSize: 10,
 			magicA: 4545678901,
 			magicB: 222324252,
-			spawnChance: 10,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

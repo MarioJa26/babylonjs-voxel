@@ -40,7 +40,7 @@ export class TreehouseFeature implements IWorldFeature {
 			regionSize: 14,
 			magicA: 7989012345,
 			magicB: 656667686,
-			spawnChance: 6,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;

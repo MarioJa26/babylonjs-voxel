@@ -1,5 +1,5 @@
 import { type SavedChunkData, WorldStorage } from "../../WorldStorage";
-import { Chunk } from "../Chunk";
+import type { Chunk } from "../Chunk";
 import type { QueuedChunkRequest } from "./ChunkStreamingController";
 import { type InFlightProcessState, ProcessStage } from "./ChunkTypes";
 
@@ -251,10 +251,6 @@ export class ChunkProcessScheduler {
 							await this.adapter.unloadChunkBoundEntitiesForChunk(chunk);
 
 							chunk.dispose();
-							//streamingController.onChunkDisposed(chunk.id);
-							chunk.isLoaded = false;
-							chunk.isTerrainScheduled = false;
-							Chunk.chunkInstances.delete(chunk.id);
 
 							state.unloadBatchIndex++;
 							state.unloadedCount++;
