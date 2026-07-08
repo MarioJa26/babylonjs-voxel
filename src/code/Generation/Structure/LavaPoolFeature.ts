@@ -130,6 +130,8 @@ export class LavaPoolFeature implements IWorldFeature {
 	) {
 		const poolRadius = 25 + (Squirrel3.get(poolCenterX, seed) % 5);
 		const maxDepth = 15 + (Squirrel3.get(poolCenterZ, seed) % 3);
+		const rimHeight = 3;
+		const lavaTop = poolCenterY - rimHeight;
 		const radiusSq = poolRadius * poolRadius;
 		const lavaBlockId = 24;
 		const shoreBlockId = 25;
@@ -143,8 +145,8 @@ export class LavaPoolFeature implements IWorldFeature {
 
 				const worldX = poolCenterX + dx;
 				const worldZ = poolCenterZ + dz;
-				const depthFactor = Math.sqrt(distSq) / shellRadius;
-				const depth = Math.floor((maxDepth + 1) * (1 - depthFactor));
+				// linear cone so the rim walls match the lava bowl below
+				const depth = Math.floor(maxDepth * (1 - Math.sqrt(distSq) / shellRadius));
 				const floorY = poolCenterY - depth;
 
 				for (let y = floorY; y <= poolCenterY; y++) {
@@ -153,14 +155,18 @@ export class LavaPoolFeature implements IWorldFeature {
 			}
 		}
 
+		// Lava fills the same cone but stops below the rim, so the shore
+		// walls remain above it and the pool is properly encased.
 		for (let dx = -poolRadius; dx <= poolRadius; dx++) {
 			for (let dz = -poolRadius; dz <= poolRadius; dz++) {
 				const distSq = dx * dx + dz * dz;
 				if (distSq >= radiusSq) continue;
 
-				const depth = Math.floor(maxDepth * (1 - distSq / radiusSq));
+				const depth = Math.floor(maxDepth * (1 - Math.sqrt(distSq) / poolRadius));
 				const floorY = poolCenterY - depth;
-				for (let y = floorY; y <= poolCenterY; y++) {
+				const topY = Math.min(poolCenterY, lavaTop);
+				if (topY < floorY) continue;
+				for (let y = floorY; y <= topY; y++) {
 					placeBlock(poolCenterX + dx, y, poolCenterZ + dz, lavaBlockId, true);
 				}
 			}
