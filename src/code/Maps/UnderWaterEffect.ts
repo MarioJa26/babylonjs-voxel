@@ -8,7 +8,8 @@ export class UnderWaterEffect {
 	private scene: BABYLON.Scene;
 	private camera: BABYLON.Camera;
 	private player: Player;
-	private depthRenderer: BABYLON.DepthRenderer;
+	private depthRenderer: BABYLON.DepthRenderer | null = null;
+	private isUnderwater = false;
 	private time = 0;
 	private rate = 0.01;
 
@@ -348,11 +349,13 @@ export class UnderWaterEffect {
 		this.registerShaders();
 
 		this.material = this.createShaderMaterial(baseTexture); // NEW: Pass baseTexture
-		// Enable depth renderer and ensure it generates a linear depth map
-		this.depthRenderer = this.scene.enableDepthRenderer(camera);
-		this.depthRenderer.useOnlyInActiveCamera = true;
 
 		this.postProcess = this.createPostProcess();
+		// The depth pass + full-screen post-process are pure overhead on land.
+		// The constructor auto-attaches the post-process to the camera, so detach
+		// it here; it is attached lazily the first time the camera goes underwater
+		// (see update()) and detached again on resurfacing.
+		this.camera.detachPostProcess(this.postProcess);
 
 		this.scene.registerBeforeRender(this.update);
 	}
@@ -424,8 +427,10 @@ export class UnderWaterEffect {
 			effect.setFloat2("screenSize", postProcess.width, postProcess.height);
 			effect.setFloat("time", this.time);
 			effect.setVector3("playerPosition", this.player.position);
-			effect.setBool("isUnderwater", this.player.position.y < 1.8);
-			effect.setTexture("dPass", this.depthRenderer.getDepthMap());
+			effect.setBool("isUnderwater", this.isUnderwater);
+			if (this.depthRenderer) {
+				effect.setTexture("dPass", this.depthRenderer.getDepthMap());
+			}
 		};
 
 		return postProcess;
@@ -434,6 +439,24 @@ export class UnderWaterEffect {
 	private update = (): void => {
 		this.time +=
 			(this.scene.getEngine().getDeltaTime() / 1000) * this.rate * 100;
+
+		const underwater = this.player.position.y < 1.8;
+		if (underwater !== this.isUnderwater) {
+			this.isUnderwater = underwater;
+			if (underwater) {
+				if (!this.depthRenderer) {
+					this.depthRenderer = this.scene.enableDepthRenderer(this.camera);
+					this.depthRenderer.useOnlyInActiveCamera = true;
+				}
+				this.camera.attachPostProcess(this.postProcess);
+			} else {
+				this.camera.detachPostProcess(this.postProcess);
+				if (this.depthRenderer) {
+					this.depthRenderer.dispose();
+					this.depthRenderer = null;
+				}
+			}
+		}
 
 		this.material.setFloat("time", this.time);
 		if (this.scene.activeCamera) {
@@ -449,5 +472,9 @@ export class UnderWaterEffect {
 		this.scene.unregisterBeforeRender(this.update);
 		this.material.dispose();
 		this.postProcess.dispose();
+		if (this.depthRenderer) {
+			this.depthRenderer.dispose();
+			this.depthRenderer = null;
+		}
 	}
 }
