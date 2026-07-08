@@ -8,6 +8,7 @@ import {
 	type WorkerMeshBaseContext,
 	type WorkerMeshInput,
 } from "../MeshPipeline/core/WorkerMeshHelpers";
+import { shapeInitPromise } from "../Shape/BlockShapes";
 import { PaletteExpander } from "./DataStructures/PaletteExpander";
 import {
 	type FullMeshMessage,
@@ -84,62 +85,74 @@ function expandCenterOnly(
 	return request.block_array;
 }
 
+// Mesh generation depends on the async block-shape/block JSON. If we mesh
+// before that finishes loading, the shape-dependent caches are permanently
+// populated with the cube fallback (e.g. grass crosses render as transparent
+// cubes). Await shape init once per worker before the first mesh task.
+let _shapesReady: Promise<void> | null = null;
+function ensureShapesReady(): Promise<void> {
+	if (!_shapesReady) _shapesReady = shapeInitPromise;
+	return _shapesReady;
+}
+
 self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 	const data = event.data;
 	if (data.task !== "voxelMesh") return;
 
-	const centerBlockArray = expandCenterOnly(data);
+	void ensureShapesReady().then(() => {
+		const centerBlockArray = expandCenterOnly(data);
 
-	const meshInput: WorkerMeshInput = {
-		block_array: centerBlockArray,
-		light_array: data.light_array,
-		neighbors: data.neighbors as (Uint8Array | Uint16Array | undefined)[],
-		neighborLights: data.neighborLights,
-		neighborPalettes: data.neighborPalettes,
-		neighborUniformIds: data.neighborUniformIds,
-	};
+		const meshInput: WorkerMeshInput = {
+			block_array: centerBlockArray,
+			light_array: data.light_array,
+			neighbors: data.neighbors as (Uint8Array | Uint16Array | undefined)[],
+			neighborLights: data.neighborLights,
+			neighborPalettes: data.neighborPalettes,
+			neighborUniformIds: data.neighborUniformIds,
+		};
 
-	const baseCtx: WorkerMeshBaseContext = {
-		size: data.chunk_size,
-		lod: data.lod,
-	};
+		const baseCtx: WorkerMeshBaseContext = {
+			size: data.chunk_size,
+			lod: data.lod,
+		};
 
-	const fullCtx = createMeshContextFromPayload(baseCtx, meshInput);
+		const fullCtx = createMeshContextFromPayload(baseCtx, meshInput);
 
-	const opaqueOut = createEmptyWorkerInternalMeshData();
-	const transparentOut = createEmptyWorkerInternalMeshData();
+		const opaqueOut = createEmptyWorkerInternalMeshData();
+		const transparentOut = createEmptyWorkerInternalMeshData();
 
-	MeshEmitters.buildVoxelMesh(fullCtx, opaqueOut, transparentOut);
+		MeshEmitters.buildVoxelMesh(fullCtx, opaqueOut, transparentOut);
 
-	const opaque =
-		opaqueOut.faceCount > 0 ? toTransferableMeshData(opaqueOut) : null;
+		const opaque =
+			opaqueOut.faceCount > 0 ? toTransferableMeshData(opaqueOut) : null;
 
-	const transparent =
-		transparentOut.faceCount > 0
-			? toTransferableMeshData(transparentOut)
-			: null;
+		const transparent =
+			transparentOut.faceCount > 0
+				? toTransferableMeshData(transparentOut)
+				: null;
 
-	const response: FullMeshMessage = {
-		type: WorkerTaskType.GenerateFullMesh,
-		chunkId: data.chunkId,
-		lod: data.lod,
-		opaque,
-		transparent,
-	};
+		const response: FullMeshMessage = {
+			type: WorkerTaskType.GenerateFullMesh,
+			chunkId: data.chunkId,
+			lod: data.lod,
+			opaque,
+			transparent,
+		};
 
-	const transferables: Transferable[] = [];
+		const transferables: Transferable[] = [];
 
-	if (opaque) {
-		transferables.push(opaque.faceDataA.buffer);
-		transferables.push(opaque.faceDataB.buffer);
-		transferables.push(opaque.faceDataC.buffer);
-	}
+		if (opaque) {
+			transferables.push(opaque.faceDataA.buffer);
+			transferables.push(opaque.faceDataB.buffer);
+			transferables.push(opaque.faceDataC.buffer);
+		}
 
-	if (transparent) {
-		transferables.push(transparent.faceDataA.buffer);
-		transferables.push(transparent.faceDataB.buffer);
-		transferables.push(transparent.faceDataC.buffer);
-	}
+		if (transparent) {
+			transferables.push(transparent.faceDataA.buffer);
+			transferables.push(transparent.faceDataB.buffer);
+			transferables.push(transparent.faceDataC.buffer);
+		}
 
-	self.postMessage(response, transferables);
+		self.postMessage(response, transferables);
+	});
 };

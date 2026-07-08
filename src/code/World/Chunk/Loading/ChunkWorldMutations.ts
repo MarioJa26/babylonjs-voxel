@@ -76,19 +76,37 @@ const _ctxScratch: BlockMutationContext = {
 	nextBlockState: 0,
 };
 
+// Cache the most-recently-resolved chunk so repeated world-coordinate
+// lookups that fall in the same chunk (the dominant case inside the water
+// sim's flow BFS and other tight loops) skip the packCoords() BigInt
+// allocation + Map<bigint,Chunk>.get() on every call.
+let _lastChunkX = NaN;
+let _lastChunkY = NaN;
+let _lastChunkZ = NaN;
+let _lastChunk: Chunk | undefined;
+
 function resolveCoords(
 	worldX: number,
 	worldY: number,
 	worldZ: number,
 ): ResolvedChunkCoords {
 	const scratch = _coordScratch;
-	scratch.chunkX = worldToChunkCoord(worldX);
-	scratch.chunkY = worldToChunkCoord(worldY);
-	scratch.chunkZ = worldToChunkCoord(worldZ);
+	const cx = worldToChunkCoord(worldX);
+	const cy = worldToChunkCoord(worldY);
+	const cz = worldToChunkCoord(worldZ);
+	scratch.chunkX = cx;
+	scratch.chunkY = cy;
+	scratch.chunkZ = cz;
 	scratch.localX = worldToBlockCoord(worldX);
 	scratch.localY = worldToBlockCoord(worldY);
 	scratch.localZ = worldToBlockCoord(worldZ);
-	scratch.chunk = getChunk(scratch.chunkX, scratch.chunkY, scratch.chunkZ);
+	if (cx !== _lastChunkX || cy !== _lastChunkY || cz !== _lastChunkZ) {
+		_lastChunkX = cx;
+		_lastChunkY = cy;
+		_lastChunkZ = cz;
+		_lastChunk = getChunk(cx, cy, cz);
+	}
+	scratch.chunk = _lastChunk;
 	return scratch;
 }
 

@@ -334,9 +334,9 @@ class WorldStorageImpl {
 
 				const raw = deserializeVoxelData(bytes);
 				hits.push({ chunkId, data: raw });
-			} catch {
+			} catch (err) {
 				console.warn(
-					`[WorldStorage] Failed to read chunk ${chunkId.toString()}`,
+					`[WorldStorage] Failed to read chunk ${chunkId.toString()}, ${err}`,
 				);
 			}
 		});

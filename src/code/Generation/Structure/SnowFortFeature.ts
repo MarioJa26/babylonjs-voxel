@@ -1,15 +1,17 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { type DoorSide, StructureBuilder } from "./StructureBuilder";
 
 const COLD_BIOMES = new Set([
 	BIOME_ID.SNOWY_PLAINS,
 	BIOME_ID.TUNDRA,
 	BIOME_ID.FROZEN_TUNDRA_PLAINS,
 ]);
+
+const GATES: DoorSide[] = ["x+", "x-", "z+", "z-"];
 
 export class SnowFortFeature implements IWorldFeature {
 	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 200 };
@@ -44,20 +46,20 @@ export class SnowFortFeature implements IWorldFeature {
 		});
 		if (!region) return;
 
-		const { centerX: fx, centerZ: fz } = region;
+		const { centerX: fx, centerZ: fz, regionHash } = region;
+		const hx = 5;
+		const hz = 5;
 		const bounds = chunkWorldBounds(
 			generatingChunkX,
 			generatingChunkZ,
 			chunkSize,
 		);
-		const wallRadius = 6;
-
 		if (
 			!aabbOverlaps(
-				fx - wallRadius,
-				fx + wallRadius,
-				fz - wallRadius,
-				fz + wallRadius,
+				fx - hx,
+				fx + hx,
+				fz - hz,
+				fz + hz,
 				bounds.minX,
 				bounds.maxX,
 				bounds.minZ,
@@ -66,51 +68,65 @@ export class SnowFortFeature implements IWorldFeature {
 		)
 			return;
 
-		let groundHeight: number;
-		if (columnPrepassResolver) {
-			const resolved = columnPrepassResolver(fx, fz);
-			groundHeight =
-				resolved.entry.terrainHeightMap[resolved.localX + resolved.localZ * 32];
-		} else {
-			groundHeight = getFinalTerrainHeight(fx, fz);
+		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
+		const baseY = b.footprintGround(fx, fz, hx, hz).min;
+		const gate = GATES[Math.abs(Squirrel3.get(regionHash, seed)) % 4];
+
+		// perimeter wall with gate
+		b.foundation(fx, fz, hx, hz, baseY, BlockType.SaltBlock);
+		b.shell(
+			fx - hx,
+			baseY + 1,
+			fz - hz,
+			fx + hx,
+			baseY + 4,
+			fz + hz,
+			BlockType.SaltBlock,
+			{
+				side: gate,
+				width: 2,
+				height: 3,
+			},
+		);
+		// crenellations
+		b.shell(
+			fx - hx,
+			baseY + 5,
+			fz - hz,
+			fx + hx,
+			baseY + 5,
+			fz + hz,
+			BlockType.SaltBlock,
+		);
+
+		// corner towers
+		for (const [dx, dz] of [
+			[-hx, -hz],
+			[hx, -hz],
+			[-hx, hz],
+			[hx, hz],
+		]) {
+			b.box(
+				fx + dx - 1,
+				baseY,
+				fz + dz - 1,
+				fx + dx + 1,
+				baseY + 6,
+				fz + dz + 1,
+				BlockType.Cobblestone03,
+			);
 		}
 
-		const wallHeight =
-			4 + (Math.abs(Squirrel3.get(region.regionHash, seed)) % 3);
-		const radiusSq = wallRadius * wallRadius;
-		const innerRadius = wallRadius - 2;
-		const innerRadiusSq = innerRadius * innerRadius;
-
-		for (let dx = -wallRadius; dx <= wallRadius; dx++) {
-			for (let dz = -wallRadius; dz <= wallRadius; dz++) {
-				const distSq = dx * dx + dz * dz;
-				if (distSq > radiusSq || distSq < innerRadiusSq) continue;
-
-				const wallY = wallHeight - Math.floor(distSq / (radiusSq * 0.3));
-				for (let y = 0; y <= Math.max(1, wallY); y++) {
-					placeBlock(
-						fx + dx,
-						groundHeight + y,
-						fz + dz,
-						BlockType.SaltBlock,
-						true,
-					);
-				}
-			}
-		}
-
-		const hasGate =
-			Math.abs(Squirrel3.get(region.regionHash + 10, seed)) % 2 === 0;
-		if (hasGate) {
-			const gateDir = Math.abs(Squirrel3.get(region.regionHash + 20, seed)) % 4;
-			const gx = gateDir === 0 ? wallRadius : gateDir === 2 ? -wallRadius : 0;
-			const gz = gateDir === 1 ? wallRadius : gateDir === 3 ? -wallRadius : 0;
-			for (let y = 0; y <= 3; y++) {
-				placeBlock(fx + gx, groundHeight + y, fz + gz, BlockType.Air, true);
-			}
-		}
-
-		placeBlock(fx, groundHeight + 1, fz, BlockType.SaltBlock, true);
-		placeBlock(fx, groundHeight + 2, fz, BlockType.SaltBlock, true);
+		// central keep
+		b.box(
+			fx - 1,
+			baseY + 1,
+			fz - 1,
+			fx + 1,
+			baseY + 3,
+			fz + 1,
+			BlockType.SaltBlock,
+		);
+		b.set(fx, baseY + 4, fz, BlockType.Cobblestone03);
 	}
 }

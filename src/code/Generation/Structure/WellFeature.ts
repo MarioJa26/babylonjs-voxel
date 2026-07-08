@@ -1,9 +1,8 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { StructureBuilder } from "./StructureBuilder";
 
 const TEMPERATE_BIOMES = new Set([
 	BIOME_ID.FOREST,
@@ -22,7 +21,7 @@ const TEMPERATE_BIOMES = new Set([
 
 export class WellFeature implements IWorldFeature {
 	public readonly verticalBounds = { minWorldY: -20, maxWorldY: 200 };
-	public readonly maxAboveSurface = 8;
+	public readonly maxAboveSurface = 10;
 
 	public generate(
 		chunkX: number,
@@ -59,7 +58,6 @@ export class WellFeature implements IWorldFeature {
 			generatingChunkZ,
 			chunkSize,
 		);
-
 		if (
 			!aabbOverlaps(
 				wx - 3,
@@ -74,48 +72,49 @@ export class WellFeature implements IWorldFeature {
 		)
 			return;
 
-		let groundHeight: number;
-		if (columnPrepassResolver) {
-			const resolved = columnPrepassResolver(wx, wz);
-			groundHeight =
-				resolved.entry.terrainHeightMap[resolved.localX + resolved.localZ * 32];
-		} else {
-			groundHeight = getFinalTerrainHeight(wx, wz);
-		}
+		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
+		const ground = b.ground(wx, wz);
 
-		for (let dx = -1; dx <= 1; dx++) {
-			for (let dz = -1; dz <= 1; dz++) {
-				placeBlock(wx + dx, groundHeight, wz + dz, BlockType.Water, true);
-			}
-		}
-
+		// sunken water pool 3x3
+		b.box(
+			wx - 1,
+			ground - 2,
+			wz - 1,
+			wx + 1,
+			ground - 1,
+			wz + 1,
+			BlockType.Water,
+		);
+		// stone rim
 		for (let dx = -2; dx <= 2; dx++) {
 			for (let dz = -2; dz <= 2; dz++) {
 				if (Math.abs(dx) === 2 || Math.abs(dz) === 2) {
-					placeBlock(
-						wx + dx,
-						groundHeight + 1,
-						wz + dz,
-						BlockType.Cobblestone03,
-						true,
-					);
+					b.set(wx + dx, ground, wz + dz, BlockType.Cobblestone03);
+					b.set(wx + dx, ground + 1, wz + dz, BlockType.Cobblestone03);
 				}
 			}
 		}
-
-		placeBlock(wx - 2, groundHeight + 2, wz - 2, BlockType.Cobblestone03, true);
-		placeBlock(wx + 2, groundHeight + 2, wz - 2, BlockType.Cobblestone03, true);
-		placeBlock(wx - 2, groundHeight + 2, wz + 2, BlockType.Cobblestone03, true);
-		placeBlock(wx + 2, groundHeight + 2, wz + 2, BlockType.Cobblestone03, true);
-
-		placeBlock(wx - 2, groundHeight + 3, wz - 2, BlockType.RoughWood, true);
-		placeBlock(wx + 2, groundHeight + 3, wz - 2, BlockType.RoughWood, true);
-		placeBlock(wx - 2, groundHeight + 3, wz + 2, BlockType.RoughWood, true);
-		placeBlock(wx + 2, groundHeight + 3, wz + 2, BlockType.RoughWood, true);
-
-		placeBlock(wx - 2, groundHeight + 4, wz, BlockType.RoughWood, true);
-		placeBlock(wx + 2, groundHeight + 4, wz, BlockType.RoughWood, true);
-		placeBlock(wx, groundHeight + 4, wz - 2, BlockType.RoughWood, true);
-		placeBlock(wx, groundHeight + 4, wz + 2, BlockType.RoughWood, true);
+		// corner posts
+		for (const [dx, dz] of [
+			[-2, -2],
+			[2, -2],
+			[-2, 2],
+			[2, 2],
+		]) {
+			b.column(wx + dx, ground + 2, wz + dz, 3, BlockType.RoughWood);
+		}
+		// cross beams
+		b.box(wx - 2, ground + 4, wz, wx + 2, ground + 4, wz, BlockType.RoughWood);
+		b.box(wx, ground + 4, wz - 2, wx, ground + 4, wz + 2, BlockType.RoughWood);
+		// little roof
+		b.box(
+			wx - 2,
+			ground + 5,
+			wz - 2,
+			wx + 2,
+			ground + 5,
+			wz + 2,
+			BlockType.ThatchRoofAngled,
+		);
 	}
 }

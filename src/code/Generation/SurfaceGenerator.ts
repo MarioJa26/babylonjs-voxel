@@ -1368,30 +1368,27 @@ export class SurfaceGenerator {
 		const overhangBaseX = worldX * 0.008;
 		const overhangBaseZ = worldZ * 0.008;
 
-		const evalDensity = (y: number): number => {
-			const baseNoise = SurfaceGenerator.densityNoise(
-				baseNoiseX,
-				y * yFreq,
-				baseNoiseZ,
-			);
-			const overhangNoise = SurfaceGenerator.densityNoise(
-				overhangBaseX + y * 0.0044,
-				y * 0.012,
-				overhangBaseZ - y * 0.0036,
-			);
-			return (
-				baseHeight -
-				y +
-				baseNoise * baseAmp +
-				overhangNoise * overhangAmp +
-				cliffContribution
-			);
-		};
+		// Density evaluated via a static helper (no closure allocated per
+		// column call).
+		const evalSurfaceDensity = SurfaceGenerator.evalSurfaceDensity;
 
 		// Pass 1: coarse scan at step=4 to find a bracket
 		let coarseHigh = CAVE_NO_SURFACE_Y;
 		for (let y = maxY; y >= minY; y -= 4) {
-			if (evalDensity(y) > 0) {
+			if (
+				evalSurfaceDensity(
+					y,
+					baseNoiseX,
+					yFreq,
+					baseNoiseZ,
+					baseHeight,
+					baseAmp,
+					overhangBaseX,
+					overhangBaseZ,
+					overhangAmp,
+					cliffContribution,
+				) > 0
+			) {
 				coarseHigh = y;
 				break;
 			}
@@ -1404,7 +1401,18 @@ export class SurfaceGenerator {
 		let highestSolid = CAVE_NO_SURFACE_Y;
 		const fineMin = Math.max(coarseHigh - 3, minY);
 		for (let y = coarseHigh; y >= fineMin; y--) {
-			const d = evalDensity(y);
+			const d = evalSurfaceDensity(
+				y,
+				baseNoiseX,
+				yFreq,
+				baseNoiseZ,
+				baseHeight,
+				baseAmp,
+				overhangBaseX,
+				overhangBaseZ,
+				overhangAmp,
+				cliffContribution,
+			);
 			if (d > 0) {
 				if (densityAbove <= 0) return y;
 				if (highestSolid === CAVE_NO_SURFACE_Y) {
@@ -1415,6 +1423,41 @@ export class SurfaceGenerator {
 		}
 
 		return highestSolid;
+	}
+
+	/**
+	 * Surface-density sample at world Y `y`.  Declared static (no captured
+	 * state) so callers avoid allocating a closure on every per-column call.
+	 */
+	private static evalSurfaceDensity(
+		y: number,
+		baseNoiseX: number,
+		yFreq: number,
+		baseNoiseZ: number,
+		baseHeight: number,
+		baseAmp: number,
+		overhangBaseX: number,
+		overhangBaseZ: number,
+		overhangAmp: number,
+		cliffContribution: number,
+	): number {
+		const baseNoise = SurfaceGenerator.densityNoise(
+			baseNoiseX,
+			y * yFreq,
+			baseNoiseZ,
+		);
+		const overhangNoise = SurfaceGenerator.densityNoise(
+			overhangBaseX + y * 0.0044,
+			y * 0.012,
+			overhangBaseZ - y * 0.0036,
+		);
+		return (
+			baseHeight -
+			y +
+			baseNoise * baseAmp +
+			overhangNoise * overhangAmp +
+			cliffContribution
+		);
 	}
 
 	private hashColumn(x: number, z: number, seed: number): number {

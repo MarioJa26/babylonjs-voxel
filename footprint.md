@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-07T21:28:57.233Z
+Generated: 2026-07-08T13:16:39.832Z
 
-> **Summary:** 143 classes · 2343 members · 467 module-level functions · 46822 LOC
+> **Summary:** 144 classes · 2366 members · 468 module-level functions · 47096 LOC
 
 ---
 
@@ -997,7 +997,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/AbandonedCabinFeature.ts` (108 LOC)
+## `Generation/Structure/AbandonedCabinFeature.ts` (92 LOC)
 
 ### export class AbandonedCabinFeature implements IWorldFeature
 
@@ -1069,7 +1069,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/BambooShrineFeature.ts` (112 LOC)
+## `Generation/Structure/BambooShrineFeature.ts` (93 LOC)
 
 ### export class BambooShrineFeature implements IWorldFeature
 
@@ -1088,7 +1088,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/CaravanCampFeature.ts` (109 LOC)
+## `Generation/Structure/CaravanCampFeature.ts` (93 LOC)
 
 ### export class CaravanCampFeature implements IWorldFeature
 
@@ -1107,7 +1107,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/CliffDwellingFeature.ts` (110 LOC)
+## `Generation/Structure/CliffDwellingFeature.ts` (101 LOC)
 
 ### export class CliffDwellingFeature implements IWorldFeature
 
@@ -1126,7 +1126,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/CrystalShrineFeature.ts` (101 LOC)
+## `Generation/Structure/CrystalShrineFeature.ts` (77 LOC)
 
 ### export class CrystalShrineFeature implements IWorldFeature
 
@@ -1145,12 +1145,13 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/DesertOasisFeature.ts` (104 LOC)
+## `Generation/Structure/DesertOasisFeature.ts` (80 LOC)
 
 ### export class DesertOasisFeature implements IWorldFeature
 
 **Properties**
 - `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
 
 **Methods**
 - `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
@@ -1163,12 +1164,13 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/DockFeature.ts` (107 LOC)
+## `Generation/Structure/DockFeature.ts` (106 LOC)
 
 ### export class DockFeature implements IWorldFeature
 
 **Properties**
 - `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
 
 **Methods**
 - `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
@@ -1200,7 +1202,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/FossilBedFeature.ts` (98 LOC)
+## `Generation/Structure/FossilBedFeature.ts` (103 LOC)
 
 ### export class FossilBedFeature implements IWorldFeature
 
@@ -1218,7 +1220,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/FrozenShrineFeature.ts` (115 LOC)
+## `Generation/Structure/FrozenShrineFeature.ts` (80 LOC)
 
 ### export class FrozenShrineFeature implements IWorldFeature
 
@@ -1255,12 +1257,13 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/IglooFeature.ts` (106 LOC)
+## `Generation/Structure/IglooFeature.ts` (86 LOC)
 
 ### export class IglooFeature implements IWorldFeature
 
 **Properties**
 - `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
 
 **Methods**
 - `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
@@ -1273,7 +1276,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/InfernalPitFeature.ts` (76 LOC)
+## `Generation/Structure/InfernalPitFeature.ts` (85 LOC)
 
 ### export class InfernalPitFeature implements IWorldFeature
 
@@ -1325,7 +1328,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/LighthouseFeature.ts` (96 LOC)
+## `Generation/Structure/LighthouseFeature.ts` (111 LOC)
 
 ### export class LighthouseFeature implements IWorldFeature
 
@@ -1369,7 +1372,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/MountainCabinFeature.ts` (102 LOC)
+## `Generation/Structure/MountainCabinFeature.ts` (88 LOC)
 
 ### export class MountainCabinFeature implements IWorldFeature
 
@@ -1388,7 +1391,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/MushroomHutFeature.ts` (112 LOC)
+## `Generation/Structure/MushroomHutFeature.ts` (83 LOC)
 
 ### export class MushroomHutFeature implements IWorldFeature
 
@@ -1407,7 +1410,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/ObservatoryFeature.ts` (103 LOC)
+## `Generation/Structure/ObservatoryFeature.ts` (77 LOC)
 
 ### export class ObservatoryFeature implements IWorldFeature
 
@@ -1426,7 +1429,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/PetrifiedShrineFeature.ts` (114 LOC)
+## `Generation/Structure/PetrifiedShrineFeature.ts` (78 LOC)
 
 ### export class PetrifiedShrineFeature implements IWorldFeature
 
@@ -1445,7 +1448,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/PyramidFeature.ts` (101 LOC)
+## `Generation/Structure/PyramidFeature.ts` (97 LOC)
 
 ### export class PyramidFeature implements IWorldFeature
 
@@ -1495,7 +1498,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/RuinFeature.ts` (112 LOC)
+## `Generation/Structure/RuinFeature.ts` (109 LOC)
 
 ### export class RuinFeature implements IWorldFeature
 
@@ -1514,12 +1517,13 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/ShipwreckFeature.ts` (125 LOC)
+## `Generation/Structure/ShipwreckFeature.ts` (110 LOC)
 
 ### export class ShipwreckFeature implements IWorldFeature
 
 **Properties**
 - `public readonly verticalBounds: unknown`
+- `public readonly maxAboveSurface: unknown`
 
 **Methods**
 - `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
@@ -1532,7 +1536,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/SnowFortFeature.ts` (104 LOC)
+## `Generation/Structure/SnowFortFeature.ts` (118 LOC)
 
 ### export class SnowFortFeature implements IWorldFeature
 
@@ -1551,7 +1555,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/StoneCircleFeature.ts` (98 LOC)
+## `Generation/Structure/StoneCircleFeature.ts` (100 LOC)
 
 ### export class StoneCircleFeature implements IWorldFeature
 
@@ -1589,6 +1593,42 @@ Generated: 2026-07-07T21:28:57.233Z
 **Types / Interfaces / Enums**
 - interface `StructureData`
 - type `PlaceBlockFunction`
+
+---
+
+## `Generation/Structure/StructureBuilder.ts` (282 LOC)
+
+### export class StructureBuilder
+
+**Constructor**
+- `constructor(place: PlaceFn, resolver: ColumnPrepassResolver | undefined, seed: number)`
+
+**Properties**
+- `public readonly place: PlaceFn`
+- `public readonly resolver: ColumnPrepassResolver | undefined`
+- `public readonly seed: number`
+
+**Methods**
+- `ground(wx: number, wz: number): number`
+- `footprintGround(cx: number, cz: number, hx: number, hz: number): { min: number; max: number; avg: number }`
+- `set(x: number, y: number, z: number, id: number, ow: unknown = true): void`
+- `air(x: number, y: number, z: number): void`
+- `column(x: number, baseY: number, z: number, height: number, id: number, ow: unknown = true): void`
+- `box(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, id: number, ow: unknown = true): void`
+- `foundation(cx: number, cz: number, hx: number, hz: number, baseY: number, id: number, ow: unknown = true): void`
+- `shell(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, id: number, door?: DoorSpec, ow: unknown = true): void`
+- `private inDoor(x: number, y: number, z: number, x0: number, y0: number, z0: number, x1: number, _y1: number, z1: number, door: DoorSpec, dw: number, dh: number, off: number): boolean`
+- `windowPair(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, glass: number): void`
+- `disc(cx: number, y: number, cz: number, radius: number, id: number, ow: unknown = true): void`
+- `ring(cx: number, y: number, cz: number, radius: number, id: number, ow: unknown = true): void`
+- `static rotate(dx: number, dz: number, rot: number): [number, number]`
+- `buildHouse(o: HouseOptions): void`
+
+**Types / Interfaces / Enums**
+- interface `DoorSpec`
+- interface `HouseOptions`
+- type `PlaceFn`
+- type `DoorSide`
 
 ---
 
@@ -1649,7 +1689,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/TreehouseFeature.ts` (109 LOC)
+## `Generation/Structure/TreehouseFeature.ts` (104 LOC)
 
 ### export class TreehouseFeature implements IWorldFeature
 
@@ -1668,7 +1708,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/TropicalTempleFeature.ts` (109 LOC)
+## `Generation/Structure/TropicalTempleFeature.ts` (116 LOC)
 
 ### export class TropicalTempleFeature implements IWorldFeature
 
@@ -1687,7 +1727,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/WatchtowerFeature.ts` (118 LOC)
+## `Generation/Structure/WatchtowerFeature.ts` (107 LOC)
 
 ### export class WatchtowerFeature implements IWorldFeature
 
@@ -1706,7 +1746,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/WellFeature.ts` (109 LOC)
+## `Generation/Structure/WellFeature.ts` (108 LOC)
 
 ### export class WellFeature implements IWorldFeature
 
@@ -1725,7 +1765,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/Structure/WindmillFeature.ts` (105 LOC)
+## `Generation/Structure/WindmillFeature.ts` (99 LOC)
 
 ### export class WindmillFeature implements IWorldFeature
 
@@ -1744,7 +1784,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Generation/SurfaceGenerator.ts` (1111 LOC)
+## `Generation/SurfaceGenerator.ts` (1147 LOC)
 
 ### export class SurfaceGenerator
 
@@ -1820,6 +1860,7 @@ Generated: 2026-07-07T21:28:57.233Z
 - `private computeCaveModifier(x: number, y: number, z: number, surfaceY: number): number`
 - `private sampleCliffNoise(x: number, baseHeight: number, z: number): number`
 - `private findTopSurfaceY(worldX: number, worldZ: number, baseHeight: number, yFreq: number): number`
+- `private static evalSurfaceDensity(y: number, baseNoiseX: number, yFreq: number, baseNoiseZ: number, baseHeight: number, baseAmp: number, overhangBaseX: number, overhangBaseZ: number, overhangAmp: number, cliffContribution: number): number`
 - `private hashColumn(x: number, z: number, seed: number): number`
 
 **Types / Interfaces / Enums**
@@ -2575,7 +2616,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `Player/Hud/PauseMenu.ts` (344 LOC)
+## `Player/Hud/PauseMenu.ts` (516 LOC)
 
 ### export class PauseMenu
 
@@ -3792,7 +3833,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `World/Chunk/ChunkLoadingSystem.ts` (828 LOC)
+## `World/Chunk/ChunkLoadingSystem.ts` (837 LOC)
 
 **Module-level functions**
 - `function isEntityAlive(entity: ChunkBoundEntity): boolean`
@@ -4029,7 +4070,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `World/Chunk/ChunkWorkerPool.ts` (1706 LOC)
+## `World/Chunk/ChunkWorkerPool.ts` (1699 LOC)
 
 ### export class ChunkWorkerPool
 
@@ -4651,7 +4692,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `World/Chunk/Loading/ChunkWorldMutations.ts` (244 LOC)
+## `World/Chunk/Loading/ChunkWorldMutations.ts` (257 LOC)
 
 ### class ResolvedChunkCoords
 
@@ -4830,10 +4871,11 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `World/Chunk/voxel.worker.ts` (117 LOC)
+## `World/Chunk/voxel.worker.ts` (125 LOC)
 
 **Module-level functions**
 - `function expandCenterOnly(request: VoxelWorkerRequest): Uint8Array | Uint16Array`
+- `function ensureShapesReady(): Promise<void>`
 
 **Types / Interfaces / Enums**
 - interface `VoxelWorkerRequest`
@@ -5220,7 +5262,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `World/MeshPipeline/core/AOPipeline.ts` (72 LOC)
+## `World/MeshPipeline/core/AOPipeline.ts` (81 LOC)
 
 **Module-level functions**
 - `export function isOccluder(packedBlock: number, shape: BlockShapeInfo): boolean`
@@ -5617,14 +5659,14 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `World/Storage/MeshSerializer.ts` (109 LOC)
+## `World/Storage/MeshSerializer.ts` (115 LOC)
 
 **Module-level functions**
 - `function writeU32LE(buf: Uint8Array, off: number, val: number): void`
 - `export function serializeMesh(mesh: MeshData | null | undefined): Uint8Array | null`
 - `export function deserializeMesh(bytes: Uint8Array): MeshData`
 - `export function serializeMeshPair(opaque: MeshData | null | undefined, transparent: MeshData | null | undefined): Uint8Array | null`
-- `export function deserializeMeshPair(bytes: Uint8Array, lod: number): DeserializedMeshPair`
+- `export function deserializeMeshPair(bytes: Uint8Array, lod: number): DeserializedMeshPair | null`
 
 **Types / Interfaces / Enums**
 - type `DeserializedMeshPair`
@@ -5666,7 +5708,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `World/Storage/OpfsChunkStore.ts` (365 LOC)
+## `World/Storage/OpfsChunkStore.ts` (366 LOC)
 
 ### export class OpfsChunkStore
 
@@ -5821,7 +5863,7 @@ Generated: 2026-07-07T21:28:57.233Z
 
 ---
 
-## `World/Storage/VoxelSerializer.ts` (167 LOC)
+## `World/Storage/VoxelSerializer.ts` (174 LOC)
 
 **Module-level functions**
 - `export function serializeVoxelData(blocks: Uint8Array | Uint16Array | null, palette: Uint16Array | null | undefined, isUniform: boolean | undefined, uniformBlockId: number | undefined, lightArray: Uint8Array | null | undefined, compressed: boolean | undefined): Uint8Array`

@@ -1,20 +1,22 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { StructureBuilder } from "./StructureBuilder";
 
 const COLD_BIOMES = new Set([
 	BIOME_ID.SNOWY_PLAINS,
-	BIOME_ID.TUNDRA,
 	BIOME_ID.FROZEN_TUNDRA_PLAINS,
-	BIOME_ID.AURORA_TUNDRA,
+	BIOME_ID.ICE_SPIKES,
 	BIOME_ID.PERMAFROST_BOG,
+	BIOME_ID.AURORA_TUNDRA,
+	BIOME_ID.GLACIER,
 ]);
 
 export class IglooFeature implements IWorldFeature {
 	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 200 };
+	public readonly maxAboveSurface = 8;
 
 	public generate(
 		chunkX: number,
@@ -37,28 +39,27 @@ export class IglooFeature implements IWorldFeature {
 		if (!COLD_BIOMES.has(biome.id)) return;
 
 		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 10,
-			magicA: 4067890123,
-			magicB: 334455667,
+			regionSize: 14,
+			magicA: 171717001,
+			magicB: 383838845,
 			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;
 
-		const { centerX: ix, centerZ: iz } = region;
+		const { centerX: cx, centerZ: cz } = region;
+		const radius = 3;
 		const bounds = chunkWorldBounds(
 			generatingChunkX,
 			generatingChunkZ,
 			chunkSize,
 		);
-		const radius = 5;
-
 		if (
 			!aabbOverlaps(
-				ix - radius,
-				ix + radius,
-				iz - radius,
-				iz + radius,
+				cx - radius - 2,
+				cx + radius + 2,
+				cz - radius - 2,
+				cz + radius + 2,
 				bounds.minX,
 				bounds.maxX,
 				bounds.minZ,
@@ -67,52 +68,28 @@ export class IglooFeature implements IWorldFeature {
 		)
 			return;
 
-		let groundHeight: number;
-		if (columnPrepassResolver) {
-			const resolved = columnPrepassResolver(ix, iz);
-			groundHeight =
-				resolved.entry.terrainHeightMap[resolved.localX + resolved.localZ * 32];
-		} else {
-			groundHeight = getFinalTerrainHeight(ix, iz);
+		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
+		const baseY = b.footprintGround(cx, cz, radius, radius).min;
+		const entrance = Math.abs(Squirrel3.get(region.regionHash, seed)) % 4;
+
+		// dome: solid lower courses + ringed upper courses
+		for (let dy = 0; dy <= 3; dy++) {
+			const r = radius - dy;
+			b.disc(cx, baseY + dy, cz, r, BlockType.IceBlock);
 		}
-
-		const hasEntry =
-			Math.abs(Squirrel3.get(region.regionHash + 5, seed)) % 3 === 0;
-
-		for (let dx = -radius; dx <= radius; dx++) {
-			for (let dz = -radius; dz <= radius; dz++) {
-				const distSq = dx * dx + dz * dz;
-				if (distSq > radius * radius) continue;
-
-				const height = Math.floor(4 * (1 - distSq / (radius * radius)));
-				for (let y = 0; y <= height; y++) {
-					const blockId =
-						y === height ? BlockType.IceBlock : BlockType.GlacierIce;
-					placeBlock(ix + dx, groundHeight + y, iz + dz, blockId, true);
-				}
-			}
+		// entrance tunnel
+		const ex = entrance === 0 ? 1 : entrance === 2 ? -1 : 0;
+		const ez = entrance === 1 ? 1 : entrance === 3 ? -1 : 0;
+		const sx = cx + ex * radius;
+		const sz = cz + ez * radius;
+		for (let t = 1; t <= 2; t++) {
+			const tx = cx + ex * (radius + t);
+			const tz = cz + ez * (radius + t);
+			b.set(tx, baseY, tz, BlockType.IceBlock);
+			b.set(tx, baseY + 1, tz, BlockType.IceBlock);
+			b.set(tx, baseY + 2, tz, BlockType.Air);
 		}
-
-		if (hasEntry) {
-			for (let y = 1; y <= 3; y++) {
-				placeBlock(ix + radius, groundHeight + y, iz, BlockType.Air, true);
-				placeBlock(ix + radius - 1, groundHeight + y, iz, BlockType.Air, true);
-			}
-			placeBlock(ix + radius, groundHeight + 3, iz, BlockType.IceBlock, true);
-			placeBlock(
-				ix + radius - 1,
-				groundHeight + 3,
-				iz,
-				BlockType.IceBlock,
-				true,
-			);
-		}
-
-		for (let dx = -2; dx <= 2; dx++) {
-			for (let dz = -2; dz <= 2; dz++) {
-				if (dx * dx + dz * dz > 5) continue;
-				placeBlock(ix + dx, groundHeight, iz + dz, BlockType.IceBlock, true);
-			}
-		}
+		void sx;
+		void sz;
 	}
 }

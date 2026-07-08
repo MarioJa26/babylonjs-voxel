@@ -1,9 +1,9 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { StructureBuilder } from "./StructureBuilder";
 
 const HOT_BIOMES = new Set([
 	BIOME_ID.DESERT,
@@ -48,15 +48,13 @@ export class PyramidFeature implements IWorldFeature {
 		});
 		if (!region) return;
 
-		const { centerX: px, centerZ: pz } = region;
+		const { centerX: px, centerZ: pz, regionHash } = region;
+		const baseRadius = 9 + (Math.abs(Squirrel3.get(regionHash, seed)) % 6);
 		const bounds = chunkWorldBounds(
 			generatingChunkX,
 			generatingChunkZ,
 			chunkSize,
 		);
-		const baseRadius =
-			10 + (Math.abs(Squirrel3.get(region.regionHash, seed)) % 6);
-
 		if (
 			!aabbOverlaps(
 				px - baseRadius,
@@ -71,44 +69,39 @@ export class PyramidFeature implements IWorldFeature {
 		)
 			return;
 
-		let groundHeight: number;
-		if (columnPrepassResolver) {
-			const resolved = columnPrepassResolver(px, pz);
-			groundHeight =
-				resolved.entry.terrainHeightMap[resolved.localX + resolved.localZ * 32];
-		} else {
-			groundHeight = getFinalTerrainHeight(px, pz);
-		}
+		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
+		const ground = b.ground(px, pz);
+		const gateDir = Math.abs(Squirrel3.get(regionHash + 3, seed)) % 4;
+		const gate =
+			gateDir === 0 ? "x+" : gateDir === 1 ? "x-" : gateDir === 2 ? "z+" : "z-";
 
-		const pyramidHeight =
-			15 + (Math.abs(Squirrel3.get(region.regionHash + 5, seed)) % 10);
-		const hasChamber =
-			Math.abs(Squirrel3.get(region.regionHash + 10, seed)) % 3 === 0;
-
-		for (let dy = 0; dy < pyramidHeight; dy++) {
-			const layerRadius = Math.floor(baseRadius * (1 - dy / pyramidHeight));
-			const layerBlock =
-				dy % 4 === 0 ? BlockType.RedSandstoneWall : BlockType.Cobblestone03;
-
-			for (let dx = -layerRadius; dx <= layerRadius; dx++) {
-				for (let dz = -layerRadius; dz <= layerRadius; dz++) {
-					if (dx * dx + dz * dz > layerRadius * layerRadius) continue;
-
-					const isEdge =
-						dx * dx + dz * dz > (layerRadius - 1) * (layerRadius - 1);
-					const isHollow =
-						hasChamber &&
-						dy > 3 &&
-						dy < pyramidHeight - 3 &&
-						Math.abs(dx) < layerRadius - 2 &&
-						Math.abs(dz) < layerRadius - 2;
-
-					if (isHollow && !isEdge) continue;
-					placeBlock(px + dx, groundHeight + dy, pz + dz, layerBlock, true);
+		const height = baseRadius; // 1 block per step
+		for (let dy = 0; dy < height; dy++) {
+			const r = baseRadius - dy;
+			const block =
+				dy % 3 === 0 ? BlockType.RedSandstoneWall : BlockType.Cobblestone03;
+			const r2 = r * r;
+			const inner2 = (r - 2) * (r - 2);
+			for (let dx = -r; dx <= r; dx++) {
+				for (let dz = -r; dz <= r; dz++) {
+					const d2 = dx * dx + dz * dz;
+					if (d2 > r2) continue;
+					// hollow interior above the first few steps
+					if (dy >= 3 && d2 < inner2) continue;
+					// entrance gap at the base
+					if (
+						dy < 3 &&
+						((gate === "x+" && dx === r && Math.abs(dz) <= 1) ||
+							(gate === "x-" && dx === -r && Math.abs(dz) <= 1) ||
+							(gate === "z+" && dz === r && Math.abs(dx) <= 1) ||
+							(gate === "z-" && dz === -r && Math.abs(dx) <= 1))
+					)
+						continue;
+					b.set(px + dx, ground + dy, pz + dz, block);
 				}
 			}
 		}
-
-		placeBlock(px, groundHeight + pyramidHeight, pz, BlockType.Glass01, true);
+		// capstone
+		b.set(px, ground + height, pz, BlockType.Glass01);
 	}
 }

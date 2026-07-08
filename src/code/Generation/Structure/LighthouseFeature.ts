@@ -1,20 +1,21 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { StructureBuilder } from "./StructureBuilder";
 
 const COASTAL_BIOMES = new Set([
+	BIOME_ID.OCEAN,
 	BIOME_ID.SANDY_SHORE,
 	BIOME_ID.ROCKY_SHORE,
-	BIOME_ID.TIDAL_FLATS,
+	BIOME_ID.CORAL_REEF,
 	BIOME_ID.ARCHIPELAGO,
+	BIOME_ID.KELP_FOREST,
 ]);
 
 export class LighthouseFeature implements IWorldFeature {
-	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 300 };
-	public readonly maxAboveSurface = 80;
+	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 200 };
+	public readonly maxAboveSurface = 20;
 
 	public generate(
 		chunkX: number,
@@ -38,27 +39,27 @@ export class LighthouseFeature implements IWorldFeature {
 
 		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
 			regionSize: 16,
-			magicA: 2045678901,
-			magicB: 112233445,
-			spawnChance: 80,
+			magicA: 929292001,
+			magicB: 454545845,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;
 
-		const { centerX: lx, centerZ: lz } = region;
+		const { centerX: cx, centerZ: cz } = region;
+		const hx = 1;
+		const hz = 1;
 		const bounds = chunkWorldBounds(
 			generatingChunkX,
 			generatingChunkZ,
 			chunkSize,
 		);
-		const radius = 4;
-
 		if (
 			!aabbOverlaps(
-				lx - radius,
-				lx + radius,
-				lz - radius,
-				lz + radius,
+				cx - hx - 1,
+				cx + hx + 1,
+				cz - hz - 1,
+				cz + hz + 1,
 				bounds.minX,
 				bounds.maxX,
 				bounds.minZ,
@@ -67,41 +68,54 @@ export class LighthouseFeature implements IWorldFeature {
 		)
 			return;
 
-		let groundHeight: number;
-		if (columnPrepassResolver) {
-			const resolved = columnPrepassResolver(lx, lz);
-			groundHeight =
-				resolved.entry.terrainHeightMap[resolved.localX + resolved.localZ * 32];
-		} else {
-			groundHeight = getFinalTerrainHeight(lx, lz);
-		}
+		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
+		const baseY = b.footprintGround(cx, cz, hx, hz).min;
+		const height = 13;
 
-		const towerHeight =
-			30 + (Math.abs(Squirrel3.get(region.regionHash, seed)) % 15);
-		const radiusSq = radius * radius;
-
-		for (let dy = 0; dy < towerHeight; dy++) {
-			const layerBlock =
-				dy === 0
-					? BlockType.Cobblestone03
-					: dy % 6 === 0
-						? BlockType.Glass01
-						: BlockType.Cobblestone03;
-
-			for (let dx = -radius; dx <= radius; dx++) {
-				for (let dz = -radius; dz <= radius; dz++) {
-					if (dx * dx + dz * dz > radiusSq) continue;
-					placeBlock(lx + dx, groundHeight + dy, lz + dz, layerBlock, true);
-				}
-			}
-		}
-
-		const lanternY = groundHeight + towerHeight;
-		placeBlock(lx, lanternY, lz, BlockType.Glass01, true);
-		placeBlock(lx + 1, lanternY, lz, BlockType.Cobblestone03, true);
-		placeBlock(lx - 1, lanternY, lz, BlockType.Cobblestone03, true);
-		placeBlock(lx, lanternY, lz + 1, BlockType.Cobblestone03, true);
-		placeBlock(lx, lanternY, lz - 1, BlockType.Cobblestone03, true);
-		placeBlock(lx, lanternY + 1, lz, BlockType.Cobblestone03, true);
+		b.foundation(cx, cz, hx, hz, baseY, BlockType.Cobblestone03);
+		b.shell(
+			cx - hx,
+			baseY + 1,
+			cz - hz,
+			cx + hx,
+			baseY + height,
+			cz + hz,
+			BlockType.ConcreteTileFacade,
+			{
+				side: "z+",
+				width: 1,
+				height: 3,
+			},
+		);
+		// gallery floor
+		b.box(
+			cx - hx - 1,
+			baseY + height + 1,
+			cz - hz - 1,
+			cx + hx + 1,
+			baseY + height + 1,
+			cz + hz + 1,
+			BlockType.Cobblestone03,
+		);
+		// lantern room (glass)
+		b.box(
+			cx - hx,
+			baseY + height + 2,
+			cz - hz,
+			cx + hx,
+			baseY + height + 4,
+			cz + hz,
+			BlockType.Glass01,
+		);
+		// roof
+		b.box(
+			cx - hx,
+			baseY + height + 5,
+			cz - hz,
+			cx + hx,
+			baseY + height + 5,
+			cz + hz,
+			BlockType.RoofSlates02,
+		);
 	}
 }

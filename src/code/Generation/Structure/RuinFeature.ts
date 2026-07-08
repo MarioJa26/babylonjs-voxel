@@ -1,9 +1,9 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { type DoorSide, StructureBuilder } from "./StructureBuilder";
 
 const EXOTIC_BIOMES = new Set([
 	BIOME_ID.ANCIENT_RUINS_BIOME,
@@ -12,6 +12,8 @@ const EXOTIC_BIOMES = new Set([
 	BIOME_ID.DUST_BOWL,
 	BIOME_ID.CRACKED_EARTH,
 ]);
+
+const DOORS: DoorSide[] = ["x+", "x-", "z+", "z-"];
 
 export class RuinFeature implements IWorldFeature {
 	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 200 };
@@ -46,19 +48,20 @@ export class RuinFeature implements IWorldFeature {
 		});
 		if (!region) return;
 
-		const { centerX: rx, centerZ: rz } = region;
+		const { centerX: rx, centerZ: rz, regionHash } = region;
+		const hx = 4;
+		const hz = 4;
 		const bounds = chunkWorldBounds(
 			generatingChunkX,
 			generatingChunkZ,
 			chunkSize,
 		);
-
 		if (
 			!aabbOverlaps(
-				rx - 8,
-				rx + 8,
-				rz - 8,
-				rz + 8,
+				rx - hx,
+				rx + hx,
+				rz - hz,
+				rz + hz,
 				bounds.minX,
 				bounds.maxX,
 				bounds.minZ,
@@ -67,58 +70,52 @@ export class RuinFeature implements IWorldFeature {
 		)
 			return;
 
-		let groundHeight: number;
-		if (columnPrepassResolver) {
-			const resolved = columnPrepassResolver(rx, rz);
-			groundHeight =
-				resolved.entry.terrainHeightMap[resolved.localX + resolved.localZ * 32];
-		} else {
-			groundHeight = getFinalTerrainHeight(rx, rz);
-		}
-
-		const numPillars =
-			4 + (Math.abs(Squirrel3.get(region.regionHash, seed)) % 5);
-		const ruinBlock =
-			Math.abs(Squirrel3.get(region.regionHash + 10, seed)) % 2 === 0
+		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
+		const baseY = b.footprintGround(rx, rz, hx, hz).min;
+		const door = DOORS[Math.abs(Squirrel3.get(regionHash, seed)) % 4];
+		const block =
+			Math.abs(Squirrel3.get(regionHash + 10, seed)) % 2 === 0
 				? BlockType.AncientCrackedStone
 				: BlockType.MossyCobble;
 
-		for (let i = 0; i < numPillars; i++) {
-			const px = rx + (Math.abs(Squirrel3.get(i * 13, seed)) % 11) - 5;
-			const pz = rz + (Math.abs(Squirrel3.get(i * 17, seed)) % 11) - 5;
-			const pillarHeight = 2 + (Math.abs(Squirrel3.get(i * 23, seed)) % 5);
+		b.foundation(rx, rz, hx, hz, baseY, block);
+		const maxH = 5;
+		b.shell(
+			rx - hx,
+			baseY + 1,
+			rz - hz,
+			rx + hx,
+			baseY + maxH,
+			rz + hz,
+			block,
+			{
+				side: door,
+				width: 2,
+				height: 3,
+			},
+		);
 
-			for (let y = 0; y < pillarHeight; y++) {
-				placeBlock(px, groundHeight + y, pz, ruinBlock, true);
-			}
-		}
-
-		const numWalls =
-			2 + (Math.abs(Squirrel3.get(region.regionHash + 20, seed)) % 3);
-		for (let w = 0; w < numWalls; w++) {
-			const wx = rx + (Math.abs(Squirrel3.get(w * 31, seed)) % 8) - 4;
-			const wz = rz + (Math.abs(Squirrel3.get(w * 37, seed)) % 8) - 4;
-			const wallLen = 3 + (Math.abs(Squirrel3.get(w * 41, seed)) % 4);
-			const wallH = 2 + (Math.abs(Squirrel3.get(w * 43, seed)) % 3);
-			const dir = Math.abs(Squirrel3.get(w * 47, seed)) % 2;
-
-			for (let l = 0; l < wallLen; l++) {
-				for (let y = 0; y < wallH; y++) {
-					const blockId =
-						Math.abs(Squirrel3.get(l * 59 + y * 61, seed)) % 3 === 0
-							? 0
-							: ruinBlock;
-					if (blockId !== 0) {
-						placeBlock(
-							wx + (dir === 0 ? l : 0),
-							groundHeight + y,
-							wz + (dir === 1 ? l : 0),
-							blockId,
-							true,
-						);
-					}
+		// broken top edge: randomly knock out upper blocks
+		for (let dx = -hx; dx <= hx; dx++) {
+			for (let dz = -hz; dz <= hz; dz++) {
+				const edge = Math.abs(dx) === hx || Math.abs(dz) === hz;
+				if (!edge) continue;
+				if (Math.abs(Squirrel3.get(dx * 13 + dz * 17, seed)) % 3 === 0) {
+					b.air(rx + dx, baseY + maxH, rz + dz);
 				}
 			}
 		}
+
+		// central altar
+		b.box(
+			rx - 1,
+			baseY,
+			rz - 1,
+			rx + 1,
+			rz + 1,
+			baseY,
+			BlockType.Cobblestone03,
+		);
+		b.column(rx, baseY + 1, rz, 2, BlockType.MossyCobble);
 	}
 }

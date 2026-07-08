@@ -73,43 +73,52 @@ export function computeAO(
 		getBlock(faceX - ux + vx, faceY - uy + vy, faceZ - uz + vz, 0),
 	);
 
-	const isSolid = (f: number) => f & FLAG_SOLID && !(f & FLAG_PARTIAL);
+	const occ = (f: number) =>
+		(f & FLAG_SOLID) !== 0 && (f & FLAG_PARTIAL) === 0 ? 1 : 0;
+	const oMu = occ(fMu);
+	const oPu = occ(fPu);
+	const oMv = occ(fMv);
+	const oPv = occ(fPv);
+	const oMumv = occ(fMumv);
+	const oPumv = occ(fPumv);
+	const oPupv = occ(fPupv);
+	const oMupv = occ(fMupv);
 
 	let packedAO = 0;
 
 	// Corner 0: (-u, -v)
 	{
-		const occU = isSolid(fMu) ? 1 : 0;
-		const occV = isSolid(fMv) ? 1 : 0;
+		const occU = oMu;
+		const occV = oMv;
 		let ao = occU + occV;
-		if (occU && occV && isSolid(fMumv)) ao++;
+		if (occU && occV && oMumv) ao++;
 		packedAO |= ao;
 	}
 
 	// Corner 1: (+u, -v)
 	{
-		const occU = isSolid(fPu) ? 1 : 0;
-		const occV = isSolid(fMv) ? 1 : 0;
+		const occU = oPu;
+		const occV = oMv;
 		let ao = occU + occV;
-		if (occU && occV && isSolid(fPumv)) ao++;
+		if (occU && occV && oPumv) ao++;
 		packedAO |= ao << 2;
 	}
 
 	// Corner 2: (+u, +v)
 	{
-		const occU = isSolid(fPu) ? 1 : 0;
-		const occV = isSolid(fPv) ? 1 : 0;
+		const occU = oPu;
+		const occV = oPv;
 		let ao = occU + occV;
-		if (occU && occV && isSolid(fPupv)) ao++;
+		if (occU && occV && oPupv) ao++;
 		packedAO |= ao << 4;
 	}
 
 	// Corner 3: (-u, +v)
 	{
-		const occU = isSolid(fMu) ? 1 : 0;
-		const occV = isSolid(fPv) ? 1 : 0;
+		const occU = oMu;
+		const occV = oPv;
 		let ao = occU + occV;
-		if (occU && occV && isSolid(fMupv)) ao++;
+		if (occU && occV && oMupv) ao++;
 		packedAO |= ao << 6;
 	}
 

@@ -304,9 +304,13 @@ export class Chunk {
 	private static readonly GLASS_02_BLOCK_ID = 61;
 	private static readonly EPS = 1e-6;
 
+	// Single closed-face-mask cache.  Masks are ≤ FACE_ALL (63) so a byte
+	// array suffices; 255 is the uncomputed sentinel.  This same LUT is also
+	// shipped to the light worker (precomputeClosedFaceMasks), eliminating the
+	// previous duplicate Int16Array + separate Uint8Array computation paths.
 	private static readonly CLOSED_FACE_MASK_CACHE = (() => {
-		const cache = new Int16Array(1 << 16);
-		cache.fill(-1);
+		const cache = new Uint8Array(1 << 16);
+		cache.fill(255);
 		return cache;
 	})();
 
@@ -795,7 +799,7 @@ export class Chunk {
 		const raw = this._block_array![index];
 		// Dense Uint8Array stores only block IDs (no state). Water level 0 = source.
 		// Uint16Array already stores the full packed value — no synthesis needed.
-		if (raw === WATER_BLOCK_ID && this._block_array instanceof Uint8Array) {
+		if (raw === WATER_BLOCK_ID && this._block_array!.BYTES_PER_ELEMENT === 1) {
 			return WATER_BLOCK_ID;
 		}
 		return raw;
@@ -1063,7 +1067,7 @@ export class Chunk {
 	private static getClosedFaceMaskForPacked(blockPacked: number): number {
 		const cacheIndex = blockPacked & 0xffff;
 		const cached = Chunk.CLOSED_FACE_MASK_CACHE[cacheIndex];
-		if (cached !== -1) return cached;
+		if (cached !== 255) return cached;
 
 		const blockId = unpackBlockId(blockPacked);
 		if (
@@ -1143,15 +1147,18 @@ export class Chunk {
 
 	/**
 	 * Precompute the closed-face mask for every possible packed block value
-	 * (blockId << BLOCK_STATE_SHIFT | state) and return the result as a
-	 * compact Uint8Array.  Called once at startup after shapes are loaded
-	 * and sent to the light worker so it can do per-face transparency
-	 * checks without importing shape definitions.
+	 * (blockId << BLOCK_STATE_SHIFT | state) and return the shared Uint8Array
+	 * LUT.  Called once at startup after shapes are loaded and sent to the
+	 * light worker so it can do per-face transparency checks without
+	 * importing shape definitions.  The returned array is the same static
+	 * cache `getClosedFaceMaskForPacked` reads from.
 	 */
 	public static precomputeClosedFaceMasks(): Uint8Array {
-		const lut = new Uint8Array(1 << 16);
+		const lut = Chunk.CLOSED_FACE_MASK_CACHE;
 		for (let i = 0; i < 1 << 16; i++) {
-			lut[i] = Chunk.getClosedFaceMaskForPacked(i) & 0xff;
+			// getClosedFaceMaskForPacked populates `lut` as a side effect;
+			// calling it here just forces the lazy computation for all entries.
+			Chunk.getClosedFaceMaskForPacked(i);
 		}
 		return lut;
 	}
@@ -1347,8 +1354,8 @@ export class Chunk {
 		}
 		for (let a = 0; a < faces.length; a++) {
 			for (let b = a + 1; b < faces.length; b++) {
-				const i = faces[a]!;
-				const j = faces[b]!;
+				const i = faces[a];
+				const j = faces[b];
 				result |= 1 << Chunk.facePairIndex(i, j);
 			}
 		}

@@ -1,38 +1,24 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { type DoorSide, StructureBuilder } from "./StructureBuilder";
 
 const MOUNTAIN_BIOMES = new Set([
+	BIOME_ID.TUNDRA_MOUNTAINS,
 	BIOME_ID.ALPINE_MEADOW,
 	BIOME_ID.ROCKY_HIGHLANDS,
-	BIOME_ID.TUNDRA_MOUNTAINS,
-	BIOME_ID.CLOUD_PEAKS,
 	BIOME_ID.MESA_PLATEAU,
+	BIOME_ID.CLOUD_PEAKS,
+	BIOME_ID.GLACIER,
 ]);
 
-const CABIN_DATA = {
-	width: 6,
-	height: 4,
-	depth: 5,
-	palette: {
-		"0": 0,
-		"1": BlockType.Cobblestone03,
-		"2": BlockType.RoughWood,
-		"3": BlockType.OldPlanks02,
-	},
-	blocks: [
-		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0,
-		0, 0, 1, 3, 3, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 0, 0, 2, 2, 2,
-		2, 0, 2, 2,
-	],
-};
+const DOORS: DoorSide[] = ["x+", "x-", "z+", "z-"];
 
 export class MountainCabinFeature implements IWorldFeature {
-	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 300 };
-	public readonly maxAboveSurface = 10;
+	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 400 };
+	public readonly maxAboveSurface = 14;
 
 	public generate(
 		chunkX: number,
@@ -55,27 +41,28 @@ export class MountainCabinFeature implements IWorldFeature {
 		if (!MOUNTAIN_BIOMES.has(biome.id)) return;
 
 		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 14,
-			magicA: 9101234567,
-			magicB: 878889808,
+			regionSize: 16,
+			magicA: 332211009,
+			magicB: 112233445,
 			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;
 
-		const { centerX: cx, centerZ: cz } = region;
+		const { centerX: cx, centerZ: cz, regionHash } = region;
+		const hx = 3;
+		const hz = 3;
 		const bounds = chunkWorldBounds(
 			generatingChunkX,
 			generatingChunkZ,
 			chunkSize,
 		);
-
 		if (
 			!aabbOverlaps(
-				cx,
-				cx + CABIN_DATA.width,
-				cz,
-				cz + CABIN_DATA.depth,
+				cx - hx,
+				cx + hx,
+				cz - hz,
+				cz + hz,
 				bounds.minX,
 				bounds.maxX,
 				bounds.minZ,
@@ -84,28 +71,26 @@ export class MountainCabinFeature implements IWorldFeature {
 		)
 			return;
 
-		let groundHeight: number;
-		if (columnPrepassResolver) {
-			const resolved = columnPrepassResolver(cx, cz);
-			groundHeight =
-				resolved.entry.terrainHeightMap[resolved.localX + resolved.localZ * 32];
-		} else {
-			groundHeight = getFinalTerrainHeight(cx, cz);
-		}
+		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
+		const baseY = b.footprintGround(cx, cz, hx, hz).min;
+		const door = DOORS[Math.abs(Squirrel3.get(regionHash, seed)) % 4];
 
-		for (let y = 0; y < CABIN_DATA.height; y++) {
-			for (let z = 0; z < CABIN_DATA.depth; z++) {
-				for (let x = 0; x < CABIN_DATA.width; x++) {
-					const idx =
-						x + z * CABIN_DATA.width + y * CABIN_DATA.width * CABIN_DATA.depth;
-					const paletteIdx = CABIN_DATA.blocks[idx]?.toString() ?? "0";
-					const blockId =
-						(CABIN_DATA.palette as Record<string, number>)[paletteIdx] ?? 0;
-					if (blockId !== 0) {
-						placeBlock(cx + x, groundHeight + y, cz + z, blockId, true);
-					}
-				}
-			}
-		}
+		b.buildHouse({
+			cx,
+			cz,
+			baseY,
+			hx,
+			hz,
+			height: 4,
+			wall: BlockType.WoodTrunkWall,
+			roof: BlockType.RoofSlates02,
+			floor: BlockType.PlankFlooring02,
+			foundation: BlockType.StoneTileWall,
+			doorSide: door,
+			windows: true,
+			extra: (bb, by) => {
+				bb.column(cx - hx + 1, by + 1, cz + hz - 1, 5, BlockType.StoneTileWall);
+			},
+		});
 	}
 }

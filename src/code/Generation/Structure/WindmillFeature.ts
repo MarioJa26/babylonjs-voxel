@@ -1,9 +1,8 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { StructureBuilder } from "./StructureBuilder";
 
 const TEMPERATE_BIOMES = new Set([
 	BIOME_ID.PLAINS,
@@ -14,8 +13,8 @@ const TEMPERATE_BIOMES = new Set([
 ]);
 
 export class WindmillFeature implements IWorldFeature {
-	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 250 };
-	public readonly maxAboveSurface = 30;
+	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 200 };
+	public readonly maxAboveSurface = 22;
 
 	public generate(
 		chunkX: number,
@@ -39,27 +38,27 @@ export class WindmillFeature implements IWorldFeature {
 
 		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
 			regionSize: 16,
-			magicA: 8101234567,
-			magicB: 778899001,
-			spawnChance: 80,
+			magicA: 858585001,
+			magicB: 252525845,
+			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;
 
-		const { centerX: wx, centerZ: wz } = region;
+		const { centerX: cx, centerZ: cz, regionHash } = region;
+		const hx = 1;
+		const hz = 1;
 		const bounds = chunkWorldBounds(
 			generatingChunkX,
 			generatingChunkZ,
 			chunkSize,
 		);
-		const radius = 5;
-
 		if (
 			!aabbOverlaps(
-				wx - radius,
-				wx + radius,
-				wz - radius,
-				wz + radius,
+				cx - hx - 4,
+				cx + hx + 4,
+				cz - hz - 4,
+				cz + hz + 4,
 				bounds.minX,
 				bounds.maxX,
 				bounds.minZ,
@@ -68,50 +67,45 @@ export class WindmillFeature implements IWorldFeature {
 		)
 			return;
 
-		let groundHeight: number;
-		if (columnPrepassResolver) {
-			const resolved = columnPrepassResolver(wx, wz);
-			groundHeight =
-				resolved.entry.terrainHeightMap[resolved.localX + resolved.localZ * 32];
-		} else {
-			groundHeight = getFinalTerrainHeight(wx, wz);
-		}
+		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
+		const baseY = b.footprintGround(cx, cz, hx, hz).min;
 
-		const towerHeight =
-			18 + (Math.abs(Squirrel3.get(region.regionHash, seed)) % 8);
+		// stone base
+		b.foundation(cx, cz, hx, hz, baseY, BlockType.Cobblestone03);
+		b.shell(
+			cx - hx,
+			baseY + 1,
+			cz - hz,
+			cx + hx,
+			baseY + 5,
+			cz + hz,
+			BlockType.StoneTileWall,
+		);
+		// wood upper
+		b.shell(
+			cx - hx,
+			baseY + 6,
+			cz - hz,
+			cx + hx,
+			baseY + 11,
+			cz + hz,
+			BlockType.WoodPlankWall,
+		);
+		// cap roof
+		b.box(
+			cx - hx,
+			baseY + 12,
+			cz - hz,
+			cx + hx,
+			baseY + 12,
+			cz + hz,
+			BlockType.RoofSlates02,
+		);
 
-		for (let dy = 0; dy < towerHeight; dy++) {
-			const taper = Math.max(2, radius - Math.floor(dy / 6));
-			const taperSq = taper * taper;
-			for (let dx = -taper; dx <= taper; dx++) {
-				for (let dz = -taper; dz <= taper; dz++) {
-					if (dx * dx + dz * dz > taperSq) continue;
-					const blockId =
-						dy < 2 ? BlockType.Cobblestone03 : BlockType.WoodPlankWall;
-					placeBlock(wx + dx, groundHeight + dy, wz + dz, blockId, true);
-				}
-			}
-		}
-
-		const platformY = groundHeight + towerHeight;
-		for (let dx = -radius; dx <= radius; dx++) {
-			for (let dz = -radius; dz <= radius; dz++) {
-				if (dx * dx + dz * dz > radius * radius) continue;
-				placeBlock(wx + dx, platformY, wz + dz, BlockType.WoodPlanks, true);
-			}
-		}
-
-		for (let dy = 0; dy < 5; dy++) {
-			placeBlock(wx, platformY + dy + 1, wz, BlockType.RoughWood, true);
-		}
-
-		const bladeLen = 6;
-		const bladeY = platformY + 4;
-		for (let i = 1; i <= bladeLen; i++) {
-			placeBlock(wx + i, bladeY, wz, BlockType.WoodPlanks, true);
-			placeBlock(wx - i, bladeY, wz, BlockType.WoodPlanks, true);
-			placeBlock(wx, bladeY, wz + i, BlockType.WoodPlanks, true);
-			placeBlock(wx, bladeY, wz - i, BlockType.WoodPlanks, true);
-		}
+		// blades: a cross of RoughWood on the +x face
+		const hubY = baseY + 9;
+		b.column(cx + hx + 1, hubY - 4, cz, 9, BlockType.RoughWood);
+		b.column(cx + hx + 1, hubY, cz - 4, 9, BlockType.RoughWood);
+		b.set(cx + hx + 1, hubY, cz, BlockType.WoodTable);
 	}
 }

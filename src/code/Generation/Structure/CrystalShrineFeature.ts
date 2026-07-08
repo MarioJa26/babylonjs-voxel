@@ -1,20 +1,19 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { StructureBuilder } from "./StructureBuilder";
 
 const GEOLOGICAL_BIOMES = new Set([
 	BIOME_ID.CRYSTAL_CAVES,
 	BIOME_ID.OBSIDIAN_FLATS,
 	BIOME_ID.GEOTHERMAL_FIELD,
-	BIOME_ID.MUSHROOM_FIELDS,
 ]);
 
 export class CrystalShrineFeature implements IWorldFeature {
 	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 200 };
-	public readonly maxAboveSurface = 15;
+	public readonly maxAboveSurface = 12;
 
 	public generate(
 		chunkX: number,
@@ -37,27 +36,27 @@ export class CrystalShrineFeature implements IWorldFeature {
 		if (!GEOLOGICAL_BIOMES.has(biome.id)) return;
 
 		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 12,
-			magicA: 3434567890,
-			magicB: 111213141,
+			regionSize: 14,
+			magicA: 646464646,
+			magicB: 121212845,
 			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;
 
-		const { centerX: sx, centerZ: sz } = region;
+		const { centerX: cx, centerZ: cz, regionHash } = region;
+		const radius = 4;
 		const bounds = chunkWorldBounds(
 			generatingChunkX,
 			generatingChunkZ,
 			chunkSize,
 		);
-
 		if (
 			!aabbOverlaps(
-				sx - 6,
-				sx + 6,
-				sz - 6,
-				sz + 6,
+				cx - radius,
+				cx + radius,
+				cz - radius,
+				cz + radius,
 				bounds.minX,
 				bounds.maxX,
 				bounds.minZ,
@@ -66,47 +65,23 @@ export class CrystalShrineFeature implements IWorldFeature {
 		)
 			return;
 
-		let groundHeight: number;
-		if (columnPrepassResolver) {
-			const resolved = columnPrepassResolver(sx, sz);
-			groundHeight =
-				resolved.entry.terrainHeightMap[resolved.localX + resolved.localZ * 32];
-		} else {
-			groundHeight = getFinalTerrainHeight(sx, sz);
+		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
+
+		// ring of crystal pillars
+		const pillars = 6 + (Math.abs(Squirrel3.get(regionHash, seed)) % 3);
+		for (let i = 0; i < pillars; i++) {
+			const angle = (i / pillars) * Math.PI * 2;
+			const px = Math.round(cx + Math.cos(angle) * radius);
+			const pz = Math.round(cz + Math.sin(angle) * radius);
+			const pg = b.ground(px, pz);
+			const h = 5 + (Math.abs(Squirrel3.get(i * 91, seed)) % 4);
+			b.column(px, pg, pz, h, BlockType.CrystalBlock);
 		}
 
-		for (let dx = -2; dx <= 2; dx++) {
-			for (let dz = -2; dz <= 2; dz++) {
-				placeBlock(
-					sx + dx,
-					groundHeight,
-					sz + dz,
-					BlockType.CrystalBlock,
-					true,
-				);
-			}
-		}
-
-		const numSpikes =
-			5 + (Math.abs(Squirrel3.get(region.regionHash, seed)) % 4);
-		for (let i = 0; i < numSpikes; i++) {
-			const angle = (i / numSpikes) * Math.PI * 2;
-			const dist = 1 + (Math.abs(Squirrel3.get(i * 19, seed)) % 3);
-			const spikeX = Math.floor(sx + Math.cos(angle) * dist);
-			const spikeZ = Math.floor(sz + Math.sin(angle) * dist);
-			const spikeHeight = 3 + (Math.abs(Squirrel3.get(i * 37, seed)) % 4);
-			const crystalBlock =
-				Math.abs(Squirrel3.get(i * 53, seed)) % 2 === 0
-					? BlockType.CrystalBlock
-					: BlockType.ExposedCrystalBlock;
-
-			for (let y = 0; y < spikeHeight; y++) {
-				placeBlock(spikeX, groundHeight + y + 1, spikeZ, crystalBlock, true);
-			}
-		}
-
-		placeBlock(sx, groundHeight + 1, sz, BlockType.ExposedCrystalBlock, true);
-		placeBlock(sx, groundHeight + 2, sz, BlockType.CrystalBlock, true);
-		placeBlock(sx, groundHeight + 3, sz, BlockType.ExposedCrystalBlock, true);
+		// central cluster
+		const cg = b.ground(cx, cz);
+		b.disc(cx, cg, cz, 1, BlockType.ExposedCrystalBlock);
+		b.column(cx, cg + 1, cz, 3, BlockType.CrystalBlock);
+		b.set(cx, cg + 4, cz, BlockType.ExposedCrystalBlock);
 	}
 }

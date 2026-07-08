@@ -108,12 +108,13 @@ export class OpfsChunkStore {
 			this._fileSize = newSize;
 		}
 
-		new Uint8Array(this._tableBuffer, off, SLOT_SIZE_U).set(this._scratchU8);
-
 		_rwOpts.at = slotAt;
 		this._accessHandle!.write(this._scratchU8, _rwOpts);
 		_rwOpts.at = dataAt;
 		this._accessHandle!.write(data, _rwOpts);
+		this._accessHandle!.flush();
+
+		new Uint8Array(this._tableBuffer, off, SLOT_SIZE_U).set(this._scratchU8);
 
 		if (!wasLive) {
 			this._size++;

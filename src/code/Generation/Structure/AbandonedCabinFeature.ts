@@ -1,9 +1,9 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { type DoorSide, StructureBuilder } from "./StructureBuilder";
 
 const TEMPERATE_BIOMES = new Set([
 	BIOME_ID.FOREST,
@@ -18,23 +18,7 @@ const TEMPERATE_BIOMES = new Set([
 	BIOME_ID.CHERRY_BLOSSOM_FOREST,
 ]);
 
-const CABIN_DATA = {
-	width: 7,
-	height: 5,
-	depth: 6,
-	palette: {
-		"0": 0,
-		"1": BlockType.OldPlanks02,
-		"2": BlockType.RoughWood,
-		"3": BlockType.ThatchRoofAngled,
-	},
-	blocks: [
-		3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, 3, 3, 0, 1, 0,
-		1, 0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1,
-		0, 0, 0, 0, 0, 1, 2, 2, 2, 0, 2, 2, 2, 2, 2, 1, 2, 1, 2, 2, 2, 2, 2, 0, 2,
-		2, 2,
-	],
-};
+const DOORS: DoorSide[] = ["x+", "x-", "z+", "z-"];
 
 export class AbandonedCabinFeature implements IWorldFeature {
 	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 200 };
@@ -69,19 +53,20 @@ export class AbandonedCabinFeature implements IWorldFeature {
 		});
 		if (!region) return;
 
-		const { centerX: cx, centerZ: cz } = region;
+		const { centerX: cx, centerZ: cz, regionHash } = region;
+		const hx = 3;
+		const hz = 3;
 		const bounds = chunkWorldBounds(
 			generatingChunkX,
 			generatingChunkZ,
 			chunkSize,
 		);
-
 		if (
 			!aabbOverlaps(
-				cx,
-				cx + CABIN_DATA.width,
-				cz,
-				cz + CABIN_DATA.depth,
+				cx - hx,
+				cx + hx,
+				cz - hz,
+				cz + hz,
 				bounds.minX,
 				bounds.maxX,
 				bounds.minZ,
@@ -90,28 +75,27 @@ export class AbandonedCabinFeature implements IWorldFeature {
 		)
 			return;
 
-		let groundHeight: number;
-		if (columnPrepassResolver) {
-			const resolved = columnPrepassResolver(cx, cz);
-			groundHeight =
-				resolved.entry.terrainHeightMap[resolved.localX + resolved.localZ * 32];
-		} else {
-			groundHeight = getFinalTerrainHeight(cx, cz);
-		}
+		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
+		const baseY = b.footprintGround(cx, cz, hx, hz).min;
+		const door = DOORS[Math.abs(Squirrel3.get(regionHash, seed)) % 4];
 
-		for (let y = 0; y < CABIN_DATA.height; y++) {
-			for (let z = 0; z < CABIN_DATA.depth; z++) {
-				for (let x = 0; x < CABIN_DATA.width; x++) {
-					const idx =
-						x + z * CABIN_DATA.width + y * CABIN_DATA.width * CABIN_DATA.depth;
-					const paletteIdx = CABIN_DATA.blocks[idx]?.toString() ?? "0";
-					const blockId =
-						(CABIN_DATA.palette as Record<string, number>)[paletteIdx] ?? 0;
-					if (blockId !== 0) {
-						placeBlock(cx + x, groundHeight + y, cz + z, blockId, true);
-					}
-				}
-			}
-		}
+		b.buildHouse({
+			cx,
+			cz,
+			baseY,
+			hx,
+			hz,
+			height: 4,
+			wall: BlockType.OldPlanks02,
+			roof: BlockType.ThatchRoofAngled,
+			floor: BlockType.OldWoodFloor,
+			foundation: BlockType.Cobblestone03,
+			doorSide: door,
+			windows: true,
+			extra: (bb, by) => {
+				// chimney
+				bb.column(cx + hx - 1, by + 1, cz - hz + 1, 5, BlockType.Cobblestone03);
+			},
+		});
 	}
 }

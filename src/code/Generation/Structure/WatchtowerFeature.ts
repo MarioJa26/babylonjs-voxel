@@ -1,22 +1,22 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { StructureBuilder } from "./StructureBuilder";
 
 const HOT_BIOMES = new Set([
 	BIOME_ID.DESERT,
-	BIOME_ID.BADLANDS,
-	BIOME_ID.RED_ROCK_CANYON,
-	BIOME_ID.SAVANNAH,
-	BIOME_ID.SCORCHED_SAVANNAH,
 	BIOME_ID.DUNE_SEA,
+	BIOME_ID.SAVANNAH,
+	BIOME_ID.PLAINS,
+	BIOME_ID.GRASS_LAND,
+	BIOME_ID.SCORCHED_SAVANNAH,
+	BIOME_ID.OASIS,
 ]);
 
 export class WatchtowerFeature implements IWorldFeature {
-	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 300 };
-	public readonly maxAboveSurface = 25;
+	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 200 };
+	public readonly maxAboveSurface = 18;
 
 	public generate(
 		chunkX: number,
@@ -39,28 +39,28 @@ export class WatchtowerFeature implements IWorldFeature {
 		if (!HOT_BIOMES.has(biome.id)) return;
 
 		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 14,
-			magicA: 4656789012,
-			magicB: 323334353,
+			regionSize: 16,
+			magicA: 707070001,
+			magicB: 131313845,
 			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;
 
-		const { centerX: tx, centerZ: tz } = region;
+		const { centerX: cx, centerZ: cz } = region;
+		const hx = 1;
+		const hz = 1;
 		const bounds = chunkWorldBounds(
 			generatingChunkX,
 			generatingChunkZ,
 			chunkSize,
 		);
-		const towerRadius = 3;
-
 		if (
 			!aabbOverlaps(
-				tx - towerRadius,
-				tx + towerRadius,
-				tz - towerRadius,
-				tz + towerRadius,
+				cx - hx - 1,
+				cx + hx + 1,
+				cz - hz - 1,
+				cz + hz + 1,
 				bounds.minX,
 				bounds.maxX,
 				bounds.minZ,
@@ -69,61 +69,48 @@ export class WatchtowerFeature implements IWorldFeature {
 		)
 			return;
 
-		let groundHeight: number;
-		if (columnPrepassResolver) {
-			const resolved = columnPrepassResolver(tx, tz);
-			groundHeight =
-				resolved.entry.terrainHeightMap[resolved.localX + resolved.localZ * 32];
-		} else {
-			groundHeight = getFinalTerrainHeight(tx, tz);
-		}
+		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
+		const baseY = b.footprintGround(cx, cz, hx, hz).min;
+		const height = 12;
 
-		const towerHeight =
-			20 + (Math.abs(Squirrel3.get(region.regionHash, seed)) % 12);
-		const radiusSq = towerRadius * towerRadius;
-
-		for (let dy = 0; dy < towerHeight; dy++) {
-			const blockId =
-				dy < 3 ? BlockType.RedSandstoneWall : BlockType.Cobblestone03;
-			for (let dx = -towerRadius; dx <= towerRadius; dx++) {
-				for (let dz = -towerRadius; dz <= towerRadius; dz++) {
-					if (dx * dx + dz * dz > radiusSq) continue;
-					placeBlock(tx + dx, groundHeight + dy, tz + dz, blockId, true);
-				}
-			}
-		}
-
-		const platformRadius = towerRadius + 1;
-		const platformRs = platformRadius * platformRadius;
-		for (let dx = -platformRadius; dx <= platformRadius; dx++) {
-			for (let dz = -platformRadius; dz <= platformRadius; dz++) {
-				if (dx * dx + dz * dz > platformRs) continue;
-				placeBlock(
-					tx + dx,
-					groundHeight + towerHeight,
-					tz + dz,
-					BlockType.Cobblestone03,
-					true,
-				);
-			}
-		}
-
-		for (let dx = -platformRadius; dx <= platformRadius; dx++) {
-			for (let dz = -platformRadius; dz <= platformRadius; dz++) {
-				if (dx * dx + dz * dz > platformRs) continue;
-				if (
-					Math.abs(dx) === platformRadius ||
-					Math.abs(dz) === platformRadius
-				) {
-					placeBlock(
-						tx + dx,
-						groundHeight + towerHeight + 1,
-						tz + dz,
-						BlockType.Cobblestone03,
-						true,
-					);
-				}
-			}
-		}
+		b.foundation(cx, cz, hx, hz, baseY, BlockType.Cobblestone03);
+		b.shell(
+			cx - hx,
+			baseY + 1,
+			cz - hz,
+			cx + hx,
+			baseY + height,
+			cz + hz,
+			BlockType.StoneTileWall,
+		);
+		// mid floor
+		b.box(
+			cx - hx,
+			baseY + 6,
+			cz - hz,
+			cx + hx,
+			baseY + 6,
+			cz + hz,
+			BlockType.SlateFloor,
+		);
+		// battlements
+		b.shell(
+			cx - hx,
+			baseY + height + 1,
+			cz - hz,
+			cx + hx,
+			baseY + height + 1,
+			cz + hz,
+			BlockType.StoneTileWall,
+		);
+		b.box(
+			cx - hx,
+			baseY + height + 2,
+			cz - hz,
+			cx + hx,
+			baseY + height + 2,
+			cz + hz,
+			BlockType.RoofSlates02,
+		);
 	}
 }

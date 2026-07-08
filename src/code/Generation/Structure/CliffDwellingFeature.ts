@@ -1,21 +1,22 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { type DoorSide, StructureBuilder } from "./StructureBuilder";
 
 const MOUNTAIN_BIOMES = new Set([
-	BIOME_ID.ROCKY_HIGHLANDS,
 	BIOME_ID.RED_ROCK_CANYON,
 	BIOME_ID.MESA_PLATEAU,
 	BIOME_ID.BADLANDS,
-	BIOME_ID.VOLCANIC_CALDERA,
+	BIOME_ID.ROCKY_HIGHLANDS,
 ]);
 
+const DOORS: DoorSide[] = ["x+", "x-", "z+", "z-"];
+
 export class CliffDwellingFeature implements IWorldFeature {
-	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 300 };
-	public readonly maxAboveSurface = 20;
+	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 400 };
+	public readonly maxAboveSurface = 16;
 
 	public generate(
 		chunkX: number,
@@ -39,26 +40,27 @@ export class CliffDwellingFeature implements IWorldFeature {
 
 		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
 			regionSize: 14,
-			magicA: 1212345678,
-			magicB: 989900112,
+			magicA: 646464001,
+			magicB: 919191845,
 			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;
 
-		const { centerX: cx, centerZ: cz } = region;
+		const { centerX: cx, centerZ: cz, regionHash } = region;
+		const hx = 3;
+		const hz = 3;
 		const bounds = chunkWorldBounds(
 			generatingChunkX,
 			generatingChunkZ,
 			chunkSize,
 		);
-
 		if (
 			!aabbOverlaps(
-				cx - 6,
-				cx + 6,
-				cz - 6,
-				cz + 6,
+				cx - hx,
+				cx + hx,
+				cz - hz,
+				cz + hz,
 				bounds.minX,
 				bounds.maxX,
 				bounds.minZ,
@@ -67,55 +69,42 @@ export class CliffDwellingFeature implements IWorldFeature {
 		)
 			return;
 
-		let groundHeight: number;
-		if (columnPrepassResolver) {
-			const resolved = columnPrepassResolver(cx, cz);
-			groundHeight =
-				resolved.entry.terrainHeightMap[resolved.localX + resolved.localZ * 32];
-		} else {
-			groundHeight = getFinalTerrainHeight(cx, cz);
-		}
+		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
+		const baseY = b.footprintGround(cx, cz, hx, hz).min;
+		const door = DOORS[Math.abs(Squirrel3.get(regionHash, seed)) % 4];
 
-		const cliffHeight =
-			8 + (Math.abs(Squirrel3.get(region.regionHash, seed)) % 6);
-		const wallBlock =
-			biome.id === BIOME_ID.RED_ROCK_CANYON ||
-			biome.id === BIOME_ID.MESA_PLATEAU
-				? BlockType.RedSandstoneWall
-				: BlockType.Cobblestone03;
-
-		for (let dy = 0; dy < cliffHeight; dy++) {
-			for (let dx = -4; dx <= 4; dx++) {
-				const depth = Math.floor(3 * (1 - Math.abs(dx) / 4));
-				for (let dz = 0; dz < depth; dz++) {
-					placeBlock(cx + dx, groundHeight + dy, cz - dz, wallBlock, true);
-				}
-			}
-		}
-
-		const numRooms =
-			2 + (Math.abs(Squirrel3.get(region.regionHash + 5, seed)) % 3);
-		for (let i = 0; i < numRooms; i++) {
-			const roomX = cx + (Math.abs(Squirrel3.get(i * 17, seed)) % 5) - 2;
-			const roomY =
-				groundHeight +
-				2 +
-				(Math.abs(Squirrel3.get(i * 29, seed)) % (cliffHeight - 4));
-			const roomW = 2 + (Math.abs(Squirrel3.get(i * 41, seed)) % 2);
-
-			for (let dx = 0; dx < roomW; dx++) {
-				for (let dy = 0; dy < 3; dy++) {
-					placeBlock(roomX + dx, roomY + dy, cz, BlockType.Air, true);
-				}
-			}
-			placeBlock(roomX, roomY, cz, BlockType.WoodPlanks, true);
-			placeBlock(
-				roomX + roomW - 1,
-				roomY,
-				cz + roomW - 1,
-				BlockType.WoodPlanks,
-				true,
-			);
-		}
+		b.buildHouse({
+			cx,
+			cz,
+			baseY,
+			hx,
+			hz,
+			height: 3,
+			wall: BlockType.JapaneseStoneWall,
+			roof: BlockType.StoneTiles02,
+			floor: BlockType.PlankFlooring02,
+			foundation: BlockType.Cobblestone03,
+			doorSide: door,
+		});
+		// second terrace tier
+		b.box(
+			cx - hx,
+			baseY + 5,
+			cz - hz,
+			cx + hx - 1,
+			baseY + 5,
+			cz + hz - 1,
+			BlockType.StoneTiles02,
+		);
+		b.shell(
+			cx - hx,
+			baseY + 6,
+			cz - hz,
+			cx + hx - 1,
+			baseY + 7,
+			cz + hz - 1,
+			BlockType.JapaneseStoneWall,
+			{ side: door, width: 1, height: 2 },
+		);
 	}
 }

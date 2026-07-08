@@ -1105,27 +1105,18 @@ export class ChunkWorkerPool {
 					});
 				}
 
-				if (this.opfsReady && this.opfsClient) {
-					const shouldPersistMesh =
-						lod === 0 ||
-						(lod >= 1 && hasStableVoxelNeighborsForCachedMesh(chunk));
-					if (shouldPersistMesh) {
-						const bytes = serializeMeshPair(opaque, transparent);
-						if (bytes) {
-							const key = packChunkKey(
-								chunk.chunkX,
-								chunk.chunkY,
-								chunk.chunkZ,
-							);
-							void this.opfsClient
-								.writeMesh(key, lod, bytes)
-								.catch((err: any) => {
-									console.warn(
-										`[ChunkWorkerPool] OPFS write failed for chunk ${chunkId}:`,
-										err,
-									);
-								});
-						}
+				if (this.opfsReady && this.opfsClient && canCacheMesh) {
+					const bytes = serializeMeshPair(opaque, transparent);
+					if (bytes) {
+						const key = packChunkKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+						void this.opfsClient
+							.writeMesh(key, lod, bytes)
+							.catch((err: any) => {
+								console.error(
+									`[ChunkWorkerPool] OPFS mesh write failed for chunk ${chunkId} (key=${key}, lod=${lod}, bytes=${bytes.length}):`,
+									err,
+								);
+							});
 					}
 				}
 				if ((chunk.lodLevel ?? 0) === lod) {
@@ -1134,7 +1125,9 @@ export class ChunkWorkerPool {
 					chunk.remeshQueued = false;
 					this.queuePostRemeshSave(chunk);
 				} else {
-					chunk.setCachedLODMesh(lod, { opaque, transparent });
+					if (!canCacheMesh) {
+						chunk.setCachedLODMesh(lod, { opaque, transparent });
+					}
 					chunk.isDirty = true;
 					chunk.remeshQueued = false;
 					this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);

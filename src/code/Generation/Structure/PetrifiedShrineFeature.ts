@@ -1,9 +1,16 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { StructureBuilder } from "./StructureBuilder";
+
+const EXOTIC_BIOMES = new Set([
+	BIOME_ID.PETRIFIED_FOREST,
+	BIOME_ID.ASHEN_WASTELAND,
+	BIOME_ID.BADLANDS,
+	BIOME_ID.DUST_BOWL,
+]);
 
 export class PetrifiedShrineFeature implements IWorldFeature {
 	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 200 };
@@ -27,30 +34,30 @@ export class PetrifiedShrineFeature implements IWorldFeature {
 		generatingChunkZ: number,
 		columnPrepassResolver?: ColumnPrepassResolver,
 	) {
-		if (biome.id !== BIOME_ID.PETRIFIED_FOREST) return;
+		if (!EXOTIC_BIOMES.has(biome.id)) return;
 
 		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 12,
-			magicA: 6767890123,
-			magicB: 444546474,
+			regionSize: 14,
+			magicA: 757575757,
+			magicB: 343434845,
 			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;
 
-		const { centerX: sx, centerZ: sz } = region;
+		const { centerX: cx, centerZ: cz, regionHash } = region;
+		const radius = 4;
 		const bounds = chunkWorldBounds(
 			generatingChunkX,
 			generatingChunkZ,
 			chunkSize,
 		);
-
 		if (
 			!aabbOverlaps(
-				sx - 6,
-				sx + 6,
-				sz - 6,
-				sz + 6,
+				cx - radius,
+				cx + radius,
+				cz - radius,
+				cz + radius,
 				bounds.minX,
 				bounds.maxX,
 				bounds.minZ,
@@ -59,66 +66,23 @@ export class PetrifiedShrineFeature implements IWorldFeature {
 		)
 			return;
 
-		let groundHeight: number;
-		if (columnPrepassResolver) {
-			const resolved = columnPrepassResolver(sx, sz);
-			groundHeight =
-				resolved.entry.terrainHeightMap[resolved.localX + resolved.localZ * 32];
-		} else {
-			groundHeight = getFinalTerrainHeight(sx, sz);
+		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
+
+		// ring of petrified logs stood on end
+		const pillars = 6 + (Math.abs(Squirrel3.get(regionHash, seed)) % 3);
+		for (let i = 0; i < pillars; i++) {
+			const angle = (i / pillars) * Math.PI * 2;
+			const px = Math.round(cx + Math.cos(angle) * radius);
+			const pz = Math.round(cz + Math.sin(angle) * radius);
+			const pg = b.ground(px, pz);
+			const h = 4 + (Math.abs(Squirrel3.get(i * 91, seed)) % 3);
+			b.column(px, pg, pz, h, BlockType.MossWood);
 		}
 
-		for (let dx = -2; dx <= 2; dx++) {
-			for (let dz = -2; dz <= 2; dz++) {
-				placeBlock(
-					sx + dx,
-					groundHeight,
-					sz + dz,
-					BlockType.AncientCrackedStone,
-					true,
-				);
-			}
-		}
-
-		const pillarPositions: [number, number][] = [
-			[-2, -2],
-			[2, -2],
-			[-2, 2],
-			[2, 2],
-			[0, -2],
-			[0, 2],
-			[-2, 0],
-			[2, 0],
-		];
-		for (const [px, pz] of pillarPositions) {
-			if (
-				Math.abs(Squirrel3.get((sx + px) * 11 + (sz + pz) * 13, seed)) % 3 ===
-				0
-			)
-				continue;
-			const h =
-				2 +
-				(Math.abs(Squirrel3.get((sx + px) * 17 + (sz + pz) * 19, seed)) % 3);
-			for (let y = 0; y < h; y++) {
-				placeBlock(
-					sx + px,
-					groundHeight + y + 1,
-					sz + pz,
-					BlockType.AncientCrackedStone,
-					true,
-				);
-			}
-		}
-
-		placeBlock(sx, groundHeight + 1, sz, BlockType.ExposedCrystalBlock, true);
-		placeBlock(sx, groundHeight + 2, sz, BlockType.AncientCrackedStone, true);
-
-		for (let i = 0; i < 3; i++) {
-			const angle = (i / 3) * Math.PI * 2;
-			const px = Math.floor(sx + Math.cos(angle) * 4);
-			const pz = Math.floor(sz + Math.sin(angle) * 4);
-			placeBlock(px, groundHeight, pz, BlockType.SaltBlock, true);
-			placeBlock(px, groundHeight + 1, pz, BlockType.SaltBlock, true);
-		}
+		// central altar of cracked stone
+		const cg = b.ground(cx, cz);
+		b.disc(cx, cg, cz, 1, BlockType.AncientCrackedStone);
+		b.column(cx, cg + 1, cz, 2, BlockType.MossWood);
+		b.set(cx, cg + 3, cz, BlockType.AncientCrackedStone);
 	}
 }

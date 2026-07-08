@@ -1,13 +1,17 @@
+import { BlockType } from "../../World/Texture/BlockType";
 import type { Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
 import type { IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 
+const LAVA = 24;
+const BASALT = BlockType.BasaltBlock;
+
 export class InfernalPitFeature implements IWorldFeature {
-	// pitTopY = -64 - random % 128 (-64..-192), pit extends downward 30+ cells.
+	// pitTopY = -64 - random % 128 (-64..-192), pit extends downward into a crater.
 	public readonly verticalBounds = {
 		minWorldY: -230,
-		maxWorldY: -50,
+		maxWorldY: 0,
 	};
 
 	public generate(
@@ -38,14 +42,16 @@ export class InfernalPitFeature implements IWorldFeature {
 
 		const { regionHash, centerX: px, centerZ: pz } = region;
 		const pitTopY = -64 - (Math.abs(Squirrel3.get(regionHash + 2, seed)) % 128);
-		const pitRadius = 8 + (Math.abs(Squirrel3.get(regionHash + 3, seed)) % 6);
+		const pitRadius = 7 + (Math.abs(Squirrel3.get(regionHash + 3, seed)) % 5);
+		const depth = 18 + (Math.abs(Squirrel3.get(regionHash + 4, seed)) % 12);
+		const rimRadius = pitRadius + 2;
 
 		const bounds = chunkWorldBounds(
 			generatingChunkX,
 			generatingChunkZ,
 			chunkSize,
 		);
-		const r = pitRadius + 2;
+		const r = rimRadius;
 		if (
 			!aabbOverlaps(
 				px - r,
@@ -60,23 +66,30 @@ export class InfernalPitFeature implements IWorldFeature {
 		)
 			return;
 
-		const radiusSq = pitRadius * pitRadius;
-		const rimRadiusSq = r * r;
+		const pitSq = pitRadius * pitRadius;
+		const rimSq = rimRadius * rimRadius;
 
 		for (let x = bounds.minX; x < bounds.maxX; x++) {
 			for (let z = bounds.minZ; z < bounds.maxZ; z++) {
 				const dx = x - px;
 				const dz = z - pz;
 				const distSq = dx * dx + dz * dz;
+				if (distSq > rimSq) continue;
 
-				if (distSq > rimRadiusSq) continue;
+				// bowl bottom: deepest at the centre
+				const bowl = Math.floor(depth * (1 - distSq / rimSq));
+				const bottomY = pitTopY - bowl;
 
-				for (let y = pitTopY; y <= 0; y++) {
-					if (distSq <= radiusSq) {
-						const blockId = y < -1536 ? 24 : 0;
-						placeBlock(x, y, z, blockId, true);
-					} else {
-						placeBlock(x, y, z, 81, true);
+				if (distSq <= pitSq) {
+					// inner crater: lava pool at the bottom, air above
+					const lavaTop = bottomY + 3;
+					for (let y = bottomY; y <= 0; y++) {
+						placeBlock(x, y, z, y <= lavaTop ? LAVA : 0, true);
+					}
+				} else {
+					// basalt crater rim wall
+					for (let y = bottomY; y <= 0; y++) {
+						placeBlock(x, y, z, BASALT, true);
 					}
 				}
 			}

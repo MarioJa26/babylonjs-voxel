@@ -87,8 +87,9 @@ const _meshData: {
 
 // OPFS mesh cache: chunkId (bigint) -> deserialized mesh pair from OPFS.
 // Populated by prefetchOpfsMeshes (called by ChunkProcessScheduler in parallel
-// with IDB voxel loads) and read by applyLoadedChunkFromSavedData. Cleared at
-// the start of each process cycle.
+// with IDB voxel loads) and read by applyLoadedChunkFromSavedData. Persists
+// across process cycles — prefetchOpfsMeshes skips reads for already-cached
+// entries to avoid redundant OPFS I/O when budget splitting causes re-entry.
 const opfsMeshCache = new Map<bigint, SelectedSavedMesh>();
 let opfsCacheHydratedThisCycle = 0;
 let opfsCacheMissedThisCycle = 0;
@@ -769,7 +770,7 @@ function applyLoadedChunkFromSavedData(
 async function prefetchOpfsMeshes(
 	requests: QueuedChunkRequest[],
 ): Promise<void> {
-	// Reset cycle counters; cache cleared in resetCycleOpfsCache().
+	// Reset cycle counters.
 	opfsCacheHydratedThisCycle = 0;
 	opfsCacheMissedThisCycle = 0;
 
@@ -780,6 +781,14 @@ async function prefetchOpfsMeshes(
 	for (const request of requests) {
 		const chunk = request.chunk;
 		const lod = request.desiredLod;
+
+		// Skip OPFS read if the mesh is already in cache (e.g., from a
+		// previous cycle that was budget-exceeded before apply).
+		if (opfsMeshCache.has(chunk.id)) {
+			opfsCacheHydratedThisCycle++;
+			continue;
+		}
+
 		const key = packChunkKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 		promises.push(
 			client
@@ -809,8 +818,18 @@ async function prefetchOpfsMeshes(
 }
 
 function resetCycleOpfsCache(): void {
-	if (opfsMeshCache.size > 0) {
-		opfsMeshCache.clear();
+	// The OPFS mesh cache is now persistent across cycles. PrefetchOpfsMeshes
+	// skips reads for already-cached entries, so re-entry is O(1).  We prune
+	// entries for chunks that are already loaded and no longer need the mesh
+	// prefetch path, preventing unbounded growth while keeping the cache
+	// warm for chunks that might be re-entered due to budget splitting.
+	if (opfsMeshCache.size > 256) {
+		for (const [id] of opfsMeshCache) {
+			const chunk = Chunk.chunkInstances.get(id);
+			if (chunk?.isLoaded) {
+				opfsMeshCache.delete(id);
+			}
+		}
 	}
 }
 

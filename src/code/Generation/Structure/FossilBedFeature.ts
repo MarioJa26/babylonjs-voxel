@@ -57,46 +57,55 @@ export class FossilBedFeature implements IWorldFeature {
 		const fossilY =
 			-50 - (Math.abs(Squirrel3.get(region.regionHash, seed)) % 150);
 		const numFossils =
-			3 + (Math.abs(Squirrel3.get(region.regionHash + 5, seed)) % 5);
+			3 + (Math.abs(Squirrel3.get(region.regionHash + 5, seed)) % 4);
 
 		for (let i = 0; i < numFossils; i++) {
-			const fX = fx + (Math.abs(Squirrel3.get(i * 13, seed)) % 11) - 5;
-			const fZ = fz + (Math.abs(Squirrel3.get(i * 17, seed)) % 11) - 5;
-			const fLen = 3 + (Math.abs(Squirrel3.get(i * 23, seed)) % 4);
+			const sx = fx + (Math.abs(Squirrel3.get(i * 13, seed)) % 11) - 5;
+			const sz = fz + (Math.abs(Squirrel3.get(i * 17, seed)) % 11) - 5;
+			const len = 4 + (Math.abs(Squirrel3.get(i * 23, seed)) % 5);
 			const dir = Math.abs(Squirrel3.get(i * 29, seed)) % 2;
+			const bone =
+				Math.abs(Squirrel3.get(i * 31, seed)) % 2 === 0
+					? BlockType.SaltBlock
+					: BlockType.Cobblestone03;
 
-			for (let l = 0; l < fLen; l++) {
-				const fossilBlock =
-					Math.abs(Squirrel3.get(i * 31 + l, seed)) % 2 === 0
-						? BlockType.SaltBlock
-						: BlockType.Cobblestone03;
+			// spine
+			for (let l = 0; l < len; l++) {
 				placeBlock(
-					fX + (dir === 0 ? l : 0),
+					sx + (dir === 0 ? l : 0),
 					fossilY,
-					fZ + (dir === 1 ? l : 0),
-					fossilBlock,
+					sz + (dir === 1 ? l : 0),
+					bone,
 					true,
 				);
 			}
+			// skull at the head end
+			const hx = sx + (dir === 0 ? len : 0);
+			const hz = sz + (dir === 1 ? len : 0);
+			placeBlock(hx, fossilY, hz, BlockType.Cobblestone03, true);
+			placeBlock(hx, fossilY + 1, hz, BlockType.Cobblestone03, true);
 
-			const ribCount = 2 + (Math.abs(Squirrel3.get(i * 37, seed)) % 3);
-			for (let r = 0; r < ribCount; r++) {
-				const rOffset =
-					1 + (Math.abs(Squirrel3.get(i * 41 + r, seed)) % (fLen - 1));
-				placeBlock(
-					fX + (dir === 0 ? rOffset : 0),
-					fossilY + 1,
-					fZ + (dir === 1 ? rOffset : 0),
-					BlockType.SaltBlock,
-					true,
-				);
+			// rib cage: symmetric arches along the spine
+			const ribs = 2 + (Math.abs(Squirrel3.get(i * 37, seed)) % 3);
+			for (let r = 0; r < ribs; r++) {
+				const off = 1 + (Math.abs(Squirrel3.get(i * 41 + r, seed)) % (len - 1));
+				const bx = sx + (dir === 0 ? off : 0);
+				const bz = sz + (dir === 1 ? off : 0);
+				const spread = 2;
+				for (let k = 1; k <= spread; k++) {
+					placeBlock(bx - k, fossilY + 1, bz, bone, true);
+					placeBlock(bx + k, fossilY + 1, bz, bone, true);
+					placeBlock(bx - k, fossilY + 2, bz, bone, true);
+					placeBlock(bx + k, fossilY + 2, bz, bone, true);
+				}
 			}
 		}
 
+		// scattered loose bones in the sediment
 		for (let dx = -4; dx <= 4; dx++) {
 			for (let dz = -4; dz <= 4; dz++) {
 				if (
-					Math.abs(Squirrel3.get(fx + dx * 7 + fz + dz * 11, seed)) % 4 ===
+					Math.abs(Squirrel3.get(fx + dx * 7 + fz + dz * 11, seed)) % 5 ===
 					0
 				) {
 					placeBlock(fx + dx, fossilY - 1, fz + dz, BlockType.SaltBlock, true);

@@ -83,6 +83,14 @@ export function deserializeMesh(bytes: Uint8Array): MeshData {
  *   [oData: oLen bytes (only if hasOpaque)]
  *   [tData: tLen bytes (only if hasTransparent)]
  */
+/**
+ * Bump this when the mesh on-disk format changes. Stale meshes written with an
+ * older version are discarded on read and re-meshed in the worker, which is
+ * essential after fixes that change how blocks are meshed (e.g. grass crosses
+ * were previously cached as full cubes before shape JSON finished loading).
+ */
+const MESH_FORMAT_VERSION = 2;
+
 export function serializeMeshPair(
 	opaque: MeshData | null | undefined,
 	transparent: MeshData | null | undefined,
@@ -92,14 +100,15 @@ export function serializeMeshPair(
 	if (!o && !t) return null;
 	const oLen = o?.length ?? 0;
 	const tLen = t?.length ?? 0;
-	const total = 10 + oLen + tLen;
+	const total = 11 + oLen + tLen;
 	const out = new Uint8Array(total);
-	out[0] = o ? 1 : 0;
-	out[1] = t ? 1 : 0;
-	writeU32LE(out, 2, oLen);
-	writeU32LE(out, 6, tLen);
-	if (o) out.set(o, 10);
-	if (t) out.set(t, 10 + oLen);
+	out[0] = MESH_FORMAT_VERSION;
+	out[1] = o ? 1 : 0;
+	out[2] = t ? 1 : 0;
+	writeU32LE(out, 3, oLen);
+	writeU32LE(out, 7, tLen);
+	if (o) out.set(o, 11);
+	if (t) out.set(t, 11 + oLen);
 	return out;
 }
 
@@ -116,22 +125,28 @@ export type DeserializedMeshPair = {
 export function deserializeMeshPair(
 	bytes: Uint8Array,
 	lod: number,
-): DeserializedMeshPair {
-	if (bytes.byteLength < 10) {
+): DeserializedMeshPair | null {
+	if (bytes.byteLength < 11) {
 		throw new Error("Invalid mesh pair: too short");
 	}
 	const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-	const hasO = dv.getUint8(0) !== 0;
-	const hasT = dv.getUint8(1) !== 0;
-	const oLen = dv.getUint32(2, true);
-	const tLen = dv.getUint32(6, true);
-	const total = 10 + oLen + tLen;
+	const version = dv.getUint8(0);
+	if (version !== MESH_FORMAT_VERSION) {
+		// Stale/unsupported mesh (e.g. a cube cached before shape JSON loaded).
+		// Returning null makes the caller fall back to a fresh worker re-mesh.
+		return null;
+	}
+	const hasO = dv.getUint8(1) !== 0;
+	const hasT = dv.getUint8(2) !== 0;
+	const oLen = dv.getUint32(3, true);
+	const tLen = dv.getUint32(7, true);
+	const total = 11 + oLen + tLen;
 	if (total > bytes.byteLength) {
 		throw new Error(
 			`Invalid mesh pair: declared ${total} bytes, got ${bytes.byteLength}`,
 		);
 	}
-	let off = 10;
+	let off = 11;
 	let opaque: MeshData | null = null;
 	let transparent: MeshData | null = null;
 	if (hasO && oLen > 0) {

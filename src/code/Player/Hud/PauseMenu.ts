@@ -220,6 +220,172 @@ export class PauseMenu {
 
 		initialized = true;
 
+		const lodHeader = document.createElement("div");
+		lodHeader.className = "collapsible-header";
+		const lodHeaderText = document.createElement("span");
+		lodHeaderText.innerText = "LOD Settings";
+		const lodArrow = document.createElement("span");
+		lodArrow.className = "collapsible-arrow";
+		lodArrow.innerText = "▸";
+		lodHeader.appendChild(lodHeaderText);
+		lodHeader.appendChild(lodArrow);
+
+		const lodSection = document.createElement("div");
+		lodSection.style.display = "none";
+
+		lodHeader.onclick = () => {
+			const open = lodSection.style.display === "none";
+			lodSection.style.display = open ? "block" : "none";
+			lodArrow.innerText = open ? "▾" : "▸";
+		};
+
+		this.createSlider(
+			lodSection,
+			"Vertical Render Distance",
+			1,
+			20,
+			SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
+			(value) => {
+				SETTING_PARAMS.VERTICAL_RENDER_DISTANCE = value;
+				return `${value} chunks`;
+			},
+		);
+
+		this.createSlider(
+			lodSection,
+			"LOD 0 Offset",
+			0,
+			10,
+			SETTING_PARAMS.LOD_0_OFFSET,
+			(value) => {
+				SETTING_PARAMS.LOD_0_OFFSET = value;
+				return `${value}`;
+			},
+		);
+
+		this.createSlider(
+			lodSection,
+			"LOD 1 Offset",
+			0,
+			10,
+			SETTING_PARAMS.LOD_1_OFFSET,
+			(value) => {
+				SETTING_PARAMS.LOD_1_OFFSET = value;
+				return `${value}`;
+			},
+		);
+
+		this.createSlider(
+			lodSection,
+			"LOD 2 Offset",
+			0,
+			10,
+			SETTING_PARAMS.LOD_2_OFFSET,
+			(value) => {
+				SETTING_PARAMS.LOD_2_OFFSET = value;
+				return `${value}`;
+			},
+		);
+
+		this.createSlider(
+			lodSection,
+			"LOD 3 Offset",
+			0,
+			10,
+			SETTING_PARAMS.LOD_3_OFFSET,
+			(value) => {
+				SETTING_PARAMS.LOD_3_OFFSET = value;
+				return `${value}`;
+			},
+		);
+
+		this.createSlider(
+			lodSection,
+			"LOD V0 Offset",
+			0,
+			10,
+			SETTING_PARAMS.LOD_VERTICAL_0_OFFSET,
+			(value) => {
+				SETTING_PARAMS.LOD_VERTICAL_0_OFFSET = value;
+				return `${value}`;
+			},
+		);
+
+		this.createSlider(
+			lodSection,
+			"LOD V1 Offset",
+			0,
+			10,
+			SETTING_PARAMS.LOD_VERTICAL_1_OFFSET,
+			(value) => {
+				SETTING_PARAMS.LOD_VERTICAL_1_OFFSET = value;
+				return `${value}`;
+			},
+		);
+
+		this.createSlider(
+			lodSection,
+			"LOD V2 Offset",
+			0,
+			10,
+			SETTING_PARAMS.LOD_VERTICAL_2_OFFSET,
+			(value) => {
+				SETTING_PARAMS.LOD_VERTICAL_2_OFFSET = value;
+				return `${value}`;
+			},
+		);
+
+		this.createSlider(
+			lodSection,
+			"LOD V3 Offset",
+			0,
+			10,
+			SETTING_PARAMS.LOD_VERTICAL_3_OFFSET,
+			(value) => {
+				SETTING_PARAMS.LOD_VERTICAL_3_OFFSET = value;
+				return `${value}`;
+			},
+		);
+
+		this.createSlider(
+			lodSection,
+			"Precompute H Offset",
+			0,
+			30,
+			SETTING_PARAMS.LOD_PRECOMPUTE_HORIZONTAL_OFFSET,
+			(value) => {
+				SETTING_PARAMS.LOD_PRECOMPUTE_HORIZONTAL_OFFSET = value;
+				return `${value}`;
+			},
+		);
+
+		this.createSlider(
+			lodSection,
+			"Precompute V Offset",
+			0,
+			15,
+			SETTING_PARAMS.LOD_PRECOMPUTE_VERTICAL_OFFSET,
+			(value) => {
+				SETTING_PARAMS.LOD_PRECOMPUTE_VERTICAL_OFFSET = value;
+				return `${value}`;
+			},
+		);
+
+		this.createSlider(
+			lodSection,
+			"Distant Render Dist",
+			32,
+			256,
+			SETTING_PARAMS.DISTANT_RENDER_DISTANCE,
+			(value) => {
+				SETTING_PARAMS.DISTANT_RENDER_DISTANCE = value;
+				return `${value} chunks`;
+			},
+		);
+
+		container.appendChild(lodHeader);
+		container.appendChild(lodSection);
+
 		// --- SSAO Toggle ---
 		const ssaoToggleLabel = document.createElement("label");
 		ssaoToggleLabel.style.display = "flex";
@@ -404,6 +570,28 @@ export class PauseMenu {
       .slider-container input[type="range"] {
         grid-column: 1 / 3;
         width: 100%;
+      }
+      .collapsible-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        width: 100%;
+        font-weight: bold;
+        margin-top: 15px;
+        padding: 5px 0;
+        border-bottom: 1px solid #777;
+        cursor: pointer;
+        user-select: none;
+      }
+      .collapsible-header:hover {
+        color: #ccc;
+      }
+      .collapsible-arrow {
+        font-size: 0.8em;
+      }
+      #settingsContainer {
+        max-height: 80vh;
+        overflow-y: auto;
       }
     `;
 		document.head.appendChild(style);

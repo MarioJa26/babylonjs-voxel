@@ -28,14 +28,14 @@ export function serializeVoxelData(
 	compressed: boolean | undefined,
 ): Uint8Array {
 	const chunks: Uint8Array[] = [];
-	let totalLen = 1; // flags byte
+	let totalLen = 2; // 2-byte flags (byte 0 = feature flags, byte 1 = format version)
 
-	let flags = 0;
-	if (blocks) flags |= FLAG_HAS_BLOCKS;
-	if (palette) flags |= FLAG_HAS_PALETTE;
-	if (isUniform) flags |= FLAG_IS_UNIFORM;
-	if (lightArray) flags |= FLAG_HAS_LIGHT;
-	if (compressed) flags |= FLAG_COMPRESSED;
+	let flags1 = 0;
+	if (blocks) flags1 |= FLAG_HAS_BLOCKS;
+	if (palette) flags1 |= FLAG_HAS_PALETTE;
+	if (isUniform) flags1 |= FLAG_IS_UNIFORM;
+	if (lightArray) flags1 |= FLAG_HAS_LIGHT;
+	if (compressed) flags1 |= FLAG_COMPRESSED;
 
 	if (isUniform) {
 		const u16 = new Uint8Array(2);
@@ -81,8 +81,9 @@ export function serializeVoxelData(
 	}
 
 	const result = new Uint8Array(totalLen);
-	result[0] = flags;
-	let offset = 1;
+	result[0] = flags1;
+	result[1] = 0; // format version (reserved)
+	let offset = 2;
 	for (const c of chunks) {
 		result.set(c, offset);
 		offset += c.byteLength;
@@ -92,14 +93,14 @@ export function serializeVoxelData(
 
 /** Deserialize voxel data from an OPFS binary blob. */
 export function deserializeVoxelData(data: Uint8Array): SavedChunkData {
-	if (data.byteLength < 1) {
+	if (data.byteLength < 2) {
 		return { blocks: null, compressed: false };
 	}
-	const flags = data[0]!;
+	const flags = data[0];
 	const isUniform = !!(flags & FLAG_IS_UNIFORM);
 	const compressed = !!(flags & FLAG_COMPRESSED);
 
-	let offset = 1;
+	let offset = 2;
 
 	let uniformBlockId: number | undefined;
 	if (isUniform) {
@@ -120,10 +121,9 @@ export function deserializeVoxelData(data: Uint8Array): SavedChunkData {
 		).getUint32(0, true);
 		offset += 4;
 		const raw = new Uint8Array(data.buffer, data.byteOffset + offset, len);
-		// Blocks are stored as bytes. If not compressed and expected size matches
-		// Uint16Array, return as Uint16Array.
 		if (!compressed && len === 65536) {
-			blocks = new Uint16Array(raw.buffer, raw.byteOffset, len >>> 1);
+			const aligned = raw.byteOffset % 2 === 0 ? raw : new Uint8Array(raw);
+			blocks = new Uint16Array(aligned.buffer, aligned.byteOffset, len >>> 1);
 		} else {
 			blocks = new Uint8Array(raw);
 		}
@@ -143,7 +143,12 @@ export function deserializeVoxelData(data: Uint8Array): SavedChunkData {
 			data.byteOffset + offset,
 			count * 2,
 		);
-		palette = new Uint16Array(raw.buffer, raw.byteOffset, count);
+		const alignedPalette = raw.byteOffset % 2 === 0 ? raw : new Uint8Array(raw);
+		palette = new Uint16Array(
+			alignedPalette.buffer,
+			alignedPalette.byteOffset,
+			count,
+		);
 		offset += count * 2;
 	}
 

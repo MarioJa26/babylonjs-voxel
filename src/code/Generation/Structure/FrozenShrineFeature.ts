@@ -1,21 +1,22 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { StructureBuilder } from "./StructureBuilder";
 
 const COLD_BIOMES = new Set([
-	BIOME_ID.ICE_SPIKES,
+	BIOME_ID.SNOWY_PLAINS,
+	BIOME_ID.TUNDRA,
+	BIOME_ID.FROZEN_TUNDRA_PLAINS,
 	BIOME_ID.GLACIER,
-	BIOME_ID.TUNDRA_MOUNTAINS,
+	BIOME_ID.ICE_SPIKES,
 	BIOME_ID.FROZEN_OCEAN,
-	BIOME_ID.AURORA_TUNDRA,
 ]);
 
 export class FrozenShrineFeature implements IWorldFeature {
 	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 200 };
-	public readonly maxAboveSurface = 20;
+	public readonly maxAboveSurface = 10;
 
 	public generate(
 		chunkX: number,
@@ -39,26 +40,26 @@ export class FrozenShrineFeature implements IWorldFeature {
 
 		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
 			regionSize: 14,
-			magicA: 5078901234,
-			magicB: 445566778,
+			magicA: 282828001,
+			magicB: 494949845,
 			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;
 
-		const { centerX: sx, centerZ: sz } = region;
+		const { centerX: cx, centerZ: cz, regionHash } = region;
+		const radius = 4;
 		const bounds = chunkWorldBounds(
 			generatingChunkX,
 			generatingChunkZ,
 			chunkSize,
 		);
-
 		if (
 			!aabbOverlaps(
-				sx - 6,
-				sx + 6,
-				sz - 6,
-				sz + 6,
+				cx - radius,
+				cx + radius,
+				cz - radius,
+				cz + radius,
 				bounds.minX,
 				bounds.maxX,
 				bounds.minZ,
@@ -67,60 +68,23 @@ export class FrozenShrineFeature implements IWorldFeature {
 		)
 			return;
 
-		let groundHeight: number;
-		if (columnPrepassResolver) {
-			const resolved = columnPrepassResolver(sx, sz);
-			groundHeight =
-				resolved.entry.terrainHeightMap[resolved.localX + resolved.localZ * 32];
-		} else {
-			groundHeight = getFinalTerrainHeight(sx, sz);
+		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
+
+		// ring of ice pillars
+		const pillars = 6 + (Math.abs(Squirrel3.get(regionHash, seed)) % 3);
+		for (let i = 0; i < pillars; i++) {
+			const angle = (i / pillars) * Math.PI * 2;
+			const px = Math.round(cx + Math.cos(angle) * radius);
+			const pz = Math.round(cz + Math.sin(angle) * radius);
+			const pg = b.ground(px, pz);
+			const h = 4 + (Math.abs(Squirrel3.get(i * 91, seed)) % 3);
+			b.column(px, pg, pz, h, BlockType.GlacierIce);
 		}
 
-		for (let dx = -3; dx <= 3; dx++) {
-			for (let dz = -3; dz <= 3; dz++) {
-				placeBlock(sx + dx, groundHeight, sz + dz, BlockType.GlacierIce, true);
-			}
-		}
-
-		const pillarPositions: [number, number][] = [
-			[-2, -2],
-			[2, -2],
-			[-2, 2],
-			[2, 2],
-		];
-		for (const [px, pz] of pillarPositions) {
-			const h =
-				4 + (Math.abs(Squirrel3.get((sx + px) * 13 + (sz + pz) * 7, seed)) % 3);
-			for (let y = 1; y <= h; y++) {
-				placeBlock(
-					sx + px,
-					groundHeight + y,
-					sz + pz,
-					BlockType.CrystalBlock,
-					true,
-				);
-			}
-			placeBlock(
-				sx + px,
-				groundHeight + h + 1,
-				sz + pz,
-				BlockType.ExposedCrystalBlock,
-				true,
-			);
-		}
-
-		placeBlock(sx, groundHeight + 1, sz, BlockType.ExposedCrystalBlock, true);
-		placeBlock(sx, groundHeight + 2, sz, BlockType.CrystalBlock, true);
-
-		for (let i = 0; i < 6; i++) {
-			const angle = (i / 6) * Math.PI * 2;
-			const ix = Math.floor(sx + Math.cos(angle) * 5);
-			const iz = Math.floor(sz + Math.sin(angle) * 5);
-			const icicleHeight =
-				2 + (Math.abs(Squirrel3.get(ix * 11 + iz * 23, seed)) % 3);
-			for (let y = 0; y < icicleHeight; y++) {
-				placeBlock(ix, groundHeight + y, iz, BlockType.IceBlock, true);
-			}
-		}
+		// central altar
+		const cg = b.ground(cx, cz);
+		b.disc(cx, cg, cz, 1, BlockType.Cobblestone03);
+		b.column(cx, cg + 1, cz, 2, BlockType.CrystalBlock);
+		b.set(cx, cg + 3, cz, BlockType.Glass01);
 	}
 }

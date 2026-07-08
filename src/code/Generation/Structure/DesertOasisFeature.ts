@@ -1,20 +1,20 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
+import { StructureBuilder } from "./StructureBuilder";
 
 const HOT_BIOMES = new Set([
 	BIOME_ID.DESERT,
 	BIOME_ID.DUNE_SEA,
-	BIOME_ID.OASIS,
-	BIOME_ID.SCORCHED_SAVANNAH,
-	BIOME_ID.DUST_BOWL,
+	BIOME_ID.SAVANNAH,
+	BIOME_ID.CRACKED_EARTH,
 ]);
 
 export class DesertOasisFeature implements IWorldFeature {
-	public readonly verticalBounds = { minWorldY: -10, maxWorldY: 200 };
+	public readonly verticalBounds = { minWorldY: -20, maxWorldY: 200 };
+	public readonly maxAboveSurface = 10;
 
 	public generate(
 		chunkX: number,
@@ -37,29 +37,27 @@ export class DesertOasisFeature implements IWorldFeature {
 		if (!HOT_BIOMES.has(biome.id)) return;
 
 		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 14,
-			magicA: 3545678901,
-			magicB: 212223242,
+			regionSize: 16,
+			magicA: 393939001,
+			magicB: 606060845,
 			spawnChance: 90,
 			earlyReturn: false,
 		});
 		if (!region) return;
 
-		const { centerX: ox, centerZ: oz } = region;
+		const { centerX: cx, centerZ: cz, regionHash } = region;
+		const radius = 4;
 		const bounds = chunkWorldBounds(
 			generatingChunkX,
 			generatingChunkZ,
 			chunkSize,
 		);
-		const poolRadius =
-			5 + (Math.abs(Squirrel3.get(region.regionHash, seed)) % 3);
-
 		if (
 			!aabbOverlaps(
-				ox - poolRadius - 4,
-				ox + poolRadius + 4,
-				oz - poolRadius - 4,
-				oz + poolRadius + 4,
+				cx - radius - 2,
+				cx + radius + 2,
+				cz - radius - 2,
+				cz + radius + 2,
 				bounds.minX,
 				bounds.maxX,
 				bounds.minZ,
@@ -68,48 +66,26 @@ export class DesertOasisFeature implements IWorldFeature {
 		)
 			return;
 
-		let groundHeight: number;
-		if (columnPrepassResolver) {
-			const resolved = columnPrepassResolver(ox, oz);
-			groundHeight =
-				resolved.entry.terrainHeightMap[resolved.localX + resolved.localZ * 32];
-		} else {
-			groundHeight = getFinalTerrainHeight(ox, oz);
-		}
+		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
 
-		const radiusSq = poolRadius * poolRadius;
-		for (let dx = -poolRadius; dx <= poolRadius; dx++) {
-			for (let dz = -poolRadius; dz <= poolRadius; dz++) {
-				if (dx * dx + dz * dz > radiusSq) continue;
-				placeBlock(ox + dx, groundHeight - 1, oz + dz, BlockType.Water, true);
-			}
-		}
+		// water pool
+		const cg = b.ground(cx, cz);
+		b.disc(cx, cg - 1, cz, radius, BlockType.Water);
+		b.disc(cx, cg - 2, cz, radius - 1, BlockType.Water);
+		// sandy rim
+		b.ring(cx, cg, cz, radius + 1, BlockType.GravellySand);
 
-		const numPalms =
-			3 + (Math.abs(Squirrel3.get(region.regionHash + 5, seed)) % 3);
-		for (let i = 0; i < numPalms; i++) {
-			const angle = (i / numPalms) * Math.PI * 2 + 0.5;
-			const dist = poolRadius + 1 + (Math.abs(Squirrel3.get(i * 41, seed)) % 2);
-			const palmX = Math.floor(ox + Math.cos(angle) * dist);
-			const palmZ = Math.floor(oz + Math.sin(angle) * dist);
-			const trunkHeight = 5 + (Math.abs(Squirrel3.get(i * 67, seed)) % 4);
-
-			for (let y = 0; y < trunkHeight; y++) {
-				placeBlock(palmX, groundHeight + y, palmZ, BlockType.PalmTrunk, true);
-			}
-
-			for (let dx = -2; dx <= 2; dx++) {
-				for (let dz = -2; dz <= 2; dz++) {
-					if (dx * dx + dz * dz > 5) continue;
-					placeBlock(
-						palmX + dx,
-						groundHeight + trunkHeight,
-						palmZ + dz,
-						BlockType.PalmLeaves,
-						true,
-					);
-				}
-			}
+		// palms around the rim
+		const palms = 3 + (Math.abs(Squirrel3.get(regionHash, seed)) % 3);
+		for (let i = 0; i < palms; i++) {
+			const angle = (i / palms) * Math.PI * 2 + 0.5;
+			const tx = Math.round(cx + Math.cos(angle) * (radius + 1));
+			const tz = Math.round(cz + Math.sin(angle) * (radius + 1));
+			const tg = b.ground(tx, tz);
+			const h = 4 + (Math.abs(Squirrel3.get(i * 57, seed)) % 3);
+			b.column(tx, tg, tz, h, BlockType.PalmTrunk);
+			b.disc(tx, tg + h, tz, 2, BlockType.PalmLeaves);
+			b.disc(tx, tg + h + 1, tz, 1, BlockType.PalmLeaves);
 		}
 	}
 }
