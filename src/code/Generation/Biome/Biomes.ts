@@ -213,7 +213,7 @@ export function getBiomeFor(
 	*/
 
 	// ── Shore band above water ────────────────────────────────────────────────
-	if (continentalness < -0.15) {
+	if (continentalness < -0.2) {
 		if (temperature < 0.25) return TIDAL_FLATS;
 		if (temperature < 0.4) return ROCKY_SHORE;
 		return SANDY_SHORE;

@@ -27,11 +27,12 @@ export class OpaqueShader {
         // Varyings
         out vec2 vUV;
         flat out vec2 vUV2;
+        out vec3 vPositionW;
         flat out mat3 vTBN;
         out float vAO;
         flat out float vSkyLight;
         flat out float vBlockLight;
-        flat out vec3 vViewDir;
+        out vec3 vViewDir;
 
         int decodeCorner(int vertexId, int isBackFace, int flip) {
             const int cornerData[4] = int[](
@@ -53,6 +54,7 @@ export class OpaqueShader {
         vec2 getQuadCornerUV(int i) {
             return vec2(float((i ^ (i >> 1)) & 1), float(i >> 1));
         }
+
         const int U_AXIS[3] = int[](1, 2, 0);
         const int V_AXIS[3] = int[](2, 0, 1);
 
@@ -190,8 +192,9 @@ export class OpaqueShader {
 
             vUV2 = vec2(faceDataB.z, atlasMaxTiles - 1.0 - faceDataB.w) * atlasTileSize;
 
+            vPositionW = localPosition + world[3].xyz;
             vTBN = mat3(T, B, N);
-            vViewDir = normalize(cameraPosition - localPosition - world[3].xyz);
+            vViewDir = normalize(cameraPosition - vPositionW);
 
             int packedAO = int(faceDataC.x + 0.5);
             vAO = float((packedAO >> (corner << 1)) & 3);
@@ -208,11 +211,12 @@ export class OpaqueShader {
 
     in vec2 vUV;
     flat in vec2 vUV2;
+    in vec3 vPositionW;
     flat in mat3 vTBN;
     in float vAO;
     flat in float vSkyLight;
     flat in float vBlockLight;
-    flat in vec3 vViewDir;
+    in vec3 vViewDir;
 
     uniform sampler2D diffuseTexture;
     uniform sampler2D normalTexture;
