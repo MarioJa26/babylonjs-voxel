@@ -11,9 +11,7 @@ export interface ChunkProcessSchedulerAdapter {
 	getUnloadBatchSize(): number;
 	getProcessFrameBudgetMs(): number;
 
-	getDesiredState(
-		chunkId: bigint,
-	): { desiredLod: number; revision: number } | undefined;
+	getDesiredState(chunkId: bigint): number | undefined;
 
 	unloadChunkBoundEntitiesForChunk(chunk: Chunk): Promise<void>;
 
@@ -307,9 +305,9 @@ export class ChunkProcessScheduler {
 							const desired = this.adapter.getDesiredState(request.chunk.id);
 
 							if (
-								!desired ||
-								desired.revision !== request.revision ||
-								desired.desiredLod !== request.desiredLod
+								desired === undefined ||
+								desired >> 3 !== request.revision ||
+								(desired & 0b111) !== request.desiredLod
 							) {
 								continue;
 							}

@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-09T16:18:29.661Z
+Generated: 2026-07-09T18:56:46.438Z
 
-> **Summary:** 133 classes · 2302 members · 500 module-level functions · 47144 LOC
+> **Summary:** 133 classes · 2303 members · 502 module-level functions · 47098 LOC
 
 ---
 
@@ -3632,7 +3632,7 @@ Generated: 2026-07-09T16:18:29.661Z
 
 ---
 
-## `World/Chunk/Chunk.ts` (1228 LOC)
+## `World/Chunk/Chunk.ts` (1267 LOC)
 
 ### export class Chunk
 
@@ -3641,12 +3641,13 @@ Generated: 2026-07-09T16:18:29.661Z
 
 **Properties**
 - `public readonly id: bigint`
-- `public readonly neighborIds: readonly bigint[]`
+- `private _neighborIds: bigint[] | null`
 - `public lodLevel: unknown`
 - `public static readonly SIZE: unknown`
 - `public static readonly SIZE2: unknown`
 - `public static readonly SIZE3: unknown`
 - `public static readonly chunkInstances: unknown`
+- `static _chunkByCoords: unknown`
 - `public static readonly loadedChunks: unknown`
 - `public static readonly loadedChunkIndex: unknown`
 - `public isModified: unknown`
@@ -3725,6 +3726,7 @@ Generated: 2026-07-09T16:18:29.661Z
 - `get isUniform(): boolean`
 - `get uniformBlockId(): number`
 - `get hasVoxelData(): boolean`
+- `public get neighborIds(): readonly bigint[]`
 
 **Methods**
 - `public static initLightHeader(): SharedArrayBuffer`
@@ -3785,6 +3787,8 @@ Generated: 2026-07-09T16:18:29.661Z
 - `export function addChunkDisposeHook(hook: ChunkDisposeHook): void`
 - `function runChunkDisposeHooks(chunk: Chunk): void`
 - `export function getChunk(cx: number, cy: number, cz: number): Chunk | undefined`
+- `function _setByCoords(c: Chunk): void`
+- `function _deleteByCoords(c: Chunk): void`
 
 **Types / Interfaces / Enums**
 - type `CachedLODMesh`
@@ -3809,7 +3813,7 @@ Generated: 2026-07-09T16:18:29.661Z
 
 ---
 
-## `World/Chunk/ChunkLoadingSystem.ts` (837 LOC)
+## `World/Chunk/ChunkLoadingSystem.ts` (838 LOC)
 
 **Module-level functions**
 - `function isEntityAlive(entity: ChunkBoundEntity): boolean`
@@ -4508,7 +4512,7 @@ Generated: 2026-07-09T16:18:29.661Z
 
 ---
 
-## `World/Chunk/Loading/ChunkProcessScheduler.ts` (420 LOC)
+## `World/Chunk/Loading/ChunkProcessScheduler.ts` (418 LOC)
 
 ### export class ChunkProcessScheduler
 
@@ -4596,7 +4600,7 @@ Generated: 2026-07-09T16:18:29.661Z
 
 ---
 
-## `World/Chunk/Loading/ChunkStreamingController.ts` (836 LOC)
+## `World/Chunk/Loading/ChunkStreamingController.ts` (812 LOC)
 
 ### export class ChunkStreamingController
 
@@ -4615,23 +4619,13 @@ Generated: 2026-07-09T16:18:29.661Z
 - `private _cachedCaveLodRuleSet: ChunkLodRuleSet | null`
 - `private _cachedOutdoorLodRuleSet: ChunkLodRuleSet | null`
 - `private _ruleSetGeneration: unknown`
-- `private _lastRefreshDecision: Map<
-		bigint,
-		{
-			playerX: number;
-			playerY: number;
-			playerZ: number;
-			ruleRev: number;
-			chunkLod: number;
-			decisionLod: number;
-		}
-	>`
+- `private _refreshCache: unknown`
 - `private _lastCaveState: boolean | null`
 - `private _lastRenderDistance: unknown`
 - `private _lastVerticalRadius: unknown`
 
 **Methods**
-- `public getDesiredState(chunkId: bigint): DesiredChunkState | undefined`
+- `public getDesiredState(chunkId: bigint): number | undefined`
 - `public async updateChunksAround(chunkX: number, chunkY: number, chunkZ: number, renderDistance: unknown = SETTING_PARAMS.RENDER_DISTANCE, verticalRadius: unknown = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE, prevChunkX?: number, prevChunkY?: number, prevChunkZ?: number, playerWorldX?: number, playerWorldZ?: number): Promise<void>`
 - `private enqueueLoadedChunksForRefresh(chunkX: number, chunkY: number, chunkZ: number, lodRuleSet: ChunkLodRuleSet): void`
 - `public processLoadedRefreshQueue(playerChunkX: number, playerChunkY: number, playerChunkZ: number, renderDistance: unknown = SETTING_PARAMS.RENDER_DISTANCE, verticalRadius: unknown = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE, maxChunks: unknown = SETTING_PARAMS.CHUNK_LOAD_BATCH_LIMIT): void`
@@ -4648,13 +4642,12 @@ Generated: 2026-07-09T16:18:29.661Z
 - `private computePriority(chunk: Chunk, desiredLod: number, playerChunkX: number, playerChunkY: number, playerChunkZ: number): number`
 
 **Module-level functions**
-- `function _chunkDist(chunkX: number, chunkY: number, chunkZ: number, centerX: number, centerY: number, centerZ: number): { hDist: number; vDist: number }`
 - `function chunkDistScratch(chunkX: number, chunkY: number, chunkZ: number, centerX: number, centerY: number, centerZ: number): { hDist: number; vDist: number }`
+- `function packOffsetKey(rx: number, ry: number, rz: number, chunkLod: number): number`
 
 **Types / Interfaces / Enums**
 - interface `ChunkStreamingControllerAdapter`
 - type `QueuedChunkRequest`
-- type `DesiredChunkState`
 
 ---
 
@@ -4727,7 +4720,7 @@ Generated: 2026-07-09T16:18:29.661Z
 
 ---
 
-## `World/Chunk/LOD/ChunkLodRules.ts` (233 LOC)
+## `World/Chunk/LOD/ChunkLodRules.ts` (249 LOC)
 
 ### export class Lod0ChunkCreationRule implements ChunkLodCreationRule
 
@@ -4795,10 +4788,9 @@ Generated: 2026-07-09T16:18:29.661Z
 
 **Methods**
 - `public static fromRenderRadii(renderDistance: number, verticalRadius: number, revision: number = 0): ChunkLodRuleSet`
-- `private resolveWithDistance(distance: ChunkLodDistance): ChunkLodDecision`
+- `private resolveWithDistance(horizontalDist: number, verticalDist: number): ChunkLodDecision`
 - `public resolve(target: ChunkLodCoordinates, player: ChunkLodCoordinates): ChunkLodDecision`
-- `private measureDistance(target: ChunkLodCoordinates, player: ChunkLodCoordinates): ChunkLodDistance`
-- `public resolveWithHysteresis(target: ChunkLodCoordinates, player: ChunkLodCoordinates, previousLod: number | null | undefined): ChunkLodDecision`
+- `public resolveWithHysteresis(targetX: number, targetY: number, targetZ: number, playerX: number, playerY: number, playerZ: number, previousLod: number | null | undefined): ChunkLodDecision`
 
 **Types / Interfaces / Enums**
 - interface `ChunkLodCreationRule`
@@ -5225,7 +5217,7 @@ Generated: 2026-07-09T16:18:29.661Z
 
 ---
 
-## `World/MeshPipeline/core/CustomShapeEmitter.ts` (626 LOC)
+## `World/MeshPipeline/core/CustomShapeEmitter.ts` (573 LOC)
 
 **Module-level functions**
 - `function parseBlockInto(packed: number, out: ParsedBlock): void`
@@ -5335,7 +5327,7 @@ Generated: 2026-07-09T16:18:29.661Z
 
 ---
 
-## `World/MeshPipeline/core/VoxelFaceEmitterAdapter.ts` (402 LOC)
+## `World/MeshPipeline/core/VoxelFaceEmitterAdapter.ts` (378 LOC)
 
 ### export class VoxelFaceEmitterAdapter
 
@@ -5348,7 +5340,7 @@ Generated: 2026-07-09T16:18:29.661Z
 
 **Module-level functions**
 - `function needsRawDim(blockId: number, width: number, height: number): boolean`
-- `function inlineOrigin(axis: number, isBackFace: boolean, desc: GreedyFaceDescriptor): { ox: number; oy: number; oz: number }`
+- `function inlineOrigin(axis: number, back: number, desc: GreedyFaceDescriptor): { ox: number; oy: number; oz: number }`
 - `function emitCubeWrap(a: VoxelFaceEmitterAdapter, out: WorkerInternalMeshData, axis: number, desc: GreedyFaceDescriptor, _packed: number, blockId: number, back: number, light: number, ao: number, faceName: FaceName, _faceBit: number): void`
 - `function emitWaterWrap(a: VoxelFaceEmitterAdapter, out: WorkerInternalMeshData, axis: number, desc: GreedyFaceDescriptor, packedBlock: number, blockId: number, back: number, light: number, ao: number, faceName: FaceName, _faceBit: number): void`
 - `function emitCustomWrap(a: VoxelFaceEmitterAdapter, out: WorkerInternalMeshData, axis: number, desc: GreedyFaceDescriptor, packedBlock: number, blockId: number, back: number, light: number, ao: number, faceName: FaceName, faceBit: number): void`
@@ -5437,7 +5429,7 @@ Generated: 2026-07-09T16:18:29.661Z
 
 ---
 
-## `World/MeshPipeline/core/WorkerMeshHelpers.ts` (189 LOC)
+## `World/MeshPipeline/core/WorkerMeshHelpers.ts` (191 LOC)
 
 **Module-level functions**
 - `export function createEmptyWorkerInternalMeshData(): WorkerInternalMeshData`
@@ -5853,7 +5845,7 @@ Generated: 2026-07-09T16:18:29.661Z
 
 ---
 
-## `World/Texture/FaceName.ts` (24 LOC)
+## `World/Texture/FaceName.ts` (23 LOC)
 
 **Module-level functions**
 - `export function getFaceName(axis: number, isBackFace: boolean): FaceName`

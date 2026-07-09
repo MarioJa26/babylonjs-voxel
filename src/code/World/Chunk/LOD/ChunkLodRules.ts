@@ -33,6 +33,23 @@ export interface ChunkLodCreationRule {
 	matches(distance: ChunkLodDistance): boolean;
 }
 
+// PERF: reused across resolveWithDistance calls (single-threaded) so we never
+// allocate a ChunkLodDistance object for rule matching.
+const _scratchDistance: ChunkLodDistance = {
+	horizontalDist: 0,
+	verticalDist: 0,
+};
+
+// PERF: single reused decision object returned by resolveWithDistance /
+// resolveWithHysteresis. Callers consume it synchronously (never retain the
+// reference), so a shared scratch removes the per-call object allocation.
+const _scratchDecision: ChunkLodDecision = {
+	horizontalDist: 0,
+	verticalDist: 0,
+	lodLevel: 0,
+	allowsChunkCreation: false,
+};
+
 export class Lod0ChunkCreationRule implements ChunkLodCreationRule {
 	public readonly lodLevel = 0;
 	public readonly allowsChunkCreation = true;
@@ -164,53 +181,68 @@ export class ChunkLodRuleSet {
 		public readonly revision: number = 0,
 	) {}
 
-	private resolveWithDistance(distance: ChunkLodDistance): ChunkLodDecision {
+	// PERF: reused across resolveWithDistance calls (single-threaded) so we
+	// never allocate a ChunkLodDistance object for rule matching.
+	private resolveWithDistance(
+		horizontalDist: number,
+		verticalDist: number,
+	): ChunkLodDecision {
+		_scratchDistance.horizontalDist = horizontalDist;
+		_scratchDistance.verticalDist = verticalDist;
 		for (const rule of this.rules) {
-			if (rule.matches(distance)) {
-				return {
-					...distance,
-					lodLevel: rule.lodLevel,
-					allowsChunkCreation: rule.allowsChunkCreation,
-				};
+			if (rule.matches(_scratchDistance)) {
+				_scratchDecision.horizontalDist = horizontalDist;
+				_scratchDecision.verticalDist = verticalDist;
+				_scratchDecision.lodLevel = rule.lodLevel;
+				_scratchDecision.allowsChunkCreation = rule.allowsChunkCreation;
+				return _scratchDecision;
 			}
 		}
 
 		const fallback = this.rules[this.rules.length - 1];
-		return {
-			...distance,
-			lodLevel: fallback?.lodLevel ?? 4,
-			allowsChunkCreation: fallback?.allowsChunkCreation ?? false,
-		};
+		_scratchDecision.horizontalDist = horizontalDist;
+		_scratchDecision.verticalDist = verticalDist;
+		_scratchDecision.lodLevel = fallback?.lodLevel ?? 4;
+		_scratchDecision.allowsChunkCreation =
+			fallback?.allowsChunkCreation ?? false;
+		return _scratchDecision;
 	}
 
 	public resolve(
 		target: ChunkLodCoordinates,
 		player: ChunkLodCoordinates,
 	): ChunkLodDecision {
-		const distance = this.measureDistance(target, player);
-		return this.resolveWithDistance(distance);
-	}
-
-	private measureDistance(
-		target: ChunkLodCoordinates,
-		player: ChunkLodCoordinates,
-	): ChunkLodDistance {
+		const horizontalDist = Math.max(
+			Math.abs(target.chunkX - player.chunkX),
+			Math.abs(target.chunkZ - player.chunkZ),
+		);
+		const verticalDist = Math.abs(target.chunkY - player.chunkY);
+		const d = this.resolveWithDistance(horizontalDist, verticalDist);
+		// Cold path — return a fresh object so external retainers are safe.
 		return {
-			horizontalDist: Math.max(
-				Math.abs(target.chunkX - player.chunkX),
-				Math.abs(target.chunkZ - player.chunkZ),
-			),
-			verticalDist: Math.abs(target.chunkY - player.chunkY),
+			horizontalDist: d.horizontalDist,
+			verticalDist: d.verticalDist,
+			lodLevel: d.lodLevel,
+			allowsChunkCreation: d.allowsChunkCreation,
 		};
 	}
 
 	public resolveWithHysteresis(
-		target: ChunkLodCoordinates,
-		player: ChunkLodCoordinates,
+		targetX: number,
+		targetY: number,
+		targetZ: number,
+		playerX: number,
+		playerY: number,
+		playerZ: number,
 		previousLod: number | null | undefined,
 	): ChunkLodDecision {
-		const distance = this.measureDistance(target, player);
-		const baseDecision = this.resolveWithDistance(distance);
+		const horizontalDist = Math.max(
+			Math.abs(targetX - playerX),
+			Math.abs(targetZ - playerZ),
+		);
+		const verticalDist = Math.abs(targetY - playerY);
+
+		const baseDecision = this.resolveWithDistance(horizontalDist, verticalDist);
 
 		if (previousLod === null || previousLod === undefined) {
 			return baseDecision;
@@ -232,31 +264,27 @@ export class ChunkLodRuleSet {
 			switch (previousLod) {
 				case 0:
 					return (
-						distance.horizontalDist <=
+						horizontalDist <=
 							this.radii.lod0HorizontalRadius + horizontalLeaveBuffer &&
-						distance.verticalDist <=
-							this.radii.lod0VerticalRadius + verticalLeaveBuffer
+						verticalDist <= this.radii.lod0VerticalRadius + verticalLeaveBuffer
 					);
 				case 1:
 					return (
-						distance.horizontalDist <=
+						horizontalDist <=
 							this.radii.lod1HorizontalRadius + horizontalLeaveBuffer &&
-						distance.verticalDist <=
-							this.radii.lod1VerticalRadius + verticalLeaveBuffer
+						verticalDist <= this.radii.lod1VerticalRadius + verticalLeaveBuffer
 					);
 				case 2:
 					return (
-						distance.horizontalDist <=
+						horizontalDist <=
 							this.radii.lod2HorizontalRadius + horizontalLeaveBuffer &&
-						distance.verticalDist <=
-							this.radii.lod2VerticalRadius + verticalLeaveBuffer
+						verticalDist <= this.radii.lod2VerticalRadius + verticalLeaveBuffer
 					);
 				case 3:
 					return (
-						distance.horizontalDist <=
+						horizontalDist <=
 							this.radii.lod3HorizontalRadius + horizontalLeaveBuffer &&
-						distance.verticalDist <=
-							this.radii.lod3VerticalRadius + verticalLeaveBuffer
+						verticalDist <= this.radii.lod3VerticalRadius + verticalLeaveBuffer
 					);
 				default:
 					return false;
@@ -264,11 +292,9 @@ export class ChunkLodRuleSet {
 		})();
 
 		if (withinPreviousBandWithBuffer && previousLod < baseDecision.lodLevel) {
-			return {
-				...distance,
-				lodLevel: previousLod,
-				allowsChunkCreation: previousBandAllowsCreation,
-			};
+			baseDecision.lodLevel = previousLod;
+			baseDecision.allowsChunkCreation = previousBandAllowsCreation;
+			return baseDecision;
 		}
 
 		return baseDecision;

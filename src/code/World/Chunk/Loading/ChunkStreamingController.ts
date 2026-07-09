@@ -22,11 +22,6 @@ export type QueuedChunkRequest = {
 	priority: number;
 };
 
-type DesiredChunkState = {
-	desiredLod: number;
-	revision: number;
-};
-
 // Scratch target for chunkDist to avoid per-call object allocation in hot
 // enqueue loops. Callers must consume hDist/vDist before the next call.
 const _chunkDistScratch: { hDist: number; vDist: number } = {
@@ -49,6 +44,27 @@ function chunkDistScratch(
 	return _chunkDistScratch;
 }
 
+// PERF: relative-offset key for the refresh decision cache. The LOD decision
+// is a pure function of (chunk - player) offset + the chunk's previous LOD,
+// so keying by offset (not by absolute chunk id) keeps cache entries valid
+// across player-chunk moves — eliminating the per-pass resolveWithHysteresis
+// storm that used to fire on every 1-chunk crossing. Bounds are generous
+// (offset +/-128, lod 0..7) so there is no overflow in the packed integer.
+const _OFFSET_BIAS = 128;
+function packOffsetKey(
+	rx: number,
+	ry: number,
+	rz: number,
+	chunkLod: number,
+): number {
+	return (
+		(rx + _OFFSET_BIAS) |
+		((ry + _OFFSET_BIAS) << 8) |
+		((rz + _OFFSET_BIAS) << 16) |
+		(chunkLod << 24)
+	);
+}
+
 export interface ChunkStreamingControllerAdapter {
 	getLoadQueue(): QueuedChunkRequest[];
 	getUnloadQueueSet(): Set<Chunk>;
@@ -61,7 +77,9 @@ const _queryScratch: Chunk[] = [];
 export class ChunkStreamingController {
 	private static readonly DESIRED_STATE_REVISION_RETENTION = 8;
 	private streamRevision = 0;
-	private desiredStates = new Map<bigint, DesiredChunkState>();
+	// PERF: desired state packed into a single number (desiredLod | revision<<3)
+	// to avoid a per-chunk object allocation on the hot streaming path.
+	private desiredStates = new Map<bigint, number>();
 	// H1: Lazy prune — only scan desiredStates when stale entries have accumulated
 	private _needsDesiredStatePrune = false;
 	// Map from chunkId -> queued request object for O(1) updates without relying
@@ -77,21 +95,13 @@ export class ChunkStreamingController {
 	// Bumped every time a LOD rule set is rebuilt; used as the cache key for
 	// per-chunk refresh decisions so stale entries are detected.
 	private _ruleSetGeneration = 0;
-	// Per-chunk cache of the last refresh decision: {player pos, ruleRev,
-	// chunkLod, decisionLod}. Lets us skip resolveWithHysteresis when the
-	// player hasn't moved into a new chunk and the chunk's LOD/dirty state
-	// is unchanged.
-	private _lastRefreshDecision: Map<
-		bigint,
-		{
-			playerX: number;
-			playerY: number;
-			playerZ: number;
-			ruleRev: number;
-			chunkLod: number;
-			decisionLod: number;
-		}
-	> = new Map();
+	// Relative-offset refresh decision cache. Keyed by (chunk - player) offset
+	// + previous chunk LOD (see packOffsetKey), value packs decisionLod | ruleRev<<3.
+	// Because the LOD decision depends only on the relative offset, entries stay
+	// valid when the player moves between chunks, so we skip resolveWithHysteresis
+	// for the stable majority of boundary chunks. Bounded by the offset space, so
+	// no per-chunk pruning is needed.
+	private _refreshCache = new Map<number, number>();
 	private _lastCaveState: boolean | null = null;
 	private _lastRenderDistance = 0;
 	private _lastVerticalRadius = 0;
@@ -100,7 +110,7 @@ export class ChunkStreamingController {
 		private readonly adapter: ChunkStreamingControllerAdapter,
 	) {}
 
-	public getDesiredState(chunkId: bigint): DesiredChunkState | undefined {
+	public getDesiredState(chunkId: bigint): number | undefined {
 		return this.desiredStates.get(chunkId);
 	}
 
@@ -213,12 +223,12 @@ export class ChunkStreamingController {
 			const request = loadQueue[readIndex];
 
 			const decision = lodRuleSet.resolveWithHysteresis(
-				{
-					chunkX: request.chunk.chunkX,
-					chunkY: request.chunk.chunkY,
-					chunkZ: request.chunk.chunkZ,
-				},
-				{ chunkX, chunkY, chunkZ },
+				request.chunk.chunkX,
+				request.chunk.chunkY,
+				request.chunk.chunkZ,
+				chunkX,
+				chunkY,
+				chunkZ,
 				request.chunk.lodLevel ?? request.desiredLod,
 			);
 
@@ -239,10 +249,10 @@ export class ChunkStreamingController {
 				chunkZ,
 			);
 
-			this.desiredStates.set(request.chunk.id, {
-				desiredLod: request.desiredLod,
-				revision: request.revision,
-			});
+			this.desiredStates.set(
+				request.chunk.id,
+				request.desiredLod | (request.revision << 3),
+			);
 
 			this.loadQueueRequestMap.set(request.chunk.id, request);
 			loadQueue[writeIndex++] = request;
@@ -328,8 +338,8 @@ export class ChunkStreamingController {
 		);
 
 		if (this._needsDesiredStatePrune) {
-			for (const [id, state] of this.desiredStates) {
-				if (state.revision < oldestKeptRevision) {
+			for (const [id, packed] of this.desiredStates) {
+				if (packed >> 3 < oldestKeptRevision) {
 					this.desiredStates.delete(id);
 				}
 			}
@@ -390,60 +400,43 @@ export class ChunkStreamingController {
 
 			if (!nearLod0 && !nearLod1 && !nearLod2) continue;
 
-			// Dirty-track: if the player position, LOD rule set, chunk LOD,
-			// and dirty flag are all unchanged since the last refresh pass,
-			// the previous decision is still valid and we can skip the
-			// expensive resolveWithHysteresis call entirely.
-			const cached = this._lastRefreshDecision.get(chunk.id);
 			const ruleRev = lodRuleSet.revision;
-			if (
-				cached !== undefined &&
-				cached.playerX === chunkX &&
-				cached.playerY === chunkY &&
-				cached.playerZ === chunkZ &&
-				cached.ruleRev === ruleRev &&
-				cached.chunkLod === chunk.lodLevel &&
-				!chunk.isDirty
-			) {
-				if (
-					chunk.lodLevel === cached.decisionLod &&
-					!(cached.decisionLod <= 1 && !chunk.hasVoxelData)
-				) {
-					continue;
-				}
-			}
-
-			// Skip chunks already at the correct LOD with no pending work
-			const decision = lodRuleSet.resolveWithHysteresis(
-				{ chunkX: chunk.chunkX, chunkY: chunk.chunkY, chunkZ: chunk.chunkZ },
-				{ chunkX, chunkY, chunkZ },
-				chunk.lodLevel ?? 3,
+			const chunkLod = chunk.lodLevel ?? 3;
+			// Offset-only key: the LOD decision is a pure function of the
+			// relative offset + previous LOD, so cache entries survive player
+			// moves and we skip resolveWithHysteresis for the stable majority.
+			const key = packOffsetKey(
+				chunk.chunkX - chunkX,
+				chunk.chunkY - chunkY,
+				chunk.chunkZ - chunkZ,
+				chunkLod,
 			);
 
+			let decisionLod: number;
+			const cached = this._refreshCache.get(key);
+			if (cached !== undefined && cached >> 3 === ruleRev && !chunk.isDirty) {
+				decisionLod = cached & 0b111;
+			} else {
+				decisionLod = lodRuleSet.resolveWithHysteresis(
+					chunk.chunkX,
+					chunk.chunkY,
+					chunk.chunkZ,
+					chunkX,
+					chunkY,
+					chunkZ,
+					chunkLod,
+				).lodLevel;
+				this._refreshCache.set(key, decisionLod | (ruleRev << 3));
+			}
+
 			if (
-				chunk.lodLevel === decision.lodLevel &&
+				chunk.lodLevel === decisionLod &&
 				!chunk.isDirty &&
-				!(decision.lodLevel <= 1 && !chunk.hasVoxelData)
+				!(decisionLod <= 1 && !chunk.hasVoxelData)
 			) {
-				this._lastRefreshDecision.set(chunk.id, {
-					playerX: chunkX,
-					playerY: chunkY,
-					playerZ: chunkZ,
-					ruleRev,
-					chunkLod: chunk.lodLevel ?? 3,
-					decisionLod: decision.lodLevel,
-				});
 				continue;
 			}
 
-			this._lastRefreshDecision.set(chunk.id, {
-				playerX: chunkX,
-				playerY: chunkY,
-				playerZ: chunkZ,
-				ruleRev,
-				chunkLod: chunk.lodLevel ?? 3,
-				decisionLod: decision.lodLevel,
-			});
 			this.loadedRefreshQueueSet.add(chunk.id);
 			this.loadedRefreshQueue.push(chunk);
 		}
@@ -528,8 +521,12 @@ export class ChunkStreamingController {
 
 		const previousLod = chunk?.lodLevel ?? 3;
 		const decision = lodRuleSet.resolveWithHysteresis(
-			{ chunkX: x, chunkY: y, chunkZ: z },
-			{ chunkX: playerChunkX, chunkY: playerChunkY, chunkZ: playerChunkZ },
+			x,
+			y,
+			z,
+			playerChunkX,
+			playerChunkY,
+			playerChunkZ,
 			previousLod,
 		);
 
@@ -556,10 +553,7 @@ export class ChunkStreamingController {
 
 		const includeVoxelData = desiredLod <= 1;
 
-		this.desiredStates.set(chunk.id, {
-			desiredLod,
-			revision,
-		});
+		this.desiredStates.set(chunk.id, desiredLod | (revision << 3));
 
 		if (chunk.isLoaded && previousLod !== desiredLod) {
 			const hasTargetCachedMesh = chunk.hasCachedLODMesh(desiredLod);
@@ -755,8 +749,12 @@ export class ChunkStreamingController {
 					// Skip if already loaded at the correct LOD with voxel data if needed
 					if (existing?.isLoaded) {
 						const decision = lodRuleSet.resolveWithHysteresis(
-							{ chunkX: chunkX + x, chunkY: worldY, chunkZ: chunkZ + z },
-							{ chunkX, chunkY, chunkZ },
+							chunkX + x,
+							worldY,
+							chunkZ + z,
+							chunkX,
+							chunkY,
+							chunkZ,
 							existing.lodLevel ?? 3,
 						);
 						const needsVoxelData =
@@ -913,7 +911,9 @@ export class ChunkStreamingController {
 
 	public onChunkDisposed(chunkId: bigint): void {
 		this.loadedRefreshQueueSet.delete(chunkId);
-		this._lastRefreshDecision.delete(chunkId);
+		// The refresh cache is keyed by relative offset (bounded by the offset
+		// space), so no per-chunk eviction is needed; stale entries are simply
+		// overwritten when another chunk occupies that offset.
 		// The chunk object remains in loadedRefreshQueue as a tombstone,
 		// but dequeueLoadedRefreshChunk will skip it because isLoaded=false
 		// and processTargetChunkCoordinate guards on that.

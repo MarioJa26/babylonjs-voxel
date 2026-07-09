@@ -53,6 +53,44 @@ const MAX_PADDED_VOL = MAX_PADDED * MAX_PADDED * MAX_PADDED;
 let _paddedBlocks = new Uint16Array(MAX_PADDED_VOL);
 let _paddedLights = new Uint8Array(MAX_PADDED_VOL);
 
+// ── Shared hot closures ──────────────────────────────────────────────────────
+// PERF: getBlock/getLight/hasNeighborChunk are invoked on the meshing hot path
+// (hasNeighborChunk fires per negative-boundary slice, getBlock/getLight per
+// voxel during AO/light sampling). Instead of re-creating these closures on
+// every chunk build, they are defined once here and read the per-chunk state
+// from the module-level refs below. This mirrors the _paddedBlocks reuse
+// assumption (worker is single-threaded; fullCtx is never retained across
+// builds).
+let _ctxPadded = _paddedBlocks;
+let _ctxPaddedLight = _paddedLights;
+let _ctxPs = 0;
+let _ctxPs2 = 0;
+let _ctxNeighbors: (Uint8Array | Uint16Array | undefined)[] = [];
+let _ctxNeighborUniformIds: (number | undefined)[] | undefined;
+
+const _readBlock = (x: number, y: number, z: number, _fallback = 0): number => {
+	return _ctxPadded[x + 1 + (y + 1) * _ctxPs + (z + 1) * _ctxPs2];
+};
+
+const _readLight = (x: number, y: number, z: number, _fallback = 0): number => {
+	return _ctxPaddedLight[x + 1 + (y + 1) * _ctxPs + (z + 1) * _ctxPs2];
+};
+
+const _hasNeighborChunk = (dx: number, dy: number, dz: number): boolean => {
+	if (dx === 0 && dy === 0 && dz === 0) return false;
+
+	const linear = dx + 1 + (dy + 1) * 3 + (dz + 1) * 9;
+	const neighborIndex = linear < 13 ? linear : linear - 1;
+
+	const n = _ctxNeighbors[neighborIndex];
+	if (n) return true;
+
+	return (
+		_ctxNeighborUniformIds !== undefined &&
+		_ctxNeighborUniformIds[neighborIndex] !== undefined
+	);
+};
+
 /**
  * Resolve a neighbor chunk's local coordinate to a packed block value,
  * handling palette expansion and uniform IDs.
@@ -214,46 +252,20 @@ export function createMeshContextFromPayload(
 		}
 	}
 
-	// ── Fast lookups via padded grid ──
-	const readBlock = (
-		x: number,
-		y: number,
-		z: number,
-		_fallback = 0,
-	): number => {
-		return padded[x + 1 + (y + 1) * ps + (z + 1) * ps2];
-	};
-
-	const readLight = (
-		x: number,
-		y: number,
-		z: number,
-		_fallback = 0,
-	): number => {
-		return paddedLight[x + 1 + (y + 1) * ps + (z + 1) * ps2];
-	};
-
-	const hasNeighborChunk = (dx: number, dy: number, dz: number): boolean => {
-		if (dx === 0 && dy === 0 && dz === 0) return false;
-
-		const linear = dx + 1 + (dy + 1) * 3 + (dz + 1) * 9;
-		const neighborIndex = linear < 13 ? linear : linear - 1;
-
-		const n = neighbors[neighborIndex];
-		if (n) return true;
-
-		return (
-			neighborUniformIds !== undefined &&
-			neighborUniformIds[neighborIndex] !== undefined
-		);
-	};
+	// ── Publish per-chunk state for the shared hot closures ──
+	_ctxPadded = padded;
+	_ctxPaddedLight = paddedLight;
+	_ctxPs = ps;
+	_ctxPs2 = ps2;
+	_ctxNeighbors = neighbors;
+	_ctxNeighborUniformIds = neighborUniformIds;
 
 	return {
 		size,
 		lod,
 		disableAO: lod >= 2,
-		getBlock: readBlock,
-		getLight: readLight,
-		hasNeighborChunk,
+		getBlock: _readBlock,
+		getLight: _readLight,
+		hasNeighborChunk: _hasNeighborChunk,
 	};
 }

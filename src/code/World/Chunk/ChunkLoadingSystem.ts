@@ -244,7 +244,9 @@ function getEntityChunkId(entity: ChunkBoundEntity): bigint | null {
 	const chunkY = worldToChunkCoord(worldPos.y);
 	const chunkZ = worldToChunkCoord(worldPos.z);
 
-	return packCoords(chunkX, chunkY, chunkZ);
+	// PERF: prefer the existing chunk's id over a fresh BigInt packCoords.
+	const chunk = getChunk(chunkX, chunkY, chunkZ);
+	return chunk ? chunk.id : packCoords(chunkX, chunkY, chunkZ);
 }
 
 function serializeEntityForReload(
@@ -437,7 +439,10 @@ export function validateChunksAround(
 				z++
 			) {
 				const chunk = getChunk(x, y, z);
-				const chunkId = packCoords(x, y, z);
+				// PERF: reuse the already-fetched chunk's BigInt id instead of
+				// re-packing coords (packCoords is a costly BigInt op). Only pack
+				// when the chunk doesn't exist yet.
+				const chunkId = chunk ? chunk.id : packCoords(x, y, z);
 
 				const isLoaded = !!chunk?.isLoaded;
 				const isQueued = queuedIds.has(chunkId);

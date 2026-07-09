@@ -107,7 +107,11 @@ function runChunkDisposeHooks(chunk: Chunk): void {
 
 export class Chunk {
 	public readonly id: bigint;
-	public readonly neighborIds: readonly bigint[];
+	// PERF: neighbor ids are computed lazily (and cached) on first access
+	// rather than eagerly in the constructor — the 6 BigInt packCoords calls
+	// were a major cost on the chunk-creation hot path (the 1ms streaming
+	// spike) even though neighbors aren't needed until culling/meshing.
+	private _neighborIds: bigint[] | null = null;
 
 	public lodLevel = 0;
 
@@ -115,6 +119,13 @@ export class Chunk {
 	public static readonly SIZE2 = Chunk.SIZE * Chunk.SIZE;
 	public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
 	public static readonly chunkInstances = new Map<bigint, Chunk>();
+	// PERF: coordinate-indexed lookup that avoids the BigInt packCoords()
+	// allocation on the hot getChunk path. The public `chunkInstances`
+	// (BigInt-keyed) map is retained for id-based external lookups; this nested
+	// Number-keyed map mirrors it for coordinate-based lookups (chunk
+	// coordinates are <= 2^21, exact as Number keys). Kept in sync at set/delete.
+	// Internal (not `private` so the module-level getChunk/helpers can access it).
+	static _chunkByCoords = new Map<number, Map<number, Map<number, Chunk>>>();
 	public static readonly loadedChunks = new Set<Chunk>();
 	public static readonly loadedChunkIndex = new LoadedChunkIndex();
 
@@ -344,18 +355,11 @@ export class Chunk {
 		// numericId is a class field initializer, runs before this line,
 		// but we assign here to use the static counter correctly.
 		this.numericId = Chunk._nextNumericId++;
-		this.neighborIds = [
-			packCoords(chunkX + 1, chunkY, chunkZ),
-			packCoords(chunkX - 1, chunkY, chunkZ),
-			packCoords(chunkX, chunkY + 1, chunkZ),
-			packCoords(chunkX, chunkY - 1, chunkZ),
-			packCoords(chunkX, chunkY, chunkZ + 1),
-			packCoords(chunkX, chunkY, chunkZ - 1),
-		];
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
 		this.lightHeaderSlot = Chunk.allocLightHeaderSlot();
 		this._isDarkCached = false;
 		Chunk.chunkInstances.set(this.id, this);
+		_setByCoords(this);
 	}
 
 	// =========================================================================
@@ -1053,6 +1057,31 @@ export class Chunk {
 		return getChunk(this.chunkX + dx, this.chunkY + dy, this.chunkZ + dz);
 	}
 
+	// PERF: lazily build + cache the neighbor id list. Neighbor ids are derived
+	// from this.id via BigInt bit-ops (no Number->BigInt conversions or bias
+	// recompute), and only on first access — keeping the constructor free of
+	// the 6 packCoords calls that used to fire on every new chunk.
+	public get neighborIds(): readonly bigint[] {
+		if (this._neighborIds) return this._neighborIds;
+		const AXIS_BITS = 21n;
+		const MASK = (1n << AXIS_BITS) - 1n;
+		const derive = (axis: 0 | 1 | 2, sign: 1n | -1n): bigint => {
+			const shift = BigInt(axis) * AXIS_BITS;
+			const comp = (this.id >> shift) & MASK;
+			const nb = (comp + sign + (1n << AXIS_BITS)) & MASK;
+			return (this.id & ~(MASK << shift)) | (nb << shift);
+		};
+		this._neighborIds = [
+			derive(0, 1n),
+			derive(0, -1n),
+			derive(1, 1n),
+			derive(1, -1n),
+			derive(2, 1n),
+			derive(2, -1n),
+		];
+		return this._neighborIds;
+	}
+
 	public markLightChanged(): void {
 		this.isLightDirty = true;
 	}
@@ -1542,6 +1571,7 @@ export class Chunk {
 		this.isTerrainScheduled = false;
 		this.remeshQueued = false;
 		Chunk.chunkInstances.delete(this.id);
+		_deleteByCoords(this);
 		this.bfsQueryId = 0;
 		this.bfsVisitedFaces = 0;
 		this.bfsQueuedForConnectivity = false;
@@ -1555,5 +1585,32 @@ export function getChunk(
 	cy: number,
 	cz: number,
 ): Chunk | undefined {
-	return Chunk.chunkInstances.get(packCoords(cx, cy, cz));
+	return Chunk._chunkByCoords.get(cx)?.get(cy)?.get(cz);
+}
+
+// ── _chunkByCoords mirror maintenance ────────────────────────────────────────
+function _setByCoords(c: Chunk): void {
+	let my = Chunk._chunkByCoords.get(c.chunkX);
+	if (my === undefined) {
+		my = new Map();
+		Chunk._chunkByCoords.set(c.chunkX, my);
+	}
+	let mz = my.get(c.chunkY);
+	if (mz === undefined) {
+		mz = new Map();
+		my.set(c.chunkY, mz);
+	}
+	mz.set(c.chunkZ, c);
+}
+
+function _deleteByCoords(c: Chunk): void {
+	const my = Chunk._chunkByCoords.get(c.chunkX);
+	if (my === undefined) return;
+	const mz = my.get(c.chunkY);
+	if (mz === undefined) return;
+	mz.delete(c.chunkZ);
+	if (mz.size === 0) {
+		my.delete(c.chunkY);
+		if (my.size === 0) Chunk._chunkByCoords.delete(c.chunkX);
+	}
 }
