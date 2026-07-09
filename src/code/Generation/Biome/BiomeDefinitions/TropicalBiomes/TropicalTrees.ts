@@ -1,4 +1,4 @@
-import { Squirrel3 } from "@/code/Generation/NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "@/code/Generation/NoiseAndParameters/Squirrel13";
 import type { TreeDefinition } from "../../BiomeTypes";
 import { DIAG_X, DIAG_Z, generateSlinkyTree } from "../../TreeDefinition";
 
@@ -8,7 +8,7 @@ export const JUNGLE_TREE: TreeDefinition = {
 	baseHeight: 20,
 	heightVariance: 20,
 	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
-		const heightHash = Squirrel3.get(
+		const heightHash = getPRNGBySeed(
 			worldX * 374761393 + worldZ * 678446653,
 			seedAsInt,
 		);
@@ -77,7 +77,7 @@ export const PALM_TREE: TreeDefinition = {
 
 	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
 		const hash =
-			Squirrel3.get(worldX * 374761393 + worldZ * 678446653, seedAsInt) >>> 0;
+			getPRNGBySeed(worldX * 374761393 + worldZ * 678446653, seedAsInt) >>> 0;
 
 		const height = this.baseHeight + (hash % (this.heightVariance + 1));
 
@@ -139,7 +139,7 @@ export const PALM_TREE: TreeDefinition = {
 
 		for (let f = 0; f < frondCount; f++) {
 			const frondHash =
-				Squirrel3.get(
+				getPRNGBySeed(
 					worldX * 15731 + worldZ * 789221 + f * 1013,
 					seedAsInt,
 				) >>> 0;

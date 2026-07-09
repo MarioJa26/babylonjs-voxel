@@ -1,6 +1,6 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 import { StructureBuilder } from "./StructureBuilder";
@@ -76,7 +76,7 @@ export class CaravanCampFeature implements IWorldFeature {
 		b.set(cx, cg + 2, cz, BlockType.Cobblestone03);
 
 		// ring of tents
-		const tents = 3 + (Math.abs(Squirrel3.get(region.regionHash, seed)) % 3);
+		const tents = 3 + (Math.abs(getPRNGBySeed(region.regionHash, seed)) % 3);
 		for (let i = 0; i < tents; i++) {
 			const angle = (i / tents) * Math.PI * 2;
 			const tx = Math.round(cx + Math.cos(angle) * 5);

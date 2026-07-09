@@ -1,5 +1,5 @@
 import type { Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 
@@ -43,10 +43,10 @@ export class RavineFeature implements IWorldFeature {
 			centerZ: ravineCenterZ,
 		} = region;
 
-		const angle = (Math.abs(Squirrel3.get(regionHash + 2, seed)) % 628) / 100;
-		const length = 40 + (Math.abs(Squirrel3.get(regionHash + 3, seed)) % 60);
-		const width = 3 + (Math.abs(Squirrel3.get(regionHash + 4, seed)) % 4);
-		const depth = 30 + (Math.abs(Squirrel3.get(regionHash + 5, seed)) % 50);
+		const angle = (Math.abs(getPRNGBySeed(regionHash + 2, seed)) % 628) / 100;
+		const length = 40 + (Math.abs(getPRNGBySeed(regionHash + 3, seed)) % 60);
+		const width = 3 + (Math.abs(getPRNGBySeed(regionHash + 4, seed)) % 4);
+		const depth = 30 + (Math.abs(getPRNGBySeed(regionHash + 5, seed)) % 50);
 
 		const dxDir = Math.cos(angle);
 		const dzDir = Math.sin(angle);
@@ -100,7 +100,7 @@ export class RavineFeature implements IWorldFeature {
 				if (perpendicular > localWidth) continue;
 
 				const wallJitter =
-					(Squirrel3.get(
+					(getPRNGBySeed(
 						Math.floor(x * 0.5) * 7919 + Math.floor(z * 0.5) * 6271,
 						seed,
 					) %

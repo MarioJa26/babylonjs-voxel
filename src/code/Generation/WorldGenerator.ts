@@ -7,7 +7,7 @@ import {
 	createFastNoise3D,
 } from "./NoiseAndParameters/FastNoise/FastNoiseFactory";
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
-import { Squirrel3 } from "./NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "./NoiseAndParameters/Squirrel13";
 import { OreGenerator } from "./OreGenerator";
 import { SurfaceGenerator } from "./SurfaceGenerator";
 import { getBiome } from "./TerrainHeightMap";
@@ -55,40 +55,40 @@ export class WorldGenerator {
 	constructor(params: GenerationParamsType) {
 		this.params = params;
 		this.prng = Alea(this.params.SEED);
-		this.seedAsInt = Squirrel3.get(0, (this.prng() * 0xffffffff) | 0);
+		this.seedAsInt = getPRNGBySeed(0, (this.prng() * 0xffffffff) | 0);
 
 		this.chunk_size = this.params.CHUNK_SIZE;
 		this.chunkSizeSq = this.chunk_size * this.chunk_size;
 		this.chunkVolume = this.chunk_size * this.chunkSizeSq;
 
 		const treeNoise = createFastNoise2D({
-			seed: Squirrel3.get(21, this.seedAsInt),
+			seed: getPRNGBySeed(21, this.seedAsInt),
 			frequency: 1,
 		});
 
 		const cheeseInstance = createFastNoise({
-			seed: Squirrel3.get(2, this.seedAsInt),
+			seed: getPRNGBySeed(2, this.seedAsInt),
 			frequency: this.params.CAVE_CHEESE_FREQ,
 		});
 		cheeseInstance.SetFractalOctaves(2);
 		this.cheeseNoise = (x, y, z) => cheeseInstance.GetNoise3D(x, y, z);
 
 		const tunnelInstance = createFastNoise({
-			seed: Squirrel3.get(22, this.seedAsInt),
+			seed: getPRNGBySeed(22, this.seedAsInt),
 			frequency: this.params.CAVE_TUNNEL_FREQ,
 		});
 		tunnelInstance.SetFractalOctaves(2);
 		this.tunnelNoise = (x, y, z) => tunnelInstance.GetNoise3D(x, y, z);
 
 		const detailInstance = createFastNoise({
-			seed: Squirrel3.get(24, this.seedAsInt),
+			seed: getPRNGBySeed(24, this.seedAsInt),
 			frequency: this.params.CAVE_DETAIL_FREQ,
 		});
 		detailInstance.SetFractalOctaves(2);
 		this.detailNoise = (x, y, z) => detailInstance.GetNoise3D(x, y, z);
 
 		const densityNoise = createFastNoise3D({
-			seed: Squirrel3.get(23, this.seedAsInt),
+			seed: getPRNGBySeed(23, this.seedAsInt),
 			frequency: 0.33333,
 		});
 
@@ -109,13 +109,13 @@ export class WorldGenerator {
 		);
 
 		const oreNoise = createFastNoise3D({
-			seed: Squirrel3.get(25, this.seedAsInt),
+			seed: getPRNGBySeed(25, this.seedAsInt),
 			frequency: 1,
 		});
 		this.oreGenerator = new OreGenerator(params, oreNoise, this.seedAsInt);
 
 		const undergroundBiomeNoise = createFastNoise2D({
-			seed: Squirrel3.get(26, this.seedAsInt),
+			seed: getPRNGBySeed(26, this.seedAsInt),
 			frequency: 0.001,
 		});
 		this.undergroundBiomeSelector = new UndergroundBiomeSelector(

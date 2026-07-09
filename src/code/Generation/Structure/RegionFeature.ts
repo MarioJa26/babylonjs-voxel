@@ -1,4 +1,4 @@
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 
 export interface RegionConfig {
 	regionSize: number;
@@ -33,7 +33,7 @@ export function computeRegion(
 	const regionX = Math.floor(chunkX / regionSize);
 	const regionZ = Math.floor(chunkZ / regionSize);
 
-	const regionHash = Squirrel3.get(regionX * magicA + regionZ * magicB, seed);
+	const regionHash = getPRNGBySeed(regionX * magicA + regionZ * magicB, seed);
 
 	const passes = earlyReturn
 		? Math.abs(regionHash) % 100 >= spawnChance
@@ -44,9 +44,9 @@ export function computeRegion(
 	const sz = config.offsetSeedZ ?? 1;
 
 	const offsetX =
-		Math.abs(Squirrel3.get(regionHash + sx, seed)) % (regionSize * chunkSize);
+		Math.abs(getPRNGBySeed(regionHash + sx, seed)) % (regionSize * chunkSize);
 	const offsetZ =
-		Math.abs(Squirrel3.get(regionHash + sz, seed)) % (regionSize * chunkSize);
+		Math.abs(getPRNGBySeed(regionHash + sz, seed)) % (regionSize * chunkSize);
 
 	return {
 		regionX,

@@ -1,5 +1,5 @@
 import type { Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds } from "./RegionFeature";
 
@@ -28,12 +28,12 @@ export class DungeonFeature implements IWorldFeature {
 		generatingChunkZ: number,
 	) {
 		const DUNGEON_CHANCE = 1;
-		const regionHash = Squirrel3.get(chunkX * 892374 + chunkZ * 234897, seed);
+		const regionHash = getPRNGBySeed(chunkX * 892374 + chunkZ * 234897, seed);
 
 		if (Math.abs(regionHash) % 100 >= DUNGEON_CHANCE) return;
 
-		const dungeonY = 15 + (Math.abs(Squirrel3.get(regionHash, seed)) % 20);
-		const numRooms = 3 + (Math.abs(Squirrel3.get(regionHash + 1, seed)) % 4);
+		const dungeonY = 15 + (Math.abs(getPRNGBySeed(regionHash, seed)) % 20);
+		const numRooms = 3 + (Math.abs(getPRNGBySeed(regionHash + 1, seed)) % 4);
 
 		const centerX = chunkX * chunkSize + chunkSize / 2;
 		const centerZ = chunkZ * chunkSize + chunkSize / 2;
@@ -42,11 +42,11 @@ export class DungeonFeature implements IWorldFeature {
 		let currentSeed = regionHash + 2;
 
 		for (let i = 0; i < numRooms; i++) {
-			const w = 7 + (Math.abs(Squirrel3.get(currentSeed++, seed)) % 6);
-			const d = 7 + (Math.abs(Squirrel3.get(currentSeed++, seed)) % 6);
+			const w = 7 + (Math.abs(getPRNGBySeed(currentSeed++, seed)) % 6);
+			const d = 7 + (Math.abs(getPRNGBySeed(currentSeed++, seed)) % 6);
 
-			const dx = (Math.abs(Squirrel3.get(currentSeed++, seed)) % 32) - 16;
-			const dz = (Math.abs(Squirrel3.get(currentSeed++, seed)) % 32) - 16;
+			const dx = (Math.abs(getPRNGBySeed(currentSeed++, seed)) % 32) - 16;
+			const dz = (Math.abs(getPRNGBySeed(currentSeed++, seed)) % 32) - 16;
 
 			rooms.push({
 				x: centerX + dx,

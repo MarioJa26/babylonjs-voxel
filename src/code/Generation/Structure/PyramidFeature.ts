@@ -1,6 +1,6 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 import { StructureBuilder } from "./StructureBuilder";
@@ -49,7 +49,7 @@ export class PyramidFeature implements IWorldFeature {
 		if (!region) return;
 
 		const { centerX: px, centerZ: pz, regionHash } = region;
-		const baseRadius = 9 + (Math.abs(Squirrel3.get(regionHash, seed)) % 6);
+		const baseRadius = 9 + (Math.abs(getPRNGBySeed(regionHash, seed)) % 6);
 		const bounds = chunkWorldBounds(
 			generatingChunkX,
 			generatingChunkZ,
@@ -71,7 +71,7 @@ export class PyramidFeature implements IWorldFeature {
 
 		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
 		const ground = b.ground(px, pz);
-		const gateDir = Math.abs(Squirrel3.get(regionHash + 3, seed)) % 4;
+		const gateDir = Math.abs(getPRNGBySeed(regionHash + 3, seed)) % 4;
 		const gate =
 			gateDir === 0 ? "x+" : gateDir === 1 ? "x-" : gateDir === 2 ? "z+" : "z-";
 

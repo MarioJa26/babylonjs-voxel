@@ -1,6 +1,6 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import type { Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 
@@ -41,9 +41,9 @@ export class InfernalPitFeature implements IWorldFeature {
 		if (!region) return;
 
 		const { regionHash, centerX: px, centerZ: pz } = region;
-		const pitTopY = -64 - (Math.abs(Squirrel3.get(regionHash + 2, seed)) % 128);
-		const pitRadius = 7 + (Math.abs(Squirrel3.get(regionHash + 3, seed)) % 5);
-		const depth = 18 + (Math.abs(Squirrel3.get(regionHash + 4, seed)) % 12);
+		const pitTopY = -64 - (Math.abs(getPRNGBySeed(regionHash + 2, seed)) % 128);
+		const pitRadius = 7 + (Math.abs(getPRNGBySeed(regionHash + 3, seed)) % 5);
+		const depth = 18 + (Math.abs(getPRNGBySeed(regionHash + 4, seed)) % 12);
 		const rimRadius = pitRadius + 2;
 
 		const bounds = chunkWorldBounds(

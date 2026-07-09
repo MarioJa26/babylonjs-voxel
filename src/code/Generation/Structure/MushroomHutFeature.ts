@@ -1,6 +1,6 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 import { type DoorSide, StructureBuilder } from "./StructureBuilder";
@@ -71,7 +71,7 @@ export class MushroomHutFeature implements IWorldFeature {
 
 		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
 		const baseY = b.footprintGround(cx, cz, hx, hz).min;
-		const door = DOORS[Math.abs(Squirrel3.get(regionHash, seed)) % 4];
+		const door = DOORS[Math.abs(getPRNGBySeed(regionHash, seed)) % 4];
 
 		b.buildHouse({
 			cx,

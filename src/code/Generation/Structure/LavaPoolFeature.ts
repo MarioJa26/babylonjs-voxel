@@ -1,5 +1,5 @@
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import { getBiome, getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
@@ -52,10 +52,10 @@ export class LavaPoolFeature implements IWorldFeature {
 		const { regionHash } = region;
 
 		// LavaPool uses a different offset derivation via intermediate baseHash
-		const baseHash = Squirrel3.get(regionHash, seed);
-		const offsetX = Math.abs(Squirrel3.get(baseHash, seed)) % (9 * chunkSize);
+		const baseHash = getPRNGBySeed(regionHash, seed);
+		const offsetX = Math.abs(getPRNGBySeed(baseHash, seed)) % (9 * chunkSize);
 		const offsetZ =
-			Math.abs(Squirrel3.get(baseHash + 1, seed)) % (9 * chunkSize);
+			Math.abs(getPRNGBySeed(baseHash + 1, seed)) % (9 * chunkSize);
 		const poolCenterX = region.regionX * 9 * chunkSize + offsetX;
 		const poolCenterZ = region.regionZ * 9 * chunkSize + offsetZ;
 
@@ -97,7 +97,7 @@ export class LavaPoolFeature implements IWorldFeature {
 			}
 		} else {
 			poolSurfaceY =
-				-64 - (Math.abs(Squirrel3.get(baseHash + 2, seed)) % (1024 - 64));
+				-64 - (Math.abs(getPRNGBySeed(baseHash + 2, seed)) % (1024 - 64));
 		}
 
 		this.generateLavaPool(
@@ -122,8 +122,8 @@ export class LavaPoolFeature implements IWorldFeature {
 		) => void,
 		seed: number,
 	) {
-		const poolRadius = 25 + (Squirrel3.get(poolCenterX, seed) % 5);
-		const maxDepth = 15 + (Squirrel3.get(poolCenterZ, seed) % 3);
+		const poolRadius = 25 + (getPRNGBySeed(poolCenterX, seed) % 5);
+		const maxDepth = 15 + (getPRNGBySeed(poolCenterZ, seed) % 3);
 		const rimHeight = 3;
 		const lavaTop = poolCenterY - rimHeight;
 		const radiusSq = poolRadius * poolRadius;

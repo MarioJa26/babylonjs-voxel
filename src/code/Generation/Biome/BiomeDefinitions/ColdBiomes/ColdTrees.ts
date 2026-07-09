@@ -1,4 +1,4 @@
-import { Squirrel3 } from "@/code/Generation/NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "@/code/Generation/NoiseAndParameters/Squirrel13";
 import type { TreeDefinition } from "../../BiomeTypes";
 
 // ---------------------------------------------------------------------------
@@ -18,7 +18,7 @@ export const ICE_SPIKE_COLUMN: TreeDefinition = {
 	baseHeight: 10,
 	heightVariance: 15,
 	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
-		const h = Squirrel3.get(worldX * HASH_A + worldZ * HASH_B, seedAsInt);
+		const h = getPRNGBySeed(worldX * HASH_A + worldZ * HASH_B, seedAsInt);
 		const height = this.baseHeight + (Math.abs(h) % (this.heightVariance + 1));
 		const woodId = this.woodId;
 		const iceId = 75; // packed ice

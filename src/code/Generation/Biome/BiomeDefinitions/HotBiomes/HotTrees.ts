@@ -1,4 +1,4 @@
-import { Squirrel3 } from "@/code/Generation/NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "@/code/Generation/NoiseAndParameters/Squirrel13";
 import type { TreeDefinition } from "../../BiomeTypes";
 import { DIAG_X, DIAG_Z, generateBaobab } from "../../TreeDefinition";
 
@@ -8,7 +8,7 @@ export const CACTUS: TreeDefinition = {
 	baseHeight: 3,
 	heightVariance: 2,
 	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
-		const heightHash = Squirrel3.get(
+		const heightHash = getPRNGBySeed(
 			worldX * 374761393 + worldZ * 678446653,
 			seedAsInt,
 		);
@@ -39,7 +39,7 @@ export const SAVANNAH_TREE: TreeDefinition = {
 		) => void,
 		seedAsInt: number,
 	): void {
-		const heightHash = Squirrel3.get(
+		const heightHash = getPRNGBySeed(
 			worldX * 374761393 + worldZ * 678446653,
 			seedAsInt,
 		);
@@ -110,7 +110,7 @@ export const DEAD_TREE: TreeDefinition = {
 	baseHeight: 5,
 	heightVariance: 3,
 	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
-		const heightHash = Squirrel3.get(
+		const heightHash = getPRNGBySeed(
 			worldX * 374761393 + worldZ * 678446653,
 			seedAsInt,
 		);
@@ -135,7 +135,7 @@ export const DEAD_TREE: TreeDefinition = {
 		// Broken branch stubs — 2–4 stubs at random heights
 		const stubCount = 2 + (Math.abs(heightHash >> 4) % 3);
 		for (let s = 0; s < stubCount; s++) {
-			const stubHash = Squirrel3.get(
+			const stubHash = getPRNGBySeed(
 				worldX * 9719 + worldZ * 19997 + s * 53,
 				seedAsInt,
 			);

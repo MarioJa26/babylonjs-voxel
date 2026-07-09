@@ -2,7 +2,7 @@ import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { createFastNoise3DWithInstance } from "../NoiseAndParameters/FastNoise/FastNoiseFactory";
 import { FractalType } from "../NoiseAndParameters/FastNoise/FastNoiseLite";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import { getBiome, getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
@@ -134,7 +134,7 @@ export class BadlandsSpireFeature implements IWorldFeature {
 			if (getBiome(cx + ox, cz + oz).id !== BIOME_ID.BADLANDS) return;
 		}
 
-		const heightHash = Squirrel3.get(spireX * 7 + spireZ * 13, seed);
+		const heightHash = getPRNGBySeed(spireX * 7 + spireZ * 13, seed);
 		const spireHeight =
 			MIN_SPIRE_HEIGHT +
 			(Math.abs(heightHash) % (MAX_SPIRE_HEIGHT - MIN_SPIRE_HEIGHT + 1));
@@ -240,8 +240,8 @@ export class BadlandsSpireFeature implements IWorldFeature {
 		const adjA = TIER_A[tierIndex] + (TIER_A[iNext] - TIER_A[tierIndex]) * s;
 		const adjB = TIER_B[tierIndex] + (TIER_B[iNext] - TIER_B[tierIndex]) * s;
 
-		const hCurr = Squirrel3.get(tierIndex * 9973, seed);
-		const hNext = Squirrel3.get(iNext * 9973, seed);
+		const hCurr = getPRNGBySeed(tierIndex * 9973, seed);
+		const hNext = getPRNGBySeed(iNext * 9973, seed);
 		const cAx = (Math.abs(hCurr) % 7) - 3;
 		const cAz = (Math.abs(hCurr >> 8) % 7) - 3;
 		const nAx = (Math.abs(hNext) % 7) - 3;
@@ -327,7 +327,7 @@ export class BadlandsSpireFeature implements IWorldFeature {
 	}
 
 	private getLayerBlock(spireLocalY: number, seed: number): number {
-		const bandSeed = Squirrel3.get(spireLocalY * 49157, seed);
+		const bandSeed = getPRNGBySeed(spireLocalY * 49157, seed);
 		const bandThickness = 3 + (Math.abs(bandSeed) % 6);
 		const layerIndex = Math.floor(spireLocalY / bandThickness);
 		return LAYERS[layerIndex % LAYERS.length];

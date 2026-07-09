@@ -1,5 +1,4 @@
-export namespace Lod3Shader {
-	export const chunkVertexShader = `
+export const LOD3chunkVertexShader = `
     #version 300 es
     precision highp float;
 
@@ -130,7 +129,7 @@ export namespace Lod3Shader {
     }
   `;
 
-	export const opaqueFragmentShader = `
+export const LOD3OpaqueFragmentShader = `
     #version 300 es
     precision highp float;
 
@@ -212,7 +211,7 @@ export namespace Lod3Shader {
     }
   `;
 
-	export const transparentFragmentShader = `
+export const LOD3transparentFragmentShader = `
     #version 300 es
     precision highp float;
 
@@ -297,4 +296,3 @@ export namespace Lod3Shader {
       fragColor = vec4(color, tex.a);
     }
   `;
-}

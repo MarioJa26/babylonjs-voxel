@@ -1,5 +1,5 @@
 import type { Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
@@ -49,7 +49,7 @@ export class TowerFeature implements IWorldFeature {
 			return;
 		}
 
-		const towerRadius = 8 + (Squirrel3.get(towerCenterX, seed) % 4);
+		const towerRadius = 8 + (getPRNGBySeed(towerCenterX, seed) % 4);
 
 		const bounds = chunkWorldBounds(
 			generatingChunkX,
@@ -125,7 +125,7 @@ export class TowerFeature implements IWorldFeature {
 		seed: number,
 		columnPrepassResolver?: ColumnPrepassResolver,
 	) {
-		const towerHeight = 76 + (Squirrel3.get(towerCenterZ, seed) % 8);
+		const towerHeight = 76 + (getPRNGBySeed(towerCenterZ, seed) % 8);
 		const wallBlockId = 1;
 		const radiusSq = towerRadius * towerRadius;
 

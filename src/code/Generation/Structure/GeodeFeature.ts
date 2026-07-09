@@ -1,5 +1,5 @@
 import type { Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 
@@ -37,8 +37,8 @@ export class GeodeFeature implements IWorldFeature {
 		if (!region) return;
 
 		const { regionHash, centerX: cx, centerZ: cz } = region;
-		const cy = -32 - (Math.abs(Squirrel3.get(regionHash + 2, seed)) % 256);
-		const outerRadius = 6 + (Math.abs(Squirrel3.get(regionHash + 3, seed)) % 5);
+		const cy = -32 - (Math.abs(getPRNGBySeed(regionHash + 2, seed)) % 256);
+		const outerRadius = 6 + (Math.abs(getPRNGBySeed(regionHash + 3, seed)) % 5);
 		const innerRadius = outerRadius - 3;
 
 		const maxR = outerRadius + 2;

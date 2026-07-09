@@ -1,6 +1,6 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 import { StructureBuilder } from "./StructureBuilder";
@@ -69,13 +69,13 @@ export class PetrifiedShrineFeature implements IWorldFeature {
 		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
 
 		// ring of petrified logs stood on end
-		const pillars = 6 + (Math.abs(Squirrel3.get(regionHash, seed)) % 3);
+		const pillars = 6 + (Math.abs(getPRNGBySeed(regionHash, seed)) % 3);
 		for (let i = 0; i < pillars; i++) {
 			const angle = (i / pillars) * Math.PI * 2;
 			const px = Math.round(cx + Math.cos(angle) * radius);
 			const pz = Math.round(cz + Math.sin(angle) * radius);
 			const pg = b.ground(px, pz);
-			const h = 4 + (Math.abs(Squirrel3.get(i * 91, seed)) % 3);
+			const h = 4 + (Math.abs(getPRNGBySeed(i * 91, seed)) % 3);
 			b.column(px, pg, pz, h, BlockType.MossWood);
 		}
 

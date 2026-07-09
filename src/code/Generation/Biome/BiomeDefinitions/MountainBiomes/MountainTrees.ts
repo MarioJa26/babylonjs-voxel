@@ -1,6 +1,6 @@
 // MountainTrees.ts
 
-import { Squirrel3 } from "../../../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "@/code/Generation/NoiseAndParameters/Squirrel13";
 import type { TreeDefinition } from "../../BiomeTypes";
 
 export const CONIFER_TREE: TreeDefinition = {
@@ -22,7 +22,7 @@ export const CONIFER_TREE: TreeDefinition = {
 		) => void,
 		seedAsInt: number,
 	): void {
-		const h = Squirrel3.get(worldX * 31337 + worldZ * 7919, seedAsInt);
+		const h = getPRNGBySeed(worldX * 31337 + worldZ * 7919, seedAsInt);
 		const height = this.baseHeight + (Math.abs(h) % this.heightVariance);
 
 		for (let y = 0; y < height; y++) {
@@ -37,7 +37,7 @@ export const CONIFER_TREE: TreeDefinition = {
 			for (let dx = -radius; dx <= radius; dx++) {
 				for (let dz = -radius; dz <= radius; dz++) {
 					if (dx === 0 && dz === 0 && y < height) continue;
-					const cornerHash = Squirrel3.get(
+					const cornerHash = getPRNGBySeed(
 						(worldX + dx) * 127 + (worldZ + dz) * 31 + y * 17,
 						seedAsInt,
 					);
@@ -79,17 +79,17 @@ export const DEAD_TREE: TreeDefinition = {
 		) => void,
 		seedAsInt: number,
 	): void {
-		const h = Squirrel3.get(worldX * 31337 + worldZ * 7919, seedAsInt);
+		const h = getPRNGBySeed(worldX * 31337 + worldZ * 7919, seedAsInt);
 		const height = this.baseHeight + (Math.abs(h) % this.heightVariance);
 
 		for (let y = 0; y < height; y++) {
 			placeBlock(worldX, worldY + y, worldZ, this.woodId, true);
 		}
 
-		const branchHash = Squirrel3.get(worldX * 521 + worldZ * 997, seedAsInt);
+		const branchHash = getPRNGBySeed(worldX * 521 + worldZ * 997, seedAsInt);
 		const branchCount = 2 + (Math.abs(branchHash) % 3);
 		for (let i = 0; i < branchCount; i++) {
-			const dirHash = Squirrel3.get(
+			const dirHash = getPRNGBySeed(
 				worldX * 131 + worldZ * 277 + i * 43,
 				seedAsInt,
 			);
@@ -100,7 +100,7 @@ export const DEAD_TREE: TreeDefinition = {
 			const length =
 				1 +
 				(Math.abs(
-					Squirrel3.get(worldX * 61 + worldZ * 151 + i * 73, seedAsInt),
+					getPRNGBySeed(worldX * 61 + worldZ * 151 + i * 73, seedAsInt),
 				) %
 					2);
 

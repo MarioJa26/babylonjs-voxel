@@ -1,6 +1,6 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import type { Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 
@@ -55,17 +55,17 @@ export class FossilBedFeature implements IWorldFeature {
 			return;
 
 		const fossilY =
-			-50 - (Math.abs(Squirrel3.get(region.regionHash, seed)) % 150);
+			-50 - (Math.abs(getPRNGBySeed(region.regionHash, seed)) % 150);
 		const numFossils =
-			3 + (Math.abs(Squirrel3.get(region.regionHash + 5, seed)) % 4);
+			3 + (Math.abs(getPRNGBySeed(region.regionHash + 5, seed)) % 4);
 
 		for (let i = 0; i < numFossils; i++) {
-			const sx = fx + (Math.abs(Squirrel3.get(i * 13, seed)) % 11) - 5;
-			const sz = fz + (Math.abs(Squirrel3.get(i * 17, seed)) % 11) - 5;
-			const len = 4 + (Math.abs(Squirrel3.get(i * 23, seed)) % 5);
-			const dir = Math.abs(Squirrel3.get(i * 29, seed)) % 2;
+			const sx = fx + (Math.abs(getPRNGBySeed(i * 13, seed)) % 11) - 5;
+			const sz = fz + (Math.abs(getPRNGBySeed(i * 17, seed)) % 11) - 5;
+			const len = 4 + (Math.abs(getPRNGBySeed(i * 23, seed)) % 5);
+			const dir = Math.abs(getPRNGBySeed(i * 29, seed)) % 2;
 			const bone =
-				Math.abs(Squirrel3.get(i * 31, seed)) % 2 === 0
+				Math.abs(getPRNGBySeed(i * 31, seed)) % 2 === 0
 					? BlockType.SaltBlock
 					: BlockType.Cobblestone03;
 
@@ -86,9 +86,9 @@ export class FossilBedFeature implements IWorldFeature {
 			placeBlock(hx, fossilY + 1, hz, BlockType.Cobblestone03, true);
 
 			// rib cage: symmetric arches along the spine
-			const ribs = 2 + (Math.abs(Squirrel3.get(i * 37, seed)) % 3);
+			const ribs = 2 + (Math.abs(getPRNGBySeed(i * 37, seed)) % 3);
 			for (let r = 0; r < ribs; r++) {
-				const off = 1 + (Math.abs(Squirrel3.get(i * 41 + r, seed)) % (len - 1));
+				const off = 1 + (Math.abs(getPRNGBySeed(i * 41 + r, seed)) % (len - 1));
 				const bx = sx + (dir === 0 ? off : 0);
 				const bz = sz + (dir === 1 ? off : 0);
 				const spread = 2;
@@ -105,7 +105,7 @@ export class FossilBedFeature implements IWorldFeature {
 		for (let dx = -4; dx <= 4; dx++) {
 			for (let dz = -4; dz <= 4; dz++) {
 				if (
-					Math.abs(Squirrel3.get(fx + dx * 7 + fz + dz * 11, seed)) % 5 ===
+					Math.abs(getPRNGBySeed(fx + dx * 7 + fz + dz * 11, seed)) % 5 ===
 					0
 				) {
 					placeBlock(fx + dx, fossilY - 1, fz + dz, BlockType.SaltBlock, true);

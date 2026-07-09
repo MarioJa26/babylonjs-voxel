@@ -1,6 +1,6 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 import { StructureBuilder } from "./StructureBuilder";
@@ -72,7 +72,7 @@ export class ShipwreckFeature implements IWorldFeature {
 
 		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
 		const baseY = b.footprintGround(cx, cz, hx, hz).min;
-		const rot = Math.abs(Squirrel3.get(region.regionHash, seed)) % 4;
+		const rot = Math.abs(getPRNGBySeed(region.regionHash, seed)) % 4;
 
 		// hull sides (skip the very bow/stern for a tapered look)
 		for (let dx = -hx + 1; dx <= hx - 1; dx++) {

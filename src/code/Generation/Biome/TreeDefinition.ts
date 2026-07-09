@@ -1,6 +1,7 @@
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
-
 // --- Shared constants hoisted to module scope ---
+
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
+
 // V8: avoid re-allocating identical arrays on every function call
 export const DIR_X = [1, 0, -1, 0] as const;
 export const DIR_Z = [0, 1, 0, -1] as const;
@@ -10,12 +11,12 @@ export const DIAG_Z = [0, 1, 1, 1, 0, -1, -1, -1] as const;
 // ---------------------------------------------------------------------------
 // Leaf scatter LUT
 // ---------------------------------------------------------------------------
-// V8: replaces per-voxel Squirrel3.get() calls in canopy loops with a single
+// V8: replaces per-voxel getPRNGBySeed() calls in canopy loops with a single
 // array read. 256 entries is enough entropy for visual scatter — the pattern
 // difference is invisible to the player at canopy scale.
 const LEAF_NOISE = new Uint8Array(256);
 for (let i = 0; i < 256; i++) {
-	LEAF_NOISE[i] = (Squirrel3.get(i, 0) >>> 0) & 0xff;
+	LEAF_NOISE[i] = (getPRNGBySeed(i, 0) >>> 0) & 0xff;
 }
 
 // ---------------------------------------------------------------------------
@@ -67,7 +68,7 @@ export function generateSlinkyTree(
 	woodSet.clear();
 
 	const heightHash =
-		Squirrel3.get(worldX * 374761393 + worldZ * 678446653, seedAsInt) >>> 0;
+		getPRNGBySeed(worldX * 374761393 + worldZ * 678446653, seedAsInt) >>> 0;
 
 	const height = baseHeight + (heightHash % (heightVariance + 1));
 
@@ -85,7 +86,7 @@ export function generateSlinkyTree(
 	// Surface roots
 	for (let root = 0; root < 5; root++) {
 		const rootHash =
-			Squirrel3.get(worldX * 31337 + worldZ * 6971 + root * 101, seedAsInt) >>>
+			getPRNGBySeed(worldX * 31337 + worldZ * 6971 + root * 101, seedAsInt) >>>
 			0;
 
 		let dir = rootHash % 4;
@@ -97,7 +98,7 @@ export function generateSlinkyTree(
 		let unsupportedStreak = 0;
 
 		for (let step = 0; step < rootLength; step++) {
-			const turnHash = Squirrel3.get(rootHash + step * 17, seedAsInt) >>> 0;
+			const turnHash = getPRNGBySeed(rootHash + step * 17, seedAsInt) >>> 0;
 			const mod = turnHash % 5;
 
 			if (mod === 0) dir = (dir + 1) % 4;
@@ -125,7 +126,7 @@ export function generateSlinkyTree(
 
 	// Trunk
 	const trunkBaseHash =
-		Squirrel3.get(worldX * 92837111 + worldZ * 689287499, seedAsInt) >>> 0;
+		getPRNGBySeed(worldX * 92837111 + worldZ * 689287499, seedAsInt) >>> 0;
 
 	const bendDirection = trunkBaseHash % 8;
 	const bendDirX = DIAG_X[bendDirection];
@@ -145,7 +146,7 @@ export function generateSlinkyTree(
 		const arc = Math.sin(t * Math.PI * 0.85);
 		const curveAmount = Math.round(arc * maxBend);
 
-		const swayHash = Squirrel3.get(trunkBaseHash + i * 31, seedAsInt) >>> 0;
+		const swayHash = getPRNGBySeed(trunkBaseHash + i * 31, seedAsInt) >>> 0;
 		const swayPhase = (swayHash % 360) * 0.0174533;
 		const lateralSway = Math.sin(t * Math.PI + swayPhase) * 0.5;
 		const targetX = worldX + bendDirX * curveAmount + bendDirZ * lateralSway;
@@ -203,7 +204,7 @@ export function generateSlinkyTree(
 			const x2 = x * x;
 			for (let z = -radius; z <= radius; z++) {
 				if (x2 + z * z <= radiusSqP1) {
-					// LUT replaces per-voxel Squirrel3.get — invisible quality diff at
+					// LUT replaces per-voxel getPRNGBySeed — invisible quality diff at
 					// canopy scale, avoids hash cost for every leaf candidate
 					if (
 						LEAF_NOISE[
@@ -220,7 +221,7 @@ export function generateSlinkyTree(
 	// Side lobes
 	for (let lobe = 0; lobe < 3; lobe++) {
 		const lobeHash =
-			Squirrel3.get(worldX * 9719 + worldZ * 19997 + lobe * 53, seedAsInt) >>>
+			getPRNGBySeed(worldX * 9719 + worldZ * 19997 + lobe * 53, seedAsInt) >>>
 			0;
 
 		const lobeDir = lobeHash % 8;
@@ -267,7 +268,7 @@ export function generateBigTopBentOak(
 	woodSet.clear();
 
 	const heightHash =
-		Squirrel3.get(worldX * 374761393 + worldZ * 678446653, seedAsInt) >>> 0;
+		getPRNGBySeed(worldX * 374761393 + worldZ * 678446653, seedAsInt) >>> 0;
 	const height = baseHeight + (heightHash % (heightVariance + 1));
 
 	function placeWood(x: number, y: number, z: number): void {
@@ -284,7 +285,7 @@ export function generateBigTopBentOak(
 	// Surface roots
 	for (let root = 0; root < 5; root++) {
 		const rootHash =
-			Squirrel3.get(worldX * 31337 + worldZ * 6971 + root * 101, seedAsInt) >>>
+			getPRNGBySeed(worldX * 31337 + worldZ * 6971 + root * 101, seedAsInt) >>>
 			0;
 		let dir = rootHash % 4;
 		const rootLength = 3 + (rootHash % 5);
@@ -294,7 +295,7 @@ export function generateBigTopBentOak(
 		let unsupportedStreak = 0;
 
 		for (let step = 0; step < rootLength; step++) {
-			const turnHash = Squirrel3.get(rootHash + step * 17, seedAsInt) >>> 0;
+			const turnHash = getPRNGBySeed(rootHash + step * 17, seedAsInt) >>> 0;
 			const mod = turnHash % 5;
 			if (mod === 0) dir = (dir + 1) % 4;
 			else if (mod === 1) dir = (dir + 3) % 4;
@@ -321,8 +322,8 @@ export function generateBigTopBentOak(
 
 	// Trunk parameters
 	const trunkBaseHash =
-		Squirrel3.get(worldX * 92837111 + worldZ * 689287499, seedAsInt) >>> 0;
-	const arcHash = Squirrel3.get(worldX * 1237 + worldZ * 7919, seedAsInt) >>> 0;
+		getPRNGBySeed(worldX * 92837111 + worldZ * 689287499, seedAsInt) >>> 0;
+	const arcHash = getPRNGBySeed(worldX * 1237 + worldZ * 7919, seedAsInt) >>> 0;
 	const bendAxisX = (arcHash & 1) === 0;
 	const bendSign = ((arcHash >> 1) & 1) === 0 ? 1 : -1;
 	const arcRadius = 6 + ((trunkBaseHash >> 2) % 2);
@@ -400,7 +401,7 @@ export function generateBigTopBentOak(
 	// Side lobes
 	for (let lobe = 0; lobe < sideLobeCount; lobe++) {
 		const lobeHash =
-			Squirrel3.get(worldX * 9719 + worldZ * 19997 + lobe * 53, seedAsInt) >>>
+			getPRNGBySeed(worldX * 9719 + worldZ * 19997 + lobe * 53, seedAsInt) >>>
 			0;
 		const lobeDir = lobeHash % 8;
 		const lobeDistance = 3 + ((lobeHash >> 3) % 2);
@@ -447,7 +448,7 @@ export function generateBaobab(
 	woodSet.clear();
 
 	const heightHash =
-		Squirrel3.get(worldX * 374761393 + worldZ * 678446653, seedAsInt) >>> 0;
+		getPRNGBySeed(worldX * 374761393 + worldZ * 678446653, seedAsInt) >>> 0;
 	const height = baseHeight + (heightHash % (heightVariance + 1));
 
 	function placeWood(x: number, y: number, z: number): void {
@@ -493,7 +494,7 @@ export function generateBaobab(
 
 	for (let b = 0; b < branchCount; b++) {
 		const branchHash =
-			Squirrel3.get(worldX * 15731 + worldZ * 789221 + b * 1013, seedAsInt) >>>
+			getPRNGBySeed(worldX * 15731 + worldZ * 789221 + b * 1013, seedAsInt) >>>
 			0;
 		const branchDir = branchHash % 8;
 		const branchLength = 2 + ((branchHash >> 3) % 3);

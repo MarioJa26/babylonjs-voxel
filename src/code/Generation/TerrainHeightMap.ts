@@ -11,7 +11,7 @@ import {
 	type GenerationParamsType,
 } from "./NoiseAndParameters/GenerationParams";
 import { Spline } from "./NoiseAndParameters/Spline";
-import { Squirrel3 } from "./NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "./NoiseAndParameters/Squirrel13";
 import { RiverGenerator } from "./RiverGeneration";
 
 // ---------------------------------------------------------------------------
@@ -50,7 +50,7 @@ const riverGenerator = new RiverGenerator(params);
 const prng = Alea(params.SEED);
 
 const _t = createFastNoise2DWithInstance({
-	seed: Squirrel3.get(1, (prng() * 0xffffffff) | 0),
+	seed: getPRNGBySeed(1, (prng() * 0xffffffff) | 0),
 	fractalType: FractalType.None,
 	frequency: GenerationParams.TEMPERATURE_NOISE_SCALE,
 });
@@ -58,7 +58,7 @@ const temperatureNoise = _t.fn;
 const temperatureInst = _t.instance;
 
 const _h = createFastNoise2DWithInstance({
-	seed: Squirrel3.get(2, (prng() * 0xffffffff) | 0),
+	seed: getPRNGBySeed(2, (prng() * 0xffffffff) | 0),
 	fractalType: FractalType.None,
 	frequency: GenerationParams.HUMIDITY_NOISE_SCALE,
 });
@@ -66,7 +66,7 @@ const humidityNoise = _h.fn;
 const humidityInst = _h.instance;
 
 const _c = createFastNoise2DWithInstance({
-	seed: Squirrel3.get(3, (prng() * 0xffffffff) | 0),
+	seed: getPRNGBySeed(3, (prng() * 0xffffffff) | 0),
 	fractalType: FractalType.Ridged,
 	frequency: GenerationParams.CONTINENTALNESS_NOISE_SCALE,
 });
@@ -74,17 +74,17 @@ const continentalnessNoise = _c.fn;
 const continentalnessInst = _c.instance;
 
 const erosionNoise = createFastNoise2D({
-	seed: Squirrel3.get(4, (prng() * 0xffffffff) | 0),
+	seed: getPRNGBySeed(4, (prng() * 0xffffffff) | 0),
 	frequency: GenerationParams.EROSION_NOISE_SCALE,
 });
 
 const peaksAndValleysNoise = createFastNoise2D({
-	seed: Squirrel3.get(5, (prng() * 0xffffffff) | 0),
+	seed: getPRNGBySeed(5, (prng() * 0xffffffff) | 0),
 	frequency: GenerationParams.PV_NOISE_SCALE,
 });
 
 const heightNoise = createFastNoise2D({
-	seed: Squirrel3.get(6, (prng() * 0xffffffff) | 0),
+	seed: getPRNGBySeed(6, (prng() * 0xffffffff) | 0),
 	fractalType: FractalType.None,
 	frequency: GenerationParams.TERRAIN_SCALE,
 });

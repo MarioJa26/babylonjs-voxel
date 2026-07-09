@@ -1,5 +1,5 @@
 import type { Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { IWorldFeature } from "./IWorldFeature";
 import { chunkWorldBounds, computeRegion } from "./RegionFeature";
 
@@ -45,9 +45,9 @@ export class MineshaftFeature implements IWorldFeature {
 			chunkSize,
 		);
 
-		const baseY = -16 - (Math.abs(Squirrel3.get(regionHash, seed)) % 128);
-		const tunnelLen = 20 + (Math.abs(Squirrel3.get(regionHash + 3, seed)) % 30);
-		const numBranches = 2 + (Math.abs(Squirrel3.get(regionHash + 4, seed)) % 3);
+		const baseY = -16 - (Math.abs(getPRNGBySeed(regionHash, seed)) % 128);
+		const tunnelLen = 20 + (Math.abs(getPRNGBySeed(regionHash + 3, seed)) % 30);
+		const numBranches = 2 + (Math.abs(getPRNGBySeed(regionHash + 4, seed)) % 3);
 
 		this.carveTunnel(
 			mx - tunnelLen / 2,
@@ -64,14 +64,14 @@ export class MineshaftFeature implements IWorldFeature {
 		let branchSeed = regionHash + 5;
 		for (let i = 0; i < numBranches; i++) {
 			const branchAngle =
-				(Math.abs(Squirrel3.get(branchSeed++, seed)) % 628) / 100;
-			const branchLen = 10 + (Math.abs(Squirrel3.get(branchSeed++, seed)) % 20);
+				(Math.abs(getPRNGBySeed(branchSeed++, seed)) % 628) / 100;
+			const branchLen = 10 + (Math.abs(getPRNGBySeed(branchSeed++, seed)) % 20);
 			const branchZ =
-				mz + (Math.abs(Squirrel3.get(branchSeed++, seed)) % 60) - 30;
+				mz + (Math.abs(getPRNGBySeed(branchSeed++, seed)) % 60) - 30;
 			const branchX =
-				mx + (Math.abs(Squirrel3.get(branchSeed++, seed)) % 60) - 30;
+				mx + (Math.abs(getPRNGBySeed(branchSeed++, seed)) % 60) - 30;
 			const branchY =
-				baseY + (Math.abs(Squirrel3.get(branchSeed++, seed)) % 8) - 4;
+				baseY + (Math.abs(getPRNGBySeed(branchSeed++, seed)) % 8) - 4;
 
 			const ex = branchX + Math.cos(branchAngle) * branchLen;
 			const ez = branchZ + Math.sin(branchAngle) * branchLen;

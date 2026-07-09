@@ -1,6 +1,6 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 import { type DoorSide, StructureBuilder } from "./StructureBuilder";
@@ -72,9 +72,9 @@ export class RuinFeature implements IWorldFeature {
 
 		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
 		const baseY = b.footprintGround(rx, rz, hx, hz).min;
-		const door = DOORS[Math.abs(Squirrel3.get(regionHash, seed)) % 4];
+		const door = DOORS[Math.abs(getPRNGBySeed(regionHash, seed)) % 4];
 		const block =
-			Math.abs(Squirrel3.get(regionHash + 10, seed)) % 2 === 0
+			Math.abs(getPRNGBySeed(regionHash + 10, seed)) % 2 === 0
 				? BlockType.AncientCrackedStone
 				: BlockType.MossyCobble;
 
@@ -100,7 +100,7 @@ export class RuinFeature implements IWorldFeature {
 			for (let dz = -hz; dz <= hz; dz++) {
 				const edge = Math.abs(dx) === hx || Math.abs(dz) === hz;
 				if (!edge) continue;
-				if (Math.abs(Squirrel3.get(dx * 13 + dz * 17, seed)) % 3 === 0) {
+				if (Math.abs(getPRNGBySeed(dx * 13 + dz * 17, seed)) % 3 === 0) {
 					b.air(rx + dx, baseY + maxH, rz + dz);
 				}
 			}

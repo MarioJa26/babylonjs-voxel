@@ -1,6 +1,6 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 import { StructureBuilder } from "./StructureBuilder";
@@ -71,28 +71,28 @@ export class StoneCircleFeature implements IWorldFeature {
 			return;
 
 		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
-		const numStones = 8 + (Math.abs(Squirrel3.get(regionHash, seed)) % 5);
+		const numStones = 8 + (Math.abs(getPRNGBySeed(regionHash, seed)) % 5);
 
 		for (let i = 0; i < numStones; i++) {
 			const angle = (i / numStones) * Math.PI * 2;
 			const stoneX = Math.round(sx + Math.cos(angle) * circleRadius);
 			const stoneZ = Math.round(sz + Math.sin(angle) * circleRadius);
 			const ground = b.ground(stoneX, stoneZ);
-			const stoneHeight = 3 + (Math.abs(Squirrel3.get(i * 37, seed)) % 3);
+			const stoneHeight = 3 + (Math.abs(getPRNGBySeed(i * 37, seed)) % 3);
 			const blockType =
-				Math.abs(Squirrel3.get(i * 53, seed)) % 2 === 0
+				Math.abs(getPRNGBySeed(i * 53, seed)) % 2 === 0
 					? BlockType.Cobblestone03
 					: BlockType.MossyCobble;
 			// upright slab (1xNx1) on its own conformed base
 			b.column(stoneX, ground, stoneZ, stoneHeight, blockType);
 			// occasional capstone
-			if (Math.abs(Squirrel3.get(i * 71, seed)) % 3 === 0) {
+			if (Math.abs(getPRNGBySeed(i * 71, seed)) % 3 === 0) {
 				b.set(stoneX, ground + stoneHeight, stoneZ, BlockType.MossyCobble);
 			}
 		}
 
 		const centerStone =
-			Math.abs(Squirrel3.get(regionHash + 100, seed)) % 2 === 0;
+			Math.abs(getPRNGBySeed(regionHash + 100, seed)) % 2 === 0;
 		if (centerStone) {
 			const cg = b.ground(sx, sz);
 			b.box(

@@ -1,4 +1,4 @@
-import { Squirrel3 } from "@/code/Generation/NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "@/code/Generation/NoiseAndParameters/Squirrel13";
 import type { TreeDefinition } from "../../BiomeTypes";
 import { DIR_X, DIR_Z } from "../../TreeDefinition";
 
@@ -19,12 +19,12 @@ const HASH_E = 29791;
 
 /** Deterministic height from world position and seed. */
 function heightHash(worldX: number, worldZ: number, seedAsInt: number): number {
-	return Squirrel3.get(worldX * HASH_A + worldZ * HASH_B, seedAsInt);
+	return getPRNGBySeed(worldX * HASH_A + worldZ * HASH_B, seedAsInt);
 }
 
 /** Leaf/hole hash for a specific block position. */
 function leafHash(x: number, y: number, z: number, seedAsInt: number): number {
-	return Squirrel3.get(x * HASH_C + z * HASH_D + y * HASH_E, seedAsInt);
+	return getPRNGBySeed(x * HASH_C + z * HASH_D + y * HASH_E, seedAsInt);
 }
 
 /** Fill a flat disc of radius r centered at (cx, cy, cz). */
@@ -240,7 +240,7 @@ export const SPHERE_MUSHROOM: TreeDefinition = {
 
 		for (let i = 0; i < height; i++) {
 			if (i > 1 && i % 3 === 0 && wobbleStepsDone < maxWobble) {
-				const wHash = Squirrel3.get(
+				const wHash = getPRNGBySeed(
 					worldX * 1337 + worldZ * 7331 + i,
 					seedAsInt,
 				);
@@ -393,7 +393,7 @@ export const CRYSTAL_SPIRE: TreeDefinition = {
 		const tipId = this.leavesId;
 
 		for (let s = 0; s < spireCount; s++) {
-			const sHash = Squirrel3.get(
+			const sHash = getPRNGBySeed(
 				worldX * 15731 + worldZ * 789221 + s * 1013,
 				seedAsInt,
 			);

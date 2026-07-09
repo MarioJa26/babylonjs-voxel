@@ -1,4 +1,4 @@
-import { Squirrel3 } from "@/code/Generation/NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "@/code/Generation/NoiseAndParameters/Squirrel13";
 import type { TreeDefinition } from "../../BiomeTypes";
 import {
 	DIR_X,
@@ -29,7 +29,7 @@ export const OAK_TREE: TreeDefinition = {
 		) => void,
 		seedAsInt: number,
 	): void {
-		const heightHash = Squirrel3.get(
+		const heightHash = getPRNGBySeed(
 			worldX * 374761393 + worldZ * 678446653,
 			seedAsInt,
 		);
@@ -92,7 +92,7 @@ export const BIRCH_TREE: TreeDefinition = {
 	baseHeight: 8,
 	heightVariance: 3,
 	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
-		const heightHash = Squirrel3.get(
+		const heightHash = getPRNGBySeed(
 			worldX * 374761393 + worldZ * 678446653,
 			seedAsInt,
 		);
@@ -169,7 +169,7 @@ export const PLAINS_TREE: TreeDefinition = {
 	baseHeight: 6,
 	heightVariance: 2,
 	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
-		const heightHash = Squirrel3.get(
+		const heightHash = getPRNGBySeed(
 			worldX * 374761393 + worldZ * 678446653,
 			seedAsInt,
 		);
@@ -204,7 +204,7 @@ export const TEMPERATE_RAINFOREST_TREE: TreeDefinition = {
 	baseHeight: 14,
 	heightVariance: 8,
 	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
-		const h = Squirrel3.get(worldX * 374761393 + worldZ * 678446653, seedAsInt);
+		const h = getPRNGBySeed(worldX * 374761393 + worldZ * 678446653, seedAsInt);
 		const height = this.baseHeight + (Math.abs(h) % (this.heightVariance + 1));
 		const woodId = this.woodId;
 		const leavesId = this.leavesId;
@@ -223,7 +223,7 @@ export const TEMPERATE_RAINFOREST_TREE: TreeDefinition = {
 		// ── Buttress roots — droop as they extend outward ─────────────────────
 		const buttressCount = 4 + (Math.abs(h >> 2) % 2);
 		for (let b = 0; b < buttressCount; b++) {
-			const bHash = Squirrel3.get(
+			const bHash = getPRNGBySeed(
 				worldX * 31337 + worldZ * 6971 + b * 101,
 				seedAsInt,
 			);
@@ -304,7 +304,7 @@ export const TEMPERATE_RAINFOREST_TREE: TreeDefinition = {
 		// ── Secondary canopy lobes — solid spheres ────────────────────────────
 		const lobeCount = 3 + (Math.abs(h >> 12) % 2);
 		for (let l = 0; l < lobeCount; l++) {
-			const lHash = Squirrel3.get(
+			const lHash = getPRNGBySeed(
 				worldX * 9719 + worldZ * 19997 + l * 53,
 				seedAsInt,
 			);
@@ -334,7 +334,7 @@ export const TEMPERATE_RAINFOREST_TREE: TreeDefinition = {
 		// ── Hanging moss ──────────────────────────────────────────────────────
 		const mossCount = 8 + (Math.abs(h >> 14) % 8);
 		for (let m = 0; m < mossCount; m++) {
-			const mHash = Squirrel3.get(
+			const mHash = getPRNGBySeed(
 				worldX * 7919 + worldZ * 6271 + m * 37,
 				seedAsInt,
 			);
@@ -362,7 +362,7 @@ export const CHERRY_BLOSSOM_TREE: TreeDefinition = {
 	baseHeight: 6,
 	heightVariance: 3,
 	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
-		const h = Squirrel3.get(worldX * 374761393 + worldZ * 678446653, seedAsInt);
+		const h = getPRNGBySeed(worldX * 374761393 + worldZ * 678446653, seedAsInt);
 		const height = this.baseHeight + (Math.abs(h) % (this.heightVariance + 1));
 		const woodId = this.woodId;
 		const leavesId = this.leavesId;
@@ -388,7 +388,7 @@ export const CHERRY_BLOSSOM_TREE: TreeDefinition = {
 
 		const droopCount = 4 + (Math.abs(h >> 4) % 3);
 		for (let d = 0; d < droopCount; d++) {
-			const dHash = Squirrel3.get(
+			const dHash = getPRNGBySeed(
 				worldX * 7919 + worldZ * 6271 + d * 47,
 				seedAsInt,
 			);
@@ -421,7 +421,7 @@ export const AUTUMN_TREE: TreeDefinition = {
 	baseHeight: 8,
 	heightVariance: 4,
 	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
-		const h = Squirrel3.get(worldX * 374761393 + worldZ * 678446653, seedAsInt);
+		const h = getPRNGBySeed(worldX * 374761393 + worldZ * 678446653, seedAsInt);
 		const height = this.baseHeight + (Math.abs(h) % (this.heightVariance + 1));
 		const woodId = this.woodId;
 		const leavesId = this.leavesId;
@@ -451,7 +451,7 @@ export const AUTUMN_TREE: TreeDefinition = {
 
 		const lobeCount = 2 + (Math.abs(h >> 8) % 2);
 		for (let l = 0; l < lobeCount; l++) {
-			const lHash = Squirrel3.get(
+			const lHash = getPRNGBySeed(
 				worldX * 9719 + worldZ * 19997 + l * 53,
 				seedAsInt,
 			);
@@ -487,7 +487,7 @@ export const PINE_TREE: TreeDefinition = {
 	heightVariance: 6,
 
 	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
-		const h = Squirrel3.get(
+		const h = getPRNGBySeed(
 			(worldX * 374761393 + worldZ * 678446653) | 0,
 			seedAsInt,
 		);

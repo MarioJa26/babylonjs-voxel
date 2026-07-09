@@ -9,10 +9,9 @@ import {
 	SSAORenderingPipeline,
 	Vector3,
 } from "@babylonjs/core";
-
 import { PlayerHud } from "../Player/Hud/PlayerHud";
 import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
-import { SkyShader } from "../World/Light/SkyShader";
+import { SkyFragmentShader, SkyVertexShader } from "../World/Light/SkyShader";
 import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 
 export class WorldEnvironment {
@@ -93,8 +92,8 @@ export class WorldEnvironment {
 		this.skybox.ignoreCameraMaxZ = true;
 
 		// Register the new sky shader
-		Effect.ShadersStore.skyVertexShader = SkyShader.skyVertexShader;
-		Effect.ShadersStore.skyFragmentShader = SkyShader.skyFragmentShader;
+		Effect.ShadersStore.skyVertexShader = SkyVertexShader;
+		Effect.ShadersStore.skyFragmentShader = SkyFragmentShader;
 
 		// Create a ShaderMaterial using the sky shader
 		const skyboxMaterial = new ShaderMaterial(

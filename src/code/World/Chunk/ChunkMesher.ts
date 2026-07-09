@@ -16,9 +16,20 @@ import {
 import { Map1 } from "@/code/Maps/Map1";
 import { WorldEnvironment } from "../../Maps/WorldEnvironment";
 import { GLOBAL_VALUES } from "../GLOBAL_VALUES";
-import { Lod2Shader } from "../Light/Lod2Shader";
-import { Lod3Shader } from "../Light/Lod3Shader";
-import { OpaqueShader } from "../Light/OpaqueShader";
+import {
+	LOD2ChunkVertexShader,
+	LOD2OpaqueFragmentShader,
+	LOD2TransparentFragmentShader,
+} from "../Light/Lod2Shader";
+import {
+	LOD3chunkVertexShader,
+	LOD3OpaqueFragmentShader,
+	LOD3transparentFragmentShader,
+} from "../Light/Lod3Shader";
+import {
+	opaqueChunkFragmentShader,
+	opaqueChunkVertexShader,
+} from "../Light/OpaqueShader";
 import { TransparentShader } from "../Light/TransparentShader";
 import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
 import { TextureCache } from "../Texture/TextureCache";
@@ -706,8 +717,8 @@ export async function initAtlas(): Promise<void> {
 	// -------------------------------------------------------------------------
 	// Shader registration
 	// -------------------------------------------------------------------------
-	Effect.ShadersStore.chunkVertexShader = OpaqueShader.chunkVertexShader;
-	Effect.ShadersStore.chunkFragmentShader = OpaqueShader.chunkFragmentShader;
+	Effect.ShadersStore.chunkVertexShader = opaqueChunkVertexShader;
+	Effect.ShadersStore.chunkFragmentShader = opaqueChunkFragmentShader;
 
 	// IMPORTANT FIX:
 	// Transparent chunk meshes must use the transparent vertex shader,
@@ -717,15 +728,15 @@ export async function initAtlas(): Promise<void> {
 	Effect.ShadersStore.transparentChunkFragmentShader =
 		TransparentShader.chunkFragmentShader;
 
-	Effect.ShadersStore.lod3ChunkVertexShader = Lod3Shader.chunkVertexShader;
-	Effect.ShadersStore.lod3ChunkFragmentShader = Lod3Shader.opaqueFragmentShader;
+	Effect.ShadersStore.lod3ChunkVertexShader = LOD3chunkVertexShader;
+	Effect.ShadersStore.lod3ChunkFragmentShader = LOD3OpaqueFragmentShader;
 	Effect.ShadersStore.lod3TransparentChunkFragmentShader =
-		Lod3Shader.transparentFragmentShader;
+		LOD3transparentFragmentShader;
 
-	Effect.ShadersStore.lod2ChunkVertexShader = Lod2Shader.chunkVertexShader;
-	Effect.ShadersStore.lod2ChunkFragmentShader = Lod2Shader.opaqueFragmentShader;
+	Effect.ShadersStore.lod2ChunkVertexShader = LOD2ChunkVertexShader;
+	Effect.ShadersStore.lod2ChunkFragmentShader = LOD2OpaqueFragmentShader;
 	Effect.ShadersStore.lod2TransparentChunkFragmentShader =
-		Lod2Shader.transparentFragmentShader;
+		LOD2TransparentFragmentShader;
 
 	if (!globalUniformBuffer) {
 		globalUniformBuffer = new UniformBuffer(

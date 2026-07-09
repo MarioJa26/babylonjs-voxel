@@ -1,6 +1,6 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 import { StructureBuilder } from "./StructureBuilder";
@@ -76,13 +76,13 @@ export class DesertOasisFeature implements IWorldFeature {
 		b.ring(cx, cg, cz, radius + 1, BlockType.GravellySand);
 
 		// palms around the rim
-		const palms = 3 + (Math.abs(Squirrel3.get(regionHash, seed)) % 3);
+		const palms = 3 + (Math.abs(getPRNGBySeed(regionHash, seed)) % 3);
 		for (let i = 0; i < palms; i++) {
 			const angle = (i / palms) * Math.PI * 2 + 0.5;
 			const tx = Math.round(cx + Math.cos(angle) * (radius + 1));
 			const tz = Math.round(cz + Math.sin(angle) * (radius + 1));
 			const tg = b.ground(tx, tz);
-			const h = 4 + (Math.abs(Squirrel3.get(i * 57, seed)) % 3);
+			const h = 4 + (Math.abs(getPRNGBySeed(i * 57, seed)) % 3);
 			b.column(tx, tg, tz, h, BlockType.PalmTrunk);
 			b.disc(tx, tg + h, tz, 2, BlockType.PalmLeaves);
 			b.disc(tx, tg + h + 1, tz, 1, BlockType.PalmLeaves);

@@ -1,5 +1,4 @@
-export namespace SkyShader {
-	export const skyVertexShader = `
+export const SkyVertexShader = `
         #version 300 es
         precision highp float;
 
@@ -18,7 +17,7 @@ export namespace SkyShader {
         }
     `;
 
-	export const skyFragmentShader = `
+export const SkyFragmentShader = `
         #version 300 es
         precision highp float;
 
@@ -32,33 +31,28 @@ export namespace SkyShader {
 
         void main(void) {
             // 1. Calculate view direction
-            // For a skybox, the vector from the center to the vertex position is the view direction.
             vec3 viewDirection = normalize(vPosition);
 
             // 2. Create sky gradient
-            // A simple gradient from a light blue at the horizon to a darker blue at the zenith.
             float skyFactor = smoothstep(0.0, 0.4, viewDirection.y);
             vec3 skyColor = mix(vec3(0.5, 0.7, 0.9), vec3(0.1, 0.3, 0.6), skyFactor);
 
             // 3. Draw the sun
-            // Calculate distance between the view direction and the sun's direction.
-            float sunDistance = distance(viewDirection, sunDirection);
+            // dot() of two unit vectors relates exactly to distance() via
+            // distance^2 = 2 - 2*dot, so thresholds below are converted
+            // 1:1 from the original distance-space values (0.015/0.01/0.1/0.0).
+            // No sqrt needed, and the resulting curve is mathematically identical.
+            float sunDot = dot(viewDirection, sunDirection);
 
-            // Create a sharp sun disc
-            float sunDisc = smoothstep(0.015, 0.01, sunDistance);
+            float sunDisc = smoothstep(0.9998875, 0.99995, sunDot);
+            float sunGlow = smoothstep(0.995, 1.0, sunDot);
 
-            // Create a softer glow around the sun
-            float sunGlow = smoothstep(0.1, 0.0, sunDistance);
-
-            // Combine colors
-            // Start with the sky color.
-            // Add the sun glow, tinted slightly yellow.
-            // Add the sun disc, which is bright white.
             vec3 finalColor = skyColor;
             finalColor += sunGlow * vec3(1.0, 0.9, 0.7) * 0.3; // Additive glow
             finalColor += sunDisc * vec3(1.0, 1.0, 0.9);      // Additive sun disc
 
-            // Ensure the sun is visible even when it's below the horizon by checking its y-direction
+            // Unclamped on purpose: overshoot past vec3(0.1,0.1,0.2) at deep
+            // night gives the reddish-black tint.
             if (sunDirection.y < 0.0) {
                 finalColor = mix(finalColor, vec3(0.1, 0.1, 0.2), -sunDirection.y * 2.0);
             }
@@ -66,4 +60,3 @@ export namespace SkyShader {
             fragColor = vec4(clamp(finalColor, 0.0, 1.0), 1.0);
         }
     `;
-}

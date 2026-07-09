@@ -1,6 +1,6 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import type { Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 
@@ -56,9 +56,9 @@ export class AbyssalTempleFeature implements IWorldFeature {
 			return;
 
 		const templeY =
-			-100 - (Math.abs(Squirrel3.get(region.regionHash, seed)) % 200);
+			-100 - (Math.abs(getPRNGBySeed(region.regionHash, seed)) % 200);
 		const templeHeight =
-			12 + (Math.abs(Squirrel3.get(region.regionHash + 5, seed)) % 8);
+			12 + (Math.abs(getPRNGBySeed(region.regionHash + 5, seed)) % 8);
 		const radiusSq = templeRadius * templeRadius;
 
 		for (let dy = 0; dy < templeHeight; dy++) {

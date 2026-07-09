@@ -1,5 +1,5 @@
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
-import { Squirrel3 } from "./NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "./NoiseAndParameters/Squirrel13";
 
 type OreDefinition = {
 	id: number;
@@ -110,7 +110,7 @@ export class OreGenerator {
 			const chunkCenterY = chunkWorldY + CHUNK_SIZE / 2;
 			if (chunkCenterY > ore.maxY) continue;
 
-			const hash = Squirrel3.get(
+			const hash = getPRNGBySeed(
 				chunkX * 374761393 + chunkY * 668265263 + chunkZ * 955191817 + ore.id,
 				this.seedAsInt,
 			);
@@ -119,13 +119,13 @@ export class OreGenerator {
 
 			const veinCenterX =
 				chunkWorldX +
-				(Math.abs(Squirrel3.get(hash, this.seedAsInt)) % CHUNK_SIZE);
+				(Math.abs(getPRNGBySeed(hash, this.seedAsInt)) % CHUNK_SIZE);
 			const veinCenterY =
 				chunkWorldY +
-				(Math.abs(Squirrel3.get(hash + 1, this.seedAsInt)) % CHUNK_SIZE);
+				(Math.abs(getPRNGBySeed(hash + 1, this.seedAsInt)) % CHUNK_SIZE);
 			const veinCenterZ =
 				chunkWorldZ +
-				(Math.abs(Squirrel3.get(hash + 2, this.seedAsInt)) % CHUNK_SIZE);
+				(Math.abs(getPRNGBySeed(hash + 2, this.seedAsInt)) % CHUNK_SIZE);
 			const radius = ore.veinRadius;
 			const radiusSq = radius * radius;
 			let placed = 0;

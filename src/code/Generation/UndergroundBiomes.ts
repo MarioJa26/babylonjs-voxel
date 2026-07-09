@@ -1,4 +1,4 @@
-import { Squirrel3 } from "./NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "./NoiseAndParameters/Squirrel13";
 
 export type UndergroundBiome = {
 	id: number;
@@ -139,7 +139,7 @@ export class UndergroundBiomeSelector {
 
 		// Squirrel3 hash — same logic as before, no change in output.
 		const hash = Math.abs(
-			Squirrel3.get(
+			getPRNGBySeed(
 				(worldX * 374761393 + worldY * 668265263 + worldZ * 955191817) | 0,
 				this.seedAsInt,
 			),

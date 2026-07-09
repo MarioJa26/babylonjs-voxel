@@ -1,6 +1,6 @@
 import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
-import { Squirrel3 } from "../NoiseAndParameters/Squirrel13";
+import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
 import { StructureBuilder } from "./StructureBuilder";
@@ -70,7 +70,7 @@ export class IglooFeature implements IWorldFeature {
 
 		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
 		const baseY = b.footprintGround(cx, cz, radius, radius).min;
-		const entrance = Math.abs(Squirrel3.get(region.regionHash, seed)) % 4;
+		const entrance = Math.abs(getPRNGBySeed(region.regionHash, seed)) % 4;
 
 		// dome: solid lower courses + ringed upper courses
 		for (let dy = 0; dy <= 3; dy++) {

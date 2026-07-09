@@ -1,5 +1,4 @@
-export class OpaqueShader {
-	static readonly chunkVertexShader = `
+export const opaqueChunkVertexShader = `
         #version 300 es
         precision highp float;
 
@@ -205,7 +204,7 @@ export class OpaqueShader {
         }
 `;
 
-	static readonly chunkFragmentShader = `
+export const opaqueChunkFragmentShader = `
     #version 300 es
     precision highp float;
 
@@ -266,4 +265,3 @@ export class OpaqueShader {
         fragColor = vec4((diffuseColor.rgb * (1.0 + diffuseIntensity * sunLightIntensity) + specular) * lightMix * aoFactor, 1.0);
     }
 `;
-}
