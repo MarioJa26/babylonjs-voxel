@@ -264,6 +264,12 @@ export class OcclusionCuller {
 	private _topoDirtyFrameCount = 0;
 	private static readonly TOPO_THROTTLE_FRAMES = 3;
 
+	// Cached visibility results so we can skip the O(chunks) sweep when nothing
+	// that affects visibility has changed since last frame.
+	private _lastSweepVpHash = -1;
+	private _lastTotal = 0;
+	private _lastOccluded = 0;
+
 	private _dirtyConnectivityChunks: Chunk[] = [];
 
 	private _bfsInProgress = false;
@@ -349,7 +355,15 @@ export class OcclusionCuller {
 			}
 		}
 
-		// VP matrix hash
+		// ── Decide whether the expensive visibility sweep must run ──────────────
+		// The BFS topology restart above is already gated on camera-chunk
+		// movement. The per-chunk frustum/backface sweep and the merged-group
+		// loop are O(visible chunks) with matrix math, so we skip them entirely
+		// when the camera hasn't moved/rotated and no BFS is in flight —
+		// visibility is then identical to the previous frame.
+		const bfsWasInProgress = this._bfsInProgress;
+
+		// VP matrix hash (cheap, constant time) — also drives frustum-plane cache.
 		const view = camera.getViewMatrix(true);
 		const proj = camera.getProjectionMatrix();
 		view.multiplyToRef(proj, _vpMatrix);
@@ -359,6 +373,18 @@ export class OcclusionCuller {
 			cacheFrustumPlanes(_vpMatrix);
 			_lastVPHash = vpHash;
 		}
+
+		const viewChanged = vpHash !== this._lastSweepVpHash;
+		const needSweep =
+			cameraMoved || viewChanged || bfsWasInProgress || needInitialBFS;
+
+		if (!needSweep) {
+			out.total = this._lastTotal;
+			out.occluded = this._lastOccluded;
+			out.timeMs = performance.now() - t0;
+			return out;
+		}
+		this._lastSweepVpHash = vpHash;
 
 		// Camera forward for backface culling
 		Vector3.TransformNormalToRef(
@@ -555,6 +581,9 @@ export class OcclusionCuller {
 		out.total = total;
 		out.occluded = total - visibleCount;
 		out.timeMs = performance.now() - t0;
+		this._lastTotal = total;
+		this._lastOccluded = total - visibleCount;
+		this._lastSweepVpHash = vpHash;
 		return out;
 	}
 

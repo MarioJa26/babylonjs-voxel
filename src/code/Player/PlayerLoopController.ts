@@ -17,6 +17,7 @@ import {
 	updateChunksAround,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
+import { getMergedMeshFlushStats } from "../World/Chunk/MergedMeshManager";
 import { BlockTickScheduler } from "../World/Chunk/Worker/BlockTickScheduler";
 import { processWaterUpdate } from "../World/Chunk/Worker/WaterSimulation";
 import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
@@ -55,6 +56,10 @@ export class PlayerLoopController {
 
 	// ---- debug HUD throttle ----
 	#lastDebugHudUpdateMs = 0;
+	// EMA-smoothed main-thread time spent inside onBeforeRender (game logic +
+	// chunk streaming + occlusion). Excludes GPU render time — pair with
+	// "Frame Ms" (engine.getDeltaTime) to see render-vs-logic split.
+	#mainThreadMs = 0;
 	static readonly DEBUG_HUD_INTERVAL_MS = 250;
 
 	// ---- observer references for cleanup ----
@@ -85,6 +90,7 @@ export class PlayerLoopController {
 
 		this.#onBeforeRenderObs = this.scene.onBeforeRenderObservable.add(() => {
 			const dt = (this.scene.deltaTime || 0) / 1000;
+			const _frameStart = performance.now();
 
 			BlockTickScheduler.getInstance().processFrame();
 
@@ -122,6 +128,10 @@ export class PlayerLoopController {
 
 			// Occlusion culling – must run after chunk loading and before Babylon evaluates the scene.
 			this.#occlusionCuller.update(this.scene, this.#lastOcclusionStats);
+
+			// Main-thread work time for this frame (EMA-smoothed).
+			const _frameMs = performance.now() - _frameStart;
+			this.#mainThreadMs = this.#mainThreadMs * 0.9 + _frameMs * 0.1;
 		});
 
 		this.#onAfterRenderObs = this.scene.onAfterRenderObservable.add(() => {
@@ -288,6 +298,16 @@ export class PlayerLoopController {
 			"performance",
 		);
 		PlayerHud.updateDebugInfo(
+			"Frame Ms",
+			this.engine.getDeltaTime().toFixed(1),
+			"performance",
+		);
+		PlayerHud.updateDebugInfo(
+			"Main Thread Ms",
+			this.#mainThreadMs.toFixed(1),
+			"performance",
+		);
+		PlayerHud.updateDebugInfo(
 			"Faces",
 			this.scene.getActiveIndices() / 3,
 			"performance",
@@ -405,6 +425,13 @@ export class PlayerLoopController {
 			"workers",
 		);
 		PlayerHud.updateDebugInfo(
+			"Worker Idle %",
+			workerStats.workerCount > 0
+				? ((workerStats.idleWorkers / workerStats.workerCount) * 100).toFixed(0)
+				: "0",
+			"workers",
+		);
+		PlayerHud.updateDebugInfo(
 			"Deferred Light",
 			`seed:${workerStats.deferredLightingSeedStateCount} pump:${workerStats.deferredLightingPumpScheduled ? "on" : "off"} enq:${workerStats.deferredLightingEnqueuedTotal} repl:${workerStats.deferredLightingSeedReplacedTotal} proc:${workerStats.deferredLightingProcessedLastFrame}/${workerStats.deferredLightingProcessedTotal} drop:${workerStats.deferredLightingDroppedTotal}`,
 			"workers",
@@ -412,6 +439,13 @@ export class PlayerLoopController {
 		PlayerHud.updateDebugInfo(
 			"Worker Dispatch",
 			`last:${workerStats.lastDispatchCount} total:${workerStats.totalDispatchCount} budget:${workerStats.dispatchBudgetPerTick || "inf"}`,
+			"workers",
+		);
+
+		const meshStats = getMergedMeshFlushStats();
+		PlayerHud.updateDebugInfo(
+			"Mesh Build",
+			`${meshStats.lastMs.toFixed(1)}ms (avg ${meshStats.avgMs.toFixed(1)}ms)`,
 			"workers",
 		);
 

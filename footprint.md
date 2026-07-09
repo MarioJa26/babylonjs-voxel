@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-09T18:56:46.438Z
+Generated: 2026-07-09T20:48:34.412Z
 
-> **Summary:** 133 classes · 2303 members · 502 module-level functions · 47098 LOC
+> **Summary:** 133 classes · 2305 members · 502 module-level functions · 47196 LOC
 
 ---
 
@@ -3101,7 +3101,7 @@ Generated: 2026-07-09T18:56:46.438Z
 
 ---
 
-## `Player/PlayerLoopController.ts` (423 LOC)
+## `Player/PlayerLoopController.ts` (451 LOC)
 
 ### export class PlayerLoopController
 
@@ -3122,6 +3122,7 @@ Generated: 2026-07-09T18:56:46.438Z
 - `#occlusionCuller: unknown`
 - `#lastOcclusionStats: unknown`
 - `#lastDebugHudUpdateMs: unknown`
+- `#mainThreadMs: unknown`
 - `static readonly DEBUG_HUD_INTERVAL_MS: unknown`
 - `#onBeforeRenderObs: Observer<Scene> | null`
 - `#onAfterRenderObs: Observer<Scene> | null`
@@ -3945,7 +3946,7 @@ Generated: 2026-07-09T18:56:46.438Z
 
 ---
 
-## `World/Chunk/chunkWorker.ts` (392 LOC)
+## `World/Chunk/chunkWorker.ts` (439 LOC)
 
 ### export class ChunkWorker
 
@@ -3955,30 +3956,29 @@ Generated: 2026-07-09T18:56:46.438Z
 **Properties**
 - `private terrainWorker: Worker`
 - `private voxelWorker: Worker`
-- `private warnedNonSharedRemeshPayload: unknown`
 - `private distantTerrainSharedInitialized: unknown`
 - `private lightSharedInitialized: unknown`
-- `private readonly _neighborScratch: (
-		| Uint8Array
-		| Uint16Array
-		| null
-		| undefined
-	)[]`
+- `private readonly _neighborScratch: (Uint16Array | undefined)[]`
 - `private readonly _neighborLightScratch: (Uint8Array | undefined)[]`
-- `private readonly _neighborUniformIdScratch: (number | undefined)[]`
-- `private readonly _neighborPaletteScratch: (
-		| Uint8Array
-		| Uint16Array
-		| null
-		| undefined
-	)[]`
-- `private static readonly EMPTY_NEIGHBOR_BLOCKS: unknown`
-- `private static readonly EMPTY_NEIGHBOR_LIGHTS: unknown`
+- `private static readonly _MAX_BORDER: unknown`
+- `private readonly _neighborBorderScratch: Uint16Array[]`
+- `private readonly _neighborLightBorderScratch: Uint8Array[]`
 - `readonly #lightMutateMsg: LightMutateRequest`
 - `readonly #lightEmissionMsg: LightAddEmissionRequest`
 - `readonly #lightSkyReconcileMsg: LightSkyReconcileRequest`
 - `readonly #lightPropagateMsg: LightPropagateDeferredRequest`
-- `private readonly paletteToTyped: unknown`
+- `readonly #voxelMeshMsg: {
+		type: WorkerTaskType.GenerateFullMesh;
+		chunkId: bigint;
+		lod: number;
+		chunk_size: number;
+		block_array: Uint8Array | Uint16Array;
+		uniformBlockId: number | undefined;
+		palette: Uint8Array | Uint16Array | null | undefined;
+		light_array: Uint8Array | undefined;
+		neighbors: (Uint16Array | undefined)[];
+		neighborLights: (Uint8Array | undefined)[];
+	}`
 - `private static readonly _REMESH_OFFSETS: readonly {
 		readonly dx: number;
 		readonly dy: number;
@@ -4050,7 +4050,7 @@ Generated: 2026-07-09T18:56:46.438Z
 
 ---
 
-## `World/Chunk/ChunkWorkerPool.ts` (1699 LOC)
+## `World/Chunk/ChunkWorkerPool.ts` (1701 LOC)
 
 ### export class ChunkWorkerPool
 
@@ -4354,7 +4354,7 @@ Generated: 2026-07-09T18:56:46.438Z
 
 ---
 
-## `World/Chunk/DataStructures/WorkerMessageType.ts` (207 LOC)
+## `World/Chunk/DataStructures/WorkerMessageType.ts` (205 LOC)
 
 **Types / Interfaces / Enums**
 - interface `SerializedLightSeedState`
@@ -4801,7 +4801,7 @@ Generated: 2026-07-09T18:56:46.438Z
 
 ---
 
-## `World/Chunk/MergedMeshManager.ts` (452 LOC)
+## `World/Chunk/MergedMeshManager.ts` (469 LOC)
 
 ### export class MergedMeshMeta
 
@@ -4824,6 +4824,10 @@ Generated: 2026-07-09T18:56:46.438Z
 - `export function getAllGroups(): MergedMeshGroup[]`
 - `export function assignChunkToGroup(chunk: Chunk, opaqueData: MeshData | null, transparentData: MeshData | null): MergedMeshGroup`
 - `export function removeChunkFromGroup(chunk: Chunk): void`
+- `export function getMergedMeshFlushStats(): {
+	lastMs: number;
+	avgMs: number;
+}`
 - `export function flushDirtyMergedGroups(): void`
 - `export function disposeAll(): void`
 - `function ensureOpaqueMergedCapacity(group: MergedMeshGroup, faceCount: number): MergedBuffers`
@@ -4839,7 +4843,7 @@ Generated: 2026-07-09T18:56:46.438Z
 
 ---
 
-## `World/Chunk/voxel.worker.ts` (125 LOC)
+## `World/Chunk/voxel.worker.ts` (121 LOC)
 
 **Module-level functions**
 - `function expandCenterOnly(request: VoxelWorkerRequest): Uint8Array | Uint16Array`
@@ -5429,17 +5433,17 @@ Generated: 2026-07-09T18:56:46.438Z
 
 ---
 
-## `World/MeshPipeline/core/WorkerMeshHelpers.ts` (191 LOC)
+## `World/MeshPipeline/core/WorkerMeshHelpers.ts` (184 LOC)
 
 **Module-level functions**
 - `export function createEmptyWorkerInternalMeshData(): WorkerInternalMeshData`
 - `export function toTransferableMeshData(data: WorkerInternalMeshData): MeshData`
-- `function resolveNeighborBlock(neighbor: Uint8Array | Uint16Array | undefined, palette: Uint8Array | Uint16Array | null | undefined, uniformId: number | undefined, lx: number, ly: number, lz: number, size: number, size2: number): number`
 - `export function createMeshContextFromPayload(base: WorkerMeshBaseContext, input: WorkerMeshInput): MeshContext`
 
 **Types / Interfaces / Enums**
 - type `WorkerMeshBaseContext`
 - type `WorkerMeshInput`
+- type `NeighborOffset`
 
 ---
 
@@ -5455,7 +5459,7 @@ Generated: 2026-07-09T18:56:46.438Z
 
 ---
 
-## `World/Occlusion/OcclusionCuller.ts` (712 LOC)
+## `World/Occlusion/OcclusionCuller.ts` (729 LOC)
 
 ### export class OcclusionCuller
 
@@ -5470,6 +5474,9 @@ Generated: 2026-07-09T18:56:46.438Z
 - `private _topologyDirty: unknown`
 - `private _topoDirtyFrameCount: unknown`
 - `private static readonly TOPO_THROTTLE_FRAMES: unknown`
+- `private _lastSweepVpHash: unknown`
+- `private _lastTotal: unknown`
+- `private _lastOccluded: unknown`
 - `private _dirtyConnectivityChunks: Chunk[]`
 - `private _bfsInProgress: unknown`
 - `private _bfsQHead: unknown`

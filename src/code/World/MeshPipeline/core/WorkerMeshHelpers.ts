@@ -12,10 +12,8 @@ export type WorkerMeshBaseContext = {
 export type WorkerMeshInput = {
 	block_array: Uint8Array | Uint16Array;
 	light_array?: Uint8Array;
-	neighbors: (Uint8Array | Uint16Array | undefined)[];
+	neighbors: (Uint16Array | undefined)[];
 	neighborLights?: (Uint8Array | undefined)[];
-	neighborPalettes?: (Uint8Array | Uint16Array | null | undefined)[];
-	neighborUniformIds?: (number | undefined)[];
 };
 
 /**
@@ -66,7 +64,6 @@ let _ctxPaddedLight = _paddedLights;
 let _ctxPs = 0;
 let _ctxPs2 = 0;
 let _ctxNeighbors: (Uint8Array | Uint16Array | undefined)[] = [];
-let _ctxNeighborUniformIds: (number | undefined)[] | undefined;
 
 const _readBlock = (x: number, y: number, z: number, _fallback = 0): number => {
 	return _ctxPadded[x + 1 + (y + 1) * _ctxPs + (z + 1) * _ctxPs2];
@@ -82,43 +79,28 @@ const _hasNeighborChunk = (dx: number, dy: number, dz: number): boolean => {
 	const linear = dx + 1 + (dy + 1) * 3 + (dz + 1) * 9;
 	const neighborIndex = linear < 13 ? linear : linear - 1;
 
-	const n = _ctxNeighbors[neighborIndex];
-	if (n) return true;
-
-	return (
-		_ctxNeighborUniformIds !== undefined &&
-		_ctxNeighborUniformIds[neighborIndex] !== undefined
-	);
+	// A neighbor "exists" iff the main thread sent a border slab for it.
+	return _ctxNeighbors[neighborIndex] !== undefined;
 };
 
-/**
- * Resolve a neighbor chunk's local coordinate to a packed block value,
- * handling palette expansion and uniform IDs.
- */
-function resolveNeighborBlock(
-	neighbor: Uint8Array | Uint16Array | undefined,
-	palette: Uint8Array | Uint16Array | null | undefined,
-	uniformId: number | undefined,
-	lx: number,
-	ly: number,
-	lz: number,
-	size: number,
-	size2: number,
-): number {
-	if (uniformId !== undefined) return uniformId;
-	if (!neighbor || neighbor.length === 0) return 0;
-
-	const idx = lx + ly * size + lz * size2;
-
-	if (palette && palette.length > 1) {
-		const packed = neighbor as Uint8Array;
-		const byte = packed[idx >>> 1];
-		const paletteIndex = (idx & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
-		return palette[paletteIndex];
+// ── Precomputed neighbor offset table ─────────────────────────────────────────
+// PERF: The (ox, oy, oz) offset for each of the 26 neighbor slots is fixed and
+// independent of chunk size. Decoding it via Math.floor/modulo on every
+// neighbor for every chunk build (26 * every mesh rebuild) is pure repeated
+// work for a value that never changes. Compute it once at module load and
+// index into it instead.
+type NeighborOffset = readonly [ox: number, oy: number, oz: number];
+const NEIGHBOR_OFFSETS: NeighborOffset[] = (() => {
+	const table: NeighborOffset[] = new Array(26);
+	for (let ni = 0; ni < 26; ni++) {
+		const linear = ni < 13 ? ni : ni + 1;
+		const oz = Math.floor(linear / 9) - 1;
+		const oy = Math.floor((linear % 9) / 3) - 1;
+		const ox = (linear % 3) - 1;
+		table[ni] = [ox, oy, oz];
 	}
-
-	return neighbor[idx] ?? 0;
-}
+	return table;
+})();
 
 /**
  * Rebuild full MeshContext inside the worker from plain postMessage payload.
@@ -142,8 +124,6 @@ export function createMeshContextFromPayload(
 
 	const neighbors = input.neighbors;
 	const neighborLights = input.neighborLights;
-	const neighborPalettes = input.neighborPalettes;
-	const neighborUniformIds = input.neighborUniformIds;
 
 	const lod = base.lod;
 
@@ -155,20 +135,52 @@ export function createMeshContextFromPayload(
 	const padded = _paddedBlocks;
 	const paddedLight = _paddedLights;
 
-	// Zero out the padded buffers.
-	padded.fill(0, 0, psVol);
-	paddedLight.fill(0, 0, psVol);
+	// ── Determine whether the zero-clear is actually needed ──
+	// PERF: The center chunk (indices 1..size on every axis) is always fully
+	// overwritten below, so it never needs clearing. The 1-voxel padding shell
+	// is only "at risk" of holding stale data from a previous build if some
+	// neighbor slab is missing (e.g. at the edge of loaded terrain) — when all
+	// 26 neighbor slabs are present, the border-copy loop below writes every
+	// shell cell itself. In the common interior-of-loaded-world case this lets
+	// us skip an O(ps^3) fill entirely.
+	let needBlockClear = false;
+	for (let i = 0; i < 26; i++) {
+		if (!neighbors[i]) {
+			needBlockClear = true;
+			break;
+		}
+	}
+
+	let needLightClear = !lightArray;
+	if (!needLightClear) {
+		if (!neighborLights) {
+			needLightClear = true;
+		} else {
+			for (let i = 0; i < 26; i++) {
+				if (!neighborLights[i]) {
+					needLightClear = true;
+					break;
+				}
+			}
+		}
+	}
+
+	if (needBlockClear) padded.fill(0, 0, psVol);
+	if (needLightClear) paddedLight.fill(0, 0, psVol);
 
 	// ── Fill center chunk (indices 1..size in each axis) ──
+	// PERF: x is the fastest-varying axis in both the source (block_array) and
+	// destination (padded) layouts, so each x-row is a contiguous run in both
+	// arrays. Use TypedArray#set (native memcpy-ish) per row instead of a
+	// scalar per-voxel loop — collapses the innermost loop from `size`
+	// individual writes to a single bulk copy.
 	for (let z = 0; z < size; z++) {
 		const pZ = (z + 1) * ps2;
 		const cZ = z * size2;
 		for (let y = 0; y < size; y++) {
 			const pIdx = (y + 1) * ps + pZ;
 			const cIdx = y * size + cZ;
-			for (let x = 0; x < size; x++) {
-				padded[x + 1 + pIdx] = blockArray[cIdx + x];
-			}
+			padded.set(blockArray.subarray(cIdx, cIdx + size), 1 + pIdx);
 		}
 	}
 
@@ -179,73 +191,71 @@ export function createMeshContextFromPayload(
 			for (let y = 0; y < size; y++) {
 				const pIdx = (y + 1) * ps + pZ;
 				const cIdx = y * size + cZ;
-				for (let x = 0; x < size; x++) {
-					paddedLight[x + 1 + pIdx] = lightArray[cIdx + x];
-				}
+				paddedLight.set(lightArray.subarray(cIdx, cIdx + size), 1 + pIdx);
 			}
 		}
 	}
 
 	// ── Fill neighbor borders ──
-	// For each of the 26 neighbors, copy the face/edge/corner voxels that
-	// border the center chunk into the appropriate padding positions.
+	// For each of the 26 neighbors, copy the border voxels that touch the
+	// center chunk into the appropriate padding positions. The main thread
+	// sends only the 1-voxel-thick border slab (dense Uint16/Uint8, exactly
+	// xCount*yCount*zCount elements, in (dx, dy, dz) order) per neighbor, so
+	// we can trust indices without bounds-checking each element.
 	const neighborCount = neighbors.length;
 	for (let ni = 0; ni < neighborCount; ni++) {
 		const neighbor = neighbors[ni];
 		const nLight = neighborLights?.[ni];
-		const nPalette = neighborPalettes?.[ni];
-		const nUniform = neighborUniformIds?.[ni];
 
-		// Skip neighbors with no data and no uniform ID.
-		if (!neighbor && nUniform === undefined) continue;
+		// No border data → leave padded as 0 (air), matching old behavior.
+		if (!neighbor) continue;
 
-		// Decode (ox, oy, oz) from linear neighbor index.
-		// The mapping is: linear = ox+1 + (oy+1)*3 + (oz+1)*9
-		// with linear >= 13 → linear - 1.
-		const linear = ni < 13 ? ni : ni + 1;
-		const oz = Math.floor(linear / 9) - 1;
-		const oy = Math.floor((linear % 9) / 3) - 1;
-		const ox = (linear % 3) - 1;
+		const [ox, oy, oz] = NEIGHBOR_OFFSETS[ni];
 
-		// Determine which local coords in the neighbor map to the border.
-		// neighborLocal = ox<0 ? size-1 : ox>0 ? 0 : [0..size-1]
-		// paddedCoord   = ox<0 ? 0     : ox>0 ? size+1 : [1..size]
 		const xCount = ox === 0 ? size : 1;
 		const yCount = oy === 0 ? size : 1;
 		const zCount = oz === 0 ? size : 1;
-
-		const nLxStart = ox < 0 ? size - 1 : 0;
-		const nLyStart = oy < 0 ? size - 1 : 0;
-		const nLzStart = oz < 0 ? size - 1 : 0;
 
 		const pXStart = ox < 0 ? 0 : ox > 0 ? size + 1 : 1;
 		const pYStart = oy < 0 ? 0 : oy > 0 ? size + 1 : 1;
 		const pZStart = oz < 0 ? 0 : oz > 0 ? size + 1 : 1;
 
-		for (let dz = 0; dz < zCount; dz++) {
-			const nLz = nLzStart + dz;
-			const pZ = (pZStart + dz) * ps2;
-			for (let dy = 0; dy < yCount; dy++) {
-				const nLy = nLyStart + dy;
-				const pY = (pYStart + dy) * ps;
-				for (let dx = 0; dx < xCount; dx++) {
-					const nLx = nLxStart + dx;
-					const val = resolveNeighborBlock(
-						neighbor,
-						nPalette,
-						nUniform,
-						nLx,
-						nLy,
-						nLz,
-						size,
-						size2,
-					);
-					padded[pXStart + dx + pY + pZ] = val;
-
-					// Also copy light data if available.
+		if (xCount === size) {
+			// PERF: ox === 0 means every x-run for this neighbor is a full,
+			// contiguous `size`-length row in both the source slab and the
+			// padded destination (x is the fastest axis in both). This covers
+			// every face neighbor along the x=0 plane and 4 of the 12 edge
+			// neighbors — collapse the per-voxel writes into row-sized
+			// TypedArray#set calls.
+			let ci = 0;
+			for (let dz = 0; dz < zCount; dz++) {
+				const pZ = (pZStart + dz) * ps2;
+				for (let dy = 0; dy < yCount; dy++) {
+					const pY = (pYStart + dy) * ps;
+					const destOffset = pXStart + pY + pZ;
+					padded.set(neighbor.subarray(ci, ci + size), destOffset);
 					if (nLight) {
-						const lIdx = nLx + nLy * size + nLz * size2;
-						paddedLight[pXStart + dx + pY + pZ] = nLight[lIdx] ?? 0;
+						paddedLight.set(nLight.subarray(ci, ci + size), destOffset);
+					}
+					ci += size;
+				}
+			}
+		} else {
+			// Remaining cases (edges/corners not aligned along x) are already
+			// small (at most `size` elements, often just 1), so the per-voxel
+			// loop is fine here.
+			let ci = 0;
+			for (let dz = 0; dz < zCount; dz++) {
+				const pZ = (pZStart + dz) * ps2;
+				for (let dy = 0; dy < yCount; dy++) {
+					const pY = (pYStart + dy) * ps;
+					for (let dx = 0; dx < xCount; dx++) {
+						const dest = pXStart + dx + pY + pZ;
+						padded[dest] = neighbor[ci];
+						if (nLight) {
+							paddedLight[dest] = nLight[ci];
+						}
+						ci++;
 					}
 				}
 			}
@@ -258,7 +268,6 @@ export function createMeshContextFromPayload(
 	_ctxPs = ps;
 	_ctxPs2 = ps2;
 	_ctxNeighbors = neighbors;
-	_ctxNeighborUniformIds = neighborUniformIds;
 
 	return {
 		size,

@@ -426,9 +426,29 @@ export function removeChunkFromGroup(chunk: Chunk): void {
  * Call once per frame/batch after assignChunkToGroup calls to avoid redundant
  * per-chunk rebuilds.
  */
+// ─── Mesh-assembly timing (main-thread merged-group rebuild) ───────────────
+// This is the dominant main-thread cost when chunks stream in: rebuildGroupData
+// allocates/concatenates typed arrays and _onGroupMeshNeedsRebuild uploads them
+// to GPU buffers. Exposed so the debug HUD can show it and so a future worker
+// offload of mesh assembly can be measured against a baseline.
+let _lastMergedFlushMs = 0;
+let _mergedFlushTotalMs = 0;
+let _mergedFlushCount = 0;
+
+export function getMergedMeshFlushStats(): {
+	lastMs: number;
+	avgMs: number;
+} {
+	return {
+		lastMs: _lastMergedFlushMs,
+		avgMs: _mergedFlushCount > 0 ? _mergedFlushTotalMs / _mergedFlushCount : 0,
+	};
+}
+
 export function flushDirtyMergedGroups(): void {
 	if (dirtyGroups.size === 0) return;
 
+	const _start = performance.now();
 	for (const group of dirtyGroups) {
 		if (!groups.has(group.groupKey)) continue;
 		if (!group.dirty) continue;
@@ -439,6 +459,11 @@ export function flushDirtyMergedGroups(): void {
 	}
 
 	dirtyGroups.clear();
+
+	const _elapsed = performance.now() - _start;
+	_lastMergedFlushMs = _elapsed;
+	_mergedFlushTotalMs += _elapsed;
+	_mergedFlushCount++;
 }
 
 /**

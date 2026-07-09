@@ -1205,10 +1205,16 @@ export class ChunkWorkerPool {
 		const configured = SETTING_PARAMS.CHUNK_WORKER_POOL_SIZE | 0;
 		if (Number.isFinite(configured) && configured > 0) return configured;
 
+		// Each ChunkWorker spawns TWO workers (terrain/light + voxel-mesh), so
+		// the effective worker count is 2x the ChunkWorker count. Reserve 2
+		// cores for the main thread / render so we never starve the UI thread
+		// (which also does mesh assembly, occlusion culling and game logic).
 		const detected = Math.max(1, (navigator.hardwareConcurrency ?? 0) | 0);
+		const workerBudget = Math.max(2, detected - 2);
+		const chunkWorkerCount = Math.floor(workerBudget / 2);
 		return Math.max(
 			ChunkWorkerPool.MIN_AUTO_POOL_SIZE,
-			Math.min(ChunkWorkerPool.MAX_AUTO_POOL_SIZE, detected),
+			Math.min(ChunkWorkerPool.MAX_AUTO_POOL_SIZE, chunkWorkerCount),
 		);
 	}
 

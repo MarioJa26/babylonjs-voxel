@@ -16,7 +16,7 @@ import {
 } from "./DataStructures/WorkerMessageType";
 
 export interface VoxelWorkerRequest {
-	task: "voxelMesh";
+	type: WorkerTaskType.GenerateFullMesh;
 
 	chunkId: bigint;
 	lod: number;
@@ -27,10 +27,8 @@ export interface VoxelWorkerRequest {
 	palette?: Uint8Array | Uint16Array | null;
 	light_array?: Uint8Array;
 
-	neighbors: (Uint8Array | Uint16Array | null | undefined)[];
+	neighbors: (Uint16Array | undefined)[];
 	neighborLights?: (Uint8Array | undefined)[];
-	neighborUniformIds?: (number | undefined)[];
-	neighborPalettes?: (Uint8Array | Uint16Array | null | undefined)[];
 }
 
 function expandCenterOnly(
@@ -97,7 +95,7 @@ function ensureShapesReady(): Promise<void> {
 
 self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 	const data = event.data;
-	if (data.task !== "voxelMesh") return;
+	if (data.type !== WorkerTaskType.GenerateFullMesh) return;
 
 	void ensureShapesReady().then(() => {
 		const centerBlockArray = expandCenterOnly(data);
@@ -105,10 +103,8 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 		const meshInput: WorkerMeshInput = {
 			block_array: centerBlockArray,
 			light_array: data.light_array,
-			neighbors: data.neighbors as (Uint8Array | Uint16Array | undefined)[],
+			neighbors: data.neighbors as (Uint16Array | undefined)[],
 			neighborLights: data.neighborLights,
-			neighborPalettes: data.neighborPalettes,
-			neighborUniformIds: data.neighborUniformIds,
 		};
 
 		const baseCtx: WorkerMeshBaseContext = {

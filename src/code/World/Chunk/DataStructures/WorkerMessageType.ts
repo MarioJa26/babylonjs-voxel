@@ -83,11 +83,11 @@ export type GenerateFullMeshRequest = {
 
 	chunk_size: number;
 
-	// Neighbor payloads (26 neighbors, center omitted)
-	neighbors: (NeighborBlockArray | null | undefined)[];
-	neighborLights?: NeighborLightArray[];
-	neighborUniformIds?: (number | undefined)[];
-	neighborPalettes?: (PackedPalette | undefined)[];
+	// Neighbor payloads (26 neighbors, center omitted). Only the 1-voxel-thick
+	// border slab of each neighbor is sent (dense Uint16), pre-expanded on the
+	// main thread, so the worker just copies it into its (size+2)^3 padded grid.
+	neighbors: (Uint16Array | undefined)[];
+	neighborLights?: (Uint8Array | undefined)[];
 };
 
 export type DistantTerrainTask = {
