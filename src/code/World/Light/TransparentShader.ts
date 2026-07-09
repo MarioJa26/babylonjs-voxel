@@ -1,5 +1,4 @@
-export namespace TransparentShader {
-	export const chunkVertexShader = `
+export const transparentChunkVertexShader = `
     #version 300 es
     precision highp float;
 
@@ -152,7 +151,7 @@ export namespace TransparentShader {
     }
   `;
 
-	export const chunkFragmentShader = `
+export const transparentChunkFragmentShader = `
   #version 300 es
   precision highp float;
 
@@ -295,4 +294,3 @@ export namespace TransparentShader {
     fragColor = vec4(finalColor, alpha);
   }
   `;
-}

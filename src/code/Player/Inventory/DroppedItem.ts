@@ -31,7 +31,12 @@ import {
 } from "@/code/World/Shape/FenceConnect";
 import { getAtlasTile } from "@/code/World/Texture/BlockTextures";
 import { isCollidableBlock } from "@/code/World/Texture/BlockType";
-import { TextureAtlasFactory } from "@/code/World/Texture/TextureAtlasFactory";
+import {
+	atlasSize,
+	atlasTileSize,
+	getDiffuse,
+	setDiffuse,
+} from "@/code/World/Texture/TextureAtlasFactory";
 import type { Player } from "../Player";
 import type { Item } from "./Item";
 
@@ -236,7 +241,7 @@ export class DroppedItem implements IUsable {
 	}
 
 	#getOrCreateAtlasTexture(): Texture {
-		let atlas = TextureAtlasFactory.getDiffuse();
+		let atlas = getDiffuse();
 		if (!atlas) {
 			console.warn("error atlas not saved");
 			atlas = new Texture("/texture/diffuse_atlas.png", Map1.mainScene, {
@@ -245,7 +250,7 @@ export class DroppedItem implements IUsable {
 			});
 			atlas.wrapU = Texture.CLAMP_ADDRESSMODE;
 			atlas.wrapV = Texture.CLAMP_ADDRESSMODE;
-			TextureAtlasFactory.setDiffuse(atlas);
+			setDiffuse(atlas);
 		}
 		return atlas;
 	}
@@ -265,8 +270,7 @@ export class DroppedItem implements IUsable {
 			DroppedItem.#tileTextures.set(blockId, tileTex);
 		}
 		const tile = getAtlasTile(item.blockId) ?? [0, 0];
-		const atlasSize = TextureAtlasFactory.atlasSize;
-		const tileSize = TextureAtlasFactory.atlasTileSize;
+		const tileSize = atlasTileSize;
 		const clampedX = Math.max(0, Math.min(atlasSize - 1, tile[0]));
 		const clampedY = Math.max(0, Math.min(atlasSize - 1, tile[1]));
 		const atlasRow = atlasSize - 1 - clampedY;

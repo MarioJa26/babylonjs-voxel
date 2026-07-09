@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-09T14:46:24.280Z
+Generated: 2026-07-09T16:18:29.661Z
 
-> **Summary:** 134 classes · 2304 members · 498 module-level functions · 47109 LOC
+> **Summary:** 133 classes · 2302 members · 500 module-level functions · 47144 LOC
 
 ---
 
@@ -660,7 +660,7 @@ Generated: 2026-07-09T14:46:24.280Z
 
 ---
 
-## `Generation/DistantTerrain/DistantTerrain.ts` (373 LOC)
+## `Generation/DistantTerrain/DistantTerrain.ts` (377 LOC)
 
 **Module-level functions**
 - `function createEmptyGridMesh(name: string, scene: Scene): Mesh`
@@ -936,10 +936,10 @@ Generated: 2026-07-09T14:46:24.280Z
 
 ---
 
-## `Generation/NoiseAndParameters/Squirrel13.ts` (28 LOC)
+## `Generation/NoiseAndParameters/Squirrel13.ts` (26 LOC)
 
 **Module-level functions**
-- `export function get(position: number, seed: number): number`
+- `export function getPRNGBySeed(position: number, seed: number): number`
 - `export function getPRNG(position: number): number`
 
 ---
@@ -2021,7 +2021,7 @@ Generated: 2026-07-09T14:46:24.280Z
 
 ---
 
-## `Maps/BlockBreakParticles.ts` (103 LOC)
+## `Maps/BlockBreakParticles.ts` (106 LOC)
 
 **Module-level functions**
 - `export function play(scene: Scene, position: Vector3, blockId: number, packedLight: number): void`
@@ -2722,7 +2722,7 @@ Generated: 2026-07-09T14:46:24.280Z
 
 ---
 
-## `Player/Inventory/DroppedItem.ts` (266 LOC)
+## `Player/Inventory/DroppedItem.ts` (270 LOC)
 
 ### export class DroppedItem implements IUsable
 
@@ -2770,7 +2770,7 @@ Generated: 2026-07-09T14:46:24.280Z
 
 ---
 
-## `Player/Inventory/Item.ts` (316 LOC)
+## `Player/Inventory/Item.ts` (315 LOC)
 
 ### export class Item implements IUsable
 
@@ -2818,17 +2818,19 @@ Generated: 2026-07-09T14:46:24.280Z
 
 ---
 
-## `Player/Inventory/ItemRegistry.ts` (100 LOC)
+## `Player/Inventory/ItemRegistry.ts` (135 LOC)
 
 **Module-level functions**
-- `export function toDisplayName(rawName: string): string`
-- `export function initDefaults(): void`
-- `export async function ensureLoaded(url: unknown = DEFAULT_ITEMS_URL): Promise<void>`
-- `export async function loadFromUrl(url: string): Promise<void>`
-- `export function register(def: ItemDefinition): void`
-- `export function get(id: number): ItemDefinition | undefined`
-- `export function getAll(): ItemDefinition[]`
-- `export function isValidDefinition(value: unknown): value is ItemDefinition`
+- `function blockKey(blockId: number, blockState: number): string`
+- `export function registerItemToDisplayName(rawName: string): string`
+- `function initDefaults(): void`
+- `export async function ensureItemRegistryLoaded(url: unknown = DEFAULT_ITEMS_URL): Promise<void>`
+- `async function loadRegisteredItemFromUrl(url: string): Promise<void>`
+- `export function registerItem(def: ItemDefinition): void`
+- `export function getRegisteredItemById(id: number): ItemDefinition | undefined`
+- `export function getItemByBlock(blockId: number, blockState: unknown = 0): ItemDefinition | undefined`
+- `export function getAllRegisteredItems(): ItemDefinition[]`
+- `function isValidDefinition(value: unknown): value is ItemDefinition`
 
 **Types / Interfaces / Enums**
 - type `ItemDefinition`
@@ -2874,7 +2876,7 @@ Generated: 2026-07-09T14:46:24.280Z
 
 ---
 
-## `Player/Inventory/PlayerInventory.ts` (356 LOC)
+## `Player/Inventory/PlayerInventory.ts` (359 LOC)
 
 ### export class PlayerInventory
 
@@ -3592,7 +3594,7 @@ Generated: 2026-07-09T14:46:24.280Z
 
 ---
 
-## `World/Boat/BoatCreatorSystem.ts` (274 LOC)
+## `World/Boat/BoatCreatorSystem.ts` (261 LOC)
 
 **Module-level functions**
 - `export function setSourceBlockIds(ids: Iterable<number>): void`
@@ -3601,28 +3603,28 @@ Generated: 2026-07-09T14:46:24.280Z
 - `export function getSourceBlockIds(): number[]`
 - `export function setVisualMode(mode: VisualMode): void`
 - `export function tryCreateBoatFromMarker(player: Player, markerX: number, markerY: number, markerZ: number): boolean`
-- `export function collectConnectedHullBlocks(markerX: number, markerY: number, markerZ: number): VoxelBlock[]`
-- `export function computeBounds(blocks: VoxelBlock[]): {
+- `function collectConnectedHullBlocks(markerX: number, markerY: number, markerZ: number): VoxelBlock[]`
+- `function computeBounds(blocks: VoxelBlock[]): {
+	minX: number;
+	minY: number;
+	minZ: number;
+	maxX: number;
+	maxY: number;
+	maxZ: number;
+	sizeX: number;
+	sizeY: number;
+	sizeZ: number;
+	center: Vector3;
+	halfExtents: Vector3;
+}`
+- `function computeForwardYaw(bounds: {
 		minX: number;
-		minY: number;
 		minZ: number;
 		maxX: number;
-		maxY: number;
 		maxZ: number;
 		sizeX: number;
-		sizeY: number;
 		sizeZ: number;
-		center: Vector3;
-		halfExtents: Vector3;
-	}`
-- `export function computeForwardYaw(bounds: {
-			minX: number;
-			minZ: number;
-			maxX: number;
-			maxZ: number;
-			sizeX: number;
-			sizeZ: number;
-		}, markerX: number, markerZ: number): number`
+	}, markerX: number, markerZ: number): number`
 
 **Types / Interfaces / Enums**
 - type `VoxelBlock`
@@ -3877,7 +3879,7 @@ Generated: 2026-07-09T14:46:24.280Z
 
 ---
 
-## `World/Chunk/ChunkMesher.ts` (1113 LOC)
+## `World/Chunk/ChunkMesher.ts` (1133 LOC)
 
 ### class LodMeshMeta
 
@@ -5184,29 +5186,23 @@ Generated: 2026-07-09T14:46:24.280Z
 
 ---
 
-## `World/Light/Lod2Shader.ts` (289 LOC)
+## `World/Light/Lod2Shader.ts` (287 LOC)
 
 ---
 
-## `World/Light/Lod3Shader.ts` (239 LOC)
+## `World/Light/Lod3Shader.ts` (237 LOC)
 
 ---
 
-## `World/Light/OpaqueShader.ts` (205 LOC)
-
-### export class OpaqueShader
-
-**Properties**
-- `static readonly chunkVertexShader: unknown`
-- `static readonly chunkFragmentShader: unknown`
+## `World/Light/OpaqueShader.ts` (203 LOC)
 
 ---
 
-## `World/Light/SkyShader.ts` (35 LOC)
+## `World/Light/SkyShader.ts` (33 LOC)
 
 ---
 
-## `World/Light/TransparentShader.ts` (225 LOC)
+## `World/Light/TransparentShader.ts` (223 LOC)
 
 ---
 
@@ -5867,18 +5863,18 @@ Generated: 2026-07-09T14:46:24.280Z
 
 ---
 
-## `World/Texture/MaterialFactory.ts` (118 LOC)
+## `World/Texture/MaterialFactory.ts` (114 LOC)
 
 **Module-level functions**
-- `export function createTexture(scene: Scene, path: string, uvScale: number): Texture`
+- `function createTexture(scene: Scene, path: string, uvScale: number): Texture`
 - `export function createMaterialByFolder(scene: Scene, folder: string, uvScale: unknown = 1, extension: unknown = ".png", diff: unknown = true, nor: unknown = false, ao: unknown = false, spec: unknown = false): StandardMaterial`
-- `export function buildMaterial(scene: Scene, mat: StandardMaterial, directory: string, baseName: string, resolution: string, extension: string, uvScale: number, diff: boolean, nor: boolean, ao: boolean, spec: boolean, cacheKey: string): StandardMaterial`
+- `function buildMaterial(scene: Scene, mat: StandardMaterial, directory: string, baseName: string, resolution: string, extension: string, uvScale: number, diff: boolean, nor: boolean, ao: boolean, spec: boolean, cacheKey: string): StandardMaterial`
 - `export function getTexturePathFromFolder(folder: string, type: unknown = "diff", extension: unknown = ".png"): string | null`
 - `export function disposeAll(): void`
 
 ---
 
-## `World/Texture/TextureAtlasFactory.ts` (25 LOC)
+## `World/Texture/TextureAtlasFactory.ts` (23 LOC)
 
 **Module-level functions**
 - `export function getDiffuse(): Texture | null`
@@ -5891,12 +5887,12 @@ Generated: 2026-07-09T14:46:24.280Z
 
 ---
 
-## `World/Texture/TextureCache.ts` (49 LOC)
+## `World/Texture/TextureCache.ts` (47 LOC)
 
 **Module-level functions**
 - `function getDB(): Promise<IDBDatabase>`
-- `export async function get(url: string): Promise<Blob | undefined>`
-- `export async function put(url: string, blob: Blob): Promise<void>`
+- `export async function getTextureCache(url: string): Promise<Blob | undefined>`
+- `export async function putTextureCache(url: string, blob: Blob): Promise<void>`
 
 ---
 

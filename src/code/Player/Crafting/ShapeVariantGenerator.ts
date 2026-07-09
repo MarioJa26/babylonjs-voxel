@@ -11,7 +11,7 @@ import {
 	TextureDefinitions,
 	TextureDefinitionsReady,
 } from "@/code/World/Texture/TextureDefinitions";
-import { ItemRegistry } from "../Inventory/ItemRegistry";
+import { registerItem } from "../Inventory/ItemRegistry";
 import { MasonRecipes } from "./CraftingManager";
 
 const MASON_SHAPES = ["slab", "stairs", "half_wall", "pane", "fence"] as const;
@@ -82,7 +82,7 @@ export async function generateShapeVariants(): Promise<void> {
 
 			shapeMap[virtualId] = shapeIndex;
 
-			ItemRegistry.register({
+			registerItem({
 				id: virtualId,
 				name: displayName,
 				description: `Shape: ${targetShape}\nID: ${virtualId}\nSource: ${sourceDef.name}\nblockId: ${virtualId}\nblockState: 0`,

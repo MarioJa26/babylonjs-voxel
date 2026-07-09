@@ -22,7 +22,11 @@ import {
 	distantWaterVertexShader,
 } from "@/code/World/Light/DistantTerrainShader";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
-import { TextureAtlasFactory } from "@/code/World/Texture/TextureAtlasFactory";
+import {
+	atlasTileSize,
+	getDiffuse,
+	setDiffuse,
+} from "@/code/World/Texture/TextureAtlasFactory";
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
 
 const USE_LA_TILE_TEXTURE = false;
@@ -136,7 +140,7 @@ function createEmptyGridMesh(name: string, scene: Scene): Mesh {
 
 function bindDiffuseTexture() {
 	if (!diffuseAtlasTexture) {
-		diffuseAtlasTexture = TextureAtlasFactory.getDiffuse();
+		diffuseAtlasTexture = getDiffuse();
 	}
 
 	if (!diffuseAtlasTexture) {
@@ -148,7 +152,7 @@ function bindDiffuseTexture() {
 				samplingMode: Texture.NEAREST_SAMPLINGMODE,
 			},
 		);
-		TextureAtlasFactory.setDiffuse(diffuseAtlasTexture);
+		setDiffuse(diffuseAtlasTexture);
 	}
 
 	if (diffuseAtlasTexture) {
@@ -359,7 +363,7 @@ export function init() {
 		bindCommonUniforms(effect, m.getScene());
 	};
 
-	material.setFloat("atlasTileSize", TextureAtlasFactory.atlasTileSize);
+	material.setFloat("atlasTileSize", atlasTileSize);
 	material.setFloat("textureScale", 32);
 	material.setFloat("tileGridResolution", gridResolution);
 	material.setFloat("gridWorldStep", Chunk.SIZE * gridStep);

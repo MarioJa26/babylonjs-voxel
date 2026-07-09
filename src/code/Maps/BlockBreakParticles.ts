@@ -2,7 +2,11 @@ import { Color4, ParticleSystem, type Scene, Vector3 } from "@babylonjs/core";
 import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
 import { BlockTextures } from "../World/Texture/BlockTextures";
 import { FaceName } from "../World/Texture/FaceName";
-import { TextureAtlasFactory } from "../World/Texture/TextureAtlasFactory";
+import {
+	atlasSize,
+	getDiffuse,
+	tileSize,
+} from "../World/Texture/TextureAtlasFactory";
 
 let particleSystem: ParticleSystem;
 const _scratchColor1 = new Color4(0, 0, 0, 0);
@@ -49,8 +53,8 @@ export function play(
 			blockTex[FaceName.Bottom] ||
 			Object.values(blockTex)[0];
 		if (uv) {
-			const row = TextureAtlasFactory.atlasSize - 1 - uv[1];
-			const cellId = row * TextureAtlasFactory.atlasSize + uv[0];
+			const row = atlasSize - 1 - uv[1];
+			const cellId = row * atlasSize + uv[0];
 			particleSystem.startSpriteCellID = cellId;
 			particleSystem.endSpriteCellID = cellId;
 			particleSystem.spriteCellChangeSpeed = 0;
@@ -67,8 +71,7 @@ export function play(
 			0,
 		);
 	} else {
-		const defaultCell =
-			(TextureAtlasFactory.atlasSize - 1) * TextureAtlasFactory.atlasSize;
+		const defaultCell = (atlasSize - 1) * atlasSize;
 		particleSystem.startSpriteCellID = defaultCell;
 		particleSystem.endSpriteCellID = defaultCell;
 		particleSystem.color1 = _scratchColor1;
@@ -91,12 +94,12 @@ export function play(
 function init(scene: Scene) {
 	particleSystem = new ParticleSystem("blockBreakParticles", 1200, scene);
 
-	const atlas = TextureAtlasFactory.getDiffuse();
+	const atlas = getDiffuse();
 	if (atlas) {
 		particleSystem.particleTexture = atlas;
 		particleSystem.isAnimationSheetEnabled = true;
-		particleSystem.spriteCellWidth = TextureAtlasFactory.tileSize;
-		particleSystem.spriteCellHeight = TextureAtlasFactory.tileSize;
+		particleSystem.spriteCellWidth = tileSize;
+		particleSystem.spriteCellHeight = tileSize;
 	}
 
 	particleSystem.minSize = 0.05;

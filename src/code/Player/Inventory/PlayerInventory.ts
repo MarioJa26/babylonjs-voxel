@@ -4,7 +4,10 @@ import { generateShapeVariants } from "../Crafting/ShapeVariantGenerator";
 import type { Player } from "../Player";
 import { DroppedItem } from "./DroppedItem";
 import { Item } from "./Item";
-import { ItemRegistry } from "./ItemRegistry";
+import {
+	ensureItemRegistryLoaded,
+	getAllRegisteredItems,
+} from "./ItemRegistry";
 import { ItemSlot } from "./ItemSlot";
 
 export type SavedInventoryItem = {
@@ -56,13 +59,13 @@ export class PlayerInventory {
 	}
 
 	async #loadInitialItems() {
-		await ItemRegistry.ensureLoaded();
+		await ensureItemRegistryLoaded();
 		await generateShapeVariants();
 		this.#generateFakeItems();
 	}
 
 	#generateFakeItems() {
-		const definitions = ItemRegistry.getAll();
+		const definitions = getAllRegisteredItems();
 		const width = this.#inventorySlots[0].length;
 		const height = this.#inventorySlots.length;
 		const slotCount = width * height;

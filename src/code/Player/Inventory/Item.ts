@@ -1,13 +1,13 @@
 import type { StandardMaterial } from "@babylonjs/core";
 import type { IUsable } from "@/code/Interface/IUsable";
 import type { BoatChunk } from "@/code/World/Boat/BoatChunk";
-import { BoatCreatorSystem } from "@/code/World/Boat/BoatCreatorSystem";
+import { tryCreateBoatFromMarker } from "@/code/World/Boat/BoatCreatorSystem";
 import { setBlock } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
 import { getSliceAxis } from "@/code/World/Shape/BlockShapeTransforms";
 import { getAtlasTile } from "@/code/World/Texture/BlockTextures";
 import { BlockType } from "@/code/World/Texture/BlockType";
-import { TextureAtlasFactory } from "@/code/World/Texture/TextureAtlasFactory";
+import { atlasSize } from "@/code/World/Texture/TextureAtlasFactory";
 import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
 import { Map1 } from "../../Maps/Map1";
 import {
@@ -15,7 +15,7 @@ import {
 	pickBlock,
 } from "../Hud/BlockHighlight/BlockRaycaster";
 import type { Player } from "../Player";
-import { type ItemDefinition, ItemRegistry } from "./ItemRegistry";
+import { getRegisteredItemById, type ItemDefinition } from "./ItemRegistry";
 import { ItemUseActions } from "./ItemUseActions";
 
 type BoatPlacementContext = {
@@ -110,7 +110,7 @@ export class Item implements IUsable {
 	}
 
 	static createById(itemId: number, row = -1, col = -1): Item {
-		const def = ItemRegistry.get(itemId);
+		const def = getRegisteredItemById(itemId);
 		if (def) {
 			return Item.createFromDefinition(def, row, col);
 		}
@@ -262,7 +262,7 @@ export class Item implements IUsable {
 
 			setBlock(pos.x, pos.y, pos.z, blockId, blockState);
 			if (blockId === BlockType.BoatCreator) {
-				BoatCreatorSystem.tryCreateBoatFromMarker(player, pos.x, pos.y, pos.z);
+				tryCreateBoatFromMarker(player, pos.x, pos.y, pos.z);
 			}
 		}
 	}
@@ -322,7 +322,6 @@ export class Item implements IUsable {
 		const atlasTile = getAtlasTile(this.blockId);
 		if (atlasTile) {
 			const [tx, ty] = atlasTile;
-			const atlasSize = TextureAtlasFactory.atlasSize;
 			const maxIndex = Math.max(1, atlasSize - 1);
 			this.#div.style.backgroundImage = "url(/texture/diffuse_atlas.png)";
 			this.#div.style.backgroundSize = `${atlasSize * 100}% ${atlasSize * 100}%`;

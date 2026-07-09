@@ -30,9 +30,18 @@ import {
 	opaqueChunkFragmentShader,
 	opaqueChunkVertexShader,
 } from "../Light/OpaqueShader";
-import { TransparentShader } from "../Light/TransparentShader";
-import { TextureAtlasFactory } from "../Texture/TextureAtlasFactory";
-import { TextureCache } from "../Texture/TextureCache";
+import {
+	transparentChunkFragmentShader,
+	transparentChunkVertexShader,
+} from "../Light/TransparentShader";
+import {
+	atlasTileSize,
+	getDiffuse,
+	getNormal,
+	setDiffuse,
+	setNormal,
+} from "../Texture/TextureAtlasFactory";
+import { getTextureCache, putTextureCache } from "../Texture/TextureCache";
 import { Chunk } from "./Chunk";
 import type { MeshData } from "./DataStructures/MeshData";
 import {
@@ -647,7 +656,7 @@ function createCachedTexture(url: string, scene: Scene, args: any): Texture {
 async function loadTextureToCache(url: string): Promise<string> {
 	const cacheKey = `${url}?v=${GLOBAL_VALUES.TEXTURE_VERSION}`;
 
-	const cachedBlob = await TextureCache.get(cacheKey);
+	const cachedBlob = await getTextureCache(cacheKey);
 	if (cachedBlob) return URL.createObjectURL(cachedBlob);
 
 	const response = await fetch(cacheKey);
@@ -658,7 +667,7 @@ async function loadTextureToCache(url: string): Promise<string> {
 	}
 
 	const newBlob = await response.blob();
-	await TextureCache.put(cacheKey, newBlob);
+	await putTextureCache(cacheKey, newBlob);
 	return URL.createObjectURL(newBlob);
 }
 
@@ -673,8 +682,8 @@ export async function initAtlas(): Promise<void> {
 		return;
 	}
 
-	let diffuseAtlasTexture = TextureAtlasFactory.getDiffuse();
-	let normalAtlasTexture = TextureAtlasFactory.getNormal();
+	let diffuseAtlasTexture = getDiffuse();
+	let normalAtlasTexture = getNormal();
 
 	if (!diffuseAtlasTexture) {
 		if (GLOBAL_VALUES.CACHE_TEXTURES) {
@@ -705,8 +714,8 @@ export async function initAtlas(): Promise<void> {
 			});
 		}
 
-		TextureAtlasFactory.setDiffuse(diffuseAtlasTexture);
-		TextureAtlasFactory.setNormal(normalAtlasTexture);
+		setDiffuse(diffuseAtlasTexture);
+		setNormal(normalAtlasTexture);
 	}
 
 	if (!diffuseAtlasTexture) {
@@ -724,9 +733,9 @@ export async function initAtlas(): Promise<void> {
 	// Transparent chunk meshes must use the transparent vertex shader,
 	// not the shared opaque vertex shader.
 	Effect.ShadersStore.transparentChunkVertexShader =
-		TransparentShader.chunkVertexShader;
+		transparentChunkVertexShader;
 	Effect.ShadersStore.transparentChunkFragmentShader =
-		TransparentShader.chunkFragmentShader;
+		transparentChunkFragmentShader;
 
 	Effect.ShadersStore.lod3ChunkVertexShader = LOD3chunkVertexShader;
 	Effect.ShadersStore.lod3ChunkFragmentShader = LOD3OpaqueFragmentShader;
@@ -755,7 +764,7 @@ export async function initAtlas(): Promise<void> {
 		globalUniformBuffer.create();
 	}
 
-	const tileSize = TextureAtlasFactory.atlasTileSize;
+	const tileSize = atlasTileSize;
 	const atlasMaxTiles = Math.floor(1.0 / tileSize + 0.5);
 
 	// The LOD materials share the same uniform list — hoist it to avoid
