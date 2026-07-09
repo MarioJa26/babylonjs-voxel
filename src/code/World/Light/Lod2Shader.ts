@@ -1,5 +1,5 @@
-export class Lod2Shader {
-	static readonly chunkVertexShader = `
+export namespace Lod2Shader {
+	export const chunkVertexShader = `
     #version 300 es
     precision highp float;
 
@@ -172,7 +172,7 @@ export class Lod2Shader {
     }
   `;
 
-	static readonly opaqueFragmentShader = `
+	export const opaqueFragmentShader = `
     #version 300 es
     precision highp float;
 
@@ -273,7 +273,7 @@ export class Lod2Shader {
     }
   `;
 
-	static readonly transparentFragmentShader = `
+	export const transparentFragmentShader = `
     #version 300 es
     precision highp float;
 

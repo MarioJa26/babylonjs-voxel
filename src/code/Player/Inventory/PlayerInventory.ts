@@ -1,7 +1,7 @@
 import { Observable, Ray, type Scene, Vector3 } from "@babylonjs/core";
 import { InventoryControls } from "../Controls/InventoryControls";
-import type { Player } from "../Player";
 import { generateShapeVariants } from "../Crafting/ShapeVariantGenerator";
+import type { Player } from "../Player";
 import { DroppedItem } from "./DroppedItem";
 import { Item } from "./Item";
 import { ItemRegistry } from "./ItemRegistry";
@@ -78,7 +78,7 @@ export class PlayerInventory {
 			if (!item) return false;
 			item.stackSize = def.maxStack ?? Math.min(64, def.id);
 			this.#inventorySlots[row][col].item = item;
-			this.#inventorySlots[row][col].divItemSlot!.appendChild(item.div);
+			this.#inventorySlots[row][col].divItemSlot?.appendChild(item.div);
 			placed.add(def.id);
 			return true;
 		};

@@ -24,11 +24,9 @@ type VoxelBlock = {
 
 type VisualMode = "blocks" | "aabb";
 
-export class BoatCreatorSystem {
-	private static readonly LOCAL_CHUNK_PADDING = 1;
-	private static readonly FLOOD_DIRECTIONS: ReadonlyArray<
-		[number, number, number]
-	> = [
+export namespace BoatCreatorSystem {
+	const LOCAL_CHUNK_PADDING = 1;
+	const FLOOD_DIRECTIONS: ReadonlyArray<[number, number, number]> = [
 		[1, 0, 0],
 		[-1, 0, 0],
 		[0, 1, 0],
@@ -38,59 +36,49 @@ export class BoatCreatorSystem {
 	];
 
 	// Expand this set with any additional block IDs that should be treated as hull.
-	private static sourceBlockIds = new Set<number>([
-		6, 10, 12, 37, 41, 42, 60, 61, 22,
-	]);
-	private static maxFloodBlocks = 8192;
-	private static visualMode: VisualMode = "blocks";
+	let sourceBlockIds = new Set<number>([6, 10, 12, 37, 41, 42, 60, 61, 22]);
+	const maxFloodBlocks = 8192;
+	let visualMode: VisualMode = "blocks";
 
-	public static setSourceBlockIds(ids: Iterable<number>): void {
-		BoatCreatorSystem.sourceBlockIds = new Set<number>();
+	export function setSourceBlockIds(ids: Iterable<number>): void {
+		sourceBlockIds = new Set<number>();
 		for (const id of ids) {
-			if (Number.isInteger(id) && id >= 0)
-				BoatCreatorSystem.sourceBlockIds.add(id);
+			if (Number.isInteger(id) && id >= 0) sourceBlockIds.add(id);
 		}
 	}
 
-	public static addSourceBlockId(id: number): void {
+	export function addSourceBlockId(id: number): void {
 		if (!Number.isInteger(id) || id < 0) return;
-		BoatCreatorSystem.sourceBlockIds.add(id);
+		sourceBlockIds.add(id);
 	}
 
-	public static removeSourceBlockId(id: number): void {
-		BoatCreatorSystem.sourceBlockIds.delete(id);
+	export function removeSourceBlockId(id: number): void {
+		sourceBlockIds.delete(id);
 	}
 
-	public static getSourceBlockIds(): number[] {
-		return [...BoatCreatorSystem.sourceBlockIds.values()];
+	export function getSourceBlockIds(): number[] {
+		return [...sourceBlockIds.values()];
 	}
 
-	public static setVisualMode(mode: VisualMode): void {
-		BoatCreatorSystem.visualMode = mode;
+	export function setVisualMode(mode: VisualMode): void {
+		visualMode = mode;
 	}
 
-	public static tryCreateBoatFromMarker(
+	export function tryCreateBoatFromMarker(
 		player: Player,
 		markerX: number,
 		markerY: number,
 		markerZ: number,
 	): boolean {
-		const hullBlocks = BoatCreatorSystem.collectConnectedHullBlocks(
-			markerX,
-			markerY,
-			markerZ,
-		);
+		const hullBlocks = collectConnectedHullBlocks(markerX, markerY, markerZ);
 		if (hullBlocks.length === 0) return false;
 
-		const bounds = BoatCreatorSystem.computeBounds(hullBlocks);
-		const paddedSizeX =
-			bounds.sizeX + BoatCreatorSystem.LOCAL_CHUNK_PADDING * 2;
-		const paddedSizeY =
-			bounds.sizeY + BoatCreatorSystem.LOCAL_CHUNK_PADDING * 2;
-		const paddedSizeZ =
-			bounds.sizeZ + BoatCreatorSystem.LOCAL_CHUNK_PADDING * 2;
+		const bounds = computeBounds(hullBlocks);
+		const paddedSizeX = bounds.sizeX + LOCAL_CHUNK_PADDING * 2;
+		const paddedSizeY = bounds.sizeY + LOCAL_CHUNK_PADDING * 2;
+		const paddedSizeZ = bounds.sizeZ + LOCAL_CHUNK_PADDING * 2;
 		if (
-			BoatCreatorSystem.visualMode === "blocks" &&
+			visualMode === "blocks" &&
 			(paddedSizeX > Chunk.SIZE ||
 				paddedSizeY > Chunk.SIZE ||
 				paddedSizeZ > Chunk.SIZE)
@@ -110,12 +98,8 @@ export class BoatCreatorSystem {
 			return false;
 		}
 
-		const { center } = bounds;
-		const initialYaw = BoatCreatorSystem.computeForwardYaw(
-			bounds,
-			markerX,
-			markerZ,
-		);
+		const center = bounds.center;
+		const initialYaw = computeForwardYaw(bounds, markerX, markerZ);
 
 		let hx = bounds.sizeX * 0.5;
 		const hy = bounds.sizeY * 0.5;
@@ -136,19 +120,19 @@ export class BoatCreatorSystem {
 		const scene = Map1.mainScene;
 
 		let boatChunk: BoatChunk | undefined;
-		if (BoatCreatorSystem.visualMode === "blocks") {
+		if (visualMode === "blocks") {
 			const localBlocks: BoatChunkBlock[] = hullBlocks.map((block) => ({
-				x: block.x - bounds.minX + BoatCreatorSystem.LOCAL_CHUNK_PADDING,
-				y: block.y - bounds.minY + BoatCreatorSystem.LOCAL_CHUNK_PADDING,
-				z: block.z - bounds.minZ + BoatCreatorSystem.LOCAL_CHUNK_PADDING,
+				x: block.x - bounds.minX + LOCAL_CHUNK_PADDING,
+				y: block.y - bounds.minY + LOCAL_CHUNK_PADDING,
+				z: block.z - bounds.minZ + LOCAL_CHUNK_PADDING,
 				blockId: block.blockId,
 				blockState: block.blockState,
 				lightLevel: block.lightLevel,
 			}));
 			const localCenter = new Vector3(
-				BoatCreatorSystem.LOCAL_CHUNK_PADDING + bounds.sizeX * 0.5,
-				BoatCreatorSystem.LOCAL_CHUNK_PADDING + bounds.sizeY * 0.5,
-				BoatCreatorSystem.LOCAL_CHUNK_PADDING + bounds.sizeZ * 0.5,
+				LOCAL_CHUNK_PADDING + bounds.sizeX * 0.5,
+				LOCAL_CHUNK_PADDING + bounds.sizeY * 0.5,
+				LOCAL_CHUNK_PADDING + bounds.sizeZ * 0.5,
 			);
 			boatChunk = new BoatChunk(scene, localBlocks, localCenter);
 		}
@@ -165,7 +149,7 @@ export class BoatCreatorSystem {
 		new CustomBoat(scene, player, GenerationParams.SEA_LEVEL, center, {
 			collisionHalfExtents: paddedHalfExtents,
 			customVisualRoot: customVisual,
-			skipDefaultModel: BoatCreatorSystem.visualMode === "blocks",
+			skipDefaultModel: visualMode === "blocks",
 			initialYaw,
 			customVisualLocalYaw: -initialYaw,
 			blockCount: hullBlocks.length,
@@ -175,7 +159,7 @@ export class BoatCreatorSystem {
 		return true;
 	}
 
-	private static collectConnectedHullBlocks(
+	function collectConnectedHullBlocks(
 		markerX: number,
 		markerY: number,
 		markerZ: number,
@@ -184,23 +168,23 @@ export class BoatCreatorSystem {
 		const visited = new Set<string>();
 		const out: VoxelBlock[] = [];
 
-		for (const [dx, dy, dz] of BoatCreatorSystem.FLOOD_DIRECTIONS) {
+		for (const [dx, dy, dz] of FLOOD_DIRECTIONS) {
 			const nx = markerX + dx;
 			const ny = markerY + dy;
 			const nz = markerZ + dz;
 			const neighborId = getBlockByWorldCoords(nx, ny, nz);
-			if (!BoatCreatorSystem.sourceBlockIds.has(neighborId)) continue;
+			if (!sourceBlockIds.has(neighborId)) continue;
 			queue.push({ x: nx, y: ny, z: nz });
 		}
 
-		while (queue.length > 0 && out.length < BoatCreatorSystem.maxFloodBlocks) {
+		while (queue.length > 0 && out.length < maxFloodBlocks) {
 			const current = queue.pop()!;
 			const key = `${current.x}|${current.y}|${current.z}`;
 			if (visited.has(key)) continue;
 			visited.add(key);
 
 			const blockId = getBlockByWorldCoords(current.x, current.y, current.z);
-			if (!BoatCreatorSystem.sourceBlockIds.has(blockId)) continue;
+			if (!sourceBlockIds.has(blockId)) continue;
 
 			const blockState = getBlockStateByWorldCoords(
 				current.x,
@@ -218,7 +202,7 @@ export class BoatCreatorSystem {
 				lightLevel,
 			});
 
-			for (const [dx, dy, dz] of BoatCreatorSystem.FLOOD_DIRECTIONS) {
+			for (const [dx, dy, dz] of FLOOD_DIRECTIONS) {
 				queue.push({
 					x: current.x + dx,
 					y: current.y + dy,
@@ -230,7 +214,7 @@ export class BoatCreatorSystem {
 		return out;
 	}
 
-	private static computeBounds(blocks: VoxelBlock[]): {
+	function computeBounds(blocks: VoxelBlock[]): {
 		minX: number;
 		minY: number;
 		minZ: number;
@@ -285,7 +269,7 @@ export class BoatCreatorSystem {
 		};
 	}
 
-	private static computeForwardYaw(
+	function computeForwardYaw(
 		bounds: {
 			minX: number;
 			minZ: number;

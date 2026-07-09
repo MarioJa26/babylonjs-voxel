@@ -875,7 +875,7 @@ export class PlayerVehicleMotor {
 
 		if (this.isOnBoat()) {
 			this.#flushToWorld();
-			this.#collisionBoat!.worldToBoatChunkLocalPoint(
+			this.#collisionBoat?.worldToBoatChunkLocalPoint(
 				this.voxelPosition,
 				this.#boatSupportLocal,
 			);

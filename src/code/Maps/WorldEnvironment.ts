@@ -93,8 +93,8 @@ export class WorldEnvironment {
 		this.skybox.ignoreCameraMaxZ = true;
 
 		// Register the new sky shader
-		Effect.ShadersStore["skyVertexShader"] = SkyShader.skyVertexShader;
-		Effect.ShadersStore["skyFragmentShader"] = SkyShader.skyFragmentShader;
+		Effect.ShadersStore.skyVertexShader = SkyShader.skyVertexShader;
+		Effect.ShadersStore.skyFragmentShader = SkyShader.skyFragmentShader;
 
 		// Create a ShaderMaterial using the sky shader
 		const skyboxMaterial = new ShaderMaterial(

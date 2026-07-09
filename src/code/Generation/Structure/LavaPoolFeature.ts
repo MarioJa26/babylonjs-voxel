@@ -101,9 +101,6 @@ export class LavaPoolFeature implements IWorldFeature {
 		}
 
 		this.generateLavaPool(
-			chunkX,
-			chunkY,
-			chunkZ,
 			poolCenterX,
 			poolSurfaceY,
 			poolCenterZ,
@@ -113,9 +110,6 @@ export class LavaPoolFeature implements IWorldFeature {
 	}
 
 	private generateLavaPool(
-		chunkX: number,
-		chunkY: number,
-		chunkZ: number,
 		poolCenterX: number,
 		poolCenterY: number,
 		poolCenterZ: number,
@@ -146,7 +140,9 @@ export class LavaPoolFeature implements IWorldFeature {
 				const worldX = poolCenterX + dx;
 				const worldZ = poolCenterZ + dz;
 				// linear cone so the rim walls match the lava bowl below
-				const depth = Math.floor(maxDepth * (1 - Math.sqrt(distSq) / shellRadius));
+				const depth = Math.floor(
+					maxDepth * (1 - Math.sqrt(distSq) / shellRadius),
+				);
 				const floorY = poolCenterY - depth;
 
 				for (let y = floorY; y <= poolCenterY; y++) {
@@ -162,7 +158,9 @@ export class LavaPoolFeature implements IWorldFeature {
 				const distSq = dx * dx + dz * dz;
 				if (distSq >= radiusSq) continue;
 
-				const depth = Math.floor(maxDepth * (1 - Math.sqrt(distSq) / poolRadius));
+				const depth = Math.floor(
+					maxDepth * (1 - Math.sqrt(distSq) / poolRadius),
+				);
 				const floorY = poolCenterY - depth;
 				const topY = Math.min(poolCenterY, lavaTop);
 				if (topY < floorY) continue;

@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-08T13:16:39.832Z
+Generated: 2026-07-09T14:46:24.280Z
 
-> **Summary:** 144 classes · 2366 members · 468 module-level functions · 47096 LOC
+> **Summary:** 134 classes · 2304 members · 498 module-level functions · 47109 LOC
 
 ---
 
@@ -660,7 +660,7 @@ Generated: 2026-07-08T13:16:39.832Z
 
 ---
 
-## `Generation/DistantTerrain/DistantTerrain.ts` (375 LOC)
+## `Generation/DistantTerrain/DistantTerrain.ts` (373 LOC)
 
 **Module-level functions**
 - `function createEmptyGridMesh(name: string, scene: Scene): Mesh`
@@ -938,17 +938,9 @@ Generated: 2026-07-08T13:16:39.832Z
 
 ## `Generation/NoiseAndParameters/Squirrel13.ts` (28 LOC)
 
-### export class Squirrel3
-
-**Properties**
-- `private static readonly NOISE1: unknown`
-- `private static readonly NOISE2: unknown`
-- `private static readonly NOISE3: unknown`
-- `private static HASH: unknown`
-
-**Methods**
-- `public static get(position: number, seed: number): number`
-- `public static getPRNG(position: number): number`
+**Module-level functions**
+- `export function get(position: number, seed: number): number`
+- `export function getPRNG(position: number): number`
 
 ---
 
@@ -1303,7 +1295,7 @@ Generated: 2026-07-08T13:16:39.832Z
 
 ---
 
-## `Generation/Structure/LavaPoolFeature.ts` (151 LOC)
+## `Generation/Structure/LavaPoolFeature.ts` (152 LOC)
 
 ### export class LavaPoolFeature implements IWorldFeature
 
@@ -1318,7 +1310,7 @@ Generated: 2026-07-08T13:16:39.832Z
 			id: number,
 			ow: boolean,
 		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
-- `private generateLavaPool(chunkX: number, chunkY: number, chunkZ: number, poolCenterX: number, poolCenterY: number, poolCenterZ: number, placeBlock: (
+- `private generateLavaPool(poolCenterX: number, poolCenterY: number, poolCenterZ: number, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -2092,20 +2084,21 @@ Generated: 2026-07-08T13:16:39.832Z
 
 ---
 
-## `Maps/UnderWaterEffect.ts` (330 LOC)
+## `Maps/UnderWaterEffect.ts` (358 LOC)
 
 ### export class UnderWaterEffect
 
 **Constructor**
-- `constructor(scene: BABYLON.Scene, camera: BABYLON.Camera, player: Player, baseTexture: BABYLON.Texture)`
+- `constructor(scene: Scene, camera: Camera, player: Player, baseTexture: Texture)`
 
 **Properties**
-- `public material: BABYLON.ShaderMaterial`
-- `public postProcess: BABYLON.PostProcess`
-- `private scene: BABYLON.Scene`
-- `private camera: BABYLON.Camera`
+- `public material: ShaderMaterial`
+- `public postProcess: PostProcess`
+- `private scene: Scene`
+- `private camera: Camera`
 - `private player: Player`
-- `private depthRenderer: BABYLON.DepthRenderer`
+- `private depthRenderer: DepthRenderer | null`
+- `private isUnderwater: unknown`
 - `private time: unknown`
 - `private rate: unknown`
 - `private static readonly VERTEX_SHADER: string`
@@ -2116,8 +2109,8 @@ Generated: 2026-07-08T13:16:39.832Z
 
 **Methods**
 - `private registerShaders(): void`
-- `private createShaderMaterial(baseTexture: BABYLON.Texture): BABYLON.ShaderMaterial`
-- `private createPostProcess(): BABYLON.PostProcess`
+- `private createShaderMaterial(baseTexture: Texture): ShaderMaterial`
+- `private createPostProcess(): PostProcess`
 - `public dispose(): void`
 
 ---
@@ -2449,7 +2442,7 @@ Generated: 2026-07-08T13:16:39.832Z
 
 ---
 
-## `Player/Hud/BlockHighlight/BlockHighlight.ts` (206 LOC)
+## `Player/Hud/BlockHighlight/BlockHighlight.ts` (205 LOC)
 
 ### export class BlockHighlight
 
@@ -2465,7 +2458,6 @@ Generated: 2026-07-08T13:16:39.832Z
 - `#prevHitX: unknown`
 - `#prevHitY: unknown`
 - `#prevHitZ: unknown`
-- `#prevIsBoat: unknown`
 - `readonly #renderHandle: () => void`
 - `#currentHit: BlockRaycastHit | null`
 
@@ -2828,22 +2820,15 @@ Generated: 2026-07-08T13:16:39.832Z
 
 ## `Player/Inventory/ItemRegistry.ts` (100 LOC)
 
-### export class ItemRegistry
-
-**Properties**
-- `private static initialized: unknown`
-- `private static loadPromise: Promise<void> | null`
-- `private static definitions: unknown`
-
-**Methods**
-- `private static toDisplayName(rawName: string): string`
-- `static initDefaults(): void`
-- `static async ensureLoaded(url: unknown = DEFAULT_ITEMS_URL): Promise<void>`
-- `static async loadFromUrl(url: string): Promise<void>`
-- `static register(def: ItemDefinition): void`
-- `static get(id: number): ItemDefinition | undefined`
-- `static getAll(): ItemDefinition[]`
-- `private static isValidDefinition(value: unknown): value is ItemDefinition`
+**Module-level functions**
+- `export function toDisplayName(rawName: string): string`
+- `export function initDefaults(): void`
+- `export async function ensureLoaded(url: unknown = DEFAULT_ITEMS_URL): Promise<void>`
+- `export async function loadFromUrl(url: string): Promise<void>`
+- `export function register(def: ItemDefinition): void`
+- `export function get(id: number): ItemDefinition | undefined`
+- `export function getAll(): ItemDefinition[]`
+- `export function isValidDefinition(value: unknown): value is ItemDefinition`
 
 **Types / Interfaces / Enums**
 - type `ItemDefinition`
@@ -3607,28 +3592,17 @@ Generated: 2026-07-08T13:16:39.832Z
 
 ---
 
-## `World/Boat/BoatCreatorSystem.ts` (279 LOC)
+## `World/Boat/BoatCreatorSystem.ts` (274 LOC)
 
-### export class BoatCreatorSystem
-
-**Properties**
-- `private static readonly LOCAL_CHUNK_PADDING: unknown`
-- `private static readonly FLOOD_DIRECTIONS: ReadonlyArray<
-		[number, number, number]
-	>`
-- `private static sourceBlockIds: unknown`
-- `private static maxFloodBlocks: unknown`
-- `private static visualMode: VisualMode`
-
-**Methods**
-- `public static setSourceBlockIds(ids: Iterable<number>): void`
-- `public static addSourceBlockId(id: number): void`
-- `public static removeSourceBlockId(id: number): void`
-- `public static getSourceBlockIds(): number[]`
-- `public static setVisualMode(mode: VisualMode): void`
-- `public static tryCreateBoatFromMarker(player: Player, markerX: number, markerY: number, markerZ: number): boolean`
-- `private static collectConnectedHullBlocks(markerX: number, markerY: number, markerZ: number): VoxelBlock[]`
-- `private static computeBounds(blocks: VoxelBlock[]): {
+**Module-level functions**
+- `export function setSourceBlockIds(ids: Iterable<number>): void`
+- `export function addSourceBlockId(id: number): void`
+- `export function removeSourceBlockId(id: number): void`
+- `export function getSourceBlockIds(): number[]`
+- `export function setVisualMode(mode: VisualMode): void`
+- `export function tryCreateBoatFromMarker(player: Player, markerX: number, markerY: number, markerZ: number): boolean`
+- `export function collectConnectedHullBlocks(markerX: number, markerY: number, markerZ: number): VoxelBlock[]`
+- `export function computeBounds(blocks: VoxelBlock[]): {
 		minX: number;
 		minY: number;
 		minZ: number;
@@ -3641,7 +3615,7 @@ Generated: 2026-07-08T13:16:39.832Z
 		center: Vector3;
 		halfExtents: Vector3;
 	}`
-- `private static computeForwardYaw(bounds: {
+- `export function computeForwardYaw(bounds: {
 			minX: number;
 			minZ: number;
 			maxX: number;
@@ -3903,7 +3877,7 @@ Generated: 2026-07-08T13:16:39.832Z
 
 ---
 
-## `World/Chunk/ChunkMesher.ts` (1115 LOC)
+## `World/Chunk/ChunkMesher.ts` (1113 LOC)
 
 ### class LodMeshMeta
 
@@ -5212,27 +5186,13 @@ Generated: 2026-07-08T13:16:39.832Z
 
 ## `World/Light/Lod2Shader.ts` (289 LOC)
 
-### export class Lod2Shader
-
-**Properties**
-- `static readonly chunkVertexShader: unknown`
-- `static readonly opaqueFragmentShader: unknown`
-- `static readonly transparentFragmentShader: unknown`
-
 ---
 
 ## `World/Light/Lod3Shader.ts` (239 LOC)
 
-### export class Lod3Shader
-
-**Properties**
-- `public static readonly chunkVertexShader: unknown`
-- `public static readonly opaqueFragmentShader: unknown`
-- `public static readonly transparentFragmentShader: unknown`
-
 ---
 
-## `World/Light/OpaqueShader.ts` (202 LOC)
+## `World/Light/OpaqueShader.ts` (205 LOC)
 
 ### export class OpaqueShader
 
@@ -5244,21 +5204,9 @@ Generated: 2026-07-08T13:16:39.832Z
 
 ## `World/Light/SkyShader.ts` (35 LOC)
 
-### export class SkyShader
-
-**Properties**
-- `static readonly skyVertexShader: unknown`
-- `static readonly skyFragmentShader: unknown`
-
 ---
 
 ## `World/Light/TransparentShader.ts` (225 LOC)
-
-### export class TransparentShader
-
-**Properties**
-- `public static readonly chunkVertexShader: unknown`
-- `public static readonly chunkFragmentShader: unknown`
 
 ---
 
@@ -5493,7 +5441,7 @@ Generated: 2026-07-08T13:16:39.832Z
 
 ---
 
-## `World/MeshPipeline/core/WorkerMeshHelpers.ts` (190 LOC)
+## `World/MeshPipeline/core/WorkerMeshHelpers.ts` (189 LOC)
 
 **Module-level functions**
 - `export function createEmptyWorkerInternalMeshData(): WorkerInternalMeshData`
@@ -5519,7 +5467,7 @@ Generated: 2026-07-08T13:16:39.832Z
 
 ---
 
-## `World/Occlusion/OcclusionCuller.ts` (717 LOC)
+## `World/Occlusion/OcclusionCuller.ts` (712 LOC)
 
 ### export class OcclusionCuller
 
@@ -5542,7 +5490,7 @@ Generated: 2026-07-08T13:16:39.832Z
 **Methods**
 - `update(_scene: Scene, out: OcclusionStats): OcclusionStats`
 - `incrementalAdd(newChunk: Chunk): void`
-- `private _startBFS(camCX: number, camCY: number, camCZ: number, SIZE: number): void`
+- `private _startBFS(camCX: number, camCY: number, camCZ: number): void`
 - `private _stepBFS(budget: number): void`
 
 **Module-level functions**
@@ -5673,7 +5621,7 @@ Generated: 2026-07-08T13:16:39.832Z
 
 ---
 
-## `World/Storage/opfs.worker.ts` (494 LOC)
+## `World/Storage/opfs.worker.ts` (491 LOC)
 
 **Module-level functions**
 - `function _enqueueOp(fn: () => Promise<void>): Promise<void>`
@@ -5683,7 +5631,6 @@ Generated: 2026-07-08T13:16:39.832Z
 - `function _lruDelete(key: number): void`
 - `function packRegionKey(rx: number, ry: number, rz: number): number`
 - `function regionFileName(rx: number, ry: number, rz: number): string`
-- `function localCoord(chunk: number): number`
 - `function viewOf(data: ArrayBuffer | Uint8Array): Uint8Array`
 - `async function compressGzip(data: Uint8Array): Promise<Uint8Array>`
 - `async function decompressGzip(data: Uint8Array): Promise<Uint8Array>`
@@ -5922,36 +5869,22 @@ Generated: 2026-07-08T13:16:39.832Z
 
 ## `World/Texture/MaterialFactory.ts` (118 LOC)
 
-### export class MaterialFactory
-
-**Properties**
-- `private static materialCache: unknown`
-
-**Methods**
-- `private static createTexture(scene: Scene, path: string, uvScale: number): Texture`
-- `static createMaterialByFolder(scene: Scene, folder: string, uvScale: unknown = 1, extension: unknown = ".png", diff: unknown = true, nor: unknown = false, ao: unknown = false, spec: unknown = false): StandardMaterial`
-- `private static buildMaterial(scene: Scene, mat: StandardMaterial, directory: string, baseName: string, resolution: string, extension: string, uvScale: number, diff: boolean, nor: boolean, ao: boolean, spec: boolean, cacheKey: string): StandardMaterial`
-- `public static getTexturePathFromFolder(folder: string, type: unknown = "diff", extension: unknown = ".png"): string | null`
-- `static disposeAll(): void`
+**Module-level functions**
+- `export function createTexture(scene: Scene, path: string, uvScale: number): Texture`
+- `export function createMaterialByFolder(scene: Scene, folder: string, uvScale: unknown = 1, extension: unknown = ".png", diff: unknown = true, nor: unknown = false, ao: unknown = false, spec: unknown = false): StandardMaterial`
+- `export function buildMaterial(scene: Scene, mat: StandardMaterial, directory: string, baseName: string, resolution: string, extension: string, uvScale: number, diff: boolean, nor: boolean, ao: boolean, spec: boolean, cacheKey: string): StandardMaterial`
+- `export function getTexturePathFromFolder(folder: string, type: unknown = "diff", extension: unknown = ".png"): string | null`
+- `export function disposeAll(): void`
 
 ---
 
 ## `World/Texture/TextureAtlasFactory.ts` (25 LOC)
 
-### export class TextureAtlasFactory
-
-**Properties**
-- `private static diffuseAtlas: Texture | null`
-- `private static normalAtlas: Texture | null`
-- `public static readonly tileSize: unknown`
-- `public static readonly atlasSize: unknown`
-- `public static readonly atlasTileSize: unknown`
-
-**Methods**
-- `static getDiffuse(): Texture | null`
-- `static setDiffuse(texture: Texture): void`
-- `static getNormal(): Texture | null`
-- `static setNormal(texture: Texture): void`
+**Module-level functions**
+- `export function getDiffuse(): Texture | null`
+- `export function setDiffuse(texture: Texture): void`
+- `export function getNormal(): Texture | null`
+- `export function setNormal(texture: Texture): void`
 
 **Types / Interfaces / Enums**
 - type `TileUV`
@@ -5960,17 +5893,10 @@ Generated: 2026-07-08T13:16:39.832Z
 
 ## `World/Texture/TextureCache.ts` (49 LOC)
 
-### export class TextureCache
-
-**Properties**
-- `private static dbName: unknown`
-- `private static storeName: unknown`
-- `private static dbPromise: Promise<IDBDatabase> | null`
-
-**Methods**
-- `private static getDB(): Promise<IDBDatabase>`
-- `static async get(url: string): Promise<Blob | undefined>`
-- `static async put(url: string, blob: Blob): Promise<void>`
+**Module-level functions**
+- `function getDB(): Promise<IDBDatabase>`
+- `export async function get(url: string): Promise<Blob | undefined>`
+- `export async function put(url: string, blob: Blob): Promise<void>`
 
 ---
 

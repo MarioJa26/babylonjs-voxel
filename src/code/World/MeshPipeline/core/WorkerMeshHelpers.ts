@@ -2,7 +2,6 @@ import { GenerationParams } from "@/code/Generation/NoiseAndParameters/Generatio
 import { MeshData } from "../../Chunk/DataStructures/MeshData";
 import { ResizableTypedArray } from "../../Chunk/DataStructures/ResizableTypedArray";
 import type { WorkerInternalMeshData } from "../../Chunk/DataStructures/WorkerInternalMeshData";
-import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
 import type { MeshContext } from "../types/MeshTypes";
 
 export type WorkerMeshBaseContext = {

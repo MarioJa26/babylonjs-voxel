@@ -2008,7 +2008,7 @@ export class ChunkWorkerPool {
 				} else if (taskType === TaskType.Remesh) {
 					normalizeChunkLod(taskChunk!);
 
-					const lod = taskChunk!.lodLevel ?? 0;
+					const lod = taskChunk?.lodLevel ?? 0;
 					this.setWorkerTaskContext(workerIndex, {
 						taskType,
 						chunk: taskChunk,

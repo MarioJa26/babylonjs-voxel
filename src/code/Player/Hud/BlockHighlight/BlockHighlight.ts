@@ -21,7 +21,6 @@ export class BlockHighlight {
 	#prevHitX = 0;
 	#prevHitY = 0;
 	#prevHitZ = 0;
-	#prevIsBoat = false;
 	readonly #renderHandle: () => void;
 
 	constructor(scene: Scene) {

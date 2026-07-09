@@ -1,5 +1,5 @@
-export class TransparentShader {
-	public static readonly chunkVertexShader = `
+export namespace TransparentShader {
+	export const chunkVertexShader = `
     #version 300 es
     precision highp float;
 
@@ -152,7 +152,7 @@ export class TransparentShader {
     }
   `;
 
-	public static readonly chunkFragmentShader = `
+	export const chunkFragmentShader = `
   #version 300 es
   precision highp float;
 

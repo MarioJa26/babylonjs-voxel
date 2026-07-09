@@ -280,7 +280,7 @@
         if (!base) return null;
 
         const parts = base.split("_");
-        const res = parts.length >= 2 ? "_" + parts.pop() : "";
+        const res = parts.length >= 2 ? `_${parts.pop()}` : "";
         const name = parts.join("_");
 
         return `${folder}/${name}_${type}${res}${ext}`;
@@ -329,7 +329,7 @@
       }
 
       function setProgress(pct) {
-        document.getElementById("progressBar").style.width = pct + "%";
+        document.getElementById("progressBar").style.width = `${pct}%`;
       }
 
       // --- FIX #1: The Download Function ---
@@ -406,7 +406,7 @@
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           blocks = await res.json();
         } catch (e) {
-          setStatus("❌ Failed to load blocks.json. Use localhost/Vite. Error: " + e.message);
+          setStatus(`❌ Failed to load blocks.json. Use localhost/Vite. Error: ${e.message}`);
           buildBtn.disabled = false;
           return;
         }

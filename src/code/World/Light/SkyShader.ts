@@ -1,5 +1,5 @@
-export class SkyShader {
-	static readonly skyVertexShader = `
+export namespace SkyShader {
+	export const skyVertexShader = `
         #version 300 es
         precision highp float;
 
@@ -18,7 +18,7 @@ export class SkyShader {
         }
     `;
 
-	static readonly skyFragmentShader = `
+	export const skyFragmentShader = `
         #version 300 es
         precision highp float;
 

@@ -143,26 +143,6 @@ function regionFileName(rx: number, ry: number, rz: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// localCoord — power-of-two bitmask; handles negatives correctly because
-// JS % can return negative, but (n & 15) for negative n gives a negative
-// result in JS too. The offset trick below is branchless and correct.
-// ---------------------------------------------------------------------------
-function localCoord(chunk: number): number {
-	// Equivalent to ((chunk % 16) + 16) % 16, but avoids two modulo ops.
-	return (chunk & 15) < 0 ? (chunk & 15) + 16 : chunk & 15;
-	// Note: for JS, (chunk % 16 + 16) & 15 is safe and branchless:
-	// chunk & 15 is only correct for non-negative; use the formula below.
-}
-
-// Actually the cleanest branchless form for negative-safe power-of-two mod:
-// ((n % M) + M) % M  →  with M=16: ((n % 16) + 16) % 16
-// But since M is a power of two: ((n & (M-1)) + M) & (M-1)
-// which equals: ((n & 15) + 16) & 15
-// This is branchless and avoids the second full-modulo.
-// We inline it directly where used below rather than calling a function,
-// saving the call overhead on the hot path.
-
-// ---------------------------------------------------------------------------
 // Scratch Uint8Array reuse — avoids allocation in toUint8Array().
 // ---------------------------------------------------------------------------
 function viewOf(data: ArrayBuffer | Uint8Array): Uint8Array {

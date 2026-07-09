@@ -3,7 +3,6 @@ import type { MobRegistry } from "../Entities/Mobs/Mob";
 import { createMobCoordinator } from "../Entities/Mobs/MobSetup";
 import { NeutralMob } from "../Entities/Mobs/NeutralMob";
 import type { SpawnCoordinator } from "../Entities/SpawnCoordinator";
-import { setSceneAccessor, setGameTimeScale } from "../Shared/GameRuntimeState";
 import {
 	dispose as disposeDistantTerrain,
 	init as initDistantTerrain,
@@ -16,6 +15,7 @@ import { DroppedItem } from "../Player/Inventory/DroppedItem";
 import type { Player } from "../Player/Player";
 import { PlayerLoadingGate } from "../Player/PlayerLoadingGate";
 import { PlayerStatePersistence } from "../Player/PlayerStatePersistence";
+import { setGameTimeScale, setSceneAccessor } from "../Shared/GameRuntimeState";
 import { disposeSharedResources, initAtlas } from "../World/Chunk/ChunkMesher";
 import { MaterialFactory } from "../World/Texture/MaterialFactory";
 import { WorldStorage } from "../World/WorldStorage";

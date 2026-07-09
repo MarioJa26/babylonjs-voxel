@@ -706,27 +706,25 @@ export async function initAtlas(): Promise<void> {
 	// -------------------------------------------------------------------------
 	// Shader registration
 	// -------------------------------------------------------------------------
-	Effect.ShadersStore["chunkVertexShader"] = OpaqueShader.chunkVertexShader;
-	Effect.ShadersStore["chunkFragmentShader"] = OpaqueShader.chunkFragmentShader;
+	Effect.ShadersStore.chunkVertexShader = OpaqueShader.chunkVertexShader;
+	Effect.ShadersStore.chunkFragmentShader = OpaqueShader.chunkFragmentShader;
 
 	// IMPORTANT FIX:
 	// Transparent chunk meshes must use the transparent vertex shader,
 	// not the shared opaque vertex shader.
-	Effect.ShadersStore["transparentChunkVertexShader"] =
+	Effect.ShadersStore.transparentChunkVertexShader =
 		TransparentShader.chunkVertexShader;
-	Effect.ShadersStore["transparentChunkFragmentShader"] =
+	Effect.ShadersStore.transparentChunkFragmentShader =
 		TransparentShader.chunkFragmentShader;
 
-	Effect.ShadersStore["lod3ChunkVertexShader"] = Lod3Shader.chunkVertexShader;
-	Effect.ShadersStore["lod3ChunkFragmentShader"] =
-		Lod3Shader.opaqueFragmentShader;
-	Effect.ShadersStore["lod3TransparentChunkFragmentShader"] =
+	Effect.ShadersStore.lod3ChunkVertexShader = Lod3Shader.chunkVertexShader;
+	Effect.ShadersStore.lod3ChunkFragmentShader = Lod3Shader.opaqueFragmentShader;
+	Effect.ShadersStore.lod3TransparentChunkFragmentShader =
 		Lod3Shader.transparentFragmentShader;
 
-	Effect.ShadersStore["lod2ChunkVertexShader"] = Lod2Shader.chunkVertexShader;
-	Effect.ShadersStore["lod2ChunkFragmentShader"] =
-		Lod2Shader.opaqueFragmentShader;
-	Effect.ShadersStore["lod2TransparentChunkFragmentShader"] =
+	Effect.ShadersStore.lod2ChunkVertexShader = Lod2Shader.chunkVertexShader;
+	Effect.ShadersStore.lod2ChunkFragmentShader = Lod2Shader.opaqueFragmentShader;
+	Effect.ShadersStore.lod2TransparentChunkFragmentShader =
 		Lod2Shader.transparentFragmentShader;
 
 	if (!globalUniformBuffer) {

@@ -1,17 +1,13 @@
 import { type Scene, StandardMaterial, Texture } from "@babylonjs/core";
 
-export class MaterialFactory {
+export namespace MaterialFactory {
 	// A cache to store and reuse materials. This is a major performance optimization.
-	private static materialCache = new Map<string, StandardMaterial>();
+	const materialCache = new Map<string, StandardMaterial>();
 
 	/**
 	 * Creates and returns a texture.
 	 */
-	private static createTexture(
-		scene: Scene,
-		path: string,
-		uvScale: number,
-	): Texture {
+	function createTexture(scene: Scene, path: string, uvScale: number): Texture {
 		const tex = new Texture(path, scene);
 		tex.uScale = uvScale;
 		tex.vScale = uvScale;
@@ -37,7 +33,7 @@ export class MaterialFactory {
 	 * @param spec Boolean to load the specular/metallic/roughness texture.
 	 * @returns A StandardMaterial.
 	 */
-	static createMaterialByFolder(
+	export function createMaterialByFolder(
 		scene: Scene,
 		folder: string,
 		uvScale = 1,
@@ -50,8 +46,8 @@ export class MaterialFactory {
 		// Generate a unique key for the cache based on all parameters
 		const cacheKey = `${folder},${uvScale},${extension},${diff},${nor},${ao},${spec}`;
 
-		if (MaterialFactory.materialCache.has(cacheKey)) {
-			return MaterialFactory.materialCache.get(cacheKey)!;
+		if (materialCache.has(cacheKey)) {
+			return materialCache.get(cacheKey)!;
 		}
 
 		const mat = new StandardMaterial(folder, scene);
@@ -78,7 +74,7 @@ export class MaterialFactory {
 		const resolution = "_" + parts.pop();
 		// e.g., baseName = "concrete_tile_facade"
 		const baseName = parts.join("_");
-		return MaterialFactory.buildMaterial(
+		return buildMaterial(
 			scene,
 			mat,
 			folder,
@@ -98,7 +94,7 @@ export class MaterialFactory {
 	 * Helper function to build the material and cache it.
 	 * This logic was separated to handle cases with and without a resolution suffix.
 	 */
-	private static buildMaterial(
+	function buildMaterial(
 		scene: Scene,
 		mat: StandardMaterial,
 		directory: string,
@@ -116,17 +112,17 @@ export class MaterialFactory {
 		// e.g., path = "./texture/stone/concrete_tile_facade_1k/concrete_tile_facade_diff_1k.jpg"
 		if (diff) {
 			const path = `${directory}/${baseName}_diff${resolution}${extension}`;
-			mat.diffuseTexture = MaterialFactory.createTexture(scene, path, uvScale);
+			mat.diffuseTexture = createTexture(scene, path, uvScale);
 		}
 
 		if (nor) {
 			const path = `${directory}/${baseName}_nor${resolution}${extension}`;
-			mat.bumpTexture = MaterialFactory.createTexture(scene, path, uvScale);
+			mat.bumpTexture = createTexture(scene, path, uvScale);
 		}
 
 		if (ao) {
 			const path = `${directory}/${baseName}_ao${resolution}${extension}`;
-			mat.ambientTexture = MaterialFactory.createTexture(scene, path, uvScale);
+			mat.ambientTexture = createTexture(scene, path, uvScale);
 		}
 
 		if (spec) {
@@ -134,12 +130,12 @@ export class MaterialFactory {
 			// metallicTexture, roughnessTexture, etc. "spec" is ambiguous.
 			// Assuming _spec for specular.
 			const path = `${directory}/${baseName}_spec${resolution}${extension}`;
-			mat.specularTexture = MaterialFactory.createTexture(scene, path, uvScale);
+			mat.specularTexture = createTexture(scene, path, uvScale);
 		}
 
 		// 5. Save the new material to the cache, freeze it, and return it
 		mat.freeze();
-		MaterialFactory.materialCache.set(cacheKey, mat);
+		materialCache.set(cacheKey, mat);
 		return mat;
 	}
 
@@ -152,7 +148,7 @@ export class MaterialFactory {
 	 * @param extension The file extension (e.g., ".png").
 	 * @returns The full path to the diffuse texture file, or null if parsing fails.
 	 */
-	public static getTexturePathFromFolder(
+	export function getTexturePathFromFolder(
 		folder: string,
 		type = "diff",
 		extension = ".png",
@@ -183,10 +179,10 @@ export class MaterialFactory {
 		return `${folder}/${baseName}_${type}${resolution}${extension}`;
 	}
 
-	static disposeAll(): void {
-		for (const mat of MaterialFactory.materialCache.values()) {
+	export function disposeAll(): void {
+		for (const mat of materialCache.values()) {
 			mat.dispose();
 		}
-		MaterialFactory.materialCache.clear();
+		materialCache.clear();
 	}
 }

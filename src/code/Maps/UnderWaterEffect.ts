@@ -1,14 +1,22 @@
-import * as BABYLON from "@babylonjs/core";
+import {
+	type Camera,
+	type DepthRenderer,
+	Effect,
+	PostProcess,
+	type Scene,
+	ShaderMaterial,
+	type Texture,
+} from "@babylonjs/core";
 import type { Player } from "../Player/Player";
 
 export class UnderWaterEffect {
-	public material: BABYLON.ShaderMaterial;
-	public postProcess: BABYLON.PostProcess;
+	public material: ShaderMaterial;
+	public postProcess: PostProcess;
 
-	private scene: BABYLON.Scene;
-	private camera: BABYLON.Camera;
+	private scene: Scene;
+	private camera: Camera;
 	private player: Player;
-	private depthRenderer: BABYLON.DepthRenderer | null = null;
+	private depthRenderer: DepthRenderer | null = null;
 	private isUnderwater = false;
 	private time = 0;
 	private rate = 0.01;
@@ -96,7 +104,7 @@ export class UnderWaterEffect {
 
         uniform sampler2D baseTexture;
 
-        // Babylon.js fog uniforms
+        // js fog uniforms
         uniform vec4 vFogInfos; 
         uniform vec3 vFogColor;
 
@@ -336,10 +344,10 @@ export class UnderWaterEffect {
         }`;
 
 	constructor(
-		scene: BABYLON.Scene,
-		camera: BABYLON.Camera,
+		scene: Scene,
+		camera: Camera,
 		player: Player,
-		baseTexture: BABYLON.Texture,
+		baseTexture: Texture,
 	) {
 		// NEW: Added baseTexture parameter
 		this.scene = scene;
@@ -361,20 +369,17 @@ export class UnderWaterEffect {
 	}
 
 	private registerShaders(): void {
-		BABYLON.Effect.ShadersStore["underWaterVertexShader"] =
-			UnderWaterEffect.VERTEX_SHADER;
-		BABYLON.Effect.ShadersStore["underWaterFragmentShader"] =
+		Effect.ShadersStore.underWaterVertexShader = UnderWaterEffect.VERTEX_SHADER;
+		Effect.ShadersStore.underWaterFragmentShader =
 			UnderWaterEffect.FRAGMENT_SHADER;
-		BABYLON.Effect.ShadersStore["underWaterBackGroundFragmentShader"] =
+		Effect.ShadersStore.underWaterBackGroundFragmentShader =
 			UnderWaterEffect.BACKGROUND_POST_PROCESS_SHADER;
-		BABYLON.Effect.ShadersStore["underWaterBackGroundTriangleVertexShader"] =
+		Effect.ShadersStore.underWaterBackGroundTriangleVertexShader =
 			UnderWaterEffect.BACKGROUND_POST_PROCESS_VERTEX_SHADER;
 	}
 
-	private createShaderMaterial(
-		baseTexture: BABYLON.Texture,
-	): BABYLON.ShaderMaterial {
-		const material = new BABYLON.ShaderMaterial(
+	private createShaderMaterial(baseTexture: Texture): ShaderMaterial {
+		const material = new ShaderMaterial(
 			"underWaterShader",
 			this.scene,
 			{
@@ -407,8 +412,8 @@ export class UnderWaterEffect {
 		return material;
 	}
 
-	private createPostProcess(): BABYLON.PostProcess {
-		const postProcess = new BABYLON.PostProcess(
+	private createPostProcess(): PostProcess {
+		const postProcess = new PostProcess(
 			"UnderWaterBackground",
 			"underWaterBackGround",
 			["time", "screenSize", "playerPosition", "isUnderwater"],
@@ -423,7 +428,7 @@ export class UnderWaterEffect {
 			"underWaterBackGroundTriangle",
 		);
 
-		postProcess.onApply = (effect: BABYLON.Effect) => {
+		postProcess.onApply = (effect: Effect) => {
 			effect.setFloat2("screenSize", postProcess.width, postProcess.height);
 			effect.setFloat("time", this.time);
 			effect.setVector3("playerPosition", this.player.position);

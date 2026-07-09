@@ -6,25 +6,25 @@ export type TileUV = {
 	tileSize: number;
 };
 
-export class TextureAtlasFactory {
-	private static diffuseAtlas: Texture | null = null;
-	private static normalAtlas: Texture | null = null;
+export namespace TextureAtlasFactory {
+	let diffuseAtlas: Texture | null = null;
+	let normalAtlas: Texture | null = null;
 
-	public static readonly tileSize = 25;
-	public static readonly atlasSize = 16;
-	public static readonly atlasTileSize = 1 / this.atlasSize;
+	export const tileSize = 25;
+	export const atlasSize = 16;
+	export const atlasTileSize = 1 / TextureAtlasFactory.atlasSize;
 
-	static getDiffuse(): Texture | null {
-		return TextureAtlasFactory.diffuseAtlas;
+	export function getDiffuse(): Texture | null {
+		return diffuseAtlas;
 	}
-	static setDiffuse(texture: Texture) {
-		TextureAtlasFactory.diffuseAtlas = texture;
+	export function setDiffuse(texture: Texture) {
+		diffuseAtlas = texture;
 	}
 
-	static getNormal(): Texture | null {
-		return TextureAtlasFactory.normalAtlas;
+	export function getNormal(): Texture | null {
+		return normalAtlas;
 	}
-	static setNormal(texture: Texture) {
-		TextureAtlasFactory.normalAtlas = texture;
+	export function setNormal(texture: Texture) {
+		normalAtlas = texture;
 	}
 }

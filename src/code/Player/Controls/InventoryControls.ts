@@ -62,7 +62,7 @@ export class InventoryControls implements IControls<unknown> {
 
 	#moveItemToHotbar(): void {
 		const slotFocused = PlayerInventory.currentlyHoveredSlot;
-		if (slotFocused && slotFocused.item) {
+		if (slotFocused?.item) {
 			if (slotFocused.item.row > 0) {
 				this.#player.playerInventory.moveItemToHotbar(slotFocused);
 			} else {

@@ -12,7 +12,7 @@ import {
 	TextureDefinitionsReady,
 } from "@/code/World/Texture/TextureDefinitions";
 import { ItemRegistry } from "../Inventory/ItemRegistry";
-import { type MasonRecipe, MasonRecipes } from "./CraftingManager";
+import { MasonRecipes } from "./CraftingManager";
 
 const MASON_SHAPES = ["slab", "stairs", "half_wall", "pane", "fence"] as const;
 

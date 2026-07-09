@@ -125,7 +125,7 @@ export class JetSkiControls implements IControls<BoatControlEntity> {
 			return;
 		}
 		const position = this.#controlledEntity.boatPosition;
-		this.#controlledEntity.boatMesh.rotationQuaternion!.toRotationMatrix(
+		this.#controlledEntity.boatMesh.rotationQuaternion?.toRotationMatrix(
 			JetSkiControls.#rotationMatrix,
 		);
 		Vector3.TransformNormalToRef(

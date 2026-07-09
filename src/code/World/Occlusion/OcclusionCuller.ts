@@ -323,7 +323,7 @@ export class OcclusionCuller {
 			this._lastCamCY = camCY;
 			this._lastCamCZ = camCZ;
 			this._topologyDirty = false;
-			this._startBFS(camCX, camCY, camCZ, SIZE);
+			this._startBFS(camCX, camCY, camCZ);
 		}
 
 		this._stepBFS(BFS_FRAME_BUDGET);
@@ -339,7 +339,7 @@ export class OcclusionCuller {
 				if (chunk.bfsQueryId !== qid) {
 					if (chunk.mergedGroupKey) continue;
 					const mesh = chunk.mesh;
-					if (mesh && mesh.isVisible) {
+					if (mesh?.isVisible) {
 						mesh.isVisible = false;
 						const tm = chunk.transparentMesh;
 						if (tm) tm.isVisible = false;
@@ -449,7 +449,7 @@ export class OcclusionCuller {
 					if (pc.mergedGroupKey) continue;
 					const pm = pc.mesh;
 					const ptm = pc.transparentMesh;
-					if (pm && pm.isVisible) {
+					if (pm?.isVisible) {
 						pm.isVisible = false;
 						if (ptm) ptm.isVisible = false;
 					}
@@ -518,7 +518,7 @@ export class OcclusionCuller {
 				let bfsPrevious = false;
 				const members = group.membersArray;
 				for (let j = 0, mlen = members.length; j < mlen; j++) {
-					const chunk = members[j]!.chunk;
+					const chunk = members[j]?.chunk;
 					if (chunk.isLoaded) {
 						if (chunk.bfsQueryId === queryId) {
 							bfsReachable = true;
@@ -714,12 +714,7 @@ export class OcclusionCuller {
 	}
 
 	// ─── _startBFS ─────────────────────────────────────────────────────────────
-	private _startBFS(
-		camCX: number,
-		camCY: number,
-		camCZ: number,
-		SIZE: number,
-	): void {
+	private _startBFS(camCX: number, camCY: number, camCZ: number): void {
 		if (!_facePairTableInitialized) initFacePairTable();
 
 		this._currentQueryId++;

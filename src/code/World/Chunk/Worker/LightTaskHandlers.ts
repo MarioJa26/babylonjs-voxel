@@ -181,7 +181,7 @@ function handleUpdateBuffers(req: LightUpdateChunkBuffersRequest): void {
 function handleMutate(req: LightMutateRequest): void {
 	if (!state.registry) return;
 	const view = state.registry.views.get(req.chunkId);
-	if (!view || !view.isLoaded) {
+	if (!view?.isLoaded) {
 		// Chunk not yet registered (mid-terrain-generation); replay later.
 		let queue = pendingMutations.get(req.chunkId);
 		if (!queue) {
@@ -209,7 +209,7 @@ function handleMutate(req: LightMutateRequest): void {
 function handleAddEmission(req: LightAddEmissionRequest): void {
 	if (!state.registry) return;
 	const view = state.registry.views.get(req.chunkId);
-	if (!view || !view.isLoaded) return;
+	if (!view?.isLoaded) return;
 	const dirty = new Set<number>();
 	addLightAt(state.registry, view, req.x, req.y, req.z, req.level, dirty);
 	for (const slot of dirty) bumpLightVersion(state.registry, slot);

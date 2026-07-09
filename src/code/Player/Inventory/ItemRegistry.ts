@@ -17,12 +17,12 @@ export type ItemDefinition = {
 
 const DEFAULT_ITEMS_URL = "/data/items.json";
 
-export class ItemRegistry {
-	private static initialized = false;
-	private static loadPromise: Promise<void> | null = null;
-	private static definitions = new Map<number, ItemDefinition>();
+export namespace ItemRegistry {
+	let initialized = false;
+	let loadPromise: Promise<void> | null = null;
+	export const definitions = new Map<number, ItemDefinition>();
 
-	private static toDisplayName(rawName: string): string {
+	export function toDisplayName(rawName: string): string {
 		return (
 			rawName
 				.split("_")
@@ -31,9 +31,9 @@ export class ItemRegistry {
 		);
 	}
 
-	static initDefaults(): void {
-		if (ItemRegistry.initialized) return;
-		ItemRegistry.initialized = true;
+	export function initDefaults(): void {
+		if (initialized) return;
+		initialized = true;
 
 		for (const textureDef of TextureDefinitions) {
 			const defaultState = 0;
@@ -52,18 +52,18 @@ export class ItemRegistry {
 		}
 	}
 
-	static async ensureLoaded(url = DEFAULT_ITEMS_URL): Promise<void> {
+	export async function ensureLoaded(url = DEFAULT_ITEMS_URL): Promise<void> {
 		await TextureDefinitionsReady;
 		ItemRegistry.initDefaults();
 
-		if (ItemRegistry.loadPromise) return ItemRegistry.loadPromise;
-		ItemRegistry.loadPromise = (async () => {
+		if (loadPromise) return loadPromise;
+		loadPromise = (async () => {
 			await ItemRegistry.loadFromUrl(url);
 		})();
-		return ItemRegistry.loadPromise;
+		return loadPromise;
 	}
 
-	static async loadFromUrl(url: string): Promise<void> {
+	export async function loadFromUrl(url: string): Promise<void> {
 		try {
 			const response = await fetch(url);
 			if (!response.ok) {
@@ -86,23 +86,23 @@ export class ItemRegistry {
 		}
 	}
 
-	static register(def: ItemDefinition): void {
+	export function register(def: ItemDefinition): void {
 		const existing = ItemRegistry.definitions.get(def.id);
 		const merged = existing ? { ...existing, ...def } : def;
 		ItemRegistry.definitions.set(def.id, merged);
 	}
 
-	static get(id: number): ItemDefinition | undefined {
+	export function get(id: number): ItemDefinition | undefined {
 		ItemRegistry.initDefaults();
 		return ItemRegistry.definitions.get(id);
 	}
 
-	static getAll(): ItemDefinition[] {
+	export function getAll(): ItemDefinition[] {
 		ItemRegistry.initDefaults();
 		return [...ItemRegistry.definitions.values()].sort((a, b) => a.id - b.id);
 	}
 
-	private static isValidDefinition(value: unknown): value is ItemDefinition {
+	export function isValidDefinition(value: unknown): value is ItemDefinition {
 		if (!value || typeof value !== "object") return false;
 		const candidate = value as Partial<ItemDefinition>;
 		return (

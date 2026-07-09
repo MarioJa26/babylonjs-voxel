@@ -322,13 +322,11 @@ export function init() {
 		);
 	};
 
-	Effect.ShadersStore["distantTerrainVertexShader"] =
-		distantTerrainVertexShader;
-	Effect.ShadersStore["distantTerrainFragmentShader"] =
+	Effect.ShadersStore.distantTerrainVertexShader = distantTerrainVertexShader;
+	Effect.ShadersStore.distantTerrainFragmentShader =
 		distantTerrainFragmentShader;
-	Effect.ShadersStore["distantWaterVertexShader"] = distantWaterVertexShader;
-	Effect.ShadersStore["distantWaterFragmentShader"] =
-		distantWaterFragmentShader;
+	Effect.ShadersStore.distantWaterVertexShader = distantWaterVertexShader;
+	Effect.ShadersStore.distantWaterFragmentShader = distantWaterFragmentShader;
 
 	material = new ShaderMaterial(
 		"distantTerrainMat",

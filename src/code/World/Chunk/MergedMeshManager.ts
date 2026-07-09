@@ -409,7 +409,7 @@ export function removeChunkFromGroup(chunk: Chunk): void {
 	let minLod = Infinity;
 
 	for (let i = 0; i < w; i++) {
-		const lod = arr[i]!.chunk.lodLevel ?? 0;
+		const lod = arr[i]?.chunk.lodLevel ?? 0;
 
 		if (lod < minLod) {
 			minLod = lod;

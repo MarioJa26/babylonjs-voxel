@@ -7,7 +7,7 @@
 // ---------------------------------------------------------------------------
 
 type EventMap = {
-	"player:pause-requested": void;
+	"player:pause-requested": undefined;
 	"player:position-changed": { x: number; y: number; z: number };
 	"chunk:loaded": {
 		chunkX: number;
@@ -28,7 +28,7 @@ export function on<K extends EventKey>(event: K, fn: Listener<K>): () => void {
 	if (!listeners.has(event)) {
 		listeners.set(event, new Set());
 	}
-	listeners.get(event)!.add(fn);
+	listeners.get(event)?.add(fn);
 	return () => {
 		listeners.get(event)?.delete(fn);
 	};
