@@ -105,10 +105,12 @@ function parseBlockInto(packed: number, out: ParsedBlock): void {
 	out.greedyCompatible = isGreedyCompatiblePackedBlock(packed);
 }
 
+const FACE_BIT_FRONT = [FACE_PX, FACE_PY, FACE_PZ];
+const FACE_BIT_BACK = [FACE_NX, FACE_NY, FACE_NZ];
+const FACE_BIT_LUT = [FACE_BIT_FRONT, FACE_BIT_BACK];
+
 function getFaceBit(axis: number, isBackFace: boolean): number {
-	if (axis === 0) return isBackFace ? FACE_NX : FACE_PX;
-	if (axis === 1) return isBackFace ? FACE_NY : FACE_PY;
-	return isBackFace ? FACE_NZ : FACE_PZ;
+	return FACE_BIT_LUT[+isBackFace][axis];
 }
 
 function isWaterGlassInterface(curr: ParsedBlock, nbr: ParsedBlock): boolean {
@@ -277,21 +279,10 @@ function isBorderOutwardFace(
 	axis: number,
 	isBackFace: boolean,
 ): boolean {
-	// Face normal direction: +1 for front face, -1 for back face on the given axis.
-	const dir = isBackFace ? -1 : 1;
-
-	if (axis === 0) {
-		// +X face (dir=+1) is outward when x >= size; -X face (dir=-1) is outward when x < 0
-		if (x < 0 && dir < 0) return true;
-		if (x >= size && dir > 0) return true;
-	} else if (axis === 1) {
-		if (y < 0 && dir < 0) return true;
-		if (y >= size && dir > 0) return true;
-	} else {
-		if (z < 0 && dir < 0) return true;
-		if (z >= size && dir > 0) return true;
-	}
-	return false;
+	// A back face (dir = -1) points outward at the p < 0 border; a front
+	// face (dir = +1) points outward at the p >= size border.
+	const p = axis === 0 ? x : axis === 1 ? y : z;
+	return isBackFace ? p < 0 : p >= size;
 }
 
 /**
@@ -605,26 +596,17 @@ function emitBoxFace(
 	parseBlockInto(packedBlock, _parsedBlockScratch1);
 	const currentBlock = _parsedBlockScratch1;
 
-	const dirX = axis === 0 ? (isBackFace ? -1 : 1) : 0;
-	const dirY = axis === 1 ? (isBackFace ? -1 : 1) : 0;
-	const dirZ = axis === 2 ? (isBackFace ? -1 : 1) : 0;
+	const back = isBackFace ? 1 : 0;
+	const d = 1 - 2 * back;
+	const dirX = axis === 0 ? d : 0;
+	const dirY = axis === 1 ? d : 0;
+	const dirZ = axis === 2 ? d : 0;
 
 	const nx = voxelX + dirX;
 	const ny = voxelY + dirY;
 	const nz = voxelZ + dirZ;
 
-	const onBoundary =
-		axis === 0
-			? isBackFace
-				? min[0] <= EPS
-				: max[0] >= 1 - EPS
-			: axis === 1
-				? isBackFace
-					? min[1] <= EPS
-					: max[1] >= 1 - EPS
-				: isBackFace
-					? min[2] <= EPS
-					: max[2] >= 1 - EPS;
+	const onBoundary = back ? min[axis] <= EPS : max[axis] >= 1 - EPS;
 
 	let light = baseLight;
 	let ao = 0;
@@ -663,63 +645,24 @@ function emitBoxFace(
 
 	const faceName = getFaceName(axis, isBackFace);
 
-	if (axis === 0) {
-		emitQuadFast(
-			out,
-			voxelX + (isBackFace ? min[0] : max[0]),
-			voxelY + min[1],
-			voxelZ + min[2],
-			axis,
-			max[1] - min[1],
-			max[2] - min[2],
-			blockId,
-			isBackFace ? 1 : 0,
-			light,
-			ao,
-			faceName,
-			currentBlock.materialType,
-			0,
-			0,
-			0,
-		);
-		return;
-	}
+	const faceIdx = back;
+	const bc = back ? min[axis] : max[axis];
+	const x = voxelX + (axis === 0 ? bc : min[0]);
+	const y = voxelY + (axis === 1 ? bc : min[1]);
+	const z = voxelZ + (axis === 2 ? bc : min[2]);
+	const u = (axis + 1) % 3;
+	const v = (axis + 2) % 3;
 
-	if (axis === 1) {
-		// axis 1 convention matches the old worker:
-		// width = Z extent, height = X extent
-		emitQuadFast(
-			out,
-			voxelX + min[0],
-			voxelY + (isBackFace ? min[1] : max[1]),
-			voxelZ + min[2],
-			axis,
-			max[2] - min[2],
-			max[0] - min[0],
-			blockId,
-			isBackFace ? 1 : 0,
-			light,
-			ao,
-			faceName,
-			currentBlock.materialType,
-			0,
-			0,
-			0,
-		);
-		return;
-	}
-
-	// axis === 2
 	emitQuadFast(
 		out,
-		voxelX + min[0],
-		voxelY + min[1],
-		voxelZ + (isBackFace ? min[2] : max[2]),
+		x,
+		y,
+		z,
 		axis,
-		max[0] - min[0],
-		max[1] - min[1],
+		max[u] - min[u],
+		max[v] - min[v],
 		blockId,
-		isBackFace ? 1 : 0,
+		faceIdx,
 		light,
 		ao,
 		faceName,

@@ -27,20 +27,6 @@ type DesiredChunkState = {
 	revision: number;
 };
 
-function _chunkDist(
-	chunkX: number,
-	chunkY: number,
-	chunkZ: number,
-	centerX: number,
-	centerY: number,
-	centerZ: number,
-): { hDist: number; vDist: number } {
-	return {
-		hDist: Math.max(Math.abs(chunkX - centerX), Math.abs(chunkZ - centerZ)),
-		vDist: Math.abs(chunkY - centerY),
-	};
-}
-
 // Scratch target for chunkDist to avoid per-call object allocation in hot
 // enqueue loops. Callers must consume hDist/vDist before the next call.
 const _chunkDistScratch: { hDist: number; vDist: number } = {

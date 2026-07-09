@@ -31,12 +31,12 @@ export const enum FaceName {
 	All,
 	Count,
 }
+const FACE_NAME_LUT: FaceName[][] = [
+	[FaceName.West, FaceName.East],
+	[FaceName.Top, FaceName.Bottom],
+	[FaceName.South, FaceName.North],
+];
+
 export function getFaceName(axis: number, isBackFace: boolean): FaceName {
-	if (axis === 0) {
-		return isBackFace ? FaceName.East : FaceName.West;
-	}
-	if (axis === 1) {
-		return isBackFace ? FaceName.Bottom : FaceName.Top;
-	}
-	return isBackFace ? FaceName.North : FaceName.South;
+	return FACE_NAME_LUT[axis][+isBackFace];
 }

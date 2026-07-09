@@ -50,17 +50,28 @@ function needsRawDim(blockId: number, width: number, height: number): boolean {
 	return blockId !== WATER_BLOCK_ID || width > 31 || height > 31;
 }
 
+const _origin = { ox: 0, oy: 0, oz: 0 };
+
 function inlineOrigin(
 	axis: number,
-	isBackFace: boolean,
+	back: number,
 	desc: GreedyFaceDescriptor,
 ): { ox: number; oy: number; oz: number } {
-	const faceBlockCoord = isBackFace ? desc.slice + 1 : desc.slice;
-	if (axis === 0)
-		return { ox: faceBlockCoord, oy: desc.uStart, oz: desc.vStart };
-	if (axis === 1)
-		return { ox: desc.vStart, oy: faceBlockCoord, oz: desc.uStart };
-	return { ox: desc.uStart, oy: desc.vStart, oz: faceBlockCoord };
+	const faceBlockCoord = desc.slice + back;
+	if (axis === 0) {
+		_origin.ox = faceBlockCoord;
+		_origin.oy = desc.uStart;
+		_origin.oz = desc.vStart;
+	} else if (axis === 1) {
+		_origin.ox = desc.vStart;
+		_origin.oy = faceBlockCoord;
+		_origin.oz = desc.uStart;
+	} else {
+		_origin.ox = desc.uStart;
+		_origin.oy = desc.vStart;
+		_origin.oz = faceBlockCoord;
+	}
+	return _origin;
 }
 
 type EmitFn = (
@@ -243,12 +254,12 @@ export class VoxelFaceEmitterAdapter {
 		ao: number,
 		faceName: FaceName,
 	): void {
-		const isBackFace = back === 1;
-		const { ox, oy, oz } = inlineOrigin(axis, isBackFace, desc);
+		const { ox, oy, oz } = inlineOrigin(axis, back, desc);
 
-		const x = axis === 0 ? ox + (isBackFace ? 0 : 1) : ox;
-		const y = axis === 1 ? oy + (isBackFace ? 0 : 1) : oy;
-		const z = axis === 2 ? oz + (isBackFace ? 0 : 1) : oz;
+		const off = 1 ^ back;
+		const x = axis === 0 ? ox + off : ox;
+		const y = axis === 1 ? oy + off : oy;
+		const z = axis === 2 ? oz + off : oz;
 
 		emitQuadFast(
 			out,
@@ -281,12 +292,12 @@ export class VoxelFaceEmitterAdapter {
 		ao: number,
 		faceName: FaceName,
 	): void {
-		const isBackFace = back === 1;
-		const { ox, oy, oz } = inlineOrigin(axis, isBackFace, desc);
+		const { ox, oy, oz } = inlineOrigin(axis, back, desc);
 
-		const x = axis === 0 ? ox + (isBackFace ? 0 : 1) : ox;
-		const y = axis === 1 ? oy + (isBackFace ? 0 : 1) : oy;
-		const z = axis === 2 ? oz + (isBackFace ? 0 : 1) : oz;
+		const off = 1 ^ back;
+		const x = axis === 0 ? ox + off : ox;
+		const y = axis === 1 ? oy + off : oy;
+		const z = axis === 2 ? oz + off : oz;
 
 		emitWaterQuad(
 			out,
@@ -321,8 +332,7 @@ export class VoxelFaceEmitterAdapter {
 		const boxes = getRuntimeShapeBoxes(packedBlock);
 		if (boxes.length === 0) return;
 
-		const isBackFace = back === 1;
-		const { ox, oy, oz } = inlineOrigin(axis, isBackFace, desc);
+		const { ox, oy, oz } = inlineOrigin(axis, back, desc);
 		const rawDim = needsRawDim(blockId, desc.width, desc.height) ? 1 : 0;
 
 		for (let i = 0; i < boxes.length; i++) {
@@ -331,30 +341,14 @@ export class VoxelFaceEmitterAdapter {
 
 			const min = box.min;
 			const max = box.max;
-			let x: number;
-			let y: number;
-			let z: number;
-			let width: number;
-			let height: number;
-			if (axis === 0) {
-				x = ox + (isBackFace ? min[0] : max[0]);
-				y = oy + min[1];
-				z = oz + min[2];
-				width = desc.width * (max[1] - min[1]);
-				height = desc.height * (max[2] - min[2]);
-			} else if (axis === 1) {
-				x = ox + min[0];
-				y = oy + (isBackFace ? min[1] : max[1]);
-				z = oz + min[2];
-				width = desc.width * (max[2] - min[2]);
-				height = desc.height * (max[0] - min[0]);
-			} else {
-				x = ox + min[0];
-				y = oy + min[1];
-				z = oz + (isBackFace ? min[2] : max[2]);
-				width = desc.width * (max[0] - min[0]);
-				height = desc.height * (max[1] - min[1]);
-			}
+			const bc = back ? min[axis] : max[axis];
+			const x = ox + (axis === 0 ? bc : min[0]);
+			const y = oy + (axis === 1 ? bc : min[1]);
+			const z = oz + (axis === 2 ? bc : min[2]);
+			const u = (axis + 1) % 3;
+			const v = (axis + 2) % 3;
+			const width = desc.width * (max[u] - min[u]);
+			const height = desc.height * (max[v] - min[v]);
 
 			emitQuadFast(
 				out,
@@ -392,8 +386,7 @@ export class VoxelFaceEmitterAdapter {
 		const boxes = getRuntimeShapeBoxes(packedBlock);
 		if (boxes.length === 0) return;
 
-		const isBackFace = back === 1;
-		const { ox, oy, oz } = inlineOrigin(axis, isBackFace, desc);
+		const { ox, oy, oz } = inlineOrigin(axis, back, desc);
 
 		for (let i = 0; i < boxes.length; i++) {
 			const box = boxes[i];
@@ -401,30 +394,14 @@ export class VoxelFaceEmitterAdapter {
 
 			const min = box.min;
 			const max = box.max;
-			let x: number;
-			let y: number;
-			let z: number;
-			let width: number;
-			let height: number;
-			if (axis === 0) {
-				x = ox + (isBackFace ? min[0] : max[0]);
-				y = oy + min[1];
-				z = oz + min[2];
-				width = desc.width * (max[1] - min[1]);
-				height = desc.height * (max[2] - min[2]);
-			} else if (axis === 1) {
-				x = ox + min[0];
-				y = oy + (isBackFace ? min[1] : max[1]);
-				z = oz + min[2];
-				width = desc.width * (max[2] - min[2]);
-				height = desc.height * (max[0] - min[0]);
-			} else {
-				x = ox + min[0];
-				y = oy + min[1];
-				z = oz + (isBackFace ? min[2] : max[2]);
-				width = desc.width * (max[0] - min[0]);
-				height = desc.height * (max[1] - min[1]);
-			}
+			const bc = back ? min[axis] : max[axis];
+			const x = ox + (axis === 0 ? bc : min[0]);
+			const y = oy + (axis === 1 ? bc : min[1]);
+			const z = oz + (axis === 2 ? bc : min[2]);
+			const u = (axis + 1) % 3;
+			const v = (axis + 2) % 3;
+			const width = desc.width * (max[u] - min[u]);
+			const height = desc.height * (max[v] - min[v]);
 
 			emitWaterQuad(
 				out,
