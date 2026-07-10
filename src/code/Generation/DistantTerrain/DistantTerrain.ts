@@ -11,8 +11,8 @@ import {
 	VertexBuffer,
 } from "@babylonjs/core";
 import { Map1 } from "@/code/Maps/Map1";
+import { worldToChunkCoord } from "@/code/Shared/ChunkCoordUtils";
 import { Chunk } from "@/code/World/Chunk/Chunk";
-import { worldToChunkCoord } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 import {

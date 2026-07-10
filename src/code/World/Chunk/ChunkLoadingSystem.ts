@@ -1,3 +1,4 @@
+import { worldToChunkCoord } from "@/code/Shared/ChunkCoordUtils";
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import { packChunkKey } from "../Storage/ChunkKey";
 import { deserializeMeshPair } from "../Storage/MeshSerializer";
@@ -1013,21 +1014,4 @@ function collectChunkEntityPayloads(): ReadonlyMap<
 	}
 
 	return entitiesByChunk;
-}
-
-/**
- * Converts world coordinates to chunk coordinates.
- * @param value The world coordinate value (e.g., player's x position).
- * @returns The corresponding chunk coordinate.
- */
-export function worldToChunkCoord(value: number): number {
-	return Math.floor(value / Chunk.SIZE);
-}
-/**
- * Converts world coordinates to local block coordinates within a chunk.
- * @param value The world coordinate value.
- * @returns The local block coordinate (0-63).
- */
-export function worldToBlockCoord(value: number): number {
-	return ((Math.floor(value) % Chunk.SIZE) + Chunk.SIZE) % Chunk.SIZE;
 }

@@ -1,10 +1,10 @@
 import { SSAO2RenderingPipeline } from "@babylonjs/core";
 import { Map1 } from "@/code/Maps/Map1";
+import { worldToChunkCoord } from "@/code/Shared/ChunkCoordUtils";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import {
 	flushChunkBoundEntities,
 	updateChunksAround,
-	worldToChunkCoord,
 } from "../../World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "../../World/Chunk/ChunkWorkerPool";
 import { WorldStorage } from "../../World/WorldStorage";

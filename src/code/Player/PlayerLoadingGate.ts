@@ -1,9 +1,9 @@
 import type { Observer, Scene } from "@babylonjs/core";
+import { worldToChunkCoord } from "../Shared/ChunkCoordUtils";
 import { getChunk } from "../World/Chunk/Chunk";
 import {
 	areChunksLoadedAround,
 	updateChunksAround,
-	worldToChunkCoord,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 import type { Player } from "./Player";

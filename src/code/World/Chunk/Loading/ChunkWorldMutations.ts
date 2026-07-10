@@ -1,5 +1,8 @@
+import {
+	worldToBlockCoord,
+	worldToChunkCoord,
+} from "@/code/Shared/ChunkCoordUtils";
 import { Chunk, getChunk } from "../Chunk";
-import { worldToBlockCoord, worldToChunkCoord } from "../ChunkLoadingSystem";
 
 export interface WorldBlockCoordinates {
 	worldX: number;
