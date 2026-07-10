@@ -6,7 +6,6 @@ import {
 	MeshBuilder,
 	type Scene,
 	ShaderMaterial,
-	SSAORenderingPipeline,
 	Vector3,
 } from "@babylonjs/core";
 import { PlayerHud } from "../Player/Hud/PlayerHud";
@@ -45,20 +44,6 @@ export class WorldEnvironment {
 		) as HTMLInputElement | null;
 		this.createLights();
 		this.createSkybox();
-	}
-
-	public initSSAO() {
-		if (SETTING_PARAMS.ENABLE_SSAO && this.scene.activeCamera) {
-			new SSAORenderingPipeline(
-				"ssaopipeline",
-				this.scene,
-				{
-					ssaoRatio: SETTING_PARAMS.SSAO_RATIO,
-					combineRatio: SETTING_PARAMS.SSAO_COMBINE_RATIO,
-				},
-				[this.scene.activeCamera],
-			);
-		}
 	}
 
 	private createLights() {

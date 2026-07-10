@@ -106,8 +106,6 @@ export class Map1 {
 				Map1.mainScene,
 				() => this.#player.position,
 			);
-
-			Map1.environment.initSSAO();
 		} catch (error) {
 			console.error("Error loading environment or textures:", error);
 		}

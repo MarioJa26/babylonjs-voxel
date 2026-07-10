@@ -38,11 +38,6 @@ export const SETTING_PARAMS = {
 	// --- Day/Night Cycle ---
 	DAY_DURATION_MS: 10 * 60 * 2000, // 20 minutes for a full day
 
-	// --- Graphics & Rendering ---
-	ENABLE_SSAO: false,
-	SSAO_RATIO: 0.5,
-	SSAO_COMBINE_RATIO: 2.0,
-
 	// --- Block Highlighter ---
 	HIGHLIGHT_ALPHA: 0.0,
 	HIGHLIGHT_COLOR: [0, 0.33, 0], // Stored as array [r, g, b]

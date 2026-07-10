@@ -1,4 +1,3 @@
-import { SSAO2RenderingPipeline } from "@babylonjs/core";
 import { Map1 } from "@/code/Maps/Map1";
 import { worldToChunkCoord } from "@/code/Shared/ChunkCoordUtils";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
@@ -16,7 +15,6 @@ export class PauseMenu {
 	private settingsContainer: HTMLElement;
 	private onResume: () => void;
 	private player: Player;
-	private ssaoPipeline: SSAO2RenderingPipeline | null = null;
 
 	constructor(onResume: () => void, player: Player) {
 		this.onResume = onResume;
@@ -386,28 +384,6 @@ export class PauseMenu {
 		container.appendChild(lodHeader);
 		container.appendChild(lodSection);
 
-		// --- SSAO Toggle ---
-		const ssaoToggleLabel = document.createElement("label");
-		ssaoToggleLabel.style.display = "flex";
-		ssaoToggleLabel.style.alignItems = "center";
-		ssaoToggleLabel.style.marginTop = "10px";
-		ssaoToggleLabel.style.width = "100%";
-		ssaoToggleLabel.style.justifyContent = "space-between";
-
-		const ssaoText = document.createElement("span");
-		ssaoText.innerText = "Enable SSAO";
-
-		const ssaoCheckbox = document.createElement("input");
-		ssaoCheckbox.type = "checkbox";
-		ssaoCheckbox.checked = SETTING_PARAMS.ENABLE_SSAO;
-		ssaoCheckbox.onchange = () => {
-			SETTING_PARAMS.ENABLE_SSAO = ssaoCheckbox.checked;
-			this.toggleSSAO(ssaoCheckbox.checked);
-		};
-		ssaoToggleLabel.appendChild(ssaoText);
-		ssaoToggleLabel.appendChild(ssaoCheckbox);
-		container.appendChild(ssaoToggleLabel);
-
 		// --- Separator and Back Button ---
 		const separator = document.createElement("hr");
 		separator.style.width = "100%";
@@ -472,29 +448,6 @@ export class PauseMenu {
 		separator.style.width = "100%";
 		separator.style.textAlign = "center";
 		return separator;
-	}
-
-	private toggleSSAO(enabled: boolean) {
-		const scene = this.player.playerCamera.playerCamera.getScene();
-		const camera = this.player.playerCamera.playerCamera;
-
-		if (this.ssaoPipeline) {
-			this.ssaoPipeline.dispose();
-			this.ssaoPipeline = null;
-		}
-
-		if (enabled) {
-			const ssao = new SSAO2RenderingPipeline(
-				"ssao",
-				scene,
-				SETTING_PARAMS.SSAO_RATIO,
-				[camera],
-			);
-			ssao.radius = 2;
-			ssao.totalStrength = 1.3;
-			ssao.expensiveBlur = true;
-			this.ssaoPipeline = ssao;
-		}
 	}
 
 	public show() {
