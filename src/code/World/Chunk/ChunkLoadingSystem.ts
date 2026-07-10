@@ -174,7 +174,7 @@ const worldMutations = new ChunkWorldMutations({
 });
 
 const readiness = new ChunkReadiness({
-	isChunkLoaded: (chunk: Chunk) => chunk.isLoaded,
+	isChunkLoaded: (chunk: Chunk) => chunk.isLoaded && chunk.hasVoxelData,
 	isChunkLod0Ready: (chunk: Chunk) => {
 		if (chunk.lodLevel === undefined || chunk.lodLevel === null) {
 			return false;

@@ -1,7 +1,7 @@
 import type { Observer, Scene } from "@babylonjs/core";
 import { getChunk } from "../World/Chunk/Chunk";
 import {
-	areChunksLod0ReadyAround,
+	areChunksLoadedAround,
 	updateChunksAround,
 	worldToChunkCoord,
 } from "../World/Chunk/ChunkLoadingSystem";
@@ -9,7 +9,7 @@ import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 import type { Player } from "./Player";
 
 export class PlayerLoadingGate {
-	private static readonly SPAWN_CHUNK_RADIUS = 2;
+	private static readonly SPAWN_CHUNK_RADIUS = 1;
 	private static readonly SPAWN_READY_FRAME_THRESHOLD = 17;
 	private static readonly SPAWN_PROTECTION_TIMEOUT_MS = 16000;
 
@@ -64,12 +64,12 @@ export class PlayerLoadingGate {
 			playerPos.z,
 		);
 
-		const chunksReady = areChunksLod0ReadyAround(
+		const chunksReady = areChunksLoadedAround(
 			chunkX,
 			chunkY,
 			chunkZ,
 			PlayerLoadingGate.SPAWN_CHUNK_RADIUS,
-			2,
+			PlayerLoadingGate.SPAWN_CHUNK_RADIUS,
 		);
 		const colliderReady = this.isSpawnColliderReady(chunkX, chunkY, chunkZ);
 		const timedOut =

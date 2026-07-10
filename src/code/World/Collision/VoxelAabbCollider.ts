@@ -238,14 +238,24 @@ export class VoxelAabbCollider {
 	}
 
 	public overlaps(position: Vector3): boolean {
+		return this.overlapsBox(position, this.#halfExtents);
+	}
+
+	/**
+	 * Like `overlaps`, but with an explicit (possibly smaller/larger) half-extent
+	 * box. Lets callers probe sub-regions of the body — e.g. a thin foot slab to
+	 * detect floor, or a side slab to detect wall contact — without allocating a
+	 * second collider.
+	 */
+	public overlapsBox(position: Vector3, halfExtents: Vector3): boolean {
 		const eps = this.#epsilon;
 
-		const aMinX = position.x - this.#halfExtents.x;
-		const aMaxX = position.x + this.#halfExtents.x;
-		const aMinY = position.y - this.#halfExtents.y;
-		const aMaxY = position.y + this.#halfExtents.y;
-		const aMinZ = position.z - this.#halfExtents.z;
-		const aMaxZ = position.z + this.#halfExtents.z;
+		const aMinX = position.x - halfExtents.x;
+		const aMaxX = position.x + halfExtents.x;
+		const aMinY = position.y - halfExtents.y;
+		const aMaxY = position.y + halfExtents.y;
+		const aMinZ = position.z - halfExtents.z;
+		const aMaxZ = position.z + halfExtents.z;
 
 		const x0 = Math.floor(aMinX + eps);
 		const x1 = Math.floor(aMaxX - eps);
@@ -380,6 +390,65 @@ export class VoxelAabbCollider {
 		}
 
 		return false;
+	}
+
+	/**
+	 * Like `overlapsBox`, but returns the integer coordinates of the first solid
+	 * voxel the box overlaps (or null). Lets callers reason about *which* block
+	 * was hit — e.g. to test what's above/below the contacted block — without
+	 * re-deriving the voxel from a probe center (which is fragile at column
+	 * boundaries).
+	 */
+	public firstSolidVoxel(
+		position: Vector3,
+		halfExtents: Vector3,
+	): { x: number; y: number; z: number } | null {
+		const eps = this.#epsilon;
+
+		const aMinX = position.x - halfExtents.x;
+		const aMaxX = position.x + halfExtents.x;
+		const aMinY = position.y - halfExtents.y;
+		const aMaxY = position.y + halfExtents.y;
+		const aMinZ = position.z - halfExtents.z;
+		const aMaxZ = position.z + halfExtents.z;
+
+		const x0 = Math.floor(aMinX + eps);
+		const x1 = Math.floor(aMaxX - eps);
+		const y0 = Math.floor(aMinY + eps);
+		const y1 = Math.floor(aMaxY - eps);
+		const z0 = Math.floor(aMinZ + eps);
+		const z1 = Math.floor(aMaxZ - eps);
+
+		for (let x = x0; x <= x1; x++) {
+			for (let y = y0; y <= y1; y++) {
+				for (let z = z0; z <= z1; z++) {
+					const info = this.#isSolidBlockAt(x, y, z);
+					if (!info) continue;
+
+					if (
+						testShapeBoxOverlap(
+							aMinX,
+							aMaxX,
+							aMinY,
+							aMaxY,
+							aMinZ,
+							aMaxZ,
+							eps,
+							info.shape,
+							info.rotation,
+							info.slice,
+							info.flipY,
+							x,
+							y,
+							z,
+						)
+					) {
+						return { x, y, z };
+					}
+				}
+			}
+		}
+		return null;
 	}
 
 	public moveAxis(

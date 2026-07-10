@@ -130,6 +130,7 @@ export class PlayerVehicleMotor {
 	readonly #tmpDv = new Vector3();
 	readonly #tmpV = new Vector3();
 	readonly #tmpInv = new Matrix();
+	readonly #tmpProbe = new Vector3(); // #checkGrounded / #checkWallContact
 
 	// ── Terrain state ─────────────────────────────────────────────────────────
 	readonly boatVoxelCollider: VoxelAabbCollider;
@@ -137,6 +138,8 @@ export class PlayerVehicleMotor {
 	private voxelPosition = new Vector3(0, 165, 0);
 	private voxelVelocity = Vector3.Zero();
 	private voxelIsGrounded = false;
+	private prevJumpHeld = false;
+	private isClimbing = false;
 	private lastStepUpTime = 0;
 	private now = 0;
 
@@ -164,6 +167,22 @@ export class PlayerVehicleMotor {
 	private readonly swimHorizontalDrag = 0.97;
 	private readonly stepUpHeight = 1.01;
 	private readonly stepUpCooldown = 0.01;
+
+	// ── Wall jump / climbing ─────────────────────────────────────────────────
+	// Formalised replacement for the old "jump up a wall" exploit. Touching a
+	// wall is not sticky: tapping jump while airborne and in contact launches a
+	// parkour wall-jump (up impulse + small push off the wall). Gravity arcs
+	// between hops; at zero stamina you can't hop and instead slide down slowly.
+	private readonly noStaminaSlideSpeed = 0.15; // slow slide while climbing
+	// Max distance of solid ground below the feet that still suppresses climbing
+	// (so you don't stick to / slow-slide a 1-tall step or the base of a wall).
+	private readonly climbGroundMaxDist = 1.0;
+	// Footprint used to detect *floor* (narrow so walls beside the player are
+	// not mistaken for ground). This is the actual bug fix.
+	private readonly footProbeHalfWidth: number; // colliderHalfWidth * 0.7
+	private readonly footProbeHalfHeight = 0.04;
+	// Half-height of the side slab used to detect wall contact.
+	private readonly wallProbeHalfHeight: number; // colliderHalfHeight * 0.6
 
 	// PERF: Pre-computed constants derived from other parameters.
 	// Avoids repeated arithmetic in the physics hot path.
@@ -193,6 +212,8 @@ export class PlayerVehicleMotor {
 		this.colliderHalfWidthWater = this.colliderHalfWidth * 0.9;
 		this.stepUpCooldownMs = this.stepUpCooldown * 1000;
 		this.jumpImpulse = this.#characterGravityLen * this.jumpHeight;
+		this.footProbeHalfWidth = this.colliderHalfWidth * 0.7;
+		this.wallProbeHalfHeight = this.colliderHalfHeight * 0.6;
 
 		// PERF: Pre-build probe offset arrays so inner loops don't allocate
 		// temporary tuples or recompute `r` every frame.
@@ -306,6 +327,9 @@ export class PlayerVehicleMotor {
 	}
 	public get isMovementLocked(): boolean {
 		return this.#movementLocked;
+	}
+	public get climbing(): boolean {
+		return this.isClimbing;
 	}
 
 	private get inputDirection(): Vector3 {
@@ -712,15 +736,91 @@ export class PlayerVehicleMotor {
 	}
 
 	#checkGrounded(pos: Vector3, collider: VoxelAabbCollider): boolean {
-		const px = pos.x,
-			py = pos.y - 0.08,
-			pz = pos.z;
-		const p = this.#tmp4;
-		for (const [sx, sz] of this._groundProbeOffsets) {
-			p.set(px + sx, py, pz + sz);
-			if (collider.overlaps(p)) return true;
-		}
-		return false;
+		// Probe a thin slab *just below the feet* using the interior footprint
+		// (narrower than the body). This detects a real floor without mistaking a
+		// wall the player is pressed against for ground — which previously let the
+		// player re-jump off a wall every frame.
+		const footY = pos.y - this.colliderHalfHeight;
+		const p = this.#tmpProbe;
+		p.set(pos.x, footY - this.footProbeHalfHeight, pos.z);
+		const extents = this.#tmpV.set(
+			this.footProbeHalfWidth,
+			this.footProbeHalfHeight,
+			this.footProbeHalfWidth,
+		);
+		return collider.overlapsBox(p, extents);
+	}
+
+	/**
+	 * Detect a solid wall in contact with the player's body on either the X or Z
+	 * sides. Returns whether contact exists and the inward normal (pointing from
+	 * the wall toward the player) so callers can tell which way "into the wall"
+	 * is. Only the body-height side slabs are probed, so floors/ceilings are
+	 * ignored.
+	 */
+	#checkWallContact(
+		pos: Vector3,
+		collider: VoxelAabbCollider,
+	): { contact: boolean; nx: number; nz: number } {
+		const cy = pos.y;
+		const hx = this.colliderHalfWidth + 0.06;
+		const hz = this.colliderHalfWidth + 0.06;
+		const hy = this.wallProbeHalfHeight;
+		const p = this.#tmpProbe;
+		const extents = this.#tmpV.set(hx, hy, hz);
+
+		// +X / -X
+		p.set(pos.x + this.colliderHalfWidth + 0.04, cy, pos.z);
+		const v1 = collider.firstSolidVoxel(p, extents);
+		if (v1 && this.#isClimbableWall(v1))
+			return { contact: true, nx: -1, nz: 0 };
+		p.set(pos.x - this.colliderHalfWidth - 0.04, cy, pos.z);
+		const v2 = collider.firstSolidVoxel(p, extents);
+		if (v2 && this.#isClimbableWall(v2)) return { contact: true, nx: 1, nz: 0 };
+		// +Z / -Z
+		p.set(pos.x, cy, pos.z + this.colliderHalfWidth + 0.04);
+		const v3 = collider.firstSolidVoxel(p, extents);
+		if (v3 && this.#isClimbableWall(v3))
+			return { contact: true, nx: 0, nz: -1 };
+		p.set(pos.x, cy, pos.z - this.colliderHalfWidth - 0.04);
+		const v4 = collider.firstSolidVoxel(p, extents);
+		if (v4 && this.#isClimbableWall(v4)) return { contact: true, nx: 0, nz: 1 };
+		return { contact: false, nx: 0, nz: 0 };
+	}
+
+	/**
+	 * Decide whether the block at the exact contacted voxel `v` is a climbable
+	 * wall. A lone 1-tall block resting on a surface (air above, solid below) is
+	 * just a step — not climbable. A wall with a block above it, or a
+	 * free-floating block with no solid block directly beneath it, is climbable.
+	 */
+	#isClimbableWall(v: { x: number; y: number; z: number }): boolean {
+		const above = getBlockAndStateByWorldCoords(v.x, v.y + 1, v.z);
+		const below = getBlockAndStateByWorldCoords(v.x, v.y - 1, v.z);
+		return (
+			isCollidableBlock(above.blockId) || !isCollidableBlock(below.blockId)
+		);
+	}
+
+	/**
+	 * True if there is a solid block within `dist` blocks directly below the
+	 * player's feet. Used to suppress climbing entirely when the player is
+	 * effectively next to a step / the base of a wall (ground within 1 block
+	 * under the feet) — so you drop the last stretch freely instead of sticking.
+	 */
+	#hasGroundBelowFeet(
+		pos: Vector3,
+		collider: VoxelAabbCollider,
+		dist: number,
+	): boolean {
+		const feetY = pos.y - this.colliderHalfHeight;
+		this.#tmpProbe.set(pos.x, feetY - dist * 0.5, pos.z);
+		const h = this.#tmpV.set(
+			this.colliderHalfWidth,
+			dist * 0.5,
+			this.colliderHalfWidth,
+		);
+		return collider.overlapsBox(this.#tmpProbe, h);
 	}
 
 	#isInsideBoatObb(boat: CustomBoat): boolean {
@@ -766,9 +866,34 @@ export class PlayerVehicleMotor {
 		const activeBoatYaw = nowOnBoat ? this.#collisionBoat!.boatYaw : null;
 
 		this.voxelIsGrounded = this.#checkGrounded(activePos, activeCol);
-		if (this.voxelIsGrounded && activeVel.y < 0) activeVel.y = 0;
 
 		const isInWater = this.isInWater();
+		const wall = this.#checkWallContact(activePos, activeCol);
+
+		// Suppress climbing entirely when solid ground is within 1 block under the
+		// feet (a step / the base of a wall) — both ascent and descent. Driven by
+		// the player's own support, not the wall block, so descent releases and
+		// you drop the last stretch freely.
+		const nearGroundBelow =
+			!isInWater &&
+			this.#hasGroundBelowFeet(activePos, activeCol, this.climbGroundMaxDist);
+
+		// Climbing state: entered while airborne and in wall contact, exited when
+		// the player leaves the wall, lands, or is within 1 block of the ground.
+		// Drives the slow-slide grip and wall-jumps; horizontal movement stays
+		// fully free.
+		if (this.isClimbing) {
+			if (!wall.contact || this.voxelIsGrounded || nearGroundBelow)
+				this.isClimbing = false;
+		} else if (
+			wall.contact &&
+			!this.voxelIsGrounded &&
+			!isInWater &&
+			!nearGroundBelow
+		) {
+			this.isClimbing = true;
+		}
+
 		const speed = isInWater
 			? this.swimSpeed
 			: this.voxelIsGrounded
@@ -832,6 +957,12 @@ export class PlayerVehicleMotor {
 			activeVel.z *= this.swimHorizontalDrag;
 			this.wantJump = 0;
 		} else {
+			// Wall-jump: a fresh jump press while airborne and touching a wall
+			// launches straight up (like a normal jump). Costs stamina in every
+			// gamemode. Gated on the press edge so holding Space doesn't spam hops.
+			const jumpPressed = this.isJumpHeld && !this.prevJumpHeld;
+			this.prevJumpHeld = this.isJumpHeld;
+
 			if (this.wantJump > 0 && this.voxelIsGrounded) {
 				this.wantJump--;
 				const canJump = this.#playerStats.consumeStamina(this.jumpStaminaCost);
@@ -841,8 +972,22 @@ export class PlayerVehicleMotor {
 					activeVel.y = Math.max(this.jumpImpulse, activeVel.y);
 					this.voxelIsGrounded = false;
 				}
+			} else if (jumpPressed && this.isClimbing) {
+				const canJump = this.#playerStats.consumeStamina(this.jumpStaminaCost);
+				if (canJump) {
+					activeVel.y = Math.max(this.jumpImpulse, activeVel.y);
+				}
 			}
 			activeVel.y += this.#characterGravity.y * deltaTime;
+
+			// Grip: while climbing and descending, slide slowly instead of
+			// free-falling (so you don't plummet when out of stamina).
+			if (this.isClimbing) {
+				if (activeVel.y < -this.noStaminaSlideSpeed)
+					activeVel.y = -this.noStaminaSlideSpeed;
+				if (this.inputDirection.x === 0) activeVel.x *= 0.98;
+				if (this.inputDirection.z === 0) activeVel.z *= 0.98;
+			}
 		}
 
 		this.#moveAxis(
@@ -868,10 +1013,6 @@ export class PlayerVehicleMotor {
 		);
 
 		this.voxelIsGrounded = this.#checkGrounded(activePos, activeCol);
-		if (this.voxelIsGrounded) {
-			if (Math.abs(activeVel.y) < 0.1) activeVel.y = 0;
-			else if (activeVel.y < 0) activeVel.y = 0;
-		}
 
 		if (this.isOnBoat()) {
 			this.#flushToWorld();

@@ -16,12 +16,14 @@ export class PlayerBodyControlState {
 	public isSprinting = false;
 	public isFlying = false;
 	public isJumpHeld = false;
+	public isSneaking = false;
 
 	public reset(): void {
 		this.inputDirection.set(0, 0, 0);
 		this.wantJump = 0;
 		this.isSprinting = false;
 		this.isJumpHeld = false;
+		this.isSneaking = false;
 	}
 }
 
@@ -33,6 +35,8 @@ export interface IPlayerBody {
 	isSprinting: boolean;
 	isFlying: boolean;
 	isJumpHeld: boolean;
+	isSneaking: boolean;
+	isClimbing: boolean;
 	isMounted: boolean;
 	mount: Mount | null;
 

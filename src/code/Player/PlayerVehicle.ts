@@ -37,6 +37,7 @@ export class PlayerVehicle implements IPlayerBody {
 
 	public toggleFlying(): void {
 		this.isFlying = !this.isFlying;
+		this.isSneaking = false;
 	}
 
 	public get inputDirection(): Vector3 {
@@ -75,6 +76,14 @@ export class PlayerVehicle implements IPlayerBody {
 		this.controlState.isJumpHeld = value;
 	}
 
+	public get isSneaking(): boolean {
+		return this.controlState.isSneaking;
+	}
+
+	public set isSneaking(value: boolean) {
+		this.controlState.isSneaking = value;
+	}
+
 	public clearControlState(): void {
 		this.controlState.reset();
 	}
@@ -97,6 +106,10 @@ export class PlayerVehicle implements IPlayerBody {
 
 	public get isMovementLocked(): boolean {
 		return this.motor.isMovementLocked;
+	}
+
+	public get isClimbing(): boolean {
+		return this.motor.climbing;
 	}
 
 	public getSavedPosition(): SavedPlayerPosition {

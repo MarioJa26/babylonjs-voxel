@@ -112,7 +112,13 @@ export class PlayerLoopController {
 
 			CustomBoat.tickAllActiveBoats(this.scene, playerPos);
 			this.playerVehicle.update(dt);
-			this.playerStats.update(dt, this.playerVehicle.isSprinting);
+			this.playerStats.update(
+				dt,
+				this.playerVehicle.isSprinting,
+				this.playerVehicle.isClimbing
+					? this.playerStats.climbingStaminaRegenMultiplier
+					: 1,
+			);
 			this.playerVehicle.updateCameraAndVisuals();
 			this.#updateControls(pickHit);
 			if (this.#updateCaveState(playerPos.y)) {

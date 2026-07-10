@@ -56,6 +56,7 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 	public static KEY_PICK_BLOCK_EXACT = ["t"];
 	public static KEY_JUMP = [" "];
 	public static KEY_SPRINT = ["shift"];
+	public static KEY_SNEAK = ["control"];
 	public static KEY_FLASH = ["f"];
 	public static KEY_INVENTORY = ["tab"];
 	public static KEY_DROP = ["q"];
@@ -152,6 +153,8 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 			}
 		} else if (WalkingControls.KEY_SPRINT.includes(key)) {
 			this.#controlledEntity.isSprinting = true;
+		} else if (WalkingControls.KEY_SNEAK.includes(key)) {
+			this.#controlledEntity.isSneaking = true;
 		} else if (WalkingControls.KEY_USE.includes(key)) {
 			this.#player.use();
 		} else if (WalkingControls.KEY_FLASH.includes(key)) {
@@ -183,6 +186,10 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 
 		if (WalkingControls.KEY_SPRINT.includes(key)) {
 			this.#controlledEntity.isSprinting = false;
+		}
+
+		if (WalkingControls.KEY_SNEAK.includes(key)) {
+			this.#controlledEntity.isSneaking = false;
 		}
 
 		if (WalkingControls.MOUSE_WHEEL_UP.includes(key)) {

@@ -24,20 +24,29 @@ export class PlayerStats {
 	public staminaRegenRate = 15;
 	public manaRegenRate = 5;
 	public hungerDepletionRate = 0.01;
+	// Stamina regen scale while climbing (slow recovery on walls).
+	public climbingStaminaRegenMultiplier = -0.2;
 
-	public update(deltaTime: number, isSprinting: boolean): void {
+	public update(
+		deltaTime: number,
+		isSprinting: boolean,
+		staminaRegenScale = 1,
+	): void {
 		// Regenerate stamina if not sprinting
 		if (!isSprinting && this.stamina < this.maxStamina) {
 			this.stamina = Math.min(
 				this.maxStamina,
-				this.stamina + this.staminaRegenRate * deltaTime,
+				this.stamina + this.staminaRegenRate * deltaTime * staminaRegenScale,
 			);
 			// Deplete hunger
 			if (this.hunger > 0) {
 				this.hunger = Math.max(
 					0,
 					this.hunger -
-						this.staminaRegenRate * this.hungerDepletionRate * deltaTime,
+						this.staminaRegenRate *
+							this.hungerDepletionRate *
+							deltaTime *
+							staminaRegenScale,
 				);
 			}
 		}
