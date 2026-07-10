@@ -37,7 +37,6 @@ export class PlayerVehicle implements IPlayerBody {
 
 	public toggleFlying(): void {
 		this.isFlying = !this.isFlying;
-		this.isSneaking = false;
 	}
 
 	public get inputDirection(): Vector3 {

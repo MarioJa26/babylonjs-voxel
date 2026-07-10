@@ -1250,7 +1250,7 @@ export class PlayerVehicleMotor {
 			dv.y += this.#upY * spd;
 			dv.z += this.#upZ * spd;
 		}
-		if (this.isSprinting) {
+		if (this.#controls.isSneaking) {
 			const spd = this.onGroundSpeed * 112.5;
 			dv.x -= this.#upX * spd;
 			dv.y -= this.#upY * spd;

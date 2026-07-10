@@ -25,7 +25,7 @@ export class TestScene {
 		private canvas: HTMLCanvasElement,
 	) {
 		this.document = document;
-		this.engine = new Engine(this.canvas, true, {
+		this.engine = new Engine(this.canvas, false, {
 			stencil: false,
 			doNotHandleContextLost: true,
 			preserveDrawingBuffer: false,
@@ -70,6 +70,9 @@ export class TestScene {
 		scene.performancePriority = ScenePerformancePriority.BackwardCompatible;
 		scene.autoClear = false; // Color buffer
 		scene.autoClearDepthAndStencil = false; // Depth and stencil
+		scene.disablePhysicsEngine();
+		scene.disableGeometryBufferRenderer();
+		scene.disableFluidRenderer();
 
 		// This creates and positions a free camera (non-mesh)
 		const camera = new FreeCamera("camera1", Vector3.Zero(), scene);
