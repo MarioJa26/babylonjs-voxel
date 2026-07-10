@@ -142,6 +142,12 @@ export class PlayerVehicleMotor {
 	private isClimbing = false;
 	private lastStepUpTime = 0;
 	private now = 0;
+	// Cached per-frame environment queries (reused across substeps).
+	private frameIsInWater = false;
+	// Scratch outputs of #checkWallContactInto (avoids per-substep object alloc).
+	#wallContact = false;
+	#wallNx = 0;
+	#wallNz = 0;
 
 	// ── Parameters ────────────────────────────────────────────────────────────
 	private readonly deceleration = 0.85;
@@ -174,6 +180,9 @@ export class PlayerVehicleMotor {
 	// parkour wall-jump (up impulse + small push off the wall). Gravity arcs
 	// between hops; at zero stamina you can't hop and instead slide down slowly.
 	private readonly noStaminaSlideSpeed = 0.15; // slow slide while climbing
+	// Controlled descent speed while climbing + sneaking (faster than the
+	// out-of-stamina slow slide). Tunable.
+	private readonly climbDownSneakSpeed = 5.0;
 	// Max distance of solid ground below the feet that still suppresses climbing
 	// (so you don't stick to / slow-slide a 1-tall step or the base of a wall).
 	private readonly climbGroundMaxDist = 1.0;
@@ -575,7 +584,7 @@ export class PlayerVehicleMotor {
 
 	#syncBoatMode(): void {
 		if (this.#supportBoat?.boatChunk) {
-			this.#lastBoatSupportMs = performance.now();
+			this.#lastBoatSupportMs = this.now;
 
 			if (this.#collisionBoat !== this.#supportBoat) {
 				this.#collisionBoat = this.#supportBoat;
@@ -596,7 +605,7 @@ export class PlayerVehicleMotor {
 
 		if (
 			this.#collisionBoat &&
-			performance.now() - this.#lastBoatSupportMs <= this.boatSupportGraceMs
+			this.now - this.#lastBoatSupportMs <= this.boatSupportGraceMs
 		) {
 			return;
 		}
@@ -720,6 +729,7 @@ export class PlayerVehicleMotor {
 		if (
 			axis !== Axis.Y &&
 			this.voxelIsGrounded &&
+			Math.abs(delta) > 1e-6 &&
 			(this.inputDirection.x !== 0 || this.inputDirection.z !== 0) &&
 			this.now - this.lastStepUpTime > this.stepUpCooldownMs
 		) {
@@ -758,10 +768,16 @@ export class PlayerVehicleMotor {
 	 * is. Only the body-height side slabs are probed, so floors/ceilings are
 	 * ignored.
 	 */
-	#checkWallContact(
-		pos: Vector3,
-		collider: VoxelAabbCollider,
-	): { contact: boolean; nx: number; nz: number } {
+	/**
+	 * Detect a solid wall in contact with the player's body on either the X or Z
+	 * sides, writing the result into `#wallContact` / `#wallNx` / `#wallNz`
+	 * (no per-call object allocation). Only the body-height side slabs are
+	 * probed, so floors/ceilings are ignored. The caller is responsible for
+	 * resetting `#wallContact` to false before calling when a fresh result is
+	 * needed.
+	 */
+	#checkWallContactInto(pos: Vector3, collider: VoxelAabbCollider): void {
+		this.#wallContact = false;
 		const cy = pos.y;
 		const hx = this.colliderHalfWidth + 0.06;
 		const hz = this.colliderHalfWidth + 0.06;
@@ -772,20 +788,32 @@ export class PlayerVehicleMotor {
 		// +X / -X
 		p.set(pos.x + this.colliderHalfWidth + 0.04, cy, pos.z);
 		const v1 = collider.firstSolidVoxel(p, extents);
-		if (v1 && this.#isClimbableWall(v1))
-			return { contact: true, nx: -1, nz: 0 };
+		if (v1 && this.#isClimbableWall(v1)) {
+			this.#wallContact = true;
+			this.#wallNx = -1;
+			return;
+		}
 		p.set(pos.x - this.colliderHalfWidth - 0.04, cy, pos.z);
 		const v2 = collider.firstSolidVoxel(p, extents);
-		if (v2 && this.#isClimbableWall(v2)) return { contact: true, nx: 1, nz: 0 };
+		if (v2 && this.#isClimbableWall(v2)) {
+			this.#wallContact = true;
+			this.#wallNx = 1;
+			return;
+		}
 		// +Z / -Z
 		p.set(pos.x, cy, pos.z + this.colliderHalfWidth + 0.04);
 		const v3 = collider.firstSolidVoxel(p, extents);
-		if (v3 && this.#isClimbableWall(v3))
-			return { contact: true, nx: 0, nz: -1 };
+		if (v3 && this.#isClimbableWall(v3)) {
+			this.#wallContact = true;
+			this.#wallNz = -1;
+			return;
+		}
 		p.set(pos.x, cy, pos.z - this.colliderHalfWidth - 0.04);
 		const v4 = collider.firstSolidVoxel(p, extents);
-		if (v4 && this.#isClimbableWall(v4)) return { contact: true, nx: 0, nz: 1 };
-		return { contact: false, nx: 0, nz: 0 };
+		if (v4 && this.#isClimbableWall(v4)) {
+			this.#wallContact = true;
+			this.#wallNz = 1;
+		}
 	}
 
 	/**
@@ -867,8 +895,15 @@ export class PlayerVehicleMotor {
 
 		this.voxelIsGrounded = this.#checkGrounded(activePos, activeCol);
 
-		const isInWater = this.isInWater();
-		const wall = this.#checkWallContact(activePos, activeCol);
+		const isInWater = this.frameIsInWater;
+
+		// Wall contact is only meaningful for climbing, which can't start while
+		// grounded (and is already tracked once climbing). Skip the 4 side probes
+		// on normal ground movement.
+		this.#wallContact = false;
+		if (!isInWater && (!this.voxelIsGrounded || this.isClimbing)) {
+			this.#checkWallContactInto(activePos, activeCol);
+		}
 
 		// Suppress climbing entirely when solid ground is within 1 block under the
 		// feet (a step / the base of a wall) — both ascent and descent. Driven by
@@ -876,6 +911,8 @@ export class PlayerVehicleMotor {
 		// you drop the last stretch freely.
 		const nearGroundBelow =
 			!isInWater &&
+			!this.voxelIsGrounded &&
+			(this.isClimbing || this.#wallContact) &&
 			this.#hasGroundBelowFeet(activePos, activeCol, this.climbGroundMaxDist);
 
 		// Climbing state: entered while airborne and in wall contact, exited when
@@ -883,14 +920,9 @@ export class PlayerVehicleMotor {
 		// Drives the slow-slide grip and wall-jumps; horizontal movement stays
 		// fully free.
 		if (this.isClimbing) {
-			if (!wall.contact || this.voxelIsGrounded || nearGroundBelow)
+			if (!this.#wallContact || this.voxelIsGrounded || nearGroundBelow)
 				this.isClimbing = false;
-		} else if (
-			wall.contact &&
-			!this.voxelIsGrounded &&
-			!isInWater &&
-			!nearGroundBelow
-		) {
+		} else if (this.#wallContact && !this.voxelIsGrounded && !nearGroundBelow) {
 			this.isClimbing = true;
 		}
 
@@ -974,17 +1006,20 @@ export class PlayerVehicleMotor {
 				}
 			} else if (jumpPressed && this.isClimbing) {
 				const canJump = this.#playerStats.consumeStamina(this.jumpStaminaCost);
-				if (canJump) {
+				if (canJump || this.#playerStats.gamemode === Gamemodes.Creative) {
 					activeVel.y = Math.max(this.jumpImpulse, activeVel.y);
 				}
 			}
 			activeVel.y += this.#characterGravity.y * deltaTime;
 
 			// Grip: while climbing and descending, slide slowly instead of
-			// free-falling (so you don't plummet when out of stamina).
+			// free-falling (so you don't plummet when out of stamina). Sneaking
+			// uses a faster, still-controlled descent cap.
 			if (this.isClimbing) {
-				if (activeVel.y < -this.noStaminaSlideSpeed)
-					activeVel.y = -this.noStaminaSlideSpeed;
+				const downCap = this.#controls.isSneaking
+					? this.climbDownSneakSpeed
+					: this.noStaminaSlideSpeed;
+				if (activeVel.y < -downCap) activeVel.y = -downCap;
 				if (this.inputDirection.x === 0) activeVel.x *= 0.98;
 				if (this.inputDirection.z === 0) activeVel.z *= 0.98;
 			}
@@ -1188,6 +1223,8 @@ export class PlayerVehicleMotor {
 
 	private integrateVoxelMovement(deltaTime: number): void {
 		this.now = performance.now();
+		// Cache environment queries once per frame; substeps reuse them.
+		this.frameIsInWater = this.isInWater();
 		if (deltaTime <= 1 / 60) {
 			this.integrateVoxelMovementStep(deltaTime);
 			return;

@@ -32,7 +32,7 @@ export class PaddleBoatControls implements IControls<BoatControlEntity> {
 	public static KEY_DOWN = ["s", "arrowdown"];
 	public static KEY_USE = ["e"];
 	public static KEY_JUMP = [" "];
-	public static KEY_SPRINT = ["shift"];
+	public static KEY_SPRINT = ["capslock"];
 	public static KEY_FLASH = ["f"];
 
 	public static MOUSE_WHEEL_UP = ["wheel_up"];

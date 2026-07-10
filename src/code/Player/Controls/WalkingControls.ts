@@ -55,8 +55,8 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 	public static KEY_PICK_BLOCK = ["r"];
 	public static KEY_PICK_BLOCK_EXACT = ["t"];
 	public static KEY_JUMP = [" "];
-	public static KEY_SPRINT = ["shift"];
-	public static KEY_SNEAK = ["control"];
+	public static KEY_SPRINT = ["capslock"];
+	public static KEY_SNEAK = ["control", "shift"];
 	public static KEY_FLASH = ["f"];
 	public static KEY_INVENTORY = ["tab"];
 	public static KEY_DROP = ["q"];
