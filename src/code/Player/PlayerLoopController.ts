@@ -66,6 +66,9 @@ export class PlayerLoopController {
 	#onBeforeRenderObs: Observer<Scene> | null = null;
 	#onAfterRenderObs: Observer<Scene> | null = null;
 
+	// ---- captured static callback for restore-on-dispose ----
+	#previousOnChunkLoaded: typeof Chunk.onChunkLoaded | null = null;
+
 	constructor(
 		private readonly engine: Engine,
 		private readonly scene: Scene,
@@ -82,9 +85,9 @@ export class PlayerLoopController {
 		BlockTickScheduler.getInstance().setProcessCallback(processWaterUpdate);
 
 		// Wire incremental occlusion culling for individual chunk loads
-		const previousOnChunkLoaded = Chunk.onChunkLoaded;
+		this.#previousOnChunkLoaded = Chunk.onChunkLoaded;
 		Chunk.onChunkLoaded = (chunk: Chunk) => {
-			previousOnChunkLoaded?.(chunk);
+			this.#previousOnChunkLoaded?.(chunk);
 			this.#occlusionCuller.incrementalAdd(chunk);
 		};
 
@@ -154,6 +157,10 @@ export class PlayerLoopController {
 		if (this.#onAfterRenderObs) {
 			this.scene.onAfterRenderObservable.remove(this.#onAfterRenderObs);
 			this.#onAfterRenderObs = null;
+		}
+		if (this.#previousOnChunkLoaded !== null) {
+			Chunk.onChunkLoaded = this.#previousOnChunkLoaded;
+			this.#previousOnChunkLoaded = null;
 		}
 	}
 

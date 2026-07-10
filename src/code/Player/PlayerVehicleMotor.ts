@@ -4,7 +4,6 @@ import {
 	type Mesh,
 	MeshBuilder,
 	Quaternion,
-	Ray,
 	type Scene,
 	StandardMaterial,
 	Vector3,
@@ -32,17 +31,7 @@ import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
 import type { PlayerBodyControlState, SavedBodyPosition } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
 import { Gamemodes, type PlayerStats } from "./PlayerStats";
-import {
-	CharacterSupportedState,
-	type CharacterSurfaceInfo,
-	SimpleCharacterController,
-} from "./SimpleCharacterController";
-
-const enum PlayerState {
-	IN_AIR,
-	ON_GROUND,
-	START_JUMP,
-}
+import { SimpleCharacterController } from "./SimpleCharacterController";
 
 type PlayerVehicleMotorOptions = {
 	scene: Scene;
@@ -57,7 +46,6 @@ type PlayerVehicleMotorOptions = {
 const _scratchA = new Vector3();
 const _scratchB = new Vector3();
 const _scratchC = new Vector3();
-const _scratchRay = new Ray(Vector3.Zero(), Vector3.Forward());
 
 // PERF: Inline quaternion rotation to avoid `applyRotationQuaternion`
 // allocating a new Vector3 on every call. Uses the standard Hamilton product.
@@ -95,13 +83,13 @@ export class PlayerVehicleMotor {
 	#characterGravityLen = 18;
 	// PERF: Pre-computed gravity up vector — avoids 12 divisions per physics step.
 	readonly #upX = -this.#characterGravity.x / this.#characterGravityLen;
+	#previousSneaking = false;
+	readonly #tmpHalfExtents = new Vector3();
 	readonly #upY = -this.#characterGravity.y / this.#characterGravityLen;
 	readonly #upZ = -this.#characterGravity.z / this.#characterGravityLen;
 	#movementLocked = false;
 	#lockedPosition: Vector3 | null = null;
 	readonly #zeroVelocity = Vector3.Zero();
-
-	private state: PlayerState = PlayerState.IN_AIR;
 
 	#collisionBoat: CustomBoat | null = null;
 	readonly #boatLocalPos = new Vector3();
@@ -126,7 +114,7 @@ export class PlayerVehicleMotor {
 	readonly #tmpCurH = new Vector3(); // current horizontal
 	readonly #tmpNextH = new Vector3(); // accelerate result
 	// PERF: Replaces per-frame allocations in calculateFlyingVelocity /
-	// calculateOnGroundVelocity / calculateJumpVelocity / accelerate.
+	// accelerate.
 	readonly #tmpDv = new Vector3();
 	readonly #tmpV = new Vector3();
 	readonly #tmpInv = new Matrix();
@@ -146,8 +134,8 @@ export class PlayerVehicleMotor {
 	private frameIsInWater = false;
 	// Scratch outputs of #checkWallContactInto (avoids per-substep object alloc).
 	#wallContact = false;
-	#wallNx = 0;
-	#wallNz = 0;
+	// Scratch for the inflated AABB used by #tryBoatHullContact.
+	readonly #tmpHullProbe = new Vector3();
 
 	// ── Parameters ────────────────────────────────────────────────────────────
 	private readonly deceleration = 0.85;
@@ -157,12 +145,11 @@ export class PlayerVehicleMotor {
 	private readonly jumpStaminaCost = 10;
 	private readonly accelRateGround = 36;
 	private readonly sprintMultiplier = 2.1;
-	private readonly penetrationRecoveryEps = 0.0001;
-	private readonly airJumpForwardBoost = 5.5;
-	private readonly minFloorNormalDot = 0.55;
-	private readonly useVoxelCollision = true;
+	private readonly sneakMultiplier = 0.5;
 	private readonly colliderHalfWidth = 0.3;
-	private readonly colliderHalfHeight = 0.875;
+	private readonly standingHalfHeight = 0.875;
+	private readonly crouchHalfHeight = 0.725;
+	private colliderHalfHeight = this.standingHalfHeight;
 	private readonly voxelStepSize = 0.25;
 	private readonly collisionEpsilon = 0.001;
 	private readonly swimSpeed = 4.0;
@@ -539,6 +526,27 @@ export class PlayerVehicleMotor {
 		return false;
 	}
 
+	#tryBoatHullContact(boat: CustomBoat): boolean {
+		const local = boat.worldToBoatChunkLocalPoint(this.voxelPosition, this.#tmp6);
+		if (!local) return false;
+		// Temporarily point the boat collider at this boat so overlapsBox() tests
+		// its blocks, then restore the previous collision boat.
+		const prev = this.#collisionBoat;
+		this.#collisionBoat = boat;
+		this.#tmpHullProbe.set(
+			this.colliderHalfWidth + 0.15,
+			this.colliderHalfHeight + 0.15,
+			this.colliderHalfWidth + 0.15,
+		);
+		const touches = this.boatVoxelCollider.overlapsBox(local, this.#tmpHullProbe);
+		this.#collisionBoat = prev;
+		if (touches) {
+			this.#supportBoat = boat;
+			return true;
+		}
+		return false;
+	}
+
 	#updateSupportBoat(): void {
 		this.#supportBoat = null;
 
@@ -546,6 +554,16 @@ export class PlayerVehicleMotor {
 
 		const boats = CustomBoat.getActiveBoats();
 		const collisionBoat = this.#collisionBoat;
+
+		// Side-hull contact: while airborne and not in water, grab onto a boat we
+		// are touching so movement and the grounded/wall checks run in boat space.
+		// Without this the player clips through tilted hulls (the world collider
+		// has no boat geometry) and the ground check evaluates in world space.
+		if (!this.voxelIsGrounded && !this.frameIsInWater) {
+			for (const boat of boats) {
+				if (this.#tryBoatHullContact(boat)) return;
+			}
+		}
 
 		// Check collision boat first (avoids allocation of reordered array).
 		if (collisionBoat) {
@@ -790,14 +808,12 @@ export class PlayerVehicleMotor {
 		const v1 = collider.firstSolidVoxel(p, extents);
 		if (v1 && this.#isClimbableWall(v1)) {
 			this.#wallContact = true;
-			this.#wallNx = -1;
 			return;
 		}
 		p.set(pos.x - this.colliderHalfWidth - 0.04, cy, pos.z);
 		const v2 = collider.firstSolidVoxel(p, extents);
 		if (v2 && this.#isClimbableWall(v2)) {
 			this.#wallContact = true;
-			this.#wallNx = 1;
 			return;
 		}
 		// +Z / -Z
@@ -805,14 +821,12 @@ export class PlayerVehicleMotor {
 		const v3 = collider.firstSolidVoxel(p, extents);
 		if (v3 && this.#isClimbableWall(v3)) {
 			this.#wallContact = true;
-			this.#wallNz = -1;
 			return;
 		}
 		p.set(pos.x, cy, pos.z - this.colliderHalfWidth - 0.04);
 		const v4 = collider.firstSolidVoxel(p, extents);
 		if (v4 && this.#isClimbableWall(v4)) {
 			this.#wallContact = true;
-			this.#wallNz = 1;
 		}
 	}
 
@@ -823,11 +837,23 @@ export class PlayerVehicleMotor {
 	 * free-floating block with no solid block directly beneath it, is climbable.
 	 */
 	#isClimbableWall(v: { x: number; y: number; z: number }): boolean {
-		const above = getBlockAndStateByWorldCoords(v.x, v.y + 1, v.z);
-		const below = getBlockAndStateByWorldCoords(v.x, v.y - 1, v.z);
-		return (
-			isCollidableBlock(above.blockId) || !isCollidableBlock(below.blockId)
-		);
+		let aboveCollidable: boolean;
+		let belowCollidable: boolean;
+		if (this.isOnBoat()) {
+			// `v` came from the boat collider, so it is in boat-LOCAL space — query
+			// the boat chunk's local blocks, not world coordinates.
+			const chunk = this.#collisionBoat!.boatChunk!;
+			const above = chunk.getBlockLocal(v.x, v.y + 1, v.z) & 0x3ff;
+			const below = chunk.getBlockLocal(v.x, v.y - 1, v.z) & 0x3ff;
+			aboveCollidable = isCollidableBlock(above);
+			belowCollidable = isCollidableBlock(below);
+		} else {
+			const above = getBlockAndStateByWorldCoords(v.x, v.y + 1, v.z);
+			const below = getBlockAndStateByWorldCoords(v.x, v.y - 1, v.z);
+			aboveCollidable = isCollidableBlock(above.blockId);
+			belowCollidable = isCollidableBlock(below.blockId);
+		}
+		return aboveCollidable || !belowCollidable;
 	}
 
 	/**
@@ -943,6 +969,10 @@ export class PlayerVehicleMotor {
 			(this.inputDirection.x !== 0 || this.inputDirection.z !== 0)
 		) {
 			desired.scaleInPlace(this.sprintMultiplier);
+		}
+
+		if (this.#controls.isSneaking && this.voxelIsGrounded) {
+			desired.scaleInPlace(this.sneakMultiplier);
 		}
 
 		// PERF: Use pre-allocated scratch vectors; avoid `new Vector3()` here.
@@ -1094,35 +1124,66 @@ export class PlayerVehicleMotor {
 			return;
 		}
 
+		const isSneaking = this.#controls.isSneaking;
+		if (isSneaking !== this.#previousSneaking) {
+			this.#previousSneaking = isSneaking;
+			const newHalfHeight = isSneaking
+				? this.crouchHalfHeight
+				: this.standingHalfHeight;
+			const deltaY = newHalfHeight - this.colliderHalfHeight;
+			let canChange = true;
+
+			// When uncrouching, check for headroom before expanding
+			if (!isSneaking && deltaY > 0) {
+				this.#tmpProbe.set(
+					this.voxelPosition.x,
+					this.voxelPosition.y + this.colliderHalfHeight + deltaY,
+					this.voxelPosition.z,
+				);
+				this.#tmpV.set(this.colliderHalfWidth, deltaY, this.colliderHalfWidth);
+				if (this.voxelCollider.overlapsBox(this.#tmpProbe, this.#tmpV)) {
+					this.#previousSneaking = true;
+					canChange = false;
+				}
+			}
+
+			if (canChange) {
+				this.colliderHalfHeight = newHalfHeight;
+				this.#tmpHalfExtents.set(
+					this.colliderHalfWidth,
+					newHalfHeight,
+					this.colliderHalfWidth,
+				);
+				this.voxelCollider.HalfExtents = this.#tmpHalfExtents;
+				this.boatVoxelCollider.HalfExtents = this.#tmpHalfExtents;
+				this.#displayCapsule.scaling.y =
+					newHalfHeight / this.standingHalfHeight;
+				this.voxelPosition.y += deltaY;
+				this.#characterController.setPosition(this.voxelPosition);
+			}
+		}
+
 		const mount = this.#getMount();
 		if (mount) {
 			mount.update();
-			if (this.useVoxelCollision) {
-				this.voxelPosition.copyFrom(this.#characterController.getPosition());
-				this.voxelVelocity.copyFromFloats(0, 0, 0);
-			}
+			this.voxelPosition.copyFrom(this.#characterController.getPosition());
+			this.voxelVelocity.copyFromFloats(0, 0, 0);
 		} else {
 			if (this.isFlying) {
 				const dv = this.calculateFlyingVelocity(deltaTime);
 				this.setVelocityInternal(dv);
-				if (this.useVoxelCollision) {
-					// PERF: addToRef avoids allocating the intermediate sum.
-					dv.scaleToRef(deltaTime, _scratchB);
-					this.voxelPosition.addInPlace(_scratchB);
-					this.#characterController.setPosition(this.voxelPosition);
-					this.#characterController.setVelocity(this.#zeroVelocity);
-				} else {
-					this.#characterController.setVelocity(dv);
-				}
+				// PERF: addToRef avoids allocating the intermediate sum.
+				dv.scaleToRef(deltaTime, _scratchB);
+				this.voxelPosition.addInPlace(_scratchB);
+				this.#characterController.setPosition(this.voxelPosition);
+				this.#characterController.setVelocity(this.#zeroVelocity);
 				this.voxelCollider.syncDebugMesh(this.voxelPosition);
 				return;
 			}
 			this.integrateMovement(deltaTime);
 		}
 
-		if (this.useVoxelCollision) {
-			this.voxelCollider.syncDebugMesh(this.voxelPosition);
-		}
+		this.voxelCollider.syncDebugMesh(this.voxelPosition);
 	}
 
 	public lockMovementAtCurrentPosition(): void {
@@ -1201,24 +1262,7 @@ export class PlayerVehicleMotor {
 	}
 
 	private integrateMovement(deltaTime: number): void {
-		if (this.useVoxelCollision) {
-			this.integrateVoxelMovement(deltaTime);
-			return;
-		}
-		if (deltaTime <= 1 / 60) {
-			this.integrateMovementStep(deltaTime);
-			return;
-		}
-		const sub = Math.min(8, Math.ceil(deltaTime / (1 / 120)));
-		const dt = deltaTime / sub;
-		for (let i = 0; i < sub; i++) this.integrateMovementStep(dt);
-	}
-
-	private integrateMovementStep(deltaTime: number): void {
-		const support = this.#characterController.checkSupport();
-		const dv = this.calculateDesiredVelocity(deltaTime, support);
-		this.#characterController.setVelocity(dv);
-		this.#characterController.integrate(deltaTime, this.#characterGravity);
+		this.integrateVoxelMovement(deltaTime);
 	}
 
 	private integrateVoxelMovement(deltaTime: number): void {
@@ -1255,6 +1299,7 @@ export class PlayerVehicleMotor {
 			dv.x -= this.#upX * spd;
 			dv.y -= this.#upY * spd;
 			dv.z -= this.#upZ * spd;
+			dv.scaleInPlace(this.sneakMultiplier);
 		}
 
 		const cur = this.getVelocityInternal();
@@ -1269,127 +1314,6 @@ export class PlayerVehicleMotor {
 			deltaTime,
 			this.#tmpV,
 		);
-	}
-
-	private calculateDesiredVelocity(
-		deltaTime: number,
-		supportInfo: CharacterSurfaceInfo,
-	): Vector3 {
-		const prev = this.state;
-		this.state = this.determineNextState(supportInfo);
-		const cur = this.getVelocityInternal();
-		switch (this.state) {
-			case PlayerState.IN_AIR:
-				return this.calculateInAirVelocity(deltaTime, cur);
-			case PlayerState.ON_GROUND:
-				return this.calculateOnGroundVelocity(cur, supportInfo);
-			case PlayerState.START_JUMP:
-				return this.calculateJumpVelocity(cur, prev);
-			default:
-				return cur;
-		}
-	}
-
-	private determineNextState(si: CharacterSurfaceInfo): PlayerState {
-		const grounded = si.supportedState === CharacterSupportedState.SUPPORTED;
-		switch (this.state) {
-			case PlayerState.IN_AIR:
-				if (grounded) return PlayerState.ON_GROUND;
-				if (this.wantJump > 0) return PlayerState.START_JUMP;
-				return PlayerState.IN_AIR;
-			case PlayerState.ON_GROUND:
-				if (!grounded) return PlayerState.IN_AIR;
-				if (this.wantJump > 0) {
-					this.wantJump--;
-					return PlayerState.START_JUMP;
-				}
-				return PlayerState.ON_GROUND;
-			case PlayerState.START_JUMP:
-				return PlayerState.IN_AIR;
-			default:
-				return this.state;
-		}
-	}
-
-	private calculateInAirVelocity(dt: number, cur: Vector3): Vector3 {
-		const v = this.#tmpV;
-		v.copyFrom(cur);
-		// Add gravity.
-		v.x += this.#characterGravity.x * dt;
-		v.y += this.#characterGravity.y * dt;
-		v.z += this.#characterGravity.z * dt;
-		return v;
-	}
-
-	private calculateOnGroundVelocity(
-		cur: Vector3,
-		si: CharacterSurfaceInfo,
-	): Vector3 {
-		const dv = this.#tmpDv;
-		this.inputDirection.scaleToRef(this.onGroundSpeed, dv);
-		const q = this.#characterOrientation;
-		_rotateVec3ByQuat(dv.x, dv.y, dv.z, q.x, q.y, q.z, q.w, dv);
-
-		if (
-			this.isSprinting &&
-			(this.inputDirection.x !== 0 || this.inputDirection.z !== 0)
-		)
-			dv.scaleInPlace(this.sprintMultiplier);
-
-		// PERF: Use #tmpV for v, inline dot products.
-		const v = this.#tmpV;
-		v.copyFrom(cur).subtractInPlace(si.averageSurfaceVelocity);
-		const n = si.averageSurfaceNormal;
-
-		// PERF: Use precomputed up vector.
-		if (
-			n.x * this.#upX + n.y * this.#upY + n.z * this.#upZ <
-			this.minFloorNormalDot
-		)
-			return cur;
-
-		const nDotV = v.dot(n);
-		v.x -= n.x * nDotV - n.x * this.penetrationRecoveryEps;
-		v.y -= n.y * nDotV - n.y * this.penetrationRecoveryEps;
-		v.z -= n.z * nDotV - n.z * this.penetrationRecoveryEps;
-		v.addInPlace(si.averageSurfaceVelocity);
-		return v;
-	}
-
-	private calculateJumpVelocity(cur: Vector3, prev: PlayerState): Vector3 {
-		const jumpSpd = Math.max(
-			this.jumpImpulse,
-			cur.x * this.#upX + cur.y * this.#upY + cur.z * this.#upZ,
-		);
-
-		const dv = this.#tmpDv;
-		this.inputDirection.scaleToRef(this.onGroundSpeed, dv);
-		const q = this.#characterOrientation;
-		_rotateVec3ByQuat(dv.x, dv.y, dv.z, q.x, q.y, q.z, q.w, dv);
-		if (this.isSprinting) dv.scaleInPlace(this.sprintMultiplier);
-
-		const v = this.#tmpV;
-		v.set(
-			this.#upX * jumpSpd + dv.x,
-			this.#upY * jumpSpd + dv.y,
-			this.#upZ * jumpSpd + dv.z,
-		);
-
-		if (prev === PlayerState.IN_AIR) {
-			// PERF: Reuse scratch Ray + manual normalize avoids allocating a
-			// new Ray and a new Vector3 from getForwardRay().direction.normalize().
-			this.#camera.playerCamera.getForwardRayToRef(_scratchRay, 100);
-			const dir = _scratchRay.direction;
-			const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
-			const boost = this.inAirSpeed * this.airJumpForwardBoost;
-			if (len > 1e-6) {
-				const inv = boost / len;
-				v.x += dir.x * inv;
-				v.y += dir.y * inv;
-				v.z += dir.z * inv;
-			}
-		}
-		return v;
 	}
 
 	private accelerateInto(
@@ -1414,8 +1338,6 @@ export class PlayerVehicleMotor {
 		return out;
 	}
 
-	/** @deprecated Use accelerateInto — kept for non-hot call sites. */
-
 	private isInWater(): boolean {
 		const pos = this.voxelPosition;
 		// PERF: Pre-baked Y and XZ offset arrays — no per-frame array literal.
@@ -1438,22 +1360,14 @@ export class PlayerVehicleMotor {
 	}
 
 	private getPositionInternal(): Vector3 {
-		return this.useVoxelCollision
-			? this.voxelPosition
-			: this.#characterController.getPosition();
+		return this.voxelPosition;
 	}
 
 	private getVelocityInternal(): Vector3 {
-		return this.useVoxelCollision
-			? this.voxelVelocity
-			: this.#characterController.getVelocity();
+		return this.voxelVelocity;
 	}
 
 	private setVelocityInternal(v: Vector3): void {
-		if (this.useVoxelCollision) {
-			this.voxelVelocity.copyFrom(v);
-			return;
-		}
-		this.#characterController.setVelocity(v);
+		this.voxelVelocity.copyFrom(v);
 	}
 }

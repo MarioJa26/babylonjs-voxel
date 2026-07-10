@@ -17,7 +17,6 @@ export class PlayerVehicle implements IPlayerBody {
 	public scene: Scene;
 	public camera: PlayerCamera;
 	public isMounted = false;
-	public DASH = true;
 	public mount: Mount | null = null;
 
 	private readonly controlState = new PlayerBodyControlState();
