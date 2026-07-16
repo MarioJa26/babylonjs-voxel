@@ -1,19 +1,153 @@
 import {
-	Color3,
-	Color4,
-	Mesh,
-	MeshBuilder,
-	type Scene,
-	StandardMaterial,
-} from "@babylonjs/core";
+	addToScene,
+	createMeshFromData,
+	createShaderMaterial,
+	type Mesh,
+	onBeforeRender,
+	removeFromScene,
+	type SceneContext,
+	type ShaderMaterial,
+	setShaderUniform,
+} from "@babylonjs/lite";
+import { Map1 } from "@/code/Maps/Map1";
+import { getScene } from "@/code/Shared/GameRuntimeState";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { getTransformedShapeBoxes } from "@/code/World/Shape/BlockShapeTransforms";
 import type { BlockRaycastHit } from "./BlockRaycaster";
 import type { BoatBlockHitContext } from "./BreakingBlockHandler";
 
+const highlightVertexWGSL = /* wgsl */ `
+struct VSOut { @builtin(position) pos : vec4<f32> };
+
+@vertex
+fn mainVertex(input : VertexInput) -> VSOut {
+  var out : VSOut;
+  out.pos = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
+  return out;
+}
+`;
+
+const highlightFragmentWGSL = /* wgsl */ `
+@fragment
+fn mainFragment() -> @location(0) vec4<f32> {
+  return shaderUniforms.uColor;
+}
+`;
+
+type BoxLike = { min: readonly number[]; max: readonly number[] };
+
+function addBox(
+	positions: number[],
+	normals: number[],
+	indices: number[],
+	x0: number,
+	y0: number,
+	z0: number,
+	x1: number,
+	y1: number,
+	z1: number,
+): void {
+	const faces: Array<{
+		n: [number, number, number];
+		v: Array<[number, number, number]>;
+	}> = [
+		{
+			n: [1, 0, 0],
+			v: [
+				[x1, y0, z0],
+				[x1, y0, z1],
+				[x1, y1, z1],
+				[x1, y1, z0],
+			],
+		},
+		{
+			n: [-1, 0, 0],
+			v: [
+				[x0, y0, z1],
+				[x0, y0, z0],
+				[x0, y1, z0],
+				[x0, y1, z1],
+			],
+		},
+		{
+			n: [0, 1, 0],
+			v: [
+				[x0, y1, z0],
+				[x1, y1, z0],
+				[x1, y1, z1],
+				[x0, y1, z1],
+			],
+		},
+		{
+			n: [0, -1, 0],
+			v: [
+				[x0, y0, z1],
+				[x1, y0, z1],
+				[x1, y0, z0],
+				[x0, y0, z0],
+			],
+		},
+		{
+			n: [0, 0, 1],
+			v: [
+				[x0, y0, z1],
+				[x1, y0, z1],
+				[x1, y1, z1],
+				[x0, y1, z1],
+			],
+		},
+		{
+			n: [0, 0, -1],
+			v: [
+				[x1, y0, z0],
+				[x0, y0, z0],
+				[x0, y1, z0],
+				[x1, y1, z0],
+			],
+		},
+	];
+
+	for (const face of faces) {
+		const base = positions.length / 3;
+		for (let i = 0; i < 4; i++) {
+			positions.push(face.v[i][0], face.v[i][1], face.v[i][2]);
+			normals.push(face.n[0], face.n[1], face.n[2]);
+		}
+		indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+	}
+}
+
+function buildBoxesGeometry(
+	boxes: readonly BoxLike[],
+	inflation: number,
+): { positions: Float32Array; normals: Float32Array; indices: Uint32Array } {
+	const positions: number[] = [];
+	const normals: number[] = [];
+	const indices: number[] = [];
+	const h = inflation / 2;
+	for (const box of boxes) {
+		addBox(
+			positions,
+			normals,
+			indices,
+			box.min[0] - h,
+			box.min[1] - h,
+			box.min[2] - h,
+			box.max[0] + h,
+			box.max[1] + h,
+			box.max[2] + h,
+		);
+	}
+	return {
+		positions: new Float32Array(positions),
+		normals: new Float32Array(normals),
+		indices: new Uint32Array(indices),
+	};
+}
+
 export class BlockHighlight {
-	readonly #scene: Scene;
-	readonly #material: StandardMaterial;
+	readonly #scene: SceneContext;
+	readonly #material: ShaderMaterial;
 
 	#mesh: Mesh;
 	#shapeKey = -1;
@@ -21,22 +155,18 @@ export class BlockHighlight {
 	#prevHitX = 0;
 	#prevHitY = 0;
 	#prevHitZ = 0;
-	readonly #renderHandle: () => void;
 
-	constructor(scene: Scene) {
-		this.#scene = scene;
+	constructor() {
+		this.#scene = getScene()!;
 		this.#material = this.#createMaterial();
 		this.#mesh = this.#buildUnitCube();
 		this.#shapeKey = -1;
 
-		this.#renderHandle = () => this.#update();
-		scene.onBeforeRenderObservable.add(this.#renderHandle);
+		onBeforeRender(this.#scene, () => this.#update());
 	}
 
 	dispose(): void {
-		this.#scene.onBeforeRenderObservable.removeCallback(this.#renderHandle);
-		this.#mesh.dispose();
-		this.#material.dispose();
+		removeFromScene(this.#scene, this.#mesh);
 	}
 
 	// ─── Per-frame update ────────────────────────────────────────────────────
@@ -45,7 +175,7 @@ export class BlockHighlight {
 		const hit = this.#currentHit;
 		const visible = hit !== null;
 		if (visible !== this.#prevVisible) {
-			this.#mesh.visibility = visible ? 1 : 0;
+			this.#mesh.visible = visible;
 			this.#prevVisible = visible;
 		}
 		if (hit) {
@@ -76,10 +206,15 @@ export class BlockHighlight {
 		if (key === this.#shapeKey) return;
 
 		const previousParent = this.#mesh.parent;
+		const px = this.#mesh.position.x;
+		const py = this.#mesh.position.y;
+		const pz = this.#mesh.position.z;
+		const visible = this.#mesh.visible ?? false;
 		const next = this.#buildForBlock(blockId, blockState);
-		next.position.copyFrom(this.#mesh.position);
+		next.position.set(px, py, pz);
 		next.parent = previousParent;
-		this.#mesh.dispose();
+		next.visible = visible;
+		removeFromScene(this.#scene, this.#mesh);
 		this.#mesh = next;
 		this.#shapeKey = key;
 	}
@@ -136,103 +271,67 @@ export class BlockHighlight {
 	}
 
 	#buildForBlock(blockId: number, blockState: number): Mesh {
-		const inflation = 0.005;
-		const parts: Mesh[] = [];
-		let idx = 0;
-
+		const boxes: BoxLike[] = [];
 		for (const box of getTransformedShapeBoxes(blockId, blockState)) {
 			const w = box.max[0] - box.min[0];
 			const h = box.max[1] - box.min[1];
 			const d = box.max[2] - box.min[2];
 			if (w <= 0 || h <= 0 || d <= 0) continue;
-
-			const part = MeshBuilder.CreateBox(
-				`hlPart_${idx++}`,
-				{
-					width: w + inflation,
-					height: h + inflation,
-					depth: d + inflation,
-				},
-				this.#scene,
-			);
-			part.position.set(
-				(box.min[0] + box.max[0]) * 0.5,
-				(box.min[1] + box.max[1]) * 0.5,
-				(box.min[2] + box.max[2]) * 0.5,
-			);
-			this.#bakeAndReset(part);
-			parts.push(part);
+			boxes.push({ min: box.min, max: box.max });
 		}
 
-		if (parts.length === 0) return this.#buildUnitCube();
+		if (boxes.length === 0) return this.#buildUnitCube();
 
-		let mesh: Mesh;
-		if (parts.length === 1) {
-			mesh = parts[0];
-		} else {
-			const merged = Mesh.MergeMeshes(
-				parts,
-				true,
-				true,
-				undefined,
-				false,
-				true,
-			);
-			if (!merged) {
-				mesh = parts[0];
-				for (let i = 1; i < parts.length; i++) parts[i].dispose();
-			} else {
-				mesh = merged as Mesh;
-			}
-		}
-
-		mesh.name = "blockHighlight";
-		this.#configure(mesh);
-		return mesh;
+		const geo = buildBoxesGeometry(boxes, 0.005);
+		return this.#createMesh("blockHighlight", geo);
 	}
 
 	#buildUnitCube(): Mesh {
-		const mesh = MeshBuilder.CreateBox(
-			"blockHighlightUnitCube",
-			{ size: 1.012 },
-			this.#scene,
-		);
-		mesh.position.set(0.5, 0.5, 0.5);
-		this.#bakeAndReset(mesh);
-		this.#configure(mesh);
-		return mesh;
+		const geo = buildBoxesGeometry([{ min: [0, 0, 0], max: [1, 1, 1] }], 0.012);
+		return this.#createMesh("blockHighlightUnitCube", geo);
 	}
 
 	// ─── Helpers ─────────────────────────────────────────────────────────────
 
-	#bakeAndReset(mesh: Mesh): void {
-		mesh.bakeCurrentTransformIntoVertices();
-		mesh.position.set(0, 0, 0);
-	}
-
-	#configure(mesh: Mesh): void {
-		mesh.isPickable = false;
-		mesh.renderingGroupId = 1;
-		mesh.material = this.#material;
-		mesh.visibility = 0;
-		mesh.enableEdgesRendering();
-		mesh.edgesWidth = SETTING_PARAMS.HIGHLIGHT_EDGE_WIDTH;
-		mesh.edgesColor = new Color4(
-			SETTING_PARAMS.HIGHLIGHT_EDGE_COLOR[0],
-			SETTING_PARAMS.HIGHLIGHT_EDGE_COLOR[1],
-			SETTING_PARAMS.HIGHLIGHT_EDGE_COLOR[2],
-			SETTING_PARAMS.HIGHLIGHT_EDGE_COLOR[3],
+	#createMesh(
+		name: string,
+		geo: {
+			positions: Float32Array;
+			normals: Float32Array;
+			indices: Uint32Array;
+		},
+	): Mesh {
+		const mesh = createMeshFromData(
+			Map1.engine,
+			name,
+			geo.positions,
+			geo.normals,
+			geo.indices,
 		);
+		mesh.material = this.#material;
+		mesh.pickable = false;
+		mesh.visible = false;
+		addToScene(this.#scene, mesh);
+		return mesh;
 	}
 
-	#createMaterial(): StandardMaterial {
-		const mat = new StandardMaterial("highlightMat", this.#scene);
-		mat.alpha = SETTING_PARAMS.HIGHLIGHT_ALPHA;
-		mat.diffuseColor = new Color3(
+	#createMaterial(): ShaderMaterial {
+		const mat = createShaderMaterial({
+			name: "highlightMat",
+			vertexSource: highlightVertexWGSL,
+			fragmentSource: highlightFragmentWGSL,
+			attributes: ["position"],
+			uniforms: ["worldViewProjection", { name: "uColor", type: "vec4<f32>" }],
+			needAlphaBlending: true,
+			depthWrite: false,
+			backFaceCulling: false,
+		});
+		setShaderUniform(mat, "uColor", [
 			SETTING_PARAMS.HIGHLIGHT_COLOR[0],
 			SETTING_PARAMS.HIGHLIGHT_COLOR[1],
 			SETTING_PARAMS.HIGHLIGHT_COLOR[2],
-		);
+			SETTING_PARAMS.HIGHLIGHT_ALPHA,
+		]);
 		return mat;
 	}
 }

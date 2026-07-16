@@ -21,12 +21,46 @@ export function setGameTimeScale(value: number): void {
 	_gameTimeScale = value;
 }
 
-let _isPaused = false;
+// ---------------------------------------------------------------------------
+// UI focus / pause model
+//
+// Instead of a single "isPaused" flag we track which UI surfaces currently own
+// the mouse. This lets non-blocking overlays (inventory, mason table) release
+// the pointer lock WITHOUT pausing the world or showing the PauseMenu.
+//
+//   - "pauseMenu"  -> genuine pause: world tick + world time freeze.
+//   - "inventory"  -> non-blocking overlay: world keeps running, mouse freed.
+//   - "masonTable" -> non-blocking overlay: world keeps running, mouse freed.
+// ---------------------------------------------------------------------------
+export const enum UiFocus {
+	pauseMenu,
+	inventory,
+	masonTable,
+}
+
+const _openUi = new Set<UiFocus>();
+
+export function openUi(focus: UiFocus): void {
+	_openUi.add(focus);
+}
+export function closeUi(focus: UiFocus): void {
+	_openUi.delete(focus);
+}
+/**
+ * True when a specific UI surface is open, or (with no argument) when ANY UI
+ * surface currently owns the mouse.
+ */
+export function isUiOpen(focus?: UiFocus): boolean {
+	return focus ? _openUi.has(focus) : _openUi.size > 0;
+}
+
+/** The world is paused ONLY when the pause menu owns focus. */
 export function getIsPaused(): boolean {
-	return _isPaused;
+	return _openUi.has(UiFocus.pauseMenu);
 }
 export function setIsPaused(value: boolean): void {
-	_isPaused = value;
+	if (value) _openUi.add(UiFocus.pauseMenu);
+	else _openUi.delete(UiFocus.pauseMenu);
 }
 
 // Lazy scene accessor — set by Map1 after construction.

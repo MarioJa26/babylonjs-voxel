@@ -1,6 +1,6 @@
 {
 	"compilerOptions": {
-		"target": "ES2025",
+		"target": "es2024",
 		"module": "ESNext",
 		"strict": true,
 		"jsx": "preserve",
@@ -12,13 +12,20 @@
 		"forceConsistentCasingInFileNames": true,
 		"useDefineForClassFields": true,
 		"sourceMap": true,
-		"types": ["vite/client"],
+		"types": ["vite/client", "@webgpu/types"],
 		"paths": {
-			"@/*": ["./src/*"]
+			"@/*": ["./src/*"],
+			"@babylonjs/core": ["./src/code/Lib/CoreShim.ts"],
+			"@babylonjs/core/*": ["./src/code/Lib/CoreShim.ts"]
 		},
 		"lib": ["ESNext", "DOM", "DOM.Iterable"],
 		"isolatedModules": true
 	},
 	"include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.vue", "vite.config.ts"],
-	"exclude": ["node_modules", "dist", "src/code_js/**/*"]
+	"exclude": [
+		"node_modules",
+		"dist",
+		"src/code_js/**/*",
+		"src/BabylonExamples/**/*"
+	]
 }

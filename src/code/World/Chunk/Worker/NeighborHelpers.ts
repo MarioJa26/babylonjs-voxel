@@ -39,21 +39,24 @@ export function maybeRemeshNeighborsNowStable(
 	chunk: Chunk,
 	scheduleRemesh: (chunk: Chunk, priority: boolean) => void,
 ): void {
-	const neighbors = [
-		chunk.getNeighbor(-1, 0, 0),
-		chunk.getNeighbor(1, 0, 0),
-		chunk.getNeighbor(0, -1, 0),
-		chunk.getNeighbor(0, 1, 0),
-		chunk.getNeighbor(0, 0, -1),
-		chunk.getNeighbor(0, 0, 1),
-	];
-	for (let i = 0; i < neighbors.length; i++) {
-		const neighbor = neighbors[i];
-		if (!neighbor?.isLoaded || !neighbor.hasVoxelData) continue;
-		if (!neighbor.getCachedLODMesh(neighbor.lodLevel)) continue;
-		if (hasStableVoxelNeighborsForCachedMesh(neighbor)) {
-			neighbor.isDirty = true;
-			scheduleRemesh(neighbor, neighbor.lodLevel === 0);
-		}
+	// PERF: unrolled to avoid allocating a 6-element neighbor array on every
+	// call (this runs per generated chunk, once for each of its neighbors).
+	maybeRemeshNeighborIfStable(chunk.getNeighbor(-1, 0, 0), scheduleRemesh);
+	maybeRemeshNeighborIfStable(chunk.getNeighbor(1, 0, 0), scheduleRemesh);
+	maybeRemeshNeighborIfStable(chunk.getNeighbor(0, -1, 0), scheduleRemesh);
+	maybeRemeshNeighborIfStable(chunk.getNeighbor(0, 1, 0), scheduleRemesh);
+	maybeRemeshNeighborIfStable(chunk.getNeighbor(0, 0, -1), scheduleRemesh);
+	maybeRemeshNeighborIfStable(chunk.getNeighbor(0, 0, 1), scheduleRemesh);
+}
+
+function maybeRemeshNeighborIfStable(
+	neighbor: Chunk | undefined | null,
+	scheduleRemesh: (chunk: Chunk, priority: boolean) => void,
+): void {
+	if (!neighbor?.isLoaded || !neighbor.hasVoxelData) return;
+	if (!neighbor.getCachedLODMesh(neighbor.lodLevel)) return;
+	if (hasStableVoxelNeighborsForCachedMesh(neighbor)) {
+		neighbor.isDirty = true;
+		scheduleRemesh(neighbor, neighbor.lodLevel === 0);
 	}
 }

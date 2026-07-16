@@ -5,6 +5,7 @@ import {
 	evaluateCaveCarve,
 	getSurfaceCarveBlend,
 } from "./CaveCarver";
+import { CaveNoiseGrid } from "./CaveNoiseGrid";
 import {
 	GenerationParams,
 	type GenerationParamsType,
@@ -172,6 +173,19 @@ export class SurfaceGenerator {
 	private riverGenerator: RiverGenerator;
 	private features: IWorldFeature[];
 
+	// PERF (#1): Trilinear cave-noise grid reused by computeCaveModifier so the
+	// surface density band no longer samples 3 raw simplex noises per voxel.
+	// This mirrors UndergroundGenerator and keeps surface carving consistent
+	// with the underground pass (both interpolate from the same coarse grid).
+	private readonly caveGrid: CaveNoiseGrid;
+	private caveGridReady = false;
+	private caveGridChunkX = 0;
+	private caveGridChunkY = 0;
+	private caveGridChunkZ = 0;
+	private curChunkWorldX = 0;
+	private curChunkWorldY = 0;
+	private curChunkWorldZ = 0;
+
 	constructor(
 		params: GenerationParamsType,
 		treeNoise: (x: number, z: number) => number,
@@ -192,6 +206,17 @@ export class SurfaceGenerator {
 		this.cheeseNoise = cheeseNoise;
 		this.tunnelNoise = tunnelNoise;
 		this.detailNoise = detailNoise;
+
+		this.caveGrid = new CaveNoiseGrid(
+			0,
+			0,
+			0,
+			this.chunk_size,
+			4,
+			this.cheeseNoise,
+			this.tunnelNoise,
+			this.detailNoise,
+		);
 
 		this.features = [
 			new TowerFeature(),
@@ -602,11 +627,26 @@ export class SurfaceGenerator {
 		const chunkWorldZ = chunkZ * CHUNK_SIZE;
 		const topWorldY = chunkWorldY + CHUNK_SIZE - 1;
 
+		// PERF (#1): Prepare the cave-noise grid context for this chunk. The grid
+		// is sampled lazily on the first computeCaveModifier call (slow path only),
+		// so fast-path chunks never pay the sampling cost.
+		this.caveGridChunkX = chunkX;
+		this.caveGridChunkY = chunkY;
+		this.caveGridChunkZ = chunkZ;
+		this.curChunkWorldX = chunkWorldX;
+		this.curChunkWorldY = chunkWorldY;
+		this.curChunkWorldZ = chunkWorldZ;
+		this.caveGridReady = false;
+
 		const topSunlightMask = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE);
 		const topSurfaceYMap = new Int16Array(CHUNK_SIZE * CHUNK_SIZE);
 		const biomeMap = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE);
 		const riverNoiseMap = new Float32Array(CHUNK_SIZE * CHUNK_SIZE);
 		topSurfaceYMap.fill(NO_SURFACE_Y);
+		// PERF (#4): The biome cache is chunk-granular (32-aligned) and the chunk
+		// is 32 wide, so getBiome(worldX, worldZ) is constant across the whole
+		// chunk and equals currentBiome. Fill once instead of 1024 lookups.
+		biomeMap.fill(currentBiome.id);
 
 		const volcanicLiquidId =
 			currentBiome.id === BIOME_ID.VOLCANIC_WASTELAND ? 24 : 30;
@@ -661,7 +701,6 @@ export class SurfaceGenerator {
 					topSurfaceYMap[columnIndex] = topSurfaceY;
 				}
 
-				biomeMap[columnIndex] = getBiome(worldX, worldZ).id;
 				riverNoiseMap[columnIndex] = riverNoise;
 
 				topSunlightMask[columnIndex] =
@@ -1322,13 +1361,45 @@ export class SurfaceGenerator {
 		z: number,
 		surfaceY: number,
 	): number {
+		const chunkSize = this.chunk_size;
+		const lx = x - this.curChunkWorldX;
+		const ly = y - this.curChunkWorldY;
+		const lz = z - this.curChunkWorldZ;
+
+		let cheese: number;
+		let tunnel: number;
+		let detail: number;
+
+		// PERF (#1): Use the pre-sampled trilinear grid for voxels inside the
+		// chunk (local Y in [0, 31]). The single per-column probe at topWorldY+1
+		// (ly === chunkSize) falls outside the grid's valid range, so it keeps
+		// sampling raw noise — negligible cost and behaviour-preserving.
+		if (ly >= 0 && ly < chunkSize) {
+			if (!this.caveGridReady) {
+				this.caveGrid.reset(
+					this.caveGridChunkX,
+					this.caveGridChunkY,
+					this.caveGridChunkZ,
+					chunkSize,
+				);
+				this.caveGridReady = true;
+			}
+			cheese = this.caveGrid.getCheese(lx, ly, lz);
+			tunnel = this.caveGrid.getTunnel(lx, ly, lz);
+			detail = this.caveGrid.getDetail(lx, ly, lz);
+		} else {
+			cheese = this.cheeseNoise(x, y, z);
+			tunnel = this.tunnelNoise(x, y, z);
+			detail = this.detailNoise(x, y, z);
+		}
+
 		const cave = evaluateCaveCarve(
 			this.params,
 			y,
 			surfaceY,
-			this.cheeseNoise(x, y, z),
-			this.tunnelNoise(x, y, z),
-			this.detailNoise(x, y, z),
+			cheese,
+			tunnel,
+			detail,
 		);
 		if (!cave.shouldCarve) return 0;
 

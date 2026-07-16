@@ -77,7 +77,8 @@ const ORE_TYPES: OreDefinition[] = [
 	},
 ];
 
-const STONE_BLOCK_IDS = new Set([1, 29]);
+// PERF (#5): direct id comparison instead of Set.has() in the per-voxel vein loop.
+const isStoneBlock = (id: number): boolean => id === 1 || id === 29;
 
 export class OreGenerator {
 	private params: GenerationParamsType;
@@ -163,7 +164,7 @@ export class OreGenerator {
 							continue;
 
 						const idx = lx + ly * CHUNK_SIZE + lz * chunkSizeSq;
-						if (!STONE_BLOCK_IDS.has(blocks[idx]!)) continue;
+						if (!isStoneBlock(blocks[idx]!)) continue;
 
 						// Shape the vein with 3D noise
 						const density = this.oreNoise(wx * 0.1, wy * 0.1, wz * 0.1);

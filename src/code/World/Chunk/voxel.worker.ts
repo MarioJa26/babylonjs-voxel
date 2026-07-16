@@ -19,6 +19,7 @@ export interface VoxelWorkerRequest {
 	type: WorkerTaskType.GenerateFullMesh;
 
 	chunkId: bigint;
+	meshRevision: number;
 	lod: number;
 	chunk_size: number;
 
@@ -93,6 +94,28 @@ function ensureShapesReady(): Promise<void> {
 	return _shapesReady;
 }
 
+// PERF: Reuse the output buffers across every mesh task in this worker.
+// buildVoxelMesh reserves a worst-case (size^3 * 16) capacity up front so the
+// hot-path emitters can write branchlessly; allocating fresh WorkerInternalMeshData
+// per task threw away ~12 MB of backing storage on every chunk. The
+// ResizableTypedArray keeps its capacity across builds — reset() only zeroes
+// length — so we allocate once and clear between tasks. toTransferableMeshData
+// slices to a right-sized copy for transfer, so these reused buffers are never
+// detached.
+const _opaqueOut = createEmptyWorkerInternalMeshData();
+const _transparentOut = createEmptyWorkerInternalMeshData();
+
+function resetMeshOut(): void {
+	_opaqueOut.faceDataA.reset();
+	_opaqueOut.faceDataB.reset();
+	_opaqueOut.faceDataC.reset();
+	_opaqueOut.faceCount = 0;
+	_transparentOut.faceDataA.reset();
+	_transparentOut.faceDataB.reset();
+	_transparentOut.faceDataC.reset();
+	_transparentOut.faceCount = 0;
+}
+
 self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 	const data = event.data;
 	if (data.type !== WorkerTaskType.GenerateFullMesh) return;
@@ -114,8 +137,9 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 
 		const fullCtx = createMeshContextFromPayload(baseCtx, meshInput);
 
-		const opaqueOut = createEmptyWorkerInternalMeshData();
-		const transparentOut = createEmptyWorkerInternalMeshData();
+		resetMeshOut();
+		const opaqueOut = _opaqueOut;
+		const transparentOut = _transparentOut;
 
 		MeshEmitters.buildVoxelMesh(fullCtx, opaqueOut, transparentOut);
 
@@ -130,6 +154,7 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 		const response: FullMeshMessage = {
 			type: WorkerTaskType.GenerateFullMesh,
 			chunkId: data.chunkId,
+			meshRevision: data.meshRevision,
 			lod: data.lod,
 			opaque,
 			transparent,

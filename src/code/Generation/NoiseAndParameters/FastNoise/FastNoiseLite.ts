@@ -1056,9 +1056,9 @@ export default class FastNoiseLite {
 
 		for (let i = 0; i < octaves; i++) {
 			// V8 can now inline the target of singleFn directly here
-			const noise = Math.abs(singleFn.call(this, seed++, x, y));
+			const noise = Math.abs(singleFn(seed++, x, y));
 			sum += (noise * -2 + 1) * amp;
-			amp *= FastNoiseLite._Lerp(1.0, 1 - noise, weight);
+			amp -= amp * weight * noise;
 
 			x *= lac;
 			y *= lac;
@@ -1091,7 +1091,7 @@ export default class FastNoiseLite {
 			sum += (noise * -2 + 1) * amp;
 
 			// Manual inline of Lerp or ensure _Lerp is a static/fast method
-			amp *= FastNoiseLite._Lerp(1.0, 1 - noise, weight);
+			amp -= amp * weight * noise;
 
 			x *= lac;
 			y *= lac;

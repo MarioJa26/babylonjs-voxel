@@ -1,4 +1,4 @@
-import { worldToChunkCoord } from "@/code/Shared/ChunkCoordUtils";
+import { worldToChunkCoord } from "@/code/Shared/VoxelMath";
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import { packChunkKey } from "../Storage/ChunkKey";
 import { deserializeMeshPair } from "../Storage/MeshSerializer";

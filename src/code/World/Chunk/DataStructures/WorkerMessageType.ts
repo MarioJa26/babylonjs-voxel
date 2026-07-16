@@ -71,6 +71,7 @@ export type GenerateTerrainRequest = {
 export type GenerateFullMeshRequest = {
 	type: WorkerTaskType.GenerateFullMesh;
 	chunkId: bigint;
+	meshRevision: number;
 
 	// NEW: LOD level sent from ChunkWorker -> worker
 	lod?: number;
@@ -226,6 +227,7 @@ export type LightDirtyMessage = {
 export type FullMeshMessage = {
 	type: WorkerTaskType.GenerateFullMesh;
 	chunkId: bigint;
+	meshRevision: number;
 	lod: number;
 	opaque: MeshData | null;
 	transparent: MeshData | null;
@@ -266,6 +268,7 @@ export type WorkerResponseData =
 
 export type MeshWorkerResponse = {
 	chunkId: bigint;
+	meshRevision: number;
 	lod: number;
 	opaque: MeshData | null;
 	transparent: MeshData | null;

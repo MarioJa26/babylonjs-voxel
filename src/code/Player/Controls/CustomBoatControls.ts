@@ -1,4 +1,12 @@
-import { Matrix, type Mesh, Vector3 } from "@babylonjs/core";
+import { formatWithOptions } from "node:util";
+import {
+	Matrix,
+	setVec3,
+	type TransformNode,
+	transformNormalVec3ToRef,
+	vec3Zero,
+} from "@babylonjs/core";
+import { scaleVec3, scaleVec3InPlace, type Vec3, vec3 } from "@babylonjs/lite";
 import type { Mount } from "@/code/Entities/Mount";
 import type { IControls } from "@/code/Interface/IControls";
 import type { Player } from "../Player";
@@ -7,25 +15,25 @@ import { handleDebugKey } from "./DebugControlHelper";
 export type BoatControlEntity = {
 	mount: Mount;
 	submergedPoints: number;
-	boatPosition: Vector3;
-	boatMesh: Mesh;
+	boatPosition: Vec3;
+	boatMesh: TransformNode;
 	currentYaw: number;
-	applyImpulse(impulse: Vector3, worldPoint: Vector3): void;
-	applyAngularImpulse(impulse: Vector3): void;
+	applyImpulse(impulse: Vec3, worldPoint: Vec3): void;
+	applyAngularImpulse(impulse: Vec3): void;
 };
 
 export class CustomBoatControls implements IControls<BoatControlEntity> {
 	readonly controlType = "customBoat";
 	public pressedKeys = new Set<string>();
 	#controlledEntity: BoatControlEntity;
-	#inputDirection: Vector3;
+	#inputDirection: Vec3;
 
 	#player: Player;
 
 	// Scratch vectors for per-frame #tick (avoids allocation)
-	readonly #_angularLeft = Vector3.Zero();
-	readonly #_angularRight = Vector3.Zero();
-	readonly #_forward = Vector3.Zero();
+	readonly #_angularLeft = vec3Zero();
+	readonly #_angularRight = vec3Zero();
+	readonly #_forward = vec3Zero();
 
 	public static KEY_LEFT = ["a", "arrowleft"];
 	public static KEY_RIGHT = ["d", "arrowright"];
@@ -39,19 +47,19 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 	public static MOUSE_WHEEL_UP = ["wheel_up"];
 	public static MOUSE_WHEEL_DOWN = ["wheel_down"];
 
-	#pushVectorUp = new Vector3(0, 0.5, 0);
-	#pushVectorDown = new Vector3(0, -0.5, 0);
+	#pushVectorUp = vec3(0, 0.5, 0);
+	#pushVectorDown = vec3(0, -0.5, 0);
 
 	#pushStrength = 3;
 	#pushNoseUpStrength = -3;
 	#angularPushStrength = 1;
 	#angularRotationStrength = 0.45;
-	#pushAngularVectorLeft = new Vector3(
+	#pushAngularVectorLeft = vec3(
 		this.#pushNoseUpStrength,
 		-this.#angularPushStrength,
 		this.#angularRotationStrength,
 	);
-	#pushAngularVectorRight = new Vector3(
+	#pushAngularVectorRight = vec3(
 		this.#pushNoseUpStrength,
 		this.#angularPushStrength,
 		-this.#angularRotationStrength,
@@ -59,19 +67,27 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 
 	// Reusable rotation matrix — built from currentYaw each tick, never from the mesh
 	static readonly #rotationMatrix = new Matrix();
-	static readonly #_localForward = new Vector3(0, 0, 1);
+	static readonly #_localForward = vec3(0, 0, 1);
 
 	constructor(paddleBoat: BoatControlEntity, player: Player) {
 		this.#controlledEntity = paddleBoat;
 		// Share the same inputDirection Vector3 as WalkingControls so the motor
 		// always reads the current control state regardless of which is active.
-		this.#inputDirection = player.playerVehicle.inputDirection;
+		const legacy = player as unknown as {
+			playerVehicle: { inputDirection: Vec3 };
+		};
+		this.#inputDirection = legacy.playerVehicle.inputDirection;
 		this.#player = player;
 
 		// Clear all axes on entry so stale values from WalkingControls don't
 		// persist into boat mode (WalkingControls uses .x and .z; we use the
 		// same axes so there is no cross-pollution).
-		this.#inputDirection.set(0, 0, 0);
+		setVec3(this.#inputDirection, 0, 0, 0);
+	}
+
+	/** Loose view of the not-yet-ported `Player` surface (use/flashlight/...). */
+	#legacy(): any {
+		return this.#player;
 	}
 
 	public handleKeyEvent(key: string, isKeyDown: boolean) {
@@ -90,13 +106,13 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 		this.#updateMovementAxesFromPressedKeys();
 
 		if (CustomBoatControls.KEY_USE.includes(key)) {
-			this.#player.use();
+			this.#legacy().use();
 		}
 	}
 
 	public onKeyUp(key: string) {
 		if (CustomBoatControls.KEY_FLASH.includes(key)) {
-			this.#player.flashlight.toggle();
+			this.#legacy().flashlight.toggle();
 		}
 
 		if (CustomBoatControls.MOUSE_WHEEL_UP.includes(key)) {
@@ -138,33 +154,34 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 
 		// Build rotation matrix from currentYaw — the hull mesh is always identity
 		// so we can never use boatMesh.rotationQuaternion or boatMesh.forward here.
-		Matrix.RotationYToRef(
-			this.#controlledEntity.currentYaw,
-			CustomBoatControls.#rotationMatrix,
-		);
+		const rot = Matrix.RotationY(this.#controlledEntity.currentYaw);
+		CustomBoatControls.#rotationMatrix.copyFrom(rot);
 
-		Vector3.TransformNormalToRef(
+		transformNormalVec3ToRef(
 			this.#pushAngularVectorLeft,
 			CustomBoatControls.#rotationMatrix,
 			this.#_angularLeft,
 		);
-		Vector3.TransformNormalToRef(
+		transformNormalVec3ToRef(
 			this.#pushAngularVectorRight,
 			CustomBoatControls.#rotationMatrix,
 			this.#_angularRight,
 		);
 
 		// Forward is +Z in local space, rotated by current yaw.
-		Vector3.TransformNormalToRef(
+		transformNormalVec3ToRef(
 			CustomBoatControls.#_localForward,
 			CustomBoatControls.#rotationMatrix,
 			this.#_forward,
 		);
-		this.#_forward.scaleInPlace(this.#pushStrength);
+		scaleVec3InPlace(this.#_forward, this.#pushStrength);
 
 		// Sprint cancels push
 		if (this.#pressedKeysHas(CustomBoatControls.KEY_SPRINT)) {
-			this.#_forward.copyFrom(Vector3.Zero());
+			this.#_forward.x = 0;
+			this.#_forward.y = 0;
+			this.#_forward.z = 0;
+
 			this.#_angularLeft.x = this.#_angularLeft.x >> 1;
 			this.#_angularLeft.y = this.#_angularLeft.y << 1;
 			this.#_angularLeft.z = this.#_angularLeft.z >> 1;
@@ -187,21 +204,21 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 	 * W (z=1) = push boat forward/up, S (z=-1) = push boat back/down.
 	 * Previously used inputDirection.y; now uses .z to match WalkingControls.
 	 */
-	#handleForwardBack(forward: Vector3, position: Vector3) {
+	#handleForwardBack(forward: Vec3, position: Vec3) {
 		if (this.#inputDirection.z > 0) {
-			forward.scaleInPlace(0.4);
+			scaleVec3InPlace(forward, 0.4);
 			this.#controlledEntity.applyImpulse(this.#pushVectorUp, position);
 		} else if (this.#inputDirection.z < 0) {
-			forward.scaleInPlace(0.4);
+			scaleVec3InPlace(forward, 0.4);
 			this.#controlledEntity.applyImpulse(this.#pushVectorDown, position);
 		}
 	}
 
 	#handleLeftRight(
-		forward: Vector3,
-		position: Vector3,
-		angularLeftWorld: Vector3,
-		angularRightWorld: Vector3,
+		forward: Vec3,
+		position: Vec3,
+		angularLeftWorld: Vec3,
+		angularRightWorld: Vec3,
 	) {
 		if (this.#inputDirection.x > 0) {
 			this.#controlledEntity.applyImpulse(forward, position);
@@ -223,7 +240,7 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 		return this.#controlledEntity;
 	}
 
-	public get inputDirection(): Vector3 {
+	public get inputDirection(): Vec3 {
 		return this.#inputDirection;
 	}
 

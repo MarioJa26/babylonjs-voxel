@@ -1,266 +1,255 @@
 import {
-	Color3,
-	Mesh,
-	MeshBuilder,
-	type Scene,
-	StandardMaterial,
-} from "@babylonjs/core";
-import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
+	addToScene,
+	createMeshFromData,
+	createShaderMaterial,
+	type Mesh,
+	type SceneContext,
+	type ShaderMaterial,
+	setShaderUniform,
+	updateMeshNormals,
+	updateMeshPositions,
+} from "@babylonjs/lite";
+import { Map1 } from "@/code/Maps/Map1";
 import { getTransformedShapeBoxes } from "@/code/World/Shape/BlockShapeTransforms";
-import type { BoatBlockHitContext } from "./BreakingBlockHandler";
+import type { BlockRaycastHit } from "./BlockRaycaster";
 
-let scene: Scene | null = null;
-let crackingMesh: Mesh | null = null;
-let crackMaterials: StandardMaterial[] = [];
-let crackingShapeKey = -1;
-let crackingLastStage = -1;
-let crackingLastBlockX = 0;
-let crackingLastBlockY = 0;
-let crackingLastBlockZ = 0;
-let crackingLastContext: unknown = null;
+const crackVertexWGSL = /* wgsl */ `
+struct VSOut { @builtin(position) pos : vec4<f32> };
 
-export function initializeBlockBreakingVisuals(targetScene: Scene): void {
-	if (scene === targetScene && crackingMesh) {
-		return;
+@vertex
+fn mainVertex(input : VertexInput) -> VSOut {
+  var out : VSOut;
+  out.pos = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
+  return out;
+}
+`;
+
+const crackFragmentWGSL = /* wgsl */ `
+@fragment
+fn mainFragment() -> @location(0) vec4<f32> {
+  let a = shaderUniforms.uCrackStage;
+  return vec4<f32>(0.0, 0.0, 0.0, a * 0.6);
+}
+`;
+
+type BoxLike = { min: readonly number[]; max: readonly number[] };
+
+function buildBoxesGeometry(
+	boxes: readonly BoxLike[],
+	inflation: number,
+): { positions: Float32Array; normals: Float32Array; indices: Uint32Array } {
+	const positions: number[] = [];
+	const normals: number[] = [];
+	const indices: number[] = [];
+	const h = inflation / 2;
+
+	const faces: Array<{
+		n: [number, number, number];
+		v: Array<[number, number, number]>;
+	}> = [
+		{
+			n: [1, 0, 0],
+			v: [
+				[1, 0, 0],
+				[1, 0, 1],
+				[1, 1, 1],
+				[1, 1, 0],
+			],
+		},
+		{
+			n: [-1, 0, 0],
+			v: [
+				[0, 0, 1],
+				[0, 0, 0],
+				[0, 1, 0],
+				[0, 1, 1],
+			],
+		},
+		{
+			n: [0, 1, 0],
+			v: [
+				[0, 1, 0],
+				[1, 1, 0],
+				[1, 1, 1],
+				[0, 1, 1],
+			],
+		},
+		{
+			n: [0, -1, 0],
+			v: [
+				[0, 0, 1],
+				[1, 0, 1],
+				[1, 0, 0],
+				[0, 0, 0],
+			],
+		},
+		{
+			n: [0, 0, 1],
+			v: [
+				[0, 0, 1],
+				[1, 0, 1],
+				[1, 1, 1],
+				[0, 1, 1],
+			],
+		},
+		{
+			n: [0, 0, -1],
+			v: [
+				[1, 0, 0],
+				[0, 0, 0],
+				[0, 1, 0],
+				[1, 1, 0],
+			],
+		},
+	];
+
+	for (const box of boxes) {
+		const x0 = box.min[0] - h;
+		const y0 = box.min[1] - h;
+		const z0 = box.min[2] - h;
+		const x1 = box.max[0] + h;
+		const y1 = box.max[1] + h;
+		const z1 = box.max[2] + h;
+
+		for (const face of faces) {
+			const base = positions.length / 3;
+			for (let i = 0; i < 4; i++) {
+				positions.push(face.v[i][0] + x0, face.v[i][1] + y0, face.v[i][2] + z0);
+				normals.push(face.n[0], face.n[1], face.n[2]);
+			}
+			indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+		}
 	}
 
-	disposeBlockBreakingVisuals();
-
-	scene = targetScene;
-	crackingMesh = createUnitCrackingMesh();
-	crackingMesh.isPickable = false;
-	crackingMesh.isVisible = false;
-	crackingMesh.renderingGroupId = 1;
-
-	for (let i = 0; i < 10; i++) {
-		const mat = new StandardMaterial(`crackMat${i}`, scene);
-		mat.diffuseColor = new Color3(
-			SETTING_PARAMS.HIGHLIGHT_COLOR[0],
-			SETTING_PARAMS.HIGHLIGHT_COLOR[1],
-			SETTING_PARAMS.HIGHLIGHT_COLOR[2],
-		);
-		mat.alpha = 0.1 + (i / 9) * 0.6;
-		mat.backFaceCulling = false;
-		mat.disableLighting = true;
-		mat.zOffset = -1;
-		crackMaterials.push(mat);
-	}
+	return {
+		positions: new Float32Array(positions),
+		normals: new Float32Array(normals),
+		indices: new Uint32Array(indices),
+	};
 }
 
-export function disposeBlockBreakingVisuals(): void {
-	crackingMesh?.dispose();
-	crackingMesh = null;
+let scene: SceneContext;
 
-	for (const mat of crackMaterials) {
-		mat.dispose();
-	}
+let crackMaterials: ShaderMaterial[] = [];
+let crackMeshes: Mesh[] = [];
+let usedCrackMeshes: Mesh[] = [];
+
+let crackGeometryKey = -1;
+
+export function initializeBlockBreakingVisuals(
+	targetScene: SceneContext,
+): void {
+	scene = targetScene;
 
 	crackMaterials = [];
-	crackingShapeKey = -1;
-	crackingLastStage = -1;
-	scene = null;
+	crackMeshes = [];
+	usedCrackMeshes = [];
+	crackGeometryKey = -1;
+
+	const unit = buildBoxesGeometry([{ min: [0, 0, 0], max: [1, 1, 1] }], 0.02);
+
+	for (let i = 0; i < 10; i++) {
+		const mat = createShaderMaterial({
+			name: "crackMat" + i,
+			vertexSource: crackVertexWGSL,
+			fragmentSource: crackFragmentWGSL,
+			attributes: ["position"],
+			uniforms: ["worldViewProjection", { name: "uCrackStage", type: "f32" }],
+			needAlphaBlending: true,
+			depthWrite: false,
+			backFaceCulling: false,
+		});
+		setShaderUniform(mat, "uCrackStage", i / 9);
+		crackMaterials.push(mat);
+
+		const mesh = createMeshFromData(
+			Map1.engine,
+			"crackMesh" + i,
+			unit.positions,
+			unit.normals,
+			unit.indices,
+		);
+		mesh.material = mat;
+		mesh.pickable = false;
+		mesh.visible = false;
+		addToScene(scene, mesh);
+		crackMeshes.push(mesh);
+	}
 }
 
+function ensureCrackGeometry(blockId: number, blockState: number): void {
+	const key = (blockId << 6) | blockState;
+	if (key === crackGeometryKey) return;
+
+	const boxes: BoxLike[] = [];
+	for (const box of getTransformedShapeBoxes(blockId, blockState)) {
+		const w = box.max[0] - box.min[0];
+		const h = box.max[1] - box.min[1];
+		const d = box.max[2] - box.min[2];
+		if (w <= 0 || h <= 0 || d <= 0) continue;
+		boxes.push({ min: box.min, max: box.max });
+	}
+
+	const geo =
+		boxes.length > 0
+			? buildBoxesGeometry(boxes, 0.02)
+			: buildBoxesGeometry([{ min: [0, 0, 0], max: [1, 1, 1] }], 0.02);
+
+	for (const mesh of crackMeshes) {
+		updateMeshPositions(Map1.engine, mesh, geo.positions);
+		updateMeshNormals(Map1.engine, mesh, geo.normals);
+	}
+
+	crackGeometryKey = key;
+}
+
+export function updateBlockBreakingVisuals(
+	progress: number,
+	targetBlock: BlockRaycastHit,
+): void {
+	const stage = Math.max(0, Math.min(9, Math.floor(progress * 10)));
+
+	ensureCrackGeometry(targetBlock.blockId, targetBlock.blockState);
+
+	for (let i = 0; i < crackMeshes.length; i++) {
+		crackMeshes[i].visible = i === stage;
+	}
+
+	const target = crackMeshes[stage];
+	target.position.set(targetBlock.x, targetBlock.y, targetBlock.z);
+
+	usedCrackMeshes = [target];
+}
+
+export function resetBlockBreakingVisuals(): void {
+	usedCrackMeshes = [];
+	for (const mesh of crackMeshes) {
+		mesh.visible = false;
+	}
+}
+
+/** Backwards-compatible entry point used by BreakingBlockHandler. */
 export function updateCrackingState(
 	block: { x: number; y: number; z: number } | null,
 	progress: number,
 	blockId?: number,
-	blockState = 0,
-	dynamicContext: unknown = null,
+	blockState?: number,
+	dynamicContext?: unknown,
 ): void {
-	if (!block || progress <= 0) {
-		if (crackingMesh) {
-			crackingMesh.isVisible = false;
-			crackingMesh.parent = null;
-		}
+	if (block === null || blockId === undefined || blockState === undefined) {
+		resetBlockBreakingVisuals();
 		return;
 	}
-
-	if (!crackingMesh) return;
-
-	if (typeof blockId === "number") {
-		ensureCrackingShape(blockId, blockState);
-	}
-
-	crackingMesh.isVisible = true;
-	if (
-		block.x !== crackingLastBlockX ||
-		block.y !== crackingLastBlockY ||
-		block.z !== crackingLastBlockZ ||
-		dynamicContext !== crackingLastContext
-	) {
-		applyCrackingTransform(block, dynamicContext);
-		crackingLastBlockX = block.x;
-		crackingLastBlockY = block.y;
-		crackingLastBlockZ = block.z;
-		crackingLastContext = dynamicContext;
-	}
-
-	const stage = Math.min(9, Math.floor(progress * 10));
-	if (stage !== crackingLastStage) {
-		crackingLastStage = stage;
-		if (crackMaterials[stage]) {
-			crackingMesh.material = crackMaterials[stage];
-		}
-	}
-}
-
-function createUnitCrackingMesh(): Mesh {
-	if (!scene) {
-		throw new Error("BlockBreakingVisuals not initialized");
-	}
-
-	const mesh = MeshBuilder.CreateBox(
-		"crackingMeshUnitCube",
-		{ size: 1.04 },
-		scene,
-	);
-	mesh.position.set(0.5, 0.5, 0.5);
-	bakeLocalOffset(mesh);
-	return mesh;
-}
-
-function bakeLocalOffset(mesh: Mesh): void {
-	mesh.bakeCurrentTransformIntoVertices();
-	mesh.position.set(0, 0, 0);
-}
-
-const inflation = 0.04;
-const parts: Mesh[] = [];
-function buildCrackingMeshForBlock(blockId: number, blockState: number): Mesh {
-	if (!scene) {
-		throw new Error("BlockBreakingVisuals not initialized");
-	}
-
-	let index = 0;
-	parts.length = 0;
-
-	for (const box of getTransformedShapeBoxes(blockId, blockState)) {
-		const width = box.max[0] - box.min[0];
-		const height = box.max[1] - box.min[1];
-		const depth = box.max[2] - box.min[2];
-		if (width <= 0 || height <= 0 || depth <= 0) continue;
-
-		const part = MeshBuilder.CreateBox(
-			`crackingMeshPart_${index++}`,
-			{
-				width: width + inflation,
-				height: height + inflation,
-				depth: depth + inflation,
-			},
-			scene,
-		);
-
-		part.position.set(
-			(box.min[0] + box.max[0]) * 0.5,
-			(box.min[1] + box.max[1]) * 0.5,
-			(box.min[2] + box.max[2]) * 0.5,
-		);
-
-		bakeLocalOffset(part);
-		parts.push(part);
-	}
-
-	if (parts.length === 0) {
-		return createUnitCrackingMesh();
-	}
-
-	if (parts.length === 1) {
-		return parts[0];
-	}
-
-	const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, true);
-	if (!merged || !(merged instanceof Mesh)) {
-		const fallback = parts[0];
-		for (let i = 1; i < parts.length; i++) {
-			parts[i].dispose();
-		}
-		return fallback;
-	}
-
-	return merged;
-}
-
-function ensureCrackingShape(blockId: number, blockState: number): void {
-	const shapeKey = (blockId << 6) | blockState;
-	if (shapeKey === crackingShapeKey) return;
-	if (!crackingMesh) return;
-
-	const oldMesh = crackingMesh;
-	const newMesh = buildCrackingMeshForBlock(blockId, blockState);
-
-	newMesh.position.copyFrom(oldMesh.position);
-	newMesh.parent = oldMesh.parent;
-	newMesh.isPickable = false;
-
-	newMesh.isVisible = oldMesh.isVisible;
-	newMesh.renderingGroupId = oldMesh.renderingGroupId;
-	newMesh.material = oldMesh.material;
-
-	crackingMesh = newMesh;
-	crackingShapeKey = shapeKey;
-
-	oldMesh?.dispose();
-}
-
-function applyCrackingTransform(
-	block: { x: number; y: number; z: number },
-	dynamicContext: unknown,
-): void {
-	if (!crackingMesh) return;
-
-	const boatContext = asBoatBlockContext(dynamicContext);
-	if (boatContext) {
-		const center = boatContext.boatChunk.center;
-
-		crackingMesh.parent = boatContext.boatChunk.visualRoot;
-		crackingMesh.position.set(
-			boatContext.localX - center.x,
-			boatContext.localY - center.y,
-			boatContext.localZ - center.z,
-		);
-		return;
-	}
-
-	crackingMesh.parent = null;
-	crackingMesh.position.set(
-		Math.floor(block.x),
-		Math.floor(block.y),
-		Math.floor(block.z),
-	);
-}
-
-function asBoatBlockContext(context: unknown): BoatBlockHitContext | null {
-	if (!context || typeof context !== "object") {
-		return null;
-	}
-
-	const value = context as Partial<BoatBlockHitContext>;
-	if (value.kind !== "boatChunk") {
-		return null;
-	}
-
-	if (
-		typeof value.localX !== "number" ||
-		typeof value.localY !== "number" ||
-		typeof value.localZ !== "number"
-	) {
-		return null;
-	}
-
-	const boatChunk = value.boatChunk as
-		| BoatBlockHitContext["boatChunk"]
-		| undefined;
-
-	if (!boatChunk?.visualRoot || !boatChunk?.center) {
-		return null;
-	}
-
-	return {
-		kind: "boatChunk",
-		boatChunk,
-		localX: value.localX,
-		localY: value.localY,
-		localZ: value.localZ,
-	};
+	updateBlockBreakingVisuals(progress, {
+		x: block.x,
+		y: block.y,
+		z: block.z,
+		nx: 0,
+		ny: 0,
+		nz: 0,
+		t: 0,
+		blockId,
+		blockState,
+		dynamicContext,
+	} as BlockRaycastHit);
 }

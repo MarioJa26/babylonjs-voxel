@@ -1,4 +1,5 @@
-import type { Observer, Scene } from "@babylonjs/core";
+import type { Scene } from "@babylonjs/core";
+import { onSceneDispose, type Vec3 } from "@babylonjs/lite";
 import {
 	flushChunkBoundEntities,
 	flushModifiedChunks,
@@ -7,7 +8,6 @@ import {
 import type { SavedInventoryState } from "./Inventory/PlayerInventory";
 import type { Player } from "./Player";
 import { Gamemodes } from "./PlayerStats";
-import type { SavedPlayerPosition } from "./PlayerVehicle";
 
 export class PlayerStatePersistence {
 	private static readonly PLAYER_POSITION_STORAGE_KEY =
@@ -19,8 +19,8 @@ export class PlayerStatePersistence {
 	private static readonly CHUNK_SAVE_NOW_BATCH_SIZE = 64;
 
 	private lastPositionSaveMs = 0;
-	private inventoryObserver: Observer<void> | null = null;
-	private sceneDisposeObserver: Observer<Scene> | null = null;
+	private inventoryObserver: any = null;
+	private sceneDisposeObserver: any = null;
 	private isDisposed = false;
 
 	private readonly onBeforeUnload = () => {
@@ -88,7 +88,6 @@ export class PlayerStatePersistence {
 		}
 
 		if (this.sceneDisposeObserver) {
-			this.scene.onDisposeObservable.remove(this.sceneDisposeObserver);
 			this.sceneDisposeObserver = null;
 		}
 
@@ -117,7 +116,7 @@ export class PlayerStatePersistence {
 			capture: true,
 		});
 
-		this.sceneDisposeObserver = this.scene.onDisposeObservable.add(() => {
+		this.sceneDisposeObserver = onSceneDispose(this.scene, () => {
 			this.dispose();
 		});
 	}
@@ -174,7 +173,7 @@ export class PlayerStatePersistence {
 			);
 			if (!raw) return;
 
-			const savedPosition = JSON.parse(raw) satisfies SavedPlayerPosition;
+			const savedPosition = JSON.parse(raw) satisfies Vec3;
 			if (this.player.playerVehicle.restoreSavedPosition(savedPosition)) {
 				this.player.playerVehicle.updateCameraAndVisuals();
 			} else {

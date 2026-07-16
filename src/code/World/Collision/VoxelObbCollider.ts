@@ -1,13 +1,14 @@
 // VoxelObbCollider.ts
 import {
 	Color4,
-	type Mesh,
+	copyVec3,
 	MeshBuilder,
 	Quaternion,
 	type Scene,
 	StandardMaterial,
-	Vector3,
+	setVec3,
 } from "@babylonjs/core";
+import { type Vec3, vec3 } from "@babylonjs/lite";
 import { Axis } from "./VoxelAabbCollider";
 
 type IsSolidBlockAt = (x: number, y: number, z: number) => boolean;
@@ -15,7 +16,7 @@ type IsSolidBlockAt = (x: number, y: number, z: number) => boolean;
 type VoxelObbDebugOptions = {
 	scene: Scene;
 	name?: string;
-	position?: Vector3;
+	position?: Vec3;
 	renderingGroupId?: number;
 };
 
@@ -26,30 +27,33 @@ type VoxelObbDebugOptions = {
  * Fully compatible with VoxelAabbCollider's moveAxis() interface.
  */
 export class VoxelObbCollider {
-	#halfExtents: Vector3; // Local-space extents
-	#centerOffset = new Vector3(); // Local-space offset of OBB center from position
+	#halfExtents = vec3(0, 0, 0); // Local-space extents
+	#centerOffset = vec3(0, 0, 0);
+	// Local-space offset of OBB center from position
 	#epsilon: number;
 	#isSolidBlockAt: IsSolidBlockAt;
 
 	#yaw = 0; // Boat yaw (radians)
-	#rotX = new Vector3(); // Rotated X axis vector
-	#rotZ = new Vector3(); // Rotated Z axis vector
+	#rotX = vec3(0, 0, 0);
+	// Rotated X axis vector
+	#rotZ = vec3(0, 0, 0);
+	// Rotated Z axis vector
 
-	#tmpCandidate = new Vector3();
-	#debugRot = new Quaternion();
-	#debugMesh: Mesh | null = null;
+	#tmpCandidate = vec3(0, 0, 0); // Temporary candidate vector
+	#debugRot = Quaternion.Identity(); // Debug rotation vector
+	#debugMesh: any = null;
 	#debugOptions: VoxelObbDebugOptions | null = null;
 
 	static #debugEnabled = false;
 	static readonly #debugColliders = new Set<VoxelObbCollider>();
 
 	constructor(
-		halfExtents: Vector3,
+		halfExtents: Vec3,
 		isSolidBlockAt: IsSolidBlockAt,
 		epsilon = 0.001,
 		debugOptions?: VoxelObbDebugOptions,
 	) {
-		this.#halfExtents = halfExtents.clone();
+		copyVec3(this.#halfExtents, halfExtents);
 		this.#epsilon = epsilon;
 		this.#isSolidBlockAt = isSolidBlockAt;
 
@@ -70,8 +74,8 @@ export class VoxelObbCollider {
 		this.#updateRotAxes();
 	}
 
-	public setHalfExtents(halfExtents: Vector3): void {
-		this.#halfExtents.copyFrom(halfExtents);
+	public setHalfExtents(halfExtents: Vec3): void {
+		copyVec3(this.#halfExtents, halfExtents);
 
 		// Rebuild the debug wireframe so its dimensions match updated extents.
 		if (this.#debugMesh && !this.#debugMesh.isDisposed()) {
@@ -83,8 +87,8 @@ export class VoxelObbCollider {
 		}
 	}
 
-	public setCenterOffset(offset: Vector3): void {
-		this.#centerOffset.copyFrom(offset);
+	public setCenterOffset(offset: Vec3): void {
+		copyVec3(this.#centerOffset, offset);
 	}
 
 	#updateRotAxes() {
@@ -92,10 +96,10 @@ export class VoxelObbCollider {
 		const s = Math.sin(this.#yaw);
 
 		// RIGHT vector (local +X)
-		this.#rotX.set(c, 0, -s);
+		setVec3(this.#rotX, c, 0, -s);
 
 		// FORWARD vector (local +Z)
-		this.#rotZ.set(s, 0, c);
+		setVec3(this.#rotZ, s, 0, c);
 	}
 
 	/** Create debug OBB wireframe */
@@ -138,7 +142,7 @@ export class VoxelObbCollider {
 	}
 
 	/** Test if OBB intersects any solid voxel */
-	public overlaps(position: Vector3): boolean {
+	public overlaps(position: Vec3): boolean {
 		// OBB world axes
 		const hx = this.#halfExtents.x;
 		const hy = this.#halfExtents.y;
@@ -220,8 +224,8 @@ export class VoxelObbCollider {
 
 	/** Same API as AABB collider — used by boat physics */
 	public moveAxis(
-		position: Vector3,
-		velocity: Vector3,
+		position: Vec3,
+		velocity: Vec3,
 		axis: Axis,
 		delta: number,
 		stepSize: number,
@@ -235,7 +239,7 @@ export class VoxelObbCollider {
 					? stepSize * Math.sign(remaining)
 					: remaining;
 
-			const candidate = this.#tmpCandidate.copyFrom(position);
+			const candidate = copyVec3(this.#tmpCandidate, position);
 
 			if (axis === Axis.X) candidate.x += step;
 			else if (axis === Axis.Y) candidate.y += step;
@@ -249,12 +253,13 @@ export class VoxelObbCollider {
 				return;
 			}
 
-			position.copyFrom(candidate);
+			copyVec3(position, candidate);
+
 			remaining -= step;
 		}
 	}
 
-	public syncDebugMesh(position: Vector3): void {
+	public syncDebugMesh(position: any): void {
 		if (VoxelObbCollider.#debugEnabled) {
 			this.#ensureDebugMesh();
 		}
@@ -271,7 +276,7 @@ export class VoxelObbCollider {
 				this.#centerOffset.z * this.#rotZ.z,
 		);
 
-		Quaternion.RotationYawPitchRollToRef(this.#yaw, 0, 0, this.#debugRot);
+		this.#debugRot.copyFrom(Quaternion.RotationYawPitchRoll(this.#yaw, 0, 0));
 		this.#debugMesh.rotationQuaternion = this.#debugRot;
 	}
 

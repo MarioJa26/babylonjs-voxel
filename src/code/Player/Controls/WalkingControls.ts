@@ -1,4 +1,4 @@
-import type { Vector3 } from "@babylonjs/core";
+import type { Vec3 } from "@babylonjs/lite";
 import type { Mob } from "@/code/Entities/Mobs/Mob";
 import type { IControls } from "@/code/Interface/IControls";
 import { Chunk } from "@/code/World/Chunk/Chunk";
@@ -10,14 +10,14 @@ import { BlockBreakingHandler } from "../Hud/BlockHighlight/BreakingBlockHandler
 import { Crosshair } from "../Hud/Crosshair/Crosshair";
 import type { Item } from "../Inventory/Item";
 import type { Player } from "../Player";
-import type { PlayerVehicle } from "../PlayerVehicle";
+import type { PlayerVehicleMotor } from "../PlayerVehicleMotor";
 import { handleDebugKey } from "./DebugControlHelper";
 
-export class WalkingControls implements IControls<PlayerVehicle> {
+export class WalkingControls implements IControls<PlayerVehicleMotor> {
 	readonly controlType = "walking";
 	public pressedKeys = new Set<string>();
-	#controlledEntity: PlayerVehicle;
-	#inputDirection: Vector3;
+	#controlledEntity: PlayerVehicleMotor;
+	#inputDirection: Vec3;
 	#player: Player;
 	#blockBreaking: BlockBreakingHandler;
 
@@ -74,6 +74,8 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 	public static KEY_F6 = ["f6"];
 
 	constructor(player: Player) {
+		// The Lite `Player` now exposes the full `PlayerVehicleMotor` (an
+		// `IPlayerBody`), so read the control surface directly.
 		this.#controlledEntity = player.playerVehicle;
 		this.#inputDirection = player.playerVehicle.inputDirection;
 		this.#player = player;
@@ -91,9 +93,9 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 	public handleMouseEvent(mouseEvent: MouseEvent, isKeyDown: boolean): void {
 		if (WalkingControls.MOUSE1.includes(mouseEvent.button)) {
 			if (isKeyDown) {
-				const mobMesh = Crosshair.pickMobMesh(this.#player);
+				const mobMesh = (Crosshair as any).pickMobMesh(this.#player);
 				if (mobMesh?.metadata instanceof MetadataContainer) {
-					const mob = mobMesh.metadata.get<Mob>("mob");
+					const mob: Mob | undefined = mobMesh.metadata.get("mob");
 					mob?.takeDamage(1);
 					return;
 				}
@@ -118,6 +120,14 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 
 	public update(hit?: BlockRaycastHit | null): void {
 		this.#blockBreaking.update(hit);
+	}
+
+	/**
+	 * Cancel any in-progress block breaking. Called when a UI overlay opens so a
+	 * held mouse button doesn't keep breaking a block while the menu is up.
+	 */
+	public stopBlockBreaking(): void {
+		this.#blockBreaking.stop();
 	}
 
 	public onKeyDown(key: string) {
@@ -225,17 +235,18 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 		}
 
 		if (WalkingControls.KEY_INVENTORY.includes(key)) {
+			// toggleInventory() is now the single source of truth for switching the
+			// active control scheme (see PlayerHud.#activateInventoryControls /
+			// #activateWalkingControls), so we no longer swap keyboardControls here.
 			this.#player.playerHud.toggleInventory();
-			this.#player.playerInventory.inventoryControls.underlyingControls = this;
-			this.#player.keyboardControls =
-				this.#player.playerInventory.inventoryControls;
 		}
 
 		if (WalkingControls.KEY_PRINT_TRACE.includes(key)) {
+			const size = (Chunk as any).SIZE ?? 16;
 			validateChunksAround(
-				Math.floor(this.#player.position.x / Chunk.SIZE),
-				Math.floor(this.#player.position.y / Chunk.SIZE),
-				Math.floor(this.#player.position.z / Chunk.SIZE),
+				Math.floor(this.#player.position.x / size),
+				Math.floor(this.#player.position.y / size),
+				Math.floor(this.#player.position.z / size),
 			);
 		}
 
@@ -275,21 +286,22 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 		const trySelectOrSwapMatchingItem = (
 			requireExactState: boolean,
 		): boolean => {
+			const inventory = this.#player.playerInventory;
 			for (let i = 0; i < 10; i++) {
-				const hotbarItem = this.#player.playerInventory.inventory[0][i].item;
+				const hotbarItem = inventory.inventory[0][i].item;
 				if (matchesPickedBlock(hotbarItem, requireExactState)) {
 					this.#player.playerHud.selectedHotbarSlot = i;
 					return true;
 				}
 			}
 
-			const inventory = this.#player.playerInventory.inventory;
-			for (let r = 1; r < inventory.length; r++) {
-				for (let c = 0; c < inventory[r].length; c++) {
-					if (matchesPickedBlock(inventory[r][c].item, requireExactState)) {
+			const inv = inventory.inventory;
+			for (let r = 1; r < inv.length; r++) {
+				for (let c = 0; c < inv[r].length; c++) {
+					if (matchesPickedBlock(inv[r][c].item, requireExactState)) {
 						const selectedSlot = this.#player.playerHud.selectedHotbarSlot;
-						const hotbarSlot = inventory[0][selectedSlot];
-						const inventorySlot = inventory[r][c];
+						const hotbarSlot = inv[0][selectedSlot];
+						const inventorySlot = inv[r][c];
 						hotbarSlot.swapSlots(inventorySlot);
 						return true;
 					}
@@ -321,11 +333,11 @@ export class WalkingControls implements IControls<PlayerVehicle> {
 		this.#inputDirection.x = right === left ? 0 : right ? 1 : -1;
 	}
 
-	public get controlledEntity(): PlayerVehicle {
+	public get controlledEntity(): PlayerVehicleMotor {
 		return this.#controlledEntity;
 	}
 
-	public get inputDirection(): Vector3 {
+	public get inputDirection(): Vec3 {
 		return this.#inputDirection;
 	}
 }

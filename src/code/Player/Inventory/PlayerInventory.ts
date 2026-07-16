@@ -1,4 +1,10 @@
-import { Observable, Ray, type Scene, Vector3 } from "@babylonjs/core";
+import { Observable } from "@babylonjs/core";
+import {
+	addVec3,
+	type SceneContext,
+	scaleVec3InPlace,
+	vec3,
+} from "@babylonjs/lite";
 import { InventoryControls } from "../Controls/InventoryControls";
 import { generateShapeVariants } from "../Crafting/ShapeVariantGenerator";
 import type { Player } from "../Player";
@@ -9,7 +15,6 @@ import {
 	getAllRegisteredItems,
 } from "./ItemRegistry";
 import { ItemSlot } from "./ItemSlot";
-
 export type SavedInventoryItem = {
 	itemId: number;
 	stackSize: number;
@@ -22,7 +27,7 @@ export type SavedInventoryState = {
 };
 
 export class PlayerInventory {
-	scene: Scene;
+	scene: SceneContext;
 	#player: Player;
 	#x: number;
 	#y: number;
@@ -33,7 +38,7 @@ export class PlayerInventory {
 
 	public static currentlyHoveredSlot: ItemSlot | null = null;
 
-	constructor(scene: Scene, player: Player, x: number, y: number) {
+	constructor(scene: SceneContext, player: Player, x: number, y: number) {
 		this.scene = scene;
 		this.#player = player;
 		this.#x = x;
@@ -311,13 +316,17 @@ export class PlayerInventory {
 		worldItem.stackSize = quantity ?? item.stackSize;
 		item.stackSize -= worldItem.stackSize;
 
-		const playerPosition =
-			this.#player.playerVehicle.displayCapsule.position.clone();
+		// Drop from the player's current world position (Lite PlayerVehicle has
+		// no display capsule — use the plain position instead).
+		const playerPosition = vec3(
+			this.#player.position.x,
+			this.#player.position.y,
+			this.#player.position.z,
+		);
 
-		const cam =
-			this.scene.activeCamera?.getForwardRay() ??
-			new Ray(new Vector3(0, 0, 0), new Vector3(0, 0, 0));
-		const dropPosition = playerPosition.add(cam.direction.scale(2)); // Create the dropped item at the calculated position using the new clean item
+		const yaw = this.#player.playerCamera.cameraYaw;
+		const forward = vec3(Math.sin(yaw), 0, Math.cos(yaw));
+		const dropPosition = addVec3(playerPosition, scaleVec3InPlace(forward, 2)); // Create the dropped item at the calculated position using the new clean item
 
 		const droppedItem = new DroppedItem(
 			worldItem,
@@ -326,7 +335,7 @@ export class PlayerInventory {
 			dropPosition.z,
 		);
 
-		droppedItem.pushItem(cam.direction.scale(6));
+		droppedItem.pushItem(scaleVec3InPlace(forward, 6));
 
 		if (item.stackSize <= 0) {
 			this.deleteItem(item);

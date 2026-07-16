@@ -1,16 +1,18 @@
+import { Color3, type Mesh, type Scene } from "@babylonjs/core";
 import {
-	Color3,
-	type Mesh,
-	MeshBuilder,
-	type Scene,
-	StandardMaterial,
-	Vector3,
-} from "@babylonjs/core";
+	addToScene,
+	createMeshFromData,
+	type LiteMetadata,
+	removeFromScene,
+	vec3,
+} from "@babylonjs/lite";
+import { Map1 } from "@/code/Maps/Map1";
 import { DroppedItem } from "../../Player/Inventory/DroppedItem";
 import { Item } from "../../Player/Inventory/Item";
 import type { Player } from "../../Player/Player";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
 import { MetadataContainer } from "../MetadataContainer";
+import { buildBoxGeometry, createMobColorMaterial } from "./MobMesh";
 import { NeutralMob } from "./NeutralMob";
 
 const BODY_WIDTH = 0.6;
@@ -53,7 +55,7 @@ export class Sheep extends NeutralMob {
 	static #chunkReloadScene: Scene | null = null;
 
 	#bodyMesh: Mesh;
-	#bodyMaterial: StandardMaterial;
+	#bodyMaterial: ReturnType<typeof createMobColorMaterial>;
 	#color: Color3;
 
 	constructor(
@@ -67,30 +69,37 @@ export class Sheep extends NeutralMob {
 		super(
 			hp ?? 8,
 			scene,
-			new Vector3(BODY_WIDTH * 0.5, BODY_HEIGHT * 0.5, BODY_DEPTH * 0.5),
+			vec3(BODY_WIDTH * 0.5, BODY_HEIGHT * 0.5, BODY_DEPTH * 0.5),
 		);
 
 		this.#color = color ?? randomSheepColor();
 
 		// Body mesh
-		this.#bodyMesh = MeshBuilder.CreateBox(
+		const bodyGeo = buildBoxGeometry(BODY_WIDTH, BODY_HEIGHT, BODY_DEPTH);
+		this.#bodyMesh = createMeshFromData(
+			Map1.engine,
 			"sheepBody",
-			{ width: BODY_WIDTH, height: BODY_HEIGHT, depth: BODY_DEPTH },
-			scene,
+			bodyGeo.positions,
+			bodyGeo.normals,
+			bodyGeo.indices,
 		);
-		this.#bodyMesh.position = new Vector3(x, y, z);
-		this.#bodyMesh.isPickable = true;
-		this.#bodyMesh.renderingGroupId = 1;
+		this.#bodyMesh.position.set(x, y, z);
+		this.#bodyMesh.pickable = true;
+		this.#bodyMesh.renderOrder = 1;
 
-		this.#bodyMaterial = new StandardMaterial("sheepBodyMat", scene);
-		this.#bodyMaterial.diffuseColor = this.#color.clone();
-		this.#bodyMaterial.specularColor = Color3.Black();
+		this.#bodyMaterial = createMobColorMaterial(
+			this.#color.clone(),
+			"sheepBodyMat",
+		);
 		this.#bodyMesh.material = this.#bodyMaterial;
 
+		addToScene(Map1.mainScene, this.#bodyMesh);
+
 		// Wire up body mesh to base class
-		this.#bodyMesh.metadata = new MetadataContainer();
+		const meta = new MetadataContainer();
+		this.#bodyMesh.metadata = meta as unknown as LiteMetadata;
 		this.setBodyMesh(this.#bodyMesh);
-		this.#bodyMesh.metadata?.set("use", (player: Player) => this.use(player));
+		meta.set("use", (player: Player) => this.use(player));
 	}
 
 	// --- Abstract implementations ---
@@ -102,7 +111,7 @@ export class Sheep extends NeutralMob {
 
 		registerChunkEntityLoader(this.CHUNK_ENTITY_TYPE, (payload: unknown) => {
 			const s = Sheep.#chunkReloadScene;
-			if (!s || s.isDisposed) return;
+			if (!s) return;
 			const data = payload as SheepSerializedPayload | undefined;
 			if (!data?.position) return;
 			const color = data.color
@@ -144,8 +153,7 @@ export class Sheep extends NeutralMob {
 
 	dispose(): void {
 		if (this.isDisposed) return;
-		this.#bodyMesh.dispose();
-		this.#bodyMaterial.dispose();
+		removeFromScene(Map1.mainScene, this.#bodyMesh);
 		super.dispose();
 	}
 }

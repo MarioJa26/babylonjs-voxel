@@ -1,4 +1,4 @@
-import { Vector3 } from "@babylonjs/core";
+import { vec3 } from "@babylonjs/lite";
 import { CustomBoat } from "@/code/Entities/CustomBoat";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { Map1 } from "@/code/Maps/Map1";
@@ -21,7 +21,7 @@ export const ItemUseActions: Record<string, ItemUseAction> = {
 		}
 
 		const spawnY = hit.y + 1;
-		const spawnPos = new Vector3(hit.x + 0.5, spawnY + 0.5, hit.z + 0.5);
+		const spawnPos = vec3(hit.x + 0.5, spawnY + 0.5, hit.z + 0.5);
 
 		const halfWidth = 1;
 		const halfHeight = 1;

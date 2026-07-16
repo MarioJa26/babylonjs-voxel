@@ -15,6 +15,13 @@
 // Direct array reads/writes are used instead of Atomics.
 // ---------------------------------------------------------------------------
 
+import {
+	CHUNK_SIZE,
+	CHUNK_SIZE2,
+	CHUNK_SIZE3,
+	LIGHT_NIBBLE_MASK,
+	SKY_LIGHT_SHIFT,
+} from "@/code/Shared/VoxelMath";
 import { unpackBlockId } from "../DataStructures/BlockEncoding";
 import { packCoords } from "../DataStructures/ChunkCoords";
 import {
@@ -37,10 +44,9 @@ const _dirtySlotsScratch = new Set<number>();
 // Layout constants
 // ---------------------------------------------------------------------------
 
-export const LIGHT_CHUNK_SIZE = 32;
-export const LIGHT_CHUNK_SIZE2 = LIGHT_CHUNK_SIZE * LIGHT_CHUNK_SIZE;
-export const LIGHT_CHUNK_SIZE3 =
-	LIGHT_CHUNK_SIZE * LIGHT_CHUNK_SIZE * LIGHT_CHUNK_SIZE;
+export const LIGHT_CHUNK_SIZE = CHUNK_SIZE;
+export const LIGHT_CHUNK_SIZE2 = CHUNK_SIZE2;
+export const LIGHT_CHUNK_SIZE3 = CHUNK_SIZE3;
 
 // Reusable face descriptors for lightBlockReconcile (size = 32, last = 31).
 const RECONCILE_FACES = [
@@ -52,8 +58,8 @@ const RECONCILE_FACES = [
 	{ dx: 0, dy: 0, dz: 1, axis: 2, selfEdge: 31, neighborEdge: 0, dir: 1 },
 ] as const;
 
-export const LIGHT_SKY_SHIFT = 4;
-export const LIGHT_BLOCK_MASK = 0xf;
+export const LIGHT_SKY_SHIFT = SKY_LIGHT_SHIFT;
+export const LIGHT_BLOCK_MASK = LIGHT_NIBBLE_MASK;
 
 // ---------------------------------------------------------------------------
 // Direction table — flattened for cache-friendly iteration.  Stride 6:
@@ -109,17 +115,18 @@ const seedCoords = new Int32Array(SEED_CAPACITY * 3);
 const seedLevels = new Uint8Array(SEED_CAPACITY);
 
 // ---------------------------------------------------------------------------
-// Face / transparency tables — duplicated from Chunk.ts so LightCore has no
-// external dependencies on BabylonJS-loaded modules.
+// Face / transparency tables
 // ---------------------------------------------------------------------------
 
-const FACE_PX = 1 << 0;
-const FACE_NX = 1 << 1;
-const FACE_PY = 1 << 2;
-const FACE_NY = 1 << 3;
-const FACE_PZ = 1 << 4;
-const FACE_NZ = 1 << 5;
-const FACE_ALL = FACE_PX | FACE_NX | FACE_PY | FACE_NY | FACE_PZ | FACE_NZ;
+import {
+	FACE_ALL,
+	FACE_NX,
+	FACE_NY,
+	FACE_NZ,
+	FACE_PX,
+	FACE_PY,
+	FACE_PZ,
+} from "../../Shape/BlockShapes";
 
 const GLASS_01_BLOCK_ID = 60;
 const GLASS_02_BLOCK_ID = 61;

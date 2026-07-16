@@ -1,6 +1,15 @@
-import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
+import type { Mesh } from "@babylonjs/core";
+import { CHUNK_SIZE } from "@/code/Shared/VoxelMath";
 import type { Chunk } from "./Chunk";
 import type { MeshData } from "./DataStructures/MeshData";
+import { disposePackedMesh } from "./PackedChunkMesh.js";
+
+// Lite `Mesh` has no `.dispose()` — free its packed-arena slices, unregister
+// from the scene, then free GPU resources.
+function disposeGroupMesh(mesh: Mesh): void {
+	if (!mesh) return;
+	disposePackedMesh(mesh);
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -93,7 +102,6 @@ export class MergedMeshMeta {
 
 const GROUP_SIZE = 4;
 const MAX_GROUP_MEMBERS = GROUP_SIZE * GROUP_SIZE * GROUP_SIZE;
-const CHUNK_SIZE = GenerationParams.CHUNK_SIZE;
 
 // ---------------------------------------------------------------------------
 // Module state
@@ -105,6 +113,20 @@ const dirtyGroups = new Set<MergedMeshGroup>();
 function markGroupDirty(group: MergedMeshGroup): void {
 	group.dirty = true;
 	dirtyGroups.add(group);
+	// A group can become dirty without a fresh worker mesh-result arriving
+	// (OPFS cache load, chunk unload, LOD change). The mesh rebuild only runs
+	// inside processMeshQueueLoop, which self-reschedules solely while the
+	// mesh-result queue is non-empty — so without this nudge a dirty group
+	// wouldn't be rebuilt (and would keep showing stale/missing geometry)
+	// until some unrelated chunk finished remeshing. Ask the pool to pump.
+	_requestFlush?.();
+}
+
+// Set by ChunkWorkerPool so markGroupDirty can schedule a flush pump.
+let _requestFlush: (() => void) | null = null;
+
+export function setRequestFlush(cb: () => void): void {
+	_requestFlush = cb;
 }
 
 /**
@@ -377,12 +399,12 @@ export function removeChunkFromGroup(chunk: Chunk): void {
 
 	if (group.members.size === 0) {
 		if (group.opaqueMeshRef) {
-			group.opaqueMeshRef.dispose();
+			disposeGroupMesh(group.opaqueMeshRef);
 			group.opaqueMeshRef = null;
 		}
 
 		if (group.transparentMeshRef) {
-			group.transparentMeshRef.dispose();
+			disposeGroupMesh(group.transparentMeshRef);
 			group.transparentMeshRef = null;
 		}
 
@@ -397,7 +419,7 @@ export function removeChunkFromGroup(chunk: Chunk): void {
 	let w = 0;
 
 	for (let i = 0, len = arr.length; i < len; i++) {
-		const m = arr[i]!;
+		const m = arr[i];
 
 		if (m.chunkId !== chunk.id) {
 			arr[w++] = m;
@@ -473,12 +495,12 @@ export function flushDirtyMergedGroups(): void {
 export function disposeAll(): void {
 	for (const group of groups.values()) {
 		if (group.opaqueMeshRef) {
-			group.opaqueMeshRef.dispose();
+			disposeGroupMesh(group.opaqueMeshRef);
 			group.opaqueMeshRef = null;
 		}
 
 		if (group.transparentMeshRef) {
-			group.transparentMeshRef.dispose();
+			disposeGroupMesh(group.transparentMeshRef);
 			group.transparentMeshRef = null;
 		}
 
@@ -580,7 +602,7 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	let totalTransparent = 0;
 
 	for (let i = 0; i < memberCount; i++) {
-		const m = members[i]!;
+		const m = members[i];
 		if (m.opaqueData) totalOpaque += m.opaqueData.faceCount;
 		if (m.transparentData) totalTransparent += m.transparentData.faceCount;
 	}
@@ -604,7 +626,7 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		let writeFace = 0;
 
 		for (let i = 0; i < memberCount; i++) {
-			const m = members[i]!;
+			const m = members[i];
 			const data = m.opaqueData;
 
 			if (!data) continue;
@@ -663,7 +685,7 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		let writeFace = 0;
 
 		for (let i = 0; i < memberCount; i++) {
-			const m = members[i]!;
+			const m = members[i];
 			const data = m.transparentData;
 
 			if (!data) continue;

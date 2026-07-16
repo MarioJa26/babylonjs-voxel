@@ -1,7 +1,8 @@
-import type { Quaternion, Vector3 } from "@babylonjs/core";
+import type { Quaternion } from "@babylonjs/core";
+import type { Vec3 } from "@babylonjs/lite";
 
 interface MountOptions {
-	mountOffset?: Vector3;
+	mountOffset?: Vec3;
 	mountRotationOffset?: Quaternion;
 }
 

@@ -6,13 +6,13 @@ import { isInCave } from "@/code/Shared/GameRuntimeState";
 import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
 import { Chunk, getChunk } from "../Chunk";
 import { createMeshFromData } from "../ChunkMesher";
-
 import { ChunkWorkerPool } from "../ChunkWorkerPool";
 import {
 	ChunkLodRuleSet,
 	DistantOnlyChunkCreationRule,
 	Lod0ChunkCreationRule,
 } from "../LOD/ChunkLodRules";
+import { flushDirtyMergedGroups } from "../MergedMeshManager";
 
 export type QueuedChunkRequest = {
 	chunk: Chunk;
@@ -313,7 +313,7 @@ export class ChunkStreamingController {
 		// This is what drives LOD transitions as the player moves closer/further.
 		this.enqueueLoadedChunksForRefresh(chunkX, chunkY, chunkZ, lodRuleSet);
 
-		this.sortLoadQueue(chunkX, chunkY, chunkZ);
+		this.sortLoadQueue();
 
 		this.queueUnloading(
 			chunkX,
@@ -837,10 +837,6 @@ export class ChunkStreamingController {
 		chunk: Chunk,
 		targetLod: number,
 	): boolean {
-		if (chunk.isDirty) {
-			return false;
-		}
-
 		const cached = chunk.getCachedLODMesh(targetLod);
 		if (!cached) {
 			return false;
@@ -854,6 +850,7 @@ export class ChunkStreamingController {
 			opaque: cached.opaque ?? null,
 			transparent: cached.transparent ?? null,
 		});
+
 		chunk.isDirty = false;
 
 		return true;
@@ -919,23 +916,8 @@ export class ChunkStreamingController {
 		// and processTargetChunkCoordinate guards on that.
 	}
 
-	private sortLoadQueue(
-		playerChunkX: number,
-		playerChunkY: number,
-		playerChunkZ: number,
-	): void {
+	private sortLoadQueue(): void {
 		const loadQueue = this.adapter.getLoadQueue();
-
-		for (const request of loadQueue) {
-			request.priority = this.computePriority(
-				request.chunk,
-				request.desiredLod,
-				playerChunkX,
-				playerChunkY,
-				playerChunkZ,
-			);
-		}
-
 		loadQueue.sort((a, b) => a.priority - b.priority);
 	}
 

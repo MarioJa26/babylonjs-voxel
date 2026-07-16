@@ -1,14 +1,15 @@
-import type { Scene, Vector3 } from "@babylonjs/core";
+import type { Scene } from "@babylonjs/core";
+import type { Vec3 } from "@babylonjs/lite";
 import type { SavedChunkEntityData } from "@/code/World/WorldStorage";
 
 export interface Mob {
-	position: Vector3;
+	position: Vec3;
 	hp: number;
 	maxHp: number;
 	readonly mobType: string;
 
 	takeDamage(amount: number): void;
-	setPlayerPosition(pos: Vector3): void;
+	setPlayerPosition(pos: Vec3): void;
 	dispose(): void;
 	serializeForChunkReload(): SavedChunkEntityData | null;
 }

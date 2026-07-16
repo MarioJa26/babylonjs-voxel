@@ -13,7 +13,8 @@
  *                  to local const before every hot loop.
  */
 
-import { Frustum, Matrix, type Scene, Vector3 } from "@babylonjs/core";
+import type { FreeCamera, Mat4 } from "@babylonjs/lite";
+import { getCameraPosition, getViewProjectionMatrix } from "@babylonjs/lite";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { Map1 } from "@/code/Maps/Map1";
 import { Chunk, getChunk } from "../Chunk/Chunk";
@@ -35,6 +36,13 @@ const MAX_RENDER_RADIUS = 20;
 const UNDERGROUND_RENDER_RADIUS = 6;
 const SEA_LEVEL = GenerationParams.SEA_LEVEL;
 const FRUSTUM_MARGIN = 32.0;
+
+// TEMP DEBUG: set true to disable frustum culling (for testing the gap).
+const DISABLE_FRUSTUM_CULL = false;
+
+// TEMP DEBUG (gap diagnosis): remove after diagnosis.
+let _dbgCullGap = 0;
+
 const BFS_FRAME_BUDGET = 3000;
 const BFS_CAP = 32768; // must be power-of-2
 const BFS_MASK = BFS_CAP - 1;
@@ -72,21 +80,76 @@ const _incBfsSteps = new Uint16Array(BFS_CAP);
 // ---------------------------------------------------------------------------
 const _frustumPacked = new Float32Array(24);
 let _frustumValid = false;
-let _lastVPHash = -1;
+// Full VP matrix from the previous frame, used to detect ANY camera change
+// (translation or rotation). A hash over 4 diagonal elements truncated to int
+// was too collision-prone and froze the frustum planes / visibility sweep.
+const _lastVP = new Float32Array(16);
 
-const _vpMatrix = Matrix.Identity();
-const _workingVector = new Vector3();
+// VP matrix + scratch vectors are derived per-frame from Lite camera math (see update()).
 
-function cacheFrustumPlanes(vp: Matrix): void {
-	const planes = Frustum.GetPlanes(vp);
-	for (let p = 0; p < 6; p++) {
-		const pl = planes[p]!;
-		const off = p * 4;
-		_frustumPacked[off] = pl.normal.x;
-		_frustumPacked[off + 1] = pl.normal.y;
-		_frustumPacked[off + 2] = pl.normal.z;
-		_frustumPacked[off + 3] = pl.d;
-	}
+// Write one frustum plane (normal.xyz, d) into the packed Float32Array,
+// normalising it so the aabbInFrustum margin test stays in world units —
+// this mirrors Babylon's Frustum.GetPlanes, which normalises each plane.
+function setFrustumPlane(
+	off: number,
+	nx: number,
+	ny: number,
+	nz: number,
+	d: number,
+): void {
+	const len = Math.hypot(nx, ny, nz) || 1;
+	_frustumPacked[off] = nx / len;
+	_frustumPacked[off + 1] = ny / len;
+	_frustumPacked[off + 2] = nz / len;
+	_frustumPacked[off + 3] = d / len;
+}
+
+// Lite's Mat4 is column-major (m[col*4 + row]); Babylon's Matrix is row-major.
+// Frustum planes come from clip-space half-space inequalities, which are built
+// Babylon Lite runs on WebGPU, whose clip space is 0 <= z <= w (not the
+// OpenGL -w <= z <= w). The side planes (left/right/top/bottom) and the far
+// plane are the standard half-spaces (col3 +/- colN). The near plane is simply
+// col2 (z >= 0); col3 + col2 would be the OpenGL near (z >= -w) and is WRONG here.
+function cacheFrustumPlanes(vp: Mat4): void {
+	const m = vp;
+	// Clip-space half-space extraction (column-major VP): side planes and far
+	// are (col3 +/- colN); near is col2 (see note above).
+	setFrustumPlane(
+		0,
+		m[3]! + m[0]!,
+		m[7]! + m[4]!,
+		m[11]! + m[8]!,
+		m[15]! + m[12]!,
+	); // left
+	setFrustumPlane(
+		4,
+		m[3]! - m[0]!,
+		m[7]! - m[4]!,
+		m[11]! - m[8]!,
+		m[15]! - m[12]!,
+	); // right
+	setFrustumPlane(
+		8,
+		m[3]! + m[1]!,
+		m[7]! + m[5]!,
+		m[11]! + m[9]!,
+		m[15]! + m[13]!,
+	); // bottom
+	setFrustumPlane(
+		12,
+		m[3]! - m[1]!,
+		m[7]! - m[5]!,
+		m[11]! - m[9]!,
+		m[15]! - m[13]!,
+	); // top
+	setFrustumPlane(16, m[2]!, m[6]!, m[10]!, m[14]!); // near (WebGPU clip: z >= 0)
+	setFrustumPlane(
+		20,
+		m[3]! - m[2]!,
+		m[7]! - m[6]!,
+		m[11]! - m[10]!,
+		m[15]! - m[14]!,
+	); // far
 	_frustumValid = true;
 }
 
@@ -104,9 +167,9 @@ function aabbInFrustum(
 	let nz = _frustumPacked[off + 2];
 	let d = _frustumPacked[off + 3];
 	if (
-		nx * (nx >= 0 ? maxX : minX) +
-			ny * (ny >= 0 ? maxY : minY) +
-			nz * (nz >= 0 ? maxZ : minZ) +
+		nx * (nx >= 0 ? minX : maxX) +
+			ny * (ny >= 0 ? minY : maxY) +
+			nz * (nz >= 0 ? minZ : maxZ) +
 			d <
 		-FRUSTUM_MARGIN
 	)
@@ -117,9 +180,9 @@ function aabbInFrustum(
 	nz = _frustumPacked[off + 2];
 	d = _frustumPacked[off + 3];
 	if (
-		nx * (nx >= 0 ? maxX : minX) +
-			ny * (ny >= 0 ? maxY : minY) +
-			nz * (nz >= 0 ? maxZ : minZ) +
+		nx * (nx >= 0 ? minX : maxX) +
+			ny * (ny >= 0 ? minY : maxY) +
+			nz * (nz >= 0 ? minZ : maxZ) +
 			d <
 		-FRUSTUM_MARGIN
 	)
@@ -130,9 +193,9 @@ function aabbInFrustum(
 	nz = _frustumPacked[off + 2];
 	d = _frustumPacked[off + 3];
 	if (
-		nx * (nx >= 0 ? maxX : minX) +
-			ny * (ny >= 0 ? maxY : minY) +
-			nz * (nz >= 0 ? maxZ : minZ) +
+		nx * (nx >= 0 ? minX : maxX) +
+			ny * (ny >= 0 ? minY : maxY) +
+			nz * (nz >= 0 ? minZ : maxZ) +
 			d <
 		-FRUSTUM_MARGIN
 	)
@@ -143,9 +206,9 @@ function aabbInFrustum(
 	nz = _frustumPacked[off + 2];
 	d = _frustumPacked[off + 3];
 	if (
-		nx * (nx >= 0 ? maxX : minX) +
-			ny * (ny >= 0 ? maxY : minY) +
-			nz * (nz >= 0 ? maxZ : minZ) +
+		nx * (nx >= 0 ? minX : maxX) +
+			ny * (ny >= 0 ? minY : maxY) +
+			nz * (nz >= 0 ? minZ : maxZ) +
 			d <
 		-FRUSTUM_MARGIN
 	)
@@ -156,9 +219,9 @@ function aabbInFrustum(
 	nz = _frustumPacked[off + 2];
 	d = _frustumPacked[off + 3];
 	if (
-		nx * (nx >= 0 ? maxX : minX) +
-			ny * (ny >= 0 ? maxY : minY) +
-			nz * (nz >= 0 ? maxZ : minZ) +
+		nx * (nx >= 0 ? minX : maxX) +
+			ny * (ny >= 0 ? minY : maxY) +
+			nz * (nz >= 0 ? minZ : maxZ) +
 			d <
 		-FRUSTUM_MARGIN
 	)
@@ -169,9 +232,9 @@ function aabbInFrustum(
 	nz = _frustumPacked[off + 2];
 	d = _frustumPacked[off + 3];
 	if (
-		nx * (nx >= 0 ? maxX : minX) +
-			ny * (ny >= 0 ? maxY : minY) +
-			nz * (nz >= 0 ? maxZ : minZ) +
+		nx * (nx >= 0 ? minX : maxX) +
+			ny * (ny >= 0 ? minY : maxY) +
+			nz * (nz >= 0 ? minZ : maxZ) +
 			d <
 		-FRUSTUM_MARGIN
 	)
@@ -266,7 +329,6 @@ export class OcclusionCuller {
 
 	// Cached visibility results so we can skip the O(chunks) sweep when nothing
 	// that affects visibility has changed since last frame.
-	private _lastSweepVpHash = -1;
 	private _lastTotal = 0;
 	private _lastOccluded = 0;
 
@@ -277,8 +339,8 @@ export class OcclusionCuller {
 	private _bfsQTail = 0;
 
 	// ─── update ────────────────────────────────────────────────────────────────
-	update(_scene: Scene, out: OcclusionStats): OcclusionStats {
-		const camera = Map1.mainScene?.activeCamera;
+	update(out: OcclusionStats): OcclusionStats {
+		const camera = (Map1.mainScene?.camera as FreeCamera) ?? null;
 		if (!camera) {
 			out.total = 0;
 			out.occluded = 0;
@@ -289,9 +351,10 @@ export class OcclusionCuller {
 		const t0 = performance.now();
 		const SIZE = Chunk.SIZE;
 
-		const camCX = Math.floor(camera.position.x / SIZE);
-		const camCY = Math.floor(camera.position.y / SIZE);
-		const camCZ = Math.floor(camera.position.z / SIZE);
+		const camPos = getCameraPosition(camera);
+		const camCX = Math.floor(camPos.x / SIZE);
+		const camCY = Math.floor(camPos.y / SIZE);
+		const camCZ = Math.floor(camPos.z / SIZE);
 
 		const currentLoadedSize = Chunk.loadedChunks.size;
 
@@ -345,10 +408,10 @@ export class OcclusionCuller {
 				if (chunk.bfsQueryId !== qid) {
 					if (chunk.mergedGroupKey) continue;
 					const mesh = chunk.mesh;
-					if (mesh?.isVisible) {
-						mesh.isVisible = false;
+					if (mesh?.visible) {
+						mesh.visible = false;
 						const tm = chunk.transparentMesh;
-						if (tm) tm.isVisible = false;
+						if (tm) tm.visible = false;
 						hidden++;
 					}
 				}
@@ -363,20 +426,29 @@ export class OcclusionCuller {
 		// visibility is then identical to the previous frame.
 		const bfsWasInProgress = this._bfsInProgress;
 
-		// VP matrix hash (cheap, constant time) — also drives frustum-plane cache.
-		const view = camera.getViewMatrix(true);
-		const proj = camera.getProjectionMatrix();
-		view.multiplyToRef(proj, _vpMatrix);
-		const m = _vpMatrix.m;
-		const vpHash = (m[0]! + m[5]! + m[10]! + m[15]!) | 0;
-		if (vpHash !== _lastVPHash || !_frustumValid) {
-			cacheFrustumPlanes(_vpMatrix);
-			_lastVPHash = vpHash;
+		// VP matrix — recompute frustum planes whenever the full matrix changes
+		// (translation OR rotation). The previous 4-element integer hash was too
+		// collision-prone and left the planes / sweep frozen on camera rotation.
+		const canvas = Map1.engine.canvas;
+		const aspect = canvas.height > 0 ? canvas.width / canvas.height : 1;
+		const vp = getViewProjectionMatrix(camera, aspect);
+
+		let vpChanged = !_frustumValid;
+		if (!vpChanged) {
+			for (let i = 0; i < 16; i++) {
+				if (Math.abs(vp[i]! - _lastVP[i]!) > 1e-6) {
+					vpChanged = true;
+					break;
+				}
+			}
+		}
+		if (vpChanged) {
+			cacheFrustumPlanes(vp);
+			_lastVP.set(vp);
 		}
 
-		const viewChanged = vpHash !== this._lastSweepVpHash;
 		const needSweep =
-			cameraMoved || viewChanged || bfsWasInProgress || needInitialBFS;
+			cameraMoved || vpChanged || bfsWasInProgress || needInitialBFS;
 
 		if (!needSweep) {
 			out.total = this._lastTotal;
@@ -384,17 +456,16 @@ export class OcclusionCuller {
 			out.timeMs = performance.now() - t0;
 			return out;
 		}
-		this._lastSweepVpHash = vpHash;
 
-		// Camera forward for backface culling
-		Vector3.TransformNormalToRef(
-			_AXIS_Z,
-			camera.getWorldMatrix(),
-			_workingVector,
-		);
-		const fwdX = _workingVector.x;
-		const fwdY = _workingVector.y;
-		const fwdZ = _workingVector.z;
+		// Camera forward for backface culling (direction from camera position to target).
+		const _camPos = camPos;
+		let fwdX = camera.target.x - _camPos.x;
+		let fwdY = camera.target.y - _camPos.y;
+		let fwdZ = camera.target.z - _camPos.z;
+		const _fwdLen = Math.hypot(fwdX, fwdY, fwdZ) || 1;
+		fwdX /= _fwdLen;
+		fwdY /= _fwdLen;
+		fwdZ /= _fwdLen;
 
 		const total = currentLoadedSize;
 		let visibleCount = 0;
@@ -407,7 +478,6 @@ export class OcclusionCuller {
 			const chunk = vis[i]!;
 			const mesh = chunk.mesh;
 			if (!mesh) continue;
-			if (mesh.isDisposed()) continue;
 			if (!chunk.isLoaded) continue;
 			if (chunk.mergedGroupKey) continue;
 
@@ -442,24 +512,31 @@ export class OcclusionCuller {
 				const minX = cx * SIZE;
 				const minY = cy * SIZE;
 				const minZ = cz * SIZE;
+				const maxX = minX + SIZE;
+				const maxY = minY + SIZE;
+				const maxZ = minZ + SIZE;
+				// Eye-inside guard (see group loop): a chunk AABB containing the
+				// camera is always visible and must not be near-plane culled.
+				const eyeInChunk =
+					camPos.x >= minX &&
+					camPos.x <= maxX &&
+					camPos.y >= minY &&
+					camPos.y <= maxY &&
+					camPos.z >= minZ &&
+					camPos.z <= maxZ;
 				if (
-					!aabbInFrustum(
-						minX,
-						minY,
-						minZ,
-						minX + SIZE,
-						minY + SIZE,
-						minZ + SIZE,
-					)
+					!DISABLE_FRUSTUM_CULL &&
+					!eyeInChunk &&
+					!aabbInFrustum(minX, minY, minZ, maxX, maxY, maxZ)
 				) {
 					visible = false;
 				}
 			}
 
-			if (mesh.isVisible !== visible) {
-				mesh.isVisible = visible;
+			if (mesh.visible !== visible) {
+				mesh.visible = visible;
 				const tm = chunk.transparentMesh;
-				if (tm) tm.isVisible = visible;
+				if (tm) tm.visible = visible;
 			}
 			if (visible) visibleCount++;
 		}
@@ -475,9 +552,9 @@ export class OcclusionCuller {
 					if (pc.mergedGroupKey) continue;
 					const pm = pc.mesh;
 					const ptm = pc.transparentMesh;
-					if (pm?.isVisible) {
-						pm.isVisible = false;
-						if (ptm) ptm.isVisible = false;
+					if (pm?.visible) {
+						pm.visible = false;
+						if (ptm) ptm.visible = false;
 					}
 				}
 			}
@@ -490,8 +567,9 @@ export class OcclusionCuller {
 		const gHalf = groupExtent * 0.5;
 		const queryId = this._currentQueryId;
 		const bfsInProgress = this._bfsInProgress;
-		const cameraUnderground = camera.position.y < SEA_LEVEL;
+		const cameraUnderground = camPos.y < SEA_LEVEL;
 
+		_dbgCullGap = 0;
 		for (let i = 0; i < allGroups.length; i++) {
 			const group = allGroups[i]!;
 			const minGX = group.gridX * groupExtent;
@@ -522,25 +600,36 @@ export class OcclusionCuller {
 				minChunkZ <= camCZ + R_chunks &&
 				camCZ - maxChunkZ <= R_chunks;
 
+			const maxGX = minGX + groupExtent;
+			const maxGY = minGY + groupExtent;
+			const maxGZ = minGZ + groupExtent;
+
+			// An AABB that contains the eye (camera) always intersects the
+			// frustum. The positive-vertex test below can otherwise falsely cull
+			// it on the near plane (its far corner sits behind z=0 by more than
+			// FRUSTUM_MARGIN), hiding the very chunks around the camera.
+			const eyeInAABB =
+				camPos.x >= minGX &&
+				camPos.x <= maxGX &&
+				camPos.y >= minGY &&
+				camPos.y <= maxGY &&
+				camPos.z >= minGZ &&
+				camPos.z <= maxGZ;
+
 			const inFrustum =
 				inRange &&
-				aabbInFrustum(
-					minGX,
-					minGY,
-					minGZ,
-					minGX + groupExtent,
-					minGY + groupExtent,
-					minGZ + groupExtent,
-				);
+				(DISABLE_FRUSTUM_CULL ||
+					eyeInAABB ||
+					aabbInFrustum(minGX, minGY, minGZ, maxGX, maxGY, maxGZ));
 
 			// BFS reachability — hide groups sealed underground.
 			const bypassBFS = isSurfaceGroup && !cameraUnderground;
 
 			let vis: boolean;
+			let bfsReachable = false;
 			if (bypassBFS) {
 				vis = inFrustum;
 			} else {
-				let bfsReachable = false;
 				let bfsPrevious = false;
 				const members = group.membersArray;
 				for (let j = 0, mlen = members.length; j < mlen; j++) {
@@ -583,7 +672,6 @@ export class OcclusionCuller {
 		out.timeMs = performance.now() - t0;
 		this._lastTotal = total;
 		this._lastOccluded = total - visibleCount;
-		this._lastSweepVpHash = vpHash;
 		return out;
 	}
 
@@ -737,8 +825,8 @@ export class OcclusionCuller {
 		}
 
 		if (newChunk.bfsQueryId === queryId && newChunk.mesh) {
-			newChunk.mesh.isVisible = true;
-			if (newChunk.transparentMesh) newChunk.transparentMesh.isVisible = true;
+			newChunk.mesh.visible = true;
+			if (newChunk.transparentMesh) newChunk.transparentMesh.visible = true;
 		}
 	}
 
@@ -908,6 +996,3 @@ export class OcclusionCuller {
 		}
 	}
 }
-
-// ---------------------------------------------------------------------------
-const _AXIS_Z = new Vector3(0, 0, 1);

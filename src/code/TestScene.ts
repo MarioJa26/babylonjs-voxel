@@ -1,98 +1,99 @@
 import {
-	Engine,
-	FreeCamera,
-	Scene,
-	ScenePerformancePriority,
-	Vector3,
-} from "@babylonjs/core";
-import { CustomBoat } from "./Entities/CustomBoat";
-import { GenerationParams } from "./Generation/NoiseAndParameters/GenerationParams";
+	createEngine,
+	createFreeCamera,
+	createSceneContext,
+	type EngineContext,
+	type FreeCamera,
+	onBeforeRender,
+	registerScene,
+	type SceneContext,
+	startEngine,
+	stopEngine,
+	vec3,
+} from "@babylonjs/lite";
+import { createMobCoordinator } from "./Entities/Mobs/MobSetup";
 import { Map1 } from "./Maps/Map1";
+import { initializeBlockBreakingVisuals } from "./Player/Hud/BlockHighlight/BlockBreakingVisuals";
+import { DroppedItem } from "./Player/Inventory/DroppedItem";
 import { Player } from "./Player/Player";
 import { PlayerCamera } from "./Player/PlayerCamera";
+import { PlayerStatePersistence } from "./Player/PlayerStatePersistence";
 import { updateGlobalUniforms } from "./World/Chunk/ChunkMesher";
 
+/**
+ * Lite (native) port of the engine/bootstrap entry point.
+ * Creates the WebGPU engine + scene + follow camera, registers the
+ * scene, and runs the render loop (startEngine's internal rAF).
+ */
 export class TestScene {
 	document: Document;
-	scene?: Scene;
-	engine: Engine;
+	scene?: SceneContext;
+	engine?: EngineContext;
 	public readonly initPromise: Promise<void>;
-	private frameCounter = 0;
-	readonly #onKeyDown: (ev: KeyboardEvent) => void;
+	#frameCounter = 0;
+	#player?: Player;
+	#playerStatePersistence?: PlayerStatePersistence;
 
 	constructor(
 		document: Document,
 		private canvas: HTMLCanvasElement,
 	) {
 		this.document = document;
-		this.engine = new Engine(this.canvas, false, {
-			stencil: false,
-			doNotHandleContextLost: true,
-			preserveDrawingBuffer: false,
-		});
-		this.#onKeyDown = async (ev) => {
-			// Ctrl+F
-			if (ev.ctrlKey && ev.key.toLowerCase() === "f") {
-				if (this.scene) {
-					if (this.scene.debugLayer.isVisible()) {
-						this.scene.debugLayer.hide();
-					} else {
-						await import("@babylonjs/core/Debug/debugLayer");
-						await import("@babylonjs/inspector");
-						this.scene.debugLayer.show();
-					}
-				}
-			}
-		};
-		window.addEventListener("keydown", this.#onKeyDown);
-
 		this.initPromise = this.init();
-
-		this.engine.runRenderLoop(() => {
-			// Update shader uniforms ONCE per frame
-			this.frameCounter++;
-			updateGlobalUniforms(this.frameCounter);
-
-			// Then render the scene
-			this.scene?.render();
-		});
 	}
 
 	async init() {
-		this.scene = await this.createScene();
-	}
+		const engine = await createEngine(this.canvas, {});
+		const scene = createSceneContext(engine, {
+			defaultRenderTask: true,
+		});
+		this.engine = engine;
+		this.scene = scene;
 
-	// Playground scene creation
-	async createScene() {
-		// This creates a basic Babylon Scene object (non-mesh)
-		const scene = new Scene(this.engine);
+		const playerCamera = new PlayerCamera();
+		const player = new Player(engine, scene, playerCamera, this.canvas);
+		this.#player = player;
 
-		scene.performancePriority = ScenePerformancePriority.BackwardCompatible;
-		scene.autoClear = false; // Color buffer
-		scene.autoClearDepthAndStencil = false; // Depth and stencil
-		scene.disablePhysicsEngine();
-		scene.disableGeometryBufferRenderer();
-		scene.disableFluidRenderer();
+		scene.camera = playerCamera.playerCamera;
 
-		// This creates and positions a free camera (non-mesh)
-		const camera = new FreeCamera("camera1", Vector3.Zero(), scene);
-
-		const playerCamera = new PlayerCamera(camera, scene);
-
-		const player = new Player(this.engine, scene, playerCamera, this.canvas);
-		CustomBoat.configureChunkReloadContext(
-			scene,
-			player,
-			GenerationParams.SEA_LEVEL,
-		);
-		const map = new Map1(scene, player);
+		const map = new Map1(engine, scene, player);
 		await map.initPromise;
-		return scene;
+
+		// World is ready — now build meshes that depend on Map1.engine.
+		initializeBlockBreakingVisuals(scene);
+		DroppedItem.preloadAtlas();
+		player.createHud(scene);
+		player.respawn();
+
+		// Wire player save/load. Instantiated AFTER respawn() so the restored
+		// position wins over the respawn height recompute. Restores position +
+		// inventory immediately and autosaves on interval / tab-hide / unload.
+		this.#playerStatePersistence = new PlayerStatePersistence(scene, player);
+
+		// C4: wire the (previously dormant) mob spawn/AI system.
+		createMobCoordinator(this.scene, () => {
+			const p = this.#player!.position;
+			return vec3(p.x, p.y, p.z);
+		});
+
+		onBeforeRender(scene, (deltaMs) => {
+			this.#frameCounter++;
+			Map1.update(deltaMs);
+			this.#player?.tick(deltaMs);
+			this.#playerStatePersistence?.update();
+			updateGlobalUniforms(this.#frameCounter);
+		});
+
+		await registerScene(scene);
+		await startEngine(engine);
 	}
+
 	public dispose(): void {
-		window.removeEventListener("keydown", this.#onKeyDown);
-		this.engine.stopRenderLoop();
-		this.scene?.dispose();
-		this.engine.dispose();
+		this.#playerStatePersistence?.dispose();
+		if (this.engine) stopEngine(this.engine);
+		Map1.disposeAll();
+		this.engine = undefined;
+		this.scene = undefined;
+		this.#player = undefined;
 	}
 }

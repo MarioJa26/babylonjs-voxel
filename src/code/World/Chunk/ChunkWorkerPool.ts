@@ -19,7 +19,7 @@ import {
 	type WorkerResponseData,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
-import { flushDirtyMergedGroups } from "./MergedMeshManager";
+import { flushDirtyMergedGroups, setRequestFlush } from "./MergedMeshManager";
 import {
 	normalizeChunkLod,
 	shouldSkipLodForChunk,
@@ -876,6 +876,11 @@ export class ChunkWorkerPool {
 		};
 
 		this.updateQueueDebugStats();
+
+		// Ensure dirty merged groups are rebuilt promptly even when no fresh
+		// worker mesh-result is pending (cache loads, unloads, LOD changes).
+		setRequestFlush(() => this.scheduleMeshFlush());
+
 		this.processMeshQueueLoop();
 
 		// Fire-and-forget OPFS init; fall back gracefully if unavailable
@@ -1073,6 +1078,15 @@ export class ChunkWorkerPool {
 	// Mesh result drain loop — runs every rAF
 	// -------------------------------------------------------------------------
 
+	private scheduleMeshFlush = (): void => {
+		if (this.meshDrainScheduled) return;
+		this.meshDrainScheduled = true;
+		requestAnimationFrame(() => {
+			this.meshDrainScheduled = false;
+			this.processMeshQueueLoop();
+		});
+	};
+
 	private processMeshQueueLoop = () => {
 		const start = performance.now();
 		let processed = 0;
@@ -1086,6 +1100,13 @@ export class ChunkWorkerPool {
 			const { chunkId, lod, opaque, transparent } = data;
 			const chunk = this.resolveChunkByMessageId(chunkId);
 			if (chunk) {
+				if (data.meshRevision !== chunk.meshRevision) {
+					// A newer edit/remesh request exists. Never expose this result.
+					chunk.isDirty = true;
+					chunk.remeshQueued = false;
+					this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0, false);
+					continue;
+				}
 				if (shouldSkipLodForChunk(chunk, lod)) {
 					// Drop stale/old underground LOD2+ results.
 					normalizeChunkLod(chunk);
@@ -1224,7 +1245,8 @@ export class ChunkWorkerPool {
 			const instance = new ChunkWorkerPool(resolvedPoolSize);
 			ChunkWorkerPool.instance = instance;
 			Chunk.onRequestRemesh = (chunk: Chunk, priority: boolean) => {
-				instance.scheduleRemesh(chunk, priority);
+				// Chunk.scheduleRemesh already advanced meshRevision.
+				instance.scheduleRemesh(chunk, priority, false);
 			};
 		}
 		return ChunkWorkerPool.instance;
@@ -1234,8 +1256,13 @@ export class ChunkWorkerPool {
 	// Remesh scheduling
 	// -------------------------------------------------------------------------
 
-	public scheduleRemesh(chunk: Chunk | undefined, priority = false): void {
+	public scheduleRemesh(
+		chunk: Chunk | undefined,
+		priority = false,
+		bumpRevision = true,
+	): void {
 		if (!chunk?.isLoaded) return;
+		if (bumpRevision) chunk.meshRevision++;
 		normalizeChunkLod(chunk);
 		if (!chunk.hasVoxelData) {
 			if (!this.tryApplyCachedLODMesh(chunk, true)) {
@@ -1427,6 +1454,7 @@ export class ChunkWorkerPool {
 						this.scheduleRemesh(
 							resolvedChunk,
 							(resolvedChunk.lodLevel ?? 0) === 0,
+							false,
 						);
 					}
 				} else if (type === WorkerTaskType.GenerateTerrain) {
@@ -1603,6 +1631,7 @@ export class ChunkWorkerPool {
 					this.scheduleRemesh(
 						resolvedChunk,
 						(resolvedChunk.lodLevel ?? 0) === 0,
+						false,
 					);
 				}
 			} catch (messageError) {

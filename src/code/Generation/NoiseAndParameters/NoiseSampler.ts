@@ -6,6 +6,13 @@ export class NoiseSampler {
 	private scale: number;
 	private xzFactor: number;
 
+	// PERF (#3): When sampleRate is a power of two (the common case, 4), the
+	// hot per-voxel get() can replace `/` and `%` with a shift and a mask.
+	private readonly isPow2: boolean;
+	private readonly rateShift: number;
+	private readonly rateMask: number;
+	private readonly invSampleRate: number;
+
 	constructor(
 		chunkX: number,
 		chunkY: number,
@@ -20,6 +27,10 @@ export class NoiseSampler {
 		this.noiseFunction = noiseFunction;
 		this.scale = scale;
 		this.xzFactor = xzFactor;
+		this.isPow2 = sampleRate > 0 && (sampleRate & (sampleRate - 1)) === 0;
+		this.rateShift = Math.log2(sampleRate) | 0;
+		this.rateMask = sampleRate - 1;
+		this.invSampleRate = 1 / sampleRate;
 		const sampleCount = chunkSize / sampleRate;
 		this.pointsPerDim = sampleCount + 1;
 		this.noiseSamples = new Float32Array(this.pointsPerDim ** 3);
@@ -73,13 +84,32 @@ export class NoiseSampler {
 	}
 
 	public get(localX: number, localY: number, localZ: number): number {
-		const cellX = (localX / this.sampleRate) | 0;
-		const cellY = (localY / this.sampleRate) | 0;
-		const cellZ = (localZ / this.sampleRate) | 0;
+		let cellX: number;
+		let cellY: number;
+		let cellZ: number;
+		let fx: number;
+		let fy: number;
+		let fz: number;
 
-		const fx = (localX % this.sampleRate) / this.sampleRate;
-		const fy = (localY % this.sampleRate) / this.sampleRate;
-		const fz = (localZ % this.sampleRate) / this.sampleRate;
+		const inv = this.invSampleRate;
+		if (this.isPow2) {
+			const shift = this.rateShift;
+			const mask = this.rateMask;
+			cellX = localX >> shift;
+			cellY = localY >> shift;
+			cellZ = localZ >> shift;
+			fx = (localX & mask) * inv;
+			fy = (localY & mask) * inv;
+			fz = (localZ & mask) * inv;
+		} else {
+			const rate = this.sampleRate;
+			cellX = (localX / rate) | 0;
+			cellY = (localY / rate) | 0;
+			cellZ = (localZ / rate) | 0;
+			fx = (localX % rate) * inv;
+			fy = (localY % rate) * inv;
+			fz = (localZ % rate) * inv;
+		}
 
 		const idx =
 			cellX +

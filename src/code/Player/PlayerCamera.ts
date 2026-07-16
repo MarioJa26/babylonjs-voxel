@@ -1,80 +1,55 @@
-import { type FreeCamera, type Scene, Vector3 } from "@babylonjs/core";
-import { GenerationParams } from "../Generation/NoiseAndParameters/GenerationParams";
-import MapFog from "../Maps/MapFog";
+import { createFreeCamera, type FreeCamera, type Vec3 } from "@babylonjs/lite";
 import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 
+/**
+ * Lite (native) port of PlayerCamera.
+ * Third-person follow camera. Drives a Lite `FreeCamera`'s
+ * `position`/`target` (ObservableVec3) directly.
+ */
 export class PlayerCamera {
 	#playerCamera: FreeCamera;
-	#isUnderWater: boolean | null = null;
-
 	#followDistance = 0.001;
 	#eyeHeight = 1.8;
 
-	// Camera control
 	#cameraPitch = 0;
 	#cameraYaw = 0;
 	readonly #maxPitch = Math.PI / 2 - 0.003;
 	public mouseSensitivity = 0.003;
-	// Zoom values
+
 	readonly #minZoom = 0.01;
 	readonly #maxZoom = 10000;
 	readonly #zoomSpeed = 20.333;
 
-	// Scratch vectors to avoid per-frame allocation
-	readonly #_forward = Vector3.Zero();
-	readonly #_eyeOffset = Vector3.Zero();
-	readonly #_tmp1 = Vector3.Zero();
-
-	constructor(
-		playerCamera: FreeCamera,
-		private scene: Scene,
-	) {
-		this.#playerCamera = playerCamera;
-
-		playerCamera.fov = SETTING_PARAMS.CAMERA_FOV * (Math.PI / 180);
-		playerCamera.minZ = 0.1;
-		playerCamera.maxZ = 4000;
+	constructor() {
+		this.#playerCamera = createFreeCamera(
+			{ x: 0, y: this.#eyeHeight, z: 0 },
+			{ x: 0, y: this.#eyeHeight, z: 1 },
+		);
+		this.#playerCamera.fov = SETTING_PARAMS.CAMERA_FOV * (Math.PI / 180);
+		this.#playerCamera.nearPlane = 0.1;
+		this.#playerCamera.farPlane = 5000;
 	}
 
-	public moveWithPlayer(characterPosition: Vector3): void {
+	public moveWithPlayer(characterPosition: Vec3): void {
 		const cosP = Math.cos(this.#cameraPitch);
-		this.#_forward.set(
-			Math.sin(this.#cameraYaw) * cosP,
-			-Math.sin(this.#cameraPitch),
-			Math.cos(this.#cameraYaw) * cosP,
+		const fx = Math.sin(this.#cameraYaw) * cosP;
+		const fy = -Math.sin(this.#cameraPitch);
+		const fz = Math.cos(this.#cameraYaw) * cosP;
+
+		const eye = this.#followDistance > this.#minZoom ? this.#eyeHeight : 0.66;
+		const cy = characterPosition.y + eye;
+
+		this.#playerCamera.position.set(
+			characterPosition.x - fx * this.#followDistance,
+			cy - fy * this.#followDistance,
+			characterPosition.z - fz * this.#followDistance,
 		);
-
-		if (this.#followDistance > this.#minZoom) {
-			this.#eyeHeight = 1.8;
-		} else {
-			this.#eyeHeight = 0.66;
-		}
-
-		this.#_eyeOffset.copyFromFloats(0, this.#eyeHeight, 0);
-
-		// Camera position = character + eyeOffset - forward * followDistance
-		this.#_forward.scaleToRef(this.#followDistance, this.#_tmp1);
-		characterPosition.addToRef(this.#_eyeOffset, this.#playerCamera.position);
-		this.#playerCamera.position.subtractInPlace(this.#_tmp1);
-
-		// Camera target = character + eyeOffset — use setTarget() so rotation is recomputed.
-		// Reuse #_tmp1 (now free after position calc) as a scratch target vector.
-		characterPosition.addToRef(this.#_eyeOffset, this.#_tmp1);
-		this.#playerCamera.setTarget(this.#_tmp1);
-
-		const isUnderWater =
-			this.#playerCamera.position.y < GenerationParams.SEA_LEVEL + 1;
-		if (this.#isUnderWater !== isUnderWater) {
-			MapFog.applyToScene(this.scene, isUnderWater);
-			this.#isUnderWater = isUnderWater;
-		}
+		this.#playerCamera.target.set(characterPosition.x, cy, characterPosition.z);
 	}
 
 	public handleMouseMovement(deltaX: number, deltaY: number): void {
 		this.#cameraYaw -= -deltaX * this.mouseSensitivity;
 		this.#cameraPitch += deltaY * this.mouseSensitivity;
-
-		// Clamp pitch to prevent camera flipping
 		this.#cameraPitch = Math.max(
 			-this.#maxPitch,
 			Math.min(this.#maxPitch, this.#cameraPitch),
@@ -101,6 +76,11 @@ export class PlayerCamera {
 		return this.#cameraPitch;
 	}
 
+	/** True when zoomed out far enough to see the player body (third-person). */
+	public get isThirdPerson(): boolean {
+		return this.#followDistance > 0.5;
+	}
+
 	public get playerCamera(): FreeCamera {
 		return this.#playerCamera;
 	}
@@ -109,15 +89,16 @@ export class PlayerCamera {
 		this.#playerCamera.fov = value * (Math.PI / 180);
 	}
 
-	get position(): Vector3 {
-		return this.#playerCamera.position;
+	public get position(): Vec3 {
+		const p = this.#playerCamera.position;
+		return { x: p.x, y: p.y, z: p.z };
 	}
 
-	set position(position: Vector3) {
-		this.#playerCamera.position = position;
+	public set position(position: Vec3) {
+		this.#playerCamera.position.set(position.x, position.y, position.z);
 	}
 
-	set target(target: Vector3) {
-		this.#playerCamera.target = target;
+	public set target(target: Vec3) {
+		this.#playerCamera.target.set(target.x, target.y, target.z);
 	}
 }

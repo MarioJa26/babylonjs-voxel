@@ -17,7 +17,7 @@ export class MetadataContainer {
 		return this.entries.delete(type);
 	}
 
-	getAll(): { type: string; data: any }[] {
+	getAll(): { type: string; data: unknown }[] {
 		return Array.from(this.entries, ([type, data]) => ({ type, data }));
 	}
 }

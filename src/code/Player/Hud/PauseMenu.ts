@@ -1,5 +1,5 @@
 import { Map1 } from "@/code/Maps/Map1";
-import { worldToChunkCoord } from "@/code/Shared/ChunkCoordUtils";
+import { worldToChunkCoord } from "@/code/Shared/VoxelMath";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import {
 	flushChunkBoundEntities,
@@ -249,125 +249,71 @@ export class PauseMenu {
 			},
 		);
 
-		this.createSlider(
-			lodSection,
-			"LOD 0 Offset",
-			0,
-			10,
-			SETTING_PARAMS.LOD_0_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_0_OFFSET = value;
-				return `${value}`;
+		const lodSliders: {
+			key: {
+				[K in keyof typeof SETTING_PARAMS]: (typeof SETTING_PARAMS)[K] extends number
+					? K
+					: never;
+			}[keyof typeof SETTING_PARAMS];
+			label: string;
+			min: number;
+			max: number;
+		}[] = [
+			{ key: "LOD_0_OFFSET", label: "LOD 0 Offset", min: 0, max: 10 },
+			{ key: "LOD_1_OFFSET", label: "LOD 1 Offset", min: 0, max: 10 },
+			{ key: "LOD_2_OFFSET", label: "LOD 2 Offset", min: 0, max: 10 },
+			{ key: "LOD_3_OFFSET", label: "LOD 3 Offset", min: 0, max: 10 },
+			{
+				key: "LOD_VERTICAL_0_OFFSET",
+				label: "LOD V0 Offset",
+				min: 0,
+				max: 10,
 			},
-		);
+			{
+				key: "LOD_VERTICAL_1_OFFSET",
+				label: "LOD V1 Offset",
+				min: 0,
+				max: 10,
+			},
+			{
+				key: "LOD_VERTICAL_2_OFFSET",
+				label: "LOD V2 Offset",
+				min: 0,
+				max: 10,
+			},
+			{
+				key: "LOD_VERTICAL_3_OFFSET",
+				label: "LOD V3 Offset",
+				min: 0,
+				max: 10,
+			},
+			{
+				key: "LOD_PRECOMPUTE_HORIZONTAL_OFFSET",
+				label: "Precompute H Offset",
+				min: 0,
+				max: 30,
+			},
+			{
+				key: "LOD_PRECOMPUTE_VERTICAL_OFFSET",
+				label: "Precompute V Offset",
+				min: 0,
+				max: 15,
+			},
+		];
 
-		this.createSlider(
-			lodSection,
-			"LOD 1 Offset",
-			0,
-			10,
-			SETTING_PARAMS.LOD_1_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_1_OFFSET = value;
-				return `${value}`;
-			},
-		);
-
-		this.createSlider(
-			lodSection,
-			"LOD 2 Offset",
-			0,
-			10,
-			SETTING_PARAMS.LOD_2_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_2_OFFSET = value;
-				return `${value}`;
-			},
-		);
-
-		this.createSlider(
-			lodSection,
-			"LOD 3 Offset",
-			0,
-			10,
-			SETTING_PARAMS.LOD_3_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_3_OFFSET = value;
-				return `${value}`;
-			},
-		);
-
-		this.createSlider(
-			lodSection,
-			"LOD V0 Offset",
-			0,
-			10,
-			SETTING_PARAMS.LOD_VERTICAL_0_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_VERTICAL_0_OFFSET = value;
-				return `${value}`;
-			},
-		);
-
-		this.createSlider(
-			lodSection,
-			"LOD V1 Offset",
-			0,
-			10,
-			SETTING_PARAMS.LOD_VERTICAL_1_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_VERTICAL_1_OFFSET = value;
-				return `${value}`;
-			},
-		);
-
-		this.createSlider(
-			lodSection,
-			"LOD V2 Offset",
-			0,
-			10,
-			SETTING_PARAMS.LOD_VERTICAL_2_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_VERTICAL_2_OFFSET = value;
-				return `${value}`;
-			},
-		);
-
-		this.createSlider(
-			lodSection,
-			"LOD V3 Offset",
-			0,
-			10,
-			SETTING_PARAMS.LOD_VERTICAL_3_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_VERTICAL_3_OFFSET = value;
-				return `${value}`;
-			},
-		);
-
-		this.createSlider(
-			lodSection,
-			"Precompute H Offset",
-			0,
-			30,
-			SETTING_PARAMS.LOD_PRECOMPUTE_HORIZONTAL_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_PRECOMPUTE_HORIZONTAL_OFFSET = value;
-				return `${value}`;
-			},
-		);
-
-		this.createSlider(
-			lodSection,
-			"Precompute V Offset",
-			0,
-			15,
-			SETTING_PARAMS.LOD_PRECOMPUTE_VERTICAL_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_PRECOMPUTE_VERTICAL_OFFSET = value;
-				return `${value}`;
-			},
-		);
+		for (const { key, label, min, max } of lodSliders) {
+			this.createSlider(
+				lodSection,
+				label,
+				min,
+				max,
+				SETTING_PARAMS[key],
+				(value) => {
+					SETTING_PARAMS[key] = value;
+					return `${value}`;
+				},
+			);
+		}
 
 		this.createSlider(
 			lodSection,

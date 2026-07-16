@@ -1,6 +1,8 @@
-import type { Mesh } from "@babylonjs/core";
+import { disposeMeshGpu, type Mesh, removeFromScene } from "@babylonjs/lite";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { getFinalTerrainHeight } from "@/code/Generation/TerrainHeightMap";
+import { Map1 } from "@/code/Maps/Map1";
+import { LIGHT_NIBBLE_MASK, SKY_LIGHT_SHIFT } from "@/code/Shared/VoxelMath";
 import {
 	FACE_ALL,
 	FACE_NX,
@@ -136,6 +138,8 @@ export class Chunk {
 	public isTerrainScheduled = false;
 	public isLightDirty = false;
 	public remeshQueued = false;
+	/** Monotonically increases whenever a new mesh is requested for this chunk. */
+	public meshRevision = 0;
 
 	public get isSolidOccluder(): boolean {
 		return this.isLoaded && this._isUniform && this._uniformBlockId !== 0;
@@ -308,8 +312,8 @@ export class Chunk {
 		null,
 	];
 
-	public static readonly SKY_LIGHT_SHIFT = 4;
-	public static readonly BLOCK_LIGHT_MASK = 0xf;
+	public static readonly SKY_LIGHT_SHIFT = SKY_LIGHT_SHIFT;
+	public static readonly BLOCK_LIGHT_MASK = LIGHT_NIBBLE_MASK;
 	private static readonly SKYLIGHT_GENERATION_MIN_WORLD_Y = 32;
 	private static readonly GLASS_01_BLOCK_ID = 60;
 	private static readonly GLASS_02_BLOCK_ID = 61;
@@ -1031,6 +1035,7 @@ export class Chunk {
 
 	public scheduleRemesh(priority = false, includeNeighbors = false): void {
 		if (!this.isLoaded) return;
+		this.meshRevision++;
 		this.isDirty = true;
 		if (this.remeshQueued) {
 			return;
@@ -1540,8 +1545,14 @@ export class Chunk {
 		}
 
 		if (!this.mergedGroupKey) {
-			this.mesh?.dispose();
-			this.transparentMesh?.dispose();
+			if (this.mesh) {
+				removeFromScene(Map1.mainScene, this.mesh as any);
+				disposeMeshGpu(this.mesh as any);
+			}
+			if (this.transparentMesh) {
+				removeFromScene(Map1.mainScene, this.transparentMesh as any);
+				disposeMeshGpu(this.transparentMesh as any);
+			}
 		}
 		this.clearCachedLODMeshes();
 		this.mesh = null;

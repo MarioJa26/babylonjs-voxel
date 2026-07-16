@@ -62,9 +62,7 @@ export function emitQuadFast(
 
 	const i = out.faceCount << 2;
 	const next = i + 4;
-	out.faceDataA.ensureCapacity(next);
-	out.faceDataB.ensureCapacity(next);
-	out.faceDataC.ensureCapacity(next);
+
 	const a = out.faceDataA.backingArray;
 	const b = out.faceDataB.backingArray;
 	const c = out.faceDataC.backingArray;
@@ -169,9 +167,7 @@ export function emitWaterQuad(
 
 	const i = out.faceCount << 2;
 	const next = i + 4;
-	out.faceDataA.ensureCapacity(next);
-	out.faceDataB.ensureCapacity(next);
-	out.faceDataC.ensureCapacity(next);
+
 	const a = out.faceDataA.backingArray;
 	const b = out.faceDataB.backingArray;
 	const c = out.faceDataC.backingArray;

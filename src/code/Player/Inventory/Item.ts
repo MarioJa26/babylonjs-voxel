@@ -1,4 +1,4 @@
-import type { StandardMaterial } from "@babylonjs/core";
+import type { ShaderMaterial } from "@babylonjs/core";
 import type { IUsable } from "@/code/Interface/IUsable";
 import type { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { tryCreateBoatFromMarker } from "@/code/World/Boat/BoatCreatorSystem";
@@ -41,7 +41,7 @@ export class Item implements IUsable {
 	name: string;
 	description: string;
 	icon: string;
-	material: StandardMaterial | undefined;
+	material: ShaderMaterial | undefined;
 
 	itemId = 1;
 	blockId: number | null = null;
@@ -221,8 +221,9 @@ export class Item implements IUsable {
 			}
 
 			// Prevent placing a block inside a mob
-			if (Map1.mobRegistry) {
-				for (const mob of Map1.mobRegistry.getAllMobs()) {
+			const mobRegistry = Map1.mobRegistry;
+			if (mobRegistry) {
+				for (const mob of mobRegistry.getAllMobs()) {
 					const mpos = mob.position;
 					if (
 						mpos.x >= pos.x &&

@@ -1,5 +1,6 @@
-import { Vector3 } from "@babylonjs/core";
+import type { Vec3 } from "@babylonjs/lite";
 import type { IControls } from "@/code/Interface/IControls";
+import { vec3Zero } from "@/code/Lib/Math";
 import { PlayerInventory } from "../Inventory/PlayerInventory";
 import type { Player } from "../Player";
 
@@ -7,7 +8,7 @@ export class InventoryControls implements IControls<unknown> {
 	readonly controlType = "inventory";
 	controlledEntity: unknown;
 	pressedKeys: Set<string>;
-	inputDirection: Vector3;
+	inputDirection: Vec3;
 
 	#underlyingControls: IControls<unknown>;
 
@@ -25,26 +26,32 @@ export class InventoryControls implements IControls<unknown> {
 	) {
 		this.controlledEntity = controlledEntity;
 		this.pressedKeys = new Set<string>();
-		this.inputDirection = Vector3.Zero();
+		this.inputDirection = vec3Zero();
 
 		this.#underlyingControls = underlyingControls;
 		this.#player = player;
 	}
+
+	/** Loose view of the not-yet-ported `Player` surface (inventory/hud/...). */
+	#legacy(): any {
+		return this.#player;
+	}
+
 	handleKeyEvent(key: string, isKeyDown: boolean): void {
 		if (isKeyDown) this.onKeyDown(key);
 		else this.onKeyUp(key);
 
 		if (InventoryControls.KEY_INVENTORY.includes(key) && !isKeyDown) {
 			this.#underlyingControls.handleKeyEvent(key, isKeyDown);
-			this.#player.keyboardControls = this.#underlyingControls;
+			this.#legacy().keyboardControls = this.#underlyingControls;
 			return;
 		}
 		if (InventoryControls.KEY_DROP.includes(key) && isKeyDown) {
 			const item = PlayerInventory.currentlyHoveredSlot?.item;
 			if (item) {
 				if (this.#pressedKeysHas(InventoryControls.KEY_CTRL))
-					this.#player.playerInventory.dropItem(item, item.stackSize);
-				else this.#player.playerInventory.dropItem(item, 1);
+					this.#legacy().playerInventory.dropItem(item, item.stackSize);
+				else this.#legacy().playerInventory.dropItem(item, 1);
 			}
 			return;
 		}
@@ -64,9 +71,9 @@ export class InventoryControls implements IControls<unknown> {
 		const slotFocused = PlayerInventory.currentlyHoveredSlot;
 		if (slotFocused?.item) {
 			if (slotFocused.item.row > 0) {
-				this.#player.playerInventory.moveItemToHotbar(slotFocused);
+				this.#legacy().playerInventory.moveItemToHotbar(slotFocused);
 			} else {
-				this.#player.playerInventory.moveItemToInventory(slotFocused);
+				this.#legacy().playerInventory.moveItemToInventory(slotFocused);
 			}
 		}
 	}

@@ -127,9 +127,16 @@ export class WorldGenerator {
 	}
 
 	private createBuffer(size: number): Uint8Array {
-		// PERF: Use regular ArrayBuffer instead of SharedArrayBuffer for generation.
-		// The buffer is transferred (not shared) to the main thread, so SAB overhead
-		// (OS shared memory page setup) is unnecessary.
+		// PERF: Allocate generation output in a SharedArrayBuffer so the block/
+		// light buffers can be *shared* (not transferred) to the main thread and
+		// then handed straight to the mesh worker. This avoids the redundant
+		// main-thread SAB realloc+memcpy that Chunk.ensureSharedBacking used to
+		// perform per generated chunk. The (cheap) OS shared-page setup happens
+		// off the main thread, in this worker. Falls back to a plain ArrayBuffer
+		// where SharedArrayBuffer is unavailable (main thread then copies as before).
+		if (typeof SharedArrayBuffer !== "undefined") {
+			return new Uint8Array(new SharedArrayBuffer(size));
+		}
 		return new Uint8Array(new ArrayBuffer(size));
 	}
 

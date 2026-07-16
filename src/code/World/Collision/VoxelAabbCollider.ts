@@ -1,12 +1,11 @@
 import {
 	Color4,
-	type Mesh,
+	copyVec3,
 	MeshBuilder,
 	Quaternion,
 	type Scene,
-	StandardMaterial,
-	Vector3,
 } from "@babylonjs/core";
+import { createStandardMaterial, type Vec3 } from "@babylonjs/lite";
 import type { ShapeDefinition } from "../Shape/BlockShapes";
 
 export const enum Axis {
@@ -33,7 +32,7 @@ type IsSolidBlockAt = (
 type VoxelAabbDebugOptions = {
 	scene: Scene;
 	name?: string;
-	position?: Vector3;
+	position?: Vec3;
 	renderingGroupId?: number;
 };
 
@@ -92,6 +91,132 @@ export const _blockShapeInfoScratch: BlockShapeInfo = {
 	slice: 0,
 	flipY: false,
 };
+
+/**
+ * A block resolver returns the raw block id + state for a world coordinate, or
+ * null when the cell should not be treated as collidable.  This indirection
+ * lets callers feed the sampler from whichever source they have (world lookup,
+ * a boat chunk's local storage, etc.) without duplicating the shape-decoding
+ * logic below.
+ */
+export type VoxelBlockResolver = (
+	x: number,
+	y: number,
+	z: number,
+) => { blockId: number; blockState: number } | null;
+
+export type VoxelBlockSamplerDeps = {
+	getFenceDynamicShape: (mask: number) => ShapeDefinition;
+	getShapeForBlockId: (blockId: number) => ShapeDefinition;
+	isFenceBlockId: (blockId: number) => boolean;
+	computeFenceNeighborMask: (
+		x: number,
+		y: number,
+		z: number,
+		getNeighborId: (wx: number, wy: number, wz: number) => number,
+	) => number;
+};
+
+/**
+ * Builds the `isSolidBlockAt` callback shared by every voxel collider
+ * (player, boat, mob, dropped item).  The only thing that varies between
+ * callers is how a (x,y,z) cell is resolved to a block id + state, so that
+ * responsibility is delegated to `resolveBlock`.
+ */
+export function createVoxelColliderBlockSampler(
+	resolveBlock: VoxelBlockResolver,
+	deps: VoxelBlockSamplerDeps,
+): (x: number, y: number, z: number) => BlockShapeInfo | null {
+	const {
+		getFenceDynamicShape,
+		getShapeForBlockId,
+		isFenceBlockId,
+		computeFenceNeighborMask,
+	} = deps;
+
+	return (x, y, z): BlockShapeInfo | null => {
+		const resolved = resolveBlock(x, y, z);
+		if (resolved === null) return null;
+		const { blockId, blockState: state } = resolved;
+
+		if (isFenceBlockId(blockId)) {
+			const mask = computeFenceNeighborMask(x, y, z, (wx, wy, wz) => {
+				const r = resolveBlock(wx, wy, wz);
+				return r ? r.blockId : 0;
+			});
+			_blockShapeInfoScratch.shape = getFenceDynamicShape(mask);
+			_blockShapeInfoScratch.rotation = 0;
+			_blockShapeInfoScratch.slice = 0;
+			_blockShapeInfoScratch.flipY = false;
+			return _blockShapeInfoScratch;
+		}
+
+		const shape = getShapeForBlockId(blockId);
+		_blockShapeInfoScratch.shape = shape;
+		_blockShapeInfoScratch.rotation = shape.rotateY ? state & 3 : 0;
+		_blockShapeInfoScratch.slice = 0;
+		_blockShapeInfoScratch.flipY = shape.allowFlipY && (state & 4) !== 0;
+		return _blockShapeInfoScratch;
+	};
+}
+
+// Module-level scratch for voxelStepUp — avoids per-call allocation.
+const _stepUpForward: Vec3 = { x: 0, y: 0, z: 0 } as Vec3;
+const _stepUpRise: Vec3 = { x: 0, y: 0, z: 0 } as Vec3;
+const _stepUpGround: Vec3 = { x: 0, y: 0, z: 0 } as Vec3;
+
+/**
+ * Attempts to step the collider up over a low ledge while advancing `delta`
+ * along `axis` (X or Z).  Returns true (and mutates `pos`) if a steppable path
+ * was found, otherwise leaves `pos` untouched and returns false.
+ *
+ * Shared by PlayerVehicleMotor and NeutralMob, which previously carried
+ * byte-near-identical copies of this routine.
+ *
+ * @param maxStepUp maximum height the collider may climb (in 0.25 steps).
+ * @param onStep callback invoked with the new (post-step) position so the
+ *   caller can zero its vertical velocity.
+ */
+export function voxelStepUp(
+	collider: VoxelAabbCollider,
+	pos: Vec3,
+	axis: Axis.X | Axis.Z,
+	delta: number,
+	maxStepUp: number,
+	onStep: (steppedPos: Vec3) => void,
+): boolean {
+	const fwd = _stepUpForward;
+	copyVec3(fwd, pos);
+	if (axis === Axis.X) fwd.x += delta;
+	else fwd.z += delta;
+	if (!collider.overlaps(fwd)) {
+		copyVec3(pos, fwd);
+		return true;
+	}
+
+	for (let rise = 0.25; rise <= maxStepUp; rise += 0.25) {
+		const up = _stepUpRise;
+		copyVec3(up, pos);
+		up.y += rise;
+		if (collider.overlaps(up)) continue;
+
+		const fwd2 = _stepUpForward;
+		copyVec3(fwd2, up);
+		if (axis === Axis.X) fwd2.x += delta;
+		else fwd2.z += delta;
+		if (collider.overlaps(fwd2)) continue;
+
+		const ground = _stepUpGround;
+		copyVec3(ground, fwd2);
+		ground.y -= 0.08;
+		if (!collider.overlaps(ground)) continue;
+
+		copyVec3(pos, fwd2);
+		onStep(pos);
+		return true;
+	}
+	return false;
+}
 
 function testShapeBoxOverlap(
 	aMinX: number,
@@ -172,22 +297,22 @@ function testShapeBoxOverlap(
 }
 
 export class VoxelAabbCollider {
-	#halfExtents: Vector3;
+	#halfExtents: Vec3;
 	#epsilon: number;
 	#isSolidBlockAt: IsSolidBlockAt;
-	#tmpCandidate = Vector3.Zero();
-	#debugMesh: Mesh | null = null;
+	#tmpCandidate = { x: 0, y: 0, z: 0 } as Vec3;
+	#debugMesh: any = null;
 	#debugOptions: VoxelAabbDebugOptions | null = null;
 	static #debugEnabled = false;
 	static readonly #debugColliders = new Set<VoxelAabbCollider>();
 
 	constructor(
-		halfExtents: Vector3,
+		halfExtents: Vec3,
 		isSolidBlockAt: IsSolidBlockAt,
 		epsilon = 0.001,
 		debugOptions?: VoxelAabbDebugOptions,
 	) {
-		this.#halfExtents = halfExtents.clone();
+		this.#halfExtents = halfExtents;
 		this.#isSolidBlockAt = isSolidBlockAt;
 		this.#epsilon = epsilon;
 		if (debugOptions) {
@@ -218,8 +343,8 @@ export class VoxelAabbCollider {
 		if (typeof options.renderingGroupId === "number") {
 			this.#debugMesh.renderingGroupId = options.renderingGroupId;
 		}
-
-		const material = new StandardMaterial(`${name}Mat`, options.scene);
+		const material = createStandardMaterial();
+		material.name = `${name}Mat`;
 		material.alpha = 0;
 		material.disableLighting = true;
 		this.#debugMesh.material = material;
@@ -237,8 +362,16 @@ export class VoxelAabbCollider {
 		this.#createDebugMesh(this.#debugOptions);
 	}
 
-	public overlaps(position: Vector3): boolean {
+	public overlaps(position: Vec3): boolean {
 		return this.overlapsBox(position, this.#halfExtents);
+	}
+	private tmpPos = { x: 0, y: 0, z: 0 } as Vec3;
+	public overlapsXYZ(x: number, y: number, z: number): boolean {
+		const p = this.tmpPos;
+		p.x = x;
+		p.y = y;
+		p.z = z;
+		return this.overlapsBox(p, this.#halfExtents);
 	}
 
 	/**
@@ -247,7 +380,7 @@ export class VoxelAabbCollider {
 	 * detect floor, or a side slab to detect wall contact — without allocating a
 	 * second collider.
 	 */
-	public overlapsBox(position: Vector3, halfExtents: Vector3): boolean {
+	public overlapsBox(position: Vec3, halfExtents: Vec3): boolean {
 		const eps = this.#epsilon;
 
 		const aMinX = position.x - halfExtents.x;
@@ -301,7 +434,7 @@ export class VoxelAabbCollider {
 	 * This uses the same collision logic as overlaps(), but only checks one block.
 	 */
 	public wouldOverlapBlock(
-		position: Vector3,
+		position: Vec3,
 		blockX: number,
 		blockY: number,
 		blockZ: number,
@@ -400,8 +533,8 @@ export class VoxelAabbCollider {
 	 * boundaries).
 	 */
 	public firstSolidVoxel(
-		position: Vector3,
-		halfExtents: Vector3,
+		position: Vec3,
+		halfExtents: Vec3,
 	): { x: number; y: number; z: number } | null {
 		const eps = this.#epsilon;
 
@@ -452,40 +585,56 @@ export class VoxelAabbCollider {
 	}
 
 	public moveAxis(
-		position: Vector3,
-		velocity: Vector3,
+		position: Vec3,
+		velocity: Vec3,
 		axis: Axis,
 		delta: number,
 		stepSize: number,
 	): void {
 		if (delta === 0) return;
-		let remaining = delta;
 
-		while (Math.abs(remaining) > 0) {
-			const step =
-				Math.abs(remaining) > stepSize
-					? stepSize * Math.sign(remaining)
-					: remaining;
+		const dir = delta > 0 ? 1 : -1;
+		let remaining = Math.abs(delta);
 
-			const candidate = this.#tmpCandidate;
-			candidate.copyFrom(position);
-			if (axis === Axis.X) candidate.x += step;
-			else if (axis === Axis.Y) candidate.y += step;
-			else candidate.z += step;
+		// pre-read position
+		let x = position.x;
+		let y = position.y;
+		let z = position.z;
 
-			if (this.overlaps(candidate)) {
+		while (remaining > 1e-8) {
+			const step = remaining > stepSize ? stepSize : remaining;
+			const move = step * dir;
+
+			let nx = x;
+			let ny = y;
+			let nz = z;
+
+			if (axis === Axis.X) nx += move;
+			else if (axis === Axis.Y) ny += move;
+			else nz += move;
+
+			if (this.overlapsXYZ(nx, ny, nz)) {
 				if (axis === Axis.X) velocity.x = 0;
 				else if (axis === Axis.Y) velocity.y = 0;
 				else velocity.z = 0;
 				break;
 			}
 
-			position.copyFrom(candidate);
+			// commit move
+			x = nx;
+			y = ny;
+			z = nz;
+
 			remaining -= step;
 		}
+
+		// write back once (important!)
+		position.x = x;
+		position.y = y;
+		position.z = z;
 	}
 
-	public syncDebugMesh(position: Vector3): void {
+	public syncDebugMesh(position: Vec3): void {
 		if (VoxelAabbCollider.#debugEnabled) {
 			this.#ensureDebugMesh();
 		}
@@ -518,7 +667,7 @@ export class VoxelAabbCollider {
 		});
 	}
 
-	public set HalfExtents(halfExtents: Vector3) {
-		this.#halfExtents.copyFrom(halfExtents);
+	public set HalfExtents(halfExtents: Vec3) {
+		this.#halfExtents = halfExtents;
 	}
 }

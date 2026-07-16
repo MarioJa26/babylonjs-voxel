@@ -1,4 +1,5 @@
 import Alea from "alea";
+import { CHUNK_SHIFT } from "@/code/Shared/VoxelMath";
 import { getBiomeFor } from "./Biome/Biomes";
 import type { Biome } from "./Biome/BiomeTypes";
 import {
@@ -19,8 +20,6 @@ import { RiverGenerator } from "./RiverGeneration";
 // ---------------------------------------------------------------------------
 
 const params: GenerationParamsType = GenerationParams;
-
-const CHUNK_SHIFT = 5; // 32×32 chunks
 
 const BIOME_TERRAIN_GRID = 192;
 const INV_BIOME_TERRAIN_GRID = 1 / BIOME_TERRAIN_GRID;

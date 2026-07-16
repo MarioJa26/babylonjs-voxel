@@ -1,5 +1,12 @@
-import { type Engine, Scene } from "@babylonjs/core";
+import type { SceneContext } from "@babylonjs/lite";
+import { onSceneDispose } from "@babylonjs/lite";
 import { Map1 } from "@/code/Maps/Map1";
+import {
+	closeUi,
+	isUiOpen,
+	openUi,
+	UiFocus,
+} from "@/code/Shared/GameRuntimeState";
 import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
 import {
 	TextureDefinitions,
@@ -18,8 +25,7 @@ import type { Player } from "../Player";
 import { Crosshair } from "./Crosshair/Crosshair";
 
 export class PlayerHud {
-	#engine: Engine;
-	#scene: Scene;
+	#scene: SceneContext;
 	readonly #player: Player;
 
 	public readonly crossHair: Crosshair;
@@ -73,12 +79,11 @@ export class PlayerHud {
 	#staminaBarFill!: HTMLDivElement;
 	#manaBarFill!: HTMLDivElement;
 
-	constructor(engine: Engine, scene: Scene, player: Player) {
-		this.#engine = engine;
+	constructor(scene: SceneContext, player: Player) {
 		this.#scene = scene;
 		this.#player = player;
 		PlayerHud.#inventory = player.playerInventory;
-		this.crossHair = new Crosshair(engine, scene);
+		this.crossHair = new Crosshair();
 		this.#overlayDiv = this.initializeHUD();
 		this.createHotbarUI();
 		this.createStatsUI();
@@ -113,7 +118,7 @@ export class PlayerHud {
 		closeButton.innerHTML = "&times;";
 		closeButton.classList.add("hud-close-button");
 		closeButton.onclick = () => {
-			this.#player.keyboardControls.onKeyUp("tab");
+			this.toggleInventory();
 		};
 
 		const contentWrapper = document.createElement("div");
@@ -131,7 +136,7 @@ export class PlayerHud {
 		overlayDiv.appendChild(closeButton);
 		document.body.appendChild(overlayDiv);
 
-		this.#scene.onDisposeObservable.add(() => {
+		onSceneDispose(this.#scene, () => {
 			overlayDiv.remove();
 			document.exitPointerLock();
 		});
@@ -294,7 +299,7 @@ export class PlayerHud {
 		this.updateHotbarSelection();
 		document.body.appendChild(hotbarWrapper);
 
-		this.#scene.onDisposeObservable.add(() => {
+		onSceneDispose(this.#scene, () => {
 			hotbarWrapper.remove();
 		});
 		return hotbarContainer;
@@ -323,7 +328,7 @@ export class PlayerHud {
 
 		document.body.appendChild(container);
 
-		this.#scene.onDisposeObservable.add(() => {
+		onSceneDispose(this.#scene, () => {
 			container.remove();
 		});
 	}
@@ -338,19 +343,47 @@ export class PlayerHud {
 		}
 		this.#inventoryOpen = !this.#inventoryOpen;
 		if (this.#inventoryOpen) {
+			// Non-blocking overlay: mark UI focus so the pointer-lock loss below is
+			// not mistaken for a pause request. The world keeps ticking.
+			openUi(UiFocus.inventory);
+			// Authoritatively switch to inventory controls so the state is correct
+			// no matter how the inventory was opened (Tab key or UI button). Also
+			// cancel any in-progress block breaking from a held mouse button.
+			this.#activateInventoryControls();
 			this.updateCraftingAvailability();
 			PlayerHud.#heldItemNameDiv.classList.remove("visible");
 			this.#overlayDiv.style.display = "flex";
-			this.#engine.exitPointerlock();
+			this.#exitPointerLock();
 		} else {
+			closeUi(UiFocus.inventory);
+			// Restore walking controls regardless of how the inventory was closed
+			// (Tab, Escape, or the close button) so world interactions work again.
+			this.#activateWalkingControls();
 			this.#overlayDiv.style.display = "none";
-			this.#engine.enterPointerlock();
+			// Only re-grab the mouse if no other overlay is still open.
+			if (!isUiOpen()) this.#enterPointerLock();
 		}
+	}
+
+	/** Switch the active keyboard/mouse scheme to the inventory controls. */
+	#activateInventoryControls(): void {
+		const walking = this.#player.defaultKeyboardControls;
+		// Cancel any in-progress block breaking from a held mouse button.
+		walking.stopBlockBreaking();
+		const inv = this.#player.playerInventory.inventoryControls;
+		inv.underlyingControls = walking;
+		this.#player.keyboardControls = inv;
+	}
+
+	/** Restore the default walking controls. */
+	#activateWalkingControls(): void {
+		this.#player.keyboardControls = this.#player.defaultKeyboardControls;
 	}
 
 	public showMasonTableUI(): void {
 		if (this.#masonTableOpen) return;
 		this.#masonTableOpen = true;
+		openUi(UiFocus.masonTable);
 		this.#selectedSourceBlockId = null;
 		this.#selectedShape = null;
 
@@ -360,16 +393,26 @@ export class PlayerHud {
 
 		this.updateMasonTableAvailability();
 		this.#masonTableDiv.style.display = "flex";
-		this.#engine.exitPointerlock();
+		this.#exitPointerLock();
 	}
 
 	public hideMasonTableUI(): void {
 		if (!this.#masonTableOpen) return;
 		this.#masonTableOpen = false;
+		closeUi(UiFocus.masonTable);
 		if (this.#masonTableDiv) {
 			this.#masonTableDiv.style.display = "none";
 		}
-		this.#engine.enterPointerlock();
+		// Only re-grab the mouse if no other overlay is still open.
+		if (!isUiOpen()) this.#enterPointerLock();
+	}
+
+	#enterPointerLock(): void {
+		document.querySelector("canvas")?.requestPointerLock();
+	}
+
+	#exitPointerLock(): void {
+		document.exitPointerLock();
 	}
 
 	public get isMasonTableOpen(): boolean {
@@ -504,7 +547,7 @@ export class PlayerHud {
 		overlay.appendChild(closeButton);
 		document.body.appendChild(overlay);
 
-		this.#scene.onDisposeObservable.add(() => {
+		onSceneDispose(this.#scene, () => {
 			overlay.remove();
 		});
 
@@ -790,17 +833,10 @@ export class PlayerHud {
 		fogStartSlider.type = "range";
 		fogStartSlider.min = "0";
 		fogStartSlider.max = "3000";
-		fogStartSlider.value = (this.#scene.fogStart || 0).toString();
+		fogStartSlider.value = MapFog.getFogStart(false).toString();
 		fogStartSlider.style.width = "100%";
 		fogStartSlider.oninput = () => {
-			if (this.#scene.fogMode === Scene.FOGMODE_NONE) {
-				this.#scene.fogMode = Scene.FOGMODE_LINEAR;
-			}
-			const value = parseFloat(fogStartSlider.value);
-			MapFog.setFogStartOverride(value);
-			if (this.#scene.fogStart !== value) {
-				this.#scene.fogStart = value;
-			}
+			MapFog.setFogStartOverride(parseFloat(fogStartSlider.value));
 		};
 		div.appendChild(fogStartSlider);
 
@@ -814,17 +850,10 @@ export class PlayerHud {
 		fogEndSlider.type = "range";
 		fogEndSlider.min = "0";
 		fogEndSlider.max = "3000";
-		fogEndSlider.value = (this.#scene.fogEnd || 1000).toString();
+		fogEndSlider.value = MapFog.getFogEnd(false).toString();
 		fogEndSlider.style.width = "100%";
 		fogEndSlider.oninput = () => {
-			if (this.#scene.fogMode === Scene.FOGMODE_NONE) {
-				this.#scene.fogMode = Scene.FOGMODE_LINEAR;
-			}
-			const value = parseFloat(fogEndSlider.value);
-			MapFog.setFogEndOverride(value);
-			if (this.#scene.fogEnd !== value) {
-				this.#scene.fogEnd = value;
-			}
+			MapFog.setFogEndOverride(parseFloat(fogEndSlider.value));
 		};
 		div.appendChild(fogEndSlider);
 

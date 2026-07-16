@@ -1,4 +1,4 @@
-import { Vector3 } from "@babylonjs/core";
+import { addVec3ToRef, type Vec3, vec3 } from "@babylonjs/lite";
 import { CustomBoat } from "@/code/Entities/CustomBoat";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { Map1 } from "@/code/Maps/Map1";
@@ -114,7 +114,7 @@ export function tryCreateBoatFromMarker(
 		[hx, hz] = [hz, hx];
 	}
 
-	const halfExtents = new Vector3(hx, hy, hz);
+	const halfExtents = vec3(hx, hy, hz);
 
 	const scene = Map1.mainScene;
 
@@ -128,7 +128,7 @@ export function tryCreateBoatFromMarker(
 			blockState: block.blockState,
 			lightLevel: block.lightLevel,
 		}));
-		const localCenter = new Vector3(
+		const localCenter = vec3(
 			LOCAL_CHUNK_PADDING + bounds.sizeX * 0.5,
 			LOCAL_CHUNK_PADDING + bounds.sizeY * 0.5,
 			LOCAL_CHUNK_PADDING + bounds.sizeZ * 0.5,
@@ -144,7 +144,8 @@ export function tryCreateBoatFromMarker(
 	}
 	setBlock(markerX, markerY, markerZ, BlockType.Air, 0);
 
-	const paddedHalfExtents = halfExtents.add(new Vector3(0.05, 0.05, 0.05));
+	const paddedHalfExtents = vec3(0, 0, 0);
+	addVec3ToRef(center, vec3(0.5, 0.5, 0.5), paddedHalfExtents);
 	new CustomBoat(scene, player, GenerationParams.SEA_LEVEL, center, {
 		collisionHalfExtents: paddedHalfExtents,
 		customVisualRoot: customVisual,
@@ -223,8 +224,8 @@ function computeBounds(blocks: VoxelBlock[]): {
 	sizeX: number;
 	sizeY: number;
 	sizeZ: number;
-	center: Vector3;
-	halfExtents: Vector3;
+	center: Vec3;
+	halfExtents: Vec3;
 } {
 	let minX = Number.POSITIVE_INFINITY;
 	let minY = Number.POSITIVE_INFINITY;
@@ -246,8 +247,8 @@ function computeBounds(blocks: VoxelBlock[]): {
 	const sizeY = maxY - minY + 1;
 	const sizeZ = maxZ - minZ + 1;
 
-	const halfExtents = new Vector3(sizeX * 0.5, sizeY * 0.5, sizeZ * 0.5);
-	const center = new Vector3(
+	const halfExtents = vec3(sizeX * 0.5, sizeY * 0.5, sizeZ * 0.5);
+	const center = vec3(
 		minX + halfExtents.x,
 		minY + halfExtents.y,
 		minZ + halfExtents.z,

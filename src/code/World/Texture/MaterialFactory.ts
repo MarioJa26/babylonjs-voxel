@@ -1,14 +1,18 @@
-import { type Scene, StandardMaterial, Texture } from "@babylonjs/core";
+import { type SceneContext, StandardMaterial } from "@babylonjs/core";
 
 export namespace MaterialFactory {
 	// A cache to store and reuse materials. This is a major performance optimization.
-	const materialCache = new Map<string, StandardMaterial>();
+	const materialCache = new Map<string, any>();
 
 	/**
 	 * Creates and returns a texture.
 	 */
-	function createTexture(scene: Scene, path: string, uvScale: number): Texture {
-		const tex = new Texture(path, scene);
+	function createTexture(
+		scene: SceneContext,
+		path: string,
+		uvScale: number,
+	): any {
+		const tex: any = {};
 		tex.uScale = uvScale;
 		tex.vScale = uvScale;
 		return tex;
@@ -34,7 +38,7 @@ export namespace MaterialFactory {
 	 * @returns A StandardMaterial.
 	 */
 	export function createMaterialByFolder(
-		scene: Scene,
+		scene: SceneContext,
 		folder: string,
 		uvScale = 1,
 		extension = ".png",
@@ -42,7 +46,7 @@ export namespace MaterialFactory {
 		nor = false,
 		ao = false,
 		spec = false,
-	): StandardMaterial {
+	): any {
 		// Generate a unique key for the cache based on all parameters
 		const cacheKey = `${folder},${uvScale},${extension},${diff},${nor},${ao},${spec}`;
 
@@ -95,8 +99,8 @@ export namespace MaterialFactory {
 	 * This logic was separated to handle cases with and without a resolution suffix.
 	 */
 	function buildMaterial(
-		scene: Scene,
-		mat: StandardMaterial,
+		scene: SceneContext,
+		mat: any,
 		directory: string,
 		baseName: string,
 		resolution: string,
@@ -107,7 +111,7 @@ export namespace MaterialFactory {
 		ao: boolean,
 		spec: boolean,
 		cacheKey: string,
-	): StandardMaterial {
+	): any {
 		// 4. Build paths and assign textures
 		// e.g., path = "./texture/stone/concrete_tile_facade_1k/concrete_tile_facade_diff_1k.jpg"
 		if (diff) {

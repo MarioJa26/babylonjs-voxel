@@ -1,4 +1,5 @@
-import { type TransformNode, Vector3 } from "@babylonjs/core";
+import { setVec3, type TransformNode, vec3Zero } from "@babylonjs/core";
+import type { Vec3 } from "@babylonjs/lite";
 import { play } from "@/code/Maps/BlockBreakParticles";
 import {
 	deleteBlock,
@@ -16,14 +17,14 @@ import { updateCrackingState } from "./BlockBreakingVisuals";
 import type { BlockRaycastHit } from "./BlockRaycaster";
 import { pickTarget } from "./BlockRaycaster";
 
-const _scratchLightPos = new Vector3();
-const _scratchParticlePos = new Vector3();
+const _scratchLightPos = vec3Zero();
+const _scratchParticlePos = vec3Zero();
 
 export type BoatBlockHitContext = {
 	kind: "boatChunk";
 	boatChunk: {
 		visualRoot: TransformNode;
-		center: Vector3;
+		center: Vec3;
 		setBlockLocal(
 			x: number,
 			y: number,
@@ -46,6 +47,7 @@ export class BlockBreakingHandler {
 	#cachedZ = 0;
 	#hasCachedBlock = false;
 	#breakTimer = 0;
+	#lastUpdateMs = 0;
 
 	constructor(player: Player) {
 		this.#player = player;
@@ -63,14 +65,19 @@ export class BlockBreakingHandler {
 	public reset(): void {
 		this.#hasCachedBlock = false;
 		this.#breakTimer = 0;
+		this.#lastUpdateMs = 0;
 		updateCrackingState(null, 0);
 	}
 
 	public update(hit?: BlockRaycastHit | null): void {
 		if (!this.#active) return;
 
+		const now = performance.now();
 		const dt =
-			this.#player.playerVehicle.scene.getEngine().getDeltaTime() / 1000;
+			this.#lastUpdateMs > 0
+				? Math.min(0.1, (now - this.#lastUpdateMs) / 1000)
+				: 0;
+		this.#lastUpdateMs = now;
 
 		hit ??= pickTarget(this.#player);
 		if (!hit) {
@@ -85,10 +92,9 @@ export class BlockBreakingHandler {
 		const blockId = hit.blockId;
 		const blockState = hit.blockState;
 
+		const selectedHotbarSlot = this.#player.playerHud.selectedHotbarSlot;
 		const item =
-			this.#player.playerInventory.inventory[0][
-				this.#player.playerHud.selectedHotbarSlot
-			]?.item;
+			this.#player.playerInventory.inventory[0][selectedHotbarSlot]?.item;
 
 		const breakTime =
 			this.#player.stats.gamemode === Gamemodes.Creative
@@ -115,7 +121,7 @@ export class BlockBreakingHandler {
 
 			if (this.#breakTimer >= breakTime) {
 				const lightPos = _scratchLightPos;
-				lightPos.set(x + 0.5 + hit.nx, y + 0.5 + hit.ny, z + 0.5 + hit.nz);
+				setVec3(lightPos, x + 0.5 + hit.nx, y + 0.5 + hit.ny, z + 0.5 + hit.nz);
 
 				const packedLight = getLightByWorldCoords(
 					lightPos.x,
@@ -184,8 +190,8 @@ export class BlockBreakingHandler {
 		const di = new DroppedItem(worldItem, x + 0.5, y + 0.5, z + 0.5);
 
 		const particlePos = _scratchParticlePos;
-		particlePos.set(x + 0.5, y + 0.5, z + 0.5);
-		play(this.#player.playerVehicle.scene, particlePos, blockId, packedLight);
+		setVec3(particlePos, x + 0.5, y + 0.5, z + 0.5);
+		play(this.#player.sceneRef, particlePos, blockId, packedLight);
 
 		this.reset();
 

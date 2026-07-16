@@ -1,189 +1,123 @@
+﻿/**
+ * Babylon Lite (native) port of WorldEnvironment.
+ * Creates the hemispheric + directional lights, the skybox (sphere +
+ * SkyShaderLite material), and drives the day/night sun direction.
+ *
+ * Note: the chunk shaders receive the sun direction via their own uniforms
+ * (updated from GLOBAL_VALUES.skyLightDirection in ChunkMesher's
+ * per-frame pass), so the Lite lights here only affect Standard/PBR
+ * materials (boats/items) which are ported in a later phase.
+ */
 import {
-	DirectionalLight,
-	Effect,
-	HemisphericLight,
+	addToScene,
+	createDirectionalLight,
+	createHemisphericLight,
+	createSphere,
+	type DirectionalLight,
+	type EngineContext,
+	getCameraPosition,
+	type HemisphericLight,
 	type Mesh,
-	MeshBuilder,
-	type Scene,
-	ShaderMaterial,
-	Vector3,
-} from "@babylonjs/core";
-import { PlayerHud } from "../Player/Hud/PlayerHud";
+	removeFromScene,
+	type SceneContext,
+	type ShaderMaterial,
+	setShaderUniform,
+} from "@babylonjs/lite";
 import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
-import { SkyFragmentShader, SkyVertexShader } from "../World/Light/SkyShader";
+import { createSkyMaterial } from "../World/Light/SkyShaderLite";
 import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 
 export class WorldEnvironment {
 	public static instance: WorldEnvironment;
-	private scene: Scene;
-	private dirLight!: DirectionalLight;
-	private hemiLight!: HemisphericLight;
-	private skybox!: Mesh;
-	private timeSlider: HTMLInputElement | null = null;
-	private negateScratch = new Vector3();
 
-	// Time cycle
+	private engine: EngineContext;
+	private scene: SceneContext;
+	private dirLight: DirectionalLight | null = null;
+	private hemiLight: HemisphericLight | null = null;
+	private skybox: Mesh | null = null;
+	private skyMaterial: ShaderMaterial | null = null;
+
 	private timeOfDay = 120000;
 	public timeScale = 0;
 	public isPaused = false;
 	public wetness = 0.0;
 
-	// HUD update throttle: debug strings and slider are visible to the user
-	// at most ~6 Hz, so we recompute them at this rate instead of every frame.
-	private static readonly HUD_UPDATE_INTERVAL_MS = 150;
-	private lastHudUpdateMs = 0;
-	private lastDebugTimeText = "";
-	private lastDebugTimeScaleText = "";
-	private lastSliderValue = "";
-
-	constructor(scene: Scene) {
+	constructor(engine: EngineContext, scene: SceneContext) {
 		WorldEnvironment.instance = this;
+		this.engine = engine;
 		this.scene = scene;
-		this.timeSlider = document.getElementById(
-			"timeSlider",
-		) as HTMLInputElement | null;
 		this.createLights();
 		this.createSkybox();
 	}
 
-	private createLights() {
-		this.hemiLight = new HemisphericLight(
-			"hemiLight",
-			new Vector3(100, 11, 55),
-			this.scene,
+	private createLights(): void {
+		this.hemiLight = createHemisphericLight(
+			[0.1, 1, 0.1],
+			SETTING_PARAMS.HEMISPHERIC_LIGHT_INTENSITY,
 		);
-		// Hemispheric "up" should point toward the sky, not the ground.
-		this.hemiLight.direction = new Vector3(0.1, 1, 0.1);
-		this.hemiLight.intensity = SETTING_PARAMS.HEMISPHERIC_LIGHT_INTENSITY;
 
-		// Directional sun light used by non-chunk StandardMaterials (boats/items/etc.).
-		this.dirLight = new DirectionalLight(
-			"sunLight",
-			GLOBAL_VALUES.skyLightDirection.clone(),
-			this.scene,
-		);
-		this.dirLight.intensity = 1.0;
+		const dir = GLOBAL_VALUES.skyLightDirection;
+		this.dirLight = createDirectionalLight([dir.x, dir.y, dir.z], 1.0);
 	}
 
-	private createSkybox() {
-		// Skybox
-		this.skybox = MeshBuilder.CreateSphere(
-			"skyBox",
-			{ diameter: 50000.11, segments: 1 },
-			this.scene,
-		);
-		this.skybox.isPickable = false;
-		this.skybox.infiniteDistance = true;
-		this.skybox.ignoreCameraMaxZ = true;
-
-		// Register the new sky shader
-		Effect.ShadersStore.skyVertexShader = SkyVertexShader;
-		Effect.ShadersStore.skyFragmentShader = SkyFragmentShader;
-
-		// Create a ShaderMaterial using the sky shader
-		const skyboxMaterial = new ShaderMaterial(
-			"skyShaderMaterial",
-			this.scene,
-			{
-				vertex: "sky",
-				fragment: "sky",
-			},
-			{
-				attributes: ["position"],
-				uniforms: ["worldViewProjection", "sunDirection"],
-			},
-		);
-
-		skyboxMaterial.backFaceCulling = false;
-		skyboxMaterial.disableDepthWrite = true;
-
-		// Update the sun's direction uniform every frame
-		skyboxMaterial.onBind = () => {
-			const effect = skyboxMaterial.getEffect();
-			if (effect) {
-				GLOBAL_VALUES.skyLightDirection.negateToRef(this.negateScratch);
-				effect.setVector3("sunDirection", this.negateScratch);
-			}
-		};
-
-		this.skybox.setEnabled(true);
-		this.skybox.material = skyboxMaterial;
+	private createSkybox(): void {
+		this.skybox = createSphere(this.engine);
+		this.skyMaterial = createSkyMaterial(this.engine, this.scene);
+		this.skybox.material = this.skyMaterial;
+		// Lite has no infiniteDistance flag, so we keep the dome centred on the
+		// camera each frame (see update()) and size it just inside the camera far
+		// plane (default 10000) so it is not clipped. The sky shader uses the
+		// normalized view direction, so it reads as an infinite dome.
+		const cam = this.scene.camera;
+		const r = cam ? 0.9 * cam.farPlane : 9000;
+		this.skybox.scaling.set(r, r, r);
+		// Sky tint behind the dome so any gap reads as sky, not black.
+		this.scene.clearColor = { r: 0.5, g: 0.7, b: 0.9, a: 1.0 };
+		addToScene(this.scene, this.skybox);
 	}
 
-	public update() {
+	public update(deltaMs: number): void {
+		// Lite has no infiniteDistance flag, so keep the dome centred on the
+		// camera and sized just inside the far plane (recomputed in case the
+		// camera was created after construction).
+		const cam = this.scene.camera;
+		if (this.skybox && cam) {
+			this.skybox.position.copyFrom(getCameraPosition(cam));
+			const r = 0.9 * cam.farPlane;
+			this.skybox.scaling.set(r, r, r);
+		}
+
 		if (this.isPaused) return;
-		// Increment time of day based on frame delta time
-		this.timeOfDay += this.scene.getEngine().getDeltaTime() * this.timeScale;
+
+		this.timeOfDay += deltaMs * this.timeScale;
 		this.timeOfDay %= SETTING_PARAMS.DAY_DURATION_MS;
 
-		// Compute smooth solar parameters (CPU)
 		const t = this.timeOfDay / SETTING_PARAMS.DAY_DURATION_MS; // 0..1
-		const angle = t * Math.PI * 2; // full orbit
+		const angle = t * Math.PI * 2;
 
-		// Use spherical coordinates:
-		// - azimuth rotates horizontally
-		// - elevationAngle is limited so sun rises/sets smoothly
-		const maxElevation = 1.1; // radians (~28.6°). Tune to taste.
-		const elevationAngle = Math.sin(angle) * maxElevation; // -max..max
+		const maxElevation = 1.1;
+		const elevationAngle = Math.sin(angle) * maxElevation;
 
-		// Cartesian direction (sun direction vector, normalized on assignment)
 		const sx = Math.cos(elevationAngle) * Math.cos(angle);
 		const sz = Math.cos(elevationAngle) * Math.sin(angle);
 		const sy = Math.sin(elevationAngle);
 
-		// GLOBAL_VALUES.skyLightDirection is expected normalized
-		// (sx,sy,sz) is already unit-length by trig identity
 		GLOBAL_VALUES.skyLightDirection.x = -sx;
 		GLOBAL_VALUES.skyLightDirection.y = -sy;
 		GLOBAL_VALUES.skyLightDirection.z = -sz;
 
-		// Sun intensity driven by elevation (zero below horizon)
-		const sunIntensity = Math.max(0.0, Math.sin(angle)); // 0..1, tune multiplier below
+		const sunIntensity = Math.max(0.0, Math.sin(angle));
 
-		// Update engine directional light if present (direction points FROM light)
 		if (this.dirLight) {
-			this.dirLight.direction.copyFrom(GLOBAL_VALUES.skyLightDirection);
-			// Scale base intensity with elevation (tune multiplier)
 			this.dirLight.intensity = 1.0 * sunIntensity;
-			const reflectivity = sunIntensity * (this.wetness * 0.95);
-			this.dirLight.specular.set(reflectivity, reflectivity, reflectivity);
 		}
-		// For debug display (throttled to ~6 Hz; the actual sun motion is
-		// computed above at full frame rate).
-		const nowMs = performance.now();
-		if (
-			nowMs - this.lastHudUpdateMs >=
-			WorldEnvironment.HUD_UPDATE_INTERVAL_MS
-		) {
-			this.lastHudUpdateMs = nowMs;
-			const timeAsHour = (this.timeOfDay / SETTING_PARAMS.DAY_DURATION_MS) * 24;
-			const hour = Math.floor(timeAsHour);
-			const minute = Math.floor((timeAsHour - hour) * 60);
-			const second = Math.floor(((timeAsHour - hour) * 60 - minute) * 60);
-			const timeText = `${String(hour).padStart(2, "0")}:${String(
-				minute,
-			).padStart(2, "0")}:${String(second).padStart(2, "0")}`;
-			if (timeText !== this.lastDebugTimeText) {
-				PlayerHud.updateDebugInfo("Time of Day", timeText, "world");
-				this.lastDebugTimeText = timeText;
-			}
-			const scaleText = `${this.timeScale.toFixed(2)}x`;
-			if (scaleText !== this.lastDebugTimeScaleText) {
-				PlayerHud.updateDebugInfo("Time Scale", scaleText, "world");
-				this.lastDebugTimeScaleText = scaleText;
-			}
-			// Update the time slider's position (skip while the user is
-			// actively dragging so we don't fight their input).
-			if (this.timeSlider && document.activeElement !== this.timeSlider) {
-				const sliderValue = (
-					(this.timeOfDay / SETTING_PARAMS.DAY_DURATION_MS) *
-					1000
-				).toString();
-				if (sliderValue !== this.lastSliderValue) {
-					this.timeSlider.value = sliderValue;
-					this.lastSliderValue = sliderValue;
-				}
-			}
+
+		if (this.skyMaterial) {
+			// Sky disc/gradient must point TOWARD the sun (+sunPos). Chunk
+			// lighting keeps using GLOBAL_VALUES.skyLightDirection (=-sunPos),
+			// which ChunkMesher negates back to +sunPos, so only the sky
+			// uniform is flipped here.
+			setShaderUniform(this.skyMaterial, "sunDirection", [sx, sy, sz]);
 		}
 	}
 
@@ -192,8 +126,12 @@ export class WorldEnvironment {
 	}
 
 	public dispose(): void {
-		this.skybox.dispose();
-		this.dirLight.dispose();
-		this.hemiLight.dispose();
+		if (this.skybox && this.scene) {
+			removeFromScene(this.scene, this.skybox);
+		}
+		this.skybox = null;
+		this.skyMaterial = null;
+		this.dirLight = null;
+		this.hemiLight = null;
 	}
 }

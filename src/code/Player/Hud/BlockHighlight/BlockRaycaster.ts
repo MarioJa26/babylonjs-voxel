@@ -1,4 +1,18 @@
-import { Matrix, Ray, Vector3 } from "@babylonjs/core";
+import {
+	lengthSqVec3,
+	Matrix,
+	setVec3,
+	transformCoordinatesVec3ToRef,
+	transformNormalVec3ToRef,
+	vec3Zero,
+} from "@babylonjs/core";
+import {
+	addVec3InPlace,
+	lengthVec3,
+	scaleVec3InPlace,
+	type Vec3,
+	vec3,
+} from "@babylonjs/lite";
 import { REACH_DISTANCE } from "@/code/Shared/Constants";
 import { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { Chunk } from "@/code/World/Chunk/Chunk";
@@ -40,6 +54,9 @@ export type BlockRaycastHit = {
 
 type FaceHit = { t: number; nx: number; ny: number; nz: number };
 
+/** Minimal ray shape (Lite has no core `Ray`). */
+type RayLike = { origin: Vec3; direction: Vec3; length: number };
+
 /** All results are written into these shared objects — callers must not retain references across frames. */
 const _sharedHit: BlockRaycastHit = {
 	x: 0,
@@ -54,12 +71,12 @@ const _sharedHit: BlockRaycastHit = {
 	dynamicContext: null,
 };
 const _sharedFaceHit: FaceHit = { t: 0, nx: 0, ny: 0, nz: 0 };
-const _sharedVec3 = new Vector3(0, 0, 0);
-const _sharedVec3b = new Vector3(0, 0, 0);
-const _sharedLocalOrigin = new Vector3(0, 0, 0);
-const _sharedLocalDir = new Vector3(0, 0, 0);
-const _sharedWorldNormal = new Vector3(0, 0, 0);
-const _sharedWorldCenter = new Vector3(0, 0, 0);
+const _sharedVec3 = vec3Zero();
+const _sharedVec3b = vec3Zero();
+const _sharedLocalOrigin = vec3Zero();
+const _sharedLocalDir = vec3Zero();
+const _sharedWorldNormal = vec3Zero();
+const _sharedWorldCenter = vec3Zero();
 const _sharedInvMatrix = new Matrix();
 const _sharedWorldMatrix = new Matrix();
 const _sharedBoatContext: {
@@ -81,13 +98,30 @@ const _sharedBoatContext: {
 	localHitNy: 0,
 	localHitNz: 0,
 };
-let _sharedRay: Ray | null = null;
+let _sharedRay: RayLike | null = null;
 
-function getForwardRay(player: Player, length: number): Ray {
+function getForwardRay(player: Player, length: number): RayLike {
 	if (!_sharedRay) {
-		_sharedRay = new Ray(new Vector3(0, 0, 0), new Vector3(0, 0, 1), 1);
+		_sharedRay = {
+			origin: vec3Zero(),
+			direction: vec3(0, 0, 1),
+			length,
+		};
 	}
-	player.playerCamera.playerCamera.getForwardRayToRef(_sharedRay, length);
+	const cam = player.playerCamera.playerCamera;
+	const px = cam.position.x;
+	const py = cam.position.y;
+	const pz = cam.position.z;
+	let dx = cam.target.x - px;
+	let dy = cam.target.y - py;
+	let dz = cam.target.z - pz;
+	const len = Math.hypot(dx, dy, dz) || 1;
+	dx /= len;
+	dy /= len;
+	dz /= len;
+	setVec3(_sharedRay.origin, px, py, pz);
+	setVec3(_sharedRay.direction, dx, dy, dz);
+	_sharedRay.length = length;
 	return _sharedRay;
 }
 
@@ -450,7 +484,7 @@ function traceRayDda(
 }
 
 function raycastFirstTerrainBlock(
-	ray: Ray,
+	ray: RayLike,
 	shouldHit: (x: number, y: number, z: number, blockId: number) => boolean,
 ): BlockRaycastHit | null {
 	const ox = ray.origin.x,
@@ -539,7 +573,7 @@ function raycastFirstTerrainBlock(
 }
 
 function raycastFirstBoatBlock(
-	ray: Ray,
+	ray: RayLike,
 	shouldHit: (x: number, y: number, z: number, blockId: number) => boolean,
 ): BlockRaycastHit | null {
 	let bestT = Infinity;
@@ -560,32 +594,30 @@ function raycastFirstBoatBlock(
 }
 
 function raycastSingleBoatChunk(
-	ray: Ray,
+	ray: RayLike,
 	boatChunk: BoatChunk,
 	shouldHit: (x: number, y: number, z: number, blockId: number) => boolean,
 ): boolean {
 	const visualRoot = boatChunk.visualRoot;
 	const center = boatChunk.center;
 
-	visualRoot.computeWorldMatrix(false);
-	_sharedWorldMatrix.copyFrom(visualRoot.getWorldMatrix());
-	_sharedWorldMatrix.invertToRef(_sharedInvMatrix);
+	const wm = visualRoot.worldMatrix;
+	for (let i = 0; i < 16; i++) {
+		_sharedWorldMatrix.m[i] = wm[i];
+	}
+	Matrix.InvertToRef(_sharedWorldMatrix, _sharedInvMatrix);
 
-	Vector3.TransformCoordinatesToRef(
+	transformCoordinatesVec3ToRef(
 		ray.origin,
 		_sharedInvMatrix,
 		_sharedLocalOrigin,
 	);
-	_sharedLocalOrigin.addInPlace(center);
-	Vector3.TransformNormalToRef(
-		ray.direction,
-		_sharedInvMatrix,
-		_sharedLocalDir,
-	);
+	addVec3InPlace(_sharedLocalOrigin, center);
+	transformNormalVec3ToRef(ray.direction, _sharedInvMatrix, _sharedLocalDir);
 
-	const localDirLen = _sharedLocalDir.length();
+	const localDirLen = lengthSqVec3(_sharedLocalDir);
 	if (localDirLen <= 1e-8) return false;
-	_sharedLocalDir.scaleInPlace(1 / localDirLen);
+	scaleVec3InPlace(_sharedLocalDir, 1 / localDirLen);
 
 	const boundsHit = intersectRayAabb(
 		_sharedLocalOrigin.x,
@@ -609,8 +641,8 @@ function raycastSingleBoatChunk(
 	if (!boundsHit) return false;
 
 	const tStart = Math.max(0, boundsHit.t);
-
-	_sharedVec3.set(
+	setVec3(
+		_sharedVec3,
 		_sharedLocalOrigin.x + _sharedLocalDir.x * (tStart + 1e-6),
 		_sharedLocalOrigin.y + _sharedLocalDir.y * (tStart + 1e-6),
 		_sharedLocalOrigin.z + _sharedLocalDir.z * (tStart + 1e-6),
@@ -685,8 +717,8 @@ function raycastSingleBoatChunk(
 
 			if (!hasHit) return DdaVisitResult.Skip;
 
-			_sharedWorldNormal.set(hitNx, hitNy, hitNz);
-			Vector3.TransformNormalToRef(
+			setVec3(_sharedWorldNormal, hitNx, hitNy, hitNz);
+			transformNormalVec3ToRef(
 				_sharedWorldNormal,
 				_sharedWorldMatrix,
 				_sharedVec3b,
@@ -747,21 +779,21 @@ export function pickBlock(player: Player): number | null {
 }
 
 /** Returns placement grid position (face-adjacent block), or null. */
-export function getPlacementPosition(player: Player): Vector3 | null {
+export function getPlacementPosition(player: Player): Vec3 | null {
 	const hit = raycastFirstBlock(player, (_x, _y, _z, id) =>
 		isTargetableBlock(id),
 	);
 	if (!hit) return null;
-	_sharedVec3.set(
+	return setVec3(
+		_sharedVec3,
 		Math.floor(hit.x + hit.nx),
 		Math.floor(hit.y + hit.ny),
 		Math.floor(hit.z + hit.nz),
 	);
-	return _sharedVec3;
 }
 
 export type PlacementHit = {
-	pos: Vector3;
+	pos: Vec3;
 	nx: number;
 	ny: number;
 	nz: number;
@@ -772,7 +804,7 @@ export type PlacementHit = {
 };
 
 const _sharedPlacementHit: PlacementHit = {
-	pos: new Vector3(),
+	pos: vec3Zero(),
 	nx: 0,
 	ny: 0,
 	nz: 0,
@@ -793,7 +825,8 @@ export function getPlacementHit(player: Player): PlacementHit | null {
 	const wy = ray.origin.y + ray.direction.y * hit.t;
 	const wz = ray.origin.z + ray.direction.z * hit.t;
 
-	_sharedPlacementHit.pos.set(
+	setVec3(
+		_sharedPlacementHit.pos,
 		Math.floor(hit.x + hit.nx),
 		Math.floor(hit.y + hit.ny),
 		Math.floor(hit.z + hit.nz),

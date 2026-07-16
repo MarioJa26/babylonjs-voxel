@@ -1,4 +1,13 @@
-import { type Mesh, type Observer, type Scene, Vector3 } from "@babylonjs/core";
+import {
+	copyVec3,
+	lengthSqVec3,
+	type Mesh,
+	type Scene,
+	setVec3,
+	vec3Zero,
+} from "@babylonjs/core";
+import { type LiteMetadata, onBeforeRender, type Vec3 } from "@babylonjs/lite";
+import { MetadataContainer } from "@/code/Entities/MetadataContainer";
 import { Map1 } from "@/code/Maps/Map1";
 import type { Player } from "@/code/Player/Player";
 import { Chunk, getChunk } from "@/code/World/Chunk/Chunk";
@@ -12,6 +21,8 @@ import {
 	_blockShapeInfoScratch,
 	Axis,
 	type BlockShapeInfo,
+	createVoxelColliderBlockSampler,
+	voxelStepUp,
 	VoxelAabbCollider,
 } from "@/code/World/Collision/VoxelAabbCollider";
 import {
@@ -63,24 +74,24 @@ export abstract class NeutralMob {
 	#hp: number;
 	#maxHp: number;
 	#bodyMesh!: Mesh;
-	#velocity = new Vector3();
+	#velocity = vec3Zero();
 	#collider: VoxelAabbCollider;
 	#state: NeutralMobState = NeutralMobState.Idle;
 	#stateTimer = 0;
 	#facingAngle = 0;
 	#scene: Scene;
-	#playerPosition: Vector3 | null = null;
+	#playerPosition: Vec3 | null = null;
 	#isDisposed = false;
 	#chunkBindingHandle?: symbol;
 	#fleeTimer = 0;
 	#breathTimer = BREATH_MAX;
 	#wanderSpeed: number;
 	#halfHeight: number;
-	#tmpUp = new Vector3();
-	#tmpFwd = new Vector3();
-	#tmpGround = new Vector3();
-	#tmpAway = new Vector3();
-	#tmpProbe = new Vector3();
+	#tmpUp = vec3Zero();
+	#tmpFwd = vec3Zero();
+	#tmpGround = vec3Zero();
+	#tmpAway = vec3Zero();
+	#tmpProbe = vec3Zero();
 
 	#path: PathWaypoint[] = [];
 	#pathIndex = 0;
@@ -99,13 +110,14 @@ export abstract class NeutralMob {
 
 	// --- Static shared observer ---
 
-	static #observer: Observer<Scene> | null = null;
+	static #observerRegistered = false;
 	static readonly #allMobs = new Set<NeutralMob>();
 
 	static #ensureObserver(): void {
-		if (NeutralMob.#observer) return;
-		NeutralMob.#observer = Map1.mainScene.onBeforeRenderObservable.add(() => {
-			const dt = Map1.mainScene.getEngine().getDeltaTime() / 1000;
+		if (NeutralMob.#observerRegistered) return;
+		NeutralMob.#observerRegistered = true;
+		onBeforeRender(Map1.mainScene, (deltaMs: number) => {
+			const dt = deltaMs / 1000;
 			if (dt <= 0) return;
 			for (const mob of NeutralMob.#allMobs) {
 				if (!mob.#bodyMesh) continue;
@@ -124,15 +136,11 @@ export abstract class NeutralMob {
 		for (const mob of [...NeutralMob.#allMobs]) {
 			mob.dispose();
 		}
-		if (NeutralMob.#observer) {
-			Map1.mainScene.onBeforeRenderObservable.remove(NeutralMob.#observer);
-			NeutralMob.#observer = null;
-		}
 	}
 
 	// --- Constructor ---
 
-	protected constructor(hp: number, scene: Scene, halfSize: Vector3) {
+	protected constructor(hp: number, scene: Scene, halfSize: Vec3) {
 		this.#hp = hp;
 		this.#maxHp = hp;
 		this.#scene = scene;
@@ -142,27 +150,22 @@ export abstract class NeutralMob {
 
 		this.#collider = new VoxelAabbCollider(
 			halfSize,
-			(wx, wy, wz): BlockShapeInfo | null => {
-				const blockId = getBlockByWorldCoords(wx, wy, wz);
-				if (!isCollidableBlock(blockId)) return null;
-				if (isFenceBlockId(blockId)) {
-					const mask = computeFenceNeighborMask(wx, wy, wz, (fx, fy, fz) =>
-						getBlockByWorldCoords(fx, fy, fz),
-					);
-					_blockShapeInfoScratch.shape = getFenceDynamicShape(mask);
-					_blockShapeInfoScratch.rotation = 0;
-					_blockShapeInfoScratch.slice = 0;
-					_blockShapeInfoScratch.flipY = false;
-					return _blockShapeInfoScratch;
-				}
-				const state = getBlockStateByWorldCoords(wx, wy, wz);
-				const shape = getShapeForBlockId(blockId);
-				_blockShapeInfoScratch.shape = shape;
-				_blockShapeInfoScratch.rotation = shape.rotateY ? state & 3 : 0;
-				_blockShapeInfoScratch.slice = 0;
-				_blockShapeInfoScratch.flipY = shape.allowFlipY && (state & 4) !== 0;
-				return _blockShapeInfoScratch;
-			},
+			createVoxelColliderBlockSampler(
+				(wx, wy, wz) => {
+					const blockId = getBlockByWorldCoords(wx, wy, wz);
+					if (!isCollidableBlock(blockId)) return null;
+					return {
+						blockId,
+						blockState: getBlockStateByWorldCoords(wx, wy, wz),
+					};
+				},
+				{
+					getFenceDynamicShape,
+					getShapeForBlockId,
+					isFenceBlockId,
+					computeFenceNeighborMask,
+				},
+			),
 			EPSILON,
 		);
 
@@ -173,10 +176,12 @@ export abstract class NeutralMob {
 
 	protected setBodyMesh(mesh: Mesh): void {
 		this.#bodyMesh = mesh;
-		if (!mesh.metadata) {
-			mesh.metadata = new Map<string, unknown>();
+		let meta = mesh.metadata as MetadataContainer | undefined;
+		if (!meta) {
+			meta = new MetadataContainer();
+			mesh.metadata = meta as unknown as LiteMetadata;
 		}
-		mesh.metadata.set("mob", this);
+		meta.set("mob", this);
 
 		this.configureChunkLoader(this.#scene);
 
@@ -197,8 +202,8 @@ export abstract class NeutralMob {
 
 	// --- Public interface ---
 
-	get position(): Vector3 {
-		return this.#bodyMesh.position;
+	get position(): Vec3 {
+		return this.#bodyMesh.position as unknown as Vec3;
 	}
 
 	get hp(): number {
@@ -213,7 +218,7 @@ export abstract class NeutralMob {
 		return this.#maxHp;
 	}
 
-	setPlayerPosition(pos: Vector3): void {
+	setPlayerPosition(pos: Vec3): void {
 		this.#playerPosition = pos;
 	}
 
@@ -236,7 +241,7 @@ export abstract class NeutralMob {
 	dispose(): void {
 		if (this.#isDisposed) return;
 		this.#isDisposed = true;
-		this.#bodyMesh.metadata?.delete("mob");
+		(this.#bodyMesh.metadata as MetadataContainer | undefined)?.delete("mob");
 		unregisterChunkBoundEntity(this.#chunkBindingHandle);
 		this.#chunkBindingHandle = undefined;
 		NeutralMob.#allMobs.delete(this);
@@ -290,7 +295,7 @@ export abstract class NeutralMob {
 	// --- Core tick ---
 
 	tick(dt: number): void {
-		if (this.#bodyMesh.isDisposed()) {
+		if (this.#isDisposed) {
 			NeutralMob.#allMobs.delete(this);
 			return;
 		}
@@ -315,12 +320,12 @@ export abstract class NeutralMob {
 				this.#pathIndex = 0;
 				this.#fleeTimer -= dt;
 				const away = this.#tmpAway;
-				away.copyFrom(this.#bodyMesh.position);
+				copyVec3(away, this.#bodyMesh.position as unknown as Vec3);
 				away.x -= this.#playerPosition.x;
 				away.y -= this.#playerPosition.y;
 				away.z -= this.#playerPosition.z;
 				away.y = 0;
-				if (away.lengthSquared() > 0.01) {
+				if (lengthSqVec3(away) > 0.01) {
 					this.#facingAngle = Math.atan2(away.x, away.z);
 				}
 			}
@@ -519,15 +524,15 @@ export abstract class NeutralMob {
 			canStepUp &&
 			(this.#velocity.x !== 0 || this.#velocity.z !== 0)
 		) {
-			const pos = this.#bodyMesh.position;
+			const pos = this.#bodyMesh.position as unknown as Vec3;
 			const savedX = pos.x;
 			const savedY = pos.y;
 			const savedZ = pos.z;
 			if (this.#attemptStepUp(pos, axis, delta)) return;
-			pos.set(savedX, savedY, savedZ);
+			setVec3(pos, savedX, savedY, savedZ);
 		}
 		this.#collider.moveAxis(
-			this.#bodyMesh.position,
+			this.#bodyMesh.position as unknown as Vec3,
 			this.#velocity,
 			axis,
 			delta,
@@ -535,35 +540,15 @@ export abstract class NeutralMob {
 		);
 	}
 
-	#attemptStepUp(pos: Vector3, axis: Axis.X | Axis.Z, delta: number): boolean {
-		const up = this.#tmpUp;
-		const fwd = this.#tmpFwd;
-		const ground = this.#tmpGround;
-
-		for (let rise = 0.25; rise <= 1.0; rise += 0.25) {
-			up.copyFrom(pos);
-			up.y += rise;
-			if (this.#collider.overlaps(up)) continue;
-
-			fwd.copyFrom(up);
-			if (axis === Axis.X) fwd.x += delta;
-			else fwd.z += delta;
-			if (this.#collider.overlaps(fwd)) continue;
-
-			ground.copyFrom(fwd);
-			ground.y -= 0.08;
-			if (!this.#collider.overlaps(ground)) continue;
-
-			pos.copyFrom(fwd);
+	#attemptStepUp(pos: Vec3, axis: Axis.X | Axis.Z, delta: number): boolean {
+		return voxelStepUp(this.#collider, pos, axis, delta, 1.0, () => {
 			this.#velocity.y = 0;
-			return true;
-		}
-		return false;
+		});
 	}
 
 	#isGrounded(): boolean {
 		const probe = this.#tmpProbe;
-		probe.copyFrom(this.#bodyMesh.position);
+		copyVec3(probe, this.#bodyMesh.position as unknown as Vec3);
 		probe.y -= 0.01;
 		return this.#collider.overlaps(probe);
 	}

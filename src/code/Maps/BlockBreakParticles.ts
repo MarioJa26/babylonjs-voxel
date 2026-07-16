@@ -1,4 +1,5 @@
-import { Color4, ParticleSystem, type Scene, Vector3 } from "@babylonjs/core";
+import { Color4, type Scene } from "@babylonjs/core";
+import { type Vec3, vec3 } from "@babylonjs/lite";
 import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
 import { BlockTextures } from "../World/Texture/BlockTextures";
 import { FaceName } from "../World/Texture/FaceName";
@@ -8,14 +9,14 @@ import {
 	tileSize,
 } from "../World/Texture/TextureAtlasFactory";
 
-let particleSystem: ParticleSystem;
+let particleSystem: any;
 const _scratchColor1 = new Color4(0, 0, 0, 0);
 const _scratchColor2 = new Color4(0, 0, 0, 0);
 const _scratchColorDead = new Color4(0, 0, 0, 0);
 
 export function play(
 	scene: Scene,
-	position: Vector3,
+	position: Vec3,
 	blockId: number,
 	packedLight: number,
 ) {
@@ -88,11 +89,13 @@ export function play(
 	}
 
 	particleSystem.manualEmitCount = 64;
-	particleSystem.start();
+	// `particleSystem` is a Lite placeholder (no real Babylon ParticleSystem in
+	// the WebGPU port yet) — guard the start call so mining never throws.
+	particleSystem.start?.();
 }
 
 function init(scene: Scene) {
-	particleSystem = new ParticleSystem("blockBreakParticles", 1200, scene);
+	particleSystem = {};
 
 	const atlas = getDiffuse();
 	if (atlas) {
@@ -107,13 +110,11 @@ function init(scene: Scene) {
 	particleSystem.minLifeTime = 0.5;
 	particleSystem.maxLifeTime = 1.0;
 	particleSystem.emitRate = 1000;
-	particleSystem.gravity = new Vector3(0, -10, 0);
-	particleSystem.direction1 = new Vector3(-1, 1, -1);
-	particleSystem.direction2 = new Vector3(1, 2, 1);
+	particleSystem.gravity = vec3(0, -10, 0);
+	particleSystem.direction1 = vec3(-1, 1, -1);
+	particleSystem.direction2 = vec3(1, 2, 1);
 	particleSystem.minEmitPower = 0;
 	particleSystem.maxEmitPower = 1;
 	particleSystem.updateSpeed = 0.0166;
 	particleSystem.renderingGroupId = 1;
-	particleSystem.blendMode = ParticleSystem.BLENDMODE_STANDARD;
-	particleSystem.billboardMode = ParticleSystem.BILLBOARDMODE_ALL;
 }

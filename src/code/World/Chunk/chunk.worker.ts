@@ -35,6 +35,22 @@ const generator = new WorldGenerator(GenerationParams);
 const _compressSeen = new Uint8Array(65536);
 const _compressUniqueIds = new Uint16Array(17);
 
+// PERF: Allocate compressed-block outputs in SharedArrayBuffers so they are
+// *shared* (not transferred) to the main thread and can be handed directly to
+// the mesh worker without the main-thread SAB copy in Chunk.ensureSharedBacking.
+// Falls back to a plain ArrayBuffer where SharedArrayBuffer is unavailable.
+const _HAS_SAB = typeof SharedArrayBuffer !== "undefined";
+function sharedU8(len: number): Uint8Array {
+	return new Uint8Array(
+		_HAS_SAB ? new SharedArrayBuffer(len) : new ArrayBuffer(len),
+	);
+}
+function sharedU16(len: number): Uint16Array {
+	return new Uint16Array(
+		_HAS_SAB ? new SharedArrayBuffer(len * 2) : new ArrayBuffer(len * 2),
+	);
+}
+
 function compressBlocks(blocks: Uint8Array): {
 	isUniform: boolean;
 	uniformBlockId: number;
@@ -69,7 +85,7 @@ function compressBlocks(blocks: Uint8Array): {
 	}
 
 	if (uniqueCount <= 16) {
-		const palette = new Uint16Array(uniqueCount);
+		const palette = sharedU16(uniqueCount);
 		let pi = 0;
 
 		// Build palette from tracked unique IDs (avoids scanning all 65536 entries).
@@ -87,7 +103,7 @@ function compressBlocks(blocks: Uint8Array): {
 		}
 
 		const len = (blocks.length + 1) >> 1;
-		const packedArray = new Uint8Array(new ArrayBuffer(len));
+		const packedArray = sharedU8(len);
 
 		// PERF: process pairs to eliminate the per-voxel branch and let V8
 		// auto-vectorise the inner loop.  For 32³ = 32768 voxels this halves
@@ -115,7 +131,7 @@ function compressBlocks(blocks: Uint8Array): {
 	// water source state so state survives serialization round-trips.
 	const hasWater = seen[WATER_BLOCK_ID] !== 0;
 	if (hasWater) {
-		const u16 = new Uint16Array(blocks.length);
+		const u16 = sharedU16(blocks.length);
 		for (let i = 0; i < blocks.length; i++) {
 			const id = blocks[i];
 			u16[i] = id === WATER_BLOCK_ID ? WATER_BLOCK_ID : id;

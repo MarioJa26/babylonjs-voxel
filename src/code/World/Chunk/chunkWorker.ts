@@ -88,6 +88,7 @@ export class ChunkWorker {
 	readonly #voxelMeshMsg: {
 		type: WorkerTaskType.GenerateFullMesh;
 		chunkId: bigint;
+		meshRevision: number;
 		lod: number;
 		chunk_size: number;
 		block_array: Uint8Array | Uint16Array;
@@ -99,6 +100,7 @@ export class ChunkWorker {
 	} = {
 		type: WorkerTaskType.GenerateFullMesh,
 		chunkId: 0n,
+		meshRevision: 0,
 		lod: 0,
 		chunk_size: Chunk.SIZE,
 		block_array: new Uint8Array(0),
@@ -315,6 +317,7 @@ export class ChunkWorker {
 
 		const msg = this.#voxelMeshMsg;
 		msg.chunkId = chunk.id;
+		msg.meshRevision = chunk.meshRevision;
 		msg.lod = forcedLod ?? chunk.lodLevel ?? 0;
 		msg.chunk_size = size;
 		msg.block_array = chunk.block_array!;

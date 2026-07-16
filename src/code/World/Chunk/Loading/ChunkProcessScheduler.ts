@@ -1,5 +1,6 @@
 import { type SavedChunkData, WorldStorage } from "../../WorldStorage";
 import type { Chunk } from "../Chunk";
+import { flushDirtyMergedGroups } from "../MergedMeshManager";
 import type { QueuedChunkRequest } from "./ChunkStreamingController";
 import { type InFlightProcessState, ProcessStage } from "./ChunkTypes";
 
@@ -411,6 +412,14 @@ export class ChunkProcessScheduler {
 							}
 						}
 
+						// Rebuild any merged-group meshes dirtied while placing
+						// (recycled) chunks in this slice. Doing this synchronously
+						// here — rather than deferring to the separate rAF flush —
+						// means a reused chunk's GPU mesh is replaced with the new
+						// geometry before the frame renders, instead of showing the
+						// group's previous (stale) composition for one or more frames.
+						flushDirtyMergedGroups();
+
 						if (state.applyLoadedIndex >= state.validLoadBatch.length) {
 							state.stage =
 								state.chunksNeedingFullHydration.size > 0
@@ -469,7 +478,6 @@ export class ChunkProcessScheduler {
 
 							this.adapter.applyHydratedChunkFromSavedData(chunk, savedData);
 						}
-
 						if (state.hydrateIndex >= state.hydrateChunks.length) {
 							state.stage = ProcessStage.ScheduleGeneration;
 						}

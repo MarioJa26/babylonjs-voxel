@@ -6,11 +6,11 @@
 // Only the members actually accessed by Controls are declared here.
 // ---------------------------------------------------------------------------
 
-import type { Vector3 } from "@babylonjs/core";
+import type { Vec3 } from "@babylonjs/lite";
 import type { IControls } from "./IControls";
 
 export interface IPlayerContext {
-	readonly position: Vector3;
+	readonly position: Vec3;
 	keyboardControls: IControls<unknown>;
 	readonly defaultKeyboardControls: IControls<unknown>;
 }

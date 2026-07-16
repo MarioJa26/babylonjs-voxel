@@ -1,82 +1,79 @@
 import {
-	Effect,
-	Mesh,
-	MeshBuilder,
-	RawTexture,
-	type Scene,
-	ShaderMaterial,
-	Texture,
-	Vector2,
-	Vector3,
-	VertexBuffer,
-} from "@babylonjs/core";
+	addToScene,
+	createGround,
+	createMeshFromData,
+	createTexture2DFromPixels,
+	type EngineContext,
+	getCameraPosition,
+	loadTexture2D,
+	type Mesh,
+	onBeforeRender,
+	type SceneContext,
+	setShaderUniform,
+	updateMeshNormals,
+	updateMeshPositions,
+	updateTexture2DFromPixels,
+} from "@babylonjs/lite";
 import { Map1 } from "@/code/Maps/Map1";
-import { worldToChunkCoord } from "@/code/Shared/ChunkCoordUtils";
+import MapFog from "@/code/Maps/MapFog";
+import { worldToChunkCoord } from "@/code/Shared/VoxelMath";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 import {
-	distantTerrainFragmentShader,
-	distantTerrainVertexShader,
-	distantWaterFragmentShader,
-	distantWaterVertexShader,
-} from "@/code/World/Light/DistantTerrainShader";
+	createDistantTerrainMaterial,
+	createDistantWaterMaterial,
+} from "@/code/World/Light/DistantTerrainShaderLite";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import {
 	atlasTileSize,
-	getDiffuse,
-	setDiffuse,
+	getDiffuseTexture2D,
+	setDiffuseTexture2D,
 } from "@/code/World/Texture/TextureAtlasFactory";
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
 
 const USE_LA_TILE_TEXTURE = false;
-const _cachedZeroVec = new Vector3(0, 0, 0);
 
 let mesh: Mesh;
 let waterMesh: Mesh;
-let material: ShaderMaterial;
-let waterMaterial: ShaderMaterial;
-let diffuseAtlasTexture: Texture | null = null;
+let material: ReturnType<typeof createDistantTerrainMaterial>;
+let waterMaterial: ReturnType<typeof createDistantWaterMaterial>;
 
-let surfaceTileLookupTexture: RawTexture;
+let surfaceTileLookupTexture: ReturnType<typeof createTexture2DFromPixels>;
 let surfaceTileLookupData: Uint8Array;
 
 let radius: number;
 const gridStep = 1;
 let gridResolution: number;
+let vertexCount: number;
 
 let sharedPositions: Int16Array;
 let sharedNormals: Int8Array;
 let sharedSurfaceTiles: Uint8Array;
 
-const gridOrigin = new Vector2();
+let floatPositions: Float32Array;
+let floatNormals: Float32Array;
+
+const gridOrigin: [number, number] = [0, 0];
 
 let lastChunkX: number = Number.NaN;
 let lastChunkZ: number = Number.NaN;
 
-let positionVB: VertexBuffer | undefined;
-let normalVB: VertexBuffer | undefined;
+let engine: EngineContext;
+let scene: SceneContext;
 
 let initialized = false;
 
 // =====================================================================
-// Helpers
+// Grid mesh construction
 // =====================================================================
 
-function createEmptyGridMesh(name: string, scene: Scene): Mesh {
-	const m = new Mesh(name, scene);
-	const engine = scene.getEngine();
-
+function createEmptyGridMesh(engine: EngineContext, name: string): Mesh {
 	const res = gridResolution;
-	const vertexCount = res * res;
 	const quadCount = (res - 1) * (res - 1);
 	const indexCount = quadCount * 6;
 
-	const useUint32 = vertexCount > 65535 && !!engine.getCaps().uintIndices;
-	const indices = useUint32
-		? new Uint32Array(indexCount)
-		: new Uint16Array(indexCount);
-
+	const indices = new Uint32Array(indexCount);
 	let k = 0;
 	for (let z = 0; z < res - 1; z++) {
 		const row = z * res;
@@ -88,102 +85,72 @@ function createEmptyGridMesh(name: string, scene: Scene): Mesh {
 			const i3 = i2 + 1;
 
 			indices[k++] = i0;
-			indices[k++] = i2;
 			indices[k++] = i1;
+			indices[k++] = i2;
 
 			indices[k++] = i1;
-			indices[k++] = i2;
 			indices[k++] = i3;
+			indices[k++] = i2;
 		}
 	}
-	m.setIndices(indices);
 
-	const positions = new Int16Array(vertexCount * 3);
-	const normals = new Int8Array(vertexCount * 3);
-
+	const positions = new Float32Array(vertexCount * 3);
+	const normals = new Float32Array(vertexCount * 3);
 	for (let i = 1; i < normals.length; i += 3) {
-		normals[i] = 127;
+		normals[i] = 1;
 	}
 
-	positionVB = new VertexBuffer(
-		engine,
-		positions,
-		VertexBuffer.PositionKind,
-		true,
-		false,
-		3,
-		false,
-		0,
-		undefined,
-		VertexBuffer.SHORT,
-		false,
-	);
-	m.setVerticesBuffer(positionVB);
-
-	normalVB = new VertexBuffer(
-		engine,
-		normals,
-		VertexBuffer.NormalKind,
-		true,
-		false,
-		3,
-		false,
-		0,
-		undefined,
-		VertexBuffer.BYTE,
-		true,
-	);
-	m.setVerticesBuffer(normalVB);
-
+	const m = createMeshFromData(engine, name, positions, normals, indices);
+	m.pickable = false;
 	return m;
 }
 
-function bindDiffuseTexture() {
-	if (!diffuseAtlasTexture) {
-		diffuseAtlasTexture = getDiffuse();
-	}
-
-	if (!diffuseAtlasTexture) {
-		diffuseAtlasTexture = new Texture(
-			"/texture/diffuse_atlas.png",
-			Map1.mainScene,
-			{
-				noMipmap: false,
-				samplingMode: Texture.NEAREST_SAMPLINGMODE,
-			},
-		);
-		setDiffuse(diffuseAtlasTexture);
-	}
-
-	if (diffuseAtlasTexture) {
-		diffuseAtlasTexture.wrapU = Texture.CLAMP_ADDRESSMODE;
-		diffuseAtlasTexture.wrapV = Texture.CLAMP_ADDRESSMODE;
-		material.setTexture("diffuseTexture", diffuseAtlasTexture);
-		material.setFloat("useTexture", 1);
+function ensureFloatBuffers() {
+	if (!floatPositions || floatPositions.length !== vertexCount * 3) {
+		floatPositions = new Float32Array(vertexCount * 3);
+		floatNormals = new Float32Array(vertexCount * 3);
 	}
 }
 
-function bindCommonUniforms(effect: Effect, scene: Scene) {
-	effect.setVector3("lightDirection", GLOBAL_VALUES.skyLightDirection);
+// =====================================================================
+// Per-frame uniforms (Lite has no onBind — drive from onBeforeRender)
+// =====================================================================
 
-	const sunElevation = -GLOBAL_VALUES.skyLightDirection.y + 0.1;
-	const _raw = sunElevation * 4;
-	const sunLightIntensity = _raw < 0.0 ? 0.0 : _raw > 1.0 ? 1.0 : _raw;
-	effect.setFloat("sunLightIntensity", sunLightIntensity);
+function updateUniforms() {
+	if (!material || !waterMaterial) return;
 
-	effect.setVector3(
-		"cameraPosition",
-		scene.activeCamera?.position || _cachedZeroVec,
-	);
-	effect.setFloat4(
-		"vFogInfos",
-		scene.fogMode,
-		scene.fogStart,
-		scene.fogEnd,
-		scene.fogDensity,
-	);
-	effect.setColor3("vFogColor", scene.fogColor);
+	const lightDir = GLOBAL_VALUES.skyLightDirection;
+	const shaderDirY = -lightDir.y;
+	const rawBlend = 1 - Math.min(1, Math.max(0, (shaderDirY + 0.2) / 0.4));
+	const blend = rawBlend * rawBlend * (3 - 2 * rawBlend);
+
+	const lx = -lightDir.x * (1 - blend);
+	const ly = -lightDir.y * (1 - blend) + blend;
+	const lz = -lightDir.z * (1 - blend);
+
+	const rawIntensity = (-lightDir.y + 0.1) * 4.0;
+	const sunLightIntensity =
+		rawIntensity < 0.0 ? 0.0 : rawIntensity > 1.0 ? 1.0 : rawIntensity;
+
+	const camera = scene ? scene.camera : null;
+	const camY = camera ? getCameraPosition(camera).y : 0;
+	const isUnderWater = camY < GenerationParams.SEA_LEVEL;
+	const start = MapFog.getFogStart(isUnderWater);
+	const end = MapFog.getFogEnd(isUnderWater);
+	const fogInfos: [number, number, number, number] = [0, start, end, 0];
+	const fogColor = MapFog.getFogColor(isUnderWater);
+
+	for (const mat of [material, waterMaterial]) {
+		setShaderUniform(mat, "lightDirection", [lx, ly, lz]);
+		setShaderUniform(mat, "sunLightIntensity", sunLightIntensity);
+		setShaderUniform(mat, "fogInfos", fogInfos);
+		setShaderUniform(mat, "fogColor", fogColor);
+	}
 }
+
+// =====================================================================
+// Terrain data application
+// =====================================================================
 
 function applyTerrainData(
 	pos: Int16Array,
@@ -192,54 +159,67 @@ function applyTerrainData(
 	worldX: number,
 	worldZ: number,
 ) {
+	ensureFloatBuffers();
+
+	for (let i = 0; i < vertexCount * 3; i++) {
+		floatPositions[i] = pos[i];
+		floatNormals[i] = nrm[i] / 127;
+	}
+
+	updateMeshPositions(engine, mesh, floatPositions);
+	updateMeshNormals(engine, mesh, floatNormals);
+
 	mesh.position.set(worldX, -2, worldZ);
-
 	waterMesh.position.set(worldX, GenerationParams.SEA_LEVEL, worldZ);
-	gridOrigin.x = worldX - radius * Chunk.SIZE;
-	gridOrigin.y = worldZ - radius * Chunk.SIZE;
-	material.setVector2("gridOriginWorld", gridOrigin);
 
-	positionVB?.update(pos);
-	normalVB?.update(nrm);
+	gridOrigin[0] = worldX - radius * Chunk.SIZE;
+	gridOrigin[1] = worldZ - radius * Chunk.SIZE;
+	setShaderUniform(material, "gridOriginWorld", [gridOrigin[0], gridOrigin[1]]);
 
 	if (USE_LA_TILE_TEXTURE) {
-		if (tiles.length !== surfaceTileLookupData.length) {
-			for (let i = 0, j = 0; i < tiles.length; i += 2, j += 2) {
-				surfaceTileLookupData[j] = tiles[i];
-				surfaceTileLookupData[j + 1] = tiles[i + 1];
-			}
-		} else {
-			surfaceTileLookupData.set(tiles);
-		}
+		surfaceTileLookupData.set(tiles.subarray(0, surfaceTileLookupData.length));
 	} else {
-		for (let src = 0, dst = 0; src < tiles.length; src += 2, dst += 4) {
-			surfaceTileLookupData[dst] = tiles[src];
-			surfaceTileLookupData[dst + 1] = tiles[src + 1];
-			surfaceTileLookupData[dst + 2] = 0;
-			surfaceTileLookupData[dst + 3] = 255;
+		for (let s = 0, d = 0; s < tiles.length; s += 2, d += 4) {
+			surfaceTileLookupData[d] = tiles[s];
+			surfaceTileLookupData[d + 1] = tiles[s + 1];
+			surfaceTileLookupData[d + 2] = 0;
+			surfaceTileLookupData[d + 3] = 255;
 		}
 	}
 
-	surfaceTileLookupTexture.update(surfaceTileLookupData);
+	updateTexture2DFromPixels(
+		engine,
+		surfaceTileLookupTexture,
+		surfaceTileLookupData,
+		0,
+		0,
+		gridResolution,
+		gridResolution,
+	);
 }
 
 // =====================================================================
 // Public API
 // =====================================================================
 
-export function init() {
+export async function initDistantTerrain(): Promise<void> {
 	if (initialized) return;
+
+	engine = Map1.engine;
+	scene = Map1.mainScene;
 
 	radius = SETTING_PARAMS.DISTANT_RENDER_DISTANCE;
 	const segments = Math.floor((radius * 2) / gridStep);
 	gridResolution = segments + 1;
+	vertexCount = gridResolution * gridResolution;
 	const size = radius * 2 * Chunk.SIZE;
 
 	if (
 		typeof SharedArrayBuffer === "undefined" ||
 		(typeof self !== "undefined" &&
 			"crossOriginIsolated" in self &&
-			!self.crossOriginIsolated)
+			!(self as unknown as { crossOriginIsolated: boolean })
+				.crossOriginIsolated)
 	) {
 		throw new Error(
 			"DistantTerrain requires SharedArrayBuffer. " +
@@ -248,8 +228,6 @@ export function init() {
 				"Cross-Origin-Embedder-Policy: require-corp.",
 		);
 	}
-
-	const vertexCount = gridResolution * gridResolution;
 
 	const positionsBuffer = new SharedArrayBuffer(
 		vertexCount * 3 * Int16Array.BYTES_PER_ELEMENT,
@@ -273,46 +251,28 @@ export function init() {
 		gridStep,
 	);
 
-	mesh = createEmptyGridMesh("distantTerrain", Map1.mainScene);
-	mesh.sideOrientation = Mesh.FRONTSIDE;
+	mesh = createEmptyGridMesh(engine, "distantTerrain");
 
-	waterMesh = MeshBuilder.CreateGround(
-		"distantWater",
-		{
-			width: size,
-			height: size,
-			subdivisions: 1,
-			updatable: false,
-		},
-		Map1.mainScene,
-	);
+	waterMesh = createGround(engine, {
+		width: size,
+		height: size,
+		subdivisions: 1,
+	});
+	waterMesh.pickable = false;
 
 	if (USE_LA_TILE_TEXTURE) {
-		surfaceTileLookupData = new Uint8Array(gridResolution * gridResolution * 2);
-		surfaceTileLookupTexture = RawTexture.CreateLuminanceAlphaTexture(
-			surfaceTileLookupData,
-			gridResolution,
-			gridResolution,
-			Map1.mainScene,
-			false,
-			false,
-			Texture.NEAREST_SAMPLINGMODE,
-		);
+		surfaceTileLookupData = new Uint8Array(vertexCount * 2);
 	} else {
-		surfaceTileLookupData = new Uint8Array(gridResolution * gridResolution * 4);
-		surfaceTileLookupTexture = RawTexture.CreateRGBATexture(
-			surfaceTileLookupData,
-			gridResolution,
-			gridResolution,
-			Map1.mainScene,
-			false,
-			false,
-			Texture.NEAREST_SAMPLINGMODE,
-		);
+		surfaceTileLookupData = new Uint8Array(vertexCount * 4);
 	}
 
-	surfaceTileLookupTexture.wrapU = Texture.CLAMP_ADDRESSMODE;
-	surfaceTileLookupTexture.wrapV = Texture.CLAMP_ADDRESSMODE;
+	surfaceTileLookupTexture = createTexture2DFromPixels(
+		engine,
+		surfaceTileLookupData,
+		gridResolution,
+		gridResolution,
+		{ addressModeU: "clamp-to-edge", addressModeV: "clamp-to-edge" },
+	);
 
 	ChunkWorkerPool.getInstance().onDistantTerrainGenerated = (data) => {
 		const worldX = data.centerChunkX * Chunk.SIZE;
@@ -326,95 +286,55 @@ export function init() {
 		);
 	};
 
-	Effect.ShadersStore.distantTerrainVertexShader = distantTerrainVertexShader;
-	Effect.ShadersStore.distantTerrainFragmentShader =
-		distantTerrainFragmentShader;
-	Effect.ShadersStore.distantWaterVertexShader = distantWaterVertexShader;
-	Effect.ShadersStore.distantWaterFragmentShader = distantWaterFragmentShader;
-
-	material = new ShaderMaterial(
-		"distantTerrainMat",
-		Map1.mainScene,
-		{ vertex: "distantTerrain", fragment: "distantTerrain" },
-		{
-			attributes: ["position", "normal"],
-			uniforms: [
-				"world",
-				"worldViewProjection",
-				"lightDirection",
-				"sunLightIntensity",
-				"atlasTileSize",
-				"textureScale",
-				"useTexture",
-				"tileGridResolution",
-				"gridOriginWorld",
-				"gridWorldStep",
-				"vFogInfos",
-				"vFogColor",
-				"cameraPosition",
-			],
-			samplers: ["diffuseTexture", "tileLookupTexture"],
-		},
-	);
-
-	material.onBind = (m) => {
-		const effect = material.getEffect();
-		if (!effect) return;
-		bindCommonUniforms(effect, m.getScene());
-	};
-
-	material.setFloat("atlasTileSize", atlasTileSize);
-	material.setFloat("textureScale", 32);
-	material.setFloat("tileGridResolution", gridResolution);
-	material.setFloat("gridWorldStep", Chunk.SIZE * gridStep);
-	material.setFloat("useTexture", 0);
-	material.setTexture("tileLookupTexture", surfaceTileLookupTexture);
-
-	bindDiffuseTexture();
-	mesh.material = material;
-
-	waterMaterial = new ShaderMaterial(
-		"distantWaterMat",
-		Map1.mainScene,
-		{ vertex: "distantWater", fragment: "distantWater" },
-		{
-			attributes: ["position"],
-			uniforms: [
-				"world",
-				"worldViewProjection",
-				"lightDirection",
-				"sunLightIntensity",
-				"vFogInfos",
-				"vFogColor",
-				"cameraPosition",
-			],
-		},
-	);
-
-	waterMaterial.onBind = (m) => {
-		const effect = waterMaterial.getEffect();
-		if (!effect) return;
-		bindCommonUniforms(effect, m.getScene());
-	};
-
-	waterMesh.material = waterMaterial;
-
-	mesh.isPickable = false;
-	mesh.checkCollisions = false;
-	mesh.receiveShadows = false;
-	mesh.doNotSyncBoundingInfo = true;
-	mesh.alwaysSelectAsActiveMesh = true;
-
-	waterMesh.isPickable = false;
-	waterMesh.checkCollisions = false;
-	waterMesh.receiveShadows = false;
-	waterMesh.doNotSyncBoundingInfo = true;
-	waterMesh.alwaysSelectAsActiveMesh = true;
-
-	if (Map1.mainScene._activeMeshesFrozen) {
-		Map1.mainScene.unfreezeActiveMeshes();
-		Map1.mainScene.freezeActiveMeshes();
+	let diffuse = getDiffuseTexture2D();
+	if (!diffuse) {
+		diffuse = await loadTexture2D(engine, "/texture/diffuse_atlas.png", {
+			mipMaps: false,
+			magFilter: "nearest",
+			minFilter: "nearest",
+		});
+		setDiffuseTexture2D(diffuse);
 	}
+
+	material = createDistantTerrainMaterial({
+		engine,
+		scene,
+		diffuseTexture: diffuse,
+		tileLookupTexture: surfaceTileLookupTexture,
+		atlasTileSize,
+		textureScale: 32,
+		tileGridResolution: gridResolution,
+		gridWorldStep: Chunk.SIZE * gridStep,
+	});
+	mesh.material = material;
+	// Draw the distant terrain as a pure background layer: render it BEFORE the
+	// chunk meshes (renderOrder 0) so every chunk drawn afterwards paints on top
+	// of it. The terrain keeps depthTest/depthWrite on for correct self-occlusion
+	// of its own hills, but because chunks are drawn after it, the clipmap is
+	// always rendered behind the real chunks regardless of depth-buffer state.
+	mesh.renderOrder = 2;
+	addToScene(scene, mesh);
+
+	waterMaterial = createDistantWaterMaterial({
+		engine,
+		scene,
+		diffuseTexture: null,
+		tileLookupTexture: null,
+		atlasTileSize,
+		textureScale: 32,
+		tileGridResolution: gridResolution,
+		gridWorldStep: Chunk.SIZE * gridStep,
+	});
+	waterMesh.material = waterMaterial;
+	// Draw the distant water as part of the background layer, just after the
+	// terrain (renderOrder -2) and before the chunk meshes (renderOrder 0). With
+	// chunks drawn afterwards it is always painted over by real terrain/water, so
+	// the flat clipmap plane can never appear in front of chunks. depthWrite is
+	// off so it never occludes anything itself.
+	waterMesh.renderOrder = 2;
+	addToScene(scene, waterMesh);
+
+	onBeforeRender(scene, updateUniforms);
 
 	initialized = true;
 }
