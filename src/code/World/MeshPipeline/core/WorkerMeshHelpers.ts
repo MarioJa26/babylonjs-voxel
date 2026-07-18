@@ -65,6 +65,30 @@ let _ctxPs = 0;
 let _ctxPs2 = 0;
 let _ctxNeighbors: (Uint8Array | Uint16Array | undefined)[] = [];
 
+// PERF: Exposed for the hot meshing loops (processCell / computeAO) so they can
+// index the padded grid directly instead of paying a per-voxel closure-call
+// for getBlock/getLight. Single-threaded worker: these are valid only for the
+// duration of the current build.
+export const PaddedGrid = {
+	get block(): Uint16Array {
+		return _ctxPadded;
+	},
+	get light(): Uint8Array {
+		return _ctxPaddedLight;
+	},
+	get ps(): number {
+		return _ctxPs;
+	},
+	get ps2(): number {
+		return _ctxPs2;
+	},
+};
+
+// Inline padded-grid index (flattened, with the +1 border offset baked in).
+export function paddedIndex(x: number, y: number, z: number): number {
+	return x + 1 + (y + 1) * _ctxPs + (z + 1) * _ctxPs2;
+}
+
 const _readBlock = (x: number, y: number, z: number, _fallback = 0): number => {
 	return _ctxPadded[x + 1 + (y + 1) * _ctxPs + (z + 1) * _ctxPs2];
 };

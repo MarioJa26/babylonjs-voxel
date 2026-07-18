@@ -1,5 +1,5 @@
-import type { Mesh, Scene } from "@babylonjs/core";
-import { type Vec3, vec3 } from "@babylonjs/lite";
+import type { Mesh } from "@babylonjs/core";
+import { type SceneContext, type Vec3, vec3 } from "@babylonjs/lite";
 import type { Mount } from "../Entities/Mount";
 import type { PlayerCamera } from "./PlayerCamera";
 import type { SimpleCharacterController } from "./SimpleCharacterController";
@@ -22,7 +22,7 @@ export class PlayerBodyControlState {
 }
 
 export interface IPlayerBody {
-	scene: Scene;
+	scene: SceneContext;
 	camera: PlayerCamera;
 	inputDirection: Vec3;
 	wantJump: number;

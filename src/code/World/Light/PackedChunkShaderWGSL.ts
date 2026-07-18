@@ -1,4 +1,16 @@
-export function buildPackedVertexWGSL(): string {
+export function buildPackedVertexWGSL(arenaCount: number = 1): string {
+	const arenas = Math.max(1, arenaCount | 0);
+
+	// Babylon Lite injects the `var<storage, read> faceDataN : array<vec4<u32>>`
+	// declarations (with @group/@binding) from each material's `storageBuffers`
+	// list, so we must NOT declare them here. We only generate the `loadFace`
+	// helper that selects among them via the per-instance arena index.
+	let loadFaceBody = "";
+	for (let i = 0; i < arenas; i++) {
+		loadFaceBody += `  if (arena == ${i}u) { return faceData${i}[idx]; }\n`;
+	}
+	loadFaceBody += "  return faceData0[idx];\n";
+
 	return /* wgsl */ `
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
@@ -8,7 +20,7 @@ struct VSOut {
   @location(3) @interpolate(flat) vTangent : vec3<f32>,
   @location(5) @interpolate(flat) vNormal : vec3<f32>,
   @location(6) vAO : f32,
-  @location(7) @interpolate(flat) vLight : vec2<f32>,
+   @location(7) @interpolate(flat) vLight : vec2<f32>,
   @location(9) @interpolate(flat) vMeta : f32,
   @location(10) vFogFactor : f32,
   @location(11) vFogColor : vec3<f32>,
@@ -17,10 +29,17 @@ struct VSOut {
 };
 
 // Thin-instance matrix columns (locations 1..4): Babylon Lite's instancing path
-// injects the per-instance 4x4 matrix as four vec4 vertex attributes. We only
-// use world3.w, which carries this mesh's faceBase offset into the shared
-// faceData arena; the rest of the matrix is unused (the vertex position is
-// derived from faceData, not the matrix).
+// injects the per-instance 4x4 matrix as four vec4 vertex attributes.
+//   world3.w carries this mesh's faceBase offset into its face arena.
+//   world0.w carries the arena index (which faceDataN buffer to read).
+// The rest of the matrix is unused (the vertex position is derived from
+// faceData, not the matrix).
+
+// Resolve a face from the arena selected by the arena index. The if-chain is
+// generated to match the number of bound faceDataN buffers (dynamic indexing
+// of an array of storage buffers is not portable in WGSL).
+fn loadFace(arena : u32, idx : u32) -> vec4<u32> {
+${loadFaceBody}}
 
 const LIGHT_BLUE = vec3<f32>(0.6, 0.75, 0.95);
 const DEEP_BLUE = vec3<f32>(0.1, 0.2, 0.4);
@@ -95,9 +114,11 @@ fn cornerVOf(corner : u32) -> f32 {
 fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32, @builtin(vertex_index) vertexIndex : u32) -> VSOut {
   var out : VSOut;
 
-  // faceBase for this mesh is carried in the thin-instance matrix (world3.w).
+  // faceBase for this mesh is carried in the thin-instance matrix (world3.w);
+  // the arena index (which faceDataN buffer to read) is in world0.w.
   let faceBase = u32(input.world3.w);
-  let face = faceData[faceBase + instanceIndex];
+  let arena = u32(input.world0.w);
+  let face = loadFace(arena, faceBase + instanceIndex);
 
   // If your WGSL target supports unpack4xU8, this whole block collapses to:
   //   let bytes0 = unpack4xU8(face.x);

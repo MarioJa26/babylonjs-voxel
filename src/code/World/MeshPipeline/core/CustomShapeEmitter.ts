@@ -37,6 +37,7 @@ import {
 	getShapeInfo,
 	isGreedyCompatiblePackedBlock,
 } from "./ShapePipeline";
+import { PaddedGrid } from "./WorkerMeshHelpers";
 
 const EPS = 1e-6;
 
@@ -639,7 +640,7 @@ function emitBoxFace(
 			const uAxis = (axis + 1) % 3;
 			const vAxis = (axis + 2) % 3;
 
-			ao = computeAO(ctx, nx, ny, nz, uAxis, vAxis);
+			ao = computeAO(PaddedGrid.block, nx, ny, nz, uAxis, vAxis);
 		}
 	}
 

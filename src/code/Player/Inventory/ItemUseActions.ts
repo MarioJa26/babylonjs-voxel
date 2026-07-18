@@ -1,7 +1,6 @@
 import { vec3 } from "@babylonjs/lite";
 import { CustomBoat } from "@/code/Entities/CustomBoat";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
-import { Map1 } from "@/code/Maps/Map1";
 import { getBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
 import { pickWaterTarget } from "../Hud/BlockHighlight/BlockRaycaster";
@@ -43,11 +42,6 @@ export const ItemUseActions: Record<string, ItemUseAction> = {
 			}
 		}
 
-		new CustomBoat(
-			Map1.mainScene,
-			player,
-			GenerationParams.SEA_LEVEL,
-			spawnPos,
-		);
+		new CustomBoat(player, GenerationParams.SEA_LEVEL, spawnPos);
 	},
 };

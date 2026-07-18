@@ -1,11 +1,9 @@
+import { Color4, copyVec3, MeshBuilder, Quaternion } from "@babylonjs/core";
 import {
-	Color4,
-	copyVec3,
-	MeshBuilder,
-	Quaternion,
-	type Scene,
-} from "@babylonjs/core";
-import { createStandardMaterial, type Vec3 } from "@babylonjs/lite";
+	createStandardMaterial,
+	type SceneContext,
+	type Vec3,
+} from "@babylonjs/lite";
 import type { ShapeDefinition } from "../Shape/BlockShapes";
 
 export const enum Axis {
@@ -30,7 +28,7 @@ type IsSolidBlockAt = (
 ) => BlockShapeInfo | null;
 
 type VoxelAabbDebugOptions = {
-	scene: Scene;
+	scene: SceneContext;
 	name?: string;
 	position?: Vec3;
 	renderingGroupId?: number;

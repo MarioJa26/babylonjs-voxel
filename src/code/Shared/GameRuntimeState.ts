@@ -62,15 +62,3 @@ export function setIsPaused(value: boolean): void {
 	if (value) _openUi.add(UiFocus.pauseMenu);
 	else _openUi.delete(UiFocus.pauseMenu);
 }
-
-// Lazy scene accessor — set by Map1 after construction.
-// Used by Player for pointer lock without importing Map1.
-let _getScene: (() => import("@babylonjs/core").Scene) | null = null;
-export function setSceneAccessor(
-	fn: () => import("@babylonjs/core").Scene,
-): void {
-	_getScene = fn;
-}
-export function getScene(): import("@babylonjs/core").Scene | null {
-	return _getScene ? _getScene() : null;
-}

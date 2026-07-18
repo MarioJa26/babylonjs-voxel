@@ -11,8 +11,8 @@ import {
 import { vec3Zero } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import MapFog from "@/code/Maps/MapFog";
+import { isEyeUnderwater } from "@/code/Maps/UnderWaterEffect";
 import { CHUNK_SIZE } from "@/code/Shared/VoxelMath";
-import { GenerationParams } from "../../Generation/NoiseAndParameters/GenerationParams";
 import { GLOBAL_VALUES } from "../GLOBAL_VALUES";
 import {
 	createLod2OpaqueMaterial,
@@ -44,6 +44,7 @@ import {
 	createPackedChunkMesh,
 	destroyPackedArenas,
 	disposePackedMesh,
+	getFaceArenaCount,
 	initPackedChunkArenas,
 	type PackedMeshInput,
 	updatePackedChunkMesh,
@@ -188,8 +189,11 @@ function setMaterialGroupUniforms(m: ShaderMaterial): void {
 function pushFogUniforms(): void {
 	populateMaterialList();
 	const camera = sceneRef ? sceneRef.camera : null;
-	const camY = camera ? getCameraPosition(camera).y : 0;
-	const isUnderWater = camY < GenerationParams.SEA_LEVEL;
+	let isUnderWater = false;
+	if (camera) {
+		const p = getCameraPosition(camera);
+		isUnderWater = isEyeUnderwater(p.x, p.y, p.z);
+	}
 	const start = MapFog.getFogStart(isUnderWater);
 	const end = MapFog.getFogEnd(isUnderWater);
 	fogInfosArray[0] = 0;
@@ -262,6 +266,7 @@ export async function initAtlas(): Promise<void> {
 		tintLUT: LOD_TINT_LUT,
 		atlasTileSize: tileSize,
 		atlasMaxTiles,
+		faceArenaCount: getFaceArenaCount(),
 	};
 
 	if (!atlasMaterial) {
@@ -311,7 +316,7 @@ function buildLiteMesh(
 	originY: number,
 	originZ: number,
 	_isTransparent: boolean,
-): Mesh {
+): Mesh | null {
 	const extent = GROUP_SIZE * CHUNK_SIZE;
 
 	const input = _packedInput;
@@ -338,13 +343,15 @@ function buildLiteMesh(
 	input.boundsMax[2] = originZ + extent;
 
 	if (!existingMesh) {
-		return createPackedChunkMesh(input);
+		const created = createPackedChunkMesh(input);
+		if (!created) return existingMesh;
+		return created;
 	}
 
-	updatePackedChunkMesh(existingMesh, input);
+	const updated = updatePackedChunkMesh(existingMesh, input);
 	if (existingMesh.material !== material) existingMesh.material = material;
 	existingMesh.renderOrder = 0;
-	return existingMesh;
+	return updated ?? existingMesh;
 }
 
 setOnGroupMeshNeedsRebuild((group) => {
@@ -360,7 +367,7 @@ setOnGroupMeshNeedsRebuild((group) => {
 
 	if (group.cachedOpaque && group.cachedOpaque.faceCount > 0) {
 		const mat = getOpaqueMaterialForLodBucket(lod);
-		group.opaqueMeshRef = buildLiteMesh(
+		const built = buildLiteMesh(
 			group,
 			group.opaqueMeshRef as any,
 			group.cachedOpaque,
@@ -371,7 +378,10 @@ setOnGroupMeshNeedsRebuild((group) => {
 			oz,
 			false,
 		) as any;
-		(group.opaqueMeshRef as any).isVisible = true;
+		if (built) {
+			group.opaqueMeshRef = built;
+			(built as any).isVisible = true;
+		}
 	} else if (group.opaqueMeshRef) {
 		(group.opaqueMeshRef as any).isVisible = false;
 	}
@@ -381,7 +391,7 @@ setOnGroupMeshNeedsRebuild((group) => {
 		// Only near (lod 0) transparent meshes carry `meta` in color.w; LOD
 		// transparent meshes keep tintBucket for their tint shaders.
 		const isNearTransparent = mat === transparentMaterial;
-		group.transparentMeshRef = buildLiteMesh(
+		const built = buildLiteMesh(
 			group,
 			group.transparentMeshRef as any,
 			group.cachedTransparent,
@@ -392,7 +402,10 @@ setOnGroupMeshNeedsRebuild((group) => {
 			oz,
 			isNearTransparent,
 		) as any;
-		(group.transparentMeshRef as any).isVisible = true;
+		if (built) {
+			group.transparentMeshRef = built;
+			(built as any).isVisible = true;
+		}
 	} else if (group.transparentMeshRef) {
 		(group.transparentMeshRef as any).isVisible = false;
 	}
@@ -466,7 +479,7 @@ function createBoatChunkMesh(
 				mesh.material = matOpaque;
 			}
 		} else {
-			mesh = createPackedChunkMesh(input) as Mesh;
+			mesh = createPackedChunkMesh(input) as Mesh | null;
 		}
 	} else if (mesh) {
 		disposePackedMesh(mesh);
@@ -493,7 +506,7 @@ function createBoatChunkMesh(
 				tMesh.material = matTransparent;
 			}
 		} else {
-			tMesh = createPackedChunkMesh(input) as Mesh;
+			tMesh = createPackedChunkMesh(input) as Mesh | null;
 		}
 	} else if (tMesh) {
 		disposePackedMesh(tMesh);

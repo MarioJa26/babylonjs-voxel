@@ -55,10 +55,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 }
 `;
 
-export function createSkyMaterial(
-	engine: EngineContext,
-	scene: SceneContext,
-): ShaderMaterial {
+export function createSkyMaterial(): ShaderMaterial {
 	const material = createShaderMaterial({
 		name: "skyLite",
 		vertexSource: skyVertexWGSL,

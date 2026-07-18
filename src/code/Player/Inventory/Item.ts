@@ -1,7 +1,6 @@
 import type { ShaderMaterial } from "@babylonjs/core";
 import type { IUsable } from "@/code/Interface/IUsable";
 import type { BoatChunk } from "@/code/World/Boat/BoatChunk";
-import { tryCreateBoatFromMarker } from "@/code/World/Boat/BoatCreatorSystem";
 import { setBlock } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
 import { getSliceAxis } from "@/code/World/Shape/BlockShapeTransforms";
@@ -262,9 +261,6 @@ export class Item implements IUsable {
 			}
 
 			setBlock(pos.x, pos.y, pos.z, blockId, blockState);
-			if (blockId === BlockType.BoatCreator) {
-				tryCreateBoatFromMarker(player, pos.x, pos.y, pos.z);
-			}
 		}
 	}
 

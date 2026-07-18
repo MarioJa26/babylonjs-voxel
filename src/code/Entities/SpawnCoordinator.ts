@@ -1,5 +1,4 @@
-import type { Scene } from "@babylonjs/core";
-import { onBeforeRender, type Vec3 } from "@babylonjs/lite";
+import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
 import {
 	getBlockByWorldCoords,
 	getLightByWorldCoords,
@@ -22,14 +21,14 @@ const MAX_SPAWN_HEIGHT = 200;
 const _mobSnapshot: Mob[] = [];
 
 export class SpawnCoordinator {
-	#scene: Scene;
+	#scene: SceneContext;
 	#getPlayerPosition: () => Vec3;
 	#lastSpawnCheck = 0;
 	#disposed = false;
 	readonly #registry: MobRegistry;
 
 	constructor(
-		scene: Scene,
+		scene: SceneContext,
 		getPlayerPosition: () => Vec3,
 		registry: MobRegistry,
 	) {

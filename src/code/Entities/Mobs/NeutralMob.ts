@@ -2,11 +2,15 @@ import {
 	copyVec3,
 	lengthSqVec3,
 	type Mesh,
-	type Scene,
 	setVec3,
 	vec3Zero,
 } from "@babylonjs/core";
-import { type LiteMetadata, onBeforeRender, type Vec3 } from "@babylonjs/lite";
+import {
+	type LiteMetadata,
+	onBeforeRender,
+	type SceneContext,
+	type Vec3,
+} from "@babylonjs/lite";
 import { MetadataContainer } from "@/code/Entities/MetadataContainer";
 import { Map1 } from "@/code/Maps/Map1";
 import type { Player } from "@/code/Player/Player";
@@ -18,12 +22,10 @@ import {
 	unregisterChunkBoundEntity,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
-	_blockShapeInfoScratch,
 	Axis,
-	type BlockShapeInfo,
 	createVoxelColliderBlockSampler,
-	voxelStepUp,
 	VoxelAabbCollider,
+	voxelStepUp,
 } from "@/code/World/Collision/VoxelAabbCollider";
 import {
 	findLandSurface,
@@ -79,7 +81,7 @@ export abstract class NeutralMob {
 	#state: NeutralMobState = NeutralMobState.Idle;
 	#stateTimer = 0;
 	#facingAngle = 0;
-	#scene: Scene;
+	#scene: SceneContext;
 	#playerPosition: Vec3 | null = null;
 	#isDisposed = false;
 	#chunkBindingHandle?: symbol;
@@ -87,9 +89,7 @@ export abstract class NeutralMob {
 	#breathTimer = BREATH_MAX;
 	#wanderSpeed: number;
 	#halfHeight: number;
-	#tmpUp = vec3Zero();
-	#tmpFwd = vec3Zero();
-	#tmpGround = vec3Zero();
+
 	#tmpAway = vec3Zero();
 	#tmpProbe = vec3Zero();
 
@@ -104,7 +104,7 @@ export abstract class NeutralMob {
 
 	// --- Abstract hooks for subclasses ---
 
-	abstract configureChunkLoader(scene: Scene): void;
+	abstract configureChunkLoader(scene: SceneContext): void;
 	abstract getWanderSpeed(): number;
 	abstract onDeath(): void;
 
@@ -140,7 +140,7 @@ export abstract class NeutralMob {
 
 	// --- Constructor ---
 
-	protected constructor(hp: number, scene: Scene, halfSize: Vec3) {
+	protected constructor(hp: number, scene: SceneContext, halfSize: Vec3) {
 		this.#hp = hp;
 		this.#maxHp = hp;
 		this.#scene = scene;
@@ -196,7 +196,7 @@ export abstract class NeutralMob {
 		NeutralMob.#ensureObserver();
 	}
 
-	protected get scene(): Scene {
+	protected get scene(): SceneContext {
 		return this.#scene;
 	}
 

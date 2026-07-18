@@ -1,9 +1,10 @@
-import { Color3, type Mesh, type Scene } from "@babylonjs/core";
+import { Color3, type Mesh } from "@babylonjs/core";
 import {
 	addToScene,
 	createMeshFromData,
 	type LiteMetadata,
 	removeFromScene,
+	type SceneContext,
 	vec3,
 } from "@babylonjs/lite";
 import { Map1 } from "@/code/Maps/Map1";
@@ -29,14 +30,20 @@ export class Chicken extends NeutralMob {
 	readonly CHUNK_ENTITY_TYPE = "chicken_v1";
 
 	static #chunkLoaderRegistered = false;
-	static #chunkReloadScene: Scene | null = null;
+	static #chunkReloadScene: SceneContext | null = null;
 
 	#headMesh: Mesh;
 	#headMaterial: ReturnType<typeof createMobColorMaterial>;
 	#bodyMesh: Mesh;
 	#bodyMaterial: ReturnType<typeof createMobColorMaterial>;
 
-	constructor(x: number, y: number, z: number, scene: Scene, hp?: number) {
+	constructor(
+		x: number,
+		y: number,
+		z: number,
+		scene: SceneContext,
+		hp?: number,
+	) {
 		super(
 			hp ?? 4,
 			scene,
@@ -97,7 +104,7 @@ export class Chicken extends NeutralMob {
 
 	// --- Abstract implementations ---
 
-	configureChunkLoader(scene: Scene): void {
+	configureChunkLoader(scene: SceneContext): void {
 		Chicken.#chunkReloadScene = scene;
 		if (Chicken.#chunkLoaderRegistered) return;
 		Chicken.#chunkLoaderRegistered = true;

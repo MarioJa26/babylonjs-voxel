@@ -1,5 +1,4 @@
-import type { Scene } from "@babylonjs/core";
-import { type FogConfig, setFog } from "@babylonjs/lite";
+import { type FogConfig, type SceneContext, setFog } from "@babylonjs/lite";
 
 export default class MapFog {
 	public static readonly fogStartUnderWater = 1;
@@ -43,7 +42,7 @@ export default class MapFog {
 		return isUnderWater ? MapFog.fogColorUnderWater : MapFog.fogColorAboveWater;
 	}
 
-	public static applyToScene(scene: Scene, isUnderWater: boolean): void {
+	public static applyToScene(scene: SceneContext, isUnderWater: boolean): void {
 		const cfg: FogConfig = {
 			mode: MapFog.fogMode,
 			density: MapFog.fogDensity,
@@ -54,7 +53,7 @@ export default class MapFog {
 		setFog(scene, cfg);
 	}
 
-	constructor(scene: Scene) {
+	constructor(scene: SceneContext) {
 		MapFog.applyToScene(scene, true);
 	}
 }

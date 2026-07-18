@@ -1,5 +1,4 @@
-import type { Scene } from "@babylonjs/core";
-import { onSceneDispose, type Vec3 } from "@babylonjs/lite";
+import { onSceneDispose, type SceneContext, type Vec3 } from "@babylonjs/lite";
 import {
 	flushChunkBoundEntities,
 	flushModifiedChunks,
@@ -33,7 +32,7 @@ export class PlayerStatePersistence {
 	};
 
 	constructor(
-		private readonly scene: Scene,
+		private readonly scene: SceneContext,
 		private readonly player: Player,
 	) {
 		this.restoreFromLocalStorage();

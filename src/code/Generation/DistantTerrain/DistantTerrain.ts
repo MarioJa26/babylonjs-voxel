@@ -16,6 +16,7 @@ import {
 } from "@babylonjs/lite";
 import { Map1 } from "@/code/Maps/Map1";
 import MapFog from "@/code/Maps/MapFog";
+import { isEyeUnderwater } from "@/code/Maps/UnderWaterEffect";
 import { worldToChunkCoord } from "@/code/Shared/VoxelMath";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
@@ -133,8 +134,10 @@ function updateUniforms() {
 		rawIntensity < 0.0 ? 0.0 : rawIntensity > 1.0 ? 1.0 : rawIntensity;
 
 	const camera = scene ? scene.camera : null;
-	const camY = camera ? getCameraPosition(camera).y : 0;
-	const isUnderWater = camY < GenerationParams.SEA_LEVEL;
+	const camPos = camera ? getCameraPosition(camera) : null;
+	const isUnderWater = camPos
+		? isEyeUnderwater(camPos.x, camPos.y, camPos.z)
+		: false;
 	const start = MapFog.getFogStart(isUnderWater);
 	const end = MapFog.getFogEnd(isUnderWater);
 	const fogInfos: [number, number, number, number] = [0, start, end, 0];

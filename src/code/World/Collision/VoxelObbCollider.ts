@@ -4,17 +4,16 @@ import {
 	copyVec3,
 	MeshBuilder,
 	Quaternion,
-	type Scene,
 	StandardMaterial,
 	setVec3,
 } from "@babylonjs/core";
-import { type Vec3, vec3 } from "@babylonjs/lite";
+import { type SceneContext, type Vec3, vec3 } from "@babylonjs/lite";
 import { Axis } from "./VoxelAabbCollider";
 
 type IsSolidBlockAt = (x: number, y: number, z: number) => boolean;
 
 type VoxelObbDebugOptions = {
-	scene: Scene;
+	scene: SceneContext;
 	name?: string;
 	position?: Vec3;
 	renderingGroupId?: number;

@@ -1,7 +1,8 @@
 // MeshPipeline/core/AOPipeline.ts
 
-import type { BlockShapeInfo, MeshContext } from "../types/MeshTypes";
-import { FLAG_PARTIAL, FLAG_SOLID, getCachedFlags } from "./BlockFlags";
+import type { BlockShapeInfo } from "../types/MeshTypes";
+import { FLAG_PARTIAL, FLAG_SOLID, getCachedFlagsAndId } from "./BlockFlags";
+import { paddedIndex } from "./WorkerMeshHelpers";
 
 /**
  * Utility: determine if a block occludes light for AO.
@@ -36,41 +37,54 @@ export function isOccluder(
  * This version fixes the directional 1-off issue by explicitly anchoring the AO samples
  * on the outside side of the face, exactly like the geometry fix did for quad placement.
  */
+// Axis unit-vector LUTs (avoids per-axis ternary/branch in computeAO).
+const AXIS_DX = [1, 0, 0];
+const AXIS_DY = [0, 1, 0];
+const AXIS_DZ = [0, 0, 1];
+
 export function computeAO(
-	ctx: MeshContext,
+	blockArr: Uint16Array,
 	faceX: number,
 	faceY: number,
 	faceZ: number,
 	uAxis: number,
 	vAxis: number,
 ): number {
-	const getBlock = ctx.getBlock;
+	const ux = AXIS_DX[uAxis];
+	const uy = AXIS_DY[uAxis];
+	const uz = AXIS_DZ[uAxis];
 
-	const ux = uAxis === 0 ? 1 : 0;
-	const uy = uAxis === 1 ? 1 : 0;
-	const uz = uAxis === 2 ? 1 : 0;
-
-	const vx = vAxis === 0 ? 1 : 0;
-	const vy = vAxis === 1 ? 1 : 0;
-	const vz = vAxis === 2 ? 1 : 0;
+	const vx = AXIS_DX[vAxis];
+	const vy = AXIS_DY[vAxis];
+	const vz = AXIS_DZ[vAxis];
 
 	// 8 unique positions — edge-adjacent cells shared by two corners each,
 	// plus four corner-diagonal cells. Fetched once, reused across all corners.
-	const fMu = getCachedFlags(getBlock(faceX - ux, faceY - uy, faceZ - uz, 0));
-	const fPu = getCachedFlags(getBlock(faceX + ux, faceY + uy, faceZ + uz, 0));
-	const fMv = getCachedFlags(getBlock(faceX - vx, faceY - vy, faceZ - vz, 0));
-	const fPv = getCachedFlags(getBlock(faceX + vx, faceY + vy, faceZ + vz, 0));
-	const fMumv = getCachedFlags(
-		getBlock(faceX - ux - vx, faceY - uy - vy, faceZ - uz - vz, 0),
+	// Each read indexes the padded grid directly (no getBlock closure) and uses
+	// the combined flags+id cache; only the low flags bits are needed for AO.
+	const fMu = getCachedFlagsAndId(
+		blockArr[paddedIndex(faceX - ux, faceY - uy, faceZ - uz)],
 	);
-	const fPumv = getCachedFlags(
-		getBlock(faceX + ux - vx, faceY + uy - vy, faceZ + uz - vz, 0),
+	const fPu = getCachedFlagsAndId(
+		blockArr[paddedIndex(faceX + ux, faceY + uy, faceZ + uz)],
 	);
-	const fPupv = getCachedFlags(
-		getBlock(faceX + ux + vx, faceY + uy + vy, faceZ + uz + vz, 0),
+	const fMv = getCachedFlagsAndId(
+		blockArr[paddedIndex(faceX - vx, faceY - vy, faceZ - vz)],
 	);
-	const fMupv = getCachedFlags(
-		getBlock(faceX - ux + vx, faceY - uy + vy, faceZ - uz + vz, 0),
+	const fPv = getCachedFlagsAndId(
+		blockArr[paddedIndex(faceX + vx, faceY + vy, faceZ + vz)],
+	);
+	const fMumv = getCachedFlagsAndId(
+		blockArr[paddedIndex(faceX - ux - vx, faceY - uy - vy, faceZ - uz - vz)],
+	);
+	const fPumv = getCachedFlagsAndId(
+		blockArr[paddedIndex(faceX + ux - vx, faceY + uy - vy, faceZ + uz - vz)],
+	);
+	const fPupv = getCachedFlagsAndId(
+		blockArr[paddedIndex(faceX + ux + vx, faceY + uy + vy, faceZ + uz + vz)],
+	);
+	const fMupv = getCachedFlagsAndId(
+		blockArr[paddedIndex(faceX - ux + vx, faceY - uy + vy, faceZ - uz + vz)],
 	);
 
 	const occ = (f: number) =>

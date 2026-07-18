@@ -431,7 +431,7 @@ export class ChunkWorkerPool {
 		// Swap-remove within the live portion only.
 		const liveEnd = this.idleWorkerIndices.length - 1;
 		if (pos !== liveEnd) {
-			const swapped = this.idleWorkerIndices[liveEnd]!;
+			const swapped = this.idleWorkerIndices[liveEnd];
 			this.idleWorkerIndices[pos] = swapped;
 			this.idleWorkerIndexPositions.set(swapped, pos);
 		}
@@ -451,7 +451,7 @@ export class ChunkWorkerPool {
 	 */
 	private _consumeNextIdleWorker(): number {
 		if (this._idleReadIdx >= this.idleWorkerIndices.length) return -1;
-		const workerIndex = this.idleWorkerIndices[this._idleReadIdx]!;
+		const workerIndex = this.idleWorkerIndices[this._idleReadIdx];
 		this._idleReadIdx++;
 		this.idleWorkerSet.delete(workerIndex);
 		this.idleWorkerIndexPositions.delete(workerIndex);
@@ -475,7 +475,7 @@ export class ChunkWorkerPool {
 		// Rebuild position map for the compacted live portion.
 		this.idleWorkerIndexPositions.clear();
 		for (let i = 0; i < this.idleWorkerIndices.length; i++) {
-			this.idleWorkerIndexPositions.set(this.idleWorkerIndices[i]!, i);
+			this.idleWorkerIndexPositions.set(this.idleWorkerIndices[i], i);
 		}
 	}
 
@@ -711,7 +711,7 @@ export class ChunkWorkerPool {
 				"ChunkWorkerPool has no workers; cannot post light task.",
 			);
 		}
-		return this.workers[0]!;
+		return this.workers[0];
 	}
 
 	private broadcastLightRegister(chunk: Chunk): void {
@@ -773,10 +773,10 @@ export class ChunkWorkerPool {
 			this.lightDirtyQueueReadIdx < this.lightDirtyQueue.length &&
 			((iterCount++ & 15) !== 0 || performance.now() - start < budget)
 		) {
-			const entry = this.lightDirtyQueue[this.lightDirtyQueueReadIdx++]!;
+			const entry = this.lightDirtyQueue[this.lightDirtyQueueReadIdx++];
 			const slots = entry.dirtySlots;
 			for (let i = 0; i < slots.length; i++) {
-				const slot = slots[i]!;
+				const slot = slots[i];
 				const prev = slotMap.get(slot) ?? 0;
 				if (entry.seq > prev) slotMap.set(slot, entry.seq);
 			}
@@ -2013,8 +2013,8 @@ export class ChunkWorkerPool {
 				// _consumeNextIdleWorker picks it up.
 				if (readyIdleIndex !== this._idleReadIdx) {
 					const frontIdx = this._idleReadIdx;
-					const frontWorker = this.idleWorkerIndices[frontIdx]!;
-					const readyWorker = this.idleWorkerIndices[readyIdleIndex]!;
+					const frontWorker = this.idleWorkerIndices[frontIdx];
+					const readyWorker = this.idleWorkerIndices[readyIdleIndex];
 					this.idleWorkerIndices[frontIdx] = readyWorker;
 					this.idleWorkerIndices[readyIdleIndex] = frontWorker;
 					this.idleWorkerIndexPositions.set(readyWorker, frontIdx);
@@ -2028,7 +2028,7 @@ export class ChunkWorkerPool {
 			const workerIndex = this._consumeNextIdleWorker();
 			if (workerIndex === -1) break;
 
-			const worker = this.workers[workerIndex]!;
+			const worker = this.workers[workerIndex];
 
 			try {
 				if (taskType === TaskType.Terrain) {

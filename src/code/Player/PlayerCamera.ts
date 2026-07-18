@@ -1,4 +1,9 @@
-import { createFreeCamera, type FreeCamera, type Vec3 } from "@babylonjs/lite";
+import {
+	createFreeCamera,
+	type FreeCamera,
+	type Vec3,
+	vec3,
+} from "@babylonjs/lite";
 import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 
 /**
@@ -27,7 +32,7 @@ export class PlayerCamera {
 		);
 		this.#playerCamera.fov = SETTING_PARAMS.CAMERA_FOV * (Math.PI / 180);
 		this.#playerCamera.nearPlane = 0.1;
-		this.#playerCamera.farPlane = 5000;
+		this.#playerCamera.farPlane = 13000;
 	}
 
 	public moveWithPlayer(characterPosition: Vec3): void {
@@ -74,6 +79,16 @@ export class PlayerCamera {
 
 	public get cameraPitch(): number {
 		return this.#cameraPitch;
+	}
+
+	/** Full 3D unit vector pointing in the direction the camera is looking. */
+	public getForwardDirection(): Vec3 {
+		const cosP = Math.cos(this.#cameraPitch);
+		return vec3(
+			Math.sin(this.#cameraYaw) * cosP,
+			-Math.sin(this.#cameraPitch),
+			Math.cos(this.#cameraYaw) * cosP,
+		);
 	}
 
 	/** True when zoomed out far enough to see the player body (third-person). */

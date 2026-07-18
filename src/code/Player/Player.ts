@@ -11,14 +11,14 @@ import {
 	createGpuPicker,
 	createStandardMaterial,
 	disposePicker,
-	pickAsync,
 } from "@babylonjs/lite";
-import { MetadataContainer } from "@/code/Entities/MetadataContainer";
 import { Map1 } from "@/code/Maps/Map1";
-import { REACH_DISTANCE } from "@/code/Shared/Constants";
+import { tryCreateBoatFromMarker } from "@/code/World/Boat/BoatCreatorSystem";
+import { BlockType } from "@/code/World/Texture/BlockType";
 import type { IControls } from "../Interface/IControls";
 import { getIsPaused, isUiOpen, setIsPaused } from "../Shared/GameRuntimeState";
 import { WalkingControls } from "./Controls/WalkingControls";
+import { pickTarget } from "./Hud/BlockHighlight/BlockRaycaster";
 import { PauseMenu } from "./Hud/PauseMenu";
 import { PlayerHud } from "./Hud/PlayerHud";
 import { PlayerInventory } from "./Inventory/PlayerInventory";
@@ -177,6 +177,11 @@ export class Player {
 		return this.#playerVehicle.position;
 	}
 
+	/** Current world-space velocity of the player body (m/s). */
+	public get velocity(): Vec3 {
+		return this.#playerVehicle.velocity;
+	}
+
 	public get playerVehicle(): PlayerVehicleMotor {
 		return this.#playerVehicle;
 	}
@@ -218,26 +223,28 @@ export class Player {
 		const x = this.canvas.clientWidth / 2;
 		const y = this.canvas.clientHeight / 2;
 
-		void pickAsync(this.#picker, x, y, {
-			// Restrict to meshes carrying a "use" callback (matches the original
-			// pickWithRay predicate — other meshes neither occlude nor are returned).
-			filter: (mesh) =>
-				(mesh.metadata as unknown as MetadataContainer | undefined) instanceof
-					MetadataContainer &&
-				(mesh.metadata as unknown as MetadataContainer).has("use"),
-		})
-			.then((info) => {
-				if (info.hit && info.pickedMesh && info.distance <= REACH_DISTANCE) {
-					const meta = info.pickedMesh.metadata as unknown as MetadataContainer;
-					if (meta instanceof MetadataContainer && meta.has("use")) {
-						(meta.get("use") as (p: Player) => void)(this);
-					}
-				}
-			})
-			.catch(() => {})
-			.finally(() => {
-				this.#pickInFlight = false;
-			});
+		// No usable mesh hit — fall back to block interaction.
+		const blockHit = pickTarget(this);
+		const blockId = blockHit?.blockId;
+		if (blockId === BlockType.MasonTable) {
+			if (this.#playerHud.isMasonTableOpen) {
+				this.#playerHud.hideMasonTableUI();
+			} else {
+				this.#playerHud.showMasonTableUI();
+			}
+			return;
+		}
+		if (blockId === BlockType.BoatCreator && blockHit) {
+			tryCreateBoatFromMarker(
+				this,
+				Math.floor(blockHit.x),
+				Math.floor(blockHit.y),
+				Math.floor(blockHit.z),
+			);
+			return;
+		}
+
+		this.#pickInFlight = false;
 	}
 
 	/** Release GPU picker resources. */

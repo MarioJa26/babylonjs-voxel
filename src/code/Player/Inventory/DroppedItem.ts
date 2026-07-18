@@ -341,7 +341,7 @@ export class DroppedItem implements IUsable {
 	}
 
 	pushItem(direction: Vec3): void {
-		addVec3InPlace(this.#position, direction);
+		this.#velocity = direction;
 	}
 
 	use(player: Player): void {

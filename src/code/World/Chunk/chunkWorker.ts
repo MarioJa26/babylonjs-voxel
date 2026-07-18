@@ -1,5 +1,4 @@
-import { Chunk } from "./Chunk";
-import { packCoords } from "./DataStructures/ChunkCoords";
+import { Chunk, getChunk } from "./Chunk";
 import {
 	type GenerateDistantTerrainRequest,
 	type InitDistantTerrainSharedRequest,
@@ -41,6 +40,9 @@ export class ChunkWorker {
 		{ length: 27 },
 		() => new Uint8Array(ChunkWorker._MAX_BORDER),
 	);
+	// PERF: reused across postFullRemesh calls instead of allocating a fresh
+	// Transferable[] every dispatch — same reasoning as _neighborScratch etc.
+	private readonly _transferScratch: Transferable[] = [];
 
 	// Pre-allocated message objects for light dispatch — avoids spread allocation per call.
 	readonly #lightMutateMsg: LightMutateRequest = {
@@ -91,7 +93,7 @@ export class ChunkWorker {
 		meshRevision: number;
 		lod: number;
 		chunk_size: number;
-		block_array: Uint8Array | Uint16Array;
+		block_array: Uint8Array | Uint16Array | null;
 		uniformBlockId: number | undefined;
 		palette: Uint8Array | Uint16Array | null | undefined;
 		light_array: Uint8Array | undefined;
@@ -178,8 +180,6 @@ export class ChunkWorker {
 	public postFullRemesh(chunk: Chunk, forcedLod?: number): void {
 		const neighbors = this._neighborScratch;
 		const neighborLights = this._neighborLightScratch;
-		const inst = Chunk.chunkInstances;
-		const neighborIds = chunk.neighborIds;
 		const cx = chunk.chunkX;
 		const cy = chunk.chunkY;
 		const cz = chunk.chunkZ;
@@ -187,11 +187,12 @@ export class ChunkWorker {
 		const size2 = size * size;
 
 		for (let i = 0; i < ChunkWorker._REMESH_OFFSETS.length; i++) {
-			const { dx, dy, dz, faceIdx } = ChunkWorker._REMESH_OFFSETS[i];
-			const neighbor =
-				faceIdx >= 0
-					? inst.get(neighborIds[faceIdx])
-					: inst.get(packCoords(cx + dx, cy + dy, cz + dz));
+			const { dx, dy, dz } = ChunkWorker._REMESH_OFFSETS[i];
+			// Number-keyed lookup instead of Chunk.chunkInstances (BigInt-keyed).
+			// Also removes a fresh packCoords() BigInt alloc for all 20 edge/corner
+			// offsets — same cost class as the neighborIds laziness fix, just
+			// unapplied here previously.
+			const neighbor = getChunk(cx + dx, cy + dy, cz + dz);
 
 			if (!neighbor?.isLoaded || !neighbor.hasVoxelData) {
 				neighbors[i] = undefined;
@@ -320,13 +321,57 @@ export class ChunkWorker {
 		msg.meshRevision = chunk.meshRevision;
 		msg.lod = forcedLod ?? chunk.lodLevel ?? 0;
 		msg.chunk_size = size;
-		msg.block_array = chunk.block_array!;
+
+		// PERF: transfer the payload buffers instead of structured-cloning.
+		// The chunk's own arrays (block_array/light_array/palette) are owned and
+		// reused, so we ship TRANSFERABLE COPIES and detach those copies — the
+		// worker receives them zero-copy (no receive-side clone). The neighbor
+		// border slabs were already .slice()'d above, so transfer those directly.
+		// Reuse the hoisted _transferScratch instead of a fresh Transferable[].
+		const transfer = this._transferScratch;
+		transfer.length = 0;
+
+		const centerBlocks = chunk.block_array;
+		if (centerBlocks) {
+			const blockCopy = centerBlocks.slice();
+			msg.block_array = blockCopy;
+			transfer.push(blockCopy.buffer);
+		} else {
+			msg.block_array = null;
+		}
+
 		msg.uniformBlockId = chunk.isUniform ? chunk.uniformBlockId : undefined;
-		msg.palette = chunk.palette;
-		msg.light_array = chunk.light_array;
+
+		if (chunk.palette && chunk.palette.length) {
+			const paletteCopy = chunk.palette.slice();
+			msg.palette = paletteCopy;
+			transfer.push(paletteCopy.buffer);
+		} else {
+			msg.palette = chunk.palette;
+		}
+
+		if (chunk.light_array) {
+			const lightCopy = chunk.light_array.slice();
+			msg.light_array = lightCopy;
+			transfer.push(lightCopy.buffer);
+		} else {
+			msg.light_array = undefined;
+		}
+
 		// neighbors / neighborLights already point at this._neighborScratch /
-		// this._neighborLightScratch, mutated in place above.
-		this.voxelWorker.postMessage(msg);
+		// this._neighborLightScratch (each already a fresh .slice() copy).
+		for (let i = 0; i < neighbors.length; i++) {
+			const n = neighbors[i];
+			if (n) transfer.push(n.buffer);
+		}
+		if (neighborLights) {
+			for (let i = 0; i < neighborLights.length; i++) {
+				const nl = neighborLights[i];
+				if (nl) transfer.push(nl.buffer);
+			}
+		}
+
+		this.voxelWorker.postMessage(msg, transfer);
 	}
 
 	// Terrain generation stays on terrainWorker

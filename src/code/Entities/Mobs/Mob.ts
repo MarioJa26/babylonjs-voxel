@@ -1,5 +1,4 @@
-import type { Scene } from "@babylonjs/core";
-import type { Vec3 } from "@babylonjs/lite";
+import type { SceneContext, Vec3 } from "@babylonjs/lite";
 import type { SavedChunkEntityData } from "@/code/World/WorldStorage";
 
 export interface Mob {
@@ -16,7 +15,7 @@ export interface Mob {
 
 export type MobSpawnConfig = {
 	mobType: string;
-	factory: (x: number, y: number, z: number, scene: Scene) => Mob;
+	factory: (x: number, y: number, z: number, scene: SceneContext) => Mob;
 	maxCount: number;
 	spawnWeight: number;
 	spawnBlockId: number;

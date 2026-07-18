@@ -1,20 +1,17 @@
-import {
-	Matrix,
-	type Mesh,
-	Quaternion,
-	type Scene,
-	setVec3,
-	type TransformNode,
-	vec3Zero,
-} from "@babylonjs/core";
+import { type Mesh, Quaternion, setVec3, vec3Zero } from "@babylonjs/core";
 import { ImportMeshAsync } from "@babylonjs/core/Loading/sceneLoader";
 import {
 	addToScene,
-	createTransformNode,
+	createBox,
+	createStandardMaterial,
+	disposeMeshGpu,
+	removeFromScene,
+	type SceneContext,
 	scaleVec3InPlace,
 	type Vec3,
 	vec3,
 } from "@babylonjs/lite";
+import { Map1 } from "@/code/Maps/Map1";
 import { BoatChunk, type BoatChunkBlock } from "@/code/World/Boat/BoatChunk";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import { Axis } from "@/code/World/Collision/VoxelAabbCollider";
@@ -63,7 +60,7 @@ type CustomBoatSerializedPayload = {
 export class CustomBoat implements IUsable {
 	static readonly CHUNK_ENTITY_TYPE = "custom_boat_v1";
 	static #chunkReloadContext: {
-		scene: Scene;
+		scene: SceneContext;
 		player: Player;
 		waterLevel: number;
 	} | null = null;
@@ -86,7 +83,10 @@ export class CustomBoat implements IUsable {
 		return CustomBoat.#boatsSnapshot;
 	}
 
-	public static tickAllActiveBoats(scene: Scene, playerPos?: Vec3): void {
+	public static tickAllActiveBoats(
+		scene: SceneContext,
+		playerPos?: Vec3,
+	): void {
 		const cullDistSq =
 			playerPos !== undefined ? CustomBoat.#boatCullDistSq : Infinity;
 		for (const boat of CustomBoat.#activeBoats) {
@@ -145,10 +145,10 @@ export class CustomBoat implements IUsable {
 	}
 
 	public static configureChunkReloadContext(
-		scene: Scene,
 		player: Player,
 		waterLevel: number,
 	): void {
+		const scene = Map1.mainScene;
 		CustomBoat.#chunkReloadContext = { scene, player, waterLevel };
 		if (CustomBoat.#chunkLoaderRegistered) {
 			return;
@@ -185,7 +185,6 @@ export class CustomBoat implements IUsable {
 					...block,
 				}));
 				restoredBoatChunk = new BoatChunk(
-					context.scene,
 					snapshotBlocks,
 					vec3(
 						data.boatChunk.center.x,
@@ -196,21 +195,15 @@ export class CustomBoat implements IUsable {
 				restoredCustomVisualRoot = restoredBoatChunk.visualRoot;
 			}
 
-			new CustomBoat(
-				context.scene,
-				context.player,
-				context.waterLevel,
-				spawnPosition,
-				{
-					collisionHalfExtents,
-					customVisualRoot: restoredCustomVisualRoot,
-					skipDefaultModel: !!restoredBoatChunk,
-					initialYaw: data.initialYaw,
-					customVisualLocalYaw: data.customVisualLocalYaw,
-					blockCount: data.blockCount,
-					boatChunk: restoredBoatChunk,
-				},
-			);
+			new CustomBoat(context.player, context.waterLevel, spawnPosition, {
+				collisionHalfExtents,
+				customVisualRoot: restoredCustomVisualRoot,
+				skipDefaultModel: !!restoredBoatChunk,
+				initialYaw: data.initialYaw,
+				customVisualLocalYaw: data.customVisualLocalYaw,
+				blockCount: data.blockCount,
+				boatChunk: restoredBoatChunk,
+			});
 		});
 	}
 
@@ -232,7 +225,7 @@ export class CustomBoat implements IUsable {
 
 	#collisionHalfExtents = vec3(1.15, 0.6, 1.15);
 	#collisionCenterOffset = vec3Zero();
-	#boat!: TransformNode;
+	#boat!: Mesh;
 	#voxelCollider!: VoxelObbCollider;
 
 	#mount!: Mount;
@@ -267,18 +260,17 @@ export class CustomBoat implements IUsable {
 	#tmpTorque = vec3Zero();
 	#tmpLever = vec3Zero();
 	#tmpBoatSampleWorld = vec3Zero();
-	#scratchInverse = new Matrix();
 	#scratchRootLocal = vec3Zero();
 	#scratchQuat = Quaternion.Identity();
 
 	constructor(
-		scene: Scene,
 		player: Player,
 		waterLevel: number,
 		position?: Vec3,
 		options?: CustomBoatOptions,
 	) {
-		CustomBoat.configureChunkReloadContext(scene, player, waterLevel);
+		const scene = Map1.mainScene;
+		CustomBoat.configureChunkReloadContext(player, waterLevel);
 
 		// 1) Options
 		if (options?.collisionHalfExtents) {
@@ -365,27 +357,42 @@ export class CustomBoat implements IUsable {
 	}
 
 	#createHull(
-		scene: Scene,
+		scene: SceneContext,
 		position: Vec3 | undefined,
 		waterLevel: number,
-	): TransformNode {
-		// Lite port: the classic hull was a (non-rendered) box mesh used only as
-		// the boat's root transform anchor. Replace it with a lightweight
-		// TransformNode — no geometry/material, just position + rotation. The GLB
-		// visual (or block-built BoatChunk visual) parents under it, and the Mount
-		// vehicle drives from it. A TransformNode defaults to an identity
-		// rotationQuaternion, so no explicit quaternion init is needed.
+	): Mesh {
+		// The hull is a real, rendered box mesh (not a TransformNode) so the GPU
+		// ray picker used by the USE interaction can hit it. In the Lite port the
+		// picker skips `visible = false` meshes (they aren't drawn to the pick
+		// buffer), so instead of hiding it we make it fully transparent (alpha 0)
+		// — it still renders (and is pickable) but is invisible to the eye. The
+		// Mount vehicle drives from this mesh's transform.
 		const px = position?.x ?? 0;
 		const py = position?.y ?? waterLevel + 10;
 		const pz = position?.z ?? 0;
-		const hull = createTransformNode("boatHull", px, py, pz);
-		// Invisible by default (it has no geometry anyway).
-		hull.visible = false;
+
+		const hull = createBox(Map1.engine, 1);
+		hull.name = "boatHull";
+		hull.position.set(px, py, pz);
+		hull.scaling.set(
+			this.#collisionHalfExtents.x * 2,
+			this.#collisionHalfExtents.y * 2,
+			this.#collisionHalfExtents.z * 2,
+		);
+
+		const mat = createStandardMaterial();
+		mat.diffuseColor = [0.8, 0.6, 0.2];
+		mat.alpha = 0; // Invisible but still rendered → pickable by GPU picker.
+		hull.material = mat;
+
+		hull.pickable = true;
+
 		addToScene(scene, hull);
+
 		return hull;
 	}
 
-	async #loadDefaultModel(scene: Scene): Promise<void> {
+	async #loadDefaultModel(scene: SceneContext): Promise<void> {
 		const result = await ImportMeshAsync("models/boat-row-small.glb", scene);
 		const root = result.meshes[0];
 		root.parent = this.#boat;
@@ -405,7 +412,7 @@ export class CustomBoat implements IUsable {
 			0,
 			0,
 		);
-		(visual.rotationQuaternion as any).copyFrom(q);
+		visual.rotationQuaternion.copyFrom(q);
 		visual.scaling.set(1, 1, 1);
 	}
 
@@ -415,8 +422,8 @@ export class CustomBoat implements IUsable {
 			...((root as any).getChildMeshes?.(false) ?? []),
 		]) {
 			mesh.pickable = true;
-			(mesh as any).renderingGroupId = 1;
-			(mesh as any).metadata = this.#boat.metadata;
+			mesh.renderingGroupId = 1;
+			mesh.metadata = this.#boat.metadata;
 		}
 	}
 
@@ -446,7 +453,7 @@ export class CustomBoat implements IUsable {
 		setVec3(bp[8], cox + ix, y, coz + iz);
 	}
 
-	#tick(scene: Scene): void {
+	#tick(scene: SceneContext): void {
 		const now = performance.now();
 		let dt = (now - this.#lastTickTime) / 1000;
 		this.#lastTickTime = now;
@@ -623,7 +630,7 @@ export class CustomBoat implements IUsable {
 		this.#angularVelocity.z += impulse.z * scale;
 	}
 
-	public get boatMesh(): TransformNode {
+	public get boatMesh(): Mesh {
 		return this.#boat;
 	}
 
@@ -731,10 +738,7 @@ export class CustomBoat implements IUsable {
 		this.#boatChunk?.dispose();
 		this.#boatChunk = undefined;
 		CustomBoat.#activeBoats.delete(this);
-
-		if (!(this.#boat as any).isDisposed?.()) {
-			(this.#boat as any).dispose?.(false, true);
-		}
+		removeFromScene(Map1.mainScene, this.#boat);
 	}
 
 	#subscribeBoatChunkBlockChanges(): void {

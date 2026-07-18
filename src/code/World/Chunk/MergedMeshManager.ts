@@ -21,6 +21,21 @@ export interface ChunkMemberData {
 	opaqueData: MeshData | null;
 	transparentData: MeshData | null;
 	localIndex: number; // 0-63 within the group
+	// `lastBuilt*` records the MeshData reference we last copied into the
+	// merged buffer for this member. On a group rebuild we skip re-copying a
+	// member whose data reference is unchanged — its bytes are already in the
+	// merged buffer at the same deterministic offset, so re-copying all 64
+	// members (incl. the 63 that didn't remesh) is pure waste. Relight-only
+	// updates hand a *new* MeshData to just the changed chunk, so only that
+	// one member's reference differs and gets re-copied (up to 63x cheaper).
+	lastBuiltOpaque: MeshData | null;
+	lastBuiltTransparent: MeshData | null;
+	// The writeByte offset each was copied at. A member is only safe to
+	// skip when BOTH its data reference AND its target offset are unchanged
+	// from last rebuild — an earlier member's face-count change shifts every
+	// later member's offset even if that later member itself didn't remesh.
+	lastBuiltOpaqueOffset: number;
+	lastBuiltTransparentOffset: number;
 }
 
 export interface MergedVertexData {
@@ -109,6 +124,18 @@ const MAX_GROUP_MEMBERS = GROUP_SIZE * GROUP_SIZE * GROUP_SIZE;
 
 const groups = new Map<string, MergedMeshGroup>();
 const dirtyGroups = new Set<MergedMeshGroup>();
+
+// Invalidate the per-member "already built" cache. Must be called whenever
+// the merged-buffer layout can change independent of member data references:
+// member add/remove (membersArray order/offset shifts) or merged-buffer
+// reallocation. Pure reassigns of an existing member (the relight path) do
+// NOT call this, so unchanged members keep their skip-eligibility.
+function invalidateGroupBuildCache(group: MergedMeshGroup): void {
+	for (const m of group.membersArray) {
+		m.lastBuiltOpaque = null;
+		m.lastBuiltTransparent = null;
+	}
+}
 
 function markGroupDirty(group: MergedMeshGroup): void {
 	group.dirty = true;
@@ -363,10 +390,17 @@ export function assignChunkToGroup(
 			opaqueData,
 			transparentData,
 			localIndex,
+			lastBuiltOpaque: null,
+			lastBuiltTransparent: null,
+			lastBuiltOpaqueOffset: -1,
+			lastBuiltTransparentOffset: -1,
 		};
 
 		group.members.set(chunk.id, memberData);
 		group.membersArray.push(memberData);
+		// New member changes layout (offset of later members shifts), so the
+		// "already built" cache is no longer valid — force a full rebuild.
+		invalidateGroupBuildCache(group);
 	}
 
 	if (chunkLod < group.minLodLevel) {
@@ -439,6 +473,10 @@ export function removeChunkFromGroup(chunk: Chunk): void {
 	}
 
 	group.minLodLevel = minLod;
+
+	// Removal shifts membersArray order, so previously-skipped members'
+	// bytes are now at the wrong offset. Force a full rebuild once.
+	invalidateGroupBuildCache(group);
 
 	markGroupDirty(group);
 }
@@ -615,7 +653,14 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	// -----------------------------------------------------------------------
 
 	if (totalOpaque > 0) {
+		// ensure* reallocates (discarding old bytes) only when capacity grows.
+		// Detect that and force a full opaque re-copy so skipped members
+		// don't keep referencing lost byte ranges.
+		const opaqueGrew = totalOpaque > group.opaqueCapacityFaces;
 		const buffers = ensureOpaqueMergedCapacity(group, totalOpaque);
+		if (opaqueGrew) {
+			for (const m of members) m.lastBuiltOpaque = null;
+		}
 
 		const mergedA = buffers.a;
 		const mergedB = buffers.b;
@@ -637,9 +682,20 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 
 			const byteCount = fc << 2;
 
-			copyFaceBytes(mergedA, data.faceDataA, byteCount, writeByte);
-			copyFaceBytes(mergedB, data.faceDataB, byteCount, writeByte);
-			copyFaceBytes(mergedC, data.faceDataC, byteCount, writeByte);
+			// Geometry-stable skip: if this member's opaque data is the exact
+			// same reference we last copied into the merged buffer, its bytes
+			// are already in place at this deterministic offset — re-copying
+			// is pure waste. Only the members that actually remeshed this
+			// pass (incl. relit ones, which get a fresh MeshData) are
+			// re-copied. This is the dominant cost on relight-only updates
+			// (the other up-to-63 members are skipped in place).
+			if (m.lastBuiltOpaque !== data || m.lastBuiltOpaqueOffset !== writeByte) {
+				copyFaceBytes(mergedA, data.faceDataA, byteCount, writeByte);
+				copyFaceBytes(mergedB, data.faceDataB, byteCount, writeByte);
+				copyFaceBytes(mergedC, data.faceDataC, byteCount, writeByte);
+				m.lastBuiltOpaque = data;
+				m.lastBuiltOpaqueOffset = writeByte;
+			}
 
 			mergedD.fill(m.localIndex, writeFace, writeFace + fc);
 
@@ -674,7 +730,11 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	// -----------------------------------------------------------------------
 
 	if (totalTransparent > 0) {
+		const transparentGrew = totalTransparent > group.transparentCapacityFaces;
 		const buffers = ensureTransparentMergedCapacity(group, totalTransparent);
+		if (transparentGrew) {
+			for (const m of members) m.lastBuiltTransparent = null;
+		}
 
 		const mergedA = buffers.a;
 		const mergedB = buffers.b;
@@ -696,9 +756,16 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 
 			const byteCount = fc << 2;
 
-			copyFaceBytes(mergedA, data.faceDataA, byteCount, writeByte);
-			copyFaceBytes(mergedB, data.faceDataB, byteCount, writeByte);
-			copyFaceBytes(mergedC, data.faceDataC, byteCount, writeByte);
+			if (
+				m.lastBuiltTransparent !== data ||
+				m.lastBuiltTransparentOffset !== writeByte
+			) {
+				copyFaceBytes(mergedA, data.faceDataA, byteCount, writeByte);
+				copyFaceBytes(mergedB, data.faceDataB, byteCount, writeByte);
+				copyFaceBytes(mergedC, data.faceDataC, byteCount, writeByte);
+				m.lastBuiltTransparent = data;
+				m.lastBuiltTransparentOffset = writeByte;
+			}
 
 			mergedD.fill(m.localIndex, writeFace, writeFace + fc);
 

@@ -3,15 +3,15 @@ import {
 	type Mesh,
 	MeshBuilder,
 	Quaternion,
-	type Scene,
 	StandardMaterial,
 	setVec3,
 	transformCoordinatesVec3ToRef,
 } from "@babylonjs/core";
-import { ImportMeshAsync } from "@babylonjs/core/Loading/sceneLoader";
+import { ImportMeshAsync } from "@babylonjs/core/Loading/SceneContextLoader";
 import {
 	crossVec3ToRef,
 	onBeforeRender,
+	type SceneContext,
 	scaleVec3InPlace,
 	type Vec3,
 	vec3,
@@ -70,26 +70,26 @@ export class AdvancedBoat implements IUsable {
 	public currentYaw = 0;
 
 	constructor(
-		scene: Scene,
+		SceneContext: SceneContext,
 		player: Player,
 		waterLevel: number,
 		position?: Vec3,
 	) {
-		this.createBoat(scene, position, waterLevel);
+		this.createBoat(SceneContext, position, waterLevel);
 
 		const md: Record<string, unknown> = {};
 		md["use"] = (player: Player) => this.use(player);
 		this.#boat.metadata = md;
 
 		this.setupBuoyancyPoints();
-		this.setupAdvancedPhysics(scene);
+		this.setupAdvancedPhysics(SceneContext);
 		AdvancedBoat.#boatControls = new PaddleBoatControls(this, player);
 
 		this.#mount = new Mount(this.#boat, AdvancedBoat.#boatControls);
 	}
 
 	private createBoat(
-		scene: Scene,
+		scene: SceneContext,
 		position: Vec3 | undefined,
 		waterLevel: number,
 	): void {
@@ -181,7 +181,7 @@ export class AdvancedBoat implements IUsable {
 		];
 	}
 
-	private setupAdvancedPhysics(scene: Scene): void {
+	private setupAdvancedPhysics(scene: SceneContext): void {
 		onBeforeRender(scene, (deltaMs: number) => {
 			const dt = deltaMs / 1000;
 			if (dt <= 0) {

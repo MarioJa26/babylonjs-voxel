@@ -3,7 +3,7 @@ import type { MobRegistry } from "../Entities/Mobs/Mob";
 import { initDistantTerrain } from "../Generation/DistantTerrain/DistantTerrain";
 import type { Player } from "../Player/Player";
 import { PlayerLoadingGate } from "../Player/PlayerLoadingGate";
-import { setGameTimeScale, setSceneAccessor } from "../Shared/GameRuntimeState";
+import { setGameTimeScale } from "../Shared/GameRuntimeState";
 import {
 	disposeSharedResources,
 	initAtlas,
@@ -24,7 +24,6 @@ export class Map1 {
 	public static mobRegistry: MobRegistry | null = null;
 
 	#player: Player;
-	#playerLoadingGate: PlayerLoadingGate | null = null;
 
 	public readonly initPromise: Promise<void>;
 
@@ -35,7 +34,6 @@ export class Map1 {
 
 		Map1.environment = new WorldEnvironment(engine, scene);
 		initEngineContext(engine, scene);
-		setSceneAccessor(() => scene as any);
 
 		this.initPromise = this.asyncInit();
 	}
@@ -44,10 +42,7 @@ export class Map1 {
 		try {
 			await initAtlas();
 			await initDistantTerrain();
-			this.#playerLoadingGate = new PlayerLoadingGate(
-				Map1.mainScene,
-				this.#player,
-			);
+			new PlayerLoadingGate(Map1.mainScene, this.#player);
 		} catch (error) {
 			console.error("Error loading environment or textures:", error);
 		}

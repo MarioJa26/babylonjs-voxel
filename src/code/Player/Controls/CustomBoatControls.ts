@@ -1,12 +1,11 @@
-import { formatWithOptions } from "node:util";
 import {
 	Matrix,
+	type Mesh,
 	setVec3,
-	type TransformNode,
 	transformNormalVec3ToRef,
 	vec3Zero,
 } from "@babylonjs/core";
-import { scaleVec3, scaleVec3InPlace, type Vec3, vec3 } from "@babylonjs/lite";
+import { scaleVec3InPlace, type Vec3, vec3 } from "@babylonjs/lite";
 import type { Mount } from "@/code/Entities/Mount";
 import type { IControls } from "@/code/Interface/IControls";
 import type { Player } from "../Player";
@@ -16,7 +15,7 @@ export type BoatControlEntity = {
 	mount: Mount;
 	submergedPoints: number;
 	boatPosition: Vec3;
-	boatMesh: TransformNode;
+	boatMesh: Mesh;
 	currentYaw: number;
 	applyImpulse(impulse: Vec3, worldPoint: Vec3): void;
 	applyAngularImpulse(impulse: Vec3): void;

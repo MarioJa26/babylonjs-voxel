@@ -324,9 +324,10 @@ export class PlayerInventory {
 			this.#player.position.z,
 		);
 
-		const yaw = this.#player.playerCamera.cameraYaw;
-		const forward = vec3(Math.sin(yaw), 0, Math.cos(yaw));
-		const dropPosition = addVec3(playerPosition, scaleVec3InPlace(forward, 2)); // Create the dropped item at the calculated position using the new clean item
+		// Full 3D look direction so the item lands in front of AND in the
+		// direction the player is looking (including pitch).
+		const forward = this.#player.playerCamera.getForwardDirection();
+		const dropPosition = addVec3(playerPosition, forward);
 
 		const droppedItem = new DroppedItem(
 			worldItem,
@@ -335,11 +336,22 @@ export class PlayerInventory {
 			dropPosition.z,
 		);
 
-		droppedItem.pushItem(scaleVec3InPlace(forward, 6));
+		// Launch in the look direction, plus the player's own momentum so the
+		// item inherits the player's movement (thrown forward while running).
+		const launch = vec3(
+			forward.x * 8 + this.#player.velocity.x,
+			forward.y * 8 + this.#player.velocity.y,
+			forward.z * 8 + this.#player.velocity.z,
+		);
+		droppedItem.pushItem(launch);
 
-		if (item.stackSize <= 0) {
-			this.deleteItem(item);
-		} else this.onInventoryChangedObservable.notifyObservers();
+		if (item.row >= 0 && item.col >= 0) {
+			if (item.stackSize <= 0) {
+				this.deleteItem(item);
+				return;
+			}
+		}
+		this.onInventoryChangedObservable.notifyObservers();
 	}
 
 	public moveItemToHotbar(slotFocused: ItemSlot): void {
@@ -403,7 +415,11 @@ export class PlayerInventory {
 		if (!item) return;
 
 		item.div.parentElement?.removeChild(item.div);
-		this.#inventorySlots[item.row][item.col].clearItemSlots();
+		const slot =
+			item.row >= 0 && item.col >= 0
+				? this.#inventorySlots[item.row]?.[item.col]
+				: undefined;
+		slot?.clearItemSlots();
 		this.onInventoryChangedObservable.notifyObservers();
 	}
 

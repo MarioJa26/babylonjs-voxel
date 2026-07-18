@@ -1,4 +1,4 @@
-import { setVec3, type TransformNode, vec3Zero } from "@babylonjs/core";
+import { type Mesh, setVec3, vec3Zero } from "@babylonjs/core";
 import type { Vec3 } from "@babylonjs/lite";
 import { play } from "@/code/Maps/BlockBreakParticles";
 import {
@@ -23,7 +23,7 @@ const _scratchParticlePos = vec3Zero();
 export type BoatBlockHitContext = {
 	kind: "boatChunk";
 	boatChunk: {
-		visualRoot: TransformNode;
+		visualRoot: Mesh;
 		center: Vec3;
 		setBlockLocal(
 			x: number,

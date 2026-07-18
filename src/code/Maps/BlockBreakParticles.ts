@@ -1,5 +1,5 @@
-import { Color4, type Scene } from "@babylonjs/core";
-import { type Vec3, vec3 } from "@babylonjs/lite";
+import { Color4 } from "@babylonjs/core";
+import { type SceneContext, type Vec3, vec3 } from "@babylonjs/lite";
 import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
 import { BlockTextures } from "../World/Texture/BlockTextures";
 import { FaceName } from "../World/Texture/FaceName";
@@ -15,7 +15,7 @@ const _scratchColor2 = new Color4(0, 0, 0, 0);
 const _scratchColorDead = new Color4(0, 0, 0, 0);
 
 export function play(
-	scene: Scene,
+	scene: SceneContext,
 	position: Vec3,
 	blockId: number,
 	packedLight: number,
@@ -94,7 +94,7 @@ export function play(
 	particleSystem.start?.();
 }
 
-function init(scene: Scene) {
+function init(scene: SceneContext) {
 	particleSystem = {};
 
 	const atlas = getDiffuse();

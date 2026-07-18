@@ -2,14 +2,15 @@ import {
 	copyVec3,
 	Matrix,
 	type Mesh,
-	type Scene,
 	setVec3,
+	transformCoordinatesVec3ToRef,
 	vec3Zero,
 } from "@babylonjs/core";
 import {
 	addToScene,
 	createMeshFromData,
 	removeFromScene,
+	type SceneContext,
 	type Vec3,
 	vec3,
 } from "@babylonjs/lite";
@@ -54,20 +55,20 @@ export class BoatChunk {
 	private static readonly CHUNK_COORD_SPACING = 4;
 	private static nextChunkSlot = 0;
 
-	#scene: Scene;
+	#scene: SceneContext;
 	#center = vec3Zero();
 	#visualRoot: Mesh;
 	#centerChunk: Chunk;
-	#scratchInverse = new Matrix();
+	#scratchWorldMatrix = new Matrix();
 	#scratchLocal = vec3Zero();
 	#neighborChunks: Chunk[] = [];
 	#attachedOpaqueMesh: Mesh | null = null;
 	#attachedTransparentMesh: Mesh | null = null;
 	#blockChangeListeners = new Set<BoatChunkBlockChangeListener>();
 
-	constructor(scene: Scene, blocks: BoatChunkBlock[], center: Vec3) {
+	constructor(blocks: BoatChunkBlock[], center: Vec3) {
 		BoatChunk.activeChunks.add(this);
-		this.#scene = scene;
+		this.#scene = Map1.mainScene;
 		copyVec3(this.#center, center);
 		this.#visualRoot = createMeshFromData(
 			Map1.engine,
@@ -421,12 +422,9 @@ export class BoatChunk {
 	}
 
 	public localToWorldCenter(x: number, y: number, z: number): Vec3 {
-		const root = this.#visualRoot.position;
-		return vec3(
-			x + 0.5 - this.#center.x + root.x,
-			y + 0.5 - this.#center.y + root.y,
-			z + 0.5 - this.#center.z + root.z,
-		);
+		const ref = vec3(0, 0, 0);
+		this.localToWorldCenterToRef(x, y, z, ref);
+		return ref;
 	}
 
 	public localToWorldCenterToRef(
@@ -438,8 +436,14 @@ export class BoatChunk {
 		const lx = x + 0.5 - this.#center.x;
 		const ly = y + 0.5 - this.#center.y;
 		const lz = z + 0.5 - this.#center.z;
-		const root = this.#visualRoot.position;
-		setVec3(ref, lx + root.x, ly + root.y, lz + root.z);
+		const wm = this.#visualRoot.worldMatrix;
+		const sm = this.#scratchWorldMatrix.m;
+		for (let i = 0; i < 16; i++) sm[i] = wm[i];
+		transformCoordinatesVec3ToRef(
+			vec3(lx, ly, lz),
+			this.#scratchWorldMatrix,
+			ref,
+		);
 	}
 
 	public getOccupiedBoundsLocal(): {

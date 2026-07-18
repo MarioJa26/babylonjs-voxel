@@ -5,6 +5,7 @@
  */
 import {
 	createShaderMaterial,
+	createStorageBuffer,
 	type EngineContext,
 	type SceneContext,
 	type ShaderMaterial,
@@ -14,12 +15,11 @@ import {
 	type Texture2D,
 } from "@babylonjs/lite";
 import { registerPackedMaterial } from "../Chunk/PackedChunkMesh.js";
-import { createLiteStorageBuffer } from "./liteGpuBuffer.js";
 import { buildPackedVertexWGSL } from "./PackedChunkShaderWGSL.js";
 
 // LOD3 declares a single diffuse sampler, so storage buffers begin at binding
 // 2 + 2*1 = 4. tintLUT occupies 4; face data / chunk offsets follow at 5/6.
-const lod3VertexWGSL = buildPackedVertexWGSL();
+const lod3VertexWGSL = buildPackedVertexWGSL;
 
 const lod3OpaqueFragmentWGSL = /* wgsl */ `
 struct VSOut {
@@ -165,14 +165,20 @@ export interface Lod3MaterialOptions {
 	tintLUT: Float32Array;
 	atlasTileSize: number;
 	atlasMaxTiles: number;
+	faceArenaCount: number;
 }
 
 export function createLod3OpaqueMaterial(
 	opts: Lod3MaterialOptions,
 ): ShaderMaterial {
+	const arenaCount = Math.max(1, opts.faceArenaCount | 0);
+	const faceStorageBuffers = [];
+	for (let i = 0; i < arenaCount; i++) {
+		faceStorageBuffers.push({ name: `faceData${i}`, type: "array<vec4<u32>>" });
+	}
 	const material = createShaderMaterial({
 		name: "lod3OpaqueLite",
-		vertexSource: lod3VertexWGSL,
+		vertexSource: lod3VertexWGSL(arenaCount),
 		fragmentSource: lod3OpaqueFragmentWGSL,
 		attributes: ["position"],
 		uniforms: [
@@ -193,7 +199,7 @@ export function createLod3OpaqueMaterial(
 		samplers: ["diffuseTexture"],
 		storageBuffers: [
 			{ name: "tintLUT", type: "array<vec4<f32>, 6>" },
-			{ name: "faceData", type: "array<vec4<u32>>" },
+			...faceStorageBuffers,
 			{ name: "chunkOffsets", type: "array<vec4<f32>>" },
 		],
 		backFaceCulling: true,
@@ -214,7 +220,7 @@ export function createLod3OpaqueMaterial(
 	setShaderStorageBuffer(
 		material,
 		"tintLUT",
-		createLiteStorageBuffer(opts.engine, opts.tintLUT, "lod3-tintLUT"),
+		createStorageBuffer(opts.engine, opts.tintLUT, "lod3-tintLUT"),
 	);
 	return material;
 }
@@ -222,9 +228,14 @@ export function createLod3OpaqueMaterial(
 export function createLod3TransparentMaterial(
 	opts: Lod3MaterialOptions,
 ): ShaderMaterial {
+	const arenaCount = Math.max(1, opts.faceArenaCount | 0);
+	const faceStorageBuffers = [];
+	for (let i = 0; i < arenaCount; i++) {
+		faceStorageBuffers.push({ name: `faceData${i}`, type: "array<vec4<u32>>" });
+	}
 	const material = createShaderMaterial({
 		name: "lod3TransparentLite",
-		vertexSource: lod3VertexWGSL,
+		vertexSource: lod3VertexWGSL(arenaCount),
 		fragmentSource: lod3TransparentFragmentWGSL,
 		attributes: ["position"],
 		uniforms: [
@@ -245,7 +256,7 @@ export function createLod3TransparentMaterial(
 		samplers: ["diffuseTexture"],
 		storageBuffers: [
 			{ name: "tintLUT", type: "array<vec4<f32>, 6>" },
-			{ name: "faceData", type: "array<vec4<u32>>" },
+			...faceStorageBuffers,
 			{ name: "chunkOffsets", type: "array<vec4<f32>>" },
 		],
 		backFaceCulling: false,
@@ -267,7 +278,7 @@ export function createLod3TransparentMaterial(
 	setShaderStorageBuffer(
 		material,
 		"tintLUT",
-		createLiteStorageBuffer(opts.engine, opts.tintLUT, "lod3-trans-tintLUT"),
+		createStorageBuffer(opts.engine, opts.tintLUT, "lod3-trans-tintLUT"),
 	);
 	return material;
 }

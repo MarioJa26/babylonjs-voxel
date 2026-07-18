@@ -1,7 +1,6 @@
 import { addVec3ToRef, type Vec3, vec3 } from "@babylonjs/lite";
 import { CustomBoat } from "@/code/Entities/CustomBoat";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
-import { Map1 } from "@/code/Maps/Map1";
 import type { Player } from "@/code/Player/Player";
 import { BoatChunk, type BoatChunkBlock } from "@/code/World/Boat/BoatChunk";
 import { Chunk } from "@/code/World/Chunk/Chunk";
@@ -35,7 +34,9 @@ const FLOOD_DIRECTIONS: ReadonlyArray<[number, number, number]> = [
 ];
 
 // Expand this set with any additional block IDs that should be treated as hull.
-let sourceBlockIds = new Set<number>([6, 10, 12, 37, 41, 42, 60, 61, 22]);
+let sourceBlockIds = new Set<number>([
+	6, 10, 12, 37, 41, 42, 60, 61, 62, 63, 22,
+]);
 const maxFloodBlocks = 8192;
 let visualMode: VisualMode = "blocks";
 
@@ -114,10 +115,6 @@ export function tryCreateBoatFromMarker(
 		[hx, hz] = [hz, hx];
 	}
 
-	const halfExtents = vec3(hx, hy, hz);
-
-	const scene = Map1.mainScene;
-
 	let boatChunk: BoatChunk | undefined;
 	if (visualMode === "blocks") {
 		const localBlocks: BoatChunkBlock[] = hullBlocks.map((block) => ({
@@ -133,7 +130,7 @@ export function tryCreateBoatFromMarker(
 			LOCAL_CHUNK_PADDING + bounds.sizeY * 0.5,
 			LOCAL_CHUNK_PADDING + bounds.sizeZ * 0.5,
 		);
-		boatChunk = new BoatChunk(scene, localBlocks, localCenter);
+		boatChunk = new BoatChunk(localBlocks, localCenter);
 	}
 
 	const customVisual = boatChunk?.visualRoot;
@@ -146,7 +143,7 @@ export function tryCreateBoatFromMarker(
 
 	const paddedHalfExtents = vec3(0, 0, 0);
 	addVec3ToRef(center, vec3(0.5, 0.5, 0.5), paddedHalfExtents);
-	new CustomBoat(scene, player, GenerationParams.SEA_LEVEL, center, {
+	new CustomBoat(player, GenerationParams.SEA_LEVEL, center, {
 		collisionHalfExtents: paddedHalfExtents,
 		customVisualRoot: customVisual,
 		skipDefaultModel: visualMode === "blocks",

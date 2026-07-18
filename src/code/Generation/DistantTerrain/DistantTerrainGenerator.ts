@@ -377,7 +377,9 @@ function generateVertex(
 	const localChunkX = chunkX - ccx;
 	const localChunkZ = chunkZ - ccz;
 	const renderDistance =
-		SETTING_PARAMS.RENDER_DISTANCE + SETTING_PARAMS.LOD_1_OFFSET;
+		SETTING_PARAMS.RENDER_DISTANCE +
+		SETTING_PARAMS.LOD_1_OFFSET +
+		SETTING_PARAMS.LOD_2_OFFSET;
 	const isInsideRealTerrain =
 		localChunkX > -renderDistance &&
 		localChunkX <= renderDistance &&

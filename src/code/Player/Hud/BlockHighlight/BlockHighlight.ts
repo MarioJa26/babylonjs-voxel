@@ -10,7 +10,6 @@ import {
 	setShaderUniform,
 } from "@babylonjs/lite";
 import { Map1 } from "@/code/Maps/Map1";
-import { getScene } from "@/code/Shared/GameRuntimeState";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { getTransformedShapeBoxes } from "@/code/World/Shape/BlockShapeTransforms";
 import type { BlockRaycastHit } from "./BlockRaycaster";
@@ -157,7 +156,7 @@ export class BlockHighlight {
 	#prevHitZ = 0;
 
 	constructor() {
-		this.#scene = getScene()!;
+		this.#scene = Map1.mainScene;
 		this.#material = this.#createMaterial();
 		this.#mesh = this.#buildUnitCube();
 		this.#shapeKey = -1;
@@ -222,12 +221,15 @@ export class BlockHighlight {
 	#applyHitTransform(hit: BlockRaycastHit): void {
 		const boatContext = this.#asBoatBlockContext(hit.dynamicContext);
 		if (boatContext) {
-			const center = boatContext.boatChunk.center;
-			this.#mesh.parent = boatContext.boatChunk.visualRoot;
+			// Parent the highlight to the boat's visual root so it inherits the
+			// boat's full transform (rotation + translation). Position it at the
+			// block's LOCAL center (un-floored) so it is not clamped to the world
+			// grid and rotates naturally with the boat.
+			this.#mesh.parent = boatContext.boatChunk.visualRoot as never;
 			this.#mesh.position.set(
-				boatContext.localX - center.x,
-				boatContext.localY - center.y,
-				boatContext.localZ - center.z,
+				boatContext.localX + 0.5 - boatContext.boatChunk.center.x,
+				boatContext.localY + 0.5 - boatContext.boatChunk.center.y,
+				boatContext.localZ + 0.5 - boatContext.boatChunk.center.z,
 			);
 			return;
 		}

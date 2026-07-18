@@ -1,20 +1,18 @@
-import type { Scene } from "@babylonjs/core";
 import {
 	createSpotLight,
 	type FreeCamera,
+	type SceneContext,
 	type SpotLight,
 } from "@babylonjs/lite";
 
 export class PlayerFlashLight {
 	#flashlight: SpotLight;
-	#camera: FreeCamera;
 	#enabled = false;
 
-	constructor(scene: Scene, playerCamera: FreeCamera) {
+	constructor(scene: SceneContext, playerCamera: FreeCamera) {
 		// Create flashlight (SpotLight) parented to the camera so it follows
 		// the view. Lite has no per-camera view-matrix observable, so the
 		// light is attached in camera-local space (forward = +Z local).
-		this.#camera = playerCamera;
 		const pos: [number, number, number] = [
 			playerCamera.position.x,
 			playerCamera.position.y,

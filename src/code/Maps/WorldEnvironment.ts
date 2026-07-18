@@ -62,7 +62,7 @@ export class WorldEnvironment {
 
 	private createSkybox(): void {
 		this.skybox = createSphere(this.engine);
-		this.skyMaterial = createSkyMaterial(this.engine, this.scene);
+		this.skyMaterial = createSkyMaterial();
 		this.skybox.material = this.skyMaterial;
 		// Lite has no infiniteDistance flag, so we keep the dome centred on the
 		// camera each frame (see update()) and size it just inside the camera far

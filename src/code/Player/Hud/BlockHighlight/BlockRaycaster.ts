@@ -8,7 +8,6 @@ import {
 } from "@babylonjs/core";
 import {
 	addVec3InPlace,
-	lengthVec3,
 	scaleVec3InPlace,
 	type Vec3,
 	vec3,

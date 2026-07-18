@@ -1,4 +1,5 @@
-import { type SceneContext, StandardMaterial } from "@babylonjs/core";
+import { StandardMaterial } from "@babylonjs/core";
+import type { SceneContext } from "@babylonjs/lite";
 
 export namespace MaterialFactory {
 	// A cache to store and reuse materials. This is a major performance optimization.

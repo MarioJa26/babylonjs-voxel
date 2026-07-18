@@ -1,9 +1,4 @@
-import {
-	Quaternion,
-	type TransformNode,
-	vec3Zero,
-	vec4,
-} from "@babylonjs/core";
+import { type Mesh, Quaternion, vec3Zero, vec4 } from "@babylonjs/core";
 import { addVec3ToRef, type Quat, type Vec3 } from "@babylonjs/lite";
 import type { IControls } from "../Interface/IControls";
 import type { IMountable } from "../Interface/IMountable";
@@ -23,7 +18,7 @@ interface IMountableUser {
 
 export class Mount implements IMountable {
 	public user: IMountableUser | null = null;
-	public vehicle: TransformNode;
+	public vehicle: Mesh;
 	#keyBoardControls: IControls<unknown>;
 
 	// Mount position and rotation offset relative to vehicle
@@ -46,7 +41,7 @@ export class Mount implements IMountable {
 	) => value is IMountableUser;
 
 	constructor(
-		vehicle: TransformNode,
+		vehicle: Mesh,
 		keyBoardControls: IControls<unknown>,
 		options: MountOptions = {},
 	) {

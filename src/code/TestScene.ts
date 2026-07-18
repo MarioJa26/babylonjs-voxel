@@ -1,9 +1,7 @@
 import {
 	createEngine,
-	createFreeCamera,
 	createSceneContext,
 	type EngineContext,
-	type FreeCamera,
 	onBeforeRender,
 	registerScene,
 	type SceneContext,
@@ -13,6 +11,7 @@ import {
 } from "@babylonjs/lite";
 import { createMobCoordinator } from "./Entities/Mobs/MobSetup";
 import { Map1 } from "./Maps/Map1";
+import { type EyeCamera, UnderWaterEffect } from "./Maps/UnderWaterEffect";
 import { initializeBlockBreakingVisuals } from "./Player/Hud/BlockHighlight/BlockBreakingVisuals";
 import { DroppedItem } from "./Player/Inventory/DroppedItem";
 import { Player } from "./Player/Player";
@@ -76,11 +75,20 @@ export class TestScene {
 			return vec3(p.x, p.y, p.z);
 		});
 
+		// Underwater visual effect — toggles a full-screen overlay whenever the
+		// player's eyes are submerged. Updated before fog so fog reads the flag.
+		const underWaterEffect = new UnderWaterEffect(
+			scene,
+			playerCamera.playerCamera as unknown as EyeCamera,
+			null,
+		);
+
 		onBeforeRender(scene, (deltaMs) => {
 			this.#frameCounter++;
 			Map1.update(deltaMs);
 			this.#player?.tick(deltaMs);
 			this.#playerStatePersistence?.update();
+			underWaterEffect.updateFromCamera();
 			updateGlobalUniforms(this.#frameCounter);
 		});
 

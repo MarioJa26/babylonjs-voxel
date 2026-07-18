@@ -30,7 +30,7 @@ import { buildPackedVertexWGSL } from "./PackedChunkShaderWGSL.js";
 
 // Opaque / transparent materials declare diffuse + normal samplers (2 sampler
 // pairs). Babylon Lite auto-injects faceData@6 / chunkOffsets@7 from storageBuffers.
-export const opaqueChunkVertexWGSL = buildPackedVertexWGSL();
+export const opaqueChunkVertexWGSL = buildPackedVertexWGSL;
 
 export const opaqueChunkFragmentWGSL = /* wgsl */ `
 struct VSOut {
@@ -198,6 +198,7 @@ export interface ChunkMaterialOptions {
 	tintLUT: Float32Array;
 	atlasTileSize: number;
 	atlasMaxTiles: number;
+	faceArenaCount: number;
 }
 
 function buildChunkMaterial(
@@ -209,9 +210,18 @@ function buildChunkMaterial(
 	const samplers = ["diffuseTexture"];
 	if (useNormal) samplers.push("normalTexture");
 
+	const arenaCount = Math.max(1, opts.faceArenaCount | 0);
+	const faceStorageBuffers = [];
+	for (let i = 0; i < arenaCount; i++) {
+		faceStorageBuffers.push({
+			name: `faceData${i}`,
+			type: "array<vec4<u32>>",
+		});
+	}
+
 	const material = createShaderMaterial({
 		name,
-		vertexSource: opaqueChunkVertexWGSL,
+		vertexSource: opaqueChunkVertexWGSL(arenaCount),
 		fragmentSource,
 		attributes: ["position"],
 		uniforms: [
@@ -229,10 +239,10 @@ function buildChunkMaterial(
 		],
 		samplers,
 		storageBuffers: [
-			{ name: "faceData", type: "array<vec4<u32>>" },
+			...faceStorageBuffers,
 			{ name: "chunkOffsets", type: "array<vec4<f32>>" },
 		],
-		backFaceCulling: true,
+		backFaceCulling: useNormal,
 		needAlphaBlending: !useNormal,
 		blendMode: "alpha",
 	});

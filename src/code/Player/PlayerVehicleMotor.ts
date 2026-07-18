@@ -3,7 +3,6 @@ import {
 	lengthSqVec3,
 	type Mesh,
 	Quaternion,
-	type Scene,
 	setVec3,
 } from "@babylonjs/core";
 import {
@@ -12,6 +11,7 @@ import {
 	createCapsule,
 	createStandardMaterial,
 	type EngineContext,
+	type SceneContext,
 	scaleVec3InPlace,
 	scaleVec3ToRef,
 	type Vec3,
@@ -44,7 +44,7 @@ import { Gamemodes, type PlayerStats } from "./PlayerStats";
 import { SimpleCharacterController } from "./SimpleCharacterController";
 
 type PlayerVehicleMotorOptions = {
-	scene: Scene;
+	scene: SceneContext;
 	engine: EngineContext;
 	camera: PlayerCamera;
 	controls: PlayerBodyControlState;
@@ -79,7 +79,7 @@ function _rotateVec3ByQuat(
 }
 
 export class PlayerVehicleMotor implements IPlayerBody {
-	readonly #scene: Scene;
+	readonly scene: SceneContext;
 	readonly #engine: EngineContext;
 	readonly #camera: PlayerCamera;
 	readonly #controls: PlayerBodyControlState;
@@ -208,7 +208,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	private readonly _waterXZOffsets: ReadonlyArray<readonly [number, number]>;
 
 	constructor(options: PlayerVehicleMotorOptions) {
-		this.#scene = options.scene;
+		this.scene = options.scene;
 		this.#engine = options.engine;
 		this.#camera = options.camera;
 		this.#controls = options.controls;
@@ -266,7 +266,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			),
 			this.collisionEpsilon,
 			{
-				scene: this.#scene,
+				scene: this.scene,
 				name: "playerAABB",
 				position: this.voxelPosition,
 				renderingGroupId: 1,
@@ -309,8 +309,8 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	public get displayCapsule(): Mesh {
 		return this.#displayCapsule;
 	}
-	public get scene(): Scene {
-		return this.#scene;
+	public getSceneContext(): SceneContext {
+		return this.scene;
 	}
 	public get camera(): PlayerCamera {
 		return this.#camera;
@@ -1284,7 +1284,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		body.material = mat;
 		body.pickable = false;
 		body.visible = false;
-		addToScene(this.#scene, body);
+		addToScene(this.scene, body);
 		return body;
 	}
 
@@ -1329,7 +1329,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			scaleVec3InPlace(dv, this.sneakMultiplier);
 		}
 
-		const cur = this.getVelocityInternal();
+		const cur = this.velocity;
 		if (lengthSqVec3(dv) < 0.01) {
 			// PERF: scaleVec3ToRef into existing scratch avoids clone + scaleInPlace.
 			return scaleVec3ToRef(cur, this.deceleration, this.#tmpV);
@@ -1394,11 +1394,12 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		return this.voxelPosition;
 	}
 
-	private getVelocityInternal(): Vec3 {
-		return this.voxelVelocity;
-	}
-
 	private setVelocityInternal(v: Vec3): void {
 		copyVec3(this.voxelVelocity, v);
+	}
+
+	/** Current world-space velocity of the player body (m/s). */
+	public get velocity(): Vec3 {
+		return this.voxelVelocity;
 	}
 }

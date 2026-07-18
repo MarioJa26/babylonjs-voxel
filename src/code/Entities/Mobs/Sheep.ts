@@ -1,9 +1,10 @@
-import { Color3, type Mesh, type Scene } from "@babylonjs/core";
+import { Color3, type Mesh } from "@babylonjs/core";
 import {
 	addToScene,
 	createMeshFromData,
 	type LiteMetadata,
 	removeFromScene,
+	type SceneContext,
 	vec3,
 } from "@babylonjs/lite";
 import { Map1 } from "@/code/Maps/Map1";
@@ -52,7 +53,7 @@ export class Sheep extends NeutralMob {
 	readonly CHUNK_ENTITY_TYPE = "sheep_v1";
 
 	static #chunkLoaderRegistered = false;
-	static #chunkReloadScene: Scene | null = null;
+	static #chunkReloadScene: SceneContext | null = null;
 
 	#bodyMesh: Mesh;
 	#bodyMaterial: ReturnType<typeof createMobColorMaterial>;
@@ -62,7 +63,7 @@ export class Sheep extends NeutralMob {
 		x: number,
 		y: number,
 		z: number,
-		scene: Scene,
+		scene: SceneContext,
 		hp?: number,
 		color?: Color3,
 	) {
@@ -104,7 +105,7 @@ export class Sheep extends NeutralMob {
 
 	// --- Abstract implementations ---
 
-	configureChunkLoader(scene: Scene): void {
+	configureChunkLoader(scene: SceneContext): void {
 		Sheep.#chunkReloadScene = scene;
 		if (Sheep.#chunkLoaderRegistered) return;
 		Sheep.#chunkLoaderRegistered = true;
