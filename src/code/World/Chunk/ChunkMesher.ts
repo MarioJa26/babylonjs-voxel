@@ -522,11 +522,9 @@ function createBoatChunkMesh(
 
 export function createMeshFromData(
 	chunk: Chunk,
-	meshData: { opaque: MeshData | null; transparent: MeshData | null },
+	opaqueMeshData: MeshData | null,
+	transparentMeshData: MeshData | null,
 ): void {
-	const opaqueMeshData = meshData.opaque;
-	const transparentMeshData = meshData.transparent;
-
 	const hasOpaque = !!opaqueMeshData && opaqueMeshData.faceCount > 0;
 	const hasTransparent =
 		!!transparentMeshData && transparentMeshData.faceCount > 0;
@@ -542,18 +540,14 @@ export function createMeshFromData(
 
 	const lodLevel = chunk.lodLevel ?? 0;
 	if (lodLevel === 0 && chunk.isModified) {
-		chunk.opaqueMeshData = hasOpaque ? opaqueMeshData : null;
-		chunk.transparentMeshData = hasTransparent ? transparentMeshData : null;
+		chunk.opaqueMeshData = opaqueMeshData;
+		chunk.transparentMeshData = transparentMeshData;
 	} else {
 		chunk.opaqueMeshData = null;
 		chunk.transparentMeshData = null;
 	}
 
-	assignChunkToGroup(
-		chunk,
-		hasOpaque ? opaqueMeshData! : null,
-		hasTransparent ? transparentMeshData! : null,
-	);
+	assignChunkToGroup(chunk, opaqueMeshData, transparentMeshData);
 }
 
 export function initEngineContext(
@@ -604,7 +598,7 @@ export function updateGlobalUniforms(frameId: number): void {
 		lastSun = u.sunLightIntensity;
 		lastWet = u.wetness;
 		for (let i = 0; i < materialList.length; i++) {
-			const m = materialList[i]!;
+			const m = materialList[i];
 			if (!m) continue;
 
 			lightDirArray[0] = u.lightDirection.x;

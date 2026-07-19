@@ -21,6 +21,30 @@ export type LoadChunkOptions = {
 const VOXEL_SENTINEL = 255;
 const ENTITY_SENTINEL = 254;
 
+// PERF: gzip's worst-case expansion on already-small, already-typed voxel/
+// light buffers is a handful of stored-block headers (~5 bytes per 64KB) plus
+// the fixed 18-byte gzip header/trailer. 512 bytes of headroom on top of the
+// uncompressed input size is generous and means the common case never grows
+// the output buffer at all.
+const GZIP_SAFETY_MARGIN = 512;
+
+/**
+ * PERF: doubling-growth helper shared by compress()'s output accumulator.
+ * Only exercised if a chunk's compressed output somehow exceeds the safety
+ * margin above (should not happen in practice for voxel/light payloads).
+ */
+function ensureCapacity(
+	buf: Uint8Array<ArrayBufferLike>,
+	needed: number,
+): Uint8Array<ArrayBufferLike> {
+	if (buf.length >= needed) return buf;
+	let newLen = buf.length * 2;
+	while (newLen < needed) newLen *= 2;
+	const grown = new Uint8Array(newLen);
+	grown.set(buf);
+	return grown;
+}
+
 class WorldStorageImpl {
 	private initPromise: Promise<void> | null = null;
 
@@ -72,25 +96,31 @@ class WorldStorageImpl {
 				>,
 			)
 			.getReader();
-		const chunks: Uint8Array[] = [];
-		let totalBytes = 0;
+
+		// PERF: pre-size the output buffer instead of accumulating an array of
+		// stream chunks and doing a second full copy pass to merge them
+		// afterward (mirrors the pre-sized approach decompressToShared already
+		// uses via the gzip trailer's ISIZE field — compression can't know its
+		// exact output size ahead of time, but a generous upper bound avoids
+		// the common-case growth/copy entirely).
+		let outBuf: Uint8Array<ArrayBufferLike> = new Uint8Array(
+			inputBytes.byteLength + GZIP_SAFETY_MARGIN,
+		);
+		let offset = 0;
 		try {
 			while (true) {
 				const { value, done } = await reader.read();
 				if (done) break;
-				chunks.push(value);
-				totalBytes += value.byteLength;
+				if (offset + value.byteLength > outBuf.length) {
+					outBuf = ensureCapacity(outBuf, offset + value.byteLength);
+				}
+				outBuf.set(value, offset);
+				offset += value.byteLength;
 			}
 		} finally {
 			reader.releaseLock();
 		}
-		const result = new Uint8Array(totalBytes);
-		let offset = 0;
-		for (const c of chunks) {
-			result.set(c, offset);
-			offset += c.byteLength;
-		}
-		return result;
+		return offset === outBuf.length ? outBuf : outBuf.slice(0, offset);
 	}
 
 	private async decompressToShared(
@@ -103,9 +133,27 @@ class WorldStorageImpl {
 				: new Uint8Array(data);
 		const sab = new SharedArrayBuffer(outputByteLength);
 		const out = new Uint8Array(sab);
-		const reader = new Response(body)
-			.body!.pipeThrough(new DecompressionStream("gzip"))
+
+		// PERF: was `new Response(body).body!.pipeThrough(...)`. Constructing a
+		// full Response just to obtain a ReadableStream pulls in Fetch API
+		// object/header machinery for what is really "wrap this Uint8Array in a
+		// stream" — the same lightweight construction compress() already uses
+		// above does the same job without it.
+		const readable = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(body);
+				controller.close();
+			},
+		});
+		const reader = readable
+			.pipeThrough(
+				new DecompressionStream("gzip") as unknown as ReadableWritablePair<
+					Uint8Array,
+					Uint8Array
+				>,
+			)
 			.getReader();
+
 		let offset = 0;
 		try {
 			while (true) {
@@ -307,11 +355,21 @@ class WorldStorageImpl {
 		}
 	}
 
+	/**
+	 * PERF: accepts an optional pre-existing map to populate in place. Callers
+	 * that maintain a reusable scratch map (e.g. ChunkProcessScheduler's
+	 * per-slice near/far/hydrate maps) can pass it in directly instead of
+	 * receiving a freshly allocated Map every call and copying entries out of
+	 * it — this method does not clear outMap itself, so the caller is
+	 * responsible for clearing it beforehand if overwrite (rather than merge)
+	 * semantics are wanted.
+	 */
 	async loadChunks(
 		chunkIds: bigint[],
 		options?: LoadChunkOptions,
+		outMap?: Map<bigint, SavedChunkData>,
 	): Promise<Map<bigint, SavedChunkData>> {
-		const result = new Map<bigint, SavedChunkData>();
+		const result = outMap ?? new Map<bigint, SavedChunkData>();
 
 		if (GLOBAL_VALUES.DISABLE_CHUNK_LOADING || chunkIds.length === 0) {
 			return result;

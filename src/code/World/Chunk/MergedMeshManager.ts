@@ -377,11 +377,11 @@ export function assignChunkToGroup(
 			existing.opaqueData === opaqueData &&
 			existing.transparentData === transparentData;
 
-		existing.opaqueData = opaqueData;
-		existing.transparentData = transparentData;
-
 		if (dataUnchanged && chunk.mergedGroupKey === groupKey) {
 			return group;
+		} else {
+			existing.opaqueData = opaqueData;
+			existing.transparentData = transparentData;
 		}
 	} else {
 		const memberData: ChunkMemberData = {

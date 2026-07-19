@@ -1,4 +1,4 @@
-import type { SceneContext } from "@babylonjs/lite";
+﻿import type { SceneContext } from "@babylonjs/lite";
 import { onSceneDispose } from "@babylonjs/lite";
 import { Map1 } from "@/code/Maps/Map1";
 import {
@@ -8,17 +8,11 @@ import {
 	UiFocus,
 } from "@/code/Shared/GameRuntimeState";
 import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
-import {
-	TextureDefinitions,
-	TextureDefinitionsReady,
-} from "@/code/World/Texture/TextureDefinitions";
+import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
 import MapFog from "../../Maps/MapFog";
 import { WorldEnvironment } from "../../Maps/WorldEnvironment";
-import {
-	MasonRecipes,
-	type Recipe,
-	Recipes,
-} from "../Crafting/CraftingManager";
+import { MasonRecipes } from "../Crafting/CraftingManager";
+import { CraftMenu } from "../Crafting/CraftMenu/CraftMenu";
 import { PlayerInventory } from "../Inventory/PlayerInventory";
 import type { Player } from "../Player";
 import { Crosshair } from "./Crosshair/Crosshair";
@@ -35,7 +29,7 @@ export class PlayerHud {
 
 	static #inventory: PlayerInventory;
 	#inventoryOpen = false;
-	#craftingRecipeDivs: { recipe: Recipe; div: HTMLDivElement }[] = [];
+	#craftMenu: CraftMenu;
 
 	#masonTableOpen = false;
 	#masonTableDiv: HTMLDivElement | null = null;
@@ -78,6 +72,7 @@ export class PlayerHud {
 		this.#scene = scene;
 		this.#player = player;
 		PlayerHud.#inventory = player.playerInventory;
+		this.#craftMenu = new CraftMenu(player.playerInventory);
 		this.crossHair = new Crosshair();
 		this.#overlayDiv = this.initializeHUD();
 		this.createHotbarUI();
@@ -87,16 +82,11 @@ export class PlayerHud {
 
 		PlayerHud.#inventory.onInventoryChangedObservable.add(() => {
 			if (this.#inventoryOpen) {
-				this.updateCraftingAvailability();
+				this.#craftMenu.updateCraftingAvailability();
 			}
 		});
 
-		void this.#initCraftingUI();
-	}
-
-	async #initCraftingUI(): Promise<void> {
-		await TextureDefinitionsReady;
-		this.createCraftingUI(this.#craftingContainer);
+		void this.#craftMenu.build(this.#craftingContainer);
 	}
 
 	private initializeHUD(): HTMLDivElement {
@@ -139,115 +129,6 @@ export class PlayerHud {
 		return overlayDiv;
 	}
 
-	private createCraftingUI(container: HTMLDivElement): void {
-		container.innerHTML = "";
-		this.#craftingRecipeDivs = [];
-
-		const viewSwitcher = document.createElement("div");
-		viewSwitcher.classList.add("crafting-view-switcher");
-
-		const detailedButton = document.createElement("button");
-		detailedButton.innerText = "List";
-		detailedButton.title = "Show name and icon";
-		detailedButton.classList.add("active");
-
-		const compactButton = document.createElement("button");
-		compactButton.innerText = "Grid";
-		compactButton.title = "Show only icon";
-
-		detailedButton.onclick = () => {
-			container.classList.remove("compact-view");
-			detailedButton.classList.add("active");
-			compactButton.classList.remove("active");
-		};
-
-		compactButton.onclick = () => {
-			container.classList.add("compact-view");
-			compactButton.classList.add("active");
-			detailedButton.classList.remove("active");
-		};
-
-		viewSwitcher.appendChild(detailedButton);
-		viewSwitcher.appendChild(compactButton);
-		container.appendChild(viewSwitcher);
-
-		for (const recipe of Recipes) {
-			const textureDef = TextureDefinitions.find(
-				(t) => t.id === recipe.resultId,
-			);
-			if (!textureDef) continue;
-
-			const recipeDiv = document.createElement("div");
-			recipeDiv.classList.add("crafting-recipe");
-
-			const ingredientsInfo = recipe.ingredients
-				.map((ing) => {
-					const ingDef = TextureDefinitions.find((t) => t.id === ing.itemId);
-					return `- ${ingDef ? ingDef.name : "Unknown"} x${ing.count}`;
-				})
-				.join("\n");
-			recipeDiv.title = `Craft ${textureDef.name}\nRequires:\n${ingredientsInfo}`;
-
-			const icon = document.createElement("img");
-			icon.src =
-				MaterialFactory.getTexturePathFromFolder(textureDef.path) ?? "";
-			icon.classList.add("crafting-icon");
-
-			const name = document.createElement("span");
-			name.innerText = textureDef.name;
-
-			recipeDiv.appendChild(icon);
-			recipeDiv.appendChild(name);
-
-			this.#craftingRecipeDivs.push({ recipe, div: recipeDiv });
-
-			recipeDiv.onclick = () => {
-				let canCraft = true;
-				for (const ing of recipe.ingredients) {
-					if (!PlayerHud.#inventory.hasItem(ing.itemId, ing.count)) {
-						canCraft = false;
-						break;
-					}
-				}
-
-				if (canCraft) {
-					for (const ing of recipe.ingredients) {
-						PlayerHud.#inventory.removeItems(ing.itemId, ing.count);
-					}
-					PlayerHud.#inventory.createAndAddItem(
-						recipe.resultId,
-						recipe.resultCount,
-					);
-					this.updateCraftingAvailability();
-				} else {
-					recipeDiv.style.borderColor = "red";
-					setTimeout(() => (recipeDiv.style.borderColor = ""), 200);
-				}
-			};
-			container.appendChild(recipeDiv);
-		}
-		this.updateCraftingAvailability();
-	}
-
-	public updateCraftingAvailability(): void {
-		for (const item of this.#craftingRecipeDivs) {
-			let canCraft = true;
-			for (const ing of item.recipe.ingredients) {
-				if (!PlayerHud.#inventory.hasItem(ing.itemId, ing.count)) {
-					canCraft = false;
-					break;
-				}
-			}
-
-			if (canCraft) {
-				item.div.classList.remove("not-craftable");
-				item.div.style.borderColor = ""; // Reset red border if it was set
-			} else {
-				item.div.classList.add("not-craftable");
-			}
-		}
-	}
-
 	private createInventoryUI(): HTMLDivElement {
 		const inventoryContainer = document.createElement("div");
 		inventoryContainer.classList.add("inventory-container");
@@ -260,6 +141,12 @@ export class PlayerHud {
 			for (let col = 0; col < inventory[row].length; col++) {
 				const slot = this.getSlot(col, row);
 				if (!slot) continue;
+				slot.addEventListener("dblclick", () => {
+					const item = PlayerHud.#inventory.inventory[row][col].item;
+					if (item) {
+						this.#craftMenu.addItemToFirstFreeSearchSlot(item.itemId);
+					}
+				});
 				rowContainer.appendChild(slot);
 			}
 			inventoryContainer.appendChild(rowContainer);
@@ -345,7 +232,7 @@ export class PlayerHud {
 			// no matter how the inventory was opened (Tab key or UI button). Also
 			// cancel any in-progress block breaking from a held mouse button.
 			this.#activateInventoryControls();
-			this.updateCraftingAvailability();
+			this.#craftMenu.updateCraftingAvailability();
 			PlayerHud.#heldItemNameDiv.classList.remove("visible");
 			this.#overlayDiv.style.display = "flex";
 			this.#exitPointerLock();
@@ -355,6 +242,7 @@ export class PlayerHud {
 			// (Tab, Escape, or the close button) so world interactions work again.
 			this.#activateWalkingControls();
 			this.#overlayDiv.style.display = "none";
+			this.#craftMenu.closePicker();
 			// Only re-grab the mouse if no other overlay is still open.
 			if (!isUiOpen()) this.#enterPointerLock();
 		}

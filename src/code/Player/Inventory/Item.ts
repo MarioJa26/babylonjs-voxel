@@ -303,6 +303,10 @@ export class Item implements IUsable {
 		this.#div.appendChild(this.#stackLabel);
 
 		this.#div.draggable = true;
+		this.#div.addEventListener("dragstart", (e) => {
+			e.dataTransfer?.setData("text/plain", `inv:${this.itemId}`);
+			e.dataTransfer?.setData("inv-id", String(this.itemId));
+		});
 
 		return this.#div;
 	}

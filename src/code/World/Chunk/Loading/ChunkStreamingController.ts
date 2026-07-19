@@ -855,10 +855,11 @@ export class ChunkStreamingController {
 			return false;
 		}
 
-		createMeshFromData(chunk, {
-			opaque: cached.opaque ?? null,
-			transparent: cached.transparent ?? null,
-		});
+		createMeshFromData(
+			chunk,
+			cached.opaque ?? null,
+			cached.transparent ?? null,
+		);
 
 		chunk.isDirty = false;
 

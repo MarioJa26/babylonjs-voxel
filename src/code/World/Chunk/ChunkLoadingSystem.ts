@@ -13,10 +13,7 @@ import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import { packCoords } from "./DataStructures/ChunkCoords";
 import type { MeshData } from "./DataStructures/MeshData";
 import { ChunkEntityRegistry } from "./Loading/ChunkEntityRegistry";
-import {
-	ChunkHydration,
-	type SelectedSavedMesh,
-} from "./Loading/ChunkHydration";
+import { ChunkHydration } from "./Loading/ChunkHydration";
 import { ChunkLoadingDebug } from "./Loading/ChunkLoadingDebug";
 import { ChunkPersistenceCoordinator } from "./Loading/ChunkPersistenceCoordinator";
 import { ChunkProcessScheduler } from "./Loading/ChunkProcessScheduler";
@@ -81,10 +78,10 @@ const _neighborBuffer: (Chunk | undefined)[] = new Array(6);
 
 const _queuedIdSet: Set<bigint> = new Set();
 
-const _meshData: {
+interface SelectedSavedMesh {
 	opaque: MeshData | null;
 	transparent: MeshData | null;
-} = { opaque: null, transparent: null };
+}
 
 // OPFS mesh cache: chunkId (bigint) -> deserialized mesh pair from OPFS.
 // Populated by prefetchOpfsMeshes (called by ChunkProcessScheduler in parallel
@@ -179,12 +176,6 @@ const chunkHydration = new ChunkHydration({
 		uniformBlockId: savedData.uniformBlockId,
 		lightArray: savedData.lightArray,
 	}),
-
-	// Mesh data now lives in OPFS, not IDB. The OPFS cache is consulted
-	// directly by applyLoadedChunkFromSavedData (via opfsMeshCache).
-	getSavedMeshForLod: () => null,
-	getAvailableMeshLods: () => [],
-	getSerializedLodCache: () => undefined,
 });
 
 const streamingController = new ChunkStreamingController({
@@ -330,22 +321,12 @@ function getNeighbors(chunk: Chunk): (Chunk | undefined)[] {
 	return n;
 }
 
-function getReusableMeshData(
-	opaque: MeshData | null,
-	transparent: MeshData | null,
-): { opaque: MeshData | null; transparent: MeshData | null } {
-	const meshData = _meshData;
-	meshData.opaque = opaque;
-	meshData.transparent = transparent;
-	return meshData;
-}
-
 function applyMeshToChunk(chunk: Chunk, mesh: SelectedSavedMesh | null): void {
 	if (!mesh || (!mesh.opaque && !mesh.transparent)) {
 		return;
 	}
 
-	createMeshFromData(chunk, getReusableMeshData(mesh.opaque, mesh.transparent));
+	createMeshFromData(chunk, mesh.opaque, mesh.transparent);
 }
 
 function refreshQueueDebugSnapshot(): void {

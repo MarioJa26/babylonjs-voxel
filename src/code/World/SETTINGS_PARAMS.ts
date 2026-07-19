@@ -7,13 +7,13 @@ export const SETTING_PARAMS = {
 	MAX_CHUNK_HEIGHT: 64,
 	CHUNK_UNLOAD_DISTANCE_BUFFER: 1, // How many extra chunks to keep before unloading
 	// 0 = auto (render-distance based), >0 = explicit per-cycle cap
-	CHUNK_LOAD_BATCH_LIMIT: 64,
-	CHUNK_UNLOAD_BATCH_LIMIT: 64,
+	CHUNK_LOAD_BATCH_LIMIT: 127,
+	CHUNK_UNLOAD_BATCH_LIMIT: 127,
 	// Soft budget used by chunk loading scheduler to decide whether to continue
 	// work in microtasks or yield to next frame.
 	CHUNK_LOADING_FRAME_BUDGET_MS: 8.0,
 	VERTICAL_CHUNK_CULLING_FACTOR: 6, // Multiplier for CHUNK_SIZE to cull chunks above/below terrain
-	CAMERA_FOV: 93, // Default camera field of view in degrees
+	CAMERA_FOV: 90, // Default camera field of view in degrees
 
 	// --- LOD Settings ---
 	LOD_0_OFFSET: 0,

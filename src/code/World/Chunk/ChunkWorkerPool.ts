@@ -20,7 +20,7 @@ import {
 	type WorkerResponseData,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
-import { flushDirtyMergedGroups, setRequestFlush } from "./MergedMeshManager";
+import { setRequestFlush } from "./MergedMeshManager";
 import {
 	normalizeChunkLod,
 	shouldSkipLodForChunk,
@@ -960,7 +960,7 @@ export class ChunkWorkerPool {
 			chunk.opaqueMeshData ||
 			chunk.transparentMeshData
 		) {
-			createMeshFromData(chunk, { opaque: null, transparent: null });
+			createMeshFromData(chunk, null, null);
 		}
 	}
 
@@ -1174,9 +1174,7 @@ export class ChunkWorkerPool {
 					}
 				}
 				if ((chunk.lodLevel ?? 0) === lod) {
-					_meshApplyScratch.opaque = opaque ?? null;
-					_meshApplyScratch.transparent = transparent ?? null;
-					createMeshFromData(chunk, _meshApplyScratch);
+					createMeshFromData(chunk, opaque ?? null, transparent ?? null);
 					chunk.isDirty = false;
 					chunk.remeshQueued = false;
 					this.queuePostRemeshSave(chunk);
@@ -1193,7 +1191,7 @@ export class ChunkWorkerPool {
 			}
 		}
 
-		flushDirtyMergedGroups();
+		//flushDirtyMergedGroups();
 
 		if (processed > 0 && this.opfsReady && this.opfsClient) {
 			this.opfsFlushCounter++;
@@ -1417,10 +1415,7 @@ export class ChunkWorkerPool {
 		const cached = chunk.getCachedLODMesh(chunk.lodLevel);
 		if (!cached?.opaque && !cached?.transparent) return false;
 
-		createMeshFromData(chunk, {
-			opaque: cached.opaque,
-			transparent: cached.transparent,
-		});
+		createMeshFromData(chunk, cached.opaque, cached.transparent);
 		chunk.isDirty = false;
 		return true;
 	}

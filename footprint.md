@@ -1,12 +1,12 @@
 # Project Footprint
 
-Generated: 2026-07-18T21:56:10.517Z
+Generated: 2026-07-19T06:38:32.646Z
 
-> **Summary:** 125 classes · 1698 members · 441 module-level functions · 50491 LOC
+> **Summary:** 125 classes · 1699 members · 446 module-level functions · 50784 LOC
 
 ---
 
-## `Entities/AdvancedBoat.ts` (328 LOC)
+## `Entities/AdvancedBoat.ts` (327 LOC)
 
 ### export class AdvancedBoat implements IUsable
 
@@ -495,7 +495,7 @@ Generated: 2026-07-18T21:56:10.517Z
 ## `Generation/Biome/Biomes.ts` (408 LOC)
 
 **Module-level functions**
-- `export function getBiomeFor(temperature: number, humidity: number, continentalness: number, river: number, terrainShapedHeight: number): Biome`
+- `export function getBiomeFor(temperature: number, humidity: number, continentalness: number, _river: number, terrainShapedHeight: number): Biome`
 
 ---
 
@@ -550,7 +550,7 @@ Generated: 2026-07-18T21:56:10.517Z
 
 ---
 
-## `Generation/DistantTerrain/DistantTerrain.ts` (290 LOC)
+## `Generation/DistantTerrain/DistantTerrain.ts` (283 LOC)
 
 **Module-level functions**
 - `function createEmptyGridMesh(engine: EngineContext, name: string): Mesh`
@@ -607,7 +607,7 @@ Generated: 2026-07-18T21:56:10.517Z
 **Methods**
 - `public seedInitialLight(chunkX: number, chunkY: number, chunkZ: number, _biome: Biome, blocks: Uint8Array, light: Uint8Array, topSunlightMask?: Uint8Array): LightSeedState`
 - `public propagateLight(blocks: Uint8Array, light: Uint8Array, seedState: LightSeedState): void`
-- `private seedInitialLightIntoSharedQueue(chunkX: number, chunkY: number, chunkZ: number, blocks: Uint8Array, light: Uint8Array, topSunlightMask?: Uint8Array): number`
+- `private seedInitialLightIntoSharedQueue(_chunkX: number, chunkY: number, _chunkZ: number, blocks: Uint8Array, light: Uint8Array, topSunlightMask?: Uint8Array): number`
 - `private propagateLightFromQueue(blocks: Uint8Array, light: Uint8Array, queue: Uint16Array, initialTail: number): void`
 - `private tryPropagate(nx: number, ny: number, nz: number, targetSky: number, targetBlock: number, sourceBlockId: number, isDown: boolean, blocks: Uint8Array, light: Uint8Array, queue: Uint16Array, tail: number, CHUNK_SIZE: number, CHUNK_SIZE_SQ: number): number`
 - `private static isTransparentBlock(blockId: number): boolean`
@@ -797,7 +797,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -815,7 +815,7 @@ export function createFastNoise3D(
 - `public readonly verticalBounds`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -841,7 +841,7 @@ export function createFastNoise3D(
 			id: number,
 			ow: boolean,
 		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
-- `private generateSpire(chunkX: number, chunkY: number, chunkZ: number, spireX: number, spireZ: number, groundHeight: number, spireHeight: number, tierHeight: number, halfFp: number, placeBlock: (
+- `private generateSpire(_chunkX: number, chunkY: number, _chunkZ: number, spireX: number, spireZ: number, groundHeight: number, spireHeight: number, tierHeight: number, halfFp: number, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -869,7 +869,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -888,7 +888,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -907,7 +907,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -926,7 +926,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -945,7 +945,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -964,7 +964,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -982,7 +982,7 @@ export function createFastNoise3D(
 - `public readonly verticalBounds`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1001,7 +1001,7 @@ export function createFastNoise3D(
 - `public readonly verticalBounds`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1020,7 +1020,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1038,7 +1038,7 @@ export function createFastNoise3D(
 - `public readonly verticalBounds`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1057,7 +1057,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1075,7 +1075,7 @@ export function createFastNoise3D(
 - `public readonly verticalBounds`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1102,7 +1102,7 @@ export function createFastNoise3D(
 - `public readonly verticalBounds`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1128,7 +1128,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1146,7 +1146,7 @@ export function createFastNoise3D(
 - `public readonly verticalBounds`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1172,7 +1172,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1191,7 +1191,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1210,7 +1210,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1229,7 +1229,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1248,7 +1248,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1266,7 +1266,7 @@ export function createFastNoise3D(
 - `public readonly verticalBounds`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1298,7 +1298,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1317,7 +1317,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1336,7 +1336,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1355,7 +1355,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1437,7 +1437,7 @@ export function createFastNoise3D(
 
 **Methods**
 - `private loadStructures()`
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1462,21 +1462,21 @@ export function createFastNoise3D(
 			id: number,
 			ow: boolean,
 		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
-- `private generateCylinderTower(chunkX: number, chunkY: number, chunkZ: number, towerCenterX: number, towerCenterZ: number, towerRadius: number, groundHeight: number, biome: Biome, placeBlock: (
+- `private generateCylinderTower(_chunkX: number, chunkY: number, _chunkZ: number, towerCenterX: number, towerCenterZ: number, towerRadius: number, groundHeight: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
 		) => void, chunkSize: number, seed: number, columnPrepassResolver?: ColumnPrepassResolver)`
-- `private generateUndergroundCylinderTower(chunkX: number, chunkY: number, chunkZ: number, towerCenterX: number, towerCenterZ: number, towerRadius: number, groundHeight: number, placeBlock: (
+- `private generateUndergroundCylinderTower(_chunkX: number, chunkY: number, _chunkZ: number, towerCenterX: number, towerCenterZ: number, towerRadius: number, groundHeight: number, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
 		) => void, chunkSize: number)`
-- `private findMinGroundHeightForTower(towerCenterX: number, towerCenterZ: number, towerRadius: number, biome: Biome, columnPrepassResolver?: ColumnPrepassResolver): number`
+- `private findMinGroundHeightForTower(towerCenterX: number, towerCenterZ: number, towerRadius: number, _biome: Biome, columnPrepassResolver?: ColumnPrepassResolver): number`
 
 ---
 
@@ -1489,7 +1489,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1508,7 +1508,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1527,7 +1527,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1546,7 +1546,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1565,7 +1565,7 @@ export function createFastNoise3D(
 - `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
@@ -1962,7 +1962,7 @@ export function createFastNoise3D(
 
 **Module-level functions**
 - `export function play(scene: SceneContext, position: Vec3, blockId: number, packedLight: number)`
-- `function init(scene: SceneContext)`
+- `function init(_scene: SceneContext)`
 
 ---
 
@@ -2010,7 +2010,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Maps/WorldEnvironment.ts` (96 LOC)
+## `Maps/WorldEnvironment.ts` (88 LOC)
 
 ### export class WorldEnvironment
 
@@ -2022,7 +2022,6 @@ export function createFastNoise3D(
 - `private engine: EngineContext`
 - `private scene: SceneContext`
 - `private dirLight: DirectionalLight | null = null`
-- `private hemiLight: HemisphericLight | null = null`
 - `private skybox: Mesh | null = null`
 - `private skyMaterial: ShaderMaterial | null = null`
 - `private timeOfDay`
@@ -2040,7 +2039,6 @@ export function createFastNoise3D(
 **Types / Interfaces / Enums**
 - type `DirectionalLight`
 - type `EngineContext`
-- type `HemisphericLight`
 - type `Mesh`
 - type `SceneContext`
 - type `ShaderMaterial`
@@ -2273,12 +2271,37 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Crafting/CraftingManager.ts` (28 LOC)
+## `Player/Crafting/CraftingManager.ts` (37 LOC)
 
 **Types / Interfaces / Enums**
 - interface `Ingredient`
 - interface `Recipe`
 - interface `MasonRecipe`
+
+---
+
+## `Player/Crafting/CraftMenu/CraftMenu.ts` (412 LOC)
+
+### export class CraftMenu
+
+**Constructor**
+- `constructor(inventory: PlayerInventory)`
+
+**Methods**
+- `async build(container: HTMLDivElement): Promise<void>`
+- `private createCraftingUI(container: HTMLDivElement): void`
+- `private craftRecipe(recipeDiv: HTMLDivElement, recipe: Recipe): void`
+- `private createRecipeCard(recipe: Recipe): HTMLDivElement | null`
+- `private createRecipeSearchPanel(): HTMLDivElement`
+- `private renderRecipeSearchSlot(index: number): void`
+- `addItemToFirstFreeSearchSlot(itemId: number): void`
+- `private openRecipeSearchPicker(slotIndex: number): void`
+- `private closeRecipeSearchPicker(): void`
+- `private readDroppedItemId(e: DragEvent): number | null`
+- `private updateRecipeSearchResults(): void`
+- `updateCraftingAvailability(): void`
+- `refreshAvailability(): void`
+- `closePicker(): void`
 
 ---
 
@@ -2512,7 +2535,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Hud/PlayerHud.ts` (860 LOC)
+## `Player/Hud/PlayerHud.ts` (762 LOC)
 
 ### export class PlayerHud
 
@@ -2521,8 +2544,6 @@ export function createFastNoise3D(
 
 **Properties**
 - `public readonly crossHair: Crosshair`
-- `recipe: MasonRecipe`
-- `div: HTMLDivElement`
 - `static debugPanelDiv: HTMLDivElement`
 - `private static infoRows: { [key: string]: { container: HTMLDivElement; valueNode: Text; valueSpan?: HTMLSpanElement; keySpan?: HTMLSpanElement; }; } = {}`
 - `private static itemTooltipDiv: HTMLDivElement`
@@ -2536,8 +2557,6 @@ export function createFastNoise3D(
 
 **Methods**
 - `private initializeHUD(): HTMLDivElement`
-- `private createCraftingUI(container: HTMLDivElement): void`
-- `public updateCraftingAvailability(): void`
 - `private createInventoryUI(): HTMLDivElement`
 - `private createHotbarUI(): HTMLDivElement`
 - `private createStatsUI(): void`
@@ -2559,10 +2578,6 @@ export function createFastNoise3D(
 - `public static showItemTooltip(text: string, event: MouseEvent): void`
 - `public static hideItemTooltip(): void`
 - `public updateStats(): void`
-
-**Types / Interfaces / Enums**
-- type `MasonRecipe`
-- type `Recipe`
 
 ---
 
@@ -2641,7 +2656,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Inventory/Item.ts` (312 LOC)
+## `Player/Inventory/Item.ts` (316 LOC)
 
 ### export class Item implements IUsable
 
@@ -2900,7 +2915,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/PlayerInputController.ts` (94 LOC)
+## `Player/PlayerInputController.ts` (92 LOC)
 
 ### export class PlayerInputController
 
@@ -3367,9 +3382,11 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/ChunkLoadingSystem.ts` (833 LOC)
+## `World/Chunk/ChunkLoadingSystem.ts` (830 LOC)
 
 **Module-level functions**
+- `function _prefetchOnReadOk(idx: number, bytes: Uint8Array | null | undefined): void`
+- `function _prefetchOnReadErr(idx: number, err: unknown): void`
 - `function isEntityAlive(entity: ChunkBoundEntity): boolean`
 - `function getEntityChunkId(entity: ChunkBoundEntity): bigint | null`
 - `export function processFrameBudgetedStreamingWork(playerChunkX: number, playerChunkY: number, playerChunkZ: number): void`
@@ -3409,9 +3426,9 @@ export function createFastNoise3D(
 >`
 
 **Types / Interfaces / Enums**
+- interface `SelectedSavedMesh`
 - type `SavedChunkData`
 - type `SavedChunkEntityData`
-- type `SelectedSavedMesh`
 - type `QueuedChunkRequest`
 - type `DynamicBlockSample`
 - type `DynamicBlockProvider`
@@ -3422,7 +3439,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/ChunkMesher.ts` (522 LOC)
+## `World/Chunk/ChunkMesher.ts` (517 LOC)
 
 **Module-level functions**
 - `function getBoatChunkIndex(size: number): Uint8Array`
@@ -3431,7 +3448,7 @@ export function createFastNoise3D(
 - `function uploadTintLUT(): void`
 - `function setMaterialGroupUniforms(m: ShaderMaterial): void`
 - `function createBoatChunkMesh(chunk: Chunk, opaqueData: MeshData | null, transparentData: MeshData | null): void`
-- `export function createMeshFromData(chunk: Chunk, meshData: { opaque: MeshData | null; transparent: MeshData | null }): void`
+- `export function createMeshFromData(chunk: Chunk, opaqueMeshData: MeshData | null, transparentMeshData: MeshData | null): void`
 - `export function initEngineContext(engine: EngineContext, scene: SceneContext): void`
 - `export function updateGlobalUniforms(frameId: number): void`
 - `export function disposeSharedResources(): void`
@@ -3559,7 +3576,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/ChunkWorkerPool.ts` (1723 LOC)
+## `World/Chunk/ChunkWorkerPool.ts` (1741 LOC)
 
 ### export class ChunkWorkerPool
 
@@ -3626,6 +3643,7 @@ export function createFastNoise3D(
 - `private _markWorkerIdle(workerIndex: number): void`
 
 **Module-level functions**
+- `function compareLodCandidateScores(a: number, b: number): number`
 - `function packInflightKey(chunkId: bigint, lod: number): bigint`
 
 **Types / Interfaces / Enums**
@@ -3818,7 +3836,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Loading/ChunkHydration.ts` (159 LOC)
+## `World/Chunk/Loading/ChunkHydration.ts` (39 LOC)
 
 ### export class ChunkHydration
 
@@ -3826,17 +3844,9 @@ export function createFastNoise3D(
 - `constructor(private readonly adapter: ChunkHydrationAdapter)`
 
 **Methods**
-- `public tryGetSavedMeshForLod(savedData: SavedChunkData, lod: number, out: SelectedSavedMesh): boolean`
-- `public getSavedMeshForLod(savedData: SavedChunkData, lod: number): SelectedSavedMesh | null`
-- `private pickBestAvailableLod(availableLods: readonly number[], desiredLod: number): number`
-- `public tryPickBestSavedMesh(savedData: SavedChunkData, desiredLod: number, out: SelectedSavedMesh): boolean`
-- `public pickBestSavedMesh(savedData: SavedChunkData, desiredLod: number): SelectedSavedMesh | null`
 - `public applyHydratedChunkFromSavedData(chunk: Chunk, savedData: SavedChunkData, scheduleRemesh = false): void`
-- `public applyLoadedChunkFromSavedData(chunk: Chunk, savedData: SavedChunkData, desiredLod: number, scheduleRemesh = false): SelectedSavedMesh | null`
-- `public applySelectedMeshDataToChunk(chunk: Chunk, selectedMesh: SelectedSavedMesh | null): void`
 
 **Types / Interfaces / Enums**
-- interface `SelectedSavedMesh`
 - interface `HydrationStoragePayload`
 - interface `ChunkHydrationAdapter`
 
@@ -3909,9 +3919,32 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Loading/ChunkProcessScheduler.ts` (420 LOC)
+## `World/Chunk/Loading/ChunkProcessScheduler.ts` (413 LOC)
 
 ### export class ChunkProcessScheduler
+
+**Constructor**
+- `constructor(private readonly adapter: ChunkProcessSchedulerAdapter)`
+
+**Properties**
+- `private isProcessing`
+- `private inFlightProcessState: InFlightProcessState | null = null`
+- `private _state: InFlightProcessState = this.createReusableProcessState()`
+- `private processContinuationScheduled`
+- `private _saveScratch: Chunk[] = []`
+- `private _nearIdScratch: bigint[] = []`
+- `private _farIdScratch: bigint[] = []`
+
+**Accessors**
+- `public get processing(): boolean`
+
+**Methods**
+- `private createReusableProcessState(): InFlightProcessState`
+- `private resetState(state: InFlightProcessState): void`
+- `public async processQueues(): Promise<void>`
+- `public beginSlice(state: InFlightProcessState): void`
+- `public hasBudget(state: InFlightProcessState): boolean`
+- `public scheduleProcessContinuation(): void`
 
 **Types / Interfaces / Enums**
 - interface `ChunkProcessSchedulerAdapter`
@@ -3973,9 +4006,10 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Loading/ChunkStreamingController.ts` (797 LOC)
+## `World/Chunk/Loading/ChunkStreamingController.ts` (806 LOC)
 
 **Module-level functions**
+- `function compareQueuedChunkRequestPriority(a: QueuedChunkRequest, b: QueuedChunkRequest): number`
 - `function chunkDistScratch(chunkX: number, chunkY: number, chunkZ: number, centerX: number, centerY: number, centerZ: number)`
 
 **Types / Interfaces / Enums**
@@ -4054,7 +4088,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/LOD/ChunkLodRules.ts` (249 LOC)
+## `World/Chunk/LOD/ChunkLodRules.ts` (246 LOC)
 
 ### export class Lod0ChunkCreationRule implements ChunkLodCreationRule
 
@@ -4135,7 +4169,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/MergedMeshManager.ts` (514 LOC)
+## `World/Chunk/MergedMeshManager.ts` (515 LOC)
 
 **Module-level functions**
 - `function disposeGroupMesh(mesh: Mesh): void`
@@ -4367,7 +4401,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Collision/VoxelAabbCollider.ts` (539 LOC)
+## `World/Collision/VoxelAabbCollider.ts` (538 LOC)
 
 **Module-level functions**
 - `function rotateShapeBoxY(minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number, rotation: number, out: [number, number, number, number, number, number]): void`
@@ -4432,7 +4466,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Light/DistantTerrainShaderLite.ts` (209 LOC)
+## `World/Light/DistantTerrainShaderLite.ts` (213 LOC)
 
 **Types / Interfaces / Enums**
 - type `EngineContext`
@@ -4524,14 +4558,12 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Light/SkyShaderLite.ts` (58 LOC)
+## `World/Light/SkyShaderLite.ts` (56 LOC)
 
 **Module-level functions**
 - `export function createSkyMaterial(): ShaderMaterial`
 
 **Types / Interfaces / Enums**
-- type `EngineContext`
-- type `SceneContext`
 - type `ShaderMaterial`
 
 ---
@@ -4724,7 +4756,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/MeshPipeline/core/VoxelMaskExtractor.ts` (418 LOC)
+## `World/MeshPipeline/core/VoxelMaskExtractor.ts` (455 LOC)
 
 ### export class VoxelMaskExtractor
 
@@ -4751,7 +4783,7 @@ export function createFastNoise3D(
 - `public extractSliceMask(axis: number, slice: number, mask: WritableNumberArray, lightMask: WritableNumberArray): void`
 
 **Module-level functions**
-- `function processCell(blockArr: Uint16Array, lightArr: Uint8Array, disableAO: boolean, bx: number, by: number, bz: number, dx: number, dy: number, dz: number, uAxis: number, vAxis: number, currentFaceBit: number, neighborFaceBit: number, outIndex: number, mask: WritableNumberArray, lightMask: WritableNumberArray): void`
+- `function processCell(blockArr: Uint16Array, lightArr: Uint8Array, disableAO: boolean, bx: number, by: number, bz: number, nx: number, ny: number, nz: number, curIdx: number, nbrIdx: number, uAxis: number, vAxis: number, currentFaceBit: number, neighborFaceBit: number, outIndex: number, mask: WritableNumberArray, lightMask: WritableNumberArray): void`
 
 **Types / Interfaces / Enums**
 - type `WritableNumberArray`
@@ -4777,12 +4809,13 @@ export function createFastNoise3D(
 
 ---
 
-## `World/MeshPipeline/core/WorkerMeshHelpers.ts` (201 LOC)
+## `World/MeshPipeline/core/WorkerMeshHelpers.ts` (234 LOC)
 
 **Module-level functions**
 - `export function createEmptyWorkerInternalMeshData(): WorkerInternalMeshData`
 - `export function toTransferableMeshData(data: WorkerInternalMeshData): MeshData`
 - `export function paddedIndex(x: number, y: number, z: number): number`
+- `function buildOpaqueClassification(padded: Uint16Array, psVol: number): Uint8Array`
 - `export function createMeshContextFromPayload(base: WorkerMeshBaseContext, input: WorkerMeshInput): MeshContext`
 
 **Types / Interfaces / Enums**
@@ -5110,7 +5143,7 @@ export function createFastNoise3D(
 ## `World/Texture/MaterialFactory.ts` (118 LOC)
 
 **Module-level functions**
-- `function createTexture(scene: SceneContext, path: string, uvScale: number): any`
+- `function createTexture(_scene: SceneContext, _path: string, uvScale: number): any`
 - `export function createMaterialByFolder(scene: SceneContext, folder: string, uvScale = 1, extension =, diff = true, nor = false, ao = false, spec = false): any`
 - `function buildMaterial(scene: SceneContext, mat: any, directory: string, baseName: string, resolution: string, extension: string, uvScale: number, diff: boolean, nor: boolean, ao: boolean, spec: boolean, cacheKey: string): any`
 - `export function getTexturePathFromFolder(folder: string, type =, extension =): string | null`
@@ -5156,30 +5189,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/WorldStorage.ts` (385 LOC)
-
-### class WorldStorageImpl
-
-**Properties**
-- `private initPromise: Promise<void> | null = null`
-
-**Methods**
-- `initialize(): Promise<void>`
-- `private async getClient(): Promise<OpfsClient | null>`
-- `private async compress(data: Uint8Array | Uint16Array): Promise<Uint8Array>`
-- `private async decompressToShared(data: Uint8Array): Promise<Uint8Array | Uint16Array>`
-- `private getGzipISize(data: Uint8Array): number`
-- `private isUint8Array(value: Uint8Array | Uint16Array | null | undefined): value is Uint8Array`
-- `private packKey(chunkX: number, chunkY: number, chunkZ: number): bigint`
-- `async saveChunk(chunk: Chunk): Promise<void>`
-- `async saveChunks(chunks: Chunk[]): Promise<void>`
-- `async saveAllModifiedChunks(): Promise<void>`
-- `async saveChunkEntities(chunkId: bigint, entities: SavedChunkEntityData[]): Promise<void>`
-- `async loadChunkEntities(chunkId: bigint): Promise<SavedChunkEntityData[]>`
-- `async loadChunk(chunkId: bigint, options?: LoadChunkOptions): Promise<SavedChunkData | null>`
-- `async loadChunks(chunkIds: bigint[], options?: LoadChunkOptions): Promise<Map<bigint, SavedChunkData>>`
-- `async clearWorldData(): Promise<void>`
-- `private async saveChunkWithClient(client: OpfsClient, chunk: Chunk): Promise<void>`
+## `World/WorldStorage.ts` (408 LOC)
 
 **Types / Interfaces / Enums**
 - type `SavedChunkData`

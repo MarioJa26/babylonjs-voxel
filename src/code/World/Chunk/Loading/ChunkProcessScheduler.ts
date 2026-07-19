@@ -1,6 +1,5 @@
 import { type SavedChunkData, WorldStorage } from "../../WorldStorage";
 import type { Chunk } from "../Chunk";
-import { flushDirtyMergedGroups } from "../MergedMeshManager";
 import type { QueuedChunkRequest } from "./ChunkStreamingController";
 import { type InFlightProcessState, ProcessStage } from "./ChunkTypes";
 
@@ -338,7 +337,6 @@ export class ChunkProcessScheduler {
 
 					case ProcessStage.LoadFromStorage: {
 						try {
-							// M3: Reuse scratch arrays — avoids .map() allocation per batch
 							this._nearIdScratch.length = 0;
 							this._farIdScratch.length = 0;
 							for (const r of state.nearRequests)
@@ -346,18 +344,22 @@ export class ChunkProcessScheduler {
 							for (const r of state.farRequests)
 								this._farIdScratch.push(r.chunk.id);
 
-							const [nearLoadedDataMap, farLoadedDataMap] = await Promise.all([
+							await Promise.all([
 								state.nearRequests.length > 0
-									? WorldStorage.loadChunks(this._nearIdScratch, {
-											includeVoxelData: true,
-										})
-									: Promise.resolve(new Map()),
+									? WorldStorage.loadChunks(
+											this._nearIdScratch,
+											{ includeVoxelData: true },
+											state.nearLoadedDataMap,
+										)
+									: Promise.resolve(),
 
 								state.farRequests.length > 0
-									? WorldStorage.loadChunks(this._farIdScratch, {
-											includeVoxelData: false,
-										})
-									: Promise.resolve(new Map()),
+									? WorldStorage.loadChunks(
+											this._farIdScratch,
+											{ includeVoxelData: false },
+											state.farLoadedDataMap,
+										)
+									: Promise.resolve(),
 
 								// Fire OPFS mesh prefetch in parallel with the IDB voxel load.
 								// This populates the OPFS mesh cache so applyLoadedChunkFromSavedData
@@ -366,16 +368,6 @@ export class ChunkProcessScheduler {
 							]);
 
 							this.beginSlice(state);
-
-							state.nearLoadedDataMap.clear();
-							state.farLoadedDataMap.clear();
-
-							for (const [k, v] of nearLoadedDataMap) {
-								state.nearLoadedDataMap.set(k, v);
-							}
-							for (const [k, v] of farLoadedDataMap) {
-								state.farLoadedDataMap.set(k, v);
-							}
 
 							state.stage = ProcessStage.ApplyLoadedChunks;
 						} catch (error) {
@@ -412,13 +404,7 @@ export class ChunkProcessScheduler {
 							}
 						}
 
-						// Rebuild any merged-group meshes dirtied while placing
-						// (recycled) chunks in this slice. Doing this synchronously
-						// here — rather than deferring to the separate rAF flush —
-						// means a reused chunk's GPU mesh is replaced with the new
-						// geometry before the frame renders, instead of showing the
-						// group's previous (stale) composition for one or more frames.
-						flushDirtyMergedGroups();
+						//flushDirtyMergedGroups();
 
 						if (state.applyLoadedIndex >= state.validLoadBatch.length) {
 							state.stage =
@@ -431,16 +417,15 @@ export class ChunkProcessScheduler {
 
 					case ProcessStage.LoadHydrationData: {
 						try {
-							// Bug 4 fix — copy into existing map instead of replacing it
-							const loaded = await WorldStorage.loadChunks(state.hydrateIds, {
-								includeVoxelData: true,
-							});
-							this.beginSlice(state);
-
+							// PERF: same fix as LoadFromStorage above — write directly
+							// into state.hydrateMap instead of copying out of a temp Map.
 							state.hydrateMap.clear();
-							for (const [k, v] of loaded) {
-								state.hydrateMap.set(k, v);
-							}
+							await WorldStorage.loadChunks(
+								state.hydrateIds,
+								{ includeVoxelData: true },
+								state.hydrateMap,
+							);
+							this.beginSlice(state);
 
 							// Bug 5 fix — only count on success
 							state.hydratedCount += state.hydrateIds.length;
