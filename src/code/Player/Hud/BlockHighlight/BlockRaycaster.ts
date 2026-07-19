@@ -12,7 +12,6 @@ import {
 	transformNormalVec3ToRef,
 	vec3Zero,
 } from "@/code/Lib/Math";
-import { REACH_DISTANCE } from "@/code/Shared/Constants";
 import { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import {
@@ -36,7 +35,9 @@ import {
 	isFenceBlockId,
 } from "@/code/World/Shape/FenceConnect";
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
+import { DroppedItem } from "../../Inventory/DroppedItem";
 import type { Player } from "../../Player";
+import { REACH_DISTANCE } from "../../PlayerStats";
 
 export type BlockRaycastHit = {
 	x: number;
@@ -766,6 +767,55 @@ function raycastSingleBoatChunk(
 
 export function pickTarget(player: Player): BlockRaycastHit | null {
 	return raycastFirstBlock(player, (_x, _y, _z, id) => isTargetableBlock(id));
+}
+
+/**
+ * Returns the dropped item the player is currently looking at (crosshair ray),
+ * or null. Picks the closest item whose AABB is hit by the look ray within
+ * `REACH_DISTANCE`. Used by `Player.use()` (the E key) so the targeted item —
+ * not merely the nearest one — is picked up.
+ */
+export function pickDroppedItem(player: Player): DroppedItem | null {
+	const ray = getForwardRay(player, REACH_DISTANCE);
+	const ox = ray.origin.x,
+		oy = ray.origin.y,
+		oz = ray.origin.z;
+	const dx = ray.direction.x,
+		dy = ray.direction.y,
+		dz = ray.direction.z;
+
+	let best: DroppedItem | null = null;
+	let bestT = Infinity;
+
+	for (const item of DroppedItem.activeItems) {
+		const c = item.position;
+		const h = item.halfExtent;
+		const hit = intersectRayAabb(
+			ox,
+			oy,
+			oz,
+			dx,
+			dy,
+			dz,
+			c.x - h,
+			c.y - h,
+			c.z - h,
+			c.x + h,
+			c.y + h,
+			c.z + h,
+			0,
+			ray.length,
+			0,
+			0,
+			0,
+		);
+		if (hit && hit.t < bestT) {
+			bestT = hit.t;
+			best = item;
+		}
+	}
+
+	return best;
 }
 
 export function pickWaterTarget(player: Player): BlockRaycastHit | null {

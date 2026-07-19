@@ -93,7 +93,7 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 	public handleMouseEvent(mouseEvent: MouseEvent, isKeyDown: boolean): void {
 		if (WalkingControls.MOUSE1.includes(mouseEvent.button)) {
 			if (isKeyDown) {
-				const mobMesh = (Crosshair as any).pickMobMesh(this.#player);
+				const mobMesh = Crosshair.pickMobMesh(this.#player);
 				if (mobMesh?.metadata instanceof MetadataContainer) {
 					const mob: Mob | undefined = mobMesh.metadata.get("mob");
 					mob?.takeDamage(1);
@@ -242,7 +242,7 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 		}
 
 		if (WalkingControls.KEY_PRINT_TRACE.includes(key)) {
-			const size = (Chunk as any).SIZE ?? 16;
+			const size = Chunk.SIZE ?? 32;
 			validateChunksAround(
 				Math.floor(this.#player.position.x / size),
 				Math.floor(this.#player.position.y / size),

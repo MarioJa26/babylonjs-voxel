@@ -138,7 +138,7 @@ export class AdvancedBoat implements IUsable {
 				scene,
 				name: "boatAABB",
 				position: this.#boat.position,
-				renderingGroupId: 1,
+				renderOrder: 1,
 			},
 		);
 	}

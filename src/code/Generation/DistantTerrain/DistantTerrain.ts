@@ -318,17 +318,17 @@ export async function initDistantTerrain(): Promise<void> {
 	// of it. The terrain keeps depthTest/depthWrite on for correct self-occlusion
 	// of its own hills, but because chunks are drawn after it, the clipmap is
 	// always rendered behind the real chunks regardless of depth-buffer state.
-	mesh.renderOrder = 2;
+	mesh.renderOrder = 0;
 	addToScene(scene, mesh);
 
 	waterMaterial = createDistantWaterMaterial();
 	waterMesh.material = waterMaterial;
 	// Draw the distant water as part of the background layer, just after the
-	// terrain (renderOrder -2) and before the chunk meshes (renderOrder 0). With
+	// terrain (renderOrder 0) and before the chunk meshes (renderOrder 0). With
 	// chunks drawn afterwards it is always painted over by real terrain/water, so
 	// the flat clipmap plane can never appear in front of chunks. depthWrite is
 	// off so it never occludes anything itself.
-	waterMesh.renderOrder = 2;
+	waterMesh.renderOrder = 0;
 	addToScene(scene, waterMesh);
 
 	onBeforeRender(scene, updateUniforms);

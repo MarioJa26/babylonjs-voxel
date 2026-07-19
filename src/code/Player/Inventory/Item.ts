@@ -206,7 +206,7 @@ export class Item implements IUsable {
 
 			// Prevent placing a block inside the player - use actual voxel collider
 			if (
-				player.wouldBlockOverlapPlayer(
+				player.playerVehicle.wouldBlockOverlapPlayer(
 					pos.x,
 					pos.y,
 					pos.z,

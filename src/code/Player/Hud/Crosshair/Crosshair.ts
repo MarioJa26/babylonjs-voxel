@@ -1,8 +1,8 @@
 import { type Mesh, type Vec3, vec3 } from "@babylonjs/lite";
 import { MetadataContainer } from "@/code/Entities/MetadataContainer";
 import { setVec3 } from "@/code/Lib/Math";
-import { REACH_DISTANCE } from "@/code/Shared/Constants";
 import type { Player } from "../../Player";
+import { REACH_DISTANCE } from "../../PlayerStats";
 import { BlockHighlight } from "../BlockHighlight/BlockHighlight";
 import type { BlockRaycastHit } from "../BlockHighlight/BlockRaycaster";
 import {

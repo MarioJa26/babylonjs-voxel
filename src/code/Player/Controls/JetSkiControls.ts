@@ -57,11 +57,6 @@ export class JetSkiControls implements IControls<BoatControlEntity> {
 		this.#player = player;
 	}
 
-	/** Loose view of the not-yet-ported `Player` surface (use/flashlight/...). */
-	#legacy(): any {
-		return this.#player;
-	}
-
 	public handleKeyEvent(key: string, isKeyDown: boolean) {
 		if (isKeyDown) {
 			this.onKeyDown(key);
@@ -112,9 +107,9 @@ export class JetSkiControls implements IControls<BoatControlEntity> {
 				this.#inputDirection.x = 0;
 			}
 		} else if (JetSkiControls.KEY_USE.includes(key)) {
-			this.#legacy().use();
+			this.#player.use();
 		} else if (JetSkiControls.KEY_FLASH.includes(key)) {
-			this.#legacy().flashlight.toggle();
+			this.#player.flashlight.toggle();
 		}
 
 		if (JetSkiControls.MOUSE_WHEEL_UP.includes(key)) {

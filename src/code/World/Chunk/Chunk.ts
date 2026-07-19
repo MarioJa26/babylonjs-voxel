@@ -261,16 +261,6 @@ export class Chunk {
 		};
 	}
 
-	// -------------------------------------------------------------------------
-	// BFS fields — declared here as class fields so they are part of the initial
-	// hidden class shape. Every Chunk instance has the same shape from the moment
-	// of construction, which means V8 never transitions to dictionary mode and
-	// all IC call sites stay monomorphic.
-	//
-	// These replace the dynamic property injection that the OcclusionCuller
-	// previously performed with `(chunk as any)._bfsXxx = ...`.
-	// -------------------------------------------------------------------------
-
 	/** Dense integer ID for this chunk, assigned from a static counter.
 	 *  Stable and strictly increasing — safe to use as a typed-array index
 	 *  in any system that wants to side-channel data onto chunks. */
@@ -1534,7 +1524,7 @@ export class Chunk {
 		// d ^ 1 gives the opposite direction (the face pointing back toward us).
 		const ids = this.neighborIds;
 		for (let d = 0; d < 6; d++) {
-			const nbr = Chunk.chunkInstances.get(ids[d]!);
+			const nbr = Chunk.chunkInstances.get(ids[d]);
 			if (nbr) nbr.neighborRefs[d ^ 1] = null;
 		}
 		this.neighborRefs.fill(null);
@@ -1546,12 +1536,12 @@ export class Chunk {
 
 		if (!this.mergedGroupKey) {
 			if (this.mesh) {
-				removeFromScene(Map1.mainScene, this.mesh as any);
-				disposeMeshGpu(this.mesh as any);
+				removeFromScene(Map1.mainScene, this.mesh);
+				disposeMeshGpu(this.mesh);
 			}
 			if (this.transparentMesh) {
-				removeFromScene(Map1.mainScene, this.transparentMesh as any);
-				disposeMeshGpu(this.transparentMesh as any);
+				removeFromScene(Map1.mainScene, this.transparentMesh);
+				disposeMeshGpu(this.transparentMesh);
 			}
 		}
 		this.clearCachedLODMeshes();

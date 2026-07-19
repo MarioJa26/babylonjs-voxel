@@ -156,7 +156,7 @@ export class CustomBoat implements IUsable {
 		CustomBoat.#chunkLoaderRegistered = true;
 		registerChunkEntityLoader(CustomBoat.CHUNK_ENTITY_TYPE, (payload) => {
 			const context = CustomBoat.#chunkReloadContext;
-			if (!context || (context.scene as any).isDisposed) {
+			if (!context) {
 				return;
 			}
 
@@ -310,7 +310,7 @@ export class CustomBoat implements IUsable {
 				scene,
 				name: "boatOBB",
 				position: this.#boat.position,
-				renderingGroupId: 1,
+				renderOrder: 1,
 			},
 		);
 		this.#subscribeBoatChunkBlockChanges();
@@ -404,7 +404,7 @@ export class CustomBoat implements IUsable {
 			...((root as any).getChildMeshes?.(false) ?? []),
 		]) {
 			mesh.pickable = true;
-			mesh.renderingGroupId = 1;
+			mesh.renderOrder = 1;
 			mesh.metadata = this.#boat.metadata;
 		}
 	}

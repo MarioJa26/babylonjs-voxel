@@ -281,7 +281,7 @@ export async function initAtlas(): Promise<void> {
 
 	populateMaterialList();
 	for (let i = 0; i < materialList.length; i++) {
-		const m = materialList[i]!;
+		const m = materialList[i];
 		if (m) setMaterialGroupUniforms(m);
 	}
 	pushFogUniforms();
@@ -350,7 +350,7 @@ function buildLiteMesh(
 
 	const updated = updatePackedChunkMesh(existingMesh, input);
 	if (existingMesh.material !== material) existingMesh.material = material;
-	existingMesh.renderOrder = 0;
+	existingMesh.renderOrder = 1;
 	return updated ?? existingMesh;
 }
 
@@ -369,7 +369,7 @@ setOnGroupMeshNeedsRebuild((group) => {
 		const mat = getOpaqueMaterialForLodBucket(lod);
 		const built = buildLiteMesh(
 			group,
-			group.opaqueMeshRef as any,
+			group.opaqueMeshRef,
 			group.cachedOpaque,
 			`merged_opaque_${group.groupKey}`,
 			mat,
@@ -380,7 +380,7 @@ setOnGroupMeshNeedsRebuild((group) => {
 		) as any;
 		if (built) {
 			group.opaqueMeshRef = built;
-			(built as any).isVisible = true;
+			built.isVisible = true;
 		}
 	} else if (group.opaqueMeshRef) {
 		(group.opaqueMeshRef as any).isVisible = false;

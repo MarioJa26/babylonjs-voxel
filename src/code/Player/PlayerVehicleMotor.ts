@@ -264,7 +264,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 				scene: this.scene,
 				name: "playerAABB",
 				position: this.voxelPosition,
-				renderingGroupId: 1,
+				renderOrder: 1,
 			},
 		);
 

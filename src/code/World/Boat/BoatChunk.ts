@@ -79,7 +79,7 @@ export class BoatChunk {
 		);
 		addToScene(this.#scene, this.#visualRoot);
 		this.#visualRoot.pickable = false;
-		(this.#visualRoot as any).renderingGroupId = 1;
+		this.#visualRoot.renderOrder = 1;
 
 		const chunkCoords = BoatChunk.allocateChunkCoords();
 		this.#centerChunk = new Chunk(chunkCoords.x, chunkCoords.y, chunkCoords.z);
@@ -275,24 +275,19 @@ export class BoatChunk {
 	}
 
 	private isAliveMesh(mesh: Mesh | null): mesh is Mesh {
-		return !!mesh && !(mesh as any).isDisposed?.();
+		return !!mesh;
 	}
 
 	private configureAttachedMesh(mesh: Mesh): void {
-		if ((mesh as any).isDisposed?.()) return;
-		(mesh as any).unfreezeWorldMatrix?.();
-		// World chunks are static and use frozen bounds. Boat meshes move/rotate, so
-		// keep bounds synced to transforms to avoid incorrect frustum culling.
-		(mesh as any).doNotSyncBoundingInfo = false;
-		(mesh as any).parent = this.#visualRoot;
+		mesh.parent = this.#visualRoot;
 		mesh.position.set(-this.#center.x, -this.#center.y, -this.#center.z);
 		mesh.rotation.set(0, 0, 0);
 		mesh.scaling.set(1, 1, 1);
 		mesh.pickable = true;
 		// Keep transparent and opaque boat chunk meshes in the same rendering group
 		// so depth from opaque is preserved for transparent pass.
-		(mesh as any).renderingGroupId = 1;
-		(mesh as any).metadata = this.#visualRoot.metadata;
+		mesh.renderOrder = 1;
+		mesh.metadata = this.#visualRoot.metadata;
 	}
 
 	private syncMeshRef(
@@ -332,7 +327,7 @@ export class BoatChunk {
 	}
 
 	public attachTo(parent: Mesh): void {
-		(this.#visualRoot as any).parent = parent;
+		this.#visualRoot.parent = parent;
 	}
 
 	public getBlockLocal(x: number, y: number, z: number): number {

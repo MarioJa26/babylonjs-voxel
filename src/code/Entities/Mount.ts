@@ -87,7 +87,7 @@ export class Mount implements IMountable {
 			this.enablePlayerPhysics(vehicle);
 		}
 
-		(vehicle.displayCapsule as any).parent = null;
+		vehicle.displayCapsule.parent = null;
 
 		this.user = null;
 		this.#physicsDisabled = false;
@@ -166,9 +166,7 @@ export class Mount implements IMountable {
 			? vec4(rp.x, rp.y, rp.z, rp.w)
 			: Quaternion.Identity();
 		vehicleRotation.multiplyToRef(this.#mountRotationOffset, this.#scratchRot);
-		(playerBody.displayCapsule.rotationQuaternion as any).copyFrom(
-			this.#scratchRot,
-		);
+		playerBody.displayCapsule.rotationQuaternion.copyFrom(this.#scratchRot);
 	}
 
 	private disablePlayerPhysics(player: IPlayerBody): void {

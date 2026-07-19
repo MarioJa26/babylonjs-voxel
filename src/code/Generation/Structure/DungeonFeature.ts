@@ -3,6 +3,14 @@ import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
 import type { IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds } from "./RegionFeature";
 
+type PlaceBlockFn = (
+	x: number,
+	y: number,
+	z: number,
+	id: number,
+	ow: boolean,
+) => void;
+
 export class DungeonFeature implements IWorldFeature {
 	// dungeonY = 15 + random % 20, so 15..34 absolute.
 	public readonly verticalBounds = {
@@ -158,7 +166,7 @@ export class DungeonFeature implements IWorldFeature {
 		z1: number,
 		z2: number,
 		yBase: number,
-		placeBlock: any,
+		placeBlock: PlaceBlockFn,
 		floorBlock: number,
 		minX: number,
 		maxX: number,

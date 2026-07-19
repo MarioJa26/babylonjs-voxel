@@ -116,5 +116,5 @@ function init(_scene: SceneContext) {
 	particleSystem.minEmitPower = 0;
 	particleSystem.maxEmitPower = 1;
 	particleSystem.updateSpeed = 0.0166;
-	particleSystem.renderingGroupId = 1;
+	particleSystem.renderOrder = 1;
 }

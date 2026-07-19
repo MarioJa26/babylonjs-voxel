@@ -35,7 +35,7 @@ type VoxelAabbDebugOptions = {
 	scene: SceneContext;
 	name?: string;
 	position?: Vec3;
-	renderingGroupId?: number;
+	renderOrder?: number;
 };
 
 /**

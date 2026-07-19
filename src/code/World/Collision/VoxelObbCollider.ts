@@ -19,7 +19,7 @@ type VoxelObbDebugOptions = {
 	scene: SceneContext;
 	name?: string;
 	position?: Vec3;
-	renderingGroupId?: number;
+	renderOrder?: number;
 };
 
 /**
@@ -251,7 +251,7 @@ export class VoxelObbCollider {
 		}
 	}
 
-	public syncDebugMesh(position: any): void {
+	public syncDebugMesh(position: Vec3): void {
 		if (VoxelObbCollider.#debugEnabled) {
 			this.#ensureDebugMesh();
 		}

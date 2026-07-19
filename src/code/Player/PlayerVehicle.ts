@@ -1,7 +1,12 @@
 import { type SceneContext, type Vec3, vec3 } from "@babylonjs/lite";
+import type { Mount } from "../Entities/Mount";
 import { getFinalTerrainHeight } from "../Generation/TerrainHeightMap";
 import { getBlockByWorldCoords } from "../World/Chunk/ChunkLoadingSystem";
-import { Axis, VoxelAabbCollider } from "../World/Collision/VoxelAabbCollider";
+import {
+	Axis,
+	type BlockShapeInfo,
+	VoxelAabbCollider,
+} from "../World/Collision/VoxelAabbCollider";
 import { getShapeInfo } from "../World/MeshPipeline/core/ShapePipeline";
 import { FALLBACK_CUBE } from "../World/Shape/BlockShapes";
 import { PlayerBodyControlState } from "./PlayerBody";
@@ -12,15 +17,18 @@ import type { PlayerCamera } from "./PlayerCamera";
 // WalkingControls writes, and resolves motion with the voxel AABB collider
 // (the same full-cube probe used by the Phase A milestone). No Babylon mesh.
 
-const SOLID_CUBE: any = {
+const SOLID_CUBE: BlockShapeInfo = {
 	shape: FALLBACK_CUBE,
 	rotation: 0,
 	slice: 0,
 	flipY: false,
-	isCube: true,
 };
 
-const isSolidBlockAt = (x: number, y: number, z: number): any => {
+const isSolidBlockAt = (
+	x: number,
+	y: number,
+	z: number,
+): BlockShapeInfo | null => {
 	const packed = getBlockByWorldCoords(x, y, z);
 	if (!packed) return null;
 	const info = getShapeInfo(packed);
@@ -41,15 +49,11 @@ export class PlayerVehicle {
 	public scene: SceneContext;
 	public camera: PlayerCamera;
 	public isMounted = false;
-	public mount: any = null;
+	public mount: Mount | null = null;
 
 	private readonly controlState = new PlayerBodyControlState();
 	#position: Vec3 & { copyFrom(v: Vec3): void };
-	#collider = new VoxelAabbCollider(
-		PLAYER_HALF_EXTENTS as any,
-		isSolidBlockAt as any,
-		0.001,
-	);
+	#collider = new VoxelAabbCollider(PLAYER_HALF_EXTENTS, isSolidBlockAt, 0.001);
 	#velocity: { x: number; y: number; z: number } = { x: 0, y: 0, z: 0 };
 	#grounded = false;
 	#speed = 8;
@@ -165,12 +169,8 @@ export class PlayerVehicle {
 		return true;
 	}
 
-	public setMount(mount: any): void {
+	public setMount(mount: Mount | null): void {
 		this.mount = mount;
-	}
-
-	public wouldBlockOverlapPlayer(): boolean {
-		return false;
 	}
 
 	public respawn(): void {

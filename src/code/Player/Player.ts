@@ -18,9 +18,13 @@ import { BlockType } from "@/code/World/Texture/BlockType";
 import type { IControls } from "../Interface/IControls";
 import { getIsPaused, isUiOpen, setIsPaused } from "../Shared/GameRuntimeState";
 import { WalkingControls } from "./Controls/WalkingControls";
-import { pickTarget } from "./Hud/BlockHighlight/BlockRaycaster";
+import {
+	pickDroppedItem,
+	pickTarget,
+} from "./Hud/BlockHighlight/BlockRaycaster";
 import { PauseMenu } from "./Hud/PauseMenu";
 import { PlayerHud } from "./Hud/PlayerHud";
+import { DroppedItem } from "./Inventory/DroppedItem";
 import { PlayerInventory } from "./Inventory/PlayerInventory";
 import { PlayerBodyControlState } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
@@ -223,6 +227,15 @@ export class Player {
 		const _x = this.canvas.clientWidth / 2;
 		const _y = this.canvas.clientHeight / 2;
 
+		// Pick up the dropped item the player is looking at (within reach).
+		// Falls back to the nearest item if none is directly targeted.
+		const dropped = pickDroppedItem(this) ?? DroppedItem.nearestTo(this);
+		if (dropped) {
+			dropped.use(this);
+			this.#pickInFlight = false;
+			return;
+		}
+
 		// No usable mesh hit — fall back to block interaction.
 		const blockHit = pickTarget(this);
 		const blockId = blockHit?.blockId;
@@ -253,9 +266,5 @@ export class Player {
 			disposePicker(this.#picker);
 			this.#picker = null;
 		}
-	}
-
-	public wouldBlockOverlapPlayer(...args: any[]): boolean {
-		return (this.#playerVehicle as any).wouldBlockOverlapPlayer(...args);
 	}
 }

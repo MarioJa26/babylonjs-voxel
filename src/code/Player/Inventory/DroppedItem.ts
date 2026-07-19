@@ -8,7 +8,6 @@ import {
 	type Mesh,
 	onBeforeRender,
 	removeFromScene,
-	scaleVec3InPlace,
 	setShaderTexture,
 	setShaderUniform,
 	setShaderVector3,
@@ -45,6 +44,7 @@ import {
 	getDiffuseTexture2D,
 } from "@/code/World/Texture/TextureAtlasFactory";
 import type { Player } from "../Player";
+import { REACH_AURA } from "../PlayerStats";
 import type { Item } from "./Item";
 
 const droppedItemVertexWGSL = /* wgsl */ `
@@ -102,12 +102,20 @@ function createDroppedItemMaterial(): ShaderMaterial {
 	});
 }
 
-function buildUnitCube(): {
+// --------------------------------------------------------------------------
+// OPTIMIZATION: Cache geometry arrays globally. Creating these arrays on
+// every DroppedItem instance causes massive GC spikes in dense worlds.
+// --------------------------------------------------------------------------
+let unitCubeGeometryCache: {
 	positions: Float32Array;
 	normals: Float32Array;
 	uvs: Float32Array;
 	indices: Uint32Array;
-} {
+} | null = null;
+
+function getUnitCubeGeometry() {
+	if (unitCubeGeometryCache) return unitCubeGeometryCache;
+
 	const positions: number[] = [];
 	const normals: number[] = [];
 	const uvs: number[] = [];
@@ -180,22 +188,24 @@ function buildUnitCube(): {
 		[0, 1],
 	];
 
-	faces.forEach((face) => {
+	for (let f = 0; f < faces.length; f++) {
+		const face = faces[f];
 		const base = positions.length / 3;
 		for (let i = 0; i < 4; i++) {
-			positions.push(...face.verts[i]);
-			normals.push(...face.normal);
-			uvs.push(...faceUV[i]);
+			positions.push(face.verts[i][0], face.verts[i][1], face.verts[i][2]);
+			normals.push(face.normal[0], face.normal[1], face.normal[2]);
+			uvs.push(faceUV[i][0], faceUV[i][1]);
 		}
 		indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
-	});
+	}
 
-	return {
+	unitCubeGeometryCache = {
 		positions: new Float32Array(positions),
 		normals: new Float32Array(normals),
 		uvs: new Float32Array(uvs),
 		indices: new Uint32Array(indices),
 	};
+	return unitCubeGeometryCache;
 }
 
 interface PlayerDroppedItemApi {
@@ -204,6 +214,26 @@ interface PlayerDroppedItemApi {
 
 const ITEM_NAME: string = "droppedItem";
 const ITEM_NAME_AABB: string = "droppedItemAABB";
+
+// Pre-compute constants
+const REACH_DISTANCE_SQ = REACH_AURA;
+const LIGHT_NORMALIZE_MUL = 1.0 / 15.0;
+
+// OPTIMIZATION: Share a single block sampler to prevent function closures per item
+const SHARED_BLOCK_SAMPLER = createVoxelColliderBlockSampler(
+	(x, y, z) => {
+		const blockId = getBlockByWorldCoords(x, y, z);
+		if (!isCollidableBlock(blockId)) return null;
+		return { blockId, blockState: getBlockStateByWorldCoords(x, y, z) };
+	},
+	{
+		getFenceDynamicShape,
+		getShapeForBlockId,
+		isFenceBlockId,
+		computeFenceNeighborMask,
+	},
+);
+
 export class DroppedItem implements IUsable {
 	#boxMesh: Mesh;
 	#material: ShaderMaterial;
@@ -211,19 +241,27 @@ export class DroppedItem implements IUsable {
 	#velocity = vec3Zero();
 	#position: Vec3;
 	#halfSize = 0.25;
-	#voxelCollider!: VoxelAabbCollider;
+	#voxelCollider: VoxelAabbCollider;
 	#scratchProbe = vec3Zero();
 	#disposed = false;
+	#itemIndex = -1; // Fast O(1) array removal
 
-	static readonly #allItems = new Set<DroppedItem>();
+	// OPTIMIZATION: Arrays iterate magnitudes faster than Sets in tight game loops
+	static readonly #allItems: DroppedItem[] = [];
 	static #observerRegistered = false;
+
 	static #ensureObserver(): void {
 		if (DroppedItem.#observerRegistered) return;
 		DroppedItem.#observerRegistered = true;
-		// TODO: physics relies on the Lite scene driving `onBeforeRender`.
+
 		onBeforeRender(Map1.mainScene, (deltaMs: number) => {
-			for (const item of DroppedItem.#allItems) {
-				item.#updatePhysics(deltaMs);
+			const dt = deltaMs * 0.001; // Mul is faster than div
+			if (dt <= 0) return;
+
+			const items = DroppedItem.#allItems;
+			const len = items.length;
+			for (let i = 0; i < len; i++) {
+				items[i].#updatePhysics(dt);
 			}
 		});
 	}
@@ -253,15 +291,14 @@ export class DroppedItem implements IUsable {
 		return DroppedItem.#atlasPromise;
 	}
 
-	/** Warm the atlas texture at startup so the first dropped item binds it
-	 *  synchronously (cached promise) instead of rendering an unbound sampler. */
 	static preloadAtlas(): void {
 		void DroppedItem.#getAtlasTexture();
 	}
 
 	constructor(item: Item, x: number, y: number, z: number) {
 		const size = 0.5 + item.stackSize * 0.005;
-		const geometry = buildUnitCube();
+		const geometry = getUnitCubeGeometry(); // Use cached geometry
+
 		this.#boxMesh = createMeshFromData(
 			Map1.engine,
 			ITEM_NAME,
@@ -273,7 +310,7 @@ export class DroppedItem implements IUsable {
 		addToScene(Map1.mainScene, this.#boxMesh);
 
 		const meta = new MetadataContainer();
-		meta.set("use", (player: Player) => this.use(player));
+		meta.set("use", this.use); // Replaced inline closure with instance arrow function
 		this.#boxMesh.metadata = meta as unknown as LiteMetadata;
 
 		this.#boxMesh.pickable = true;
@@ -283,40 +320,23 @@ export class DroppedItem implements IUsable {
 
 		this.#material = createDroppedItemMaterial();
 		this.#boxMesh.material = this.#material;
-		// Stay hidden until the atlas texture is bound — the ShaderMaterial
-		// declares a `diffuseTexture` sampler, and the Lite renderer rejects an
-		// unbound sampler, so we must not render before setShaderTexture() runs.
 		this.#boxMesh.visible = false;
 
 		this.#halfSize = size * 0.5;
 		this.#item = item;
+
 		this.#voxelCollider = new VoxelAabbCollider(
 			vec3(this.#halfSize, this.#halfSize, this.#halfSize),
-			createVoxelColliderBlockSampler(
-				(x, y, z) => {
-					const blockId = getBlockByWorldCoords(x, y, z);
-					if (!isCollidableBlock(blockId)) return null;
-					return { blockId, blockState: getBlockStateByWorldCoords(x, y, z) };
-				},
-				{
-					getFenceDynamicShape,
-					getShapeForBlockId,
-					isFenceBlockId,
-					computeFenceNeighborMask,
-				},
-			),
+			SHARED_BLOCK_SAMPLER, // Use global sampler
 			DroppedItem.EPSILON,
 			{
 				scene: Map1.mainScene,
 				name: ITEM_NAME_AABB,
 				position: this.#position,
-				renderingGroupId: 1,
+				renderOrder: 1,
 			},
 		);
 
-		// Prefer the already-loaded shared atlas (set in initAtlas, same
-		// Texture2D the chunk materials use) so we bind synchronously with no
-		// async gap where an unbound `diffuseTexture` sampler could be rendered.
 		const sharedAtlas = getDiffuseTexture2D();
 		if (sharedAtlas) {
 			setShaderTexture(this.#material, "diffuseTexture", sharedAtlas);
@@ -332,7 +352,11 @@ export class DroppedItem implements IUsable {
 		}
 
 		DroppedItem.#ensureObserver();
-		DroppedItem.#allItems.add(this);
+
+		// Fast Array Add
+		this.#itemIndex = DroppedItem.#allItems.length;
+		DroppedItem.#allItems.push(this);
+
 		this.#updateLighting();
 	}
 
@@ -340,30 +364,34 @@ export class DroppedItem implements IUsable {
 		this.#velocity = direction;
 	}
 
-	use(player: Player): void {
+	// Arrow function limits closure allocations to 1 per instance instead of per execution
+	use = (player: Player): void => {
 		const api = player as unknown as PlayerDroppedItemApi;
 		const remainder = api.playerInventory.addItem(this.#item);
 		if (remainder <= 0) {
 			this.#dispose();
 		}
-	}
+	};
+
 	#dispose(): void {
+		if (this.#disposed) return;
 		this.#disposed = true;
-		DroppedItem.#allItems.delete(this);
+
+		// O(1) Fast Swap and Pop from active items array
+		const items = DroppedItem.#allItems;
+		const last = items.pop();
+		if (last !== undefined && last !== this) {
+			items[this.#itemIndex] = last;
+			last.#itemIndex = this.#itemIndex;
+		}
+
 		this.#voxelCollider.dispose();
 		removeFromScene(Map1.mainScene, this.#boxMesh);
 	}
 
-	#updatePhysics(deltaMs: number): void {
-		if (this.#disposed) {
-			DroppedItem.#allItems.delete(this);
-			return;
-		}
-
-		const dt = deltaMs / 1000;
-		if (dt <= 0) return;
-
+	#updatePhysics(dt: number): void {
 		this.#velocity.y += DroppedItem.GRAVITY * dt;
+
 		this.#moveAxis(ColliderAxis.X, this.#velocity.x * dt);
 		this.#moveAxis(ColliderAxis.Y, this.#velocity.y * dt);
 		this.#moveAxis(ColliderAxis.Z, this.#velocity.z * dt);
@@ -372,22 +400,33 @@ export class DroppedItem implements IUsable {
 		const damping = grounded
 			? DroppedItem.GROUND_DAMPING_PER_SEC
 			: DroppedItem.AIR_DAMPING_PER_SEC;
-		const keep = Math.max(0, 1 - damping * dt);
-		scaleVec3InPlace(this.#velocity, keep);
+		const keep = Math.max(0.0, 1.0 - damping * dt);
+
+		// Inlined scaling operation avoids function call overhead
+		this.#velocity.x *= keep;
+		this.#velocity.y *= keep;
+		this.#velocity.z *= keep;
 
 		if (grounded && this.#velocity.y < 0) {
 			this.#velocity.y = 0;
 		}
 
-		if (Math.abs(this.#velocity.x) < DroppedItem.MIN_SPEED) {
+		// Direct comparisons are faster than Math.abs bounds checks
+		if (
+			this.#velocity.x > -DroppedItem.MIN_SPEED &&
+			this.#velocity.x < DroppedItem.MIN_SPEED
+		)
 			this.#velocity.x = 0;
-		}
-		if (Math.abs(this.#velocity.y) < DroppedItem.MIN_SPEED) {
+		if (
+			this.#velocity.y > -DroppedItem.MIN_SPEED &&
+			this.#velocity.y < DroppedItem.MIN_SPEED
+		)
 			this.#velocity.y = 0;
-		}
-		if (Math.abs(this.#velocity.z) < DroppedItem.MIN_SPEED) {
+		if (
+			this.#velocity.z > -DroppedItem.MIN_SPEED &&
+			this.#velocity.z < DroppedItem.MIN_SPEED
+		)
 			this.#velocity.z = 0;
-		}
 
 		this.#boxMesh.position.set(
 			this.#position.x,
@@ -425,8 +464,8 @@ export class DroppedItem implements IUsable {
 			this.#position.z,
 		);
 
-		const skyLight = ((packedLight >> 4) & 0xf) / 15;
-		const blockLight = (packedLight & 0xf) / 15;
+		const skyLight = ((packedLight >> 4) & 0xf) * LIGHT_NORMALIZE_MUL;
+		const blockLight = (packedLight & 0xf) * LIGHT_NORMALIZE_MUL;
 
 		const sunElevation = -GLOBAL_VALUES.skyLightDirection.y + 0.1;
 		const sunLightIntensity = Math.min(1.0, Math.max(0.0, sunElevation * 4.0));
@@ -440,9 +479,9 @@ export class DroppedItem implements IUsable {
 		const blockG = blockLight * DroppedItem.BLOCK_LIGHT_COLOR.y;
 		const blockB = blockLight * DroppedItem.BLOCK_LIGHT_COLOR.z;
 
-		const finalR = Math.min(1, Math.max(0.3, skyR + blockR));
-		const finalG = Math.min(1, Math.max(0.3, skyG + blockG));
-		const finalB = Math.min(1, Math.max(0.3, skyB + blockB));
+		const finalR = Math.min(1.0, Math.max(0.3, skyR + blockR));
+		const finalG = Math.min(1.0, Math.max(0.3, skyG + blockG));
+		const finalB = Math.min(1.0, Math.max(0.3, skyB + blockB));
 
 		setShaderVector3(this.#material, "tintColor", [finalR, finalG, finalB]);
 	}
@@ -465,13 +504,55 @@ export class DroppedItem implements IUsable {
 		return this.#boxMesh;
 	}
 
+	get position(): Vec3 {
+		return this.#position;
+	}
+
 	get item(): Item {
 		return this.#item;
 	}
 
 	static disposeAll(): void {
-		for (const item of [...DroppedItem.#allItems]) {
-			item.#dispose();
+		// Create standard array clone since we mutate during loop via `#dispose`
+		const itemsToDispose = [...DroppedItem.#allItems];
+		for (let i = 0; i < itemsToDispose.length; i++) {
+			itemsToDispose[i].#dispose();
 		}
+	}
+
+	static nearestTo(player: Player): DroppedItem | null {
+		const p = player.position;
+		let best: DroppedItem | null = null;
+		let bestSq = REACH_DISTANCE_SQ;
+
+		const items = DroppedItem.#allItems;
+		const len = items.length;
+
+		for (let i = 0; i < len; i++) {
+			const item = items[i];
+			const m = item.#position;
+			const dx = m.x - p.x;
+			const dy = m.y - p.y;
+			const dz = m.z - p.z;
+
+			const dSq = dx * dx + dy * dy + dz * dz;
+			if (dSq <= bestSq) {
+				bestSq = dSq;
+				best = item;
+			}
+		}
+		return best;
+	}
+
+	/**
+	 * All still-active dropped items.
+	 * Now returns the backing array, treated as read-only.
+	 */
+	static get activeItems(): ReadonlyArray<DroppedItem> {
+		return DroppedItem.#allItems;
+	}
+
+	get halfExtent(): number {
+		return this.#halfSize;
 	}
 }

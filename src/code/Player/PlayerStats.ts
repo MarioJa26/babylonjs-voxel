@@ -4,6 +4,9 @@ export const enum Gamemodes {
 	Adventure = 2,
 	Spectator = 3,
 }
+
+export const REACH_DISTANCE = 64;
+export const REACH_AURA = 3;
 export class PlayerStats {
 	public gamemode: Gamemodes = Gamemodes.Creative;
 

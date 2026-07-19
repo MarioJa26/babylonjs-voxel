@@ -67,11 +67,6 @@ export class PaddleBoatControls implements IControls<BoatControlEntity> {
 		this.#player = player;
 	}
 
-	/** Loose view of the not-yet-ported `Player` surface (use/flashlight/...). */
-	#legacy(): any {
-		return this.#player;
-	}
-
 	public handleKeyEvent(key: string, isKeyDown: boolean) {
 		if (isKeyDown) {
 			this.onKeyDown(key);
@@ -94,7 +89,7 @@ export class PaddleBoatControls implements IControls<BoatControlEntity> {
 		} else if (PaddleBoatControls.KEY_DOWN.includes(key)) {
 			this.#inputDirection.y = 1;
 		} else if (PaddleBoatControls.KEY_USE.includes(key)) {
-			this.#legacy().use();
+			this.#player.use();
 		}
 	}
 
@@ -124,7 +119,7 @@ export class PaddleBoatControls implements IControls<BoatControlEntity> {
 				this.#inputDirection.x = 0;
 			}
 		} else if (PaddleBoatControls.KEY_FLASH.includes(key)) {
-			this.#legacy().flashlight.toggle();
+			this.#player.flashlight.toggle();
 		}
 
 		if (PaddleBoatControls.MOUSE_WHEEL_UP.includes(key)) {

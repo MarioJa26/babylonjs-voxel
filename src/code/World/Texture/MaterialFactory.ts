@@ -1,8 +1,27 @@
 import type { SceneContext } from "@babylonjs/lite";
 
+// Minimal structural view of the Babylon material objects this factory builds
+// by hand (it assigns texture slots then freezes/disposes them). Keeps the
+// builder `any`-free without pulling in Babylon's full Material types.
+interface RawMaterial {
+	uScale?: number;
+	vScale?: number;
+	diffuseTexture?: RawTexture;
+	bumpTexture?: RawTexture;
+	ambientTexture?: RawTexture;
+	specularTexture?: RawTexture;
+	freeze?(): void;
+	dispose?(): void;
+}
+
+interface RawTexture {
+	uScale?: number;
+	vScale?: number;
+}
+
 export namespace MaterialFactory {
 	// A cache to store and reuse materials. This is a major performance optimization.
-	const materialCache = new Map<string, any>();
+	const materialCache = new Map<string, RawMaterial>();
 
 	/**
 	 * Creates and returns a texture.
@@ -11,8 +30,8 @@ export namespace MaterialFactory {
 		_scene: SceneContext,
 		_path: string,
 		uvScale: number,
-	): any {
-		const tex: any = {};
+	): RawTexture {
+		const tex: RawTexture = {};
 		tex.uScale = uvScale;
 		tex.vScale = uvScale;
 		return tex;
@@ -46,7 +65,7 @@ export namespace MaterialFactory {
 		nor = false,
 		ao = false,
 		spec = false,
-	): any {
+	): RawMaterial {
 		// Generate a unique key for the cache based on all parameters
 		const cacheKey = `${folder},${uvScale},${extension},${diff},${nor},${ao},${spec}`;
 
@@ -54,7 +73,7 @@ export namespace MaterialFactory {
 			return materialCache.get(cacheKey)!;
 		}
 
-		const mat: any = {};
+		const mat: RawMaterial = {};
 
 		// --- Parse the folder name to build file paths ---
 		// 1. Get the last part of the folder path
@@ -100,7 +119,7 @@ export namespace MaterialFactory {
 	 */
 	function buildMaterial(
 		scene: SceneContext,
-		mat: any,
+		mat: RawMaterial,
 		directory: string,
 		baseName: string,
 		resolution: string,
@@ -111,7 +130,7 @@ export namespace MaterialFactory {
 		ao: boolean,
 		spec: boolean,
 		cacheKey: string,
-	): any {
+	): RawMaterial {
 		// 4. Build paths and assign textures
 		// e.g., path = "./texture/stone/concrete_tile_facade_1k/concrete_tile_facade_diff_1k.jpg"
 		if (diff) {
@@ -138,7 +157,7 @@ export namespace MaterialFactory {
 		}
 
 		// 5. Save the new material to the cache, freeze it, and return it
-		mat.freeze();
+		mat.freeze?.();
 		materialCache.set(cacheKey, mat);
 		return mat;
 	}
@@ -185,7 +204,7 @@ export namespace MaterialFactory {
 
 	export function disposeAll(): void {
 		for (const mat of materialCache.values()) {
-			mat.dispose();
+			mat.dispose?.();
 		}
 		materialCache.clear();
 	}
