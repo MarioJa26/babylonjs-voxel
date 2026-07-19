@@ -1,16 +1,11 @@
-import {
-	copyVec3,
-	type Mesh,
-	type ShaderMaterial,
-	vec3Zero,
-} from "@babylonjs/core";
+import type { ShaderMaterial } from "@babylonjs/lite";
 import {
 	addToScene,
-	addVec3InPlace,
 	createMeshFromData,
 	createShaderMaterial,
 	type LiteMetadata,
 	loadTexture2D,
+	type Mesh,
 	onBeforeRender,
 	removeFromScene,
 	scaleVec3InPlace,
@@ -23,6 +18,7 @@ import {
 } from "@babylonjs/lite";
 import { MetadataContainer } from "@/code/Entities/MetadataContainer";
 import type { IUsable } from "@/code/Interface/IUsable";
+import { copyVec3, vec3Zero } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import {
 	getBlockByWorldCoords,

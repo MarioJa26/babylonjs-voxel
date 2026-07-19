@@ -12,7 +12,7 @@ export class GeodeFeature implements IWorldFeature {
 
 	public generate(
 		chunkX: number,
-		chunkY: number,
+		_chunkY: number,
 		chunkZ: number,
 		_biome: Biome,
 		placeBlock: (

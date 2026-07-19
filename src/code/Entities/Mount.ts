@@ -1,5 +1,5 @@
-import { type Mesh, Quaternion, vec3Zero, vec4 } from "@babylonjs/core";
-import { addVec3ToRef, type Quat, type Vec3 } from "@babylonjs/lite";
+import { addVec3ToRef, type Mesh, type Quat, type Vec3 } from "@babylonjs/lite";
+import { Quaternion, vec3Zero, vec4 } from "@/code/Lib/Math";
 import type { IControls } from "../Interface/IControls";
 import type { IMountable } from "../Interface/IMountable";
 import type { IPlayerBody } from "../Player/PlayerBody";

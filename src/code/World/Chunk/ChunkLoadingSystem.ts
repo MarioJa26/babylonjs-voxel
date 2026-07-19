@@ -97,6 +97,37 @@ let opfsCacheMissedThisCycle = 0;
 
 const _entityPayloadMap = new Map<bigint, SavedChunkEntityData[]>();
 
+// Reused across prefetchOpfsMeshes cycles to avoid per-cycle Promise array
+// allocation and per-request .then/.catch closure allocation.
+const _prefetchPromises: Promise<void>[] = [];
+const _prefetchReqInfo: { chunkId: bigint; key: bigint; lod: number }[] = [];
+
+function _prefetchOnReadOk(
+	idx: number,
+	bytes: Uint8Array | null | undefined,
+): void {
+	if (!bytes) {
+		opfsCacheMissedThisCycle++;
+		return;
+	}
+	const info = _prefetchReqInfo[idx];
+	const mesh = deserializeMeshPair(bytes, info.lod);
+	if (mesh) {
+		opfsMeshCache.set(info.chunkId, mesh);
+		opfsCacheHydratedThisCycle++;
+	} else {
+		opfsCacheMissedThisCycle++;
+	}
+}
+
+function _prefetchOnReadErr(idx: number, err: unknown): void {
+	const info = _prefetchReqInfo[idx];
+	console.warn(
+		`[ChunkLoadingSystem] OPFS read failed for chunk ${info.chunkId}:`,
+		err,
+	);
+}
+
 const debugStats: ChunkLoadingDebugStats = {
 	loadQueueLength: 0,
 	unloadQueueLength: 0,
@@ -783,7 +814,8 @@ async function prefetchOpfsMeshes(
 	const client = await ChunkWorkerPool.getInstance().ensureOpfsReady();
 	if (!client) return;
 
-	const promises: Promise<void>[] = [];
+	_prefetchPromises.length = 0;
+	_prefetchReqInfo.length = 0;
 	for (const request of requests) {
 		const chunk = request.chunk;
 		const lod = request.desiredLod;
@@ -796,31 +828,16 @@ async function prefetchOpfsMeshes(
 		}
 
 		const key = packChunkKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-		promises.push(
-			client
-				.readMesh(key, lod)
-				.then((bytes) => {
-					if (!bytes) {
-						opfsCacheMissedThisCycle++;
-						return;
-					}
-					const mesh = deserializeMeshPair(bytes, lod);
-					if (mesh) {
-						opfsMeshCache.set(chunk.id, mesh);
-						opfsCacheHydratedThisCycle++;
-					} else {
-						opfsCacheMissedThisCycle++;
-					}
-				})
-				.catch((err: any) => {
-					console.warn(
-						`[ChunkLoadingSystem] OPFS read failed for chunk ${chunk.id}:`,
-						err,
-					);
-				}),
+		const idx = _prefetchReqInfo.length;
+		_prefetchReqInfo.push({ chunkId: chunk.id, key, lod });
+		_prefetchPromises.push(
+			client.readMesh(key, lod).then(
+				(bytes) => _prefetchOnReadOk(idx, bytes),
+				(err) => _prefetchOnReadErr(idx, err),
+			),
 		);
 	}
-	await Promise.all(promises);
+	await Promise.all(_prefetchPromises);
 }
 
 function resetCycleOpfsCache(): void {

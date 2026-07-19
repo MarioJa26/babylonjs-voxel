@@ -1,22 +1,17 @@
 import {
-	copyVec3,
-	lengthSqVec3,
-	type Mesh,
-	Quaternion,
-	setVec3,
-} from "@babylonjs/core";
-import {
 	addToScene,
 	addVec3InPlace,
 	createCapsule,
 	createStandardMaterial,
 	type EngineContext,
+	type Mesh,
 	type SceneContext,
 	scaleVec3InPlace,
 	scaleVec3ToRef,
 	type Vec3,
 	vec3,
 } from "@babylonjs/lite";
+import { copyVec3, lengthSqVec3, Quaternion, setVec3 } from "@/code/Lib/Math";
 import {
 	Axis,
 	createVoxelColliderBlockSampler,

@@ -604,7 +604,7 @@ export function registerPackedMaterial(material: ShaderMaterial): void {
 	// meshes; with the dedicated group above those rebuilds stay instanced.
 	if (!boundMaterials.has(material)) {
 		for (let i = 0; i < faceArenas.length; i++) {
-			setShaderStorageBuffer(material, `faceData${i}`, faceArenas[i]!.buffer);
+			setShaderStorageBuffer(material, `faceData${i}`, faceArenas[i]?.buffer);
 			faceArenas[i]!.bound = true;
 		}
 		if (offsetBuffer) {

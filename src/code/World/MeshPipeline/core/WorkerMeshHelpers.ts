@@ -3,6 +3,14 @@ import { MeshData } from "../../Chunk/DataStructures/MeshData";
 import { ResizableTypedArray } from "../../Chunk/DataStructures/ResizableTypedArray";
 import type { WorkerInternalMeshData } from "../../Chunk/DataStructures/WorkerInternalMeshData";
 import type { MeshContext } from "../types/MeshTypes";
+import {
+	FLAG_GREEDY,
+	FLAG_PARTIAL,
+	FLAG_SOLID,
+	FLAG_TRANSPARENT,
+	getCachedFlagsAndId,
+	getFlagsFromCombined,
+} from "./BlockFlags";
 
 export type WorkerMeshBaseContext = {
 	size: number;
@@ -50,6 +58,15 @@ const MAX_PADDED = GenerationParams.CHUNK_SIZE + 2; // 64 + 2
 const MAX_PADDED_VOL = MAX_PADDED * MAX_PADDED * MAX_PADDED;
 let _paddedBlocks = new Uint16Array(MAX_PADDED_VOL);
 let _paddedLights = new Uint8Array(MAX_PADDED_VOL);
+// PERF: One bit per padded cell — "opaque, greedy-participating, solid cube
+// with no transparency/partial-shape complications". VoxelMaskExtractor was
+// re-deriving this exact condition from raw flags up to 6x per voxel per
+// remesh (once as "current" and once as "neighbor", for each of 3 axes).
+// Classifying every cell once here — in a single sequential pass over the
+// padded grid we already built — lets the axis loops fast-reject the
+// overwhelming majority of interior cell-pairs with one AND of two bytes,
+// with zero flag re-derivation and zero call into processCell.
+let _paddedOpaque: Uint8Array<ArrayBufferLike> = new Uint8Array(MAX_PADDED_VOL);
 
 // ── Shared hot closures ──────────────────────────────────────────────────────
 // PERF: getBlock/getLight/hasNeighborChunk are invoked on the meshing hot path
@@ -61,6 +78,7 @@ let _paddedLights = new Uint8Array(MAX_PADDED_VOL);
 // builds).
 let _ctxPadded = _paddedBlocks;
 let _ctxPaddedLight = _paddedLights;
+let _ctxPaddedOpaque = _paddedOpaque;
 let _ctxPs = 0;
 let _ctxPs2 = 0;
 let _ctxNeighbors: (Uint8Array | Uint16Array | undefined)[] = [];
@@ -75,6 +93,9 @@ export const PaddedGrid = {
 	},
 	get light(): Uint8Array {
 		return _ctxPaddedLight;
+	},
+	get opaque(): Uint8Array {
+		return _ctxPaddedOpaque;
 	},
 	get ps(): number {
 		return _ctxPs;
@@ -126,6 +147,34 @@ const NEIGHBOR_OFFSETS: NeighborOffset[] = (() => {
 	return table;
 })();
 
+const OPAQUE_REQUIRED = FLAG_SOLID | FLAG_GREEDY;
+const OPAQUE_FORBIDDEN = FLAG_TRANSPARENT | FLAG_PARTIAL;
+
+/**
+ * PERF: Classify every cell in the padded grid exactly once, immediately
+ * after the grid is assembled. A cell is "opaque" here iff it is solid,
+ * greedy-participating, and has neither the transparent nor partial-shape
+ * flag — i.e. exactly the condition VoxelMaskExtractor's bothCube fast path
+ * checks. Doing it here means the flags for a given voxel are derived once
+ * per chunk build instead of up to 6 times (as current + as neighbor, for
+ * each of the 3 mesh axes) inside the per-cell hot loop.
+ */
+function buildOpaqueClassification(
+	padded: Uint16Array,
+	psVol: number,
+): Uint8Array {
+	const bits = _paddedOpaque;
+	for (let i = 0; i < psVol; i++) {
+		const flags = getFlagsFromCombined(getCachedFlagsAndId(padded[i]));
+		bits[i] =
+			(flags & OPAQUE_REQUIRED) === OPAQUE_REQUIRED &&
+			(flags & OPAQUE_FORBIDDEN) === 0
+				? 1
+				: 0;
+	}
+	return bits;
+}
+
 /**
  * Rebuild full MeshContext inside the worker from plain postMessage payload.
  * This version supports the center chunk and 26 neighbors.
@@ -155,6 +204,7 @@ export function createMeshContextFromPayload(
 	if (psVol > _paddedBlocks.length) {
 		_paddedBlocks = new Uint16Array(psVol);
 		_paddedLights = new Uint8Array(psVol);
+		_paddedOpaque = new Uint8Array(psVol);
 	}
 	const padded = _paddedBlocks;
 	const paddedLight = _paddedLights;
@@ -286,9 +336,14 @@ export function createMeshContextFromPayload(
 		}
 	}
 
+	// ── Classify every cell once, now that the grid (center + all neighbor
+	// borders) is fully assembled ──
+	const opaque = buildOpaqueClassification(padded, psVol);
+
 	// ── Publish per-chunk state for the shared hot closures ──
 	_ctxPadded = padded;
 	_ctxPaddedLight = paddedLight;
+	_ctxPaddedOpaque = opaque;
 	_ctxPs = ps;
 	_ctxPs2 = ps2;
 	_ctxNeighbors = neighbors;

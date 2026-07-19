@@ -106,9 +106,9 @@ export class TowerFeature implements IWorldFeature {
 	}
 
 	private generateCylinderTower(
-		chunkX: number,
+		_chunkX: number,
 		chunkY: number,
-		chunkZ: number,
+		_chunkZ: number,
 		towerCenterX: number,
 		towerCenterZ: number,
 		towerRadius: number,
@@ -175,9 +175,9 @@ export class TowerFeature implements IWorldFeature {
 	}
 
 	private generateUndergroundCylinderTower(
-		chunkX: number,
+		_chunkX: number,
 		chunkY: number,
-		chunkZ: number,
+		_chunkZ: number,
 		towerCenterX: number,
 		towerCenterZ: number,
 		towerRadius: number,
@@ -220,7 +220,7 @@ export class TowerFeature implements IWorldFeature {
 		towerCenterX: number,
 		towerCenterZ: number,
 		towerRadius: number,
-		biome: Biome,
+		_biome: Biome,
 		columnPrepassResolver?: ColumnPrepassResolver,
 	): number {
 		let minGroundHeight = Infinity;

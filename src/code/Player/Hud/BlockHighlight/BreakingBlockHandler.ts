@@ -1,5 +1,5 @@
-import { type Mesh, setVec3, vec3Zero } from "@babylonjs/core";
-import type { Vec3 } from "@babylonjs/lite";
+import type { Mesh, Vec3 } from "@babylonjs/lite";
+import { setVec3, vec3Zero } from "@/code/Lib/Math";
 import { play } from "@/code/Maps/BlockBreakParticles";
 import {
 	deleteBlock,

@@ -147,7 +147,7 @@ let scene: SceneContext;
 
 let crackMaterials: ShaderMaterial[] = [];
 let crackMeshes: Mesh[] = [];
-let usedCrackMeshes: Mesh[] = [];
+let _usedCrackMeshes: Mesh[] = [];
 
 let crackGeometryKey = -1;
 
@@ -158,14 +158,14 @@ export function initializeBlockBreakingVisuals(
 
 	crackMaterials = [];
 	crackMeshes = [];
-	usedCrackMeshes = [];
+	_usedCrackMeshes = [];
 	crackGeometryKey = -1;
 
 	const unit = buildBoxesGeometry([{ min: [0, 0, 0], max: [2, 1, 1] }], 0.06);
 
 	for (let i = 0; i < 10; i++) {
 		const mat = createShaderMaterial({
-			name: "crackMat" + i,
+			name: `crackMat${i}`,
 			vertexSource: crackVertexWGSL,
 			fragmentSource: crackFragmentWGSL,
 			attributes: ["position"],
@@ -179,7 +179,7 @@ export function initializeBlockBreakingVisuals(
 
 		const mesh = createMeshFromData(
 			Map1.engine,
-			"crackMesh" + i,
+			`crackMesh${i}`,
 			unit.positions,
 			unit.normals,
 			unit.indices,
@@ -249,7 +249,7 @@ export function updateBlockBreakingVisuals(
 		target.position.set(targetBlock.x, targetBlock.y, targetBlock.z);
 	}
 
-	usedCrackMeshes = [target];
+	_usedCrackMeshes = [target];
 }
 
 function asBoatBlockContext(context: unknown): {
@@ -291,7 +291,7 @@ function asBoatBlockContext(context: unknown): {
 }
 
 export function resetBlockBreakingVisuals(): void {
-	usedCrackMeshes = [];
+	_usedCrackMeshes = [];
 	for (const mesh of crackMeshes) {
 		mesh.visible = false;
 	}

@@ -107,9 +107,9 @@ export class LightGenerator {
 	 * Returns the number of initially seeded queue entries.
 	 */
 	private seedInitialLightIntoSharedQueue(
-		chunkX: number,
+		_chunkX: number,
 		chunkY: number,
-		chunkZ: number,
+		_chunkZ: number,
 		blocks: Uint8Array,
 		light: Uint8Array,
 		topSunlightMask?: Uint8Array,

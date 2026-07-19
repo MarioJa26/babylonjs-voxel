@@ -11,12 +11,10 @@
 import {
 	addToScene,
 	createDirectionalLight,
-	createHemisphericLight,
 	createSphere,
 	type DirectionalLight,
 	type EngineContext,
 	getCameraPosition,
-	type HemisphericLight,
 	type Mesh,
 	removeFromScene,
 	type SceneContext,
@@ -33,7 +31,6 @@ export class WorldEnvironment {
 	private engine: EngineContext;
 	private scene: SceneContext;
 	private dirLight: DirectionalLight | null = null;
-	private hemiLight: HemisphericLight | null = null;
 	private skybox: Mesh | null = null;
 	private skyMaterial: ShaderMaterial | null = null;
 
@@ -51,11 +48,6 @@ export class WorldEnvironment {
 	}
 
 	private createLights(): void {
-		this.hemiLight = createHemisphericLight(
-			[0.1, 1, 0.1],
-			SETTING_PARAMS.HEMISPHERIC_LIGHT_INTENSITY,
-		);
-
 		const dir = GLOBAL_VALUES.skyLightDirection;
 		this.dirLight = createDirectionalLight([dir.x, dir.y, dir.z], 1.0);
 	}
@@ -132,6 +124,5 @@ export class WorldEnvironment {
 		this.skybox = null;
 		this.skyMaterial = null;
 		this.dirLight = null;
-		this.hemiLight = null;
 	}
 }

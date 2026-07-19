@@ -15,7 +15,6 @@ export class PlayerInputController {
 	#onMouseUp: (event: MouseEvent) => void;
 	#onPointerMove: (event: MouseEvent) => void;
 	#onWheel: (event: WheelEvent) => void;
-	#pointerObs: any = null;
 
 	constructor(
 		private readonly canvas: HTMLCanvasElement,
@@ -101,6 +100,5 @@ export class PlayerInputController {
 		window.removeEventListener("mouseup", this.#onMouseUp);
 		this.canvas.removeEventListener("mousemove", this.#onPointerMove);
 		this.canvas.removeEventListener("wheel", this.#onWheel);
-		this.#pointerObs = null;
 	}
 }

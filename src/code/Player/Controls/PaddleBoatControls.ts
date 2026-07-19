@@ -1,14 +1,7 @@
-import { copyFile } from "node:fs";
-import {
-	copyVec3,
-	Matrix,
-	type Mesh,
-	transformNormalVec3ToRef,
-	vec3Zero,
-} from "@babylonjs/core";
-import { scaleVec3, type Vec3, vec3 } from "@babylonjs/lite";
+import { type Mesh, scaleVec3, type Vec3, vec3 } from "@babylonjs/lite";
 import type { Mount } from "@/code/Entities/Mount";
 import type { IControls } from "@/code/Interface/IControls";
+import { Matrix, transformNormalVec3ToRef, vec3Zero } from "@/code/Lib/Math";
 import type { Player } from "../Player";
 import { handleDebugKey } from "./DebugControlHelper";
 

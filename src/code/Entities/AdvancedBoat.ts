@@ -1,21 +1,20 @@
 import {
-	Color3,
-	type Mesh,
-	MeshBuilder,
-	Quaternion,
-	StandardMaterial,
-	setVec3,
-	transformCoordinatesVec3ToRef,
-} from "@babylonjs/core";
-import { ImportMeshAsync } from "@babylonjs/core/Loading/SceneContextLoader";
-import {
+	addToScene,
+	createBox,
+	createStandardMaterial,
 	crossVec3ToRef,
+	type Mesh,
 	onBeforeRender,
 	type SceneContext,
 	scaleVec3InPlace,
 	type Vec3,
 	vec3,
 } from "@babylonjs/lite";
+import {
+	Quaternion,
+	setVec3,
+	transformCoordinatesVec3ToRef,
+} from "@/code/Lib/Math";
 import {
 	Axis,
 	createVoxelColliderBlockSampler,
@@ -78,7 +77,7 @@ export class AdvancedBoat implements IUsable {
 		this.createBoat(SceneContext, position, waterLevel);
 
 		const md: Record<string, unknown> = {};
-		md["use"] = (player: Player) => this.use(player);
+		md.use = (player: Player) => this.use(player);
 		this.#boat.metadata = md;
 
 		this.setupBuoyancyPoints();
@@ -94,15 +93,14 @@ export class AdvancedBoat implements IUsable {
 		waterLevel: number,
 	): void {
 		// AABB collision hull used by the physics body.
-		const boatHull = MeshBuilder.CreateBox(
-			"boatHull",
-			{
-				width: this.#collisionHalfExtents.x * 2,
-				height: this.#collisionHalfExtents.y * 2,
-				depth: this.#collisionHalfExtents.z * 2,
-			},
-			scene,
-		);
+		const size =
+			((this.#collisionHalfExtents.x +
+				this.#collisionHalfExtents.y +
+				this.#collisionHalfExtents.z) *
+				2) /
+			3;
+		const boatHull = createBox(scene.surface.engine, size);
+		boatHull.name = "boatHull";
 
 		boatHull.position.set(
 			position?.x || 0,
@@ -110,14 +108,14 @@ export class AdvancedBoat implements IUsable {
 			position?.z || 0,
 		);
 
-		const hullMaterial = new StandardMaterial("hullMat", scene);
-		hullMaterial.diffuseColor = new Color3(0.8, 0.6, 0.2);
+		const hullMaterial = createStandardMaterial();
+		hullMaterial.name = "hullMat";
+		hullMaterial.diffuseColor = [0.8, 0.6, 0.2];
 		boatHull.material = hullMaterial;
 		boatHull.pickable = true;
 
-		// Set to false to see the physics shape during debugging, true to hide it
-		boatHull.visible = false;
 		boatHull.rotationQuaternion.copyFrom(Quaternion.Identity());
+		addToScene(scene, boatHull);
 		this.#boat = boatHull;
 
 		this.#voxelCollider = new VoxelAabbCollider(
@@ -143,22 +141,6 @@ export class AdvancedBoat implements IUsable {
 				renderingGroupId: 1,
 			},
 		);
-
-		ImportMeshAsync("models/boat-row-small.glb", scene)
-			.then((result: any) => {
-				const root = result.meshes[0];
-				root.parent = this.#boat;
-				root.position.y = -0.45;
-
-				result.meshes.forEach((m: any) => {
-					m.isPickable = true;
-					m.renderingGroupId = 1;
-					m.metadata = this.#boat.metadata;
-				});
-			})
-			.catch((err: any) => {
-				console.error("Model failed to load:", err);
-			});
 	}
 
 	private setupBuoyancyPoints(): void {

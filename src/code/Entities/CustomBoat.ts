@@ -1,16 +1,15 @@
-import { type Mesh, Quaternion, setVec3, vec3Zero } from "@babylonjs/core";
-import { ImportMeshAsync } from "@babylonjs/core/Loading/sceneLoader";
 import {
 	addToScene,
 	createBox,
 	createStandardMaterial,
-	disposeMeshGpu,
+	type Mesh,
 	removeFromScene,
 	type SceneContext,
 	scaleVec3InPlace,
 	type Vec3,
 	vec3,
 } from "@babylonjs/lite";
+import { Quaternion, setVec3, vec3Zero } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import { BoatChunk, type BoatChunkBlock } from "@/code/World/Boat/BoatChunk";
 import { Chunk } from "@/code/World/Chunk/Chunk";
@@ -329,10 +328,6 @@ export class CustomBoat implements IUsable {
 		if (this.#customVisualRoot) {
 			this.#attachCustomVisual(this.#customVisualRoot);
 			this.#applyCustomVisualMetadata(this.#customVisualRoot);
-		} else if (!this.#skipDefaultModel) {
-			this.#loadDefaultModel(scene).catch((err) =>
-				console.error("Model failed:", err),
-			);
 		}
 
 		// 5) Buoyancy points
@@ -392,19 +387,6 @@ export class CustomBoat implements IUsable {
 		return hull;
 	}
 
-	async #loadDefaultModel(scene: SceneContext): Promise<void> {
-		const result = await ImportMeshAsync("models/boat-row-small.glb", scene);
-		const root = result.meshes[0];
-		root.parent = this.#boat;
-		root.position.y = -0.45;
-
-		for (const m of result.meshes) {
-			m.isPickable = true;
-			m.renderingGroupId = 1;
-			m.metadata = this.#boat.metadata;
-		}
-	}
-
 	#attachCustomVisual(visual: Mesh): void {
 		visual.position.copyFrom(this.#boat.position);
 		const q = Quaternion.RotationYawPitchRoll(
@@ -453,7 +435,7 @@ export class CustomBoat implements IUsable {
 		setVec3(bp[8], cox + ix, y, coz + iz);
 	}
 
-	#tick(scene: SceneContext): void {
+	#tick(_scene: SceneContext): void {
 		const now = performance.now();
 		let dt = (now - this.#lastTickTime) / 1000;
 		this.#lastTickTime = now;

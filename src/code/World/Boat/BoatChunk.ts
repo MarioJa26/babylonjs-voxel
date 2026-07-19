@@ -1,19 +1,19 @@
 import {
-	copyVec3,
-	Matrix,
-	type Mesh,
-	setVec3,
-	transformCoordinatesVec3ToRef,
-	vec3Zero,
-} from "@babylonjs/core";
-import {
 	addToScene,
 	createMeshFromData,
+	type Mesh,
 	removeFromScene,
 	type SceneContext,
 	type Vec3,
 	vec3,
 } from "@babylonjs/lite";
+import {
+	copyVec3,
+	Matrix,
+	setVec3,
+	transformCoordinatesVec3ToRef,
+	vec3Zero,
+} from "@/code/Lib/Math";
 import { Map1 } from "../../Maps/Map1";
 import { Chunk } from "../Chunk/Chunk";
 import { ChunkWorkerPool } from "../Chunk/ChunkWorkerPool";

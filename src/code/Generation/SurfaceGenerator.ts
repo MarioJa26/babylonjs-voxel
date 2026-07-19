@@ -980,7 +980,7 @@ export class SurfaceGenerator {
 
 	private generateFlora(
 		chunkX: number,
-		chunkY: number,
+		_chunkY: number,
 		chunkZ: number,
 		_biome: Biome,
 		placeBlock: (x: number, y: number, z: number, id: number) => void,

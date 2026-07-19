@@ -1,4 +1,4 @@
-import type { Mesh } from "@babylonjs/core";
+import type { Mesh } from "@babylonjs/lite";
 import { CHUNK_SIZE } from "@/code/Shared/VoxelMath";
 import type { Chunk } from "./Chunk";
 import type { MeshData } from "./DataStructures/MeshData";

@@ -24,7 +24,7 @@ const isSolidBlockAt = (x: number, y: number, z: number): any => {
 	const packed = getBlockByWorldCoords(x, y, z);
 	if (!packed) return null;
 	const info = getShapeInfo(packed);
-	if (!info || !info.isCube) return null;
+	if (!info?.isCube) return null;
 	return SOLID_CUBE;
 };
 

@@ -1,6 +1,6 @@
 {
 	"compilerOptions": {
-		"target": "es2024",
+		"target": "esnext",
 		"module": "ESNext",
 		"strict": true,
 		"jsx": "preserve",
@@ -14,9 +14,7 @@
 		"sourceMap": true,
 		"types": ["vite/client", "@webgpu/types"],
 		"paths": {
-			"@/*": ["./src/*"],
-			"@babylonjs/core": ["./src/code/Lib/CoreShim.ts"],
-			"@babylonjs/core/*": ["./src/code/Lib/CoreShim.ts"]
+			"@/*": ["./src/*"]
 		},
 		"lib": ["ESNext", "DOM", "DOM.Iterable"],
 		"isolatedModules": true

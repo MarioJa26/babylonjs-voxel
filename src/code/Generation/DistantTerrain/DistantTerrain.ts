@@ -142,12 +142,16 @@ function updateUniforms() {
 	const end = MapFog.getFogEnd(isUnderWater);
 	const fogInfos: [number, number, number, number] = [0, start, end, 0];
 	const fogColor = MapFog.getFogColor(isUnderWater);
+	// Precomputed reciprocal of (far - near) so the per-fragment fog factor can
+	// multiply instead of divide (mirrors the SKYBLEND_FACTOR trick).
+	const fogInvRange = 1.0 / Math.max(end - start, 1e-4);
 
 	for (const mat of [material, waterMaterial]) {
 		setShaderUniform(mat, "lightDirection", [lx, ly, lz]);
 		setShaderUniform(mat, "sunLightIntensity", sunLightIntensity);
 		setShaderUniform(mat, "fogInfos", fogInfos);
 		setShaderUniform(mat, "fogColor", fogColor);
+		setShaderUniform(mat, "fogInvRange", fogInvRange);
 	}
 }
 
@@ -162,8 +166,6 @@ function applyTerrainData(
 	worldX: number,
 	worldZ: number,
 ) {
-	ensureFloatBuffers();
-
 	for (let i = 0; i < vertexCount * 3; i++) {
 		floatPositions[i] = pos[i];
 		floatNormals[i] = nrm[i] / 127;
@@ -215,6 +217,7 @@ export async function initDistantTerrain(): Promise<void> {
 	const segments = Math.floor((radius * 2) / gridStep);
 	gridResolution = segments + 1;
 	vertexCount = gridResolution * gridResolution;
+	ensureFloatBuffers();
 	const size = radius * 2 * Chunk.SIZE;
 
 	if (
@@ -318,16 +321,7 @@ export async function initDistantTerrain(): Promise<void> {
 	mesh.renderOrder = 2;
 	addToScene(scene, mesh);
 
-	waterMaterial = createDistantWaterMaterial({
-		engine,
-		scene,
-		diffuseTexture: null,
-		tileLookupTexture: null,
-		atlasTileSize,
-		textureScale: 32,
-		tileGridResolution: gridResolution,
-		gridWorldStep: Chunk.SIZE * gridStep,
-	});
+	waterMaterial = createDistantWaterMaterial();
 	waterMesh.material = waterMaterial;
 	// Draw the distant water as part of the background layer, just after the
 	// terrain (renderOrder -2) and before the chunk meshes (renderOrder 0). With

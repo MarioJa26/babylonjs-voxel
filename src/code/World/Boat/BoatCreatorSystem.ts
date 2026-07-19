@@ -102,7 +102,7 @@ export function tryCreateBoatFromMarker(
 	const initialYaw = computeForwardYaw(bounds, markerX, markerZ);
 
 	let hx = bounds.sizeX * 0.5;
-	const hy = bounds.sizeY * 0.5;
+	const _hy = bounds.sizeY * 0.5;
 	let hz = bounds.sizeZ * 0.5;
 
 	const yaw = initialYaw % (Math.PI * 2);

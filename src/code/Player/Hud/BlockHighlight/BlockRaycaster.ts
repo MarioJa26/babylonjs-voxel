@@ -1,17 +1,17 @@
 import {
+	addVec3InPlace,
+	scaleVec3InPlace,
+	type Vec3,
+	vec3,
+} from "@babylonjs/lite";
+import {
 	lengthSqVec3,
 	Matrix,
 	setVec3,
 	transformCoordinatesVec3ToRef,
 	transformNormalVec3ToRef,
 	vec3Zero,
-} from "@babylonjs/core";
-import {
-	addVec3InPlace,
-	scaleVec3InPlace,
-	type Vec3,
-	vec3,
-} from "@babylonjs/lite";
+} from "@/code/Lib/Math";
 import { REACH_DISTANCE } from "@/code/Shared/Constants";
 import { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { Chunk } from "@/code/World/Chunk/Chunk";

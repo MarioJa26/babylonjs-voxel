@@ -5,8 +5,6 @@
  */
 import {
 	createShaderMaterial,
-	type EngineContext,
-	type SceneContext,
 	type ShaderMaterial,
 	setShaderUniform,
 } from "@babylonjs/lite";

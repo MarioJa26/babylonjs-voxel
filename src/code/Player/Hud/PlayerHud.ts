@@ -15,7 +15,6 @@ import {
 import MapFog from "../../Maps/MapFog";
 import { WorldEnvironment } from "../../Maps/WorldEnvironment";
 import {
-	type MasonRecipe,
 	MasonRecipes,
 	type Recipe,
 	Recipes,
@@ -42,10 +41,6 @@ export class PlayerHud {
 	#masonTableDiv: HTMLDivElement | null = null;
 	#selectedSourceBlockId: number | null = null;
 	#selectedShape: string | null = null;
-	#masonRecipeDivs: {
-		recipe: MasonRecipe;
-		div: HTMLDivElement;
-	}[] = [];
 
 	#selectedHotbarSlot = 0;
 	#hotbarSlots: HTMLDivElement[] = [];

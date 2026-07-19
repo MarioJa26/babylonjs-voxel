@@ -1,4 +1,4 @@
-import type { ShaderMaterial } from "@babylonjs/core";
+import type { ShaderMaterial } from "@babylonjs/lite";
 import type { IUsable } from "@/code/Interface/IUsable";
 import type { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { setBlock } from "@/code/World/Chunk/ChunkLoadingSystem";

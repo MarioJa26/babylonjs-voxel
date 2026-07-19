@@ -104,15 +104,15 @@ export class OpfsChunkStore {
 		if (neededEnd > this._fileSize) {
 			const headroom = Math.max(size, 1024 * 1024);
 			const newSize = neededEnd + headroom;
-			this._accessHandle!.truncate(newSize);
+			this._accessHandle?.truncate(newSize);
 			this._fileSize = newSize;
 		}
 
 		_rwOpts.at = slotAt;
-		this._accessHandle!.write(this._scratchU8, _rwOpts);
+		this._accessHandle?.write(this._scratchU8, _rwOpts);
 		_rwOpts.at = dataAt;
-		this._accessHandle!.write(data, _rwOpts);
-		this._accessHandle!.flush();
+		this._accessHandle?.write(data, _rwOpts);
+		this._accessHandle?.flush();
 
 		new Uint8Array(this._tableBuffer, off, SLOT_SIZE_U).set(this._scratchU8);
 
@@ -148,7 +148,7 @@ export class OpfsChunkStore {
 		// so returning a subarray would silently corrupt previous results.
 		if (size <= this._readSlab.byteLength) {
 			_rwOpts.at = at;
-			const got = this._accessHandle!.read(this._readSlab, _rwOpts);
+			const got = this._accessHandle?.read(this._readSlab, _rwOpts);
 			if (got !== size) {
 				this._missCount++;
 				return null;
@@ -158,7 +158,7 @@ export class OpfsChunkStore {
 		}
 		const buf = new Uint8Array(size);
 		_rwOpts.at = at;
-		const got = this._accessHandle!.read(buf, _rwOpts);
+		const got = this._accessHandle?.read(buf, _rwOpts);
 		if (got !== size) {
 			this._missCount++;
 			return null;
@@ -180,11 +180,11 @@ export class OpfsChunkStore {
 		// Write flag byte and zeroed size via existing scratch buffer.
 		this._scratchU8[0] = SLOT_FLAG_REMOVED;
 		_rwOpts.at = HEADER_SIZE_U + off + 9;
-		this._accessHandle!.write(this._scratchU8.subarray(0, 1), _rwOpts);
+		this._accessHandle?.write(this._scratchU8.subarray(0, 1), _rwOpts);
 
 		this._scratchDv.setUint32(0, 0, true);
 		_rwOpts.at = HEADER_SIZE_U + off + 16;
-		this._accessHandle!.write(this._scratchU8.subarray(0, 4), _rwOpts);
+		this._accessHandle?.write(this._scratchU8.subarray(0, 4), _rwOpts);
 
 		dv.setUint8(off + 9, SLOT_FLAG_REMOVED);
 		dv.setUint32(off + 16, 0, true);
@@ -199,7 +199,7 @@ export class OpfsChunkStore {
 		this.compactIfNeeded();
 		if (!this._dirty) return;
 		this._writeHeader();
-		this._accessHandle!.flush();
+		this._accessHandle?.flush();
 		this._dirty = false;
 	}
 
@@ -238,14 +238,14 @@ export class OpfsChunkStore {
 		// Use truncate to extend the file to the full table region.
 		// The OS zero-fills implicitly — avoids writing a 32 MB zero buffer
 		// through JS, which is slow on some OPFS implementations.
-		this._accessHandle!.truncate(this._dataStartOffset);
+		this._accessHandle?.truncate(this._dataStartOffset);
 		this._fileSize = this._dataStartOffset;
-		this._accessHandle!.flush();
+		this._accessHandle?.flush();
 	}
 
 	private _load(): void {
 		_rwOpts.at = 0;
-		this._accessHandle!.read(this._headerBuf, _rwOpts);
+		this._accessHandle?.read(this._headerBuf, _rwOpts);
 		const dv = new DataView(this._headerBuf.buffer);
 		this._capacity = dv.getUint32(12, true);
 
@@ -258,7 +258,7 @@ export class OpfsChunkStore {
 		this._tableBuffer = new ArrayBuffer(tableBytes);
 		const tableU8 = new Uint8Array(this._tableBuffer);
 		_rwOpts.at = HEADER_SIZE_U;
-		this._accessHandle!.read(tableU8, _rwOpts);
+		this._accessHandle?.read(tableU8, _rwOpts);
 		this._tableView = new DataView(this._tableBuffer);
 
 		let liveCount = 0;
@@ -284,7 +284,7 @@ export class OpfsChunkStore {
 		this._dataSize = dataEnd;
 		this._liveDataSize = liveDataSize;
 
-		this._fileSize = this._accessHandle!.getSize() as number;
+		this._fileSize = this._accessHandle?.getSize() as number;
 
 		this._dirty = true;
 	}
@@ -361,7 +361,7 @@ export class OpfsChunkStore {
 		dv.setBigUint64(4, this._dataSize, true);
 		dv.setUint32(12, this._capacity, true);
 		_rwOpts.at = 0;
-		this._accessHandle!.write(this._headerBuf, _rwOpts);
+		this._accessHandle?.write(this._headerBuf, _rwOpts);
 	}
 
 	compactIfNeeded(): void {

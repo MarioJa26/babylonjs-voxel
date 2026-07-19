@@ -1,17 +1,12 @@
 import {
-	copyVec3,
-	lengthSqVec3,
-	type Mesh,
-	setVec3,
-	vec3Zero,
-} from "@babylonjs/core";
-import {
 	type LiteMetadata,
+	type Mesh,
 	onBeforeRender,
 	type SceneContext,
 	type Vec3,
 } from "@babylonjs/lite";
 import { MetadataContainer } from "@/code/Entities/MetadataContainer";
+import { copyVec3, lengthSqVec3, setVec3, vec3Zero } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import type { Player } from "@/code/Player/Player";
 import { Chunk, getChunk } from "@/code/World/Chunk/Chunk";

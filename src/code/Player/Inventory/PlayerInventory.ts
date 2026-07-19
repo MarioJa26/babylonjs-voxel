@@ -1,10 +1,5 @@
-import { Observable } from "@babylonjs/core";
-import {
-	addVec3,
-	type SceneContext,
-	scaleVec3InPlace,
-	vec3,
-} from "@babylonjs/lite";
+import { addVec3, type SceneContext, vec3 } from "@babylonjs/lite";
+import { Observable } from "@/code/Lib/Math";
 import { InventoryControls } from "../Controls/InventoryControls";
 import { generateShapeVariants } from "../Crafting/ShapeVariantGenerator";
 import type { Player } from "../Player";

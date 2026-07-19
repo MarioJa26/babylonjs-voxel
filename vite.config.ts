@@ -9,18 +9,6 @@ export default defineConfig({
 	resolve: {
 		alias: [
 			{
-				find: /^@babylonjs\/core(\/.*)?$/,
-				replacement: fileURLToPath(
-					new URL("./src/code/Lib/CoreShim.ts", import.meta.url),
-				),
-			},
-			{
-				find: /^@babylonjs\/loaders(\/.*)?$/,
-				replacement: fileURLToPath(
-					new URL("./src/code/Lib/LoadersStub.ts", import.meta.url),
-				),
-			},
-			{
 				find: "@",
 				replacement: fileURLToPath(new URL("./src", import.meta.url)),
 			},

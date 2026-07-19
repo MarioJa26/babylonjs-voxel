@@ -15,36 +15,31 @@ import {
 
 const DEEP_BLUE = /* wgsl */ `vec3<f32>(0.1, 0.2, 0.4)`;
 const LIGHT_BLUE = /* wgsl */ `vec3<f32>(0.6, 0.75, 0.95)`;
-const DARK_SKY = /* wgsl */ `vec3<f32>(0.1, 0.1, 0.2)`;
 const MID_SKY = /* wgsl */ `vec3<f32>(0.5, 0.7, 0.9)`;
 const DAY_SKY = /* wgsl */ `vec3<f32>(0.1, 0.3, 0.6)`;
 
-// Fog color/atmosphere helpers, shared by both vertex shaders so the
-// expensive sky/atmosphere blend is computed per-vertex (cheap) and
-// interpolated, instead of per-fragment.
+// Ported faithfully from the pre-Lite GLSL shader. The Lite port's
+// updateUniforms() remaps lightDirection, so its sign is inverted vs the old
+// code: here lightDirection.y < 0 means the sun is below the horizon (night),
+// whereas the old shader tested > 0. All other lighting math is unchanged.
 const FOG_HELPER_WGSL = /* wgsl */ `
 fn getAtmosphereColor(heightFactor : f32) -> vec3<f32> {
   return mix(${LIGHT_BLUE}, ${DEEP_BLUE}, heightFactor) * (shaderUniforms.sunLightIntensity * shaderUniforms.sunLightIntensity);
 }
 
-fn getSkyboxColor(viewDirY : f32) -> vec3<f32> {
+fn getSkyboxColor(viewDirY : f32, nightAmount : f32) -> vec3<f32> {
   let skyFactor = smoothstep(0.0, 0.4, max(viewDirY, 0.0));
   var skyboxColor = mix(${MID_SKY}, ${DAY_SKY}, skyFactor);
-  if (shaderUniforms.lightDirection.y > 0.0) {
-    skyboxColor = mix(skyboxColor, ${DARK_SKY}, shaderUniforms.lightDirection.y * 2.0);
-  }
+  skyboxColor = mix(skyboxColor, vec3<f32>(0.0, 0.0, 0.0), nightAmount);
   return skyboxColor;
 }
 `;
 
 const terrainVertexWGSL = /* wgsl */ `
-${FOG_HELPER_WGSL}
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vNormal : vec3<f32>,
   @location(1) vPositionW : vec3<f32>,
-  @location(2) vFogFactor : f32,
-  @location(3) vFogColor : vec3<f32>,
 };
 
 @vertex
@@ -53,32 +48,16 @@ fn mainVertex(input : VertexInput) -> VSOut {
   out.pos = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
   out.vPositionW = input.position + shaderSystem.world[3].xyz;
   out.vNormal = input.normal;
-
-  // Cheap fog: per-vertex, interpolated (matches the chunk/LOD path).
-  let viewVec = out.vPositionW - shaderSystem.cameraPosition;
-  let dist = length(viewVec);
-  let infos = shaderUniforms.fogInfos;
-  out.vFogFactor = clamp((dist - infos.y) / max(infos.z - infos.y, 1e-4), 0.0, 1.0);
-
-  let heightFactor = clamp(out.vPositionW.y * 0.003, 0.0, 1.0);
-  let atmosphereColor = getAtmosphereColor(heightFactor);
-  let baseFogColor = mix(shaderUniforms.fogColor, atmosphereColor, 0.8);
-  let viewDirY = viewVec.y / max(dist, 1e-4);
-  let skyboxColor = getSkyboxColor(viewDirY);
-  let skyBlend = clamp((dist - 1400.0) * 0.0003333, 0.0, 1.0);
-  out.vFogColor = mix(baseFogColor, skyboxColor, skyBlend);
-
   return out;
 }
 `;
 
 const terrainFragmentWGSL = /* wgsl */ `
+${FOG_HELPER_WGSL}
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vNormal : vec3<f32>,
   @location(1) vPositionW : vec3<f32>,
-  @location(2) vFogFactor : f32,
-  @location(3) vFogColor : vec3<f32>,
 };
 
 fn sampleAtlasTile(tile : vec2<f32>, worldUV : vec2<f32>) -> vec3<f32> {
@@ -99,32 +78,45 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let worldNormal = normalize(in.vNormal);
   let ndotl = max(0.0, dot(worldNormal, -shaderUniforms.lightDirection));
 
- 
-let useTex = shaderUniforms.useTexture;
+  let useTex = shaderUniforms.useTexture;
+  var texColor = vec3<f32>(0.5);
+  if (useTex > 0.5) {
+    let tile = readTopTileFromLookup(in.vPositionW);
+    let worldUV = in.vPositionW.xz / shaderUniforms.textureScale;
+    texColor = sampleAtlasTile(tile, worldUV);
+  }
 
-let tile = readTopTileFromLookup(in.vPositionW);
-let worldUV = in.vPositionW.xz / shaderUniforms.textureScale;
-let texColor = sampleAtlasTile(tile, worldUV);
-
-// Branchless blend
-let albedo = mix(vec3<f32>(0.5), texColor, useTex);
-
+  let albedo = mix(vec3<f32>(0.5), texColor, useTex);
 
   let skyColor = vec3<f32>(0.8) * (shaderUniforms.sunLightIntensity + 0.2);
   let finalColor = albedo * (ndotl * shaderUniforms.sunLightIntensity * 0.6 + skyColor * 0.6);
 
-  let colorWithFog = mix(finalColor, in.vFogColor, in.vFogFactor);
+  // Fog computed per-fragment from the interpolated world position.
+  let viewVec = in.vPositionW - shaderSystem.cameraPosition;
+  let dist = length(viewVec);
+  let infos = shaderUniforms.fogInfos;
+  let fogFactor = clamp((infos.z - dist) * shaderUniforms.fogInvRange, 0.0, 1.0);
+
+  let heightFactor = clamp(in.vPositionW.y * 0.003, 0.0, 1.0);
+  let atmosphereColor = getAtmosphereColor(heightFactor);
+  var baseFogColor = mix(shaderUniforms.fogColor, atmosphereColor, 0.8);
+  let nightAmount = clamp(1.0 - shaderUniforms.sunLightIntensity, 0.0, 1.0);
+  baseFogColor = mix(baseFogColor, vec3<f32>(0.0, 0.0, 0.0), nightAmount);
+
+  let viewDirY = viewVec.y / max(dist, 1e-4);
+  let skyboxColor = getSkyboxColor(viewDirY, nightAmount);
+  let skyBlend = clamp((dist - 1400.0) * 0.0003333, 0.0, 1.0);
+  let fogColor = mix(baseFogColor, skyboxColor, skyBlend);
+
+  let colorWithFog = mix(fogColor, finalColor, fogFactor);
   return vec4<f32>(colorWithFog, 1.0);
 }
 `;
 
 const waterVertexWGSL = /* wgsl */ `
-${FOG_HELPER_WGSL}
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vPositionW : vec3<f32>,
-  @location(2) vFogFactor : f32,
-  @location(3) vFogColor : vec3<f32>,
 };
 
 @vertex
@@ -132,31 +124,15 @@ fn mainVertex(input : VertexInput) -> VSOut {
   var out : VSOut;
   out.pos = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
   out.vPositionW = input.position + shaderSystem.world[3].xyz;
-
-  // Cheap fog: per-vertex, interpolated.
-  let viewVec = out.vPositionW - shaderSystem.cameraPosition;
-  let dist = length(viewVec);
-  let infos = shaderUniforms.fogInfos;
-  out.vFogFactor = clamp((dist - infos.y) / max(infos.z - infos.y, 1e-4), 0.0, 1.0);
-
-  let heightFactor = clamp(out.vPositionW.y * 0.003, 0.0, 1.0);
-  let atmosphereColor = getAtmosphereColor(heightFactor);
-  let baseFogColor = mix(shaderUniforms.fogColor, atmosphereColor, 0.8);
-  let viewDirY = viewVec.y / max(dist, 1e-4);
-  let skyboxColor = getSkyboxColor(viewDirY);
-  let skyBlend = clamp((dist - 7000.0) * 0.0003333, 0.0, 1.0);
-  out.vFogColor = mix(baseFogColor, skyboxColor, skyBlend);
-
   return out;
 }
 `;
 
 const waterFragmentWGSL = /* wgsl */ `
+${FOG_HELPER_WGSL}
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vPositionW : vec3<f32>,
-  @location(2) vFogFactor : f32,
-  @location(3) vFogColor : vec3<f32>,
 };
 
 @fragment
@@ -172,9 +148,27 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let spec = exp2(clamp(64.0 * 1.4427 * (RV - 1.0), -126.0, 0.0));
   let specular = vec3<f32>(spec * shaderUniforms.sunLightIntensity);
 
-  let finalColor = vec3<f32>(0.0, 0.1, 0.3) * (shaderUniforms.sunLightIntensity * 0.8 + 0.1) + specular;
+  let litWater = vec3<f32>(0.0, 0.25, 0.55) * (shaderUniforms.sunLightIntensity * 0.8 + 0.2);
+  let nightWater = vec3<f32>(0.0, 0.06, 0.18);
+  let finalColor = mix(nightWater, litWater, shaderUniforms.sunLightIntensity) + specular;
 
-  let colorWithFog = mix(finalColor, in.vFogColor, in.vFogFactor);
+  // Fog computed per-fragment so the huge flat plane fades correctly
+  // (per-vertex would interpolate fully-fogged corners across the whole plane).
+  let infos = shaderUniforms.fogInfos;
+  let fogFactor = clamp((infos.z - dist) * shaderUniforms.fogInvRange, 0.0, 1.0);
+
+  let heightFactor = clamp(in.vPositionW.y * 0.003, 0.0, 1.0);
+  let atmosphereColor = getAtmosphereColor(heightFactor);
+  var baseFogColor = mix(shaderUniforms.fogColor, atmosphereColor, 0.8);
+  let nightAmount = clamp(1.0 - shaderUniforms.sunLightIntensity, 0.0, 1.0);
+  baseFogColor = mix(baseFogColor, vec3<f32>(0.0, 0.0, 0.0), nightAmount);
+
+  let viewDirY = viewVec.y / max(dist, 1e-4);
+  let skyboxColor = getSkyboxColor(viewDirY, nightAmount);
+  let skyBlend = clamp((dist - 7000.0) * 0.0003333, 0.0, 1.0);
+  let fogColor = mix(baseFogColor, skyboxColor, skyBlend);
+
+  let colorWithFog = mix(fogColor, finalColor, fogFactor);
   return vec4<f32>(colorWithFog, 1.0);
 }
 `;
@@ -212,6 +206,7 @@ export function createDistantTerrainMaterial(
 			{ name: "gridWorldStep", type: "f32" },
 			{ name: "fogInfos", type: "vec4<f32>" },
 			{ name: "fogColor", type: "vec3<f32>" },
+			{ name: "fogInvRange", type: "f32" },
 		],
 		samplers: ["diffuseTexture", "tileLookupTexture"],
 		backFaceCulling: true,
@@ -227,12 +222,11 @@ export function createDistantTerrainMaterial(
 	setShaderUniform(material, "lightDirection", [0, 1, 0]);
 	setShaderUniform(material, "fogInfos", [0, 0, 1000, 0]);
 	setShaderUniform(material, "fogColor", [0.6, 0.7, 0.9]);
+	setShaderUniform(material, "fogInvRange", 1 / 1000);
 	return material;
 }
 
-export function createDistantWaterMaterial(
-	opts: DistantTerrainMaterialOptions,
-): ShaderMaterial {
+export function createDistantWaterMaterial(): ShaderMaterial {
 	const material = createShaderMaterial({
 		name: "distantWaterLite",
 		vertexSource: waterVertexWGSL,
@@ -246,6 +240,7 @@ export function createDistantWaterMaterial(
 			{ name: "sunLightIntensity", type: "f32" },
 			{ name: "fogInfos", type: "vec4<f32>" },
 			{ name: "fogColor", type: "vec3<f32>" },
+			{ name: "fogInvRange", type: "f32" },
 		],
 		samplers: [],
 		backFaceCulling: true,
@@ -260,5 +255,6 @@ export function createDistantWaterMaterial(
 	setShaderUniform(material, "lightDirection", [0, 1, 0]);
 	setShaderUniform(material, "fogInfos", [0, 0, 1000, 0]);
 	setShaderUniform(material, "fogColor", [0.6, 0.7, 0.9]);
+	setShaderUniform(material, "fogInvRange", 1 / 1000);
 	return material;
 }

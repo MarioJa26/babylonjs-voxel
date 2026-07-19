@@ -13,7 +13,7 @@ export class RavineFeature implements IWorldFeature {
 
 	public generate(
 		chunkX: number,
-		chunkY: number,
+		_chunkY: number,
 		chunkZ: number,
 		_biome: Biome,
 		placeBlock: (
@@ -85,7 +85,7 @@ export class RavineFeature implements IWorldFeature {
 		)
 			return;
 
-		const maxDepthY = ravineCenterZ + depth;
+		const _maxDepthY = ravineCenterZ + depth;
 
 		for (let x = bounds.minX; x < bounds.maxX; x++) {
 			for (let z = bounds.minZ; z < bounds.maxZ; z++) {
@@ -113,7 +113,7 @@ export class RavineFeature implements IWorldFeature {
 
 				for (let y = Math.max(floorY, -1600); y <= 512; y++) {
 					const distFromFloor = y - floorY;
-					const wallWidth = 0.5 + wallJitter;
+					const _wallWidth = 0.5 + wallJitter;
 					if (distFromFloor < 0) continue;
 					if (distFromFloor > ravineDepth) break;
 

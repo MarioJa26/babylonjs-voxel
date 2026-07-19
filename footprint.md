@@ -1,12 +1,12 @@
 # Project Footprint
 
-Generated: 2026-07-18T04:24:11.522Z
+Generated: 2026-07-18T21:56:10.517Z
 
-> **Summary:** 126 classes · 1710 members · 446 module-level functions · 50718 LOC
+> **Summary:** 125 classes · 1698 members · 441 module-level functions · 50491 LOC
 
 ---
 
-## `Entities/AdvancedBoat.ts` (342 LOC)
+## `Entities/AdvancedBoat.ts` (328 LOC)
 
 ### export class AdvancedBoat implements IUsable
 
@@ -43,7 +43,7 @@ Generated: 2026-07-18T04:24:11.522Z
 
 ---
 
-## `Entities/CustomBoat.ts` (790 LOC)
+## `Entities/CustomBoat.ts` (774 LOC)
 
 ### export class CustomBoat implements IUsable
 
@@ -151,6 +151,7 @@ Generated: 2026-07-18T04:24:11.522Z
 - `setVec3(this.#tmpBoatSampleWorld, worldX + 0.5, worldY + 0.5, worldZ + 0.5)`
 
 **Types / Interfaces / Enums**
+- type `Mesh`
 - type `SceneContext`
 - type `Vec3`
 - type `DynamicBlockSample`
@@ -174,7 +175,7 @@ Generated: 2026-07-18T04:24:11.522Z
 
 ---
 
-## `Entities/Mobs/Chicken.ts` (117 LOC)
+## `Entities/Mobs/Chicken.ts` (118 LOC)
 
 ### export class Chicken extends NeutralMob
 
@@ -195,6 +196,7 @@ Generated: 2026-07-18T04:24:11.522Z
 
 **Types / Interfaces / Enums**
 - type `LiteMetadata`
+- type `Mesh`
 - type `SceneContext`
 - type `ChickenSerializedPayload`
 
@@ -244,7 +246,7 @@ Generated: 2026-07-18T04:24:11.522Z
 
 ---
 
-## `Entities/Mobs/NeutralMob.ts` (612 LOC)
+## `Entities/Mobs/NeutralMob.ts` (607 LOC)
 
 ### abstract export class NeutralMob
 
@@ -314,15 +316,15 @@ Generated: 2026-07-18T04:24:11.522Z
 - `findPathInto(this.#path, sx, sz, startGroundY, tx, tz, this.#requiredHeadroom, 250)`
 
 **Types / Interfaces / Enums**
-- type `Mesh`
 - type `LiteMetadata`
+- type `Mesh`
 - type `SceneContext`
 - type `Vec3`
 - type `PathWaypoint`
 
 ---
 
-## `Entities/Mobs/Sheep.ts` (130 LOC)
+## `Entities/Mobs/Sheep.ts` (131 LOC)
 
 ### export class Sheep extends NeutralMob
 
@@ -349,6 +351,7 @@ Generated: 2026-07-18T04:24:11.522Z
 
 **Types / Interfaces / Enums**
 - type `LiteMetadata`
+- type `Mesh`
 - type `SceneContext`
 - type `SheepSerializedPayload`
 
@@ -392,38 +395,6 @@ Generated: 2026-07-18T04:24:11.522Z
 
 **Types / Interfaces / Enums**
 - interface `MountOptions`
-
----
-
-## `Entities/Sheep.ts` (130 LOC)
-
-### export class Sheep extends NeutralMob
-
-**Constructor**
-- `constructor(x: number, y: number, z: number, scene: SceneContext, hp?: number, color?: Color3)`
-
-**Properties**
-- `readonly mobType`
-- `readonly CHUNK_ENTITY_TYPE`
-
-**Methods**
-- `super(hp ?? 8, scene, vec3(BODY_WIDTH * 0.5, BODY_HEIGHT * 0.5, BODY_DEPTH * 0.5))`
-- `addToScene(Map1.mainScene, this.#bodyMesh)`
-- `configureChunkLoader(scene: SceneContext): void`
-- `getWanderSpeed(): number`
-- `onDeath(): void`
-- `protected override getExtraPayload(): Record<string, unknown>`
-- `dispose(): void`
-
-**Module-level functions**
-- `function colorToPayload(c: Color3)`
-- `function payloadToColor(p: { r: number; g: number; b: number }): Color3`
-- `function randomSheepColor(): Color3`
-
-**Types / Interfaces / Enums**
-- type `LiteMetadata`
-- type `SceneContext`
-- type `SheepSerializedPayload`
 
 ---
 
@@ -598,7 +569,7 @@ Generated: 2026-07-18T04:24:11.522Z
 
 ---
 
-## `Generation/DistantTerrain/DistantTerrainGenerator.ts` (363 LOC)
+## `Generation/DistantTerrain/DistantTerrainGenerator.ts` (365 LOC)
 
 **Module-level functions**
 - `function cachedHeight(wx: number, wz: number): number`
@@ -1822,14 +1793,6 @@ export function createFastNoise3D(
 
 ---
 
-## `Lib/CoreShim.ts` (20 LOC)
-
----
-
-## `Lib/LoadersStub.ts` (1 LOC)
-
----
-
 ## `Lib/Math.ts` (1312 LOC)
 
 ### export class Color3
@@ -2084,7 +2047,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Controls/CustomBoatControls.ts` (188 LOC)
+## `Player/Controls/CustomBoatControls.ts` (187 LOC)
 
 ### export class CustomBoatControls implements IControls<BoatControlEntity>
 
@@ -2128,7 +2091,6 @@ export function createFastNoise3D(
 - `public update(): void`
 
 **Types / Interfaces / Enums**
-- type `Mesh`
 - type `BoatControlEntity`
 
 ---
@@ -2169,7 +2131,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Controls/JetSkiControls.ts` (195 LOC)
+## `Player/Controls/JetSkiControls.ts` (194 LOC)
 
 ### export class JetSkiControls implements IControls<BoatControlEntity>
 
@@ -2213,7 +2175,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Controls/PaddleBoatControls.ts` (210 LOC)
+## `Player/Controls/PaddleBoatControls.ts` (203 LOC)
 
 ### export class PaddleBoatControls implements IControls<BoatControlEntity>
 
@@ -2256,7 +2218,6 @@ export function createFastNoise3D(
 - `public update(): void`
 
 **Types / Interfaces / Enums**
-- type `Mesh`
 - type `BoatControlEntity`
 
 ---
@@ -2605,7 +2566,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Inventory/DroppedItem.ts` (424 LOC)
+## `Player/Inventory/DroppedItem.ts` (420 LOC)
 
 ### export class DroppedItem implements IUsable
 
@@ -2673,9 +2634,8 @@ export function createFastNoise3D(
 
 **Types / Interfaces / Enums**
 - interface `PlayerDroppedItemApi`
-- type `Mesh`
-- type `ShaderMaterial`
 - type `LiteMetadata`
+- type `Mesh`
 - type `Texture2D`
 - type `Vec3`
 
@@ -2783,7 +2743,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Inventory/PlayerInventory.ts` (379 LOC)
+## `Player/Inventory/PlayerInventory.ts` (374 LOC)
 
 ### export class PlayerInventory
 
@@ -2823,7 +2783,6 @@ export function createFastNoise3D(
 - `public deleteItem(item: Item)`
 
 **Types / Interfaces / Enums**
-- type `SceneContext`
 - type `SavedInventoryItem`
 - type `SavedInventoryState`
 
@@ -2868,7 +2827,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/PlayerBody.ts` (44 LOC)
+## `Player/PlayerBody.ts` (43 LOC)
 
 ### export class PlayerBodyControlState
 
@@ -3119,11 +3078,11 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/PlayerVehicleMotor.ts` (1139 LOC)
+## `Player/PlayerVehicleMotor.ts` (1134 LOC)
 
 **Types / Interfaces / Enums**
-- type `Mesh`
 - type `EngineContext`
+- type `Mesh`
 - type `SceneContext`
 - type `Vec3`
 - type `PlayerVehicleMotorOptions`
@@ -4408,12 +4367,13 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Collision/VoxelAabbCollider.ts` (544 LOC)
+## `World/Collision/VoxelAabbCollider.ts` (539 LOC)
 
 **Module-level functions**
 - `function rotateShapeBoxY(minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number, rotation: number, out: [number, number, number, number, number, number]): void`
 
 **Types / Interfaces / Enums**
+- type `Mesh`
 - type `SceneContext`
 - type `Vec3`
 - type `BlockShapeInfo`
@@ -4422,7 +4382,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Collision/VoxelObbCollider.ts` (235 LOC)
+## `World/Collision/VoxelObbCollider.ts` (228 LOC)
 
 ### export class VoxelObbCollider
 
@@ -4430,9 +4390,6 @@ export function createFastNoise3D(
 - `constructor(halfExtents: Vec3, isSolidBlockAt: IsSolidBlockAt, epsilon = 0.001, debugOptions?: VoxelObbDebugOptions)`
 
 **Properties**
-- `width: this.#halfExtents.x * 2,`
-- `height: this.#halfExtents.y * 2,`
-- `depth: this.#halfExtents.z * 2,`
 - `px: number,`
 - `py: number,`
 - `pz: number,`
@@ -4450,6 +4407,7 @@ export function createFastNoise3D(
 - `public setCenterOffset(offset: Vec3): void`
 - `setVec3(this.#rotX, c, 0, -s)`
 - `setVec3(this.#rotZ, s, 0, c)`
+- `addToScene(options.scene, this.#debugMesh)`
 - `public overlaps(position: Vec3): boolean`
 - `public moveAxis(position: Vec3, velocity: Vec3, axis: Axis, delta: number, stepSize: number): void`
 - `public syncDebugMesh(position: any): void`
@@ -4458,6 +4416,9 @@ export function createFastNoise3D(
 - `public static setDebugEnabled(enabled: boolean): void`
 
 **Types / Interfaces / Enums**
+- type `Mesh`
+- type `SceneContext`
+- type `Vec3`
 - type `IsSolidBlockAt`
 - type `VoxelObbDebugOptions`
 
@@ -4471,14 +4432,9 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Light/DistantTerrainShaderLite.ts` (215 LOC)
-
-**Module-level functions**
-- `export function createDistantTerrainMaterial(opts: DistantTerrainMaterialOptions): ShaderMaterial`
-- `export function createDistantWaterMaterial(opts: DistantTerrainMaterialOptions): ShaderMaterial`
+## `World/Light/DistantTerrainShaderLite.ts` (209 LOC)
 
 **Types / Interfaces / Enums**
-- interface `DistantTerrainMaterialOptions`
 - type `EngineContext`
 - type `SceneContext`
 - type `ShaderMaterial`
@@ -5151,7 +5107,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Texture/MaterialFactory.ts` (119 LOC)
+## `World/Texture/MaterialFactory.ts` (118 LOC)
 
 **Module-level functions**
 - `function createTexture(scene: SceneContext, path: string, uvScale: number): any`
@@ -5162,13 +5118,13 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Texture/TextureAtlasFactory.ts` (31 LOC)
+## `World/Texture/TextureAtlasFactory.ts` (29 LOC)
 
 **Module-level functions**
-- `export function getDiffuse(): Texture | null`
-- `export function setDiffuse(texture: Texture)`
-- `export function getNormal(): Texture | null`
-- `export function setNormal(texture: Texture)`
+- `export function getDiffuse(): Texture2D | null`
+- `export function setDiffuse(texture: Texture2D)`
+- `export function getNormal(): Texture2D | null`
+- `export function setNormal(texture: Texture2D)`
 - `export function getDiffuseTexture2D(): Texture2D | null`
 - `export function setDiffuseTexture2D(texture: Texture2D)`
 

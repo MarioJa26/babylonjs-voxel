@@ -1,5 +1,5 @@
-import type { Quaternion } from "@babylonjs/core";
 import type { Vec3 } from "@babylonjs/lite";
+import type { Quaternion } from "@/code/Lib/Math";
 
 interface MountOptions {
 	mountOffset?: Vec3;

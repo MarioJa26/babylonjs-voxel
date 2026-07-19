@@ -1,13 +1,12 @@
+import { type Mesh, scaleVec3InPlace, type Vec3, vec3 } from "@babylonjs/lite";
+import type { Mount } from "@/code/Entities/Mount";
+import type { IControls } from "@/code/Interface/IControls";
 import {
 	Matrix,
-	type Mesh,
 	setVec3,
 	transformNormalVec3ToRef,
 	vec3Zero,
-} from "@babylonjs/core";
-import { scaleVec3InPlace, type Vec3, vec3 } from "@babylonjs/lite";
-import type { Mount } from "@/code/Entities/Mount";
-import type { IControls } from "@/code/Interface/IControls";
+} from "@/code/Lib/Math";
 import type { Player } from "../Player";
 import { handleDebugKey } from "./DebugControlHelper";
 

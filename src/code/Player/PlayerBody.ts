@@ -1,5 +1,4 @@
-import type { Mesh } from "@babylonjs/core";
-import { type SceneContext, type Vec3, vec3 } from "@babylonjs/lite";
+import { type Mesh, type SceneContext, type Vec3, vec3 } from "@babylonjs/lite";
 import type { Mount } from "../Entities/Mount";
 import type { PlayerCamera } from "./PlayerCamera";
 import type { SimpleCharacterController } from "./SimpleCharacterController";

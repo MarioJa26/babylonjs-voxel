@@ -1,13 +1,16 @@
 // VoxelObbCollider.ts
+
 import {
-	Color4,
-	copyVec3,
-	MeshBuilder,
-	Quaternion,
-	StandardMaterial,
-	setVec3,
-} from "@babylonjs/core";
-import { type SceneContext, type Vec3, vec3 } from "@babylonjs/lite";
+	addToScene,
+	createBox,
+	createStandardMaterial,
+	disposeMeshGpu,
+	type Mesh,
+	type SceneContext,
+	type Vec3,
+	vec3,
+} from "@babylonjs/lite";
+import { copyVec3, Quaternion, setVec3 } from "@/code/Lib/Math";
 import { Axis } from "./VoxelAabbCollider";
 
 type IsSolidBlockAt = (x: number, y: number, z: number) => boolean;
@@ -40,7 +43,7 @@ export class VoxelObbCollider {
 
 	#tmpCandidate = vec3(0, 0, 0); // Temporary candidate vector
 	#debugRot = Quaternion.Identity(); // Debug rotation vector
-	#debugMesh: any = null;
+	#debugMesh: Mesh | null = null;
 	#debugOptions: VoxelObbDebugOptions | null = null;
 
 	static #debugEnabled = false;
@@ -77,8 +80,8 @@ export class VoxelObbCollider {
 		copyVec3(this.#halfExtents, halfExtents);
 
 		// Rebuild the debug wireframe so its dimensions match updated extents.
-		if (this.#debugMesh && !this.#debugMesh.isDisposed()) {
-			this.#debugMesh.dispose();
+		if (this.#debugMesh) {
+			disposeMeshGpu(this.#debugMesh);
 			this.#debugMesh = null;
 			if (VoxelObbCollider.#debugEnabled) {
 				this.#ensureDebugMesh();
@@ -103,33 +106,23 @@ export class VoxelObbCollider {
 
 	/** Create debug OBB wireframe */
 	#createDebugMesh(options: VoxelObbDebugOptions): void {
-		if (this.#debugMesh && !this.#debugMesh.isDisposed()) {
+		if (this.#debugMesh) {
 			return;
 		}
 		const name = options.name ?? "voxelObbDebug";
-		this.#debugMesh = MeshBuilder.CreateBox(
-			name,
-			{
-				width: this.#halfExtents.x * 2,
-				height: this.#halfExtents.y * 2,
-				depth: this.#halfExtents.z * 2,
-			},
-			options.scene,
-		);
-		this.#debugMesh.isPickable = false;
-		this.#debugMesh.rotationQuaternion = Quaternion.Identity();
-		if (typeof options.renderingGroupId === "number") {
-			this.#debugMesh.renderingGroupId = options.renderingGroupId;
-		}
+		const size =
+			((this.#halfExtents.x + this.#halfExtents.y + this.#halfExtents.z) * 2) /
+			3;
+		this.#debugMesh = createBox(options.scene.surface.engine, size);
+		this.#debugMesh.name = name;
+		this.#debugMesh.pickable = false;
 
-		const material = new StandardMaterial(`${name}Mat`, options.scene);
+		const material = createStandardMaterial();
+		material.name = `${name}Mat`;
 		material.alpha = 0;
-		material.disableLighting = true;
+		material.diffuseColor = [1, 0.2, 0.2];
 		this.#debugMesh.material = material;
-		this.#debugMesh.isVisible = true;
-		this.#debugMesh.enableEdgesRendering();
-		this.#debugMesh.edgesWidth = 3;
-		this.#debugMesh.edgesColor = new Color4(1, 0.2, 0.2, 1);
+		addToScene(options.scene, this.#debugMesh);
 		if (options.position) {
 			this.#debugMesh.position.copyFrom(options.position);
 		}
@@ -262,7 +255,7 @@ export class VoxelObbCollider {
 		if (VoxelObbCollider.#debugEnabled) {
 			this.#ensureDebugMesh();
 		}
-		if (!this.#debugMesh || this.#debugMesh.isDisposed()) return;
+		if (!this.#debugMesh) return;
 
 		// Position at the offset center (rotate local offset into world space)
 		this.#debugMesh.position.set(
@@ -276,13 +269,14 @@ export class VoxelObbCollider {
 		);
 
 		this.#debugRot.copyFrom(Quaternion.RotationYawPitchRoll(this.#yaw, 0, 0));
-		this.#debugMesh.rotationQuaternion = this.#debugRot;
+		this.#debugMesh.rotationQuaternion.copyFrom(this.#debugRot);
 	}
 
 	public dispose(): void {
 		VoxelObbCollider.#debugColliders.delete(this);
-		if (this.#debugMesh && !this.#debugMesh.isDisposed()) {
-			this.#debugMesh.dispose();
+		if (this.#debugMesh) {
+			disposeMeshGpu(this.#debugMesh);
+			this.#debugMesh = null;
 		}
 		this.#debugMesh = null;
 		this.#debugOptions = null;
@@ -296,8 +290,8 @@ export class VoxelObbCollider {
 		VoxelObbCollider.#debugEnabled = enabled;
 		VoxelObbCollider.#debugColliders.forEach((collider) => {
 			if (enabled) collider.#ensureDebugMesh();
-			else if (collider.#debugMesh && !collider.#debugMesh.isDisposed()) {
-				collider.#debugMesh.dispose();
+			else if (collider.#debugMesh) {
+				disposeMeshGpu(collider.#debugMesh);
 				collider.#debugMesh = null;
 			}
 		});

@@ -1,10 +1,10 @@
-import type { Color3 } from "@babylonjs/core";
 import {
 	createMeshFromData,
 	createShaderMaterial,
 	type ShaderMaterial,
 	setShaderUniform,
 } from "@babylonjs/lite";
+import type { Color3 } from "@/code/Lib/Math";
 
 const MOB_VERTEX_WGSL = /* wgsl */ `
 struct VSOut {

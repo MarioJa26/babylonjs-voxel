@@ -164,9 +164,9 @@ export class BadlandsSpireFeature implements IWorldFeature {
 	}
 
 	private generateSpire(
-		chunkX: number,
+		_chunkX: number,
 		chunkY: number,
-		chunkZ: number,
+		_chunkZ: number,
 		spireX: number,
 		spireZ: number,
 		groundHeight: number,

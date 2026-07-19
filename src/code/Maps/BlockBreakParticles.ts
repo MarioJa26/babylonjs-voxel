@@ -1,5 +1,5 @@
-import { Color4 } from "@babylonjs/core";
 import { type SceneContext, type Vec3, vec3 } from "@babylonjs/lite";
+import { Color4 } from "@/code/Lib/Math";
 import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
 import { BlockTextures } from "../World/Texture/BlockTextures";
 import { FaceName } from "../World/Texture/FaceName";
@@ -94,7 +94,7 @@ export function play(
 	particleSystem.start?.();
 }
 
-function init(scene: SceneContext) {
+function init(_scene: SceneContext) {
 	particleSystem = {};
 
 	const atlas = getDiffuse();

@@ -342,7 +342,7 @@ export class ChunkWorker {
 
 		msg.uniformBlockId = chunk.isUniform ? chunk.uniformBlockId : undefined;
 
-		if (chunk.palette && chunk.palette.length) {
+		if (chunk.palette?.length) {
 			const paletteCopy = chunk.palette.slice();
 			msg.palette = paletteCopy;
 			transfer.push(paletteCopy.buffer);

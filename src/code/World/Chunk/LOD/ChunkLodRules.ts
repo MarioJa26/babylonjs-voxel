@@ -260,36 +260,33 @@ export class ChunkLodRuleSet {
 
 		const previousBandAllowsCreation = previousLod >= 0 && previousLod <= 3;
 
-		const withinPreviousBandWithBuffer = (() => {
-			switch (previousLod) {
-				case 0:
-					return (
-						horizontalDist <=
-							this.radii.lod0HorizontalRadius + horizontalLeaveBuffer &&
-						verticalDist <= this.radii.lod0VerticalRadius + verticalLeaveBuffer
-					);
-				case 1:
-					return (
-						horizontalDist <=
-							this.radii.lod1HorizontalRadius + horizontalLeaveBuffer &&
-						verticalDist <= this.radii.lod1VerticalRadius + verticalLeaveBuffer
-					);
-				case 2:
-					return (
-						horizontalDist <=
-							this.radii.lod2HorizontalRadius + horizontalLeaveBuffer &&
-						verticalDist <= this.radii.lod2VerticalRadius + verticalLeaveBuffer
-					);
-				case 3:
-					return (
-						horizontalDist <=
-							this.radii.lod3HorizontalRadius + horizontalLeaveBuffer &&
-						verticalDist <= this.radii.lod3VerticalRadius + verticalLeaveBuffer
-					);
-				default:
-					return false;
-			}
-		})();
+		let withinPreviousBandWithBuffer = false;
+		switch (previousLod) {
+			case 0:
+				withinPreviousBandWithBuffer =
+					horizontalDist <=
+						this.radii.lod0HorizontalRadius + horizontalLeaveBuffer &&
+					verticalDist <= this.radii.lod0VerticalRadius + verticalLeaveBuffer;
+				break;
+			case 1:
+				withinPreviousBandWithBuffer =
+					horizontalDist <=
+						this.radii.lod1HorizontalRadius + horizontalLeaveBuffer &&
+					verticalDist <= this.radii.lod1VerticalRadius + verticalLeaveBuffer;
+				break;
+			case 2:
+				withinPreviousBandWithBuffer =
+					horizontalDist <=
+						this.radii.lod2HorizontalRadius + horizontalLeaveBuffer &&
+					verticalDist <= this.radii.lod2VerticalRadius + verticalLeaveBuffer;
+				break;
+			case 3:
+				withinPreviousBandWithBuffer =
+					horizontalDist <=
+						this.radii.lod3HorizontalRadius + horizontalLeaveBuffer &&
+					verticalDist <= this.radii.lod3VerticalRadius + verticalLeaveBuffer;
+				break;
+		}
 
 		if (withinPreviousBandWithBuffer && previousLod < baseDecision.lodLevel) {
 			baseDecision.lodLevel = previousLod;

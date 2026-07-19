@@ -3,7 +3,7 @@ import { addVec3InPlace, type Vec3, type Vec4, vec3 } from "@babylonjs/lite";
 /**
  * Pure-TypeScript math + utility library used by the Lite port.
  *
- * Babylon.js `@babylonjs/core` is no longer a dependency. The handful of
+ * `@babylonjs/core` is not a dependency of this project. The handful of
  * math/utility types the gameplay code relied on (Vector2, Color3/4,
  * Quaternion, Matrix, Observable, Tools, Scalar) are re-implemented here.
  *

@@ -143,19 +143,42 @@ export class VoxelMaskExtractor {
 			const ndz = VoxelMaskExtractor._ndzDz[axis];
 			const uA = axis === 0 ? 1 : axis === 2 ? 0 : 2;
 			const vA = axis === 0 ? 2 : axis === 2 ? 1 : 0;
+			const opaqueArr = PaddedGrid.opaque;
+			const ps = PaddedGrid.ps;
+			const ps2 = PaddedGrid.ps2;
 			let idx = 0;
 			for (let v = 0; v < size; v++) {
 				for (let u = 0; u < size; u++) {
+					const bx = bxVal === 0 ? -1 : bxVal === 1 ? u : v;
+					const by = byVal === 0 ? -1 : byVal === 1 ? u : v;
+					const bz = bzVal === 0 ? -1 : bzVal === 1 ? u : v;
+					const nx = bx + ndx;
+					const ny = by + ndy;
+					const nz = bz + ndz;
+					const curIdx = bx + 1 + (by + 1) * ps + (bz + 1) * ps2;
+					const nbrIdx = nx + 1 + (ny + 1) * ps + (nz + 1) * ps2;
+
+					// PERF: both sides classified as opaque interior cubes ->
+					// guaranteed empty face, skip processCell entirely.
+					if (opaqueArr[curIdx] & opaqueArr[nbrIdx]) {
+						mask[idx] = 0;
+						lightMask[idx] = 0;
+						idx++;
+						continue;
+					}
+
 					processCell(
 						blockArr,
 						lightArr,
 						disableAO,
-						bxVal === 0 ? -1 : bxVal === 1 ? u : v,
-						byVal === 0 ? -1 : byVal === 1 ? u : v,
-						bzVal === 0 ? -1 : bzVal === 1 ? u : v,
-						ndx,
-						ndy,
-						ndz,
+						bx,
+						by,
+						bz,
+						nx,
+						ny,
+						nz,
+						curIdx,
+						nbrIdx,
 						uA,
 						vA,
 						currentFaceBit,
@@ -182,20 +205,43 @@ export class VoxelMaskExtractor {
 		const dx = axis === 0 ? 1 : 0;
 		const dy = axis === 1 ? 1 : 0;
 		const dz = axis === 2 ? 1 : 0;
+		const opaqueArr = PaddedGrid.opaque;
+		const ps = PaddedGrid.ps;
+		const ps2 = PaddedGrid.ps2;
 
 		let idx = 0;
 		for (let v = 0; v < size; v++) {
 			for (let u = 0; u < size; u++) {
+				const bx = bxVal === 0 ? slice : bxVal === 1 ? u : v;
+				const by = byVal === 0 ? slice : byVal === 1 ? u : v;
+				const bz = bzVal === 0 ? slice : bzVal === 1 ? u : v;
+				const nx = bx + dx;
+				const ny = by + dy;
+				const nz = bz + dz;
+				const curIdx = bx + 1 + (by + 1) * ps + (bz + 1) * ps2;
+				const nbrIdx = nx + 1 + (ny + 1) * ps + (nz + 1) * ps2;
+
+				// PERF: both sides classified as opaque interior cubes ->
+				// guaranteed empty face, skip processCell entirely.
+				if (opaqueArr[curIdx] & opaqueArr[nbrIdx]) {
+					mask[idx] = 0;
+					lightMask[idx] = 0;
+					idx++;
+					continue;
+				}
+
 				processCell(
 					blockArr,
 					lightArr,
 					disableAO,
-					bxVal === 0 ? slice : bxVal === 1 ? u : v,
-					byVal === 0 ? slice : byVal === 1 ? u : v,
-					bzVal === 0 ? slice : bzVal === 1 ? u : v,
-					dx,
-					dy,
-					dz,
+					bx,
+					by,
+					bz,
+					nx,
+					ny,
+					nz,
+					curIdx,
+					nbrIdx,
 					uAxis,
 					vAxis,
 					currentFaceBit,
@@ -221,9 +267,14 @@ function processCell(
 	bx: number,
 	by: number,
 	bz: number,
-	dx: number,
-	dy: number,
-	dz: number,
+	nx: number,
+	ny: number,
+	nz: number,
+	// PERF: caller already computes these to run the opaque-opaque fast
+	// reject before deciding to call processCell at all, so pass them
+	// straight through instead of recomputing paddedIndex twice more here.
+	curIdx: number,
+	nbrIdx: number,
 	uAxis: number,
 	vAxis: number,
 	currentFaceBit: number,
@@ -232,13 +283,9 @@ function processCell(
 	mask: WritableNumberArray,
 	lightMask: WritableNumberArray,
 ): void {
-	const nx = bx + dx;
-	const ny = by + dy;
-	const nz = bz + dz;
-
 	// --- inline samplePacked (direct padded-grid index) ---
-	const currentPacked = blockArr[paddedIndex(bx, by, bz)];
-	const neighborPacked = blockArr[paddedIndex(nx, ny, nz)];
+	const currentPacked = blockArr[curIdx];
+	const neighborPacked = blockArr[nbrIdx];
 
 	// --- early out: air-air (before flags) ---
 	if (!currentPacked && !neighborPacked) {
@@ -349,8 +396,8 @@ function processCell(
 	}
 
 	// --- light (inline pickLight) ---
-	const currLight = lightArr[paddedIndex(bx, by, bz)];
-	const nbrLight = lightArr[paddedIndex(nx, ny, nz)];
+	const currLight = lightArr[curIdx];
+	const nbrLight = lightArr[nbrIdx];
 	const maxLight = currLight > nbrLight ? currLight : nbrLight;
 	const packedLightOnly = disableAO
 		? quantizeLightForLOD(maxLight, true)

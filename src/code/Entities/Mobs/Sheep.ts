@@ -1,12 +1,13 @@
-import { Color3, type Mesh } from "@babylonjs/core";
 import {
 	addToScene,
 	createMeshFromData,
 	type LiteMetadata,
+	type Mesh,
 	removeFromScene,
 	type SceneContext,
 	vec3,
 } from "@babylonjs/lite";
+import { Color3 } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import { DroppedItem } from "../../Player/Inventory/DroppedItem";
 import { Item } from "../../Player/Inventory/Item";

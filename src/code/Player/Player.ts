@@ -220,8 +220,8 @@ export class Player {
 		this.#pickInFlight = true;
 
 		// Crosshair is screen-centre; pick there in CSS pixels relative to canvas.
-		const x = this.canvas.clientWidth / 2;
-		const y = this.canvas.clientHeight / 2;
+		const _x = this.canvas.clientWidth / 2;
+		const _y = this.canvas.clientHeight / 2;
 
 		// No usable mesh hit — fall back to block interaction.
 		const blockHit = pickTarget(this);

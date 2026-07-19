@@ -12,7 +12,6 @@ import {
 	DistantOnlyChunkCreationRule,
 	Lod0ChunkCreationRule,
 } from "../LOD/ChunkLodRules";
-import { flushDirtyMergedGroups } from "../MergedMeshManager";
 
 export type QueuedChunkRequest = {
 	chunk: Chunk;
@@ -21,6 +20,13 @@ export type QueuedChunkRequest = {
 	includeVoxelData: boolean;
 	priority: number;
 };
+
+function compareQueuedChunkRequestPriority(
+	a: QueuedChunkRequest,
+	b: QueuedChunkRequest,
+): number {
+	return a.priority - b.priority;
+}
 
 // Scratch target for chunkDist to avoid per-call object allocation in hot
 // enqueue loops. Callers must consume hDist/vDist before the next call.
@@ -376,7 +382,7 @@ export class ChunkStreamingController {
 			_queryScratch,
 		);
 		for (let _qi = 0; _qi < _queryScratch.length; _qi++) {
-			const chunk = _queryScratch[_qi]!;
+			const chunk = _queryScratch[_qi];
 			if (this.loadedRefreshQueueSet.has(chunk.id)) continue;
 
 			const { hDist, vDist } = chunkDistScratch(
@@ -453,19 +459,22 @@ export class ChunkStreamingController {
 			return;
 		}
 
-		const lodRuleSet =
-			this._cachedOutdoorLodRuleSet !== null &&
-			this._lastRenderDistance === renderDistance &&
-			this._lastVerticalRadius === verticalRadius
-				? this._cachedOutdoorLodRuleSet
-				: (() => {
-						this._ruleSetGeneration++;
-						return ChunkLodRuleSet.fromRenderRadii(
-							renderDistance,
-							verticalRadius,
-							this._ruleSetGeneration,
-						);
-					})();
+		let lodRuleSet = this._cachedOutdoorLodRuleSet;
+		if (
+			lodRuleSet === null ||
+			this._lastRenderDistance !== renderDistance ||
+			this._lastVerticalRadius !== verticalRadius
+		) {
+			this._ruleSetGeneration++;
+			lodRuleSet = ChunkLodRuleSet.fromRenderRadii(
+				renderDistance,
+				verticalRadius,
+				this._ruleSetGeneration,
+			);
+			this._cachedOutdoorLodRuleSet = lodRuleSet;
+			this._lastRenderDistance = renderDistance;
+			this._lastVerticalRadius = verticalRadius;
+		}
 
 		let processed = 0;
 
@@ -809,7 +818,7 @@ export class ChunkStreamingController {
 			_queryScratch,
 		);
 		for (let _qi = 0; _qi < _queryScratch.length; _qi++) {
-			const chunk = _queryScratch[_qi]!;
+			const chunk = _queryScratch[_qi];
 			if (chunk.isBoatChunk) continue;
 			if (unloadQueueSet.has(chunk)) continue;
 
@@ -918,7 +927,7 @@ export class ChunkStreamingController {
 
 	private sortLoadQueue(): void {
 		const loadQueue = this.adapter.getLoadQueue();
-		loadQueue.sort((a, b) => a.priority - b.priority);
+		loadQueue.sort(compareQueuedChunkRequestPriority);
 	}
 
 	private computePriority(

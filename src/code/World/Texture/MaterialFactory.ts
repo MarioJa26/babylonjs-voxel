@@ -1,4 +1,3 @@
-import { StandardMaterial } from "@babylonjs/core";
 import type { SceneContext } from "@babylonjs/lite";
 
 export namespace MaterialFactory {
@@ -9,8 +8,8 @@ export namespace MaterialFactory {
 	 * Creates and returns a texture.
 	 */
 	function createTexture(
-		scene: SceneContext,
-		path: string,
+		_scene: SceneContext,
+		_path: string,
 		uvScale: number,
 	): any {
 		const tex: any = {};
@@ -55,7 +54,7 @@ export namespace MaterialFactory {
 			return materialCache.get(cacheKey)!;
 		}
 
-		const mat = new StandardMaterial(folder, scene);
+		const mat: any = {};
 
 		// --- Parse the folder name to build file paths ---
 		// 1. Get the last part of the folder path
@@ -76,7 +75,7 @@ export namespace MaterialFactory {
 
 		// 3. Re-assemble the parts
 		// e.g., resolution = "_1k"
-		const resolution = "_" + parts.pop();
+		const resolution = `_${parts.pop()}`;
 		// e.g., baseName = "concrete_tile_facade"
 		const baseName = parts.join("_");
 		return buildMaterial(
@@ -178,7 +177,7 @@ export namespace MaterialFactory {
 			resolution = "";
 		} else {
 			// Handles names like "concrete_tile_facade_1k"
-			resolution = "_" + parts.pop()!; // e.g., "_1k"
+			resolution = `_${parts.pop()!}`; // e.g., "_1k"
 			baseName = parts.join("_"); // e.g., "concrete_tile_facade"
 		}
 		return `${folder}/${baseName}_${type}${resolution}${extension}`;

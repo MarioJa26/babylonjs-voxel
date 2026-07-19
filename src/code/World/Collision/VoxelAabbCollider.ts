@@ -1,9 +1,13 @@
-import { Color4, copyVec3, MeshBuilder, Quaternion } from "@babylonjs/core";
 import {
+	addToScene,
+	createBox,
 	createStandardMaterial,
+	disposeMeshGpu,
+	type Mesh,
 	type SceneContext,
 	type Vec3,
 } from "@babylonjs/lite";
+import { copyVec3, Quaternion } from "@/code/Lib/Math";
 import type { ShapeDefinition } from "../Shape/BlockShapes";
 
 export const enum Axis {
@@ -298,8 +302,7 @@ export class VoxelAabbCollider {
 	#halfExtents: Vec3;
 	#epsilon: number;
 	#isSolidBlockAt: IsSolidBlockAt;
-	#tmpCandidate = { x: 0, y: 0, z: 0 } as Vec3;
-	#debugMesh: any = null;
+	#debugMesh: Mesh | null = null;
 	#debugOptions: VoxelAabbDebugOptions | null = null;
 	static #debugEnabled = false;
 	static readonly #debugColliders = new Set<VoxelAabbCollider>();
@@ -323,33 +326,23 @@ export class VoxelAabbCollider {
 	}
 
 	#createDebugMesh(options: VoxelAabbDebugOptions): void {
-		if (this.#debugMesh && !this.#debugMesh.isDisposed()) {
+		if (this.#debugMesh) {
 			return;
 		}
 		const name = options.name ?? "voxelAabbDebug";
-		this.#debugMesh = MeshBuilder.CreateBox(
-			name,
-			{
-				width: this.#halfExtents.x * 2,
-				height: this.#halfExtents.y * 2,
-				depth: this.#halfExtents.z * 2,
-			},
-			options.scene,
-		);
-		this.#debugMesh.isPickable = false;
-		this.#debugMesh.rotationQuaternion = Quaternion.Identity();
-		if (typeof options.renderingGroupId === "number") {
-			this.#debugMesh.renderingGroupId = options.renderingGroupId;
-		}
+		const size =
+			((this.#halfExtents.x + this.#halfExtents.y + this.#halfExtents.z) * 2) /
+			3;
+		this.#debugMesh = createBox(options.scene.surface.engine, size);
+		this.#debugMesh.name = name;
+		this.#debugMesh.pickable = false;
+		this.#debugMesh.rotationQuaternion.copyFrom(Quaternion.Identity());
 		const material = createStandardMaterial();
 		material.name = `${name}Mat`;
 		material.alpha = 0;
-		material.disableLighting = true;
+		material.diffuseColor = [0.2, 1, 0.2];
 		this.#debugMesh.material = material;
-		this.#debugMesh.isVisible = true;
-		this.#debugMesh.enableEdgesRendering();
-		this.#debugMesh.edgesWidth = 2;
-		this.#debugMesh.edgesColor = new Color4(0.2, 1, 0.2, 1);
+		addToScene(options.scene, this.#debugMesh);
 		if (options.position) {
 			this.#debugMesh.position.copyFrom(options.position);
 		}
@@ -636,14 +629,15 @@ export class VoxelAabbCollider {
 		if (VoxelAabbCollider.#debugEnabled) {
 			this.#ensureDebugMesh();
 		}
-		if (!this.#debugMesh || this.#debugMesh.isDisposed()) return;
+		if (!this.#debugMesh) return;
 		this.#debugMesh.position.copyFrom(position);
 	}
 
 	public dispose(): void {
 		VoxelAabbCollider.#debugColliders.delete(this);
-		if (this.#debugMesh && !this.#debugMesh.isDisposed()) {
-			this.#debugMesh.dispose();
+		if (this.#debugMesh) {
+			disposeMeshGpu(this.#debugMesh);
+			this.#debugMesh = null;
 		}
 		this.#debugMesh = null;
 		this.#debugOptions = null;
@@ -658,8 +652,8 @@ export class VoxelAabbCollider {
 		VoxelAabbCollider.#debugColliders.forEach((collider) => {
 			if (enabled) {
 				collider.#ensureDebugMesh();
-			} else if (collider.#debugMesh && !collider.#debugMesh.isDisposed()) {
-				collider.#debugMesh.dispose();
+			} else if (collider.#debugMesh) {
+				disposeMeshGpu(collider.#debugMesh);
 				collider.#debugMesh = null;
 			}
 		});

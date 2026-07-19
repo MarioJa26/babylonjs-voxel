@@ -13,7 +13,7 @@ export class LavaPoolFeature implements IWorldFeature {
 
 	public generate(
 		chunkX: number,
-		chunkY: number,
+		_chunkY: number,
 		chunkZ: number,
 		biome: Biome,
 		placeBlock: (

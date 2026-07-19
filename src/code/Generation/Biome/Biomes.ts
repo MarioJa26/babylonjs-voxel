@@ -179,7 +179,7 @@ export function getBiomeFor(
 	temperature: number,
 	humidity: number,
 	continentalness: number,
-	river: number,
+	_river: number,
 	terrainShapedHeight: number,
 ): Biome {
 	const SEA = GenerationParams.SEA_LEVEL;
