@@ -119,13 +119,15 @@ export class Sheep extends NeutralMob {
 			const color = data.color
 				? payloadToColor(data.color)
 				: randomSheepColor();
-			new Sheep(
-				data.position.x,
-				data.position.y,
-				data.position.z,
-				s,
-				data.hp,
-				color,
+			Map1.mobRegistry?.addMob(
+				new Sheep(
+					data.position.x,
+					data.position.y,
+					data.position.z,
+					s,
+					data.hp,
+					color,
+				),
 			);
 		});
 	}

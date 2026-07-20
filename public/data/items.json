@@ -11,7 +11,7 @@
 		"id": 1000,
 		"name": "Wooden Pickaxe",
 		"description": "A pickaxe made of wood.\nHarvests stone and ores.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/wood/pickaxe.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},
@@ -19,7 +19,7 @@
 		"id": 1001,
 		"name": "Wooden Sword",
 		"description": "A sword made of wood.\nDeals modest damage.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/wood/sword.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},
@@ -27,7 +27,7 @@
 		"id": 1002,
 		"name": "Wooden Axe",
 		"description": "A axe made of wood.\nHarvests wood quickly.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/wood/axe.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},
@@ -35,7 +35,7 @@
 		"id": 1003,
 		"name": "Wooden Shovel",
 		"description": "A shovel made of wood.\nHarvests dirt and sand.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/wood/shovel.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},
@@ -43,7 +43,7 @@
 		"id": 1004,
 		"name": "Wooden Hoe",
 		"description": "A hoe made of wood.\nTills farmland.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/wood/hoe.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},
@@ -51,7 +51,7 @@
 		"id": 1005,
 		"name": "Stone Pickaxe",
 		"description": "A pickaxe made of stone.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/stone/pickaxe.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},
@@ -59,7 +59,7 @@
 		"id": 1006,
 		"name": "Stone Sword",
 		"description": "A sword made of stone.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/stone/sword.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},
@@ -67,7 +67,7 @@
 		"id": 1007,
 		"name": "Stone Axe",
 		"description": "A axe made of stone.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/stone/axe.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},
@@ -75,7 +75,7 @@
 		"id": 1008,
 		"name": "Stone Shovel",
 		"description": "A shovel made of stone.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/stone/shovel.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},
@@ -83,7 +83,7 @@
 		"id": 1009,
 		"name": "Stone Hoe",
 		"description": "A hoe made of stone.",
-		"icon": "/texture/placeholder.png",
+		"icon": "/texture/items/stone/hoe.png",
 		"maxStack": 1,
 		"useAction": "use_tool"
 	},

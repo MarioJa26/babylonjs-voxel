@@ -115,12 +115,15 @@ export class Chicken extends NeutralMob {
 			if (!s) return;
 			const data = payload as ChickenSerializedPayload | undefined;
 			if (!data?.position) return;
-			new Chicken(
-				data.position.x,
-				data.position.y,
-				data.position.z,
-				s,
-				data.hp,
+
+			Map1.mobRegistry?.addMob(
+				new Chicken(
+					data.position.x,
+					data.position.y,
+					data.position.z,
+					s,
+					data.hp,
+				),
 			);
 		});
 	}
