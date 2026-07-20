@@ -2,11 +2,12 @@ import type { ShaderMaterial } from "@babylonjs/lite";
 import type { IUsable } from "@/code/Interface/IUsable";
 import type { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { setBlock } from "@/code/World/Chunk/ChunkLoadingSystem";
-import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
+import {
+	getShapeForBlockId,
+	shapeInitPromise,
+} from "@/code/World/Shape/BlockShapes";
 import { getSliceAxis } from "@/code/World/Shape/BlockShapeTransforms";
-import { getAtlasTile } from "@/code/World/Texture/BlockTextures";
 import { BlockType } from "@/code/World/Texture/BlockType";
-import { atlasSize } from "@/code/World/Texture/TextureAtlasFactory";
 import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
 import { Map1 } from "../../Maps/Map1";
 import {
@@ -14,6 +15,7 @@ import {
 	pickBlock,
 } from "../Hud/BlockHighlight/BlockRaycaster";
 import type { Player } from "../Player";
+import { drawCubeIcon, getShapeHeightScale } from "./CubeIcon";
 import { getRegisteredItemById, type ItemDefinition } from "./ItemRegistry";
 import { ItemUseActions } from "./ItemUseActions";
 
@@ -50,6 +52,7 @@ export class Item implements IUsable {
 	#stackSize = 1;
 	#div: HTMLDivElement = document.createElement("div");
 	#stackLabel: HTMLSpanElement = document.createElement("span");
+	#cubeCanvas: HTMLCanvasElement = document.createElement("canvas");
 	#useAction: ((player: Player) => void) | null = null;
 	row: number;
 	col: number;
@@ -295,6 +298,7 @@ export class Item implements IUsable {
 
 	createDiv(): HTMLDivElement {
 		this.#div.classList.add("inventory-item");
+		this.#div.appendChild(this.#cubeCanvas);
 		this.refreshIconStyle();
 
 		this.#stackLabel.innerText = this.#stackSize.toString();
@@ -320,21 +324,80 @@ export class Item implements IUsable {
 	}
 
 	public refreshIconStyle(): void {
-		const atlasTile = getAtlasTile(this.blockId);
-		if (atlasTile) {
-			const [tx, ty] = atlasTile;
-			const maxIndex = Math.max(1, atlasSize - 1);
-			this.#div.style.backgroundImage = "url(/texture/diffuse_atlas.png)";
-			this.#div.style.backgroundSize = `${atlasSize * 100}% ${atlasSize * 100}%`;
-			this.#div.style.backgroundPosition = `${(tx / maxIndex) * 100}% ${(ty / maxIndex) * 100}%`;
-			this.#div.style.backgroundRepeat = "no-repeat";
+		if (this.blockId !== null) {
+			this.#drawCubeIcon();
+			// Shapes load asynchronously; once ready, redraw so shape-aware
+			// boxes (slabs, stairs, fences, ...) are used instead of the fallback.
+			if (!this.#shapeRedrawn) {
+				this.#shapeRedrawn = true;
+				void shapeInitPromise.then(() => {
+					if (this.blockId !== null) this.#drawCubeIcon();
+				});
+			}
 			return;
 		}
 
+		// Non-block items: fall back to a plain icon image.
 		this.#div.style.backgroundImage = this.icon ? `url(${this.icon})` : "";
 		this.#div.style.backgroundSize = "contain";
-		this.#div.style.backgroundPosition = "center";
 		this.#div.style.backgroundRepeat = "no-repeat";
+	}
+
+	#cubeAtlasImage: HTMLImageElement | null = null;
+	#cubeAtlasLoaded = false;
+	#cubeRedrawPending = false;
+	#shapeRedrawn = false;
+
+	#getCubeAtlasImage(): HTMLImageElement {
+		if (this.#cubeAtlasImage) return this.#cubeAtlasImage;
+		const img = new Image();
+		img.onload = () => {
+			this.#cubeAtlasLoaded = true;
+			// Redraw any items that were waiting on the atlas (async).
+			if (!this.#cubeRedrawPending) {
+				this.#cubeRedrawPending = true;
+				queueMicrotask(() => {
+					this.#cubeRedrawPending = false;
+					if (this.blockId !== null) this.#drawCubeIcon();
+				});
+			}
+		};
+		img.src = "/texture/diffuse_atlas.png";
+		this.#cubeAtlasImage = img;
+		return img;
+	}
+
+	/**
+	 * Builds a crisp, nearest-neighbor upscaled tile sprite from the atlas so
+	 * the cube faces never blur or bleed into neighbouring atlas tiles. A half
+	 * texel is inset from each edge to avoid sampling adjacent tiles, and the
+	 * whole tile is drawn into a small offscreen canvas with smoothing off.
+	 */
+	/**
+	 * Draws the Minecraft-style isometric cube icon for this block onto the
+	 * item's canvas. The actual rendering lives in CubeIcon.ts.
+	 */
+	#drawCubeIcon(): void {
+		const canvas = this.#cubeCanvas;
+		const size = 64;
+		if (canvas.width !== size) {
+			canvas.width = size;
+			canvas.height = size;
+		}
+		const ctx = canvas.getContext("2d");
+		if (!ctx) return;
+
+		this.#getCubeAtlasImage();
+		const img = this.#cubeAtlasImage;
+		const ready: boolean = this.#cubeAtlasLoaded && !!img && img.width > 0;
+
+		drawCubeIcon(
+			ctx,
+			this.blockId,
+			img,
+			ready,
+			getShapeHeightScale(this.blockId),
+		);
 	}
 
 	public static stackItemAtoB(itemA: Item, itemB: Item): number {

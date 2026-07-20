@@ -162,3 +162,21 @@ export function getAtlasTile(blockId: number | null): [number, number] | null {
 	if (!uv || uv.length < 2) return null;
 	return [uv[0], uv[1]];
 }
+
+/**
+ * Per-face atlas tile lookup used by the inventory cube icon. Falls back to
+ * the generic `All`/`Side` tile when a per-face slot is not set.
+ */
+export function getFaceAtlasTile(
+	blockId: number | null,
+	face: FaceName,
+): [number, number] | null {
+	if (blockId === null) return null;
+
+	const blockTexture = BlockTextures[blockId];
+	if (!blockTexture) return null;
+
+	const uv = blockTexture[face] ?? blockTexture[FaceName.All];
+	if (!uv || uv.length < 2) return null;
+	return [uv[0], uv[1]];
+}
