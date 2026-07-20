@@ -1,6 +1,5 @@
 import { type SavedChunkData, WorldStorage } from "../../WorldStorage";
 import type { Chunk } from "../Chunk";
-import { flushDirtyMergedGroups } from "../MergedMeshManager";
 import type { QueuedChunkRequest } from "./ChunkStreamingController";
 import { type InFlightProcessState, ProcessStage } from "./ChunkTypes";
 
@@ -404,8 +403,6 @@ export class ChunkProcessScheduler {
 								state.chunksToGenerate.push(request.chunk);
 							}
 						}
-
-						//flushDirtyMergedGroups();
 
 						if (state.applyLoadedIndex >= state.validLoadBatch.length) {
 							state.stage =

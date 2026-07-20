@@ -70,12 +70,26 @@ export class TowerFeature implements IWorldFeature {
 		)
 			return;
 
+		// Fetch every affected chunk's prepass ONCE (the resolver builds a
+		// full 32x32 chunk prepass, so calling it per-column would rebuild
+		// up to 9 prepasses per tower). We cover the tower's bounding box of
+		// chunks and index into the cached height maps.
+		const prepassByChunk = columnPrepassResolver
+			? this.collectPrepasses(
+					towerCenterX,
+					towerCenterZ,
+					towerRadius,
+					chunkSize,
+					columnPrepassResolver,
+				)
+			: undefined;
+
 		const groundHeight = this.findMinGroundHeightForTower(
 			towerCenterX,
 			towerCenterZ,
 			towerRadius,
 			biome,
-			columnPrepassResolver,
+			prepassByChunk,
 		);
 
 		this.generateCylinderTower(
@@ -90,7 +104,7 @@ export class TowerFeature implements IWorldFeature {
 			placeBlock,
 			chunkSize,
 			seed,
-			columnPrepassResolver,
+			prepassByChunk,
 		);
 		this.generateUndergroundCylinderTower(
 			chunkX,
@@ -103,6 +117,59 @@ export class TowerFeature implements IWorldFeature {
 			placeBlock,
 			chunkSize,
 		);
+	}
+
+	/**
+	 * Build a map from (chunkX,chunkZ) -> prepass entry for every chunk that
+	 * the tower's bounding disk touches. Called once per tower so the heavy
+	 * per-chunk prepass is built at most once per chunk, not once per column.
+	 */
+	private collectPrepasses(
+		centerX: number,
+		centerZ: number,
+		radius: number,
+		chunkSize: number,
+		resolver: ColumnPrepassResolver,
+	): Map<string, ReturnType<ColumnPrepassResolver>["entry"]> {
+		const map = new Map<string, ReturnType<ColumnPrepassResolver>["entry"]>();
+		const minX = centerX - radius;
+		const maxX = centerX + radius;
+		const minZ = centerZ - radius;
+		const maxZ = centerZ + radius;
+		const minChunkX = Math.floor(minX / chunkSize);
+		const maxChunkX = Math.floor(maxX / chunkSize);
+		const minChunkZ = Math.floor(minZ / chunkSize);
+		const maxChunkZ = Math.floor(maxZ / chunkSize);
+		for (let cx = minChunkX; cx <= maxChunkX; cx++) {
+			for (let cz = minChunkZ; cz <= maxChunkZ; cz++) {
+				const key = cx + "," + cz;
+				if (!map.has(key)) {
+					const resolved = resolver(cx * chunkSize, cz * chunkSize);
+					map.set(key, resolved.entry);
+				}
+			}
+		}
+		return map;
+	}
+
+	private resolveHeight(
+		worldX: number,
+		worldZ: number,
+		chunkSize: number,
+		prepassByChunk:
+			| Map<string, ReturnType<ColumnPrepassResolver>["entry"]>
+			| undefined,
+	): number {
+		if (!prepassByChunk) {
+			return getFinalTerrainHeight(worldX, worldZ);
+		}
+		const cx = Math.floor(worldX / chunkSize);
+		const cz = Math.floor(worldZ / chunkSize);
+		const entry = prepassByChunk.get(cx + "," + cz);
+		if (!entry) return getFinalTerrainHeight(worldX, worldZ);
+		const localX = worldX - cx * chunkSize;
+		const localZ = worldZ - cz * chunkSize;
+		return entry.terrainHeightMap[localX + localZ * chunkSize];
 	}
 
 	private generateCylinderTower(
@@ -123,7 +190,9 @@ export class TowerFeature implements IWorldFeature {
 		) => void,
 		chunkSize: number,
 		seed: number,
-		columnPrepassResolver?: ColumnPrepassResolver,
+		prepassByChunk:
+			| Map<string, ReturnType<ColumnPrepassResolver>["entry"]>
+			| undefined,
 	) {
 		const towerHeight = 76 + (getPRNGBySeed(towerCenterZ, seed) % 8);
 		const wallBlockId = 1;
@@ -136,16 +205,12 @@ export class TowerFeature implements IWorldFeature {
 				const worldX = towerCenterX + dx;
 				const worldZ = towerCenterZ + dz;
 
-				let originalHeight: number;
-				if (columnPrepassResolver) {
-					const resolved = columnPrepassResolver(worldX, worldZ);
-					originalHeight =
-						resolved.entry.terrainHeightMap[
-							resolved.localX + resolved.localZ * 32
-						];
-				} else {
-					originalHeight = getFinalTerrainHeight(worldX, worldZ);
-				}
+				const originalHeight = this.resolveHeight(
+					worldX,
+					worldZ,
+					chunkSize,
+					prepassByChunk,
+				);
 
 				for (let y = originalHeight; y < groundHeight; y++) {
 					placeBlock(worldX, y, worldZ, biome.undergroundBlock, true);
@@ -221,7 +286,10 @@ export class TowerFeature implements IWorldFeature {
 		towerCenterZ: number,
 		towerRadius: number,
 		_biome: Biome,
-		columnPrepassResolver?: ColumnPrepassResolver,
+		prepassByChunk:
+			| Map<string, ReturnType<ColumnPrepassResolver>["entry"]>
+			| undefined,
+		chunkSize = 32,
 	): number {
 		let minGroundHeight = Infinity;
 		const radiusSq = towerRadius * towerRadius;
@@ -232,16 +300,12 @@ export class TowerFeature implements IWorldFeature {
 				const worldX = towerCenterX + dx;
 				const worldZ = towerCenterZ + dz;
 
-				let height: number;
-				if (columnPrepassResolver) {
-					const resolved = columnPrepassResolver(worldX, worldZ);
-					height =
-						resolved.entry.terrainHeightMap[
-							resolved.localX + resolved.localZ * 32
-						];
-				} else {
-					height = getFinalTerrainHeight(worldX, worldZ);
-				}
+				const height = this.resolveHeight(
+					worldX,
+					worldZ,
+					chunkSize,
+					prepassByChunk,
+				);
 
 				if (height < minGroundHeight) {
 					minGroundHeight = height;

@@ -146,14 +146,20 @@ export class SurfaceGenerator {
 	 *
 	 * Keyed by (chunkX, chunkZ) packed into a number.
 	 */
-	private static readonly COLUMN_CACHE_SIZE = 512;
+	private static readonly COLUMN_CACHE_SETS = 512;
+	private static readonly COLUMN_CACHE_WAYS = 4;
 	private static readonly COLUMN_CACHE_MASK =
-		SurfaceGenerator.COLUMN_CACHE_SIZE - 1;
+		SurfaceGenerator.COLUMN_CACHE_SETS - 1;
 	private static readonly columnCacheKeys = new Uint32Array(
-		SurfaceGenerator.COLUMN_CACHE_SIZE,
+		SurfaceGenerator.COLUMN_CACHE_SETS * SurfaceGenerator.COLUMN_CACHE_WAYS,
 	);
 	private static readonly columnCacheEntries: (ColumnPrepassCacheEntry | null)[] =
-		new Array(SurfaceGenerator.COLUMN_CACHE_SIZE).fill(null);
+		new Array(
+			SurfaceGenerator.COLUMN_CACHE_SETS * SurfaceGenerator.COLUMN_CACHE_WAYS,
+		).fill(null);
+	private static columnCacheLru = new Uint8Array(
+		SurfaceGenerator.COLUMN_CACHE_SETS * SurfaceGenerator.COLUMN_CACHE_WAYS,
+	);
 
 	/**
 	 * Direct-mapped flora-column cache for overlapping flora scans.
@@ -320,10 +326,31 @@ export class SurfaceGenerator {
 		chunkZ: number,
 	): ColumnPrepassCacheEntry {
 		const key = this.getColumnPrepassKey(chunkX, chunkZ);
-		const slot = key & SurfaceGenerator.COLUMN_CACHE_MASK;
-		const cached = SurfaceGenerator.columnCacheEntries[slot];
-		if (cached && SurfaceGenerator.columnCacheKeys[slot] === key) {
-			return cached;
+		const set = key & SurfaceGenerator.COLUMN_CACHE_MASK;
+		const ways = SurfaceGenerator.COLUMN_CACHE_WAYS;
+		const base = set * ways;
+
+		// Associative lookup across the ways of this set.
+		let hitWay = -1;
+		for (let w = 0; w < ways; w++) {
+			const slot = base + w;
+			if (
+				SurfaceGenerator.columnCacheEntries[slot] &&
+				SurfaceGenerator.columnCacheKeys[slot] === key
+			) {
+				hitWay = w;
+				break;
+			}
+		}
+		if (hitWay !== -1) {
+			const slot = base + hitWay;
+			SurfaceGenerator.columnCacheLru[slot] = 0;
+			for (let w = 0; w < ways; w++) {
+				if (w !== hitWay) SurfaceGenerator.columnCacheLru[base + w]++;
+			}
+			return SurfaceGenerator.columnCacheEntries[
+				slot
+			] as ColumnPrepassCacheEntry;
 		}
 
 		const CHUNK_SIZE = this.params.CHUNK_SIZE;
@@ -455,8 +482,23 @@ export class SurfaceGenerator {
 			maxSurfaceY,
 		};
 
-		SurfaceGenerator.columnCacheKeys[slot] = key;
-		SurfaceGenerator.columnCacheEntries[slot] = built;
+		// Evict the least-recently-used way in this set.
+		let victimWay = 0;
+		let victimLru = -1;
+		for (let w = 0; w < ways; w++) {
+			const lru = SurfaceGenerator.columnCacheLru[base + w];
+			if (lru > victimLru) {
+				victimLru = lru;
+				victimWay = w;
+			}
+		}
+		const victimSlot = base + victimWay;
+		SurfaceGenerator.columnCacheKeys[victimSlot] = key;
+		SurfaceGenerator.columnCacheEntries[victimSlot] = built;
+		SurfaceGenerator.columnCacheLru[victimSlot] = 0;
+		for (let w = 0; w < ways; w++) {
+			if (w !== victimWay) SurfaceGenerator.columnCacheLru[base + w]++;
+		}
 
 		return built;
 	}

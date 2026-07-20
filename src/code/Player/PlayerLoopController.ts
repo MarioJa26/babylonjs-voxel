@@ -18,10 +18,7 @@ import {
 	updateChunksAround,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
-import {
-	flushDirtyMergedGroups,
-	getMergedMeshFlushStats,
-} from "../World/Chunk/MergedMeshManager";
+import { getMergedMeshFlushStats } from "../World/Chunk/MergedMeshManager";
 import { BlockTickScheduler } from "../World/Chunk/Worker/BlockTickScheduler";
 import { processWaterUpdate } from "../World/Chunk/Worker/WaterSimulation";
 import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
@@ -160,9 +157,7 @@ export class PlayerLoopController {
 
 		this.#updateChunksAroundPlayer(cx, cy, cz, playerPos);
 		processFrameBudgetedStreamingWork(cx, cy, cz);
-		// Flush any merged groups dirtied by this frame's chunk reuse/mesh
-		// swaps so stale group buffers aren't rendered before occlusion culling.
-		flushDirtyMergedGroups();
+
 		this.#updateActiveMeshSelection(cx, cy, cz);
 
 		// Occlusion culling – must run after chunk loading and before Lite evaluates the scene.
