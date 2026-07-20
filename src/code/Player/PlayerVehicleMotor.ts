@@ -12,6 +12,7 @@ import {
 	vec3,
 } from "@babylonjs/lite";
 import { copyVec3, lengthSqVec3, Quaternion, setVec3 } from "@/code/Lib/Math";
+import { worldToChunkCoord } from "@/code/Shared/VoxelMath";
 import {
 	Axis,
 	createVoxelColliderBlockSampler,
@@ -22,6 +23,7 @@ import { CustomBoat } from "../Entities/CustomBoat";
 import type { Mount } from "../Entities/Mount";
 import { getFinalTerrainHeight } from "../Generation/TerrainHeightMap";
 import type { BoatChunk } from "../World/Boat/BoatChunk";
+import { getChunk } from "../World/Chunk/Chunk";
 import {
 	getBlockAndStateByWorldCoords,
 	getBlockByWorldCoords,
@@ -71,6 +73,30 @@ function _rotateVec3ByQuat(
 	out.x = ix * qw + iw * -qx + iy * -qz - iz * -qy;
 	out.y = iy * qw + iw * -qy + iz * -qx - ix * -qz;
 	out.z = iz * qw + iw * -qz + ix * -qy - iy * -qx;
+}
+
+// Sentinel returned by the player's collision sampler for probes whose chunk
+// is not yet loaded: a solid, full-cube block so the player is held up by
+// unloaded terrain instead of falling through the world while chunks stream in.
+const _unloadedSolid: { blockId: number; blockState: number } = {
+	blockId: BlockType.Cobble,
+	blockState: 0,
+};
+
+// True when the chunk containing the given world coordinate is present and has
+// voxel data. Used to gate collision: an unloaded chunk is treated as solid so
+// the player never falls through terrain that hasn't streamed in.
+function isChunkLoadedAtWorldCoords(
+	worldX: number,
+	worldY: number,
+	worldZ: number,
+): boolean {
+	const chunk = getChunk(
+		worldToChunkCoord(worldX),
+		worldToChunkCoord(worldY),
+		worldToChunkCoord(worldZ),
+	);
+	return !!chunk && chunk.isLoaded && chunk.hasVoxelData;
 }
 
 export class PlayerVehicleMotor implements IPlayerBody {
@@ -248,6 +274,12 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			},
 			createVoxelColliderBlockSampler(
 				(x, y, z) => {
+					if (!isChunkLoadedAtWorldCoords(x, y, z)) {
+						// Chunk under this probe is not loaded: treat it as solid
+						// terrain so the player collides with / rests on it instead
+						// of falling through into the void while chunks stream in.
+						return _unloadedSolid;
+					}
 					const r = getBlockAndStateByWorldCoords(x, y, z);
 					if (!isCollidableBlock(r.blockId)) return null;
 					return r;

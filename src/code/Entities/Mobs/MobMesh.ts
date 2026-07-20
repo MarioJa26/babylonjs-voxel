@@ -112,18 +112,18 @@ export function buildBoxGeometry(
 			normal: [0, 0, 1],
 			verts: [
 				[-hx, -hy, hz],
-				[hx, -hy, hz],
-				[hx, hy, hz],
 				[-hx, hy, hz],
+				[hx, hy, hz],
+				[hx, -hy, hz],
 			],
 		},
 		{
 			normal: [0, 0, -1],
 			verts: [
 				[hx, -hy, -hz],
-				[-hx, -hy, -hz],
-				[-hx, hy, -hz],
 				[hx, hy, -hz],
+				[-hx, hy, -hz],
+				[-hx, -hy, -hz],
 			],
 		},
 	];

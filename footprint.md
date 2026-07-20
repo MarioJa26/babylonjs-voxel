@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-20T10:10:33.274Z
+Generated: 2026-07-20T10:55:01.960Z
 
-> **Summary:** 125 classes · 1707 members · 464 module-level functions · 51004 LOC
+> **Summary:** 125 classes · 1704 members · 464 module-level functions · 51025 LOC
 
 ---
 
@@ -1586,18 +1586,17 @@ export function createFastNoise3D(
 
 ---
 
-## `Generation/SurfaceGenerator.ts` (1180 LOC)
+## `Generation/SurfaceGenerator.ts` (1185 LOC)
 
 ### export class SurfaceGenerator
 
 **Constructor**
-- `constructor(params: GenerationParamsType, treeNoise: (x: number, z: number) => number, densityNoise: (x: number, y: number, z: number) => number, densityNoise2D: (x: number, z: number) => number, seedAsInt: number, cheeseNoise: (x: number, y: number, z: number) => number, tunnelNoise: (x: number, y: number, z: number) => number, detailNoise: (x: number, y: number, z: number) => number)`
+- `constructor(params: GenerationParamsType, treeNoise: (x: number, z: number) => number, densityNoise: (x: number, y: number, z: number) => number, seedAsInt: number, cheeseNoise: (x: number, y: number, z: number) => number, tunnelNoise: (x: number, y: number, z: number) => number, detailNoise: (x: number, y: number, z: number) => number)`
 
 **Properties**
 - `private params: GenerationParamsType`
 - `private static treeNoise: (x: number, z: number) => number`
 - `private static densityNoise: (x: number, y: number, z: number) => number`
-- `private static densityNoise2D: (x: number, z: number) => number`
 - `private cheeseNoise: (x: number, y: number, z: number) => number`
 - `private tunnelNoise: (x: number, y: number, z: number) => number`
 - `private detailNoise: (x: number, y: number, z: number) => number`
@@ -1722,7 +1721,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Generation/WorldGenerator.ts` (272 LOC)
+## `Generation/WorldGenerator.ts` (267 LOC)
 
 ### export class WorldGenerator
 
@@ -1752,8 +1751,6 @@ export function createFastNoise3D(
 - `frequency: this.params.CAVE_TUNNEL_FREQ,`
 - `seed: getPRNGBySeed(24, this.seedAsInt),`
 - `frequency: this.params.CAVE_DETAIL_FREQ,`
-- `seed: getPRNGBySeed(23, this.seedAsInt),`
-- `frequency: 0.33333,`
 - `seed: getPRNGBySeed(23, this.seedAsInt),`
 - `frequency: 0.33333,`
 - `seed: getPRNGBySeed(25, this.seedAsInt),`
@@ -3101,7 +3098,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/PlayerVehicleMotor.ts` (1134 LOC)
+## `Player/PlayerVehicleMotor.ts` (1155 LOC)
 
 **Types / Interfaces / Enums**
 - type `EngineContext`

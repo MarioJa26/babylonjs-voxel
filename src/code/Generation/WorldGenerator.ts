@@ -92,20 +92,10 @@ export class WorldGenerator {
 			frequency: 0.33333,
 		});
 
-		// 2D variant of the base density gradient. The base term is a smooth
-		// large-scale gradient; dropping its Y dimension halves the 3D noise
-		// calls in surface generation while overhangs (3D overhangNoise) and
-		// caves (cave grid) are untouched, so terrain stays "interesting".
-		const densityNoise2D = createFastNoise2D({
-			seed: getPRNGBySeed(23, this.seedAsInt),
-			frequency: 0.33333,
-		});
-
 		this.surfaceGenerator = new SurfaceGenerator(
 			params,
 			treeNoise,
 			densityNoise,
-			densityNoise2D,
 			this.seedAsInt,
 			this.cheeseNoise,
 			this.tunnelNoise,
@@ -195,7 +185,7 @@ export class WorldGenerator {
 				);
 				for (let localX = 0; localX < chunkSize; localX++) {
 					const idx = localX + localY * chunkSize + zOffset;
-					const blockId = blocks[idx]!;
+					const blockId = blocks[idx];
 					if (blockId === 0 || IS_ORE[blockId]) continue;
 					// PERF: Use column-cached biome (X offset is negligible for biome selection).
 					blocks[idx] = this.undergroundBiomeSelector.getStoneReplacement(

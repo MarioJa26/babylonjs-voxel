@@ -97,7 +97,6 @@ export class SurfaceGenerator {
 
 	private static treeNoise: (x: number, z: number) => number;
 	private static densityNoise: (x: number, y: number, z: number) => number;
-	private static densityNoise2D: (x: number, z: number) => number;
 
 	private cheeseNoise: (x: number, y: number, z: number) => number;
 	private tunnelNoise: (x: number, y: number, z: number) => number;
@@ -192,7 +191,6 @@ export class SurfaceGenerator {
 		params: GenerationParamsType,
 		treeNoise: (x: number, z: number) => number,
 		densityNoise: (x: number, y: number, z: number) => number,
-		densityNoise2D: (x: number, z: number) => number,
 		seedAsInt: number,
 		cheeseNoise: (x: number, y: number, z: number) => number,
 		tunnelNoise: (x: number, y: number, z: number) => number,
@@ -201,7 +199,6 @@ export class SurfaceGenerator {
 		this.params = params;
 		SurfaceGenerator.treeNoise = treeNoise;
 		SurfaceGenerator.densityNoise = densityNoise;
-		SurfaceGenerator.densityNoise2D = densityNoise2D;
 		SurfaceGenerator.seedAsInt = seedAsInt;
 
 		this.chunk_size = this.params.CHUNK_SIZE;
@@ -1315,12 +1312,11 @@ export class SurfaceGenerator {
 			return relativeHeight;
 		}
 
-		// PERF: the base density term is a smooth large-scale gradient. Using
-		// a 2D noise (x,z only) instead of 3D halves the 3D noise
-		// calls in surface generation. Overhangs (the 3D overhangNoise
-		// term) and caves (cave grid) are untouched, so terrain keeps its
-		// interesting character.
-		const baseNoise = SurfaceGenerator.densityNoise2D(x * 0.002, z * 0.01);
+		const baseNoise = SurfaceGenerator.densityNoise(
+			x * 0.002,
+			y * yFreq,
+			z * 0.01,
+		);
 
 		const overhangNoise = SurfaceGenerator.densityNoise(
 			(x + y * 0.55) * 0.008,
@@ -1519,7 +1515,11 @@ export class SurfaceGenerator {
 		overhangAmp: number,
 		cliffContribution: number,
 	): number {
-		const baseNoise = SurfaceGenerator.densityNoise2D(baseNoiseX, baseNoiseZ);
+		const baseNoise = SurfaceGenerator.densityNoise(
+			baseNoiseX,
+			y * yFreq,
+			baseNoiseZ,
+		);
 		const overhangNoise = SurfaceGenerator.densityNoise(
 			overhangBaseX + y * 0.0044,
 			y * 0.012,
