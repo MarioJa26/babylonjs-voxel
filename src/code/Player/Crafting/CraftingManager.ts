@@ -12,16 +12,6 @@ export interface Recipe {
 }
 
 export const Recipes: Recipe[] = [
-	{
-		resultId: 5, // Example: Wood Planks
-		resultCount: 4,
-		ingredients: [{ itemId: 28, count: 1 }], // Requires 1 Log (ID 28)
-	},
-	{
-		resultId: 1, // Example: Stone
-		resultCount: 1,
-		ingredients: [{ itemId: 3, count: 2 }], // Requires 2 Dirt (ID 3) - Just for testing
-	},
 	// Wood log -> 4 wood blocks (id 35)
 	{ resultId: 35, resultCount: 4, ingredients: [{ itemId: 10, count: 1 }] }, // BarkWillow02
 	{ resultId: 35, resultCount: 4, ingredients: [{ itemId: 22, count: 1 }] }, // PineBark
@@ -32,6 +22,73 @@ export const Recipes: Recipe[] = [
 	{ resultId: 35, resultCount: 4, ingredients: [{ itemId: 73, count: 1 }] }, // BirchBark
 	{ resultId: 35, resultCount: 4, ingredients: [{ itemId: 85, count: 1 }] }, // PalmTrunk
 	{ resultId: 35, resultCount: 4, ingredients: [{ itemId: 87, count: 1 }] }, // SierranConiferBark
+	// Wooden tools from 5 wood planks (id 5). Placeholder tool items (ids 1000-1004).
+	{
+		resultId: 1000,
+		resultCount: 1,
+		ingredients: [{ itemId: 35, count: 5 }], // 5 Wood Planks -> Wooden Pickaxe
+	},
+	{
+		resultId: 1001,
+		resultCount: 1,
+		ingredients: [{ itemId: 35, count: 5 }], // 5 Wood Planks -> Wooden Sword
+	},
+	{
+		resultId: 1002,
+		resultCount: 1,
+		ingredients: [{ itemId: 35, count: 5 }], // 5 Wood Planks -> Wooden Axe
+	},
+	{
+		resultId: 1003,
+		resultCount: 1,
+		ingredients: [{ itemId: 35, count: 5 }], // 5 Wood Planks -> Wooden Shovel
+	},
+	{
+		resultId: 1004,
+		resultCount: 1,
+		ingredients: [{ itemId: 35, count: 5 }], // 5 Wood Planks -> Wooden Hoe
+	},
+	// Stone tools: 2 wood planks (id 5) + 3 stone (id 1). Placeholder tool items (ids 1005-1009).
+	{
+		resultId: 1005,
+		resultCount: 1,
+		ingredients: [
+			{ itemId: 35, count: 2 }, // 2 Wood Planks
+			{ itemId: 1, count: 3 }, // 3 Stone
+		],
+	},
+	{
+		resultId: 1006,
+		resultCount: 1,
+		ingredients: [
+			{ itemId: 35, count: 2 }, // 2 Wood Planks
+			{ itemId: 1, count: 3 }, // 3 Stone
+		],
+	},
+	{
+		resultId: 1007,
+		resultCount: 1,
+		ingredients: [
+			{ itemId: 35, count: 2 }, // 2 Wood Planks
+			{ itemId: 1, count: 3 }, // 3 Stone
+		],
+	},
+	{
+		resultId: 1008,
+		resultCount: 1,
+		ingredients: [
+			{ itemId: 35, count: 2 }, // 2 Wood Planks
+			{ itemId: 1, count: 3 }, // 3 Stone
+		],
+	},
+	{
+		resultId: 1009,
+		resultCount: 1,
+		ingredients: [
+			{ itemId: 35, count: 2 }, // 2 Wood Planks
+			{ itemId: 1, count: 3 }, // 3 Stone
+		],
+	},
 	// Add more recipes here
 ];
 

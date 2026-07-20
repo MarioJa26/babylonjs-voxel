@@ -1,3 +1,4 @@
+import { getRegisteredItemById } from "@/code/Player/Inventory/ItemRegistry";
 import type { PlayerInventory } from "@/code/Player/Inventory/PlayerInventory";
 import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
 import {
@@ -5,6 +6,25 @@ import {
 	TextureDefinitionsReady,
 } from "@/code/World/Texture/TextureDefinitions";
 import { type Recipe, Recipes } from "../CraftingManager";
+
+// Resolves an icon source for a given item id. Prefers block textures from
+// TextureDefinitions; falls back to the item registry (e.g. tools that have
+// no block counterpart and only a `icon` placeholder).
+function resolveIconSource(itemId: number): string | null {
+	const textureDef = TextureDefinitions.find((t) => t.id === itemId);
+	if (textureDef) {
+		return MaterialFactory.getTexturePathFromFolder(textureDef.path) ?? null;
+	}
+	const itemDef = getRegisteredItemById(itemId);
+	return itemDef?.icon ?? null;
+}
+
+function resolveDisplayName(itemId: number): string {
+	const textureDef = TextureDefinitions.find((t) => t.id === itemId);
+	if (textureDef) return textureDef.name;
+	const itemDef = getRegisteredItemById(itemId);
+	return itemDef?.name ?? "Unknown";
+}
 
 // Tracks the item id currently being dragged from a recipe-search slot, so we
 // can tell a swap (slot -> slot) apart from a new drop (e.g. inventory -> slot).
@@ -103,32 +123,28 @@ export class CraftMenu {
 	}
 
 	private createRecipeCard(recipe: Recipe): HTMLDivElement | null {
-		const textureDef = TextureDefinitions.find((t) => t.id === recipe.resultId);
-		if (!textureDef) return null;
+		const resultName = resolveDisplayName(recipe.resultId);
+		if (!resultName) return null;
 
 		const recipeDiv = document.createElement("div");
 		recipeDiv.classList.add("crafting-recipe");
 
 		const ingredientsInfo = recipe.ingredients
-			.map((ing) => {
-				const ingDef = TextureDefinitions.find((t) => t.id === ing.itemId);
-				return `${ing.count} ${ingDef ? ingDef.name : "Unknown"}`;
-			})
+			.map((ing) => `${ing.count} ${resolveDisplayName(ing.itemId)}`)
 			.join("\n");
-		recipeDiv.title = `Craft ${recipe.resultCount}x ${textureDef.name}\nRequires:\n${ingredientsInfo}`;
+		recipeDiv.title = `Craft ${recipe.resultCount}x ${resultName}\nRequires:\n${ingredientsInfo}`;
 
 		const inputWrap = document.createElement("div");
 		inputWrap.classList.add("crafting-recipe-inputs");
 		for (const ing of recipe.ingredients) {
-			const ingDef = TextureDefinitions.find((t) => t.id === ing.itemId);
-			if (!ingDef) continue;
+			const ingName = resolveDisplayName(ing.itemId);
 			const slot = document.createElement("div");
 			slot.classList.add("crafting-slot");
 
 			const ingIcon = document.createElement("img");
-			ingIcon.src = MaterialFactory.getTexturePathFromFolder(ingDef.path) ?? "";
+			ingIcon.src = resolveIconSource(ing.itemId) ?? "";
 			ingIcon.classList.add("crafting-icon");
-			ingIcon.alt = ingDef.name;
+			ingIcon.alt = ingName;
 
 			const count = document.createElement("span");
 			count.classList.add("crafting-slot-count");
@@ -147,9 +163,9 @@ export class CraftMenu {
 		outputSlot.classList.add("crafting-slot", "crafting-slot-output");
 
 		const icon = document.createElement("img");
-		icon.src = MaterialFactory.getTexturePathFromFolder(textureDef.path) ?? "";
+		icon.src = resolveIconSource(recipe.resultId) ?? "";
 		icon.classList.add("crafting-icon");
-		icon.alt = textureDef.name;
+		icon.alt = resultName;
 
 		const outCount = document.createElement("span");
 		outCount.classList.add("crafting-slot-count");

@@ -9,6 +9,14 @@ import type { Player } from "../Player";
 export type ItemUseAction = (player: Player) => void;
 
 export const ItemUseActions: Record<string, ItemUseAction> = {
+	use_tool: (player: Player) => {
+		// TODO: implement tool-specific behavior (mining, attacking, tilling).
+		console.debug("use_tool invoked by", player);
+	},
+	open_crafting: (player: Player) => {
+		// TODO: implement crafting table open.
+		console.debug("open_crafting invoked by", player);
+	},
 	place_boat: (player: Player) => {
 		const hit = pickWaterTarget(player);
 		if (!hit) return;

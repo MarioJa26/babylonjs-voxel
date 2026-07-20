@@ -6,5 +6,197 @@
 		"icon": "/texture/other/boat-row-small.png",
 		"maxStack": 1,
 		"useAction": "place_boat"
+	},
+	{
+		"id": 1000,
+		"name": "Wooden Pickaxe",
+		"description": "A pickaxe made of wood.\nHarvests stone and ores.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 1,
+		"useAction": "use_tool"
+	},
+	{
+		"id": 1001,
+		"name": "Wooden Sword",
+		"description": "A sword made of wood.\nDeals modest damage.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 1,
+		"useAction": "use_tool"
+	},
+	{
+		"id": 1002,
+		"name": "Wooden Axe",
+		"description": "A axe made of wood.\nHarvests wood quickly.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 1,
+		"useAction": "use_tool"
+	},
+	{
+		"id": 1003,
+		"name": "Wooden Shovel",
+		"description": "A shovel made of wood.\nHarvests dirt and sand.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 1,
+		"useAction": "use_tool"
+	},
+	{
+		"id": 1004,
+		"name": "Wooden Hoe",
+		"description": "A hoe made of wood.\nTills farmland.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 1,
+		"useAction": "use_tool"
+	},
+	{
+		"id": 1005,
+		"name": "Stone Pickaxe",
+		"description": "A pickaxe made of stone.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 1,
+		"useAction": "use_tool"
+	},
+	{
+		"id": 1006,
+		"name": "Stone Sword",
+		"description": "A sword made of stone.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 1,
+		"useAction": "use_tool"
+	},
+	{
+		"id": 1007,
+		"name": "Stone Axe",
+		"description": "A axe made of stone.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 1,
+		"useAction": "use_tool"
+	},
+	{
+		"id": 1008,
+		"name": "Stone Shovel",
+		"description": "A shovel made of stone.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 1,
+		"useAction": "use_tool"
+	},
+	{
+		"id": 1009,
+		"name": "Stone Hoe",
+		"description": "A hoe made of stone.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 1,
+		"useAction": "use_tool"
+	},
+	{
+		"id": 1010,
+		"name": "Iron Pickaxe",
+		"description": "A pickaxe made of iron.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 1,
+		"useAction": "use_tool"
+	},
+	{
+		"id": 1011,
+		"name": "Iron Sword",
+		"description": "A sword made of iron.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 1,
+		"useAction": "use_tool"
+	},
+	{
+		"id": 1012,
+		"name": "Iron Axe",
+		"description": "A axe made of iron.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 1,
+		"useAction": "use_tool"
+	},
+	{
+		"id": 1013,
+		"name": "Iron Shovel",
+		"description": "A shovel made of iron.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 1,
+		"useAction": "use_tool"
+	},
+	{
+		"id": 1014,
+		"name": "Iron Hoe",
+		"description": "A hoe made of iron.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 1,
+		"useAction": "use_tool"
+	},
+	{
+		"id": 1015,
+		"name": "Apple",
+		"description": "Restores a small amount of hunger.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1016,
+		"name": "Stick",
+		"description": "Used for crafting tools.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1017,
+		"name": "Torch",
+		"description": "Emits light.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1018,
+		"name": "Bucket",
+		"description": "Holds water or lava.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 16
+	},
+	{
+		"id": 1019,
+		"name": "Coal",
+		"description": "A fuel source.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1020,
+		"name": "Diamond",
+		"description": "A precious gem.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1021,
+		"name": "Iron Ingot",
+		"description": "Refined iron.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1022,
+		"name": "Bow",
+		"description": "A ranged weapon.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 1,
+		"useAction": "use_tool"
+	},
+	{
+		"id": 1023,
+		"name": "Arrow",
+		"description": "Ammunition for bows.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1024,
+		"name": "Crafting Table",
+		"description": "Opens a 3x3 crafting grid.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 64,
+		"useAction": "open_crafting"
 	}
 ]
