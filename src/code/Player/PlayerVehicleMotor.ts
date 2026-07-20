@@ -12,7 +12,7 @@ import {
 	vec3,
 } from "@babylonjs/lite";
 import { copyVec3, lengthSqVec3, Quaternion, setVec3 } from "@/code/Lib/Math";
-import { worldToChunkCoord } from "@/code/Shared/VoxelMath";
+import { worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import {
 	Axis,
 	createVoxelColliderBlockSampler,

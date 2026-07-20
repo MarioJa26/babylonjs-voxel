@@ -1,5 +1,5 @@
 import Alea from "alea";
-import { CHUNK_SHIFT } from "@/code/Shared/VoxelMath";
+import { CHUNK_SHIFT } from "@/code/Lib/VoxelMath";
 import { getBiomeFor } from "./Biome/Biomes";
 import type { Biome } from "./Biome/BiomeTypes";
 import {

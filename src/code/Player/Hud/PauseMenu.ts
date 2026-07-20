@@ -1,5 +1,5 @@
+import { worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import { Map1 } from "@/code/Maps/Map1";
-import { worldToChunkCoord } from "@/code/Shared/VoxelMath";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import {
 	flushChunkBoundEntities,

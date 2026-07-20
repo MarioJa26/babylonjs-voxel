@@ -1,8 +1,8 @@
 import { disposeMeshGpu, type Mesh, removeFromScene } from "@babylonjs/lite";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { getFinalTerrainHeight } from "@/code/Generation/TerrainHeightMap";
+import { LIGHT_NIBBLE_MASK, SKY_LIGHT_SHIFT } from "@/code/Lib/VoxelMath";
 import { Map1 } from "@/code/Maps/Map1";
-import { LIGHT_NIBBLE_MASK, SKY_LIGHT_SHIFT } from "@/code/Shared/VoxelMath";
 import {
 	FACE_ALL,
 	FACE_NX,

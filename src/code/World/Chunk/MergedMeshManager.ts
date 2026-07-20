@@ -1,5 +1,5 @@
 import type { Mesh } from "@babylonjs/lite";
-import { CHUNK_SIZE } from "@/code/Shared/VoxelMath";
+import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
 import type { Chunk } from "./Chunk";
 import type { MeshData } from "./DataStructures/MeshData";
 import { disposePackedMesh } from "./PackedChunkMesh.js";

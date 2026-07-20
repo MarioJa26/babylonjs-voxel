@@ -1,4 +1,4 @@
-import { worldToBlockCoord, worldToChunkCoord } from "@/code/Shared/VoxelMath";
+import { worldToBlockCoord, worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import { Chunk, getChunk } from "../Chunk";
 
 export interface WorldBlockCoordinates {

@@ -21,7 +21,7 @@ import {
 	CHUNK_SIZE3,
 	LIGHT_NIBBLE_MASK,
 	SKY_LIGHT_SHIFT,
-} from "@/code/Shared/VoxelMath";
+} from "@/code/Lib/VoxelMath";
 import { unpackBlockId } from "../DataStructures/BlockEncoding";
 import { packCoords } from "../DataStructures/ChunkCoords";
 import {

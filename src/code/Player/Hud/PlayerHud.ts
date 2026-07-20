@@ -1,12 +1,12 @@
 ﻿import type { SceneContext } from "@babylonjs/lite";
 import { onSceneDispose } from "@babylonjs/lite";
-import { Map1 } from "@/code/Maps/Map1";
 import {
 	closeUi,
 	isUiOpen,
 	openUi,
 	UiFocus,
-} from "@/code/Shared/GameRuntimeState";
+} from "@/code/Lib/GameRuntimeState";
+import { Map1 } from "@/code/Maps/Map1";
 import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
 import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
 import MapFog from "../../Maps/MapFog";

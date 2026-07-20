@@ -7,9 +7,9 @@ import {
 	getTerrainNoiseDebug,
 } from "../Generation/TerrainHeightMap";
 import type { IControls } from "../Interface/IControls";
+import { isUiOpen, setInCave } from "../Lib/GameRuntimeState";
+import { worldToChunkCoord } from "../Lib/VoxelMath";
 import { Map1 } from "../Maps/Map1";
-import { isUiOpen, setInCave } from "../Shared/GameRuntimeState";
-import { worldToChunkCoord } from "../Shared/VoxelMath";
 import { Chunk } from "../World/Chunk/Chunk";
 import {
 	getDebugStats,

@@ -9,10 +9,10 @@ import {
 	type Texture2D,
 } from "@babylonjs/lite";
 import { vec3Zero } from "@/code/Lib/Math";
+import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
 import { Map1 } from "@/code/Maps/Map1";
 import MapFog from "@/code/Maps/MapFog";
 import { isEyeUnderwater } from "@/code/Maps/UnderWaterEffect";
-import { CHUNK_SIZE } from "@/code/Shared/VoxelMath";
 import { GLOBAL_VALUES } from "../GLOBAL_VALUES";
 import {
 	createLod2OpaqueMaterial,

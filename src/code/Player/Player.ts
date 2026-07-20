@@ -16,7 +16,7 @@ import { Map1 } from "@/code/Maps/Map1";
 import { tryCreateBoatFromMarker } from "@/code/World/Boat/BoatCreatorSystem";
 import { BlockType } from "@/code/World/Texture/BlockType";
 import type { IControls } from "../Interface/IControls";
-import { getIsPaused, isUiOpen, setIsPaused } from "../Shared/GameRuntimeState";
+import { getIsPaused, isUiOpen, setIsPaused } from "../Lib/GameRuntimeState";
 import { WalkingControls } from "./Controls/WalkingControls";
 import {
 	pickDroppedItem,

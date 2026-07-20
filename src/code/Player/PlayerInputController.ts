@@ -1,5 +1,5 @@
 import type { IControls } from "../Interface/IControls";
-import { isUiOpen } from "../Shared/GameRuntimeState";
+import { isUiOpen } from "../Lib/GameRuntimeState";
 import type { InventoryControls } from "./Controls/InventoryControls";
 import type { WalkingControls } from "./Controls/WalkingControls";
 import type { PlayerCamera } from "./PlayerCamera";

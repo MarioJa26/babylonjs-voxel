@@ -1,9 +1,9 @@
 import type { EngineContext, SceneContext } from "@babylonjs/lite";
 import type { MobRegistry } from "../Entities/Mobs/Mob";
 import { initDistantTerrain } from "../Generation/DistantTerrain/DistantTerrain";
+import { setGameTimeScale } from "../Lib/GameRuntimeState";
 import type { Player } from "../Player/Player";
 import { PlayerLoadingGate } from "../Player/PlayerLoadingGate";
-import { setGameTimeScale } from "../Shared/GameRuntimeState";
 import {
 	disposeSharedResources,
 	initAtlas,

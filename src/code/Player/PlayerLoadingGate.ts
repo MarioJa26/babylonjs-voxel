@@ -1,6 +1,6 @@
 import type { SceneContext } from "@babylonjs/lite";
 import { onBeforeRender } from "@babylonjs/lite";
-import { worldToChunkCoord } from "../Shared/VoxelMath";
+import { worldToChunkCoord } from "../Lib/VoxelMath";
 import { getChunk } from "../World/Chunk/Chunk";
 import {
 	areChunksLoadedAround,

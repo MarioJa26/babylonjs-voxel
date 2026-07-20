@@ -14,10 +14,10 @@ import {
 	updateMeshPositions,
 	updateTexture2DFromPixels,
 } from "@babylonjs/lite";
+import { worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import { Map1 } from "@/code/Maps/Map1";
 import MapFog from "@/code/Maps/MapFog";
 import { isEyeUnderwater } from "@/code/Maps/UnderWaterEffect";
-import { worldToChunkCoord } from "@/code/Shared/VoxelMath";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";

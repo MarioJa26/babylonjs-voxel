@@ -2,7 +2,7 @@ import {
 	isInitialized as isDistantTerrainReady,
 	update as updateDistantTerrain,
 } from "@/code/Generation/DistantTerrain/DistantTerrain";
-import { isInCave } from "@/code/Shared/GameRuntimeState";
+import { isInCave } from "@/code/Lib/GameRuntimeState";
 import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
 import { Chunk, getChunk } from "../Chunk";
 import { createMeshFromData } from "../ChunkMesher";
