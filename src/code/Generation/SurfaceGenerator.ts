@@ -121,6 +121,15 @@ export class SurfaceGenerator {
 		SurfaceGenerator.DENSITY_INFLUENCE_RANGE;
 
 	/**
+	 * Coarse scan stride used by findTopSurfaceY. The coarse pass steps down by
+	 * this amount to bracket the surface; the fine pass then walks the upward
+	 * gap [coarseHigh, coarseHigh + DENSITY_COARSE_STEP - 1] at step 1 to resolve
+	 * the exact surface (the previous coarse sample was air, so the true top
+	 * surface must lie in that gap).
+	 */
+	private static readonly DENSITY_COARSE_STEP = 4;
+
+	/**
 	 * Conservative vertical budgets used to decide whether a chunkY slice
 	 * can possibly contain any flora / structure blocks.
 	 *
@@ -146,34 +155,20 @@ export class SurfaceGenerator {
 	 *
 	 * Keyed by (chunkX, chunkZ) packed into a number.
 	 */
-	private static readonly COLUMN_CACHE_SETS = 512;
-	private static readonly COLUMN_CACHE_WAYS = 4;
-	private static readonly COLUMN_CACHE_MASK =
-		SurfaceGenerator.COLUMN_CACHE_SETS - 1;
-	private static readonly columnCacheKeys = new Uint32Array(
-		SurfaceGenerator.COLUMN_CACHE_SETS * SurfaceGenerator.COLUMN_CACHE_WAYS,
-	);
-	private static readonly columnCacheEntries: (ColumnPrepassCacheEntry | null)[] =
-		new Array(
-			SurfaceGenerator.COLUMN_CACHE_SETS * SurfaceGenerator.COLUMN_CACHE_WAYS,
-		).fill(null);
-	private static columnCacheLru = new Uint8Array(
-		SurfaceGenerator.COLUMN_CACHE_SETS * SurfaceGenerator.COLUMN_CACHE_WAYS,
-	);
+	// PERF: column prepasses are a pure function of (chunkX, chunkZ) and cost
+	// ~2.8ms to build (findTopSurfaceY). Storing them in a persistent Map
+	// (built at most once per footprint) eliminates LRU thrash during bulk
+	// generation, where row-major order + flora's wide scan window previously
+	// evicted and rebuilt the same prepasses many times.
+	private static readonly columnCache = new Map<
+		number,
+		ColumnPrepassCacheEntry
+	>();
 
-	/**
-	 * Direct-mapped flora-column cache for overlapping flora scans.
-	 *
-	 * Keyed by (worldX, worldZ) packed into a number.
-	 */
-	private static readonly FLORA_CACHE_SIZE = 16384;
-	private static readonly FLORA_CACHE_MASK =
-		SurfaceGenerator.FLORA_CACHE_SIZE - 1;
-	private static readonly floraCacheKeys = new Uint32Array(
-		SurfaceGenerator.FLORA_CACHE_SIZE,
-	);
-	private static readonly floraCacheEntries: (FloraColumnCacheEntry | null)[] =
-		new Array(SurfaceGenerator.FLORA_CACHE_SIZE).fill(null);
+	// PERF: flora-column data is a pure function of (worldX, worldZ). A
+	// persistent Map (built once per column) avoids the direct-mapped cache's
+	// hash-collision evictions that thrashed during bulk area generation.
+	private static readonly floraCache = new Map<number, FloraColumnCacheEntry>();
 
 	private chunk_size: number;
 	private riverGenerator: RiverGenerator;
@@ -326,31 +321,10 @@ export class SurfaceGenerator {
 		chunkZ: number,
 	): ColumnPrepassCacheEntry {
 		const key = this.getColumnPrepassKey(chunkX, chunkZ);
-		const set = key & SurfaceGenerator.COLUMN_CACHE_MASK;
-		const ways = SurfaceGenerator.COLUMN_CACHE_WAYS;
-		const base = set * ways;
 
-		// Associative lookup across the ways of this set.
-		let hitWay = -1;
-		for (let w = 0; w < ways; w++) {
-			const slot = base + w;
-			if (
-				SurfaceGenerator.columnCacheEntries[slot] &&
-				SurfaceGenerator.columnCacheKeys[slot] === key
-			) {
-				hitWay = w;
-				break;
-			}
-		}
-		if (hitWay !== -1) {
-			const slot = base + hitWay;
-			SurfaceGenerator.columnCacheLru[slot] = 0;
-			for (let w = 0; w < ways; w++) {
-				if (w !== hitWay) SurfaceGenerator.columnCacheLru[base + w]++;
-			}
-			return SurfaceGenerator.columnCacheEntries[
-				slot
-			] as ColumnPrepassCacheEntry;
+		const cached = SurfaceGenerator.columnCache.get(key);
+		if (cached) {
+			return cached;
 		}
 
 		const CHUNK_SIZE = this.params.CHUNK_SIZE;
@@ -482,23 +456,7 @@ export class SurfaceGenerator {
 			maxSurfaceY,
 		};
 
-		// Evict the least-recently-used way in this set.
-		let victimWay = 0;
-		let victimLru = -1;
-		for (let w = 0; w < ways; w++) {
-			const lru = SurfaceGenerator.columnCacheLru[base + w];
-			if (lru > victimLru) {
-				victimLru = lru;
-				victimWay = w;
-			}
-		}
-		const victimSlot = base + victimWay;
-		SurfaceGenerator.columnCacheKeys[victimSlot] = key;
-		SurfaceGenerator.columnCacheEntries[victimSlot] = built;
-		SurfaceGenerator.columnCacheLru[victimSlot] = 0;
-		for (let w = 0; w < ways; w++) {
-			if (w !== victimWay) SurfaceGenerator.columnCacheLru[base + w]++;
-		}
+		SurfaceGenerator.columnCache.set(key, built);
 
 		return built;
 	}
@@ -516,9 +474,8 @@ export class SurfaceGenerator {
 		knownTopSurfaceY?: number,
 	): FloraColumnCacheEntry {
 		const key = this.getFloraColumnKey(worldX, worldZ);
-		const slot = key & SurfaceGenerator.FLORA_CACHE_MASK;
-		const cached = SurfaceGenerator.floraCacheEntries[slot];
-		if (cached && SurfaceGenerator.floraCacheKeys[slot] === key) {
+		const cached = SurfaceGenerator.floraCache.get(key);
+		if (cached) {
 			return cached;
 		}
 
@@ -554,8 +511,7 @@ export class SurfaceGenerator {
 			treeNoiseValue,
 		};
 
-		SurfaceGenerator.floraCacheKeys[slot] = key;
-		SurfaceGenerator.floraCacheEntries[slot] = built;
+		SurfaceGenerator.floraCache.set(key, built);
 
 		return built;
 	}
@@ -1485,9 +1441,10 @@ export class SurfaceGenerator {
 		// column call).
 		const evalSurfaceDensity = SurfaceGenerator.evalSurfaceDensity;
 
-		// Pass 1: coarse scan at step=4 to find a bracket
+		// Pass 1: coarse scan at DENSITY_COARSE_STEP to find a bracket
+		const coarseStep = SurfaceGenerator.DENSITY_COARSE_STEP;
 		let coarseHigh = CAVE_NO_SURFACE_Y;
-		for (let y = maxY; y >= minY; y -= 4) {
+		for (let y = maxY; y >= minY; y -= coarseStep) {
 			if (
 				evalSurfaceDensity(
 					y,
@@ -1508,12 +1465,16 @@ export class SurfaceGenerator {
 		}
 		if (coarseHigh === CAVE_NO_SURFACE_Y) return CAVE_NO_SURFACE_Y;
 
-		// Pass 2: fine scan within the coarse bracket
-		// The coarse step is 4, so the true surface is within [coarseHigh-3, coarseHigh].
+		// Pass 2: fine scan. The coarse pass steps down by DENSITY_COARSE_STEP
+		// and stops at the first (highest) solid sample `coarseHigh`. The
+		// previous coarse sample (coarseHigh + coarseStep) was air, so the true
+		// top surface lies somewhere in [coarseHigh, coarseHigh + coarseStep - 1].
+		// Walk that upward gap at step 1 to resolve the exact surface (a larger
+		// coarse step therefore costs fewer noise calls without losing resolution).
 		let densityAbove = -1;
 		let highestSolid = CAVE_NO_SURFACE_Y;
-		const fineMin = Math.max(coarseHigh - 3, minY);
-		for (let y = coarseHigh; y >= fineMin; y--) {
+		const fineTop = Math.min(coarseHigh + (coarseStep - 1), maxY);
+		for (let y = fineTop; y >= coarseHigh; y--) {
 			const d = evalSurfaceDensity(
 				y,
 				baseNoiseX,

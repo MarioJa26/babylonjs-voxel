@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-20T07:00:33.929Z
+Generated: 2026-07-20T09:15:36.135Z
 
-> **Summary:** 125 classes · 1708 members · 464 module-level functions · 50958 LOC
+> **Summary:** 125 classes · 1704 members · 464 module-level functions · 51004 LOC
 
 ---
 
@@ -1450,7 +1450,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Generation/Structure/TowerFeature.ts` (229 LOC)
+## `Generation/Structure/TowerFeature.ts` (281 LOC)
 
 ### export class TowerFeature implements IWorldFeature
 
@@ -1465,13 +1465,19 @@ export function createFastNoise3D(
 			id: number,
 			ow: boolean,
 		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
+- `private collectPrepasses(centerX: number, centerZ: number, radius: number, chunkSize: number, resolver: ColumnPrepassResolver): Map<string, ReturnType<ColumnPrepassResolver>[ ]>`
+- `private resolveHeight(worldX: number, worldZ: number, chunkSize: number, prepassByChunk:
+			| Map<string, ReturnType<ColumnPrepassResolver>[       ]>
+			| undefined): number`
 - `private generateCylinderTower(_chunkX: number, chunkY: number, _chunkZ: number, towerCenterX: number, towerCenterZ: number, towerRadius: number, groundHeight: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, chunkSize: number, seed: number, columnPrepassResolver?: ColumnPrepassResolver)`
+		) => void, chunkSize: number, seed: number, prepassByChunk:
+			| Map<string, ReturnType<ColumnPrepassResolver>[       ]>
+			| undefined)`
 - `private generateUndergroundCylinderTower(_chunkX: number, chunkY: number, _chunkZ: number, towerCenterX: number, towerCenterZ: number, towerRadius: number, groundHeight: number, placeBlock: (
 			x: number,
 			y: number,
@@ -1479,7 +1485,9 @@ export function createFastNoise3D(
 			id: number,
 			ow: boolean,
 		) => void, chunkSize: number)`
-- `private findMinGroundHeightForTower(towerCenterX: number, towerCenterZ: number, towerRadius: number, _biome: Biome, columnPrepassResolver?: ColumnPrepassResolver): number`
+- `private findMinGroundHeightForTower(towerCenterX: number, towerCenterZ: number, towerRadius: number, _biome: Biome, prepassByChunk:
+			| Map<string, ReturnType<ColumnPrepassResolver>[       ]>
+			| undefined, chunkSize = 32): number`
 
 ---
 
@@ -1578,7 +1586,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Generation/SurfaceGenerator.ts` (1198 LOC)
+## `Generation/SurfaceGenerator.ts` (1185 LOC)
 
 ### export class SurfaceGenerator
 
@@ -1597,19 +1605,13 @@ export function createFastNoise3D(
 - `private static readonly DENSITY_CLIFF_AMPLITUDE`
 - `private static readonly DENSITY_INFLUENCE_RANGE`
 - `private static readonly DENSITY_VERTICAL_SCAN_RANGE`
+- `private static readonly DENSITY_COARSE_STEP`
 - `private static readonly MAX_TREE_HEIGHT`
 - `private static readonly MAX_STRUCTURE_ABOVE_SURFACE`
 - `private static readonly MAX_STRUCTURE_BELOW_SURFACE`
 - `private readonly maxStructureAboveSurface: number`
 - `private static seedAsInt: number`
-- `private static readonly COLUMN_CACHE_SIZE`
-- `private static readonly COLUMN_CACHE_MASK`
-- `private static readonly columnCacheKeys`
-- `private static readonly columnCacheEntries: (ColumnPrepassCacheEntry | null)[] =`
-- `private static readonly FLORA_CACHE_SIZE`
-- `private static readonly FLORA_CACHE_MASK`
-- `private static readonly floraCacheKeys`
-- `private static readonly floraCacheEntries: (FloraColumnCacheEntry | null)[] =`
+- `private static readonly floraCache`
 - `private chunk_size: number`
 - `private riverGenerator: RiverGenerator`
 - `private features: IWorldFeature[]`
@@ -1692,7 +1694,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Generation/UndergroundGenerator.ts` (138 LOC)
+## `Generation/UndergroundGenerator.ts` (150 LOC)
 
 ### export class UndergroundGenerator
 
@@ -2957,7 +2959,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/PlayerLoopController.ts` (461 LOC)
+## `Player/PlayerLoopController.ts` (457 LOC)
 
 ### export class PlayerLoopController
 
@@ -3942,7 +3944,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Loading/ChunkProcessScheduler.ts` (414 LOC)
+## `World/Chunk/Loading/ChunkProcessScheduler.ts` (413 LOC)
 
 ### export class ChunkProcessScheduler
 

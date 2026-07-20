@@ -1,3 +1,4 @@
+import { WATER_BLOCK_ID } from "../World/Chunk/Worker/ChunkMesherConstants";
 import {
 	CAVE_FLAG_CARVED,
 	CAVE_FLAG_TUNNEL_CORE,
@@ -75,6 +76,22 @@ export class UndergroundGenerator {
 		const cs = CHUNK_SIZE;
 		const cs2 = cs * cs;
 		const vol = cs * cs2;
+
+		// PERF: Caves only carve solid (non-air, non-water) blocks. Scan once
+		// for any carveable voxel; sky/water-only chunks (no solid) can skip the
+		// expensive cave-noise grid sampling entirely. This avoids ~2187 3D-noise
+		// evaluations per chunk for every chunk that contains no solid block.
+		let hasSolid = false;
+		for (let i = 0; i < vol; i++) {
+			const b = blocks ? blocks[i] : 0;
+			if (b !== 0 && b !== WATER_BLOCK_ID) {
+				hasSolid = true;
+				break;
+			}
+		}
+		if (!hasSolid) {
+			return;
+		}
 
 		// PERF: Reuse pre-sampled cave noise grid instead of allocating new one per chunk.
 		this.caveGrid.reset(chunkX, chunkY, chunkZ, cs);
