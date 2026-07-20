@@ -9,6 +9,13 @@ const SLOT_FLAG_REMOVED = 0x04;
 const COMPACT_MIN_ORPHANED = 4 * 1024 * 1024; // 4 MB minimum before compacting
 const COMPACT_RATIO_THRESHOLD = 0.5; // compact when live < 50% of file
 
+// 64-bit disk offset stored across two Uint32 slots (bytes 20..23 = low,
+// 24..27 = high).  Kept as plain `number` math (no bigint) and extends the
+// previous 4 GiB ceiling to ~16 EiB.  Offsets are exact in double precision
+// up to 2^53, far beyond any realistic OPFS region-file size.
+const OFFSET_HI_BYTE = 24;
+const _TWO_POW_32 = 0x100000000;
+
 export class OpfsChunkStore {
 	private _fileHandle: FileSystemFileHandle | null = null;
 	private _accessHandle: FileSystemSyncAccessHandle | null = null;
@@ -95,7 +102,12 @@ export class OpfsChunkStore {
 		this._scratchDv.setUint8(8, lod);
 		this._scratchDv.setUint8(9, SLOT_FLAG_DIRTY | SLOT_FLAG_OCCUPIED);
 		this._scratchDv.setUint32(16, size, true);
-		this._scratchDv.setUint32(20, diskOffset, true);
+		this._scratchDv.setUint32(20, diskOffset >>> 0, true);
+		this._scratchDv.setUint32(
+			OFFSET_HI_BYTE,
+			(diskOffset / _TWO_POW_32) | 0,
+			true,
+		);
 
 		const slotAt = HEADER_SIZE_U + off;
 		const dataAt = this._dataStartOffset + diskOffset;
@@ -132,7 +144,9 @@ export class OpfsChunkStore {
 		const off = index * SLOT_SIZE_U;
 		const flags = dv.getUint8(off + 9);
 		const size = dv.getUint32(off + 16, true);
-		const offset = dv.getUint32(off + 20, true);
+		const offset =
+			dv.getUint32(off + OFFSET_HI_BYTE, true) * _TWO_POW_32 +
+			dv.getUint32(off + 20, true);
 
 		if (
 			size === 0 ||
@@ -268,7 +282,9 @@ export class OpfsChunkStore {
 			const off = i * SLOT_SIZE_U;
 			const flags = this._tableView.getUint8(off + 9);
 			const size = this._tableView.getUint32(off + 16, true);
-			const diskOffset = this._tableView.getUint32(off + 20, true);
+			const diskOffset =
+				this._tableView.getUint32(off + OFFSET_HI_BYTE, true) * _TWO_POW_32 +
+				this._tableView.getUint32(off + 20, true);
 			if (
 				size === 0 ||
 				(flags & SLOT_FLAG_REMOVED) !== 0 ||
@@ -386,7 +402,9 @@ export class OpfsChunkStore {
 			const off = i * SLOT_SIZE_U;
 			const flags = this._tableView.getUint8(off + 9);
 			const size = this._tableView.getUint32(off + 16, true);
-			const offset = this._tableView.getUint32(off + 20, true);
+			const offset =
+				this._tableView.getUint32(off + OFFSET_HI_BYTE, true) * _TWO_POW_32 +
+				this._tableView.getUint32(off + 20, true);
 			if (
 				size === 0 ||
 				(flags & SLOT_FLAG_REMOVED) !== 0 ||
@@ -423,7 +441,12 @@ export class OpfsChunkStore {
 			}
 
 			const slotOff = entry.index * SLOT_SIZE_U;
-			this._tableView.setUint32(slotOff + 20, writeHead, true);
+			this._tableView.setUint32(slotOff + 20, writeHead >>> 0, true);
+			this._tableView.setUint32(
+				slotOff + OFFSET_HI_BYTE,
+				Math.floor(writeHead / _TWO_POW_32),
+				true,
+			);
 			writeHead += entry.size;
 		}
 

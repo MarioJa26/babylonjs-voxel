@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-20T06:12:32.671Z
+Generated: 2026-07-20T07:00:33.929Z
 
-> **Summary:** 125 classes · 1708 members · 464 module-level functions · 50940 LOC
+> **Summary:** 125 classes · 1708 members · 464 module-level functions · 50958 LOC
 
 ---
 
@@ -5014,7 +5014,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Storage/OpfsChunkStore.ts` (366 LOC)
+## `World/Storage/OpfsChunkStore.ts` (384 LOC)
 
 ### export class OpfsChunkStore
 
