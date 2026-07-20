@@ -426,6 +426,7 @@ export class LightGenerator {
 		lut[61] = 1;
 		lut[64] = 1;
 		lut[66] = 1;
+		lut[91] = 1;
 		return lut;
 	})();
 

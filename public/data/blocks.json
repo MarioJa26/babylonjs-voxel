@@ -509,5 +509,12 @@
 		"name": "mason_table",
 		"path": "/texture/wood/wood_planks_1k",
 		"hardness": 1.3
+	},
+	{
+		"id": "Grass006Cross",
+		"name": "grass006_cross",
+		"path": "/texture/dirt/Grass006_1K",
+		"shape": "cross_diagonal",
+		"hardness": 0.6
 	}
 ]
