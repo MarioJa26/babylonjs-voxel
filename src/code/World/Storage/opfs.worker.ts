@@ -107,32 +107,26 @@ function _lruEvict(): number | null {
 	return node.key;
 }
 
-function _lruDelete(key: number): void {
-	const node = _lruMap.get(key);
-	if (!node) return;
-	if (node.prev) node.prev.next = node.next;
-	else _lruHead = node.next;
-	if (node.next) node.next.prev = node.prev;
-	else _lruTail = node.prev;
-	_lruMap.delete(key);
-}
-
 // ---------------------------------------------------------------------------
-// Region key packing — avoids string allocation on every voxel op.
+// Region key packing — bitwise shift+OR instead of multiplication. This
+// guarantees an int32 SMI result directly (no float intermediate) and is
+// cheaper than the equivalent `* (1 << n)` form.
 // Coords are in chunk-space / REGION_DIM, typically –512..+512.
 // Pack into a 32-bit integer with 10-bit signed fields (offset by 512).
 // Supports region coords in [–512, +511].
 // ---------------------------------------------------------------------------
 const REGION_COORD_OFFSET = 512;
-const REGION_COORD_BITS = 10;
+const REGION_KEY_SHIFT_HI = 20; // REGION_COORD_BITS * 2
+const REGION_KEY_SHIFT_LO = 10; // REGION_COORD_BITS
 const REGION_DIM = 16;
+const REGION_DIM_SHIFT = 4; // log2(REGION_DIM) — REGION_DIM must stay a power of two
+const REGION_LOCAL_MASK = REGION_DIM - 1; // 15
 const MAX_OPEN_REGIONS = 128;
 
 function packRegionKey(rx: number, ry: number, rz: number): number {
-	// Each field is 10 bits, offset so it's always non-negative.
 	return (
-		(rx + REGION_COORD_OFFSET) * (1 << (REGION_COORD_BITS * 2)) +
-		(ry + REGION_COORD_OFFSET) * (1 << REGION_COORD_BITS) +
+		((rx + REGION_COORD_OFFSET) << REGION_KEY_SHIFT_HI) |
+		((ry + REGION_COORD_OFFSET) << REGION_KEY_SHIFT_LO) |
 		(rz + REGION_COORD_OFFSET)
 	);
 }
@@ -140,6 +134,32 @@ function packRegionKey(rx: number, ry: number, rz: number): number {
 // Human-readable filename still uses rx/ry/rz — only the map key is packed.
 function regionFileName(rx: number, ry: number, rz: number): string {
 	return `r.${rx}.${ry}.${rz}.bin`;
+}
+
+// ---------------------------------------------------------------------------
+// Shared chunk-coord -> (region, local) resolver.
+// Was previously duplicated three times (Read/Write/RemoveVoxel), each doing
+// Math.floor(cx / 16) + a redundant double-mask `((cx & 15) + 16) & 15`.
+//
+// `>>` already floors correctly for negative two's-complement ints, so
+// `cx >> 4` replaces the float division + Math.floor entirely, and plain
+// `cx & 15` is already negative-safe (two's-complement masking), so the
+// extra "+16) & 15" wrap was a no-op that cost two ops per axis for nothing.
+//
+// Result is written into a module-level scratch array instead of an
+// allocated object/tuple — this function sits on the hottest path in the
+// worker (every voxel read/write/remove), so avoiding an allocation here
+// matters more than call-site prettiness.
+// ---------------------------------------------------------------------------
+const _loc = new Int32Array(6); // [rx, ry, rz, lx, ly, lz]
+
+function resolveVoxelLocation(cx: number, cy: number, cz: number): void {
+	_loc[0] = cx >> REGION_DIM_SHIFT;
+	_loc[1] = cy >> REGION_DIM_SHIFT;
+	_loc[2] = cz >> REGION_DIM_SHIFT;
+	_loc[3] = cx & REGION_LOCAL_MASK;
+	_loc[4] = cy & REGION_LOCAL_MASK;
+	_loc[5] = cz & REGION_LOCAL_MASK;
 }
 
 // ---------------------------------------------------------------------------
@@ -430,6 +450,7 @@ async function openStores(): Promise<void> {
 // ---------------------------------------------------------------------------
 const _resultMsg: { id: number; result: unknown } = { id: 0, result: null };
 const _errorMsg: { id: number; error: string } = { id: 0, error: "" };
+const _transferArr: ArrayBufferLike[] = [undefined as unknown as ArrayBuffer]; // reused 1-slot transfer list
 
 function postResult(id: number, result: unknown): void {
 	_resultMsg.id = id;
@@ -437,6 +458,22 @@ function postResult(id: number, result: unknown): void {
 	_self.postMessage(_resultMsg);
 	// Clear after send so the previous value isn't retained across turns.
 	_resultMsg.result = null;
+}
+
+// Same as postResult but transfers the backing buffer (for voxel reads),
+// reusing both the message wrapper and the single-slot transfer array
+// instead of allocating a fresh `{ id, result }` + `[buffer]` per call.
+function postTransferResult(id: number, result: Uint8Array | null): void {
+	if (!result) {
+		postResult(id, null);
+		return;
+	}
+	_resultMsg.id = id;
+	_resultMsg.result = result;
+	_transferArr[0] = result.buffer;
+	_self.postMessage(_resultMsg, _transferArr);
+	_resultMsg.result = null;
+	_transferArr[0] = undefined as unknown as ArrayBuffer;
 }
 
 function postError(id: number, message: string): void {
@@ -511,56 +548,27 @@ _self.addEventListener("message", (event: MessageEvent) => {
 			}
 
 			case OpfsMsg.ReadVoxel: {
-				const cx = data.chunkX | 0;
-				const cy = data.chunkY | 0;
-				const cz = data.chunkZ | 0;
-				const rx = Math.floor(cx / REGION_DIM);
-				const ry = Math.floor(cy / REGION_DIM);
-				const rz = Math.floor(cz / REGION_DIM);
-				// Branchless negative-safe mod-16 via bit trick.
-				const lx = ((cx & 15) + 16) & 15;
-				const ly = ((cy & 15) + 16) & 15;
-				const lz = ((cz & 15) + 16) & 15;
 				const isEntity = (data.lod | 0) === 254;
-				const rf = await getRegionFile(rx, ry, rz);
-				const result = rf.readChunk(lx, ly, lz, isEntity);
-				if (result) {
-					_self.postMessage({ id, result }, [result.buffer]);
-				} else {
-					postResult(id, null);
-				}
+				resolveVoxelLocation(data.chunkX | 0, data.chunkY | 0, data.chunkZ | 0);
+				const rf = await getRegionFile(_loc[0], _loc[1], _loc[2]);
+				const result = rf.readChunk(_loc[3], _loc[4], _loc[5], isEntity);
+				postTransferResult(id, result);
 				break;
 			}
 			case OpfsMsg.WriteVoxel: {
-				const cx = data.chunkX | 0;
-				const cy = data.chunkY | 0;
-				const cz = data.chunkZ | 0;
-				const rx = Math.floor(cx / REGION_DIM);
-				const ry = Math.floor(cy / REGION_DIM);
-				const rz = Math.floor(cz / REGION_DIM);
-				const lx = ((cx & 15) + 16) & 15;
-				const ly = ((cy & 15) + 16) & 15;
-				const lz = ((cz & 15) + 16) & 15;
 				const isEntity = (data.lod | 0) === 254;
-				const rf = await getRegionFile(rx, ry, rz);
-				rf.writeChunk(lx, ly, lz, isEntity, viewOf(data.data));
+				resolveVoxelLocation(data.chunkX | 0, data.chunkY | 0, data.chunkZ | 0);
+				const rf = await getRegionFile(_loc[0], _loc[1], _loc[2]);
+				rf.writeChunk(_loc[3], _loc[4], _loc[5], isEntity, viewOf(data.data));
 				markDirty();
 				postResult(id, true);
 				break;
 			}
 			case OpfsMsg.RemoveVoxel: {
-				const cx = data.chunkX | 0;
-				const cy = data.chunkY | 0;
-				const cz = data.chunkZ | 0;
-				const rx = Math.floor(cx / REGION_DIM);
-				const ry = Math.floor(cy / REGION_DIM);
-				const rz = Math.floor(cz / REGION_DIM);
-				const lx = ((cx & 15) + 16) & 15;
-				const ly = ((cy & 15) + 16) & 15;
-				const lz = ((cz & 15) + 16) & 15;
 				const isEntity = (data.lod | 0) === 254;
-				const rf = await getRegionFile(rx, ry, rz);
-				rf.removeChunk(lx, ly, lz, isEntity);
+				resolveVoxelLocation(data.chunkX | 0, data.chunkY | 0, data.chunkZ | 0);
+				const rf = await getRegionFile(_loc[0], _loc[1], _loc[2]);
+				rf.removeChunk(_loc[3], _loc[4], _loc[5], isEntity);
 				markDirty();
 				postResult(id, true);
 				break;

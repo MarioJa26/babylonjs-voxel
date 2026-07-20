@@ -16,8 +16,8 @@ export class OpfsChunkStore {
 	private _tableView: DataView = new DataView(new ArrayBuffer(0));
 	private _size: number = 0;
 	private _capacity: number = 0;
-	private _dataSize: bigint = 0n;
-	private _liveDataSize: bigint = 0n;
+	private _dataSize: number = 0;
+	private _liveDataSize: number = 0;
 	private _dirty = false;
 
 	private readonly _scratch: ArrayBuffer;
@@ -95,10 +95,10 @@ export class OpfsChunkStore {
 		this._scratchDv.setUint8(8, lod);
 		this._scratchDv.setUint8(9, SLOT_FLAG_DIRTY | SLOT_FLAG_OCCUPIED);
 		this._scratchDv.setUint32(16, size, true);
-		this._scratchDv.setBigUint64(20, diskOffset, true);
+		this._scratchDv.setUint32(20, diskOffset, true);
 
 		const slotAt = HEADER_SIZE_U + off;
-		const dataAt = this._dataStartOffset + Number(diskOffset);
+		const dataAt = this._dataStartOffset + diskOffset;
 		const neededEnd = Math.max(slotAt + SLOT_SIZE_U, dataAt + size);
 
 		if (neededEnd > this._fileSize) {
@@ -119,10 +119,10 @@ export class OpfsChunkStore {
 		if (!wasLive) {
 			this._size++;
 		} else {
-			this._liveDataSize -= BigInt(existingSize);
+			this._liveDataSize -= existingSize;
 		}
-		this._dataSize += BigInt(size);
-		this._liveDataSize += BigInt(size);
+		this._dataSize += size;
+		this._liveDataSize += size;
 		this._dirty = true;
 	}
 
@@ -132,7 +132,7 @@ export class OpfsChunkStore {
 		const off = index * SLOT_SIZE_U;
 		const flags = dv.getUint8(off + 9);
 		const size = dv.getUint32(off + 16, true);
-		const offset = dv.getBigUint64(off + 20, true);
+		const offset = dv.getUint32(off + 20, true);
 
 		if (
 			size === 0 ||
@@ -143,7 +143,7 @@ export class OpfsChunkStore {
 			return null;
 		}
 
-		const at = this._dataStartOffset + Number(offset);
+		const at = this._dataStartOffset + offset;
 		// NOTE: slice() is intentional here — _readSlab is reused across reads,
 		// so returning a subarray would silently corrupt previous results.
 		if (size <= this._readSlab.byteLength) {
@@ -190,7 +190,7 @@ export class OpfsChunkStore {
 		dv.setUint32(off + 16, 0, true);
 
 		this._size--;
-		this._liveDataSize -= BigInt(existingSize);
+		this._liveDataSize -= existingSize;
 		this._evictionCount++;
 		return true;
 	}
@@ -214,7 +214,7 @@ export class OpfsChunkStore {
 	} {
 		return {
 			slotCount: this._size,
-			usedBytes: Number(this._dataSize),
+			usedBytes: this._dataSize,
 			totalBytes: this._fileSize,
 			capacity: this._capacity,
 			hitCount: this._hitCount,
@@ -230,8 +230,8 @@ export class OpfsChunkStore {
 	private _init(): void {
 		this._capacity = OpfsChunkStore.INITIAL_CAPACITY;
 		this._size = 0;
-		this._dataSize = 0n;
-		this._liveDataSize = 0n;
+		this._dataSize = 0;
+		this._liveDataSize = 0;
 		this._tableBuffer = new ArrayBuffer(this._capacity * SLOT_SIZE_U);
 		this._tableView = new DataView(this._tableBuffer);
 		this._writeHeader(); // writes 4 KB header
@@ -262,13 +262,13 @@ export class OpfsChunkStore {
 		this._tableView = new DataView(this._tableBuffer);
 
 		let liveCount = 0;
-		let dataEnd = 0n;
-		let liveDataSize = 0n;
+		let dataEnd = 0;
+		let liveDataSize = 0;
 		for (let i = 0; i < this._capacity; i++) {
 			const off = i * SLOT_SIZE_U;
 			const flags = this._tableView.getUint8(off + 9);
 			const size = this._tableView.getUint32(off + 16, true);
-			const diskOffset = this._tableView.getBigUint64(off + 20, true);
+			const diskOffset = this._tableView.getUint32(off + 20, true);
 			if (
 				size === 0 ||
 				(flags & SLOT_FLAG_REMOVED) !== 0 ||
@@ -276,8 +276,8 @@ export class OpfsChunkStore {
 			)
 				continue;
 			liveCount++;
-			liveDataSize += BigInt(size);
-			const end = diskOffset + BigInt(size);
+			liveDataSize += size;
+			const end = diskOffset + size;
 			if (end > dataEnd) dataEnd = end;
 		}
 		this._size = liveCount;
@@ -358,7 +358,7 @@ export class OpfsChunkStore {
 	private _writeHeader(): void {
 		const dv = new DataView(this._headerBuf.buffer);
 		dv.setUint32(0, this._size, true);
-		dv.setBigUint64(4, this._dataSize, true);
+		dv.setUint32(4, this._dataSize, true);
 		dv.setUint32(12, this._capacity, true);
 		_rwOpts.at = 0;
 		this._accessHandle?.write(this._headerBuf, _rwOpts);
@@ -367,10 +367,10 @@ export class OpfsChunkStore {
 	compactIfNeeded(): void {
 		const orphanedBytes = this._dataSize - this._liveDataSize;
 		if (
-			orphanedBytes >= BigInt(COMPACT_MIN_ORPHANED) &&
-			this._liveDataSize < this._dataSize - BigInt(COMPACT_MIN_ORPHANED) &&
-			this._liveDataSize * 100n <
-				this._dataSize * BigInt((1 - COMPACT_RATIO_THRESHOLD) * 100)
+			orphanedBytes >= COMPACT_MIN_ORPHANED &&
+			this._liveDataSize < this._dataSize - COMPACT_MIN_ORPHANED &&
+			this._liveDataSize * 100 <
+				this._dataSize * (1 - COMPACT_RATIO_THRESHOLD) * 100
 		) {
 			this.compact();
 		}
@@ -379,14 +379,14 @@ export class OpfsChunkStore {
 	compact(): void {
 		if (!this._accessHandle) return;
 
-		type LiveEntry = { index: number; offset: bigint; size: number };
+		type LiveEntry = { index: number; offset: number; size: number };
 		const liveEntries: LiveEntry[] = [];
 
 		for (let i = 0; i < this._capacity; i++) {
 			const off = i * SLOT_SIZE_U;
 			const flags = this._tableView.getUint8(off + 9);
 			const size = this._tableView.getUint32(off + 16, true);
-			const offset = this._tableView.getBigUint64(off + 20, true);
+			const offset = this._tableView.getUint32(off + 20, true);
 			if (
 				size === 0 ||
 				(flags & SLOT_FLAG_REMOVED) !== 0 ||
@@ -396,17 +396,17 @@ export class OpfsChunkStore {
 			liveEntries.push({ index: i, offset, size });
 		}
 
-		liveEntries.sort((a, b) => Number(a.offset) - Number(b.offset));
+		liveEntries.sort((a, b) => a.offset - b.offset);
 
 		const dataStart = this._dataStartOffset;
 		const copyBuf = new Uint8Array(64 * 1024);
-		let writeHead = 0n;
+		let writeHead = 0;
 
 		for (const entry of liveEntries) {
-			const srcOff = dataStart + Number(entry.offset);
-			const dstOff = dataStart + Number(writeHead);
+			const srcOff = dataStart + entry.offset;
+			const dstOff = dataStart + writeHead;
 
-			if (Number(writeHead) !== Number(entry.offset)) {
+			if (writeHead !== entry.offset) {
 				let remaining = entry.size;
 				let src = srcOff;
 				let dst = dstOff;
@@ -423,11 +423,11 @@ export class OpfsChunkStore {
 			}
 
 			const slotOff = entry.index * SLOT_SIZE_U;
-			this._tableView.setBigUint64(slotOff + 20, writeHead, true);
-			writeHead += BigInt(entry.size);
+			this._tableView.setUint32(slotOff + 20, writeHead, true);
+			writeHead += entry.size;
 		}
 
-		const newDataEnd = this._dataStartOffset + Number(writeHead);
+		const newDataEnd = this._dataStartOffset + writeHead;
 		if (newDataEnd < this._fileSize) {
 			this._accessHandle.truncate(newDataEnd);
 			this._fileSize = newDataEnd;

@@ -20,7 +20,7 @@ import {
 	type WorkerResponseData,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
-import { setRequestFlush } from "./MergedMeshManager";
+import { flushDirtyMergedGroups, setRequestFlush } from "./MergedMeshManager";
 import {
 	normalizeChunkLod,
 	shouldSkipLodForChunk,
@@ -127,9 +127,12 @@ export class ChunkWorkerPool {
 
 	private workerRestartAtMs: number[] = [];
 
-	// --- Remesh queue: sorted array, insertion-sort maintained ---
-	private taskQueue: Chunk[] = [];
-	private taskQueueReadIdx = 0;
+	// --- Remesh queue: binary min-heap keyed by compareRemeshPriority ---
+	// taskHeap is a standard 0-indexed array-backed heap; taskHeapPositions
+	// tracks each chunk's current index so priority upgrades and disposal
+	// removal can be done in O(log n) instead of a linear scan/splice.
+	private taskHeap: Chunk[] = [];
+	private taskHeapPositions: Map<Chunk, number> = new Map();
 	private taskQueuePriority: Map<Chunk, boolean> = new Map();
 
 	private workerDispatchCounts: number[] = [];
@@ -212,10 +215,6 @@ export class ChunkWorkerPool {
 
 	// Pre-bound methods — avoids per-call .bind(this) allocation
 	private readonly _boundScheduleRemesh = this.scheduleRemesh.bind(this);
-	private readonly _compareRemeshPriorityFn = (
-		[ca, pa]: [Chunk, boolean],
-		[cb, pb]: [Chunk, boolean],
-	) => this.compareRemeshPriority(ca, pa, cb, pb);
 	// SoA scratch for scheduleBackgroundLodPrecompute — avoids per-candidate
 	// object allocation.  Indices are grown via .push() to stay on
 	// PACKED_SMI_ELEMENTS (array.length = N followed by fill triggers a
@@ -297,7 +296,7 @@ export class ChunkWorkerPool {
 	private hasPendingTasks(): boolean {
 		return (
 			this.terrainTaskQueue.size > 0 ||
-			this.taskQueueReadIdx < this.taskQueue.length ||
+			this.taskHeap.length > 0 ||
 			this.lodPrecomputeQueueReadIdx < this.lodPrecomputeQueue.length ||
 			this.distantTerrainTaskQueueReadIdx < this.distantTerrainTaskQueue.length
 		);
@@ -328,7 +327,7 @@ export class ChunkWorkerPool {
 		const busy = Math.max(0, stats.workerCount - stats.idleWorkers);
 		stats.busyWorkers = busy;
 		if (busy > stats.peakBusyWorkers) stats.peakBusyWorkers = busy;
-		stats.remeshQueueLength = this.taskQueue.length - this.taskQueueReadIdx;
+		stats.remeshQueueLength = this.taskHeap.length;
 		stats.terrainQueueLength = this.terrainTaskQueue.size;
 		stats.lodPrecomputeQueueLength =
 			this.lodPrecomputeQueue.length - this.lodPrecomputeQueueReadIdx;
@@ -781,6 +780,21 @@ export class ChunkWorkerPool {
 	private onLightChunkDisposed(chunk: Chunk): void {
 		this.lightChunkByHeaderSlot.delete(chunk.lightHeaderSlot);
 		this.broadcastLightUnregister(chunk);
+
+		// Drop any pending deferred-light work for this chunk so a future
+		// reload at the same coordinates (which reuses the same coordinate-
+		// based chunk id) can re-enqueue without being shadowed by the stale
+		// queuedIds entry.  Otherwise the deferred BFS is silently skipped and
+		// the chunk's lateral sky-light (cave) lighting never runs.
+		this.deferredLightingQueuedIds.delete(chunk.id);
+		this.deferredLightingSeedStates.delete(chunk.id);
+		const q = this.deferredLightingQueue;
+		for (let i = this.deferredLightingQueueReadIdx; i < q.length; i++) {
+			if (q[i] === chunk) {
+				q[i] = null as unknown as Chunk;
+				break;
+			}
+		}
 	}
 
 	private processLightDirtyQueue = (): void => {
@@ -1056,6 +1070,10 @@ export class ChunkWorkerPool {
 		) {
 			const chunk =
 				this.deferredLightingQueue[this.deferredLightingQueueReadIdx++];
+			// Slot may have been nulled by onLightChunkDisposed (the chunk was
+			// unloaded before the pump reached it); skip it without counting
+			// as a dropped chunk.
+			if (!chunk) continue;
 			this.deferredLightingQueuedIds.delete(chunk.id);
 
 			const seedState = this.deferredLightingSeedStates.get(chunk.id);
@@ -1191,7 +1209,7 @@ export class ChunkWorkerPool {
 			}
 		}
 
-		//flushDirtyMergedGroups();
+		flushDirtyMergedGroups();
 
 		if (processed > 0 && this.opfsReady && this.opfsClient) {
 			this.opfsFlushCounter++;
@@ -1221,6 +1239,41 @@ export class ChunkWorkerPool {
 			requestAnimationFrame(this.processMeshQueueLoop);
 		}
 	};
+
+	// -------------------------------------------------------------------------
+	// Mesh result queue enqueue — shared by the terrain-worker and mesh-worker
+	// message handlers.
+	//
+	// Backpressure fix: when the queue is at MAX_MESH_QUEUE, we overwrite the
+	// oldest unread slot (meshResultQueueReadIdx) with the new result but do
+	// NOT advance meshResultQueueReadIdx. The previous version incremented the
+	// read index after writing into it, which made the entry just written
+	// look "already consumed" to the drain loop (which starts reading from
+	// meshResultQueueReadIdx) — so under backpressure the *newest* mesh
+	// result was the one silently dropped, and since chunk.remeshQueued had
+	// already been cleared before dispatch, that chunk's mesh could go
+	// missing with no retry. Leaving the read index alone means the slot we
+	// just overwrote holds the newest result and is still unread, so the
+	// oldest entry is the one discarded instead.
+	// -------------------------------------------------------------------------
+	private enqueueMeshResult(data: FullMeshMessage): void {
+		const pending = this.meshResultQueue.length - this.meshResultQueueReadIdx;
+		if (
+			pending >= ChunkWorkerPool.MAX_MESH_QUEUE &&
+			this.meshResultQueueReadIdx < this.meshResultQueue.length
+		) {
+			this.meshResultQueue[this.meshResultQueueReadIdx] = data;
+		} else {
+			this.meshResultQueue.push(data);
+		}
+		if (!this.meshDrainScheduled) {
+			this.meshDrainScheduled = true;
+			requestAnimationFrame(() => {
+				this.meshDrainScheduled = false;
+				this.processMeshQueueLoop();
+			});
+		}
+	}
 
 	private queuePostRemeshSave(chunk: Chunk): void {
 		if (chunk.isBoatChunk) return;
@@ -1352,8 +1405,8 @@ export class ChunkWorkerPool {
 		}
 		this.pendingRemeshMap.clear();
 
-		pending.sort(this._compareRemeshPriorityFn);
-
+		// No pre-sort needed: insertChunkIntoRemeshQueue pushes into the heap,
+		// which maintains order on its own regardless of insertion order.
 		for (let i = 0; i < pending.length; i++) {
 			const [chunk, priority] = pending[i];
 			if (!chunk.isLoaded) continue;
@@ -1483,22 +1536,7 @@ export class ChunkWorkerPool {
 		if (type === WorkerTaskType.GenerateFullMesh) {
 			const meshData = data as FullMeshMessage;
 			this.clearInflightRemeshByMessage(meshData.chunkId, meshData.lod);
-			const pending = this.meshResultQueue.length - this.meshResultQueueReadIdx;
-			if (
-				pending >= ChunkWorkerPool.MAX_MESH_QUEUE &&
-				this.meshResultQueueReadIdx < this.meshResultQueue.length
-			) {
-				this.meshResultQueue[this.meshResultQueueReadIdx++] = meshData;
-			} else {
-				this.meshResultQueue.push(meshData);
-			}
-			if (!this.meshDrainScheduled) {
-				this.meshDrainScheduled = true;
-				requestAnimationFrame(() => {
-					this.meshDrainScheduled = false;
-					this.processMeshQueueLoop();
-				});
-			}
+			this.enqueueMeshResult(meshData);
 
 			const resolvedChunk = this.resolveChunkByMessageId(meshData.chunkId);
 			if (
@@ -1662,22 +1700,7 @@ export class ChunkWorkerPool {
 		this.clearInflightRemeshByMessage(data.chunkId, data.lod);
 
 		const fullMeshMessage = data as unknown as FullMeshMessage;
-		const pending2 = this.meshResultQueue.length - this.meshResultQueueReadIdx;
-		if (
-			pending2 >= ChunkWorkerPool.MAX_MESH_QUEUE &&
-			this.meshResultQueueReadIdx < this.meshResultQueue.length
-		) {
-			this.meshResultQueue[this.meshResultQueueReadIdx++] = fullMeshMessage;
-		} else {
-			this.meshResultQueue.push(fullMeshMessage);
-		}
-		if (!this.meshDrainScheduled) {
-			this.meshDrainScheduled = true;
-			requestAnimationFrame(() => {
-				this.meshDrainScheduled = false;
-				this.processMeshQueueLoop();
-			});
-		}
+		this.enqueueMeshResult(fullMeshMessage);
 
 		const resolvedChunk = this.resolveChunkByMessageId(data.chunkId);
 		if (resolvedChunk && this.rerunRemeshAfterInflight.get(resolvedChunk.id)) {
@@ -1723,12 +1746,97 @@ export class ChunkWorkerPool {
 		return undefined;
 	}
 
-	private compactTaskQueue(): void {
-		if (this.taskQueueReadIdx === 0) return;
-		if (this.taskQueueReadIdx > this.taskQueue.length >> 1) {
-			this.taskQueue.copyWithin(0, this.taskQueueReadIdx);
-			this.taskQueue.length -= this.taskQueueReadIdx;
-			this.taskQueueReadIdx = 0;
+	// -------------------------------------------------------------------------
+	// taskHeap: binary min-heap over compareRemeshPriority.
+	//
+	// Replaces the old "binary-search the insertion point, then splice" queue.
+	// The binary search made lookup O(log n), but Array.splice still has to
+	// shift every element after the insertion point, so a batch of N inserts
+	// (e.g. a large terrain edit dirtying hundreds of chunks in one frame) was
+	// still O(n) each / O(n^2) overall. Heap push/pop/remove are all O(log n),
+	// so the same batch is O(n log n) worst case.
+	//
+	// taskHeapPositions mirrors each chunk's current array index so
+	// heapRemove (used by priority upgrades and chunk disposal) doesn't need
+	// a linear scan to find it.
+	// -------------------------------------------------------------------------
+
+	private heapSwap(i: number, j: number): void {
+		const a = this.taskHeap[i];
+		const b = this.taskHeap[j];
+		this.taskHeap[i] = b;
+		this.taskHeap[j] = a;
+		this.taskHeapPositions.set(b, i);
+		this.taskHeapPositions.set(a, j);
+	}
+
+	private heapLess(i: number, j: number): boolean {
+		const a = this.taskHeap[i];
+		const b = this.taskHeap[j];
+		const aPriority = this.taskQueuePriority.get(a) ?? false;
+		const bPriority = this.taskQueuePriority.get(b) ?? false;
+		return this.compareRemeshPriority(a, aPriority, b, bPriority) < 0;
+	}
+
+	private heapSiftUp(i: number): void {
+		while (i > 0) {
+			const parent = (i - 1) >> 1;
+			if (!this.heapLess(i, parent)) break;
+			this.heapSwap(i, parent);
+			i = parent;
+		}
+	}
+
+	private heapSiftDown(i: number): void {
+		const n = this.taskHeap.length;
+		while (true) {
+			const left = i * 2 + 1;
+			const right = left + 1;
+			let smallest = i;
+			if (left < n && this.heapLess(left, smallest)) smallest = left;
+			if (right < n && this.heapLess(right, smallest)) smallest = right;
+			if (smallest === i) break;
+			this.heapSwap(i, smallest);
+			i = smallest;
+		}
+	}
+
+	private heapPush(chunk: Chunk): void {
+		const idx = this.taskHeap.length;
+		this.taskHeap.push(chunk);
+		this.taskHeapPositions.set(chunk, idx);
+		this.heapSiftUp(idx);
+	}
+
+	private heapPop(): Chunk | undefined {
+		const n = this.taskHeap.length;
+		if (n === 0) return undefined;
+		const top = this.taskHeap[0];
+		this.taskHeapPositions.delete(top);
+		const last = this.taskHeap.pop()!;
+		if (n > 1) {
+			this.taskHeap[0] = last;
+			this.taskHeapPositions.set(last, 0);
+			this.heapSiftDown(0);
+		}
+		return top;
+	}
+
+	// O(log n) removal of an arbitrary chunk (used by chunk disposal so a
+	// disposed chunk's reference is dropped immediately instead of lingering
+	// as a tombstone until it's naturally dequeued).
+	private heapRemove(chunk: Chunk): void {
+		const idx = this.taskHeapPositions.get(chunk);
+		if (idx === undefined) return;
+		this.taskHeapPositions.delete(chunk);
+		const last = this.taskHeap.pop()!;
+		if (idx < this.taskHeap.length) {
+			this.taskHeap[idx] = last;
+			this.taskHeapPositions.set(last, idx);
+			// The replacement could violate the heap property in either
+			// direction relative to its new position, so try both.
+			this.heapSiftDown(idx);
+			this.heapSiftUp(idx);
 		}
 	}
 
@@ -1737,28 +1845,16 @@ export class ChunkWorkerPool {
 		if (existingPriority !== undefined) {
 			if (priority && !existingPriority) {
 				this.taskQueuePriority.set(chunk, true);
+				const idx = this.taskHeapPositions.get(chunk);
+				// Priority went false -> true, which can only move the chunk
+				// closer to the root, so sift-up alone suffices.
+				if (idx !== undefined) this.heapSiftUp(idx);
 			}
 			return;
 		}
 
 		this.taskQueuePriority.set(chunk, priority);
-		this.compactTaskQueue();
-
-		let lo = this.taskQueueReadIdx;
-		let hi = this.taskQueue.length;
-		while (lo < hi) {
-			const mid = (lo + hi) >>> 1;
-			const queued = this.taskQueue[mid];
-			const queuedPriority = this.taskQueuePriority.get(queued) ?? false;
-			if (
-				this.compareRemeshPriority(chunk, priority, queued, queuedPriority) < 0
-			) {
-				hi = mid;
-			} else {
-				lo = mid + 1;
-			}
-		}
-		this.taskQueue.splice(lo, 0, chunk);
+		this.heapPush(chunk);
 	}
 
 	// -------------------------------------------------------------------------
@@ -1974,8 +2070,8 @@ export class ChunkWorkerPool {
 			if (this.terrainTaskQueue.size > 0) {
 				taskChunk = this.dequeueNextTerrainChunk();
 				taskType = TaskType.Terrain;
-			} else if (this.taskQueueReadIdx < this.taskQueue.length) {
-				taskChunk = this.taskQueue[this.taskQueueReadIdx++];
+			} else if (this.taskHeap.length > 0) {
+				taskChunk = this.heapPop();
 				taskType = TaskType.Remesh;
 			} else if (
 				this.distantTerrainTaskQueueReadIdx <
@@ -2004,9 +2100,10 @@ export class ChunkWorkerPool {
 
 			// Per-type pre-dispatch validation.
 			if (taskType === TaskType.Remesh) {
-				// Skip disposed chunks — onChunkDisposed clears pendingRemeshMap and
-				// taskQueuePriority but leaves stale entries in taskQueue to avoid
-				// the O(n) splice.  The isLoaded check is the tombstone guard.
+				// onChunkDisposed calls heapRemove() to drop disposed chunks from
+				// taskHeap immediately, but this guard stays as a defensive
+				// backstop for any chunk that became unloaded without going
+				// through the dispose hook.
 				if (!taskChunk!.isLoaded) {
 					this.taskQueuePriority.delete(taskChunk!);
 					continue;
@@ -2171,15 +2268,20 @@ export class ChunkWorkerPool {
 		this.deferredLightingSeedStates.delete(chunk.id);
 		this.rerunRemeshAfterInflight.delete(chunk.id);
 
+		// O(log n) — the heap backing taskHeap supports real removal (unlike
+		// the old sorted-array queue, where removing an arbitrary element
+		// would have cost O(n)), so disposed chunks drop out immediately
+		// instead of lingering as a tombstone until naturally dequeued.
+		this.heapRemove(chunk);
+
 		// Set cleanup.
 		this.terrainTaskQueue.delete(chunk);
 
-		// taskQueue, deferredLightingQueue, and lodPrecomputeQueue are intentionally
-		// NOT spliced here.  Splicing is O(n) and causes O(n²) behaviour during
-		// large unload storms.  Instead, stale entries are skipped at dequeue time
-		// in processQueue and processDeferredLightingQueue via isLoaded / seedState
-		// guards.  lodPrecomputeQueue entries are also skipped via the isLoaded guard
-		// in processQueue, so we only clear the tracking set here.
+		// deferredLightingQueue and lodPrecomputeQueue are intentionally NOT
+		// spliced here.  Splicing is O(n) and causes O(n²) behaviour during
+		// large unload storms.  Instead, stale entries are skipped at dequeue
+		// time in processDeferredLightingQueue / processQueue via isLoaded /
+		// seedState guards, so we only clear the tracking sets here.
 
 		// pendingLodPrecomputeKeys uses packInflightKey(chunkId, lod).
 		// LOD values are 0–15, so 16 deletes is cheap.

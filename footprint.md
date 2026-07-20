@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-19T06:38:32.646Z
+Generated: 2026-07-20T06:12:32.671Z
 
-> **Summary:** 125 classes · 1699 members · 446 module-level functions · 50784 LOC
+> **Summary:** 125 classes · 1708 members · 464 module-level functions · 50940 LOC
 
 ---
 
@@ -65,7 +65,7 @@ Generated: 2026-07-19T06:38:32.646Z
 - `dtClamp: { min: 1 / 600, max: 1 / 24 },`
 - `name: ,`
 - `position: this.#boat.position,`
-- `renderingGroupId: 1,`
+- `renderOrder: 1,`
 - `getWorldPosition: () => this.#boat.position,`
 - `unload: () => this.dispose(),`
 - `isAlive: () => !(this.#boat as any).isDisposed?.(),`
@@ -357,7 +357,7 @@ Generated: 2026-07-19T06:38:32.646Z
 
 ---
 
-## `Entities/Mount.ts` (127 LOC)
+## `Entities/Mount.ts` (125 LOC)
 
 ### export class Mount implements IMountable
 
@@ -974,7 +974,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Generation/Structure/DungeonFeature.ts` (166 LOC)
+## `Generation/Structure/DungeonFeature.ts` (173 LOC)
 
 ### export class DungeonFeature implements IWorldFeature
 
@@ -989,7 +989,10 @@ export function createFastNoise3D(
 			id: number,
 			ow: boolean,
 		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number)`
-- `private carveCorridor(x1: number, x2: number, z1: number, z2: number, yBase: number, placeBlock: any, floorBlock: number, minX: number, maxX: number, minZ: number, maxZ: number)`
+- `private carveCorridor(x1: number, x2: number, z1: number, z2: number, yBase: number, placeBlock: PlaceBlockFn, floorBlock: number, minX: number, maxX: number, minZ: number, maxZ: number)`
+
+**Types / Interfaces / Enums**
+- type `PlaceBlockFn`
 
 ---
 
@@ -2045,7 +2048,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Controls/CustomBoatControls.ts` (187 LOC)
+## `Player/Controls/CustomBoatControls.ts` (184 LOC)
 
 ### export class CustomBoatControls implements IControls<BoatControlEntity>
 
@@ -2129,7 +2132,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Controls/JetSkiControls.ts` (194 LOC)
+## `Player/Controls/JetSkiControls.ts` (191 LOC)
 
 ### export class JetSkiControls implements IControls<BoatControlEntity>
 
@@ -2173,7 +2176,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Controls/PaddleBoatControls.ts` (203 LOC)
+## `Player/Controls/PaddleBoatControls.ts` (200 LOC)
 
 ### export class PaddleBoatControls implements IControls<BoatControlEntity>
 
@@ -2383,7 +2386,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Hud/BlockHighlight/BlockRaycaster.ts` (757 LOC)
+## `Player/Hud/BlockHighlight/BlockRaycaster.ts` (797 LOC)
 
 **Module-level functions**
 - `function getForwardRay(player: Player, length: number): RayLike`
@@ -2392,6 +2395,7 @@ export function createFastNoise3D(
 - `function intersectRayAabb(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number, tMin: number, tMax: number, fallbackNx: number, fallbackNy: number, fallbackNz: number): FaceHit | null`
 - `function raycastShapeInVoxel(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, vx: number, vy: number, vz: number, blockId: number, blockState: number, tEnter: number, tExit: number, fallbackNx: number, fallbackNy: number, fallbackNz: number): FaceHit | null`
 - `export function pickTarget(player: Player): BlockRaycastHit | null`
+- `export function pickDroppedItem(player: Player): DroppedItem | null`
 - `export function pickWaterTarget(player: Player): BlockRaycastHit | null`
 - `export function pickBlock(player: Player): number | null`
 - `export function getPlacementPosition(player: Player): Vec3 | null`
@@ -2581,7 +2585,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Inventory/DroppedItem.ts` (420 LOC)
+## `Player/Inventory/DroppedItem.ts` (471 LOC)
 
 ### export class DroppedItem implements IUsable
 
@@ -2603,37 +2607,34 @@ export function createFastNoise3D(
 - `scene: Map1.mainScene,`
 - `name: ITEM_NAME_AABB,`
 - `position: this.#position,`
-- `renderingGroupId: 1,`
+- `renderOrder: 1,`
+- `use`
 
 **Accessors**
 - `get boxMesh(): Mesh`
+- `get position(): Vec3`
 - `get item(): Item`
+- `static get activeItems(): ReadonlyArray<DroppedItem>`
+- `get halfExtent(): number`
 
 **Methods**
 - `onBeforeRender(Map1.mainScene, (deltaMs: number) => {
-			for (const item of DroppedItem.#allItems) {
-				item.#updatePhysics(deltaMs);
+			const dt = deltaMs * 0.001; 
+			if (dt <= 0) return;
+
+			const items = DroppedItem.#allItems;
+			const len = items.length;
+			for (let i = 0; i < len; i++) {
+				items[i].#updatePhysics(dt);
 			}
 		})`
 - `static preloadAtlas(): void`
 - `addToScene(Map1.mainScene, this.#boxMesh)`
 - `vec3(this.#halfSize, this.#halfSize, this.#halfSize)`
-- `createVoxelColliderBlockSampler((x, y, z) => {
-					const blockId = getBlockByWorldCoords(x, y, z);
-					if (!isCollidableBlock(blockId)) return null;
-					return { blockId, blockState: getBlockStateByWorldCoords(x, y, z) };
-				}, {
-					getFenceDynamicShape,
-					getShapeForBlockId,
-					isFenceBlockId,
-					computeFenceNeighborMask,
-				})`
 - `setShaderTexture(this.#material, sharedAtlas)`
 - `setShaderTexture(this.#material, atlas)`
 - `pushItem(direction: Vec3): void`
-- `use(player: Player): void`
 - `removeFromScene(Map1.mainScene, this.#boxMesh)`
-- `scaleVec3InPlace(this.#velocity, keep)`
 - `copyVec3(this.#scratchProbe, this.#position)`
 - `setShaderVector3(this.#material, [finalR, finalG, finalB])`
 - `setShaderUniform(this.#material, tileSize)`
@@ -2642,10 +2643,11 @@ export function createFastNoise3D(
 			atlasRow * tileSize,
 		])`
 - `static disposeAll(): void`
+- `static nearestTo(player: Player): DroppedItem | null`
 
 **Module-level functions**
 - `function createDroppedItemMaterial(): ShaderMaterial`
-- `function buildUnitCube()`
+- `function getUnitCubeGeometry()`
 
 **Types / Interfaces / Enums**
 - interface `PlayerDroppedItemApi`
@@ -2803,7 +2805,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Player.ts` (200 LOC)
+## `Player/Player.ts` (207 LOC)
 
 ### export class Player
 
@@ -2838,7 +2840,6 @@ export function createFastNoise3D(
 - `public onKeyEvent(key: string, isKeyDown: boolean): void`
 - `public use(): void`
 - `public disposePicker(): void`
-- `public wouldBlockOverlapPlayer(...args: any[]): boolean`
 
 ---
 
@@ -3015,7 +3016,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/PlayerStats.ts` (83 LOC)
+## `Player/PlayerStats.ts` (85 LOC)
 
 ### export class PlayerStats
 
@@ -3045,7 +3046,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/PlayerVehicle.ts` (214 LOC)
+## `Player/PlayerVehicle.ts` (215 LOC)
 
 ### export class PlayerVehicle
 
@@ -3056,7 +3057,7 @@ export function createFastNoise3D(
 - `public scene: SceneContext`
 - `public camera: PlayerCamera`
 - `public isMounted`
-- `public mount: any = null`
+- `public mount: Mount | null = null`
 - `private readonly controlState`
 - `x: 0,`
 - `z: 0,`
@@ -3085,11 +3086,13 @@ export function createFastNoise3D(
 - `public unlockMovement(): void`
 - `public getSavedPosition(): Vec3`
 - `public restoreSavedPosition(position: unknown): boolean`
-- `public setMount(mount: any): void`
-- `public wouldBlockOverlapPlayer(): boolean`
+- `public setMount(mount: Mount | null): void`
 - `public respawn(): void`
 - `public update(deltaTime: number): void`
 - `public updateCameraAndVisuals(): void`
+
+**Types / Interfaces / Enums**
+- type `BlockShapeInfo`
 
 ---
 
@@ -3132,10 +3135,6 @@ export function createFastNoise3D(
 **Types / Interfaces / Enums**
 - type `CharacterSurfaceInfo`
 - enum `CharacterSupportedState`
-
----
-
-## `Shared/Constants.ts` (1 LOC)
 
 ---
 
@@ -3184,7 +3183,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Boat/BoatChunk.ts` (477 LOC)
+## `World/Boat/BoatChunk.ts` (474 LOC)
 
 ### export class BoatChunk
 
@@ -3382,7 +3381,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/ChunkLoadingSystem.ts` (830 LOC)
+## `World/Chunk/ChunkLoadingSystem.ts` (831 LOC)
 
 **Module-level functions**
 - `function _prefetchOnReadOk(idx: number, bytes: Uint8Array | null | undefined): void`
@@ -3576,7 +3575,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/ChunkWorkerPool.ts` (1741 LOC)
+## `World/Chunk/ChunkWorkerPool.ts` (1782 LOC)
 
 ### export class ChunkWorkerPool
 
@@ -3592,55 +3591,85 @@ export function createFastNoise3D(
 - `private workerTaskContext: WorkerTaskContext[] = []`
 - `private distantTerrainSharedInit: { positionsBuffer: SharedArrayBuffer; normalsBuffer: SharedArrayBuffer; surfaceTilesBuffer: SharedArrayBuffer; radius: number; gridStep: number; } | null = null`
 - `private workerRestartAtMs: number[] = []`
-- `private taskQueue: Chunk[] = []`
-- `private taskQueueReadIdx`
-- `private taskQueuePriority: Map<Chunk, boolean> = new Map()`
-- `private workerDispatchCounts: number[] = []`
-- `private _lastHeartbeatSeq: number[] = []`
-- `private lastDispatchRing`
-- `private pendingRemeshMap: Map<Chunk, boolean> = new Map()`
-- `private terrainTaskDeferLighting`
-- `private terrainTaskQueue: Set<Chunk> = new Set()`
-- `private deferredLightingQueue: Chunk[] = []`
-- `private deferredLightingQueueReadIdx`
-- `private deferredLightingQueuedIds`
-- `private deferredLightingSeedStates`
-- `private deferredLightingPumpScheduled`
-- `private distantTerrainReadyWorkers`
-- `private distantTerrainTaskQueue: DistantTerrainTask[] = []`
-- `private distantTerrainTaskQueueReadIdx`
-- `private lodPrecomputeQueue: Array<{ chunk: Chunk; lod: number }> = []`
-- `private lodPrecomputeQueueReadIdx`
-- `private pendingLodPrecomputeKeys`
-- `private lastPrecomputeScheduleTs`
-- `private lightSlotPendingSeq: Map<number, number> = new Map()`
-- `private lightChunkByHeaderSlot: Map<number, Chunk> = new Map()`
-- `private lightHeaderBuffer: SharedArrayBuffer | null = null`
-- `private closedFaceMaskBuffer: SharedArrayBuffer | null = null`
-- `private debugStats: ChunkWorkerPoolDebugStats = { workerCount: 0, idleWorkers: 0, busyWorkers: 0, peakBusyWorkers: 0, remeshQueueLength: 0, terrainQueueLength: 0, lodPrecomputeQueueLength: 0, distantTerrainQueueLength: 0, meshResultQueueLength: 0, deferredLightingQueueLength: 0, deferredLightingSeedStateCount: 0, deferredLightingPumpScheduled: false, deferredLightingEnqueuedTotal: 0, deferredLightingSeedReplacedTotal: 0, deferredLightingProcessedLastFrame: 0, deferredLightingProcessedTotal: 0, deferredLightingDroppedTotal: 0, dispatchBudgetPerTick: 0, lastDispatchCount: 0, totalDispatchCount: 0, lastMeshDrainMs: 0, lastMeshProcessed: 0, totalMeshProcessed: 0, totalTerrainDispatches: 0, totalRemeshDispatches: 0, totalLodPrecomputeDispatches: 0, totalDistantDispatches: 0, lightDirtyQueueLength: 0, lightDirtyProcessedLastFrame: 0, lightDirtyProcessedTotal: 0, lightDispatches: 0, workerDispatchCounts: [], lastDispatchWorkerIndices: [], }`
-- `public onDistantTerrainGenerated`
-- `chunkId: chunk.id,`
-- `headerSlot: chunk.lightHeaderSlot,`
-- `seedQueue: seedState.queue,`
-- `seedLength: seedState.length,`
-- `seq: this.nextLightSeq(),`
-- `chunkId: chunk.id,`
-- `headerSlot: chunk.lightHeaderSlot,`
-- `seq: this.nextLightSeq(),`
+- `private idleWorkerSet: Set<number> = new Set()`
+- `private idleWorkerIndices: number[] = []`
+- `private idleWorkerIndexPositions: Map<number, number> = new Map()`
+- `private _idleReadIdx`
+- `private meshResultQueue: FullMeshMessage[] = []`
+- `private meshResultQueueReadIdx`
+- `private remeshFlushScheduled`
+- `private processQueuePumpScheduled`
+- `private meshDrainScheduled`
+- `private pendingRemeshSaveIds`
+- `private pendingRemeshSaveTimer: ReturnType<typeof setTimeout> | null = null`
+- `private readonly REMESH_SAVE_DEBOUNCE_MS`
+- `private inFlightRemeshKeys`
+- `private rerunRemeshAfterInflight`
+- `private distantTerrainInFlight`
+- `private nextDistantTerrainRequestId`
+- `private opfsClient: OpfsClient | null = null`
+- `private opfsReady`
+- `private opfsInitPromise: Promise<void> | null = null`
+- `private opfsFlushCounter`
+- `private static readonly _flushPendingScratch: Array<[Chunk, boolean]> = []`
+- `private static readonly _queryScratch: Chunk[] = []`
+- `private static readonly _dedupScratch: Set<number> = new Set()`
+- `private readonly _boundScheduleRemesh`
+- `private static readonly _lodCandidateChunks: Chunk[] = []`
+- `private static readonly _lodCandidateLods: number[] = []`
+- `private static readonly _lodCandidateScores: number[] = []`
+- `private static readonly _lodCandidateIndices: number[] = []`
+- `private nextLightSeqCounter`
+- `private lightDirtyQueue: { seq: number; dirtySlots: Uint32Array }[] = []`
+- `private lightDirtyQueueReadIdx`
+- `private lightDirtyPumpScheduled`
 
 **Methods**
-- `private getDispatchBudgetPerTick(): number`
-- `private hasPendingTasks(): boolean`
-- `private getEffectiveIdleWorkerCount(): number`
-- `private scheduleProcessQueuePump(): void`
-- `private updateQueueDebugStats(): void`
-- `public getDebugStats(): ChunkWorkerPoolDebugStats`
-- `private recordWorkerDispatch(workerIndex: number): void`
-- `private setWorkerTaskContext(workerIndex: number, context: WorkerTaskContext): void`
-- `private resolveChunkByMessageId(chunkId: bigint): Chunk | undefined`
-- `private isSameLodRemeshInflight(chunk: Chunk): boolean`
-- `private clearInflightRemeshByMessage(chunkId: bigint, lod: number): void`
-- `private _markWorkerIdle(workerIndex: number): void`
+- `public static getLodCandidateScore(idx: number): number`
+- `private _removeWorkerFromIdle(workerIndex: number): void`
+- `private _consumeNextIdleWorker(): number`
+- `private _compactIdleWorkers(): void`
+- `private handleWorkerFailure(workerIndex: number, reason: unknown): void`
+- `public nextLightSeq(): number`
+- `public postLightMutate(req: {
+		chunkId: bigint;
+		headerSlot: number;
+		x: number;
+		y: number;
+		z: number;
+		oldPacked: number;
+		newPacked: number;
+		seq: number;
+	}): void`
+- `public postLightAddEmission(req: {
+		chunkId: bigint;
+		headerSlot: number;
+		x: number;
+		y: number;
+		z: number;
+		level: number;
+		seq: number;
+	}): void`
+- `public postLightSkyReconcile(req: {
+		chunkId: bigint;
+		headerSlot: number;
+		seq: number;
+	}): void`
+- `public postLightPropagateDeferred(req: {
+		chunkId: bigint;
+		headerSlot: number;
+		seedQueue: Uint16Array;
+		seedLength: number;
+		seq: number;
+	}): void`
+- `public enqueueDeferredLightFromSunlightInit(chunk: Chunk, seedQueue: Uint16Array, seedLength: number): void`
+- `private getLightWorker(): ChunkWorker`
+- `private broadcastLightRegister(chunk: Chunk): void`
+- `private broadcastLightUpdateBuffers(chunk: Chunk): void`
+- `private broadcastLightUnregister(chunk: Chunk): void`
+- `private onLightChunkLoaded(chunk: Chunk): void`
+- `private onLightChunkLayoutChanged(chunk: Chunk): void`
+- `private onLightChunkDisposed(chunk: Chunk): void`
 
 **Module-level functions**
 - `function compareLodCandidateScores(a: number, b: number): number`
@@ -3680,7 +3709,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/DataStructures/MeshData.ts` (28 LOC)
+## `World/Chunk/DataStructures/MeshData.ts` (7 LOC)
 
 ### export class MeshData
 
@@ -3689,12 +3718,6 @@ export function createFastNoise3D(
 - `faceDataB: Uint8Array = EMPTY_U8`
 - `faceDataC: Uint8Array = EMPTY_U8`
 - `faceCount`
-
-**Methods**
-- `public static deserialize(data: any): MeshData`
-
-**Module-level functions**
-- `function toU8(raw: unknown): Uint8Array`
 
 ---
 
@@ -3919,7 +3942,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Loading/ChunkProcessScheduler.ts` (413 LOC)
+## `World/Chunk/Loading/ChunkProcessScheduler.ts` (414 LOC)
 
 ### export class ChunkProcessScheduler
 
@@ -4444,7 +4467,7 @@ export function createFastNoise3D(
 - `addToScene(options.scene, this.#debugMesh)`
 - `public overlaps(position: Vec3): boolean`
 - `public moveAxis(position: Vec3, velocity: Vec3, axis: Axis, delta: number, stepSize: number): void`
-- `public syncDebugMesh(position: any): void`
+- `public syncDebugMesh(position: Vec3): void`
 - `public dispose(): void`
 - `public static toggleDebugEnabled(): void`
 - `public static setDebugEnabled(enabled: boolean): void`
@@ -4958,14 +4981,31 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Storage/opfs.worker.ts` (491 LOC)
+## `World/Storage/opfs.worker.ts` (479 LOC)
 
 **Module-level functions**
 - `async function _drainOpQueue(): Promise<void>`
 - `function _lruTouch(key: number): void`
 - `function _lruEvict(): number | null`
-- `function _lruDelete(key: number): void`
 - `function packRegionKey(rx: number, ry: number, rz: number): number`
+- `function regionFileName(rx: number, ry: number, rz: number): string`
+- `function resolveVoxelLocation(cx: number, cy: number, cz: number): void`
+- `function viewOf(data: ArrayBuffer | Uint8Array): Uint8Array`
+- `async function compressGzip(data: Uint8Array): Promise<Uint8Array>`
+- `async function decompressGzip(data: Uint8Array): Promise<Uint8Array>`
+- `function queueFlush(): void`
+- `async function _flushOp(): Promise<void>`
+- `function _scheduleFlush(): void`
+- `function markDirty(): void`
+- `function _flushAllRegions(): void`
+- `async function _closeRegionFile(rf: RegionFile): Promise<void>`
+- `async function ensureMeshStore(): Promise<OpfsChunkStore>`
+- `function resetMeshStore(): void`
+- `async function ensureRegionsDir(): Promise<FileSystemDirectoryHandle>`
+- `async function getRegionFile(rx: number, ry: number, rz: number): Promise<RegionFile>`
+- `async function openStores(): Promise<void>`
+- `function postResult(id: number, result: unknown): void`
+- `function postTransferResult(id: number, result: Uint8Array | null): void`
 - `function postError(id: number, message: string): void`
 
 **Types / Interfaces / Enums**
@@ -4988,8 +5028,8 @@ export function createFastNoise3D(
 - `private _tableView: DataView = new DataView(new ArrayBuffer(0))`
 - `private _size: number = 0`
 - `private _capacity: number = 0`
-- `private _dataSize: bigint = 0n`
-- `private _liveDataSize: bigint = 0n`
+- `private _dataSize: number = 0`
+- `private _liveDataSize: number = 0`
 - `private _dirty`
 - `private readonly _scratch: ArrayBuffer`
 - `private readonly _scratchDv: DataView`
@@ -5001,7 +5041,7 @@ export function createFastNoise3D(
 - `private _missCount`
 - `private _evictionCount`
 - `slotCount: this._size,`
-- `usedBytes: Number(this._dataSize),`
+- `usedBytes: this._dataSize,`
 - `totalBytes: this._fileSize,`
 - `capacity: this._capacity,`
 - `hitCount: this._hitCount,`
@@ -5033,7 +5073,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Storage/OpfsClient.ts` (178 LOC)
+## `World/Storage/OpfsClient.ts` (217 LOC)
 
 ### export class OpfsClient
 
@@ -5050,11 +5090,17 @@ export function createFastNoise3D(
 - `chunkX: decode(key),`
 - `chunkY: decode(key >> AXIS_BITS),`
 - `chunkZ: decode(key >> (AXIS_BITS * 2n)),`
+- `slotCount: number`
+- `usedBytes: number`
+- `totalBytes: number`
+- `capacity: number`
+- `hitCount: number`
+- `missCount: number`
+- `evictionCount: number`
 
 **Methods**
 - `resolve()`
 - `async ready(): Promise<void>`
-- `private _postMessage(type: OpfsMsg, payload: Record<string, any> = {}, transfer: Transferable[] = []): Promise<any>`
 - `private _onMessage(msg: { id: number; error?: string; result?: any }): void`
 - `private _packKey(key: bigint)`
 - `private _unpackKey(key: bigint)`
@@ -5066,11 +5112,16 @@ export function createFastNoise3D(
 - `async removeVoxel(key: bigint, lod: number): Promise<void>`
 - `async flush(): Promise<void>`
 - `async getStats(): Promise<`
+- `_resetWire(OpfsMsg.GetStats)`
 - `static async create(): Promise<OpfsClient>`
 - `async close(): Promise<void>`
 
 **Module-level functions**
+- `function _resetWire(type: OpfsMsg): void`
 - `function transferableBytes(data: Uint8Array): Uint8Array`
+
+**Types / Interfaces / Enums**
+- interface `WireMsg`
 
 ---
 
@@ -5140,14 +5191,18 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Texture/MaterialFactory.ts` (118 LOC)
+## `World/Texture/MaterialFactory.ts` (132 LOC)
 
 **Module-level functions**
-- `function createTexture(_scene: SceneContext, _path: string, uvScale: number): any`
-- `export function createMaterialByFolder(scene: SceneContext, folder: string, uvScale = 1, extension =, diff = true, nor = false, ao = false, spec = false): any`
-- `function buildMaterial(scene: SceneContext, mat: any, directory: string, baseName: string, resolution: string, extension: string, uvScale: number, diff: boolean, nor: boolean, ao: boolean, spec: boolean, cacheKey: string): any`
+- `function createTexture(_scene: SceneContext, _path: string, uvScale: number): RawTexture`
+- `export function createMaterialByFolder(scene: SceneContext, folder: string, uvScale = 1, extension =, diff = true, nor = false, ao = false, spec = false): RawMaterial`
+- `function buildMaterial(scene: SceneContext, mat: RawMaterial, directory: string, baseName: string, resolution: string, extension: string, uvScale: number, diff: boolean, nor: boolean, ao: boolean, spec: boolean, cacheKey: string): RawMaterial`
 - `export function getTexturePathFromFolder(folder: string, type =, extension =): string | null`
 - `export function disposeAll(): void`
+
+**Types / Interfaces / Enums**
+- interface `RawMaterial`
+- interface `RawTexture`
 
 ---
 

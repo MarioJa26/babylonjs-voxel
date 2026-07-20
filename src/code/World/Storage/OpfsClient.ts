@@ -8,6 +8,47 @@
 import { OpfsMsg } from "./OpfsMessageTypes";
 
 const _packScratch = { hi: 0, lo: 0 };
+
+// Reusable wire message. postMessage structured-clones synchronously at send
+// time, so the same object can be recycled every call — no per-op allocation
+// and no `{ id, type, ...payload }` spread (which copies every key). Fields
+// are wiped each call so stale values never leak across ops. String keys are
+// mandated by the postMessage protocol and are read once by the worker, so
+// they cost nothing hot; the dominant serialization cost is the Uint8Array.
+interface WireMsg {
+	id: number;
+	type: OpfsMsg;
+	keyHi: number;
+	keyLo: number;
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+	lod: number;
+	data?: Uint8Array;
+}
+const _wireMsg: WireMsg = {
+	id: 0,
+	type: OpfsMsg.Ping,
+	keyHi: 0,
+	keyLo: 0,
+	chunkX: 0,
+	chunkY: 0,
+	chunkZ: 0,
+	lod: 0,
+};
+
+function _resetWire(type: OpfsMsg): void {
+	const m = _wireMsg;
+	m.type = type;
+	m.keyHi = 0;
+	m.keyLo = 0;
+	m.chunkX = 0;
+	m.chunkY = 0;
+	m.chunkZ = 0;
+	m.lod = 0;
+	m.data = undefined;
+}
+
 const MAX_INFLIGHT = 2048;
 
 if ((MAX_INFLIGHT & (MAX_INFLIGHT - 1)) !== 0) {
@@ -20,7 +61,9 @@ function transferableBytes(data: Uint8Array): Uint8Array {
 	}
 	return data.slice();
 }
-
+const AXIS_BITS = 21n;
+const AXIS_MASK = (1n << AXIS_BITS) - 1n;
+const AXIS_BIAS = 1n << (AXIS_BITS - 1n);
 export class OpfsClient {
 	private _worker: Worker;
 	private _opResolves: (((v: any) => void) | null)[];
@@ -56,11 +99,7 @@ export class OpfsClient {
 		await this._ready;
 	}
 
-	private _postMessage(
-		type: OpfsMsg,
-		payload: Record<string, any> = {},
-		transfer: Transferable[] = [],
-	): Promise<any> {
+	private _dispatch<T = unknown>(transfer: Transferable[] = []): Promise<T> {
 		return new Promise((resolve, reject) => {
 			const id = this._nextId++;
 			const slot = (id - 1) & (MAX_INFLIGHT - 1);
@@ -71,7 +110,11 @@ export class OpfsClient {
 			}
 			this._opResolves[slot] = resolve;
 			this._opRejects[slot] = reject;
-			this._worker.postMessage({ id, type, ...payload }, transfer);
+
+			const m = _wireMsg;
+			m.id = id;
+			this._worker.postMessage(m, transfer);
+			m.data = undefined;
 		});
 	}
 
@@ -99,9 +142,6 @@ export class OpfsClient {
 		chunkY: number;
 		chunkZ: number;
 	} {
-		const AXIS_BITS = 21n;
-		const AXIS_MASK = (1n << AXIS_BITS) - 1n;
-		const AXIS_BIAS = 1n << (AXIS_BITS - 1n);
 		const decode = (v: bigint): number => {
 			return Number((v & AXIS_MASK) - AXIS_BIAS);
 		};
@@ -116,77 +156,75 @@ export class OpfsClient {
 
 	async readMesh(key: bigint, lod: number): Promise<Uint8Array | null> {
 		const { hi, lo } = this._packKey(key);
-		return await this._postMessage(OpfsMsg.ReadMesh, {
-			keyHi: hi,
-			keyLo: lo,
-			lod,
-		});
+		_resetWire(OpfsMsg.ReadMesh);
+		_wireMsg.keyHi = hi;
+		_wireMsg.keyLo = lo;
+		_wireMsg.lod = lod;
+		return await this._dispatch<Uint8Array | null>();
 	}
 
 	async writeMesh(key: bigint, lod: number, data: Uint8Array): Promise<void> {
 		const { hi, lo } = this._packKey(key);
 		const bytes = transferableBytes(data);
-		await this._postMessage(
-			OpfsMsg.WriteMesh,
-			{ keyHi: hi, keyLo: lo, lod, data: bytes },
-			[bytes.buffer],
-		);
+		_resetWire(OpfsMsg.WriteMesh);
+		_wireMsg.keyHi = hi;
+		_wireMsg.keyLo = lo;
+		_wireMsg.lod = lod;
+		_wireMsg.data = bytes;
+		return await this._dispatch<void>([bytes.buffer]);
 	}
 
 	async removeMesh(key: bigint, lod: number): Promise<boolean> {
 		const { hi, lo } = this._packKey(key);
-		return await this._postMessage(OpfsMsg.RemoveMesh, {
-			keyHi: hi,
-			keyLo: lo,
-			lod,
-		});
+		_resetWire(OpfsMsg.RemoveMesh);
+		_wireMsg.keyHi = hi;
+		_wireMsg.keyLo = lo;
+		_wireMsg.lod = lod;
+		return await this._dispatch<boolean>();
 	}
 
 	// ── Voxel storage (persistent region files) ────────────────
 
 	async readVoxel(key: bigint, lod: number): Promise<Uint8Array | null> {
 		const { chunkX, chunkY, chunkZ } = this._unpackKey(key);
-		return await this._postMessage(OpfsMsg.ReadVoxel, {
-			chunkX,
-			chunkY,
-			chunkZ,
-			lod,
-		});
+		_resetWire(OpfsMsg.ReadVoxel);
+		_wireMsg.chunkX = chunkX;
+		_wireMsg.chunkY = chunkY;
+		_wireMsg.chunkZ = chunkZ;
+		_wireMsg.lod = lod;
+		return await this._dispatch<Uint8Array | null>();
 	}
 
 	async writeVoxel(key: bigint, lod: number, data: Uint8Array): Promise<void> {
 		const { chunkX, chunkY, chunkZ } = this._unpackKey(key);
 		const bytes = transferableBytes(data);
-		await this._postMessage(
-			OpfsMsg.WriteVoxel,
-			{
-				chunkX,
-				chunkY,
-				chunkZ,
-				lod,
-				data: bytes,
-			},
-			[bytes.buffer],
-		);
+		_resetWire(OpfsMsg.WriteVoxel);
+		_wireMsg.chunkX = chunkX;
+		_wireMsg.chunkY = chunkY;
+		_wireMsg.chunkZ = chunkZ;
+		_wireMsg.lod = lod;
+		_wireMsg.data = bytes;
+		return await this._dispatch<void>([bytes.buffer]);
 	}
 
 	async removeVoxel(key: bigint, lod: number): Promise<void> {
 		const { chunkX, chunkY, chunkZ } = this._unpackKey(key);
-		await this._postMessage(OpfsMsg.RemoveVoxel, {
-			chunkX,
-			chunkY,
-			chunkZ,
-			lod,
-		});
+		_resetWire(OpfsMsg.RemoveVoxel);
+		_wireMsg.chunkX = chunkX;
+		_wireMsg.chunkY = chunkY;
+		_wireMsg.chunkZ = chunkZ;
+		_wireMsg.lod = lod;
+		return await this._dispatch<void>();
 	}
 
 	// ── Batch flush ─────────────────────────────────────────────
 
 	async flush(): Promise<void> {
-		await Promise.all([
-			this._postMessage(OpfsMsg.FlushVoxels),
-			this._postMessage(OpfsMsg.FlushMeshes),
-		]);
+		_resetWire(OpfsMsg.FlushVoxels);
+		const a = this._dispatch<void>();
+		_resetWire(OpfsMsg.FlushMeshes);
+		const b = this._dispatch<void>();
+		await Promise.all([a, b]);
 	}
 
 	async getStats(): Promise<{
@@ -198,7 +236,16 @@ export class OpfsClient {
 		missCount: number;
 		evictionCount: number;
 	}> {
-		return await this._postMessage(OpfsMsg.GetStats);
+		_resetWire(OpfsMsg.GetStats);
+		return await this._dispatch<{
+			slotCount: number;
+			usedBytes: number;
+			totalBytes: number;
+			capacity: number;
+			hitCount: number;
+			missCount: number;
+			evictionCount: number;
+		}>();
 	}
 
 	// ── Lifecycle ───────────────────────────────────────────────
@@ -210,7 +257,8 @@ export class OpfsClient {
 	}
 
 	async close(): Promise<void> {
-		await this._postMessage(OpfsMsg.Close);
+		_resetWire(OpfsMsg.Close);
+		await this._dispatch<void>();
 		this._worker.terminate();
 	}
 }

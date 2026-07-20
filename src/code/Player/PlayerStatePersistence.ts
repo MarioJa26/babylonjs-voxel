@@ -14,7 +14,7 @@ export class PlayerStatePersistence {
 	private static readonly PLAYER_INVENTORY_STORAGE_KEY =
 		"b102.playerInventory.v1";
 	private static readonly PLAYER_STATE_SAVE_INTERVAL_MS = 15000;
-	private static readonly CHUNK_SAVE_BATCH_SIZE = 12;
+	private static readonly CHUNK_SAVE_BATCH_SIZE = 32;
 	private static readonly CHUNK_SAVE_NOW_BATCH_SIZE = 64;
 
 	private lastPositionSaveMs = 0;

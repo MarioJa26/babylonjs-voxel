@@ -1,5 +1,6 @@
 import { type SavedChunkData, WorldStorage } from "../../WorldStorage";
 import type { Chunk } from "../Chunk";
+import { flushDirtyMergedGroups } from "../MergedMeshManager";
 import type { QueuedChunkRequest } from "./ChunkStreamingController";
 import { type InFlightProcessState, ProcessStage } from "./ChunkTypes";
 

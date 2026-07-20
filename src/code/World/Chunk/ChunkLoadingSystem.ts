@@ -612,8 +612,8 @@ export async function flushOpfsStorage(): Promise<void> {
 	if (!client) return;
 	try {
 		await client.flush();
-	} catch {
-		// best-effort; ignore errors
+	} catch (error) {
+		console.log(error);
 	}
 }
 
