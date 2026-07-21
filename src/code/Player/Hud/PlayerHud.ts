@@ -16,6 +16,7 @@ import { CraftMenu } from "../Crafting/CraftMenu/CraftMenu";
 import { PlayerInventory } from "../Inventory/PlayerInventory";
 import type { Player } from "../Player";
 import { Crosshair } from "./Crosshair/Crosshair";
+import { Chat } from "./Chat";
 
 export class PlayerHud {
 	#scene: SceneContext;
@@ -25,6 +26,10 @@ export class PlayerHud {
 
 	public get player(): Player {
 		return this.#player;
+	}
+
+	public get chat(): Chat {
+		return this.#chat;
 	}
 
 	static #inventory: PlayerInventory;
@@ -68,6 +73,8 @@ export class PlayerHud {
 	#staminaBarFill!: HTMLDivElement;
 	#manaBarFill!: HTMLDivElement;
 
+	readonly #chat: Chat;
+
 	constructor(scene: SceneContext, player: Player) {
 		this.#scene = scene;
 		this.#player = player;
@@ -87,6 +94,8 @@ export class PlayerHud {
 		});
 
 		void this.#craftMenu.build(this.#craftingContainer);
+
+		this.#chat = new Chat(player);
 	}
 
 	private initializeHUD(): HTMLDivElement {

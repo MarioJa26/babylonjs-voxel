@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-21T04:29:32.684Z
+Generated: 2026-07-21T12:00:31.492Z
 
-> **Summary:** 125 classes · 1705 members · 475 module-level functions · 51540 LOC
+> **Summary:** 126 classes · 1711 members · 476 module-level functions · 51756 LOC
 
 ---
 
@@ -1807,7 +1807,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Lib/GameRuntimeState.ts` (36 LOC)
+## `Lib/GameRuntimeState.ts` (37 LOC)
 
 **Module-level functions**
 - `export function isInCave(): boolean`
@@ -2262,7 +2262,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Controls/WalkingControls.ts` (285 LOC)
+## `Player/Controls/WalkingControls.ts` (278 LOC)
 
 ### export class WalkingControls implements IControls<PlayerVehicleMotor>
 
@@ -2279,7 +2279,7 @@ export function createFastNoise3D(
 - `public static KEY_DOWN`
 - `public static KEY_USE`
 - `public static KEY_PICK_BLOCK`
-- `public static KEY_PICK_BLOCK_EXACT`
+- `public static KEY_CHAT`
 - `public static KEY_JUMP`
 - `public static KEY_SPRINT`
 - `public static KEY_SNEAK`
@@ -2295,9 +2295,6 @@ export function createFastNoise3D(
 - `public static MOUSE2`
 - `public static KEY_F5`
 - `public static KEY_F6`
-- `item: Item | null | undefined,`
-- `requireExactState: boolean,`
-- `requireExactState: boolean,`
 
 **Accessors**
 - `public get controlledEntity(): PlayerVehicleMotor`
@@ -2488,6 +2485,39 @@ export function createFastNoise3D(
 
 ---
 
+## `Player/Hud/Chat.ts` (213 LOC)
+
+### export class Chat
+
+**Constructor**
+- `constructor(player: Player)`
+
+**Properties**
+- `default`
+
+**Accessors**
+- `get isOpen(): boolean`
+
+**Methods**
+- `setTimeout(() => {
+				el.classList.add(                    );
+				setTimeout(() => {
+					if (el.parentNode) el.parentNode.removeChild(el);
+				}, 1000);
+			}, 4000)`
+- `open(): void`
+- `close(): void`
+- `toggle(): void`
+- `addSystemMessage(text: string): void`
+
+**Module-level functions**
+- `function gamemodeName(gm: Gamemodes): string`
+
+**Types / Interfaces / Enums**
+- interface `ChatMessage`
+
+---
+
 ## `Player/Hud/Crosshair/Crosshair.ts` (116 LOC)
 
 ### export class Crosshair
@@ -2582,7 +2612,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Hud/PlayerHud.ts` (762 LOC)
+## `Player/Hud/PlayerHud.ts` (768 LOC)
 
 ### export class PlayerHud
 
@@ -2598,6 +2628,7 @@ export function createFastNoise3D(
 
 **Accessors**
 - `public get player(): Player`
+- `public get chat(): Chat`
 - `public get isMasonTableOpen(): boolean`
 - `public get selectedHotbarSlot(): number`
 - `public set selectedHotbarSlot(slot: number)`
@@ -2628,7 +2659,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Inventory/CubeIcon.ts` (329 LOC)
+## `Player/Inventory/CubeIcon.ts` (331 LOC)
 
 **Module-level functions**
 - `export function setNormalMapEnabled(enabled: boolean): void`
@@ -2716,7 +2747,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Inventory/Item.ts` (398 LOC)
+## `Player/Inventory/Item.ts` (399 LOC)
 
 ### export class Item implements IUsable
 

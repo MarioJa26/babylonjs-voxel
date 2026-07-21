@@ -4,12 +4,14 @@ import type { IControls } from "@/code/Interface/IControls";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import { validateChunksAround } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { MetadataContainer } from "../../Entities/MetadataContainer";
+import { isUiOpen, UiFocus } from "../../Lib/GameRuntimeState";
 import type { BlockRaycastHit } from "../Hud/BlockHighlight/BlockRaycaster";
 import { pickTarget } from "../Hud/BlockHighlight/BlockRaycaster";
 import { BlockBreakingHandler } from "../Hud/BlockHighlight/BreakingBlockHandler";
 import { Crosshair } from "../Hud/Crosshair/Crosshair";
 import type { Item } from "../Inventory/Item";
 import type { Player } from "../Player";
+import { Gamemodes } from "../PlayerStats";
 import type { PlayerVehicleMotor } from "../PlayerVehicleMotor";
 import { handleDebugKey } from "./DebugControlHelper";
 
@@ -53,7 +55,7 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 	public static KEY_DOWN = ["s", "arrowdown"];
 	public static KEY_USE = ["e"];
 	public static KEY_PICK_BLOCK = ["r"];
-	public static KEY_PICK_BLOCK_EXACT = ["t"];
+	public static KEY_CHAT = ["t"];
 	public static KEY_JUMP = [" "];
 	public static KEY_SPRINT = ["capslock"];
 	public static KEY_SNEAK = ["control", "shift"];
@@ -131,6 +133,8 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 	}
 
 	public onKeyDown(key: string) {
+		if (isUiOpen(UiFocus.chat)) return;
+
 		const isAlreadyPressed = this.pressedKeys.has(key);
 		if (isAlreadyPressed && !WalkingControls.KEY_JUMP.includes(key)) return;
 
@@ -147,6 +151,11 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 
 		if (handleDebugKey(key)) return;
 
+		if (WalkingControls.KEY_CHAT.includes(key)) {
+			this.#player.playerHud.chat.open();
+			return;
+		}
+
 		this.#updateMovementAxesFromPressedKeys();
 
 		if (WalkingControls.KEY_JUMP.includes(key)) {
@@ -154,7 +163,9 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 			const now = performance.now();
 
 			if (now - this.#lastJumpTapMs <= WalkingControls.DOUBLE_TAP_MS) {
-				this.#controlledEntity.toggleFlying();
+				if (this.#player.stats.gamemode !== Gamemodes.Survival) {
+					this.#controlledEntity.toggleFlying();
+				}
 				this.#controlledEntity.wantJump = 0;
 				this.#lastJumpTapMs = 0;
 			} else {
@@ -189,6 +200,12 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 	}
 
 	public onKeyUp(key: string) {
+		if (isUiOpen(UiFocus.chat)) {
+			this.pressedKeys.delete(key);
+			this.#updateMovementAxesFromPressedKeys();
+			return;
+		}
+
 		if (WalkingControls.KEY_JUMP.includes(key)) {
 			this.#controlledEntity.isJumpHeld = false;
 			this.#controlledEntity.wantJump = 0;
@@ -227,10 +244,7 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 			this.#controlledEntity.camera.zoomIn();
 		}
 
-		if (
-			WalkingControls.KEY_PICK_BLOCK.includes(key) ||
-			WalkingControls.KEY_PICK_BLOCK_EXACT.includes(key)
-		) {
+		if (WalkingControls.KEY_PICK_BLOCK.includes(key)) {
 			this.#handlePickBlock(key);
 		}
 
@@ -259,63 +273,40 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 		this.#updateMovementAxesFromPressedKeys();
 	}
 
-	#handlePickBlock(key: string) {
+	#handlePickBlock(_key: string) {
 		const hit = pickTarget(this.#player);
 		if (!hit) return;
 
 		const blockId = hit.blockId;
-		const blockState = hit.blockState;
 
 		if (blockId === 0) return;
 
-		const isExactPickMode = WalkingControls.KEY_PICK_BLOCK_EXACT.includes(key);
-
-		const matchesPickedBlock = (
-			item: Item | null | undefined,
-			requireExactState: boolean,
-		): boolean => {
+		const matchesPickedBlock = (item: Item | null | undefined): boolean => {
 			if (!item) return false;
-
 			const itemBlockId = item.blockId ?? item.itemId;
-			if (itemBlockId !== blockId) return false;
-			if (!requireExactState) return true;
-
-			return (item.blockState ?? 0) === blockState;
+			return itemBlockId === blockId;
 		};
 
-		const trySelectOrSwapMatchingItem = (
-			requireExactState: boolean,
-		): boolean => {
-			const inventory = this.#player.playerInventory;
-			for (let i = 0; i < 10; i++) {
-				const hotbarItem = inventory.inventory[0][i].item;
-				if (matchesPickedBlock(hotbarItem, requireExactState)) {
-					this.#player.playerHud.selectedHotbarSlot = i;
-					return true;
+		const inventory = this.#player.playerInventory;
+		for (let i = 0; i < 10; i++) {
+			const hotbarItem = inventory.inventory[0][i].item;
+			if (matchesPickedBlock(hotbarItem)) {
+				this.#player.playerHud.selectedHotbarSlot = i;
+				return;
+			}
+		}
+
+		const inv = inventory.inventory;
+		for (let r = 1; r < inv.length; r++) {
+			for (let c = 0; c < inv[r].length; c++) {
+				if (matchesPickedBlock(inv[r][c].item)) {
+					const selectedSlot = this.#player.playerHud.selectedHotbarSlot;
+					const hotbarSlot = inv[0][selectedSlot];
+					const inventorySlot = inv[r][c];
+					hotbarSlot.swapSlots(inventorySlot);
+					return;
 				}
 			}
-
-			const inv = inventory.inventory;
-			for (let r = 1; r < inv.length; r++) {
-				for (let c = 0; c < inv[r].length; c++) {
-					if (matchesPickedBlock(inv[r][c].item, requireExactState)) {
-						const selectedSlot = this.#player.playerHud.selectedHotbarSlot;
-						const hotbarSlot = inv[0][selectedSlot];
-						const inventorySlot = inv[r][c];
-						hotbarSlot.swapSlots(inventorySlot);
-						return true;
-					}
-				}
-			}
-
-			return false;
-		};
-
-		if (isExactPickMode) {
-			if (trySelectOrSwapMatchingItem(true)) return;
-			if (trySelectOrSwapMatchingItem(false)) return;
-		} else {
-			if (trySelectOrSwapMatchingItem(false)) return;
 		}
 	}
 

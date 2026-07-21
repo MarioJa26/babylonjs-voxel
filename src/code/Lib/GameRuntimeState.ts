@@ -36,6 +36,7 @@ export const enum UiFocus {
 	pauseMenu,
 	inventory,
 	masonTable,
+	chat,
 }
 
 const _openUi = new Set<UiFocus>();
