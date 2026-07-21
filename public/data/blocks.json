@@ -516,5 +516,11 @@
 		"path": "/texture/dirt/Grass006_1K",
 		"shape": "cross_diagonal",
 		"hardness": 0.6
+	},
+	{
+		"id": "WoodCrate",
+		"name": "wood_crate",
+		"path": "/texture/wood/wood_crate_01_1k",
+		"hardness": 1.0
 	}
 ]

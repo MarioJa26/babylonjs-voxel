@@ -19,7 +19,7 @@ type QueuedOp = {
 };
 
 // Ring buffer with power-of-two capacity so wrap is a bitmask.
-const QUEUE_CAP = 256; // must be power of two
+const QUEUE_CAP = 4096; // must be power of two
 const QUEUE_MASK = QUEUE_CAP - 1;
 const _opRing: (QueuedOp | undefined)[] = new Array(QUEUE_CAP);
 let _ringHead = 0; // next dequeue index
