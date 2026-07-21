@@ -53,10 +53,12 @@ let _diffuseReady = false;
 const _diffuseCanvas = document.createElement("canvas");
 const _diffuseCtx = _diffuseCanvas.getContext("2d", {
 	willReadFrequently: true,
+	alpha: false,
 })!;
 const _normalCanvas = document.createElement("canvas");
 const _normalCtx = _normalCanvas.getContext("2d", {
 	willReadFrequently: true,
+	alpha: false,
 })!;
 
 // ─── Lit tile cache: flat array indexed by (srcY * atlasCols + srcX) ───
@@ -73,8 +75,8 @@ const _LY = -0.6;
 const _LZ = 0.54;
 const _AMBIENT = 0.33;
 const _ONE_MINUS_AMBIENT = 0.67; // 1 - _AMBIENT — precomputed
-const _POWER = 1.6;
-const _BOOST = 2.15;
+const _POWER = 1.5;
+const _BOOST = 2.0;
 
 // ─── Pre-computed brightness LUT (256 entries) ───
 // Avoids Math.pow + multiply per pixel. Index = quantised raw dot product.

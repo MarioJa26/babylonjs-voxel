@@ -426,7 +426,7 @@ export class Item implements IUsable {
 		const ctx = canvas.getContext("2d");
 		if (ctx === null) return;
 
-		const img = _ensureSharedAtlas();
+		const img = _sharedAtlasImg!; // always non-null after module init
 		const ready = _sharedAtlasLoaded && img.width > 0;
 
 		drawCubeIcon(
@@ -476,3 +476,5 @@ export class Item implements IUsable {
 		return this._stackSize;
 	}
 }
+// ─── EAGER LOAD: begin fetching immediately on import ───
+_ensureSharedAtlas();
