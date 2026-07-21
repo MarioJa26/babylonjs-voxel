@@ -15,7 +15,7 @@ export interface CubeIconOptions {
 	rightShade?: number;
 }
 
-// ─── Frozen defaults: V8 can inline these as constants ───
+// ─── Frozen defaults ───
 const R_DEFAULT = 25;
 const RY_DEFAULT = 16;
 const SIZE_DEFAULT = 64;
@@ -24,15 +24,126 @@ const LEFT_SHADE = 0.79;
 const RIGHT_SHADE = 0.37;
 const TILE = 25;
 
-// ─── Pre-allocated scratch buffers (module-level, zero GC in hot path) ───
-// 7 vertices × 2 coords = 14 floats for local space
+// ─── Normal map atlas ───
+const NORMAL_ATLAS_URL = "/texture/normal_atlas.png";
+let _normalImg: HTMLImageElement | null = null;
+let _normalReady = false;
+
+// Diffuse atlas (same one Item.ts loads)
+const DIFFUSE_ATLAS_URL = "/texture/diffuse_atlas.png";
+let _diffuseImg: HTMLImageElement | null = null;
+let _diffuseReady = false;
+
+// Offscreen canvases for pixel reading
+const _diffuseCanvas = document.createElement("canvas");
+const _diffuseCtx = _diffuseCanvas.getContext("2d", {
+	willReadFrequently: true,
+});
+const _normalCanvas = document.createElement("canvas");
+const _normalCtx = _normalCanvas.getContext("2d", { willReadFrequently: true });
+
+// Cache: lit tile canvas per (srcX, srcY) key
+const _litTileCache = new Map<number, HTMLCanvasElement>();
+
+// Fixed light direction (normalised): top-left-front
+const _LX = 0.267;
+const _LY = -0.6;
+const _LZ = 0.54;
+// Ambient floor: lowest brightness for a face turned fully away from light.
+const _AMBIENT = 0.33;
+// Power curve applied to the raw dot-product brightness. Values < 1 widen
+// the contrast range so grooves read as much darker while flat surfaces
+// stay near full brightness.
+const _POWER = 1.6;
+// Boost after the power curve so the overall image doesn't go too dark.
+const _BOOST = 2.15;
+
+function _loadAtlas(
+	url: string,
+	canvas: CanvasRenderingContext2D | null,
+): HTMLImageElement {
+	const img = new Image();
+	img.onload = () => {
+		if (canvas) {
+			const cvs = canvas.canvas;
+			cvs.width = img.width;
+			cvs.height = img.height;
+			canvas.drawImage(img, 0, 0);
+		}
+		if (url === DIFFUSE_ATLAS_URL) {
+			_diffuseImg = img;
+			_diffuseReady = true;
+			_litTileCache.clear();
+		} else {
+			_normalImg = img;
+			_normalReady = true;
+			_litTileCache.clear();
+		}
+	};
+	img.src = url;
+	return img;
+}
+
+function _ensureAtlases(): void {
+	if (!_diffuseImg) _loadAtlas(DIFFUSE_ATLAS_URL, _diffuseCtx);
+	if (!_normalImg) _loadAtlas(NORMAL_ATLAS_URL, _normalCtx);
+}
+
+/**
+ * Builds a lit tile canvas: draws the diffuse tile, reads normal map pixels,
+ * computes per-pixel brightness, and multiplies into the diffuse RGB.
+ * Result is cached by source position so each tile is processed at most once.
+ */
+function _buildLitTile(srcX: number, srcY: number): HTMLCanvasElement | null {
+	if (!_diffuseReady || !_normalReady || !_diffuseCtx || !_normalCtx)
+		return null;
+
+	const key = srcY * 400 + srcX;
+	const cached = _litTileCache.get(key);
+	if (cached) return cached;
+
+	// Read diffuse tile pixels
+	const diffData = _diffuseCtx.getImageData(srcX, srcY, TILE, TILE).data;
+	// Read normal tile pixels
+	const normData = _normalCtx.getImageData(srcX, srcY, TILE, TILE).data;
+
+	const out = document.createElement("canvas");
+	out.width = TILE;
+	out.height = TILE;
+	const octx = out.getContext("2d")!;
+	const outImg = octx.createImageData(TILE, TILE);
+	const outData = outImg.data;
+
+	for (let i = 0; i < diffData.length; i += 4) {
+		// Normal map RGB → [-1,1] range
+		const nx = (normData[i] / 255) * 2 - 1;
+		const ny = (normData[i + 1] / 255) * 2 - 1;
+		const nz = (normData[i + 2] / 255) * 2 - 1;
+
+		// Raw dot product with light direction → 0..1
+		const raw = Math.max(0, nx * _LX + ny * _LY + nz * _LZ);
+		// Mix with ambient, apply power curve to widen contrast, boost to
+		// compensate overall darkening.
+		const lit = raw * (1 - _AMBIENT) + _AMBIENT;
+		const brightness = lit ** _POWER * _BOOST;
+
+		outData[i] = Math.min(255, (diffData[i] * brightness) | 0);
+		outData[i + 1] = Math.min(255, (diffData[i + 1] * brightness) | 0);
+		outData[i + 2] = Math.min(255, (diffData[i + 2] * brightness) | 0);
+		outData[i + 3] = diffData[i + 3]; // preserve alpha
+	}
+
+	octx.putImageData(outImg, 0, 0);
+	_litTileCache.set(key, out);
+	return out;
+}
+
+// ─── Pre-allocated scratch buffers ───
 const _lx = new Float64Array(7);
 const _ly = new Float64Array(7);
-// Transformed screen coords
 const _sx = new Float64Array(7);
 const _sy = new Float64Array(7);
 
-// Pre-computed shade overlay strings (avoid template literal allocation per frame)
 const _shadeCache = new Map<number, string>();
 function getShadeFill(shade: number): string {
 	let cached = _shadeCache.get(shade);
@@ -46,18 +157,14 @@ function getShadeFill(shade: number): string {
 	return cached;
 }
 
-// ─── Face index tables (avoid per-call array allocation) ───
-// topFace: [0,1,3,2] → indices into vertex array
-// leftFace: [2,3,6,4]
-// rightFace: [3,1,5,6]
+// ─── Face index tables ───
 const TOP_FACE = [0, 1, 3, 2] as const;
 const LEFT_FACE = [2, 3, 6, 4] as const;
 const RIGHT_FACE = [3, 1, 5, 6] as const;
-
 // Vertex indices: 0=top, 1=topR, 2=topL, 3=topB, 4=botL, 5=botR, 6=botF
 
 /**
- * Draws a Minecraft-style isometric cube icon. Zero-allocation hot path.
+ * Draws a Minecraft-style isometric cube icon.
  */
 export function drawCubeIcon(
 	ctx: CanvasRenderingContext2D,
@@ -67,7 +174,6 @@ export function drawCubeIcon(
 	heightScale: number,
 	options?: CubeIconOptions,
 ): void {
-	// Inline defaults — avoid object spread allocation
 	const R = options?.radius ?? R_DEFAULT;
 	const ry = options?.ry ?? RY_DEFAULT;
 	const size = options?.size ?? SIZE_DEFAULT;
@@ -75,33 +181,28 @@ export function drawCubeIcon(
 	const leftShade = options?.leftShade ?? LEFT_SHADE;
 	const rightShade = options?.rightShade ?? RIGHT_SHADE;
 
+	_ensureAtlases();
+
 	const H = 30.0 * heightScale;
-	const ry2 = ry + ry; // 2*ry, avoid multiply
+	const ry2 = ry + ry;
 
-	// ─── Compute local-space vertices into pre-allocated buffers ───
-	// 0: top (0,0)
+	// ─── Compute local-space vertices ───
 	_lx[0] = 0;
-	_ly[0] = 0;
-	// 1: topR (R, ry)
+	_ly[0] = 0; // top
 	_lx[1] = R;
-	_ly[1] = ry;
-	// 2: topL (-R, ry)
+	_ly[1] = ry; // topR
 	_lx[2] = -R;
-	_ly[2] = ry;
-	// 3: topB (0, 2*ry)
+	_ly[2] = ry; // topL
 	_lx[3] = 0;
-	_ly[3] = ry2;
-	// 4: botL (-R, ry+H)
+	_ly[3] = ry2; // topB
 	_lx[4] = -R;
-	_ly[4] = ry + H;
-	// 5: botR (R, ry+H)
+	_ly[4] = ry + H; // botL
 	_lx[5] = R;
-	_ly[5] = ry + H;
-	// 6: botF (0, 2*ry+H)
+	_ly[5] = ry + H; // botR
 	_lx[6] = 0;
-	_ly[6] = ry2 + H;
+	_ly[6] = ry2 + H; // botF
 
-	// ─── Compute bounding box without spread (avoid temp array + iterator) ───
+	// ─── Bounding box ───
 	let minX = _lx[0],
 		maxX = _lx[0];
 	let minY = _ly[0],
@@ -115,22 +216,20 @@ export function drawCubeIcon(
 		else if (y > maxY) maxY = y;
 	}
 
-	// Centering offset
 	const offX = ((size - (maxX - minX)) * 0.5 - minX) | 0;
 	const offY = ((size - (maxY - minY)) * 0.5 - minY) | 0;
 
-	// ─── Transform to screen space ───
 	for (let i = 0; i < 7; i++) {
 		_sx[i] = _lx[i] + offX;
 		_sy[i] = _ly[i] + offY;
 	}
 
-	// ─── Reset canvas state once ───
+	// ─── Reset canvas ───
 	ctx.imageSmoothingEnabled = false;
 	ctx.setTransform(1, 0, 0, 1, 0, 0);
 	ctx.clearRect(0, 0, size, size);
 
-	// ─── Resolve atlas tiles (branchless fallback chain) ───
+	// ─── Resolve atlas tiles ───
 	const topTile = getFaceAtlasTile(blockId, FaceName.Top);
 	const topTX = topTile ? topTile[0] * TILE : 0;
 	const topTY = topTile ? topTile[1] * TILE : 0;
@@ -148,10 +247,18 @@ export function drawCubeIcon(
 	const rightTX = rightTile ? rightTile[0] * TILE : topTX;
 	const rightTY = rightTile ? rightTile[1] * TILE : topTY;
 
-	// ─── Draw faces (top → left → right, painter's order) ───
-	_drawFace(ctx, TOP_FACE, atlasImage, atlasReady, topTX, topTY, topShade);
-	_drawFace(ctx, LEFT_FACE, atlasImage, atlasReady, leftTX, leftTY, leftShade);
-	_drawFace(
+	// ─── Draw faces with normal-map lighting ───
+	_drawLitFace(ctx, TOP_FACE, atlasImage, atlasReady, topTX, topTY, topShade);
+	_drawLitFace(
+		ctx,
+		LEFT_FACE,
+		atlasImage,
+		atlasReady,
+		leftTX,
+		leftTY,
+		leftShade,
+	);
+	_drawLitFace(
 		ctx,
 		RIGHT_FACE,
 		atlasImage,
@@ -161,7 +268,7 @@ export function drawCubeIcon(
 		rightShade,
 	);
 
-	// ─── Silhouette outline (single path, no redundant state changes) ───
+	// ─── Silhouette outline ───
 	ctx.strokeStyle = "rgba(0,0,0,0.5)";
 	ctx.lineWidth = 1.5;
 	ctx.beginPath();
@@ -176,10 +283,11 @@ export function drawCubeIcon(
 }
 
 /**
- * Draws one parallelogram face. Uses pre-allocated screen coords.
- * Minimal save/restore — only one pair for clip+transform, one for shade.
+ * Draws one parallelogram face. The diffuse tile is lit by the normal map
+ * (per-pixel brightness), then drawn onto the face via affine transform.
+ * A directional shade overlay is applied on top.
  */
-function _drawFace(
+function _drawLitFace(
 	ctx: CanvasRenderingContext2D,
 	faceIdx: readonly number[],
 	img: HTMLImageElement | null,
@@ -202,7 +310,7 @@ function _drawFace(
 	const x3 = _sx[i3],
 		y3 = _sy[i3];
 
-	// ─── Clip + texture (single save/restore) ───
+	// ─── Clip + texture ───
 	ctx.save();
 	ctx.beginPath();
 	ctx.moveTo(x0, y0);
@@ -212,20 +320,26 @@ function _drawFace(
 	ctx.closePath();
 	ctx.clip();
 
-	if (ready && img) {
-		// Affine transform: unit square → parallelogram
-		// U axis: i0→i1, V axis: i0→i3
-		ctx.setTransform(x1 - x0, y1 - y0, x3 - x0, y3 - y0, x0, y0);
-		ctx.drawImage(img, srcX, srcY, TILE, TILE, 0, 0, 1, 1);
+	if (ready) {
+		// Try to build a lit tile from the normal map
+		const litTile = _buildLitTile(srcX, srcY);
+		if (litTile) {
+			// Draw the lit tile canvas (already has per-pixel lighting baked in)
+			ctx.setTransform(x1 - x0, y1 - y0, x3 - x0, y3 - y0, x0, y0);
+			ctx.drawImage(litTile, 0, 0, TILE, TILE, 0, 0, 1, 1);
+		} else if (img) {
+			// Normal map not ready yet — fall back to raw diffuse tile
+			ctx.setTransform(x1 - x0, y1 - y0, x3 - x0, y3 - y0, x0, y0);
+			ctx.drawImage(img, srcX, srcY, TILE, TILE, 0, 0, 1, 1);
+		}
 	} else {
-		// Fallback: flat grey (single fillRect in identity space)
 		ctx.setTransform(1, 0, 0, 1, 0, 0);
 		ctx.fillStyle = "#9a9a9a";
 		ctx.fillRect(x0 - 40, y0 - 40, 80, 80);
 	}
 	ctx.restore();
 
-	// ─── Shade overlay (identity transform, cached fill string) ───
+	// ─── Shade overlay ───
 	ctx.save();
 	ctx.setTransform(1, 0, 0, 1, 0, 0);
 	ctx.beginPath();
@@ -251,6 +365,5 @@ export function getShapeHeightScale(blockId: number | null): number {
 		const h = b.max[1] - b.min[1];
 		if (h > maxH) maxH = h;
 	}
-	// Clamp without Math.max/min (avoids function call overhead in V8)
 	return maxH < 0.25 ? 0.25 : maxH > 1 ? 1 : maxH;
 }
