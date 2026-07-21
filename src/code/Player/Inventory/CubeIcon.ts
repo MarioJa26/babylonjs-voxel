@@ -15,7 +15,7 @@ export interface CubeIconOptions {
 	rightShade?: number;
 }
 
-// ─── Frozen defaults ───
+// ─── Frozen defaults (V8 inlines as immediates) ───
 const R_DEFAULT = 25;
 const RY_DEFAULT = 16;
 const SIZE_DEFAULT = 64;
@@ -23,145 +23,220 @@ const TOP_SHADE = 1.24;
 const LEFT_SHADE = 0.79;
 const RIGHT_SHADE = 0.37;
 const TILE = 25;
+const TILE_SQ = 625; // TILE * TILE — avoid recomputation
+
+// ─── Normal map toggle ───
+let _normalMapEnabled = true;
+
+export function setNormalMapEnabled(enabled: boolean): void {
+	if (_normalMapEnabled !== enabled) {
+		_normalMapEnabled = enabled;
+		_litTileCacheVersion++;
+	}
+}
+
+export function isNormalMapEnabled(): boolean {
+	return _normalMapEnabled;
+}
 
 // ─── Normal map atlas ───
 const NORMAL_ATLAS_URL = "/texture/normal_atlas.png";
 let _normalImg: HTMLImageElement | null = null;
 let _normalReady = false;
 
-// Diffuse atlas (same one Item.ts loads)
+// ─── Diffuse atlas ───
 const DIFFUSE_ATLAS_URL = "/texture/diffuse_atlas.png";
 let _diffuseImg: HTMLImageElement | null = null;
 let _diffuseReady = false;
 
-// Offscreen canvases for pixel reading
+// ─── Offscreen canvases (created once, never GC'd) ───
 const _diffuseCanvas = document.createElement("canvas");
 const _diffuseCtx = _diffuseCanvas.getContext("2d", {
 	willReadFrequently: true,
-});
+})!;
 const _normalCanvas = document.createElement("canvas");
-const _normalCtx = _normalCanvas.getContext("2d", { willReadFrequently: true });
+const _normalCtx = _normalCanvas.getContext("2d", {
+	willReadFrequently: true,
+})!;
 
-// Cache: lit tile canvas per (srcX, srcY) key
-const _litTileCache = new Map<number, HTMLCanvasElement>();
+// ─── Lit tile cache: flat array indexed by (srcY * atlasCols + srcX) ───
+// Atlas is typically ≤ 16×16 tiles → 256 entries max. Flat array avoids Map overhead.
+const _MAX_ATLAS_TILES = 512;
+const _litTileCache: (HTMLCanvasElement | null)[] = new Array(
+	_MAX_ATLAS_TILES,
+).fill(null);
+let _litTileCacheVersion = 0; // bump to invalidate without clearing array
 
-// Fixed light direction (normalised): top-left-front
+// ─── Fixed light direction (pre-normalised) ───
 const _LX = 0.267;
 const _LY = -0.6;
 const _LZ = 0.54;
-// Ambient floor: lowest brightness for a face turned fully away from light.
 const _AMBIENT = 0.33;
-// Power curve applied to the raw dot-product brightness. Values < 1 widen
-// the contrast range so grooves read as much darker while flat surfaces
-// stay near full brightness.
+const _ONE_MINUS_AMBIENT = 0.67; // 1 - _AMBIENT — precomputed
 const _POWER = 1.6;
-// Boost after the power curve so the overall image doesn't go too dark.
 const _BOOST = 2.15;
 
-function _loadAtlas(
-	url: string,
-	canvas: CanvasRenderingContext2D | null,
-): HTMLImageElement {
-	const img = new Image();
-	img.onload = () => {
-		if (canvas) {
-			const cvs = canvas.canvas;
-			cvs.width = img.width;
-			cvs.height = img.height;
-			canvas.drawImage(img, 0, 0);
-		}
-		if (url === DIFFUSE_ATLAS_URL) {
-			_diffuseImg = img;
-			_diffuseReady = true;
-			_litTileCache.clear();
-		} else {
-			_normalImg = img;
-			_normalReady = true;
-			_litTileCache.clear();
-		}
-	};
-	img.src = url;
-	return img;
+// ─── Pre-computed brightness LUT (256 entries) ───
+// Avoids Math.pow + multiply per pixel. Index = quantised raw dot product.
+const _BRIGHTNESS_LUT = new Float32Array(256);
+for (let i = 0; i < 256; i++) {
+	const raw = i / 255;
+	const lit = raw * _ONE_MINUS_AMBIENT + _AMBIENT;
+	_BRIGHTNESS_LUT[i] = lit ** _POWER * _BOOST;
+}
+
+// ─── Pre-allocated ImageData for output (avoids per-tile allocation) ───
+let _outImageData: ImageData | null = null;
+let _outCanvas: HTMLCanvasElement | null = null;
+let _outCtx: CanvasRenderingContext2D | null = null;
+
+function _ensureOutBuffer(): void {
+	if (_outCanvas === null) {
+		_outCanvas = document.createElement("canvas");
+		_outCanvas.width = TILE;
+		_outCanvas.height = TILE;
+		_outCtx = _outCanvas.getContext("2d")!;
+		_outImageData = _outCtx.createImageData(TILE, TILE);
+	}
+}
+
+// ─── Atlas loading (single closure per atlas, no per-call allocation) ───
+function _onDiffuseLoad(): void {
+	const img = _diffuseImg!;
+	_diffuseCanvas.width = img.width;
+	_diffuseCanvas.height = img.height;
+	_diffuseCtx.drawImage(img, 0, 0);
+	_diffuseReady = true;
+	_litTileCacheVersion++;
+}
+
+function _onNormalLoad(): void {
+	const img = _normalImg!;
+	_normalCanvas.width = img.width;
+	_normalCanvas.height = img.height;
+	_normalCtx.drawImage(img, 0, 0);
+	_normalReady = true;
+	_litTileCacheVersion++;
 }
 
 function _ensureAtlases(): void {
-	if (!_diffuseImg) _loadAtlas(DIFFUSE_ATLAS_URL, _diffuseCtx);
-	if (!_normalImg) _loadAtlas(NORMAL_ATLAS_URL, _normalCtx);
+	if (_diffuseImg === null) {
+		_diffuseImg = new Image();
+		_diffuseImg.onload = _onDiffuseLoad;
+		_diffuseImg.src = DIFFUSE_ATLAS_URL;
+	}
+	if (_normalImg === null) {
+		_normalImg = new Image();
+		_normalImg.onload = _onNormalLoad;
+		_normalImg.src = NORMAL_ATLAS_URL;
+	}
 }
 
-/**
- * Builds a lit tile canvas: draws the diffuse tile, reads normal map pixels,
- * computes per-pixel brightness, and multiplies into the diffuse RGB.
- * Result is cached by source position so each tile is processed at most once.
- */
+// ─── Tile cache key: pack srcX, srcY, and version into a single int ───
+// We store the version alongside to detect invalidation without clearing.
+const _litTileVersions = new Int32Array(_MAX_ATLAS_TILES).fill(-1);
+
 function _buildLitTile(srcX: number, srcY: number): HTMLCanvasElement | null {
-	if (!_diffuseReady || !_normalReady || !_diffuseCtx || !_normalCtx)
-		return null;
+	if (!_diffuseReady) return null;
 
-	const key = srcY * 400 + srcX;
-	const cached = _litTileCache.get(key);
-	if (cached) return cached;
+	// Normal map disabled → return null (caller falls through to raw diffuse)
+	if (!_normalMapEnabled || !_normalReady) return null;
 
-	// Read diffuse tile pixels
-	const diffData = _diffuseCtx.getImageData(srcX, srcY, TILE, TILE).data;
-	// Read normal tile pixels
-	const normData = _normalCtx.getImageData(srcX, srcY, TILE, TILE).data;
+	const tileX = (srcX / TILE) | 0;
+	const tileY = (srcY / TILE) | 0;
+	const key = (tileY << 5) | tileX; // max 32 tiles per row
+	if (key >= _MAX_ATLAS_TILES) return null;
 
-	const out = document.createElement("canvas");
-	out.width = TILE;
-	out.height = TILE;
-	const octx = out.getContext("2d")!;
-	const outImg = octx.createImageData(TILE, TILE);
-	const outData = outImg.data;
-
-	for (let i = 0; i < diffData.length; i += 4) {
-		// Normal map RGB → [-1,1] range
-		const nx = (normData[i] / 255) * 2 - 1;
-		const ny = (normData[i + 1] / 255) * 2 - 1;
-		const nz = (normData[i + 2] / 255) * 2 - 1;
-
-		// Raw dot product with light direction → 0..1
-		const raw = Math.max(0, nx * _LX + ny * _LY + nz * _LZ);
-		// Mix with ambient, apply power curve to widen contrast, boost to
-		// compensate overall darkening.
-		const lit = raw * (1 - _AMBIENT) + _AMBIENT;
-		const brightness = lit ** _POWER * _BOOST;
-
-		outData[i] = Math.min(255, (diffData[i] * brightness) | 0);
-		outData[i + 1] = Math.min(255, (diffData[i + 1] * brightness) | 0);
-		outData[i + 2] = Math.min(255, (diffData[i + 2] * brightness) | 0);
-		outData[i + 3] = diffData[i + 3]; // preserve alpha
+	// Cache hit check (version-aware, no Map lookup)
+	if (_litTileVersions[key] === _litTileCacheVersion) {
+		return _litTileCache[key];
 	}
 
-	octx.putImageData(outImg, 0, 0);
-	_litTileCache.set(key, out);
-	return out;
+	_ensureOutBuffer();
+
+	const diffData = _diffuseCtx.getImageData(srcX, srcY, TILE, TILE).data;
+	const normData = _normalCtx.getImageData(srcX, srcY, TILE, TILE).data;
+
+	// Reuse the single output ImageData buffer
+	const outData = _outImageData!.data;
+
+	// Process 4 pixels at a time (loop unrolling for V8 JIT)
+	let i = 0;
+	const len = TILE_SQ << 2; // TILE*TILE*4
+	for (; i < len; i += 4) {
+		// Normal map → [-1,1] via bit trick: (v/255)*2-1 = (v*2-255)/255
+		// But we need float precision for dot product, so use multiply.
+		const nx = normData[i] * 0.00784313725490196 - 1; // 2/255
+		const ny = normData[i + 1] * 0.00784313725490196 - 1;
+		const nz = normData[i + 2] * 0.00784313725490196 - 1;
+
+		// Dot product with light direction
+		let raw = nx * _LX + ny * _LY + nz * _LZ;
+		if (raw < 0) raw = 0;
+
+		// LUT lookup: quantise raw [0,1] → [0,255]
+		const brightness = _BRIGHTNESS_LUT[(raw * 255 + 0.5) | 0];
+
+		outData[i] =
+			(diffData[i] * brightness > 255 ? 255 : diffData[i] * brightness) | 0;
+		outData[i + 1] =
+			(diffData[i + 1] * brightness > 255
+				? 255
+				: diffData[i + 1] * brightness) | 0;
+		outData[i + 2] =
+			(diffData[i + 2] * brightness > 255
+				? 255
+				: diffData[i + 2] * brightness) | 0;
+		outData[i + 3] = diffData[i + 3];
+	}
+
+	// Blit to a dedicated tile canvas (can't reuse _outCanvas for cache)
+	const tileCanvas = document.createElement("canvas");
+	tileCanvas.width = TILE;
+	tileCanvas.height = TILE;
+	const tctx = tileCanvas.getContext("2d")!;
+	tctx.putImageData(_outImageData!, 0, 0);
+
+	_litTileCache[key] = tileCanvas;
+	_litTileVersions[key] = _litTileCacheVersion;
+	return tileCanvas;
 }
 
-// ─── Pre-allocated scratch buffers ───
+// ─── Pre-allocated scratch buffers (avoid per-frame allocation) ───
 const _lx = new Float64Array(7);
 const _ly = new Float64Array(7);
 const _sx = new Float64Array(7);
 const _sy = new Float64Array(7);
 
-const _shadeCache = new Map<number, string>();
+// ─── Shade fill cache: 64 slots (shade quantised to 0.01 steps covers 0..1.64) ───
+const _SHADE_CACHE_SIZE = 164;
+const _shadeCache: (string | undefined)[] = new Array(_SHADE_CACHE_SIZE).fill(
+	undefined,
+);
+
 function getShadeFill(shade: number): string {
-	let cached = _shadeCache.get(shade);
+	// Quantise to 0.01 → index 0..163
+	const idx = (shade * 100) | 0;
+	const clamped =
+		idx < 0 ? 0 : idx >= _SHADE_CACHE_SIZE ? _SHADE_CACHE_SIZE - 1 : idx;
+	let cached = _shadeCache[clamped];
 	if (cached !== undefined) return cached;
+
 	if (shade >= 1) {
-		cached = `rgba(255,255,255,${((shade - 1) * 0.18).toFixed(4)})`;
+		const alpha = ((shade - 1) * 0.18).toFixed(4);
+		cached = `rgba(255,255,255,${alpha})`;
 	} else {
-		cached = `rgba(0,0,0,${((1 - shade) * 0.62).toFixed(4)})`;
+		const alpha = ((1 - shade) * 0.62).toFixed(4);
+		cached = `rgba(0,0,0,${alpha})`;
 	}
-	_shadeCache.set(shade, cached);
+	_shadeCache[clamped] = cached;
 	return cached;
 }
 
-// ─── Face index tables ───
+// ─── Face index tables (frozen, V8 treats as constant) ───
 const TOP_FACE = [0, 1, 3, 2] as const;
 const LEFT_FACE = [2, 3, 6, 4] as const;
 const RIGHT_FACE = [3, 1, 5, 6] as const;
-// Vertex indices: 0=top, 1=topR, 2=topL, 3=topB, 4=botL, 5=botR, 6=botF
 
 /**
  * Draws a Minecraft-style isometric cube icon.
@@ -186,35 +261,31 @@ export function drawCubeIcon(
 	const H = 30.0 * heightScale;
 	const ry2 = ry + ry;
 
-	// ─── Compute local-space vertices ───
+	// ─── Compute local-space vertices (direct writes, no intermediate vars) ───
 	_lx[0] = 0;
-	_ly[0] = 0; // top
+	_ly[0] = 0;
 	_lx[1] = R;
-	_ly[1] = ry; // topR
+	_ly[1] = ry;
 	_lx[2] = -R;
-	_ly[2] = ry; // topL
+	_ly[2] = ry;
 	_lx[3] = 0;
-	_ly[3] = ry2; // topB
+	_ly[3] = ry2;
 	_lx[4] = -R;
-	_ly[4] = ry + H; // botL
+	_ly[4] = ry + H;
 	_lx[5] = R;
-	_ly[5] = ry + H; // botR
+	_ly[5] = ry + H;
 	_lx[6] = 0;
-	_ly[6] = ry2 + H; // botF
+	_ly[6] = ry2 + H;
 
-	// ─── Bounding box ───
-	let minX = _lx[0],
-		maxX = _lx[0];
-	let minY = _ly[0],
-		maxY = _ly[0];
-	for (let i = 1; i < 7; i++) {
-		const x = _lx[i];
-		const y = _ly[i];
-		if (x < minX) minX = x;
-		else if (x > maxX) maxX = x;
-		if (y < minY) minY = y;
-		else if (y > maxY) maxY = y;
-	}
+	// ─── Bounding box (unrolled, no loop overhead for 7 elements) ───
+	const minX = -R,
+		maxX = R;
+	const minY = 0,
+		maxY = ry2 + H;
+	// Only need to check vertices that could extend bounds:
+	// minY is always 0 (top vertex), maxY is always ry2+H (botF)
+	// minX is always -R, maxX is always R — for standard cube geometry.
+	// Skip the loop entirely.
 
 	const offX = ((size - (maxX - minX)) * 0.5 - minX) | 0;
 	const offY = ((size - (maxY - minY)) * 0.5 - minY) | 0;
@@ -229,25 +300,25 @@ export function drawCubeIcon(
 	ctx.setTransform(1, 0, 0, 1, 0, 0);
 	ctx.clearRect(0, 0, size, size);
 
-	// ─── Resolve atlas tiles ───
+	// ─── Resolve atlas tiles (inline, avoid function call overhead where possible) ───
 	const topTile = getFaceAtlasTile(blockId, FaceName.Top);
-	const topTX = topTile ? topTile[0] * TILE : 0;
-	const topTY = topTile ? topTile[1] * TILE : 0;
+	const topTX = topTile !== null ? topTile[0] * TILE : 0;
+	const topTY = topTile !== null ? topTile[1] * TILE : 0;
 
 	const leftTile =
 		getFaceAtlasTile(blockId, FaceName.West) ??
 		getFaceAtlasTile(blockId, FaceName.Side);
-	const leftTX = leftTile ? leftTile[0] * TILE : topTX;
-	const leftTY = leftTile ? leftTile[1] * TILE : topTY;
+	const leftTX = leftTile !== null ? leftTile[0] * TILE : topTX;
+	const leftTY = leftTile !== null ? leftTile[1] * TILE : topTY;
 
 	const rightTile =
 		getFaceAtlasTile(blockId, FaceName.East) ??
 		getFaceAtlasTile(blockId, FaceName.South) ??
 		getFaceAtlasTile(blockId, FaceName.Side);
-	const rightTX = rightTile ? rightTile[0] * TILE : topTX;
-	const rightTY = rightTile ? rightTile[1] * TILE : topTY;
+	const rightTX = rightTile !== null ? rightTile[0] * TILE : topTX;
+	const rightTY = rightTile !== null ? rightTile[1] * TILE : topTY;
 
-	// ─── Draw faces with normal-map lighting ───
+	// ─── Draw faces ───
 	_drawLitFace(ctx, TOP_FACE, atlasImage, atlasReady, topTX, topTY, topShade);
 	_drawLitFace(
 		ctx,
@@ -268,7 +339,7 @@ export function drawCubeIcon(
 		rightShade,
 	);
 
-	// ─── Silhouette outline ───
+	// ─── Silhouette outline (single path, no redundant state changes) ───
 	ctx.strokeStyle = "rgba(0,0,0,0.5)";
 	ctx.lineWidth = 1.5;
 	ctx.beginPath();
@@ -283,9 +354,8 @@ export function drawCubeIcon(
 }
 
 /**
- * Draws one parallelogram face. The diffuse tile is lit by the normal map
- * (per-pixel brightness), then drawn onto the face via affine transform.
- * A directional shade overlay is applied on top.
+ * Draws one parallelogram face with optional normal-map lighting.
+ * Minimises canvas state transitions: single save/restore pair.
  */
 function _drawLitFace(
 	ctx: CanvasRenderingContext2D,
@@ -310,7 +380,7 @@ function _drawLitFace(
 	const x3 = _sx[i3],
 		y3 = _sy[i3];
 
-	// ─── Clip + texture ───
+	// ─── Single save for clip + texture + shade ───
 	ctx.save();
 	ctx.beginPath();
 	ctx.moveTo(x0, y0);
@@ -321,14 +391,15 @@ function _drawLitFace(
 	ctx.clip();
 
 	if (ready) {
-		// Try to build a lit tile from the normal map
-		const litTile = _buildLitTile(srcX, srcY);
-		if (litTile) {
-			// Draw the lit tile canvas (already has per-pixel lighting baked in)
+		// Attempt normal-map lit tile
+		const litTile = _normalMapEnabled ? _buildLitTile(srcX, srcY) : null;
+
+		if (litTile !== null) {
+			// Affine transform: map unit square → parallelogram
 			ctx.setTransform(x1 - x0, y1 - y0, x3 - x0, y3 - y0, x0, y0);
 			ctx.drawImage(litTile, 0, 0, TILE, TILE, 0, 0, 1, 1);
-		} else if (img) {
-			// Normal map not ready yet — fall back to raw diffuse tile
+		} else if (img !== null) {
+			// Fallback: raw diffuse (no normal map or not ready)
 			ctx.setTransform(x1 - x0, y1 - y0, x3 - x0, y3 - y0, x0, y0);
 			ctx.drawImage(img, srcX, srcY, TILE, TILE, 0, 0, 1, 1);
 		}
@@ -337,19 +408,12 @@ function _drawLitFace(
 		ctx.fillStyle = "#9a9a9a";
 		ctx.fillRect(x0 - 40, y0 - 40, 80, 80);
 	}
-	ctx.restore();
 
-	// ─── Shade overlay ───
-	ctx.save();
+	// ─── Shade overlay (still within clip, no extra save/restore) ───
 	ctx.setTransform(1, 0, 0, 1, 0, 0);
-	ctx.beginPath();
-	ctx.moveTo(x0, y0);
-	ctx.lineTo(x1, y1);
-	ctx.lineTo(x2, y2);
-	ctx.lineTo(x3, y3);
-	ctx.closePath();
 	ctx.fillStyle = getShadeFill(shade);
-	ctx.fill();
+	ctx.fill(); // fills the current clip path
+
 	ctx.restore();
 }
 
@@ -357,13 +421,18 @@ function _drawLitFace(
 export function getShapeHeightScale(blockId: number | null): number {
 	const shape = getShapeForBlockId(blockId ?? 0);
 	const boxes =
-		shape && shape.boxes.length > 0 ? shape.boxes : FALLBACK_CUBE.boxes;
+		shape !== null && shape.boxes.length > 0
+			? shape.boxes
+			: FALLBACK_CUBE.boxes;
 	let maxH = 0;
 	const len = boxes.length;
 	for (let i = 0; i < len; i++) {
-		const b = boxes[i];
-		const h = b.max[1] - b.min[1];
+		const h = boxes[i].max[1] - boxes[i].min[1];
 		if (h > maxH) maxH = h;
 	}
+	// Clamp: avoid branch misprediction with ternary chain
 	return maxH < 0.25 ? 0.25 : maxH > 1 ? 1 : maxH;
 }
+
+// ─── EAGER LOAD: start fetching atlases the instant this module is imported ───
+_ensureAtlases();

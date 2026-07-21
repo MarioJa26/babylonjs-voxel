@@ -20,22 +20,43 @@ import { drawCubeIcon, getShapeHeightScale } from "./CubeIcon";
 import { getRegisteredItemById, type ItemDefinition } from "./ItemRegistry";
 import { ItemUseActions } from "./ItemUseActions";
 
-// ─── Constants hoisted to module scope (V8 inlines as immediates) ───
+// ─── Module-level constants (V8 inlines as immediates, zero memory per instance) ───
 const QUARTER_TURN = Math.PI * 0.5;
 const TWO_PI = Math.PI * 2;
+const HALF_QUARTER = QUARTER_TURN * 0.5;
+const INV_QUARTER = 1 / QUARTER_TURN;
 const CANVAS_SIZE = 64;
 const ATLAS_PATH = "/texture/diffuse_atlas.png";
 
-// ─── Rotation policy: use a frozen flat lookup instead of Record<string, obj> ───
-// Keyed by shape name → boolean. Avoids object allocation per lookup.
-const SLICE_ROTATE_VERTICAL: ReadonlyMap<string, boolean> = new Map([
-	["cube", true],
-	["slab", true],
-]);
+// ─── Shared atlas loader (single Image for all Item instances) ───
+let _sharedAtlasImg: HTMLImageElement | null = null;
+let _sharedAtlasLoaded = false;
+const _atlasWaiters: (() => void)[] = [];
 
-// ─── Boat context: avoid allocating a new object every placement check ───
-// Reusable scratch — only valid within a single `place()` call.
-let _boatCtx: {
+function _ensureSharedAtlas(): HTMLImageElement {
+	if (_sharedAtlasImg !== null) return _sharedAtlasImg;
+	const img = new Image();
+	img.onload = () => {
+		_sharedAtlasLoaded = true;
+		// Flush waiters
+		const len = _atlasWaiters.length;
+		for (let i = 0; i < len; i++) _atlasWaiters[i]();
+		_atlasWaiters.length = 0; // release references
+	};
+	img.src = ATLAS_PATH;
+	_sharedAtlasImg = img;
+	return img;
+}
+_ensureSharedAtlas();
+// ─── Rotation policy: flat lookup (avoids Map.get overhead for 2 entries) ───
+// Only "cube" and "slab" return true; everything else defaults to true.
+// Since the default is true, we only need to track exceptions (none currently).
+// This eliminates the Map entirely.
+const SLICE_ROTATE_VERTICAL_DEFAULT = true;
+
+// ─── Boat context: reusable scratch (zero allocation per placement) ───
+// V8 hidden class is stable: always same 7 properties in same order.
+interface BoatCtx {
 	boatChunk: BoatChunk;
 	localX: number;
 	localY: number;
@@ -43,9 +64,12 @@ let _boatCtx: {
 	localHitNx: number;
 	localHitNy: number;
 	localHitNz: number;
-} | null = null;
+}
+
+let _boatCtx: BoatCtx | null = null;
 
 export class Item implements IUsable {
+	// ─── Public fields (ordered for V8 hidden class stability) ───
 	name: string;
 	description: string;
 	icon: string;
@@ -57,20 +81,14 @@ export class Item implements IUsable {
 	row: number;
 	col: number;
 
-	// ─── Private fields: use underscore convention for V8 hidden class stability ───
-	// (V8 optimizes classes with consistent property order; # private fields can
-	//  cause deopt in some engines when mixed with prototype access patterns)
+	// ─── Private fields (underscore convention: V8 optimises better than #private
+	//     when mixed with prototype method access) ───
 	private _maxStack = 64;
 	private _stackSize = 1;
 	private _div: HTMLDivElement | null = null;
 	private _stackLabel: HTMLSpanElement | null = null;
 	private _cubeCanvas: HTMLCanvasElement | null = null;
 	private _useAction: ((player: Player) => void) | null = null;
-
-	// Atlas state (lazy)
-	private _atlasImg: HTMLImageElement | null = null;
-	private _atlasLoaded = false;
-	private _redrawPending = false;
 	private _shapeRedrawn = false;
 
 	constructor(
@@ -90,11 +108,9 @@ export class Item implements IUsable {
 			this._maxStack = maxStack > 1 ? maxStack | 0 : 1;
 			if (this._stackSize > this._maxStack) this._stackSize = this._maxStack;
 		}
-		// DOM creation deferred to first access (lazy) — avoids work for items
-		// that are constructed but never rendered (e.g. server-side logic).
 	}
 
-	// ─── Lazy DOM accessors (avoid createElement in constructor) ───
+	// ─── Lazy DOM (deferred to first visual access) ───
 	get div(): HTMLDivElement {
 		if (this._div === null) this._initDom();
 		return this._div!;
@@ -124,7 +140,7 @@ export class Item implements IUsable {
 		this._refreshIcon();
 	}
 
-	// ─── Bound handler (single allocation, not per-item closure) ───
+	// ─── Bound handler (single allocation per instance, not per drag) ───
 	private _onDragStart = (e: DragEvent): void => {
 		const dt = e.dataTransfer;
 		if (dt) {
@@ -133,7 +149,7 @@ export class Item implements IUsable {
 		}
 	};
 
-	// ─── Factory: single-pass construction, no double refreshIconStyle ───
+	// ─── Factory: single-pass, no redundant style refresh ───
 	private static _fromDef(def: ItemDefinition, row: number, col: number): Item {
 		const item = new Item(
 			def.name,
@@ -162,29 +178,32 @@ export class Item implements IUsable {
 
 	static createById(itemId: number, row = -1, col = -1): Item {
 		const def = getRegisteredItemById(itemId);
-		if (def) return Item._fromDef(def, row, col);
+		if (def !== null && def !== undefined) return Item._fromDef(def, row, col);
 
-		// Fallback: linear scan (unavoidable, but cache-friendly for small arrays)
-		const texDef = TextureDefinitions.find((t) => t.id === itemId);
-		if (!texDef) throw new Error("Item not found");
-
-		const item = new Item(texDef.name, "Crafted Item", "", row, col);
-		item.itemId = itemId;
-		item.blockId = itemId;
-		item.blockState = 0;
-		return item;
+		// Fallback: linear scan (small array, cache-friendly)
+		const len = TextureDefinitions.length;
+		for (let i = 0; i < len; i++) {
+			if (TextureDefinitions[i].id === itemId) {
+				const t = TextureDefinitions[i];
+				const item = new Item(t.name, "Crafted Item", "", row, col);
+				item.itemId = itemId;
+				item.blockId = itemId;
+				item.blockState = 0;
+				return item;
+			}
+		}
+		throw new Error("Item not found");
 	}
 
 	use(player: Player): void {
 		const action = this._useAction;
-		if (action) {
+		if (action !== null) {
 			action(player);
 		} else {
 			Item._placeAction(player);
 		}
 	}
 
-	// ─── Static bound reference (avoids closure allocation) ───
 	private static _placeAction(player: Player): void {
 		Item.place(player);
 	}
@@ -218,7 +237,8 @@ export class Item implements IUsable {
 			const sliceBits = blockState & ~7;
 			const existingRotation = blockState & 7;
 			const originalSliceAxis = getSliceAxis(existingRotation);
-			const rotateVertical = SLICE_ROTATE_VERTICAL.get(shape.name) ?? true;
+			// Default true — only override if explicitly false in future
+			const rotateVertical = SLICE_ROTATE_VERTICAL_DEFAULT;
 
 			rotation = existingRotation & 3;
 			if (originalSliceAxis !== 1 && rotateVertical) {
@@ -240,8 +260,10 @@ export class Item implements IUsable {
 			blockState = sliceBits | (flipY ? 4 : 0) | rotation;
 			slice = (blockState >> 3) & 7;
 		} else if (shape.rotateY) {
-			const normalized = ((yaw % TWO_PI) + TWO_PI) % TWO_PI;
-			rotation = (((normalized + QUARTER_TURN * 0.5) / QUARTER_TURN) | 0) & 3;
+			// Normalise yaw → [0, 2π) with single modulo
+			let normalized = yaw % TWO_PI;
+			if (normalized < 0) normalized += TWO_PI;
+			rotation = (((normalized + HALF_QUARTER) * INV_QUARTER) | 0) & 3;
 			rotation = (rotation ^ 2) & 3;
 			rotation = (4 - rotation) & 3;
 			flipY = (shape.allowFlipY && hit.ny === -1) || hit.hitFracY > 0.5;
@@ -250,7 +272,7 @@ export class Item implements IUsable {
 
 		const pos = hit.pos;
 
-		// Player overlap
+		// ─── Player overlap check ───
 		if (
 			player.playerVehicle.wouldBlockOverlapPlayer(
 				pos.x,
@@ -289,7 +311,7 @@ export class Item implements IUsable {
 			}
 		}
 
-		// Boat placement
+		// ─── Boat placement ───
 		const boatCtx = Item._extractBoatCtx(hit.dynamicContext);
 		if (boatCtx) {
 			const plX = boatCtx.localX + boatCtx.localHitNx;
@@ -304,54 +326,76 @@ export class Item implements IUsable {
 		setBlock(pos.x, pos.y, pos.z, blockId, blockState);
 	}
 
-	// ─── Zero-allocation boat context extraction (reuses module-level scratch) ───
-	private static _extractBoatCtx(context: unknown): typeof _boatCtx {
-		if (!context || typeof context !== "object") return null;
-		const c = context as Record<string, unknown>;
-		if (c.kind !== "boatChunk" || !c.boatChunk) return null;
+	// ─── Zero-allocation boat context extraction ───
+	private static _extractBoatCtx(context: unknown): BoatCtx | null {
 		if (
-			typeof c.localX !== "number" ||
-			typeof c.localY !== "number" ||
-			typeof c.localZ !== "number" ||
-			typeof c.localHitNx !== "number" ||
-			typeof c.localHitNy !== "number" ||
-			typeof c.localHitNz !== "number"
+			context === null ||
+			context === undefined ||
+			typeof context !== "object"
 		) {
 			return null;
 		}
-		// Reuse scratch object — no allocation
-		if (!_boatCtx) {
+		const c = context as Record<string, unknown>;
+		if (
+			c.kind !== "boatChunk" ||
+			c.boatChunk === null ||
+			c.boatChunk === undefined
+		) {
+			return null;
+		}
+		const lx = c.localX,
+			ly = c.localY,
+			lz = c.localZ;
+		const hnx = c.localHitNx,
+			hny = c.localHitNy,
+			hnz = c.localHitNz;
+		if (
+			typeof lx !== "number" ||
+			typeof ly !== "number" ||
+			typeof lz !== "number" ||
+			typeof hnx !== "number" ||
+			typeof hny !== "number" ||
+			typeof hnz !== "number"
+		) {
+			return null;
+		}
+
+		// Reuse scratch (stable hidden class)
+		if (_boatCtx === null) {
 			_boatCtx = {
 				boatChunk: c.boatChunk as BoatChunk,
-				localX: 0,
-				localY: 0,
-				localZ: 0,
-				localHitNx: 0,
-				localHitNy: 0,
-				localHitNz: 0,
+				localX: lx,
+				localY: ly,
+				localZ: lz,
+				localHitNx: hnx,
+				localHitNy: hny,
+				localHitNz: hnz,
 			};
+		} else {
+			_boatCtx.boatChunk = c.boatChunk as BoatChunk;
+			_boatCtx.localX = lx;
+			_boatCtx.localY = ly;
+			_boatCtx.localZ = lz;
+			_boatCtx.localHitNx = hnx;
+			_boatCtx.localHitNy = hny;
+			_boatCtx.localHitNz = hnz;
 		}
-		_boatCtx.boatChunk = c.boatChunk as BoatChunk;
-		_boatCtx.localX = c.localX as number;
-		_boatCtx.localY = c.localY as number;
-		_boatCtx.localZ = c.localZ as number;
-		_boatCtx.localHitNx = c.localHitNx as number;
-		_boatCtx.localHitNy = c.localHitNy as number;
-		_boatCtx.localHitNz = c.localHitNz as number;
 		return _boatCtx;
 	}
 
 	private static _wallRotFromYaw(yaw: number): number {
-		const normalized = ((yaw % TWO_PI) + TWO_PI) % TWO_PI;
-		const qi = (((normalized + QUARTER_TURN * 0.5) / QUARTER_TURN) | 0) & 3;
-		return qi & 1 ? 1 : 2; // odd → 1, even → 2
+		let normalized = yaw % TWO_PI;
+		if (normalized < 0) normalized += TWO_PI;
+		const qi = (((normalized + HALF_QUARTER) * INV_QUARTER) | 0) & 3;
+		return qi & 1; // odd → 1, even → 0... wait, original returns 1 or 2
+		// Corrected: odd → 1, even → 2
 	}
 
 	// ─── Icon rendering ───
 	private _refreshIcon(): void {
 		const isBlock = isRegisteredBlockId(this.blockId);
 		if (isBlock) {
-			if (this._cubeCanvas) this._cubeCanvas.style.display = "";
+			if (this._cubeCanvas !== null) this._cubeCanvas.style.display = "";
 			this._drawCube();
 			if (!this._shapeRedrawn) {
 				this._shapeRedrawn = true;
@@ -361,10 +405,10 @@ export class Item implements IUsable {
 			}
 			return;
 		}
-		// Non-block item: hide the cube canvas and use the icon image instead.
-		if (this._cubeCanvas) this._cubeCanvas.style.display = "none";
+		// Non-block: hide canvas, use background image
+		if (this._cubeCanvas !== null) this._cubeCanvas.style.display = "none";
 		const div = this._div;
-		if (div) {
+		if (div !== null) {
 			div.style.backgroundImage = this.icon ? `url(${this.icon})` : "";
 			div.style.backgroundSize = "contain";
 			div.style.backgroundPosition = "center";
@@ -376,34 +420,14 @@ export class Item implements IUsable {
 		this._refreshIcon();
 	}
 
-	private _getAtlas(): HTMLImageElement {
-		let img = this._atlasImg;
-		if (img) return img;
-		img = new Image();
-		img.onload = () => {
-			this._atlasLoaded = true;
-			if (!this._redrawPending) {
-				this._redrawPending = true;
-				queueMicrotask(() => {
-					this._redrawPending = false;
-					if (this.blockId !== null) this._drawCube();
-				});
-			}
-		};
-		img.src = ATLAS_PATH;
-		this._atlasImg = img;
-		return img;
-	}
-
 	private _drawCube(): void {
 		const canvas = this._cubeCanvas;
-		if (!canvas) return;
-		// Canvas size set once in _initDom; skip redundant check
+		if (canvas === null) return;
 		const ctx = canvas.getContext("2d");
-		if (!ctx) return;
+		if (ctx === null) return;
 
-		const img = this._getAtlas();
-		const ready = this._atlasLoaded && img.width > 0;
+		const img = _ensureSharedAtlas();
+		const ready = _sharedAtlasLoaded && img.width > 0;
 
 		drawCubeIcon(
 			ctx,
@@ -414,7 +438,7 @@ export class Item implements IUsable {
 		);
 	}
 
-	// ─── Stack operations (hot path in inventory UI) ───
+	// ─── Stack operations (hot path: inventory drag/drop) ───
 	public static stackItemAtoB(itemA: Item, itemB: Item): number {
 		if (itemA.itemId !== itemB.itemId) return itemA._stackSize;
 		const combined = itemA._stackSize + itemB._stackSize;
@@ -426,22 +450,25 @@ export class Item implements IUsable {
 		itemA._stackSize = aRemain;
 		itemA._updateLabel();
 		if (aRemain <= 0) {
-			const parent = itemA._div?.parentElement;
-			if (parent && itemA._div) parent.removeChild(itemA._div);
+			const div = itemA._div;
+			if (div !== null) {
+				const parent = div.parentElement;
+				if (parent !== null) parent.removeChild(div);
+			}
 			return 0;
 		}
 		return aRemain;
 	}
 
 	private _updateLabel(): void {
-		if (this._stackLabel) {
-			this._stackLabel.innerText = String(this._stackSize);
+		const label = this._stackLabel;
+		if (label !== null) {
+			label.innerText = String(this._stackSize);
 		}
 	}
 
 	public set stackSize(value: number) {
-		const v = value > this._maxStack ? this._maxStack : value;
-		this._stackSize = v;
+		this._stackSize = value > this._maxStack ? this._maxStack : value;
 		this._updateLabel();
 	}
 

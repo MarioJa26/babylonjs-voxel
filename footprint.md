@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-20T10:55:01.960Z
+Generated: 2026-07-21T04:29:32.684Z
 
-> **Summary:** 125 classes · 1704 members · 464 module-level functions · 51025 LOC
+> **Summary:** 125 classes · 1705 members · 475 module-level functions · 51540 LOC
 
 ---
 
@@ -175,7 +175,7 @@ Generated: 2026-07-20T10:55:01.960Z
 
 ---
 
-## `Entities/Mobs/Chicken.ts` (118 LOC)
+## `Entities/Mobs/Chicken.ts` (120 LOC)
 
 ### export class Chicken extends NeutralMob
 
@@ -324,7 +324,7 @@ Generated: 2026-07-20T10:55:01.960Z
 
 ---
 
-## `Entities/Mobs/Sheep.ts` (131 LOC)
+## `Entities/Mobs/Sheep.ts` (133 LOC)
 
 ### export class Sheep extends NeutralMob
 
@@ -588,7 +588,7 @@ Generated: 2026-07-20T10:55:01.960Z
 
 ---
 
-## `Generation/LightGenerator.ts` (334 LOC)
+## `Generation/LightGenerator.ts` (335 LOC)
 
 ### export class LightGenerator
 
@@ -602,7 +602,7 @@ Generated: 2026-07-20T10:55:01.960Z
 - `private static queueMask: number`
 - `private static scratchQueue: Uint16Array | null = null`
 - `private static readonly SKYLIGHT_GENERATION_MIN_WORLD_Y`
-- `private static readonly _transparentLUT: Uint8Array = (() => { const lut = new Uint8Array(128); lut[0] = 1; lut[WATER_BLOCK_ID] = 1; lut[60] = 1; lut[61] = 1; lut[64] = 1; lut[66] = 1; return lut; })()`
+- `private static readonly _transparentLUT: Uint8Array = (() => { const lut = new Uint8Array(128); lut[0] = 1; lut[WATER_BLOCK_ID] = 1; lut[60] = 1; lut[61] = 1; lut[64] = 1; lut[66] = 1; lut[91] = 1; return lut; })()`
 
 **Methods**
 - `public seedInitialLight(chunkX: number, chunkY: number, chunkZ: number, _biome: Biome, blocks: Uint8Array, light: Uint8Array, topSunlightMask?: Uint8Array): LightSeedState`
@@ -1798,6 +1798,30 @@ export function createFastNoise3D(
 
 ---
 
+## `Lib/EventBus.ts` (26 LOC)
+
+**Types / Interfaces / Enums**
+- type `EventMap`
+- type `EventKey`
+- type `Listener`
+
+---
+
+## `Lib/GameRuntimeState.ts` (36 LOC)
+
+**Module-level functions**
+- `export function isInCave(): boolean`
+- `export function setInCave(value: boolean): void`
+- `export function getGameTimeScale(): number`
+- `export function setGameTimeScale(value: number): void`
+- `export function openUi(focus: UiFocus): void`
+- `export function closeUi(focus: UiFocus): void`
+- `export function isUiOpen(focus?: UiFocus): boolean`
+- `export function getIsPaused(): boolean`
+- `export function setIsPaused(value: boolean): void`
+
+---
+
 ## `Lib/Math.ts` (1312 LOC)
 
 ### export class Color3
@@ -1945,6 +1969,19 @@ export function createFastNoise3D(
 - `export function rotateVec3ByQuaternionToRef(q: Quaternion, v: Vec3, result: Vec3): Vec3`
 - `export function rotateVec3ByQuaternionAroundPointToRef(q: Quaternion, v: Vec3, point: Vec3, result: Vec3): Vec3`
 - `export function vec4(x: number, y: number, z: number, w: number): Vec4`
+
+---
+
+## `Lib/VoxelMath.ts` (32 LOC)
+
+**Module-level functions**
+- `export function worldToChunkCoord(value: number): number`
+- `export function worldToBlockCoord(value: number): number`
+- `export function idx3(x: number, y: number, z: number, size: number): number`
+- `export function idx2(x: number, z: number, size: number): number`
+- `export function getSkyLight(packed: number): number`
+- `export function getBlockLight(packed: number): number`
+- `export function packLight(sky: number, block: number): number`
 
 ---
 
@@ -2276,7 +2313,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Crafting/CraftingManager.ts` (37 LOC)
+## `Player/Crafting/CraftingManager.ts` (92 LOC)
 
 **Types / Interfaces / Enums**
 - interface `Ingredient`
@@ -2285,7 +2322,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Crafting/CraftMenu/CraftMenu.ts` (412 LOC)
+## `Player/Crafting/CraftMenu/CraftMenu.ts` (423 LOC)
 
 ### export class CraftMenu
 
@@ -2308,6 +2345,10 @@ export function createFastNoise3D(
 - `refreshAvailability(): void`
 - `closePicker(): void`
 
+**Module-level functions**
+- `function resolveIconSource(itemId: number): string | null`
+- `function resolveDisplayName(itemId: number): string`
+
 ---
 
 ## `Player/Crafting/ShapeVariantGenerator.ts` (82 LOC)
@@ -2320,7 +2361,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Hud/BlockHighlight/BlockBreakingVisuals.ts` (290 LOC)
+## `Player/Hud/BlockHighlight/BlockBreakingVisuals.ts` (294 LOC)
 
 **Module-level functions**
 - `function addBox(positions: number[], normals: number[], indices: number[], x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): void`
@@ -2388,7 +2429,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Hud/BlockHighlight/BlockRaycaster.ts` (797 LOC)
+## `Player/Hud/BlockHighlight/BlockRaycaster.ts` (798 LOC)
 
 **Module-level functions**
 - `function getForwardRay(player: Player, length: number): RayLike`
@@ -2587,6 +2628,21 @@ export function createFastNoise3D(
 
 ---
 
+## `Player/Inventory/CubeIcon.ts` (329 LOC)
+
+**Module-level functions**
+- `export function setNormalMapEnabled(enabled: boolean): void`
+- `export function isNormalMapEnabled(): boolean`
+- `function getShadeFill(shade: number): string`
+- `export function drawCubeIcon(ctx: CanvasRenderingContext2D, blockId: number | null, atlasImage: HTMLImageElement | null, atlasReady: boolean, heightScale: number, options?: CubeIconOptions): void`
+- `function _drawLitFace(ctx: CanvasRenderingContext2D, faceIdx: readonly number[], img: HTMLImageElement | null, ready: boolean, srcX: number, srcY: number, shade: number): void`
+- `export function getShapeHeightScale(blockId: number | null): number`
+
+**Types / Interfaces / Enums**
+- interface `CubeIconOptions`
+
+---
+
 ## `Player/Inventory/DroppedItem.ts` (471 LOC)
 
 ### export class DroppedItem implements IUsable
@@ -2660,7 +2716,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Inventory/Item.ts` (316 LOC)
+## `Player/Inventory/Item.ts` (398 LOC)
 
 ### export class Item implements IUsable
 
@@ -2668,9 +2724,6 @@ export function createFastNoise3D(
 - `constructor(name: string, description: string, icon: string, row: number, col: number, maxStack?: number)`
 
 **Properties**
-- `private static readonly SLICE_SHAPE_ROTATION_POLICY: Record<`
-- `cube: { rotateVerticalByYaw: true },`
-- `slab: { rotateVerticalByYaw: true },`
 - `name: string`
 - `description: string`
 - `icon: string`
@@ -2680,33 +2733,40 @@ export function createFastNoise3D(
 - `blockState`
 - `row: number`
 - `col: number`
-- `context: unknown,`
-- `kind: ,`
-- `boatChunk: value.boatChunk,`
-- `localX: value.localX,`
-- `localY: value.localY,`
-- `localZ: value.localZ,`
-- `localHitNx: value.localHitNx,`
-- `localHitNy: value.localHitNy,`
-- `localHitNz: value.localHitNz,`
+- `private _maxStack`
+- `private _stackSize`
+- `private _div: HTMLDivElement | null = null`
+- `private _stackLabel: HTMLSpanElement | null = null`
+- `private _cubeCanvas: HTMLCanvasElement | null = null`
+- `private _useAction: ((player: Player) => void) | null = null`
+- `private _shapeRedrawn`
+- `private _onDragStart`
 
 **Accessors**
+- `get div(): HTMLDivElement`
 - `public set stackSize(value: number)`
 - `public get stackSize(): number`
-- `get div(): HTMLDivElement`
 
 **Methods**
-- `private static createFromDefinition(def: ItemDefinition, row: number, col: number): Item`
+- `private _initDom(): void`
+- `private static _fromDef(def: ItemDefinition, row: number, col: number): Item`
 - `static createById(itemId: number, row = -1, col = -1): Item`
 - `use(player: Player): void`
-- `static place(player: Player)`
-- `createDiv(): HTMLDivElement`
-- `private static getWallRotationFromYaw(yaw: number): number`
+- `private static _placeAction(player: Player): void`
+- `static place(player: Player): void`
+- `private static _extractBoatCtx(context: unknown): BoatCtx | null`
+- `private static _wallRotFromYaw(yaw: number): number`
+- `private _refreshIcon(): void`
 - `public refreshIconStyle(): void`
+- `private _drawCube(): void`
 - `public static stackItemAtoB(itemA: Item, itemB: Item): number`
+- `private _updateLabel(): void`
+
+**Module-level functions**
+- `function _ensureSharedAtlas(): HTMLImageElement`
 
 **Types / Interfaces / Enums**
-- type `BoatPlacementContext`
+- interface `BoatCtx`
 
 ---
 
@@ -2755,7 +2815,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Inventory/ItemUseActions.ts` (37 LOC)
+## `Player/Inventory/ItemUseActions.ts` (43 LOC)
 
 **Types / Interfaces / Enums**
 - type `ItemUseAction`
@@ -3137,43 +3197,6 @@ export function createFastNoise3D(
 **Types / Interfaces / Enums**
 - type `CharacterSurfaceInfo`
 - enum `CharacterSupportedState`
-
----
-
-## `Shared/EventBus.ts` (26 LOC)
-
-**Types / Interfaces / Enums**
-- type `EventMap`
-- type `EventKey`
-- type `Listener`
-
----
-
-## `Shared/GameRuntimeState.ts` (36 LOC)
-
-**Module-level functions**
-- `export function isInCave(): boolean`
-- `export function setInCave(value: boolean): void`
-- `export function getGameTimeScale(): number`
-- `export function setGameTimeScale(value: number): void`
-- `export function openUi(focus: UiFocus): void`
-- `export function closeUi(focus: UiFocus): void`
-- `export function isUiOpen(focus?: UiFocus): boolean`
-- `export function getIsPaused(): boolean`
-- `export function setIsPaused(value: boolean): void`
-
----
-
-## `Shared/VoxelMath.ts` (32 LOC)
-
-**Module-level functions**
-- `export function worldToChunkCoord(value: number): number`
-- `export function worldToBlockCoord(value: number): number`
-- `export function idx3(x: number, y: number, z: number, size: number): number`
-- `export function idx2(x: number, z: number, size: number): number`
-- `export function getSkyLight(packed: number): number`
-- `export function getBlockLight(packed: number): number`
-- `export function packLight(sky: number, block: number): number`
 
 ---
 
@@ -4910,13 +4933,14 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Shape/BlockShapes.ts` (225 LOC)
+## `World/Shape/BlockShapes.ts` (234 LOC)
 
 **Module-level functions**
 - `function ensureShapeInit(): Promise<void>`
 - `export function getShapeDefinitions(): ShapeDefinition[]`
 - `export function getShapeByBlockId(): Uint16Array`
 - `export function areShapesInitialized(): boolean`
+- `export function isRegisteredBlockId(id: number | null): boolean`
 - `export function getCubeShapeIndex(): number`
 - `export function isCrossBlockId(blockId: number): boolean`
 - `export function isCrossDiagonalBlockId(blockId: number): boolean`
@@ -5154,7 +5178,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Texture/BlockTextures.ts` (123 LOC)
+## `World/Texture/BlockTextures.ts` (134 LOC)
 
 **Module-level functions**
 - `function buildBlockTextures(): (BlockTextureDef | null)[]`
@@ -5165,6 +5189,7 @@ export function createFastNoise3D(
 - `function getVirtualBlockIdSync(sourceBlockId: number, shape: string): number`
 - `export function setBlockAtlasTile(blockId: number, col: number, row: number): void`
 - `export function getAtlasTile(blockId: number | null): [number, number] | null`
+- `export function getFaceAtlasTile(blockId: number | null, face: FaceName): [number, number] | null`
 
 **Types / Interfaces / Enums**
 - type `BlockTextureDef`
@@ -5172,7 +5197,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Texture/BlockType.ts` (125 LOC)
+## `World/Texture/BlockType.ts` (127 LOC)
 
 **Module-level functions**
 - `export function isPassThroughBlock(blockId: number): boolean`
