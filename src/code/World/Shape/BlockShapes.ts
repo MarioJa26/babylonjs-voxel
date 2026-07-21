@@ -141,8 +141,9 @@ const VIRTUAL_SHAPES = ["slab", "stairs", "half_wall", "pane", "fence"];
 
 const loadBlockShapeMap = async (
 	shapes: ShapeDefinition[],
-): Promise<Uint16Array> => {
+): Promise<{ map: Uint16Array; ids: Set<number> }> => {
 	const map = new Uint16Array(65536);
+	const ids = new Set<number>();
 	const cubeIndex = shapes.findIndex((shape) => shape.name === "cube");
 	map.fill(cubeIndex === -1 ? 0 : cubeIndex);
 
@@ -167,6 +168,7 @@ const loadBlockShapeMap = async (
 			const shapeIndex = shapeIndexByName.get(shapeName);
 			if (shapeIndex === undefined) continue;
 			map[id] = shapeIndex;
+			ids.add(id);
 		}
 
 		// Pre-compute virtual block shape entries for mason table shape variants.
@@ -189,17 +191,19 @@ const loadBlockShapeMap = async (
 				const virtualId =
 					VIRTUAL_BLOCK_ID_START + (id - 1) * VIRTUAL_SHAPES.length + si;
 				map[virtualId] = targetIndex;
+				ids.add(virtualId);
 			}
 		}
 	} catch (error) {
 		console.warn("Block shape map failed to load:", error);
 	}
 
-	return map;
+	return { map, ids };
 };
 
 let _shapeDefinitions: ShapeDefinition[] | null = null;
 let _shapeByBlockId: Uint16Array | null = null;
+let _registeredBlockIds: Set<number> | null = null;
 let _shapeInitPromise: Promise<void> | null = null;
 
 let _cubeShapeIndex = 0;
@@ -212,9 +216,10 @@ function ensureShapeInit(): Promise<void> {
 	if (_shapeInitPromise === null) {
 		_shapeInitPromise = (async () => {
 			const defs = await loadShapeDefinitions();
-			const map = await loadBlockShapeMap(defs);
+			const { map, ids } = await loadBlockShapeMap(defs);
 			_shapeDefinitions = defs;
 			_shapeByBlockId = map;
+			_registeredBlockIds = ids;
 			_cubeShapeIndex = defs.findIndex((d) => d.name === "cube");
 			if (_cubeShapeIndex === -1) _cubeShapeIndex = 0;
 			_crossShapeIndex = defs.findIndex((d) => d.name === "cross");
@@ -238,6 +243,18 @@ export function getShapeByBlockId(): Uint16Array {
 
 export function areShapesInitialized(): boolean {
 	return _shapeDefinitions !== null && _shapeByBlockId !== null;
+}
+
+/**
+ * Returns true only for ids that are explicitly registered blocks (including
+ * mason-table virtual shape variants). Non-block items (tools, weapons, etc.)
+ * return false even though getShapeForBlockId falls back to the cube shape.
+ * This is shape-driven, so blocks added later to the data files are detected
+ * automatically without touching the atlas.
+ */
+export function isRegisteredBlockId(id: number | null): boolean {
+	if (id === null || _registeredBlockIds === null) return false;
+	return _registeredBlockIds.has(id);
 }
 
 export function getCubeShapeIndex(): number {

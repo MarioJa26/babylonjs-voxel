@@ -3,11 +3,10 @@ import {
 	createMeshFromData,
 	createShaderMaterial,
 	type Mesh,
+	resizeMeshGeometry,
 	type SceneContext,
 	type ShaderMaterial,
 	setShaderUniform,
-	updateMeshNormals,
-	updateMeshPositions,
 } from "@babylonjs/lite";
 import { Map1 } from "@/code/Maps/Map1";
 import { getTransformedShapeBoxes } from "@/code/World/Shape/BlockShapeTransforms";
@@ -211,8 +210,13 @@ function ensureCrackGeometry(blockId: number, blockState: number): void {
 			: buildBoxesGeometry([{ min: [0, 0, 0], max: [1, 1, 1] }], 0.06);
 
 	for (const mesh of crackMeshes) {
-		updateMeshPositions(Map1.engine, mesh, geo.positions);
-		updateMeshNormals(Map1.engine, mesh, geo.normals);
+		resizeMeshGeometry(
+			Map1.engine,
+			mesh,
+			geo.positions,
+			geo.normals,
+			geo.indices,
+		);
 	}
 
 	crackGeometryKey = key;

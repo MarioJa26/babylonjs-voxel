@@ -4,6 +4,7 @@ import type { BoatChunk } from "@/code/World/Boat/BoatChunk";
 import { setBlock } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
 	getShapeForBlockId,
+	isRegisteredBlockId,
 	shapeInitPromise,
 } from "@/code/World/Shape/BlockShapes";
 import { getSliceAxis } from "@/code/World/Shape/BlockShapeTransforms";
@@ -19,8 +20,22 @@ import { drawCubeIcon, getShapeHeightScale } from "./CubeIcon";
 import { getRegisteredItemById, type ItemDefinition } from "./ItemRegistry";
 import { ItemUseActions } from "./ItemUseActions";
 
-type BoatPlacementContext = {
-	kind: "boatChunk";
+// ─── Constants hoisted to module scope (V8 inlines as immediates) ───
+const QUARTER_TURN = Math.PI * 0.5;
+const TWO_PI = Math.PI * 2;
+const CANVAS_SIZE = 64;
+const ATLAS_PATH = "/texture/diffuse_atlas.png";
+
+// ─── Rotation policy: use a frozen flat lookup instead of Record<string, obj> ───
+// Keyed by shape name → boolean. Avoids object allocation per lookup.
+const SLICE_ROTATE_VERTICAL: ReadonlyMap<string, boolean> = new Map([
+	["cube", true],
+	["slab", true],
+]);
+
+// ─── Boat context: avoid allocating a new object every placement check ───
+// Reusable scratch — only valid within a single `place()` call.
+let _boatCtx: {
 	boatChunk: BoatChunk;
 	localX: number;
 	localY: number;
@@ -28,17 +43,9 @@ type BoatPlacementContext = {
 	localHitNx: number;
 	localHitNy: number;
 	localHitNz: number;
-};
+} | null = null;
 
 export class Item implements IUsable {
-	private static readonly SLICE_SHAPE_ROTATION_POLICY: Record<
-		string,
-		{ rotateVerticalByYaw: boolean }
-	> = {
-		cube: { rotateVerticalByYaw: true },
-		slab: { rotateVerticalByYaw: true },
-	};
-
 	name: string;
 	description: string;
 	icon: string;
@@ -47,15 +54,24 @@ export class Item implements IUsable {
 	itemId = 1;
 	blockId: number | null = null;
 	blockState = 0;
-
-	#maxStack = 64;
-	#stackSize = 1;
-	#div: HTMLDivElement = document.createElement("div");
-	#stackLabel: HTMLSpanElement = document.createElement("span");
-	#cubeCanvas: HTMLCanvasElement = document.createElement("canvas");
-	#useAction: ((player: Player) => void) | null = null;
 	row: number;
 	col: number;
+
+	// ─── Private fields: use underscore convention for V8 hidden class stability ───
+	// (V8 optimizes classes with consistent property order; # private fields can
+	//  cause deopt in some engines when mixed with prototype access patterns)
+	private _maxStack = 64;
+	private _stackSize = 1;
+	private _div: HTMLDivElement | null = null;
+	private _stackLabel: HTMLSpanElement | null = null;
+	private _cubeCanvas: HTMLCanvasElement | null = null;
+	private _useAction: ((player: Player) => void) | null = null;
+
+	// Atlas state (lazy)
+	private _atlasImg: HTMLImageElement | null = null;
+	private _atlasLoaded = false;
+	private _redrawPending = false;
+	private _shapeRedrawn = false;
 
 	constructor(
 		name: string,
@@ -65,29 +81,64 @@ export class Item implements IUsable {
 		col: number,
 		maxStack?: number,
 	) {
-		if (typeof maxStack === "number") {
-			this.#maxStack = Math.max(1, Math.floor(maxStack));
-			this.#stackSize = Math.min(this.#stackSize, this.#maxStack);
-		}
 		this.name = name;
 		this.description = description;
 		this.icon = icon;
 		this.row = row;
 		this.col = col;
-		this.#div = this.createDiv();
+		if (maxStack !== undefined) {
+			this._maxStack = maxStack > 1 ? maxStack | 0 : 1;
+			if (this._stackSize > this._maxStack) this._stackSize = this._maxStack;
+		}
+		// DOM creation deferred to first access (lazy) — avoids work for items
+		// that are constructed but never rendered (e.g. server-side logic).
 	}
 
-	private static createFromDefinition(
-		def: ItemDefinition,
-		row: number,
-		col: number,
-	): Item {
-		const icon = def.icon ?? "";
+	// ─── Lazy DOM accessors (avoid createElement in constructor) ───
+	get div(): HTMLDivElement {
+		if (this._div === null) this._initDom();
+		return this._div!;
+	}
 
+	private _initDom(): void {
+		const div = document.createElement("div");
+		div.classList.add("inventory-item");
+
+		const canvas = document.createElement("canvas");
+		canvas.width = CANVAS_SIZE;
+		canvas.height = CANVAS_SIZE;
+		div.appendChild(canvas);
+
+		const label = document.createElement("span");
+		label.classList.add("stack-label");
+		label.innerText = String(this._stackSize);
+		div.appendChild(label);
+
+		div.draggable = true;
+		div.addEventListener("dragstart", this._onDragStart, false);
+
+		this._div = div;
+		this._cubeCanvas = canvas;
+		this._stackLabel = label;
+
+		this._refreshIcon();
+	}
+
+	// ─── Bound handler (single allocation, not per-item closure) ───
+	private _onDragStart = (e: DragEvent): void => {
+		const dt = e.dataTransfer;
+		if (dt) {
+			dt.setData("text/plain", `inv:${this.itemId}`);
+			dt.setData("inv-id", String(this.itemId));
+		}
+	};
+
+	// ─── Factory: single-pass construction, no double refreshIconStyle ───
+	private static _fromDef(def: ItemDefinition, row: number, col: number): Item {
 		const item = new Item(
 			def.name,
 			def.description ?? def.name,
-			icon,
+			def.icon ?? "",
 			row,
 			col,
 			def.maxStack,
@@ -95,15 +146,13 @@ export class Item implements IUsable {
 		item.itemId = def.id;
 		item.blockId = def.blockId ?? def.id;
 		item.blockState = def.blockState ?? 0;
-		item.refreshIconStyle();
 
+		// Resolve use action once at creation (not per-use)
 		if (def.useAction === "place_block") {
-			item.#useAction = (player: Player) => Item.place(player);
+			item._useAction = Item._placeAction;
 		} else if (def.useAction) {
-			const action = ItemUseActions[def.useAction];
-			if (action) {
-				item.#useAction = action;
-			} else {
+			item._useAction = ItemUseActions[def.useAction] ?? null;
+			if (!item._useAction) {
 				console.warn(`Unknown item use action: ${def.useAction}`);
 			}
 		}
@@ -113,283 +162,248 @@ export class Item implements IUsable {
 
 	static createById(itemId: number, row = -1, col = -1): Item {
 		const def = getRegisteredItemById(itemId);
-		if (def) {
-			return Item.createFromDefinition(def, row, col);
-		}
+		if (def) return Item._fromDef(def, row, col);
 
-		const textureDef = TextureDefinitions.find((t) => t.id === itemId);
-		if (!textureDef) throw new Error("Item not found");
+		// Fallback: linear scan (unavoidable, but cache-friendly for small arrays)
+		const texDef = TextureDefinitions.find((t) => t.id === itemId);
+		if (!texDef) throw new Error("Item not found");
 
-		const item = new Item(textureDef.name, "Crafted Item", "", row, col);
+		const item = new Item(texDef.name, "Crafted Item", "", row, col);
 		item.itemId = itemId;
 		item.blockId = itemId;
 		item.blockState = 0;
-		item.refreshIconStyle();
-
 		return item;
 	}
 
 	use(player: Player): void {
-		if (this.#useAction) {
-			this.#useAction(player);
+		const action = this._useAction;
+		if (action) {
+			action(player);
 		} else {
-			Item.place(player);
+			Item._placeAction(player);
 		}
 	}
 
-	static place(player: Player) {
+	// ─── Static bound reference (avoids closure allocation) ───
+	private static _placeAction(player: Player): void {
+		Item.place(player);
+	}
+
+	static place(player: Player): void {
 		const blockNumber = pickBlock(player);
 		if (blockNumber === BlockType.CraftingTable) return;
 
 		const hit = getPlacementHit(player);
 		if (!hit) return;
 
-		const { pos, nx, ny, nz, hitFracX, hitFracY, hitFracZ } = hit;
-
 		const item =
 			player.playerInventory.inventory[0][player.playerHud.selectedHotbarSlot]
 				?.item;
+		if (!item) return;
 
-		if (item) {
-			const blockId = item.blockId ?? item.itemId;
-			let blockState = item.blockState ?? 0;
-			// Water always placed as source: level 0
-			if (blockId === BlockType.Water) blockState = 0;
-			const shape = getShapeForBlockId(blockId);
-			const yaw = player.playerCamera.cameraYaw;
-			const hasSlice = (blockState >> 3) & 7;
+		const blockId = item.blockId ?? item.itemId;
+		let blockState = item.blockState ?? 0;
 
-			let rotation = 0;
-			let slice = 0;
-			let flipY = false;
+		if (blockId === BlockType.Water) blockState = 0;
 
-			if (hasSlice > 0) {
-				const sliceBits = blockState & ~7;
-				const existingRotation = blockState & 7;
-				const originalSliceAxis = getSliceAxis(existingRotation);
-				const policy = Item.SLICE_SHAPE_ROTATION_POLICY[shape.name] ?? {
-					rotateVerticalByYaw: true,
-				};
+		const shape = getShapeForBlockId(blockId);
+		const yaw = player.playerCamera.cameraYaw;
+		const hasSlice = (blockState >> 3) & 7;
 
-				rotation = existingRotation & 3;
-				if (originalSliceAxis !== 1 && policy.rotateVerticalByYaw) {
-					rotation = Item.getWallRotationFromYaw(yaw);
-				}
-				const sliceAxis = getSliceAxis(rotation);
+		let rotation = 0;
+		let slice = 0;
+		let flipY = false;
 
-				flipY = (existingRotation & 4) !== 0;
-				if (sliceAxis === 1) {
-					// Horizontal slabs: only top/bottom.
-					if (ny === -1) flipY = true;
-					else if (ny === 1) flipY = false;
-					else flipY = hitFracY > 0.5;
-				} else if (sliceAxis === 0) {
-					// Vertical slabs on X: only +/-X side.
-					flipY = nx !== 0 ? nx < 0 : hitFracX > 0.5;
-				} else {
-					// Vertical slabs on Z: only +/-Z side.
-					flipY = nz !== 0 ? nz < 0 : hitFracZ > 0.5;
-				}
+		if (hasSlice > 0) {
+			const sliceBits = blockState & ~7;
+			const existingRotation = blockState & 7;
+			const originalSliceAxis = getSliceAxis(existingRotation);
+			const rotateVertical = SLICE_ROTATE_VERTICAL.get(shape.name) ?? true;
 
-				const flipBit = flipY ? 4 : 0;
-				blockState = sliceBits | flipBit | rotation;
-				slice = (blockState >> 3) & 7;
-			} else if (shape.rotateY) {
-				const quarterTurn = Math.PI / 2;
-				const normalized =
-					((yaw % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
-				rotation =
-					(Math.floor((normalized + quarterTurn / 2) / quarterTurn) & 3) ^ 2;
-				rotation = (4 - rotation) & 3;
-				flipY = (shape.allowFlipY && ny === -1) || hitFracY > 0.5;
-				const flipBit = flipY ? 4 : 0;
-				const sliceBits = blockState & ~7;
-				blockState = sliceBits | flipBit | rotation;
+			rotation = existingRotation & 3;
+			if (originalSliceAxis !== 1 && rotateVertical) {
+				rotation = Item._wallRotFromYaw(yaw);
+			}
+			const sliceAxis = getSliceAxis(rotation);
+
+			flipY = (existingRotation & 4) !== 0;
+			if (sliceAxis === 1) {
+				if (hit.ny === -1) flipY = true;
+				else if (hit.ny === 1) flipY = false;
+				else flipY = hit.hitFracY > 0.5;
+			} else if (sliceAxis === 0) {
+				flipY = hit.nx !== 0 ? hit.nx < 0 : hit.hitFracX > 0.5;
+			} else {
+				flipY = hit.nz !== 0 ? hit.nz < 0 : hit.hitFracZ > 0.5;
 			}
 
-			// Prevent placing a block inside the player - use actual voxel collider
-			if (
-				player.playerVehicle.wouldBlockOverlapPlayer(
-					pos.x,
-					pos.y,
-					pos.z,
-					shape,
-					rotation,
-					slice,
-					flipY,
-				)
-			) {
-				return;
-			}
+			blockState = sliceBits | (flipY ? 4 : 0) | rotation;
+			slice = (blockState >> 3) & 7;
+		} else if (shape.rotateY) {
+			const normalized = ((yaw % TWO_PI) + TWO_PI) % TWO_PI;
+			rotation = (((normalized + QUARTER_TURN * 0.5) / QUARTER_TURN) | 0) & 3;
+			rotation = (rotation ^ 2) & 3;
+			rotation = (4 - rotation) & 3;
+			flipY = (shape.allowFlipY && hit.ny === -1) || hit.hitFracY > 0.5;
+			blockState = (blockState & ~7) | (flipY ? 4 : 0) | rotation;
+		}
 
-			// Prevent placing a block inside a mob
-			const mobRegistry = Map1.mobRegistry;
-			if (mobRegistry) {
-				for (const mob of mobRegistry.getAllMobs()) {
-					const mpos = mob.position;
-					if (
-						mpos.x >= pos.x &&
-						mpos.x < pos.x + 1 &&
-						mpos.y >= pos.y &&
-						mpos.y < pos.y + 1 &&
-						mpos.z >= pos.z &&
-						mpos.z < pos.z + 1
-					) {
-						return;
-					}
-				}
-			}
+		const pos = hit.pos;
 
-			const boatContext = Item.#asBoatPlacementContext(hit.dynamicContext);
-			if (boatContext) {
-				const placeLocalX = boatContext.localX + boatContext.localHitNx;
-				const placeLocalY = boatContext.localY + boatContext.localHitNy;
-				const placeLocalZ = boatContext.localZ + boatContext.localHitNz;
+		// Player overlap
+		if (
+			player.playerVehicle.wouldBlockOverlapPlayer(
+				pos.x,
+				pos.y,
+				pos.z,
+				shape,
+				rotation,
+				slice,
+				flipY,
+			)
+		) {
+			return;
+		}
+
+		// Mob overlap (Set iteration)
+		const mobRegistry = Map1.mobRegistry;
+		if (mobRegistry) {
+			const px = pos.x,
+				py = pos.y,
+				pz = pos.z;
+			const px1 = px + 1,
+				py1 = py + 1,
+				pz1 = pz + 1;
+			for (const mob of mobRegistry.getAllMobs()) {
+				const mp = mob.position;
 				if (
-					boatContext.boatChunk.isInsideLocalBounds(
-						placeLocalX,
-						placeLocalY,
-						placeLocalZ,
-					)
+					mp.x >= px &&
+					mp.x < px1 &&
+					mp.y >= py &&
+					mp.y < py1 &&
+					mp.z >= pz &&
+					mp.z < pz1
 				) {
-					boatContext.boatChunk.setBlockLocal(
-						placeLocalX,
-						placeLocalY,
-						placeLocalZ,
-						blockId,
-						blockState,
-					);
 					return;
 				}
 			}
-
-			setBlock(pos.x, pos.y, pos.z, blockId, blockState);
 		}
+
+		// Boat placement
+		const boatCtx = Item._extractBoatCtx(hit.dynamicContext);
+		if (boatCtx) {
+			const plX = boatCtx.localX + boatCtx.localHitNx;
+			const plY = boatCtx.localY + boatCtx.localHitNy;
+			const plZ = boatCtx.localZ + boatCtx.localHitNz;
+			if (boatCtx.boatChunk.isInsideLocalBounds(plX, plY, plZ)) {
+				boatCtx.boatChunk.setBlockLocal(plX, plY, plZ, blockId, blockState);
+				return;
+			}
+		}
+
+		setBlock(pos.x, pos.y, pos.z, blockId, blockState);
 	}
 
-	static #asBoatPlacementContext(
-		context: unknown,
-	): BoatPlacementContext | null {
+	// ─── Zero-allocation boat context extraction (reuses module-level scratch) ───
+	private static _extractBoatCtx(context: unknown): typeof _boatCtx {
 		if (!context || typeof context !== "object") return null;
-		const value = context as Partial<BoatPlacementContext>;
-		if (value.kind !== "boatChunk") return null;
-		if (!value.boatChunk) return null;
+		const c = context as Record<string, unknown>;
+		if (c.kind !== "boatChunk" || !c.boatChunk) return null;
 		if (
-			typeof value.localX !== "number" ||
-			typeof value.localY !== "number" ||
-			typeof value.localZ !== "number" ||
-			typeof value.localHitNx !== "number" ||
-			typeof value.localHitNy !== "number" ||
-			typeof value.localHitNz !== "number"
+			typeof c.localX !== "number" ||
+			typeof c.localY !== "number" ||
+			typeof c.localZ !== "number" ||
+			typeof c.localHitNx !== "number" ||
+			typeof c.localHitNy !== "number" ||
+			typeof c.localHitNz !== "number"
 		) {
 			return null;
 		}
-		return {
-			kind: "boatChunk",
-			boatChunk: value.boatChunk,
-			localX: value.localX,
-			localY: value.localY,
-			localZ: value.localZ,
-			localHitNx: value.localHitNx,
-			localHitNy: value.localHitNy,
-			localHitNz: value.localHitNz,
-		};
+		// Reuse scratch object — no allocation
+		if (!_boatCtx) {
+			_boatCtx = {
+				boatChunk: c.boatChunk as BoatChunk,
+				localX: 0,
+				localY: 0,
+				localZ: 0,
+				localHitNx: 0,
+				localHitNy: 0,
+				localHitNz: 0,
+			};
+		}
+		_boatCtx.boatChunk = c.boatChunk as BoatChunk;
+		_boatCtx.localX = c.localX as number;
+		_boatCtx.localY = c.localY as number;
+		_boatCtx.localZ = c.localZ as number;
+		_boatCtx.localHitNx = c.localHitNx as number;
+		_boatCtx.localHitNy = c.localHitNy as number;
+		_boatCtx.localHitNz = c.localHitNz as number;
+		return _boatCtx;
 	}
 
-	createDiv(): HTMLDivElement {
-		this.#div.classList.add("inventory-item");
-		this.#div.appendChild(this.#cubeCanvas);
-		this.refreshIconStyle();
-
-		this.#stackLabel.innerText = this.#stackSize.toString();
-		this.#stackLabel.classList.add("stack-label");
-
-		this.#div.appendChild(this.#stackLabel);
-
-		this.#div.draggable = true;
-		this.#div.addEventListener("dragstart", (e) => {
-			e.dataTransfer?.setData("text/plain", `inv:${this.itemId}`);
-			e.dataTransfer?.setData("inv-id", String(this.itemId));
-		});
-
-		return this.#div;
+	private static _wallRotFromYaw(yaw: number): number {
+		const normalized = ((yaw % TWO_PI) + TWO_PI) % TWO_PI;
+		const qi = (((normalized + QUARTER_TURN * 0.5) / QUARTER_TURN) | 0) & 3;
+		return qi & 1 ? 1 : 2; // odd → 1, even → 2
 	}
 
-	private static getWallRotationFromYaw(yaw: number): number {
-		const quarterTurn = Math.PI / 2;
-		const normalized = ((yaw % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
-		const quarterIndex =
-			Math.floor((normalized + quarterTurn / 2) / quarterTurn) & 3;
-		return quarterIndex % 2 === 0 ? 2 : 1;
-	}
-
-	public refreshIconStyle(): void {
-		if (this.blockId !== null) {
-			this.#drawCubeIcon();
-			// Shapes load asynchronously; once ready, redraw so shape-aware
-			// boxes (slabs, stairs, fences, ...) are used instead of the fallback.
-			if (!this.#shapeRedrawn) {
-				this.#shapeRedrawn = true;
-				void shapeInitPromise.then(() => {
-					if (this.blockId !== null) this.#drawCubeIcon();
+	// ─── Icon rendering ───
+	private _refreshIcon(): void {
+		const isBlock = isRegisteredBlockId(this.blockId);
+		if (isBlock) {
+			if (this._cubeCanvas) this._cubeCanvas.style.display = "";
+			this._drawCube();
+			if (!this._shapeRedrawn) {
+				this._shapeRedrawn = true;
+				shapeInitPromise.then(() => {
+					if (isRegisteredBlockId(this.blockId)) this._drawCube();
 				});
 			}
 			return;
 		}
-
-		// Non-block items: fall back to a plain icon image.
-		this.#div.style.backgroundImage = this.icon ? `url(${this.icon})` : "";
-		this.#div.style.backgroundSize = "contain";
-		this.#div.style.backgroundRepeat = "no-repeat";
+		// Non-block item: hide the cube canvas and use the icon image instead.
+		if (this._cubeCanvas) this._cubeCanvas.style.display = "none";
+		const div = this._div;
+		if (div) {
+			div.style.backgroundImage = this.icon ? `url(${this.icon})` : "";
+			div.style.backgroundSize = "contain";
+			div.style.backgroundPosition = "center";
+			div.style.backgroundRepeat = "no-repeat";
+		}
 	}
 
-	#cubeAtlasImage: HTMLImageElement | null = null;
-	#cubeAtlasLoaded = false;
-	#cubeRedrawPending = false;
-	#shapeRedrawn = false;
+	public refreshIconStyle(): void {
+		this._refreshIcon();
+	}
 
-	#getCubeAtlasImage(): HTMLImageElement {
-		if (this.#cubeAtlasImage) return this.#cubeAtlasImage;
-		const img = new Image();
+	private _getAtlas(): HTMLImageElement {
+		let img = this._atlasImg;
+		if (img) return img;
+		img = new Image();
 		img.onload = () => {
-			this.#cubeAtlasLoaded = true;
-			// Redraw any items that were waiting on the atlas (async).
-			if (!this.#cubeRedrawPending) {
-				this.#cubeRedrawPending = true;
+			this._atlasLoaded = true;
+			if (!this._redrawPending) {
+				this._redrawPending = true;
 				queueMicrotask(() => {
-					this.#cubeRedrawPending = false;
-					if (this.blockId !== null) this.#drawCubeIcon();
+					this._redrawPending = false;
+					if (this.blockId !== null) this._drawCube();
 				});
 			}
 		};
-		img.src = "/texture/diffuse_atlas.png";
-		this.#cubeAtlasImage = img;
+		img.src = ATLAS_PATH;
+		this._atlasImg = img;
 		return img;
 	}
 
-	/**
-	 * Builds a crisp, nearest-neighbor upscaled tile sprite from the atlas so
-	 * the cube faces never blur or bleed into neighbouring atlas tiles. A half
-	 * texel is inset from each edge to avoid sampling adjacent tiles, and the
-	 * whole tile is drawn into a small offscreen canvas with smoothing off.
-	 */
-	/**
-	 * Draws the Minecraft-style isometric cube icon for this block onto the
-	 * item's canvas. The actual rendering lives in CubeIcon.ts.
-	 */
-	#drawCubeIcon(): void {
-		const canvas = this.#cubeCanvas;
-		const size = 64;
-		if (canvas.width !== size) {
-			canvas.width = size;
-			canvas.height = size;
-		}
+	private _drawCube(): void {
+		const canvas = this._cubeCanvas;
+		if (!canvas) return;
+		// Canvas size set once in _initDom; skip redundant check
 		const ctx = canvas.getContext("2d");
 		if (!ctx) return;
 
-		this.#getCubeAtlasImage();
-		const img = this.#cubeAtlasImage;
-		const ready: boolean = this.#cubeAtlasLoaded && !!img && img.width > 0;
+		const img = this._getAtlas();
+		const ready = this._atlasLoaded && img.width > 0;
 
 		drawCubeIcon(
 			ctx,
@@ -400,28 +414,38 @@ export class Item implements IUsable {
 		);
 	}
 
+	// ─── Stack operations (hot path in inventory UI) ───
 	public static stackItemAtoB(itemA: Item, itemB: Item): number {
-		if (itemA.itemId !== itemB.itemId) return itemA.stackSize;
-		//StackSize is limited to maxStackSize
-		const stackSize = itemA.stackSize + itemB.stackSize;
-		itemB.stackSize = stackSize;
-		itemA.stackSize = stackSize - itemB.stackSize;
-		if (itemA.stackSize <= 0) {
-			itemA.div.parentElement?.removeChild(itemA.div);
+		if (itemA.itemId !== itemB.itemId) return itemA._stackSize;
+		const combined = itemA._stackSize + itemB._stackSize;
+		const bMax = itemB._maxStack;
+		const bNew = combined > bMax ? bMax : combined;
+		itemB._stackSize = bNew;
+		itemB._updateLabel();
+		const aRemain = combined - bNew;
+		itemA._stackSize = aRemain;
+		itemA._updateLabel();
+		if (aRemain <= 0) {
+			const parent = itemA._div?.parentElement;
+			if (parent && itemA._div) parent.removeChild(itemA._div);
 			return 0;
 		}
-		return itemA.stackSize;
+		return aRemain;
+	}
+
+	private _updateLabel(): void {
+		if (this._stackLabel) {
+			this._stackLabel.innerText = String(this._stackSize);
+		}
 	}
 
 	public set stackSize(value: number) {
-		this.#stackSize = Math.min(value, this.#maxStack);
-		this.#stackLabel.innerText = this.#stackSize.toString();
-	}
-	public get stackSize(): number {
-		return this.#stackSize;
+		const v = value > this._maxStack ? this._maxStack : value;
+		this._stackSize = v;
+		this._updateLabel();
 	}
 
-	get div(): HTMLDivElement {
-		return this.#div;
+	public get stackSize(): number {
+		return this._stackSize;
 	}
 }

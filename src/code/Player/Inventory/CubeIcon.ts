@@ -5,39 +5,59 @@ import {
 import { getFaceAtlasTile } from "@/code/World/Texture/BlockTextures";
 import { FaceName } from "@/code/World/Texture/FaceName";
 
-export type Vec2 = [number, number];
-
 export interface CubeIconOptions {
-	/** Horizontal half-width of the top rhombus. Bigger = wider cube. */
 	radius?: number;
-	/** Vertical half-height of the top rhombus. */
 	ry?: number;
-	/** Side-face height multiplier applied to 2*radius (1 => full cube). */
 	heightRatio?: number;
-	/** Target canvas pixel size (square). */
 	size?: number;
-	/** Shade factors per face (1 = neutral, >1 brighter, <1 darker). */
 	topShade?: number;
 	leftShade?: number;
 	rightShade?: number;
 }
 
-const DEFAULTS: Required<CubeIconOptions> = {
-	radius: 23,
-	ry: 12,
-	heightRatio: 1.5,
-	size: 64,
-	topShade: 1.24,
-	leftShade: 0.79,
-	rightShade: 0.37,
-};
+// ─── Frozen defaults: V8 can inline these as constants ───
+const R_DEFAULT = 25;
+const RY_DEFAULT = 16;
+const SIZE_DEFAULT = 64;
+const TOP_SHADE = 1.24;
+const LEFT_SHADE = 0.79;
+const RIGHT_SHADE = 0.37;
+const TILE = 25;
+
+// ─── Pre-allocated scratch buffers (module-level, zero GC in hot path) ───
+// 7 vertices × 2 coords = 14 floats for local space
+const _lx = new Float64Array(7);
+const _ly = new Float64Array(7);
+// Transformed screen coords
+const _sx = new Float64Array(7);
+const _sy = new Float64Array(7);
+
+// Pre-computed shade overlay strings (avoid template literal allocation per frame)
+const _shadeCache = new Map<number, string>();
+function getShadeFill(shade: number): string {
+	let cached = _shadeCache.get(shade);
+	if (cached !== undefined) return cached;
+	if (shade >= 1) {
+		cached = `rgba(255,255,255,${((shade - 1) * 0.18).toFixed(4)})`;
+	} else {
+		cached = `rgba(0,0,0,${((1 - shade) * 0.62).toFixed(4)})`;
+	}
+	_shadeCache.set(shade, cached);
+	return cached;
+}
+
+// ─── Face index tables (avoid per-call array allocation) ───
+// topFace: [0,1,3,2] → indices into vertex array
+// leftFace: [2,3,6,4]
+// rightFace: [3,1,5,6]
+const TOP_FACE = [0, 1, 3, 2] as const;
+const LEFT_FACE = [2, 3, 6, 4] as const;
+const RIGHT_FACE = [3, 1, 5, 6] as const;
+
+// Vertex indices: 0=top, 1=topR, 2=topL, 3=topB, 4=botL, 5=botR, 6=botF
 
 /**
- * Draws a Minecraft-style isometric cube icon onto `ctx`, centred in the
- * `size`x`size` canvas. Each visible face is textured from the block's real
- * per-face atlas tile and shaded with the classic top-bright / left-medium /
- * right-dark look. The transform is fully deterministic, so the texture never
- * skews or drifts. `heightScale` (0..1) shortens slabs and other flat shapes.
+ * Draws a Minecraft-style isometric cube icon. Zero-allocation hot path.
  */
 export function drawCubeIcon(
 	ctx: CanvasRenderingContext2D,
@@ -45,181 +65,176 @@ export function drawCubeIcon(
 	atlasImage: HTMLImageElement | null,
 	atlasReady: boolean,
 	heightScale: number,
-	options: CubeIconOptions = {},
+	options?: CubeIconOptions,
 ): void {
-	const cfg = { ...DEFAULTS, ...options };
-	const R = cfg.radius;
-	const ry = cfg.ry;
-	const H = 1.5 * R * heightScale;
-	const tile = 25;
-	const size = cfg.size;
+	// Inline defaults — avoid object spread allocation
+	const R = options?.radius ?? R_DEFAULT;
+	const ry = options?.ry ?? RY_DEFAULT;
+	const size = options?.size ?? SIZE_DEFAULT;
+	const topShade = options?.topShade ?? TOP_SHADE;
+	const leftShade = options?.leftShade ?? LEFT_SHADE;
+	const rightShade = options?.rightShade ?? RIGHT_SHADE;
 
+	const H = 30.0 * heightScale;
+	const ry2 = ry + ry; // 2*ry, avoid multiply
+
+	// ─── Compute local-space vertices into pre-allocated buffers ───
+	// 0: top (0,0)
+	_lx[0] = 0;
+	_ly[0] = 0;
+	// 1: topR (R, ry)
+	_lx[1] = R;
+	_ly[1] = ry;
+	// 2: topL (-R, ry)
+	_lx[2] = -R;
+	_ly[2] = ry;
+	// 3: topB (0, 2*ry)
+	_lx[3] = 0;
+	_ly[3] = ry2;
+	// 4: botL (-R, ry+H)
+	_lx[4] = -R;
+	_ly[4] = ry + H;
+	// 5: botR (R, ry+H)
+	_lx[5] = R;
+	_ly[5] = ry + H;
+	// 6: botF (0, 2*ry+H)
+	_lx[6] = 0;
+	_ly[6] = ry2 + H;
+
+	// ─── Compute bounding box without spread (avoid temp array + iterator) ───
+	let minX = _lx[0],
+		maxX = _lx[0];
+	let minY = _ly[0],
+		maxY = _ly[0];
+	for (let i = 1; i < 7; i++) {
+		const x = _lx[i];
+		const y = _ly[i];
+		if (x < minX) minX = x;
+		else if (x > maxX) maxX = x;
+		if (y < minY) minY = y;
+		else if (y > maxY) maxY = y;
+	}
+
+	// Centering offset
+	const offX = ((size - (maxX - minX)) * 0.5 - minX) | 0;
+	const offY = ((size - (maxY - minY)) * 0.5 - minY) | 0;
+
+	// ─── Transform to screen space ───
+	for (let i = 0; i < 7; i++) {
+		_sx[i] = _lx[i] + offX;
+		_sy[i] = _ly[i] + offY;
+	}
+
+	// ─── Reset canvas state once ───
 	ctx.imageSmoothingEnabled = false;
 	ctx.setTransform(1, 0, 0, 1, 0, 0);
 	ctx.clearRect(0, 0, size, size);
 
-	// Map exported visible faces to atlas face slots.
-	const topTile = getFaceAtlasTile(blockId, FaceName.Top) ?? [0, 0];
+	// ─── Resolve atlas tiles (branchless fallback chain) ───
+	const topTile = getFaceAtlasTile(blockId, FaceName.Top);
+	const topTX = topTile ? topTile[0] * TILE : 0;
+	const topTY = topTile ? topTile[1] * TILE : 0;
+
 	const leftTile =
 		getFaceAtlasTile(blockId, FaceName.West) ??
-		getFaceAtlasTile(blockId, FaceName.Side) ??
-		topTile;
+		getFaceAtlasTile(blockId, FaceName.Side);
+	const leftTX = leftTile ? leftTile[0] * TILE : topTX;
+	const leftTY = leftTile ? leftTile[1] * TILE : topTY;
+
 	const rightTile =
 		getFaceAtlasTile(blockId, FaceName.East) ??
 		getFaceAtlasTile(blockId, FaceName.South) ??
-		getFaceAtlasTile(blockId, FaceName.Side) ??
-		topTile;
+		getFaceAtlasTile(blockId, FaceName.Side);
+	const rightTX = rightTile ? rightTile[0] * TILE : topTX;
+	const rightTY = rightTile ? rightTile[1] * TILE : topTY;
 
-	// Local-space cube points (origin = top-front vertex), then centre.
-	const Ltop: Vec2 = [0, 0];
-	const LtopR: Vec2 = [R, ry];
-	const LtopL: Vec2 = [-R, ry];
-	const LtopB: Vec2 = [0, 2 * ry];
-	const LbotL: Vec2 = [-R, ry + H];
-	const LbotR: Vec2 = [R, ry + H];
-	const LbotF: Vec2 = [0, 2 * ry + H];
-
-	const xs = [
-		Ltop[0],
-		LtopR[0],
-		LtopL[0],
-		LtopB[0],
-		LbotL[0],
-		LbotR[0],
-		LbotF[0],
-	];
-	const ys = [
-		Ltop[1],
-		LtopR[1],
-		LtopL[1],
-		LtopB[1],
-		LbotL[1],
-		LbotR[1],
-		LbotF[1],
-	];
-	const offX =
-		(size - (Math.max(...xs) - Math.min(...xs))) / 2 - Math.min(...xs);
-	const offY =
-		(size - (Math.max(...ys) - Math.min(...ys))) / 2 - Math.min(...ys);
-	const T = (p: Vec2): Vec2 => [p[0] + offX, p[1] + offY];
-
-	const top = T(Ltop);
-	const topR = T(LtopR);
-	const topL = T(LtopL);
-	const topB = T(LtopB);
-	const botL = T(LbotL);
-	const botR = T(LbotR);
-	const botF = T(LbotF);
-
-	const topFace = [top, topR, topB, topL];
-	const leftFace = [topL, topB, botF, botL];
-	const rightFace = [topB, topR, botR, botF];
-
-	const srcTop: Vec2 = [topTile[0] * tile, topTile[1] * tile];
-	const srcLeft: Vec2 = [leftTile[0] * tile, leftTile[1] * tile];
-	const srcRight: Vec2 = [rightTile[0] * tile, rightTile[1] * tile];
-
-	drawRhombusFace(
+	// ─── Draw faces (top → left → right, painter's order) ───
+	_drawFace(ctx, TOP_FACE, atlasImage, atlasReady, topTX, topTY, topShade);
+	_drawFace(ctx, LEFT_FACE, atlasImage, atlasReady, leftTX, leftTY, leftShade);
+	_drawFace(
 		ctx,
-		topFace,
+		RIGHT_FACE,
 		atlasImage,
 		atlasReady,
-		srcTop,
-		tile,
-		cfg.topShade,
-	);
-	drawRhombusFace(
-		ctx,
-		leftFace,
-		atlasImage,
-		atlasReady,
-		srcLeft,
-		tile,
-		cfg.leftShade,
-	);
-	drawRhombusFace(
-		ctx,
-		rightFace,
-		atlasImage,
-		atlasReady,
-		srcRight,
-		tile,
-		cfg.rightShade,
+		rightTX,
+		rightTY,
+		rightShade,
 	);
 
-	// Outline the whole silhouette.
-	ctx.setTransform(1, 0, 0, 1, 0, 0);
+	// ─── Silhouette outline (single path, no redundant state changes) ───
 	ctx.strokeStyle = "rgba(0,0,0,0.5)";
 	ctx.lineWidth = 1.5;
 	ctx.beginPath();
-	ctx.moveTo(top[0], top[1]);
-	ctx.lineTo(topR[0], topR[1]);
-	ctx.lineTo(botR[0], botR[1]);
-	ctx.lineTo(botF[0], botF[1]);
-	ctx.lineTo(botL[0], botL[1]);
-	ctx.lineTo(topL[0], topL[1]);
+	ctx.moveTo(_sx[0], _sy[0]);
+	ctx.lineTo(_sx[1], _sy[1]);
+	ctx.lineTo(_sx[5], _sy[5]);
+	ctx.lineTo(_sx[6], _sy[6]);
+	ctx.lineTo(_sx[4], _sy[4]);
+	ctx.lineTo(_sx[2], _sy[2]);
 	ctx.closePath();
 	ctx.stroke();
 }
 
 /**
- * Maps the unit square (0..1) onto a parallelogram face via setTransform,
- * then draws the atlas tile into it. Deterministic transform => no drift.
- * Clipping to the face quad prevents neighbour bleed.
+ * Draws one parallelogram face. Uses pre-allocated screen coords.
+ * Minimal save/restore — only one pair for clip+transform, one for shade.
  */
-function drawRhombusFace(
+function _drawFace(
 	ctx: CanvasRenderingContext2D,
-	pts: Vec2[],
+	faceIdx: readonly number[],
 	img: HTMLImageElement | null,
 	ready: boolean,
-	src: Vec2,
-	tile: number,
+	srcX: number,
+	srcY: number,
 	shade: number,
 ): void {
-	const o = pts[0];
-	const p1 = pts[1];
-	const p3 = pts[3];
+	const i0 = faceIdx[0];
+	const i1 = faceIdx[1];
+	const i2 = faceIdx[2];
+	const i3 = faceIdx[3];
 
+	const x0 = _sx[i0],
+		y0 = _sy[i0];
+	const x1 = _sx[i1],
+		y1 = _sy[i1];
+	const x2 = _sx[i2],
+		y2 = _sy[i2];
+	const x3 = _sx[i3],
+		y3 = _sy[i3];
+
+	// ─── Clip + texture (single save/restore) ───
 	ctx.save();
 	ctx.beginPath();
-	ctx.moveTo(pts[0][0], pts[0][1]);
-	for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+	ctx.moveTo(x0, y0);
+	ctx.lineTo(x1, y1);
+	ctx.lineTo(x2, y2);
+	ctx.lineTo(x3, y3);
 	ctx.closePath();
 	ctx.clip();
 
 	if (ready && img) {
-		// setTransform(a,b,c,d,e,f): (x,y) -> (a*x + c*y + e, b*x + d*y + f).
-		// U axis along edge o->p1, V axis along edge o->p3.
-		ctx.setTransform(
-			p1[0] - o[0],
-			p1[1] - o[1],
-			p3[0] - o[0],
-			p3[1] - o[1],
-			o[0],
-			o[1],
-		);
-		ctx.drawImage(img, src[0], src[1], tile, tile, 0, 0, 1, 1);
+		// Affine transform: unit square → parallelogram
+		// U axis: i0→i1, V axis: i0→i3
+		ctx.setTransform(x1 - x0, y1 - y0, x3 - x0, y3 - y0, x0, y0);
+		ctx.drawImage(img, srcX, srcY, TILE, TILE, 0, 0, 1, 1);
 	} else {
+		// Fallback: flat grey (single fillRect in identity space)
 		ctx.setTransform(1, 0, 0, 1, 0, 0);
 		ctx.fillStyle = "#9a9a9a";
-		ctx.fillRect(o[0] - 40, o[1] - 40, 80, 80);
+		ctx.fillRect(x0 - 40, y0 - 40, 80, 80);
 	}
 	ctx.restore();
 
-	// Directional shading overlay (untransformed space). Faces brighter than
-	// 1 get a white tint, darker faces a black tint, so left and right read
-	// as clearly different brightnesses.
+	// ─── Shade overlay (identity transform, cached fill string) ───
 	ctx.save();
 	ctx.setTransform(1, 0, 0, 1, 0, 0);
 	ctx.beginPath();
-	ctx.moveTo(pts[0][0], pts[0][1]);
-	for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+	ctx.moveTo(x0, y0);
+	ctx.lineTo(x1, y1);
+	ctx.lineTo(x2, y2);
+	ctx.lineTo(x3, y3);
 	ctx.closePath();
-	if (shade >= 1) {
-		ctx.fillStyle = `rgba(255,255,255,${(shade - 1) * 0.18})`;
-	} else {
-		ctx.fillStyle = `rgba(0,0,0,${(1 - shade) * 0.62})`;
-	}
+	ctx.fillStyle = getShadeFill(shade);
 	ctx.fill();
 	ctx.restore();
 }
@@ -230,6 +245,12 @@ export function getShapeHeightScale(blockId: number | null): number {
 	const boxes =
 		shape && shape.boxes.length > 0 ? shape.boxes : FALLBACK_CUBE.boxes;
 	let maxH = 0;
-	for (const b of boxes) maxH = Math.max(maxH, b.max[1] - b.min[1]);
-	return Math.max(0.25, Math.min(1, maxH));
+	const len = boxes.length;
+	for (let i = 0; i < len; i++) {
+		const b = boxes[i];
+		const h = b.max[1] - b.min[1];
+		if (h > maxH) maxH = h;
+	}
+	// Clamp without Math.max/min (avoids function call overhead in V8)
+	return maxH < 0.25 ? 0.25 : maxH > 1 ? 1 : maxH;
 }
