@@ -89,6 +89,12 @@ export const Recipes: Recipe[] = [
 			{ itemId: 1, count: 3 }, // 3 Stone
 		],
 	},
+	// WoodCrate: 10 wood planks -> 1 WoodCrate (id 92)
+	{
+		resultId: 92,
+		resultCount: 1,
+		ingredients: [{ itemId: 35, count: 10 }],
+	},
 	// Add more recipes here
 ];
 
