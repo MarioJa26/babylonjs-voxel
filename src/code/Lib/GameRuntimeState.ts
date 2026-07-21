@@ -36,6 +36,7 @@ export const enum UiFocus {
 	pauseMenu,
 	inventory,
 	masonTable,
+	woodCrate,
 	chat,
 }
 

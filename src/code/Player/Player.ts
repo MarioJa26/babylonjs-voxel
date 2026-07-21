@@ -245,6 +245,7 @@ export class Player {
 			} else {
 				this.#playerHud.showMasonTableUI();
 			}
+			this.#pickInFlight = false;
 			return;
 		}
 		if (blockId === BlockType.BoatCreator && blockHit) {
@@ -254,6 +255,20 @@ export class Player {
 				Math.floor(blockHit.y),
 				Math.floor(blockHit.z),
 			);
+			this.#pickInFlight = false;
+			return;
+		}
+		if (blockId === BlockType.WoodCrate && blockHit) {
+			if (this.#playerHud.isWoodCrateOpen) {
+				this.#playerHud.hideWoodCrateUI();
+			} else {
+				this.#playerHud.showWoodCrateUI(
+					Math.floor(blockHit.x),
+					Math.floor(blockHit.y),
+					Math.floor(blockHit.z),
+				);
+			}
+			this.#pickInFlight = false;
 			return;
 		}
 

@@ -51,7 +51,7 @@ export class PlayerLoadingGate {
 			chunkX,
 			chunkY,
 			chunkZ,
-			SETTING_PARAMS.RENDER_DISTANCE * 2,
+			SETTING_PARAMS.RENDER_DISTANCE,
 			SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
 			undefined,
 			undefined,

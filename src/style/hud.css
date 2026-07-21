@@ -924,3 +924,88 @@
 #chat-input:focus {
 	border-color: rgba(0, 187, 255, 0.7);
 }
+
+/* ─── Wood Crate Overlay ───────────────────────────────────────────────── */
+
+.woodcrate-overlay {
+	position: absolute;
+	top: 5%;
+	left: 50%;
+	transform: translateX(-50%);
+	width: 90vw;
+	max-width: 1200px;
+	height: 80vh;
+	max-height: 800px;
+	background-color: rgba(0, 0, 0, 0.85);
+	padding: 1em;
+	z-index: 100;
+	display: none;
+	flex-direction: column;
+	font-family: var(--ui-font-family);
+	font-size: 1em;
+	border: 2px solid rgba(96, 96, 64, 0.9);
+	border-radius: 8px;
+}
+
+.woodcrate-title {
+	color: white;
+	font-size: 1.5em;
+	font-weight: bold;
+	text-align: center;
+	padding: 0.5em;
+	text-shadow: 2px 2px 2px black;
+}
+
+.woodcrate-content {
+	display: flex;
+	flex-direction: row;
+	gap: 1em;
+	flex: 1;
+	overflow: hidden;
+	align-items: flex-start;
+	justify-content: center;
+}
+
+.woodcrate-panel {
+	display: flex;
+	flex-direction: column;
+	background-color: rgba(0, 0, 0, 0.4);
+	padding: 0.5em;
+	border-radius: 4px;
+	overflow-y: auto;
+}
+
+.woodcrate-panel--player {
+	flex: 3;
+}
+
+.woodcrate-panel--crate {
+	flex: 1;
+	max-width: 320px;
+}
+
+.woodcrate-panel-title {
+	color: #ccc;
+	font-weight: bold;
+	padding: 0.5em;
+	text-align: center;
+	border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+	margin-bottom: 0.5em;
+	width: 100%;
+}
+
+.woodcrate-grid {
+	display: flex;
+	flex-direction: column;
+	gap: 0.66em;
+	padding: 0.5em;
+	width: 100%;
+	justify-content: center;
+	align-items: center;
+}
+
+.woodcrate-row--vertical {
+	display: flex;
+	flex-direction: row;
+	gap: 0.66em;
+}
