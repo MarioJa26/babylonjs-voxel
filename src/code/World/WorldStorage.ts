@@ -99,10 +99,10 @@ class WorldStorageImpl {
 
 		// PERF: pre-size the output buffer instead of accumulating an array of
 		// stream chunks and doing a second full copy pass to merge them
-		// afterward (mirrors the pre-sized approach decompressToShared already
-		// uses via the gzip trailer's ISIZE field — compression can't know its
-		// exact output size ahead of time, but a generous upper bound avoids
-		// the common-case growth/copy entirely).
+		// afterward. Decompression takes a different approach — it reads the
+		// gzip trailer's ISIZE field for exact sizing; compression can't know
+		// its exact output size ahead of time, but a generous upper bound
+		// avoids the common-case growth/copy entirely.
 		let outBuf: Uint8Array<ArrayBufferLike> = new Uint8Array(
 			inputBytes.byteLength + GZIP_SAFETY_MARGIN,
 		);
@@ -121,77 +121,6 @@ class WorldStorageImpl {
 			reader.releaseLock();
 		}
 		return offset === outBuf.length ? outBuf : outBuf.slice(0, offset);
-	}
-
-	private async decompressToShared(
-		data: Uint8Array,
-	): Promise<Uint8Array | Uint16Array> {
-		const outputByteLength = this.getGzipISize(data);
-		const body: Uint8Array<ArrayBuffer> =
-			data.buffer instanceof ArrayBuffer
-				? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
-				: new Uint8Array(data);
-		const sab = new SharedArrayBuffer(outputByteLength);
-		const out = new Uint8Array(sab);
-
-		// PERF: was `new Response(body).body!.pipeThrough(...)`. Constructing a
-		// full Response just to obtain a ReadableStream pulls in Fetch API
-		// object/header machinery for what is really "wrap this Uint8Array in a
-		// stream" — the same lightweight construction compress() already uses
-		// above does the same job without it.
-		const readable = new ReadableStream<Uint8Array>({
-			start(controller) {
-				controller.enqueue(body);
-				controller.close();
-			},
-		});
-		const reader = readable
-			.pipeThrough(
-				new DecompressionStream("gzip") as unknown as ReadableWritablePair<
-					Uint8Array,
-					Uint8Array
-				>,
-			)
-			.getReader();
-
-		let offset = 0;
-		try {
-			while (true) {
-				const { value, done } = await reader.read();
-				if (done) break;
-				if (value) {
-					out.set(value, offset);
-					offset += value.byteLength;
-				}
-			}
-		} finally {
-			reader.releaseLock();
-		}
-		if (offset !== outputByteLength) {
-			throw new Error(
-				`Decompressed size mismatch: expected ${outputByteLength}, got ${offset}`,
-			);
-		}
-		return sab.byteLength === Chunk.SIZE3 * 2
-			? new Uint16Array(sab)
-			: new Uint8Array(sab);
-	}
-
-	private getGzipISize(data: Uint8Array): number {
-		if (data.byteLength < 18) throw new Error("Invalid gzip data: too small");
-		return (
-			(data[data.byteLength - 4] |
-				(data[data.byteLength - 3] << 8) |
-				(data[data.byteLength - 2] << 16) |
-				(data[data.byteLength - 1] << 24)) >>>
-			0
-		);
-	}
-
-	private isUint8Array(
-		value: Uint8Array | Uint16Array | null | undefined,
-	): value is Uint8Array {
-		return !!value && value.BYTES_PER_ELEMENT === 1;
 	}
 
 	private detachSharedArrayBuffer<T extends ArrayBufferView>(view: T): T {
@@ -319,29 +248,14 @@ class WorldStorageImpl {
 		if (!client) return null;
 
 		try {
-			const bytes = await client.readVoxel(chunkId, VOXEL_SENTINEL);
+			const includeVoxelData = options?.includeVoxelData ?? true;
+			const bytes = includeVoxelData
+				? await client.readVoxelDecompressed(chunkId, VOXEL_SENTINEL)
+				: await client.readVoxel(chunkId, VOXEL_SENTINEL);
 			if (!bytes) return null;
 			const data = deserializeVoxelData(bytes);
-			const includeVoxelData = options?.includeVoxelData ?? true;
 
-			if (data.compressed && includeVoxelData) {
-				const jobs: Promise<void>[] = [];
-				if (this.isUint8Array(data.blocks)) {
-					jobs.push(
-						this.decompressToShared(data.blocks).then((result) => {
-							data.blocks = result;
-						}),
-					);
-				}
-				if (this.isUint8Array(data.lightArray)) {
-					jobs.push(
-						this.decompressToShared(data.lightArray).then((result) => {
-							data.lightArray = result as Uint8Array;
-						}),
-					);
-				}
-				await Promise.all(jobs);
-			} else if (!includeVoxelData) {
+			if (!includeVoxelData) {
 				data.blocks = null;
 				data.palette = null;
 				data.isUniform = undefined;
@@ -387,7 +301,9 @@ class WorldStorageImpl {
 
 		await mapLimit(chunkIds, readConcurrency, async (chunkId) => {
 			try {
-				const bytes = await client.readVoxel(chunkId, VOXEL_SENTINEL);
+				const bytes = includeVoxelData
+					? await client.readVoxelDecompressed(chunkId, VOXEL_SENTINEL)
+					: await client.readVoxel(chunkId, VOXEL_SENTINEL);
 				if (!bytes) return;
 
 				const raw = deserializeVoxelData(bytes);
@@ -417,35 +333,9 @@ class WorldStorageImpl {
 			return result;
 		}
 
-		const decompressConcurrency = Math.max(1, Math.min(4, hardwareConcurrency));
-
-		await mapLimit(hits, decompressConcurrency, async ({ chunkId, data }) => {
-			if (data.compressed) {
-				const jobs: Promise<void>[] = [];
-
-				if (this.isUint8Array(data.blocks)) {
-					jobs.push(
-						this.decompressToShared(data.blocks).then((r) => {
-							data.blocks = r;
-						}),
-					);
-				}
-
-				if (this.isUint8Array(data.lightArray)) {
-					jobs.push(
-						this.decompressToShared(data.lightArray).then((r) => {
-							data.lightArray = r as Uint8Array;
-						}),
-					);
-				}
-
-				if (jobs.length > 0) {
-					await Promise.all(jobs);
-				}
-			}
-
-			result.set(chunkId, data);
-		});
+		for (let i = 0; i < hits.length; i++) {
+			result.set(hits[i].chunkId, hits[i].data);
+		}
 
 		return result;
 	}

@@ -195,6 +195,19 @@ export class OpfsClient {
 		return await this._dispatch<Uint8Array | null>();
 	}
 
+	async readVoxelDecompressed(
+		key: bigint,
+		lod: number,
+	): Promise<Uint8Array | null> {
+		const { chunkX, chunkY, chunkZ } = this._unpackKey(key);
+		_resetWire(OpfsMsg.ReadVoxelDecompressed);
+		_wireMsg.chunkX = chunkX;
+		_wireMsg.chunkY = chunkY;
+		_wireMsg.chunkZ = chunkZ;
+		_wireMsg.lod = lod;
+		return await this._dispatch<Uint8Array | null>();
+	}
+
 	async writeVoxel(key: bigint, lod: number, data: Uint8Array): Promise<void> {
 		const { chunkX, chunkY, chunkZ } = this._unpackKey(key);
 		const bytes = transferableBytes(data);

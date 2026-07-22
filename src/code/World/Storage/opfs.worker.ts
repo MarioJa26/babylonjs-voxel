@@ -3,6 +3,10 @@
 import { OpfsChunkStore } from "./OpfsChunkStore";
 import { OpfsMsg } from "./OpfsMessageTypes";
 import { RegionFile } from "./RegionFile";
+import {
+	deserializeVoxelData,
+	serializeVoxelData,
+} from "./VoxelSerializer";
 
 // ---------------------------------------------------------------------------
 // Hoist self reference once — avoids repeated casts + property lookups.
@@ -553,6 +557,35 @@ _self.addEventListener("message", (event: MessageEvent) => {
 				const rf = await getRegionFile(_loc[0], _loc[1], _loc[2]);
 				const result = rf.readChunk(_loc[3], _loc[4], _loc[5], isEntity);
 				postTransferResult(id, result);
+				break;
+			}
+			case OpfsMsg.ReadVoxelDecompressed: {
+				resolveVoxelLocation(data.chunkX | 0, data.chunkY | 0, data.chunkZ | 0);
+				const rf2 = await getRegionFile(_loc[0], _loc[1], _loc[2]);
+				const raw = rf2.readChunk(_loc[3], _loc[4], _loc[5], false);
+				if (!raw) {
+					postTransferResult(id, null);
+					break;
+				}
+				const saved = deserializeVoxelData(raw);
+				if (saved.compressed) {
+					if (saved.blocks && saved.blocks instanceof Uint8Array) {
+						saved.blocks = await decompressGzip(saved.blocks);
+					}
+					if (saved.lightArray) {
+						saved.lightArray = await decompressGzip(saved.lightArray);
+					}
+					saved.compressed = false;
+				}
+				const uncompressed = serializeVoxelData(
+					saved.blocks,
+					saved.palette,
+					saved.isUniform,
+					saved.uniformBlockId,
+					saved.lightArray,
+					false,
+				);
+				postTransferResult(id, uncompressed);
 				break;
 			}
 			case OpfsMsg.WriteVoxel: {

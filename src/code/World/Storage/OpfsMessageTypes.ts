@@ -10,4 +10,5 @@ export const enum OpfsMsg {
 	RemoveVoxel,
 	FlushVoxels,
 	Close,
+	ReadVoxelDecompressed,
 }
