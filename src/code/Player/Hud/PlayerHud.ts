@@ -20,6 +20,7 @@ import MapFog from "../../Maps/MapFog";
 import { WorldEnvironment } from "../../Maps/WorldEnvironment";
 import { MasonRecipes } from "../Crafting/CraftingManager";
 import { CraftMenu } from "../Crafting/CraftMenu/CraftMenu";
+import { Item } from "../Inventory/Item";
 import type { ItemSlot } from "../Inventory/ItemSlot";
 import { PlayerInventory } from "../Inventory/PlayerInventory";
 import type { Player } from "../Player";
@@ -333,6 +334,7 @@ export class PlayerHud {
 	// ─── Wood Crate ─────────────────────────────────────────────────────────
 
 	#woodCrateKeyHandler?: (e: KeyboardEvent) => void;
+	#woodCrateClickHandler?: (e: MouseEvent) => void;
 
 	public showWoodCrateUI(x: number, y: number, z: number): void {
 		if (this.#woodCrateOpen) return;
@@ -374,6 +376,23 @@ export class PlayerHud {
 		};
 		window.addEventListener("keydown", this.#woodCrateKeyHandler, true);
 		window.addEventListener("keyup", this.#woodCrateKeyHandler, true);
+
+		// Shift-click handler for fast transfer between crate and inventory
+		this.#woodCrateClickHandler = (e: MouseEvent) => {
+			if (!this.#woodCrateOpen) return;
+			if (!e.shiftKey) return;
+			const slot = PlayerInventory.currentlyHoveredSlot;
+			if (!slot?.item) return;
+			if (this.#moveItemBetweenCrateAndInventory(slot)) {
+				e.preventDefault();
+				e.stopPropagation();
+			}
+		};
+		this.#woodCrateDiv.addEventListener(
+			"click",
+			this.#woodCrateClickHandler,
+			true,
+		);
 	}
 
 	public hideWoodCrateUI(): void {
@@ -421,11 +440,96 @@ export class PlayerHud {
 			this.#woodCrateKeyHandler = undefined;
 		}
 
+		// Remove shift-click handler
+		if (this.#woodCrateClickHandler && this.#woodCrateDiv) {
+			this.#woodCrateDiv.removeEventListener(
+				"click",
+				this.#woodCrateClickHandler,
+				true,
+			);
+			this.#woodCrateClickHandler = undefined;
+		}
+
 		if (!isUiOpen()) this.#enterPointerLock();
 	}
 
 	public get isWoodCrateOpen(): boolean {
 		return this.#woodCrateOpen;
+	}
+
+	#moveItemBetweenCrateAndInventory(slot: ItemSlot): boolean {
+		const item = slot.item;
+		if (!item) return false;
+
+		const inventory = PlayerHud.#inventory.inventory;
+		const isInInventory =
+			slot.row > 0 || (slot.row === 0 && inventory[0]?.includes(slot));
+		const isInCrate =
+			this.#woodCrateSlots?.some((row) => row.includes(slot)) ?? false;
+
+		if (!isInInventory && !isInCrate) return false;
+
+		if (isInInventory) {
+			// Move from inventory to crate
+			if (!this.#woodCrateSlots) return false;
+
+			// Try to stack with existing items in crate
+			for (const row of this.#woodCrateSlots) {
+				for (const crateSlot of row) {
+					if (crateSlot.item && crateSlot.item.itemId === item.itemId) {
+						const remainder = Item.stackItemAtoB(item, crateSlot.item);
+						if (remainder === 0) {
+							slot.clearItemSlots();
+							return true;
+						}
+					}
+				}
+			}
+
+			// Try to move to empty slot in crate
+			for (const row of this.#woodCrateSlots) {
+				for (const crateSlot of row) {
+					if (!crateSlot.item) {
+						slot.clearItemSlots();
+						item.row = crateSlot.row;
+						item.col = crateSlot.col;
+						crateSlot.divItemSlot.appendChild(item.div);
+						crateSlot.item = item;
+						return true;
+					}
+				}
+			}
+		} else if (isInCrate) {
+			// Move from crate to inventory
+			// Try to stack with existing items in inventory
+			for (let row = inventory.length - 1; row >= 0; row--) {
+				for (const invSlot of inventory[row]) {
+					if (invSlot.item && invSlot.item.itemId === item.itemId) {
+						const remainder = Item.stackItemAtoB(item, invSlot.item);
+						if (remainder === 0) {
+							slot.clearItemSlots();
+							return true;
+						}
+					}
+				}
+			}
+
+			// Try to move to empty slot in inventory
+			for (let row = inventory.length - 1; row >= 0; row--) {
+				for (const invSlot of inventory[row]) {
+					if (!invSlot.item) {
+						slot.clearItemSlots();
+						item.row = invSlot.row;
+						item.col = invSlot.col;
+						invSlot.divItemSlot.appendChild(item.div);
+						invSlot.item = item;
+						return true;
+					}
+				}
+			}
+		}
+
+		return false;
 	}
 
 	private createWoodCrateUI(): HTMLDivElement {

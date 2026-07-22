@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-21T12:00:31.492Z
+Generated: 2026-07-22T02:59:38.684Z
 
-> **Summary:** 126 classes · 1711 members · 476 module-level functions · 51756 LOC
+> **Summary:** 126 classes · 1716 members · 484 module-level functions · 52212 LOC
 
 ---
 
@@ -1807,7 +1807,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Lib/GameRuntimeState.ts` (37 LOC)
+## `Lib/GameRuntimeState.ts` (38 LOC)
 
 **Module-level functions**
 - `export function isInCave(): boolean`
@@ -2310,7 +2310,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Crafting/CraftingManager.ts` (92 LOC)
+## `Player/Crafting/CraftingManager.ts` (97 LOC)
 
 **Types / Interfaces / Enums**
 - interface `Ingredient`
@@ -2451,7 +2451,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Hud/BlockHighlight/BreakingBlockHandler.ts` (182 LOC)
+## `Player/Hud/BlockHighlight/BreakingBlockHandler.ts` (223 LOC)
 
 ### export class BlockBreakingHandler
 
@@ -2479,6 +2479,7 @@ export function createFastNoise3D(
 - `setVec3(particlePos, x + 0.5, y + 0.5, z + 0.5)`
 - `play(this.#player.sceneRef, particlePos, blockId, packedLight)`
 - `deleteBlock(x, y, z)`
+- `saveBlockInventory(x, y, z, emptyInv)`
 
 **Types / Interfaces / Enums**
 - type `BoatBlockHitContext`
@@ -2612,7 +2613,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Hud/PlayerHud.ts` (768 LOC)
+## `Player/Hud/PlayerHud.ts` (1035 LOC)
 
 ### export class PlayerHud
 
@@ -2630,6 +2631,7 @@ export function createFastNoise3D(
 - `public get player(): Player`
 - `public get chat(): Chat`
 - `public get isMasonTableOpen(): boolean`
+- `public get isWoodCrateOpen(): boolean`
 - `public get selectedHotbarSlot(): number`
 - `public set selectedHotbarSlot(slot: number)`
 
@@ -2642,6 +2644,9 @@ export function createFastNoise3D(
 - `public toggleInventory(): void`
 - `public showMasonTableUI(): void`
 - `public hideMasonTableUI(): void`
+- `public showWoodCrateUI(x: number, y: number, z: number): void`
+- `public hideWoodCrateUI(): void`
+- `private createWoodCrateUI(): HTMLDivElement`
 - `private createMasonTableUI(): HTMLDivElement`
 - `private getMasonSourceBlocks()`
 - `public updateMasonTableAvailability(): void`
@@ -2656,6 +2661,9 @@ export function createFastNoise3D(
 - `public static showItemTooltip(text: string, event: MouseEvent): void`
 - `public static hideItemTooltip(): void`
 - `public updateStats(): void`
+
+**Types / Interfaces / Enums**
+- type `SavedBlockInventory`
 
 ---
 
@@ -2674,7 +2682,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Inventory/DroppedItem.ts` (471 LOC)
+## `Player/Inventory/DroppedItem.ts` (469 LOC)
 
 ### export class DroppedItem implements IUsable
 
@@ -2722,7 +2730,7 @@ export function createFastNoise3D(
 - `vec3(this.#halfSize, this.#halfSize, this.#halfSize)`
 - `setShaderTexture(this.#material, sharedAtlas)`
 - `setShaderTexture(this.#material, atlas)`
-- `pushItem(direction: Vec3): void`
+- `addVelocity(x: number, y: number, z: number): void`
 - `removeFromScene(Map1.mainScene, this.#boxMesh)`
 - `copyVec3(this.#scratchProbe, this.#position)`
 - `setShaderVector3(this.#material, [finalR, finalG, finalB])`
@@ -2739,7 +2747,6 @@ export function createFastNoise3D(
 - `function getUnitCubeGeometry()`
 
 **Types / Interfaces / Enums**
-- interface `PlayerDroppedItemApi`
 - type `LiteMetadata`
 - type `Mesh`
 - type `Texture2D`
@@ -2853,7 +2860,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Inventory/PlayerInventory.ts` (374 LOC)
+## `Player/Inventory/PlayerInventory.ts` (373 LOC)
 
 ### export class PlayerInventory
 
@@ -2898,7 +2905,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Player.ts` (207 LOC)
+## `Player/Player.ts` (222 LOC)
 
 ### export class Player
 
@@ -3236,6 +3243,24 @@ export function createFastNoise3D(
 **Types / Interfaces / Enums**
 - type `EngineContext`
 - type `SceneContext`
+
+---
+
+## `World/BlockInventory/BlockInventoryManager.ts` (129 LOC)
+
+**Module-level functions**
+- `function posKey(x: number, y: number, z: number): string`
+- `function loadAll(): Map<string, SavedBlockInventory>`
+- `function saveAll(): void`
+- `export function getBlockInventory(x: number, y: number, z: number): SavedBlockInventory`
+- `export function saveBlockInventory(x: number, y: number, z: number, inv: SavedBlockInventory): void`
+- `export function createEmptyInventory(width: number, height: number): SavedBlockInventory`
+- `export function buildBlockInventorySlots(saved: SavedBlockInventory): ItemSlot[][]`
+- `export function serializeBlockSlots(grid: ItemSlot[][]): SavedBlockInventory`
+
+**Types / Interfaces / Enums**
+- interface `SavedBlockInventoryItem`
+- interface `SavedBlockInventory`
 
 ---
 
@@ -5228,7 +5253,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Texture/BlockType.ts` (127 LOC)
+## `World/Texture/BlockType.ts` (128 LOC)
 
 **Module-level functions**
 - `export function isPassThroughBlock(blockId: number): boolean`

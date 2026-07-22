@@ -333,12 +333,11 @@ export class PlayerInventory {
 
 		// Launch in the look direction, plus the player's own momentum so the
 		// item inherits the player's movement (thrown forward while running).
-		const launch = vec3(
+		droppedItem.addVelocity(
 			forward.x * 8 + this.#player.velocity.x,
 			forward.y * 8 + this.#player.velocity.y,
 			forward.z * 8 + this.#player.velocity.z,
 		);
-		droppedItem.pushItem(launch);
 
 		if (item.row >= 0 && item.col >= 0) {
 			if (item.stackSize <= 0) {

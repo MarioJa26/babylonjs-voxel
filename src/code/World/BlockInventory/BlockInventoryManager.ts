@@ -16,8 +16,6 @@ export interface SavedBlockInventory {
 	slots: (SavedBlockInventoryItem | null)[][];
 }
 
-type BlockPosition = { x: number; y: number; z: number };
-
 function posKey(x: number, y: number, z: number): string {
 	return `${x},${y},${z}`;
 }
@@ -129,9 +127,7 @@ export function buildBlockInventorySlots(
 /**
  * Serialize a live ItemSlot grid back to a SavedBlockInventory.
  */
-export function serializeBlockSlots(
-	grid: ItemSlot[][],
-): SavedBlockInventory {
+export function serializeBlockSlots(grid: ItemSlot[][]): SavedBlockInventory {
 	const slots: (SavedBlockInventoryItem | null)[][] = [];
 	for (const row of grid) {
 		const savedRow: (SavedBlockInventoryItem | null)[] = [];

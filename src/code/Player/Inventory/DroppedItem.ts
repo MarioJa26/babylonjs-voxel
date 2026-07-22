@@ -208,10 +208,6 @@ function getUnitCubeGeometry() {
 	return unitCubeGeometryCache;
 }
 
-interface PlayerDroppedItemApi {
-	playerInventory: { addItem: (item: Item) => number };
-}
-
 const ITEM_NAME: string = "droppedItem";
 const ITEM_NAME_AABB: string = "droppedItemAABB";
 
@@ -296,7 +292,7 @@ export class DroppedItem implements IUsable {
 	}
 
 	constructor(item: Item, x: number, y: number, z: number) {
-		const size = 0.5 + item.stackSize * 0.005;
+		const size = 0.25 + item.stackSize * 0.009;
 		const geometry = getUnitCubeGeometry(); // Use cached geometry
 
 		this.#boxMesh = createMeshFromData(
@@ -360,14 +356,15 @@ export class DroppedItem implements IUsable {
 		this.#updateLighting();
 	}
 
-	pushItem(direction: Vec3): void {
-		this.#velocity = direction;
+	addVelocity(x: number, y: number, z: number): void {
+		this.#velocity.x += x;
+		this.#velocity.y += y;
+		this.#velocity.z += z;
 	}
 
 	// Arrow function limits closure allocations to 1 per instance instead of per execution
 	use = (player: Player): void => {
-		const api = player as unknown as PlayerDroppedItemApi;
-		const remainder = api.playerInventory.addItem(this.#item);
+		const remainder = player.playerInventory.addItem(this.#item);
 		if (remainder <= 0) {
 			this.#dispose();
 		}
@@ -434,7 +431,7 @@ export class DroppedItem implements IUsable {
 			this.#position.z,
 		);
 		this.#voxelCollider.syncDebugMesh(this.#position);
-		//this.#updateLighting();
+		this.#updateLighting();
 	}
 
 	#moveAxis(axis: ColliderAxis, delta: number): void {

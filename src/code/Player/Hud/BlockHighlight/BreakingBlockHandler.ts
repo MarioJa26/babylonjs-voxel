@@ -2,9 +2,15 @@ import type { Mesh, Vec3 } from "@babylonjs/lite";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
 import { play } from "@/code/Maps/BlockBreakParticles";
 import {
+	createEmptyInventory,
+	getBlockInventory,
+	saveBlockInventory,
+} from "@/code/World/BlockInventory/BlockInventoryManager";
+import {
 	deleteBlock,
 	getLightByWorldCoords,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { BlockType } from "@/code/World/Texture/BlockType";
 import {
 	getBlockBreakTime,
 	getBlockInfo,
@@ -19,6 +25,7 @@ import { pickTarget } from "./BlockRaycaster";
 
 const _scratchLightPos = vec3Zero();
 const _scratchParticlePos = vec3Zero();
+let variation = 1834927911;
 
 export type BoatBlockHitContext = {
 	kind: "boatChunk";
@@ -189,6 +196,16 @@ export class BlockBreakingHandler {
 
 		const di = new DroppedItem(worldItem, x + 0.5, y + 0.5, z + 0.5);
 
+		variation ^= blockId;
+		variation ^= variation << 3;
+		variation ^= variation >>> 2;
+
+		const pushX = ((variation & 7) - 3.5) * 0.44;
+		const pushY = 0.67 + ((variation >>> 3) & 3);
+		const pushZ = (((variation >>> 5) & 7) - 3.5) * 0.44;
+
+		di.addVelocity(pushX, pushY, pushZ);
+
 		const particlePos = _scratchParticlePos;
 		setVec3(particlePos, x + 0.5, y + 0.5, z + 0.5);
 		play(this.#player.sceneRef, particlePos, blockId, packedLight);
@@ -206,6 +223,37 @@ export class BlockBreakingHandler {
 			);
 		} else {
 			deleteBlock(x, y, z);
+		}
+		if (blockId === BlockType.WoodCrate) {
+			const blockInventory = getBlockInventory(x, y, z);
+
+			const dropX = x + 0.5;
+			const dropY = y + 0.5;
+			const dropZ = z + 0.5;
+
+			for (const row of blockInventory.slots) {
+				for (const savedItem of row) {
+					if (savedItem) {
+						const item = Item.createById(savedItem.itemId);
+						item.stackSize = savedItem.stackSize;
+						variation ^= savedItem.itemId;
+						variation ^= variation << 3;
+						variation ^= variation >>> 2;
+
+						const pushX = ((variation & 7) - 3.5) * 0.44;
+						const pushY = 0.5 + ((variation >>> 3) & 3);
+						const pushZ = (((variation >>> 5) & 7) - 3.5) * 0.44;
+
+						const droppedItem = new DroppedItem(item, dropX, dropY, dropZ);
+						droppedItem.addVelocity(pushX, pushY, pushZ);
+					}
+				}
+			}
+			const emptyInv = createEmptyInventory(
+				blockInventory.width,
+				blockInventory.height,
+			);
+			saveBlockInventory(x, y, z, emptyInv);
 		}
 
 		if (this.#player.stats.gamemode === Gamemodes.Creative) {
