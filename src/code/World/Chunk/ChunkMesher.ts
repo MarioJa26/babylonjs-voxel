@@ -1,12 +1,10 @@
 import {
 	type EngineContext,
 	getCameraPosition,
-	loadTexture2D,
 	type Mesh,
 	type SceneContext,
 	type ShaderMaterial,
 	setShaderUniform,
-	type Texture2D,
 } from "@babylonjs/lite";
 import { vec3Zero } from "@/code/Lib/Math";
 import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
@@ -26,10 +24,9 @@ import {
 	createChunkOpaqueMaterial,
 	createChunkTransparentMaterial,
 } from "../Light/OpaqueShaderLite";
+import { packAtlas } from "../Texture/AtlasPacker";
 import {
 	atlasTileSize,
-	getDiffuse,
-	getNormal,
 	setDiffuseTexture2D,
 } from "../Texture/TextureAtlasFactory";
 import type { Chunk } from "./Chunk";
@@ -222,47 +219,18 @@ export async function initAtlas(): Promise<void> {
 
 	initPackedChunkArenas(engine, scene);
 
-	let diffuseAtlasTexture = getDiffuse() as unknown as Texture2D | null;
-	let normalAtlasTexture = getNormal() as unknown as Texture2D | null;
+	const { opaque: packedTexture, transparent: transparentTexture } =
+		await packAtlas(engine);
 
-	if (!diffuseAtlasTexture) {
-		diffuseAtlasTexture = await loadTexture2D(
-			engine,
-			"/texture/diffuse_atlas.png",
-			{
-				mipMaps: false,
-				magFilter: "nearest",
-				minFilter: "nearest",
-			},
-		);
-	}
-	if (!normalAtlasTexture) {
-		normalAtlasTexture = await loadTexture2D(
-			engine,
-			"/texture/normal_atlas.png",
-			{
-				mipMaps: false,
-				magFilter: "nearest",
-				minFilter: "nearest",
-			},
-		);
-	}
-
-	if (!diffuseAtlasTexture) {
-		console.error("Texture Atlas not yet built or available!");
-		return;
-	}
-
-	setDiffuseTexture2D(diffuseAtlasTexture);
+	setDiffuseTexture2D(packedTexture);
 
 	const tileSize = atlasTileSize;
 	const atlasMaxTiles = Math.floor(1.0 / tileSize + 0.5);
 
-	const matOpts = {
+	const baseOpts = {
 		engine: engine as EngineContext,
 		scene: scene as SceneContext,
-		diffuseTexture: diffuseAtlasTexture,
-		normalTexture: normalAtlasTexture,
+		normalTexture: null,
 		tintLUT: LOD_TINT_LUT,
 		atlasTileSize: tileSize,
 		atlasMaxTiles,
@@ -270,12 +238,30 @@ export async function initAtlas(): Promise<void> {
 	};
 
 	if (!atlasMaterial) {
-		atlasMaterial = createChunkOpaqueMaterial(matOpts);
-		transparentMaterial = createChunkTransparentMaterial(matOpts);
-		lod2OpaqueMaterial = createLod2OpaqueMaterial(matOpts);
-		lod2TransparentMaterial = createLod2TransparentMaterial(matOpts);
-		lod3OpaqueMaterial = createLod3OpaqueMaterial(matOpts);
-		lod3TransparentMaterial = createLod3TransparentMaterial(matOpts);
+		atlasMaterial = createChunkOpaqueMaterial({
+			...baseOpts,
+			diffuseTexture: packedTexture,
+		});
+		transparentMaterial = createChunkTransparentMaterial({
+			...baseOpts,
+			diffuseTexture: transparentTexture,
+		});
+		lod2OpaqueMaterial = createLod2OpaqueMaterial({
+			...baseOpts,
+			diffuseTexture: packedTexture,
+		});
+		lod2TransparentMaterial = createLod2TransparentMaterial({
+			...baseOpts,
+			diffuseTexture: transparentTexture,
+		});
+		lod3OpaqueMaterial = createLod3OpaqueMaterial({
+			...baseOpts,
+			diffuseTexture: packedTexture,
+		});
+		lod3TransparentMaterial = createLod3TransparentMaterial({
+			...baseOpts,
+			diffuseTexture: transparentTexture,
+		});
 		uploadTintLUT();
 	}
 

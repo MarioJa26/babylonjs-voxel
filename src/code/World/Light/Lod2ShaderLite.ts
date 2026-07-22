@@ -68,7 +68,6 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let atlasUV = in.vUV2 + singleTileUV * shaderUniforms.atlasTileSize;
 
   var diffuseColor = textureSample(diffuseTexture, diffuseTextureSampler, atlasUV);
-  if (diffuseColor.a < 0.01) { discard; }
   diffuseColor = vec4<f32>(diffuseColor.rgb * mix(1.0, 0.55, shaderUniforms.wetness), diffuseColor.a);
 
   let worldNormal = in.vNormal;
@@ -92,7 +91,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   color = applyTintBucket(color, in.vTint);
 
   color = mix(color, in.vFogColor, in.vFogFactor);
-  return vec4<f32>(color, diffuseColor.a);
+  return vec4<f32>(color, 1.0);
 }
 `;
 

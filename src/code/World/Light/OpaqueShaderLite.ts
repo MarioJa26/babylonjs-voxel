@@ -57,8 +57,13 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   var diffuseColor = textureSample(diffuseTexture, diffuseTextureSampler, atlasUV);
   diffuseColor = vec4<f32>(diffuseColor.rgb * mix(1.0, 0.5, shaderUniforms.wetness), diffuseColor.a);
 
-  var normalMap = textureSample(normalTexture, normalTextureSampler, atlasUV).rgb;
-  normalMap = normalize(normalMap * 2.0 - 1.0);
+
+
+let nx = diffuseColor.a * 2.0 - 1.0;
+let nz = sqrt(max(0.0, 1.0 - nx * nx));
+
+let normalMap = normalize(vec3<f32>(nx, 0.0, nz));
+
   let N = in.vNormal;
   let T = in.vTangent;
   let B = cross(N, T);
@@ -208,7 +213,6 @@ function buildChunkMaterial(
 	opts: ChunkMaterialOptions,
 ): ShaderMaterial {
 	const samplers = ["diffuseTexture"];
-	if (useNormal) samplers.push("normalTexture");
 
 	const arenaCount = Math.max(1, opts.faceArenaCount | 0);
 	const faceStorageBuffers = [];
@@ -250,9 +254,6 @@ function buildChunkMaterial(
 	registerPackedMaterial(material);
 
 	setShaderTexture(material, "diffuseTexture", opts.diffuseTexture);
-	if (useNormal) {
-		setShaderTexture(material, "normalTexture", opts.normalTexture);
-	}
 	setShaderUniform(material, "atlasTileSize", opts.atlasTileSize);
 	setShaderUniform(material, "atlasMaxTiles", opts.atlasMaxTiles);
 	setShaderUniform(material, "sunLightIntensity", 1);

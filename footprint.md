@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-22T02:59:38.684Z
+Generated: 2026-07-22T11:43:06.137Z
 
-> **Summary:** 126 classes · 1716 members · 484 module-level functions · 52212 LOC
+> **Summary:** 126 classes · 1680 members · 487 module-level functions · 52286 LOC
 
 ---
 
@@ -2682,65 +2682,9 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/Inventory/DroppedItem.ts` (469 LOC)
+## `Player/Inventory/DroppedItem.ts` (493 LOC)
 
 ### export class DroppedItem implements IUsable
-
-**Constructor**
-- `constructor(item: Item, x: number, y: number, z: number)`
-
-**Properties**
-- `static readonly GRAVITY`
-- `static readonly STEP_SIZE`
-- `static readonly EPSILON`
-- `static readonly AIR_DAMPING_PER_SEC`
-- `static readonly GROUND_DAMPING_PER_SEC`
-- `static readonly MIN_SPEED`
-- `static readonly SKY_LIGHT_COLOR`
-- `static readonly BLOCK_LIGHT_COLOR`
-- `mipMaps: false,`
-- `magFilter: ,`
-- `minFilter: ,`
-- `scene: Map1.mainScene,`
-- `name: ITEM_NAME_AABB,`
-- `position: this.#position,`
-- `renderOrder: 1,`
-- `use`
-
-**Accessors**
-- `get boxMesh(): Mesh`
-- `get position(): Vec3`
-- `get item(): Item`
-- `static get activeItems(): ReadonlyArray<DroppedItem>`
-- `get halfExtent(): number`
-
-**Methods**
-- `onBeforeRender(Map1.mainScene, (deltaMs: number) => {
-			const dt = deltaMs * 0.001; 
-			if (dt <= 0) return;
-
-			const items = DroppedItem.#allItems;
-			const len = items.length;
-			for (let i = 0; i < len; i++) {
-				items[i].#updatePhysics(dt);
-			}
-		})`
-- `static preloadAtlas(): void`
-- `addToScene(Map1.mainScene, this.#boxMesh)`
-- `vec3(this.#halfSize, this.#halfSize, this.#halfSize)`
-- `setShaderTexture(this.#material, sharedAtlas)`
-- `setShaderTexture(this.#material, atlas)`
-- `addVelocity(x: number, y: number, z: number): void`
-- `removeFromScene(Map1.mainScene, this.#boxMesh)`
-- `copyVec3(this.#scratchProbe, this.#position)`
-- `setShaderVector3(this.#material, [finalR, finalG, finalB])`
-- `setShaderUniform(this.#material, tileSize)`
-- `setShaderUniform(this.#material, [
-			clampedX * tileSize,
-			atlasRow * tileSize,
-		])`
-- `static disposeAll(): void`
-- `static nearestTo(player: Player): DroppedItem | null`
 
 **Module-level functions**
 - `function createDroppedItemMaterial(): ShaderMaterial`
@@ -3519,7 +3463,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/ChunkMesher.ts` (517 LOC)
+## `World/Chunk/ChunkMesher.ts` (505 LOC)
 
 **Module-level functions**
 - `function getBoatChunkIndex(size: number): Uint8Array`
@@ -3538,7 +3482,6 @@ export function createFastNoise3D(
 - type `Mesh`
 - type `SceneContext`
 - type `ShaderMaterial`
-- type `Texture2D`
 - type `MergedMeshGroup`
 - type `PackedMeshInput`
 
@@ -4595,7 +4538,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Light/Lod2ShaderLite.ts` (247 LOC)
+## `World/Light/Lod2ShaderLite.ts` (246 LOC)
 
 **Module-level functions**
 - `function baseUniforms(): readonly ShaderUniformOption[]`
@@ -4635,7 +4578,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Light/OpaqueShaderLite.ts` (228 LOC)
+## `World/Light/OpaqueShaderLite.ts` (225 LOC)
 
 **Module-level functions**
 - `function buildChunkMaterial(name: string, fragmentSource: string, useNormal: boolean, opts: ChunkMaterialOptions): ShaderMaterial`
@@ -5231,6 +5174,15 @@ export function createFastNoise3D(
 **Types / Interfaces / Enums**
 - type `SavedChunkData`
 - type `SavedChunkEntityData`
+
+---
+
+## `World/Texture/AtlasPacker.ts` (66 LOC)
+
+**Module-level functions**
+- `function loadImage(url: string): Promise<HTMLImageElement>`
+- `function readPixels(img: HTMLImageElement): Uint8Array`
+- `async export function packAtlas(engine: EngineContext): Promise<`
 
 ---
 

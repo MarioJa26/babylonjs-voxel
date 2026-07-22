@@ -295,7 +295,7 @@ export async function initDistantTerrain(): Promise<void> {
 	let diffuse = getDiffuseTexture2D();
 	if (!diffuse) {
 		diffuse = await loadTexture2D(engine, "/texture/diffuse_atlas.png", {
-			mipMaps: false,
+			mipMaps: true,
 			magFilter: "nearest",
 			minFilter: "nearest",
 		});
