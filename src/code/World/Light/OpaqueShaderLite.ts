@@ -56,18 +56,12 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 
   var diffuseColor = textureSample(diffuseTexture, diffuseTextureSampler, atlasUV);
   diffuseColor = vec4<f32>(diffuseColor.rgb * mix(1.0, 0.5, shaderUniforms.wetness), diffuseColor.a);
+  let nx = diffuseColor.a * 2.0 - 1.0;
+  let nz = sqrt(1.0 - nx * nx);
 
+  let normalMap = normalize(vec3<f32>(nx, 0.0, nz));
 
-
-let nx = diffuseColor.a * 2.0 - 1.0;
-let nz = sqrt(max(0.0, 1.0 - nx * nx));
-
-let normalMap = normalize(vec3<f32>(nx, 0.0, nz));
-
-  let N = in.vNormal;
-  let T = in.vTangent;
-  let B = cross(N, T);
-  let worldNormal = normalize(mat3x3<f32>(T, B, N) * normalMap);
+  let worldNormal = in.vTangent * nx + in.vNormal * nz;
 
   let lightDirection = shaderUniforms.lightDirection;
   let viewDir = in.vViewDir;
