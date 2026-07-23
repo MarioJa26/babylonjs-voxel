@@ -542,10 +542,10 @@ export function flushDirtyMergedGroups(): void {
 
 		if (!_mergedFlushRafScheduled) {
 			_mergedFlushRafScheduled = true;
-			requestAnimationFrame(() => {
+			setTimeout(() => {
 				_mergedFlushRafScheduled = false;
 				flushDirtyMergedGroups();
-			});
+			}, 0);
 		}
 	}
 

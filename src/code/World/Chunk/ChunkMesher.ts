@@ -115,6 +115,7 @@ let lastLY = 0;
 let lastLZ = 0;
 let lastSun = -1;
 let lastWet = -1;
+let _timeFrameCounter = 0;
 
 function getOpaqueMaterialForLodBucket(lod: number): ShaderMaterial {
 	return lod >= 3
@@ -183,6 +184,12 @@ function setMaterialGroupUniforms(m: ShaderMaterial): void {
 // Push fog uniforms from MapFog every frame so the debug fog sliders and
 // underwater transitions affect chunk + LOD2 + LOD3 together. Layout is
 // [0, start, end, 0] — the vertex shader reads .y = start, .z = end.
+let _fogCachedStart = -1;
+let _fogCachedEnd = -1;
+let _fogCachedColorR = -1;
+let _fogCachedColorG = -1;
+let _fogCachedColorB = -1;
+let _fogCachedUnderwater = false;
 function pushFogUniforms(): void {
 	populateMaterialList();
 	const camera = sceneRef ? sceneRef.camera : null;
@@ -193,11 +200,27 @@ function pushFogUniforms(): void {
 	}
 	const start = MapFog.getFogStart(isUnderWater);
 	const end = MapFog.getFogEnd(isUnderWater);
+	const color = MapFog.getFogColor(isUnderWater);
+	if (
+		start === _fogCachedStart &&
+		end === _fogCachedEnd &&
+		color[0] === _fogCachedColorR &&
+		color[1] === _fogCachedColorG &&
+		color[2] === _fogCachedColorB &&
+		isUnderWater === _fogCachedUnderwater
+	) {
+		return;
+	}
+	_fogCachedStart = start;
+	_fogCachedEnd = end;
+	_fogCachedColorR = color[0];
+	_fogCachedColorG = color[1];
+	_fogCachedColorB = color[2];
+	_fogCachedUnderwater = isUnderWater;
 	fogInfosArray[0] = 0;
 	fogInfosArray[1] = start;
 	fogInfosArray[2] = end;
 	fogInfosArray[3] = 0;
-	const color = MapFog.getFogColor(isUnderWater);
 	fogColorArray[0] = color[0];
 	fogColorArray[1] = color[1];
 	fogColorArray[2] = color[2];
@@ -597,6 +620,11 @@ export function updateGlobalUniforms(frameId: number): void {
 		}
 	} else if (transparentMaterial) {
 		// Lighting is static, but the transparent shader still animates `time`.
+		// Throttle to ~20fps (every 3 frames) since the shader uses time for
+		// slow water animation — smooth float changes at 16ms granularity
+		// produce the same visual result while cutting 2/3 of the custom-UBO
+		// writeBuffer calls for the transparent material.
+		if (_timeFrameCounter++ % 3 !== 0) return;
 		const time = performance.now() * 0.001;
 		setShaderUniform(transparentMaterial, "time", time);
 	}

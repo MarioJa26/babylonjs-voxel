@@ -313,10 +313,10 @@ export class ChunkWorkerPool {
 			this.processQueue();
 			this.processQueuePumpScheduled = false;
 		} else {
-			requestAnimationFrame(() => {
+			setTimeout(() => {
 				this.processQueuePumpScheduled = false;
 				this.processQueue();
-			});
+			}, 0);
 		}
 	}
 
@@ -797,7 +797,7 @@ export class ChunkWorkerPool {
 		this._lightRegFlags.push(fromChannel);
 		if (!this._lightRegDrainScheduled) {
 			this._lightRegDrainScheduled = true;
-			requestAnimationFrame(() => {
+			setTimeout(() => {
 				this._lightRegDrainScheduled = false;
 				const chunks = this._lightRegChunks;
 				const flags = this._lightRegFlags;
@@ -894,7 +894,7 @@ export class ChunkWorkerPool {
 	private scheduleLightDirtyPump(): void {
 		if (this.lightDirtyPumpScheduled) return;
 		this.lightDirtyPumpScheduled = true;
-		requestAnimationFrame(this.processLightDirtyQueue);
+		setTimeout(this.processLightDirtyQueue, 0);
 	}
 
 	// -------------------------------------------------------------------------
@@ -1089,10 +1089,10 @@ export class ChunkWorkerPool {
 	private scheduleDeferredLightingPump(): void {
 		if (this.deferredLightingPumpScheduled) return;
 		this.deferredLightingPumpScheduled = true;
-		requestAnimationFrame(() => {
+		setTimeout(() => {
 			this.deferredLightingPumpScheduled = false;
 			this.processDeferredLightingQueue();
-		});
+		}, 0);
 	}
 
 	private processDeferredLightingQueue(): void {
@@ -1179,10 +1179,10 @@ export class ChunkWorkerPool {
 	private scheduleMeshFlush = (): void => {
 		if (this.meshDrainScheduled) return;
 		this.meshDrainScheduled = true;
-		requestAnimationFrame(() => {
+		setTimeout(() => {
 			this.meshDrainScheduled = false;
 			this.processMeshQueueLoop();
-		});
+		}, 0);
 	};
 
 	private _meshSerialQueue: Array<{
@@ -1336,10 +1336,10 @@ export class ChunkWorkerPool {
 		if (queue.length > 0) {
 			if (!this._meshSerialDrainScheduled) {
 				this._meshSerialDrainScheduled = true;
-				requestAnimationFrame(() => {
+				setTimeout(() => {
 					this._meshSerialDrainScheduled = false;
 					this._drainSerialQueue(queue);
-				});
+				}, 0);
 			}
 		}
 	}
@@ -1372,10 +1372,10 @@ export class ChunkWorkerPool {
 		}
 		if (!this.meshDrainScheduled) {
 			this.meshDrainScheduled = true;
-			requestAnimationFrame(() => {
+			setTimeout(() => {
 				this.meshDrainScheduled = false;
 				this.processMeshQueueLoop();
-			});
+			}, 0);
 		}
 	}
 
@@ -1493,10 +1493,10 @@ export class ChunkWorkerPool {
 	private scheduleRemeshFlush(): void {
 		if (this.remeshFlushScheduled) return;
 		this.remeshFlushScheduled = true;
-		requestAnimationFrame(() => {
+		setTimeout(() => {
 			this.remeshFlushScheduled = false;
 			this.flushPendingRemeshQueue();
-		});
+		}, 0);
 	}
 
 	private flushPendingRemeshQueue(): void {
