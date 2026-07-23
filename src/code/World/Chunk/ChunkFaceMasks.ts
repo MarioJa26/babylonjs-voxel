@@ -61,7 +61,7 @@ const _faceScratch: number[] = [];
 const FACE_CONNECT_THRESHOLD = 16;
 
 function getFaceBit(axis: number, dir: number): number {
-	return _faceBitLUT[((axis + 1) * 3 + (dir + 1)) >>> 0];
+	return _faceBitLUT[axis * 2 + (dir >= 0 ? 1 : 0)];
 }
 
 function pushRectFlat(
@@ -102,80 +102,71 @@ function insertionSortEdges(start: number, len: number): void {
 
 function dedupeEdges(start: number, len: number): number {
 	const arr = _edgeScratch;
-	let w = start;
-	for (let r = start; r < start + len; r++) {
-		if (r === start || Math.abs(arr[r] - arr[r - 1]) > 1e-9) {
-			arr[w++] = arr[r];
+	if (len === 0 || arr[start] > EPS) {
+		for (let i = len; i > 0; i--) arr[start + i] = arr[start + i - 1];
+		arr[start] = 0;
+		len++;
+	}
+	if (arr[start + len - 1] < 1 - EPS) {
+		arr[start + len] = 1;
+		len++;
+	}
+	let w = 1;
+	for (let r = 1; r < len; r++) {
+		if (Math.abs(arr[start + r] - arr[start + w - 1]) > EPS) {
+			arr[start + w++] = arr[start + r];
 		}
 	}
-	return w - start;
+	return w;
 }
 
 function doesFlatRectsCoverUnitSquare(f: number): boolean {
+	const count = _rectCounts[f];
+	if (count === 0) return false;
+
 	const buf = _rectBufs[f];
-	const cnt = _rectCounts[f];
-	if (cnt === 0) return false;
+	const HALF = MAX_RECTS * 2 + 2;
 
-	const eg = _edgeScratch;
-	let eLen = 0;
-
-	for (let i = 0; i < cnt; i++) {
-		const base = i * RECT_STRIDE;
-		eg[eLen++] = buf[base];
-		eg[eLen++] = buf[base + 1];
+	let uLen = 0;
+	let vLen = 0;
+	for (let i = 0; i < count; i++) {
+		const b = i * RECT_STRIDE;
+		_edgeScratch[uLen++] = buf[b];
+		_edgeScratch[uLen++] = buf[b + 1];
+		_edgeScratch[HALF + vLen++] = buf[b + 2];
+		_edgeScratch[HALF + vLen++] = buf[b + 3];
 	}
 
-	eg[eLen++] = 0;
-	eg[eLen++] = 1;
+	insertionSortEdges(0, uLen);
+	insertionSortEdges(HALF, vLen);
 
-	insertionSortEdges(0, eLen);
-	eLen = dedupeEdges(0, eLen);
+	uLen = dedupeEdges(0, uLen);
+	vLen = dedupeEdges(HALF, vLen);
 
-	for (let si = 0; si < eLen - 1; si++) {
-		const u0 = eg[si];
-		const u1 = eg[si + 1];
-		if (u1 - u0 <= EPS) continue;
-
-		const vi = _edgeScratch;
-		let vLen = 0;
-		for (let i = 0; i < cnt; i++) {
-			const base = i * RECT_STRIDE;
-			const ru0 = buf[base];
-			const ru1 = buf[base + 1];
-			const rv0 = buf[base + 2];
-			const rv1 = buf[base + 3];
-
-			if (ru1 > u0 + EPS && ru0 < u1 - EPS) {
-				vi[vLen++] = Math.max(0, rv0);
-				vi[vLen++] = Math.min(1, rv1);
-			}
-		}
-
-		if (vLen === 0) return false;
-
-		insertionSortEdges(0, vLen);
-		vLen = dedupeEdges(0, vLen);
-
-		let covered = 0;
-		let v = vi[0];
-		let first = true;
-		for (let i = 1; i < vLen; i++) {
-			if (first) {
-				v = vi[i];
-				first = false;
-				continue;
-			}
-			if (!first) {
-				first = true;
-				if (vi[i] > v) {
-					covered += vi[i] - v;
+	for (let ui = 0; ui < uLen - 1; ui++) {
+		const u0e = _edgeScratch[ui];
+		const u1e = _edgeScratch[ui + 1];
+		if (u1e - u0e <= EPS) continue;
+		for (let vi = 0; vi < vLen - 1; vi++) {
+			const v0e = _edgeScratch[HALF + vi];
+			const v1e = _edgeScratch[HALF + vi + 1];
+			if (v1e - v0e <= EPS) continue;
+			let covered = false;
+			for (let r = 0; r < count; r++) {
+				const rb = r * RECT_STRIDE;
+				if (
+					buf[rb] <= u0e + EPS &&
+					buf[rb + 1] >= u1e - EPS &&
+					buf[rb + 2] <= v0e + EPS &&
+					buf[rb + 3] >= v1e - EPS
+				) {
+					covered = true;
+					break;
 				}
 			}
+			if (!covered) return false;
 		}
-
-		if (Math.abs(1 - covered) > EPS) return false;
 	}
-
 	return true;
 }
 

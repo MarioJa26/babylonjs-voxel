@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-23T11:24:46.806Z
+Generated: 2026-07-23T14:38:37.476Z
 
-> **Summary:** 126 classes · 1671 members · 503 module-level functions · 52650 LOC
+> **Summary:** 126 classes · 1671 members · 503 module-level functions · 52672 LOC
 
 ---
 
@@ -3400,7 +3400,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/ChunkFaceMasks.ts` (292 LOC)
+## `World/Chunk/ChunkFaceMasks.ts` (290 LOC)
 
 **Module-level functions**
 - `function getFaceBit(axis: number, dir: number): number`
@@ -3474,7 +3474,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/ChunkMesher.ts` (505 LOC)
+## `World/Chunk/ChunkMesher.ts` (529 LOC)
 
 **Module-level functions**
 - `function getBoatChunkIndex(size: number): Uint8Array`
