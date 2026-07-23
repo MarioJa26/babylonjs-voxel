@@ -42,10 +42,10 @@ type SerializedLODMeshCache = Record<
 
 const _twoEntryPalette = new Uint16Array(2);
 
-const _ccVisited = new Uint8Array(GenerationParams.CHUNK_SIZE ** 3);
+const _ccState = new Uint8Array(GenerationParams.CHUNK_SIZE ** 3);
 const _ccStack = new Int32Array(GenerationParams.CHUNK_SIZE ** 3);
-const _ccOpaque = new Uint8Array(GenerationParams.CHUNK_SIZE ** 3);
 const _ccFaceCounts = new Uint16Array(6);
+const _fullConnectMask = connectFacesMask(0x3f);
 
 // Reusable seed queue for initializeSunlight().  Sized once from the
 // build-time CHUNK_SIZE constant; shared across all chunk loads because
@@ -1147,25 +1147,32 @@ export class Chunk {
 		const S3 = Chunk.SIZE3;
 		const SM1 = S - 1;
 
-		_ccVisited.fill(0, 0, S3);
-		const visited = _ccVisited;
+		const state = _ccState;
+		state.fill(0, 0, S3);
 		const stack = _ccStack;
-		const opaque = _ccOpaque;
 
-		// Type-specialized opaque fill — avoids per-voxel function call overhead.
+		// Build merged state: bit 0 = opaque, bit 1 = reserved for visited.
+		// Byte-pair fill for palette chunks: process 2 nibbles per iteration.
 		if (this._paletteOpacity) {
 			const blockArr = this._block_array as Uint8Array;
 			const palOp = this._paletteOpacity;
-			for (let i = 0; i < S3; i++) {
-				const byte = blockArr[i >>> 1];
-				const nibble = (i & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
-				opaque[i] = palOp[nibble];
+			const half = S3 >>> 1;
+			for (let i = 0; i < half; i++) {
+				const b = blockArr[i];
+				state[i * 2] = palOp[b & 0x0f];
+				state[i * 2 + 1] = palOp[(b >>> 4) & 0x0f];
+			}
+			if (S3 & 1) {
+				state[S3 - 1] = palOp[blockArr[half] & 0x0f];
 			}
 		} else if (this._denseOpacity) {
-			opaque.set(this._denseOpacity.subarray(0, S3));
+			const de = this._denseOpacity;
+			for (let i = 0; i < S3; i++) {
+				state[i] = de[i];
+			}
 		} else {
 			for (let i = 0; i < S3; i++) {
-				opaque[i] = this.isOpaqueAtIndex(i);
+				state[i] = this.isOpaqueAtIndex(i);
 			}
 		}
 
@@ -1175,16 +1182,11 @@ export class Chunk {
 			for (let y = 0; y < S; y++) {
 				for (let x = 0; x < S; x++) {
 					const idx = x + y * S + z * S2;
-					if (visited[idx]) continue;
-
-					if (opaque[idx]) {
-						visited[idx] = 1;
-						continue;
-					}
+					if (state[idx] !== 0) continue;
 
 					let stackTop = 0;
 					stack[stackTop++] = idx;
-					visited[idx] = 1;
+					state[idx] = 2;
 					const fc = _ccFaceCounts;
 					fc[0] = 0;
 					fc[1] = 0;
@@ -1195,7 +1197,6 @@ export class Chunk {
 
 					while (stackTop > 0) {
 						const cur = stack[--stackTop];
-						// Bitwise coord extraction — S=32 is a power of 2.
 						const cx = cur & 31;
 						const cy = (cur >>> 5) & 31;
 						const cz = cur >>> 10;
@@ -1209,43 +1210,43 @@ export class Chunk {
 
 						if (cx > 0) {
 							const n = cur - 1;
-							if (!visited[n] && !opaque[n]) {
-								visited[n] = 1;
+							if (state[n] === 0) {
+								state[n] = 2;
 								stack[stackTop++] = n;
 							}
 						}
 						if (cx < SM1) {
 							const n = cur + 1;
-							if (!visited[n] && !opaque[n]) {
-								visited[n] = 1;
+							if (state[n] === 0) {
+								state[n] = 2;
 								stack[stackTop++] = n;
 							}
 						}
 						if (cy > 0) {
 							const n = cur - S;
-							if (!visited[n] && !opaque[n]) {
-								visited[n] = 1;
+							if (state[n] === 0) {
+								state[n] = 2;
 								stack[stackTop++] = n;
 							}
 						}
 						if (cy < SM1) {
 							const n = cur + S;
-							if (!visited[n] && !opaque[n]) {
-								visited[n] = 1;
+							if (state[n] === 0) {
+								state[n] = 2;
 								stack[stackTop++] = n;
 							}
 						}
 						if (cz > 0) {
 							const n = cur - S2;
-							if (!visited[n] && !opaque[n]) {
-								visited[n] = 1;
+							if (state[n] === 0) {
+								state[n] = 2;
 								stack[stackTop++] = n;
 							}
 						}
 						if (cz < SM1) {
 							const n = cur + S2;
-							if (!visited[n] && !opaque[n]) {
-								visited[n] = 1;
+							if (state[n] === 0) {
+								state[n] = 2;
 								stack[stackTop++] = n;
 							}
 						}
@@ -1259,8 +1260,12 @@ export class Chunk {
 					if (fc[4] >= FACE_CONNECT_THRESHOLD) openFaces |= 16;
 					if (fc[5] >= FACE_CONNECT_THRESHOLD) openFaces |= 32;
 					connectivity |= connectFacesMask(openFaces);
+
+					if (connectivity === _fullConnectMask) break;
 				}
+				if (connectivity === _fullConnectMask) break;
 			}
+			if (connectivity === _fullConnectMask) break;
 		}
 
 		this.faceConnectivity = connectivity;

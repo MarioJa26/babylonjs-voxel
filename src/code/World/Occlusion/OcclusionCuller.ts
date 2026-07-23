@@ -290,22 +290,22 @@ function hasConnectivity(
 	fc: number,
 ): boolean {
 	if (neighborVisited & 1) {
-		if (fc & (1 << FACE_PAIR_FLAT[exitFace]!)) return true;
+		if (fc & (1 << FACE_PAIR_FLAT[exitFace])) return true;
 	}
 	if (neighborVisited & 2) {
-		if (fc & (1 << FACE_PAIR_FLAT[6 + exitFace]!)) return true;
+		if (fc & (1 << FACE_PAIR_FLAT[6 + exitFace])) return true;
 	}
 	if (neighborVisited & 4) {
-		if (fc & (1 << FACE_PAIR_FLAT[12 + exitFace]!)) return true;
+		if (fc & (1 << FACE_PAIR_FLAT[12 + exitFace])) return true;
 	}
 	if (neighborVisited & 8) {
-		if (fc & (1 << FACE_PAIR_FLAT[18 + exitFace]!)) return true;
+		if (fc & (1 << FACE_PAIR_FLAT[18 + exitFace])) return true;
 	}
 	if (neighborVisited & 16) {
-		if (fc & (1 << FACE_PAIR_FLAT[24 + exitFace]!)) return true;
+		if (fc & (1 << FACE_PAIR_FLAT[24 + exitFace])) return true;
 	}
 	if (neighborVisited & 32) {
-		if (fc & (1 << FACE_PAIR_FLAT[30 + exitFace]!)) return true;
+		if (fc & (1 << FACE_PAIR_FLAT[30 + exitFace])) return true;
 	}
 	return false;
 }
@@ -361,7 +361,7 @@ export class OcclusionCuller {
 			const vis = this._topoVisibleChunks;
 			const len = vis.length;
 			for (let i = 0; i < len; i++) {
-				const chunk = vis[i]!;
+				const chunk = vis[i];
 				if (chunk.connectivityDirty && !chunk.bfsQueuedForConnectivity) {
 					chunk.bfsQueuedForConnectivity = true;
 					this._dirtyConnectivityChunks.push(chunk);
@@ -402,7 +402,7 @@ export class OcclusionCuller {
 			const len = vis.length;
 			let hidden = 0;
 			for (let i = 0; i < len && hidden < 100; i++) {
-				const chunk = vis[i]!;
+				const chunk = vis[i];
 				if (chunk.bfsQueryId !== qid) {
 					if (chunk.mergedGroupKey) continue;
 					const mesh = chunk.mesh;
@@ -434,7 +434,7 @@ export class OcclusionCuller {
 		let vpChanged = !_frustumValid;
 		if (!vpChanged) {
 			for (let i = 0; i < 16; i++) {
-				if (Math.abs(vp[i]! - _lastVP[i]!) > 1e-6) {
+				if (Math.abs(vp[i] - _lastVP[i]) > 1e-6) {
 					vpChanged = true;
 					break;
 				}

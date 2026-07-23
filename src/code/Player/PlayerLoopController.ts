@@ -56,7 +56,7 @@ export class PlayerLoopController {
 	#lastCaveState = false;
 
 	// ---- occlusion culling ----
-	#occlusionCuller = new OcclusionCuller();
+	//#occlusionCuller = new OcclusionCuller();
 	#lastOcclusionStats = { total: 0, occluded: 0, timeMs: 0 };
 
 	// ---- debug HUD throttle ----
@@ -97,7 +97,7 @@ export class PlayerLoopController {
 		this.#previousOnChunkLoaded = Chunk.onChunkLoaded;
 		Chunk.onChunkLoaded = (chunk: Chunk) => {
 			this.#previousOnChunkLoaded?.(chunk);
-			this.#occlusionCuller.incrementalAdd(chunk);
+			//this.#occlusionCuller.incrementalAdd(chunk);
 		};
 	}
 
@@ -161,7 +161,7 @@ export class PlayerLoopController {
 		this.#updateActiveMeshSelection(cx, cy, cz);
 
 		// Occlusion culling – must run after chunk loading and before Lite evaluates the scene.
-		this.#occlusionCuller.update(this.#lastOcclusionStats);
+		//this.#occlusionCuller.update(this.#lastOcclusionStats);
 
 		// Main-thread work time for this frame (EMA-smoothed).
 		const _frameMs = performance.now() - _frameStart;
