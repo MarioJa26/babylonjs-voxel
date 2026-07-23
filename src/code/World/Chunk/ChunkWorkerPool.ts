@@ -4,6 +4,7 @@ import { packChunkKey } from "../Storage/ChunkKey";
 import { OpfsClient } from "../Storage/OpfsClient";
 import { WorldStorage } from "../WorldStorage";
 import { addChunkDisposeHook, Chunk } from "./Chunk";
+import { precomputeClosedFaceMasks } from "./ChunkFaceMasks";
 import { createMeshFromData } from "./ChunkMesher";
 import { ChunkWorker } from "./chunkWorker";
 import type { MeshData } from "./DataStructures/MeshData";
@@ -980,7 +981,7 @@ export class ChunkWorkerPool {
 		// so it can correctly handle non-full blocks (slabs, stairs, etc.).
 		shapeInitPromise
 			.then(() => {
-				const lut = Chunk.precomputeClosedFaceMasks();
+				const lut = precomputeClosedFaceMasks();
 				const sab = new SharedArrayBuffer(lut.byteLength);
 				new Uint8Array(sab).set(lut);
 				this.closedFaceMaskBuffer = sab;

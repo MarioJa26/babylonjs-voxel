@@ -18,6 +18,7 @@ import { getCameraPosition, getViewProjectionMatrix } from "@babylonjs/lite";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { Map1 } from "@/code/Maps/Map1";
 import { Chunk, getChunk } from "../Chunk/Chunk";
+import { facePairIndex } from "../Chunk/ChunkFaceMasks";
 import { getAllGroups } from "../Chunk/MergedMeshManager";
 
 // ---------------------------------------------------------------------------
@@ -55,7 +56,7 @@ function initFacePairTable(): void {
 		for (let j = 0; j < 6; j++) {
 			const min = Math.min(i, j);
 			const max = Math.max(i, j);
-			FACE_PAIR_FLAT[i * 6 + j] = Chunk.facePairIndex(min, max);
+			FACE_PAIR_FLAT[i * 6 + j] = facePairIndex(min, max);
 		}
 	}
 	_facePairTableInitialized = true;

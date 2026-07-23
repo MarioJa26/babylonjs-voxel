@@ -4,19 +4,10 @@ import { getFinalTerrainHeight } from "@/code/Generation/TerrainHeightMap";
 import { LIGHT_NIBBLE_MASK, SKY_LIGHT_SHIFT } from "@/code/Lib/VoxelMath";
 import { Map1 } from "@/code/Maps/Map1";
 import {
-	FACE_ALL,
-	FACE_NX,
-	FACE_NY,
-	FACE_NZ,
-	FACE_PX,
-	FACE_PY,
-	FACE_PZ,
-	FALLBACK_CUBE,
-	getCubeShapeIndex,
-	getShapeByBlockId,
-	getShapeDefinitions,
-} from "../Shape/BlockShapes";
-import { getSliceAxis, transformBox } from "../Shape/BlockShapeTransforms";
+	connectFacesMask,
+	FACE_CONNECT_THRESHOLD,
+	isTransparent,
+} from "./ChunkFaceMasks";
 import {
 	packBlockValue,
 	unpackBlockId,
@@ -49,22 +40,7 @@ type SerializedLODMeshCache = Record<
 	{ opaque?: MeshData | null; transparent?: MeshData | null }
 >;
 
-// ---------------------------------------------------------------------------
-// Face-rect scratch buffers (used by getClosedFaceMaskForPacked).
-// ---------------------------------------------------------------------------
-const MAX_RECTS = 64;
-const RECT_STRIDE = 4;
-const _rectBufs = Array.from(
-	{ length: 6 },
-	() => new Float32Array(MAX_RECTS * RECT_STRIDE),
-);
-const _rectCounts = new Int32Array(6);
-const _edgeScratch = new Float64Array((MAX_RECTS * 2 + 4) * 2);
 const _twoEntryPalette = new Uint16Array(2);
-
-const _sliceMin: [number, number, number] = [0, 0, 0];
-const _sliceMax: [number, number, number] = [0, 0, 0];
-const _sliceResult = { min: _sliceMin, max: _sliceMax };
 
 const _ccVisited = new Uint8Array(GenerationParams.CHUNK_SIZE ** 3);
 const _ccStack = new Int32Array(GenerationParams.CHUNK_SIZE ** 3);
@@ -307,20 +283,6 @@ export class Chunk {
 	public static readonly SKY_LIGHT_SHIFT = SKY_LIGHT_SHIFT;
 	public static readonly BLOCK_LIGHT_MASK = LIGHT_NIBBLE_MASK;
 	private static readonly SKYLIGHT_GENERATION_MIN_WORLD_Y = 32;
-	private static readonly GLASS_01_BLOCK_ID = 60;
-	private static readonly GLASS_02_BLOCK_ID = 61;
-	private static readonly EPS = 1e-6;
-
-	// Single closed-face-mask cache.  Masks are ≤ FACE_ALL (63) so a byte
-	// array suffices; 255 is the uncomputed sentinel.  This same LUT is also
-	// shipped to the light worker (precomputeClosedFaceMasks), eliminating the
-	// previous duplicate Int16Array + separate Uint8Array computation paths.
-	private static readonly CLOSED_FACE_MASK_CACHE = (() => {
-		const cache = new Uint8Array(1 << 16);
-		cache.fill(255);
-		return cache;
-	})();
-
 	private static readonly EMPTY_LIGHT_ARRAY =
 		typeof SharedArrayBuffer !== "undefined"
 			? new Uint8Array(new SharedArrayBuffer(0))
@@ -631,7 +593,7 @@ export class Chunk {
 
 				if (hasLoadedAbove) {
 					const aboveBlockPacked = aboveChunk.getBlockPacked(x, 0, z);
-					if (aboveChunk.isTransparent(aboveBlockPacked, 1, -1)) {
+					if (isTransparent(aboveBlockPacked, 1, -1)) {
 						incomingSkyLight = aboveChunk.getSkyLight(x, 0, z);
 						sourceFiltersFullSun = filtersFullSunlight(
 							unpackBlockId(aboveBlockPacked),
@@ -659,7 +621,7 @@ export class Chunk {
 					}
 
 					const blockPacked = this.getBlockPacked(x, y, z);
-					if (!this.isTransparent(blockPacked, 1, 1)) {
+					if (!isTransparent(blockPacked, 1, 1)) {
 						incomingSkyLight = 0;
 						sourceFiltersFullSun = false;
 						continue;
@@ -690,7 +652,7 @@ export class Chunk {
 						seedQueue[seedLength++] = (x << 10) | (y << 5) | z;
 					}
 
-					if (!this.isTransparent(blockPacked, 1, -1)) {
+					if (!isTransparent(blockPacked, 1, -1)) {
 						incomingSkyLight = 0;
 						sourceFiltersFullSun = thisFiltersFullSun;
 						continue;
@@ -1088,318 +1050,14 @@ export class Chunk {
 	}
 
 	// =========================================================================
-	// Face-mask geometry
-	// =========================================================================
-
-	private static getClosedFaceMaskForPacked(blockPacked: number): number {
-		const cacheIndex = blockPacked & 0xffff;
-		const cached = Chunk.CLOSED_FACE_MASK_CACHE[cacheIndex];
-		if (cached !== 255) return cached;
-
-		const blockId = unpackBlockId(blockPacked);
-		if (
-			blockId === 0 ||
-			blockId === WATER_BLOCK_ID ||
-			blockId === Chunk.GLASS_01_BLOCK_ID ||
-			blockId === Chunk.GLASS_02_BLOCK_ID
-		) {
-			Chunk.CLOSED_FACE_MASK_CACHE[cacheIndex] = 0;
-			return 0;
-		}
-
-		const state = unpackBlockState(blockPacked);
-		const shapeMap = getShapeByBlockId();
-		const shapeDefs = getShapeDefinitions();
-		const cubeIndex = getCubeShapeIndex();
-		const shapeIndex = shapeMap[blockId] ?? cubeIndex;
-		const shape =
-			shapeDefs[shapeIndex] ?? shapeDefs[cubeIndex] ?? FALLBACK_CUBE;
-		if (!shape) {
-			Chunk.CLOSED_FACE_MASK_CACHE[cacheIndex] = FACE_ALL;
-			return FACE_ALL;
-		}
-
-		const rotation = shape.rotateY ? state & 3 : 0;
-		const flipY = Boolean(shape.allowFlipY && (state & 4) !== 0);
-
-		_rectCounts.fill(0);
-
-		for (const box of shape.boxes) {
-			const transformed = transformBox(box.min, box.max, rotation, flipY);
-			const sliced = shape.usesSliceState
-				? Chunk.applySliceStateToBoxForLight(
-						transformed.min,
-						transformed.max,
-						state,
-					)
-				: transformed;
-
-			const min = sliced.min;
-			const max = sliced.max;
-			const faceMask = box.faceMask ?? FACE_ALL;
-			const EPS = Chunk.EPS;
-
-			if (
-				max[0] - min[0] <= EPS ||
-				max[1] - min[1] <= EPS ||
-				max[2] - min[2] <= EPS
-			)
-				continue;
-
-			if (faceMask & FACE_PX && max[0] >= 1 - EPS)
-				Chunk.pushRectFlat(0, min[1], max[1], min[2], max[2]);
-			if (faceMask & FACE_NX && min[0] <= EPS)
-				Chunk.pushRectFlat(1, min[1], max[1], min[2], max[2]);
-			if (faceMask & FACE_PY && max[1] >= 1 - EPS)
-				Chunk.pushRectFlat(2, min[0], max[0], min[2], max[2]);
-			if (faceMask & FACE_NY && min[1] <= EPS)
-				Chunk.pushRectFlat(3, min[0], max[0], min[2], max[2]);
-			if (faceMask & FACE_PZ && max[2] >= 1 - EPS)
-				Chunk.pushRectFlat(4, min[0], max[0], min[1], max[1]);
-			if (faceMask & FACE_NZ && min[2] <= EPS)
-				Chunk.pushRectFlat(5, min[0], max[0], min[1], max[1]);
-		}
-
-		let closedMask = 0;
-		if (Chunk.doesFlatRectsCoverUnitSquare(0)) closedMask |= FACE_PX;
-		if (Chunk.doesFlatRectsCoverUnitSquare(1)) closedMask |= FACE_NX;
-		if (Chunk.doesFlatRectsCoverUnitSquare(2)) closedMask |= FACE_PY;
-		if (Chunk.doesFlatRectsCoverUnitSquare(3)) closedMask |= FACE_NY;
-		if (Chunk.doesFlatRectsCoverUnitSquare(4)) closedMask |= FACE_PZ;
-		if (Chunk.doesFlatRectsCoverUnitSquare(5)) closedMask |= FACE_NZ;
-
-		Chunk.CLOSED_FACE_MASK_CACHE[cacheIndex] = closedMask;
-		return closedMask;
-	}
-
-	/**
-	 * Precompute the closed-face mask for every possible packed block value
-	 * (blockId << BLOCK_STATE_SHIFT | state) and return the shared Uint8Array
-	 * LUT.  Called once at startup after shapes are loaded and sent to the
-	 * light worker so it can do per-face transparency checks without
-	 * importing shape definitions.  The returned array is the same static
-	 * cache `getClosedFaceMaskForPacked` reads from.
-	 */
-	public static precomputeClosedFaceMasks(): Uint8Array {
-		const lut = Chunk.CLOSED_FACE_MASK_CACHE;
-		for (let i = 0; i < 1 << 16; i++) {
-			// getClosedFaceMaskForPacked populates `lut` as a side effect;
-			// calling it here just forces the lazy computation for all entries.
-			Chunk.getClosedFaceMaskForPacked(i);
-		}
-		return lut;
-	}
-
-	private static pushRectFlat(
-		f: number,
-		u0: number,
-		u1: number,
-		v0: number,
-		v1: number,
-	): void {
-		const EPS = Chunk.EPS;
-		const cu0 = Math.min(1, Math.max(0, Math.min(u0, u1)));
-		const cu1 = Math.min(1, Math.max(0, Math.max(u0, u1)));
-		const cv0 = Math.min(1, Math.max(0, Math.min(v0, v1)));
-		const cv1 = Math.min(1, Math.max(0, Math.max(v0, v1)));
-		if (cu1 - cu0 <= EPS || cv1 - cv0 <= EPS) return;
-		const cnt = _rectCounts[f];
-		if (cnt >= MAX_RECTS) return;
-		const base = cnt * RECT_STRIDE;
-		const buf = _rectBufs[f];
-		buf[base] = cu0;
-		buf[base + 1] = cu1;
-		buf[base + 2] = cv0;
-		buf[base + 3] = cv1;
-		_rectCounts[f] = cnt + 1;
-	}
-
-	private static doesFlatRectsCoverUnitSquare(f: number): boolean {
-		const count = _rectCounts[f];
-		if (count === 0) return false;
-
-		const buf = _rectBufs[f];
-		const EPS = Chunk.EPS;
-		const HALF = MAX_RECTS * 2 + 2;
-
-		let uLen = 0;
-		let vLen = 0;
-		for (let i = 0; i < count; i++) {
-			const b = i * RECT_STRIDE;
-			_edgeScratch[uLen++] = buf[b];
-			_edgeScratch[uLen++] = buf[b + 1];
-			_edgeScratch[HALF + vLen++] = buf[b + 2];
-			_edgeScratch[HALF + vLen++] = buf[b + 3];
-		}
-
-		Chunk.insertionSortEdges(0, uLen);
-		Chunk.insertionSortEdges(HALF, vLen);
-
-		uLen = Chunk.dedupeEdges(0, uLen);
-		vLen = Chunk.dedupeEdges(HALF, vLen);
-
-		for (let ui = 0; ui < uLen - 1; ui++) {
-			const u0e = _edgeScratch[ui];
-			const u1e = _edgeScratch[ui + 1];
-			if (u1e - u0e <= EPS) continue;
-			for (let vi = 0; vi < vLen - 1; vi++) {
-				const v0e = _edgeScratch[HALF + vi];
-				const v1e = _edgeScratch[HALF + vi + 1];
-				if (v1e - v0e <= EPS) continue;
-				let covered = false;
-				for (let r = 0; r < count; r++) {
-					const rb = r * RECT_STRIDE;
-					if (
-						buf[rb] <= u0e + EPS &&
-						buf[rb + 1] >= u1e - EPS &&
-						buf[rb + 2] <= v0e + EPS &&
-						buf[rb + 3] >= v1e - EPS
-					) {
-						covered = true;
-						break;
-					}
-				}
-				if (!covered) return false;
-			}
-		}
-		return true;
-	}
-
-	private static insertionSortEdges(start: number, len: number): void {
-		_edgeScratch.subarray(start, start + len).sort();
-	}
-
-	private static dedupeEdges(start: number, len: number): number {
-		const EPS = Chunk.EPS;
-		if (len === 0 || _edgeScratch[start] > EPS) {
-			for (let i = len; i > 0; i--)
-				_edgeScratch[start + i] = _edgeScratch[start + i - 1];
-			_edgeScratch[start] = 0;
-			len++;
-		}
-		if (_edgeScratch[start + len - 1] < 1 - EPS) {
-			_edgeScratch[start + len] = 1;
-			len++;
-		}
-		let write = 1;
-		for (let read = 1; read < len; read++) {
-			if (
-				Math.abs(_edgeScratch[start + read] - _edgeScratch[start + write - 1]) >
-				EPS
-			) {
-				_edgeScratch[start + write++] = _edgeScratch[start + read];
-			}
-		}
-		return write;
-	}
-
-	private static readonly _faceBitLUT = new Uint8Array([
-		FACE_PX,
-		FACE_NX,
-		FACE_PY,
-		FACE_NY,
-		FACE_PZ,
-		FACE_NZ,
-	]);
-
-	private static getFaceBit(axis: number, dir: number): number {
-		return Chunk._faceBitLUT[axis * 2 + (dir >= 0 ? 0 : 1)];
-	}
-
-	private isTransparent(
-		blockPacked: number,
-		axis?: number,
-		dir?: number,
-	): boolean {
-		const closedMask = Chunk.getClosedFaceMaskForPacked(blockPacked);
-		if (axis === undefined) return closedMask !== FACE_ALL;
-		if (dir === undefined) {
-			return (
-				(closedMask & Chunk.getFaceBit(axis, 1)) === 0 ||
-				(closedMask & Chunk.getFaceBit(axis, -1)) === 0
-			);
-		}
-		return (closedMask & Chunk.getFaceBit(axis, dir)) === 0;
-	}
-
-	private static applySliceStateToBoxForLight(
-		min: [number, number, number],
-		max: [number, number, number],
-		state: number,
-	): { min: [number, number, number]; max: [number, number, number] } {
-		const slice = (state >>> 3) & 7;
-		if (slice === 0) {
-			_sliceResult.min = min;
-			_sliceResult.max = max;
-			return _sliceResult;
-		}
-
-		const rotation = state & 7;
-		const sliceAxis = getSliceAxis(rotation);
-		const flip = (rotation & 4) !== 0;
-		const heightScale = slice / 8;
-		_sliceMin[0] = min[0];
-		_sliceMin[1] = min[1];
-		_sliceMin[2] = min[2];
-		_sliceMax[0] = max[0];
-		_sliceMax[1] = max[1];
-		_sliceMax[2] = max[2];
-
-		if (flip) {
-			_sliceMin[sliceAxis] = 1 - (1 - min[sliceAxis]) * heightScale;
-			_sliceMax[sliceAxis] = 1 - (1 - max[sliceAxis]) * heightScale;
-		} else {
-			_sliceMin[sliceAxis] = min[sliceAxis] * heightScale;
-			_sliceMax[sliceAxis] = max[sliceAxis] * heightScale;
-		}
-		if (_sliceMin[sliceAxis] > _sliceMax[sliceAxis]) {
-			const tmp = _sliceMin[sliceAxis];
-			_sliceMin[sliceAxis] = _sliceMax[sliceAxis];
-			_sliceMax[sliceAxis] = tmp;
-		}
-		_sliceResult.min = _sliceMin;
-		_sliceResult.max = _sliceMax;
-		return _sliceResult;
-	}
-
-	// =========================================================================
 	// Face connectivity for occlusion BFS
 	// =========================================================================
-
-	public static facePairIndex(i: number, j: number): number {
-		return 4 * i - ((i * (i - 1)) >> 1) + j - 1;
-	}
-
-	private static readonly _faceScratch: number[] = [];
-
-	private static connectFacesMask(faceMask: number): number {
-		let result = 0;
-		const faces = Chunk._faceScratch;
-		faces.length = 0;
-		for (let f = 0; f < 6; f++) {
-			if (faceMask & (1 << f)) faces.push(f);
-		}
-		for (let a = 0; a < faces.length; a++) {
-			for (let b = a + 1; b < faces.length; b++) {
-				const i = faces[a];
-				const j = faces[b];
-				result |= 1 << Chunk.facePairIndex(i, j);
-			}
-		}
-		return result;
-	}
-
-	// Minimum air voxels on a chunk face for that face to count as connected.
-	// A 32×32 face has 1024 voxels; threshold of S/2 = 16 filters out
-	// single-block cracks and thin slivers while allowing real passages.
-	private static readonly FACE_CONNECT_THRESHOLD =
-		GenerationParams.CHUNK_SIZE / 2;
 
 	public computeFaceConnectivity(): number {
 		if (!this._hasVoxelData || this._isUniform) {
 			const mask =
 				this._isUniform && this._uniformBlockId === 0
-					? Chunk.connectFacesMask(0x3f)
+					? connectFacesMask(0x3f)
 					: 0;
 			this.faceConnectivity = mask;
 			this.connectivityDirty = false;
@@ -1498,16 +1156,14 @@ export class Chunk {
 						}
 					}
 
-					// Only count faces with enough air voxels as connected.
 					let openFaces = 0;
-					const thresh = Chunk.FACE_CONNECT_THRESHOLD;
-					if (fc[0] >= thresh) openFaces |= 1 << 0;
-					if (fc[1] >= thresh) openFaces |= 1 << 1;
-					if (fc[2] >= thresh) openFaces |= 1 << 2;
-					if (fc[3] >= thresh) openFaces |= 1 << 3;
-					if (fc[4] >= thresh) openFaces |= 1 << 4;
-					if (fc[5] >= thresh) openFaces |= 1 << 5;
-					connectivity |= Chunk.connectFacesMask(openFaces);
+					if (fc[0] >= FACE_CONNECT_THRESHOLD) openFaces |= 1 << 0;
+					if (fc[1] >= FACE_CONNECT_THRESHOLD) openFaces |= 1 << 1;
+					if (fc[2] >= FACE_CONNECT_THRESHOLD) openFaces |= 1 << 2;
+					if (fc[3] >= FACE_CONNECT_THRESHOLD) openFaces |= 1 << 3;
+					if (fc[4] >= FACE_CONNECT_THRESHOLD) openFaces |= 1 << 4;
+					if (fc[5] >= FACE_CONNECT_THRESHOLD) openFaces |= 1 << 5;
+					connectivity |= connectFacesMask(openFaces);
 				}
 			}
 		}

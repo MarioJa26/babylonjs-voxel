@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-23T10:50:51.133Z
+Generated: 2026-07-23T11:24:46.806Z
 
-> **Summary:** 126 classes · 1689 members · 492 module-level functions · 52640 LOC
+> **Summary:** 126 classes · 1671 members · 503 module-level functions · 52650 LOC
 
 ---
 
@@ -3312,7 +3312,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Chunk.ts` (1280 LOC)
+## `World/Chunk/Chunk.ts` (995 LOC)
 
 ### export class Chunk
 
@@ -3325,17 +3325,10 @@ export function createFastNoise3D(
 - `public static readonly SKY_LIGHT_SHIFT`
 - `public static readonly BLOCK_LIGHT_MASK`
 - `private static readonly SKYLIGHT_GENERATION_MIN_WORLD_Y`
-- `private static readonly GLASS_01_BLOCK_ID`
-- `private static readonly GLASS_02_BLOCK_ID`
-- `private static readonly EPS`
-- `private static readonly CLOSED_FACE_MASK_CACHE`
 - `private static readonly EMPTY_LIGHT_ARRAY`
 - `public cachedLODMeshes`
 - `private static readonly _lightEmissionLUT`
 - `public static _lightPool: { postLightMutate(req: any): void; postLightAddEmission(req: any): void; nextLightSeq(): number; enqueueDeferredLightFromSunlightInit?( chunk: Chunk, queue: Uint16Array, length: number, ): void; } | null = null`
-- `private static readonly _faceBitLUT`
-- `private static readonly _faceScratch: number[] = []`
-- `private static readonly FACE_CONNECT_THRESHOLD`
 
 **Accessors**
 - `get block_array(): Uint8Array | Uint16Array | null`
@@ -3359,17 +3352,6 @@ export function createFastNoise3D(
 - `public getNeighbor(dx: number, dy: number, dz: number): Chunk | undefined`
 - `public markLightChanged(): void`
 - `public needsPersistence(): boolean`
-- `private static getClosedFaceMaskForPacked(blockPacked: number): number`
-- `public static precomputeClosedFaceMasks(): Uint8Array`
-- `private static pushRectFlat(f: number, u0: number, u1: number, v0: number, v1: number): void`
-- `private static doesFlatRectsCoverUnitSquare(f: number): boolean`
-- `private static insertionSortEdges(start: number, len: number): void`
-- `private static dedupeEdges(start: number, len: number): number`
-- `private static getFaceBit(axis: number, dir: number): number`
-- `private isTransparent(blockPacked: number, axis?: number, dir?: number): boolean`
-- `private static applySliceStateToBoxForLight(min: [number, number, number], max: [number, number, number], state: number)`
-- `public static facePairIndex(i: number, j: number): number`
-- `private static connectFacesMask(faceMask: number): number`
 - `public computeFaceConnectivity(): number`
 - `public dispose(): void`
 
@@ -3415,6 +3397,23 @@ export function createFastNoise3D(
 
 **Types / Interfaces / Enums**
 - type `DynamicBlockSample`
+
+---
+
+## `World/Chunk/ChunkFaceMasks.ts` (292 LOC)
+
+**Module-level functions**
+- `function getFaceBit(axis: number, dir: number): number`
+- `function pushRectFlat(f: number, u0: number, u1: number, v0: number, v1: number): void`
+- `function insertionSortEdges(start: number, len: number): void`
+- `function dedupeEdges(start: number, len: number): number`
+- `function doesFlatRectsCoverUnitSquare(f: number): boolean`
+- `function getClosedFaceMaskForPacked(blockPacked: number): number`
+- `function applySliceStateToBoxForLight(min: [number, number, number], max: [number, number, number], state: number)`
+- `export function isTransparent(blockPacked: number, axis?: number, dir?: number): boolean`
+- `export function facePairIndex(i: number, j: number): number`
+- `function connectFacesMask(faceMask: number): number`
+- `export function precomputeClosedFaceMasks(): Uint8Array`
 
 ---
 
@@ -3612,7 +3611,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/ChunkWorkerPool.ts` (1862 LOC)
+## `World/Chunk/ChunkWorkerPool.ts` (1863 LOC)
 
 ### export class ChunkWorkerPool
 
@@ -4270,7 +4269,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/voxel.worker.ts` (136 LOC)
+## `World/Chunk/voxel.worker.ts` (137 LOC)
 
 **Module-level functions**
 - `function expandCenterOnly(request: VoxelWorkerRequest): Uint8Array | Uint16Array`
@@ -4900,7 +4899,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Occlusion/OcclusionCuller.ts` (782 LOC)
+## `World/Occlusion/OcclusionCuller.ts` (783 LOC)
 
 **Module-level functions**
 - `function initFacePairTable(): void`

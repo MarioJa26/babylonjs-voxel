@@ -116,6 +116,8 @@ function resetMeshOut(): void {
 	_transparentOut.faceCount = 0;
 }
 
+let transferables: Transferable[];
+
 self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 	const data = event.data;
 	if (data.type !== WorkerTaskType.GenerateFullMesh) return;
@@ -160,7 +162,7 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 			transparent,
 		};
 
-		const transferables: Transferable[] = [];
+		transferables = [];
 
 		if (opaque) {
 			transferables.push(opaque.faceDataA.buffer);
