@@ -429,13 +429,9 @@ export class ChunkStreamingController {
 			if (cached !== undefined && cached >> 3 === ruleRev && !chunk.isDirty) {
 				decisionLod = cached & 0b111;
 			} else {
-				decisionLod = lodRuleSet.resolveWithHysteresis(
-					chunk.chunkX,
-					chunk.chunkY,
-					chunk.chunkZ,
-					chunkX,
-					chunkY,
-					chunkZ,
+				decisionLod = lodRuleSet.resolveWithHysteresisFromDistance(
+					hDist,
+					vDist,
 					chunkLod,
 				).lodLevel;
 				this._refreshCache.set(key, decisionLod | (ruleRev << 3));

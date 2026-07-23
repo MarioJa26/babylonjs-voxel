@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-23T14:38:37.476Z
+Generated: 2026-07-23T15:09:15.297Z
 
-> **Summary:** 126 classes · 1671 members · 503 module-level functions · 52672 LOC
+> **Summary:** 126 classes · 1675 members · 503 module-level functions · 52776 LOC
 
 ---
 
@@ -3002,7 +3002,7 @@ export function createFastNoise3D(
 
 ---
 
-## `Player/PlayerLoopController.ts` (457 LOC)
+## `Player/PlayerLoopController.ts` (467 LOC)
 
 ### export class PlayerLoopController
 
@@ -3312,7 +3312,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Chunk.ts` (995 LOC)
+## `World/Chunk/Chunk.ts` (1072 LOC)
 
 ### export class Chunk
 
@@ -3345,6 +3345,8 @@ export function createFastNoise3D(
 - `private setNibble(index: number, value: number): void`
 - `public loadFromStorage(blocks: Uint8Array | Uint16Array | null, palette: Uint16Array | null | undefined, isUniform: boolean | undefined, uniformBlockId: number | undefined, light_array?: Uint8Array, scheduleRemesh = true, _fromStorage = false): void`
 - `private writeLightHeaderRow(): void`
+- `private _rebuildPaletteOpacity(): void`
+- `private _rebuildDenseOpacity(): void`
 - `private isOpaqueAtIndex(i: number): number`
 - `public setBlock(localX: number, localY: number, localZ: number, blockId: number, state = 0): void`
 - `public deleteBlock(localX: number, localY: number, localZ: number): void`
@@ -3400,7 +3402,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/ChunkFaceMasks.ts` (290 LOC)
+## `World/Chunk/ChunkFaceMasks.ts` (294 LOC)
 
 **Module-level functions**
 - `function getFaceBit(axis: number, dir: number): number`
@@ -4069,7 +4071,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Loading/ChunkStreamingController.ts` (814 LOC)
+## `World/Chunk/Loading/ChunkStreamingController.ts` (810 LOC)
 
 **Module-level functions**
 - `function compareQueuedChunkRequestPriority(a: QueuedChunkRequest, b: QueuedChunkRequest): number`
@@ -4151,7 +4153,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/LOD/ChunkLodRules.ts` (246 LOC)
+## `World/Chunk/LOD/ChunkLodRules.ts` (263 LOC)
 
 ### export class Lod0ChunkCreationRule implements ChunkLodCreationRule
 
@@ -4222,6 +4224,8 @@ export function createFastNoise3D(
 - `private resolveWithDistance(horizontalDist: number, verticalDist: number): ChunkLodDecision`
 - `public resolve(target: ChunkLodCoordinates, player: ChunkLodCoordinates): ChunkLodDecision`
 - `public resolveWithHysteresis(targetX: number, targetY: number, targetZ: number, playerX: number, playerY: number, playerZ: number, previousLod: number | null | undefined): ChunkLodDecision`
+- `public resolveWithHysteresisFromDistance(horizontalDist: number, verticalDist: number, previousLod: number | null | undefined): ChunkLodDecision`
+- `private _resolveWithHysteresis(horizontalDist: number, verticalDist: number, previousLod: number | null | undefined): ChunkLodDecision`
 
 **Types / Interfaces / Enums**
 - interface `ChunkLodCreationRule`

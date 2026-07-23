@@ -236,12 +236,36 @@ export class ChunkLodRuleSet {
 		playerZ: number,
 		previousLod: number | null | undefined,
 	): ChunkLodDecision {
-		const horizontalDist = Math.max(
-			Math.abs(targetX - playerX),
-			Math.abs(targetZ - playerZ),
+		return this._resolveWithHysteresis(
+			Math.max(Math.abs(targetX - playerX), Math.abs(targetZ - playerZ)),
+			Math.abs(targetY - playerY),
+			previousLod,
 		);
-		const verticalDist = Math.abs(targetY - playerY);
+	}
 
+	/**
+	 * Like resolveWithHysteresis but accepts precomputed distances — avoids
+	 * redundant abs/max computation when the caller already has hDist/vDist
+	 * (e.g. enqueueLoadedChunksForRefresh which computes both for the
+	 * LOD-boundary pre-check before resolving).
+	 */
+	public resolveWithHysteresisFromDistance(
+		horizontalDist: number,
+		verticalDist: number,
+		previousLod: number | null | undefined,
+	): ChunkLodDecision {
+		return this._resolveWithHysteresis(
+			horizontalDist,
+			verticalDist,
+			previousLod,
+		);
+	}
+
+	private _resolveWithHysteresis(
+		horizontalDist: number,
+		verticalDist: number,
+		previousLod: number | null | undefined,
+	): ChunkLodDecision {
 		const baseDecision = this.resolveWithDistance(horizontalDist, verticalDist);
 
 		if (previousLod === null || previousLod === undefined) {

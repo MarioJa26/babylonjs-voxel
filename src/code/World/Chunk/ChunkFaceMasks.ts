@@ -305,12 +305,13 @@ export function facePairIndex(i: number, j: number): number {
 	return 4 * i - ((i * (i - 1)) >> 1) + j - 1;
 }
 
-function connectFacesMask(faceMask: number): number {
+const _connectFacesMaskLUT = new Uint32Array(64);
+for (let fm = 0; fm < 64; fm++) {
 	let result = 0;
 	const faces = _faceScratch;
 	faces.length = 0;
 	for (let f = 0; f < 6; f++) {
-		if (faceMask & (1 << f)) faces.push(f);
+		if (fm & (1 << f)) faces.push(f);
 	}
 	for (let a = 0; a < faces.length; a++) {
 		for (let b = a + 1; b < faces.length; b++) {
@@ -319,7 +320,11 @@ function connectFacesMask(faceMask: number): number {
 			result |= 1 << facePairIndex(i, j);
 		}
 	}
-	return result;
+	_connectFacesMaskLUT[fm] = result;
+}
+
+function connectFacesMask(faceMask: number): number {
+	return _connectFacesMaskLUT[faceMask & 0x3f];
 }
 
 export function precomputeClosedFaceMasks(): Uint8Array {

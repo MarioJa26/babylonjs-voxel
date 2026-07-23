@@ -181,6 +181,11 @@ export class Chunk {
 	private _paletteIndexMap: Map<number, number> | null = null;
 	private _hasVoxelData = false;
 
+	// PERF: precomputed opacity lookups — one bool per palette index or dense
+	// voxel, eliminating the per-voxel unpackBlockId + BLOCK_TYPE indirection.
+	private _paletteOpacity: Uint8Array | null = null;
+	private _denseOpacity: Uint8Array | null = null;
+
 	public chunkY: number;
 	public chunkX: number;
 	public chunkZ: number;
@@ -401,6 +406,15 @@ export class Chunk {
 			this._paletteIndexMap = null;
 		}
 
+		if (this._palette) {
+			this._rebuildPaletteOpacity();
+		} else if (this._block_array instanceof Uint16Array) {
+			this._rebuildDenseOpacity();
+		} else {
+			this._paletteOpacity = null;
+			this._denseOpacity = null;
+		}
+
 		if (light_array) {
 			this.light_array = light_array;
 		} else {
@@ -489,6 +503,8 @@ export class Chunk {
 		this._uniformBlockId = 0;
 		this._block_array = null;
 		this._palette = null;
+		this._paletteOpacity = null;
+		this._denseOpacity = null;
 		this._paletteIndexMap = null;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
 		this._isDarkCached = false;
@@ -716,8 +732,17 @@ export class Chunk {
 			this._isDarkCached = false;
 			return;
 		}
-		for (let i = 0; i < la.length; i++) {
-			if ((la[i]! & 0xf0) !== 0) {
+		const len = la.length;
+		const wordCount = len >>> 2;
+		const la32 = new Uint32Array(la.buffer, la.byteOffset, wordCount);
+		for (let i = 0; i < wordCount; i++) {
+			if (la32[i] & 0xf0f0f0f0) {
+				this._isDarkCached = false;
+				return;
+			}
+		}
+		for (let i = wordCount << 2; i < len; i++) {
+			if ((la[i] & 0xf0) !== 0) {
 				this._isDarkCached = false;
 				return;
 			}
@@ -769,6 +794,50 @@ export class Chunk {
 	}
 
 	/**
+	 * Precompute opacity flag for each palette entry. Called whenever the
+	 * palette is created or mutated so that isOpaqueAtIndex can do a single
+	 * nibble-read + array-lookup instead of unpackBlockId + BLOCK_TYPE.
+	 */
+	private _rebuildPaletteOpacity(): void {
+		const pal = this._palette;
+		if (!pal) {
+			this._paletteOpacity = null;
+			return;
+		}
+		let opa = this._paletteOpacity;
+		if (!opa || opa.length < pal.length) {
+			opa = new Uint8Array(pal.length);
+			this._paletteOpacity = opa;
+		}
+		for (let i = 0; i < pal.length; i++) {
+			const packed = pal[i];
+			opa[i] = packed !== 0 && BLOCK_TYPE[unpackBlockId(packed)] === 0 ? 1 : 0;
+		}
+	}
+
+	/**
+	 * Precompute opacity flag for every voxel in a dense (Uint16Array) block
+	 * storage layout. Called once after loadFromStorage or layout transition.
+	 */
+	private _rebuildDenseOpacity(): void {
+		const arr = this._block_array;
+		if (!(arr instanceof Uint16Array)) {
+			this._denseOpacity = null;
+			return;
+		}
+		const S3 = Chunk.SIZE3;
+		let opa = this._denseOpacity;
+		if (!opa || opa.length < S3) {
+			opa = new Uint8Array(S3);
+			this._denseOpacity = opa;
+		}
+		for (let i = 0; i < S3; i++) {
+			const packed = arr[i];
+			opa[i] = packed !== 0 && BLOCK_TYPE[unpackBlockId(packed)] === 0 ? 1 : 0;
+		}
+	}
+
+	/**
 	 * Read the packed block value at a flat index and return 1 if opaque, 0 if not.
 	 * Avoids expanding blocks to a dense array — reads directly from palette/nibble
 	 * or dense storage, keeping the result in cache.
@@ -780,16 +849,14 @@ export class Chunk {
 				? 1
 				: 0;
 		}
-		if (this._palette) {
+		if (this._paletteOpacity) {
 			const blockArr = this._block_array as Uint8Array;
 			const byte = blockArr[i >>> 1];
 			const nibble = (i & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
-			const packed = this._palette[nibble];
-			return packed !== 0 && BLOCK_TYPE[unpackBlockId(packed)] === 0 ? 1 : 0;
+			return this._paletteOpacity[nibble];
 		}
-		if (this._block_array) {
-			const packed = this._block_array[i];
-			return packed !== 0 && BLOCK_TYPE[unpackBlockId(packed)] === 0 ? 1 : 0;
+		if (this._denseOpacity) {
+			return this._denseOpacity[i];
 		}
 		return 0;
 	}
@@ -905,6 +972,17 @@ export class Chunk {
 				);
 				this._palette = new Uint16Array(sab, 0, this._palette.length);
 			}
+		}
+
+		if (paletteChanged) {
+			this._rebuildPaletteOpacity();
+		} else if (
+			storageLayoutChanged &&
+			this._block_array instanceof Uint16Array
+		) {
+			this._rebuildDenseOpacity();
+		} else if (storageLayoutChanged) {
+			this._denseOpacity = null;
 		}
 
 		// Block storage layout changed — refresh the worker-visible header
@@ -1067,14 +1145,30 @@ export class Chunk {
 		const S = Chunk.SIZE;
 		const S2 = S * S;
 		const S3 = Chunk.SIZE3;
+		const SM1 = S - 1;
 
 		_ccVisited.fill(0, 0, S3);
 		const visited = _ccVisited;
 		const stack = _ccStack;
 		const opaque = _ccOpaque;
-		for (let i = 0; i < S3; i++) {
-			opaque[i] = this.isOpaqueAtIndex(i);
+
+		// Type-specialized opaque fill — avoids per-voxel function call overhead.
+		if (this._paletteOpacity) {
+			const blockArr = this._block_array as Uint8Array;
+			const palOp = this._paletteOpacity;
+			for (let i = 0; i < S3; i++) {
+				const byte = blockArr[i >>> 1];
+				const nibble = (i & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
+				opaque[i] = palOp[nibble];
+			}
+		} else if (this._denseOpacity) {
+			opaque.set(this._denseOpacity.subarray(0, S3));
+		} else {
+			for (let i = 0; i < S3; i++) {
+				opaque[i] = this.isOpaqueAtIndex(i);
+			}
 		}
+
 		let connectivity = 0;
 
 		for (let z = 0; z < S; z++) {
@@ -1101,16 +1195,17 @@ export class Chunk {
 
 					while (stackTop > 0) {
 						const cur = stack[--stackTop];
-						const cx = cur % S;
-						const cy = ((cur / S) | 0) % S;
-						const cz = (cur / S2) | 0;
+						// Bitwise coord extraction — S=32 is a power of 2.
+						const cx = cur & 31;
+						const cy = (cur >>> 5) & 31;
+						const cz = cur >>> 10;
 
 						if (cx === 0) fc[1]++;
-						if (cx === S - 1) fc[0]++;
+						if (cx === SM1) fc[0]++;
 						if (cy === 0) fc[3]++;
-						if (cy === S - 1) fc[2]++;
+						if (cy === SM1) fc[2]++;
 						if (cz === 0) fc[5]++;
-						if (cz === S - 1) fc[4]++;
+						if (cz === SM1) fc[4]++;
 
 						if (cx > 0) {
 							const n = cur - 1;
@@ -1119,7 +1214,7 @@ export class Chunk {
 								stack[stackTop++] = n;
 							}
 						}
-						if (cx < S - 1) {
+						if (cx < SM1) {
 							const n = cur + 1;
 							if (!visited[n] && !opaque[n]) {
 								visited[n] = 1;
@@ -1133,7 +1228,7 @@ export class Chunk {
 								stack[stackTop++] = n;
 							}
 						}
-						if (cy < S - 1) {
+						if (cy < SM1) {
 							const n = cur + S;
 							if (!visited[n] && !opaque[n]) {
 								visited[n] = 1;
@@ -1147,7 +1242,7 @@ export class Chunk {
 								stack[stackTop++] = n;
 							}
 						}
-						if (cz < S - 1) {
+						if (cz < SM1) {
 							const n = cur + S2;
 							if (!visited[n] && !opaque[n]) {
 								visited[n] = 1;
@@ -1157,12 +1252,12 @@ export class Chunk {
 					}
 
 					let openFaces = 0;
-					if (fc[0] >= FACE_CONNECT_THRESHOLD) openFaces |= 1 << 0;
-					if (fc[1] >= FACE_CONNECT_THRESHOLD) openFaces |= 1 << 1;
-					if (fc[2] >= FACE_CONNECT_THRESHOLD) openFaces |= 1 << 2;
-					if (fc[3] >= FACE_CONNECT_THRESHOLD) openFaces |= 1 << 3;
-					if (fc[4] >= FACE_CONNECT_THRESHOLD) openFaces |= 1 << 4;
-					if (fc[5] >= FACE_CONNECT_THRESHOLD) openFaces |= 1 << 5;
+					if (fc[0] >= FACE_CONNECT_THRESHOLD) openFaces |= 1;
+					if (fc[1] >= FACE_CONNECT_THRESHOLD) openFaces |= 2;
+					if (fc[2] >= FACE_CONNECT_THRESHOLD) openFaces |= 4;
+					if (fc[3] >= FACE_CONNECT_THRESHOLD) openFaces |= 8;
+					if (fc[4] >= FACE_CONNECT_THRESHOLD) openFaces |= 16;
+					if (fc[5] >= FACE_CONNECT_THRESHOLD) openFaces |= 32;
 					connectivity |= connectFacesMask(openFaces);
 				}
 			}
@@ -1212,6 +1307,8 @@ export class Chunk {
 		this._isUniform = true;
 		this._uniformBlockId = 0;
 		this._palette = null;
+		this._paletteOpacity = null;
+		this._denseOpacity = null;
 		this._paletteIndexMap = null;
 		this._hasVoxelData = false;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;

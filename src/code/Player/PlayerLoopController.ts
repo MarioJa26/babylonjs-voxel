@@ -231,21 +231,31 @@ export class PlayerLoopController {
 			cy !== this.#loadLastCy ||
 			cz !== this.#loadLastCz
 		) {
-			void updateChunksAround(
-				cx,
-				cy,
-				cz,
-				undefined,
-				undefined,
-				this.#loadLastCx,
-				this.#loadLastCy,
-				this.#loadLastCz,
-				playerPos.x,
-				playerPos.z,
-			);
+			const _cx = cx,
+				_cy = cy,
+				_cz = cz;
+			const _lastCx = this.#loadLastCx,
+				_lastCy = this.#loadLastCy,
+				_lastCz = this.#loadLastCz;
+			const _ppx = playerPos.x,
+				_ppz = playerPos.z;
 			this.#loadLastCx = cx;
 			this.#loadLastCy = cy;
 			this.#loadLastCz = cz;
+			setTimeout(() => {
+				void updateChunksAround(
+					_cx,
+					_cy,
+					_cz,
+					undefined,
+					undefined,
+					_lastCx,
+					_lastCy,
+					_lastCz,
+					_ppx,
+					_ppz,
+				);
+			}, 0);
 		}
 	}
 
