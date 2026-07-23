@@ -1,4 +1,3 @@
-import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { BlockTextures } from "@/code/World/Texture/BlockTextures";
 import { FaceName } from "@/code/World/Texture/FaceName";
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
@@ -17,6 +16,7 @@ let lastGridCenterChunkZ = Number.NaN;
 let lastCenterChunkX = Number.NaN;
 let lastCenterChunkZ = Number.NaN;
 
+let currentRenderDistance = 0;
 let rowSize = 0;
 let segments = 0;
 let gridStep = 1;
@@ -37,6 +37,14 @@ function cachedHeight(wx: number, wz: number): number {
 	_heightCacheKeys[slot] = key;
 	_heightCache[slot] = h;
 	return h;
+}
+
+// =====================================================================
+// Configuration
+// =====================================================================
+
+export function setRenderDistance(value: number): void {
+	currentRenderDistance = value;
 }
 
 // =====================================================================
@@ -376,15 +384,11 @@ function generateVertex(
 	const chunkZ = gcz - radius + z * gridStep;
 	const localChunkX = chunkX - ccx;
 	const localChunkZ = chunkZ - ccz;
-	const renderDistance =
-		SETTING_PARAMS.RENDER_DISTANCE +
-		SETTING_PARAMS.LOD_1_OFFSET +
-		SETTING_PARAMS.LOD_2_OFFSET;
 	const isInsideRealTerrain =
-		localChunkX > -renderDistance &&
-		localChunkX <= renderDistance &&
-		localChunkZ > -renderDistance &&
-		localChunkZ <= renderDistance;
+		localChunkX > -currentRenderDistance &&
+		localChunkX <= currentRenderDistance &&
+		localChunkZ > -currentRenderDistance &&
+		localChunkZ <= currentRenderDistance;
 
 	const pos = positions!;
 	const nrm = normals!;

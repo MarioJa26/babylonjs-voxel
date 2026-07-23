@@ -5,7 +5,9 @@
 // region files) are handled by the worker.
 // ---------------------------------------------------------------------------
 
+import type { MeshData } from "../Chunk/DataStructures/MeshData";
 import { OpfsMsg } from "./OpfsMessageTypes";
+import type { HydratedVoxelData } from "./VoxelSerializer";
 
 const _packScratch = { hi: 0, lo: 0 };
 
@@ -35,6 +37,34 @@ const _wireMsg: WireMsg = {
 	chunkY: 0,
 	chunkZ: 0,
 	lod: 0,
+};
+
+// Separate wire message for raw-mesh writes (WriteMeshRaw) — transfers the raw
+// MeshData arrays to the worker for serialization there, avoiding main-thread
+// allocation pressure that causes Major GC.
+interface WireMeshRawMsg {
+	id: number;
+	type: OpfsMsg;
+	keyHi: number;
+	keyLo: number;
+	lod: number;
+	faceCountO: number;
+	faceCountT: number;
+	aO?: Uint8Array;
+	bO?: Uint8Array;
+	cO?: Uint8Array;
+	aT?: Uint8Array;
+	bT?: Uint8Array;
+	cT?: Uint8Array;
+}
+const _wireMeshRawMsg: WireMeshRawMsg = {
+	id: 0,
+	type: OpfsMsg.WriteMeshRaw,
+	keyHi: 0,
+	keyLo: 0,
+	lod: 0,
+	faceCountO: 0,
+	faceCountT: 0,
 };
 
 function _resetWire(type: OpfsMsg): void {
@@ -99,7 +129,10 @@ export class OpfsClient {
 		await this._ready;
 	}
 
-	private _dispatch<T = unknown>(transfer: Transferable[] = []): Promise<T> {
+	private _dispatch<T = unknown>(
+		transfer: Transferable[] = [],
+		msg: Record<string, any> = _wireMsg,
+	): Promise<T> {
 		return new Promise((resolve, reject) => {
 			const id = this._nextId++;
 			const slot = (id - 1) & (MAX_INFLIGHT - 1);
@@ -111,10 +144,9 @@ export class OpfsClient {
 			this._opResolves[slot] = resolve;
 			this._opRejects[slot] = reject;
 
-			const m = _wireMsg;
-			m.id = id;
-			this._worker.postMessage(m, transfer);
-			m.data = undefined;
+			msg.id = id;
+			this._worker.postMessage(msg, transfer);
+			if (msg === _wireMsg) _wireMsg.data = undefined;
 		});
 	}
 
@@ -163,15 +195,48 @@ export class OpfsClient {
 		return await this._dispatch<Uint8Array | null>();
 	}
 
-	async writeMesh(key: bigint, lod: number, data: Uint8Array): Promise<void> {
+	async writeMeshRaw(
+		key: bigint,
+		lod: number,
+		opaque: MeshData | null | undefined,
+		transparent: MeshData | null | undefined,
+	): Promise<void> {
 		const { hi, lo } = this._packKey(key);
-		const bytes = transferableBytes(data);
-		_resetWire(OpfsMsg.WriteMesh);
-		_wireMsg.keyHi = hi;
-		_wireMsg.keyLo = lo;
-		_wireMsg.lod = lod;
-		_wireMsg.data = bytes;
-		return await this._dispatch<void>([bytes.buffer]);
+		const m = _wireMeshRawMsg;
+		m.id = 0;
+		m.type = OpfsMsg.WriteMeshRaw;
+		m.keyHi = hi;
+		m.keyLo = lo;
+		m.lod = lod;
+		m.faceCountO = opaque?.faceCount ?? 0;
+		m.faceCountT = transparent?.faceCount ?? 0;
+		// Slice each array so the originals (referenced by chunk cached meshes
+		// and merged group members) stay valid on the main thread.
+		m.aO = opaque?.faceDataA?.slice();
+		m.bO = opaque?.faceDataB?.slice();
+		m.cO = opaque?.faceDataC?.slice();
+		m.aT = transparent?.faceDataA?.slice();
+		m.bT = transparent?.faceDataB?.slice();
+		m.cT = transparent?.faceDataC?.slice();
+
+		const transfer: Transferable[] = [];
+		const pushBuf = (arr: Uint8Array | undefined) => {
+			if (
+				arr &&
+				arr.byteOffset === 0 &&
+				arr.byteLength === arr.buffer.byteLength
+			) {
+				transfer.push(arr.buffer);
+			}
+		};
+		pushBuf(m.aO);
+		pushBuf(m.bO);
+		pushBuf(m.cO);
+		pushBuf(m.aT);
+		pushBuf(m.bT);
+		pushBuf(m.cT);
+
+		return await this._dispatch<void>(transfer, m);
 	}
 
 	async removeMesh(key: bigint, lod: number): Promise<boolean> {
@@ -195,17 +260,26 @@ export class OpfsClient {
 		return await this._dispatch<Uint8Array | null>();
 	}
 
+	/**
+	 * Send a MessageChannel port to the OPFS worker so it can forward
+	 * decompressed SAB references directly to the terrain/light worker.
+	 * Fire-and-forget (no response expected).
+	 */
+	public initWorkerChannel(port: MessagePort): void {
+		this._worker.postMessage({ type: OpfsMsg.InitWorkerChannel }, [port]);
+	}
+
 	async readVoxelDecompressed(
 		key: bigint,
 		lod: number,
-	): Promise<Uint8Array | null> {
+	): Promise<HydratedVoxelData | null> {
 		const { chunkX, chunkY, chunkZ } = this._unpackKey(key);
 		_resetWire(OpfsMsg.ReadVoxelDecompressed);
 		_wireMsg.chunkX = chunkX;
 		_wireMsg.chunkY = chunkY;
 		_wireMsg.chunkZ = chunkZ;
 		_wireMsg.lod = lod;
-		return await this._dispatch<Uint8Array | null>();
+		return await this._dispatch<HydratedVoxelData | null>();
 	}
 
 	async writeVoxel(key: bigint, lod: number, data: Uint8Array): Promise<void> {

@@ -59,6 +59,7 @@ const gridOrigin: [number, number] = [0, 0];
 
 let lastChunkX: number = Number.NaN;
 let lastChunkZ: number = Number.NaN;
+let lastRenderDistance: number = Number.NaN;
 
 let engine: EngineContext;
 let scene: SceneContext;
@@ -343,14 +344,20 @@ export function isInitialized(): boolean {
 export function update(worldX: number, worldZ: number) {
 	const cx = worldToChunkCoord(worldX);
 	const cz = worldToChunkCoord(worldZ);
-	if (cx === lastChunkX && cz === lastChunkZ) return;
+	const effectiveRenderDistance =
+		SETTING_PARAMS.RENDER_DISTANCE +
+		SETTING_PARAMS.LOD_1_OFFSET +
+		SETTING_PARAMS.LOD_2_OFFSET;
+	const renderDistanceChanged = effectiveRenderDistance !== lastRenderDistance;
+	if (cx === lastChunkX && cz === lastChunkZ && !renderDistanceChanged) return;
 	lastChunkX = cx;
 	lastChunkZ = cz;
+	lastRenderDistance = effectiveRenderDistance;
 	ChunkWorkerPool.getInstance().scheduleDistantTerrain(
 		cx,
 		cz,
 		radius,
-		SETTING_PARAMS.RENDER_DISTANCE,
+		effectiveRenderDistance,
 		gridStep,
 	);
 }

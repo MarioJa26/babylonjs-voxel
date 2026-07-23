@@ -317,6 +317,24 @@ export class ChunkStreamingController {
 
 		// Enqueue loaded chunks near LOD boundaries for re-evaluation.
 		// This is what drives LOD transitions as the player moves closer/further.
+		const unloadScanRadius =
+			operationalRadius + SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER + 8;
+		const unloadScanVertical =
+			operationalVerticalRadius +
+			SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER +
+			8;
+
+		// Single pass over the chunk index — used by both refresh and unload.
+		_queryScratch.length = 0;
+		Chunk.loadedChunkIndex.queryCollect(
+			chunkX,
+			chunkY,
+			chunkZ,
+			unloadScanRadius,
+			unloadScanVertical,
+			_queryScratch,
+		);
+
 		this.enqueueLoadedChunksForRefresh(chunkX, chunkY, chunkZ, lodRuleSet);
 
 		this.sortLoadQueue();
@@ -369,18 +387,6 @@ export class ChunkStreamingController {
 			lod2VerticalRadius,
 		} = lodRuleSet.radii;
 
-		const queryRadius = lod2HorizontalRadius + 2;
-		const queryVertical = lod2VerticalRadius + 2;
-
-		_queryScratch.length = 0;
-		Chunk.loadedChunkIndex.queryCollect(
-			chunkX,
-			chunkY,
-			chunkZ,
-			queryRadius,
-			queryVertical,
-			_queryScratch,
-		);
 		for (let _qi = 0; _qi < _queryScratch.length; _qi++) {
 			const chunk = _queryScratch[_qi];
 			if (this.loadedRefreshQueueSet.has(chunk.id)) continue;
@@ -529,23 +535,36 @@ export class ChunkStreamingController {
 		let chunk = getChunk(x, y, z);
 
 		const previousLod = chunk?.lodLevel ?? 3;
-		const decision = lodRuleSet.resolveWithHysteresis(
-			x,
-			y,
-			z,
-			playerChunkX,
-			playerChunkY,
-			playerChunkZ,
+		const ruleRev = lodRuleSet.revision;
+		const cacheKey = packOffsetKey(
+			x - playerChunkX,
+			y - playerChunkY,
+			z - playerChunkZ,
 			previousLod,
 		);
-
-		if (!decision.allowsChunkCreation) return;
+		let desiredLod: number;
+		const cached = this._refreshCache.get(cacheKey);
+		if (cached !== undefined && cached >> 3 === ruleRev && !chunk?.isDirty) {
+			desiredLod = cached & 0b111;
+		} else {
+			const decision = lodRuleSet.resolveWithHysteresis(
+				x,
+				y,
+				z,
+				playerChunkX,
+				playerChunkY,
+				playerChunkZ,
+				previousLod,
+			);
+			if (!decision.allowsChunkCreation) return;
+			desiredLod = decision.lodLevel;
+			this._refreshCache.set(cacheKey, desiredLod | (ruleRev << 3));
+		}
 
 		if (!chunk) {
 			chunk = new Chunk(x, y, z);
 		}
 
-		const desiredLod = decision.lodLevel;
 		const revision = this.streamRevision;
 
 		if (chunk.isLoaded && previousLod === desiredLod) {
@@ -805,18 +824,6 @@ export class ChunkStreamingController {
 		const verticalRemoveRadius =
 			verticalRadius + SETTING_PARAMS.CHUNK_UNLOAD_DISTANCE_BUFFER;
 
-		const scanRadius = removeRadius + 8;
-		const scanVertical = verticalRemoveRadius + 8;
-
-		_queryScratch.length = 0;
-		Chunk.loadedChunkIndex.queryCollect(
-			chunkX,
-			chunkY,
-			chunkZ,
-			scanRadius,
-			scanVertical,
-			_queryScratch,
-		);
 		for (let _qi = 0; _qi < _queryScratch.length; _qi++) {
 			const chunk = _queryScratch[_qi];
 			if (chunk.isBoatChunk) continue;
@@ -928,6 +935,7 @@ export class ChunkStreamingController {
 
 	private sortLoadQueue(): void {
 		const loadQueue = this.adapter.getLoadQueue();
+		if (loadQueue.length <= 64) return;
 		loadQueue.sort(compareQueuedChunkRequestPriority);
 	}
 

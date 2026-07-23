@@ -11,7 +11,7 @@ export const SETTING_PARAMS = {
 	CHUNK_UNLOAD_BATCH_LIMIT: 255,
 	// Soft budget used by chunk loading scheduler to decide whether to continue
 	// work in microtasks or yield to next frame.
-	CHUNK_LOADING_FRAME_BUDGET_MS: 8.0,
+	CHUNK_LOADING_FRAME_BUDGET_MS: 100.0,
 	VERTICAL_CHUNK_CULLING_FACTOR: 6, // Multiplier for CHUNK_SIZE to cull chunks above/below terrain
 	CAMERA_FOV: 90, // Default camera field of view in degrees
 

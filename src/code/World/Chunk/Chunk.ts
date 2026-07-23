@@ -191,7 +191,9 @@ export class Chunk {
 		return Chunk._lightHeaderNextSlot++;
 	}
 
-	public static onLightChunkLoaded: ((chunk: Chunk) => void) | null = null;
+	public static onLightChunkLoaded:
+		| ((chunk: Chunk, fromChannel: boolean) => void)
+		| null = null;
 	public static onLightChunkLayoutChanged: ((chunk: Chunk) => void) | null =
 		null;
 	public static onLightChunkDisposed: ((chunk: Chunk) => void) | null = null;
@@ -406,6 +408,7 @@ export class Chunk {
 		uniformBlockId: number | undefined,
 		light_array?: Uint8Array,
 		scheduleRemesh = true,
+		_fromStorage = false,
 	): void {
 		this.clearCachedLODMeshes();
 		this._hasVoxelData = true;
@@ -456,7 +459,7 @@ export class Chunk {
 		this.ensureSharedBacking();
 
 		this.writeLightHeaderRow();
-		Chunk.onLightChunkLoaded?.(this);
+		Chunk.onLightChunkLoaded?.(this, _fromStorage);
 		Chunk.onChunkLoaded?.(this);
 		if (scheduleRemesh) this.scheduleRemesh(true, true);
 	}

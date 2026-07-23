@@ -1,12 +1,10 @@
 /// <reference lib="webworker" />
 
+import { serializeMeshPair } from "./MeshSerializer";
 import { OpfsChunkStore } from "./OpfsChunkStore";
 import { OpfsMsg } from "./OpfsMessageTypes";
 import { RegionFile } from "./RegionFile";
-import {
-	deserializeVoxelData,
-	serializeVoxelData,
-} from "./VoxelSerializer";
+import { deserializeVoxelData } from "./VoxelSerializer";
 
 // ---------------------------------------------------------------------------
 // Hoist self reference once — avoids repeated casts + property lookups.
@@ -68,6 +66,13 @@ let regionsDir: FileSystemDirectoryHandle | null = null;
 const regionFiles = new Map<number, RegionFile>();
 const regionOpenInflight = new Map<number, Promise<RegionFile>>();
 let initInFlight: Promise<void> | null = null;
+
+// ---------------------------------------------------------------------------
+// Worker-to-worker channel: OPFS worker forwards decompressed SAB refs
+// directly to the terrain/light worker so the main thread never posts
+// the SAB payloads itself (saves ~22ms per chunk load).
+// ---------------------------------------------------------------------------
+let _workerChannelPort: MessagePort | null = null;
 
 // ---------------------------------------------------------------------------
 // O(1) LRU via doubly-linked list embedded in a Map.
@@ -511,11 +516,35 @@ _self.addEventListener("message", (event: MessageEvent) => {
 				postResult(id, raw ? await decompressGzip(raw) : null);
 				break;
 			}
-			case OpfsMsg.WriteMesh: {
-				const compressed = await compressGzip(viewOf(data.data));
-				await withMeshRetry((s) =>
-					s.write(data.keyHi >>> 0, data.keyLo >>> 0, data.lod | 0, compressed),
-				);
+			case OpfsMsg.WriteMeshRaw: {
+				const opaque = data.aO
+					? {
+							faceDataA: data.aO,
+							faceDataB: data.bO ?? new Uint8Array(0),
+							faceDataC: data.cO ?? new Uint8Array(0),
+							faceCount: data.faceCountO >>> 0,
+						}
+					: null;
+				const transparent = data.aT
+					? {
+							faceDataA: data.aT,
+							faceDataB: data.bT ?? new Uint8Array(0),
+							faceDataC: data.cT ?? new Uint8Array(0),
+							faceCount: data.faceCountT >>> 0,
+						}
+					: null;
+				const bytes = serializeMeshPair(opaque, transparent);
+				if (bytes) {
+					const compressed = await compressGzip(bytes);
+					await withMeshRetry((s) =>
+						s.write(
+							data.keyHi >>> 0,
+							data.keyLo >>> 0,
+							data.lod | 0,
+							compressed,
+						),
+					);
+				}
 				postResult(id, true);
 				break;
 			}
@@ -564,7 +593,7 @@ _self.addEventListener("message", (event: MessageEvent) => {
 				const rf2 = await getRegionFile(_loc[0], _loc[1], _loc[2]);
 				const raw = rf2.readChunk(_loc[3], _loc[4], _loc[5], false);
 				if (!raw) {
-					postTransferResult(id, null);
+					postResult(id, null);
 					break;
 				}
 				const saved = deserializeVoxelData(raw);
@@ -577,15 +606,68 @@ _self.addEventListener("message", (event: MessageEvent) => {
 					}
 					saved.compressed = false;
 				}
-				const uncompressed = serializeVoxelData(
-					saved.blocks,
-					saved.palette,
-					saved.isUniform,
-					saved.uniformBlockId,
-					saved.lightArray,
-					false,
-				);
-				postTransferResult(id, uncompressed);
+
+				let blocksSAB: SharedArrayBuffer | null = null;
+				let paletteSAB: SharedArrayBuffer | null = null;
+				let lightSAB: SharedArrayBuffer | null = null;
+
+				if (saved.blocks) {
+					const rawBytes =
+						saved.blocks instanceof Uint16Array
+							? new Uint8Array(
+									saved.blocks.buffer,
+									saved.blocks.byteOffset,
+									saved.blocks.byteLength,
+								)
+							: saved.blocks;
+					blocksSAB = new SharedArrayBuffer(rawBytes.byteLength);
+					new Uint8Array(blocksSAB).set(rawBytes);
+				}
+				if (saved.palette) {
+					const byteLen = saved.palette.byteLength;
+					paletteSAB = new SharedArrayBuffer(byteLen);
+					new Uint8Array(paletteSAB).set(
+						new Uint8Array(
+							saved.palette.buffer,
+							saved.palette.byteOffset,
+							byteLen,
+						),
+					);
+				}
+				if (saved.lightArray) {
+					lightSAB = new SharedArrayBuffer(saved.lightArray.byteLength);
+					new Uint8Array(lightSAB).set(saved.lightArray);
+				}
+
+				const cx = data.chunkX | 0;
+				const cy = data.chunkY | 0;
+				const cz = data.chunkZ | 0;
+				const blockBytesPerElement: 1 | 2 =
+					saved.blocks?.byteLength === 65536 ? 2 : 1;
+
+				// Forward SAB refs + coords to the terrain/light worker so it
+				// can register the chunk without the main thread posting SABs.
+				if (_workerChannelPort) {
+					_workerChannelPort.postMessage({
+						_type: "voxelData",
+						chunkX: cx,
+						chunkY: cy,
+						chunkZ: cz,
+						blocksSAB,
+						paletteSAB,
+						lightSAB,
+						blockBytesPerElement,
+					});
+				}
+
+				postResult(id, {
+					blocksSAB,
+					paletteSAB,
+					isUniform: saved.isUniform ?? false,
+					uniformBlockId: saved.uniformBlockId ?? 0,
+					lightSAB,
+					blockBytesPerElement,
+				});
 				break;
 			}
 			case OpfsMsg.WriteVoxel: {
@@ -625,8 +707,20 @@ _self.addEventListener("message", (event: MessageEvent) => {
 				_lruTail = null;
 				regionOpenInflight.clear();
 				regionsDir = null;
+				if (_workerChannelPort) {
+					_workerChannelPort.close();
+					_workerChannelPort = null;
+				}
 				initInFlight = null;
 				postResult(id, true);
+				break;
+			}
+			case OpfsMsg.InitWorkerChannel: {
+				const port = event.ports?.[0];
+				if (port) {
+					_workerChannelPort = port;
+					_workerChannelPort.start();
+				}
 				break;
 			}
 			default:

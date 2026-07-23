@@ -1,7 +1,7 @@
 export const enum OpfsMsg {
 	Ping,
 	ReadMesh,
-	WriteMesh,
+	WriteMeshRaw,
 	RemoveMesh,
 	FlushMeshes,
 	GetStats,
@@ -11,4 +11,5 @@ export const enum OpfsMsg {
 	FlushVoxels,
 	Close,
 	ReadVoxelDecompressed,
+	InitWorkerChannel,
 }

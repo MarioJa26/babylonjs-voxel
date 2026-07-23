@@ -495,7 +495,7 @@ export function processFrameBudgetedStreamingWork(
 		playerChunkZ,
 		SETTING_PARAMS.RENDER_DISTANCE,
 		SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
-		32,
+		255,
 	);
 }
 
@@ -745,6 +745,7 @@ function loadNearLodChunk(
 		savedData.uniformBlockId,
 		savedData.lightArray,
 		!hasDesiredMesh,
+		true,
 	);
 
 	if (!hasDesiredMesh) {

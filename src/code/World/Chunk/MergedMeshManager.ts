@@ -505,11 +505,27 @@ export function getMergedMeshFlushStats(): {
 	};
 }
 
+let _mergedFlushRafScheduled = false;
+const _flushSnapshot: MergedMeshGroup[] = [];
+
 export function flushDirtyMergedGroups(): void {
 	if (dirtyGroups.size === 0) return;
 
 	const _start = performance.now();
-	for (const group of dirtyGroups) {
+	const snapshot = _flushSnapshot;
+	snapshot.length = 0;
+	for (const g of dirtyGroups) snapshot.push(g);
+	dirtyGroups.clear();
+
+	let budgetExhausted = false;
+	let i = 0;
+	for (; i < snapshot.length; i++) {
+		// Re-check budget every group (the rebuild below is the expensive part)
+		if (i > 0 && (i & 3) === 0 && performance.now() - _start > 5) {
+			budgetExhausted = true;
+			break;
+		}
+		const group = snapshot[i];
 		if (!groups.has(group.groupKey)) continue;
 		if (!group.dirty) continue;
 
@@ -518,7 +534,20 @@ export function flushDirtyMergedGroups(): void {
 		_onGroupMeshNeedsRebuild?.(group);
 	}
 
-	dirtyGroups.clear();
+	// Groups that were not processed stay dirty for the next frame.
+	if (budgetExhausted) {
+		for (; i < snapshot.length; i++) {
+			if (snapshot[i].dirty) dirtyGroups.add(snapshot[i]);
+		}
+
+		if (!_mergedFlushRafScheduled) {
+			_mergedFlushRafScheduled = true;
+			requestAnimationFrame(() => {
+				_mergedFlushRafScheduled = false;
+				flushDirtyMergedGroups();
+			});
+		}
+	}
 
 	const _elapsed = performance.now() - _start;
 	_lastMergedFlushMs = _elapsed;

@@ -252,12 +252,15 @@ function ensureArenas(): void {
 			boundMaterials.add(m);
 		}
 	}
-	// Create every face arena up front. The shader's loadFace references all
-	// faceData0..N unconditionally, so every arena's buffer must be bound at
-	// draw time (an unbound declared storage buffer is a pipeline error). Each
-	// starts tiny and grows to the binding cap on demand via growArena.
+	// Pre-size each arena to a generous initial capacity so growth at runtime
+	// is rare. `maxStorageBindingBytes / FACE_BYTES` is the binding cap; we
+	// start each arena at 262144 faces (4 MiB) which covers ~1.5M faces across
+	// 6 arenas before any grow is needed — well past a typical render distance.
+	// The capacity doubles on demand up to the binding cap if needed.
+	const maxFaces = maxFacesPerArena();
+	const initialCapacity = Math.min(262_144, maxFaces);
 	while (faceArenas.length < maxFaceArenas) {
-		createFaceArena(8192);
+		createFaceArena(initialCapacity);
 	}
 }
 

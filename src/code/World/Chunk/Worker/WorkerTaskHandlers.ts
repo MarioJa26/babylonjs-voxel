@@ -1,6 +1,7 @@
 import {
 	generate,
 	initSharedBuffers,
+	setRenderDistance,
 } from "@/code/Generation/DistantTerrain/DistantTerrainGenerator";
 import type { WorldGenerator } from "@/code/Generation/WorldGenerator";
 import type { FaceName } from "@/code/World/Texture/FaceName";
@@ -127,8 +128,16 @@ export function handleGenerateDistantTerrain(
 	};
 	transferables: Transferable[];
 } {
-	const { requestId, centerChunkX, centerChunkZ, radius, gridStep } = request;
+	const {
+		requestId,
+		centerChunkX,
+		centerChunkZ,
+		radius,
+		gridStep,
+		renderDistance,
+	} = request;
 
+	setRenderDistance(renderDistance);
 	const data = generate(centerChunkX, centerChunkZ, radius, gridStep);
 
 	return {

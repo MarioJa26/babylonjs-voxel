@@ -7,6 +7,20 @@ export type SavedChunkData = {
 	compressed?: boolean;
 };
 
+/**
+ * Structured SAB-backed result returned by readVoxelDecompressed.
+ * Blocks/palette/light are already in SharedArrayBuffers so the main
+ * thread skips both the deserialize round-trip and ensureSharedBacking.
+ */
+export interface HydratedVoxelData {
+	blocksSAB: SharedArrayBuffer | null;
+	paletteSAB: SharedArrayBuffer | null;
+	isUniform: boolean;
+	uniformBlockId: number;
+	lightSAB: SharedArrayBuffer | null;
+	blockBytesPerElement: 1 | 2;
+}
+
 export type SavedChunkEntityData = {
 	type: string;
 	payload: unknown;

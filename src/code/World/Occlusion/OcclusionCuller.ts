@@ -38,10 +38,7 @@ const SEA_LEVEL = GenerationParams.SEA_LEVEL;
 const FRUSTUM_MARGIN = 32.0;
 
 // TEMP DEBUG: set true to disable frustum culling (for testing the gap).
-const DISABLE_FRUSTUM_CULL = false;
-
-// TEMP DEBUG (gap diagnosis): remove after diagnosis.
-let _dbgCullGap = 0;
+const DISABLE_FRUSTUM_CULL = true;
 
 const BFS_FRAME_BUDGET = 3000;
 const BFS_CAP = 32768; // must be power-of-2
@@ -569,9 +566,8 @@ export class OcclusionCuller {
 		const bfsInProgress = this._bfsInProgress;
 		const cameraUnderground = camPos.y < SEA_LEVEL;
 
-		_dbgCullGap = 0;
 		for (let i = 0; i < allGroups.length; i++) {
-			const group = allGroups[i]!;
+			const group = allGroups[i];
 			const minGX = group.gridX * groupExtent;
 			const minGY = group.gridY * groupExtent;
 			const minGZ = group.gridZ * groupExtent;

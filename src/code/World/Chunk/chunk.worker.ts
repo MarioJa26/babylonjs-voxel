@@ -3,7 +3,7 @@
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { WorldGenerator } from "@/code/Generation/WorldGenerator";
 import {
-	type WorkerRequestData,
+	type LightRegisterChunkRequest,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
 import { WATER_BLOCK_ID } from "./Worker/ChunkMesherConstants";
@@ -13,6 +13,84 @@ import {
 	handleGenerateTerrain,
 	handleInitDistantTerrainShared,
 } from "./Worker/WorkerTaskHandlers";
+
+// ---------------------------------------------------------------------------
+// Worker-to-worker channel: The OPFS worker sends SAB refs + coords through
+// a MessageChannel. The main thread sends only metadata (chunkId, headerSlot,
+// seq). The terrain worker merges both halves before registering.
+// ---------------------------------------------------------------------------
+interface PendingVoxelData {
+	blocksSAB: SharedArrayBuffer | null;
+	paletteSAB: SharedArrayBuffer | null;
+	lightSAB: SharedArrayBuffer;
+	blockBytesPerElement: 1 | 2;
+}
+// Coord → voxel data from OPFS worker
+const _pendingVoxelData = new Map<number, PendingVoxelData>();
+// Coord → registration metadata from main thread (arrives before channel)
+const _pendingRegistrations = new Map<
+	number,
+	{ seq: number; chunkId: bigint; headerSlot: number }
+>();
+
+function _packCoordKey(x: number, y: number, z: number): number {
+	return ((x + 512) << 20) | ((y + 512) << 10) | (z + 512);
+}
+
+function _registerFromBoth(
+	meta: {
+		seq: number;
+		chunkId: bigint;
+		chunkX: number;
+		chunkY: number;
+		chunkZ: number;
+		headerSlot: number;
+	},
+	voxel: PendingVoxelData,
+): void {
+	LightTaskHandlers.handleRegisterChunk({
+		type: WorkerTaskType.LightRegisterChunk,
+		seq: meta.seq,
+		chunkId: meta.chunkId,
+		chunkX: meta.chunkX,
+		chunkY: meta.chunkY,
+		chunkZ: meta.chunkZ,
+		headerSlot: meta.headerSlot,
+		blockSAB: voxel.blocksSAB,
+		lightSAB: voxel.lightSAB,
+		paletteSAB: voxel.paletteSAB,
+		blockStorageBytesPerElement: voxel.blockBytesPerElement,
+	});
+}
+
+function _handleChannelMessage(event: MessageEvent): void {
+	const data = event.data;
+	if (!data || (data as { _type?: string })._type !== "voxelData") return;
+	const key = _packCoordKey(data.chunkX | 0, data.chunkY | 0, data.chunkZ | 0);
+	const voxel: PendingVoxelData = {
+		blocksSAB: data.blocksSAB,
+		paletteSAB: data.paletteSAB,
+		lightSAB: data.lightSAB,
+		blockBytesPerElement: data.blockBytesPerElement,
+	};
+	const meta = _pendingRegistrations.get(key);
+	if (meta) {
+		_pendingRegistrations.delete(key);
+		_registerFromBoth(
+			{
+				seq: meta.seq,
+				chunkId: meta.chunkId,
+				chunkX: data.chunkX,
+				chunkY: data.chunkY,
+				chunkZ: data.chunkZ,
+				headerSlot: meta.headerSlot,
+			},
+			voxel,
+		);
+	} else {
+		_pendingVoxelData.set(key, voxel);
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Shared instances
@@ -156,7 +234,7 @@ function compressBlocks(blocks: Uint8Array): {
 // Worker message handler
 // ---------------------------------------------------------------------------
 
-const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
+const onMessageHandler = (event: MessageEvent) => {
 	const { type } = event.data;
 
 	switch (type) {
@@ -208,7 +286,43 @@ const onMessageHandler = (event: MessageEvent<WorkerRequestData>) => {
 			return;
 		}
 		case WorkerTaskType.LightRegisterChunk: {
-			LightTaskHandlers.handleRegisterChunk(event.data);
+			const req = event.data as LightRegisterChunkRequest;
+			// If blockSAB is provided (fresh generation / worker restart), register directly.
+			if (req.blockSAB !== null) {
+				LightTaskHandlers.handleRegisterChunk(req);
+				return;
+			}
+			// Null SABs → main thread uses worker-to-worker channel for SABs.
+			// Merge with pending voxel data from OPFS worker.
+			const key = _packCoordKey(req.chunkX, req.chunkY, req.chunkZ);
+			const voxel = _pendingVoxelData.get(key);
+			if (voxel) {
+				_pendingVoxelData.delete(key);
+				_registerFromBoth(
+					{
+						seq: req.seq,
+						chunkId: req.chunkId,
+						chunkX: req.chunkX,
+						chunkY: req.chunkY,
+						chunkZ: req.chunkZ,
+						headerSlot: req.headerSlot,
+					},
+					voxel,
+				);
+			} else {
+				_pendingRegistrations.set(key, {
+					seq: req.seq,
+					chunkId: req.chunkId,
+					headerSlot: req.headerSlot,
+				});
+			}
+			return;
+		}
+
+		case WorkerTaskType.InitWorkerChannel: {
+			const port = (event.data as { port: MessagePort }).port;
+			port.onmessage = _handleChannelMessage;
+			port.start();
 			return;
 		}
 		case WorkerTaskType.LightUnregisterChunk: {

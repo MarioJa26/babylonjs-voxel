@@ -5,7 +5,7 @@ import { packChunkKey } from "./Storage/ChunkKey";
 import type { OpfsClient } from "./Storage/OpfsClient";
 import {
 	deserializeEntities,
-	deserializeVoxelData,
+	type HydratedVoxelData,
 	type SavedChunkData,
 	type SavedChunkEntityData,
 	serializeEntities,
@@ -249,20 +249,18 @@ class WorldStorageImpl {
 
 		try {
 			const includeVoxelData = options?.includeVoxelData ?? true;
-			const bytes = includeVoxelData
-				? await client.readVoxelDecompressed(chunkId, VOXEL_SENTINEL)
-				: await client.readVoxel(chunkId, VOXEL_SENTINEL);
-			if (!bytes) return null;
-			const data = deserializeVoxelData(bytes);
-
 			if (!includeVoxelData) {
-				data.blocks = null;
-				data.palette = null;
-				data.isUniform = undefined;
-				data.uniformBlockId = undefined;
-				data.lightArray = undefined;
+				const bytes = await client.readVoxel(chunkId, VOXEL_SENTINEL);
+				if (!bytes) return null;
+				const data: SavedChunkData = { blocks: null };
+				return data;
 			}
-			return data;
+			const hydrated = await client.readVoxelDecompressed(
+				chunkId,
+				VOXEL_SENTINEL,
+			);
+			if (!hydrated) return null;
+			return hydrateResultToSavedData(hydrated);
 		} catch (err) {
 			console.warn("[WorldStorage] OPFS voxel read failed:", err);
 			return null;
@@ -299,39 +297,36 @@ class WorldStorageImpl {
 
 		const readConcurrency = Math.max(2, Math.min(16, hardwareConcurrency * 2));
 
-		await mapLimit(chunkIds, readConcurrency, async (chunkId) => {
-			try {
-				const bytes = includeVoxelData
-					? await client.readVoxelDecompressed(chunkId, VOXEL_SENTINEL)
-					: await client.readVoxel(chunkId, VOXEL_SENTINEL);
-				if (!bytes) return;
-
-				const raw = deserializeVoxelData(bytes);
-				hits.push({ chunkId, data: raw });
-			} catch (err) {
-				console.warn(
-					`[WorldStorage] Failed to read chunk ${chunkId.toString()}, ${err}`,
-				);
-			}
-		});
+		if (!includeVoxelData) {
+			await mapLimit(chunkIds, readConcurrency, async (chunkId) => {
+				try {
+					const bytes = await client.readVoxel(chunkId, VOXEL_SENTINEL);
+					if (!bytes) return;
+					hits.push({ chunkId, data: { blocks: null } });
+				} catch (err) {
+					console.warn(
+						`[WorldStorage] Failed to read chunk ${chunkId.toString()}, ${err}`,
+					);
+				}
+			});
+		} else {
+			await mapLimit(chunkIds, readConcurrency, async (chunkId) => {
+				try {
+					const hydrated = await client.readVoxelDecompressed(
+						chunkId,
+						VOXEL_SENTINEL,
+					);
+					if (!hydrated) return;
+					hits.push({ chunkId, data: hydrateResultToSavedData(hydrated) });
+				} catch (err) {
+					console.warn(
+						`[WorldStorage] Failed to read chunk ${chunkId.toString()}, ${err}`,
+					);
+				}
+			});
+		}
 
 		if (hits.length === 0) return result;
-
-		if (!includeVoxelData) {
-			for (let i = 0; i < hits.length; i++) {
-				const { chunkId, data } = hits[i];
-
-				data.blocks = null;
-				data.palette = null;
-				data.isUniform = undefined;
-				data.uniformBlockId = undefined;
-				data.lightArray = undefined;
-
-				result.set(chunkId, data);
-			}
-
-			return result;
-		}
 
 		for (let i = 0; i < hits.length; i++) {
 			result.set(hits[i].chunkId, hits[i].data);
@@ -383,6 +378,27 @@ class WorldStorageImpl {
 		}
 	}
 }
+/**
+ * Convert a HydratedVoxelData (SAB-backed structured result from the OPFS
+ * worker) into SavedChunkData that Chunk.loadFromStorage can consume.
+ * The TypedArray views are backed by SharedArrayBuffer so ensureSharedBacking
+ * becomes a no-op — no main-thread copy is needed.
+ */
+function hydrateResultToSavedData(h: HydratedVoxelData): SavedChunkData {
+	return {
+		blocks: h.blocksSAB
+			? h.blockBytesPerElement === 2
+				? new Uint16Array(h.blocksSAB)
+				: new Uint8Array(h.blocksSAB)
+			: null,
+		palette: h.paletteSAB ? new Uint16Array(h.paletteSAB) : null,
+		isUniform: h.isUniform || undefined,
+		uniformBlockId: h.uniformBlockId || undefined,
+		lightArray: h.lightSAB ? new Uint8Array(h.lightSAB) : undefined,
+		compressed: false,
+	};
+}
+
 async function mapLimit<T>(
 	items: readonly T[],
 	limit: number,

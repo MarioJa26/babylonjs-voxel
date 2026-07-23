@@ -1,7 +1,6 @@
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import { shapeInitPromise } from "../Shape/BlockShapes";
 import { packChunkKey } from "../Storage/ChunkKey";
-import { serializeMeshPair } from "../Storage/MeshSerializer";
 import { OpfsClient } from "../Storage/OpfsClient";
 import { WorldStorage } from "../WorldStorage";
 import { addChunkDisposeHook, Chunk } from "./Chunk";
@@ -736,6 +735,25 @@ export class ChunkWorkerPool {
 	}
 
 	private broadcastLightRegister(chunk: Chunk): void {
+		// SAB fields are null → the terrain worker merges them with the
+		// pre-sent channel data from the OPFS worker.  Saves ~22ms main-thread
+		// postMessage cost for the SAB references.
+		this.getLightWorker().postLightRegisterChunk({
+			seq: this.nextLightSeq(),
+			chunkId: chunk.id,
+			chunkX: chunk.chunkX,
+			chunkY: chunk.chunkY,
+			chunkZ: chunk.chunkZ,
+			headerSlot: chunk.lightHeaderSlot,
+			blockSAB: null,
+			lightSAB: null,
+			paletteSAB: null,
+			blockStorageBytesPerElement: 1,
+		});
+	}
+
+	/** Full-registration path for fresh-generation chunks (no OPFS channel). */
+	private broadcastLightRegisterFull(chunk: Chunk): void {
 		const snap = chunk.getLightStorageSnapshot();
 		this.getLightWorker().postLightRegisterChunk({
 			seq: this.nextLightSeq(),
@@ -768,9 +786,28 @@ export class ChunkWorkerPool {
 		this.lightSlotPendingSeq.delete(chunk.lightHeaderSlot);
 	}
 
-	private onLightChunkLoaded(chunk: Chunk): void {
+	private _lightRegChunks: Chunk[] = [];
+	private _lightRegFlags: boolean[] = [];
+	private _lightRegDrainScheduled = false;
+
+	private onLightChunkLoaded(chunk: Chunk, fromChannel: boolean): void {
 		this.lightChunkByHeaderSlot.set(chunk.lightHeaderSlot, chunk);
-		this.broadcastLightRegister(chunk);
+		this._lightRegChunks.push(chunk);
+		this._lightRegFlags.push(fromChannel);
+		if (!this._lightRegDrainScheduled) {
+			this._lightRegDrainScheduled = true;
+			requestAnimationFrame(() => {
+				this._lightRegDrainScheduled = false;
+				const chunks = this._lightRegChunks;
+				const flags = this._lightRegFlags;
+				for (let i = 0; i < chunks.length; i++) {
+					if (flags[i]) this.broadcastLightRegister(chunks[i]);
+					else this.broadcastLightRegisterFull(chunks[i]);
+				}
+				chunks.length = 0;
+				flags.length = 0;
+			});
+		}
 	}
 
 	private onLightChunkLayoutChanged(chunk: Chunk): void {
@@ -896,7 +933,8 @@ export class ChunkWorkerPool {
 			}
 		}
 
-		Chunk.onLightChunkLoaded = (chunk) => this.onLightChunkLoaded(chunk);
+		Chunk.onLightChunkLoaded = (chunk, fromChannel) =>
+			this.onLightChunkLoaded(chunk, fromChannel);
 		Chunk.onLightChunkLayoutChanged = (chunk) =>
 			this.onLightChunkLayoutChanged(chunk);
 		Chunk.onLightChunkDisposed = (chunk) => this.onLightChunkDisposed(chunk);
@@ -924,6 +962,13 @@ export class ChunkWorkerPool {
 			.then((client: OpfsClient) => {
 				this.opfsClient = client;
 				this.opfsReady = true;
+
+				// Wire up the worker-to-worker MessageChannel so the OPFS worker
+				// sends decompressed SAB refs directly to the terrain/light worker,
+				// bypassing the main thread's postMessage for LightRegisterChunk.
+				const channel = new MessageChannel();
+				this.getLightWorker().initWorkerChannel(channel.port1);
+				client.initWorkerChannel(channel.port2);
 			})
 			.catch((err: any) => {
 				console.warn("[ChunkWorkerPool] OPFS unavailable:", err);
@@ -1139,10 +1184,27 @@ export class ChunkWorkerPool {
 		});
 	};
 
+	private _meshSerialQueue: Array<{
+		opaque: MeshData | null | undefined;
+		transparent: MeshData | null | undefined;
+		key: bigint;
+		lod: number;
+		chunkId: bigint;
+	}> = [];
+	private _meshSerialPool: Array<{
+		opaque: MeshData | null | undefined;
+		transparent: MeshData | null | undefined;
+		key: bigint;
+		lod: number;
+		chunkId: bigint;
+	}> = [];
+	private _meshSerialDrainScheduled = false;
+
 	private processMeshQueueLoop = () => {
 		const start = performance.now();
 		let processed = 0;
 		let iterCount = 0;
+		const serialQueue = this._meshSerialQueue;
 		while (
 			this.meshResultQueueReadIdx < this.meshResultQueue.length &&
 			((iterCount++ & 15) !== 0 || performance.now() - start < 5)
@@ -1153,14 +1215,12 @@ export class ChunkWorkerPool {
 			const chunk = this.resolveChunkByMessageId(chunkId);
 			if (chunk) {
 				if (data.meshRevision !== chunk.meshRevision) {
-					// A newer edit/remesh request exists. Never expose this result.
 					chunk.isDirty = true;
 					chunk.remeshQueued = false;
 					this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0, false);
 					continue;
 				}
 				if (shouldSkipLodForChunk(chunk, lod)) {
-					// Drop stale/old underground LOD2+ results.
 					normalizeChunkLod(chunk);
 					chunk.isDirty = true;
 					chunk.remeshQueued = false;
@@ -1175,21 +1235,16 @@ export class ChunkWorkerPool {
 					_meshApplyScratch.opaque = opaque ?? null;
 					_meshApplyScratch.transparent = transparent ?? null;
 					chunk.setCachedLODMesh(lod, _meshApplyScratch);
-				}
 
-				if (this.opfsReady && this.opfsClient && canCacheMesh) {
-					const bytes = serializeMeshPair(opaque, transparent);
-					if (bytes) {
-						const key = packChunkKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-						void this.opfsClient
-							.writeMesh(key, lod, bytes)
-							.catch((err: any) => {
-								console.error(
-									`[ChunkWorkerPool] OPFS mesh write failed for chunk ${chunkId} (key=${key}, lod=${lod}, bytes=${bytes.length}):`,
-									err,
-								);
-							});
-					}
+					// Queue mesh serialization for OPFS *after* the hot loop so
+					// allocate+copy doesn't steal from the frame budget.
+					const entry = this._meshSerialPool.pop() ?? ({} as any);
+					entry.opaque = opaque;
+					entry.transparent = transparent;
+					entry.key = packChunkKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+					entry.lod = lod;
+					entry.chunkId = chunkId;
+					serialQueue.push(entry);
 				}
 				if ((chunk.lodLevel ?? 0) === lod) {
 					createMeshFromData(chunk, opaque ?? null, transparent ?? null);
@@ -1209,36 +1264,84 @@ export class ChunkWorkerPool {
 			}
 		}
 
+		// Flush merged groups with a per-group budget so a heavy rebuild
+		// doesn't steal the entire frame.
 		flushDirtyMergedGroups();
+
+		// Drain serialization queue (outside the 5ms budget) in this same
+		// rAF so OPFS writes begin ASAP, but stop if we blow past budget.
+		if (serialQueue.length > 0 && this.opfsReady && this.opfsClient) {
+			this._drainSerialQueue(serialQueue);
+		}
 
 		if (processed > 0 && this.opfsReady && this.opfsClient) {
 			this.opfsFlushCounter++;
 			if (this.opfsFlushCounter >= 60) {
 				this.opfsFlushCounter = 0;
 				void this.opfsClient.flush().catch((err: any) => {
-					console.warn("[ChunkWorkerPool] OPFS flush failed:", err);
+					console.error("[ChunkWorkerPool] OPFS flush failed:", err);
 				});
 			}
 		}
 
-		if (
-			this.meshResultQueueReadIdx > 64 &&
-			this.meshResultQueueReadIdx * 2 > this.meshResultQueue.length
-		) {
-			this.meshResultQueue.copyWithin(0, this.meshResultQueueReadIdx);
-			this.meshResultQueue.length -= this.meshResultQueueReadIdx;
-			this.meshResultQueueReadIdx = 0;
-		}
-
-		this.debugStats.lastMeshProcessed = processed;
-		this.debugStats.totalMeshProcessed += processed;
-		this.debugStats.lastMeshDrainMs = performance.now() - start;
-		this.updateQueueDebugStats();
-
 		if (this.meshResultQueueReadIdx < this.meshResultQueue.length) {
-			requestAnimationFrame(this.processMeshQueueLoop);
+			this.scheduleMeshFlush();
 		}
 	};
+
+	/**
+	 * Drain the mesh-serialization queue with its own 5ms budget so the
+	 * hot loop stays tight.  If more items remain, schedule a follow-up
+	 * rAF to finish them.
+	 */
+	private _drainSerialQueue(
+		queue: Array<{
+			opaque: MeshData | null | undefined;
+			transparent: MeshData | null | undefined;
+			key: bigint;
+			lod: number;
+			chunkId: bigint;
+		}>,
+	): void {
+		const start = performance.now();
+		let i = 0;
+		for (; i < queue.length; i++) {
+			if ((i & 15) === 0 && performance.now() - start > 5) break;
+			const item = queue[i];
+			// Transfer raw MeshData arrays to OPFS worker — serialization
+			// happens there, eliminating main-thread allocation pressure.
+			void this.opfsClient!.writeMeshRaw(
+				item.key,
+				item.lod,
+				item.opaque,
+				item.transparent,
+			).catch((err: any) => {
+				console.error(
+					`[ChunkWorkerPool] OPFS mesh write failed for chunk ${item.chunkId} (key=${item.key}, lod=${item.lod}):`,
+					err,
+				);
+			});
+		}
+		// Return processed items to pool, then remove from queue
+		const pool = this._meshSerialPool;
+		for (let j = 0; j < i; j++) {
+			const e = queue[j];
+			e.opaque = null;
+			e.transparent = null;
+			pool.push(e);
+		}
+		queue.splice(0, i);
+
+		if (queue.length > 0) {
+			if (!this._meshSerialDrainScheduled) {
+				this._meshSerialDrainScheduled = true;
+				requestAnimationFrame(() => {
+					this._meshSerialDrainScheduled = false;
+					this._drainSerialQueue(queue);
+				});
+			}
+		}
+	}
 
 	// -------------------------------------------------------------------------
 	// Mesh result queue enqueue — shared by the terrain-worker and mesh-worker
@@ -2213,6 +2316,7 @@ export class ChunkWorkerPool {
 					distantTask!.centerChunkZ,
 					distantTask!.radius,
 					distantTask!.gridStep,
+					distantTask!.renderDistance,
 				);
 				this.recordWorkerDispatch(workerIndex);
 				this.debugStats.totalDistantDispatches++;

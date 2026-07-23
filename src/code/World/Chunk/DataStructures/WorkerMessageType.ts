@@ -25,6 +25,7 @@ export const enum WorkerTaskType {
 	LightSkyReconcile,
 	LightPropagateDeferred,
 	LightDirty,
+	InitWorkerChannel,
 }
 
 /* =========================================================
@@ -116,6 +117,7 @@ export type GenerateDistantTerrainRequest = {
 	centerChunkZ: number;
 	radius: number;
 	gridStep: number;
+	renderDistance: number;
 };
 
 export type WorkerRequestData =

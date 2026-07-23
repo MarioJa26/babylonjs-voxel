@@ -422,6 +422,7 @@ export class ChunkWorker {
 		centerChunkZ: number,
 		radius: number,
 		gridStep: number,
+		renderDistance: number,
 	): void {
 		if (!this.distantTerrainSharedInitialized) {
 			throw new Error(
@@ -435,6 +436,7 @@ export class ChunkWorker {
 			centerChunkZ,
 			radius,
 			gridStep,
+			renderDistance,
 		};
 
 		this.terrainWorker.postMessage(message);
@@ -447,6 +449,13 @@ export class ChunkWorker {
 	// they live for the lifetime of the page and are referenced by all
 	// workers via the registration messages posted by the pool.
 	// ---------------------------------------------------------------------
+
+	public initWorkerChannel(port: MessagePort): void {
+		this.terrainWorker.postMessage(
+			{ type: WorkerTaskType.InitWorkerChannel, port },
+			[port],
+		);
+	}
 
 	public initLightShared(headerBuffer: SharedArrayBuffer): void {
 		if (this.lightSharedInitialized) return;

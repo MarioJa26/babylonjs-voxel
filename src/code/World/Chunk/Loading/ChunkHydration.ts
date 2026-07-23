@@ -70,6 +70,7 @@ export class ChunkHydration {
 			payload.uniformBlockId,
 			payload.lightArray,
 			scheduleRemesh,
+			true,
 		);
 
 		const lodCache = this.adapter.getSerializedLodCache?.(savedData);

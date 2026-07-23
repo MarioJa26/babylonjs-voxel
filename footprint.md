@@ -1,8 +1,8 @@
 # Project Footprint
 
-Generated: 2026-07-22T11:43:06.137Z
+Generated: 2026-07-23T10:50:51.133Z
 
-> **Summary:** 126 classes · 1680 members · 487 module-level functions · 52286 LOC
+> **Summary:** 126 classes · 1689 members · 492 module-level functions · 52640 LOC
 
 ---
 
@@ -550,7 +550,7 @@ Generated: 2026-07-22T11:43:06.137Z
 
 ---
 
-## `Generation/DistantTerrain/DistantTerrain.ts` (283 LOC)
+## `Generation/DistantTerrain/DistantTerrain.ts` (290 LOC)
 
 **Module-level functions**
 - `function createEmptyGridMesh(engine: EngineContext, name: string): Mesh`
@@ -569,10 +569,11 @@ Generated: 2026-07-22T11:43:06.137Z
 
 ---
 
-## `Generation/DistantTerrain/DistantTerrainGenerator.ts` (365 LOC)
+## `Generation/DistantTerrain/DistantTerrainGenerator.ts` (364 LOC)
 
 **Module-level functions**
 - `function cachedHeight(wx: number, wz: number): number`
+- `export function setRenderDistance(value: number): void`
 - `export function initSharedBuffers(positionsBuffer: SharedArrayBuffer, normalsBuffer: SharedArrayBuffer, surfaceTilesBuffer: SharedArrayBuffer, r: number, gStep: number)`
 - `export function generate(centerChunkX: number, centerChunkZ: number, r: number, gStep: number, forceFullRebuild = false)`
 - `function ensureBuffers(r: number, gStep: number)`
@@ -3311,7 +3312,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Chunk.ts` (1277 LOC)
+## `World/Chunk/Chunk.ts` (1280 LOC)
 
 ### export class Chunk
 
@@ -3349,7 +3350,7 @@ export function createFastNoise3D(
 - `_setByCoords(this)`
 - `private getNibble(index: number): number`
 - `private setNibble(index: number, value: number): void`
-- `public loadFromStorage(blocks: Uint8Array | Uint16Array | null, palette: Uint16Array | null | undefined, isUniform: boolean | undefined, uniformBlockId: number | undefined, light_array?: Uint8Array, scheduleRemesh = true): void`
+- `public loadFromStorage(blocks: Uint8Array | Uint16Array | null, palette: Uint16Array | null | undefined, isUniform: boolean | undefined, uniformBlockId: number | undefined, light_array?: Uint8Array, scheduleRemesh = true, _fromStorage = false): void`
 - `private writeLightHeaderRow(): void`
 - `private isOpaqueAtIndex(i: number): number`
 - `public setBlock(localX: number, localY: number, localZ: number, blockId: number, state = 0): void`
@@ -3387,15 +3388,26 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/chunk.worker.ts` (184 LOC)
+## `World/Chunk/chunk.worker.ts` (283 LOC)
 
 **Module-level functions**
+- `function _packCoordKey(x: number, y: number, z: number): number`
+- `function _registerFromBoth(meta: {
+		seq: number;
+		chunkId: bigint;
+		chunkX: number;
+		chunkY: number;
+		chunkZ: number;
+		headerSlot: number;
+	}, voxel: PendingVoxelData): void`
+- `function _handleChannelMessage(event: MessageEvent): void`
 - `function sharedU8(len: number): Uint8Array`
 - `function sharedU16(len: number): Uint16Array`
 - `function compressBlocks(blocks: Uint8Array)`
 
 **Types / Interfaces / Enums**
-- type `WorkerRequestData`
+- interface `PendingVoxelData`
+- type `LightRegisterChunkRequest`
 
 ---
 
@@ -3406,7 +3418,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/ChunkLoadingSystem.ts` (831 LOC)
+## `World/Chunk/ChunkLoadingSystem.ts` (832 LOC)
 
 **Module-level functions**
 - `function _prefetchOnReadOk(idx: number, bytes: Uint8Array | null | undefined): void`
@@ -3487,7 +3499,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/chunkWorker.ts` (468 LOC)
+## `World/Chunk/chunkWorker.ts` (476 LOC)
 
 ### export class ChunkWorker
 
@@ -3529,7 +3541,8 @@ export function createFastNoise3D(
 - `public postFullRemesh(chunk: Chunk, forcedLod?: number): void`
 - `public postTerrainGeneration(chunk: Chunk, deferLighting: boolean = true): void`
 - `public initDistantTerrainShared(positionsBuffer: SharedArrayBuffer, normalsBuffer: SharedArrayBuffer, surfaceTilesBuffer: SharedArrayBuffer, radius: number, gridStep: number): void`
-- `public postGenerateDistantTerrain(requestId: number, centerChunkX: number, centerChunkZ: number, radius: number, gridStep: number): void`
+- `public postGenerateDistantTerrain(requestId: number, centerChunkX: number, centerChunkZ: number, radius: number, gridStep: number, renderDistance: number): void`
+- `public initWorkerChannel(port: MessagePort): void`
 - `public initLightShared(headerBuffer: SharedArrayBuffer): void`
 - `public postLightSetClosedFaceMask(maskBuffer: SharedArrayBuffer): void`
 - `public postLightRegisterChunk(req: {
@@ -3599,7 +3612,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/ChunkWorkerPool.ts` (1782 LOC)
+## `World/Chunk/ChunkWorkerPool.ts` (1862 LOC)
 
 ### export class ChunkWorkerPool
 
@@ -3647,6 +3660,9 @@ export function createFastNoise3D(
 - `private lightDirtyQueue: { seq: number; dirtySlots: Uint32Array }[] = []`
 - `private lightDirtyQueueReadIdx`
 - `private lightDirtyPumpScheduled`
+- `private _lightRegChunks: Chunk[] = []`
+- `private _lightRegFlags: boolean[] = []`
+- `private _lightRegDrainScheduled`
 
 **Methods**
 - `public static getLodCandidateScore(idx: number): number`
@@ -3689,9 +3705,10 @@ export function createFastNoise3D(
 - `public enqueueDeferredLightFromSunlightInit(chunk: Chunk, seedQueue: Uint16Array, seedLength: number): void`
 - `private getLightWorker(): ChunkWorker`
 - `private broadcastLightRegister(chunk: Chunk): void`
+- `private broadcastLightRegisterFull(chunk: Chunk): void`
 - `private broadcastLightUpdateBuffers(chunk: Chunk): void`
 - `private broadcastLightUnregister(chunk: Chunk): void`
-- `private onLightChunkLoaded(chunk: Chunk): void`
+- `private onLightChunkLoaded(chunk: Chunk, fromChannel: boolean): void`
 - `private onLightChunkLayoutChanged(chunk: Chunk): void`
 - `private onLightChunkDisposed(chunk: Chunk): void`
 
@@ -3818,7 +3835,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/DataStructures/WorkerMessageType.ts` (208 LOC)
+## `World/Chunk/DataStructures/WorkerMessageType.ts` (210 LOC)
 
 **Types / Interfaces / Enums**
 - interface `SerializedLightSeedState`
@@ -3883,7 +3900,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Loading/ChunkHydration.ts` (39 LOC)
+## `World/Chunk/Loading/ChunkHydration.ts` (40 LOC)
 
 ### export class ChunkHydration
 
@@ -4053,7 +4070,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Loading/ChunkStreamingController.ts` (806 LOC)
+## `World/Chunk/Loading/ChunkStreamingController.ts` (814 LOC)
 
 **Module-level functions**
 - `function compareQueuedChunkRequestPriority(a: QueuedChunkRequest, b: QueuedChunkRequest): number`
@@ -4216,7 +4233,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/MergedMeshManager.ts` (515 LOC)
+## `World/Chunk/MergedMeshManager.ts` (539 LOC)
 
 **Module-level functions**
 - `function disposeGroupMesh(mesh: Mesh): void`
@@ -4228,7 +4245,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/PackedChunkMesh.ts` (730 LOC)
+## `World/Chunk/PackedChunkMesh.ts` (732 LOC)
 
 **Module-level functions**
 - `function acquireInterval(base: number, count: number)`
@@ -4425,7 +4442,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Chunk/Worker/WorkerTaskHandlers.ts` (143 LOC)
+## `World/Chunk/Worker/WorkerTaskHandlers.ts` (152 LOC)
 
 **Module-level functions**
 - `export function handleGenerateTerrain(request: GenerateTerrainRequest, deps: { generator: WorldGenerator; compressBlocks: CompressBlocksFn })`
@@ -4578,7 +4595,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Light/OpaqueShaderLite.ts` (225 LOC)
+## `World/Light/OpaqueShaderLite.ts` (222 LOC)
 
 **Module-level functions**
 - `function buildChunkMaterial(name: string, fragmentSource: string, useNormal: boolean, opts: ChunkMaterialOptions): ShaderMaterial`
@@ -4883,7 +4900,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Occlusion/OcclusionCuller.ts` (784 LOC)
+## `World/Occlusion/OcclusionCuller.ts` (782 LOC)
 
 **Module-level functions**
 - `function initFacePairTable(): void`
@@ -5006,7 +5023,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Storage/opfs.worker.ts` (479 LOC)
+## `World/Storage/opfs.worker.ts` (593 LOC)
 
 **Module-level functions**
 - `async function _drainOpQueue(): Promise<void>`
@@ -5098,7 +5115,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Storage/OpfsClient.ts` (217 LOC)
+## `World/Storage/OpfsClient.ts` (289 LOC)
 
 ### export class OpfsClient
 
@@ -5112,6 +5129,8 @@ export function createFastNoise3D(
 - `private _nextId`
 - `private _ready: Promise<void>`
 - `type: ,`
+- `transfer: Transferable[] = [],`
+- `msg: Record<string, any> = _wireMsg,`
 - `chunkX: decode(key),`
 - `chunkY: decode(key >> AXIS_BITS),`
 - `chunkZ: decode(key >> (AXIS_BITS * 2n)),`
@@ -5130,9 +5149,11 @@ export function createFastNoise3D(
 - `private _packKey(key: bigint)`
 - `private _unpackKey(key: bigint)`
 - `async readMesh(key: bigint, lod: number): Promise<Uint8Array | null>`
-- `async writeMesh(key: bigint, lod: number, data: Uint8Array): Promise<void>`
+- `async writeMeshRaw(key: bigint, lod: number, opaque: MeshData | null | undefined, transparent: MeshData | null | undefined): Promise<void>`
 - `async removeMesh(key: bigint, lod: number): Promise<boolean>`
 - `async readVoxel(key: bigint, lod: number): Promise<Uint8Array | null>`
+- `public initWorkerChannel(port: MessagePort): void`
+- `async readVoxelDecompressed(key: bigint, lod: number): Promise<HydratedVoxelData | null>`
 - `async writeVoxel(key: bigint, lod: number, data: Uint8Array): Promise<void>`
 - `async removeVoxel(key: bigint, lod: number): Promise<void>`
 - `async flush(): Promise<void>`
@@ -5147,10 +5168,11 @@ export function createFastNoise3D(
 
 **Types / Interfaces / Enums**
 - interface `WireMsg`
+- interface `WireMeshRawMsg`
 
 ---
 
-## `World/Storage/OpfsMessageTypes.ts` (13 LOC)
+## `World/Storage/OpfsMessageTypes.ts` (15 LOC)
 
 ---
 
@@ -5163,7 +5185,7 @@ export function createFastNoise3D(
 
 ---
 
-## `World/Storage/VoxelSerializer.ts` (174 LOC)
+## `World/Storage/VoxelSerializer.ts` (182 LOC)
 
 **Module-level functions**
 - `export function serializeVoxelData(blocks: Uint8Array | Uint16Array | null, palette: Uint16Array | null | undefined, isUniform: boolean | undefined, uniformBlockId: number | undefined, lightArray: Uint8Array | null | undefined, compressed: boolean | undefined): Uint8Array`
@@ -5172,6 +5194,7 @@ export function createFastNoise3D(
 - `export function deserializeEntities(data: Uint8Array): SavedChunkEntityData[]`
 
 **Types / Interfaces / Enums**
+- interface `HydratedVoxelData`
 - type `SavedChunkData`
 - type `SavedChunkEntityData`
 
@@ -5279,9 +5302,13 @@ export function createFastNoise3D(
 
 ---
 
-## `World/WorldStorage.ts` (408 LOC)
+## `World/WorldStorage.ts` (328 LOC)
+
+**Module-level functions**
+- `function hydrateResultToSavedData(h: HydratedVoxelData): SavedChunkData`
 
 **Types / Interfaces / Enums**
+- type `HydratedVoxelData`
 - type `SavedChunkData`
 - type `SavedChunkEntityData`
 - type `LoadChunkOptions`
