@@ -21,36 +21,33 @@ import {
 	type EngineContext,
 	type SceneContext,
 	type ShaderMaterial,
+	type ShaderUniformOption,
 	setShaderTexture,
 	setShaderUniform,
 	type Texture2D,
 } from "@babylonjs/lite";
 import { registerPackedMaterial } from "../Chunk/PackedChunkMesh.js";
-import { buildPackedVertexWGSL } from "./PackedChunkShaderWGSL.js";
-
-// Opaque / transparent materials declare diffuse + normal samplers (2 sampler
-// pairs). Babylon Lite auto-injects faceData@6 / chunkOffsets@7 from storageBuffers.
-export const opaqueChunkVertexWGSL = buildPackedVertexWGSL;
+import {
+	buildPackedVertexWGSL,
+	type VertexShaderOptions,
+} from "./PackedChunkShaderWGSL.js";
 
 export const opaqueChunkFragmentWGSL = /* wgsl */ `
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
-  @location(1) @interpolate(flat) vUV2 : vec2<f32>,
+  @location(1) @interpolate(flat) vTileLayer : u32,
   @location(3) @interpolate(flat) vTangent : vec3<f32>,
   @location(5) @interpolate(flat) vNormal : vec3<f32>,
   @location(6) vAO : f32,
   @location(7) @interpolate(flat) vLight : vec2<f32>,
-  @location(10) vFogFactor : f32,
-  @location(11) vFogColor : vec3<f32>,
-  @location(12) vTint : f32,
   @location(13) vViewDir : vec3<f32>,
 };
 
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let singleTileUV = fract(in.vUV);
-  let layer = u32(in.vUV2.y) * u32(shaderUniforms.atlasMaxTiles) + u32(in.vUV2.x);
+  let layer = in.vTileLayer;
 
   var diffuseColor = textureSampleGrad(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, dpdx(in.vUV), dpdy(in.vUV));
   diffuseColor = vec4<f32>(diffuseColor.rgb * mix(1.0, 0.5, shaderUniforms.wetness), diffuseColor.a);
@@ -86,22 +83,18 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 }
 `;
 
-export const transparentChunkVertexWGSL = opaqueChunkVertexWGSL;
-
 export const transparentChunkFragmentWGSL = /* wgsl */ `
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
-  @location(1) @interpolate(flat) vUV2 : vec2<f32>,
+  @location(1) @interpolate(flat) vTileLayer : u32,
   @location(2) vWorldPosition : vec3<f32>,
-  @location(3) @interpolate(flat) vTangent : vec3<f32>,
   @location(5) @interpolate(flat) vNormal : vec3<f32>,
   @location(6) vAO : f32,
   @location(7) @interpolate(flat) vLight : vec2<f32>,
-  @location(9) @interpolate(flat) vMeta : f32,
+  @location(9) @interpolate(flat) vMeta : u32,
   @location(10) vFogFactor : f32,
   @location(11) vFogColor : vec3<f32>,
-  @location(12) vTint : f32,
   @location(13) vViewDir : vec3<f32>,
 };
 
@@ -126,13 +119,12 @@ fn valueNoise(p : vec2<f32>) -> f32 {
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   // meta (isWater flag in bit 3) is carried in vMeta for near transparent
   // meshes; glass/other transparent have isWater = 0.
-  let faceMeta = u32(in.vMeta);
-  let isWater = f32((faceMeta >> 3u) & 1u);
+  let isWater = f32((in.vMeta >> 3u) & 1u);
 
   let scrollDir = vec2<f32>(-shaderUniforms.time * 0.3, shaderUniforms.time * 0.4) * isWater;
   let animatedUV = in.vUV + scrollDir;
   let singleTileUV = fract(animatedUV);
-  let layer = u32(in.vUV2.y) * u32(shaderUniforms.atlasMaxTiles) + u32(in.vUV2.x);
+  let layer = in.vTileLayer;
 
   var diffuseColor = textureSampleGrad(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, dpdx(in.vUV), dpdy(in.vUV));
   if (diffuseColor.a < 0.01) { discard; }
@@ -202,6 +194,7 @@ function buildChunkMaterial(
 	name: string,
 	fragmentSource: string,
 	useNormal: boolean,
+	vertexOptions: VertexShaderOptions,
 	opts: ChunkMaterialOptions,
 ): ShaderMaterial {
 	const samplers: { name: string; viewDimension: "2d" | "2d-array" }[] = [
@@ -220,24 +213,31 @@ function buildChunkMaterial(
 		});
 	}
 
+	const uniforms: ShaderUniformOption[] = [
+		"world",
+		"worldViewProjection",
+		"cameraPosition",
+		{ name: "atlasTileSize", type: "f32" },
+		{ name: "atlasMaxTiles", type: "f32" },
+		{ name: "atlasMaxTilesU32", type: "u32" },
+		{ name: "lightDirection", type: "vec3<f32>" },
+		{ name: "sunLightIntensity", type: "f32" },
+		{ name: "wetness", type: "f32" },
+	];
+	if (vertexOptions.fog) {
+		uniforms.push({ name: "fogInfos", type: "vec4<f32>" });
+		uniforms.push({ name: "fogColor", type: "vec3<f32>" });
+	}
+	if (name === "chunkTransparentLite") {
+		uniforms.push({ name: "time", type: "f32" });
+	}
+
 	const material = createShaderMaterial({
 		name,
-		vertexSource: opaqueChunkVertexWGSL(arenaCount),
+		vertexSource: buildPackedVertexWGSL(arenaCount, vertexOptions),
 		fragmentSource,
 		attributes: ["position"],
-		uniforms: [
-			"world",
-			"worldViewProjection",
-			"cameraPosition",
-			{ name: "atlasTileSize", type: "f32" },
-			{ name: "atlasMaxTiles", type: "f32" },
-			{ name: "lightDirection", type: "vec3<f32>" },
-			{ name: "sunLightIntensity", type: "f32" },
-			{ name: "wetness", type: "f32" },
-			{ name: "time", type: "f32" },
-			{ name: "fogInfos", type: "vec4<f32>" },
-			{ name: "fogColor", type: "vec3<f32>" },
-		],
+		uniforms,
 		samplers,
 		storageBuffers: [
 			...faceStorageBuffers,
@@ -256,12 +256,17 @@ function buildChunkMaterial(
 	}
 	setShaderUniform(material, "atlasTileSize", opts.atlasTileSize);
 	setShaderUniform(material, "atlasMaxTiles", opts.atlasMaxTiles);
+	setShaderUniform(material, "atlasMaxTilesU32", opts.atlasMaxTiles);
 	setShaderUniform(material, "sunLightIntensity", 1);
 	setShaderUniform(material, "wetness", 0);
-	setShaderUniform(material, "time", 0);
+	if (name === "chunkTransparentLite") {
+		setShaderUniform(material, "time", 0);
+	}
 	setShaderUniform(material, "lightDirection", [0, 1, 0]);
-	setShaderUniform(material, "fogInfos", [0, 140, 2600, 0]);
-	setShaderUniform(material, "fogColor", [0.6, 0.7, 0.9]);
+	if (vertexOptions.fog) {
+		setShaderUniform(material, "fogInfos", [0, 140, 2600, 0]);
+		setShaderUniform(material, "fogColor", [0.6, 0.7, 0.9]);
+	}
 	return material;
 }
 
@@ -272,6 +277,13 @@ export function createChunkOpaqueMaterial(
 		"chunkOpaqueLite",
 		opaqueChunkFragmentWGSL,
 		true,
+		{
+			tangent: true,
+			worldPosition: false,
+			meta: false,
+			tint: false,
+			fog: false,
+		},
 		opts,
 	);
 }
@@ -283,6 +295,7 @@ export function createChunkTransparentMaterial(
 		"chunkTransparentLite",
 		transparentChunkFragmentWGSL,
 		false,
+		{ tangent: false, worldPosition: true, meta: true, tint: false, fog: true },
 		opts,
 	);
 }

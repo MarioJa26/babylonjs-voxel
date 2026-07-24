@@ -1,10 +1,90 @@
-export function buildPackedVertexWGSL(arenaCount: number = 1): string {
-	const arenas = Math.max(1, arenaCount | 0);
+export interface VertexShaderOptions {
+	fog?: boolean;
+	tint?: boolean;
+	meta?: boolean;
+	tangent?: boolean;
+	worldPosition?: boolean;
+}
 
-	// Babylon Lite injects the `var<storage, read> faceDataN : array<vec4<u32>>`
-	// declarations (with @group/@binding) from each material's `storageBuffers`
-	// list, so we must NOT declare them here. We only generate the `loadFace`
-	// helper that selects among them via the per-instance arena index.
+// Varying locations (stable across all variants):
+//   0: vUV          (always)
+//   1: vTileLayer   (always)
+//   2: vWorldPosition (optional)
+//   3: vTangent     (optional)
+//   5: vNormal      (always)
+//   6: vAO          (always)
+//   7: vLight       (always)
+//   9: vMeta        (optional)
+//  10: vFogFactor   (optional)
+//  11: vFogColor    (optional)
+//  12: vTint        (optional)
+//  13: vViewDir     (always)
+
+function vsOutFields(opts: VertexShaderOptions): string {
+	const f: string[] = [];
+	f.push("  @builtin(position) pos : vec4<f32>,");
+	f.push("  @location(0) vUV : vec2<f32>,");
+	f.push("  @location(1) @interpolate(flat) vTileLayer : u32,");
+	if (opts.worldPosition) f.push("  @location(2) vWorldPosition : vec3<f32>,");
+	if (opts.tangent)
+		f.push("  @location(3) @interpolate(flat) vTangent : vec3<f32>,");
+	f.push("  @location(5) @interpolate(flat) vNormal : vec3<f32>,");
+	f.push("  @location(6) vAO : f32,");
+	f.push("  @location(7) @interpolate(flat) vLight : vec2<f32>,");
+	if (opts.meta) f.push("  @location(9) @interpolate(flat) vMeta : u32,");
+	if (opts.fog) {
+		f.push("  @location(10) vFogFactor : f32,");
+		f.push("  @location(11) vFogColor : vec3<f32>,");
+	}
+	if (opts.tint) f.push("  @location(12) @interpolate(flat) vTint : u32,");
+	f.push("  @location(13) vViewDir : vec3<f32>,");
+	return f.join("\n");
+}
+
+function vsOutAssignments(opts: VertexShaderOptions): string {
+	const a: string[] = [];
+	a.push("  out.vUV = vec2<f32>(faceU, faceV);");
+	a.push("  out.vTileLayer = tileY * shaderUniforms.atlasMaxTilesU32 + tileX;");
+	if (opts.worldPosition) a.push("  out.vWorldPosition = worldPos.xyz;");
+	if (opts.tangent) a.push("  out.vTangent = sharedTangent;");
+	a.push("  out.vNormal = sharedNormal;");
+	a.push("  out.vAO = f32(ambientOcclusion);");
+	a.push("  out.vLight = vec2<f32>(skyLight, blockLight);");
+	if (opts.meta) a.push("  out.vMeta = metaByte;");
+	if (opts.tint) a.push("  out.vTint = tintBucket;");
+	if (opts.fog) {
+		a.push("  let infos = shaderUniforms.fogInfos;");
+		a.push("  let fogStart = infos.y;");
+		a.push("  let fogEnd = infos.z;");
+		a.push(
+			"  out.vFogFactor = clamp((dist - fogStart) / max(fogEnd - fogStart, 1.0), 0.0, 1.0);",
+		);
+		a.push("  let heightFactor = clamp(worldPos.y * 0.003, 0.0, 1.0);");
+		a.push("  let atmosphereColor = getAtmosphereColor(heightFactor);");
+		a.push(
+			"  let baseFogColor = mix(shaderUniforms.fogColor, atmosphereColor, 0.8);",
+		);
+		a.push("  let viewDirY = -toCamera.y * invDist;");
+		a.push("  let skyboxColor = getSkyboxColor(viewDirY);");
+		a.push("  let skyBlend = clamp((dist - 1400.0) * 0.0003333, 0.0, 1.0);");
+		a.push("  out.vFogColor = mix(baseFogColor, skyboxColor, skyBlend);");
+	}
+	return a.join("\n");
+}
+
+export function buildPackedVertexWGSL(
+	arenaCount: number = 1,
+	opts: VertexShaderOptions = {},
+): string {
+	const arenas = Math.max(1, arenaCount | 0);
+	const o: VertexShaderOptions = {
+		fog: opts.fog ?? true,
+		tint: opts.tint ?? true,
+		meta: opts.meta ?? true,
+		tangent: opts.tangent ?? true,
+		worldPosition: opts.worldPosition ?? true,
+	};
+
 	let loadFaceBody = "";
 	for (let i = 0; i < arenas; i++) {
 		loadFaceBody += `  if (arena == ${i}u) { return faceData${i}[idx]; }\n`;
@@ -13,19 +93,7 @@ export function buildPackedVertexWGSL(arenaCount: number = 1): string {
 
 	return /* wgsl */ `
 struct VSOut {
-  @builtin(position) pos : vec4<f32>,
-  @location(0) vUV : vec2<f32>,
-  @location(1) @interpolate(flat) vUV2 : vec2<f32>,
-  @location(2) vWorldPosition : vec3<f32>,
-  @location(3) @interpolate(flat) vTangent : vec3<f32>,
-  @location(5) @interpolate(flat) vNormal : vec3<f32>,
-  @location(6) vAO : f32,
-   @location(7) @interpolate(flat) vLight : vec2<f32>,
-  @location(9) @interpolate(flat) vMeta : f32,
-  @location(10) vFogFactor : f32,
-  @location(11) vFogColor : vec3<f32>,
-  @location(12) vTint : f32,
-  @location(13) vViewDir : vec3<f32>,
+${vsOutFields(o)}
 };
 
 // Thin-instance matrix columns (locations 1..4): Babylon Lite's instancing path
@@ -35,9 +103,6 @@ struct VSOut {
 // The rest of the matrix is unused (the vertex position is derived from
 // faceData, not the matrix).
 
-// Resolve a face from the arena selected by the arena index. The if-chain is
-// generated to match the number of bound faceDataN buffers (dynamic indexing
-// of an array of storage buffers is not portable in WGSL).
 fn loadFace(arena : u32, idx : u32) -> vec4<u32> {
 ${loadFaceBody}}
 
@@ -64,8 +129,6 @@ const DIAGONAL : f32 = 0.70710678;
 const INV_POS : f32 = 0.125;
 const INV_LIGHT : f32 = 1.0 / 15.0;
 
-// Flattened replacement for cornerData(state) >> (vid*2) & 3
-// Index as [state * 4u + vid]
 const CORNER_LUT = array<u32,16>(
   0u,1u,2u,3u,   // state 0  (was packed byte 228)
   3u,0u,1u,2u,   // state 1  (was packed byte 147)
@@ -73,8 +136,6 @@ const CORNER_LUT = array<u32,16>(
   1u,0u,3u,2u    // state 3  (was packed byte 177)
 );
 
-// Flattened replacement for atlasCornerLookup(axisFace) >> (corner*2) & 3
-// Index as [axisFace * 4u + corner]. axisFace ranges 0..5.
 const ATLAS_CORNER_LUT = array<u32,24>(
   0u,3u,2u,1u,   // axisFace 0
   1u,2u,3u,0u,   // axisFace 1
@@ -84,47 +145,25 @@ const ATLAS_CORNER_LUT = array<u32,24>(
   0u,1u,2u,3u    // axisFace 5 (default/else case)
 );
 
-// Per-axis basis vectors, replaces select() chains for axis placement
 const AXIS_BASIS = array<vec3<f32>,3>(
   vec3<f32>(1.0, 0.0, 0.0),
   vec3<f32>(0.0, 1.0, 0.0),
   vec3<f32>(0.0, 0.0, 1.0)
 );
 
-fn uAxisOf(axis : u32) -> u32 {
-  if (axis == 0u) { return 1u; }
-  if (axis == 1u) { return 2u; }
-  return 0u;
-}
-fn vAxisOf(axis : u32) -> u32 {
-  if (axis == 0u) { return 2u; }
-  if (axis == 1u) { return 0u; }
-  return 1u;
-}
-fn cornerUOf(corner : u32) -> f32 {
-  if (corner == 0u || corner == 3u) { return 0.0; }
-  return 1.0;
-}
-fn cornerVOf(corner : u32) -> f32 {
-  if (corner == 0u || corner == 1u) { return 0.0; }
-  return 1.0;
-}
+const CORNER_U = array<f32, 4>(0.0, 1.0, 1.0, 0.0);
+const CORNER_V = array<f32, 4>(0.0, 0.0, 1.0, 1.0);
+const U_AXIS = array<u32, 3>(1u, 2u, 0u);
+const V_AXIS = array<u32, 3>(2u, 0u, 1u);
 
 @vertex
 fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32, @builtin(vertex_index) vertexIndex : u32) -> VSOut {
   var out : VSOut;
 
-  // faceBase for this mesh is carried in the thin-instance matrix (world3.w);
-  // the arena index (which faceDataN buffer to read) is in world0.w.
   let faceBase = u32(input.world3.w);
   let arena = u32(input.world0.w);
   let face = loadFace(arena, faceBase + instanceIndex);
 
-  // If your WGSL target supports unpack4xU8, this whole block collapses to:
-  //   let bytes0 = unpack4xU8(face.x);
-  //   let aByte = f32(bytes0.x); let bByte = f32(bytes0.y);
-  //   let cByte = f32(bytes0.z); let axisFace = bytes0.w;
-  // Left as manual shifts below since intrinsic support wasn't confirmed.
   let aByte = f32(face.x & 0xffu);
   let bByte = f32((face.x >> 8u) & 0xffu);
   let cByte = f32((face.x >> 16u) & 0xffu);
@@ -137,7 +176,7 @@ fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32,
 
   let packedAO = face.z & 0xffu;
   let lightByte = (face.z >> 8u) & 0xffu;
-  let tintBucket = (face.z >> 16u) & 0xffu;
+${o.tint ? "  let tintBucket = (face.z >> 16u) & 0xffu;" : ""}
   let metaByte = (face.z >> 24u) & 0xffu;
 
   let axis = axisFace >> 1u;
@@ -152,7 +191,6 @@ fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32,
 
   let co = chunkOffsets[face.w];
 
-  // Hoisted: computed once, reused for base position and fractional UV offset
   let posX = aByte * INV_POS;
   let posZ = cByte * INV_POS;
   let baseX = posX + co.x;
@@ -163,14 +201,9 @@ fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32,
   let blockLight = f32(lightByte & 0x0fu) * INV_LIGHT;
 
   let cornerState = (isBackFace << 1u) | flip;
-  let uAxis = uAxisOf(axis);
-  let vAxis = vAxisOf(axis);
+  let uAxis = U_AXIS[axis];
+  let vAxis = V_AXIS[axis];
   let faceSign = select(1.0, -1.0, isBackFace != 0u);
-
-  let fractionalX = fract(posX);
-  let fractionalZ = fract(posZ);
-  let uvOffsetU = select(fractionalX, fractionalZ, uAxis == 0u);
-  let uvOffsetV = select(fractionalX, fractionalZ, vAxis == 0u);
 
   let isDiag = diagonalEnabled != 0u;
 
@@ -186,63 +219,49 @@ fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32,
 
   let vid = vertexIndex;
   let corner = CORNER_LUT[cornerState * 4u + vid];
-  let cuF = cornerUOf(corner);
-  let cvF = cornerVOf(corner);
+  let cuF = CORNER_U[corner];
+  let cvF = CORNER_V[corner];
 
-  let diagH = (cuF - 0.5) * faceWidth;
-  let posDiag = vec3<f32>(
-    baseX + sharedTangent.x * diagH,
-    baseY + cvF * faceHeight,
-    baseZ + sharedTangent.z * diagH
-  );
-  let faceUDiag = cuF;
-  let faceVDiag = cvF;
+  var position : vec3<f32>;
+  var faceU : f32;
+  var faceV : f32;
+  if (isDiag) {
+    let diagH = (cuF - 0.5) * faceWidth;
+    position = vec3<f32>(
+      baseX + sharedTangent.x * diagH,
+      baseY + cvF * faceHeight,
+      baseZ + sharedTangent.z * diagH
+    );
+    faceU = cuF;
+    faceV = cvF;
+  } else {
+    let fractionalX = fract(posX);
+    let fractionalZ = fract(posZ);
+    let uvOffsetU = select(fractionalX, fractionalZ, uAxis == 0u);
+    let uvOffsetV = select(fractionalX, fractionalZ, vAxis == 0u);
 
-  let pu = cuF * faceWidth;
-  let pv = cvF * faceHeight;
-  let posQuad = vec3<f32>(baseX, baseY, baseZ) + AXIS_BASIS[uAxis] * pu + AXIS_BASIS[vAxis] * pv;
+    let pu = cuF * faceWidth;
+    let pv = cvF * faceHeight;
+    position = vec3<f32>(baseX, baseY, baseZ) + AXIS_BASIS[uAxis] * pu + AXIS_BASIS[vAxis] * pv;
 
-  let ac = ATLAS_CORNER_LUT[axisFace * 4u + corner];
-  let atlasU = (ac ^ (ac >> 1u)) & 1u;
-  let atlasV = ac >> 1u;
-  let swapUV = axisFace < 4u;
-  let faceUQuad = select(f32(atlasU) * faceWidth + uvOffsetU, f32(atlasU) * faceHeight + uvOffsetV, swapUV);
-  let faceVQuad = select(f32(atlasV) * faceHeight + uvOffsetV, f32(atlasV) * faceWidth + uvOffsetU, swapUV);
+    let ac = ATLAS_CORNER_LUT[axisFace * 4u + corner];
+    let atlasU = (ac ^ (ac >> 1u)) & 1u;
+    let atlasV = ac >> 1u;
+    let swapUV = axisFace < 4u;
+    faceU = select(f32(atlasU) * faceWidth + uvOffsetU, f32(atlasU) * faceHeight + uvOffsetV, swapUV);
+    faceV = select(f32(atlasV) * faceHeight + uvOffsetV, f32(atlasV) * faceWidth + uvOffsetU, swapUV);
+  }
 
-  let position = select(posQuad, posDiag, isDiag);
-  let faceU = select(faceUQuad, faceUDiag, isDiag);
-  let faceV = select(faceVQuad, faceVDiag, isDiag);
-
-  let worldPos = shaderSystem.world * vec4<f32>(position, 1.0);
-  out.pos = shaderSystem.worldViewProjection * vec4<f32>(position, 1.0);
-  out.vUV = vec2<f32>(faceU, faceV);
-  out.vUV2 = vec2<f32>(f32(tileX), f32(tileY));
-  out.vWorldPosition = worldPos.xyz;
-  out.vTangent = sharedTangent;
-  out.vNormal = sharedNormal;
+  let localPosition = vec4<f32>(position, 1.0);
+  let worldPos = shaderSystem.world * localPosition;
+  out.pos = shaderSystem.worldViewProjection * localPosition;
   let ambientOcclusion = (packedAO >> (corner << 1u)) & 3u;
-  out.vAO = f32(ambientOcclusion);
-  out.vLight = vec2<f32>(skyLight, blockLight);
-  out.vMeta = f32(metaByte);
-  out.vTint = f32(tintBucket);
-
-  let viewVec = worldPos.xyz - shaderSystem.cameraPosition;
-  let dist = length(viewVec);
-  let infos = shaderUniforms.fogInfos;
-  let fogStart = infos.y;
-  let fogEnd = infos.z;
-  out.vFogFactor = clamp((dist - fogStart) / max(fogEnd - fogStart, 1.0), 0.0, 1.0);
-
-  let heightFactor = clamp(worldPos.y * 0.003, 0.0, 1.0);
-  let atmosphereColor = getAtmosphereColor(heightFactor);
-  let baseFogColor = mix(shaderUniforms.fogColor, atmosphereColor, 0.8);
-  let viewDirY = viewVec.y / max(dist, 1e-4);
-  let skyboxColor = getSkyboxColor(viewDirY);
-  let skyBlend = clamp((dist - 1400.0) * 0.0003333, 0.0, 1.0);
-  out.vFogColor = mix(baseFogColor, skyboxColor, skyBlend);
-
-  out.vViewDir = normalize(shaderSystem.cameraPosition - worldPos.xyz);
-
+  let toCamera = shaderSystem.cameraPosition - worldPos.xyz;
+  let distSq = dot(toCamera, toCamera);
+  let invDist = inverseSqrt(max(distSq, 1e-8));
+${o.fog ? "  let dist = distSq * invDist;" : ""}
+${vsOutAssignments(o)}
+  out.vViewDir = toCamera * invDist;
   return out;
 }
 `;

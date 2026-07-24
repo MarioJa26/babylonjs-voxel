@@ -228,6 +228,7 @@ function pushFogUniforms(): void {
 	for (let i = 0; i < materialList.length; i++) {
 		const m = materialList[i];
 		if (!m) continue;
+		if (m === atlasMaterial) continue;
 		setShaderUniform(m, "fogInfos", fogInfosArray);
 		setShaderUniform(m, "fogColor", fogColorArray);
 	}

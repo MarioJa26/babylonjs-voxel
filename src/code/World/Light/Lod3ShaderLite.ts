@@ -17,22 +17,17 @@ import {
 import { registerPackedMaterial } from "../Chunk/PackedChunkMesh.js";
 import { buildPackedVertexWGSL } from "./PackedChunkShaderWGSL.js";
 
-// LOD3 declares a single diffuse sampler, so storage buffers begin at binding
-// 2 + 2*1 = 4. tintLUT occupies 4; face data / chunk offsets follow at 5/6.
-const lod3VertexWGSL = buildPackedVertexWGSL;
-
 const lod3OpaqueFragmentWGSL = /* wgsl */ `
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
-  @location(1) @interpolate(flat) vUV2 : vec2<f32>,
-  @location(3) @interpolate(flat) vTangent : vec3<f32>,
+  @location(1) @interpolate(flat) vTileLayer : u32,
   @location(5) @interpolate(flat) vNormal : vec3<f32>,
   @location(6) vAO : f32,
   @location(7) @interpolate(flat) vLight : vec2<f32>,
   @location(10) vFogFactor : f32,
   @location(11) vFogColor : vec3<f32>,
-  @location(12) vTint : f32,
+  @location(12) @interpolate(flat) vTint : u32,
   @location(13) vViewDir : vec3<f32>,
 };
 
@@ -52,8 +47,8 @@ fn applyDitherFade(coord : vec2<f32>) {
   }
 }
 
-fn applyTintBucket(color : vec3<f32>, bucket : f32) -> vec3<f32> {
-  let idx = i32(clamp(floor(bucket + 0.5), 0.0, 5.0));
+fn applyTintBucket(color : vec3<f32>, bucket : u32) -> vec3<f32> {
+  let idx = i32(min(bucket, 5u));
   let lum = dot(color, vec3<f32>(0.299, 0.587, 0.114));
   return mix(vec3<f32>(lum), color, tintLUT[idx].a) * tintLUT[idx].rgb;
 }
@@ -63,7 +58,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   applyDitherFade(in.pos.xy);
 
   let singleTileUV = fract(in.vUV);
-  let layer = u32(in.vUV2.y) * u32(shaderUniforms.atlasMaxTiles) + u32(in.vUV2.x);
+  let layer = in.vTileLayer;
   var diffuseColor = textureSampleGrad(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, dpdx(in.vUV), dpdy(in.vUV));
 
   let worldNormal = in.vNormal;
@@ -93,14 +88,13 @@ const lod3TransparentFragmentWGSL = /* wgsl */ `
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
-  @location(1) @interpolate(flat) vUV2 : vec2<f32>,
-  @location(3) @interpolate(flat) vTangent : vec3<f32>,
+  @location(1) @interpolate(flat) vTileLayer : u32,
   @location(5) @interpolate(flat) vNormal : vec3<f32>,
   @location(6) vAO : f32,
   @location(7) @interpolate(flat) vLight : vec2<f32>,
   @location(10) vFogFactor : f32,
   @location(11) vFogColor : vec3<f32>,
-  @location(12) vTint : f32,
+  @location(12) @interpolate(flat) vTint : u32,
   @location(13) vViewDir : vec3<f32>,
 };
 
@@ -120,8 +114,8 @@ fn applyDitherFade(coord : vec2<f32>) {
   }
 }
 
-fn applyTintBucket(color : vec3<f32>, bucket : f32) -> vec3<f32> {
-  let idx = i32(clamp(floor(bucket + 0.5), 0.0, 5.0));
+fn applyTintBucket(color : vec3<f32>, bucket : u32) -> vec3<f32> {
+  let idx = i32(min(bucket, 5u));
   let lum = dot(color, vec3<f32>(0.299, 0.587, 0.114));
   return mix(vec3<f32>(lum), color, tintLUT[idx].a) * tintLUT[idx].rgb;
 }
@@ -131,7 +125,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   applyDitherFade(in.pos.xy);
 
   let singleTileUV = fract(in.vUV);
-  let layer = u32(in.vUV2.y) * u32(shaderUniforms.atlasMaxTiles) + u32(in.vUV2.x);
+  let layer = in.vTileLayer;
   var diffuseColor = textureSampleGrad(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, dpdx(in.vUV), dpdy(in.vUV));
   if (diffuseColor.a < 0.02) { discard; }
 
@@ -178,7 +172,13 @@ export function createLod3OpaqueMaterial(
 	}
 	const material = createShaderMaterial({
 		name: "lod3OpaqueLite",
-		vertexSource: lod3VertexWGSL(arenaCount),
+		vertexSource: buildPackedVertexWGSL(arenaCount, {
+			tangent: false,
+			worldPosition: false,
+			meta: false,
+			tint: true,
+			fog: true,
+		}),
 		fragmentSource: lod3OpaqueFragmentWGSL,
 		attributes: ["position"],
 		uniforms: [
@@ -187,6 +187,7 @@ export function createLod3OpaqueMaterial(
 			"cameraPosition",
 			{ name: "atlasTileSize", type: "f32" },
 			{ name: "atlasMaxTiles", type: "f32" },
+			{ name: "atlasMaxTilesU32", type: "u32" },
 			{ name: "lightDirection", type: "vec3<f32>" },
 			{ name: "sunLightIntensity", type: "f32" },
 			{ name: "wetness", type: "f32" },
@@ -209,6 +210,7 @@ export function createLod3OpaqueMaterial(
 	setShaderTexture(material, "diffuseTexture", opts.diffuseTexture);
 	setShaderUniform(material, "atlasTileSize", opts.atlasTileSize);
 	setShaderUniform(material, "atlasMaxTiles", opts.atlasMaxTiles);
+	setShaderUniform(material, "atlasMaxTilesU32", opts.atlasMaxTiles);
 	setShaderUniform(material, "sunLightIntensity", 1);
 	setShaderUniform(material, "wetness", 0);
 	setShaderUniform(material, "lodFadeProgress", 1);
@@ -235,7 +237,13 @@ export function createLod3TransparentMaterial(
 	}
 	const material = createShaderMaterial({
 		name: "lod3TransparentLite",
-		vertexSource: lod3VertexWGSL(arenaCount),
+		vertexSource: buildPackedVertexWGSL(arenaCount, {
+			tangent: false,
+			worldPosition: false,
+			meta: false,
+			tint: true,
+			fog: true,
+		}),
 		fragmentSource: lod3TransparentFragmentWGSL,
 		attributes: ["position"],
 		uniforms: [
@@ -244,6 +252,7 @@ export function createLod3TransparentMaterial(
 			"cameraPosition",
 			{ name: "atlasTileSize", type: "f32" },
 			{ name: "atlasMaxTiles", type: "f32" },
+			{ name: "atlasMaxTilesU32", type: "u32" },
 			{ name: "lightDirection", type: "vec3<f32>" },
 			{ name: "sunLightIntensity", type: "f32" },
 			{ name: "wetness", type: "f32" },
@@ -267,6 +276,7 @@ export function createLod3TransparentMaterial(
 	setShaderTexture(material, "diffuseTexture", opts.diffuseTexture);
 	setShaderUniform(material, "atlasTileSize", opts.atlasTileSize);
 	setShaderUniform(material, "atlasMaxTiles", opts.atlasMaxTiles);
+	setShaderUniform(material, "atlasMaxTilesU32", opts.atlasMaxTiles);
 	setShaderUniform(material, "sunLightIntensity", 1);
 	setShaderUniform(material, "wetness", 0);
 	setShaderUniform(material, "lodFadeProgress", 1);
