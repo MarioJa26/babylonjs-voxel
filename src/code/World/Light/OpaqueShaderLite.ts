@@ -36,7 +36,7 @@ export const opaqueChunkFragmentWGSL = /* wgsl */ `
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
-  @location(1) vUV2 : vec2<f32>,
+  @location(1) @interpolate(flat) vUV2 : vec2<f32>,
   @location(3) @interpolate(flat) vTangent : vec3<f32>,
   @location(5) @interpolate(flat) vNormal : vec3<f32>,
   @location(6) vAO : f32,
@@ -49,15 +49,13 @@ struct VSOut {
 
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
-  let atlasTileSize = shaderUniforms.atlasTileSize;
-
   let singleTileUV = fract(in.vUV);
-  let atlasUV = in.vUV2 + singleTileUV * atlasTileSize;
+  let layer = u32(in.vUV2.y) * u32(shaderUniforms.atlasMaxTiles) + u32(in.vUV2.x);
 
-  var diffuseColor = textureSample(diffuseTexture, diffuseTextureSampler, atlasUV);
+  var diffuseColor = textureSampleGrad(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, dpdx(in.vUV), dpdy(in.vUV));
   diffuseColor = vec4<f32>(diffuseColor.rgb * mix(1.0, 0.5, shaderUniforms.wetness), diffuseColor.a);
 
-  var normalMap = textureSample(normalTexture, normalTextureSampler, atlasUV).rgb;
+  var normalMap = textureSampleGrad(normalTexture, normalTextureSampler, singleTileUV, layer, dpdx(in.vUV), dpdy(in.vUV)).rgb;
   normalMap = normalize(normalMap * 2.0 - 1.0);
 
    let N = in.vNormal;
@@ -94,7 +92,7 @@ export const transparentChunkFragmentWGSL = /* wgsl */ `
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
-  @location(1) vUV2 : vec2<f32>,
+  @location(1) @interpolate(flat) vUV2 : vec2<f32>,
   @location(2) vWorldPosition : vec3<f32>,
   @location(3) @interpolate(flat) vTangent : vec3<f32>,
   @location(5) @interpolate(flat) vNormal : vec3<f32>,
@@ -126,8 +124,6 @@ fn valueNoise(p : vec2<f32>) -> f32 {
 
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
-  let atlasTileSize = shaderUniforms.atlasTileSize;
-
   // meta (isWater flag in bit 3) is carried in vMeta for near transparent
   // meshes; glass/other transparent have isWater = 0.
   let faceMeta = u32(in.vMeta);
@@ -136,9 +132,9 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let scrollDir = vec2<f32>(-shaderUniforms.time * 0.3, shaderUniforms.time * 0.4) * isWater;
   let animatedUV = in.vUV + scrollDir;
   let singleTileUV = fract(animatedUV);
-  let atlasUV = in.vUV2 + singleTileUV * atlasTileSize;
+  let layer = u32(in.vUV2.y) * u32(shaderUniforms.atlasMaxTiles) + u32(in.vUV2.x);
 
-  var diffuseColor = textureSample(diffuseTexture, diffuseTextureSampler, atlasUV);
+  var diffuseColor = textureSampleGrad(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, dpdx(in.vUV), dpdy(in.vUV));
   if (diffuseColor.a < 0.01) { discard; }
 
   var worldNormal : vec3<f32>;
@@ -208,8 +204,12 @@ function buildChunkMaterial(
 	useNormal: boolean,
 	opts: ChunkMaterialOptions,
 ): ShaderMaterial {
-	const samplers = ["diffuseTexture"];
-	if (useNormal) samplers.push("normalTexture");
+	const samplers: { name: string; viewDimension: "2d" | "2d-array" }[] = [
+		{ name: "diffuseTexture", viewDimension: "2d-array" },
+	];
+	if (useNormal) {
+		samplers.push({ name: "normalTexture", viewDimension: "2d-array" });
+	}
 
 	const arenaCount = Math.max(1, opts.faceArenaCount | 0);
 	const faceStorageBuffers = [];

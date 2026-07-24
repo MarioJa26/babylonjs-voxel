@@ -25,7 +25,7 @@ const lod3OpaqueFragmentWGSL = /* wgsl */ `
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
-  @location(1) vUV2 : vec2<f32>,
+  @location(1) @interpolate(flat) vUV2 : vec2<f32>,
   @location(3) @interpolate(flat) vTangent : vec3<f32>,
   @location(5) @interpolate(flat) vNormal : vec3<f32>,
   @location(6) vAO : f32,
@@ -63,8 +63,8 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   applyDitherFade(in.pos.xy);
 
   let singleTileUV = fract(in.vUV);
-  let atlasUV = in.vUV2 + singleTileUV * shaderUniforms.atlasTileSize;
-  let tex = textureSample(diffuseTexture, diffuseTextureSampler, atlasUV);
+  let layer = u32(in.vUV2.y) * u32(shaderUniforms.atlasMaxTiles) + u32(in.vUV2.x);
+  var diffuseColor = textureSampleGrad(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, dpdx(in.vUV), dpdy(in.vUV));
 
   let worldNormal = in.vNormal;
   let diffuseIntensity = max(0.0, dot(worldNormal, shaderUniforms.lightDirection));
@@ -82,7 +82,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let topBottom = select(0.58, 1.0, in.vNormal.y > 0.0);
   let faceShade = select(0.78, topBottom, abs(in.vNormal.y) > 0.5);
 
-  var color = (tex.rgb * (1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity) + specular) * lightMix * faceShade;
+  var color = (diffuseColor.rgb * (1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity) + specular) * lightMix * faceShade;
   color = applyTintBucket(color, in.vTint);
   color = mix(color, in.vFogColor, in.vFogFactor);
   return vec4<f32>(color, 1.0);
@@ -93,7 +93,7 @@ const lod3TransparentFragmentWGSL = /* wgsl */ `
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
-  @location(1) vUV2 : vec2<f32>,
+  @location(1) @interpolate(flat) vUV2 : vec2<f32>,
   @location(3) @interpolate(flat) vTangent : vec3<f32>,
   @location(5) @interpolate(flat) vNormal : vec3<f32>,
   @location(6) vAO : f32,
@@ -131,9 +131,9 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   applyDitherFade(in.pos.xy);
 
   let singleTileUV = fract(in.vUV);
-  let atlasUV = in.vUV2 + singleTileUV * shaderUniforms.atlasTileSize;
-  let tex = textureSample(diffuseTexture, diffuseTextureSampler, atlasUV);
-  if (tex.a < 0.02) { discard; }
+  let layer = u32(in.vUV2.y) * u32(shaderUniforms.atlasMaxTiles) + u32(in.vUV2.x);
+  var diffuseColor = textureSampleGrad(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, dpdx(in.vUV), dpdy(in.vUV));
+  if (diffuseColor.a < 0.02) { discard; }
 
   let worldNormal = in.vNormal;
   let diffuseIntensity = max(0.0, dot(worldNormal, shaderUniforms.lightDirection));
@@ -151,10 +151,10 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let topBottom = select(0.58, 1.0, in.vNormal.y > 0.0);
   let faceShade = select(0.78, topBottom, abs(in.vNormal.y) > 0.5);
 
-  var color = (tex.rgb * (1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity) + specular) * lightMix * faceShade;
+  var color = (diffuseColor.rgb * (1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity) + specular) * lightMix * faceShade;
   color = applyTintBucket(color, in.vTint);
   color = mix(color, in.vFogColor, in.vFogFactor);
-  return vec4<f32>(color, tex.a);
+  return vec4<f32>(color, diffuseColor.a);
 }
 `;
 
@@ -196,7 +196,7 @@ export function createLod3OpaqueMaterial(
 			{ name: "fogInfos", type: "vec4<f32>" },
 			{ name: "fogColor", type: "vec3<f32>" },
 		],
-		samplers: ["diffuseTexture"],
+		samplers: [{ name: "diffuseTexture", viewDimension: "2d-array" }],
 		storageBuffers: [
 			{ name: "tintLUT", type: "array<vec4<f32>, 6>" },
 			...faceStorageBuffers,
@@ -253,7 +253,7 @@ export function createLod3TransparentMaterial(
 			{ name: "fogInfos", type: "vec4<f32>" },
 			{ name: "fogColor", type: "vec3<f32>" },
 		],
-		samplers: ["diffuseTexture"],
+		samplers: [{ name: "diffuseTexture", viewDimension: "2d-array" }],
 		storageBuffers: [
 			{ name: "tintLUT", type: "array<vec4<f32>, 6>" },
 			...faceStorageBuffers,

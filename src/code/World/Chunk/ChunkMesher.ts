@@ -27,8 +27,8 @@ import {
 import { packAtlas } from "../Texture/AtlasPacker";
 import {
 	atlasTileSize,
-	setDiffuseTexture2D,
-	setNormal,
+	setDiffuseArray,
+	setNormalArray,
 } from "../Texture/TextureAtlasFactory";
 import type { Chunk } from "./Chunk";
 import type { MeshData } from "./DataStructures/MeshData";
@@ -249,8 +249,8 @@ export async function initAtlas(): Promise<void> {
 		transparent: transparentTexture,
 	} = await packAtlas(engine);
 
-	setDiffuseTexture2D(diffuse);
-	setNormal(normal);
+	setDiffuseArray(diffuse);
+	setNormalArray(normal);
 
 	const tileSize = atlasTileSize;
 	const atlasMaxTiles = Math.floor(1.0 / tileSize + 0.5);

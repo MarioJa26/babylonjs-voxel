@@ -15,7 +15,7 @@ export function buildPackedVertexWGSL(arenaCount: number = 1): string {
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
-  @location(1) vUV2 : vec2<f32>,
+  @location(1) @interpolate(flat) vUV2 : vec2<f32>,
   @location(2) vWorldPosition : vec3<f32>,
   @location(3) @interpolate(flat) vTangent : vec3<f32>,
   @location(5) @interpolate(flat) vNormal : vec3<f32>,
@@ -159,9 +159,6 @@ fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32,
   let baseY = bByte * INV_POS + co.y;
   let baseZ = posZ + co.z;
 
-  let atlasBaseU = f32(tileX) * shaderUniforms.atlasTileSize;
-  let atlasBaseV = f32(u32(shaderUniforms.atlasMaxTiles) - 1u - tileY) * shaderUniforms.atlasTileSize;
-
   let skyLight = f32((lightByte >> 4u) & 0x0fu) * INV_LIGHT;
   let blockLight = f32(lightByte & 0x0fu) * INV_LIGHT;
 
@@ -219,7 +216,7 @@ fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32,
   let worldPos = shaderSystem.world * vec4<f32>(position, 1.0);
   out.pos = shaderSystem.worldViewProjection * vec4<f32>(position, 1.0);
   out.vUV = vec2<f32>(faceU, faceV);
-  out.vUV2 = vec2<f32>(atlasBaseU, atlasBaseV);
+  out.vUV2 = vec2<f32>(f32(tileX), f32(tileY));
   out.vWorldPosition = worldPos.xyz;
   out.vTangent = sharedTangent;
   out.vNormal = sharedNormal;

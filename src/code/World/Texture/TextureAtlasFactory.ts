@@ -1,4 +1,4 @@
-import type { Texture2D } from "@babylonjs/lite";
+import type { Texture2D, Texture2DArray } from "@babylonjs/lite";
 
 export type TileUV = {
 	u: number;
@@ -8,6 +8,8 @@ export type TileUV = {
 
 let diffuseAtlasLite: Texture2D | null = null;
 let normalAtlasLite: Texture2D | null = null;
+let diffuseAtlasArray: Texture2DArray | null = null;
+let normalAtlasArray: Texture2DArray | null = null;
 
 export const tileSize = 25;
 export const atlasSize = 16;
@@ -32,4 +34,18 @@ export function getDiffuseTexture2D(): Texture2D | null {
 }
 export function setDiffuseTexture2D(texture: Texture2D) {
 	diffuseAtlasLite = texture;
+}
+
+export function getDiffuseArray(): Texture2DArray | null {
+	return diffuseAtlasArray;
+}
+export function setDiffuseArray(texture: Texture2DArray | null) {
+	diffuseAtlasArray = texture;
+}
+
+export function getNormalArray(): Texture2DArray | null {
+	return normalAtlasArray;
+}
+export function setNormalArray(texture: Texture2DArray | null) {
+	normalAtlasArray = texture;
 }

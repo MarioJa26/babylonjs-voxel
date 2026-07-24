@@ -27,7 +27,7 @@ const lod2OpaqueFragmentWGSL = /* wgsl */ `
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
-  @location(1) vUV2 : vec2<f32>,
+  @location(1) @interpolate(flat) vUV2 : vec2<f32>,
   @location(3) @interpolate(flat) vTangent : vec3<f32>,
   @location(5) @interpolate(flat) vNormal : vec3<f32>,
   @location(6) vAO : f32,
@@ -65,9 +65,9 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   applyDitherFade(in.pos.xy);
 
   let singleTileUV = fract(in.vUV);
-  let atlasUV = in.vUV2 + singleTileUV * shaderUniforms.atlasTileSize;
+  let layer = u32(in.vUV2.y) * u32(shaderUniforms.atlasMaxTiles) + u32(in.vUV2.x);
 
-  var diffuseColor = textureSample(diffuseTexture, diffuseTextureSampler, atlasUV);
+  var diffuseColor = textureSampleGrad(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, dpdx(in.vUV), dpdy(in.vUV));
   diffuseColor = vec4<f32>(diffuseColor.rgb * mix(1.0, 0.55, shaderUniforms.wetness), diffuseColor.a);
 
   let worldNormal = in.vNormal;
@@ -99,7 +99,7 @@ const lod2TransparentFragmentWGSL = /* wgsl */ `
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
-  @location(1) vUV2 : vec2<f32>,
+  @location(1) @interpolate(flat) vUV2 : vec2<f32>,
   @location(3) @interpolate(flat) vTangent : vec3<f32>,
   @location(5) @interpolate(flat) vNormal : vec3<f32>,
   @location(6) vAO : f32,
@@ -136,9 +136,9 @@ fn applyTintBucket(color : vec3<f32>, bucket : f32) -> vec3<f32> {
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let singleTileUV = fract(in.vUV);
-  let atlasUV = in.vUV2 + singleTileUV * shaderUniforms.atlasTileSize;
+  let layer = u32(in.vUV2.y) * u32(shaderUniforms.atlasMaxTiles) + u32(in.vUV2.x);
 
-  var diffuseColor = textureSample(diffuseTexture, diffuseTextureSampler, atlasUV);
+  var diffuseColor = textureSampleGrad(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, dpdx(in.vUV), dpdy(in.vUV));
   applyDitherFade(in.pos.xy);
   if (diffuseColor.a < 0.02) { discard; }
   diffuseColor = vec4<f32>(diffuseColor.rgb * mix(1.0, 0.55, shaderUniforms.wetness), diffuseColor.a);
@@ -213,7 +213,7 @@ export function createLod2OpaqueMaterial(
 		fragmentSource: lod2OpaqueFragmentWGSL,
 		attributes: ["position"],
 		uniforms: baseUniforms(),
-		samplers: ["diffuseTexture"],
+		samplers: [{ name: "diffuseTexture", viewDimension: "2d-array" }],
 		storageBuffers: [
 			{ name: "tintLUT", type: "array<vec4<f32>, 6>" },
 			...faceStorageBuffers,
@@ -256,7 +256,7 @@ export function createLod2TransparentMaterial(
 		fragmentSource: lod2TransparentFragmentWGSL,
 		attributes: ["position"],
 		uniforms: baseUniforms(),
-		samplers: ["diffuseTexture"],
+		samplers: [{ name: "diffuseTexture", viewDimension: "2d-array" }],
 		storageBuffers: [
 			{ name: "tintLUT", type: "array<vec4<f32>, 6>" },
 			...faceStorageBuffers,
