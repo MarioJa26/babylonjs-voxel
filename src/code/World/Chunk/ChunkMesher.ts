@@ -28,6 +28,7 @@ import { packAtlas } from "../Texture/AtlasPacker";
 import {
 	atlasTileSize,
 	setDiffuseTexture2D,
+	setNormal,
 } from "../Texture/TextureAtlasFactory";
 import type { Chunk } from "./Chunk";
 import type { MeshData } from "./DataStructures/MeshData";
@@ -242,10 +243,14 @@ export async function initAtlas(): Promise<void> {
 
 	initPackedChunkArenas(engine, scene);
 
-	const { opaque: packedTexture, transparent: transparentTexture } =
-		await packAtlas(engine);
+	const {
+		diffuse,
+		normal,
+		transparent: transparentTexture,
+	} = await packAtlas(engine);
 
-	setDiffuseTexture2D(packedTexture);
+	setDiffuseTexture2D(diffuse);
+	setNormal(normal);
 
 	const tileSize = atlasTileSize;
 	const atlasMaxTiles = Math.floor(1.0 / tileSize + 0.5);
@@ -253,7 +258,6 @@ export async function initAtlas(): Promise<void> {
 	const baseOpts = {
 		engine: engine as EngineContext,
 		scene: scene as SceneContext,
-		normalTexture: null,
 		tintLUT: LOD_TINT_LUT,
 		atlasTileSize: tileSize,
 		atlasMaxTiles,
@@ -263,15 +267,17 @@ export async function initAtlas(): Promise<void> {
 	if (!atlasMaterial) {
 		atlasMaterial = createChunkOpaqueMaterial({
 			...baseOpts,
-			diffuseTexture: packedTexture,
+			diffuseTexture: diffuse,
+			normalTexture: normal,
 		});
 		transparentMaterial = createChunkTransparentMaterial({
 			...baseOpts,
 			diffuseTexture: transparentTexture,
+			normalTexture: null,
 		});
 		lod2OpaqueMaterial = createLod2OpaqueMaterial({
 			...baseOpts,
-			diffuseTexture: packedTexture,
+			diffuseTexture: diffuse,
 		});
 		lod2TransparentMaterial = createLod2TransparentMaterial({
 			...baseOpts,
@@ -279,7 +285,7 @@ export async function initAtlas(): Promise<void> {
 		});
 		lod3OpaqueMaterial = createLod3OpaqueMaterial({
 			...baseOpts,
-			diffuseTexture: packedTexture,
+			diffuseTexture: diffuse,
 		});
 		lod3TransparentMaterial = createLod3TransparentMaterial({
 			...baseOpts,
