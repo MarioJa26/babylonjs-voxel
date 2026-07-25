@@ -126,12 +126,11 @@ export class Chat {
 		const raw = text.slice(1).trim();
 		const parts = raw.split(/\s+/);
 		const cmd = parts[0]?.toLowerCase();
-		const arg = parts[1];
 
 		switch (cmd) {
 			case "g":
 			case "gamemode": {
-				const gm = this.#parseGamemode(arg);
+				const gm = this.#parseGamemode(parts[1]);
 				if (gm !== null) {
 					this.#player.stats.gamemode = gm;
 					this.#addSystem(`Gamemode set to ${gamemodeName(gm)}`);
@@ -142,12 +141,20 @@ export class Chat {
 				}
 				break;
 			}
+			case "tp":
+			case "teleport":
+				this.#handleTeleport(parts.slice(1));
+				break;
 			case "h":
 			case "help":
 				this.#addSystem("Commands:");
 				this.#addSystem(
 					"  !g <gamemode> - Set gamemode (survival, creative, adventure, spectator)",
 				);
+				this.#addSystem(
+					"  !tp <x> <y> <z> - Teleport to coordinates (~ for current)",
+				);
+				this.#addSystem("  !tp <x> <z> - Teleport keeping current y");
 				this.#addSystem("  !h / !help   - Show this help");
 				break;
 			default:
@@ -163,6 +170,48 @@ export class Chat {
 		if (lower === "2" || lower === "adventure") return Gamemodes.Adventure;
 		if (lower === "3" || lower === "spectator") return Gamemodes.Spectator;
 		return null;
+	}
+
+	#handleTeleport(args: string[]): void {
+		const pos = this.#player.position;
+		const current = { x: pos.x, y: pos.y, z: pos.z };
+
+		if (args.length === 2) {
+			const x = this.#parseCoord(args[0], current.x);
+			const z = this.#parseCoord(args[1], current.z);
+			if (x === null || z === null) {
+				this.#addSystem("Usage: !tp <x> <z>");
+				return;
+			}
+			pos.x = x;
+			pos.z = z;
+			this.#addSystem(`Teleported to ${x} ${current.y} ${z}`);
+		} else if (args.length === 3) {
+			const x = this.#parseCoord(args[0], current.x);
+			const y = this.#parseCoord(args[1], current.y);
+			const z = this.#parseCoord(args[2], current.z);
+			if (x === null || y === null || z === null) {
+				this.#addSystem("Usage: !tp <x> <y> <z>");
+				return;
+			}
+			pos.x = x;
+			pos.y = y;
+			pos.z = z;
+			this.#addSystem(`Teleported to ${x} ${y} ${z}`);
+		} else {
+			this.#addSystem("Usage: !tp <x> <y> <z> or !tp <x> <z>");
+		}
+	}
+
+	#parseCoord(input: string, current: number): number | null {
+		if (input === "~") return current;
+		if (input.startsWith("~")) {
+			const offset = Number.parseFloat(input.slice(1));
+			if (Number.isNaN(offset)) return null;
+			return current + offset;
+		}
+		const val = Number.parseFloat(input);
+		return Number.isNaN(val) ? null : val;
 	}
 
 	#addMessage(text: string, type: ChatMessage["type"]): void {

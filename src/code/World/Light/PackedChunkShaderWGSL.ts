@@ -6,6 +6,8 @@ export interface VertexShaderOptions {
 	worldPosition?: boolean;
 }
 
+type ResolvedVertexShaderOptions = Required<VertexShaderOptions>;
+
 // Varying locations (stable across all variants):
 //   0: vUV          (always)
 //   1: vTileLayer   (always)
@@ -20,7 +22,33 @@ export interface VertexShaderOptions {
 //  12: vTint        (optional)
 //  13: vViewDir     (always)
 
-function vsOutFields(opts: VertexShaderOptions): string {
+function fogWGSL(enabled: boolean): string {
+	if (!enabled) return "";
+	return /* wgsl */ `
+const LIGHT_BLUE = vec3<f32>(0.6, 0.75, 0.95);
+const DEEP_BLUE = vec3<f32>(0.1, 0.2, 0.4);
+const MID_SKY = vec3<f32>(0.5, 0.7, 0.9);
+const DAY_SKY = vec3<f32>(0.1, 0.3, 0.6);
+const DARK_SKY = vec3<f32>(0.1, 0.1, 0.2);
+
+fn getAtmosphereColor(heightFactor : f32) -> vec3<f32> {
+  let sunlight = shaderUniforms.sunLightIntensity;
+  return mix(LIGHT_BLUE, DEEP_BLUE, heightFactor) * sunlight * sunlight;
+}
+
+fn getSkyboxColor(viewDirY : f32) -> vec3<f32> {
+  let skyFactor = smoothstep(0.0, 0.4, max(viewDirY, 0.0));
+  var skyboxColor = mix(MID_SKY, DAY_SKY, skyFactor);
+  if (shaderUniforms.lightDirection.y > 0.0) {
+    let darkness = clamp(shaderUniforms.lightDirection.y * 2.0, 0.0, 1.0);
+    skyboxColor = mix(skyboxColor, DARK_SKY, darkness);
+  }
+  return skyboxColor;
+}
+`;
+}
+
+function vsOutFields(opts: ResolvedVertexShaderOptions): string {
 	const f: string[] = [];
 	f.push("  @builtin(position) pos : vec4<f32>,");
 	f.push("  @location(0) vUV : vec2<f32>,");
@@ -41,7 +69,7 @@ function vsOutFields(opts: VertexShaderOptions): string {
 	return f.join("\n");
 }
 
-function vsOutAssignments(opts: VertexShaderOptions): string {
+function vsOutAssignments(opts: ResolvedVertexShaderOptions): string {
 	const a: string[] = [];
 	a.push("  out.vUV = vec2<f32>(faceU, faceV);");
 	a.push("  out.vTileLayer = tileY * shaderUniforms.atlasMaxTilesU32 + tileX;");
@@ -77,7 +105,7 @@ export function buildPackedVertexWGSL(
 	opts: VertexShaderOptions = {},
 ): string {
 	const arenas = Math.max(1, arenaCount | 0);
-	const o: VertexShaderOptions = {
+	const o: ResolvedVertexShaderOptions = {
 		fog: opts.fog ?? true,
 		tint: opts.tint ?? true,
 		meta: opts.meta ?? true,
@@ -106,25 +134,7 @@ ${vsOutFields(o)}
 fn loadFace(arena : u32, idx : u32) -> vec4<u32> {
 ${loadFaceBody}}
 
-const LIGHT_BLUE = vec3<f32>(0.6, 0.75, 0.95);
-const DEEP_BLUE = vec3<f32>(0.1, 0.2, 0.4);
-const MID_SKY = vec3<f32>(0.5, 0.7, 0.9);
-const DAY_SKY = vec3<f32>(0.1, 0.3, 0.6);
-const DARK_SKY = vec3<f32>(0.1, 0.1, 0.2);
-
-fn getAtmosphereColor(heightFactor : f32) -> vec3<f32> {
-  return mix(LIGHT_BLUE, DEEP_BLUE, heightFactor) * (shaderUniforms.sunLightIntensity * shaderUniforms.sunLightIntensity);
-}
-
-fn getSkyboxColor(viewDirY : f32) -> vec3<f32> {
-  let skyFactor = smoothstep(0.0, 0.4, max(viewDirY, 0.0));
-  var skyboxColor = mix(MID_SKY, DAY_SKY, skyFactor);
-  if (shaderUniforms.lightDirection.y > 0.0) {
-    skyboxColor = mix(skyboxColor, DARK_SKY, shaderUniforms.lightDirection.y * 2.0);
-  }
-  return skyboxColor;
-}
-
+${fogWGSL(o.fog)}
 const DIAGONAL : f32 = 0.70710678;
 const INV_POS : f32 = 0.125;
 const INV_LIGHT : f32 = 1.0 / 15.0;
