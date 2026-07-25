@@ -4,7 +4,7 @@ import { DIAG_X, DIAG_Z, generateSlinkyTree } from "../../TreeDefinition";
 
 export const JUNGLE_TREE: TreeDefinition = {
 	woodId: 33,
-	leavesId: 34,
+	leavesId: 93,
 	baseHeight: 20,
 	heightVariance: 20,
 	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {

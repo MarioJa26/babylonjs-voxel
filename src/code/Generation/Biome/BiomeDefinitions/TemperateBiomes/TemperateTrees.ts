@@ -359,8 +359,8 @@ export const TEMPERATE_RAINFOREST_TREE: TreeDefinition = {
 export const CHERRY_BLOSSOM_TREE: TreeDefinition = {
 	woodId: 28, // BarkBrown02
 	leavesId: 15, // TODO: cherry blossom pink block — replace when available
-	baseHeight: 6,
-	heightVariance: 3,
+	baseHeight: 9,
+	heightVariance: 4,
 	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
 		const h = getPRNGBySeed(worldX * 374761393 + worldZ * 678446653, seedAsInt);
 		const height = this.baseHeight + (Math.abs(h) % (this.heightVariance + 1));
@@ -404,6 +404,8 @@ export const CHERRY_BLOSSOM_TREE: TreeDefinition = {
 				placeBlock(bx, by, bz, leavesId, false);
 				if (step === droopLen) {
 					placeBlock(bx, by - 1, bz, leavesId, false);
+					placeBlock(bx, by - 2, bz, leavesId, false);
+					placeBlock(bx, by - 3, bz, leavesId, false);
 				}
 			}
 		}

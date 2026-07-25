@@ -125,7 +125,7 @@ export const FERN_GULLY: Biome = {
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
 	treeDensity: 0.0,
-	grassDensity: 0.85, // extremely dense ferns and moss
+	grassDensity: 0.7, // extremely dense ferns and moss
 	beachBlock: 8, // mud
 	seafloorBlock: 8, // mud
 

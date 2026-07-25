@@ -335,14 +335,6 @@ class WorldStorageImpl {
 		return result;
 	}
 
-	async clearWorldData(): Promise<void> {
-		if ("storage" in navigator && "getDirectory" in navigator.storage) {
-			const root = await navigator.storage.getDirectory();
-			for await (const entry of root.values()) {
-				await root.removeEntry(entry.name, { recursive: true });
-			}
-		}
-	}
 	private async saveChunkWithClient(
 		client: OpfsClient,
 		chunk: Chunk,

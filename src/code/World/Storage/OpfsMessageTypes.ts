@@ -12,4 +12,5 @@ export const enum OpfsMsg {
 	Close,
 	ReadVoxelDecompressed,
 	InitWorkerChannel,
+	ClearWorld,
 }

@@ -522,5 +522,11 @@
 		"name": "wood_crate",
 		"path": "/texture/wood/wood_crate_01_1k",
 		"hardness": 1.0
+	},
+	{
+		"id": "SequoiaLeaves",
+		"name": "sequoia_leaves",
+		"path": "/texture/transparent/sequoialeaves_01_1k",
+		"hardness": 1.0
 	}
 ]

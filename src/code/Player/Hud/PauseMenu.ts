@@ -103,9 +103,8 @@ export class PauseMenu {
 					const pool = ChunkWorkerPool.getInstance();
 					const client = pool.getOpfsClient();
 					if (client) {
-						await client.close();
+						await client.clearWorld();
 					}
-					await WorldStorage.clearWorldData();
 					localStorage.removeItem("b102.playerPosition.v1");
 					localStorage.removeItem("b102.playerInventory.v1");
 					window.location.reload();

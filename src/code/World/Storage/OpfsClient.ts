@@ -348,4 +348,10 @@ export class OpfsClient {
 		await this._dispatch<void>();
 		this._worker.terminate();
 	}
+
+	async clearWorld(): Promise<void> {
+		_resetWire(OpfsMsg.ClearWorld);
+		await this._dispatch<void>();
+		this._worker.terminate();
+	}
 }

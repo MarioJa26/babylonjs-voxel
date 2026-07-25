@@ -715,6 +715,47 @@ _self.addEventListener("message", (event: MessageEvent) => {
 				postResult(id, true);
 				break;
 			}
+			case OpfsMsg.ClearWorld: {
+				// Close all open handles first so removeEntry won't fail
+				// with NoModificationAllowedError.
+				_flushAllRegions();
+				if (meshStore) {
+					meshStore.close();
+					meshStore = null;
+				}
+				for (const rf of regionFiles.values()) {
+					try {
+						rf.flush();
+						rf.close();
+					} catch {
+						/* ignore */
+					}
+				}
+				regionFiles.clear();
+				_lruMap.clear();
+				_lruHead = null;
+				_lruTail = null;
+				regionOpenInflight.clear();
+				regionsDir = null;
+				if (_workerChannelPort) {
+					_workerChannelPort.close();
+					_workerChannelPort = null;
+				}
+				initInFlight = null;
+
+				// Now delete all OPFS entries from root.
+				try {
+					const root = await navigator.storage.getDirectory();
+					for await (const entry of root.values()) {
+						await root.removeEntry(entry.name, { recursive: true });
+					}
+				} catch (err) {
+					postError(id, err instanceof Error ? err.message : String(err));
+					break;
+				}
+				postResult(id, true);
+				break;
+			}
 			case OpfsMsg.InitWorkerChannel: {
 				const port = event.ports?.[0];
 				if (port) {
