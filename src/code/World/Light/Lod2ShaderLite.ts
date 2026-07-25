@@ -62,7 +62,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let singleTileUV = fract(in.vUV);
   let layer = in.vTileLayer;
 
-  var diffuseColor = textureSampleGrad(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, dpdx(in.vUV), dpdy(in.vUV));
+  var diffuseColor = textureSampleLevel(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, 3.0);
   diffuseColor = vec4<f32>(diffuseColor.rgb * mix(1.0, 0.55, shaderUniforms.wetness), diffuseColor.a);
 
   let worldNormal = in.vNormal;
@@ -104,7 +104,6 @@ struct VSOut {
   @location(12) @interpolate(flat) vTint : u32,
   @location(13) vViewDir : vec3<f32>,
 };
-
 fn hash12(p : vec2<f32>) -> f32 {
   var p3 = fract(vec3<f32>(p.xyx) * 0.1031);
   p3 = p3 + dot(p3, p3.yzx + 33.33);
@@ -132,7 +131,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let singleTileUV = fract(in.vUV);
   let layer = in.vTileLayer;
 
-  var diffuseColor = textureSampleGrad(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, dpdx(in.vUV), dpdy(in.vUV));
+  var diffuseColor = textureSampleLevel(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, 3.0);
   applyDitherFade(in.pos.xy);
   if (diffuseColor.a < 0.02) { discard; }
   diffuseColor = vec4<f32>(diffuseColor.rgb * mix(1.0, 0.55, shaderUniforms.wetness), diffuseColor.a);
