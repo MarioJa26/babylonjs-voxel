@@ -262,6 +262,6 @@ export const opaqueChunkFragmentShader = `
         float skyScale = vSkyLight * 0.8 * (sunLightIntensity + 0.2);
         vec3 lightMix = clamp(skyScale + vBlockLight * vec3(0.9, 0.6, 0.2), 0.2, 1.0);
         
-        fragColor = vec4((diffuseColor.rgb * (1.0 + diffuseIntensity * sunLightIntensity) + specular) * lightMix * aoFactor, 1.0);
+        fragColor = vec4((diffuseColor.rgb * (1.0 + diffuseIntensity * sunLightIntensity * vSkyLight) + specular) * lightMix * aoFactor, 1.0);
     }
 `;

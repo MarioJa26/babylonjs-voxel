@@ -76,7 +76,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let topBottom = select(0.58, 1.0, in.vNormal.y > 0.0);
   let faceShade = select(0.78, topBottom, abs(in.vNormal.y) > 0.5);
 
-  var color = (diffuseColor.rgb * (1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity) + specular) * lightMix * faceShade;
+  var color = (diffuseColor.rgb * (1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity * in.vLight.x) + specular) * lightMix * faceShade;
   color = applyTintBucket(color, in.vTint);
   color = mix(color, in.vFogColor, in.vFogFactor);
   return vec4<f32>(color, 1.0);
@@ -143,7 +143,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let topBottom = select(0.58, 1.0, in.vNormal.y > 0.0);
   let faceShade = select(0.78, topBottom, abs(in.vNormal.y) > 0.5);
 
-  var color = (diffuseColor.rgb * (1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity) + specular) * lightMix * faceShade;
+  var color = (diffuseColor.rgb * (1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity * in.vLight.x) + specular) * lightMix * faceShade;
   color = applyTintBucket(color, in.vTint);
   color = mix(color, in.vFogColor, in.vFogFactor);
   return vec4<f32>(color, diffuseColor.a);

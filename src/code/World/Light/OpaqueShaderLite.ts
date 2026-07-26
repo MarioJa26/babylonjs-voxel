@@ -76,7 +76,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let skyScale = in.vLight.x * 0.8 * (shaderUniforms.sunLightIntensity + 0.2);
   let lightMix = clamp(skyScale + in.vLight.y * vec3<f32>(0.9, 0.6, 0.2), vec3<f32>(0.2), vec3<f32>(1.0));
 
-  let color = (diffuseColor.rgb * (1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity) + specular) * lightMix * aoFactor;
+  let color = (diffuseColor.rgb * (1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity * in.vLight.x) + specular) * lightMix * aoFactor;
 
   let finalColor = color;
   return vec4<f32>(finalColor, 1.0);
@@ -165,7 +165,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let skyScale = skyLight * 0.8 * (shaderUniforms.sunLightIntensity + 0.2);
   let lightMix = clamp(skyScale + blockLight * vec3<f32>(0.9, 0.6, 0.2), vec3<f32>(0.0), vec3<f32>(1.0));
 
-  var litColor = diffuseColor.rgb * (1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity) + specular;
+  var litColor = diffuseColor.rgb * (1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity * in.vLight.x) + specular;
   let luminance = dot(litColor, vec3<f32>(0.299, 0.587, 0.114));
   let saturation = mix(1.0, 0.5, isWater);
   litColor = mix(vec3<f32>(luminance), litColor, lightLevel * saturation + (1.0 - saturation));

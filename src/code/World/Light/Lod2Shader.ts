@@ -262,7 +262,7 @@ export const LOD2OpaqueFragmentShader = `
       float horizon = clamp(dot(worldNormal, lightDirection) * 0.5 + 0.5, 0.65, 1.0);
       float faceShade = vFaceShade;
 
-      vec3 color = (diffuseColor.rgb * (1.0 + diffuseIntensity * sunLightIntensity) + specular) * lightMix * horizon * faceShade;
+      vec3 color = (diffuseColor.rgb * (1.0 + diffuseIntensity * sunLightIntensity * vSkyLight) + specular) * lightMix * horizon * faceShade;
       color = applyTintBucket(color, vTintBucket);
 
       // Fog now uses interpolated vertex result
@@ -362,7 +362,7 @@ export const LOD2TransparentFragmentShader = `
       float horizon = clamp(dot(worldNormal, lightDirection) * 0.5 + 0.5, 0.65, 1.0);
       float faceShade = vFaceShade;
 
-      vec3 color = (diffuseColor.rgb * (1.0 + diffuseIntensity * sunLightIntensity) + specular) * lightMix * horizon * faceShade;
+      vec3 color = (diffuseColor.rgb * (1.0 + diffuseIntensity * sunLightIntensity * vSkyLight) + specular) * lightMix * horizon * faceShade;
       color = applyTintBucket(color, vTintBucket);
 
       // Fog now uses interpolated vertex result

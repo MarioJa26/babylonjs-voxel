@@ -326,18 +326,15 @@ function buildLiteMesh(
 		chunkIndex: Uint8Array;
 		faceCount: number;
 	},
-	name: string,
 	material: ShaderMaterial,
 	originX: number,
 	originY: number,
 	originZ: number,
 	_isTransparent: boolean,
 ): Mesh | null {
-	const extent = GROUP_SIZE * CHUNK_SIZE;
-
+	const S = GROUP_SIZE * CHUNK_SIZE;
 	const input = _packedInput;
-
-	input.name = name;
+	input.name = "";
 	input.material = material;
 	input.faceDataA = mergedData.faceDataA;
 	input.faceDataB = mergedData.faceDataB;
@@ -354,9 +351,9 @@ function buildLiteMesh(
 	input.boundsMin[1] = originY;
 	input.boundsMin[2] = originZ;
 
-	input.boundsMax[0] = originX + extent;
-	input.boundsMax[1] = originY + extent;
-	input.boundsMax[2] = originZ + extent;
+	input.boundsMax[0] = originX + S;
+	input.boundsMax[1] = originY + S;
+	input.boundsMax[2] = originZ + S;
 
 	if (!existingMesh) {
 		const created = createPackedChunkMesh(input);
@@ -387,7 +384,6 @@ setOnGroupMeshNeedsRebuild((group) => {
 			group,
 			group.opaqueMeshRef,
 			group.cachedOpaque,
-			`merged_opaque_${group.groupKey}`,
 			mat,
 			ox,
 			oy,
@@ -411,7 +407,6 @@ setOnGroupMeshNeedsRebuild((group) => {
 			group,
 			group.transparentMeshRef as any,
 			group.cachedTransparent,
-			`merged_transparent_${group.groupKey}`,
 			mat,
 			ox,
 			oy,
@@ -428,11 +423,10 @@ setOnGroupMeshNeedsRebuild((group) => {
 });
 
 function buildBoatInput(
-	name: string,
 	material: ShaderMaterial,
 	data: MeshData,
 ): PackedMeshInput {
-	_packedInput.name = name;
+	//_packedInput.name = "";
 	_packedInput.material = material;
 	_packedInput.faceDataA = data.faceDataA;
 	_packedInput.faceDataB = data.faceDataB;
@@ -481,11 +475,7 @@ function createBoatChunkMesh(
 	let mesh = chunk.mesh;
 
 	if (hasOpaque) {
-		const input = buildBoatInput(
-			`boat_chunk_opaque_${x}_${y}_${z}`,
-			matOpaque,
-			opaqueData!,
-		);
+		const input = buildBoatInput(matOpaque, opaqueData!);
 
 		if (mesh) {
 			const updated = updatePackedChunkMesh(mesh, input);
@@ -508,11 +498,7 @@ function createBoatChunkMesh(
 	let tMesh = chunk.transparentMesh as Mesh | null;
 
 	if (hasTransparent) {
-		const input = buildBoatInput(
-			`boat_chunk_transparent_${x}_${y}_${z}`,
-			matTransparent,
-			transparentData!,
-		);
+		const input = buildBoatInput(matTransparent, transparentData!);
 
 		if (tMesh) {
 			const updated = updatePackedChunkMesh(tMesh, input);

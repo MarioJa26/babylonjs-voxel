@@ -276,7 +276,7 @@ export const transparentChunkFragmentShader = `
     );
 
     // --- 7. Final Color and Alpha ---
-    vec3 litColor = diffuseColor.rgb * (1.0 + diffuseIntensity * sunLightIntensity) + specular;
+    vec3 litColor = diffuseColor.rgb * (1.0 + diffuseIntensity * sunLightIntensity * vSkyLight) + specular;
     float luminance = dot(litColor, vec3(0.299, 0.587, 0.114));
     float saturation = mix(1.0, 0.5, isWater);
     litColor = mix(

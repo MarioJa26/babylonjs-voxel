@@ -167,16 +167,15 @@ const CLOSED_FACE_MASK_CACHE = (() => {
 	return cache;
 })();
 
-// Many block IDs share the same closed-face mask regardless of state.  This
-// keeps the per-cell cost low.
-const QUICK_CLOSED_MASK: Record<number, number> = {
-	0: 0,
-	[WATER_BLOCK_ID]: 0,
-	[GLASS_01_BLOCK_ID]: 0,
-	[GLASS_02_BLOCK_ID]: 0,
-	64: 0, // GrassCross
-	66: 0, // SavannahGrassCross
-};
+// Dense lookup indexed by blockId for O(1) cold-path resolution.
+// Default FACE_ALL (cube) — only transparent/air blocks differ.
+const QUICK_CLOSED_MASK = new Uint8Array(256).fill(FACE_ALL);
+QUICK_CLOSED_MASK[0] = 0; // Air
+QUICK_CLOSED_MASK[WATER_BLOCK_ID] = 0;
+QUICK_CLOSED_MASK[GLASS_01_BLOCK_ID] = 0;
+QUICK_CLOSED_MASK[GLASS_02_BLOCK_ID] = 0;
+QUICK_CLOSED_MASK[64] = 0; // GrassCross
+QUICK_CLOSED_MASK[66] = 0; // SavannahGrassCross
 
 /**
  * Conservative approximation of the original Chunk.getClosedFaceMaskForPacked
@@ -203,15 +202,8 @@ function getClosedFaceMaskForPacked(packed: number): number {
 
 	const blockId = unpackBlockId(packed);
 	const quick = QUICK_CLOSED_MASK[blockId];
-	if (quick !== undefined) {
-		CLOSED_FACE_MASK_CACHE[cacheIndex] = quick;
-		return quick;
-	}
-
-	// Preserve state-aware override: glass-01/02 + air return 0 above.
-	// For every other block, default to fully closed (cube).
-	CLOSED_FACE_MASK_CACHE[cacheIndex] = FACE_ALL;
-	return FACE_ALL;
+	CLOSED_FACE_MASK_CACHE[cacheIndex] = quick;
+	return quick;
 }
 
 /**

@@ -39,7 +39,7 @@ const SEA_LEVEL = GenerationParams.SEA_LEVEL;
 const FRUSTUM_MARGIN = 32.0;
 
 // TEMP DEBUG: set true to disable frustum culling (for testing the gap).
-const DISABLE_FRUSTUM_CULL = true;
+const DISABLE_FRUSTUM_CULL = false;
 
 const BFS_FRAME_BUDGET = 3000;
 const BFS_CAP = 32768; // must be power-of-2

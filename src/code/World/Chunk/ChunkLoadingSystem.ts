@@ -94,10 +94,22 @@ let opfsCacheMissedThisCycle = 0;
 
 const _entityPayloadMap = new Map<bigint, SavedChunkEntityData[]>();
 
-// Reused across prefetchOpfsMeshes cycles to avoid per-cycle Promise array
-// allocation and per-request .then/.catch closure allocation.
+// PERF: ring buffer for prefetch request info — avoids unbounded growth
+// when budget splitting causes re-entry across many frames. Old entries
+// are dropped once all pending promises for the cycle have settled.
+const _prefetchReqInfoHead = 0;
+let _prefetchReqInfoTail = 0;
+const _PREFAETCH_REQ_CAP = 512;
+const _prefetchReqInfo = new Array<{
+	chunkId: bigint;
+	key: bigint;
+	lod: number;
+}>(_PREFAETCH_REQ_CAP);
+for (let i = 0; i < _PREFAETCH_REQ_CAP; i++) {
+	_prefetchReqInfo[i] = { chunkId: 0n, key: 0n, lod: 0 };
+}
+let prefetchPromisesThisCycle = 0;
 const _prefetchPromises: Promise<void>[] = [];
-const _prefetchReqInfo: { chunkId: bigint; key: bigint; lod: number }[] = [];
 
 function _prefetchOnReadOk(
 	idx: number,
@@ -107,7 +119,7 @@ function _prefetchOnReadOk(
 		opfsCacheMissedThisCycle++;
 		return;
 	}
-	const info = _prefetchReqInfo[idx];
+	const info = _prefetchReqInfo[idx % _PREFAETCH_REQ_CAP];
 	const mesh = deserializeMeshPair(bytes, info.lod);
 	if (mesh) {
 		opfsMeshCache.set(info.chunkId, mesh);
@@ -118,7 +130,7 @@ function _prefetchOnReadOk(
 }
 
 function _prefetchOnReadErr(idx: number, err: unknown): void {
-	const info = _prefetchReqInfo[idx];
+	const info = _prefetchReqInfo[idx % _PREFAETCH_REQ_CAP];
 	console.warn(
 		`[ChunkLoadingSystem] OPFS read failed for chunk ${info.chunkId}:`,
 		err,
@@ -797,7 +809,7 @@ async function prefetchOpfsMeshes(
 	if (!client) return;
 
 	_prefetchPromises.length = 0;
-	_prefetchReqInfo.length = 0;
+
 	for (const request of requests) {
 		const chunk = request.chunk;
 		const lod = request.desiredLod;
@@ -810,8 +822,9 @@ async function prefetchOpfsMeshes(
 		}
 
 		const key = packChunkKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-		const idx = _prefetchReqInfo.length;
-		_prefetchReqInfo.push({ chunkId: chunk.id, key, lod });
+		const idx = _prefetchReqInfoTail;
+		_prefetchReqInfo[idx] = { chunkId: chunk.id, key, lod };
+		_prefetchReqInfoTail = (idx + 1) & (_PREFAETCH_REQ_CAP - 1);
 		_prefetchPromises.push(
 			client.readMesh(key, lod).then(
 				(bytes) => _prefetchOnReadOk(idx, bytes),
@@ -823,12 +836,11 @@ async function prefetchOpfsMeshes(
 }
 
 function resetCycleOpfsCache(): void {
-	// The OPFS mesh cache is now persistent across cycles. PrefetchOpfsMeshes
-	// skips reads for already-cached entries, so re-entry is O(1).  We prune
-	// entries for chunks that are already loaded and no longer need the mesh
-	// prefetch path, preventing unbounded growth while keeping the cache
-	// warm for chunks that might be re-entered due to budget splitting.
-	if (opfsMeshCache.size > 256) {
+	// The OPFS mesh cache is persistent across cycles. PrefetchOpfsMeshes
+	// skips reads for already-cached entries, so re-entry is O(1).  Prune
+	// entries for loaded chunks (whose mesh has already been applied) to
+	// reclaim memory and keep the cached set tight for budget-split re-entry.
+	if (opfsMeshCache.size > 64) {
 		for (const [id] of opfsMeshCache) {
 			const chunk = Chunk.chunkInstances.get(id);
 			if (chunk?.isLoaded) {
