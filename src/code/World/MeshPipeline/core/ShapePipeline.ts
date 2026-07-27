@@ -156,7 +156,7 @@ for (let id = 0; id < TINT_BUCKET_LUT_SIZE; id++) {
 
 const MATERIAL_TYPE_LUT_SIZE = 128;
 const MATERIAL_TYPE_LUT: Uint8Array = new Uint8Array(MATERIAL_TYPE_LUT_SIZE);
-for (const id of [WATER_BLOCK_ID, 60, 61, 64, 66]) {
+for (const id of [WATER_BLOCK_ID, 60, 61]) {
 	MATERIAL_TYPE_LUT[id] = MaterialType.WaterOrGlass;
 }
 

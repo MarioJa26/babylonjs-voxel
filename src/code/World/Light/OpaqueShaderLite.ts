@@ -50,6 +50,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let layer = in.vTileLayer;
 
   var diffuseColor = textureSampleGrad(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, dpdx(in.vUV), dpdy(in.vUV));
+  if (diffuseColor.a < 0.01) { discard; }
   diffuseColor = vec4<f32>(diffuseColor.rgb * mix(1.0, 0.5, shaderUniforms.wetness), diffuseColor.a);
 
   var normalMap = textureSampleGrad(normalTexture, normalTextureSampler, singleTileUV, layer, dpdx(in.vUV), dpdy(in.vUV)).rgb;

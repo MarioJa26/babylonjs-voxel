@@ -236,6 +236,7 @@ export const opaqueChunkFragmentShader = `
         vec2 atlasUV = vUV2 + singleTileUV * atlasTileSize;
 
         vec4 diffuseColor = texture(diffuseTexture, atlasUV);
+        if (diffuseColor.a < 0.01) discard;
 
         diffuseColor.rgb *= mix(1.0, 0.5, wetness);
 

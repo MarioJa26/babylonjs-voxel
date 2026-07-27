@@ -170,7 +170,7 @@ export function emitCustomShapes(
 						blockId,
 						baseLight,
 						getMaterialType(blockId),
-						transparentOut,
+						out,
 					);
 					continue;
 				}
@@ -184,7 +184,7 @@ export function emitCustomShapes(
 							blockId,
 							baseLight,
 							getMaterialType(blockId),
-							transparentOut,
+							out,
 						);
 					} else {
 						emitCrossDiagonalAtBlock(
@@ -194,7 +194,7 @@ export function emitCustomShapes(
 							blockId,
 							baseLight,
 							getMaterialType(blockId),
-							transparentOut,
+							out,
 						);
 					}
 					continue;

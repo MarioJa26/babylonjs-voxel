@@ -59,6 +59,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let singleTileUV = fract(in.vUV);
   let layer = in.vTileLayer;
   var diffuseColor = textureSampleLevel(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, 3.0);
+  if (diffuseColor.a < 0.01) { discard; }
 
   let worldNormal = in.vNormal;
   let diffuseIntensity = max(0.0, dot(worldNormal, shaderUniforms.lightDirection));

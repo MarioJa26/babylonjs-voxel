@@ -193,6 +193,7 @@ export const LOD3OpaqueFragmentShader = `
 
       vec2 atlasUV = vUV2 + vUV * atlasTileSize;
       vec4 tex = texture(diffuseTexture, atlasUV);
+      if (tex.a < 0.01) discard;
 
       float sun = clamp(sunLightIntensity, 0.0, 1.0);
       float skyTerm = vSkyLight * (0.15 + 0.85 * sun);

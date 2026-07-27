@@ -1106,7 +1106,7 @@ export class SurfaceGenerator {
 							topBlockId === BlockType.RockyTerrain02 ||
 							topBlockId === BlockType.ConcreteMoss
 						) {
-							placeBlock(worldX, surfaceY + 1, worldZ, 64);
+							placeBlock(worldX, surfaceY + 1, worldZ, BlockType.Grass006Cross);
 						} else {
 							if (topBlockId === 65)
 								placeBlock(worldX, surfaceY + 1, worldZ, 66);

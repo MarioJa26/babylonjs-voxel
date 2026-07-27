@@ -260,6 +260,11 @@
       </div>
     </div>
 
+    <div class="block-list" id="mipPanel" style="display:none; border:2px solid #27ae60; border-radius:8px; padding:12px;">
+      <h2>Mip Levels (CPU — alpha-weighted RGB + lerp-α 0.75)</h2>
+      <div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:8px" id="mipContainer"></div>
+    </div>
+
     <script>
       document.title = `Atlas Builder ${new Date().toLocaleTimeString()}`;
 
@@ -274,6 +279,9 @@
 
       let diffuseCanvas = null;
       let normalCanvas = null;
+      let debugWorkCanvas = null;
+      let debugTileSize = 25;
+      let debugGridSize = 16;
 
       function getTexturePathFromFolder(folder, type = "diff", ext = ".png") {
         const base = folder.split("/").pop();
@@ -470,6 +478,7 @@
 
             entries.push({
               id: entry.id,
+              tileIndex: index,
               name: entry.name,
               col,
               row,
@@ -491,6 +500,9 @@
 
         diffuseCanvas = convertToVisibleCanvas(diffuseWorkCanvas);
         normalCanvas = convertToVisibleCanvas(normalWorkCanvas);
+        debugWorkCanvas = diffuseWorkCanvas;
+        debugTileSize = tileSz;
+        debugGridSize = gridSz;
 
         requestAnimationFrame(() => {
           // Pass the desired filename to the preview generator
@@ -561,7 +573,7 @@
 
         for (const entry of entries) {
           html += `
-            <tr>
+            <tr data-tile="${entry.tileIndex}" style="cursor:pointer">
               <td>${escapeHtml(entry.id)}</td>
               <td>${escapeHtml(entry.name)}</td>
               <td>${entry.col}</td>
@@ -573,6 +585,190 @@
         }
 
         tbody.innerHTML = html;
+
+        // Click handler for mip preview
+        tbody.querySelectorAll("tr[data-tile]").forEach(row => {
+          row.addEventListener("click", () => {
+            try {
+              const tileIndex = +row.dataset.tile;
+              const entry = entries.find(e => e.tileIndex === tileIndex);
+              if (entry && entry.hasDiffuse) {
+                setStatus(`Showing mip levels for tile index ${tileIndex} (${entry.id})...`);
+                renderMipLevels(tileIndex, debugTileSize, debugGridSize);
+              } else {
+                setStatus(`❌ Tile index ${tileIndex} has no diffuse texture.`);
+              }
+            } catch (e) {
+              setStatus(`❌ Error: ${e.message}`);
+              console.error(e);
+            }
+          });
+        });
+      }
+
+      // --- Mip debug -----------------------------------------------------------
+
+      function fillTransparentPixels(data) {
+        const n = data.length;
+        for (let i = 0; i < n; i += 4) {
+          if (data[i + 3] === 0) {
+            data[i]     = 72;
+            data[i + 1] = 99;
+            data[i + 2] = 41;
+          }
+        }
+      }
+
+      function downsampleMip(src, w, h) {
+        const nw = Math.max(1, w >> 1);
+        const nh = Math.max(1, h >> 1);
+        const dst = new Uint8ClampedArray(nw * nh * 4);
+
+        for (let y = 0; y < nh; y++) {
+          for (let x = 0; x < nw; x++) {
+            let sumR = 0, sumG = 0, sumB = 0, sumA = 0;
+            let maxA = 0, n = 0;
+
+            for (let dy = 0; dy < 2; dy++) {
+              for (let dx = 0; dx < 2; dx++) {
+                const sx = x * 2 + dx;
+                const sy = y * 2 + dy;
+                if (sx >= w || sy >= h) continue;
+
+                const si = (sy * w + sx) * 4;
+                const a = src[si + 3];
+                sumR += src[si]     * a;
+                sumG += src[si + 1] * a;
+                sumB += src[si + 2] * a;
+                sumA += a;
+                if (a > maxA) maxA = a;
+                n++;
+              }
+            }
+
+            const di = (y * nw + x) * 4;
+            const inv = sumA > 0 ? 1 / sumA : 0;
+            if (sumA > 0) {
+              dst[di]     = (sumR * inv + 0.5) | 0;
+              dst[di + 1] = (sumG * inv + 0.5) | 0;
+              dst[di + 2] = (sumB * inv + 0.5) | 0;
+            } else {
+              dst[di]     = 72;
+              dst[di + 1] = 99;
+              dst[di + 2] = 41;
+            }
+
+            const avgA = sumA / n;
+            dst[di + 3] = (avgA + (maxA - avgA) * 0.75 + 0.5) | 0;
+          }
+        }
+
+        fillTransparentPixels(dst);
+
+        return { data: dst, w: nw, h: nh };
+      }
+
+      function extractTile(src, srcW, tile, tx, ty) {
+        const out = new Uint8ClampedArray(tile * tile * 4);
+        for (let y = 0; y < tile; y++) {
+          const si = ((ty * tile + y) * srcW + tx * tile) * 4;
+          const di = y * tile * 4;
+          for (let x = 0; x < tile; x++) {
+            out[di + x * 4]     = src[si + x * 4];
+            out[di + x * 4 + 1] = src[si + x * 4 + 1];
+            out[di + x * 4 + 2] = src[si + x * 4 + 2];
+            out[di + x * 4 + 3] = src[si + x * 4 + 3];
+          }
+        }
+        return out;
+      }
+
+      function renderMipLevels(id, tile, grid) {
+        try {
+        const panel = document.getElementById("mipPanel");
+        const container = document.getElementById("mipContainer");
+        if (!panel || !container) { setStatus("❌ mipPanel or mipContainer not found"); return; }
+        panel.style.display = "block";
+        container.innerHTML = "<div style='color:#888;padding:8px'>Rendering…</div>";
+
+        const tx = id % grid;
+        const ty = (id / grid) | 0;
+
+        // Read pixels from the diffuse work canvas
+        const work = debugWorkCanvas;
+        if (!work) { setStatus("❌ debugWorkCanvas is null — build atlas first"); return; }
+        console.log("work canvas:", work.width, work.height);
+        const ctx = work.getContext("2d");
+        const imgData = ctx.getImageData(0, 0, work.width, work.height);
+        console.log("imgData:", imgData.width, imgData.height, imgData.data.length);
+        const src = imgData.data;
+        const rawPixels = extractTile(src, work.width, tile, tx, ty);
+
+        // Patch fully-transparent pixels with green — they're discarded
+        // by the shader anyway, so this prevents black bleed in mip levels.
+        const patched = new Uint8ClampedArray(rawPixels);
+        fillTransparentPixels(patched);
+
+        // Render two rows: raw and patched
+        for (const [labelPrefix, pixels] of [["Raw", rawPixels], ["Patched", patched]]) {
+          const labelRow = document.createElement("div");
+          labelRow.style.width = "100%";
+          labelRow.style.fontSize = "0.8em";
+          labelRow.style.color = "#888";
+          labelRow.style.marginTop = labelPrefix === "Patched" ? "12px" : "0";
+          labelRow.textContent = labelPrefix === "Patched" ? "--- Patched (grass-green fill) ---" : "--- Raw atlas tile ---";
+          container.appendChild(labelRow);
+
+          let mw = tile, mh = tile;
+          let px = new Uint8ClampedArray(pixels);
+          const mipCount = Math.floor(Math.log2(Math.max(tile, tile))) + 1;
+          console.log(`Mip count: ${mipCount}, tile: ${tile}x${tile}`);
+
+          for (let mip = 0; mip < mipCount; mip++) {
+            const c = document.createElement("canvas");
+            c.width = mw;
+            c.height = mh;
+            const ctx = c.getContext("2d");
+            const imgData = ctx.createImageData(mw, mh);
+            imgData.data.set(px);
+            ctx.putImageData(imgData, 0, 0);
+
+            const wrapper = document.createElement("div");
+            wrapper.style.textAlign = "center";
+            wrapper.style.display = "inline-block";
+            wrapper.style.marginRight = "8px";
+
+            const img = document.createElement("img");
+            img.src = c.toDataURL("image/png");
+            img.style.imageRendering = "pixelated";
+            img.style.width = Math.max(mw * 4, 20) + "px";
+            img.style.height = Math.max(mh * 4, 20) + "px";
+            img.style.border = "1px solid #555";
+            wrapper.appendChild(img);
+
+            const label2 = document.createElement("div");
+            label2.style.fontSize = "0.75em";
+            label2.style.color = "#aaa";
+            label2.textContent = `LOD ${mip}  ${mw}×${mh}`;
+            wrapper.appendChild(label2);
+
+            container.appendChild(wrapper);
+            console.log(`Appended LOD ${mip} canvas ${mw}x${mh}`);
+
+            if (mip + 1 < mipCount) {
+              const down = downsampleMip(px, mw, mh);
+              px = down.data;
+              mw = down.w;
+              mh = down.h;
+            }
+          }
+        }
+          // Remove the "Rendering…" placeholder
+          const placeholder = container.querySelector("div:first-child");
+          if (placeholder && placeholder.textContent === "Rendering…") placeholder.remove();
+          setStatus(`✅ Mip levels rendered for tile index ${id}.`);
+          panel.scrollIntoView({ behavior: "smooth", block: "start" });
+        } catch (e) { setStatus(`❌ renderMipLevels error: ${e.message}`); console.error(e); }
       }
 
       function escapeHtml(value) {
