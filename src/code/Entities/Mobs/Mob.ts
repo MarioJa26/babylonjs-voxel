@@ -72,8 +72,7 @@ export class MobRegistry {
 
 	private counts = new Map<string, number>();
 	pickSpawnType(): MobSpawnConfig | null {
-		const configs = [...this.#configs.values()];
-		if (configs.length === 0) return null;
+		if (this.#configs.size === 0) return null;
 
 		this.counts.clear();
 		for (const mob of this.#allMobs) {
@@ -82,7 +81,7 @@ export class MobRegistry {
 
 		let totalWeight = 0;
 		const eligible: MobSpawnConfig[] = [];
-		for (const config of configs) {
+		for (const config of this.#configs.values()) {
 			if ((this.counts.get(config.mobType) || 0) < config.maxCount) {
 				eligible.push(config);
 				totalWeight += config.spawnWeight;

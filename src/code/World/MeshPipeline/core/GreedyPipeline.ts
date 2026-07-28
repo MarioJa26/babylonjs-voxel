@@ -153,13 +153,24 @@ export function greedyMesh(
 				// Clear the merged region so it wont be processed again
 				if (width === size) {
 					const clearEnd = index + height * size;
-					mask.fill(0, index, clearEnd);
-					lights.fill(0, index, clearEnd);
+					for (let ci = index; ci < clearEnd; ci++) {
+						mask[ci] = 0;
+						lights[ci] = 0;
+					}
+				} else if (width < 8) {
+					for (let dv = 0; dv < height; dv++) {
+						const rowBase = index + dv * size;
+						const rowEnd = rowBase + width;
+						for (let ci = rowBase; ci < rowEnd; ci++) {
+							mask[ci] = 0;
+							lights[ci] = 0;
+						}
+					}
 				} else {
 					for (let dv = 0; dv < height; dv++) {
-						const clearRowBase = index + dv * size;
-						mask.fill(0, clearRowBase, clearRowBase + width);
-						lights.fill(0, clearRowBase, clearRowBase + width);
+						const rowBase = index + dv * size;
+						mask.fill(0, rowBase, rowBase + width);
+						lights.fill(0, rowBase, rowBase + width);
 					}
 				}
 

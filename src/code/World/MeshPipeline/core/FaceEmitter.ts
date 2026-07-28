@@ -163,7 +163,7 @@ export function emitWaterQuad(
 		}
 	}
 
-	if (sx < 0 || sy < 0 || sz < 0 || sx >= 256 || sy >= 256 || sz >= 256) return;
+	//	if (sx < 0 || sy < 0 || sz < 0 || sx >= 256 || sy >= 256 || sz >= 256) return;
 
 	const i = out.faceCount << 2;
 	const next = i + 4;

@@ -73,6 +73,9 @@ const _incBfsChunks = new Array<Chunk | null>(BFS_CAP).fill(null);
 const _incBfsEntry = new Int8Array(BFS_CAP);
 const _incBfsSteps = new Uint16Array(BFS_CAP);
 
+// Scratch array for fallback nearby-chunk collection — reused to avoid per-call allocation.
+const _nearbyChunksScratch: Chunk[] = [];
+
 // ---------------------------------------------------------------------------
 // Frustum plane cache — packed Float32Array
 // ---------------------------------------------------------------------------
@@ -865,17 +868,17 @@ export class OcclusionCuller {
 			_bfsSteps[qTail] = 0;
 			qTail = 1;
 		} else {
-			const _nearbyChunks: Chunk[] = [];
+			_nearbyChunksScratch.length = 0;
 			Chunk.loadedChunkIndex.queryCollect(
 				camCX,
 				camCY,
 				camCZ,
 				NEAR_CHUNKS,
 				NEAR_CHUNKS,
-				_nearbyChunks,
+				_nearbyChunksScratch,
 			);
-			for (let i = 0; i < _nearbyChunks.length; i++) {
-				const chunk = _nearbyChunks[i]!;
+			for (let i = 0; i < _nearbyChunksScratch.length; i++) {
+				const chunk = _nearbyChunksScratch[i]!;
 				if (chunk.bfsQueryId === queryId) continue;
 				ensureNeighborRefs(chunk);
 				resetChunkBfs(chunk, queryId);

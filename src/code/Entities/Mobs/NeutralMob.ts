@@ -258,10 +258,29 @@ export abstract class NeutralMob {
 		const centerY = Math.floor(pos.y);
 		const headY = Math.floor(pos.y + this.#halfHeight - 0.05);
 
-		const feetInWater = getBlockByWorldCoords(x, feetY, z) === BlockType.Water;
-		const centerInWater =
-			getBlockByWorldCoords(x, centerY, z) === BlockType.Water;
-		const headInWater = getBlockByWorldCoords(x, headY, z) === BlockType.Water;
+		// Batch lookups: resolve chunk once and read all 3 Y values locally.
+		const chunkCX = x >> 5;
+		const chunkCY = feetY >> 5;
+		const chunkCZ = z >> 5;
+		const sameChunk = centerY >> 5 === chunkCY && headY >> 5 === chunkCY;
+		let feetInWater = false;
+		let centerInWater = false;
+		let headInWater = false;
+		if (sameChunk) {
+			const chunk = getChunk(chunkCX, chunkCY, chunkCZ);
+			if (chunk?.isLoaded) {
+				const lx = x & 31;
+				const lz = z & 31;
+				feetInWater = chunk.getBlock(lx, feetY & 31, lz) === BlockType.Water;
+				centerInWater =
+					chunk.getBlock(lx, centerY & 31, lz) === BlockType.Water;
+				headInWater = chunk.getBlock(lx, headY & 31, lz) === BlockType.Water;
+			}
+		} else {
+			feetInWater = getBlockByWorldCoords(x, feetY, z) === BlockType.Water;
+			centerInWater = getBlockByWorldCoords(x, centerY, z) === BlockType.Water;
+			headInWater = getBlockByWorldCoords(x, headY, z) === BlockType.Water;
+		}
 
 		this.#inWaterCached = feetInWater || centerInWater || headInWater;
 		this.#headSubmergedCached = headInWater;

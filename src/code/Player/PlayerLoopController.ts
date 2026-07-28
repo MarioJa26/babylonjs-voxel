@@ -114,12 +114,16 @@ export class PlayerLoopController {
 
 		BlockTickScheduler.getInstance().processFrame();
 
-		if (this.playerVehicle.isSprinting) {
+		// Cache getter-backed properties once per frame.
+		const vehicle = this.playerVehicle;
+		const stats = this.playerStats;
+
+		if (vehicle.isSprinting) {
 			if (
-				!this.playerStats.consumeStamina(4 * dtSec) &&
-				this.playerStats.gamemode !== Gamemodes.Creative
+				!stats.consumeStamina(4 * dtSec) &&
+				stats.gamemode !== Gamemodes.Creative
 			) {
-				this.playerVehicle.isSprinting = false;
+				vehicle.isSprinting = false;
 			}
 		}
 
@@ -138,15 +142,13 @@ export class PlayerLoopController {
 			this.scene,
 			vec3(playerPos.x, playerPos.y, playerPos.z),
 		);
-		this.playerVehicle.update(dt);
-		this.playerStats.update(
+		vehicle.update(dt);
+		stats.update(
 			dtSec,
-			this.playerVehicle.isSprinting,
-			this.playerVehicle.isClimbing
-				? this.playerStats.climbingStaminaRegenMultiplier
-				: 1,
+			vehicle.isSprinting,
+			vehicle.isClimbing ? stats.climbingStaminaRegenMultiplier : 1,
 		);
-		this.playerVehicle.updateCameraAndVisuals();
+		vehicle.updateCameraAndVisuals();
 		this.#updateControls(pickHit);
 		if (this.#updateCaveState(playerPos.y)) {
 			this.#loadLastCx = -99999;
@@ -335,9 +337,10 @@ export class PlayerLoopController {
 		const chunkX = worldToChunkCoord(playerPos.x);
 		const chunkY = worldToChunkCoord(playerPos.y);
 		const chunkZ = worldToChunkCoord(playerPos.z);
-		const cameraPos = this.playerCamera.position;
-		const cameraYaw = this.playerCamera.cameraYaw;
-		const cameraPitch = this.playerCamera.cameraPitch;
+		const cam = this.playerCamera;
+		const cameraPos = cam.position;
+		const cameraYaw = cam.cameraYaw;
+		const cameraPitch = cam.cameraPitch;
 
 		PlayerHud.updateDebugInfo(
 			"FPS",

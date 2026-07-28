@@ -172,13 +172,13 @@ function uploadTintLUT(): void {
 const fogInfosArray = new Float32Array(4);
 const fogColorArray = new Float32Array(3);
 
-function setMaterialGroupUniforms(m: ShaderMaterial): void {
+function setMaterialGroupUniforms(m: ShaderMaterial, time?: number): void {
 	setShaderUniform(m, "sunLightIntensity", cachedUniforms.sunLightIntensity);
 	setShaderUniform(m, "wetness", cachedUniforms.wetness);
 	// Only the transparent shader declares/uses `time`; Lite prunes it from the
 	// other materials' generated uniform struct, so guard the write.
 	if (m === transparentMaterial) {
-		setShaderUniform(m, "time", performance.now() * 0.001);
+		setShaderUniform(m, "time", time ?? performance.now() * 0.001);
 	}
 }
 
@@ -296,9 +296,10 @@ export async function initAtlas(): Promise<void> {
 	}
 
 	populateMaterialList();
+	const initTime = performance.now() * 0.001;
 	for (let i = 0; i < materialList.length; i++) {
 		const m = materialList[i];
-		if (m) setMaterialGroupUniforms(m);
+		if (m) setMaterialGroupUniforms(m, initTime);
 	}
 	pushFogUniforms();
 }
@@ -599,6 +600,7 @@ export function updateGlobalUniforms(frameId: number): void {
 		lastLZ = u.lightDirection.z;
 		lastSun = u.sunLightIntensity;
 		lastWet = u.wetness;
+		const updateTime = performance.now() * 0.001;
 		for (let i = 0; i < materialList.length; i++) {
 			const m = materialList[i];
 			if (!m) continue;
@@ -609,7 +611,7 @@ export function updateGlobalUniforms(frameId: number): void {
 
 			setShaderUniform(m, "lightDirection", lightDirArray);
 
-			setMaterialGroupUniforms(m);
+			setMaterialGroupUniforms(m, updateTime);
 		}
 	} else if (transparentMaterial) {
 		// Lighting is static, but the transparent shader still animates `time`.

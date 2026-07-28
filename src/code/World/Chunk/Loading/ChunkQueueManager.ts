@@ -196,8 +196,10 @@ export class ChunkQueueManager {
 		loadQueue: readonly Chunk[];
 		unloadQueue: readonly Chunk[];
 	} {
+		// Return internal references directly — callers only read the arrays synchronously
+		// within the same frame, so copying is unnecessary.
 		return {
-			loadQueue: [...this.loadQueue],
+			loadQueue: this.loadQueue,
 			unloadQueue: [...this.unloadQueueSet],
 		};
 	}

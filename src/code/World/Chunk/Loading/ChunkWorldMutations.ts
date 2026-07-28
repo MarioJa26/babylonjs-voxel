@@ -284,7 +284,7 @@ export function getBlockStateByWorldCoords(
 	worldY: number,
 	worldZ: number,
 ): number {
-	const coords = toLocalBlockCoordinates(worldX, worldY, worldZ);
+	const coords = resolveCoords(worldX, worldY, worldZ);
 	if (!coords.chunk) return 0;
 	return coords.chunk.getBlockState(
 		coords.localX,

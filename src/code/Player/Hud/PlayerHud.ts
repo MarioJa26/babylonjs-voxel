@@ -52,6 +52,8 @@ export class PlayerHud {
 
 	#woodCrateOpen = false;
 	#woodCrateDiv: HTMLDivElement | null = null;
+	#woodCrateBlockGrid: HTMLElement | null = null;
+	#woodCratePlayerGrid: HTMLElement | null = null;
 	#woodCrateBlockPos: { x: number; y: number; z: number } | null = null;
 	#woodCrateSlots: ItemSlot[][] | null = null;
 	#woodCrateSavedState: SavedBlockInventory | null = null;
@@ -560,6 +562,7 @@ export class PlayerHud {
 		const playerGrid = document.createElement("div");
 		playerGrid.classList.add("woodcrate-grid");
 		playerGrid.id = "woodcrate-player-grid";
+		this.#woodCratePlayerGrid = playerGrid;
 		const inventory = PlayerHud.#inventory.inventory;
 		for (let row = inventory.length - 1; row >= 1; row--) {
 			const rowDiv = document.createElement("div");
@@ -584,6 +587,7 @@ export class PlayerHud {
 		const blockGrid = document.createElement("div");
 		blockGrid.classList.add("woodcrate-grid", "woodcrate-grid--vertical");
 		blockGrid.id = "woodcrate-block-grid";
+		this.#woodCrateBlockGrid = blockGrid;
 		if (this.#woodCrateSlots) {
 			for (const row of this.#woodCrateSlots) {
 				const rowDiv = document.createElement("div");
@@ -610,9 +614,7 @@ export class PlayerHud {
 	}
 
 	#refreshWoodCrateContent(): void {
-		const blockGrid = this.#woodCrateDiv?.querySelector(
-			"#woodcrate-block-grid",
-		);
+		const blockGrid = this.#woodCrateBlockGrid;
 		if (!blockGrid || !this.#woodCrateSlots) return;
 		blockGrid.innerHTML = "";
 		for (const row of this.#woodCrateSlots) {
@@ -626,9 +628,7 @@ export class PlayerHud {
 
 		// Also rebuild the player inventory grid — slot divs were moved back
 		// to the main inventory container on the last close.
-		const playerGrid = this.#woodCrateDiv?.querySelector(
-			"#woodcrate-player-grid",
-		);
+		const playerGrid = this.#woodCratePlayerGrid;
 		if (!playerGrid) return;
 		playerGrid.innerHTML = "";
 		const inventory = PlayerHud.#inventory.inventory;

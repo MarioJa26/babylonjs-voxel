@@ -25,12 +25,15 @@ const listeners = new Map<EventKey, Set<Listener<any>>>();
  * Subscribe to an event. Returns an unsubscribe function.
  */
 export function on<K extends EventKey>(event: K, fn: Listener<K>): () => void {
-	if (!listeners.has(event)) {
-		listeners.set(event, new Set());
+	let set = listeners.get(event);
+	if (!set) {
+		set = new Set();
+		listeners.set(event, set);
 	}
-	listeners.get(event)?.add(fn);
+	set.add(fn);
+	const setForCleanup = set;
 	return () => {
-		listeners.get(event)?.delete(fn);
+		setForCleanup.delete(fn);
 	};
 }
 

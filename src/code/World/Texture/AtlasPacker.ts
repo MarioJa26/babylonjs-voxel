@@ -30,7 +30,7 @@ function extractTile(
 		const si = ((ty * tile + y) * srcW + tx * tile) * 4;
 		const di = y * tile * 4;
 		for (let x = 0; x < tile; x++) {
-			out[di + x * 4]     = src[si + x * 4];
+			out[di + x * 4] = src[si + x * 4];
 			out[di + x * 4 + 1] = src[si + x * 4 + 1];
 			out[di + x * 4 + 2] = src[si + x * 4 + 2];
 			out[di + x * 4 + 3] = src[si + x * 4 + 3];
@@ -62,7 +62,7 @@ function fillTransparentPixels(data: Uint8ClampedArray): void {
 	const n = data.length;
 	for (let i = 0; i < n; i += 4) {
 		if (data[i + 3] === 0) {
-			data[i]     = 72;
+			data[i] = 72;
 			data[i + 1] = 99;
 			data[i + 2] = 41;
 		}
@@ -93,8 +93,12 @@ function downsampleMip(
 
 	for (let y = 0; y < nh; y++) {
 		for (let x = 0; x < nw; x++) {
-			let sumR = 0, sumG = 0, sumB = 0, sumA = 0;
-			let maxA = 0, n = 0;
+			let sumR = 0,
+				sumG = 0,
+				sumB = 0,
+				sumA = 0;
+			let maxA = 0,
+				n = 0;
 
 			for (let dy = 0; dy < 2; dy++) {
 				for (let dx = 0; dx < 2; dx++) {
@@ -104,7 +108,7 @@ function downsampleMip(
 
 					const si = (sy * w + sx) * 4;
 					const a = src[si + 3];
-					sumR += src[si]     * a;
+					sumR += src[si] * a;
 					sumG += src[si + 1] * a;
 					sumB += src[si + 2] * a;
 					sumA += a;
@@ -116,11 +120,11 @@ function downsampleMip(
 			const di = (y * nw + x) * 4;
 			const inv = sumA > 0 ? 1 / sumA : 0;
 			if (sumA > 0) {
-				dst[di]     = (sumR * inv + 0.5) | 0;
+				dst[di] = (sumR * inv + 0.5) | 0;
 				dst[di + 1] = (sumG * inv + 0.5) | 0;
 				dst[di + 2] = (sumB * inv + 0.5) | 0;
 			} else {
-				dst[di]     = 72;
+				dst[di] = 72;
 				dst[di + 1] = 99;
 				dst[di + 2] = 41;
 			}
@@ -179,7 +183,8 @@ async function loadDiffuseTilesIntoArray(
 		fillTransparentPixels(mipPixels);
 
 		flipY(mipPixels, TILE_SIZE, TILE_SIZE);
-		let mw = TILE_SIZE, mh = TILE_SIZE;
+		let mw = TILE_SIZE,
+			mh = TILE_SIZE;
 
 		for (let mip = 0; mip < mipCount; mip++) {
 			device.queue.writeTexture(
@@ -226,9 +231,14 @@ async function loadNormalTilesIntoArray(
 			const ctx = canvas.getContext("2d")!;
 			ctx.drawImage(
 				bitmap,
-				tx * TILE_SIZE, ty * TILE_SIZE,
-				TILE_SIZE, TILE_SIZE,
-				0, 0, TILE_SIZE, TILE_SIZE,
+				tx * TILE_SIZE,
+				ty * TILE_SIZE,
+				TILE_SIZE,
+				TILE_SIZE,
+				0,
+				0,
+				TILE_SIZE,
+				TILE_SIZE,
 			);
 			uploadImageToArrayLayer(engine, texArray, layer, canvas);
 		}

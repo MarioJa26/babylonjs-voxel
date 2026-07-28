@@ -557,7 +557,7 @@ export class ChunkWorkerPool {
 				this.distantTerrainTaskQueue[this.distantTerrainTaskQueueReadIdx] =
 					context.distantTask;
 			} else {
-				this.distantTerrainTaskQueue.unshift(context.distantTask);
+				this.distantTerrainTaskQueue.push(context.distantTask);
 			}
 		}
 

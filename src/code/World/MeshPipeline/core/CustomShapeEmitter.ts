@@ -396,7 +396,7 @@ function emitCrossDiagonalAtBlock(
 	// diagonal across a unit square corner-to-corner
 	const diagWidth = Math.SQRT2;
 
-	// Diagonal A: NW -> SE
+	// Diagonal A: SW -> NE (variant 1 → NE normal catches SE light)
 	emitQuadFast(
 		out,
 		cx,
@@ -412,7 +412,7 @@ function emitCrossDiagonalAtBlock(
 		FaceName.West,
 		materialType,
 		0,
-		1,
+		2,
 		0,
 	);
 
@@ -431,11 +431,11 @@ function emitCrossDiagonalAtBlock(
 		FaceName.East,
 		materialType,
 		0,
-		1,
+		2,
 		0,
 	);
 
-	// Diagonal B: NE -> SW
+	// Diagonal B: NW -> SE (variant 0 → NW normal, tangent NE)
 	emitQuadFast(
 		out,
 		cx,
@@ -451,7 +451,7 @@ function emitCrossDiagonalAtBlock(
 		FaceName.South,
 		materialType,
 		0,
-		2,
+		1,
 		0,
 	);
 
@@ -470,7 +470,7 @@ function emitCrossDiagonalAtBlock(
 		FaceName.North,
 		materialType,
 		0,
-		2,
+		1,
 		0,
 	);
 }

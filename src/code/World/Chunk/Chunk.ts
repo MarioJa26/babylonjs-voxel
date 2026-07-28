@@ -181,6 +181,9 @@ export class Chunk {
 	private _paletteIndexMap: Map<number, number> | null = null;
 	private _hasVoxelData = false;
 
+	// Cached Uint32Array view over light_array — avoids re-allocation on every recomputeDarkCache call.
+	private _la32: Uint32Array | null = null;
+
 	// PERF: precomputed opacity lookups — one bool per palette index or dense
 	// voxel, eliminating the per-voxel unpackBlockId + BLOCK_TYPE indirection.
 	private _paletteOpacity: Uint8Array | null = null;
@@ -392,6 +395,7 @@ export class Chunk {
 			this._palette = palette;
 			this._paletteIndexMap = null;
 			this._block_array = blocks;
+			this._buildPaletteIndexMap();
 		} else if (blocks) {
 			this._isUniform = false;
 			this._uniformBlockId = 0;
@@ -477,9 +481,12 @@ export class Chunk {
 		if (block && !(block.buffer instanceof SharedArrayBuffer)) {
 			const len = block.byteLength;
 			const sab = new SharedArrayBuffer(len);
-			new Uint8Array(sab).set(
-				new Uint8Array(block.buffer, block.byteOffset, len),
-			);
+			const dst = new Uint8Array(sab);
+			if (block.byteOffset === 0 && block.BYTES_PER_ELEMENT === 1) {
+				dst.set(block as Uint8Array);
+			} else {
+				dst.set(new Uint8Array(block.buffer, block.byteOffset, len));
+			}
 			this._block_array =
 				block instanceof Uint16Array
 					? new Uint16Array(sab)
@@ -490,9 +497,12 @@ export class Chunk {
 		if (palette && !(palette.buffer instanceof SharedArrayBuffer)) {
 			const byteLen = palette.byteLength;
 			const sab = new SharedArrayBuffer(byteLen);
-			new Uint8Array(sab).set(
-				new Uint8Array(palette.buffer, palette.byteOffset, byteLen),
-			);
+			const dst = new Uint8Array(sab);
+			if (palette.byteOffset === 0) {
+				dst.set(new Uint8Array(palette.buffer, 0, byteLen));
+			} else {
+				dst.set(new Uint8Array(palette.buffer, palette.byteOffset, byteLen));
+			}
 			this._palette = new Uint16Array(sab, 0, palette.length);
 		}
 	}
@@ -552,7 +562,7 @@ export class Chunk {
 	public restoreLODMeshCache(cache?: SerializedLODMeshCache): void {
 		this.cachedLODMeshes.clear();
 		if (!cache) return;
-		for (const key in cache) {
+		for (const key of Object.keys(cache)) {
 			const lod = Number(key);
 			if (!Number.isFinite(lod)) continue;
 			const entry = cache[lod];
@@ -734,7 +744,15 @@ export class Chunk {
 		}
 		const len = la.length;
 		const wordCount = len >>> 2;
-		const la32 = new Uint32Array(la.buffer, la.byteOffset, wordCount);
+		if (
+			!this._la32 ||
+			this._la32.buffer !== la.buffer ||
+			this._la32.byteOffset !== la.byteOffset ||
+			this._la32.length !== wordCount
+		) {
+			this._la32 = new Uint32Array(la.buffer, la.byteOffset, wordCount);
+		}
+		const la32 = this._la32;
 		for (let i = 0; i < wordCount; i++) {
 			if (la32[i] & 0xf0f0f0f0) {
 				this._isDarkCached = false;
@@ -791,6 +809,21 @@ export class Chunk {
 			return WATER_BLOCK_ID;
 		}
 		return raw;
+	}
+
+	/**
+	 * Build palette index map eagerly so that setBlock's palette→index
+	 * lookup is O(1) from the first call instead of O(palette) on demand.
+	 */
+	private _buildPaletteIndexMap(): void {
+		const pal = this._palette;
+		if (!pal) {
+			this._paletteIndexMap = null;
+			return;
+		}
+		const pm = new Map<number, number>();
+		for (let i = 0; i < pal.length; i++) pm.set(pal[i], i);
+		this._paletteIndexMap = pm;
 	}
 
 	/**
@@ -1164,8 +1197,26 @@ export class Chunk {
 		} else if (this._denseOpacity) {
 			opaque.set(this._denseOpacity.subarray(0, S3));
 		} else {
-			for (let i = 0; i < S3; i++) {
-				opaque[i] = this.isOpaqueAtIndex(i);
+			// Inline isOpaqueAtIndex for the fallback path to avoid per-voxel method dispatch overhead.
+			const uId = this._uniformBlockId;
+			const palOp = this._paletteOpacity;
+			const denseOp = this._denseOpacity;
+			const blockArr = this._block_array;
+			const isUniform = this._isUniform;
+			if (isUniform) {
+				const opaqueVal =
+					uId !== 0 && BLOCK_TYPE[unpackBlockId(uId)] === 0 ? 1 : 0;
+				for (let i = 0; i < S3; i++) opaque[i] = opaqueVal;
+			} else if (palOp && blockArr instanceof Uint8Array) {
+				for (let i = 0; i < S3; i++) {
+					const byte = blockArr[i >>> 1];
+					const nibble = (i & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
+					opaque[i] = palOp[nibble];
+				}
+			} else if (denseOp) {
+				for (let i = 0; i < S3; i++) opaque[i] = denseOp[i];
+			} else {
+				for (let i = 0; i < S3; i++) opaque[i] = 0;
 			}
 		}
 
@@ -1310,6 +1361,7 @@ export class Chunk {
 		this._paletteOpacity = null;
 		this._denseOpacity = null;
 		this._paletteIndexMap = null;
+		this._la32 = null;
 		this._hasVoxelData = false;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
 		this._isDarkCached = false;
