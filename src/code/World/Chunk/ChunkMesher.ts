@@ -396,7 +396,8 @@ setOnGroupMeshNeedsRebuild((group) => {
 			built.isVisible = true;
 		}
 	} else if (group.opaqueMeshRef) {
-		(group.opaqueMeshRef as any).isVisible = false;
+		disposePackedMesh(group.opaqueMeshRef);
+		group.opaqueMeshRef = null;
 	}
 
 	if (group.cachedTransparent && group.cachedTransparent.faceCount > 0) {
@@ -419,7 +420,8 @@ setOnGroupMeshNeedsRebuild((group) => {
 			(built as any).isVisible = true;
 		}
 	} else if (group.transparentMeshRef) {
-		(group.transparentMeshRef as any).isVisible = false;
+		disposePackedMesh(group.transparentMeshRef);
+		group.transparentMeshRef = null;
 	}
 });
 

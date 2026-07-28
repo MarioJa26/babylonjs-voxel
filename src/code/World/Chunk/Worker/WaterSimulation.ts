@@ -45,7 +45,13 @@ function scheduleNeighborUpdates(
 }
 
 function isSolidBlock(blockId: number): boolean {
-	return blockId !== BlockType.Air && blockId !== BlockType.Water;
+	return (
+		blockId !== BlockType.Air &&
+		blockId !== BlockType.Water &&
+		blockId !== BlockType.GrassCross &&
+		blockId !== BlockType.SavannahGrassCross &&
+		blockId !== BlockType.Grass006Cross
+	);
 }
 
 function canWaterPass(x: number, y: number, z: number): boolean {
@@ -173,7 +179,12 @@ function getFlowDirectionMask(
 		const targetId = getBlockByWorldCoords(nx, worldY, nz);
 
 		let canFlow = false;
-		if (targetId === BlockType.Air) {
+		if (
+			targetId === BlockType.Air ||
+			targetId === BlockType.GrassCross ||
+			targetId === BlockType.SavannahGrassCross ||
+			targetId === BlockType.Grass006Cross
+		) {
 			canFlow = true;
 		} else if (targetId === BlockType.Water) {
 			const targetState = getBlockStateByWorldCoords(nx, worldY, nz);
@@ -262,7 +273,12 @@ function flowInto(
 		const targetLevel = getWaterLevel(targetId, targetState);
 		// Only overwrite if incoming water is strictly stronger (lower level number)
 		if (targetLevel <= newLevel) return false;
-	} else if (targetId !== BlockType.Air) {
+	} else if (
+		targetId !== BlockType.Air &&
+		targetId !== BlockType.GrassCross &&
+		targetId !== BlockType.SavannahGrassCross &&
+		targetId !== BlockType.Grass006Cross
+	) {
 		return false;
 	}
 

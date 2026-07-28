@@ -176,6 +176,7 @@ QUICK_CLOSED_MASK[GLASS_01_BLOCK_ID] = 0;
 QUICK_CLOSED_MASK[GLASS_02_BLOCK_ID] = 0;
 QUICK_CLOSED_MASK[64] = 0; // GrassCross
 QUICK_CLOSED_MASK[66] = 0; // SavannahGrassCross
+QUICK_CLOSED_MASK[91] = 0; // Grass006Cross
 
 /**
  * Conservative approximation of the original Chunk.getClosedFaceMaskForPacked

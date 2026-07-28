@@ -190,9 +190,14 @@ export class BlockBreakingHandler {
 		const info = getBlockInfo(blockId);
 		if (!info) return;
 
-		const worldItem = Item.createById(blockId);
+		//todo make it good
+		const dropId =
+			blockId === BlockType.Grass001 || blockId === 14 || blockId === 51
+				? 46
+				: blockId;
+		const worldItem = Item.createById(dropId);
 		worldItem.stackSize = 1;
-		worldItem.itemId = blockId;
+		worldItem.itemId = dropId;
 
 		const di = new DroppedItem(worldItem, x + 0.5, y + 0.5, z + 0.5);
 

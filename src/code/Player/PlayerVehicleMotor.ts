@@ -171,12 +171,12 @@ export class PlayerVehicleMotor implements IPlayerBody {
 
 	// ── Parameters ────────────────────────────────────────────────────────────
 	private readonly deceleration = 0.85;
-	private readonly inAirSpeed = 7.0;
-	private readonly onGroundSpeed = 5.67;
+	private readonly inAirSpeed = 4.3;
+	private readonly onGroundSpeed = 4.67;
 	private readonly jumpHeight = 0.35;
 	private readonly jumpStaminaCost = 10;
 	private readonly accelRateGround = 36;
-	private readonly sprintMultiplier = 2.1;
+	private readonly sprintMultiplier = 1.5;
 	private readonly sneakMultiplier = 0.5;
 	private readonly colliderHalfWidth = 0.3;
 	private readonly standingHalfHeight = 0.875;
