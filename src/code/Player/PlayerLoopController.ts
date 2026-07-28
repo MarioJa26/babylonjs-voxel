@@ -118,7 +118,7 @@ export class PlayerLoopController {
 		const vehicle = this.playerVehicle;
 		const stats = this.playerStats;
 
-		if (vehicle.isSprinting) {
+		if (vehicle.isSprinting && (vehicle.inputDirection.x !== 0 || vehicle.inputDirection.z !== 0)) {
 			if (
 				!stats.consumeStamina(4 * dtSec) &&
 				stats.gamemode !== Gamemodes.Creative
