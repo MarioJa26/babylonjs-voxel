@@ -1,3 +1,4 @@
+import * as lite from "@babylonjs/lite";
 import {
 	createEngine,
 	createSceneContext,
@@ -9,6 +10,7 @@ import {
 	stopEngine,
 	vec3,
 } from "@babylonjs/lite";
+import { showLiteExplorer } from "babylon-lite-explorer";
 import { createMobCoordinator } from "./Entities/Mobs/MobSetup";
 import { Map1 } from "./Maps/Map1";
 import { type EyeCamera, UnderWaterEffect } from "./Maps/UnderWaterEffect";
@@ -94,6 +96,11 @@ export class TestScene {
 
 		await registerScene(scene);
 		await startEngine(engine);
+
+		showLiteExplorer(
+			{ engine, scene, canvas: this.canvas, lite },
+			{ mode: "overlay", layout: "single", theme: "dark" },
+		);
 	}
 
 	public dispose(): void {

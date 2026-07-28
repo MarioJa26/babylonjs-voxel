@@ -77,6 +77,7 @@ export class PlayerLoopController {
 		private readonly playerVehicle: {
 			isSprinting: boolean;
 			isClimbing: boolean;
+			inputDirection: Vec3;
 			update(dt: number): void;
 			updateCameraAndVisuals(): void;
 		},
@@ -118,7 +119,10 @@ export class PlayerLoopController {
 		const vehicle = this.playerVehicle;
 		const stats = this.playerStats;
 
-		if (vehicle.isSprinting && (vehicle.inputDirection.x !== 0 || vehicle.inputDirection.z !== 0)) {
+		if (
+			vehicle.isSprinting &&
+			(vehicle.inputDirection.x !== 0 || vehicle.inputDirection.z !== 0)
+		) {
 			if (
 				!stats.consumeStamina(4 * dtSec) &&
 				stats.gamemode !== Gamemodes.Creative
