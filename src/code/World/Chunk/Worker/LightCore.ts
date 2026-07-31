@@ -137,6 +137,7 @@ const _lightEmissionLUT = (() => {
 	lut[10] = 15;
 	lut[11] = 15;
 	lut[24] = 15;
+	lut[94] = 15;
 	return lut;
 })();
 
@@ -177,6 +178,7 @@ QUICK_CLOSED_MASK[GLASS_02_BLOCK_ID] = 0;
 QUICK_CLOSED_MASK[64] = 0; // GrassCross
 QUICK_CLOSED_MASK[66] = 0; // SavannahGrassCross
 QUICK_CLOSED_MASK[91] = 0; // Grass006Cross
+QUICK_CLOSED_MASK[94] = 0; // Torch
 
 /**
  * Conservative approximation of the original Chunk.getClosedFaceMaskForPacked

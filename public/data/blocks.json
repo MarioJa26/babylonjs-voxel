@@ -528,5 +528,12 @@
 		"name": "sequoia_leaves",
 		"path": "/texture/transparent/sequoialeaves_01_1k",
 		"hardness": 1.0
+	},
+	{
+		"id": "Torch",
+		"name": "torch",
+		"path": "/texture/items/torch/torch_1k",
+		"shape": "torch",
+		"hardness": 0.5
 	}
 ]

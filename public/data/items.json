@@ -145,8 +145,11 @@
 		"id": 1017,
 		"name": "Torch",
 		"description": "Emits light.",
-		"icon": "/texture/placeholder.png",
-		"maxStack": 64
+		"icon": "/texture/items/torch/torch.png",
+		"maxStack": 64,
+		"useAction": "place_block",
+		"blockId": 94,
+		"blockState": 0
 	},
 	{
 		"id": 1018,

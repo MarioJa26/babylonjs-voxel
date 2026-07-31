@@ -9,6 +9,7 @@ import {
 } from "@babylonjs/lite";
 import { copyVec3, Quaternion } from "@/code/Lib/Math";
 import type { ShapeDefinition } from "../Shape/BlockShapes";
+import { isPassThroughBlock } from "../Texture/BlockType";
 
 export const enum Axis {
 	X,
@@ -140,6 +141,8 @@ export function createVoxelColliderBlockSampler(
 		const resolved = resolveBlock(x, y, z);
 		if (resolved === null) return null;
 		const { blockId, blockState: state } = resolved;
+
+		if (isPassThroughBlock(blockId)) return null;
 
 		if (isFenceBlockId(blockId)) {
 			const mask = computeFenceNeighborMask(x, y, z, (wx, wy, wz) => {

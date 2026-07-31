@@ -131,6 +131,8 @@ export const opaqueChunkVertexShader = `
 
             if (diagonalEnabled) {
                 vec3 centerBottom = faceDataA.xyz * invPosScale;
+                centerBottom.x -= float((meta >> 3) & 1) * 0.5 * invPosScale;
+                centerBottom.z -= float((meta >> 7) & 1) * 0.5 * invPosScale;
 
                 buildDiagonalQuad(
                     centerBottom,
@@ -154,6 +156,8 @@ export const opaqueChunkVertexShader = `
                 int vAxisLocal = V_AXIS[axis];
 
                 localPosition = faceDataA.xyz * invPosScale;
+                localPosition.x -= float((meta >> 3) & 1) * 0.5 * invPosScale;
+                localPosition.z -= float((meta >> 7) & 1) * 0.5 * invPosScale;
                 localPosition[uAxis] += du;
                 localPosition[vAxisLocal] += dv;
 
@@ -169,6 +173,8 @@ export const opaqueChunkVertexShader = `
                 vUV = vec2(u, v) * vec2(uDim, vDim);
 
                 vec3 faceOrigin = faceDataA.xyz * invPosScale;
+                faceOrigin.x -= float((meta >> 3) & 1) * 0.5 * invPosScale;
+                faceOrigin.z -= float((meta >> 7) & 1) * 0.5 * invPosScale;
                 vec2 uvOff = vec2(fract(faceOrigin[uAxis]), fract(faceOrigin[vAxisLocal]));
                 vUV += swapUV == 1 ? uvOff.yx : uvOff;
 

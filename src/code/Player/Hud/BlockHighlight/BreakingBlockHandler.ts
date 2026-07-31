@@ -194,7 +194,9 @@ export class BlockBreakingHandler {
 		const dropId =
 			blockId === BlockType.Grass001 || blockId === 14 || blockId === 51
 				? 46
-				: blockId;
+				: blockId === BlockType.Torch
+					? 1017
+					: blockId;
 		const worldItem = Item.createById(dropId);
 		worldItem.stackSize = 1;
 		worldItem.itemId = dropId;

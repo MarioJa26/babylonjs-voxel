@@ -42,12 +42,17 @@ export function emitQuadFast(
 	const diagEnabled = diagonal !== 0 ? 1 : 0;
 	const diagVariant = diagonal === 2 ? 1 : 0;
 
+	const posOffX = (x * POS_SCALE) % 1 !== 0 ? 1 : 0;
+	const posOffZ = (z * POS_SCALE) % 1 !== 0 ? 1 : 0;
+
 	const meta =
 		(flip ? 1 : 0) |
 		((materialType & 0x3) << 1) |
+		(posOffX << 3) |
 		(diagEnabled << 4) |
 		(diagVariant << 5) |
-		(rawDim ? 64 : 0);
+		(rawDim ? 64 : 0) |
+		(posOffZ << 7);
 
 	const tint = BlockTint[blockId];
 

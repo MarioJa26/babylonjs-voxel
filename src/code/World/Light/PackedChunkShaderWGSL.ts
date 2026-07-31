@@ -201,8 +201,8 @@ ${o.tint ? "  let tintBucket = (face.z >> 16u) & 0xffu;" : ""}
 
   let co = chunkOffsets[face.w];
 
-  let posX = aByte * INV_POS;
-  let posZ = cByte * INV_POS;
+  let posX = aByte * INV_POS - f32((metaByte >> 3u) & 1u) * 0.5 * INV_POS;
+  let posZ = cByte * INV_POS - f32((metaByte >> 7u) & 1u) * 0.5 * INV_POS;
   let baseX = posX + co.x;
   let baseY = bByte * INV_POS + co.y;
   let baseZ = posZ + co.z;

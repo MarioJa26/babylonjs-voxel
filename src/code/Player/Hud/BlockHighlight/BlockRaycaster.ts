@@ -130,7 +130,8 @@ function isTargetableBlock(blockId: number): boolean {
 		isCollidableBlock(blockId) ||
 		blockId === BlockType.GrassCross ||
 		blockId === BlockType.SavannahGrassCross ||
-		blockId === BlockType.Grass006Cross
+		blockId === BlockType.Grass006Cross ||
+		blockId === BlockType.Torch
 	);
 }
 

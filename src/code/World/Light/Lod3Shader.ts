@@ -69,6 +69,8 @@ export const LOD3chunkVertexShader = `
       int vAxis = V_AXIS[axis];
 
       vec3 localPosition = faceDataA.xyz * invPosScale;
+      localPosition.x -= float((meta >> 3) & 1) * 0.5 * invPosScale;
+      localPosition.z -= float((meta >> 7) & 1) * 0.5 * invPosScale;
       localPosition[uAxis] += du;
       localPosition[vAxis] += dv;
 

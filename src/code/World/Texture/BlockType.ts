@@ -93,6 +93,7 @@ export enum BlockType {
 	Grass006Cross = 91,
 	WoodCrate = 92,
 	SequoiaLeaves = 93,
+	Torch = 94,
 }
 
 export const Hardness = {
@@ -115,7 +116,8 @@ export function isPassThroughBlock(blockId: number): boolean {
 		blockId === BlockType.Water ||
 		blockId === BlockType.GrassCross ||
 		blockId === BlockType.SavannahGrassCross ||
-		blockId === BlockType.Grass006Cross
+		blockId === BlockType.Grass006Cross ||
+		blockId === BlockType.Torch
 	);
 }
 

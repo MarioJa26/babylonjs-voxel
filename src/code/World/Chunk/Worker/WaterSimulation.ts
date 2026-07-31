@@ -50,7 +50,8 @@ function isSolidBlock(blockId: number): boolean {
 		blockId !== BlockType.Water &&
 		blockId !== BlockType.GrassCross &&
 		blockId !== BlockType.SavannahGrassCross &&
-		blockId !== BlockType.Grass006Cross
+		blockId !== BlockType.Grass006Cross &&
+		blockId !== BlockType.Torch
 	);
 }
 
