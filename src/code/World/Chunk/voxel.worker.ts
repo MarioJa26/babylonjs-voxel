@@ -3,7 +3,7 @@
 import { MeshEmitters } from "../MeshPipeline/core/MeshEmitters";
 import {
 	createEmptyWorkerInternalMeshData,
-	createMeshContextFromPayload,
+	MeshBuildSession,
 	toTransferableMeshData,
 	type WorkerMeshBaseContext,
 	type WorkerMeshInput,
@@ -94,7 +94,8 @@ function ensureShapesReady(): Promise<void> {
 	return _shapesReady;
 }
 
-// PERF: Reuse the output buffers across every mesh task in this worker.
+// PERF: Reuse the session (padded grids, greedy scratch, cached pipeline) and
+// the output buffers across every mesh task in this worker.
 // buildVoxelMesh reserves a worst-case (size^3 * 16) capacity up front so the
 // hot-path emitters can write branchlessly; allocating fresh WorkerInternalMeshData
 // per task threw away ~12 MB of backing storage on every chunk. The
@@ -102,6 +103,7 @@ function ensureShapesReady(): Promise<void> {
 // length — so we allocate once and clear between tasks. toTransferableMeshData
 // slices to a right-sized copy for transfer, so these reused buffers are never
 // detached.
+const _session = new MeshBuildSession();
 const _opaqueOut = createEmptyWorkerInternalMeshData();
 const _transparentOut = createEmptyWorkerInternalMeshData();
 
@@ -137,13 +139,13 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 			lod: data.lod,
 		};
 
-		const fullCtx = createMeshContextFromPayload(baseCtx, meshInput);
+		_session.begin(baseCtx, meshInput);
 
 		resetMeshOut();
 		const opaqueOut = _opaqueOut;
 		const transparentOut = _transparentOut;
 
-		MeshEmitters.buildVoxelMesh(fullCtx, opaqueOut, transparentOut);
+		MeshEmitters.buildVoxelMesh(_session, opaqueOut, transparentOut);
 
 		const opaque =
 			opaqueOut.faceCount > 0 ? toTransferableMeshData(opaqueOut) : null;

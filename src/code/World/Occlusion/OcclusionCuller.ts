@@ -265,12 +265,8 @@ function resetChunkBfs(chunk: Chunk, queryId: number): void {
 function ensureNeighborRefs(chunk: Chunk): void {
 	const refs = chunk.neighborRefs;
 	if (refs[0] !== null || refs[1] !== null) return; // already populated
-	const ids = chunk.neighborIds;
 	for (let d = 0; d < 6; d++) {
-		const id = ids[d];
-		if (id !== undefined) {
-			refs[d] = Chunk.chunkInstances.get(id) ?? null;
-		}
+		refs[d] = chunk.getNeighborChunk(d) ?? null;
 	}
 }
 

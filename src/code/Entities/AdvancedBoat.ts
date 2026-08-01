@@ -11,6 +11,7 @@ import {
 	vec3,
 } from "@babylonjs/lite";
 import {
+	Matrix,
 	Quaternion,
 	setVec3,
 	transformCoordinatesVec3ToRef,
@@ -61,6 +62,9 @@ export class AdvancedBoat implements IUsable {
 	readonly #_torque = vec3(0, 0, 0);
 	readonly #_deltaRot = new Quaternion();
 	readonly #_nextRot = new Quaternion();
+	readonly #_currentRot = new Quaternion();
+	readonly #_rotQuat = new Quaternion();
+	readonly #_rotMat = new Matrix();
 	readonly #_euler = vec3(0, 0, 0);
 
 	static #boatControls: PaddleBoatControls;
@@ -171,12 +175,12 @@ export class AdvancedBoat implements IUsable {
 			}
 
 			this.#submergedPoints = 0;
-			const q = new Quaternion();
 			{
 				const rq = this.#boat.rotationQuaternion;
-				q.set(rq.x, rq.y, rq.z, rq.w);
+				this.#_rotQuat.set(rq.x, rq.y, rq.z, rq.w);
 			}
-			const rotMat = q.toRotationMatrix();
+			Quaternion.ToRotationMatrixToRef(this.#_rotQuat, this.#_rotMat);
+			const rotMat = this.#_rotMat;
 
 			// Gravity is always applied, buoyancy counters it when submerged.
 			this.#linearVelocity.y += this.#gravity * dt;
@@ -259,24 +263,21 @@ export class AdvancedBoat implements IUsable {
 	}
 
 	private integrateRotation(dt: number): void {
-		const currentRotation = new Quaternion();
 		{
 			const rq = this.#boat.rotationQuaternion;
-			currentRotation.set(rq.x, rq.y, rq.z, rq.w);
+			this.#_currentRot.set(rq.x, rq.y, rq.z, rq.w);
 		}
-		this.#_deltaRot.copyFrom(
-			Quaternion.RotationYawPitchRoll(
-				this.#angularVelocity.y * dt,
-				this.#lockPitch ? 0 : this.#angularVelocity.x * dt,
-				this.#lockRoll ? 0 : this.#angularVelocity.z * dt,
-			),
+		Quaternion.FromEulerAnglesToRef(
+			this.#lockPitch ? 0 : this.#angularVelocity.x * dt,
+			this.#angularVelocity.y * dt,
+			this.#lockRoll ? 0 : this.#angularVelocity.z * dt,
+			this.#_deltaRot,
 		);
-		this.#_deltaRot.multiplyToRef(currentRotation, this.#_nextRot);
+		this.#_deltaRot.multiplyToRef(this.#_currentRot, this.#_nextRot);
 		this.#_nextRot.normalize();
 
-		const euler = this.#_nextRot.toEulerAngles();
-
-		setVec3(this.#_euler, euler.x, euler.y, euler.z);
+		Quaternion.ToRotationMatrixToRef(this.#_nextRot, this.#_rotMat);
+		this.#_rotMat.toEulerAnglesToRef(this.#_euler);
 
 		if (this.#lockPitch) {
 			this.#_euler.x = 0;
@@ -284,14 +285,13 @@ export class AdvancedBoat implements IUsable {
 		if (this.#lockRoll) {
 			this.#_euler.z = 0;
 		}
-		currentRotation.copyFrom(
-			Quaternion.RotationYawPitchRoll(
-				this.#_euler.y,
-				this.#_euler.x,
-				this.#_euler.z,
-			),
+		Quaternion.FromEulerAnglesToRef(
+			this.#_euler.x,
+			this.#_euler.y,
+			this.#_euler.z,
+			this.#_currentRot,
 		);
-		this.#boat.rotationQuaternion.copyFrom(currentRotation);
+		this.#boat.rotationQuaternion.copyFrom(this.#_currentRot);
 
 		if (this.#lockPitch) {
 			this.#angularVelocity.x = 0;
@@ -355,6 +355,11 @@ export class AdvancedBoat implements IUsable {
 			this.#boat.position.y,
 			this.#boat.position.z,
 		);
+	}
+	public getBoatPositionToRef(out: Vec3): void {
+		out.x = this.#boat.position.x;
+		out.y = this.#boat.position.y;
+		out.z = this.#boat.position.z;
 	}
 	public get mount(): Mount {
 		return this.#mount;

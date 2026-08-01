@@ -1,4 +1,4 @@
-import { type SceneContext, type Vec3, vec3 } from "@babylonjs/lite";
+import type { SceneContext, Vec3 } from "@babylonjs/lite";
 import { CustomBoat } from "../Entities/CustomBoat";
 import { update as updateDistantTerrain } from "../Generation/DistantTerrain/DistantTerrain";
 import {
@@ -132,7 +132,9 @@ export class PlayerLoopController {
 		}
 
 		// Raycast once per frame — shared by crosshair highlight and block breaking.
-		const pickHit = pickTarget(this.playerHud.player);
+		// Skipped while a UI overlay is open (matches #updateControls' early-out),
+		// since the highlight is hidden behind the menu and breaking is suppressed.
+		const pickHit = isUiOpen() ? null : pickTarget(this.playerHud.player);
 		this.playerHud.crossHair.setTargetHit(pickHit);
 
 		// L1: Cache position once — reused by all sub-systems this frame.
@@ -142,10 +144,7 @@ export class PlayerLoopController {
 
 		// C3: tick all active boats (buoyancy + controls). Uses the player
 		// position only for distance culling of out-of-range boats.
-		CustomBoat.tickAllActiveBoats(
-			this.scene,
-			vec3(playerPos.x, playerPos.y, playerPos.z),
-		);
+		CustomBoat.tickAllActiveBoats(this.scene, playerPos);
 		vehicle.update(dt);
 		stats.update(
 			dtSec,

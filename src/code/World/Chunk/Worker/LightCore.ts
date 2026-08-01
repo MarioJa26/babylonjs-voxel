@@ -31,6 +31,7 @@ import {
 	LIGHT_HEADER_FLAG_STORAGE_U16,
 	LIGHT_HEADER_FLAG_UNIFORM,
 	type LightHeaderView,
+	MAX_HEADER_SLOTS,
 	readHeaderMeta,
 } from "./ChunkLightHeader";
 import { filtersFullSunlight, WATER_BLOCK_ID } from "./ChunkMesherConstants";
@@ -80,7 +81,10 @@ const LIGHT_DIR_COUNT = 6;
 const BFS_CAPACITY = 32768;
 
 class LightQueue {
-	readonly chunks: (bigint | 0)[] = new Array(BFS_CAPACITY).fill(0);
+	// Queue nodes store the dense header slot, not the chunkId — the BFS
+	// only needs the slot to index the registry's flat bySlot array, which
+	// skips the bigint-hash Map lookup that used to run per node.
+	readonly slots = new Int32Array(BFS_CAPACITY);
 	readonly coords = new Int32Array(BFS_CAPACITY);
 	readonly levels = new Int32Array(BFS_CAPACITY);
 
@@ -95,9 +99,15 @@ class LightQueue {
 		this.head = this.tail = 0;
 	}
 
-	push(chunkId: bigint, x: number, y: number, z: number, level: number): void {
+	push(
+		headerSlot: number,
+		x: number,
+		y: number,
+		z: number,
+		level: number,
+	): void {
 		const slot = this.tail & (BFS_CAPACITY - 1);
-		this.chunks[slot] = chunkId;
+		this.slots[slot] = headerSlot;
 		this.coords[slot] = x | (y << 5) | (z << 10);
 		this.levels[slot] = level;
 		this.tail = (this.tail + 1) & (BFS_CAPACITY - 1);
@@ -110,7 +120,7 @@ const Q_B = new LightQueue();
 // Reusable seed buffers for lightSkyReconcile — hoisted to module level to
 // avoid per-call allocation (safe: single worker thread).
 const SEED_CAPACITY = 6144;
-const seedChunks = new BigInt64Array(SEED_CAPACITY);
+const seedSlots = new Int32Array(SEED_CAPACITY);
 const seedCoords = new Int32Array(SEED_CAPACITY * 3);
 const seedLevels = new Uint8Array(SEED_CAPACITY);
 
@@ -250,11 +260,23 @@ export type ChunkView = {
 
 export type ChunkViewRegistry = {
 	header: LightHeaderView;
-	views: Map<bigint, ChunkView>;
+	/**
+	 * Views indexed by dense header slot (the pool's slot allocation is
+	 * sent to the worker in every Light* message). The BFS hot paths look
+	 * up views here with a single array index instead of a bigint-keyed
+	 * Map.get(). Size = MAX_HEADER_SLOTS; a slot is null when unassigned.
+	 */
+	bySlot: (ChunkView | null)[];
+	/** chunkId → view, for the rare chunkId-keyed entry points (unregister, neighbor linking). */
+	byChunkId: Map<bigint, ChunkView>;
 };
 
 export function createRegistry(header: LightHeaderView): ChunkViewRegistry {
-	return { header, views: new Map() };
+	return {
+		header,
+		bySlot: new Array<ChunkView | null>(MAX_HEADER_SLOTS).fill(null),
+		byChunkId: new Map(),
+	};
 }
 
 /**
@@ -277,12 +299,12 @@ function linkNeighborViews(registry: ChunkViewRegistry, view: ChunkView): void {
 	const cx = view.chunkX;
 	const cy = view.chunkY;
 	const cz = view.chunkZ;
-	n[DIR_PX] = registry.views.get(packCoords(cx + 1, cy, cz)) ?? null;
-	n[DIR_NX] = registry.views.get(packCoords(cx - 1, cy, cz)) ?? null;
-	n[DIR_PY] = registry.views.get(packCoords(cx, cy + 1, cz)) ?? null;
-	n[DIR_NY] = registry.views.get(packCoords(cx, cy - 1, cz)) ?? null;
-	n[DIR_PZ] = registry.views.get(packCoords(cx, cy, cz + 1)) ?? null;
-	n[DIR_NZ] = registry.views.get(packCoords(cx, cy, cz - 1)) ?? null;
+	n[DIR_PX] = registry.byChunkId.get(packCoords(cx + 1, cy, cz)) ?? null;
+	n[DIR_NX] = registry.byChunkId.get(packCoords(cx - 1, cy, cz)) ?? null;
+	n[DIR_PY] = registry.byChunkId.get(packCoords(cx, cy + 1, cz)) ?? null;
+	n[DIR_NY] = registry.byChunkId.get(packCoords(cx, cy - 1, cz)) ?? null;
+	n[DIR_PZ] = registry.byChunkId.get(packCoords(cx, cy, cz + 1)) ?? null;
+	n[DIR_NZ] = registry.byChunkId.get(packCoords(cx, cy, cz - 1)) ?? null;
 
 	// Back-link: each neighbor points to this view in the opposite direction.
 	if (n[DIR_PX]) n[DIR_PX].neighborViews[DIR_NX] = view;
@@ -354,7 +376,8 @@ export function registerChunk(
 		palette: Uint16Array | null;
 		light_array: Uint8Array;
 	},
-): ChunkView {
+): ChunkView | null {
+	if (args.headerSlot < 0 || args.headerSlot >= MAX_HEADER_SLOTS) return null;
 	const view: ChunkView = {
 		chunkId: args.chunkId,
 		chunkX: args.chunkX,
@@ -372,21 +395,25 @@ export function registerChunk(
 		neighborViews: [null, null, null, null, null, null],
 	};
 	refreshLayout(registry, view);
-	registry.views.set(view.chunkId, view);
+	registry.byChunkId.set(view.chunkId, view);
+	registry.bySlot[view.headerSlot] = view;
 	linkNeighborViews(registry, view);
 	return view;
 }
 
 export function updateChunkBuffers(
 	registry: ChunkViewRegistry,
-	chunkId: bigint,
+	headerSlot: number,
 	updates: {
 		block_array?: Uint8Array | Uint16Array | null;
 		palette?: Uint16Array | null;
 		light_array?: Uint8Array;
 	},
 ): void {
-	const view = registry.views.get(chunkId);
+	const view =
+		headerSlot >= 0 && headerSlot < MAX_HEADER_SLOTS
+			? registry.bySlot[headerSlot]
+			: undefined;
 	if (!view) return;
 	if (updates.block_array !== undefined) view.block_array = updates.block_array;
 	if (updates.palette !== undefined) view.palette = updates.palette;
@@ -398,8 +425,16 @@ export function unregisterChunk(
 	registry: ChunkViewRegistry,
 	chunkId: bigint,
 ): void {
-	const view = registry.views.get(chunkId);
+	const view = registry.byChunkId.get(chunkId);
 	if (view) {
+		// Null the slot entry so a stale slot can never alias a reused slot.
+		if (
+			view.headerSlot >= 0 &&
+			view.headerSlot < MAX_HEADER_SLOTS &&
+			registry.bySlot[view.headerSlot] === view
+		) {
+			registry.bySlot[view.headerSlot] = null;
+		}
 		// Null back-links from neighbors so they don't hold stale refs.
 		const n = view.neighborViews;
 		for (let d = 0; d < 6; d++) {
@@ -410,7 +445,7 @@ export function unregisterChunk(
 			}
 		}
 	}
-	registry.views.delete(chunkId);
+	registry.byChunkId.delete(chunkId);
 }
 
 /**
@@ -543,18 +578,32 @@ function processQueue(
 	const size2 = LIGHT_CHUNK_SIZE2;
 	const skyShift = LIGHT_SKY_SHIFT;
 
+	// refreshLayout is hoisted: a view's header row is re-read once per BFS
+	// pass (per role) instead of once per queue node / per neighbor cell.
+	// Layout changes mid-pass are rare (storage promotion happens on a
+	// register/updateBuffers message, which can't interleave with this
+	// synchronous loop) and are picked up on the next touch.
+	let lastRefreshedView: ChunkView | null = null;
+	let lastRefreshedTarget: ChunkView | null = null;
+
 	while (q.head !== q.tail) {
 		const slot = q.head & (BFS_CAPACITY - 1);
 		q.head = (q.head + 1) & (BFS_CAPACITY - 1);
-		const chunkId = q.chunks[slot] as bigint;
+		const headerSlot = q.slots[slot];
 		const coord = q.coords[slot];
 		const x = coord & 0x1f;
 		const y = (coord >> 5) & 0x1f;
 		const z = (coord >> 10) & 0x1f;
 
-		const view = registry.views.get(chunkId);
+		const view =
+			headerSlot >= 0 && headerSlot < MAX_HEADER_SLOTS
+				? registry.bySlot[headerSlot]
+				: undefined;
 		if (!view) continue;
-		refreshLayout(registry, view);
+		if (view !== lastRefreshedView) {
+			lastRefreshedView = view;
+			refreshLayout(registry, view);
+		}
 		if (!view.isLoaded) continue;
 
 		const lightArr = view.light_array;
@@ -601,7 +650,10 @@ function processQueue(
 				tz = resolved.z;
 			}
 			if (targetView !== view) {
-				refreshLayout(registry, targetView);
+				if (targetView !== lastRefreshedTarget) {
+					lastRefreshedTarget = targetView;
+					refreshLayout(registry, targetView);
+				}
 			}
 			if (!targetView.isLoaded) continue;
 
@@ -645,7 +697,7 @@ function processQueue(
 			if (result === WriteResult.Wrote) {
 				dirtySlots.add(targetView.headerSlot);
 				addAdjacentBorderSlots(dirtySlots, targetView, tx, ty, tz);
-				q.push(targetView.chunkId, tx, ty, tz, nextLevel);
+				q.push(targetView.headerSlot, tx, ty, tz, nextLevel);
 			}
 		}
 	}
@@ -667,17 +719,27 @@ function processRemoveQueue(
 
 	let isFirstDequeue = true;
 
+	// See processQueue — refreshLayout is hoisted per pass per role.
+	let lastRefreshedView: ChunkView | null = null;
+	let lastRefreshedTarget: ChunkView | null = null;
+
 	while (q.head !== q.tail) {
 		const slot = q.head & (BFS_CAPACITY - 1);
 		q.head = (q.head + 1) & (BFS_CAPACITY - 1);
-		const chunkId = q.chunks[slot] as bigint;
+		const headerSlot = q.slots[slot];
 		const coord = q.coords[slot];
 		const cx = coord & 0x1f;
 		const cy = (coord >> 5) & 0x1f;
 		const cz = (coord >> 10) & 0x1f;
-		const view = registry.views.get(chunkId);
+		const view =
+			headerSlot >= 0 && headerSlot < MAX_HEADER_SLOTS
+				? registry.bySlot[headerSlot]
+				: undefined;
 		if (!view) continue;
-		refreshLayout(registry, view);
+		if (view !== lastRefreshedView) {
+			lastRefreshedView = view;
+			refreshLayout(registry, view);
+		}
 		if (!view.isLoaded) continue;
 
 		const level = q.levels[slot];
@@ -720,7 +782,10 @@ function processRemoveQueue(
 				tz = resolved.z;
 			}
 			if (targetView !== view) {
-				refreshLayout(registry, targetView);
+				if (targetView !== lastRefreshedTarget) {
+					lastRefreshedTarget = targetView;
+					refreshLayout(registry, targetView);
+				}
 			}
 			if (!targetView.isLoaded) continue;
 
@@ -757,9 +822,9 @@ function processRemoveQueue(
 					dirtySlots.add(targetView.headerSlot);
 					addAdjacentBorderSlots(dirtySlots, targetView, tx, ty, tz);
 				}
-				q.push(targetView.chunkId, tx, ty, tz, neighborLevel);
+				q.push(targetView.headerSlot, tx, ty, tz, neighborLevel);
 			} else {
-				Q_B.push(targetView.chunkId, tx, ty, tz, neighborLevel);
+				Q_B.push(targetView.headerSlot, tx, ty, tz, neighborLevel);
 			}
 		}
 	}
@@ -784,14 +849,17 @@ function processRemoveQueue(
  */
 export function lightMutate(
 	registry: ChunkViewRegistry,
-	chunkId: bigint,
+	headerSlot: number,
 	x: number,
 	y: number,
 	z: number,
 	oldPacked: number,
 	_newPacked: number,
 ): Set<number> {
-	const view = registry.views.get(chunkId);
+	const view =
+		headerSlot >= 0 && headerSlot < MAX_HEADER_SLOTS
+			? registry.bySlot[headerSlot]
+			: undefined;
 	if (!view) return _emptyNumberSet;
 	refreshLayout(registry, view);
 	if (!view.isLoaded) return _emptyNumberSet;
@@ -870,7 +938,7 @@ function removeLightAt(
 
 	Q_A.clear();
 	Q_B.clear();
-	Q_A.push(view.chunkId, x, y, z, startLevel);
+	Q_A.push(view.headerSlot, x, y, z, startLevel);
 
 	processRemoveQueue(registry, Q_A, isSkyLight, dirtySlots, oldPacked);
 
@@ -975,7 +1043,7 @@ function updateLightFromNeighborsAt(
 			dirtySlots.add(view.headerSlot);
 			addAdjacentBorderSlots(dirtySlots, view, x, y, z);
 		}
-		Q_A.push(view.chunkId, x, y, z, nextLevel);
+		Q_A.push(view.headerSlot, x, y, z, nextLevel);
 	}
 
 	if (Q_A.head !== Q_A.tail) {
@@ -1004,7 +1072,7 @@ export function addLightAt(
 		addAdjacentBorderSlots(dirtySlots, view, x, y, z);
 	}
 	Q_A.clear();
-	Q_A.push(view.chunkId, x, y, z, level);
+	Q_A.push(view.headerSlot, x, y, z, level);
 	processQueue(registry, Q_A, false, dirtySlots);
 }
 
@@ -1094,11 +1162,14 @@ function cutSkyLightBelowAt(
  */
 export function lightSkyReconcile(
 	registry: ChunkViewRegistry,
-	chunkId: bigint,
+	headerSlot: number,
 ): Set<number> {
 	_dirtySlotsScratch.clear();
 	const dirtySlots = _dirtySlotsScratch;
-	const view = registry.views.get(chunkId);
+	const view =
+		headerSlot >= 0 && headerSlot < MAX_HEADER_SLOTS
+			? registry.bySlot[headerSlot]
+			: undefined;
 	if (!view) return dirtySlots;
 	refreshLayout(registry, view);
 	if (!view.isLoaded) return dirtySlots;
@@ -1136,7 +1207,9 @@ export function lightSkyReconcile(
 					if (selfSky === neighborSky) continue;
 					if (seedCount >= 6144) return dirtySlots;
 					const selfHigher = selfSky > neighborSky;
-					seedChunks[seedCount] = selfHigher ? view.chunkId : neighbor.chunkId;
+					seedSlots[seedCount] = selfHigher
+						? view.headerSlot
+						: neighbor.headerSlot;
 					seedCoords[seedCount * 3] = selfHigher ? selfX : nbrX;
 					seedCoords[seedCount * 3 + 1] = selfHigher ? u : u;
 					seedCoords[seedCount * 3 + 2] = selfHigher ? v : v;
@@ -1157,7 +1230,9 @@ export function lightSkyReconcile(
 					if (selfSky === neighborSky) continue;
 					if (seedCount >= 6144) return dirtySlots;
 					const selfHigher = selfSky > neighborSky;
-					seedChunks[seedCount] = selfHigher ? view.chunkId : neighbor.chunkId;
+					seedSlots[seedCount] = selfHigher
+						? view.headerSlot
+						: neighbor.headerSlot;
 					seedCoords[seedCount * 3] = selfHigher ? u : u;
 					seedCoords[seedCount * 3 + 1] = selfHigher ? selfY : nbrY;
 					seedCoords[seedCount * 3 + 2] = selfHigher ? v : v;
@@ -1178,7 +1253,9 @@ export function lightSkyReconcile(
 					if (selfSky === neighborSky) continue;
 					if (seedCount >= 6144) return dirtySlots;
 					const selfHigher = selfSky > neighborSky;
-					seedChunks[seedCount] = selfHigher ? view.chunkId : neighbor.chunkId;
+					seedSlots[seedCount] = selfHigher
+						? view.headerSlot
+						: neighbor.headerSlot;
 					seedCoords[seedCount * 3] = selfHigher ? u : u;
 					seedCoords[seedCount * 3 + 1] = selfHigher ? v : v;
 					seedCoords[seedCount * 3 + 2] = selfHigher ? selfZ : nbrZ;
@@ -1192,7 +1269,7 @@ export function lightSkyReconcile(
 	if (seedCount > 0) {
 		return batchPropagate(
 			registry,
-			seedChunks,
+			seedSlots,
 			seedCoords,
 			seedLevels,
 			seedCount,
@@ -1203,7 +1280,7 @@ export function lightSkyReconcile(
 
 	function batchPropagate(
 		registry: ChunkViewRegistry,
-		chunks: BigInt64Array,
+		slots: Int32Array,
 		coords: Int32Array,
 		levels: Uint8Array,
 		count: number,
@@ -1213,7 +1290,7 @@ export function lightSkyReconcile(
 		for (let i = 0; i < count; i++) {
 			const base = i * 3;
 			Q_A.push(
-				chunks[i],
+				slots[i],
 				coords[base],
 				coords[base + 1],
 				coords[base + 2],
@@ -1234,11 +1311,14 @@ export function lightSkyReconcile(
  */
 export function lightBlockReconcile(
 	registry: ChunkViewRegistry,
-	chunkId: bigint,
+	headerSlot: number,
 ): Set<number> {
 	_dirtySlotsScratch.clear();
 	const dirtySlots = _dirtySlotsScratch;
-	const view = registry.views.get(chunkId);
+	const view =
+		headerSlot >= 0 && headerSlot < MAX_HEADER_SLOTS
+			? registry.bySlot[headerSlot]
+			: undefined;
 	if (!view) return dirtySlots;
 	refreshLayout(registry, view);
 	if (!view.isLoaded) return dirtySlots;
@@ -1279,7 +1359,7 @@ export function lightBlockReconcile(
 							(sourceEmits || isTransparent(sourcePacked, fAxis, fDir)) &&
 							isTransparent(targetPacked, fAxis, -fDir)
 						) {
-							Q_A.push(view.chunkId, selfX, u, v, selfLevel);
+							Q_A.push(view.headerSlot, selfX, u, v, selfLevel);
 						}
 					}
 
@@ -1292,7 +1372,7 @@ export function lightBlockReconcile(
 							(sourceEmits || isTransparent(sourcePacked, fAxis, -fDir)) &&
 							isTransparent(targetPacked, fAxis, fDir)
 						) {
-							Q_A.push(neighbor.chunkId, nbrX, u, v, neighborLevel);
+							Q_A.push(neighbor.headerSlot, nbrX, u, v, neighborLevel);
 						}
 					}
 				}
@@ -1316,7 +1396,7 @@ export function lightBlockReconcile(
 							(sourceEmits || isTransparent(sourcePacked, fAxis, fDir)) &&
 							isTransparent(targetPacked, fAxis, -fDir)
 						) {
-							Q_A.push(view.chunkId, u, selfY, v, selfLevel);
+							Q_A.push(view.headerSlot, u, selfY, v, selfLevel);
 						}
 					}
 
@@ -1329,7 +1409,7 @@ export function lightBlockReconcile(
 							(sourceEmits || isTransparent(sourcePacked, fAxis, -fDir)) &&
 							isTransparent(targetPacked, fAxis, fDir)
 						) {
-							Q_A.push(neighbor.chunkId, u, nbrY, v, neighborLevel);
+							Q_A.push(neighbor.headerSlot, u, nbrY, v, neighborLevel);
 						}
 					}
 				}
@@ -1353,7 +1433,7 @@ export function lightBlockReconcile(
 							(sourceEmits || isTransparent(sourcePacked, fAxis, fDir)) &&
 							isTransparent(targetPacked, fAxis, -fDir)
 						) {
-							Q_A.push(view.chunkId, u, v, selfZ, selfLevel);
+							Q_A.push(view.headerSlot, u, v, selfZ, selfLevel);
 						}
 					}
 
@@ -1366,7 +1446,7 @@ export function lightBlockReconcile(
 							(sourceEmits || isTransparent(sourcePacked, fAxis, -fDir)) &&
 							isTransparent(targetPacked, fAxis, fDir)
 						) {
-							Q_A.push(neighbor.chunkId, u, v, nbrZ, neighborLevel);
+							Q_A.push(neighbor.headerSlot, u, v, nbrZ, neighborLevel);
 						}
 					}
 				}
@@ -1387,12 +1467,15 @@ export function lightBlockReconcile(
  */
 export function propagateDeferred(
 	registry: ChunkViewRegistry,
-	chunkId: bigint,
+	headerSlot: number,
 	seedState: { queue: Uint16Array; length: number },
 ): Set<number> {
 	_dirtySlotsScratch.clear();
 	const dirtySlots = _dirtySlotsScratch;
-	const view = registry.views.get(chunkId);
+	const view =
+		headerSlot >= 0 && headerSlot < MAX_HEADER_SLOTS
+			? registry.bySlot[headerSlot]
+			: undefined;
 	if (!view) return dirtySlots;
 	refreshLayout(registry, view);
 	if (!view.isLoaded) return dirtySlots;
@@ -1414,7 +1497,7 @@ export function propagateDeferred(
 			level > 0 &&
 			!filtersFullSunlight(unpackBlockId(getViewBlockPacked(view, x, y, z)))
 		)
-			Q_A.push(view.chunkId, x, y, z, level);
+			Q_A.push(view.headerSlot, x, y, z, level);
 	}
 	if (Q_A.head !== Q_A.tail) {
 		processQueue(registry, Q_A, true, dirtySlots);

@@ -9,7 +9,7 @@ import {
 	FACE_PY,
 	FACE_PZ,
 } from "../../Shape/BlockShapes";
-import type { BlockShapeInfo, MeshContext } from "../types/MeshTypes";
+import type { BlockShapeInfo } from "../types/MeshTypes";
 import { computeAO } from "./AOPipeline";
 import {
 	FLAG_GREEDY,
@@ -21,11 +21,11 @@ import {
 	getCachedIsCube,
 	getFlagsFromCombined,
 	getIdFromCombined,
+	getShapeInfo,
 	isGlassBlock,
-} from "./BlockFlags";
+} from "./BlockInfoCache";
 import { quantizeLightForLOD } from "./LightPipeline";
-import { getShapeInfo } from "./ShapePipeline";
-import { PaddedGrid, paddedIndex } from "./WorkerMeshHelpers";
+import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
 /**
  * Marker bit used so non-cube faces do not greedily merge with cube faces.
@@ -46,178 +46,100 @@ type WritableNumberArray = number[] | Int32Array | Uint16Array | Uint32Array;
  * - only greedy-compatible blocks may emit through this path
  * - non-greedy custom shapes may still OCCLUDE neighboring faces
  * - custom shapes themselves should be emitted in a separate custom-shape pass
+ *
+ * Stateless: all state lives on the MeshBuildSession passed in.
  */
-export class VoxelMaskExtractor {
-	private ctx: MeshContext;
 
-	constructor(ctx: MeshContext) {
-		this.ctx = ctx;
-	}
+// Maps (slice_or_m1, u, v) → (bx, by, bz) for each axis.
+// [0]=slice, [1]=u, [2]=v
+const _bxPerm = [0, 2, 1];
+const _byPerm = [1, 0, 2];
+const _bzPerm = [2, 1, 0];
+// Neighbor direction for negative boundary check.
+const _ndxDx = [1, 0, 0];
+const _ndyDy = [0, 1, 0];
+const _ndzDz = [0, 0, 1];
+// hasNeighborChunk args for negative boundary.
+const _negNbrDx = [-1, 0, 0];
+const _negNbrDy = [0, -1, 0];
+const _negNbrDz = [0, 0, -1];
 
-	/** PERF: Update context reference instead of creating a new instance. */
-	public setCtx(ctx: MeshContext): void {
-		this.ctx = ctx;
-	}
+/**
+ * Return the face bit on the CURRENT block that points toward the neighbor.
+ */
+function getCurrentFaceBit(axis: number): number {
+	if (axis === 0) return FACE_PX;
+	if (axis === 1) return FACE_PY;
+	return FACE_PZ;
+}
 
-	/**
-	 * Return the face bit on the CURRENT block that points toward the neighbor.
-	 */
-	private getCurrentFaceBit(axis: number): number {
-		if (axis === 0) return FACE_PX;
-		if (axis === 1) return FACE_PY;
-		return FACE_PZ;
-	}
+/**
+ * Return the OPPOSITE face bit on the NEIGHBOR block that points back toward the current block.
+ */
+function getNeighborFaceBit(axis: number): number {
+	if (axis === 0) return FACE_NX;
+	if (axis === 1) return FACE_NY;
+	return FACE_NZ;
+}
 
-	/**
-	 * Return the OPPOSITE face bit on the NEIGHBOR block that points back toward the current block.
-	 */
-	private getNeighborFaceBit(axis: number): number {
-		if (axis === 0) return FACE_NX;
-		if (axis === 1) return FACE_NY;
-		return FACE_NZ;
-	}
+function clearSlice(
+	mask: WritableNumberArray,
+	lightMask: WritableNumberArray,
+	size: number,
+): void {
+	const total = size * size;
+	mask.fill(0, 0, total);
+	lightMask.fill(0, 0, total);
+}
 
-	private clearSlice(
-		mask: WritableNumberArray,
-		lightMask: WritableNumberArray,
-		size: number,
-	): void {
-		const total = size * size;
-		mask.fill(0, 0, total);
-		lightMask.fill(0, 0, total);
-	}
+export function extractSliceMask(
+	session: MeshBuildSession,
+	axis: number,
+	slice: number,
+	mask: WritableNumberArray,
+	lightMask: WritableNumberArray,
+): void {
+	const size = session.size;
+	const currentFaceBit = getCurrentFaceBit(axis);
+	const neighborFaceBit = getNeighborFaceBit(axis);
 
-	// PERF: processCell is a module-level free function (not a method) so V8
-	// keeps it monomorphic and can inline it into the slice loops without the
-	// `this` hidden-class overhead of a per-voxel method call. All hot axis
-	// parameters (dx,dy,dz,uAxis,vAxis,face bits) are passed as plain locals.
-	// Maps (slice_or_m1, u, v) → (bx, by, bz) for each axis.
-	// [0]=slice, [1]=u, [2]=v
-	private static readonly _bxPerm = [0, 2, 1];
-	private static readonly _byPerm = [1, 0, 2];
-	private static readonly _bzPerm = [2, 1, 0];
-	// Neighbor direction for negative boundary check.
-	private static readonly _ndxDx = [1, 0, 0];
-	private static readonly _ndyDy = [0, 1, 0];
-	private static readonly _ndzDz = [0, 0, 1];
-	// hasNeighborChunk args for negative boundary.
-	private static readonly _negNbrDx = [-1, 0, 0];
-	private static readonly _negNbrDy = [0, -1, 0];
-	private static readonly _negNbrDz = [0, 0, -1];
+	const bxVal = _bxPerm[axis];
+	const byVal = _byPerm[axis];
+	const bzVal = _bzPerm[axis];
 
-	public extractSliceMask(
-		axis: number,
-		slice: number,
-		mask: WritableNumberArray,
-		lightMask: WritableNumberArray,
-	): void {
-		const size = this.ctx.size;
-		const currentFaceBit = this.getCurrentFaceBit(axis);
-		const neighborFaceBit = this.getNeighborFaceBit(axis);
-		const bxPerm = VoxelMaskExtractor._bxPerm;
-		const byPerm = VoxelMaskExtractor._byPerm;
-		const bzPerm = VoxelMaskExtractor._bzPerm;
+	const blockArr = session.block;
+	const lightArr = session.light;
+	const disableAO = session.disableAO;
 
-		const bxVal = bxPerm[axis];
-		const byVal = byPerm[axis];
-		const bzVal = bzPerm[axis];
-
-		const blockArr = PaddedGrid.block;
-		const lightArr = PaddedGrid.light;
-		const disableAO = this.ctx.disableAO;
-
-		// Negative boundary: face at position 0.
-		if (slice === -1) {
-			if (
-				!this.ctx.hasNeighborChunk(
-					VoxelMaskExtractor._negNbrDx[axis],
-					VoxelMaskExtractor._negNbrDy[axis],
-					VoxelMaskExtractor._negNbrDz[axis],
-				)
-			) {
-				this.clearSlice(mask, lightMask, size);
-				return;
-			}
-			const ndx = VoxelMaskExtractor._ndxDx[axis];
-			const ndy = VoxelMaskExtractor._ndyDy[axis];
-			const ndz = VoxelMaskExtractor._ndzDz[axis];
-			const uA = axis === 0 ? 1 : axis === 2 ? 0 : 2;
-			const vA = axis === 0 ? 2 : axis === 2 ? 1 : 0;
-			const opaqueArr = PaddedGrid.opaque;
-			const ps = PaddedGrid.ps;
-			const ps2 = PaddedGrid.ps2;
-			let idx = 0;
-			for (let v = 0; v < size; v++) {
-				for (let u = 0; u < size; u++) {
-					const bx = bxVal === 0 ? -1 : bxVal === 1 ? u : v;
-					const by = byVal === 0 ? -1 : byVal === 1 ? u : v;
-					const bz = bzVal === 0 ? -1 : bzVal === 1 ? u : v;
-					const nx = bx + ndx;
-					const ny = by + ndy;
-					const nz = bz + ndz;
-					const curIdx = bx + 1 + (by + 1) * ps + (bz + 1) * ps2;
-					const nbrIdx = nx + 1 + (ny + 1) * ps + (nz + 1) * ps2;
-
-					// PERF: both sides classified as opaque interior cubes ->
-					// guaranteed empty face, skip processCell entirely.
-					if (opaqueArr[curIdx] & opaqueArr[nbrIdx]) {
-						mask[idx] = 0;
-						lightMask[idx] = 0;
-						idx++;
-						continue;
-					}
-
-					processCell(
-						blockArr,
-						lightArr,
-						disableAO,
-						bx,
-						by,
-						bz,
-						nx,
-						ny,
-						nz,
-						curIdx,
-						nbrIdx,
-						uA,
-						vA,
-						currentFaceBit,
-						neighborFaceBit,
-						idx,
-						mask,
-						lightMask,
-					);
-					idx++;
-				}
-			}
+	// Negative boundary: face at position 0.
+	if (slice === -1) {
+		if (
+			!session.hasNeighborChunk(
+				_negNbrDx[axis],
+				_negNbrDy[axis],
+				_negNbrDz[axis],
+			)
+		) {
+			clearSlice(mask, lightMask, size);
 			return;
 		}
-
-		// Positive boundary: faces at position size overflow.
-		// The next chunk renders these faces at its position 0.
-		if (slice === size - 1) {
-			this.clearSlice(mask, lightMask, size);
-			return;
-		}
-
-		const uAxis = axis === 0 ? 1 : axis === 2 ? 0 : 2;
-		const vAxis = axis === 0 ? 2 : axis === 2 ? 1 : 0;
-		const dx = axis === 0 ? 1 : 0;
-		const dy = axis === 1 ? 1 : 0;
-		const dz = axis === 2 ? 1 : 0;
-		const opaqueArr = PaddedGrid.opaque;
-		const ps = PaddedGrid.ps;
-		const ps2 = PaddedGrid.ps2;
-
+		const ndx = _ndxDx[axis];
+		const ndy = _ndyDy[axis];
+		const ndz = _ndzDz[axis];
+		const uA = axis === 0 ? 1 : axis === 2 ? 0 : 2;
+		const vA = axis === 0 ? 2 : axis === 2 ? 1 : 0;
+		const opaqueArr = session.opaque;
+		const ps = session.ps;
+		const ps2 = session.ps2;
 		let idx = 0;
 		for (let v = 0; v < size; v++) {
 			for (let u = 0; u < size; u++) {
-				const bx = bxVal === 0 ? slice : bxVal === 1 ? u : v;
-				const by = byVal === 0 ? slice : byVal === 1 ? u : v;
-				const bz = bzVal === 0 ? slice : bzVal === 1 ? u : v;
-				const nx = bx + dx;
-				const ny = by + dy;
-				const nz = bz + dz;
+				const bx = bxVal === 0 ? -1 : bxVal === 1 ? u : v;
+				const by = byVal === 0 ? -1 : byVal === 1 ? u : v;
+				const bz = bzVal === 0 ? -1 : bzVal === 1 ? u : v;
+				const nx = bx + ndx;
+				const ny = by + ndy;
+				const nz = bz + ndz;
 				const curIdx = bx + 1 + (by + 1) * ps + (bz + 1) * ps2;
 				const nbrIdx = nx + 1 + (ny + 1) * ps + (nz + 1) * ps2;
 
@@ -231,6 +153,7 @@ export class VoxelMaskExtractor {
 				}
 
 				processCell(
+					session,
 					blockArr,
 					lightArr,
 					disableAO,
@@ -242,8 +165,8 @@ export class VoxelMaskExtractor {
 					nz,
 					curIdx,
 					nbrIdx,
-					uAxis,
-					vAxis,
+					uA,
+					vA,
 					currentFaceBit,
 					neighborFaceBit,
 					idx,
@@ -253,6 +176,69 @@ export class VoxelMaskExtractor {
 				idx++;
 			}
 		}
+		return;
+	}
+
+	// Positive boundary: faces at position size overflow.
+	// The next chunk renders these faces at its position 0.
+	if (slice === size - 1) {
+		clearSlice(mask, lightMask, size);
+		return;
+	}
+
+	const uAxis = axis === 0 ? 1 : axis === 2 ? 0 : 2;
+	const vAxis = axis === 0 ? 2 : axis === 2 ? 1 : 0;
+	const dx = axis === 0 ? 1 : 0;
+	const dy = axis === 1 ? 1 : 0;
+	const dz = axis === 2 ? 1 : 0;
+	const opaqueArr = session.opaque;
+	const ps = session.ps;
+	const ps2 = session.ps2;
+
+	let idx = 0;
+	for (let v = 0; v < size; v++) {
+		for (let u = 0; u < size; u++) {
+			const bx = bxVal === 0 ? slice : bxVal === 1 ? u : v;
+			const by = byVal === 0 ? slice : byVal === 1 ? u : v;
+			const bz = bzVal === 0 ? slice : bzVal === 1 ? u : v;
+			const nx = bx + dx;
+			const ny = by + dy;
+			const nz = bz + dz;
+			const curIdx = bx + 1 + (by + 1) * ps + (bz + 1) * ps2;
+			const nbrIdx = nx + 1 + (ny + 1) * ps + (nz + 1) * ps2;
+
+			// PERF: both sides classified as opaque interior cubes ->
+			// guaranteed empty face, skip processCell entirely.
+			if (opaqueArr[curIdx] & opaqueArr[nbrIdx]) {
+				mask[idx] = 0;
+				lightMask[idx] = 0;
+				idx++;
+				continue;
+			}
+
+			processCell(
+				session,
+				blockArr,
+				lightArr,
+				disableAO,
+				bx,
+				by,
+				bz,
+				nx,
+				ny,
+				nz,
+				curIdx,
+				nbrIdx,
+				uAxis,
+				vAxis,
+				currentFaceBit,
+				neighborFaceBit,
+				idx,
+				mask,
+				lightMask,
+			);
+			idx++;
+		}
 	}
 }
 
@@ -261,6 +247,7 @@ export class VoxelMaskExtractor {
  * The body is identical to the previous method form.
  */
 function processCell(
+	session: MeshBuildSession,
 	blockArr: Uint16Array,
 	lightArr: Uint8Array,
 	disableAO: boolean,
@@ -430,7 +417,7 @@ function processCell(
 				(currentPacked & PACKED_ID_STATE_MASK) |
 				(currShapeInfo.isCube ? 0 : NON_CUBE_MASK);
 
-			packedAO = disableAO ? 0 : computeAO(blockArr, nx, ny, nz, uAxis, vAxis);
+			packedAO = disableAO ? 0 : computeAO(session, nx, ny, nz, uAxis, vAxis);
 		} else if (!preferCurrent && nbrParticipates) {
 			if (!nbrShapeInfo && nbrSolid) {
 				nbrShapeInfo = getShapeInfo(neighborPacked);
@@ -449,7 +436,7 @@ function processCell(
 				(nbrIsCube ? 0 : NON_CUBE_MASK) |
 				BACK_FACE_MASK;
 
-			packedAO = disableAO ? 0 : computeAO(blockArr, bx, by, bz, uAxis, vAxis);
+			packedAO = disableAO ? 0 : computeAO(session, bx, by, bz, uAxis, vAxis);
 		} else {
 			mask[outIndex] = 0;
 			lightMask[outIndex] = 0;
@@ -458,7 +445,10 @@ function processCell(
 
 		if ((packedMask & 0x3ff) === WATER_BLOCK_ID) {
 			packedMask &= ~(0x7 << 13);
-			if ((blockArr[paddedIndex(bx, by + 1, bz)] & 0x3ff) === WATER_BLOCK_ID) {
+			if (
+				(blockArr[session.padIndex(bx, by + 1, bz)] & 0x3ff) ===
+				WATER_BLOCK_ID
+			) {
 				packedMask |= WATER_ABOVE_MASK;
 			}
 		}
@@ -530,7 +520,7 @@ function processCell(
 			(currentPacked & PACKED_ID_STATE_MASK) |
 			(currShapeInfo.isCube ? 0 : NON_CUBE_MASK);
 
-		packedAO = disableAO ? 0 : computeAO(blockArr, nx, ny, nz, uAxis, vAxis);
+		packedAO = disableAO ? 0 : computeAO(session, nx, ny, nz, uAxis, vAxis);
 	} else if (nbrShapeInfo) {
 		const nbrIsCube = nbrShapeInfo.isCube;
 		packedMask =
@@ -538,7 +528,7 @@ function processCell(
 			(nbrIsCube ? 0 : NON_CUBE_MASK) |
 			BACK_FACE_MASK;
 
-		packedAO = disableAO ? 0 : computeAO(blockArr, bx, by, bz, uAxis, vAxis);
+		packedAO = disableAO ? 0 : computeAO(session, bx, by, bz, uAxis, vAxis);
 	} else {
 		mask[outIndex] = 0;
 		lightMask[outIndex] = 0;
@@ -566,7 +556,7 @@ function processCell(
 			aboveZ = nz;
 		}
 		if (
-			(blockArr[paddedIndex(aboveX, aboveY + 1, aboveZ)] & 0x3ff) ===
+			(blockArr[session.padIndex(aboveX, aboveY + 1, aboveZ)] & 0x3ff) ===
 			WATER_BLOCK_ID
 		) {
 			packedMask |= WATER_ABOVE_MASK;

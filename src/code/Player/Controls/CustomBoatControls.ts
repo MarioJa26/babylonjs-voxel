@@ -13,11 +13,11 @@ import { handleDebugKey } from "./DebugControlHelper";
 export type BoatControlEntity = {
 	mount: Mount;
 	submergedPoints: number;
-	boatPosition: Vec3;
 	boatMesh: Mesh;
 	currentYaw: number;
 	applyImpulse(impulse: Vec3, worldPoint: Vec3): void;
 	applyAngularImpulse(impulse: Vec3): void;
+	getBoatPositionToRef(out: Vec3): void;
 };
 
 export class CustomBoatControls implements IControls<BoatControlEntity> {
@@ -32,6 +32,7 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 	readonly #_angularLeft = vec3Zero();
 	readonly #_angularRight = vec3Zero();
 	readonly #_forward = vec3Zero();
+	readonly #_position = vec3Zero();
 
 	public static KEY_LEFT = ["a", "arrowleft"];
 	public static KEY_RIGHT = ["d", "arrowright"];
@@ -143,12 +144,15 @@ export class CustomBoatControls implements IControls<BoatControlEntity> {
 			return;
 		}
 
-		const position = this.#controlledEntity.boatPosition;
+		this.#controlledEntity.getBoatPositionToRef(this.#_position);
+		const position = this.#_position;
 
 		// Build rotation matrix from currentYaw — the hull mesh is always identity
 		// so we can never use boatMesh.rotationQuaternion or boatMesh.forward here.
-		const rot = Matrix.RotationY(this.#controlledEntity.currentYaw);
-		CustomBoatControls.#rotationMatrix.copyFrom(rot);
+		Matrix.RotationYToRef(
+			this.#controlledEntity.currentYaw,
+			CustomBoatControls.#rotationMatrix,
+		);
 
 		transformNormalVec3ToRef(
 			this.#pushAngularVectorLeft,

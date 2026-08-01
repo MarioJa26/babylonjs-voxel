@@ -17,6 +17,7 @@ export class JetSkiControls implements IControls<BoatControlEntity> {
 	readonly #_angularLeft = vec3Zero();
 	readonly #_angularRight = vec3Zero();
 	readonly #_forward = vec3Zero();
+	readonly #_position = vec3Zero();
 
 	public static KEY_LEFT = ["a", "arrowleft"];
 	public static KEY_RIGHT = ["d", "arrowright"];
@@ -128,10 +129,13 @@ export class JetSkiControls implements IControls<BoatControlEntity> {
 		if (this.#controlledEntity.submergedPoints <= 1) {
 			return;
 		}
-		const position = this.#controlledEntity.boatPosition;
+		this.#controlledEntity.getBoatPositionToRef(this.#_position);
+		const position = this.#_position;
 		// Lite `Mesh` has no rotationQuaternion — derive heading from currentYaw.
-		const rot = Matrix.RotationY(this.#controlledEntity.currentYaw);
-		JetSkiControls.#rotationMatrix.copyFrom(rot);
+		Matrix.RotationYToRef(
+			this.#controlledEntity.currentYaw,
+			JetSkiControls.#rotationMatrix,
+		);
 		transformNormalVec3ToRef(
 			this.#pushAngularVectorLeft,
 			JetSkiControls.#rotationMatrix,

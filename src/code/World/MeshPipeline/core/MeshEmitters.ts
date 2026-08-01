@@ -1,23 +1,14 @@
 // MeshPipeline/core/MeshEmitters.ts
 
-import { ResizableTypedArray } from "../../Chunk/DataStructures/ResizableTypedArray";
 import type { WorkerInternalMeshData } from "../../Chunk/DataStructures/WorkerInternalMeshData";
-import type { MeshContext } from "../types/MeshTypes";
-import { mergeMeshData } from "./MeshAssembler";
-import { createMeshContext } from "./MeshContext";
 import { VoxelPipeline } from "./VoxelPipeline";
+import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
 /**
  * Public API object exposing all meshing entry points.
  */
 export const MeshEmitters = {
-	createContext: createMeshContext,
-
-	createEmptyMeshData,
-
 	buildVoxelMesh,
-
-	mergeMeshData,
 };
 
 /**
@@ -40,39 +31,15 @@ export function reserveMeshCapacity(
 }
 
 /**
- * Create an empty WorkerInternalMeshData object (strict TS).
- * The caller must provide your engine's ResizableTypedArray & WorkerInternalMeshData classes.
+ * Build the full voxel mesh for one chunk into the worker's reused output
+ * buffers.
  *
- * THIS FUNCTION mirrors how your engine constructs the output mesh data.
+ * The session carries the padded grids, greedy scratch buffers and the cached
+ * VoxelPipeline (created once per worker), so a session can be reused across
+ * builds on the single-threaded worker with zero per-build allocation.
  */
-
-export function createEmptyMeshData(): WorkerInternalMeshData {
-	return {
-		faceDataA: new ResizableTypedArray(Uint8Array),
-		faceDataB: new ResizableTypedArray(Uint8Array),
-		faceDataC: new ResizableTypedArray(Uint8Array),
-		faceCount: 0,
-	};
-}
-
-/**
- * Placeholder for voxel meshing until Phase 7.
- * This will call:
- *  - GreedyPipeline
- *  - AO pipeline
- *  - FaceEmitter
- *  - ShapePipeline
- *
- * For now we define the signature.
- */
-
-// PERF: Cache VoxelPipeline instance to avoid per-build allocations of
-// VoxelPipeline + VoxelGreedyAdapter + VoxelMaskExtractor + VoxelFaceEmitterAdapter.
-let _cachedPipeline: VoxelPipeline | null = null;
-let _cachedPipelineCtx: MeshContext | null = null;
-
 export function buildVoxelMesh(
-	ctx: MeshContext,
+	session: MeshBuildSession,
 	opaqueOut: WorkerInternalMeshData,
 	transparentOut: WorkerInternalMeshData,
 ): void {
@@ -81,16 +48,21 @@ export function buildVoxelMesh(
 	// (e.g. fences, ~15 quads/block worst case) can emit many more, so size
 	// for size^3 * 16 blocks + greedy headroom. Overestimate is transient
 	// (arrays are sliced to actual length and discarded after the build).
-	const maxQuads =
-		ctx.size * ctx.size * ctx.size * 16 + 3 * ctx.size * ctx.size;
+	const size = session.size;
+	const maxQuads = size * size * size * 16 + 3 * size * size;
 	reserveMeshCapacity(opaqueOut, maxQuads);
 	reserveMeshCapacity(transparentOut, maxQuads);
 
-	if (_cachedPipeline && _cachedPipelineCtx === ctx) {
-		_cachedPipeline.build(opaqueOut, transparentOut);
-	} else {
-		_cachedPipeline = new VoxelPipeline(ctx);
-		_cachedPipelineCtx = ctx;
-		_cachedPipeline.build(opaqueOut, transparentOut);
+	// Point the session's quad buffers at the (reused) output meshes.
+	// bind() zeroes the internal face counter; the worker already reset the
+	// ResizableTypedArray lengths + faceCount before calling this.
+	session.quadOpaque.bind(opaqueOut);
+	session.quadTransparent.bind(transparentOut);
+
+	let pipeline = session.pipeline;
+	if (!pipeline) {
+		pipeline = new VoxelPipeline(session);
+		session.pipeline = pipeline;
 	}
+	pipeline.build();
 }

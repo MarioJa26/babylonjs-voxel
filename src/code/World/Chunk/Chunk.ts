@@ -85,12 +85,6 @@ function runChunkDisposeHooks(chunk: Chunk): void {
 
 export class Chunk {
 	public readonly id: bigint;
-	// PERF: neighbor ids are computed lazily (and cached) on first access
-	// rather than eagerly in the constructor — the 6 BigInt packCoords calls
-	// were a major cost on the chunk-creation hot path (the 1ms streaming
-	// spike) even though neighbors aren't needed until culling/meshing.
-	private _neighborIds: bigint[] | null = null;
-
 	public lodLevel = 0;
 
 	public static readonly SIZE = GenerationParams.CHUNK_SIZE;
@@ -114,8 +108,31 @@ export class Chunk {
 	public isTerrainScheduled = false;
 	public isLightDirty = false;
 	public remeshQueued = false;
+	/**
+	 * Set when a remesh arrives for a chunk whose mesh was superseded while
+	 * the previous request was still in flight — the pool re-runs the remesh
+	 * once the in-flight key clears. Flag lives on the chunk (not a Map) to
+	 * avoid BigInt-keyed bookkeeping on the worker-message hot path.
+	 */
+	public rerunRemeshAfterInflight = false;
 	/** Monotonically increases whenever a new mesh is requested for this chunk. */
 	public meshRevision = 0;
+	/**
+	 * P2.4: Monotonically increases whenever the chunk's BLOCK content changes
+	 * (setBlock / loadFromStorage / loadLodOnlyFromStorage). Unlike
+	 * meshRevision — which also bumps on light-triggered remeshes — this only
+	 * moves when the data behind the border slabs actually changes, so the
+	 * ChunkWorker's slab cache can reuse block borders across relight rounds.
+	 */
+	public blockRevision = 0;
+	/**
+	 * P2.4: Monotonically stamped on every loadFromStorage. A chunk id is
+	 * derived from world coordinates and is reused when a chunk is disposed
+	 * and later re-created, so caches keyed by chunk id must also validate
+	 * this generation counter.
+	 */
+	public generation = 0;
+	private static _generationCounter = 0;
 
 	public get isSolidOccluder(): boolean {
 		return this.isLoaded && this._isUniform && this._uniformBlockId !== 0;
@@ -178,7 +195,6 @@ export class Chunk {
 	private _isUniform = true;
 	private _uniformBlockId = 0;
 	private _palette: Uint16Array | null = null;
-	private _paletteIndexMap: Map<number, number> | null = null;
 	private _hasVoxelData = false;
 
 	// Cached Uint32Array view over light_array — avoids re-allocation on every recomputeDarkCache call.
@@ -296,7 +312,9 @@ export class Chunk {
 			? new Uint8Array(new SharedArrayBuffer(0))
 			: new Uint8Array(0);
 
-	public cachedLODMeshes = new Map<number, CachedLODMesh>();
+	// PERF: lazily allocated — most chunks never cache an LOD mesh, so the
+	// Map is only created on first set instead of once per chunk constructor.
+	private _cachedLODMeshes: Map<number, CachedLODMesh> | null = null;
 
 	private static readonly _lightEmissionLUT = (() => {
 		const lut = new Uint8Array(256);
@@ -388,26 +406,21 @@ export class Chunk {
 			this._uniformBlockId = uniformBlockId;
 			this._block_array = null;
 			this._palette = null;
-			this._paletteIndexMap = null;
 		} else if (palette && blocks instanceof Uint8Array) {
 			this._isUniform = false;
 			this._uniformBlockId = 0;
 			this._palette = palette;
-			this._paletteIndexMap = null;
 			this._block_array = blocks;
-			this._buildPaletteIndexMap();
 		} else if (blocks) {
 			this._isUniform = false;
 			this._uniformBlockId = 0;
 			this._palette = null;
-			this._paletteIndexMap = null;
 			this._block_array = blocks;
 		} else {
 			this._isUniform = true;
 			this._uniformBlockId = 0;
 			this._block_array = null;
 			this._palette = null;
-			this._paletteIndexMap = null;
 		}
 
 		if (this._palette) {
@@ -425,6 +438,9 @@ export class Chunk {
 			this.initializeSunlight();
 		}
 		this.recomputeDarkCache();
+
+		this.blockRevision++;
+		this.generation = ++Chunk._generationCounter;
 
 		this.isLoaded = true;
 		Chunk.loadedChunks.add(this);
@@ -515,9 +531,10 @@ export class Chunk {
 		this._palette = null;
 		this._paletteOpacity = null;
 		this._denseOpacity = null;
-		this._paletteIndexMap = null;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
 		this._isDarkCached = false;
+		this.blockRevision++;
+		this.generation = ++Chunk._generationCounter;
 		this.isLoaded = true;
 		Chunk.loadedChunks.add(this);
 		Chunk.loadedChunkIndex.register(this);
@@ -530,26 +547,39 @@ export class Chunk {
 	// =========================================================================
 
 	public getCachedLODMesh(lod: number): CachedLODMesh | null {
-		return this.cachedLODMeshes.get(lod) ?? null;
+		return this._cachedLODMeshes?.get(lod) ?? null;
 	}
 	public hasCachedLODMesh(lod: number): boolean {
-		const c = this.cachedLODMeshes.get(lod);
+		const c = this._cachedLODMeshes?.get(lod);
 		return !!c && (!!c.opaque || !!c.transparent);
 	}
 	public setCachedLODMesh(lod: number, mesh: CachedLODMesh): void {
-		this.cachedLODMeshes.set(lod, {
-			opaque: mesh.opaque ?? null,
-			transparent: mesh.transparent ?? null,
-		});
+		let cache = this._cachedLODMeshes;
+		if (cache === null) {
+			cache = new Map<number, CachedLODMesh>();
+			this._cachedLODMeshes = cache;
+		}
+		const entry = cache.get(lod);
+		if (entry) {
+			entry.opaque = mesh.opaque ?? null;
+			entry.transparent = mesh.transparent ?? null;
+		} else {
+			cache.set(lod, {
+				opaque: mesh.opaque ?? null,
+				transparent: mesh.transparent ?? null,
+			});
+		}
 	}
 	public clearCachedLODMeshes(): void {
-		this.cachedLODMeshes.clear();
+		this._cachedLODMeshes?.clear();
 	}
 	public getSerializableLODMeshCache(): SerializedLODMeshCache | undefined {
-		if (this.cachedLODMeshes.size === 0) return undefined;
+		if (this._cachedLODMeshes === null || this._cachedLODMeshes.size === 0) {
+			return undefined;
+		}
 		const out: SerializedLODMeshCache = {};
 		let count = 0;
-		for (const [lod, mesh] of this.cachedLODMeshes.entries()) {
+		for (const [lod, mesh] of this._cachedLODMeshes.entries()) {
 			if (!mesh.opaque && !mesh.transparent) continue;
 			out[lod] = {
 				opaque: mesh.opaque ?? null,
@@ -560,16 +590,16 @@ export class Chunk {
 		return count === 0 ? undefined : out;
 	}
 	public restoreLODMeshCache(cache?: SerializedLODMeshCache): void {
-		this.cachedLODMeshes.clear();
+		this._cachedLODMeshes?.clear();
 		if (!cache) return;
 		for (const key of Object.keys(cache)) {
 			const lod = Number(key);
 			if (!Number.isFinite(lod)) continue;
 			const entry = cache[lod];
 			if (!entry?.opaque && !entry?.transparent) continue;
-			this.cachedLODMeshes.set(lod, {
-				opaque: entry?.opaque ?? null,
-				transparent: entry?.transparent ?? null,
+			this.setCachedLODMesh(lod, {
+				opaque: entry.opaque ?? null,
+				transparent: entry.transparent ?? null,
 			});
 		}
 	}
@@ -694,11 +724,9 @@ export class Chunk {
 		if (seedLength > 0) {
 			const pool = Chunk._lightPool;
 			if (pool) {
-				pool.enqueueDeferredLightFromSunlightInit?.(
-					this,
-					seedQueue.slice(0, seedLength),
-					seedLength,
-				);
+				const seedCopy = new Uint16Array(seedLength);
+				seedCopy.set(seedQueue.subarray(0, seedLength));
+				pool.enqueueDeferredLightFromSunlightInit?.(this, seedCopy, seedLength);
 			}
 		}
 	}
@@ -812,21 +840,6 @@ export class Chunk {
 	}
 
 	/**
-	 * Build palette index map eagerly so that setBlock's palette→index
-	 * lookup is O(1) from the first call instead of O(palette) on demand.
-	 */
-	private _buildPaletteIndexMap(): void {
-		const pal = this._palette;
-		if (!pal) {
-			this._paletteIndexMap = null;
-			return;
-		}
-		const pm = new Map<number, number>();
-		for (let i = 0; i < pal.length; i++) pm.set(pal[i], i);
-		this._paletteIndexMap = pm;
-	}
-
-	/**
 	 * Precompute opacity flag for each palette entry. Called whenever the
 	 * palette is created or mutated so that isOpaqueAtIndex can do a single
 	 * nibble-read + array-lookup instead of unpackBlockId + BLOCK_TYPE.
@@ -925,13 +938,11 @@ export class Chunk {
 			this._isUniform = false;
 			this._hasVoxelData = true;
 			this._palette = new Uint16Array([this._uniformBlockId]);
-			this._paletteIndexMap = null;
 			let newIndex = 0;
 			if (this._palette[0] !== packedBlock) {
 				_twoEntryPalette[0] = this._palette[0];
 				_twoEntryPalette[1] = packedBlock;
 				this._palette = new Uint16Array(_twoEntryPalette);
-				this._paletteIndexMap = null;
 				newIndex = 1;
 			}
 			this._block_array = new Uint8Array(
@@ -946,33 +957,32 @@ export class Chunk {
 			oldPacked = this._palette[paletteIndex];
 			if (oldPacked === packedBlock) return;
 
-			let pm = this._paletteIndexMap;
-			if (!pm) {
-				pm = new Map();
-				for (let i = 0; i < this._palette.length; i++) {
-					pm.set(this._palette[i], i);
+			// PERF: linear scan instead of a per-chunk Map — palettes are
+			// capped at 16 entries before promoting to dense storage, so the
+			// Map's build+churn cost was pure garbage per chunk load.
+			let npi = -1;
+			const pal = this._palette;
+			for (let i = 0; i < pal.length; i++) {
+				if (pal[i] === packedBlock) {
+					npi = i;
+					break;
 				}
-				this._paletteIndexMap = pm;
 			}
-			let npi = pm.get(packedBlock);
-			if (npi === undefined) {
-				if (this._palette.length < 16) {
-					npi = this._palette.length;
+			if (npi < 0) {
+				if (pal.length < 16) {
+					npi = pal.length;
 					const ep = new Uint16Array(npi + 1);
-					ep.set(this._palette);
+					ep.set(pal);
 					ep[npi] = packedBlock;
 					this._palette = ep;
-					pm.set(packedBlock, npi);
 					this.setNibble(index, npi);
 					paletteChanged = true;
 				} else {
 					const na = new Uint16Array(new SharedArrayBuffer(Chunk.SIZE3 * 2));
-					for (let i = 0; i < Chunk.SIZE3; i++)
-						na[i] = this._palette[this.getNibble(i)];
+					for (let i = 0; i < Chunk.SIZE3; i++) na[i] = pal[this.getNibble(i)];
 					na[index] = packedBlock;
 					this._block_array = na;
 					this._palette = null;
-					this._paletteIndexMap = null;
 					storageLayoutChanged = true;
 				}
 			} else {
@@ -1035,6 +1045,7 @@ export class Chunk {
 
 		this.isModified = true;
 		this.connectivityDirty = true;
+		this.blockRevision++;
 		this.clearCachedLODMeshes();
 		this.scheduleRemesh(true);
 		Chunk.onBlockModified?.(this);
@@ -1128,29 +1139,31 @@ export class Chunk {
 		return getChunk(this.chunkX + dx, this.chunkY + dy, this.chunkZ + dz);
 	}
 
-	// PERF: lazily build + cache the neighbor id list. Neighbor ids are derived
-	// from this.id via BigInt bit-ops (no Number->BigInt conversions or bias
-	// recompute), and only on first access — keeping the constructor free of
-	// the 6 packCoords calls that used to fire on every new chunk.
-	public get neighborIds(): readonly bigint[] {
-		if (this._neighborIds) return this._neighborIds;
-		const AXIS_BITS = 21n;
-		const MASK = (1n << AXIS_BITS) - 1n;
-		const derive = (axis: 0 | 1 | 2, sign: 1n | -1n): bigint => {
-			const shift = BigInt(axis) * AXIS_BITS;
-			const comp = (this.id >> shift) & MASK;
-			const nb = (comp + sign + (1n << AXIS_BITS)) & MASK;
-			return (this.id & ~(MASK << shift)) | (nb << shift);
-		};
-		this._neighborIds = [
-			derive(0, 1n),
-			derive(0, -1n),
-			derive(1, 1n),
-			derive(1, -1n),
-			derive(2, 1n),
-			derive(2, -1n),
-		];
-		return this._neighborIds;
+	// Face-order offsets matching neighborRefs / the culler's face constants:
+	// [0]=+X  [1]=-X  [2]=+Y  [3]=-Y  [4]=+Z  [5]=-Z
+	private static readonly _NEIGHBOR_OFFSETS: readonly (readonly [
+		number,
+		number,
+		number,
+	])[] = [
+		[1, 0, 0],
+		[-1, 0, 0],
+		[0, 1, 0],
+		[0, -1, 0],
+		[0, 0, 1],
+		[0, 0, -1],
+	];
+
+	// PERF: resolve a face-adjacent neighbor via the number-keyed coords
+	// registry instead of deriving+caching 6 BigInt ids per chunk — zero
+	// allocation on the culling/dispose paths.
+	public getNeighborChunk(faceIdx: number): Chunk | undefined {
+		const off = Chunk._NEIGHBOR_OFFSETS[faceIdx];
+		return getChunk(
+			this.chunkX + off[0],
+			this.chunkY + off[1],
+			this.chunkZ + off[2],
+		);
 	}
 
 	public markLightChanged(): void {
@@ -1327,9 +1340,8 @@ export class Chunk {
 		// Null our slot in each live neighbour's neighborRefs before removing
 		// ourselves from chunkInstances, so no chunk holds a dangling ref to us.
 		// d ^ 1 gives the opposite direction (the face pointing back toward us).
-		const ids = this.neighborIds;
 		for (let d = 0; d < 6; d++) {
-			const nbr = Chunk.chunkInstances.get(ids[d]);
+			const nbr = this.getNeighborChunk(d);
 			if (nbr) nbr.neighborRefs[d ^ 1] = null;
 		}
 		this.neighborRefs.fill(null);
@@ -1360,7 +1372,6 @@ export class Chunk {
 		this._palette = null;
 		this._paletteOpacity = null;
 		this._denseOpacity = null;
-		this._paletteIndexMap = null;
 		this._la32 = null;
 		this._hasVoxelData = false;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
@@ -1379,6 +1390,7 @@ export class Chunk {
 		Chunk.loadedChunkIndex.unregister(this);
 		this.isTerrainScheduled = false;
 		this.remeshQueued = false;
+		this.rerunRemeshAfterInflight = false;
 		Chunk.chunkInstances.delete(this.id);
 		_deleteByCoords(this);
 		this.bfsQueryId = 0;

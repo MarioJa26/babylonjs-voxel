@@ -1,29 +1,11 @@
 // MeshPipeline/core/AOPipeline.ts
 
-import type { BlockShapeInfo } from "../types/MeshTypes";
-import { FLAG_PARTIAL, FLAG_SOLID, getCachedFlagsAndId } from "./BlockFlags";
-import { paddedIndex } from "./WorkerMeshHelpers";
-
-/**
- * Utility: determine if a block occludes light for AO.
- *
- * AO should only treat a block as an occluder if it fully closes the relevant voxel face,
- * which for ordinary full cubes means all faces are closed.
- *
- * IMPORTANT:
- * Do NOT require isSliceCompatible here — normal cubes are not slice-compatible,
- * but they absolutely should occlude AO.
- */
-export function isOccluder(
-	packedBlock: number,
-	shape: BlockShapeInfo,
-): boolean {
-	if (!packedBlock) return false;
-
-	// For now keep AO conservative:
-	// only fully closed cube-like blocks count as AO occluders.
-	return shape.isCube && shape.closedFaceMask !== 0;
-}
+import {
+	FLAG_PARTIAL,
+	FLAG_SOLID,
+	getCachedFlagsAndId,
+} from "./BlockInfoCache";
+import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
 /**
  * Compute packed AO value for the 4 corners of a face.
@@ -36,6 +18,8 @@ export function isOccluder(
  *
  * This version fixes the directional 1-off issue by explicitly anchoring the AO samples
  * on the outside side of the face, exactly like the geometry fix did for quad placement.
+ *
+ * Stateless: all reads go through the session's padded grid.
  */
 // Axis unit-vector LUTs (avoids per-axis ternary/branch in computeAO).
 const AXIS_DX = [1, 0, 0];
@@ -43,13 +27,16 @@ const AXIS_DY = [0, 1, 0];
 const AXIS_DZ = [0, 0, 1];
 
 export function computeAO(
-	blockArr: Uint16Array,
+	session: MeshBuildSession,
 	faceX: number,
 	faceY: number,
 	faceZ: number,
 	uAxis: number,
 	vAxis: number,
 ): number {
+	const blockArr = session.block;
+	const padIndex = session.padIndex;
+
 	const ux = AXIS_DX[uAxis];
 	const uy = AXIS_DY[uAxis];
 	const uz = AXIS_DZ[uAxis];
@@ -63,28 +50,28 @@ export function computeAO(
 	// Each read indexes the padded grid directly (no getBlock closure) and uses
 	// the combined flags+id cache; only the low flags bits are needed for AO.
 	const fMu = getCachedFlagsAndId(
-		blockArr[paddedIndex(faceX - ux, faceY - uy, faceZ - uz)],
+		blockArr[padIndex(faceX - ux, faceY - uy, faceZ - uz)],
 	);
 	const fPu = getCachedFlagsAndId(
-		blockArr[paddedIndex(faceX + ux, faceY + uy, faceZ + uz)],
+		blockArr[padIndex(faceX + ux, faceY + uy, faceZ + uz)],
 	);
 	const fMv = getCachedFlagsAndId(
-		blockArr[paddedIndex(faceX - vx, faceY - vy, faceZ - vz)],
+		blockArr[padIndex(faceX - vx, faceY - vy, faceZ - vz)],
 	);
 	const fPv = getCachedFlagsAndId(
-		blockArr[paddedIndex(faceX + vx, faceY + vy, faceZ + vz)],
+		blockArr[padIndex(faceX + vx, faceY + vy, faceZ + vz)],
 	);
 	const fMumv = getCachedFlagsAndId(
-		blockArr[paddedIndex(faceX - ux - vx, faceY - uy - vy, faceZ - uz - vz)],
+		blockArr[padIndex(faceX - ux - vx, faceY - uy - vy, faceZ - uz - vz)],
 	);
 	const fPumv = getCachedFlagsAndId(
-		blockArr[paddedIndex(faceX + ux - vx, faceY + uy - vy, faceZ + uz - vz)],
+		blockArr[padIndex(faceX + ux - vx, faceY + uy - vy, faceZ + uz - vz)],
 	);
 	const fPupv = getCachedFlagsAndId(
-		blockArr[paddedIndex(faceX + ux + vx, faceY + uy + vy, faceZ + uz + vz)],
+		blockArr[padIndex(faceX + ux + vx, faceY + uy + vy, faceZ + uz + vz)],
 	);
 	const fMupv = getCachedFlagsAndId(
-		blockArr[paddedIndex(faceX - ux + vx, faceY - uy + vy, faceZ - uz + vz)],
+		blockArr[padIndex(faceX - ux + vx, faceY - uy + vy, faceZ - uz + vz)],
 	);
 
 	const occ = (f: number) =>

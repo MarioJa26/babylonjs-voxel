@@ -582,6 +582,7 @@ function raycastFirstBoatBlock(
 	let hasHit = false;
 
 	for (const boatChunk of BoatChunk.getActiveChunks()) {
+		if (!isBoatChunkInReach(ray, boatChunk)) continue;
 		if (!raycastSingleBoatChunk(ray, boatChunk, shouldHit)) continue;
 		if (!hasHit || _sharedHit.t < bestT) {
 			bestT = _sharedHit.t;
@@ -593,6 +594,44 @@ function raycastFirstBoatBlock(
 
 	_sharedHit.dynamicContext = _sharedBoatContext;
 	return _sharedHit;
+}
+
+// Half-diagonal of the 32³ local chunk box (sqrt(3) * 16) — used to bound
+// the chunk in world space without per-corner transforms.
+const BOAT_CHUNK_HALF_DIAG = Math.sqrt(3) * (Chunk.SIZE / 2);
+
+/**
+ * Cheap world-space bounding-sphere reject that runs before the per-chunk
+ * matrix inverse + local DDA in raycastSingleBoatChunk: transforms the
+ * chunk's local box center by the (already-computed, free to read) world
+ * matrix and tests the squared distance against (ray length + scaled
+ * half-diagonal)². Rejects far-away boats with ~30 flops instead of a
+ * matrix inverse.
+ */
+function isBoatChunkInReach(ray: RayLike, boatChunk: BoatChunk): boolean {
+	const wm = boatChunk.visualRoot.worldMatrix;
+	const cx = boatChunk.center.x;
+	const cy = boatChunk.center.y;
+	const cz = boatChunk.center.z;
+	// Local box center, offset by the chunk's center alignment.
+	const lcx = Chunk.SIZE / 2 - cx;
+	const lcy = Chunk.SIZE / 2 - cy;
+	const lcz = Chunk.SIZE / 2 - cz;
+	// M * (boxCenterLocal) — affine part only (m[12..14] is the translation).
+	const ax = wm[0] * lcx + wm[4] * lcy + wm[8] * lcz + wm[12];
+	const ay = wm[1] * lcx + wm[5] * lcy + wm[9] * lcz + wm[13];
+	const az = wm[2] * lcx + wm[6] * lcy + wm[10] * lcz + wm[14];
+	// Max matrix column length → conservative world-space bounding radius.
+	const scaleX = Math.hypot(wm[0], wm[1], wm[2]);
+	const scaleY = Math.hypot(wm[4], wm[5], wm[6]);
+	const scaleZ = Math.hypot(wm[8], wm[9], wm[10]);
+	const radius = Math.max(scaleX, scaleY, scaleZ) * BOAT_CHUNK_HALF_DIAG;
+
+	const ox = ray.origin.x - ax;
+	const oy = ray.origin.y - ay;
+	const oz = ray.origin.z - az;
+	const limit = ray.length + radius;
+	return ox * ox + oy * oy + oz * oz <= limit * limit;
 }
 
 function raycastSingleBoatChunk(

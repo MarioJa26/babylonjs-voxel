@@ -53,6 +53,11 @@ interface MergedBuffers {
 	d: Uint8Array;
 }
 
+export interface MergedFaceRange {
+	start: number; // first face index in merged-face coordinates
+	count: number;
+}
+
 export interface MergedMeshGroup {
 	groupKey: string;
 	gridX: number;
@@ -97,6 +102,13 @@ export interface MergedMeshGroup {
 
 	dirty: boolean;
 
+	// Face ranges (merged-face coordinates) that changed on the most recent
+	// rebuildGroupData pass. Consumed by the packed-mesh updater so it can
+	// re-pack + re-upload only the members that actually remeshed instead of
+	// the whole merged group. Cleared/regenerated on every rebuild.
+	dirtyOpaqueRanges: MergedFaceRange[] | null;
+	dirtyTransparentRanges: MergedFaceRange[] | null;
+
 	// Mesh references — set by ChunkMesher.ts after creating/updating.
 	// These are NOT owned by MergedMeshManager; ownership stays with ChunkMesher.
 	opaqueMeshRef: any | null;
@@ -134,6 +146,25 @@ function invalidateGroupBuildCache(group: MergedMeshGroup): void {
 	for (const m of group.membersArray) {
 		m.lastBuiltOpaque = null;
 		m.lastBuiltTransparent = null;
+	}
+}
+
+// Records a re-copied member's face range into `ranges` (merged-face
+// coordinates), coalescing with the previous range when adjacent so the
+// packed-mesh updater issues as few writeBuffer calls as possible. Members
+// are iterated in merged order and never overlap, so adjacency is the only
+// merge case.
+function pushDirtyRange(
+	ranges: MergedFaceRange[],
+	start: number,
+	count: number,
+): void {
+	if (count <= 0) return;
+	const prev = ranges[ranges.length - 1];
+	if (prev && prev.start + prev.count === start) {
+		prev.count += count;
+	} else {
+		ranges.push({ start, count });
 	}
 }
 
@@ -360,6 +391,9 @@ export function assignChunkToGroup(
 
 			dirty: true,
 
+			dirtyOpaqueRanges: null,
+			dirtyTransparentRanges: null,
+
 			opaqueMeshRef: null,
 			transparentMeshRef: null,
 		};
@@ -520,8 +554,10 @@ export function flushDirtyMergedGroups(): void {
 	let budgetExhausted = false;
 	let i = 0;
 	for (; i < snapshot.length; i++) {
-		// Re-check budget every group (the rebuild below is the expensive part)
-		if (i > 0 && (i & 3) === 0 && performance.now() - _start > 5) {
+		// Re-check budget before every group (the rebuild below is the
+		// expensive part), so a burst of heavy groups cannot overrun the
+		// timer well past the budget.
+		if (i > 0 && performance.now() - _start > 5) {
 			budgetExhausted = true;
 			break;
 		}
@@ -660,6 +696,13 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	const members = group.membersArray;
 	const memberCount = members.length;
 
+	// Ranges of the merged buffer that changed this pass. Consumed by the
+	// packed-mesh updater to re-pack/re-upload only those faces.
+	const opaqueRanges = (group.dirtyOpaqueRanges ??= []);
+	opaqueRanges.length = 0;
+	const transparentRanges = (group.dirtyTransparentRanges ??= []);
+	transparentRanges.length = 0;
+
 	// Single pass to compute both totals instead of scanning membersArray
 	// twice (once per face-data kind). Member count is bounded at 64, so
 	// this isn't about a single rebuild being slow — it's a free win with
@@ -724,6 +767,7 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 				copyFaceBytes(mergedC, data.faceDataC, byteCount, writeByte);
 				m.lastBuiltOpaque = data;
 				m.lastBuiltOpaqueOffset = writeByte;
+				pushDirtyRange(opaqueRanges, writeFace, fc);
 			}
 
 			mergedD.fill(m.localIndex, writeFace, writeFace + fc);
@@ -794,6 +838,7 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 				copyFaceBytes(mergedC, data.faceDataC, byteCount, writeByte);
 				m.lastBuiltTransparent = data;
 				m.lastBuiltTransparentOffset = writeByte;
+				pushDirtyRange(transparentRanges, writeFace, fc);
 			}
 
 			mergedD.fill(m.localIndex, writeFace, writeFace + fc);

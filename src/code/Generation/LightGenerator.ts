@@ -100,6 +100,33 @@ export class LightGenerator {
 	}
 
 	/**
+	 * Immediate full-lighting path: seeds skylight into the shared queue and
+	 * propagates from it in place, without allocating the snapshot slice that
+	 * seedInitialLight + propagateLight produce. The queue is a ring buffer, so
+	 * reading and extending it in the same pass is safe.
+	 */
+	public seedAndPropagateLightImmediate(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		blocks: Uint8Array,
+		light: Uint8Array,
+		topSunlightMask?: Uint8Array,
+	): void {
+		const tail = this.seedInitialLightIntoSharedQueue(
+			chunkX,
+			chunkY,
+			chunkZ,
+			blocks,
+			light,
+			topSunlightMask,
+		);
+		if (tail > 0) {
+			this.propagateLightFromQueue(blocks, light, this.lightQueue, tail);
+		}
+	}
+
+	/**
 	 * Shared internal seeding routine used by both:
 	 * - generate(...) immediate full-light path
 	 * - seedInitialLight(...) deferred-light path

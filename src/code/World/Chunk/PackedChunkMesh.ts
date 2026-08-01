@@ -38,6 +38,7 @@ import {
 	updateStorageBuffer,
 } from "@babylonjs/lite";
 import { onGpuWorkDone } from "../Light/liteGpuBuffer.js";
+import type { MergedFaceRange } from "./MergedMeshManager.js";
 
 // Babylon Lite's public type surface omits the thinInstances field and a few
 // runtime-only fields this module relies on. These local extension interfaces
@@ -503,6 +504,27 @@ function uploadFaceRange(arena: number, base: number, count: number): void {
 	);
 }
 
+// Upload only the given arena face ranges (arena-face coordinates). `ranges`
+// are already coalesced by the caller, so each range is one writeBuffer.
+// Ranges are clamped to `faceCount` so a stale/mismatched list can never
+// overwrite another mesh's arena block.
+function uploadFaceRanges(
+	arena: number,
+	faceBase: number,
+	faceCount: number,
+	ranges: readonly MergedFaceRange[],
+): void {
+	for (let r = 0; r < ranges.length; r++) {
+		const { start, count } = ranges[r];
+		const clampedStart = start < 0 ? 0 : start;
+		const clampedEnd = clampedStart + count;
+		if (clampedStart >= faceCount) continue;
+		const n = clampedEnd > faceCount ? faceCount - clampedStart : count;
+		if (n <= 0) continue;
+		uploadFaceRange(arena, faceBase + clampedStart, n);
+	}
+}
+
 function uploadOffsetRange(base: number): void {
 	if (!offsetBuffer) return;
 
@@ -641,7 +663,10 @@ export interface PackedMeshInput {
 // This turns 12 shifts+ORs per face into 3 direct word reads, and replaces
 // four independent `i * 4` index computations per array with one running
 // accumulator.
-function packFaces(state: PackedMeshState): void {
+// Rebuild the cached u32 views over state.input's face data. The views are
+// only invalid when the underlying buffer identity changes (reuseOrCloneU8
+// had to .slice() a fresh copy instead of reusing via .set()).
+function ensureFaceWordViews(state: PackedMeshState): void {
 	const input = state.input;
 	const faceCount = input.faceDataA.length >>> 2;
 
@@ -684,21 +709,54 @@ function packFaces(state: PackedMeshState): void {
 		);
 		state.faceWordsC = cWords;
 	}
+}
+
+// Pack only the given merged-face ranges into the arena. `ranges` are in
+// merged-face coordinates (the concatenated group layout); the arena layout
+// is identical, shifted by state.faceBase. Ranges are clamped to the mesh's
+// face count so a stale/mismatched list can never corrupt the arena.
+function packFaceRanges(
+	state: PackedMeshState,
+	ranges: readonly MergedFaceRange[],
+): void {
+	if (ranges.length === 0) return;
+	ensureFaceWordViews(state);
+	const input = state.input;
 	const ci = input.chunkIndex;
 	const offsetBase = state.offsetBase;
+	const faceCount = input.faceDataA.length >>> 2;
 
 	const arena = faceArenas[state.faceArena];
 	if (!arena) return;
 	const faceCpu = arena.cpu;
 
-	let o = state.faceBase * 4;
-	for (let i = 0; i < faceCount; i++) {
-		faceCpu[o] = aWords[i];
-		faceCpu[o + 1] = bWords[i];
-		faceCpu[o + 2] = cWords[i];
-		faceCpu[o + 3] = offsetBase + ci[i];
-		o += 4;
+	const aWords = state.faceWordsA!;
+	const bWords = state.faceWordsB!;
+	const cWords = state.faceWordsC!;
+
+	const baseWord = state.faceBase * 4;
+	for (let r = 0; r < ranges.length; r++) {
+		const { start, count } = ranges[r];
+		const clampedStart = start < 0 ? 0 : start;
+		const clampedEnd = clampedStart + count;
+		if (clampedStart >= faceCount) continue;
+		const n = clampedEnd > faceCount ? faceCount - clampedStart : count;
+		if (n <= 0) continue;
+		let o = baseWord + clampedStart * 4;
+		const end = clampedStart + n;
+		for (let i = clampedStart; i < end; i++) {
+			faceCpu[o] = aWords[i];
+			faceCpu[o + 1] = bWords[i];
+			faceCpu[o + 2] = cWords[i];
+			faceCpu[o + 3] = offsetBase + ci[i];
+			o += 4;
+		}
 	}
+}
+
+function packFaces(state: PackedMeshState): void {
+	const faceCount = state.input.faceDataA.length >>> 2;
+	packFaceRanges(state, [{ start: 0, count: faceCount }]);
 }
 
 function packOffsets(state: PackedMeshState): void {
@@ -887,6 +945,7 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 export function updatePackedChunkMesh(
 	mesh: Mesh,
 	input: PackedMeshInput,
+	dirtyRanges?: readonly MergedFaceRange[] | null,
 ): Mesh {
 	const state = meshState.get(mesh);
 	if (!state) {
@@ -896,10 +955,6 @@ export function updatePackedChunkMesh(
 	const faceCount = input.faceDataA.length / 4;
 
 	if (faceCount === state.faceCount) {
-		state.input = cloneInput(input, state.input);
-		packFaces(state);
-		uploadFaceRange(state.faceArena, state.faceBase, faceCount);
-
 		const anyMesh = mesh as PackedMesh;
 		const boundMin = reuseOrCloneVec3(state.boundMin, input.boundsMin);
 		const boundMax = reuseOrCloneVec3(state.boundMax, input.boundsMax);
@@ -910,6 +965,24 @@ export function updatePackedChunkMesh(
 		anyMesh.isVisible = true;
 		mesh.material = input.material;
 		mesh.position.set(input.position[0], input.position[1], input.position[2]);
+
+		// Incremental path: `dirtyRanges` (merged-face coordinates) tells us
+		// exactly which members remeshed this pass. Empty means the merged
+		// buffer is byte-identical to what we last packed — skip the clone,
+		// the CPU re-pack and the GPU re-upload entirely (the retained
+		// `state.input` copy is still accurate).
+		if (dirtyRanges && dirtyRanges.length === 0) {
+			return mesh;
+		}
+
+		state.input = cloneInput(input, state.input);
+		if (dirtyRanges && dirtyRanges.length > 0) {
+			packFaceRanges(state, dirtyRanges);
+			uploadFaceRanges(state.faceArena, state.faceBase, faceCount, dirtyRanges);
+		} else {
+			packFaces(state);
+			uploadFaceRange(state.faceArena, state.faceBase, faceCount);
+		}
 
 		return mesh;
 	}

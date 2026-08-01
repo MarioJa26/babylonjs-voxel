@@ -35,6 +35,7 @@ import type { MeshData } from "./DataStructures/MeshData";
 import {
 	assignChunkToGroup,
 	disposeAll,
+	type MergedFaceRange,
 	type MergedMeshGroup,
 	setOnGroupMeshNeedsRebuild,
 } from "./MergedMeshManager";
@@ -331,7 +332,7 @@ function buildLiteMesh(
 	originX: number,
 	originY: number,
 	originZ: number,
-	_isTransparent: boolean,
+	dirtyRanges: readonly MergedFaceRange[] | null,
 ): Mesh | null {
 	const S = GROUP_SIZE * CHUNK_SIZE;
 	const input = _packedInput;
@@ -362,7 +363,7 @@ function buildLiteMesh(
 		return created;
 	}
 
-	const updated = updatePackedChunkMesh(existingMesh, input);
+	const updated = updatePackedChunkMesh(existingMesh, input, dirtyRanges);
 	if (existingMesh.material !== material) existingMesh.material = material;
 	existingMesh.renderOrder = 1;
 	return updated ?? existingMesh;
@@ -389,7 +390,7 @@ setOnGroupMeshNeedsRebuild((group) => {
 			ox,
 			oy,
 			oz,
-			false,
+			group.dirtyOpaqueRanges,
 		) as any;
 		if (built) {
 			group.opaqueMeshRef = built;
@@ -404,7 +405,6 @@ setOnGroupMeshNeedsRebuild((group) => {
 		const mat = getTransparentMaterialForLodBucket(lod);
 		// Only near (lod 0) transparent meshes carry `meta` in color.w; LOD
 		// transparent meshes keep tintBucket for their tint shaders.
-		const isNearTransparent = mat === transparentMaterial;
 		const built = buildLiteMesh(
 			group,
 			group.transparentMeshRef as any,
@@ -413,7 +413,7 @@ setOnGroupMeshNeedsRebuild((group) => {
 			ox,
 			oy,
 			oz,
-			isNearTransparent,
+			group.dirtyTransparentRanges,
 		) as any;
 		if (built) {
 			group.transparentMeshRef = built;

@@ -37,7 +37,18 @@ export class WorldEnvironment {
 	private timeOfDay = 120000;
 	public timeScale = 0;
 	public isPaused = false;
-	public wetness = 0.0;
+	public wetness = 0.1;
+
+	// Per-frame update caches: the sun only moves while timeScale > 0 and the
+	// dome only needs moving when the camera crosses a block boundary. Avoids
+	// material-UBO version bumps + mesh world-matrix writes (and their
+	// queue.writeBuffer calls) on every idle frame.
+	private lastSunDir: [number, number, number] = [NaN, NaN, NaN];
+	private lastSunIntensity = NaN;
+	private lastDomeX = 0;
+	private lastDomeY = 0;
+	private lastDomeZ = 0;
+	private lastFarPlane = NaN;
 
 	constructor(engine: EngineContext, scene: SceneContext) {
 		WorldEnvironment.instance = this;
@@ -60,24 +71,43 @@ export class WorldEnvironment {
 		// camera each frame (see update()) and size it just inside the camera far
 		// plane (default 10000) so it is not clipped. The sky shader uses the
 		// normalized view direction, so it reads as an infinite dome.
-		const cam = this.scene.camera;
-		const r = cam ? 0.9 * cam.farPlane : 9000;
-		this.skybox.scaling.set(r, r, r);
+		if (this.scene.camera) this.syncDome();
 		// Sky tint behind the dome so any gap reads as sky, not black.
 		this.scene.clearColor = { r: 0.5, g: 0.7, b: 0.9, a: 1.0 };
 		addToScene(this.scene, this.skybox);
+	}
+
+	/** Move/resize the sky dome only when the camera or far plane actually
+	 *  moved — avoids a world-matrix version bump (and mesh-UBO writeBuffer)
+	 *  on every idle frame. */
+	private syncDome(): void {
+		const skybox = this.skybox;
+		const cam = this.scene.camera;
+		if (!skybox || !cam) return;
+		const camPos = getCameraPosition(cam);
+		if (
+			Math.abs(camPos.x - this.lastDomeX) > 1.25 ||
+			Math.abs(camPos.y - this.lastDomeY) > 1.25 ||
+			Math.abs(camPos.z - this.lastDomeZ) > 1.25
+		) {
+			skybox.position.copyFrom(camPos);
+			this.lastDomeX = camPos.x;
+			this.lastDomeY = camPos.y;
+			this.lastDomeZ = camPos.z;
+		}
+		const farPlane = cam.farPlane;
+		if (farPlane !== this.lastFarPlane) {
+			const r = 0.9 * farPlane;
+			skybox.scaling.set(r, r, r);
+			this.lastFarPlane = farPlane;
+		}
 	}
 
 	public update(deltaMs: number): void {
 		// Lite has no infiniteDistance flag, so keep the dome centred on the
 		// camera and sized just inside the far plane (recomputed in case the
 		// camera was created after construction).
-		const cam = this.scene.camera;
-		if (this.skybox && cam) {
-			this.skybox.position.copyFrom(getCameraPosition(cam));
-			const r = 0.9 * cam.farPlane;
-			this.skybox.scaling.set(r, r, r);
-		}
+		this.syncDome();
 
 		if (this.isPaused) return;
 
@@ -100,16 +130,28 @@ export class WorldEnvironment {
 
 		const sunIntensity = Math.max(0.0, Math.sin(angle));
 
-		if (this.dirLight) {
+		// Only touch the lights/material when a value actually changed (the
+		// sun is static while timeScale === 0), so steady-state frames skip
+		// every material-UBO version bump + writeBuffer.
+		if (this.dirLight && sunIntensity !== this.lastSunIntensity) {
 			this.dirLight.intensity = 1.0 * sunIntensity;
+			this.lastSunIntensity = sunIntensity;
 		}
 
-		if (this.skyMaterial) {
+		if (
+			this.skyMaterial &&
+			(sx !== this.lastSunDir[0] ||
+				sy !== this.lastSunDir[1] ||
+				sz !== this.lastSunDir[2])
+		) {
 			// Sky disc/gradient must point TOWARD the sun (+sunPos). Chunk
 			// lighting keeps using GLOBAL_VALUES.skyLightDirection (=-sunPos),
 			// which ChunkMesher negates back to +sunPos, so only the sky
 			// uniform is flipped here.
 			setShaderUniform(this.skyMaterial, "sunDirection", [sx, sy, sz]);
+			this.lastSunDir[0] = sx;
+			this.lastSunDir[1] = sy;
+			this.lastSunDir[2] = sz;
 		}
 	}
 

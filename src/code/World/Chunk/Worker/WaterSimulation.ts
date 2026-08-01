@@ -4,11 +4,18 @@ import {
 	isWaterSource,
 } from "../../Texture/BlockType";
 import {
+	type BlockAndStateOut,
+	getBlockAndStateByWorldCoordsInto,
 	getBlockByWorldCoords,
 	getBlockStateByWorldCoords,
 	setBlock,
 } from "../ChunkLoadingSystem";
 import { BlockTickScheduler } from "./BlockTickScheduler";
+
+// Reusable out object for the combined block-id/state lookup — consumed
+// synchronously at each call site, so sharing it is safe (same pattern as
+// ChunkLoadingSystem's own scratch).
+const _blockAndState: BlockAndStateOut = { blockId: 0, blockState: 0 };
 
 // Flattened into parallel typed arrays instead of an array of [dx, dz]
 // tuples — hot loops index straight into contiguous memory with no nested
@@ -360,12 +367,14 @@ function checkInfiniteSource(
 	for (let i = 0; i < HORIZONTAL_DIR_COUNT; i++) {
 		const dx = HORIZONTAL_DX[i];
 		const dz = HORIZONTAL_DZ[i];
-		const nbId = getBlockByWorldCoords(worldX + dx, worldY, worldZ + dz);
-		const nbState = getBlockStateByWorldCoords(
+		getBlockAndStateByWorldCoordsInto(
 			worldX + dx,
 			worldY,
 			worldZ + dz,
+			_blockAndState,
 		);
+		const nbId = _blockAndState.blockId;
+		const nbState = _blockAndState.blockState;
 		if (nbId === BlockType.Water && isWaterSource(nbId, nbState)) {
 			sourceCount++;
 			if (sourceCount >= 2) return true;
@@ -381,10 +390,11 @@ export function processWaterUpdate(
 ): void {
 	const scheduler = BlockTickScheduler.getInstance();
 
-	const blockId = getBlockByWorldCoords(worldX, worldY, worldZ);
+	getBlockAndStateByWorldCoordsInto(worldX, worldY, worldZ, _blockAndState);
+	const blockId = _blockAndState.blockId;
 	if (blockId !== BlockType.Water) return;
 
-	const state = getBlockStateByWorldCoords(worldX, worldY, worldZ);
+	const state = _blockAndState.blockState;
 	const level = getWaterLevel(blockId, state);
 
 	// Hoist aboveId to top of function so it's available for both

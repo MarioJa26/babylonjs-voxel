@@ -13,12 +13,34 @@ import {
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
 
+// P2.4: Versioned cache entry for a decoded block border slab (see
+// ChunkWorker._slabCache below). Validated against (generation, blockRevision)
+// so disposed-and-recreated chunks (reused chunk ids) and block mutations can
+// never serve stale borders.
+type SlabCacheEntry = {
+	generation: number;
+	blockRevision: number;
+	borders: (Uint16Array | undefined)[];
+};
+
 export class ChunkWorker {
 	private terrainWorker: Worker; // terrain + distant terrain + light
 	private voxelWorker: Worker; // voxel mesh
 
 	private distantTerrainSharedInitialized = false;
 	private lightSharedInitialized = false;
+
+	// P2.4: Versioned cache of decoded block border slabs for palette-encoded
+	// neighbor chunks. The palette nibble-decode in postFullRemesh is the most
+	// expensive per-neighbor work of the dispatch, and it is pure re-decoding:
+	// during light-propagation cascades the same chunk is remeshed repeatedly
+	// while its BLOCK borders never change. Entries are validated against
+	// (generation, blockRevision) — see Chunk's docs — and bounded by
+	// _MAX_SLAB_CACHE_ENTRIES (LRU-ish: Map iteration order = insertion order,
+	// oldest deleted first). Light borders are NOT cached: the light grid is a
+	// worker-mutated SharedArrayBuffer with no reliable main-thread version.
+	private readonly _slabCache = new Map<bigint, SlabCacheEntry>();
+	private static readonly _MAX_SLAB_CACHE_ENTRIES = 64;
 
 	// Reusable scratch for remesh dispatch — avoids per-call allocation of the
 	// 26-neighbor arrays and their border slabs. The border/light SCRATCH
@@ -222,36 +244,45 @@ export class ChunkWorker {
 				border.fill(neighbor.uniformBlockId, 0, total);
 			} else if (nArr && nArr.length > 0) {
 				if (nPalette && nPalette.length > 1) {
-					// 4-bit nibble-packed palette storage — must decode per voxel,
-					// but when dx === 0 the run is a full contiguous `size`-length
-					// row starting at an even index (size is always a power of
-					// two), so we can decode both nibbles of each packed byte in
-					// one iteration instead of one nibble at a time.
-					const packed = nArr as Uint8Array;
-					let ci = 0;
-					for (let bz = 0; bz < zCount; bz++) {
-						const nlz = lzStart + bz;
-						for (let by = 0; by < yCount; by++) {
-							const nly = lyStart + by;
-							const rowBase = nly * size + nlz * size2;
-							if (dx === 0) {
-								let idx = rowBase; // lxStart is 0 when dx === 0
-								for (let bx = 0; bx < xCount; bx += 2) {
-									const byte = packed[idx >>> 1];
-									border[ci++] = nPalette[byte & 0x0f] ?? 0;
-									border[ci++] = nPalette[(byte >>> 4) & 0x0f] ?? 0;
-									idx += 2;
-								}
-							} else {
-								for (let bx = 0; bx < xCount; bx++) {
-									const idx = lxStart + bx + rowBase;
-									const byte = packed[idx >>> 1];
-									const pIdx =
-										(idx & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
-									border[ci++] = nPalette[pIdx] ?? 0;
+					// P2.4: 4-bit nibble-packed palette storage — the expensive
+					// decode. Reuse the cached decoded border when the
+					// neighbor's block content hasn't changed.
+					const cached = this._getCachedSlab(neighbor, i, total);
+					if (cached) {
+						border.set(cached, 0);
+					} else {
+						// 4-bit nibble-packed palette storage — must decode per voxel,
+						// but when dx === 0 the run is a full contiguous `size`-length
+						// row starting at an even index (size is always a power of
+						// two), so we can decode both nibbles of each packed byte in
+						// one iteration instead of one nibble at a time.
+						const packed = nArr as Uint8Array;
+						let ci = 0;
+						for (let bz = 0; bz < zCount; bz++) {
+							const nlz = lzStart + bz;
+							for (let by = 0; by < yCount; by++) {
+								const nly = lyStart + by;
+								const rowBase = nly * size + nlz * size2;
+								if (dx === 0) {
+									let idx = rowBase; // lxStart is 0 when dx === 0
+									for (let bx = 0; bx < xCount; bx += 2) {
+										const byte = packed[idx >>> 1];
+										border[ci++] = nPalette[byte & 0x0f] ?? 0;
+										border[ci++] = nPalette[(byte >>> 4) & 0x0f] ?? 0;
+										idx += 2;
+									}
+								} else {
+									for (let bx = 0; bx < xCount; bx++) {
+										const idx = lxStart + bx + rowBase;
+										const byte = packed[idx >>> 1];
+										const pIdx =
+											(idx & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
+										border[ci++] = nPalette[pIdx] ?? 0;
+									}
 								}
 							}
 						}
+						this._putCachedSlab(neighbor, i, border.slice(0, total));
 					}
 				} else {
 					// Dense storage (no palette packing) — indices are always
@@ -372,6 +403,53 @@ export class ChunkWorker {
 		}
 
 		this.voxelWorker.postMessage(msg, transfer);
+	}
+
+	// ---------------------------------------------------------------------
+	// P2.4: versioned block-border slab cache
+	// ---------------------------------------------------------------------
+
+	private _getCachedSlab(
+		neighbor: Chunk,
+		slot: number,
+		total: number,
+	): Uint16Array | undefined {
+		const entry = this._slabCache.get(neighbor.id);
+		if (
+			!entry ||
+			entry.generation !== neighbor.generation ||
+			entry.blockRevision !== neighbor.blockRevision
+		) {
+			return undefined;
+		}
+		const border = entry.borders[slot];
+		return border && border.length === total ? border : undefined;
+	}
+
+	private _putCachedSlab(
+		neighbor: Chunk,
+		slot: number,
+		border: Uint16Array,
+	): void {
+		let entry = this._slabCache.get(neighbor.id);
+		if (
+			!entry ||
+			entry.generation !== neighbor.generation ||
+			entry.blockRevision !== neighbor.blockRevision
+		) {
+			if (this._slabCache.size >= ChunkWorker._MAX_SLAB_CACHE_ENTRIES) {
+				// Map preserves insertion order → first key is the oldest.
+				const oldest = this._slabCache.keys().next();
+				if (!oldest.done) this._slabCache.delete(oldest.value);
+			}
+			entry = {
+				generation: neighbor.generation,
+				blockRevision: neighbor.blockRevision,
+				borders: new Array(27),
+			};
+			this._slabCache.set(neighbor.id, entry);
+		}
+		entry.borders[slot] = border;
 	}
 
 	// Terrain generation stays on terrainWorker

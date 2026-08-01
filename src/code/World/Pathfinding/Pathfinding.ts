@@ -70,6 +70,7 @@ function findWaterSurface(
 	startY: number,
 	searchUp: number,
 	searchDown: number,
+	result: SurfaceResult,
 ): SurfaceResult | null {
 	for (let dy = searchUp; dy >= -searchDown; dy--) {
 		const y = startY + dy;
@@ -78,11 +79,10 @@ function findWaterSurface(
 		const above = getBlockByWorldCoords(x, y + 1, z);
 		if (above !== BlockType.Water && isPassThroughBlock(above)) {
 			const heightCost = dy > 0 ? dy * 4 : -dy;
-			return {
-				groundY: y,
-				cost: 4 + heightCost,
-				kind: PathNodeKind.Water,
-			};
+			result.groundY = y;
+			result.cost = 4 + heightCost;
+			result.kind = PathNodeKind.Water;
+			return result;
 		}
 	}
 	return null;
@@ -98,7 +98,13 @@ export function findSurface(
 	stepDown: number,
 	headroom: number,
 	allowWater = true,
+	result?: SurfaceResult,
 ): SurfaceResult | null {
+	const out: SurfaceResult = result ?? {
+		groundY: 0,
+		cost: 0,
+		kind: PathNodeKind.Land,
+	};
 	for (let dy = stepUp; dy >= -stepDown; dy--) {
 		const groundY = startGroundY + dy;
 		const groundBlock = getBlockByWorldCoords(x, groundY, z);
@@ -107,15 +113,14 @@ export function findSurface(
 			isCollidableBlock(groundBlock) &&
 			hasClearance(x, z, groundY, headroom, false)
 		) {
-			return {
-				groundY,
-				cost: 1 + heightCost,
-				kind: PathNodeKind.Land,
-			};
+			out.groundY = groundY;
+			out.cost = 1 + heightCost;
+			out.kind = PathNodeKind.Land;
+			return out;
 		}
 	}
 	if (!allowWater) return null;
-	return findWaterSurface(x, z, startGroundY, stepUp + 4, stepDown + 8);
+	return findWaterSurface(x, z, startGroundY, stepUp + 4, stepDown + 8, out);
 }
 
 // --- Land surface lookup (for shore targeting) ---
@@ -125,11 +130,16 @@ export function findLandSurface(
 	z: number,
 	startY: number,
 	headroom: number,
+	result?: { groundY: number },
 ): { groundY: number } | null {
+	const out = result ?? { groundY: 0 };
 	for (let dy = 5; dy >= -5; dy--) {
 		const groundY = startY + dy;
 		if (!isCollidableBlock(getBlockByWorldCoords(x, groundY, z))) continue;
-		if (hasClearance(x, z, groundY, headroom, false)) return { groundY };
+		if (hasClearance(x, z, groundY, headroom, false)) {
+			out.groundY = groundY;
+			return out;
+		}
 	}
 	return null;
 }
@@ -140,7 +150,7 @@ export function isLandAt(
 	startY: number,
 	headroom: number,
 ): boolean {
-	return findLandSurface(x, z, startY, headroom) !== null;
+	return findLandSurface(x, z, startY, headroom, LAND_SCRATCH) !== null;
 }
 
 // --- AStar heap (specialized, no closures) ---
@@ -268,6 +278,15 @@ function releaseUsedNodes(): void {
 const SHARED_OPEN_HEAP = new AStarHeap();
 const SHARED_CLOSED = new Map<number, number>();
 
+// Scratch results for findSurface/findLandSurface — reused across the A*
+// expansion loop. Not reentrant (same rule as findPathInto).
+const SURFACE_SCRATCH: SurfaceResult = {
+	groundY: 0,
+	cost: 0,
+	kind: PathNodeKind.Land,
+};
+const LAND_SCRATCH: { groundY: number } = { groundY: 0 };
+
 // --- Path reconstruction (no reverse/slice/shift) ---
 
 function buildPathInto(outPath: PathWaypoint[], endNode: AStarNode): void {
@@ -325,7 +344,16 @@ export function findPathInto(
 					cost: 1,
 					kind: PathNodeKind.Land,
 				}
-			: findSurface(targetX, targetZ, startGroundY, 5, 3, headroom, true);
+			: findSurface(
+					targetX,
+					targetZ,
+					startGroundY,
+					5,
+					3,
+					headroom,
+					true,
+					SURFACE_SCRATCH,
+				);
 	if (!targetSurface) return false;
 
 	const startSurface = findSurface(
@@ -336,6 +364,7 @@ export function findPathInto(
 		8,
 		headroom,
 		true,
+		SURFACE_SCRATCH,
 	) ?? {
 		groundY: startGroundY,
 		cost: 1,
@@ -395,6 +424,7 @@ export function findPathInto(
 					current.kind === PathNodeKind.Water ? 6 : 1,
 					headroom,
 					true,
+					SURFACE_SCRATCH,
 				);
 				if (!surface) continue;
 

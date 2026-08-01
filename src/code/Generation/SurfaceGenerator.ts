@@ -62,8 +62,6 @@ import {
 export type SurfaceGenerationResult = {
 	topSunlightMask: Uint8Array;
 	topSurfaceYMap: Int16Array;
-	biomeMap: Uint8Array;
-	riverNoiseMap: Float32Array;
 	minSurfaceY: number;
 	maxSurfaceY: number;
 };
@@ -91,6 +89,15 @@ type FloraColumnCacheEntry = {
 const _findlingeWx = new Float32Array(23);
 const _findlingeWz = new Float32Array(23);
 const _findlingeWy = new Float32Array(25);
+
+// PERF: Module-level scratch for generateTerrain's per-chunk result arrays.
+// All downstream consumers (underground pass, flora, light seeding) read them
+// synchronously within the same generateChunkData call, so a shared buffer
+// eliminates the ~8KB of typed-array garbage per chunk.
+const _scratchArea = GenerationParams.CHUNK_SIZE * GenerationParams.CHUNK_SIZE;
+const _scratchSunlightMask = new Uint8Array(_scratchArea);
+const _scratchTopSurfaceYMap = new Int16Array(_scratchArea);
+_scratchTopSurfaceYMap.fill(CAVE_NO_SURFACE_Y);
 
 export class SurfaceGenerator {
 	private params: GenerationParamsType;
@@ -560,14 +567,7 @@ export class SurfaceGenerator {
 			);
 
 		if (canContainFlora) {
-			this.generateFlora(
-				chunkX,
-				chunkY,
-				chunkZ,
-				biome,
-				placeBlock,
-				generationResult.topSurfaceYMap,
-			);
+			this.generateFlora(chunkX, chunkY, chunkZ, biome, placeBlock);
 		}
 
 		const canContainStructures =
@@ -636,15 +636,9 @@ export class SurfaceGenerator {
 		this.curChunkWorldZ = chunkWorldZ;
 		this.caveGridReady = false;
 
-		const topSunlightMask = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE);
-		const topSurfaceYMap = new Int16Array(CHUNK_SIZE * CHUNK_SIZE);
-		const biomeMap = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE);
-		const riverNoiseMap = new Float32Array(CHUNK_SIZE * CHUNK_SIZE);
+		const topSunlightMask = _scratchSunlightMask;
+		const topSurfaceYMap = _scratchTopSurfaceYMap;
 		topSurfaceYMap.fill(NO_SURFACE_Y);
-		// PERF (#4): The biome cache is chunk-granular (32-aligned) and the chunk
-		// is 32 wide, so getBiome(worldX, worldZ) is constant across the whole
-		// chunk and equals currentBiome. Fill once instead of 1024 lookups.
-		biomeMap.fill(currentBiome.id);
 
 		const volcanicLiquidId =
 			currentBiome.id === BIOME_ID.VOLCANIC_WASTELAND ? 24 : 30;
@@ -667,8 +661,6 @@ export class SurfaceGenerator {
 			return {
 				topSunlightMask,
 				topSurfaceYMap,
-				biomeMap,
-				riverNoiseMap,
 				minSurfaceY: NO_SURFACE_Y,
 				maxSurfaceY: NO_SURFACE_Y,
 			};
@@ -698,8 +690,6 @@ export class SurfaceGenerator {
 				if (hasSurface) {
 					topSurfaceYMap[columnIndex] = topSurfaceY;
 				}
-
-				riverNoiseMap[columnIndex] = riverNoise;
 
 				topSunlightMask[columnIndex] =
 					!hasSurface || topSurfaceY <= topWorldY ? 1 : 0;
@@ -969,8 +959,6 @@ export class SurfaceGenerator {
 		return {
 			topSunlightMask,
 			topSurfaceYMap,
-			biomeMap,
-			riverNoiseMap,
 			minSurfaceY,
 			maxSurfaceY,
 		};
@@ -982,7 +970,6 @@ export class SurfaceGenerator {
 		chunkZ: number,
 		_biome: Biome,
 		placeBlock: (x: number, y: number, z: number, id: number) => void,
-		topSurfaceYMap: Int16Array,
 	) {
 		const SCAN_RADIUS = 6;
 		const chunkSize = this.chunk_size;
@@ -1012,26 +999,30 @@ export class SurfaceGenerator {
 					localZ >= 0 &&
 					localZ < chunkSize;
 
-				// Border columns: topSurfaceY lives in the neighbouring chunk's
-				// column prepass (which is shared globally and already built by
-				// terrain generation or by an earlier flora pass). Reading from
-				// the prepass avoids the slow `findTopSurfaceY` path inside
-				// `getOrBuildFloraColumnInfo`, which would otherwise spend ~130
-				// noise calls per border column.
-				let knownTopSurfaceY: number | undefined;
-				if (isInsideChunkColumn) {
-					const sv = topSurfaceYMap[localX + localZ * chunkSize];
-					if (sv === NO_SURFACE_Y || sv < this.params.SEA_LEVEL) continue;
-					knownTopSurfaceY = sv;
-				} else {
-					const resolved = this.resolveColumnPrepassForWorld(worldX, worldZ);
-					const sv =
-						resolved.entry.topSurfaceYMap[
-							resolved.localX + resolved.localZ * chunkSize
-						];
-					if (sv === NO_SURFACE_Y || sv < this.params.SEA_LEVEL) continue;
-					knownTopSurfaceY = sv;
-				}
+				// PERF: Resolve the owning column prepass once per column with
+				// zero allocation — previously each border column built a fresh
+				// {entry, localX, localZ} object (twice per column) and border
+				// prepasses were looked up once per check. Border columns read
+				// from the neighbouring chunk's prepass (shared globally, already
+				// built by terrain generation), avoiding the slow `findTopSurfaceY`
+				// path inside `getOrBuildFloraColumnInfo` (~130 noise calls).
+				const prepassEntry: ColumnPrepassCacheEntry = isInsideChunkColumn
+					? columnPrepass
+					: this.getOrBuildColumnPrepass(
+							Math.floor(worldX / chunkSize),
+							Math.floor(worldZ / chunkSize),
+						);
+				const colLocalX = isInsideChunkColumn
+					? localX
+					: worldX - Math.floor(worldX / chunkSize) * chunkSize;
+				const colLocalZ = isInsideChunkColumn
+					? localZ
+					: worldZ - Math.floor(worldZ / chunkSize) * chunkSize;
+
+				const sv =
+					prepassEntry.topSurfaceYMap[colLocalX + colLocalZ * chunkSize];
+				if (sv === NO_SURFACE_Y || sv < this.params.SEA_LEVEL) continue;
+				const knownTopSurfaceY: number = sv;
 
 				const column = this.getOrBuildFloraColumnInfo(
 					worldX,
@@ -1059,16 +1050,8 @@ export class SurfaceGenerator {
 
 				// Beach flag — read from prepass instead of calling isBeachLocation
 				// (which fires 4 getFinalTerrainHeight lookups per column).
-				let isBeach: boolean;
-				if (isInsideChunkColumn) {
-					isBeach = columnPrepass.isBeachMap[localX + localZ * chunkSize] === 1;
-				} else {
-					const resolved = this.resolveColumnPrepassForWorld(worldX, worldZ);
-					isBeach =
-						resolved.entry.isBeachMap[
-							resolved.localX + resolved.localZ * chunkSize
-						] === 1;
-				}
+				const isBeach =
+					prepassEntry.isBeachMap[colLocalX + colLocalZ * chunkSize] === 1;
 				const topBlockId =
 					isBeach &&
 					surfaceY >= this.params.SEA_LEVEL - 2 &&

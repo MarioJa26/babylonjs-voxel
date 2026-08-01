@@ -11,17 +11,14 @@ import {
 	FACE_PZ,
 } from "../../Shape/BlockShapes";
 import { type FaceName, getFaceName } from "../../Texture/FaceName";
-import {
-	type GreedyFaceDescriptor,
-	MaterialType,
-	type WorkerInternalMeshData,
-} from "../types/MeshTypes";
-import { emitQuadFast, emitWaterQuad } from "./FaceEmitter";
+import { type GreedyFaceDescriptor, MaterialType } from "../types/MeshTypes";
 import {
 	getMaterialType,
 	getRuntimeShapeBoxes,
 	getShapeInfo,
-} from "./ShapePipeline";
+} from "./BlockInfoCache";
+import type { QuadBuffer } from "./QuadBuffer";
+import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
 const BACK_FACE_MASK = 0x80000000;
 const NON_CUBE_MASK = 0x40000000;
@@ -50,33 +47,16 @@ function needsRawDim(blockId: number, width: number, height: number): boolean {
 	return blockId !== WATER_BLOCK_ID || width > 31 || height > 31;
 }
 
-const _origin = { ox: 0, oy: 0, oz: 0 };
-
-function inlineOrigin(
-	axis: number,
-	back: number,
-	desc: GreedyFaceDescriptor,
-): { ox: number; oy: number; oz: number } {
-	const faceBlockCoord = desc.slice + back;
-	if (axis === 0) {
-		_origin.ox = faceBlockCoord;
-		_origin.oy = desc.uStart;
-		_origin.oz = desc.vStart;
-	} else if (axis === 1) {
-		_origin.ox = desc.vStart;
-		_origin.oy = faceBlockCoord;
-		_origin.oz = desc.uStart;
-	} else {
-		_origin.ox = desc.uStart;
-		_origin.oy = desc.vStart;
-		_origin.oz = faceBlockCoord;
-	}
-	return _origin;
-}
-
+/**
+ * P2.5: All four emit paths share one signature so they can be dispatched
+ * through a per-instance array of bound method references. The previous
+ * version routed through module-level wrappers that called
+ * `a["emitCubeFace"](...)` — string-keyed property dispatch that defeats V8
+ * inlining. Binding once in the constructor gives direct method calls with
+ * none of the per-call megamorphic overhead.
+ */
 type EmitFn = (
-	adapter: VoxelFaceEmitterAdapter,
-	out: WorkerInternalMeshData,
+	out: QuadBuffer,
 	axis: number,
 	desc: GreedyFaceDescriptor,
 	packedBlock: number,
@@ -88,118 +68,24 @@ type EmitFn = (
 	faceBit: number,
 ) => void;
 
-function emitCubeWrap(
-	a: VoxelFaceEmitterAdapter,
-	out: WorkerInternalMeshData,
-	axis: number,
-	desc: GreedyFaceDescriptor,
-	_packed: number,
-	blockId: number,
-	back: number,
-	light: number,
-	ao: number,
-	faceName: FaceName,
-	_faceBit: number,
-): void {
-	a["emitCubeFace"](out, axis, desc, blockId, back, light, ao, faceName);
-}
-
-function emitWaterWrap(
-	a: VoxelFaceEmitterAdapter,
-	out: WorkerInternalMeshData,
-	axis: number,
-	desc: GreedyFaceDescriptor,
-	packedBlock: number,
-	blockId: number,
-	back: number,
-	light: number,
-	ao: number,
-	faceName: FaceName,
-	_faceBit: number,
-): void {
-	a["emitWaterFace"](
-		out,
-		axis,
-		desc,
-		blockId,
-		packedBlock,
-		back,
-		light,
-		ao,
-		faceName,
-	);
-}
-
-function emitCustomWrap(
-	a: VoxelFaceEmitterAdapter,
-	out: WorkerInternalMeshData,
-	axis: number,
-	desc: GreedyFaceDescriptor,
-	packedBlock: number,
-	blockId: number,
-	back: number,
-	light: number,
-	ao: number,
-	faceName: FaceName,
-	faceBit: number,
-): void {
-	a["emitCustomShapeFace"](
-		out,
-		axis,
-		desc,
-		packedBlock,
-		blockId,
-		back,
-		light,
-		ao,
-		faceName,
-		faceBit,
-	);
-}
-
-function emitWaterCustomWrap(
-	a: VoxelFaceEmitterAdapter,
-	out: WorkerInternalMeshData,
-	axis: number,
-	desc: GreedyFaceDescriptor,
-	packedBlock: number,
-	blockId: number,
-	back: number,
-	light: number,
-	ao: number,
-	faceName: FaceName,
-	faceBit: number,
-): void {
-	a["emitWaterCustomShapeFace"](
-		out,
-		axis,
-		desc,
-		packedBlock,
-		blockId,
-		back,
-		light,
-		ao,
-		faceName,
-		faceBit,
-	);
-}
-
-// Dispatch LUT indexed by (isWater << 1) | isCube:
-//   0 = custom shape non-water, 1 = cube non-water, 2 = custom shape water, 3 = cube water
-const EMIT_DISPATCH: EmitFn[] = [
-	emitCustomWrap,
-	emitCubeWrap,
-	emitWaterCustomWrap,
-	emitWaterWrap,
-];
-
 export class VoxelFaceEmitterAdapter {
-	public emitVoxelFace(
-		axis: number,
-		desc: GreedyFaceDescriptor,
-		opaqueOut: WorkerInternalMeshData,
-		transparentOut: WorkerInternalMeshData,
-	): void {
+	private readonly _session: MeshBuildSession;
+	// Dispatch LUT indexed by (isWater << 1) | isCube:
+	//   0 = custom shape non-water, 1 = cube non-water,
+	//   2 = custom shape water, 3 = cube water
+	private readonly _dispatch: readonly EmitFn[];
+
+	constructor(session: MeshBuildSession) {
+		this._session = session;
+		this._dispatch = [
+			this.emitCustomShapeFace.bind(this),
+			this.emitCubeFace.bind(this),
+			this.emitWaterCustomShapeFace.bind(this),
+			this.emitWaterFace.bind(this),
+		];
+	}
+
+	public emitVoxelFace(axis: number, desc: GreedyFaceDescriptor): void {
 		const rawMask = desc.idState | 0;
 		const isBackFace = (rawMask & BACK_FACE_MASK) !== 0;
 		const isNonCube = (rawMask & NON_CUBE_MASK) !== 0;
@@ -216,8 +102,11 @@ export class VoxelFaceEmitterAdapter {
 		const isWater =
 			materialType === MaterialType.WaterOrGlass && blockId === WATER_BLOCK_ID;
 
+		const session = this._session;
 		const out =
-			materialType === MaterialType.WaterOrGlass ? transparentOut : opaqueOut;
+			materialType === MaterialType.WaterOrGlass
+				? session.quadTransparent
+				: session.quadOpaque;
 
 		const ao = desc.light & 0xff;
 		const light = (desc.light >> 8) & 0xff;
@@ -229,8 +118,7 @@ export class VoxelFaceEmitterAdapter {
 
 		const isCube = shapeInfo.isCube && !isNonCube;
 		const dispatchKey = (isWater ? 2 : 0) | (isCube ? 1 : 0);
-		EMIT_DISPATCH[dispatchKey](
-			this,
+		this._dispatch[dispatchKey](
 			out,
 			axis,
 			desc,
@@ -245,14 +133,16 @@ export class VoxelFaceEmitterAdapter {
 	}
 
 	private emitCubeFace(
-		out: WorkerInternalMeshData,
+		out: QuadBuffer,
 		axis: number,
 		desc: GreedyFaceDescriptor,
+		_packedBlock: number,
 		blockId: number,
 		back: number,
 		light: number,
 		ao: number,
 		faceName: FaceName,
+		_faceBit: number,
 	): void {
 		const { ox, oy, oz } = inlineOrigin(axis, back, desc);
 
@@ -261,8 +151,9 @@ export class VoxelFaceEmitterAdapter {
 		const y = axis === 1 ? oy + off : oy;
 		const z = axis === 2 ? oz + off : oz;
 
-		emitQuadFast(
-			out,
+		// P3.8: unchecked emit — greedy cube faces sit at positions 0..size-1,
+		// so the scaled coordinates can never leave the u8 range.
+		out.emitQuadUnchecked(
 			x,
 			y,
 			z,
@@ -282,15 +173,16 @@ export class VoxelFaceEmitterAdapter {
 	}
 
 	private emitWaterFace(
-		out: WorkerInternalMeshData,
+		out: QuadBuffer,
 		axis: number,
 		desc: GreedyFaceDescriptor,
-		blockId: number,
 		packedBlock: number,
+		blockId: number,
 		back: number,
 		light: number,
 		ao: number,
 		faceName: FaceName,
+		_faceBit: number,
 	): void {
 		const { ox, oy, oz } = inlineOrigin(axis, back, desc);
 
@@ -299,8 +191,7 @@ export class VoxelFaceEmitterAdapter {
 		const y = axis === 1 ? oy + off : oy;
 		const z = axis === 2 ? oz + off : oz;
 
-		emitWaterQuad(
-			out,
+		out.emitWaterQuad(
 			x,
 			y,
 			z,
@@ -318,7 +209,7 @@ export class VoxelFaceEmitterAdapter {
 	}
 
 	private emitCustomShapeFace(
-		out: WorkerInternalMeshData,
+		out: QuadBuffer,
 		axis: number,
 		desc: GreedyFaceDescriptor,
 		packedBlock: number,
@@ -350,8 +241,7 @@ export class VoxelFaceEmitterAdapter {
 			const width = desc.width * (max[u] - min[u]);
 			const height = desc.height * (max[v] - min[v]);
 
-			emitQuadFast(
-				out,
+			out.emitQuad(
 				x,
 				y,
 				z,
@@ -372,7 +262,7 @@ export class VoxelFaceEmitterAdapter {
 	}
 
 	private emitWaterCustomShapeFace(
-		out: WorkerInternalMeshData,
+		out: QuadBuffer,
 		axis: number,
 		desc: GreedyFaceDescriptor,
 		packedBlock: number,
@@ -403,8 +293,7 @@ export class VoxelFaceEmitterAdapter {
 			const width = desc.width * (max[u] - min[u]);
 			const height = desc.height * (max[v] - min[v]);
 
-			emitWaterQuad(
-				out,
+			out.emitWaterQuad(
 				x,
 				y,
 				z,
@@ -421,4 +310,28 @@ export class VoxelFaceEmitterAdapter {
 			);
 		}
 	}
+}
+
+const _origin = { ox: 0, oy: 0, oz: 0 };
+
+function inlineOrigin(
+	axis: number,
+	back: number,
+	desc: GreedyFaceDescriptor,
+): { ox: number; oy: number; oz: number } {
+	const faceBlockCoord = desc.slice + back;
+	if (axis === 0) {
+		_origin.ox = faceBlockCoord;
+		_origin.oy = desc.uStart;
+		_origin.oz = desc.vStart;
+	} else if (axis === 1) {
+		_origin.ox = desc.vStart;
+		_origin.oy = faceBlockCoord;
+		_origin.oz = desc.uStart;
+	} else {
+		_origin.ox = desc.uStart;
+		_origin.oy = desc.vStart;
+		_origin.oz = faceBlockCoord;
+	}
+	return _origin;
 }

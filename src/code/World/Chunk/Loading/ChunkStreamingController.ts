@@ -85,14 +85,18 @@ export class ChunkStreamingController {
 	private streamRevision = 0;
 	// PERF: desired state packed into a single number (desiredLod | revision<<3)
 	// to avoid a per-chunk object allocation on the hot streaming path.
-	private desiredStates = new Map<bigint, number>();
+	// Keyed by chunk.numericId (number) — BigInt keys hash slower and the
+	// BigInt box churn showed up at the top of the allocation profile.
+	private desiredStates = new Map<number, number>();
 	// H1: Lazy prune — only scan desiredStates when stale entries have accumulated
 	private _needsDesiredStatePrune = false;
-	// Map from chunkId -> queued request object for O(1) updates without relying
-	// on unstable queue indices (the scheduler dequeues from the head).
-	private loadQueueRequestMap: Map<bigint, QueuedChunkRequest> = new Map();
+	// Map from numericId -> queued request object for O(1) updates without
+	// relying on unstable queue indices (the scheduler dequeues from the head).
+	// Keyed by numericId (number) — BigInt keys hash slower and the BigInt
+	// box churn showed up at the top of the allocation profile.
+	private loadQueueRequestMap: Map<number, QueuedChunkRequest> = new Map();
 	private loadedRefreshQueue: Chunk[] = [];
-	private loadedRefreshQueueSet: Set<bigint> = new Set();
+	private loadedRefreshQueueSet: Set<number> = new Set();
 	private loadedRefreshQueueHead = 0;
 
 	// H2: Cache LOD rule sets — only rebuild when cave state or render distance changes
@@ -116,8 +120,8 @@ export class ChunkStreamingController {
 		private readonly adapter: ChunkStreamingControllerAdapter,
 	) {}
 
-	public getDesiredState(chunkId: bigint): number | undefined {
-		return this.desiredStates.get(chunkId);
+	public getDesiredState(numericId: number): number | undefined {
+		return this.desiredStates.get(numericId);
 	}
 
 	public async updateChunksAround(
@@ -222,45 +226,93 @@ export class ChunkStreamingController {
 		const unloadQueueSet = this.adapter.getUnloadQueueSet();
 		this.loadQueueRequestMap.clear();
 
-		// Retag queued requests in place.
+		// Retag queued requests in place. Tiered to avoid the per-request
+		// resolveWithHysteresis storm during streaming backlogs:
+		//  - Out-of-range requests are dropped with a cheap distance check
+		//    (matches the rule fallback's allowsChunkCreation=false bounds).
+		//  - Only dirty/near-zone requests re-resolve their LOD decision
+		//    (cache-assisted via _refreshCache). The near zone covers both
+		//    LOD0 and LOD1 bands, so cave mode (lod1 radii 0) falls back to
+		//    LOD0 and re-resolves its whole creation zone.
+		//  - Everything else just refreshes priority/revision, which is all
+		//    sortLoadQueue and the scheduler's desiredStates validation need.
+		// Stale decisions self-heal through enqueueLoadedChunksForRefresh
+		// after the chunk loads.
 		let writeIndex = 0;
 
 		for (let readIndex = 0; readIndex < loadQueue.length; readIndex++) {
 			const request = loadQueue[readIndex];
+			const chunk = request.chunk;
 
-			const decision = lodRuleSet.resolveWithHysteresis(
-				request.chunk.chunkX,
-				request.chunk.chunkY,
-				request.chunk.chunkZ,
+			const { hDist, vDist } = chunkDistScratch(
+				chunk.chunkX,
+				chunk.chunkY,
+				chunk.chunkZ,
 				chunkX,
 				chunkY,
 				chunkZ,
-				request.chunk.lodLevel ?? request.desiredLod,
 			);
 
-			if (!decision.allowsChunkCreation) {
-				request.chunk.isTerrainScheduled = false;
-				this.loadQueueRequestMap.delete(request.chunk.id);
+			if (hDist > operationalRadius || vDist > operationalVerticalRadius) {
+				chunk.isTerrainScheduled = false;
+				this.loadQueueRequestMap.delete(chunk.numericId);
 				continue;
 			}
 
-			request.desiredLod = decision.lodLevel;
+			let desiredLod = request.desiredLod;
+			const nearZoneRadius =
+				Math.max(lod0HorizontalRadius, lod1HorizontalRadius) + 2;
+			const nearZoneVertical =
+				Math.max(lod0VerticalRadius, lod1VerticalRadius) + 2;
+			if (
+				chunk.isDirty ||
+				(hDist <= nearZoneRadius && vDist <= nearZoneVertical)
+			) {
+				const previousLod = chunk.lodLevel ?? request.desiredLod;
+				const key = packOffsetKey(
+					chunk.chunkX - chunkX,
+					chunk.chunkY - chunkY,
+					chunk.chunkZ - chunkZ,
+					previousLod,
+				);
+				const cached = this._refreshCache.get(key);
+				if (
+					cached !== undefined &&
+					cached >> 3 === lodRuleSet.revision &&
+					!chunk.isDirty
+				) {
+					desiredLod = cached & 0b111;
+				} else {
+					desiredLod = lodRuleSet.resolveWithHysteresis(
+						chunk.chunkX,
+						chunk.chunkY,
+						chunk.chunkZ,
+						chunkX,
+						chunkY,
+						chunkZ,
+						previousLod,
+					).lodLevel;
+					this._refreshCache.set(key, desiredLod | (lodRuleSet.revision << 3));
+				}
+			}
+
+			request.desiredLod = desiredLod;
 			request.revision = this.streamRevision;
-			request.includeVoxelData = request.desiredLod <= 1;
+			request.includeVoxelData = desiredLod <= 1;
 			request.priority = this.computePriority(
-				request.chunk,
-				request.desiredLod,
+				chunk,
+				desiredLod,
 				chunkX,
 				chunkY,
 				chunkZ,
 			);
 
 			this.desiredStates.set(
-				request.chunk.id,
-				request.desiredLod | (request.revision << 3),
+				chunk.numericId,
+				desiredLod | (request.revision << 3),
 			);
 
-			this.loadQueueRequestMap.set(request.chunk.id, request);
+			this.loadQueueRequestMap.set(chunk.numericId, request);
 			loadQueue[writeIndex++] = request;
 		}
 
@@ -389,7 +441,7 @@ export class ChunkStreamingController {
 
 		for (let _qi = 0; _qi < _queryScratch.length; _qi++) {
 			const chunk = _queryScratch[_qi];
-			if (this.loadedRefreshQueueSet.has(chunk.id)) continue;
+			if (this.loadedRefreshQueueSet.has(chunk.numericId)) continue;
 
 			const { hDist, vDist } = chunkDistScratch(
 				chunk.chunkX,
@@ -445,7 +497,7 @@ export class ChunkStreamingController {
 				continue;
 			}
 
-			this.loadedRefreshQueueSet.add(chunk.id);
+			this.loadedRefreshQueueSet.add(chunk.numericId);
 			this.loadedRefreshQueue.push(chunk);
 		}
 	}
@@ -484,7 +536,7 @@ export class ChunkStreamingController {
 			const chunk = this.dequeueLoadedRefreshChunk();
 			if (!chunk) break;
 
-			this.loadedRefreshQueueSet.delete(chunk.id);
+			this.loadedRefreshQueueSet.delete(chunk.numericId);
 
 			this.processTargetChunkCoordinate(
 				chunk.chunkX,
@@ -577,7 +629,7 @@ export class ChunkStreamingController {
 
 		const includeVoxelData = desiredLod <= 1;
 
-		this.desiredStates.set(chunk.id, desiredLod | (revision << 3));
+		this.desiredStates.set(chunk.numericId, desiredLod | (revision << 3));
 
 		if (chunk.isLoaded && previousLod !== desiredLod) {
 			const hasTargetCachedMesh = chunk.hasCachedLODMesh(desiredLod);
@@ -880,7 +932,7 @@ export class ChunkStreamingController {
 		}
 
 		const loadQueue = this.adapter.getLoadQueue();
-		const existingRequest = this.loadQueueRequestMap.get(chunk.id);
+		const existingRequest = this.loadQueueRequestMap.get(chunk.numericId);
 
 		if (existingRequest) {
 			const request = existingRequest;
@@ -889,7 +941,7 @@ export class ChunkStreamingController {
 			request.revision = revision;
 			request.includeVoxelData = includeVoxelData;
 			request.priority = Number.POSITIVE_INFINITY;
-			this.loadQueueRequestMap.set(chunk.id, request);
+			this.loadQueueRequestMap.set(chunk.numericId, request);
 		} else {
 			const request: QueuedChunkRequest = {
 				chunk,
@@ -900,7 +952,7 @@ export class ChunkStreamingController {
 			};
 
 			loadQueue.push(request);
-			this.loadQueueRequestMap.set(chunk.id, request);
+			this.loadQueueRequestMap.set(chunk.numericId, request);
 		}
 
 		const unloadSet = this.adapter.getUnloadQueueSet();
@@ -915,12 +967,12 @@ export class ChunkStreamingController {
 		requests: ReadonlyArray<QueuedChunkRequest>,
 	): void {
 		for (const request of requests) {
-			this.loadQueueRequestMap.delete(request.chunk.id);
+			this.loadQueueRequestMap.delete(request.chunk.numericId);
 		}
 	}
 
-	public onChunkDisposed(chunkId: bigint): void {
-		this.loadedRefreshQueueSet.delete(chunkId);
+	public onChunkDisposed(numericId: number): void {
+		this.loadedRefreshQueueSet.delete(numericId);
 		// The refresh cache is keyed by relative offset (bounded by the offset
 		// space), so no per-chunk eviction is needed; stale entries are simply
 		// overwritten when another chunk occupies that offset.

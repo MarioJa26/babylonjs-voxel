@@ -1,5 +1,6 @@
 // MeshPipeline/core/GreedyPipeline.ts
-import type { GreedyFaceDescriptor, MeshContext } from "../types/MeshTypes";
+import type { GreedyFaceDescriptor } from "../types/MeshTypes";
+import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
 /**
  * Writable numeric arrays accepted by the greedy pipeline.
@@ -31,67 +32,40 @@ export type MaskExtractor = (
 export type FaceEmitterCallback = (desc: GreedyFaceDescriptor) => void;
 
 /**
- * Reusable scratch buffers.
- *
- * Since the worker is effectively single-threaded for this code path,
- * module-level scratch reuse is safe as long as greedyMesh is not re-entered.
- */
-let SCRATCH_MASK = new Int32Array(0);
-let SCRATCH_LIGHTS = new Uint16Array(0);
-const _greedyFaceScratch: GreedyFaceDescriptor = {
-	slice: 0,
-	uStart: 0,
-	vStart: 0,
-	width: 0,
-	height: 0,
-	idState: 0,
-	light: 0,
-};
-
-/**
- * Ensure the reusable scratch buffers are at least the required size.
- */
-function ensureScratchCapacity(area: number): {
-	mask: Int32Array;
-	lights: Uint16Array;
-} {
-	if (SCRATCH_MASK.length < area) {
-		SCRATCH_MASK = new Int32Array(area);
-	}
-	if (SCRATCH_LIGHTS.length < area) {
-		SCRATCH_LIGHTS = new Uint16Array(area);
-	}
-
-	return {
-		mask: SCRATCH_MASK,
-		lights: SCRATCH_LIGHTS,
-	};
-}
-
-/**
  * The main greedy-meshing engine.
  *
  * It accepts:
- *   - ctx.size for dimensions
+ *   - session for dimensions + reusable scratch buffers
  *   - extractMask(...) to fill mask & light arrays for a slice
  *   - emitFace(...) callback that builds quads using the merged results
  *
  * Optimized version:
- * - reuses typed-array scratch buffers
+ * - reuses the session's typed-array scratch buffers (no per-call allocation)
  * - avoids per-call array allocation
  * - avoids per-call .fill(0) because extractMask overwrites every entry
+ *
+ * The shared face descriptor lives on the session, so greedyMesh is
+ * re-entrant as long as the callback doesn't stash the descriptor.
  */
 export function greedyMesh(
-	ctx: MeshContext,
+	session: MeshBuildSession,
 	extractMask: MaskExtractor,
 	emitFace: FaceEmitterCallback,
 ): void {
-	const size = ctx.size;
+	const size = session.size;
 	const area = size * size;
 
-	const scratch = ensureScratchCapacity(area);
-	const mask = scratch.mask;
-	const lights = scratch.lights;
+	// Ensure the session's scratch buffers are at least the required size.
+	if (session.scratchMask.length < area) {
+		session.scratchMask = new Int32Array(area);
+	}
+	if (session.scratchLights.length < area) {
+		session.scratchLights = new Uint16Array(area);
+	}
+	const mask = session.scratchMask;
+	const lights = session.scratchLights;
+
+	const faceScratch = session.faceScratch;
 
 	// axis-slice iteration
 	// Start at -1 to handle the negative boundary (face at position 0).
@@ -141,14 +115,14 @@ export function greedyMesh(
 				}
 
 				// Emit the merged face descriptor
-				_greedyFaceScratch.slice = slice;
-				_greedyFaceScratch.uStart = u;
-				_greedyFaceScratch.vStart = v;
-				_greedyFaceScratch.width = width;
-				_greedyFaceScratch.height = height;
-				_greedyFaceScratch.idState = idState;
-				_greedyFaceScratch.light = light;
-				emitFace(_greedyFaceScratch);
+				faceScratch.slice = slice;
+				faceScratch.uStart = u;
+				faceScratch.vStart = v;
+				faceScratch.width = width;
+				faceScratch.height = height;
+				faceScratch.idState = idState;
+				faceScratch.light = light;
+				emitFace(faceScratch);
 
 				// Clear the merged region so it wont be processed again
 				if (width === size) {

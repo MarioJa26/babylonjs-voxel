@@ -87,14 +87,12 @@ export type ChunkWorkerPoolDebugStats = {
 };
 
 // ---------------------------------------------------------------------------
-// Packed in-flight key: (chunkId << 4n | BigInt(lod)) avoids string alloc.
-// LOD values are expected to be 0–15 so 4 bits is sufficient.
+// Packed in-flight key: (numericId << 4 | lod) avoids BigInt packing allocs
+// on the worker-message hot path. LOD values are expected to be 0–15 so
+// 4 bits is sufficient.
 // ---------------------------------------------------------------------------
-const _lodBigInts: bigint[] = [];
-for (let i = 0; i < 16; i++) _lodBigInts[i] = BigInt(i);
-
-function packInflightKey(chunkId: bigint, lod: number): bigint {
-	return (chunkId << 4n) | _lodBigInts[lod & 0xf];
+function packInflightKey(numericId: number, lod: number): number {
+	return (numericId << 4) | (lod & 0xf);
 }
 
 type WorkerTaskContext = {
@@ -159,7 +157,7 @@ export class ChunkWorkerPool {
 	private distantTerrainTaskQueueReadIdx = 0;
 	private lodPrecomputeQueue: Array<{ chunk: Chunk; lod: number }> = [];
 	private lodPrecomputeQueueReadIdx = 0;
-	private pendingLodPrecomputeKeys = new Set<bigint>();
+	private pendingLodPrecomputeKeys = new Set<number>();
 	private lastPrecomputeScheduleTs = 0;
 
 	// ---------------------------------------------------------------------------
@@ -192,8 +190,7 @@ export class ChunkWorkerPool {
 	private pendingRemeshSaveTimer: ReturnType<typeof setTimeout> | null = null;
 	private readonly REMESH_SAVE_DEBOUNCE_MS = 500;
 
-	private inFlightRemeshKeys = new Set<bigint>();
-	private rerunRemeshAfterInflight = new Map<bigint, boolean>();
+	private inFlightRemeshKeys = new Set<number>();
 
 	private distantTerrainInFlight = false;
 	private nextDistantTerrainRequestId = 1;
@@ -236,6 +233,25 @@ export class ChunkWorkerPool {
 	private lightDirtyQueue: { seq: number; dirtySlots: Uint32Array }[] = [];
 	private lightDirtyQueueReadIdx = 0;
 	private lightDirtyPumpScheduled = false;
+	// Free-list for LightDirty envelope objects — one fresh object per light
+	// worker reply used to show up in the allocation profile.
+	private static readonly _LIGHT_DIRTY_EMPTY = new Uint32Array(0);
+	private static readonly _lightDirtyPool: {
+		seq: number;
+		dirtySlots: Uint32Array;
+	}[] = [];
+	private static allocLightDirtyEntry(
+		seq: number,
+		dirtySlots: Uint32Array,
+	): { seq: number; dirtySlots: Uint32Array } {
+		const entry = ChunkWorkerPool._lightDirtyPool.pop() ?? {
+			seq: 0,
+			dirtySlots: ChunkWorkerPool._LIGHT_DIRTY_EMPTY,
+		};
+		entry.seq = seq;
+		entry.dirtySlots = dirtySlots;
+		return entry;
+	}
 	/**
 	 * slot -> {pendingSeq, inFlightSeq}.  When the worker reports a new
 	 * LightDirty entry for a slot we advance pendingSeq; on drain we look
@@ -388,12 +404,14 @@ export class ChunkWorkerPool {
 
 	private isSameLodRemeshInflight(chunk: Chunk): boolean {
 		return this.inFlightRemeshKeys.has(
-			packInflightKey(chunk.id, chunk.lodLevel ?? 0),
+			packInflightKey(chunk.numericId, chunk.lodLevel ?? 0),
 		);
 	}
 
 	private clearInflightRemeshByMessage(chunkId: bigint, lod: number): void {
-		this.inFlightRemeshKeys.delete(packInflightKey(chunkId, lod));
+		const chunk = Chunk.chunkInstances.get(chunkId);
+		if (!chunk) return;
+		this.inFlightRemeshKeys.delete(packInflightKey(chunk.numericId, lod));
 	}
 
 	// -------------------------------------------------------------------------
@@ -519,7 +537,7 @@ export class ChunkWorkerPool {
 			typeof context.lod === "number"
 		) {
 			this.inFlightRemeshKeys.delete(
-				packInflightKey(context.chunk.id, context.lod),
+				packInflightKey(context.chunk.numericId, context.lod),
 			);
 		}
 
@@ -540,7 +558,7 @@ export class ChunkWorkerPool {
 			context.chunk &&
 			typeof context.lod === "number"
 		) {
-			const key = packInflightKey(context.chunk.id, context.lod);
+			const key = packInflightKey(context.chunk.numericId, context.lod);
 			if (!this.pendingLodPrecomputeKeys.has(key)) {
 				this.pendingLodPrecomputeKeys.add(key);
 				this.lodPrecomputeQueue.push({
@@ -715,8 +733,9 @@ export class ChunkWorkerPool {
 	 * Called by Chunk.initializeSunlight() when a chunk is loaded without
 	 * a pre-computed light_array.  Enqueues into the deferred-light pump
 	 * so the BFS runs after the chunk has been registered with the light
-	 * worker (onLightChunkLoaded posts LightRegisterChunk synchronously
-	 * in the same loadFromStorage call, before the next rAF).
+	 * worker.  If LightPropagateDeferred still arrives before the worker's
+	 * LightRegisterChunk is processed, the worker holds the seed and
+	 * replays it once the chunk registers (LightTaskHandlers).
 	 */
 	public enqueueDeferredLightFromSunlightInit(
 		chunk: Chunk,
@@ -855,6 +874,14 @@ export class ChunkWorkerPool {
 				if (entry.seq > prev) slotMap.set(slot, entry.seq);
 			}
 			processed++;
+		}
+
+		// Return consumed envelopes to the free-list — must happen before
+		// copyWithin overwrites the consumed prefix below.
+		for (let i = 0; i < this.lightDirtyQueueReadIdx; i++) {
+			const entry = this.lightDirtyQueue[i];
+			entry.dirtySlots = ChunkWorkerPool._LIGHT_DIRTY_EMPTY;
+			ChunkWorkerPool._lightDirtyPool.push(entry);
 		}
 
 		if (
@@ -1176,13 +1203,15 @@ export class ChunkWorkerPool {
 	// Mesh result drain loop — runs every rAF
 	// -------------------------------------------------------------------------
 
+	private _meshDrainCallback = (): void => {
+		this.meshDrainScheduled = false;
+		this.processMeshQueueLoop();
+	};
+
 	private scheduleMeshFlush = (): void => {
 		if (this.meshDrainScheduled) return;
 		this.meshDrainScheduled = true;
-		setTimeout(() => {
-			this.meshDrainScheduled = false;
-			this.processMeshQueueLoop();
-		}, 0);
+		setTimeout(this._meshDrainCallback, 0);
 	};
 
 	private _meshSerialQueue: Array<{
@@ -1372,10 +1401,7 @@ export class ChunkWorkerPool {
 		}
 		if (!this.meshDrainScheduled) {
 			this.meshDrainScheduled = true;
-			setTimeout(() => {
-				this.meshDrainScheduled = false;
-				this.processMeshQueueLoop();
-			}, 0);
+			setTimeout(this._meshDrainCallback, 0);
 		}
 	}
 
@@ -1468,7 +1494,7 @@ export class ChunkWorkerPool {
 
 		if (this.isCompletelyEmptyChunk(chunk)) {
 			if (inflight) {
-				this.rerunRemeshAfterInflight.set(chunk.id, true);
+				chunk.rerunRemeshAfterInflight = true;
 			}
 			this.pendingRemeshMap.delete(chunk);
 			this.taskQueuePriority.delete(chunk);
@@ -1477,7 +1503,7 @@ export class ChunkWorkerPool {
 		}
 
 		if (inflight) {
-			this.rerunRemeshAfterInflight.set(chunk.id, true);
+			chunk.rerunRemeshAfterInflight = true;
 			return;
 		}
 
@@ -1629,10 +1655,9 @@ export class ChunkWorkerPool {
 
 		if (type === WorkerTaskType.LightDirty) {
 			const dirty = data as LightDirtyMessage;
-			this.lightDirtyQueue.push({
-				seq: dirty.seq,
-				dirtySlots: dirty.dirtySlots,
-			});
+			this.lightDirtyQueue.push(
+				ChunkWorkerPool.allocLightDirtyEntry(dirty.seq, dirty.dirtySlots),
+			);
 			this.scheduleLightDirtyPump();
 			return false;
 		}
@@ -1643,11 +1668,8 @@ export class ChunkWorkerPool {
 			this.enqueueMeshResult(meshData);
 
 			const resolvedChunk = this.resolveChunkByMessageId(meshData.chunkId);
-			if (
-				resolvedChunk &&
-				this.rerunRemeshAfterInflight.get(resolvedChunk.id)
-			) {
-				this.rerunRemeshAfterInflight.delete(resolvedChunk.id);
+			if (resolvedChunk && resolvedChunk.rerunRemeshAfterInflight) {
+				resolvedChunk.rerunRemeshAfterInflight = false;
 				this.scheduleRemesh(
 					resolvedChunk,
 					(resolvedChunk.lodLevel ?? 0) === 0,
@@ -1807,8 +1829,8 @@ export class ChunkWorkerPool {
 		this.enqueueMeshResult(fullMeshMessage);
 
 		const resolvedChunk = this.resolveChunkByMessageId(data.chunkId);
-		if (resolvedChunk && this.rerunRemeshAfterInflight.get(resolvedChunk.id)) {
-			this.rerunRemeshAfterInflight.delete(resolvedChunk.id);
+		if (resolvedChunk && resolvedChunk.rerunRemeshAfterInflight) {
+			resolvedChunk.rerunRemeshAfterInflight = false;
 			this.scheduleRemesh(
 				resolvedChunk,
 				(resolvedChunk.lodLevel ?? 0) === 0,
@@ -2082,7 +2104,7 @@ export class ChunkWorkerPool {
 			for (let li = 0; li < targetLods.length; li++) {
 				const lod = targetLods[li];
 				if (chunk.hasCachedLODMesh(lod)) continue;
-				const key = packInflightKey(chunk.id, lod);
+				const key = packInflightKey(chunk.numericId, lod);
 				if (this.pendingLodPrecomputeKeys.has(key)) continue;
 				candidateChunks.push(chunk);
 				candidateLods.push(lod);
@@ -2108,7 +2130,7 @@ export class ChunkWorkerPool {
 			const idx = candidateIndices[i];
 			const chunk = candidateChunks[idx];
 			const lod = candidateLods[idx];
-			const key = packInflightKey(chunk.id, lod);
+			const key = packInflightKey(chunk.numericId, lod);
 			if (this.pendingLodPrecomputeKeys.has(key)) continue;
 			this.pendingLodPrecomputeKeys.add(key);
 			this.lodPrecomputeQueue.push({ chunk, lod });
@@ -2193,7 +2215,7 @@ export class ChunkWorkerPool {
 				taskChunk = task.chunk;
 				precomputeLod = task.lod;
 				this.pendingLodPrecomputeKeys.delete(
-					packInflightKey(task.chunk.id, task.lod),
+					packInflightKey(task.chunk.numericId, task.lod),
 				);
 				taskType = TaskType.LodPrecompute;
 			} else {
@@ -2290,7 +2312,7 @@ export class ChunkWorkerPool {
 				});
 				this.pendingRemeshMap.delete(taskChunk!);
 				this.taskQueuePriority.delete(taskChunk!);
-				this.inFlightRemeshKeys.add(packInflightKey(taskChunk!.id, lod));
+				this.inFlightRemeshKeys.add(packInflightKey(taskChunk!.numericId, lod));
 				worker.postFullRemesh(taskChunk!);
 				this.recordWorkerDispatch(workerIndex);
 				this.debugStats.totalRemeshDispatches++;
@@ -2302,7 +2324,7 @@ export class ChunkWorkerPool {
 					chunk: taskChunk,
 					lod,
 				});
-				this.inFlightRemeshKeys.add(packInflightKey(taskChunk!.id, lod));
+				this.inFlightRemeshKeys.add(packInflightKey(taskChunk!.numericId, lod));
 				worker.postFullRemesh(taskChunk!, lod);
 				this.recordWorkerDispatch(workerIndex);
 				this.debugStats.totalLodPrecomputeDispatches++;
@@ -2371,7 +2393,6 @@ export class ChunkWorkerPool {
 		this.terrainTaskDeferLighting.delete(chunk.id);
 		this.deferredLightingQueuedIds.delete(chunk.id);
 		this.deferredLightingSeedStates.delete(chunk.id);
-		this.rerunRemeshAfterInflight.delete(chunk.id);
 
 		// O(log n) — the heap backing taskHeap supports real removal (unlike
 		// the old sorted-array queue, where removing an arbitrary element
@@ -2388,10 +2409,31 @@ export class ChunkWorkerPool {
 		// time in processDeferredLightingQueue / processQueue via isLoaded /
 		// seedState guards, so we only clear the tracking sets here.
 
-		// pendingLodPrecomputeKeys uses packInflightKey(chunkId, lod).
+		// pendingLodPrecomputeKeys uses packInflightKey(numericId, lod).
 		// LOD values are 0–15, so 16 deletes is cheap.
 		for (let lod = 0; lod < 16; lod++) {
-			this.pendingLodPrecomputeKeys.delete(packInflightKey(chunk.id, lod));
+			this.pendingLodPrecomputeKeys.delete(
+				packInflightKey(chunk.numericId, lod),
+			);
+		}
+
+		// In-flight remesh keys are keyed by numericId, which is only
+		// recoverable while the task context still references the chunk.
+		// Clear them here so a late worker reply for a disposed chunk
+		// (which cannot resolve the chunk) doesn't leak Set entries.
+		for (let i = 0; i < this.workerTaskContext.length; i++) {
+			const ctx = this.workerTaskContext[i];
+			if (
+				ctx &&
+				(ctx.taskType === TaskType.Remesh ||
+					ctx.taskType === TaskType.LodPrecompute) &&
+				ctx.chunk === chunk &&
+				typeof ctx.lod === "number"
+			) {
+				this.inFlightRemeshKeys.delete(
+					packInflightKey(chunk.numericId, ctx.lod),
+				);
+			}
 		}
 	}
 	public static async teardownForHmr(): Promise<void> {

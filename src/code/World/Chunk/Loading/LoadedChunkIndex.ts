@@ -16,11 +16,11 @@ function chunkToCellKey(chunk: Chunk): number {
 
 export class LoadedChunkIndex {
 	private readonly cells = new Map<number, Set<Chunk>>();
-	private readonly chunkCellKeys = new Map<bigint, number>();
+	private readonly chunkCellKeys = new Map<number, number>();
 
 	register(chunk: Chunk): void {
 		const key = chunkToCellKey(chunk);
-		this.chunkCellKeys.set(chunk.id, key);
+		this.chunkCellKeys.set(chunk.numericId, key);
 		let cell = this.cells.get(key);
 		if (!cell) {
 			cell = new Set();
@@ -30,9 +30,9 @@ export class LoadedChunkIndex {
 	}
 
 	unregister(chunk: Chunk): void {
-		const key = this.chunkCellKeys.get(chunk.id);
+		const key = this.chunkCellKeys.get(chunk.numericId);
 		if (!key) return;
-		this.chunkCellKeys.delete(chunk.id);
+		this.chunkCellKeys.delete(chunk.numericId);
 		const cell = this.cells.get(key);
 		if (cell) {
 			cell.delete(chunk);

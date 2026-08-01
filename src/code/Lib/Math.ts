@@ -1018,9 +1018,29 @@ export class Matrix {
 		return new Matrix([1, 0, 0, 0, 0, c, s, 0, 0, -s, c, 0, 0, 0, 0, 1]);
 	}
 	static RotationY(angle: number): Matrix {
+		return Matrix.RotationYToRef(angle, new Matrix());
+	}
+	static RotationYToRef(angle: number, result: Matrix): Matrix {
 		const c = Math.cos(angle);
 		const s = Math.sin(angle);
-		return new Matrix([c, 0, -s, 0, 0, 1, 0, 0, s, 0, c, 0, 0, 0, 0, 1]);
+		const m = result.m;
+		m[0] = c;
+		m[1] = 0;
+		m[2] = -s;
+		m[3] = 0;
+		m[4] = 0;
+		m[5] = 1;
+		m[6] = 0;
+		m[7] = 0;
+		m[8] = s;
+		m[9] = 0;
+		m[10] = c;
+		m[11] = 0;
+		m[12] = 0;
+		m[13] = 0;
+		m[14] = 0;
+		m[15] = 1;
+		return result;
 	}
 	static RotationZ(angle: number): Matrix {
 		const c = Math.cos(angle);
@@ -1275,17 +1295,25 @@ export class Matrix {
 		);
 	}
 	toEulerAngles(): Vec3 {
+		return this.toEulerAnglesToRef(vec3(0, 0, 0));
+	}
+	toEulerAnglesToRef(result: Vec3): Vec3 {
 		const m = this.m;
 		const sy = -m[2];
 		if (Math.abs(sy) > 0.99999) {
-			const sx = 0;
-			const sz = Math.atan2(-m[4], m[0]);
-			return vec3(sx, Math.asin(Math.max(-1, Math.min(1, sy))), sz);
+			return setVec3(
+				result,
+				0,
+				Math.asin(Math.max(-1, Math.min(1, sy))),
+				Math.atan2(-m[4], m[0]),
+			);
 		}
-		const sx = Math.atan2(m[6], m[10]);
-		const syA = Math.asin(Math.max(-1, Math.min(1, sy)));
-		const sz = Math.atan2(m[1], m[5]);
-		return vec3(sx, syA, sz);
+		return setVec3(
+			result,
+			Math.atan2(m[6], m[10]),
+			Math.asin(Math.max(-1, Math.min(1, sy))),
+			Math.atan2(m[1], m[5]),
+		);
 	}
 	toArray(): number[] {
 		return this.m.slice();
@@ -1296,11 +1324,18 @@ export class Observable<T> {
 	#observers: Array<(data: T) => void> = [];
 	#observerIds = new Map<number, (data: T) => void>();
 	#nextId = 1;
+	// Snapshot cache: notifyObservers used to call #observers.slice() on
+	// every notify. The snapshot is only re-taken when the observer list
+	// actually mutates, so the common no-change case iterates the cached
+	// copy. Semantics are unchanged: observers added/removed during a
+	// notify see the snapshot they would have seen before.
+	#notifySnapshot: Array<(data: T) => void> | null = null;
 
 	add(observer: (data: T) => void): number {
 		const id = this.#nextId++;
 		this.#observerIds.set(id, observer);
 		this.#observers.push(observer);
+		this.#notifySnapshot = null;
 		return id;
 	}
 	addOnce(observer: (data: T) => void): number {
@@ -1317,6 +1352,7 @@ export class Observable<T> {
 		this.#observerIds.delete(id);
 		const idx = this.#observers.indexOf(obs);
 		if (idx >= 0) this.#observers.splice(idx, 1);
+		this.#notifySnapshot = null;
 		return true;
 	}
 	removeCallback(observer: (data: T) => void): boolean {
@@ -1326,14 +1362,18 @@ export class Observable<T> {
 		for (const [id, o] of this.#observerIds) {
 			if (o === observer) this.#observerIds.delete(id);
 		}
+		this.#notifySnapshot = null;
 		return true;
 	}
 	clear(): void {
 		this.#observers = [];
 		this.#observerIds.clear();
+		this.#notifySnapshot = null;
 	}
 	notifyObservers(data: T): void {
-		for (const o of this.#observers.slice()) o(data);
+		const list =
+			this.#notifySnapshot ?? (this.#notifySnapshot = this.#observers.slice());
+		for (const o of list) o(data);
 	}
 	get hasObservers(): boolean {
 		return this.#observers.length > 0;

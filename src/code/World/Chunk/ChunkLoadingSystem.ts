@@ -108,7 +108,7 @@ const _prefetchReqInfo = new Array<{
 for (let i = 0; i < _PREFAETCH_REQ_CAP; i++) {
 	_prefetchReqInfo[i] = { chunkId: 0n, key: 0n, lod: 0 };
 }
-let prefetchPromisesThisCycle = 0;
+const prefetchPromisesThisCycle = 0;
 const _prefetchPromises: Promise<void>[] = [];
 
 function _prefetchOnReadOk(
@@ -197,7 +197,7 @@ const streamingController = new ChunkStreamingController({
 });
 
 addChunkDisposeHook((chunk) => {
-	streamingController.onChunkDisposed(chunk.id);
+	streamingController.onChunkDisposed(chunk.numericId);
 });
 
 const worldMutations = new ChunkWorldMutations({
@@ -472,8 +472,11 @@ export function validateChunksAround(
 				const isLoaded = !!chunk?.isLoaded;
 				const isQueued = queuedIds.has(chunkId);
 				const isUnloading = !!chunk && unloadQueueSet.has(chunk);
+				// desiredStates is keyed by numericId and only contains entries
+				// for chunks that exist, so a missing chunk implies no desired state.
 				const hasDesiredState =
-					streamingController.getDesiredState(chunkId) !== undefined;
+					!!chunk &&
+					streamingController.getDesiredState(chunk.numericId) !== undefined;
 
 				if (hasDesiredState && !isLoaded && !isQueued && !isUnloading) {
 					missing.push({

@@ -505,10 +505,11 @@ export class CustomBoat implements IUsable {
 		// Sync visuals (if any)
 		if (this.#customVisualRoot) {
 			this.#customVisualRoot.position.copyFrom(this.#boat.position);
-			this.#scratchQuat = Quaternion.RotationYawPitchRoll(
+			Quaternion.FromEulerAnglesToRef(
+				0,
 				this.#currentYaw + this.#customVisualLocalYaw,
 				0,
-				0,
+				this.#scratchQuat,
 			);
 			(this.#customVisualRoot.rotationQuaternion as any).copyFrom(
 				this.#scratchQuat,
@@ -622,6 +623,11 @@ export class CustomBoat implements IUsable {
 			this.#boat.position.y,
 			this.#boat.position.z,
 		);
+	}
+	public getBoatPositionToRef(out: Vec3): void {
+		out.x = this.#boat.position.x;
+		out.y = this.#boat.position.y;
+		out.z = this.#boat.position.z;
 	}
 
 	public get mount(): Mount {

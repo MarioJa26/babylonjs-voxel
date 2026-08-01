@@ -323,16 +323,17 @@ export class WorldGenerator {
 		}
 
 		if (!deferLighting) {
-			const lightSeedState = this.lightGenerator.seedInitialLight(
+			// PERF: In-place seed+propagate — no LightSeedState snapshot slice
+			// allocation (the slice would only be copied into a scratch queue
+			// and discarded within the same call).
+			this.lightGenerator.seedAndPropagateLightImmediate(
 				chunkX,
 				chunkY,
 				chunkZ,
-				biome,
 				blocks,
 				light,
 				surfaceGeneration.topSunlightMask,
 			);
-			this.lightGenerator.propagateLight(blocks, light, lightSeedState);
 			return { blocks, light };
 		}
 

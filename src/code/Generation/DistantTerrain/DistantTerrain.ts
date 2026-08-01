@@ -118,6 +118,24 @@ function ensureFloatBuffers() {
 // Per-frame uniforms (Lite has no onBind — drive from onBeforeRender)
 // =====================================================================
 
+// Scratch arrays + change caches: the sun is static while timeScale === 0 and
+// fog only changes on underwater transitions/overrides, so steady-state
+// frames skip every setShaderUniform (and the material-UBO writeBuffer).
+const lightDirScratch = new Float32Array(3);
+const fogInfosScratch = new Float32Array(4);
+const fogColorScratch = new Float32Array(3);
+let lastLx = Number.NaN;
+let lastLy = Number.NaN;
+let lastLz = Number.NaN;
+let lastSunIntensity = Number.NaN;
+let lastUnderWater: boolean | null = null;
+let lastFogStart = Number.NaN;
+let lastFogEnd = Number.NaN;
+let lastFogColorR = Number.NaN;
+let lastFogColorG = Number.NaN;
+let lastFogColorB = Number.NaN;
+let lastFogInvRange = Number.NaN;
+
 function updateUniforms() {
 	if (!material || !waterMaterial) return;
 
@@ -141,18 +159,61 @@ function updateUniforms() {
 		: false;
 	const start = MapFog.getFogStart(isUnderWater);
 	const end = MapFog.getFogEnd(isUnderWater);
-	const fogInfos: [number, number, number, number] = [0, start, end, 0];
 	const fogColor = MapFog.getFogColor(isUnderWater);
 	// Precomputed reciprocal of (far - near) so the per-fragment fog factor can
 	// multiply instead of divide (mirrors the SKYBLEND_FACTOR trick).
 	const fogInvRange = 1.0 / Math.max(end - start, 1e-4);
 
-	for (const mat of [material, waterMaterial]) {
-		setShaderUniform(mat, "lightDirection", [lx, ly, lz]);
-		setShaderUniform(mat, "sunLightIntensity", sunLightIntensity);
-		setShaderUniform(mat, "fogInfos", fogInfos);
-		setShaderUniform(mat, "fogColor", fogColor);
-		setShaderUniform(mat, "fogInvRange", fogInvRange);
+	const staticChanged =
+		lx !== lastLx ||
+		ly !== lastLy ||
+		lz !== lastLz ||
+		sunLightIntensity !== lastSunIntensity;
+	const fogChanged =
+		isUnderWater !== lastUnderWater ||
+		start !== lastFogStart ||
+		end !== lastFogEnd ||
+		fogColor[0] !== lastFogColorR ||
+		fogColor[1] !== lastFogColorG ||
+		fogColor[2] !== lastFogColorB ||
+		fogInvRange !== lastFogInvRange;
+
+	if (!staticChanged && !fogChanged) return;
+
+	if (staticChanged) {
+		lightDirScratch[0] = lx;
+		lightDirScratch[1] = ly;
+		lightDirScratch[2] = lz;
+		lastLx = lx;
+		lastLy = ly;
+		lastLz = lz;
+		lastSunIntensity = sunLightIntensity;
+		for (const mat of [material, waterMaterial]) {
+			setShaderUniform(mat, "lightDirection", lightDirScratch);
+			setShaderUniform(mat, "sunLightIntensity", sunLightIntensity);
+		}
+	}
+
+	if (fogChanged) {
+		fogInfosScratch[0] = 0;
+		fogInfosScratch[1] = start;
+		fogInfosScratch[2] = end;
+		fogInfosScratch[3] = 0;
+		fogColorScratch[0] = fogColor[0];
+		fogColorScratch[1] = fogColor[1];
+		fogColorScratch[2] = fogColor[2];
+		lastUnderWater = isUnderWater;
+		lastFogStart = start;
+		lastFogEnd = end;
+		lastFogColorR = fogColor[0];
+		lastFogColorG = fogColor[1];
+		lastFogColorB = fogColor[2];
+		lastFogInvRange = fogInvRange;
+		for (const mat of [material, waterMaterial]) {
+			setShaderUniform(mat, "fogInfos", fogInfosScratch);
+			setShaderUniform(mat, "fogColor", fogColorScratch);
+			setShaderUniform(mat, "fogInvRange", fogInvRange);
+		}
 	}
 }
 
