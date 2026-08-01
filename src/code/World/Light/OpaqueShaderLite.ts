@@ -56,7 +56,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   var normalMap = textureSampleGrad(normalTexture, normalTextureSampler, singleTileUV, layer, dpdx(in.vUV), dpdy(in.vUV)).rgb;
   normalMap = normalize(normalMap * 2.0 - 1.0);
 
-   let N = in.vNormal;
+  let N = in.vNormal;
   let T = in.vTangent;
   let B = cross(N, T);
   let worldNormal = normalize(mat3x3<f32>(T, B, N) * normalMap);
@@ -210,7 +210,7 @@ function buildChunkMaterial(
 	for (let i = 0; i < arenaCount; i++) {
 		faceStorageBuffers.push({
 			name: `faceData${i}`,
-			type: "array<vec4<u32>>",
+			type: "array<u32>",
 		});
 	}
 

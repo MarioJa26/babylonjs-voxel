@@ -22,6 +22,14 @@ const WATER_LEVEL_PAIR_MASK = 0x20000; // bit 17 — indicates water level pair 
  * ResizableTypedArrays, collapsing the per-face path to plain typed-array
  * stores.
  *
+ * Face layout (3 u32 words per face, little-endian byte order):
+ *   word0 (faceDataA): sx | sy<<8 | sz<<16 | axisFace(3)<<24 | tint(3)<<27
+ *   word1 (faceDataB): sw | sh<<8 | tileX<<16 | tileY<<24
+ *   word2 (faceDataC): ao | light<<8 | meta<<16 | chunkIndex(6)<<24
+ * The chunkIndex byte (word2 byte 3) is written as 0 here; the merged-group
+ * layer ORs in the per-face local chunk index (0..63) when assembling the
+ * group buffer, and PackedChunkMesh uploads it to the GPU arena verbatim.
+ *
  * Bounds-check policy (P3.8):
  *  - `emitQuad` (custom shapes) keeps the bounds check: custom boxes and
  *    border blocks can produce coordinates at exactly -1 / size, which scale
@@ -80,15 +88,15 @@ export class QuadBuffer {
 		a[i] = sx;
 		a[i + 1] = sy;
 		a[i + 2] = sz;
-		a[i + 3] = axisFace;
+		a[i + 3] = axisFace | (tint << 3);
 		b[i] = sw;
 		b[i + 1] = sh;
 		b[i + 2] = tx;
 		b[i + 3] = ty;
 		c[i] = ao;
 		c[i + 1] = light;
-		c[i + 2] = tint;
-		c[i + 3] = meta;
+		c[i + 2] = meta;
+		c[i + 3] = 0;
 		this.count++;
 		const next = i + 4;
 		this.rtaA.length = next;

@@ -115,9 +115,10 @@ export function buildPackedVertexWGSL(
 
 	let loadFaceBody = "";
 	for (let i = 0; i < arenas; i++) {
-		loadFaceBody += `  if (arena == ${i}u) { return faceData${i}[idx]; }\n`;
+		loadFaceBody += `  if (arena == ${i}u) { return vec3<u32>(faceData${i}[i3], faceData${i}[i3 + 1u], faceData${i}[i3 + 2u]); }\n`;
 	}
-	loadFaceBody += "  return faceData0[idx];\n";
+	loadFaceBody +=
+		"  return vec3<u32>(faceData0[i3], faceData0[i3 + 1u], faceData0[i3 + 2u]);\n";
 
 	return /* wgsl */ `
 struct VSOut {
@@ -128,10 +129,27 @@ ${vsOutFields(o)}
 // injects the per-instance 4x4 matrix as four vec4 vertex attributes.
 //   world3.w carries this mesh's faceBase offset into its face arena.
 //   world0.w carries the arena index (which faceDataN buffer to read).
+//   world1.x carries the group's chunkOffsets base (the 64-offset block index).
 // The rest of the matrix is unused (the vertex position is derived from
 // faceData, not the matrix).
+//
+// Face layout — 3 u32 words per face (12 bytes, little-endian):
+//   word0: sx | sy<<8 | sz<<16 | axisFace(3)<<24 | tint(3)<<27
+//   word1: sw | sh<<8 | tileX<<16 | tileY<<24
+//   word2: ao | light<<8 | meta<<16 | chunkIndex(6)<<24
+// sx/sy/sz are chunk-local positions scaled by 8 (1 block = 8 units);
+// sw/sh are face dimensions in the same scaled units (rawDimensions flag
+// switches them to unscaled block units for oversized faces); chunkIndex is
+// the per-face local chunk 0..63 selecting one of the 64 chunkOffsets entries
+// of this group.
+//
+// The face arenas are declared as flat array<u32> (NOT array<vec3<u32>>:
+// WGSL storage-buffer layout pads vec3 elements to a 16-byte stride, which
+// would misalign every face after the first), so loadFace reads 3 consecutive
+// u32s per face.
 
-fn loadFace(arena : u32, idx : u32) -> vec4<u32> {
+fn loadFace(arena : u32, idx : u32) -> vec3<u32> {
+  let i3 = idx * 3u;
 ${loadFaceBody}}
 
 ${fogWGSL(o.fog)}
@@ -172,12 +190,13 @@ fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32,
 
   let faceBase = u32(input.world3.w);
   let arena = u32(input.world0.w);
+  let offsetBase = u32(input.world1.x);
   let face = loadFace(arena, faceBase + instanceIndex);
 
   let aByte = f32(face.x & 0xffu);
   let bByte = f32((face.x >> 8u) & 0xffu);
   let cByte = f32((face.x >> 16u) & 0xffu);
-  let axisFace = (face.x >> 24u) & 0xffu;
+  let axisFace = (face.x >> 24u) & 7u;
 
   let widthByte = face.y & 0xffu;
   let heightByte = (face.y >> 8u) & 0xffu;
@@ -186,8 +205,9 @@ fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32,
 
   let packedAO = face.z & 0xffu;
   let lightByte = (face.z >> 8u) & 0xffu;
-${o.tint ? "  let tintBucket = (face.z >> 16u) & 0xffu;" : ""}
-  let metaByte = (face.z >> 24u) & 0xffu;
+  let metaByte = (face.z >> 16u) & 0xffu;
+  let localChunk = (face.z >> 24u) & 0x3fu;
+${o.tint ? "  let tintBucket = (face.x >> 27u) & 7u;" : ""}
 
   let axis = axisFace >> 1u;
   let isBackFace = axisFace & 1u;
@@ -199,7 +219,7 @@ ${o.tint ? "  let tintBucket = (face.z >> 16u) & 0xffu;" : ""}
   let faceWidth = select(f32(widthByte) * INV_POS, f32(widthByte), rawDimensions != 0u);
   let faceHeight = select(f32(heightByte) * INV_POS, f32(heightByte), rawDimensions != 0u);
 
-  let co = chunkOffsets[face.w];
+  let co = chunkOffsets[offsetBase + localChunk];
 
   let posX = aByte * INV_POS - f32((metaByte >> 3u) & 1u) * 0.5 * INV_POS;
   let posZ = cByte * INV_POS - f32((metaByte >> 7u) & 1u) * 0.5 * INV_POS;

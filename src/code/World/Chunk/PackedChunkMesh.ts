@@ -8,6 +8,11 @@
  * `@builtin(instance_index)` combined with a per-mesh `faceBase` offset that is
  * carried in the thin-instance matrix (world3.w).
  *
+ * Each face is 3 u32 words (12 bytes — see QuadBuffer.ts for the bit layout);
+ * the per-face local chunk index (0..63) is OR'd into word2 byte 3 during
+ * merged-group assembly, and the group's chunkOffsets base rides in the
+ * instance matrix (world1.x), so no 4th word is needed.
+ *
  * Babylon Lite 1.11 has no instanced-draw support in the plain ShaderMaterial
  * path (drawIndexed is called with no instance count), but it DOES support
  * thin instances: a mesh with `mesh.thinInstances` set is drawn `ti.count`
@@ -117,7 +122,7 @@ let sceneRef: SceneContext | null = null;
 // right one via a per-instance `arenaIndex`. `faceData0..faceData{N-1}` are
 // bound to every packed material.
 interface FaceArena {
-	cpu: Uint32Array; // faceCount * 4 u32 (vec4<u32> per face)
+	cpu: Uint32Array; // faceCount * 3 u32 (vec3<u32> per face)
 	buffer: StorageBuffer;
 	capacity: number; // in faces
 	used: number; // in faces
@@ -173,8 +178,22 @@ let maxWriteBytes = 64 * 1024 * 1024;
 // thrown error. We cap each arena at this limit and add more arenas as needed.
 let maxStorageBindingBytes = 128 * 1024 * 1024;
 
-// Bytes per face in the arena (vec4<u32>).
-const FACE_BYTES = 16;
+// Bytes per face in the arena (vec3<u32>: 3 words × 4 bytes).
+// Layout (little-endian, see QuadBuffer.ts):
+//   w0 = sx | sy<<8 | sz<<16 | axisFace(3)<<24 | tint(3)<<27
+//   w1 = sw | sh<<8 | tileX<<16 | tileY<<24
+//   w2 = ao | light<<8 | meta<<16 | chunkIndex(6)<<24
+// The per-face chunk index (0..63) is OR'd in at merge time; the group's
+// offsetBase (where its 64 chunk offsets live in the global chunkOffsets
+// buffer) rides in the per-mesh instance matrix (world1.x) instead of a
+// 4th word — that cut the arena stride from 16 to 12 bytes per face.
+const FACE_BYTES = 12;
+
+// Element index inside the per-instance 4x4 matrix where we stash the group's
+// chunkOffsets base (world1.x = matrix element 4). The vertex shader computes
+// the per-face offset as `chunkOffsets[offsetBase + ci]`. f32 holds integers
+// up to 2^24 exactly; offsetBase is far below that (offsetUsedGroups * 64).
+const OFFSET_BASE_MATRIX_INDEX = 4;
 
 // Element index inside the per-instance 4x4 matrix where we stash `arenaIndex`.
 // world0.w is column 0, row 3 (matrix element 3). The vertex shader reads it
@@ -255,9 +274,10 @@ function ensureArenas(): void {
 	}
 	// Pre-size each arena to a generous initial capacity so growth at runtime
 	// is rare. `maxStorageBindingBytes / FACE_BYTES` is the binding cap; we
-	// start each arena at 262144 faces (4 MiB) which covers ~1.5M faces across
-	// 6 arenas before any grow is needed — well past a typical render distance.
-	// The capacity doubles on demand up to the binding cap if needed.
+	// start each arena at 262144 faces (3 MiB at 12 B/face) which covers
+	// ~1.5M faces across 6 arenas before any grow is needed — well past a
+	// typical render distance. The capacity doubles on demand up to the
+	// binding cap if needed.
 	const maxFaces = maxFacesPerArena();
 	const initialCapacity = Math.min(262_144, maxFaces);
 	while (faceArenas.length < maxFaceArenas) {
@@ -273,7 +293,7 @@ function createFaceArena(initialCapacity: number): FaceArena {
 	let capacity = initialCapacity;
 	if (capacity < 1) capacity = 1;
 	if (capacity > maxFaces) capacity = maxFaces;
-	const cpu = new Uint32Array(capacity * 4);
+	const cpu = new Uint32Array(capacity * 3);
 	const buffer = createStorageBuffer(engineRef!, cpu, "face-set");
 	const arena: FaceArena = {
 		cpu,
@@ -328,8 +348,8 @@ function growArena(arena: FaceArena, index: number): void {
 	const maxFaces = Math.floor(maxStorageBindingBytes / FACE_BYTES);
 	const newCapacity = Math.min(arena.capacity * 2, maxFaces);
 	if (newCapacity <= arena.capacity) return;
-	const newCpu = new Uint32Array(newCapacity * 4);
-	newCpu.set(arena.cpu.subarray(0, arena.used * 4));
+	const newCpu = new Uint32Array(newCapacity * 3);
+	newCpu.set(arena.cpu.subarray(0, arena.used * 3));
 	arena.cpu = newCpu;
 	arena.capacity = newCapacity;
 	const old = arena.buffer;
@@ -489,7 +509,7 @@ function uploadFaceRange(arena: number, base: number, count: number): void {
 	const a = faceArenas[arena];
 	if (!a) return;
 
-	const elementsPerFace = 4; // vec4<u32>
+	const elementsPerFace = 3; // vec3<u32>
 
 	const dstByteOffset = base * elementsPerFace * 4;
 	const srcElementOffset = base * elementsPerFace;
@@ -645,7 +665,6 @@ export interface PackedMeshInput {
 	faceDataA: Uint8Array;
 	faceDataB: Uint8Array;
 	faceDataC: Uint8Array;
-	chunkIndex: Uint8Array; // per-face local chunk index (0..63)
 	chunkOffsets: Float32Array; // length 192, stride 3
 	position: [number, number, number];
 	boundsMin: [number, number, number];
@@ -715,6 +734,9 @@ function ensureFaceWordViews(state: PackedMeshState): void {
 // merged-face coordinates (the concatenated group layout); the arena layout
 // is identical, shifted by state.faceBase. Ranges are clamped to the mesh's
 // face count so a stale/mismatched list can never corrupt the arena.
+// Each face is 3 u32 words; the per-face chunk index (ci) is already stamped
+// into word2 byte 3 by the merged-group assembly, so the words are copied
+// verbatim.
 function packFaceRanges(
 	state: PackedMeshState,
 	ranges: readonly MergedFaceRange[],
@@ -722,8 +744,6 @@ function packFaceRanges(
 	if (ranges.length === 0) return;
 	ensureFaceWordViews(state);
 	const input = state.input;
-	const ci = input.chunkIndex;
-	const offsetBase = state.offsetBase;
 	const faceCount = input.faceDataA.length >>> 2;
 
 	const arena = faceArenas[state.faceArena];
@@ -734,7 +754,7 @@ function packFaceRanges(
 	const bWords = state.faceWordsB!;
 	const cWords = state.faceWordsC!;
 
-	const baseWord = state.faceBase * 4;
+	const baseWord = state.faceBase * 3;
 	for (let r = 0; r < ranges.length; r++) {
 		const { start, count } = ranges[r];
 		const clampedStart = start < 0 ? 0 : start;
@@ -742,14 +762,13 @@ function packFaceRanges(
 		if (clampedStart >= faceCount) continue;
 		const n = clampedEnd > faceCount ? faceCount - clampedStart : count;
 		if (n <= 0) continue;
-		let o = baseWord + clampedStart * 4;
+		let o = baseWord + clampedStart * 3;
 		const end = clampedStart + n;
 		for (let i = clampedStart; i < end; i++) {
 			faceCpu[o] = aWords[i];
 			faceCpu[o + 1] = bWords[i];
 			faceCpu[o + 2] = cWords[i];
-			faceCpu[o + 3] = offsetBase + ci[i];
-			o += 4;
+			o += 3;
 		}
 	}
 }
@@ -773,20 +792,22 @@ function packOffsets(state: PackedMeshState): void {
 }
 
 // Build / reuse the thin-instance matrix buffer for a mesh: `count` matrices
-// whose world3.w (matrices[i*16 + FACE_BASE_MATRIX_INDEX]) carries `faceBase`.
-// The shader reads world3.w as faceBase and ignores the rest (it computes the
-// vertex position from faceData), so the rest of every matrix stays zero.
+// whose world3.w (matrices[i*16 + FACE_BASE_MATRIX_INDEX]) carries `faceBase`
+// and world1.x (OFFSET_BASE_MATRIX_INDEX) carries the group's chunkOffsets
+// base. The shader reads those and ignores the rest (it computes the vertex
+// position from faceData), so the rest of every matrix stays zero.
 //
 // PERF: the buffer is RETAINED per-mesh on PackedMeshState and reused across
-// updates — only the single faceBase lane per instance is rewritten, and only
-// when the instance count changes do we reallocate. This removes the previous
-// `count*16` Float32Array allocation on every chunk remesh (a major GC source
-// in the updatePackedChunkMesh hot path). The old single-shared-scratch concern
-// does not apply because each mesh owns its OWN retained buffer here.
+// updates — only the faceBase/offsetBase lanes per instance are rewritten, and
+// only when the instance count changes do we reallocate. This removes the
+// previous `count*16` Float32Array allocation on every chunk remesh (a major
+// GC source in the updatePackedChunkMesh hot path). The old single-shared-scratch
+// concern does not apply because each mesh owns its OWN retained buffer here.
 function buildInstanceMatrices(
 	prev: Float32Array | undefined,
 	arena: number,
 	faceBase: number,
+	offsetBase: number,
 	count: number,
 ): Float32Array {
 	const needLen = count * 16;
@@ -795,16 +816,19 @@ function buildInstanceMatrices(
 		matrices = new Float32Array(needLen);
 	}
 	// The matrices are otherwise all-zero and never change, so only the
-	// faceBase (world3.w) and arenaIndex (world0.w) lanes are ever rewritten.
-	// A running accumulator replaces `count` multiplications (i*16) with
-	// `count` additions.
+	// faceBase (world3.w), arena (world0.w) and offsetBase (world1.x) lanes
+	// are ever rewritten. A running accumulator replaces `count`
+	// multiplications (i*16) with `count` additions.
 	let faceIdx = FACE_BASE_MATRIX_INDEX;
 	let arenaIdx = ARENA_MATRIX_INDEX;
+	let offsetIdx = OFFSET_BASE_MATRIX_INDEX;
 	for (let i = 0; i < count; i++) {
 		matrices[faceIdx] = faceBase;
 		matrices[arenaIdx] = arena;
+		matrices[offsetIdx] = offsetBase;
 		faceIdx += 16;
 		arenaIdx += 16;
+		offsetIdx += 16;
 	}
 	return matrices;
 }
@@ -865,7 +889,6 @@ function cloneInput(
 		faceDataA: reuseOrCloneU8(prev?.faceDataA, input.faceDataA),
 		faceDataB: reuseOrCloneU8(prev?.faceDataB, input.faceDataB),
 		faceDataC: reuseOrCloneU8(prev?.faceDataC, input.faceDataC),
-		chunkIndex: reuseOrCloneU8(prev?.chunkIndex, input.chunkIndex),
 		chunkOffsets: reuseOrCloneF32(prev?.chunkOffsets, input.chunkOffsets),
 		position: reuseOrCloneVec3(prev?.position, input.position),
 		boundsMin: reuseOrCloneVec3(prev?.boundsMin, input.boundsMin),
@@ -925,12 +948,13 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 	anyMesh.isVisible = true;
 
 	// Thin instances: draw `faceCount` copies of the shared quad, each addressed
-	// by instance_index; faceBase rides in world3.w and the arena index in
-	// world0.w.
+	// by instance_index; faceBase rides in world3.w, the arena index in
+	// world0.w, and the chunkOffsets base in world1.x.
 	const instanceMatrices = buildInstanceMatrices(
 		state.instanceMatrices,
 		alloc.arena,
 		alloc.base,
+		offsetBase,
 		faceCount,
 	);
 	state.instanceMatrices = instanceMatrices;
@@ -1027,6 +1051,7 @@ export function updatePackedChunkMesh(
 		state.instanceMatrices,
 		alloc.arena,
 		alloc.base,
+		state.offsetBase,
 		faceCount,
 	);
 	state.instanceMatrices = instanceMatrices;

@@ -75,18 +75,6 @@ let lastUpdateFrame = -1;
 
 // ── Allocation-reducing pools / reused state ──────────────────────────────────
 
-// Boat meshes always carry an all-zero chunkIndex. Pool a single zero-filled
-// buffer instead of allocating a fresh Uint8Array on every boat rebuild.
-let boatChunkIndexPool = new Uint8Array(0);
-function getBoatChunkIndex(size: number): Uint8Array {
-	if (boatChunkIndexPool.length < size) {
-		boatChunkIndexPool = new Uint8Array(size);
-	} else {
-		boatChunkIndexPool.fill(0, 0, size);
-	}
-	return boatChunkIndexPool.subarray(0, size);
-}
-
 // Boat chunks are standalone (all subchunk offsets zero) — reused every rebuild.
 const boatChunkOffsets = new Float32Array(192);
 
@@ -311,7 +299,6 @@ const _packedInput: PackedMeshInput = {
 	faceDataA: null as any,
 	faceDataB: null as any,
 	faceDataC: null as any,
-	chunkIndex: null as any,
 	chunkOffsets: null as any,
 	position: [0, 0, 0],
 	boundsMin: [0, 0, 0],
@@ -325,7 +312,6 @@ function buildLiteMesh(
 		faceDataA: Uint8Array;
 		faceDataB: Uint8Array;
 		faceDataC: Uint8Array;
-		chunkIndex: Uint8Array;
 		faceCount: number;
 	},
 	material: ShaderMaterial,
@@ -341,7 +327,6 @@ function buildLiteMesh(
 	input.faceDataA = mergedData.faceDataA;
 	input.faceDataB = mergedData.faceDataB;
 	input.faceDataC = mergedData.faceDataC;
-	input.chunkIndex = mergedData.chunkIndex;
 	input.chunkOffsets = group.chunkOffsets;
 
 	// mutate arrays instead of replacing
@@ -434,7 +419,6 @@ function buildBoatInput(
 	_packedInput.faceDataA = data.faceDataA;
 	_packedInput.faceDataB = data.faceDataB;
 	_packedInput.faceDataC = data.faceDataC;
-	_packedInput.chunkIndex = getBoatChunkIndex(data.faceCount);
 	_packedInput.chunkOffsets = boatChunkOffsets;
 	// Boat chunks carry no world AABB, so they are never frustum-culled.
 

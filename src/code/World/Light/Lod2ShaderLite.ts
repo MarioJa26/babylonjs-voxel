@@ -200,7 +200,7 @@ export function createLod2OpaqueMaterial(
 	const arenaCount = Math.max(1, opts.faceArenaCount | 0);
 	const faceStorageBuffers = [];
 	for (let i = 0; i < arenaCount; i++) {
-		faceStorageBuffers.push({ name: `faceData${i}`, type: "array<vec4<u32>>" });
+		faceStorageBuffers.push({ name: `faceData${i}`, type: "array<u32>" });
 	}
 	const material = createShaderMaterial({
 		name: "lod2OpaqueLite",
@@ -250,7 +250,7 @@ export function createLod2TransparentMaterial(
 	const arenaCount = Math.max(1, opts.faceArenaCount | 0);
 	const faceStorageBuffers = [];
 	for (let i = 0; i < arenaCount; i++) {
-		faceStorageBuffers.push({ name: `faceData${i}`, type: "array<vec4<u32>>" });
+		faceStorageBuffers.push({ name: `faceData${i}`, type: "array<u32>" });
 	}
 	const material = createShaderMaterial({
 		name: "lod2TransparentLite",

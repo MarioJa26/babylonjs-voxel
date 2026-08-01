@@ -42,7 +42,6 @@ export interface MergedVertexData {
 	faceDataA: Uint8Array;
 	faceDataB: Uint8Array;
 	faceDataC: Uint8Array;
-	chunkIndex: Uint8Array;
 	faceCount: number;
 }
 
@@ -50,7 +49,6 @@ interface MergedBuffers {
 	a: Uint8Array;
 	b: Uint8Array;
 	c: Uint8Array;
-	d: Uint8Array;
 }
 
 export interface MergedFaceRange {
@@ -85,14 +83,12 @@ export interface MergedMeshGroup {
 	opaqueA: Uint8Array | null;
 	opaqueB: Uint8Array | null;
 	opaqueC: Uint8Array | null;
-	opaqueD: Uint8Array | null;
 
 	transparentA: Uint8Array | null;
 	transparentB: Uint8Array | null;
 	transparentC: Uint8Array | null;
-	transparentD: Uint8Array | null;
 
-	// Cached wrappers to avoid allocating `{ a, b, c, d }` every rebuild.
+	// Cached wrappers to avoid allocating `{ a, b, c }` every rebuild.
 	opaqueBuffers: MergedBuffers | null;
 	transparentBuffers: MergedBuffers | null;
 
@@ -376,12 +372,10 @@ export function assignChunkToGroup(
 			opaqueA: null,
 			opaqueB: null,
 			opaqueC: null,
-			opaqueD: null,
 
 			transparentA: null,
 			transparentB: null,
 			transparentC: null,
-			transparentD: null,
 
 			opaqueBuffers: null,
 			transparentBuffers: null,
@@ -613,14 +607,12 @@ export function disposeAll(): void {
 		group.opaqueA = null;
 		group.opaqueB = null;
 		group.opaqueC = null;
-		group.opaqueD = null;
 		group.opaqueBuffers = null;
 		group.opaqueCapacityFaces = 0;
 
 		group.transparentA = null;
 		group.transparentB = null;
 		group.transparentC = null;
-		group.transparentD = null;
 		group.transparentBuffers = null;
 		group.transparentCapacityFaces = 0;
 
@@ -651,14 +643,12 @@ function ensureOpaqueMergedCapacity(
 		const a = new Uint8Array(byte4);
 		const b = new Uint8Array(byte4);
 		const c = new Uint8Array(byte4);
-		const d = new Uint8Array(capacity);
 
 		group.opaqueA = a;
 		group.opaqueB = b;
 		group.opaqueC = c;
-		group.opaqueD = d;
 
-		group.opaqueBuffers = { a, b, c, d };
+		group.opaqueBuffers = { a, b, c };
 	}
 
 	return group.opaqueBuffers!;
@@ -679,14 +669,12 @@ function ensureTransparentMergedCapacity(
 		const a = new Uint8Array(byte4);
 		const b = new Uint8Array(byte4);
 		const c = new Uint8Array(byte4);
-		const d = new Uint8Array(capacity);
 
 		group.transparentA = a;
 		group.transparentB = b;
 		group.transparentC = c;
-		group.transparentD = d;
 
-		group.transparentBuffers = { a, b, c, d };
+		group.transparentBuffers = { a, b, c };
 	}
 
 	return group.transparentBuffers!;
@@ -737,7 +725,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		const mergedA = buffers.a;
 		const mergedB = buffers.b;
 		const mergedC = buffers.c;
-		const mergedD = buffers.d;
 
 		let writeByte = 0;
 		let writeFace = 0;
@@ -765,12 +752,19 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 				copyFaceBytes(mergedA, data.faceDataA, byteCount, writeByte);
 				copyFaceBytes(mergedB, data.faceDataB, byteCount, writeByte);
 				copyFaceBytes(mergedC, data.faceDataC, byteCount, writeByte);
+				// Stamp this member's local chunk index (0..63) into word2
+				// byte 3 of every face. The worker leaves this byte zero; a
+				// skipped member's previously stamped bytes stay in place.
+				// `localIndex` is stable per member slot, and any layout
+				// change (realloc / member add-remove) forces a full re-copy.
+				const ci = m.localIndex;
+				for (let k = writeByte + 3; k < writeByte + byteCount; k += 4) {
+					mergedC[k] |= ci;
+				}
 				m.lastBuiltOpaque = data;
 				m.lastBuiltOpaqueOffset = writeByte;
 				pushDirtyRange(opaqueRanges, writeFace, fc);
 			}
-
-			mergedD.fill(m.localIndex, writeFace, writeFace + fc);
 
 			writeByte += byteCount;
 			writeFace += fc;
@@ -783,7 +777,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 				faceDataA: new Uint8Array(0),
 				faceDataB: new Uint8Array(0),
 				faceDataC: new Uint8Array(0),
-				chunkIndex: new Uint8Array(0),
 				faceCount: 0,
 			};
 		}
@@ -791,7 +784,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		vd.faceDataA = mergedA.subarray(0, totalBytes);
 		vd.faceDataB = mergedB.subarray(0, totalBytes);
 		vd.faceDataC = mergedC.subarray(0, totalBytes);
-		vd.chunkIndex = mergedD.subarray(0, totalOpaque);
 		vd.faceCount = totalOpaque;
 		group.cachedOpaque = vd;
 	} else {
@@ -812,7 +804,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		const mergedA = buffers.a;
 		const mergedB = buffers.b;
 		const mergedC = buffers.c;
-		const mergedD = buffers.d;
 
 		let writeByte = 0;
 		let writeFace = 0;
@@ -836,12 +827,14 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 				copyFaceBytes(mergedA, data.faceDataA, byteCount, writeByte);
 				copyFaceBytes(mergedB, data.faceDataB, byteCount, writeByte);
 				copyFaceBytes(mergedC, data.faceDataC, byteCount, writeByte);
+				const ci = m.localIndex;
+				for (let k = writeByte + 3; k < writeByte + byteCount; k += 4) {
+					mergedC[k] |= ci;
+				}
 				m.lastBuiltTransparent = data;
 				m.lastBuiltTransparentOffset = writeByte;
 				pushDirtyRange(transparentRanges, writeFace, fc);
 			}
-
-			mergedD.fill(m.localIndex, writeFace, writeFace + fc);
 
 			writeByte += byteCount;
 			writeFace += fc;
@@ -854,7 +847,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 				faceDataA: new Uint8Array(0),
 				faceDataB: new Uint8Array(0),
 				faceDataC: new Uint8Array(0),
-				chunkIndex: new Uint8Array(0),
 				faceCount: 0,
 			};
 		}
@@ -862,7 +854,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		vd.faceDataA = mergedA.subarray(0, totalBytes);
 		vd.faceDataB = mergedB.subarray(0, totalBytes);
 		vd.faceDataC = mergedC.subarray(0, totalBytes);
-		vd.chunkIndex = mergedD.subarray(0, totalTransparent);
 		vd.faceCount = totalTransparent;
 		group.cachedTransparent = vd;
 	} else {
