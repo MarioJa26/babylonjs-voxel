@@ -65,3 +65,32 @@ export function worldSeed(name: string): string {
 export function worldLocalStorageKey(name: string, baseKey: string): string {
 	return `b102.world.${name}.${baseKey}`;
 }
+
+/** localStorage base key for a world's explicit terrain seed. */
+export const WORLD_SEED_BASE_KEY = "seed.v1";
+
+/** The explicitly stored seed for a world, or null if it uses the default. */
+export function getStoredWorldSeed(worldName: string): string | null {
+	return localStorage.getItem(
+		worldLocalStorageKey(worldName, WORLD_SEED_BASE_KEY),
+	);
+}
+
+export function setStoredWorldSeed(worldName: string, seed: string): void {
+	localStorage.setItem(
+		worldLocalStorageKey(worldName, WORLD_SEED_BASE_KEY),
+		seed,
+	);
+}
+
+export function removeStoredWorldSeed(worldName: string): void {
+	localStorage.removeItem(worldLocalStorageKey(worldName, WORLD_SEED_BASE_KEY));
+}
+
+/**
+ * Effective terrain seed for a world: the explicitly stored seed if one was
+ * set, otherwise the deterministic name-derived seed.
+ */
+export function worldSeedFor(worldName: string): string {
+	return getStoredWorldSeed(worldName) ?? worldSeed(worldName);
+}

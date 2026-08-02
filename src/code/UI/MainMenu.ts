@@ -1,9 +1,13 @@
 import {
 	isValidWorldName,
+	removeStoredWorldSeed,
 	sanitizeWorldName,
+	setStoredWorldSeed,
+	WORLD_SEED_BASE_KEY,
 	worldLocalStorageKey,
 	worldPath,
 } from "../World/WorldContext";
+import worldNames from "./worldNames.json";
 
 /**
  * OPFS layout: b102/worlds/<name>/ — same tree the OPFS worker uses, so a
@@ -11,6 +15,41 @@ import {
  */
 const OPFS_ROOT = "b102";
 const OPFS_WORLDS = "worlds";
+
+function randomWorldName(): string {
+	const pick = (list: readonly string[]): string =>
+		list[Math.floor(Math.random() * list.length)];
+	return `${pick(worldNames.prefixes)}_${pick(worldNames.roots)}${pick(worldNames.suffixes)}`;
+}
+
+function randomSeed(): string {
+	// Minecraft-style 64-bit signed seed (full range, including negatives).
+	const hi = Math.floor(Math.random() * 0x100000000);
+	const lo = Math.floor(Math.random() * 0x100000000);
+	let seed = (BigInt(hi) << 32n) | BigInt(lo);
+	if (seed >= 0x8000000000000000n) {
+		seed -= 0x10000000000000000n;
+	}
+	return seed.toString();
+}
+
+function diceButton(title: string, onClick: () => void): HTMLButtonElement {
+	const button = document.createElement("button");
+	button.type = "button";
+	button.title = title;
+	button.setAttribute("aria-label", title);
+	button.innerHTML = `
+		<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+			<rect x="2" y="2" width="20" height="20" rx="5" fill="none" stroke="currentColor" stroke-width="2"/>
+			<circle cx="7.5" cy="7.5" r="1.6" fill="currentColor"/>
+			<circle cx="16.5" cy="7.5" r="1.6" fill="currentColor"/>
+			<circle cx="12" cy="12" r="1.6" fill="currentColor"/>
+			<circle cx="7.5" cy="16.5" r="1.6" fill="currentColor"/>
+			<circle cx="16.5" cy="16.5" r="1.6" fill="currentColor"/>
+		</svg>`;
+	button.onclick = onClick;
+	return button;
+}
 
 async function listWorlds(): Promise<string[]> {
 	try {
@@ -37,7 +76,11 @@ async function deleteWorld(name: string): Promise<void> {
 	const b102 = await root.getDirectoryHandle(OPFS_ROOT);
 	const worlds = await b102.getDirectoryHandle(OPFS_WORLDS);
 	await worlds.removeEntry(name, { recursive: true });
-	for (const baseKey of ["playerPosition.v1", "playerInventory.v1"]) {
+	for (const baseKey of [
+		"playerPosition.v1",
+		"playerInventory.v1",
+		WORLD_SEED_BASE_KEY,
+	]) {
 		localStorage.removeItem(worldLocalStorageKey(name, baseKey));
 	}
 }
@@ -50,6 +93,7 @@ export class MainMenu {
 	private readonly container: HTMLElement;
 	private readonly worldListEl: HTMLElement;
 	private readonly nameInput: HTMLInputElement;
+	private readonly seedInput: HTMLInputElement;
 	private readonly statusEl: HTMLElement;
 
 	constructor() {
@@ -81,9 +125,48 @@ export class MainMenu {
 		createButton.innerText = "Create World";
 		createButton.onclick = () => void this.createWorld();
 
-		createRow.appendChild(this.nameInput);
+		const randomButton = diceButton("Generate a random name", () => {
+			this.nameInput.value = randomWorldName();
+			this.nameInput.focus();
+			this.statusEl.classList.remove("error");
+			this.statusEl.innerText = "";
+		});
+
+		const inputWrap = document.createElement("div");
+		inputWrap.className = "main-menu-input-wrap";
+		inputWrap.appendChild(this.nameInput);
+		inputWrap.appendChild(randomButton);
+
+		createRow.appendChild(inputWrap);
 		createRow.appendChild(createButton);
 		this.container.appendChild(createRow);
+
+		// Seed row
+		this.seedInput = document.createElement("input");
+		this.seedInput.type = "text";
+		this.seedInput.placeholder = "Seed (optional)";
+		this.seedInput.maxLength = 64;
+		this.seedInput.title =
+			"Optional terrain seed. Leave empty to derive it from the world name.";
+		this.seedInput.addEventListener("keydown", (e) => {
+			if (e.key === "Enter") void this.createWorld();
+		});
+
+		const seedRandomButton = diceButton("Generate a random seed", () => {
+			this.seedInput.value = randomSeed();
+			this.seedInput.focus();
+			this.statusEl.classList.remove("error");
+			this.statusEl.innerText = "";
+		});
+
+		const seedRow = document.createElement("div");
+		seedRow.className = "main-menu-create";
+		const seedWrap = document.createElement("div");
+		seedWrap.className = "main-menu-input-wrap";
+		seedWrap.appendChild(this.seedInput);
+		seedWrap.appendChild(seedRandomButton);
+		seedRow.appendChild(seedWrap);
+		this.container.appendChild(seedRow);
 
 		this.statusEl = document.createElement("div");
 		this.statusEl.className = "main-menu-status";
@@ -113,6 +196,12 @@ export class MainMenu {
 			this.statusEl.innerText = "Please enter a valid world name.";
 			this.statusEl.classList.add("error");
 			return;
+		}
+		const seed = this.seedInput.value.trim();
+		if (seed) {
+			setStoredWorldSeed(name, seed.slice(0, 64));
+		} else {
+			removeStoredWorldSeed(name);
 		}
 		window.location.href = worldPath(name);
 	}
@@ -230,6 +319,29 @@ export class MainMenu {
         display: flex;
         gap: 8px;
         margin-bottom: 8px;
+      }
+
+      #mainMenuContainer .main-menu-input-wrap {
+        position: relative;
+      }
+
+      #mainMenuContainer .main-menu-input-wrap input {
+        width: 100%;
+        padding-right: 96px;
+        box-sizing: border-box;
+      }
+
+      #mainMenuContainer .main-menu-input-wrap button {
+        position: absolute;
+        right: 4px;
+        top: 50%;
+        transform: translateY(-50%);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 4px 8px;
+        border: none;
+        border-radius: 3px;
       }
 
       #mainMenuContainer input {

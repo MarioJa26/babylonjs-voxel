@@ -22,7 +22,7 @@ import { PlayerCamera } from "./Player/PlayerCamera";
 import { PlayerStatePersistence } from "./Player/PlayerStatePersistence";
 import { updateGlobalUniforms } from "./World/Chunk/ChunkMesher";
 import { installLightDebugTool } from "./World/Chunk/LightDebugTool";
-import { worldSeed } from "./World/WorldContext";
+import { worldSeedFor } from "./World/WorldContext";
 
 /**
  * Lite (native) port of the engine/bootstrap entry point.
@@ -51,7 +51,7 @@ export class TestScene {
 	async init() {
 		// Seed the main-thread terrain height sampling (vehicle physics,
 		// spawn height) identically to the chunk workers.
-		setTerrainSeed(worldSeed(this.worldName));
+		setTerrainSeed(worldSeedFor(this.worldName));
 
 		const engine = await createEngine(this.canvas, {});
 		const scene = createSceneContext(engine, {

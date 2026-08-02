@@ -414,6 +414,7 @@ export class PauseMenu {
         font-size: 3em;
         margin-bottom: 20px;
         text-shadow: 2px 2px 4px #000000;
+        user-select: none;
       }
 
       #pauseMenuContainer button {
@@ -424,6 +425,7 @@ export class PauseMenu {
         color: white;
         min-width: 200px;
         cursor: pointer;
+        user-select: none;
         transition: background-color 0.3s, color 0.3s;
       }
 

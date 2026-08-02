@@ -10,7 +10,7 @@ import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import { shapeInitPromise } from "../Shape/BlockShapes";
 import { packChunkKey } from "../Storage/ChunkKey";
 import { OpfsClient } from "../Storage/OpfsClient";
-import { getWorldNameFromUrl, worldSeed } from "../WorldContext";
+import { getWorldNameFromUrl, worldSeedFor } from "../WorldContext";
 import { WorldStorage } from "../WorldStorage";
 import { addChunkDisposeHook, Chunk, getChunk } from "./Chunk";
 import { precomputeClosedFaceMasks } from "./ChunkFaceMasks";
@@ -1027,13 +1027,14 @@ export class ChunkWorkerPool {
 	// -------------------------------------------------------------------------
 
 	/**
-	 * Give a freshly spawned terrain worker the world-name-derived generator
-	 * seed. Must run before the first generation task the worker handles.
+	 * Give a freshly spawned terrain worker the world's generator seed
+	 * (explicit stored seed, or the world-name-derived default). Must run
+	 * before the first generation task the worker handles.
 	 */
 	private applyWorldSeed(worker: ChunkWorker): void {
 		const worldName = getWorldNameFromUrl();
 		if (worldName) {
-			worker.setWorldSeed(worldSeed(worldName));
+			worker.setWorldSeed(worldSeedFor(worldName));
 		}
 	}
 

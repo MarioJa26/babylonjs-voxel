@@ -1,4 +1,5 @@
 import { closeUi, openUi, UiFocus } from "@/code/Lib/GameRuntimeState";
+import { getWorldNameFromUrl, worldSeedFor } from "@/code/World/WorldContext";
 import type { Player } from "../Player";
 import { Gamemodes } from "../PlayerStats";
 
@@ -145,6 +146,12 @@ export class Chat {
 			case "teleport":
 				this.#handleTeleport(parts.slice(1));
 				break;
+			case "seed": {
+				const worldName = getWorldNameFromUrl() ?? "default";
+				const seed = worldSeedFor(worldName);
+				this.#addSystem(`World "${worldName}" seed: ${seed}`);
+				break;
+			}
 			case "h":
 			case "help":
 				this.#addSystem("Commands:");
@@ -155,6 +162,7 @@ export class Chat {
 					"  !tp <x> <y> <z> - Teleport to coordinates (~ for current)",
 				);
 				this.#addSystem("  !tp <x> <z> - Teleport keeping current y");
+				this.#addSystem("  !seed       - Show the current world's seed");
 				this.#addSystem("  !h / !help   - Show this help");
 				break;
 			default:
