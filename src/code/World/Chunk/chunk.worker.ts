@@ -1,6 +1,8 @@
 /// <reference lib="webworker" />
 
+import type { GenerationParamsType } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
+import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap";
 import { WorldGenerator } from "@/code/Generation/WorldGenerator";
 import {
 	type LightRegisterChunkRequest,
@@ -95,7 +97,10 @@ function _handleChannelMessage(event: MessageEvent): void {
 // ---------------------------------------------------------------------------
 // Shared instances
 // ---------------------------------------------------------------------------
-const generator = new WorldGenerator(GenerationParams);
+// The default generator uses the baked-in constant seed; a SetWorldSeed
+// message (sent by the pool right after worker creation, before any
+// generation task) swaps it for the world-name-derived seed.
+let generator: WorldGenerator;
 
 // ---------------------------------------------------------------------------
 // Block compression
@@ -347,6 +352,20 @@ const onMessageHandler = (event: MessageEvent) => {
 		}
 		case WorkerTaskType.LightPropagateDeferred: {
 			LightTaskHandlers.handlePropagateDeferred(event.data);
+			return;
+		}
+
+		case WorkerTaskType.SetWorldSeed: {
+			// Re-seed the shared terrain module (height map, biomes, rivers)
+			// and rebuild the generator with the world seed. Sent before any
+			// generation task, so no chunk can be generated with a stale seed.
+			const { seed } = event.data as { seed: string };
+			setTerrainSeed(seed);
+			generator = new WorldGenerator({
+				...GenerationParams,
+				SEED: seed,
+			} as GenerationParamsType);
+			self.postMessage({ type: WorkerTaskType.SetWorldSeed }); // ← ack
 			return;
 		}
 

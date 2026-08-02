@@ -10,6 +10,7 @@ import {
 	type LightSkyReconcileRequest,
 	type MeshWorkerResponse,
 	type RelightMeshRequest,
+	type SetWorldSeedRequest,
 	type WorkerResponseData,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
@@ -638,6 +639,18 @@ export class ChunkWorker {
 		};
 		this.terrainWorker.postMessage(message);
 		this.lightSharedInitialized = true;
+	}
+
+	/**
+	 * Set the world-name-derived generator seed on the terrain worker. Must be
+	 * posted before the first generation task (the pool does this right after
+	 * creating each worker).
+	 */
+	public setWorldSeed(seed: string): void {
+		this.terrainWorker.postMessage({
+			type: WorkerTaskType.SetWorldSeed,
+			seed,
+		} satisfies SetWorldSeedRequest);
 	}
 
 	public postLightSetClosedFaceMask(maskBuffer: SharedArrayBuffer): void {

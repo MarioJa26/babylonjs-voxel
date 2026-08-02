@@ -28,6 +28,8 @@ export const enum WorkerTaskType {
 	LightPropagateDeferred,
 	LightDirty,
 	InitWorkerChannel,
+	// --- World bootstrap ---
+	SetWorldSeed,
 }
 
 /* =========================================================
@@ -149,6 +151,12 @@ export type GenerateDistantTerrainRequest = {
 	renderDistance: number;
 };
 
+export type SetWorldSeedRequest = {
+	type: WorkerTaskType.SetWorldSeed;
+	/** Seed string fed to the generator (world name derived). */
+	seed: string;
+};
+
 export type WorkerRequestData =
 	| GenerateTerrainRequest
 	| GenerateFullMeshRequest
@@ -163,7 +171,8 @@ export type WorkerRequestData =
 	| LightMutateRequest
 	| LightAddEmissionRequest
 	| LightSkyReconcileRequest
-	| LightPropagateDeferredRequest;
+	| LightPropagateDeferredRequest
+	| SetWorldSeedRequest;
 
 /* =========================================================
  * Light-task messages

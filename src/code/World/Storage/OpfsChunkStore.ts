@@ -59,9 +59,8 @@ export class OpfsChunkStore {
 		return HEADER_SIZE_U + this._capacity * SLOT_SIZE_U;
 	}
 
-	async open(name: string): Promise<void> {
-		const root = await navigator.storage.getDirectory();
-		this._fileHandle = await root.getFileHandle(name, { create: true });
+	async open(dir: FileSystemDirectoryHandle, name: string): Promise<void> {
+		this._fileHandle = await dir.getFileHandle(name, { create: true });
 		const file = await this._fileHandle.getFile();
 		this._accessHandle = await this._fileHandle.createSyncAccessHandle();
 

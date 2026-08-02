@@ -10,6 +10,7 @@ import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import { shapeInitPromise } from "../Shape/BlockShapes";
 import { packChunkKey } from "../Storage/ChunkKey";
 import { OpfsClient } from "../Storage/OpfsClient";
+import { getWorldNameFromUrl, worldSeed } from "../WorldContext";
 import { WorldStorage } from "../WorldStorage";
 import { addChunkDisposeHook, Chunk, getChunk } from "./Chunk";
 import { precomputeClosedFaceMasks } from "./ChunkFaceMasks";
@@ -674,6 +675,8 @@ export class ChunkWorkerPool {
 			replacement.setOnError(onError);
 			holder.worker = replacement;
 
+			this.applyWorldSeed(replacement);
+
 			this.workers[workerIndex] = replacement;
 			this.workerRestartAtMs[workerIndex] = performance.now();
 			this.setWorkerTaskContext(workerIndex, null);
@@ -1023,6 +1026,17 @@ export class ChunkWorkerPool {
 	// Constructor
 	// -------------------------------------------------------------------------
 
+	/**
+	 * Give a freshly spawned terrain worker the world-name-derived generator
+	 * seed. Must run before the first generation task the worker handles.
+	 */
+	private applyWorldSeed(worker: ChunkWorker): void {
+		const worldName = getWorldNameFromUrl();
+		if (worldName) {
+			worker.setWorldSeed(worldSeed(worldName));
+		}
+	}
+
 	private constructor(poolSize: number) {
 		// Allocate the workspace-wide light header SAB and broadcast it to
 		// every worker.  Each worker wraps the buffer and keeps a local
@@ -1043,6 +1057,8 @@ export class ChunkWorkerPool {
 			const workerWrapper = new ChunkWorker(i, onMessageTerrain, onMessageMesh);
 			workerWrapper.setOnError(onError);
 			holder.worker = workerWrapper;
+
+			this.applyWorldSeed(workerWrapper);
 
 			this.workers.push(workerWrapper);
 			this._markWorkerIdle(i);
@@ -1081,7 +1097,7 @@ export class ChunkWorkerPool {
 		this.processMeshQueueLoop();
 
 		// Fire-and-forget OPFS init; fall back gracefully if unavailable
-		this.opfsInitPromise = OpfsClient.create()
+		this.opfsInitPromise = OpfsClient.create(getWorldNameFromUrl() ?? "default")
 			.then((client: OpfsClient) => {
 				this.opfsClient = client;
 				this.opfsReady = true;

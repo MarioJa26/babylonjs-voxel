@@ -5,7 +5,6 @@ import {
 	flushChunkBoundEntities,
 	updateChunksAround,
 } from "../../World/Chunk/ChunkLoadingSystem";
-import { ChunkWorkerPool } from "../../World/Chunk/ChunkWorkerPool";
 import { WorldStorage } from "../../World/WorldStorage";
 import type { Player } from "../Player"; // Import Player to access its methods
 
@@ -66,8 +65,7 @@ export class PauseMenu {
 			saveButton.innerText = "Saving...";
 			saveButton.disabled = true;
 			try {
-				await WorldStorage.saveAllModifiedChunks();
-				await flushChunkBoundEntities();
+				await this.saveAll();
 				saveButton.innerText = "Saved!";
 			} catch (e) {
 				console.error("Save failed", e);
@@ -87,45 +85,29 @@ export class PauseMenu {
 		settingsButton.onclick = () => this.showSettings(true);
 		container.appendChild(settingsButton);
 
-		// Reset World Button
-		const resetButton = document.createElement("button");
-		resetButton.innerText = "Reset World";
-		resetButton.style.backgroundColor = "#800000";
-		resetButton.onclick = async () => {
-			if (
-				confirm(
-					"Are you sure you want to delete your world? This cannot be undone.",
-				)
-			) {
-				resetButton.innerText = "Deleting...";
-				resetButton.disabled = true;
-				try {
-					const pool = ChunkWorkerPool.getInstance();
-					const client = pool.getOpfsClient();
-					if (client) {
-						await client.clearWorld();
-					}
-					localStorage.removeItem("b102.playerPosition.v1");
-					localStorage.removeItem("b102.playerInventory.v1");
-					window.location.reload();
-				} catch (e) {
-					console.error("Failed to reset world", e);
-					resetButton.innerText = "Error!";
-				}
+		// Main Menu Button
+		const mainMenuButton = document.createElement("button");
+		mainMenuButton.innerText = "Main Menu";
+		mainMenuButton.onclick = async () => {
+			mainMenuButton.innerText = "Saving...";
+			mainMenuButton.disabled = true;
+			try {
+				await this.saveAll();
+				window.location.href = "/";
+			} catch (e) {
+				console.error("Failed to save before returning", e);
+				mainMenuButton.innerText = "Error!";
+				mainMenuButton.disabled = false;
 			}
 		};
-		container.appendChild(resetButton);
-
-		// Quit Button
-		const quitButton = document.createElement("button");
-		quitButton.innerText = "Quit Game";
-		quitButton.onclick = () => {
-			// For a web game, reloading is a simple way to "quit" to the start.
-			window.location.reload();
-		};
-		container.appendChild(quitButton);
+		container.appendChild(mainMenuButton);
 
 		return container;
+	}
+
+	private async saveAll(): Promise<void> {
+		await WorldStorage.saveAllModifiedChunks();
+		await flushChunkBoundEntities();
 	}
 
 	private createSettingsPanel(): HTMLElement {

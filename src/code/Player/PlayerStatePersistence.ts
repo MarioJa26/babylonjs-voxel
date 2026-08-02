@@ -4,6 +4,7 @@ import {
 	flushModifiedChunks,
 	flushOpfsStorage,
 } from "../World/Chunk/ChunkLoadingSystem";
+import { worldLocalStorageKey } from "../World/WorldContext";
 import type { SavedInventoryState } from "./Inventory/PlayerInventory";
 import type { Player } from "./Player";
 import { Gamemodes } from "./PlayerStats";
@@ -37,9 +38,15 @@ export class PlayerStatePersistence {
 	constructor(
 		private readonly scene: SceneContext,
 		private readonly player: Player,
+		private readonly worldName: string,
 	) {
 		this.restoreFromLocalStorage();
 		this.setupPersistence();
+	}
+
+	/** Per-world storage key, e.g. `b102.world.My World.playerPosition.v1`. */
+	private storageKey(baseKey: string): string {
+		return worldLocalStorageKey(this.worldName, baseKey);
 	}
 
 	public update(): void {
@@ -142,7 +149,7 @@ export class PlayerStatePersistence {
 		try {
 			const positionState = this.player.playerVehicle.getSavedPosition();
 			window.localStorage.setItem(
-				PlayerStatePersistence.PLAYER_POSITION_STORAGE_KEY,
+				this.storageKey(PlayerStatePersistence.PLAYER_POSITION_STORAGE_KEY),
 				JSON.stringify(positionState),
 			);
 		} catch (error) {
@@ -157,7 +164,7 @@ export class PlayerStatePersistence {
 			const inventoryState =
 				this.player.playerInventory.getSavedInventoryState();
 			window.localStorage.setItem(
-				PlayerStatePersistence.PLAYER_INVENTORY_STORAGE_KEY,
+				this.storageKey(PlayerStatePersistence.PLAYER_INVENTORY_STORAGE_KEY),
 				JSON.stringify(inventoryState),
 			);
 		} catch (error) {
@@ -174,7 +181,7 @@ export class PlayerStatePersistence {
 	private restorePosition(): void {
 		try {
 			const raw = window.localStorage.getItem(
-				PlayerStatePersistence.PLAYER_POSITION_STORAGE_KEY,
+				this.storageKey(PlayerStatePersistence.PLAYER_POSITION_STORAGE_KEY),
 			);
 			if (!raw) return;
 
@@ -199,7 +206,7 @@ export class PlayerStatePersistence {
 
 		try {
 			const raw = window.localStorage.getItem(
-				PlayerStatePersistence.PLAYER_INVENTORY_STORAGE_KEY,
+				this.storageKey(PlayerStatePersistence.PLAYER_INVENTORY_STORAGE_KEY),
 			);
 			if (!raw) return;
 

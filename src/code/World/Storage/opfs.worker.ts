@@ -67,6 +67,11 @@ const regionFiles = new Map<number, RegionFile>();
 const regionOpenInflight = new Map<number, Promise<RegionFile>>();
 let initInFlight: Promise<void> | null = null;
 
+// Active world name (b102/worlds/<name>/...). Set via OpfsMsg.SetWorld before
+// any store op; the client sends it ahead of Ping, and ops are serialized, so
+// it always lands first. Defaults to "default" if never set.
+let _worldName: string | null = null;
+
 // ---------------------------------------------------------------------------
 // Worker-to-worker channel: OPFS worker forwards decompressed SAB refs
 // directly to the terrain/light worker so the main thread never posts
@@ -369,11 +374,20 @@ async function withMeshRetry<T>(fn: (s: OpfsChunkStore) => T): Promise<T> {
 	}
 }
 
-async function ensureRegionsDir(): Promise<FileSystemDirectoryHandle> {
-	if (regionsDir) return regionsDir;
+async function ensureWorldDir(): Promise<FileSystemDirectoryHandle> {
 	const root = await navigator.storage.getDirectory();
 	const b102 = await root.getDirectoryHandle("b102", { create: true });
-	regionsDir = await b102.getDirectoryHandle("regions", { create: true });
+	const worlds = await b102.getDirectoryHandle("worlds", { create: true });
+	return await worlds.getDirectoryHandle(_worldName ?? "default", {
+		create: true,
+	});
+}
+
+async function ensureRegionsDir(): Promise<FileSystemDirectoryHandle> {
+	if (regionsDir) return regionsDir;
+	regionsDir = await (await ensureWorldDir()).getDirectoryHandle("regions", {
+		create: true,
+	});
 	return regionsDir;
 }
 
@@ -444,8 +458,9 @@ async function openStores(): Promise<void> {
 		return;
 	}
 	initInFlight = (async () => {
+		const worldDir = await ensureWorldDir();
 		const store = new OpfsChunkStore();
-		await store.open("meshes.bin");
+		await store.open(worldDir, "meshes.bin");
 		meshStore = store;
 		await ensureRegionsDir();
 	})();
@@ -506,6 +521,62 @@ _self.addEventListener("message", (event: MessageEvent) => {
 			case OpfsMsg.Ping: {
 				postResult(id, "pong");
 				_self.postMessage({ type: "ready" });
+				break;
+			}
+
+			case OpfsMsg.SetWorld: {
+				// Must arrive before any store op (the client posts it ahead
+				// of Ping; the serial op queue preserves order).
+				_worldName =
+					typeof data.name === "string" && data.name.length > 0
+						? data.name
+						: "default";
+				postResult(id, true);
+				break;
+			}
+
+			case OpfsMsg.RemoveWorld: {
+				// Close every open handle first so removeEntry won't fail
+				// with NoModificationAllowedError.
+				_flushAllRegions();
+				if (meshStore) {
+					meshStore.close();
+					meshStore = null;
+				}
+				for (const rf of regionFiles.values()) {
+					try {
+						rf.flush();
+						rf.close();
+					} catch {
+						/* ignore */
+					}
+				}
+				regionFiles.clear();
+				_lruMap.clear();
+				_lruHead = null;
+				_lruTail = null;
+				regionOpenInflight.clear();
+				regionsDir = null;
+				if (_workerChannelPort) {
+					_workerChannelPort.close();
+					_workerChannelPort = null;
+				}
+				initInFlight = null;
+
+				const name: string =
+					typeof data.name === "string" && data.name.length > 0
+						? data.name
+						: "default";
+				try {
+					const root = await navigator.storage.getDirectory();
+					const b102 = await root.getDirectoryHandle("b102");
+					const worlds = await b102.getDirectoryHandle("worlds");
+					await worlds.removeEntry(name, { recursive: true });
+				} catch (err) {
+					postError(id, err instanceof Error ? err.message : String(err));
+					break;
+				}
+				postResult(id, true);
 				break;
 			}
 

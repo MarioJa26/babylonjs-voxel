@@ -27,6 +27,7 @@ interface WireMsg {
 	chunkZ: number;
 	lod: number;
 	data?: Uint8Array;
+	name?: string;
 }
 const _wireMsg: WireMsg = {
 	id: 0,
@@ -77,6 +78,7 @@ function _resetWire(type: OpfsMsg): void {
 	m.chunkZ = 0;
 	m.lod = 0;
 	m.data = undefined;
+	m.name = undefined;
 }
 
 const MAX_INFLIGHT = 2048;
@@ -101,7 +103,7 @@ export class OpfsClient {
 	private _nextId = 1;
 	private _ready: Promise<void>;
 
-	constructor() {
+	constructor(worldName: string) {
 		this._worker = new Worker(new URL("./opfs.worker.ts", import.meta.url), {
 			type: "module",
 		});
@@ -121,6 +123,9 @@ export class OpfsClient {
 			};
 			this._worker.onerror = (e) =>
 				console.error("[OpfsClient] Worker error:", e);
+			// SetWorld is posted first so it is enqueued before Ping and any
+			// store op — the worker's serial op queue preserves this order.
+			this._worker.postMessage({ type: OpfsMsg.SetWorld, name: worldName });
 			this._worker.postMessage({ type: OpfsMsg.Ping });
 		});
 	}
@@ -337,8 +342,8 @@ export class OpfsClient {
 
 	// ── Lifecycle ───────────────────────────────────────────────
 
-	static async create(): Promise<OpfsClient> {
-		const client = new OpfsClient();
+	static async create(worldName: string): Promise<OpfsClient> {
+		const client = new OpfsClient(worldName);
 		await client.ready();
 		return client;
 	}
@@ -353,5 +358,15 @@ export class OpfsClient {
 		_resetWire(OpfsMsg.ClearWorld);
 		await this._dispatch<void>();
 		this._worker.terminate();
+	}
+
+	/**
+	 * Delete a world's OPFS directory (b102/worlds/<name>) after closing all
+	 * open handles. Use this instead of clearWorld() to keep other worlds.
+	 */
+	async removeWorld(name: string): Promise<void> {
+		_resetWire(OpfsMsg.RemoveWorld);
+		_wireMsg.name = name;
+		await this._dispatch<void>();
 	}
 }

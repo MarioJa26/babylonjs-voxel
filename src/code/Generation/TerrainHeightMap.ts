@@ -43,50 +43,110 @@ const encodeCornerKey = (gx: number, gz: number): number =>
 
 // ---------------------------------------------------------------------------
 // One-time initialization
+//
+// The noise instances are held in `let` bindings so they can be rebuilt at
+// runtime via setTerrainSeed() — this module is evaluated once per thread
+// (main + every worker) at bundle load, but the world seed is only known
+// after URL routing. All consumers call through the exported accessors, so
+// swapping the instances is safe as long as the swap happens before the
+// first sample (it does: world boot / SetWorldSeed, before any generation).
 // ---------------------------------------------------------------------------
 
-const riverGenerator = new RiverGenerator(params);
-const prng = Alea(params.SEED);
+type TerrainNoiseSet = {
+	riverGenerator: RiverGenerator;
+	temperature: ReturnType<typeof createFastNoise2DWithInstance>;
+	humidity: ReturnType<typeof createFastNoise2DWithInstance>;
+	continentalness: ReturnType<typeof createFastNoise2DWithInstance>;
+	erosion: ReturnType<typeof createFastNoise2D>;
+	peaksAndValleys: ReturnType<typeof createFastNoise2D>;
+	height: ReturnType<typeof createFastNoise2D>;
+};
 
-const _t = createFastNoise2DWithInstance({
-	seed: getPRNGBySeed(1, (prng() * 0xffffffff) | 0),
-	fractalType: FractalType.None,
-	frequency: GenerationParams.TEMPERATURE_NOISE_SCALE,
-});
-const temperatureNoise = _t.fn;
-const temperatureInst = _t.instance;
+function createTerrainNoise(seed: string): TerrainNoiseSet {
+	const prng = Alea(seed);
 
-const _h = createFastNoise2DWithInstance({
-	seed: getPRNGBySeed(2, (prng() * 0xffffffff) | 0),
-	fractalType: FractalType.None,
-	frequency: GenerationParams.HUMIDITY_NOISE_SCALE,
-});
-const humidityNoise = _h.fn;
-const humidityInst = _h.instance;
+	const temperature = createFastNoise2DWithInstance({
+		seed: getPRNGBySeed(1, (prng() * 0xffffffff) | 0),
+		fractalType: FractalType.None,
+		frequency: GenerationParams.TEMPERATURE_NOISE_SCALE,
+	});
 
-const _c = createFastNoise2DWithInstance({
-	seed: getPRNGBySeed(3, (prng() * 0xffffffff) | 0),
-	fractalType: FractalType.Ridged,
-	frequency: GenerationParams.CONTINENTALNESS_NOISE_SCALE,
-});
-const continentalnessNoise = _c.fn;
-const continentalnessInst = _c.instance;
+	const humidity = createFastNoise2DWithInstance({
+		seed: getPRNGBySeed(2, (prng() * 0xffffffff) | 0),
+		fractalType: FractalType.None,
+		frequency: GenerationParams.HUMIDITY_NOISE_SCALE,
+	});
 
-const erosionNoise = createFastNoise2D({
-	seed: getPRNGBySeed(4, (prng() * 0xffffffff) | 0),
-	frequency: GenerationParams.EROSION_NOISE_SCALE,
-});
+	const continentalness = createFastNoise2DWithInstance({
+		seed: getPRNGBySeed(3, (prng() * 0xffffffff) | 0),
+		fractalType: FractalType.Ridged,
+		frequency: GenerationParams.CONTINENTALNESS_NOISE_SCALE,
+	});
 
-const peaksAndValleysNoise = createFastNoise2D({
-	seed: getPRNGBySeed(5, (prng() * 0xffffffff) | 0),
-	frequency: GenerationParams.PV_NOISE_SCALE,
-});
+	const erosion = createFastNoise2D({
+		seed: getPRNGBySeed(4, (prng() * 0xffffffff) | 0),
+		frequency: GenerationParams.EROSION_NOISE_SCALE,
+	});
 
-const heightNoise = createFastNoise2D({
-	seed: getPRNGBySeed(6, (prng() * 0xffffffff) | 0),
-	fractalType: FractalType.None,
-	frequency: GenerationParams.TERRAIN_SCALE,
-});
+	const peaksAndValleys = createFastNoise2D({
+		seed: getPRNGBySeed(5, (prng() * 0xffffffff) | 0),
+		frequency: GenerationParams.PV_NOISE_SCALE,
+	});
+
+	const height = createFastNoise2D({
+		seed: getPRNGBySeed(6, (prng() * 0xffffffff) | 0),
+		fractalType: FractalType.None,
+		frequency: GenerationParams.TERRAIN_SCALE,
+	});
+
+	return {
+		riverGenerator: new RiverGenerator({
+			...GenerationParams,
+			SEED: seed,
+		} as GenerationParamsType),
+		temperature,
+		humidity,
+		continentalness,
+		erosion,
+		peaksAndValleys,
+		height,
+	};
+}
+
+let _noise = createTerrainNoise(GenerationParams.SEED);
+let riverGenerator = _noise.riverGenerator;
+let temperatureNoise = _noise.temperature.fn;
+let temperatureInst = _noise.temperature.instance;
+let humidityNoise = _noise.humidity.fn;
+let humidityInst = _noise.humidity.instance;
+let continentalnessNoise = _noise.continentalness.fn;
+let continentalnessInst = _noise.continentalness.instance;
+let erosionNoise = _noise.erosion;
+let peaksAndValleysNoise = _noise.peaksAndValleys;
+let heightNoise = _noise.height;
+
+/**
+ * Rebuild every noise instance + river generator from a new seed string and
+ * clear the sampled caches so no pre-seed values leak. Must be called before
+ * the first terrain sample on each thread (main thread: world boot; workers:
+ * SetWorldSeed task).
+ */
+export function setTerrainSeed(seed: string): void {
+	_noise = createTerrainNoise(seed);
+	riverGenerator = _noise.riverGenerator;
+	temperatureNoise = _noise.temperature.fn;
+	temperatureInst = _noise.temperature.instance;
+	humidityNoise = _noise.humidity.fn;
+	humidityInst = _noise.humidity.instance;
+	continentalnessNoise = _noise.continentalness.fn;
+	continentalnessInst = _noise.continentalness.instance;
+	erosionNoise = _noise.erosion;
+	peaksAndValleysNoise = _noise.peaksAndValleys;
+	heightNoise = _noise.height;
+	cornerValid.fill(0);
+	chunkCacheValid.fill(0);
+	_fhcValid.fill(0);
+}
 
 // Inline — avoids a function call on every noise sample on the hot path.
 // raw is in [-1, 1]; result maps it to [1, -1] with abs.

@@ -12,6 +12,7 @@ import {
 } from "@babylonjs/lite";
 import { showLiteExplorer } from "babylon-lite-explorer";
 import { createMobCoordinator } from "./Entities/Mobs/MobSetup";
+import { setTerrainSeed } from "./Generation/TerrainHeightMap";
 import { Map1 } from "./Maps/Map1";
 import { type EyeCamera, UnderWaterEffect } from "./Maps/UnderWaterEffect";
 import { initializeBlockBreakingVisuals } from "./Player/Hud/BlockHighlight/BlockBreakingVisuals";
@@ -21,6 +22,7 @@ import { PlayerCamera } from "./Player/PlayerCamera";
 import { PlayerStatePersistence } from "./Player/PlayerStatePersistence";
 import { updateGlobalUniforms } from "./World/Chunk/ChunkMesher";
 import { installLightDebugTool } from "./World/Chunk/LightDebugTool";
+import { worldSeed } from "./World/WorldContext";
 
 /**
  * Lite (native) port of the engine/bootstrap entry point.
@@ -40,12 +42,17 @@ export class TestScene {
 	constructor(
 		document: Document,
 		private canvas: HTMLCanvasElement,
+		private readonly worldName: string,
 	) {
 		this.document = document;
 		this.initPromise = this.init();
 	}
 
 	async init() {
+		// Seed the main-thread terrain height sampling (vehicle physics,
+		// spawn height) identically to the chunk workers.
+		setTerrainSeed(worldSeed(this.worldName));
+
 		const engine = await createEngine(this.canvas, {});
 		const scene = createSceneContext(engine, {
 			defaultRenderTask: true,
@@ -76,7 +83,11 @@ export class TestScene {
 		// Wire player save/load. Instantiated AFTER respawn() so the restored
 		// position wins over the respawn height recompute. Restores position +
 		// inventory immediately and autosaves on interval / tab-hide / unload.
-		this.#playerStatePersistence = new PlayerStatePersistence(scene, player);
+		this.#playerStatePersistence = new PlayerStatePersistence(
+			scene,
+			player,
+			this.worldName,
+		);
 
 		// C4: wire the (previously dormant) mob spawn/AI system.
 		createMobCoordinator(this.scene, () => {
