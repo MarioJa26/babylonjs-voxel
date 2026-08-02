@@ -1183,6 +1183,69 @@ export function lightSkyReconcile(
 
 	let seedCount = 0;
 
+	// Interior pass: re-seed every transparent sky cell that can still
+	// write light into a neighbour — i.e. a cell whose sky level is more
+	// than one above any 6-neighbour, or that touches the chunk border
+	// (neighbour state unknown there).  Sky-light runs only receive their
+	// ray seeding at generation time; if a chunk's saved light predates
+	// the deferred BFS (storage reload), those runs never spread light
+	// into the chunk's own dark cave air, and the registration edge passes
+	// only fix border disagreements.  The BFS only re-enqueues cells it
+	// actually writes (see processQueue), so ray-painted columns — already
+	// 15 top to bottom — never spread sideways unless their boundary cells
+	// are seeded; those cells are the minimal complete seed set, and the
+	// BFS from them converges the chunk to the true light fixed point.
+	// (Fresh chunks get the same coverage at generation time because the
+	// generator enqueues every ray-lit cell.)  Re-running over already
+	// correct light writes nothing and costs almost nothing.
+	for (let x = 0; x < size && seedCount < 6144; x++) {
+		for (let z = 0; z < size && seedCount < 6144; z++) {
+			for (let y = 0; y < size; y++) {
+				const idx = x + y * size + z * size2;
+				const sky = (view.light_array[idx] >> LIGHT_SKY_SHIFT) & 0xf;
+				if (sky <= 1) continue;
+				if (!isTransparent(getViewBlockPacked(view, x, y, z), 1, 1)) {
+					continue;
+				}
+				let seed = false;
+				for (let i = 0; i < LIGHT_DIR_COUNT; i++) {
+					const base = i * LIGHT_DIR_STRIDE;
+					const tx = x + LIGHT_DIRS_FLAT[base];
+					const ty = y + LIGHT_DIRS_FLAT[base + 1];
+					const tz = z + LIGHT_DIRS_FLAT[base + 2];
+					if (
+						tx < 0 ||
+						tx >= size ||
+						ty < 0 ||
+						ty >= size ||
+						tz < 0 ||
+						tz >= size
+					) {
+						seed = true;
+						break;
+					}
+					const nIdx = tx + ty * size + tz * size2;
+					const neighborSky = (view.light_array[nIdx] >> LIGHT_SKY_SHIFT) & 0xf;
+					if (
+						neighborSky < sky - 1 &&
+						isTransparent(getViewBlockPacked(view, tx, ty, tz), 1, 1)
+					) {
+						seed = true;
+						break;
+					}
+				}
+				if (!seed) continue;
+				seedSlots[seedCount] = view.headerSlot;
+				seedCoords[seedCount * 3] = x;
+				seedCoords[seedCount * 3 + 1] = y;
+				seedCoords[seedCount * 3 + 2] = z;
+				seedLevels[seedCount] = sky;
+				seedCount++;
+				if (seedCount >= 6144) break;
+			}
+		}
+	}
+
 	for (let f = 0; f < 6; f++) {
 		const neighbor = view.neighborViews[f ^ 1];
 		if (!neighbor) continue;

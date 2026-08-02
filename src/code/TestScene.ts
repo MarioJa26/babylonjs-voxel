@@ -20,6 +20,7 @@ import { Player } from "./Player/Player";
 import { PlayerCamera } from "./Player/PlayerCamera";
 import { PlayerStatePersistence } from "./Player/PlayerStatePersistence";
 import { updateGlobalUniforms } from "./World/Chunk/ChunkMesher";
+import { installLightDebugTool } from "./World/Chunk/LightDebugTool";
 
 /**
  * Lite (native) port of the engine/bootstrap entry point.
@@ -34,6 +35,7 @@ export class TestScene {
 	#frameCounter = 0;
 	#player?: Player;
 	#playerStatePersistence?: PlayerStatePersistence;
+	#disposeLightDebugTool?: () => void;
 
 	constructor(
 		document: Document,
@@ -54,6 +56,11 @@ export class TestScene {
 		const playerCamera = new PlayerCamera();
 		const player = new Player(engine, scene, playerCamera, this.canvas);
 		this.#player = player;
+
+		// F8: dump sky-light data around the player (see LightDebugTool).
+		this.#disposeLightDebugTool = installLightDebugTool(
+			() => this.#player?.position,
+		);
 
 		scene.camera = playerCamera.playerCamera;
 
@@ -104,6 +111,7 @@ export class TestScene {
 	}
 
 	public dispose(): void {
+		this.#disposeLightDebugTool?.();
 		this.#playerStatePersistence?.dispose();
 		if (this.engine) stopEngine(this.engine);
 		Map1.disposeAll();

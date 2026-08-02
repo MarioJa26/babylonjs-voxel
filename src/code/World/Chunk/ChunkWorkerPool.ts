@@ -152,6 +152,14 @@ export class ChunkWorkerPool {
 	>();
 	private deferredLightingPumpScheduled = false;
 
+	// Debug: deferred-light seed length received at generation time, keyed by
+	// chunk id.  Only populated while the in-game LightDebugTool is installed.
+	private debugLightSeedLengths = new Map<bigint, number>();
+
+	public debugLightSeedLength(chunkId: bigint): number | undefined {
+		return this.debugLightSeedLengths.get(chunkId);
+	}
+
 	private distantTerrainReadyWorkers = new Set<number>();
 	private distantTerrainTaskQueue: DistantTerrainTask[] = [];
 	private distantTerrainTaskQueueReadIdx = 0;
@@ -837,6 +845,7 @@ export class ChunkWorkerPool {
 	private onLightChunkDisposed(chunk: Chunk): void {
 		this.lightChunkByHeaderSlot.delete(chunk.lightHeaderSlot);
 		this.broadcastLightUnregister(chunk);
+		this.debugLightSeedLengths.delete(chunk.id);
 
 		// Drop any pending deferred-light work for this chunk so a future
 		// reload at the same coordinates (which reuses the same coordinate-
@@ -1692,6 +1701,10 @@ export class ChunkWorkerPool {
 			const chunk = this.resolveChunkByMessageId(chunkId);
 			if (chunk) {
 				const isStale = !chunk.isTerrainScheduled && !chunk.isLoaded;
+				this.debugLightSeedLengths.set(
+					chunk.id,
+					lightSeedLength !== undefined ? lightSeedLength : -1,
+				);
 				const blocks: Uint8Array | Uint16Array | null = block_array ?? null;
 				const light: Uint8Array = light_array;
 
