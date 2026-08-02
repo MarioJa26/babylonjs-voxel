@@ -278,6 +278,31 @@ function releaseUsedNodes(): void {
 const SHARED_OPEN_HEAP = new AStarHeap();
 const SHARED_CLOSED = new Map<number, number>();
 
+// PERF: Global per-window expansion budget for A* so mob wander/shore searches
+// (up to 2×250 + 6×700 expansions) can't eat the whole main thread when many
+// mobs search around the same time. The window is time-based so consecutive
+// findPathInto calls within the same frame share one budget, and it resets
+// automatically ~2 frames later.
+export const PATHFINDING_EXPANSION_BUDGET = 1500;
+const PATHFINDING_BUDGET_WINDOW_MS = 40;
+let _budgetWindowStartMs = 0;
+let _budgetExpansionsUsed = 0;
+
+/** True while expansions remain within the current budget window. */
+function hasPathfindingBudget(): boolean {
+	const now = performance.now();
+	if (now - _budgetWindowStartMs >= PATHFINDING_BUDGET_WINDOW_MS) {
+		_budgetWindowStartMs = now;
+		_budgetExpansionsUsed = 0;
+		return true;
+	}
+	return _budgetExpansionsUsed < PATHFINDING_EXPANSION_BUDGET;
+}
+
+function consumePathfindingBudget(): void {
+	_budgetExpansionsUsed++;
+}
+
 // Scratch results for findSurface/findLandSurface — reused across the A*
 // expansion loop. Not reentrant (same rule as findPathInto).
 const SURFACE_SCRATCH: SurfaceResult = {
@@ -398,6 +423,12 @@ export function findPathInto(
 
 		let expansions = 0;
 		while (open.size > 0 && expansions < maxExpansions) {
+			if (!hasPathfindingBudget()) {
+				// Budget window exhausted — bail out cleanly this tick; the
+				// caller retries on its next wander/shore search.
+				break;
+			}
+			consumePathfindingBudget();
 			const current = open.pop()!;
 			expansions++;
 

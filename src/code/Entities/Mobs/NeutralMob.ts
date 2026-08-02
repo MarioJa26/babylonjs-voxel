@@ -6,6 +6,7 @@ import {
 	type Vec3,
 } from "@babylonjs/lite";
 import { MetadataContainer } from "@/code/Entities/MetadataContainer";
+import { isUiOpen } from "@/code/Lib/GameRuntimeState";
 import { copyVec3, lengthSqVec3, setVec3, vec3Zero } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import type { Player } from "@/code/Player/Player";
@@ -114,6 +115,9 @@ export abstract class NeutralMob {
 		onBeforeRender(Map1.mainScene, (deltaMs: number) => {
 			const dt = deltaMs / 1000;
 			if (dt <= 0) return;
+			// PERF: skip mob simulation while any UI overlay owns the mouse
+			// (matches the player loop's pickTarget/controls suppression).
+			if (isUiOpen()) return;
 			for (const mob of NeutralMob.#allMobs) {
 				if (!mob.#bodyMesh) continue;
 				const pos = mob.#bodyMesh.position;

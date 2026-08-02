@@ -9,6 +9,7 @@ import {
 	type LightSetClosedFaceMaskRequest,
 	type LightSkyReconcileRequest,
 	type MeshWorkerResponse,
+	type RelightMeshRequest,
 	type WorkerResponseData,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
@@ -121,6 +122,8 @@ export class ChunkWorker {
 		light_array: Uint8Array | undefined;
 		neighbors: (Uint16Array | undefined)[];
 		neighborLights: (Uint8Array | undefined)[];
+		generation: number;
+		blockRevision: number;
 	} = {
 		type: WorkerTaskType.GenerateFullMesh,
 		chunkId: 0n,
@@ -132,6 +135,20 @@ export class ChunkWorker {
 		palette: undefined,
 		light_array: undefined,
 		neighbors: this._neighborScratch,
+		neighborLights: this._neighborLightScratch,
+		generation: -1,
+		blockRevision: -1,
+	};
+
+	readonly #relightMeshMsg: RelightMeshRequest = {
+		type: WorkerTaskType.RelightMesh,
+		chunkId: 0n,
+		meshRevision: 0,
+		lod: 0,
+		chunk_size: Chunk.SIZE,
+		generation: -1,
+		blockRevision: -1,
+		light_array: new Uint8Array(0),
 		neighborLights: this._neighborLightScratch,
 	};
 
@@ -201,7 +218,6 @@ export class ChunkWorker {
 
 	public postFullRemesh(chunk: Chunk, forcedLod?: number): void {
 		const neighbors = this._neighborScratch;
-		const neighborLights = this._neighborLightScratch;
 		const cx = chunk.chunkX;
 		const cy = chunk.chunkY;
 		const cz = chunk.chunkZ;
@@ -218,7 +234,6 @@ export class ChunkWorker {
 
 			if (!neighbor?.isLoaded || !neighbor.hasVoxelData) {
 				neighbors[i] = undefined;
-				neighborLights[i] = undefined;
 				continue;
 			}
 
@@ -321,37 +336,17 @@ export class ChunkWorker {
 			// and corners (1 element) actually clone cheaply instead of the
 			// full size^2 scratch buffer (up to 4096 elements for size=64).
 			neighbors[i] = border.slice(0, total);
-
-			const nLight = neighbor.light_array;
-			if (nLight) {
-				const lb = this._neighborLightBorderScratch[i];
-				let li = 0;
-				for (let bz = 0; bz < zCount; bz++) {
-					const nlz = lzStart + bz;
-					for (let by = 0; by < yCount; by++) {
-						const nly = lyStart + by;
-						const rowBase = nly * size + nlz * size2;
-						if (dx === 0) {
-							lb.set(nLight.subarray(rowBase, rowBase + xCount), li);
-							li += xCount;
-						} else {
-							for (let bx = 0; bx < xCount; bx++) {
-								lb[li++] = nLight[lxStart + bx + rowBase];
-							}
-						}
-					}
-				}
-				neighborLights[i] = lb.slice(0, total); // see note above re: slice vs subarray
-			} else {
-				neighborLights[i] = undefined;
-			}
 		}
+
+		const neighborLights = this.buildNeighborLightBorders(cx, cy, cz);
 
 		const msg = this.#voxelMeshMsg;
 		msg.chunkId = chunk.id;
 		msg.meshRevision = chunk.meshRevision;
 		msg.lod = forcedLod ?? chunk.lodLevel ?? 0;
 		msg.chunk_size = size;
+		msg.generation = chunk.generation;
+		msg.blockRevision = chunk.blockRevision;
 
 		// PERF: transfer the payload buffers instead of structured-cloning.
 		// The chunk's own arrays (block_array/light_array/palette) are owned and
@@ -400,6 +395,106 @@ export class ChunkWorker {
 				const nl = neighborLights[i];
 				if (nl) transfer.push(nl.buffer);
 			}
+		}
+
+		this.voxelWorker.postMessage(msg, transfer);
+	}
+
+	/**
+	 * Extract the 1-voxel-thick light border slabs of all 26 neighbors into
+	 * right-sized .slice() copies (see the slice-vs-subarray note in
+	 * postFullRemesh). Light borders are NOT slab-cached: the light grid is
+	 * worker-mutated with no reliable main-thread version.
+	 */
+	private buildNeighborLightBorders(
+		cx: number,
+		cy: number,
+		cz: number,
+	): (Uint8Array | undefined)[] {
+		const neighborLights = this._neighborLightScratch;
+		const size = Chunk.SIZE;
+		const size2 = size * size;
+
+		for (let i = 0; i < ChunkWorker._REMESH_OFFSETS.length; i++) {
+			const { dx, dy, dz } = ChunkWorker._REMESH_OFFSETS[i];
+			const neighbor = getChunk(cx + dx, cy + dy, cz + dz);
+
+			if (!neighbor?.isLoaded || !neighbor.hasVoxelData) {
+				neighborLights[i] = undefined;
+				continue;
+			}
+
+			const xCount = dx === 0 ? size : 1;
+			const yCount = dy === 0 ? size : 1;
+			const zCount = dz === 0 ? size : 1;
+			const total = xCount * yCount * zCount;
+			const lxStart = dx < 0 ? size - 1 : 0;
+			const lyStart = dy < 0 ? size - 1 : 0;
+			const lzStart = dz < 0 ? size - 1 : 0;
+
+			const nLight = neighbor.light_array;
+			if (nLight) {
+				const lb = this._neighborLightBorderScratch[i];
+				let li = 0;
+				for (let bz = 0; bz < zCount; bz++) {
+					const nlz = lzStart + bz;
+					for (let by = 0; by < yCount; by++) {
+						const nly = lyStart + by;
+						const rowBase = nly * size + nlz * size2;
+						if (dx === 0) {
+							lb.set(nLight.subarray(rowBase, rowBase + xCount), li);
+							li += xCount;
+						} else {
+							for (let bx = 0; bx < xCount; bx++) {
+								lb[li++] = nLight[lxStart + bx + rowBase];
+							}
+						}
+					}
+				}
+				neighborLights[i] = lb.slice(0, total);
+			} else {
+				neighborLights[i] = undefined;
+			}
+		}
+
+		return neighborLights;
+	}
+
+	/**
+	 * Light-only remesh dispatch (T2-8). Sends only the center light array and
+	 * the 26 neighbor light borders; the worker reuses its cached block grid,
+	 * so the block-border extraction, block/palette copies and their transfers
+	 * are skipped entirely. Falls back to a full remesh on cache miss.
+	 */
+	public postRelightMesh(chunk: Chunk): void {
+		const msg = this.#relightMeshMsg;
+		msg.chunkId = chunk.id;
+		msg.meshRevision = chunk.meshRevision;
+		msg.lod = chunk.lodLevel ?? 0;
+		msg.chunk_size = Chunk.SIZE;
+		msg.generation = chunk.generation;
+		msg.blockRevision = chunk.blockRevision;
+
+		const transfer = this._transferScratch;
+		transfer.length = 0;
+
+		const lightArray = chunk.light_array;
+		if (lightArray) {
+			const lightCopy = lightArray.slice();
+			msg.light_array = lightCopy;
+			transfer.push(lightCopy.buffer);
+		} else {
+			msg.light_array = new Uint8Array(0);
+		}
+
+		const neighborLights = this.buildNeighborLightBorders(
+			chunk.chunkX,
+			chunk.chunkY,
+			chunk.chunkZ,
+		);
+		msg.neighborLights = neighborLights;
+		for (const nl of neighborLights) {
+			if (nl) transfer.push(nl.buffer);
 		}
 
 		this.voxelWorker.postMessage(msg, transfer);
@@ -659,6 +754,10 @@ export class ChunkWorker {
 		msg.seedQueue = req.seedQueue;
 		msg.seedLength = req.seedLength;
 		msg.seq = req.seq;
-		this.terrainWorker.postMessage(msg);
+		// PERF: the seed queue is exclusively owned by the caller (the pool
+		// deletes its deferredLightingSeedStates entry before posting), so it
+		// is transferred instead of structured-cloned — otherwise postMessage
+		// would copy up to 6144 Uint16s a second time.
+		this.terrainWorker.postMessage(msg, [req.seedQueue.buffer]);
 	}
 }

@@ -17,6 +17,7 @@ import {
 } from "@babylonjs/lite";
 import { MetadataContainer } from "@/code/Entities/MetadataContainer";
 import type { IUsable } from "@/code/Interface/IUsable";
+import { isUiOpen, UiFocus } from "@/code/Lib/GameRuntimeState";
 import { vec3Zero } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import {
@@ -279,6 +280,10 @@ export class DroppedItem implements IUsable {
 		onBeforeRender(Map1.mainScene, (deltaMs: number) => {
 			const dt = deltaMs * 0.001;
 			if (dt <= 0) return;
+
+			// PERF: skip item physics while any UI overlay owns the mouse
+			// (matches the mob observer and player-loop suppression).
+			if (isUiOpen(UiFocus.pauseMenu)) return;
 
 			const items = DroppedItem.#allItems;
 			const len = items.length;

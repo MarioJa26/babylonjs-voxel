@@ -62,14 +62,6 @@ function isSolidBlock(blockId: number): boolean {
 	);
 }
 
-function canWaterPass(x: number, y: number, z: number): boolean {
-	return !isSolidBlock(getBlockByWorldCoords(x, y, z));
-}
-
-function isHole(x: number, y: number, z: number): boolean {
-	return !isSolidBlock(getBlockByWorldCoords(x, y - 1, z));
-}
-
 // --- Flow pathing (vanilla-style edge-seeking) ------------------------
 
 const FLOW_SEARCH_DEPTH = 5; // matches vanilla's getSlopeFindDistance for water
@@ -90,6 +82,46 @@ const flowQueueRdx = new Int8Array(FLOW_GRID_CELLS);
 const flowQueueRdz = new Int8Array(FLOW_GRID_CELLS);
 const flowQueueDist = new Uint8Array(FLOW_GRID_CELLS);
 const flowCosts = new Uint8Array(HORIZONTAL_DIR_COUNT);
+// T2-10: per-call target ids captured by getFlowDirectionMask, re-used by
+// the caller's flowInto spread calls (saves one world read per direction).
+const flowDirectionTargetIds = new Int16Array(HORIZONTAL_DIR_COUNT);
+
+// T2-10: lazy 9x9 flow-grid read cache. The four directional BFS passes in
+// findFlowCosts re-probe the same cells, and getFlowDirectionMask reads the
+// same first ring — so each cell's world lookup (chunk lookup + palette /
+// nibble decode) is performed at most once per flow computation instead of
+// once per pass that visits it. Two layers: the flow plane at y and the
+// hole plane at y-1. -1 marks "unknown"; packed values are always >= 0
+// (blockId | blockState << 16, so air packs to 0).
+const FLOW_CACHE_UNKNOWN = -1;
+const flowGridPacked = new Int32Array(FLOW_GRID_CELLS);
+const flowHoleGridPacked = new Int32Array(FLOW_GRID_CELLS);
+
+function flowGridIndex(rdx: number, rdz: number): number {
+	return (rdz + FLOW_GRID_CENTER) * FLOW_GRID_DIM + (rdx + FLOW_GRID_CENTER);
+}
+
+function cachedFlowCell(
+	layer: Int32Array,
+	worldX: number,
+	worldY: number,
+	worldZ: number,
+	rdx: number,
+	rdz: number,
+): number {
+	const c = flowGridIndex(rdx, rdz);
+	const packed = layer[c];
+	if (packed !== FLOW_CACHE_UNKNOWN) return packed;
+	getBlockAndStateByWorldCoordsInto(
+		worldX + rdx,
+		worldY,
+		worldZ + rdz,
+		_blockAndState,
+	);
+	const result = _blockAndState.blockId | (_blockAndState.blockState << 16);
+	layer[c] = result;
+	return result;
+}
 
 // For each of the 4 cardinal directions, finds the distance (capped at
 // FLOW_SEARCH_DEPTH) to the nearest reachable hole along a path that begins
@@ -105,15 +137,20 @@ function findFlowCosts(worldX: number, worldY: number, worldZ: number): void {
 
 		flowCosts[dirIdx] = FLOW_NOT_FOUND;
 
-		const startX = worldX + dx0;
-		const startZ = worldZ + dz0;
-		if (!canWaterPass(startX, worldY, startZ)) continue;
+		const startPacked = cachedFlowCell(
+			flowGridPacked,
+			worldX,
+			worldY,
+			worldZ,
+			dx0,
+			dz0,
+		);
+		if (isSolidBlock(startPacked & 0xffff)) continue;
 
 		flowEpoch++;
 		const epoch = flowEpoch;
 
-		const startGridIdx =
-			(dz0 + FLOW_GRID_CENTER) * FLOW_GRID_DIM + (dx0 + FLOW_GRID_CENTER);
+		const startGridIdx = flowGridIndex(dx0, dz0);
 		flowVisitEpoch[startGridIdx] = epoch;
 		flowQueueRdx[0] = dx0;
 		flowQueueRdz[0] = dz0;
@@ -128,10 +165,15 @@ function findFlowCosts(worldX: number, worldY: number, worldZ: number): void {
 			const dist = flowQueueDist[queueHead];
 			queueHead++;
 
-			const x = worldX + rdx;
-			const z = worldZ + rdz;
-
-			if (isHole(x, worldY, z)) {
+			const holePacked = cachedFlowCell(
+				flowHoleGridPacked,
+				worldX,
+				worldY - 1,
+				worldZ,
+				rdx,
+				rdz,
+			);
+			if (!isSolidBlock(holePacked & 0xffff)) {
 				flowCosts[dirIdx] = dist;
 				break;
 			}
@@ -150,13 +192,18 @@ function findFlowCosts(worldX: number, worldY: number, worldZ: number): void {
 					continue;
 				}
 
-				const nGridIdx =
-					(nrdz + FLOW_GRID_CENTER) * FLOW_GRID_DIM + (nrdx + FLOW_GRID_CENTER);
+				const nGridIdx = flowGridIndex(nrdx, nrdz);
 				if (flowVisitEpoch[nGridIdx] === epoch) continue;
 
-				const nx = worldX + nrdx;
-				const nz = worldZ + nrdz;
-				if (!canWaterPass(nx, worldY, nz)) continue;
+				const nPacked = cachedFlowCell(
+					flowGridPacked,
+					worldX,
+					worldY,
+					worldZ,
+					nrdx,
+					nrdz,
+				);
+				if (isSolidBlock(nPacked & 0xffff)) continue;
 
 				flowVisitEpoch[nGridIdx] = epoch;
 				flowQueueRdx[queueTail] = nrdx;
@@ -171,20 +218,34 @@ function findFlowCosts(worldX: number, worldY: number, worldZ: number): void {
 // Returns a bitmask over HORIZONTAL_DX/DZ indices (bit i set = flow into
 // that direction this tick). A bitmask instead of an array of direction
 // pairs means the per-tick spread decision allocates nothing.
+// T2-10: also fills flowDirectionTargetIds with each direction's target id
+// (read once here, reused by the caller's flowInto calls) and resets the
+// per-call flow-grid read cache — no writes happen between this reset and
+// the last cache read (the spread writes occur after this function returns).
 function getFlowDirectionMask(
 	worldX: number,
 	worldY: number,
 	worldZ: number,
 ): number {
+	flowGridPacked.fill(FLOW_CACHE_UNKNOWN, 0, FLOW_GRID_CELLS);
+	flowHoleGridPacked.fill(FLOW_CACHE_UNKNOWN, 0, FLOW_GRID_CELLS);
+
 	let validMask = 0;
 	let dropMask = 0;
 
 	for (let i = 0; i < HORIZONTAL_DIR_COUNT; i++) {
 		const dx = HORIZONTAL_DX[i];
 		const dz = HORIZONTAL_DZ[i];
-		const nx = worldX + dx;
-		const nz = worldZ + dz;
-		const targetId = getBlockByWorldCoords(nx, worldY, nz);
+		const packed = cachedFlowCell(
+			flowGridPacked,
+			worldX,
+			worldY,
+			worldZ,
+			dx,
+			dz,
+		);
+		const targetId = packed & 0xffff;
+		flowDirectionTargetIds[i] = targetId;
 
 		let canFlow = false;
 		if (
@@ -195,7 +256,7 @@ function getFlowDirectionMask(
 		) {
 			canFlow = true;
 		} else if (targetId === BlockType.Water) {
-			const targetState = getBlockStateByWorldCoords(nx, worldY, nz);
+			const targetState = packed >>> 16;
 			if (!isWaterSource(targetId, targetState)) {
 				if (getWaterLevel(targetId, targetState) > 0) canFlow = true;
 			}
@@ -204,8 +265,15 @@ function getFlowDirectionMask(
 
 		validMask |= 1 << i;
 
-		const belowNeighbor = getBlockByWorldCoords(nx, worldY - 1, nz);
-		if (!isSolidBlock(belowNeighbor)) dropMask |= 1 << i;
+		const belowPacked = cachedFlowCell(
+			flowHoleGridPacked,
+			worldX,
+			worldY - 1,
+			worldZ,
+			dx,
+			dz,
+		);
+		if (!isSolidBlock(belowPacked & 0xffff)) dropMask |= 1 << i;
 	}
 
 	if (validMask === 0) return 0;
@@ -472,6 +540,7 @@ export function processWaterUpdate(
 					-dx,
 					0,
 					-dz,
+					flowDirectionTargetIds[i],
 				);
 			}
 		}

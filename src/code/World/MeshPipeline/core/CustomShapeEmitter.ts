@@ -134,18 +134,24 @@ export function emitCustomShapes(session: MeshBuildSession): void {
 	const getLight = session.getLight;
 	const isLOD2 = session.lod >= 2;
 	const needsCustom = session.needsCustom;
-	const padIndex = session.padIndex;
+	const ps = session.ps;
+	const ps2 = session.ps2;
 	const opaqueOut = session.quadOpaque;
 	const transparentOut = session.quadTransparent;
 
 	for (let y = -1; y <= size; y++) {
+		const rowBaseY = (y + 1) * ps;
 		for (let z = -1; z <= size; z++) {
+			// PERF: hoisted padded-grid base for the x-row — the per-cell
+			// padIndex closure call (2 multiplies + 3 adds) is replaced by a
+			// single add per cell.
+			const base = rowBaseY + (z + 1) * ps2;
 			for (let x = -1; x <= size; x++) {
 				// P3.7: precomputed per-cell classification — skip every cell
 				// that cannot contribute custom geometry (air + greedy blocks)
 				// with a single byte load, instead of a cache lookup + flag
 				// checks per cell.
-				if (!needsCustom[padIndex(x, y, z)]) continue;
+				if (!needsCustom[base + x + 1]) continue;
 
 				const packed = getBlock(x, y, z, 0);
 				const flags = getCachedFlags(packed);

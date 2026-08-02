@@ -3,8 +3,6 @@ import { MeshData } from "../../Chunk/DataStructures/MeshData";
 import { ResizableTypedArray } from "../../Chunk/DataStructures/ResizableTypedArray";
 import type { WorkerInternalMeshData } from "../../Chunk/DataStructures/WorkerInternalMeshData";
 import type { MeshContext } from "../types/MeshTypes";
-import { QuadBuffer } from "./QuadBuffer";
-import type { VoxelPipeline } from "./VoxelPipeline";
 import {
 	FLAG_GREEDY,
 	FLAG_PARTIAL,
@@ -13,6 +11,8 @@ import {
 	getCachedFlagsAndId,
 	getFlagsFromCombined,
 } from "./BlockInfoCache";
+import { QuadBuffer } from "./QuadBuffer";
+import type { VoxelPipeline } from "./VoxelPipeline";
 
 export type WorkerMeshBaseContext = {
 	size: number;
@@ -20,10 +20,25 @@ export type WorkerMeshBaseContext = {
 };
 
 export type WorkerMeshInput = {
-	block_array: Uint8Array | Uint16Array;
+	block_array?: Uint8Array | Uint16Array | null;
+	// Uniform chunks carry only the fill id — the padded grid is filled
+	// directly, skipping the dense intermediate array (64-512 KiB alloc).
+	uniformFill?: number;
 	light_array?: Uint8Array;
 	neighbors: (Uint16Array | undefined)[];
 	neighborLights?: (Uint8Array | undefined)[];
+};
+
+/**
+ * Padded-grid buffer set. A relight-cache entry owns one of these so a
+ * light-only remesh can skip the block fill + opacity classification entirely:
+ * the session binds to the entry's arrays instead of copying into its own.
+ */
+export type PaddedGrids = {
+	block: Uint16Array<ArrayBuffer>;
+	light: Uint8Array<ArrayBuffer>;
+	opaque: Uint8Array<ArrayBuffer>;
+	needsCustom: Uint8Array<ArrayBuffer>;
 };
 
 // ── Precomputed neighbor offset table ─────────────────────────────────────────
@@ -143,8 +158,19 @@ export class MeshBuildSession implements MeshContext {
 	/**
 	 * Reset the session for a new chunk build: fills the padded grids from the
 	 * center chunk + 26 neighbor border slabs and re-classifies opacity.
+	 *
+	 * When `grids` is provided (a relight-cache entry's padded buffers) the
+	 * session binds to those arrays instead of its own — and when
+	 * `skipBlockFill` is set, the block content + opacity classification are
+	 * known-valid from the entry's previous full build, so only the light
+	 * grid is refilled.
 	 */
-	public begin(base: WorkerMeshBaseContext, input: WorkerMeshInput): void {
+	public begin(
+		base: WorkerMeshBaseContext,
+		input: WorkerMeshInput,
+		grids?: PaddedGrids,
+		skipBlockFill = false,
+	): void {
 		const size = base.size;
 		const size2 = size * size;
 		const ps = size + 2; // padded size
@@ -161,8 +187,26 @@ export class MeshBuildSession implements MeshContext {
 		this.lod = base.lod;
 		this.disableAO = base.lod >= 2;
 
-		// Ensure padded buffers are large enough.
-		if (psVol > this.block.length) {
+		// Ensure padded buffers are large enough (grow the caller-provided
+		// grids in place so they persist across relights).
+		if (grids) {
+			if (psVol > grids.block.length) {
+				grids.block = new Uint16Array(psVol);
+				grids.light = new Uint8Array(psVol);
+				grids.opaque = new Uint8Array(psVol);
+				grids.needsCustom = new Uint8Array(psVol);
+			}
+			this.block = grids.block;
+			this.light = grids.light;
+			this.opaque = grids.opaque;
+			this.needsCustom = grids.needsCustom;
+		} else {
+			// NOTE: the voxel worker always passes `grids` (a relight-cache
+			// entry's buffers). This fallback must not reuse the session's
+			// existing arrays in that scenario — after a grid-bound build,
+			// `this.block` aliases the cache entry's arrays, and writing a
+			// different chunk into them would corrupt the entry. Allocating
+			// fresh is the safe default for any non-cache caller.
 			this.block = new Uint16Array(psVol);
 			this.light = new Uint8Array(psVol);
 			this.opaque = new Uint8Array(psVol);
@@ -180,12 +224,15 @@ export class MeshBuildSession implements MeshContext {
 		// neighbor slab is missing (e.g. at the edge of loaded terrain) — when all
 		// 26 neighbor slabs are present, the border-copy loop below writes every
 		// shell cell itself. In the common interior-of-loaded-world case this lets
-		// us skip an O(ps^3) fill entirely.
+		// us skip an O(ps^3) fill entirely. On a light-only rebuild the block grid
+		// is already valid, so only the light clear is ever needed.
 		let needBlockClear = false;
-		for (let i = 0; i < 26; i++) {
-			if (!neighbors[i]) {
-				needBlockClear = true;
-				break;
+		if (!skipBlockFill) {
+			for (let i = 0; i < 26; i++) {
+				if (!neighbors[i]) {
+					needBlockClear = true;
+					break;
+				}
 			}
 		}
 
@@ -206,19 +253,34 @@ export class MeshBuildSession implements MeshContext {
 		if (needBlockClear) padded.fill(0, 0, psVol);
 		if (needLightClear) paddedLight.fill(0, 0, psVol);
 
-		// ── Fill center chunk (indices 1..size in each axis) ──
-		// PERF: x is the fastest-varying axis in both the source (block_array) and
-		// destination (padded) layouts, so each x-row is a contiguous run in both
-		// arrays. Use TypedArray#set (native memcpy-ish) per row instead of a
-		// scalar per-voxel loop — collapses the innermost loop from `size`
-		// individual writes to a single bulk copy.
-		for (let z = 0; z < size; z++) {
-			const pZ = (z + 1) * ps2;
-			const cZ = z * size2;
-			for (let y = 0; y < size; y++) {
-				const pIdx = (y + 1) * ps + pZ;
-				const cIdx = y * size + cZ;
-				padded.set(blockArray.subarray(cIdx, cIdx + size), 1 + pIdx);
+		if (!skipBlockFill) {
+			// ── Fill center chunk (indices 1..size in each axis) ──
+			// PERF: x is the fastest-varying axis in both the source (block_array)
+			// and destination (padded) layouts, so each x-row is a contiguous run
+			// in both arrays. A tight store loop beats TypedArray#set(subarray)
+			// here: the subarray would allocate a fresh view per row (~2 * size^2
+			// tiny allocations per build).
+			if (input.uniformFill !== undefined) {
+				const fillId = input.uniformFill;
+				for (let z = 0; z < size; z++) {
+					const pZ = (z + 1) * ps2;
+					for (let y = 0; y < size; y++) {
+						const start = 1 + (y + 1) * ps + pZ;
+						padded.fill(fillId, start, start + size);
+					}
+				}
+			} else if (blockArray) {
+				for (let z = 0; z < size; z++) {
+					const pZ = (z + 1) * ps2;
+					const cZ = z * size2;
+					for (let y = 0; y < size; y++) {
+						const pIdx = 1 + (y + 1) * ps + pZ;
+						const cIdx = y * size + cZ;
+						for (let x = 0; x < size; x++) {
+							padded[pIdx + x] = blockArray[cIdx + x];
+						}
+					}
+				}
 			}
 		}
 
@@ -227,9 +289,11 @@ export class MeshBuildSession implements MeshContext {
 				const pZ = (z + 1) * ps2;
 				const cZ = z * size2;
 				for (let y = 0; y < size; y++) {
-					const pIdx = (y + 1) * ps + pZ;
+					const pIdx = 1 + (y + 1) * ps + pZ;
 					const cIdx = y * size + cZ;
-					paddedLight.set(lightArray.subarray(cIdx, cIdx + size), 1 + pIdx);
+					for (let x = 0; x < size; x++) {
+						paddedLight[pIdx + x] = lightArray[cIdx + x];
+					}
 				}
 			}
 		}
@@ -239,7 +303,9 @@ export class MeshBuildSession implements MeshContext {
 		// center chunk into the appropriate padding positions. The main thread
 		// sends only the 1-voxel-thick border slab (dense Uint16/Uint8, exactly
 		// xCount*yCount*zCount elements, in (dx, dy, dz) order) per neighbor, so
-		// we can trust indices without bounds-checking each element.
+		// we can trust indices without bounds-checking each element. On a
+		// light-only rebuild the block borders are already baked into the grid;
+		// only the light borders are copied.
 		const neighborCount = neighbors.length;
 		for (let ni = 0; ni < neighborCount; ni++) {
 			const neighbor = neighbors[ni];
@@ -263,17 +329,22 @@ export class MeshBuildSession implements MeshContext {
 				// contiguous `size`-length row in both the source slab and the
 				// padded destination (x is the fastest axis in both). This covers
 				// every face neighbor along the x=0 plane and 4 of the 12 edge
-				// neighbors — collapse the per-voxel writes into row-sized
-				// TypedArray#set calls.
+				// neighbors — store loops, same rationale as the center fill.
 				let ci = 0;
 				for (let dz = 0; dz < zCount; dz++) {
 					const pZ = (pZStart + dz) * ps2;
 					for (let dy = 0; dy < yCount; dy++) {
 						const pY = (pYStart + dy) * ps;
 						const destOffset = pXStart + pY + pZ;
-						padded.set(neighbor.subarray(ci, ci + size), destOffset);
+						if (!skipBlockFill) {
+							for (let x = 0; x < size; x++) {
+								padded[destOffset + x] = neighbor[ci + x];
+							}
+						}
 						if (nLight) {
-							paddedLight.set(nLight.subarray(ci, ci + size), destOffset);
+							for (let x = 0; x < size; x++) {
+								paddedLight[destOffset + x] = nLight[ci + x];
+							}
 						}
 						ci += size;
 					}
@@ -289,7 +360,9 @@ export class MeshBuildSession implements MeshContext {
 						const pY = (pYStart + dy) * ps;
 						for (let dx = 0; dx < xCount; dx++) {
 							const dest = pXStart + dx + pY + pZ;
-							padded[dest] = neighbor[ci];
+							if (!skipBlockFill) {
+								padded[dest] = neighbor[ci];
+							}
 							if (nLight) {
 								paddedLight[dest] = nLight[ci];
 							}
@@ -303,8 +376,11 @@ export class MeshBuildSession implements MeshContext {
 		this.neighbors = neighbors;
 
 		// ── Classify every cell once, now that the grid (center + all neighbor
-		// borders) is fully assembled ──
-		this.buildOpaqueClassification(psVol);
+		// borders) is fully assembled. A light-only rebuild reuses the entry's
+		// classification (block content is version-validated unchanged).
+		if (!skipBlockFill) {
+			this.buildOpaqueClassification(psVol);
+		}
 	}
 
 	/**

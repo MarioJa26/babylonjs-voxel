@@ -18,6 +18,9 @@ export class PlayerStatePersistence {
 	private static readonly CHUNK_SAVE_NOW_BATCH_SIZE = 64;
 
 	private lastPositionSaveMs = 0;
+	// PERF: update() runs every frame but only saves every 15 s — gate the
+	// Date.now() check to ~4 Hz instead of per-frame.
+	private lastCheckMs = 0;
 	private inventoryObserver: any = null;
 	private sceneDisposeObserver: any = null;
 	private isDisposed = false;
@@ -43,6 +46,9 @@ export class PlayerStatePersistence {
 		if (this.isDisposed) return;
 
 		const now = Date.now();
+		if (now - this.lastCheckMs < 250) return;
+		this.lastCheckMs = now;
+
 		if (
 			now - this.lastPositionSaveMs <
 			PlayerStatePersistence.PLAYER_STATE_SAVE_INTERVAL_MS

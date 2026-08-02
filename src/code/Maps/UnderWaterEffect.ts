@@ -138,6 +138,18 @@ export class UnderWaterEffect {
 	}
 }
 
+// PERF: Module-level cache for isEyeUnderwater. The function is called twice
+// per frame (UnderWaterEffect.updateFromCamera + ChunkMesher.pushFogUniforms),
+// each call doing 3-4 chunk lookups. The result only changes when the eye
+// crosses a voxel boundary or water at the eye voxel changes, so cache on the
+// raw eye position and re-validate at most every 250 ms.
+let _underwaterCacheEyeX = NaN;
+let _underwaterCacheEyeY = NaN;
+let _underwaterCacheEyeZ = NaN;
+let _underwaterCacheResult = false;
+let _underwaterCacheMs = 0;
+const UNDERWATER_CACHE_VALID_MS = 250;
+
 /**
  * Shared underwater test: true when the block at the given eye/world position
  * is a water source. Used by both the visual overlay and the fog system so
@@ -148,21 +160,39 @@ export function isEyeUnderwater(
 	eyeY: number,
 	eyeZ: number,
 ): boolean {
+	const now = performance.now();
+	if (
+		eyeX === _underwaterCacheEyeX &&
+		eyeY === _underwaterCacheEyeY &&
+		eyeZ === _underwaterCacheEyeZ &&
+		now - _underwaterCacheMs < UNDERWATER_CACHE_VALID_MS
+	) {
+		return _underwaterCacheResult;
+	}
+
 	const x = Math.floor(eyeX);
 	const y = Math.floor(eyeY);
 	const z = Math.floor(eyeZ);
+	let result = false;
 	const blockId = getBlockByWorldCoords(x, y, z);
-	if (blockId !== BlockType.Water) return false;
+	if (blockId === BlockType.Water) {
+		// Compute the actual water surface height. A water block fully covered
+		// by water above (or a source block, level 0) fills the whole voxel;
+		// a lower-level (flowing) block has a surface dropped by level/8.
+		const state = getBlockStateByWorldCoords(x, y, z);
+		const level = getWaterLevel(blockId, state);
+		const aboveId = getBlockByWorldCoords(x, y + 1, z);
+		const surfaceY = aboveId === BlockType.Water ? y + 1 : y + 1 - level / 8;
 
-	// Compute the actual water surface height. A water block fully covered
-	// by water above (or a source block, level 0) fills the whole voxel;
-	// a lower-level (flowing) block has a surface dropped by level/8.
-	const state = getBlockStateByWorldCoords(x, y, z);
-	const level = getWaterLevel(blockId, state);
-	const aboveId = getBlockByWorldCoords(x, y + 1, z);
-	const surfaceY = aboveId === BlockType.Water ? y + 1 : y + 1 - level / 8;
+		// The eye is underwater when it sits below the water surface within
+		// this voxel (any water voxel counts, source or non-source).
+		result = eyeY < surfaceY;
+	}
 
-	// The eye is underwater when it sits below the water surface within
-	// this voxel (any water voxel counts, source or non-source).
-	return eyeY < surfaceY;
+	_underwaterCacheEyeX = eyeX;
+	_underwaterCacheEyeY = eyeY;
+	_underwaterCacheEyeZ = eyeZ;
+	_underwaterCacheResult = result;
+	_underwaterCacheMs = now;
+	return result;
 }

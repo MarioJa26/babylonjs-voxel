@@ -12,11 +12,7 @@ import {
 } from "../../Shape/BlockShapes";
 import { type FaceName, getFaceName } from "../../Texture/FaceName";
 import { type GreedyFaceDescriptor, MaterialType } from "../types/MeshTypes";
-import {
-	getMaterialType,
-	getRuntimeShapeBoxes,
-	getShapeInfo,
-} from "./BlockInfoCache";
+import { getMaterialType, getRuntimeShapeBoxes } from "./BlockInfoCache";
 import type { QuadBuffer } from "./QuadBuffer";
 import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
@@ -94,10 +90,10 @@ export class VoxelFaceEmitterAdapter {
 		if (!packedBlock) return;
 
 		const blockId = unpackBlockId(packedBlock);
-		// getShapeInfo keys its cache on the raw value; pass the id/state-only
-		// form so water flags (bits 16-17) don't fragment the cache. The full
-		// packedBlock (with water flags) is still forwarded to emitWaterQuad.
-		const shapeInfo = getShapeInfo(packedBlock & PACKED_ID_STATE_MASK);
+		// PERF: NON_CUBE_MASK is set by the mask extractor exactly when the
+		// block's shape is non-cube (it compares against getShapeInfo().isCube
+		// itself), so the per-face getShapeInfo cache probe is redundant —
+		// isCube is simply !isNonCube.
 		const materialType = getMaterialType(blockId);
 		const isWater =
 			materialType === MaterialType.WaterOrGlass && blockId === WATER_BLOCK_ID;
@@ -116,7 +112,7 @@ export class VoxelFaceEmitterAdapter {
 		const faceName = FACE_NAME_TABLE[faceIndex];
 		const faceBit = FACE_BIT_TABLE[faceIndex];
 
-		const isCube = shapeInfo.isCube && !isNonCube;
+		const isCube = !isNonCube;
 		const dispatchKey = (isWater ? 2 : 0) | (isCube ? 1 : 0);
 		this._dispatch[dispatchKey](
 			out,
@@ -220,7 +216,7 @@ export class VoxelFaceEmitterAdapter {
 		faceName: FaceName,
 		faceBit: number,
 	): void {
-		const boxes = getRuntimeShapeBoxes(packedBlock);
+		const boxes = getRuntimeShapeBoxes(packedBlock & PACKED_ID_STATE_MASK);
 		if (boxes.length === 0) return;
 
 		const { ox, oy, oz } = inlineOrigin(axis, back, desc);
@@ -273,7 +269,11 @@ export class VoxelFaceEmitterAdapter {
 		faceName: FaceName,
 		faceBit: number,
 	): void {
-		const boxes = getRuntimeShapeBoxes(packedBlock);
+		// getRuntimeShapeBoxes keys its cache on the id/state-only form —
+		// water flags (bits 16-17) would fall off the dense cache into the
+		// overflow Map for every custom water face. The full packedBlock is
+		// still forwarded to emitWaterQuad.
+		const boxes = getRuntimeShapeBoxes(packedBlock & PACKED_ID_STATE_MASK);
 		if (boxes.length === 0) return;
 
 		const { ox, oy, oz } = inlineOrigin(axis, back, desc);

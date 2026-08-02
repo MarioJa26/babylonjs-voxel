@@ -52,11 +52,23 @@ export class PlayerLoopController {
 	#prevCameraPitch = 0;
 	#rebuildActiveMeshes = false;
 
+	// ---- pick-target raycast gating (skip the 64-voxel DDA when still) ----
+	#pickLastX = NaN;
+	#pickLastY = NaN;
+	#pickLastZ = NaN;
+	#pickLastYaw = NaN;
+	#pickLastPitch = NaN;
+	#pickCachedHit: BlockRaycastHit | null = null;
+	#pickStillFrames = 0;
+	static readonly PICK_STILL_REFRESH_FRAMES = 6; // refresh at most every 6 still frames
+
 	// ---- cave state ----
 	#lastCaveState = false;
 
 	// ---- occlusion culling ----
-	//#occlusionCuller = new OcclusionCuller();
+	// T2-12: re-enabled (stage 1 — frustum/backface sweep only; the cave-BFS
+	// topology culling stays disabled via BFS_CAVE_CULLING_ENABLED).
+	#occlusionCuller = new OcclusionCuller();
 	#lastOcclusionStats = { total: 0, occluded: 0, timeMs: 0 };
 
 	// ---- debug HUD throttle ----
@@ -94,7 +106,10 @@ export class PlayerLoopController {
 		// Initialize water tick scheduler
 		BlockTickScheduler.getInstance().setProcessCallback(processWaterUpdate);
 
-		// Wire incremental occlusion culling for individual chunk loads
+		// Wire incremental occlusion culling for individual chunk loads.
+		// T2-12 stage 1: BFS is disabled, so incrementalAdd is a no-op
+		// (it early-returns while _currentQueryId === 0); re-enable it with
+		// BFS_CAVE_CULLING_ENABLED.
 		this.#previousOnChunkLoaded = Chunk.onChunkLoaded;
 		Chunk.onChunkLoaded = (chunk: Chunk) => {
 			this.#previousOnChunkLoaded?.(chunk);
@@ -135,12 +150,11 @@ export class PlayerLoopController {
 		// Skipped while a UI overlay is open (matches #updateControls' early-out),
 		// since the highlight is hidden behind the menu and breaking is suppressed.
 		const uiOpen = isUiOpen();
-		const pickHit = uiOpen ? null : pickTarget(this.playerHud.player);
+		const playerPos = this.getPlayerPosition();
+		const pickHit = uiOpen ? null : this.#pickTargetGated(playerPos);
 		this.playerHud.crossHair.setTargetHit(pickHit);
 
 		// L1: Cache position once — reused by all sub-systems this frame.
-		const playerPos = this.getPlayerPosition();
-
 		updateDistantTerrain(playerPos.x, playerPos.z);
 
 		// C3: tick all active boats (buoyancy + controls). Uses the player
@@ -167,7 +181,7 @@ export class PlayerLoopController {
 		this.#updateActiveMeshSelection(cx, cy, cz);
 
 		// Occlusion culling – must run after chunk loading and before Lite evaluates the scene.
-		//this.#occlusionCuller.update(this.#lastOcclusionStats);
+		this.#occlusionCuller.update(this.#lastOcclusionStats);
 
 		// Main-thread work time for this frame (EMA-smoothed).
 		const _frameMs = performance.now() - _frameStart;
@@ -187,6 +201,47 @@ export class PlayerLoopController {
 	// ---------------------------------------------------------------------------
 	// Controls
 	// ---------------------------------------------------------------------------
+
+	/**
+	 * Full pick raycast, gated on camera/position stillness. When the eye
+	 * position and camera yaw/pitch have not moved (within epsilon), reuse the
+	 * last hit for at most PICK_STILL_REFRESH_FRAMES frames — staring at open
+	 * sky drops the 64-voxel DDA from 60/s to 10/s. Block-breaking progress is
+	 * wall-clock based (BreakingBlockHandler), so a briefly stale hit is safe;
+	 * the frame cap guarantees the hit refreshes after e.g. a block breaks.
+	 */
+	#pickTargetGated(playerPos: {
+		x: number;
+		y: number;
+		z: number;
+	}): BlockRaycastHit | null {
+		const yaw = this.playerCamera.cameraYaw;
+		const pitch = this.playerCamera.cameraPitch;
+
+		const still =
+			Math.abs(playerPos.x - this.#pickLastX) < 0.001 &&
+			Math.abs(playerPos.y - this.#pickLastY) < 0.001 &&
+			Math.abs(playerPos.z - this.#pickLastZ) < 0.001 &&
+			Math.abs(yaw - this.#pickLastYaw) < 0.001 &&
+			Math.abs(pitch - this.#pickLastPitch) < 0.001;
+
+		if (
+			still &&
+			this.#pickStillFrames < PlayerLoopController.PICK_STILL_REFRESH_FRAMES
+		) {
+			this.#pickStillFrames++;
+			return this.#pickCachedHit;
+		}
+
+		this.#pickLastX = playerPos.x;
+		this.#pickLastY = playerPos.y;
+		this.#pickLastZ = playerPos.z;
+		this.#pickLastYaw = yaw;
+		this.#pickLastPitch = pitch;
+		this.#pickStillFrames = 0;
+		this.#pickCachedHit = pickTarget(this.playerHud.player);
+		return this.#pickCachedHit;
+	}
 
 	#updateControls(uiOpen: boolean, hit?: BlockRaycastHit | null): void {
 		const controls = this.getKeyboardControls();
@@ -237,31 +292,27 @@ export class PlayerLoopController {
 			cy !== this.#loadLastCy ||
 			cz !== this.#loadLastCz
 		) {
-			const _cx = cx,
-				_cy = cy,
-				_cz = cz;
-			const _lastCx = this.#loadLastCx,
-				_lastCy = this.#loadLastCy,
-				_lastCz = this.#loadLastCz;
-			const _ppx = playerPos.x,
-				_ppz = playerPos.z;
+			// Direct call (no setTimeout): updateChunksAround is already async
+			// and frame-budgeted, and PlayerLoadingGate calls it directly every
+			// frame while spawn-loading — the macrotask only added latency.
+			const prevCx = this.#loadLastCx;
+			const prevCy = this.#loadLastCy;
+			const prevCz = this.#loadLastCz;
 			this.#loadLastCx = cx;
 			this.#loadLastCy = cy;
 			this.#loadLastCz = cz;
-			setTimeout(() => {
-				void updateChunksAround(
-					_cx,
-					_cy,
-					_cz,
-					undefined,
-					undefined,
-					_lastCx,
-					_lastCy,
-					_lastCz,
-					_ppx,
-					_ppz,
-				);
-			}, 0);
+			void updateChunksAround(
+				cx,
+				cy,
+				cz,
+				undefined,
+				undefined,
+				prevCx,
+				prevCy,
+				prevCz,
+				playerPos.x,
+				playerPos.z,
+			);
 		}
 	}
 

@@ -4,14 +4,16 @@ import { MeshEmitters } from "../MeshPipeline/core/MeshEmitters";
 import {
 	createEmptyWorkerInternalMeshData,
 	MeshBuildSession,
+	type PaddedGrids,
 	toTransferableMeshData,
-	type WorkerMeshBaseContext,
 	type WorkerMeshInput,
 } from "../MeshPipeline/core/WorkerMeshHelpers";
 import { shapeInitPromise } from "../Shape/BlockShapes";
 import { PaletteExpander } from "./DataStructures/PaletteExpander";
 import {
 	type FullMeshMessage,
+	type RelightMeshMissMessage,
+	type RelightMeshRequest,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
 
@@ -23,6 +25,10 @@ export interface VoxelWorkerRequest {
 	lod: number;
 	chunk_size: number;
 
+	// Content versioning for the relight cache.
+	generation?: number;
+	blockRevision?: number;
+
 	block_array: Uint8Array | Uint16Array | null;
 	uniformBlockId?: number;
 	palette?: Uint8Array | Uint16Array | null;
@@ -30,6 +36,71 @@ export interface VoxelWorkerRequest {
 
 	neighbors: (Uint16Array | undefined)[];
 	neighborLights?: (Uint8Array | undefined)[];
+}
+
+// ---------------------------------------------------------------------------
+// T2-8 + micro: relight block-grid cache.
+//
+// A light-only remesh re-runs the identical greedy pipeline with a fresh
+// light grid, so the worker can reuse the block grid (center + neighbor
+// borders) it received for the chunk's last full mesh — the main thread then
+// skips the block-border extraction and block/palette transfers entirely.
+// Entries are validated against (generation, blockRevision) so disposed-and-
+// recreated chunks (reused chunk ids) and block mutations can never serve
+// stale borders. Uniform chunks fill the padded grid directly from the fill
+// id instead of a dense grid.
+//
+// Each entry OWNS its (size+2)^3 padded grids (block/light/opaque/needsCustom).
+// The full build fills them; a light-only rebuild binds the session to them
+// and refills only the light grid — skipping the ~33k center stores, the 26
+// border copies and the full-grid opacity classification.
+// ---------------------------------------------------------------------------
+type RelightCacheEntry = {
+	generation: number;
+	blockRevision: number;
+	grids: PaddedGrids;
+	// 26-slot border arrays — kept only as the hasNeighborChunk presence mask
+	// (the border content is already baked into grids.block).
+	neighbors: (Uint16Array | undefined)[];
+};
+
+const RELIGHT_CACHE_MAX = 6;
+const relightCache = new Map<bigint, RelightCacheEntry>();
+
+function getOrCreateRelightEntry(
+	chunkId: bigint,
+	generation: number,
+	blockRevision: number,
+	neighbors: (Uint16Array | undefined)[],
+): RelightCacheEntry {
+	const existing = relightCache.get(chunkId);
+	if (existing) {
+		// Same chunk re-meshed: refresh versions + presence mask. The grids
+		// are refilled in full by the build itself (skipBlockFill=false).
+		existing.generation = generation;
+		existing.blockRevision = blockRevision;
+		existing.neighbors = neighbors;
+		return existing;
+	}
+	if (relightCache.size >= RELIGHT_CACHE_MAX) {
+		// Map iteration order = insertion order, so the first key is the
+		// oldest entry.
+		const oldest = relightCache.keys().next();
+		if (!oldest.done) relightCache.delete(oldest.value);
+	}
+	const entry: RelightCacheEntry = {
+		generation,
+		blockRevision,
+		grids: {
+			block: new Uint16Array(0),
+			light: new Uint8Array(0),
+			opaque: new Uint8Array(0),
+			needsCustom: new Uint8Array(0),
+		},
+		neighbors,
+	};
+	relightCache.set(chunkId, entry);
+	return entry;
 }
 
 function expandCenterOnly(
@@ -73,8 +144,9 @@ function expandCenterOnly(
 	}
 
 	if (request.palette && request.palette.length > 0) {
-		const expander = new PaletteExpander();
-		return expander.expandPalette(
+		// PERF: PaletteExpander is stateless — one shared instance instead of
+		// a fresh object per palette chunk.
+		return _paletteExpander.expandPalette(
 			request.block_array as Uint8Array,
 			request.palette,
 			totalBlocks,
@@ -83,6 +155,8 @@ function expandCenterOnly(
 
 	return request.block_array;
 }
+
+const _paletteExpander = new PaletteExpander();
 
 // Mesh generation depends on the async block-shape/block JSON. If we mesh
 // before that finishes loading, the shape-dependent caches are permanently
@@ -120,64 +194,130 @@ function resetMeshOut(): void {
 
 let transferables: Transferable[];
 
-self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
+function buildVoxelMeshFromInput(
+	input: WorkerMeshInput,
+	size: number,
+	lod: number,
+	grids?: PaddedGrids,
+	skipBlockFill = false,
+): void {
+	_session.begin({ size, lod }, input, grids, skipBlockFill);
+	resetMeshOut();
+	MeshEmitters.buildVoxelMesh(_session, _opaqueOut, _transparentOut);
+}
+
+function postMeshResponse(
+	chunkId: bigint,
+	meshRevision: number,
+	lod: number,
+): void {
+	const opaque =
+		_opaqueOut.faceCount > 0 ? toTransferableMeshData(_opaqueOut) : null;
+
+	const transparent =
+		_transparentOut.faceCount > 0
+			? toTransferableMeshData(_transparentOut)
+			: null;
+
+	const response: FullMeshMessage = {
+		type: WorkerTaskType.GenerateFullMesh,
+		chunkId,
+		meshRevision,
+		lod,
+		opaque,
+		transparent,
+	};
+
+	transferables = [];
+
+	if (opaque) {
+		transferables.push(opaque.faceDataA.buffer);
+		transferables.push(opaque.faceDataB.buffer);
+		transferables.push(opaque.faceDataC.buffer);
+	}
+
+	if (transparent) {
+		transferables.push(transparent.faceDataA.buffer);
+		transferables.push(transparent.faceDataB.buffer);
+		transferables.push(transparent.faceDataC.buffer);
+	}
+
+	self.postMessage(response, transferables);
+}
+
+self.onmessage = (
+	event: MessageEvent<VoxelWorkerRequest | RelightMeshRequest>,
+): void => {
 	const data = event.data;
+
+	if (data.type === WorkerTaskType.RelightMesh) {
+		void ensureShapesReady().then(() => {
+			const entry = relightCache.get(data.chunkId);
+			const expectedPaddedVol =
+				(data.chunk_size + 2) * (data.chunk_size + 2) * (data.chunk_size + 2);
+			if (
+				!entry ||
+				entry.generation !== data.generation ||
+				entry.blockRevision !== data.blockRevision ||
+				entry.grids.block.length !== expectedPaddedVol
+			) {
+				const miss: RelightMeshMissMessage = {
+					type: WorkerTaskType.RelightMesh,
+					chunkId: data.chunkId,
+					meshRevision: data.meshRevision,
+					lod: data.lod,
+				};
+				self.postMessage(miss);
+				return;
+			}
+
+			// Light-only rebuild: bind the session to the entry's padded grids
+			// and refill only the light grid (block fill + opacity
+			// classification are version-validated unchanged).
+			buildVoxelMeshFromInput(
+				{
+					neighbors: entry.neighbors,
+					light_array: data.light_array,
+					neighborLights: data.neighborLights,
+				},
+				data.chunk_size,
+				data.lod,
+				entry.grids,
+				true,
+			);
+			postMeshResponse(data.chunkId, data.meshRevision, data.lod);
+		});
+		return;
+	}
+
 	if (data.type !== WorkerTaskType.GenerateFullMesh) return;
 
 	void ensureShapesReady().then(() => {
-		const centerBlockArray = expandCenterOnly(data);
+		const entry = getOrCreateRelightEntry(
+			data.chunkId,
+			data.generation ?? -1,
+			data.blockRevision ?? -1,
+			data.neighbors,
+		);
 
-		const meshInput: WorkerMeshInput = {
-			block_array: centerBlockArray,
-			light_array: data.light_array,
-			neighbors: data.neighbors as (Uint16Array | undefined)[],
-			neighborLights: data.neighborLights,
-		};
+		// Uniform chunks carry no dense grid — pass the fill id so the padded
+		// grid is filled directly (no 64-512 KiB dense materialization).
+		const uniform = data.uniformBlockId !== undefined;
+		const centerBlockArray = uniform ? null : expandCenterOnly(data);
 
-		const baseCtx: WorkerMeshBaseContext = {
-			size: data.chunk_size,
-			lod: data.lod,
-		};
-
-		_session.begin(baseCtx, meshInput);
-
-		resetMeshOut();
-		const opaqueOut = _opaqueOut;
-		const transparentOut = _transparentOut;
-
-		MeshEmitters.buildVoxelMesh(_session, opaqueOut, transparentOut);
-
-		const opaque =
-			opaqueOut.faceCount > 0 ? toTransferableMeshData(opaqueOut) : null;
-
-		const transparent =
-			transparentOut.faceCount > 0
-				? toTransferableMeshData(transparentOut)
-				: null;
-
-		const response: FullMeshMessage = {
-			type: WorkerTaskType.GenerateFullMesh,
-			chunkId: data.chunkId,
-			meshRevision: data.meshRevision,
-			lod: data.lod,
-			opaque,
-			transparent,
-		};
-
-		transferables = [];
-
-		if (opaque) {
-			transferables.push(opaque.faceDataA.buffer);
-			transferables.push(opaque.faceDataB.buffer);
-			transferables.push(opaque.faceDataC.buffer);
-		}
-
-		if (transparent) {
-			transferables.push(transparent.faceDataA.buffer);
-			transferables.push(transparent.faceDataB.buffer);
-			transferables.push(transparent.faceDataC.buffer);
-		}
-
-		self.postMessage(response, transferables);
+		buildVoxelMeshFromInput(
+			{
+				block_array: centerBlockArray,
+				uniformFill: uniform ? data.uniformBlockId : undefined,
+				light_array: data.light_array,
+				neighbors: data.neighbors as (Uint16Array | undefined)[],
+				neighborLights: data.neighborLights,
+			},
+			data.chunk_size,
+			data.lod,
+			entry.grids,
+			false,
+		);
+		postMeshResponse(data.chunkId, data.meshRevision, data.lod);
 	});
 };

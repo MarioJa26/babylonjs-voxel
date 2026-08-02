@@ -225,8 +225,38 @@ const persistenceCoordinator = new ChunkPersistenceCoordinator({
 	getChunkEntitySaveBatchSize: () => getUnloadBatchSize(),
 });
 
+// PERF: Block edits (incl. every water-sim tick) used to trigger an immediate
+// OPFS save per block via Chunk.onBlockModified — a spreading pool of N blocks
+// serialized N async writes. Debounce into a single batched save per 500 ms;
+// unloads and the periodic flush (PlayerStatePersistence) still persist chunks.
+const BLOCK_EDIT_SAVE_DEBOUNCE_MS = 500;
+const pendingBlockEditSaveIds = new Set<bigint>();
+let blockEditSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+function queueBlockEditSave(chunk: Chunk): void {
+	pendingBlockEditSaveIds.add(chunk.id);
+	if (blockEditSaveTimer !== null) return;
+
+	blockEditSaveTimer = setTimeout(() => {
+		blockEditSaveTimer = null;
+		const chunksToSave: Chunk[] = [];
+		for (const id of pendingBlockEditSaveIds) {
+			const pendingChunk = Chunk.chunkInstances.get(id);
+			if (pendingChunk?.isLoaded && pendingChunk.needsPersistence()) {
+				chunksToSave.push(pendingChunk);
+			}
+		}
+		pendingBlockEditSaveIds.clear();
+		if (chunksToSave.length > 0) {
+			void WorldStorage.saveChunks(chunksToSave).catch((error) => {
+				console.error("Block-edit chunk save failed:", error);
+			});
+		}
+	}, BLOCK_EDIT_SAVE_DEBOUNCE_MS);
+}
+
 Chunk.onBlockModified = (chunk) => {
-	void WorldStorage.saveChunk(chunk).catch(() => {});
+	queueBlockEditSave(chunk);
 };
 
 const processScheduler = new ChunkProcessScheduler({

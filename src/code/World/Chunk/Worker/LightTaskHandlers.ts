@@ -84,11 +84,20 @@ function ensureState(req: InitLightSharedRequest | null): ChunkViewRegistry {
 	return state.registry;
 }
 
-function postDirty(seq: number, dirtySlots: Set<number>): void {
+// PERF: bumps each slot's light version and fills the transfer array in a
+// single Set iteration (callers previously iterated twice: once for the bump,
+// once for the fill). The buffer is transferred zero-copy to the main thread;
+// a per-message allocation is inherent without a return channel, so no pool.
+function postDirty(
+	seq: number,
+	dirtySlots: Set<number>,
+	registry: ChunkViewRegistry,
+): void {
 	if (dirtySlots.size === 0) return;
 	const arr = new Uint32Array(dirtySlots.size);
 	let i = 0;
 	for (const slot of dirtySlots) {
+		bumpLightVersion(registry, slot);
 		arr[i++] = slot;
 	}
 	const msg: LightDirtyMessage = {
@@ -168,8 +177,7 @@ function handleRegisterChunk(req: LightRegisterChunkRequest): void {
 		dirty.add(slot);
 	}
 	if (dirty.size > 0) {
-		for (const slot of dirty) bumpLightVersion(registry, slot);
-		postDirty(req.seq, dirty);
+		postDirty(req.seq, dirty, registry);
 	}
 }
 
@@ -227,8 +235,7 @@ function handleMutate(req: LightMutateRequest): void {
 		req.oldPacked,
 		req.newPacked,
 	);
-	for (const slot of dirty) bumpLightVersion(state.registry, slot);
-	postDirty(req.seq, dirty);
+	postDirty(req.seq, dirty, state.registry);
 }
 
 function handleAddEmission(req: LightAddEmissionRequest): void {
@@ -240,8 +247,7 @@ function handleAddEmission(req: LightAddEmissionRequest): void {
 	if (!view || view.chunkId !== req.chunkId || !view.isLoaded) return;
 	const dirty = new Set<number>();
 	addLightAt(state.registry, view, req.x, req.y, req.z, req.level, dirty);
-	for (const slot of dirty) bumpLightVersion(state.registry, slot);
-	postDirty(req.seq, dirty);
+	postDirty(req.seq, dirty, state.registry);
 }
 
 function handleSkyReconcile(req: LightSkyReconcileRequest): void {
@@ -253,8 +259,7 @@ function handleSkyReconcile(req: LightSkyReconcileRequest): void {
 	for (const slot of lightBlockReconcile(state.registry, req.headerSlot)) {
 		dirty.add(slot);
 	}
-	for (const slot of dirty) bumpLightVersion(state.registry, slot);
-	postDirty(req.seq, dirty);
+	postDirty(req.seq, dirty, state.registry);
 }
 
 function handlePropagateDeferred(req: LightPropagateDeferredRequest): void {
@@ -278,8 +283,7 @@ function handlePropagateDeferred(req: LightPropagateDeferredRequest): void {
 		queue: req.seedQueue,
 		length: req.seedLength,
 	});
-	for (const slot of dirty) bumpLightVersion(state.registry, slot);
-	postDirty(req.seq, dirty);
+	postDirty(req.seq, dirty, state.registry);
 }
 
 export const LightTaskHandlers = {

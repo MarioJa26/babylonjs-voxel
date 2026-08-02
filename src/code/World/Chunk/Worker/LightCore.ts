@@ -320,13 +320,31 @@ function linkNeighborViews(registry: ChunkViewRegistry, view: ChunkView): void {
  * Returns the target ChunkView and adjusted local coords, or null if the
  * neighbor chunk isn't loaded.
  */
+type NeighborResolveResult = {
+	view: ChunkView;
+	x: number;
+	y: number;
+	z: number;
+};
+
+// PERF: single-threaded worker — results are written into this shared scratch
+// instead of allocating a fresh object per out-of-bounds cell in the BFS hot
+// loop (up to 6 allocations per border cell otherwise).
+const _neighborResolveScratch: NeighborResolveResult = {
+	view: null as unknown as ChunkView,
+	x: 0,
+	y: 0,
+	z: 0,
+};
+
 function resolveNeighborView(
 	startView: ChunkView,
 	tx: number,
 	ty: number,
 	tz: number,
 	size: number,
-): { view: ChunkView; x: number; y: number; z: number } | null {
+	out: NeighborResolveResult = _neighborResolveScratch,
+): NeighborResolveResult | null {
 	let cur = startView;
 	let rx = tx,
 		ry = ty,
@@ -349,7 +367,11 @@ function resolveNeighborView(
 		cur = next;
 		rz = rz < 0 ? size - 1 : 0;
 	}
-	return { view: cur, x: rx, y: ry, z: rz };
+	out.view = cur;
+	out.x = rx;
+	out.y = ry;
+	out.z = rz;
+	return out;
 }
 
 export function refreshLayout(
@@ -498,9 +520,19 @@ function getViewBlockPacked(
 	y: number,
 	z: number,
 ): number {
+	return getViewBlockPackedAt(
+		view,
+		x + y * LIGHT_CHUNK_SIZE + z * LIGHT_CHUNK_SIZE2,
+	);
+}
+
+/**
+ * PERF: index-precomputed variant — the BFS hot loops already have the
+ * flattened index in hand and were recomputing it inside getViewBlockPacked.
+ */
+function getViewBlockPackedAt(view: ChunkView, idx: number): number {
 	if (view.isUniform) return view.uniformBlockId;
 	if (!view.block_array) return 0;
-	const idx = x + y * LIGHT_CHUNK_SIZE + z * LIGHT_CHUNK_SIZE2;
 	if (view.hasPalette && view.palette) {
 		const arr = view.block_array as Uint8Array;
 		const byte = arr[idx >>> 1];
@@ -615,7 +647,7 @@ function processQueue(
 			: lightArr[idx] & 0xf;
 		if (level <= 0) continue;
 
-		const sourcePacked = getViewBlockPacked(view, x, y, z);
+		const sourcePacked = getViewBlockPackedAt(view, idx);
 		const sourceBlockId = unpackBlockId(sourcePacked);
 		const sourceEmits = !isSkyLight && getLightEmission(sourceBlockId) > 0;
 		const srcFiltersFullSun = filtersFullSunlight(sourceBlockId);
@@ -661,7 +693,11 @@ function processQueue(
 			}
 			if (!targetView.isLoaded) continue;
 
-			const targetPacked = getViewBlockPacked(targetView, tx, ty, tz);
+			// PERF: compute the flattened index once — both the block read and
+			// the light read use it (they previously recomputed it).
+			const tidx = tx + ty * size + tz * size2;
+			const tSlot = targetView.headerSlot;
+			const targetPacked = getViewBlockPackedAt(targetView, tidx);
 
 			if (isSkyLight && isDown !== 1 && srcFiltersFullSun) {
 				const peekId = unpackBlockId(targetPacked);
@@ -676,7 +712,6 @@ function processQueue(
 
 			if (!isTransparent(targetPacked, axis, -dir)) continue;
 
-			const tidx = tx + ty * size + tz * size2;
 			const tLight = targetView.light_array;
 			const currentLevel = isSkyLight
 				? (tLight[tidx] >> skyShift) & 0xf
@@ -700,9 +735,9 @@ function processQueue(
 
 			const result = casLightByte(targetView, tidx, isSkyLight, nextLevel);
 			if (result === WriteResult.Wrote) {
-				dirtySlots.add(targetView.headerSlot);
+				dirtySlots.add(tSlot);
 				addAdjacentBorderSlots(dirtySlots, targetView, tx, ty, tz);
-				q.push(targetView.headerSlot, tx, ty, tz, nextLevel);
+				q.push(tSlot, tx, ty, tz, nextLevel);
 			}
 		}
 	}
@@ -1010,7 +1045,10 @@ function updateLightFromNeighborsAt(
 			if (!sourceView.isLoaded) continue;
 		}
 
-		const sourceBlockPacked = getViewBlockPacked(sourceView, sx, sy, sz);
+		// PERF: flattened index computed once — shared by the block read and
+		// the light read below (they previously recomputed it).
+		const sidx = sx + sy * size + sz * size2;
+		const sourceBlockPacked = getViewBlockPackedAt(sourceView, sidx);
 		const sourceBlockId = unpackBlockId(sourceBlockPacked);
 		const sourceEmits = !isSkyLight && getLightEmission(sourceBlockId) > 0;
 		const sourceFiltersFullSun = filtersFullSunlight(sourceBlockId);
@@ -1029,7 +1067,6 @@ function updateLightFromNeighborsAt(
 
 		if (!isTransparent(targetBlockPacked, axis, -dir)) continue;
 
-		const sidx = sx + sy * size + sz * size2;
 		const level = isSkyLight
 			? getSkyLight(sourceView, sidx)
 			: getBlockLight(sourceView, sidx);
@@ -1421,8 +1458,8 @@ export function lightBlockReconcile(
 					const neighborLevel = getBlockLight(neighbor, nidx);
 
 					if (selfLevel > 1 && neighborLevel < selfLevel - 1) {
-						const sourcePacked = getViewBlockPacked(view, selfX, u, v);
-						const targetPacked = getViewBlockPacked(neighbor, nbrX, u, v);
+						const sourcePacked = getViewBlockPackedAt(view, sidx);
+						const targetPacked = getViewBlockPackedAt(neighbor, nidx);
 						const sourceBlockId = unpackBlockId(sourcePacked);
 						const sourceEmits = getLightEmission(sourceBlockId) > 0;
 						if (
@@ -1434,8 +1471,8 @@ export function lightBlockReconcile(
 					}
 
 					if (neighborLevel > 1 && selfLevel < neighborLevel - 1) {
-						const sourcePacked = getViewBlockPacked(neighbor, nbrX, u, v);
-						const targetPacked = getViewBlockPacked(view, selfX, u, v);
+						const sourcePacked = getViewBlockPackedAt(neighbor, nidx);
+						const targetPacked = getViewBlockPackedAt(view, sidx);
 						const sourceBlockId = unpackBlockId(sourcePacked);
 						const sourceEmits = getLightEmission(sourceBlockId) > 0;
 						if (
@@ -1458,8 +1495,8 @@ export function lightBlockReconcile(
 					const neighborLevel = getBlockLight(neighbor, nidx);
 
 					if (selfLevel > 1 && neighborLevel < selfLevel - 1) {
-						const sourcePacked = getViewBlockPacked(view, u, selfY, v);
-						const targetPacked = getViewBlockPacked(neighbor, u, nbrY, v);
+						const sourcePacked = getViewBlockPackedAt(view, sidx);
+						const targetPacked = getViewBlockPackedAt(neighbor, nidx);
 						const sourceBlockId = unpackBlockId(sourcePacked);
 						const sourceEmits = getLightEmission(sourceBlockId) > 0;
 						if (
@@ -1471,8 +1508,8 @@ export function lightBlockReconcile(
 					}
 
 					if (neighborLevel > 1 && selfLevel < neighborLevel - 1) {
-						const sourcePacked = getViewBlockPacked(neighbor, u, nbrY, v);
-						const targetPacked = getViewBlockPacked(view, u, selfY, v);
+						const sourcePacked = getViewBlockPackedAt(neighbor, nidx);
+						const targetPacked = getViewBlockPackedAt(view, sidx);
 						const sourceBlockId = unpackBlockId(sourcePacked);
 						const sourceEmits = getLightEmission(sourceBlockId) > 0;
 						if (
@@ -1495,8 +1532,8 @@ export function lightBlockReconcile(
 					const neighborLevel = getBlockLight(neighbor, nidx);
 
 					if (selfLevel > 1 && neighborLevel < selfLevel - 1) {
-						const sourcePacked = getViewBlockPacked(view, u, v, selfZ);
-						const targetPacked = getViewBlockPacked(neighbor, u, v, nbrZ);
+						const sourcePacked = getViewBlockPackedAt(view, sidx);
+						const targetPacked = getViewBlockPackedAt(neighbor, nidx);
 						const sourceBlockId = unpackBlockId(sourcePacked);
 						const sourceEmits = getLightEmission(sourceBlockId) > 0;
 						if (
@@ -1508,8 +1545,8 @@ export function lightBlockReconcile(
 					}
 
 					if (neighborLevel > 1 && selfLevel < neighborLevel - 1) {
-						const sourcePacked = getViewBlockPacked(neighbor, u, v, nbrZ);
-						const targetPacked = getViewBlockPacked(view, u, v, selfZ);
+						const sourcePacked = getViewBlockPackedAt(neighbor, nidx);
+						const targetPacked = getViewBlockPackedAt(view, sidx);
 						const sourceBlockId = unpackBlockId(sourcePacked);
 						const sourceEmits = getLightEmission(sourceBlockId) > 0;
 						if (

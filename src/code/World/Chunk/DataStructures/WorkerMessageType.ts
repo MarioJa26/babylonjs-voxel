@@ -5,11 +5,13 @@ export const enum TaskType {
 	Remesh,
 	LodPrecompute,
 	DistantTerrain,
+	Relight,
 }
 
 export const enum WorkerTaskType {
 	GenerateTerrain,
 	GenerateFullMesh,
+	RelightMesh,
 	GenerateDistantTerrain_Generated,
 	GenerateDistantTerrain,
 	InitDistantTerrainShared,
@@ -77,6 +79,12 @@ export type GenerateFullMeshRequest = {
 	// NEW: LOD level sent from ChunkWorker -> worker
 	lod?: number;
 
+	// Content versioning for the worker-side relight cache: a relight task
+	// reuses the cached block grid only when both match the chunk's current
+	// state.
+	generation?: number;
+	blockRevision?: number;
+
 	// Center chunk payload
 	block_array: PackedBlockArray;
 	uniformBlockId?: number;
@@ -90,6 +98,27 @@ export type GenerateFullMeshRequest = {
 	// main thread, so the worker just copies it into its (size+2)^3 padded grid.
 	neighbors: (Uint16Array | undefined)[];
 	neighborLights?: (Uint8Array | undefined)[];
+};
+
+/**
+ * Light-only remesh request. The worker re-runs the full greedy pipeline
+ * against its cached block grid (validated via generation/blockRevision) with
+ * fresh light data, so the main thread skips the block-border extraction and
+ * the block/palette transfers entirely. A cache miss is answered with a
+ * RelightMeshMissMessage and the main thread falls back to a full remesh.
+ */
+export type RelightMeshRequest = {
+	type: WorkerTaskType.RelightMesh;
+	chunkId: bigint;
+	meshRevision: number;
+	lod: number;
+	chunk_size: number;
+
+	generation: number;
+	blockRevision: number;
+
+	light_array: Uint8Array;
+	neighborLights: (Uint8Array | undefined)[];
 };
 
 export type DistantTerrainTask = {
@@ -123,6 +152,7 @@ export type GenerateDistantTerrainRequest = {
 export type WorkerRequestData =
 	| GenerateTerrainRequest
 	| GenerateFullMeshRequest
+	| RelightMeshRequest
 	| GenerateDistantTerrainRequest
 	| InitDistantTerrainSharedRequest
 	| InitLightSharedRequest
@@ -251,6 +281,17 @@ export type TerrainGeneratedMessage = {
 	lightSeedLength?: number;
 };
 
+/**
+ * Relight cache-miss response: the worker has no valid block grid for this
+ * chunk, so the main thread must fall back to a full GenerateFullMesh.
+ */
+export type RelightMeshMissMessage = {
+	type: WorkerTaskType.RelightMesh;
+	chunkId: bigint;
+	meshRevision: number;
+	lod: number;
+};
+
 export type DistantTerrainGeneratedMessage = {
 	type: WorkerTaskType.GenerateDistantTerrain_Generated;
 	requestId: number;
@@ -261,6 +302,7 @@ export type DistantTerrainGeneratedMessage = {
 export type WorkerResponseData =
 	| FullMeshMessage
 	| TerrainGeneratedMessage
+	| RelightMeshMissMessage
 	| DistantTerrainGeneratedMessage
 	| { type: WorkerTaskType.InitDistantTerrainShared } // ← ack only, no payload
 	| { type: WorkerTaskType.InitLightShared } // ← ack only

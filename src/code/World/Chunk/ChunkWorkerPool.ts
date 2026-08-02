@@ -1,9 +1,17 @@
+import {
+	FLAG_GREEDY,
+	FLAG_PARTIAL,
+	FLAG_SOLID,
+	FLAG_TRANSPARENT,
+	getCachedFlagsAndId,
+	getFlagsFromCombined,
+} from "../MeshPipeline/core/BlockInfoCache";
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import { shapeInitPromise } from "../Shape/BlockShapes";
 import { packChunkKey } from "../Storage/ChunkKey";
 import { OpfsClient } from "../Storage/OpfsClient";
 import { WorldStorage } from "../WorldStorage";
-import { addChunkDisposeHook, Chunk } from "./Chunk";
+import { addChunkDisposeHook, Chunk, getChunk } from "./Chunk";
 import { precomputeClosedFaceMasks } from "./ChunkFaceMasks";
 import { createMeshFromData } from "./ChunkMesher";
 import { ChunkWorker } from "./chunkWorker";
@@ -15,6 +23,7 @@ import {
 	type FullMeshMessage,
 	type LightDirtyMessage,
 	type MeshWorkerResponse,
+	type RelightMeshMissMessage,
 	TaskType,
 	type TerrainGeneratedMessage,
 	type WorkerResponseData,
@@ -58,6 +67,7 @@ export type ChunkWorkerPoolDebugStats = {
 	remeshQueueLength: number;
 	terrainQueueLength: number;
 	lodPrecomputeQueueLength: number;
+	relightQueueLength: number;
 	distantTerrainQueueLength: number;
 	meshResultQueueLength: number;
 	deferredLightingQueueLength: number;
@@ -77,6 +87,7 @@ export type ChunkWorkerPoolDebugStats = {
 	totalTerrainDispatches: number;
 	totalRemeshDispatches: number;
 	totalLodPrecomputeDispatches: number;
+	totalRelightDispatches: number;
 	totalDistantDispatches: number;
 	lightDirtyQueueLength: number;
 	lightDirtyProcessedLastFrame: number;
@@ -167,6 +178,22 @@ export class ChunkWorkerPool {
 	private lodPrecomputeQueueReadIdx = 0;
 	private pendingLodPrecomputeKeys = new Set<number>();
 	private lastPrecomputeScheduleTs = 0;
+
+	// T2-8: light-only remesh queue. Populated by tryScheduleRelightOnly from
+	// the light-dirty pump; dispatched with lower priority than block remeshes.
+	private relightQueue: Chunk[] = [];
+	private relightQueueReadIdx = 0;
+	private pendingRelightKeys = new Set<number>();
+
+	// T2-8: block content version of the chunk at the time its current mesh
+	// was built (per LOD). A light-dirty chunk whose (lod, blockRevision) match
+	// this entry can be re-meshed with a light-only RelightMesh task instead of
+	// a full remesh. Deleted on dispose; stale entries simply fall back to full
+	// remesh.
+	private blockRevisionAtMesh = new Map<
+		bigint,
+		{ blockRevision: number; lod: number }
+	>();
 
 	// ---------------------------------------------------------------------------
 	// Idle-worker tracking
@@ -279,6 +306,7 @@ export class ChunkWorkerPool {
 		remeshQueueLength: 0,
 		terrainQueueLength: 0,
 		lodPrecomputeQueueLength: 0,
+		relightQueueLength: 0,
 		distantTerrainQueueLength: 0,
 		meshResultQueueLength: 0,
 		deferredLightingQueueLength: 0,
@@ -298,6 +326,7 @@ export class ChunkWorkerPool {
 		totalTerrainDispatches: 0,
 		totalRemeshDispatches: 0,
 		totalLodPrecomputeDispatches: 0,
+		totalRelightDispatches: 0,
 		totalDistantDispatches: 0,
 		lightDirtyQueueLength: 0,
 		lightDirtyProcessedLastFrame: 0,
@@ -322,6 +351,7 @@ export class ChunkWorkerPool {
 			this.terrainTaskQueue.size > 0 ||
 			this.taskHeap.length > 0 ||
 			this.lodPrecomputeQueueReadIdx < this.lodPrecomputeQueue.length ||
+			this.relightQueueReadIdx < this.relightQueue.length ||
 			this.distantTerrainTaskQueueReadIdx < this.distantTerrainTaskQueue.length
 		);
 	}
@@ -355,6 +385,8 @@ export class ChunkWorkerPool {
 		stats.terrainQueueLength = this.terrainTaskQueue.size;
 		stats.lodPrecomputeQueueLength =
 			this.lodPrecomputeQueue.length - this.lodPrecomputeQueueReadIdx;
+		stats.relightQueueLength =
+			this.relightQueue.length - this.relightQueueReadIdx;
 		stats.distantTerrainQueueLength =
 			this.distantTerrainTaskQueue.length - this.distantTerrainTaskQueueReadIdx;
 		stats.meshResultQueueLength =
@@ -420,6 +452,13 @@ export class ChunkWorkerPool {
 		const chunk = Chunk.chunkInstances.get(chunkId);
 		if (!chunk) return;
 		this.inFlightRemeshKeys.delete(packInflightKey(chunk.numericId, lod));
+	}
+
+	private recordBlockRevisionAtMesh(chunk: Chunk, lod: number): void {
+		this.blockRevisionAtMesh.set(chunk.id, {
+			blockRevision: chunk.blockRevision,
+			lod,
+		});
 	}
 
 	// -------------------------------------------------------------------------
@@ -540,7 +579,8 @@ export class ChunkWorkerPool {
 
 		if (
 			(context?.taskType === TaskType.Remesh ||
-				context?.taskType === TaskType.LodPrecompute) &&
+				context?.taskType === TaskType.LodPrecompute ||
+				context?.taskType === TaskType.Relight) &&
 			context.chunk &&
 			typeof context.lod === "number"
 		) {
@@ -560,6 +600,14 @@ export class ChunkWorkerPool {
 			context?.taskType === TaskType.Remesh &&
 			context.chunk?.isLoaded
 		) {
+			this.scheduleRemesh(context.chunk, true);
+		} else if (
+			context?.taskType === TaskType.Relight &&
+			context.chunk?.isLoaded &&
+			typeof context.lod === "number"
+		) {
+			// Relight's worker-side block grid was lost with the worker —
+			// re-queue as a full remesh so it is rebuilt.
 			this.scheduleRemesh(context.chunk, true);
 		} else if (
 			context?.taskType === TaskType.LodPrecompute &&
@@ -759,7 +807,7 @@ export class ChunkWorkerPool {
 				"ChunkWorkerPool has no workers; cannot post light task.",
 			);
 		}
-		return this.workers[0];
+		return this.workers[ChunkWorkerPool.LIGHT_WORKER_INDEX];
 	}
 
 	private broadcastLightRegister(chunk: Chunk): void {
@@ -919,13 +967,51 @@ export class ChunkWorkerPool {
 		for (const [slot] of slotMap) {
 			const chunk = this.lightChunkByHeaderSlot.get(slot);
 			if (chunk?.isLoaded && !chunk.isTerrainScheduled) {
-				this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);
+				if (!this.tryScheduleRelightOnly(chunk)) {
+					this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);
+				}
 				slotMap.delete(slot);
 			} else if (!chunk) {
 				slotMap.delete(slot);
 			}
 		}
 	};
+
+	/**
+	 * T2-8: schedule a light-only remesh for a chunk whose block content is
+	 * unchanged since its current mesh was built. Returns false (caller falls
+	 * back to a full scheduleRemesh) when the chunk has no mesh baseline, when
+	 * a full remesh is already pending/in-flight, or when the chunk has no
+	 * light array.
+	 */
+	private tryScheduleRelightOnly(chunk: Chunk): boolean {
+		if (!chunk.light_array) return false;
+
+		const baseline = this.blockRevisionAtMesh.get(chunk.id);
+		const lod = chunk.lodLevel ?? 0;
+		if (
+			!baseline ||
+			baseline.lod !== lod ||
+			baseline.blockRevision !== chunk.blockRevision
+		) {
+			return false;
+		}
+
+		if (
+			this.pendingRemeshMap.has(chunk) ||
+			this.isSameLodRemeshInflight(chunk)
+		) {
+			return false;
+		}
+
+		const key = packInflightKey(chunk.numericId, lod);
+		if (this.pendingRelightKeys.has(key)) return true;
+
+		this.pendingRelightKeys.add(key);
+		this.relightQueue.push(chunk);
+		this.scheduleProcessQueuePump();
+		return true;
+	}
 
 	private scheduleLightDirtyPump(): void {
 		if (this.lightDirtyPumpScheduled) return;
@@ -1047,6 +1133,64 @@ export class ChunkWorkerPool {
 
 	private isCompletelyEmptyChunk(chunk: Chunk): boolean {
 		return chunk.isUniform && chunk.uniformBlockId === 0;
+	}
+
+	/**
+	 * The engine's "opaque" classification, identical to the mesher's:
+	 * solid + greedy-participating, neither transparent nor partial-shape.
+	 * These are full cubes that close every face, so a chunk made entirely
+	 * of one such block emits no custom geometry either.
+	 */
+	private static isOpaqueCubePacked(packed: number): boolean {
+		const flags = getFlagsFromCombined(getCachedFlagsAndId(packed));
+		return (
+			(flags & (FLAG_SOLID | FLAG_GREEDY)) === (FLAG_SOLID | FLAG_GREEDY) &&
+			(flags & (FLAG_TRANSPARENT | FLAG_PARTIAL)) === 0
+		);
+	}
+
+	/**
+	 * A chunk whose voxels are all the same opaque cube only ever emits
+	 * faces at its -X/-Y/-Z boundaries (slice -1) — its +boundaries are
+	 * emitted by the +neighbors at their own slice -1, and interior pairs
+	 * are opaque-opaque. When those three negative neighbors are also
+	 * uniformly opaque cubes, every boundary pair is opaque-opaque, so the
+	 * chunk's mesh is provably empty: skip the full worker dispatch.
+	 */
+	private isUniformSolidMeshSkippable(chunk: Chunk): boolean {
+		if (!chunk.isUniform || chunk.uniformBlockId === 0) return false;
+		if (!ChunkWorkerPool.isOpaqueCubePacked(chunk.uniformBlockId)) return false;
+		return (
+			this.isUniformOpaqueCubeNeighbor(
+				chunk.chunkX - 1,
+				chunk.chunkY,
+				chunk.chunkZ,
+			) &&
+			this.isUniformOpaqueCubeNeighbor(
+				chunk.chunkX,
+				chunk.chunkY - 1,
+				chunk.chunkZ,
+			) &&
+			this.isUniformOpaqueCubeNeighbor(
+				chunk.chunkX,
+				chunk.chunkY,
+				chunk.chunkZ - 1,
+			)
+		);
+	}
+
+	private isUniformOpaqueCubeNeighbor(
+		cx: number,
+		cy: number,
+		cz: number,
+	): boolean {
+		const neighbor = getChunk(cx, cy, cz);
+		if (!neighbor?.isLoaded || !neighbor.hasVoxelData) return false;
+		return (
+			neighbor.isUniform &&
+			neighbor.uniformBlockId !== 0 &&
+			ChunkWorkerPool.isOpaqueCubePacked(neighbor.uniformBlockId)
+		);
 	}
 
 	private clearChunkMeshIfPresent(chunk: Chunk): void {
@@ -1501,7 +1645,10 @@ export class ChunkWorkerPool {
 
 		const inflight = this.isSameLodRemeshInflight(chunk);
 
-		if (this.isCompletelyEmptyChunk(chunk)) {
+		if (
+			this.isCompletelyEmptyChunk(chunk) ||
+			this.isUniformSolidMeshSkippable(chunk)
+		) {
 			if (inflight) {
 				chunk.rerunRemeshAfterInflight = true;
 			}
@@ -1549,7 +1696,10 @@ export class ChunkWorkerPool {
 		for (let i = 0; i < pending.length; i++) {
 			const [chunk, priority] = pending[i];
 			if (!chunk.isLoaded) continue;
-			if (this.isCompletelyEmptyChunk(chunk)) {
+			if (
+				this.isCompletelyEmptyChunk(chunk) ||
+				this.isUniformSolidMeshSkippable(chunk)
+			) {
 				this.clearChunkMeshIfPresent(chunk);
 				continue;
 			}
@@ -1677,6 +1827,9 @@ export class ChunkWorkerPool {
 			this.enqueueMeshResult(meshData);
 
 			const resolvedChunk = this.resolveChunkByMessageId(meshData.chunkId);
+			if (resolvedChunk) {
+				this.recordBlockRevisionAtMesh(resolvedChunk, meshData.lod);
+			}
 			if (resolvedChunk && resolvedChunk.rerunRemeshAfterInflight) {
 				resolvedChunk.rerunRemeshAfterInflight = false;
 				this.scheduleRemesh(
@@ -1828,6 +1981,17 @@ export class ChunkWorkerPool {
 			return failed;
 		}
 
+		if (type === (WorkerTaskType.RelightMesh as unknown as string)) {
+			// Relight cache miss in the worker: fall back to a full remesh.
+			const miss = data as unknown as RelightMeshMissMessage;
+			this.clearInflightRemeshByMessage(miss.chunkId, miss.lod);
+			const missChunk = this.resolveChunkByMessageId(miss.chunkId);
+			if (missChunk?.isLoaded) {
+				this.scheduleRemesh(missChunk, (missChunk.lodLevel ?? 0) === 0, false);
+			}
+			return failed;
+		}
+
 		if (type !== (WorkerTaskType.GenerateFullMesh as unknown as string)) {
 			console.warn(
 				`Ignoring unexpected mesh worker message from ${workerIndex}:`,
@@ -1842,6 +2006,9 @@ export class ChunkWorkerPool {
 		this.enqueueMeshResult(fullMeshMessage);
 
 		const resolvedChunk = this.resolveChunkByMessageId(data.chunkId);
+		if (resolvedChunk) {
+			this.recordBlockRevisionAtMesh(resolvedChunk, data.lod);
+		}
 		if (resolvedChunk && resolvedChunk.rerunRemeshAfterInflight) {
 			resolvedChunk.rerunRemeshAfterInflight = false;
 			this.scheduleRemesh(
@@ -2231,6 +2398,12 @@ export class ChunkWorkerPool {
 					packInflightKey(task.chunk.numericId, task.lod),
 				);
 				taskType = TaskType.LodPrecompute;
+			} else if (this.relightQueueReadIdx < this.relightQueue.length) {
+				taskChunk = this.relightQueue[this.relightQueueReadIdx++];
+				this.pendingRelightKeys.delete(
+					packInflightKey(taskChunk.numericId, taskChunk.lodLevel ?? 0),
+				);
+				taskType = TaskType.Relight;
 			} else {
 				break;
 			}
@@ -2247,7 +2420,10 @@ export class ChunkWorkerPool {
 					this.taskQueuePriority.delete(taskChunk!);
 					continue;
 				}
-				if (this.isCompletelyEmptyChunk(taskChunk!)) {
+				if (
+					this.isCompletelyEmptyChunk(taskChunk!) ||
+					this.isUniformSolidMeshSkippable(taskChunk!)
+				) {
 					this.clearChunkMeshIfPresent(taskChunk!);
 					this.pendingRemeshMap.delete(taskChunk!);
 					this.taskQueuePriority.delete(taskChunk!);
@@ -2263,6 +2439,37 @@ export class ChunkWorkerPool {
 					shouldSkipLodForChunk(taskChunk, precomputeLod) ||
 					taskChunk.hasCachedLODMesh(precomputeLod)
 				) {
+					continue;
+				}
+			}
+
+			if (taskType === TaskType.Relight && taskChunk) {
+				const lod = taskChunk.lodLevel ?? 0;
+				// onChunkDisposed clears pendingRelightKeys but does NOT splice
+				// relightQueue (O(n) during unload storms) — stale entries are
+				// skipped here at dequeue time via the isLoaded guard, the
+				// same pattern as deferredLightingQueue / lodPrecomputeQueue.
+				if (!taskChunk.isLoaded) {
+					continue;
+				}
+				// The light-dirty pump may have scheduled a full remesh while
+				// this relight sat in the queue — drop the relight if so.
+				if (this.pendingRemeshMap.has(taskChunk)) {
+					continue;
+				}
+				// Re-validate the blockRevision baseline: a block edit since
+				// scheduling makes the cached block grid stale.
+				const baseline = this.blockRevisionAtMesh.get(taskChunk.id);
+				if (
+					!baseline ||
+					baseline.lod !== lod ||
+					baseline.blockRevision !== taskChunk.blockRevision
+				) {
+					this.scheduleRemesh(
+						taskChunk,
+						(taskChunk.lodLevel ?? 0) === 0,
+						false,
+					);
 					continue;
 				}
 			}
@@ -2310,6 +2517,24 @@ export class ChunkWorkerPool {
 					this._markWorkerIdle(workerIndex);
 					continue;
 				}
+				// T2-11: worker 0's terrainWorker is the dedicated light
+				// worker (it holds the ChunkViewRegistry and executes every
+				// Light* task).  Terrain generation on the same thread queues
+				// light registration/reconcile behind multi-hundred-ms
+				// generation jobs during load.  Re-queue the task for another
+				// worker instead; worker 0 stays free for light work.
+				if (
+					workerIndex === ChunkWorkerPool.LIGHT_WORKER_INDEX &&
+					this.workers.length > 1
+				) {
+					this.terrainTaskQueue.add(taskChunk);
+					this._markWorkerIdle(workerIndex);
+					// Only worker 0 is idle → no progress possible this pump.
+					if (this.idleWorkerIndices.length - this._idleReadIdx <= 1) {
+						break;
+					}
+					continue;
+				}
 				this.dispatchTerrainTaskToWorker(workerIndex, worker, taskChunk);
 				this.recordWorkerDispatch(workerIndex);
 				this.debugStats.totalTerrainDispatches++;
@@ -2341,6 +2566,20 @@ export class ChunkWorkerPool {
 				worker.postFullRemesh(taskChunk!, lod);
 				this.recordWorkerDispatch(workerIndex);
 				this.debugStats.totalLodPrecomputeDispatches++;
+				dispatchedThisTick++;
+			} else if (taskType === TaskType.Relight) {
+				normalizeChunkLod(taskChunk!);
+
+				const lod = taskChunk?.lodLevel ?? 0;
+				this.setWorkerTaskContext(workerIndex, {
+					taskType,
+					chunk: taskChunk,
+					lod,
+				});
+				this.inFlightRemeshKeys.add(packInflightKey(taskChunk!.numericId, lod));
+				worker.postRelightMesh(taskChunk!);
+				this.recordWorkerDispatch(workerIndex);
+				this.debugStats.totalRelightDispatches++;
 				dispatchedThisTick++;
 			} else {
 				// distantTerrain
@@ -2406,6 +2645,7 @@ export class ChunkWorkerPool {
 		this.terrainTaskDeferLighting.delete(chunk.id);
 		this.deferredLightingQueuedIds.delete(chunk.id);
 		this.deferredLightingSeedStates.delete(chunk.id);
+		this.blockRevisionAtMesh.delete(chunk.id);
 
 		// O(log n) — the heap backing taskHeap supports real removal (unlike
 		// the old sorted-array queue, where removing an arbitrary element
@@ -2428,6 +2668,7 @@ export class ChunkWorkerPool {
 			this.pendingLodPrecomputeKeys.delete(
 				packInflightKey(chunk.numericId, lod),
 			);
+			this.pendingRelightKeys.delete(packInflightKey(chunk.numericId, lod));
 		}
 
 		// In-flight remesh keys are keyed by numericId, which is only
@@ -2439,7 +2680,8 @@ export class ChunkWorkerPool {
 			if (
 				ctx &&
 				(ctx.taskType === TaskType.Remesh ||
-					ctx.taskType === TaskType.LodPrecompute) &&
+					ctx.taskType === TaskType.LodPrecompute ||
+					ctx.taskType === TaskType.Relight) &&
 				ctx.chunk === chunk &&
 				typeof ctx.lod === "number"
 			) {
@@ -2463,6 +2705,13 @@ export class ChunkWorkerPool {
 	}
 
 	private static readonly MAX_MESH_QUEUE = 512;
+
+	// T2-11: worker 0's terrainWorker is the dedicated light worker — the
+	// only worker whose terrainWorker runs Light* tasks (initLightShared is
+	// called on it in the constructor and the HMR replacement path).  Terrain
+	// generation is excluded from this worker so light registration, reconcile
+	// and propagation never queue behind generation jobs.
+	private static readonly LIGHT_WORKER_INDEX = 0;
 }
 
 // ---------------------------------------------------------------------------

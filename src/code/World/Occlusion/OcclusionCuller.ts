@@ -41,6 +41,12 @@ const FRUSTUM_MARGIN = 32.0;
 // TEMP DEBUG: set true to disable frustum culling (for testing the gap).
 const DISABLE_FRUSTUM_CULL = false;
 
+// T2-12: staged re-enable. Stage 1 (current): frustum/backface sweep + merged-
+// group frustum culling only — the graph-based cave BFS (connectivity scans,
+// _startBFS/_stepBFS, topology-dirty handling) is disabled. Flip this to true
+// for Stage 2 (full cave culling) once Stage 1 is verified in-game.
+const BFS_CAVE_CULLING_ENABLED = false;
+
 const BFS_FRAME_BUDGET = 3000;
 const BFS_CAP = 32768; // must be power-of-2
 const BFS_MASK = BFS_CAP - 1;
@@ -355,8 +361,9 @@ export class OcclusionCuller {
 
 		const currentLoadedSize = Chunk.loadedChunks.size;
 
-		// Topology-dirty scan
-		{
+		// Topology-dirty scan (BFS stage only)
+		let topologyTrigger = false;
+		if (BFS_CAVE_CULLING_ENABLED) {
 			const vis = this._topoVisibleChunks;
 			const len = vis.length;
 			for (let i = 0; i < len; i++) {
@@ -367,6 +374,15 @@ export class OcclusionCuller {
 					this._topologyDirty = true;
 				}
 			}
+
+			if (this._topologyDirty) {
+				if (
+					++this._topoDirtyFrameCount >= OcclusionCuller.TOPO_THROTTLE_FRAMES
+				) {
+					topologyTrigger = true;
+					this._topoDirtyFrameCount = 0;
+				}
+			}
 		}
 
 		const cameraMoved =
@@ -374,25 +390,24 @@ export class OcclusionCuller {
 			camCY !== this._lastCamCY ||
 			camCZ !== this._lastCamCZ;
 
-		let topologyTrigger = false;
-		if (this._topologyDirty) {
-			if (++this._topoDirtyFrameCount >= OcclusionCuller.TOPO_THROTTLE_FRAMES) {
-				topologyTrigger = true;
-				this._topoDirtyFrameCount = 0;
-			}
-		}
-
-		const needInitialBFS = this._currentQueryId === 0 && currentLoadedSize > 0;
+		const needInitialBFS =
+			BFS_CAVE_CULLING_ENABLED &&
+			this._currentQueryId === 0 &&
+			currentLoadedSize > 0;
 
 		if (cameraMoved || needInitialBFS || topologyTrigger) {
 			this._lastCamCX = camCX;
 			this._lastCamCY = camCY;
 			this._lastCamCZ = camCZ;
 			this._topologyDirty = false;
-			this._startBFS(camCX, camCY, camCZ);
+			if (BFS_CAVE_CULLING_ENABLED) {
+				this._startBFS(camCX, camCY, camCZ);
+			}
 		}
 
-		this._stepBFS(BFS_FRAME_BUDGET);
+		if (BFS_CAVE_CULLING_ENABLED) {
+			this._stepBFS(BFS_FRAME_BUDGET);
+		}
 
 		// Gradual-hide during in-progress BFS spread: max 100 per frame
 		if (this._bfsInProgress) {
@@ -468,11 +483,21 @@ export class OcclusionCuller {
 		let visibleCount = 0;
 
 		// ── Frustum + backface sweep ────────────────────────────────────────────
-		const vis = this._topoVisibleChunks;
-		const visLen = vis.length;
+		// Stage 1 (no cave BFS): the BFS-visible list stays empty, so sweep every
+		// loaded chunk instead — the BFS is only the topological subset filter.
+		const sweepList = BFS_CAVE_CULLING_ENABLED
+			? this._topoVisibleChunks
+			: _nearbyChunksScratch;
+		if (!BFS_CAVE_CULLING_ENABLED) {
+			_nearbyChunksScratch.length = 0;
+			for (const chunk of Chunk.loadedChunks) {
+				_nearbyChunksScratch.push(chunk);
+			}
+		}
+		const visLen = sweepList.length;
 
 		for (let i = 0; i < visLen; i++) {
-			const chunk = vis[i]!;
+			const chunk = sweepList[i]!;
 			const mesh = chunk.mesh;
 			if (!mesh) continue;
 			if (!chunk.isLoaded) continue;
@@ -618,8 +643,11 @@ export class OcclusionCuller {
 					eyeInAABB ||
 					aabbInFrustum(minGX, minGY, minGZ, maxGX, maxGY, maxGZ));
 
-			// BFS reachability — hide groups sealed underground.
-			const bypassBFS = isSurfaceGroup && !cameraUnderground;
+			// BFS reachability — hide groups sealed underground. Stage 1: BFS
+			// disabled → every group is frustum-only (bypass the reachability
+			// gate, which would otherwise hide every group below the queryId).
+			const bypassBFS =
+				!BFS_CAVE_CULLING_ENABLED || (isSurfaceGroup && !cameraUnderground);
 
 			let vis: boolean;
 			let bfsReachable = false;
