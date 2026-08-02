@@ -129,14 +129,18 @@ export class OreGenerator {
 				(Math.abs(getPRNGBySeed(hash + 2, this.seedAsInt)) % CHUNK_SIZE);
 			const radius = ore.veinRadius;
 			const radiusSq = radius * radius;
+			const thresholdScale = 0.4 / radiusSq;
 			let placed = 0;
 
 			for (let dx = -radius; dx <= radius && placed < ore.blocksPerVein; dx++) {
+				// wx depends only on dx — hoist the noise X coordinate.
+				const sx = (veinCenterX + dx) * 0.1;
 				for (
 					let dy = -radius;
 					dy <= radius && placed < ore.blocksPerVein;
 					dy++
 				) {
+					const sy = (veinCenterY + dy) * 0.1;
 					for (
 						let dz = -radius;
 						dz <= radius && placed < ore.blocksPerVein;
@@ -167,8 +171,8 @@ export class OreGenerator {
 						if (!isStoneBlock(blocks[idx]!)) continue;
 
 						// Shape the vein with 3D noise
-						const density = this.oreNoise(wx * 0.1, wy * 0.1, wz * 0.1);
-						const threshold = 0.3 + (distSq / radiusSq) * 0.4;
+						const density = this.oreNoise(sx, sy, (veinCenterZ + dz) * 0.1);
+						const threshold = 0.3 + distSq * thresholdScale;
 
 						if (density > threshold) {
 							blocks[idx] = ore.id;

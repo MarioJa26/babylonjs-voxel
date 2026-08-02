@@ -111,6 +111,11 @@ export class WorldEnvironment {
 
 		if (this.isPaused) return;
 
+		// Sun is static while timeScale === 0 (values never change, so the
+		// change-detection caches below skip every write). First frame still
+		// runs to apply the initial sun (lastSunIntensity starts as NaN).
+		if (this.timeScale === 0 && !Number.isNaN(this.lastSunIntensity)) return;
+
 		this.timeOfDay += deltaMs * this.timeScale;
 		this.timeOfDay %= SETTING_PARAMS.DAY_DURATION_MS;
 
@@ -118,17 +123,20 @@ export class WorldEnvironment {
 		const angle = t * Math.PI * 2;
 
 		const maxElevation = 1.1;
-		const elevationAngle = Math.sin(angle) * maxElevation;
+		const sinAngle = Math.sin(angle);
+		const cosAngle = Math.cos(angle);
+		const elevationAngle = sinAngle * maxElevation;
+		const cosElevation = Math.cos(elevationAngle);
 
-		const sx = Math.cos(elevationAngle) * Math.cos(angle);
-		const sz = Math.cos(elevationAngle) * Math.sin(angle);
+		const sx = cosElevation * cosAngle;
+		const sz = cosElevation * sinAngle;
 		const sy = Math.sin(elevationAngle);
 
 		GLOBAL_VALUES.skyLightDirection.x = -sx;
 		GLOBAL_VALUES.skyLightDirection.y = -sy;
 		GLOBAL_VALUES.skyLightDirection.z = -sz;
 
-		const sunIntensity = Math.max(0.0, Math.sin(angle));
+		const sunIntensity = Math.max(0.0, sinAngle);
 
 		// Only touch the lights/material when a value actually changed (the
 		// sun is static while timeScale === 0), so steady-state frames skip

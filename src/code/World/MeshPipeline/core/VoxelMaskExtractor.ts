@@ -126,6 +126,7 @@ export function extractSliceMask(
 		const ndx = _ndxDx[axis];
 		const ndy = _ndyDy[axis];
 		const ndz = _ndzDz[axis];
+		const nbrDelta = ndx + ndy * session.ps + ndz * session.ps2;
 		const uA = axis === 0 ? 1 : axis === 2 ? 0 : 2;
 		const vA = axis === 0 ? 2 : axis === 2 ? 1 : 0;
 		const opaqueArr = session.opaque;
@@ -141,7 +142,7 @@ export function extractSliceMask(
 				const ny = by + ndy;
 				const nz = bz + ndz;
 				const curIdx = bx + 1 + (by + 1) * ps + (bz + 1) * ps2;
-				const nbrIdx = nx + 1 + (ny + 1) * ps + (nz + 1) * ps2;
+				const nbrIdx = curIdx + nbrDelta;
 
 				// PERF: both sides classified as opaque interior cubes ->
 				// guaranteed empty face, skip processCell entirely.
@@ -191,6 +192,7 @@ export function extractSliceMask(
 	const dx = axis === 0 ? 1 : 0;
 	const dy = axis === 1 ? 1 : 0;
 	const dz = axis === 2 ? 1 : 0;
+	const nbrDelta = dx + dy * session.ps + dz * session.ps2;
 	const opaqueArr = session.opaque;
 	const ps = session.ps;
 	const ps2 = session.ps2;
@@ -205,7 +207,7 @@ export function extractSliceMask(
 			const ny = by + dy;
 			const nz = bz + dz;
 			const curIdx = bx + 1 + (by + 1) * ps + (bz + 1) * ps2;
-			const nbrIdx = nx + 1 + (ny + 1) * ps + (nz + 1) * ps2;
+			const nbrIdx = curIdx + nbrDelta;
 
 			// PERF: both sides classified as opaque interior cubes ->
 			// guaranteed empty face, skip processCell entirely.

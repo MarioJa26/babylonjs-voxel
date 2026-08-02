@@ -115,7 +115,7 @@ function getForwardRay(player: Player, length: number): RayLike {
 	let dx = cam.target.x - px;
 	let dy = cam.target.y - py;
 	let dz = cam.target.z - pz;
-	const len = Math.hypot(dx, dy, dz) || 1;
+	const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
 	dx /= len;
 	dy /= len;
 	dz /= len;

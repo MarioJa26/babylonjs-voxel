@@ -271,21 +271,25 @@ function flowInto(
 	excludeDx: number,
 	excludeDy: number,
 	excludeDz: number,
+	targetId?: number,
 ): boolean {
-	const targetId = getBlockByWorldCoords(worldX, worldY, worldZ);
+	const id =
+		targetId !== undefined
+			? targetId
+			: getBlockByWorldCoords(worldX, worldY, worldZ);
 
-	if (targetId === BlockType.Water) {
+	if (id === BlockType.Water) {
 		const targetState = getBlockStateByWorldCoords(worldX, worldY, worldZ);
-		if (isWaterSource(targetId, targetState)) return false;
+		if (isWaterSource(id, targetState)) return false;
 
-		const targetLevel = getWaterLevel(targetId, targetState);
+		const targetLevel = getWaterLevel(id, targetState);
 		// Only overwrite if incoming water is strictly stronger (lower level number)
 		if (targetLevel <= newLevel) return false;
 	} else if (
-		targetId !== BlockType.Air &&
-		targetId !== BlockType.GrassCross &&
-		targetId !== BlockType.SavannahGrassCross &&
-		targetId !== BlockType.Grass006Cross
+		id !== BlockType.Air &&
+		id !== BlockType.GrassCross &&
+		id !== BlockType.SavannahGrassCross &&
+		id !== BlockType.Grass006Cross
 	) {
 		return false;
 	}
@@ -310,11 +314,15 @@ function checkRetract(
 	worldZ: number,
 	level: number,
 	scheduler: BlockTickScheduler,
+	aboveId?: number,
 ): boolean {
 	// A block fed by water directly above it is a falling/waterfall block —
 	// always considered supported as long as there's water above it.
-	const aboveId = getBlockByWorldCoords(worldX, worldY + 1, worldZ);
-	if (aboveId === BlockType.Water) {
+	const above =
+		aboveId !== undefined
+			? aboveId
+			: getBlockByWorldCoords(worldX, worldY + 1, worldZ);
+	if (above === BlockType.Water) {
 		return false;
 	}
 
@@ -414,7 +422,14 @@ export function processWaterUpdate(
 			return;
 		}
 
-		const retracted = checkRetract(worldX, worldY, worldZ, level, scheduler);
+		const retracted = checkRetract(
+			worldX,
+			worldY,
+			worldZ,
+			level,
+			scheduler,
+			aboveId,
+		);
 		if (retracted) return;
 	}
 
@@ -428,6 +443,7 @@ export function processWaterUpdate(
 		0,
 		1,
 		0,
+		belowId,
 	);
 
 	// Matches vanilla: if this block could fall, it falls — it does not also

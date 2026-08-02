@@ -224,12 +224,14 @@ export class VoxelObbCollider {
 	): void {
 		if (delta === 0) return;
 
+		// delta's sign never changes across steps, so hoist direction and loop
+		// on `remaining !== 0` (steps are exactly stepSize or remaining, which
+		// converges to exactly 0).
+		const dir = delta > 0 ? 1 : -1;
 		let remaining = delta;
-		while (Math.abs(remaining) > 0) {
-			const step =
-				Math.abs(remaining) > stepSize
-					? stepSize * Math.sign(remaining)
-					: remaining;
+		while (remaining !== 0) {
+			const absRem = remaining > 0 ? remaining : -remaining;
+			const step = absRem > stepSize ? stepSize * dir : remaining;
 
 			const candidate = copyVec3(this.#tmpCandidate, position);
 

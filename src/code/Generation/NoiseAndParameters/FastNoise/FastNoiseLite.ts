@@ -1086,7 +1086,7 @@ export default class FastNoiseLite {
 
 		for (let i = 0; i < octaves; i++) {
 			// V8 can now inline the specific noise logic (e.g. Perlin) directly here
-			const noise = Math.abs(singleFn.call(this, seed++, x, y, z));
+			const noise = Math.abs(singleFn(seed++, x, y, z));
 
 			sum += (noise * -2 + 1) * amp;
 

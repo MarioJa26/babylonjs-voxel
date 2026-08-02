@@ -789,6 +789,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		pos: Vec3,
 		vel: Vec3,
 		collider: VoxelAabbCollider,
+		input: Vec3,
 		axis: Axis,
 		delta: number,
 	): void {
@@ -796,7 +797,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			axis !== Axis.Y &&
 			this.voxelIsGrounded &&
 			Math.abs(delta) > 1e-6 &&
-			(this.inputDirection.x !== 0 || this.inputDirection.z !== 0) &&
+			(input.x !== 0 || input.z !== 0) &&
 			this.now - this.lastStepUpTime > this.stepUpCooldownMs
 		) {
 			const savedX = pos.x,
@@ -999,6 +1000,9 @@ export class PlayerVehicleMotor implements IPlayerBody {
 				? this.onGroundSpeed
 				: this.inAirSpeed;
 
+		// PERF: cache the controls getter once per physics substep
+		const input = this.inputDirection;
+
 		// PERF: #getDesiredVelocity now writes into a pre-allocated scratch.
 		const desired = this.#tmpDesiredH;
 		this.#getDesiredVelocity(speed, activeBoatYaw, desired);
@@ -1007,7 +1011,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			this.isSprinting &&
 			!isInWater &&
 			this.voxelIsGrounded &&
-			(this.inputDirection.x !== 0 || this.inputDirection.z !== 0)
+			(input.x !== 0 || input.z !== 0)
 		) {
 			scaleVec3InPlace(desired, this.sprintMultiplier);
 		}
@@ -1039,12 +1043,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		activeVel.x = nextH.x;
 		activeVel.z = nextH.z;
 
-		if (
-			!isInWater &&
-			this.voxelIsGrounded &&
-			this.inputDirection.x === 0 &&
-			this.inputDirection.z === 0
-		) {
+		if (!isInWater && this.voxelIsGrounded && input.x === 0 && input.z === 0) {
 			activeVel.x *= this.deceleration;
 			activeVel.z *= this.deceleration;
 		}
@@ -1091,8 +1090,8 @@ export class PlayerVehicleMotor implements IPlayerBody {
 					? this.climbDownSneakSpeed
 					: this.noStaminaSlideSpeed;
 				if (activeVel.y < -downCap) activeVel.y = -downCap;
-				if (this.inputDirection.x === 0) activeVel.x *= 0.98;
-				if (this.inputDirection.z === 0) activeVel.z *= 0.98;
+				if (input.x === 0) activeVel.x *= 0.98;
+				if (input.z === 0) activeVel.z *= 0.98;
 			}
 		}
 
@@ -1100,6 +1099,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			activePos,
 			activeVel,
 			activeCol,
+			input,
 			Axis.X,
 			activeVel.x * deltaTime,
 		);
@@ -1107,6 +1107,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			activePos,
 			activeVel,
 			activeCol,
+			input,
 			Axis.Y,
 			activeVel.y * deltaTime,
 		);
@@ -1114,6 +1115,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			activePos,
 			activeVel,
 			activeCol,
+			input,
 			Axis.Z,
 			activeVel.z * deltaTime,
 		);

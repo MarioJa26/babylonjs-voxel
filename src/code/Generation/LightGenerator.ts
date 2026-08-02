@@ -165,6 +165,7 @@ export class LightGenerator {
 		for (let x = 0; x < CHUNK_SIZE; x++) {
 			for (let z = 0; z < CHUNK_SIZE; z++) {
 				const columnIndex = x + z * CHUNK_SIZE;
+				const colBase = x + z * CHUNK_SIZE_SQ;
 
 				let incomingSkyLight = topSunlightMask
 					? topSunlightMask[columnIndex] !== 0
@@ -174,7 +175,8 @@ export class LightGenerator {
 
 				let sourceFiltersFullSun = false;
 
-				for (let y = CHUNK_SIZE - 1; y >= 0; y--) {
+				let idx = colBase + (CHUNK_SIZE - 1) * CHUNK_SIZE;
+				for (let y = CHUNK_SIZE - 1; y >= 0; y--, idx -= CHUNK_SIZE) {
 					const worldY = chunkWorldY + y;
 					if (worldY < LightGenerator.SKYLIGHT_GENERATION_MIN_WORLD_Y) {
 						incomingSkyLight = 0;
@@ -182,7 +184,6 @@ export class LightGenerator {
 						continue;
 					}
 
-					const idx = x + y * CHUNK_SIZE + z * CHUNK_SIZE_SQ;
 					const blockId = blocks[idx];
 
 					if (!LightGenerator.isTransparentBlock(blockId)) {
@@ -211,9 +212,7 @@ export class LightGenerator {
 						!sourceFiltersFullSun &&
 						!blockFiltersFullSun;
 
-					const cellSkyLight = preservesFullSun
-						? 15
-						: Math.max(incomingSkyLight - 1, 0);
+					const cellSkyLight = preservesFullSun ? 15 : incomingSkyLight - 1;
 
 					if (cellSkyLight === 0) {
 						incomingSkyLight = 0;
@@ -295,6 +294,7 @@ export class LightGenerator {
 					tail,
 					CHUNK_SIZE,
 					CHUNK_SIZE_SQ,
+					mask,
 				);
 			}
 
@@ -313,6 +313,7 @@ export class LightGenerator {
 					tail,
 					CHUNK_SIZE,
 					CHUNK_SIZE_SQ,
+					mask,
 				);
 			}
 
@@ -331,6 +332,7 @@ export class LightGenerator {
 					tail,
 					CHUNK_SIZE,
 					CHUNK_SIZE_SQ,
+					mask,
 				);
 			}
 
@@ -355,6 +357,7 @@ export class LightGenerator {
 					tail,
 					CHUNK_SIZE,
 					CHUNK_SIZE_SQ,
+					mask,
 				);
 			}
 
@@ -373,6 +376,7 @@ export class LightGenerator {
 					tail,
 					CHUNK_SIZE,
 					CHUNK_SIZE_SQ,
+					mask,
 				);
 			}
 
@@ -391,6 +395,7 @@ export class LightGenerator {
 					tail,
 					CHUNK_SIZE,
 					CHUNK_SIZE_SQ,
+					mask,
 				);
 			}
 		}
@@ -410,13 +415,14 @@ export class LightGenerator {
 		tail: number,
 		CHUNK_SIZE: number,
 		CHUNK_SIZE_SQ: number,
+		mask: number,
 	): number {
 		const idx = nx + ny * CHUNK_SIZE + nz * CHUNK_SIZE_SQ;
 
-		if (!LightGenerator.isTransparentBlock(blocks[idx])) {
+		const targetBlockId = blocks[idx];
+		if (!LightGenerator.isTransparentBlock(targetBlockId)) {
 			return tail;
 		}
-		const targetBlockId = blocks[idx];
 
 		// Skylight water rules:
 		// - water receives lateral skylight only from water
@@ -438,7 +444,7 @@ export class LightGenerator {
 
 		if (newSky !== currentSky || newBlock !== currentBlock) {
 			light[idx] = (newSky << 4) | newBlock;
-			queue[tail & LightGenerator.queueMask] = (nx << 10) | (ny << 5) | nz;
+			queue[tail & mask] = (nx << 10) | (ny << 5) | nz;
 			return tail + 1;
 		}
 

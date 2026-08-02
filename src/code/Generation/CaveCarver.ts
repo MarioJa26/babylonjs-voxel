@@ -29,7 +29,7 @@ export const caveCarveScratch: CaveCarveEvaluation = {
 	depthBelowSurface: 0,
 };
 
-function clamp01(value: number): number {
+export function clamp01(value: number): number {
 	return value < 0 ? 0 : value > 1 ? 1 : value;
 }
 
@@ -40,7 +40,7 @@ export function getDepthBelowSurface(surfaceY: number, worldY: number): number {
 }
 
 export function getSurfaceCarveBlend(depthBelowSurface: number): number {
-	if (!Number.isFinite(depthBelowSurface)) return 1;
+	if (depthBelowSurface === Number.POSITIVE_INFINITY) return 1;
 	return clamp01((depthBelowSurface + 3) / 18);
 }
 
@@ -52,10 +52,12 @@ export function evaluateCaveCarve(
 	tunnel: number,
 	detail: number,
 	out?: CaveCarveEvaluation,
+	precomputedCaveDensity?: number,
 ): CaveCarveEvaluation {
 	const o = out ?? caveCarveScratch;
 	const depthBelowSurface = getDepthBelowSurface(surfaceY, worldY);
-	if (Number.isFinite(depthBelowSurface) && depthBelowSurface < 0) {
+	const depthFinite = depthBelowSurface !== Number.POSITIVE_INFINITY;
+	if (depthFinite && depthBelowSurface < 0) {
 		o.shouldCarve = false;
 		o.carveStrength = 0;
 		o.tunnelCore = false;
@@ -63,20 +65,27 @@ export function evaluateCaveCarve(
 		return o;
 	}
 
-	const fullDepthDenom = Math.max(
-		1,
-		params.CAVE_SURFACE_BLEND_UPPER - params.CAVE_FULL_DENSITY_DEPTH,
-	);
-	const depthT = clamp01(
-		(worldY - params.CAVE_FULL_DENSITY_DEPTH) / fullDepthDenom,
-	);
-	const caveDensity =
-		params.CAVE_DENSITY_MIN * (1 - depthT) + params.CAVE_DENSITY_MAX * depthT;
+	// fullDepthDenom/depthT/caveDensity depend only on params + worldY, so
+	// callers that loop over a layer hoist them and pass caveDensity in.
+	let caveDensity: number;
+	if (precomputedCaveDensity !== undefined) {
+		caveDensity = precomputedCaveDensity;
+	} else {
+		const fullDepthDenom = Math.max(
+			1,
+			params.CAVE_SURFACE_BLEND_UPPER - params.CAVE_FULL_DENSITY_DEPTH,
+		);
+		const depthT = clamp01(
+			(worldY - params.CAVE_FULL_DENSITY_DEPTH) / fullDepthDenom,
+		);
+		caveDensity =
+			params.CAVE_DENSITY_MIN * (1 - depthT) + params.CAVE_DENSITY_MAX * depthT;
+	}
 
-	const surfaceDepthT = Number.isFinite(depthBelowSurface)
+	const surfaceDepthT = depthFinite
 		? clamp01(depthBelowSurface / SURFACE_ENTRY_DEPTH)
 		: 1;
-	const cheeseDepthT = Number.isFinite(depthBelowSurface)
+	const cheeseDepthT = depthFinite
 		? clamp01((depthBelowSurface - 4) / SURFACE_CHEESE_RAMP)
 		: 1;
 	const thresholdBias =

@@ -1,3 +1,23 @@
+export type NoiseCellParams = {
+	cellX: number;
+	cellY: number;
+	cellZ: number;
+	fx: number;
+	fy: number;
+	fz: number;
+};
+
+// Module-level scratch: params are fully consumed within each get()/getFrom()
+// call, so sharing across instances and callers is safe.
+const _cellScratch: NoiseCellParams = {
+	cellX: 0,
+	cellY: 0,
+	cellZ: 0,
+	fx: 0,
+	fy: 0,
+	fz: 0,
+};
+
 export class NoiseSampler {
 	private noiseSamples: Float32Array;
 	private sampleRate: number;
@@ -12,6 +32,7 @@ export class NoiseSampler {
 	private readonly rateShift: number;
 	private readonly rateMask: number;
 	private readonly invSampleRate: number;
+	private readonly pointsPerDimSq: number;
 
 	constructor(
 		chunkX: number,
@@ -33,6 +54,7 @@ export class NoiseSampler {
 		this.invSampleRate = 1 / sampleRate;
 		const sampleCount = chunkSize / sampleRate;
 		this.pointsPerDim = sampleCount + 1;
+		this.pointsPerDimSq = this.pointsPerDim * this.pointsPerDim;
 		this.noiseSamples = new Float32Array(this.pointsPerDim ** 3);
 
 		this.sampleNoise(chunkX, chunkY, chunkZ, chunkSize);
@@ -84,58 +106,64 @@ export class NoiseSampler {
 	}
 
 	public get(localX: number, localY: number, localZ: number): number {
-		let cellX: number;
-		let cellY: number;
-		let cellZ: number;
-		let fx: number;
-		let fy: number;
-		let fz: number;
+		this.getCellParams(localX, localY, localZ, _cellScratch);
+		return this.getFrom(_cellScratch);
+	}
 
+	public getCellParams(
+		localX: number,
+		localY: number,
+		localZ: number,
+		out: NoiseCellParams,
+	): void {
 		const inv = this.invSampleRate;
 		if (this.isPow2) {
 			const shift = this.rateShift;
 			const mask = this.rateMask;
-			cellX = localX >> shift;
-			cellY = localY >> shift;
-			cellZ = localZ >> shift;
-			fx = (localX & mask) * inv;
-			fy = (localY & mask) * inv;
-			fz = (localZ & mask) * inv;
+			out.cellX = localX >> shift;
+			out.cellY = localY >> shift;
+			out.cellZ = localZ >> shift;
+			out.fx = (localX & mask) * inv;
+			out.fy = (localY & mask) * inv;
+			out.fz = (localZ & mask) * inv;
 		} else {
 			const rate = this.sampleRate;
-			cellX = (localX / rate) | 0;
-			cellY = (localY / rate) | 0;
-			cellZ = (localZ / rate) | 0;
-			fx = (localX % rate) * inv;
-			fy = (localY % rate) * inv;
-			fz = (localZ % rate) * inv;
+			out.cellX = (localX / rate) | 0;
+			out.cellY = (localY / rate) | 0;
+			out.cellZ = (localZ / rate) | 0;
+			out.fx = (localX % rate) * inv;
+			out.fy = (localY % rate) * inv;
+			out.fz = (localZ % rate) * inv;
 		}
+	}
 
-		const idx =
-			cellX +
-			cellZ * this.pointsPerDim +
-			cellY * this.pointsPerDim * this.pointsPerDim;
+	/** Trilinear sample at precomputed cell/fraction params (see getCellParams). */
+	public getFrom(p: NoiseCellParams): number {
+		const ppd = this.pointsPerDim;
+		const ppd2 = this.pointsPerDimSq;
+		const idx = p.cellX + p.cellZ * ppd + p.cellY * ppd2;
 
 		const i000 = idx;
 		const i100 = idx + 1;
-		const i001 = idx + this.pointsPerDim;
-		const i101 = idx + this.pointsPerDim + 1;
-		const i010 = idx + this.pointsPerDim * this.pointsPerDim;
-		const i110 = idx + this.pointsPerDim * this.pointsPerDim + 1;
-		const i011 =
-			idx + this.pointsPerDim * this.pointsPerDim + this.pointsPerDim;
-		const i111 =
-			idx + this.pointsPerDim * this.pointsPerDim + this.pointsPerDim + 1;
+		const i001 = idx + ppd;
+		const i101 = idx + ppd + 1;
+		const i010 = idx + ppd2;
+		const i110 = idx + ppd2 + 1;
+		const i011 = idx + ppd2 + ppd;
+		const i111 = idx + ppd2 + ppd + 1;
 
-		const n000 = this.noiseSamples[i000];
-		const n100 = this.noiseSamples[i100];
-		const n001 = this.noiseSamples[i001];
-		const n101 = this.noiseSamples[i101];
-		const n010 = this.noiseSamples[i010];
-		const n110 = this.noiseSamples[i110];
-		const n011 = this.noiseSamples[i011];
-		const n111 = this.noiseSamples[i111];
+		const s = this.noiseSamples;
+		const n000 = s[i000];
+		const n100 = s[i100];
+		const n001 = s[i001];
+		const n101 = s[i101];
+		const n010 = s[i010];
+		const n110 = s[i110];
+		const n011 = s[i011];
+		const n111 = s[i111];
 
+		const fy = p.fy;
+		const fz = p.fz;
 		const n00 = n000 + (n010 - n000) * fy;
 		const n10 = n100 + (n110 - n100) * fy;
 		const n01 = n001 + (n011 - n001) * fy;
@@ -144,6 +172,6 @@ export class NoiseSampler {
 		const n0 = n00 + (n01 - n00) * fz;
 		const n1 = n10 + (n11 - n10) * fz;
 
-		return n0 + (n1 - n0) * fx;
+		return n0 + (n1 - n0) * p.fx;
 	}
 }

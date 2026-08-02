@@ -287,6 +287,14 @@ const SURFACE_SCRATCH: SurfaceResult = {
 };
 const LAND_SCRATCH: { groundY: number } = { groundY: 0 };
 
+/** Writes a flat-land fallback into the scratch and returns it (no allocation). */
+function fallbackSurface(out: SurfaceResult, groundY: number): SurfaceResult {
+	out.groundY = groundY;
+	out.cost = 1;
+	out.kind = PathNodeKind.Land;
+	return out;
+}
+
 // --- Path reconstruction (no reverse/slice/shift) ---
 
 function buildPathInto(outPath: PathWaypoint[], endNode: AStarNode): void {
@@ -339,11 +347,7 @@ export function findPathInto(
 
 	const targetSurface =
 		requiredTargetGroundY !== undefined
-			? {
-					groundY: requiredTargetGroundY,
-					cost: 1,
-					kind: PathNodeKind.Land,
-				}
+			? fallbackSurface(SURFACE_SCRATCH, requiredTargetGroundY)
 			: findSurface(
 					targetX,
 					targetZ,
@@ -356,20 +360,17 @@ export function findPathInto(
 				);
 	if (!targetSurface) return false;
 
-	const startSurface = findSurface(
-		startX,
-		startZ,
-		startGroundY,
-		3,
-		8,
-		headroom,
-		true,
-		SURFACE_SCRATCH,
-	) ?? {
-		groundY: startGroundY,
-		cost: 1,
-		kind: PathNodeKind.Land,
-	};
+	const startSurface =
+		findSurface(
+			startX,
+			startZ,
+			startGroundY,
+			3,
+			8,
+			headroom,
+			true,
+			SURFACE_SCRATCH,
+		) ?? fallbackSurface(SURFACE_SCRATCH, startGroundY);
 
 	const open = SHARED_OPEN_HEAP;
 	const closed = SHARED_CLOSED;

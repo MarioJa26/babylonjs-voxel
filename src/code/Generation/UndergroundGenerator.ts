@@ -2,8 +2,8 @@ import { WATER_BLOCK_ID } from "../World/Chunk/Worker/ChunkMesherConstants";
 import {
 	CAVE_FLAG_CARVED,
 	CAVE_FLAG_TUNNEL_CORE,
+	clamp01,
 	evaluateCaveCarve,
-	NO_SURFACE_Y,
 } from "./CaveCarver";
 import { CaveNoiseGrid } from "./CaveNoiseGrid";
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
@@ -13,6 +13,7 @@ const SMOOTHING_PASSES = 2;
 
 const MAX_CHUNK_VOLUME = 32 * 32 * 32;
 const _carve = new Uint8Array(MAX_CHUNK_VOLUME);
+const _caveSample = new Float32Array(3);
 
 export class UndergroundGenerator {
 	private readonly params: GenerationParamsType;
@@ -98,29 +99,45 @@ export class UndergroundGenerator {
 
 		_carve.fill(0, 0, vol);
 
+		// fullDepthDenom depends only on params; caveDensity additionally on
+		// worldY — hoisted once per layer instead of per voxel.
+		const fullDepthDenom = Math.max(
+			1,
+			params.CAVE_SURFACE_BLEND_UPPER - params.CAVE_FULL_DENSITY_DEPTH,
+		);
+
 		for (let localY = 0; localY < cs; localY++) {
 			const worldY = chunkWorldY + localY;
 			const yBase = localY * cs;
+			const depthT = clamp01(
+				(worldY - params.CAVE_FULL_DENSITY_DEPTH) / fullDepthDenom,
+			);
+			const caveDensity =
+				params.CAVE_DENSITY_MIN * (1 - depthT) +
+				params.CAVE_DENSITY_MAX * depthT;
 
 			for (let localZ = 0; localZ < cs; localZ++) {
 				const yzBase = yBase + localZ * cs2;
 
 				for (let localX = 0; localX < cs; localX++) {
-					const surfaceY = topSurfaceYMap[localX + localZ * cs] ?? NO_SURFACE_Y;
+					const surfaceY = topSurfaceYMap[localX + localZ * cs];
 
 					// PERF: Skip voxels already carved to air by terrain generation.
 					if (blocks) {
-						const blockIdx = localX + localY * cs + localZ * cs2;
-						if (blocks[blockIdx] === 0) continue;
+						const idx = yzBase + localX;
+						if (blocks[idx] === 0) continue;
 					}
 
+					this.caveGrid.get3(localX, localY, localZ, _caveSample);
 					const cave = evaluateCaveCarve(
 						params,
 						worldY,
 						surfaceY,
-						this.caveGrid.getCheese(localX, localY, localZ),
-						this.caveGrid.getTunnel(localX, localY, localZ),
-						this.caveGrid.getDetail(localX, localY, localZ),
+						_caveSample[0],
+						_caveSample[1],
+						_caveSample[2],
+						undefined,
+						caveDensity,
 					);
 					if (!cave.shouldCarve) continue;
 

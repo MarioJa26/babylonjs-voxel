@@ -148,9 +148,11 @@ export class Player {
 
 	#updatePlayerBody(): void {
 		if (!this.#playerBodyMesh) return;
+		const visible = this.#playerCamera.isThirdPerson;
+		this.#playerBodyMesh.visible = visible;
+		if (!visible) return;
 		const p = this.position;
 		this.#playerBodyMesh.position.set(p.x, p.y, p.z);
-		this.#playerBodyMesh.visible = this.#playerCamera.isThirdPerson;
 	}
 
 	#onPauseRequested(): void {

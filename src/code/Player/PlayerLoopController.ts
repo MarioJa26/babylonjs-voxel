@@ -134,7 +134,8 @@ export class PlayerLoopController {
 		// Raycast once per frame — shared by crosshair highlight and block breaking.
 		// Skipped while a UI overlay is open (matches #updateControls' early-out),
 		// since the highlight is hidden behind the menu and breaking is suppressed.
-		const pickHit = isUiOpen() ? null : pickTarget(this.playerHud.player);
+		const uiOpen = isUiOpen();
+		const pickHit = uiOpen ? null : pickTarget(this.playerHud.player);
 		this.playerHud.crossHair.setTargetHit(pickHit);
 
 		// L1: Cache position once — reused by all sub-systems this frame.
@@ -152,7 +153,7 @@ export class PlayerLoopController {
 			vehicle.isClimbing ? stats.climbingStaminaRegenMultiplier : 1,
 		);
 		vehicle.updateCameraAndVisuals();
-		this.#updateControls(pickHit);
+		this.#updateControls(uiOpen, pickHit);
 		if (this.#updateCaveState(playerPos.y)) {
 			this.#loadLastCx = -99999;
 		}
@@ -172,7 +173,7 @@ export class PlayerLoopController {
 		const _frameMs = performance.now() - _frameStart;
 		this.#mainThreadMs = this.#mainThreadMs * 0.9 + _frameMs * 0.1;
 
-		this.#updateDebugHud(deltaMs);
+		this.#updateDebugHud(deltaMs, cx, cy, cz);
 		this.#freezeActiveMeshes();
 	}
 
@@ -187,14 +188,14 @@ export class PlayerLoopController {
 	// Controls
 	// ---------------------------------------------------------------------------
 
-	#updateControls(hit?: BlockRaycastHit | null): void {
+	#updateControls(uiOpen: boolean, hit?: BlockRaycastHit | null): void {
 		const controls = this.getKeyboardControls();
 		const type = controls.controlType;
 		if (type === "walking" || type === "customBoat" || type === "paddleBoat") {
 			// While a UI overlay (inventory / mason table) is open, suppress block
 			// breaking progress and cancel any in-progress break so a held mouse
 			// button doesn't keep mining behind the menu.
-			if (isUiOpen()) {
+			if (uiOpen) {
 				const maybe = controls as unknown as {
 					stopBlockBreaking?: () => void;
 				};
@@ -324,9 +325,14 @@ export class PlayerLoopController {
 	// Debug HUD
 	// ---------------------------------------------------------------------------
 
-	#updateDebugHud(deltaMs: number): void {
+	#updateDebugHud(
+		deltaMs: number,
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+	): void {
 		this.playerHud.updateStats();
-		if (PlayerHud.debugPanelDiv.style.display === "none") return;
+		if (!PlayerHud.debugPanelVisible) return;
 
 		const now = performance.now();
 		if (
@@ -337,9 +343,6 @@ export class PlayerLoopController {
 		this.#lastDebugHudUpdateMs = now;
 
 		const playerPos = this.getPlayerPosition();
-		const chunkX = worldToChunkCoord(playerPos.x);
-		const chunkY = worldToChunkCoord(playerPos.y);
-		const chunkZ = worldToChunkCoord(playerPos.z);
 		const cam = this.playerCamera;
 		const cameraPos = cam.position;
 		const cameraYaw = cam.cameraYaw;

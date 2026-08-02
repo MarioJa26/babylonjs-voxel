@@ -624,10 +624,14 @@ export class Chunk {
 		}
 
 		const la = this.light_array;
-		for (let i = 0; i < Chunk.SIZE3; i++) la[i] &= blockMask;
+		// Word-wise clear: keeps the block-light nibble, zeroes sky light. 4x
+		// fewer iterations than the byte loop (SIZE3 is divisible by 4).
+		const la32 = new Uint32Array(la.buffer, la.byteOffset, la.length >>> 2);
+		for (let i = 0; i < la32.length; i++) la32[i] &= 0x0f0f0f0f;
 
 		const chunkBaseX = this.chunkX * size;
 		const chunkBaseZ = this.chunkZ * size;
+		const chunkBaseY = this.chunkY * size;
 		const hasLoadedAbove = !!aboveChunk?.isLoaded;
 
 		// Reuse the module-level scratch seed queue.  The function is
@@ -644,6 +648,7 @@ export class Chunk {
 			const worldX = chunkBaseX + x;
 			for (let z = 0; z < size; z++) {
 				const worldZ = chunkBaseZ + z;
+				const colBase = x + z * size2;
 				let incomingSkyLight = 0;
 				let sourceFiltersFullSun = false;
 
@@ -665,8 +670,9 @@ export class Chunk {
 					}
 				}
 
-				for (let y = size - 1; y >= 0; y--) {
-					const worldY = this.chunkY * size + y;
+				let idx = colBase + (size - 1) * size;
+				for (let y = size - 1; y >= 0; y--, idx -= size) {
+					const worldY = chunkBaseY + y;
 					if (
 						!hasLoadedAbove &&
 						worldY < Chunk.SKYLIGHT_GENERATION_MIN_WORLD_Y
@@ -691,9 +697,7 @@ export class Chunk {
 						incomingSkyLight === 15 &&
 						!sourceFiltersFullSun &&
 						!thisFiltersFullSun;
-					const cellSkyLight = preservesFullSun
-						? 15
-						: Math.max(incomingSkyLight - 1, 0);
+					const cellSkyLight = preservesFullSun ? 15 : incomingSkyLight - 1;
 
 					if (cellSkyLight === 0) {
 						incomingSkyLight = 0;
@@ -701,7 +705,6 @@ export class Chunk {
 						continue;
 					}
 
-					const idx = x + y * size + z * size2;
 					la[idx] = (la[idx] & blockMask) | (cellSkyLight << skyShift);
 
 					if (!thisFiltersFullSun && seedLength < seedCapacity) {

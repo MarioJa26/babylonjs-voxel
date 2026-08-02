@@ -49,30 +49,19 @@ export function computeAO(
 	// plus four corner-diagonal cells. Fetched once, reused across all corners.
 	// Each read indexes the padded grid directly (no getBlock closure) and uses
 	// the combined flags+id cache; only the low flags bits are needed for AO.
-	const fMu = getCachedFlagsAndId(
-		blockArr[padIndex(faceX - ux, faceY - uy, faceZ - uz)],
-	);
-	const fPu = getCachedFlagsAndId(
-		blockArr[padIndex(faceX + ux, faceY + uy, faceZ + uz)],
-	);
-	const fMv = getCachedFlagsAndId(
-		blockArr[padIndex(faceX - vx, faceY - vy, faceZ - vz)],
-	);
-	const fPv = getCachedFlagsAndId(
-		blockArr[padIndex(faceX + vx, faceY + vy, faceZ + vz)],
-	);
-	const fMumv = getCachedFlagsAndId(
-		blockArr[padIndex(faceX - ux - vx, faceY - uy - vy, faceZ - uz - vz)],
-	);
-	const fPumv = getCachedFlagsAndId(
-		blockArr[padIndex(faceX + ux - vx, faceY + uy - vy, faceZ + uz - vz)],
-	);
-	const fPupv = getCachedFlagsAndId(
-		blockArr[padIndex(faceX + ux + vx, faceY + uy + vy, faceZ + uz + vz)],
-	);
-	const fMupv = getCachedFlagsAndId(
-		blockArr[padIndex(faceX - ux + vx, faceY - uy + vy, faceZ - uz + vz)],
-	);
+	// u/v are unit axes, so the 8 samples are baseIdx +/- uOff +/- vOff — one
+	// padIndex call instead of eight.
+	const baseIdx = padIndex(faceX, faceY, faceZ);
+	const uOff = ux + uy * session.ps + uz * session.ps2;
+	const vOff = vx + vy * session.ps + vz * session.ps2;
+	const fMu = getCachedFlagsAndId(blockArr[baseIdx - uOff]);
+	const fPu = getCachedFlagsAndId(blockArr[baseIdx + uOff]);
+	const fMv = getCachedFlagsAndId(blockArr[baseIdx - vOff]);
+	const fPv = getCachedFlagsAndId(blockArr[baseIdx + vOff]);
+	const fMumv = getCachedFlagsAndId(blockArr[baseIdx - uOff - vOff]);
+	const fPumv = getCachedFlagsAndId(blockArr[baseIdx + uOff - vOff]);
+	const fPupv = getCachedFlagsAndId(blockArr[baseIdx + uOff + vOff]);
+	const fMupv = getCachedFlagsAndId(blockArr[baseIdx - uOff + vOff]);
 
 	const occ = (f: number) =>
 		(f & FLAG_SOLID) !== 0 && (f & FLAG_PARTIAL) === 0 ? 1 : 0;

@@ -618,9 +618,13 @@ function processQueue(
 		const sourcePacked = getViewBlockPacked(view, x, y, z);
 		const sourceBlockId = unpackBlockId(sourcePacked);
 		const sourceEmits = !isSkyLight && getLightEmission(sourceBlockId) > 0;
+		const srcFiltersFullSun = filtersFullSunlight(sourceBlockId);
 
-		for (let i = 0; i < LIGHT_DIR_COUNT; i++) {
-			const base = i * LIGHT_DIR_STRIDE;
+		for (
+			let i = 0, base = 0;
+			i < LIGHT_DIR_COUNT;
+			i++, base += LIGHT_DIR_STRIDE
+		) {
 			const dx = LIGHT_DIRS_FLAT[base];
 			const dy = LIGHT_DIRS_FLAT[base + 1];
 			const dz = LIGHT_DIRS_FLAT[base + 2];
@@ -659,7 +663,7 @@ function processQueue(
 
 			const targetPacked = getViewBlockPacked(targetView, tx, ty, tz);
 
-			if (isSkyLight && isDown !== 1 && filtersFullSunlight(sourceBlockId)) {
+			if (isSkyLight && isDown !== 1 && srcFiltersFullSun) {
 				const peekId = unpackBlockId(targetPacked);
 				if (!filtersFullSunlight(peekId)) continue;
 			} else if (
@@ -673,21 +677,22 @@ function processQueue(
 			if (!isTransparent(targetPacked, axis, -dir)) continue;
 
 			const tidx = tx + ty * size + tz * size2;
+			const tLight = targetView.light_array;
 			const currentLevel = isSkyLight
-				? (targetView.light_array[tidx] >> skyShift) & 0xf
-				: targetView.light_array[tidx] & 0xf;
+				? (tLight[tidx] >> skyShift) & 0xf
+				: tLight[tidx] & 0xf;
 
 			const targetBlockId = unpackBlockId(targetPacked);
 
 			if (isSkyLight && isDown !== 1 && filtersFullSunlight(targetBlockId)) {
-				if (!filtersFullSunlight(sourceBlockId)) continue;
+				if (srcFiltersFullSun) continue;
 			}
 
 			const preservesFullSun =
 				isSkyLight &&
 				isDown === 1 &&
 				level === 15 &&
-				!filtersFullSunlight(sourceBlockId) &&
+				!srcFiltersFullSun &&
 				!filtersFullSunlight(targetBlockId);
 
 			const nextLevel = preservesFullSun ? 15 : level - 1;
@@ -751,9 +756,13 @@ function processRemoveQueue(
 		isFirstDequeue = false;
 		const sourceBlockId = unpackBlockId(sourcePacked);
 		const sourceEmits = !isSkyLight && getLightEmission(sourceBlockId) > 0;
+		const srcFiltersFullSun = filtersFullSunlight(sourceBlockId);
 
-		for (let i = 0; i < LIGHT_DIR_COUNT; i++) {
-			const base = i * LIGHT_DIR_STRIDE;
+		for (
+			let i = 0, base = 0;
+			i < LIGHT_DIR_COUNT;
+			i++, base += LIGHT_DIR_STRIDE
+		) {
 			const dx = LIGHT_DIRS_FLAT[base];
 			const dy = LIGHT_DIRS_FLAT[base + 1];
 			const dz = LIGHT_DIRS_FLAT[base + 2];
@@ -792,7 +801,7 @@ function processRemoveQueue(
 			if (
 				isSkyLight
 					? !isTransparent(sourcePacked, axis, dir) ||
-						(isDown !== 1 && filtersFullSunlight(sourceBlockId))
+						(isDown !== 1 && srcFiltersFullSun)
 					: !sourceEmits && !isTransparent(sourcePacked, axis, dir)
 			)
 				continue;
@@ -812,7 +821,7 @@ function processRemoveQueue(
 				isSkyLight &&
 				isDown === 1 &&
 				level === 15 &&
-				!filtersFullSunlight(sourceBlockId) &&
+				!srcFiltersFullSun &&
 				!filtersFullSunlight(targetBlockId);
 			const isDependent =
 				neighborLevel < level || (preservesFullSun && neighborLevel === 15);
@@ -961,16 +970,21 @@ function updateLightFromNeighborsAt(
 
 	const size = LIGHT_CHUNK_SIZE;
 	const size2 = LIGHT_CHUNK_SIZE2;
+	const selfIdx = x + y * size + z * size2;
 	const targetBlockPacked = getViewBlockPacked(view, x, y, z);
 	let currentTargetLevel = isSkyLight
-		? getSkyLight(view, x + y * size + z * size2)
-		: getBlockLight(view, x + y * size + z * size2);
+		? getSkyLight(view, selfIdx)
+		: getBlockLight(view, selfIdx);
 	const targetBlockId2 = unpackBlockId(targetBlockPacked);
+	const targetFiltersFullSun = filtersFullSunlight(targetBlockId2);
 
 	Q_A.clear();
 
-	for (let i = 0; i < LIGHT_DIR_COUNT; i++) {
-		const base = i * LIGHT_DIR_STRIDE;
+	for (
+		let i = 0, base = 0;
+		i < LIGHT_DIR_COUNT;
+		i++, base += LIGHT_DIR_STRIDE
+	) {
 		const dx = LIGHT_DIRS_FLAT[base];
 		const dy = LIGHT_DIRS_FLAT[base + 1];
 		const dz = LIGHT_DIRS_FLAT[base + 2];
@@ -999,18 +1013,17 @@ function updateLightFromNeighborsAt(
 		const sourceBlockPacked = getViewBlockPacked(sourceView, sx, sy, sz);
 		const sourceBlockId = unpackBlockId(sourceBlockPacked);
 		const sourceEmits = !isSkyLight && getLightEmission(sourceBlockId) > 0;
+		const sourceFiltersFullSun = filtersFullSunlight(sourceBlockId);
 
 		const lateralWaterToWater =
 			isSkyLight &&
 			!sourceIsAbove &&
-			filtersFullSunlight(sourceBlockId) &&
-			filtersFullSunlight(targetBlockId2);
+			sourceFiltersFullSun &&
+			targetFiltersFullSun;
 
 		const sourceAllows = isSkyLight
 			? isTransparent(sourceBlockPacked, axis, dir) &&
-				(sourceIsAbove ||
-					!filtersFullSunlight(sourceBlockId) ||
-					lateralWaterToWater)
+				(sourceIsAbove || !sourceFiltersFullSun || lateralWaterToWater)
 			: sourceEmits || isTransparent(sourceBlockPacked, axis, dir);
 		if (!sourceAllows) continue;
 
@@ -1022,22 +1035,16 @@ function updateLightFromNeighborsAt(
 			: getBlockLight(sourceView, sidx);
 		if (level <= 0) continue;
 
-		const targetBlockId = unpackBlockId(targetBlockPacked);
 		const preservesFullSun =
 			isSkyLight &&
 			sourceIsAbove &&
 			level === 15 &&
-			!filtersFullSunlight(sourceBlockId) &&
-			!filtersFullSunlight(targetBlockId);
+			!sourceFiltersFullSun &&
+			!targetFiltersFullSun;
 
 		const nextLevel = preservesFullSun ? 15 : level - 1;
 		if (nextLevel <= 0 || nextLevel <= currentTargetLevel) continue;
-		const result3 = casLightByte(
-			view,
-			x + y * size + z * size2,
-			isSkyLight,
-			nextLevel,
-		);
+		const result3 = casLightByte(view, selfIdx, isSkyLight, nextLevel);
 		if (result3 === WriteResult.Wrote) {
 			currentTargetLevel = nextLevel;
 			dirtySlots.add(view.headerSlot);

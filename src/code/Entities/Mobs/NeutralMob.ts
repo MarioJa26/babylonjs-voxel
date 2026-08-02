@@ -388,14 +388,18 @@ export abstract class NeutralMob {
 		}
 
 		// Apply movement — pathfinding or free wander
+		let sinFacing = 0;
+		let cosFacing = 0;
 		if (this.#state === NeutralMobState.Wander) {
 			if (this.#path.length > 0 && this.#pathIndex < this.#path.length) {
 				this.#advanceOnPath(currentSpeed, dt);
 			} else if (inWater && !fleeing) {
 				this.#waterWander(dt);
 			} else {
-				this.#velocity.x = Math.sin(this.#facingAngle) * currentSpeed;
-				this.#velocity.z = Math.cos(this.#facingAngle) * currentSpeed;
+				sinFacing = Math.sin(this.#facingAngle);
+				cosFacing = Math.cos(this.#facingAngle);
+				this.#velocity.x = sinFacing * currentSpeed;
+				this.#velocity.z = cosFacing * currentSpeed;
 			}
 		}
 
@@ -471,12 +475,8 @@ export abstract class NeutralMob {
 			!inWater &&
 			this.#path.length === 0
 		) {
-			const aheadX = Math.floor(
-				this.#bodyMesh.position.x + Math.sin(this.#facingAngle) * 1.5,
-			);
-			const aheadZ = Math.floor(
-				this.#bodyMesh.position.z + Math.cos(this.#facingAngle) * 1.5,
-			);
+			const aheadX = Math.floor(this.#bodyMesh.position.x + sinFacing * 1.5);
+			const aheadZ = Math.floor(this.#bodyMesh.position.z + cosFacing * 1.5);
 			const groundY = Math.floor(this.#bodyMesh.position.y - 0.5);
 			const groundBlock = getBlockByWorldCoords(aheadX, groundY, aheadZ);
 			if (!isCollidableBlock(groundBlock)) {

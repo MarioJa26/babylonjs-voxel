@@ -75,6 +75,7 @@ export class PlayerHud {
 	#mainInventoryContainer!: HTMLDivElement;
 
 	static debugPanelDiv: HTMLDivElement;
+	static debugPanelVisible = true;
 	private static infoRows: {
 		[key: string]: {
 			container: HTMLDivElement;
@@ -1106,21 +1107,26 @@ export class PlayerHud {
 
 	public static toggleDebugInfo(): void {
 		if (PlayerHud.debugPanelDiv) {
-			if (PlayerHud.debugPanelDiv.style.display === "none") {
-				PlayerHud.showDebugPanel();
-			} else {
+			if (PlayerHud.debugPanelVisible) {
 				PlayerHud.hideDebugPanel();
+			} else {
+				PlayerHud.showDebugPanel();
 			}
 		}
 	}
 
 	public static showDebugPanel(): void {
-		if (PlayerHud.debugPanelDiv)
+		if (PlayerHud.debugPanelDiv) {
 			PlayerHud.debugPanelDiv.style.display = "block";
+			PlayerHud.debugPanelVisible = true;
+		}
 	}
 
 	public static hideDebugPanel(): void {
-		if (PlayerHud.debugPanelDiv) PlayerHud.debugPanelDiv.style.display = "none";
+		if (PlayerHud.debugPanelDiv) {
+			PlayerHud.debugPanelDiv.style.display = "none";
+			PlayerHud.debugPanelVisible = false;
+		}
 	}
 
 	public static updateDebugInfo(
