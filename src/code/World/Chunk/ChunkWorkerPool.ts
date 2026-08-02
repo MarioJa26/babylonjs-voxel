@@ -566,6 +566,50 @@ export class ChunkWorkerPool {
 		}
 	}
 
+	/**
+	 * Deterministic column -> worker affinity for terrain generation tasks.
+	 *
+	 * Every slice of a (chunkX, chunkZ) column hashes to the same worker so
+	 * that worker's static column/flora prepass caches (SurfaceGenerator
+	 * columnCache / floraCache) are built once per column instead of once per
+	 * vertical slice per worker. Worker restarts keep the same index, so the
+	 * affinity remains stable after a respawn (the replacement worker's caches
+	 * simply go cold once).
+	 *
+	 * Worker 0 (LIGHT_WORKER_INDEX) is the dedicated light worker and is
+	 * skipped when more than one worker exists (see the T2-11 guard in
+	 * processQueue); with a single worker, terrain falls back to worker 0.
+	 */
+	private terrainWorkerForColumn(chunkX: number, chunkZ: number): number {
+		const n = this.workers.length;
+		if (n <= 1) return 0;
+		const h = (Math.imul(chunkX, 73856093) ^ Math.imul(chunkZ, 19349663)) >>> 0;
+		return 1 + (h % (n - 1));
+	}
+
+	/**
+	 * If `preferred` is currently idle (in the live portion of
+	 * idleWorkerIndices, at or after _idleReadIdx), swap it to the front so
+	 * the next _consumeNextIdleWorker() picks it. Returns true when the
+	 * preferred worker is now at the front. Mirrors the distant-terrain
+	 * ready-worker swap in processQueue.
+	 */
+	private _swapPreferredIdleWorkerToFront(preferred: number): boolean {
+		const start = this._idleReadIdx;
+		for (let i = start; i < this.idleWorkerIndices.length; i++) {
+			if (this.idleWorkerIndices[i] !== preferred) continue;
+			if (i !== start) {
+				const frontWorker = this.idleWorkerIndices[start];
+				this.idleWorkerIndices[start] = preferred;
+				this.idleWorkerIndices[i] = frontWorker;
+				this.idleWorkerIndexPositions.set(preferred, start);
+				this.idleWorkerIndexPositions.set(frontWorker, i);
+			}
+			return true;
+		}
+		return false;
+	}
+
 	// -------------------------------------------------------------------------
 	// Worker failure / restart
 	// -------------------------------------------------------------------------
@@ -2519,6 +2563,17 @@ export class ChunkWorkerPool {
 					this.idleWorkerIndexPositions.set(readyWorker, frontIdx);
 					this.idleWorkerIndexPositions.set(frontWorker, readyIdleIndex);
 				}
+			}
+
+			// Column affinity: terrain generation tasks for the same
+			// (chunkX, chunkZ) column always prefer the same worker, so that
+			// worker's static column/flora prepass caches are built once per
+			// column instead of once per vertical slice per worker. Falls back
+			// to the next idle worker when the preferred worker is busy.
+			if (taskType === TaskType.Terrain && taskChunk) {
+				this._swapPreferredIdleWorkerToFront(
+					this.terrainWorkerForColumn(taskChunk.chunkX, taskChunk.chunkZ),
+				);
 			}
 
 			// Consume the next idle worker — this clears it from idleWorkerSet
