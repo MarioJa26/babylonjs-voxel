@@ -100,7 +100,9 @@ function _handleChannelMessage(event: MessageEvent): void {
 // ---------------------------------------------------------------------------
 // The default generator uses the baked-in constant seed; a SetWorldSeed
 // message (sent by the pool right after worker creation, before any
-// generation task) swaps it for the world-name-derived seed.
+// generation task) swaps it for the world-name-derived seed. Assigned in the
+// boot gate below once the wasm noise backend has settled — never undefined
+// by the time any message is handled.
 let generator: WorldGenerator;
 
 // ---------------------------------------------------------------------------
@@ -375,13 +377,43 @@ const onMessageHandler = (event: MessageEvent) => {
 	}
 };
 
+// ---------------------------------------------------------------------------
+// Worker boot
+//
 // The SIMD wasm noise backend must be active before the generator is built
 // (SetWorldSeed), or generator instances would be bound to the JS backend.
-// Postpone accepting messages until the wasm load settles; messages posted
-// earlier (SetWorldSeed) are queued by the browser and delivered after the
-// handler is assigned, so ordering is preserved. On failure the JS backend
-// stays active and the worker boots normally.
+//
+// self.onmessage is attached synchronously (module top level) so no message
+// can be silently dropped: browsers dispatch a queued message to the CURRENT
+// value of self.onmessage, and a message that arrives while onmessage is
+// null is discarded, not queued for later. Instead, messages posted during
+// the wasm load window are buffered and replayed in arrival order once the
+// load settles — SetWorldSeed arrives first, so the generator is still
+// built on the SIMD backend. On failure the JS backend stays active and the
+// worker boots normally.
+// ---------------------------------------------------------------------------
+const _pendingMessages: MessageEvent[] = [];
+let _wasmReady = false;
+
+self.onmessage = (event: MessageEvent) => {
+	if (_wasmReady) {
+		onMessageHandler(event);
+		return;
+	}
+	_pendingMessages.push(event);
+};
+
 void enableWasmNoise().finally(() => {
-	self.onmessage = onMessageHandler;
+	// Default generator (baked-in constant seed) so generation can never
+	// dereference an undefined generator; SetWorldSeed replaces it as the
+	// buffered message is replayed below.
+	generator = new WorldGenerator({
+		...GenerationParams,
+	} as GenerationParamsType);
+	_wasmReady = true;
+	for (const ev of _pendingMessages) {
+		onMessageHandler(ev);
+	}
+	_pendingMessages.length = 0;
 	self.postMessage({ type: WorkerTaskType.WorkerReady });
 });

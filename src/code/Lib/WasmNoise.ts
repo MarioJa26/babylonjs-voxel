@@ -5,8 +5,9 @@
 // Safe to call from any context; memoized so concurrent callers share one
 // load attempt. Never throws — any failure falls back to the JS backend.
 // ---------------------------------------------------------------------------
-import { createWasmNoiseBackend } from "./WasmKernels";
+
 import { setNoiseBackend } from "../Generation/NoiseAndParameters/FastNoise/FastNoiseFactory";
+import { createWasmNoiseBackend } from "./WasmKernels";
 
 /**
  * kernels.wasm served from public/wasm/ (copied there by
