@@ -184,7 +184,7 @@ export class PlayerVehicle {
 
 	public update(deltaTime: number): void {
 		if (this.#movementLocked) {
-			this.camera.moveWithPlayer(this.#position);
+			this.camera.moveWithPlayer(this.#position, deltaTime / 1000);
 			return;
 		}
 
@@ -246,10 +246,13 @@ export class PlayerVehicle {
 
 		this.#grounded = this.#velocity.y === 0;
 
-		this.camera.moveWithPlayer(this.#position);
+		this.camera.moveWithPlayer(this.#position, dt);
 	}
 
-	public updateCameraAndVisuals(): void {
-		this.camera.moveWithPlayer(this.#position);
+	public updateCameraAndVisuals(deltaMs?: number): void {
+		this.camera.moveWithPlayer(
+			this.#position,
+			deltaMs !== undefined ? deltaMs / 1000 : undefined,
+		);
 	}
 }

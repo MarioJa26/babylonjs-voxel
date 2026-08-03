@@ -94,7 +94,7 @@ export class PlayerLoopController {
 			velocity: Vec3;
 			inputDirection: Vec3;
 			update(dt: number): void;
-			updateCameraAndVisuals(): void;
+			updateCameraAndVisuals(deltaMs?: number): void;
 		},
 		private readonly playerStats: PlayerStats,
 		private readonly playerHud: PlayerHud,
@@ -170,7 +170,7 @@ export class PlayerLoopController {
 			vehicle.isSprinting,
 			vehicle.isClimbing ? stats.climbingStaminaRegenMultiplier : 1,
 		);
-		vehicle.updateCameraAndVisuals();
+		vehicle.updateCameraAndVisuals(deltaMs);
 		this.#updateControls(uiOpen, pickHit);
 		if (this.#updateCaveState(playerPos.y)) {
 			this.#loadLastCx = -99999;

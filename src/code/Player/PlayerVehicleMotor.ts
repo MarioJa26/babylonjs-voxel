@@ -402,7 +402,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.voxelPosition.y = y;
 		setVec3(this.voxelVelocity, 0, 0, 0);
 		this.#characterController.setPosition(this.voxelPosition);
-		this.#camera.moveWithPlayer(this.voxelPosition);
+		this.#camera.snapToPlayer(this.voxelPosition);
 		this.#displayCapsule?.position.copyFrom(this.voxelPosition);
 		this.voxelCollider.syncDebugMesh(this.voxelPosition);
 	}
@@ -1136,14 +1136,17 @@ export class PlayerVehicleMotor implements IPlayerBody {
 
 	// ── Public update ─────────────────────────────────────────────────────────
 
-	public updateCameraAndVisuals(): void {
+	public updateCameraAndVisuals(deltaMs?: number): void {
 		Quaternion.FromEulerAnglesToRef(
 			0,
 			this.#camera.cameraYaw,
 			0,
 			this.#characterOrientation,
 		);
-		this.#camera.moveWithPlayer(this.getPositionInternal());
+		this.#camera.moveWithPlayer(
+			this.getPositionInternal(),
+			deltaMs !== undefined ? deltaMs / 1000 : undefined,
+		);
 		this.#displayCapsule.position.copyFrom(this.getPositionInternal());
 		const rq = this.#displayCapsule.rotationQuaternion;
 		rq.set(
@@ -1247,7 +1250,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		copyVec3(this.voxelPosition, this.#lockedPosition);
 		this.#characterController.setPosition(this.#lockedPosition);
 		this.#characterController.setVelocity(this.#zeroVelocity);
-		this.#camera.moveWithPlayer(this.#lockedPosition);
+		this.#camera.snapToPlayer(this.#lockedPosition);
 		this.#displayCapsule.position.copyFrom(this.#lockedPosition);
 		this.voxelCollider.syncDebugMesh(this.voxelPosition);
 	}
@@ -1275,7 +1278,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		setVec3(this.voxelVelocity, 0, 0, 0);
 		this.#characterController.setPosition(p);
 		if (this.#movementLocked) this.#lockedPosition = vec3(p.x, p.y, p.z);
-		this.#camera.moveWithPlayer(p);
+		this.#camera.snapToPlayer(p);
 		this.#displayCapsule.position.copyFrom(p);
 		this.voxelCollider.syncDebugMesh(this.voxelPosition);
 		return true;

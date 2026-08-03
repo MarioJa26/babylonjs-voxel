@@ -16,6 +16,12 @@ export class PlayerCamera {
 	#followDistance = 0.001;
 	#eyeHeight = 1.8;
 
+	// Smoothed vertical eye height (world units). Kept between moves so the
+	// camera eases up steep steps instead of snapping a full block at once.
+	// Lazily initialised on the first snap so the very first frame is exact.
+	#smoothedEyeY: number = this.#eyeHeight;
+	readonly #verticalSmoothSpeed = 36;
+
 	#cameraPitch = 0;
 	#cameraYaw = 0;
 	readonly #maxPitch = Math.PI / 2 - 0.003;
@@ -35,14 +41,34 @@ export class PlayerCamera {
 		this.#playerCamera.farPlane = 13000;
 	}
 
-	public moveWithPlayer(characterPosition: Vec3): void {
+	/**
+	 * Follow `characterPosition`. When `deltaSeconds` is provided the vertical
+	 * eye height is exponentially eased toward the player (so block steps don't
+	 * jerk the view); horizontal tracking stays exact. Omitted/zero delta snaps
+	 * immediately — used for teleports.
+	 */
+	public moveWithPlayer(characterPosition: Vec3, deltaSeconds?: number): void {
 		const cosP = Math.cos(this.#cameraPitch);
 		const fx = Math.sin(this.#cameraYaw) * cosP;
 		const fy = -Math.sin(this.#cameraPitch);
 		const fz = Math.cos(this.#cameraYaw) * cosP;
 
 		const eye = this.#followDistance > this.#minZoom ? this.#eyeHeight : 0.66;
-		const cy = characterPosition.y + eye;
+		const targetY = characterPosition.y + eye;
+
+		let cy = targetY;
+		if (
+			deltaSeconds !== undefined &&
+			deltaSeconds > 0 &&
+			this.#smoothedEyeY !== null
+		) {
+			this.#smoothedEyeY +=
+				(targetY - this.#smoothedEyeY) *
+				(1 - Math.exp(-this.#verticalSmoothSpeed * deltaSeconds));
+			cy = this.#smoothedEyeY;
+		} else {
+			this.#smoothedEyeY = targetY;
+		}
 
 		this.#playerCamera.position.set(
 			characterPosition.x - fx * this.#followDistance,
@@ -50,6 +76,11 @@ export class PlayerCamera {
 			characterPosition.z - fz * this.#followDistance,
 		);
 		this.#playerCamera.target.set(characterPosition.x, cy, characterPosition.z);
+	}
+
+	/** Snap the camera straight to a position (respawn / save restore / locks). */
+	public snapToPlayer(characterPosition: Vec3): void {
+		this.moveWithPlayer(characterPosition, 0);
 	}
 
 	public handleMouseMovement(deltaX: number, deltaY: number): void {
