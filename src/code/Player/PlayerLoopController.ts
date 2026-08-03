@@ -9,6 +9,7 @@ import {
 import type { IControls } from "../Interface/IControls";
 import { isUiOpen, setInCave } from "../Lib/GameRuntimeState";
 import { worldToChunkCoord } from "../Lib/VoxelMath";
+import { playSprint } from "../Maps/BlockBreakParticles";
 import { Map1 } from "../Maps/Map1";
 import { Chunk } from "../World/Chunk/Chunk";
 import {
@@ -89,6 +90,8 @@ export class PlayerLoopController {
 		private readonly playerVehicle: {
 			isSprinting: boolean;
 			isClimbing: boolean;
+			isFlying: boolean;
+			velocity: Vec3;
 			inputDirection: Vec3;
 			update(dt: number): void;
 			updateCameraAndVisuals(): void;
@@ -161,6 +164,7 @@ export class PlayerLoopController {
 		// position only for distance culling of out-of-range boats.
 		CustomBoat.tickAllActiveBoats(this.scene, playerPos);
 		vehicle.update(dt);
+		this.#updateSprintParticles(uiOpen, playerPos);
 		stats.update(
 			dtSec,
 			vehicle.isSprinting,
@@ -261,6 +265,35 @@ export class PlayerLoopController {
 				controls as unknown as { update(hit?: BlockRaycastHit | null): void }
 			).update(hit);
 		}
+	}
+
+	// ---------------------------------------------------------------------------
+	// Sprint particles
+	// ---------------------------------------------------------------------------
+
+	#updateSprintParticles(
+		uiOpen: boolean,
+		playerPos: { x: number; y: number; z: number },
+	): void {
+		if (
+			uiOpen ||
+			!this.playerVehicle.isSprinting ||
+			this.playerVehicle.isFlying
+		) {
+			return;
+		}
+		const vel = this.playerVehicle.velocity;
+		if (vel.x * vel.x + vel.z * vel.z < 4) return;
+
+		// Player capsule is 1.8m tall — feet sit ~0.85 below the body center.
+		playSprint(
+			this.scene,
+			playerPos.x,
+			playerPos.y - 0.85,
+			playerPos.z,
+			vel.x,
+			vel.z,
+		);
 	}
 
 	// ---------------------------------------------------------------------------

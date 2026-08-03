@@ -1,6 +1,6 @@
 import type { Mesh, Vec3 } from "@babylonjs/lite";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
-import { play } from "@/code/Maps/BlockBreakParticles";
+import { play, playMining } from "@/code/Maps/BlockBreakParticles";
 import {
 	createEmptyInventory,
 	getBlockInventory,
@@ -25,6 +25,7 @@ import { pickTarget } from "./BlockRaycaster";
 
 const _scratchLightPos = vec3Zero();
 const _scratchParticlePos = vec3Zero();
+const _scratchMiningPos = vec3Zero();
 let variation = 1834927911;
 
 export type BoatBlockHitContext = {
@@ -126,6 +127,8 @@ export class BlockBreakingHandler {
 				hit.dynamicContext,
 			);
 
+			this.#emitMiningParticles(hit, x, y, z, blockId);
+
 			if (this.#breakTimer >= breakTime) {
 				const lightPos = _scratchLightPos;
 				setVec3(lightPos, x + 0.5 + hit.nx, y + 0.5 + hit.ny, z + 0.5 + hit.nz);
@@ -152,7 +155,35 @@ export class BlockBreakingHandler {
 				blockState,
 				hit.dynamicContext,
 			);
+
+			this.#emitMiningParticles(hit, x, y, z, blockId);
 		}
+	}
+
+	#emitMiningParticles(
+		hit: BlockRaycastHit,
+		x: number,
+		y: number,
+		z: number,
+		blockId: number,
+	): void {
+		const miningPos = _scratchMiningPos;
+		setVec3(
+			miningPos,
+			x + 0.5 + hit.nx * 0.5,
+			y + 0.5 + hit.ny * 0.5,
+			z + 0.5 + hit.nz * 0.5,
+		);
+		playMining(
+			this.#player.sceneRef,
+			miningPos.x,
+			miningPos.y,
+			miningPos.z,
+			hit.nx,
+			hit.ny,
+			hit.nz,
+			blockId,
+		);
 	}
 
 	#asBoatBlockContext(context: unknown): BoatBlockHitContext | null {

@@ -13,6 +13,10 @@ import {
 	type Vec3,
 } from "@babylonjs/lite";
 import { isUiOpen, UiFocus } from "@/code/Lib/GameRuntimeState";
+import {
+	getBlockByWorldCoords,
+	getLightByWorldCoords,
+} from "@/code/World/Chunk/ChunkLoadingSystem";
 import { getPRNGUnit2 } from "../Generation/NoiseAndParameters/Squirrel13";
 import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
 import { BlockTextures } from "../World/Texture/BlockTextures";
@@ -20,12 +24,18 @@ import { FaceName } from "../World/Texture/FaceName";
 import { atlasSize, tileSize } from "../World/Texture/TextureAtlasFactory";
 
 const ATLAS_URL = "/texture/diffuse_atlas.png";
-const POOL_SIZE = 1024;
-const PARTICLES_PER_BREAK = 32;
+const POOL_SIZE = 2048;
+const PARTICLES_PER_BREAK = 222;
+const MINING_PARTICLES_PER_EMIT = 5;
+const MINING_PARTICLE_INTERVAL_MS = 60;
+const SPRINT_PARTICLES_PER_EMIT = 5;
+const SPRINT_PARTICLE_INTERVAL_MS = 130;
 const GRAVITY = -16;
 const MAX_DT = 0.1;
 const FADE_START = 0.85;
 const MAX_PENDING_BURSTS = 8;
+let lastMiningEmitMs = 0;
+let lastSprintEmitMs = 0;
 
 type Particle = {
 	x: number;
@@ -44,6 +54,7 @@ type Particle = {
 	g: number;
 	b: number;
 	a: number;
+	gravityScale: number;
 };
 
 type PendingBurst = {
@@ -108,6 +119,127 @@ export function play(
 			g: light.g,
 			b: light.b,
 		});
+	}
+}
+
+/**
+ * Sparks that pop out of the block face while it is being mined. Emission is
+ * throttled internally, so the caller may call this every frame. `x/y/z` is the
+ * face center (block center + normal * 0.5) and `nx/ny/nz` the face normal.
+ */
+export function playMining(
+	scene: SceneContext,
+	x: number,
+	y: number,
+	z: number,
+	nx: number,
+	ny: number,
+	nz: number,
+	blockId: number,
+): void {
+	ensureInit(scene);
+	if (!ready) return;
+
+	const now = performance.now();
+	if (now - lastMiningEmitMs < MINING_PARTICLE_INTERVAL_MS) return;
+	lastMiningEmitMs = now;
+
+	const frame = getBlockFrame(blockId);
+
+	// Sample light one more half-block out along the normal: `x/y/z` is the
+	// face boundary, which floors into the mined (solid) block for half of the
+	// faces — that voxel stores no light, so particles came out black there.
+	// `face center + normal * 0.5` lands in the adjacent air block, which is
+	// lit, for every face (same spot the block-break burst samples).
+	const light = computeLight(
+		getLightByWorldCoords(x + nx * 0.5, y + ny * 0.5, z + nz * 0.5),
+	);
+
+	for (let i = 0; i < MINING_PARTICLES_PER_EMIT; i++) {
+		const jx = (getPRNGUnit2() - 0.5) * 0.5;
+		const jy = (getPRNGUnit2() - 0.5) * 0.5;
+		const jz = (getPRNGUnit2() - 0.5) * 0.5;
+		const speed = 0.5 + getPRNGUnit2();
+		addParticle(
+			x + jx,
+			y + jy,
+			z + jz,
+			nx * speed + jx * 0.6,
+			ny * speed + 0.35 + jy * 0.6,
+			nz * speed + jz * 0.6,
+			0.3 + getPRNGUnit2() * 0.25,
+			0.04 + getPRNGUnit2() * 0.03,
+			getPRNGUnit2() * Math.PI * 2,
+			getPRNGUnit2() - 0.5,
+			frame,
+			light.r,
+			light.g,
+			light.b,
+			1,
+			0.6,
+		);
+	}
+}
+
+/**
+ * Footstep dust kicked up behind a sprinting player. `x/y/z` is the feet
+ * position and `velX/velZ` the world-space horizontal movement vector; dust
+ * drifts opposite to it.
+ */
+export function playSprint(
+	scene: SceneContext,
+	x: number,
+	y: number,
+	z: number,
+	velX: number,
+	velZ: number,
+): void {
+	ensureInit(scene);
+	if (!ready) return;
+
+	const now = performance.now();
+	if (now - lastSprintEmitMs < SPRINT_PARTICLE_INTERVAL_MS) return;
+
+	// Dust picks up the block underfoot: frame + tint come from the ground
+	// block at the feet, so it changes with the terrain instead of always
+	// showing the same tile. No block underfoot (air / unloaded chunk) means
+	// no dust — e.g. while falling or flying over open air.
+	const groundBlockId = getBlockByWorldCoords(
+		Math.floor(x),
+		Math.floor(y - 0.05),
+		Math.floor(z),
+	);
+	if (groundBlockId === 0) return;
+	const frame = getBlockFrame(groundBlockId);
+	const light = computeLight(getLightByWorldCoords(x, y, z));
+
+	lastSprintEmitMs = now;
+
+	const speed = Math.max(0.0001, Math.hypot(velX, velZ));
+	const dirX = velX / speed;
+	const dirZ = velZ / speed;
+
+	const count = SPRINT_PARTICLES_PER_EMIT + Math.floor(getPRNGUnit2() * 2);
+	for (let i = 0; i < count; i++) {
+		const shade = 0.8 + getPRNGUnit2() * 0.2;
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.5,
+			y + 0.12,
+			z + (getPRNGUnit2() - 0.5) * 0.5,
+			-dirX * (0.4 + getPRNGUnit2() * 0.7) + (getPRNGUnit2() - 0.5) * 0.4,
+			0.34,
+			-dirZ * (0.4 + getPRNGUnit2() * 0.7) + (getPRNGUnit2() - 0.5) * 0.4,
+			0.35 + getPRNGUnit2() * 0.3,
+			0.1,
+			getPRNGUnit2() * Math.PI * 2,
+			getPRNGUnit2() - 0.5,
+			frame,
+			light.r * shade,
+			light.g * shade,
+			light.b * shade,
+			1.0,
+			0.08,
+		);
 	}
 }
 
@@ -191,7 +323,7 @@ function tick(deltaMs: number): void {
 	const gravityDt = GRAVITY * dt;
 	for (let i = 0; i < alive.length; i++) {
 		const p = alive[i];
-		p.vy += gravityDt;
+		p.vy += gravityDt * p.gravityScale;
 		p.x += p.vx * dt;
 		p.y += p.vy * dt;
 		p.z += p.vz * dt;
@@ -238,27 +370,66 @@ function spawnBurst(
 	b: number,
 ): void {
 	for (let i = 0; i < PARTICLES_PER_BREAK; i++) {
-		if (alive.length >= POOL_SIZE) break;
-		const p = free.pop() ?? createParticle();
-		p.x = x + (getPRNGUnit2() - 0.5) * 0.8;
-		p.y = y + (getPRNGUnit2() - 0.5) * 0.8;
-		p.z = z + (getPRNGUnit2() - 0.5) * 0.8;
-		p.vx = (getPRNGUnit2() - 0.5) * 2.8;
-		p.vy = getPRNGUnit2() * 4.0;
-		p.vz = (getPRNGUnit2() - 0.5) * 2.8;
-		p.age = 0;
-		p.life = 0.75 + getPRNGUnit2() * 0.9;
-		p.size = 0.053 + getPRNGUnit2() * 0.08;
-		p.angle = getPRNGUnit2();
-		p.spin = getPRNGUnit2() - 0.5;
-		p.frame = frame;
 		const shade = 0.7 + getPRNGUnit2() * 0.3;
-		p.r = r * shade;
-		p.g = g * shade;
-		p.b = b * shade;
-		p.a = 1;
-		alive.push(p);
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.8,
+			y + (getPRNGUnit2() - 0.5) * 0.8,
+			z + (getPRNGUnit2() - 0.5) * 0.8,
+			(getPRNGUnit2() - 0.5) * 2.8,
+			getPRNGUnit2() * 4.0,
+			(getPRNGUnit2() - 0.5) * 2.8,
+			0.75 + getPRNGUnit2() * 0.9,
+			0.053 + getPRNGUnit2() * 0.08,
+			getPRNGUnit2(),
+			getPRNGUnit2() - 0.5,
+			frame,
+			r * shade,
+			g * shade,
+			b * shade,
+			1,
+			1,
+		);
 	}
+}
+
+function addParticle(
+	x: number,
+	y: number,
+	z: number,
+	vx: number,
+	vy: number,
+	vz: number,
+	life: number,
+	size: number,
+	angle: number,
+	spin: number,
+	frame: number,
+	r: number,
+	g: number,
+	b: number,
+	a: number,
+	gravityScale: number,
+): void {
+	if (alive.length >= POOL_SIZE) return;
+	const p = free.pop() ?? createParticle();
+	p.x = x;
+	p.y = y;
+	p.z = z;
+	p.vx = vx;
+	p.vy = vy;
+	p.vz = vz;
+	p.age = 0;
+	p.life = life;
+	p.size = size;
+	p.angle = angle;
+	p.spin = spin;
+	p.frame = frame;
+	p.r = r;
+	p.g = g;
+	p.b = b;
+	p.a = a;
+	p.gravityScale = gravityScale;
+	alive.push(p);
 }
 
 function createParticle(): Particle {
@@ -279,6 +450,7 @@ function createParticle(): Particle {
 		g: 1,
 		b: 1,
 		a: 1,
+		gravityScale: 1,
 	};
 }
 
