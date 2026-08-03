@@ -749,6 +749,35 @@ export class ChunkWorkerPool {
 				}
 			}
 
+			// The replacement voxel worker's registration map is empty: give it
+			// a fresh OPFS channel (future storage loads reach it) and
+			// re-register every loaded chunk directly — the channel data for
+			// chunks loaded before/during the restart may have hit the stale
+			// port of the terminated worker.
+			if (this.opfsReady && this.opfsClient) {
+				const voxelChannel = new MessageChannel();
+				replacement.initVoxelWorkerChannel(voxelChannel.port1);
+				this.opfsClient.initWorkerChannel(voxelChannel.port2);
+			}
+			for (const [, chunk] of Chunk.chunkInstances) {
+				if (chunk.isLoaded) {
+					const snap = chunk.getLightStorageSnapshot();
+					replacement.postVoxelRegisterChunk({
+						chunkId: chunk.id,
+						chunkX: chunk.chunkX,
+						chunkY: chunk.chunkY,
+						chunkZ: chunk.chunkZ,
+						isUniform: chunk.isUniform,
+						uniformBlockId: chunk.uniformBlockId,
+						blockStorageBytesPerElement: snap.blockStorageBytesPerElement,
+						direct: true,
+						blockSAB: snap.blockSAB,
+						paletteSAB: snap.paletteSAB,
+						lightSAB: snap.lightSAB,
+					});
+				}
+			}
+
 			if (this.distantTerrainSharedInit) {
 				const {
 					positionsBuffer,
@@ -909,6 +938,78 @@ export class ChunkWorkerPool {
 		this.lightSlotPendingSeq.delete(chunk.lightHeaderSlot);
 	}
 
+	/**
+	 * Channel-path voxel registration: metadata only (SABs arrive via the
+	 * OPFS worker-to-worker channel, which already forwarded them while
+	 * serving the storage read). Mirrors broadcastLightRegister.
+	 */
+	private broadcastVoxelRegister(chunk: Chunk): void {
+		for (let i = 0; i < this.workers.length; i++) {
+			this.workers[i].postVoxelRegisterChunk({
+				chunkId: chunk.id,
+				chunkX: chunk.chunkX,
+				chunkY: chunk.chunkY,
+				chunkZ: chunk.chunkZ,
+				isUniform: chunk.isUniform,
+				uniformBlockId: chunk.uniformBlockId,
+				blockStorageBytesPerElement: 1,
+				direct: false,
+				blockSAB: null,
+				paletteSAB: null,
+				lightSAB: null,
+			});
+		}
+	}
+
+	/** Direct-path voxel registration: SAB handles inline (fresh chunks). */
+	private broadcastVoxelRegisterFull(chunk: Chunk): void {
+		const snap = chunk.getLightStorageSnapshot();
+		for (let i = 0; i < this.workers.length; i++) {
+			this.workers[i].postVoxelRegisterChunk({
+				chunkId: chunk.id,
+				chunkX: chunk.chunkX,
+				chunkY: chunk.chunkY,
+				chunkZ: chunk.chunkZ,
+				isUniform: chunk.isUniform,
+				uniformBlockId: chunk.uniformBlockId,
+				blockStorageBytesPerElement: snap.blockStorageBytesPerElement,
+				direct: true,
+				blockSAB: snap.blockSAB,
+				paletteSAB: snap.paletteSAB,
+				lightSAB: snap.lightSAB,
+			});
+		}
+	}
+
+	/** Storage-layout transition (uniform<->palette<->u16): new SAB handles. */
+	private broadcastVoxelUpdateBuffers(chunk: Chunk): void {
+		const snap = chunk.getLightStorageSnapshot();
+		for (let i = 0; i < this.workers.length; i++) {
+			this.workers[i].postVoxelUpdateBuffers({
+				chunkId: chunk.id,
+				chunkX: chunk.chunkX,
+				chunkY: chunk.chunkY,
+				chunkZ: chunk.chunkZ,
+				isUniform: chunk.isUniform,
+				uniformBlockId: chunk.uniformBlockId,
+				blockStorageBytesPerElement: snap.blockStorageBytesPerElement,
+				blockSAB: snap.blockSAB,
+				paletteSAB: snap.paletteSAB,
+				lightSAB: snap.lightSAB,
+			});
+		}
+	}
+
+	private broadcastVoxelUnregister(chunk: Chunk): void {
+		for (let i = 0; i < this.workers.length; i++) {
+			this.workers[i].postVoxelUnregisterChunk(
+				chunk.chunkX,
+				chunk.chunkY,
+				chunk.chunkZ,
+			);
+		}
+	}
+
 	private _lightRegChunks: Chunk[] = [];
 	private _lightRegFlags: boolean[] = [];
 	private _lightRegDrainScheduled = false;
@@ -924,8 +1025,16 @@ export class ChunkWorkerPool {
 				const chunks = this._lightRegChunks;
 				const flags = this._lightRegFlags;
 				for (let i = 0; i < chunks.length; i++) {
-					if (flags[i]) this.broadcastLightRegister(chunks[i]);
-					else this.broadcastLightRegisterFull(chunks[i]);
+					if (flags[i]) {
+						this.broadcastLightRegister(chunks[i]);
+						// Channel path: the OPFS worker already forwarded the
+						// SAB refs to every voxel worker while serving the
+						// storage read, so metadata-only registration suffices.
+						this.broadcastVoxelRegister(chunks[i]);
+					} else {
+						this.broadcastLightRegisterFull(chunks[i]);
+						this.broadcastVoxelRegisterFull(chunks[i]);
+					}
 				}
 				chunks.length = 0;
 				flags.length = 0;
@@ -935,11 +1044,13 @@ export class ChunkWorkerPool {
 
 	private onLightChunkLayoutChanged(chunk: Chunk): void {
 		this.broadcastLightUpdateBuffers(chunk);
+		this.broadcastVoxelUpdateBuffers(chunk);
 	}
 
 	private onLightChunkDisposed(chunk: Chunk): void {
 		this.lightChunkByHeaderSlot.delete(chunk.lightHeaderSlot);
 		this.broadcastLightUnregister(chunk);
+		this.broadcastVoxelUnregister(chunk);
 		this.debugLightSeedLengths.delete(chunk.id);
 
 		// Drop any pending deferred-light work for this chunk so a future
@@ -1153,6 +1264,16 @@ export class ChunkWorkerPool {
 				const channel = new MessageChannel();
 				this.getLightWorker().initWorkerChannel(channel.port1);
 				client.initWorkerChannel(channel.port2);
+
+				// One channel per voxel worker: the same "voxelData" forwards
+				// reach every voxel worker's registration map, so any worker
+				// can read the center grid / neighbor borders of any loaded
+				// chunk directly from shared memory.
+				for (let i = 0; i < this.workers.length; i++) {
+					const voxelChannel = new MessageChannel();
+					this.workers[i].initVoxelWorkerChannel(voxelChannel.port1);
+					client.initWorkerChannel(voxelChannel.port2);
+				}
 			})
 			.catch((err: any) => {
 				console.warn("[ChunkWorkerPool] OPFS unavailable:", err);
@@ -1891,7 +2012,7 @@ export class ChunkWorkerPool {
 			if (resolvedChunk) {
 				this.recordBlockRevisionAtMesh(resolvedChunk, meshData.lod);
 			}
-			if (resolvedChunk && resolvedChunk.rerunRemeshAfterInflight) {
+			if (resolvedChunk?.rerunRemeshAfterInflight) {
 				resolvedChunk.rerunRemeshAfterInflight = false;
 				this.scheduleRemesh(
 					resolvedChunk,
@@ -2070,7 +2191,7 @@ export class ChunkWorkerPool {
 		if (resolvedChunk) {
 			this.recordBlockRevisionAtMesh(resolvedChunk, data.lod);
 		}
-		if (resolvedChunk && resolvedChunk.rerunRemeshAfterInflight) {
+		if (resolvedChunk?.rerunRemeshAfterInflight) {
 			resolvedChunk.rerunRemeshAfterInflight = false;
 			this.scheduleRemesh(
 				resolvedChunk,

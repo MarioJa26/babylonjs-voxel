@@ -28,6 +28,10 @@ export const enum WorkerTaskType {
 	LightPropagateDeferred,
 	LightDirty,
 	InitWorkerChannel,
+	// --- Voxel-worker registration (SAB-direct mesh borders) ---
+	VoxelRegisterChunk,
+	VoxelUnregisterChunk,
+	VoxelUpdateChunkBuffers,
 	// --- World bootstrap ---
 	SetWorldSeed,
 }
@@ -35,11 +39,6 @@ export const enum WorkerTaskType {
 /* =========================================================
  * Shared helper types
  * ========================================================= */
-
-export type PackedBlockArray = Uint8Array | Uint16Array | null | undefined;
-export type PackedPalette = Uint8Array | Uint16Array | null | undefined;
-export type NeighborBlockArray = Uint8Array | Uint16Array | undefined;
-export type NeighborLightArray = Uint8Array | undefined;
 
 /* =========================================================
  * Requests sent TO the worker
@@ -87,26 +86,31 @@ export type GenerateFullMeshRequest = {
 	generation?: number;
 	blockRevision?: number;
 
-	// Center chunk payload
-	block_array: PackedBlockArray;
+	// SAB-direct context. The worker derives the 26 neighbor coords from the
+	// center coords and looks each up in its voxel-registration map (see
+	// VoxelRegisterChunk); no border data is transferred anymore.
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+
+	// 26-bit presence snapshot taken at dispatch time (slot i = bit i, same
+	// offset order as the worker's NEIGHBOR_OFFSETS table). Bits are set for
+	// every neighbor that passed the loaded + hasVoxelData gate, matching the
+	// borders the old transfer path would have sent.
+	neighborMask: number;
+
+	// Uniform chunks carry no dense grid — pass the fill id so the padded
+	// grid is filled directly (no 64-512 KiB dense materialization).
 	uniformBlockId?: number;
-	palette?: PackedPalette;
-	light_array?: Uint8Array;
 
 	chunk_size: number;
-
-	// Neighbor payloads (26 neighbors, center omitted). Only the 1-voxel-thick
-	// border slab of each neighbor is sent (dense Uint16), pre-expanded on the
-	// main thread, so the worker just copies it into its (size+2)^3 padded grid.
-	neighbors: (Uint16Array | undefined)[];
-	neighborLights?: (Uint8Array | undefined)[];
 };
 
 /**
  * Light-only remesh request. The worker re-runs the full greedy pipeline
  * against its cached block grid (validated via generation/blockRevision) with
- * fresh light data, so the main thread skips the block-border extraction and
- * the block/palette transfers entirely. A cache miss is answered with a
+ * fresh light read directly from the registered light SharedArrayBuffers, so
+ * the main thread sends metadata only. A cache miss is answered with a
  * RelightMeshMissMessage and the main thread falls back to a full remesh.
  */
 export type RelightMeshRequest = {
@@ -119,8 +123,10 @@ export type RelightMeshRequest = {
 	generation: number;
 	blockRevision: number;
 
-	light_array: Uint8Array;
-	neighborLights: (Uint8Array | undefined)[];
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+	neighborMask: number;
 };
 
 export type DistantTerrainTask = {
@@ -172,6 +178,9 @@ export type WorkerRequestData =
 	| LightAddEmissionRequest
 	| LightSkyReconcileRequest
 	| LightPropagateDeferredRequest
+	| VoxelRegisterChunkRequest
+	| VoxelUnregisterChunkRequest
+	| VoxelUpdateChunkBuffersRequest
 	| SetWorldSeedRequest;
 
 /* =========================================================
@@ -260,6 +269,57 @@ export type LightDirtyMessage = {
 	type: WorkerTaskType.LightDirty;
 	seq: number;
 	dirtySlots: Uint32Array;
+};
+
+/* =========================================================
+ * Voxel-worker registration messages (SAB-direct mesh data)
+ * ========================================================= */
+
+/**
+ * Register a chunk's voxel/light SharedArrayBuffers with a mesh worker so it
+ * can extract the center grid and the 26 neighbor border slabs directly from
+ * shared memory instead of receiving transferred copies per remesh.
+ *
+ * When `direct` is true the SAB fields are authoritative (fresh generation,
+ * storage layout change, worker restart). When `direct` is false the SAB
+ * fields must be null and the handles arrive via the OPFS worker-to-worker
+ * channel; the worker merges the two halves (mirror of the light-worker
+ * registration path).
+ */
+export type VoxelRegisterChunkRequest = {
+	type: WorkerTaskType.VoxelRegisterChunk;
+	chunkId: bigint;
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+	isUniform: boolean;
+	uniformBlockId: number;
+	blockStorageBytesPerElement: 1 | 2;
+	direct: boolean;
+	blockSAB: SharedArrayBuffer | null;
+	paletteSAB: SharedArrayBuffer | null;
+	lightSAB: SharedArrayBuffer | null;
+};
+
+export type VoxelUnregisterChunkRequest = {
+	type: WorkerTaskType.VoxelUnregisterChunk;
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+};
+
+export type VoxelUpdateChunkBuffersRequest = {
+	type: WorkerTaskType.VoxelUpdateChunkBuffers;
+	chunkId: bigint;
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+	isUniform: boolean;
+	uniformBlockId: number;
+	blockStorageBytesPerElement: 1 | 2;
+	blockSAB: SharedArrayBuffer | null;
+	paletteSAB: SharedArrayBuffer | null;
+	lightSAB: SharedArrayBuffer | null;
 };
 
 /* =========================================================

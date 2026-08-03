@@ -166,12 +166,12 @@ export class MeshBuildSession implements MeshContext {
 	 * grid is refilled.
 	 */
 	public begin(
-		base: WorkerMeshBaseContext,
+		size: number,
+		lod: number,
 		input: WorkerMeshInput,
 		grids?: PaddedGrids,
 		skipBlockFill = false,
 	): void {
-		const size = base.size;
 		const size2 = size * size;
 		const ps = size + 2; // padded size
 		const ps2 = ps * ps;
@@ -184,8 +184,8 @@ export class MeshBuildSession implements MeshContext {
 		const neighborLights = input.neighborLights;
 
 		this.size = size;
-		this.lod = base.lod;
-		this.disableAO = base.lod >= 2;
+		this.lod = lod;
+		this.disableAO = lod >= 2;
 
 		// Ensure padded buffers are large enough (grow the caller-provided
 		// grids in place so they persist across relights).

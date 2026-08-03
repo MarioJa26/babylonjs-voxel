@@ -57,7 +57,7 @@ export interface MergedFaceRange {
 }
 
 export interface MergedMeshGroup {
-	groupKey: string;
+	groupKey: number;
 	gridX: number;
 	gridY: number;
 	gridZ: number;
@@ -130,7 +130,7 @@ const MAX_GROUP_MEMBERS = GROUP_SIZE * GROUP_SIZE * GROUP_SIZE;
 // Module state
 // ---------------------------------------------------------------------------
 
-const groups = new Map<string, MergedMeshGroup>();
+const groups = new Map<number, MergedMeshGroup>();
 const dirtyGroups = new Set<MergedMeshGroup>();
 
 // Invalidate the per-member "already built" cache. Must be called whenever
@@ -270,13 +270,20 @@ function getLodRenderBucket(lod: number): number {
 	return 3;
 }
 
+/**
+ * Pack (group grid coords, lod bucket) into a single number key. 10 bits per
+ * axis with a +512 bias (group coords in [-512, 511] → chunk coords in
+ * [-2048, 2047], the same ±512 domain the worker registries assume) plus 2
+ * bits for the lod bucket. The result fits int32 exactly, so it stays a
+ * small integer in V8 — much cheaper Map lookups than the old string key.
+ */
 function makeGroupKey(
 	gx: number,
 	gy: number,
 	gz: number,
 	lodBucket: number,
-): string {
-	return `${gx}_${gy}_${gz}_${lodBucket}`;
+): number {
+	return (gx + 512) * 1048576 + (gy + 512) * 4096 + (gz + 512) * 4 + lodBucket;
 }
 
 function getLocalIndex(chunkX: number, chunkY: number, chunkZ: number): number {
@@ -291,7 +298,7 @@ function getLocalIndex(chunkX: number, chunkY: number, chunkZ: number): number {
 // Public: group lookup
 // ---------------------------------------------------------------------------
 
-export function getGroupKeyForChunk(chunk: Chunk): string {
+export function getGroupKeyForChunk(chunk: Chunk): number {
 	const { gx, gy, gz } = getGroupGridCoords(
 		chunk.chunkX,
 		chunk.chunkY,
@@ -303,7 +310,7 @@ export function getGroupKeyForChunk(chunk: Chunk): string {
 	return makeGroupKey(gx, gy, gz, lodBucket);
 }
 
-export function getGroup(groupKey: string): MergedMeshGroup | undefined {
+export function getGroup(groupKey: number): MergedMeshGroup | undefined {
 	return groups.get(groupKey);
 }
 

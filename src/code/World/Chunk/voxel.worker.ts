@@ -12,30 +12,412 @@ import { shapeInitPromise } from "../Shape/BlockShapes";
 import { PaletteExpander } from "./DataStructures/PaletteExpander";
 import {
 	type FullMeshMessage,
+	type GenerateFullMeshRequest,
 	type RelightMeshMissMessage,
 	type RelightMeshRequest,
+	type VoxelRegisterChunkRequest,
+	type VoxelUnregisterChunkRequest,
+	type VoxelUpdateChunkBuffersRequest,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
 
-export interface VoxelWorkerRequest {
-	type: WorkerTaskType.GenerateFullMesh;
+export type VoxelWorkerRequest =
+	| GenerateFullMeshRequest
+	| RelightMeshRequest
+	| VoxelRegisterChunkRequest
+	| VoxelUnregisterChunkRequest
+	| VoxelUpdateChunkBuffersRequest
+	| { type: WorkerTaskType.InitWorkerChannel; port: MessagePort };
 
-	chunkId: bigint;
-	meshRevision: number;
-	lod: number;
-	chunk_size: number;
+// ---------------------------------------------------------------------------
+// Voxel registration — SAB-direct mesh data
+//
+// Every chunk's block/palette/light storage is a SharedArrayBuffer. The mesh
+// worker registers the handles once (VoxelRegisterChunk) and then reads the
+// center grid and the 26 neighbor border slabs directly from shared memory on
+// every mesh task, instead of the main thread extracting and transferring up
+// to 55 copies per remesh.
+//
+// Handle delivery mirrors the light-worker pattern: the OPFS worker forwards
+// the SAB references through a worker-to-worker MessageChannel (direct=true
+// registration carries them inline instead — fresh generation, storage layout
+// change, worker restart), and the main thread sends only metadata
+// (coords + uniform state). The two halves are merged when both arrive; a mesh
+// task racing ahead of the channel data falls back to air borders and is
+// healed by the next remesh (the revision-validated relight cache guarantees
+// a subsequent full rebuild).
+// ---------------------------------------------------------------------------
+type VoxelRegistration = {
+	blockSAB: SharedArrayBuffer | null;
+	paletteSAB: SharedArrayBuffer | null;
+	lightSAB: SharedArrayBuffer | null;
+	blockBytesPerElement: 1 | 2;
+	isUniform: boolean;
+	uniformBlockId: number;
+};
 
-	// Content versioning for the relight cache.
-	generation?: number;
-	blockRevision?: number;
+// Same coordinate packing as the light worker's registry (±512 range).
+function _packCoordKey(x: number, y: number, z: number): number {
+	return ((x + 512) << 20) | ((y + 512) << 10) | (z + 512);
+}
 
-	block_array: Uint8Array | Uint16Array | null;
-	uniformBlockId?: number;
-	palette?: Uint8Array | Uint16Array | null;
-	light_array?: Uint8Array;
+// SAB handles from the OPFS worker (via the worker-to-worker channel).
+const _pendingChannelData = new Map<number, VoxelRegistration>();
+// Metadata from the main thread (usually arrives after the channel data).
+const _pendingMetadata = new Map<
+	number,
+	{ isUniform: boolean; uniformBlockId: number }
+>();
 
-	neighbors: (Uint16Array | undefined)[];
-	neighborLights?: (Uint8Array | undefined)[];
+const _voxelRegistrations = new Map<number, VoxelRegistration>();
+
+function _handleChannelMessage(event: MessageEvent): void {
+	const data = event.data;
+	if (!data || (data as { _type?: string })._type !== "voxelData") return;
+	const key = _packCoordKey(data.chunkX | 0, data.chunkY | 0, data.chunkZ | 0);
+	const meta = _pendingMetadata.get(key);
+	const voxel: VoxelRegistration = {
+		blockSAB: data.blocksSAB ?? null,
+		paletteSAB: data.paletteSAB ?? null,
+		lightSAB: data.lightSAB ?? null,
+		blockBytesPerElement: data.blockBytesPerElement,
+		isUniform: meta ? meta.isUniform : false,
+		uniformBlockId: meta ? meta.uniformBlockId : 0,
+	};
+	if (meta) {
+		_pendingMetadata.delete(key);
+		_voxelRegistrations.set(key, voxel);
+	} else {
+		_pendingChannelData.set(key, voxel);
+	}
+}
+
+function _handleVoxelRegister(req: VoxelRegisterChunkRequest): void {
+	const key = _packCoordKey(req.chunkX, req.chunkY, req.chunkZ);
+	const reg: VoxelRegistration = {
+		blockSAB: req.blockSAB,
+		paletteSAB: req.paletteSAB,
+		lightSAB: req.lightSAB,
+		blockBytesPerElement: req.blockStorageBytesPerElement,
+		isUniform: req.isUniform,
+		uniformBlockId: req.uniformBlockId,
+	};
+
+	if (req.direct) {
+		_pendingMetadata.delete(key);
+		_pendingChannelData.delete(key);
+		_voxelRegistrations.set(key, reg);
+		return;
+	}
+
+	const pending = _pendingChannelData.get(key);
+	if (pending) {
+		_pendingChannelData.delete(key);
+		pending.isUniform = reg.isUniform;
+		pending.uniformBlockId = reg.uniformBlockId;
+		_voxelRegistrations.set(key, pending);
+	} else {
+		_pendingMetadata.set(key, {
+			isUniform: reg.isUniform,
+			uniformBlockId: reg.uniformBlockId,
+		});
+	}
+}
+
+function _handleVoxelUnregister(req: VoxelUnregisterChunkRequest): void {
+	const key = _packCoordKey(req.chunkX, req.chunkY, req.chunkZ);
+	_voxelRegistrations.delete(key);
+	_pendingChannelData.delete(key);
+	_pendingMetadata.delete(key);
+}
+
+function _handleVoxelUpdateBuffers(req: VoxelUpdateChunkBuffersRequest): void {
+	const key = _packCoordKey(req.chunkX, req.chunkY, req.chunkZ);
+	_pendingMetadata.delete(key);
+	_pendingChannelData.delete(key);
+	_voxelRegistrations.set(key, {
+		blockSAB: req.blockSAB,
+		paletteSAB: req.paletteSAB,
+		lightSAB: req.lightSAB,
+		blockBytesPerElement: req.blockStorageBytesPerElement,
+		isUniform: req.isUniform,
+		uniformBlockId: req.uniformBlockId,
+	});
+}
+
+// ---------------------------------------------------------------------------
+// SAB border extraction
+//
+// Ported from the main thread's postFullRemesh extraction (which is deleted):
+// the worker now builds the 26 block/light border slabs itself, directly from
+// the neighbor chunks' SharedArrayBuffers. Slab values are written into
+// per-slot scratch buffers (reused across tasks — begin() copies them into
+// the padded grid before the scratch is next touched).
+// ---------------------------------------------------------------------------
+
+// Offset order must match the main thread's remesh mask (slot i = mask bit i):
+// dz outer → dx inner, center (0,0,0) omitted.
+const NEIGHBOR_OFFSETS: readonly {
+	readonly dx: number;
+	readonly dy: number;
+	readonly dz: number;
+}[] = (() => {
+	const out: { dx: number; dy: number; dz: number }[] = [];
+	for (let z = -1; z <= 1; z++) {
+		for (let y = -1; y <= 1; y++) {
+			for (let x = -1; x <= 1; x++) {
+				if (x === 0 && y === 0 && z === 0) continue;
+				out.push({ dx: x, dy: y, dz: z });
+			}
+		}
+	}
+	return out;
+})();
+
+// chunk_size is always Chunk.SIZE (32); 32^2 covers the largest (face) slab.
+const _MAX_BORDER = 32 * 32;
+
+const _blockBorderScratch: Uint16Array[] = Array.from(
+	{ length: 26 },
+	() => new Uint16Array(_MAX_BORDER),
+);
+const _lightBorderScratch: Uint8Array[] = Array.from(
+	{ length: 26 },
+	() => new Uint8Array(_MAX_BORDER),
+);
+
+// 26-slot input arrays consumed by begin() within the same task.
+const _neighborBlocks: (Uint16Array | undefined)[] = new Array(26);
+const _neighborLights: (Uint8Array | undefined)[] = new Array(26);
+
+// Truthy presence marker for the relight cache's per-entry presence array —
+// never dereferenced (block borders are skipped on light-only rebuilds).
+const _PRESENT = new Uint16Array(0);
+
+function presenceFromMask(mask: number): (Uint16Array | undefined)[] {
+	const arr = new Array<Uint16Array | undefined>(26);
+	for (let i = 0; i < 26; i++) {
+		arr[i] = (mask & (1 << i)) !== 0 ? _PRESENT : undefined;
+	}
+	return arr;
+}
+
+function extractBlockBorder(
+	reg: VoxelRegistration,
+	slot: number,
+	size: number,
+	dx: number,
+	dy: number,
+	dz: number,
+): Uint16Array {
+	const xCount = dx === 0 ? size : 1;
+	const yCount = dy === 0 ? size : 1;
+	const zCount = dz === 0 ? size : 1;
+	const total = xCount * yCount * zCount;
+	const out = _blockBorderScratch[slot];
+
+	if (reg.isUniform) {
+		// PERF: the whole border is one repeated block id — skip the
+		// triple-nested loop entirely for uniform chunks.
+		out.fill(reg.uniformBlockId, 0, total);
+		return out;
+	}
+
+	if (!reg.blockSAB) {
+		out.fill(0, 0, total);
+		return out;
+	}
+
+	const lxStart = dx < 0 ? size - 1 : 0;
+	const lyStart = dy < 0 ? size - 1 : 0;
+	const lzStart = dz < 0 ? size - 1 : 0;
+	const size2 = size * size;
+
+	if (reg.blockBytesPerElement === 2) {
+		// Dense Uint16 storage — indices are always in-bounds of the SAB, so
+		// no `?? 0` guard is needed.
+		const dense = new Uint16Array(reg.blockSAB);
+		let ci = 0;
+		for (let bz = 0; bz < zCount; bz++) {
+			const nlz = lzStart + bz;
+			for (let by = 0; by < yCount; by++) {
+				const nly = lyStart + by;
+				const rowBase = nly * size + nlz * size2;
+				if (dx === 0) {
+					// Full contiguous row — bulk copy instead of a per-voxel
+					// scalar loop.
+					out.set(dense.subarray(rowBase, rowBase + xCount), ci);
+					ci += xCount;
+				} else {
+					for (let bx = 0; bx < xCount; bx++) {
+						out[ci++] = dense[lxStart + bx + rowBase];
+					}
+				}
+			}
+		}
+		return out;
+	}
+
+	const packed = new Uint8Array(reg.blockSAB);
+	const palette = reg.paletteSAB ? new Uint16Array(reg.paletteSAB) : null;
+
+	if (palette && palette.length > 1) {
+		// 4-bit nibble-packed palette storage — must decode per voxel, but
+		// when dx === 0 the run is a full contiguous `size`-length row
+		// starting at an even index (size is always a power of two), so we
+		// can decode both nibbles of each packed byte in one iteration.
+		let ci = 0;
+		for (let bz = 0; bz < zCount; bz++) {
+			const nlz = lzStart + bz;
+			for (let by = 0; by < yCount; by++) {
+				const nly = lyStart + by;
+				const rowBase = nly * size + nlz * size2;
+				if (dx === 0) {
+					let idx = rowBase; // lxStart is 0 when dx === 0
+					for (let bx = 0; bx < xCount; bx += 2) {
+						const byte = packed[idx >>> 1];
+						out[ci++] = palette[byte & 0x0f] ?? 0;
+						out[ci++] = palette[(byte >>> 4) & 0x0f] ?? 0;
+						idx += 2;
+					}
+				} else {
+					for (let bx = 0; bx < xCount; bx++) {
+						const idx = lxStart + bx + rowBase;
+						const byte = packed[idx >>> 1];
+						const pIdx = (idx & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
+						out[ci++] = palette[pIdx] ?? 0;
+					}
+				}
+			}
+		}
+		return out;
+	}
+
+	// Dense Uint8 storage.
+	let ci = 0;
+	for (let bz = 0; bz < zCount; bz++) {
+		const nlz = lzStart + bz;
+		for (let by = 0; by < yCount; by++) {
+			const nly = lyStart + by;
+			const rowBase = nly * size + nlz * size2;
+			if (dx === 0) {
+				out.set(packed.subarray(rowBase, rowBase + xCount), ci);
+				ci += xCount;
+			} else {
+				for (let bx = 0; bx < xCount; bx++) {
+					out[ci++] = packed[lxStart + bx + rowBase];
+				}
+			}
+		}
+	}
+	return out;
+}
+
+function extractLightBorder(
+	reg: VoxelRegistration,
+	slot: number,
+	size: number,
+	dx: number,
+	dy: number,
+	dz: number,
+): Uint8Array | undefined {
+	if (!reg.lightSAB) return undefined;
+
+	const xCount = dx === 0 ? size : 1;
+	const yCount = dy === 0 ? size : 1;
+	const zCount = dz === 0 ? size : 1;
+	const lxStart = dx < 0 ? size - 1 : 0;
+	const lyStart = dy < 0 ? size - 1 : 0;
+	const lzStart = dz < 0 ? size - 1 : 0;
+	const size2 = size * size;
+
+	const nLight = new Uint8Array(reg.lightSAB);
+	const lb = _lightBorderScratch[slot];
+	let li = 0;
+	for (let bz = 0; bz < zCount; bz++) {
+		const nlz = lzStart + bz;
+		for (let by = 0; by < yCount; by++) {
+			const nly = lyStart + by;
+			const rowBase = nly * size + nlz * size2;
+			if (dx === 0) {
+				lb.set(nLight.subarray(rowBase, rowBase + xCount), li);
+				li += xCount;
+			} else {
+				for (let bx = 0; bx < xCount; bx++) {
+					lb[li++] = nLight[lxStart + bx + rowBase];
+				}
+			}
+		}
+	}
+	return lb;
+}
+
+function buildNeighborArrays(
+	cx: number,
+	cy: number,
+	cz: number,
+	size: number,
+	mask: number,
+): void {
+	for (let i = 0; i < 26; i++) {
+		if ((mask & (1 << i)) === 0) {
+			_neighborBlocks[i] = undefined;
+			_neighborLights[i] = undefined;
+			continue;
+		}
+		const { dx, dy, dz } = NEIGHBOR_OFFSETS[i];
+		const reg = _voxelRegistrations.get(
+			_packCoordKey(cx + dx, cy + dy, cz + dz),
+		);
+		if (!reg) {
+			// Benign race: the neighbor's registration (channel data) has not
+			// completed yet — treat as air; the next remesh heals it.
+			_neighborBlocks[i] = undefined;
+			_neighborLights[i] = undefined;
+			continue;
+		}
+		_neighborBlocks[i] = extractBlockBorder(reg, i, size, dx, dy, dz);
+		_neighborLights[i] = extractLightBorder(reg, i, size, dx, dy, dz);
+	}
+}
+
+function decodeCenterBlocks(
+	reg: VoxelRegistration | undefined,
+	size: number,
+): Uint8Array | Uint16Array | null {
+	if (!reg?.blockSAB) return null;
+	const totalBlocks = size * size * size;
+
+	if (reg.blockBytesPerElement === 2) {
+		// Dense Uint16 storage — the SAB view IS the dense array.
+		return new Uint16Array(reg.blockSAB);
+	}
+
+	const packed = new Uint8Array(reg.blockSAB);
+	const palette = reg.paletteSAB ? new Uint16Array(reg.paletteSAB) : null;
+
+	if (palette && palette.length > 1) {
+		// PERF: PaletteExpander is stateless — one shared instance instead of
+		// a fresh object per palette chunk.
+		return _paletteExpander.expandPalette(packed, palette, totalBlocks);
+	}
+
+	if (palette && palette.length === 1) {
+		const blockId = palette[0];
+		if (blockId === 0) return null;
+		const dense = new Uint16Array(totalBlocks);
+		dense.fill(blockId);
+		return dense;
+	}
+
+	// Dense Uint8 storage.
+	return packed;
+}
+
+function centerLightArray(
+	reg: VoxelRegistration | undefined,
+): Uint8Array | undefined {
+	return reg?.lightSAB ? new Uint8Array(reg.lightSAB) : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -59,8 +441,10 @@ type RelightCacheEntry = {
 	generation: number;
 	blockRevision: number;
 	grids: PaddedGrids;
-	// 26-slot border arrays — kept only as the hasNeighborChunk presence mask
-	// (the border content is already baked into grids.block).
+	// 26-slot presence array — kept only as the hasNeighborChunk gate for the
+	// light-border copy on light-only rebuilds (the border content is already
+	// baked into grids.block). Built from the full mesh's neighborMask, so
+	// scratch reuse across tasks can never change a chunk's presence.
 	neighbors: (Uint16Array | undefined)[];
 };
 
@@ -101,59 +485,6 @@ function getOrCreateRelightEntry(
 	};
 	relightCache.set(chunkId, entry);
 	return entry;
-}
-
-function expandCenterOnly(
-	request: VoxelWorkerRequest,
-): Uint8Array | Uint16Array {
-	const totalBlocks =
-		request.chunk_size * request.chunk_size * request.chunk_size;
-
-	if (request.block_array instanceof Uint16Array) {
-		return request.block_array;
-	}
-
-	if (
-		request.block_array instanceof Uint8Array &&
-		(!request.palette || request.palette.length === 0)
-	) {
-		return request.block_array;
-	}
-
-	if (!request.block_array && request.uniformBlockId !== undefined) {
-		if (request.uniformBlockId === 0) {
-			return new Uint16Array(totalBlocks);
-		}
-		const dense = new Uint16Array(totalBlocks);
-		dense.fill(request.uniformBlockId);
-		return dense;
-	}
-
-	if (!request.block_array) {
-		return new Uint16Array(totalBlocks);
-	}
-
-	if (request.palette && request.palette.length === 1) {
-		const blockId = request.palette[0];
-		if (blockId === 0) {
-			return new Uint16Array(totalBlocks);
-		}
-		const dense = new Uint16Array(totalBlocks);
-		dense.fill(blockId);
-		return dense;
-	}
-
-	if (request.palette && request.palette.length > 0) {
-		// PERF: PaletteExpander is stateless — one shared instance instead of
-		// a fresh object per palette chunk.
-		return _paletteExpander.expandPalette(
-			request.block_array as Uint8Array,
-			request.palette,
-			totalBlocks,
-		);
-	}
-
-	return request.block_array;
 }
 
 const _paletteExpander = new PaletteExpander();
@@ -201,7 +532,7 @@ function buildVoxelMeshFromInput(
 	grids?: PaddedGrids,
 	skipBlockFill = false,
 ): void {
-	_session.begin({ size, lod }, input, grids, skipBlockFill);
+	_session.begin(size, lod, input, grids, skipBlockFill);
 	resetMeshOut();
 	MeshEmitters.buildVoxelMesh(_session, _opaqueOut, _transparentOut);
 }
@@ -245,10 +576,30 @@ function postMeshResponse(
 	self.postMessage(response, transferables);
 }
 
-self.onmessage = (
-	event: MessageEvent<VoxelWorkerRequest | RelightMeshRequest>,
-): void => {
+self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 	const data = event.data;
+
+	if (data.type === WorkerTaskType.InitWorkerChannel) {
+		const port = data.port;
+		port.onmessage = _handleChannelMessage;
+		port.start();
+		return;
+	}
+
+	if (data.type === WorkerTaskType.VoxelRegisterChunk) {
+		_handleVoxelRegister(data);
+		return;
+	}
+
+	if (data.type === WorkerTaskType.VoxelUnregisterChunk) {
+		_handleVoxelUnregister(data);
+		return;
+	}
+
+	if (data.type === WorkerTaskType.VoxelUpdateChunkBuffers) {
+		_handleVoxelUpdateBuffers(data);
+		return;
+	}
 
 	if (data.type === WorkerTaskType.RelightMesh) {
 		void ensureShapesReady().then(() => {
@@ -271,14 +622,25 @@ self.onmessage = (
 				return;
 			}
 
+			const reg = _voxelRegistrations.get(
+				_packCoordKey(data.chunkX, data.chunkY, data.chunkZ),
+			);
+			buildNeighborArrays(
+				data.chunkX,
+				data.chunkY,
+				data.chunkZ,
+				data.chunk_size,
+				data.neighborMask,
+			);
+
 			// Light-only rebuild: bind the session to the entry's padded grids
 			// and refill only the light grid (block fill + opacity
 			// classification are version-validated unchanged).
 			buildVoxelMeshFromInput(
 				{
 					neighbors: entry.neighbors,
-					light_array: data.light_array,
-					neighborLights: data.neighborLights,
+					light_array: centerLightArray(reg),
+					neighborLights: _neighborLights,
 				},
 				data.chunk_size,
 				data.lod,
@@ -293,31 +655,43 @@ self.onmessage = (
 	if (data.type !== WorkerTaskType.GenerateFullMesh) return;
 
 	void ensureShapesReady().then(() => {
-		const entry = getOrCreateRelightEntry(
-			data.chunkId,
-			data.generation ?? -1,
-			data.blockRevision ?? -1,
-			data.neighbors,
+		const size = data.chunk_size;
+		const reg = _voxelRegistrations.get(
+			_packCoordKey(data.chunkX, data.chunkY, data.chunkZ),
+		);
+		buildNeighborArrays(
+			data.chunkX,
+			data.chunkY,
+			data.chunkZ,
+			size,
+			data.neighborMask,
 		);
 
 		// Uniform chunks carry no dense grid — pass the fill id so the padded
 		// grid is filled directly (no 64-512 KiB dense materialization).
 		const uniform = data.uniformBlockId !== undefined;
-		const centerBlockArray = uniform ? null : expandCenterOnly(data);
+		const centerBlockArray = uniform ? null : decodeCenterBlocks(reg, size);
+
+		const entry = getOrCreateRelightEntry(
+			data.chunkId,
+			data.generation ?? -1,
+			data.blockRevision ?? -1,
+			presenceFromMask(data.neighborMask),
+		);
 
 		buildVoxelMeshFromInput(
 			{
 				block_array: centerBlockArray,
 				uniformFill: uniform ? data.uniformBlockId : undefined,
-				light_array: data.light_array,
-				neighbors: data.neighbors as (Uint16Array | undefined)[],
-				neighborLights: data.neighborLights,
+				light_array: centerLightArray(reg),
+				neighbors: _neighborBlocks,
+				neighborLights: _neighborLights,
 			},
-			data.chunk_size,
-			data.lod,
+			size,
+			data.lod ?? 0,
 			entry.grids,
 			false,
 		);
-		postMeshResponse(data.chunkId, data.meshRevision, data.lod);
+		postMeshResponse(data.chunkId, data.meshRevision, data.lod ?? 0);
 	});
 };

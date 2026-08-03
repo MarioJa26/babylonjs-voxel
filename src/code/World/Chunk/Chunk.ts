@@ -214,8 +214,9 @@ export class Chunk {
 	public opaqueMeshData: MeshData | null = null;
 	public transparentMeshData: MeshData | null = null;
 
-	// Merged mesh group key (e.g., "gx_gy_gz_lod"). null if not merged.
-	public mergedGroupKey: string | null = null;
+	// Merged mesh group key (packed group-grid coords + lod bucket, see
+	// MergedMeshManager.makeGroupKey). null if not merged.
+	public mergedGroupKey: number | null = null;
 
 	// --- Face connectivity for occlusion BFS ---
 	public faceConnectivity = 0;

@@ -45,7 +45,7 @@ export const JUNGLE_TREE: TreeDefinition = {
 // Uses generateSlinkyTree with prop roots that spread wide into the water
 // ---------------------------------------------------------------------------
 export const MANGROVE_TREE: TreeDefinition = {
-	woodId: 33, // jungle wood — replace with mangrove wood block
+	woodId: 95, // mangrove wood block
 	leavesId: 34, // jungle leaves — replace with mangrove leaves
 	baseHeight: 7,
 	heightVariance: 3,

@@ -22,6 +22,7 @@ export const Recipes: Recipe[] = [
 	{ resultId: 35, resultCount: 4, ingredients: [{ itemId: 73, count: 1 }] }, // BirchBark
 	{ resultId: 35, resultCount: 4, ingredients: [{ itemId: 85, count: 1 }] }, // PalmTrunk
 	{ resultId: 35, resultCount: 4, ingredients: [{ itemId: 87, count: 1 }] }, // SierranConiferBark
+	{ resultId: 35, resultCount: 4, ingredients: [{ itemId: 95, count: 1 }] }, // MangroveWood
 	// Wooden tools from 5 wood planks (id 5). Placeholder tool items (ids 1000-1004).
 	{
 		resultId: 1000,

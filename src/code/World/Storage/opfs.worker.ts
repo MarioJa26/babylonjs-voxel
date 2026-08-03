@@ -73,11 +73,17 @@ let initInFlight: Promise<void> | null = null;
 let _worldName: string | null = null;
 
 // ---------------------------------------------------------------------------
-// Worker-to-worker channel: OPFS worker forwards decompressed SAB refs
-// directly to the terrain/light worker so the main thread never posts
-// the SAB payloads itself (saves ~22ms per chunk load).
+// Worker-to-worker channels: OPFS worker forwards decompressed SAB refs
+// directly to the terrain/light worker and every voxel (mesh) worker so the
+// main thread never posts the SAB payloads itself (saves ~22ms per chunk
+// load). One port per destination worker; InitWorkerChannel adds to the set.
 // ---------------------------------------------------------------------------
-let _workerChannelPort: MessagePort | null = null;
+const _workerChannelPorts = new Set<MessagePort>();
+
+function _closeWorkerChannelPorts(): void {
+	for (const port of _workerChannelPorts) port.close();
+	_workerChannelPorts.clear();
+}
 
 // ---------------------------------------------------------------------------
 // O(1) LRU via doubly-linked list embedded in a Map.
@@ -557,10 +563,7 @@ _self.addEventListener("message", (event: MessageEvent) => {
 				_lruTail = null;
 				regionOpenInflight.clear();
 				regionsDir = null;
-				if (_workerChannelPort) {
-					_workerChannelPort.close();
-					_workerChannelPort = null;
-				}
+				_closeWorkerChannelPorts();
 				initInFlight = null;
 
 				const name: string =
@@ -716,10 +719,11 @@ _self.addEventListener("message", (event: MessageEvent) => {
 				const blockBytesPerElement: 1 | 2 =
 					saved.blocks?.byteLength === 65536 ? 2 : 1;
 
-				// Forward SAB refs + coords to the terrain/light worker so it
-				// can register the chunk without the main thread posting SABs.
-				if (_workerChannelPort) {
-					_workerChannelPort.postMessage({
+				// Forward SAB refs + coords to every registered worker (light +
+				// voxel mesh) so each can register the chunk without the main
+				// thread posting SABs.
+				if (_workerChannelPorts.size > 0) {
+					const forward = {
 						_type: "voxelData",
 						chunkX: cx,
 						chunkY: cy,
@@ -728,7 +732,10 @@ _self.addEventListener("message", (event: MessageEvent) => {
 						paletteSAB,
 						lightSAB,
 						blockBytesPerElement,
-					});
+					};
+					for (const port of _workerChannelPorts) {
+						port.postMessage(forward);
+					}
 				}
 
 				postResult(id, {
@@ -778,10 +785,7 @@ _self.addEventListener("message", (event: MessageEvent) => {
 				_lruTail = null;
 				regionOpenInflight.clear();
 				regionsDir = null;
-				if (_workerChannelPort) {
-					_workerChannelPort.close();
-					_workerChannelPort = null;
-				}
+				_closeWorkerChannelPorts();
 				initInFlight = null;
 				postResult(id, true);
 				break;
@@ -808,10 +812,7 @@ _self.addEventListener("message", (event: MessageEvent) => {
 				_lruTail = null;
 				regionOpenInflight.clear();
 				regionsDir = null;
-				if (_workerChannelPort) {
-					_workerChannelPort.close();
-					_workerChannelPort = null;
-				}
+				_closeWorkerChannelPorts();
 				initInFlight = null;
 
 				// Now delete all OPFS entries from root.
@@ -830,8 +831,8 @@ _self.addEventListener("message", (event: MessageEvent) => {
 			case OpfsMsg.InitWorkerChannel: {
 				const port = event.ports?.[0];
 				if (port) {
-					_workerChannelPort = port;
-					_workerChannelPort.start();
+					_workerChannelPorts.add(port);
+					port.start();
 				}
 				break;
 			}

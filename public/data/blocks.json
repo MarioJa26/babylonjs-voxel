@@ -535,5 +535,11 @@
 		"path": "/texture/items/torch/torch_1k",
 		"shape": "torch",
 		"hardness": 0.5
+	},
+	{
+		"id": "MangroveWood",
+		"name": "mangrove_wood",
+		"path": "/texture/wood/mangrove_trunk_1k",
+		"hardness": 1.3
 	}
 ]
