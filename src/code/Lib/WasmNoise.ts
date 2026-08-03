@@ -29,7 +29,9 @@ function isWasmNoiseDisabled(): boolean {
  * Resolves true on success; false on any failure (JS backend stays active).
  * Memoized: only the first caller performs the load.
  */
-export function enableWasmNoise(url: string = KERNELS_WASM_URL): Promise<boolean> {
+export function enableWasmNoise(
+	url: string = KERNELS_WASM_URL,
+): Promise<boolean> {
 	if (wasmNoisePromise) return wasmNoisePromise;
 	wasmNoisePromise = loadWasmNoise(url);
 	return wasmNoisePromise;
@@ -37,7 +39,9 @@ export function enableWasmNoise(url: string = KERNELS_WASM_URL): Promise<boolean
 
 async function loadWasmNoise(url: string): Promise<boolean> {
 	if (isWasmNoiseDisabled()) {
-		console.warn("[wasm-noise] disabled (?noWasm=1) - keeping JS noise backend");
+		console.warn(
+			"[wasm-noise] disabled (?noWasm=1) - keeping JS noise backend",
+		);
 		return false;
 	}
 	try {

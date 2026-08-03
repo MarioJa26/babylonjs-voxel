@@ -3515,10 +3515,7 @@ export default class FastNoiseLite {
 				overhangBaseZ - y * 0.0036,
 			);
 			out[i] =
-				rel +
-				base * baseAmp +
-				overhang * overhangAmp +
-				cliffContribution;
+				rel + base * baseAmp + overhang * overhangAmp + cliffContribution;
 		}
 	}
 }

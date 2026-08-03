@@ -54,10 +54,13 @@ import {
 	SURFACE_RESET_AIR_GAP,
 } from "./Terrain/SurfaceBlockResolver";
 import {
+	fillTerrainNoiseGrid,
 	getBiome,
 	getCachedRiverNoise,
 	getFinalTerrainHeight,
+	getFinalTerrainHeightFromGrid,
 	prefetchChunkCorners,
+	type TerrainNoiseGrid,
 } from "./TerrainHeightMap";
 
 export type SurfaceGenerationResult = {
@@ -75,6 +78,10 @@ export type ColumnPrepassCacheEntry = {
 	// Bit-packed beach flag per column (1 = is beach) — computed once in the
 	// prepass so resolveSolidBlockId never calls isBeachLocation per voxel.
 	isBeachMap: Uint8Array;
+	// Per-column cliff noise (surface-level 3D density sample). Computed once
+	// in the prepass and reused by every chunkY layer's slow path, which
+	// otherwise re-samples it per layer.
+	cliffNoiseMap: Float32Array;
 	minSurfaceY: number;
 	maxSurfaceY: number;
 };
@@ -90,6 +97,28 @@ type FloraColumnCacheEntry = {
 const _findlingeWx = new Float32Array(23);
 const _findlingeWz = new Float32Array(23);
 const _findlingeWy = new Float32Array(25);
+
+// Module-level scratch for the batch 2D column prepass. Sized for a 32-wide
+// chunk + 1-block halo on each side (34 columns) so PASS 2's border neighbor
+// lookups (worldX±1 / worldZ±1) also hit the grid. Shared across all prepass
+// builds — generateChunkData is synchronous per thread.
+const _GRID_HALO = 1;
+const _GRID_EDGE = 32 + _GRID_HALO * 2;
+const _gridArea = _GRID_EDGE * _GRID_EDGE;
+const _gridRiver = new Float32Array(_gridArea);
+const _gridErosion = new Float32Array(_gridArea);
+const _gridPv = new Float32Array(_gridArea);
+const _gridContinental = new Float32Array(_gridArea);
+const _terrainNoiseGrid: TerrainNoiseGrid = {
+	river: _gridRiver,
+	erosion: _gridErosion,
+	pv: _gridPv,
+	continentalness: _gridContinental,
+	width: _GRID_EDGE,
+	height: _GRID_EDGE,
+	offsetX: 0,
+	offsetZ: 0,
+};
 
 // PERF: Module-level scratch for generateTerrain's per-chunk result arrays.
 // All downstream consumers (underground pass, flora, light seeding) read them
@@ -356,10 +385,28 @@ export class SurfaceGenerator {
 		// loop never hits a cache miss on fillCorner.
 		prefetchChunkCorners(chunkWorldX, chunkWorldZ);
 
+		// Batch-prepopulate the 2D height fields (river/erosion/pv/continentalness)
+		// for the whole chunk + 1-block halo in a single FillNoise2D call each,
+		// so PASS 1 below reads terrain heights from the grid instead of making
+		// 4 scalar noise crossings per column (1024 crossings saved per chunk).
+		// The biome-scaled height noise stays per-column scalar (its scale blends
+		// per column inside computeFinalTerrainHeight), as do density/cliff 3D.
+		const useNoiseGrid = CHUNK_SIZE <= _GRID_EDGE - _GRID_HALO * 2;
+		if (useNoiseGrid) {
+			fillTerrainNoiseGrid(
+				chunkWorldX,
+				chunkWorldZ,
+				_GRID_HALO,
+				CHUNK_SIZE,
+				_terrainNoiseGrid,
+			);
+		}
+
 		const terrainHeightMap = new Int32Array(area);
 		const riverNoiseMap = new Float32Array(area);
 		const topSurfaceYMap = new Int16Array(area);
 		const isBeachMap = new Uint8Array(area);
+		const cliffNoiseMap = new Float32Array(area);
 		topSurfaceYMap.fill(NO_SURFACE_Y);
 
 		let minSurfaceY = Number.POSITIVE_INFINITY;
@@ -381,18 +428,27 @@ export class SurfaceGenerator {
 				const worldZ = chunkWorldZ + localZ;
 				const columnIndex = localX + localZ * CHUNK_SIZE;
 
-				const terrainHeight = getFinalTerrainHeight(worldX, worldZ);
+				const terrainHeight = useNoiseGrid
+					? getFinalTerrainHeightFromGrid(worldX, worldZ, _terrainNoiseGrid)
+					: getFinalTerrainHeight(worldX, worldZ);
 				const riverNoise = getCachedRiverNoise(worldX, worldZ);
+
+				// Cliff noise is a pure function of the column (sampled once at
+				// surface level) — computed here and reused by findTopSurfaceY and
+				// every chunkY layer's slow path below.
+				const cliffNoise = this.sampleCliffNoise(worldX, terrainHeight, worldZ);
 
 				const topSurfaceY = this.findTopSurfaceY(
 					worldX,
 					worldZ,
 					terrainHeight,
 					yFreqMap,
+					cliffNoise,
 				);
 
 				terrainHeightMap[columnIndex] = terrainHeight;
 				riverNoiseMap[columnIndex] = riverNoise;
+				cliffNoiseMap[columnIndex] = cliffNoise;
 				topSurfaceYMap[columnIndex] = topSurfaceY;
 
 				if (topSurfaceY !== NO_SURFACE_Y) {
@@ -436,22 +492,46 @@ export class SurfaceGenerator {
 				const left =
 					localX > 0
 						? terrainHeightMap[columnIndex - 1]
-						: getFinalTerrainHeight(worldX - 1, worldZ);
+						: useNoiseGrid
+							? getFinalTerrainHeightFromGrid(
+									worldX - 1,
+									worldZ,
+									_terrainNoiseGrid,
+								)
+							: getFinalTerrainHeight(worldX - 1, worldZ);
 
 				const right =
 					localX < CHUNK_SIZE - 1
 						? terrainHeightMap[columnIndex + 1]
-						: getFinalTerrainHeight(worldX + 1, worldZ);
+						: useNoiseGrid
+							? getFinalTerrainHeightFromGrid(
+									worldX + 1,
+									worldZ,
+									_terrainNoiseGrid,
+								)
+							: getFinalTerrainHeight(worldX + 1, worldZ);
 
 				const down =
 					localZ > 0
 						? terrainHeightMap[columnIndex - CHUNK_SIZE]
-						: getFinalTerrainHeight(worldX, worldZ - 1);
+						: useNoiseGrid
+							? getFinalTerrainHeightFromGrid(
+									worldX,
+									worldZ - 1,
+									_terrainNoiseGrid,
+								)
+							: getFinalTerrainHeight(worldX, worldZ - 1);
 
 				const up =
 					localZ < CHUNK_SIZE - 1
 						? terrainHeightMap[columnIndex + CHUNK_SIZE]
-						: getFinalTerrainHeight(worldX, worldZ + 1);
+						: useNoiseGrid
+							? getFinalTerrainHeightFromGrid(
+									worldX,
+									worldZ + 1,
+									_terrainNoiseGrid,
+								)
+							: getFinalTerrainHeight(worldX, worldZ + 1);
 
 				if (
 					left <= SEA_LEVEL ||
@@ -470,6 +550,7 @@ export class SurfaceGenerator {
 			yFreqMap,
 			topSurfaceYMap,
 			isBeachMap,
+			cliffNoiseMap,
 			minSurfaceY,
 			maxSurfaceY,
 		};
@@ -852,14 +933,11 @@ export class SurfaceGenerator {
 					continue;
 				}
 
-				// SLOW PATH — sample cliffNoise once at surface level, reuse for all Y.
-				// y * 0.004 shifts by only 0.256 across the entire 64-block influence range
-				// so this is visually identical to per-voxel sampling.
-				const cliffNoise = SurfaceGenerator.densityNoise(
-					worldX * 0.0035,
-					terrainHeight * 0.004,
-					worldZ * 0.0035,
-				);
+				// SLOW PATH — cliffNoise sampled once per column in the prepass
+				// (reused across every chunkY layer). y * 0.004 shifts by only
+				// 0.256 across the entire 64-block influence range so this is
+				// visually identical to per-voxel sampling.
+				const cliffNoise = columnPrepass.cliffNoiseMap[columnIndex];
 
 				// Batch the whole density column (CHUNK_SIZE voxels + the probe
 				// one block above the chunk) in a single SurfaceDensity call. The
@@ -932,7 +1010,7 @@ export class SurfaceGenerator {
 						}
 					}
 
-				const density = densityColumn[localY];
+					const density = densityColumn[localY];
 					const caveMod =
 						density > 0
 							? this.computeCaveModifier(
@@ -1385,17 +1463,18 @@ export class SurfaceGenerator {
 		worldZ: number,
 		baseHeight: number,
 		yFreq: number,
+		cliffNoise?: number,
 	): number {
 		const range = SurfaceGenerator.DENSITY_VERTICAL_SCAN_RANGE;
 		const maxY = baseHeight + range;
 		const minY = baseHeight - range;
 
-		const cliffNoise = this.sampleCliffNoise(worldX, baseHeight, worldZ);
+		const cliff =
+			cliffNoise ?? this.sampleCliffNoise(worldX, baseHeight, worldZ);
 
 		const baseAmp = SurfaceGenerator.DENSITY_BASE_AMPLITUDE;
 		const overhangAmp = SurfaceGenerator.DENSITY_OVERHANG_AMPLITUDE;
-		const cliffContribution =
-			cliffNoise * SurfaceGenerator.DENSITY_CLIFF_AMPLITUDE;
+		const cliffContribution = cliff * SurfaceGenerator.DENSITY_CLIFF_AMPLITUDE;
 
 		const baseNoiseX = worldX * 0.002;
 		const baseNoiseZ = worldZ * 0.01;
