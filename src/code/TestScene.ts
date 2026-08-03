@@ -1,4 +1,3 @@
-import * as lite from "@babylonjs/lite";
 import {
 	createEngine,
 	createSceneContext,
@@ -114,11 +113,11 @@ export class TestScene {
 
 		await registerScene(scene);
 		await startEngine(engine);
-
+		/*
 		showLiteExplorer(
 			{ engine, scene, canvas: this.canvas, lite },
 			{ mode: "overlay", layout: "single", theme: "dark" },
-		);
+		);*/
 	}
 
 	public dispose(): void {

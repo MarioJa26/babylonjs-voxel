@@ -12,7 +12,7 @@ export const DESERT: Biome = {
 	name: "Desert",
 	topBlock: 3, // sand
 	undergroundBlock: 3, // sandstone
-	stoneBlock: 1, // stone
+	stoneBlock: 59, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.075,
 	grassDensity: 0.1,

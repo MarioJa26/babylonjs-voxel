@@ -60,7 +60,7 @@ export const SANDY_SHORE: Biome = {
 	name: "Sandy_Shore",
 	topBlock: 3, // sand
 	undergroundBlock: 3, // sand
-	stoneBlock: 1, // stone
+	stoneBlock: 59, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.12,
 	grassDensity: 0.05, // sparse beach grass
