@@ -1,0 +1,138 @@
+{
+  "backend": "js",
+  "chunks": [
+    {
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "ms": 16.078,
+      "airRatio": 0,
+      "caveRatio": 0
+    },
+    {
+      "x": 1,
+      "y": 0,
+      "z": 0,
+      "ms": 5.357,
+      "airRatio": 0,
+      "caveRatio": 0
+    },
+    {
+      "x": 0,
+      "y": 0,
+      "z": 1,
+      "ms": 5.524,
+      "airRatio": 0,
+      "caveRatio": 0
+    },
+    {
+      "x": 1,
+      "y": 0,
+      "z": 1,
+      "ms": 4.582,
+      "airRatio": 0,
+      "caveRatio": 0
+    },
+    {
+      "x": 2,
+      "y": 0,
+      "z": 2,
+      "ms": 5.085,
+      "airRatio": 0,
+      "caveRatio": 0
+    },
+    {
+      "x": -1,
+      "y": 0,
+      "z": 0,
+      "ms": 5.713,
+      "airRatio": 0,
+      "caveRatio": 0
+    },
+    {
+      "x": 0,
+      "y": 0,
+      "z": -1,
+      "ms": 4.045,
+      "airRatio": 0,
+      "caveRatio": 0
+    },
+    {
+      "x": 3,
+      "y": 0,
+      "z": -2,
+      "ms": 6.083,
+      "airRatio": 0,
+      "caveRatio": 0
+    },
+    {
+      "x": -2,
+      "y": 0,
+      "z": 3,
+      "ms": 4.275,
+      "airRatio": 0,
+      "caveRatio": 0
+    },
+    {
+      "x": 0,
+      "y": -1,
+      "z": 0,
+      "ms": 6.913,
+      "airRatio": 0,
+      "caveRatio": 0
+    },
+    {
+      "x": 1,
+      "y": -1,
+      "z": 1,
+      "ms": 18.644,
+      "airRatio": 0,
+      "caveRatio": 0
+    },
+    {
+      "x": -1,
+      "y": -1,
+      "z": -1,
+      "ms": 7.465,
+      "airRatio": 0,
+      "caveRatio": 0
+    },
+    {
+      "x": 2,
+      "y": -1,
+      "z": -2,
+      "ms": 31.676,
+      "airRatio": 0,
+      "caveRatio": 0
+    },
+    {
+      "x": 0,
+      "y": -2,
+      "z": 0,
+      "ms": 6.081,
+      "airRatio": 0,
+      "caveRatio": 0
+    },
+    {
+      "x": 2,
+      "y": -2,
+      "z": 2,
+      "ms": 31.904,
+      "airRatio": 0,
+      "caveRatio": 0
+    },
+    {
+      "x": -3,
+      "y": -2,
+      "z": -3,
+      "ms": 56.961,
+      "airRatio": 0,
+      "caveRatio": 0
+    }
+  ],
+  "totalMs": 223.4,
+  "avgMsPerChunk": 13.96,
+  "fill2dMs": 0.08,
+  "fill3dMs": 2.78,
+  "hash": "d078885e"
+}

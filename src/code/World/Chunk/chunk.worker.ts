@@ -4,6 +4,7 @@ import type { GenerationParamsType } from "@/code/Generation/NoiseAndParameters/
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap";
 import { WorldGenerator } from "@/code/Generation/WorldGenerator";
+import { enableWasmNoise } from "@/code/Lib/WasmNoise";
 import {
 	type LightRegisterChunkRequest,
 	WorkerTaskType,
@@ -374,5 +375,13 @@ const onMessageHandler = (event: MessageEvent) => {
 	}
 };
 
-self.onmessage = onMessageHandler;
-self.postMessage({ type: WorkerTaskType.WorkerReady });
+// The SIMD wasm noise backend must be active before the generator is built
+// (SetWorldSeed), or generator instances would be bound to the JS backend.
+// Postpone accepting messages until the wasm load settles; messages posted
+// earlier (SetWorldSeed) are queued by the browser and delivered after the
+// handler is assigned, so ordering is preserved. On failure the JS backend
+// stays active and the worker boots normally.
+void enableWasmNoise().finally(() => {
+	self.onmessage = onMessageHandler;
+	self.postMessage({ type: WorkerTaskType.WorkerReady });
+});

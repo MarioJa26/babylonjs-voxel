@@ -3392,4 +3392,133 @@ export default class FastNoiseLite {
 			}
 		}
 	}
+
+	/**
+	 * @description Fills a pre-allocated Float32Array with 3D noise sampled
+	 * at affinely-deformed coordinates:
+	 *   x' = x0 + col*ax + row*bx
+	 *   y' = y0 + row*ay
+	 *   z' = z0 + slice*az + row*bz
+	 * Covers per-axis scaling (base fields) and y-sheared fields (overhang)
+	 * with a single batched call.
+	 * @param out Pre-allocated output buffer of size width * height * depth
+	 * @param width Number of columns (X)
+	 * @param height Number of rows (Y)
+	 * @param depth Number of slices (Z)
+	 */
+	public FillNoise3DAffine(
+		out: Float32Array,
+		width: number,
+		height: number,
+		depth: number,
+		x0: number,
+		y0: number,
+		z0: number,
+		ax: number,
+		bx: number,
+		ay: number,
+		az: number,
+		bz: number,
+	): void {
+		const freq = this._Frequency;
+		const transformType = this._TransformType3D;
+		const G3 = this.G3;
+		const H3 = this.H3;
+		const F3 = this.F3;
+		const activeR3 = this._activeR3;
+
+		let idx = 0;
+		for (let slice = 0; slice < depth; slice++) {
+			const zSlice = z0 + az * slice;
+			for (let row = 0; row < height; row++) {
+				const xRowBase = x0 + bx * row;
+				let y = (y0 + ay * row) * freq;
+				let z = (zSlice + bz * row) * freq;
+				for (let col = 0; col < width; col++) {
+					let x = (xRowBase + ax * col) * freq;
+
+					switch (transformType) {
+						case TransformType3D.ImproveXYPlanes: {
+							const xy = x + y;
+							const s2 = xy * G3;
+							const zH = z * H3;
+							x += s2 - zH;
+							y += s2 - zH;
+							z += xy * H3;
+							break;
+						}
+						case TransformType3D.ImproveXZPlanes: {
+							const xz = x + z;
+							const s2xz = xz * G3;
+							const yH = y * H3;
+							x += s2xz - yH;
+							z += s2xz - yH;
+							y += xz * H3;
+							break;
+						}
+						case TransformType3D.DefaultOpenSimplex2: {
+							const r = (x + y + z) * F3;
+							x = r - x;
+							y = r - y;
+							z = r - z;
+							break;
+						}
+					}
+
+					out[idx++] = activeR3(x, y, z);
+				}
+			}
+		}
+	}
+
+	/**
+	 * @description Batch-evaluates the terrain-surface density formula for
+	 * `count` world-Y samples starting at `startY` with stride `step` (may be
+	 * negative). Mirrors the wasm `surface_density_band` kernel so both
+	 * backends produce equivalent bands:
+	 *   rel = baseHeight - y
+	 *   d = rel + base(baseNoiseX, y*yFreq, baseNoiseZ)*baseAmp
+	 *         + overhang(overhangBaseX + y*0.0044, y*0.012, overhangBaseZ - y*0.0036)*overhangAmp
+	 *         + cliffContribution
+	 * Samples with |rel| > influenceRange return rel without noise.
+	 * @param out Pre-allocated output buffer of size `count`
+	 * @param startY World Y of the first sample
+	 * @param step Y stride between samples (negative scans downward)
+	 */
+	public SurfaceDensity(
+		out: Float32Array,
+		count: number,
+		startY: number,
+		step: number,
+		baseNoiseX: number,
+		baseNoiseZ: number,
+		overhangBaseX: number,
+		overhangBaseZ: number,
+		baseHeight: number,
+		yFreq: number,
+		cliffContribution: number,
+		baseAmp: number,
+		overhangAmp: number,
+		influenceRange: number,
+	): void {
+		for (let i = 0; i < count; i++) {
+			const y = startY + i * step;
+			const rel = baseHeight - y;
+			if (rel > influenceRange || rel < -influenceRange) {
+				out[i] = rel;
+				continue;
+			}
+			const base = this.GetNoise3D(baseNoiseX, y * yFreq, baseNoiseZ);
+			const overhang = this.GetNoise3D(
+				overhangBaseX + y * 0.0044,
+				y * 0.012,
+				overhangBaseZ - y * 0.0036,
+			);
+			out[i] =
+				rel +
+				base * baseAmp +
+				overhang * overhangAmp +
+				cliffContribution;
+		}
+	}
 }

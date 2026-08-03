@@ -5,6 +5,7 @@ import {
 	createFastNoise,
 	createFastNoise2D,
 	createFastNoise3D,
+	createFastNoise3DWithInstance,
 } from "./NoiseAndParameters/FastNoise/FastNoiseFactory";
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
 import { getPRNGBySeed } from "./NoiseAndParameters/Squirrel13";
@@ -87,15 +88,17 @@ export class WorldGenerator {
 		detailInstance.SetFractalOctaves(2);
 		this.detailNoise = (x, y, z) => detailInstance.GetNoise3D(x, y, z);
 
-		const densityNoise = createFastNoise3D({
-			seed: getPRNGBySeed(23, this.seedAsInt),
-			frequency: 0.33333,
-		});
+		const { fn: densityNoise, instance: densityInstance } =
+			createFastNoise3DWithInstance({
+				seed: getPRNGBySeed(23, this.seedAsInt),
+				frequency: 0.33333,
+			});
 
 		this.surfaceGenerator = new SurfaceGenerator(
 			params,
 			treeNoise,
 			densityNoise,
+			densityInstance,
 			this.seedAsInt,
 			this.cheeseNoise,
 			this.tunnelNoise,

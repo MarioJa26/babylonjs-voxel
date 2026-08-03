@@ -6,6 +6,7 @@ import {
 	getSurfaceCarveBlend,
 } from "./CaveCarver";
 import { CaveNoiseGrid } from "./CaveNoiseGrid";
+import type { NoiseInstance } from "./NoiseAndParameters/FastNoise/FastNoiseFactory";
 import {
 	GenerationParams,
 	type GenerationParamsType,
@@ -157,6 +158,14 @@ export class SurfaceGenerator {
 
 	private static seedAsInt: number;
 
+	// Batch backend for the density-band evals used by findTopSurfaceY and the
+	// per-column density fill (see SurfaceDensity on NoiseInstance).
+	private readonly densityInstance: NoiseInstance;
+
+	// Scratch buffer reused per column band call to avoid allocating.
+	// One chunk column (32 voxels) + the probe above the chunk.
+	private readonly densityColumnBand = new Float32Array(33);
+
 	/**
 	 * Direct-mapped cache of expensive horizontal column prepass data.
 	 *
@@ -198,6 +207,7 @@ export class SurfaceGenerator {
 		params: GenerationParamsType,
 		treeNoise: (x: number, z: number) => number,
 		densityNoise: (x: number, y: number, z: number) => number,
+		densityInstance: NoiseInstance,
 		seedAsInt: number,
 		cheeseNoise: (x: number, y: number, z: number) => number,
 		tunnelNoise: (x: number, y: number, z: number) => number,
@@ -206,6 +216,7 @@ export class SurfaceGenerator {
 		this.params = params;
 		SurfaceGenerator.treeNoise = treeNoise;
 		SurfaceGenerator.densityNoise = densityNoise;
+		this.densityInstance = densityInstance;
 		SurfaceGenerator.seedAsInt = seedAsInt;
 
 		this.chunk_size = this.params.CHUNK_SIZE;
@@ -850,16 +861,31 @@ export class SurfaceGenerator {
 					worldZ * 0.0035,
 				);
 
-				let depthAnchorY = columnTopSurfaceY;
-
-				const densityAboveChunk = this.getDensity(
-					worldX,
-					topWorldY + 1,
-					worldZ,
+				// Batch the whole density column (CHUNK_SIZE voxels + the probe
+				// one block above the chunk) in a single SurfaceDensity call. The
+				// band matches this.getDensity exactly, including the |rel| >
+				// influence early-out, and is reused for the probe + voxel reads.
+				const densityColumn = this.densityColumnBand;
+				this.densityInstance.SurfaceDensity(
+					densityColumn,
+					CHUNK_SIZE + 1,
+					chunkWorldY,
+					1,
+					worldX * 0.002,
+					worldZ * 0.01,
+					worldX * 0.008,
+					worldZ * 0.008,
 					terrainHeight,
 					yFreq,
-					cliffNoise,
+					cliffNoise * SurfaceGenerator.DENSITY_CLIFF_AMPLITUDE,
+					SurfaceGenerator.DENSITY_BASE_AMPLITUDE,
+					SurfaceGenerator.DENSITY_OVERHANG_AMPLITUDE,
+					SurfaceGenerator.DENSITY_INFLUENCE_RANGE,
 				);
+
+				let depthAnchorY = columnTopSurfaceY;
+
+				const densityAboveChunk = densityColumn[CHUNK_SIZE];
 				const caveModAbove =
 					densityAboveChunk > 0
 						? this.computeCaveModifier(
@@ -906,14 +932,7 @@ export class SurfaceGenerator {
 						}
 					}
 
-					const density = this.getDensity(
-						worldX,
-						worldY,
-						worldZ,
-						terrainHeight,
-						yFreq,
-						cliffNoise,
-					);
+				const density = densityColumn[localY];
 					const caveMod =
 						density > 0
 							? this.computeCaveModifier(
@@ -1276,43 +1295,6 @@ export class SurfaceGenerator {
 			placeBlock,
 			(worldX: number, worldZ: number) =>
 				this.resolveColumnPrepassForWorld(worldX, worldZ),
-		);
-	}
-
-	private getDensity(
-		x: number,
-		y: number,
-		z: number,
-		baseHeight: number,
-		yFreq: number,
-		cachedCliffNoise: number,
-	): number {
-		const relativeHeight = baseHeight - y;
-
-		if (relativeHeight > SurfaceGenerator.DENSITY_INFLUENCE_RANGE) {
-			return relativeHeight;
-		}
-		if (relativeHeight < -SurfaceGenerator.DENSITY_INFLUENCE_RANGE) {
-			return relativeHeight;
-		}
-
-		const baseNoise = SurfaceGenerator.densityNoise(
-			x * 0.002,
-			y * yFreq,
-			z * 0.01,
-		);
-
-		const overhangNoise = SurfaceGenerator.densityNoise(
-			(x + y * 0.55) * 0.008,
-			y * 0.012,
-			(z - y * 0.45) * 0.008,
-		);
-
-		return (
-			relativeHeight +
-			baseNoise * SurfaceGenerator.DENSITY_BASE_AMPLITUDE +
-			overhangNoise * SurfaceGenerator.DENSITY_OVERHANG_AMPLITUDE +
-			cachedCliffNoise * SurfaceGenerator.DENSITY_CLIFF_AMPLITUDE
 		);
 	}
 

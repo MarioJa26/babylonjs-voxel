@@ -1,5 +1,6 @@
 import { TestScene } from "./code/TestScene";
 import { MainMenu } from "./code/UI/MainMenu";
+import { enableWasmNoise } from "./code/Lib/WasmNoise";
 import { getWorldNameFromUrl } from "./code/World/WorldContext";
 import "@/style/hud.css";
 import "@/style/Item.css";
@@ -41,6 +42,11 @@ async function main(): Promise<void> {
 		menu.mount(document.body);
 		return;
 	}
+
+	// Install the SIMD wasm noise backend (chunk generation itself runs in
+	// the terrain workers, which load it independently). Fire-and-forget:
+	// chunk generation never waits on this; failure keeps the JS backend.
+	void enableWasmNoise();
 
 	const canvas = document.createElement("canvas");
 
