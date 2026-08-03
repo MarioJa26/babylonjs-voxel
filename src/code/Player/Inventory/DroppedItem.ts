@@ -503,12 +503,27 @@ export class DroppedItem implements IUsable {
 		this.#lastLightY = ly;
 		this.#lastLightZ = lz;
 
-		const packedLight = getLightByWorldCoords(
-			this.#position.x,
-			this.#position.y,
-			this.#position.z,
+		this.#applyTintFromPackedLight(
+			getLightByWorldCoords(
+				this.#position.x,
+				this.#position.y,
+				this.#position.z,
+			),
 		);
+	}
 
+	/**
+	 * One-shot tint from a pre-sampled packed light value (e.g. the lit air
+	 * voxel beside a freshly mined block). Does not touch the per-voxel cache:
+	 * the item keeps this tint until it actually crosses into another voxel,
+	 * which prevents a freshly dropped item from spawning dark inside the
+	 * still-unlit block it came from.
+	 */
+	public setInitialLight(packedLight: number): void {
+		this.#applyTintFromPackedLight(packedLight);
+	}
+
+	#applyTintFromPackedLight(packedLight: number): void {
 		const skyLight = ((packedLight >> 4) & 0xf) * LIGHT_NORMALIZE_MUL;
 		const blockLight = (packedLight & 0xf) * LIGHT_NORMALIZE_MUL;
 

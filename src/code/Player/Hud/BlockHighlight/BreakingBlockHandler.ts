@@ -234,6 +234,11 @@ export class BlockBreakingHandler {
 
 		const di = new DroppedItem(worldItem, x + 0.5, y + 0.5, z + 0.5);
 
+		// The item spawns inside the still-solid block, whose voxel stores no
+		// light until the deferred light propagation lands — tint it from the
+		// lit air voxel beside the mined face instead.
+		di.setInitialLight(packedLight);
+
 		variation ^= blockId;
 		variation ^= variation << 3;
 		variation ^= variation >>> 2;
@@ -283,6 +288,7 @@ export class BlockBreakingHandler {
 						const pushZ = (((variation >>> 5) & 7) - 3.5) * 0.44;
 
 						const droppedItem = new DroppedItem(item, dropX, dropY, dropZ);
+						droppedItem.setInitialLight(packedLight);
 						droppedItem.addVelocity(pushX, pushY, pushZ);
 					}
 				}
