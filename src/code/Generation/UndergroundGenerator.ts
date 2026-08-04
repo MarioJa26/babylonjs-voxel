@@ -64,10 +64,10 @@ export class UndergroundGenerator {
 		chunkY: number,
 		chunkZ: number,
 		topSurfaceYMap: Int16Array,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
+		placeBlockLocal: (
+			lx: number,
+			ly: number,
+			lz: number,
 			id: number,
 			ow?: boolean,
 		) => void,
@@ -77,8 +77,6 @@ export class UndergroundGenerator {
 		const LAVA_LEVEL = this.LAVA_LEVEL;
 		const params = this.params;
 
-		const chunkWorldX = chunkX * CHUNK_SIZE;
-		const chunkWorldZ = chunkZ * CHUNK_SIZE;
 		const chunkWorldY = chunkY * CHUNK_SIZE;
 
 		const cs = CHUNK_SIZE;
@@ -193,12 +191,11 @@ export class UndergroundGenerator {
 			const yBase = localY * cs;
 
 			for (let localZ = 0; localZ < cs; localZ++) {
-				const worldZ = chunkWorldZ + localZ;
 				const yzBase = yBase + localZ * cs2;
 
 				for (let localX = 0; localX < cs; localX++) {
 					if ((_carve[yzBase + localX] & CAVE_FLAG_CARVED) === 0) continue;
-					placeBlock(chunkWorldX + localX, worldY, worldZ, blockId, true);
+					placeBlockLocal(localX, localY, localZ, blockId, true);
 				}
 			}
 		}

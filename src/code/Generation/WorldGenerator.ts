@@ -274,7 +274,14 @@ export class WorldGenerator {
 
 		const blocks = this.createBuffer(chunkVolume);
 
-		// ── placeBlock closure ────────────────────────────────────────────
+		// ── placeBlock closures ───────────────────────────────────────────
+		const writeBlock = (idx: number, blockId: number, overwrite: boolean) => {
+			if (blockId === 0 && blocks[idx] === WATER_BLOCK_ID) return;
+			if (blocks[idx] === 0 || overwrite) blocks[idx] = blockId;
+		};
+
+		// Checked variant — world coords; drops writes outside this chunk.
+		// Used by trees/structures/flora that can legitimately overflow.
 		const placeBlock = (
 			x: number,
 			y: number,
@@ -296,9 +303,26 @@ export class WorldGenerator {
 			)
 				return;
 
-			const idx = localX + localY * chunkSize + localZ * chunkSizeSq;
-			if (blockId === 0 && blocks[idx] === WATER_BLOCK_ID) return;
-			if (blocks[idx] === 0 || overwrite) blocks[idx] = blockId;
+			writeBlock(
+				localX + localY * chunkSize + localZ * chunkSizeSq,
+				blockId,
+				overwrite,
+			);
+		};
+
+		// Unchecked variant — caller guarantees in-chunk local coords.
+		const placeBlockLocal = (
+			localX: number,
+			localY: number,
+			localZ: number,
+			blockId: number,
+			overwrite = false,
+		) => {
+			writeBlock(
+				localX + localY * chunkSize + localZ * chunkSizeSq,
+				blockId,
+				overwrite,
+			);
 		};
 
 		const biome = getBiome(chunkWorldX, chunkWorldZ);
@@ -309,6 +333,7 @@ export class WorldGenerator {
 			chunkZ,
 			biome,
 			placeBlock,
+			placeBlockLocal,
 		);
 
 		this.oreGenerator.generate(chunkX, chunkY, chunkZ, blocks);
@@ -318,7 +343,7 @@ export class WorldGenerator {
 			chunkY,
 			chunkZ,
 			surfaceGeneration.topSurfaceYMap,
-			placeBlock,
+			placeBlockLocal,
 			blocks,
 		);
 		if (!skipDecorations) {

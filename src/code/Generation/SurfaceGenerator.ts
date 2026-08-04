@@ -644,13 +644,20 @@ export class SurfaceGenerator {
 			id: number,
 			ow?: boolean,
 		) => void,
+		placeBlockLocal: (
+			lx: number,
+			ly: number,
+			lz: number,
+			id: number,
+			ow?: boolean,
+		) => void,
 	): SurfaceGenerationResult {
 		const generationResult = this.generateTerrain(
 			chunkX,
 			chunkY,
 			chunkZ,
 			biome,
-			placeBlock,
+			placeBlockLocal,
 		);
 
 		const chunkMinY = chunkY * this.chunk_size;
@@ -707,12 +714,12 @@ export class SurfaceGenerator {
 		chunkY: number,
 		chunkZ: number,
 		currentBiome: Biome,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
+		placeBlockLocal: (
+			lx: number,
+			ly: number,
+			lz: number,
 			id: number,
-			ow: boolean,
+			ow?: boolean,
 		) => void,
 	): SurfaceGenerationResult {
 		const CHUNK_SIZE = this.params.CHUNK_SIZE;
@@ -748,13 +755,11 @@ export class SurfaceGenerator {
 		// Use -128 for a safe margin — only affects very deep chunks
 		if (topWorldY < -128) {
 			for (let localX = 0; localX < CHUNK_SIZE; localX++) {
-				const worldX = chunkWorldX + localX;
 				for (let localZ = 0; localZ < CHUNK_SIZE; localZ++) {
-					const worldZ = chunkWorldZ + localZ;
 					for (let localY = 0; localY < CHUNK_SIZE; localY++) {
 						const worldY = chunkWorldY + localY;
 						const blockId = worldY < 0 ? 29 : currentBiome.stoneBlock;
-						placeBlock(worldX, worldY, worldZ, blockId, true);
+						placeBlockLocal(localX, localY, localZ, blockId, true);
 					}
 				}
 			}
@@ -820,13 +825,7 @@ export class SurfaceGenerator {
 					topWorldY <= SEA_LEVEL
 				) {
 					for (let localY = 0; localY < CHUNK_SIZE; localY++) {
-						placeBlock(
-							worldX,
-							chunkWorldY + localY,
-							worldZ,
-							volcanicLiquidId,
-							false,
-						);
+						placeBlockLocal(localX, localY, localZ, volcanicLiquidId, false);
 					}
 					continue;
 				}
@@ -837,7 +836,7 @@ export class SurfaceGenerator {
 				// ------------------------------------------------------------
 				if (chunkEntirelyAboveInfluence && topWorldY < 0) {
 					for (let localY = 0; localY < CHUNK_SIZE; localY++) {
-						placeBlock(worldX, chunkWorldY + localY, worldZ, 29, false);
+						placeBlockLocal(localX, localY, localZ, 29, false);
 					}
 					continue;
 				}
@@ -851,9 +850,15 @@ export class SurfaceGenerator {
 						const worldY = chunkWorldY + localY;
 						if (worldY <= SEA_LEVEL) {
 							if (worldY >= 0) {
-								placeBlock(worldX, worldY, worldZ, volcanicLiquidId, false);
+								placeBlockLocal(
+									localX,
+									localY,
+									localZ,
+									volcanicLiquidId,
+									false,
+								);
 							} else {
-								placeBlock(worldX, worldY, worldZ, 29, false);
+								placeBlockLocal(localX, localY, localZ, 29, false);
 							}
 						}
 					}
@@ -867,10 +872,10 @@ export class SurfaceGenerator {
 				// ------------------------------------------------------------
 				if (chunkEntirelyBelowInfluence && chunkWorldY >= SEA_LEVEL + 16) {
 					for (let localY = 0; localY < CHUNK_SIZE; localY++) {
-						placeBlock(
-							worldX,
-							chunkWorldY + localY,
-							worldZ,
+						placeBlockLocal(
+							localX,
+							localY,
+							localZ,
 							currentBiome.stoneBlock,
 							true,
 						);
@@ -907,10 +912,10 @@ export class SurfaceGenerator {
 								riverNoise,
 							);
 							if (isTunnel) {
-								placeBlock(
-									worldX,
-									worldY,
-									worldZ,
+								placeBlockLocal(
+									localX,
+									localY,
+									localZ,
 									worldY <= SEA_LEVEL ? 30 : 0,
 									true,
 								);
@@ -934,7 +939,7 @@ export class SurfaceGenerator {
 							depthBelowSurface,
 							isBeachMap[columnIndex] === 1,
 						);
-						placeBlock(worldX, worldY, worldZ, blockId, true);
+						placeBlockLocal(localX, localY, localZ, blockId, true);
 						airGapSinceLastSolid = 0;
 					}
 
@@ -1006,10 +1011,10 @@ export class SurfaceGenerator {
 							riverNoise,
 						);
 						if (isTunnel) {
-							placeBlock(
-								worldX,
-								worldY,
-								worldZ,
+							placeBlockLocal(
+								localX,
+								localY,
+								localZ,
 								worldY <= SEA_LEVEL ? 30 : 0,
 								true,
 							);
@@ -1045,14 +1050,20 @@ export class SurfaceGenerator {
 							depthBelowSurface,
 							isBeachMap[columnIndex] === 1,
 						);
-						placeBlock(worldX, worldY, worldZ, blockId, true);
+						placeBlockLocal(localX, localY, localZ, blockId, true);
 						airGapSinceLastSolid = 0;
 					} else {
 						if (worldY <= SEA_LEVEL) {
 							if (worldY >= 0) {
-								placeBlock(worldX, worldY, worldZ, volcanicLiquidId, false);
+								placeBlockLocal(
+									localX,
+									localY,
+									localZ,
+									volcanicLiquidId,
+									false,
+								);
 							} else {
-								placeBlock(worldX, worldY, worldZ, 29, false);
+								placeBlockLocal(localX, localY, localZ, 29, false);
 							}
 						}
 						airGapSinceLastSolid++;
