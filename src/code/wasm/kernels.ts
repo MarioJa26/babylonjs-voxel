@@ -62,7 +62,7 @@ function gradCoord3(
 }
 
 function pingpong(t: f32): f32 {
-	t -= f32(Math.trunc((t as f64) * 0.5)) * 2;
+	t -= Mathf.trunc(t * 0.5) * 2;
 	return t < 1 ? t : 2 - t;
 }
 
@@ -125,9 +125,9 @@ function singleSimplex2(seed: i32, x: f32, y: f32): f32 {
 }
 
 function singleSimplex3(seed: i32, x: f32, y: f32, z: f32): f32 {
-	let i: i32 = i32(Math.round(x as f64));
-	let j: i32 = i32(Math.round(y as f64));
-	let k: i32 = i32(Math.round(z as f64));
+	let i: i32 = i32(Mathf.round(x));
+	let j: i32 = i32(Mathf.round(y));
+	let k: i32 = i32(Mathf.round(z));
 
 	let x0: f32 = x - f32(i);
 	let y0: f32 = y - f32(j);
@@ -295,7 +295,7 @@ function fractal2(
 		let sum: f32 = 0;
 		let amp: f32 = fractalBounding(gain, octaves);
 		for (let i: i32 = 0; i < octaves; i++) {
-			const n: f32 = f32(Math.abs(singleSimplex2(seed++, x, y)));
+			const n: f32 = Mathf.abs(singleSimplex2(seed++, x, y));
 			sum += (n * -2 + 1) * amp;
 			amp -= amp * ws * n;
 			x *= lacunarity;
@@ -360,7 +360,7 @@ function fractal3(
 		let sum: f32 = 0;
 		let amp: f32 = fractalBounding(gain, octaves);
 		for (let i: i32 = 0; i < octaves; i++) {
-			const n: f32 = f32(Math.abs(singleSimplex3(seed++, x, y, z)));
+			const n: f32 = Mathf.abs(singleSimplex3(seed++, x, y, z));
 			sum += (n * -2 + 1) * amp;
 			amp -= amp * ws * n;
 			x *= lacunarity;
@@ -471,7 +471,6 @@ function cornerPassL3(
 	a: v128,
 ): v128 {
 	const zero: v128 = f32x4.splat(0.0);
-	const oneI: v128 = i32x4.splat(1);
 
 	// corner 0
 	const a2: v128 = f32x4.mul(a, a);
@@ -494,7 +493,7 @@ function cornerPassL3(
 
 	// b -= 1 where b > 1
 	const bGt1: v128 = f32x4.gt(b, f32x4.splat(1.0));
-	b = f32x4.sub(b, f32x4.convert_i32x4_s(v128.and(bGt1, oneI)));
+	b = selectB(bGt1, f32x4.sub(b, f32x4.splat(1.0)), b);
 	const b2: v128 = f32x4.mul(b, b);
 
 	// lattice offsets
