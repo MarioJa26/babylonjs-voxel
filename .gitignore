@@ -4,6 +4,8 @@
 /public/environment
 /src/App.vue
 /src/BabylonExamples/
+/tests/
+/benchmarks/
 
 /src/code_js
 convert.bat
