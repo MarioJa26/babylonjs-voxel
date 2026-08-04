@@ -525,12 +525,20 @@ function cornerPassL3(
 }
 
 function singleSimplex2L4(seed: i32, x: v128, y: v128): v128 {
-	const xi: v128 = f32x4.floor(x);
-	const yi: v128 = f32x4.floor(y);
-	const i: v128 = i32x4.trunc_sat_f32x4_s(xi);
-	const j: v128 = i32x4.trunc_sat_f32x4_s(yi);
-	const xf: v128 = f32x4.sub(x, xi);
-	const yf: v128 = f32x4.sub(y, yi);
+	// fastFloor parity: scalar singleSimplex2 uses `x >= 0 ? i32(x) : i32(x)-1`
+	// (and the JS FastNoiseLite mirror uses the same). Plain f32x4.floor would
+	// diverge at exact negative integers (floor(-5)=-5 vs fastFloor(-5)=-6),
+	// which shows up as a one-cell seam when the same field is sampled through
+	// both GetNoise2D and FillNoise2D (e.g. freq=1 at x == -y). Emulate
+	// fastFloor exactly: truncate, then subtract 1 where x < 0.
+	const negMask: v128 = f32x4.lt(x, f32x4.splat(0.0));
+	let i: v128 = i32x4.trunc_sat_f32x4_s(x);
+	i = i32x4.sub(i, v128.and(negMask, i32x4.splat(1)));
+	const negMaskY: v128 = f32x4.lt(y, f32x4.splat(0.0));
+	let j: v128 = i32x4.trunc_sat_f32x4_s(y);
+	j = i32x4.sub(j, v128.and(negMaskY, i32x4.splat(1)));
+	const xf: v128 = f32x4.sub(x, f32x4.convert_i32x4_s(i));
+	const yf: v128 = f32x4.sub(y, f32x4.convert_i32x4_s(j));
 
 	const t: v128 = f32x4.mul(f32x4.add(xf, yf), f32x4.splat(G2));
 	const x0: v128 = f32x4.sub(xf, t);
@@ -568,7 +576,9 @@ function singleSimplex2L4(seed: i32, x: v128, y: v128): v128 {
 	);
 	n2 = selectB(f32x4.gt(c, zero), n2, zero);
 
-	// B/C corner (y0 > x0)
+	// B/C corner (y0 > x0) — deferred gradient: select the lattice coords and
+	// deltas first, then ONE gradL2 call (gradL2 is the most scalar-bound
+	// function: 4x extract_lane + 8x replace_lane), mirroring cornerPassL3.
 	const mBC: v128 = f32x4.gt(y0, x0);
 	const x1B: v128 = f32x4.add(x0, f32x4.splat(G2));
 	const y1B: v128 = f32x4.add(y0, f32x4.splat(G2 - 1));
@@ -581,21 +591,9 @@ function singleSimplex2L4(seed: i32, x: v128, y: v128): v128 {
 		f32x4.mul(y1, y1),
 	);
 	const b2: v128 = f32x4.mul(b, b);
-	const gB: v128 = gradL2(
-		seed,
-		iP,
-		i32x4.add(jP, i32x4.splat(PRIME_Y)),
-		x1B,
-		y1B,
-	);
-	const gC: v128 = gradL2(
-		seed,
-		i32x4.add(iP, i32x4.splat(PRIME_X)),
-		jP,
-		x1C,
-		y1C,
-	);
-	const g: v128 = selectB(mBC, gB, gC);
+	const selI1: v128 = selectB(mBC, iP, i32x4.add(iP, i32x4.splat(PRIME_X)));
+	const selJ1: v128 = selectB(mBC, i32x4.add(jP, i32x4.splat(PRIME_Y)), jP);
+	const g: v128 = gradL2(seed, selI1, selJ1, x1, y1);
 	let n1: v128 = f32x4.mul(f32x4.mul(b2, b2), g);
 	n1 = selectB(f32x4.gt(b, zero), n1, zero);
 
@@ -780,13 +778,15 @@ function fractal2L4(
 				t,
 				f32x4.mul(
 					selectB(
+						f32x4.ge(tt, f32x4.splat(0.0)),
 						f32x4.floor(tt),
 						f32x4.ceil(tt),
-						f32x4.ge(tt, f32x4.splat(0.0)),
 					),
 					f32x4.splat(2.0),
 				),
 			);
+			// (PingPong: t -= 2*trunc-like(tt); the selectB mask must be the
+			// ge() comparator, exactly as fractal3L4 does.)
 			const n: v128 = selectB(
 				f32x4.lt(t, one),
 				t,
@@ -1095,6 +1095,9 @@ export function noise_fill_2d(
 	}
 	const F2s: v128 = f32x4.splat(F2);
 	const freqs: v128 = f32x4.splat(freq);
+	// Hoisted once: the four x-lane offsets (0, freq, 2freq, 3freq) are the
+	// same for every row/col, so each aligned group only needs an add.
+	const laneFreq: v128 = f32x4.mul(f32x4(0.0, 1.0, 2.0, 3.0), freqs);
 	const widthAligned: i32 = width & ~3;
 	let idx: i32 = 0;
 	for (let row: i32 = 0; row < height; row++) {
@@ -1103,10 +1106,7 @@ export function noise_fill_2d(
 		let col: i32 = 0;
 		for (; col < widthAligned; col += 4) {
 			const base: f32 = (f32(col) + offsetX) * freq;
-			let xs: v128 = f32x4.splat(base);
-			xs = f32x4.replace_lane(xs, 1, base + freq);
-			xs = f32x4.replace_lane(xs, 2, base + freq * 2);
-			xs = f32x4.replace_lane(xs, 3, base + freq * 3);
+			let xs: v128 = f32x4.add(f32x4.splat(base), laneFreq);
 			let ysT: v128 = ys;
 			const t: v128 = f32x4.mul(f32x4.add(xs, ysT), F2s);
 			xs = f32x4.add(xs, t);
@@ -1167,6 +1167,11 @@ export function noise_fill_3d(
 		return;
 	}
 	const widthAligned: i32 = width & ~3;
+	// Hoisted once: the four x-lane offsets, reused by every transform branch.
+	const laneFreq: v128 = f32x4.mul(
+		f32x4(0.0, 1.0, 2.0, 3.0),
+		f32x4.splat(freq),
+	);
 	let idx: i32 = 0;
 	if (transformType == 1) {
 		const G3s: v128 = f32x4.splat(G3);
@@ -1180,10 +1185,7 @@ export function noise_fill_3d(
 				let col: i32 = 0;
 				for (; col < widthAligned; col += 4) {
 					const base: f32 = (f32(col) + offsetX) * freq;
-					let xs: v128 = f32x4.splat(base);
-					xs = f32x4.replace_lane(xs, 1, base + freq);
-					xs = f32x4.replace_lane(xs, 2, base + freq * 2);
-					xs = f32x4.replace_lane(xs, 3, base + freq * 3);
+					const xs: v128 = f32x4.add(f32x4.splat(base), laneFreq);
 					const xy: v128 = f32x4.add(xs, ys);
 					const s2: v128 = f32x4.mul(xy, G3s);
 					const zH: v128 = f32x4.mul(zs, H3s);
@@ -1248,10 +1250,7 @@ export function noise_fill_3d(
 				let col: i32 = 0;
 				for (; col < widthAligned; col += 4) {
 					const base: f32 = (f32(col) + offsetX) * freq;
-					let xs: v128 = f32x4.splat(base);
-					xs = f32x4.replace_lane(xs, 1, base + freq);
-					xs = f32x4.replace_lane(xs, 2, base + freq * 2);
-					xs = f32x4.replace_lane(xs, 3, base + freq * 3);
+					const xs: v128 = f32x4.add(f32x4.splat(base), laneFreq);
 					const xz: v128 = f32x4.add(xs, zs);
 					const s2xz: v128 = f32x4.mul(xz, G3s);
 					const yH: v128 = f32x4.mul(ys, H3s);
@@ -1315,10 +1314,7 @@ export function noise_fill_3d(
 				let col: i32 = 0;
 				for (; col < widthAligned; col += 4) {
 					const base: f32 = (f32(col) + offsetX) * freq;
-					let xs: v128 = f32x4.splat(base);
-					xs = f32x4.replace_lane(xs, 1, base + freq);
-					xs = f32x4.replace_lane(xs, 2, base + freq * 2);
-					xs = f32x4.replace_lane(xs, 3, base + freq * 3);
+					const xs: v128 = f32x4.add(f32x4.splat(base), laneFreq);
 					const r: v128 = f32x4.mul(f32x4.add(f32x4.add(xs, ys), zs), F3s);
 					const xv: v128 = f32x4.sub(r, xs);
 					const yv: v128 = f32x4.sub(r, ys);
