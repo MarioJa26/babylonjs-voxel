@@ -99,7 +99,7 @@ export const PINE_FOREST: Biome = {
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.2, // very dense pine trees
-	grassDensity: 0.15, // sparse undergrowth under dense canopy
+	grassDensity: 0.367, // sparse undergrowth under dense canopy
 	beachBlock: 3, // sand
 	seafloorBlock: 46, // gravel seafloor
 
