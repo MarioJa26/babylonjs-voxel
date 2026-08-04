@@ -183,9 +183,12 @@ export class WorldGenerator {
 		for (let localY = 0; localY < chunkSize; localY++) {
 			const worldY = chunkWorldY + localY;
 			if (worldY >= 0) continue;
+			// PERF: invariant across both the z and x loops.
+			const yOffset = localY * chunkSize;
 			for (let localZ = 0; localZ < chunkSize; localZ++) {
 				const worldZ = chunkWorldZ + localZ;
-				const zOffset = localZ * chunkSizeSq;
+				// PERF: combine once per row instead of per-voxel.
+				const rowBase = yOffset + localZ * chunkSizeSq;
 				// PERF: Cache biome per column (worldY + worldZ are constant across X).
 				const colBiome = this.undergroundBiomeSelector.getBiome(
 					chunkWorldX,
@@ -193,7 +196,7 @@ export class WorldGenerator {
 					worldZ,
 				);
 				for (let localX = 0; localX < chunkSize; localX++) {
-					const idx = localX + localY * chunkSize + zOffset;
+					const idx = localX + rowBase;
 					const blockId = blocks[idx];
 					if (blockId === 0 || IS_ORE[blockId]) continue;
 					// PERF: Use column-cached biome (X offset is negligible for biome selection).
@@ -276,8 +279,9 @@ export class WorldGenerator {
 
 		// ── placeBlock closures ───────────────────────────────────────────
 		const writeBlock = (idx: number, blockId: number, overwrite: boolean) => {
-			if (blockId === 0 && blocks[idx] === WATER_BLOCK_ID) return;
-			if (blocks[idx] === 0 || overwrite) blocks[idx] = blockId;
+			const existing = blocks[idx];
+			if (blockId === 0 && existing === WATER_BLOCK_ID) return;
+			if (existing === 0 || overwrite) blocks[idx] = blockId;
 		};
 
 		// Checked variant — world coords; drops writes outside this chunk.
@@ -325,6 +329,21 @@ export class WorldGenerator {
 			);
 		};
 
+		// PERF: For fixed-X/Z Y-loops (the hottest fill loops in surface fill),
+		// the caller hoists the localX/localZ term once per column via
+		// columnBaseLocal instead of paying for it on every voxel.
+		const columnBaseLocal = (localX: number, localZ: number): number =>
+			localX + localZ * chunkSizeSq;
+
+		const placeColumnLocal = (
+			columnBase: number,
+			localY: number,
+			blockId: number,
+			overwrite = false,
+		) => {
+			writeBlock(columnBase + localY * chunkSize, blockId, overwrite);
+		};
+
 		const biome = getBiome(chunkWorldX, chunkWorldZ);
 
 		const surfaceGeneration = this.surfaceGenerator.generate(
@@ -333,7 +352,8 @@ export class WorldGenerator {
 			chunkZ,
 			biome,
 			placeBlock,
-			placeBlockLocal,
+			columnBaseLocal,
+			placeColumnLocal,
 		);
 
 		this.oreGenerator.generate(chunkX, chunkY, chunkZ, blocks);

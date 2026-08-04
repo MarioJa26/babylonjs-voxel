@@ -1,4 +1,4 @@
-import type {
+﻿import type {
 	NoiseBackend,
 	NoiseInstance,
 } from "../Generation/NoiseAndParameters/FastNoise/FastNoiseFactory";
@@ -164,6 +164,10 @@ export class WasmFastNoise implements NoiseInstance {
 	private seed: number;
 	private noiseType: NoiseType = 1;
 	private rotationType3D: RotationType3D = 0;
+	// PERF: Derived from noiseType + rotationType3D; recomputed only when either
+	// changes (setup time) instead of on every 3D sample/fill call, where it's
+	// invariant 99.9% of the time.
+	private transformType: number = transformTypeFor(1, 0);
 	private frequency = 1.0;
 	private fractalType: FractalType = 2; // Ridged (matches factory default)
 	private octaves = 3;
@@ -218,7 +222,7 @@ export class WasmFastNoise implements NoiseInstance {
 			this.frequency,
 			this.noiseType,
 			this.fractalType,
-			transformTypeFor(this.noiseType, this.rotationType3D),
+			this.transformType,
 			this.seed,
 			this.octaves,
 			this.lacunarity,
@@ -278,7 +282,7 @@ export class WasmFastNoise implements NoiseInstance {
 			this.frequency,
 			this.noiseType,
 			this.fractalType,
-			transformTypeFor(this.noiseType, this.rotationType3D),
+			this.transformType,
 			this.seed,
 			this.octaves,
 			this.lacunarity,
@@ -321,7 +325,7 @@ export class WasmFastNoise implements NoiseInstance {
 			this.frequency,
 			this.noiseType,
 			this.fractalType,
-			transformTypeFor(this.noiseType, this.rotationType3D),
+			this.transformType,
 			this.seed,
 			this.octaves,
 			this.lacunarity,
@@ -367,7 +371,7 @@ export class WasmFastNoise implements NoiseInstance {
 			this.frequency,
 			this.noiseType,
 			this.fractalType,
-			transformTypeFor(this.noiseType, this.rotationType3D),
+			this.transformType,
 			this.seed,
 			this.octaves,
 			this.lacunarity,
@@ -388,10 +392,12 @@ export class WasmFastNoise implements NoiseInstance {
 
 	SetNoiseType(noiseType: NoiseType): void {
 		this.noiseType = noiseType;
+		this.transformType = transformTypeFor(noiseType, this.rotationType3D);
 	}
 
 	SetRotationType3D(rotationType3D: RotationType3D): void {
 		this.rotationType3D = rotationType3D;
+		this.transformType = transformTypeFor(this.noiseType, rotationType3D);
 	}
 
 	SetFractalType(fractalType: FractalType): void {
