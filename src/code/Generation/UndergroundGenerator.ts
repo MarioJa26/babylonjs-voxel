@@ -6,6 +6,7 @@ import {
 	evaluateCaveCarve,
 } from "./CaveCarver";
 import { CaveNoiseGrid } from "./CaveNoiseGrid";
+import type { NoiseInstance } from "./NoiseAndParameters/FastNoise/FastNoiseFactory";
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
 
 const MIN_SOLID_NEIGHBORS = 5;
@@ -31,6 +32,9 @@ export class UndergroundGenerator {
 		cheeseNoise: (x: number, y: number, z: number) => number,
 		tunnelNoise: (x: number, y: number, z: number) => number,
 		detailNoise: (x: number, y: number, z: number) => number,
+		cheeseInstance?: NoiseInstance,
+		tunnelInstance?: NoiseInstance,
+		detailInstance?: NoiseInstance,
 	) {
 		this.params = params;
 		this.CHUNK_SIZE = params.CHUNK_SIZE;
@@ -49,6 +53,9 @@ export class UndergroundGenerator {
 			this.cheeseNoise,
 			this.tunnelNoise,
 			this.detailNoise,
+			cheeseInstance,
+			tunnelInstance,
+			detailInstance,
 		);
 	}
 

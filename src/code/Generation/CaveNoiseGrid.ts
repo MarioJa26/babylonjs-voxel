@@ -1,3 +1,4 @@
+import type { NoiseInstance } from "./NoiseAndParameters/FastNoise/FastNoiseFactory";
 import {
 	type NoiseCellParams,
 	NoiseSampler,
@@ -32,6 +33,9 @@ export class CaveNoiseGrid {
 		cheeseFn: (x: number, y: number, z: number) => number,
 		tunnelFn: (x: number, y: number, z: number) => number,
 		detailFn: (x: number, y: number, z: number) => number,
+		cheeseInstance?: NoiseInstance,
+		tunnelInstance?: NoiseInstance,
+		detailInstance?: NoiseInstance,
 	) {
 		// scale=1, xzFactor=1 → raw world coordinates, no internal rescaling.
 		const s = 1;
@@ -45,6 +49,7 @@ export class CaveNoiseGrid {
 			s,
 			xz,
 			cheeseFn,
+			cheeseInstance,
 		);
 		this.tunnel = new NoiseSampler(
 			chunkX,
@@ -55,6 +60,7 @@ export class CaveNoiseGrid {
 			s,
 			xz,
 			tunnelFn,
+			tunnelInstance,
 		);
 		this.detail = new NoiseSampler(
 			chunkX,
@@ -65,6 +71,7 @@ export class CaveNoiseGrid {
 			s,
 			xz,
 			detailFn,
+			detailInstance,
 		);
 	}
 

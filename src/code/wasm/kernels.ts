@@ -1009,6 +1009,68 @@ export function noise_scalar_3d(
 	);
 }
 
+// 4-lane equivalent of noise_scalar_3d: applies freq, the 3D transform and the
+// fractal per lane. Every op is per-lane scalar math, so each lane is
+// bit-identical to the scalar kernel (same guarantee as the fill kernels).
+function noise3L4(
+	x: v128,
+	y: v128,
+	z: v128,
+	freq: f32,
+	noiseType: i32,
+	fractalType: i32,
+	transformType: i32,
+	seed: i32,
+	octaves: i32,
+	lacunarity: f32,
+	gain: f32,
+	ws: f32,
+	pp: f32,
+): v128 {
+	if (noiseType != 1) return f32x4.splat(0.0);
+	const freqV: v128 = f32x4.splat(freq);
+	x = f32x4.mul(x, freqV);
+	y = f32x4.mul(y, freqV);
+	z = f32x4.mul(z, freqV);
+	if (transformType == 1) {
+		const G3s: v128 = f32x4.splat(G3);
+		const H3s: v128 = f32x4.splat(H3);
+		const xy: v128 = f32x4.add(x, y);
+		const s2: v128 = f32x4.mul(xy, G3s);
+		const zH: v128 = f32x4.mul(z, H3s);
+		x = f32x4.add(x, f32x4.sub(s2, zH));
+		y = f32x4.add(y, f32x4.sub(s2, zH));
+		z = f32x4.add(z, f32x4.mul(xy, H3s));
+	} else if (transformType == 2) {
+		const G3s: v128 = f32x4.splat(G3);
+		const H3s: v128 = f32x4.splat(H3);
+		const xz: v128 = f32x4.add(x, z);
+		const s2xz: v128 = f32x4.mul(xz, G3s);
+		const yH: v128 = f32x4.mul(y, H3s);
+		x = f32x4.add(x, f32x4.sub(s2xz, yH));
+		z = f32x4.add(z, f32x4.sub(s2xz, yH));
+		y = f32x4.add(y, f32x4.mul(xz, H3s));
+	} else if (transformType == 3) {
+		const F3s: v128 = f32x4.splat(F3);
+		const r: v128 = f32x4.mul(f32x4.add(f32x4.add(x, y), z), F3s);
+		x = f32x4.sub(r, x);
+		y = f32x4.sub(r, y);
+		z = f32x4.sub(r, z);
+	}
+	return fractal3L4(
+		seed,
+		x,
+		y,
+		z,
+		fractalType,
+		octaves,
+		lacunarity,
+		gain,
+		ws,
+		pp,
+	);
+}
+
 // --- batch exports -------------------------------------------------------------
 
 export function noise_fill_2d(
@@ -1557,9 +1619,10 @@ export function noise_fill_3d_affine(
 // Out-of-influence samples (|rel| > influenceRange) return plain rel without
 // touching the noise (identical to the JS getDensity fast-path).
 //
-// The noise evaluation reuses noise_scalar_3d, so every value is bit-identical
-// to the per-sample wasm scalar path; the only win is removing JS<->wasm
-// boundary crossings (~64k per chunk) for the scan + voxel loops.
+// The noise evaluation reuses noise3L4 (the 4-lane twin of noise_scalar_3d),
+// so every value is bit-identical to the per-sample wasm scalar path; the win
+// is removing JS<->wasm boundary crossings (~64k per chunk) for the scan +
+// voxel loops AND vectorizing the per-lane simplex math.
 
 export function surface_density_band(
 	out: usize,
@@ -1625,10 +1688,12 @@ export function surface_density_band(
 		if (!anyInside) {
 			result = rel;
 		} else {
-			const nBase0: f32 = noise_scalar_3d(
-				baseNoiseX,
-				f32x4.extract_lane(laneY, 0) * yFreq,
-				baseNoiseZ,
+			// PERF: lane-wise noise (noise3L4) instead of 8 scalar crossings —
+			// same per-lane values as noise_scalar_3d, so bit-identical output.
+			const nBase: v128 = noise3L4(
+				baseNoiseXV,
+				f32x4.mul(laneY, yFreqV),
+				baseNoiseZV,
 				freq,
 				noiseType,
 				fractalType,
@@ -1640,61 +1705,15 @@ export function surface_density_band(
 				ws,
 				pp,
 			);
-			const nBase1: f32 = noise_scalar_3d(
-				baseNoiseX,
-				f32x4.extract_lane(laneY, 1) * yFreq,
-				baseNoiseZ,
-				freq,
-				noiseType,
-				fractalType,
-				transformType,
-				seed,
-				octaves,
-				lacunarity,
-				gain,
-				ws,
-				pp,
-			);
-			const nBase2: f32 = noise_scalar_3d(
-				baseNoiseX,
-				f32x4.extract_lane(laneY, 2) * yFreq,
-				baseNoiseZ,
-				freq,
-				noiseType,
-				fractalType,
-				transformType,
-				seed,
-				octaves,
-				lacunarity,
-				gain,
-				ws,
-				pp,
-			);
-			const nBase3: f32 = noise_scalar_3d(
-				baseNoiseX,
-				f32x4.extract_lane(laneY, 3) * yFreq,
-				baseNoiseZ,
-				freq,
-				noiseType,
-				fractalType,
-				transformType,
-				seed,
-				octaves,
-				lacunarity,
-				gain,
-				ws,
-				pp,
-			);
-			const nBase: v128 = f32x4(nBase0, nBase1, nBase2, nBase3);
 
 			const ohX: v128 = f32x4.add(overhangBaseXV, f32x4.mul(laneY, oh0044V));
 			const ohY: v128 = f32x4.mul(laneY, oh012V);
 			const ohZ: v128 = f32x4.sub(overhangBaseZV, f32x4.mul(laneY, oh0036V));
 
-			const nOh0: f32 = noise_scalar_3d(
-				f32x4.extract_lane(ohX, 0),
-				f32x4.extract_lane(ohY, 0),
-				f32x4.extract_lane(ohZ, 0),
+			const nOh: v128 = noise3L4(
+				ohX,
+				ohY,
+				ohZ,
 				freq,
 				noiseType,
 				fractalType,
@@ -1706,52 +1725,6 @@ export function surface_density_band(
 				ws,
 				pp,
 			);
-			const nOh1: f32 = noise_scalar_3d(
-				f32x4.extract_lane(ohX, 1),
-				f32x4.extract_lane(ohY, 1),
-				f32x4.extract_lane(ohZ, 1),
-				freq,
-				noiseType,
-				fractalType,
-				transformType,
-				seed,
-				octaves,
-				lacunarity,
-				gain,
-				ws,
-				pp,
-			);
-			const nOh2: f32 = noise_scalar_3d(
-				f32x4.extract_lane(ohX, 2),
-				f32x4.extract_lane(ohY, 2),
-				f32x4.extract_lane(ohZ, 2),
-				freq,
-				noiseType,
-				fractalType,
-				transformType,
-				seed,
-				octaves,
-				lacunarity,
-				gain,
-				ws,
-				pp,
-			);
-			const nOh3: f32 = noise_scalar_3d(
-				f32x4.extract_lane(ohX, 3),
-				f32x4.extract_lane(ohY, 3),
-				f32x4.extract_lane(ohZ, 3),
-				freq,
-				noiseType,
-				fractalType,
-				transformType,
-				seed,
-				octaves,
-				lacunarity,
-				gain,
-				ws,
-				pp,
-			);
-			const nOh: v128 = f32x4(nOh0, nOh1, nOh2, nOh3);
 
 			const density: v128 = f32x4.add(
 				f32x4.add(rel, f32x4.mul(nBase, baseAmpV)),

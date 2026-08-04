@@ -103,12 +103,18 @@ export class WorldGenerator {
 			this.cheeseNoise,
 			this.tunnelNoise,
 			this.detailNoise,
+			cheeseInstance,
+			tunnelInstance,
+			detailInstance,
 		);
 		this.undergroundGenerator = new UndergroundGenerator(
 			params,
 			this.cheeseNoise,
 			this.tunnelNoise,
 			this.detailNoise,
+			cheeseInstance,
+			tunnelInstance,
+			detailInstance,
 		);
 
 		const oreNoise = createFastNoise3D({

@@ -26,6 +26,8 @@
 		"dist",
 		"src/code/wasm/**/*",
 		"src/code_js/**/*",
-		"src/BabylonExamples/**/*"
+		"src/BabylonExamples/**/*",
+		"tests/*",
+		"benchmarks/*"
 	]
 }

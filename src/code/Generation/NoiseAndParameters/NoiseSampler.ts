@@ -1,3 +1,5 @@
+import type { NoiseInstance } from "./FastNoise/FastNoiseFactory";
+
 export type NoiseCellParams = {
 	cellX: number;
 	cellY: number;
@@ -23,6 +25,10 @@ export class NoiseSampler {
 	private sampleRate: number;
 	private pointsPerDim: number;
 	private noiseFunction: (x: number, y: number, z: number) => number;
+	/** When present, the underlying FastNoiseLite instance is used to batch the
+	 * entire grid in one FillNoise3DAffine call (SIMD-friendly on the wasm
+	 * backend) instead of `pointsPerDim³` scalar crossings. */
+	private instance?: NoiseInstance;
 	private scale: number;
 	private xzFactor: number;
 
@@ -43,9 +49,11 @@ export class NoiseSampler {
 		scale: number,
 		xzFactor: number,
 		noiseFunction: (x: number, y: number, z: number) => number,
+		instance?: NoiseInstance,
 	) {
 		this.sampleRate = sampleRate;
 		this.noiseFunction = noiseFunction;
+		this.instance = instance;
 		this.scale = scale;
 		this.xzFactor = xzFactor;
 		this.isPow2 = sampleRate > 0 && (sampleRate & (sampleRate - 1)) === 0;
@@ -78,7 +86,6 @@ export class NoiseSampler {
 		const sampleRate = this.sampleRate;
 		const pointsPerDim = this.pointsPerDim;
 		const noiseSamples = this.noiseSamples;
-		const noiseFunction = this.noiseFunction;
 		const scale = this.scale;
 		const xzFactor = this.xzFactor;
 
@@ -86,7 +93,37 @@ export class NoiseSampler {
 		const chunkWorldY = chunkY * chunkSize;
 		const chunkWorldZ = chunkZ * chunkSize;
 
-		// Generate noise samples at grid points
+		// PERF: Batch the whole coarse grid through the backend's
+		// FillNoise3DAffine (4-lane SIMD on the wasm backend) instead of
+		// pointsPerDim³ scalar crossings. The affine map reduces to a plain
+		// per-axis grid here (bx = bz = 0).
+		const instance = this.instance;
+		if (instance) {
+			// Sampling coords: x' = chunkWorldX + col*sampleRate*scale*xzFactor
+			//                  y' = chunkWorldY + row*sampleRate*scale
+			//                  z' = chunkWorldZ + slice*sampleRate*scale*xzFactor
+			// Buffers in x,y,z order (memory order matches affine's col,row,slice).
+			instance.FillNoise3DAffine(
+				noiseSamples,
+				pointsPerDim, // width  (X)
+				pointsPerDim, // height (Y)
+				pointsPerDim, // depth  (Z)
+				chunkWorldX * scale * xzFactor,
+				chunkWorldY * scale,
+				chunkWorldZ * scale * xzFactor,
+				sampleRate * scale * xzFactor,
+				0,
+				sampleRate * scale,
+				sampleRate * scale * xzFactor,
+				0,
+			);
+			return;
+		}
+
+		const noiseFunction = this.noiseFunction;
+
+		// Fallback: scalar crossing per grid point. Memory order x,y,z matches
+		// the affine branch so the interpolation code is shared.
 		for (let y = 0; y < pointsPerDim; y++) {
 			const wy = chunkWorldY + y * sampleRate;
 			for (let z = 0; z < pointsPerDim; z++) {
@@ -98,7 +135,7 @@ export class NoiseSampler {
 						wy * scale,
 						wz * scale * xzFactor,
 					);
-					noiseSamples[x + z * pointsPerDim + y * pointsPerDim * pointsPerDim] =
+					noiseSamples[x + y * pointsPerDim + z * pointsPerDim * pointsPerDim] =
 						val;
 				}
 			}
@@ -141,14 +178,14 @@ export class NoiseSampler {
 	public getFrom(p: NoiseCellParams): number {
 		const ppd = this.pointsPerDim;
 		const ppd2 = this.pointsPerDimSq;
-		const idx = p.cellX + p.cellZ * ppd + p.cellY * ppd2;
+		const idx = p.cellX + p.cellY * ppd + p.cellZ * ppd2;
 
 		const i000 = idx;
 		const i100 = idx + 1;
-		const i001 = idx + ppd;
-		const i101 = idx + ppd + 1;
-		const i010 = idx + ppd2;
-		const i110 = idx + ppd2 + 1;
+		const i010 = idx + ppd;
+		const i110 = idx + ppd + 1;
+		const i001 = idx + ppd2;
+		const i101 = idx + ppd2 + 1;
 		const i011 = idx + ppd2 + ppd;
 		const i111 = idx + ppd2 + ppd + 1;
 

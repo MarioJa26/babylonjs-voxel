@@ -35,6 +35,7 @@ import { MountainCabinFeature } from "./Structure/MountainCabinFeature";
 import { MushroomHutFeature } from "./Structure/MushroomHutFeature";
 import { ObservatoryFeature } from "./Structure/ObservatoryFeature";
 import { PetrifiedShrineFeature } from "./Structure/PetrifiedShrineFeature";
+import { PondFeature } from "./Structure/PondFeature";
 import { PyramidFeature } from "./Structure/PyramidFeature";
 import { RavineFeature } from "./Structure/RavineFeature";
 import { RuinFeature } from "./Structure/RuinFeature";
@@ -241,6 +242,9 @@ export class SurfaceGenerator {
 		cheeseNoise: (x: number, y: number, z: number) => number,
 		tunnelNoise: (x: number, y: number, z: number) => number,
 		detailNoise: (x: number, y: number, z: number) => number,
+		cheeseInstance?: NoiseInstance,
+		tunnelInstance?: NoiseInstance,
+		detailInstance?: NoiseInstance,
 	) {
 		this.params = params;
 		SurfaceGenerator.treeNoise = treeNoise;
@@ -264,6 +268,9 @@ export class SurfaceGenerator {
 			this.cheeseNoise,
 			this.tunnelNoise,
 			this.detailNoise,
+			cheeseInstance,
+			tunnelInstance,
+			detailInstance,
 		);
 
 		this.features = [
@@ -289,6 +296,7 @@ export class SurfaceGenerator {
 			new WindmillFeature(),
 			new StoneCircleFeature(),
 			new WellFeature(),
+			new PondFeature(),
 			// Hot
 			new PyramidFeature(),
 			new DesertOasisFeature(),
