@@ -1553,6 +1553,12 @@ export class SurfaceGenerator {
 	/**
 	 * Surface-density sample at world Y `y`.  Declared static (no captured
 	 * state) so callers avoid allocating a closure on every per-column call.
+	 *
+	 * NOTE: findTopSurfaceY deliberately keeps this scalar path instead of
+	 * batching through SurfaceDensity — the coarse scan early-outs at the
+	 * first solid from the top (~9-10 evals typical), while a band call
+	 * always evaluates all 17+4 samples. Benchmarked: band version regressed
+	 * the JS pass 326→522ms and the wasm pass 112→117ms.
 	 */
 	private static evalSurfaceDensity(
 		y: number,

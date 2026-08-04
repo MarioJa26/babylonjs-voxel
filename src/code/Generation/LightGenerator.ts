@@ -18,6 +18,8 @@ export type LightSeedState = {
 export class LightGenerator {
 	private static chunkSize: number;
 	private static chunkSizeSq: number;
+	private static csShift: number;
+	private static csShift2: number;
 
 	/**
 	 * Reusable queue buffer for the "generate immediately" path.
@@ -44,6 +46,14 @@ export class LightGenerator {
 		const pot = nextPowerOfTwo(rawCap);
 
 		LightGenerator.queueMask = pot - 1;
+
+		// CHUNK_SIZE is a power of two: shift = bit position of the set bit.
+		let csShift = 0;
+		for (let m = LightGenerator.chunkSize; m > 1; m >>= 1) {
+			csShift++;
+		}
+		LightGenerator.csShift = csShift;
+		LightGenerator.csShift2 = csShift * 2;
 
 		this.lightQueue = new Uint16Array(pot);
 		LightGenerator.scratchQueue = new Uint16Array(pot);
@@ -193,7 +203,7 @@ export class LightGenerator {
 						// Lava emits block light
 						if (blockId === 24) {
 							light[idx] = (light[idx] & 0xf0) | 15;
-							queue[tail & mask] = (x << 10) | (y << 5) | z;
+							queue[tail & mask] = idx;
 							tail++;
 						}
 
@@ -227,7 +237,7 @@ export class LightGenerator {
 					// queue with every water voxel in tall columns.
 					const shouldSeed = !blockFiltersFullSun || !sourceFiltersFullSun;
 					if (shouldSeed) {
-						queue[tail & mask] = (x << 10) | (y << 5) | z;
+						queue[tail & mask] = idx;
 						tail++;
 					}
 
@@ -256,17 +266,14 @@ export class LightGenerator {
 
 		const mask = LightGenerator.queueMask;
 		const CHUNK_SIZE = LightGenerator.chunkSize;
-		const CHUNK_SIZE_SQ = LightGenerator.chunkSizeSq;
+		const csShift = LightGenerator.csShift;
+		const csMask = CHUNK_SIZE - 1;
+		const csShift2 = LightGenerator.csShift2;
 
 		while (head < tail) {
-			const val = queue[head & mask];
+			const idx = queue[head & mask];
 			head++;
 
-			const x = (val >> 10) & 0x1f;
-			const y = (val >> 5) & 0x1f;
-			const z = val & 0x1f;
-
-			const idx = x + y * CHUNK_SIZE + z * CHUNK_SIZE_SQ;
 			const sourceBlockId = blocks[idx];
 			const lightVal = light[idx];
 			const skyLight = (lightVal >> 4) & 0x0f;
@@ -279,11 +286,9 @@ export class LightGenerator {
 			const skyM1 = skyLight - 1;
 			const blkM1 = blockLight - 1;
 
-			if (x + 1 < CHUNK_SIZE) {
+			if ((idx & csMask) !== csMask) {
 				tail = this.tryPropagate(
-					x + 1,
-					y,
-					z,
+					idx + 1,
 					skyM1,
 					blkM1,
 					sourceBlockId,
@@ -292,17 +297,13 @@ export class LightGenerator {
 					light,
 					queue,
 					tail,
-					CHUNK_SIZE,
-					CHUNK_SIZE_SQ,
 					mask,
 				);
 			}
 
-			if (x > 0) {
+			if ((idx & csMask) !== 0) {
 				tail = this.tryPropagate(
-					x - 1,
-					y,
-					z,
+					idx - 1,
 					skyM1,
 					blkM1,
 					sourceBlockId,
@@ -311,17 +312,13 @@ export class LightGenerator {
 					light,
 					queue,
 					tail,
-					CHUNK_SIZE,
-					CHUNK_SIZE_SQ,
 					mask,
 				);
 			}
 
-			if (y + 1 < CHUNK_SIZE) {
+			if (((idx >> csShift) & csMask) !== csMask) {
 				tail = this.tryPropagate(
-					x,
-					y + 1,
-					z,
+					idx + CHUNK_SIZE,
 					skyM1,
 					blkM1,
 					sourceBlockId,
@@ -330,23 +327,19 @@ export class LightGenerator {
 					light,
 					queue,
 					tail,
-					CHUNK_SIZE,
-					CHUNK_SIZE_SQ,
 					mask,
 				);
 			}
 
-			if (y > 0) {
-				const belowIdx = x + (y - 1) * CHUNK_SIZE + z * CHUNK_SIZE_SQ;
+			if (((idx >> csShift) & csMask) !== 0) {
+				const belowIdx = idx - CHUNK_SIZE;
 				const preservesFullSunDown =
 					skyLight === 15 &&
 					!filtersFullSunlight(sourceBlockId) &&
 					!filtersFullSunlight(blocks[belowIdx]);
 
 				tail = this.tryPropagate(
-					x,
-					y - 1,
-					z,
+					belowIdx,
 					preservesFullSunDown ? 15 : skyM1,
 					blkM1,
 					sourceBlockId,
@@ -355,17 +348,13 @@ export class LightGenerator {
 					light,
 					queue,
 					tail,
-					CHUNK_SIZE,
-					CHUNK_SIZE_SQ,
 					mask,
 				);
 			}
 
-			if (z + 1 < CHUNK_SIZE) {
+			if ((idx >> csShift2) !== csMask) {
 				tail = this.tryPropagate(
-					x,
-					y,
-					z + 1,
+					idx + CHUNK_SIZE * CHUNK_SIZE,
 					skyM1,
 					blkM1,
 					sourceBlockId,
@@ -374,17 +363,13 @@ export class LightGenerator {
 					light,
 					queue,
 					tail,
-					CHUNK_SIZE,
-					CHUNK_SIZE_SQ,
 					mask,
 				);
 			}
 
-			if (z > 0) {
+			if ((idx >> csShift2) !== 0) {
 				tail = this.tryPropagate(
-					x,
-					y,
-					z - 1,
+					idx - CHUNK_SIZE * CHUNK_SIZE,
 					skyM1,
 					blkM1,
 					sourceBlockId,
@@ -393,8 +378,6 @@ export class LightGenerator {
 					light,
 					queue,
 					tail,
-					CHUNK_SIZE,
-					CHUNK_SIZE_SQ,
 					mask,
 				);
 			}
@@ -402,9 +385,7 @@ export class LightGenerator {
 	}
 
 	private tryPropagate(
-		nx: number,
-		ny: number,
-		nz: number,
+		nIdx: number,
 		targetSky: number,
 		targetBlock: number,
 		sourceBlockId: number,
@@ -413,13 +394,9 @@ export class LightGenerator {
 		light: Uint8Array,
 		queue: Uint16Array,
 		tail: number,
-		CHUNK_SIZE: number,
-		CHUNK_SIZE_SQ: number,
 		mask: number,
 	): number {
-		const idx = nx + ny * CHUNK_SIZE + nz * CHUNK_SIZE_SQ;
-
-		const targetBlockId = blocks[idx];
+		const targetBlockId = blocks[nIdx];
 		if (!LightGenerator.isTransparentBlock(targetBlockId)) {
 			return tail;
 		}
@@ -435,7 +412,7 @@ export class LightGenerator {
 			if (sourceIsWater && !targetIsWater) return tail;
 		}
 
-		const currentVal = light[idx];
+		const currentVal = light[nIdx];
 		const currentSky = (currentVal >> 4) & 0x0f;
 		const currentBlock = currentVal & 0x0f;
 
@@ -443,8 +420,8 @@ export class LightGenerator {
 		const newBlock = targetBlock > currentBlock ? targetBlock : currentBlock;
 
 		if (newSky !== currentSky || newBlock !== currentBlock) {
-			light[idx] = (newSky << 4) | newBlock;
-			queue[tail & mask] = (nx << 10) | (ny << 5) | nz;
+			light[nIdx] = (newSky << 4) | newBlock;
+			queue[tail & mask] = nIdx;
 			return tail + 1;
 		}
 

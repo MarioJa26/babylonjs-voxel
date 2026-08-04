@@ -20,16 +20,15 @@
  *   - per column: top solid Y within 1 block for >= 99% of columns
  */
 
-import { readFileSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { GenerationParams } from "../src/code/Generation/NoiseAndParameters/GenerationParams";
 import {
 	createFastNoise,
 	getNoiseBackend,
 	setNoiseBackend,
 } from "../src/code/Generation/NoiseAndParameters/FastNoise/FastNoiseFactory";
+import { GenerationParams } from "../src/code/Generation/NoiseAndParameters/GenerationParams";
 import { setTerrainSeed } from "../src/code/Generation/TerrainHeightMap";
 import { WorldGenerator } from "../src/code/Generation/WorldGenerator";
 import { createWasmNoiseBackend } from "../src/code/Lib/WasmKernels";
@@ -164,7 +163,7 @@ function runPass(wasmBytes: Uint8Array | null): PassResult {
 		frequency: GenerationParams.CONTINENTALNESS_NOISE_SCALE,
 	});
 	const out2d = new Float32Array(CS * CS);
-	const iters2d = 500;
+	const iters2d = 5000;
 	for (let i = 0; i < 50; i++) {
 		fillInst2d.FillNoise2D(out2d, CS, CS, -40 + (i % 5), -40 + (i % 3) * 7);
 	}
@@ -181,13 +180,29 @@ function runPass(wasmBytes: Uint8Array | null): PassResult {
 	});
 	fillInst3d.SetFractalOctaves(2);
 	const out3d = new Float32Array(CS * CS * CS);
-	const iters3d = 200;
+	const iters3d = 2000;
 	for (let i = 0; i < 20; i++) {
-		fillInst3d.FillNoise3D(out3d, CS, CS, CS, -40 + (i % 7), -20, -40 + (i % 5));
+		fillInst3d.FillNoise3D(
+			out3d,
+			CS,
+			CS,
+			CS,
+			-40 + (i % 7),
+			-20,
+			-40 + (i % 5),
+		);
 	}
 	const t3 = performance.now();
 	for (let i = 0; i < iters3d; i++) {
-		fillInst3d.FillNoise3D(out3d, CS, CS, CS, -40 + (i % 7), -20, -40 + (i % 5));
+		fillInst3d.FillNoise3D(
+			out3d,
+			CS,
+			CS,
+			CS,
+			-40 + (i % 7),
+			-20,
+			-40 + (i % 5),
+		);
 		consume(out3d);
 	}
 	const fill3dMs = (performance.now() - t3) / iters3d;
@@ -203,9 +218,7 @@ function runPass(wasmBytes: Uint8Array | null): PassResult {
 			hashParts.push(b);
 		}
 	}
-	const hashBuf = new Uint8Array(
-		hashParts.reduce((n, x) => n + x.length, 0),
-	);
+	const hashBuf = new Uint8Array(hashParts.reduce((n, x) => n + x.length, 0));
 	let offset = 0;
 	for (const part of hashParts) {
 		hashBuf.set(part, offset);
@@ -229,13 +242,23 @@ function noiseOrthogonalityCheck(wasmBytes: Uint8Array): void {
 		{ freq: GenerationParams.TEMPERATURE_NOISE_SCALE, octaves: 3 },
 	];
 	setNoiseBackend(jsBackend);
-	const js2d = cfgs.map((c) => createFastNoise({ seed: 4242, frequency: c.freq }));
-	const js3d = createFastNoise({ seed: 4242, frequency: GenerationParams.CAVE_CHEESE_FREQ });
+	const js2d = cfgs.map((c) =>
+		createFastNoise({ seed: 4242, frequency: c.freq }),
+	);
+	const js3d = createFastNoise({
+		seed: 4242,
+		frequency: GenerationParams.CAVE_CHEESE_FREQ,
+	});
 	js3d.SetFractalOctaves(2);
 
 	setNoiseBackend(createWasmNoiseBackend(wasmBytes));
-	const wm2d = cfgs.map((c) => createFastNoise({ seed: 4242, frequency: c.freq }));
-	const wm3d = createFastNoise({ seed: 4242, frequency: GenerationParams.CAVE_CHEESE_FREQ });
+	const wm2d = cfgs.map((c) =>
+		createFastNoise({ seed: 4242, frequency: c.freq }),
+	);
+	const wm3d = createFastNoise({
+		seed: 4242,
+		frequency: GenerationParams.CAVE_CHEESE_FREQ,
+	});
 	wm3d.SetFractalOctaves(2);
 
 	let worst = 0;
@@ -289,7 +312,9 @@ function compare(jsPass: PassResult, wmPass: PassResult): void {
 		const vol = CS * CS * CS;
 
 		if (Math.abs(a.airRatio - b.airRatio) > 0.005) {
-			fail(`chunk (${cx},${cy},${cz}): air ratio ${a.airRatio} vs ${b.airRatio}`);
+			fail(
+				`chunk (${cx},${cy},${cz}): air ratio ${a.airRatio} vs ${b.airRatio}`,
+			);
 		}
 		if (Math.abs(a.caveRatio - b.caveRatio) > 0.01) {
 			fail(
@@ -346,7 +371,9 @@ function compare(jsPass: PassResult, wmPass: PassResult): void {
 }
 
 async function main(): Promise<void> {
-	const wasmBytes = existsSync(wasmPath) ? new Uint8Array(readFileSync(wasmPath)) : null;
+	const wasmBytes = existsSync(wasmPath)
+		? new Uint8Array(readFileSync(wasmPath))
+		: null;
 
 	// Pass 1 — JS backend (default at module load).
 	const jsPass = runPass(null);
@@ -388,14 +415,20 @@ async function main(): Promise<void> {
 		);
 	}
 
-	console.log(`JS pass: ${jsPass.totalMs.toFixed(1)}ms total (hash ${jsPass.hash})`);
+	console.log(
+		`JS pass: ${jsPass.totalMs.toFixed(1)}ms total (hash ${jsPass.hash})`,
+	);
 
 	if (!wmPass) {
-		console.log("kernels.wasm not found — wasm pass skipped (baseline written).");
+		console.log(
+			"kernels.wasm not found — wasm pass skipped (baseline written).",
+		);
 		return;
 	}
 
-	console.log(`wasm pass: ${wmPass.totalMs.toFixed(1)}ms total (hash ${wmPass.hash})`);
+	console.log(
+		`wasm pass: ${wmPass.totalMs.toFixed(1)}ms total (hash ${wmPass.hash})`,
+	);
 	compare(jsPass, wmPass);
 }
 
