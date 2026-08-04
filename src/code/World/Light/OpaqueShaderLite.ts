@@ -118,9 +118,9 @@ fn valueNoise(p : vec2<f32>) -> f32 {
 
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
-  // meta (isWater flag in bit 3) is carried in vMeta for near transparent
-  // meshes; glass/other transparent have isWater = 0.
-  let isWater = f32((in.vMeta >> 3u) & 1u);
+  // meta (isWater flag in bit 2) is carried in vMeta for near transparent
+  // meshes; glass/other transparent have isWater = 0. Bit 3 stays posOffX.
+  let isWater = f32((in.vMeta >> 2u) & 1u);
 
   let scrollDir = vec2<f32>(-shaderUniforms.time * 0.3, shaderUniforms.time * 0.4) * isWater;
   let animatedUV = in.vUV + scrollDir;

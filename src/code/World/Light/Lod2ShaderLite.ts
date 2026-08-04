@@ -156,8 +156,8 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   var color = (diffuseColor.rgb * (1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity * in.vLight.x) + specular) * lightMix * faceShade;
   color = applyTintBucket(color, in.vTint);
 
-  // meta (isWater flag in bit 3) tints the water surface a flat blue.
-  let isWater = f32((in.vMeta >> 3u) & 1u);
+  // meta (isWater flag in bit 2) tints the water surface a flat blue.
+  let isWater = f32((in.vMeta >> 2u) & 1u);
   color = mix(color, vec3<f32>(0.1, 0.4, 0.7) * lightMix, isWater);
 
   color = mix(color, in.vFogColor, in.vFogFactor);

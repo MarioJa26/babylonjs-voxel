@@ -719,10 +719,13 @@ function processQueue(
 
 			const targetBlockId = unpackBlockId(targetPacked);
 
-			if (isSkyLight && isDown !== 1 && filtersFullSunlight(targetBlockId)) {
-				if (srcFiltersFullSun) continue;
-			}
-
+			// Water-to-water lateral skylight is ALLOWED (worldgen parity —
+			// LightGenerator's rule is "water receives lateral skylight only
+			// from water"). Removal of this guard previously cut lateral
+			// underwater spread: sunlit water lit a shaded pocket by one cell's
+			// re-seed, but the propagation pass refused to carry it any further
+			// through the connected water body, blacking out everything beyond
+			// the first water cell under a ceiling/overhang.
 			const preservesFullSun =
 				isSkyLight &&
 				isDown === 1 &&
@@ -835,11 +838,21 @@ function processRemoveQueue(
 
 			if (
 				isSkyLight
-					? !isTransparent(sourcePacked, axis, dir) ||
-						(isDown !== 1 && srcFiltersFullSun)
+					? !isTransparent(sourcePacked, axis, dir)
 					: !sourceEmits && !isTransparent(sourcePacked, axis, dir)
 			)
 				continue;
+
+			// Water lateral-emission rule: a water cell's skylight depends only
+			// on the cell above, so its removal never cascades into lateral or
+			// upward neighbours. BUT a lateral/upward neighbour is exactly where
+			// a removed water cell's own light came from — if it holds light it
+			// must be kept alive as a rebuild seed (Q_B), or the restore pass
+			// can never re-light the water from the sky above and the surface
+			// stays permanently black (previous flow/relight sweeps blacked out
+			// every pond under open sky).
+			const isWaterLateralBlock =
+				isSkyLight && isDown !== 1 && srcFiltersFullSun;
 
 			const targetPacked = getViewBlockPacked(targetView, tx, ty, tz);
 			if (!isTransparent(targetPacked, axis, -dir)) continue;
@@ -849,7 +862,13 @@ function processRemoveQueue(
 			const neighborLevel = isSkyLight
 				? (tArr[tIdx] >> LIGHT_SKY_SHIFT) & 0xf
 				: tArr[tIdx] & 0xf;
+
 			if (neighborLevel === 0) continue;
+
+			if (isWaterLateralBlock) {
+				Q_B.push(targetView.headerSlot, tx, ty, tz, neighborLevel);
+				continue;
+			}
 
 			const targetBlockId = unpackBlockId(targetPacked);
 			const preservesFullSun =

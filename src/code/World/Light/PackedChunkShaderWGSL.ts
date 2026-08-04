@@ -143,6 +143,13 @@ ${vsOutFields(o)}
 // the per-face local chunk 0..63 selecting one of the 64 chunkOffsets entries
 // of this group.
 //
+// meta byte (word2 byte 2) bit usage:
+//   bit0 flip · bit1-2 materialType(2) · bit3 posOffX · bit4 diag ·
+//   bit5 diagVariant · bit6 rawDim · bit7 posOffZ
+// Water faces carry isWater in bit 2 (their materialType=1 leaves bit 2 clear;
+// Cutout=2 faces render on the opaque pipeline), so bit 3 stays a clean
+// posOffX correction for every face — water never sets posOffX/posOffZ.
+//
 // The face arenas are declared as flat array<u32> (NOT array<vec3<u32>>:
 // WGSL storage-buffer layout pads vec3 elements to a 16-byte stride, which
 // would misalign every face after the first), so loadFace reads 3 consecutive

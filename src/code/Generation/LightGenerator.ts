@@ -352,7 +352,7 @@ export class LightGenerator {
 				);
 			}
 
-			if ((idx >> csShift2) !== csMask) {
+			if (idx >> csShift2 !== csMask) {
 				tail = this.tryPropagate(
 					idx + CHUNK_SIZE * CHUNK_SIZE,
 					skyM1,
@@ -367,7 +367,7 @@ export class LightGenerator {
 				);
 			}
 
-			if ((idx >> csShift2) !== 0) {
+			if (idx >> csShift2 !== 0) {
 				tail = this.tryPropagate(
 					idx - CHUNK_SIZE * CHUNK_SIZE,
 					skyM1,

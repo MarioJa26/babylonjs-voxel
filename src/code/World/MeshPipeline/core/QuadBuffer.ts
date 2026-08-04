@@ -26,6 +26,13 @@ const WATER_LEVEL_PAIR_MASK = 0x20000; // bit 17 — indicates water level pair 
  *   word0 (faceDataA): sx | sy<<8 | sz<<16 | axisFace(3)<<24 | tint(3)<<27
  *   word1 (faceDataB): sw | sh<<8 | tileX<<16 | tileY<<24
  *   word2 (faceDataC): ao | light<<8 | meta<<16 | chunkIndex(6)<<24
+ * meta byte (word2 byte 2):
+ *   bit0 flip · bit1-2 materialType(2) · bit3 posOffX · bit4 diag ·
+ *   bit5 diagVariant · bit6 rawDim · bit7 posOffZ
+ * For water faces bit 2 doubles as isWater (water's materialType=1 leaves it
+ * clear otherwise; Cutout=2 faces render on the opaque pipeline, which never
+ * reads meta). isWater lives at bit 2 so the vertex shader's posOffX (bit 3)
+ * stays clean for water — water never sets posOffX/posOffZ.
  * The chunkIndex byte (word2 byte 3) is written as 0 here; the merged-group
  * layer ORs in the per-face local chunk index (0..63) when assembling the
  * group buffer, and PackedChunkMesh uploads it to the GPU arena verbatim.
@@ -263,7 +270,7 @@ export class QuadBuffer {
 		const waterAbove = (packedBlock & WATER_ABOVE_MASK) !== 0;
 		const rawDim = width > 31 || height > 31 ? 1 : 0;
 
-		const meta = ((materialType & 0x3) << 1) | (1 << 3) | (rawDim ? 64 : 0);
+		const meta = ((materialType & 0x3) << 1) | (1 << 2) | (rawDim ? 64 : 0);
 
 		const tint = BlockTint[blockId];
 
