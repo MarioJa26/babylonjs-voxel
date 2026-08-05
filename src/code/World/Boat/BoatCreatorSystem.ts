@@ -1,7 +1,6 @@
-import { Vector3 } from "@babylonjs/core";
+import { addVec3ToRef, type Vec3, vec3 } from "@babylonjs/lite";
 import { CustomBoat } from "@/code/Entities/CustomBoat";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
-import { Map1 } from "@/code/Maps/Map1";
 import type { Player } from "@/code/Player/Player";
 import { BoatChunk, type BoatChunkBlock } from "@/code/World/Boat/BoatChunk";
 import { Chunk } from "@/code/World/Chunk/Chunk";
@@ -35,7 +34,9 @@ const FLOOD_DIRECTIONS: ReadonlyArray<[number, number, number]> = [
 ];
 
 // Expand this set with any additional block IDs that should be treated as hull.
-let sourceBlockIds = new Set<number>([6, 10, 12, 37, 41, 42, 60, 61, 22]);
+let sourceBlockIds = new Set<number>([
+	6, 10, 12, 37, 41, 42, 60, 61, 62, 63, 22,
+]);
 const maxFloodBlocks = 8192;
 let visualMode: VisualMode = "blocks";
 
@@ -101,7 +102,7 @@ export function tryCreateBoatFromMarker(
 	const initialYaw = computeForwardYaw(bounds, markerX, markerZ);
 
 	let hx = bounds.sizeX * 0.5;
-	const hy = bounds.sizeY * 0.5;
+	const _hy = bounds.sizeY * 0.5;
 	let hz = bounds.sizeZ * 0.5;
 
 	const yaw = initialYaw % (Math.PI * 2);
@@ -114,10 +115,6 @@ export function tryCreateBoatFromMarker(
 		[hx, hz] = [hz, hx];
 	}
 
-	const halfExtents = new Vector3(hx, hy, hz);
-
-	const scene = Map1.mainScene;
-
 	let boatChunk: BoatChunk | undefined;
 	if (visualMode === "blocks") {
 		const localBlocks: BoatChunkBlock[] = hullBlocks.map((block) => ({
@@ -128,12 +125,12 @@ export function tryCreateBoatFromMarker(
 			blockState: block.blockState,
 			lightLevel: block.lightLevel,
 		}));
-		const localCenter = new Vector3(
+		const localCenter = vec3(
 			LOCAL_CHUNK_PADDING + bounds.sizeX * 0.5,
 			LOCAL_CHUNK_PADDING + bounds.sizeY * 0.5,
 			LOCAL_CHUNK_PADDING + bounds.sizeZ * 0.5,
 		);
-		boatChunk = new BoatChunk(scene, localBlocks, localCenter);
+		boatChunk = new BoatChunk(localBlocks, localCenter);
 	}
 
 	const customVisual = boatChunk?.visualRoot;
@@ -144,8 +141,9 @@ export function tryCreateBoatFromMarker(
 	}
 	setBlock(markerX, markerY, markerZ, BlockType.Air, 0);
 
-	const paddedHalfExtents = halfExtents.add(new Vector3(0.05, 0.05, 0.05));
-	new CustomBoat(scene, player, GenerationParams.SEA_LEVEL, center, {
+	const paddedHalfExtents = vec3(0, 0, 0);
+	addVec3ToRef(center, vec3(0.5, 0.5, 0.5), paddedHalfExtents);
+	new CustomBoat(player, GenerationParams.SEA_LEVEL, center, {
 		collisionHalfExtents: paddedHalfExtents,
 		customVisualRoot: customVisual,
 		skipDefaultModel: visualMode === "blocks",
@@ -223,8 +221,8 @@ function computeBounds(blocks: VoxelBlock[]): {
 	sizeX: number;
 	sizeY: number;
 	sizeZ: number;
-	center: Vector3;
-	halfExtents: Vector3;
+	center: Vec3;
+	halfExtents: Vec3;
 } {
 	let minX = Number.POSITIVE_INFINITY;
 	let minY = Number.POSITIVE_INFINITY;
@@ -246,8 +244,8 @@ function computeBounds(blocks: VoxelBlock[]): {
 	const sizeY = maxY - minY + 1;
 	const sizeZ = maxZ - minZ + 1;
 
-	const halfExtents = new Vector3(sizeX * 0.5, sizeY * 0.5, sizeZ * 0.5);
-	const center = new Vector3(
+	const halfExtents = vec3(sizeX * 0.5, sizeY * 0.5, sizeZ * 0.5);
+	const center = vec3(
 		minX + halfExtents.x,
 		minY + halfExtents.y,
 		minZ + halfExtents.z,

@@ -1,5 +1,6 @@
-import type { Observer, Scene } from "@babylonjs/core";
-import { worldToChunkCoord } from "../Shared/ChunkCoordUtils";
+import type { SceneContext } from "@babylonjs/lite";
+import { onBeforeRender } from "@babylonjs/lite";
+import { worldToChunkCoord } from "../Lib/VoxelMath";
 import { getChunk } from "../World/Chunk/Chunk";
 import {
 	areChunksLoadedAround,
@@ -8,6 +9,10 @@ import {
 import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 import type { Player } from "./Player";
 
+/**
+ * Lite (native) port of PlayerLoadingGate.
+ * Reuses the core-free ChunkLoadingSystem streaming logic.
+ */
 export class PlayerLoadingGate {
 	private static readonly SPAWN_CHUNK_RADIUS = 1;
 	private static readonly SPAWN_READY_FRAME_THRESHOLD = 17;
@@ -16,15 +21,14 @@ export class PlayerLoadingGate {
 	private spawnReadyFrames = 0;
 	private isActive = true;
 	private readonly startMs: number;
-	private beforeRenderObserver: Observer<Scene> | null = null;
 
 	constructor(
-		private readonly scene: Scene,
+		private readonly scene: SceneContext,
 		private readonly player: Player,
 	) {
 		this.startMs = performance.now();
 		this.player.playerVehicle.lockMovementAtCurrentPosition();
-		this.beforeRenderObserver = this.scene.onBeforeRenderObservable.add(() => {
+		onBeforeRender(this.scene, () => {
 			this.update();
 		});
 	}
@@ -32,21 +36,13 @@ export class PlayerLoadingGate {
 	public dispose(): void {
 		if (!this.isActive) return;
 		this.isActive = false;
-
-		if (this.beforeRenderObserver) {
-			this.scene.onBeforeRenderObservable.remove(this.beforeRenderObserver);
-			this.beforeRenderObserver = null;
-		}
-
 		if (this.player.playerVehicle.isMovementLocked) {
 			this.player.playerVehicle.unlockMovement();
 		}
 	}
 
 	private update(): void {
-		if (!this.isActive) {
-			return;
-		}
+		if (!this.isActive) return;
 		const playerPos = this.player.position;
 		const chunkX = worldToChunkCoord(playerPos.x);
 		const chunkY = worldToChunkCoord(playerPos.y);
@@ -55,7 +51,7 @@ export class PlayerLoadingGate {
 			chunkX,
 			chunkY,
 			chunkZ,
-			SETTING_PARAMS.RENDER_DISTANCE * 2,
+			SETTING_PARAMS.RENDER_DISTANCE,
 			SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
 			undefined,
 			undefined,
@@ -99,7 +95,6 @@ export class PlayerLoadingGate {
 			if (!chunk?.isLoaded) {
 				continue;
 			}
-
 			if (chunk.mesh || chunk.transparentMesh) {
 				return true;
 			}

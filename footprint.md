@@ -1,85 +1,45 @@
 # Project Footprint
 
-Generated: 2026-07-09T20:48:34.412Z
+Generated: 2026-07-23T15:09:15.297Z
 
-> **Summary:** 133 classes · 2305 members · 502 module-level functions · 47196 LOC
+> **Summary:** 126 classes · 1675 members · 503 module-level functions · 52776 LOC
 
 ---
 
-## `Entities/AdvancedBoat.ts` (325 LOC)
+## `Entities/AdvancedBoat.ts` (327 LOC)
 
 ### export class AdvancedBoat implements IUsable
 
 **Constructor**
-- `constructor(scene: Scene, player: Player, waterLevel: number, position?: Vector3)`
+- `constructor(SceneContext: SceneContext, player: Player, waterLevel: number, position?: Vec3)`
 
 **Properties**
-- `#collisionHalfExtents: unknown`
-- `#boat: Mesh`
-- `#mount: Mount`
-- `#buoyancyPoints: Vector3[]`
-- `#baseBuoyancyForce: unknown`
-- `#mass: unknown`
-- `#gravity: unknown`
-- `#collisionStepSize: unknown`
-- `#collisionEpsilon: unknown`
-- `#buoyancyTorqueScale: unknown`
-- `#lockRoll: unknown`
-- `#lockPitch: unknown`
-- `#linearVelocity: unknown`
-- `#angularVelocity: unknown`
-- `#voxelCollider: VoxelAabbCollider`
-- `readonly #_worldPt: unknown`
-- `readonly #_buoyVec: unknown`
-- `readonly #_accel: unknown`
-- `readonly #_lever: unknown`
-- `readonly #_torque: unknown`
-- `readonly #_deltaRot: unknown`
-- `readonly #_nextRot: unknown`
-- `readonly #_euler: unknown`
-- `#renderObserver: Observer<Scene> | null`
-- `static #boatControls: PaddleBoatControls`
-- `#submergedPoints: unknown`
+- `public currentYaw`
 
 **Accessors**
 - `public get boatMesh(): Mesh`
-- `public get boatPosition(): Vector3`
+- `public get boatPosition(): Vec3`
 - `public get mount(): Mount`
 - `public get submergedPoints(): number`
 
 **Methods**
-- `private createBoat(scene: Scene, position: Vector3 | undefined, waterLevel: number): void`
+- `private createBoat(scene: SceneContext, position: Vec3 | undefined, waterLevel: number): void`
 - `private setupBuoyancyPoints(): void`
-- `private setupAdvancedPhysics(scene: Scene): void`
-- `private applyForceAtPoint(force: Vector3, worldPoint: Vector3, dt: number): void`
+- `private setupAdvancedPhysics(scene: SceneContext): void`
+- `private applyForceAtPoint(force: Vec3, worldPoint: Vec3, dt: number): void`
 - `private integrateRotation(dt: number): void`
 - `private moveAxis(axis: Axis, delta: number): void`
-- `private getWaterSubmersionAtPoint(worldPoint: Vector3): number`
-- `public applyImpulse(impulse: Vector3, worldPoint: Vector3): void`
-- `public applyAngularImpulse(impulse: Vector3): void`
-- `public getBoatTopYToRef(out: Vector3): void`
-- `public getBoatTopY(): Vector3`
+- `private getWaterSubmersionAtPoint(worldPoint: Vec3): number`
+- `public applyImpulse(impulse: Vec3, worldPoint: Vec3): void`
+- `public applyAngularImpulse(impulse: Vec3): void`
+- `public getBoatTopYToRef(out: Vec3): void`
+- `public getBoatTopY(): Vec3`
 - `use(player: Player): void`
 
----
-
-## `Entities/BuoyantObject.ts` (60 LOC)
-
-### export class BuoyantObject
-
-**Constructor**
-- `constructor(scene: Scene, mesh: Mesh, waterMaterial: WaterMaterial, waterHeight: number)`
-
-**Properties**
-- `public scene: Scene`
-- `public mesh: Mesh`
-- `public waterMaterial: WaterMaterial`
-- `public waterHeight: number`
-- `private verticalVelocity: unknown`
-- `readonly #renderHandle: () => void`
-
-**Methods**
-- `dispose(): void`
+**Types / Interfaces / Enums**
+- type `Mesh`
+- type `SceneContext`
+- type `Vec3`
 
 ---
 
@@ -88,97 +48,113 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class CustomBoat implements IUsable
 
 **Constructor**
-- `constructor(scene: Scene, player: Player, waterLevel: number, position?: Vector3, options?: CustomBoatOptions)`
+- `constructor(player: Player, waterLevel: number, position?: Vec3, options?: CustomBoatOptions)`
 
 **Properties**
-- `static readonly CHUNK_ENTITY_TYPE: unknown`
-- `static #chunkReloadContext: {
-		scene: Scene;
-		player: Player;
-		waterLevel: number;
-	} | null`
-- `static #chunkLoaderRegistered: unknown`
-- `static #activeBoats: unknown`
-- `static #boatsSnapshot: CustomBoat[]`
-- `static #boatCullDistSq: unknown`
-- `#cfg: unknown`
-- `#collisionHalfExtents: unknown`
-- `#collisionCenterOffset: unknown`
-- `#boat: Mesh`
-- `#voxelCollider: VoxelObbCollider`
-- `#mount: Mount`
-- `static #boatControls: CustomBoatControls`
-- `#customVisualRoot?: Mesh`
-- `#customVisualLocalYaw: unknown`
-- `#skipDefaultModel: unknown`
-- `#boatChunk?: BoatChunk`
-- `#boatChunkCollisionProviderHandle?: symbol`
-- `#boatChunkBlockChangeUnsubscribe?: () => void`
-- `#ignoredDynamicBlockProviders: unknown`
-- `#currentYaw: unknown`
-- `#cachedYaw: unknown`
-- `#cachedCos: unknown`
-- `#cachedSin: unknown`
-- `#linearVelocity: unknown`
-- `#angularVelocity: unknown`
-- `#angularResponseScale: unknown`
-- `#buoyancyPoints: Vector3[]`
-- `#submergedPoints: unknown`
-- `#chunkBindingHandle?: symbol`
-- `#isDisposed: unknown`
-- `#tmpWorldPoint: unknown`
-- `#tmpTorque: unknown`
-- `#tmpLever: unknown`
-- `#tmpBoatSampleWorld: unknown`
-- `#scratchInverse: unknown`
-- `#scratchRootLocal: unknown`
-- `#scratchQuat: unknown`
+- `static readonly CHUNK_ENTITY_TYPE`
+- `scene: SceneContext`
+- `player: Player`
+- `waterLevel: number`
+- `mass: 11,`
+- `gravity: -9.81,`
+- `baseBuoyancyForce: 20,`
+- `torqueScale: 0.12,`
+- `collisionStepSize: 0.25,`
+- `collisionEpsilon: 0.01,`
+- `damping: { waterLinear: 0.985, waterAngular: 0.92, airLinear: 0.995, airAngular: 0.98, },`
+- `dtClamp: { min: 1 / 600, max: 1 / 24 },`
+- `name: ,`
+- `position: this.#boat.position,`
+- `renderOrder: 1,`
+- `getWorldPosition: () => this.#boat.position,`
+- `unload: () => this.dispose(),`
+- `isAlive: () => !(this.#boat as any).isDisposed?.(),`
+- `serializeForChunkReload: () => this.#createSerializedPayload(),`
+- `scene: SceneContext,`
+- `position: Vec3 | undefined,`
+- `waterLevel: number,`
+- `dt`
+- `fx: number,`
+- `fy: number,`
+- `fz: number,`
+- `worldPoint: Vec3,`
+- `dt: number,`
+- `type: string`
+- `payload: CustomBoatSerializedPayload`
+- `position: { x: this.#boat.position.x, y: this.#boat.position.y, z: this.#boat.position.z, },`
+- `collisionHalfExtents: { x: this.#collisionHalfExtents.x, y: this.#collisionHalfExtents.y, z: this.#collisionHalfExtents.z, },`
+- `initialYaw: this.#currentYaw,`
+- `customVisualLocalYaw: this.#customVisualLocalYaw,`
+- `blockCount: boatChunkSnapshot?.blocks.length,`
+- `boatChunk: boatChunkSnapshot`
+- `blocks: boatChunkSnapshot.blocks.map((block) => ({ ...block })),`
+- `center: { x: boatChunkSnapshot.center.x, y: boatChunkSnapshot.center.y, z: boatChunkSnapshot.center.z, },`
+- `type: CustomBoat.CHUNK_ENTITY_TYPE,`
+- `localX: number,`
+- `localY: number,`
+- `localZ: number,`
+- `worldX: number,`
+- `worldY: number,`
+- `worldZ: number,`
+- `blockState: this.#boatChunk.getBlockStateLocal(local.x, local.y, local.z),`
+- `lightLevel: this.#boatChunk.getLightLocal(local.x, local.y, local.z),`
+- `context: { kind: , boatChunk: this.#boatChunk, localX: local.x, localY: local.y, localZ: local.z, },`
+- `worldX: number,`
+- `worldY: number,`
+- `worldZ: number,`
+- `blockId: number,`
+- `blockState: number,`
+- `worldX: number,`
+- `worldY: number,`
+- `worldZ: number,`
+- `ignoredDynamicBlockProviders: this.#ignoredDynamicBlockProviders,`
 
 **Accessors**
 - `public get boatChunk(): BoatChunk | undefined`
 - `public get boatYaw(): number`
 - `public get boatMesh(): Mesh`
-- `public get boatPosition(): Vector3`
+- `public get boatPosition(): Vec3`
 - `public get mount(): Mount`
 - `public get submergedPoints(): number`
 - `public get currentYaw(): number`
+- `public get collisionHalfExtents(): Vec3`
 
 **Methods**
 - `public static getActiveBoats(): readonly CustomBoat[]`
-- `public static tickAllActiveBoats(scene: Scene, playerPos?: Vector3): void`
-- `public worldToBoatChunkLocalPoint(worldPoint: Vector3, out: unknown = new Vector3()): Vector3 | null`
-- `public boatChunkLocalPointToWorld(localPoint: Vector3, out: unknown = new Vector3()): Vector3 | null`
-- `public static configureChunkReloadContext(scene: Scene, player: Player, waterLevel: number): void`
-- `#createHull(scene: Scene, position: Vector3 | undefined, waterLevel: number): Mesh`
-- `async #loadDefaultModel(scene: Scene): Promise<void>`
-- `#attachCustomVisual(visual: Mesh): void`
-- `#applyCustomVisualMetadata(root: Mesh): void`
-- `#buildBuoyancyPoints(): void`
-- `#tick(scene: Scene): void`
-- `#applyForceAtPoint(fx: number, fy: number, fz: number, worldPoint: Vector3, dt: number): void`
-- `#integrateRotation(dt: number): void`
-- `#moveAxis(axis: Axis, delta: number): void`
-- `#getWaterSubmersionAtPoint(worldPoint: Vector3): number`
-- `public applyImpulse(impulse: Vector3, point: Vector3): void`
-- `public applyAngularImpulse(impulse: Vector3): void`
-- `public getBoatTopYToRef(out: Vector3): void`
-- `public getBoatTopY(): Vector3`
-- `#createSerializedPayload(): {
-		type: string;
-		payload: CustomBoatSerializedPayload;
-	}`
+- `public static tickAllActiveBoats(scene: SceneContext, playerPos?: Vec3): void`
+- `public worldToBoatChunkLocalPoint(worldPoint: Vec3, out = vec3Zero()): Vec3 | null`
+- `public boatChunkLocalPointToWorld(localPoint: Vec3, out = vec3Zero()): Vec3 | null`
+- `public static configureChunkReloadContext(player: Player, waterLevel: number): void`
+- `addToScene(scene, hull)`
+- `setVec3(bp[0], cox - ox, y, coz - oz)`
+- `setVec3(bp[1], cox + ox, y, coz - oz)`
+- `setVec3(bp[2], cox - ox, y, coz + oz)`
+- `setVec3(bp[3], cox + ox, y, coz + oz)`
+- `setVec3(bp[4], cox, y, coz)`
+- `setVec3(bp[5], cox - ix, y, coz - iz)`
+- `setVec3(bp[6], cox + ix, y, coz - iz)`
+- `setVec3(bp[7], cox - ix, y, coz + iz)`
+- `setVec3(bp[8], cox + ix, y, coz + iz)`
+- `setVec3(this.#tmpWorldPoint, this.#boat.position.x + rx, this.#boat.position.y + lp.y, this.#boat.position.z + rz)`
+- `scaleVec3InPlace(this.#linearVelocity, d ** (dt * 60))`
+- `scaleVec3InPlace(this.#angularVelocity, ad ** (dt * 60))`
+- `setVec3(this.#tmpLever, worldPoint.x - this.#boat.position.x, worldPoint.y - this.#boat.position.y, worldPoint.z - this.#boat.position.z)`
+- `setVec3(this.#tmpTorque, this.#tmpLever.y * fz - this.#tmpLever.z * fy, this.#tmpLever.z * fx - this.#tmpLever.x * fz, this.#tmpLever.x * fy - this.#tmpLever.y * fx)`
+- `public applyImpulse(impulse: Vec3, point: Vec3)`
+- `public applyAngularImpulse(impulse: Vec3): void`
+- `public getBoatTopYToRef(out: Vec3): void`
+- `public getBoatTopY(): Vec3`
 - `public use(player: Player): void`
 - `public dispose(): void`
-- `#subscribeBoatChunkBlockChanges(): void`
-- `#syncCollisionFromBoatChunk(): void`
-- `#hasOccupiedBoatNeighbor(localX: number, localY: number, localZ: number): boolean`
-- `#registerBoatChunkCollisionProvider(): void`
-- `#sampleBoatChunkBlock(worldX: number, worldY: number, worldZ: number): DynamicBlockSample | null`
-- `#setBoatChunkBlock(worldX: number, worldY: number, worldZ: number, blockId: number, blockState: number): boolean`
-- `#worldToBoatLocal(worldX: number, worldY: number, worldZ: number): Vector3 | null`
-- `#getWorldBlockForBoatPhysics(x: number, y: number, z: number): number`
+- `setVec3(this.#collisionCenterOffset, (obbMaxX + obbMinX) / 2, 0, (obbMaxZ + obbMinZ) / 2)`
+- `setVec3(this.#collisionHalfExtents, halfX + pad, halfY + pad, halfZ + pad)`
+- `setVec3(this.#tmpBoatSampleWorld, worldX + 0.5, worldY + 0.5, worldZ + 0.5)`
 
 **Types / Interfaces / Enums**
+- type `Mesh`
+- type `SceneContext`
+- type `Vec3`
+- type `DynamicBlockSample`
 - type `CustomBoatOptions`
 - type `SerializedBoatChunk`
 - type `CustomBoatSerializedPayload`
@@ -190,41 +166,38 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class MetadataContainer
 
 **Properties**
-- `private entries: unknown`
+- `private entries`
 
 **Methods**
-- `set(type: string, data: T): void`
-- `get(type: string): T | undefined`
 - `has(type: string): boolean`
 - `delete(type: string): boolean`
-- `getAll(): { type: string; data: any }[]`
+- `getAll()`
 
 ---
 
-## `Entities/Mobs/Chicken.ts` (100 LOC)
+## `Entities/Mobs/Chicken.ts` (120 LOC)
 
 ### export class Chicken extends NeutralMob
 
 **Constructor**
-- `constructor(x: number, y: number, z: number, scene: Scene, hp?: number)`
+- `constructor(x: number, y: number, z: number, scene: SceneContext, hp?: number)`
 
 **Properties**
-- `readonly mobType: unknown`
-- `readonly CHUNK_ENTITY_TYPE: unknown`
-- `static #chunkLoaderRegistered: unknown`
-- `static #chunkReloadScene: Scene | null`
-- `#headMesh: Mesh`
-- `#headMaterial: StandardMaterial`
-- `#bodyMesh: Mesh`
-- `#bodyMaterial: StandardMaterial`
+- `readonly mobType`
+- `readonly CHUNK_ENTITY_TYPE`
 
 **Methods**
-- `configureChunkLoader(scene: Scene): void`
+- `super(hp ?? 4, scene, vec3(BODY_WIDTH * 0.5, BODY_HEIGHT * 0.5, BODY_DEPTH * 0.5))`
+- `addToScene(Map1.mainScene, this.#bodyMesh)`
+- `configureChunkLoader(scene: SceneContext): void`
 - `getWanderSpeed(): number`
 - `onDeath(): void`
 - `dispose(): void`
 
 **Types / Interfaces / Enums**
+- type `LiteMetadata`
+- type `Mesh`
+- type `SceneContext`
 - type `ChickenSerializedPayload`
 
 ---
@@ -234,9 +207,10 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class MobRegistry
 
 **Properties**
-- `#configs: unknown`
-- `#allMobs: unknown`
-- `private counts: unknown`
+- `private counts`
+- `type: config.mobType,`
+- `count: this.getCountByType(config.mobType),`
+- `max: config.maxCount,`
 
 **Methods**
 - `register(config: MobSpawnConfig): void`
@@ -249,11 +223,7 @@ Generated: 2026-07-09T20:48:34.412Z
 - `getTotalCount(): number`
 - `disposeAll(): void`
 - `pickSpawnType(): MobSpawnConfig | null`
-- `getDebugStats(): {
-		total: number;
-		cap: number;
-		perType: { type: string; count: number; max: number }[];
-	}`
+- `getDebugStats()`
 
 **Types / Interfaces / Enums**
 - interface `Mob`
@@ -261,145 +231,147 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `Entities/Mobs/MobSetup.ts` (32 LOC)
+## `Entities/Mobs/MobMesh.ts` (140 LOC)
 
 **Module-level functions**
-- `export function createMobCoordinator(scene: Scene, getPlayerPosition: () => Vector3): SpawnCoordinator`
+- `export function createMobColorMaterial(color: Color3, name: string): ShaderMaterial`
+- `export function buildBoxGeometry(width: number, height: number, depth: number)`
+
+**Types / Interfaces / Enums**
+- type `ShaderMaterial`
 
 ---
 
-## `Entities/Mobs/NeutralMob.ts` (624 LOC)
+## `Entities/Mobs/MobSetup.ts` (32 LOC)
 
-### export abstract class NeutralMob
+---
+
+## `Entities/Mobs/NeutralMob.ts` (607 LOC)
+
+### abstract export class NeutralMob
 
 **Constructor**
-- `constructor(hp: number, scene: Scene, halfSize: Vector3)`
+- `constructor(hp: number, scene: SceneContext, halfSize: Vec3)`
 
 **Properties**
-- `abstract readonly mobType: string`
-- `abstract readonly CHUNK_ENTITY_TYPE: string`
-- `#hp: number`
-- `#maxHp: number`
-- `#bodyMesh: Mesh`
-- `#velocity: unknown`
-- `#collider: VoxelAabbCollider`
-- `#state: NeutralMobState`
-- `#stateTimer: unknown`
-- `#facingAngle: unknown`
-- `#scene: Scene`
-- `#playerPosition: Vector3 | null`
-- `#isDisposed: unknown`
-- `#chunkBindingHandle?: symbol`
-- `#fleeTimer: unknown`
-- `#breathTimer: unknown`
-- `#wanderSpeed: number`
-- `#halfHeight: number`
-- `#tmpUp: unknown`
-- `#tmpFwd: unknown`
-- `#tmpGround: unknown`
-- `#tmpAway: unknown`
-- `#tmpProbe: unknown`
-- `#path: PathWaypoint[]`
-- `#pathIndex: unknown`
-- `#shoreSearchTimer: unknown`
-- `#waterWanderTimer: unknown`
-- `readonly #requiredHeadroom: number`
-- `#inWaterCached: unknown`
-- `#headSubmergedCached: unknown`
-- `#waterSurfaceY: unknown`
-- `static #observer: Observer<Scene> | null`
-- `static readonly #allMobs: unknown`
+- `readonly abstract mobType: string`
+- `readonly abstract CHUNK_ENTITY_TYPE: string`
+- `type: this.CHUNK_ENTITY_TYPE,`
+- `payload: { position: { x: pos.x, y: pos.y, z: pos.z }, hp: this.#hp, ...extra, },`
 
 **Accessors**
-- `protected get scene(): Scene`
-- `get position(): Vector3`
+- `protected get scene(): SceneContext`
+- `get position(): Vec3`
 - `get hp(): number`
 - `set hp(value: number)`
 - `get maxHp(): number`
 - `get isDisposed(): boolean`
 
 **Methods**
-- `abstract configureChunkLoader(scene: Scene): void`
+- `abstract configureChunkLoader(scene: SceneContext): void`
 - `abstract getWanderSpeed(): number`
 - `abstract onDeath(): void`
-- `static #ensureObserver(): void`
+- `onBeforeRender(Map1.mainScene, (deltaMs: number) => {
+			const dt = deltaMs / 1000;
+			if (dt <= 0) return;
+			for (const mob of NeutralMob.#allMobs) {
+				if (!mob.#bodyMesh) continue;
+				const pos = mob.#bodyMesh.position;
+				const cx = Math.floor(pos.x / Chunk.SIZE);
+				const cy = Math.floor(pos.y / Chunk.SIZE);
+				const cz = Math.floor(pos.z / Chunk.SIZE);
+				const chunk = getChunk(cx, cy, cz);
+				if (!chunk || chunk.lodLevel > 1) continue;
+				mob.tick(dt);
+			}
+		})`
 - `static disposeAll(): void`
+- `createVoxelColliderBlockSampler((wx, wy, wz) => {
+					const blockId = getBlockByWorldCoords(wx, wy, wz);
+					if (!isCollidableBlock(blockId)) return null;
+					return {
+						blockId,
+						blockState: getBlockStateByWorldCoords(wx, wy, wz),
+					};
+				}, {
+					getFenceDynamicShape,
+					getShapeForBlockId,
+					isFenceBlockId,
+					computeFenceNeighborMask,
+				})`
 - `protected setBodyMesh(mesh: Mesh): void`
-- `setPlayerPosition(pos: Vector3): void`
+- `setPlayerPosition(pos: Vec3): void`
 - `takeDamage(amount: number): void`
 - `serializeForChunkReload(): SavedChunkEntityData | null`
 - `use(_player: Player): void`
 - `dispose(): void`
-- `#updateWaterState(): boolean`
+- `getBlockByWorldCoords(x, centerY, z)`
 - `protected isInWater(): boolean`
 - `protected isHeadSubmerged(): boolean`
 - `tick(dt: number): void`
-- `#serializeForChunkReload(): SavedChunkEntityData | null`
 - `protected getExtraPayload(): Record<string, unknown>`
-- `#moveAxis(axis: Axis, delta: number, canStepUp: boolean): void`
-- `#attemptStepUp(pos: Vector3, axis: Axis.X | Axis.Z, delta: number): boolean`
-- `#isGrounded(): boolean`
-- `#findNearestShore(): void`
-- `#pickWanderTarget(): void`
-- `#waterWander(dt: number): void`
-- `#advanceOnPath(speed: number, dt: number): void`
+- `setVec3(pos, savedX, savedY, savedZ)`
+- `copyVec3(probe, this.#bodyMesh.position as unknown as Vec3)`
+- `findPathInto(this.#path, sx, sz, sy, tx, tz, this.#requiredHeadroom, 700, land.groundY)`
+- `findPathInto(this.#path, sx, sz, startGroundY, tx, tz, this.#requiredHeadroom, 250)`
 
 **Types / Interfaces / Enums**
-- enum `NeutralMobState`
+- type `LiteMetadata`
+- type `Mesh`
+- type `SceneContext`
+- type `Vec3`
+- type `PathWaypoint`
 
 ---
 
-## `Entities/Mobs/Sheep.ts` (122 LOC)
+## `Entities/Mobs/Sheep.ts` (133 LOC)
 
 ### export class Sheep extends NeutralMob
 
 **Constructor**
-- `constructor(x: number, y: number, z: number, scene: Scene, hp?: number, color?: Color3)`
+- `constructor(x: number, y: number, z: number, scene: SceneContext, hp?: number, color?: Color3)`
 
 **Properties**
-- `readonly mobType: unknown`
-- `readonly CHUNK_ENTITY_TYPE: unknown`
-- `static #chunkLoaderRegistered: unknown`
-- `static #chunkReloadScene: Scene | null`
-- `#bodyMesh: Mesh`
-- `#bodyMaterial: StandardMaterial`
-- `#color: Color3`
+- `readonly mobType`
+- `readonly CHUNK_ENTITY_TYPE`
 
 **Methods**
-- `configureChunkLoader(scene: Scene): void`
+- `super(hp ?? 8, scene, vec3(BODY_WIDTH * 0.5, BODY_HEIGHT * 0.5, BODY_DEPTH * 0.5))`
+- `addToScene(Map1.mainScene, this.#bodyMesh)`
+- `configureChunkLoader(scene: SceneContext): void`
 - `getWanderSpeed(): number`
 - `onDeath(): void`
-- `protected getExtraPayload(): Record<string, unknown>`
-- `#dropWool(): void`
+- `protected override getExtraPayload(): Record<string, unknown>`
 - `dispose(): void`
 
 **Module-level functions**
-- `function colorToPayload(c: Color3): { r: number; g: number; b: number }`
+- `function colorToPayload(c: Color3)`
 - `function payloadToColor(p: { r: number; g: number; b: number }): Color3`
 - `function randomSheepColor(): Color3`
 
 **Types / Interfaces / Enums**
+- type `LiteMetadata`
+- type `Mesh`
+- type `SceneContext`
 - type `SheepSerializedPayload`
 
 ---
 
-## `Entities/Mount.ts` (120 LOC)
+## `Entities/Mount.ts` (125 LOC)
 
 ### export class Mount implements IMountable
 
 **Constructor**
-- `constructor(vehicle: TransformNode, keyBoardControls: IControls<unknown>, options: MountOptions = {})`
+- `constructor(vehicle: Mesh, keyBoardControls: IControls<unknown>, options: MountOptions = {})`
 
 **Properties**
-- `public user: IMountableUser | null`
-- `public vehicle: TransformNode`
-- `#keyBoardControls: IControls<unknown>`
-- `#mountOffset: Vector3`
-- `#mountRotationOffset: Quaternion`
-- `#physicsDisabled: unknown`
-- `#scratchPos: unknown`
-- `#scratchRot: unknown`
-- `static isMountableUser: (value: unknown) => value is IMountableUser`
+- `public user: IMountableUser | null = null`
+- `public vehicle: Mesh`
+- `static isMountableUser: (value: unknown) => value is IMountableUser = (( v: unknown, ): v is IMountableUser => false) as ( value: unknown, ) => value is IMountableUser`
+- `x: 0,`
+- `y: 0,`
+- `z: 0,`
+- `w: 1,`
 
 **Methods**
 - `isMounted(): boolean`
@@ -407,10 +379,9 @@ Generated: 2026-07-09T20:48:34.412Z
 - `dismount(): boolean`
 - `getMountedUser(): IMountableUser | null`
 - `getKeyBoardControls(): IControls<unknown>`
-- `setMountOffset(offset: Vector3): void`
-- `setMountRotationOffset(rotationOffset: Quaternion): void`
+- `setMountOffset(offset: Vec3): void`
+- `setMountRotationOffset(rotationOffset: Quat): void`
 - `update(): void`
-- `#mountVehicle(player: IMountableUser): boolean`
 - `private updateMountedPosition(): void`
 - `private disablePlayerPhysics(player: IPlayerBody): void`
 - `private enablePlayerPhysics(playerVehicle: IPlayerBody): void`
@@ -420,73 +391,37 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `Entities/MountOptions.ts` (6 LOC)
+## `Entities/MountOptions.ts` (7 LOC)
 
 **Types / Interfaces / Enums**
 - interface `MountOptions`
 
 ---
 
-## `Entities/Sheep.ts` (122 LOC)
-
-### export class Sheep extends NeutralMob
-
-**Constructor**
-- `constructor(x: number, y: number, z: number, scene: Scene, hp?: number, color?: Color3)`
-
-**Properties**
-- `readonly mobType: unknown`
-- `readonly CHUNK_ENTITY_TYPE: unknown`
-- `static #chunkLoaderRegistered: unknown`
-- `static #chunkReloadScene: Scene | null`
-- `#bodyMesh: Mesh`
-- `#bodyMaterial: StandardMaterial`
-- `#color: Color3`
-
-**Methods**
-- `configureChunkLoader(scene: Scene): void`
-- `getWanderSpeed(): number`
-- `onDeath(): void`
-- `protected getExtraPayload(): Record<string, unknown>`
-- `#dropWool(): void`
-- `dispose(): void`
-
-**Module-level functions**
-- `function colorToPayload(c: Color3): { r: number; g: number; b: number }`
-- `function payloadToColor(p: { r: number; g: number; b: number }): Color3`
-- `function randomSheepColor(): Color3`
-
-**Types / Interfaces / Enums**
-- type `SheepSerializedPayload`
-
----
-
-## `Entities/SpawnCoordinator.ts` (160 LOC)
+## `Entities/SpawnCoordinator.ts` (155 LOC)
 
 ### export class SpawnCoordinator
 
 **Constructor**
-- `constructor(scene: Scene, getPlayerPosition: () => Vector3, registry: MobRegistry)`
+- `constructor(scene: SceneContext, getPlayerPosition: () => Vec3, registry: MobRegistry)`
 
 **Properties**
-- `#scene: Scene`
-- `#getPlayerPosition: () => Vector3`
-- `#lastSpawnCheck: unknown`
-- `#disposed: unknown`
-- `#observer: ReturnType<Scene["onBeforeRenderObservable"]["add"]> | null`
-- `readonly #registry: MobRegistry`
+- `playerPos: Vec3,`
+- `config: MobSpawnConfig,`
+- `tooClose`
+- `x: wx + 0.5,`
+- `y: spawnY + (config.spawnYOffset ?? 0.2),`
+- `z: wz + 0.5,`
 
 **Accessors**
 - `get registry(): MobRegistry`
 
 **Methods**
+- `onBeforeRender(this.#scene, () => {
+			if (this.#disposed) return;
+			this.#tick();
+		})`
 - `dispose(): void`
-- `#tick(): void`
-- `#updatePlayerPositions(playerPos: Vector3): void`
-- `#despawnDistant(playerPos: Vector3): void`
-- `#trySpawn(playerPos: Vector3): void`
-- `#getTotalCap(): number`
-- `#findSpawnPosition(playerPos: Vector3, config: MobSpawnConfig): { x: number; y: number; z: number } | null`
 
 ---
 
@@ -519,20 +454,6 @@ Generated: 2026-07-09T20:48:34.412Z
 **Module-level functions**
 - `function heightHash(worldX: number, worldZ: number, seedAsInt: number): number`
 - `function leafHash(x: number, y: number, z: number, seedAsInt: number): number`
-- `function placedisc(cx: number, cy: number, cz: number, r: number, blockId: number, overwrite: boolean, placeBlock: (
-		x: number,
-		y: number,
-		z: number,
-		id: number,
-		ow?: boolean,
-	) => void): void`
-- `function placeDiscHoley(cx: number, cy: number, cz: number, r: number, blockId: number, skip: number, seedAsInt: number, placeBlock: (
-		x: number,
-		y: number,
-		z: number,
-		id: number,
-		ow?: boolean,
-	) => void): void`
 
 ---
 
@@ -569,21 +490,12 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ## `Generation/Biome/BiomeDefinitions/TropicalBiomes/TropicalTrees.ts` (182 LOC)
 
-**Module-level functions**
-- `function placeFaceConnected(fromX: number, fromY: number, fromZ: number, toX: number, toY: number, toZ: number, blockId: number, replace: boolean, placeBlock: (
-		x: number,
-		y: number,
-		z: number,
-		blockId: number,
-		replace: boolean,
-	) => void): void`
-
 ---
 
 ## `Generation/Biome/Biomes.ts` (408 LOC)
 
 **Module-level functions**
-- `export function getBiomeFor(temperature: number, humidity: number, continentalness: number, river: number, terrainShapedHeight: number): Biome`
+- `export function getBiomeFor(temperature: number, humidity: number, continentalness: number, _river: number, terrainShapedHeight: number): Biome`
 
 ---
 
@@ -592,7 +504,6 @@ Generated: 2026-07-09T20:48:34.412Z
 **Types / Interfaces / Enums**
 - interface `Biome`
 - type `TreeDefinition`
-- enum `BIOME_ID`
 
 ---
 
@@ -600,29 +511,8 @@ Generated: 2026-07-09T20:48:34.412Z
 
 **Module-level functions**
 - `function packLocal(dx: number, dy: number, dz: number): number`
-- `export function generateSlinkyTree(worldX: number, worldY: number, worldZ: number, placeBlock: (
-		x: number,
-		y: number,
-		z: number,
-		blockId: number,
-		overwrite?: boolean,
-	) => void, seedAsInt: number, woodId: number, leavesId: number, baseHeight: number, heightVariance: number): void`
 - `function placeWood(x: number, y: number, z: number): void`
-- `export function generateBigTopBentOak(worldX: number, worldY: number, worldZ: number, placeBlock: (
-		x: number,
-		y: number,
-		z: number,
-		blockId: number,
-		overwrite?: boolean,
-	) => void, seedAsInt: number, woodId: number, leavesId: number, baseHeight: number, heightVariance: number): void`
 - `function placeWood(x: number, y: number, z: number): void`
-- `export function generateBaobab(worldX: number, worldY: number, worldZ: number, placeBlock: (
-		x: number,
-		y: number,
-		z: number,
-		blockId: number,
-		overwrite?: boolean,
-	) => void, seedAsInt: number, woodId: number, leavesId: number, baseHeight: number, heightVariance: number): void`
 - `function placeWood(x: number, y: number, z: number): void`
 
 ---
@@ -660,40 +550,46 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `Generation/DistantTerrain/DistantTerrain.ts` (377 LOC)
+## `Generation/DistantTerrain/DistantTerrain.ts` (290 LOC)
 
 **Module-level functions**
-- `function createEmptyGridMesh(name: string, scene: Scene): Mesh`
-- `function bindDiffuseTexture(): void`
-- `function bindCommonUniforms(effect: Effect, scene: Scene): void`
-- `function applyTerrainData(pos: Int16Array, nrm: Int8Array, tiles: Uint8Array, worldX: number, worldZ: number): void`
-- `export function init(): void`
+- `function createEmptyGridMesh(engine: EngineContext, name: string): Mesh`
+- `function ensureFloatBuffers()`
+- `function updateUniforms()`
+- `function applyTerrainData(pos: Int16Array, nrm: Int8Array, tiles: Uint8Array, worldX: number, worldZ: number)`
+- `async export function initDistantTerrain(): Promise<void>`
 - `export function isInitialized(): boolean`
-- `export function update(worldX: number, worldZ: number): void`
+- `export function update(worldX: number, worldZ: number)`
 - `export function dispose(): void`
+
+**Types / Interfaces / Enums**
+- type `EngineContext`
+- type `Mesh`
+- type `SceneContext`
 
 ---
 
-## `Generation/DistantTerrain/DistantTerrainGenerator.ts` (363 LOC)
+## `Generation/DistantTerrain/DistantTerrainGenerator.ts` (364 LOC)
 
 **Module-level functions**
 - `function cachedHeight(wx: number, wz: number): number`
-- `export function initSharedBuffers(positionsBuffer: SharedArrayBuffer, normalsBuffer: SharedArrayBuffer, surfaceTilesBuffer: SharedArrayBuffer, r: number, gStep: number): void`
-- `export function generate(centerChunkX: number, centerChunkZ: number, r: number, gStep: number, forceFullRebuild: unknown = false): { positions: Int16Array<ArrayBufferLike>; normals: Int8Array<ArrayBufferLike>; surfaceTiles: Uint8Array<ArrayBufferLike>; centerChunkX: number; centerChunkZ: number; }`
-- `function ensureBuffers(r: number, gStep: number): void`
-- `function configureGrid(r: number, gStep: number): void`
-- `function allocateLocalBuffers(): void`
-- `function resetTracking(): void`
-- `function fullGenerate(gcx: number, gcz: number, ccx: number, ccz: number): void`
-- `function slideArrays(shiftX: number, shiftZ: number): void`
-- `function regenerateEdges(shiftX: number, shiftZ: number, gcx: number, gcz: number, ccx: number, ccz: number): void`
-- `function rewriteLocalXZ(ccx: number, ccz: number, gcx: number, gcz: number): void`
-- `function generateVertex(x: number, z: number, gcx: number, gcz: number, ccx: number, ccz: number): void`
+- `export function setRenderDistance(value: number): void`
+- `export function initSharedBuffers(positionsBuffer: SharedArrayBuffer, normalsBuffer: SharedArrayBuffer, surfaceTilesBuffer: SharedArrayBuffer, r: number, gStep: number)`
+- `export function generate(centerChunkX: number, centerChunkZ: number, r: number, gStep: number, forceFullRebuild = false)`
+- `function ensureBuffers(r: number, gStep: number)`
+- `function configureGrid(r: number, gStep: number)`
+- `function allocateLocalBuffers()`
+- `function resetTracking()`
+- `function fullGenerate(gcx: number, gcz: number, ccx: number, ccz: number)`
+- `function slideArrays(shiftX: number, shiftZ: number)`
+- `function regenerateEdges(shiftX: number, shiftZ: number, gcx: number, gcz: number, ccx: number, ccz: number)`
+- `function rewriteLocalXZ(ccx: number, ccz: number, gcx: number, gcz: number)`
+- `function generateVertex(x: number, z: number, gcx: number, gcz: number, ccx: number, ccz: number)`
 - `function getTopTileForBlock(blockId: number): [number, number]`
 
 ---
 
-## `Generation/LightGenerator.ts` (334 LOC)
+## `Generation/LightGenerator.ts` (335 LOC)
 
 ### export class LightGenerator
 
@@ -705,14 +601,14 @@ Generated: 2026-07-09T20:48:34.412Z
 - `private static chunkSizeSq: number`
 - `private lightQueue: Uint16Array`
 - `private static queueMask: number`
-- `private static scratchQueue: Uint16Array | null`
-- `private static readonly SKYLIGHT_GENERATION_MIN_WORLD_Y: unknown`
-- `private static readonly _transparentLUT: Uint8Array`
+- `private static scratchQueue: Uint16Array | null = null`
+- `private static readonly SKYLIGHT_GENERATION_MIN_WORLD_Y`
+- `private static readonly _transparentLUT: Uint8Array = (() => { const lut = new Uint8Array(128); lut[0] = 1; lut[WATER_BLOCK_ID] = 1; lut[60] = 1; lut[61] = 1; lut[64] = 1; lut[66] = 1; lut[91] = 1; return lut; })()`
 
 **Methods**
 - `public seedInitialLight(chunkX: number, chunkY: number, chunkZ: number, _biome: Biome, blocks: Uint8Array, light: Uint8Array, topSunlightMask?: Uint8Array): LightSeedState`
 - `public propagateLight(blocks: Uint8Array, light: Uint8Array, seedState: LightSeedState): void`
-- `private seedInitialLightIntoSharedQueue(chunkX: number, chunkY: number, chunkZ: number, blocks: Uint8Array, light: Uint8Array, topSunlightMask?: Uint8Array): number`
+- `private seedInitialLightIntoSharedQueue(_chunkX: number, chunkY: number, _chunkZ: number, blocks: Uint8Array, light: Uint8Array, topSunlightMask?: Uint8Array): number`
 - `private propagateLightFromQueue(blocks: Uint8Array, light: Uint8Array, queue: Uint16Array, initialTail: number): void`
 - `private tryPropagate(nx: number, ny: number, nz: number, targetSky: number, targetBlock: number, sourceBlockId: number, isDown: boolean, blocks: Uint8Array, light: Uint8Array, queue: Uint16Array, tail: number, CHUNK_SIZE: number, CHUNK_SIZE_SQ: number): number`
 - `private static isTransparentBlock(blockId: number): boolean`
@@ -728,14 +624,28 @@ Generated: 2026-07-09T20:48:34.412Z
 ## `Generation/NoiseAndParameters/FastNoise/FastNoiseFactory.ts` (109 LOC)
 
 **Module-level functions**
-- `export function createFastNoise(seed: number, fractalType?: FractalType, frequency?: number): FastNoiseLite`
-- `export function createFastNoise(options: FastNoiseOptions): FastNoiseLite`
-- `export function createFastNoise(seedOrOptions: number | FastNoiseOptions, fractalType?: FractalType, frequency?: number): FastNoiseLite`
-- `export function createFastNoise2D(seed: number, fractalType?: FractalType, frequency?: number): (x: number, z: number) => number`
-- `export function createFastNoise2D(options: FastNoiseOptions): (x: number, z: number) => number`
-- `export function createFastNoise2D(seedOrOptions: number | FastNoiseOptions, fractalType?: FractalType, frequency?: number): (x: number, z: number) => number`
-- `export function createFastNoise3D(options: FastNoiseOptions): (x: number, y: number, z: number) => number`
-- `export function createFastNoise3D(seedOrOptions: number | FastNoiseOptions, fractalType?: FractalType, frequency?: number): (x: number, y: number, z: number) => number`
+- `export function createFastNoise(seed: number, fractalType?: FractalType, frequency?: number): FastNoiseLite;
+export function createFastNoise(options: FastNoiseOptions): FastNoiseLite;
+export function createFastNoise(
+	seedOrOptions: number | FastNoiseOptions,
+	fractalType?: FractalType,
+	frequency?: number,
+): FastNoiseLite`
+- `export function createFastNoise2D(seed: number, fractalType?: FractalType, frequency?: number): (x: number, z: number) => number;
+export function createFastNoise2D(
+	options: FastNoiseOptions,
+): (x: number, z: number) => number;
+export function createFastNoise2D(
+	seedOrOptions: number | FastNoiseOptions,
+	fractalType?: FractalType,
+	frequency?: number,
+): (x: number, z: number) => number`
+- `export function createFastNoise3D(options: FastNoiseOptions): (x: number, y: number, z: number) => number;
+export function createFastNoise3D(
+	seedOrOptions: number | FastNoiseOptions,
+	fractalType?: FractalType,
+	frequency?: number,
+): (x: number, y: number, z: number) => number`
 - `export function createFastNoise2DWithInstance(seedOrOptions: number | FastNoiseOptions, fractalType?: FractalType, frequency?: number): FastNoise2DResult`
 - `export function createFastNoise3DWithInstance(seedOrOptions: number | FastNoiseOptions, fractalType?: FractalType, frequency?: number): FastNoise3DResult`
 
@@ -747,125 +657,6 @@ Generated: 2026-07-09T20:48:34.412Z
 ---
 
 ## `Generation/NoiseAndParameters/FastNoise/FastNoiseLite.ts` (2922 LOC)
-
-### export class FastNoiseLite
-
-**Constructor**
-- `constructor(seed?: number)`
-
-**Properties**
-- `static NoiseType: unknown`
-- `static RotationType3D: unknown`
-- `static FractalType: unknown`
-- `static CellularDistanceFunction: unknown`
-- `static CellularReturnType: unknown`
-- `static DomainWarpType: unknown`
-- `static TransformType3D: unknown`
-- `private _Seed: unknown`
-- `private _Frequency: unknown`
-- `private _NoiseType: unknown`
-- `private _RotationType3D: unknown`
-- `private _TransformType3D: unknown`
-- `private _DomainWarpAmp: unknown`
-- `private _FractalType: unknown`
-- `private _Octaves: unknown`
-- `private _Lacunarity: unknown`
-- `private _Gain: unknown`
-- `private _WeightedStrength: unknown`
-- `private _PingPongStrength: unknown`
-- `private _FractalBounding: unknown`
-- `private SQRT3: unknown`
-- `private _CellularDistanceFunction: unknown`
-- `private _CellularReturnType: unknown`
-- `private _CellularJitterModifier: unknown`
-- `private _DomainWarpType: unknown`
-- `private _WarpTransformType3D: unknown`
-- `private _activeSingleR2: SingleNoiseFn2`
-- `private _activeSingleR3: SingleNoiseFn3`
-- `private _activeR2: NoiseFn2`
-- `private _activeR3: NoiseFn3`
-- `private readonly F2: unknown`
-- `private readonly F3: unknown`
-- `private readonly G3: unknown`
-- `private readonly H3: unknown`
-- `private _Gradients2D: unknown`
-- `private _RandVecs2D: unknown`
-- `private _Gradients3D: unknown`
-- `private _RandVecs3D: unknown`
-- `private _PrimeX: unknown`
-- `private _PrimeY: unknown`
-- `private _PrimeZ: unknown`
-- `private readonly S: unknown`
-- `private readonly G2: unknown`
-- `private readonly G2_2: unknown`
-- `private readonly C1: unknown`
-- `private readonly C2: unknown`
-- `private readonly NORM: unknown`
-
-**Methods**
-- `private _updateRuntimeFunctions(): void`
-- `private _updateSinglePointers(): void`
-- `SetSeed(seed: number): void`
-- `SetFrequency(frequency: number): void`
-- `SetNoiseType(noiseType: NoiseType): void`
-- `SetRotationType3D(rotationType3D: RotationType3D): void`
-- `SetFractalType(fractalType: FractalType): void`
-- `SetFractalOctaves(octaves: number): void`
-- `SetFractalLacunarity(lacunarity: number): void`
-- `SetFractalGain(gain: number): void`
-- `SetFractalWeightedStrength(weightedStrength: number): void`
-- `SetFractalPingPongStrength(pingPongStrength: number): void`
-- `SetCellularDistanceFunction(cellularDistanceFunction: CellularDistanceFunction): void`
-- `SetCellularReturnType(cellularReturnType: CellularReturnType): void`
-- `SetCellularJitter(cellularJitter: number): void`
-- `SetDomainWarpType(domainWarpType: DomainWarpType): void`
-- `SetDomainWarpAmp(domainWarpAmp: number): void`
-- `public GetNoise2D(x: number, y: number): number`
-- `public GetNoise3D(x: number, y: number, z: number): number`
-- `public GetNoise(x: number, y: number, z?: number): number`
-- `DomainWarp(coord: Vector2 | Vector3): void`
-- `private static _Lerp(a: number, b: number, t: number): number`
-- `private static _InterpHermite(t: number): number`
-- `private static _InterpQuintic(t: number): number`
-- `private static _CubicLerp(a: number, b: number, c: number, d: number, t: number): number`
-- `private static _PingPong(t: number): number`
-- `private _CalculateFractalBounding(): void`
-- `private _HashR2(seed: number, xPrimed: number, yPrimed: number): number`
-- `private _HashR3(seed: number, xPrimed: number, yPrimed: number, zPrimed: number): number`
-- `private _ValCoordR2(seed: number, xPrimed: number, yPrimed: number): number`
-- `private _ValCoordR3(seed: number, xPrimed: number, yPrimed: number, zPrimed: number): number`
-- `private _GradCoordR2(seed: number, xPrimed: number, yPrimed: number, xd: number, yd: number): number`
-- `private _GradCoordR3(seed: number, xPrimed: number, yPrimed: number, zPrimed: number, xd: number, yd: number, zd: number): number`
-- `private _GenNoiseSingleR2(seed: number, x: number, y: number): number`
-- `private _GenNoiseSingleR3(seed: number, x: number, y: number, z: number): number`
-- `private _UpdateTransformType3D(): void`
-- `private _UpdateWarpTransformType3D(): void`
-- `private _GenFractalFBmR2(x: number, y: number): number`
-- `private _GenFractalFBmR3(x: number, y: number, z: number): number`
-- `private _GenFractalRidgedR2(x: number, y: number): number`
-- `private _GenFractalRidgedR3(x: number, y: number, z: number): number`
-- `private _GenFractalPingPongR2(x: number, y: number): number`
-- `private _GenFractalPingPongR3(x: number, y: number, z: number): number`
-- `private _SingleOpenSimplex2R2(seed: number, x: number, y: number): number`
-- `private _SingleOpenSimplex2R3(seed: number, x: number, y: number, z: number): number`
-- `private _SingleOpenSimplex2SR2(seed: number, x: number, y: number): number`
-- `private _SingleOpenSimplex2SR3(seed: number, x: number, y: number, z: number): number`
-- `private _SingleCellularR2(seed: number, x: number, y: number): number`
-- `private _SingleCellularR3(seed: number, x: number, y: number, z: number): number`
-- `private _SinglePerlinR2(seed: number, x: number, y: number): number`
-- `private _SinglePerlinR3(seed: number, x: number, y: number, z: number): number`
-- `private _SingleValueCubicR2(seed: number, x: number, y: number): number`
-- `private _SingleValueCubicR3(seed: number, x: number, y: number, z: number): number`
-- `private _SingleValueR2(seed: number, x: number, y: number): number`
-- `private _SingleValueR3(seed: number, x: number, y: number, z: number): number`
-- `private _DoSingleDomainWarp(seed: number, amp: number, freq: number, coord: Vector2 | Vector3, x: number, y: number, z?: number): void`
-- `private _DomainWarpSingle(coord: Vector2 | Vector3): void`
-- `private _DomainWarpFractalProgressive(coord: Vector2 | Vector3): void`
-- `private _DomainWarpFractalIndependent(coord: Vector2 | Vector3): void`
-- `private _SingleDomainWarpBasicGrid(seed: number, warpAmp: number, frequency: number, coord: Vector2 | Vector3, x: number, y: number, z?: number): void`
-- `private _SingleDomainWarpOpenSimplex2Gradient(seed: number, warpAmp: number, frequency: number, coord: Vector2 | Vector3, outGradOnly: boolean, x: number, y: number, z?: number): void`
-- `public FillNoise2D(out: Float32Array, width: number, height: number, offsetX: unknown = 0, offsetY: unknown = 0): void`
-- `public FillNoise3D(out: Float32Array, width: number, height: number, depth: number, offsetX: unknown = 0, offsetY: unknown = 0, offsetZ: unknown = 0): void`
 
 **Types / Interfaces / Enums**
 - interface `Vector2`
@@ -891,7 +682,7 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `Generation/NoiseAndParameters/NoiseSampler.ts` (104 LOC)
+## `Generation/NoiseAndParameters/NoiseSampler.ts` (131 LOC)
 
 ### export class NoiseSampler
 
@@ -905,6 +696,10 @@ Generated: 2026-07-09T20:48:34.412Z
 - `private noiseFunction: (x: number, y: number, z: number) => number`
 - `private scale: number`
 - `private xzFactor: number`
+- `private readonly isPow2: boolean`
+- `private readonly rateShift: number`
+- `private readonly rateMask: number`
+- `private readonly invSampleRate: number`
 
 **Methods**
 - `public reset(chunkX: number, chunkY: number, chunkZ: number, chunkSize: number): void`
@@ -925,7 +720,7 @@ Generated: 2026-07-09T20:48:34.412Z
 - `private tMin: number`
 - `private tMax: number`
 - `private lut: Float32Array`
-- `private static readonly LUT_SIZE: unknown`
+- `private static readonly LUT_SIZE`
 
 **Methods**
 - `private evaluate(t: number): number`
@@ -957,7 +752,7 @@ Generated: 2026-07-09T20:48:34.412Z
 - `private seedAsInt: number`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, blocks: Uint8Array): void`
+- `public generate(chunkX: number, chunkY: number, chunkZ: number, blocks: Uint8Array)`
 
 **Types / Interfaces / Enums**
 - type `OreDefinition`
@@ -973,19 +768,24 @@ Generated: 2026-07-09T20:48:34.412Z
 
 **Properties**
 - `private params: GenerationParamsType`
-- `private readonly TUNNEL_RADIUS: unknown`
+- `private readonly TUNNEL_RADIUS`
 - `private readonly TUNNEL_CENTER_Y: number`
 - `private static riverNoise: (x: number, z: number) => number`
 - `private static riverNoiseInst: FastNoiseLite`
 - `private static wallNoise: (x: number, y: number, z: number) => number`
 - `private riverSpline: Spline`
 - `private riverDepthSpline: Spline`
+- `frequency: 0.1,`
+- `frequency: GenerationParams.RIVER_SCALE,`
 
 **Methods**
 - `public isRiver(worldX: number, worldY: number, worldZ: number, riverNoise: number): boolean`
 - `public getRiverNoise(x: number, z: number): number`
 - `public getRiverDepth(riverValue: number): number`
 - `public fillRiverNoise2D(out: Float32Array, width: number, height: number, offsetX: number, offsetY: number): void`
+
+**Types / Interfaces / Enums**
+- type `GenerationParamsType`
 
 ---
 
@@ -994,17 +794,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class AbandonedCabinFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1013,16 +813,16 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class AbyssalTempleFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
+- `public readonly verticalBounds`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number)`
 
 ---
 
@@ -1031,8 +831,8 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class BadlandsSpireFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
 - `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
@@ -1041,21 +841,21 @@ Generated: 2026-07-09T20:48:34.412Z
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
-- `private generateSpire(chunkX: number, chunkY: number, chunkZ: number, spireX: number, spireZ: number, groundHeight: number, spireHeight: number, tierHeight: number, halfFp: number, placeBlock: (
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
+- `private generateSpire(_chunkX: number, chunkY: number, _chunkZ: number, spireX: number, spireZ: number, groundHeight: number, spireHeight: number, tierHeight: number, halfFp: number, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, chunkSize: number, seed: number): void`
+		) => void, chunkSize: number, seed: number)`
 - `private generateTierSlice(worldY: number, groundHeight: number, tierHeight: number, centerX: number, centerZ: number, noiseOffX: number, noiseOffZ: number, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number): void`
+		) => void, seed: number)`
 - `private getLayerBlock(spireLocalY: number, seed: number): number`
 - `private findGroundHeight(x: number, z: number, halfFp: number, columnPrepassResolver?: ColumnPrepassResolver): number`
 
@@ -1066,17 +866,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class BambooShrineFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1085,17 +885,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class CaravanCampFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1104,17 +904,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class CliffDwellingFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1123,17 +923,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class CrystalShrineFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1142,17 +942,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class DesertOasisFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1161,36 +961,39 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class DockFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
-## `Generation/Structure/DungeonFeature.ts` (166 LOC)
+## `Generation/Structure/DungeonFeature.ts` (173 LOC)
 
 ### export class DungeonFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
+- `public readonly verticalBounds`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number): void`
-- `private carveCorridor(x1: number, x2: number, z1: number, z2: number, yBase: number, placeBlock: any, floorBlock: number, minX: number, maxX: number, minZ: number, maxZ: number): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number)`
+- `private carveCorridor(x1: number, x2: number, z1: number, z2: number, yBase: number, placeBlock: PlaceBlockFn, floorBlock: number, minX: number, maxX: number, minZ: number, maxZ: number)`
+
+**Types / Interfaces / Enums**
+- type `PlaceBlockFn`
 
 ---
 
@@ -1199,16 +1002,16 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class FossilBedFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
+- `public readonly verticalBounds`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number)`
 
 ---
 
@@ -1217,17 +1020,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class FrozenShrineFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1236,16 +1039,16 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class GeodeFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
+- `public readonly verticalBounds`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number)`
 
 ---
 
@@ -1254,17 +1057,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class IglooFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1273,16 +1076,16 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class InfernalPitFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
+- `public readonly verticalBounds`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number)`
 
 ---
 
@@ -1300,23 +1103,23 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class LavaPoolFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
+- `public readonly verticalBounds`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 - `private generateLavaPool(poolCenterX: number, poolCenterY: number, poolCenterZ: number, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number): void`
+		) => void, seed: number)`
 
 ---
 
@@ -1325,17 +1128,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class LighthouseFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1344,23 +1147,23 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class MineshaftFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
+- `public readonly verticalBounds`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number)`
 - `private carveTunnel(x1: number, x2: number, y: number, zCenter: number, minX: number, maxX: number, minZ: number, maxZ: number, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void): void`
+		) => void)`
 
 ---
 
@@ -1369,17 +1172,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class MountainCabinFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1388,17 +1191,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class MushroomHutFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1407,17 +1210,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class ObservatoryFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1426,17 +1229,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class PetrifiedShrineFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1445,17 +1248,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class PyramidFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1464,16 +1267,16 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class RavineFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
+- `public readonly verticalBounds`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number)`
 
 ---
 
@@ -1481,7 +1284,7 @@ Generated: 2026-07-09T20:48:34.412Z
 
 **Module-level functions**
 - `export function computeRegion(chunkX: number, chunkZ: number, chunkSize: number, seed: number, config: RegionConfig): RegionResult | null`
-- `export function chunkWorldBounds(genChunkX: number, genChunkZ: number, chunkSize: number): { minX: number; maxX: number; minZ: number; maxZ: number }`
+- `export function chunkWorldBounds(genChunkX: number, genChunkZ: number, chunkSize: number)`
 - `export function aabbOverlaps(fMinX: number, fMaxX: number, fMinZ: number, fMaxZ: number, cMinX: number, cMaxX: number, cMinZ: number, cMaxZ: number): boolean`
 
 **Types / Interfaces / Enums**
@@ -1495,17 +1298,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class RuinFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1514,17 +1317,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class ShipwreckFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1533,17 +1336,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class SnowFortFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1552,17 +1355,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class StoneCircleFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1580,7 +1383,7 @@ Generated: 2026-07-09T20:48:34.412Z
 - `private blocks: Uint8Array`
 
 **Methods**
-- `public place(originX: number, originY: number, originZ: number, placeBlock: PlaceBlockFunction): void`
+- `public place(originX: number, originY: number, originZ: number, placeBlock: PlaceBlockFunction)`
 
 **Types / Interfaces / Enums**
 - interface `StructureData`
@@ -1602,17 +1405,17 @@ Generated: 2026-07-09T20:48:34.412Z
 
 **Methods**
 - `ground(wx: number, wz: number): number`
-- `footprintGround(cx: number, cz: number, hx: number, hz: number): { min: number; max: number; avg: number }`
-- `set(x: number, y: number, z: number, id: number, ow: unknown = true): void`
+- `footprintGround(cx: number, cz: number, hx: number, hz: number)`
+- `set(x: number, y: number, z: number, id: number, ow = true): void`
 - `air(x: number, y: number, z: number): void`
-- `column(x: number, baseY: number, z: number, height: number, id: number, ow: unknown = true): void`
-- `box(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, id: number, ow: unknown = true): void`
-- `foundation(cx: number, cz: number, hx: number, hz: number, baseY: number, id: number, ow: unknown = true): void`
-- `shell(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, id: number, door?: DoorSpec, ow: unknown = true): void`
+- `column(x: number, baseY: number, z: number, height: number, id: number, ow = true): void`
+- `box(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, id: number, ow = true): void`
+- `foundation(cx: number, cz: number, hx: number, hz: number, baseY: number, id: number, ow = true): void`
+- `shell(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, id: number, door?: DoorSpec, ow = true): void`
 - `private inDoor(x: number, y: number, z: number, x0: number, y0: number, z0: number, x1: number, _y1: number, z1: number, door: DoorSpec, dw: number, dh: number, off: number): boolean`
 - `windowPair(x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, glass: number): void`
-- `disc(cx: number, y: number, cz: number, radius: number, id: number, ow: unknown = true): void`
-- `ring(cx: number, y: number, cz: number, radius: number, id: number, ow: unknown = true): void`
+- `disc(cx: number, y: number, cz: number, radius: number, id: number, ow = true): void`
+- `ring(cx: number, y: number, cz: number, radius: number, id: number, ow = true): void`
 - `static rotate(dx: number, dz: number, rot: number): [number, number]`
 - `buildHouse(o: HouseOptions): void`
 
@@ -1632,28 +1435,28 @@ Generated: 2026-07-09T20:48:34.412Z
 - `constructor()`
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `private static structures: Map<string, Structure>`
-- `private static structureNames: string[]`
+- `public readonly verticalBounds`
+- `private static structures: Map<string, Structure> = new Map()`
+- `private static structureNames: string[] = []`
 
 **Methods**
-- `private loadStructures(): void`
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `private loadStructures()`
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
-## `Generation/Structure/TowerFeature.ts` (229 LOC)
+## `Generation/Structure/TowerFeature.ts` (281 LOC)
 
 ### export class TowerFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
+- `public readonly verticalBounds`
 
 **Methods**
 - `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
@@ -1662,22 +1465,30 @@ Generated: 2026-07-09T20:48:34.412Z
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
-- `private generateCylinderTower(chunkX: number, chunkY: number, chunkZ: number, towerCenterX: number, towerCenterZ: number, towerRadius: number, groundHeight: number, biome: Biome, placeBlock: (
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
+- `private collectPrepasses(centerX: number, centerZ: number, radius: number, chunkSize: number, resolver: ColumnPrepassResolver): Map<string, ReturnType<ColumnPrepassResolver>[ ]>`
+- `private resolveHeight(worldX: number, worldZ: number, chunkSize: number, prepassByChunk:
+			| Map<string, ReturnType<ColumnPrepassResolver>[       ]>
+			| undefined): number`
+- `private generateCylinderTower(_chunkX: number, chunkY: number, _chunkZ: number, towerCenterX: number, towerCenterZ: number, towerRadius: number, groundHeight: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, chunkSize: number, seed: number, columnPrepassResolver?: ColumnPrepassResolver): void`
-- `private generateUndergroundCylinderTower(chunkX: number, chunkY: number, chunkZ: number, towerCenterX: number, towerCenterZ: number, towerRadius: number, groundHeight: number, placeBlock: (
+		) => void, chunkSize: number, seed: number, prepassByChunk:
+			| Map<string, ReturnType<ColumnPrepassResolver>[       ]>
+			| undefined)`
+- `private generateUndergroundCylinderTower(_chunkX: number, chunkY: number, _chunkZ: number, towerCenterX: number, towerCenterZ: number, towerRadius: number, groundHeight: number, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, chunkSize: number): void`
-- `private findMinGroundHeightForTower(towerCenterX: number, towerCenterZ: number, towerRadius: number, biome: Biome, columnPrepassResolver?: ColumnPrepassResolver): number`
+		) => void, chunkSize: number)`
+- `private findMinGroundHeightForTower(towerCenterX: number, towerCenterZ: number, towerRadius: number, _biome: Biome, prepassByChunk:
+			| Map<string, ReturnType<ColumnPrepassResolver>[       ]>
+			| undefined, chunkSize = 32): number`
 
 ---
 
@@ -1686,17 +1497,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class TreehouseFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1705,17 +1516,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class TropicalTempleFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1724,17 +1535,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class WatchtowerFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1743,17 +1554,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class WellFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
@@ -1762,21 +1573,21 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class WindmillFeature implements IWorldFeature
 
 **Properties**
-- `public readonly verticalBounds: unknown`
-- `public readonly maxAboveSurface: unknown`
+- `public readonly verticalBounds`
+- `public readonly maxAboveSurface`
 
 **Methods**
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
+- `public generate(chunkX: number, _chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
 			x: number,
 			y: number,
 			z: number,
 			id: number,
 			ow: boolean,
-		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver): void`
+		) => void, seed: number, chunkSize: number, generatingChunkX: number, generatingChunkZ: number, columnPrepassResolver?: ColumnPrepassResolver)`
 
 ---
 
-## `Generation/SurfaceGenerator.ts` (1147 LOC)
+## `Generation/SurfaceGenerator.ts` (1185 LOC)
 
 ### export class SurfaceGenerator
 
@@ -1790,72 +1601,38 @@ Generated: 2026-07-09T20:48:34.412Z
 - `private cheeseNoise: (x: number, y: number, z: number) => number`
 - `private tunnelNoise: (x: number, y: number, z: number) => number`
 - `private detailNoise: (x: number, y: number, z: number) => number`
-- `private static readonly DENSITY_BASE_AMPLITUDE: unknown`
-- `private static readonly DENSITY_OVERHANG_AMPLITUDE: unknown`
-- `private static readonly DENSITY_CLIFF_AMPLITUDE: unknown`
-- `private static readonly DENSITY_INFLUENCE_RANGE: unknown`
-- `private static readonly DENSITY_VERTICAL_SCAN_RANGE: unknown`
-- `private static readonly MAX_TREE_HEIGHT: unknown`
-- `private static readonly MAX_STRUCTURE_ABOVE_SURFACE: unknown`
-- `private static readonly MAX_STRUCTURE_BELOW_SURFACE: unknown`
+- `private static readonly DENSITY_BASE_AMPLITUDE`
+- `private static readonly DENSITY_OVERHANG_AMPLITUDE`
+- `private static readonly DENSITY_CLIFF_AMPLITUDE`
+- `private static readonly DENSITY_INFLUENCE_RANGE`
+- `private static readonly DENSITY_VERTICAL_SCAN_RANGE`
+- `private static readonly DENSITY_COARSE_STEP`
+- `private static readonly MAX_TREE_HEIGHT`
+- `private static readonly MAX_STRUCTURE_ABOVE_SURFACE`
+- `private static readonly MAX_STRUCTURE_BELOW_SURFACE`
 - `private readonly maxStructureAboveSurface: number`
 - `private static seedAsInt: number`
-- `private static readonly COLUMN_CACHE_SIZE: unknown`
-- `private static readonly COLUMN_CACHE_MASK: unknown`
-- `private static readonly columnCacheKeys: unknown`
-- `private static readonly columnCacheEntries: (ColumnPrepassCacheEntry | null)[]`
-- `private static readonly FLORA_CACHE_SIZE: unknown`
-- `private static readonly FLORA_CACHE_MASK: unknown`
-- `private static readonly floraCacheKeys: unknown`
-- `private static readonly floraCacheEntries: (FloraColumnCacheEntry | null)[]`
+- `private static readonly floraCache`
 - `private chunk_size: number`
 - `private riverGenerator: RiverGenerator`
 - `private features: IWorldFeature[]`
+- `private readonly caveGrid: CaveNoiseGrid`
+- `private caveGridReady`
+- `private caveGridChunkX`
+- `private caveGridChunkY`
+- `private caveGridChunkZ`
+- `private curChunkWorldX`
+- `private curChunkWorldY`
+- `private curChunkWorldZ`
 
 **Methods**
 - `private packXZKey(x: number, z: number): number`
 - `private getColumnPrepassKey(chunkX: number, chunkZ: number): number`
-- `private resolveColumnPrepassForWorld(worldX: number, worldZ: number): {
-		entry: ColumnPrepassCacheEntry;
-		localX: number;
-		localZ: number;
-	}`
-- `private getOrBuildColumnPrepass(chunkX: number, chunkZ: number): ColumnPrepassCacheEntry`
-- `private getFloraColumnKey(worldX: number, worldZ: number): number`
-- `private getOrBuildFloraColumnInfo(worldX: number, worldZ: number, knownTopSurfaceY?: number): FloraColumnCacheEntry`
-- `private chunkIntersectsVerticalBand(chunkMinY: number, chunkMaxY: number, bandMinY: number, bandMaxY: number): boolean`
-- `public generate(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow?: boolean,
-		) => void): SurfaceGenerationResult`
-- `private resolveSolidBlockId(currentBiome: Biome, worldY: number, depthBelowSurface: number, isBeach: boolean): number`
-- `private generateTerrain(chunkX: number, chunkY: number, chunkZ: number, currentBiome: Biome, placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void): SurfaceGenerationResult`
-- `private generateFlora(chunkX: number, chunkY: number, chunkZ: number, _biome: Biome, placeBlock: (x: number, y: number, z: number, id: number) => void, topSurfaceYMap: Int16Array): void`
-- `private generateFindlinge(worldX: number, worldZ: number, surfaceY: number, colBiome: Biome, placeBlock: (x: number, y: number, z: number, id: number) => void): void`
-- `private generateStructures(chunkX: number, chunkY: number, chunkZ: number, biome: Biome, placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void): void`
-- `private getDensity(x: number, y: number, z: number, baseHeight: number, yFreq: number, cachedCliffNoise: number): number`
-- `private computeCaveModifier(x: number, y: number, z: number, surfaceY: number): number`
-- `private sampleCliffNoise(x: number, baseHeight: number, z: number): number`
-- `private findTopSurfaceY(worldX: number, worldZ: number, baseHeight: number, yFreq: number): number`
 - `private static evalSurfaceDensity(y: number, baseNoiseX: number, yFreq: number, baseNoiseZ: number, baseHeight: number, baseAmp: number, overhangBaseX: number, overhangBaseZ: number, overhangAmp: number, cliffContribution: number): number`
 - `private hashColumn(x: number, z: number, seed: number): number`
 
 **Types / Interfaces / Enums**
+- type `GenerationParamsType`
 - type `SurfaceGenerationResult`
 - type `ColumnPrepassCacheEntry`
 - type `FloraColumnCacheEntry`
@@ -1863,15 +1640,6 @@ Generated: 2026-07-09T20:48:34.412Z
 ---
 
 ## `Generation/Terrain/StructurePlacer.ts` (70 LOC)
-
-**Module-level functions**
-- `export function generateStructures(chunkX: number, chunkY: number, chunkZ: number, chunkSize: number, biome: Biome, features: IWorldFeature[], seedAsInt: number, placeBlock: (
-		x: number,
-		y: number,
-		z: number,
-		id: number,
-		ow: boolean,
-	) => void, columnPrepassResolver?: ColumnPrepassResolver): void`
 
 ---
 
@@ -1892,14 +1660,7 @@ Generated: 2026-07-09T20:48:34.412Z
 - `export function getBiome(x: number, z: number): Biome`
 - `export function getCachedRiverNoise(x: number, z: number): number`
 - `export function getOctaveNoise(x: number, z: number): number`
-- `export function getTerrainNoiseDebug(x: number, z: number): {
-	continent: number;
-	temperature: number;
-	humidity: number;
-	river: number;
-	erosion: number;
-	pv: number;
-}`
+- `export function getTerrainNoiseDebug(x: number, z: number)`
 - `function getBiomeBase(b: Biome): number`
 - `function getBiomeAmp(b: Biome): number`
 - `function getBiomeScale(b: Biome): number`
@@ -1908,6 +1669,9 @@ Generated: 2026-07-09T20:48:34.412Z
 - `function getBiomeErosionScale(b: Biome): number`
 - `function fillCorner(gx: number, gz: number, worldX: number, worldZ: number, out: Float32Array): void`
 - `export function prefetchChunkCorners(chunkWorldX: number, chunkWorldZ: number): void`
+
+**Types / Interfaces / Enums**
+- type `GenerationParamsType`
 
 ---
 
@@ -1931,7 +1695,7 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `Generation/UndergroundGenerator.ts` (138 LOC)
+## `Generation/UndergroundGenerator.ts` (150 LOC)
 
 ### export class UndergroundGenerator
 
@@ -1958,7 +1722,7 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `Generation/WorldGenerator.ts` (264 LOC)
+## `Generation/WorldGenerator.ts` (267 LOC)
 
 ### export class WorldGenerator
 
@@ -1980,6 +1744,20 @@ Generated: 2026-07-09T20:48:34.412Z
 - `private cheeseNoise: (x: number, y: number, z: number) => number`
 - `private tunnelNoise: (x: number, y: number, z: number) => number`
 - `private detailNoise: (x: number, y: number, z: number) => number`
+- `seed: getPRNGBySeed(21, this.seedAsInt),`
+- `frequency: 1,`
+- `seed: getPRNGBySeed(2, this.seedAsInt),`
+- `frequency: this.params.CAVE_CHEESE_FREQ,`
+- `seed: getPRNGBySeed(22, this.seedAsInt),`
+- `frequency: this.params.CAVE_TUNNEL_FREQ,`
+- `seed: getPRNGBySeed(24, this.seedAsInt),`
+- `frequency: this.params.CAVE_DETAIL_FREQ,`
+- `seed: getPRNGBySeed(23, this.seedAsInt),`
+- `frequency: 0.33333,`
+- `seed: getPRNGBySeed(25, this.seedAsInt),`
+- `frequency: 1,`
+- `seed: getPRNGBySeed(26, this.seedAsInt),`
+- `frequency: 0.001,`
 
 **Methods**
 - `private createBuffer(size: number): Uint8Array`
@@ -2021,136 +1799,296 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `Maps/BlockBreakParticles.ts` (106 LOC)
+## `Lib/EventBus.ts` (26 LOC)
 
-**Module-level functions**
-- `export function play(scene: Scene, position: Vector3, blockId: number, packedLight: number): void`
-- `function init(scene: Scene): void`
+**Types / Interfaces / Enums**
+- type `EventMap`
+- type `EventKey`
+- type `Listener`
 
 ---
 
-## `Maps/Map1.ts` (123 LOC)
+## `Lib/GameRuntimeState.ts` (38 LOC)
+
+**Module-level functions**
+- `export function isInCave(): boolean`
+- `export function setInCave(value: boolean): void`
+- `export function getGameTimeScale(): number`
+- `export function setGameTimeScale(value: number): void`
+- `export function openUi(focus: UiFocus): void`
+- `export function closeUi(focus: UiFocus): void`
+- `export function isUiOpen(focus?: UiFocus): boolean`
+- `export function getIsPaused(): boolean`
+- `export function setIsPaused(value: boolean): void`
+
+---
+
+## `Lib/Math.ts` (1312 LOC)
+
+### export class Color3
+
+**Constructor**
+- `constructor(public r: number = 0, public g: number = 0, public b: number = 0)`
+
+**Methods**
+- `static Black(): Color3`
+- `static White(): Color3`
+- `static Red(): Color3`
+- `static Green(): Color3`
+- `static Blue(): Color3`
+- `static Gray(): Color3`
+- `static Purple(): Color3`
+- `static Yellow(): Color3`
+- `static Teal(): Color3`
+- `static Magenta(): Color3`
+- `static FromArray(arr: ArrayLike<number>, offset = 0): Color3`
+- `static FromInts(r: number, g: number, b: number): Color3`
+- `static Lerp(left: Color3, right: Color3, amount: number): Color3`
+- `static Random(): Color3`
+- `clone(): Color3`
+- `copyFrom(src: Color3): Color3`
+- `copyFromFloats(r: number, g: number, b: number): Color3`
+- `toArray(arr: number[] | Float32Array, offset = 0): number[] | Float32Array`
+- `toColor4(alpha = 1): Color4`
+- `scale(scale: number): Color3`
+- `scaleToRef(scale: number, result: Color3): Color3`
+- `add(other: Color3): Color3`
+- `subtract(other: Color3): Color3`
+- `multiply(other: Color3): Color3`
+- `equals(other: Color3): boolean`
+- `toString(): string`
+
+### export class Color4
+
+**Constructor**
+- `constructor(public r: number = 0, public g: number = 0, public b: number = 0, public a: number = 1)`
+
+**Methods**
+- `static Black(): Color4`
+- `static White(): Color4`
+- `static FromArray(arr: ArrayLike<number>, offset = 0): Color4`
+- `static Lerp(left: Color4, right: Color4, amount: number): Color4`
+- `clone(): Color4`
+- `copyFrom(src: Color4): Color4`
+- `copyFromFloats(r: number, g: number, b: number, a: number): Color4`
+- `toArray(arr: number[] | Float32Array, offset = 0): number[] | Float32Array`
+- `asArray(): [number, number, number, number]`
+- `toColor3(): Color3`
+- `scale(scale: number): Color4`
+- `add(other: Color4): Color4`
+- `multiply(other: Color4): Color4`
+- `equals(other: Color4): boolean`
+
+### export class Quaternion
+
+**Constructor**
+- `constructor(public x: number = 0, public y: number = 0, public z: number = 0, public w: number = 1)`
+
+**Methods**
+- `static Identity(): Quaternion`
+- `static FromEulerAngles(x: number, y: number, z: number): Quaternion`
+- `static FromEulerAnglesToRef(x: number, y: number, z: number, result: Quaternion): Quaternion`
+- `static RotationAxis(axis: Vec3, angle: number): Quaternion`
+- `static RotationYawPitchRoll(yaw: number, pitch: number, roll: number): Quaternion`
+- `static RotationQuaternionFromAxis(axis1: Vec3, axis2: Vec3, axis3: Vec3): Quaternion`
+- `static FromRotationMatrix(matrix: Matrix): Quaternion`
+- `static FromRotationMatrixToRef(matrix: Matrix, result: Quaternion): Quaternion`
+- `static Slerp(left: Quaternion, right: Quaternion, amount: number): Quaternion`
+- `static Dot(left: Quaternion, right: Quaternion): number`
+- `static Normalize(q: Quaternion): Quaternion`
+- `static NormalizeToRef(q: Quaternion, result: Quaternion): Quaternion`
+- `static RotateVectorToRef(q: Quaternion, v: Vec3, result: Vec3): Vec3`
+- `clone(): Quaternion`
+- `copyFrom(src: Quaternion): Quaternion`
+- `copyFromFloats(x: number, y: number, z: number, w: number): Quaternion`
+- `set(x: number, y: number, z: number, w: number): Quaternion`
+- `toEulerAngles(): Vec3`
+- `toRotationMatrix(): Matrix`
+- `static ToRotationMatrixToRef(q: Quaternion, result: Matrix): Matrix`
+- `normalize(): Quaternion`
+- `conjugateInPlace(): Quaternion`
+- `conjugate(): Quaternion`
+- `invert(): Quaternion`
+- `multiply(q: Quaternion): Quaternion`
+- `multiplyToRef(q: Quaternion, result: Quaternion): Quaternion`
+- `static MultiplyToRef(left: Quaternion, right: Quaternion, result: Quaternion): Quaternion`
+- `scale(scale: number): Quaternion`
+- `scaleToRef(scale: number, result: Quaternion): Quaternion`
+- `add(other: Quaternion): Quaternion`
+- `subtract(other: Quaternion): Quaternion`
+- `dot(other: Quaternion): number`
+- `length(): number`
+- `equals(other: Quaternion): boolean`
+- `toArray(arr: number[] | Float32Array, offset = 0): number[] | Float32Array`
+
+### export class Matrix
+
+**Constructor**
+- `constructor(public m: number[] = Matrix.Identity().m.slice())`
+
+**Methods**
+- `static Identity(): Matrix`
+- `static Zero(): Matrix`
+- `static Translation(x: number, y: number, z: number): Matrix`
+- `static Scaling(x: number, y: number, z: number): Matrix`
+- `static RotationX(angle: number): Matrix`
+- `static RotationY(angle: number): Matrix`
+- `static RotationZ(angle: number): Matrix`
+- `static RotationYawPitchRoll(yaw: number, pitch: number, roll: number): Matrix`
+- `static FromEulerAngles(x: number, y: number, z: number): Matrix`
+- `static FromXYZAxesToRef(axis1: Vec3, axis2: Vec3, axis3: Vec3, result: Matrix): Matrix`
+- `static LookAtLH(eye: Vec3, target: Vec3, up: Vec3): Matrix`
+- `static ComposeToRef(scale: Vec3, rotation: Quaternion, translation: Vec3, result: Matrix): Matrix`
+- `clone(): Matrix`
+- `copyFrom(src: Matrix): Matrix`
+- `multiply(other: Matrix): Matrix`
+- `multiplyToRef(other: Matrix, result: Matrix): Matrix`
+- `static MultiplyToRef(left: Matrix, right: Matrix, result: Matrix): Matrix`
+- `invert(): Matrix`
+- `static InvertToRef(matrix: Matrix, result: Matrix): Matrix`
+- `getTranslation(): Vec3`
+- `setTranslation(translation: Vec3): Matrix`
+- `decompose(scale?: Vec3, rotation?: Quaternion, translation?: Vec3): boolean`
+- `determinant(): number`
+- `toEulerAngles(): Vec3`
+- `toArray(): number[]`
+
+### export class Observable
+
+**Accessors**
+- `get hasObservers(): boolean`
+
+**Methods**
+- `add(observer: (data: T) => void): number`
+- `addOnce(observer: (data: T) => void): number`
+- `remove(id: number): boolean`
+- `removeCallback(observer: (data: T) => void): boolean`
+- `clear(): void`
+- `notifyObservers(data: T): void`
+
+**Module-level functions**
+- `export function rotateVec3ByQuaternionToRef(q: Quaternion, v: Vec3, result: Vec3): Vec3`
+- `export function rotateVec3ByQuaternionAroundPointToRef(q: Quaternion, v: Vec3, point: Vec3, result: Vec3): Vec3`
+- `export function vec4(x: number, y: number, z: number, w: number): Vec4`
+
+---
+
+## `Lib/VoxelMath.ts` (32 LOC)
+
+**Module-level functions**
+- `export function worldToChunkCoord(value: number): number`
+- `export function worldToBlockCoord(value: number): number`
+- `export function idx3(x: number, y: number, z: number, size: number): number`
+- `export function idx2(x: number, z: number, size: number): number`
+- `export function getSkyLight(packed: number): number`
+- `export function getBlockLight(packed: number): number`
+- `export function packLight(sky: number, block: number): number`
+
+---
+
+## `lite-spike.ts` (133 LOC)
+
+**Module-level functions**
+- `function buildSpikeGeometry()`
+- `async export function runLiteSpike(canvas: HTMLCanvasElement): Promise<`
+- `function setChunkUniforms(material: ShaderMaterial): void`
+
+**Types / Interfaces / Enums**
+- type `EngineContext`
+- type `Mesh`
+- type `SceneContext`
+- type `ShaderMaterial`
+
+---
+
+## `Maps/BlockBreakParticles.ts` (105 LOC)
+
+**Module-level functions**
+- `export function play(scene: SceneContext, position: Vec3, blockId: number, packedLight: number)`
+- `function init(_scene: SceneContext)`
+
+---
+
+## `Maps/Map1.ts` (67 LOC)
 
 ### export class Map1
 
 **Constructor**
-- `constructor(scene: Scene, player: Player)`
+- `constructor(engine: EngineContext, scene: SceneContext, player: Player)`
 
 **Properties**
-- `public static mainScene: Scene`
+- `public static mainScene: SceneContext`
+- `public static engine: EngineContext`
 - `public static environment: WorldEnvironment`
-- `public static mobRegistry: MobRegistry | null`
-- `#player: Player`
-- `#playerStatePersistence: PlayerStatePersistence | null`
-- `#playerLoadingGate: PlayerLoadingGate | null`
-- `#spawnCoordinator: SpawnCoordinator | null`
-- `#renderObs: Observer<Scene> | null`
+- `public static mobRegistry: MobRegistry | null = null`
 - `public readonly initPromise: Promise<void>`
 
 **Accessors**
-- `public static get timeScale(): number`
+- `public static get timeScale()`
 - `public static set timeScale(v: number)`
-- `public static get isPaused(): boolean`
+- `public static get isPaused()`
 - `public static set isPaused(v: boolean)`
 
 **Methods**
-- `async asyncInit(): Promise<void>`
+- `initEngineContext(engine, scene)`
+- `async asyncInit()`
+- `public static update(deltaMs: number = 16.67): void`
 - `public static setTime(time: number): void`
-- `public static setDebug(enabled: boolean): void`
+- `public static setDebug(_enabled: boolean): void`
+- `public static disposeAll(): void`
 
 ---
 
-## `Maps/MapFog.ts` (34 LOC)
-
-### export class MapFog
-
-**Constructor**
-- `constructor(scene: Scene)`
-
-**Properties**
-- `public static readonly fogStartUnderWater: unknown`
-- `public static readonly fogEndUnderWater: unknown`
-- `public static readonly fogStartAboveWater: unknown`
-- `public static readonly fogEndAboveWater: unknown`
-- `private static fogStartOverride: number | null`
-- `private static fogEndOverride: number | null`
-
-**Methods**
-- `public static setFogStartOverride(value: number | null): void`
-- `public static setFogEndOverride(value: number | null): void`
-- `public static getFogStart(isUnderWater: boolean): number`
-- `public static getFogEnd(isUnderWater: boolean): number`
-- `public static applyToScene(scene: Scene, isUnderWater: boolean): void`
+## `Maps/MapFog.ts` (48 LOC)
 
 ---
 
-## `Maps/UnderWaterEffect.ts` (358 LOC)
+## `Maps/UnderWaterEffect.ts` (127 LOC)
 
-### export class UnderWaterEffect
+**Module-level functions**
+- `export function isEyeUnderwater(eyeX: number, eyeY: number, eyeZ: number): boolean`
 
-**Constructor**
-- `constructor(scene: Scene, camera: Camera, player: Player, baseTexture: Texture)`
-
-**Properties**
-- `public material: ShaderMaterial`
-- `public postProcess: PostProcess`
-- `private scene: Scene`
-- `private camera: Camera`
-- `private player: Player`
-- `private depthRenderer: DepthRenderer | null`
-- `private isUnderwater: unknown`
-- `private time: unknown`
-- `private rate: unknown`
-- `private static readonly VERTEX_SHADER: string`
-- `private static readonly FRAGMENT_SHADER: string`
-- `private static readonly BACKGROUND_POST_PROCESS_SHADER: string`
-- `private static readonly BACKGROUND_POST_PROCESS_VERTEX_SHADER: string`
-- `private update: unknown`
-
-**Methods**
-- `private registerShaders(): void`
-- `private createShaderMaterial(baseTexture: Texture): ShaderMaterial`
-- `private createPostProcess(): PostProcess`
-- `public dispose(): void`
+**Types / Interfaces / Enums**
+- interface `EyeCamera`
 
 ---
 
-## `Maps/WorldEnvironment.ts` (168 LOC)
+## `Maps/WorldEnvironment.ts` (88 LOC)
 
 ### export class WorldEnvironment
 
 **Constructor**
-- `constructor(scene: Scene)`
+- `constructor(engine: EngineContext, scene: SceneContext)`
 
 **Properties**
 - `public static instance: WorldEnvironment`
-- `private scene: Scene`
-- `private dirLight: DirectionalLight`
-- `private hemiLight: HemisphericLight`
-- `private skybox: Mesh`
-- `private timeSlider: HTMLInputElement | null`
-- `private negateScratch: unknown`
-- `private timeOfDay: unknown`
-- `public timeScale: unknown`
-- `public isPaused: unknown`
-- `public wetness: unknown`
-- `private static readonly HUD_UPDATE_INTERVAL_MS: unknown`
-- `private lastHudUpdateMs: unknown`
-- `private lastDebugTimeText: unknown`
-- `private lastDebugTimeScaleText: unknown`
-- `private lastSliderValue: unknown`
+- `private engine: EngineContext`
+- `private scene: SceneContext`
+- `private dirLight: DirectionalLight | null = null`
+- `private skybox: Mesh | null = null`
+- `private skyMaterial: ShaderMaterial | null = null`
+- `private timeOfDay`
+- `public timeScale`
+- `public isPaused`
+- `public wetness`
 
 **Methods**
-- `public initSSAO(): void`
 - `private createLights(): void`
 - `private createSkybox(): void`
-- `public update(): void`
+- `public update(deltaMs: number): void`
 - `public setTime(time: number): void`
 - `public dispose(): void`
 
+**Types / Interfaces / Enums**
+- type `DirectionalLight`
+- type `EngineContext`
+- type `Mesh`
+- type `SceneContext`
+- type `ShaderMaterial`
+
 ---
 
-## `Player/Controls/CustomBoatControls.ts` (175 LOC)
+## `Player/Controls/CustomBoatControls.ts` (184 LOC)
 
 ### export class CustomBoatControls implements IControls<BoatControlEntity>
 
@@ -2158,48 +2096,39 @@ Generated: 2026-07-09T20:48:34.412Z
 - `constructor(paddleBoat: BoatControlEntity, player: Player)`
 
 **Properties**
-- `readonly controlType: unknown`
-- `public pressedKeys: unknown`
-- `#controlledEntity: BoatControlEntity`
-- `#inputDirection: Vector3`
-- `#player: Player`
-- `readonly #_angularLeft: unknown`
-- `readonly #_angularRight: unknown`
-- `readonly #_forward: unknown`
-- `public static KEY_LEFT: unknown`
-- `public static KEY_RIGHT: unknown`
-- `public static KEY_UP: unknown`
-- `public static KEY_DOWN: unknown`
-- `public static KEY_USE: unknown`
-- `public static KEY_JUMP: unknown`
-- `public static KEY_SPRINT: unknown`
-- `public static KEY_FLASH: unknown`
-- `public static MOUSE_WHEEL_UP: unknown`
-- `public static MOUSE_WHEEL_DOWN: unknown`
-- `#pushVectorUp: unknown`
-- `#pushVectorDown: unknown`
-- `#pushStrength: unknown`
-- `#pushNoseUpStrength: unknown`
-- `#angularPushStrength: unknown`
-- `#angularRotationStrength: unknown`
-- `#pushAngularVectorLeft: unknown`
-- `#pushAngularVectorRight: unknown`
-- `static readonly #rotationMatrix: unknown`
-- `static readonly #_localForward: unknown`
+- `readonly controlType`
+- `public pressedKeys`
+- `public static KEY_LEFT`
+- `public static KEY_RIGHT`
+- `public static KEY_UP`
+- `public static KEY_DOWN`
+- `public static KEY_USE`
+- `public static KEY_JUMP`
+- `public static KEY_SPRINT`
+- `public static KEY_FLASH`
+- `public static MOUSE_WHEEL_UP`
+- `public static MOUSE_WHEEL_DOWN`
+- `playerVehicle: { inputDirection: Vec3 }`
+- `forward: Vec3,`
+- `position: Vec3,`
+- `angularLeftWorld: Vec3,`
+- `angularRightWorld: Vec3,`
 
 **Accessors**
 - `public get controlledEntity(): BoatControlEntity`
-- `public get inputDirection(): Vector3`
+- `public get inputDirection(): Vec3`
 
 **Methods**
-- `public handleKeyEvent(key: string, isKeyDown: boolean): void`
-- `public onKeyDown(key: string): void`
-- `public onKeyUp(key: string): void`
-- `#updateMovementAxesFromPressedKeys(): void`
-- `#tick(): void`
-- `#handleForwardBack(forward: Vector3, position: Vector3): void`
-- `#handleLeftRight(forward: Vector3, position: Vector3, angularLeftWorld: Vector3, angularRightWorld: Vector3): void`
-- `#pressedKeysHas(keys: string[]): boolean`
+- `setVec3(this.#inputDirection, 0, 0, 0)`
+- `public handleKeyEvent(key: string, isKeyDown: boolean)`
+- `public onKeyDown(key: string)`
+- `public onKeyUp(key: string)`
+- `transformNormalVec3ToRef(this.#pushAngularVectorLeft, CustomBoatControls.#rotationMatrix, this.#_angularLeft)`
+- `transformNormalVec3ToRef(this.#pushAngularVectorRight, CustomBoatControls.#rotationMatrix, this.#_angularRight)`
+- `transformNormalVec3ToRef(CustomBoatControls.#_localForward, CustomBoatControls.#rotationMatrix, this.#_forward)`
+- `scaleVec3InPlace(this.#_forward, this.#pushStrength)`
+- `scaleVec3InPlace(forward, 0.4)`
+- `scaleVec3InPlace(forward, 0.4)`
 - `public update(): void`
 
 **Types / Interfaces / Enums**
@@ -2207,14 +2136,14 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `Player/Controls/DebugControlHelper.ts` (25 LOC)
+## `Player/Controls/DebugControlHelper.ts` (27 LOC)
 
 **Module-level functions**
 - `export function handleDebugKey(key: string): boolean`
 
 ---
 
-## `Player/Controls/InventoryControls.ts` (79 LOC)
+## `Player/Controls/InventoryControls.ts` (80 LOC)
 
 ### export class InventoryControls implements IControls<unknown>
 
@@ -2222,16 +2151,14 @@ Generated: 2026-07-09T20:48:34.412Z
 - `constructor(controlledEntity: unknown, underlyingControls: IControls<unknown>, player: Player)`
 
 **Properties**
-- `readonly controlType: unknown`
+- `readonly controlType`
 - `controlledEntity: unknown`
 - `pressedKeys: Set<string>`
-- `inputDirection: Vector3`
-- `#underlyingControls: IControls<unknown>`
-- `#player: Player`
-- `public static KEY_INVENTORY: unknown`
-- `public static KEY_DROP: unknown`
-- `public static KEY_CTRL: unknown`
-- `public static MOUSE1_INVENTORY: unknown`
+- `inputDirection: Vec3`
+- `public static KEY_INVENTORY`
+- `public static KEY_DROP`
+- `public static KEY_CTRL`
+- `public static MOUSE1_INVENTORY`
 
 **Accessors**
 - `public get underlyingControls(): IControls<unknown>`
@@ -2240,14 +2167,12 @@ Generated: 2026-07-09T20:48:34.412Z
 **Methods**
 - `handleKeyEvent(key: string, isKeyDown: boolean): void`
 - `handleMouseEvent(mouseEvent: MouseEvent): void`
-- `#moveItemToHotbar(): void`
 - `onKeyUp(key: string): void`
 - `onKeyDown(key: string): void`
-- `#pressedKeysHas(keys: string[]): boolean`
 
 ---
 
-## `Player/Controls/JetSkiControls.ts` (186 LOC)
+## `Player/Controls/JetSkiControls.ts` (191 LOC)
 
 ### export class JetSkiControls implements IControls<BoatControlEntity>
 
@@ -2255,52 +2180,43 @@ Generated: 2026-07-09T20:48:34.412Z
 - `constructor(paddleBoat: BoatControlEntity, player: Player)`
 
 **Properties**
-- `readonly controlType: unknown`
-- `public pressedKeys: unknown`
-- `#controlledEntity: BoatControlEntity`
-- `#inputDirection: unknown`
-- `#player: Player`
-- `readonly #_angularLeft: unknown`
-- `readonly #_angularRight: unknown`
-- `readonly #_forward: unknown`
-- `public static KEY_LEFT: unknown`
-- `public static KEY_RIGHT: unknown`
-- `public static KEY_UP: unknown`
-- `public static KEY_DOWN: unknown`
-- `public static KEY_USE: unknown`
-- `public static KEY_JUMP: unknown`
-- `public static KEY_SPRINT: unknown`
-- `public static KEY_FLASH: unknown`
-- `public static MOUSE_WHEEL_UP: unknown`
-- `public static MOUSE_WHEEL_DOWN: unknown`
-- `#pushVectorUp: unknown`
-- `#pushVectorDown: unknown`
-- `#pushStrength: unknown`
-- `#pushNoseUpStrength: unknown`
-- `#angularPushStrength: unknown`
-- `#angularRotationStrength: unknown`
-- `#pushAngularVectorLeft: unknown`
-- `#pushAngularVectorRight: unknown`
-- `static readonly #rotationMatrix: unknown`
-- `static readonly #_localForward: unknown`
+- `readonly controlType`
+- `public pressedKeys`
+- `public static KEY_LEFT`
+- `public static KEY_RIGHT`
+- `public static KEY_UP`
+- `public static KEY_DOWN`
+- `public static KEY_USE`
+- `public static KEY_JUMP`
+- `public static KEY_SPRINT`
+- `public static KEY_FLASH`
+- `public static MOUSE_WHEEL_UP`
+- `public static MOUSE_WHEEL_DOWN`
+- `playerVehicle: { inputDirection: Vec3 }`
+- `forward: Vec3,`
+- `position: Vec3,`
+- `angularLeftWorld: Vec3,`
+- `angularRightWorld: Vec3,`
 
 **Accessors**
 - `public get controlledEntity(): BoatControlEntity`
-- `public get inputDirection(): Vector3`
+- `public get inputDirection(): Vec3`
 
 **Methods**
-- `public handleKeyEvent(key: string, isKeyDown: boolean): void`
-- `public onKeyDown(key: string): void`
-- `public onKeyUp(key: string): void`
-- `#tick(): void`
-- `#handleUpDown(forward: Vector3, position: Vector3): void`
-- `#handleLeftRight(forward: Vector3, position: Vector3, angularLeftWorld: Vector3, angularRightWorld: Vector3): void`
-- `#pressedKeysHas(keys: string[]): boolean`
+- `public handleKeyEvent(key: string, isKeyDown: boolean)`
+- `public onKeyDown(key: string)`
+- `public onKeyUp(key: string)`
+- `transformNormalVec3ToRef(this.#pushAngularVectorLeft, JetSkiControls.#rotationMatrix, this.#_angularLeft)`
+- `transformNormalVec3ToRef(this.#pushAngularVectorRight, JetSkiControls.#rotationMatrix, this.#_angularRight)`
+- `transformNormalVec3ToRef(JetSkiControls.#_localForward, JetSkiControls.#rotationMatrix, this.#_forward)`
+- `scaleVec3(this.#_forward, this.#pushStrength)`
+- `scaleVec3(forward, 0.4)`
+- `scaleVec3(forward, 0.4)`
 - `public update(): void`
 
 ---
 
-## `Player/Controls/PaddleBoatControls.ts` (194 LOC)
+## `Player/Controls/PaddleBoatControls.ts` (200 LOC)
 
 ### export class PaddleBoatControls implements IControls<BoatControlEntity>
 
@@ -2308,47 +2224,38 @@ Generated: 2026-07-09T20:48:34.412Z
 - `constructor(paddleBoat: BoatControlEntity, player: Player)`
 
 **Properties**
-- `readonly controlType: unknown`
-- `public pressedKeys: unknown`
-- `#controlledEntity: BoatControlEntity`
-- `#inputDirection: unknown`
-- `#player: Player`
-- `readonly #_angularLeft: unknown`
-- `readonly #_angularRight: unknown`
-- `readonly #_forward: unknown`
-- `public static KEY_LEFT: unknown`
-- `public static KEY_RIGHT: unknown`
-- `public static KEY_UP: unknown`
-- `public static KEY_DOWN: unknown`
-- `public static KEY_USE: unknown`
-- `public static KEY_JUMP: unknown`
-- `public static KEY_SPRINT: unknown`
-- `public static KEY_FLASH: unknown`
-- `public static MOUSE_WHEEL_UP: unknown`
-- `public static MOUSE_WHEEL_DOWN: unknown`
-- `#pushVectorUp: unknown`
-- `#pushVectorDown: unknown`
-- `#pushStrength: unknown`
-- `#pushNoseUpStrength: unknown`
-- `#angularPushStrength: unknown`
-- `#angularRotationStrength: unknown`
-- `#pushAngularVectorLeft: unknown`
-- `#pushAngularVectorRight: unknown`
-- `static readonly #rotationMatrix: unknown`
-- `static readonly #_localForward: unknown`
+- `readonly controlType`
+- `public pressedKeys`
+- `public static KEY_LEFT`
+- `public static KEY_RIGHT`
+- `public static KEY_UP`
+- `public static KEY_DOWN`
+- `public static KEY_USE`
+- `public static KEY_JUMP`
+- `public static KEY_SPRINT`
+- `public static KEY_FLASH`
+- `public static MOUSE_WHEEL_UP`
+- `public static MOUSE_WHEEL_DOWN`
+- `playerVehicle: { inputDirection: Vec3 }`
+- `forward: Vec3,`
+- `position: Vec3,`
+- `angularLeftWorld: Vec3,`
+- `angularRightWorld: Vec3,`
 
 **Accessors**
 - `public get controlledEntity(): BoatControlEntity`
-- `public get inputDirection(): Vector3`
+- `public get inputDirection(): Vec3`
 
 **Methods**
-- `public handleKeyEvent(key: string, isKeyDown: boolean): void`
-- `public onKeyDown(key: string): void`
-- `public onKeyUp(key: string): void`
-- `#tick(): void`
-- `#handleUpDown(forward: Vector3, position: Vector3): void`
-- `#handleLeftRight(forward: Vector3, position: Vector3, angularLeftWorld: Vector3, angularRightWorld: Vector3): void`
-- `#pressedKeysHas(keys: string[]): boolean`
+- `public handleKeyEvent(key: string, isKeyDown: boolean)`
+- `public onKeyDown(key: string)`
+- `public onKeyUp(key: string)`
+- `transformNormalVec3ToRef(this.#pushAngularVectorLeft, PaddleBoatControls.#rotationMatrix, this.#_angularLeft)`
+- `transformNormalVec3ToRef(this.#pushAngularVectorRight, PaddleBoatControls.#rotationMatrix, this.#_angularRight)`
+- `transformNormalVec3ToRef(PaddleBoatControls.#_localForward, PaddleBoatControls.#rotationMatrix, this.#_forward)`
+- `scaleVec3(this.#_forward, this.#pushStrength)`
+- `scaleVec3(forward, 0.4)`
+- `scaleVec3(forward, 0.4)`
 - `public update(): void`
 
 **Types / Interfaces / Enums**
@@ -2356,62 +2263,55 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `Player/Controls/WalkingControls.ts` (277 LOC)
+## `Player/Controls/WalkingControls.ts` (278 LOC)
 
-### export class WalkingControls implements IControls<PlayerVehicle>
+### export class WalkingControls implements IControls<PlayerVehicleMotor>
 
 **Constructor**
 - `constructor(player: Player)`
 
 **Properties**
-- `readonly controlType: unknown`
-- `public pressedKeys: unknown`
-- `#controlledEntity: PlayerVehicle`
-- `#inputDirection: Vector3`
-- `#player: Player`
-- `#blockBreaking: BlockBreakingHandler`
-- `#lastJumpTapMs: unknown`
-- `static readonly DOUBLE_TAP_MS: unknown`
-- `static readonly #HOTBAR_KEY_MAP: unknown`
-- `public static KEY_LEFT: unknown`
-- `public static KEY_RIGHT: unknown`
-- `public static KEY_UP: unknown`
-- `public static KEY_DOWN: unknown`
-- `public static KEY_USE: unknown`
-- `public static KEY_PICK_BLOCK: unknown`
-- `public static KEY_PICK_BLOCK_EXACT: unknown`
-- `public static KEY_JUMP: unknown`
-- `public static KEY_SPRINT: unknown`
-- `public static KEY_FLASH: unknown`
-- `public static KEY_INVENTORY: unknown`
-- `public static KEY_DROP: unknown`
-- `public static KEY_CTRL: unknown`
-- `public static KEY_ALT: unknown`
-- `public static KEY_PRINT_TRACE: unknown`
-- `public static MOUSE_WHEEL_UP: unknown`
-- `public static MOUSE_WHEEL_DOWN: unknown`
-- `public static MOUSE1: unknown`
-- `public static MOUSE2: unknown`
-- `public static KEY_F5: unknown`
-- `public static KEY_F6: unknown`
+- `readonly controlType`
+- `public pressedKeys`
+- `static readonly DOUBLE_TAP_MS`
+- `public static KEY_LEFT`
+- `public static KEY_RIGHT`
+- `public static KEY_UP`
+- `public static KEY_DOWN`
+- `public static KEY_USE`
+- `public static KEY_PICK_BLOCK`
+- `public static KEY_CHAT`
+- `public static KEY_JUMP`
+- `public static KEY_SPRINT`
+- `public static KEY_SNEAK`
+- `public static KEY_FLASH`
+- `public static KEY_INVENTORY`
+- `public static KEY_DROP`
+- `public static KEY_CTRL`
+- `public static KEY_ALT`
+- `public static KEY_PRINT_TRACE`
+- `public static MOUSE_WHEEL_UP`
+- `public static MOUSE_WHEEL_DOWN`
+- `public static MOUSE1`
+- `public static MOUSE2`
+- `public static KEY_F5`
+- `public static KEY_F6`
 
 **Accessors**
-- `public get controlledEntity(): PlayerVehicle`
-- `public get inputDirection(): Vector3`
+- `public get controlledEntity(): PlayerVehicleMotor`
+- `public get inputDirection(): Vec3`
 
 **Methods**
-- `public handleKeyEvent(key: string, isKeyDown: boolean): void`
+- `public handleKeyEvent(key: string, isKeyDown: boolean)`
 - `public handleMouseEvent(mouseEvent: MouseEvent, isKeyDown: boolean): void`
 - `public update(hit?: BlockRaycastHit | null): void`
-- `public onKeyDown(key: string): void`
-- `public onKeyUp(key: string): void`
-- `#handlePickBlock(key: string): void`
-- `#pressedKeysHas(keys: string[]): boolean`
-- `#updateMovementAxesFromPressedKeys(): void`
+- `public stopBlockBreaking(): void`
+- `public onKeyDown(key: string)`
+- `public onKeyUp(key: string)`
 
 ---
 
-## `Player/Crafting/CraftingManager.ts` (28 LOC)
+## `Player/Crafting/CraftingManager.ts` (97 LOC)
 
 **Types / Interfaces / Enums**
 - interface `Ingredient`
@@ -2420,99 +2320,139 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
+## `Player/Crafting/CraftMenu/CraftMenu.ts` (423 LOC)
+
+### export class CraftMenu
+
+**Constructor**
+- `constructor(inventory: PlayerInventory)`
+
+**Methods**
+- `async build(container: HTMLDivElement): Promise<void>`
+- `private createCraftingUI(container: HTMLDivElement): void`
+- `private craftRecipe(recipeDiv: HTMLDivElement, recipe: Recipe): void`
+- `private createRecipeCard(recipe: Recipe): HTMLDivElement | null`
+- `private createRecipeSearchPanel(): HTMLDivElement`
+- `private renderRecipeSearchSlot(index: number): void`
+- `addItemToFirstFreeSearchSlot(itemId: number): void`
+- `private openRecipeSearchPicker(slotIndex: number): void`
+- `private closeRecipeSearchPicker(): void`
+- `private readDroppedItemId(e: DragEvent): number | null`
+- `private updateRecipeSearchResults(): void`
+- `updateCraftingAvailability(): void`
+- `refreshAvailability(): void`
+- `closePicker(): void`
+
+**Module-level functions**
+- `function resolveIconSource(itemId: number): string | null`
+- `function resolveDisplayName(itemId: number): string`
+
+---
+
 ## `Player/Crafting/ShapeVariantGenerator.ts` (82 LOC)
 
 **Module-level functions**
-- `export async function generateShapeVariants(): Promise<void>`
+- `async export function generateShapeVariants(): Promise<void>`
+
+**Types / Interfaces / Enums**
+- type `TextureDefinition`
 
 ---
 
-## `Player/Hud/BlockHighlight/BlockBreakingVisuals.ts` (224 LOC)
+## `Player/Hud/BlockHighlight/BlockBreakingVisuals.ts` (294 LOC)
 
 **Module-level functions**
-- `export function initializeBlockBreakingVisuals(targetScene: Scene): void`
-- `export function disposeBlockBreakingVisuals(): void`
-- `export function updateCrackingState(block: { x: number; y: number; z: number } | null, progress: number, blockId?: number, blockState: unknown = 0, dynamicContext: unknown = null): void`
-- `function createUnitCrackingMesh(): Mesh`
-- `function bakeLocalOffset(mesh: Mesh): void`
-- `function buildCrackingMeshForBlock(blockId: number, blockState: number): Mesh`
-- `function ensureCrackingShape(blockId: number, blockState: number): void`
-- `function applyCrackingTransform(block: { x: number; y: number; z: number }, dynamicContext: unknown): void`
-- `function asBoatBlockContext(context: unknown): BoatBlockHitContext | null`
+- `function addBox(positions: number[], normals: number[], indices: number[], x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): void`
+- `function buildBoxesGeometry(boxes: readonly BoxLike[], inflation: number)`
+- `export function initializeBlockBreakingVisuals(targetScene: SceneContext): void`
+- `function ensureCrackGeometry(blockId: number, blockState: number): void`
+- `export function updateBlockBreakingVisuals(progress: number, targetBlock: BlockRaycastHit): void`
+- `function asBoatBlockContext(context: unknown)`
+- `export function resetBlockBreakingVisuals(): void`
+- `export function updateCrackingState(block: { x: number; y: number; z: number } | null, progress: number, blockId?: number, blockState?: number, dynamicContext?: unknown): void`
+
+**Types / Interfaces / Enums**
+- type `Mesh`
+- type `SceneContext`
+- type `ShaderMaterial`
+- type `BoxLike`
 
 ---
 
-## `Player/Hud/BlockHighlight/BlockHighlight.ts` (205 LOC)
+## `Player/Hud/BlockHighlight/BlockHighlight.ts` (299 LOC)
 
 ### export class BlockHighlight
 
 **Constructor**
-- `constructor(scene: Scene)`
+- `constructor()`
 
 **Properties**
-- `readonly #scene: Scene`
-- `readonly #material: StandardMaterial`
-- `#mesh: Mesh`
-- `#shapeKey: unknown`
-- `#prevVisible: unknown`
-- `#prevHitX: unknown`
-- `#prevHitY: unknown`
-- `#prevHitZ: unknown`
-- `readonly #renderHandle: () => void`
-- `#currentHit: BlockRaycastHit | null`
+- `kind: ,`
+- `localX: value.localX,`
+- `localY: value.localY,`
+- `localZ: value.localZ,`
+- `name: string,`
+- `geo: { positions: Float32Array; normals: Float32Array; indices: Uint32Array; },`
+- `name: ,`
+- `vertexSource: highlightVertexWGSL,`
+- `fragmentSource: highlightFragmentWGSL,`
+- `attributes: [ ],`
+- `uniforms: [ , { name: , type: }],`
+- `needAlphaBlending: true,`
+- `depthWrite: false,`
+- `backFaceCulling: false,`
 
 **Methods**
+- `onBeforeRender(this.#scene, () => this.#update())`
 - `dispose(): void`
-- `#update(): void`
 - `setHit(hit: BlockRaycastHit | null): void`
-- `#ensureShape(blockId: number, blockState: number): void`
-- `#applyHitTransform(hit: BlockRaycastHit): void`
-- `#asBoatBlockContext(context: unknown): BoatBlockHitContext | null`
-- `#buildForBlock(blockId: number, blockState: number): Mesh`
-- `#buildUnitCube(): Mesh`
-- `#bakeAndReset(mesh: Mesh): void`
-- `#configure(mesh: Mesh): void`
-- `#createMaterial(): StandardMaterial`
+- `removeFromScene(this.#scene, this.#mesh)`
+- `addToScene(this.#scene, mesh)`
+- `setShaderUniform(mat, [
+			SETTING_PARAMS.HIGHLIGHT_COLOR[0],
+			SETTING_PARAMS.HIGHLIGHT_COLOR[1],
+			SETTING_PARAMS.HIGHLIGHT_COLOR[2],
+			SETTING_PARAMS.HIGHLIGHT_ALPHA,
+		])`
+
+**Module-level functions**
+- `function addBox(positions: number[], normals: number[], indices: number[], x0: number, y0: number, z0: number, x1: number, y1: number, z1: number): void`
+- `function buildBoxesGeometry(boxes: readonly BoxLike[], inflation: number)`
+
+**Types / Interfaces / Enums**
+- type `Mesh`
+- type `SceneContext`
+- type `ShaderMaterial`
+- type `BoxLike`
 
 ---
 
-## `Player/Hud/BlockHighlight/BlockRaycaster.ts` (726 LOC)
+## `Player/Hud/BlockHighlight/BlockRaycaster.ts` (798 LOC)
 
 **Module-level functions**
-- `function getForwardRay(player: Player, length: number): Ray`
+- `function getForwardRay(player: Player, length: number): RayLike`
 - `function isTargetableBlock(blockId: number): boolean`
 - `function isFullBlockShape(blockId: number, blockState: number): boolean`
 - `function intersectRayAabb(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number, tMin: number, tMax: number, fallbackNx: number, fallbackNy: number, fallbackNz: number): FaceHit | null`
 - `function raycastShapeInVoxel(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, vx: number, vy: number, vz: number, blockId: number, blockState: number, tEnter: number, tExit: number, fallbackNx: number, fallbackNy: number, fallbackNz: number): FaceHit | null`
-- `function raycastFirstBlock(player: Player, shouldHit: (x: number, y: number, z: number, blockId: number) => boolean): BlockRaycastHit | null`
-- `function traceRayDda(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, startX: number, startY: number, startZ: number, tStart: number, maxDist: number, checkStart: boolean, visit: (
-		x: number,
-		y: number,
-		z: number,
-		t: number,
-		nx: number,
-		ny: number,
-		nz: number,
-		tExit: number,
-	) => DdaVisitResult): void`
-- `function raycastFirstTerrainBlock(ray: Ray, shouldHit: (x: number, y: number, z: number, blockId: number) => boolean): BlockRaycastHit | null`
-- `function raycastFirstBoatBlock(ray: Ray, shouldHit: (x: number, y: number, z: number, blockId: number) => boolean): BlockRaycastHit | null`
-- `function raycastSingleBoatChunk(ray: Ray, boatChunk: BoatChunk, shouldHit: (x: number, y: number, z: number, blockId: number) => boolean): boolean`
 - `export function pickTarget(player: Player): BlockRaycastHit | null`
+- `export function pickDroppedItem(player: Player): DroppedItem | null`
 - `export function pickWaterTarget(player: Player): BlockRaycastHit | null`
 - `export function pickBlock(player: Player): number | null`
-- `export function getPlacementPosition(player: Player): Vector3 | null`
+- `export function getPlacementPosition(player: Player): Vec3 | null`
 - `export function getPlacementHit(player: Player): PlacementHit | null`
 
 **Types / Interfaces / Enums**
+- type `Vec3`
+- type `ShapeBounds`
 - type `BlockRaycastHit`
 - type `FaceHit`
+- type `RayLike`
 - type `PlacementHit`
-- enum `DdaVisitResult`
 
 ---
 
-## `Player/Hud/BlockHighlight/BreakingBlockHandler.ts` (176 LOC)
+## `Player/Hud/BlockHighlight/BreakingBlockHandler.ts` (223 LOC)
 
 ### export class BlockBreakingHandler
 
@@ -2520,24 +2460,63 @@ Generated: 2026-07-09T20:48:34.412Z
 - `constructor(player: Player)`
 
 **Properties**
-- `#player: Player`
-- `#active: unknown`
-- `#cachedX: unknown`
-- `#cachedY: unknown`
-- `#cachedZ: unknown`
-- `#hasCachedBlock: unknown`
-- `#breakTimer: unknown`
+- `kind: ,`
+- `boatChunk: value.boatChunk,`
+- `localX: value.localX,`
+- `localY: value.localY,`
+- `localZ: value.localZ,`
+- `x: number,`
+- `y: number,`
+- `z: number,`
+- `blockId: number,`
+- `packedLight: number,`
+- `dynamicContext: unknown,`
 
 **Methods**
 - `public start(): void`
 - `public stop(): void`
 - `public reset(): void`
 - `public update(hit?: BlockRaycastHit | null): void`
-- `#asBoatBlockContext(context: unknown): BoatBlockHitContext | null`
-- `#breakBlock(x: number, y: number, z: number, blockId: number, packedLight: number, dynamicContext: unknown): void`
+- `setVec3(particlePos, x + 0.5, y + 0.5, z + 0.5)`
+- `play(this.#player.sceneRef, particlePos, blockId, packedLight)`
+- `deleteBlock(x, y, z)`
+- `saveBlockInventory(x, y, z, emptyInv)`
 
 **Types / Interfaces / Enums**
 - type `BoatBlockHitContext`
+
+---
+
+## `Player/Hud/Chat.ts` (213 LOC)
+
+### export class Chat
+
+**Constructor**
+- `constructor(player: Player)`
+
+**Properties**
+- `default`
+
+**Accessors**
+- `get isOpen(): boolean`
+
+**Methods**
+- `setTimeout(() => {
+				el.classList.add(                    );
+				setTimeout(() => {
+					if (el.parentNode) el.parentNode.removeChild(el);
+				}, 1000);
+			}, 4000)`
+- `open(): void`
+- `close(): void`
+- `toggle(): void`
+- `addSystemMessage(text: string): void`
+
+**Module-level functions**
+- `function gamemodeName(gm: Gamemodes): string`
+
+**Types / Interfaces / Enums**
+- interface `ChatMessage`
 
 ---
 
@@ -2546,26 +2525,31 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class Crosshair
 
 **Constructor**
-- `constructor(engine: Engine, scene: Scene)`
+- `constructor()`
 
 **Properties**
-- `readonly #ui: CrosshairUI`
-- `readonly #highlight: BlockHighlight`
+- `player: Player,`
+- `maxDistance: number,`
+- `predicate?: (mesh: Mesh) => boolean,`
+- `getForwardRay?: (d: number) => unknown`
+- `pickWithRay?: ( ray: unknown, predicate?: (mesh: Mesh) => boolean, fast?: boolean, ) => { pickedMesh?: Mesh | null } | null`
 
 **Methods**
 - `public setTargetHit(hit: BlockRaycastHit | null): void`
 - `setCrosshair(id: string): void`
 - `showHitMarker(): void`
-- `static pickTargetInto(player: Player, target: Vector3): boolean`
-- `static pickWaterPlacementTargetInto(player: Player, target: Vector3): boolean`
+- `static pickTargetInto(player: Player, target: Vec3): boolean`
+- `static pickWaterPlacementTargetInto(player: Player, target: Vec3): boolean`
 - `static pickBlock(player: Player): number | null`
-- `static pickTarget(player: Player): Vector3 | null`
-- `static pickWaterPlacementTarget(player: Player): Vector3 | null`
-- `static getPlacementPosition(player: Player): Vector3 | null`
+- `static pickTarget(player: Player): Vec3 | null`
+- `static pickWaterPlacementTarget(player: Player): Vec3 | null`
+- `static getPlacementPosition(player: Player): Vec3 | null`
 - `static getPlacementHit(player: Player): PlacementHit | null`
-- `static pickUsableMesh(player: Player, maxDistance: unknown = REACH_DISTANCE): AbstractMesh | null`
-- `static pickMobMesh(player: Player, maxDistance: unknown = REACH_DISTANCE): AbstractMesh | null`
-- `static #rayMarchFirstMesh(player: Player, maxDistance: number, predicate?: (mesh: AbstractMesh) => boolean): AbstractMesh | null`
+- `static pickUsableMesh(player: Player, maxDistance = REACH_DISTANCE): Mesh | null`
+- `static pickMobMesh(player: Player, maxDistance = REACH_DISTANCE): Mesh | null`
+
+**Types / Interfaces / Enums**
+- type `PlacementHit`
 
 ---
 
@@ -2574,12 +2558,7 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class CrosshairUI
 
 **Constructor**
-- `constructor(initialCrosshairId: unknown = "179")`
-
-**Properties**
-- `#crosshair: HTMLImageElement`
-- `#hitMarker: HTMLImageElement`
-- `#hitMarkerTimeout?: ReturnType<typeof setTimeout>`
+- `constructor(initialCrosshairId =)`
 
 **Methods**
 - `setCrosshair(id: string): void`
@@ -2596,9 +2575,9 @@ Generated: 2026-07-09T20:48:34.412Z
 
 **Properties**
 - `static instance: DebugPanel`
-- `static div: HTMLDivElement`
-- `private static infoLines: { [key: string]: string }`
-- `private static elements: unknown`
+- `static div: HTMLDivElement = document.createElement( )`
+- `private static infoLines: { [key: string]: string } = {}`
+- `private static elements`
 
 **Methods**
 - `static getInstance(): DebugPanel`
@@ -2608,7 +2587,7 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `Player/Hud/PauseMenu.ts` (516 LOC)
+## `Player/Hud/PauseMenu.ts` (430 LOC)
 
 ### export class PauseMenu
 
@@ -2621,83 +2600,44 @@ Generated: 2026-07-09T20:48:34.412Z
 - `private settingsContainer: HTMLElement`
 - `private onResume: () => void`
 - `private player: Player`
-- `private ssaoPipeline: SSAO2RenderingPipeline | null`
 
 **Methods**
 - `private createMenuElement(): HTMLElement`
 - `private createMainButtons(): HTMLElement`
 - `private createSettingsPanel(): HTMLElement`
-- `private createSlider(container: HTMLElement, labelText: string, min: number, max: number, initialValue: number, onInput: (value: number) => string): void`
+- `private createSlider(container: HTMLElement, labelText: string, min: number, max: number, initialValue: number, onInput: (value: number) => string)`
 - `private createSeparator(text: string): HTMLElement`
-- `private toggleSSAO(enabled: boolean): void`
-- `public show(): void`
-- `public hide(): void`
-- `private showSettings(show: boolean): void`
-- `private addStyles(): void`
+- `public show()`
+- `public hide()`
+- `private showSettings(show: boolean)`
+- `private addStyles()`
 
 ---
 
-## `Player/Hud/PlayerHud.ts` (847 LOC)
+## `Player/Hud/PlayerHud.ts` (1035 LOC)
 
 ### export class PlayerHud
 
 **Constructor**
-- `constructor(engine: Engine, scene: Scene, player: Player)`
+- `constructor(scene: SceneContext, player: Player)`
 
 **Properties**
-- `#engine: Engine`
-- `#scene: Scene`
-- `readonly #player: Player`
 - `public readonly crossHair: Crosshair`
-- `static #inventory: PlayerInventory`
-- `#inventoryOpen: unknown`
-- `#craftingRecipeDivs: { recipe: Recipe; div: HTMLDivElement }[]`
-- `#masonTableOpen: unknown`
-- `#masonTableDiv: HTMLDivElement | null`
-- `#selectedSourceBlockId: number | null`
-- `#selectedShape: string | null`
-- `#masonRecipeDivs: {
-		recipe: MasonRecipe;
-		div: HTMLDivElement;
-	}[]`
-- `#selectedHotbarSlot: unknown`
-- `#hotbarSlots: HTMLDivElement[]`
-- `static #heldItemNameDiv: HTMLDivElement`
-- `#heldItemNameTimeout?: number`
-- `#heldItemNameDivCachedWidth: unknown`
-- `#prevHealthPct: unknown`
-- `#prevHungerPct: unknown`
-- `#prevStaminaPct: unknown`
-- `#prevManaPct: unknown`
-- `#overlayDiv: HTMLDivElement`
-- `#craftingContainer: HTMLDivElement`
 - `static debugPanelDiv: HTMLDivElement`
-- `private static infoRows: {
-		[key: string]: {
-			container: HTMLDivElement;
-			valueNode: Text;
-			valueSpan?: HTMLSpanElement;
-			keySpan?: HTMLSpanElement;
-		};
-	}`
+- `private static infoRows: { [key: string]: { container: HTMLDivElement; valueNode: Text; valueSpan?: HTMLSpanElement; keySpan?: HTMLSpanElement; }; } = {}`
 - `private static itemTooltipDiv: HTMLDivElement`
 - `private static itemTooltipMouseMove?: (e: MouseEvent) => void`
-- `#healthBarFill: HTMLDivElement`
-- `#hungerBarFill: HTMLDivElement`
-- `#staminaBarFill: HTMLDivElement`
-- `#manaBarFill: HTMLDivElement`
 
 **Accessors**
 - `public get player(): Player`
+- `public get chat(): Chat`
 - `public get isMasonTableOpen(): boolean`
+- `public get isWoodCrateOpen(): boolean`
 - `public get selectedHotbarSlot(): number`
 - `public set selectedHotbarSlot(slot: number)`
 
 **Methods**
-- `async #initCraftingUI(): Promise<void>`
 - `private initializeHUD(): HTMLDivElement`
-- `private createCraftingUI(container: HTMLDivElement): void`
-- `public updateCraftingAvailability(): void`
 - `private createInventoryUI(): HTMLDivElement`
 - `private createHotbarUI(): HTMLDivElement`
 - `private createStatsUI(): void`
@@ -2705,8 +2645,11 @@ Generated: 2026-07-09T20:48:34.412Z
 - `public toggleInventory(): void`
 - `public showMasonTableUI(): void`
 - `public hideMasonTableUI(): void`
+- `public showWoodCrateUI(x: number, y: number, z: number): void`
+- `public hideWoodCrateUI(): void`
+- `private createWoodCrateUI(): HTMLDivElement`
 - `private createMasonTableUI(): HTMLDivElement`
-- `private getMasonSourceBlocks(): { id: number; name: string; path: string; }[]`
+- `private getMasonSourceBlocks()`
 - `public updateMasonTableAvailability(): void`
 - `private craftMasonRecipe(): void`
 - `private updateHotbarSelection(): void`
@@ -2720,57 +2663,43 @@ Generated: 2026-07-09T20:48:34.412Z
 - `public static hideItemTooltip(): void`
 - `public updateStats(): void`
 
+**Types / Interfaces / Enums**
+- type `SavedBlockInventory`
+
 ---
 
-## `Player/Inventory/DroppedItem.ts` (270 LOC)
+## `Player/Inventory/CubeIcon.ts` (331 LOC)
+
+**Module-level functions**
+- `export function setNormalMapEnabled(enabled: boolean): void`
+- `export function isNormalMapEnabled(): boolean`
+- `function getShadeFill(shade: number): string`
+- `export function drawCubeIcon(ctx: CanvasRenderingContext2D, blockId: number | null, atlasImage: HTMLImageElement | null, atlasReady: boolean, heightScale: number, options?: CubeIconOptions): void`
+- `function _drawLitFace(ctx: CanvasRenderingContext2D, faceIdx: readonly number[], img: HTMLImageElement | null, ready: boolean, srcX: number, srcY: number, shade: number): void`
+- `export function getShapeHeightScale(blockId: number | null): number`
+
+**Types / Interfaces / Enums**
+- interface `CubeIconOptions`
+
+---
+
+## `Player/Inventory/DroppedItem.ts` (493 LOC)
 
 ### export class DroppedItem implements IUsable
 
-**Constructor**
-- `constructor(item: Item, x: number, y: number, z: number)`
+**Module-level functions**
+- `function createDroppedItemMaterial(): ShaderMaterial`
+- `function getUnitCubeGeometry()`
 
-**Properties**
-- `#boxMesh: Mesh`
-- `#material: StandardMaterial`
-- `#item: Item`
-- `#velocity: unknown`
-- `#halfSize: unknown`
-- `#voxelCollider: VoxelAabbCollider`
-- `#scratchProbe: unknown`
-- `static readonly #allItems: unknown`
-- `static #observer: Observer<Scene> | null`
-- `static readonly GRAVITY: unknown`
-- `static readonly STEP_SIZE: unknown`
-- `static readonly EPSILON: unknown`
-- `static readonly AIR_DAMPING_PER_SEC: unknown`
-- `static readonly GROUND_DAMPING_PER_SEC: unknown`
-- `static readonly MIN_SPEED: unknown`
-- `static readonly SKY_LIGHT_COLOR: unknown`
-- `static readonly BLOCK_LIGHT_COLOR: unknown`
-- `static readonly #tileTextures: unknown`
-
-**Accessors**
-- `get boxMesh(): Mesh`
-- `get item(): Item`
-
-**Methods**
-- `static #ensureObserver(): void`
-- `pushItem(direction: Vector3): void`
-- `use(player: Player): void`
-- `#dispose(): void`
-- `#updatePhysics(): void`
-- `#moveAxis(axis: Axis, delta: number): void`
-- `#overlapsSolid(position: Vector3): boolean`
-- `#isGrounded(): boolean`
-- `#updateLighting(): void`
-- `#getOrCreateAtlasTexture(): Texture`
-- `#applyAtlasTexture(item: Item): void`
-- `static disposeAll(): void`
-- `static disposeTileTextures(): void`
+**Types / Interfaces / Enums**
+- type `LiteMetadata`
+- type `Mesh`
+- type `Texture2D`
+- type `Vec3`
 
 ---
 
-## `Player/Inventory/Item.ts` (315 LOC)
+## `Player/Inventory/Item.ts` (399 LOC)
 
 ### export class Item implements IUsable
 
@@ -2778,43 +2707,49 @@ Generated: 2026-07-09T20:48:34.412Z
 - `constructor(name: string, description: string, icon: string, row: number, col: number, maxStack?: number)`
 
 **Properties**
-- `private static readonly SLICE_SHAPE_ROTATION_POLICY: Record<
-		string,
-		{ rotateVerticalByYaw: boolean }
-	>`
 - `name: string`
 - `description: string`
 - `icon: string`
-- `material: StandardMaterial | undefined`
-- `itemId: unknown`
-- `blockId: number | null`
-- `blockState: unknown`
-- `#maxStack: unknown`
-- `#stackSize: unknown`
-- `#div: HTMLDivElement`
-- `#stackLabel: HTMLSpanElement`
-- `#useAction: ((player: Player) => void) | null`
+- `material: ShaderMaterial | undefined`
+- `itemId`
+- `blockId: number | null = null`
+- `blockState`
 - `row: number`
 - `col: number`
+- `private _maxStack`
+- `private _stackSize`
+- `private _div: HTMLDivElement | null = null`
+- `private _stackLabel: HTMLSpanElement | null = null`
+- `private _cubeCanvas: HTMLCanvasElement | null = null`
+- `private _useAction: ((player: Player) => void) | null = null`
+- `private _shapeRedrawn`
+- `private _onDragStart`
 
 **Accessors**
+- `get div(): HTMLDivElement`
 - `public set stackSize(value: number)`
 - `public get stackSize(): number`
-- `get div(): HTMLDivElement`
 
 **Methods**
-- `private static createFromDefinition(def: ItemDefinition, row: number, col: number): Item`
-- `static createById(itemId: number, row: unknown = -1, col: unknown = -1): Item`
+- `private _initDom(): void`
+- `private static _fromDef(def: ItemDefinition, row: number, col: number): Item`
+- `static createById(itemId: number, row = -1, col = -1): Item`
 - `use(player: Player): void`
+- `private static _placeAction(player: Player): void`
 - `static place(player: Player): void`
-- `static #asBoatPlacementContext(context: unknown): BoatPlacementContext | null`
-- `createDiv(): HTMLDivElement`
-- `private static getWallRotationFromYaw(yaw: number): number`
+- `private static _extractBoatCtx(context: unknown): BoatCtx | null`
+- `private static _wallRotFromYaw(yaw: number): number`
+- `private _refreshIcon(): void`
 - `public refreshIconStyle(): void`
+- `private _drawCube(): void`
 - `public static stackItemAtoB(itemA: Item, itemB: Item): number`
+- `private _updateLabel(): void`
+
+**Module-level functions**
+- `function _ensureSharedAtlas(): HTMLImageElement`
 
 **Types / Interfaces / Enums**
-- type `BoatPlacementContext`
+- interface `BoatCtx`
 
 ---
 
@@ -2824,11 +2759,11 @@ Generated: 2026-07-09T20:48:34.412Z
 - `function blockKey(blockId: number, blockState: number): string`
 - `export function registerItemToDisplayName(rawName: string): string`
 - `function initDefaults(): void`
-- `export async function ensureItemRegistryLoaded(url: unknown = DEFAULT_ITEMS_URL): Promise<void>`
+- `async export function ensureItemRegistryLoaded(url = DEFAULT_ITEMS_URL): Promise<void>`
 - `async function loadRegisteredItemFromUrl(url: string): Promise<void>`
 - `export function registerItem(def: ItemDefinition): void`
 - `export function getRegisteredItemById(id: number): ItemDefinition | undefined`
-- `export function getItemByBlock(blockId: number, blockState: unknown = 0): ItemDefinition | undefined`
+- `export function getItemByBlock(blockId: number, blockState = 0): ItemDefinition | undefined`
 - `export function getAllRegisteredItems(): ItemDefinition[]`
 - `function isValidDefinition(value: unknown): value is ItemDefinition`
 
@@ -2845,15 +2780,9 @@ Generated: 2026-07-09T20:48:34.412Z
 - `constructor(row: number, col: number)`
 
 **Properties**
-- `#item: Item | null`
-- `#divItemSlot: HTMLDivElement`
-- `#onDragStart: () => void`
-- `#onDragOver: (e: DragEvent) => void`
-- `#onDrop: (e: DragEvent) => void`
-- `#onMouseOver: (e: MouseEvent) => void`
-- `#onMouseOut: () => void`
 - `row: number`
 - `col: number`
+- `draggedItem`
 
 **Accessors**
 - `public get divItemSlot(): HTMLDivElement`
@@ -2862,9 +2791,9 @@ Generated: 2026-07-09T20:48:34.412Z
 - `public get item(): Item | null`
 
 **Methods**
-- `public swapSlots(slot: ItemSlot): void`
-- `public clearItemSlots(): void`
-- `public initialize(): void`
+- `public swapSlots(slot: ItemSlot)`
+- `public clearItemSlots()`
+- `public initialize()`
 - `public dispose(): void`
 
 ---
@@ -2876,22 +2805,21 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `Player/Inventory/PlayerInventory.ts` (359 LOC)
+## `Player/Inventory/PlayerInventory.ts` (373 LOC)
 
 ### export class PlayerInventory
 
 **Constructor**
-- `constructor(scene: Scene, player: Player, x: number, y: number)`
+- `constructor(scene: SceneContext, player: Player, x: number, y: number)`
 
 **Properties**
-- `scene: Scene`
-- `#player: Player`
-- `#x: number`
-- `#y: number`
-- `#inventorySlots: ItemSlot[][]`
-- `public onInventoryChangedObservable: unknown`
-- `#inventoryControls: InventoryControls`
-- `public static currentlyHoveredSlot: ItemSlot | null`
+- `scene: SceneContext`
+- `public onInventoryChangedObservable`
+- `public static currentlyHoveredSlot: ItemSlot | null = null`
+- `def: (typeof definitions)[number],`
+- `row: number,`
+- `col: number,`
+- `savedState: unknown,`
 
 **Accessors**
 - `public get inventoryControls(): InventoryControls`
@@ -2901,25 +2829,20 @@ Generated: 2026-07-09T20:48:34.412Z
 - `get y(): number`
 
 **Methods**
-- `#generateInventorySlots(): void`
-- `async #loadInitialItems(): Promise<void>`
-- `#generateFakeItems(): void`
-- `#createItemById(itemId: number, row: number, col: number): Item | null`
+- `placeItem(def, row, col)`
+- `placeItem(def, row, col)`
 - `public getSavedInventoryState(): SavedInventoryState`
 - `public restoreSavedInventoryState(savedState: unknown): boolean`
-- `#clearInventory(): void`
-- `#isValidSavedInventoryState(savedState: unknown): savedState is SavedInventoryState`
-- `#isValidSavedInventoryItem(value: unknown): value is SavedInventoryItem`
 - `public addItem(item: Item): number`
 - `public hasItem(itemId: number, count: number): boolean`
 - `public removeItems(itemId: number, count: number): void`
 - `public createAndAddItem(itemId: number, count: number): void`
-- `public dropItemFromHotbar(): void`
-- `public dropItem(item: Item, quantity?: number): void`
+- `public dropItemFromHotbar()`
+- `public dropItem(item: Item, quantity?: number)`
 - `public moveItemToHotbar(slotFocused: ItemSlot): void`
 - `public moveItemToInventory(slotFocused: ItemSlot): void`
 - `public moveItem(slotFocused: ItemSlot, targetBarIndexRange: [number, number]): void`
-- `public deleteItem(item: Item): void`
+- `public deleteItem(item: Item)`
 
 **Types / Interfaces / Enums**
 - type `SavedInventoryItem`
@@ -2927,70 +2850,61 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `Player/Player.ts` (178 LOC)
+## `Player/Player.ts` (222 LOC)
 
-### export class Player implements IUsable
+### export class Player
 
 **Constructor**
-- `constructor(engine: Engine, scene: Scene, playerCam: PlayerCamera, canvas: HTMLCanvasElement)`
+- `constructor(private engine: EngineContext, private scene: SceneContext, playerCam: PlayerCamera, private canvas: HTMLCanvasElement)`
 
 **Properties**
-- `#playerCamera: PlayerCamera`
-- `#playerVehicle: PlayerVehicle`
-- `#playerInventory: PlayerInventory`
-- `#playerHud: PlayerHud`
-- `#defaultKeyboardControls: WalkingControls`
-- `#keyboardControls: IControls<unknown>`
-- `#inputController: PlayerInputController`
-- `#loopController: PlayerLoopController`
-- `public flashlight: PlayerFlashLight`
-- `public stats: PlayerStats`
-- `#pauseMenu: PauseMenu`
+- `keyboardControls: IControls<unknown>`
+- `camera: playerCam,`
+- `controls: new PlayerBodyControlState(),`
+- `playerStats: this.#stats,`
 
 **Accessors**
-- `public get playerVehicle(): PlayerVehicle`
-- `public get playerBody(): IPlayerBody`
-- `public get playerCamera(): PlayerCamera`
-- `public get keyboardControls(): IControls<unknown>`
-- `public set keyboardControls(keyboardControls: IControls<unknown>)`
+- `public get position(): Vec3`
+- `public get velocity(): Vec3`
+- `public get playerVehicle(): PlayerVehicleMotor`
 - `public get playerHud(): PlayerHud`
 - `public get playerInventory(): PlayerInventory`
+- `public get playerCamera(): PlayerCamera`
+- `public get stats(): PlayerStats`
+- `public get flashlight(): PlayerFlashLight`
 - `public get defaultKeyboardControls(): WalkingControls`
-- `public get position(): Vector3`
+- `public get sceneRef(): SceneContext`
 
 **Methods**
-- `private pauseGame(): void`
-- `private resumeGame(): void`
-- `public dispose(): void`
-- `public wouldBlockOverlapPlayer(blockX: number, blockY: number, blockZ: number, blockShape: {
-			boxes: Array<{
-				min: [number, number, number];
-				max: [number, number, number];
-			}>;
-			rotateY: boolean;
-			usesSliceState: boolean;
-		}, rotation: number, slice: number, flipY: boolean): boolean`
-- `use(): void`
+- `public createHud(scene: SceneContext): void`
+- `addToScene(scene, body)`
+- `public respawn(): void`
+- `public tick(deltaMs: number): void`
+- `setIsPaused(true)`
+- `setIsPaused(false)`
+- `public onKeyEvent(key: string, isKeyDown: boolean): void`
+- `public use(): void`
+- `public disposePicker(): void`
 
 ---
 
-## `Player/PlayerBody.ts` (44 LOC)
+## `Player/PlayerBody.ts` (43 LOC)
 
 ### export class PlayerBodyControlState
 
 **Properties**
-- `public readonly inputDirection: unknown`
-- `public wantJump: unknown`
-- `public isSprinting: unknown`
-- `public isFlying: unknown`
-- `public isJumpHeld: unknown`
+- `public inputDirection`
+- `public wantJump`
+- `public isSprinting`
+- `public isFlying`
+- `public isJumpHeld`
+- `public isSneaking`
 
 **Methods**
 - `public reset(): void`
 
 **Types / Interfaces / Enums**
 - interface `IPlayerBody`
-- type `SavedBodyPosition`
 
 ---
 
@@ -2999,170 +2913,139 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class PlayerCamera
 
 **Constructor**
-- `constructor(playerCamera: FreeCamera, scene: Scene)`
+- `constructor()`
 
 **Properties**
-- `#playerCamera: FreeCamera`
-- `#isUnderWater: boolean | null`
-- `#followDistance: unknown`
-- `#eyeHeight: unknown`
-- `#cameraPitch: unknown`
-- `#cameraYaw: unknown`
-- `readonly #maxPitch: unknown`
-- `public mouseSensitivity: unknown`
-- `readonly #minZoom: unknown`
-- `readonly #maxZoom: unknown`
-- `readonly #zoomSpeed: unknown`
-- `readonly #_forward: unknown`
-- `readonly #_eyeOffset: unknown`
-- `readonly #_tmp1: unknown`
+- `public mouseSensitivity`
 
 **Accessors**
 - `public get cameraYaw(): number`
 - `public get cameraPitch(): number`
+- `public get isThirdPerson(): boolean`
 - `public get playerCamera(): FreeCamera`
 - `public set fov(value: number)`
-- `get position(): Vector3`
-- `set position(position: Vector3)`
-- `set target(target: Vector3)`
+- `public get position(): Vec3`
+- `public set position(position: Vec3)`
+- `public set target(target: Vec3)`
 
 **Methods**
-- `public moveWithPlayer(characterPosition: Vector3): void`
+- `public moveWithPlayer(characterPosition: Vec3): void`
 - `public handleMouseMovement(deltaX: number, deltaY: number): void`
 - `public zoomIn(): void`
 - `public zoomOut(): void`
+- `public getForwardDirection(): Vec3`
+
+**Types / Interfaces / Enums**
+- type `FreeCamera`
+- type `Vec3`
 
 ---
 
-## `Player/PlayerFlashLight.ts` (48 LOC)
+## `Player/PlayerFlashLight.ts` (43 LOC)
 
 ### export class PlayerFlashLight
 
 **Constructor**
-- `constructor(scene: Scene, playerCamera: FreeCamera)`
-
-**Properties**
-- `#flashlight: SpotLight`
-- `#camera: FreeCamera`
-- `#viewMatrixObs: Observer<Camera> | null`
+- `constructor(scene: SceneContext, playerCamera: FreeCamera)`
 
 **Methods**
-- `public toggle(): void`
+- `setEnabled(v: boolean): void`
+- `dispose(): void`
+- `public toggle()`
 - `public dispose(): void`
+
+**Types / Interfaces / Enums**
+- type `FreeCamera`
+- type `SceneContext`
+- type `SpotLight`
 
 ---
 
-## `Player/PlayerInputController.ts` (111 LOC)
+## `Player/PlayerInputController.ts` (92 LOC)
 
 ### export class PlayerInputController
 
 **Constructor**
-- `constructor(scene: Scene, canvas: HTMLCanvasElement, playerCamera: PlayerCamera, onKeyEvent: KeyEventHandler, getKeyboardControls: () => IControls<unknown>, onPauseRequested: () => void)`
-
-**Properties**
-- `#onKeyDown: (event: KeyboardEvent) => void`
-- `#onKeyUp: (event: KeyboardEvent) => void`
-- `#onCanvasClick: () => void`
-- `#onPointerLockChange: () => void`
-- `#onMouseDown: (event: MouseEvent) => void`
-- `#onMouseUp: (event: MouseEvent) => void`
-- `#pointerObs: Observer<PointerInfo> | null`
+- `constructor(private readonly canvas: HTMLCanvasElement, private readonly playerCamera: PlayerCamera, private readonly onKeyEvent: KeyEventHandler, private readonly getKeyboardControls: () => IControls<unknown>, private readonly onPauseRequested: () => void)`
 
 **Methods**
 - `public bind(): void`
 - `public dispose(): void`
-- `private bindPointerObserver(): void`
 
 **Types / Interfaces / Enums**
 - type `KeyEventHandler`
 
 ---
 
-## `Player/PlayerLoadingGate.ts` (96 LOC)
+## `Player/PlayerLoadingGate.ts` (90 LOC)
 
 ### export class PlayerLoadingGate
 
 **Constructor**
-- `constructor(scene: Scene, player: Player)`
+- `constructor(private readonly scene: SceneContext, private readonly player: Player)`
 
 **Properties**
-- `private static readonly SPAWN_CHUNK_RADIUS: unknown`
-- `private static readonly SPAWN_READY_FRAME_THRESHOLD: unknown`
-- `private static readonly SPAWN_PROTECTION_TIMEOUT_MS: unknown`
-- `private spawnReadyFrames: unknown`
-- `private isActive: unknown`
+- `private static readonly SPAWN_CHUNK_RADIUS`
+- `private static readonly SPAWN_READY_FRAME_THRESHOLD`
+- `private static readonly SPAWN_PROTECTION_TIMEOUT_MS`
+- `private spawnReadyFrames`
+- `private isActive`
 - `private readonly startMs: number`
-- `private beforeRenderObserver: Observer<Scene> | null`
 
 **Methods**
+- `onBeforeRender(this.scene, () => {
+			this.update();
+		})`
 - `public dispose(): void`
 - `private update(): void`
 - `private isSpawnColliderReady(chunkX: number, chunkY: number, chunkZ: number): boolean`
 
 ---
 
-## `Player/PlayerLoopController.ts` (451 LOC)
+## `Player/PlayerLoopController.ts` (467 LOC)
 
 ### export class PlayerLoopController
 
 **Constructor**
-- `constructor(engine: Engine, scene: Scene, playerVehicle: IPlayerBody, playerStats: PlayerStats, playerHud: PlayerHud, playerCamera: PlayerCamera, getKeyboardControls: () => IControls<unknown>, getPlayerPosition: () => Vector3)`
+- `constructor(scene: SceneContext, private readonly playerVehicle: {
+			isSprinting: boolean;
+			isClimbing: boolean;
+			update(dt: number): void;
+			updateCameraAndVisuals(): void;
+		}, private readonly playerStats: PlayerStats, private readonly playerHud: PlayerHud, private readonly playerCamera: PlayerCamera, private readonly getKeyboardControls: () => IControls<unknown>, private readonly getPlayerPosition: () => Vec3)`
 
 **Properties**
-- `#loadLastCx: unknown`
-- `#loadLastCy: unknown`
-- `#loadLastCz: unknown`
-- `#amLastCx: unknown`
-- `#amLastCy: unknown`
-- `#amLastCz: unknown`
-- `#prevCameraYaw: unknown`
-- `#prevCameraPitch: unknown`
-- `#rebuildActiveMeshes: unknown`
-- `#lastCaveState: unknown`
-- `#occlusionCuller: unknown`
-- `#lastOcclusionStats: unknown`
-- `#lastDebugHudUpdateMs: unknown`
-- `#mainThreadMs: unknown`
-- `static readonly DEBUG_HUD_INTERVAL_MS: unknown`
-- `#onBeforeRenderObs: Observer<Scene> | null`
-- `#onAfterRenderObs: Observer<Scene> | null`
-- `#frozenOnce: unknown`
-- `#cameraStillFrames: unknown`
-- `static readonly FREEZE_DELAY_FRAMES: unknown`
-- `static readonly #DIRECTION_NAMES: unknown`
+- `static readonly DEBUG_HUD_INTERVAL_MS`
+- `private readonly scene: SceneContext`
+- `stopBlockBreaking?: () => void`
 
 **Methods**
 - `public bind(): void`
-- `public dispose(): void`
-- `#updateControls(hit?: BlockRaycastHit | null): void`
-- `#updateCaveState(playerY: number): boolean`
-- `#updateChunksAroundPlayer(cx: number, cy: number, cz: number, playerPos: { x: number; z: number }): void`
-- `#updateActiveMeshSelection(cx: number, cy: number, cz: number): void`
-- `#freezeActiveMeshes(): void`
-- `#updateDebugHud(): void`
-- `#directionFromYaw(yaw: number): string`
+
+**Types / Interfaces / Enums**
+- type `BlockRaycastHit`
 
 ---
 
-## `Player/PlayerStatePersistence.ts` (187 LOC)
+## `Player/PlayerStatePersistence.ts` (185 LOC)
 
 ### export class PlayerStatePersistence
 
 **Constructor**
-- `constructor(scene: Scene, player: Player)`
+- `constructor(private readonly scene: SceneContext, private readonly player: Player)`
 
 **Properties**
-- `private static readonly PLAYER_POSITION_STORAGE_KEY: unknown`
-- `private static readonly PLAYER_INVENTORY_STORAGE_KEY: unknown`
-- `private static readonly PLAYER_STATE_SAVE_INTERVAL_MS: unknown`
-- `private static readonly CHUNK_SAVE_BATCH_SIZE: unknown`
-- `private static readonly CHUNK_SAVE_NOW_BATCH_SIZE: unknown`
-- `private lastPositionSaveMs: unknown`
-- `private inventoryObserver: Observer<void> | null`
-- `private sceneDisposeObserver: Observer<Scene> | null`
-- `private isDisposed: unknown`
-- `private readonly onBeforeUnload: unknown`
-- `private readonly onVisibilityChange: unknown`
+- `private static readonly PLAYER_POSITION_STORAGE_KEY`
+- `private static readonly PLAYER_INVENTORY_STORAGE_KEY`
+- `private static readonly PLAYER_STATE_SAVE_INTERVAL_MS`
+- `private static readonly CHUNK_SAVE_BATCH_SIZE`
+- `private static readonly CHUNK_SAVE_NOW_BATCH_SIZE`
+- `private lastPositionSaveMs`
+- `private inventoryObserver: any = null`
+- `private sceneDisposeObserver: any = null`
+- `private isDisposed`
+- `private readonly onBeforeUnload`
+- `private readonly onVisibilityChange`
 
 **Methods**
 - `public update(): void`
@@ -3178,56 +3061,55 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `Player/PlayerStats.ts` (74 LOC)
+## `Player/PlayerStats.ts` (85 LOC)
 
 ### export class PlayerStats
 
 **Properties**
-- `public gamemode: Gamemodes`
-- `public maxHealth: unknown`
-- `public health: unknown`
-- `public maxHunger: unknown`
-- `public hunger: unknown`
-- `public maxStamina: unknown`
-- `public stamina: unknown`
-- `public maxMana: unknown`
-- `public mana: unknown`
-- `public healthRegenRate: unknown`
-- `public staminaRegenRate: unknown`
-- `public manaRegenRate: unknown`
-- `public hungerDepletionRate: unknown`
+- `public gamemode: Gamemodes = Gamemodes.Creative`
+- `public maxHealth`
+- `public health`
+- `public maxHunger`
+- `public hunger`
+- `public maxStamina`
+- `public stamina`
+- `public maxMana`
+- `public mana`
+- `public healthRegenRate`
+- `public staminaRegenRate`
+- `public manaRegenRate`
+- `public hungerDepletionRate`
+- `public climbingStaminaRegenMultiplier`
 
 **Methods**
-- `public update(deltaTime: number, isSprinting: boolean): void`
+- `public update(deltaTime: number, isSprinting: boolean, staminaRegenScale = 1): void`
 - `public takeDamage(amount: number): void`
 - `public heal(amount: number): void`
 - `public consumeStamina(amount: number): boolean`
 - `public consumeMana(amount: number): boolean`
 - `public eat(amount: number): void`
 
-**Types / Interfaces / Enums**
-- enum `Gamemodes`
-
 ---
 
-## `Player/PlayerVehicle.ts` (121 LOC)
+## `Player/PlayerVehicle.ts` (215 LOC)
 
-### export class PlayerVehicle implements IPlayerBody
+### export class PlayerVehicle
 
 **Constructor**
-- `constructor(scene: Scene, camera: PlayerCamera, playerStats: PlayerStats)`
+- `constructor(scene: SceneContext, camera: PlayerCamera)`
 
 **Properties**
-- `public scene: Scene`
+- `public scene: SceneContext`
 - `public camera: PlayerCamera`
-- `public isMounted: unknown`
-- `public DASH: unknown`
-- `public mount: Mount | null`
-- `private readonly controlState: unknown`
-- `private readonly motor: PlayerVehicleMotor`
+- `public isMounted`
+- `public mount: Mount | null = null`
+- `private readonly controlState`
+- `x: 0,`
+- `z: 0,`
 
 **Accessors**
-- `public get inputDirection(): Vector3`
+- `public get position(): Vec3`
+- `public get inputDirection(): Vec3`
 - `public get wantJump(): number`
 - `public set wantJump(value: number)`
 - `public get isSprinting(): boolean`
@@ -3236,217 +3118,64 @@ Generated: 2026-07-09T20:48:34.412Z
 - `public set isFlying(value: boolean)`
 - `public get isJumpHeld(): boolean`
 - `public set isJumpHeld(value: boolean)`
+- `public get isSneaking(): boolean`
+- `public set isSneaking(value: boolean)`
+- `public get isClimbing(): boolean`
 - `public get isMovementLocked(): boolean`
-- `public get characterController(): SimpleCharacterController`
-- `public get displayCapsule(): Mesh`
 
 **Methods**
-- `public toggleFlying(): void`
+- `copyFrom(v: Vec3)`
 - `public clearControlState(): void`
-- `public update(deltaTime: number): void`
-- `public updateCameraAndVisuals(): void`
+- `public toggleFlying(): void`
 - `public lockMovementAtCurrentPosition(): void`
 - `public unlockMovement(): void`
-- `public getSavedPosition(): SavedPlayerPosition`
+- `public getSavedPosition(): Vec3`
 - `public restoreSavedPosition(position: unknown): boolean`
-- `public setMount(mount: Mount): void`
-- `public wouldBlockOverlapPlayer(blockX: number, blockY: number, blockZ: number, blockShape: {
-			boxes: Array<{
-				min: [number, number, number];
-				max: [number, number, number];
-			}>;
-			rotateY: boolean;
-			usesSliceState: boolean;
-		}, rotation: number, slice: number, flipY: boolean): boolean`
+- `public setMount(mount: Mount | null): void`
+- `public respawn(): void`
+- `public update(deltaTime: number): void`
+- `public updateCameraAndVisuals(): void`
 
 **Types / Interfaces / Enums**
-- type `SavedPlayerPosition`
+- type `BlockShapeInfo`
 
 ---
 
-## `Player/PlayerVehicleMotor.ts` (1081 LOC)
-
-### export class PlayerVehicleMotor
-
-**Constructor**
-- `constructor(options: PlayerVehicleMotorOptions)`
-
-**Properties**
-- `readonly #scene: Scene`
-- `readonly #camera: PlayerCamera`
-- `readonly #controls: PlayerBodyControlState`
-- `readonly #getMount: () => Mount | null`
-- `readonly #playerStats: PlayerStats`
-- `#displayCapsule: Mesh`
-- `#characterController: SimpleCharacterController`
-- `#characterOrientation: unknown`
-- `#characterGravity: unknown`
-- `#characterGravityLen: unknown`
-- `readonly #upX: unknown`
-- `readonly #upY: unknown`
-- `readonly #upZ: unknown`
-- `#movementLocked: unknown`
-- `#lockedPosition: Vector3 | null`
-- `readonly #zeroVelocity: unknown`
-- `private state: PlayerState`
-- `#collisionBoat: CustomBoat | null`
-- `readonly #boatLocalPos: unknown`
-- `readonly #boatLocalVel: unknown`
-- `readonly #boatSupportLocal: unknown`
-- `#supportBoat: CustomBoat | null`
-- `#lastBoatSupportMs: unknown`
-- `private readonly boatSupportGraceMs: unknown`
-- `readonly #tmp0: unknown`
-- `readonly #tmp1: unknown`
-- `readonly #tmp2: unknown`
-- `readonly #tmp3: unknown`
-- `readonly #tmp4: unknown`
-- `readonly #tmp5: unknown`
-- `readonly #tmp6: unknown`
-- `readonly #tmp7: unknown`
-- `readonly #tmp8: unknown`
-- `readonly #tmpDesiredH: unknown`
-- `readonly #tmpCurH: unknown`
-- `readonly #tmpNextH: unknown`
-- `readonly #tmpDv: unknown`
-- `readonly #tmpV: unknown`
-- `readonly #tmpInv: unknown`
-- `readonly boatVoxelCollider: VoxelAabbCollider`
-- `private readonly voxelCollider: VoxelAabbCollider`
-- `private voxelPosition: unknown`
-- `private voxelVelocity: unknown`
-- `private voxelIsGrounded: unknown`
-- `private lastStepUpTime: unknown`
-- `private now: unknown`
-- `private readonly deceleration: unknown`
-- `private readonly inAirSpeed: unknown`
-- `private readonly onGroundSpeed: unknown`
-- `private readonly jumpHeight: unknown`
-- `private readonly jumpStaminaCost: unknown`
-- `private readonly accelRateGround: unknown`
-- `private readonly sprintMultiplier: unknown`
-- `private readonly penetrationRecoveryEps: unknown`
-- `private readonly airJumpForwardBoost: unknown`
-- `private readonly minFloorNormalDot: unknown`
-- `private readonly useVoxelCollision: unknown`
-- `private readonly colliderHalfWidth: unknown`
-- `private readonly colliderHalfHeight: unknown`
-- `private readonly voxelStepSize: unknown`
-- `private readonly collisionEpsilon: unknown`
-- `private readonly swimSpeed: unknown`
-- `private readonly swimAcceleration: unknown`
-- `private readonly swimSinkSpeed: unknown`
-- `private readonly swimRiseSpeed: unknown`
-- `private readonly swimVerticalAcceleration: unknown`
-- `private readonly swimHorizontalDrag: unknown`
-- `private readonly stepUpHeight: unknown`
-- `private readonly stepUpCooldown: unknown`
-- `private readonly colliderHalfWidthProbe: number`
-- `private readonly colliderHalfWidthWater: number`
-- `private readonly stepUpCooldownMs: number`
-- `private readonly jumpImpulse: number`
-- `private readonly _groundProbeOffsets: ReadonlyArray<
-		readonly [number, number]
-	>`
-- `private readonly _waterYOffsets: ReadonlyArray<number>`
-- `private readonly _waterXZOffsets: ReadonlyArray<readonly [number, number]>`
-
-**Accessors**
-- `public get characterController(): SimpleCharacterController`
-- `public get displayCapsule(): Mesh`
-- `public get isMovementLocked(): boolean`
-- `private get inputDirection(): Vector3`
-- `private get wantJump(): number`
-- `private set wantJump(v: number)`
-- `private get isSprinting(): boolean`
-- `private get isFlying(): boolean`
-- `private get isJumpHeld(): boolean`
-
-**Methods**
-- `private isOnBoat(): boolean`
-- `#toBoatLocal(world: Vector3, _yaw: number, out: Vector3): void`
-- `#toWorld(local: Vector3, _yaw: number, out: Vector3): void`
-- `#resolveEntryOverlap(): void`
-- `#flushToWorld(): void`
-- `public wouldBlockOverlapPlayer(blockX: number, blockY: number, blockZ: number, blockShape: {
-			boxes: Array<{
-				min: [number, number, number];
-				max: [number, number, number];
-			}>;
-			rotateY: boolean;
-			usesSliceState: boolean;
-		}, rotation: number, slice: number, flipY: boolean): boolean`
-- `#applyBoatMotion(): void`
-- `#tryBoatSupport(boat: CustomBoat, chunk: BoatChunk, footY: number): boolean`
-- `#updateSupportBoat(): void`
-- `#syncBoatMode(): void`
-- `#getDesiredVelocity(speed: number, boatYaw: number | null, out: Vector3): void`
-- `#sweepAxis(pos: Vector3, vel: Vector3, collider: VoxelAabbCollider, axis: Axis, delta: number): void`
-- `#attemptStepUp(pos: Vector3, vel: Vector3, collider: VoxelAabbCollider, axis: Axis.X | Axis.Z, delta: number): boolean`
-- `#moveAxis(pos: Vector3, vel: Vector3, collider: VoxelAabbCollider, axis: Axis, delta: number): void`
-- `#checkGrounded(pos: Vector3, collider: VoxelAabbCollider): boolean`
-- `#isInsideBoatObb(boat: CustomBoat): boolean`
-- `private integrateVoxelMovementStep(deltaTime: number): void`
-- `public updateCameraAndVisuals(): void`
-- `public update(deltaTime: number): void`
-- `public lockMovementAtCurrentPosition(): void`
-- `public unlockMovement(): void`
-- `public getSavedPosition(): SavedBodyPosition`
-- `public restoreSavedPosition(position: unknown): boolean`
-- `private initializeCharacter(): void`
-- `private configureCharacterController(): void`
-- `private createCharacterMesh(height: number, width: number): Mesh`
-- `private integrateMovement(deltaTime: number): void`
-- `private integrateMovementStep(deltaTime: number): void`
-- `private integrateVoxelMovement(deltaTime: number): void`
-- `private calculateFlyingVelocity(deltaTime: number): Vector3`
-- `private calculateDesiredVelocity(deltaTime: number, supportInfo: CharacterSurfaceInfo): Vector3`
-- `private determineNextState(si: CharacterSurfaceInfo): PlayerState`
-- `private calculateInAirVelocity(dt: number, cur: Vector3): Vector3`
-- `private calculateOnGroundVelocity(cur: Vector3, si: CharacterSurfaceInfo): Vector3`
-- `private calculateJumpVelocity(cur: Vector3, prev: PlayerState): Vector3`
-- `private accelerateInto(cur: Vector3, tgt: Vector3, maxA: number, dt: number, out: Vector3): Vector3`
-- `private isInWater(): boolean`
-- `private isValidSavedPosition(p: unknown): p is SavedBodyPosition`
-- `private getPositionInternal(): Vector3`
-- `private getVelocityInternal(): Vector3`
-- `private setVelocityInternal(v: Vector3): void`
-
-**Module-level functions**
-- `function _rotateVec3ByQuat(vx: number, vy: number, vz: number, qx: number, qy: number, qz: number, qw: number, out: Vector3): void`
+## `Player/PlayerVehicleMotor.ts` (1155 LOC)
 
 **Types / Interfaces / Enums**
+- type `EngineContext`
+- type `Mesh`
+- type `SceneContext`
+- type `Vec3`
 - type `PlayerVehicleMotorOptions`
-- enum `PlayerState`
 
 ---
 
-## `Player/SimpleCharacterController.ts` (63 LOC)
+## `Player/SimpleCharacterController.ts` (64 LOC)
 
 ### export class SimpleCharacterController
 
 **Constructor**
-- `constructor(startPosition: Vector3)`
+- `constructor(startPosition: Vec3)`
 
 **Properties**
-- `public keepDistance: unknown`
-- `public keepContactTolerance: unknown`
-- `public maxCastIterations: unknown`
-- `public penetrationRecoverySpeed: unknown`
-- `public maxSlopeCosine: unknown`
-- `#position: Vector3`
-- `#velocity: unknown`
-- `static readonly #cachedSurfaceNormal: unknown`
-- `static readonly #cachedSurfaceVelocity: unknown`
-- `static readonly #cachedSurfaceInfo: CharacterSurfaceInfo`
+- `public keepDistance`
+- `public keepContactTolerance`
+- `public maxCastIterations`
+- `public penetrationRecoverySpeed`
+- `public maxSlopeCosine`
+- `supportedState: CharacterSupportedState.UNSUPPORTED,`
+- `averageSurfaceNormal: SimpleCharacterController.#cachedSurfaceNormal,`
+- `averageSurfaceVelocity: SimpleCharacterController.#cachedSurfaceVelocity,`
 
 **Methods**
-- `public getPosition(): Vector3`
-- `public setPosition(position: Vector3): void`
-- `public getVelocity(): Vector3`
-- `public setVelocity(velocity: Vector3): void`
+- `public getPosition(): Vec3`
+- `public setPosition(position: Vec3): void`
+- `public getVelocity(): Vec3`
+- `public setVelocity(velocity: Vec3): void`
 - `public checkSupport(): CharacterSurfaceInfo`
-- `public integrate(deltaTime: number, gravity: Vector3): void`
+- `public integrate(deltaTime: number, gravity: Vec3): void`
 
 **Types / Interfaces / Enums**
 - type `CharacterSurfaceInfo`
@@ -3454,96 +3183,62 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `Shared/ChunkCoordUtils.ts` (8 LOC)
-
-**Module-level functions**
-- `export function worldToChunkCoord(value: number): number`
-- `export function worldToBlockCoord(value: number): number`
-
----
-
-## `Shared/Constants.ts` (1 LOC)
-
----
-
-## `Shared/EventBus.ts` (26 LOC)
-
-**Module-level functions**
-- `export function on(event: K, fn: Listener<K>): () => void`
-- `export function emit(event: K, data: EventMap[K]): void`
+## `TestScene.ts` (82 LOC)
 
 **Types / Interfaces / Enums**
-- type `EventMap`
-- type `EventKey`
-- type `Listener`
+- type `EngineContext`
+- type `SceneContext`
 
 ---
 
-## `Shared/GameRuntimeState.ts` (30 LOC)
+## `World/BlockInventory/BlockInventoryManager.ts` (129 LOC)
 
 **Module-level functions**
-- `export function isInCave(): boolean`
-- `export function setInCave(value: boolean): void`
-- `export function getGameTimeScale(): number`
-- `export function setGameTimeScale(value: number): void`
-- `export function getIsPaused(): boolean`
-- `export function setIsPaused(value: boolean): void`
-- `export function setSceneAccessor(fn: () => import("@babylonjs/core").Scene): void`
-- `export function getScene(): import("@babylonjs/core").Scene | null`
+- `function posKey(x: number, y: number, z: number): string`
+- `function loadAll(): Map<string, SavedBlockInventory>`
+- `function saveAll(): void`
+- `export function getBlockInventory(x: number, y: number, z: number): SavedBlockInventory`
+- `export function saveBlockInventory(x: number, y: number, z: number, inv: SavedBlockInventory): void`
+- `export function createEmptyInventory(width: number, height: number): SavedBlockInventory`
+- `export function buildBlockInventorySlots(saved: SavedBlockInventory): ItemSlot[][]`
+- `export function serializeBlockSlots(grid: ItemSlot[][]): SavedBlockInventory`
+
+**Types / Interfaces / Enums**
+- interface `SavedBlockInventoryItem`
+- interface `SavedBlockInventory`
 
 ---
 
-## `TestScene.ts` (78 LOC)
-
-### export class TestScene
-
-**Constructor**
-- `constructor(document: Document, canvas: HTMLCanvasElement)`
-
-**Properties**
-- `document: Document`
-- `scene?: Scene`
-- `engine: Engine`
-- `public readonly initPromise: Promise<void>`
-- `private frameCounter: unknown`
-- `readonly #onKeyDown: (ev: KeyboardEvent) => void`
-
-**Methods**
-- `async init(): Promise<void>`
-- `async createScene(): Promise<Scene>`
-- `public dispose(): void`
-
----
-
-## `World/Boat/BoatChunk.ts` (463 LOC)
+## `World/Boat/BoatChunk.ts` (474 LOC)
 
 ### export class BoatChunk
 
 **Constructor**
-- `constructor(scene: Scene, blocks: BoatChunkBlock[], center: Vector3)`
+- `constructor(blocks: BoatChunkBlock[], center: Vec3)`
 
 **Properties**
-- `private static activeChunks: unknown`
-- `private static readonly CHUNK_Y_BASE: unknown`
-- `private static readonly CHUNK_COORD_GRID_WIDTH: unknown`
-- `private static readonly CHUNK_COORD_SPACING: unknown`
-- `private static nextChunkSlot: unknown`
-- `#scene: Scene`
-- `#center: Vector3`
-- `#visualRoot: Mesh`
-- `#centerChunk: Chunk`
-- `#scratchInverse: unknown`
-- `#scratchLocal: unknown`
-- `#neighborChunks: Chunk[]`
-- `#attachedOpaqueMesh: Mesh | null`
-- `#attachedTransparentMesh: Mesh | null`
-- `#blockChangeListeners: unknown`
+- `private static activeChunks`
+- `private static readonly CHUNK_Y_BASE`
+- `private static readonly CHUNK_COORD_GRID_WIDTH`
+- `private static readonly CHUNK_COORD_SPACING`
+- `private static nextChunkSlot`
+- `found`
+- `blockState: unpackBlockState(packedBlock),`
+- `lightLevel: this.#centerChunk.getLight(x, y, z),`
+- `center: vec3(this.#center.x, this.#center.y, this.#center.z),`
+- `localX: number,`
+- `localY: number,`
+- `localZ: number,`
+- `blockId: number,`
+- `blockState: number,`
 
 **Accessors**
 - `public get visualRoot(): Mesh`
-- `public get center(): Vector3`
+- `public get center(): Vec3`
 
 **Methods**
+- `copyVec3(this.#center, center)`
+- `addToScene(this.#scene, this.#visualRoot)`
 - `private initializeCenterChunkLighting(blocks: BoatChunkBlock[]): void`
 - `private static allocateChunkCoords(): ChunkCoords`
 - `private createSharedBuffer(byteLength: number): ArrayBufferLike`
@@ -3559,7 +3254,7 @@ Generated: 2026-07-09T20:48:34.412Z
 - `private syncMeshRef(source: Mesh | null, attachedRef: Mesh | null): Mesh | null`
 - `private updateAttachedMeshTransform(mesh: Mesh | null): void`
 - `public syncVisualMeshes(): void`
-- `public remesh(priority: unknown = true): void`
+- `public remesh(priority = true): void`
 - `public attachTo(parent: Mesh): void`
 - `public getBlockLocal(x: number, y: number, z: number): number`
 - `public isInsideLocalBounds(x: number, y: number, z: number): boolean`
@@ -3567,28 +3262,24 @@ Generated: 2026-07-09T20:48:34.412Z
 - `public getBlockPackedLocal(x: number, y: number, z: number): number`
 - `public getLightLocal(x: number, y: number, z: number): number`
 - `public setBlockPackedLocal(x: number, y: number, z: number, packedBlock: number): void`
-- `public setBlockLocal(x: number, y: number, z: number, blockId: number, blockState: unknown = 0): void`
+- `public setBlockLocal(x: number, y: number, z: number, blockId: number, blockState = 0): void`
 - `public setLightLocal(x: number, y: number, z: number, packedLight: number): void`
-- `public worldToLocalBlock(worldPosition: Vector3): Vector3`
-- `public worldToLocalBlockToRef(worldPosition: Vector3, ref: Vector3): void`
-- `public localToWorldCenter(x: number, y: number, z: number): Vector3`
-- `public localToWorldCenterToRef(x: number, y: number, z: number, ref: Vector3): void`
-- `public getOccupiedBoundsLocal(): {
-		minX: number;
-		minY: number;
-		minZ: number;
-		maxX: number;
-		maxY: number;
-		maxZ: number;
-	} | null`
+- `public worldToLocalBlock(worldPosition: Vec3): Vec3`
+- `public worldToLocalBlockToRef(worldPosition: Vec3, ref: Vec3): void`
+- `public localToWorldCenter(x: number, y: number, z: number): Vec3`
+- `public localToWorldCenterToRef(x: number, y: number, z: number, ref: Vec3): void`
+- `public getOccupiedBoundsLocal()`
 - `public onBlockChanged(listener: BoatChunkBlockChangeListener): () => void`
-- `public toSnapshot(): { blocks: BoatChunkBlock[]; center: Vector3 }`
+- `public toSnapshot()`
 - `public dispose(): void`
 - `private createEmptyLightArray(): Uint8Array`
 - `public static getActiveChunks(): ReadonlySet<BoatChunk>`
-- `#emitBlockChanged(localX: number, localY: number, localZ: number, blockId: number, blockState: number): void`
+- `listener(this, localX, localY, localZ, blockId, blockState)`
 
 **Types / Interfaces / Enums**
+- type `Mesh`
+- type `SceneContext`
+- type `Vec3`
 - type `BoatChunkBlock`
 - type `ChunkCoords`
 - type `BoatChunkBlockChangeListener`
@@ -3605,19 +3296,7 @@ Generated: 2026-07-09T20:48:34.412Z
 - `export function setVisualMode(mode: VisualMode): void`
 - `export function tryCreateBoatFromMarker(player: Player, markerX: number, markerY: number, markerZ: number): boolean`
 - `function collectConnectedHullBlocks(markerX: number, markerY: number, markerZ: number): VoxelBlock[]`
-- `function computeBounds(blocks: VoxelBlock[]): {
-	minX: number;
-	minY: number;
-	minZ: number;
-	maxX: number;
-	maxY: number;
-	maxZ: number;
-	sizeX: number;
-	sizeY: number;
-	sizeZ: number;
-	center: Vector3;
-	halfExtents: Vector3;
-}`
+- `function computeBounds(blocks: VoxelBlock[])`
 - `function computeForwardYaw(bounds: {
 		minX: number;
 		minZ: number;
@@ -3633,7 +3312,7 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `World/Chunk/Chunk.ts` (1267 LOC)
+## `World/Chunk/Chunk.ts` (1072 LOC)
 
 ### export class Chunk
 
@@ -3642,86 +3321,16 @@ Generated: 2026-07-09T20:48:34.412Z
 
 **Properties**
 - `public readonly id: bigint`
-- `private _neighborIds: bigint[] | null`
-- `public lodLevel: unknown`
-- `public static readonly SIZE: unknown`
-- `public static readonly SIZE2: unknown`
-- `public static readonly SIZE3: unknown`
-- `public static readonly chunkInstances: unknown`
-- `static _chunkByCoords: unknown`
-- `public static readonly loadedChunks: unknown`
-- `public static readonly loadedChunkIndex: unknown`
-- `public isModified: unknown`
-- `public isBoatChunk: unknown`
-- `public isDirty: unknown`
-- `public isLoaded: unknown`
-- `public isTerrainScheduled: unknown`
-- `public isLightDirty: unknown`
-- `public remeshQueued: unknown`
-- `public static DEBUG_REMESH: unknown`
-- `public static onRequestRemesh: | ((chunk: Chunk, priority: boolean) => void)
-		| null`
-- `public static onChunkLoaded: ((chunk: Chunk) => void) | null`
-- `public static onBlockModified: ((chunk: Chunk) => void) | null`
-- `public static lightHeaderBuffer: SharedArrayBuffer | null`
-- `public static lightHeaderView: LightHeaderView | null`
-- `private static _lightHeaderNextSlot: unknown`
-- `private static _lightHeaderFreeSlots: number[]`
-- `public static onLightChunkLoaded: ((chunk: Chunk) => void) | null`
-- `public static onLightChunkLayoutChanged: ((chunk: Chunk) => void) | null`
-- `public static onLightChunkDisposed: ((chunk: Chunk) => void) | null`
-- `private _block_array: Uint8Array | Uint16Array | null`
-- `private _isUniform: unknown`
-- `private _uniformBlockId: unknown`
-- `private _palette: Uint16Array | null`
-- `private _paletteIndexMap: Map<number, number> | null`
-- `private _hasVoxelData: unknown`
-- `public chunkY: number`
-- `public chunkX: number`
-- `public chunkZ: number`
-- `public mesh: Mesh | null`
-- `public transparentMesh: Mesh | null`
-- `public opaqueMeshData: MeshData | null`
-- `public transparentMeshData: MeshData | null`
-- `public mergedGroupKey: string | null`
-- `public faceConnectivity: unknown`
-- `public connectivityDirty: unknown`
-- `_isDarkCached: boolean | undefined`
-- `public _fSteps: Uint8Array`
-- `light_array: Uint8Array`
-- `public readonly numericId: number`
-- `private static _nextNumericId: unknown`
-- `public lightHeaderSlot: number`
-- `public bfsQueryId: number`
-- `public bfsVisitedFaces: number`
-- `public bfsQueuedForConnectivity: boolean`
-- `public readonly neighborRefs: (Chunk | null)[]`
-- `public static readonly SKY_LIGHT_SHIFT: unknown`
-- `public static readonly BLOCK_LIGHT_MASK: unknown`
-- `private static readonly SKYLIGHT_GENERATION_MIN_WORLD_Y: unknown`
-- `private static readonly GLASS_01_BLOCK_ID: unknown`
-- `private static readonly GLASS_02_BLOCK_ID: unknown`
-- `private static readonly EPS: unknown`
-- `private static readonly CLOSED_FACE_MASK_CACHE: unknown`
-- `private static readonly EMPTY_LIGHT_ARRAY: unknown`
-- `public cachedLODMeshes: unknown`
-- `private static readonly _lightEmissionLUT: unknown`
-- `public static _lightPool: {
-		postLightMutate(req: any): void;
-		postLightAddEmission(req: any): void;
-		nextLightSeq(): number;
-		enqueueDeferredLightFromSunlightInit?(
-			chunk: Chunk,
-			queue: Uint16Array,
-			length: number,
-		): void;
-	} | null`
-- `private static readonly _faceBitLUT: unknown`
-- `private static readonly _faceScratch: number[]`
-- `private static readonly FACE_CONNECT_THRESHOLD: unknown`
+- `public readonly neighborRefs: (Chunk | null)[] = [ null, null, null, null, null, null, ]`
+- `public static readonly SKY_LIGHT_SHIFT`
+- `public static readonly BLOCK_LIGHT_MASK`
+- `private static readonly SKYLIGHT_GENERATION_MIN_WORLD_Y`
+- `private static readonly EMPTY_LIGHT_ARRAY`
+- `public cachedLODMeshes`
+- `private static readonly _lightEmissionLUT`
+- `public static _lightPool: { postLightMutate(req: any): void; postLightAddEmission(req: any): void; nextLightSeq(): number; enqueueDeferredLightFromSunlightInit?( chunk: Chunk, queue: Uint16Array, length: number, ): void; } | null = null`
 
 **Accessors**
-- `public get isSolidOccluder(): boolean`
 - `get block_array(): Uint8Array | Uint16Array | null`
 - `get palette(): Uint16Array | null`
 - `get isUniform(): boolean`
@@ -3730,57 +3339,21 @@ Generated: 2026-07-09T20:48:34.412Z
 - `public get neighborIds(): readonly bigint[]`
 
 **Methods**
-- `public static initLightHeader(): SharedArrayBuffer`
-- `private static allocLightHeaderSlot(): number`
-- `public getLightStorageSnapshot(): {
-		lightSAB: SharedArrayBuffer | null;
-		blockSAB: SharedArrayBuffer | null;
-		paletteSAB: SharedArrayBuffer | null;
-		blockStorageBytesPerElement: 1 | 2;
-	}`
 - `public static getLightEmission(blockId: number): number`
+- `_setByCoords(this)`
 - `private getNibble(index: number): number`
 - `private setNibble(index: number, value: number): void`
-- `public loadFromStorage(blocks: Uint8Array | Uint16Array | null, palette: Uint16Array | null | undefined, isUniform: boolean | undefined, uniformBlockId: number | undefined, light_array?: Uint8Array, scheduleRemesh: unknown = true): void`
+- `public loadFromStorage(blocks: Uint8Array | Uint16Array | null, palette: Uint16Array | null | undefined, isUniform: boolean | undefined, uniformBlockId: number | undefined, light_array?: Uint8Array, scheduleRemesh = true, _fromStorage = false): void`
 - `private writeLightHeaderRow(): void`
-- `private ensureSharedBacking(): void`
-- `public loadLodOnlyFromStorage(scheduleRemesh: unknown = false): void`
-- `public getCachedLODMesh(lod: number): CachedLODMesh | null`
-- `public hasCachedLODMesh(lod: number): boolean`
-- `public setCachedLODMesh(lod: number, mesh: CachedLODMesh): void`
-- `public clearCachedLODMeshes(): void`
-- `public getSerializableLODMeshCache(): SerializedLODMeshCache | undefined`
-- `public restoreLODMeshCache(cache?: SerializedLODMeshCache): void`
-- `public initializeSunlight(): void`
-- `public getBlockLight(lx: number, ly: number, lz: number): number`
-- `public getSkyLight(lx: number, ly: number, lz: number): number`
-- `public getLight(lx: number, ly: number, lz: number): number`
-- `public setLight(x: number, y: number, z: number, level: number): void`
-- `public recomputeDarkCache(): void`
-- `public setBlockLight(x: number, y: number, z: number, level: number): void`
-- `public setSkyLight(x: number, y: number, z: number, level: number): void`
-- `public getBlock(lx: number, ly: number, lz: number): number`
-- `public getBlockState(lx: number, ly: number, lz: number): number`
-- `public getBlockPacked(lx: number, ly: number, lz: number): number`
+- `private _rebuildPaletteOpacity(): void`
+- `private _rebuildDenseOpacity(): void`
 - `private isOpaqueAtIndex(i: number): number`
-- `public setBlock(localX: number, localY: number, localZ: number, blockId: number, state: unknown = 0): void`
-- `private dispatchLightMutate(localX: number, localY: number, localZ: number, oldPacked: number, newPacked: number): void`
+- `public setBlock(localX: number, localY: number, localZ: number, blockId: number, state = 0): void`
 - `public deleteBlock(localX: number, localY: number, localZ: number): void`
-- `public scheduleRemesh(priority: unknown = false, includeNeighbors: unknown = false): void`
+- `public scheduleRemesh(priority = false, includeNeighbors = false): void`
 - `public getNeighbor(dx: number, dy: number, dz: number): Chunk | undefined`
 - `public markLightChanged(): void`
 - `public needsPersistence(): boolean`
-- `private static getClosedFaceMaskForPacked(blockPacked: number): number`
-- `public static precomputeClosedFaceMasks(): Uint8Array`
-- `private static pushRectFlat(f: number, u0: number, u1: number, v0: number, v1: number): void`
-- `private static doesFlatRectsCoverUnitSquare(f: number): boolean`
-- `private static insertionSortEdges(start: number, len: number): void`
-- `private static dedupeEdges(start: number, len: number): number`
-- `private static getFaceBit(axis: number, dir: number): number`
-- `private isTransparent(blockPacked: number, axis?: number, dir?: number): boolean`
-- `private static applySliceStateToBoxForLight(min: [number, number, number], max: [number, number, number], state: number): { min: [number, number, number]; max: [number, number, number] }`
-- `public static facePairIndex(i: number, j: number): number`
-- `private static connectFacesMask(faceMask: number): number`
 - `public computeFaceConnectivity(): number`
 - `public dispose(): void`
 
@@ -3792,50 +3365,68 @@ Generated: 2026-07-09T20:48:34.412Z
 - `function _deleteByCoords(c: Chunk): void`
 
 **Types / Interfaces / Enums**
+- type `LightHeaderView`
 - type `CachedLODMesh`
 - type `SerializedLODMeshCache`
 - type `ChunkDisposeHook`
 
 ---
 
-## `World/Chunk/chunk.worker.ts` (173 LOC)
+## `World/Chunk/chunk.worker.ts` (283 LOC)
 
 **Module-level functions**
-- `function compressBlocks(blocks: Uint8Array): {
-	isUniform: boolean;
-	uniformBlockId: number;
-	palette: Uint16Array | null;
-	packedBlocks: Uint8Array | Uint16Array | null;
-}`
+- `function _packCoordKey(x: number, y: number, z: number): number`
+- `function _registerFromBoth(meta: {
+		seq: number;
+		chunkId: bigint;
+		chunkX: number;
+		chunkY: number;
+		chunkZ: number;
+		headerSlot: number;
+	}, voxel: PendingVoxelData): void`
+- `function _handleChannelMessage(event: MessageEvent): void`
+- `function sharedU8(len: number): Uint8Array`
+- `function sharedU16(len: number): Uint16Array`
+- `function compressBlocks(blocks: Uint8Array)`
+
+**Types / Interfaces / Enums**
+- interface `PendingVoxelData`
+- type `LightRegisterChunkRequest`
 
 ---
 
 ## `World/Chunk/ChunkEntityAPI.ts` (13 LOC)
 
+**Types / Interfaces / Enums**
+- type `DynamicBlockSample`
+
 ---
 
-## `World/Chunk/ChunkLoadingSystem.ts` (838 LOC)
+## `World/Chunk/ChunkFaceMasks.ts` (294 LOC)
 
 **Module-level functions**
+- `function getFaceBit(axis: number, dir: number): number`
+- `function pushRectFlat(f: number, u0: number, u1: number, v0: number, v1: number): void`
+- `function insertionSortEdges(start: number, len: number): void`
+- `function dedupeEdges(start: number, len: number): number`
+- `function doesFlatRectsCoverUnitSquare(f: number): boolean`
+- `function getClosedFaceMaskForPacked(blockPacked: number): number`
+- `function applySliceStateToBoxForLight(min: [number, number, number], max: [number, number, number], state: number)`
+- `export function isTransparent(blockPacked: number, axis?: number, dir?: number): boolean`
+- `export function facePairIndex(i: number, j: number): number`
+- `function connectFacesMask(faceMask: number): number`
+- `export function precomputeClosedFaceMasks(): Uint8Array`
+
+---
+
+## `World/Chunk/ChunkLoadingSystem.ts` (832 LOC)
+
+**Module-level functions**
+- `function _prefetchOnReadOk(idx: number, bytes: Uint8Array | null | undefined): void`
+- `function _prefetchOnReadErr(idx: number, err: unknown): void`
 - `function isEntityAlive(entity: ChunkBoundEntity): boolean`
 - `function getEntityChunkId(entity: ChunkBoundEntity): bigint | null`
-- `function serializeEntityForReload(entity: ChunkBoundEntity): SavedChunkEntityData | null`
-- `function getConfiguredBatchSize(configuredValue: number, fallbackValue: number): number`
-- `function getLoadBatchSize(): number`
-- `function getUnloadBatchSize(): number`
-- `function getProcessFrameBudgetMs(): number`
-- `function getNeighbors(chunk: Chunk): (Chunk | undefined)[]`
-- `function getReusableMeshData(opaque: MeshData | null, transparent: MeshData | null): { opaque: MeshData | null; transparent: MeshData | null }`
-- `function applyMeshToChunk(chunk: Chunk, mesh: SelectedSavedMesh | null): void`
-- `function refreshQueueDebugSnapshot(): void`
-- `export function getDebugStats(): ChunkLoadingDebugStats`
-- `export async function refreshOpfsDebugStats(): Promise<void>`
-- `function refreshOpfsPrefetchSnapshot(): void`
-- `function buildQueuedIdSet(): Set<bigint>`
-- `function ensureChunkLoadedHook(): void`
-- `export function validateChunksAround(centerChunkX: number, centerChunkY: number, centerChunkZ: number, horizontalRadius: unknown = SETTING_PARAMS.RENDER_DISTANCE, verticalRadius: unknown = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE): void`
 - `export function processFrameBudgetedStreamingWork(playerChunkX: number, playerChunkY: number, playerChunkZ: number): void`
-- `export function registerChunkEntityLoader(type: string, loader: (payload: unknown, chunk: Chunk) => void): void`
 - `export function registerChunkBoundEntity(entity: ChunkBoundEntity): symbol`
 - `export function unregisterChunkBoundEntity(handle: symbol | undefined): void`
 - `export function registerDynamicBlockProvider(provider: DynamicBlockProvider, mutator?: DynamicBlockMutator): symbol`
@@ -3843,12 +3434,11 @@ Generated: 2026-07-09T20:48:34.412Z
 - `function sampleDynamicBlock(worldX: number, worldY: number, worldZ: number, options?: DynamicBlockQueryOptions): DynamicBlockSample | null`
 - `function tryMutateDynamicBlock(worldX: number, worldY: number, worldZ: number, blockId: number, blockState: number): boolean`
 - `async function unloadChunkBoundEntitiesForChunkImpl(chunk: Chunk): Promise<void>`
-- `export function flushModifiedChunks(maxChunks: unknown = getUnloadBatchSize()): Promise<void>`
 - `export function flushChunkBoundEntities(): Promise<void>`
-- `export async function flushOpfsStorage(): Promise<void>`
+- `async export function flushOpfsStorage(): Promise<void>`
 - `function scheduleChunkAndNeighborsRemesh(chunk: Chunk): void`
 - `function scheduleNeighborsOnlyRemesh(chunk: Chunk): void`
-- `export async function updateChunksAround(chunkX: number, chunkY: number, chunkZ: number, renderDistance: unknown = SETTING_PARAMS.RENDER_DISTANCE, verticalRadius: unknown = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE, prevChunkX?: number, prevChunkY?: number, prevChunkZ?: number, playerWorldX?: number, playerWorldZ?: number): Promise<void>`
+- `async export function updateChunksAround(chunkX: number, chunkY: number, chunkZ: number, renderDistance = SETTING_PARAMS.RENDER_DISTANCE, verticalRadius = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE, prevChunkX?: number, prevChunkY?: number, prevChunkZ?: number, playerWorldX?: number, playerWorldZ?: number): Promise<void>`
 - `function updateSliceDebugStats(state: InFlightProcessState): void`
 - `function finalizeProcessState(state: InFlightProcessState): void`
 - `function applyHydratedChunkFromSavedData(chunk: Chunk, savedData: SavedChunkData): void`
@@ -3857,24 +3447,26 @@ Generated: 2026-07-09T20:48:34.412Z
 - `function applyLoadedChunkFromSavedData(state: InFlightProcessState, request: QueuedChunkRequest, savedData: SavedChunkData): void`
 - `async function prefetchOpfsMeshes(requests: QueuedChunkRequest[]): Promise<void>`
 - `function resetCycleOpfsCache(): void`
-- `export function deleteBlock(worldX: number, worldY: number, worldZ: number): void`
-- `export function setBlock(worldX: number, worldY: number, worldZ: number, blockId: number, state: unknown = 0): void`
+- `export function deleteBlock(worldX: number, worldY: number, worldZ: number)`
+- `export function setBlock(worldX: number, worldY: number, worldZ: number, blockId: number, state = 0)`
 - `export function getBlockByWorldCoords(worldX: number, worldY: number, worldZ: number, options?: DynamicBlockQueryOptions): number`
 - `export function getTerrainBlockByWorldCoords(worldX: number, worldY: number, worldZ: number): number`
 - `export function getBlockStateByWorldCoords(worldX: number, worldY: number, worldZ: number, options?: DynamicBlockQueryOptions): number`
 - `export function getBlockAndStateByWorldCoordsInto(worldX: number, worldY: number, worldZ: number, out: BlockAndStateOut, options?: DynamicBlockQueryOptions): BlockAndStateOut`
 - `export function getBlockAndStateByWorldCoords(worldX: number, worldY: number, worldZ: number, options?: DynamicBlockQueryOptions): BlockAndStateOut`
 - `export function getLightByWorldCoords(worldX: number, worldY: number, worldZ: number, options?: DynamicBlockQueryOptions): number`
-- `export function areChunksLoadedAround(chunkX: number, chunkY: number, chunkZ: number, horizontalRadius: unknown = 1, verticalRadius: unknown = 0): boolean`
-- `export function areChunksLod0ReadyAround(chunkX: number, chunkY: number, chunkZ: number, horizontalRadius: unknown = 1, verticalRadius: unknown = 0): boolean`
+- `export function areChunksLoadedAround(chunkX: number, chunkY: number, chunkZ: number, horizontalRadius = 1, verticalRadius = 0): boolean`
+- `export function areChunksLod0ReadyAround(chunkX: number, chunkY: number, chunkZ: number, horizontalRadius = 1, verticalRadius = 0): boolean`
 - `function collectChunkEntityPayloads(): ReadonlyMap<
 	bigint,
 	SavedChunkEntityData[]
 >`
-- `export function worldToChunkCoord(value: number): number`
-- `export function worldToBlockCoord(value: number): number`
 
 **Types / Interfaces / Enums**
+- interface `SelectedSavedMesh`
+- type `SavedChunkData`
+- type `SavedChunkEntityData`
+- type `QueuedChunkRequest`
 - type `DynamicBlockSample`
 - type `DynamicBlockProvider`
 - type `DynamicBlockMutator`
@@ -3884,69 +3476,31 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `World/Chunk/ChunkMesher.ts` (1133 LOC)
-
-### class LodMeshMeta
-
-**Properties**
-- `__lodLevel: unknown`
-- `__lodCrossFade: LodCrossFadeState | null`
+## `World/Chunk/ChunkMesher.ts` (529 LOC)
 
 **Module-level functions**
-- `function ensureMeshMetadata(mesh: Mesh): LodMeshMeta`
-- `function getMeshLodLevel(mesh: Mesh | null): number | null`
-- `function setMeshLodLevel(mesh: Mesh, lod: number): void`
-- `function getMeshFadeState(mesh: Mesh): LodCrossFadeState | null`
-- `function clearMeshFadeState(mesh: Mesh): void`
-- `function setMeshFadeState(mesh: Mesh, state: LodCrossFadeState): void`
-- `function makeFadeSeed(chunk: Chunk): number`
-- `function beginLodCrossFade(chunk: Chunk, oldMesh: Mesh | null, newMesh: Mesh | null): void`
-- `function shouldUseLodCrossFade(previousLod: number | null, nextLod: number): boolean`
-- `function getMeshFadeUniforms(mesh: Mesh | undefined, nowMs?: number): typeof scratchFadeUniforms`
-- `function updateLodCrossFades(nowMs: number): void`
-- `function applyLodShaderBindings(material: ShaderMaterial): void`
-- `function applyMergedMeshBindings(material: ShaderMaterial): void`
-- `function ensureSharedFacePositionBuffer(): void`
-- `function upsertFaceVertexBufferMerged(mesh: Mesh, engine: AbstractEngine, kind: string, data: Uint8Array, itemSize: number): void`
-- `function getOpaqueMaterialForLodBucket(lod: number): Material`
-- `function getTransparentMaterialForLodBucket(lod: number): Material`
-- `function beginGroupLodCrossFadeIfNeeded(group: {
-		membersArray: { chunk: Chunk }[];
-	}, previousLod: number | null, nextLod: number, oldMesh: Mesh | null, newMesh: Mesh | null): void`
-- `function upsertMergedMesh(group: {
-		gridX: number;
-		gridY: number;
-		gridZ: number;
-		groupKey: string;
-		chunkOffsets: Float32Array;
-	}, existingMesh: Mesh | null, mergedData: {
-		faceDataA: Uint8Array;
-		faceDataB: Uint8Array;
-		faceDataC: Uint8Array;
-		chunkIndex: Uint8Array;
-		faceCount: number;
-	}, name: string, material: Material): Mesh`
-- `function createCachedTexture(url: string, scene: Scene, args: any): Texture`
-- `async function loadTextureToCache(url: string): Promise<string>`
-- `export async function initAtlas(): Promise<void>`
-- `function createBoatChunkStandaloneMesh(name: string, material: Material, faceData: {
-		faceDataA: Uint8Array;
-		faceDataB: Uint8Array;
-		faceDataC: Uint8Array;
-		chunkIndex: Uint8Array;
-		faceCount: number;
-	}): Mesh`
+- `function getBoatChunkIndex(size: number): Uint8Array`
+- `function getOpaqueMaterialForLodBucket(lod: number): ShaderMaterial`
+- `function getTransparentMaterialForLodBucket(lod: number): ShaderMaterial`
+- `function uploadTintLUT(): void`
+- `function setMaterialGroupUniforms(m: ShaderMaterial): void`
 - `function createBoatChunkMesh(chunk: Chunk, opaqueData: MeshData | null, transparentData: MeshData | null): void`
-- `export function createMeshFromData(chunk: Chunk, meshData: { opaque: MeshData | null; transparent: MeshData | null }): void`
+- `export function createMeshFromData(chunk: Chunk, opaqueMeshData: MeshData | null, transparentMeshData: MeshData | null): void`
+- `export function initEngineContext(engine: EngineContext, scene: SceneContext): void`
 - `export function updateGlobalUniforms(frameId: number): void`
 - `export function disposeSharedResources(): void`
 
 **Types / Interfaces / Enums**
-- type `LodCrossFadeState`
+- type `EngineContext`
+- type `Mesh`
+- type `SceneContext`
+- type `ShaderMaterial`
+- type `MergedMeshGroup`
+- type `PackedMeshInput`
 
 ---
 
-## `World/Chunk/chunkWorker.ts` (439 LOC)
+## `World/Chunk/chunkWorker.ts` (476 LOC)
 
 ### export class ChunkWorker
 
@@ -3956,35 +3510,31 @@ Generated: 2026-07-09T20:48:34.412Z
 **Properties**
 - `private terrainWorker: Worker`
 - `private voxelWorker: Worker`
-- `private distantTerrainSharedInitialized: unknown`
-- `private lightSharedInitialized: unknown`
-- `private readonly _neighborScratch: (Uint16Array | undefined)[]`
-- `private readonly _neighborLightScratch: (Uint8Array | undefined)[]`
-- `private static readonly _MAX_BORDER: unknown`
-- `private readonly _neighborBorderScratch: Uint16Array[]`
-- `private readonly _neighborLightBorderScratch: Uint8Array[]`
-- `readonly #lightMutateMsg: LightMutateRequest`
-- `readonly #lightEmissionMsg: LightAddEmissionRequest`
-- `readonly #lightSkyReconcileMsg: LightSkyReconcileRequest`
-- `readonly #lightPropagateMsg: LightPropagateDeferredRequest`
-- `readonly #voxelMeshMsg: {
-		type: WorkerTaskType.GenerateFullMesh;
-		chunkId: bigint;
-		lod: number;
-		chunk_size: number;
-		block_array: Uint8Array | Uint16Array;
-		uniformBlockId: number | undefined;
-		palette: Uint8Array | Uint16Array | null | undefined;
-		light_array: Uint8Array | undefined;
-		neighbors: (Uint16Array | undefined)[];
-		neighborLights: (Uint8Array | undefined)[];
-	}`
-- `private static readonly _REMESH_OFFSETS: readonly {
-		readonly dx: number;
-		readonly dy: number;
-		readonly dz: number;
-		readonly faceIdx: number;
-	}[]`
+- `private distantTerrainSharedInitialized`
+- `private lightSharedInitialized`
+- `type: WorkerTaskType.GenerateFullMesh`
+- `chunkId: bigint`
+- `meshRevision: number`
+- `lod: number`
+- `chunk_size: number`
+- `block_array: Uint8Array | Uint16Array | null`
+- `uniformBlockId: number | undefined`
+- `palette: Uint8Array | Uint16Array | null | undefined`
+- `light_array: Uint8Array | undefined`
+- `neighbors: (Uint16Array | undefined)[]`
+- `neighborLights: (Uint8Array | undefined)[]`
+- `type: WorkerTaskType.GenerateFullMesh,`
+- `chunkId: 0n,`
+- `meshRevision: 0,`
+- `lod: 0,`
+- `chunk_size: Chunk.SIZE,`
+- `block_array: new Uint8Array(0),`
+- `uniformBlockId: undefined,`
+- `palette: undefined,`
+- `light_array: undefined,`
+- `neighbors: this._neighborScratch,`
+- `neighborLights: this._neighborLightScratch,`
+- `private static readonly _REMESH_OFFSETS: readonly { readonly dx: number; readonly dy: number; readonly dz: number; readonly faceIdx: number; }[] = (() => { const out: { dx: number; dy: number; dz: number; faceIdx: number }[] = []; for (let z = -1; z <= 1; z++) { for (let y = -1; y <= 1; y++) { for (let x = -1; x <= 1; x++) { if (x === 0 && y === 0 && z === 0) continue; const nz = (x !== 0 ? 1 : 0) + (y !== 0 ? 1 : 0) + (z !== 0 ? 1 : 0); let faceIdx = -1; if (nz === 1) faceIdx = x === 1 ? 0 : x === -1 ? 1 : y === 1 ? 2 : y === -1 ? 3 : z === 1 ? 4 : 5; out.push({ dx: x, dy: y, dz: z, faceIdx }); } } } return out; })()`
 
 **Methods**
 - `public setOnError(handler: (ev: ErrorEvent | Event) => void): void`
@@ -3992,7 +3542,8 @@ Generated: 2026-07-09T20:48:34.412Z
 - `public postFullRemesh(chunk: Chunk, forcedLod?: number): void`
 - `public postTerrainGeneration(chunk: Chunk, deferLighting: boolean = true): void`
 - `public initDistantTerrainShared(positionsBuffer: SharedArrayBuffer, normalsBuffer: SharedArrayBuffer, surfaceTilesBuffer: SharedArrayBuffer, radius: number, gridStep: number): void`
-- `public postGenerateDistantTerrain(requestId: number, centerChunkX: number, centerChunkZ: number, radius: number, gridStep: number): void`
+- `public postGenerateDistantTerrain(requestId: number, centerChunkX: number, centerChunkZ: number, radius: number, gridStep: number, renderDistance: number): void`
+- `public initWorkerChannel(port: MessagePort): void`
 - `public initLightShared(headerBuffer: SharedArrayBuffer): void`
 - `public postLightSetClosedFaceMask(maskBuffer: SharedArrayBuffer): void`
 - `public postLightRegisterChunk(req: {
@@ -4048,111 +3599,74 @@ Generated: 2026-07-09T20:48:34.412Z
 		seq: number;
 	}): void`
 
+**Types / Interfaces / Enums**
+- type `GenerateDistantTerrainRequest`
+- type `InitDistantTerrainSharedRequest`
+- type `InitLightSharedRequest`
+- type `LightAddEmissionRequest`
+- type `LightMutateRequest`
+- type `LightPropagateDeferredRequest`
+- type `LightSetClosedFaceMaskRequest`
+- type `LightSkyReconcileRequest`
+- type `MeshWorkerResponse`
+- type `WorkerResponseData`
+
 ---
 
-## `World/Chunk/ChunkWorkerPool.ts` (1701 LOC)
+## `World/Chunk/ChunkWorkerPool.ts` (1863 LOC)
 
 ### export class ChunkWorkerPool
 
-**Constructor**
-- `constructor(poolSize: number)`
-
 **Properties**
 - `private static instance: ChunkWorkerPool | undefined`
-- `private static readonly WORKER_ERROR_COOLDOWN_MS: unknown`
-- `private static readonly MIN_AUTO_POOL_SIZE: unknown`
-- `private static readonly MAX_AUTO_POOL_SIZE: unknown`
-- `private static readonly DEFERRED_LIGHTING_BUDGET_MS: unknown`
-- `private static readonly DEFERRED_LIGHTING_MAX_CHUNKS_PER_FRAME: unknown`
-- `private static readonly LAST_DISPATCH_RING_SIZE: unknown`
-- `private workers: ChunkWorker[]`
-- `private workerTaskContext: WorkerTaskContext[]`
-- `private distantTerrainSharedInit: {
-		positionsBuffer: SharedArrayBuffer;
-		normalsBuffer: SharedArrayBuffer;
-		surfaceTilesBuffer: SharedArrayBuffer;
-		radius: number;
-		gridStep: number;
-	} | null`
-- `private workerRestartAtMs: number[]`
-- `private taskQueue: Chunk[]`
-- `private taskQueueReadIdx: unknown`
-- `private taskQueuePriority: Map<Chunk, boolean>`
-- `private workerDispatchCounts: number[]`
-- `private _lastHeartbeatSeq: number[]`
-- `private lastDispatchRing: unknown`
-- `private pendingRemeshMap: Map<Chunk, boolean>`
-- `private terrainTaskDeferLighting: unknown`
-- `private terrainTaskQueue: Set<Chunk>`
-- `private deferredLightingQueue: Chunk[]`
-- `private deferredLightingQueueReadIdx: unknown`
-- `private deferredLightingQueuedIds: unknown`
-- `private deferredLightingSeedStates: unknown`
-- `private deferredLightingPumpScheduled: unknown`
-- `private distantTerrainReadyWorkers: unknown`
-- `private distantTerrainTaskQueue: DistantTerrainTask[]`
-- `private distantTerrainTaskQueueReadIdx: unknown`
-- `private lodPrecomputeQueue: Array<{ chunk: Chunk; lod: number }>`
-- `private lodPrecomputeQueueReadIdx: unknown`
-- `private pendingLodPrecomputeKeys: unknown`
-- `private lastPrecomputeScheduleTs: unknown`
-- `private idleWorkerSet: Set<number>`
-- `private idleWorkerIndices: number[]`
-- `private idleWorkerIndexPositions: Map<number, number>`
-- `private _idleReadIdx: unknown`
-- `private meshResultQueue: FullMeshMessage[]`
-- `private meshResultQueueReadIdx: unknown`
-- `private remeshFlushScheduled: unknown`
-- `private processQueuePumpScheduled: unknown`
-- `private meshDrainScheduled: unknown`
-- `private pendingRemeshSaveIds: unknown`
-- `private pendingRemeshSaveTimer: ReturnType<typeof setTimeout> | null`
-- `private readonly REMESH_SAVE_DEBOUNCE_MS: unknown`
-- `private inFlightRemeshKeys: unknown`
-- `private rerunRemeshAfterInflight: unknown`
-- `private distantTerrainInFlight: unknown`
-- `private nextDistantTerrainRequestId: unknown`
-- `private opfsClient: OpfsClient | null`
-- `private opfsReady: unknown`
-- `private opfsInitPromise: Promise<void> | null`
-- `private opfsFlushCounter: unknown`
-- `private static readonly _flushPendingScratch: Array<[Chunk, boolean]>`
-- `private static readonly _queryScratch: Chunk[]`
-- `private static readonly _dedupScratch: Set<number>`
-- `private readonly _boundScheduleRemesh: unknown`
-- `private readonly _compareRemeshPriorityFn: unknown`
-- `private static readonly _lodCandidateChunks: Chunk[]`
-- `private static readonly _lodCandidateLods: number[]`
-- `private static readonly _lodCandidateScores: number[]`
-- `private static readonly _lodCandidateIndices: number[]`
-- `private nextLightSeqCounter: unknown`
-- `private lightDirtyQueue: { seq: number; dirtySlots: Uint32Array }[]`
-- `private lightDirtyQueueReadIdx: unknown`
-- `private lightDirtyPumpScheduled: unknown`
-- `private lightSlotPendingSeq: Map<number, number>`
-- `private lightChunkByHeaderSlot: Map<number, Chunk>`
-- `private lightHeaderBuffer: SharedArrayBuffer | null`
-- `private closedFaceMaskBuffer: SharedArrayBuffer | null`
-- `private debugStats: ChunkWorkerPoolDebugStats`
-- `public onDistantTerrainGenerated: | ((data: DistantTerrainGeneratedMessage) => void)
-		| null`
-- `private processLightDirtyQueue: unknown`
-- `private processMeshQueueLoop: unknown`
-- `private static readonly MAX_MESH_QUEUE: unknown`
+- `private static readonly WORKER_ERROR_COOLDOWN_MS`
+- `private static readonly MIN_AUTO_POOL_SIZE`
+- `private static readonly MAX_AUTO_POOL_SIZE`
+- `private static readonly DEFERRED_LIGHTING_BUDGET_MS`
+- `private static readonly DEFERRED_LIGHTING_MAX_CHUNKS_PER_FRAME`
+- `private static readonly LAST_DISPATCH_RING_SIZE`
+- `private workers: ChunkWorker[] = []`
+- `private workerTaskContext: WorkerTaskContext[] = []`
+- `private distantTerrainSharedInit: { positionsBuffer: SharedArrayBuffer; normalsBuffer: SharedArrayBuffer; surfaceTilesBuffer: SharedArrayBuffer; radius: number; gridStep: number; } | null = null`
+- `private workerRestartAtMs: number[] = []`
+- `private idleWorkerSet: Set<number> = new Set()`
+- `private idleWorkerIndices: number[] = []`
+- `private idleWorkerIndexPositions: Map<number, number> = new Map()`
+- `private _idleReadIdx`
+- `private meshResultQueue: FullMeshMessage[] = []`
+- `private meshResultQueueReadIdx`
+- `private remeshFlushScheduled`
+- `private processQueuePumpScheduled`
+- `private meshDrainScheduled`
+- `private pendingRemeshSaveIds`
+- `private pendingRemeshSaveTimer: ReturnType<typeof setTimeout> | null = null`
+- `private readonly REMESH_SAVE_DEBOUNCE_MS`
+- `private inFlightRemeshKeys`
+- `private rerunRemeshAfterInflight`
+- `private distantTerrainInFlight`
+- `private nextDistantTerrainRequestId`
+- `private opfsClient: OpfsClient | null = null`
+- `private opfsReady`
+- `private opfsInitPromise: Promise<void> | null = null`
+- `private opfsFlushCounter`
+- `private static readonly _flushPendingScratch: Array<[Chunk, boolean]> = []`
+- `private static readonly _queryScratch: Chunk[] = []`
+- `private static readonly _dedupScratch: Set<number> = new Set()`
+- `private readonly _boundScheduleRemesh`
+- `private static readonly _lodCandidateChunks: Chunk[] = []`
+- `private static readonly _lodCandidateLods: number[] = []`
+- `private static readonly _lodCandidateScores: number[] = []`
+- `private static readonly _lodCandidateIndices: number[] = []`
+- `private nextLightSeqCounter`
+- `private lightDirtyQueue: { seq: number; dirtySlots: Uint32Array }[] = []`
+- `private lightDirtyQueueReadIdx`
+- `private lightDirtyPumpScheduled`
+- `private _lightRegChunks: Chunk[] = []`
+- `private _lightRegFlags: boolean[] = []`
+- `private _lightRegDrainScheduled`
 
 **Methods**
-- `private getDispatchBudgetPerTick(): number`
-- `private hasPendingTasks(): boolean`
-- `private getEffectiveIdleWorkerCount(): number`
-- `private scheduleProcessQueuePump(): void`
-- `private updateQueueDebugStats(): void`
-- `public getDebugStats(): ChunkWorkerPoolDebugStats`
-- `private recordWorkerDispatch(workerIndex: number): void`
-- `private setWorkerTaskContext(workerIndex: number, context: WorkerTaskContext): void`
-- `private resolveChunkByMessageId(chunkId: bigint): Chunk | undefined`
-- `private isSameLodRemeshInflight(chunk: Chunk): boolean`
-- `private clearInflightRemeshByMessage(chunkId: bigint, lod: number): void`
-- `private _markWorkerIdle(workerIndex: number): void`
+- `public static getLodCandidateScore(idx: number): number`
 - `private _removeWorkerFromIdle(workerIndex: number): void`
 - `private _consumeNextIdleWorker(): number`
 - `private _compactIdleWorkers(): void`
@@ -4192,47 +3706,25 @@ Generated: 2026-07-09T20:48:34.412Z
 - `public enqueueDeferredLightFromSunlightInit(chunk: Chunk, seedQueue: Uint16Array, seedLength: number): void`
 - `private getLightWorker(): ChunkWorker`
 - `private broadcastLightRegister(chunk: Chunk): void`
+- `private broadcastLightRegisterFull(chunk: Chunk): void`
 - `private broadcastLightUpdateBuffers(chunk: Chunk): void`
 - `private broadcastLightUnregister(chunk: Chunk): void`
-- `private onLightChunkLoaded(chunk: Chunk): void`
+- `private onLightChunkLoaded(chunk: Chunk, fromChannel: boolean): void`
 - `private onLightChunkLayoutChanged(chunk: Chunk): void`
 - `private onLightChunkDisposed(chunk: Chunk): void`
-- `private scheduleLightDirtyPump(): void`
-- `public async ensureOpfsReady(): Promise<OpfsClient | null>`
-- `public getOpfsClient(): OpfsClient | null`
-- `private isCompletelyEmptyChunk(chunk: Chunk): boolean`
-- `private clearChunkMeshIfPresent(chunk: Chunk): void`
-- `private enqueueDeferredLightingRefinement(chunk: Chunk, seedQueue: Uint16Array, seedLength: number): void`
-- `private scheduleDeferredLightingPump(): void`
-- `private processDeferredLightingQueue(): void`
-- `private queuePostRemeshSave(chunk: Chunk): void`
-- `private static resolvePoolSize(explicitPoolSize?: number): number`
-- `public static getInstance(poolSize?: number): ChunkWorkerPool`
-- `public scheduleRemesh(chunk: Chunk | undefined, priority: unknown = false): void`
-- `private scheduleRemeshFlush(): void`
-- `private flushPendingRemeshQueue(): void`
-- `public scheduleDistantTerrain(centerChunkX: number, centerChunkZ: number, radius: number, renderDistance: number, gridStep: number): void`
-- `private tryApplyCachedLODMesh(chunk: Chunk, allowDirtyReuse: unknown = false): boolean`
-- `private makeTerrainMessageHandler(workerIndex: number, getWorker: () => ChunkWorker | undefined): (event: MessageEvent<WorkerResponseData>) => void`
-- `private makeMeshMessageHandler(workerIndex: number, getWorker: () => ChunkWorker | undefined): (event: MessageEvent<MeshWorkerResponse>) => void`
-- `private compareRemeshPriority(aChunk: Chunk, aPriority: boolean, bChunk: Chunk, bPriority: boolean): number`
-- `private dequeueNextTerrainChunk(): Chunk | undefined`
-- `private compactTaskQueue(): void`
-- `private insertChunkIntoRemeshQueue(chunk: Chunk, priority: boolean): void`
-- `public scheduleTerrainGeneration(chunk: Chunk, deferLighting: unknown = true): void`
-- `public scheduleTerrainGenerationBatch(chunks: Chunk[], deferLighting: unknown = true): void`
-- `private getQueuedTerrainDeferLighting(chunk: Chunk): boolean`
-- `private dispatchTerrainTaskToWorker(workerIndex: number, worker: ChunkWorker, chunk: Chunk): boolean`
-- `public scheduleBackgroundLodPrecompute(centerChunkX: number, centerChunkY: number, centerChunkZ: number): void`
-- `public initDistantTerrainShared(positionsBuffer: SharedArrayBuffer, normalsBuffer: SharedArrayBuffer, surfaceTilesBuffer: SharedArrayBuffer, radius: number, gridStep: number): void`
-- `private processQueue(): void`
-- `public onChunkDisposed(chunk: Chunk): void`
-- `public static async teardownForHmr(): Promise<void>`
 
 **Module-level functions**
+- `function compareLodCandidateScores(a: number, b: number): number`
 - `function packInflightKey(chunkId: bigint, lod: number): bigint`
 
 **Types / Interfaces / Enums**
+- type `DistantTerrainGeneratedMessage`
+- type `DistantTerrainTask`
+- type `FullMeshMessage`
+- type `LightDirtyMessage`
+- type `MeshWorkerResponse`
+- type `TerrainGeneratedMessage`
+- type `WorkerResponseData`
 - type `WorkerMessageData`
 - type `ChunkWorkerPoolDebugStats`
 - type `WorkerTaskContext`
@@ -4242,7 +3734,7 @@ Generated: 2026-07-09T20:48:34.412Z
 ## `World/Chunk/DataStructures/BlockEncoding.ts` (26 LOC)
 
 **Module-level functions**
-- `export function packBlockValue(blockId: number, state: unknown = 0): number`
+- `export function packBlockValue(blockId: number, state = 0): number`
 - `export function unpackBlockId(value: number): number`
 - `export function unpackBlockState(value: number): number`
 - `export function packRotationSlice(rotation: number, slice: number): number`
@@ -4255,29 +3747,19 @@ Generated: 2026-07-09T20:48:34.412Z
 
 **Module-level functions**
 - `export function packCoords(x: number, y: number, z: number): bigint`
-- `export function unpackChunkCoords(id: bigint): {
-	x: number;
-	y: number;
-	z: number;
-}`
+- `export function unpackChunkCoords(id: bigint)`
 
 ---
 
-## `World/Chunk/DataStructures/MeshData.ts` (28 LOC)
+## `World/Chunk/DataStructures/MeshData.ts` (7 LOC)
 
 ### export class MeshData
 
 **Properties**
-- `faceDataA: Uint8Array`
-- `faceDataB: Uint8Array`
-- `faceDataC: Uint8Array`
-- `faceCount: unknown`
-
-**Methods**
-- `public static deserialize(data: any): MeshData`
-
-**Module-level functions**
-- `function toU8(raw: unknown): Uint8Array`
+- `faceDataA: Uint8Array = EMPTY_U8`
+- `faceDataB: Uint8Array = EMPTY_U8`
+- `faceDataC: Uint8Array = EMPTY_U8`
+- `faceCount`
 
 ---
 
@@ -4296,12 +3778,12 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class ResizableTypedArray
 
 **Constructor**
-- `constructor(ctor: new (capacity: number) => T, initialCapacity: unknown = 512)`
+- `constructor(private ctor: new (capacity: number) => T, initialCapacity = 512)`
 
 **Properties**
 - `private array: T`
 - `private capacity: number`
-- `public length: unknown`
+- `public length`
 
 **Accessors**
 - `get backingArray(): T`
@@ -4330,9 +3812,9 @@ Generated: 2026-07-09T20:48:34.412Z
 
 **Properties**
 - `private buf: (T | undefined)[]`
-- `private head: unknown`
-- `private tail: unknown`
-- `private _size: unknown`
+- `private head`
+- `private tail`
+- `private _size`
 - `readonly capacity: number`
 
 **Accessors**
@@ -4354,7 +3836,7 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `World/Chunk/DataStructures/WorkerMessageType.ts` (205 LOC)
+## `World/Chunk/DataStructures/WorkerMessageType.ts` (210 LOC)
 
 **Types / Interfaces / Enums**
 - interface `SerializedLightSeedState`
@@ -4383,8 +3865,6 @@ Generated: 2026-07-09T20:48:34.412Z
 - type `DistantTerrainGeneratedMessage`
 - type `WorkerResponseData`
 - type `MeshWorkerResponse`
-- enum `TaskType`
-- enum `WorkerTaskType`
 
 ---
 
@@ -4393,15 +3873,15 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class ChunkEntityRegistry
 
 **Constructor**
-- `constructor(adapter: ChunkBoundEntityAdapter<TEntity>)`
+- `constructor(private readonly adapter: ChunkBoundEntityAdapter<TEntity>)`
 
 **Properties**
-- `private readonly entities: unknown`
-- `private readonly pendingReloads: unknown`
-- `private readonly loaders: unknown`
-- `private restoringChunkEntities: unknown`
-- `private chunkLoadedHookInstalled: unknown`
-- `private previousChunkLoadedHook: ((chunk: Chunk) => void) | null`
+- `private readonly entities`
+- `private readonly pendingReloads`
+- `private readonly loaders`
+- `private restoringChunkEntities`
+- `private chunkLoadedHookInstalled`
+- `private previousChunkLoadedHook: ((chunk: Chunk) => void) | null = null`
 
 **Methods**
 - `public registerLoader(type: string, loader: ChunkEntityLoader): void`
@@ -4421,25 +3901,17 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `World/Chunk/Loading/ChunkHydration.ts` (159 LOC)
+## `World/Chunk/Loading/ChunkHydration.ts` (40 LOC)
 
 ### export class ChunkHydration
 
 **Constructor**
-- `constructor(adapter: ChunkHydrationAdapter)`
+- `constructor(private readonly adapter: ChunkHydrationAdapter)`
 
 **Methods**
-- `public tryGetSavedMeshForLod(savedData: SavedChunkData, lod: number, out: SelectedSavedMesh): boolean`
-- `public getSavedMeshForLod(savedData: SavedChunkData, lod: number): SelectedSavedMesh | null`
-- `private pickBestAvailableLod(availableLods: readonly number[], desiredLod: number): number`
-- `public tryPickBestSavedMesh(savedData: SavedChunkData, desiredLod: number, out: SelectedSavedMesh): boolean`
-- `public pickBestSavedMesh(savedData: SavedChunkData, desiredLod: number): SelectedSavedMesh | null`
-- `public applyHydratedChunkFromSavedData(chunk: Chunk, savedData: SavedChunkData, scheduleRemesh: unknown = false): void`
-- `public applyLoadedChunkFromSavedData(chunk: Chunk, savedData: SavedChunkData, desiredLod: number, scheduleRemesh: unknown = false): SelectedSavedMesh | null`
-- `public applySelectedMeshDataToChunk(chunk: Chunk, selectedMesh: SelectedSavedMesh | null): void`
+- `public applyHydratedChunkFromSavedData(chunk: Chunk, savedData: SavedChunkData, scheduleRemesh = false): void`
 
 **Types / Interfaces / Enums**
-- interface `SelectedSavedMesh`
 - interface `HydrationStoragePayload`
 - interface `ChunkHydrationAdapter`
 
@@ -4450,10 +3922,10 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class ChunkLoadingDebug
 
 **Constructor**
-- `constructor(adapter: ChunkLoadingDebugAdapter = {})`
+- `constructor(private readonly adapter: ChunkLoadingDebugAdapter = {})`
 
 **Properties**
-- `private stats: ChunkLoadingDebugStats`
+- `private stats: ChunkLoadingDebugStats = { loadQueueLength: 0, unloadQueueLength: 0, pendingChunkEntityReloadCount: 0, registeredChunkEntityCount: 0, isProcessing: false, currentStage: null, processedLoadsThisSlice: 0, processedUnloadsThisSlice: 0, processedLoadsTotal: 0, processedUnloadsTotal: 0, sliceStartedAtMs: null, sliceElapsedMs: 0, frameBudgetMs: 0, continuationScheduled: false, }`
 
 **Methods**
 - `public getStats(): ChunkLoadingDebugStats`
@@ -4487,17 +3959,17 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class ChunkPersistenceCoordinator
 
 **Constructor**
-- `constructor(adapter: ChunkPersistenceCoordinatorAdapter)`
+- `constructor(private readonly adapter: ChunkPersistenceCoordinatorAdapter)`
 
 **Properties**
-- `private flushPromise: Promise<void> | null`
-- `private pendingFlushRequested: unknown`
-- `private entityFlushPromise: Promise<void> | null`
-- `private pendingEntityFlushRequested: unknown`
-- `private readonly lastPersistedEntityChunkIds: unknown`
-- `private readonly _modifiedChunksScratch: Chunk[]`
-- `private readonly _candidateChunkIdsScratch: bigint[]`
-- `private readonly _seenChunkIdsScratch: unknown`
+- `private flushPromise: Promise<void> | null = null`
+- `private pendingFlushRequested`
+- `private entityFlushPromise: Promise<void> | null = null`
+- `private pendingEntityFlushRequested`
+- `private readonly lastPersistedEntityChunkIds`
+- `private readonly _modifiedChunksScratch: Chunk[] = []`
+- `private readonly _candidateChunkIdsScratch: bigint[] = []`
+- `private readonly _seenChunkIdsScratch`
 
 **Methods**
 - `public async flushModifiedChunks(maxChunks: number = this.getChunkSaveBatchSize()): Promise<void>`
@@ -4512,21 +3984,21 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `World/Chunk/Loading/ChunkProcessScheduler.ts` (418 LOC)
+## `World/Chunk/Loading/ChunkProcessScheduler.ts` (413 LOC)
 
 ### export class ChunkProcessScheduler
 
 **Constructor**
-- `constructor(adapter: ChunkProcessSchedulerAdapter)`
+- `constructor(private readonly adapter: ChunkProcessSchedulerAdapter)`
 
 **Properties**
-- `private isProcessing: unknown`
-- `private inFlightProcessState: InFlightProcessState | null`
-- `private _state: InFlightProcessState`
-- `private processContinuationScheduled: unknown`
-- `private _saveScratch: Chunk[]`
-- `private _nearIdScratch: bigint[]`
-- `private _farIdScratch: bigint[]`
+- `private isProcessing`
+- `private inFlightProcessState: InFlightProcessState | null = null`
+- `private _state: InFlightProcessState = this.createReusableProcessState()`
+- `private processContinuationScheduled`
+- `private _saveScratch: Chunk[] = []`
+- `private _nearIdScratch: bigint[] = []`
+- `private _farIdScratch: bigint[] = []`
 
 **Accessors**
 - `public get processing(): boolean`
@@ -4549,12 +4021,14 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class ChunkQueueManager
 
 **Constructor**
-- `constructor(adapter: ChunkQueueManagerAdapter = {})`
+- `constructor(private readonly adapter: ChunkQueueManagerAdapter = {})`
 
 **Properties**
-- `private readonly loadQueue: Chunk[]`
-- `private readonly loadQueueSet: unknown`
-- `private readonly unloadQueueSet: unknown`
+- `private readonly loadQueue: Chunk[] = []`
+- `private readonly loadQueueSet`
+- `private readonly unloadQueueSet`
+- `loadQueue: [...this.loadQueue],`
+- `unloadQueue: [...this.unloadQueueSet],`
 
 **Methods**
 - `public getLoadBatchSize(): number`
@@ -4570,10 +4044,7 @@ Generated: 2026-07-09T20:48:34.412Z
 - `public dequeueUnloadBatch(maxChunks: number = this.getUnloadBatchSize()): ChunkQueueBatch`
 - `public removeChunk(chunk: Chunk): void`
 - `public clear(): void`
-- `public snapshot(): {
-		loadQueue: readonly Chunk[];
-		unloadQueue: readonly Chunk[];
-	}`
+- `public snapshot()`
 - `public refreshQueueDebugSnapshot(): void`
 
 **Types / Interfaces / Enums**
@@ -4587,7 +4058,7 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class ChunkReadiness
 
 **Constructor**
-- `constructor(adapter: ChunkReadinessAdapter = {})`
+- `constructor(private readonly adapter: ChunkReadinessAdapter = {})`
 
 **Methods**
 - `public areChunksLoadedAround(chunkX: number, chunkY: number, chunkZ: number, horizontalRadius: number = 1, verticalRadius: number = 0): boolean`
@@ -4600,53 +4071,13 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `World/Chunk/Loading/ChunkStreamingController.ts` (812 LOC)
-
-### export class ChunkStreamingController
-
-**Constructor**
-- `constructor(adapter: ChunkStreamingControllerAdapter)`
-
-**Properties**
-- `private static readonly DESIRED_STATE_REVISION_RETENTION: unknown`
-- `private streamRevision: unknown`
-- `private desiredStates: unknown`
-- `private _needsDesiredStatePrune: unknown`
-- `private loadQueueRequestMap: Map<bigint, QueuedChunkRequest>`
-- `private loadedRefreshQueue: Chunk[]`
-- `private loadedRefreshQueueSet: Set<bigint>`
-- `private loadedRefreshQueueHead: unknown`
-- `private _cachedCaveLodRuleSet: ChunkLodRuleSet | null`
-- `private _cachedOutdoorLodRuleSet: ChunkLodRuleSet | null`
-- `private _ruleSetGeneration: unknown`
-- `private _refreshCache: unknown`
-- `private _lastCaveState: boolean | null`
-- `private _lastRenderDistance: unknown`
-- `private _lastVerticalRadius: unknown`
-
-**Methods**
-- `public getDesiredState(chunkId: bigint): number | undefined`
-- `public async updateChunksAround(chunkX: number, chunkY: number, chunkZ: number, renderDistance: unknown = SETTING_PARAMS.RENDER_DISTANCE, verticalRadius: unknown = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE, prevChunkX?: number, prevChunkY?: number, prevChunkZ?: number, playerWorldX?: number, playerWorldZ?: number): Promise<void>`
-- `private enqueueLoadedChunksForRefresh(chunkX: number, chunkY: number, chunkZ: number, lodRuleSet: ChunkLodRuleSet): void`
-- `public processLoadedRefreshQueue(playerChunkX: number, playerChunkY: number, playerChunkZ: number, renderDistance: unknown = SETTING_PARAMS.RENDER_DISTANCE, verticalRadius: unknown = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE, maxChunks: unknown = SETTING_PARAMS.CHUNK_LOAD_BATCH_LIMIT): void`
-- `private dequeueLoadedRefreshChunk(): Chunk | undefined`
-- `public processTargetChunkCoordinate(x: number, y: number, z: number, playerChunkX: number, playerChunkY: number, playerChunkZ: number, lodRuleSet: ChunkLodRuleSet): void`
-- `private processMovementRings(chunkX: number, chunkY: number, chunkZ: number, prevChunkX: number, prevChunkY: number, prevChunkZ: number, lodRuleSet: ChunkLodRuleSet): void`
-- `private processInitialShell(chunkX: number, chunkY: number, chunkZ: number, lodRuleSet: ChunkLodRuleSet): void`
-- `public queueUnloading(chunkX: number, chunkY: number, chunkZ: number, renderDistance: number, verticalRadius: number): void`
-- `public tryApplyCachedLodTransitionMesh(chunk: Chunk, targetLod: number): boolean`
-- `public ensureChunkQueuedForLoad(chunk: Chunk, desiredLod: number, revision: number, includeVoxelData: unknown = desiredLod <= 1): void`
-- `public onLoadRequestsDequeued(requests: ReadonlyArray<QueuedChunkRequest>): void`
-- `public onChunkDisposed(chunkId: bigint): void`
-- `private sortLoadQueue(playerChunkX: number, playerChunkY: number, playerChunkZ: number): void`
-- `private computePriority(chunk: Chunk, desiredLod: number, playerChunkX: number, playerChunkY: number, playerChunkZ: number): number`
+## `World/Chunk/Loading/ChunkStreamingController.ts` (810 LOC)
 
 **Module-level functions**
-- `function chunkDistScratch(chunkX: number, chunkY: number, chunkZ: number, centerX: number, centerY: number, centerZ: number): { hDist: number; vDist: number }`
-- `function packOffsetKey(rx: number, ry: number, rz: number, chunkLod: number): number`
+- `function compareQueuedChunkRequestPriority(a: QueuedChunkRequest, b: QueuedChunkRequest): number`
+- `function chunkDistScratch(chunkX: number, chunkY: number, chunkZ: number, centerX: number, centerY: number, centerZ: number)`
 
 **Types / Interfaces / Enums**
-- interface `ChunkStreamingControllerAdapter`
 - type `QueuedChunkRequest`
 
 ---
@@ -4657,7 +4088,6 @@ Generated: 2026-07-09T20:48:34.412Z
 - type `ChunkBoundEntity`
 - type `InFlightProcessState`
 - type `ChunkLoadingDebugStats`
-- enum `ProcessStage`
 
 ---
 
@@ -4666,18 +4096,18 @@ Generated: 2026-07-09T20:48:34.412Z
 ### class ResolvedChunkCoords
 
 **Properties**
-- `chunkX: unknown`
-- `chunkY: unknown`
-- `chunkZ: unknown`
-- `localX: unknown`
-- `localY: unknown`
-- `localZ: unknown`
+- `chunkX`
+- `chunkY`
+- `chunkZ`
+- `localX`
+- `localY`
+- `localZ`
 - `chunk: Chunk | undefined`
 
 ### export class ChunkWorldMutations
 
 **Constructor**
-- `constructor(adapter: ChunkWorldMutationsAdapter = {})`
+- `constructor(private readonly adapter: ChunkWorldMutationsAdapter = {})`
 
 **Methods**
 - `public getBlockByWorldCoords(worldX: number, worldY: number, worldZ: number): number`
@@ -4704,15 +4134,18 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class LoadedChunkIndex
 
 **Properties**
-- `private readonly cells: unknown`
-- `private readonly chunkCellKeys: unknown`
+- `private readonly cells`
+- `private readonly chunkCellKeys`
+- `centerX: number,`
+- `centerY: number,`
+- `centerZ: number,`
+- `horizontalRadius: number,`
+- `verticalRadius: number,`
 
 **Methods**
 - `register(chunk: Chunk): void`
 - `unregister(chunk: Chunk): void`
-- `query(centerX: number, centerY: number, centerZ: number, horizontalRadius: number, verticalRadius: number): IterableIterator<Chunk>`
 - `queryCollect(centerX: number, centerY: number, centerZ: number, horizontalRadius: number, verticalRadius: number, out: Chunk[]): void`
-- `all(): IterableIterator<Chunk>`
 
 **Module-level functions**
 - `function hashCellKey(cx: number, cy: number, cz: number): number`
@@ -4720,16 +4153,16 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `World/Chunk/LOD/ChunkLodRules.ts` (249 LOC)
+## `World/Chunk/LOD/ChunkLodRules.ts` (263 LOC)
 
 ### export class Lod0ChunkCreationRule implements ChunkLodCreationRule
 
 **Constructor**
-- `constructor(horizontalRadius: number, verticalRadius: number)`
+- `constructor(private readonly horizontalRadius: number, private readonly verticalRadius: number)`
 
 **Properties**
-- `public readonly lodLevel: unknown`
-- `public readonly allowsChunkCreation: unknown`
+- `public readonly lodLevel`
+- `public readonly allowsChunkCreation`
 
 **Methods**
 - `public matches(distance: ChunkLodDistance): boolean`
@@ -4737,11 +4170,11 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class Lod1ChunkCreationRule implements ChunkLodCreationRule
 
 **Constructor**
-- `constructor(horizontalRadius: number, verticalRadius: number)`
+- `constructor(private readonly horizontalRadius: number, private readonly verticalRadius: number)`
 
 **Properties**
-- `public readonly lodLevel: unknown`
-- `public readonly allowsChunkCreation: unknown`
+- `public readonly lodLevel`
+- `public readonly allowsChunkCreation`
 
 **Methods**
 - `public matches(distance: ChunkLodDistance): boolean`
@@ -4749,11 +4182,11 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class Lod2ChunkCreationRule implements ChunkLodCreationRule
 
 **Constructor**
-- `constructor(horizontalRadius: number, verticalRadius: number)`
+- `constructor(private readonly horizontalRadius: number, private readonly verticalRadius: number)`
 
 **Properties**
-- `public readonly lodLevel: unknown`
-- `public readonly allowsChunkCreation: unknown`
+- `public readonly lodLevel`
+- `public readonly allowsChunkCreation`
 
 **Methods**
 - `public matches(distance: ChunkLodDistance): boolean`
@@ -4761,11 +4194,11 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class Lod3ChunkCreationRule implements ChunkLodCreationRule
 
 **Constructor**
-- `constructor(horizontalRadius: number, verticalRadius: number)`
+- `constructor(private readonly horizontalRadius: number, private readonly verticalRadius: number)`
 
 **Properties**
-- `public readonly lodLevel: unknown`
-- `public readonly allowsChunkCreation: unknown`
+- `public readonly lodLevel`
+- `public readonly allowsChunkCreation`
 
 **Methods**
 - `public matches(distance: ChunkLodDistance): boolean`
@@ -4773,10 +4206,10 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class DistantOnlyChunkCreationRule implements ChunkLodCreationRule
 
 **Constructor**
-- `constructor(lodLevel: unknown = 4)`
+- `constructor(public readonly lodLevel = 4)`
 
 **Properties**
-- `public readonly allowsChunkCreation: unknown`
+- `public readonly allowsChunkCreation`
 
 **Methods**
 - `public matches(_distance: ChunkLodDistance): boolean`
@@ -4784,13 +4217,15 @@ Generated: 2026-07-09T20:48:34.412Z
 ### export class ChunkLodRuleSet
 
 **Constructor**
-- `constructor(radii: ChunkLodRadii, rules: ChunkLodCreationRule[], revision: number = 0)`
+- `constructor(public readonly radii: ChunkLodRadii, private readonly rules: ChunkLodCreationRule[], public readonly revision: number = 0)`
 
 **Methods**
 - `public static fromRenderRadii(renderDistance: number, verticalRadius: number, revision: number = 0): ChunkLodRuleSet`
 - `private resolveWithDistance(horizontalDist: number, verticalDist: number): ChunkLodDecision`
 - `public resolve(target: ChunkLodCoordinates, player: ChunkLodCoordinates): ChunkLodDecision`
 - `public resolveWithHysteresis(targetX: number, targetY: number, targetZ: number, playerX: number, playerY: number, playerZ: number, previousLod: number | null | undefined): ChunkLodDecision`
+- `public resolveWithHysteresisFromDistance(horizontalDist: number, verticalDist: number, previousLod: number | null | undefined): ChunkLodDecision`
+- `private _resolveWithHysteresis(horizontalDist: number, verticalDist: number, previousLod: number | null | undefined): ChunkLodDecision`
 
 **Types / Interfaces / Enums**
 - interface `ChunkLodCreationRule`
@@ -4801,90 +4236,59 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `World/Chunk/MergedMeshManager.ts` (469 LOC)
-
-### export class MergedMeshMeta
-
-**Properties**
-- `chunkOffsets: Float32Array | null`
-- `chunkOffsetsArray: number[] | null`
-- `isMerged: unknown`
-- `__lodLevel: unknown`
+## `World/Chunk/MergedMeshManager.ts` (539 LOC)
 
 **Module-level functions**
-- `function markGroupDirty(group: MergedMeshGroup): void`
-- `function copyFaceBytes(dst: Uint8Array, src: Uint8Array, byteCount: number, writeByte: number): void`
-- `export function setOnGroupMeshNeedsRebuild(cb: GroupMeshRebuildCallback): void`
-- `function getGroupGridCoords(chunkX: number, chunkY: number, chunkZ: number): { gx: number; gy: number; gz: number }`
-- `function getLodRenderBucket(lod: number): number`
-- `function makeGroupKey(gx: number, gy: number, gz: number, lodBucket: number): string`
-- `function getLocalIndex(chunkX: number, chunkY: number, chunkZ: number): number`
-- `export function getGroupKeyForChunk(chunk: Chunk): string`
-- `export function getGroup(groupKey: string): MergedMeshGroup | undefined`
-- `export function getAllGroups(): MergedMeshGroup[]`
+- `function disposeGroupMesh(mesh: Mesh): void`
 - `export function assignChunkToGroup(chunk: Chunk, opaqueData: MeshData | null, transparentData: MeshData | null): MergedMeshGroup`
 - `export function removeChunkFromGroup(chunk: Chunk): void`
-- `export function getMergedMeshFlushStats(): {
-	lastMs: number;
-	avgMs: number;
-}`
-- `export function flushDirtyMergedGroups(): void`
-- `export function disposeAll(): void`
-- `function ensureOpaqueMergedCapacity(group: MergedMeshGroup, faceCount: number): MergedBuffers`
-- `function ensureTransparentMergedCapacity(group: MergedMeshGroup, faceCount: number): MergedBuffers`
-- `function rebuildGroupData(group: MergedMeshGroup): void`
 
 **Types / Interfaces / Enums**
 - interface `ChunkMemberData`
-- interface `MergedVertexData`
-- interface `MergedBuffers`
-- interface `MergedMeshGroup`
-- type `GroupMeshRebuildCallback`
 
 ---
 
-## `World/Chunk/voxel.worker.ts` (121 LOC)
+## `World/Chunk/PackedChunkMesh.ts` (732 LOC)
+
+**Module-level functions**
+- `function acquireInterval(base: number, count: number)`
+- `function releaseInterval(node: { base: number; count: number }): void`
+- `function ensureInstancedBuild(material: ShaderMaterial, mesh: Mesh): void`
+- `export function initPackedChunkArenas(engine: EngineContext, scene: SceneContext): void`
+- `export function getFaceArenaCount(): number`
+- `function ensureArenas(): void`
+- `function createFaceArena(initialCapacity: number): FaceArena`
+- `function writeBufferChunked(buffer: StorageBuffer, data: Uint32Array | Float32Array, dstByteOffset: number, srcElementOffset: number, elementCount: number): void`
+- `export function registerPackedMaterial(material: ShaderMaterial): void`
+- `export function disposePackedMesh(mesh: Mesh): void`
+- `export function destroyPackedArenas(): void`
+
+**Types / Interfaces / Enums**
+- type `EngineContext`
+- type `Mesh`
+- type `SceneContext`
+- type `ShaderMaterial`
+- type `StorageBuffer`
+- type `BuildGroupFn`
+
+---
+
+## `World/Chunk/voxel.worker.ts` (137 LOC)
 
 **Module-level functions**
 - `function expandCenterOnly(request: VoxelWorkerRequest): Uint8Array | Uint16Array`
 - `function ensureShapesReady(): Promise<void>`
+- `function resetMeshOut(): void`
 
 **Types / Interfaces / Enums**
 - interface `VoxelWorkerRequest`
+- type `WorkerMeshBaseContext`
+- type `WorkerMeshInput`
+- type `FullMeshMessage`
 
 ---
 
 ## `World/Chunk/Worker/BlockTickScheduler.ts` (112 LOC)
-
-### export class BlockTickScheduler
-
-**Properties**
-- `#pending: unknown`
-- `#buckets: number[][]`
-- `#overflow: number[]`
-- `currentTick: unknown`
-- `safetyCeiling: unknown`
-- `#processCallback: | ((worldX: number, worldY: number, worldZ: number) => void)
-		| null`
-
-**Accessors**
-- `get pendingCount(): number`
-
-**Methods**
-- `static getInstance(): BlockTickScheduler`
-- `setProcessCallback(cb: (worldX: number, worldY: number, worldZ: number) => void): void`
-- `setBudget(budget: number): void`
-- `schedule(worldX: number, worldY: number, worldZ: number, delay: number): void`
-- `removeAt(worldX: number, worldY: number, worldZ: number): void`
-- `processFrame(): void`
-- `getDiagnostics(): { pendingCount: number; overflowCount: number }`
-- `clear(): void`
-
-**Module-level functions**
-- `function packKey(x: number, y: number, z: number): number`
-
-**Types / Interfaces / Enums**
-- interface `ScheduledTick`
 
 ---
 
@@ -4912,23 +4316,23 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `World/Chunk/Worker/ChunkMesherConstants.ts` (54 LOC)
+## `World/Chunk/Worker/ChunkMesherConstants.ts` (62 LOC)
 
 **Module-level functions**
 - `export function filtersFullSunlight(blockId: number): boolean`
 
 ---
 
-## `World/Chunk/Worker/LightCore.ts` (1124 LOC)
+## `World/Chunk/Worker/LightCore.ts` (1132 LOC)
 
 ### class LightQueue
 
 **Properties**
-- `readonly chunks: (bigint | 0)[]`
-- `readonly coords: unknown`
-- `readonly levels: unknown`
-- `head: unknown`
-- `tail: unknown`
+- `readonly chunks: (bigint | 0)[] = new Array(BFS_CAPACITY).fill(0)`
+- `readonly coords`
+- `readonly levels`
+- `head`
+- `tail`
 
 **Accessors**
 - `get length(): number`
@@ -4940,12 +4344,7 @@ Generated: 2026-07-09T20:48:34.412Z
 **Module-level functions**
 - `function getLightEmission(blockId: number): number`
 - `function getFaceBit(axis: number, dir: number): number`
-- `function getClosedFaceMaskForPacked(packed: number): number`
-- `export function applyClosedFaceMaskLUT(lut: Uint8Array): void`
-- `function isTransparent(packed: number, axis: number, dir: number): boolean`
-- `export function createRegistry(header: LightHeaderView): ChunkViewRegistry`
-- `function linkNeighborViews(registry: ChunkViewRegistry, view: ChunkView): void`
-- `function resolveNeighborView(startView: ChunkView, tx: number, ty: number, tz: number, size: number): { view: ChunkView; x: number; y: number; z: number } | null`
+- `function resolveNeighborView(startView: ChunkView, tx: number, ty: number, tz: number, size: number)`
 - `export function refreshLayout(registry: ChunkViewRegistry, view: ChunkView): void`
 - `export function registerChunk(registry: ChunkViewRegistry, args: {
 		chunkId: bigint;
@@ -4968,10 +4367,6 @@ Generated: 2026-07-09T20:48:34.412Z
 - `function getViewBlockPacked(view: ChunkView, x: number, y: number, z: number): number`
 - `function getBlockLight(view: ChunkView, idx: number): number`
 - `function getSkyLight(view: ChunkView, idx: number): number`
-- `function casLightByte(view: ChunkView, idx: number, isSky: boolean, nextLevel: number): WriteResult`
-- `function clearLightByte(view: ChunkView, idx: number, isSky: boolean): boolean`
-- `function processQueue(registry: ChunkViewRegistry, q: LightQueue, isSkyLight: boolean, dirtySlots: Set<number>): void`
-- `function processRemoveQueue(registry: ChunkViewRegistry, q: LightQueue, isSkyLight: boolean, dirtySlots: Set<number>, initialOldPacked?: number): void`
 - `export function lightMutate(registry: ChunkViewRegistry, chunkId: bigint, x: number, y: number, z: number, oldPacked: number, _newPacked: number): Set<number>`
 - `function removeLightAt(registry: ChunkViewRegistry, view: ChunkView, x: number, y: number, z: number, startLevel: number, isSkyLight: boolean, dirtySlots: Set<number>, oldPacked?: number): void`
 - `function updateLightFromNeighborsAt(registry: ChunkViewRegistry, view: ChunkView, x: number, y: number, z: number, isSkyLight: boolean, dirtySlots: Set<number>): void`
@@ -4984,9 +4379,7 @@ Generated: 2026-07-09T20:48:34.412Z
 - `export function bumpLightVersion(registry: ChunkViewRegistry, slot: number): void`
 
 **Types / Interfaces / Enums**
-- type `ChunkView`
-- type `ChunkViewRegistry`
-- enum `WriteResult`
+- type `LightHeaderView`
 
 ---
 
@@ -5007,6 +4400,7 @@ Generated: 2026-07-09T20:48:34.412Z
 - `function handlePropagateDeferred(req: LightPropagateDeferredRequest): void`
 
 **Types / Interfaces / Enums**
+- type `ChunkViewRegistry`
 - type `LightState`
 
 ---
@@ -5023,16 +4417,14 @@ Generated: 2026-07-09T20:48:34.412Z
 ## `World/Chunk/Worker/NeighborHelpers.ts` (56 LOC)
 
 **Module-level functions**
-- `export function scheduleChunkAndNeighborsRemesh(chunk: Chunk, scheduleRemesh: (chunk: Chunk, priority: boolean) => void): void`
 - `export function hasStableVoxelNeighborsForCachedMesh(chunk: Chunk): boolean`
-- `export function maybeRemeshNeighborsNowStable(chunk: Chunk, scheduleRemesh: (chunk: Chunk, priority: boolean) => void): void`
 
 ---
 
 ## `World/Chunk/Worker/WaterSimulation.ts` (386 LOC)
 
 **Module-level functions**
-- `function scheduleNeighborUpdates(worldX: number, worldY: number, worldZ: number, scheduler: BlockTickScheduler, excludeDx: unknown = 0, excludeDy: unknown = 0, excludeDz: unknown = 0): void`
+- `function scheduleNeighborUpdates(worldX: number, worldY: number, worldZ: number, scheduler: BlockTickScheduler, excludeDx = 0, excludeDy = 0, excludeDz = 0): void`
 - `function isSolidBlock(blockId: number): boolean`
 - `function canWaterPass(x: number, y: number, z: number): boolean`
 - `function isHole(x: number, y: number, z: number): boolean`
@@ -5053,122 +4445,81 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `World/Chunk/Worker/WorkerTaskHandlers.ts` (143 LOC)
+## `World/Chunk/Worker/WorkerTaskHandlers.ts` (152 LOC)
 
 **Module-level functions**
-- `export function handleGenerateTerrain(request: GenerateTerrainRequest, deps: { generator: WorldGenerator; compressBlocks: CompressBlocksFn }): { payload: TerrainGeneratedMessage; transferables: Transferable[] }`
+- `export function handleGenerateTerrain(request: GenerateTerrainRequest, deps: { generator: WorldGenerator; compressBlocks: CompressBlocksFn })`
 - `export function handleInitDistantTerrainShared(request: {
 	positionsBuffer: SharedArrayBuffer;
 	normalsBuffer: SharedArrayBuffer;
 	surfaceTilesBuffer: SharedArrayBuffer;
 	radius: number;
 	gridStep: number;
-}): { payload: { type: number }; transferables: Transferable[] }`
-- `export function handleGenerateDistantTerrain(request: GenerateDistantTerrainRequest): {
-	payload: {
-		type: number;
-		requestId: number;
-		centerChunkX: number;
-		centerChunkZ: number;
-	};
-	transferables: Transferable[];
-}`
+})`
+- `export function handleGenerateDistantTerrain(request: GenerateDistantTerrainRequest)`
 - `function pushTransferable(transferables: Transferable[], view: ArrayBufferView | null | undefined, label: string): void`
 
 **Types / Interfaces / Enums**
+- type `GenerateDistantTerrainRequest`
+- type `GenerateTerrainRequest`
+- type `TerrainGeneratedMessage`
 - type `MeshBuilderLike`
 - type `CompressBlocksFn`
 
 ---
 
-## `World/Collision/VoxelAabbCollider.ts` (392 LOC)
-
-### export class VoxelAabbCollider
-
-**Constructor**
-- `constructor(halfExtents: Vector3, isSolidBlockAt: IsSolidBlockAt, epsilon: unknown = 0.001, debugOptions?: VoxelAabbDebugOptions)`
-
-**Properties**
-- `#halfExtents: Vector3`
-- `#epsilon: number`
-- `#isSolidBlockAt: IsSolidBlockAt`
-- `#tmpCandidate: unknown`
-- `#debugMesh: Mesh | null`
-- `#debugOptions: VoxelAabbDebugOptions | null`
-- `static #debugEnabled: unknown`
-- `static readonly #debugColliders: unknown`
-
-**Accessors**
-- `public set HalfExtents(halfExtents: Vector3)`
-
-**Methods**
-- `#createDebugMesh(options: VoxelAabbDebugOptions): void`
-- `#ensureDebugMesh(): void`
-- `public overlaps(position: Vector3): boolean`
-- `public wouldOverlapBlock(position: Vector3, blockX: number, blockY: number, blockZ: number, blockShape: {
-			boxes: Array<{
-				min: [number, number, number];
-				max: [number, number, number];
-			}>;
-			rotateY: boolean;
-			usesSliceState: boolean;
-		}, rotation: number, slice: number, flipY: boolean): boolean`
-- `public moveAxis(position: Vector3, velocity: Vector3, axis: Axis, delta: number, stepSize: number): void`
-- `public syncDebugMesh(position: Vector3): void`
-- `public dispose(): void`
-- `public static toggleDebugEnabled(): void`
-- `public static setDebugEnabled(enabled: boolean): void`
+## `World/Collision/VoxelAabbCollider.ts` (538 LOC)
 
 **Module-level functions**
 - `function rotateShapeBoxY(minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number, rotation: number, out: [number, number, number, number, number, number]): void`
-- `function testShapeBoxOverlap(aMinX: number, aMaxX: number, aMinY: number, aMaxY: number, aMinZ: number, aMaxZ: number, eps: number, shape: ShapeDefinition, rotation: number, slice: number, flipY: boolean, blockX: number, blockY: number, blockZ: number): boolean`
 
 **Types / Interfaces / Enums**
+- type `Mesh`
+- type `SceneContext`
+- type `Vec3`
 - type `BlockShapeInfo`
 - type `IsSolidBlockAt`
 - type `VoxelAabbDebugOptions`
-- enum `Axis`
 
 ---
 
-## `World/Collision/VoxelObbCollider.ts` (235 LOC)
+## `World/Collision/VoxelObbCollider.ts` (228 LOC)
 
 ### export class VoxelObbCollider
 
 **Constructor**
-- `constructor(halfExtents: Vector3, isSolidBlockAt: IsSolidBlockAt, epsilon: unknown = 0.001, debugOptions?: VoxelObbDebugOptions)`
+- `constructor(halfExtents: Vec3, isSolidBlockAt: IsSolidBlockAt, epsilon = 0.001, debugOptions?: VoxelObbDebugOptions)`
 
 **Properties**
-- `#halfExtents: Vector3`
-- `#centerOffset: unknown`
-- `#epsilon: number`
-- `#isSolidBlockAt: IsSolidBlockAt`
-- `#yaw: unknown`
-- `#rotX: unknown`
-- `#rotZ: unknown`
-- `#tmpCandidate: unknown`
-- `#debugRot: unknown`
-- `#debugMesh: Mesh | null`
-- `#debugOptions: VoxelObbDebugOptions | null`
-- `static #debugEnabled: unknown`
-- `static readonly #debugColliders: unknown`
+- `px: number,`
+- `py: number,`
+- `pz: number,`
+- `hx: number,`
+- `hy: number,`
+- `hz: number,`
+- `vx: number,`
+- `vy: number,`
+- `vz: number,`
 
 **Methods**
-- `public setYaw(yaw: number): void`
-- `public setHalfExtents(halfExtents: Vector3): void`
-- `public setCenterOffset(offset: Vector3): void`
-- `#updateRotAxes(): void`
-- `#createDebugMesh(options: VoxelObbDebugOptions): void`
-- `#ensureDebugMesh(): void`
-- `public overlaps(position: Vector3): boolean`
-- `#obbIntersectsVoxel(px: number, py: number, pz: number, hx: number, hy: number, hz: number, vx: number, vy: number, vz: number): boolean`
-- `public moveAxis(position: Vector3, velocity: Vector3, axis: Axis, delta: number, stepSize: number): void`
-- `public syncDebugMesh(position: Vector3): void`
+- `copyVec3(this.#halfExtents, halfExtents)`
+- `public setYaw(yaw: number)`
+- `public setHalfExtents(halfExtents: Vec3): void`
+- `public setCenterOffset(offset: Vec3): void`
+- `setVec3(this.#rotX, c, 0, -s)`
+- `setVec3(this.#rotZ, s, 0, c)`
+- `addToScene(options.scene, this.#debugMesh)`
+- `public overlaps(position: Vec3): boolean`
+- `public moveAxis(position: Vec3, velocity: Vec3, axis: Axis, delta: number, stepSize: number): void`
+- `public syncDebugMesh(position: Vec3): void`
 - `public dispose(): void`
 - `public static toggleDebugEnabled(): void`
 - `public static setDebugEnabled(enabled: boolean): void`
 
 **Types / Interfaces / Enums**
+- type `Mesh`
+- type `SceneContext`
+- type `Vec3`
 - type `IsSolidBlockAt`
 - type `VoxelObbDebugOptions`
 
@@ -5182,7 +4533,45 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
+## `World/Light/DistantTerrainShaderLite.ts` (213 LOC)
+
+**Types / Interfaces / Enums**
+- type `EngineContext`
+- type `SceneContext`
+- type `ShaderMaterial`
+- type `Texture2D`
+
+---
+
+## `World/Light/liteGpuBuffer.ts` (15 LOC)
+
+**Module-level functions**
+- `function deviceOf(engine: EngineContext): GPUDevice`
+- `export function onGpuWorkDone(engine: EngineContext): Promise<void>`
+
+**Types / Interfaces / Enums**
+- interface `EngineWithDevice`
+
+---
+
 ## `World/Light/Lod2Shader.ts` (287 LOC)
+
+---
+
+## `World/Light/Lod2ShaderLite.ts` (246 LOC)
+
+**Module-level functions**
+- `function baseUniforms(): readonly ShaderUniformOption[]`
+- `export function createLod2OpaqueMaterial(opts: Lod2MaterialOptions): ShaderMaterial`
+- `export function createLod2TransparentMaterial(opts: Lod2MaterialOptions): ShaderMaterial`
+
+**Types / Interfaces / Enums**
+- interface `Lod2MaterialOptions`
+- type `EngineContext`
+- type `SceneContext`
+- type `ShaderMaterial`
+- type `ShaderUniformOption`
+- type `Texture2D`
 
 ---
 
@@ -5190,7 +4579,45 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
+## `World/Light/Lod3ShaderLite.ts` (251 LOC)
+
+**Module-level functions**
+- `export function createLod3OpaqueMaterial(opts: Lod3MaterialOptions): ShaderMaterial`
+- `export function createLod3TransparentMaterial(opts: Lod3MaterialOptions): ShaderMaterial`
+
+**Types / Interfaces / Enums**
+- interface `Lod3MaterialOptions`
+- type `EngineContext`
+- type `SceneContext`
+- type `ShaderMaterial`
+- type `Texture2D`
+
+---
+
 ## `World/Light/OpaqueShader.ts` (203 LOC)
+
+---
+
+## `World/Light/OpaqueShaderLite.ts` (222 LOC)
+
+**Module-level functions**
+- `function buildChunkMaterial(name: string, fragmentSource: string, useNormal: boolean, opts: ChunkMaterialOptions): ShaderMaterial`
+- `export function createChunkOpaqueMaterial(opts: ChunkMaterialOptions): ShaderMaterial`
+- `export function createChunkTransparentMaterial(opts: ChunkMaterialOptions): ShaderMaterial`
+
+**Types / Interfaces / Enums**
+- interface `ChunkMaterialOptions`
+- type `EngineContext`
+- type `SceneContext`
+- type `ShaderMaterial`
+- type `Texture2D`
+
+---
+
+## `World/Light/PackedChunkShaderWGSL.ts` (187 LOC)
+
+**Module-level functions**
+- `export function buildPackedVertexWGSL(arenaCount: number = 1): string`
 
 ---
 
@@ -5198,36 +4625,50 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
+## `World/Light/SkyShaderLite.ts` (56 LOC)
+
+**Module-level functions**
+- `export function createSkyMaterial(): ShaderMaterial`
+
+**Types / Interfaces / Enums**
+- type `ShaderMaterial`
+
+---
+
 ## `World/Light/TransparentShader.ts` (223 LOC)
 
 ---
 
-## `World/MeshPipeline/core/AOPipeline.ts` (81 LOC)
+## `World/MeshPipeline/core/AOPipeline.ts` (92 LOC)
 
 **Module-level functions**
 - `export function isOccluder(packedBlock: number, shape: BlockShapeInfo): boolean`
-- `export function computeAO(ctx: MeshContext, faceX: number, faceY: number, faceZ: number, uAxis: number, vAxis: number): number`
+- `export function computeAO(blockArr: Uint16Array, faceX: number, faceY: number, faceZ: number, uAxis: number, vAxis: number): number`
 
 ---
 
-## `World/MeshPipeline/core/BlockFlags.ts` (116 LOC)
+## `World/MeshPipeline/core/BlockFlags.ts` (124 LOC)
 
 **Module-level functions**
 - `export function isGlassBlock(blockId: number): boolean`
 - `function canUseDenseCache(packed: number): boolean`
 - `export function getCachedBlockId(packed: number): number`
+- `function buildEntry(packed: number, id: number): number`
+- `export function getCachedFlagsAndId(packed: number): number`
+- `export function getFlagsFromCombined(combined: number): number`
+- `export function getIdFromCombined(combined: number): number`
 - `export function getCachedIsCube(packed: number): boolean`
+- `function computeFlags(packed: number, id: number): number`
 - `export function getCachedFlags(packed: number): number`
 
 ---
 
-## `World/MeshPipeline/core/CustomShapeEmitter.ts` (573 LOC)
+## `World/MeshPipeline/core/CustomShapeEmitter.ts` (574 LOC)
 
 **Module-level functions**
 - `function parseBlockInto(packed: number, out: ParsedBlock): void`
 - `function getFaceBit(axis: number, isBackFace: boolean): number`
 - `function isWaterGlassInterface(curr: ParsedBlock, nbr: ParsedBlock): boolean`
-- `export function emitCustomShapes(ctx: MeshContext, opaqueOut: WorkerInternalMeshData, transparentOut: WorkerInternalMeshData): void`
 - `function isBorderOutwardFace(x: number, y: number, z: number, size: number, axis: number, isBackFace: boolean): boolean`
 - `function emitCrossShapeAtBlock(x: number, y: number, z: number, blockId: number, baseLight: number, materialType: MaterialType = MaterialType.Cutout, out: WorkerInternalMeshData): void`
 - `function emitCrossDiagonalAtBlock(x: number, y: number, z: number, blockId: number, baseLight: number, materialType: MaterialType = MaterialType.Cutout, out: WorkerInternalMeshData): void`
@@ -5239,12 +4680,14 @@ Generated: 2026-07-09T20:48:34.412Z
 	}, axis: number, isBackFace: boolean, baseLight: number, out: WorkerInternalMeshData): void`
 
 **Types / Interfaces / Enums**
+- type `MeshContext`
+- type `WorkerInternalMeshData`
 - type `ParsedBlock`
 - type `FaceDescriptor`
 
 ---
 
-## `World/MeshPipeline/core/FaceEmitter.ts` (152 LOC)
+## `World/MeshPipeline/core/FaceEmitter.ts` (146 LOC)
 
 **Module-level functions**
 - `export function emitQuadFast(out: WorkerInternalMeshData, x: number, y: number, z: number, axis: number, width: number, height: number, blockId: number, backFace: number, light: number, ao: number, faceName: FaceName, materialType: number, flip: number, diagonal: number, rawDim: number): void`
@@ -5255,10 +4698,7 @@ Generated: 2026-07-09T20:48:34.412Z
 ## `World/MeshPipeline/core/GreedyPipeline.ts` (103 LOC)
 
 **Module-level functions**
-- `function ensureScratchCapacity(area: number): {
-	mask: Int32Array;
-	lights: Uint16Array;
-}`
+- `function ensureScratchCapacity(area: number)`
 - `export function greedyMesh(ctx: MeshContext, extractMask: MaskExtractor, emitFace: FaceEmitterCallback): void`
 
 **Types / Interfaces / Enums**
@@ -5291,13 +4731,14 @@ Generated: 2026-07-09T20:48:34.412Z
 - `export function createMeshContext(params: {
 	size: number;
 	lod: number;
-}): Omit<MeshContext, "getBlock" | "getLight" | "hasNeighborChunk">`
+}): Omit<MeshContext,            |            |                   >`
 
 ---
 
-## `World/MeshPipeline/core/MeshEmitters.ts` (35 LOC)
+## `World/MeshPipeline/core/MeshEmitters.ts` (48 LOC)
 
 **Module-level functions**
+- `export function reserveMeshCapacity(out: WorkerInternalMeshData, maxQuads: number): void`
 - `export function createEmptyMeshData(): WorkerInternalMeshData`
 - `export function buildVoxelMesh(ctx: MeshContext, opaqueOut: WorkerInternalMeshData, transparentOut: WorkerInternalMeshData): void`
 
@@ -5327,6 +4768,7 @@ Generated: 2026-07-09T20:48:34.412Z
 - `function buildGreedyCompatible(packedBlock: number): boolean`
 
 **Types / Interfaces / Enums**
+- type `ShapeBounds`
 - type `FaceRect`
 
 ---
@@ -5344,13 +4786,15 @@ Generated: 2026-07-09T20:48:34.412Z
 
 **Module-level functions**
 - `function needsRawDim(blockId: number, width: number, height: number): boolean`
-- `function inlineOrigin(axis: number, back: number, desc: GreedyFaceDescriptor): { ox: number; oy: number; oz: number }`
+- `function inlineOrigin(axis: number, back: number, desc: GreedyFaceDescriptor)`
 - `function emitCubeWrap(a: VoxelFaceEmitterAdapter, out: WorkerInternalMeshData, axis: number, desc: GreedyFaceDescriptor, _packed: number, blockId: number, back: number, light: number, ao: number, faceName: FaceName, _faceBit: number): void`
 - `function emitWaterWrap(a: VoxelFaceEmitterAdapter, out: WorkerInternalMeshData, axis: number, desc: GreedyFaceDescriptor, packedBlock: number, blockId: number, back: number, light: number, ao: number, faceName: FaceName, _faceBit: number): void`
 - `function emitCustomWrap(a: VoxelFaceEmitterAdapter, out: WorkerInternalMeshData, axis: number, desc: GreedyFaceDescriptor, packedBlock: number, blockId: number, back: number, light: number, ao: number, faceName: FaceName, faceBit: number): void`
 - `function emitWaterCustomWrap(a: VoxelFaceEmitterAdapter, out: WorkerInternalMeshData, axis: number, desc: GreedyFaceDescriptor, packedBlock: number, blockId: number, back: number, light: number, ao: number, faceName: FaceName, faceBit: number): void`
 
 **Types / Interfaces / Enums**
+- type `GreedyFaceDescriptor`
+- type `WorkerInternalMeshData`
 - type `EmitFn`
 
 ---
@@ -5366,15 +4810,12 @@ Generated: 2026-07-09T20:48:34.412Z
 - `private ctx: MeshContext`
 - `private maskExtractor: VoxelMaskExtractor`
 - `private faceEmitter: VoxelFaceEmitterAdapter`
-- `private readonly _extractMask: (
-		slice: number,
-		maskBuf: WritableNumberArray,
-		lightBuf: WritableNumberArray,
-	) => void`
+- `private readonly _extractMask: ( slice: number, maskBuf: WritableNumberArray, lightBuf: WritableNumberArray, ) => void`
 - `private readonly _emitFace: (desc: GreedyFaceDescriptor) => void`
-- `private _opaqueOut: WorkerInternalMeshData`
-- `private _transparentOut: WorkerInternalMeshData`
-- `private _currentAxis: unknown`
+- `slice: number,`
+- `maskBuf: WritableNumberArray,`
+- `lightBuf: WritableNumberArray,`
+- `private _currentAxis`
 
 **Methods**
 - `public setCtx(ctx: MeshContext): void`
@@ -5382,7 +4823,7 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `World/MeshPipeline/core/VoxelMaskExtractor.ts` (404 LOC)
+## `World/MeshPipeline/core/VoxelMaskExtractor.ts` (455 LOC)
 
 ### export class VoxelMaskExtractor
 
@@ -5391,23 +4832,25 @@ Generated: 2026-07-09T20:48:34.412Z
 
 **Properties**
 - `private ctx: MeshContext`
-- `private static readonly _bxPerm: unknown`
-- `private static readonly _byPerm: unknown`
-- `private static readonly _bzPerm: unknown`
-- `private static readonly _ndxDx: unknown`
-- `private static readonly _ndyDy: unknown`
-- `private static readonly _ndzDz: unknown`
-- `private static readonly _negNbrDx: unknown`
-- `private static readonly _negNbrDy: unknown`
-- `private static readonly _negNbrDz: unknown`
+- `private static readonly _bxPerm`
+- `private static readonly _byPerm`
+- `private static readonly _bzPerm`
+- `private static readonly _ndxDx`
+- `private static readonly _ndyDy`
+- `private static readonly _ndzDz`
+- `private static readonly _negNbrDx`
+- `private static readonly _negNbrDy`
+- `private static readonly _negNbrDz`
 
 **Methods**
 - `public setCtx(ctx: MeshContext): void`
 - `private getCurrentFaceBit(axis: number): number`
 - `private getNeighborFaceBit(axis: number): number`
 - `private clearSlice(mask: WritableNumberArray, lightMask: WritableNumberArray, size: number): void`
-- `private processCell(bx: number, by: number, bz: number, dx: number, dy: number, dz: number, uAxis: number, vAxis: number, currentFaceBit: number, neighborFaceBit: number, outIndex: number, mask: WritableNumberArray, lightMask: WritableNumberArray): void`
 - `public extractSliceMask(axis: number, slice: number, mask: WritableNumberArray, lightMask: WritableNumberArray): void`
+
+**Module-level functions**
+- `function processCell(blockArr: Uint16Array, lightArr: Uint8Array, disableAO: boolean, bx: number, by: number, bz: number, nx: number, ny: number, nz: number, curIdx: number, nbrIdx: number, uAxis: number, vAxis: number, currentFaceBit: number, neighborFaceBit: number, outIndex: number, mask: WritableNumberArray, lightMask: WritableNumberArray): void`
 
 **Types / Interfaces / Enums**
 - type `WritableNumberArray`
@@ -5433,11 +4876,13 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `World/MeshPipeline/core/WorkerMeshHelpers.ts` (184 LOC)
+## `World/MeshPipeline/core/WorkerMeshHelpers.ts` (234 LOC)
 
 **Module-level functions**
 - `export function createEmptyWorkerInternalMeshData(): WorkerInternalMeshData`
 - `export function toTransferableMeshData(data: WorkerInternalMeshData): MeshData`
+- `export function paddedIndex(x: number, y: number, z: number): number`
+- `function buildOpaqueClassification(padded: Uint16Array, psVol: number): Uint8Array`
 - `export function createMeshContextFromPayload(base: WorkerMeshBaseContext, input: WorkerMeshInput): MeshContext`
 
 **Types / Interfaces / Enums**
@@ -5455,47 +4900,14 @@ Generated: 2026-07-09T20:48:34.412Z
 - interface `BlockShapeInfo`
 - interface `GreedyFaceDescriptor`
 - type `WorkerInternalMeshData`
-- enum `MaterialType`
 
 ---
 
-## `World/Occlusion/OcclusionCuller.ts` (729 LOC)
-
-### export class OcclusionCuller
-
-**Properties**
-- `private _topoVisibleChunks: Chunk[]`
-- `private _prevTopoChunks: Chunk[]`
-- `private _currentQueryId: unknown`
-- `private _lastCompletedQueryId: unknown`
-- `private _lastCamCX: unknown`
-- `private _lastCamCY: unknown`
-- `private _lastCamCZ: unknown`
-- `private _topologyDirty: unknown`
-- `private _topoDirtyFrameCount: unknown`
-- `private static readonly TOPO_THROTTLE_FRAMES: unknown`
-- `private _lastSweepVpHash: unknown`
-- `private _lastTotal: unknown`
-- `private _lastOccluded: unknown`
-- `private _dirtyConnectivityChunks: Chunk[]`
-- `private _bfsInProgress: unknown`
-- `private _bfsQHead: unknown`
-- `private _bfsQTail: unknown`
-
-**Methods**
-- `update(_scene: Scene, out: OcclusionStats): OcclusionStats`
-- `incrementalAdd(newChunk: Chunk): void`
-- `private _startBFS(camCX: number, camCY: number, camCZ: number): void`
-- `private _stepBFS(budget: number): void`
+## `World/Occlusion/OcclusionCuller.ts` (783 LOC)
 
 **Module-level functions**
 - `function initFacePairTable(): void`
-- `function cacheFrustumPlanes(vp: Matrix): void`
-- `function aabbInFrustum(minX: number, minY: number, minZ: number, maxX: number, maxY: number, maxZ: number): boolean`
 - `function resetChunkBfs(chunk: Chunk, queryId: number): void`
-- `function ensureNeighborRefs(chunk: Chunk): void`
-- `function minFSteps(fs: Uint8Array): number`
-- `function hasConnectivity(neighborVisited: number, exitFace: number, fc: number): boolean`
 
 **Types / Interfaces / Enums**
 - interface `OcclusionStats`
@@ -5507,7 +4919,7 @@ Generated: 2026-07-09T20:48:34.412Z
 ### class AStarHeap
 
 **Properties**
-- `private items: AStarNode[]`
+- `private items: AStarNode[] = []`
 
 **Accessors**
 - `get size(): number`
@@ -5520,34 +4932,34 @@ Generated: 2026-07-09T20:48:34.412Z
 **Module-level functions**
 - `function hasClearance(x: number, z: number, groundY: number, headroom: number, allowWater: boolean): boolean`
 - `function findWaterSurface(x: number, z: number, startY: number, searchUp: number, searchDown: number): SurfaceResult | null`
-- `export function findSurface(x: number, z: number, startGroundY: number, stepUp: number, stepDown: number, headroom: number, allowWater: unknown = true): SurfaceResult | null`
-- `export function findLandSurface(x: number, z: number, startY: number, headroom: number): { groundY: number } | null`
+- `export function findSurface(x: number, z: number, startGroundY: number, stepUp: number, stepDown: number, headroom: number, allowWater = true): SurfaceResult | null`
+- `export function findLandSurface(x: number, z: number, startY: number, headroom: number)`
 - `export function isLandAt(x: number, z: number, startY: number, headroom: number): boolean`
 - `function nodeKey(x: number, z: number, y: number, kind: PathNodeKind): number`
 - `function allocNode(x: number, z: number, groundY: number, kind: PathNodeKind, g: number, h: number, parent: AStarNode | null): AStarNode`
 - `function releaseUsedNodes(): void`
 - `function buildPathInto(outPath: PathWaypoint[], endNode: AStarNode): void`
-- `export function findPathInto(outPath: PathWaypoint[], startX: number, startZ: number, startGroundY: number, targetX: number, targetZ: number, headroom: number, maxExpansions: unknown = 300, requiredTargetGroundY?: number): boolean`
+- `export function findPathInto(outPath: PathWaypoint[], startX: number, startZ: number, startGroundY: number, targetX: number, targetZ: number, headroom: number, maxExpansions = 300, requiredTargetGroundY?: number): boolean`
 
 **Types / Interfaces / Enums**
 - interface `PathWaypoint`
 - interface `AStarNode`
 - interface `SurfaceResult`
-- enum `PathNodeKind`
 
 ---
 
-## `World/SETTINGS_PARAMS.ts` (37 LOC)
+## `World/SETTINGS_PARAMS.ts` (34 LOC)
 
 ---
 
-## `World/Shape/BlockShapes.ts` (225 LOC)
+## `World/Shape/BlockShapes.ts` (234 LOC)
 
 **Module-level functions**
 - `function ensureShapeInit(): Promise<void>`
 - `export function getShapeDefinitions(): ShapeDefinition[]`
 - `export function getShapeByBlockId(): Uint16Array`
 - `export function areShapesInitialized(): boolean`
+- `export function isRegisteredBlockId(id: number | null): boolean`
 - `export function getCubeShapeIndex(): number`
 - `export function isCrossBlockId(blockId: number): boolean`
 - `export function isCrossDiagonalBlockId(blockId: number): boolean`
@@ -5585,20 +4997,18 @@ Generated: 2026-07-09T20:48:34.412Z
 - `export function getFenceDynamicShape(mask: number): ShapeDefinition`
 
 **Types / Interfaces / Enums**
+- type `ShapeBox`
+- type `ShapeDefinition`
 - type `GetBlockFn`
 
 ---
 
-## `World/Storage/ChunkKey.ts` (39 LOC)
+## `World/Storage/ChunkKey.ts` (33 LOC)
 
 **Module-level functions**
 - `function validateAxis(v: number, name: string): void`
 - `export function packChunkKey(chunkX: number, chunkY: number, chunkZ: number): bigint`
-- `export function unpackChunkKey(key: bigint): {
-	chunkX: number;
-	chunkY: number;
-	chunkZ: number;
-}`
+- `export function unpackChunkKey(key: bigint)`
 
 ---
 
@@ -5616,16 +5026,15 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `World/Storage/opfs.worker.ts` (491 LOC)
+## `World/Storage/opfs.worker.ts` (593 LOC)
 
 **Module-level functions**
-- `function _enqueueOp(fn: () => Promise<void>): Promise<void>`
 - `async function _drainOpQueue(): Promise<void>`
 - `function _lruTouch(key: number): void`
 - `function _lruEvict(): number | null`
-- `function _lruDelete(key: number): void`
 - `function packRegionKey(rx: number, ry: number, rz: number): number`
 - `function regionFileName(rx: number, ry: number, rz: number): string`
+- `function resolveVoxelLocation(cx: number, cy: number, cz: number): void`
 - `function viewOf(data: ArrayBuffer | Uint8Array): Uint8Array`
 - `async function compressGzip(data: Uint8Array): Promise<Uint8Array>`
 - `async function decompressGzip(data: Uint8Array): Promise<Uint8Array>`
@@ -5637,11 +5046,11 @@ Generated: 2026-07-09T20:48:34.412Z
 - `async function _closeRegionFile(rf: RegionFile): Promise<void>`
 - `async function ensureMeshStore(): Promise<OpfsChunkStore>`
 - `function resetMeshStore(): void`
-- `async function withMeshRetry(fn: (s: OpfsChunkStore) => T): Promise<T>`
 - `async function ensureRegionsDir(): Promise<FileSystemDirectoryHandle>`
 - `async function getRegionFile(rx: number, ry: number, rz: number): Promise<RegionFile>`
 - `async function openStores(): Promise<void>`
 - `function postResult(id: number, result: unknown): void`
+- `function postTransferResult(id: number, result: Uint8Array | null): void`
 - `function postError(id: number, message: string): void`
 
 **Types / Interfaces / Enums**
@@ -5650,7 +5059,7 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `World/Storage/OpfsChunkStore.ts` (366 LOC)
+## `World/Storage/OpfsChunkStore.ts` (384 LOC)
 
 ### export class OpfsChunkStore
 
@@ -5658,25 +5067,32 @@ Generated: 2026-07-09T20:48:34.412Z
 - `constructor()`
 
 **Properties**
-- `private _fileHandle: FileSystemFileHandle | null`
-- `private _accessHandle: FileSystemSyncAccessHandle | null`
-- `private _tableBuffer: ArrayBuffer`
-- `private _tableView: DataView`
-- `private _size: number`
-- `private _capacity: number`
-- `private _dataSize: bigint`
-- `private _liveDataSize: bigint`
-- `private _dirty: unknown`
+- `private _fileHandle: FileSystemFileHandle | null = null`
+- `private _accessHandle: FileSystemSyncAccessHandle | null = null`
+- `private _tableBuffer: ArrayBuffer = new ArrayBuffer(0)`
+- `private _tableView: DataView = new DataView(new ArrayBuffer(0))`
+- `private _size: number = 0`
+- `private _capacity: number = 0`
+- `private _dataSize: number = 0`
+- `private _liveDataSize: number = 0`
+- `private _dirty`
 - `private readonly _scratch: ArrayBuffer`
 - `private readonly _scratchDv: DataView`
 - `private readonly _scratchU8: Uint8Array`
 - `private readonly _readSlab: Uint8Array`
 - `private readonly _headerBuf: Uint8Array`
-- `private _fileSize: unknown`
-- `private _hitCount: unknown`
-- `private _missCount: unknown`
-- `private _evictionCount: unknown`
-- `private static readonly INITIAL_CAPACITY: unknown`
+- `private _fileSize`
+- `private _hitCount`
+- `private _missCount`
+- `private _evictionCount`
+- `slotCount: this._size,`
+- `usedBytes: this._dataSize,`
+- `totalBytes: this._fileSize,`
+- `capacity: this._capacity,`
+- `hitCount: this._hitCount,`
+- `missCount: this._missCount,`
+- `evictionCount: this._evictionCount,`
+- `private static readonly INITIAL_CAPACITY`
 
 **Accessors**
 - `private get _dataStartOffset(): number`
@@ -5688,15 +5104,7 @@ Generated: 2026-07-09T20:48:34.412Z
 - `read(keyHi: number, keyLo: number, lod: number): Uint8Array | null`
 - `remove(keyHi: number, keyLo: number, lod: number): boolean`
 - `flush(): void`
-- `getStats(): {
-		slotCount: number;
-		usedBytes: number;
-		totalBytes: number;
-		capacity: number;
-		hitCount: number;
-		missCount: number;
-		evictionCount: number;
-	}`
+- `getStats()`
 - `private _init(): void`
 - `private _load(): void`
 - `private _findSlot(keyHi: number, keyLo: number, lod: number): number`
@@ -5710,7 +5118,7 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `World/Storage/OpfsClient.ts` (178 LOC)
+## `World/Storage/OpfsClient.ts` (289 LOC)
 
 ### export class OpfsClient
 
@@ -5721,47 +5129,53 @@ Generated: 2026-07-09T20:48:34.412Z
 - `private _worker: Worker`
 - `private _opResolves: (((v: any) => void) | null)[]`
 - `private _opRejects: (((e: any) => void) | null)[]`
-- `private _nextId: unknown`
+- `private _nextId`
 - `private _ready: Promise<void>`
+- `type: ,`
+- `transfer: Transferable[] = [],`
+- `msg: Record<string, any> = _wireMsg,`
+- `chunkX: decode(key),`
+- `chunkY: decode(key >> AXIS_BITS),`
+- `chunkZ: decode(key >> (AXIS_BITS * 2n)),`
+- `slotCount: number`
+- `usedBytes: number`
+- `totalBytes: number`
+- `capacity: number`
+- `hitCount: number`
+- `missCount: number`
+- `evictionCount: number`
 
 **Methods**
+- `resolve()`
 - `async ready(): Promise<void>`
-- `private _postMessage(type: OpfsMsg, payload: Record<string, any> = {}, transfer: Transferable[] = []): Promise<any>`
 - `private _onMessage(msg: { id: number; error?: string; result?: any }): void`
-- `private _packKey(key: bigint): { hi: number; lo: number }`
-- `private _unpackKey(key: bigint): {
-		chunkX: number;
-		chunkY: number;
-		chunkZ: number;
-	}`
+- `private _packKey(key: bigint)`
+- `private _unpackKey(key: bigint)`
 - `async readMesh(key: bigint, lod: number): Promise<Uint8Array | null>`
-- `async writeMesh(key: bigint, lod: number, data: Uint8Array): Promise<void>`
+- `async writeMeshRaw(key: bigint, lod: number, opaque: MeshData | null | undefined, transparent: MeshData | null | undefined): Promise<void>`
 - `async removeMesh(key: bigint, lod: number): Promise<boolean>`
 - `async readVoxel(key: bigint, lod: number): Promise<Uint8Array | null>`
+- `public initWorkerChannel(port: MessagePort): void`
+- `async readVoxelDecompressed(key: bigint, lod: number): Promise<HydratedVoxelData | null>`
 - `async writeVoxel(key: bigint, lod: number, data: Uint8Array): Promise<void>`
 - `async removeVoxel(key: bigint, lod: number): Promise<void>`
 - `async flush(): Promise<void>`
-- `async getStats(): Promise<{
-		slotCount: number;
-		usedBytes: number;
-		totalBytes: number;
-		capacity: number;
-		hitCount: number;
-		missCount: number;
-		evictionCount: number;
-	}>`
+- `async getStats(): Promise<`
+- `_resetWire(OpfsMsg.GetStats)`
 - `static async create(): Promise<OpfsClient>`
 - `async close(): Promise<void>`
 
 **Module-level functions**
+- `function _resetWire(type: OpfsMsg): void`
 - `function transferableBytes(data: Uint8Array): Uint8Array`
+
+**Types / Interfaces / Enums**
+- interface `WireMsg`
+- interface `WireMeshRawMsg`
 
 ---
 
-## `World/Storage/OpfsMessageTypes.ts` (13 LOC)
-
-**Types / Interfaces / Enums**
-- enum `OpfsMsg`
+## `World/Storage/OpfsMessageTypes.ts` (15 LOC)
 
 ---
 
@@ -5769,43 +5183,12 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ### export class RegionFile
 
-**Constructor**
-- `constructor(accessHandle: FileSystemSyncAccessHandle, headerU8: Uint8Array, headerDv: DataView, slotDv: DataView, slotTableU8: Uint8Array, usedBytes: number, occupiedCount: number, freeListHead: number, fileSize: number)`
-
-**Properties**
-- `private accessHandle: FileSystemSyncAccessHandle`
-- `private headerU8: Uint8Array`
-- `private headerDv: DataView`
-- `private slotDv: DataView`
-- `private readonly _slotTableU8: Uint8Array`
-- `private usedBytes: number`
-- `private occupiedCount: number`
-- `private freeListHead: number`
-- `private fileSize: number`
-- `private headerDirty: unknown`
-- `private readonly _dirtyBits: unknown`
-
-**Methods**
-- `static async open(accessHandle: FileSystemSyncAccessHandle, regionX: number, regionY: number, regionZ: number): Promise<RegionFile>`
-- `private readSlotSize(idx: number): number`
-- `private readSlotOffset(idx: number): number`
-- `private markDirty(idx: number): void`
-- `private writeSlotInMemory(idx: number, offset: number, size: number): void`
-- `private commitHeader(): void`
-- `private markAllSlotsDirty(): void`
-- `private static _compact(rf: RegionFile, accessHandle: FileSystemSyncAccessHandle): void`
-- `readChunk(lx: number, ly: number, lz: number, isEntity: boolean): Uint8Array | null`
-- `writeChunk(lx: number, ly: number, lz: number, isEntity: boolean, data: Uint8Array): void`
-- `removeChunk(lx: number, ly: number, lz: number, isEntity: boolean): void`
-- `flush(): void`
-- `close(): void`
-
 **Module-level functions**
 - `function slotIndex(lx: number, ly: number, lz: number, isEntity: boolean): number`
 
 ---
 
-## `World/Storage/VoxelSerializer.ts` (174 LOC)
+## `World/Storage/VoxelSerializer.ts` (182 LOC)
 
 **Module-level functions**
 - `export function serializeVoxelData(blocks: Uint8Array | Uint16Array | null, palette: Uint16Array | null | undefined, isUniform: boolean | undefined, uniformBlockId: number | undefined, lightArray: Uint8Array | null | undefined, compressed: boolean | undefined): Uint8Array`
@@ -5814,23 +5197,33 @@ Generated: 2026-07-09T20:48:34.412Z
 - `export function deserializeEntities(data: Uint8Array): SavedChunkEntityData[]`
 
 **Types / Interfaces / Enums**
+- interface `HydratedVoxelData`
 - type `SavedChunkData`
 - type `SavedChunkEntityData`
 
 ---
 
-## `World/Texture/BlockTextures.ts` (123 LOC)
+## `World/Texture/AtlasPacker.ts` (66 LOC)
+
+**Module-level functions**
+- `function loadImage(url: string): Promise<HTMLImageElement>`
+- `function readPixels(img: HTMLImageElement): Uint8Array`
+- `async export function packAtlas(engine: EngineContext): Promise<`
+
+---
+
+## `World/Texture/BlockTextures.ts` (134 LOC)
 
 **Module-level functions**
 - `function buildBlockTextures(): (BlockTextureDef | null)[]`
 - `function createTileDef(col: number, row: number): BlockTextureDef`
-- `function getTileFromResult(result: (BlockTextureDef | null)[], blockId: number): [number, number] | null`
 - `function getMaxBlockTypeId(): number`
 - `function getAtlasTileForBlockId(id: number): [number, number] | null`
 - `export function getVirtualBlockId(sourceBlockId: number, shape: string): number | null`
 - `function getVirtualBlockIdSync(sourceBlockId: number, shape: string): number`
 - `export function setBlockAtlasTile(blockId: number, col: number, row: number): void`
 - `export function getAtlasTile(blockId: number | null): [number, number] | null`
+- `export function getFaceAtlasTile(blockId: number | null, face: FaceName): [number, number] | null`
 
 **Types / Interfaces / Enums**
 - type `BlockTextureDef`
@@ -5838,7 +5231,7 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `World/Texture/BlockType.ts` (125 LOC)
+## `World/Texture/BlockType.ts` (128 LOC)
 
 **Module-level functions**
 - `export function isPassThroughBlock(blockId: number): boolean`
@@ -5857,29 +5250,32 @@ Generated: 2026-07-09T20:48:34.412Z
 **Module-level functions**
 - `export function getFaceName(axis: number, isBackFace: boolean): FaceName`
 
-**Types / Interfaces / Enums**
-- enum `FaceName`
-
 ---
 
-## `World/Texture/MaterialFactory.ts` (114 LOC)
+## `World/Texture/MaterialFactory.ts` (132 LOC)
 
 **Module-level functions**
-- `function createTexture(scene: Scene, path: string, uvScale: number): Texture`
-- `export function createMaterialByFolder(scene: Scene, folder: string, uvScale: unknown = 1, extension: unknown = ".png", diff: unknown = true, nor: unknown = false, ao: unknown = false, spec: unknown = false): StandardMaterial`
-- `function buildMaterial(scene: Scene, mat: StandardMaterial, directory: string, baseName: string, resolution: string, extension: string, uvScale: number, diff: boolean, nor: boolean, ao: boolean, spec: boolean, cacheKey: string): StandardMaterial`
-- `export function getTexturePathFromFolder(folder: string, type: unknown = "diff", extension: unknown = ".png"): string | null`
+- `function createTexture(_scene: SceneContext, _path: string, uvScale: number): RawTexture`
+- `export function createMaterialByFolder(scene: SceneContext, folder: string, uvScale = 1, extension =, diff = true, nor = false, ao = false, spec = false): RawMaterial`
+- `function buildMaterial(scene: SceneContext, mat: RawMaterial, directory: string, baseName: string, resolution: string, extension: string, uvScale: number, diff: boolean, nor: boolean, ao: boolean, spec: boolean, cacheKey: string): RawMaterial`
+- `export function getTexturePathFromFolder(folder: string, type =, extension =): string | null`
 - `export function disposeAll(): void`
 
+**Types / Interfaces / Enums**
+- interface `RawMaterial`
+- interface `RawTexture`
+
 ---
 
-## `World/Texture/TextureAtlasFactory.ts` (23 LOC)
+## `World/Texture/TextureAtlasFactory.ts` (29 LOC)
 
 **Module-level functions**
-- `export function getDiffuse(): Texture | null`
-- `export function setDiffuse(texture: Texture): void`
-- `export function getNormal(): Texture | null`
-- `export function setNormal(texture: Texture): void`
+- `export function getDiffuse(): Texture2D | null`
+- `export function setDiffuse(texture: Texture2D)`
+- `export function getNormal(): Texture2D | null`
+- `export function setNormal(texture: Texture2D)`
+- `export function getDiffuseTexture2D(): Texture2D | null`
+- `export function setDiffuseTexture2D(texture: Texture2D)`
 
 **Types / Interfaces / Enums**
 - type `TileUV`
@@ -5890,8 +5286,8 @@ Generated: 2026-07-09T20:48:34.412Z
 
 **Module-level functions**
 - `function getDB(): Promise<IDBDatabase>`
-- `export async function getTextureCache(url: string): Promise<Blob | undefined>`
-- `export async function putTextureCache(url: string, blob: Blob): Promise<void>`
+- `async export function getTextureCache(url: string): Promise<Blob | undefined>`
+- `async export function putTextureCache(url: string, blob: Blob): Promise<void>`
 
 ---
 
@@ -5909,36 +5305,15 @@ Generated: 2026-07-09T20:48:34.412Z
 
 ---
 
-## `World/WorldStorage.ts` (385 LOC)
-
-### class WorldStorageImpl
-
-**Properties**
-- `private initPromise: Promise<void> | null`
-
-**Methods**
-- `initialize(): Promise<void>`
-- `private async getClient(): Promise<OpfsClient | null>`
-- `private async compress(data: Uint8Array | Uint16Array): Promise<Uint8Array>`
-- `private async decompressToShared(data: Uint8Array): Promise<Uint8Array | Uint16Array>`
-- `private getGzipISize(data: Uint8Array): number`
-- `private isUint8Array(value: Uint8Array | Uint16Array | null | undefined): value is Uint8Array`
-- `private detachSharedArrayBuffer(view: T): T`
-- `private packKey(chunkX: number, chunkY: number, chunkZ: number): bigint`
-- `async saveChunk(chunk: Chunk): Promise<void>`
-- `async saveChunks(chunks: Chunk[]): Promise<void>`
-- `async saveAllModifiedChunks(): Promise<void>`
-- `async saveChunkEntities(chunkId: bigint, entities: SavedChunkEntityData[]): Promise<void>`
-- `async loadChunkEntities(chunkId: bigint): Promise<SavedChunkEntityData[]>`
-- `async loadChunk(chunkId: bigint, options?: LoadChunkOptions): Promise<SavedChunkData | null>`
-- `async loadChunks(chunkIds: bigint[], options?: LoadChunkOptions): Promise<Map<bigint, SavedChunkData>>`
-- `async clearWorldData(): Promise<void>`
-- `private async saveChunkWithClient(client: OpfsClient, chunk: Chunk): Promise<void>`
+## `World/WorldStorage.ts` (328 LOC)
 
 **Module-level functions**
-- `async function mapLimit(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<void>): Promise<void>`
+- `function hydrateResultToSavedData(h: HydratedVoxelData): SavedChunkData`
 
 **Types / Interfaces / Enums**
+- type `HydratedVoxelData`
+- type `SavedChunkData`
+- type `SavedChunkEntityData`
 - type `LoadChunkOptions`
 
 ---

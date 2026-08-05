@@ -1,7 +1,4 @@
-import {
-	worldToBlockCoord,
-	worldToChunkCoord,
-} from "@/code/Shared/ChunkCoordUtils";
+import { worldToBlockCoord, worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import { Chunk, getChunk } from "../Chunk";
 
 export interface WorldBlockCoordinates {
@@ -287,7 +284,7 @@ export function getBlockStateByWorldCoords(
 	worldY: number,
 	worldZ: number,
 ): number {
-	const coords = toLocalBlockCoordinates(worldX, worldY, worldZ);
+	const coords = resolveCoords(worldX, worldY, worldZ);
 	if (!coords.chunk) return 0;
 	return coords.chunk.getBlockState(
 		coords.localX,

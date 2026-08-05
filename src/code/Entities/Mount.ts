@@ -1,4 +1,5 @@
-import { Quaternion, type TransformNode, Vector3 } from "@babylonjs/core";
+import { addVec3ToRef, type Mesh, type Quat, type Vec3 } from "@babylonjs/lite";
+import { Quaternion, vec3Zero, vec4 } from "@/code/Lib/Math";
 import type { IControls } from "../Interface/IControls";
 import type { IMountable } from "../Interface/IMountable";
 import type { IPlayerBody } from "../Player/PlayerBody";
@@ -17,17 +18,17 @@ interface IMountableUser {
 
 export class Mount implements IMountable {
 	public user: IMountableUser | null = null;
-	public vehicle: TransformNode;
+	public vehicle: Mesh;
 	#keyBoardControls: IControls<unknown>;
 
 	// Mount position and rotation offset relative to vehicle
-	#mountOffset: Vector3;
-	#mountRotationOffset: Quaternion;
+	#mountOffset: Vec3;
+	#mountRotationOffset: Quat;
 
 	// Track if physics is disabled
 	#physicsDisabled = false;
-	#scratchPos = new Vector3();
-	#scratchRot = new Quaternion();
+	#scratchPos = vec3Zero();
+	#scratchRot = new Quaternion(0, 0, 0, 1);
 
 	/**
 	 * Predicate to check if a value is a mountable user.
@@ -40,15 +41,19 @@ export class Mount implements IMountable {
 	) => value is IMountableUser;
 
 	constructor(
-		vehicle: TransformNode,
+		vehicle: Mesh,
 		keyBoardControls: IControls<unknown>,
 		options: MountOptions = {},
 	) {
 		this.vehicle = vehicle;
 		this.#keyBoardControls = keyBoardControls;
-		this.#mountOffset = options.mountOffset ?? new Vector3(0, 0.9, 0);
-		this.#mountRotationOffset =
-			options.mountRotationOffset ?? Quaternion.Identity();
+		this.#mountOffset = options.mountOffset ?? { x: 0, y: 0.9, z: 0 };
+		this.#mountRotationOffset = options.mountRotationOffset ?? {
+			x: 0,
+			y: 0,
+			z: 0,
+			w: 1,
+		};
 	}
 
 	isMounted(): boolean {
@@ -82,7 +87,7 @@ export class Mount implements IMountable {
 			this.enablePlayerPhysics(vehicle);
 		}
 
-		vehicle.displayCapsule.setParent(null);
+		vehicle.displayCapsule.parent = null;
 
 		this.user = null;
 		this.#physicsDisabled = false;
@@ -98,7 +103,7 @@ export class Mount implements IMountable {
 		return this.#keyBoardControls;
 	}
 
-	setMountOffset(offset: Vector3): void {
+	setMountOffset(offset: Vec3): void {
 		this.#mountOffset = offset;
 
 		// Update position if someone is mounted
@@ -107,7 +112,7 @@ export class Mount implements IMountable {
 		}
 	}
 
-	setMountRotationOffset(rotationOffset: Quaternion): void {
+	setMountRotationOffset(rotationOffset: Quat): void {
 		this.#mountRotationOffset = rotationOffset;
 
 		// Update position if someone is mounted
@@ -153,18 +158,19 @@ export class Mount implements IMountable {
 	private updateMountedPosition(): void {
 		if (!this.user) return;
 		const playerBody = this.user.playerVehicle;
-		this.#scratchPos
-			.copyFrom(this.vehicle.position)
-			.addInPlace(this.#mountOffset);
+		addVec3ToRef(this.vehicle.position, this.#mountOffset, this.#scratchPos);
+
 		playerBody.characterController.setPosition(this.#scratchPos);
-		const vehicleRotation =
-			this.vehicle.rotationQuaternion ?? Quaternion.Identity();
+		const rp = this.vehicle.rotationQuaternion;
+		const vehicleRotation: any = rp
+			? vec4(rp.x, rp.y, rp.z, rp.w)
+			: Quaternion.Identity();
 		vehicleRotation.multiplyToRef(this.#mountRotationOffset, this.#scratchRot);
-		playerBody.displayCapsule.rotationQuaternion = this.#scratchRot;
+		playerBody.displayCapsule.rotationQuaternion.copyFrom(this.#scratchRot);
 	}
 
 	private disablePlayerPhysics(player: IPlayerBody): void {
-		player.characterController.setVelocity(Vector3.Zero());
+		player.characterController.setVelocity(vec3Zero());
 		player.clearControlState();
 		player.isMounted = true;
 		// Disable gravity effect by setting a flag

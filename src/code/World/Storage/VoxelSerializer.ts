@@ -7,6 +7,20 @@ export type SavedChunkData = {
 	compressed?: boolean;
 };
 
+/**
+ * Structured SAB-backed result returned by readVoxelDecompressed.
+ * Blocks/palette/light are already in SharedArrayBuffers so the main
+ * thread skips both the deserialize round-trip and ensureSharedBacking.
+ */
+export interface HydratedVoxelData {
+	blocksSAB: SharedArrayBuffer | null;
+	paletteSAB: SharedArrayBuffer | null;
+	isUniform: boolean;
+	uniformBlockId: number;
+	lightSAB: SharedArrayBuffer | null;
+	blockBytesPerElement: 1 | 2;
+}
+
 export type SavedChunkEntityData = {
 	type: string;
 	payload: unknown;
@@ -27,7 +41,6 @@ export function serializeVoxelData(
 	lightArray: Uint8Array | null | undefined,
 	compressed: boolean | undefined,
 ): Uint8Array {
-	const chunks: Uint8Array[] = [];
 	let totalLen = 2; // 2-byte flags (byte 0 = feature flags, byte 1 = format version)
 
 	let flags1 = 0;
@@ -37,57 +50,52 @@ export function serializeVoxelData(
 	if (lightArray) flags1 |= FLAG_HAS_LIGHT;
 	if (compressed) flags1 |= FLAG_COMPRESSED;
 
+	if (isUniform) totalLen += 2;
+	if (blocks) totalLen += 4 + blocks.byteLength;
+	if (palette) totalLen += 4 + palette.byteLength;
+	if (lightArray) totalLen += 4 + lightArray.byteLength;
+
+	const result = new Uint8Array(totalLen);
+	const dv = new DataView(result.buffer);
+	let offset = 2;
+	result[0] = flags1;
+	result[1] = 0; // format version (reserved)
+
 	if (isUniform) {
-		const u16 = new Uint8Array(2);
-		new DataView(u16.buffer).setUint16(0, uniformBlockId ?? 0, true);
-		chunks.push(u16);
-		totalLen += 2;
+		dv.setUint16(offset, uniformBlockId ?? 0, true);
+		offset += 2;
 	}
 
 	if (blocks) {
-		const lenBuf = new Uint8Array(4);
-		new DataView(lenBuf.buffer).setUint32(0, blocks.byteLength, true);
-		chunks.push(lenBuf);
-		totalLen += 4;
+		dv.setUint32(offset, blocks.byteLength, true);
+		offset += 4;
 		const bytes =
 			blocks instanceof Uint16Array
 				? new Uint8Array(blocks.buffer, blocks.byteOffset, blocks.byteLength)
 				: blocks;
-		chunks.push(bytes);
-		totalLen += bytes.byteLength;
+		result.set(bytes, offset);
+		offset += bytes.byteLength;
 	}
 
 	if (palette) {
-		const lenBuf = new Uint8Array(4);
-		new DataView(lenBuf.buffer).setUint32(0, palette.length, true);
-		chunks.push(lenBuf);
-		totalLen += 4;
+		dv.setUint32(offset, palette.length, true);
+		offset += 4;
 		const bytes = new Uint8Array(
 			palette.buffer,
 			palette.byteOffset,
 			palette.byteLength,
 		);
-		chunks.push(bytes);
-		totalLen += bytes.byteLength;
+		result.set(bytes, offset);
+		offset += bytes.byteLength;
 	}
 
 	if (lightArray) {
-		const lenBuf = new Uint8Array(4);
-		new DataView(lenBuf.buffer).setUint32(0, lightArray.byteLength, true);
-		chunks.push(lenBuf);
-		totalLen += 4;
-		chunks.push(lightArray);
-		totalLen += lightArray.byteLength;
+		dv.setUint32(offset, lightArray.byteLength, true);
+		offset += 4;
+		result.set(lightArray, offset);
+		offset += lightArray.byteLength;
 	}
 
-	const result = new Uint8Array(totalLen);
-	result[0] = flags1;
-	result[1] = 0; // format version (reserved)
-	let offset = 2;
-	for (const c of chunks) {
-		result.set(c, offset);
-		offset += c.byteLength;
-	}
 	return result;
 }
 
@@ -100,25 +108,18 @@ export function deserializeVoxelData(data: Uint8Array): SavedChunkData {
 	const isUniform = !!(flags & FLAG_IS_UNIFORM);
 	const compressed = !!(flags & FLAG_COMPRESSED);
 
+	const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
 	let offset = 2;
 
 	let uniformBlockId: number | undefined;
 	if (isUniform) {
-		uniformBlockId = new DataView(
-			data.buffer,
-			data.byteOffset + offset,
-			2,
-		).getUint16(0, true);
+		uniformBlockId = dv.getUint16(offset, true);
 		offset += 2;
 	}
 
 	let blocks: Uint8Array | Uint16Array | null = null;
 	if (flags & FLAG_HAS_BLOCKS) {
-		const len = new DataView(
-			data.buffer,
-			data.byteOffset + offset,
-			4,
-		).getUint32(0, true);
+		const len = dv.getUint32(offset, true);
 		offset += 4;
 		const raw = new Uint8Array(data.buffer, data.byteOffset + offset, len);
 		if (!compressed && len === 65536) {
@@ -132,11 +133,7 @@ export function deserializeVoxelData(data: Uint8Array): SavedChunkData {
 
 	let palette: Uint16Array | null = null;
 	if (flags & FLAG_HAS_PALETTE) {
-		const count = new DataView(
-			data.buffer,
-			data.byteOffset + offset,
-			4,
-		).getUint32(0, true);
+		const count = dv.getUint32(offset, true);
 		offset += 4;
 		const raw = new Uint8Array(
 			data.buffer,
@@ -154,11 +151,7 @@ export function deserializeVoxelData(data: Uint8Array): SavedChunkData {
 
 	let lightArray: Uint8Array | null = null;
 	if (flags & FLAG_HAS_LIGHT) {
-		const len = new DataView(
-			data.buffer,
-			data.byteOffset + offset,
-			4,
-		).getUint32(0, true);
+		const len = dv.getUint32(offset, true);
 		offset += 4;
 		lightArray = new Uint8Array(data.buffer, data.byteOffset + offset, len);
 		offset += len;

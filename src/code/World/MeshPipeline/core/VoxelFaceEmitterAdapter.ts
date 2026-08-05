@@ -11,17 +11,10 @@ import {
 	FACE_PZ,
 } from "../../Shape/BlockShapes";
 import { type FaceName, getFaceName } from "../../Texture/FaceName";
-import {
-	type GreedyFaceDescriptor,
-	MaterialType,
-	type WorkerInternalMeshData,
-} from "../types/MeshTypes";
-import { emitQuadFast, emitWaterQuad } from "./FaceEmitter";
-import {
-	getMaterialType,
-	getRuntimeShapeBoxes,
-	getShapeInfo,
-} from "./ShapePipeline";
+import { type GreedyFaceDescriptor, MaterialType } from "../types/MeshTypes";
+import { getMaterialType, getRuntimeShapeBoxes } from "./BlockInfoCache";
+import type { QuadBuffer } from "./QuadBuffer";
+import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
 const BACK_FACE_MASK = 0x80000000;
 const NON_CUBE_MASK = 0x40000000;
@@ -50,6 +43,273 @@ function needsRawDim(blockId: number, width: number, height: number): boolean {
 	return blockId !== WATER_BLOCK_ID || width > 31 || height > 31;
 }
 
+/**
+ * P2.5: All four emit paths share one signature so they can be dispatched
+ * through a per-instance array of bound method references. The previous
+ * version routed through module-level wrappers that called
+ * `a["emitCubeFace"](...)` — string-keyed property dispatch that defeats V8
+ * inlining. Binding once in the constructor gives direct method calls with
+ * none of the per-call megamorphic overhead.
+ */
+type EmitFn = (
+	out: QuadBuffer,
+	axis: number,
+	desc: GreedyFaceDescriptor,
+	packedBlock: number,
+	blockId: number,
+	back: number,
+	light: number,
+	ao: number,
+	faceName: FaceName,
+	faceBit: number,
+) => void;
+
+export class VoxelFaceEmitterAdapter {
+	private readonly _session: MeshBuildSession;
+	// Dispatch LUT indexed by (isWater << 1) | isCube:
+	//   0 = custom shape non-water, 1 = cube non-water,
+	//   2 = custom shape water, 3 = cube water
+	private readonly _dispatch: readonly EmitFn[];
+
+	constructor(session: MeshBuildSession) {
+		this._session = session;
+		this._dispatch = [
+			this.emitCustomShapeFace.bind(this),
+			this.emitCubeFace.bind(this),
+			this.emitWaterCustomShapeFace.bind(this),
+			this.emitWaterFace.bind(this),
+		];
+	}
+
+	public emitVoxelFace(axis: number, desc: GreedyFaceDescriptor): void {
+		const rawMask = desc.idState | 0;
+		const isBackFace = (rawMask & BACK_FACE_MASK) !== 0;
+		const isNonCube = (rawMask & NON_CUBE_MASK) !== 0;
+		const packedBlock = rawMask & PACKED_WATER_MASK;
+
+		if (!packedBlock) return;
+
+		const blockId = unpackBlockId(packedBlock);
+		// PERF: NON_CUBE_MASK is set by the mask extractor exactly when the
+		// block's shape is non-cube (it compares against getShapeInfo().isCube
+		// itself), so the per-face getShapeInfo cache probe is redundant —
+		// isCube is simply !isNonCube.
+		const materialType = getMaterialType(blockId);
+		const isWater =
+			materialType === MaterialType.WaterOrGlass && blockId === WATER_BLOCK_ID;
+
+		const session = this._session;
+		const out =
+			materialType === MaterialType.WaterOrGlass
+				? session.quadTransparent
+				: session.quadOpaque;
+
+		const ao = desc.light & 0xff;
+		const light = (desc.light >> 8) & 0xff;
+
+		const back = isBackFace ? 1 : 0;
+		const faceIndex = axis * 2 + back;
+		const faceName = FACE_NAME_TABLE[faceIndex];
+		const faceBit = FACE_BIT_TABLE[faceIndex];
+
+		const isCube = !isNonCube;
+		const dispatchKey = (isWater ? 2 : 0) | (isCube ? 1 : 0);
+		this._dispatch[dispatchKey](
+			out,
+			axis,
+			desc,
+			packedBlock,
+			blockId,
+			back,
+			light,
+			ao,
+			faceName,
+			faceBit,
+		);
+	}
+
+	private emitCubeFace(
+		out: QuadBuffer,
+		axis: number,
+		desc: GreedyFaceDescriptor,
+		_packedBlock: number,
+		blockId: number,
+		back: number,
+		light: number,
+		ao: number,
+		faceName: FaceName,
+		_faceBit: number,
+	): void {
+		inlineOrigin(axis, back, desc);
+
+		const off = 1 ^ back;
+		const x = axis === 0 ? _origin.ox + off : _origin.ox;
+		const y = axis === 1 ? _origin.oy + off : _origin.oy;
+		const z = axis === 2 ? _origin.oz + off : _origin.oz;
+		// P3.8: unchecked emit — greedy cube faces sit at positions 0..size-1,
+		// so the scaled coordinates can never leave the u8 range.
+		out.emitQuadUnchecked(
+			x,
+			y,
+			z,
+			axis,
+			desc.width,
+			desc.height,
+			blockId,
+			back,
+			light,
+			ao,
+			faceName,
+			MaterialType.Default,
+			0,
+			0,
+			needsRawDim(blockId, desc.width, desc.height) ? 1 : 0,
+		);
+	}
+
+	private emitWaterFace(
+		out: QuadBuffer,
+		axis: number,
+		desc: GreedyFaceDescriptor,
+		packedBlock: number,
+		blockId: number,
+		back: number,
+		light: number,
+		ao: number,
+		faceName: FaceName,
+		_faceBit: number,
+	): void {
+		inlineOrigin(axis, back, desc);
+
+		const off = 1 ^ back;
+		const x = axis === 0 ? _origin.ox + off : _origin.ox;
+		const y = axis === 1 ? _origin.oy + off : _origin.oy;
+		const z = axis === 2 ? _origin.oz + off : _origin.oz;
+		out.emitWaterQuad(
+			x,
+			y,
+			z,
+			axis,
+			desc.width,
+			desc.height,
+			blockId,
+			back,
+			light,
+			ao,
+			faceName,
+			MaterialType.WaterOrGlass,
+			packedBlock,
+		);
+	}
+
+	private emitCustomShapeFace(
+		out: QuadBuffer,
+		axis: number,
+		desc: GreedyFaceDescriptor,
+		packedBlock: number,
+		blockId: number,
+		back: number,
+		light: number,
+		ao: number,
+		faceName: FaceName,
+		faceBit: number,
+	): void {
+		const boxes = getRuntimeShapeBoxes(packedBlock & PACKED_ID_STATE_MASK);
+		if (boxes.length === 0) return;
+
+		inlineOrigin(axis, back, desc);
+		const rawDim = needsRawDim(blockId, desc.width, desc.height) ? 1 : 0;
+
+		for (let i = 0; i < boxes.length; i++) {
+			const box = boxes[i];
+			if ((box.faceMask & faceBit) === 0) continue;
+
+			const min = box.min;
+			const max = box.max;
+			const bc = back ? min[axis] : max[axis];
+			const x = _origin.ox + (axis === 0 ? bc : min[0]);
+			const y = _origin.oy + (axis === 1 ? bc : min[1]);
+			const z = _origin.oz + (axis === 2 ? bc : min[2]);
+			const u = (axis + 1) % 3;
+			const v = (axis + 2) % 3;
+			const width = desc.width * (max[u] - min[u]);
+			const height = desc.height * (max[v] - min[v]);
+
+			out.emitQuad(
+				x,
+				y,
+				z,
+				axis,
+				width,
+				height,
+				blockId,
+				back,
+				light,
+				ao,
+				faceName,
+				MaterialType.Default,
+				0,
+				0,
+				rawDim,
+			);
+		}
+	}
+
+	private emitWaterCustomShapeFace(
+		out: QuadBuffer,
+		axis: number,
+		desc: GreedyFaceDescriptor,
+		packedBlock: number,
+		blockId: number,
+		back: number,
+		light: number,
+		ao: number,
+		faceName: FaceName,
+		faceBit: number,
+	): void {
+		// getRuntimeShapeBoxes keys its cache on the id/state-only form —
+		// water flags (bits 16-17) would fall off the dense cache into the
+		// overflow Map for every custom water face. The full packedBlock is
+		// still forwarded to emitWaterQuad.
+		const boxes = getRuntimeShapeBoxes(packedBlock & PACKED_ID_STATE_MASK);
+		if (boxes.length === 0) return;
+
+		inlineOrigin(axis, back, desc);
+
+		for (let i = 0; i < boxes.length; i++) {
+			const box = boxes[i];
+			if ((box.faceMask & faceBit) === 0) continue;
+
+			const min = box.min;
+			const max = box.max;
+			const bc = back ? min[axis] : max[axis];
+			const x = _origin.ox + (axis === 0 ? bc : min[0]);
+			const y = _origin.oy + (axis === 1 ? bc : min[1]);
+			const z = _origin.oz + (axis === 2 ? bc : min[2]);
+			const u = (axis + 1) % 3;
+			const v = (axis + 2) % 3;
+			const width = desc.width * (max[u] - min[u]);
+			const height = desc.height * (max[v] - min[v]);
+
+			out.emitWaterQuad(
+				x,
+				y,
+				z,
+				axis,
+				width,
+				height,
+				blockId,
+				back,
+				light,
+				ao,
+				faceName,
+				MaterialType.WaterOrGlass,
+				packedBlock,
+			);
+		}
+	}
+}
+
 const _origin = { ox: 0, oy: 0, oz: 0 };
 
 function inlineOrigin(
@@ -72,353 +332,4 @@ function inlineOrigin(
 		_origin.oz = faceBlockCoord;
 	}
 	return _origin;
-}
-
-type EmitFn = (
-	adapter: VoxelFaceEmitterAdapter,
-	out: WorkerInternalMeshData,
-	axis: number,
-	desc: GreedyFaceDescriptor,
-	packedBlock: number,
-	blockId: number,
-	back: number,
-	light: number,
-	ao: number,
-	faceName: FaceName,
-	faceBit: number,
-) => void;
-
-function emitCubeWrap(
-	a: VoxelFaceEmitterAdapter,
-	out: WorkerInternalMeshData,
-	axis: number,
-	desc: GreedyFaceDescriptor,
-	_packed: number,
-	blockId: number,
-	back: number,
-	light: number,
-	ao: number,
-	faceName: FaceName,
-	_faceBit: number,
-): void {
-	a["emitCubeFace"](out, axis, desc, blockId, back, light, ao, faceName);
-}
-
-function emitWaterWrap(
-	a: VoxelFaceEmitterAdapter,
-	out: WorkerInternalMeshData,
-	axis: number,
-	desc: GreedyFaceDescriptor,
-	packedBlock: number,
-	blockId: number,
-	back: number,
-	light: number,
-	ao: number,
-	faceName: FaceName,
-	_faceBit: number,
-): void {
-	a["emitWaterFace"](
-		out,
-		axis,
-		desc,
-		blockId,
-		packedBlock,
-		back,
-		light,
-		ao,
-		faceName,
-	);
-}
-
-function emitCustomWrap(
-	a: VoxelFaceEmitterAdapter,
-	out: WorkerInternalMeshData,
-	axis: number,
-	desc: GreedyFaceDescriptor,
-	packedBlock: number,
-	blockId: number,
-	back: number,
-	light: number,
-	ao: number,
-	faceName: FaceName,
-	faceBit: number,
-): void {
-	a["emitCustomShapeFace"](
-		out,
-		axis,
-		desc,
-		packedBlock,
-		blockId,
-		back,
-		light,
-		ao,
-		faceName,
-		faceBit,
-	);
-}
-
-function emitWaterCustomWrap(
-	a: VoxelFaceEmitterAdapter,
-	out: WorkerInternalMeshData,
-	axis: number,
-	desc: GreedyFaceDescriptor,
-	packedBlock: number,
-	blockId: number,
-	back: number,
-	light: number,
-	ao: number,
-	faceName: FaceName,
-	faceBit: number,
-): void {
-	a["emitWaterCustomShapeFace"](
-		out,
-		axis,
-		desc,
-		packedBlock,
-		blockId,
-		back,
-		light,
-		ao,
-		faceName,
-		faceBit,
-	);
-}
-
-// Dispatch LUT indexed by (isWater << 1) | isCube:
-//   0 = custom shape non-water, 1 = cube non-water, 2 = custom shape water, 3 = cube water
-const EMIT_DISPATCH: EmitFn[] = [
-	emitCustomWrap,
-	emitCubeWrap,
-	emitWaterCustomWrap,
-	emitWaterWrap,
-];
-
-export class VoxelFaceEmitterAdapter {
-	public emitVoxelFace(
-		axis: number,
-		desc: GreedyFaceDescriptor,
-		opaqueOut: WorkerInternalMeshData,
-		transparentOut: WorkerInternalMeshData,
-	): void {
-		const rawMask = desc.idState | 0;
-		const isBackFace = (rawMask & BACK_FACE_MASK) !== 0;
-		const isNonCube = (rawMask & NON_CUBE_MASK) !== 0;
-		const packedBlock = rawMask & PACKED_WATER_MASK;
-
-		if (!packedBlock) return;
-
-		const blockId = unpackBlockId(packedBlock);
-		// getShapeInfo keys its cache on the raw value; pass the id/state-only
-		// form so water flags (bits 16-17) don't fragment the cache. The full
-		// packedBlock (with water flags) is still forwarded to emitWaterQuad.
-		const shapeInfo = getShapeInfo(packedBlock & PACKED_ID_STATE_MASK);
-		const materialType = getMaterialType(blockId);
-		const isWater =
-			materialType === MaterialType.WaterOrGlass && blockId === WATER_BLOCK_ID;
-
-		const out =
-			materialType === MaterialType.WaterOrGlass ? transparentOut : opaqueOut;
-
-		const ao = desc.light & 0xff;
-		const light = (desc.light >> 8) & 0xff;
-
-		const back = isBackFace ? 1 : 0;
-		const faceIndex = axis * 2 + back;
-		const faceName = FACE_NAME_TABLE[faceIndex];
-		const faceBit = FACE_BIT_TABLE[faceIndex];
-
-		const isCube = shapeInfo.isCube && !isNonCube;
-		const dispatchKey = (isWater ? 2 : 0) | (isCube ? 1 : 0);
-		EMIT_DISPATCH[dispatchKey](
-			this,
-			out,
-			axis,
-			desc,
-			packedBlock,
-			blockId,
-			back,
-			light,
-			ao,
-			faceName,
-			faceBit,
-		);
-	}
-
-	private emitCubeFace(
-		out: WorkerInternalMeshData,
-		axis: number,
-		desc: GreedyFaceDescriptor,
-		blockId: number,
-		back: number,
-		light: number,
-		ao: number,
-		faceName: FaceName,
-	): void {
-		const { ox, oy, oz } = inlineOrigin(axis, back, desc);
-
-		const off = 1 ^ back;
-		const x = axis === 0 ? ox + off : ox;
-		const y = axis === 1 ? oy + off : oy;
-		const z = axis === 2 ? oz + off : oz;
-
-		emitQuadFast(
-			out,
-			x,
-			y,
-			z,
-			axis,
-			desc.width,
-			desc.height,
-			blockId,
-			back,
-			light,
-			ao,
-			faceName,
-			MaterialType.Default,
-			0,
-			0,
-			needsRawDim(blockId, desc.width, desc.height) ? 1 : 0,
-		);
-	}
-
-	private emitWaterFace(
-		out: WorkerInternalMeshData,
-		axis: number,
-		desc: GreedyFaceDescriptor,
-		blockId: number,
-		packedBlock: number,
-		back: number,
-		light: number,
-		ao: number,
-		faceName: FaceName,
-	): void {
-		const { ox, oy, oz } = inlineOrigin(axis, back, desc);
-
-		const off = 1 ^ back;
-		const x = axis === 0 ? ox + off : ox;
-		const y = axis === 1 ? oy + off : oy;
-		const z = axis === 2 ? oz + off : oz;
-
-		emitWaterQuad(
-			out,
-			x,
-			y,
-			z,
-			axis,
-			desc.width,
-			desc.height,
-			blockId,
-			back,
-			light,
-			ao,
-			faceName,
-			MaterialType.WaterOrGlass,
-			packedBlock,
-		);
-	}
-
-	private emitCustomShapeFace(
-		out: WorkerInternalMeshData,
-		axis: number,
-		desc: GreedyFaceDescriptor,
-		packedBlock: number,
-		blockId: number,
-		back: number,
-		light: number,
-		ao: number,
-		faceName: FaceName,
-		faceBit: number,
-	): void {
-		const boxes = getRuntimeShapeBoxes(packedBlock);
-		if (boxes.length === 0) return;
-
-		const { ox, oy, oz } = inlineOrigin(axis, back, desc);
-		const rawDim = needsRawDim(blockId, desc.width, desc.height) ? 1 : 0;
-
-		for (let i = 0; i < boxes.length; i++) {
-			const box = boxes[i];
-			if ((box.faceMask & faceBit) === 0) continue;
-
-			const min = box.min;
-			const max = box.max;
-			const bc = back ? min[axis] : max[axis];
-			const x = ox + (axis === 0 ? bc : min[0]);
-			const y = oy + (axis === 1 ? bc : min[1]);
-			const z = oz + (axis === 2 ? bc : min[2]);
-			const u = (axis + 1) % 3;
-			const v = (axis + 2) % 3;
-			const width = desc.width * (max[u] - min[u]);
-			const height = desc.height * (max[v] - min[v]);
-
-			emitQuadFast(
-				out,
-				x,
-				y,
-				z,
-				axis,
-				width,
-				height,
-				blockId,
-				back,
-				light,
-				ao,
-				faceName,
-				MaterialType.Default,
-				0,
-				0,
-				rawDim,
-			);
-		}
-	}
-
-	private emitWaterCustomShapeFace(
-		out: WorkerInternalMeshData,
-		axis: number,
-		desc: GreedyFaceDescriptor,
-		packedBlock: number,
-		blockId: number,
-		back: number,
-		light: number,
-		ao: number,
-		faceName: FaceName,
-		faceBit: number,
-	): void {
-		const boxes = getRuntimeShapeBoxes(packedBlock);
-		if (boxes.length === 0) return;
-
-		const { ox, oy, oz } = inlineOrigin(axis, back, desc);
-
-		for (let i = 0; i < boxes.length; i++) {
-			const box = boxes[i];
-			if ((box.faceMask & faceBit) === 0) continue;
-
-			const min = box.min;
-			const max = box.max;
-			const bc = back ? min[axis] : max[axis];
-			const x = ox + (axis === 0 ? bc : min[0]);
-			const y = oy + (axis === 1 ? bc : min[1]);
-			const z = oz + (axis === 2 ? bc : min[2]);
-			const u = (axis + 1) % 3;
-			const v = (axis + 2) % 3;
-			const width = desc.width * (max[u] - min[u]);
-			const height = desc.height * (max[v] - min[v]);
-
-			emitWaterQuad(
-				out,
-				x,
-				y,
-				z,
-				axis,
-				width,
-				height,
-				blockId,
-				back,
-				light,
-				ao,
-				faceName,
-				MaterialType.WaterOrGlass,
-				packedBlock,
-			);
-		}
-	}
 }

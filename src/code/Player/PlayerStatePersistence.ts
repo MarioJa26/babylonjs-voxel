@@ -1,13 +1,13 @@
-import type { Observer, Scene } from "@babylonjs/core";
+import { onSceneDispose, type SceneContext, type Vec3 } from "@babylonjs/lite";
 import {
 	flushChunkBoundEntities,
 	flushModifiedChunks,
 	flushOpfsStorage,
 } from "../World/Chunk/ChunkLoadingSystem";
+import { worldLocalStorageKey } from "../World/WorldContext";
 import type { SavedInventoryState } from "./Inventory/PlayerInventory";
 import type { Player } from "./Player";
 import { Gamemodes } from "./PlayerStats";
-import type { SavedPlayerPosition } from "./PlayerVehicle";
 
 export class PlayerStatePersistence {
 	private static readonly PLAYER_POSITION_STORAGE_KEY =
@@ -15,12 +15,15 @@ export class PlayerStatePersistence {
 	private static readonly PLAYER_INVENTORY_STORAGE_KEY =
 		"b102.playerInventory.v1";
 	private static readonly PLAYER_STATE_SAVE_INTERVAL_MS = 15000;
-	private static readonly CHUNK_SAVE_BATCH_SIZE = 12;
+	private static readonly CHUNK_SAVE_BATCH_SIZE = 32;
 	private static readonly CHUNK_SAVE_NOW_BATCH_SIZE = 64;
 
 	private lastPositionSaveMs = 0;
-	private inventoryObserver: Observer<void> | null = null;
-	private sceneDisposeObserver: Observer<Scene> | null = null;
+	// PERF: update() runs every frame but only saves every 15 s — gate the
+	// Date.now() check to ~4 Hz instead of per-frame.
+	private lastCheckMs = 0;
+	private inventoryObserver: any = null;
+	private sceneDisposeObserver: any = null;
 	private isDisposed = false;
 
 	private readonly onBeforeUnload = () => {
@@ -33,17 +36,26 @@ export class PlayerStatePersistence {
 	};
 
 	constructor(
-		private readonly scene: Scene,
+		private readonly scene: SceneContext,
 		private readonly player: Player,
+		private readonly worldName: string,
 	) {
 		this.restoreFromLocalStorage();
 		this.setupPersistence();
+	}
+
+	/** Per-world storage key, e.g. `b102.world.My World.playerPosition.v1`. */
+	private storageKey(baseKey: string): string {
+		return worldLocalStorageKey(this.worldName, baseKey);
 	}
 
 	public update(): void {
 		if (this.isDisposed) return;
 
 		const now = Date.now();
+		if (now - this.lastCheckMs < 250) return;
+		this.lastCheckMs = now;
+
 		if (
 			now - this.lastPositionSaveMs <
 			PlayerStatePersistence.PLAYER_STATE_SAVE_INTERVAL_MS
@@ -88,7 +100,6 @@ export class PlayerStatePersistence {
 		}
 
 		if (this.sceneDisposeObserver) {
-			this.scene.onDisposeObservable.remove(this.sceneDisposeObserver);
 			this.sceneDisposeObserver = null;
 		}
 
@@ -117,7 +128,7 @@ export class PlayerStatePersistence {
 			capture: true,
 		});
 
-		this.sceneDisposeObserver = this.scene.onDisposeObservable.add(() => {
+		this.sceneDisposeObserver = onSceneDispose(this.scene, () => {
 			this.dispose();
 		});
 	}
@@ -138,7 +149,7 @@ export class PlayerStatePersistence {
 		try {
 			const positionState = this.player.playerVehicle.getSavedPosition();
 			window.localStorage.setItem(
-				PlayerStatePersistence.PLAYER_POSITION_STORAGE_KEY,
+				this.storageKey(PlayerStatePersistence.PLAYER_POSITION_STORAGE_KEY),
 				JSON.stringify(positionState),
 			);
 		} catch (error) {
@@ -153,7 +164,7 @@ export class PlayerStatePersistence {
 			const inventoryState =
 				this.player.playerInventory.getSavedInventoryState();
 			window.localStorage.setItem(
-				PlayerStatePersistence.PLAYER_INVENTORY_STORAGE_KEY,
+				this.storageKey(PlayerStatePersistence.PLAYER_INVENTORY_STORAGE_KEY),
 				JSON.stringify(inventoryState),
 			);
 		} catch (error) {
@@ -170,11 +181,11 @@ export class PlayerStatePersistence {
 	private restorePosition(): void {
 		try {
 			const raw = window.localStorage.getItem(
-				PlayerStatePersistence.PLAYER_POSITION_STORAGE_KEY,
+				this.storageKey(PlayerStatePersistence.PLAYER_POSITION_STORAGE_KEY),
 			);
 			if (!raw) return;
 
-			const savedPosition = JSON.parse(raw) satisfies SavedPlayerPosition;
+			const savedPosition = JSON.parse(raw) satisfies Vec3;
 			if (this.player.playerVehicle.restoreSavedPosition(savedPosition)) {
 				this.player.playerVehicle.updateCameraAndVisuals();
 			} else {
@@ -195,7 +206,7 @@ export class PlayerStatePersistence {
 
 		try {
 			const raw = window.localStorage.getItem(
-				PlayerStatePersistence.PLAYER_INVENTORY_STORAGE_KEY,
+				this.storageKey(PlayerStatePersistence.PLAYER_INVENTORY_STORAGE_KEY),
 			);
 			if (!raw) return;
 

@@ -1,20 +1,13 @@
-import type { Mesh } from "@babylonjs/core";
+import { disposeMeshGpu, type Mesh, removeFromScene } from "@babylonjs/lite";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { getFinalTerrainHeight } from "@/code/Generation/TerrainHeightMap";
+import { LIGHT_NIBBLE_MASK, SKY_LIGHT_SHIFT } from "@/code/Lib/VoxelMath";
+import { Map1 } from "@/code/Maps/Map1";
 import {
-	FACE_ALL,
-	FACE_NX,
-	FACE_NY,
-	FACE_NZ,
-	FACE_PX,
-	FACE_PY,
-	FACE_PZ,
-	FALLBACK_CUBE,
-	getCubeShapeIndex,
-	getShapeByBlockId,
-	getShapeDefinitions,
-} from "../Shape/BlockShapes";
-import { getSliceAxis, transformBox } from "../Shape/BlockShapeTransforms";
+	connectFacesMask,
+	FACE_CONNECT_THRESHOLD,
+	isTransparent,
+} from "./ChunkFaceMasks";
 import {
 	packBlockValue,
 	unpackBlockId,
@@ -47,22 +40,7 @@ type SerializedLODMeshCache = Record<
 	{ opaque?: MeshData | null; transparent?: MeshData | null }
 >;
 
-// ---------------------------------------------------------------------------
-// Face-rect scratch buffers (used by getClosedFaceMaskForPacked).
-// ---------------------------------------------------------------------------
-const MAX_RECTS = 64;
-const RECT_STRIDE = 4;
-const _rectBufs = Array.from(
-	{ length: 6 },
-	() => new Float32Array(MAX_RECTS * RECT_STRIDE),
-);
-const _rectCounts = new Int32Array(6);
-const _edgeScratch = new Float64Array((MAX_RECTS * 2 + 4) * 2);
 const _twoEntryPalette = new Uint16Array(2);
-
-const _sliceMin: [number, number, number] = [0, 0, 0];
-const _sliceMax: [number, number, number] = [0, 0, 0];
-const _sliceResult = { min: _sliceMin, max: _sliceMax };
 
 const _ccVisited = new Uint8Array(GenerationParams.CHUNK_SIZE ** 3);
 const _ccStack = new Int32Array(GenerationParams.CHUNK_SIZE ** 3);
@@ -107,25 +85,14 @@ function runChunkDisposeHooks(chunk: Chunk): void {
 
 export class Chunk {
 	public readonly id: bigint;
-	// PERF: neighbor ids are computed lazily (and cached) on first access
-	// rather than eagerly in the constructor — the 6 BigInt packCoords calls
-	// were a major cost on the chunk-creation hot path (the 1ms streaming
-	// spike) even though neighbors aren't needed until culling/meshing.
-	private _neighborIds: bigint[] | null = null;
-
 	public lodLevel = 0;
 
 	public static readonly SIZE = GenerationParams.CHUNK_SIZE;
 	public static readonly SIZE2 = Chunk.SIZE * Chunk.SIZE;
 	public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
 	public static readonly chunkInstances = new Map<bigint, Chunk>();
-	// PERF: coordinate-indexed lookup that avoids the BigInt packCoords()
-	// allocation on the hot getChunk path. The public `chunkInstances`
-	// (BigInt-keyed) map is retained for id-based external lookups; this nested
-	// Number-keyed map mirrors it for coordinate-based lookups (chunk
-	// coordinates are <= 2^21, exact as Number keys). Kept in sync at set/delete.
-	// Internal (not `private` so the module-level getChunk/helpers can access it).
-	static _chunkByCoords = new Map<number, Map<number, Map<number, Chunk>>>();
+
+	static _chunkByCoords = new Map<number, Chunk>();
 	public static readonly loadedChunks = new Set<Chunk>();
 	public static readonly loadedChunkIndex = new LoadedChunkIndex();
 
@@ -136,6 +103,31 @@ export class Chunk {
 	public isTerrainScheduled = false;
 	public isLightDirty = false;
 	public remeshQueued = false;
+	/**
+	 * Set when a remesh arrives for a chunk whose mesh was superseded while
+	 * the previous request was still in flight — the pool re-runs the remesh
+	 * once the in-flight key clears. Flag lives on the chunk (not a Map) to
+	 * avoid BigInt-keyed bookkeeping on the worker-message hot path.
+	 */
+	public rerunRemeshAfterInflight = false;
+	/** Monotonically increases whenever a new mesh is requested for this chunk. */
+	public meshRevision = 0;
+	/**
+	 * P2.4: Monotonically increases whenever the chunk's BLOCK content changes
+	 * (setBlock / loadFromStorage / loadLodOnlyFromStorage). Unlike
+	 * meshRevision — which also bumps on light-triggered remeshes — this only
+	 * moves when the data behind the border slabs actually changes, so the
+	 * ChunkWorker's slab cache can reuse block borders across relight rounds.
+	 */
+	public blockRevision = 0;
+	/**
+	 * P2.4: Monotonically stamped on every loadFromStorage. A chunk id is
+	 * derived from world coordinates and is reused when a chunk is disposed
+	 * and later re-created, so caches keyed by chunk id must also validate
+	 * this generation counter.
+	 */
+	public generation = 0;
+	private static _generationCounter = 0;
 
 	public get isSolidOccluder(): boolean {
 		return this.isLoaded && this._isUniform && this._uniformBlockId !== 0;
@@ -187,7 +179,9 @@ export class Chunk {
 		return Chunk._lightHeaderNextSlot++;
 	}
 
-	public static onLightChunkLoaded: ((chunk: Chunk) => void) | null = null;
+	public static onLightChunkLoaded:
+		| ((chunk: Chunk, fromChannel: boolean) => void)
+		| null = null;
 	public static onLightChunkLayoutChanged: ((chunk: Chunk) => void) | null =
 		null;
 	public static onLightChunkDisposed: ((chunk: Chunk) => void) | null = null;
@@ -196,8 +190,15 @@ export class Chunk {
 	private _isUniform = true;
 	private _uniformBlockId = 0;
 	private _palette: Uint16Array | null = null;
-	private _paletteIndexMap: Map<number, number> | null = null;
 	private _hasVoxelData = false;
+
+	// Cached Uint32Array view over light_array — avoids re-allocation on every recomputeDarkCache call.
+	private _la32: Uint32Array | null = null;
+
+	// PERF: precomputed opacity lookups — one bool per palette index or dense
+	// voxel, eliminating the per-voxel unpackBlockId + BLOCK_TYPE indirection.
+	private _paletteOpacity: Uint8Array | null = null;
+	private _denseOpacity: Uint8Array | null = null;
 
 	public chunkY: number;
 	public chunkX: number;
@@ -208,17 +209,16 @@ export class Chunk {
 	public opaqueMeshData: MeshData | null = null;
 	public transparentMeshData: MeshData | null = null;
 
-	// Merged mesh group key (e.g., "gx_gy_gz_lod"). null if not merged.
-	public mergedGroupKey: string | null = null;
+	// Merged mesh group key (packed group-grid coords + lod bucket, see
+	// MergedMeshManager.makeGroupKey). null if not merged.
+	public mergedGroupKey: number | null = null;
 
 	// --- Face connectivity for occlusion BFS ---
 	public faceConnectivity = 0;
 	public connectivityDirty = true;
 
-	// PERF: Cached "is chunk dark" flag.
 	_isDarkCached: boolean | undefined = undefined;
 
-	// PERF: Pre-allocated per-face BFS step counts — avoids new Uint8Array(6) in hot BFS loop.
 	public _fSteps: Uint8Array = new Uint8Array(6);
 
 	light_array: Uint8Array;
@@ -256,16 +256,6 @@ export class Chunk {
 				this._block_array instanceof Uint16Array ? 2 : 1,
 		};
 	}
-
-	// -------------------------------------------------------------------------
-	// BFS fields — declared here as class fields so they are part of the initial
-	// hidden class shape. Every Chunk instance has the same shape from the moment
-	// of construction, which means V8 never transitions to dictionary mode and
-	// all IC call sites stay monomorphic.
-	//
-	// These replace the dynamic property injection that the OcclusionCuller
-	// previously performed with `(chunk as any)._bfsXxx = ...`.
-	// -------------------------------------------------------------------------
 
 	/** Dense integer ID for this chunk, assigned from a static counter.
 	 *  Stable and strictly increasing — safe to use as a typed-array index
@@ -308,29 +298,17 @@ export class Chunk {
 		null,
 	];
 
-	public static readonly SKY_LIGHT_SHIFT = 4;
-	public static readonly BLOCK_LIGHT_MASK = 0xf;
+	public static readonly SKY_LIGHT_SHIFT = SKY_LIGHT_SHIFT;
+	public static readonly BLOCK_LIGHT_MASK = LIGHT_NIBBLE_MASK;
 	private static readonly SKYLIGHT_GENERATION_MIN_WORLD_Y = 32;
-	private static readonly GLASS_01_BLOCK_ID = 60;
-	private static readonly GLASS_02_BLOCK_ID = 61;
-	private static readonly EPS = 1e-6;
-
-	// Single closed-face-mask cache.  Masks are ≤ FACE_ALL (63) so a byte
-	// array suffices; 255 is the uncomputed sentinel.  This same LUT is also
-	// shipped to the light worker (precomputeClosedFaceMasks), eliminating the
-	// previous duplicate Int16Array + separate Uint8Array computation paths.
-	private static readonly CLOSED_FACE_MASK_CACHE = (() => {
-		const cache = new Uint8Array(1 << 16);
-		cache.fill(255);
-		return cache;
-	})();
-
 	private static readonly EMPTY_LIGHT_ARRAY =
 		typeof SharedArrayBuffer !== "undefined"
 			? new Uint8Array(new SharedArrayBuffer(0))
 			: new Uint8Array(0);
 
-	public cachedLODMeshes = new Map<number, CachedLODMesh>();
+	// PERF: lazily allocated — most chunks never cache an LOD mesh, so the
+	// Map is only created on first set instead of once per chunk constructor.
+	private _cachedLODMeshes: Map<number, CachedLODMesh> | null = null;
 
 	private static readonly _lightEmissionLUT = (() => {
 		const lut = new Uint8Array(256);
@@ -412,6 +390,7 @@ export class Chunk {
 		uniformBlockId: number | undefined,
 		light_array?: Uint8Array,
 		scheduleRemesh = true,
+		_fromStorage = false,
 	): void {
 		this.clearCachedLODMeshes();
 		this._hasVoxelData = true;
@@ -421,25 +400,30 @@ export class Chunk {
 			this._uniformBlockId = uniformBlockId;
 			this._block_array = null;
 			this._palette = null;
-			this._paletteIndexMap = null;
 		} else if (palette && blocks instanceof Uint8Array) {
 			this._isUniform = false;
 			this._uniformBlockId = 0;
 			this._palette = palette;
-			this._paletteIndexMap = null;
 			this._block_array = blocks;
 		} else if (blocks) {
 			this._isUniform = false;
 			this._uniformBlockId = 0;
 			this._palette = null;
-			this._paletteIndexMap = null;
 			this._block_array = blocks;
 		} else {
 			this._isUniform = true;
 			this._uniformBlockId = 0;
 			this._block_array = null;
 			this._palette = null;
-			this._paletteIndexMap = null;
+		}
+
+		if (this._palette) {
+			this._rebuildPaletteOpacity();
+		} else if (this._block_array instanceof Uint16Array) {
+			this._rebuildDenseOpacity();
+		} else {
+			this._paletteOpacity = null;
+			this._denseOpacity = null;
 		}
 
 		if (light_array) {
@@ -448,6 +432,9 @@ export class Chunk {
 			this.initializeSunlight();
 		}
 		this.recomputeDarkCache();
+
+		this.blockRevision++;
+		this.generation = ++Chunk._generationCounter;
 
 		this.isLoaded = true;
 		Chunk.loadedChunks.add(this);
@@ -462,7 +449,7 @@ export class Chunk {
 		this.ensureSharedBacking();
 
 		this.writeLightHeaderRow();
-		Chunk.onLightChunkLoaded?.(this);
+		Chunk.onLightChunkLoaded?.(this, _fromStorage);
 		Chunk.onChunkLoaded?.(this);
 		if (scheduleRemesh) this.scheduleRemesh(true, true);
 	}
@@ -504,9 +491,12 @@ export class Chunk {
 		if (block && !(block.buffer instanceof SharedArrayBuffer)) {
 			const len = block.byteLength;
 			const sab = new SharedArrayBuffer(len);
-			new Uint8Array(sab).set(
-				new Uint8Array(block.buffer, block.byteOffset, len),
-			);
+			const dst = new Uint8Array(sab);
+			if (block.byteOffset === 0 && block.BYTES_PER_ELEMENT === 1) {
+				dst.set(block as Uint8Array);
+			} else {
+				dst.set(new Uint8Array(block.buffer, block.byteOffset, len));
+			}
 			this._block_array =
 				block instanceof Uint16Array
 					? new Uint16Array(sab)
@@ -517,9 +507,12 @@ export class Chunk {
 		if (palette && !(palette.buffer instanceof SharedArrayBuffer)) {
 			const byteLen = palette.byteLength;
 			const sab = new SharedArrayBuffer(byteLen);
-			new Uint8Array(sab).set(
-				new Uint8Array(palette.buffer, palette.byteOffset, byteLen),
-			);
+			const dst = new Uint8Array(sab);
+			if (palette.byteOffset === 0) {
+				dst.set(new Uint8Array(palette.buffer, 0, byteLen));
+			} else {
+				dst.set(new Uint8Array(palette.buffer, palette.byteOffset, byteLen));
+			}
 			this._palette = new Uint16Array(sab, 0, palette.length);
 		}
 	}
@@ -530,9 +523,12 @@ export class Chunk {
 		this._uniformBlockId = 0;
 		this._block_array = null;
 		this._palette = null;
-		this._paletteIndexMap = null;
+		this._paletteOpacity = null;
+		this._denseOpacity = null;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
 		this._isDarkCached = false;
+		this.blockRevision++;
+		this.generation = ++Chunk._generationCounter;
 		this.isLoaded = true;
 		Chunk.loadedChunks.add(this);
 		Chunk.loadedChunkIndex.register(this);
@@ -545,26 +541,39 @@ export class Chunk {
 	// =========================================================================
 
 	public getCachedLODMesh(lod: number): CachedLODMesh | null {
-		return this.cachedLODMeshes.get(lod) ?? null;
+		return this._cachedLODMeshes?.get(lod) ?? null;
 	}
 	public hasCachedLODMesh(lod: number): boolean {
-		const c = this.cachedLODMeshes.get(lod);
+		const c = this._cachedLODMeshes?.get(lod);
 		return !!c && (!!c.opaque || !!c.transparent);
 	}
 	public setCachedLODMesh(lod: number, mesh: CachedLODMesh): void {
-		this.cachedLODMeshes.set(lod, {
-			opaque: mesh.opaque ?? null,
-			transparent: mesh.transparent ?? null,
-		});
+		let cache = this._cachedLODMeshes;
+		if (cache === null) {
+			cache = new Map<number, CachedLODMesh>();
+			this._cachedLODMeshes = cache;
+		}
+		const entry = cache.get(lod);
+		if (entry) {
+			entry.opaque = mesh.opaque ?? null;
+			entry.transparent = mesh.transparent ?? null;
+		} else {
+			cache.set(lod, {
+				opaque: mesh.opaque ?? null,
+				transparent: mesh.transparent ?? null,
+			});
+		}
 	}
 	public clearCachedLODMeshes(): void {
-		this.cachedLODMeshes.clear();
+		this._cachedLODMeshes?.clear();
 	}
 	public getSerializableLODMeshCache(): SerializedLODMeshCache | undefined {
-		if (this.cachedLODMeshes.size === 0) return undefined;
+		if (this._cachedLODMeshes === null || this._cachedLODMeshes.size === 0) {
+			return undefined;
+		}
 		const out: SerializedLODMeshCache = {};
 		let count = 0;
-		for (const [lod, mesh] of this.cachedLODMeshes.entries()) {
+		for (const [lod, mesh] of this._cachedLODMeshes.entries()) {
 			if (!mesh.opaque && !mesh.transparent) continue;
 			out[lod] = {
 				opaque: mesh.opaque ?? null,
@@ -575,16 +584,16 @@ export class Chunk {
 		return count === 0 ? undefined : out;
 	}
 	public restoreLODMeshCache(cache?: SerializedLODMeshCache): void {
-		this.cachedLODMeshes.clear();
+		this._cachedLODMeshes?.clear();
 		if (!cache) return;
-		for (const key in cache) {
+		for (const key of Object.keys(cache)) {
 			const lod = Number(key);
 			if (!Number.isFinite(lod)) continue;
 			const entry = cache[lod];
 			if (!entry?.opaque && !entry?.transparent) continue;
-			this.cachedLODMeshes.set(lod, {
-				opaque: entry?.opaque ?? null,
-				transparent: entry?.transparent ?? null,
+			this.setCachedLODMesh(lod, {
+				opaque: entry.opaque ?? null,
+				transparent: entry.transparent ?? null,
 			});
 		}
 	}
@@ -609,10 +618,14 @@ export class Chunk {
 		}
 
 		const la = this.light_array;
-		for (let i = 0; i < Chunk.SIZE3; i++) la[i] &= blockMask;
+		// Word-wise clear: keeps the block-light nibble, zeroes sky light. 4x
+		// fewer iterations than the byte loop (SIZE3 is divisible by 4).
+		const la32 = new Uint32Array(la.buffer, la.byteOffset, la.length >>> 2);
+		for (let i = 0; i < la32.length; i++) la32[i] &= 0x0f0f0f0f;
 
 		const chunkBaseX = this.chunkX * size;
 		const chunkBaseZ = this.chunkZ * size;
+		const chunkBaseY = this.chunkY * size;
 		const hasLoadedAbove = !!aboveChunk?.isLoaded;
 
 		// Reuse the module-level scratch seed queue.  The function is
@@ -629,12 +642,13 @@ export class Chunk {
 			const worldX = chunkBaseX + x;
 			for (let z = 0; z < size; z++) {
 				const worldZ = chunkBaseZ + z;
+				const colBase = x + z * size2;
 				let incomingSkyLight = 0;
 				let sourceFiltersFullSun = false;
 
 				if (hasLoadedAbove) {
 					const aboveBlockPacked = aboveChunk.getBlockPacked(x, 0, z);
-					if (aboveChunk.isTransparent(aboveBlockPacked, 1, -1)) {
+					if (isTransparent(aboveBlockPacked, 1, -1)) {
 						incomingSkyLight = aboveChunk.getSkyLight(x, 0, z);
 						sourceFiltersFullSun = filtersFullSunlight(
 							unpackBlockId(aboveBlockPacked),
@@ -650,8 +664,9 @@ export class Chunk {
 					}
 				}
 
-				for (let y = size - 1; y >= 0; y--) {
-					const worldY = this.chunkY * size + y;
+				let idx = colBase + (size - 1) * size;
+				for (let y = size - 1; y >= 0; y--, idx -= size) {
+					const worldY = chunkBaseY + y;
 					if (
 						!hasLoadedAbove &&
 						worldY < Chunk.SKYLIGHT_GENERATION_MIN_WORLD_Y
@@ -662,7 +677,7 @@ export class Chunk {
 					}
 
 					const blockPacked = this.getBlockPacked(x, y, z);
-					if (!this.isTransparent(blockPacked, 1, 1)) {
+					if (!isTransparent(blockPacked, 1, 1)) {
 						incomingSkyLight = 0;
 						sourceFiltersFullSun = false;
 						continue;
@@ -676,9 +691,7 @@ export class Chunk {
 						incomingSkyLight === 15 &&
 						!sourceFiltersFullSun &&
 						!thisFiltersFullSun;
-					const cellSkyLight = preservesFullSun
-						? 15
-						: Math.max(incomingSkyLight - 1, 0);
+					const cellSkyLight = preservesFullSun ? 15 : incomingSkyLight - 1;
 
 					if (cellSkyLight === 0) {
 						incomingSkyLight = 0;
@@ -686,14 +699,13 @@ export class Chunk {
 						continue;
 					}
 
-					const idx = x + y * size + z * size2;
 					la[idx] = (la[idx] & blockMask) | (cellSkyLight << skyShift);
 
 					if (!thisFiltersFullSun && seedLength < seedCapacity) {
 						seedQueue[seedLength++] = (x << 10) | (y << 5) | z;
 					}
 
-					if (!this.isTransparent(blockPacked, 1, -1)) {
+					if (!isTransparent(blockPacked, 1, -1)) {
 						incomingSkyLight = 0;
 						sourceFiltersFullSun = thisFiltersFullSun;
 						continue;
@@ -709,11 +721,9 @@ export class Chunk {
 		if (seedLength > 0) {
 			const pool = Chunk._lightPool;
 			if (pool) {
-				pool.enqueueDeferredLightFromSunlightInit?.(
-					this,
-					seedQueue.slice(0, seedLength),
-					seedLength,
-				);
+				const seedCopy = new Uint16Array(seedLength);
+				seedCopy.set(seedQueue.subarray(0, seedLength));
+				pool.enqueueDeferredLightFromSunlightInit?.(this, seedCopy, seedLength);
 			}
 		}
 	}
@@ -757,8 +767,25 @@ export class Chunk {
 			this._isDarkCached = false;
 			return;
 		}
-		for (let i = 0; i < la.length; i++) {
-			if ((la[i]! & 0xf0) !== 0) {
+		const len = la.length;
+		const wordCount = len >>> 2;
+		if (
+			!this._la32 ||
+			this._la32.buffer !== la.buffer ||
+			this._la32.byteOffset !== la.byteOffset ||
+			this._la32.length !== wordCount
+		) {
+			this._la32 = new Uint32Array(la.buffer, la.byteOffset, wordCount);
+		}
+		const la32 = this._la32;
+		for (let i = 0; i < wordCount; i++) {
+			if (la32[i] & 0xf0f0f0f0) {
+				this._isDarkCached = false;
+				return;
+			}
+		}
+		for (let i = wordCount << 2; i < len; i++) {
+			if ((la[i] & 0xf0) !== 0) {
 				this._isDarkCached = false;
 				return;
 			}
@@ -810,6 +837,50 @@ export class Chunk {
 	}
 
 	/**
+	 * Precompute opacity flag for each palette entry. Called whenever the
+	 * palette is created or mutated so that isOpaqueAtIndex can do a single
+	 * nibble-read + array-lookup instead of unpackBlockId + BLOCK_TYPE.
+	 */
+	private _rebuildPaletteOpacity(): void {
+		const pal = this._palette;
+		if (!pal) {
+			this._paletteOpacity = null;
+			return;
+		}
+		let opa = this._paletteOpacity;
+		if (!opa || opa.length < pal.length) {
+			opa = new Uint8Array(pal.length);
+			this._paletteOpacity = opa;
+		}
+		for (let i = 0; i < pal.length; i++) {
+			const packed = pal[i];
+			opa[i] = packed !== 0 && BLOCK_TYPE[unpackBlockId(packed)] === 0 ? 1 : 0;
+		}
+	}
+
+	/**
+	 * Precompute opacity flag for every voxel in a dense (Uint16Array) block
+	 * storage layout. Called once after loadFromStorage or layout transition.
+	 */
+	private _rebuildDenseOpacity(): void {
+		const arr = this._block_array;
+		if (!(arr instanceof Uint16Array)) {
+			this._denseOpacity = null;
+			return;
+		}
+		const S3 = Chunk.SIZE3;
+		let opa = this._denseOpacity;
+		if (!opa || opa.length < S3) {
+			opa = new Uint8Array(S3);
+			this._denseOpacity = opa;
+		}
+		for (let i = 0; i < S3; i++) {
+			const packed = arr[i];
+			opa[i] = packed !== 0 && BLOCK_TYPE[unpackBlockId(packed)] === 0 ? 1 : 0;
+		}
+	}
+
+	/**
 	 * Read the packed block value at a flat index and return 1 if opaque, 0 if not.
 	 * Avoids expanding blocks to a dense array — reads directly from palette/nibble
 	 * or dense storage, keeping the result in cache.
@@ -821,16 +892,14 @@ export class Chunk {
 				? 1
 				: 0;
 		}
-		if (this._palette) {
+		if (this._paletteOpacity) {
 			const blockArr = this._block_array as Uint8Array;
 			const byte = blockArr[i >>> 1];
 			const nibble = (i & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
-			const packed = this._palette[nibble];
-			return packed !== 0 && BLOCK_TYPE[unpackBlockId(packed)] === 0 ? 1 : 0;
+			return this._paletteOpacity[nibble];
 		}
-		if (this._block_array) {
-			const packed = this._block_array[i];
-			return packed !== 0 && BLOCK_TYPE[unpackBlockId(packed)] === 0 ? 1 : 0;
+		if (this._denseOpacity) {
+			return this._denseOpacity[i];
 		}
 		return 0;
 	}
@@ -866,13 +935,11 @@ export class Chunk {
 			this._isUniform = false;
 			this._hasVoxelData = true;
 			this._palette = new Uint16Array([this._uniformBlockId]);
-			this._paletteIndexMap = null;
 			let newIndex = 0;
 			if (this._palette[0] !== packedBlock) {
 				_twoEntryPalette[0] = this._palette[0];
 				_twoEntryPalette[1] = packedBlock;
 				this._palette = new Uint16Array(_twoEntryPalette);
-				this._paletteIndexMap = null;
 				newIndex = 1;
 			}
 			this._block_array = new Uint8Array(
@@ -887,33 +954,32 @@ export class Chunk {
 			oldPacked = this._palette[paletteIndex];
 			if (oldPacked === packedBlock) return;
 
-			let pm = this._paletteIndexMap;
-			if (!pm) {
-				pm = new Map();
-				for (let i = 0; i < this._palette.length; i++) {
-					pm.set(this._palette[i], i);
+			// PERF: linear scan instead of a per-chunk Map — palettes are
+			// capped at 16 entries before promoting to dense storage, so the
+			// Map's build+churn cost was pure garbage per chunk load.
+			let npi = -1;
+			const pal = this._palette;
+			for (let i = 0; i < pal.length; i++) {
+				if (pal[i] === packedBlock) {
+					npi = i;
+					break;
 				}
-				this._paletteIndexMap = pm;
 			}
-			let npi = pm.get(packedBlock);
-			if (npi === undefined) {
-				if (this._palette.length < 16) {
-					npi = this._palette.length;
+			if (npi < 0) {
+				if (pal.length < 16) {
+					npi = pal.length;
 					const ep = new Uint16Array(npi + 1);
-					ep.set(this._palette);
+					ep.set(pal);
 					ep[npi] = packedBlock;
 					this._palette = ep;
-					pm.set(packedBlock, npi);
 					this.setNibble(index, npi);
 					paletteChanged = true;
 				} else {
 					const na = new Uint16Array(new SharedArrayBuffer(Chunk.SIZE3 * 2));
-					for (let i = 0; i < Chunk.SIZE3; i++)
-						na[i] = this._palette[this.getNibble(i)];
+					for (let i = 0; i < Chunk.SIZE3; i++) na[i] = pal[this.getNibble(i)];
 					na[index] = packedBlock;
 					this._block_array = na;
 					this._palette = null;
-					this._paletteIndexMap = null;
 					storageLayoutChanged = true;
 				}
 			} else {
@@ -948,6 +1014,17 @@ export class Chunk {
 			}
 		}
 
+		if (paletteChanged) {
+			this._rebuildPaletteOpacity();
+		} else if (
+			storageLayoutChanged &&
+			this._block_array instanceof Uint16Array
+		) {
+			this._rebuildDenseOpacity();
+		} else if (storageLayoutChanged) {
+			this._denseOpacity = null;
+		}
+
 		// Block storage layout changed — refresh the worker-visible header
 		// row BEFORE the light BFS dispatches, so any in-flight BFS picks
 		// up the new layout on its next cell access.
@@ -965,6 +1042,7 @@ export class Chunk {
 
 		this.isModified = true;
 		this.connectivityDirty = true;
+		this.blockRevision++;
 		this.clearCachedLODMeshes();
 		this.scheduleRemesh(true);
 		Chunk.onBlockModified?.(this);
@@ -1031,6 +1109,7 @@ export class Chunk {
 
 	public scheduleRemesh(priority = false, includeNeighbors = false): void {
 		if (!this.isLoaded) return;
+		this.meshRevision++;
 		this.isDirty = true;
 		if (this.remeshQueued) {
 			return;
@@ -1057,29 +1136,31 @@ export class Chunk {
 		return getChunk(this.chunkX + dx, this.chunkY + dy, this.chunkZ + dz);
 	}
 
-	// PERF: lazily build + cache the neighbor id list. Neighbor ids are derived
-	// from this.id via BigInt bit-ops (no Number->BigInt conversions or bias
-	// recompute), and only on first access — keeping the constructor free of
-	// the 6 packCoords calls that used to fire on every new chunk.
-	public get neighborIds(): readonly bigint[] {
-		if (this._neighborIds) return this._neighborIds;
-		const AXIS_BITS = 21n;
-		const MASK = (1n << AXIS_BITS) - 1n;
-		const derive = (axis: 0 | 1 | 2, sign: 1n | -1n): bigint => {
-			const shift = BigInt(axis) * AXIS_BITS;
-			const comp = (this.id >> shift) & MASK;
-			const nb = (comp + sign + (1n << AXIS_BITS)) & MASK;
-			return (this.id & ~(MASK << shift)) | (nb << shift);
-		};
-		this._neighborIds = [
-			derive(0, 1n),
-			derive(0, -1n),
-			derive(1, 1n),
-			derive(1, -1n),
-			derive(2, 1n),
-			derive(2, -1n),
-		];
-		return this._neighborIds;
+	// Face-order offsets matching neighborRefs / the culler's face constants:
+	// [0]=+X  [1]=-X  [2]=+Y  [3]=-Y  [4]=+Z  [5]=-Z
+	private static readonly _NEIGHBOR_OFFSETS: readonly (readonly [
+		number,
+		number,
+		number,
+	])[] = [
+		[1, 0, 0],
+		[-1, 0, 0],
+		[0, 1, 0],
+		[0, -1, 0],
+		[0, 0, 1],
+		[0, 0, -1],
+	];
+
+	// PERF: resolve a face-adjacent neighbor via the number-keyed coords
+	// registry instead of deriving+caching 6 BigInt ids per chunk — zero
+	// allocation on the culling/dispose paths.
+	public getNeighborChunk(faceIdx: number): Chunk | undefined {
+		const off = Chunk._NEIGHBOR_OFFSETS[faceIdx];
+		return getChunk(
+			this.chunkX + off[0],
+			this.chunkY + off[1],
+			this.chunkZ + off[2],
+		);
 	}
 
 	public markLightChanged(): void {
@@ -1090,318 +1171,14 @@ export class Chunk {
 	}
 
 	// =========================================================================
-	// Face-mask geometry
-	// =========================================================================
-
-	private static getClosedFaceMaskForPacked(blockPacked: number): number {
-		const cacheIndex = blockPacked & 0xffff;
-		const cached = Chunk.CLOSED_FACE_MASK_CACHE[cacheIndex];
-		if (cached !== 255) return cached;
-
-		const blockId = unpackBlockId(blockPacked);
-		if (
-			blockId === 0 ||
-			blockId === WATER_BLOCK_ID ||
-			blockId === Chunk.GLASS_01_BLOCK_ID ||
-			blockId === Chunk.GLASS_02_BLOCK_ID
-		) {
-			Chunk.CLOSED_FACE_MASK_CACHE[cacheIndex] = 0;
-			return 0;
-		}
-
-		const state = unpackBlockState(blockPacked);
-		const shapeMap = getShapeByBlockId();
-		const shapeDefs = getShapeDefinitions();
-		const cubeIndex = getCubeShapeIndex();
-		const shapeIndex = shapeMap[blockId] ?? cubeIndex;
-		const shape =
-			shapeDefs[shapeIndex] ?? shapeDefs[cubeIndex] ?? FALLBACK_CUBE;
-		if (!shape) {
-			Chunk.CLOSED_FACE_MASK_CACHE[cacheIndex] = FACE_ALL;
-			return FACE_ALL;
-		}
-
-		const rotation = shape.rotateY ? state & 3 : 0;
-		const flipY = Boolean(shape.allowFlipY && (state & 4) !== 0);
-
-		_rectCounts.fill(0);
-
-		for (const box of shape.boxes) {
-			const transformed = transformBox(box.min, box.max, rotation, flipY);
-			const sliced = shape.usesSliceState
-				? Chunk.applySliceStateToBoxForLight(
-						transformed.min,
-						transformed.max,
-						state,
-					)
-				: transformed;
-
-			const min = sliced.min;
-			const max = sliced.max;
-			const faceMask = box.faceMask ?? FACE_ALL;
-			const EPS = Chunk.EPS;
-
-			if (
-				max[0] - min[0] <= EPS ||
-				max[1] - min[1] <= EPS ||
-				max[2] - min[2] <= EPS
-			)
-				continue;
-
-			if (faceMask & FACE_PX && max[0] >= 1 - EPS)
-				Chunk.pushRectFlat(0, min[1], max[1], min[2], max[2]);
-			if (faceMask & FACE_NX && min[0] <= EPS)
-				Chunk.pushRectFlat(1, min[1], max[1], min[2], max[2]);
-			if (faceMask & FACE_PY && max[1] >= 1 - EPS)
-				Chunk.pushRectFlat(2, min[0], max[0], min[2], max[2]);
-			if (faceMask & FACE_NY && min[1] <= EPS)
-				Chunk.pushRectFlat(3, min[0], max[0], min[2], max[2]);
-			if (faceMask & FACE_PZ && max[2] >= 1 - EPS)
-				Chunk.pushRectFlat(4, min[0], max[0], min[1], max[1]);
-			if (faceMask & FACE_NZ && min[2] <= EPS)
-				Chunk.pushRectFlat(5, min[0], max[0], min[1], max[1]);
-		}
-
-		let closedMask = 0;
-		if (Chunk.doesFlatRectsCoverUnitSquare(0)) closedMask |= FACE_PX;
-		if (Chunk.doesFlatRectsCoverUnitSquare(1)) closedMask |= FACE_NX;
-		if (Chunk.doesFlatRectsCoverUnitSquare(2)) closedMask |= FACE_PY;
-		if (Chunk.doesFlatRectsCoverUnitSquare(3)) closedMask |= FACE_NY;
-		if (Chunk.doesFlatRectsCoverUnitSquare(4)) closedMask |= FACE_PZ;
-		if (Chunk.doesFlatRectsCoverUnitSquare(5)) closedMask |= FACE_NZ;
-
-		Chunk.CLOSED_FACE_MASK_CACHE[cacheIndex] = closedMask;
-		return closedMask;
-	}
-
-	/**
-	 * Precompute the closed-face mask for every possible packed block value
-	 * (blockId << BLOCK_STATE_SHIFT | state) and return the shared Uint8Array
-	 * LUT.  Called once at startup after shapes are loaded and sent to the
-	 * light worker so it can do per-face transparency checks without
-	 * importing shape definitions.  The returned array is the same static
-	 * cache `getClosedFaceMaskForPacked` reads from.
-	 */
-	public static precomputeClosedFaceMasks(): Uint8Array {
-		const lut = Chunk.CLOSED_FACE_MASK_CACHE;
-		for (let i = 0; i < 1 << 16; i++) {
-			// getClosedFaceMaskForPacked populates `lut` as a side effect;
-			// calling it here just forces the lazy computation for all entries.
-			Chunk.getClosedFaceMaskForPacked(i);
-		}
-		return lut;
-	}
-
-	private static pushRectFlat(
-		f: number,
-		u0: number,
-		u1: number,
-		v0: number,
-		v1: number,
-	): void {
-		const EPS = Chunk.EPS;
-		const cu0 = Math.min(1, Math.max(0, Math.min(u0, u1)));
-		const cu1 = Math.min(1, Math.max(0, Math.max(u0, u1)));
-		const cv0 = Math.min(1, Math.max(0, Math.min(v0, v1)));
-		const cv1 = Math.min(1, Math.max(0, Math.max(v0, v1)));
-		if (cu1 - cu0 <= EPS || cv1 - cv0 <= EPS) return;
-		const cnt = _rectCounts[f];
-		if (cnt >= MAX_RECTS) return;
-		const base = cnt * RECT_STRIDE;
-		const buf = _rectBufs[f];
-		buf[base] = cu0;
-		buf[base + 1] = cu1;
-		buf[base + 2] = cv0;
-		buf[base + 3] = cv1;
-		_rectCounts[f] = cnt + 1;
-	}
-
-	private static doesFlatRectsCoverUnitSquare(f: number): boolean {
-		const count = _rectCounts[f];
-		if (count === 0) return false;
-
-		const buf = _rectBufs[f];
-		const EPS = Chunk.EPS;
-		const HALF = MAX_RECTS * 2 + 2;
-
-		let uLen = 0;
-		let vLen = 0;
-		for (let i = 0; i < count; i++) {
-			const b = i * RECT_STRIDE;
-			_edgeScratch[uLen++] = buf[b];
-			_edgeScratch[uLen++] = buf[b + 1];
-			_edgeScratch[HALF + vLen++] = buf[b + 2];
-			_edgeScratch[HALF + vLen++] = buf[b + 3];
-		}
-
-		Chunk.insertionSortEdges(0, uLen);
-		Chunk.insertionSortEdges(HALF, vLen);
-
-		uLen = Chunk.dedupeEdges(0, uLen);
-		vLen = Chunk.dedupeEdges(HALF, vLen);
-
-		for (let ui = 0; ui < uLen - 1; ui++) {
-			const u0e = _edgeScratch[ui];
-			const u1e = _edgeScratch[ui + 1];
-			if (u1e - u0e <= EPS) continue;
-			for (let vi = 0; vi < vLen - 1; vi++) {
-				const v0e = _edgeScratch[HALF + vi];
-				const v1e = _edgeScratch[HALF + vi + 1];
-				if (v1e - v0e <= EPS) continue;
-				let covered = false;
-				for (let r = 0; r < count; r++) {
-					const rb = r * RECT_STRIDE;
-					if (
-						buf[rb] <= u0e + EPS &&
-						buf[rb + 1] >= u1e - EPS &&
-						buf[rb + 2] <= v0e + EPS &&
-						buf[rb + 3] >= v1e - EPS
-					) {
-						covered = true;
-						break;
-					}
-				}
-				if (!covered) return false;
-			}
-		}
-		return true;
-	}
-
-	private static insertionSortEdges(start: number, len: number): void {
-		_edgeScratch.subarray(start, start + len).sort();
-	}
-
-	private static dedupeEdges(start: number, len: number): number {
-		const EPS = Chunk.EPS;
-		if (len === 0 || _edgeScratch[start] > EPS) {
-			for (let i = len; i > 0; i--)
-				_edgeScratch[start + i] = _edgeScratch[start + i - 1];
-			_edgeScratch[start] = 0;
-			len++;
-		}
-		if (_edgeScratch[start + len - 1] < 1 - EPS) {
-			_edgeScratch[start + len] = 1;
-			len++;
-		}
-		let write = 1;
-		for (let read = 1; read < len; read++) {
-			if (
-				Math.abs(_edgeScratch[start + read] - _edgeScratch[start + write - 1]) >
-				EPS
-			) {
-				_edgeScratch[start + write++] = _edgeScratch[start + read];
-			}
-		}
-		return write;
-	}
-
-	private static readonly _faceBitLUT = new Uint8Array([
-		FACE_PX,
-		FACE_NX,
-		FACE_PY,
-		FACE_NY,
-		FACE_PZ,
-		FACE_NZ,
-	]);
-
-	private static getFaceBit(axis: number, dir: number): number {
-		return Chunk._faceBitLUT[axis * 2 + (dir >= 0 ? 0 : 1)];
-	}
-
-	private isTransparent(
-		blockPacked: number,
-		axis?: number,
-		dir?: number,
-	): boolean {
-		const closedMask = Chunk.getClosedFaceMaskForPacked(blockPacked);
-		if (axis === undefined) return closedMask !== FACE_ALL;
-		if (dir === undefined) {
-			return (
-				(closedMask & Chunk.getFaceBit(axis, 1)) === 0 ||
-				(closedMask & Chunk.getFaceBit(axis, -1)) === 0
-			);
-		}
-		return (closedMask & Chunk.getFaceBit(axis, dir)) === 0;
-	}
-
-	private static applySliceStateToBoxForLight(
-		min: [number, number, number],
-		max: [number, number, number],
-		state: number,
-	): { min: [number, number, number]; max: [number, number, number] } {
-		const slice = (state >>> 3) & 7;
-		if (slice === 0) {
-			_sliceResult.min = min;
-			_sliceResult.max = max;
-			return _sliceResult;
-		}
-
-		const rotation = state & 7;
-		const sliceAxis = getSliceAxis(rotation);
-		const flip = (rotation & 4) !== 0;
-		const heightScale = slice / 8;
-		_sliceMin[0] = min[0];
-		_sliceMin[1] = min[1];
-		_sliceMin[2] = min[2];
-		_sliceMax[0] = max[0];
-		_sliceMax[1] = max[1];
-		_sliceMax[2] = max[2];
-
-		if (flip) {
-			_sliceMin[sliceAxis] = 1 - (1 - min[sliceAxis]) * heightScale;
-			_sliceMax[sliceAxis] = 1 - (1 - max[sliceAxis]) * heightScale;
-		} else {
-			_sliceMin[sliceAxis] = min[sliceAxis] * heightScale;
-			_sliceMax[sliceAxis] = max[sliceAxis] * heightScale;
-		}
-		if (_sliceMin[sliceAxis] > _sliceMax[sliceAxis]) {
-			const tmp = _sliceMin[sliceAxis];
-			_sliceMin[sliceAxis] = _sliceMax[sliceAxis];
-			_sliceMax[sliceAxis] = tmp;
-		}
-		_sliceResult.min = _sliceMin;
-		_sliceResult.max = _sliceMax;
-		return _sliceResult;
-	}
-
-	// =========================================================================
 	// Face connectivity for occlusion BFS
 	// =========================================================================
-
-	public static facePairIndex(i: number, j: number): number {
-		return 4 * i - ((i * (i - 1)) >> 1) + j - 1;
-	}
-
-	private static readonly _faceScratch: number[] = [];
-
-	private static connectFacesMask(faceMask: number): number {
-		let result = 0;
-		const faces = Chunk._faceScratch;
-		faces.length = 0;
-		for (let f = 0; f < 6; f++) {
-			if (faceMask & (1 << f)) faces.push(f);
-		}
-		for (let a = 0; a < faces.length; a++) {
-			for (let b = a + 1; b < faces.length; b++) {
-				const i = faces[a];
-				const j = faces[b];
-				result |= 1 << Chunk.facePairIndex(i, j);
-			}
-		}
-		return result;
-	}
-
-	// Minimum air voxels on a chunk face for that face to count as connected.
-	// A 32×32 face has 1024 voxels; threshold of S/2 = 16 filters out
-	// single-block cracks and thin slivers while allowing real passages.
-	private static readonly FACE_CONNECT_THRESHOLD =
-		GenerationParams.CHUNK_SIZE / 2;
 
 	public computeFaceConnectivity(): number {
 		if (!this._hasVoxelData || this._isUniform) {
 			const mask =
 				this._isUniform && this._uniformBlockId === 0
-					? Chunk.connectFacesMask(0x3f)
+					? connectFacesMask(0x3f)
 					: 0;
 			this.faceConnectivity = mask;
 			this.connectivityDirty = false;
@@ -1411,14 +1188,48 @@ export class Chunk {
 		const S = Chunk.SIZE;
 		const S2 = S * S;
 		const S3 = Chunk.SIZE3;
+		const SM1 = S - 1;
 
 		_ccVisited.fill(0, 0, S3);
 		const visited = _ccVisited;
 		const stack = _ccStack;
 		const opaque = _ccOpaque;
-		for (let i = 0; i < S3; i++) {
-			opaque[i] = this.isOpaqueAtIndex(i);
+
+		// Type-specialized opaque fill — avoids per-voxel function call overhead.
+		if (this._paletteOpacity) {
+			const blockArr = this._block_array as Uint8Array;
+			const palOp = this._paletteOpacity;
+			for (let i = 0; i < S3; i++) {
+				const byte = blockArr[i >>> 1];
+				const nibble = (i & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
+				opaque[i] = palOp[nibble];
+			}
+		} else if (this._denseOpacity) {
+			opaque.set(this._denseOpacity.subarray(0, S3));
+		} else {
+			// Inline isOpaqueAtIndex for the fallback path to avoid per-voxel method dispatch overhead.
+			const uId = this._uniformBlockId;
+			const palOp = this._paletteOpacity;
+			const denseOp = this._denseOpacity;
+			const blockArr = this._block_array;
+			const isUniform = this._isUniform;
+			if (isUniform) {
+				const opaqueVal =
+					uId !== 0 && BLOCK_TYPE[unpackBlockId(uId)] === 0 ? 1 : 0;
+				for (let i = 0; i < S3; i++) opaque[i] = opaqueVal;
+			} else if (palOp && blockArr instanceof Uint8Array) {
+				for (let i = 0; i < S3; i++) {
+					const byte = blockArr[i >>> 1];
+					const nibble = (i & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
+					opaque[i] = palOp[nibble];
+				}
+			} else if (denseOp) {
+				for (let i = 0; i < S3; i++) opaque[i] = denseOp[i];
+			} else {
+				for (let i = 0; i < S3; i++) opaque[i] = 0;
+			}
 		}
+
 		let connectivity = 0;
 
 		for (let z = 0; z < S; z++) {
@@ -1445,16 +1256,17 @@ export class Chunk {
 
 					while (stackTop > 0) {
 						const cur = stack[--stackTop];
-						const cx = cur % S;
-						const cy = ((cur / S) | 0) % S;
-						const cz = (cur / S2) | 0;
+						// Bitwise coord extraction — S=32 is a power of 2.
+						const cx = cur & 31;
+						const cy = (cur >>> 5) & 31;
+						const cz = cur >>> 10;
 
 						if (cx === 0) fc[1]++;
-						if (cx === S - 1) fc[0]++;
+						if (cx === SM1) fc[0]++;
 						if (cy === 0) fc[3]++;
-						if (cy === S - 1) fc[2]++;
+						if (cy === SM1) fc[2]++;
 						if (cz === 0) fc[5]++;
-						if (cz === S - 1) fc[4]++;
+						if (cz === SM1) fc[4]++;
 
 						if (cx > 0) {
 							const n = cur - 1;
@@ -1463,7 +1275,7 @@ export class Chunk {
 								stack[stackTop++] = n;
 							}
 						}
-						if (cx < S - 1) {
+						if (cx < SM1) {
 							const n = cur + 1;
 							if (!visited[n] && !opaque[n]) {
 								visited[n] = 1;
@@ -1477,7 +1289,7 @@ export class Chunk {
 								stack[stackTop++] = n;
 							}
 						}
-						if (cy < S - 1) {
+						if (cy < SM1) {
 							const n = cur + S;
 							if (!visited[n] && !opaque[n]) {
 								visited[n] = 1;
@@ -1491,7 +1303,7 @@ export class Chunk {
 								stack[stackTop++] = n;
 							}
 						}
-						if (cz < S - 1) {
+						if (cz < SM1) {
 							const n = cur + S2;
 							if (!visited[n] && !opaque[n]) {
 								visited[n] = 1;
@@ -1500,16 +1312,14 @@ export class Chunk {
 						}
 					}
 
-					// Only count faces with enough air voxels as connected.
 					let openFaces = 0;
-					const thresh = Chunk.FACE_CONNECT_THRESHOLD;
-					if (fc[0] >= thresh) openFaces |= 1 << 0;
-					if (fc[1] >= thresh) openFaces |= 1 << 1;
-					if (fc[2] >= thresh) openFaces |= 1 << 2;
-					if (fc[3] >= thresh) openFaces |= 1 << 3;
-					if (fc[4] >= thresh) openFaces |= 1 << 4;
-					if (fc[5] >= thresh) openFaces |= 1 << 5;
-					connectivity |= Chunk.connectFacesMask(openFaces);
+					if (fc[0] >= FACE_CONNECT_THRESHOLD) openFaces |= 1;
+					if (fc[1] >= FACE_CONNECT_THRESHOLD) openFaces |= 2;
+					if (fc[2] >= FACE_CONNECT_THRESHOLD) openFaces |= 4;
+					if (fc[3] >= FACE_CONNECT_THRESHOLD) openFaces |= 8;
+					if (fc[4] >= FACE_CONNECT_THRESHOLD) openFaces |= 16;
+					if (fc[5] >= FACE_CONNECT_THRESHOLD) openFaces |= 32;
+					connectivity |= connectFacesMask(openFaces);
 				}
 			}
 		}
@@ -1527,9 +1337,8 @@ export class Chunk {
 		// Null our slot in each live neighbour's neighborRefs before removing
 		// ourselves from chunkInstances, so no chunk holds a dangling ref to us.
 		// d ^ 1 gives the opposite direction (the face pointing back toward us).
-		const ids = this.neighborIds;
 		for (let d = 0; d < 6; d++) {
-			const nbr = Chunk.chunkInstances.get(ids[d]!);
+			const nbr = this.getNeighborChunk(d);
 			if (nbr) nbr.neighborRefs[d ^ 1] = null;
 		}
 		this.neighborRefs.fill(null);
@@ -1540,8 +1349,14 @@ export class Chunk {
 		}
 
 		if (!this.mergedGroupKey) {
-			this.mesh?.dispose();
-			this.transparentMesh?.dispose();
+			if (this.mesh) {
+				removeFromScene(Map1.mainScene, this.mesh);
+				disposeMeshGpu(this.mesh);
+			}
+			if (this.transparentMesh) {
+				removeFromScene(Map1.mainScene, this.transparentMesh);
+				disposeMeshGpu(this.transparentMesh);
+			}
 		}
 		this.clearCachedLODMeshes();
 		this.mesh = null;
@@ -1552,7 +1367,9 @@ export class Chunk {
 		this._isUniform = true;
 		this._uniformBlockId = 0;
 		this._palette = null;
-		this._paletteIndexMap = null;
+		this._paletteOpacity = null;
+		this._denseOpacity = null;
+		this._la32 = null;
 		this._hasVoxelData = false;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
 		this._isDarkCached = false;
@@ -1570,6 +1387,7 @@ export class Chunk {
 		Chunk.loadedChunkIndex.unregister(this);
 		this.isTerrainScheduled = false;
 		this.remeshQueued = false;
+		this.rerunRemeshAfterInflight = false;
 		Chunk.chunkInstances.delete(this.id);
 		_deleteByCoords(this);
 		this.bfsQueryId = 0;
@@ -1580,37 +1398,37 @@ export class Chunk {
 	}
 }
 
+// Pack (cx, cy, cz) into a single safe-integer number key for _chunkByCoords.
+// X(21b) | Y(10b) | Z(21b); each coord is masked to its bit width so negative
+// coordinates encode consistently (two's-complement low bits) and decode-free
+// lookups always match the stored key.
+const _COORD_X_MASK = (1 << 21) - 1; // 0x1FFFFF
+const _COORD_Y_MASK = (1 << 10) - 1; // 0x3FF
+const _COORD_Z_MASK = (1 << 21) - 1; // 0x1FFFFF
+const _COORD_YZ_MULT = 2147483648; // 2^31 (< 2^53)
+const _COORD_Z_MULT = 1 << 10; // 2^10
+
+function packCoordKey(cx: number, cy: number, cz: number): number {
+	return (
+		(cx & _COORD_X_MASK) * _COORD_YZ_MULT +
+		(cy & _COORD_Y_MASK) * _COORD_Z_MULT +
+		(cz & _COORD_Z_MASK)
+	);
+}
+
 export function getChunk(
 	cx: number,
 	cy: number,
 	cz: number,
 ): Chunk | undefined {
-	return Chunk._chunkByCoords.get(cx)?.get(cy)?.get(cz);
+	return Chunk._chunkByCoords.get(packCoordKey(cx, cy, cz));
 }
 
 // ── _chunkByCoords mirror maintenance ────────────────────────────────────────
 function _setByCoords(c: Chunk): void {
-	let my = Chunk._chunkByCoords.get(c.chunkX);
-	if (my === undefined) {
-		my = new Map();
-		Chunk._chunkByCoords.set(c.chunkX, my);
-	}
-	let mz = my.get(c.chunkY);
-	if (mz === undefined) {
-		mz = new Map();
-		my.set(c.chunkY, mz);
-	}
-	mz.set(c.chunkZ, c);
+	Chunk._chunkByCoords.set(packCoordKey(c.chunkX, c.chunkY, c.chunkZ), c);
 }
 
 function _deleteByCoords(c: Chunk): void {
-	const my = Chunk._chunkByCoords.get(c.chunkX);
-	if (my === undefined) return;
-	const mz = my.get(c.chunkY);
-	if (mz === undefined) return;
-	mz.delete(c.chunkZ);
-	if (mz.size === 0) {
-		my.delete(c.chunkY);
-		if (my.size === 0) Chunk._chunkByCoords.delete(c.chunkX);
-	}
+	Chunk._chunkByCoords.delete(packCoordKey(c.chunkX, c.chunkY, c.chunkZ));
 }

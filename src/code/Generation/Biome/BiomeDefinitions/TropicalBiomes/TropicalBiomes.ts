@@ -9,7 +9,7 @@ export const JUNGLE: Biome = {
 	id: BIOME_ID.JUNGLE,
 	name: "Jungle",
 	topBlock: 51, // jungle grass
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.2,
@@ -59,7 +59,7 @@ export const BAMBOO_FOREST: Biome = {
 	id: BIOME_ID.BAMBOO_FOREST,
 	name: "Bamboo_Forest",
 	topBlock: 51, // jungle grass
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.3, // very dense bamboo stalks
@@ -84,7 +84,7 @@ export const TROPICAL_ISLAND: Biome = {
 	id: BIOME_ID.TROPICAL_ISLAND,
 	name: "Tropical_Island",
 	topBlock: 15, // lush grass
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.14, // palm trees scattered across the island
@@ -108,7 +108,7 @@ export const CLOUD_FOREST: Biome = {
 	id: BIOME_ID.CLOUD_FOREST,
 	name: "Cloud_Forest",
 	topBlock: 14, // mossy grass
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.22, // dense moss-draped trees

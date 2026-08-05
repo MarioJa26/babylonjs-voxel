@@ -1,14 +1,16 @@
-import type { Engine, Observer, Scene, Vector3 } from "@babylonjs/core";
+import type { SceneContext, Vec3 } from "@babylonjs/lite";
 import { CustomBoat } from "../Entities/CustomBoat";
+import { update as updateDistantTerrain } from "../Generation/DistantTerrain/DistantTerrain";
 import {
 	getBiome,
 	getFinalTerrainHeight,
 	getTerrainNoiseDebug,
 } from "../Generation/TerrainHeightMap";
 import type { IControls } from "../Interface/IControls";
+import { isUiOpen, setInCave } from "../Lib/GameRuntimeState";
+import { worldToChunkCoord } from "../Lib/VoxelMath";
+import { playSprint } from "../Maps/BlockBreakParticles";
 import { Map1 } from "../Maps/Map1";
-import { worldToChunkCoord } from "../Shared/ChunkCoordUtils";
-import { setInCave } from "../Shared/GameRuntimeState";
 import { Chunk } from "../World/Chunk/Chunk";
 import {
 	getDebugStats,
@@ -26,12 +28,16 @@ import {
 	pickTarget,
 } from "./Hud/BlockHighlight/BlockRaycaster";
 import { PlayerHud } from "./Hud/PlayerHud";
-import type { IPlayerBody } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
 import { Gamemodes, type PlayerStats } from "./PlayerStats";
 
 // PERF: Reusable scratch for debug HUD dispatch histogram — avoids per-tick allocation.
 const _indexedScratch: { count: number; index: number }[] = [];
+
+// Lite port: the classic-Babylon scene/engine accessors (onBeforeRenderObservable,
+// freezeActiveMeshes, getFps, getDeltaTime, getActiveIndices, ...) are not on
+// SceneContext/EngineContext. The frame loop is driven by the host (Player.tick
+// via onBeforeRender), and the debug HUD derives timings from the frame delta.
 
 export class PlayerLoopController {
 	// ---- chunk-loading position tracking ----
@@ -47,10 +53,22 @@ export class PlayerLoopController {
 	#prevCameraPitch = 0;
 	#rebuildActiveMeshes = false;
 
+	// ---- pick-target raycast gating (skip the 64-voxel DDA when still) ----
+	#pickLastX = NaN;
+	#pickLastY = NaN;
+	#pickLastZ = NaN;
+	#pickLastYaw = NaN;
+	#pickLastPitch = NaN;
+	#pickCachedHit: BlockRaycastHit | null = null;
+	#pickStillFrames = 0;
+	static readonly PICK_STILL_REFRESH_FRAMES = 6; // refresh at most every 6 still frames
+
 	// ---- cave state ----
 	#lastCaveState = false;
 
 	// ---- occlusion culling ----
+	// T2-12: re-enabled (stage 1 — frustum/backface sweep only; the cave-BFS
+	// topology culling stays disabled via BFS_CAVE_CULLING_ENABLED).
 	#occlusionCuller = new OcclusionCuller();
 	#lastOcclusionStats = { total: 0, occluded: 0, timeMs: 0 };
 
@@ -62,102 +80,122 @@ export class PlayerLoopController {
 	#mainThreadMs = 0;
 	static readonly DEBUG_HUD_INTERVAL_MS = 250;
 
-	// ---- observer references for cleanup ----
-	#onBeforeRenderObs: Observer<Scene> | null = null;
-	#onAfterRenderObs: Observer<Scene> | null = null;
-
 	// ---- captured static callback for restore-on-dispose ----
 	#previousOnChunkLoaded: typeof Chunk.onChunkLoaded | null = null;
 
+	private readonly scene: SceneContext;
+
 	constructor(
-		private readonly engine: Engine,
-		private readonly scene: Scene,
-		private readonly playerVehicle: IPlayerBody,
+		scene: SceneContext,
+		private readonly playerVehicle: {
+			isSprinting: boolean;
+			isClimbing: boolean;
+			isFlying: boolean;
+			velocity: Vec3;
+			inputDirection: Vec3;
+			update(dt: number): void;
+			updateCameraAndVisuals(deltaMs?: number): void;
+		},
 		private readonly playerStats: PlayerStats,
 		private readonly playerHud: PlayerHud,
 		private readonly playerCamera: PlayerCamera,
 		private readonly getKeyboardControls: () => IControls<unknown>,
-		private readonly getPlayerPosition: () => Vector3,
-	) {}
+		private readonly getPlayerPosition: () => Vec3,
+	) {
+		this.scene = scene;
+	}
 
 	public bind(): void {
 		// Initialize water tick scheduler
 		BlockTickScheduler.getInstance().setProcessCallback(processWaterUpdate);
 
-		// Wire incremental occlusion culling for individual chunk loads
+		// Wire incremental occlusion culling for individual chunk loads.
+		// T2-12 stage 1: BFS is disabled, so incrementalAdd is a no-op
+		// (it early-returns while _currentQueryId === 0); re-enable it with
+		// BFS_CAVE_CULLING_ENABLED.
 		this.#previousOnChunkLoaded = Chunk.onChunkLoaded;
 		Chunk.onChunkLoaded = (chunk: Chunk) => {
 			this.#previousOnChunkLoaded?.(chunk);
-			this.#occlusionCuller.incrementalAdd(chunk);
+			//this.#occlusionCuller.incrementalAdd(chunk);
 		};
+	}
 
-		this.#onBeforeRenderObs = this.scene.onBeforeRenderObservable.add(() => {
-			const dt = (this.scene.deltaTime || 0) / 1000;
-			const _frameStart = performance.now();
+	/**
+	 * Per-frame update. Driven by the host loop (Player.tick → onBeforeRender),
+	 * since Lite's SceneContext has no onBeforeRenderObservable to self-register.
+	 */
+	public tick(deltaMs: number): void {
+		const dt = deltaMs;
+		// Stats are tuned per-second; the frame delta arrives in milliseconds
+		// (the motor converts internally). Normalize once for the stats path.
+		const dtSec = deltaMs / 1000;
+		const _frameStart = performance.now();
 
-			BlockTickScheduler.getInstance().processFrame();
+		BlockTickScheduler.getInstance().processFrame();
 
-			if (this.playerVehicle.isSprinting) {
-				if (
-					!this.playerStats.consumeStamina(4 * dt) &&
-					this.playerStats.gamemode !== Gamemodes.Creative
-				) {
-					this.playerVehicle.isSprinting = false;
-				}
+		// Cache getter-backed properties once per frame.
+		const vehicle = this.playerVehicle;
+		const stats = this.playerStats;
+
+		if (
+			vehicle.isSprinting &&
+			(vehicle.inputDirection.x !== 0 || vehicle.inputDirection.z !== 0)
+		) {
+			if (
+				!stats.consumeStamina(4 * dtSec) &&
+				stats.gamemode !== Gamemodes.Creative
+			) {
+				vehicle.isSprinting = false;
 			}
+		}
 
-			// Raycast once per frame — shared by crosshair highlight and block breaking.
-			const pickHit = pickTarget(this.playerHud.player);
-			this.playerHud.crossHair.setTargetHit(pickHit);
+		// Raycast once per frame — shared by crosshair highlight and block breaking.
+		// Skipped while a UI overlay is open (matches #updateControls' early-out),
+		// since the highlight is hidden behind the menu and breaking is suppressed.
+		const uiOpen = isUiOpen();
+		const playerPos = this.getPlayerPosition();
+		const pickHit = uiOpen ? null : this.#pickTargetGated(playerPos);
+		this.playerHud.crossHair.setTargetHit(pickHit);
 
-			// L1: Cache position once — reused by all sub-systems this frame.
-			const playerPos = this.getPlayerPosition();
+		// L1: Cache position once — reused by all sub-systems this frame.
+		updateDistantTerrain(playerPos.x, playerPos.z);
 
-			CustomBoat.tickAllActiveBoats(this.scene, playerPos);
-			this.playerVehicle.update(dt);
-			this.playerStats.update(
-				dt,
-				this.playerVehicle.isSprinting,
-				this.playerVehicle.isClimbing
-					? this.playerStats.climbingStaminaRegenMultiplier
-					: 1,
-			);
-			this.playerVehicle.updateCameraAndVisuals();
-			this.#updateControls(pickHit);
-			if (this.#updateCaveState(playerPos.y)) {
-				this.#loadLastCx = -99999;
-			}
-			const cx = worldToChunkCoord(playerPos.x);
-			const cy = worldToChunkCoord(playerPos.y);
-			const cz = worldToChunkCoord(playerPos.z);
+		// C3: tick all active boats (buoyancy + controls). Uses the player
+		// position only for distance culling of out-of-range boats.
+		CustomBoat.tickAllActiveBoats(this.scene, playerPos);
+		vehicle.update(dt);
+		this.#updateSprintParticles(uiOpen, playerPos);
+		stats.update(
+			dtSec,
+			vehicle.isSprinting,
+			vehicle.isClimbing ? stats.climbingStaminaRegenMultiplier : 1,
+		);
+		vehicle.updateCameraAndVisuals(deltaMs);
+		this.#updateControls(uiOpen, pickHit);
+		if (this.#updateCaveState(playerPos.y)) {
+			this.#loadLastCx = -99999;
+		}
+		const cx = worldToChunkCoord(playerPos.x);
+		const cy = worldToChunkCoord(playerPos.y);
+		const cz = worldToChunkCoord(playerPos.z);
 
-			this.#updateChunksAroundPlayer(cx, cy, cz, playerPos);
-			processFrameBudgetedStreamingWork(cx, cy, cz);
-			this.#updateActiveMeshSelection(cx, cy, cz);
+		this.#updateChunksAroundPlayer(cx, cy, cz, playerPos);
+		processFrameBudgetedStreamingWork(cx, cy, cz);
 
-			// Occlusion culling – must run after chunk loading and before Babylon evaluates the scene.
-			this.#occlusionCuller.update(this.scene, this.#lastOcclusionStats);
+		this.#updateActiveMeshSelection(cx, cy, cz);
 
-			// Main-thread work time for this frame (EMA-smoothed).
-			const _frameMs = performance.now() - _frameStart;
-			this.#mainThreadMs = this.#mainThreadMs * 0.9 + _frameMs * 0.1;
-		});
+		// Occlusion culling – must run after chunk loading and before Lite evaluates the scene.
+		this.#occlusionCuller.update(this.#lastOcclusionStats);
 
-		this.#onAfterRenderObs = this.scene.onAfterRenderObservable.add(() => {
-			this.#updateDebugHud();
-			this.#freezeActiveMeshes();
-		});
+		// Main-thread work time for this frame (EMA-smoothed).
+		const _frameMs = performance.now() - _frameStart;
+		this.#mainThreadMs = this.#mainThreadMs * 0.9 + _frameMs * 0.1;
+
+		this.#updateDebugHud(deltaMs, cx, cy, cz);
+		this.#freezeActiveMeshes();
 	}
 
 	public dispose(): void {
-		if (this.#onBeforeRenderObs) {
-			this.scene.onBeforeRenderObservable.remove(this.#onBeforeRenderObs);
-			this.#onBeforeRenderObs = null;
-		}
-		if (this.#onAfterRenderObs) {
-			this.scene.onAfterRenderObservable.remove(this.#onAfterRenderObs);
-			this.#onAfterRenderObs = null;
-		}
 		if (this.#previousOnChunkLoaded !== null) {
 			Chunk.onChunkLoaded = this.#previousOnChunkLoaded;
 			this.#previousOnChunkLoaded = null;
@@ -168,14 +206,94 @@ export class PlayerLoopController {
 	// Controls
 	// ---------------------------------------------------------------------------
 
-	#updateControls(hit?: BlockRaycastHit | null): void {
+	/**
+	 * Full pick raycast, gated on camera/position stillness. When the eye
+	 * position and camera yaw/pitch have not moved (within epsilon), reuse the
+	 * last hit for at most PICK_STILL_REFRESH_FRAMES frames — staring at open
+	 * sky drops the 64-voxel DDA from 60/s to 10/s. Block-breaking progress is
+	 * wall-clock based (BreakingBlockHandler), so a briefly stale hit is safe;
+	 * the frame cap guarantees the hit refreshes after e.g. a block breaks.
+	 */
+	#pickTargetGated(playerPos: {
+		x: number;
+		y: number;
+		z: number;
+	}): BlockRaycastHit | null {
+		const yaw = this.playerCamera.cameraYaw;
+		const pitch = this.playerCamera.cameraPitch;
+
+		const still =
+			Math.abs(playerPos.x - this.#pickLastX) < 0.001 &&
+			Math.abs(playerPos.y - this.#pickLastY) < 0.001 &&
+			Math.abs(playerPos.z - this.#pickLastZ) < 0.001 &&
+			Math.abs(yaw - this.#pickLastYaw) < 0.001 &&
+			Math.abs(pitch - this.#pickLastPitch) < 0.001;
+
+		if (
+			still &&
+			this.#pickStillFrames < PlayerLoopController.PICK_STILL_REFRESH_FRAMES
+		) {
+			this.#pickStillFrames++;
+			return this.#pickCachedHit;
+		}
+
+		this.#pickLastX = playerPos.x;
+		this.#pickLastY = playerPos.y;
+		this.#pickLastZ = playerPos.z;
+		this.#pickLastYaw = yaw;
+		this.#pickLastPitch = pitch;
+		this.#pickStillFrames = 0;
+		this.#pickCachedHit = pickTarget(this.playerHud.player);
+		return this.#pickCachedHit;
+	}
+
+	#updateControls(uiOpen: boolean, hit?: BlockRaycastHit | null): void {
 		const controls = this.getKeyboardControls();
 		const type = controls.controlType;
 		if (type === "walking" || type === "customBoat" || type === "paddleBoat") {
+			// While a UI overlay (inventory / mason table) is open, suppress block
+			// breaking progress and cancel any in-progress break so a held mouse
+			// button doesn't keep mining behind the menu.
+			if (uiOpen) {
+				const maybe = controls as unknown as {
+					stopBlockBreaking?: () => void;
+				};
+				maybe.stopBlockBreaking?.();
+				return;
+			}
 			(
 				controls as unknown as { update(hit?: BlockRaycastHit | null): void }
 			).update(hit);
 		}
+	}
+
+	// ---------------------------------------------------------------------------
+	// Sprint particles
+	// ---------------------------------------------------------------------------
+
+	#updateSprintParticles(
+		uiOpen: boolean,
+		playerPos: { x: number; y: number; z: number },
+	): void {
+		if (
+			uiOpen ||
+			!this.playerVehicle.isSprinting ||
+			this.playerVehicle.isFlying
+		) {
+			return;
+		}
+		const vel = this.playerVehicle.velocity;
+		if (vel.x * vel.x + vel.z * vel.z < 4) return;
+
+		// Player capsule is 1.8m tall — feet sit ~0.85 below the body center.
+		playSprint(
+			this.scene,
+			playerPos.x,
+			playerPos.y - 0.85,
+			playerPos.z,
+			vel.x,
+			vel.z,
+		);
 	}
 
 	// ---------------------------------------------------------------------------
@@ -207,21 +325,27 @@ export class PlayerLoopController {
 			cy !== this.#loadLastCy ||
 			cz !== this.#loadLastCz
 		) {
+			// Direct call (no setTimeout): updateChunksAround is already async
+			// and frame-budgeted, and PlayerLoadingGate calls it directly every
+			// frame while spawn-loading — the macrotask only added latency.
+			const prevCx = this.#loadLastCx;
+			const prevCy = this.#loadLastCy;
+			const prevCz = this.#loadLastCz;
+			this.#loadLastCx = cx;
+			this.#loadLastCy = cy;
+			this.#loadLastCz = cz;
 			void updateChunksAround(
 				cx,
 				cy,
 				cz,
 				undefined,
 				undefined,
-				this.#loadLastCx,
-				this.#loadLastCy,
-				this.#loadLastCz,
+				prevCx,
+				prevCy,
+				prevCz,
 				playerPos.x,
 				playerPos.z,
 			);
-			this.#loadLastCx = cx;
-			this.#loadLastCy = cy;
-			this.#loadLastCz = cz;
 		}
 	}
 
@@ -256,11 +380,9 @@ export class PlayerLoopController {
 		if (chunkChanged || cameraMoved) {
 			this.#cameraStillFrames = 0;
 			this.#rebuildActiveMeshes = false;
-			// Unfreeze so Babylon rebuilds the active mesh list this frame.
-			if (this.scene._activeMeshesFrozen) {
-				this.scene._activeMeshesFrozen = false;
-				this.#frozenOnce = false;
-			}
+			// Lite has no active-mesh freeze; reset the local freeze latch so a
+			// later still-period can re-arm (no-op on the renderer side).
+			this.#frozenOnce = false;
 		} else {
 			this.#cameraStillFrames++;
 			// Schedule ONE freeze after the player has been still long enough.
@@ -274,8 +396,10 @@ export class PlayerLoopController {
 	}
 
 	#freezeActiveMeshes(): void {
+		// Lite SceneContext exposes no active-mesh freeze API; chunk visibility is
+		// already driven directly by the OcclusionCuller each frame. Keep the local
+		// latch consistent so a future still-period re-arms cleanly.
 		if (this.#rebuildActiveMeshes && !this.#frozenOnce) {
-			this.scene.freezeActiveMeshes(true, undefined, undefined, false);
 			this.#frozenOnce = true;
 			this.#rebuildActiveMeshes = false;
 		}
@@ -285,9 +409,14 @@ export class PlayerLoopController {
 	// Debug HUD
 	// ---------------------------------------------------------------------------
 
-	#updateDebugHud(): void {
+	#updateDebugHud(
+		deltaMs: number,
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+	): void {
 		this.playerHud.updateStats();
-		if (PlayerHud.debugPanelDiv.style.display === "none") return;
+		if (!PlayerHud.debugPanelVisible) return;
 
 		const now = performance.now();
 		if (
@@ -298,33 +427,23 @@ export class PlayerLoopController {
 		this.#lastDebugHudUpdateMs = now;
 
 		const playerPos = this.getPlayerPosition();
-		const chunkX = worldToChunkCoord(playerPos.x);
-		const chunkY = worldToChunkCoord(playerPos.y);
-		const chunkZ = worldToChunkCoord(playerPos.z);
-		const cameraPos = this.playerCamera.position;
-		const cameraYaw = this.playerCamera.cameraYaw;
-		const cameraPitch = this.playerCamera.cameraPitch;
+		const cam = this.playerCamera;
+		const cameraPos = cam.position;
+		const cameraYaw = cam.cameraYaw;
+		const cameraPitch = cam.cameraPitch;
 
 		PlayerHud.updateDebugInfo(
 			"FPS",
-			this.engine.getFps().toFixed(),
+			deltaMs > 0 ? (1000 / deltaMs).toFixed() : "0",
 			"performance",
 		);
-		PlayerHud.updateDebugInfo(
-			"Frame Ms",
-			this.engine.getDeltaTime().toFixed(1),
-			"performance",
-		);
+		PlayerHud.updateDebugInfo("Frame Ms", deltaMs.toFixed(1), "performance");
 		PlayerHud.updateDebugInfo(
 			"Main Thread Ms",
 			this.#mainThreadMs.toFixed(1),
 			"performance",
 		);
-		PlayerHud.updateDebugInfo(
-			"Faces",
-			this.scene.getActiveIndices() / 3,
-			"performance",
-		);
+		PlayerHud.updateDebugInfo("Faces", "n/a", "performance");
 		PlayerHud.updateDebugInfo(
 			"Player Pos",
 			`${playerPos.x.toFixed(2)}, ${playerPos.y.toFixed(2)}, ${playerPos.z.toFixed(2)}`,
@@ -516,8 +635,8 @@ export class PlayerLoopController {
 			"stats",
 		);
 
-		if (Map1.mobRegistry) {
-			const mobStats = Map1.mobRegistry.getDebugStats();
+		const mobStats = Map1.mobRegistry?.getDebugStats();
+		if (mobStats) {
 			PlayerHud.updateDebugInfo(
 				"Mobs",
 				`${mobStats.total}/${mobStats.cap}`,

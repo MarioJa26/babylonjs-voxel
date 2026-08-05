@@ -90,6 +90,15 @@ export enum BlockType {
 	SierranConiferLeaves = 88,
 	PineLeaves = 89,
 	MasonTable = 90,
+	Grass006Cross = 91,
+	WoodCrate = 92,
+	SequoiaLeaves = 93,
+	Torch = 94,
+	MangroveWood = 95,
+	Cobblecoal = 96,
+	Cobblecopper = 97,
+	Cobblegold = 98,
+	Cobbleiron = 99,
 }
 
 export const Hardness = {
@@ -111,7 +120,9 @@ export function isPassThroughBlock(blockId: number): boolean {
 		blockId === BlockType.Air ||
 		blockId === BlockType.Water ||
 		blockId === BlockType.GrassCross ||
-		blockId === BlockType.SavannahGrassCross
+		blockId === BlockType.SavannahGrassCross ||
+		blockId === BlockType.Grass006Cross ||
+		blockId === BlockType.Torch
 	);
 }
 

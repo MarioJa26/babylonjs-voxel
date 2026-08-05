@@ -1,10 +1,11 @@
 {
 	"compilerOptions": {
-		"target": "ES2025",
+		"target": "esnext",
 		"module": "ESNext",
 		"strict": true,
 		"jsx": "preserve",
 		"importHelpers": true,
+		"resolveJsonModule": true,
 		"moduleResolution": "bundler",
 		"skipLibCheck": true,
 		"esModuleInterop": true,
@@ -12,7 +13,7 @@
 		"forceConsistentCasingInFileNames": true,
 		"useDefineForClassFields": true,
 		"sourceMap": true,
-		"types": ["vite/client"],
+		"types": ["vite/client", "@webgpu/types"],
 		"paths": {
 			"@/*": ["./src/*"]
 		},
@@ -20,5 +21,13 @@
 		"isolatedModules": true
 	},
 	"include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.vue", "vite.config.ts"],
-	"exclude": ["node_modules", "dist", "src/code_js/**/*"]
+	"exclude": [
+		"node_modules",
+		"dist",
+		"src/code/wasm/**/*",
+		"src/code_js/**/*",
+		"src/BabylonExamples/**/*",
+		"tests/*",
+		"benchmarks/*"
+	]
 }

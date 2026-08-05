@@ -89,7 +89,7 @@ export function deserializeMesh(bytes: Uint8Array): MeshData {
  * essential after fixes that change how blocks are meshed (e.g. grass crosses
  * were previously cached as full cubes before shape JSON finished loading).
  */
-const MESH_FORMAT_VERSION = 2;
+const MESH_FORMAT_VERSION = 3;
 
 export function serializeMeshPair(
 	opaque: MeshData | null | undefined,

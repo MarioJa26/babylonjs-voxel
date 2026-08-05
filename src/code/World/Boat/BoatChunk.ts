@@ -1,4 +1,20 @@
-import { Matrix, Mesh, type Scene, Vector3 } from "@babylonjs/core";
+import {
+	addToScene,
+	createMeshFromData,
+	type Mesh,
+	removeFromScene,
+	type SceneContext,
+	type Vec3,
+	vec3,
+} from "@babylonjs/lite";
+import {
+	copyVec3,
+	Matrix,
+	setVec3,
+	transformCoordinatesVec3ToRef,
+	vec3Zero,
+} from "@/code/Lib/Math";
+import { Map1 } from "../../Maps/Map1";
 import { Chunk } from "../Chunk/Chunk";
 import { ChunkWorkerPool } from "../Chunk/ChunkWorkerPool";
 import {
@@ -39,24 +55,31 @@ export class BoatChunk {
 	private static readonly CHUNK_COORD_SPACING = 4;
 	private static nextChunkSlot = 0;
 
-	#scene: Scene;
-	#center: Vector3;
+	#scene: SceneContext;
+	#center = vec3Zero();
 	#visualRoot: Mesh;
 	#centerChunk: Chunk;
-	#scratchInverse = new Matrix();
-	#scratchLocal = new Vector3();
+	#scratchWorldMatrix = new Matrix();
+	#scratchLocal = vec3Zero();
 	#neighborChunks: Chunk[] = [];
 	#attachedOpaqueMesh: Mesh | null = null;
 	#attachedTransparentMesh: Mesh | null = null;
 	#blockChangeListeners = new Set<BoatChunkBlockChangeListener>();
 
-	constructor(scene: Scene, blocks: BoatChunkBlock[], center: Vector3) {
+	constructor(blocks: BoatChunkBlock[], center: Vec3) {
 		BoatChunk.activeChunks.add(this);
-		this.#scene = scene;
-		this.#center = center.clone();
-		this.#visualRoot = new Mesh("boatChunkRoot", this.#scene);
-		this.#visualRoot.isPickable = false;
-		this.#visualRoot.renderingGroupId = 1;
+		this.#scene = Map1.mainScene;
+		copyVec3(this.#center, center);
+		this.#visualRoot = createMeshFromData(
+			Map1.engine,
+			"boatChunkRoot",
+			new Float32Array(9),
+			new Float32Array(9),
+			new Uint32Array([0, 1, 2]),
+		);
+		addToScene(this.#scene, this.#visualRoot);
+		this.#visualRoot.pickable = false;
+		this.#visualRoot.renderOrder = 1;
 
 		const chunkCoords = BoatChunk.allocateChunkCoords();
 		this.#centerChunk = new Chunk(chunkCoords.x, chunkCoords.y, chunkCoords.z);
@@ -252,23 +275,18 @@ export class BoatChunk {
 	}
 
 	private isAliveMesh(mesh: Mesh | null): mesh is Mesh {
-		return !!mesh && !mesh.isDisposed();
+		return !!mesh;
 	}
 
 	private configureAttachedMesh(mesh: Mesh): void {
-		if (mesh.isDisposed()) return;
-		mesh.unfreezeWorldMatrix();
-		// World chunks are static and use frozen bounds. Boat meshes move/rotate, so
-		// keep bounds synced to transforms to avoid incorrect frustum culling.
-		mesh.doNotSyncBoundingInfo = false;
 		mesh.parent = this.#visualRoot;
 		mesh.position.set(-this.#center.x, -this.#center.y, -this.#center.z);
 		mesh.rotation.set(0, 0, 0);
 		mesh.scaling.set(1, 1, 1);
-		mesh.isPickable = true;
+		mesh.pickable = true;
 		// Keep transparent and opaque boat chunk meshes in the same rendering group
 		// so depth from opaque is preserved for transparent pass.
-		mesh.renderingGroupId = 1;
+		mesh.renderOrder = 1;
 		mesh.metadata = this.#visualRoot.metadata;
 	}
 
@@ -379,55 +397,46 @@ export class BoatChunk {
 		this.#centerChunk.scheduleRemesh();
 	}
 
-	public worldToLocalBlock(worldPosition: Vector3): Vector3 {
+	public worldToLocalBlock(worldPosition: Vec3): Vec3 {
 		this.worldToLocalBlockToRef(worldPosition, this.#scratchLocal);
-		return new Vector3(
+		return vec3(
 			Math.floor(this.#scratchLocal.x),
 			Math.floor(this.#scratchLocal.y),
 			Math.floor(this.#scratchLocal.z),
 		);
 	}
 
-	public worldToLocalBlockToRef(worldPosition: Vector3, ref: Vector3): void {
-		this.#visualRoot.getWorldMatrix().invertToRef(this.#scratchInverse);
-		Vector3.TransformCoordinatesToRef(
-			worldPosition,
-			this.#scratchInverse,
-			this.#scratchLocal,
-		);
-		ref.set(
-			Math.floor(this.#scratchLocal.x + this.#center.x),
-			Math.floor(this.#scratchLocal.y + this.#center.y),
-			Math.floor(this.#scratchLocal.z + this.#center.z),
+	public worldToLocalBlockToRef(worldPosition: Vec3, ref: Vec3): void {
+		const root = this.#visualRoot.position;
+		setVec3(
+			ref,
+			worldPosition.x - root.x + this.#center.x,
+			worldPosition.y - root.y + this.#center.y,
+			worldPosition.z - root.z + this.#center.z,
 		);
 	}
 
-	public localToWorldCenter(x: number, y: number, z: number): Vector3 {
-		const localCenter = new Vector3(
-			x + 0.5 - this.#center.x,
-			y + 0.5 - this.#center.y,
-			z + 0.5 - this.#center.z,
-		);
-		return Vector3.TransformCoordinates(
-			localCenter,
-			this.#visualRoot.getWorldMatrix(),
-		);
+	public localToWorldCenter(x: number, y: number, z: number): Vec3 {
+		const ref = vec3(0, 0, 0);
+		this.localToWorldCenterToRef(x, y, z, ref);
+		return ref;
 	}
 
 	public localToWorldCenterToRef(
 		x: number,
 		y: number,
 		z: number,
-		ref: Vector3,
+		ref: Vec3,
 	): void {
 		const lx = x + 0.5 - this.#center.x;
 		const ly = y + 0.5 - this.#center.y;
 		const lz = z + 0.5 - this.#center.z;
-		Vector3.TransformCoordinatesFromFloatsToRef(
-			lx,
-			ly,
-			lz,
-			this.#visualRoot.getWorldMatrix(),
+		const wm = this.#visualRoot.worldMatrix;
+		const sm = this.#scratchWorldMatrix.m;
+		for (let i = 0; i < 16; i++) sm[i] = wm[i];
+		transformCoordinatesVec3ToRef(
+			vec3(lx, ly, lz),
+			this.#scratchWorldMatrix,
 			ref,
 		);
 	}
@@ -474,7 +483,7 @@ export class BoatChunk {
 		};
 	}
 
-	public toSnapshot(): { blocks: BoatChunkBlock[]; center: Vector3 } {
+	public toSnapshot(): { blocks: BoatChunkBlock[]; center: Vec3 } {
 		const blocks: BoatChunkBlock[] = [];
 
 		for (let y = 0; y < Chunk.SIZE; y++) {
@@ -501,7 +510,7 @@ export class BoatChunk {
 
 		return {
 			blocks,
-			center: this.#center.clone(),
+			center: vec3(this.#center.x, this.#center.y, this.#center.z),
 		};
 	}
 
@@ -518,7 +527,7 @@ export class BoatChunk {
 		}
 		this.#neighborChunks.length = 0;
 
-		this.#visualRoot.dispose(false, true);
+		removeFromScene(this.#scene, this.#visualRoot);
 	}
 	private createEmptyLightArray(): Uint8Array {
 		return new Uint8Array(this.createSharedBuffer(Chunk.SIZE3));
@@ -528,7 +537,7 @@ export class BoatChunk {
 		return this.#visualRoot;
 	}
 
-	public get center(): Vector3 {
+	public get center(): Vec3 {
 		return this.#center;
 	}
 

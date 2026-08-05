@@ -236,12 +236,36 @@ export class ChunkLodRuleSet {
 		playerZ: number,
 		previousLod: number | null | undefined,
 	): ChunkLodDecision {
-		const horizontalDist = Math.max(
-			Math.abs(targetX - playerX),
-			Math.abs(targetZ - playerZ),
+		return this._resolveWithHysteresis(
+			Math.max(Math.abs(targetX - playerX), Math.abs(targetZ - playerZ)),
+			Math.abs(targetY - playerY),
+			previousLod,
 		);
-		const verticalDist = Math.abs(targetY - playerY);
+	}
 
+	/**
+	 * Like resolveWithHysteresis but accepts precomputed distances — avoids
+	 * redundant abs/max computation when the caller already has hDist/vDist
+	 * (e.g. enqueueLoadedChunksForRefresh which computes both for the
+	 * LOD-boundary pre-check before resolving).
+	 */
+	public resolveWithHysteresisFromDistance(
+		horizontalDist: number,
+		verticalDist: number,
+		previousLod: number | null | undefined,
+	): ChunkLodDecision {
+		return this._resolveWithHysteresis(
+			horizontalDist,
+			verticalDist,
+			previousLod,
+		);
+	}
+
+	private _resolveWithHysteresis(
+		horizontalDist: number,
+		verticalDist: number,
+		previousLod: number | null | undefined,
+	): ChunkLodDecision {
 		const baseDecision = this.resolveWithDistance(horizontalDist, verticalDist);
 
 		if (previousLod === null || previousLod === undefined) {
@@ -260,36 +284,33 @@ export class ChunkLodRuleSet {
 
 		const previousBandAllowsCreation = previousLod >= 0 && previousLod <= 3;
 
-		const withinPreviousBandWithBuffer = (() => {
-			switch (previousLod) {
-				case 0:
-					return (
-						horizontalDist <=
-							this.radii.lod0HorizontalRadius + horizontalLeaveBuffer &&
-						verticalDist <= this.radii.lod0VerticalRadius + verticalLeaveBuffer
-					);
-				case 1:
-					return (
-						horizontalDist <=
-							this.radii.lod1HorizontalRadius + horizontalLeaveBuffer &&
-						verticalDist <= this.radii.lod1VerticalRadius + verticalLeaveBuffer
-					);
-				case 2:
-					return (
-						horizontalDist <=
-							this.radii.lod2HorizontalRadius + horizontalLeaveBuffer &&
-						verticalDist <= this.radii.lod2VerticalRadius + verticalLeaveBuffer
-					);
-				case 3:
-					return (
-						horizontalDist <=
-							this.radii.lod3HorizontalRadius + horizontalLeaveBuffer &&
-						verticalDist <= this.radii.lod3VerticalRadius + verticalLeaveBuffer
-					);
-				default:
-					return false;
-			}
-		})();
+		let withinPreviousBandWithBuffer = false;
+		switch (previousLod) {
+			case 0:
+				withinPreviousBandWithBuffer =
+					horizontalDist <=
+						this.radii.lod0HorizontalRadius + horizontalLeaveBuffer &&
+					verticalDist <= this.radii.lod0VerticalRadius + verticalLeaveBuffer;
+				break;
+			case 1:
+				withinPreviousBandWithBuffer =
+					horizontalDist <=
+						this.radii.lod1HorizontalRadius + horizontalLeaveBuffer &&
+					verticalDist <= this.radii.lod1VerticalRadius + verticalLeaveBuffer;
+				break;
+			case 2:
+				withinPreviousBandWithBuffer =
+					horizontalDist <=
+						this.radii.lod2HorizontalRadius + horizontalLeaveBuffer &&
+					verticalDist <= this.radii.lod2VerticalRadius + verticalLeaveBuffer;
+				break;
+			case 3:
+				withinPreviousBandWithBuffer =
+					horizontalDist <=
+						this.radii.lod3HorizontalRadius + horizontalLeaveBuffer &&
+					verticalDist <= this.radii.lod3VerticalRadius + verticalLeaveBuffer;
+				break;
+		}
 
 		if (withinPreviousBandWithBuffer && previousLod < baseDecision.lodLevel) {
 			baseDecision.lodLevel = previousLod;

@@ -5,7 +5,7 @@ import { packChunkKey } from "./Storage/ChunkKey";
 import type { OpfsClient } from "./Storage/OpfsClient";
 import {
 	deserializeEntities,
-	deserializeVoxelData,
+	type HydratedVoxelData,
 	type SavedChunkData,
 	type SavedChunkEntityData,
 	serializeEntities,
@@ -20,6 +20,30 @@ export type LoadChunkOptions = {
 
 const VOXEL_SENTINEL = 255;
 const ENTITY_SENTINEL = 254;
+
+// PERF: gzip's worst-case expansion on already-small, already-typed voxel/
+// light buffers is a handful of stored-block headers (~5 bytes per 64KB) plus
+// the fixed 18-byte gzip header/trailer. 512 bytes of headroom on top of the
+// uncompressed input size is generous and means the common case never grows
+// the output buffer at all.
+const GZIP_SAFETY_MARGIN = 512;
+
+/**
+ * PERF: doubling-growth helper shared by compress()'s output accumulator.
+ * Only exercised if a chunk's compressed output somehow exceeds the safety
+ * margin above (should not happen in practice for voxel/light payloads).
+ */
+function ensureCapacity(
+	buf: Uint8Array<ArrayBufferLike>,
+	needed: number,
+): Uint8Array<ArrayBufferLike> {
+	if (buf.length >= needed) return buf;
+	let newLen = buf.length * 2;
+	while (newLen < needed) newLen *= 2;
+	const grown = new Uint8Array(newLen);
+	grown.set(buf);
+	return grown;
+}
 
 class WorldStorageImpl {
 	private initPromise: Promise<void> | null = null;
@@ -72,78 +96,31 @@ class WorldStorageImpl {
 				>,
 			)
 			.getReader();
-		const chunks: Uint8Array[] = [];
-		let totalBytes = 0;
-		try {
-			while (true) {
-				const { value, done } = await reader.read();
-				if (done) break;
-				chunks.push(value);
-				totalBytes += value.byteLength;
-			}
-		} finally {
-			reader.releaseLock();
-		}
-		const result = new Uint8Array(totalBytes);
-		let offset = 0;
-		for (const c of chunks) {
-			result.set(c, offset);
-			offset += c.byteLength;
-		}
-		return result;
-	}
 
-	private async decompressToShared(
-		data: Uint8Array,
-	): Promise<Uint8Array | Uint16Array> {
-		const outputByteLength = this.getGzipISize(data);
-		const body: Uint8Array<ArrayBuffer> =
-			data.buffer instanceof ArrayBuffer
-				? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
-				: new Uint8Array(data);
-		const sab = new SharedArrayBuffer(outputByteLength);
-		const out = new Uint8Array(sab);
-		const reader = new Response(body)
-			.body!.pipeThrough(new DecompressionStream("gzip"))
-			.getReader();
-		let offset = 0;
-		try {
-			while (true) {
-				const { value, done } = await reader.read();
-				if (done) break;
-				if (value) {
-					out.set(value, offset);
-					offset += value.byteLength;
-				}
-			}
-		} finally {
-			reader.releaseLock();
-		}
-		if (offset !== outputByteLength) {
-			throw new Error(
-				`Decompressed size mismatch: expected ${outputByteLength}, got ${offset}`,
-			);
-		}
-		return sab.byteLength === Chunk.SIZE3 * 2
-			? new Uint16Array(sab)
-			: new Uint8Array(sab);
-	}
-
-	private getGzipISize(data: Uint8Array): number {
-		if (data.byteLength < 18) throw new Error("Invalid gzip data: too small");
-		return (
-			(data[data.byteLength - 4] |
-				(data[data.byteLength - 3] << 8) |
-				(data[data.byteLength - 2] << 16) |
-				(data[data.byteLength - 1] << 24)) >>>
-			0
+		// PERF: pre-size the output buffer instead of accumulating an array of
+		// stream chunks and doing a second full copy pass to merge them
+		// afterward. Decompression takes a different approach — it reads the
+		// gzip trailer's ISIZE field for exact sizing; compression can't know
+		// its exact output size ahead of time, but a generous upper bound
+		// avoids the common-case growth/copy entirely.
+		let outBuf: Uint8Array<ArrayBufferLike> = new Uint8Array(
+			inputBytes.byteLength + GZIP_SAFETY_MARGIN,
 		);
-	}
-
-	private isUint8Array(
-		value: Uint8Array | Uint16Array | null | undefined,
-	): value is Uint8Array {
-		return !!value && value.BYTES_PER_ELEMENT === 1;
+		let offset = 0;
+		try {
+			while (true) {
+				const { value, done } = await reader.read();
+				if (done) break;
+				if (offset + value.byteLength > outBuf.length) {
+					outBuf = ensureCapacity(outBuf, offset + value.byteLength);
+				}
+				outBuf.set(value, offset);
+				offset += value.byteLength;
+			}
+		} finally {
+			reader.releaseLock();
+		}
+		return offset === outBuf.length ? outBuf : outBuf.slice(0, offset);
 	}
 
 	private detachSharedArrayBuffer<T extends ArrayBufferView>(view: T): T {
@@ -271,47 +248,40 @@ class WorldStorageImpl {
 		if (!client) return null;
 
 		try {
-			const bytes = await client.readVoxel(chunkId, VOXEL_SENTINEL);
-			if (!bytes) return null;
-			const data = deserializeVoxelData(bytes);
 			const includeVoxelData = options?.includeVoxelData ?? true;
-
-			if (data.compressed && includeVoxelData) {
-				const jobs: Promise<void>[] = [];
-				if (this.isUint8Array(data.blocks)) {
-					jobs.push(
-						this.decompressToShared(data.blocks).then((result) => {
-							data.blocks = result;
-						}),
-					);
-				}
-				if (this.isUint8Array(data.lightArray)) {
-					jobs.push(
-						this.decompressToShared(data.lightArray).then((result) => {
-							data.lightArray = result as Uint8Array;
-						}),
-					);
-				}
-				await Promise.all(jobs);
-			} else if (!includeVoxelData) {
-				data.blocks = null;
-				data.palette = null;
-				data.isUniform = undefined;
-				data.uniformBlockId = undefined;
-				data.lightArray = undefined;
+			if (!includeVoxelData) {
+				const bytes = await client.readVoxel(chunkId, VOXEL_SENTINEL);
+				if (!bytes) return null;
+				const data: SavedChunkData = { blocks: null };
+				return data;
 			}
-			return data;
+			const hydrated = await client.readVoxelDecompressed(
+				chunkId,
+				VOXEL_SENTINEL,
+			);
+			if (!hydrated) return null;
+			return hydrateResultToSavedData(hydrated);
 		} catch (err) {
 			console.warn("[WorldStorage] OPFS voxel read failed:", err);
 			return null;
 		}
 	}
 
+	/**
+	 * PERF: accepts an optional pre-existing map to populate in place. Callers
+	 * that maintain a reusable scratch map (e.g. ChunkProcessScheduler's
+	 * per-slice near/far/hydrate maps) can pass it in directly instead of
+	 * receiving a freshly allocated Map every call and copying entries out of
+	 * it — this method does not clear outMap itself, so the caller is
+	 * responsible for clearing it beforehand if overwrite (rather than merge)
+	 * semantics are wanted.
+	 */
 	async loadChunks(
 		chunkIds: bigint[],
 		options?: LoadChunkOptions,
+		outMap?: Map<bigint, SavedChunkData>,
 	): Promise<Map<bigint, SavedChunkData>> {
-		const result = new Map<bigint, SavedChunkData>();
+		const result = outMap ?? new Map<bigint, SavedChunkData>();
 
 		if (GLOBAL_VALUES.DISABLE_CHUNK_LOADING || chunkIds.length === 0) {
 			return result;
@@ -327,79 +297,44 @@ class WorldStorageImpl {
 
 		const readConcurrency = Math.max(2, Math.min(16, hardwareConcurrency * 2));
 
-		await mapLimit(chunkIds, readConcurrency, async (chunkId) => {
-			try {
-				const bytes = await client.readVoxel(chunkId, VOXEL_SENTINEL);
-				if (!bytes) return;
-
-				const raw = deserializeVoxelData(bytes);
-				hits.push({ chunkId, data: raw });
-			} catch (err) {
-				console.warn(
-					`[WorldStorage] Failed to read chunk ${chunkId.toString()}, ${err}`,
-				);
-			}
-		});
+		if (!includeVoxelData) {
+			await mapLimit(chunkIds, readConcurrency, async (chunkId) => {
+				try {
+					const bytes = await client.readVoxel(chunkId, VOXEL_SENTINEL);
+					if (!bytes) return;
+					hits.push({ chunkId, data: { blocks: null } });
+				} catch (err) {
+					console.warn(
+						`[WorldStorage] Failed to read chunk ${chunkId.toString()}, ${err}`,
+					);
+				}
+			});
+		} else {
+			await mapLimit(chunkIds, readConcurrency, async (chunkId) => {
+				try {
+					const hydrated = await client.readVoxelDecompressed(
+						chunkId,
+						VOXEL_SENTINEL,
+					);
+					if (!hydrated) return;
+					hits.push({ chunkId, data: hydrateResultToSavedData(hydrated) });
+				} catch (err) {
+					console.warn(
+						`[WorldStorage] Failed to read chunk ${chunkId.toString()}, ${err}`,
+					);
+				}
+			});
+		}
 
 		if (hits.length === 0) return result;
 
-		if (!includeVoxelData) {
-			for (let i = 0; i < hits.length; i++) {
-				const { chunkId, data } = hits[i];
-
-				data.blocks = null;
-				data.palette = null;
-				data.isUniform = undefined;
-				data.uniformBlockId = undefined;
-				data.lightArray = undefined;
-
-				result.set(chunkId, data);
-			}
-
-			return result;
+		for (let i = 0; i < hits.length; i++) {
+			result.set(hits[i].chunkId, hits[i].data);
 		}
-
-		const decompressConcurrency = Math.max(1, Math.min(4, hardwareConcurrency));
-
-		await mapLimit(hits, decompressConcurrency, async ({ chunkId, data }) => {
-			if (data.compressed) {
-				const jobs: Promise<void>[] = [];
-
-				if (this.isUint8Array(data.blocks)) {
-					jobs.push(
-						this.decompressToShared(data.blocks).then((r) => {
-							data.blocks = r;
-						}),
-					);
-				}
-
-				if (this.isUint8Array(data.lightArray)) {
-					jobs.push(
-						this.decompressToShared(data.lightArray).then((r) => {
-							data.lightArray = r as Uint8Array;
-						}),
-					);
-				}
-
-				if (jobs.length > 0) {
-					await Promise.all(jobs);
-				}
-			}
-
-			result.set(chunkId, data);
-		});
 
 		return result;
 	}
 
-	async clearWorldData(): Promise<void> {
-		if ("storage" in navigator && "getDirectory" in navigator.storage) {
-			const root = await navigator.storage.getDirectory();
-			for await (const entry of root.values()) {
-				await root.removeEntry(entry.name, { recursive: true });
-			}
-		}
-	}
 	private async saveChunkWithClient(
 		client: OpfsClient,
 		chunk: Chunk,
@@ -435,6 +370,27 @@ class WorldStorageImpl {
 		}
 	}
 }
+/**
+ * Convert a HydratedVoxelData (SAB-backed structured result from the OPFS
+ * worker) into SavedChunkData that Chunk.loadFromStorage can consume.
+ * The TypedArray views are backed by SharedArrayBuffer so ensureSharedBacking
+ * becomes a no-op — no main-thread copy is needed.
+ */
+function hydrateResultToSavedData(h: HydratedVoxelData): SavedChunkData {
+	return {
+		blocks: h.blocksSAB
+			? h.blockBytesPerElement === 2
+				? new Uint16Array(h.blocksSAB)
+				: new Uint8Array(h.blocksSAB)
+			: null,
+		palette: h.paletteSAB ? new Uint16Array(h.paletteSAB) : null,
+		isUniform: h.isUniform || undefined,
+		uniformBlockId: h.uniformBlockId || undefined,
+		lightArray: h.lightSAB ? new Uint8Array(h.lightSAB) : undefined,
+		compressed: false,
+	};
+}
+
 async function mapLimit<T>(
 	items: readonly T[],
 	limit: number,

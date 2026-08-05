@@ -1,4 +1,4 @@
-import type { Scene, Vector3 } from "@babylonjs/core";
+import type { SceneContext, Vec3 } from "@babylonjs/lite";
 import { Map1 } from "../../Maps/Map1";
 import { BlockType } from "../../World/Texture/BlockType";
 import { SpawnCoordinator } from "../SpawnCoordinator";
@@ -7,8 +7,8 @@ import { MobRegistry } from "./Mob";
 import { Sheep } from "./Sheep";
 
 export function createMobCoordinator(
-	scene: Scene,
-	getPlayerPosition: () => Vector3,
+	scene: SceneContext,
+	getPlayerPosition: () => Vec3,
 ): SpawnCoordinator {
 	const registry = new MobRegistry();
 

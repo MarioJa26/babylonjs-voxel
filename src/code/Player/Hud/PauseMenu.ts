@@ -1,11 +1,10 @@
+import { worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import { Map1 } from "@/code/Maps/Map1";
-import { worldToChunkCoord } from "@/code/Shared/ChunkCoordUtils";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import {
 	flushChunkBoundEntities,
 	updateChunksAround,
 } from "../../World/Chunk/ChunkLoadingSystem";
-import { ChunkWorkerPool } from "../../World/Chunk/ChunkWorkerPool";
 import { WorldStorage } from "../../World/WorldStorage";
 import type { Player } from "../Player"; // Import Player to access its methods
 
@@ -66,8 +65,7 @@ export class PauseMenu {
 			saveButton.innerText = "Saving...";
 			saveButton.disabled = true;
 			try {
-				await WorldStorage.saveAllModifiedChunks();
-				await flushChunkBoundEntities();
+				await this.saveAll();
 				saveButton.innerText = "Saved!";
 			} catch (e) {
 				console.error("Save failed", e);
@@ -87,46 +85,29 @@ export class PauseMenu {
 		settingsButton.onclick = () => this.showSettings(true);
 		container.appendChild(settingsButton);
 
-		// Reset World Button
-		const resetButton = document.createElement("button");
-		resetButton.innerText = "Reset World";
-		resetButton.style.backgroundColor = "#800000";
-		resetButton.onclick = async () => {
-			if (
-				confirm(
-					"Are you sure you want to delete your world? This cannot be undone.",
-				)
-			) {
-				resetButton.innerText = "Deleting...";
-				resetButton.disabled = true;
-				try {
-					const pool = ChunkWorkerPool.getInstance();
-					const client = pool.getOpfsClient();
-					if (client) {
-						await client.close();
-					}
-					await WorldStorage.clearWorldData();
-					localStorage.removeItem("b102.playerPosition.v1");
-					localStorage.removeItem("b102.playerInventory.v1");
-					window.location.reload();
-				} catch (e) {
-					console.error("Failed to reset world", e);
-					resetButton.innerText = "Error!";
-				}
+		// Main Menu Button
+		const mainMenuButton = document.createElement("button");
+		mainMenuButton.innerText = "Main Menu";
+		mainMenuButton.onclick = async () => {
+			mainMenuButton.innerText = "Saving...";
+			mainMenuButton.disabled = true;
+			try {
+				await this.saveAll();
+				window.location.href = "/";
+			} catch (e) {
+				console.error("Failed to save before returning", e);
+				mainMenuButton.innerText = "Error!";
+				mainMenuButton.disabled = false;
 			}
 		};
-		container.appendChild(resetButton);
-
-		// Quit Button
-		const quitButton = document.createElement("button");
-		quitButton.innerText = "Quit Game";
-		quitButton.onclick = () => {
-			// For a web game, reloading is a simple way to "quit" to the start.
-			window.location.reload();
-		};
-		container.appendChild(quitButton);
+		container.appendChild(mainMenuButton);
 
 		return container;
+	}
+
+	private async saveAll(): Promise<void> {
+		await WorldStorage.saveAllModifiedChunks();
+		await flushChunkBoundEntities();
 	}
 
 	private createSettingsPanel(): HTMLElement {
@@ -249,125 +230,71 @@ export class PauseMenu {
 			},
 		);
 
-		this.createSlider(
-			lodSection,
-			"LOD 0 Offset",
-			0,
-			10,
-			SETTING_PARAMS.LOD_0_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_0_OFFSET = value;
-				return `${value}`;
+		const lodSliders: {
+			key: {
+				[K in keyof typeof SETTING_PARAMS]: (typeof SETTING_PARAMS)[K] extends number
+					? K
+					: never;
+			}[keyof typeof SETTING_PARAMS];
+			label: string;
+			min: number;
+			max: number;
+		}[] = [
+			{ key: "LOD_0_OFFSET", label: "LOD 0 Offset", min: 0, max: 10 },
+			{ key: "LOD_1_OFFSET", label: "LOD 1 Offset", min: 0, max: 10 },
+			{ key: "LOD_2_OFFSET", label: "LOD 2 Offset", min: 0, max: 10 },
+			{ key: "LOD_3_OFFSET", label: "LOD 3 Offset", min: 0, max: 10 },
+			{
+				key: "LOD_VERTICAL_0_OFFSET",
+				label: "LOD V0 Offset",
+				min: 0,
+				max: 10,
 			},
-		);
+			{
+				key: "LOD_VERTICAL_1_OFFSET",
+				label: "LOD V1 Offset",
+				min: 0,
+				max: 10,
+			},
+			{
+				key: "LOD_VERTICAL_2_OFFSET",
+				label: "LOD V2 Offset",
+				min: 0,
+				max: 10,
+			},
+			{
+				key: "LOD_VERTICAL_3_OFFSET",
+				label: "LOD V3 Offset",
+				min: 0,
+				max: 10,
+			},
+			{
+				key: "LOD_PRECOMPUTE_HORIZONTAL_OFFSET",
+				label: "Precompute H Offset",
+				min: 0,
+				max: 30,
+			},
+			{
+				key: "LOD_PRECOMPUTE_VERTICAL_OFFSET",
+				label: "Precompute V Offset",
+				min: 0,
+				max: 15,
+			},
+		];
 
-		this.createSlider(
-			lodSection,
-			"LOD 1 Offset",
-			0,
-			10,
-			SETTING_PARAMS.LOD_1_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_1_OFFSET = value;
-				return `${value}`;
-			},
-		);
-
-		this.createSlider(
-			lodSection,
-			"LOD 2 Offset",
-			0,
-			10,
-			SETTING_PARAMS.LOD_2_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_2_OFFSET = value;
-				return `${value}`;
-			},
-		);
-
-		this.createSlider(
-			lodSection,
-			"LOD 3 Offset",
-			0,
-			10,
-			SETTING_PARAMS.LOD_3_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_3_OFFSET = value;
-				return `${value}`;
-			},
-		);
-
-		this.createSlider(
-			lodSection,
-			"LOD V0 Offset",
-			0,
-			10,
-			SETTING_PARAMS.LOD_VERTICAL_0_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_VERTICAL_0_OFFSET = value;
-				return `${value}`;
-			},
-		);
-
-		this.createSlider(
-			lodSection,
-			"LOD V1 Offset",
-			0,
-			10,
-			SETTING_PARAMS.LOD_VERTICAL_1_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_VERTICAL_1_OFFSET = value;
-				return `${value}`;
-			},
-		);
-
-		this.createSlider(
-			lodSection,
-			"LOD V2 Offset",
-			0,
-			10,
-			SETTING_PARAMS.LOD_VERTICAL_2_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_VERTICAL_2_OFFSET = value;
-				return `${value}`;
-			},
-		);
-
-		this.createSlider(
-			lodSection,
-			"LOD V3 Offset",
-			0,
-			10,
-			SETTING_PARAMS.LOD_VERTICAL_3_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_VERTICAL_3_OFFSET = value;
-				return `${value}`;
-			},
-		);
-
-		this.createSlider(
-			lodSection,
-			"Precompute H Offset",
-			0,
-			30,
-			SETTING_PARAMS.LOD_PRECOMPUTE_HORIZONTAL_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_PRECOMPUTE_HORIZONTAL_OFFSET = value;
-				return `${value}`;
-			},
-		);
-
-		this.createSlider(
-			lodSection,
-			"Precompute V Offset",
-			0,
-			15,
-			SETTING_PARAMS.LOD_PRECOMPUTE_VERTICAL_OFFSET,
-			(value) => {
-				SETTING_PARAMS.LOD_PRECOMPUTE_VERTICAL_OFFSET = value;
-				return `${value}`;
-			},
-		);
+		for (const { key, label, min, max } of lodSliders) {
+			this.createSlider(
+				lodSection,
+				label,
+				min,
+				max,
+				SETTING_PARAMS[key],
+				(value) => {
+					SETTING_PARAMS[key] = value;
+					return `${value}`;
+				},
+			);
+		}
 
 		this.createSlider(
 			lodSection,
@@ -487,6 +414,7 @@ export class PauseMenu {
         font-size: 3em;
         margin-bottom: 20px;
         text-shadow: 2px 2px 4px #000000;
+        user-select: none;
       }
 
       #pauseMenuContainer button {
@@ -497,6 +425,7 @@ export class PauseMenu {
         color: white;
         min-width: 200px;
         cursor: pointer;
+        user-select: none;
         transition: background-color 0.3s, color 0.3s;
       }
 

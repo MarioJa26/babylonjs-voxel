@@ -15,8 +15,8 @@ export const ALPINE_MEADOW: Biome = {
 	canSpawnTrees: true,
 	treeDensity: 0.08, // sparse conifers at treeline
 	grassDensity: 0.3, // lush alpine grass
-	beachBlock: BlockType.RocksGround02, // rocky shore
-	seafloorBlock: BlockType.RocksGround02, // rocky seafloor
+	beachBlock: 46, // rocky shore
+	seafloorBlock: 46, // rocky seafloor
 
 	terrainScale: GenerationParams.TERRAIN_SCALE * 0.5,
 	persistence: 0.25,

@@ -1,4 +1,5 @@
 import Alea from "alea";
+import { CHUNK_SHIFT } from "@/code/Lib/VoxelMath";
 import { getBiomeFor } from "./Biome/Biomes";
 import type { Biome } from "./Biome/BiomeTypes";
 import {
@@ -19,8 +20,6 @@ import { RiverGenerator } from "./RiverGeneration";
 // ---------------------------------------------------------------------------
 
 const params: GenerationParamsType = GenerationParams;
-
-const CHUNK_SHIFT = 5; // 32×32 chunks
 
 const BIOME_TERRAIN_GRID = 192;
 const INV_BIOME_TERRAIN_GRID = 1 / BIOME_TERRAIN_GRID;
@@ -44,50 +43,114 @@ const encodeCornerKey = (gx: number, gz: number): number =>
 
 // ---------------------------------------------------------------------------
 // One-time initialization
+//
+// The noise instances are held in `let` bindings so they can be rebuilt at
+// runtime via setTerrainSeed() — this module is evaluated once per thread
+// (main + every worker) at bundle load, but the world seed is only known
+// after URL routing. All consumers call through the exported accessors, so
+// swapping the instances is safe as long as the swap happens before the
+// first sample (it does: world boot / SetWorldSeed, before any generation).
 // ---------------------------------------------------------------------------
 
-const riverGenerator = new RiverGenerator(params);
-const prng = Alea(params.SEED);
+type TerrainNoiseSet = {
+	riverGenerator: RiverGenerator;
+	temperature: ReturnType<typeof createFastNoise2DWithInstance>;
+	humidity: ReturnType<typeof createFastNoise2DWithInstance>;
+	continentalness: ReturnType<typeof createFastNoise2DWithInstance>;
+	erosion: ReturnType<typeof createFastNoise2DWithInstance>;
+	peaksAndValleys: ReturnType<typeof createFastNoise2DWithInstance>;
+	height: ReturnType<typeof createFastNoise2D>;
+};
 
-const _t = createFastNoise2DWithInstance({
-	seed: getPRNGBySeed(1, (prng() * 0xffffffff) | 0),
-	fractalType: FractalType.None,
-	frequency: GenerationParams.TEMPERATURE_NOISE_SCALE,
-});
-const temperatureNoise = _t.fn;
-const temperatureInst = _t.instance;
+function createTerrainNoise(seed: string): TerrainNoiseSet {
+	const prng = Alea(seed);
 
-const _h = createFastNoise2DWithInstance({
-	seed: getPRNGBySeed(2, (prng() * 0xffffffff) | 0),
-	fractalType: FractalType.None,
-	frequency: GenerationParams.HUMIDITY_NOISE_SCALE,
-});
-const humidityNoise = _h.fn;
-const humidityInst = _h.instance;
+	const temperature = createFastNoise2DWithInstance({
+		seed: getPRNGBySeed(1, (prng() * 0xffffffff) | 0),
+		fractalType: FractalType.None,
+		frequency: GenerationParams.TEMPERATURE_NOISE_SCALE,
+	});
 
-const _c = createFastNoise2DWithInstance({
-	seed: getPRNGBySeed(3, (prng() * 0xffffffff) | 0),
-	fractalType: FractalType.Ridged,
-	frequency: GenerationParams.CONTINENTALNESS_NOISE_SCALE,
-});
-const continentalnessNoise = _c.fn;
-const continentalnessInst = _c.instance;
+	const humidity = createFastNoise2DWithInstance({
+		seed: getPRNGBySeed(2, (prng() * 0xffffffff) | 0),
+		fractalType: FractalType.None,
+		frequency: GenerationParams.HUMIDITY_NOISE_SCALE,
+	});
 
-const erosionNoise = createFastNoise2D({
-	seed: getPRNGBySeed(4, (prng() * 0xffffffff) | 0),
-	frequency: GenerationParams.EROSION_NOISE_SCALE,
-});
+	const continentalness = createFastNoise2DWithInstance({
+		seed: getPRNGBySeed(3, (prng() * 0xffffffff) | 0),
+		fractalType: FractalType.Ridged,
+		frequency: GenerationParams.CONTINENTALNESS_NOISE_SCALE,
+	});
 
-const peaksAndValleysNoise = createFastNoise2D({
-	seed: getPRNGBySeed(5, (prng() * 0xffffffff) | 0),
-	frequency: GenerationParams.PV_NOISE_SCALE,
-});
+	const erosion = createFastNoise2DWithInstance({
+		seed: getPRNGBySeed(4, (prng() * 0xffffffff) | 0),
+		frequency: GenerationParams.EROSION_NOISE_SCALE,
+	});
 
-const heightNoise = createFastNoise2D({
-	seed: getPRNGBySeed(6, (prng() * 0xffffffff) | 0),
-	fractalType: FractalType.None,
-	frequency: GenerationParams.TERRAIN_SCALE,
-});
+	const peaksAndValleys = createFastNoise2DWithInstance({
+		seed: getPRNGBySeed(5, (prng() * 0xffffffff) | 0),
+		frequency: GenerationParams.PV_NOISE_SCALE,
+	});
+
+	const height = createFastNoise2D({
+		seed: getPRNGBySeed(6, (prng() * 0xffffffff) | 0),
+		fractalType: FractalType.None,
+		frequency: GenerationParams.TERRAIN_SCALE,
+	});
+
+	return {
+		riverGenerator: new RiverGenerator({
+			...GenerationParams,
+			SEED: seed,
+		} as GenerationParamsType),
+		temperature,
+		humidity,
+		continentalness,
+		erosion,
+		peaksAndValleys,
+		height,
+	};
+}
+
+let _noise = createTerrainNoise(GenerationParams.SEED);
+let riverGenerator = _noise.riverGenerator;
+let temperatureNoise = _noise.temperature.fn;
+let temperatureInst = _noise.temperature.instance;
+let humidityNoise = _noise.humidity.fn;
+let humidityInst = _noise.humidity.instance;
+let continentalnessNoise = _noise.continentalness.fn;
+let continentalnessInst = _noise.continentalness.instance;
+let erosionNoise = _noise.erosion.fn;
+let erosionInst = _noise.erosion.instance;
+let peaksAndValleysNoise = _noise.peaksAndValleys.fn;
+let peaksAndValleysInst = _noise.peaksAndValleys.instance;
+let heightNoise = _noise.height;
+
+/**
+ * Rebuild every noise instance + river generator from a new seed string and
+ * clear the sampled caches so no pre-seed values leak. Must be called before
+ * the first terrain sample on each thread (main thread: world boot; workers:
+ * SetWorldSeed task).
+ */
+export function setTerrainSeed(seed: string): void {
+	_noise = createTerrainNoise(seed);
+	riverGenerator = _noise.riverGenerator;
+	temperatureNoise = _noise.temperature.fn;
+	temperatureInst = _noise.temperature.instance;
+	humidityNoise = _noise.humidity.fn;
+	humidityInst = _noise.humidity.instance;
+	continentalnessNoise = _noise.continentalness.fn;
+	continentalnessInst = _noise.continentalness.instance;
+	erosionNoise = _noise.erosion.fn;
+	erosionInst = _noise.erosion.instance;
+	peaksAndValleysNoise = _noise.peaksAndValleys.fn;
+	peaksAndValleysInst = _noise.peaksAndValleys.instance;
+	heightNoise = _noise.height;
+	cornerValid.fill(0);
+	chunkCacheValid.fill(0);
+	_fhcValid.fill(0);
+}
 
 // Inline — avoids a function call on every noise sample on the hot path.
 // raw is in [-1, 1]; result maps it to [1, -1] with abs.
@@ -266,16 +329,28 @@ const _fhcKeyZ = new Int32Array(MAX_FINAL_HEIGHT_CACHE);
 const _fhcValue = new Int32Array(MAX_FINAL_HEIGHT_CACHE); // floor() → always integer
 const _fhcValid = new Uint8Array(MAX_FINAL_HEIGHT_CACHE);
 
-export function getFinalTerrainHeight(x: number, z: number): number {
-	const slot =
+function _fhcSlot(x: number, z: number): number {
+	return (
 		(((Math.imul(x, 2246822519) ^ Math.imul(z, 3266489917)) >>> 0) &
 			_FHC_MASK) >>>
-		0;
+		0
+	);
+}
 
-	if (_fhcValid[slot] && _fhcKeyX[slot] === x && _fhcKeyZ[slot] === z) {
-		return _fhcValue[slot];
-	}
-
+/**
+ * Core final-height computation. All 2D/3D noise inputs are passed in so the
+ * same formula is shared by the scalar path (getFinalTerrainHeight) and the
+ * batch-grid path (getFinalTerrainHeightFromGrid). Must stay bit-identical to
+ * the previous inline implementation.
+ */
+function computeFinalTerrainHeight(
+	x: number,
+	z: number,
+	riverAbs: number,
+	erosion: number,
+	pv: number,
+	rawContinent: number,
+): number {
 	// Inline getBlendedBiomeTerrainSettings to avoid shared-scratch Float32Array
 	// indirection and extra function-call overhead on this already-hot path.
 	const gx = Math.floor(x * INV_BIOME_TERRAIN_GRID);
@@ -335,23 +410,131 @@ export function getFinalTerrainHeight(x: number, z: number): number {
 	}
 	const noiseHeight = shaped * sAmp;
 
-	const riverAbs = Math.abs(riverGenerator.getRiverNoise(x, z));
-
 	// computeDetail — inline.
-	const erosion = erosionNoise(x, z);
-	const pv = peaksAndValleysNoise(x, z);
 	const riverFactor = riverAbs < 0.1 ? riverAbs * 10 : 1;
 	const roughness = erosionSpline.getValue(erosion) * riverFactor * sErosScale;
 	const detail =
 		peaksAndValleysSpline.getValue(pv) * roughness * sPvScale +
 		riverGenerator.getRiverDepth(riverAbs);
 
-	const rawContinent = continentalnessNoise(x, z);
 	const continent = applyRidged(rawContinent);
 	const splineBaseHeight =
 		GenerationParams.SEA_LEVEL + continentalnessSpline.getValue(continent);
 
-	const result = Math.floor(splineBaseHeight + sBase + noiseHeight + detail);
+	return Math.floor(splineBaseHeight + sBase + noiseHeight + detail);
+}
+
+export function getFinalTerrainHeight(x: number, z: number): number {
+	const slot = _fhcSlot(x, z);
+
+	if (_fhcValid[slot] && _fhcKeyX[slot] === x && _fhcKeyZ[slot] === z) {
+		return _fhcValue[slot];
+	}
+
+	const riverAbs = Math.abs(riverGenerator.getRiverNoise(x, z));
+	const erosion = erosionNoise(x, z);
+	const pv = peaksAndValleysNoise(x, z);
+	const rawContinent = continentalnessNoise(x, z);
+
+	const result = computeFinalTerrainHeight(
+		x,
+		z,
+		riverAbs,
+		erosion,
+		pv,
+		rawContinent,
+	);
+
+	_fhcKeyX[slot] = x;
+	_fhcKeyZ[slot] = z;
+	_fhcValue[slot] = result;
+	_fhcValid[slot] = 1;
+	return result;
+}
+
+// ---------------------------------------------------------------------------
+// Batch 2D column prepass — grid noise fields
+//
+// The surface prepass evaluates getFinalTerrainHeight for every column in a
+// chunk (1024 crossings). The 2D noise inputs (river/erosion/pv/continentalness)
+// live on a uniform world-X/world-Z lattice, so each can be prefilled for the
+// whole chunk with a single FillNoise2D call; only the biome-scaled height
+// noise stays per-column scalar (its scale blends per column inside
+// computeFinalTerrainHeight). The grid path returns bit-identical heights to
+// the scalar path and also backfills the _fhc cache so later scalar callers
+// hit it.
+// ---------------------------------------------------------------------------
+
+export type TerrainNoiseGrid = {
+	river: Float32Array;
+	erosion: Float32Array;
+	pv: Float32Array;
+	continentalness: Float32Array;
+	width: number;
+	height: number;
+	offsetX: number;
+	offsetZ: number;
+};
+
+export function fillTerrainNoiseGrid(
+	chunkWorldX: number,
+	chunkWorldZ: number,
+	halo: number,
+	chunkSize: number,
+	out: TerrainNoiseGrid,
+): void {
+	const width = chunkSize + halo * 2;
+	const height = chunkSize + halo * 2;
+	const offsetX = chunkWorldX - halo;
+	const offsetZ = chunkWorldZ - halo;
+
+	riverGenerator.fillRiverNoise2D(out.river, width, height, offsetX, offsetZ);
+	erosionInst.FillNoise2D(out.erosion, width, height, offsetX, offsetZ);
+	peaksAndValleysInst.FillNoise2D(out.pv, width, height, offsetX, offsetZ);
+	continentalnessInst.FillNoise2D(
+		out.continentalness,
+		width,
+		height,
+		offsetX,
+		offsetZ,
+	);
+
+	out.width = width;
+	out.height = height;
+	out.offsetX = offsetX;
+	out.offsetZ = offsetZ;
+}
+
+export function getFinalTerrainHeightFromGrid(
+	x: number,
+	z: number,
+	grid: TerrainNoiseGrid,
+): number {
+	const col = x - grid.offsetX;
+	const row = z - grid.offsetZ;
+	if (col < 0 || row < 0 || col >= grid.width || row >= grid.height) {
+		return getFinalTerrainHeight(x, z);
+	}
+	const idx = col + row * grid.width;
+
+	const slot = _fhcSlot(x, z);
+	if (_fhcValid[slot] && _fhcKeyX[slot] === x && _fhcKeyZ[slot] === z) {
+		return _fhcValue[slot];
+	}
+
+	const riverAbs = Math.abs(grid.river[idx]);
+	const erosion = grid.erosion[idx];
+	const pv = grid.pv[idx];
+	const rawContinent = grid.continentalness[idx];
+
+	const result = computeFinalTerrainHeight(
+		x,
+		z,
+		riverAbs,
+		erosion,
+		pv,
+		rawContinent,
+	);
 
 	_fhcKeyX[slot] = x;
 	_fhcKeyZ[slot] = z;

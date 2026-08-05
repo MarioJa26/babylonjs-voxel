@@ -3,7 +3,7 @@ import {
 	createFastNoise2DWithInstance,
 	createFastNoise3D,
 } from "./NoiseAndParameters/FastNoise/FastNoiseFactory";
-import type FastNoiseLite from "./NoiseAndParameters/FastNoise/FastNoiseLite";
+import type { NoiseInstance } from "./NoiseAndParameters/FastNoise/FastNoiseFactory";
 import {
 	GenerationParams,
 	type GenerationParamsType,
@@ -16,7 +16,7 @@ export class RiverGenerator {
 	private readonly TUNNEL_CENTER_Y: number;
 
 	private static riverNoise: (x: number, z: number) => number;
-	private static riverNoiseInst: FastNoiseLite;
+	private static riverNoiseInst: NoiseInstance;
 	private static wallNoise: (x: number, y: number, z: number) => number;
 
 	private riverSpline: Spline;

@@ -11,7 +11,7 @@ export interface ChunkProcessSchedulerAdapter {
 	getUnloadBatchSize(): number;
 	getProcessFrameBudgetMs(): number;
 
-	getDesiredState(chunkId: bigint): number | undefined;
+	getDesiredState(numericId: number): number | undefined;
 
 	unloadChunkBoundEntitiesForChunk(chunk: Chunk): Promise<void>;
 
@@ -302,7 +302,9 @@ export class ChunkProcessScheduler {
 							if (!request.chunk.isTerrainScheduled) {
 								continue;
 							}
-							const desired = this.adapter.getDesiredState(request.chunk.id);
+							const desired = this.adapter.getDesiredState(
+								request.chunk.numericId,
+							);
 
 							if (
 								desired === undefined ||
@@ -337,7 +339,6 @@ export class ChunkProcessScheduler {
 
 					case ProcessStage.LoadFromStorage: {
 						try {
-							// M3: Reuse scratch arrays — avoids .map() allocation per batch
 							this._nearIdScratch.length = 0;
 							this._farIdScratch.length = 0;
 							for (const r of state.nearRequests)
@@ -345,18 +346,22 @@ export class ChunkProcessScheduler {
 							for (const r of state.farRequests)
 								this._farIdScratch.push(r.chunk.id);
 
-							const [nearLoadedDataMap, farLoadedDataMap] = await Promise.all([
+							await Promise.all([
 								state.nearRequests.length > 0
-									? WorldStorage.loadChunks(this._nearIdScratch, {
-											includeVoxelData: true,
-										})
-									: Promise.resolve(new Map()),
+									? WorldStorage.loadChunks(
+											this._nearIdScratch,
+											{ includeVoxelData: true },
+											state.nearLoadedDataMap,
+										)
+									: Promise.resolve(),
 
 								state.farRequests.length > 0
-									? WorldStorage.loadChunks(this._farIdScratch, {
-											includeVoxelData: false,
-										})
-									: Promise.resolve(new Map()),
+									? WorldStorage.loadChunks(
+											this._farIdScratch,
+											{ includeVoxelData: false },
+											state.farLoadedDataMap,
+										)
+									: Promise.resolve(),
 
 								// Fire OPFS mesh prefetch in parallel with the IDB voxel load.
 								// This populates the OPFS mesh cache so applyLoadedChunkFromSavedData
@@ -365,16 +370,6 @@ export class ChunkProcessScheduler {
 							]);
 
 							this.beginSlice(state);
-
-							state.nearLoadedDataMap.clear();
-							state.farLoadedDataMap.clear();
-
-							for (const [k, v] of nearLoadedDataMap) {
-								state.nearLoadedDataMap.set(k, v);
-							}
-							for (const [k, v] of farLoadedDataMap) {
-								state.farLoadedDataMap.set(k, v);
-							}
 
 							state.stage = ProcessStage.ApplyLoadedChunks;
 						} catch (error) {
@@ -422,16 +417,15 @@ export class ChunkProcessScheduler {
 
 					case ProcessStage.LoadHydrationData: {
 						try {
-							// Bug 4 fix — copy into existing map instead of replacing it
-							const loaded = await WorldStorage.loadChunks(state.hydrateIds, {
-								includeVoxelData: true,
-							});
-							this.beginSlice(state);
-
+							// PERF: same fix as LoadFromStorage above — write directly
+							// into state.hydrateMap instead of copying out of a temp Map.
 							state.hydrateMap.clear();
-							for (const [k, v] of loaded) {
-								state.hydrateMap.set(k, v);
-							}
+							await WorldStorage.loadChunks(
+								state.hydrateIds,
+								{ includeVoxelData: true },
+								state.hydrateMap,
+							);
+							this.beginSlice(state);
 
 							// Bug 5 fix — only count on success
 							state.hydratedCount += state.hydrateIds.length;
@@ -469,7 +463,6 @@ export class ChunkProcessScheduler {
 
 							this.adapter.applyHydratedChunkFromSavedData(chunk, savedData);
 						}
-
 						if (state.hydrateIndex >= state.hydrateChunks.length) {
 							state.stage = ProcessStage.ScheduleGeneration;
 						}

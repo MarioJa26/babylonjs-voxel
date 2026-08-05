@@ -1,7 +1,6 @@
-import { Vector3 } from "@babylonjs/core";
+import { vec3 } from "@babylonjs/lite";
 import { CustomBoat } from "@/code/Entities/CustomBoat";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
-import { Map1 } from "@/code/Maps/Map1";
 import { getBlockByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
 import { pickWaterTarget } from "../Hud/BlockHighlight/BlockRaycaster";
@@ -10,6 +9,14 @@ import type { Player } from "../Player";
 export type ItemUseAction = (player: Player) => void;
 
 export const ItemUseActions: Record<string, ItemUseAction> = {
+	use_tool: (player: Player) => {
+		// TODO: implement tool-specific behavior (mining, attacking, tilling).
+		console.debug("use_tool invoked by", player);
+	},
+	open_crafting: (player: Player) => {
+		// TODO: implement crafting table open.
+		console.debug("open_crafting invoked by", player);
+	},
 	place_boat: (player: Player) => {
 		const hit = pickWaterTarget(player);
 		if (!hit) return;
@@ -21,7 +28,7 @@ export const ItemUseActions: Record<string, ItemUseAction> = {
 		}
 
 		const spawnY = hit.y + 1;
-		const spawnPos = new Vector3(hit.x + 0.5, spawnY + 0.5, hit.z + 0.5);
+		const spawnPos = vec3(hit.x + 0.5, spawnY + 0.5, hit.z + 0.5);
 
 		const halfWidth = 1;
 		const halfHeight = 1;
@@ -43,11 +50,6 @@ export const ItemUseActions: Record<string, ItemUseAction> = {
 			}
 		}
 
-		new CustomBoat(
-			Map1.mainScene,
-			player,
-			GenerationParams.SEA_LEVEL,
-			spawnPos,
-		);
+		new CustomBoat(player, GenerationParams.SEA_LEVEL, spawnPos);
 	},
 };

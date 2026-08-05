@@ -33,3 +33,34 @@ export function getPRNG(position: number): number {
 	HASH = mangled;
 	return mangled;
 }
+
+/**
+ * Like `getPRNG`, but returns a float in [0, 1).
+ *
+ * NOTE: the hash's final `mangled ^ (mangled >> 8)` uses a sign-extending
+ * shift, so bit 31 is always 0 — the output is uniform over [0, 2^31), not
+ * [0, 2^32). Dividing by 2^31 compensates.
+ */
+export function getPRNGUnit(position: number): number {
+	let mangled = position;
+	mangled *= NOISE1;
+	mangled += HASH;
+	mangled ^= mangled >> 8;
+	mangled += NOISE2;
+	mangled ^= mangled << 8;
+	mangled *= NOISE3;
+	mangled ^= mangled >> 8;
+	HASH = mangled;
+	return mangled / 2147483648;
+}
+export function getPRNGUnit2(): number {
+	let mangled = HASH;
+	mangled *= NOISE1;
+	mangled ^= mangled >> 8;
+	mangled += NOISE2;
+	mangled ^= mangled << 8;
+	mangled *= NOISE3;
+	mangled ^= mangled >> 8;
+	HASH = mangled;
+	return mangled / 2147483648;
+}

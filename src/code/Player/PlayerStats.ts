@@ -4,6 +4,9 @@ export const enum Gamemodes {
 	Adventure = 2,
 	Spectator = 3,
 }
+
+export const REACH_DISTANCE = 64;
+export const REACH_AURA = 3;
 export class PlayerStats {
 	public gamemode: Gamemodes = Gamemodes.Creative;
 
@@ -25,7 +28,7 @@ export class PlayerStats {
 	public manaRegenRate = 5;
 	public hungerDepletionRate = 0.01;
 	// Stamina regen scale while climbing (slow recovery on walls).
-	public climbingStaminaRegenMultiplier = -0.2;
+	public climbingStaminaRegenMultiplier = 0.25;
 
 	public update(
 		deltaTime: number,
@@ -33,12 +36,13 @@ export class PlayerStats {
 		staminaRegenScale = 1,
 	): void {
 		// Regenerate stamina if not sprinting
+		const scale = Math.max(0, staminaRegenScale); // climbing slows recovery; never drains via regen
 		if (!isSprinting && this.stamina < this.maxStamina) {
 			this.stamina = Math.min(
 				this.maxStamina,
-				this.stamina + this.staminaRegenRate * deltaTime * staminaRegenScale,
+				this.stamina + this.staminaRegenRate * deltaTime * scale,
 			);
-			// Deplete hunger
+			// Deplete hunger (only ever decreases — uses the non-negative scale)
 			if (this.hunger > 0) {
 				this.hunger = Math.max(
 					0,
@@ -46,7 +50,7 @@ export class PlayerStats {
 						this.staminaRegenRate *
 							this.hungerDepletionRate *
 							deltaTime *
-							staminaRegenScale,
+							scale,
 				);
 			}
 		}

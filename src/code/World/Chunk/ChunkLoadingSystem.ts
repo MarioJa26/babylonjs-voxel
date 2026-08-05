@@ -1,4 +1,4 @@
-import { worldToChunkCoord } from "@/code/Shared/ChunkCoordUtils";
+import { worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import { packChunkKey } from "../Storage/ChunkKey";
 import { deserializeMeshPair } from "../Storage/MeshSerializer";
@@ -13,10 +13,7 @@ import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import { packCoords } from "./DataStructures/ChunkCoords";
 import type { MeshData } from "./DataStructures/MeshData";
 import { ChunkEntityRegistry } from "./Loading/ChunkEntityRegistry";
-import {
-	ChunkHydration,
-	type SelectedSavedMesh,
-} from "./Loading/ChunkHydration";
+import { ChunkHydration } from "./Loading/ChunkHydration";
 import { ChunkLoadingDebug } from "./Loading/ChunkLoadingDebug";
 import { ChunkPersistenceCoordinator } from "./Loading/ChunkPersistenceCoordinator";
 import { ChunkProcessScheduler } from "./Loading/ChunkProcessScheduler";
@@ -81,10 +78,10 @@ const _neighborBuffer: (Chunk | undefined)[] = new Array(6);
 
 const _queuedIdSet: Set<bigint> = new Set();
 
-const _meshData: {
+interface SelectedSavedMesh {
 	opaque: MeshData | null;
 	transparent: MeshData | null;
-} = { opaque: null, transparent: null };
+}
 
 // OPFS mesh cache: chunkId (bigint) -> deserialized mesh pair from OPFS.
 // Populated by prefetchOpfsMeshes (called by ChunkProcessScheduler in parallel
@@ -96,6 +93,49 @@ let opfsCacheHydratedThisCycle = 0;
 let opfsCacheMissedThisCycle = 0;
 
 const _entityPayloadMap = new Map<bigint, SavedChunkEntityData[]>();
+
+// PERF: ring buffer for prefetch request info — avoids unbounded growth
+// when budget splitting causes re-entry across many frames. Old entries
+// are dropped once all pending promises for the cycle have settled.
+const _prefetchReqInfoHead = 0;
+let _prefetchReqInfoTail = 0;
+const _PREFAETCH_REQ_CAP = 512;
+const _prefetchReqInfo = new Array<{
+	chunkId: bigint;
+	key: bigint;
+	lod: number;
+}>(_PREFAETCH_REQ_CAP);
+for (let i = 0; i < _PREFAETCH_REQ_CAP; i++) {
+	_prefetchReqInfo[i] = { chunkId: 0n, key: 0n, lod: 0 };
+}
+const prefetchPromisesThisCycle = 0;
+const _prefetchPromises: Promise<void>[] = [];
+
+function _prefetchOnReadOk(
+	idx: number,
+	bytes: Uint8Array | null | undefined,
+): void {
+	if (!bytes) {
+		opfsCacheMissedThisCycle++;
+		return;
+	}
+	const info = _prefetchReqInfo[idx % _PREFAETCH_REQ_CAP];
+	const mesh = deserializeMeshPair(bytes, info.lod);
+	if (mesh) {
+		opfsMeshCache.set(info.chunkId, mesh);
+		opfsCacheHydratedThisCycle++;
+	} else {
+		opfsCacheMissedThisCycle++;
+	}
+}
+
+function _prefetchOnReadErr(idx: number, err: unknown): void {
+	const info = _prefetchReqInfo[idx % _PREFAETCH_REQ_CAP];
+	console.warn(
+		`[ChunkLoadingSystem] OPFS read failed for chunk ${info.chunkId}:`,
+		err,
+	);
+}
 
 const debugStats: ChunkLoadingDebugStats = {
 	loadQueueLength: 0,
@@ -148,12 +188,6 @@ const chunkHydration = new ChunkHydration({
 		uniformBlockId: savedData.uniformBlockId,
 		lightArray: savedData.lightArray,
 	}),
-
-	// Mesh data now lives in OPFS, not IDB. The OPFS cache is consulted
-	// directly by applyLoadedChunkFromSavedData (via opfsMeshCache).
-	getSavedMeshForLod: () => null,
-	getAvailableMeshLods: () => [],
-	getSerializedLodCache: () => undefined,
 });
 
 const streamingController = new ChunkStreamingController({
@@ -163,7 +197,7 @@ const streamingController = new ChunkStreamingController({
 });
 
 addChunkDisposeHook((chunk) => {
-	streamingController.onChunkDisposed(chunk.id);
+	streamingController.onChunkDisposed(chunk.numericId);
 });
 
 const worldMutations = new ChunkWorldMutations({
@@ -191,8 +225,38 @@ const persistenceCoordinator = new ChunkPersistenceCoordinator({
 	getChunkEntitySaveBatchSize: () => getUnloadBatchSize(),
 });
 
+// PERF: Block edits (incl. every water-sim tick) used to trigger an immediate
+// OPFS save per block via Chunk.onBlockModified — a spreading pool of N blocks
+// serialized N async writes. Debounce into a single batched save per 500 ms;
+// unloads and the periodic flush (PlayerStatePersistence) still persist chunks.
+const BLOCK_EDIT_SAVE_DEBOUNCE_MS = 500;
+const pendingBlockEditSaveIds = new Set<bigint>();
+let blockEditSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+function queueBlockEditSave(chunk: Chunk): void {
+	pendingBlockEditSaveIds.add(chunk.id);
+	if (blockEditSaveTimer !== null) return;
+
+	blockEditSaveTimer = setTimeout(() => {
+		blockEditSaveTimer = null;
+		const chunksToSave: Chunk[] = [];
+		for (const id of pendingBlockEditSaveIds) {
+			const pendingChunk = Chunk.chunkInstances.get(id);
+			if (pendingChunk?.isLoaded && pendingChunk.needsPersistence()) {
+				chunksToSave.push(pendingChunk);
+			}
+		}
+		pendingBlockEditSaveIds.clear();
+		if (chunksToSave.length > 0) {
+			void WorldStorage.saveChunks(chunksToSave).catch((error) => {
+				console.error("Block-edit chunk save failed:", error);
+			});
+		}
+	}, BLOCK_EDIT_SAVE_DEBOUNCE_MS);
+}
+
 Chunk.onBlockModified = (chunk) => {
-	void WorldStorage.saveChunk(chunk).catch(() => {});
+	queueBlockEditSave(chunk);
 };
 
 const processScheduler = new ChunkProcessScheduler({
@@ -299,22 +363,12 @@ function getNeighbors(chunk: Chunk): (Chunk | undefined)[] {
 	return n;
 }
 
-function getReusableMeshData(
-	opaque: MeshData | null,
-	transparent: MeshData | null,
-): { opaque: MeshData | null; transparent: MeshData | null } {
-	const meshData = _meshData;
-	meshData.opaque = opaque;
-	meshData.transparent = transparent;
-	return meshData;
-}
-
 function applyMeshToChunk(chunk: Chunk, mesh: SelectedSavedMesh | null): void {
 	if (!mesh || (!mesh.opaque && !mesh.transparent)) {
 		return;
 	}
 
-	createMeshFromData(chunk, getReusableMeshData(mesh.opaque, mesh.transparent));
+	createMeshFromData(chunk, mesh.opaque, mesh.transparent);
 }
 
 function refreshQueueDebugSnapshot(): void {
@@ -448,8 +502,11 @@ export function validateChunksAround(
 				const isLoaded = !!chunk?.isLoaded;
 				const isQueued = queuedIds.has(chunkId);
 				const isUnloading = !!chunk && unloadQueueSet.has(chunk);
+				// desiredStates is keyed by numericId and only contains entries
+				// for chunks that exist, so a missing chunk implies no desired state.
 				const hasDesiredState =
-					streamingController.getDesiredState(chunkId) !== undefined;
+					!!chunk &&
+					streamingController.getDesiredState(chunk.numericId) !== undefined;
 
 				if (hasDesiredState && !isLoaded && !isQueued && !isUnloading) {
 					missing.push({
@@ -483,7 +540,7 @@ export function processFrameBudgetedStreamingWork(
 		playerChunkZ,
 		SETTING_PARAMS.RENDER_DISTANCE,
 		SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
-		32,
+		255,
 	);
 }
 
@@ -600,8 +657,8 @@ export async function flushOpfsStorage(): Promise<void> {
 	if (!client) return;
 	try {
 		await client.flush();
-	} catch {
-		// best-effort; ignore errors
+	} catch (error) {
+		console.log(error);
 	}
 }
 
@@ -733,6 +790,7 @@ function loadNearLodChunk(
 		savedData.uniformBlockId,
 		savedData.lightArray,
 		!hasDesiredMesh,
+		true,
 	);
 
 	if (!hasDesiredMesh) {
@@ -783,7 +841,8 @@ async function prefetchOpfsMeshes(
 	const client = await ChunkWorkerPool.getInstance().ensureOpfsReady();
 	if (!client) return;
 
-	const promises: Promise<void>[] = [];
+	_prefetchPromises.length = 0;
+
 	for (const request of requests) {
 		const chunk = request.chunk;
 		const lod = request.desiredLod;
@@ -796,40 +855,25 @@ async function prefetchOpfsMeshes(
 		}
 
 		const key = packChunkKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-		promises.push(
-			client
-				.readMesh(key, lod)
-				.then((bytes) => {
-					if (!bytes) {
-						opfsCacheMissedThisCycle++;
-						return;
-					}
-					const mesh = deserializeMeshPair(bytes, lod);
-					if (mesh) {
-						opfsMeshCache.set(chunk.id, mesh);
-						opfsCacheHydratedThisCycle++;
-					} else {
-						opfsCacheMissedThisCycle++;
-					}
-				})
-				.catch((err: any) => {
-					console.warn(
-						`[ChunkLoadingSystem] OPFS read failed for chunk ${chunk.id}:`,
-						err,
-					);
-				}),
+		const idx = _prefetchReqInfoTail;
+		_prefetchReqInfo[idx] = { chunkId: chunk.id, key, lod };
+		_prefetchReqInfoTail = (idx + 1) & (_PREFAETCH_REQ_CAP - 1);
+		_prefetchPromises.push(
+			client.readMesh(key, lod).then(
+				(bytes) => _prefetchOnReadOk(idx, bytes),
+				(err) => _prefetchOnReadErr(idx, err),
+			),
 		);
 	}
-	await Promise.all(promises);
+	await Promise.all(_prefetchPromises);
 }
 
 function resetCycleOpfsCache(): void {
-	// The OPFS mesh cache is now persistent across cycles. PrefetchOpfsMeshes
-	// skips reads for already-cached entries, so re-entry is O(1).  We prune
-	// entries for chunks that are already loaded and no longer need the mesh
-	// prefetch path, preventing unbounded growth while keeping the cache
-	// warm for chunks that might be re-entered due to budget splitting.
-	if (opfsMeshCache.size > 256) {
+	// The OPFS mesh cache is persistent across cycles. PrefetchOpfsMeshes
+	// skips reads for already-cached entries, so re-entry is O(1).  Prune
+	// entries for loaded chunks (whose mesh has already been applied) to
+	// reclaim memory and keep the cached set tight for budget-split re-entry.
+	if (opfsMeshCache.size > 64) {
 		for (const [id] of opfsMeshCache) {
 			const chunk = Chunk.chunkInstances.get(id);
 			if (chunk?.isLoaded) {

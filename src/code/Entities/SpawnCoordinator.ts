@@ -1,4 +1,4 @@
-import type { Scene, Vector3 } from "@babylonjs/core";
+import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
 import {
 	getBlockByWorldCoords,
 	getLightByWorldCoords,
@@ -21,23 +21,22 @@ const MAX_SPAWN_HEIGHT = 200;
 const _mobSnapshot: Mob[] = [];
 
 export class SpawnCoordinator {
-	#scene: Scene;
-	#getPlayerPosition: () => Vector3;
+	#scene: SceneContext;
+	#getPlayerPosition: () => Vec3;
 	#lastSpawnCheck = 0;
 	#disposed = false;
-	#observer: ReturnType<Scene["onBeforeRenderObservable"]["add"]> | null = null;
 	readonly #registry: MobRegistry;
 
 	constructor(
-		scene: Scene,
-		getPlayerPosition: () => Vector3,
+		scene: SceneContext,
+		getPlayerPosition: () => Vec3,
 		registry: MobRegistry,
 	) {
 		this.#scene = scene;
 		this.#getPlayerPosition = getPlayerPosition;
 		this.#registry = registry;
 
-		this.#observer = scene.onBeforeRenderObservable.add(() => {
+		onBeforeRender(this.#scene, () => {
 			if (this.#disposed) return;
 			this.#tick();
 		});
@@ -49,10 +48,6 @@ export class SpawnCoordinator {
 
 	dispose(): void {
 		this.#disposed = true;
-		if (this.#observer) {
-			this.#scene.onBeforeRenderObservable.remove(this.#observer);
-			this.#observer = null;
-		}
 	}
 
 	#tick(): void {
@@ -66,13 +61,13 @@ export class SpawnCoordinator {
 		this.#trySpawn(playerPos);
 	}
 
-	#updatePlayerPositions(playerPos: Vector3): void {
+	#updatePlayerPositions(playerPos: Vec3): void {
 		for (const mob of this.#registry.getAllMobs()) {
 			mob.setPlayerPosition(playerPos);
 		}
 	}
 
-	#despawnDistant(playerPos: Vector3): void {
+	#despawnDistant(playerPos: Vec3): void {
 		_mobSnapshot.length = 0;
 		for (const mob of this.#registry.getAllMobs()) {
 			_mobSnapshot.push(mob);
@@ -106,7 +101,7 @@ export class SpawnCoordinator {
 		}
 	}
 
-	#trySpawn(playerPos: Vector3): void {
+	#trySpawn(playerPos: Vec3): void {
 		const totalCap = this.#getTotalCap();
 		if (this.#registry.getTotalCount() >= totalCap) return;
 
@@ -134,7 +129,7 @@ export class SpawnCoordinator {
 	}
 
 	#findSpawnPosition(
-		playerPos: Vector3,
+		playerPos: Vec3,
 		config: MobSpawnConfig,
 	): { x: number; y: number; z: number } | null {
 		const angle = Math.random() * Math.PI * 2;

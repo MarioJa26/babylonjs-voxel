@@ -1,33 +1,29 @@
 // MeshPipeline/core/VoxelGreedyAdapter.ts
 
-import type {
-	GreedyFaceDescriptor,
-	MeshContext,
-	WorkerInternalMeshData,
-} from "../types/MeshTypes";
+import type { GreedyFaceDescriptor } from "../types/MeshTypes";
 
 import { greedyMesh, type WritableNumberArray } from "./GreedyPipeline";
 import { VoxelFaceEmitterAdapter } from "./VoxelFaceEmitterAdapter";
-import { VoxelMaskExtractor } from "./VoxelMaskExtractor";
+import { extractSliceMask } from "./VoxelMaskExtractor";
+import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
 /**
  * Drives the greedy mesher across all 3 axes (X, Y, Z),
- * using VoxelMaskExtractor and VoxelFaceEmitterAdapter.
+ * using the stateless VoxelMaskExtractor and VoxelFaceEmitterAdapter.
  *
  * This is the "middle layer" of the voxel meshing pipeline:
  *
  * Input:
- *   - ctx            → block/light access
- *   - block_array    → packed voxel data
- *   - neighbors      → array of neighbor chunk voxel arrays
+ *   - session → padded block/light grids + scratch buffers + quad outputs
  *
  * Output:
- *   - WorkerInternalMeshData filled with quads
+ *   - session.quadOpaque / session.quadTransparent filled with quads
  *
+ * The adapter instance is cached per session (pipeline), so the closures
+ * below are created once per worker instead of once per chunk build.
  */
 export class VoxelGreedyAdapter {
-	private ctx: MeshContext;
-	private maskExtractor: VoxelMaskExtractor;
+	private readonly _session: MeshBuildSession;
 	private faceEmitter: VoxelFaceEmitterAdapter;
 	// PERF: Pre-create closures once instead of re-creating per axis per build.
 	private readonly _extractMask: (
@@ -36,21 +32,21 @@ export class VoxelGreedyAdapter {
 		lightBuf: WritableNumberArray,
 	) => void;
 	private readonly _emitFace: (desc: GreedyFaceDescriptor) => void;
-	// Temporary output targets updated before each axis run.
-	private _opaqueOut!: WorkerInternalMeshData;
-	private _transparentOut!: WorkerInternalMeshData;
+	// Set by build() before each axis run so the closures capture a number, not
+	// a closure parameter — avoids per-axis closure re-creation.
+	private _currentAxis = 0;
 
-	constructor(ctx: MeshContext) {
-		this.ctx = ctx;
-		this.maskExtractor = new VoxelMaskExtractor(ctx);
-		this.faceEmitter = new VoxelFaceEmitterAdapter();
+	constructor(session: MeshBuildSession) {
+		this._session = session;
+		this.faceEmitter = new VoxelFaceEmitterAdapter(session);
 
 		this._extractMask = (
 			slice: number,
 			maskBuf: WritableNumberArray,
 			lightBuf: WritableNumberArray,
 		) => {
-			this.maskExtractor.extractSliceMask(
+			extractSliceMask(
+				this._session,
 				this._currentAxis,
 				slice,
 				maskBuf,
@@ -59,38 +55,18 @@ export class VoxelGreedyAdapter {
 		};
 
 		this._emitFace = (desc: GreedyFaceDescriptor) => {
-			this.faceEmitter.emitVoxelFace(
-				this._currentAxis,
-				desc,
-				this._opaqueOut,
-				this._transparentOut,
-			);
+			this.faceEmitter.emitVoxelFace(this._currentAxis, desc);
 		};
-	}
-
-	// Set by build() before each axis run so the closures capture a number, not
-	// a closure parameter — avoids per-axis closure re-creation.
-	private _currentAxis = 0;
-
-	/** PERF: Update context reference instead of creating a new adapter. */
-	public setCtx(ctx: MeshContext): void {
-		this.ctx = ctx;
-		this.maskExtractor.setCtx(ctx);
 	}
 
 	/**
 	 * Runs greedy meshing on all 3 axes.
-	 * Emits quads for ALL voxel faces into the output.
+	 * Emits quads for ALL voxel faces into the session's quad buffers.
 	 */
-	public build(
-		opaqueOut: WorkerInternalMeshData,
-		transparentOut: WorkerInternalMeshData,
-	): void {
-		this._opaqueOut = opaqueOut;
-		this._transparentOut = transparentOut;
+	public build(): void {
 		for (let axis = 0; axis < 3; axis++) {
 			this._currentAxis = axis;
-			greedyMesh(this.ctx, this._extractMask, this._emitFace);
+			greedyMesh(this._session, this._extractMask, this._emitFace);
 		}
 	}
 }

@@ -1,15 +1,24 @@
+import type { ShaderMaterial } from "@babylonjs/lite";
 import {
-	Color3,
+	addToScene,
+	createMeshFromData,
+	createShaderMaterial,
+	type LiteMetadata,
+	loadTexture2D,
 	type Mesh,
-	MeshBuilder,
-	type Observer,
-	type Scene,
-	StandardMaterial,
-	Texture,
-	Vector3,
-} from "@babylonjs/core";
+	onBeforeRender,
+	removeFromScene,
+	setShaderTexture,
+	setShaderUniform,
+	setShaderVector3,
+	type Texture2D,
+	type Vec3,
+	vec3,
+} from "@babylonjs/lite";
 import { MetadataContainer } from "@/code/Entities/MetadataContainer";
 import type { IUsable } from "@/code/Interface/IUsable";
+import { isUiOpen, UiFocus } from "@/code/Lib/GameRuntimeState";
+import { vec3Zero } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import {
 	getBlockByWorldCoords,
@@ -17,9 +26,8 @@ import {
 	getLightByWorldCoords,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
-	_blockShapeInfoScratch,
-	Axis,
-	type BlockShapeInfo,
+	Axis as ColliderAxis,
+	createVoxelColliderBlockSampler,
 	VoxelAabbCollider,
 } from "@/code/World/Collision/VoxelAabbCollider";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
@@ -34,28 +42,253 @@ import { isCollidableBlock } from "@/code/World/Texture/BlockType";
 import {
 	atlasSize,
 	atlasTileSize,
-	getDiffuse,
-	setDiffuse,
+	getDiffuseTexture2D,
 } from "@/code/World/Texture/TextureAtlasFactory";
 import type { Player } from "../Player";
+import { REACH_AURA } from "../PlayerStats";
 import type { Item } from "./Item";
+
+const droppedItemVertexWGSL = /* wgsl */ `
+struct VSOut {
+  @builtin(position) pos : vec4<f32>,
+  @location(0) vUV : vec2<f32>,
+  @location(1) vNormal : vec3<f32>,
+  @location(2) vWorldPos : vec3<f32>,
+};
+
+@vertex
+fn mainVertex(input : VertexInput) -> VSOut {
+  var out : VSOut;
+  let worldPos = shaderSystem.world * vec4<f32>(input.position, 1.0);
+  out.pos = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
+  out.vUV = input.uv;
+  out.vNormal = input.normal;
+  out.vWorldPos = worldPos.xyz;
+  return out;
+}
+`;
+
+const droppedItemFragmentWGSL = /* wgsl */ `
+struct VSOut {
+  @builtin(position) pos : vec4<f32>,
+  @location(0) vUV : vec2<f32>,
+  @location(1) vNormal : vec3<f32>,
+  @location(2) vWorldPos : vec3<f32>,
+};
+
+@fragment
+fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
+  let atlasUV = in.vUV * shaderUniforms.uScale + shaderUniforms.uOffset;
+  let tex = textureSample(diffuseTexture, diffuseTextureSampler, atlasUV);
+  let tint = shaderUniforms.tintColor;
+  return vec4<f32>(tex.rgb * tint, 1.0);
+}
+`;
+
+function createDroppedItemMaterial(): ShaderMaterial {
+	return createShaderMaterial({
+		name: "droppedItemMaterial",
+		vertexSource: droppedItemVertexWGSL,
+		fragmentSource: droppedItemFragmentWGSL,
+		attributes: ["position", "normal", "uv"],
+		uniforms: [
+			"world",
+			"worldViewProjection",
+			{ name: "uScale", type: "f32" },
+			{ name: "uOffset", type: "vec2<f32>" },
+			{ name: "tintColor", type: "vec3<f32>" },
+		],
+		samplers: ["diffuseTexture"],
+		backFaceCulling: true,
+	});
+}
+
+// --------------------------------------------------------------------------
+// OPTIMIZATION: Cache geometry arrays globally. Creating these arrays on
+// every DroppedItem instance causes massive GC spikes in dense worlds.
+// --------------------------------------------------------------------------
+let unitCubeGeometryCache: {
+	positions: Float32Array;
+	normals: Float32Array;
+	uvs: Float32Array;
+	indices: Uint32Array;
+} | null = null;
+
+function getUnitCubeGeometry() {
+	if (unitCubeGeometryCache) return unitCubeGeometryCache;
+
+	const positions: number[] = [];
+	const normals: number[] = [];
+	const uvs: number[] = [];
+	const indices: number[] = [];
+
+	const faces: Array<{
+		normal: [number, number, number];
+		verts: Array<[number, number, number]>;
+	}> = [
+		// East: +X
+		{
+			normal: [1, 0, 0],
+			verts: [
+				[0.5, -0.5, 0.5],
+				[0.5, -0.5, -0.5],
+				[0.5, 0.5, -0.5],
+				[0.5, 0.5, 0.5],
+			],
+		},
+
+		// West: -X
+		{
+			normal: [-1, 0, 0],
+			verts: [
+				[-0.5, -0.5, -0.5],
+				[-0.5, -0.5, 0.5],
+				[-0.5, 0.5, 0.5],
+				[-0.5, 0.5, -0.5],
+			],
+		},
+
+		// Top: +Y
+		{
+			normal: [0, 1, 0],
+			verts: [
+				[-0.5, 0.5, 0.5],
+				[0.5, 0.5, 0.5],
+				[0.5, 0.5, -0.5],
+				[-0.5, 0.5, -0.5],
+			],
+		},
+
+		// Bottom: -Y
+		{
+			normal: [0, -1, 0],
+			verts: [
+				[-0.5, -0.5, -0.5],
+				[0.5, -0.5, -0.5],
+				[0.5, -0.5, 0.5],
+				[-0.5, -0.5, 0.5],
+			],
+		},
+
+		// South/front: +Z — already correct
+		{
+			normal: [0, 0, 1],
+			verts: [
+				[-0.5, -0.5, 0.5],
+				[0.5, -0.5, 0.5],
+				[0.5, 0.5, 0.5],
+				[-0.5, 0.5, 0.5],
+			],
+		},
+
+		// North/back: -Z — already correct
+		{
+			normal: [0, 0, -1],
+			verts: [
+				[0.5, -0.5, -0.5],
+				[-0.5, -0.5, -0.5],
+				[-0.5, 0.5, -0.5],
+				[0.5, 0.5, -0.5],
+			],
+		},
+	];
+
+	const faceUV: Array<[number, number]> = [
+		[0, 0],
+		[1, 0],
+		[1, 1],
+		[0, 1],
+	];
+
+	for (let f = 0; f < faces.length; f++) {
+		const face = faces[f];
+		const base = positions.length / 3;
+		for (let i = 0; i < 4; i++) {
+			positions.push(face.verts[i][0], face.verts[i][1], face.verts[i][2]);
+			normals.push(face.normal[0], face.normal[1], face.normal[2]);
+			uvs.push(faceUV[i][0], faceUV[i][1]);
+		}
+		indices.push(base, base + 2, base + 1, base, base + 3, base + 2);
+	}
+
+	unitCubeGeometryCache = {
+		positions: new Float32Array(positions),
+		normals: new Float32Array(normals),
+		uvs: new Float32Array(uvs),
+		indices: new Uint32Array(indices),
+	};
+	return unitCubeGeometryCache;
+}
+
+const ITEM_NAME: string = "droppedItem";
+const ITEM_NAME_AABB: string = "droppedItemAABB";
+
+// Pre-compute constants
+const REACH_DISTANCE_SQ = REACH_AURA;
+const LIGHT_NORMALIZE_MUL = 1.0 / 15.0;
+
+// OPTIMIZATION: Share a single block sampler to prevent function closures per item
+const SHARED_BLOCK_SAMPLER = createVoxelColliderBlockSampler(
+	(x, y, z) => {
+		const blockId = getBlockByWorldCoords(x, y, z);
+		if (!isCollidableBlock(blockId)) return null;
+		return { blockId, blockState: getBlockStateByWorldCoords(x, y, z) };
+	},
+	{
+		getFenceDynamicShape,
+		getShapeForBlockId,
+		isFenceBlockId,
+		computeFenceNeighborMask,
+	},
+);
 
 export class DroppedItem implements IUsable {
 	#boxMesh: Mesh;
-	#material: StandardMaterial;
+	#material: ShaderMaterial;
 	#item: Item;
-	#velocity = Vector3.Zero();
+	#velocity = vec3Zero();
+	#position: Vec3;
 	#halfSize = 0.25;
-	#voxelCollider!: VoxelAabbCollider;
-	#scratchProbe = new Vector3();
+	#voxelCollider: VoxelAabbCollider;
+	#disposed = false;
+	#itemIndex = -1;
 
-	static readonly #allItems = new Set<DroppedItem>();
-	static #observer: Observer<Scene> | null = null;
+	// OPTIMIZATION: Only update lighting when item crosses a voxel boundary
+	#lastLightX = Number.NaN;
+	#lastLightY = Number.NaN;
+	#lastLightZ = Number.NaN;
+
+	// OPTIMIZATION: Reuse tint array to avoid GC pressure from setShaderVector3
+	#tint: [number, number, number] = [1, 1, 1];
+
+	// OPTIMIZATION: Skip transform updates when item hasn't moved
+	#oldPositionX = Number.NaN;
+	#oldPositionY = Number.NaN;
+	#oldPositionZ = Number.NaN;
+
+	// OPTIMIZATION: Track grounded from Y-axis collision instead of extra overlap query
+	#grounded = false;
+
+	// OPTIMIZATION: Arrays iterate magnitudes faster than Sets in tight game loops
+	static readonly #allItems: DroppedItem[] = [];
+	static #observerRegistered = false;
+
 	static #ensureObserver(): void {
-		if (DroppedItem.#observer) return;
-		DroppedItem.#observer = Map1.mainScene.onBeforeRenderObservable.add(() => {
-			for (const item of DroppedItem.#allItems) {
-				item.#updatePhysics();
+		if (DroppedItem.#observerRegistered) return;
+		DroppedItem.#observerRegistered = true;
+
+		onBeforeRender(Map1.mainScene, (deltaMs: number) => {
+			const dt = deltaMs * 0.001;
+			if (dt <= 0) return;
+
+			// PERF: skip item physics while any UI overlay owns the mouse
+			// (matches the mob observer and player-loop suppression).
+			if (isUiOpen(UiFocus.pauseMenu)) return;
+
+			const items = DroppedItem.#allItems;
+			const len = items.length;
+			for (let i = 0; i < len; i++) {
+				items[i].#updatePhysics(dt);
 			}
 		});
 	}
@@ -66,134 +299,188 @@ export class DroppedItem implements IUsable {
 	static readonly AIR_DAMPING_PER_SEC = 1.8;
 	static readonly GROUND_DAMPING_PER_SEC = 8.0;
 	static readonly MIN_SPEED = 0.03;
-	static readonly SKY_LIGHT_COLOR = new Vector3(0.8, 0.8, 0.8);
-	static readonly BLOCK_LIGHT_COLOR = new Vector3(0.9, 0.6, 0.2);
+	static readonly SKY_LIGHT_COLOR = vec3(0.8, 0.8, 0.8);
+	static readonly BLOCK_LIGHT_COLOR = vec3(0.9, 0.6, 0.2);
 
-	static readonly #tileTextures = new Map<number, Texture>();
+	static #atlasPromise: Promise<Texture2D | null> | null = null;
+	static #getAtlasTexture(): Promise<Texture2D | null> {
+		if (!DroppedItem.#atlasPromise) {
+			DroppedItem.#atlasPromise = loadTexture2D(
+				Map1.engine,
+				"/texture/diffuse_atlas.png",
+				{
+					mipMaps: true,
+					magFilter: "nearest",
+					minFilter: "nearest",
+				},
+			).catch(() => null);
+		}
+		return DroppedItem.#atlasPromise;
+	}
+
+	static preloadAtlas(): void {
+		void DroppedItem.#getAtlasTexture();
+	}
 
 	constructor(item: Item, x: number, y: number, z: number) {
-		const size = 0.5 + item.stackSize * 0.005;
-		this.#boxMesh = MeshBuilder.CreateBox(
-			"box",
-			{ width: size, height: size, depth: size },
-			Map1.mainScene,
-		);
-		this.#boxMesh.metadata = new MetadataContainer();
-		this.#boxMesh.metadata.set("use", (player: Player) => this.use(player));
+		const size = 0.25 + item.stackSize * 0.009;
+		const geometry = getUnitCubeGeometry();
 
-		this.#boxMesh.isPickable = true;
-		this.#boxMesh.position = new Vector3(x, y, z);
-
-		this.#material = new StandardMaterial(
-			`droppedItemMaterial_${item.itemId}`,
-			Map1.mainScene,
+		this.#boxMesh = createMeshFromData(
+			Map1.engine,
+			ITEM_NAME,
+			geometry.positions,
+			geometry.normals,
+			geometry.indices,
+			geometry.uvs,
 		);
-		this.#material.specularColor = Color3.Black();
-		this.#applyAtlasTexture(item);
+		addToScene(Map1.mainScene, this.#boxMesh);
+
+		const meta = new MetadataContainer();
+		meta.set("use", this.use);
+		this.#boxMesh.metadata = meta as unknown as LiteMetadata;
+
+		this.#boxMesh.pickable = true;
+		this.#boxMesh.scaling.set(size, size, size);
+		this.#position = vec3(x, y, z);
+		this.#boxMesh.position.set(x, y, z);
+
+		this.#material = createDroppedItemMaterial();
 		this.#boxMesh.material = this.#material;
+		this.#boxMesh.visible = false;
 
-		this.#boxMesh.renderingGroupId = 1;
 		this.#halfSize = size * 0.5;
 		this.#item = item;
+
 		this.#voxelCollider = new VoxelAabbCollider(
-			new Vector3(this.#halfSize, this.#halfSize, this.#halfSize),
-			(x, y, z): BlockShapeInfo | null => {
-				const blockId = getBlockByWorldCoords(x, y, z);
-				if (!isCollidableBlock(blockId)) return null;
-
-				if (isFenceBlockId(blockId)) {
-					const mask = computeFenceNeighborMask(x, y, z, (wx, wy, wz) => {
-						return getBlockByWorldCoords(wx, wy, wz);
-					});
-					_blockShapeInfoScratch.shape = getFenceDynamicShape(mask);
-					_blockShapeInfoScratch.rotation = 0;
-					_blockShapeInfoScratch.slice = 0;
-					_blockShapeInfoScratch.flipY = false;
-					return _blockShapeInfoScratch;
-				}
-
-				const state = getBlockStateByWorldCoords(x, y, z);
-				const shape = getShapeForBlockId(blockId);
-				_blockShapeInfoScratch.shape = shape;
-				_blockShapeInfoScratch.rotation = shape.rotateY ? state & 3 : 0;
-				_blockShapeInfoScratch.slice = 0;
-				_blockShapeInfoScratch.flipY = shape.allowFlipY && (state & 4) !== 0;
-				return _blockShapeInfoScratch;
-			},
+			vec3(this.#halfSize, this.#halfSize, this.#halfSize),
+			SHARED_BLOCK_SAMPLER,
 			DroppedItem.EPSILON,
 			{
 				scene: Map1.mainScene,
-				name: "droppedItemAABB",
-				position: this.#boxMesh.position,
-				renderingGroupId: 1,
+				name: ITEM_NAME_AABB,
+				position: this.#position,
+				renderOrder: 1,
 			},
 		);
 
+		const sharedAtlas = getDiffuseTexture2D();
+		if (sharedAtlas) {
+			setShaderTexture(this.#material, "diffuseTexture", sharedAtlas);
+			this.#applyAtlasTile(item);
+			this.#boxMesh.visible = true;
+		} else {
+			void DroppedItem.#getAtlasTexture().then((atlas) => {
+				if (this.#disposed || !atlas) return;
+				setShaderTexture(this.#material, "diffuseTexture", atlas);
+				this.#applyAtlasTile(item);
+				this.#boxMesh.visible = true;
+			});
+		}
+
 		DroppedItem.#ensureObserver();
-		DroppedItem.#allItems.add(this);
-		this.#updateLighting();
+
+		this.#itemIndex = DroppedItem.#allItems.length;
+		DroppedItem.#allItems.push(this);
+
+		this.#updateLightingIfNeeded();
 	}
 
-	pushItem(direction: Vector3): void {
-		this.#velocity.addInPlace(direction);
+	addVelocity(x: number, y: number, z: number): void {
+		this.#velocity.x += x;
+		this.#velocity.y += y;
+		this.#velocity.z += z;
 	}
 
-	use(player: Player): void {
+	use = (player: Player): void => {
 		const remainder = player.playerInventory.addItem(this.#item);
 		if (remainder <= 0) {
 			this.#dispose();
 		}
-	}
-	#dispose(): void {
-		DroppedItem.#allItems.delete(this);
-		this.#voxelCollider.dispose();
-		this.#boxMesh.dispose();
-		this.#material.dispose();
-	}
+	};
 
-	#updatePhysics(): void {
-		if (this.#boxMesh.isDisposed()) {
-			DroppedItem.#allItems.delete(this);
-			return;
+	#dispose(): void {
+		if (this.#disposed) return;
+		this.#disposed = true;
+
+		const items = DroppedItem.#allItems;
+		const last = items.pop();
+		if (last !== undefined && last !== this) {
+			items[this.#itemIndex] = last;
+			last.#itemIndex = this.#itemIndex;
 		}
 
-		const dt = Map1.mainScene.getEngine().getDeltaTime() / 1000;
-		if (dt <= 0) return;
+		this.#voxelCollider.dispose();
+		removeFromScene(Map1.mainScene, this.#boxMesh);
+	}
 
+	#updatePhysics(dt: number): void {
 		this.#velocity.y += DroppedItem.GRAVITY * dt;
-		this.#moveAxis(Axis.X, this.#velocity.x * dt);
-		this.#moveAxis(Axis.Y, this.#velocity.y * dt);
-		this.#moveAxis(Axis.Z, this.#velocity.z * dt);
 
-		const grounded = this.#isGrounded();
-		const damping = grounded
+		this.#moveAxis(ColliderAxis.X, this.#velocity.x * dt);
+
+		// OPTIMIZATION: Track grounded from Y collision instead of extra overlap query
+		this.#grounded = false;
+		const preY = this.#position.y;
+		this.#moveAxis(ColliderAxis.Y, this.#velocity.y * dt);
+		if (this.#position.y === preY && this.#velocity.y < 0) {
+			this.#grounded = true;
+		}
+
+		this.#moveAxis(ColliderAxis.Z, this.#velocity.z * dt);
+
+		const damping = this.#grounded
 			? DroppedItem.GROUND_DAMPING_PER_SEC
 			: DroppedItem.AIR_DAMPING_PER_SEC;
-		const keep = Math.max(0, 1 - damping * dt);
-		this.#velocity.scaleInPlace(keep);
+		// OPTIMIZATION: Frame-rate independent exponential damping
+		const keep = Math.exp(-damping * dt);
 
-		if (grounded && this.#velocity.y < 0) {
+		this.#velocity.x *= keep;
+		this.#velocity.y *= keep;
+		this.#velocity.z *= keep;
+
+		if (this.#grounded && this.#velocity.y < 0) {
 			this.#velocity.y = 0;
 		}
 
-		if (Math.abs(this.#velocity.x) < DroppedItem.MIN_SPEED) {
+		if (
+			this.#velocity.x > -DroppedItem.MIN_SPEED &&
+			this.#velocity.x < DroppedItem.MIN_SPEED
+		)
 			this.#velocity.x = 0;
-		}
-		if (Math.abs(this.#velocity.y) < DroppedItem.MIN_SPEED) {
+		if (
+			this.#velocity.y > -DroppedItem.MIN_SPEED &&
+			this.#velocity.y < DroppedItem.MIN_SPEED
+		)
 			this.#velocity.y = 0;
-		}
-		if (Math.abs(this.#velocity.z) < DroppedItem.MIN_SPEED) {
+		if (
+			this.#velocity.z > -DroppedItem.MIN_SPEED &&
+			this.#velocity.z < DroppedItem.MIN_SPEED
+		)
 			this.#velocity.z = 0;
+
+		// OPTIMIZATION: Skip transform update when item hasn't moved
+		const px = this.#position.x;
+		const py = this.#position.y;
+		const pz = this.#position.z;
+		if (
+			px !== this.#oldPositionX ||
+			py !== this.#oldPositionY ||
+			pz !== this.#oldPositionZ
+		) {
+			this.#oldPositionX = px;
+			this.#oldPositionY = py;
+			this.#oldPositionZ = pz;
+			this.#boxMesh.position.set(px, py, pz);
 		}
 
-		// Sync debug AABB once per frame (not per collision sub-step).
-		this.#voxelCollider.syncDebugMesh(this.#boxMesh.position);
-		//this.#updateLighting();
+		this.#voxelCollider.syncDebugMesh(this.#position);
+		this.#updateLightingIfNeeded();
 	}
 
-	#moveAxis(axis: Axis, delta: number): void {
+	#moveAxis(axis: ColliderAxis, delta: number): void {
 		this.#voxelCollider.moveAxis(
-			this.#boxMesh.position,
+			this.#position,
 			this.#velocity,
 			axis,
 			delta,
@@ -201,25 +488,44 @@ export class DroppedItem implements IUsable {
 		);
 	}
 
-	#overlapsSolid(position: Vector3): boolean {
-		return this.#voxelCollider.overlaps(position);
-	}
+	#updateLightingIfNeeded(): void {
+		const lx = this.#position.x | 0;
+		const ly = this.#position.y | 0;
+		const lz = this.#position.z | 0;
+		if (
+			lx === this.#lastLightX &&
+			ly === this.#lastLightY &&
+			lz === this.#lastLightZ
+		) {
+			return;
+		}
+		this.#lastLightX = lx;
+		this.#lastLightY = ly;
+		this.#lastLightZ = lz;
 
-	#isGrounded(): boolean {
-		this.#scratchProbe.copyFrom(this.#boxMesh.position);
-		this.#scratchProbe.y -= 0.01;
-		return this.#overlapsSolid(this.#scratchProbe);
-	}
-
-	#updateLighting(): void {
-		const packedLight = getLightByWorldCoords(
-			this.#boxMesh.position.x,
-			this.#boxMesh.position.y,
-			this.#boxMesh.position.z,
+		this.#applyTintFromPackedLight(
+			getLightByWorldCoords(
+				this.#position.x,
+				this.#position.y,
+				this.#position.z,
+			),
 		);
+	}
 
-		const skyLight = ((packedLight >> 4) & 0xf) / 15;
-		const blockLight = (packedLight & 0xf) / 15;
+	/**
+	 * One-shot tint from a pre-sampled packed light value (e.g. the lit air
+	 * voxel beside a freshly mined block). Does not touch the per-voxel cache:
+	 * the item keeps this tint until it actually crosses into another voxel,
+	 * which prevents a freshly dropped item from spawning dark inside the
+	 * still-unlit block it came from.
+	 */
+	public setInitialLight(packedLight: number): void {
+		this.#applyTintFromPackedLight(packedLight);
+	}
+
+	#applyTintFromPackedLight(packedLight: number): void {
+		const skyLight = ((packedLight >> 4) & 0xf) * LIGHT_NORMALIZE_MUL;
+		const blockLight = (packedLight & 0xf) * LIGHT_NORMALIZE_MUL;
 
 		const sunElevation = -GLOBAL_VALUES.skyLightDirection.y + 0.1;
 		const sunLightIntensity = Math.min(1.0, Math.max(0.0, sunElevation * 4.0));
@@ -233,57 +539,33 @@ export class DroppedItem implements IUsable {
 		const blockG = blockLight * DroppedItem.BLOCK_LIGHT_COLOR.y;
 		const blockB = blockLight * DroppedItem.BLOCK_LIGHT_COLOR.z;
 
-		const finalR = Math.min(1, Math.max(0.3, skyR + blockR));
-		const finalG = Math.min(1, Math.max(0.3, skyG + blockG));
-		const finalB = Math.min(1, Math.max(0.3, skyB + blockB));
-
-		this.#material.diffuseColor.set(finalR, finalG, finalB);
+		// OPTIMIZATION: Reuse tint array to avoid GC from setShaderVector3
+		this.#tint[0] = Math.min(1.0, Math.max(0.3, skyR + blockR));
+		this.#tint[1] = Math.min(1.0, Math.max(0.3, skyG + blockG));
+		this.#tint[2] = Math.min(1.0, Math.max(0.3, skyB + blockB));
+		setShaderVector3(this.#material, "tintColor", this.#tint);
 	}
 
-	#getOrCreateAtlasTexture(): Texture {
-		let atlas = getDiffuse();
-		if (!atlas) {
-			console.warn("error atlas not saved");
-			atlas = new Texture("/texture/diffuse_atlas.png", Map1.mainScene, {
-				noMipmap: false,
-				samplingMode: Texture.NEAREST_SAMPLINGMODE,
-			});
-			atlas.wrapU = Texture.CLAMP_ADDRESSMODE;
-			atlas.wrapV = Texture.CLAMP_ADDRESSMODE;
-			setDiffuse(atlas);
-		}
-		return atlas;
-	}
-
-	#applyAtlasTexture(item: Item): void {
-		const blockId = item.blockId ?? 0;
-		let tileTex = DroppedItem.#tileTextures.get(blockId);
-		if (!tileTex) {
-			const atlasTexture = this.#getOrCreateAtlasTexture();
-			tileTex = atlasTexture.clone();
-			if (!tileTex) {
-				this.#material.diffuseColor = Color3.White();
-				return;
-			}
-			tileTex.wrapU = Texture.CLAMP_ADDRESSMODE;
-			tileTex.wrapV = Texture.CLAMP_ADDRESSMODE;
-			DroppedItem.#tileTextures.set(blockId, tileTex);
-		}
+	#applyAtlasTile(item: Item): void {
 		const tile = getAtlasTile(item.blockId) ?? [0, 0];
 		const tileSize = atlasTileSize;
 		const clampedX = Math.max(0, Math.min(atlasSize - 1, tile[0]));
 		const clampedY = Math.max(0, Math.min(atlasSize - 1, tile[1]));
 		const atlasRow = atlasSize - 1 - clampedY;
 
-		tileTex.uScale = tileSize;
-		tileTex.vScale = tileSize;
-		tileTex.uOffset = clampedX * tileSize;
-		tileTex.vOffset = atlasRow * tileSize;
-		this.#material.diffuseTexture = tileTex;
+		setShaderUniform(this.#material, "uScale", tileSize);
+		setShaderUniform(this.#material, "uOffset", [
+			clampedX * tileSize,
+			atlasRow * tileSize,
+		]);
 	}
 
 	get boxMesh(): Mesh {
 		return this.#boxMesh;
+	}
+
+	get position(): Vec3 {
+		return this.#position;
 	}
 
 	get item(): Item {
@@ -291,19 +573,40 @@ export class DroppedItem implements IUsable {
 	}
 
 	static disposeAll(): void {
-		for (const item of [...DroppedItem.#allItems]) {
-			item.#dispose();
-		}
-		if (DroppedItem.#observer) {
-			Map1.mainScene.onBeforeRenderObservable.remove(DroppedItem.#observer);
-			DroppedItem.#observer = null;
+		while (DroppedItem.#allItems.length > 0) {
+			DroppedItem.#allItems[0].#dispose();
 		}
 	}
 
-	static disposeTileTextures(): void {
-		for (const tex of DroppedItem.#tileTextures.values()) {
-			tex.dispose();
+	static nearestTo(player: Player): DroppedItem | null {
+		const p = player.position;
+		let best: DroppedItem | null = null;
+		let bestSq = REACH_DISTANCE_SQ;
+
+		const items = DroppedItem.#allItems;
+		const len = items.length;
+
+		for (let i = 0; i < len; i++) {
+			const item = items[i];
+			const m = item.#position;
+			const dx = m.x - p.x;
+			const dy = m.y - p.y;
+			const dz = m.z - p.z;
+
+			const dSq = dx * dx + dy * dy + dz * dz;
+			if (dSq <= bestSq) {
+				bestSq = dSq;
+				best = item;
+			}
 		}
-		DroppedItem.#tileTextures.clear();
+		return best;
+	}
+
+	static get activeItems(): ReadonlyArray<DroppedItem> {
+		return DroppedItem.#allItems;
+	}
+
+	get halfExtent(): number {
+		return this.#halfSize;
 	}
 }

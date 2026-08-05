@@ -1,55 +1,50 @@
 import {
-	type Camera,
-	Color3,
+	createSpotLight,
 	type FreeCamera,
-	type Observer,
-	Ray,
-	type Scene,
-	SpotLight,
-	Vector3,
-} from "@babylonjs/core";
+	type SceneContext,
+	type SpotLight,
+} from "@babylonjs/lite";
 
 export class PlayerFlashLight {
 	#flashlight: SpotLight;
-	#camera: FreeCamera;
-	#viewMatrixObs: Observer<Camera> | null = null;
+	#enabled = false;
 
-	constructor(scene: Scene, playerCamera: FreeCamera) {
-		// Create flashlight (SpotLight)
-		this.#camera = playerCamera;
-		this.#flashlight = new SpotLight(
-			"flashlight",
-			this.#camera.position.clone(),
-			Vector3.Zero(), // forward direction
+	constructor(scene: SceneContext, playerCamera: FreeCamera) {
+		// Create flashlight (SpotLight) parented to the camera so it follows
+		// the view. Lite has no per-camera view-matrix observable, so the
+		// light is attached in camera-local space (forward = +Z local).
+		const pos: [number, number, number] = [
+			playerCamera.position.x,
+			playerCamera.position.y,
+			playerCamera.position.z,
+		];
+		this.#flashlight = createSpotLight(
+			pos,
+			[0, 0, 1], // forward direction (camera-local)
 			Math.PI / 4, // angle
 			1.2, // exponent
-			scene,
+			1.5, // intensity
 		);
-		this.#flashlight.intensity = 1.5;
-		this.#flashlight.diffuse = new Color3(1, 1, 0.5);
-		this.#flashlight.specular = new Color3(1, 1, 1);
+		this.#flashlight.diffuse = [1, 1, 0.5];
+		this.#flashlight.specular = [1, 1, 1];
 		this.#flashlight.range = 210;
-		this.#flashlight.setEnabled(false);
-		this.#flashlight.parent = this.#camera;
-
-		// Update flashlight position on camera movement
-		const scratchRay = new Ray(Vector3.Zero(), Vector3.Zero());
-		this.#viewMatrixObs = this.#camera.onViewMatrixChangedObservable.add(() => {
-			this.#flashlight.position.copyFrom(this.#camera.position);
-			this.#camera.getForwardRayToRef(scratchRay, 0);
-			this.#flashlight.direction.copyFrom(scratchRay.direction);
-		});
+		const flAny = this.#flashlight as unknown as {
+			setEnabled?(v: boolean): void;
+			dispose?(): void;
+		};
+		flAny.setEnabled?.(false);
+		this.#flashlight.parent = playerCamera;
+		void scene;
 	}
 
 	public toggle() {
-		this.#flashlight.setEnabled(!this.#flashlight.isEnabled());
+		this.#enabled = !this.#enabled;
+		(
+			this.#flashlight as unknown as { setEnabled?(v: boolean): void }
+		).setEnabled?.(this.#enabled);
 	}
 
 	public dispose(): void {
-		if (this.#viewMatrixObs) {
-			this.#camera.onViewMatrixChangedObservable.remove(this.#viewMatrixObs);
-			this.#viewMatrixObs = null;
-		}
-		this.#flashlight.dispose();
+		(this.#flashlight as unknown as { dispose?(): void }).dispose?.();
 	}
 }

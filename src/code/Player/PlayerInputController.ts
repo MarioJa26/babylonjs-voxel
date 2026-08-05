@@ -1,11 +1,5 @@
-import {
-	type Observer,
-	PointerEventTypes,
-	type PointerInfo,
-	type Scene,
-} from "@babylonjs/core";
 import type { IControls } from "../Interface/IControls";
-import { getGameTimeScale } from "../Shared/GameRuntimeState";
+import { isUiOpen } from "../Lib/GameRuntimeState";
 import type { InventoryControls } from "./Controls/InventoryControls";
 import type { WalkingControls } from "./Controls/WalkingControls";
 import type { PlayerCamera } from "./PlayerCamera";
@@ -19,10 +13,10 @@ export class PlayerInputController {
 	#onPointerLockChange: () => void;
 	#onMouseDown: (event: MouseEvent) => void;
 	#onMouseUp: (event: MouseEvent) => void;
-	#pointerObs: Observer<PointerInfo> | null = null;
+	#onPointerMove: (event: MouseEvent) => void;
+	#onWheel: (event: WheelEvent) => void;
 
 	constructor(
-		private readonly scene: Scene,
 		private readonly canvas: HTMLCanvasElement,
 		private readonly playerCamera: PlayerCamera,
 		private readonly onKeyEvent: KeyEventHandler,
@@ -43,10 +37,10 @@ export class PlayerInputController {
 			}
 		};
 		this.#onPointerLockChange = () => {
-			if (
-				document.pointerLockElement !== this.canvas &&
-				getGameTimeScale() > 0
-			) {
+			// Only treat a lost pointer lock as a pause request when NO UI surface
+			// is open. Menus (inventory, mason table) release the lock themselves;
+			// those must NOT trigger the pause menu.
+			if (document.pointerLockElement !== this.canvas && !isUiOpen()) {
 				this.onPauseRequested();
 			}
 		};
@@ -55,13 +49,30 @@ export class PlayerInputController {
 			if (controls.controlType === "inventory") {
 				(controls as InventoryControls).handleMouseEvent(event);
 			} else if (controls.controlType === "walking") {
+				// World interactions (break/place) only apply when the canvas owns
+				// the pointer. While an overlay (inventory/mason) is open the pointer
+				// is unlocked, so these clicks must be ignored — otherwise the player
+				// could break/place blocks through the menu.
+				if (document.pointerLockElement !== this.canvas) return;
 				(controls as WalkingControls).handleMouseEvent(event, true);
 			}
 		};
 		this.#onMouseUp = (event) => {
 			const controls = this.getKeyboardControls();
 			if (controls.controlType === "walking") {
+				if (document.pointerLockElement !== this.canvas) return;
 				(controls as WalkingControls).handleMouseEvent(event, false);
+			}
+		};
+		this.#onPointerMove = (event: MouseEvent) => {
+			if (document.pointerLockElement !== this.canvas) return;
+			this.playerCamera.handleMouseMovement(event.movementX, event.movementY);
+		};
+		this.#onWheel = (event: WheelEvent) => {
+			if (event.deltaY > 0) {
+				this.onKeyEvent("wheel_down", false);
+			} else if (event.deltaY < 0) {
+				this.onKeyEvent("wheel_up", false);
 			}
 		};
 	}
@@ -73,7 +84,8 @@ export class PlayerInputController {
 		document.addEventListener("pointerlockchange", this.#onPointerLockChange);
 		window.addEventListener("mousedown", this.#onMouseDown);
 		window.addEventListener("mouseup", this.#onMouseUp);
-		this.bindPointerObserver();
+		this.canvas.addEventListener("mousemove", this.#onPointerMove);
+		this.canvas.addEventListener("wheel", this.#onWheel);
 	}
 
 	public dispose(): void {
@@ -86,33 +98,7 @@ export class PlayerInputController {
 		);
 		window.removeEventListener("mousedown", this.#onMouseDown);
 		window.removeEventListener("mouseup", this.#onMouseUp);
-		if (this.#pointerObs) {
-			this.scene.onPointerObservable.remove(this.#pointerObs);
-			this.#pointerObs = null;
-		}
-	}
-
-	private bindPointerObserver(): void {
-		this.#pointerObs = this.scene.onPointerObservable.add((pointerInfo) => {
-			if (document.pointerLockElement !== this.canvas) return;
-
-			switch (pointerInfo.type) {
-				case PointerEventTypes.POINTERMOVE:
-					this.playerCamera.handleMouseMovement(
-						pointerInfo.event.movementX,
-						pointerInfo.event.movementY,
-					);
-					break;
-				case PointerEventTypes.POINTERWHEEL: {
-					const wheelEvent = pointerInfo.event as WheelEvent;
-					if (wheelEvent.deltaY > 0) {
-						this.onKeyEvent("wheel_down", false);
-					} else if (wheelEvent.deltaY < 0) {
-						this.onKeyEvent("wheel_up", false);
-					}
-					break;
-				}
-			}
-		});
+		this.canvas.removeEventListener("mousemove", this.#onPointerMove);
+		this.canvas.removeEventListener("wheel", this.#onWheel);
 	}
 }

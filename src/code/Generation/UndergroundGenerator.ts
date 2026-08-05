@@ -1,10 +1,12 @@
+import { WATER_BLOCK_ID } from "../World/Chunk/Worker/ChunkMesherConstants";
 import {
 	CAVE_FLAG_CARVED,
 	CAVE_FLAG_TUNNEL_CORE,
+	clamp01,
 	evaluateCaveCarve,
-	NO_SURFACE_Y,
 } from "./CaveCarver";
 import { CaveNoiseGrid } from "./CaveNoiseGrid";
+import type { NoiseInstance } from "./NoiseAndParameters/FastNoise/FastNoiseFactory";
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
 
 const MIN_SOLID_NEIGHBORS = 5;
@@ -12,6 +14,7 @@ const SMOOTHING_PASSES = 2;
 
 const MAX_CHUNK_VOLUME = 32 * 32 * 32;
 const _carve = new Uint8Array(MAX_CHUNK_VOLUME);
+const _caveSample = new Float32Array(3);
 
 export class UndergroundGenerator {
 	private readonly params: GenerationParamsType;
@@ -29,6 +32,9 @@ export class UndergroundGenerator {
 		cheeseNoise: (x: number, y: number, z: number) => number,
 		tunnelNoise: (x: number, y: number, z: number) => number,
 		detailNoise: (x: number, y: number, z: number) => number,
+		cheeseInstance?: NoiseInstance,
+		tunnelInstance?: NoiseInstance,
+		detailInstance?: NoiseInstance,
 	) {
 		this.params = params;
 		this.CHUNK_SIZE = params.CHUNK_SIZE;
@@ -47,6 +53,9 @@ export class UndergroundGenerator {
 			this.cheeseNoise,
 			this.tunnelNoise,
 			this.detailNoise,
+			cheeseInstance,
+			tunnelInstance,
+			detailInstance,
 		);
 	}
 
@@ -55,10 +64,10 @@ export class UndergroundGenerator {
 		chunkY: number,
 		chunkZ: number,
 		topSurfaceYMap: Int16Array,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
+		placeBlockLocal: (
+			lx: number,
+			ly: number,
+			lz: number,
 			id: number,
 			ow?: boolean,
 		) => void,
@@ -68,42 +77,72 @@ export class UndergroundGenerator {
 		const LAVA_LEVEL = this.LAVA_LEVEL;
 		const params = this.params;
 
-		const chunkWorldX = chunkX * CHUNK_SIZE;
-		const chunkWorldZ = chunkZ * CHUNK_SIZE;
 		const chunkWorldY = chunkY * CHUNK_SIZE;
 
 		const cs = CHUNK_SIZE;
 		const cs2 = cs * cs;
 		const vol = cs * cs2;
 
+		// PERF: Caves only carve solid (non-air, non-water) blocks. Scan once
+		// for any carveable voxel; sky/water-only chunks (no solid) can skip the
+		// expensive cave-noise grid sampling entirely. This avoids ~2187 3D-noise
+		// evaluations per chunk for every chunk that contains no solid block.
+		let hasSolid = false;
+		for (let i = 0; i < vol; i++) {
+			const b = blocks ? blocks[i] : 0;
+			if (b !== 0 && b !== WATER_BLOCK_ID) {
+				hasSolid = true;
+				break;
+			}
+		}
+		if (!hasSolid) {
+			return;
+		}
+
 		// PERF: Reuse pre-sampled cave noise grid instead of allocating new one per chunk.
 		this.caveGrid.reset(chunkX, chunkY, chunkZ, cs);
 
 		_carve.fill(0, 0, vol);
 
+		// fullDepthDenom depends only on params; caveDensity additionally on
+		// worldY — hoisted once per layer instead of per voxel.
+		const fullDepthDenom = Math.max(
+			1,
+			params.CAVE_SURFACE_BLEND_UPPER - params.CAVE_FULL_DENSITY_DEPTH,
+		);
+
 		for (let localY = 0; localY < cs; localY++) {
 			const worldY = chunkWorldY + localY;
 			const yBase = localY * cs;
+			const depthT = clamp01(
+				(worldY - params.CAVE_FULL_DENSITY_DEPTH) / fullDepthDenom,
+			);
+			const caveDensity =
+				params.CAVE_DENSITY_MIN * (1 - depthT) +
+				params.CAVE_DENSITY_MAX * depthT;
 
 			for (let localZ = 0; localZ < cs; localZ++) {
 				const yzBase = yBase + localZ * cs2;
 
 				for (let localX = 0; localX < cs; localX++) {
-					const surfaceY = topSurfaceYMap[localX + localZ * cs] ?? NO_SURFACE_Y;
+					const surfaceY = topSurfaceYMap[localX + localZ * cs];
 
 					// PERF: Skip voxels already carved to air by terrain generation.
 					if (blocks) {
-						const blockIdx = localX + localY * cs + localZ * cs2;
-						if (blocks[blockIdx] === 0) continue;
+						const idx = yzBase + localX;
+						if (blocks[idx] === 0) continue;
 					}
 
+					this.caveGrid.get3(localX, localY, localZ, _caveSample);
 					const cave = evaluateCaveCarve(
 						params,
 						worldY,
 						surfaceY,
-						this.caveGrid.getCheese(localX, localY, localZ),
-						this.caveGrid.getTunnel(localX, localY, localZ),
-						this.caveGrid.getDetail(localX, localY, localZ),
+						_caveSample[0],
+						_caveSample[1],
+						_caveSample[2],
+						undefined,
+						caveDensity,
 					);
 					if (!cave.shouldCarve) continue;
 
@@ -152,12 +191,11 @@ export class UndergroundGenerator {
 			const yBase = localY * cs;
 
 			for (let localZ = 0; localZ < cs; localZ++) {
-				const worldZ = chunkWorldZ + localZ;
 				const yzBase = yBase + localZ * cs2;
 
 				for (let localX = 0; localX < cs; localX++) {
 					if ((_carve[yzBase + localX] & CAVE_FLAG_CARVED) === 0) continue;
-					placeBlock(chunkWorldX + localX, worldY, worldZ, blockId, true);
+					placeBlockLocal(localX, localY, localZ, blockId, true);
 				}
 			}
 		}

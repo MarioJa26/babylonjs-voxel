@@ -1,25 +1,34 @@
-import { type Engine, Scene } from "@babylonjs/core";
-import { Map1 } from "@/code/Maps/Map1";
-import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
+﻿import type { SceneContext } from "@babylonjs/lite";
+import { onSceneDispose } from "@babylonjs/lite";
 import {
-	TextureDefinitions,
-	TextureDefinitionsReady,
-} from "@/code/World/Texture/TextureDefinitions";
+	closeUi,
+	isUiOpen,
+	openUi,
+	UiFocus,
+} from "@/code/Lib/GameRuntimeState";
+import { Map1 } from "@/code/Maps/Map1";
+import {
+	buildBlockInventorySlots,
+	getBlockInventory,
+	type SavedBlockInventory,
+	saveBlockInventory,
+	serializeBlockSlots,
+} from "@/code/World/BlockInventory/BlockInventoryManager";
+import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
+import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
 import MapFog from "../../Maps/MapFog";
 import { WorldEnvironment } from "../../Maps/WorldEnvironment";
-import {
-	type MasonRecipe,
-	MasonRecipes,
-	type Recipe,
-	Recipes,
-} from "../Crafting/CraftingManager";
+import { MasonRecipes } from "../Crafting/CraftingManager";
+import { CraftMenu } from "../Crafting/CraftMenu/CraftMenu";
+import { Item } from "../Inventory/Item";
+import type { ItemSlot } from "../Inventory/ItemSlot";
 import { PlayerInventory } from "../Inventory/PlayerInventory";
 import type { Player } from "../Player";
+import { Chat } from "./Chat";
 import { Crosshair } from "./Crosshair/Crosshair";
 
 export class PlayerHud {
-	#engine: Engine;
-	#scene: Scene;
+	#scene: SceneContext;
 	readonly #player: Player;
 
 	public readonly crossHair: Crosshair;
@@ -28,18 +37,26 @@ export class PlayerHud {
 		return this.#player;
 	}
 
+	public get chat(): Chat {
+		return this.#chat;
+	}
+
 	static #inventory: PlayerInventory;
 	#inventoryOpen = false;
-	#craftingRecipeDivs: { recipe: Recipe; div: HTMLDivElement }[] = [];
+	#craftMenu: CraftMenu;
 
 	#masonTableOpen = false;
 	#masonTableDiv: HTMLDivElement | null = null;
 	#selectedSourceBlockId: number | null = null;
 	#selectedShape: string | null = null;
-	#masonRecipeDivs: {
-		recipe: MasonRecipe;
-		div: HTMLDivElement;
-	}[] = [];
+
+	#woodCrateOpen = false;
+	#woodCrateDiv: HTMLDivElement | null = null;
+	#woodCrateBlockGrid: HTMLElement | null = null;
+	#woodCratePlayerGrid: HTMLElement | null = null;
+	#woodCrateBlockPos: { x: number; y: number; z: number } | null = null;
+	#woodCrateSlots: ItemSlot[][] | null = null;
+	#woodCrateSavedState: SavedBlockInventory | null = null;
 
 	#selectedHotbarSlot = 0;
 	#hotbarSlots: HTMLDivElement[] = [];
@@ -55,8 +72,10 @@ export class PlayerHud {
 
 	#overlayDiv: HTMLDivElement;
 	#craftingContainer!: HTMLDivElement;
+	#mainInventoryContainer!: HTMLDivElement;
 
 	static debugPanelDiv: HTMLDivElement;
+	static debugPanelVisible = true;
 	private static infoRows: {
 		[key: string]: {
 			container: HTMLDivElement;
@@ -73,12 +92,14 @@ export class PlayerHud {
 	#staminaBarFill!: HTMLDivElement;
 	#manaBarFill!: HTMLDivElement;
 
-	constructor(engine: Engine, scene: Scene, player: Player) {
-		this.#engine = engine;
+	readonly #chat: Chat;
+
+	constructor(scene: SceneContext, player: Player) {
 		this.#scene = scene;
 		this.#player = player;
 		PlayerHud.#inventory = player.playerInventory;
-		this.crossHair = new Crosshair(engine, scene);
+		this.#craftMenu = new CraftMenu(player.playerInventory);
+		this.crossHair = new Crosshair();
 		this.#overlayDiv = this.initializeHUD();
 		this.createHotbarUI();
 		this.createStatsUI();
@@ -87,16 +108,13 @@ export class PlayerHud {
 
 		PlayerHud.#inventory.onInventoryChangedObservable.add(() => {
 			if (this.#inventoryOpen) {
-				this.updateCraftingAvailability();
+				this.#craftMenu.updateCraftingAvailability();
 			}
 		});
 
-		void this.#initCraftingUI();
-	}
+		void this.#craftMenu.build(this.#craftingContainer);
 
-	async #initCraftingUI(): Promise<void> {
-		await TextureDefinitionsReady;
-		this.createCraftingUI(this.#craftingContainer);
+		this.#chat = new Chat(player);
 	}
 
 	private initializeHUD(): HTMLDivElement {
@@ -113,7 +131,7 @@ export class PlayerHud {
 		closeButton.innerHTML = "&times;";
 		closeButton.classList.add("hud-close-button");
 		closeButton.onclick = () => {
-			this.#player.keyboardControls.onKeyUp("tab");
+			this.toggleInventory();
 		};
 
 		const contentWrapper = document.createElement("div");
@@ -131,7 +149,7 @@ export class PlayerHud {
 		overlayDiv.appendChild(closeButton);
 		document.body.appendChild(overlayDiv);
 
-		this.#scene.onDisposeObservable.add(() => {
+		onSceneDispose(this.#scene, () => {
 			overlayDiv.remove();
 			document.exitPointerLock();
 		});
@@ -139,118 +157,10 @@ export class PlayerHud {
 		return overlayDiv;
 	}
 
-	private createCraftingUI(container: HTMLDivElement): void {
-		container.innerHTML = "";
-		this.#craftingRecipeDivs = [];
-
-		const viewSwitcher = document.createElement("div");
-		viewSwitcher.classList.add("crafting-view-switcher");
-
-		const detailedButton = document.createElement("button");
-		detailedButton.innerText = "List";
-		detailedButton.title = "Show name and icon";
-		detailedButton.classList.add("active");
-
-		const compactButton = document.createElement("button");
-		compactButton.innerText = "Grid";
-		compactButton.title = "Show only icon";
-
-		detailedButton.onclick = () => {
-			container.classList.remove("compact-view");
-			detailedButton.classList.add("active");
-			compactButton.classList.remove("active");
-		};
-
-		compactButton.onclick = () => {
-			container.classList.add("compact-view");
-			compactButton.classList.add("active");
-			detailedButton.classList.remove("active");
-		};
-
-		viewSwitcher.appendChild(detailedButton);
-		viewSwitcher.appendChild(compactButton);
-		container.appendChild(viewSwitcher);
-
-		for (const recipe of Recipes) {
-			const textureDef = TextureDefinitions.find(
-				(t) => t.id === recipe.resultId,
-			);
-			if (!textureDef) continue;
-
-			const recipeDiv = document.createElement("div");
-			recipeDiv.classList.add("crafting-recipe");
-
-			const ingredientsInfo = recipe.ingredients
-				.map((ing) => {
-					const ingDef = TextureDefinitions.find((t) => t.id === ing.itemId);
-					return `- ${ingDef ? ingDef.name : "Unknown"} x${ing.count}`;
-				})
-				.join("\n");
-			recipeDiv.title = `Craft ${textureDef.name}\nRequires:\n${ingredientsInfo}`;
-
-			const icon = document.createElement("img");
-			icon.src =
-				MaterialFactory.getTexturePathFromFolder(textureDef.path) ?? "";
-			icon.classList.add("crafting-icon");
-
-			const name = document.createElement("span");
-			name.innerText = textureDef.name;
-
-			recipeDiv.appendChild(icon);
-			recipeDiv.appendChild(name);
-
-			this.#craftingRecipeDivs.push({ recipe, div: recipeDiv });
-
-			recipeDiv.onclick = () => {
-				let canCraft = true;
-				for (const ing of recipe.ingredients) {
-					if (!PlayerHud.#inventory.hasItem(ing.itemId, ing.count)) {
-						canCraft = false;
-						break;
-					}
-				}
-
-				if (canCraft) {
-					for (const ing of recipe.ingredients) {
-						PlayerHud.#inventory.removeItems(ing.itemId, ing.count);
-					}
-					PlayerHud.#inventory.createAndAddItem(
-						recipe.resultId,
-						recipe.resultCount,
-					);
-					this.updateCraftingAvailability();
-				} else {
-					recipeDiv.style.borderColor = "red";
-					setTimeout(() => (recipeDiv.style.borderColor = ""), 200);
-				}
-			};
-			container.appendChild(recipeDiv);
-		}
-		this.updateCraftingAvailability();
-	}
-
-	public updateCraftingAvailability(): void {
-		for (const item of this.#craftingRecipeDivs) {
-			let canCraft = true;
-			for (const ing of item.recipe.ingredients) {
-				if (!PlayerHud.#inventory.hasItem(ing.itemId, ing.count)) {
-					canCraft = false;
-					break;
-				}
-			}
-
-			if (canCraft) {
-				item.div.classList.remove("not-craftable");
-				item.div.style.borderColor = ""; // Reset red border if it was set
-			} else {
-				item.div.classList.add("not-craftable");
-			}
-		}
-	}
-
 	private createInventoryUI(): HTMLDivElement {
 		const inventoryContainer = document.createElement("div");
 		inventoryContainer.classList.add("inventory-container");
+		this.#mainInventoryContainer = inventoryContainer;
 
 		const inventory = PlayerHud.#inventory.inventory;
 		for (let row = inventory.length - 1; row >= 1; row--) {
@@ -260,6 +170,12 @@ export class PlayerHud {
 			for (let col = 0; col < inventory[row].length; col++) {
 				const slot = this.getSlot(col, row);
 				if (!slot) continue;
+				slot.addEventListener("dblclick", () => {
+					const item = PlayerHud.#inventory.inventory[row][col].item;
+					if (item) {
+						this.#craftMenu.addItemToFirstFreeSearchSlot(item.itemId);
+					}
+				});
 				rowContainer.appendChild(slot);
 			}
 			inventoryContainer.appendChild(rowContainer);
@@ -294,7 +210,7 @@ export class PlayerHud {
 		this.updateHotbarSelection();
 		document.body.appendChild(hotbarWrapper);
 
-		this.#scene.onDisposeObservable.add(() => {
+		onSceneDispose(this.#scene, () => {
 			hotbarWrapper.remove();
 		});
 		return hotbarContainer;
@@ -323,7 +239,7 @@ export class PlayerHud {
 
 		document.body.appendChild(container);
 
-		this.#scene.onDisposeObservable.add(() => {
+		onSceneDispose(this.#scene, () => {
 			container.remove();
 		});
 	}
@@ -336,21 +252,53 @@ export class PlayerHud {
 		if (this.#masonTableOpen) {
 			this.hideMasonTableUI();
 		}
+		if (this.#woodCrateOpen) {
+			this.hideWoodCrateUI();
+		}
 		this.#inventoryOpen = !this.#inventoryOpen;
 		if (this.#inventoryOpen) {
-			this.updateCraftingAvailability();
+			// Non-blocking overlay: mark UI focus so the pointer-lock loss below is
+			// not mistaken for a pause request. The world keeps ticking.
+			openUi(UiFocus.inventory);
+			// Authoritatively switch to inventory controls so the state is correct
+			// no matter how the inventory was opened (Tab key or UI button). Also
+			// cancel any in-progress block breaking from a held mouse button.
+			this.#activateInventoryControls();
+			this.#craftMenu.updateCraftingAvailability();
 			PlayerHud.#heldItemNameDiv.classList.remove("visible");
 			this.#overlayDiv.style.display = "flex";
-			this.#engine.exitPointerlock();
+			this.#exitPointerLock();
 		} else {
+			closeUi(UiFocus.inventory);
+			// Restore walking controls regardless of how the inventory was closed
+			// (Tab, Escape, or the close button) so world interactions work again.
+			this.#activateWalkingControls();
 			this.#overlayDiv.style.display = "none";
-			this.#engine.enterPointerlock();
+			this.#craftMenu.closePicker();
+			// Only re-grab the mouse if no other overlay is still open.
+			if (!isUiOpen()) this.#enterPointerLock();
 		}
+	}
+
+	/** Switch the active keyboard/mouse scheme to the inventory controls. */
+	#activateInventoryControls(): void {
+		const walking = this.#player.defaultKeyboardControls;
+		// Cancel any in-progress block breaking from a held mouse button.
+		walking.stopBlockBreaking();
+		const inv = this.#player.playerInventory.inventoryControls;
+		inv.underlyingControls = walking;
+		this.#player.keyboardControls = inv;
+	}
+
+	/** Restore the default walking controls. */
+	#activateWalkingControls(): void {
+		this.#player.keyboardControls = this.#player.defaultKeyboardControls;
 	}
 
 	public showMasonTableUI(): void {
 		if (this.#masonTableOpen) return;
 		this.#masonTableOpen = true;
+		openUi(UiFocus.masonTable);
 		this.#selectedSourceBlockId = null;
 		this.#selectedShape = null;
 
@@ -360,20 +308,340 @@ export class PlayerHud {
 
 		this.updateMasonTableAvailability();
 		this.#masonTableDiv.style.display = "flex";
-		this.#engine.exitPointerlock();
+		this.#exitPointerLock();
 	}
 
 	public hideMasonTableUI(): void {
 		if (!this.#masonTableOpen) return;
 		this.#masonTableOpen = false;
+		closeUi(UiFocus.masonTable);
 		if (this.#masonTableDiv) {
 			this.#masonTableDiv.style.display = "none";
 		}
-		this.#engine.enterPointerlock();
+		// Only re-grab the mouse if no other overlay is still open.
+		if (!isUiOpen()) this.#enterPointerLock();
+	}
+
+	#enterPointerLock(): void {
+		document.querySelector("canvas")?.requestPointerLock();
+	}
+
+	#exitPointerLock(): void {
+		document.exitPointerLock();
 	}
 
 	public get isMasonTableOpen(): boolean {
 		return this.#masonTableOpen;
+	}
+
+	// ─── Wood Crate ─────────────────────────────────────────────────────────
+
+	#woodCrateKeyHandler?: (e: KeyboardEvent) => void;
+	#woodCrateClickHandler?: (e: MouseEvent) => void;
+
+	public showWoodCrateUI(x: number, y: number, z: number): void {
+		if (this.#woodCrateOpen) return;
+		this.#woodCrateOpen = true;
+		this.#woodCrateBlockPos = { x, y, z };
+		openUi(UiFocus.woodCrate);
+
+		// Load saved state and build live slots
+		const saved = getBlockInventory(x, y, z);
+		this.#woodCrateSavedState = saved;
+		this.#woodCrateSlots = buildBlockInventorySlots(saved);
+
+		if (!this.#woodCrateDiv) {
+			this.#woodCrateDiv = this.createWoodCrateUI();
+		} else {
+			// Rebuild the block inventory content
+			this.#refreshWoodCrateContent();
+		}
+
+		// Switch to inventory controls for Q-drop and cross-inventory drag
+		this.#activateInventoryControls();
+		this.#woodCrateDiv.style.display = "flex";
+		this.#exitPointerLock();
+
+		// Capture-phase handler: close woodcrate on Tab/Escape and block the
+		// event from reaching the InventoryControls instance that was active
+		// while the crate was open. Without this, the old InventoryControls'
+		// keyup handler overwrites keyboardControls after toggleInventory
+		// opens the player inventory, leaving the player stuck.
+		this.#woodCrateKeyHandler = (e: KeyboardEvent) => {
+			if (!this.#woodCrateOpen) return;
+			if (e.key === "Escape" || e.key === "Tab") {
+				e.preventDefault();
+				e.stopPropagation();
+				if (e.type === "keydown") {
+					this.hideWoodCrateUI();
+				}
+			}
+		};
+		window.addEventListener("keydown", this.#woodCrateKeyHandler, true);
+		window.addEventListener("keyup", this.#woodCrateKeyHandler, true);
+
+		// Shift-click handler for fast transfer between crate and inventory
+		this.#woodCrateClickHandler = (e: MouseEvent) => {
+			if (!this.#woodCrateOpen) return;
+			if (!e.shiftKey) return;
+			const slot = PlayerInventory.currentlyHoveredSlot;
+			if (!slot?.item) return;
+			if (this.#moveItemBetweenCrateAndInventory(slot)) {
+				e.preventDefault();
+				e.stopPropagation();
+			}
+		};
+		this.#woodCrateDiv.addEventListener(
+			"click",
+			this.#woodCrateClickHandler,
+			true,
+		);
+	}
+
+	public hideWoodCrateUI(): void {
+		if (!this.#woodCrateOpen) return;
+		this.#woodCrateOpen = false;
+
+		// Persist block inventory
+		if (this.#woodCrateBlockPos && this.#woodCrateSlots) {
+			const saved = serializeBlockSlots(this.#woodCrateSlots);
+			const { x, y, z } = this.#woodCrateBlockPos;
+			saveBlockInventory(x, y, z, saved);
+		}
+
+		// Clear live slot references
+		this.#woodCrateSlots = null;
+		this.#woodCrateSavedState = null;
+		this.#woodCrateBlockPos = null;
+
+		closeUi(UiFocus.woodCrate);
+		if (this.#woodCrateDiv) {
+			this.#woodCrateDiv.style.display = "none";
+		}
+
+		// Move player inventory slots back to main inventory container
+		if (this.#mainInventoryContainer) {
+			const inventory = PlayerHud.#inventory.inventory;
+			const rows =
+				this.#mainInventoryContainer.querySelectorAll(".inventory-row");
+			for (let row = inventory.length - 1; row >= 1; row--) {
+				const rowDiv = rows[inventory.length - 1 - row];
+				if (!rowDiv) continue;
+				for (let col = 0; col < inventory[row].length; col++) {
+					const slot = inventory[row][col];
+					rowDiv.appendChild(slot.divItemSlot);
+				}
+			}
+		}
+
+		this.#activateWalkingControls();
+
+		// Remove Escape/Tab key listeners
+		if (this.#woodCrateKeyHandler) {
+			window.removeEventListener("keydown", this.#woodCrateKeyHandler, true);
+			window.removeEventListener("keyup", this.#woodCrateKeyHandler, true);
+			this.#woodCrateKeyHandler = undefined;
+		}
+
+		// Remove shift-click handler
+		if (this.#woodCrateClickHandler && this.#woodCrateDiv) {
+			this.#woodCrateDiv.removeEventListener(
+				"click",
+				this.#woodCrateClickHandler,
+				true,
+			);
+			this.#woodCrateClickHandler = undefined;
+		}
+
+		if (!isUiOpen()) this.#enterPointerLock();
+	}
+
+	public get isWoodCrateOpen(): boolean {
+		return this.#woodCrateOpen;
+	}
+
+	#moveItemBetweenCrateAndInventory(slot: ItemSlot): boolean {
+		const item = slot.item;
+		if (!item) return false;
+
+		const inventory = PlayerHud.#inventory.inventory;
+		const isInInventory =
+			slot.row > 0 || (slot.row === 0 && inventory[0]?.includes(slot));
+		const isInCrate =
+			this.#woodCrateSlots?.some((row) => row.includes(slot)) ?? false;
+
+		if (!isInInventory && !isInCrate) return false;
+
+		if (isInInventory) {
+			// Move from inventory to crate
+			if (!this.#woodCrateSlots) return false;
+
+			// Try to stack with existing items in crate
+			for (const row of this.#woodCrateSlots) {
+				for (const crateSlot of row) {
+					if (crateSlot.item && crateSlot.item.itemId === item.itemId) {
+						const remainder = Item.stackItemAtoB(item, crateSlot.item);
+						if (remainder === 0) {
+							slot.clearItemSlots();
+							return true;
+						}
+					}
+				}
+			}
+
+			// Try to move to empty slot in crate
+			for (const row of this.#woodCrateSlots) {
+				for (const crateSlot of row) {
+					if (!crateSlot.item) {
+						slot.clearItemSlots();
+						item.row = crateSlot.row;
+						item.col = crateSlot.col;
+						crateSlot.divItemSlot.appendChild(item.div);
+						crateSlot.item = item;
+						return true;
+					}
+				}
+			}
+		} else if (isInCrate) {
+			// Move from crate to inventory
+			// Try to stack with existing items in inventory
+			for (let row = inventory.length - 1; row >= 0; row--) {
+				for (const invSlot of inventory[row]) {
+					if (invSlot.item && invSlot.item.itemId === item.itemId) {
+						const remainder = Item.stackItemAtoB(item, invSlot.item);
+						if (remainder === 0) {
+							slot.clearItemSlots();
+							return true;
+						}
+					}
+				}
+			}
+
+			// Try to move to empty slot in inventory
+			for (let row = inventory.length - 1; row >= 0; row--) {
+				for (const invSlot of inventory[row]) {
+					if (!invSlot.item) {
+						slot.clearItemSlots();
+						item.row = invSlot.row;
+						item.col = invSlot.col;
+						invSlot.divItemSlot.appendChild(item.div);
+						invSlot.item = item;
+						return true;
+					}
+				}
+			}
+		}
+
+		return false;
+	}
+
+	private createWoodCrateUI(): HTMLDivElement {
+		const overlay = document.createElement("div");
+		overlay.id = "woodcrate-overlay";
+		overlay.classList.add("woodcrate-overlay");
+
+		const closeButton = document.createElement("button");
+		closeButton.innerHTML = "&times;";
+		closeButton.classList.add("hud-close-button");
+		closeButton.onclick = () => this.hideWoodCrateUI();
+
+		const title = document.createElement("div");
+		title.classList.add("woodcrate-title");
+		title.textContent = "Wood Crate";
+
+		const content = document.createElement("div");
+		content.classList.add("woodcrate-content");
+
+		// Player inventory panel (left, takes most space)
+		const playerPanel = document.createElement("div");
+		playerPanel.classList.add("woodcrate-panel", "woodcrate-panel--player");
+		const playerTitle = document.createElement("div");
+		playerTitle.classList.add("woodcrate-panel-title");
+		playerTitle.textContent = "Inventory";
+		playerPanel.appendChild(playerTitle);
+
+		const playerGrid = document.createElement("div");
+		playerGrid.classList.add("woodcrate-grid");
+		playerGrid.id = "woodcrate-player-grid";
+		this.#woodCratePlayerGrid = playerGrid;
+		const inventory = PlayerHud.#inventory.inventory;
+		for (let row = inventory.length - 1; row >= 1; row--) {
+			const rowDiv = document.createElement("div");
+			rowDiv.classList.add("inventory-row");
+			for (let col = 0; col < inventory[row].length; col++) {
+				const slot = inventory[row][col];
+				rowDiv.appendChild(slot.divItemSlot);
+			}
+			playerGrid.appendChild(rowDiv);
+		}
+		playerPanel.appendChild(playerGrid);
+		content.appendChild(playerPanel);
+
+		// Block inventory panel (right, compact)
+		const blockPanel = document.createElement("div");
+		blockPanel.classList.add("woodcrate-panel", "woodcrate-panel--crate");
+		const blockTitle = document.createElement("div");
+		blockTitle.classList.add("woodcrate-panel-title");
+		blockTitle.textContent = "Crate";
+		blockPanel.appendChild(blockTitle);
+
+		const blockGrid = document.createElement("div");
+		blockGrid.classList.add("woodcrate-grid", "woodcrate-grid--vertical");
+		blockGrid.id = "woodcrate-block-grid";
+		this.#woodCrateBlockGrid = blockGrid;
+		if (this.#woodCrateSlots) {
+			for (const row of this.#woodCrateSlots) {
+				const rowDiv = document.createElement("div");
+				rowDiv.classList.add("woodcrate-row--vertical");
+				for (const slot of row) {
+					rowDiv.appendChild(slot.divItemSlot);
+				}
+				blockGrid.appendChild(rowDiv);
+			}
+		}
+		blockPanel.appendChild(blockGrid);
+		content.appendChild(blockPanel);
+
+		overlay.appendChild(title);
+		overlay.appendChild(content);
+		overlay.appendChild(closeButton);
+		document.body.appendChild(overlay);
+
+		onSceneDispose(this.#scene, () => {
+			overlay.remove();
+		});
+
+		return overlay;
+	}
+
+	#refreshWoodCrateContent(): void {
+		const blockGrid = this.#woodCrateBlockGrid;
+		if (!blockGrid || !this.#woodCrateSlots) return;
+		blockGrid.innerHTML = "";
+		for (const row of this.#woodCrateSlots) {
+			const rowDiv = document.createElement("div");
+			rowDiv.classList.add("woodcrate-row--vertical");
+			for (const slot of row) {
+				rowDiv.appendChild(slot.divItemSlot);
+			}
+			blockGrid.appendChild(rowDiv);
+		}
+
+		// Also rebuild the player inventory grid — slot divs were moved back
+		// to the main inventory container on the last close.
+		const playerGrid = this.#woodCratePlayerGrid;
+		if (!playerGrid) return;
+		playerGrid.innerHTML = "";
+		const inventory = PlayerHud.#inventory.inventory;
+		for (let row = inventory.length - 1; row >= 1; row--) {
+			const rowDiv = document.createElement("div");
+			rowDiv.classList.add("inventory-row");
+			for (let col = 0; col < inventory[row].length; col++) {
+				const slot = inventory[row][col];
+				rowDiv.appendChild(slot.divItemSlot);
+			}
+			playerGrid.appendChild(rowDiv);
+		}
 	}
 
 	private createMasonTableUI(): HTMLDivElement {
@@ -504,7 +772,7 @@ export class PlayerHud {
 		overlay.appendChild(closeButton);
 		document.body.appendChild(overlay);
 
-		this.#scene.onDisposeObservable.add(() => {
+		onSceneDispose(this.#scene, () => {
 			overlay.remove();
 		});
 
@@ -790,17 +1058,10 @@ export class PlayerHud {
 		fogStartSlider.type = "range";
 		fogStartSlider.min = "0";
 		fogStartSlider.max = "3000";
-		fogStartSlider.value = (this.#scene.fogStart || 0).toString();
+		fogStartSlider.value = MapFog.getFogStart(false).toString();
 		fogStartSlider.style.width = "100%";
 		fogStartSlider.oninput = () => {
-			if (this.#scene.fogMode === Scene.FOGMODE_NONE) {
-				this.#scene.fogMode = Scene.FOGMODE_LINEAR;
-			}
-			const value = parseFloat(fogStartSlider.value);
-			MapFog.setFogStartOverride(value);
-			if (this.#scene.fogStart !== value) {
-				this.#scene.fogStart = value;
-			}
+			MapFog.setFogStartOverride(parseFloat(fogStartSlider.value));
 		};
 		div.appendChild(fogStartSlider);
 
@@ -814,17 +1075,10 @@ export class PlayerHud {
 		fogEndSlider.type = "range";
 		fogEndSlider.min = "0";
 		fogEndSlider.max = "3000";
-		fogEndSlider.value = (this.#scene.fogEnd || 1000).toString();
+		fogEndSlider.value = MapFog.getFogEnd(false).toString();
 		fogEndSlider.style.width = "100%";
 		fogEndSlider.oninput = () => {
-			if (this.#scene.fogMode === Scene.FOGMODE_NONE) {
-				this.#scene.fogMode = Scene.FOGMODE_LINEAR;
-			}
-			const value = parseFloat(fogEndSlider.value);
-			MapFog.setFogEndOverride(value);
-			if (this.#scene.fogEnd !== value) {
-				this.#scene.fogEnd = value;
-			}
+			MapFog.setFogEndOverride(parseFloat(fogEndSlider.value));
 		};
 		div.appendChild(fogEndSlider);
 
@@ -853,21 +1107,26 @@ export class PlayerHud {
 
 	public static toggleDebugInfo(): void {
 		if (PlayerHud.debugPanelDiv) {
-			if (PlayerHud.debugPanelDiv.style.display === "none") {
-				PlayerHud.showDebugPanel();
-			} else {
+			if (PlayerHud.debugPanelVisible) {
 				PlayerHud.hideDebugPanel();
+			} else {
+				PlayerHud.showDebugPanel();
 			}
 		}
 	}
 
 	public static showDebugPanel(): void {
-		if (PlayerHud.debugPanelDiv)
+		if (PlayerHud.debugPanelDiv) {
 			PlayerHud.debugPanelDiv.style.display = "block";
+			PlayerHud.debugPanelVisible = true;
+		}
 	}
 
 	public static hideDebugPanel(): void {
-		if (PlayerHud.debugPanelDiv) PlayerHud.debugPanelDiv.style.display = "none";
+		if (PlayerHud.debugPanelDiv) {
+			PlayerHud.debugPanelDiv.style.display = "none";
+			PlayerHud.debugPanelVisible = false;
+		}
 	}
 
 	public static updateDebugInfo(

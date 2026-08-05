@@ -1,17 +1,10 @@
-import { type Mesh, type Scene, Vector3 } from "@babylonjs/core";
-
+import { type Mesh, type SceneContext, type Vec3, vec3 } from "@babylonjs/lite";
 import type { Mount } from "../Entities/Mount";
 import type { PlayerCamera } from "./PlayerCamera";
 import type { SimpleCharacterController } from "./SimpleCharacterController";
 
-export type SavedBodyPosition = {
-	x: number;
-	y: number;
-	z: number;
-};
-
 export class PlayerBodyControlState {
-	public readonly inputDirection = new Vector3(0, 0, 0);
+	public inputDirection = vec3(0, 0, 0);
 	public wantJump = 0;
 	public isSprinting = false;
 	public isFlying = false;
@@ -19,7 +12,7 @@ export class PlayerBodyControlState {
 	public isSneaking = false;
 
 	public reset(): void {
-		this.inputDirection.set(0, 0, 0);
+		this.inputDirection = vec3(0, 0, 0);
 		this.wantJump = 0;
 		this.isSprinting = false;
 		this.isJumpHeld = false;
@@ -28,9 +21,9 @@ export class PlayerBodyControlState {
 }
 
 export interface IPlayerBody {
-	scene: Scene;
+	scene: SceneContext;
 	camera: PlayerCamera;
-	inputDirection: Vector3;
+	inputDirection: Vec3;
 	wantJump: number;
 	isSprinting: boolean;
 	isFlying: boolean;
@@ -52,6 +45,6 @@ export interface IPlayerBody {
 	isMovementLocked: boolean;
 	clearControlState(): void;
 
-	getSavedPosition(): SavedBodyPosition;
+	getSavedPosition(): Vec3;
 	restoreSavedPosition(position: unknown): boolean;
 }

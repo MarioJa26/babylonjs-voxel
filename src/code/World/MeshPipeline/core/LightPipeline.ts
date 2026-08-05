@@ -1,7 +1,5 @@
 // MeshPipeline/core/LightPipeline.ts
 
-import type { MeshContext } from "../types/MeshTypes";
-
 /**
  * Quantize a single nibble (used for LOD lighting).
  */
@@ -25,31 +23,4 @@ export function quantizeLightForLOD(
 	const sky = quantizeNibble((light >> 4) & 0x0f);
 
 	return block | (sky << 4);
-}
-
-/**
- * Merge light from current and neighbor blocks.
- * Matches logic in your original code: partial blocks use max().
- */
-export function mergeLight(
-	currLight: number,
-	neighborLight: number,
-	isPartialCurrent: boolean,
-	isPartialNeighbor: boolean,
-): number {
-	return isPartialCurrent && !isPartialNeighbor
-		? Math.max(currLight, neighborLight)
-		: neighborLight;
-}
-
-/**
- * Extract packed sky/block light as a single byte.
- */
-export function getPackedLightByte(
-	ctx: MeshContext,
-	x: number,
-	y: number,
-	z: number,
-): number {
-	return ctx.getLight(x, y, z, 0) & 0xff;
 }

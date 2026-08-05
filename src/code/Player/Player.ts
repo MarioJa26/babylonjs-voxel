@@ -1,144 +1,195 @@
-import type { Engine, Scene, Vector3 } from "@babylonjs/core";
-import { MetadataContainer } from "../Entities/MetadataContainer";
-import { Mount } from "../Entities/Mount";
+import type {
+	EngineContext,
+	GpuPicker,
+	Mesh,
+	SceneContext,
+	Vec3,
+} from "@babylonjs/lite";
+import {
+	addToScene,
+	createCapsule,
+	createGpuPicker,
+	createStandardMaterial,
+	disposePicker,
+} from "@babylonjs/lite";
+import { Map1 } from "@/code/Maps/Map1";
+import { tryCreateBoatFromMarker } from "@/code/World/Boat/BoatCreatorSystem";
+import { BlockType } from "@/code/World/Texture/BlockType";
 import type { IControls } from "../Interface/IControls";
-import type { IUsable } from "../Interface/IUsable";
-import { WalkingControls } from "../Player/Controls/WalkingControls";
-import { getScene, setIsPaused } from "../Shared/GameRuntimeState";
-import { BlockType } from "../World/Texture/BlockType";
-import { Crosshair } from "./Hud/Crosshair/Crosshair";
+import { getIsPaused, isUiOpen, setIsPaused } from "../Lib/GameRuntimeState";
+import { WalkingControls } from "./Controls/WalkingControls";
+import {
+	pickDroppedItem,
+	pickTarget,
+} from "./Hud/BlockHighlight/BlockRaycaster";
 import { PauseMenu } from "./Hud/PauseMenu";
 import { PlayerHud } from "./Hud/PlayerHud";
+import { DroppedItem } from "./Inventory/DroppedItem";
 import { PlayerInventory } from "./Inventory/PlayerInventory";
-import type { IPlayerBody } from "./PlayerBody";
+import { PlayerBodyControlState } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
 import { PlayerFlashLight } from "./PlayerFlashLight";
 import { PlayerInputController } from "./PlayerInputController";
 import { PlayerLoopController } from "./PlayerLoopController";
 import { PlayerStats } from "./PlayerStats";
-import { PlayerVehicle } from "./PlayerVehicle";
+import { PlayerVehicleMotor } from "./PlayerVehicleMotor";
 
 /**
- * Player class that handles character movement, physics, and camera controls
+ * Lite (native) port of the Player — Phase B slice.
+ *
+ * Wires the existing gameplay clusters (PlayerHud, PlayerInputController,
+ * WalkingControls, PlayerInventory, BreakingBlockHandler, ItemUseActions,
+ * DroppedItem) into the Babylon Lite runtime:
+ *   - movement is owned by `PlayerVehicle` (driven by WalkingControls flags via
+ *     the voxel AABB collider)
+ *   - per-frame: move, update distant terrain, raycast a target for the
+ *     crosshair highlight, tick WalkingControls (block breaking), refresh HUD
+ *
+ * Phase C (mobs/boats/mounts) and the full PlayerLoopController are deferred.
  */
-export class Player implements IUsable {
+export class Player {
 	#playerCamera: PlayerCamera;
-	#playerVehicle: PlayerVehicle;
+	#stats: PlayerStats;
+	#playerVehicle: PlayerVehicleMotor;
+	#walkingControls: WalkingControls;
+	#flashlight: PlayerFlashLight;
 	#playerInventory: PlayerInventory;
-	#playerHud: PlayerHud;
-
-	#defaultKeyboardControls!: WalkingControls;
-	#keyboardControls!: IControls<unknown>;
-	#inputController!: PlayerInputController;
+	#playerHud!: PlayerHud;
+	#pauseMenu!: PauseMenu;
+	#inputController: PlayerInputController;
+	#picker: GpuPicker | null = null;
+	#pickInFlight = false;
 	#loopController!: PlayerLoopController;
+	#playerBodyMesh: Mesh | null = null;
 
-	public flashlight: PlayerFlashLight;
-	public stats: PlayerStats;
+	// Current keyboard control scheme (WalkingControls, or InventoryControls
+	// while the inventory overlay is open).
+	keyboardControls: IControls<unknown>;
 
-	#pauseMenu: PauseMenu;
-
-	/**
-	 * Creates a new Player instance
-	 * @param scene The Babylon.js scene
-	 * @param camera The camera to use for the player's view
-	 * @param canvas The HTML canvas element for input handling
-	 */
 	constructor(
-		private engine: Engine,
-		private scene: Scene,
+		private engine: EngineContext,
+		private scene: SceneContext,
 		playerCam: PlayerCamera,
 		private canvas: HTMLCanvasElement,
 	) {
-		// Register Player as a mountable user for Mount (breaks Mount ↔ Player cycle)
-		Mount.isMountableUser = (
-			value: unknown,
-		): value is {
-			playerVehicle: IPlayerBody;
-			playerCamera: { zoomIn(): void; zoomOut(): void };
-			keyboardControls: IControls<unknown>;
-			defaultKeyboardControls: IControls<unknown>;
-		} => value instanceof Player;
-
-		this.#playerInventory = new PlayerInventory(scene, this, 10, 10);
-		this.stats = new PlayerStats();
-		this.#playerVehicle = new PlayerVehicle(this.scene, playerCam, this.stats);
 		this.#playerCamera = playerCam;
-		this.flashlight = new PlayerFlashLight(this.scene, playerCam.playerCamera);
+		this.#stats = new PlayerStats();
+		this.#playerVehicle = new PlayerVehicleMotor({
+			scene,
+			engine,
+			camera: playerCam,
+			controls: new PlayerBodyControlState(),
+			playerStats: this.#stats,
+		});
+		this.#walkingControls = new WalkingControls(this);
+		this.keyboardControls = this.#walkingControls;
+		this.#flashlight = new PlayerFlashLight(scene, playerCam.playerCamera);
+		this.#playerInventory = new PlayerInventory(scene, this, 10, 10);
 
-		this.#pauseMenu = new PauseMenu(() => this.resumeGame(), this);
-		this.#playerHud = new PlayerHud(engine, this.scene, this);
-
-		this.#defaultKeyboardControls = new WalkingControls(this);
-		this.#keyboardControls = this.#defaultKeyboardControls;
-
-		const inputController = new PlayerInputController(
-			this.scene,
-			this.canvas,
-			this.#playerCamera,
-			(key, isKeyDown) => this.#keyboardControls.handleKeyEvent(key, isKeyDown),
-			() => this.#keyboardControls,
-			() => this.pauseGame(),
+		this.#inputController = new PlayerInputController(
+			canvas,
+			playerCam,
+			(key, down) => this.onKeyEvent(key, down),
+			() => this.keyboardControls,
+			() => this.#onPauseRequested(),
 		);
+		this.#inputController.bind();
 
-		const loopController = new PlayerLoopController(
-			this.engine,
-			this.scene,
+		this.#picker = createGpuPicker(scene);
+	}
+
+	/**
+	 * Build the HUD (crosshair + inventory + stats). Deferred until after
+	 * `Map1.initPromise` so the highlight/`BlockBreakingVisuals` meshes can use
+	 * `Map1.engine`, which is only ready once the world has initialised.
+	 */
+	public createHud(scene: SceneContext): void {
+		if (this.#playerHud) return;
+		this.#playerHud = new PlayerHud(scene, this);
+		this.#createPlayerBody(scene);
+		this.#loopController = new PlayerLoopController(
+			scene,
 			this.#playerVehicle,
-			this.stats,
+			this.#stats,
 			this.#playerHud,
 			this.#playerCamera,
-			() => this.#keyboardControls,
+			() => this.keyboardControls,
 			() => this.position,
 		);
-
-		inputController.bind();
-		loopController.bind();
-		this.#inputController = inputController;
-		this.#loopController = loopController;
+		this.#loopController.bind();
+		this.#pauseMenu = new PauseMenu(() => this.#resume(), this);
 	}
 
-	private pauseGame() {
+	/** Visible player capsule (third-person). Lite-native mesh + unlit material. */
+	#createPlayerBody(scene: SceneContext): void {
+		const body = createCapsule(this.engine, { height: 1.8, radius: 0.3 });
+		const mat = createStandardMaterial();
+		mat.diffuseColor = [0.2, 0.6, 1.0];
+		mat.emissiveColor = [0.0, 0.0, 0.0];
+		mat.disableLighting = true;
+		body.material = mat;
+		body.pickable = false;
+		body.visible = false;
+		addToScene(scene, body);
+		this.#playerBodyMesh = body;
+	}
+
+	/** Recompute spawn height against the loaded terrain (call after map init). */
+	public respawn(): void {
+		this.#playerVehicle.respawn();
+	}
+
+	public tick(deltaMs: number): void {
+		if (getIsPaused()) return;
+		if (!this.#loopController) return;
+		this.#loopController.tick(deltaMs);
+		this.#updatePlayerBody();
+	}
+
+	#updatePlayerBody(): void {
+		if (!this.#playerBodyMesh) return;
+		const visible = this.#playerCamera.isThirdPerson;
+		this.#playerBodyMesh.visible = visible;
+		if (!visible) return;
+		const p = this.position;
+		this.#playerBodyMesh.position.set(p.x, p.y, p.z);
+	}
+
+	#onPauseRequested(): void {
+		// Never open the pause menu while a non-blocking overlay (inventory,
+		// mason table) is open — those keep the world running and just free the
+		// mouse. Only a genuine pause request (Esc with no menu) reaches here.
+		if (getIsPaused() || isUiOpen() || !this.#pauseMenu) return;
 		setIsPaused(true);
+		Map1.isPaused = true;
 		this.#pauseMenu.show();
+		if (document.pointerLockElement) document.exitPointerLock();
 	}
 
-	private resumeGame() {
+	#resume(): void {
 		setIsPaused(false);
+		Map1.isPaused = false;
 		this.#pauseMenu.hide();
-		// Request pointer lock only if the canvas has focus
-		const mapScene = getScene();
-		if (mapScene) {
-			const canvas = mapScene.getEngine().getRenderingCanvas();
-			if (document.activeElement === canvas) {
-				(mapScene.getEngine() as Engine).enterPointerlock();
-			}
-		}
+		this.canvas.requestPointerLock();
 	}
 
-	public dispose(): void {
-		this.#inputController.dispose();
-		this.#loopController.dispose();
-		this.flashlight.dispose();
+	public onKeyEvent(key: string, isKeyDown: boolean): void {
+		this.keyboardControls?.handleKeyEvent(key, isKeyDown);
 	}
 
-	public get playerVehicle(): PlayerVehicle {
+	// ─── public surface consumed by WalkingControls / PlayerHud ─────────────
+
+	public get position(): Vec3 {
+		return this.#playerVehicle.position;
+	}
+
+	/** Current world-space velocity of the player body (m/s). */
+	public get velocity(): Vec3 {
+		return this.#playerVehicle.velocity;
+	}
+
+	public get playerVehicle(): PlayerVehicleMotor {
 		return this.#playerVehicle;
-	}
-
-	public get playerBody(): IPlayerBody {
-		return this.#playerVehicle;
-	}
-
-	public get playerCamera(): PlayerCamera {
-		return this.#playerCamera;
-	}
-
-	public get keyboardControls(): IControls<unknown> {
-		return this.#keyboardControls;
-	}
-
-	public set keyboardControls(keyboardControls: IControls<unknown>) {
-		this.#keyboardControls = keyboardControls;
 	}
 
 	public get playerHud(): PlayerHud {
@@ -149,68 +200,88 @@ export class Player implements IUsable {
 		return this.#playerInventory;
 	}
 
+	public get playerCamera(): PlayerCamera {
+		return this.#playerCamera;
+	}
+
+	public get stats(): PlayerStats {
+		return this.#stats;
+	}
+
+	public get flashlight(): PlayerFlashLight {
+		return this.#flashlight;
+	}
+
 	public get defaultKeyboardControls(): WalkingControls {
-		return this.#defaultKeyboardControls;
+		return this.#walkingControls;
 	}
 
-	public get position(): Vector3 {
-		return this.#playerVehicle.characterController.getPosition();
+	public get sceneRef(): SceneContext {
+		return this.scene;
 	}
 
-	public wouldBlockOverlapPlayer(
-		blockX: number,
-		blockY: number,
-		blockZ: number,
-		blockShape: {
-			boxes: Array<{
-				min: [number, number, number];
-				max: [number, number, number];
-			}>;
-			rotateY: boolean;
-			usesSliceState: boolean;
-		},
-		rotation: number,
-		slice: number,
-		flipY: boolean,
-	): boolean {
-		return this.#playerVehicle.wouldBlockOverlapPlayer(
-			blockX,
-			blockY,
-			blockZ,
-			blockShape,
-			rotation,
-			slice,
-			flipY,
-		);
-	}
+	/** KEY_USE ('e') — interact with the usable mesh under the crosshair. */
+	public use(): void {
+		if (this.#pickInFlight || !this.#picker) return;
+		this.#pickInFlight = true;
 
-	use(): void {
-		if (this.#playerHud.isMasonTableOpen) {
-			this.#playerHud.hideMasonTableUI();
+		// Crosshair is screen-centre; pick there in CSS pixels relative to canvas.
+		const _x = this.canvas.clientWidth / 2;
+		const _y = this.canvas.clientHeight / 2;
+
+		// Pick up the dropped item the player is looking at (within reach).
+		// Falls back to the nearest item if none is directly targeted.
+		const dropped = pickDroppedItem(this) ?? DroppedItem.nearestTo(this);
+		if (dropped) {
+			dropped.use(this);
+			this.#pickInFlight = false;
 			return;
 		}
 
-		const mesh = Crosshair.pickUsableMesh(this);
-		if (mesh) {
-			if (mesh.metadata) {
-				const metadataContainer = mesh.metadata as MetadataContainer;
-				if (
-					metadataContainer instanceof MetadataContainer &&
-					metadataContainer.has("use")
-				) {
-					const useFunc =
-						metadataContainer.get<(player: Player) => void>("use");
-					if (useFunc) {
-						useFunc(this);
-					}
-				}
-			}
-			return;
-		}
-
-		const blockId = Crosshair.pickBlock(this);
+		// No usable mesh hit — fall back to block interaction.
+		const blockHit = pickTarget(this);
+		const blockId = blockHit?.blockId;
 		if (blockId === BlockType.MasonTable) {
-			this.#playerHud.showMasonTableUI();
+			if (this.#playerHud.isMasonTableOpen) {
+				this.#playerHud.hideMasonTableUI();
+			} else {
+				this.#playerHud.showMasonTableUI();
+			}
+			this.#pickInFlight = false;
+			return;
+		}
+		if (blockId === BlockType.BoatCreator && blockHit) {
+			tryCreateBoatFromMarker(
+				this,
+				Math.floor(blockHit.x),
+				Math.floor(blockHit.y),
+				Math.floor(blockHit.z),
+			);
+			this.#pickInFlight = false;
+			return;
+		}
+		if (blockId === BlockType.WoodCrate && blockHit) {
+			if (this.#playerHud.isWoodCrateOpen) {
+				this.#playerHud.hideWoodCrateUI();
+			} else {
+				this.#playerHud.showWoodCrateUI(
+					Math.floor(blockHit.x),
+					Math.floor(blockHit.y),
+					Math.floor(blockHit.z),
+				);
+			}
+			this.#pickInFlight = false;
+			return;
+		}
+
+		this.#pickInFlight = false;
+	}
+
+	/** Release GPU picker resources. */
+	public disposePicker(): void {
+		if (this.#picker) {
+			disposePicker(this.#picker);
+			this.#picker = null;
 		}
 	}
 }

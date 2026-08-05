@@ -1,24 +1,47 @@
-import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
+import type { Mesh } from "@babylonjs/lite";
+import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
 import type { Chunk } from "./Chunk";
 import type { MeshData } from "./DataStructures/MeshData";
+import { disposePackedMesh } from "./PackedChunkMesh.js";
+
+// Lite `Mesh` has no `.dispose()` — free its packed-arena slices, unregister
+// from the scene, then free GPU resources.
+function disposeGroupMesh(mesh: Mesh): void {
+	if (!mesh) return;
+	disposePackedMesh(mesh);
+}
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface ChunkMemberData {
-	chunkId: bigint;
+	chunkId: number;
 	chunk: Chunk;
 	opaqueData: MeshData | null;
 	transparentData: MeshData | null;
 	localIndex: number; // 0-63 within the group
+	// `lastBuilt*` records the MeshData reference we last copied into the
+	// merged buffer for this member. On a group rebuild we skip re-copying a
+	// member whose data reference is unchanged — its bytes are already in the
+	// merged buffer at the same deterministic offset, so re-copying all 64
+	// members (incl. the 63 that didn't remesh) is pure waste. Relight-only
+	// updates hand a *new* MeshData to just the changed chunk, so only that
+	// one member's reference differs and gets re-copied (up to 63x cheaper).
+	lastBuiltOpaque: MeshData | null;
+	lastBuiltTransparent: MeshData | null;
+	// The writeByte offset each was copied at. A member is only safe to
+	// skip when BOTH its data reference AND its target offset are unchanged
+	// from last rebuild — an earlier member's face-count change shifts every
+	// later member's offset even if that later member itself didn't remesh.
+	lastBuiltOpaqueOffset: number;
+	lastBuiltTransparentOffset: number;
 }
 
 export interface MergedVertexData {
 	faceDataA: Uint8Array;
 	faceDataB: Uint8Array;
 	faceDataC: Uint8Array;
-	chunkIndex: Uint8Array;
 	faceCount: number;
 }
 
@@ -26,11 +49,15 @@ interface MergedBuffers {
 	a: Uint8Array;
 	b: Uint8Array;
 	c: Uint8Array;
-	d: Uint8Array;
+}
+
+export interface MergedFaceRange {
+	start: number; // first face index in merged-face coordinates
+	count: number;
 }
 
 export interface MergedMeshGroup {
-	groupKey: string;
+	groupKey: number;
 	gridX: number;
 	gridY: number;
 	gridZ: number;
@@ -42,7 +69,7 @@ export interface MergedMeshGroup {
 	 */
 	lodBucket: number;
 	minLodLevel: number;
-	members: Map<bigint, ChunkMemberData>;
+	members: Map<number, ChunkMemberData>;
 	membersArray: ChunkMemberData[];
 	totalOpaqueFaces: number;
 	totalTransparentFaces: number;
@@ -56,14 +83,12 @@ export interface MergedMeshGroup {
 	opaqueA: Uint8Array | null;
 	opaqueB: Uint8Array | null;
 	opaqueC: Uint8Array | null;
-	opaqueD: Uint8Array | null;
 
 	transparentA: Uint8Array | null;
 	transparentB: Uint8Array | null;
 	transparentC: Uint8Array | null;
-	transparentD: Uint8Array | null;
 
-	// Cached wrappers to avoid allocating `{ a, b, c, d }` every rebuild.
+	// Cached wrappers to avoid allocating `{ a, b, c }` every rebuild.
 	opaqueBuffers: MergedBuffers | null;
 	transparentBuffers: MergedBuffers | null;
 
@@ -72,6 +97,13 @@ export interface MergedMeshGroup {
 	transparentVertexData: MergedVertexData | null;
 
 	dirty: boolean;
+
+	// Face ranges (merged-face coordinates) that changed on the most recent
+	// rebuildGroupData pass. Consumed by the packed-mesh updater so it can
+	// re-pack + re-upload only the members that actually remeshed instead of
+	// the whole merged group. Cleared/regenerated on every rebuild.
+	dirtyOpaqueRanges: MergedFaceRange[] | null;
+	dirtyTransparentRanges: MergedFaceRange[] | null;
 
 	// Mesh references — set by ChunkMesher.ts after creating/updating.
 	// These are NOT owned by MergedMeshManager; ownership stays with ChunkMesher.
@@ -93,18 +125,79 @@ export class MergedMeshMeta {
 
 const GROUP_SIZE = 4;
 const MAX_GROUP_MEMBERS = GROUP_SIZE * GROUP_SIZE * GROUP_SIZE;
-const CHUNK_SIZE = GenerationParams.CHUNK_SIZE;
 
 // ---------------------------------------------------------------------------
 // Module state
 // ---------------------------------------------------------------------------
 
-const groups = new Map<string, MergedMeshGroup>();
+const groups = new Map<number, MergedMeshGroup>();
 const dirtyGroups = new Set<MergedMeshGroup>();
+
+// Invalidate the per-member "already built" cache. Must be called whenever
+// the merged-buffer layout can change independent of member data references:
+// member add/remove (membersArray order/offset shifts) or merged-buffer
+// reallocation. Pure reassigns of an existing member (the relight path) do
+// NOT call this, so unchanged members keep their skip-eligibility.
+function invalidateGroupBuildCache(group: MergedMeshGroup): void {
+	for (const m of group.membersArray) {
+		m.lastBuiltOpaque = null;
+		m.lastBuiltTransparent = null;
+	}
+}
+
+// Pool of MergedFaceRange objects to avoid allocating a fresh {start,count}
+// object on every dirty-range push (up to ~64 per full 64-member rebuild).
+// Objects are returned to the pool at the start of each rebuildGroupData pass
+// (the previous pass's ranges were already consumed synchronously by the
+// packed-mesh updater callback), then reused for the current pass.
+const _rangePool: MergedFaceRange[] = [];
+
+function acquireRange(start: number, count: number): MergedFaceRange {
+	const r = _rangePool.pop();
+	if (r) {
+		r.start = start;
+		r.count = count;
+		return r;
+	}
+	return { start, count };
+}
+
+// Records a re-copied member's face range into `ranges` (merged-face
+// coordinates), coalescing with the previous range when adjacent so the
+// packed-mesh updater issues as few writeBuffer calls as possible. Members
+// are iterated in merged order and never overlap, so adjacency is the only
+// merge case.
+function pushDirtyRange(
+	ranges: MergedFaceRange[],
+	start: number,
+	count: number,
+): void {
+	if (count <= 0) return;
+	const prev = ranges[ranges.length - 1];
+	if (prev && prev.start + prev.count === start) {
+		prev.count += count;
+	} else {
+		ranges.push(acquireRange(start, count));
+	}
+}
 
 function markGroupDirty(group: MergedMeshGroup): void {
 	group.dirty = true;
 	dirtyGroups.add(group);
+	// A group can become dirty without a fresh worker mesh-result arriving
+	// (OPFS cache load, chunk unload, LOD change). The mesh rebuild only runs
+	// inside processMeshQueueLoop, which self-reschedules solely while the
+	// mesh-result queue is non-empty — so without this nudge a dirty group
+	// wouldn't be rebuilt (and would keep showing stale/missing geometry)
+	// until some unrelated chunk finished remeshing. Ask the pool to pump.
+	_requestFlush?.();
+}
+
+// Set by ChunkWorkerPool so markGroupDirty can schedule a flush pump.
+let _requestFlush: (() => void) | null = null;
+
+export function setRequestFlush(cb: () => void): void {
+	_requestFlush = cb;
 }
 
 /**
@@ -194,13 +287,20 @@ function getLodRenderBucket(lod: number): number {
 	return 3;
 }
 
+/**
+ * Pack (group grid coords, lod bucket) into a single number key. 10 bits per
+ * axis with a +512 bias (group coords in [-512, 511] → chunk coords in
+ * [-2048, 2047], the same ±512 domain the worker registries assume) plus 2
+ * bits for the lod bucket. The result fits int32 exactly, so it stays a
+ * small integer in V8 — much cheaper Map lookups than the old string key.
+ */
 function makeGroupKey(
 	gx: number,
 	gy: number,
 	gz: number,
 	lodBucket: number,
-): string {
-	return `${gx}_${gy}_${gz}_${lodBucket}`;
+): number {
+	return (gx + 512) * 1048576 + (gy + 512) * 4096 + (gz + 512) * 4 + lodBucket;
 }
 
 function getLocalIndex(chunkX: number, chunkY: number, chunkZ: number): number {
@@ -215,7 +315,7 @@ function getLocalIndex(chunkX: number, chunkY: number, chunkZ: number): number {
 // Public: group lookup
 // ---------------------------------------------------------------------------
 
-export function getGroupKeyForChunk(chunk: Chunk): string {
+export function getGroupKeyForChunk(chunk: Chunk): number {
 	const { gx, gy, gz } = getGroupGridCoords(
 		chunk.chunkX,
 		chunk.chunkY,
@@ -227,7 +327,7 @@ export function getGroupKeyForChunk(chunk: Chunk): string {
 	return makeGroupKey(gx, gy, gz, lodBucket);
 }
 
-export function getGroup(groupKey: string): MergedMeshGroup | undefined {
+export function getGroup(groupKey: number): MergedMeshGroup | undefined {
 	return groups.get(groupKey);
 }
 
@@ -296,12 +396,10 @@ export function assignChunkToGroup(
 			opaqueA: null,
 			opaqueB: null,
 			opaqueC: null,
-			opaqueD: null,
 
 			transparentA: null,
 			transparentB: null,
 			transparentC: null,
-			transparentD: null,
 
 			opaqueBuffers: null,
 			transparentBuffers: null,
@@ -310,6 +408,9 @@ export function assignChunkToGroup(
 			transparentVertexData: null,
 
 			dirty: true,
+
+			dirtyOpaqueRanges: null,
+			dirtyTransparentRanges: null,
 
 			opaqueMeshRef: null,
 			transparentMeshRef: null,
@@ -321,30 +422,37 @@ export function assignChunkToGroup(
 	const localIndex = getLocalIndex(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 	const chunkLod = chunk.lodLevel ?? 0;
 
-	const existing = group.members.get(chunk.id);
+	const existing = group.members.get(chunk.numericId);
 
 	if (existing) {
 		const dataUnchanged =
 			existing.opaqueData === opaqueData &&
 			existing.transparentData === transparentData;
 
-		existing.opaqueData = opaqueData;
-		existing.transparentData = transparentData;
-
 		if (dataUnchanged && chunk.mergedGroupKey === groupKey) {
 			return group;
+		} else {
+			existing.opaqueData = opaqueData;
+			existing.transparentData = transparentData;
 		}
 	} else {
 		const memberData: ChunkMemberData = {
-			chunkId: chunk.id,
+			chunkId: chunk.numericId,
 			chunk,
 			opaqueData,
 			transparentData,
 			localIndex,
+			lastBuiltOpaque: null,
+			lastBuiltTransparent: null,
+			lastBuiltOpaqueOffset: -1,
+			lastBuiltTransparentOffset: -1,
 		};
 
-		group.members.set(chunk.id, memberData);
+		group.members.set(chunk.numericId, memberData);
 		group.membersArray.push(memberData);
+		// New member changes layout (offset of later members shifts), so the
+		// "already built" cache is no longer valid — force a full rebuild.
+		invalidateGroupBuildCache(group);
 	}
 
 	if (chunkLod < group.minLodLevel) {
@@ -373,16 +481,16 @@ export function removeChunkFromGroup(chunk: Chunk): void {
 
 	if (!group) return;
 
-	group.members.delete(chunk.id);
+	group.members.delete(chunk.numericId);
 
 	if (group.members.size === 0) {
 		if (group.opaqueMeshRef) {
-			group.opaqueMeshRef.dispose();
+			disposeGroupMesh(group.opaqueMeshRef);
 			group.opaqueMeshRef = null;
 		}
 
 		if (group.transparentMeshRef) {
-			group.transparentMeshRef.dispose();
+			disposeGroupMesh(group.transparentMeshRef);
 			group.transparentMeshRef = null;
 		}
 
@@ -397,9 +505,9 @@ export function removeChunkFromGroup(chunk: Chunk): void {
 	let w = 0;
 
 	for (let i = 0, len = arr.length; i < len; i++) {
-		const m = arr[i]!;
+		const m = arr[i];
 
-		if (m.chunkId !== chunk.id) {
+		if (m.chunkId !== chunk.numericId) {
 			arr[w++] = m;
 		}
 	}
@@ -417,6 +525,10 @@ export function removeChunkFromGroup(chunk: Chunk): void {
 	}
 
 	group.minLodLevel = minLod;
+
+	// Removal shifts membersArray order, so previously-skipped members'
+	// bytes are now at the wrong offset. Force a full rebuild once.
+	invalidateGroupBuildCache(group);
 
 	markGroupDirty(group);
 }
@@ -445,11 +557,29 @@ export function getMergedMeshFlushStats(): {
 	};
 }
 
+let _mergedFlushRafScheduled = false;
+const _flushSnapshot: MergedMeshGroup[] = [];
+
 export function flushDirtyMergedGroups(): void {
 	if (dirtyGroups.size === 0) return;
 
 	const _start = performance.now();
-	for (const group of dirtyGroups) {
+	const snapshot = _flushSnapshot;
+	snapshot.length = 0;
+	for (const g of dirtyGroups) snapshot.push(g);
+	dirtyGroups.clear();
+
+	let budgetExhausted = false;
+	let i = 0;
+	for (; i < snapshot.length; i++) {
+		// Re-check budget before every group (the rebuild below is the
+		// expensive part), so a burst of heavy groups cannot overrun the
+		// timer well past the budget.
+		if (i > 0 && performance.now() - _start > 5) {
+			budgetExhausted = true;
+			break;
+		}
+		const group = snapshot[i];
 		if (!groups.has(group.groupKey)) continue;
 		if (!group.dirty) continue;
 
@@ -458,7 +588,20 @@ export function flushDirtyMergedGroups(): void {
 		_onGroupMeshNeedsRebuild?.(group);
 	}
 
-	dirtyGroups.clear();
+	// Groups that were not processed stay dirty for the next frame.
+	if (budgetExhausted) {
+		for (; i < snapshot.length; i++) {
+			if (snapshot[i].dirty) dirtyGroups.add(snapshot[i]);
+		}
+
+		if (!_mergedFlushRafScheduled) {
+			_mergedFlushRafScheduled = true;
+			setTimeout(() => {
+				_mergedFlushRafScheduled = false;
+				flushDirtyMergedGroups();
+			}, 0);
+		}
+	}
 
 	const _elapsed = performance.now() - _start;
 	_lastMergedFlushMs = _elapsed;
@@ -473,12 +616,12 @@ export function flushDirtyMergedGroups(): void {
 export function disposeAll(): void {
 	for (const group of groups.values()) {
 		if (group.opaqueMeshRef) {
-			group.opaqueMeshRef.dispose();
+			disposeGroupMesh(group.opaqueMeshRef);
 			group.opaqueMeshRef = null;
 		}
 
 		if (group.transparentMeshRef) {
-			group.transparentMeshRef.dispose();
+			disposeGroupMesh(group.transparentMeshRef);
 			group.transparentMeshRef = null;
 		}
 
@@ -488,14 +631,12 @@ export function disposeAll(): void {
 		group.opaqueA = null;
 		group.opaqueB = null;
 		group.opaqueC = null;
-		group.opaqueD = null;
 		group.opaqueBuffers = null;
 		group.opaqueCapacityFaces = 0;
 
 		group.transparentA = null;
 		group.transparentB = null;
 		group.transparentC = null;
-		group.transparentD = null;
 		group.transparentBuffers = null;
 		group.transparentCapacityFaces = 0;
 
@@ -526,14 +667,12 @@ function ensureOpaqueMergedCapacity(
 		const a = new Uint8Array(byte4);
 		const b = new Uint8Array(byte4);
 		const c = new Uint8Array(byte4);
-		const d = new Uint8Array(capacity);
 
 		group.opaqueA = a;
 		group.opaqueB = b;
 		group.opaqueC = c;
-		group.opaqueD = d;
 
-		group.opaqueBuffers = { a, b, c, d };
+		group.opaqueBuffers = { a, b, c };
 	}
 
 	return group.opaqueBuffers!;
@@ -554,14 +693,12 @@ function ensureTransparentMergedCapacity(
 		const a = new Uint8Array(byte4);
 		const b = new Uint8Array(byte4);
 		const c = new Uint8Array(byte4);
-		const d = new Uint8Array(capacity);
 
 		group.transparentA = a;
 		group.transparentB = b;
 		group.transparentC = c;
-		group.transparentD = d;
 
-		group.transparentBuffers = { a, b, c, d };
+		group.transparentBuffers = { a, b, c };
 	}
 
 	return group.transparentBuffers!;
@@ -570,6 +707,32 @@ function ensureTransparentMergedCapacity(
 function rebuildGroupData(group: MergedMeshGroup): void {
 	const members = group.membersArray;
 	const memberCount = members.length;
+
+	// Ranges of the merged buffer that changed this pass. Consumed by the
+	// Return the previous pass's range objects to the pool. They were already
+	// consumed synchronously by the packed-mesh updater callback (which ran
+	// right after the previous rebuildGroupData for this group), so reusing
+	// them now is safe and avoids per-rebuild {start,count} allocations.
+	const prevOpaqueRanges = group.dirtyOpaqueRanges;
+	if (prevOpaqueRanges) {
+		for (let i = 0; i < prevOpaqueRanges.length; i++) {
+			_rangePool.push(prevOpaqueRanges[i]);
+		}
+	}
+	const prevTransparentRanges = group.dirtyTransparentRanges;
+	if (prevTransparentRanges) {
+		for (let i = 0; i < prevTransparentRanges.length; i++) {
+			_rangePool.push(prevTransparentRanges[i]);
+		}
+	}
+
+	// packed-mesh updater to re-pack/re-upload only those faces.
+	group.dirtyOpaqueRanges ??= [];
+	const opaqueRanges = group.dirtyOpaqueRanges;
+	opaqueRanges.length = 0;
+	group.dirtyTransparentRanges ??= [];
+	const transparentRanges = group.dirtyTransparentRanges;
+	transparentRanges.length = 0;
 
 	// Single pass to compute both totals instead of scanning membersArray
 	// twice (once per face-data kind). Member count is bounded at 64, so
@@ -580,7 +743,7 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	let totalTransparent = 0;
 
 	for (let i = 0; i < memberCount; i++) {
-		const m = members[i]!;
+		const m = members[i];
 		if (m.opaqueData) totalOpaque += m.opaqueData.faceCount;
 		if (m.transparentData) totalTransparent += m.transparentData.faceCount;
 	}
@@ -593,18 +756,24 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	// -----------------------------------------------------------------------
 
 	if (totalOpaque > 0) {
+		// ensure* reallocates (discarding old bytes) only when capacity grows.
+		// Detect that and force a full opaque re-copy so skipped members
+		// don't keep referencing lost byte ranges.
+		const opaqueGrew = totalOpaque > group.opaqueCapacityFaces;
 		const buffers = ensureOpaqueMergedCapacity(group, totalOpaque);
+		if (opaqueGrew) {
+			for (const m of members) m.lastBuiltOpaque = null;
+		}
 
 		const mergedA = buffers.a;
 		const mergedB = buffers.b;
 		const mergedC = buffers.c;
-		const mergedD = buffers.d;
 
 		let writeByte = 0;
 		let writeFace = 0;
 
 		for (let i = 0; i < memberCount; i++) {
-			const m = members[i]!;
+			const m = members[i];
 			const data = m.opaqueData;
 
 			if (!data) continue;
@@ -615,11 +784,30 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 
 			const byteCount = fc << 2;
 
-			copyFaceBytes(mergedA, data.faceDataA, byteCount, writeByte);
-			copyFaceBytes(mergedB, data.faceDataB, byteCount, writeByte);
-			copyFaceBytes(mergedC, data.faceDataC, byteCount, writeByte);
-
-			mergedD.fill(m.localIndex, writeFace, writeFace + fc);
+			// Geometry-stable skip: if this member's opaque data is the exact
+			// same reference we last copied into the merged buffer, its bytes
+			// are already in place at this deterministic offset — re-copying
+			// is pure waste. Only the members that actually remeshed this
+			// pass (incl. relit ones, which get a fresh MeshData) are
+			// re-copied. This is the dominant cost on relight-only updates
+			// (the other up-to-63 members are skipped in place).
+			if (m.lastBuiltOpaque !== data || m.lastBuiltOpaqueOffset !== writeByte) {
+				copyFaceBytes(mergedA, data.faceDataA, byteCount, writeByte);
+				copyFaceBytes(mergedB, data.faceDataB, byteCount, writeByte);
+				copyFaceBytes(mergedC, data.faceDataC, byteCount, writeByte);
+				// Stamp this member's local chunk index (0..63) into word2
+				// byte 3 of every face. The worker leaves this byte zero; a
+				// skipped member's previously stamped bytes stay in place.
+				// `localIndex` is stable per member slot, and any layout
+				// change (realloc / member add-remove) forces a full re-copy.
+				const ci = m.localIndex;
+				for (let k = writeByte + 3; k < writeByte + byteCount; k += 4) {
+					mergedC[k] |= ci;
+				}
+				m.lastBuiltOpaque = data;
+				m.lastBuiltOpaqueOffset = writeByte;
+				pushDirtyRange(opaqueRanges, writeFace, fc);
+			}
 
 			writeByte += byteCount;
 			writeFace += fc;
@@ -632,7 +820,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 				faceDataA: new Uint8Array(0),
 				faceDataB: new Uint8Array(0),
 				faceDataC: new Uint8Array(0),
-				chunkIndex: new Uint8Array(0),
 				faceCount: 0,
 			};
 		}
@@ -640,7 +827,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		vd.faceDataA = mergedA.subarray(0, totalBytes);
 		vd.faceDataB = mergedB.subarray(0, totalBytes);
 		vd.faceDataC = mergedC.subarray(0, totalBytes);
-		vd.chunkIndex = mergedD.subarray(0, totalOpaque);
 		vd.faceCount = totalOpaque;
 		group.cachedOpaque = vd;
 	} else {
@@ -652,18 +838,21 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	// -----------------------------------------------------------------------
 
 	if (totalTransparent > 0) {
+		const transparentGrew = totalTransparent > group.transparentCapacityFaces;
 		const buffers = ensureTransparentMergedCapacity(group, totalTransparent);
+		if (transparentGrew) {
+			for (const m of members) m.lastBuiltTransparent = null;
+		}
 
 		const mergedA = buffers.a;
 		const mergedB = buffers.b;
 		const mergedC = buffers.c;
-		const mergedD = buffers.d;
 
 		let writeByte = 0;
 		let writeFace = 0;
 
 		for (let i = 0; i < memberCount; i++) {
-			const m = members[i]!;
+			const m = members[i];
 			const data = m.transparentData;
 
 			if (!data) continue;
@@ -674,11 +863,21 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 
 			const byteCount = fc << 2;
 
-			copyFaceBytes(mergedA, data.faceDataA, byteCount, writeByte);
-			copyFaceBytes(mergedB, data.faceDataB, byteCount, writeByte);
-			copyFaceBytes(mergedC, data.faceDataC, byteCount, writeByte);
-
-			mergedD.fill(m.localIndex, writeFace, writeFace + fc);
+			if (
+				m.lastBuiltTransparent !== data ||
+				m.lastBuiltTransparentOffset !== writeByte
+			) {
+				copyFaceBytes(mergedA, data.faceDataA, byteCount, writeByte);
+				copyFaceBytes(mergedB, data.faceDataB, byteCount, writeByte);
+				copyFaceBytes(mergedC, data.faceDataC, byteCount, writeByte);
+				const ci = m.localIndex;
+				for (let k = writeByte + 3; k < writeByte + byteCount; k += 4) {
+					mergedC[k] |= ci;
+				}
+				m.lastBuiltTransparent = data;
+				m.lastBuiltTransparentOffset = writeByte;
+				pushDirtyRange(transparentRanges, writeFace, fc);
+			}
 
 			writeByte += byteCount;
 			writeFace += fc;
@@ -691,7 +890,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 				faceDataA: new Uint8Array(0),
 				faceDataB: new Uint8Array(0),
 				faceDataC: new Uint8Array(0),
-				chunkIndex: new Uint8Array(0),
 				faceCount: 0,
 			};
 		}
@@ -699,7 +897,6 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		vd.faceDataA = mergedA.subarray(0, totalBytes);
 		vd.faceDataB = mergedB.subarray(0, totalBytes);
 		vd.faceDataC = mergedC.subarray(0, totalBytes);
-		vd.chunkIndex = mergedD.subarray(0, totalTransparent);
 		vd.faceCount = totalTransparent;
 		group.cachedTransparent = vd;
 	} else {

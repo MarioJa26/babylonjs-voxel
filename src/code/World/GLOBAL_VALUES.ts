@@ -1,4 +1,4 @@
-import { Vector3 } from "@babylonjs/core";
+import { vec3 } from "@babylonjs/lite";
 
 export const GLOBAL_VALUES = {
 	DEBUG: false,
@@ -10,6 +10,6 @@ export const GLOBAL_VALUES = {
 	DISABLE_CHUNK_SAVING: false,
 	DISABLE_CHUNK_LOADING: false,
 
-	skyLightDirection: new Vector3(-1, -2, -1),
+	skyLightDirection: vec3(-1, -2, -1),
 	GLOBAL_TIME: 0,
 };

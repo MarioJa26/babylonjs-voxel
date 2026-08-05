@@ -1,4 +1,5 @@
-import { Vector3 } from "@babylonjs/core";
+import { type Vec3, Vec3Up } from "@babylonjs/lite";
+import { vec3Zero } from "../Lib/Math";
 
 export enum CharacterSupportedState {
 	UNSUPPORTED = 0,
@@ -7,8 +8,8 @@ export enum CharacterSupportedState {
 
 export type CharacterSurfaceInfo = {
 	supportedState: CharacterSupportedState;
-	averageSurfaceNormal: Vector3;
-	averageSurfaceVelocity: Vector3;
+	averageSurfaceNormal: Vec3;
+	averageSurfaceVelocity: Vec3;
 };
 
 export class SimpleCharacterController {
@@ -18,35 +19,35 @@ export class SimpleCharacterController {
 	public penetrationRecoverySpeed = 0;
 	public maxSlopeCosine = 0;
 
-	#position: Vector3;
-	#velocity = Vector3.Zero();
+	#position: Vec3;
+	#velocity = vec3Zero();
 
-	static readonly #cachedSurfaceNormal = Vector3.Up();
-	static readonly #cachedSurfaceVelocity = Vector3.Zero();
+	static readonly #cachedSurfaceNormal = Vec3Up;
+	static readonly #cachedSurfaceVelocity = vec3Zero();
 	static readonly #cachedSurfaceInfo: CharacterSurfaceInfo = {
 		supportedState: CharacterSupportedState.UNSUPPORTED,
 		averageSurfaceNormal: SimpleCharacterController.#cachedSurfaceNormal,
 		averageSurfaceVelocity: SimpleCharacterController.#cachedSurfaceVelocity,
 	};
 
-	constructor(startPosition: Vector3) {
-		this.#position = startPosition.clone();
+	constructor(startPosition: Vec3) {
+		this.#position = startPosition;
 	}
 
-	public getPosition(): Vector3 {
+	public getPosition(): Vec3 {
 		return this.#position;
 	}
 
-	public setPosition(position: Vector3): void {
-		this.#position.copyFrom(position);
+	public setPosition(position: Vec3): void {
+		this.#position = position;
 	}
 
-	public getVelocity(): Vector3 {
+	public getVelocity(): Vec3 {
 		return this.#velocity;
 	}
 
-	public setVelocity(velocity: Vector3): void {
-		this.#velocity.copyFrom(velocity);
+	public setVelocity(velocity: Vec3): void {
+		this.#velocity = velocity;
 	}
 
 	public checkSupport(): CharacterSurfaceInfo {
@@ -58,7 +59,7 @@ export class SimpleCharacterController {
 		return info;
 	}
 
-	public integrate(deltaTime: number, gravity: Vector3): void {
+	public integrate(deltaTime: number, gravity: Vec3): void {
 		this.#velocity.x += gravity.x * deltaTime;
 		this.#velocity.y += gravity.y * deltaTime;
 		this.#velocity.z += gravity.z * deltaTime;

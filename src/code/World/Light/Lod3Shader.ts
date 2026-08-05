@@ -69,6 +69,8 @@ export const LOD3chunkVertexShader = `
       int vAxis = V_AXIS[axis];
 
       vec3 localPosition = faceDataA.xyz * invPosScale;
+      localPosition.x -= float((meta >> 3) & 1) * 0.5 * invPosScale;
+      localPosition.z -= float((meta >> 7) & 1) * 0.5 * invPosScale;
       localPosition[uAxis] += du;
       localPosition[vAxis] += dv;
 
@@ -193,15 +195,15 @@ export const LOD3OpaqueFragmentShader = `
 
       vec2 atlasUV = vUV2 + vUV * atlasTileSize;
       vec4 tex = texture(diffuseTexture, atlasUV);
+      if (tex.a < 0.01) discard;
 
       float sun = clamp(sunLightIntensity, 0.0, 1.0);
       float skyTerm = vSkyLight * (0.15 + 0.85 * sun);
       float blockTerm = vBlockLight;
-      float light = clamp(max(skyTerm, blockTerm), 0.0, 1.0);
 
       float faceShade = vFaceShade;
       float horizon = clamp(dot(vFaceNormalW, lightDirection) * 0.5 + 0.5, 0.65, 1.0);
-      light = clamp(light * faceShade * horizon, 0.0, 1.0);
+      float light = clamp(max(skyTerm * faceShade * horizon, blockTerm), 0.0, 1.0);
 
       vec3 color = applyTintBucket(tex.rgb, vTintBucket) * light;
 
@@ -283,11 +285,10 @@ export const LOD3transparentFragmentShader = `
       float sun = clamp(sunLightIntensity, 0.0, 1.0);
       float skyTerm = vSkyLight * (0.15 + 0.85 * sun);
       float blockTerm = vBlockLight;
-      float light = clamp(max(skyTerm, blockTerm), 0.0, 1.0);
 
       float faceShade = vFaceShade;
       float horizon = clamp(dot(vFaceNormalW, lightDirection) * 0.5 + 0.5, 0.65, 1.0);
-      light = clamp(light * faceShade * horizon, 0.0, 1.0);
+      float light = clamp(max(skyTerm * faceShade * horizon, blockTerm), 0.0, 1.0);
 
       vec3 color = applyTintBucket(tex.rgb, vTintBucket) * light;
 

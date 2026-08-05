@@ -5,6 +5,7 @@ import {
 	createFastNoise,
 	createFastNoise2D,
 	createFastNoise3D,
+	createFastNoise3DWithInstance,
 } from "./NoiseAndParameters/FastNoise/FastNoiseFactory";
 import type { GenerationParamsType } from "./NoiseAndParameters/GenerationParams";
 import { getPRNGBySeed } from "./NoiseAndParameters/Squirrel13";
@@ -87,25 +88,33 @@ export class WorldGenerator {
 		detailInstance.SetFractalOctaves(2);
 		this.detailNoise = (x, y, z) => detailInstance.GetNoise3D(x, y, z);
 
-		const densityNoise = createFastNoise3D({
-			seed: getPRNGBySeed(23, this.seedAsInt),
-			frequency: 0.33333,
-		});
+		const { fn: densityNoise, instance: densityInstance } =
+			createFastNoise3DWithInstance({
+				seed: getPRNGBySeed(23, this.seedAsInt),
+				frequency: 0.33333,
+			});
 
 		this.surfaceGenerator = new SurfaceGenerator(
 			params,
 			treeNoise,
 			densityNoise,
+			densityInstance,
 			this.seedAsInt,
 			this.cheeseNoise,
 			this.tunnelNoise,
 			this.detailNoise,
+			cheeseInstance,
+			tunnelInstance,
+			detailInstance,
 		);
 		this.undergroundGenerator = new UndergroundGenerator(
 			params,
 			this.cheeseNoise,
 			this.tunnelNoise,
 			this.detailNoise,
+			cheeseInstance,
+			tunnelInstance,
+			detailInstance,
 		);
 
 		const oreNoise = createFastNoise3D({
@@ -127,9 +136,16 @@ export class WorldGenerator {
 	}
 
 	private createBuffer(size: number): Uint8Array {
-		// PERF: Use regular ArrayBuffer instead of SharedArrayBuffer for generation.
-		// The buffer is transferred (not shared) to the main thread, so SAB overhead
-		// (OS shared memory page setup) is unnecessary.
+		// PERF: Allocate generation output in a SharedArrayBuffer so the block/
+		// light buffers can be *shared* (not transferred) to the main thread and
+		// then handed straight to the mesh worker. This avoids the redundant
+		// main-thread SAB realloc+memcpy that Chunk.ensureSharedBacking used to
+		// perform per generated chunk. The (cheap) OS shared-page setup happens
+		// off the main thread, in this worker. Falls back to a plain ArrayBuffer
+		// where SharedArrayBuffer is unavailable (main thread then copies as before).
+		if (typeof SharedArrayBuffer !== "undefined") {
+			return new Uint8Array(new SharedArrayBuffer(size));
+		}
 		return new Uint8Array(new ArrayBuffer(size));
 	}
 
@@ -167,9 +183,12 @@ export class WorldGenerator {
 		for (let localY = 0; localY < chunkSize; localY++) {
 			const worldY = chunkWorldY + localY;
 			if (worldY >= 0) continue;
+			// PERF: invariant across both the z and x loops.
+			const yOffset = localY * chunkSize;
 			for (let localZ = 0; localZ < chunkSize; localZ++) {
 				const worldZ = chunkWorldZ + localZ;
-				const zOffset = localZ * chunkSizeSq;
+				// PERF: combine once per row instead of per-voxel.
+				const rowBase = yOffset + localZ * chunkSizeSq;
 				// PERF: Cache biome per column (worldY + worldZ are constant across X).
 				const colBiome = this.undergroundBiomeSelector.getBiome(
 					chunkWorldX,
@@ -177,8 +196,8 @@ export class WorldGenerator {
 					worldZ,
 				);
 				for (let localX = 0; localX < chunkSize; localX++) {
-					const idx = localX + localY * chunkSize + zOffset;
-					const blockId = blocks[idx]!;
+					const idx = localX + rowBase;
+					const blockId = blocks[idx];
 					if (blockId === 0 || IS_ORE[blockId]) continue;
 					// PERF: Use column-cached biome (X offset is negligible for biome selection).
 					blocks[idx] = this.undergroundBiomeSelector.getStoneReplacement(
@@ -258,7 +277,15 @@ export class WorldGenerator {
 
 		const blocks = this.createBuffer(chunkVolume);
 
-		// ── placeBlock closure ────────────────────────────────────────────
+		// ── placeBlock closures ───────────────────────────────────────────
+		const writeBlock = (idx: number, blockId: number, overwrite: boolean) => {
+			const existing = blocks[idx];
+			if (blockId === 0 && existing === WATER_BLOCK_ID) return;
+			if (existing === 0 || overwrite) blocks[idx] = blockId;
+		};
+
+		// Checked variant — world coords; drops writes outside this chunk.
+		// Used by trees/structures/flora that can legitimately overflow.
 		const placeBlock = (
 			x: number,
 			y: number,
@@ -280,9 +307,41 @@ export class WorldGenerator {
 			)
 				return;
 
-			const idx = localX + localY * chunkSize + localZ * chunkSizeSq;
-			if (blockId === 0 && blocks[idx] === WATER_BLOCK_ID) return;
-			if (blocks[idx] === 0 || overwrite) blocks[idx] = blockId;
+			writeBlock(
+				localX + localY * chunkSize + localZ * chunkSizeSq,
+				blockId,
+				overwrite,
+			);
+		};
+
+		// Unchecked variant — caller guarantees in-chunk local coords.
+		const placeBlockLocal = (
+			localX: number,
+			localY: number,
+			localZ: number,
+			blockId: number,
+			overwrite = false,
+		) => {
+			writeBlock(
+				localX + localY * chunkSize + localZ * chunkSizeSq,
+				blockId,
+				overwrite,
+			);
+		};
+
+		// PERF: For fixed-X/Z Y-loops (the hottest fill loops in surface fill),
+		// the caller hoists the localX/localZ term once per column via
+		// columnBaseLocal instead of paying for it on every voxel.
+		const columnBaseLocal = (localX: number, localZ: number): number =>
+			localX + localZ * chunkSizeSq;
+
+		const placeColumnLocal = (
+			columnBase: number,
+			localY: number,
+			blockId: number,
+			overwrite = false,
+		) => {
+			writeBlock(columnBase + localY * chunkSize, blockId, overwrite);
 		};
 
 		const biome = getBiome(chunkWorldX, chunkWorldZ);
@@ -293,6 +352,8 @@ export class WorldGenerator {
 			chunkZ,
 			biome,
 			placeBlock,
+			columnBaseLocal,
+			placeColumnLocal,
 		);
 
 		this.oreGenerator.generate(chunkX, chunkY, chunkZ, blocks);
@@ -302,7 +363,7 @@ export class WorldGenerator {
 			chunkY,
 			chunkZ,
 			surfaceGeneration.topSurfaceYMap,
-			placeBlock,
+			placeBlockLocal,
 			blocks,
 		);
 		if (!skipDecorations) {
@@ -316,16 +377,17 @@ export class WorldGenerator {
 		}
 
 		if (!deferLighting) {
-			const lightSeedState = this.lightGenerator.seedInitialLight(
+			// PERF: In-place seed+propagate — no LightSeedState snapshot slice
+			// allocation (the slice would only be copied into a scratch queue
+			// and discarded within the same call).
+			this.lightGenerator.seedAndPropagateLightImmediate(
 				chunkX,
 				chunkY,
 				chunkZ,
-				biome,
 				blocks,
 				light,
 				surfaceGeneration.topSunlightMask,
 			);
-			this.lightGenerator.propagateLight(blocks, light, lightSeedState);
 			return { blocks, light };
 		}
 

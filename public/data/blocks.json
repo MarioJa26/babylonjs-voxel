@@ -509,5 +509,61 @@
 		"name": "mason_table",
 		"path": "/texture/wood/wood_planks_1k",
 		"hardness": 1.3
+	},
+	{
+		"id": "Grass006Cross",
+		"name": "grass006_cross",
+		"path": "/texture/dirt/Grass006_1K",
+		"shape": "cross_diagonal",
+		"hardness": 0.6
+	},
+	{
+		"id": "WoodCrate",
+		"name": "wood_crate",
+		"path": "/texture/wood/wood_crate_01_1k",
+		"hardness": 1.0
+	},
+	{
+		"id": "SequoiaLeaves",
+		"name": "sequoia_leaves",
+		"path": "/texture/transparent/sequoialeaves_01_1k",
+		"hardness": 1.0
+	},
+	{
+		"id": "Torch",
+		"name": "torch",
+		"path": "/texture/items/torch/torch_1k",
+		"shape": "torch",
+		"hardness": 0.5
+	},
+	{
+		"id": "MangroveWood",
+		"name": "mangrove_wood",
+		"path": "/texture/wood/mangrove_trunk_1k",
+		"hardness": 1.3
+	},
+	{
+		"id": "Cobblecoal",
+		"name": "Stone Coal Ore",
+		"path": "/texture/cobble/cobblecoal_1k",
+		"hardness": 1.3
+	},
+	{
+		"id": "Cobblecopper",
+		"name": "Stone Copper Ore",
+		"path": "/texture/cobble/cobblecopper_1k",
+		"hardness": 1.3
+	},
+	{
+		"id": "Cobblegold",
+		"name": "Stone Gold Ore",
+		"path": "/texture/cobble/cobblegold_1k",
+		"hardness": 1.3
+	},
+	{
+		"id": "Cobbleiron",
+		"name": "Stone Iron Ore",
+		"path": "/texture/cobble/cobbleiron_1k",
+		"hardness": 1.3
 	}
 ]

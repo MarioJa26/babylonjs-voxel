@@ -1,485 +1,198 @@
+import type { SceneContext, Vec3 } from "@babylonjs/lite";
 import {
-	type Camera,
-	type DepthRenderer,
-	Effect,
-	PostProcess,
-	type Scene,
-	ShaderMaterial,
-	type Texture,
-} from "@babylonjs/core";
-import type { Player } from "../Player/Player";
+	getBlockByWorldCoords,
+	getBlockStateByWorldCoords,
+} from "../World/Chunk/ChunkLoadingSystem";
+import { BlockType, getWaterLevel } from "../World/Texture/BlockType";
 
+export interface EyeCamera {
+	position: Vec3;
+}
+
+// Babylon Lite (WebGPU) has no PostProcess / DepthRenderer / GLSL ShaderMaterial
+// pipeline, so the underwater effect is a full-screen HTML overlay (blue tint +
+// animated caustic shimmer) toggled whenever the player's eyes are submerged.
 export class UnderWaterEffect {
-	public material: ShaderMaterial;
-	public postProcess: PostProcess;
+	public material: object | null;
+	public postProcess: object | null;
 
-	private scene: Scene;
-	private camera: Camera;
-	private player: Player;
-	private depthRenderer: DepthRenderer | null = null;
+	private scene: SceneContext;
+	private camera: EyeCamera;
 	private isUnderwater = false;
-	private time = 0;
-	private rate = 0.01;
+	private wasUnderwater = false;
 
-	private static readonly VERTEX_SHADER: string = `
-        precision lowp float;
+	private overlay: HTMLDivElement | null = null;
 
-        attribute vec3 position;
-        attribute vec2 uv;
-        attribute vec3 normal;
-
-        uniform mat4 world;
-        uniform mat4 view;
-        uniform mat4 worldViewProjection;
-        uniform float time;
-
-        varying vec2 vUV;
-        varying vec3 vNormal;
-        varying vec3 vPosition;
-
-        #ifndef NUM_BONE_INFLUENCERS
-        #define NUM_BONE_INFLUENCERS 4
-        #define BonesPerMesh 60
-        #endif
-
-        #if NUM_BONE_INFLUENCERS > 0
-            uniform mat4 mBones[BonesPerMesh];
-            attribute vec4 matricesIndices;
-            attribute vec4 matricesWeights;
-            #if NUM_BONE_INFLUENCERS > 4
-                attribute vec4 matricesIndicesExtra;
-                attribute vec4 matricesWeightsExtra;
-            #endif
-        #endif
-
-        void main(void) {
-            vec4 p = vec4(position, 1.0);
-
-            #if NUM_BONE_INFLUENCERS > 0
-                mat4 influence = mBones[int(matricesIndices[0])] * matricesWeights[0];
-                #if NUM_BONE_INFLUENCERS > 1
-                    influence += mBones[int(matricesIndices[1])] * matricesWeights[1];
-                #endif
-                #if NUM_BONE_INFLUENCERS > 2
-                    influence += mBones[int(matricesIndices[2])] * matricesWeights[2];
-                #endif
-                #if NUM_BONE_INFLUENCERS > 3
-                    influence += mBones[int(matricesIndices[3])] * matricesWeights[3];
-                #endif
-                #if NUM_BONE_INFLUENCERS > 4
-                    influence += mBones[int(matricesIndicesExtra[0])] * matricesWeightsExtra[0];
-                #endif
-                #if NUM_BONE_INFLUENCERS > 5
-                    influence += mBones[int(matricesIndicesExtra[1])] * matricesWeightsExtra[1];
-                #endif
-                #if NUM_BONE_INFLUENCERS > 6
-                    influence += mBones[int(matricesIndicesExtra[2])] * matricesWeightsExtra[2];
-                #endif
-                #if NUM_BONE_INFLUENCERS > 7
-                    influence += mBones[int(matricesIndicesExtra[3])] * matricesWeightsExtra[3];
-                #endif
-                p = influence * p;
-            #endif
-
-            vec4 worldPos = world * p;
-
-            gl_Position = worldViewProjection * p;
-            vUV = uv;
-            vNormal = normal;
-            vPosition = worldPos.xyz;
-        }`;
-
-	private static readonly FRAGMENT_SHADER: string = `
-        precision lowp float;
-
-        varying vec2 vUV;
-        varying vec3 vNormal;
-        varying vec3 vPosition;
-
-        uniform float time;
-        uniform mat4 world;
-        uniform vec3 cameraPosition;
-        uniform vec3 playerPosition;
-
-
-        uniform sampler2D baseTexture;
-
-        // js fog uniforms
-        uniform vec4 vFogInfos; 
-        uniform vec3 vFogColor;
-
-        #define TAU 6.28318530718
-        #define MAX_ITER 4
-        #define MIN_ITER 1.0
-
-        float CalcFogFactor(float fFogDistance) {
-            //float fogStart = vFogInfos.y;
-            float fogEnd = vFogInfos.z;
-            //float fogCoeff = (fogEnd - fFogDistance) / (fogEnd - vFogInfos.y);
-            return clamp((fogEnd - fFogDistance) / (fogEnd - vFogInfos.y), 0.0, 1.0);
-        }
-
-        vec3 caustic(vec2 uv, float iterations) {
-            vec2 p = mod(uv * TAU, TAU) - 250.0;
-            float timeOffset = time * 0.5 + 23.0;
-            vec2 i = vec2(p);
-            float causticValue = 1.0;
-            float intensityFactor = 0.006;
-
-            for (float n = 1.0; n < (iterations + 0.9); n+= 1.0) {
-                float t = timeOffset * (1.0 - (3.5 / float(n)));
-                i = p + vec2(cos(t - i.x) + sin(t + i.y), sin(t - i.y) + cos(t + i.x));
-                
-                // FIX: Added a small epsilon (0.001) to the denominator to prevent division by zero
-                float denominator_x = 0.0001 + abs(sin(i.x + t) / intensityFactor);
-                float denominator_y = 0.0001 + abs(cos(i.y + t) / intensityFactor);
-
-                causticValue += 1.0 / length(vec2(p.x / denominator_x, p.y / denominator_y));
-            }
-
-            causticValue /= iterations;
-            causticValue = 1.17 - pow(causticValue, 1.4);
-            vec3 color = vec3(pow(abs(causticValue), 8.0));
-            color = clamp(color + vec3(0.0, 0.1, 0.3), 0.0, 1.0);
-            //color = mix(color, vec3(1.0, 1.0, 1.0), 0.1);
-
-            return color;
-        }
-
-        void main(void) {
-            vec3 lightPosition = vec3(playerPosition.x, 10.0, playerPosition.z);
-            
-            vec3 textureColor = texture2D(baseTexture, vUV * 128.0 ).rgb;
- 
-            vec3 worldPosition = vPosition;
-            vec2 causticUV = worldPosition.xz / 16.0;
-
-               // --- LOD CALCULATION ---
-                float distanceToCamera = length(vPosition - playerPosition);
-
-                // Define a range for the transition, e.g., from 15 to 50 units
-                float lodStartDistance = 20.0;
-                float lodEndDistance = 100.0;
-
-                // smoothstep creates a nice falloff from 1.0 (close) to 0.0 (far)
-                float lodFactor = 1.0 - smoothstep(lodStartDistance, lodEndDistance, distanceToCamera);
-
-                // Determine iterations based on distance.
-                // MAX_ITER is the original max value (4).
-                // Close up, we'll use 4 iterations. Far away, only 2.
-                // We use max(2, ...) to ensure we don't have 0 or 1 iterations, which can look bad.
-                float iterations = mix(MIN_ITER, float(MAX_ITER), lodFactor);
-
-
-            vec3 worldNormal = normalize(vec3(world * vec4(vNormal, 0.0)));
-            vec3 lightDirection = normalize(lightPosition - worldPosition);
-
-            vec3 color = textureColor;
-            float diffuseFactor = max(0.0, dot(worldNormal, lightDirection));
-
-            color = (textureColor * diffuseFactor) + (caustic(causticUV, iterations) * diffuseFactor) ;
-            
-            // Apply fog
-            float fFogDistance = length(worldPosition - cameraPosition);
-            float fog = CalcFogFactor(fFogDistance);
-            color = mix(vFogColor, color, fog);
-
-            gl_FragColor = vec4(color, 0.0);
-        }`;
-
-	private static readonly BACKGROUND_POST_PROCESS_SHADER: string = `
-        precision lowp float;
-
-        varying vec2 vUV;
-
-        uniform float time;
-        uniform sampler2D textureSampler;
-        uniform sampler2D dPass;
-        uniform bool isUnderwater;
-        uniform vec2 screenSize;
-
-        #define TAU 6.28318530718
-        #define MAX_ITERATIONS 4
-        #define BASE_INTENSITY 0.008
-
-        float causticPattern(float coordinate, float distortionPower, float globalTime)
-        {
-            float periodicCoordinate = mod(coordinate * TAU, TAU) - 250.0;
-            float causticTime = globalTime * 0.5 + 23.0;
-
-            float iteratorValue = periodicCoordinate;
-            float causticIntensity = 0.0;
-            
-            for (int i = 0; i < MAX_ITERATIONS; i++) 
-            {
-                float timeOffset = causticTime * (1.0 - (3.5 / float(i + 1)));
-                iteratorValue = periodicCoordinate + cos(timeOffset - iteratorValue) + sin(timeOffset + iteratorValue);
-                
-                // FIX: Added a small epsilon (0.001) to prevent division by zero
-                float denominator = max(0.001, abs(sin(iteratorValue + timeOffset) / BASE_INTENSITY));
-                causticIntensity += 1.0 / length(periodicCoordinate / denominator);
-            }
-
-            causticIntensity /= float(MAX_ITERATIONS);
-            causticIntensity = 1.17 - pow(causticIntensity, distortionPower);
-            
-            return causticIntensity;
-        }
-
-        float getGodRays(vec2 screenUV)
-        {
-            float godRayIntensity = 0.0;
-            godRayIntensity += pow(causticPattern((screenUV.x + 0.08 * screenUV.y) / 1.7 + 0.5, 1.8, time * 0.65), 10.0) * 0.05;
-            godRayIntensity -= pow((1.0 - screenUV.y) * 0.3, 2.0) * 0.2;
-            godRayIntensity += pow(causticPattern(sin(screenUV.x), 0.3, time * 0.7), 9.0) * 0.4; 
-            godRayIntensity += pow(causticPattern(cos(screenUV.x * 2.3), 0.3, time * 1.3), 4.0) * 0.1;
-            godRayIntensity -= pow((1.0 - screenUV.y) * 0.3, 3.0);
-            return clamp(godRayIntensity, 0.0, 2.0);
-        }
-
-        float hash(float seed)
-        {
-            return fract(sin(seed) * 43758.5453123);
-        }
-
-        float renderBubble(vec2 pixelLocation, vec2 bubbleCenter, float bubbleRadius)
-        {
-            vec2 vectorToCenter = pixelLocation - bubbleCenter;
-            float distanceFactor = dot(vectorToCenter, vectorToCenter) / bubbleRadius;
-
-            if (distanceFactor > 1.0) return pow(max(0.0, 1.5 - distanceFactor), 3.0) * 5.0;
-
-            distanceFactor = pow(distanceFactor, 6.0);
-            
-            vec2 highlightVectorTop = pixelLocation - bubbleCenter + vec2(-bubbleRadius * 7.0, +bubbleRadius * 7.0);
-            distanceFactor += 0.8 / max(sqrt((dot(highlightVectorTop, highlightVectorTop)) / bubbleRadius * 8.0), 0.3);
-            
-            vec2 highlightVectorBack = pixelLocation - bubbleCenter + vec2(+bubbleRadius * 7.0, -bubbleRadius * 7.0);
-            distanceFactor += 0.2 / max((dot(highlightVectorBack, highlightVectorBack) / bubbleRadius * 4.0), 0.3);
-
-            return distanceFactor;
-        }
-            
-        void main(void) {
-
-            vec3 finalColor = texture2D(textureSampler, vUV).rgb;
-
-            if(isUnderwater){
-
-            vec3 skyColor = vec3(0.3, 1.0, 1.0);
-            vec2 aspectCorrectedUV = vUV * vec2(screenSize.x / screenSize.y, 1.0);
-            
-            float depthValue = texture2D(dPass, vUV).r;
-            // Use a smoother falloff for depth instead of a hard cutoff
-            depthValue = smoothstep(0.9, 1.0, depthValue);
-
-          
-            for (float bubbleIndex = 0.0; bubbleIndex < 6.0; bubbleIndex += 1.0)
-            {
-                float bubbleTime = time * 0.5 + 5.27;
-                float animationFrame = floor((bubbleTime + 2.0) / 4.0);
-                vec2 bubblePosition = vec2(0.4, -0.9) + vec2(0.0, mod(bubbleTime + (bubbleIndex / 50.0) + hash(bubbleIndex + animationFrame) * 0.7, 4.0));
-                bubblePosition.x += hash(bubbleIndex) * (aspectCorrectedUV.y + 0.6);
-                
-                float bubbleRadius = 0.002 * hash(bubbleIndex - animationFrame);
-                float bubbleIntensity = renderBubble(bubblePosition, aspectCorrectedUV, bubbleRadius);
-                bubbleIntensity *= hash(bubbleIndex + animationFrame + 399.0) * 0.3;
-                
-                vec3 bubbleColor = vec3(0.6 + hash(animationFrame * 323.1 + bubbleIndex) * 0.4, 1.0, 1.0);
-                finalColor = mix(finalColor, bubbleColor, bubbleIntensity);
-            }
-
-            vec3 godRayColorLayer1 = getGodRays(aspectCorrectedUV * 0.5) * mix(skyColor, vec3(1.0), aspectCorrectedUV.y * aspectCorrectedUV.y) * vec3(0.7, 1.0, 1.0);
-            vec3 godRayColorLayer2 = getGodRays(aspectCorrectedUV * 2.0) * mix(skyColor, vec3(1.0), aspectCorrectedUV.y * aspectCorrectedUV.y) * vec3(0.7, 1.0, 1.0);
-            vec3 godRayColor = (godRayColorLayer1 * depthValue) + godRayColorLayer2;
-
-            finalColor += godRayColor * (1.0 - vUV.y);
-            }
-            gl_FragColor = vec4(finalColor, 1.0);
-        }`;
-
-	// Fullscreen-triangle post-process vertex shader:
-	// Babylon's PostProcessManager always draws a quad (4 vertices, 2 triangles),
-	// but we can turn the second triangle into a degenerate one and use a single
-	// oversized triangle to avoid the diagonal seam and reduce interpolation issues.
-	private static readonly BACKGROUND_POST_PROCESS_VERTEX_SHADER: string = `
-        precision highp float;
-
-        attribute vec2 position;
-        uniform vec2 scale;
-        varying vec2 vUV;
-
-        const vec2 madd = vec2(0.5, 0.5);
-
-        void main(void) {
-            // PostProcessManager quad vertices (in order):
-            //   0: ( 1,  1)
-            //   1: (-1,  1)
-            //   2: (-1, -1)
-            //   3: ( 1, -1)
-            //
-            // Indices:
-            //   (0,1,2) and (0,2,3)
-            //
-            // We remap vertices 0/1/2 into an oversized fullscreen triangle and
-            // collapse vertex 3 onto vertex 0 to make the second triangle degenerate.
-            vec2 outPos;
-
-            if (position.x > 0.0 && position.y > 0.0) {
-                // id 0
-                outPos = vec2(-1.0, -1.0);
-            } else if (position.x < 0.0 && position.y > 0.0) {
-                // id 1
-                outPos = vec2(3.0, -1.0);
-            } else if (position.x < 0.0 && position.y < 0.0) {
-                // id 2
-                outPos = vec2(-1.0, 3.0);
-            } else {
-                // id 3 (degenerate)
-                outPos = vec2(-1.0, -1.0);
-            }
-
-            vUV = (outPos * madd + madd) * scale;
-            gl_Position = vec4(outPos, 0.0, 1.0);
-        }`;
-
-	constructor(
-		scene: Scene,
-		camera: Camera,
-		player: Player,
-		baseTexture: Texture,
-	) {
-		// NEW: Added baseTexture parameter
+	constructor(scene: SceneContext, camera: EyeCamera, baseTexture: unknown) {
 		this.scene = scene;
 		this.camera = camera;
-		this.player = player;
+		this.material = null;
+		this.postProcess = null;
+		void baseTexture;
 
-		this.registerShaders();
-
-		this.material = this.createShaderMaterial(baseTexture); // NEW: Pass baseTexture
-
-		this.postProcess = this.createPostProcess();
-		// The depth pass + full-screen post-process are pure overhead on land.
-		// The constructor auto-attaches the post-process to the camera, so detach
-		// it here; it is attached lazily the first time the camera goes underwater
-		// (see update()) and detached again on resurfacing.
-		this.camera.detachPostProcess(this.postProcess);
-
-		this.scene.registerBeforeRender(this.update);
+		this.#buildOverlay();
 	}
 
-	private registerShaders(): void {
-		Effect.ShadersStore.underWaterVertexShader = UnderWaterEffect.VERTEX_SHADER;
-		Effect.ShadersStore.underWaterFragmentShader =
-			UnderWaterEffect.FRAGMENT_SHADER;
-		Effect.ShadersStore.underWaterBackGroundFragmentShader =
-			UnderWaterEffect.BACKGROUND_POST_PROCESS_SHADER;
-		Effect.ShadersStore.underWaterBackGroundTriangleVertexShader =
-			UnderWaterEffect.BACKGROUND_POST_PROCESS_VERTEX_SHADER;
-	}
-
-	private createShaderMaterial(baseTexture: Texture): ShaderMaterial {
-		const material = new ShaderMaterial(
-			"underWaterShader",
-			this.scene,
-			{
-				vertex: "underWater",
-				fragment: "underWater",
-			},
-			{
-				attributes: [
-					"position",
-					"normal",
-					"uv",
-					"matricesIndices",
-					"matricesWeights",
-				],
-				samplers: ["baseTexture"], // NEW: Declare baseTexture as a sampler
-				uniforms: [
-					"world",
-					"worldViewProjection",
-					"time",
-					"cameraPosition",
-					"playerPosition",
-					"isUnderwater",
-					"vFogInfos",
-					"vFogColor",
-					"mBones",
-				],
-			},
-		);
-		material.setTexture("baseTexture", baseTexture); // NEW: Set the texture uniform
-		return material;
-	}
-
-	private createPostProcess(): PostProcess {
-		const postProcess = new PostProcess(
-			"UnderWaterBackground",
-			"underWaterBackGround",
-			["time", "screenSize", "playerPosition", "isUnderwater"],
-			["dPass"],
-			1.0,
-			this.camera,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			"underWaterBackGroundTriangle",
-		);
-
-		postProcess.onApply = (effect: Effect) => {
-			effect.setFloat2("screenSize", postProcess.width, postProcess.height);
-			effect.setFloat("time", this.time);
-			effect.setVector3("playerPosition", this.player.position);
-			effect.setBool("isUnderwater", this.isUnderwater);
-			if (this.depthRenderer) {
-				effect.setTexture("dPass", this.depthRenderer.getDepthMap());
+	#buildOverlay(): void {
+		// Try to attach to the engine canvas so the overlay tracks the game view.
+		const engine = (
+			this.scene as unknown as {
+				engine?: { getInputElement?: () => HTMLCanvasElement | null };
 			}
+		).engine;
+		const canvas = engine?.getInputElement?.() ?? null;
+
+		void canvas;
+
+		const overlay = document.createElement("div");
+		overlay.id = "underwater-overlay";
+		overlay.style.position = "fixed";
+		overlay.style.inset = "0";
+		overlay.style.pointerEvents = "none";
+		overlay.style.zIndex = "50";
+		overlay.style.display = "none";
+		overlay.style.background =
+			"radial-gradient(ellipse at center, rgba(20,90,140,0.18) 0%, rgba(10,50,90,0.42) 70%, rgba(5,30,60,0.6) 100%)";
+		overlay.style.transition = "opacity 250ms ease";
+		overlay.style.opacity = "0";
+
+		const shimmer = document.createElement("div");
+		shimmer.style.position = "absolute";
+		shimmer.style.inset = "0";
+		shimmer.style.backgroundImage =
+			"radial-gradient(circle at 20% 30%, rgba(180,230,255,0.12) 0%, transparent 18%)," +
+			"radial-gradient(circle at 70% 60%, rgba(180,230,255,0.10) 0%, transparent 20%)," +
+			"radial-gradient(circle at 45% 80%, rgba(200,240,255,0.08) 0%, transparent 16%)";
+		shimmer.style.backgroundSize = "60% 60%, 50% 50%, 70% 70%";
+		shimmer.style.animation = "underwaterCaustics 6s linear infinite";
+		overlay.appendChild(shimmer);
+
+		const style = document.createElement("style");
+		style.textContent = `
+			@keyframes underwaterCaustics {
+				0%   { background-position: 0% 0%, 0% 0%, 0% 0%; }
+				50%  { background-position: 30% 40%, -25% 20%, 15% -30%; }
+				100% { background-position: 0% 0%, 0% 0%, 0% 0%; }
+			}
+		`;
+		document.head.appendChild(style);
+
+		document.body.appendChild(overlay);
+		this.overlay = overlay;
+
+		const disposable = this.scene as unknown as {
+			onDisposeObservable?: { addOnce?: (cb: () => void) => void };
 		};
-
-		return postProcess;
+		disposable.onDisposeObservable?.addOnce?.(() => {
+			overlay.remove();
+			style.remove();
+		});
 	}
 
-	private update = (): void => {
-		this.time +=
-			(this.scene.getEngine().getDeltaTime() / 1000) * this.rate * 100;
+	/** True when the player's eyes are currently below the water surface. */
+	public get isUnderwaterState(): boolean {
+		return this.isUnderwater;
+	}
 
-		const underwater = this.player.position.y < 1.8;
-		if (underwater !== this.isUnderwater) {
-			this.isUnderwater = underwater;
-			if (underwater) {
-				if (!this.depthRenderer) {
-					this.depthRenderer = this.scene.enableDepthRenderer(this.camera);
-					this.depthRenderer.useOnlyInActiveCamera = true;
-				}
-				this.camera.attachPostProcess(this.postProcess);
-			} else {
-				this.camera.detachPostProcess(this.postProcess);
-				if (this.depthRenderer) {
-					this.depthRenderer.dispose();
-					this.depthRenderer = null;
-				}
-			}
-		}
+	/**
+	 * Re-evaluate underwater state from the camera's eye position. Returns the
+	 * new underwater flag so callers (fog, etc.) can react to transitions.
+	 */
+	public updateFromCamera(): boolean {
+		const pos = this.camera.position;
+		this.isUnderwater = isEyeUnderwater(pos.x, pos.y, pos.z);
 
-		this.material.setFloat("time", this.time);
-		if (this.scene.activeCamera) {
-			this.material.setVector3(
-				"cameraPosition",
-				this.scene.activeCamera.position,
-			);
-			this.material.setVector3("playerPosition", this.player.position);
+		if (this.isUnderwater !== this.wasUnderwater) {
+			this.wasUnderwater = this.isUnderwater;
+			this.#applyOverlay();
 		}
-	};
+		return this.isUnderwater;
+	}
+
+	#applyOverlay(): void {
+		if (!this.overlay) return;
+		if (this.isUnderwater) {
+			this.overlay.style.display = "block";
+			// Force reflow so the opacity transition runs.
+			void this.overlay.offsetWidth;
+			this.overlay.style.opacity = "1";
+		} else {
+			this.overlay.style.opacity = "0";
+			window.setTimeout(() => {
+				if (this.overlay && !this.isUnderwater) {
+					this.overlay.style.display = "none";
+				}
+			}, 260);
+		}
+	}
 
 	public dispose(): void {
-		this.scene.unregisterBeforeRender(this.update);
-		this.material.dispose();
-		this.postProcess.dispose();
-		if (this.depthRenderer) {
-			this.depthRenderer.dispose();
-			this.depthRenderer = null;
+		this.material = null;
+		this.postProcess = null;
+		this.isUnderwater = false;
+		this.wasUnderwater = false;
+		if (this.overlay) {
+			this.overlay.remove();
+			this.overlay = null;
 		}
 	}
+}
+
+// PERF: Module-level cache for isEyeUnderwater. The function is called twice
+// per frame (UnderWaterEffect.updateFromCamera + ChunkMesher.pushFogUniforms),
+// each call doing 3-4 chunk lookups. The result only changes when the eye
+// crosses a voxel boundary or water at the eye voxel changes, so cache on the
+// raw eye position and re-validate at most every 250 ms.
+let _underwaterCacheEyeX = NaN;
+let _underwaterCacheEyeY = NaN;
+let _underwaterCacheEyeZ = NaN;
+let _underwaterCacheResult = false;
+let _underwaterCacheMs = 0;
+const UNDERWATER_CACHE_VALID_MS = 250;
+
+/**
+ * Shared underwater test: true when the block at the given eye/world position
+ * is a water source. Used by both the visual overlay and the fog system so
+ * they stay in sync (lakes count, not just sea-level Y).
+ */
+export function isEyeUnderwater(
+	eyeX: number,
+	eyeY: number,
+	eyeZ: number,
+): boolean {
+	const now = performance.now();
+	if (
+		eyeX === _underwaterCacheEyeX &&
+		eyeY === _underwaterCacheEyeY &&
+		eyeZ === _underwaterCacheEyeZ &&
+		now - _underwaterCacheMs < UNDERWATER_CACHE_VALID_MS
+	) {
+		return _underwaterCacheResult;
+	}
+
+	const x = Math.floor(eyeX);
+	const y = Math.floor(eyeY);
+	const z = Math.floor(eyeZ);
+	let result = false;
+	const blockId = getBlockByWorldCoords(x, y, z);
+	if (blockId === BlockType.Water) {
+		// Compute the actual water surface height. A water block fully covered
+		// by water above (or a source block, level 0) fills the whole voxel;
+		// a lower-level (flowing) block has a surface dropped by level/8.
+		const state = getBlockStateByWorldCoords(x, y, z);
+		const level = getWaterLevel(blockId, state);
+		const aboveId = getBlockByWorldCoords(x, y + 1, z);
+		const surfaceY = aboveId === BlockType.Water ? y + 1 : y + 1 - level / 8;
+
+		// The eye is underwater when it sits below the water surface within
+		// this voxel (any water voxel counts, source or non-source).
+		result = eyeY < surfaceY;
+	}
+
+	_underwaterCacheEyeX = eyeX;
+	_underwaterCacheEyeY = eyeY;
+	_underwaterCacheEyeZ = eyeZ;
+	_underwaterCacheResult = result;
+	_underwaterCacheMs = now;
+	return result;
 }

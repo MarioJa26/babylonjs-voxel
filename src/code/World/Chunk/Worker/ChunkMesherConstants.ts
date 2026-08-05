@@ -1,4 +1,12 @@
 import {
+	FACE_NX,
+	FACE_NY,
+	FACE_NZ,
+	FACE_PX,
+	FACE_PY,
+	FACE_PZ,
+} from "../../Shape/BlockShapes";
+import {
 	BLOCK_ID_MASK,
 	BLOCK_STATE_MASK,
 	BLOCK_STATE_SHIFT,
@@ -29,12 +37,12 @@ export const ROTATE_Y_FACE_MASK_3 = new Uint8Array(64);
 export const FLIP_Y_FACE_MASK = new Uint8Array(64);
 
 for (let mask = 0; mask < 64; mask++) {
-	const px = (mask >> 0) & 1;
-	const nx = (mask >> 1) & 1;
-	const py = (mask >> 2) & 1;
-	const ny = (mask >> 3) & 1;
-	const pz = (mask >> 4) & 1;
-	const nz = (mask >> 5) & 1;
+	const px = (mask & FACE_PX) !== 0 ? 1 : 0;
+	const nx = (mask & FACE_NX) !== 0 ? 1 : 0;
+	const py = (mask & FACE_PY) !== 0 ? 1 : 0;
+	const ny = (mask & FACE_NY) !== 0 ? 1 : 0;
+	const pz = (mask & FACE_PZ) !== 0 ? 1 : 0;
+	const nz = (mask & FACE_NZ) !== 0 ? 1 : 0;
 
 	// One 90° CW rotation around Y:
 	// +X -> +Z

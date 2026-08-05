@@ -77,7 +77,8 @@ const ORE_TYPES: OreDefinition[] = [
 	},
 ];
 
-const STONE_BLOCK_IDS = new Set([1, 29]);
+// PERF (#5): direct id comparison instead of Set.has() in the per-voxel vein loop.
+const isStoneBlock = (id: number): boolean => id === 1 || id === 29;
 
 export class OreGenerator {
 	private params: GenerationParamsType;
@@ -128,14 +129,18 @@ export class OreGenerator {
 				(Math.abs(getPRNGBySeed(hash + 2, this.seedAsInt)) % CHUNK_SIZE);
 			const radius = ore.veinRadius;
 			const radiusSq = radius * radius;
+			const thresholdScale = 0.4 / radiusSq;
 			let placed = 0;
 
 			for (let dx = -radius; dx <= radius && placed < ore.blocksPerVein; dx++) {
+				// wx depends only on dx — hoist the noise X coordinate.
+				const sx = (veinCenterX + dx) * 0.1;
 				for (
 					let dy = -radius;
 					dy <= radius && placed < ore.blocksPerVein;
 					dy++
 				) {
+					const sy = (veinCenterY + dy) * 0.1;
 					for (
 						let dz = -radius;
 						dz <= radius && placed < ore.blocksPerVein;
@@ -163,11 +168,11 @@ export class OreGenerator {
 							continue;
 
 						const idx = lx + ly * CHUNK_SIZE + lz * chunkSizeSq;
-						if (!STONE_BLOCK_IDS.has(blocks[idx]!)) continue;
+						if (!isStoneBlock(blocks[idx]!)) continue;
 
 						// Shape the vein with 3D noise
-						const density = this.oreNoise(wx * 0.1, wy * 0.1, wz * 0.1);
-						const threshold = 0.3 + (distSq / radiusSq) * 0.4;
+						const density = this.oreNoise(sx, sy, (veinCenterZ + dz) * 0.1);
+						const threshold = 0.3 + distSq * thresholdScale;
 
 						if (density > threshold) {
 							blocks[idx] = ore.id;

@@ -1,21 +1,21 @@
-import type { Scene, Vector3 } from "@babylonjs/core";
+import type { SceneContext, Vec3 } from "@babylonjs/lite";
 import type { SavedChunkEntityData } from "@/code/World/WorldStorage";
 
 export interface Mob {
-	position: Vector3;
+	position: Vec3;
 	hp: number;
 	maxHp: number;
 	readonly mobType: string;
 
 	takeDamage(amount: number): void;
-	setPlayerPosition(pos: Vector3): void;
+	setPlayerPosition(pos: Vec3): void;
 	dispose(): void;
 	serializeForChunkReload(): SavedChunkEntityData | null;
 }
 
 export type MobSpawnConfig = {
 	mobType: string;
-	factory: (x: number, y: number, z: number, scene: Scene) => Mob;
+	factory: (x: number, y: number, z: number, scene: SceneContext) => Mob;
 	maxCount: number;
 	spawnWeight: number;
 	spawnBlockId: number;
@@ -72,8 +72,7 @@ export class MobRegistry {
 
 	private counts = new Map<string, number>();
 	pickSpawnType(): MobSpawnConfig | null {
-		const configs = [...this.#configs.values()];
-		if (configs.length === 0) return null;
+		if (this.#configs.size === 0) return null;
 
 		this.counts.clear();
 		for (const mob of this.#allMobs) {
@@ -82,7 +81,7 @@ export class MobRegistry {
 
 		let totalWeight = 0;
 		const eligible: MobSpawnConfig[] = [];
-		for (const config of configs) {
+		for (const config of this.#configs.values()) {
 			if ((this.counts.get(config.mobType) || 0) < config.maxCount) {
 				eligible.push(config);
 				totalWeight += config.spawnWeight;

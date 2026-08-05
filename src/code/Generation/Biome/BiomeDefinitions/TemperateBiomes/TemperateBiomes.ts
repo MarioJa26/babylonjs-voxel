@@ -19,7 +19,7 @@ export const FOREST: Biome = {
 	id: BIOME_ID.FOREST,
 	name: "Forest",
 	topBlock: 15, // grass
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.15,
@@ -43,7 +43,7 @@ export const CHERRY_BLOSSOM_FOREST: Biome = {
 	id: BIOME_ID.CHERRY_BLOSSOM_FOREST,
 	name: "Cherry_Blossom_Forest",
 	topBlock: 15, // grass
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.22, // dense cherry trees
@@ -69,7 +69,7 @@ export const AUTUMN_FOREST: Biome = {
 	id: BIOME_ID.AUTUMN_FOREST,
 	name: "Autumn_Forest",
 	topBlock: 15, // grass
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.2, // dense autumn trees
@@ -95,11 +95,11 @@ export const PINE_FOREST: Biome = {
 	id: BIOME_ID.PINE_FOREST,
 	name: "Pine_Forest",
 	topBlock: 14, // mossy grass
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.2, // very dense pine trees
-	grassDensity: 0.15, // sparse undergrowth under dense canopy
+	grassDensity: 0.367, // sparse undergrowth under dense canopy
 	beachBlock: 3, // sand
 	seafloorBlock: 46, // gravel seafloor
 
@@ -125,7 +125,7 @@ export const FERN_GULLY: Biome = {
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
 	treeDensity: 0.0,
-	grassDensity: 0.85, // extremely dense ferns and moss
+	grassDensity: 0.7, // extremely dense ferns and moss
 	beachBlock: 8, // mud
 	seafloorBlock: 8, // mud
 
@@ -146,7 +146,7 @@ export const PLAINS: Biome = {
 	id: BIOME_ID.PLAINS,
 	name: "Plains",
 	topBlock: 57, // plains grass (different shade)
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.06,
@@ -244,7 +244,7 @@ export const TEMPERATE_RAINFOREST: Biome = {
 	id: BIOME_ID.TEMPERATE_RAINFOREST,
 	name: "Temperate_Rainforest",
 	topBlock: 14, // mossy grass
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.15, // very dense trees
@@ -268,7 +268,7 @@ export const MAPLE_FOREST: Biome = {
 	id: BIOME_ID.MAPLE_FOREST,
 	name: "Maple_Forest",
 	topBlock: 15, // grass
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.18,
@@ -292,7 +292,7 @@ export const BIRCH_FOREST: Biome = {
 	id: BIOME_ID.BIRCH_FOREST,
 	name: "Birch_Forest",
 	topBlock: 15, // grass
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.2,
@@ -316,7 +316,7 @@ export const MEADOW: Biome = {
 	id: BIOME_ID.MEADOW,
 	name: "Meadow",
 	topBlock: 15, // grass
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
 	treeDensity: 0.0,
@@ -339,7 +339,7 @@ export const HEDGEROW: Biome = {
 	id: BIOME_ID.HEDGEROW,
 	name: "Hedgerow",
 	topBlock: 15, // grass
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.1, // sparse trees clustered along hedge lines

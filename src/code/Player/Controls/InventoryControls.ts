@@ -1,5 +1,6 @@
-import { Vector3 } from "@babylonjs/core";
+import type { Vec3 } from "@babylonjs/lite";
 import type { IControls } from "@/code/Interface/IControls";
+import { vec3Zero } from "@/code/Lib/Math";
 import { PlayerInventory } from "../Inventory/PlayerInventory";
 import type { Player } from "../Player";
 
@@ -7,7 +8,7 @@ export class InventoryControls implements IControls<unknown> {
 	readonly controlType = "inventory";
 	controlledEntity: unknown;
 	pressedKeys: Set<string>;
-	inputDirection: Vector3;
+	inputDirection: Vec3;
 
 	#underlyingControls: IControls<unknown>;
 
@@ -25,11 +26,12 @@ export class InventoryControls implements IControls<unknown> {
 	) {
 		this.controlledEntity = controlledEntity;
 		this.pressedKeys = new Set<string>();
-		this.inputDirection = Vector3.Zero();
+		this.inputDirection = vec3Zero();
 
 		this.#underlyingControls = underlyingControls;
 		this.#player = player;
 	}
+
 	handleKeyEvent(key: string, isKeyDown: boolean): void {
 		if (isKeyDown) this.onKeyDown(key);
 		else this.onKeyUp(key);

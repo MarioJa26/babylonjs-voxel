@@ -60,6 +60,9 @@ export class BlockTickScheduler {
 	// so it still runs (slightly late) instead of being dropped.
 	#overflow: number[] = [];
 
+	// Reusable scratch to avoid splice+concat allocation when merging overflow + freshDue.
+	private static readonly _dueScratch: number[] = [];
+
 	currentTick = 0;
 	safetyCeiling = DEFAULT_SAFETY_CEILING;
 
@@ -133,9 +136,17 @@ export class BlockTickScheduler {
 		// one.
 		this.#buckets[bucketIdx] = [];
 
-		const due =
+		const due: number[] =
 			this.#overflow.length > 0
-				? this.#overflow.splice(0, this.#overflow.length).concat(freshDue)
+				? (() => {
+						const scratch = BlockTickScheduler._dueScratch;
+						scratch.length = 0;
+						for (let i = 0; i < this.#overflow.length; i++)
+							scratch.push(this.#overflow[i]);
+						for (let i = 0; i < freshDue.length; i++) scratch.push(freshDue[i]);
+						this.#overflow.length = 0;
+						return scratch;
+					})()
 				: freshDue;
 
 		const processCount = Math.min(due.length, this.safetyCeiling);

@@ -1,9 +1,16 @@
-import { type TransformNode, Vector3 } from "@babylonjs/core";
-import { play } from "@/code/Maps/BlockBreakParticles";
+import type { Mesh, Vec3 } from "@babylonjs/lite";
+import { setVec3, vec3Zero } from "@/code/Lib/Math";
+import { play, playMining } from "@/code/Maps/BlockBreakParticles";
+import {
+	createEmptyInventory,
+	getBlockInventory,
+	saveBlockInventory,
+} from "@/code/World/BlockInventory/BlockInventoryManager";
 import {
 	deleteBlock,
 	getLightByWorldCoords,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { BlockType } from "@/code/World/Texture/BlockType";
 import {
 	getBlockBreakTime,
 	getBlockInfo,
@@ -16,14 +23,16 @@ import { updateCrackingState } from "./BlockBreakingVisuals";
 import type { BlockRaycastHit } from "./BlockRaycaster";
 import { pickTarget } from "./BlockRaycaster";
 
-const _scratchLightPos = new Vector3();
-const _scratchParticlePos = new Vector3();
+const _scratchLightPos = vec3Zero();
+const _scratchParticlePos = vec3Zero();
+const _scratchMiningPos = vec3Zero();
+let variation = 1834927911;
 
 export type BoatBlockHitContext = {
 	kind: "boatChunk";
 	boatChunk: {
-		visualRoot: TransformNode;
-		center: Vector3;
+		visualRoot: Mesh;
+		center: Vec3;
 		setBlockLocal(
 			x: number,
 			y: number,
@@ -46,6 +55,7 @@ export class BlockBreakingHandler {
 	#cachedZ = 0;
 	#hasCachedBlock = false;
 	#breakTimer = 0;
+	#lastUpdateMs = 0;
 
 	constructor(player: Player) {
 		this.#player = player;
@@ -63,14 +73,19 @@ export class BlockBreakingHandler {
 	public reset(): void {
 		this.#hasCachedBlock = false;
 		this.#breakTimer = 0;
+		this.#lastUpdateMs = 0;
 		updateCrackingState(null, 0);
 	}
 
 	public update(hit?: BlockRaycastHit | null): void {
 		if (!this.#active) return;
 
+		const now = performance.now();
 		const dt =
-			this.#player.playerVehicle.scene.getEngine().getDeltaTime() / 1000;
+			this.#lastUpdateMs > 0
+				? Math.min(0.1, (now - this.#lastUpdateMs) / 1000)
+				: 0;
+		this.#lastUpdateMs = now;
 
 		hit ??= pickTarget(this.#player);
 		if (!hit) {
@@ -85,10 +100,9 @@ export class BlockBreakingHandler {
 		const blockId = hit.blockId;
 		const blockState = hit.blockState;
 
+		const selectedHotbarSlot = this.#player.playerHud.selectedHotbarSlot;
 		const item =
-			this.#player.playerInventory.inventory[0][
-				this.#player.playerHud.selectedHotbarSlot
-			]?.item;
+			this.#player.playerInventory.inventory[0][selectedHotbarSlot]?.item;
 
 		const breakTime =
 			this.#player.stats.gamemode === Gamemodes.Creative
@@ -113,9 +127,11 @@ export class BlockBreakingHandler {
 				hit.dynamicContext,
 			);
 
+			this.#emitMiningParticles(hit, x, y, z, blockId);
+
 			if (this.#breakTimer >= breakTime) {
 				const lightPos = _scratchLightPos;
-				lightPos.set(x + 0.5 + hit.nx, y + 0.5 + hit.ny, z + 0.5 + hit.nz);
+				setVec3(lightPos, x + 0.5 + hit.nx, y + 0.5 + hit.ny, z + 0.5 + hit.nz);
 
 				const packedLight = getLightByWorldCoords(
 					lightPos.x,
@@ -139,7 +155,35 @@ export class BlockBreakingHandler {
 				blockState,
 				hit.dynamicContext,
 			);
+
+			this.#emitMiningParticles(hit, x, y, z, blockId);
 		}
+	}
+
+	#emitMiningParticles(
+		hit: BlockRaycastHit,
+		x: number,
+		y: number,
+		z: number,
+		blockId: number,
+	): void {
+		const miningPos = _scratchMiningPos;
+		setVec3(
+			miningPos,
+			x + 0.5 + hit.nx * 0.5,
+			y + 0.5 + hit.ny * 0.5,
+			z + 0.5 + hit.nz * 0.5,
+		);
+		playMining(
+			this.#player.sceneRef,
+			miningPos.x,
+			miningPos.y,
+			miningPos.z,
+			hit.nx,
+			hit.ny,
+			hit.nz,
+			blockId,
+		);
 	}
 
 	#asBoatBlockContext(context: unknown): BoatBlockHitContext | null {
@@ -177,15 +221,37 @@ export class BlockBreakingHandler {
 		const info = getBlockInfo(blockId);
 		if (!info) return;
 
-		const worldItem = Item.createById(blockId);
+		//todo make it good
+		const dropId =
+			blockId === BlockType.Grass001 || blockId === 14 || blockId === 51
+				? 46
+				: blockId === BlockType.Torch
+					? 1017
+					: blockId;
+		const worldItem = Item.createById(dropId);
 		worldItem.stackSize = 1;
-		worldItem.itemId = blockId;
+		worldItem.itemId = dropId;
 
 		const di = new DroppedItem(worldItem, x + 0.5, y + 0.5, z + 0.5);
 
+		// The item spawns inside the still-solid block, whose voxel stores no
+		// light until the deferred light propagation lands — tint it from the
+		// lit air voxel beside the mined face instead.
+		di.setInitialLight(packedLight);
+
+		variation ^= blockId;
+		variation ^= variation << 3;
+		variation ^= variation >>> 2;
+
+		const pushX = ((variation & 7) - 3.5) * 0.44;
+		const pushY = 0.67 + ((variation >>> 3) & 3);
+		const pushZ = (((variation >>> 5) & 7) - 3.5) * 0.44;
+
+		di.addVelocity(pushX, pushY, pushZ);
+
 		const particlePos = _scratchParticlePos;
-		particlePos.set(x + 0.5, y + 0.5, z + 0.5);
-		play(this.#player.playerVehicle.scene, particlePos, blockId, packedLight);
+		setVec3(particlePos, x + 0.5, y + 0.5, z + 0.5);
+		play(this.#player.sceneRef, particlePos, blockId, packedLight);
 
 		this.reset();
 
@@ -200,6 +266,38 @@ export class BlockBreakingHandler {
 			);
 		} else {
 			deleteBlock(x, y, z);
+		}
+		if (blockId === BlockType.WoodCrate) {
+			const blockInventory = getBlockInventory(x, y, z);
+
+			const dropX = x + 0.5;
+			const dropY = y + 0.5;
+			const dropZ = z + 0.5;
+
+			for (const row of blockInventory.slots) {
+				for (const savedItem of row) {
+					if (savedItem) {
+						const item = Item.createById(savedItem.itemId);
+						item.stackSize = savedItem.stackSize;
+						variation ^= savedItem.itemId;
+						variation ^= variation << 3;
+						variation ^= variation >>> 2;
+
+						const pushX = ((variation & 7) - 3.5) * 0.44;
+						const pushY = 0.5 + ((variation >>> 3) & 3);
+						const pushZ = (((variation >>> 5) & 7) - 3.5) * 0.44;
+
+						const droppedItem = new DroppedItem(item, dropX, dropY, dropZ);
+						droppedItem.setInitialLight(packedLight);
+						droppedItem.addVelocity(pushX, pushY, pushZ);
+					}
+				}
+			}
+			const emptyInv = createEmptyInventory(
+				blockInventory.width,
+				blockInventory.height,
+			);
+			saveBlockInventory(x, y, z, emptyInv);
 		}
 
 		if (this.#player.stats.gamemode === Gamemodes.Creative) {

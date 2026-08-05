@@ -14,29 +14,23 @@ import {
 	getFenceDynamicShape,
 } from "../../Shape/FenceConnect";
 import { FaceName, getFaceName } from "../../Texture/FaceName";
-import {
-	MaterialType,
-	type MeshContext,
-	type WorkerInternalMeshData,
-} from "../types/MeshTypes";
+import { MaterialType } from "../types/MeshTypes";
 
 import { computeAO } from "./AOPipeline";
 import {
 	FLAG_CUSTOM_CROSS,
 	FLAG_CUSTOM_CROSS_DIAGONAL,
 	FLAG_CUSTOM_FENCE,
-	FLAG_GREEDY,
 	FLAG_WATER_GLASS,
 	getCachedBlockId,
 	getCachedFlags,
-} from "./BlockFlags";
-import { emitQuadFast } from "./FaceEmitter";
-import {
 	getMaterialType,
 	getRuntimeShapeBoxes,
 	getShapeInfo,
 	isGreedyCompatiblePackedBlock,
-} from "./ShapePipeline";
+} from "./BlockInfoCache";
+import type { QuadBuffer } from "./QuadBuffer";
+import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
 const EPS = 1e-6;
 
@@ -134,27 +128,33 @@ function isWaterGlassInterface(curr: ParsedBlock, nbr: ParsedBlock): boolean {
  * processed. For these, only faces that point INTO the current chunk are emitted
  * so the adjacent chunk's own mesher handles the outward-facing side.
  */
-export function emitCustomShapes(
-	ctx: MeshContext,
-	opaqueOut: WorkerInternalMeshData,
-	transparentOut: WorkerInternalMeshData,
-): void {
-	const size = ctx.size;
-	const getBlock = ctx.getBlock;
-	const getLight = ctx.getLight;
-	const isLOD2 = ctx.lod >= 2;
+export function emitCustomShapes(session: MeshBuildSession): void {
+	const size = session.size;
+	const getBlock = session.getBlock;
+	const getLight = session.getLight;
+	const isLOD2 = session.lod >= 2;
+	const needsCustom = session.needsCustom;
+	const ps = session.ps;
+	const ps2 = session.ps2;
+	const opaqueOut = session.quadOpaque;
+	const transparentOut = session.quadTransparent;
 
 	for (let y = -1; y <= size; y++) {
+		const rowBaseY = (y + 1) * ps;
 		for (let z = -1; z <= size; z++) {
+			// PERF: hoisted padded-grid base for the x-row — the per-cell
+			// padIndex closure call (2 multiplies + 3 adds) is replaced by a
+			// single add per cell.
+			const base = rowBaseY + (z + 1) * ps2;
 			for (let x = -1; x <= size; x++) {
+				// P3.7: precomputed per-cell classification — skip every cell
+				// that cannot contribute custom geometry (air + greedy blocks)
+				// with a single byte load, instead of a cache lookup + flag
+				// checks per cell.
+				if (!needsCustom[base + x + 1]) continue;
+
 				const packed = getBlock(x, y, z, 0);
-				if (!packed) continue;
-
 				const flags = getCachedFlags(packed);
-
-				if (flags & FLAG_GREEDY) {
-					continue;
-				}
 
 				const blockId = getCachedBlockId(packed);
 				const out = flags & FLAG_WATER_GLASS ? transparentOut : opaqueOut;
@@ -169,7 +169,7 @@ export function emitCustomShapes(
 						blockId,
 						baseLight,
 						getMaterialType(blockId),
-						transparentOut,
+						out,
 					);
 					continue;
 				}
@@ -183,7 +183,7 @@ export function emitCustomShapes(
 							blockId,
 							baseLight,
 							getMaterialType(blockId),
-							transparentOut,
+							out,
 						);
 					} else {
 						emitCrossDiagonalAtBlock(
@@ -193,7 +193,7 @@ export function emitCustomShapes(
 							blockId,
 							baseLight,
 							getMaterialType(blockId),
-							transparentOut,
+							out,
 						);
 					}
 					continue;
@@ -215,7 +215,7 @@ export function emitCustomShapes(
 							)
 								continue;
 							emitBoxFace(
-								ctx,
+								session,
 								x,
 								y,
 								z,
@@ -245,7 +245,7 @@ export function emitCustomShapes(
 							continue;
 
 						emitBoxFace(
-							ctx,
+							session,
 							x,
 							y,
 							z,
@@ -295,11 +295,10 @@ function emitCrossShapeAtBlock(
 	blockId: number,
 	baseLight: number,
 	materialType: MaterialType = MaterialType.Cutout,
-	out: WorkerInternalMeshData,
+	out: QuadBuffer,
 ): void {
 	// X-aligned plane (perpendicular to X axis)
-	emitQuadFast(
-		out,
+	out.emitQuad(
 		x + 0.5,
 		y,
 		z,
@@ -317,8 +316,7 @@ function emitCrossShapeAtBlock(
 		0,
 	);
 
-	emitQuadFast(
-		out,
+	out.emitQuad(
 		x + 0.5,
 		y,
 		z,
@@ -337,8 +335,7 @@ function emitCrossShapeAtBlock(
 	);
 
 	// Z-aligned plane (perpendicular to Z axis)
-	emitQuadFast(
-		out,
+	out.emitQuad(
 		x,
 		y,
 		z + 0.5,
@@ -356,8 +353,7 @@ function emitCrossShapeAtBlock(
 		0,
 	);
 
-	emitQuadFast(
-		out,
+	out.emitQuad(
 		x,
 		y,
 		z + 0.5,
@@ -387,7 +383,7 @@ function emitCrossDiagonalAtBlock(
 	blockId: number,
 	baseLight: number,
 	materialType: MaterialType = MaterialType.Cutout,
-	out: WorkerInternalMeshData,
+	out: QuadBuffer,
 ): void {
 	const cx = x + 0.5;
 	const cz = z + 0.5;
@@ -395,9 +391,8 @@ function emitCrossDiagonalAtBlock(
 	// diagonal across a unit square corner-to-corner
 	const diagWidth = Math.SQRT2;
 
-	// Diagonal A: NW -> SE
-	emitQuadFast(
-		out,
+	// Diagonal A: SW -> NE (variant 1 → NE normal catches SE light)
+	out.emitQuad(
 		cx,
 		y,
 		cz,
@@ -411,12 +406,11 @@ function emitCrossDiagonalAtBlock(
 		FaceName.West,
 		materialType,
 		0,
-		1,
+		2,
 		0,
 	);
 
-	emitQuadFast(
-		out,
+	out.emitQuad(
 		cx,
 		y,
 		cz,
@@ -430,13 +424,12 @@ function emitCrossDiagonalAtBlock(
 		FaceName.East,
 		materialType,
 		0,
-		1,
+		2,
 		0,
 	);
 
-	// Diagonal B: NE -> SW
-	emitQuadFast(
-		out,
+	// Diagonal B: NW -> SE (variant 0 → NW normal, tangent NE)
+	out.emitQuad(
 		cx,
 		y,
 		cz,
@@ -450,12 +443,11 @@ function emitCrossDiagonalAtBlock(
 		FaceName.South,
 		materialType,
 		0,
-		2,
+		1,
 		0,
 	);
 
-	emitQuadFast(
-		out,
+	out.emitQuad(
 		cx,
 		y,
 		cz,
@@ -469,7 +461,7 @@ function emitCrossDiagonalAtBlock(
 		FaceName.North,
 		materialType,
 		0,
-		2,
+		1,
 		0,
 	);
 }
@@ -486,13 +478,12 @@ function emitLOD2CrossBillboard(
 	blockId: number,
 	baseLight: number,
 	materialType: MaterialType,
-	out: WorkerInternalMeshData,
+	out: QuadBuffer,
 ): void {
 	const W = 1.2;
 
 	// X-aligned plane
-	emitQuadFast(
-		out,
+	out.emitQuad(
 		x + 0.5,
 		y,
 		z,
@@ -510,8 +501,7 @@ function emitLOD2CrossBillboard(
 		0,
 	);
 
-	emitQuadFast(
-		out,
+	out.emitQuad(
 		x + 0.5,
 		y,
 		z,
@@ -530,8 +520,7 @@ function emitLOD2CrossBillboard(
 	);
 
 	// Z-aligned plane
-	emitQuadFast(
-		out,
+	out.emitQuad(
 		x,
 		y,
 		z + 0.5,
@@ -549,8 +538,7 @@ function emitLOD2CrossBillboard(
 		0,
 	);
 
-	emitQuadFast(
-		out,
+	out.emitQuad(
 		x,
 		y,
 		z + 0.5,
@@ -570,7 +558,7 @@ function emitLOD2CrossBillboard(
 }
 
 function emitBoxFace(
-	ctx: MeshContext,
+	session: MeshBuildSession,
 	voxelX: number,
 	voxelY: number,
 	voxelZ: number,
@@ -584,7 +572,7 @@ function emitBoxFace(
 	axis: number,
 	isBackFace: boolean,
 	baseLight: number,
-	out: WorkerInternalMeshData,
+	out: QuadBuffer,
 ): void {
 	const faceBit = getFaceBit(axis, isBackFace);
 	if ((box.faceMask & faceBit) === 0) {
@@ -612,7 +600,7 @@ function emitBoxFace(
 	let ao = 0;
 
 	if (onBoundary) {
-		const neighborPacked = ctx.getBlock(nx, ny, nz, 0);
+		const neighborPacked = session.getBlock(nx, ny, nz, 0);
 		parseBlockInto(neighborPacked, _parsedBlockScratch2);
 		const neighbor = _parsedBlockScratch2;
 
@@ -632,14 +620,14 @@ function emitBoxFace(
 			return;
 		}
 
-		light = ctx.getLight(nx, ny, nz, baseLight);
+		light = session.getLight(nx, ny, nz, baseLight);
 
-		if (!ctx.disableAO) {
+		if (!session.disableAO) {
 			// AO anchor must be on the outside side of the emitted face.
 			const uAxis = (axis + 1) % 3;
 			const vAxis = (axis + 2) % 3;
 
-			ao = computeAO(ctx, nx, ny, nz, uAxis, vAxis);
+			ao = computeAO(session, nx, ny, nz, uAxis, vAxis);
 		}
 	}
 
@@ -653,8 +641,7 @@ function emitBoxFace(
 	const u = (axis + 1) % 3;
 	const v = (axis + 2) % 3;
 
-	emitQuadFast(
-		out,
+	out.emitQuad(
 		x,
 		y,
 		z,

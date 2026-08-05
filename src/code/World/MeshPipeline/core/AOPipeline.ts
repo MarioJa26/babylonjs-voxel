@@ -1,28 +1,11 @@
 // MeshPipeline/core/AOPipeline.ts
 
-import type { BlockShapeInfo, MeshContext } from "../types/MeshTypes";
-import { FLAG_PARTIAL, FLAG_SOLID, getCachedFlags } from "./BlockFlags";
-
-/**
- * Utility: determine if a block occludes light for AO.
- *
- * AO should only treat a block as an occluder if it fully closes the relevant voxel face,
- * which for ordinary full cubes means all faces are closed.
- *
- * IMPORTANT:
- * Do NOT require isSliceCompatible here — normal cubes are not slice-compatible,
- * but they absolutely should occlude AO.
- */
-export function isOccluder(
-	packedBlock: number,
-	shape: BlockShapeInfo,
-): boolean {
-	if (!packedBlock) return false;
-
-	// For now keep AO conservative:
-	// only fully closed cube-like blocks count as AO occluders.
-	return shape.isCube && shape.closedFaceMask !== 0;
-}
+import {
+	FLAG_PARTIAL,
+	FLAG_SOLID,
+	getCachedFlagsAndId,
+} from "./BlockInfoCache";
+import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
 /**
  * Compute packed AO value for the 4 corners of a face.
@@ -35,43 +18,50 @@ export function isOccluder(
  *
  * This version fixes the directional 1-off issue by explicitly anchoring the AO samples
  * on the outside side of the face, exactly like the geometry fix did for quad placement.
+ *
+ * Stateless: all reads go through the session's padded grid.
  */
+// Axis unit-vector LUTs (avoids per-axis ternary/branch in computeAO).
+const AXIS_DX = [1, 0, 0];
+const AXIS_DY = [0, 1, 0];
+const AXIS_DZ = [0, 0, 1];
+
 export function computeAO(
-	ctx: MeshContext,
+	session: MeshBuildSession,
 	faceX: number,
 	faceY: number,
 	faceZ: number,
 	uAxis: number,
 	vAxis: number,
 ): number {
-	const getBlock = ctx.getBlock;
+	const blockArr = session.block;
+	const padIndex = session.padIndex;
 
-	const ux = uAxis === 0 ? 1 : 0;
-	const uy = uAxis === 1 ? 1 : 0;
-	const uz = uAxis === 2 ? 1 : 0;
+	const ux = AXIS_DX[uAxis];
+	const uy = AXIS_DY[uAxis];
+	const uz = AXIS_DZ[uAxis];
 
-	const vx = vAxis === 0 ? 1 : 0;
-	const vy = vAxis === 1 ? 1 : 0;
-	const vz = vAxis === 2 ? 1 : 0;
+	const vx = AXIS_DX[vAxis];
+	const vy = AXIS_DY[vAxis];
+	const vz = AXIS_DZ[vAxis];
 
 	// 8 unique positions — edge-adjacent cells shared by two corners each,
 	// plus four corner-diagonal cells. Fetched once, reused across all corners.
-	const fMu = getCachedFlags(getBlock(faceX - ux, faceY - uy, faceZ - uz, 0));
-	const fPu = getCachedFlags(getBlock(faceX + ux, faceY + uy, faceZ + uz, 0));
-	const fMv = getCachedFlags(getBlock(faceX - vx, faceY - vy, faceZ - vz, 0));
-	const fPv = getCachedFlags(getBlock(faceX + vx, faceY + vy, faceZ + vz, 0));
-	const fMumv = getCachedFlags(
-		getBlock(faceX - ux - vx, faceY - uy - vy, faceZ - uz - vz, 0),
-	);
-	const fPumv = getCachedFlags(
-		getBlock(faceX + ux - vx, faceY + uy - vy, faceZ + uz - vz, 0),
-	);
-	const fPupv = getCachedFlags(
-		getBlock(faceX + ux + vx, faceY + uy + vy, faceZ + uz + vz, 0),
-	);
-	const fMupv = getCachedFlags(
-		getBlock(faceX - ux + vx, faceY - uy + vy, faceZ - uz + vz, 0),
-	);
+	// Each read indexes the padded grid directly (no getBlock closure) and uses
+	// the combined flags+id cache; only the low flags bits are needed for AO.
+	// u/v are unit axes, so the 8 samples are baseIdx +/- uOff +/- vOff — one
+	// padIndex call instead of eight.
+	const baseIdx = padIndex(faceX, faceY, faceZ);
+	const uOff = ux + uy * session.ps + uz * session.ps2;
+	const vOff = vx + vy * session.ps + vz * session.ps2;
+	const fMu = getCachedFlagsAndId(blockArr[baseIdx - uOff]);
+	const fPu = getCachedFlagsAndId(blockArr[baseIdx + uOff]);
+	const fMv = getCachedFlagsAndId(blockArr[baseIdx - vOff]);
+	const fPv = getCachedFlagsAndId(blockArr[baseIdx + vOff]);
+	const fMumv = getCachedFlagsAndId(blockArr[baseIdx - uOff - vOff]);
+	const fPumv = getCachedFlagsAndId(blockArr[baseIdx + uOff - vOff]);
+	const fPupv = getCachedFlagsAndId(blockArr[baseIdx + uOff + vOff]);
+	const fMupv = getCachedFlagsAndId(blockArr[baseIdx - uOff + vOff]);
 
 	const occ = (f: number) =>
 		(f & FLAG_SOLID) !== 0 && (f & FLAG_PARTIAL) === 0 ? 1 : 0;

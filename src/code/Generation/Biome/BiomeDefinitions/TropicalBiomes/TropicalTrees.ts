@@ -4,7 +4,7 @@ import { DIAG_X, DIAG_Z, generateSlinkyTree } from "../../TreeDefinition";
 
 export const JUNGLE_TREE: TreeDefinition = {
 	woodId: 33,
-	leavesId: 34,
+	leavesId: 93,
 	baseHeight: 20,
 	heightVariance: 20,
 	generate(worldX, worldY, worldZ, placeBlock, seedAsInt): void {
@@ -45,7 +45,7 @@ export const JUNGLE_TREE: TreeDefinition = {
 // Uses generateSlinkyTree with prop roots that spread wide into the water
 // ---------------------------------------------------------------------------
 export const MANGROVE_TREE: TreeDefinition = {
-	woodId: 33, // jungle wood — replace with mangrove wood block
+	woodId: 95, // mangrove wood block
 	leavesId: 34, // jungle leaves — replace with mangrove leaves
 	baseHeight: 7,
 	heightVariance: 3,

@@ -1,4 +1,5 @@
-import { Observable, Ray, type Scene, Vector3 } from "@babylonjs/core";
+import { addVec3, type SceneContext, vec3 } from "@babylonjs/lite";
+import { Observable } from "@/code/Lib/Math";
 import { InventoryControls } from "../Controls/InventoryControls";
 import { generateShapeVariants } from "../Crafting/ShapeVariantGenerator";
 import type { Player } from "../Player";
@@ -9,7 +10,6 @@ import {
 	getAllRegisteredItems,
 } from "./ItemRegistry";
 import { ItemSlot } from "./ItemSlot";
-
 export type SavedInventoryItem = {
 	itemId: number;
 	stackSize: number;
@@ -22,7 +22,7 @@ export type SavedInventoryState = {
 };
 
 export class PlayerInventory {
-	scene: Scene;
+	scene: SceneContext;
 	#player: Player;
 	#x: number;
 	#y: number;
@@ -33,7 +33,7 @@ export class PlayerInventory {
 
 	public static currentlyHoveredSlot: ItemSlot | null = null;
 
-	constructor(scene: Scene, player: Player, x: number, y: number) {
+	constructor(scene: SceneContext, player: Player, x: number, y: number) {
 		this.scene = scene;
 		this.#player = player;
 		this.#x = x;
@@ -311,13 +311,18 @@ export class PlayerInventory {
 		worldItem.stackSize = quantity ?? item.stackSize;
 		item.stackSize -= worldItem.stackSize;
 
-		const playerPosition =
-			this.#player.playerVehicle.displayCapsule.position.clone();
+		// Drop from the player's current world position (Lite PlayerVehicle has
+		// no display capsule — use the plain position instead).
+		const playerPosition = vec3(
+			this.#player.position.x,
+			this.#player.position.y,
+			this.#player.position.z,
+		);
 
-		const cam =
-			this.scene.activeCamera?.getForwardRay() ??
-			new Ray(new Vector3(0, 0, 0), new Vector3(0, 0, 0));
-		const dropPosition = playerPosition.add(cam.direction.scale(2)); // Create the dropped item at the calculated position using the new clean item
+		// Full 3D look direction so the item lands in front of AND in the
+		// direction the player is looking (including pitch).
+		const forward = this.#player.playerCamera.getForwardDirection();
+		const dropPosition = addVec3(playerPosition, forward);
 
 		const droppedItem = new DroppedItem(
 			worldItem,
@@ -326,11 +331,21 @@ export class PlayerInventory {
 			dropPosition.z,
 		);
 
-		droppedItem.pushItem(cam.direction.scale(6));
+		// Launch in the look direction, plus the player's own momentum so the
+		// item inherits the player's movement (thrown forward while running).
+		droppedItem.addVelocity(
+			forward.x * 8 + this.#player.velocity.x,
+			forward.y * 8 + this.#player.velocity.y,
+			forward.z * 8 + this.#player.velocity.z,
+		);
 
-		if (item.stackSize <= 0) {
-			this.deleteItem(item);
-		} else this.onInventoryChangedObservable.notifyObservers();
+		if (item.row >= 0 && item.col >= 0) {
+			if (item.stackSize <= 0) {
+				this.deleteItem(item);
+				return;
+			}
+		}
+		this.onInventoryChangedObservable.notifyObservers();
 	}
 
 	public moveItemToHotbar(slotFocused: ItemSlot): void {
@@ -394,7 +409,11 @@ export class PlayerInventory {
 		if (!item) return;
 
 		item.div.parentElement?.removeChild(item.div);
-		this.#inventorySlots[item.row][item.col].clearItemSlots();
+		const slot =
+			item.row >= 0 && item.col >= 0
+				? this.#inventorySlots[item.row]?.[item.col]
+				: undefined;
+		slot?.clearItemSlots();
 		this.onInventoryChangedObservable.notifyObservers();
 	}
 

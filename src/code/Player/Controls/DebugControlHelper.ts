@@ -15,7 +15,9 @@ const handlers: Record<string, () => void> = {
 	},
 
 	f4: () => {
-		Map1.mainScene.forceShowBoundingBoxes = false;
+		(
+			Map1.mainScene as unknown as { forceShowBoundingBoxes: boolean }
+		).forceShowBoundingBoxes = false;
 		VoxelAabbCollider.toggleDebugEnabled();
 		VoxelObbCollider.toggleDebugEnabled();
 	},
