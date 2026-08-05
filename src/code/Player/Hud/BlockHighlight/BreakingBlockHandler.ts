@@ -1,6 +1,6 @@
 import type { Mesh, Vec3 } from "@babylonjs/lite";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
-import { play, playMining } from "@/code/Maps/BlockBreakParticles";
+import { play, playDebris, playMining } from "@/code/Maps/BlockBreakParticles";
 import {
 	createEmptyInventory,
 	getBlockInventory,
@@ -252,6 +252,14 @@ export class BlockBreakingHandler {
 		const particlePos = _scratchParticlePos;
 		setVec3(particlePos, x + 0.5, y + 0.5, z + 0.5);
 		play(this.#player.sceneRef, particlePos, blockId, packedLight);
+		playDebris(
+			this.#player.sceneRef,
+			particlePos.x,
+			particlePos.y,
+			particlePos.z,
+			blockId,
+			packedLight,
+		);
 
 		this.reset();
 

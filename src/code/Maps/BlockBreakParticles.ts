@@ -15,8 +15,20 @@ import {
 import { isUiOpen, UiFocus } from "@/code/Lib/GameRuntimeState";
 import {
 	getBlockByWorldCoords,
+	getBlockStateByWorldCoords,
 	getLightByWorldCoords,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
+import {
+	createVoxelColliderBlockSampler,
+	VoxelAabbCollider,
+} from "@/code/World/Collision/VoxelAabbCollider";
+import { getShapeForBlockId } from "@/code/World/Shape/BlockShapes";
+import {
+	computeFenceNeighborMask,
+	getFenceDynamicShape,
+	isFenceBlockId,
+} from "@/code/World/Shape/FenceConnect";
+import { isCollidableBlock } from "@/code/World/Texture/BlockType";
 import { getPRNGUnit2 } from "../Generation/NoiseAndParameters/Squirrel13";
 import { GLOBAL_VALUES } from "../World/GLOBAL_VALUES";
 import { BlockTextures } from "../World/Texture/BlockTextures";
@@ -25,37 +37,59 @@ import { atlasSize, tileSize } from "../World/Texture/TextureAtlasFactory";
 
 const ATLAS_URL = "/texture/diffuse_atlas.png";
 const POOL_SIZE = 2048;
-const PARTICLES_PER_BREAK = 222;
-const MINING_PARTICLES_PER_EMIT = 5;
-const MINING_PARTICLE_INTERVAL_MS = 60;
-const SPRINT_PARTICLES_PER_EMIT = 5;
-const SPRINT_PARTICLE_INTERVAL_MS = 130;
+const PARTICLES_PER_BREAK = 198;
+const MINING_PARTICLES_PER_EMIT = 6;
+const MINING_PARTICLE_INTERVAL_MS = 67;
+const SPRINT_PARTICLES_PER_EMIT = 6;
+const SPRINT_PARTICLE_INTERVAL_MS = 120;
 const GRAVITY = -16;
 const MAX_DT = 0.1;
 const FADE_START = 0.85;
 const MAX_PENDING_BURSTS = 8;
+
+const DEBRIS_PER_BREAK = 32;
+const DEBRIS_RESTITUTION = 0.35;
+const DEBRIS_COLLIDE_STEP = 0.15;
+const DEBRIS_SETTLE_SPEED = 1.0;
+const DEBRIS_RADIUS_SCALE = 0.4;
+
 let lastMiningEmitMs = 0;
 let lastSprintEmitMs = 0;
 
-type Particle = {
-	x: number;
-	y: number;
-	z: number;
-	vx: number;
-	vy: number;
-	vz: number;
-	age: number;
-	life: number;
-	size: number;
-	angle: number;
-	spin: number;
-	frame: number;
-	r: number;
-	g: number;
-	b: number;
-	a: number;
-	gravityScale: number;
-};
+// ---------------------------------------------------------------------------
+// Particle pool (SoA / typed-array layout).
+//
+// Particles live densely packed in [0, aliveCount). Removal is a swap with
+// the last live particle followed by aliveCount--, so there is no separate
+// free-list to maintain — the tail past aliveCount *is* the free capacity.
+// This keeps every per-frame scan cache-dense and GC-transparent (no object
+// pointers for the collector to trace), matching the typed-array-LUT /
+// scratch-buffer conventions used elsewhere in the engine.
+// ---------------------------------------------------------------------------
+
+const px = new Float32Array(POOL_SIZE);
+const py = new Float32Array(POOL_SIZE);
+const pz = new Float32Array(POOL_SIZE);
+const pvx = new Float32Array(POOL_SIZE);
+const pvy = new Float32Array(POOL_SIZE);
+const pvz = new Float32Array(POOL_SIZE);
+const page = new Float32Array(POOL_SIZE);
+const plife = new Float32Array(POOL_SIZE);
+const psize = new Float32Array(POOL_SIZE);
+const pangle = new Float32Array(POOL_SIZE);
+const pspin = new Float32Array(POOL_SIZE);
+const pr = new Float32Array(POOL_SIZE);
+const pg = new Float32Array(POOL_SIZE);
+const pb = new Float32Array(POOL_SIZE);
+const pa = new Float32Array(POOL_SIZE);
+const pgrav = new Float32Array(POOL_SIZE);
+const pframe = new Uint16Array(POOL_SIZE);
+/** bit0 = collide (routes through voxel collision in tick), bit1 = settled. */
+const pflags = new Uint8Array(POOL_SIZE);
+const COLLIDE_BIT = 1;
+const SETTLED_BIT = 2;
+
+let aliveCount = 0;
 
 type PendingBurst = {
 	x: number;
@@ -67,9 +101,8 @@ type PendingBurst = {
 	b: number;
 };
 
-const alive: Particle[] = [];
-const free: Particle[] = [];
 const pendingBursts: PendingBurst[] = [];
+const pendingDebris: PendingBurst[] = [];
 
 // Scratch props reused across every `addBillboardSpriteIndex` call so the
 // per-frame billboard rebuild allocates nothing.
@@ -83,6 +116,60 @@ const scratchProps = {
 	color: scratchColor,
 	frame: 0,
 };
+
+// Scratch light result reused across every `computeLight` call. Safe because
+// every call site consumes `.r/.g/.b` immediately and never holds the
+// reference across a subsequent `computeLight` call.
+const scratchLight = { r: 0, g: 0, b: 0 };
+
+// Scratch objects for debris collision sweeps (allocation-free).
+const scratchDebrisPos: Vec3 = { x: 0, y: 0, z: 0 };
+const scratchDebrisHalf: Vec3 = { x: 0, y: 0, z: 0 };
+
+// Shared shape-aware voxel sampler + stateless collider (DroppedItem pattern).
+// The collider's fixed half-extents are never used; debris sweeps call
+// `overlapsBox` with per-particle radii instead.
+const DEBRIS_BLOCK_SAMPLER = createVoxelColliderBlockSampler(
+	(x, y, z) => {
+		const blockId = getBlockByWorldCoords(x, y, z);
+		if (!isCollidableBlock(blockId)) return null;
+		return { blockId, blockState: getBlockStateByWorldCoords(x, y, z) };
+	},
+	{
+		getFenceDynamicShape,
+		getShapeForBlockId,
+		isFenceBlockId,
+		computeFenceNeighborMask,
+	},
+);
+
+const debrisCollider = new VoxelAabbCollider(
+	{ x: 1, y: 1, z: 1 },
+	DEBRIS_BLOCK_SAMPLER,
+	0.001,
+);
+
+// Block id -> atlas frame index, precomputed once. `BlockTextures` is static
+// for the lifetime of the process, so there's no reason to re-walk the
+// per-block face fallback chain (and allocate a closure for `Array.find`) on
+// every emit.
+const blockFrameLUT = buildBlockFrameLUT();
+
+function buildBlockFrameLUT(): Uint16Array {
+	const lut = new Uint16Array(BlockTextures.length);
+	for (let id = 0; id < BlockTextures.length; id++) {
+		const blockTex = BlockTextures[id];
+		if (!blockTex) continue;
+		const uv =
+			blockTex[FaceName.All] ??
+			blockTex[FaceName.Side] ??
+			blockTex[FaceName.Top] ??
+			blockTex[FaceName.Bottom] ??
+			blockTex.find((tile) => tile !== undefined);
+		lut[id] = uv ? uv[1] * atlasSize + uv[0] : 0;
+	}
+	return lut;
+}
 
 let initScene: SceneContext | null = null;
 let billboard: FacingBillboardSpriteSystem | null = null;
@@ -123,6 +210,39 @@ export function play(
 }
 
 /**
+ * Bouncy debris kicked out of a broken block. Particles collide with the voxel
+ * world (shape-aware: slabs/stairs/fences), bounce with restitution, and settle
+ * to rest on surfaces where they fade out. `x/y/z` is the broken block center.
+ */
+export function playDebris(
+	scene: SceneContext,
+	x: number,
+	y: number,
+	z: number,
+	blockId: number,
+	packedLight: number,
+): void {
+	ensureInit(scene);
+
+	const frame = getBlockFrame(blockId);
+	const light = computeLight(packedLight);
+
+	if (ready) {
+		spawnDebrisBurst(x, y, z, frame, light.r, light.g, light.b);
+	} else if (pendingDebris.length < MAX_PENDING_BURSTS) {
+		pendingDebris.push({
+			x,
+			y,
+			z,
+			frame,
+			r: light.r,
+			g: light.g,
+			b: light.b,
+		});
+	}
+}
+
+/**
  * Sparks that pop out of the block face while it is being mined. Emission is
  * throttled internally, so the caller may call this every frame. `x/y/z` is the
  * face center (block center + normal * 0.5) and `nx/ny/nz` the face normal.
@@ -154,6 +274,9 @@ export function playMining(
 	const light = computeLight(
 		getLightByWorldCoords(x + nx * 0.5, y + ny * 0.5, z + nz * 0.5),
 	);
+	const lr = light.r;
+	const lg = light.g;
+	const lb = light.b;
 
 	for (let i = 0; i < MINING_PARTICLES_PER_EMIT; i++) {
 		const jx = (getPRNGUnit2() - 0.5) * 0.5;
@@ -172,9 +295,9 @@ export function playMining(
 			getPRNGUnit2() * Math.PI * 2,
 			getPRNGUnit2() - 0.5,
 			frame,
-			light.r,
-			light.g,
-			light.b,
+			lr,
+			lg,
+			lb,
 			1,
 			0.6,
 		);
@@ -212,6 +335,9 @@ export function playSprint(
 	if (groundBlockId === 0) return;
 	const frame = getBlockFrame(groundBlockId);
 	const light = computeLight(getLightByWorldCoords(x, y, z));
+	const lr = light.r;
+	const lg = light.g;
+	const lb = light.b;
 
 	lastSprintEmitMs = now;
 
@@ -234,9 +360,9 @@ export function playSprint(
 			getPRNGUnit2() * Math.PI * 2,
 			getPRNGUnit2() - 0.5,
 			frame,
-			light.r * shade,
-			light.g * shade,
-			light.b * shade,
+			lr * shade,
+			lg * shade,
+			lb * shade,
 			1.0,
 			0.08,
 		);
@@ -298,6 +424,19 @@ async function setup(texture: Texture2D | null): Promise<void> {
 		);
 	}
 	pendingBursts.length = 0;
+
+	for (const burst of pendingDebris) {
+		spawnDebrisBurst(
+			burst.x,
+			burst.y,
+			burst.z,
+			burst.frame,
+			burst.r,
+			burst.g,
+			burst.b,
+		);
+	}
+	pendingDebris.length = 0;
 }
 
 function flushDeferredRenderables(scene: SceneContext): Promise<void> {
@@ -321,41 +460,43 @@ function tick(deltaMs: number): void {
 	if (isUiOpen(UiFocus.pauseMenu)) return;
 
 	const gravityDt = GRAVITY * dt;
-	for (let i = 0; i < alive.length; i++) {
-		const p = alive[i];
-		p.vy += gravityDt * p.gravityScale;
-		p.x += p.vx * dt;
-		p.y += p.vy * dt;
-		p.z += p.vz * dt;
-		p.age += dt;
-		p.angle += p.spin * dt;
-		if (p.age >= p.life) {
-			alive[i] = alive[alive.length - 1];
-			alive.pop();
-			free.push(p);
-			i--;
+	for (let i = 0; i < aliveCount; i++) {
+		const flags = pflags[i];
+		if (flags & COLLIDE_BIT) {
+			if (!(flags & SETTLED_BIT)) collideParticle(i, dt);
+		} else {
+			pvy[i] += gravityDt * pgrav[i];
+			px[i] += pvx[i] * dt;
+			py[i] += pvy[i] * dt;
+			pz[i] += pvz[i] * dt;
+		}
+		page[i] += dt;
+		if (!(pflags[i] & SETTLED_BIT)) pangle[i] += pspin[i] * dt;
+
+		if (page[i] >= plife[i]) {
+			removeParticle(i);
+			i--; // re-visit whichever particle just got swapped into slot i
 		}
 	}
 
 	clearBillboardSprites(billboard);
-	for (let i = 0; i < alive.length; i++) {
-		const p = alive[i];
-		const lifeFrac = p.age / p.life;
+	for (let i = 0; i < aliveCount; i++) {
+		const lifeFrac = page[i] / plife[i];
 		const alpha =
 			lifeFrac > FADE_START
 				? 1 - (lifeFrac - FADE_START) / (1 - FADE_START)
 				: 1;
-		scratchPos[0] = p.x;
-		scratchPos[1] = p.y;
-		scratchPos[2] = p.z;
-		scratchSize[0] = p.size;
-		scratchSize[1] = p.size;
-		scratchColor[0] = p.r;
-		scratchColor[1] = p.g;
-		scratchColor[2] = p.b;
-		scratchColor[3] = alpha * p.a;
-		scratchProps.rotation = p.angle;
-		scratchProps.frame = p.frame;
+		scratchPos[0] = px[i];
+		scratchPos[1] = py[i];
+		scratchPos[2] = pz[i];
+		scratchSize[0] = psize[i];
+		scratchSize[1] = psize[i];
+		scratchColor[0] = pr[i];
+		scratchColor[1] = pg[i];
+		scratchColor[2] = pb[i];
+		scratchColor[3] = alpha * pa[i];
+		scratchProps.rotation = pangle[i];
+		scratchProps.frame = pframe[i];
 		addBillboardSpriteIndex(billboard, scratchProps);
 	}
 }
@@ -392,6 +533,112 @@ function spawnBurst(
 	}
 }
 
+function spawnDebrisBurst(
+	x: number,
+	y: number,
+	z: number,
+	frame: number,
+	r: number,
+	g: number,
+	b: number,
+): void {
+	for (let i = 0; i < DEBRIS_PER_BREAK; i++) {
+		const shade = 0.8 + getPRNGUnit2() * 0.25;
+		addParticle(
+			x + (getPRNGUnit2() - 0.5) * 0.8,
+			y + 0.15,
+			z + (getPRNGUnit2() - 0.5) * 0.8,
+			(getPRNGUnit2() - 0.5) * 2.2,
+			1.4 + getPRNGUnit2() * 2.2,
+			(getPRNGUnit2() - 0.5) * 2.2,
+			1.3 + getPRNGUnit2() * 1.2,
+			0.06 + getPRNGUnit2() * 0.07,
+			getPRNGUnit2() * Math.PI * 2,
+			(getPRNGUnit2() - 0.5) * 3,
+			frame,
+			r * shade,
+			g * shade,
+			b * shade,
+			1,
+			1,
+			true,
+		);
+	}
+}
+
+/** Integrates a colliding particle through voxel collision, axis by axis. */
+function collideParticle(i: number, dt: number): void {
+	pvy[i] += GRAVITY * dt * pgrav[i];
+
+	const half = psize[i] * DEBRIS_RADIUS_SCALE;
+	scratchDebrisHalf.x = half;
+	scratchDebrisHalf.y = half;
+	scratchDebrisHalf.z = half;
+
+	moveDebrisAxis(i, 0, pvx[i] * dt);
+	moveDebrisAxis(i, 1, pvy[i] * dt);
+	moveDebrisAxis(i, 2, pvz[i] * dt);
+}
+
+/**
+ * Sweep one axis for a colliding particle. On hit, the particle is left at the
+ * contact point and `onDebrisHit` bounces or settles velocity along that axis.
+ */
+function moveDebrisAxis(i: number, axis: number, delta: number): void {
+	if (delta === 0) return;
+
+	const dir = delta > 0 ? 1 : -1;
+	let remaining = Math.abs(delta);
+
+	const pos = scratchDebrisPos;
+	while (remaining > 1e-8) {
+		const step =
+			remaining > DEBRIS_COLLIDE_STEP ? DEBRIS_COLLIDE_STEP : remaining;
+		const move = step * dir;
+
+		pos.x = px[i];
+		pos.y = py[i];
+		pos.z = pz[i];
+		if (axis === 0) pos.x += move;
+		else if (axis === 1) pos.y += move;
+		else pos.z += move;
+
+		if (debrisCollider.overlapsBox(pos, scratchDebrisHalf)) {
+			onDebrisHit(i, axis, dir);
+			return;
+		}
+
+		if (axis === 0) px[i] = pos.x;
+		else if (axis === 1) py[i] = pos.y;
+		else pz[i] = pos.z;
+
+		remaining -= step;
+	}
+}
+
+/** Reflect or zero velocity on the axis that just hit a block. */
+function onDebrisHit(i: number, axis: number, dir: number): void {
+	if (axis === 1) {
+		if (dir < 0 && -pvy[i] > DEBRIS_SETTLE_SPEED) {
+			pvy[i] = -pvy[i] * DEBRIS_RESTITUTION;
+		} else {
+			pvy[i] = 0;
+			if (dir < 0) pflags[i] |= SETTLED_BIT;
+		}
+		return;
+	}
+
+	const v = axis === 0 ? pvx[i] : pvz[i];
+	if (Math.abs(v) > DEBRIS_SETTLE_SPEED * 1.4) {
+		const bounced = -v * DEBRIS_RESTITUTION;
+		if (axis === 0) pvx[i] = bounced;
+		else pvz[i] = bounced;
+	} else {
+		if (axis === 0) pvx[i] = 0;
+		else pvz[i] = 0;
+	}
+}
+
 function addParticle(
 	x: number,
 	y: number,
@@ -409,62 +656,56 @@ function addParticle(
 	b: number,
 	a: number,
 	gravityScale: number,
+	collide = false,
 ): void {
-	if (alive.length >= POOL_SIZE) return;
-	const p = free.pop() ?? createParticle();
-	p.x = x;
-	p.y = y;
-	p.z = z;
-	p.vx = vx;
-	p.vy = vy;
-	p.vz = vz;
-	p.age = 0;
-	p.life = life;
-	p.size = size;
-	p.angle = angle;
-	p.spin = spin;
-	p.frame = frame;
-	p.r = r;
-	p.g = g;
-	p.b = b;
-	p.a = a;
-	p.gravityScale = gravityScale;
-	alive.push(p);
+	if (aliveCount >= POOL_SIZE) return;
+	const i = aliveCount++;
+	px[i] = x;
+	py[i] = y;
+	pz[i] = z;
+	pvx[i] = vx;
+	pvy[i] = vy;
+	pvz[i] = vz;
+	page[i] = 0;
+	plife[i] = life;
+	psize[i] = size;
+	pangle[i] = angle;
+	pspin[i] = spin;
+	pframe[i] = frame;
+	pr[i] = r;
+	pg[i] = g;
+	pb[i] = b;
+	pa[i] = a;
+	pgrav[i] = gravityScale;
+	pflags[i] = collide ? COLLIDE_BIT : 0;
 }
 
-function createParticle(): Particle {
-	return {
-		x: 0,
-		y: 0,
-		z: 0,
-		vx: 0,
-		vy: 0,
-		vz: 0,
-		age: 0,
-		life: 1,
-		size: 0.1,
-		angle: 0,
-		spin: 0,
-		frame: 0,
-		r: 1,
-		g: 1,
-		b: 1,
-		a: 1,
-		gravityScale: 1,
-	};
+/** Swap-remove: overwrites slot `i` with the last live particle and shrinks aliveCount. */
+function removeParticle(i: number): void {
+	const last = --aliveCount;
+	if (i === last) return;
+	px[i] = px[last];
+	py[i] = py[last];
+	pz[i] = pz[last];
+	pvx[i] = pvx[last];
+	pvy[i] = pvy[last];
+	pvz[i] = pvz[last];
+	page[i] = page[last];
+	plife[i] = plife[last];
+	psize[i] = psize[last];
+	pangle[i] = pangle[last];
+	pspin[i] = pspin[last];
+	pframe[i] = pframe[last];
+	pr[i] = pr[last];
+	pg[i] = pg[last];
+	pb[i] = pb[last];
+	pa[i] = pa[last];
+	pgrav[i] = pgrav[last];
+	pflags[i] = pflags[last];
 }
 
 function getBlockFrame(blockId: number): number {
-	const blockTex = BlockTextures[blockId];
-	if (!blockTex) return 0;
-	const uv =
-		blockTex[FaceName.All] ??
-		blockTex[FaceName.Side] ??
-		blockTex[FaceName.Top] ??
-		blockTex[FaceName.Bottom] ??
-		blockTex.find((tile) => tile !== undefined);
-	if (!uv) return 0;
-	return uv[1] * atlasSize + uv[0];
+	return blockFrameLUT[blockId] ?? 0;
 }
 
 function computeLight(packedLight: number): {
@@ -479,17 +720,14 @@ function computeLight(packedLight: number): {
 	const sunLightIntensity = Math.min(1.0, Math.max(0.0, sunElevation * 4.0));
 	const skyScale = sunLightIntensity + 0.3;
 
-	const skyR = skyLight * 0.8 * skyScale;
-	const skyG = skyLight * 0.8 * skyScale;
-	const skyB = skyLight * 0.8 * skyScale;
+	const skyRGB = skyLight * 0.8 * skyScale;
 
 	const blockR = blockLight * 0.9;
 	const blockG = blockLight * 0.6;
 	const blockB = blockLight * 0.2;
 
-	return {
-		r: Math.min(1, Math.max(0.2, skyR + blockR)),
-		g: Math.min(1, Math.max(0.2, skyG + blockG)),
-		b: Math.min(1, Math.max(0.2, skyB + blockB)),
-	};
+	scratchLight.r = Math.min(1, Math.max(0.2, skyRGB + blockR));
+	scratchLight.g = Math.min(1, Math.max(0.2, skyRGB + blockG));
+	scratchLight.b = Math.min(1, Math.max(0.2, skyRGB + blockB));
+	return scratchLight;
 }
