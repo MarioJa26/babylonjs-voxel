@@ -66,35 +66,35 @@ function createTerrainNoise(seed: string): TerrainNoiseSet {
 	const prng = Alea(seed);
 
 	const temperature = createFastNoise2DWithInstance({
-		seed: getPRNGBySeed(1, (prng() * 0xffffffff) | 0),
+		seed: getPRNGBySeed(420671337, (prng() * 0xffffffff) | 0),
 		fractalType: FractalType.None,
 		frequency: GenerationParams.TEMPERATURE_NOISE_SCALE,
 	});
 
 	const humidity = createFastNoise2DWithInstance({
-		seed: getPRNGBySeed(2, (prng() * 0xffffffff) | 0),
+		seed: getPRNGBySeed(94120401, (prng() * 0xffffffff) | 0),
 		fractalType: FractalType.None,
 		frequency: GenerationParams.HUMIDITY_NOISE_SCALE,
 	});
 
 	const continentalness = createFastNoise2DWithInstance({
-		seed: getPRNGBySeed(3, (prng() * 0xffffffff) | 0),
+		seed: getPRNGBySeed(15215211, (prng() * 0xffffffff) | 0),
 		fractalType: FractalType.Ridged,
 		frequency: GenerationParams.CONTINENTALNESS_NOISE_SCALE,
 	});
 
 	const erosion = createFastNoise2DWithInstance({
-		seed: getPRNGBySeed(4, (prng() * 0xffffffff) | 0),
+		seed: getPRNGBySeed(39322317412, (prng() * 0xffffffff) | 0),
 		frequency: GenerationParams.EROSION_NOISE_SCALE,
 	});
 
 	const peaksAndValleys = createFastNoise2DWithInstance({
-		seed: getPRNGBySeed(5, (prng() * 0xffffffff) | 0),
+		seed: getPRNGBySeed(2048, (prng() * 0xffffffff) | 0),
 		frequency: GenerationParams.PV_NOISE_SCALE,
 	});
 
 	const height = createFastNoise2D({
-		seed: getPRNGBySeed(6, (prng() * 0xffffffff) | 0),
+		seed: getPRNGBySeed(491290000, (prng() * 0xffffffff) | 0),
 		fractalType: FractalType.None,
 		frequency: GenerationParams.TERRAIN_SCALE,
 	});
@@ -156,7 +156,9 @@ export function setTerrainSeed(seed: string): void {
 // raw is in [-1, 1]; result maps it to [1, -1] with abs.
 // @inline candidate for bundlers that support it.
 function applyRidged(raw: number): number {
-	return 1 - Math.abs(raw) * 2;
+	const num = 1 - Math.abs(raw) * 2;
+	if (num < 0) return -(num ** 2);
+	return num ** 2;
 }
 
 const continentalnessSpline = new Spline([
@@ -177,9 +179,9 @@ const continentalnessSpline = new Spline([
 	// Hills
 	{ t: 0.3, v: 130 },
 	{ t: 0.4, v: 200 },
-	{ t: 0.5, v: 280 },
+	{ t: 0.5, v: 300 },
 	// Mountains
-	{ t: 0.6, v: 380 },
+	{ t: 0.6, v: 400 },
 	{ t: 0.7, v: 500 },
 	{ t: 0.8, v: 550 },
 	/*

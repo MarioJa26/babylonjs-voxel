@@ -63,26 +63,26 @@ export class WorldGenerator {
 		this.chunkVolume = this.chunk_size * this.chunkSizeSq;
 
 		const treeNoise = createFastNoise2D({
-			seed: getPRNGBySeed(21, this.seedAsInt),
+			seed: getPRNGBySeed(52253100808, this.seedAsInt),
 			frequency: 1,
 		});
 
 		const cheeseInstance = createFastNoise({
-			seed: getPRNGBySeed(2, this.seedAsInt),
+			seed: getPRNGBySeed(4912491002, this.seedAsInt),
 			frequency: this.params.CAVE_CHEESE_FREQ,
 		});
 		cheeseInstance.SetFractalOctaves(2);
 		this.cheeseNoise = (x, y, z) => cheeseInstance.GetNoise3D(x, y, z);
 
 		const tunnelInstance = createFastNoise({
-			seed: getPRNGBySeed(22, this.seedAsInt),
+			seed: getPRNGBySeed(251251516119, this.seedAsInt),
 			frequency: this.params.CAVE_TUNNEL_FREQ,
 		});
 		tunnelInstance.SetFractalOctaves(2);
 		this.tunnelNoise = (x, y, z) => tunnelInstance.GetNoise3D(x, y, z);
 
 		const detailInstance = createFastNoise({
-			seed: getPRNGBySeed(24, this.seedAsInt),
+			seed: getPRNGBySeed(242319705330, this.seedAsInt),
 			frequency: this.params.CAVE_DETAIL_FREQ,
 		});
 		detailInstance.SetFractalOctaves(2);
@@ -90,7 +90,7 @@ export class WorldGenerator {
 
 		const { fn: densityNoise, instance: densityInstance } =
 			createFastNoise3DWithInstance({
-				seed: getPRNGBySeed(23, this.seedAsInt),
+				seed: getPRNGBySeed(100002313119477, this.seedAsInt),
 				frequency: 0.33333,
 			});
 
