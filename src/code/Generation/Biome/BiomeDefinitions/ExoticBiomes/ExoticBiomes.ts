@@ -9,7 +9,7 @@ export const ANCIENT_RUINS_BIOME: Biome = {
 	id: BIOME_ID.ANCIENT_RUINS_BIOME,
 	name: "Ancient_Ruins",
 	topBlock: BlockType.AncientCrackedStone, // cracked stone brick / ancient stone
-	undergroundBlock: 19, // dirt (nature reclaiming the ruins)
+	undergroundBlock: 46, // dirt (nature reclaiming the ruins)
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.08, // trees growing through the ruins

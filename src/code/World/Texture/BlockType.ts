@@ -95,6 +95,10 @@ export enum BlockType {
 	SequoiaLeaves = 93,
 	Torch = 94,
 	MangroveWood = 95,
+	Cobblecoal = 96,
+	Cobblecopper = 97,
+	Cobblegold = 98,
+	Cobbleiron = 99,
 }
 
 export const Hardness = {

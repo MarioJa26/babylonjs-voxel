@@ -35,7 +35,7 @@ export const SAVANNAH: Biome = {
 	id: BIOME_ID.SAVANNAH,
 	name: "Savannah",
 	topBlock: 65, // dry savannah grass
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.05,
@@ -153,7 +153,7 @@ export const OASIS: Biome = {
 	id: BIOME_ID.OASIS,
 	name: "Oasis",
 	topBlock: 15, // lush grass (contrast against surrounding desert)
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.12, // palm-like trees clustered around water
@@ -226,7 +226,7 @@ export const SCORCHED_SAVANNAH: Biome = {
 	id: BIOME_ID.SCORCHED_SAVANNAH,
 	name: "Scorched_Savannah",
 	topBlock: 72, // scorched / cracked dry grass
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.03, // very sparse dead trees
@@ -251,7 +251,7 @@ export const CRACKED_EARTH: Biome = {
 	id: BIOME_ID.CRACKED_EARTH,
 	name: "Cracked_Earth",
 	topBlock: 1, // MudCrackedDry03
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
 	treeDensity: 0.0,

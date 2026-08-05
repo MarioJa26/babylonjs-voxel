@@ -70,10 +70,10 @@ export class PondFeature implements IWorldFeature {
 		columnPrepassResolver?: ColumnPrepassResolver,
 	) {
 		const region = computeRegion(chunkX, chunkZ, chunkSize, seed, {
-			regionSize: 1,
+			regionSize: 9,
 			magicA: 778899331,
 			magicB: 445566227,
-			spawnChance: 100,
+			spawnChance: 22,
 			earlyReturn: false,
 		});
 		if (!region) return;

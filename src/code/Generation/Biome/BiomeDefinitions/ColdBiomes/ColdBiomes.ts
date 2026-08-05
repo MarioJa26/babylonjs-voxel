@@ -12,7 +12,7 @@ export const TUNDRA: Biome = {
 	id: BIOME_ID.TUNDRA,
 	name: "Tundra",
 	topBlock: 9, // snow
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.0,
@@ -36,7 +36,7 @@ export const TUNDRA_MOUNTAINS: Biome = {
 	id: BIOME_ID.TUNDRA_MOUNTAINS,
 	name: "Tundra_Mountains",
 	topBlock: 9, // snow
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.0,
@@ -110,7 +110,7 @@ export const SNOWY_PLAINS: Biome = {
 	id: BIOME_ID.SNOWY_PLAINS,
 	name: "Snowy_Plains",
 	topBlock: 9, // snow
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
 	treeDensity: 0.0,
@@ -133,7 +133,7 @@ export const FROZEN_TUNDRA_PLAINS: Biome = {
 	id: BIOME_ID.FROZEN_TUNDRA_PLAINS,
 	name: "Frozen_Tundra_Plains",
 	topBlock: 9, // snow
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
 	treeDensity: 0.0,
@@ -158,7 +158,7 @@ export const AURORA_TUNDRA: Biome = {
 	id: BIOME_ID.AURORA_TUNDRA,
 	name: "Aurora_Tundra",
 	topBlock: 9, // snow
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.04, // very sparse conifers
@@ -184,7 +184,7 @@ export const PERMAFROST_BOG: Biome = {
 	id: BIOME_ID.PERMAFROST_BOG,
 	name: "Permafrost_Bog",
 	topBlock: BlockType.Peat, // frozen mud / permafrost dirt
-	undergroundBlock: 19, // frozen mud
+	undergroundBlock: 46, // frozen mud
 	stoneBlock: 1, // stone
 	canSpawnTrees: false,
 	treeDensity: 0.0,
