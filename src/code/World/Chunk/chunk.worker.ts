@@ -5,6 +5,7 @@ import { GenerationParams } from "@/code/Generation/NoiseAndParameters/Generatio
 import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap";
 import { WorldGenerator } from "@/code/Generation/WorldGenerator";
 import { enableWasmNoise } from "@/code/Lib/WasmNoise";
+import { packCoords } from "./DataStructures/ChunkCoords";
 import {
 	type LightRegisterChunkRequest,
 	WorkerTaskType,
@@ -29,16 +30,12 @@ interface PendingVoxelData {
 	blockBytesPerElement: 1 | 2;
 }
 // Coord → voxel data from OPFS worker
-const _pendingVoxelData = new Map<number, PendingVoxelData>();
+const _pendingVoxelData = new Map<bigint, PendingVoxelData>();
 // Coord → registration metadata from main thread (arrives before channel)
 const _pendingRegistrations = new Map<
-	number,
+	bigint,
 	{ seq: number; chunkId: bigint; headerSlot: number }
 >();
-
-function _packCoordKey(x: number, y: number, z: number): number {
-	return ((x + 512) << 20) | ((y + 512) << 10) | (z + 512);
-}
 
 function _registerFromBoth(
 	meta: {
@@ -69,7 +66,7 @@ function _registerFromBoth(
 function _handleChannelMessage(event: MessageEvent): void {
 	const data = event.data;
 	if (!data || (data as { _type?: string })._type !== "voxelData") return;
-	const key = _packCoordKey(data.chunkX | 0, data.chunkY | 0, data.chunkZ | 0);
+	const key = packCoords(data.chunkX | 0, data.chunkY | 0, data.chunkZ | 0);
 	const voxel: PendingVoxelData = {
 		blocksSAB: data.blocksSAB,
 		paletteSAB: data.paletteSAB,
@@ -302,7 +299,7 @@ const onMessageHandler = (event: MessageEvent) => {
 			}
 			// Null SABs → main thread uses worker-to-worker channel for SABs.
 			// Merge with pending voxel data from OPFS worker.
-			const key = _packCoordKey(req.chunkX, req.chunkY, req.chunkZ);
+			const key = packCoords(req.chunkX, req.chunkY, req.chunkZ);
 			const voxel = _pendingVoxelData.get(key);
 			if (voxel) {
 				_pendingVoxelData.delete(key);

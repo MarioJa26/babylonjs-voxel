@@ -9,6 +9,7 @@ import {
 	type WorkerMeshInput,
 } from "../MeshPipeline/core/WorkerMeshHelpers";
 import { shapeInitPromise } from "../Shape/BlockShapes";
+import { packCoords } from "./DataStructures/ChunkCoords";
 import { PaletteExpander } from "./DataStructures/PaletteExpander";
 import {
 	type FullMeshMessage,
@@ -56,25 +57,20 @@ type VoxelRegistration = {
 	uniformBlockId: number;
 };
 
-// Same coordinate packing as the light worker's registry (±512 range).
-function _packCoordKey(x: number, y: number, z: number): number {
-	return ((x + 512) << 20) | ((y + 512) << 10) | (z + 512);
-}
-
 // SAB handles from the OPFS worker (via the worker-to-worker channel).
-const _pendingChannelData = new Map<number, VoxelRegistration>();
+const _pendingChannelData = new Map<bigint, VoxelRegistration>();
 // Metadata from the main thread (usually arrives after the channel data).
 const _pendingMetadata = new Map<
-	number,
+	bigint,
 	{ isUniform: boolean; uniformBlockId: number }
 >();
 
-const _voxelRegistrations = new Map<number, VoxelRegistration>();
+const _voxelRegistrations = new Map<bigint, VoxelRegistration>();
 
 function _handleChannelMessage(event: MessageEvent): void {
 	const data = event.data;
 	if (!data || (data as { _type?: string })._type !== "voxelData") return;
-	const key = _packCoordKey(data.chunkX | 0, data.chunkY | 0, data.chunkZ | 0);
+	const key = packCoords(data.chunkX | 0, data.chunkY | 0, data.chunkZ | 0);
 	const meta = _pendingMetadata.get(key);
 	const voxel: VoxelRegistration = {
 		blockSAB: data.blocksSAB ?? null,
@@ -93,7 +89,7 @@ function _handleChannelMessage(event: MessageEvent): void {
 }
 
 function _handleVoxelRegister(req: VoxelRegisterChunkRequest): void {
-	const key = _packCoordKey(req.chunkX, req.chunkY, req.chunkZ);
+	const key = packCoords(req.chunkX, req.chunkY, req.chunkZ);
 	const reg: VoxelRegistration = {
 		blockSAB: req.blockSAB,
 		paletteSAB: req.paletteSAB,
@@ -125,14 +121,14 @@ function _handleVoxelRegister(req: VoxelRegisterChunkRequest): void {
 }
 
 function _handleVoxelUnregister(req: VoxelUnregisterChunkRequest): void {
-	const key = _packCoordKey(req.chunkX, req.chunkY, req.chunkZ);
+	const key = packCoords(req.chunkX, req.chunkY, req.chunkZ);
 	_voxelRegistrations.delete(key);
 	_pendingChannelData.delete(key);
 	_pendingMetadata.delete(key);
 }
 
 function _handleVoxelUpdateBuffers(req: VoxelUpdateChunkBuffersRequest): void {
-	const key = _packCoordKey(req.chunkX, req.chunkY, req.chunkZ);
+	const key = packCoords(req.chunkX, req.chunkY, req.chunkZ);
 	_pendingMetadata.delete(key);
 	_pendingChannelData.delete(key);
 	_voxelRegistrations.set(key, {
@@ -366,9 +362,7 @@ function buildNeighborArrays(
 			continue;
 		}
 		const { dx, dy, dz } = NEIGHBOR_OFFSETS[i];
-		const reg = _voxelRegistrations.get(
-			_packCoordKey(cx + dx, cy + dy, cz + dz),
-		);
+		const reg = _voxelRegistrations.get(packCoords(cx + dx, cy + dy, cz + dz));
 		if (!reg) {
 			// Benign race: the neighbor's registration (channel data) has not
 			// completed yet — treat as air; the next remesh heals it.
@@ -623,7 +617,7 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 			}
 
 			const reg = _voxelRegistrations.get(
-				_packCoordKey(data.chunkX, data.chunkY, data.chunkZ),
+				packCoords(data.chunkX, data.chunkY, data.chunkZ),
 			);
 			buildNeighborArrays(
 				data.chunkX,
@@ -657,7 +651,7 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 	void ensureShapesReady().then(() => {
 		const size = data.chunk_size;
 		const reg = _voxelRegistrations.get(
-			_packCoordKey(data.chunkX, data.chunkY, data.chunkZ),
+			packCoords(data.chunkX, data.chunkY, data.chunkZ),
 		);
 		buildNeighborArrays(
 			data.chunkX,
