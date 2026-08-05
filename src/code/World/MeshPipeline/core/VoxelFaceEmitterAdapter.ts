@@ -140,13 +140,12 @@ export class VoxelFaceEmitterAdapter {
 		faceName: FaceName,
 		_faceBit: number,
 	): void {
-		const { ox, oy, oz } = inlineOrigin(axis, back, desc);
+		inlineOrigin(axis, back, desc);
 
 		const off = 1 ^ back;
-		const x = axis === 0 ? ox + off : ox;
-		const y = axis === 1 ? oy + off : oy;
-		const z = axis === 2 ? oz + off : oz;
-
+		const x = axis === 0 ? _origin.ox + off : _origin.ox;
+		const y = axis === 1 ? _origin.oy + off : _origin.oy;
+		const z = axis === 2 ? _origin.oz + off : _origin.oz;
 		// P3.8: unchecked emit — greedy cube faces sit at positions 0..size-1,
 		// so the scaled coordinates can never leave the u8 range.
 		out.emitQuadUnchecked(
@@ -180,13 +179,12 @@ export class VoxelFaceEmitterAdapter {
 		faceName: FaceName,
 		_faceBit: number,
 	): void {
-		const { ox, oy, oz } = inlineOrigin(axis, back, desc);
+		inlineOrigin(axis, back, desc);
 
 		const off = 1 ^ back;
-		const x = axis === 0 ? ox + off : ox;
-		const y = axis === 1 ? oy + off : oy;
-		const z = axis === 2 ? oz + off : oz;
-
+		const x = axis === 0 ? _origin.ox + off : _origin.ox;
+		const y = axis === 1 ? _origin.oy + off : _origin.oy;
+		const z = axis === 2 ? _origin.oz + off : _origin.oz;
 		out.emitWaterQuad(
 			x,
 			y,
@@ -219,7 +217,7 @@ export class VoxelFaceEmitterAdapter {
 		const boxes = getRuntimeShapeBoxes(packedBlock & PACKED_ID_STATE_MASK);
 		if (boxes.length === 0) return;
 
-		const { ox, oy, oz } = inlineOrigin(axis, back, desc);
+		inlineOrigin(axis, back, desc);
 		const rawDim = needsRawDim(blockId, desc.width, desc.height) ? 1 : 0;
 
 		for (let i = 0; i < boxes.length; i++) {
@@ -229,9 +227,9 @@ export class VoxelFaceEmitterAdapter {
 			const min = box.min;
 			const max = box.max;
 			const bc = back ? min[axis] : max[axis];
-			const x = ox + (axis === 0 ? bc : min[0]);
-			const y = oy + (axis === 1 ? bc : min[1]);
-			const z = oz + (axis === 2 ? bc : min[2]);
+			const x = _origin.ox + (axis === 0 ? bc : min[0]);
+			const y = _origin.oy + (axis === 1 ? bc : min[1]);
+			const z = _origin.oz + (axis === 2 ? bc : min[2]);
 			const u = (axis + 1) % 3;
 			const v = (axis + 2) % 3;
 			const width = desc.width * (max[u] - min[u]);
@@ -276,7 +274,7 @@ export class VoxelFaceEmitterAdapter {
 		const boxes = getRuntimeShapeBoxes(packedBlock & PACKED_ID_STATE_MASK);
 		if (boxes.length === 0) return;
 
-		const { ox, oy, oz } = inlineOrigin(axis, back, desc);
+		inlineOrigin(axis, back, desc);
 
 		for (let i = 0; i < boxes.length; i++) {
 			const box = boxes[i];
@@ -285,9 +283,9 @@ export class VoxelFaceEmitterAdapter {
 			const min = box.min;
 			const max = box.max;
 			const bc = back ? min[axis] : max[axis];
-			const x = ox + (axis === 0 ? bc : min[0]);
-			const y = oy + (axis === 1 ? bc : min[1]);
-			const z = oz + (axis === 2 ? bc : min[2]);
+			const x = _origin.ox + (axis === 0 ? bc : min[0]);
+			const y = _origin.oy + (axis === 1 ? bc : min[1]);
+			const z = _origin.oz + (axis === 2 ? bc : min[2]);
 			const u = (axis + 1) % 3;
 			const v = (axis + 2) % 3;
 			const width = desc.width * (max[u] - min[u]);

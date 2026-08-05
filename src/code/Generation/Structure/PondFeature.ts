@@ -2,6 +2,7 @@ import { BlockType } from "../../World/Texture/BlockType";
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
 import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
+import { SUBSURFACE_LAYER_DEPTH } from "../Terrain/SurfaceBlockResolver";
 import { getBiome } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
@@ -82,12 +83,18 @@ export class PondFeature implements IWorldFeature {
 		const centerBiome = getBiome(cx, cz);
 		if (POND_UNSUITABLE.has(centerBiome.id)) return;
 
-		const radius = 4 + (Math.abs(getPRNGBySeed(regionHash, seed)) % 5);
+		const radius = 5 + (Math.abs(getPRNGBySeed(regionHash, seed)) % 5);
 		// 3..5 deep so the centre always has at least 1 block of water below
 		// the fixed rim depth.
 		const maxDepth = 3 + (Math.abs(getPRNGBySeed(regionHash + 1, seed)) % 3);
+		// Stretch the pond into an ellipse so width (X) and depth/length (Z)
+		// differ rather than always being a perfect circle.
+		const stretch =
+			0.85 + (Math.abs(getPRNGBySeed(regionHash + 2, seed)) % 13) / 10;
+		const rx = Math.max(3, radius);
+		const rz = Math.max(3, radius * stretch);
 
-		const MAX_RADIUS = radius + 3;
+		const MAX_RADIUS = Math.max(rx, rz) + 3;
 		const bounds = chunkWorldBounds(
 			generatingChunkX,
 			generatingChunkZ,
@@ -109,45 +116,74 @@ export class PondFeature implements IWorldFeature {
 
 		const b = new StructureBuilder(placeBlock, columnPrepassResolver, seed);
 
-		// The pond should sit on reasonably flat ground — skip steep slopes so
-		// we don't carve a draining hole into a hillside.
-		const { min, max } = b.footprintGround(cx, cz, radius + 1, radius + 1);
-		if (max - min > 7) return;
-
-		const centerGround = b.ground(cx, cz);
 		const sea = GenerationParams.SEA_LEVEL;
-		// Keep ponds away from the ocean waterline so they don't just merge
-		// into the sea.
-		if (centerGround <= sea + 2) return;
+		const centerGround = b.ground(cx, cz);
+		if (centerGround <= sea - 8) return;
+
+		// Pick a single flat water level from the *surrounding* shoreline, not
+		// the centre, so the pond sits flush with the local terrain. Use the
+		// lowest sampled point rather than an average - a real pond settles
+		// at the local low point of the terrain, not somewhere above it. On
+		// sloped ground, averaging would put the water level above the
+		// downhill side, forcing the (now-guaranteed) rim to build a raised
+		// pedestal to reach it instead of sitting flush.
+		const rims = 8;
+		let minRim = Infinity;
+		for (let k = 0; k < rims; k++) {
+			const a = (k / rims) * Math.PI * 2;
+			const h = b.ground(
+				Math.round(cx + Math.cos(a) * (rx - 0.5)),
+				Math.round(cz + Math.sin(a) * (rz - 0.5)),
+			);
+			if (h < minRim) minRim = h;
+		}
+		const waterTop = minRim - 1;
+		if (waterTop <= sea - 8) return;
 
 		this.generatePond(
 			cx,
-			centerGround,
 			cz,
-			radius,
+			waterTop,
+			rx,
+			rz,
 			maxDepth,
+			centerBiome.topBlock,
+			centerBiome.undergroundBlock,
+			centerBiome.stoneBlock,
 			centerBiome.beachBlock,
+			(x, z) => b.ground(x, z),
 			placeBlock,
 		);
 	}
 
 	/**
-	 * Carves a clean bowl into the terrain and fills it with water.
+	 * Carves a smooth pond that blends into the local terrain.
 	 *
-	 * The pond is a cone dug down from `rimY` (the top of the shore, placed
-	 * flush with the ground at the centre) to `rimY - depth`. A solid shore
-	 * shell occupies the whole cone so the rim height is constant everywhere,
-	 * then water fills from the floor up to a single flat level
-	 * (`rimY - RIM_DEPTH`). This guarantees a perfectly flat water surface and
-	 * a consistent, circular shoreline regardless of the underlying terrain.
+	 * The water surface is a single flat height (`waterTop`). The basin has a
+	 * flat floor in the deep core (`floorY`) and a smooth ramp from the shore
+	 * down to that floor, so there are no vertical walls. Surrounding the
+	 * basin is a rim ring (nCore..1 is the basin ramp, 1..nRim is the rim)
+	 * that is *always* built up to at least `waterTop` - guaranteeing the
+	 * pond is fully encased regardless of how the surrounding terrain slopes
+	 * - while still blending smoothly up to natural ground height where the
+	 * terrain is already taller, so the pond grafts in cleanly instead of
+	 * leaving a hard shelf. Carved/built faces are filled with the biome's
+	 * own geology (top / underground / stone blocks, exactly like the
+	 * surrounding terrain) so the pond reads as a natural depression rather
+	 * than a sand tub, with no floating blocks.
 	 */
 	private generatePond(
 		centerX: number,
-		rimY: number,
 		centerZ: number,
-		poolRadius: number,
+		waterTop: number,
+		radiusX: number,
+		radiusZ: number,
 		maxDepth: number,
-		shoreBlockId: number,
+		topBlockId: number,
+		undergroundBlockId: number,
+		stoneBlockId: number,
+		beachBlockId: number,
+		groundAt: (x: number, z: number) => number,
 		placeBlock: (
 			x: number,
 			y: number,
@@ -156,44 +192,95 @@ export class PondFeature implements IWorldFeature {
 			ow: boolean,
 		) => void,
 	) {
-		const RIM_DEPTH = 2;
-		const waterTop = rimY - RIM_DEPTH;
-		if (waterTop >= rimY) return;
+		const floorY = waterTop - maxDepth;
+		if (waterTop <= floorY) return;
 
-		// Solid shore shell: full cone from the floor up to the flat rim.
-		const shellRadius = poolRadius + 1;
-		const shellRadiusSq = shellRadius * shellRadius;
-		for (let dx = -shellRadius; dx <= shellRadius; dx++) {
-			for (let dz = -shellRadius; dz <= shellRadius; dz++) {
-				const distSq = dx * dx + dz * dz;
-				if (distSq >= shellRadiusSq) continue;
+		// Normalized elliptical space: n == 1 is the shoreline. `nCore` bounds
+		// the flat floor, the band (nCore, 1) is the smooth rim ramp, and the
+		// band (1, nRim] is the guaranteed encasing rim.
+		const ext = Math.max(radiusX, radiusZ);
+		const nCore = 1 - 2.5 / ext;
+		const nRim = 1 + 1.2 / ext;
+		const loop = Math.ceil(ext) + 2;
 
-				const dist = Math.sqrt(distSq);
-				const depth = Math.floor(maxDepth * (1 - dist / shellRadius));
-				const floorY = rimY - depth;
+		for (let dx = -loop; dx <= loop; dx++) {
+			for (let dz = -loop; dz <= loop; dz++) {
+				const nx = dx / radiusX;
+				const nz = dz / radiusZ;
+				const n = Math.sqrt(nx * nx + nz * nz);
+				const wx = centerX + dx;
+				const wz = centerZ + dz;
 
-				for (let y = floorY; y <= rimY; y++) {
-					placeBlock(centerX + dx, y, centerZ + dz, shoreBlockId, true);
+				if (n <= 1) {
+					// Basin: flat floor in the core, ramp toward the shore.
+					const t = Math.min(1, Math.max(0, (n - nCore) / (1 - nCore)));
+					const solidTop = floorY + Math.round(maxDepth * t);
+
+					// Rebuild the carved soil/stone below the water line using
+					// the biome's natural blocks (depth-mapped like terrain).
+					// The floor itself is sand (it's underwater), not the
+					// biome's grass/top block.
+					const base = solidTop - (SUBSURFACE_LAYER_DEPTH + 2);
+					for (let y = base; y <= solidTop; y++) {
+						const depthBelow = solidTop - y;
+						const id =
+							depthBelow === 0
+								? beachBlockId
+								: depthBelow <= SUBSURFACE_LAYER_DEPTH
+									? undergroundBlockId
+									: stoneBlockId;
+						placeBlock(wx, y, wz, id, true);
+					}
+					// Water up to the single flat surface level.
+					for (let y = solidTop + 1; y <= waterTop; y++) {
+						placeBlock(wx, y, wz, BlockType.Water, true);
+					}
+					// Open the top: any natural ground above the water level is
+					// carved away so the surface is exposed and level.
+					const g = groundAt(wx, wz);
+					for (let y = waterTop + 1; y <= g; y++) {
+						placeBlock(wx, y, wz, 0, true);
+					}
+					continue;
 				}
-			}
-		}
 
-		// Water fills the same cone but stops at the flat water level below the
-		// rim, so the shore wall stays above it and the surface is level.
-		const radiusSq = poolRadius * poolRadius;
-		for (let dx = -poolRadius; dx <= poolRadius; dx++) {
-			for (let dz = -poolRadius; dz <= poolRadius; dz++) {
-				const distSq = dx * dx + dz * dz;
-				if (distSq >= radiusSq) continue;
+				if (n > nRim) continue;
 
-				const dist = Math.sqrt(distSq);
-				const depth = Math.floor(maxDepth * (1 - dist / poolRadius));
-				const floorY = rimY - depth;
-				const topY = Math.min(rimY, waterTop);
-				if (topY < floorY) continue;
+				// Guaranteed rim: exactly `waterTop` tall, never higher.
+				// Only build anything where natural ground is at or below the
+				// water line - that's the only case where it could leak.
+				// Where natural ground already clears the water, it already
+				// forms the wall (a hillside, a bank, whatever it is), so
+				// leave it untouched and just cap the waterline block with
+				// sand for a beach edge - never rebuild it up to hill height.
+				const g = groundAt(wx, wz);
+				const rimTop = waterTop;
 
-				for (let y = floorY; y <= topY; y++) {
-					placeBlock(centerX + dx, y, centerZ + dz, BlockType.Water, true);
+				if (g <= rimTop) {
+					// Backfill with the biome's own strata up to the water
+					// line - same depth-mapped fill as the basin, capped with
+					// sand at the very top so it reads as a beach lip.
+					const base = rimTop - (SUBSURFACE_LAYER_DEPTH + 2);
+					for (let y = base; y <= rimTop; y++) {
+						const depthBelow = rimTop - y;
+						const id =
+							depthBelow === 0
+								? beachBlockId
+								: depthBelow <= SUBSURFACE_LAYER_DEPTH
+									? undergroundBlockId
+									: stoneBlockId;
+						placeBlock(wx, y, wz, id, true);
+					}
+				} else {
+					// Natural ground already clears the water line, so leave
+					// the hillside/bank itself untouched. Still guarantee a
+					// dirt layer directly under the sand cap - don't rely on
+					// whatever the natural terrain happened to have there.
+					placeBlock(wx, rimTop - 3, wz, undergroundBlockId, false);
+					placeBlock(wx, rimTop - 2, wz, undergroundBlockId, false);
+					placeBlock(wx, rimTop - 1, wz, undergroundBlockId, false);
+					placeBlock(wx, rimTop, wz, undergroundBlockId, true);
+					placeBlock(wx, rimTop + 1, wz, beachBlockId, true);
 				}
 			}
 		}

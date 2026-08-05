@@ -134,6 +134,17 @@ export class QuadBuffer {
 		diagonal: number,
 		rawDim: number,
 	): void {
+		const xs = x * POS_SCALE;
+		const ys = y * POS_SCALE;
+		const zs = z * POS_SCALE;
+
+		const sx = (xs + 0.5) | 0;
+		const sy = (ys + 0.5) | 0;
+		const sz = (zs + 0.5) | 0;
+
+		if (sx < 0 || sy < 0 || sz < 0 || sx >= 256 || sy >= 256 || sz >= 256)
+			return;
+
 		const tileIdx = blockId * FaceName.Count + faceName;
 		const tx = BlockFaceTileX[tileIdx];
 		const ty = BlockFaceTileY[tileIdx];
@@ -143,9 +154,6 @@ export class QuadBuffer {
 		const diagEnabled = diagonal !== 0 ? 1 : 0;
 		const diagVariant = diagonal === 2 ? 1 : 0;
 
-		const xs = x * POS_SCALE;
-		const ys = y * POS_SCALE;
-		const zs = z * POS_SCALE;
 		const posOffX = xs % 1 !== 0 ? 1 : 0;
 		const posOffZ = zs % 1 !== 0 ? 1 : 0;
 
@@ -159,13 +167,6 @@ export class QuadBuffer {
 			(posOffZ << 7);
 
 		const tint = BlockTint[blockId];
-
-		const sx = (xs + 0.5) | 0;
-		const sy = (ys + 0.5) | 0;
-		const sz = (zs + 0.5) | 0;
-
-		if (sx < 0 || sy < 0 || sz < 0 || sx >= 256 || sy >= 256 || sz >= 256)
-			return;
 
 		const sw = rawDim ? width : width * POS_SCALE;
 		const sh = rawDim ? height : height * POS_SCALE;
@@ -251,6 +252,13 @@ export class QuadBuffer {
 		materialType: number,
 		packedBlock: number,
 	): void {
+		const sx = (x * POS_SCALE + 0.5) | 0;
+		let sy = (y * POS_SCALE + 0.5) | 0;
+		const sz = (z * POS_SCALE + 0.5) | 0;
+
+		if (sx < 0 || sy < 0 || sz < 0 || sx >= 256 || sy >= 256 || sz >= 256)
+			return;
+
 		const tileIdx = blockId * FaceName.Count + faceName;
 		const tx = BlockFaceTileX[tileIdx];
 		const ty = BlockFaceTileY[tileIdx];
@@ -273,10 +281,6 @@ export class QuadBuffer {
 		const meta = ((materialType & 0x3) << 1) | (1 << 2) | (rawDim ? 64 : 0);
 
 		const tint = BlockTint[blockId];
-
-		const sx = (x * POS_SCALE + 0.5) | 0;
-		let sy = (y * POS_SCALE + 0.5) | 0;
-		const sz = (z * POS_SCALE + 0.5) | 0;
 
 		let sw: number;
 		let sh: number;

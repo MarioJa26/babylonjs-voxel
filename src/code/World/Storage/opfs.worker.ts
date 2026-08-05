@@ -591,22 +591,51 @@ _self.addEventListener("message", (event: MessageEvent) => {
 				break;
 			}
 			case OpfsMsg.WriteMeshRaw: {
-				const opaque = data.aO
-					? {
-							faceDataA: data.aO,
-							faceDataB: data.bO ?? new Uint8Array(0),
-							faceDataC: data.cO ?? new Uint8Array(0),
-							faceCount: data.faceCountO >>> 0,
-						}
-					: null;
-				const transparent = data.aT
-					? {
-							faceDataA: data.aT,
-							faceDataB: data.bT ?? new Uint8Array(0),
-							faceDataC: data.cT ?? new Uint8Array(0),
-							faceCount: data.faceCountT >>> 0,
-						}
-					: null;
+				// Reconstruct the six face arrays as zero-copy subarray views
+				// over the single combined transferable buffer sent by the main
+				// thread: [oA|oB|oC|tA|tB|tC], each faceCount*4 bytes.
+				const oBytes = (data.faceCountO >>> 0) << 2;
+				const tBytes = (data.faceCountT >>> 0) << 2;
+				const md = data.meshData;
+				let oA: Uint8Array | undefined;
+				let oB: Uint8Array | undefined;
+				let oC: Uint8Array | undefined;
+				let tA: Uint8Array | undefined;
+				let tB: Uint8Array | undefined;
+				let tC: Uint8Array | undefined;
+				if (md) {
+					let off = 0;
+					oA = md.subarray(off, off + oBytes);
+					off += oBytes;
+					oB = md.subarray(off, off + oBytes);
+					off += oBytes;
+					oC = md.subarray(off, off + oBytes);
+					off += oBytes;
+					tA = md.subarray(off, off + tBytes);
+					off += tBytes;
+					tB = md.subarray(off, off + tBytes);
+					off += tBytes;
+					tC = md.subarray(off, off + tBytes);
+					off += tBytes;
+				}
+				const opaque =
+					data.faceCountO >>> 0 > 0
+						? {
+								faceDataA: oA!,
+								faceDataB: oB!,
+								faceDataC: oC!,
+								faceCount: data.faceCountO >>> 0,
+							}
+						: null;
+				const transparent =
+					data.faceCountT >>> 0 > 0
+						? {
+								faceDataA: tA!,
+								faceDataB: tB!,
+								faceDataC: tC!,
+								faceCount: data.faceCountT >>> 0,
+							}
+						: null;
 				const bytes = serializeMeshPair(opaque, transparent);
 				if (bytes) {
 					const compressed = await compressGzip(bytes);

@@ -91,13 +91,8 @@ export class Chunk {
 	public static readonly SIZE2 = Chunk.SIZE * Chunk.SIZE;
 	public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
 	public static readonly chunkInstances = new Map<bigint, Chunk>();
-	// PERF: coordinate-indexed lookup that avoids the BigInt packCoords()
-	// allocation on the hot getChunk path. The public `chunkInstances`
-	// (BigInt-keyed) map is retained for id-based external lookups; this nested
-	// Number-keyed map mirrors it for coordinate-based lookups (chunk
-	// coordinates are <= 2^21, exact as Number keys). Kept in sync at set/delete.
-	// Internal (not `private` so the module-level getChunk/helpers can access it).
-	static _chunkByCoords = new Map<number, Map<number, Map<number, Chunk>>>();
+
+	static _chunkByCoords = new Map<number, Chunk>();
 	public static readonly loadedChunks = new Set<Chunk>();
 	public static readonly loadedChunkIndex = new LoadedChunkIndex();
 
@@ -222,10 +217,8 @@ export class Chunk {
 	public faceConnectivity = 0;
 	public connectivityDirty = true;
 
-	// PERF: Cached "is chunk dark" flag.
 	_isDarkCached: boolean | undefined = undefined;
 
-	// PERF: Pre-allocated per-face BFS step counts — avoids new Uint8Array(6) in hot BFS loop.
 	public _fSteps: Uint8Array = new Uint8Array(6);
 
 	light_array: Uint8Array;
@@ -1405,37 +1398,37 @@ export class Chunk {
 	}
 }
 
+// Pack (cx, cy, cz) into a single safe-integer number key for _chunkByCoords.
+// X(21b) | Y(10b) | Z(21b); each coord is masked to its bit width so negative
+// coordinates encode consistently (two's-complement low bits) and decode-free
+// lookups always match the stored key.
+const _COORD_X_MASK = (1 << 21) - 1; // 0x1FFFFF
+const _COORD_Y_MASK = (1 << 10) - 1; // 0x3FF
+const _COORD_Z_MASK = (1 << 21) - 1; // 0x1FFFFF
+const _COORD_YZ_MULT = 2147483648; // 2^31 (< 2^53)
+const _COORD_Z_MULT = 1 << 10; // 2^10
+
+function packCoordKey(cx: number, cy: number, cz: number): number {
+	return (
+		(cx & _COORD_X_MASK) * _COORD_YZ_MULT +
+		(cy & _COORD_Y_MASK) * _COORD_Z_MULT +
+		(cz & _COORD_Z_MASK)
+	);
+}
+
 export function getChunk(
 	cx: number,
 	cy: number,
 	cz: number,
 ): Chunk | undefined {
-	return Chunk._chunkByCoords.get(cx)?.get(cy)?.get(cz);
+	return Chunk._chunkByCoords.get(packCoordKey(cx, cy, cz));
 }
 
 // ── _chunkByCoords mirror maintenance ────────────────────────────────────────
 function _setByCoords(c: Chunk): void {
-	let my = Chunk._chunkByCoords.get(c.chunkX);
-	if (my === undefined) {
-		my = new Map();
-		Chunk._chunkByCoords.set(c.chunkX, my);
-	}
-	let mz = my.get(c.chunkY);
-	if (mz === undefined) {
-		mz = new Map();
-		my.set(c.chunkY, mz);
-	}
-	mz.set(c.chunkZ, c);
+	Chunk._chunkByCoords.set(packCoordKey(c.chunkX, c.chunkY, c.chunkZ), c);
 }
 
 function _deleteByCoords(c: Chunk): void {
-	const my = Chunk._chunkByCoords.get(c.chunkX);
-	if (my === undefined) return;
-	const mz = my.get(c.chunkY);
-	if (mz === undefined) return;
-	mz.delete(c.chunkZ);
-	if (mz.size === 0) {
-		my.delete(c.chunkY);
-		if (my.size === 0) Chunk._chunkByCoords.delete(c.chunkX);
-	}
+	Chunk._chunkByCoords.delete(packCoordKey(c.chunkX, c.chunkY, c.chunkZ));
 }

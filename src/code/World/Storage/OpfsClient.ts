@@ -51,12 +51,12 @@ interface WireMeshRawMsg {
 	lod: number;
 	faceCountO: number;
 	faceCountT: number;
-	aO?: Uint8Array;
-	bO?: Uint8Array;
-	cO?: Uint8Array;
-	aT?: Uint8Array;
-	bT?: Uint8Array;
-	cT?: Uint8Array;
+	// All six face arrays (opaque A/B/C, transparent A/B/C) packed
+	// contiguously into ONE transferable buffer: [oA|oB|oC|tA|tB|tC], each
+	// faceCount*4 bytes. Replaces the previous six separate .slice() copies
+	// (6 ArrayBuffer allocations per save) with a single allocation; the
+	// worker reconstructs zero-copy subarray views.
+	meshData?: Uint8Array;
 }
 const _wireMeshRawMsg: WireMeshRawMsg = {
 	id: 0,
@@ -213,35 +213,46 @@ export class OpfsClient {
 		m.keyHi = hi;
 		m.keyLo = lo;
 		m.lod = lod;
-		m.faceCountO = opaque?.faceCount ?? 0;
-		m.faceCountT = transparent?.faceCount ?? 0;
-		// Slice each array so the originals (referenced by chunk cached meshes
-		// and merged group members) stay valid on the main thread.
-		m.aO = opaque?.faceDataA?.slice();
-		m.bO = opaque?.faceDataB?.slice();
-		m.cO = opaque?.faceDataC?.slice();
-		m.aT = transparent?.faceDataA?.slice();
-		m.bT = transparent?.faceDataB?.slice();
-		m.cT = transparent?.faceDataC?.slice();
+		const faceCountO = opaque?.faceCount ?? 0;
+		const faceCountT = transparent?.faceCount ?? 0;
+		m.faceCountO = faceCountO;
+		m.faceCountT = faceCountT;
+
+		// Pack the six face arrays into a single transferable buffer instead of
+		// allocating six separate .slice() copies. The originals (referenced by
+		// chunk cached meshes and merged group members) stay valid on the main
+		// thread; only this one combined copy is transferred to the worker.
+		const oBytes = faceCountO << 2;
+		const tBytes = faceCountT << 2;
+		const total = oBytes * 3 + tBytes * 3;
 
 		const transfer: Transferable[] = [];
-		const pushBuf = (arr: Uint8Array | undefined) => {
-			if (
-				arr &&
-				arr.byteOffset === 0 &&
-				arr.byteLength === arr.buffer.byteLength
-			) {
-				transfer.push(arr.buffer);
-			}
-		};
-		pushBuf(m.aO);
-		pushBuf(m.bO);
-		pushBuf(m.cO);
-		pushBuf(m.aT);
-		pushBuf(m.bT);
-		pushBuf(m.cT);
+		if (total > 0) {
+			const buf = new Uint8Array(total);
+			let off = 0;
+			const put = (arr: Uint8Array | undefined, n: number): void => {
+				if (arr && arr.length > 0) {
+					buf.set(arr.length === n ? arr : arr.subarray(0, n), off);
+				}
+				off += n;
+			};
+			put(opaque?.faceDataA, oBytes);
+			put(opaque?.faceDataB, oBytes);
+			put(opaque?.faceDataC, oBytes);
+			put(transparent?.faceDataA, tBytes);
+			put(transparent?.faceDataB, tBytes);
+			put(transparent?.faceDataC, tBytes);
+			m.meshData = buf;
+			transfer.push(buf.buffer);
+		} else {
+			m.meshData = undefined;
+		}
 
-		return await this._dispatch<void>(transfer, m);
+		await this._dispatch<void>(transfer, m);
+		// Drop the (now detached) buffer reference so it can be GC'd and the
+		// reusable wire message is clean for the next call.
+		m.meshData = undefined;
+		return;
 	}
 
 	async removeMesh(key: bigint, lod: number): Promise<boolean> {

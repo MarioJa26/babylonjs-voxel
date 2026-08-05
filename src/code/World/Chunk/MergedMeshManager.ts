@@ -16,7 +16,7 @@ function disposeGroupMesh(mesh: Mesh): void {
 // ---------------------------------------------------------------------------
 
 export interface ChunkMemberData {
-	chunkId: bigint;
+	chunkId: number;
 	chunk: Chunk;
 	opaqueData: MeshData | null;
 	transparentData: MeshData | null;
@@ -69,7 +69,7 @@ export interface MergedMeshGroup {
 	 */
 	lodBucket: number;
 	minLodLevel: number;
-	members: Map<bigint, ChunkMemberData>;
+	members: Map<number, ChunkMemberData>;
 	membersArray: ChunkMemberData[];
 	totalOpaqueFaces: number;
 	totalTransparentFaces: number;
@@ -145,6 +145,23 @@ function invalidateGroupBuildCache(group: MergedMeshGroup): void {
 	}
 }
 
+// Pool of MergedFaceRange objects to avoid allocating a fresh {start,count}
+// object on every dirty-range push (up to ~64 per full 64-member rebuild).
+// Objects are returned to the pool at the start of each rebuildGroupData pass
+// (the previous pass's ranges were already consumed synchronously by the
+// packed-mesh updater callback), then reused for the current pass.
+const _rangePool: MergedFaceRange[] = [];
+
+function acquireRange(start: number, count: number): MergedFaceRange {
+	const r = _rangePool.pop();
+	if (r) {
+		r.start = start;
+		r.count = count;
+		return r;
+	}
+	return { start, count };
+}
+
 // Records a re-copied member's face range into `ranges` (merged-face
 // coordinates), coalescing with the previous range when adjacent so the
 // packed-mesh updater issues as few writeBuffer calls as possible. Members
@@ -160,7 +177,7 @@ function pushDirtyRange(
 	if (prev && prev.start + prev.count === start) {
 		prev.count += count;
 	} else {
-		ranges.push({ start, count });
+		ranges.push(acquireRange(start, count));
 	}
 }
 
@@ -405,7 +422,7 @@ export function assignChunkToGroup(
 	const localIndex = getLocalIndex(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 	const chunkLod = chunk.lodLevel ?? 0;
 
-	const existing = group.members.get(chunk.id);
+	const existing = group.members.get(chunk.numericId);
 
 	if (existing) {
 		const dataUnchanged =
@@ -420,7 +437,7 @@ export function assignChunkToGroup(
 		}
 	} else {
 		const memberData: ChunkMemberData = {
-			chunkId: chunk.id,
+			chunkId: chunk.numericId,
 			chunk,
 			opaqueData,
 			transparentData,
@@ -431,7 +448,7 @@ export function assignChunkToGroup(
 			lastBuiltTransparentOffset: -1,
 		};
 
-		group.members.set(chunk.id, memberData);
+		group.members.set(chunk.numericId, memberData);
 		group.membersArray.push(memberData);
 		// New member changes layout (offset of later members shifts), so the
 		// "already built" cache is no longer valid — force a full rebuild.
@@ -464,7 +481,7 @@ export function removeChunkFromGroup(chunk: Chunk): void {
 
 	if (!group) return;
 
-	group.members.delete(chunk.id);
+	group.members.delete(chunk.numericId);
 
 	if (group.members.size === 0) {
 		if (group.opaqueMeshRef) {
@@ -490,7 +507,7 @@ export function removeChunkFromGroup(chunk: Chunk): void {
 	for (let i = 0, len = arr.length; i < len; i++) {
 		const m = arr[i];
 
-		if (m.chunkId !== chunk.id) {
+		if (m.chunkId !== chunk.numericId) {
 			arr[w++] = m;
 		}
 	}
@@ -692,10 +709,29 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	const memberCount = members.length;
 
 	// Ranges of the merged buffer that changed this pass. Consumed by the
+	// Return the previous pass's range objects to the pool. They were already
+	// consumed synchronously by the packed-mesh updater callback (which ran
+	// right after the previous rebuildGroupData for this group), so reusing
+	// them now is safe and avoids per-rebuild {start,count} allocations.
+	const prevOpaqueRanges = group.dirtyOpaqueRanges;
+	if (prevOpaqueRanges) {
+		for (let i = 0; i < prevOpaqueRanges.length; i++) {
+			_rangePool.push(prevOpaqueRanges[i]);
+		}
+	}
+	const prevTransparentRanges = group.dirtyTransparentRanges;
+	if (prevTransparentRanges) {
+		for (let i = 0; i < prevTransparentRanges.length; i++) {
+			_rangePool.push(prevTransparentRanges[i]);
+		}
+	}
+
 	// packed-mesh updater to re-pack/re-upload only those faces.
-	const opaqueRanges = (group.dirtyOpaqueRanges ??= []);
+	group.dirtyOpaqueRanges ??= [];
+	const opaqueRanges = group.dirtyOpaqueRanges;
 	opaqueRanges.length = 0;
-	const transparentRanges = (group.dirtyTransparentRanges ??= []);
+	group.dirtyTransparentRanges ??= [];
+	const transparentRanges = group.dirtyTransparentRanges;
 	transparentRanges.length = 0;
 
 	// Single pass to compute both totals instead of scanning membersArray
