@@ -1,5 +1,8 @@
 # Dependencies
 /node_modules
+/server/node_modules
+/server/dist
+/server/*.log
 /public/models
 /public/environment
 /src/App.vue

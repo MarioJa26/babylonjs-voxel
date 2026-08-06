@@ -1,9 +1,10 @@
+import { enableWasmNoise } from "./code/Lib/WasmNoise";
 import { TestScene } from "./code/TestScene";
 import { MainMenu } from "./code/UI/MainMenu";
-import { enableWasmNoise } from "./code/Lib/WasmNoise";
 import { getWorldNameFromUrl } from "./code/World/WorldContext";
 import "@/style/hud.css";
 import "@/style/Item.css";
+import "@/style/MultiplayerHUD.css";
 
 function showErrorOverlay(error: unknown): void {
 	console.error("Application startup failed:", error);

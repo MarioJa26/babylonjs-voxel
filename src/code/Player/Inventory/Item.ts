@@ -68,6 +68,17 @@ interface BoatCtx {
 
 let _boatCtx: BoatCtx | null = null;
 
+// Multiplayer callback: called when a block is placed locally
+let _onBlockPlaced:
+	| ((x: number, y: number, z: number, blockId: number) => void)
+	| null = null;
+
+export function setOnBlockPlaced(
+	callback: (x: number, y: number, z: number, blockId: number) => void,
+): void {
+	_onBlockPlaced = callback;
+}
+
 export class Item implements IUsable {
 	// ─── Public fields (ordered for V8 hidden class stability) ───
 	name: string;
@@ -324,6 +335,9 @@ export class Item implements IUsable {
 		}
 
 		setBlock(pos.x, pos.y, pos.z, blockId, blockState);
+
+		// Notify multiplayer of block placement
+		_onBlockPlaced?.(pos.x, pos.y, pos.z, blockId);
 	}
 
 	// ─── Zero-allocation boat context extraction ───

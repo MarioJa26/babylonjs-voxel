@@ -132,6 +132,15 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 		this.#blockBreaking.stop();
 	}
 
+	/**
+	 * Set callback for when a block is broken (for multiplayer sync).
+	 */
+	public setOnBlockBroken(
+		callback: (x: number, y: number, z: number, blockId: number) => void,
+	): void {
+		this.#blockBreaking.setOnBlockBroken(callback);
+	}
+
 	public onKeyDown(key: string) {
 		if (isUiOpen(UiFocus.chat)) return;
 
@@ -153,6 +162,8 @@ export class WalkingControls implements IControls<PlayerVehicleMotor> {
 
 		if (WalkingControls.KEY_CHAT.includes(key)) {
 			this.#player.playerHud.chat.open();
+			// Also open multiplayer chat if connected
+			this.#player.networkManager?.toggleChat();
 			return;
 		}
 

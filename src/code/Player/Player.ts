@@ -25,6 +25,7 @@ import {
 import { PauseMenu } from "./Hud/PauseMenu";
 import { PlayerHud } from "./Hud/PlayerHud";
 import { DroppedItem } from "./Inventory/DroppedItem";
+import { setOnBlockPlaced } from "./Inventory/Item";
 import { PlayerInventory } from "./Inventory/PlayerInventory";
 import { PlayerBodyControlState } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
@@ -61,6 +62,7 @@ export class Player {
 	#pickInFlight = false;
 	#loopController!: PlayerLoopController;
 	#playerBodyMesh: Mesh | null = null;
+	networkManager?: import("../Network/NetworkManager").NetworkManager;
 
 	// Current keyboard control scheme (WalkingControls, or InventoryControls
 	// while the inventory overlay is open).
@@ -283,5 +285,17 @@ export class Player {
 			disposePicker(this.#picker);
 			this.#picker = null;
 		}
+	}
+
+	/**
+	 * Wire block edit callbacks for multiplayer.
+	 * Called by TestScene when multiplayer is active.
+	 */
+	public setDefaultBlockEditCallbacks(net: {
+		onBlockPlaced: (x: number, y: number, z: number, blockId: number) => void;
+		onBlockBroken: (x: number, y: number, z: number, blockId: number) => void;
+	}): void {
+		setOnBlockPlaced(net.onBlockPlaced);
+		this.#walkingControls.setOnBlockBroken(net.onBlockBroken);
 	}
 }

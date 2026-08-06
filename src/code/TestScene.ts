@@ -14,6 +14,7 @@ import { createMobCoordinator } from "./Entities/Mobs/MobSetup";
 import { setTerrainSeed } from "./Generation/TerrainHeightMap";
 import { Map1 } from "./Maps/Map1";
 import { type EyeCamera, UnderWaterEffect } from "./Maps/UnderWaterEffect";
+import { NetworkManager } from "./Network/NetworkManager";
 import { initializeBlockBreakingVisuals } from "./Player/Hud/BlockHighlight/BlockBreakingVisuals";
 import { DroppedItem } from "./Player/Inventory/DroppedItem";
 import { Player } from "./Player/Player";
@@ -37,6 +38,7 @@ export class TestScene {
 	#player?: Player;
 	#playerStatePersistence?: PlayerStatePersistence;
 	#disposeLightDebugTool?: () => void;
+	#networkManager?: NetworkManager;
 
 	constructor(
 		document: Document,
@@ -94,6 +96,21 @@ export class TestScene {
 			return vec3(p.x, p.y, p.z);
 		});
 
+		// Multiplayer: connect to server if URL has ?mp=1
+		if (new URLSearchParams(window.location.search).has("mp")) {
+			this.#networkManager = new NetworkManager(player);
+			player.networkManager = this.#networkManager;
+
+			// Wire block edit callbacks BEFORE connect (so they're ready when connected)
+			player.setDefaultBlockEditCallbacks(this.#networkManager);
+
+			// Connect (fire-and-forget; errors logged inside NetworkManager)
+			void this.#networkManager.connect(
+				`Player${Math.floor(Math.random() * 1000)}`,
+				this.worldName,
+			);
+		}
+
 		// Underwater visual effect — toggles a full-screen overlay whenever the
 		// player's eyes are submerged. Updated before fog so fog reads the flag.
 		const underWaterEffect = new UnderWaterEffect(
@@ -107,6 +124,7 @@ export class TestScene {
 			Map1.update(deltaMs);
 			this.#player?.tick(deltaMs);
 			this.#playerStatePersistence?.update();
+			this.#networkManager?.tick(deltaMs);
 			underWaterEffect.updateFromCamera();
 			updateGlobalUniforms(this.#frameCounter);
 		});
@@ -123,6 +141,7 @@ export class TestScene {
 	public dispose(): void {
 		this.#disposeLightDebugTool?.();
 		this.#playerStatePersistence?.dispose();
+		this.#networkManager?.disconnect();
 		if (this.engine) stopEngine(this.engine);
 		Map1.disposeAll();
 		this.engine = undefined;

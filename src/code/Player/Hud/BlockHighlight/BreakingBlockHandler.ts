@@ -48,6 +48,7 @@ export type BoatBlockHitContext = {
 
 export class BlockBreakingHandler {
 	#player: Player;
+	#onBlockBroken?: (x: number, y: number, z: number, blockId: number) => void;
 
 	#active = false;
 	#cachedX = 0;
@@ -59,6 +60,12 @@ export class BlockBreakingHandler {
 
 	constructor(player: Player) {
 		this.#player = player;
+	}
+
+	setOnBlockBroken(
+		callback: (x: number, y: number, z: number, blockId: number) => void,
+	): void {
+		this.#onBlockBroken = callback;
 	}
 
 	public start(): void {
@@ -262,6 +269,9 @@ export class BlockBreakingHandler {
 		);
 
 		this.reset();
+
+		// Notify multiplayer of block break
+		this.#onBlockBroken?.(x, y, z, blockId);
 
 		const boatContext = this.#asBoatBlockContext(dynamicContext);
 		if (boatContext) {
