@@ -485,14 +485,22 @@ export class OcclusionCuller {
 		// ── Frustum + backface sweep ────────────────────────────────────────────
 		// Stage 1 (no cave BFS): the BFS-visible list stays empty, so sweep every
 		// loaded chunk instead — the BFS is only the topological subset filter.
+		// PERF: Use spatial index query instead of iterating all loaded chunks.
+		// This reduces O(all_loaded_chunks) to O(chunks_near_camera), which is
+		// critical when render distance exceeds the visible frustum.
 		const sweepList = BFS_CAVE_CULLING_ENABLED
 			? this._topoVisibleChunks
 			: _nearbyChunksScratch;
 		if (!BFS_CAVE_CULLING_ENABLED) {
 			_nearbyChunksScratch.length = 0;
-			for (const chunk of Chunk.loadedChunks) {
-				_nearbyChunksScratch.push(chunk);
-			}
+			Chunk.loadedChunkIndex.queryCollect(
+				camCX,
+				camCY,
+				camCZ,
+				MAX_RENDER_RADIUS,
+				MAX_RENDER_RADIUS,
+				_nearbyChunksScratch,
+			);
 		}
 		const visLen = sweepList.length;
 

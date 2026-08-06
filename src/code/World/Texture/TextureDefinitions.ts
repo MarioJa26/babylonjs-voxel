@@ -1,4 +1,5 @@
 import { BlockType } from "./BlockType";
+import { getToolSpeedMultiplier } from "@/code/Player/Inventory/ProceduralTools";
 
 export interface TextureDefinition {
 	id: BlockType;
@@ -91,7 +92,7 @@ export function getBlockBreakTime(id: number, toolItemId?: number): number {
 
 	let speedMultiplier = 1;
 	if (toolItemId) {
-		speedMultiplier = 1.5;
+		speedMultiplier = getToolSpeedMultiplier(toolItemId) ?? 1.5;
 	}
 
 	return (hardness * 1.5) / speedMultiplier;

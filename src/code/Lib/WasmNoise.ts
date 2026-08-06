@@ -52,9 +52,6 @@ async function loadWasmNoise(url: string): Promise<boolean> {
 		}
 		const bytes = new Uint8Array(await response.arrayBuffer());
 		setNoiseBackend(createWasmNoiseBackend(bytes));
-		console.info(
-			`[wasm-noise] SIMD noise backend active (${bytes.byteLength} bytes)`,
-		);
 		return true;
 	} catch (error) {
 		console.warn("[wasm-noise] load failed - keeping JS noise backend:", error);

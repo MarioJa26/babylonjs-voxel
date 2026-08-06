@@ -175,7 +175,21 @@
 	{
 		"id": 1021,
 		"name": "Iron Ingot",
-		"description": "Refined iron.",
+		"description": "Refined iron.\nUsed to craft iron tools.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1025,
+		"name": "Gold Ingot",
+		"description": "Refined gold.\nUsed to craft gold tools.",
+		"icon": "/texture/placeholder.png",
+		"maxStack": 64
+	},
+	{
+		"id": 1026,
+		"name": "Copper Ingot",
+		"description": "Refined copper.\nUsed to craft copper tools.",
 		"icon": "/texture/placeholder.png",
 		"maxStack": 64
 	},

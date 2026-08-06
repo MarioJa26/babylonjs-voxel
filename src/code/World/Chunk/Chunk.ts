@@ -3,6 +3,34 @@ import { GenerationParams } from "@/code/Generation/NoiseAndParameters/Generatio
 import { getFinalTerrainHeight } from "@/code/Generation/TerrainHeightMap";
 import { LIGHT_NIBBLE_MASK, SKY_LIGHT_SHIFT } from "@/code/Lib/VoxelMath";
 import { Map1 } from "@/code/Maps/Map1";
+import { onGpuWorkDone } from "../Light/liteGpuBuffer.js";
+
+// BUGFIX: Deferred mesh disposal to prevent "buffer used in submit while
+// destroyed" WebGPU validation errors. disposeMeshGpu() destroys GPU buffers
+// immediately, but the GPU may still be rendering with them from a
+// previously-submitted command buffer. We defer disposal until onGpuWorkDone.
+const _pendingMeshDisposal: Mesh[] = [];
+let _meshDisposalScheduled = false;
+
+function deferMeshDisposal(mesh: Mesh): void {
+	if (!mesh) return;
+	_pendingMeshDisposal.push(mesh);
+	if (_meshDisposalScheduled) return;
+	_meshDisposalScheduled = true;
+	const engine = Map1.engine;
+	if (!engine) {
+		for (const m of _pendingMeshDisposal) disposeMeshGpu(m);
+		_pendingMeshDisposal.length = 0;
+		_meshDisposalScheduled = false;
+		return;
+	}
+	void onGpuWorkDone(engine).then(() => {
+		_meshDisposalScheduled = false;
+		for (const m of _pendingMeshDisposal) disposeMeshGpu(m);
+		_pendingMeshDisposal.length = 0;
+	});
+}
+
 import {
 	connectFacesMask,
 	FACE_CONNECT_THRESHOLD,
@@ -1351,11 +1379,11 @@ export class Chunk {
 		if (!this.mergedGroupKey) {
 			if (this.mesh) {
 				removeFromScene(Map1.mainScene, this.mesh);
-				disposeMeshGpu(this.mesh);
+				deferMeshDisposal(this.mesh);
 			}
 			if (this.transparentMesh) {
 				removeFromScene(Map1.mainScene, this.transparentMesh);
-				disposeMeshGpu(this.transparentMesh);
+				deferMeshDisposal(this.transparentMesh);
 			}
 		}
 		this.clearCachedLODMeshes();

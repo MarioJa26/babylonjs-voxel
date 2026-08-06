@@ -2,6 +2,7 @@ import {
 	TextureDefinitions,
 	TextureDefinitionsReady,
 } from "@/code/World/Texture/TextureDefinitions";
+import { registerProceduralTools } from "./ProceduralTools";
 
 export type ItemDefinition = {
 	id: number;
@@ -89,6 +90,7 @@ export async function ensureItemRegistryLoaded(
 		await TextureDefinitionsReady;
 		initDefaults();
 		await loadRegisteredItemFromUrl(url);
+		registerProceduralTools(registerItem);
 	})();
 	return loadPromise;
 }

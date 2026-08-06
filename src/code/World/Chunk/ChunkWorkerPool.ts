@@ -222,6 +222,19 @@ export class ChunkWorkerPool {
 	private processQueuePumpScheduled = false;
 	private meshDrainScheduled = false;
 
+	// PERF: Centralized work-coalescing scheduler. Instead of scheduling
+	// independent setTimeout callbacks per subsystem (mesh, lighting, remesh),
+	// flag pending work here and drain everything in a single macrotask.
+	private static readonly WORK_PROCESS_QUEUE = 1 << 0;
+	private static readonly WORK_MESH = 1 << 1;
+	private static readonly WORK_DEFERRED_LIGHT = 1 << 2;
+	private static readonly WORK_LIGHT_REG = 1 << 3;
+	private static readonly WORK_REMESH_FLUSH = 1 << 4;
+	private static readonly WORK_LIGHT_DIRTY = 1 << 5;
+	private static readonly WORK_SERIAL_QUEUE = 1 << 6;
+	private _pendingWorkFlags = 0;
+	private _centralSchedulerScheduled = false;
+
 	private pendingRemeshSaveIds = new Set<bigint>();
 	private pendingRemeshSaveTimer: ReturnType<typeof setTimeout> | null = null;
 	private readonly REMESH_SAVE_DEBOUNCE_MS = 500;
@@ -368,10 +381,7 @@ export class ChunkWorkerPool {
 			this.processQueue();
 			this.processQueuePumpScheduled = false;
 		} else {
-			setTimeout(() => {
-				this.processQueuePumpScheduled = false;
-				this.processQueue();
-			}, 0);
+			this._scheduleCentralWork(ChunkWorkerPool.WORK_PROCESS_QUEUE);
 		}
 	}
 
@@ -1020,25 +1030,7 @@ export class ChunkWorkerPool {
 		this._lightRegFlags.push(fromChannel);
 		if (!this._lightRegDrainScheduled) {
 			this._lightRegDrainScheduled = true;
-			setTimeout(() => {
-				this._lightRegDrainScheduled = false;
-				const chunks = this._lightRegChunks;
-				const flags = this._lightRegFlags;
-				for (let i = 0; i < chunks.length; i++) {
-					if (flags[i]) {
-						this.broadcastLightRegister(chunks[i]);
-						// Channel path: the OPFS worker already forwarded the
-						// SAB refs to every voxel worker while serving the
-						// storage read, so metadata-only registration suffices.
-						this.broadcastVoxelRegister(chunks[i]);
-					} else {
-						this.broadcastLightRegisterFull(chunks[i]);
-						this.broadcastVoxelRegisterFull(chunks[i]);
-					}
-				}
-				chunks.length = 0;
-				flags.length = 0;
-			});
+			this._scheduleCentralWork(ChunkWorkerPool.WORK_LIGHT_REG);
 		}
 	}
 
@@ -1174,7 +1166,80 @@ export class ChunkWorkerPool {
 	private scheduleLightDirtyPump(): void {
 		if (this.lightDirtyPumpScheduled) return;
 		this.lightDirtyPumpScheduled = true;
-		setTimeout(this.processLightDirtyQueue, 0);
+		this._scheduleCentralWork(ChunkWorkerPool.WORK_LIGHT_DIRTY);
+	}
+
+	// -------------------------------------------------------------------------
+	// Centralized work coalescing
+	//
+	// Instead of each subsystem scheduling its own setTimeout(…, 0), flag the
+	// work here and drain everything in a single macrotask. This eliminates
+	// frame-time fragmentation where 4-5 independent callbacks each consumed
+	// 1-2ms in separate event-loop ticks.
+	// -------------------------------------------------------------------------
+
+	private _scheduleCentralWork(flags: number): void {
+		this._pendingWorkFlags |= flags;
+		if (this._centralSchedulerScheduled) return;
+		this._centralSchedulerScheduled = true;
+		setTimeout(this._centralFlush, 0);
+	}
+
+	private _centralFlush = (): void => {
+		this._centralSchedulerScheduled = false;
+		const flags = this._pendingWorkFlags;
+		this._pendingWorkFlags = 0;
+
+		if (flags & ChunkWorkerPool.WORK_PROCESS_QUEUE) {
+			this.processQueuePumpScheduled = false;
+			this.processQueue();
+		}
+		if (flags & ChunkWorkerPool.WORK_MESH) {
+			this.meshDrainScheduled = false;
+			this.processMeshQueueLoop();
+		}
+		if (flags & ChunkWorkerPool.WORK_DEFERRED_LIGHT) {
+			this.deferredLightingPumpScheduled = false;
+			this.processDeferredLightingQueue();
+		}
+		if (flags & ChunkWorkerPool.WORK_LIGHT_REG) {
+			this._lightRegDrainScheduled = false;
+			this._drainLightRegistration();
+		}
+		if (flags & ChunkWorkerPool.WORK_REMESH_FLUSH) {
+			this.remeshFlushScheduled = false;
+			this.flushPendingRemeshQueue();
+		}
+		if (flags & ChunkWorkerPool.WORK_LIGHT_DIRTY) {
+			this.lightDirtyPumpScheduled = false;
+			this.processLightDirtyQueue();
+		}
+		if (flags & ChunkWorkerPool.WORK_SERIAL_QUEUE) {
+			this._meshSerialDrainScheduled = false;
+			if (
+				this._meshSerialQueue.length > 0 &&
+				this.opfsReady &&
+				this.opfsClient
+			) {
+				this._drainSerialQueue(this._meshSerialQueue);
+			}
+		}
+	};
+
+	private _drainLightRegistration(): void {
+		const chunks = this._lightRegChunks;
+		const flags = this._lightRegFlags;
+		for (let i = 0; i < chunks.length; i++) {
+			if (flags[i]) {
+				this.broadcastLightRegister(chunks[i]);
+				this.broadcastVoxelRegister(chunks[i]);
+			} else {
+				this.broadcastLightRegisterFull(chunks[i]);
+				this.broadcastVoxelRegisterFull(chunks[i]);
+			}
+		}
+		chunks.length = 0;
+		flags.length = 0;
 	}
 
 	// -------------------------------------------------------------------------
@@ -1451,10 +1516,7 @@ export class ChunkWorkerPool {
 	private scheduleDeferredLightingPump(): void {
 		if (this.deferredLightingPumpScheduled) return;
 		this.deferredLightingPumpScheduled = true;
-		setTimeout(() => {
-			this.deferredLightingPumpScheduled = false;
-			this.processDeferredLightingQueue();
-		}, 0);
+		this._scheduleCentralWork(ChunkWorkerPool.WORK_DEFERRED_LIGHT);
 	}
 
 	private processDeferredLightingQueue(): void {
@@ -1538,15 +1600,10 @@ export class ChunkWorkerPool {
 	// Mesh result drain loop — runs every rAF
 	// -------------------------------------------------------------------------
 
-	private _meshDrainCallback = (): void => {
-		this.meshDrainScheduled = false;
-		this.processMeshQueueLoop();
-	};
-
 	private scheduleMeshFlush = (): void => {
 		if (this.meshDrainScheduled) return;
 		this.meshDrainScheduled = true;
-		setTimeout(this._meshDrainCallback, 0);
+		this._scheduleCentralWork(ChunkWorkerPool.WORK_MESH);
 	};
 
 	private _meshSerialQueue: Array<{
@@ -1700,10 +1757,7 @@ export class ChunkWorkerPool {
 		if (queue.length > 0) {
 			if (!this._meshSerialDrainScheduled) {
 				this._meshSerialDrainScheduled = true;
-				setTimeout(() => {
-					this._meshSerialDrainScheduled = false;
-					this._drainSerialQueue(queue);
-				}, 0);
+				this._scheduleCentralWork(ChunkWorkerPool.WORK_SERIAL_QUEUE);
 			}
 		}
 	}
@@ -1736,7 +1790,7 @@ export class ChunkWorkerPool {
 		}
 		if (!this.meshDrainScheduled) {
 			this.meshDrainScheduled = true;
-			setTimeout(this._meshDrainCallback, 0);
+			this._scheduleCentralWork(ChunkWorkerPool.WORK_MESH);
 		}
 	}
 
@@ -1857,10 +1911,7 @@ export class ChunkWorkerPool {
 	private scheduleRemeshFlush(): void {
 		if (this.remeshFlushScheduled) return;
 		this.remeshFlushScheduled = true;
-		setTimeout(() => {
-			this.remeshFlushScheduled = false;
-			this.flushPendingRemeshQueue();
-		}, 0);
+		this._scheduleCentralWork(ChunkWorkerPool.WORK_REMESH_FLUSH);
 	}
 
 	private flushPendingRemeshQueue(): void {

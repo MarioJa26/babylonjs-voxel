@@ -216,6 +216,30 @@ export class SurfaceGenerator {
 	// hash-collision evictions that thrashed during bulk area generation.
 	private static readonly floraCache = new Map<number, FloraColumnCacheEntry>();
 
+	// PERF: Cap cache sizes to prevent unbounded memory growth during long
+	// play sessions. Each columnCache entry holds ~15KB of typed arrays;
+	// floraCache entries are small but grow with explored terrain. FIFO
+	// eviction preserves the bulk-generation locality that makes caching
+	// effective while bounding peak memory.
+	private static readonly COLUMN_CACHE_MAX = 4096;
+	private static readonly FLORA_CACHE_MAX = 8192;
+
+	private static evictCacheIfFull(
+		cache: Map<number, unknown>,
+		maxSize: number,
+	): void {
+		if (cache.size < maxSize) return;
+		// FIFO eviction: delete oldest 25% of entries. Map iteration order
+		// is insertion order, so this evicts the oldest entries first.
+		const targetEvict = maxSize >> 2;
+		let evicted = 0;
+		for (const key of cache.keys()) {
+			cache.delete(key);
+			evicted++;
+			if (evicted >= targetEvict) break;
+		}
+	}
+
 	private chunk_size: number;
 	private riverGenerator: RiverGenerator;
 	private features: IWorldFeature[];
@@ -564,6 +588,10 @@ export class SurfaceGenerator {
 		};
 
 		SurfaceGenerator.columnCache.set(key, built);
+		SurfaceGenerator.evictCacheIfFull(
+			SurfaceGenerator.columnCache,
+			SurfaceGenerator.COLUMN_CACHE_MAX,
+		);
 
 		return built;
 	}
@@ -619,6 +647,10 @@ export class SurfaceGenerator {
 		};
 
 		SurfaceGenerator.floraCache.set(key, built);
+		SurfaceGenerator.evictCacheIfFull(
+			SurfaceGenerator.floraCache,
+			SurfaceGenerator.FLORA_CACHE_MAX,
+		);
 
 		return built;
 	}

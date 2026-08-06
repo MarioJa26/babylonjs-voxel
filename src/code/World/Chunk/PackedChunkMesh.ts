@@ -115,6 +115,33 @@ const meshState = new Map<Mesh, PackedMeshState>();
 let engineRef: EngineContext | null = null;
 let sceneRef: SceneContext | null = null;
 
+// PERF/BUGFIX: Deferred GPU resource disposal queue. disposeMeshGpu() destroys
+// GPU buffers immediately, but the GPU may still be rendering with them from
+// a previously-submitted command buffer. This causes "buffer used in submit
+// while destroyed" WebGPU validation errors. We queue meshes for disposal and
+// only dispose them after onGpuWorkDone() resolves.
+const _pendingDisposal: Mesh[] = [];
+let _disposalScheduled = false;
+
+function scheduleDeferredDisposal(mesh: Mesh): void {
+	_pendingDisposal.push(mesh);
+	if (_disposalScheduled) return;
+	_disposalScheduled = true;
+	const engine = engineRef;
+	if (!engine) {
+		// Engine gone — dispose immediately (no GPU to wait for).
+		for (const m of _pendingDisposal) disposeMeshGpu(m);
+		_pendingDisposal.length = 0;
+		_disposalScheduled = false;
+		return;
+	}
+	void onGpuWorkDone(engine).then(() => {
+		_disposalScheduled = false;
+		for (const m of _pendingDisposal) disposeMeshGpu(m);
+		_pendingDisposal.length = 0;
+	});
+}
+
 // The face data is split across several storage buffers ("arenas"). A single
 // GPU storage-buffer BINDING is capped at `maxStorageBufferBindingSize`
 // (default 128 MiB ≈ 8.4M faces). To hold more loaded faces than that, we
@@ -1068,7 +1095,7 @@ export function disposePackedMesh(mesh: Mesh): void {
 		meshState.delete(mesh);
 	}
 	if (sceneRef && mesh) removeFromScene(sceneRef, mesh);
-	disposeMeshGpu(mesh);
+	scheduleDeferredDisposal(mesh);
 }
 
 export function destroyPackedArenas(): void {
@@ -1076,7 +1103,7 @@ export function destroyPackedArenas(): void {
 	// referencing the arena buffers we are about to destroy.
 	for (const mesh of meshState.keys()) {
 		if (sceneRef && mesh) removeFromScene(sceneRef, mesh);
-		disposeMeshGpu(mesh);
+		scheduleDeferredDisposal(mesh);
 	}
 	meshState.clear();
 

@@ -710,37 +710,33 @@ _self.addEventListener("message", (event: MessageEvent) => {
 					saved.compressed = false;
 				}
 
-				let blocksSAB: SharedArrayBuffer | null = null;
-				let paletteSAB: SharedArrayBuffer | null = null;
-				let lightSAB: SharedArrayBuffer | null = null;
-
-				if (saved.blocks) {
-					const rawBytes =
-						saved.blocks instanceof Uint16Array
-							? new Uint8Array(
-									saved.blocks.buffer,
-									saved.blocks.byteOffset,
-									saved.blocks.byteLength,
-								)
-							: saved.blocks;
-					blocksSAB = new SharedArrayBuffer(rawBytes.byteLength);
-					new Uint8Array(blocksSAB).set(rawBytes);
-				}
-				if (saved.palette) {
-					const byteLen = saved.palette.byteLength;
-					paletteSAB = new SharedArrayBuffer(byteLen);
-					new Uint8Array(paletteSAB).set(
-						new Uint8Array(
-							saved.palette.buffer,
-							saved.palette.byteOffset,
-							byteLen,
-						),
+				// PERF: Convert voxel data to SABs for cross-worker sharing.
+				// Optimization: if source is already SAB-backed, reference it
+				// directly instead of allocating + copying. For ArrayBuffer-
+				// backed sources, use the underlying buffer to avoid an
+				// intermediate view allocation.
+				const toSAB = (
+					src: Uint8Array | Uint16Array | null | undefined,
+				): SharedArrayBuffer | null => {
+					if (!src) return null;
+					const byteLen = src.byteLength;
+					if (byteLen === 0) return null;
+					// Already SAB-backed: reuse directly (no copy needed).
+					if (src.buffer instanceof SharedArrayBuffer) {
+						return src.buffer as SharedArrayBuffer;
+					}
+					// Allocate SAB and copy. Use the underlying buffer to
+					// avoid creating an intermediate view for Uint16Array.
+					const sab = new SharedArrayBuffer(byteLen);
+					new Uint8Array(sab).set(
+						new Uint8Array(src.buffer, src.byteOffset, byteLen),
 					);
-				}
-				if (saved.lightArray) {
-					lightSAB = new SharedArrayBuffer(saved.lightArray.byteLength);
-					new Uint8Array(lightSAB).set(saved.lightArray);
-				}
+					return sab;
+				};
+
+				const blocksSAB = toSAB(saved.blocks);
+				const paletteSAB = toSAB(saved.palette);
+				const lightSAB = toSAB(saved.lightArray);
 
 				const cx = data.chunkX | 0;
 				const cy = data.chunkY | 0;
