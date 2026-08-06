@@ -6,6 +6,7 @@ import {
 	getCachedFlagsAndId,
 	getFlagsFromCombined,
 } from "../MeshPipeline/core/BlockInfoCache";
+import { RemoteChunkProvider } from "../../Network/chunk/RemoteChunkProvider";
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import { shapeInitPromise } from "../Shape/BlockShapes";
 import { packChunkKey } from "../Storage/ChunkKey";
@@ -126,6 +127,15 @@ export class ChunkWorkerPool {
 
 	private workers: ChunkWorker[] = [];
 	private workerTaskContext: WorkerTaskContext[] = [];
+
+	// Remote server-side terrain generation (multiplayer mode)
+	private remoteChunkProvider: RemoteChunkProvider | null = null;
+	private remoteGenerationEnabled = false;
+	private remotePendingChunks = new Map<string, Chunk>();
+	private remoteTaskQueue: Chunk[] = [];
+	private remoteTaskQueueSet = new Set<Chunk>();
+	private remoteInFlight = 0;
+	private readonly MAX_REMOTE_CONCURRENT = 8; // Max concurrent server requests
 
 	private distantTerrainSharedInit: {
 		positionsBuffer: SharedArrayBuffer;
@@ -1779,6 +1789,9 @@ export class ChunkWorkerPool {
 	// oldest entry is the one discarded instead.
 	// -------------------------------------------------------------------------
 	private enqueueMeshResult(data: FullMeshMessage): void {
+		console.log(
+			`[Mesh] result chunk=${data.chunkId} opaque=${data.opaque?.faceCount ?? 0} transparent=${data.transparent?.faceCount ?? 0}`,
+		);
 		const pending = this.meshResultQueue.length - this.meshResultQueueReadIdx;
 		if (
 			pending >= ChunkWorkerPool.MAX_MESH_QUEUE &&
@@ -1916,6 +1929,9 @@ export class ChunkWorkerPool {
 
 	private flushPendingRemeshQueue(): void {
 		if (this.pendingRemeshMap.size === 0) return;
+		console.log(
+			`[Queue] flush remesh count=${this.pendingRemeshMap.size} idle=${this.getEffectiveIdleWorkerCount()} terrainQ=${this.terrainTaskQueue.size} heap=${this.taskHeap.length}`,
+		);
 
 		const pending = ChunkWorkerPool._flushPendingScratch;
 		pending.length = 0;
@@ -2402,6 +2418,10 @@ export class ChunkWorkerPool {
 
 	public scheduleTerrainGeneration(chunk: Chunk, deferLighting = true): void {
 		if (!chunk) return;
+		if (this.remoteGenerationEnabled && this.remoteChunkProvider) {
+			this.enqueueRemoteGeneration(chunk, deferLighting);
+			return;
+		}
 		this.terrainTaskQueue.add(chunk);
 		const existing = this.terrainTaskDeferLighting.get(chunk.id);
 		if (existing === undefined) {
@@ -2417,6 +2437,13 @@ export class ChunkWorkerPool {
 		chunks: Chunk[],
 		deferLighting = true,
 	): void {
+		if (this.remoteGenerationEnabled && this.remoteChunkProvider) {
+			for (let i = 0; i < chunks.length; i++) {
+				this.enqueueRemoteGeneration(chunks[i], deferLighting);
+			}
+			this.pumpRemoteGeneration();
+			return;
+		}
 		for (let i = 0; i < chunks.length; i++) {
 			const chunk = chunks[i];
 			this.terrainTaskQueue.add(chunk);
@@ -2431,6 +2458,65 @@ export class ChunkWorkerPool {
 		this.scheduleProcessQueuePump();
 	}
 
+	/**
+	 * In remote (multiplayer) mode, a chunk's voxel data comes from the server,
+	 * NOT from a local terrain worker. Enqueue it for a server request without
+	 * touching the worker terrain queue, so server-routed work can never starve
+	 * the worker remesh queue (the local mesh workers build meshes normally).
+	 */
+	private enqueueRemoteGeneration(chunk: Chunk, _deferLighting = true): void {
+		if (!chunk || chunk.isBoatChunk) return;
+		const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
+		if (this.remotePendingChunks.has(key)) return;
+		if (this.remoteTaskQueueSet.has(chunk)) return;
+		this.remoteTaskQueue.push(chunk);
+		this.remoteTaskQueueSet.add(chunk);
+		chunk.isTerrainScheduled = true;
+	}
+
+	private pumpRemoteGeneration(): void {
+		if (!this.remoteChunkProvider) return;
+		while (
+			this.remoteTaskQueue.length > 0 &&
+			this.remoteInFlight < this.MAX_REMOTE_CONCURRENT
+		) {
+			const chunk = this.remoteTaskQueue.shift();
+			if (!chunk) continue;
+			this.remoteTaskQueueSet.delete(chunk);
+			if (chunk.isBoatChunk) continue;
+			const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
+			if (this.remotePendingChunks.has(key)) continue;
+			this.remotePendingChunks.set(key, chunk);
+			this.remoteInFlight++;
+			console.log(`[RemoteGen] dispatch request ${key}`);
+
+			void this.remoteChunkProvider
+				.requestChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ)
+				.then((data) => this.handleRemoteChunkData(data))
+				.catch((err) => {
+					chunk.isTerrainScheduled = false;
+					this.remotePendingChunks.delete(key);
+					this.remoteInFlight--;
+					console.warn(`[RemoteGen] request FAILED ${key}:`, err);
+					// Re-queue so the chunk is retried rather than left unloaded.
+					const live = getChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+					if (live === chunk && !chunk.isLoaded && !chunk.isBoatChunk) {
+						this.enqueueRemoteGenerationRetry(chunk);
+					}
+					this.pumpRemoteGeneration();
+				});
+		}
+	}
+
+	private enqueueRemoteGenerationRetry(chunk: Chunk): void {
+		const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
+		if (this.remotePendingChunks.has(key)) return;
+		if (this.remoteTaskQueueSet.has(chunk)) return;
+		this.remoteTaskQueue.push(chunk);
+		this.remoteTaskQueueSet.add(chunk);
+		chunk.isTerrainScheduled = true;
+	}
+
 	private getQueuedTerrainDeferLighting(chunk: Chunk): boolean {
 		return this.terrainTaskDeferLighting.get(chunk.id) ?? true;
 	}
@@ -2442,6 +2528,7 @@ export class ChunkWorkerPool {
 	): boolean {
 		if (!chunk) return false;
 		const deferLighting = this.getQueuedTerrainDeferLighting(chunk);
+
 		this.terrainTaskQueue.delete(chunk);
 		this.terrainTaskDeferLighting.delete(chunk.id);
 		this.setWorkerTaskContext(workerIndex, {
@@ -2452,6 +2539,85 @@ export class ChunkWorkerPool {
 		chunk.isTerrainScheduled = true;
 		worker.postTerrainGeneration(chunk, deferLighting);
 		return true;
+	}
+
+	/**
+	 * Enable server-side terrain generation (multiplayer mode).
+	 */
+	public setRemoteChunkProvider(provider: RemoteChunkProvider | null): void {
+		this.remoteChunkProvider = provider;
+		this.remoteGenerationEnabled = provider !== null;
+		console.log(
+			`[RemoteGen] setRemoteChunkProvider enabled=${this.remoteGenerationEnabled}`,
+		);
+	}
+
+	/**
+	 * Handle chunk data received from the server.
+	 */
+	private handleRemoteChunkData(data: {
+		chunkX: number;
+		chunkY: number;
+		chunkZ: number;
+		blocks: Uint8Array;
+		light: Uint8Array;
+		palette?: number[];
+		isUniform: boolean;
+		uniformBlockId: number;
+	}): void {
+		const key = `${data.chunkX},${data.chunkY},${data.chunkZ}`;
+		const captured = this.remotePendingChunks.get(key) ?? null;
+		this.remotePendingChunks.delete(key);
+		this.remoteInFlight--;
+
+		// Apply the data to the CURRENT live chunk at these coordinates, not the
+		// instance captured when the request was dispatched. The chunk may have
+		// been unloaded and re-created while the server round-trip was in flight;
+		// meshing the stale instance would leave the visible chunk permanently
+		// without a mesh even though its voxel data is present. If no live chunk
+		// exists anymore, fall back to the captured instance so the server's
+		// voxel data is never dropped (its replacement will reuse it).
+		const target = getChunk(data.chunkX, data.chunkY, data.chunkZ) ?? captured;
+		if (!target || target.isBoatChunk) {
+			// Free the concurrency slot (already decremented above) and keep the
+			// request queue moving so other pending chunks are not blocked.
+			this.pumpRemoteGeneration();
+			return;
+		}
+		const chunk = target;
+		console.log(
+			`[RemoteGen] apply data ${data.chunkX},${data.chunkY},${data.chunkZ} ` +
+				`uniform=${data.isUniform} palette=${data.palette ? data.palette.length : "none"} ` +
+				`blocks=${data.blocks.byteLength} light=${data.light.byteLength}`,
+		);
+
+		// Pass raw compressed blocks directly to loadFromStorage.
+		// Do NOT decompress — loadFromStorage handles uniform/palette/dense formats
+		// and expects nibble-packed data when a palette is provided.
+		const blocks = data.blocks;
+		const palette = data.palette ? Uint16Array.from(data.palette) : null;
+
+		// Load into chunk (same path as local generation)
+		chunk.loadFromStorage(
+			blocks,
+			palette,
+			data.isUniform,
+			data.uniformBlockId,
+			data.light,
+			false,
+		);
+		chunk.isModified = true;
+
+		// Schedule meshing AFTER the server voxel data has been applied, so the
+		// generated mesh always reflects the requested-from-server blocks.
+		chunk.scheduleRemesh(true, true);
+		scheduleChunkAndNeighborsRemesh(chunk, this._boundScheduleRemesh);
+		maybeRemeshNeighborsNowStable(chunk, this._boundScheduleRemesh);
+
+		// Process remesh queue
+		this.scheduleProcessQueuePump();
+		// Keep issuing the next server request (a slot just freed up).
+		this.pumpRemoteGeneration();
 	}
 
 	// -------------------------------------------------------------------------
@@ -2787,6 +2953,9 @@ export class ChunkWorkerPool {
 				normalizeChunkLod(taskChunk!);
 
 				const lod = taskChunk?.lodLevel ?? 0;
+				console.log(
+					`[Queue] dispatch remesh ${taskChunk?.chunkX},${taskChunk?.chunkY},${taskChunk?.chunkZ} to w${workerIndex} idle=${this.getEffectiveIdleWorkerCount()}`,
+				);
 				this.setWorkerTaskContext(workerIndex, {
 					taskType,
 					chunk: taskChunk,

@@ -8,11 +8,13 @@
 		"skipLibCheck": true,
 		"allowImportingTsExtensions": true,
 		"noEmit": true,
-		"outDir": "./dist",
-		"rootDir": "./src",
 		"declaration": false,
 		"sourceMap": true,
-		"lib": ["ESNext", "DOM"]
+		"lib": ["ESNext", "DOM"],
+		"paths": {
+			"@/*": ["../src/*"],
+			"@server/*": ["./src/*"]
+		}
 	},
 	"include": ["src/**/*.ts"],
 	"exclude": ["node_modules", "dist"]

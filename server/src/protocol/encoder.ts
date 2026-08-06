@@ -63,12 +63,24 @@ export class BinaryEncoder {
 		this.offset += 2;
 	}
 
+	writeUint32(value: number): void {
+		this.ensure(4);
+		this.view.setUint32(this.offset, value, true);
+		this.offset += 4;
+	}
+
 	writeString(str: string): void {
 		const encoded = new TextEncoder().encode(str);
 		this.writeUint16(encoded.byteLength);
 		this.ensure(encoded.byteLength);
 		this.buffer.set(encoded, this.offset);
 		this.offset += encoded.byteLength;
+	}
+
+	writeBytes(bytes: Uint8Array): void {
+		this.ensure(bytes.byteLength);
+		this.buffer.set(bytes, this.offset);
+		this.offset += bytes.byteLength;
 	}
 
 	writePlayerState(data: PlayerStateData): void {
@@ -92,9 +104,10 @@ export class BinaryEncoder {
 		this.writeUint8(data.action);
 	}
 
-	writeChunkRequest(cx: number, cz: number, lod: number): void {
+	writeChunkRequest(cx: number, cy: number, cz: number, lod: number): void {
 		this.writeUint8(MessageType.ChunkRequest);
 		this.writeInt32(cx);
+		this.writeInt32(cy);
 		this.writeInt32(cz);
 		this.writeUint8(lod);
 	}
@@ -159,6 +172,12 @@ export class BinaryDecoder {
 		return v;
 	}
 
+	readUint32(): number {
+		const v = this.view.getUint32(this.offset, true);
+		this.offset += 4;
+		return v;
+	}
+
 	readString(): string {
 		const len = this.readUint16();
 		const start = this.offset;
@@ -187,11 +206,12 @@ export class BinaryDecoder {
 		return { sessionId, x, y, z, blockId, action };
 	}
 
-	readChunkRequest(): { cx: number; cz: number; lod: number } {
+	readChunkRequest(): { cx: number; cy: number; cz: number; lod: number } {
 		const cx = this.readInt32();
+		const cy = this.readInt32();
 		const cz = this.readInt32();
 		const lod = this.readUint8();
-		return { cx, cz, lod };
+		return { cx, cy, cz, lod };
 	}
 }
 
@@ -336,4 +356,119 @@ export function encodeWorldTime(timeOfDay: number): Uint8Array {
 export function decodeWorldTime(buffer: Uint8Array): number {
 	const dec = new BinaryDecoder(buffer.subarray(1));
 	return dec.readFloat32();
+}
+
+/**
+ * Chunk data — server → client (response to chunk request).
+ * Contains compressed voxel data for meshing on the client.
+ * Format: [type:1][chunkX:i32][chunkY:i32][chunkZ:i32][flags:u8][blockData...][lightData...]
+ * flags: bit0=isUniform, bit1=hasPalette
+ * If isUniform: next 2 bytes = uniformBlockId, no block data
+ * If hasPalette: next 2 bytes = paletteLength, then paletteLength*2 bytes palette, then packed data
+ * Light data always follows block data (lightLength:u32 then bytes)
+ */
+export function encodeChunkData(data: {
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+	blocks: Uint8Array;
+	light: Uint8Array;
+	palette?: number[];
+	isUniform: boolean;
+	uniformBlockId: number;
+}): Uint8Array {
+	const lightBytes = data.light.length;
+	const headerSize = 1 + 12 + 1; // type + chunk coords + flags
+	const uniformSize = data.isUniform ? 2 : 0;
+	const paletteSize = data.palette ? 2 + data.palette.length * 2 : 0;
+	const totalSize =
+		headerSize + uniformSize + paletteSize + data.blocks.length + 4 + lightBytes;
+
+	const enc = new BinaryEncoder(totalSize);
+	enc.writeUint8(MessageType.ChunkData);
+	enc.writeInt32(data.chunkX);
+	enc.writeInt32(data.chunkY);
+	enc.writeInt32(data.chunkZ);
+
+	// Flags
+	let flags = 0;
+	if (data.isUniform) flags |= 1;
+	if (data.palette) flags |= 2;
+	enc.writeUint8(flags);
+
+	if (data.isUniform) {
+		enc.writeUint16(data.uniformBlockId);
+	} else if (data.palette) {
+		enc.writeUint16(data.palette.length);
+		for (const pid of data.palette) {
+			enc.writeUint16(pid);
+		}
+		enc.writeBytes(data.blocks);
+	} else {
+		enc.writeBytes(data.blocks);
+	}
+
+	// Light data
+	enc.writeUint32(lightBytes);
+	enc.writeBytes(data.light);
+
+	return enc.getBytes();
+}
+
+export function decodeChunkData(buffer: Uint8Array): {
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+	blocks: Uint8Array;
+	light: Uint8Array;
+	palette?: number[];
+	isUniform: boolean;
+	uniformBlockId: number;
+} {
+	const dec = new BinaryDecoder(buffer.subarray(1));
+	const chunkX = dec.readInt32();
+	const chunkY = dec.readInt32();
+	const chunkZ = dec.readInt32();
+	const flags = dec.readUint8();
+	const isUniform = (flags & 1) !== 0;
+	const hasPalette = (flags & 2) !== 0;
+
+	let uniformBlockId = 0;
+	let palette: number[] | undefined;
+	let blocks: Uint8Array;
+
+	if (isUniform) {
+		uniformBlockId = dec.readUint16();
+		blocks = new Uint8Array(0);
+	} else if (hasPalette) {
+		const paletteLen = dec.readUint16();
+		palette = [];
+		for (let i = 0; i < paletteLen; i++) {
+			palette.push(dec.readUint16());
+		}
+		// Packed nibble data: remaining before light
+		// We need to know the packed size — it's derived from chunk volume
+		const chunkVolume = 32 * 32 * 32; // CHUNK_SIZE^3
+		const packedSize = Math.ceil(chunkVolume / 2);
+		blocks = new Uint8Array(packedSize);
+		for (let i = 0; i < packedSize; i++) {
+			blocks[i] = dec.readUint8();
+		}
+	} else {
+		// Dense format: full chunk volume
+		const chunkVolume = 32 * 32 * 32;
+		blocks = new Uint8Array(chunkVolume);
+		for (let i = 0; i < chunkVolume; i++) {
+			blocks[i] = dec.readUint8();
+		}
+	}
+
+	// Light data
+	const lightLen = dec.readUint32();
+	const light = new Uint8Array(lightLen);
+	for (let i = 0; i < lightLen; i++) {
+		light[i] = dec.readUint8();
+	}
+
+	return { chunkX, chunkY, chunkZ, blocks, light, palette, isUniform, uniformBlockId };
 }

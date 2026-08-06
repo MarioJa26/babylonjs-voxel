@@ -55,6 +55,8 @@ export interface NetClientCallbacks {
 	onServerError?: (code: number, message?: string) => void;
 }
 
+type BinaryHandler = (data: Uint8Array) => void;
+
 export class NetClient {
 	private client: ColyseusSDK | null = null;
 	private room: any = null;
@@ -63,6 +65,7 @@ export class NetClient {
 	private callbacks: NetClientCallbacks = {};
 	private remotePlayers = new Map<string, RemotePlayer>();
 	private playerName = "";
+	private binaryHandlers: BinaryHandler[] = [];
 
 	constructor(private serverUrl: string = this.defaultServerUrl()) {}
 
@@ -114,7 +117,16 @@ export class NetClient {
 		});
 	}
 
+	addBinaryHandler(handler: BinaryHandler): void {
+		this.binaryHandlers.push(handler);
+	}
+
 	private handleBinaryMessage(data: Uint8Array): void {
+		// Notify external handlers first (e.g. RemoteChunkProvider)
+		for (const handler of this.binaryHandlers) {
+			handler(data);
+		}
+
 		if (data.byteLength < 1) return;
 
 		const dec = new BinaryDecoder(data);
@@ -218,6 +230,10 @@ export class NetClient {
 				break;
 			}
 
+			case MessageType.ChunkData:
+				// Handled by RemoteChunkProvider via addBinaryHandler — no-op here
+				break;
+
 			default:
 				console.warn(
 					`[NetClient] Unknown message type: 0x${msgType.toString(16)}`,
@@ -276,6 +292,18 @@ export class NetClient {
 	sendChat(message: string): void {
 		if (!this.connected || !this.room) return;
 		this.room.send("chat", message);
+	}
+
+	sendChunkRequest(cx: number, cy: number, cz: number, lod: number): void {
+		if (!this.connected || !this.room) {
+			console.warn(
+				`[NetClient] sendChunkRequest skipped (not connected): ${cx},${cy},${cz}`,
+			);
+			return;
+		}
+		this.encoder.reset();
+		this.encoder.writeChunkRequest(cx, cy, cz, lod);
+		this.room.sendBytes("binary", this.encoder.getBytes());
 	}
 
 	// ─── Remote player access ──────────────────────────────────────────

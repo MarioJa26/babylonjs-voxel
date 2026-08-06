@@ -5,6 +5,7 @@
  * - Track connected players (sessionId, name, position, animation)
  * - Broadcast player movement at a fixed tick rate
  * - Relay block edits between clients with validation
+ * - Generate terrain chunks (server-authoritative world gen)
  * - Manage world lifecycle (create on first join, destroy when empty)
  */
 import { type Client, Room } from "colyseus";
@@ -13,6 +14,7 @@ import {
 	encodeBlockEditBatch,
 	encodeBlockEditBroadcast,
 	encodeChatMessage,
+	encodeChunkData,
 	encodePlayerJoin,
 	encodePlayerLeave,
 	encodePlayerStateBatch,
@@ -23,6 +25,7 @@ import {
 	MessageType,
 	type PlayerStateData,
 } from "../protocol/messages.ts";
+import { ChunkGenerationService } from "../world/ChunkGenerationService.ts";
 
 interface ServerPlayerState {
 	sessionId: string;
@@ -48,13 +51,20 @@ export class VoxelRoom extends Room {
 	private timeOfDay = 0.3; // Start at morning (0..1)
 	private timeAccum = 0; // Accumulator for time broadcast
 	private dayCycleAccum = 0; // Accumulator for day cycle advance
+	private chunkGen!: ChunkGenerationService;
 
 	maxClients = MAX_PLAYERS;
 
-	onCreate(options: { worldName?: string; seed?: number }) {
+	onCreate(options: { worldName?: string; seed?: string }) {
 		console.log(
 			`[VoxelRoom] created for world: ${options.worldName ?? "default"}`,
 		);
+
+		// Initialize chunk generation service with seed
+		this.chunkGen = new ChunkGenerationService();
+		const seed = options.seed ?? options.worldName ?? "default";
+		this.chunkGen.setSeed(String(seed));
+		console.log(`[VoxelRoom] terrain seed: ${seed}`);
 
 		// Set up fixed-rate simulation tick
 		this.tickInterval = setInterval(() => this.tick(), 1000 / TICK_RATE);
@@ -229,8 +239,12 @@ export class VoxelRoom extends Room {
 			}
 
 			case MessageType.ChunkRequest: {
-				// Phase 2: server-side world generation
-				// For now, no-op (client generates locally)
+				const { cx, cy, cz, lod } = dec.readChunkRequest();
+				// Only support LOD0 for now
+				if (lod !== 0) break;
+
+				// Generate chunk asynchronously (don't block other messages)
+				void this.handleChunkRequest(client, cx, cy, cz);
 				break;
 			}
 
@@ -238,6 +252,32 @@ export class VoxelRoom extends Room {
 				console.warn(
 					`[VoxelRoom] Unknown message type: 0x${msgType.toString(16)}`,
 				);
+		}
+	}
+
+	/**
+	 * Generate a chunk and send it to the requesting client.
+	 * Runs generation off the main handler to avoid blocking other messages.
+	 */
+	private async handleChunkRequest(
+		client: Client,
+		cx: number,
+		cy: number,
+		cz: number,
+	): Promise<void> {
+		try {
+			console.log(`[VoxelRoom] chunk request ${cx},${cy},${cz}`);
+			const chunkData = await this.chunkGen.generateChunk(cx, cy, cz);
+			const msg = encodeChunkData(chunkData);
+			client.sendBytes("binary", msg);
+			console.log(
+				`[VoxelRoom] sent chunk ${cx},${cy},${cz} blocks=${chunkData.blocks.byteLength} uniform=${chunkData.isUniform} palette=${chunkData.palette ? chunkData.palette.length : "none"}`,
+			);
+		} catch (err) {
+			console.error(
+				`[VoxelRoom] Chunk gen failed for ${cx},${cy},${cz}:`,
+				err,
+			);
 		}
 	}
 }

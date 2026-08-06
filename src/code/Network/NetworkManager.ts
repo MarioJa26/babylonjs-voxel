@@ -20,6 +20,7 @@ import { play, playDebris } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
 import { WorldEnvironment } from "@/code/Maps/WorldEnvironment";
 import type { Player } from "@/code/Player/Player";
+import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
 import {
 	deleteBlock,
 	getLightByWorldCoords,
@@ -28,6 +29,7 @@ import {
 import { MultiplayerHUD } from "./MultiplayerHUD";
 import { NetClient, type RemotePlayer } from "./NetClient";
 import { BlockActionType } from "./protocol/messages";
+import { RemoteChunkProvider } from "./chunk/RemoteChunkProvider";
 import { RemotePlayerRenderer } from "./RemotePlayerRenderer";
 
 const SEND_RATE = 20; // Hz — how often to send player position
@@ -37,6 +39,7 @@ export class NetworkManager {
 	private client: NetClient;
 	private renderer: RemotePlayerRenderer;
 	private hud: MultiplayerHUD;
+	private chunkProvider: RemoteChunkProvider;
 	private player: Player;
 	private sendAccum = 0;
 	private lastYaw = 0;
@@ -51,6 +54,7 @@ export class NetworkManager {
 			(msg) => this.sendChat(msg),
 			(open) => this.onToggleChat(open),
 		);
+		this.chunkProvider = new RemoteChunkProvider(this.client);
 	}
 
 	async connect(playerName: string, worldName: string): Promise<void> {
@@ -105,6 +109,9 @@ export class NetworkManager {
 		});
 
 		await this.client.connect(playerName, worldName);
+
+		// Enable server-side chunk generation
+		ChunkWorkerPool.getInstance(2)?.setRemoteChunkProvider(this.chunkProvider);
 	}
 
 	/**
@@ -220,6 +227,7 @@ export class NetworkManager {
 	}
 
 	disconnect(): void {
+		ChunkWorkerPool.getInstance(2)?.setRemoteChunkProvider(null);
 		this.client.disconnect();
 		this.renderer.dispose();
 		this.hud.dispose();
