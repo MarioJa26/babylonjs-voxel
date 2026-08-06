@@ -97,18 +97,20 @@ export class TestScene {
 		});
 
 		// Multiplayer: connect to server if URL has ?mp=1
-		if (new URLSearchParams(window.location.search).has("mp")) {
-			this.#networkManager = new NetworkManager(player);
+		const urlParams = new URLSearchParams(window.location.search);
+		if (urlParams.has("mp")) {
+			const serverUrl = urlParams.get("server") ?? undefined;
+			const playerName =
+				urlParams.get("name") ?? `Player${Math.floor(Math.random() * 1000)}`;
+
+			this.#networkManager = new NetworkManager(player, serverUrl);
 			player.networkManager = this.#networkManager;
 
 			// Wire block edit callbacks BEFORE connect (so they're ready when connected)
 			player.setDefaultBlockEditCallbacks(this.#networkManager);
 
 			// Connect (fire-and-forget; errors logged inside NetworkManager)
-			void this.#networkManager.connect(
-				`Player${Math.floor(Math.random() * 1000)}`,
-				this.worldName,
-			);
+			void this.#networkManager.connect(playerName, this.worldName);
 		}
 
 		// Underwater visual effect — toggles a full-screen overlay whenever the

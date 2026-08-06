@@ -14,10 +14,11 @@
  */
 
 import type { Vec3 } from "@babylonjs/lite";
-import { isUiOpen, setIsPaused } from "@/code/Lib/GameRuntimeState";
+import { setIsPaused } from "@/code/Lib/GameRuntimeState";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
 import { play, playDebris } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
+import { WorldEnvironment } from "@/code/Maps/WorldEnvironment";
 import type { Player } from "@/code/Player/Player";
 import {
 	deleteBlock,
@@ -94,6 +95,10 @@ export class NetworkManager {
 				console.log(`[${chat.name}]: ${chat.message}`);
 				this.hud.addChatMessage(chat.name, chat.message);
 			},
+			onWorldTime: (timeOfDay) => {
+				// Sync to server time — server is authoritative
+				Map1.environment?.setTime(timeOfDay);
+			},
 			onServerError: (code, message) => {
 				console.error(`[NetworkManager] Server error ${code}: ${message}`);
 			},
@@ -110,7 +115,13 @@ export class NetworkManager {
 
 		// Update remote player interpolation
 		this.client.updateRemotePlayerInterpolation(deltaMs / 1000);
-		this.renderer.update();
+
+		// Update renderer with camera for name tag projection
+		const cam = this.player.playerCamera.playerCamera;
+		const canvas = (this.player.sceneRef as any).engine?.getRenderingCanvas();
+		const w = canvas?.clientWidth ?? window.innerWidth;
+		const h = canvas?.clientHeight ?? window.innerHeight;
+		this.renderer.update(cam, w, h);
 
 		// Update HUD player count and names
 		const remotePlayers = this.client.getRemotePlayers();

@@ -320,3 +320,20 @@ export function decodeChatMessage(buffer: Uint8Array): ChatMessageData {
 		message: dec.readString(),
 	};
 }
+
+/**
+ * World time sync — server → client.
+ * timeOfDay: 0..1 fraction of day cycle (0=midnight, 0.5=noon).
+ * Format: [type:1][timeOfDay:f32]
+ */
+export function encodeWorldTime(timeOfDay: number): Uint8Array {
+	const enc = new BinaryEncoder(5);
+	enc.writeUint8(MessageType.WorldTime);
+	enc.writeFloat32(timeOfDay);
+	return enc.getBytes();
+}
+
+export function decodeWorldTime(buffer: Uint8Array): number {
+	const dec = new BinaryDecoder(buffer.subarray(1));
+	return dec.readFloat32();
+}

@@ -9,12 +9,10 @@ import {
 } from "../World/WorldContext";
 import worldNames from "./worldNames.json";
 
-/**
- * OPFS layout: b102/worlds/<name>/ — same tree the OPFS worker uses, so a
- * world created here is immediately visible to the game and vice versa.
- */
 const OPFS_ROOT = "b102";
 const OPFS_WORLDS = "worlds";
+const PLAYER_NAME_KEY = "b102.playerName";
+const MULTIPLAYER_SERVER_KEY = "b102.mpServer";
 
 function randomWorldName(): string {
 	const pick = (list: readonly string[]): string =>
@@ -23,7 +21,6 @@ function randomWorldName(): string {
 }
 
 function randomSeed(): string {
-	// Minecraft-style 64-bit signed seed (full range, including negatives).
 	const hi = Math.floor(Math.random() * 0x100000000);
 	const lo = Math.floor(Math.random() * 0x100000000);
 	let seed = (BigInt(hi) << 32n) | BigInt(lo);
@@ -66,11 +63,6 @@ async function listWorlds(): Promise<string[]> {
 	}
 }
 
-/**
- * Remove a world directory. Safe on the menu page because no OPFS worker is
- * running here, so no file handles are open (an open sync access handle would
- * make removeEntry fail with NoModificationAllowedError).
- */
 async function deleteWorld(name: string): Promise<void> {
 	const root = await navigator.storage.getDirectory();
 	const b102 = await root.getDirectoryHandle(OPFS_ROOT);
@@ -85,16 +77,34 @@ async function deleteWorld(name: string): Promise<void> {
 	}
 }
 
-/**
- * Main menu — world list + create + delete. Pure DOM overlay (no engine),
- * following the same pattern as PauseMenu.
- */
+export function getPlayerName(): string {
+	return localStorage.getItem(PLAYER_NAME_KEY) ?? "";
+}
+
+export function setPlayerName(name: string): void {
+	localStorage.setItem(PLAYER_NAME_KEY, name);
+}
+
+export function getMultiplayerServer(): string {
+	return localStorage.getItem(MULTIPLAYER_SERVER_KEY) ?? "ws://localhost:2567";
+}
+
+export function setMultiplayerServer(url: string): void {
+	localStorage.setItem(MULTIPLAYER_SERVER_KEY, url);
+}
+
 export class MainMenu {
 	private readonly container: HTMLElement;
 	private readonly worldListEl: HTMLElement;
 	private readonly nameInput: HTMLInputElement;
 	private readonly seedInput: HTMLInputElement;
 	private readonly statusEl: HTMLElement;
+	// Multiplayer fields
+	private readonly mpNameInput: HTMLInputElement;
+	private readonly mpServerInput: HTMLInputElement;
+	private readonly mpWorldInput: HTMLInputElement;
+	private readonly mpStatusEl: HTMLElement;
+	private tab: "single" | "multi" = "single";
 
 	constructor() {
 		this.container = document.createElement("div");
@@ -104,15 +114,33 @@ export class MainMenu {
 		title.innerText = "b102";
 		this.container.appendChild(title);
 
+		// Tab bar
+		const tabBar = document.createElement("div");
+		tabBar.className = "main-menu-tabs";
+		const spTab = document.createElement("button");
+		spTab.className = "main-menu-tab active";
+		spTab.innerText = "Singleplayer";
+		spTab.onclick = () => this.setTab("single");
+		const mpTab = document.createElement("button");
+		mpTab.className = "main-menu-tab";
+		mpTab.innerText = "Multiplayer";
+		mpTab.onclick = () => this.setTab("multi");
+		tabBar.appendChild(spTab);
+		tabBar.appendChild(mpTab);
+		this.container.appendChild(tabBar);
+
+		// Singleplayer panel
+		const spPanel = document.createElement("div");
+		spPanel.className = "main-menu-panel active";
+		spPanel.id = "spPanel";
+
 		const subtitle = document.createElement("p");
 		subtitle.className = "main-menu-subtitle";
 		subtitle.innerText = "Select a world to play";
-		this.container.appendChild(subtitle);
+		spPanel.appendChild(subtitle);
 
-		// Create-world row
 		const createRow = document.createElement("div");
 		createRow.className = "main-menu-create";
-
 		this.nameInput = document.createElement("input");
 		this.nameInput.type = "text";
 		this.nameInput.placeholder = "New world name";
@@ -120,28 +148,23 @@ export class MainMenu {
 		this.nameInput.addEventListener("keydown", (e) => {
 			if (e.key === "Enter") void this.createWorld();
 		});
-
 		const createButton = document.createElement("button");
 		createButton.innerText = "Create World";
 		createButton.onclick = () => void this.createWorld();
-
 		const randomButton = diceButton("Generate a random name", () => {
 			this.nameInput.value = randomWorldName();
 			this.nameInput.focus();
 			this.statusEl.classList.remove("error");
 			this.statusEl.innerText = "";
 		});
-
 		const inputWrap = document.createElement("div");
 		inputWrap.className = "main-menu-input-wrap";
 		inputWrap.appendChild(this.nameInput);
 		inputWrap.appendChild(randomButton);
-
 		createRow.appendChild(inputWrap);
 		createRow.appendChild(createButton);
-		this.container.appendChild(createRow);
+		spPanel.appendChild(createRow);
 
-		// Seed row
 		this.seedInput = document.createElement("input");
 		this.seedInput.type = "text";
 		this.seedInput.placeholder = "Seed (optional)";
@@ -151,14 +174,12 @@ export class MainMenu {
 		this.seedInput.addEventListener("keydown", (e) => {
 			if (e.key === "Enter") void this.createWorld();
 		});
-
 		const seedRandomButton = diceButton("Generate a random seed", () => {
 			this.seedInput.value = randomSeed();
 			this.seedInput.focus();
 			this.statusEl.classList.remove("error");
 			this.statusEl.innerText = "";
 		});
-
 		const seedRow = document.createElement("div");
 		seedRow.className = "main-menu-create";
 		const seedWrap = document.createElement("div");
@@ -166,18 +187,102 @@ export class MainMenu {
 		seedWrap.appendChild(this.seedInput);
 		seedWrap.appendChild(seedRandomButton);
 		seedRow.appendChild(seedWrap);
-		this.container.appendChild(seedRow);
+		spPanel.appendChild(seedRow);
 
 		this.statusEl = document.createElement("div");
 		this.statusEl.className = "main-menu-status";
-		this.container.appendChild(this.statusEl);
+		spPanel.appendChild(this.statusEl);
 
-		// World list
 		this.worldListEl = document.createElement("div");
 		this.worldListEl.className = "main-menu-worlds";
-		this.container.appendChild(this.worldListEl);
+		spPanel.appendChild(this.worldListEl);
+
+		this.container.appendChild(spPanel);
+
+		// Multiplayer panel
+		const mpPanel = document.createElement("div");
+		mpPanel.className = "main-menu-panel";
+		mpPanel.id = "mpPanel";
+
+		const mpSubtitle = document.createElement("p");
+		mpSubtitle.className = "main-menu-subtitle";
+		mpSubtitle.innerText = "Connect to a multiplayer server";
+		mpPanel.appendChild(mpSubtitle);
+
+		// Player name
+		const mpNameRow = document.createElement("div");
+		mpNameRow.className = "main-menu-create";
+		this.mpNameInput = document.createElement("input");
+		this.mpNameInput.type = "text";
+		this.mpNameInput.placeholder = "Your name";
+		this.mpNameInput.maxLength = 24;
+		this.mpNameInput.value = getPlayerName();
+		mpNameRow.appendChild(this.mpNameInput);
+		mpPanel.appendChild(mpNameRow);
+
+		// Server address
+		const mpServerRow = document.createElement("div");
+		mpServerRow.className = "main-menu-create";
+		this.mpServerInput = document.createElement("input");
+		this.mpServerInput.type = "text";
+		this.mpServerInput.placeholder = "Server address (ws://host:2567)";
+		this.mpServerInput.value = getMultiplayerServer();
+		mpServerRow.appendChild(this.mpServerInput);
+		mpPanel.appendChild(mpServerRow);
+
+		// World name
+		const mpWorldRow = document.createElement("div");
+		mpWorldRow.className = "main-menu-create";
+		this.mpWorldInput = document.createElement("input");
+		this.mpWorldInput.type = "text";
+		this.mpWorldInput.placeholder = "World name";
+		this.mpWorldInput.maxLength = 64;
+		const mpRandomWorld = diceButton("Random world", () => {
+			this.mpWorldInput.value = randomWorldName();
+			this.mpWorldInput.focus();
+		});
+		const mpWorldWrap = document.createElement("div");
+		mpWorldWrap.className = "main-menu-input-wrap";
+		mpWorldWrap.appendChild(this.mpWorldInput);
+		mpWorldWrap.appendChild(mpRandomWorld);
+		mpWorldRow.appendChild(mpWorldWrap);
+		mpPanel.appendChild(mpWorldRow);
+
+		// Connect button
+		const mpConnectRow = document.createElement("div");
+		mpConnectRow.className = "main-menu-create";
+		const mpConnectBtn = document.createElement("button");
+		mpConnectBtn.innerText = "Connect";
+		mpConnectBtn.className = "mp-connect";
+		mpConnectBtn.onclick = () => void this.connectMultiplayer();
+		mpConnectRow.appendChild(mpConnectBtn);
+		mpPanel.appendChild(mpConnectRow);
+
+		this.mpStatusEl = document.createElement("div");
+		this.mpStatusEl.className = "main-menu-status";
+		mpPanel.appendChild(this.mpStatusEl);
+
+		this.container.appendChild(mpPanel);
 
 		this.addStyles();
+	}
+
+	setTab(tab: "single" | "multi"): void {
+		this.tab = tab;
+		const spPanel = this.container.querySelector("#spPanel") as HTMLElement;
+		const mpPanel = this.container.querySelector("#mpPanel") as HTMLElement;
+		const tabs = this.container.querySelectorAll(".main-menu-tab");
+		if (tab === "single") {
+			spPanel?.classList.add("active");
+			mpPanel?.classList.remove("active");
+			tabs[0]?.classList.add("active");
+			tabs[1]?.classList.remove("active");
+		} else {
+			spPanel?.classList.remove("active");
+			mpPanel?.classList.add("active");
+			tabs[0]?.classList.remove("active");
+			tabs[1]?.classList.add("active");
+		}
 	}
 
 	public mount(root: HTMLElement): void {
@@ -279,6 +384,36 @@ export class MainMenu {
 		}
 	}
 
+	private async connectMultiplayer(): Promise<void> {
+		const playerName = this.mpNameInput.value.trim();
+		const server = this.mpServerInput.value.trim();
+		const worldName = sanitizeWorldName(this.mpWorldInput.value);
+
+		if (!playerName) {
+			this.mpStatusEl.innerText = "Please enter your name.";
+			this.mpStatusEl.classList.add("error");
+			return;
+		}
+		if (!server) {
+			this.mpStatusEl.innerText = "Please enter a server address.";
+			this.mpStatusEl.classList.add("error");
+			return;
+		}
+		if (!isValidWorldName(worldName)) {
+			this.mpStatusEl.innerText = "Please enter a valid world name.";
+			this.mpStatusEl.classList.add("error");
+			return;
+		}
+
+		// Save settings
+		setPlayerName(playerName);
+		setMultiplayerServer(server);
+
+		// Redirect to world with multiplayer params
+		const params = new URLSearchParams({ mp: "1", server, name: playerName });
+		window.location.href = `${worldPath(worldName)}?${params.toString()}`;
+	}
+
 	private loadingRow(text: string): HTMLElement {
 		const row = document.createElement("div");
 		row.className = "main-menu-world-row empty";
@@ -297,7 +432,7 @@ export class MainMenu {
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 16px;
+        gap: 12px;
         background: radial-gradient(circle at 50% 30%, #1e2a33, #0e1418);
         color: #e8e8e8;
         font-family: sans-serif;
@@ -310,15 +445,55 @@ export class MainMenu {
         letter-spacing: 4px;
       }
 
+      .main-menu-tabs {
+        display: flex;
+        gap: 4px;
+        margin-bottom: 8px;
+      }
+
+      .main-menu-tab {
+        padding: 8px 24px;
+        font-size: 1em;
+        border: 1px solid #45545e;
+        border-bottom: none;
+        border-radius: 4px 4px 0 0;
+        background: #141c22;
+        color: #9aa7b0;
+        cursor: pointer;
+        transition: background-color 0.2s, color 0.2s;
+      }
+
+      .main-menu-tab.active {
+        background: #2c4a5c;
+        color: #e8e8e8;
+        border-color: #7fb3d5;
+      }
+
+      .main-menu-tab:hover:not(.active) {
+        background: #1e2a33;
+        color: #e8e8e8;
+      }
+
+      .main-menu-panel {
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .main-menu-panel.active {
+        display: flex;
+      }
+
       #mainMenuContainer .main-menu-subtitle {
-        margin: 0 0 12px;
+        margin: 0;
         color: #9aa7b0;
       }
 
       #mainMenuContainer .main-menu-create {
         display: flex;
         gap: 8px;
-        margin-bottom: 8px;
+        margin-bottom: 4px;
       }
 
       #mainMenuContainer .main-menu-input-wrap {
@@ -378,6 +553,17 @@ export class MainMenu {
       #mainMenuContainer button:disabled {
         opacity: 0.5;
         cursor: default;
+      }
+
+      #mainMenuContainer button.mp-connect {
+        border-color: #5d9c6a;
+        background: #2c5c38;
+        width: 260px;
+      }
+
+      #mainMenuContainer button.mp-connect:hover:not(:disabled) {
+        background: #5d9c6a;
+        color: #0e1418;
       }
 
       #mainMenuContainer .main-menu-world-row {

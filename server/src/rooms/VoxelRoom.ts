@@ -16,6 +16,7 @@ import {
 	encodePlayerJoin,
 	encodePlayerLeave,
 	encodePlayerStateBatch,
+	encodeWorldTime,
 } from "../protocol/encoder.ts";
 import {
 	type BlockEditData,
@@ -37,11 +38,16 @@ interface ServerPlayerState {
 const TICK_RATE = 20; // Hz
 const MAX_PLAYERS = 24;
 const MAX_STORED_EDITS = 1000; // Keep last N edits for new joiners
+const DAY_DURATION_MS = 120000; // 2 minutes per day cycle
+const TIME_BROADCAST_INTERVAL = 5000; // Broadcast time every 5 seconds
 
 export class VoxelRoom extends Room {
 	private players = new Map<string, ServerPlayerState>();
 	private tickInterval: ReturnType<typeof setInterval> | null = null;
 	private blockEdits: BlockEditData[] = []; // Edit history for sync on join
+	private timeOfDay = 0.3; // Start at morning (0..1)
+	private timeAccum = 0; // Accumulator for time broadcast
+	private dayCycleAccum = 0; // Accumulator for day cycle advance
 
 	maxClients = MAX_PLAYERS;
 
@@ -130,8 +136,20 @@ export class VoxelRoom extends Room {
 		this.players.clear();
 	}
 
-	private tick(): void {
+	private tick(deltaMs = 50): void {
 		if (this.players.size === 0) return;
+
+		// Advance day/night cycle
+		this.dayCycleAccum += deltaMs;
+		this.timeOfDay = (this.dayCycleAccum % DAY_DURATION_MS) / DAY_DURATION_MS;
+
+		// Broadcast time periodically
+		this.timeAccum += deltaMs;
+		if (this.timeAccum >= TIME_BROADCAST_INTERVAL) {
+			this.timeAccum = 0;
+			const timeMsg = encodeWorldTime(this.timeOfDay);
+			this.broadcastBytes("binary", timeMsg, {});
+		}
 
 		// Build batch of all player states
 		const states: PlayerStateData[] = [];

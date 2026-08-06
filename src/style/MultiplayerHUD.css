@@ -9,6 +9,12 @@
 	z-index: 1000;
 	font-family: "Segoe UI", system-ui, sans-serif;
 	font-size: 14px;
+	overflow: hidden; /* Prevent scrollbars from off-screen name tags */
+}
+
+/* Prevent body scrollbars from multiplayer elements */
+body {
+	overflow: hidden;
 }
 
 .mp-status-bar {
@@ -146,6 +152,23 @@
 
 .mp-chat-input:focus {
 	border-color: rgba(255, 255, 255, 0.4);
+}
+
+/* Player name tags (floating above remote players) */
+.mp-name-tag {
+	position: absolute;
+	transform: translate(-50%, -100%);
+	padding: 2px 8px;
+	background: rgba(0, 0, 0, 0.6);
+	border-radius: 3px;
+	color: #fff;
+	font-size: 12px;
+	font-weight: 600;
+	white-space: nowrap;
+	pointer-events: none;
+	text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+	z-index: 100;
+	margin-top: -8px;
 }
 
 @keyframes mp-pulse {

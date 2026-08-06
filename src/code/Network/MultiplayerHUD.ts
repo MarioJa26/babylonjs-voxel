@@ -84,11 +84,12 @@ export class MultiplayerHUD {
 	}
 
 	setPlayerNames(names: string[]): void {
-		// Show names as a tooltip-like display
-		if (names.length <= 1) {
-			this.playerCountEl.textContent = `👤 ${names.length} (solo)`;
+		// names = remote players only; total = self + remotes
+		const total = names.length + 1;
+		if (total <= 1) {
+			this.playerCountEl.textContent = "👤 1 (solo)";
 		} else {
-			this.playerCountEl.textContent = `👤 ${names.length}: ${names.join(", ")}`;
+			this.playerCountEl.textContent = `👤 ${total}: ${names.join(", ")}`;
 		}
 	}
 

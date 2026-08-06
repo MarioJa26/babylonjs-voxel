@@ -16,6 +16,7 @@ import {
 	decodePlayerJoin,
 	decodePlayerLeave,
 	decodePlayerStateBatch,
+	decodeWorldTime,
 } from "./protocol/encoder";
 import {
 	type BlockEditData,
@@ -50,6 +51,7 @@ export interface NetClientCallbacks {
 	onPlayerStates?: (states: RemotePlayer[]) => void;
 	onBlockEdit?: (edit: BlockEditData) => void;
 	onChatMessage?: (chat: ChatMessageData) => void;
+	onWorldTime?: (timeOfDay: number) => void;
 	onServerError?: (code: number, message?: string) => void;
 }
 
@@ -207,6 +209,12 @@ export class NetClient {
 				for (const edit of edits) {
 					this.callbacks.onBlockEdit?.(edit);
 				}
+				break;
+			}
+
+			case MessageType.WorldTime: {
+				const timeOfDay = decodeWorldTime(data);
+				this.callbacks.onWorldTime?.(timeOfDay);
 				break;
 			}
 
