@@ -41,18 +41,21 @@ export class ChunkWorkerPool {
 	private pendingTasks = new Map<number, PendingTask>();
 	private nextId = 1;
 	private seed = "default";
+	private wasmEnabled = true;
 	private initialized = false;
 
-	async initialize(seed: string): Promise<void> {
+	async initialize(seed: string, wasmEnabled = true): Promise<void> {
 		if (this.initialized) {
-			if (seed !== this.seed) {
+			if (seed !== this.seed || wasmEnabled !== this.wasmEnabled) {
 				this.seed = seed;
+				this.wasmEnabled = wasmEnabled;
 				await this.recreateWorkers();
 			}
 			return;
 		}
 
 		this.seed = seed;
+		this.wasmEnabled = wasmEnabled;
 		const poolSize = resolvePoolSize();
 
 		for (let i = 0; i < poolSize; i++) {
@@ -117,6 +120,7 @@ export class ChunkWorkerPool {
 		freeWorker.worker.postMessage({
 			id: task.id,
 			seed: this.seed,
+			wasmEnabled: this.wasmEnabled,
 			chunkX: task.chunkX,
 			chunkY: task.chunkY,
 			chunkZ: task.chunkZ,

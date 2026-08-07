@@ -3,12 +3,17 @@
  *
  * Each worker owns one WorldGenerator instance. Receives chunk requests,
  * generates terrain, and posts results back with zero-copy buffer transfers.
+ *
+ * When wasmEnabled is true, loads the WASM SIMD noise backend before
+ * constructing the WorldGenerator — same backend the client uses.
  */
 import { parentPort } from "node:worker_threads";
+import { loadWasmNoiseFromFile } from "@/code/Lib/WasmNoise";
 
 type GenRequest = {
 	id: number;
 	seed: string;
+	wasmEnabled: boolean;
 	chunkX: number;
 	chunkY: number;
 	chunkZ: number;
@@ -34,9 +39,29 @@ let generator: {
 } | null = null;
 
 let currentSeed = "";
+let wasmInitialized = false;
 
-async function ensureInit(seed: string): Promise<void> {
+async function ensureWasm(wasmEnabled: boolean): Promise<void> {
+	if (wasmInitialized) return;
+	wasmInitialized = true;
+
+	if (wasmEnabled) {
+		const ok = await loadWasmNoiseFromFile();
+		if (ok) {
+			console.log("[chunk-worker] WASM noise backend active");
+		} else {
+			console.log("[chunk-worker] JS noise backend (WASM unavailable)");
+		}
+	} else {
+		console.log("[chunk-worker] JS noise backend (wasm-enabled=false)");
+	}
+}
+
+async function ensureInit(seed: string, wasmEnabled: boolean): Promise<void> {
 	if (generator && currentSeed === seed) return;
+
+	// Initialize WASM backend before first WorldGenerator construction
+	await ensureWasm(wasmEnabled);
 
 	const { WorldGenerator: WG } = await import(
 		"@/code/Generation/WorldGenerator"
@@ -51,7 +76,7 @@ async function ensureInit(seed: string): Promise<void> {
 }
 
 function handleRequest(req: GenRequest): void {
-	ensureInit(req.seed)
+	ensureInit(req.seed, req.wasmEnabled)
 		.then(() => {
 			const gen = generator!;
 			const result = gen.generateChunkData(req.chunkX, req.chunkY, req.chunkZ);

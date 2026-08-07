@@ -72,8 +72,10 @@ export class VoxelRoom extends Room {
 		// The config seed is authoritative — clients do not provide their own.
 		this.chunkGen = new ChunkGenerationService();
 		this.seed = this.config.seed;
-		this.chunkGen.setSeed(this.seed);
-		console.log(`[VoxelRoom] terrain seed: ${this.seed} (from server.properties)`);
+		this.chunkGen.setSeed(this.seed, this.config.wasmEnabled);
+		console.log(
+			`[VoxelRoom] terrain seed: ${this.seed} (from server.properties), wasm: ${this.config.wasmEnabled}`,
+		);
 
 		// Initialize world storage (persistence) and load existing edits
 		this.worldStorage = new ServerWorldStorage(this.worldName);

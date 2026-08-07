@@ -15,6 +15,13 @@ import { createWasmNoiseBackend } from "./WasmKernels";
  */
 export const KERNELS_WASM_URL = "/wasm/kernels.wasm";
 
+/**
+ * Default filesystem path for the server (Node.js). Relative to cwd — the
+ * server runs from the project root, so this resolves to
+ * project-root/src/code/wasm/kernels.wasm.
+ */
+export const KERNELS_WASM_PATH = "src/code/wasm/kernels.wasm";
+
 let wasmNoisePromise: Promise<boolean> | null = null;
 
 /** ?noWasm=1 in the URL forces the JS backend (parity debugging). */
@@ -57,4 +64,57 @@ async function loadWasmNoise(url: string): Promise<boolean> {
 		console.warn("[wasm-noise] load failed - keeping JS noise backend:", error);
 		return false;
 	}
+}
+
+/**
+ * Node.js filesystem loader for the server. Loads kernels.wasm from disk
+ * and installs it as the active noise backend. Same contract as
+ * enableWasmNoise: returns true on success, false on any failure (JS
+ * backend stays active), never throws.
+ *
+ * Searches multiple locations so it works regardless of cwd:
+ *   1. The explicit filePath (if absolute, used as-is)
+ *   2. Resolved against process.cwd()
+ *   3. Resolved against cwd/../ (parent — handles running from server/)
+ *   4. Resolved against cwd/../../ (project root — handles server/dist/)
+ */
+export async function loadWasmNoiseFromFile(
+	filePath: string = KERNELS_WASM_PATH,
+): Promise<boolean> {
+	if (wasmNoisePromise) return wasmNoisePromise;
+	wasmNoisePromise = (async () => {
+		const { readFileSync, existsSync } = await import("node:fs");
+		const { resolve, isAbsolute } = await import("node:path");
+
+		// Build candidate paths: explicit first, then search upwards from cwd
+		const candidates: string[] = [];
+		if (isAbsolute(filePath)) {
+			candidates.push(filePath);
+		} else {
+			candidates.push(resolve(process.cwd(), filePath));
+			candidates.push(resolve(process.cwd(), "..", filePath));
+			candidates.push(resolve(process.cwd(), "..", "..", filePath));
+		}
+
+		for (const absPath of candidates) {
+			if (!existsSync(absPath)) continue;
+			try {
+				const bytes = new Uint8Array(readFileSync(absPath));
+				setNoiseBackend(createWasmNoiseBackend(bytes));
+				console.log(
+					`[wasm-noise] loaded from ${absPath} (${bytes.byteLength} bytes)`,
+				);
+				return true;
+			} catch (error) {
+				console.warn(`[wasm-noise] read failed for ${absPath}:`, error);
+			}
+		}
+
+		console.warn(
+			"[wasm-noise] file not found in any candidate path - keeping JS noise backend",
+		);
+		console.warn("  tried:", candidates.join(", "));
+		return false;
+	})();
+	return wasmNoisePromise;
 }

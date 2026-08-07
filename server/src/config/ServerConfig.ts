@@ -20,6 +20,7 @@ export interface ServerConfig {
 	tickRate: number;
 	dayDuration: number;
 	dayCycle: boolean;
+	wasmEnabled: boolean;
 }
 
 const DEFAULTS: ServerConfig = {
@@ -33,6 +34,7 @@ const DEFAULTS: ServerConfig = {
 	tickRate: 20,
 	dayDuration: 120000,
 	dayCycle: true,
+	wasmEnabled: true,
 };
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
@@ -97,6 +99,7 @@ export function loadServerConfig(configPath = resolve(process.cwd(), "server.pro
 		tickRate: parseIntSafe(props["tick-rate"], DEFAULTS.tickRate),
 		dayDuration: parseIntSafe(props["day-duration"], DEFAULTS.dayDuration),
 		dayCycle: parseBoolean(props["day-cycle"], DEFAULTS.dayCycle),
+		wasmEnabled: parseBoolean(props["wasm-enabled"], DEFAULTS.wasmEnabled),
 	};
 
 	return cachedConfig;

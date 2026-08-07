@@ -34,16 +34,19 @@ export class ChunkGenerationService {
 	private initPromise: Promise<void> | null = null;
 	private dedupMap = new Map<string, Promise<ChunkData>>();
 
-	setSeed(seed: string): void {
+	setSeed(seed: string, wasmEnabled = true): void {
 		if (seed === this.seed && this.initPromise) return;
 		this.seed = seed;
 		this.initPromise = null;
 		this.dedupMap.clear();
+		this.wasmEnabled = wasmEnabled;
 	}
+
+	private wasmEnabled = true;
 
 	private async ensurePool(): Promise<void> {
 		if (this.initPromise) return this.initPromise;
-		this.initPromise = this.pool.initialize(this.seed);
+		this.initPromise = this.pool.initialize(this.seed, this.wasmEnabled);
 		return this.initPromise;
 	}
 
