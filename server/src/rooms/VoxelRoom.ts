@@ -11,10 +11,12 @@
 import { type Client, Room } from "colyseus";
 import {
 	BinaryDecoder,
+	decodeChunkRequestBatch,
 	encodeBlockEditBatch,
 	encodeBlockEditBroadcast,
 	encodeChatMessage,
 	encodeChunkData,
+	encodeChunkDataBatch,
 	encodeChunkUnchanged,
 	encodePlayerJoin,
 	encodePlayerLeave,
@@ -161,6 +163,9 @@ export class VoxelRoom extends Room {
 		}
 		this.players.clear();
 
+		// Terminate worker threads
+		await this.chunkGen.terminate();
+
 		// Persist world edits to disk
 		if (this.worldStorage) {
 			await this.worldStorage.save();
@@ -274,11 +279,17 @@ export class VoxelRoom extends Room {
 
 			case MessageType.ChunkRequest: {
 				const { cx, cy, cz, lod, cachedHash } = dec.readChunkRequest();
-				// Only support LOD0 for now
 				if (lod !== 0) break;
-
-				// Generate chunk and check if it changed
 				void this.handleChunkRequest(client, cx, cy, cz, cachedHash);
+				break;
+			}
+
+			case MessageType.ChunkRequestBatch: {
+				const requests = dec.readChunkRequestBatch();
+				const valid = requests.filter((r: { lod: number }) => r.lod === 0);
+				if (valid.length > 0) {
+					void this.handleBatchChunkRequest(client, valid);
+				}
 				break;
 			}
 
@@ -303,19 +314,70 @@ export class VoxelRoom extends Room {
 		try {
 			const chunkData = await this.chunkGen.generateChunk(cx, cy, cz);
 
-			// Check if chunk data matches client's cached version
 			if (cachedHash !== 0 && chunkData.hash === cachedHash) {
-				// Client already has this chunk — send short "unchanged" stamp
 				const msg = encodeChunkUnchanged(cx, cy, cz, chunkData.hash);
 				client.sendBytes("binary", msg);
 				return;
 			}
 
-			// Send full chunk data with hash for caching
 			const msg = encodeChunkData(chunkData);
 			client.sendBytes("binary", msg);
 		} catch (err) {
 			console.error(`[VoxelRoom] Chunk gen failed for ${cx},${cy},${cz}:`, err);
+		}
+	}
+
+	private async handleBatchChunkRequest(
+		client: Client,
+		requests: Array<{
+			cx: number;
+			cy: number;
+			cz: number;
+			lod: number;
+			cachedHash: number;
+		}>,
+	): Promise<void> {
+		try {
+			const results = await this.chunkGen.generateChunksBatch(
+				requests.map((r) => ({ chunkX: r.cx, chunkY: r.cy, chunkZ: r.cz })),
+			);
+
+			const unchanged: Array<{
+				cx: number;
+				cy: number;
+				cz: number;
+				hash: number;
+			}> = [];
+			const fullChunks: typeof results = [];
+
+			for (let i = 0; i < results.length; i++) {
+				const cachedHash = requests[i].cachedHash;
+				if (cachedHash !== 0 && results[i].hash === cachedHash) {
+					unchanged.push({
+						cx: results[i].chunkX,
+						cy: results[i].chunkY,
+						cz: results[i].chunkZ,
+						hash: results[i].hash,
+					});
+				} else {
+					fullChunks.push(results[i]);
+				}
+			}
+
+			if (fullChunks.length > 0) {
+				const msg = encodeChunkDataBatch(fullChunks);
+				client.sendBytes("binary", msg);
+			}
+
+			for (const u of unchanged) {
+				const msg = encodeChunkUnchanged(u.cx, u.cy, u.cz, u.hash);
+				client.sendBytes("binary", msg);
+			}
+		} catch (err) {
+			console.error(
+				`[VoxelRoom] Batch chunk gen failed (${requests.length} chunks):`,
+				err,
+			);
 		}
 	}
 }

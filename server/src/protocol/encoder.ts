@@ -227,6 +227,33 @@ export class BinaryDecoder {
 		const cachedHash = this.readUint32();
 		return { cx, cy, cz, lod, cachedHash };
 	}
+
+	readChunkRequestBatch(): Array<{
+		cx: number;
+		cy: number;
+		cz: number;
+		lod: number;
+		cachedHash: number;
+	}> {
+		const count = this.readUint16();
+		const requests: Array<{
+			cx: number;
+			cy: number;
+			cz: number;
+			lod: number;
+			cachedHash: number;
+		}> = [];
+		for (let i = 0; i < count; i++) {
+			requests.push({
+				cx: this.readInt32(),
+				cy: this.readInt32(),
+				cz: this.readInt32(),
+				lod: this.readUint8(),
+				cachedHash: this.readUint32(),
+			});
+		}
+		return requests;
+	}
 }
 
 // Batch encoding for server → client broadcasts
@@ -359,7 +386,11 @@ export function decodeChatMessage(buffer: Uint8Array): ChatMessageData {
  * Simple hash for chunk cache validation.
  * Combines block data into a 32-bit stamp. Fast, no crypto overhead.
  */
-export function hashChunk(blocks: Uint8Array, light: Uint8Array, palette?: number[]): number {
+export function hashChunk(
+	blocks: Uint8Array,
+	light: Uint8Array,
+	palette?: number[],
+): number {
 	let h = 0x811c9dc5; // FNV offset basis
 	const mix = (v: number) => {
 		h ^= v & 0xff;
@@ -431,7 +462,12 @@ export function encodeChunkData(data: {
 	const uniformSize = data.isUniform ? 2 : 0;
 	const paletteSize = data.palette ? 2 + data.palette.length * 2 : 0;
 	const totalSize =
-		headerSize + uniformSize + paletteSize + data.blocks.length + 4 + lightBytes;
+		headerSize +
+		uniformSize +
+		paletteSize +
+		data.blocks.length +
+		4 +
+		lightBytes;
 
 	const enc = new BinaryEncoder(totalSize);
 	enc.writeUint8(MessageType.ChunkData);
@@ -567,4 +603,212 @@ export function decodeChunkUnchanged(buffer: Uint8Array): {
 		cz: dec.readInt32(),
 		hash: dec.readUint32(),
 	};
+}
+
+// ---------------------------------------------------------------------------
+// Chunk request batch — client → server, multiple coords in one message
+// Format: [type:1][count:u16][cx:i32][cy:i32][cz:i32][lod:u8][cachedHash:u32] × count
+// ---------------------------------------------------------------------------
+
+export function encodeChunkRequestBatch(
+	requests: Array<{
+		cx: number;
+		cy: number;
+		cz: number;
+		lod: number;
+		cachedHash: number;
+	}>,
+): Uint8Array {
+	const enc = new BinaryEncoder(3 + requests.length * 15);
+	enc.writeUint8(MessageType.ChunkRequestBatch);
+	enc.writeUint16(Math.min(requests.length, 65535));
+	for (const r of requests) {
+		enc.writeInt32(r.cx);
+		enc.writeInt32(r.cy);
+		enc.writeInt32(r.cz);
+		enc.writeUint8(r.lod);
+		enc.writeUint32(r.cachedHash);
+	}
+	return enc.getBytes();
+}
+
+export function decodeChunkRequestBatch(
+	buffer: Uint8Array,
+): Array<{
+	cx: number;
+	cy: number;
+	cz: number;
+	lod: number;
+	cachedHash: number;
+}> {
+	const dec = new BinaryDecoder(buffer.subarray(1));
+	const count = dec.readUint16();
+	const requests: Array<{
+		cx: number;
+		cy: number;
+		cz: number;
+		lod: number;
+		cachedHash: number;
+	}> = [];
+	for (let i = 0; i < count; i++) {
+		requests.push({
+			cx: dec.readInt32(),
+			cy: dec.readInt32(),
+			cz: dec.readInt32(),
+			lod: dec.readUint8(),
+			cachedHash: dec.readUint32(),
+		});
+	}
+	return requests;
+}
+
+// ---------------------------------------------------------------------------
+// Chunk data batch — server → client, multiple chunks in one message
+// Format: [type:1][count:u16][(chunk entry)] × count
+// Each entry: [cx:i32][cy:i32][cz:i32][hash:u32][flags:u8][blockData...][lightData...]
+// (same inner format as encodeChunkData minus the type byte)
+// ---------------------------------------------------------------------------
+
+export function encodeChunkDataBatch(
+	chunks: Array<{
+		chunkX: number;
+		chunkY: number;
+		chunkZ: number;
+		blocks: Uint8Array;
+		light: Uint8Array;
+		palette?: number[];
+		isUniform: boolean;
+		uniformBlockId: number;
+		hash: number;
+	}>,
+): Uint8Array {
+	// Calculate total size
+	let totalSize = 3; // type + count
+	for (const c of chunks) {
+		totalSize += 12 + 4 + 1; // coords + hash + flags
+		if (c.isUniform) {
+			totalSize += 2;
+		} else if (c.palette) {
+			totalSize += 2 + c.palette.length * 2 + c.blocks.length;
+		} else {
+			totalSize += c.blocks.length;
+		}
+		totalSize += 4 + c.light.length;
+	}
+
+	const enc = new BinaryEncoder(totalSize);
+	enc.writeUint8(MessageType.ChunkDataBatch);
+	enc.writeUint16(Math.min(chunks.length, 65535));
+
+	for (const c of chunks) {
+		enc.writeInt32(c.chunkX);
+		enc.writeInt32(c.chunkY);
+		enc.writeInt32(c.chunkZ);
+		enc.writeUint32(c.hash);
+
+		let flags = 0;
+		if (c.isUniform) flags |= 1;
+		if (c.palette) flags |= 2;
+		enc.writeUint8(flags);
+
+		if (c.isUniform) {
+			enc.writeUint16(c.uniformBlockId);
+		} else if (c.palette) {
+			enc.writeUint16(c.palette.length);
+			for (const pid of c.palette) {
+				enc.writeUint16(pid);
+			}
+			enc.writeBytes(c.blocks);
+		} else {
+			enc.writeBytes(c.blocks);
+		}
+
+		enc.writeUint32(c.light.length);
+		enc.writeBytes(c.light);
+	}
+
+	return enc.getBytes();
+}
+
+export function decodeChunkDataBatch(buffer: Uint8Array): Array<{
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+	blocks: Uint8Array;
+	light: Uint8Array;
+	palette?: number[];
+	isUniform: boolean;
+	uniformBlockId: number;
+	hash: number;
+}> {
+	const dec = new BinaryDecoder(buffer.subarray(1));
+	const count = dec.readUint16();
+	const chunks: Array<{
+		chunkX: number;
+		chunkY: number;
+		chunkZ: number;
+		blocks: Uint8Array;
+		light: Uint8Array;
+		palette?: number[];
+		isUniform: boolean;
+		uniformBlockId: number;
+		hash: number;
+	}> = [];
+
+	for (let i = 0; i < count; i++) {
+		const chunkX = dec.readInt32();
+		const chunkY = dec.readInt32();
+		const chunkZ = dec.readInt32();
+		const hash = dec.readUint32();
+		const flags = dec.readUint8();
+		const isUniform = (flags & 1) !== 0;
+		const hasPalette = (flags & 2) !== 0;
+
+		let uniformBlockId = 0;
+		let palette: number[] | undefined;
+		let blocks: Uint8Array;
+
+		if (isUniform) {
+			uniformBlockId = dec.readUint16();
+			blocks = new Uint8Array(0);
+		} else if (hasPalette) {
+			const paletteLen = dec.readUint16();
+			palette = [];
+			for (let j = 0; j < paletteLen; j++) {
+				palette.push(dec.readUint16());
+			}
+			const chunkVolume = 32 * 32 * 32;
+			const packedSize = Math.ceil(chunkVolume / 2);
+			blocks = new Uint8Array(packedSize);
+			for (let j = 0; j < packedSize; j++) {
+				blocks[j] = dec.readUint8();
+			}
+		} else {
+			const chunkVolume = 32 * 32 * 32;
+			blocks = new Uint8Array(chunkVolume);
+			for (let j = 0; j < chunkVolume; j++) {
+				blocks[j] = dec.readUint8();
+			}
+		}
+
+		const lightLen = dec.readUint32();
+		const light = new Uint8Array(lightLen);
+		for (let j = 0; j < lightLen; j++) {
+			light[j] = dec.readUint8();
+		}
+
+		chunks.push({
+			chunkX,
+			chunkY,
+			chunkZ,
+			blocks,
+			light,
+			palette,
+			isUniform,
+			uniformBlockId,
+			hash,
+		});
+	}
+
+	return chunks;
 }

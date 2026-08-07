@@ -13,6 +13,7 @@ export const MessageType = {
 	PlayerState: 0x01,
 	BlockEdit: 0x02,
 	ChunkRequest: 0x03,
+	ChunkRequestBatch: 0x04,
 
 	// Server → Client
 	PlayerStateBatch: 0x10,
@@ -22,6 +23,7 @@ export const MessageType = {
 	BlockEditBatch: 0x14, // Sent on join: all recent edits
 	ChunkData: 0x15,
 	ChunkUnchanged: 0x16, // Server says "your cached chunk is still valid"
+	ChunkDataBatch: 0x19,
 	WorldTime: 0x17,
 	ChatMessage: 0x18,
 } as const;

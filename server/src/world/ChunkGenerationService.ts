@@ -1,9 +1,11 @@
 /**
  * ChunkGenerationService — server-side terrain generation.
- * Dynamically imports the client's WorldGenerator (pure computation, no DOM).
+ *
+ * Uses a worker thread pool for parallel chunk generation, request
+ * deduplication to avoid duplicate work, and batch dispatch for efficiency.
  */
-import type { WorldGenerator } from "@/code/Generation/WorldGenerator";
 import { hashChunk } from "../protocol/encoder.ts";
+import { ChunkWorkerPool } from "../workers/ChunkWorkerPool.ts";
 
 export interface ChunkData {
 	chunkX: number;
@@ -17,34 +19,31 @@ export interface ChunkData {
 	hash: number;
 }
 
+interface RawChunkResult {
+	blocks: Uint8Array;
+	light: Uint8Array;
+}
+
+function chunkKey(cx: number, cy: number, cz: number): string {
+	return `${cx},${cy},${cz}`;
+}
+
 export class ChunkGenerationService {
-	private generator: WorldGenerator | null = null;
+	private pool = new ChunkWorkerPool();
 	private seed = "default";
 	private initPromise: Promise<void> | null = null;
+	private dedupMap = new Map<string, Promise<ChunkData>>();
 
 	setSeed(seed: string): void {
-		if (seed === this.seed && this.generator) return;
+		if (seed === this.seed && this.initPromise) return;
 		this.seed = seed;
-		this.generator = null;
 		this.initPromise = null;
+		this.dedupMap.clear();
 	}
 
-	private async ensureInit(): Promise<void> {
-		if (this.generator) return;
+	private async ensurePool(): Promise<void> {
 		if (this.initPromise) return this.initPromise;
-
-		this.initPromise = (async () => {
-			const { WorldGenerator: WG } = await import(
-				"@/code/Generation/WorldGenerator"
-			);
-			const { GenerationParams } = await import(
-				"@/code/Generation/NoiseAndParameters/GenerationParams"
-			);
-
-			const params = { ...GenerationParams, SEED: this.seed };
-			this.generator = new WG(params as any);
-		})();
-
+		this.initPromise = this.pool.initialize(this.seed);
 		return this.initPromise;
 	}
 
@@ -53,15 +52,84 @@ export class ChunkGenerationService {
 		chunkY: number,
 		chunkZ: number,
 	): Promise<ChunkData> {
-		await this.ensureInit();
-		const gen = this.generator!;
-		const result = gen.generateChunkData(chunkX, chunkY, chunkZ);
+		const key = chunkKey(chunkX, chunkY, chunkZ);
 
-		// Compress blocks for network transfer
-		const { blocks, light } = result;
+		const existing = this.dedupMap.get(key);
+		if (existing) return existing;
+
+		const promise = this._doGenerate(chunkX, chunkY, chunkZ);
+		this.dedupMap.set(key, promise);
+
+		try {
+			const result = await promise;
+			return result;
+		} finally {
+			this.dedupMap.delete(key);
+		}
+	}
+
+	private async _doGenerate(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+	): Promise<ChunkData> {
+		await this.ensurePool();
+		const raw = await this.pool.dispatch(chunkX, chunkY, chunkZ);
+		return this.finalizeChunk(chunkX, chunkY, chunkZ, raw);
+	}
+
+	async generateChunksBatch(
+		coords: Array<{ chunkX: number; chunkY: number; chunkZ: number }>,
+	): Promise<ChunkData[]> {
+		await this.ensurePool();
+
+		const results: ChunkData[] = new Array(coords.length);
+		const toFetch: Array<{
+			index: number;
+			cx: number;
+			cy: number;
+			cz: number;
+		}> = [];
+		const fetches: Array<Promise<RawChunkResult>> = [];
+
+		for (let i = 0; i < coords.length; i++) {
+			const { chunkX: cx, chunkY: cy, chunkZ: cz } = coords[i];
+			const key = chunkKey(cx, cy, cz);
+
+			const existing = this.dedupMap.get(key);
+			if (existing) {
+				results[i] = await existing;
+				continue;
+			}
+
+			toFetch.push({ index: i, cx, cy, cz });
+		}
+
+		if (toFetch.length > 0) {
+			const batchPromise = this.pool.dispatchAll(
+				toFetch.map((t) => ({ chunkX: t.cx, chunkY: t.cy, chunkZ: t.cz })),
+			);
+
+			const batchResults = await batchPromise;
+
+			for (let i = 0; i < toFetch.length; i++) {
+				const { index, cx, cy, cz } = toFetch[i];
+				const chunkData = this.finalizeChunk(cx, cy, cz, batchResults[i]);
+				results[index] = chunkData;
+			}
+		}
+
+		return results;
+	}
+
+	private finalizeChunk(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		raw: RawChunkResult,
+	): ChunkData {
+		const { blocks, light } = raw;
 		const compressed = this.compressBlocks(blocks);
-
-		// Compute hash for cache validation
 		const hash = hashChunk(compressed.data, light, compressed.palette);
 
 		return {
@@ -77,10 +145,6 @@ export class ChunkGenerationService {
 		};
 	}
 
-	/**
-	 * Compress chunk blocks into uniform/palette/dense format.
-	 * Mirrors the client's chunk.worker.ts compressBlocks().
-	 */
 	private compressBlocks(blocks: Uint8Array): {
 		data: Uint8Array;
 		palette?: number[];
@@ -95,13 +159,11 @@ export class ChunkGenerationService {
 			uniqueBlocks.set(id, (uniqueBlocks.get(id) ?? 0) + 1);
 		}
 
-		// Uniform chunk (all same block)
 		if (uniqueBlocks.size === 1) {
 			const uniformBlockId = uniqueBlocks.keys().next().value ?? 0;
 			return { data: new Uint8Array(0), isUniform: true, uniformBlockId };
 		}
 
-		// Palette compression (≤16 unique blocks → nibble packing)
 		if (uniqueBlocks.size <= 16) {
 			const palette = Array.from(uniqueBlocks.keys());
 			const blockToPalette = new Map<number, number>();
@@ -110,8 +172,6 @@ export class ChunkGenerationService {
 			}
 
 			const packed = new Uint8Array(Math.ceil(len / 2));
-			// Match client's chunk.worker.ts nibble order:
-			// byte i = (low nibble = block[2i]) | (high nibble = block[2i+1] << 4)
 			for (let i = 0; i < len; i += 2) {
 				const evenIdx = blockToPalette.get(blocks[i]) ?? 0;
 				const oddIdx = blockToPalette.get(blocks[i + 1]) ?? 0;
@@ -121,7 +181,16 @@ export class ChunkGenerationService {
 			return { data: packed, palette, isUniform: false, uniformBlockId: 0 };
 		}
 
-		// Dense format (full Uint8Array copy)
-		return { data: new Uint8Array(blocks), isUniform: false, uniformBlockId: 0 };
+		return {
+			data: new Uint8Array(blocks),
+			isUniform: false,
+			uniformBlockId: 0,
+		};
+	}
+
+	async terminate(): Promise<void> {
+		await this.pool.terminate();
+		this.dedupMap.clear();
+		this.initPromise = null;
 	}
 }
