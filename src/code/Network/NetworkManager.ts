@@ -20,21 +20,39 @@ import { play, playDebris } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
 import { WorldEnvironment } from "@/code/Maps/WorldEnvironment";
 import type { Player } from "@/code/Player/Player";
+import { resetDistantTerrain } from "@/code/Generation/DistantTerrain/DistantTerrain";
+import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap";
 import {
 	deleteBlock,
 	getLightByWorldCoords,
 	setBlock,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
-import { worldSeedFor } from "@/code/World/WorldContext";
+import { getWorldNameFromUrl, worldSeedFor } from "@/code/World/WorldContext";
 import { RemoteChunkProvider } from "./chunk/RemoteChunkProvider";
 import { MultiplayerHUD } from "./MultiplayerHUD";
 import { NetClient, type RemotePlayer } from "./NetClient";
 import { BlockActionType } from "./protocol/messages";
 import { RemotePlayerRenderer } from "./RemotePlayerRenderer";
+import { Gamemodes } from "@/code/Player/PlayerStats";
 
 const SEND_RATE = 20; // Hz — how often to send player position
 const SEND_INTERVAL_MS = 1000 / SEND_RATE;
+
+function gamemodeName(gm: Gamemodes): string {
+	switch (gm) {
+		case Gamemodes.Survival:
+			return "Survival";
+		case Gamemodes.Creative:
+			return "Creative";
+		case Gamemodes.Adventure:
+			return "Adventure";
+		case Gamemodes.Spectator:
+			return "Spectator";
+		default:
+			return "Unknown";
+	}
+}
 
 export class NetworkManager {
 	private client: NetClient;
@@ -46,6 +64,7 @@ export class NetworkManager {
 	private lastYaw = 0;
 	private lastPitch = 0;
 	private _scratchVec: Vec3 = vec3Zero();
+	private serverSeed: string | null = null;
 
 	constructor(player: Player, serverUrl?: string) {
 		this.player = player;
@@ -104,14 +123,24 @@ export class NetworkManager {
 				// Sync to server time — server is authoritative
 				Map1.environment?.setTime(timeOfDay);
 			},
+			onWorldConfig: (seed) => {
+				// Server sent authoritative seed — re-seed local terrain so the
+				// clip map matches the server's distant terrain.
+				console.log(`[NetworkManager] Received server seed: ${seed}`);
+				this.serverSeed = seed;
+				setTerrainSeed(seed);
+				ChunkWorkerPool.getInstance(2)?.setWorldSeed(seed);
+				resetDistantTerrain();
+			},
 			onServerError: (code, message) => {
 				console.error(`[NetworkManager] Server error ${code}: ${message}`);
 			},
 		});
 
-		// Compute the same seed the client uses for terrain generation
-		const seed = worldSeedFor(worldName);
-		await this.client.connect(playerName, worldName, seed);
+		// Multiplayer: don't send a seed — the server uses its config seed.
+		// The server sends back the authoritative seed via WorldConfig on join,
+		// which re-seeds our local terrain (see onWorldConfig callback).
+		await this.client.connect(playerName, worldName, "");
 
 		// Enable server-side chunk generation
 		ChunkWorkerPool.getInstance(2)?.setRemoteChunkProvider(this.chunkProvider);
@@ -226,7 +255,119 @@ export class NetworkManager {
 	}
 
 	sendChat(message: string): void {
+		// Intercept commands (start with ! or /) — run locally, don't broadcast
+		if (message.startsWith("!") || message.startsWith("/")) {
+			this.handleCommand(message.slice(1).trim());
+			return;
+		}
 		this.client.sendChat(message);
+	}
+
+	private handleCommand(raw: string): void {
+		const parts = raw.split(/\s+/);
+		const cmd = parts[0]?.toLowerCase();
+		const args = parts.slice(1);
+
+		switch (cmd) {
+			case "g":
+			case "gamemode": {
+				const gm = this.parseGamemode(args[0]);
+				if (gm !== null) {
+					this.player.stats.gamemode = gm;
+					this.hud.addSystemMessage(`Gamemode set to ${gamemodeName(gm)}`);
+				} else {
+					this.hud.addSystemMessage(
+						"Usage: !g <gamemode> (survival, creative, adventure, spectator)",
+					);
+				}
+				break;
+			}
+			case "tp":
+			case "teleport":
+				this.handleTeleport(args);
+				break;
+			case "seed": {
+				// In multiplayer, show the server's authoritative seed
+				if (this.serverSeed !== null) {
+					this.hud.addSystemMessage(`Server seed: ${this.serverSeed}`);
+				} else {
+					const worldName = getWorldNameFromUrl() ?? "default";
+					this.hud.addSystemMessage(
+						`World "${worldName}" seed: ${worldSeedFor(worldName)}`,
+					);
+				}
+				break;
+			}
+			case "h":
+			case "help":
+				this.hud.addSystemMessage("Commands:");
+				this.hud.addSystemMessage(
+					"  !g <gamemode> - Set gamemode (survival, creative, adventure, spectator)",
+				);
+				this.hud.addSystemMessage(
+					"  !tp <x> <y> <z> - Teleport to coordinates (~ for current)",
+				);
+				this.hud.addSystemMessage("  !tp <x> <z> - Teleport keeping current y");
+				this.hud.addSystemMessage(
+					"  !seed       - Show the current world's seed",
+				);
+				this.hud.addSystemMessage("  !h / !help   - Show this help");
+				break;
+			default:
+				this.hud.addSystemMessage(`Unknown command: ${cmd}`);
+		}
+	}
+
+	private parseGamemode(input: string | undefined): Gamemodes | null {
+		if (!input) return null;
+		const lower = input.toLowerCase();
+		if (lower === "0" || lower === "survival") return Gamemodes.Survival;
+		if (lower === "1" || lower === "creative") return Gamemodes.Creative;
+		if (lower === "2" || lower === "adventure") return Gamemodes.Adventure;
+		if (lower === "3" || lower === "spectator") return Gamemodes.Spectator;
+		return null;
+	}
+
+	private handleTeleport(args: string[]): void {
+		const pos = this.player.position;
+		const current = { x: pos.x, y: pos.y, z: pos.z };
+
+		const parseCoord = (input: string, current: number): number | null => {
+			if (input === "~") return current;
+			if (input.startsWith("~")) {
+				const offset = Number.parseFloat(input.slice(1));
+				if (Number.isNaN(offset)) return null;
+				return current + offset;
+			}
+			const val = Number.parseFloat(input);
+			return Number.isNaN(val) ? null : val;
+		};
+
+		if (args.length === 2) {
+			const x = parseCoord(args[0], current.x);
+			const z = parseCoord(args[1], current.z);
+			if (x === null || z === null) {
+				this.hud.addSystemMessage("Usage: !tp <x> <z>");
+				return;
+			}
+			pos.x = x;
+			pos.z = z;
+			this.hud.addSystemMessage(`Teleported to ${x} ${current.y} ${z}`);
+		} else if (args.length === 3) {
+			const x = parseCoord(args[0], current.x);
+			const y = parseCoord(args[1], current.y);
+			const z = parseCoord(args[2], current.z);
+			if (x === null || y === null || z === null) {
+				this.hud.addSystemMessage("Usage: !tp <x> <y> <z>");
+				return;
+			}
+			pos.x = x;
+			pos.y = y;
+			pos.z = z;
+			this.hud.addSystemMessage(`Teleported to ${x} ${y} ${z}`);
+		} else {
+			this.hud.addSystemMessage("Usage: !tp <x> <y> <z> or !tp <x> <z>");
+		}
 	}
 
 	disconnect(): void {

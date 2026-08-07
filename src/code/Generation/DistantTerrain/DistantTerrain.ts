@@ -402,6 +402,17 @@ export function isInitialized(): boolean {
 	return initialized;
 }
 
+/**
+ * Force full clip map regeneration on the next update() call.
+ * Used after the server sends a new seed so the distant terrain
+ * is rebuilt from scratch instead of sliding stale data.
+ */
+export function resetDistantTerrain(): void {
+	lastChunkX = Number.NaN;
+	lastChunkZ = Number.NaN;
+	lastRenderDistance = Number.NaN;
+}
+
 export function update(worldX: number, worldZ: number) {
 	const cx = worldToChunkCoord(worldX);
 	const cz = worldToChunkCoord(worldZ);

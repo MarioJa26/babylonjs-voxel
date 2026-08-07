@@ -7,9 +7,12 @@
 
 import { WebSocketTransport } from "@colyseus/ws-transport";
 import { Server } from "colyseus";
+import { loadServerConfig } from "./config/ServerConfig.ts";
 import { VoxelRoom } from "./rooms/VoxelRoom.ts";
 
-const PORT = Number(process.env.PORT) || 2567;
+// Load server.properties (seed, port, max-players, etc.)
+const config = loadServerConfig();
+const PORT = Number(process.env.PORT) || config.serverPort;
 
 // Colyseus game server with WebSocket transport
 const gameServer = new Server({

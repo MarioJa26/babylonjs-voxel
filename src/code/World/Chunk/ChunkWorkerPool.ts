@@ -2476,9 +2476,13 @@ export class ChunkWorkerPool {
 
 	private pumpRemoteGeneration(): void {
 		if (!this.remoteChunkProvider) return;
+
+		// Collect up to MAX_REMOTE_CONCURRENT chunks from the queue into a batch.
+		// Batch requests reduce round-trips: one network message fetches many chunks.
+		const batch: Chunk[] = [];
 		while (
 			this.remoteTaskQueue.length > 0 &&
-			this.remoteInFlight < this.MAX_REMOTE_CONCURRENT
+			batch.length < this.MAX_REMOTE_CONCURRENT
 		) {
 			const chunk = this.remoteTaskQueue.shift();
 			if (!chunk) continue;
@@ -2487,25 +2491,54 @@ export class ChunkWorkerPool {
 			const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
 			if (this.remotePendingChunks.has(key)) continue;
 			this.remotePendingChunks.set(key, chunk);
+			batch.push(chunk);
+		}
+
+		if (batch.length === 0) return;
+
+		if (batch.length === 1) {
+			// Single chunk — use the simple path
+			const chunk = batch[0];
+			const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
 			this.remoteInFlight++;
 			console.log(`[RemoteGen] dispatch request ${key}`);
-
 			void this.remoteChunkProvider
 				.requestChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ)
 				.then((data) => this.handleRemoteChunkData(data))
-				.catch((err) => {
-					chunk.isTerrainScheduled = false;
-					this.remotePendingChunks.delete(key);
-					this.remoteInFlight--;
-					console.warn(`[RemoteGen] request FAILED ${key}:`, err);
-					// Re-queue so the chunk is retried rather than left unloaded.
-					const live = getChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-					if (live === chunk && !chunk.isLoaded && !chunk.isBoatChunk) {
-						this.enqueueRemoteGenerationRetry(chunk);
-					}
-					this.pumpRemoteGeneration();
-				});
+				.catch((err) => this.handleRemoteGenError(err, chunk, key));
+		} else {
+			// Multiple chunks — batch request
+			this.remoteInFlight += batch.length;
+			const keys = batch
+				.map((c) => `${c.chunkX},${c.chunkY},${c.chunkZ}`)
+				.join(" ");
+			console.log(
+				`[RemoteGen] dispatch batch (${batch.length}): ${keys}`,
+			);
+			const promises = this.remoteChunkProvider.requestChunkBatch(
+				batch.map((c) => ({ cx: c.chunkX, cy: c.chunkY, cz: c.chunkZ })),
+			);
+			for (let i = 0; i < batch.length; i++) {
+				const chunk = batch[i];
+				const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
+				void promises[i]
+					.then((data) => this.handleRemoteChunkData(data))
+					.catch((err) => this.handleRemoteGenError(err, chunk, key));
+			}
 		}
+	}
+
+	private handleRemoteGenError(err: Error, chunk: Chunk, key: string): void {
+		chunk.isTerrainScheduled = false;
+		this.remotePendingChunks.delete(key);
+		this.remoteInFlight--;
+		console.warn(`[RemoteGen] request FAILED ${key}:`, err);
+		// Re-queue so the chunk is retried rather than left unloaded.
+		const live = getChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+		if (live === chunk && !chunk.isLoaded && !chunk.isBoatChunk) {
+			this.enqueueRemoteGenerationRetry(chunk);
+		}
+		this.pumpRemoteGeneration();
 	}
 
 	private enqueueRemoteGenerationRetry(chunk: Chunk): void {
@@ -2539,6 +2572,17 @@ export class ChunkWorkerPool {
 		chunk.isTerrainScheduled = true;
 		worker.postTerrainGeneration(chunk, deferLighting);
 		return true;
+	}
+
+	/**
+	 * Re-seed all workers and the local height sampler from a new seed.
+	 * Used when the server sends its authoritative seed on join so the
+	 * clip map matches server terrain.
+	 */
+	public setWorldSeed(seed: string): void {
+		for (const worker of this.workers) {
+			worker.setWorldSeed(seed);
+		}
 	}
 
 	/**

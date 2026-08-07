@@ -134,7 +134,6 @@ export class MainMenu {
 	// Multiplayer elements
 	private readonly mpScreen!: HTMLElement;
 	private readonly mpServerInput!: HTMLInputElement;
-	private readonly mpServerNameInput!: HTMLInputElement;
 	private readonly mpStatusEl!: HTMLElement;
 	private readonly mpServerListEl!: HTMLElement;
 	// Player name (shared)
@@ -288,21 +287,7 @@ export class MainMenu {
 		mpTitle.innerText = "Multiplayer";
 		this.mpScreen.appendChild(mpTitle);
 
-		// Server name
-		const serverNameGroup = document.createElement("div");
-		serverNameGroup.className = "input-group";
-		const serverNameLabel = document.createElement("label");
-		serverNameLabel.className = "input-label";
-		serverNameLabel.innerText = "Server Name";
-		this.mpServerNameInput = document.createElement("input");
-		this.mpServerNameInput.type = "text";
-		this.mpServerNameInput.placeholder = "My Server";
-		this.mpServerNameInput.maxLength = 32;
-		serverNameGroup.appendChild(serverNameLabel);
-		serverNameGroup.appendChild(this.mpServerNameInput);
-		this.mpScreen.appendChild(serverNameGroup);
-
-		// Server address
+		// Server address (like Minecraft — just the address)
 		const addrGroup = document.createElement("div");
 		addrGroup.className = "input-group";
 		const addrLabel = document.createElement("label");
@@ -317,7 +302,7 @@ export class MainMenu {
 		addrGroup.appendChild(this.mpServerInput);
 		this.mpScreen.appendChild(addrGroup);
 
-		// Connect button
+		// Connect button — direct connect, no world creation
 		const connectRow = document.createElement("div");
 		connectRow.className = "menu-create-row";
 		const connectBtn = document.createElement("button");
@@ -467,8 +452,8 @@ export class MainMenu {
 	private async connectMultiplayer(): Promise<void> {
 		const playerName = this.playerNameInput.value.trim();
 		const serverUrl = this.mpServerInput.value.trim();
-		const serverName =
-			this.mpServerNameInput.value.trim() || serverUrl || "Server";
+		// Display name for the saved server entry (derived from the address)
+		const displayName = serverUrl.replace(/^wss?:\/\//, "").replace(/:\d+$/, "") || "Server";
 
 		if (!playerName) {
 			this.mpStatusEl.innerText = "Please enter your name.";
@@ -483,15 +468,17 @@ export class MainMenu {
 
 		setPlayerName(playerName);
 		localStorage.setItem(MULTIPLAYER_SERVER_KEY, serverUrl);
-		saveServer({ name: serverName, url: serverUrl });
+		saveServer({ name: displayName, url: serverUrl });
 		void this.refreshServerList();
 
+		// Direct connect — navigate to the multiplayer route.
+		// No world creation; the server uses its config seed.
 		const params = new URLSearchParams({
 			mp: "1",
 			server: serverUrl,
 			name: playerName,
 		});
-		window.location.href = `${worldPath(serverName)}?${params.toString()}`;
+		window.location.href = `${worldPath("__mp__")}?${params.toString()}`;
 	}
 
 	private async refreshServerList(): Promise<void> {

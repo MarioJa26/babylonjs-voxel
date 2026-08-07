@@ -9,7 +9,11 @@
  */
 
 import type { NetClient } from "../NetClient";
-import { decodeChunkData, decodeChunkUnchanged } from "../protocol/encoder";
+import {
+	decodeChunkData,
+	decodeChunkDataBatch,
+	decodeChunkUnchanged,
+} from "../protocol/encoder";
 import { MessageType } from "../protocol/messages";
 
 export interface RemoteChunkData {
@@ -52,6 +56,19 @@ export class RemoteChunkProvider {
 				if (pending) {
 					this.pending.delete(key);
 					pending.resolve(chunk);
+				}
+			} else if (data[0] === MessageType.ChunkDataBatch) {
+				// Batch response — multiple chunks in one message
+				const chunks = decodeChunkDataBatch(data);
+				for (const chunk of chunks) {
+					const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
+					this.chunkHashes.set(key, chunk.hash);
+
+					const pending = this.pending.get(key);
+					if (pending) {
+						this.pending.delete(key);
+						pending.resolve(chunk);
+					}
 				}
 			} else if (data[0] === MessageType.ChunkUnchanged) {
 				// Server says our cached chunk is still valid
@@ -128,6 +145,73 @@ export class RemoteChunkProvider {
 		cachedHash: number,
 	): void {
 		this.client.sendChunkRequest(cx, cy, cz, 0, cachedHash);
+	}
+
+	/**
+	 * Request multiple chunks in a single batch message.
+	 * More efficient than individual requests — one round-trip for many chunks.
+	 * Returns promises that resolve when the batch response arrives.
+	 */
+	requestChunkBatch(
+		coords: Array<{ cx: number; cy: number; cz: number }>,
+		timeoutMs = 30000,
+	): Promise<RemoteChunkData>[] {
+		const requests: Array<{
+			cx: number;
+			cy: number;
+			cz: number;
+			lod: number;
+			cachedHash: number;
+		}> = [];
+		const results: Promise<RemoteChunkData>[] = [];
+
+		for (const { cx, cy, cz } of coords) {
+			const key = `${cx},${cy},${cz}`;
+
+			// Skip if already in flight
+			if (this.inFlight.has(key)) {
+				results.push(this.inFlight.get(key)!);
+				continue;
+			}
+
+			const promise = new Promise<RemoteChunkData>((resolve, reject) => {
+				const timer = setTimeout(() => {
+					this.pending.delete(key);
+					reject(new Error(`Chunk request timeout: ${key}`));
+				}, timeoutMs);
+
+				this.pending.set(key, {
+					resolve: (data) => {
+						clearTimeout(timer);
+						resolve(data);
+					},
+					reject: (err) => {
+						clearTimeout(timer);
+						reject(err);
+					},
+				});
+
+				requests.push({
+					cx,
+					cy,
+					cz,
+					lod: 0,
+					cachedHash: this.chunkHashes.get(key) ?? 0,
+				});
+			}).finally(() => {
+				this.inFlight.delete(key);
+			});
+
+			this.inFlight.set(key, promise);
+			results.push(promise);
+		}
+
+		// Send all requests in one message
+		if (requests.length > 0) {
+			this.client.sendChunkRequestBatch(requests);
+		}
+
+		return results;
 	}
 
 	/**

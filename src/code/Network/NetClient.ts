@@ -16,6 +16,7 @@ import {
 	decodePlayerJoin,
 	decodePlayerLeave,
 	decodePlayerStateBatch,
+	decodeWorldConfig,
 	decodeWorldTime,
 } from "./protocol/encoder";
 import {
@@ -52,6 +53,7 @@ export interface NetClientCallbacks {
 	onBlockEdit?: (edit: BlockEditData) => void;
 	onChatMessage?: (chat: ChatMessageData) => void;
 	onWorldTime?: (timeOfDay: number) => void;
+	onWorldConfig?: (seed: string) => void;
 	onServerError?: (code: number, message?: string) => void;
 }
 
@@ -235,6 +237,12 @@ export class NetClient {
 				break;
 			}
 
+			case MessageType.WorldConfig: {
+				const seed = decodeWorldConfig(data);
+				this.callbacks.onWorldConfig?.(seed);
+				break;
+			}
+
 			case MessageType.ChunkData:
 				// Handled by RemoteChunkProvider via addBinaryHandler — no-op here
 				break;
@@ -314,6 +322,21 @@ export class NetClient {
 		}
 		this.encoder.reset();
 		this.encoder.writeChunkRequest(cx, cy, cz, lod, cachedHash);
+		this.room.sendBytes("binary", this.encoder.getBytes());
+	}
+
+	sendChunkRequestBatch(
+		requests: Array<{
+			cx: number;
+			cy: number;
+			cz: number;
+			lod: number;
+			cachedHash: number;
+		}>,
+	): void {
+		if (!this.connected || !this.room || requests.length === 0) return;
+		this.encoder.reset();
+		this.encoder.writeChunkRequestBatch(requests);
 		this.room.sendBytes("binary", this.encoder.getBytes());
 	}
 

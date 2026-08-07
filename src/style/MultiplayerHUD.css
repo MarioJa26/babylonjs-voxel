@@ -95,7 +95,7 @@ body {
 
 .mp-chat-messages {
 	position: absolute;
-	bottom: 80px;
+	bottom: var(--chat-bottom, 130px); /* sits above the stat bars (vars defined in hud.css) */
 	left: 8px;
 	max-width: 400px;
 	max-height: 250px;
@@ -133,7 +133,7 @@ body {
 
 .mp-chat-input {
 	position: absolute;
-	bottom: 80px;
+	bottom: var(--chat-bottom, 130px); /* match .mp-chat-messages */
 	left: 8px;
 	width: 380px;
 	padding: 8px 12px;

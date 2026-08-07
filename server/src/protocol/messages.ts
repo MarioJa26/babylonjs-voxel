@@ -23,9 +23,10 @@ export const MessageType = {
 	BlockEditBatch: 0x14, // Sent on join: all recent edits
 	ChunkData: 0x15,
 	ChunkUnchanged: 0x16, // Server says "your cached chunk is still valid"
-	ChunkDataBatch: 0x19,
 	WorldTime: 0x17,
 	ChatMessage: 0x18,
+	WorldConfig: 0x1a,
+	ChunkDataBatch: 0x19,
 } as const;
 
 export type MessageType = (typeof MessageType)[keyof typeof MessageType];

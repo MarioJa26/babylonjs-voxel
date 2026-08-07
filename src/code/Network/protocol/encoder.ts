@@ -119,6 +119,26 @@ export class BinaryEncoder {
 		this.writeUint32(cachedHash);
 	}
 
+	writeChunkRequestBatch(
+		requests: Array<{
+			cx: number;
+			cy: number;
+			cz: number;
+			lod: number;
+			cachedHash: number;
+		}>,
+	): void {
+		this.writeUint8(MessageType.ChunkRequestBatch);
+		this.writeUint16(Math.min(requests.length, 65535));
+		for (const r of requests) {
+			this.writeInt32(r.cx);
+			this.writeInt32(r.cy);
+			this.writeInt32(r.cz);
+			this.writeUint8(r.lod);
+			this.writeUint32(r.cachedHash);
+		}
+	}
+
 	getBytes(): Uint8Array {
 		return this.buffer.subarray(0, this.offset);
 	}
@@ -410,6 +430,24 @@ export function decodeWorldTime(buffer: Uint8Array): number {
 }
 
 /**
+ * World config — server → client on join.
+ * Carries the authoritative world seed so the client's clip map matches
+ * the server's terrain generation.
+ * Format: [type:1][seedLength:u16][seedString...]
+ */
+export function encodeWorldConfig(seed: string): Uint8Array {
+	const enc = new BinaryEncoder(256);
+	enc.writeUint8(MessageType.WorldConfig);
+	enc.writeString(seed);
+	return enc.getBytes();
+}
+
+export function decodeWorldConfig(buffer: Uint8Array): string {
+	const dec = new BinaryDecoder(buffer.subarray(1));
+	return dec.readString();
+}
+
+/**
  * Chunk data — server → client (response to chunk request).
  * Contains compressed voxel data for meshing on the client.
  * Format: [type:1][chunkX:i32][chunkY:i32][chunkZ:i32][hash:u32][flags:u8][blockData...][lightData...]
@@ -576,4 +614,94 @@ export function decodeChunkUnchanged(buffer: Uint8Array): {
 		cz: dec.readInt32(),
 		hash: dec.readUint32(),
 	};
+}
+
+// ---------------------------------------------------------------------------
+// Chunk data batch — server → client, multiple chunks in one message
+// Format: [type:1][count:u16][(chunk entry)] × count
+// Each entry: [cx:i32][cy:i32][cz:i32][hash:u32][flags:u8][blockData...][lightData...]
+// (same inner format as encodeChunkData minus the type byte)
+// ---------------------------------------------------------------------------
+
+export function decodeChunkDataBatch(buffer: Uint8Array): Array<{
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+	blocks: Uint8Array;
+	light: Uint8Array;
+	palette?: number[];
+	isUniform: boolean;
+	uniformBlockId: number;
+	hash: number;
+}> {
+	const dec = new BinaryDecoder(buffer.subarray(1));
+	const count = dec.readUint16();
+	const chunks: Array<{
+		chunkX: number;
+		chunkY: number;
+		chunkZ: number;
+		blocks: Uint8Array;
+		light: Uint8Array;
+		palette?: number[];
+		isUniform: boolean;
+		uniformBlockId: number;
+		hash: number;
+	}> = [];
+
+	for (let i = 0; i < count; i++) {
+		const chunkX = dec.readInt32();
+		const chunkY = dec.readInt32();
+		const chunkZ = dec.readInt32();
+		const hash = dec.readUint32();
+		const flags = dec.readUint8();
+		const isUniform = (flags & 1) !== 0;
+		const hasPalette = (flags & 2) !== 0;
+
+		let uniformBlockId = 0;
+		let palette: number[] | undefined;
+		let blocks: Uint8Array;
+
+		if (isUniform) {
+			uniformBlockId = dec.readUint16();
+			blocks = new Uint8Array(0);
+		} else if (hasPalette) {
+			const paletteLen = dec.readUint16();
+			palette = [];
+			for (let j = 0; j < paletteLen; j++) {
+				palette.push(dec.readUint16());
+			}
+			const chunkVolume = 32 * 32 * 32;
+			const packedSize = Math.ceil(chunkVolume / 2);
+			blocks = new Uint8Array(packedSize);
+			for (let j = 0; j < packedSize; j++) {
+				blocks[j] = dec.readUint8();
+			}
+		} else {
+			const chunkVolume = 32 * 32 * 32;
+			blocks = new Uint8Array(chunkVolume);
+			for (let j = 0; j < chunkVolume; j++) {
+				blocks[j] = dec.readUint8();
+			}
+		}
+
+		const lightLen = dec.readUint32();
+		const light = new Uint8Array(lightLen);
+		for (let j = 0; j < lightLen; j++) {
+			light[j] = dec.readUint8();
+		}
+
+		chunks.push({
+			chunkX,
+			chunkY,
+			chunkZ,
+			blocks,
+			light,
+			palette,
+			isUniform,
+			uniformBlockId,
+			hash,
+		});
+	}
+
+	return chunks;
 }

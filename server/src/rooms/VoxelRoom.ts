@@ -9,6 +9,7 @@
  * - Manage world lifecycle (create on first join, destroy when empty)
  */
 import { type Client, Room } from "colyseus";
+import { getServerConfig } from "../config/ServerConfig.ts";
 import {
 	BinaryDecoder,
 	encodeBlockEditBatch,
@@ -20,6 +21,7 @@ import {
 	encodePlayerJoin,
 	encodePlayerLeave,
 	encodePlayerStateBatch,
+	encodeWorldConfig,
 	encodeWorldTime,
 } from "../protocol/encoder.ts";
 import {
@@ -41,10 +43,7 @@ interface ServerPlayerState {
 	animation: number;
 }
 
-const TICK_RATE = 20; // Hz
-const MAX_PLAYERS = 24;
 const MAX_STORED_EDITS = 1000; // Keep last N edits for new joiners
-const DAY_DURATION_MS = 120000; // 2 minutes per day cycle
 const TIME_BROADCAST_INTERVAL = 5000; // Broadcast time every 5 seconds
 
 export class VoxelRoom extends Room {
@@ -54,21 +53,27 @@ export class VoxelRoom extends Room {
 	private timeOfDay = 0.3; // Start at morning (0..1)
 	private worldStorage!: ServerWorldStorage;
 	private worldName = "default";
+	private seed = "default";
 	private timeAccum = 0; // Accumulator for time broadcast
 	private dayCycleAccum = 0; // Accumulator for day cycle advance
 	private chunkGen!: ChunkGenerationService;
+	private config = getServerConfig();
 
-	maxClients = MAX_PLAYERS;
+	constructor() {
+		super();
+		this.maxClients = getServerConfig().maxPlayers;
+	}
 
 	async onCreate(options: { worldName?: string; seed?: string }) {
 		this.worldName = options.worldName ?? "default";
 		console.log(`[VoxelRoom] created for world: ${this.worldName}`);
 
-		// Initialize chunk generation service with seed
+		// Initialize chunk generation service with seed from server config.
+		// The config seed is authoritative — clients do not provide their own.
 		this.chunkGen = new ChunkGenerationService();
-		const seed = options.seed ?? options.worldName ?? "default";
-		this.chunkGen.setSeed(String(seed));
-		console.log(`[VoxelRoom] terrain seed: ${seed}`);
+		this.seed = this.config.seed;
+		this.chunkGen.setSeed(this.seed);
+		console.log(`[VoxelRoom] terrain seed: ${this.seed} (from server.properties)`);
 
 		// Initialize world storage (persistence) and load existing edits
 		this.worldStorage = new ServerWorldStorage(this.worldName);
@@ -84,7 +89,10 @@ export class VoxelRoom extends Room {
 		);
 
 		// Set up fixed-rate simulation tick
-		this.tickInterval = setInterval(() => this.tick(), 1000 / TICK_RATE);
+		this.tickInterval = setInterval(
+			() => this.tick(),
+			1000 / this.config.tickRate,
+		);
 
 		// Register message handlers for binary protocol (raw bytes)
 		this.onMessageBytes("binary", (client, data: Uint8Array) => {
@@ -140,6 +148,10 @@ export class VoxelRoom extends Room {
 				`[VoxelRoom] Synced ${this.blockEdits.length} block edits to ${name}`,
 			);
 		}
+
+		// Send authoritative world seed so the client's clip map matches server terrain
+		const configMsg = encodeWorldConfig(this.seed);
+		client.sendBytes("binary", configMsg);
 	}
 
 	onLeave(client: Client, code?: number) {
@@ -177,9 +189,13 @@ export class VoxelRoom extends Room {
 	private tick(deltaMs = 50): void {
 		if (this.players.size === 0) return;
 
-		// Advance day/night cycle
-		this.dayCycleAccum += deltaMs;
-		this.timeOfDay = (this.dayCycleAccum % DAY_DURATION_MS) / DAY_DURATION_MS;
+		// Advance day/night cycle (only if enabled in config)
+		if (this.config.dayCycle) {
+			this.dayCycleAccum += deltaMs;
+			this.timeOfDay =
+				(this.dayCycleAccum % this.config.dayDuration) /
+				this.config.dayDuration;
+		}
 
 		// Broadcast time periodically
 		this.timeAccum += deltaMs;
@@ -233,13 +249,13 @@ export class VoxelRoom extends Room {
 				const player = this.players.get(client.sessionId);
 				if (!player) return;
 
-				// Simple reach check: player must be within reasonable distance
+				// Reach check: player must be within max-reach blocks
 				const dx = edit.x - player.x;
 				const dy = edit.y - player.y;
 				const dz = edit.z - player.z;
 				const distSq = dx * dx + dy * dy + dz * dz;
-				const MAX_REACH_SQ = 8 * 8; // 64 blocks²
-				if (distSq > MAX_REACH_SQ) {
+				const maxReachSq = this.config.maxReach * this.config.maxReach;
+				if (distSq > maxReachSq) {
 					console.warn(
 						`[VoxelRoom] Block edit rejected: too far (${Math.sqrt(distSq).toFixed(1)} blocks)`,
 					);

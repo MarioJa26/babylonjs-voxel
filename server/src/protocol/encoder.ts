@@ -437,6 +437,19 @@ export function decodeWorldTime(buffer: Uint8Array): number {
 }
 
 /**
+ * World config — server → client on join.
+ * Carries the authoritative world seed so the client's clip map matches
+ * the server's terrain generation.
+ * Format: [type:1][seedLength:u16][seedString...]
+ */
+export function encodeWorldConfig(seed: string): Uint8Array {
+	const enc = new BinaryEncoder(256);
+	enc.writeUint8(MessageType.WorldConfig);
+	enc.writeString(seed);
+	return enc.getBytes();
+}
+
+/**
  * Chunk data — server → client (response to chunk request).
  * Contains compressed voxel data for meshing on the client.
  * Format: [type:1][chunkX:i32][chunkY:i32][chunkZ:i32][hash:u32][flags:u8][blockData...][lightData...]

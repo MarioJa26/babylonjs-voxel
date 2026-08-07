@@ -578,19 +578,37 @@
 }
 
 /* Stats Bars */
+:root {
+	--stats-offset-bottom: 20px; /* distance of the stats block from the viewport bottom */
+	--stats-bar-height: 12px;
+	--stats-bar-count: 4;
+	--stats-bar-gap: 8px;
+	--chat-clear-margin: 24px; /* breathing room between chat and the stats bars */
+	/* Derived: vertical top edge shared by the bars block and the chat position */
+	--stats-top:
+		calc(
+			var(--stats-offset-bottom) +
+			var(--stats-bar-count) * var(--stats-bar-height) +
+			(var(--stats-bar-count) - 1) * var(--stats-bar-gap)
+		);
+	/* Chat bottom offset: sits just above the stats block */
+	--chat-bottom:
+		calc(var(--stats-top) + var(--chat-clear-margin));
+}
+
 #stats-container {
 	position: absolute;
-	bottom: 20px;
+	bottom: var(--stats-offset-bottom);
 	left: 20px;
 	display: flex;
 	flex-direction: column;
-	gap: 8px;
+	gap: var(--stats-bar-gap);
 	pointer-events: none;
 }
 
 .stat-bar-wrapper {
 	width: 250px;
-	height: 12px;
+	height: var(--stats-bar-height);
 	background-color: rgba(0, 0, 0, 0.6);
 	border: 1px solid rgba(255, 255, 255, 0.2);
 	border-radius: 2px;
@@ -850,7 +868,7 @@
 /* Chat */
 #chat-container {
 	position: fixed;
-	bottom: 5vh;
+	bottom: var(--chat-bottom); /* sits above the stat bars */
 	left: 1vw;
 	width: 30vw;
 	max-width: 400px;
