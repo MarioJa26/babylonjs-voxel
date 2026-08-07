@@ -20,16 +20,17 @@ import { play, playDebris } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
 import { WorldEnvironment } from "@/code/Maps/WorldEnvironment";
 import type { Player } from "@/code/Player/Player";
-import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
 import {
 	deleteBlock,
 	getLightByWorldCoords,
 	setBlock,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
+import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
+import { worldSeedFor } from "@/code/World/WorldContext";
+import { RemoteChunkProvider } from "./chunk/RemoteChunkProvider";
 import { MultiplayerHUD } from "./MultiplayerHUD";
 import { NetClient, type RemotePlayer } from "./NetClient";
 import { BlockActionType } from "./protocol/messages";
-import { RemoteChunkProvider } from "./chunk/RemoteChunkProvider";
 import { RemotePlayerRenderer } from "./RemotePlayerRenderer";
 
 const SEND_RATE = 20; // Hz — how often to send player position
@@ -108,7 +109,9 @@ export class NetworkManager {
 			},
 		});
 
-		await this.client.connect(playerName, worldName);
+		// Compute the same seed the client uses for terrain generation
+		const seed = worldSeedFor(worldName);
+		await this.client.connect(playerName, worldName, seed);
 
 		// Enable server-side chunk generation
 		ChunkWorkerPool.getInstance(2)?.setRemoteChunkProvider(this.chunkProvider);

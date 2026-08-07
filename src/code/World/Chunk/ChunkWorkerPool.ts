@@ -1,3 +1,4 @@
+import type { RemoteChunkProvider } from "../../Network/chunk/RemoteChunkProvider";
 import {
 	FLAG_GREEDY,
 	FLAG_PARTIAL,
@@ -6,7 +7,6 @@ import {
 	getCachedFlagsAndId,
 	getFlagsFromCombined,
 } from "../MeshPipeline/core/BlockInfoCache";
-import { RemoteChunkProvider } from "../../Network/chunk/RemoteChunkProvider";
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import { shapeInitPromise } from "../Shape/BlockShapes";
 import { packChunkKey } from "../Storage/ChunkKey";
@@ -2564,6 +2564,7 @@ export class ChunkWorkerPool {
 		palette?: number[];
 		isUniform: boolean;
 		uniformBlockId: number;
+		hash: number;
 	}): void {
 		const key = `${data.chunkX},${data.chunkY},${data.chunkZ}`;
 		const captured = this.remotePendingChunks.get(key) ?? null;
@@ -2585,28 +2586,44 @@ export class ChunkWorkerPool {
 			return;
 		}
 		const chunk = target;
-		console.log(
-			`[RemoteGen] apply data ${data.chunkX},${data.chunkY},${data.chunkZ} ` +
-				`uniform=${data.isUniform} palette=${data.palette ? data.palette.length : "none"} ` +
-				`blocks=${data.blocks.byteLength} light=${data.light.byteLength}`,
-		);
 
-		// Pass raw compressed blocks directly to loadFromStorage.
-		// Do NOT decompress — loadFromStorage handles uniform/palette/dense formats
-		// and expects nibble-packed data when a palette is provided.
-		const blocks = data.blocks;
-		const palette = data.palette ? Uint16Array.from(data.palette) : null;
+		// Check if server said "unchanged" (empty blocks = no new data needed)
+		const unchanged =
+			data.blocks.byteLength === 0 &&
+			data.light.byteLength === 0 &&
+			data.hash !== 0;
 
-		// Load into chunk (same path as local generation)
-		chunk.loadFromStorage(
-			blocks,
-			palette,
-			data.isUniform,
-			data.uniformBlockId,
-			data.light,
-			false,
-		);
-		chunk.isModified = true;
+		if (unchanged) {
+			// Chunk data hasn't changed — chunk already has correct voxel data
+			console.log(
+				`[RemoteGen] chunk ${data.chunkX},${data.chunkY},${data.chunkZ} unchanged (hash=${data.hash})`,
+			);
+			chunk.isLoaded = true;
+			chunk.isModified = true;
+		} else {
+			console.log(
+				`[RemoteGen] apply data ${data.chunkX},${data.chunkY},${data.chunkZ} ` +
+					`uniform=${data.isUniform} palette=${data.palette ? data.palette.length : "none"} ` +
+					`blocks=${data.blocks.byteLength} light=${data.light.byteLength}`,
+			);
+
+			// Pass raw compressed blocks directly to loadFromStorage.
+			// Do NOT decompress — loadFromStorage handles uniform/palette/dense formats
+			// and expects nibble-packed data when a palette is provided.
+			const blocks = data.blocks;
+			const palette = data.palette ? Uint16Array.from(data.palette) : null;
+
+			// Load into chunk (same path as local generation)
+			chunk.loadFromStorage(
+				blocks,
+				palette,
+				data.isUniform,
+				data.uniformBlockId,
+				data.light,
+				false,
+			);
+			chunk.isModified = true;
+		}
 
 		// Schedule meshing AFTER the server voxel data has been applied, so the
 		// generated mesh always reflects the requested-from-server blocks.

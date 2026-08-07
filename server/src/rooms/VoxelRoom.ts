@@ -15,6 +15,7 @@ import {
 	encodeBlockEditBroadcast,
 	encodeChatMessage,
 	encodeChunkData,
+	encodeChunkUnchanged,
 	encodePlayerJoin,
 	encodePlayerLeave,
 	encodePlayerStateBatch,
@@ -26,6 +27,7 @@ import {
 	type PlayerStateData,
 } from "../protocol/messages.ts";
 import { ChunkGenerationService } from "../world/ChunkGenerationService.ts";
+import { ServerWorldStorage } from "../world/ServerWorldStorage.ts";
 
 interface ServerPlayerState {
 	sessionId: string;
@@ -49,22 +51,36 @@ export class VoxelRoom extends Room {
 	private tickInterval: ReturnType<typeof setInterval> | null = null;
 	private blockEdits: BlockEditData[] = []; // Edit history for sync on join
 	private timeOfDay = 0.3; // Start at morning (0..1)
+	private worldStorage!: ServerWorldStorage;
+	private worldName = "default";
 	private timeAccum = 0; // Accumulator for time broadcast
 	private dayCycleAccum = 0; // Accumulator for day cycle advance
 	private chunkGen!: ChunkGenerationService;
 
 	maxClients = MAX_PLAYERS;
 
-	onCreate(options: { worldName?: string; seed?: string }) {
-		console.log(
-			`[VoxelRoom] created for world: ${options.worldName ?? "default"}`,
-		);
+	async onCreate(options: { worldName?: string; seed?: string }) {
+		this.worldName = options.worldName ?? "default";
+		console.log(`[VoxelRoom] created for world: ${this.worldName}`);
 
 		// Initialize chunk generation service with seed
 		this.chunkGen = new ChunkGenerationService();
 		const seed = options.seed ?? options.worldName ?? "default";
 		this.chunkGen.setSeed(String(seed));
 		console.log(`[VoxelRoom] terrain seed: ${seed}`);
+
+		// Initialize world storage (persistence) and load existing edits
+		this.worldStorage = new ServerWorldStorage(this.worldName);
+		await this.worldStorage.init();
+
+		// Restore in-memory edit history from storage
+		this.blockEdits = this.worldStorage
+			.getEdits()
+			.map((e) => ({ sessionId: "stored", ...e }));
+
+		console.log(
+			`[VoxelRoom] loaded ${this.blockEdits.length} stored edits for ${this.worldName}`,
+		);
 
 		// Set up fixed-rate simulation tick
 		this.tickInterval = setInterval(() => this.tick(), 1000 / TICK_RATE);
@@ -137,13 +153,21 @@ export class VoxelRoom extends Room {
 		this.broadcastBytes("binary", leaveMsg, {});
 	}
 
-	onDispose() {
+	async onDispose() {
 		console.log("[VoxelRoom] disposed");
 		if (this.tickInterval) {
 			clearInterval(this.tickInterval);
 			this.tickInterval = null;
 		}
 		this.players.clear();
+
+		// Persist world edits to disk
+		if (this.worldStorage) {
+			await this.worldStorage.save();
+			console.log(
+				`[VoxelRoom] saved ${this.worldStorage.editCount} edits for ${this.worldName}`,
+			);
+		}
 	}
 
 	private tick(deltaMs = 50): void {
@@ -232,6 +256,16 @@ export class VoxelRoom extends Room {
 					this.blockEdits.shift();
 				}
 
+				// Persist to server storage
+				this.worldStorage.addEdit({
+					x: edit.x,
+					y: edit.y,
+					z: edit.z,
+					blockId: edit.blockId,
+					action: edit.action,
+					timestamp: Date.now(),
+				});
+
 				// Broadcast to all other clients
 				const msg = encodeBlockEditBroadcast(storedEdit);
 				this.broadcastBytes("binary", msg, { except: client });
@@ -239,12 +273,12 @@ export class VoxelRoom extends Room {
 			}
 
 			case MessageType.ChunkRequest: {
-				const { cx, cy, cz, lod } = dec.readChunkRequest();
+				const { cx, cy, cz, lod, cachedHash } = dec.readChunkRequest();
 				// Only support LOD0 for now
 				if (lod !== 0) break;
 
-				// Generate chunk asynchronously (don't block other messages)
-				void this.handleChunkRequest(client, cx, cy, cz);
+				// Generate chunk and check if it changed
+				void this.handleChunkRequest(client, cx, cy, cz, cachedHash);
 				break;
 			}
 
@@ -264,20 +298,24 @@ export class VoxelRoom extends Room {
 		cx: number,
 		cy: number,
 		cz: number,
+		cachedHash: number,
 	): Promise<void> {
 		try {
-			console.log(`[VoxelRoom] chunk request ${cx},${cy},${cz}`);
 			const chunkData = await this.chunkGen.generateChunk(cx, cy, cz);
+
+			// Check if chunk data matches client's cached version
+			if (cachedHash !== 0 && chunkData.hash === cachedHash) {
+				// Client already has this chunk — send short "unchanged" stamp
+				const msg = encodeChunkUnchanged(cx, cy, cz, chunkData.hash);
+				client.sendBytes("binary", msg);
+				return;
+			}
+
+			// Send full chunk data with hash for caching
 			const msg = encodeChunkData(chunkData);
 			client.sendBytes("binary", msg);
-			console.log(
-				`[VoxelRoom] sent chunk ${cx},${cy},${cz} blocks=${chunkData.blocks.byteLength} uniform=${chunkData.isUniform} palette=${chunkData.palette ? chunkData.palette.length : "none"}`,
-			);
 		} catch (err) {
-			console.error(
-				`[VoxelRoom] Chunk gen failed for ${cx},${cy},${cz}:`,
-				err,
-			);
+			console.error(`[VoxelRoom] Chunk gen failed for ${cx},${cy},${cz}:`, err);
 		}
 	}
 }

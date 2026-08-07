@@ -46,6 +46,35 @@ type RawBlockDefinition = {
 
 const BLOCKS_URL = "/data/blocks.json";
 const SHAPES_URL = "/data/block-shapes.json";
+
+// Resolve path to public/data/ for Node.js server-side generation
+async function resolvePublicData(filename: string): Promise<string> {
+	const { fileURLToPath } = await import("node:url");
+	const { dirname, join } = await import("node:path");
+	const __filename = fileURLToPath(import.meta.url);
+	const __dirname = dirname(__filename);
+	// From src/code/World/Shape/ to project root public/
+	return join(__dirname, "..", "..", "..", "..", "public", "data", filename);
+}
+
+async function loadJsonUrl(url: string): Promise<any> {
+	// In Node.js, read from disk; in browser, use fetch
+	if (
+		typeof window === "undefined" &&
+		typeof globalThis.process !== "undefined"
+	) {
+		// Server-side: read file from public/data/
+		const fs = await import("node:fs/promises");
+		const filePath = await resolvePublicData(url.replace("/data/", ""));
+		const text = await fs.readFile(filePath, "utf-8");
+		return JSON.parse(text);
+	}
+	// Client-side: use fetch
+	const response = await fetch(url);
+	if (!response.ok)
+		throw new Error(`Failed to load ${url}: ${response.status}`);
+	return response.json();
+}
 const SHAPE_SCALE = 16;
 
 export const FALLBACK_CUBE: ShapeDefinition = {
@@ -98,10 +127,7 @@ const normalizeBox = (raw: RawShapeBox): ShapeBox | null => {
 
 const loadShapeDefinitions = async (): Promise<ShapeDefinition[]> => {
 	try {
-		const response = await fetch(SHAPES_URL);
-		if (!response.ok)
-			throw new Error(`Failed to load shapes: ${response.status}`);
-		const data = (await response.json()) as unknown;
+		const data = (await loadJsonUrl(SHAPES_URL)) as unknown;
 		if (!Array.isArray(data)) throw new Error("Shape JSON must be an array.");
 
 		const defs: ShapeDefinition[] = [];
@@ -148,10 +174,7 @@ const loadBlockShapeMap = async (
 	map.fill(cubeIndex === -1 ? 0 : cubeIndex);
 
 	try {
-		const response = await fetch(BLOCKS_URL);
-		if (!response.ok)
-			throw new Error(`Failed to load blocks: ${response.status}`);
-		const data = (await response.json()) as unknown;
+		const data = (await loadJsonUrl(BLOCKS_URL)) as unknown;
 		if (!Array.isArray(data)) throw new Error("Blocks JSON must be an array.");
 
 		const shapeIndexByName = new Map(

@@ -2,9 +2,14 @@
  * RemoteChunkProvider — fetches chunk voxel data from the server
  * instead of generating it locally. Replaces the terrain worker
  * when in multiplayer mode.
+ *
+ * Caches chunk hashes and sends them with requests. If the server's chunk
+ * hasn't changed, it responds with a short "unchanged" stamp instead of
+ * re-sending all the data.
  */
-import { decodeChunkData } from "../protocol/encoder";
+
 import type { NetClient } from "../NetClient";
+import { decodeChunkData, decodeChunkUnchanged } from "../protocol/encoder";
 import { MessageType } from "../protocol/messages";
 
 export interface RemoteChunkData {
@@ -16,6 +21,7 @@ export interface RemoteChunkData {
 	palette?: number[];
 	isUniform: boolean;
 	uniformBlockId: number;
+	hash: number;
 }
 
 type PendingChunk = {
@@ -26,25 +32,49 @@ type PendingChunk = {
 export class RemoteChunkProvider {
 	private pending = new Map<string, PendingChunk>();
 	private inFlight = new Map<string, Promise<RemoteChunkData>>();
-	private requestQueue: string[] = [];
-	private processing = false;
+	private chunkHashes = new Map<string, number>(); // Cached chunk hashes
 	private static readonly CHUNK_SIZE = 32;
 	private static readonly CHUNK_VOLUME = 32 * 32 * 32;
 
 	constructor(private client: NetClient) {
 		// Listen for chunk data responses
 		this.client.addBinaryHandler((data: Uint8Array) => {
-			if (data.byteLength < 1 || data[0] !== MessageType.ChunkData) return;
-			console.log(`[RemoteGen] RX chunk data msg, ${data.byteLength} bytes`);
-			const chunk = decodeChunkData(data);
-			const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
-			const pending = this.pending.get(key);
-			console.log(
-				`[RemoteGen] RX decoded ${key} pending=${pending !== undefined}`,
-			);
-			if (pending) {
-				this.pending.delete(key);
-				pending.resolve(chunk);
+			if (data.byteLength < 1) return;
+
+			if (data[0] === MessageType.ChunkData) {
+				const chunk = decodeChunkData(data);
+				const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
+
+				// Cache the hash for future requests
+				this.chunkHashes.set(key, chunk.hash);
+
+				const pending = this.pending.get(key);
+				if (pending) {
+					this.pending.delete(key);
+					pending.resolve(chunk);
+				}
+			} else if (data[0] === MessageType.ChunkUnchanged) {
+				// Server says our cached chunk is still valid
+				const { cx, cy, cz, hash } = decodeChunkUnchanged(data);
+				const key = `${cx},${cy},${cz}`;
+
+				// Resolve pending with a synthetic "unchanged" marker
+				// The ChunkWorkerPool will see isUniform=false, blocks=empty, and
+				// know to skip meshing since the data hasn't changed
+				const pending = this.pending.get(key);
+				if (pending) {
+					this.pending.delete(key);
+					pending.resolve({
+						chunkX: cx,
+						chunkY: cy,
+						chunkZ: cz,
+						blocks: new Uint8Array(0),
+						light: new Uint8Array(0),
+						isUniform: false,
+						uniformBlockId: 0,
+						hash,
+					});
+				}
 			}
 		});
 	}
@@ -58,8 +88,6 @@ export class RemoteChunkProvider {
 		const key = `${cx},${cy},${cz}`;
 
 		// Deduplicate: if a request for this chunk is already in flight, share it
-		// instead of issuing a second request (avoids duplicate wire messages and
-		// torn/overlapping responses during join).
 		const existing = this.inFlight.get(key);
 		if (existing) return existing;
 
@@ -82,8 +110,9 @@ export class RemoteChunkProvider {
 				},
 			});
 
-			// Send request
-			this.sendRequest(cx, cy, cz);
+			// Send request with cached hash (if we have one)
+			const cachedHash = this.chunkHashes.get(key) ?? 0;
+			this.sendRequest(cx, cy, cz, cachedHash);
 		}).finally(() => {
 			this.inFlight.delete(key);
 		});
@@ -92,8 +121,13 @@ export class RemoteChunkProvider {
 		return promise;
 	}
 
-	private sendRequest(cx: number, cy: number, cz: number): void {
-		this.client.sendChunkRequest(cx, cy, cz, 0);
+	private sendRequest(
+		cx: number,
+		cy: number,
+		cz: number,
+		cachedHash: number,
+	): void {
+		this.client.sendChunkRequest(cx, cy, cz, 0, cachedHash);
 	}
 
 	/**
@@ -101,16 +135,12 @@ export class RemoteChunkProvider {
 	 */
 	static decompressBlocks(chunk: RemoteChunkData): Uint8Array {
 		if (chunk.isUniform) {
-			// Uniform chunk — fill with single block ID
 			const result = new Uint8Array(RemoteChunkProvider.CHUNK_VOLUME);
 			result.fill(chunk.uniformBlockId);
 			return result;
 		}
 
 		if (chunk.palette) {
-			// Palette-compressed — unpack nibbles. Matches the client's canonical
-			// storage format (even index = low nibble, odd index = high nibble),
-			// the same convention used by Chunk.getBlock and the voxel mesher.
 			const result = new Uint8Array(RemoteChunkProvider.CHUNK_VOLUME);
 			const packed = chunk.blocks;
 			for (let i = 0; i < RemoteChunkProvider.CHUNK_VOLUME; i++) {
@@ -122,7 +152,6 @@ export class RemoteChunkProvider {
 			return result;
 		}
 
-		// Dense format — direct copy
 		return chunk.blocks;
 	}
 }

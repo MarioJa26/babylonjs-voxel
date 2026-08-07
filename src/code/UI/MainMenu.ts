@@ -13,14 +13,20 @@ const OPFS_ROOT = "b102";
 const OPFS_WORLDS = "worlds";
 const PLAYER_NAME_KEY = "b102.playerName";
 const MULTIPLAYER_SERVER_KEY = "b102.mpServer";
+const SERVER_LIST_KEY = "b102.mpServers";
 
-function randomWorldName(): string {
+export interface SavedServer {
+	name: string;
+	url: string;
+}
+
+function getRandomWorldName(): string {
 	const pick = (list: readonly string[]): string =>
 		list[Math.floor(Math.random() * list.length)];
 	return `${pick(worldNames.prefixes)}_${pick(worldNames.roots)}${pick(worldNames.suffixes)}`;
 }
 
-function randomSeed(): string {
+function getRandomSeed(): string {
 	const hi = Math.floor(Math.random() * 0x100000000);
 	const lo = Math.floor(Math.random() * 0x100000000);
 	let seed = (BigInt(hi) << 32n) | BigInt(lo);
@@ -85,26 +91,54 @@ export function setPlayerName(name: string): void {
 	localStorage.setItem(PLAYER_NAME_KEY, name);
 }
 
-export function getMultiplayerServer(): string {
-	return localStorage.getItem(MULTIPLAYER_SERVER_KEY) ?? "ws://localhost:2567";
+export function getSavedServers(): SavedServer[] {
+	try {
+		return JSON.parse(localStorage.getItem(SERVER_LIST_KEY) ?? "[]");
+	} catch {
+		return [];
+	}
 }
 
-export function setMultiplayerServer(url: string): void {
-	localStorage.setItem(MULTIPLAYER_SERVER_KEY, url);
+export function saveServer(server: SavedServer): void {
+	const servers = getSavedServers();
+	const idx = servers.findIndex((s) => s.url === server.url);
+	if (idx >= 0) {
+		servers[idx] = server;
+	} else {
+		servers.push(server);
+	}
+	localStorage.setItem(SERVER_LIST_KEY, JSON.stringify(servers));
 }
+
+export function removeServer(url: string): void {
+	const servers = getSavedServers().filter((s) => s.url !== url);
+	localStorage.setItem(SERVER_LIST_KEY, JSON.stringify(servers));
+}
+
+type MenuScreen = "main" | "singleplayer" | "multiplayer";
 
 export class MainMenu {
 	private readonly container: HTMLElement;
-	private readonly worldListEl: HTMLElement;
-	private readonly nameInput: HTMLInputElement;
-	private readonly seedInput: HTMLInputElement;
-	private readonly statusEl: HTMLElement;
-	// Multiplayer fields
-	private readonly mpNameInput: HTMLInputElement;
-	private readonly mpServerInput: HTMLInputElement;
-	private readonly mpWorldInput: HTMLInputElement;
-	private readonly mpStatusEl: HTMLElement;
-	private tab: "single" | "multi" = "single";
+	private screen: MenuScreen = "main";
+
+	// Main screen elements
+	private readonly mainScreen!: HTMLElement;
+
+	// Singleplayer elements
+	private readonly spScreen!: HTMLElement;
+	private readonly worldListEl!: HTMLElement;
+	private readonly nameInput!: HTMLInputElement;
+	private readonly seedInput!: HTMLInputElement;
+	private readonly spStatusEl!: HTMLElement;
+
+	// Multiplayer elements
+	private readonly mpScreen!: HTMLElement;
+	private readonly mpServerInput!: HTMLInputElement;
+	private readonly mpServerNameInput!: HTMLInputElement;
+	private readonly mpStatusEl!: HTMLElement;
+	private readonly mpServerListEl!: HTMLElement;
+	// Player name (shared)
+	private readonly playerNameInput!: HTMLInputElement;
 
 	constructor() {
 		this.container = document.createElement("div");
@@ -114,192 +148,238 @@ export class MainMenu {
 		title.innerText = "b102";
 		this.container.appendChild(title);
 
-		// Tab bar
-		const tabBar = document.createElement("div");
-		tabBar.className = "main-menu-tabs";
-		const spTab = document.createElement("button");
-		spTab.className = "main-menu-tab active";
-		spTab.innerText = "Singleplayer";
-		spTab.onclick = () => this.setTab("single");
-		const mpTab = document.createElement("button");
-		mpTab.className = "main-menu-tab";
-		mpTab.innerText = "Multiplayer";
-		mpTab.onclick = () => this.setTab("multi");
-		tabBar.appendChild(spTab);
-		tabBar.appendChild(mpTab);
-		this.container.appendChild(tabBar);
+		// ─── Player Name (top of main screen) ────────────────────────
+		const nameBar = document.createElement("div");
+		nameBar.className = "player-name-bar";
 
-		// Singleplayer panel
-		const spPanel = document.createElement("div");
-		spPanel.className = "main-menu-panel active";
-		spPanel.id = "spPanel";
+		const nameLabel = document.createElement("label");
+		nameLabel.className = "player-name-label";
+		nameLabel.innerText = "Player Name";
+		nameBar.appendChild(nameLabel);
 
-		const subtitle = document.createElement("p");
-		subtitle.className = "main-menu-subtitle";
-		subtitle.innerText = "Select a world to play";
-		spPanel.appendChild(subtitle);
+		this.playerNameInput = document.createElement("input");
+		this.playerNameInput.type = "text";
+		this.playerNameInput.placeholder = "Steve";
+		this.playerNameInput.maxLength = 24;
+		this.playerNameInput.value = getPlayerName();
+		nameBar.appendChild(this.playerNameInput);
 
+		this.container.appendChild(nameBar);
+
+		// ─── Main Screen ──────────────────────────────────────────────
+		this.mainScreen = document.createElement("div");
+		this.mainScreen.className = "menu-screen active";
+		this.mainScreen.id = "mainScreen";
+
+		const spBtn = document.createElement("button");
+		btnMinecraft(spBtn, "Singleplayer");
+		spBtn.onclick = () => this.showScreen("singleplayer");
+		this.mainScreen.appendChild(spBtn);
+
+		const mpBtn = document.createElement("button");
+		btnMinecraft(mpBtn, "Multiplayer");
+		mpBtn.onclick = () => this.showScreen("multiplayer");
+		this.mainScreen.appendChild(mpBtn);
+
+		const spacer1 = document.createElement("div");
+		spacer1.className = "menu-spacer";
+		this.mainScreen.appendChild(spacer1);
+
+		const optsBtn = document.createElement("button");
+		btnMinecraft(optsBtn, "Options…");
+		optsBtn.onclick = () => alert("Options not yet implemented");
+		this.mainScreen.appendChild(optsBtn);
+
+		const quitBtn = document.createElement("button");
+		btnMinecraft(quitBtn, "Quit Game");
+		quitBtn.onclick = () => window.close();
+		this.mainScreen.appendChild(quitBtn);
+
+		this.container.appendChild(this.mainScreen);
+
+		// ─── Singleplayer Screen ──────────────────────────────────────
+		this.spScreen = document.createElement("div");
+		this.spScreen.className = "menu-screen";
+		this.spScreen.id = "spScreen";
+
+		const spBack = document.createElement("button");
+		btnMinecraft(spBack, "← Back");
+		spBack.onclick = () => this.showScreen("main");
+		this.spScreen.appendChild(spBack);
+
+		const spTitle = document.createElement("h2");
+		spTitle.className = "screen-title";
+		spTitle.innerText = "Select World";
+		this.spScreen.appendChild(spTitle);
+
+		// Create world
 		const createRow = document.createElement("div");
-		createRow.className = "main-menu-create";
+		createRow.className = "menu-create-row";
 		this.nameInput = document.createElement("input");
 		this.nameInput.type = "text";
-		this.nameInput.placeholder = "New world name";
+		this.nameInput.placeholder = "New World";
 		this.nameInput.maxLength = 64;
 		this.nameInput.addEventListener("keydown", (e) => {
 			if (e.key === "Enter") void this.createWorld();
 		});
-		const createButton = document.createElement("button");
-		createButton.innerText = "Create World";
-		createButton.onclick = () => void this.createWorld();
-		const randomButton = diceButton("Generate a random name", () => {
-			this.nameInput.value = randomWorldName();
+		const randomBtn = diceButton("Random name", () => {
+			this.nameInput.value = getRandomWorldName();
 			this.nameInput.focus();
-			this.statusEl.classList.remove("error");
-			this.statusEl.innerText = "";
 		});
 		const inputWrap = document.createElement("div");
-		inputWrap.className = "main-menu-input-wrap";
+		inputWrap.className = "menu-input-wrap";
 		inputWrap.appendChild(this.nameInput);
-		inputWrap.appendChild(randomButton);
+		inputWrap.appendChild(randomBtn);
 		createRow.appendChild(inputWrap);
-		createRow.appendChild(createButton);
-		spPanel.appendChild(createRow);
+		this.spScreen.appendChild(createRow);
+
+		const createBtnRow = document.createElement("div");
+		createBtnRow.className = "menu-create-row";
+		const createBtn = document.createElement("button");
+		btnMinecraft(createBtn, "Create New World");
+		createBtn.onclick = () => void this.createWorld();
+		createBtnRow.appendChild(createBtn);
 
 		this.seedInput = document.createElement("input");
 		this.seedInput.type = "text";
 		this.seedInput.placeholder = "Seed (optional)";
 		this.seedInput.maxLength = 64;
-		this.seedInput.title =
-			"Optional terrain seed. Leave empty to derive it from the world name.";
 		this.seedInput.addEventListener("keydown", (e) => {
 			if (e.key === "Enter") void this.createWorld();
 		});
-		const seedRandomButton = diceButton("Generate a random seed", () => {
-			this.seedInput.value = randomSeed();
+		const seedRandomBtn = diceButton("Random seed", () => {
+			this.seedInput.value = getRandomSeed();
 			this.seedInput.focus();
-			this.statusEl.classList.remove("error");
-			this.statusEl.innerText = "";
 		});
-		const seedRow = document.createElement("div");
-		seedRow.className = "main-menu-create";
 		const seedWrap = document.createElement("div");
-		seedWrap.className = "main-menu-input-wrap";
+		seedWrap.className = "menu-input-wrap";
 		seedWrap.appendChild(this.seedInput);
-		seedWrap.appendChild(seedRandomButton);
-		seedRow.appendChild(seedWrap);
-		spPanel.appendChild(seedRow);
+		seedWrap.appendChild(seedRandomBtn);
+		createBtnRow.appendChild(seedWrap);
 
-		this.statusEl = document.createElement("div");
-		this.statusEl.className = "main-menu-status";
-		spPanel.appendChild(this.statusEl);
+		const seedBtnRow = document.createElement("div");
+		seedBtnRow.className = "menu-create-row";
+		seedBtnRow.appendChild(this.seedInput);
+		seedBtnRow.appendChild(seedRandomBtn);
+		this.spScreen.appendChild(createBtnRow);
+
+		this.spStatusEl = document.createElement("div");
+		this.spStatusEl.className = "menu-status";
+		this.spScreen.appendChild(this.spStatusEl);
 
 		this.worldListEl = document.createElement("div");
-		this.worldListEl.className = "main-menu-worlds";
-		spPanel.appendChild(this.worldListEl);
+		this.worldListEl.className = "menu-world-list";
+		this.spScreen.appendChild(this.worldListEl);
 
-		this.container.appendChild(spPanel);
+		this.container.appendChild(this.spScreen);
 
-		// Multiplayer panel
-		const mpPanel = document.createElement("div");
-		mpPanel.className = "main-menu-panel";
-		mpPanel.id = "mpPanel";
+		// ─── Multiplayer Screen ───────────────────────────────────────
+		this.mpScreen = document.createElement("div");
+		this.mpScreen.className = "menu-screen";
+		this.mpScreen.id = "mpScreen";
 
-		const mpSubtitle = document.createElement("p");
-		mpSubtitle.className = "main-menu-subtitle";
-		mpSubtitle.innerText = "Connect to a multiplayer server";
-		mpPanel.appendChild(mpSubtitle);
+		const mpBack = document.createElement("button");
+		btnMinecraft(mpBack, "← Back");
+		mpBack.onclick = () => this.showScreen("main");
+		this.mpScreen.appendChild(mpBack);
 
-		// Player name
-		const mpNameRow = document.createElement("div");
-		mpNameRow.className = "main-menu-create";
-		this.mpNameInput = document.createElement("input");
-		this.mpNameInput.type = "text";
-		this.mpNameInput.placeholder = "Your name";
-		this.mpNameInput.maxLength = 24;
-		this.mpNameInput.value = getPlayerName();
-		mpNameRow.appendChild(this.mpNameInput);
-		mpPanel.appendChild(mpNameRow);
+		const mpTitle = document.createElement("h2");
+		mpTitle.className = "screen-title";
+		mpTitle.innerText = "Multiplayer";
+		this.mpScreen.appendChild(mpTitle);
+
+		// Server name
+		const serverNameGroup = document.createElement("div");
+		serverNameGroup.className = "input-group";
+		const serverNameLabel = document.createElement("label");
+		serverNameLabel.className = "input-label";
+		serverNameLabel.innerText = "Server Name";
+		this.mpServerNameInput = document.createElement("input");
+		this.mpServerNameInput.type = "text";
+		this.mpServerNameInput.placeholder = "My Server";
+		this.mpServerNameInput.maxLength = 32;
+		serverNameGroup.appendChild(serverNameLabel);
+		serverNameGroup.appendChild(this.mpServerNameInput);
+		this.mpScreen.appendChild(serverNameGroup);
 
 		// Server address
-		const mpServerRow = document.createElement("div");
-		mpServerRow.className = "main-menu-create";
+		const addrGroup = document.createElement("div");
+		addrGroup.className = "input-group";
+		const addrLabel = document.createElement("label");
+		addrLabel.className = "input-label";
+		addrLabel.innerText = "Server Address";
 		this.mpServerInput = document.createElement("input");
 		this.mpServerInput.type = "text";
-		this.mpServerInput.placeholder = "Server address (ws://host:2567)";
-		this.mpServerInput.value = getMultiplayerServer();
-		mpServerRow.appendChild(this.mpServerInput);
-		mpPanel.appendChild(mpServerRow);
-
-		// World name
-		const mpWorldRow = document.createElement("div");
-		mpWorldRow.className = "main-menu-create";
-		this.mpWorldInput = document.createElement("input");
-		this.mpWorldInput.type = "text";
-		this.mpWorldInput.placeholder = "World name";
-		this.mpWorldInput.maxLength = 64;
-		const mpRandomWorld = diceButton("Random world", () => {
-			this.mpWorldInput.value = randomWorldName();
-			this.mpWorldInput.focus();
-		});
-		const mpWorldWrap = document.createElement("div");
-		mpWorldWrap.className = "main-menu-input-wrap";
-		mpWorldWrap.appendChild(this.mpWorldInput);
-		mpWorldWrap.appendChild(mpRandomWorld);
-		mpWorldRow.appendChild(mpWorldWrap);
-		mpPanel.appendChild(mpWorldRow);
+		this.mpServerInput.placeholder = "ws://host:2567";
+		this.mpServerInput.value =
+			localStorage.getItem(MULTIPLAYER_SERVER_KEY) ?? "ws://localhost:2567";
+		addrGroup.appendChild(addrLabel);
+		addrGroup.appendChild(this.mpServerInput);
+		this.mpScreen.appendChild(addrGroup);
 
 		// Connect button
-		const mpConnectRow = document.createElement("div");
-		mpConnectRow.className = "main-menu-create";
-		const mpConnectBtn = document.createElement("button");
-		mpConnectBtn.innerText = "Connect";
-		mpConnectBtn.className = "mp-connect";
-		mpConnectBtn.onclick = () => void this.connectMultiplayer();
-		mpConnectRow.appendChild(mpConnectBtn);
-		mpPanel.appendChild(mpConnectRow);
+		const connectRow = document.createElement("div");
+		connectRow.className = "menu-create-row";
+		const connectBtn = document.createElement("button");
+		btnMinecraft(connectBtn, "Connect to Server");
+		connectBtn.onclick = () => void this.connectMultiplayer();
+		connectRow.appendChild(connectBtn);
+		this.mpScreen.appendChild(connectRow);
 
 		this.mpStatusEl = document.createElement("div");
-		this.mpStatusEl.className = "main-menu-status";
-		mpPanel.appendChild(this.mpStatusEl);
+		this.mpStatusEl.className = "menu-status";
+		this.mpScreen.appendChild(this.mpStatusEl);
 
-		this.container.appendChild(mpPanel);
+		const serverListTitle = document.createElement("h3");
+		serverListTitle.className = "screen-subtitle";
+		serverListTitle.innerText = "Saved Servers";
+		this.mpScreen.appendChild(serverListTitle);
+
+		this.mpServerListEl = document.createElement("div");
+		this.mpServerListEl.className = "menu-server-list";
+		this.mpScreen.appendChild(this.mpServerListEl);
+
+		this.container.appendChild(this.mpScreen);
 
 		this.addStyles();
 	}
 
-	setTab(tab: "single" | "multi"): void {
-		this.tab = tab;
-		const spPanel = this.container.querySelector("#spPanel") as HTMLElement;
-		const mpPanel = this.container.querySelector("#mpPanel") as HTMLElement;
-		const tabs = this.container.querySelectorAll(".main-menu-tab");
-		if (tab === "single") {
-			spPanel?.classList.add("active");
-			mpPanel?.classList.remove("active");
-			tabs[0]?.classList.add("active");
-			tabs[1]?.classList.remove("active");
-		} else {
-			spPanel?.classList.remove("active");
-			mpPanel?.classList.add("active");
-			tabs[0]?.classList.remove("active");
-			tabs[1]?.classList.add("active");
+	private showScreen(screen: MenuScreen): void {
+		this.screen = screen;
+		this.container.querySelectorAll(".menu-screen").forEach((el) => {
+			el.classList.remove("active");
+		});
+		switch (screen) {
+			case "main":
+				this.mainScreen.classList.add("active");
+				break;
+			case "singleplayer":
+				this.spScreen.classList.add("active");
+				void this.refreshWorlds();
+				break;
+			case "multiplayer":
+				this.mpScreen.classList.add("active");
+				void this.refreshServerList();
+				break;
 		}
 	}
 
 	public mount(root: HTMLElement): void {
 		root.appendChild(this.container);
-		void this.refreshWorlds();
 	}
 
 	public dispose(): void {
 		this.container.remove();
 	}
 
+	// ─── Singleplayer ──────────────────────────────────────────────────
+
 	private async createWorld(): Promise<void> {
 		const raw = this.nameInput.value;
 		const name = sanitizeWorldName(raw);
 		if (!isValidWorldName(name)) {
-			this.statusEl.innerText = "Please enter a valid world name.";
-			this.statusEl.classList.add("error");
+			this.spStatusEl.innerText = "Please enter a valid world name.";
+			this.spStatusEl.classList.add("error");
 			return;
 		}
 		const seed = this.seedInput.value.trim();
@@ -319,8 +399,8 @@ export class MainMenu {
 		try {
 			worlds = await listWorlds();
 		} catch (err) {
-			this.statusEl.innerText = `Could not read saved worlds: ${String(err)}`;
-			this.statusEl.classList.add("error");
+			this.spStatusEl.innerText = `Could not read saved worlds: ${String(err)}`;
+			this.spStatusEl.classList.add("error");
 			return;
 		}
 		this.worldListEl.textContent = "";
@@ -339,26 +419,24 @@ export class MainMenu {
 
 	private worldRow(name: string): HTMLElement {
 		const row = document.createElement("div");
-		row.className = "main-menu-world-row";
+		row.className = "menu-world-row";
 
 		const label = document.createElement("span");
-		label.className = "main-menu-world-name";
+		label.className = "world-name";
 		label.innerText = name;
 		row.appendChild(label);
 
-		const playButton = document.createElement("button");
-		playButton.innerText = "Play";
-		playButton.className = "play";
-		playButton.onclick = () => {
+		const playBtn = document.createElement("button");
+		btnSmallMinecraft(playBtn, "Play");
+		playBtn.onclick = () => {
 			window.location.href = worldPath(name);
 		};
-		row.appendChild(playButton);
+		row.appendChild(playBtn);
 
-		const deleteButton = document.createElement("button");
-		deleteButton.innerText = "Delete";
-		deleteButton.className = "delete";
-		deleteButton.onclick = () => void this.deleteWorld(name, deleteButton);
-		row.appendChild(deleteButton);
+		const deleteBtn = document.createElement("button");
+		btnSmallMinecraft(deleteBtn, "Delete");
+		deleteBtn.onclick = () => void this.deleteWorld(name, deleteBtn);
+		row.appendChild(deleteBtn);
 
 		return row;
 	}
@@ -372,51 +450,103 @@ export class MainMenu {
 		button.innerText = "Deleting…";
 		try {
 			await deleteWorld(name);
-			this.statusEl.innerText = `Deleted "${name}".`;
-			this.statusEl.classList.remove("error");
+			this.spStatusEl.innerText = `Deleted "${name}".`;
+			this.spStatusEl.classList.remove("error");
 			await this.refreshWorlds();
 		} catch (err) {
 			console.error("Failed to delete world", err);
-			this.statusEl.innerText = `Failed to delete "${name}": ${String(err)}`;
-			this.statusEl.classList.add("error");
+			this.spStatusEl.innerText = `Failed to delete "${name}": ${String(err)}`;
+			this.spStatusEl.classList.add("error");
 			button.disabled = false;
 			button.innerText = "Delete";
 		}
 	}
 
+	// ─── Multiplayer ───────────────────────────────────────────────────
+
 	private async connectMultiplayer(): Promise<void> {
-		const playerName = this.mpNameInput.value.trim();
-		const server = this.mpServerInput.value.trim();
-		const worldName = sanitizeWorldName(this.mpWorldInput.value);
+		const playerName = this.playerNameInput.value.trim();
+		const serverUrl = this.mpServerInput.value.trim();
+		const serverName =
+			this.mpServerNameInput.value.trim() || serverUrl || "Server";
 
 		if (!playerName) {
 			this.mpStatusEl.innerText = "Please enter your name.";
 			this.mpStatusEl.classList.add("error");
 			return;
 		}
-		if (!server) {
+		if (!serverUrl) {
 			this.mpStatusEl.innerText = "Please enter a server address.";
 			this.mpStatusEl.classList.add("error");
 			return;
 		}
-		if (!isValidWorldName(worldName)) {
-			this.mpStatusEl.innerText = "Please enter a valid world name.";
-			this.mpStatusEl.classList.add("error");
+
+		setPlayerName(playerName);
+		localStorage.setItem(MULTIPLAYER_SERVER_KEY, serverUrl);
+		saveServer({ name: serverName, url: serverUrl });
+		void this.refreshServerList();
+
+		const params = new URLSearchParams({
+			mp: "1",
+			server: serverUrl,
+			name: playerName,
+		});
+		window.location.href = `${worldPath(serverName)}?${params.toString()}`;
+	}
+
+	private async refreshServerList(): Promise<void> {
+		this.mpServerListEl.textContent = "";
+		const servers = getSavedServers();
+
+		if (servers.length === 0) {
+			this.mpServerListEl.appendChild(this.loadingRow("No saved servers."));
 			return;
 		}
 
-		// Save settings
-		setPlayerName(playerName);
-		setMultiplayerServer(server);
+		for (const server of servers) {
+			this.mpServerListEl.appendChild(this.serverRow(server));
+		}
+	}
 
-		// Redirect to world with multiplayer params
-		const params = new URLSearchParams({ mp: "1", server, name: playerName });
-		window.location.href = `${worldPath(worldName)}?${params.toString()}`;
+	private serverRow(server: SavedServer): HTMLElement {
+		const row = document.createElement("div");
+		row.className = "menu-server-row";
+
+		const info = document.createElement("div");
+		info.className = "server-info";
+		const nameEl = document.createElement("div");
+		nameEl.className = "server-name";
+		nameEl.innerText = server.name;
+		const urlEl = document.createElement("div");
+		urlEl.className = "server-url";
+		urlEl.innerText = server.url;
+		info.appendChild(nameEl);
+		info.appendChild(urlEl);
+		row.appendChild(info);
+
+		const joinBtn = document.createElement("button");
+		btnSmallMinecraft(joinBtn, "Join");
+		joinBtn.onclick = () => {
+			this.mpServerInput.value = server.url;
+			void this.connectMultiplayer();
+		};
+		row.appendChild(joinBtn);
+
+		const delBtn = document.createElement("button");
+		btnSmallMinecraft(delBtn, "✕");
+		delBtn.title = "Remove";
+		delBtn.onclick = () => {
+			removeServer(server.url);
+			void this.refreshServerList();
+		};
+		row.appendChild(delBtn);
+
+		return row;
 	}
 
 	private loadingRow(text: string): HTMLElement {
 		const row = document.createElement("div");
-		row.className = "main-menu-world-row empty";
+		row.className = "menu-world-row empty";
 		row.innerText = text;
 		return row;
 	}
@@ -424,200 +554,311 @@ export class MainMenu {
 	private addStyles(): void {
 		const style = document.createElement("style");
 		style.innerHTML = `
-      #mainMenuContainer {
-        position: fixed;
-        inset: 0;
-        z-index: 200;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 12px;
-        background: radial-gradient(circle at 50% 30%, #1e2a33, #0e1418);
-        color: #e8e8e8;
-        font-family: sans-serif;
-      }
+			#mainMenuContainer {
+				position: fixed;
+				inset: 0;
+				z-index: 200;
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				justify-content: center;
+				gap: 8px;
+				background: radial-gradient(circle at 50% 30%, #1e2a33, #0e1418);
+				color: #e8e8e8;
+				font-family: "Segoe UI", system-ui, sans-serif;
+			}
 
-      #mainMenuContainer h1 {
-        font-size: 4em;
-        margin: 0;
-        text-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
-        letter-spacing: 4px;
-      }
+			#mainMenuContainer h1 {
+				font-size: 3.5em;
+				margin: 0 0 16px;
+				text-shadow: 0 4px 12px rgba(0, 0, 0, 0.8), 0 0 40px rgba(127, 179, 213, 0.3);
+				letter-spacing: 6px;
+				font-weight: 700;
+			}
 
-      .main-menu-tabs {
-        display: flex;
-        gap: 4px;
-        margin-bottom: 8px;
-      }
+			/* Player name bar at top of main screen */
+			.player-name-bar {
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				gap: 4px;
+				margin-bottom: 16px;
+				width: 260px;
+			}
 
-      .main-menu-tab {
-        padding: 8px 24px;
-        font-size: 1em;
-        border: 1px solid #45545e;
-        border-bottom: none;
-        border-radius: 4px 4px 0 0;
-        background: #141c22;
-        color: #9aa7b0;
-        cursor: pointer;
-        transition: background-color 0.2s, color 0.2s;
-      }
+			.player-name-label {
+				font-size: 0.75em;
+				text-transform: uppercase;
+				letter-spacing: 1px;
+				color: #9aa7b0;
+				align-self: flex-start;
+				margin-left: 4px;
+			}
 
-      .main-menu-tab.active {
-        background: #2c4a5c;
-        color: #e8e8e8;
-        border-color: #7fb3d5;
-      }
+			.player-name-bar input {
+				width: 100%;
+				text-align: center;
+				font-size: 1.1em;
+			}
 
-      .main-menu-tab:hover:not(.active) {
-        background: #1e2a33;
-        color: #e8e8e8;
-      }
+			#mainMenuContainer h2.screen-title {
+				font-size: 1.5em;
+				margin: 0 0 16px;
+				color: #e8e8e8;
+			}
 
-      .main-menu-panel {
-        display: none;
-        flex-direction: column;
-        align-items: center;
-        gap: 12px;
-      }
+			#mainMenuContainer h3.screen-subtitle {
+				font-size: 1em;
+				margin: 16px 0 8px;
+				color: #9aa7b0;
+				font-weight: 400;
+			}
 
-      .main-menu-panel.active {
-        display: flex;
-      }
+			.menu-screen {
+				display: none;
+				flex-direction: column;
+				align-items: center;
+				gap: 8px;
+				width: 100%;
+				max-width: 400px;
+				max-height: 90vh;
+				overflow-y: auto;
+				padding: 16px;
+			}
 
-      #mainMenuContainer .main-menu-subtitle {
-        margin: 0;
-        color: #9aa7b0;
-      }
+			.menu-screen.active {
+				display: flex;
+			}
 
-      #mainMenuContainer .main-menu-create {
-        display: flex;
-        gap: 8px;
-        margin-bottom: 4px;
-      }
+			.menu-spacer {
+				height: 16px;
+			}
 
-      #mainMenuContainer .main-menu-input-wrap {
-        position: relative;
-      }
+			/* Minecraft-style button */
+			.mc-btn {
+				width: 320px;
+				padding: 12px 24px;
+				font-size: 1.1em;
+				font-family: inherit;
+				border: 2px solid #3a3a3a;
+				border-radius: 0;
+				background: #5a5a5a linear-gradient(180deg, rgba(255,255,255,0.1) 0%, transparent 50%);
+				color: #e8e8e8;
+				cursor: pointer;
+				text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
+				transition: all 0.1s;
+				position: relative;
+			}
 
-      #mainMenuContainer .main-menu-input-wrap input {
-        width: 100%;
-        padding-right: 96px;
-        box-sizing: border-box;
-      }
+			.mc-btn:hover {
+				background: #6a6a6a linear-gradient(180deg, rgba(255,255,255,0.15) 0%, transparent 50%);
+				border-color: #7fb3d5;
+				color: #fff;
+			}
 
-      #mainMenuContainer .main-menu-input-wrap button {
-        position: absolute;
-        right: 4px;
-        top: 50%;
-        transform: translateY(-50%);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        padding: 4px 8px;
-        border: none;
-        border-radius: 3px;
-      }
+			.mc-btn:active {
+				background: #4a4a4a;
+			}
 
-      #mainMenuContainer input {
-        width: 260px;
-        padding: 10px 12px;
-        font-size: 1em;
-        border: 1px solid #45545e;
-        border-radius: 4px;
-        background: #141c22;
-        color: #e8e8e8;
-        outline: none;
-      }
+			/* Small button variant */
+			.mc-btn-small {
+				padding: 6px 12px;
+				font-size: 0.9em;
+				width: auto;
+				min-width: 70px;
+			}
 
-      #mainMenuContainer input:focus {
-        border-color: #7fb3d5;
-      }
+			/* Create world / connect buttons — green accent */
+			.mc-btn-green {
+				border-color: #3a6a3a;
+				background: #2d5a2d linear-gradient(180deg, rgba(255,255,255,0.08) 0%, transparent 50%);
+			}
 
-      #mainMenuContainer button {
-        font-size: 1em;
-        padding: 10px 18px;
-        border: 1px solid #7fb3d5;
-        border-radius: 4px;
-        background: #2c4a5c;
-        color: #e8e8e8;
-        cursor: pointer;
-        transition: background-color 0.2s, color 0.2s;
-      }
+			.mc-btn-green:hover {
+				border-color: #5d9c6a;
+				background: #3d7a3d linear-gradient(180deg, rgba(255,255,255,0.12) 0%, transparent 50%);
+			}
 
-      #mainMenuContainer button:hover:not(:disabled) {
-        background: #7fb3d5;
-        color: #0e1418;
-      }
+			/* Delete / remove buttons — red accent */
+			.mc-btn-red {
+				border-color: #6a3a3a;
+				background: #5a2d2d linear-gradient(180deg, rgba(255,255,255,0.08) 0%, transparent 50%);
+			}
 
-      #mainMenuContainer button:disabled {
-        opacity: 0.5;
-        cursor: default;
-      }
+			.mc-btn-red:hover {
+				border-color: #9c5d5d;
+				background: #7a3d3d linear-gradient(180deg, rgba(255,255,255,0.12) 0%, transparent 50%);
+			}
 
-      #mainMenuContainer button.mp-connect {
-        border-color: #5d9c6a;
-        background: #2c5c38;
-        width: 260px;
-      }
+			/* Back button — left aligned */
+			.mc-btn-back {
+				width: auto;
+				min-width: 100px;
+				margin-bottom: 16px;
+				align-self: flex-start;
+			}
 
-      #mainMenuContainer button.mp-connect:hover:not(:disabled) {
-        background: #5d9c6a;
-        color: #0e1418;
-      }
+			.menu-create-row {
+				display: flex;
+				gap: 8px;
+				width: 100%;
+				max-width: 400px;
+				align-items: center;
+			}
 
-      #mainMenuContainer .main-menu-world-row {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        width: 420px;
-        max-width: 90vw;
-        padding: 8px 12px;
-        background: rgba(255, 255, 255, 0.04);
-        border: 1px solid #2c3a44;
-        border-radius: 4px;
-      }
+			.menu-input-wrap {
+				position: relative;
+				flex: 1;
+			}
 
-      #mainMenuContainer .main-menu-world-row .main-menu-world-name {
-        flex: 1;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
+			.menu-input-wrap input {
+				width: 100%;
+				padding-right: 40px;
+				box-sizing: border-box;
+			}
 
-      #mainMenuContainer .main-menu-world-row button.play {
-        border-color: #5d9c6a;
-        background: #2c5c38;
-      }
+			.menu-input-wrap button {
+				position: absolute;
+				right: 6px;
+				top: 50%;
+				transform: translateY(-50%);
+				background: none;
+				border: none;
+				color: #9aa7b0;
+				cursor: pointer;
+				padding: 4px;
+				font-size: 1.1em;
+				line-height: 1;
+			}
 
-      #mainMenuContainer .main-menu-world-row button.delete {
-        border-color: #9c5d5d;
-        background: #5c2c2c;
-      }
+			.menu-input-wrap button:hover {
+				color: #e8e8e8;
+			}
 
-      #mainMenuContainer .main-menu-world-row.empty {
-        justify-content: center;
-        color: #9aa7b0;
-        font-style: italic;
-      }
+			.input-group {
+				display: flex;
+				flex-direction: column;
+				gap: 2px;
+				width: 100%;
+				max-width: 400px;
+			}
 
-      #mainMenuContainer .main-menu-worlds {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        max-height: 50vh;
-        overflow-y: auto;
-      }
+			.input-label {
+				font-size: 0.7em;
+				text-transform: uppercase;
+				letter-spacing: 1px;
+				color: #9aa7b0;
+				margin-left: 4px;
+			}
 
-      #mainMenuContainer .main-menu-status {
-        min-height: 1.2em;
-        color: #9aa7b0;
-      }
+			#mainMenuContainer input {
+				width: 100%;
+				padding: 10px 12px;
+				font-size: 1em;
+				font-family: inherit;
+				border: 2px solid #3a3a3a;
+				border-radius: 0;
+				background: #1a1a1a;
+				color: #e8e8e8;
+				outline: none;
+				box-sizing: border-box;
+			}
 
-      #mainMenuContainer .main-menu-status.error {
-        color: #ff9b9b;
-      }
-    `;
+			#mainMenuContainer input:focus {
+				border-color: #7fb3d5;
+				background: #222;
+			}
+
+			.menu-world-list,
+			.menu-server-list {
+				display: flex;
+				flex-direction: column;
+				gap: 4px;
+				width: 100%;
+				max-width: 400px;
+				max-height: 40vh;
+				overflow-y: auto;
+			}
+
+			.menu-world-row,
+			.menu-server-row {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				padding: 8px 12px;
+				background: rgba(255, 255, 255, 0.03);
+				border: 1px solid #2c3a44;
+			}
+
+			.menu-world-row.empty,
+			.menu-server-row.empty {
+				justify-content: center;
+				color: #9aa7b0;
+				font-style: italic;
+			}
+
+			.world-name {
+				flex: 1;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+				font-size: 0.95em;
+			}
+
+			.server-info {
+				flex: 1;
+				min-width: 0;
+			}
+
+			.server-name {
+				font-weight: 600;
+				font-size: 0.9em;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+			}
+
+			.server-url {
+				font-size: 0.75em;
+				color: #9aa7b0;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+			}
+
+			.menu-status {
+				min-height: 1.2em;
+				font-size: 0.85em;
+				color: #9aa7b0;
+				width: 100%;
+				max-width: 400px;
+			}
+
+			.menu-status.error {
+				color: #ff9b9b;
+			}
+
+			@media (max-width: 480px) {
+				.mc-btn { width: 260px; }
+				#mainMenuContainer h1 { font-size: 2.5em; }
+			}
+		`;
 		document.head.appendChild(style);
 	}
+}
+
+// ─── Helper functions for Minecraft-style buttons ────────────────────────
+
+function btnMinecraft(btn: HTMLButtonElement, text: string): void {
+	btn.className = "mc-btn";
+	btn.innerText = text;
+}
+
+function btnSmallMinecraft(btn: HTMLButtonElement, text: string): void {
+	btn.className = "mc-btn mc-btn-small";
+	btn.innerText = text;
+}
+
+function quitScreen(btn: HTMLButtonElement): void {
+	// visual indicator — could add icon
 }

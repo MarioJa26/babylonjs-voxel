@@ -3,6 +3,7 @@
 /server/node_modules
 /server/dist
 /server/*.log
+/server/server-data
 /public/models
 /public/environment
 /src/App.vue

@@ -3,6 +3,7 @@
  * Dynamically imports the client's WorldGenerator (pure computation, no DOM).
  */
 import type { WorldGenerator } from "@/code/Generation/WorldGenerator";
+import { hashChunk } from "../protocol/encoder.ts";
 
 export interface ChunkData {
 	chunkX: number;
@@ -13,6 +14,7 @@ export interface ChunkData {
 	palette?: number[];
 	isUniform: boolean;
 	uniformBlockId: number;
+	hash: number;
 }
 
 export class ChunkGenerationService {
@@ -59,6 +61,9 @@ export class ChunkGenerationService {
 		const { blocks, light } = result;
 		const compressed = this.compressBlocks(blocks);
 
+		// Compute hash for cache validation
+		const hash = hashChunk(compressed.data, light, compressed.palette);
+
 		return {
 			chunkX,
 			chunkY,
@@ -68,6 +73,7 @@ export class ChunkGenerationService {
 			palette: compressed.palette,
 			isUniform: compressed.isUniform,
 			uniformBlockId: compressed.uniformBlockId,
+			hash,
 		};
 	}
 

@@ -81,7 +81,11 @@ export class NetClient {
 		this.callbacks = callbacks;
 	}
 
-	async connect(playerName: string, worldName: string): Promise<void> {
+	async connect(
+		playerName: string,
+		worldName: string,
+		seed: string,
+	): Promise<void> {
 		this.playerName = playerName;
 		this.client = new ColyseusSDK(this.serverUrl);
 
@@ -89,6 +93,7 @@ export class NetClient {
 			this.room = await this.client.joinOrCreate("voxel", {
 				name: playerName,
 				worldName,
+				seed,
 			});
 
 			this.setupRoomHandlers();
@@ -294,7 +299,13 @@ export class NetClient {
 		this.room.send("chat", message);
 	}
 
-	sendChunkRequest(cx: number, cy: number, cz: number, lod: number): void {
+	sendChunkRequest(
+		cx: number,
+		cy: number,
+		cz: number,
+		lod: number,
+		cachedHash = 0,
+	): void {
 		if (!this.connected || !this.room) {
 			console.warn(
 				`[NetClient] sendChunkRequest skipped (not connected): ${cx},${cy},${cz}`,
@@ -302,7 +313,7 @@ export class NetClient {
 			return;
 		}
 		this.encoder.reset();
-		this.encoder.writeChunkRequest(cx, cy, cz, lod);
+		this.encoder.writeChunkRequest(cx, cy, cz, lod, cachedHash);
 		this.room.sendBytes("binary", this.encoder.getBytes());
 	}
 

@@ -104,12 +104,19 @@ export class BinaryEncoder {
 		this.writeUint8(data.action);
 	}
 
-	writeChunkRequest(cx: number, cy: number, cz: number, lod: number): void {
+	writeChunkRequest(
+		cx: number,
+		cy: number,
+		cz: number,
+		lod: number,
+		cachedHash = 0,
+	): void {
 		this.writeUint8(MessageType.ChunkRequest);
 		this.writeInt32(cx);
 		this.writeInt32(cy);
 		this.writeInt32(cz);
 		this.writeUint8(lod);
+		this.writeUint32(cachedHash);
 	}
 
 	getBytes(): Uint8Array {
@@ -206,12 +213,19 @@ export class BinaryDecoder {
 		return { sessionId, x, y, z, blockId, action };
 	}
 
-	readChunkRequest(): { cx: number; cy: number; cz: number; lod: number } {
+	readChunkRequest(): {
+		cx: number;
+		cy: number;
+		cz: number;
+		lod: number;
+		cachedHash: number;
+	} {
 		const cx = this.readInt32();
 		const cy = this.readInt32();
 		const cz = this.readInt32();
 		const lod = this.readUint8();
-		return { cx, cy, cz, lod };
+		const cachedHash = this.readUint32();
+		return { cx, cy, cz, lod, cachedHash };
 	}
 }
 
@@ -342,6 +356,39 @@ export function decodeChatMessage(buffer: Uint8Array): ChatMessageData {
 }
 
 /**
+ * Simple hash for chunk cache validation.
+ * Combines block data into a 32-bit stamp. Fast, no crypto overhead.
+ */
+export function hashChunk(blocks: Uint8Array, light: Uint8Array, palette?: number[]): number {
+	let h = 0x811c9dc5; // FNV offset basis
+	const mix = (v: number) => {
+		h ^= v & 0xff;
+		h = Math.imul(h, 0x01000193); // FNV prime
+	};
+
+	// Sample blocks (check first 256 bytes + every 64th byte for large chunks)
+	const step = blocks.length > 256 ? Math.floor(blocks.length / 64) : 1;
+	for (let i = 0; i < blocks.length; i += step) {
+		mix(blocks[i]);
+	}
+
+	// Mix light data (sample every 128th byte)
+	for (let i = 0; i < light.length; i += 128) {
+		mix(light[i]);
+	}
+
+	// Mix palette
+	if (palette) {
+		for (const p of palette) {
+			mix(p & 0xff);
+			mix((p >> 8) & 0xff);
+		}
+	}
+
+	return h >>> 0; // Convert to unsigned 32-bit
+}
+
+/**
  * World time sync — server → client.
  * timeOfDay: 0..1 fraction of day cycle (0=midnight, 0.5=noon).
  * Format: [type:1][timeOfDay:f32]
@@ -361,7 +408,8 @@ export function decodeWorldTime(buffer: Uint8Array): number {
 /**
  * Chunk data — server → client (response to chunk request).
  * Contains compressed voxel data for meshing on the client.
- * Format: [type:1][chunkX:i32][chunkY:i32][chunkZ:i32][flags:u8][blockData...][lightData...]
+ * Format: [type:1][chunkX:i32][chunkY:i32][chunkZ:i32][hash:u32][flags:u8][blockData...][lightData...]
+ * hash: CRC32-like stamp for cache validation
  * flags: bit0=isUniform, bit1=hasPalette
  * If isUniform: next 2 bytes = uniformBlockId, no block data
  * If hasPalette: next 2 bytes = paletteLength, then paletteLength*2 bytes palette, then packed data
@@ -376,9 +424,10 @@ export function encodeChunkData(data: {
 	palette?: number[];
 	isUniform: boolean;
 	uniformBlockId: number;
+	hash: number;
 }): Uint8Array {
 	const lightBytes = data.light.length;
-	const headerSize = 1 + 12 + 1; // type + chunk coords + flags
+	const headerSize = 1 + 12 + 4 + 1; // type + chunk coords + hash + flags
 	const uniformSize = data.isUniform ? 2 : 0;
 	const paletteSize = data.palette ? 2 + data.palette.length * 2 : 0;
 	const totalSize =
@@ -389,6 +438,7 @@ export function encodeChunkData(data: {
 	enc.writeInt32(data.chunkX);
 	enc.writeInt32(data.chunkY);
 	enc.writeInt32(data.chunkZ);
+	enc.writeUint32(data.hash);
 
 	// Flags
 	let flags = 0;
@@ -424,11 +474,13 @@ export function decodeChunkData(buffer: Uint8Array): {
 	palette?: number[];
 	isUniform: boolean;
 	uniformBlockId: number;
+	hash: number;
 } {
 	const dec = new BinaryDecoder(buffer.subarray(1));
 	const chunkX = dec.readInt32();
 	const chunkY = dec.readInt32();
 	const chunkZ = dec.readInt32();
+	const hash = dec.readUint32();
 	const flags = dec.readUint8();
 	const isUniform = (flags & 1) !== 0;
 	const hasPalette = (flags & 2) !== 0;
@@ -470,5 +522,49 @@ export function decodeChunkData(buffer: Uint8Array): {
 		light[i] = dec.readUint8();
 	}
 
-	return { chunkX, chunkY, chunkZ, blocks, light, palette, isUniform, uniformBlockId };
+	return {
+		chunkX,
+		chunkY,
+		chunkZ,
+		blocks,
+		light,
+		palette,
+		isUniform,
+		uniformBlockId,
+		hash,
+	};
+}
+
+/**
+ * Chunk unchanged — server → client (chunk hasn't changed since client's cached version).
+ * Format: [type:1][chunkX:i32][chunkY:i32][chunkZ:i32][hash:u32]
+ */
+export function encodeChunkUnchanged(
+	cx: number,
+	cy: number,
+	cz: number,
+	hash: number,
+): Uint8Array {
+	const enc = new BinaryEncoder(17);
+	enc.writeUint8(MessageType.ChunkUnchanged);
+	enc.writeInt32(cx);
+	enc.writeInt32(cy);
+	enc.writeInt32(cz);
+	enc.writeUint32(hash);
+	return enc.getBytes();
+}
+
+export function decodeChunkUnchanged(buffer: Uint8Array): {
+	cx: number;
+	cy: number;
+	cz: number;
+	hash: number;
+} {
+	const dec = new BinaryDecoder(buffer.subarray(1));
+	return {
+		cx: dec.readInt32(),
+		cy: dec.readInt32(),
+		cz: dec.readInt32(),
+		hash: dec.readUint32(),
+	};
 }
