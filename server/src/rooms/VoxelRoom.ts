@@ -11,7 +11,6 @@
 import { type Client, Room } from "colyseus";
 import {
 	BinaryDecoder,
-	decodeChunkRequestBatch,
 	encodeBlockEditBatch,
 	encodeBlockEditBroadcast,
 	encodeChatMessage,

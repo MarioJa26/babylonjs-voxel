@@ -55,22 +55,17 @@ export class ChunkWorkerPool {
 		this.seed = seed;
 		const poolSize = resolvePoolSize();
 
-		const initPromises: Promise<void>[] = [];
 		for (let i = 0; i < poolSize; i++) {
 			const worker = this.createWorker();
 			this.workers.push({ worker, busy: false });
-			initPromises.push(this.waitForWorkerReady(worker));
 		}
 
-		await Promise.all(initPromises);
 		this.initialized = true;
 	}
 
 	private createWorker(): Worker {
-		const workerPath = join(__dirname, "chunkWorker.ts");
-		const worker = new Worker(workerPath, {
-			execArgv: ["--import", "tsx"],
-		});
+		const workerPath = join(__dirname, "chunkWorkerBootstrap.mjs");
+		const worker = new Worker(workerPath);
 
 		worker.on("message", (msg: WorkerMessage) => {
 			this.handleWorkerMessage(worker, msg);
@@ -89,17 +84,6 @@ export class ChunkWorkerPool {
 		});
 
 		return worker;
-	}
-
-	private waitForWorkerReady(worker: Worker): Promise<void> {
-		return new Promise((resolve) => {
-			const handler = () => {
-				worker.off("message", handler);
-				resolve();
-			};
-			worker.on("message", handler);
-			worker.once("error", () => resolve());
-		});
 	}
 
 	private handleWorkerMessage(worker: Worker, msg: WorkerMessage): void {
@@ -185,7 +169,6 @@ export class ChunkWorkerPool {
 		for (let i = 0; i < poolSize; i++) {
 			const worker = this.createWorker();
 			this.workers.push({ worker, busy: false });
-			await this.waitForWorkerReady(worker);
 		}
 	}
 

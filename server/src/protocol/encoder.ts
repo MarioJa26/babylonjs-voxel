@@ -632,36 +632,6 @@ export function encodeChunkRequestBatch(
 	return enc.getBytes();
 }
 
-export function decodeChunkRequestBatch(
-	buffer: Uint8Array,
-): Array<{
-	cx: number;
-	cy: number;
-	cz: number;
-	lod: number;
-	cachedHash: number;
-}> {
-	const dec = new BinaryDecoder(buffer.subarray(1));
-	const count = dec.readUint16();
-	const requests: Array<{
-		cx: number;
-		cy: number;
-		cz: number;
-		lod: number;
-		cachedHash: number;
-	}> = [];
-	for (let i = 0; i < count; i++) {
-		requests.push({
-			cx: dec.readInt32(),
-			cy: dec.readInt32(),
-			cz: dec.readInt32(),
-			lod: dec.readUint8(),
-			cachedHash: dec.readUint32(),
-		});
-	}
-	return requests;
-}
-
 // ---------------------------------------------------------------------------
 // Chunk data batch — server → client, multiple chunks in one message
 // Format: [type:1][count:u16][(chunk entry)] × count
