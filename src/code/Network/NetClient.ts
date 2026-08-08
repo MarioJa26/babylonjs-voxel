@@ -247,6 +247,10 @@ export class NetClient {
 				// Handled by RemoteChunkProvider via addBinaryHandler — no-op here
 				break;
 
+			case MessageType.ChunkDataBatch:
+				// Handled by RemoteChunkProvider via addBinaryHandler — no-op here
+				break;
+
 			default:
 				console.warn(
 					`[NetClient] Unknown message type: 0x${msgType.toString(16)}`,

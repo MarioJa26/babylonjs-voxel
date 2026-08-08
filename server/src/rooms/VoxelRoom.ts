@@ -54,6 +54,8 @@ export class VoxelRoom extends Room {
 	private worldStorage!: ServerWorldStorage;
 	private worldName = "default";
 	private seed = "default";
+	private dirtyChunks = new Set<string>(); // chunks pending save
+	private flushTimer: ReturnType<typeof setTimeout> | null = null;
 	private timeAccum = 0; // Accumulator for time broadcast
 	private dayCycleAccum = 0; // Accumulator for day cycle advance
 	private chunkGen!: ChunkGenerationService;
@@ -77,18 +79,17 @@ export class VoxelRoom extends Room {
 			`[VoxelRoom] terrain seed: ${this.seed} (from server.properties), wasm: ${this.config.wasmEnabled}`,
 		);
 
-		// Initialize world storage (persistence) and load existing edits
-		this.worldStorage = new ServerWorldStorage(this.worldName);
-		await this.worldStorage.init();
-
-		// Restore in-memory edit history from storage
-		this.blockEdits = this.worldStorage
-			.getEdits()
-			.map((e) => ({ sessionId: "stored", ...e }));
-
-		console.log(
-			`[VoxelRoom] loaded ${this.blockEdits.length} stored edits for ${this.worldName}`,
+		// Initialize world storage (LevelDB) — terrain persists across restarts
+		this.worldStorage = new ServerWorldStorage(
+			this.worldName,
+			this.seed,
+			this.config.worldStoragePath,
 		);
+		await this.worldStorage.init();
+		this.chunkGen.setStorage(this.worldStorage);
+
+		// Keep block edit history for new joiners (sent as initial edits)
+		this.blockEdits = [];
 
 		// Set up fixed-rate simulation tick
 		this.tickInterval = setInterval(
@@ -176,16 +177,58 @@ export class VoxelRoom extends Room {
 		}
 		this.players.clear();
 
+		// Flush any pending chunk saves
+		this.clearChunkFlush();
+		await this.flushDirtyChunks();
+
 		// Terminate worker threads
 		await this.chunkGen.terminate();
 
-		// Persist world edits to disk
+		// Close storage
 		if (this.worldStorage) {
-			await this.worldStorage.save();
-			console.log(
-				`[VoxelRoom] saved ${this.worldStorage.editCount} edits for ${this.worldName}`,
-			);
+			await this.worldStorage.dispose();
 		}
+	}
+
+	private scheduleChunkFlush(): void {
+		if (this.flushTimer) return;
+		this.flushTimer = setTimeout(() => {
+			void this.flushDirtyChunks();
+		}, 500);
+	}
+
+	private clearChunkFlush(): void {
+		if (this.flushTimer) {
+			clearTimeout(this.flushTimer);
+			this.flushTimer = null;
+		}
+	}
+
+	private async flushDirtyChunks(): Promise<void> {
+		this.clearChunkFlush();
+		if (this.dirtyChunks.size === 0) return;
+
+		const keys = Array.from(this.dirtyChunks);
+		this.dirtyChunks.clear();
+
+		for (const key of keys) {
+			const [cx, cy, cz] = key.split(",").map(Number);
+			const stored = await this.worldStorage.readChunk(cx, cy, cz);
+			if (stored) {
+				// Re-save to persist the latest state (includes block edits)
+				this.worldStorage.writeChunk({
+					chunkX: cx,
+					chunkY: cy,
+					chunkZ: cz,
+					blocks: stored.blocks,
+					light: stored.light,
+					palette: stored.palette,
+					isUniform: stored.isUniform,
+					uniformBlockId: stored.uniformBlockId,
+				});
+			}
+		}
+		await this.worldStorage.flush();
 	}
 
 	private tick(deltaMs = 50): void {
@@ -278,15 +321,13 @@ export class VoxelRoom extends Room {
 					this.blockEdits.shift();
 				}
 
-				// Persist to server storage
-				this.worldStorage.addEdit({
-					x: edit.x,
-					y: edit.y,
-					z: edit.z,
-					blockId: edit.blockId,
-					action: edit.action,
-					timestamp: Date.now(),
-				});
+				// Schedule chunk save (debounced) — the chunk will be serialized
+				// and written to LevelDB when the flush timer fires
+				const cx = Math.floor(edit.x / 32);
+				const cy = Math.floor(edit.y / 32);
+				const cz = Math.floor(edit.z / 32);
+				this.dirtyChunks.add(`${cx},${cy},${cz}`);
+				this.scheduleChunkFlush();
 
 				// Broadcast to all other clients
 				const msg = encodeBlockEditBroadcast(storedEdit);
@@ -318,8 +359,8 @@ export class VoxelRoom extends Room {
 	}
 
 	/**
-	 * Generate a chunk and send it to the requesting client.
-	 * Runs generation off the main handler to avoid blocking other messages.
+	 * Serve a chunk to the requesting client.
+	 * Checks storage first — only generates if not found in LevelDB.
 	 */
 	private async handleChunkRequest(
 		client: Client,
@@ -329,6 +370,20 @@ export class VoxelRoom extends Room {
 		cachedHash: number,
 	): Promise<void> {
 		try {
+			// Check storage first (fast path — no regeneration)
+			const stored = await this.worldStorage.readChunk(cx, cy, cz);
+			if (stored) {
+				if (cachedHash !== 0 && stored.hash === cachedHash) {
+					const msg = encodeChunkUnchanged(cx, cy, cz, stored.hash);
+					client.sendBytes("binary", msg);
+					return;
+				}
+				const msg = encodeChunkData(stored);
+				client.sendBytes("binary", msg);
+				return;
+			}
+
+			// Not in storage — generate, which also saves to storage
 			const chunkData = await this.chunkGen.generateChunk(cx, cy, cz);
 
 			if (cachedHash !== 0 && chunkData.hash === cachedHash) {

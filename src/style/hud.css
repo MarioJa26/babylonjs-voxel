@@ -585,15 +585,15 @@
 	--stats-bar-gap: 8px;
 	--chat-clear-margin: 24px; /* breathing room between chat and the stats bars */
 	/* Derived: vertical top edge shared by the bars block and the chat position */
-	--stats-top:
-		calc(
-			var(--stats-offset-bottom) +
-			var(--stats-bar-count) * var(--stats-bar-height) +
-			(var(--stats-bar-count) - 1) * var(--stats-bar-gap)
-		);
+	--stats-top: calc(
+		var(--stats-offset-bottom) +
+		var(--stats-bar-count) *
+		var(--stats-bar-height) +
+		(var(--stats-bar-count) - 1) *
+		var(--stats-bar-gap)
+	);
 	/* Chat bottom offset: sits just above the stats block */
-	--chat-bottom:
-		calc(var(--stats-top) + var(--chat-clear-margin));
+	--chat-bottom: calc(var(--stats-top) + var(--chat-clear-margin));
 }
 
 #stats-container {

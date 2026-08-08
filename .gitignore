@@ -4,6 +4,7 @@
 /server/dist
 /server/*.log
 /server/server-data
+/server/test-db
 /public/models
 /public/environment
 /src/App.vue

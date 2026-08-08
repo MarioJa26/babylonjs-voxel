@@ -1,113 +1,145 @@
 /**
- * ServerWorldStorage — persists block edits to disk per world.
- * Uses simple JSON files in a worlds/ directory.
- * Each world gets one file containing all block edits.
+ * ServerWorldStorage — LevelDB-backed chunk storage for the server.
+ *
+ * Stores full chunk data (blocks + light) using the same VoxelSerializer
+ * blob format as singleplayer. On startup, the server checks stored chunks
+ * first before generating new ones — terrain persists across restarts.
+ *
+ * Replaces the old flat JSON edit-log approach. Block edits are now saved
+ * as full chunk snapshots, so changing the server.properties seed requires
+ * manually deleting the world folder (server-data/worlds/<name>/db/).
  */
+import { LevelDbChunkStore } from "./LevelDbChunkStore.ts";
+import { serializeVoxelData, deserializeVoxelData } from "@/code/World/Storage/VoxelSerializer";
+import { hashChunk } from "../protocol/encoder.ts";
 
-import { existsSync } from "node:fs";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-
-export interface StoredBlockEdit {
-	x: number;
-	y: number;
-	z: number;
-	blockId: number;
-	action: number; // 0=place, 1=break
-	timestamp: number;
+export interface StoredChunkData {
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+	blocks: Uint8Array;
+	light: Uint8Array;
+	palette?: number[];
+	isUniform: boolean;
+	uniformBlockId: number;
+	hash: number;
 }
 
 export class ServerWorldStorage {
-	private edits: StoredBlockEdit[] = [];
-	private saveTimer: ReturnType<typeof setTimeout> | null = null;
-	private savePending = false;
-	private readonly filePath: string;
-	private readonly dirPath: string;
+	private store: LevelDbChunkStore;
+	private dirtyChunks = new Set<string>();
+	private flushTimer: ReturnType<typeof setTimeout> | null = null;
+	private flushPending = false;
+	private seed: string;
 
-	constructor(worldName: string, basePath = "./server-data") {
-		this.dirPath = join(basePath, "worlds");
-		this.filePath = join(this.dirPath, `${this.sanitize(worldName)}.json`);
-	}
-
-	private sanitize(name: string): string {
-		return name.replace(/[^a-zA-Z0-9_-]/g, "_");
+	constructor(worldName: string, seed: string, basePath = "./server-data") {
+		this.seed = seed;
+		this.store = new LevelDbChunkStore(worldName, basePath);
 	}
 
 	async init(): Promise<void> {
-		if (!existsSync(this.dirPath)) {
-			await mkdir(this.dirPath, { recursive: true });
+		await this.store.open();
+		await this.store.setMeta("seed", this.seed);
+		await this.store.setMeta("version", "1");
+	}
+
+	async dispose(): Promise<void> {
+		await this.store.close();
+	}
+
+	/**
+	 * Read a chunk from storage. Returns null if not found (needs generation).
+	 */
+	async readChunk(cx: number, cy: number, cz: number): Promise<StoredChunkData | null> {
+		const blob = await this.store.readChunk(cx, cy, cz);
+		if (!blob) return null;
+
+		const deserialized = deserializeVoxelData(blob);
+		const rawBlocks = deserialized.blocks;
+		const blocksU8 = rawBlocks instanceof Uint8Array
+			? rawBlocks
+			: rawBlocks
+				? new Uint8Array(rawBlocks.buffer, rawBlocks.byteOffset, rawBlocks.byteLength)
+				: new Uint8Array(0);
+		const light = deserialized.lightArray;
+		const lightU8 = light ? new Uint8Array(light) : new Uint8Array(0);
+		const hash = hashChunk(
+			blocksU8,
+			lightU8,
+			deserialized.palette ? Array.from(deserialized.palette) : undefined,
+		);
+
+		return {
+			chunkX: cx,
+			chunkY: cy,
+			chunkZ: cz,
+			blocks: deserialized.blocks instanceof Uint8Array
+				? deserialized.blocks
+				: new Uint8Array(0),
+			light: deserialized.lightArray ?? new Uint8Array(0),
+			palette: deserialized.palette
+				? Array.from(deserialized.palette)
+				: undefined,
+			isUniform: deserialized.isUniform ?? false,
+			uniformBlockId: deserialized.uniformBlockId ?? 0,
+			hash,
+		};
+	}
+
+	/**
+	 * Write a chunk to storage (debounced). Call flush() to persist immediately.
+	 */
+	writeChunk(data: {
+		chunkX: number;
+		chunkY: number;
+		chunkZ: number;
+		blocks: Uint8Array;
+		light: Uint8Array;
+		palette?: number[];
+		isUniform: boolean;
+		uniformBlockId: number;
+	}): void {
+		const blob = serializeVoxelData(
+			data.blocks,
+			data.palette ? Uint16Array.from(data.palette) : null,
+			data.isUniform,
+			data.uniformBlockId,
+			data.light,
+			true,
+		);
+		this.store.writeChunk(data.chunkX, data.chunkY, data.chunkZ, blob);
+
+		const key = `${data.chunkX},${data.chunkY},${data.chunkZ}`;
+		this.dirtyChunks.add(key);
+		this.scheduleFlush();
+	}
+
+	private scheduleFlush(): void {
+		if (this.flushPending) return;
+		this.flushPending = true;
+		this.flushTimer = setTimeout(() => {
+			void this.doFlush();
+		}, 500);
+	}
+
+	private async doFlush(): Promise<void> {
+		this.flushPending = false;
+		if (this.flushTimer) {
+			clearTimeout(this.flushTimer);
+			this.flushTimer = null;
 		}
-
-		try {
-			const data = await readFile(this.filePath, "utf-8");
-			this.edits = JSON.parse(data);
-			console.log(
-				`[WorldStorage] Loaded ${this.edits.length} edits for ${this.filePath}`,
-			);
-		} catch {
-			// No existing file — start fresh
-			this.edits = [];
-		}
+		this.dirtyChunks.clear();
+		await this.store.flush();
 	}
 
-	addEdit(edit: StoredBlockEdit): void {
-		this.edits.push(edit);
-
-		// Cap at max to prevent unbounded growth
-		const MAX_EDITS = 10000;
-		if (this.edits.length > MAX_EDITS) {
-			this.edits = this.edits.slice(-MAX_EDITS);
-		}
-
-		// Debounce saves (save at most once per 5 seconds)
-		this.scheduleSave();
+	/**
+	 * Immediately flush all pending writes.
+	 */
+	async flush(): Promise<void> {
+		await this.doFlush();
 	}
 
-	getEdits(): StoredBlockEdit[] {
-		return this.edits;
-	}
-
-	getEditsSince(timestamp: number): StoredBlockEdit[] {
-		return this.edits.filter((e) => e.timestamp > timestamp);
-	}
-
-	private scheduleSave(): void {
-		this.savePending = true;
-		if (this.saveTimer) return; // Already scheduled
-
-		this.saveTimer = setTimeout(() => {
-			void this.save();
-		}, 5000);
-	}
-
-	async save(): Promise<void> {
-		if (this.saveTimer) {
-			clearTimeout(this.saveTimer);
-			this.saveTimer = null;
-		}
-		if (!this.savePending) return;
-		this.savePending = false;
-
-		try {
-			await writeFile(this.filePath, JSON.stringify(this.edits), "utf-8");
-			console.log(
-				`[WorldStorage] Saved ${this.edits.length} edits to ${this.filePath}`,
-			);
-		} catch (err) {
-			console.error("[WorldStorage] Save failed:", err);
-		}
-	}
-
-	async clear(): Promise<void> {
-		this.edits = [];
-		try {
-			await unlink(this.filePath);
-		} catch {
-			// File doesn't exist — that's fine
-		}
-	}
-
-	get editCount(): number {
-		return this.edits.length;
+	get pendingWrites(): number {
+		return this.dirtyChunks.size;
 	}
 }

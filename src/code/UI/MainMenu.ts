@@ -453,7 +453,8 @@ export class MainMenu {
 		const playerName = this.playerNameInput.value.trim();
 		const serverUrl = this.mpServerInput.value.trim();
 		// Display name for the saved server entry (derived from the address)
-		const displayName = serverUrl.replace(/^wss?:\/\//, "").replace(/:\d+$/, "") || "Server";
+		const displayName =
+			serverUrl.replace(/^wss?:\/\//, "").replace(/:\d+$/, "") || "Server";
 
 		if (!playerName) {
 			this.mpStatusEl.innerText = "Please enter your name.";

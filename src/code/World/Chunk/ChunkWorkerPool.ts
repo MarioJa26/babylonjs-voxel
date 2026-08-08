@@ -1789,9 +1789,6 @@ export class ChunkWorkerPool {
 	// oldest entry is the one discarded instead.
 	// -------------------------------------------------------------------------
 	private enqueueMeshResult(data: FullMeshMessage): void {
-		console.log(
-			`[Mesh] result chunk=${data.chunkId} opaque=${data.opaque?.faceCount ?? 0} transparent=${data.transparent?.faceCount ?? 0}`,
-		);
 		const pending = this.meshResultQueue.length - this.meshResultQueueReadIdx;
 		if (
 			pending >= ChunkWorkerPool.MAX_MESH_QUEUE &&
@@ -1929,9 +1926,6 @@ export class ChunkWorkerPool {
 
 	private flushPendingRemeshQueue(): void {
 		if (this.pendingRemeshMap.size === 0) return;
-		console.log(
-			`[Queue] flush remesh count=${this.pendingRemeshMap.size} idle=${this.getEffectiveIdleWorkerCount()} terrainQ=${this.terrainTaskQueue.size} heap=${this.taskHeap.length}`,
-		);
 
 		const pending = ChunkWorkerPool._flushPendingScratch;
 		pending.length = 0;
@@ -2501,7 +2495,6 @@ export class ChunkWorkerPool {
 			const chunk = batch[0];
 			const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
 			this.remoteInFlight++;
-			console.log(`[RemoteGen] dispatch request ${key}`);
 			void this.remoteChunkProvider
 				.requestChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ)
 				.then((data) => this.handleRemoteChunkData(data))
@@ -2509,12 +2502,6 @@ export class ChunkWorkerPool {
 		} else {
 			// Multiple chunks — batch request
 			this.remoteInFlight += batch.length;
-			const keys = batch
-				.map((c) => `${c.chunkX},${c.chunkY},${c.chunkZ}`)
-				.join(" ");
-			console.log(
-				`[RemoteGen] dispatch batch (${batch.length}): ${keys}`,
-			);
 			const promises = this.remoteChunkProvider.requestChunkBatch(
 				batch.map((c) => ({ cx: c.chunkX, cy: c.chunkY, cz: c.chunkZ })),
 			);
@@ -2639,18 +2626,9 @@ export class ChunkWorkerPool {
 
 		if (unchanged) {
 			// Chunk data hasn't changed — chunk already has correct voxel data
-			console.log(
-				`[RemoteGen] chunk ${data.chunkX},${data.chunkY},${data.chunkZ} unchanged (hash=${data.hash})`,
-			);
 			chunk.isLoaded = true;
 			chunk.isModified = true;
 		} else {
-			console.log(
-				`[RemoteGen] apply data ${data.chunkX},${data.chunkY},${data.chunkZ} ` +
-					`uniform=${data.isUniform} palette=${data.palette ? data.palette.length : "none"} ` +
-					`blocks=${data.blocks.byteLength} light=${data.light.byteLength}`,
-			);
-
 			// Pass raw compressed blocks directly to loadFromStorage.
 			// Do NOT decompress — loadFromStorage handles uniform/palette/dense formats
 			// and expects nibble-packed data when a palette is provided.
@@ -3014,9 +2992,6 @@ export class ChunkWorkerPool {
 				normalizeChunkLod(taskChunk!);
 
 				const lod = taskChunk?.lodLevel ?? 0;
-				console.log(
-					`[Queue] dispatch remesh ${taskChunk?.chunkX},${taskChunk?.chunkY},${taskChunk?.chunkZ} to w${workerIndex} idle=${this.getEffectiveIdleWorkerCount()}`,
-				);
 				this.setWorkerTaskContext(workerIndex, {
 					taskType,
 					chunk: taskChunk,

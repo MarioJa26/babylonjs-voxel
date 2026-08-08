@@ -21,6 +21,7 @@ export interface ServerConfig {
 	dayDuration: number;
 	dayCycle: boolean;
 	wasmEnabled: boolean;
+	worldStoragePath: string;
 }
 
 const DEFAULTS: ServerConfig = {
@@ -35,11 +36,16 @@ const DEFAULTS: ServerConfig = {
 	dayDuration: 120000,
 	dayCycle: true,
 	wasmEnabled: true,
+	worldStoragePath: "server-data",
 };
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
 	if (value === undefined) return fallback;
-	return value.toLowerCase() === "true" || value === "1" || value.toLowerCase() === "yes";
+	return (
+		value.toLowerCase() === "true" ||
+		value === "1" ||
+		value.toLowerCase() === "yes"
+	);
 }
 
 function parseIntSafe(value: string | undefined, fallback: number): number {
@@ -71,7 +77,9 @@ let cachedConfig: ServerConfig | null = null;
  * Load server config from server.properties. Results are cached —
  * subsequent calls return the same object.
  */
-export function loadServerConfig(configPath = resolve(process.cwd(), "server.properties")): ServerConfig {
+export function loadServerConfig(
+	configPath = resolve(process.cwd(), "server.properties"),
+): ServerConfig {
 	if (cachedConfig) return cachedConfig;
 
 	const props: Record<string, string> = {};
@@ -82,7 +90,10 @@ export function loadServerConfig(configPath = resolve(process.cwd(), "server.pro
 			Object.assign(props, parseProperties(content));
 			console.log(`[ServerConfig] Loaded from ${configPath}`);
 		} catch (err) {
-			console.warn(`[ServerConfig] Failed to read ${configPath}, using defaults:`, err);
+			console.warn(
+				`[ServerConfig] Failed to read ${configPath}, using defaults:`,
+				err,
+			);
 		}
 	} else {
 		console.warn(`[ServerConfig] ${configPath} not found, using defaults`);
@@ -100,6 +111,7 @@ export function loadServerConfig(configPath = resolve(process.cwd(), "server.pro
 		dayDuration: parseIntSafe(props["day-duration"], DEFAULTS.dayDuration),
 		dayCycle: parseBoolean(props["day-cycle"], DEFAULTS.dayCycle),
 		wasmEnabled: parseBoolean(props["wasm-enabled"], DEFAULTS.wasmEnabled),
+		worldStoragePath: props["world-storage-path"] ?? DEFAULTS.worldStoragePath,
 	};
 
 	return cachedConfig;
@@ -110,7 +122,9 @@ export function loadServerConfig(configPath = resolve(process.cwd(), "server.pro
  */
 export function getServerConfig(): ServerConfig {
 	if (!cachedConfig) {
-		throw new Error("ServerConfig not initialized — call loadServerConfig() first");
+		throw new Error(
+			"ServerConfig not initialized — call loadServerConfig() first",
+		);
 	}
 	return cachedConfig;
 }
@@ -118,7 +132,9 @@ export function getServerConfig(): ServerConfig {
 /**
  * Force a config reload. Used by tests or after editing server.properties.
  */
-export function reloadServerConfig(configPath = resolve(process.cwd(), "server.properties")): ServerConfig {
+export function reloadServerConfig(
+	configPath = resolve(process.cwd(), "server.properties"),
+): ServerConfig {
 	cachedConfig = null;
 	return loadServerConfig(configPath);
 }

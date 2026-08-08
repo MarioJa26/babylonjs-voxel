@@ -3,9 +3,13 @@
  *
  * Uses a worker thread pool for parallel chunk generation, request
  * deduplication to avoid duplicate work, and batch dispatch for efficiency.
+ *
+ * After generation, chunks are persisted to LevelDB storage so they can be
+ * served from disk on subsequent requests (no regeneration needed).
  */
 import { hashChunk } from "../protocol/encoder.ts";
 import { ChunkWorkerPool } from "../workers/ChunkWorkerPool.ts";
+import type { ServerWorldStorage } from "./ServerWorldStorage.ts";
 
 export interface ChunkData {
 	chunkX: number;
@@ -33,6 +37,7 @@ export class ChunkGenerationService {
 	private seed = "default";
 	private initPromise: Promise<void> | null = null;
 	private dedupMap = new Map<string, Promise<ChunkData>>();
+	private storage: ServerWorldStorage | null = null;
 
 	setSeed(seed: string, wasmEnabled = true): void {
 		if (seed === this.seed && this.initPromise) return;
@@ -78,7 +83,9 @@ export class ChunkGenerationService {
 	): Promise<ChunkData> {
 		await this.ensurePool();
 		const raw = await this.pool.dispatch(chunkX, chunkY, chunkZ);
-		return this.finalizeChunk(chunkX, chunkY, chunkZ, raw);
+		const data = this.finalizeChunk(chunkX, chunkY, chunkZ, raw);
+		await this.saveChunk(data);
+		return data;
 	}
 
 	async generateChunksBatch(
@@ -118,6 +125,7 @@ export class ChunkGenerationService {
 			for (let i = 0; i < toFetch.length; i++) {
 				const { index, cx, cy, cz } = toFetch[i];
 				const chunkData = this.finalizeChunk(cx, cy, cz, batchResults[i]);
+				await this.saveChunk(chunkData);
 				results[index] = chunkData;
 			}
 		}
@@ -189,6 +197,27 @@ export class ChunkGenerationService {
 			isUniform: false,
 			uniformBlockId: 0,
 		};
+	}
+
+	/**
+	 * Attach a storage backend. After generation, chunks are saved here.
+	 */
+	setStorage(storage: ServerWorldStorage | null): void {
+		this.storage = storage;
+	}
+
+	private async saveChunk(data: ChunkData): Promise<void> {
+		if (!this.storage) return;
+		this.storage.writeChunk({
+			chunkX: data.chunkX,
+			chunkY: data.chunkY,
+			chunkZ: data.chunkZ,
+			blocks: data.blocks,
+			light: data.light,
+			palette: data.palette,
+			isUniform: data.isUniform,
+			uniformBlockId: data.uniformBlockId,
+		});
 	}
 
 	async terminate(): Promise<void> {
