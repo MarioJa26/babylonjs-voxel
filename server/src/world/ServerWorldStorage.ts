@@ -9,8 +9,11 @@
  * as full chunk snapshots, so changing the server.properties seed requires
  * manually deleting the world folder (server-data/worlds/<name>/db/).
  */
-import { LevelDbChunkStore } from "./LevelDbChunkStore.ts";
-import { serializeVoxelData, deserializeVoxelData } from "@/code/World/Storage/VoxelSerializer";
+import { LevelDbChunkStore } from "@/code/World/Storage/LevelDbChunkStore";
+import {
+	deserializeVoxelData,
+	serializeVoxelData,
+} from "@/code/World/Storage/VoxelSerializer";
 import { hashChunk } from "../protocol/encoder.ts";
 
 export interface StoredChunkData {
@@ -50,17 +53,26 @@ export class ServerWorldStorage {
 	/**
 	 * Read a chunk from storage. Returns null if not found (needs generation).
 	 */
-	async readChunk(cx: number, cy: number, cz: number): Promise<StoredChunkData | null> {
+	async readChunk(
+		cx: number,
+		cy: number,
+		cz: number,
+	): Promise<StoredChunkData | null> {
 		const blob = await this.store.readChunk(cx, cy, cz);
 		if (!blob) return null;
 
 		const deserialized = deserializeVoxelData(blob);
 		const rawBlocks = deserialized.blocks;
-		const blocksU8 = rawBlocks instanceof Uint8Array
-			? rawBlocks
-			: rawBlocks
-				? new Uint8Array(rawBlocks.buffer, rawBlocks.byteOffset, rawBlocks.byteLength)
-				: new Uint8Array(0);
+		const blocksU8 =
+			rawBlocks instanceof Uint8Array
+				? rawBlocks
+				: rawBlocks
+					? new Uint8Array(
+							rawBlocks.buffer,
+							rawBlocks.byteOffset,
+							rawBlocks.byteLength,
+						)
+					: new Uint8Array(0);
 		const light = deserialized.lightArray;
 		const lightU8 = light ? new Uint8Array(light) : new Uint8Array(0);
 		const hash = hashChunk(
@@ -73,9 +85,10 @@ export class ServerWorldStorage {
 			chunkX: cx,
 			chunkY: cy,
 			chunkZ: cz,
-			blocks: deserialized.blocks instanceof Uint8Array
-				? deserialized.blocks
-				: new Uint8Array(0),
+			blocks:
+				deserialized.blocks instanceof Uint8Array
+					? deserialized.blocks
+					: new Uint8Array(0),
 			light: deserialized.lightArray ?? new Uint8Array(0),
 			palette: deserialized.palette
 				? Array.from(deserialized.palette)
@@ -99,13 +112,14 @@ export class ServerWorldStorage {
 		isUniform: boolean;
 		uniformBlockId: number;
 	}): void {
+		// Don't pre-compress — LevelDB compresses with Snappy internally.
 		const blob = serializeVoxelData(
 			data.blocks,
 			data.palette ? Uint16Array.from(data.palette) : null,
 			data.isUniform,
 			data.uniformBlockId,
 			data.light,
-			true,
+			false,
 		);
 		this.store.writeChunk(data.chunkX, data.chunkY, data.chunkZ, blob);
 
