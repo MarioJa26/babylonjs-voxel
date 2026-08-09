@@ -2401,8 +2401,6 @@ export class ChunkWorkerPool {
 
 		if (batch.length === 0) return;
 
-		console.log(`[T4] SEND ${batch.length} chunks to server: ${batch.map(c => `${c.chunkX},${c.chunkY},${c.chunkZ}`).join(' ')}`);
-
 		if (batch.length === 1) {
 			// Single chunk — use the simple path
 			const chunk = batch[0];
@@ -2524,9 +2522,7 @@ export class ChunkWorkerPool {
 		// voxel data is never dropped (its replacement will reuse it).
 		const liveChunk = getChunk(data.chunkX, data.chunkY, data.chunkZ);
 		const target = liveChunk ?? captured;
-		console.log(`[T6] handleRemoteChunkData ${key}: liveChunk=${!!liveChunk}, blocks=${data.blocks.byteLength}, uniform=${data.isUniform}, blockId=${data.uniformBlockId}`);
 		if (!target || target.isBoatChunk) {
-			console.log(`[T6b] SKIPPED ${key}: no target or boat chunk`);
 			// Free the concurrency slot (already decremented above) and keep the
 			// request queue moving so other pending chunks are not blocked.
 			this.pumpRemoteGeneration();
@@ -2573,7 +2569,6 @@ export class ChunkWorkerPool {
 
 		// Schedule meshing AFTER the server voxel data has been applied, so the
 		// generated mesh always reflects the requested-from-server blocks.
-		console.log(`[T7] scheduling remesh for ${key}, isLoaded=${chunk.isLoaded}`);
 		chunk.scheduleRemesh(true, true);
 		scheduleChunkAndNeighborsRemesh(chunk, this._boundScheduleRemesh);
 		maybeRemeshNeighborsNowStable(chunk, this._boundScheduleRemesh);

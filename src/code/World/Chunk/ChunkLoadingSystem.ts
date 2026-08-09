@@ -232,7 +232,7 @@ processScheduler.onContinuationSlice = () => {
 	ChunkWorkerPool.getInstance(2).pumpRemoteGeneration();
 };
 
-function isEntityAlive(entity: ChunkBoundBody): boolean {
+function isEntityAlive(entity: ChunkBoundEntity): boolean {
 	return !(entity.isAlive && !entity.isAlive());
 }
 
@@ -434,17 +434,7 @@ export async function processFrameBudgetedStreamingWork(
 		255,
 	);
 
-	const proc = processScheduler as any;
-	if (
-		proc.isProcessing &&
-		(!proc._processStartTime ||
-			performance.now() - proc._processStartTime > 2000)
-	) {
-		// Safety: if stuck for >2 seconds, force reset
-		proc.isProcessing = false;
-		proc.inFlightProcessState = null;
-		proc._processStartTime = 0;
-	}
+	processScheduler.ensureNotStuck();
 	if (!processScheduler.processing) {
 		await processScheduler.processQueues();
 	}
@@ -715,16 +705,6 @@ function applyLoadedChunkFromSavedData(
 	}
 
 	loadNearLodChunk(chunk, savedData, selectedMesh, hasDesiredMesh, targetLod);
-}
-
-async function prefetchOpfsMeshes(
-	requests: QueuedChunkRequest[],
-): Promise<void> {
-	// OPFS removed — meshes are recomputed client-side. No-op.
-}
-
-function resetCycleOpfsCache(): void {
-	// OPFS removed — no-op.
 }
 
 export function deleteBlock(worldX: number, worldY: number, worldZ: number) {

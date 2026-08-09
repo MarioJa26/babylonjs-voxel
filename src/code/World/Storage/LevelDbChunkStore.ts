@@ -56,7 +56,7 @@ export class LevelDbChunkStore {
 		this.opened = true;
 	}
 
-	private 	async openBrowser(): Promise<void> {
+	private async openBrowser(): Promise<void> {
 		console.log(`[LevelDb] Opening IndexedDB: ${this.dbPath}`);
 		this.db = new IndexedDbStore(this.dbPath);
 		await this.db.open();

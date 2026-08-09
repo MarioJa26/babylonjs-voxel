@@ -62,7 +62,15 @@ async function loadJsonServer(url: string): Promise<any> {
 	const { readFile } = await import("node:fs/promises");
 	const __filename = fileURLToPath(import.meta.url);
 	const __dirname = dirname(__filename);
-	const filePath = join(__dirname, "..", "..", "..", "..", "public", url.replace(/^\//, ""));
+	const filePath = join(
+		__dirname,
+		"..",
+		"..",
+		"..",
+		"..",
+		"public",
+		url.replace(/^\//, ""),
+	);
 	const text = await readFile(filePath, "utf-8");
 	return JSON.parse(text);
 }

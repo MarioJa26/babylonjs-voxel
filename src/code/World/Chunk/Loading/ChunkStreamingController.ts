@@ -353,7 +353,6 @@ export class ChunkStreamingController {
 			Math.abs(chunkY - prevChunkY) <= 1 &&
 			Math.abs(chunkZ - prevChunkZ) <= 1;
 
-		console.log(`[MOVE] canUseDelta=${canUseDelta}, curr=${chunkX},${chunkY},${chunkZ}, prev=${prevChunkX},${prevChunkY},${prevChunkZ}`);
 		if (canUseDelta) {
 			this.processMovementRings(
 				chunkX,
@@ -675,9 +674,6 @@ export class ChunkStreamingController {
 		chunk.lodLevel = desiredLod;
 
 		if (!chunk.isLoaded) {
-			console.log(
-				`[T1] QUEUED ${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ} rev=${revision}`,
-			);
 			this.ensureChunkQueuedForLoad(
 				chunk,
 				desiredLod,

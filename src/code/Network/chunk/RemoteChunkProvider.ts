@@ -45,8 +45,6 @@ export class RemoteChunkProvider {
 		this.client.addBinaryHandler((data: Uint8Array) => {
 			if (data.byteLength < 1) return;
 
-			console.log(`[T5] MSG type=0x${data[0].toString(16)} len=${data.byteLength} (ChunkData=0x15 Batch=0x19)`);
-
 			if (data[0] === MessageType.ChunkData) {
 				const chunk = decodeChunkData(data);
 				const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;

@@ -1,5 +1,6 @@
 import { Chunk } from "./Chunk/Chunk";
 import { GLOBAL_VALUES } from "./GLOBAL_VALUES";
+import { LevelDbChunkStore } from "./Storage/LevelDbChunkStore";
 import {
 	deserializeEntities,
 	deserializeVoxelData,
@@ -8,7 +9,6 @@ import {
 	serializeEntities,
 	serializeVoxelData,
 } from "./Storage/VoxelSerializer";
-import { LevelDbChunkStore } from "./Storage/LevelDbChunkStore";
 import { getWorldNameFromUrl } from "./WorldContext";
 
 export type { SavedChunkData, SavedChunkEntityData };
@@ -30,7 +30,9 @@ class WorldStorageImpl {
 			console.log(`[WorldStorage] Initializing for world: ${worldName}`);
 			this.store = new LevelDbChunkStore(worldName, "./saves");
 			await this.store.open();
-			console.log(`[WorldStorage] Initialized successfully, isReady=${this.store.isReady}`);
+			console.log(
+				`[WorldStorage] Initialized successfully, isReady=${this.store.isReady}`,
+			);
 		})();
 		return this.initPromise;
 	}
