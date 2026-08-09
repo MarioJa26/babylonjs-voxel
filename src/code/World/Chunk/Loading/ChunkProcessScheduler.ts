@@ -128,6 +128,14 @@ export class ChunkProcessScheduler {
 		return performance.now() > this._overallDeadline;
 	}
 
+	/** Race a promise against a timeout. Resolves with fallback on timeout. */
+	private withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+		return Promise.race([
+			promise,
+			new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+		]);
+	}
+
 	/** Force-reset if processing has been stuck for too long. Called every frame. */
 	public ensureNotStuck(): void {
 		if (
@@ -229,7 +237,11 @@ export class ChunkProcessScheduler {
 
 						if (this._saveScratch.length > 0) {
 							try {
-								await WorldStorage.saveChunks(this._saveScratch);
+								await this.withTimeout(
+									WorldStorage.saveChunks(this._saveScratch),
+									500,
+									undefined,
+								);
 								if (this.checkDeadline()) {
 									timedOut = true;
 									break;
@@ -380,7 +392,8 @@ export class ChunkProcessScheduler {
 							for (const r of state.farRequests)
 								this._farIdScratch.push(r.chunk.id);
 
-							await Promise.all([
+						await this.withTimeout(
+							Promise.all([
 								state.nearRequests.length > 0
 									? WorldStorage.loadChunks(
 											this._nearIdScratch,
@@ -396,11 +409,14 @@ export class ChunkProcessScheduler {
 											state.farLoadedDataMap,
 										)
 									: Promise.resolve(),
-							]);
-							if (this.checkDeadline()) {
-								timedOut = true;
-								break;
-							}
+							]),
+							500,
+							undefined,
+						);
+						if (this.checkDeadline()) {
+							timedOut = true;
+							break;
+						}
 
 							this.beginSlice(state);
 							state.stage = ProcessStage.ApplyLoadedChunks;
@@ -453,10 +469,14 @@ export class ChunkProcessScheduler {
 							// PERF: same fix as LoadFromStorage above — write directly
 							// into state.hydrateMap instead of copying out of a temp Map.
 							state.hydrateMap.clear();
-							await WorldStorage.loadChunks(
-								state.hydrateIds,
-								{ includeVoxelData: true },
-								state.hydrateMap,
+							await this.withTimeout(
+								WorldStorage.loadChunks(
+									state.hydrateIds,
+									{ includeVoxelData: true },
+									state.hydrateMap,
+								),
+								500,
+								undefined,
 							);
 							if (this.checkDeadline()) {
 								timedOut = true;

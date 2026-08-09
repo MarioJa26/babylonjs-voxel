@@ -5,6 +5,7 @@
  */
 import type { EngineContext, Mesh, SceneContext } from "@babylonjs/lite";
 import {
+	addToScene,
 	createCapsule,
 	createStandardMaterial,
 	disposeMeshGpu,
@@ -35,7 +36,7 @@ export class RemotePlayerVisual {
 
 	constructor(
 		private engine: EngineContext,
-		scene: SceneContext,
+		private scene: SceneContext,
 		private player: RemotePlayer,
 		colorIndex: number,
 	) {
@@ -46,11 +47,11 @@ export class RemotePlayerVisual {
 
 		const color = PLAYER_COLORS[colorIndex % PLAYER_COLORS.length];
 		const mat = createStandardMaterial();
-		mat.diffuseColor = color;
-		mat.emissiveColor = [0, 0, 0];
+		mat.emissiveColor = color;
 		mat.disableLighting = true;
 		this.mesh.material = mat;
 		this.mesh.pickable = false;
+		addToScene(this.scene, this.mesh);
 
 		// Create floating name tag
 		this.nameTag = document.createElement("div");

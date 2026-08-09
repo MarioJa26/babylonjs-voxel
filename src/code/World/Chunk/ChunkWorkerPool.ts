@@ -2376,18 +2376,22 @@ export class ChunkWorkerPool {
 		return this.remoteTaskQueue.length > 0;
 	}
 
-	public pumpRemoteGeneration(): void {
+	public async pumpRemoteGeneration(): Promise<void> {
 		if (!this.remoteChunkProvider) return;
 
 		// Process the task queue: send up to MAX_REMOTE_CONCURRENT chunks per call.
 		// This is called every frame from processFrameBudgetedStreamingWork.
 
-		// Collect up to MAX_REMOTE_CONCURRENT chunks from the queue into a batch.
-		// Batch requests reduce round-trips: one network message fetches many chunks.
-		const batch: Chunk[] = [];
+		// Collect up to MAX_REMOTE_CONCURRENT chunks from the queue.
+		// Check local cache synchronously — only request from server what we don't
+		// have cached. The old fire-and-forget async cache check raced with the
+		// server request, causing handleRemoteChunkData to be called twice per
+		// chunk (once from cache, once from server), which double-decremented
+		// remoteInFlight and broke the concurrency limiter.
+		const toRequest: Chunk[] = [];
 		while (
 			this.remoteTaskQueue.length > 0 &&
-			batch.length < this.MAX_REMOTE_CONCURRENT
+			toRequest.length < this.MAX_REMOTE_CONCURRENT
 		) {
 			const chunk = this.remoteTaskQueue.shift();
 			if (!chunk) continue;
@@ -2395,15 +2399,34 @@ export class ChunkWorkerPool {
 			if (chunk.isBoatChunk) continue;
 			const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
 			if (this.remotePendingChunks.has(key)) continue;
+
+			// Check local cache synchronously before sending a server request
+			try {
+				const cached = await this.remoteChunkProvider.getCachedChunk(
+					chunk.chunkX,
+					chunk.chunkY,
+					chunk.chunkZ,
+				);
+				if (cached) {
+					// Cache hit — apply directly, no server request needed
+					chunk.isTerrainScheduled = true;
+					this.handleRemoteChunkData(cached);
+					continue;
+				}
+			} catch {
+				// Cache read failed — fall through to server request
+			}
+
+			// Cache miss — queue for server request
 			this.remotePendingChunks.set(key, chunk);
-			batch.push(chunk);
+			toRequest.push(chunk);
 		}
 
-		if (batch.length === 0) return;
+		if (toRequest.length === 0) return;
 
-		if (batch.length === 1) {
+		if (toRequest.length === 1) {
 			// Single chunk — use the simple path
-			const chunk = batch[0];
+			const chunk = toRequest[0];
 			const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
 			this.remoteInFlight++;
 			void this.remoteChunkProvider
@@ -2412,12 +2435,16 @@ export class ChunkWorkerPool {
 				.catch((err) => this.handleRemoteGenError(err, chunk, key));
 		} else {
 			// Multiple chunks — batch request
-			this.remoteInFlight += batch.length;
+			this.remoteInFlight += toRequest.length;
 			const promises = this.remoteChunkProvider.requestChunkBatch(
-				batch.map((c) => ({ cx: c.chunkX, cy: c.chunkY, cz: c.chunkZ })),
+				toRequest.map((c) => ({
+					cx: c.chunkX,
+					cy: c.chunkY,
+					cz: c.chunkZ,
+				})),
 			);
-			for (let i = 0; i < batch.length; i++) {
-				const chunk = batch[i];
+			for (let i = 0; i < toRequest.length; i++) {
+				const chunk = toRequest[i];
 				const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
 				void promises[i]
 					.then((data) => this.handleRemoteChunkData(data))
@@ -2539,9 +2566,48 @@ export class ChunkWorkerPool {
 			data.hash !== 0;
 
 		if (unchanged) {
-			// Chunk data hasn't changed — chunk already has correct voxel data
-			chunk.isLoaded = true;
-			chunk.isModified = true;
+			// Chunk data hasn't changed on the server.
+			// If the chunk already has voxel data, just mark it loaded.
+			// If it has NO voxel data (first time seen), load from local cache.
+			if (chunk.hasVoxelData) {
+				chunk.isLoaded = true;
+				chunk.isModified = true;
+			} else if (this.remoteChunkProvider) {
+				// First time seeing this chunk — pull from local cache
+				void this.remoteChunkProvider
+					.getCachedChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ)
+					.then((cached) => {
+						if (cached) {
+							const blocks = cached.blocks;
+							const palette = cached.palette
+								? Uint16Array.from(cached.palette)
+								: null;
+							chunk.loadFromStorage(
+								blocks,
+								palette,
+								cached.isUniform,
+								cached.uniformBlockId,
+								cached.light,
+								false,
+							);
+							chunk.isModified = true;
+							this.broadcastLightRegister(chunk);
+							this.broadcastVoxelRegister(chunk);
+							chunk.scheduleRemesh(true, true);
+							scheduleChunkAndNeighborsRemesh(
+								chunk,
+								this._boundScheduleRemesh,
+							);
+						} else {
+							// No local cache either — mark loaded so it's not stuck
+							chunk.isLoaded = true;
+						}
+					})
+					.catch(() => {
+						chunk.isLoaded = true;
+					});
+				return;
+			}
 		} else {
 			// Pass raw compressed blocks directly to loadFromStorage.
 			// Do NOT decompress — loadFromStorage handles uniform/palette/dense formats

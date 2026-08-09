@@ -3,9 +3,19 @@
  *
  * Message types are single-byte IDs. All multi-byte integers are little-endian.
  * Positions are float32 (sub-block precision, full float range).
- * Rotations are uint8 (1.4° precision).
+ * Rotations are uint8 (yaw: 0-255 maps the full 360° circle, pitch: 0-255 maps
+ * -90°..+90°).
  *
- * Shared between client and server.
+ * Player identity:
+ *  - C→S messages (PlayerState, BlockEdit) carry NO sessionId — the server
+ *    uses the connection identity.
+ *  - S→C PlayerStateBatch uses a per-room uint8 player index (assigned at
+ *    join, announced in PlayerJoin) instead of repeating sessionId strings.
+ *  - PlayerJoin carries the assigned index; PlayerLeave carries the index
+ *    instead of a sessionId string.
+ *
+ * Shared between client and server — single source of truth. The server
+ * imports this module via its "@/code/Network/protocol/*" path alias.
  */
 
 export const MessageType = {
@@ -25,8 +35,9 @@ export const MessageType = {
 	ChunkUnchanged: 0x16, // Server says "your cached chunk is still valid"
 	WorldTime: 0x17,
 	ChatMessage: 0x18,
-	WorldConfig: 0x1a, // Server → client: authoritative world seed on join
 	ChunkDataBatch: 0x19,
+	WorldConfig: 0x1a, // Server → client: authoritative world seed on join
+	SpawnPosition: 0x1b, // Server → client: teleport player to saved position
 } as const;
 
 export type MessageType = (typeof MessageType)[keyof typeof MessageType];
@@ -39,14 +50,19 @@ export const BlockActionType = {
 export type BlockActionType =
 	(typeof BlockActionType)[keyof typeof BlockActionType];
 
+/** Client → Server: full local player state (no sessionId — connection identity). */
 export interface PlayerStateData {
-	sessionId: string;
 	x: number;
 	y: number;
 	z: number;
 	yaw: number;
 	pitch: number;
 	animation: number;
+}
+
+/** Server → Client: one entry of a PlayerStateBatch (index instead of sessionId). */
+export interface PlayerStateBatchEntry extends PlayerStateData {
+	index: number;
 }
 
 export interface BlockEditData {
@@ -59,12 +75,13 @@ export interface BlockEditData {
 }
 
 export interface PlayerJoinData {
+	index: number;
 	sessionId: string;
 	name: string;
 }
 
 export interface PlayerLeaveData {
-	sessionId: string;
+	index: number;
 }
 
 export interface ChatMessageData {

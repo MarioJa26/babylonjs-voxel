@@ -7,8 +7,14 @@
  * After generation, chunks are persisted to LevelDB storage so they can be
  * served from disk on subsequent requests (no regeneration needed).
  */
-import { hashChunk } from "../protocol/encoder.ts";
+
+import {
+	packChunkKeyFast,
+	unpackChunkKeyFast,
+} from "@/code/World/Storage/ChunkKey.ts";
+import { hashChunk } from "@/code/Network/protocol/encoder.ts";
 import { ChunkWorkerPool } from "../workers/ChunkWorkerPool.ts";
+import { compressBlocks } from "./ChunkCompression.ts";
 import type { ServerWorldStorage } from "./ServerWorldStorage.ts";
 
 export interface ChunkData {
@@ -28,16 +34,16 @@ interface RawChunkResult {
 	light: Uint8Array;
 }
 
-function chunkKey(cx: number, cy: number, cz: number): string {
-	return `${cx},${cy},${cz}`;
-}
-
 export class ChunkGenerationService {
 	private pool = new ChunkWorkerPool();
 	private seed = "default";
 	private initPromise: Promise<void> | null = null;
-	private dedupMap = new Map<string, Promise<ChunkData>>();
+	// Keyed by packChunkKey(cx,cy,cz) — a single number instead of the
+	// template-literal string this used to build ("cx,cy,cz") on every
+	// generate/dedup check. Purely internal to this map, no external coupling.
+	private dedupMap = new Map<number, Promise<ChunkData>>();
 	private storage: ServerWorldStorage | null = null;
+	private wasmEnabled = true;
 
 	setSeed(seed: string, wasmEnabled = true): void {
 		if (seed === this.seed && this.initPromise) return;
@@ -46,8 +52,6 @@ export class ChunkGenerationService {
 		this.dedupMap.clear();
 		this.wasmEnabled = wasmEnabled;
 	}
-
-	private wasmEnabled = true;
 
 	private async ensurePool(): Promise<void> {
 		if (this.initPromise) return this.initPromise;
@@ -60,7 +64,7 @@ export class ChunkGenerationService {
 		chunkY: number,
 		chunkZ: number,
 	): Promise<ChunkData> {
-		const key = chunkKey(chunkX, chunkY, chunkZ);
+		const key = packChunkKeyFast(chunkX, chunkY, chunkZ);
 
 		const existing = this.dedupMap.get(key);
 		if (existing) return existing;
@@ -69,8 +73,7 @@ export class ChunkGenerationService {
 		this.dedupMap.set(key, promise);
 
 		try {
-			const result = await promise;
-			return result;
+			return await promise;
 		} finally {
 			this.dedupMap.delete(key);
 		}
@@ -94,38 +97,50 @@ export class ChunkGenerationService {
 		await this.ensurePool();
 
 		const results: ChunkData[] = new Array(coords.length);
+		const dedupHits: Array<{ index: number; promise: Promise<ChunkData> }> = [];
 		const toFetch: Array<{
 			index: number;
 			cx: number;
 			cy: number;
 			cz: number;
 		}> = [];
-		const fetches: Array<Promise<RawChunkResult>> = [];
 
 		for (let i = 0; i < coords.length; i++) {
 			const { chunkX: cx, chunkY: cy, chunkZ: cz } = coords[i];
-			const key = chunkKey(cx, cy, cz);
+			const key = packChunkKeyFast(cx, cy, cz);
 
 			const existing = this.dedupMap.get(key);
 			if (existing) {
-				results[i] = await existing;
+				dedupHits.push({ index: i, promise: existing });
 				continue;
 			}
 
 			toFetch.push({ index: i, cx, cy, cz });
 		}
 
+		// Resolve dedup hits in parallel (they may already be in flight).
+		await Promise.all(
+			dedupHits.map((hit) =>
+				hit.promise.then((data) => {
+					results[hit.index] = data;
+				}),
+			),
+		);
+
 		if (toFetch.length > 0) {
-			const batchPromise = this.pool.dispatchAll(
+			const batchResults = await this.pool.dispatchAll(
 				toFetch.map((t) => ({ chunkX: t.cx, chunkY: t.cy, chunkZ: t.cz })),
 			);
-
-			const batchResults = await batchPromise;
 
 			// Finalize all chunks (CPU work, but fast compared to generation)
 			const finalized = new Array(toFetch.length);
 			for (let i = 0; i < toFetch.length; i++) {
-				finalized[i] = this.finalizeChunk(toFetch[i].cx, toFetch[i].cy, toFetch[i].cz, batchResults[i]);
+				finalized[i] = this.finalizeChunk(
+					toFetch[i].cx,
+					toFetch[i].cy,
+					toFetch[i].cz,
+					batchResults[i],
+				);
 			}
 
 			// Save all chunks in parallel (I/O bound)
@@ -146,7 +161,7 @@ export class ChunkGenerationService {
 		raw: RawChunkResult,
 	): ChunkData {
 		const { blocks, light } = raw;
-		const compressed = this.compressBlocks(blocks);
+		const compressed = compressBlocks(blocks);
 		const hash = hashChunk(compressed.data, light, compressed.palette);
 
 		return {
@@ -162,49 +177,6 @@ export class ChunkGenerationService {
 		};
 	}
 
-	private compressBlocks(blocks: Uint8Array): {
-		data: Uint8Array;
-		palette?: number[];
-		isUniform: boolean;
-		uniformBlockId: number;
-	} {
-		const len = blocks.length;
-		const uniqueBlocks = new Map<number, number>();
-
-		for (let i = 0; i < len; i++) {
-			const id = blocks[i];
-			uniqueBlocks.set(id, (uniqueBlocks.get(id) ?? 0) + 1);
-		}
-
-		if (uniqueBlocks.size === 1) {
-			const uniformBlockId = uniqueBlocks.keys().next().value ?? 0;
-			return { data: new Uint8Array(0), isUniform: true, uniformBlockId };
-		}
-
-		if (uniqueBlocks.size <= 16) {
-			const palette = Array.from(uniqueBlocks.keys());
-			const blockToPalette = new Map<number, number>();
-			for (let i = 0; i < palette.length; i++) {
-				blockToPalette.set(palette[i], i);
-			}
-
-			const packed = new Uint8Array(Math.ceil(len / 2));
-			for (let i = 0; i < len; i += 2) {
-				const evenIdx = blockToPalette.get(blocks[i]) ?? 0;
-				const oddIdx = blockToPalette.get(blocks[i + 1]) ?? 0;
-				packed[i >> 1] = (evenIdx & 0x0f) | ((oddIdx & 0x0f) << 4);
-			}
-
-			return { data: packed, palette, isUniform: false, uniformBlockId: 0 };
-		}
-
-		return {
-			data: new Uint8Array(blocks),
-			isUniform: false,
-			uniformBlockId: 0,
-		};
-	}
-
 	/**
 	 * Attach a storage backend. After generation, chunks are saved here.
 	 */
@@ -214,16 +186,7 @@ export class ChunkGenerationService {
 
 	private async saveChunk(data: ChunkData): Promise<void> {
 		if (!this.storage) return;
-		this.storage.writeChunk({
-			chunkX: data.chunkX,
-			chunkY: data.chunkY,
-			chunkZ: data.chunkZ,
-			blocks: data.blocks,
-			light: data.light,
-			palette: data.palette,
-			isUniform: data.isUniform,
-			uniformBlockId: data.uniformBlockId,
-		});
+		this.storage.writeChunk(data);
 	}
 
 	async terminate(): Promise<void> {

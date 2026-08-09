@@ -16,6 +16,7 @@ import {
 	decodePlayerJoin,
 	decodePlayerLeave,
 	decodePlayerStateBatch,
+	decodeSpawnPosition,
 	decodeWorldConfig,
 	decodeWorldTime,
 } from "./protocol/encoder";
@@ -23,13 +24,11 @@ import {
 	type BlockEditData,
 	type ChatMessageData,
 	MessageType,
-	type PlayerJoinData,
-	type PlayerLeaveData,
-	type PlayerStateData,
 } from "./protocol/messages";
 
 export interface RemotePlayer {
 	sessionId: string;
+	index: number;
 	name: string;
 	x: number;
 	y: number;
@@ -37,7 +36,7 @@ export interface RemotePlayer {
 	yaw: number;
 	pitch: number;
 	animation: number;
-	// Interpolation targets
+	// Interpolation targets (yaw stored in degrees)
 	targetX: number;
 	targetY: number;
 	targetZ: number;
@@ -48,12 +47,19 @@ export interface NetClientCallbacks {
 	onConnected?: () => void;
 	onDisconnected?: (code: number, reason?: string) => void;
 	onPlayerJoin?: (player: RemotePlayer) => void;
-	onPlayerLeave?: (sessionId: string) => void;
+	onPlayerLeave?: (sessionId: string, name?: string) => void;
 	onPlayerStates?: (states: RemotePlayer[]) => void;
 	onBlockEdit?: (edit: BlockEditData) => void;
 	onChatMessage?: (chat: ChatMessageData) => void;
 	onWorldTime?: (timeOfDay: number) => void;
 	onWorldConfig?: (seed: string) => void;
+	onSpawnPosition?: (pos: {
+		x: number;
+		y: number;
+		z: number;
+		yaw: number;
+		pitch: number;
+	}) => void;
 	onServerError?: (code: number, message?: string) => void;
 }
 
@@ -66,8 +72,11 @@ export class NetClient {
 	private connected = false;
 	private callbacks: NetClientCallbacks = {};
 	private remotePlayers = new Map<string, RemotePlayer>();
+	private playerByIndex = new Map<number, string>(); // room player index → sessionId
+	private ownIndex = -1;
 	private playerName = "";
 	private binaryHandlers: BinaryHandler[] = [];
+	worldName = "default";
 
 	constructor(private serverUrl: string = this.defaultServerUrl()) {}
 
@@ -89,6 +98,7 @@ export class NetClient {
 		seed: string,
 	): Promise<void> {
 		this.playerName = playerName;
+		this.worldName = worldName;
 		this.client = new ColyseusSDK(this.serverUrl);
 
 		try {
@@ -143,34 +153,27 @@ export class NetClient {
 			case MessageType.PlayerStateBatch: {
 				const states = decodePlayerStateBatch(data);
 				for (const state of states) {
-					if (state.sessionId === this.room.sessionId) continue;
+					if (state.index === this.ownIndex) continue;
 
-					const existing = this.remotePlayers.get(state.sessionId);
+					// Map the room index back to a sessionId (PlayerJoin arrives
+					// before any state for that player — ordering is per-connection).
+					const sessionId = this.playerByIndex.get(state.index);
+					if (!sessionId) {
+						console.warn(
+							`[NetClient] State for unknown player index ${state.index}, skipping`,
+						);
+						continue;
+					}
+
+					const existing = this.remotePlayers.get(sessionId);
 					if (existing) {
-						// Update interpolation targets
+						// Update interpolation targets (yaw byte → degrees)
 						existing.targetX = state.x;
 						existing.targetY = state.y;
 						existing.targetZ = state.z;
-						existing.targetYaw = state.yaw;
+						existing.targetYaw = (state.yaw / 255) * 360;
 						existing.pitch = state.pitch;
 						existing.animation = state.animation;
-					} else {
-						// New player appeared (should have gotten PlayerJoin first, but handle anyway)
-						const player: RemotePlayer = {
-							sessionId: state.sessionId,
-							name: state.sessionId.substring(0, 6),
-							x: state.x,
-							y: state.y,
-							z: state.z,
-							yaw: state.yaw,
-							pitch: state.pitch,
-							animation: state.animation,
-							targetX: state.x,
-							targetY: state.y,
-							targetZ: state.z,
-							targetYaw: state.yaw,
-						};
-						this.remotePlayers.set(state.sessionId, player);
 					}
 				}
 
@@ -182,10 +185,16 @@ export class NetClient {
 
 			case MessageType.PlayerJoin: {
 				const join = decodePlayerJoin(data);
-				if (join.sessionId === this.room.sessionId) break;
+				if (join.sessionId === this.room.sessionId) {
+					// This is our own join message — record our room index
+					this.ownIndex = join.index;
+					break;
+				}
 
+				this.playerByIndex.set(join.index, join.sessionId);
 				const player: RemotePlayer = {
 					sessionId: join.sessionId,
+					index: join.index,
 					name: join.name,
 					x: 0,
 					y: 80,
@@ -204,9 +213,13 @@ export class NetClient {
 			}
 
 			case MessageType.PlayerLeave: {
-				const leave = decodePlayerLeave(data);
-				this.remotePlayers.delete(leave.sessionId);
-				this.callbacks.onPlayerLeave?.(leave.sessionId);
+				const index = decodePlayerLeave(data);
+				const sessionId = this.playerByIndex.get(index) ?? "";
+				const existing = this.remotePlayers.get(sessionId);
+				const name = existing?.name;
+				this.remotePlayers.delete(sessionId);
+				this.playerByIndex.delete(index);
+				this.callbacks.onPlayerLeave?.(sessionId, name);
 				break;
 			}
 
@@ -243,6 +256,12 @@ export class NetClient {
 				break;
 			}
 
+			case MessageType.SpawnPosition: {
+				const pos = decodeSpawnPosition(data);
+				this.callbacks.onSpawnPosition?.(pos);
+				break;
+			}
+
 			case MessageType.ChunkData:
 				// Handled by RemoteChunkProvider via addBinaryHandler — no-op here
 				break;
@@ -272,13 +291,13 @@ export class NetClient {
 
 		this.encoder.reset();
 		this.encoder.writePlayerState({
-			sessionId: this.room.sessionId,
 			x, // float32 — sub-block precision
 			y,
 			z,
-			yaw: Math.round((yaw % 360) / 1.4) & 0xff,
+			// yaw: 0-255 maps the full 360° circle
+			yaw: Math.round(((((yaw % 360) + 360) % 360) / 360) * 255) & 0xff,
 			pitch: Math.round(((pitch + 90) / 180) * 255) & 0xff,
-			animation: animation,
+			animation,
 		});
 
 		this.room.sendBytes("binary", this.encoder.getBytes());
@@ -295,7 +314,7 @@ export class NetClient {
 
 		this.encoder.reset();
 		this.encoder.writeBlockEdit({
-			sessionId: this.room.sessionId,
+			sessionId: "",
 			x,
 			y,
 			z,
@@ -308,7 +327,19 @@ export class NetClient {
 
 	sendChat(message: string): void {
 		if (!this.connected || !this.room) return;
-		this.room.send("chat", message);
+
+		this.encoder.reset();
+		const chat: ChatMessageData = {
+			sessionId: this.room.sessionId,
+			name: this.playerName,
+			message,
+		};
+		this.encoder.writeChatMessage(chat);
+		this.room.sendBytes("binary", this.encoder.getBytes());
+
+		// Local echo — the server relays to everyone except the sender, so
+		// echo here to avoid a full round-trip delay on our own message.
+		this.callbacks.onChatMessage?.(chat);
 	}
 
 	sendChunkRequest(
@@ -361,7 +392,7 @@ export class NetClient {
 			player.y += (player.targetY - player.y) * lerpFactor;
 			player.z += (player.targetZ - player.z) * lerpFactor;
 
-			// Yaw interpolation (handle wraparound)
+			// Yaw interpolation (handle wraparound — yaw is stored in degrees)
 			let yawDiff = player.targetYaw - player.yaw;
 			if (yawDiff > 180) yawDiff -= 360;
 			if (yawDiff < -180) yawDiff += 360;
@@ -378,6 +409,8 @@ export class NetClient {
 		}
 		this.connected = false;
 		this.remotePlayers.clear();
+		this.playerByIndex.clear();
+		this.ownIndex = -1;
 	}
 
 	get isConnected(): boolean {

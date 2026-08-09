@@ -126,8 +126,7 @@ export class Player {
 	#createPlayerBody(scene: SceneContext): void {
 		const body = createCapsule(this.engine, { height: 1.8, radius: 0.3 });
 		const mat = createStandardMaterial();
-		mat.diffuseColor = [0.2, 0.6, 1.0];
-		mat.emissiveColor = [0.0, 0.0, 0.0];
+		mat.emissiveColor = [0.2, 0.6, 1.0];
 		mat.disableLighting = true;
 		body.material = mat;
 		body.pickable = false;

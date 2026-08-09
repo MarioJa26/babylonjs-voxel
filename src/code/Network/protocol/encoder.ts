@@ -2,6 +2,9 @@
  * Binary encoder/decoder for b102 multiplayer protocol.
  *
  * All integers are little-endian. Uses DataView for cross-platform correctness.
+ *
+ * Single source of truth for client AND server — the server imports this
+ * module via its "@/code/Network/protocol/*" path alias.
  */
 import {
 	type BlockEditData,
@@ -9,6 +12,7 @@ import {
 	MessageType,
 	type PlayerJoinData,
 	type PlayerLeaveData,
+	type PlayerStateBatchEntry,
 	type PlayerStateData,
 } from "./messages";
 
@@ -83,9 +87,12 @@ export class BinaryEncoder {
 		this.offset += bytes.byteLength;
 	}
 
+	/**
+	 * C→S: no sessionId — the server uses the connection identity.
+	 * yaw: 0-255 maps the full 360° circle; pitch: 0-255 maps -90°..+90°.
+	 */
 	writePlayerState(data: PlayerStateData): void {
 		this.writeUint8(MessageType.PlayerState);
-		this.writeString(data.sessionId);
 		this.writeFloat32(data.x);
 		this.writeFloat32(data.y);
 		this.writeFloat32(data.z);
@@ -94,14 +101,22 @@ export class BinaryEncoder {
 		this.writeUint8(data.animation);
 	}
 
+	/** C→S: no sessionId — the server uses the connection identity. */
 	writeBlockEdit(data: BlockEditData): void {
 		this.writeUint8(MessageType.BlockEdit);
-		this.writeString(data.sessionId);
 		this.writeInt32(data.x);
 		this.writeInt32(data.y);
 		this.writeInt32(data.z);
 		this.writeUint16(data.blockId);
 		this.writeUint8(data.action);
+	}
+
+	/** C→S and S→C share the ChatMessage layout (sessionId, name, message). */
+	writeChatMessage(data: ChatMessageData): void {
+		this.writeUint8(MessageType.ChatMessage);
+		this.writeString(data.sessionId);
+		this.writeString(data.name);
+		this.writeString(data.message);
 	}
 
 	writeChunkRequest(
@@ -212,25 +227,33 @@ export class BinaryDecoder {
 		return new TextDecoder().decode(this.buffer.subarray(start, this.offset));
 	}
 
+	/** C→S: no sessionId field on the wire. */
 	readPlayerState(): PlayerStateData {
-		const sessionId = this.readString();
 		const x = this.readFloat32();
 		const y = this.readFloat32();
 		const z = this.readFloat32();
 		const yaw = this.readUint8();
 		const pitch = this.readUint8();
 		const animation = this.readUint8();
-		return { sessionId, x, y, z, yaw, pitch, animation };
+		return { x, y, z, yaw, pitch, animation };
 	}
 
+	/** C→S: no sessionId field on the wire. */
 	readBlockEdit(): BlockEditData {
-		const sessionId = this.readString();
 		const x = this.readInt32();
 		const y = this.readInt32();
 		const z = this.readInt32();
 		const blockId = this.readUint16();
 		const action = this.readUint8();
-		return { sessionId, x, y, z, blockId, action };
+		return { sessionId: "", x, y, z, blockId, action };
+	}
+
+	readChatMessage(): ChatMessageData {
+		return {
+			sessionId: this.readString(),
+			name: this.readString(),
+			message: this.readString(),
+		};
 	}
 
 	readChunkRequest(): {
@@ -247,15 +270,51 @@ export class BinaryDecoder {
 		const cachedHash = this.readUint32();
 		return { cx, cy, cz, lod, cachedHash };
 	}
+
+	readChunkRequestBatch(): Array<{
+		cx: number;
+		cy: number;
+		cz: number;
+		lod: number;
+		cachedHash: number;
+	}> {
+		const count = this.readUint16();
+		const requests: Array<{
+			cx: number;
+			cy: number;
+			cz: number;
+			lod: number;
+			cachedHash: number;
+		}> = [];
+		for (let i = 0; i < count; i++) {
+			requests.push({
+				cx: this.readInt32(),
+				cy: this.readInt32(),
+				cz: this.readInt32(),
+				lod: this.readUint8(),
+				cachedHash: this.readUint32(),
+			});
+		}
+		return requests;
+	}
 }
 
-// Batch encoding for server → client broadcasts
-export function encodePlayerStateBatch(states: PlayerStateData[]): Uint8Array {
-	const enc = new BinaryEncoder(2 + states.length * 20);
+/**
+ * Batch encoding for server → client broadcasts.
+ * Per player: [index:u8][x:f32][y:f32][z:f32][yaw:u8][pitch:u8][anim:u8] — 13
+ * bytes instead of a sessionId string (~16-24 bytes) plus 12+3.
+ *
+ * writePlayerStateBatch writes into a caller-owned (reused) encoder so the
+ * fixed-rate server tick doesn't allocate a fresh buffer every cycle.
+ */
+export function writePlayerStateBatch(
+	enc: BinaryEncoder,
+	states: PlayerStateBatchEntry[],
+): void {
 	enc.writeUint8(MessageType.PlayerStateBatch);
 	enc.writeUint8(Math.min(states.length, 255));
 	for (const s of states) {
-		enc.writeString(s.sessionId);
+		enc.writeUint8(s.index);
 		enc.writeFloat32(s.x);
 		enc.writeFloat32(s.y);
 		enc.writeFloat32(s.z);
@@ -263,15 +322,32 @@ export function encodePlayerStateBatch(states: PlayerStateData[]): Uint8Array {
 		enc.writeUint8(s.pitch);
 		enc.writeUint8(s.animation);
 	}
+}
+
+export function encodePlayerStateBatch(
+	states: PlayerStateBatchEntry[],
+): Uint8Array {
+	const enc = new BinaryEncoder(2 + states.length * 13);
+	writePlayerStateBatch(enc, states);
 	return enc.getBytes();
 }
 
-export function decodePlayerStateBatch(buffer: Uint8Array): PlayerStateData[] {
+export function decodePlayerStateBatch(
+	buffer: Uint8Array,
+): PlayerStateBatchEntry[] {
 	const dec = new BinaryDecoder(buffer.subarray(1)); // skip type byte
 	const count = dec.readUint8();
-	const states: PlayerStateData[] = [];
+	const states: PlayerStateBatchEntry[] = [];
 	for (let i = 0; i < count; i++) {
-		states.push(dec.readPlayerState());
+		states.push({
+			index: dec.readUint8(),
+			x: dec.readFloat32(),
+			y: dec.readFloat32(),
+			z: dec.readFloat32(),
+			yaw: dec.readUint8(),
+			pitch: dec.readUint8(),
+			animation: dec.readUint8(),
+		});
 	}
 	return states;
 }
@@ -312,9 +388,16 @@ export function decodeBlockEditBatch(buffer: Uint8Array): BlockEditData[] {
 	return edits;
 }
 
+/**
+ * Player join — server → client.
+ * [type:1][index:u8][sessionId:str][name:str]
+ * The joiner receives its OWN join message (with its index) directly; other
+ * clients receive it via broadcast.
+ */
 export function encodePlayerJoin(data: PlayerJoinData): Uint8Array {
 	const enc = new BinaryEncoder(64);
 	enc.writeUint8(MessageType.PlayerJoin);
+	enc.writeUint8(data.index);
 	enc.writeString(data.sessionId);
 	enc.writeString(data.name);
 	return enc.getBytes();
@@ -323,23 +406,33 @@ export function encodePlayerJoin(data: PlayerJoinData): Uint8Array {
 export function decodePlayerJoin(buffer: Uint8Array): PlayerJoinData {
 	const dec = new BinaryDecoder(buffer.subarray(1));
 	return {
+		index: dec.readUint8(),
 		sessionId: dec.readString(),
 		name: dec.readString(),
 	};
 }
 
+/**
+ * Player leave — server → client.
+ * [type:1][index:u8] — the client resolves sessionId via its index map.
+ */
 export function encodePlayerLeave(data: PlayerLeaveData): Uint8Array {
-	const enc = new BinaryEncoder(64);
+	const enc = new BinaryEncoder(2);
 	enc.writeUint8(MessageType.PlayerLeave);
-	enc.writeString(data.sessionId);
+	enc.writeUint8(data.index);
 	return enc.getBytes();
 }
 
-export function decodePlayerLeave(buffer: Uint8Array): PlayerLeaveData {
+export function decodePlayerLeave(buffer: Uint8Array): number {
 	const dec = new BinaryDecoder(buffer.subarray(1));
-	return { sessionId: dec.readString() };
+	return dec.readUint8();
 }
 
+/**
+ * S→C: broadcast of one player's block edit.
+ * [type:1][sessionId:str][x:i32][y:i32][z:i32][blockId:u16][action:u8]
+ * Keeps the sessionId string — block edits are rare, so the overhead is fine.
+ */
 export function encodeBlockEditBroadcast(data: BlockEditData): Uint8Array {
 	const enc = new BinaryEncoder(32);
 	enc.writeUint8(MessageType.BlockEditBroadcast);
@@ -354,25 +447,20 @@ export function encodeBlockEditBroadcast(data: BlockEditData): Uint8Array {
 
 export function decodeBlockEditBroadcast(buffer: Uint8Array): BlockEditData {
 	const dec = new BinaryDecoder(buffer.subarray(1));
-	return dec.readBlockEdit();
+	const sessionId = dec.readString();
+	const edit = dec.readBlockEdit();
+	return { ...edit, sessionId };
 }
 
 export function encodeChatMessage(data: ChatMessageData): Uint8Array {
 	const enc = new BinaryEncoder(256);
-	enc.writeUint8(MessageType.ChatMessage);
-	enc.writeString(data.sessionId);
-	enc.writeString(data.name);
-	enc.writeString(data.message);
+	enc.writeChatMessage(data);
 	return enc.getBytes();
 }
 
 export function decodeChatMessage(buffer: Uint8Array): ChatMessageData {
 	const dec = new BinaryDecoder(buffer.subarray(1));
-	return {
-		sessionId: dec.readString(),
-		name: dec.readString(),
-		message: dec.readString(),
-	};
+	return dec.readChatMessage();
 }
 
 /**
@@ -617,11 +705,99 @@ export function decodeChunkUnchanged(buffer: Uint8Array): {
 }
 
 // ---------------------------------------------------------------------------
+// Chunk request batch — client → server, multiple coords in one message
+// Format: [type:1][count:u16][cx:i32][cy:i32][cz:i32][lod:u8][cachedHash:u32] × count
+// ---------------------------------------------------------------------------
+
+export function encodeChunkRequestBatch(
+	requests: Array<{
+		cx: number;
+		cy: number;
+		cz: number;
+		lod: number;
+		cachedHash: number;
+	}>,
+): Uint8Array {
+	const enc = new BinaryEncoder(3 + requests.length * 15);
+	enc.writeUint8(MessageType.ChunkRequestBatch);
+	enc.writeUint16(Math.min(requests.length, 65535));
+	for (const r of requests) {
+		enc.writeInt32(r.cx);
+		enc.writeInt32(r.cy);
+		enc.writeInt32(r.cz);
+		enc.writeUint8(r.lod);
+		enc.writeUint32(r.cachedHash);
+	}
+	return enc.getBytes();
+}
+
+// ---------------------------------------------------------------------------
 // Chunk data batch — server → client, multiple chunks in one message
 // Format: [type:1][count:u16][(chunk entry)] × count
 // Each entry: [cx:i32][cy:i32][cz:i32][hash:u32][flags:u8][blockData...][lightData...]
 // (same inner format as encodeChunkData minus the type byte)
 // ---------------------------------------------------------------------------
+
+export function encodeChunkDataBatch(
+	chunks: Array<{
+		chunkX: number;
+		chunkY: number;
+		chunkZ: number;
+		blocks: Uint8Array;
+		light: Uint8Array;
+		palette?: number[];
+		isUniform: boolean;
+		uniformBlockId: number;
+		hash: number;
+	}>,
+): Uint8Array {
+	// Calculate total size
+	let totalSize = 3; // type + count
+	for (const c of chunks) {
+		totalSize += 12 + 4 + 1; // coords + hash + flags
+		if (c.isUniform) {
+			totalSize += 2;
+		} else if (c.palette) {
+			totalSize += 2 + c.palette.length * 2 + c.blocks.length;
+		} else {
+			totalSize += c.blocks.length;
+		}
+		totalSize += 4 + c.light.length;
+	}
+
+	const enc = new BinaryEncoder(totalSize);
+	enc.writeUint8(MessageType.ChunkDataBatch);
+	enc.writeUint16(Math.min(chunks.length, 65535));
+
+	for (const c of chunks) {
+		enc.writeInt32(c.chunkX);
+		enc.writeInt32(c.chunkY);
+		enc.writeInt32(c.chunkZ);
+		enc.writeUint32(c.hash);
+
+		let flags = 0;
+		if (c.isUniform) flags |= 1;
+		if (c.palette) flags |= 2;
+		enc.writeUint8(flags);
+
+		if (c.isUniform) {
+			enc.writeUint16(c.uniformBlockId);
+		} else if (c.palette) {
+			enc.writeUint16(c.palette.length);
+			for (const pid of c.palette) {
+				enc.writeUint16(pid);
+			}
+			enc.writeBytes(c.blocks);
+		} else {
+			enc.writeBytes(c.blocks);
+		}
+
+		enc.writeUint32(c.light.length);
+		enc.writeBytes(c.light);
+	}
+
+	return enc.getBytes();
+}
 
 export function decodeChunkDataBatch(buffer: Uint8Array): Array<{
 	chunkX: number;
@@ -704,4 +880,43 @@ export function decodeChunkDataBatch(buffer: Uint8Array): Array<{
 	}
 
 	return chunks;
+}
+
+// ---------------------------------------------------------------------------
+// Spawn position — server → client on join
+// Format: [type:1][x:f32][y:f32][z:f32][yaw:f32][pitch:f32]
+// ---------------------------------------------------------------------------
+
+export function encodeSpawnPosition(
+	x: number,
+	y: number,
+	z: number,
+	yaw: number,
+	pitch: number,
+): Uint8Array {
+	const enc = new BinaryEncoder(21);
+	enc.writeUint8(MessageType.SpawnPosition);
+	enc.writeFloat32(x);
+	enc.writeFloat32(y);
+	enc.writeFloat32(z);
+	enc.writeFloat32(yaw);
+	enc.writeFloat32(pitch);
+	return enc.getBytes();
+}
+
+export function decodeSpawnPosition(buffer: Uint8Array): {
+	x: number;
+	y: number;
+	z: number;
+	yaw: number;
+	pitch: number;
+} {
+	const dec = new BinaryDecoder(buffer.subarray(1));
+	return {
+		x: dec.readFloat32(),
+		y: dec.readFloat32(),
+		z: dec.readFloat32(),
+		yaw: dec.readFloat32(),
+		pitch: dec.readFloat32(),
+	};
 }

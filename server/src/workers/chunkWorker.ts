@@ -1,8 +1,9 @@
 /**
  * chunkWorker.ts — Node.js worker thread for parallel chunk generation.
  *
- * Each worker owns one WorldGenerator instance. Receives chunk requests,
- * generates terrain, and posts results back with zero-copy buffer transfers.
+ * Each worker owns one WorldGenerator instance. Receives single or batch
+ * chunk requests, generates terrain, and posts results back with zero-copy
+ * buffer transfers (WorldGenerator allocates a fresh buffer per chunk).
  *
  * When wasmEnabled is true, loads the WASM SIMD noise backend before
  * constructing the WorldGenerator — same backend the client uses.
@@ -10,17 +11,42 @@
 import { parentPort } from "node:worker_threads";
 import { loadWasmNoiseFromFile } from "@/code/Lib/WasmNoise";
 
-type GenRequest = {
-	id: number;
-	seed: string;
-	wasmEnabled: boolean;
+type ChunkCoord = {
 	chunkX: number;
 	chunkY: number;
 	chunkZ: number;
 };
 
-type GenSuccess = {
+type GenRequest = {
 	id: number;
+	seed: string;
+	wasmEnabled: boolean;
+	kind: "single";
+} & ChunkCoord;
+
+type GenBatchRequest = {
+	id: number;
+	seed: string;
+	wasmEnabled: boolean;
+	kind: "batch";
+	items: ChunkCoord[];
+};
+
+type ChunkResult = {
+	blocks: Uint8Array;
+	light: Uint8Array;
+};
+
+type GenSuccess = GenResultMessage;
+type GenBatchSuccess = {
+	id: number;
+	kind: "batch";
+	items: ChunkResult[];
+};
+
+type GenResultMessage = {
+	id: number;
+	kind: "single";
 	blocks: Uint8Array;
 	light: Uint8Array;
 };
@@ -31,11 +57,7 @@ type GenError = {
 };
 
 let generator: {
-	generateChunkData: (
-		x: number,
-		y: number,
-		z: number,
-	) => { blocks: Uint8Array; light: Uint8Array };
+	generateChunkData: (x: number, y: number, z: number) => ChunkResult;
 } | null = null;
 
 let currentSeed = "";
@@ -75,22 +97,39 @@ async function ensureInit(seed: string, wasmEnabled: boolean): Promise<void> {
 	currentSeed = seed;
 }
 
+/**
+ * Collect transfer list for a result. Buffers allocated as SharedArrayBuffer
+ * are shared (not transferable) — plain ArrayBuffers are moved zero-copy.
+ */
+function collectTransferable(results: ChunkResult[]): ArrayBuffer[] {
+	const transfer: ArrayBuffer[] = [];
+	for (const r of results) {
+		if (r.blocks.buffer instanceof SharedArrayBuffer === false) {
+			transfer.push(r.blocks.buffer);
+		}
+		if (r.light.buffer instanceof SharedArrayBuffer === false) {
+			transfer.push(r.light.buffer);
+		}
+	}
+	return transfer;
+}
+
+function generateOne(c: ChunkCoord): ChunkResult {
+	const gen = generator!;
+	return gen.generateChunkData(c.chunkX, c.chunkY, c.chunkZ);
+}
+
 function handleRequest(req: GenRequest): void {
 	ensureInit(req.seed, req.wasmEnabled)
 		.then(() => {
-			const gen = generator!;
-			const result = gen.generateChunkData(req.chunkX, req.chunkY, req.chunkZ);
-
-			const blocksCopy = new Uint8Array(result.blocks);
-			const lightCopy = new Uint8Array(result.light);
-
+			const result = generateOne(req);
 			const msg: GenSuccess = {
 				id: req.id,
-				blocks: blocksCopy,
-				light: lightCopy,
+				kind: "single",
+				blocks: result.blocks,
+				light: result.light,
 			};
-
-			parentPort!.postMessage(msg, [blocksCopy.buffer, lightCopy.buffer]);
+			parentPort!.postMessage(msg, collectTransferable([result]));
 		})
 		.catch((err: unknown) => {
 			const msg: GenError = {
@@ -101,6 +140,29 @@ function handleRequest(req: GenRequest): void {
 		});
 }
 
-parentPort!.on("message", (msg: GenRequest) => {
-	handleRequest(msg);
+function handleBatchRequest(req: GenBatchRequest): void {
+	ensureInit(req.seed, req.wasmEnabled)
+		.then(() => {
+			const items: ChunkResult[] = [];
+			for (const c of req.items) {
+				items.push(generateOne(c));
+			}
+			const msg: GenBatchSuccess = { id: req.id, kind: "batch", items };
+			parentPort!.postMessage(msg, collectTransferable(items));
+		})
+		.catch((err: unknown) => {
+			const msg: GenError = {
+				id: req.id,
+				error: err instanceof Error ? err.message : String(err),
+			};
+			parentPort!.postMessage(msg);
+		});
+}
+
+parentPort!.on("message", (msg: GenRequest | GenBatchRequest) => {
+	if (msg.kind === "batch") {
+		handleBatchRequest(msg);
+	} else {
+		handleRequest(msg);
+	}
 });

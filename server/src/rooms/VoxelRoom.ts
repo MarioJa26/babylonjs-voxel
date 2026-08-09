@@ -9,9 +9,9 @@
  * - Manage world lifecycle (create on first join, destroy when empty)
  */
 import { type Client, Room } from "colyseus";
-import { getServerConfig } from "../config/ServerConfig.ts";
 import {
 	BinaryDecoder,
+	BinaryEncoder,
 	encodeBlockEditBatch,
 	encodeBlockEditBroadcast,
 	encodeChatMessage,
@@ -20,20 +20,28 @@ import {
 	encodeChunkUnchanged,
 	encodePlayerJoin,
 	encodePlayerLeave,
-	encodePlayerStateBatch,
+	encodeSpawnPosition,
 	encodeWorldConfig,
 	encodeWorldTime,
-} from "../protocol/encoder.ts";
+	writePlayerStateBatch,
+} from "@/code/Network/protocol/encoder.ts";
 import {
 	type BlockEditData,
+	type ChatMessageData,
 	MessageType,
-	type PlayerStateData,
-} from "../protocol/messages.ts";
+	type PlayerStateBatchEntry,
+} from "@/code/Network/protocol/messages.ts";
+import {
+	packChunkKeyFast,
+	unpackChunkKeyFast,
+} from "@/code/World/Storage/ChunkKey.ts";
+import { getServerConfig } from "../config/ServerConfig.ts";
 import { ChunkGenerationService } from "../world/ChunkGenerationService.ts";
 import { ServerWorldStorage } from "../world/ServerWorldStorage.ts";
 
 interface ServerPlayerState {
 	sessionId: string;
+	index: number;
 	name: string;
 	x: number;
 	y: number;
@@ -41,10 +49,16 @@ interface ServerPlayerState {
 	yaw: number;
 	pitch: number;
 	animation: number;
+	/** True when the state changed since the last broadcast (dirty-tracking). */
+	dirty: boolean;
+	/** Last time this player's position was persisted to storage (ms epoch). */
+	lastSaveTime: number;
 }
 
 const MAX_STORED_EDITS = 1000; // Keep last N edits for new joiners
 const TIME_BROADCAST_INTERVAL = 5000; // Broadcast time every 5 seconds
+const FULL_SNAPSHOT_INTERVAL = 2000; // Periodic full player-state broadcast (ms)
+const PLAYER_SAVE_INTERVAL = 3000; // Position persistence debounce (ms)
 
 export class VoxelRoom extends Room {
 	private players = new Map<string, ServerPlayerState>();
@@ -54,12 +68,34 @@ export class VoxelRoom extends Room {
 	private worldStorage!: ServerWorldStorage;
 	private worldName = "default";
 	private seed = "default";
-	private dirtyChunks = new Set<string>(); // chunks pending save
+	// Both keyed by packChunkKey(cx,cy,cz) — internal to this class, so the
+	// packed numeric key is safe here (see ChunkKey.ts for what it must not
+	// be used for).
+	private dirtyChunks = new Set<number>(); // chunks pending save
+	private pendingChunkEdits = new Map<
+		number,
+		Map<number, { x: number; y: number; z: number; blockId: number }>
+	>();
 	private flushTimer: ReturnType<typeof setTimeout> | null = null;
 	private timeAccum = 0; // Accumulator for time broadcast
 	private dayCycleAccum = 0; // Accumulator for day cycle advance
 	private chunkGen!: ChunkGenerationService;
 	private config = getServerConfig();
+	private playersReady = new Set<string>(); // received spawn position
+
+	// Pooled PlayerStateBatchEntry objects + reused output array for the
+	// per-tick broadcast, so the fixed-rate tick doesn't allocate N objects
+	// + 1 array every cycle regardless of whether anything actually moved.
+	// The pool grows lazily up to the peak concurrent player count (bounded
+	// by maxClients) and is reused for the lifetime of the room after that.
+	// The batch buffer itself is also reused (tickEncoder) — no per-tick
+	// allocation on the broadcast path.
+	private statePool: PlayerStateBatchEntry[] = [];
+	private statesScratch: PlayerStateBatchEntry[] = [];
+	private tickEncoder = new BinaryEncoder(2048);
+	private nextPlayerIndex = 0;
+	private freedIndices: number[] = [];
+	private lastFullSnapshot = 0;
 
 	constructor() {
 		super();
@@ -101,46 +137,57 @@ export class VoxelRoom extends Room {
 		this.onMessageBytes("binary", (client, data: Uint8Array) => {
 			this.handleBinaryMessage(client, data);
 		});
-
-		// Register message handlers for JSON control messages (chat, etc.)
-		this.onMessage("chat", (client, message: string) => {
-			const player = this.players.get(client.sessionId);
-			if (!player) return;
-			const payload = encodeChatMessage({
-				sessionId: client.sessionId,
-				name: player.name,
-				message,
-			});
-			this.broadcastBytes("binary", payload, {});
-		});
 	}
 
-	onJoin(client: Client, options: { name?: string }) {
+	async onJoin(client: Client, options: { name?: string }) {
 		const name = options.name ?? `Player${this.players.size + 1}`;
 		console.log(`[VoxelRoom] ${name} (${client.sessionId}) joined`);
 
-		// Initialize player state at origin (will be updated by client)
+		// Restore saved position or use default spawn (keyed by player name, not sessionId)
+		const saved = await this.worldStorage.loadPlayerPosition(name);
+		const index = this.allocateIndex();
 		const state: ServerPlayerState = {
 			sessionId: client.sessionId,
+			index,
 			name,
-			x: 0,
-			y: 80, // Default spawn height
-			z: 0,
-			yaw: 0,
-			pitch: 0,
+			x: saved?.x ?? 0,
+			y: saved?.y ?? 80,
+			z: saved?.z ?? 0,
+			yaw: saved?.yaw ?? 0,
+			pitch: saved?.pitch ?? 0,
 			animation: 0,
+			dirty: true,
+			lastSaveTime: 0,
 		};
 		this.players.set(client.sessionId, state);
 
 		// Notify others of new player
-		const joinMsg = encodePlayerJoin({ sessionId: client.sessionId, name });
+		const joinMsg = encodePlayerJoin({
+			index,
+			sessionId: client.sessionId,
+			name,
+		});
 		this.broadcastBytes("binary", joinMsg, { except: client });
+
+		// Tell the joiner its own room index (no join event fires for self).
+		// The client needs this to skip its own entry in PlayerStateBatch.
+		client.sendBytes("binary", joinMsg);
 
 		// Send existing players to the new client (so they can render them)
 		for (const [sid, p] of this.players) {
 			if (sid === client.sessionId) continue;
-			const existingJoin = encodePlayerJoin({ sessionId: sid, name: p.name });
+			const existingJoin = encodePlayerJoin({
+				index: p.index,
+				sessionId: sid,
+				name: p.name,
+			});
 			client.sendBytes("binary", existingJoin);
+		}
+
+		// Force a full dirty pass so the joiner gets current positions on the
+		// next tick even if nobody is moving.
+		for (const p of this.players.values()) {
+			p.dirty = true;
 		}
 
 		// Sync block edit history so new player sees existing world changes
@@ -152,6 +199,19 @@ export class VoxelRoom extends Room {
 		// Send authoritative world seed so the client's clip map matches server terrain
 		const configMsg = encodeWorldConfig(this.seed);
 		client.sendBytes("binary", configMsg);
+
+		// Tell client where to spawn (saved position or default)
+		const spawnMsg = encodeSpawnPosition(
+			state.x,
+			state.y,
+			state.z,
+			state.yaw,
+			state.pitch,
+		);
+		client.sendBytes("binary", spawnMsg);
+
+		// Now safe to save positions (client has been told where to spawn)
+		this.playersReady.add(client.sessionId);
 	}
 
 	onLeave(client: Client, code?: number) {
@@ -160,9 +220,23 @@ export class VoxelRoom extends Room {
 			`[VoxelRoom] ${player?.name ?? client.sessionId} left (code: ${code})`,
 		);
 
-		this.players.delete(client.sessionId);
+		// Persist final position on disconnect so it's ready on next join
+		if (player) {
+			void this.worldStorage.savePlayerPosition(
+				player.name,
+				player.x,
+				player.y,
+				player.z,
+				player.yaw,
+				player.pitch,
+			);
+		}
 
-		const leaveMsg = encodePlayerLeave({ sessionId: client.sessionId });
+		this.players.delete(client.sessionId);
+		this.playersReady.delete(client.sessionId);
+		if (player) this.freeIndex(player.index);
+
+		const leaveMsg = encodePlayerLeave({ index: player?.index ?? 0 });
 		this.broadcastBytes("binary", leaveMsg, {});
 	}
 
@@ -177,6 +251,7 @@ export class VoxelRoom extends Room {
 		// Flush any pending chunk saves
 		this.clearChunkFlush();
 		await this.flushDirtyChunks();
+		this.pendingChunkEdits.clear();
 
 		// Terminate worker threads
 		await this.chunkGen.terminate();
@@ -205,27 +280,44 @@ export class VoxelRoom extends Room {
 		this.clearChunkFlush();
 		if (this.dirtyChunks.size === 0) return;
 
-		const keys = Array.from(this.dirtyChunks);
-		this.dirtyChunks.clear();
+		// Swap in a fresh set instead of Array.from(this.dirtyChunks) +
+		// clear(): any new edits that land while the applyBlockEdits calls
+		// below are in flight get tracked on the new set and picked up by
+		// the next flush (same behavior as before), without allocating an
+		// extra array on every flush.
+		const dirty = this.dirtyChunks;
+		this.dirtyChunks = new Set();
 
-		for (const key of keys) {
-			const [cx, cy, cz] = key.split(",").map(Number);
-			const stored = await this.worldStorage.readChunk(cx, cy, cz);
-			if (stored) {
-				// Re-save to persist the latest state (includes block edits)
-				this.worldStorage.writeChunk({
-					chunkX: cx,
-					chunkY: cy,
-					chunkZ: cz,
-					blocks: stored.blocks,
-					light: stored.light,
-					palette: stored.palette,
-					isUniform: stored.isUniform,
-					uniformBlockId: stored.uniformBlockId,
-				});
+		// Apply pending block edits to the stored chunks (parallel I/O).
+		const applyTasks: Promise<void>[] = [];
+		for (const key of dirty) {
+			const editMap = this.pendingChunkEdits.get(key);
+			this.pendingChunkEdits.delete(key);
+			if (editMap && editMap.size > 0) {
+				const [cx, cy, cz] = unpackChunkKeyFast(key);
+				applyTasks.push(
+					this.worldStorage.applyBlockEdits(
+						cx,
+						cy,
+						cz,
+						Array.from(editMap.values()),
+					),
+				);
 			}
 		}
+		await Promise.all(applyTasks);
 		await this.worldStorage.flush();
+	}
+
+	/** Assign the lowest free room player index (0-255). */
+	private allocateIndex(): number {
+		const idx = this.freedIndices.pop() ?? this.nextPlayerIndex++;
+		if (idx > 255) return 255; // safety cap — far above maxClients
+		return idx;
+	}
+
+	private freeIndex(index: number): void {
+		this.freedIndices.push(index);
 	}
 
 	private tick(deltaMs = 50): void {
@@ -247,22 +339,49 @@ export class VoxelRoom extends Room {
 			this.broadcastBytes("binary", timeMsg, {});
 		}
 
-		// Build batch of all player states
-		const states: PlayerStateData[] = [];
-		for (const [, p] of this.players) {
-			states.push({
-				sessionId: p.sessionId,
-				x: p.x,
-				y: p.y,
-				z: p.z,
-				yaw: p.yaw,
-				pitch: p.pitch,
-				animation: p.animation,
-			});
+		// Dirty-tracking broadcast: only players whose state changed since the
+		// last tick are included, plus a periodic full snapshot so clients can
+		// resync interpolation (and late joiners get current positions).
+		const now = Date.now();
+		const fullSnapshotDue =
+			now - this.lastFullSnapshot >= FULL_SNAPSHOT_INTERVAL;
+		if (fullSnapshotDue) this.lastFullSnapshot = now;
+
+		this.statesScratch.length = 0;
+		let idx = 0;
+		for (const p of this.players.values()) {
+			if (!p.dirty && !fullSnapshotDue) continue;
+			let slot = this.statePool[idx];
+			if (!slot) {
+				slot = {
+					index: 0,
+					x: 0,
+					y: 0,
+					z: 0,
+					yaw: 0,
+					pitch: 0,
+					animation: 0,
+				};
+				this.statePool[idx] = slot;
+			}
+			slot.index = p.index;
+			slot.x = p.x;
+			slot.y = p.y;
+			slot.z = p.z;
+			slot.yaw = p.yaw;
+			slot.pitch = p.pitch;
+			slot.animation = p.animation;
+			this.statesScratch.push(slot);
+			idx++;
+			p.dirty = false;
 		}
 
-		const batch = encodePlayerStateBatch(states);
-		this.broadcastBytes("binary", batch, {});
+		if (this.statesScratch.length === 0) return;
+
+		// Reuse the persistent encoder — no per-tick allocation.
+		this.tickEncoder.reset();
+		writePlayerStateBatch(this.tickEncoder, this.statesScratch);
+		this.broadcastBytes("binary", this.tickEncoder.getBytes(), {});
 	}
 
 	private handleBinaryMessage(client: Client, data: Uint8Array): void {
@@ -282,6 +401,26 @@ export class VoxelRoom extends Room {
 					player.yaw = state.yaw;
 					player.pitch = state.pitch;
 					player.animation = state.animation;
+					player.dirty = true;
+					// Persist debounced (at most every PLAYER_SAVE_INTERVAL ms) —
+					// the per-tick save was hammering LevelDB at 20 writes/sec/player.
+					// Only persist after the client has received its spawn position
+					// (prevents race condition where default 0,80,0 overwrites saved pos).
+					// Keyed by player name so position survives reconnects (sessionId changes each time).
+					if (this.playersReady.has(client.sessionId)) {
+						const now = Date.now();
+						if (now - player.lastSaveTime >= PLAYER_SAVE_INTERVAL) {
+							player.lastSaveTime = now;
+							void this.worldStorage.savePlayerPosition(
+								player.name,
+								state.x,
+								state.y,
+								state.z,
+								state.yaw,
+								state.pitch,
+							);
+						}
+					}
 				}
 				break;
 			}
@@ -318,12 +457,34 @@ export class VoxelRoom extends Room {
 					this.blockEdits.shift();
 				}
 
-				// Schedule chunk save (debounced) — the chunk will be serialized
-				// and written to LevelDB when the flush timer fires
-				const cx = Math.floor(edit.x / 32);
-				const cy = Math.floor(edit.y / 32);
-				const cz = Math.floor(edit.z / 32);
-				this.dirtyChunks.add(`${cx},${cy},${cz}`);
+				// Schedule chunk save (debounced) — the edit is applied to the
+				// stored chunk when the flush timer fires, so it persists.
+				// >>5 === floor(x/32) for any 32-bit int (including negatives),
+				// same result as the original Math.floor(x/32) but no
+				// floating-point division.
+				const cx = edit.x >> 5;
+				const cy = edit.y >> 5;
+				const cz = edit.z >> 5;
+				const key = packChunkKeyFast(cx, cy, cz);
+				let editMap = this.pendingChunkEdits.get(key);
+				if (!editMap) {
+					editMap = new Map();
+					this.pendingChunkEdits.set(key, editMap);
+				}
+				// &31 gives the same non-negative local coordinate as
+				// ((x % 32) + 32) % 32 since 32 is a power of two — one op
+				// instead of two mods and an add.
+				const lx = edit.x & 31;
+				const ly = edit.y & 31;
+				const lz = edit.z & 31;
+				// Last write wins per voxel
+				editMap.set(lx + (ly << 5) + (lz << 10), {
+					x: edit.x,
+					y: edit.y,
+					z: edit.z,
+					blockId: edit.blockId,
+				});
+				this.dirtyChunks.add(key);
 				this.scheduleChunkFlush();
 
 				// Broadcast to all other clients
@@ -345,6 +506,21 @@ export class VoxelRoom extends Room {
 				if (valid.length > 0) {
 					void this.handleBatchChunkRequest(client, valid);
 				}
+				break;
+			}
+
+			case MessageType.ChatMessage: {
+				const chat: ChatMessageData = dec.readChatMessage();
+				const player = this.players.get(client.sessionId);
+				if (!player) return;
+				// Relay to everyone except the sender — the sender already
+				// echoed locally.
+				const payload = encodeChatMessage({
+					sessionId: client.sessionId,
+					name: player.name,
+					message: chat.message,
+				});
+				this.broadcastBytes("binary", payload, { except: client });
 				break;
 			}
 
@@ -407,22 +583,32 @@ export class VoxelRoom extends Room {
 		}>,
 	): Promise<void> {
 		try {
-			// Check storage first — only generate missing chunks
-			const missing: typeof requests = [];
+			// Deduplicate coords — one response per unique chunk.
+			const seen = new Map<number, (typeof requests)[0]>();
+			for (const r of requests) {
+				const key = packChunkKeyFast(r.cx, r.cy, r.cz);
+				if (!seen.has(key)) seen.set(key, r);
+			}
+			const unique = Array.from(seen.values());
 
-			for (let i = 0; i < requests.length; i++) {
-				const { cx, cy, cz, cachedHash } = requests[i];
-				const stored = await this.worldStorage.readChunk(cx, cy, cz);
+			// Bulk read from storage in parallel — only generate what's missing.
+			const storedMap = await this.worldStorage.readChunks(
+				unique.map((r) => ({ cx: r.cx, cy: r.cy, cz: r.cz })),
+			);
+
+			const missing: typeof requests = [];
+			for (const r of unique) {
+				const stored = storedMap.get(packChunkKeyFast(r.cx, r.cy, r.cz));
 				if (stored) {
-					if (cachedHash !== 0 && stored.hash === cachedHash) {
-						const msg = encodeChunkUnchanged(cx, cy, cz, stored.hash);
+					if (r.cachedHash !== 0 && stored.hash === r.cachedHash) {
+						const msg = encodeChunkUnchanged(r.cx, r.cy, r.cz, stored.hash);
 						client.sendBytes("binary", msg);
 					} else {
 						const msg = encodeChunkData(stored);
 						client.sendBytes("binary", msg);
 					}
 				} else {
-					missing.push({ ...requests[i] });
+					missing.push(r);
 				}
 			}
 

@@ -8,11 +8,17 @@
  * re-sending all the data.
  */
 
+import { LevelDbChunkStore } from "../../World/Storage/LevelDbChunkStore";
+import {
+	deserializeVoxelData,
+	serializeVoxelData,
+} from "../../World/Storage/VoxelSerializer";
 import type { NetClient } from "../NetClient";
 import {
 	decodeChunkData,
 	decodeChunkDataBatch,
 	decodeChunkUnchanged,
+	hashChunk,
 } from "../protocol/encoder";
 import { MessageType } from "../protocol/messages";
 
@@ -39,8 +45,15 @@ export class RemoteChunkProvider {
 	private chunkHashes = new Map<string, number>(); // Cached chunk hashes
 	private static readonly CHUNK_SIZE = 32;
 	private static readonly CHUNK_VOLUME = 32 * 32 * 32;
+	private store: LevelDbChunkStore;
 
 	constructor(private client: NetClient) {
+		this.store = new LevelDbChunkStore(
+			client.worldName || "default",
+			"./saves",
+		);
+		// Initialize storage asynchronously
+		void this.store.open();
 		// Listen for chunk data responses
 		this.client.addBinaryHandler((data: Uint8Array) => {
 			if (data.byteLength < 1) return;
@@ -49,6 +62,17 @@ export class RemoteChunkProvider {
 				const chunk = decodeChunkData(data);
 				const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
 				this.chunkHashes.set(key, chunk.hash);
+				// Cache chunk locally
+				this.saveChunkToLocal(
+					chunk.chunkX,
+					chunk.chunkY,
+					chunk.chunkZ,
+					chunk.blocks,
+					chunk.light,
+					chunk.palette,
+					chunk.isUniform,
+					chunk.uniformBlockId,
+				);
 				const pending = this.pending.get(key);
 				if (pending) {
 					this.pending.delete(key);
@@ -57,17 +81,25 @@ export class RemoteChunkProvider {
 			} else if (data[0] === MessageType.ChunkDataBatch) {
 				// Batch response — multiple chunks in one message
 				const chunks = decodeChunkDataBatch(data);
-				// console.log(`[RemoteChunkProvider] received batch of ${chunks.length} chunks, pending=${this.pending.size}`);
 				for (const chunk of chunks) {
 					const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
 					this.chunkHashes.set(key, chunk.hash);
+					// Cache chunk locally
+					this.saveChunkToLocal(
+						chunk.chunkX,
+						chunk.chunkY,
+						chunk.chunkZ,
+						chunk.blocks,
+						chunk.light,
+						chunk.palette,
+						chunk.isUniform,
+						chunk.uniformBlockId,
+					);
 
 					const pending = this.pending.get(key);
 					if (pending) {
 						this.pending.delete(key);
 						pending.resolve(chunk);
-					} else {
-						// console.log(`[RemoteChunkProvider] no pending for ${key}`);
 					}
 				}
 			} else if (data[0] === MessageType.ChunkUnchanged) {
@@ -94,6 +126,68 @@ export class RemoteChunkProvider {
 				}
 			}
 		});
+	}
+
+	/** Load chunk from local cache. Returns null if not cached. */
+	async getCachedChunk(
+		cx: number,
+		cy: number,
+		cz: number,
+	): Promise<RemoteChunkData | null> {
+		const blob = await this.store.readChunk(cx, cy, cz);
+		if (!blob) return null;
+		const deserialized = deserializeVoxelData(blob);
+		const blocks =
+			deserialized.blocks instanceof Uint8Array
+				? deserialized.blocks
+				: new Uint8Array(0);
+		const light = deserialized.lightArray ?? new Uint8Array(0);
+		const hash = hashChunk(
+			blocks,
+			light,
+			deserialized.palette ? Array.from(deserialized.palette) : undefined,
+		);
+		const key = `${cx},${cy},${cz}`;
+		this.chunkHashes.set(key, hash);
+		return {
+			chunkX: cx,
+			chunkY: cy,
+			chunkZ: cz,
+			blocks,
+			light,
+			palette: deserialized.palette
+				? Array.from(deserialized.palette)
+				: undefined,
+			isUniform: deserialized.isUniform ?? false,
+			uniformBlockId: deserialized.uniformBlockId ?? 0,
+			hash,
+		};
+	}
+
+	/** Save chunk data to local OPFS cache (fire-and-forget). */
+	private saveChunkToLocal(
+		cx: number,
+		cy: number,
+		cz: number,
+		blocks: Uint8Array,
+		light: Uint8Array,
+		palette: number[] | undefined,
+		isUniform: boolean,
+		uniformBlockId: number,
+	): void {
+		try {
+			const blob = serializeVoxelData(
+				blocks,
+				palette ? Uint16Array.from(palette) : null,
+				isUniform,
+				uniformBlockId,
+				light,
+				false,
+			);
+			this.store.writeChunk(cx, cy, cz, blob);
+		} catch {
+			// Ignore cache write failures
+		}
 	}
 
 	async requestChunk(

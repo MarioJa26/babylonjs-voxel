@@ -14,14 +14,14 @@
  */
 
 import type { Vec3 } from "@babylonjs/lite";
+import { resetDistantTerrain } from "@/code/Generation/DistantTerrain/DistantTerrain";
+import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap";
 import { setIsPaused } from "@/code/Lib/GameRuntimeState";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
 import { play, playDebris } from "@/code/Maps/BlockBreakParticles";
 import { Map1 } from "@/code/Maps/Map1";
-import { WorldEnvironment } from "@/code/Maps/WorldEnvironment";
 import type { Player } from "@/code/Player/Player";
-import { resetDistantTerrain } from "@/code/Generation/DistantTerrain/DistantTerrain";
-import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap";
+import { Gamemodes } from "@/code/Player/PlayerStats";
 import {
 	deleteBlock,
 	getLightByWorldCoords,
@@ -34,7 +34,6 @@ import { MultiplayerHUD } from "./MultiplayerHUD";
 import { NetClient, type RemotePlayer } from "./NetClient";
 import { BlockActionType } from "./protocol/messages";
 import { RemotePlayerRenderer } from "./RemotePlayerRenderer";
-import { Gamemodes } from "@/code/Player/PlayerStats";
 
 const SEND_RATE = 20; // Hz — how often to send player position
 const SEND_INTERVAL_MS = 1000 / SEND_RATE;
@@ -96,12 +95,10 @@ export class NetworkManager {
 				this.renderer.onPlayerJoin(player);
 				this.hud.addSystemMessage(`${player.name} joined`);
 			},
-			onPlayerLeave: (sessionId) => {
+			onPlayerLeave: (sessionId, name) => {
 				console.log(`[NetworkManager] Player left: ${sessionId}`);
 				this.renderer.onPlayerLeave(sessionId);
-				// Try to get the name from remotePlayers before it's removed
-				const rp = this.client.getRemotePlayer(sessionId);
-				this.hud.addSystemMessage(`${rp?.name ?? "A player"} left`);
+				this.hud.addSystemMessage(`${name ?? "A player"} left`);
 			},
 			onPlayerStates: (_states) => {
 				// States are applied in tick() via interpolation
@@ -131,6 +128,11 @@ export class NetworkManager {
 				setTerrainSeed(seed);
 				ChunkWorkerPool.getInstance(2)?.setWorldSeed(seed);
 				resetDistantTerrain();
+			},
+			onSpawnPosition: (pos) => {
+				// Teleport to server-assigned spawn (saved position)
+				this.player.playerVehicle.restoreSavedPosition(pos);
+				this.player.playerVehicle.updateCameraAndVisuals();
 			},
 			onServerError: (code, message) => {
 				console.error(`[NetworkManager] Server error ${code}: ${message}`);
