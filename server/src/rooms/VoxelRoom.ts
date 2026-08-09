@@ -99,6 +99,7 @@ export class VoxelRoom extends Room {
 
 		// Register message handlers for binary protocol (raw bytes)
 		this.onMessageBytes("binary", (client, data: Uint8Array) => {
+			console.log(`[SVR-ENTRY] binary msg ${data.byteLength} bytes from ${client.sessionId}`);
 			this.handleBinaryMessage(client, data);
 		});
 
@@ -273,6 +274,7 @@ export class VoxelRoom extends Room {
 
 		const dec = new BinaryDecoder(data);
 		const msgType = dec.readUint8(); // consume type byte
+		console.log(`[SVR-RX] msgType=0x${msgType.toString(16)} from ${client.sessionId}`);
 
 		switch (msgType) {
 			case MessageType.PlayerState: {
@@ -337,6 +339,7 @@ export class VoxelRoom extends Room {
 
 			case MessageType.ChunkRequest: {
 				const { cx, cy, cz, lod, cachedHash } = dec.readChunkRequest();
+				console.log(`[SVR-RX] ChunkRequest ${cx},${cy},${cz} lod=${lod} hash=${cachedHash}`);
 				if (lod !== 0) break;
 				void this.handleChunkRequest(client, cx, cy, cz, cachedHash);
 				break;
@@ -345,6 +348,7 @@ export class VoxelRoom extends Room {
 			case MessageType.ChunkRequestBatch: {
 				const requests = dec.readChunkRequestBatch();
 				const valid = requests.filter((r: { lod: number }) => r.lod === 0);
+				console.log(`[SVR-RX] ChunkRequestBatch ${requests.length} chunks (${valid.length} valid)`);
 				if (valid.length > 0) {
 					void this.handleBatchChunkRequest(client, valid);
 				}
@@ -370,30 +374,38 @@ export class VoxelRoom extends Room {
 		cachedHash: number,
 	): Promise<void> {
 		try {
+			console.log(`[SVR] handleChunkRequest ${cx},${cy},${cz} — checking storage`);
 			// Check storage first (fast path — no regeneration)
 			const stored = await this.worldStorage.readChunk(cx, cy, cz);
 			if (stored) {
+				console.log(`[SVR] found in storage ${cx},${cy},${cz} hash=${stored.hash}`);
 				if (cachedHash !== 0 && stored.hash === cachedHash) {
 					const msg = encodeChunkUnchanged(cx, cy, cz, stored.hash);
 					client.sendBytes("binary", msg);
+					console.log(`[SVR] sent ChunkUnchanged ${cx},${cy},${cz}`);
 					return;
 				}
 				const msg = encodeChunkData(stored);
 				client.sendBytes("binary", msg);
+				console.log(`[SVR] sent ChunkData ${cx},${cy},${cz}`);
 				return;
 			}
 
+			console.log(`[SVR] not in storage, generating ${cx},${cy},${cz}`);
 			// Not in storage — generate, which also saves to storage
 			const chunkData = await this.chunkGen.generateChunk(cx, cy, cz);
+			console.log(`[SVR] generation done ${cx},${cy},${cz} hash=${chunkData.hash}`);
 
 			if (cachedHash !== 0 && chunkData.hash === cachedHash) {
 				const msg = encodeChunkUnchanged(cx, cy, cz, chunkData.hash);
 				client.sendBytes("binary", msg);
+				console.log(`[SVR] sent ChunkUnchanged ${cx},${cy},${cz}`);
 				return;
 			}
 
 			const msg = encodeChunkData(chunkData);
 			client.sendBytes("binary", msg);
+			console.log(`[SVR] sent ChunkData ${cx},${cy},${cz}`);
 		} catch (err) {
 			console.error(`[VoxelRoom] Chunk gen failed for ${cx},${cy},${cz}:`, err);
 		}
@@ -409,10 +421,12 @@ export class VoxelRoom extends Room {
 			cachedHash: number;
 		}>,
 	): Promise<void> {
+		console.log(`[SVR] generating batch of ${requests.length} chunks`);
 		try {
 			const results = await this.chunkGen.generateChunksBatch(
 				requests.map((r) => ({ chunkX: r.cx, chunkY: r.cy, chunkZ: r.cz })),
 			);
+			console.log(`[SVR] batch done: ${results.length} chunks generated`);
 
 			const unchanged: Array<{
 				cx: number;
@@ -436,9 +450,18 @@ export class VoxelRoom extends Room {
 				}
 			}
 
+			console.log(`[SVR] sending ${fullChunks.length} full + ${unchanged.length} unchanged`);
+			console.log(`[SVR] client.connected=${client.state}, sessionId=${client.sessionId}`);
+
 			if (fullChunks.length > 0) {
 				const msg = encodeChunkDataBatch(fullChunks);
-				client.sendBytes("binary", msg);
+				console.log(`[SVR] sendBytes ChunkDataBatch (${msg.length} bytes) to ${client.sessionId}`);
+				try {
+					client.sendBytes("binary", msg);
+					console.log(`[SVR] sendBytes OK`);
+				} catch (sendErr) {
+					console.error(`[SVR] sendBytes FAILED:`, sendErr);
+				}
 			}
 
 			for (const u of unchanged) {

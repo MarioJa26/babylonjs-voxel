@@ -1,7 +1,5 @@
 import { worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
-import { packChunkKey } from "../Storage/ChunkKey";
-import { deserializeMeshPair } from "../Storage/MeshSerializer";
 import {
 	type SavedChunkData,
 	type SavedChunkEntityData,
@@ -83,59 +81,7 @@ interface SelectedSavedMesh {
 	transparent: MeshData | null;
 }
 
-// OPFS mesh cache: chunkId (bigint) -> deserialized mesh pair from OPFS.
-// Populated by prefetchOpfsMeshes (called by ChunkProcessScheduler in parallel
-// with IDB voxel loads) and read by applyLoadedChunkFromSavedData. Persists
-// across process cycles — prefetchOpfsMeshes skips reads for already-cached
-// entries to avoid redundant OPFS I/O when budget splitting causes re-entry.
-const opfsMeshCache = new Map<bigint, SelectedSavedMesh>();
-let opfsCacheHydratedThisCycle = 0;
-let opfsCacheMissedThisCycle = 0;
-
 const _entityPayloadMap = new Map<bigint, SavedChunkEntityData[]>();
-
-// PERF: ring buffer for prefetch request info — avoids unbounded growth
-// when budget splitting causes re-entry across many frames. Old entries
-// are dropped once all pending promises for the cycle have settled.
-const _prefetchReqInfoHead = 0;
-let _prefetchReqInfoTail = 0;
-const _PREFAETCH_REQ_CAP = 512;
-const _prefetchReqInfo = new Array<{
-	chunkId: bigint;
-	key: bigint;
-	lod: number;
-}>(_PREFAETCH_REQ_CAP);
-for (let i = 0; i < _PREFAETCH_REQ_CAP; i++) {
-	_prefetchReqInfo[i] = { chunkId: 0n, key: 0n, lod: 0 };
-}
-const prefetchPromisesThisCycle = 0;
-const _prefetchPromises: Promise<void>[] = [];
-
-function _prefetchOnReadOk(
-	idx: number,
-	bytes: Uint8Array | null | undefined,
-): void {
-	if (!bytes) {
-		opfsCacheMissedThisCycle++;
-		return;
-	}
-	const info = _prefetchReqInfo[idx % _PREFAETCH_REQ_CAP];
-	const mesh = deserializeMeshPair(bytes, info.lod);
-	if (mesh) {
-		opfsMeshCache.set(info.chunkId, mesh);
-		opfsCacheHydratedThisCycle++;
-	} else {
-		opfsCacheMissedThisCycle++;
-	}
-}
-
-function _prefetchOnReadErr(idx: number, err: unknown): void {
-	const info = _prefetchReqInfo[idx % _PREFAETCH_REQ_CAP];
-	console.warn(
-		`[ChunkLoadingSystem] OPFS read failed for chunk ${info.chunkId}:`,
-		err,
-	);
-}
 
 const debugStats: ChunkLoadingDebugStats = {
 	loadQueueLength: 0,
@@ -161,14 +107,6 @@ const debugStats: ChunkLoadingDebugStats = {
 	totalHydrated: 0,
 	totalUnloaded: 0,
 	totalSaved: 0,
-	lastOpfsHits: 0,
-	lastOpfsMisses: 0,
-	totalOpfsHits: 0,
-	totalOpfsMisses: 0,
-	opfsUsedBytes: 0,
-	opfsTotalBytes: 0,
-	opfsSlotCount: 0,
-	opfsEvictionCount: 0,
 };
 
 const chunkEntityRegistry = new ChunkEntityRegistry<ChunkBoundEntity>({
@@ -225,9 +163,7 @@ const persistenceCoordinator = new ChunkPersistenceCoordinator({
 	getChunkEntitySaveBatchSize: () => getUnloadBatchSize(),
 });
 
-// PERF: Block edits (incl. every water-sim tick) used to trigger an immediate
-// OPFS save per block via Chunk.onBlockModified — a spreading pool of N blocks
-// serialized N async writes. Debounce into a single batched save per 500 ms;
+// PERF: Debounce block-edit saves into a single batched save per 500 ms;
 // unloads and the periodic flush (PlayerStatePersistence) still persist chunks.
 const BLOCK_EDIT_SAVE_DEBOUNCE_MS = 500;
 const pendingBlockEditSaveIds = new Set<bigint>();
@@ -275,10 +211,6 @@ const processScheduler = new ChunkProcessScheduler({
 	applyLoadedChunkFromSavedData: (state, request, savedData) =>
 		applyLoadedChunkFromSavedData(state, request, savedData),
 
-	prefetchOpfsMeshes: (requests) => prefetchOpfsMeshes(requests),
-
-	resetOpfsMeshCache: () => resetCycleOpfsCache(),
-
 	applyHydratedChunkFromSavedData: (chunk, savedData) =>
 		applyHydratedChunkFromSavedData(chunk, savedData),
 
@@ -295,7 +227,12 @@ const processScheduler = new ChunkProcessScheduler({
 		streamingController.onLoadRequestsDequeued(requests),
 });
 
-function isEntityAlive(entity: ChunkBoundEntity): boolean {
+// After each processQueues continuation slice, pump remote generation.
+processScheduler.onContinuationSlice = () => {
+	ChunkWorkerPool.getInstance(2).pumpRemoteGeneration();
+};
+
+function isEntityAlive(entity: ChunkBoundBody): boolean {
 	return !(entity.isAlive && !entity.isAlive());
 }
 
@@ -384,8 +321,6 @@ function refreshQueueDebugSnapshot(): void {
 	debugStats.loadBatchLimit = getLoadBatchSize();
 	debugStats.unloadBatchLimit = getUnloadBatchSize();
 	debugStats.frameBudgetMs = getProcessFrameBudgetMs();
-
-	refreshOpfsPrefetchSnapshot();
 }
 
 export function getDebugStats(): ChunkLoadingDebugStats {
@@ -393,52 +328,8 @@ export function getDebugStats(): ChunkLoadingDebugStats {
 	return debugStats;
 }
 
-let lastOpfsHitCount = 0;
-let lastOpfsMissCount = 0;
-let lastOpfsRefreshMs = 0;
-const OPFS_REFRESH_INTERVAL_MS = 250;
-
 export async function refreshOpfsDebugStats(): Promise<void> {
-	// Throttle: OPFS stats require a worker round-trip.
-	const now = performance.now();
-	if (now - lastOpfsRefreshMs < OPFS_REFRESH_INTERVAL_MS) return;
-	lastOpfsRefreshMs = now;
-
-	const client = ChunkWorkerPool.getInstance().getOpfsClient();
-	if (!client) {
-		debugStats.opfsTotalBytes = 0;
-		debugStats.opfsUsedBytes = 0;
-		debugStats.opfsSlotCount = 0;
-		debugStats.opfsEvictionCount = 0;
-		return;
-	}
-
-	try {
-		const stats = await client.getStats();
-		debugStats.opfsTotalBytes = stats.totalBytes;
-		debugStats.opfsUsedBytes = stats.usedBytes;
-		debugStats.opfsSlotCount = stats.slotCount;
-		debugStats.opfsEvictionCount = stats.evictionCount;
-
-		// Cumulative deltas (worker tracks totals; we accumulate UI-side).
-		const newHits = stats.hitCount - lastOpfsHitCount;
-		const newMisses = stats.missCount - lastOpfsMissCount;
-		if (newHits > 0) debugStats.totalOpfsHits += newHits;
-		if (newMisses > 0) debugStats.totalOpfsMisses += newMisses;
-
-		lastOpfsHitCount = stats.hitCount;
-		lastOpfsMissCount = stats.missCount;
-	} catch {
-		// worker may be transiently unavailable; leave previous values
-	}
-}
-
-function refreshOpfsPrefetchSnapshot(): void {
-	// lastOpfsHits / lastOpfsMisses are per-process-cycle values captured
-	// in prefetchOpfsMeshes(). Snapshot them here so the HUD sees fresh
-	// values on each frame.
-	debugStats.lastOpfsHits = opfsCacheHydratedThisCycle;
-	debugStats.lastOpfsMisses = opfsCacheMissedThisCycle;
+	// OPFS removed — debug stats zeroed out (no-op).
 }
 
 function buildQueuedIdSet(): Set<bigint> {
@@ -529,11 +420,11 @@ export function validateChunksAround(
 	}
 }
 
-export function processFrameBudgetedStreamingWork(
+export async function processFrameBudgetedStreamingWork(
 	playerChunkX: number,
 	playerChunkY: number,
 	playerChunkZ: number,
-): void {
+): Promise<void> {
 	streamingController.processLoadedRefreshQueue(
 		playerChunkX,
 		playerChunkY,
@@ -542,6 +433,15 @@ export function processFrameBudgetedStreamingWork(
 		SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
 		255,
 	);
+
+	if (!processScheduler.processing) {
+		await processScheduler.processQueues();
+	}
+
+	// Always pump remote generation every frame. This sends queued chunks
+	// to the server. Even if processQueues hasn't reached ScheduleGeneration
+	// yet, pumping is a no-op when the queue is empty.
+	ChunkWorkerPool.getInstance(2).pumpRemoteGeneration();
 }
 
 export function registerChunkEntityLoader(
@@ -653,13 +553,7 @@ export function flushChunkBoundEntities(): Promise<void> {
 }
 
 export async function flushOpfsStorage(): Promise<void> {
-	const client = ChunkWorkerPool.getInstance().getOpfsClient();
-	if (!client) return;
-	try {
-		await client.flush();
-	} catch (error) {
-		console.log(error);
-	}
+	await WorldStorage.flush();
 }
 
 function scheduleChunkAndNeighborsRemesh(chunk: Chunk): void {
@@ -747,10 +641,6 @@ function applyHydratedChunkFromSavedData(
 	chunk: Chunk,
 	savedData: SavedChunkData,
 ): void {
-	// Mesh lookup is purely OPFS-based (see applyLoadedChunkFromSavedData).
-	// Hydration re-runs never re-fetch OPFS; the chunk already has whatever
-	// mesh it had after applyLoadedChunkFromSavedData, and the worker pool
-	// will overwrite/regenerate as needed.
 	chunkHydration.applyHydratedChunkFromSavedData(chunk, savedData, true);
 }
 
@@ -789,21 +679,9 @@ function loadNearLodChunk(
 		savedData.isUniform,
 		savedData.uniformBlockId,
 		savedData.lightArray,
-		!hasDesiredMesh,
+		true,
 		true,
 	);
-
-	if (!hasDesiredMesh) {
-		return;
-	}
-
-	applyMeshToChunk(chunk, selectedMesh);
-
-	if (targetLod <= 1) {
-		// Chunk already has a valid mesh from OPFS — only remesh
-		// neighbors so they update face culling for this newly loaded chunk.
-		scheduleNeighborsOnlyRemesh(chunk);
-	}
 }
 
 function applyLoadedChunkFromSavedData(
@@ -817,11 +695,8 @@ function applyLoadedChunkFromSavedData(
 	state.loadedFromStorageCount++;
 	chunk.lodLevel = targetLod;
 
-	// Mesh comes from OPFS, populated by prefetchOpfsMeshes in parallel with
-	// the IDB voxel load. If absent, loadNearLodChunk will fall through to
-	// remesh, which writes the freshly generated mesh to OPFS for next time.
-	const selectedMesh = opfsMeshCache.get(chunk.id) ?? null;
-	const hasDesiredMesh = !!selectedMesh;
+	const selectedMesh = null;
+	const hasDesiredMesh = false;
 
 	if (targetLod >= 2) {
 		loadFarLodChunk(state, chunk, selectedMesh, hasDesiredMesh);
@@ -834,53 +709,11 @@ function applyLoadedChunkFromSavedData(
 async function prefetchOpfsMeshes(
 	requests: QueuedChunkRequest[],
 ): Promise<void> {
-	// Reset cycle counters.
-	opfsCacheHydratedThisCycle = 0;
-	opfsCacheMissedThisCycle = 0;
-
-	const client = await ChunkWorkerPool.getInstance().ensureOpfsReady();
-	if (!client) return;
-
-	_prefetchPromises.length = 0;
-
-	for (const request of requests) {
-		const chunk = request.chunk;
-		const lod = request.desiredLod;
-
-		// Skip OPFS read if the mesh is already in cache (e.g., from a
-		// previous cycle that was budget-exceeded before apply).
-		if (opfsMeshCache.has(chunk.id)) {
-			opfsCacheHydratedThisCycle++;
-			continue;
-		}
-
-		const key = packChunkKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-		const idx = _prefetchReqInfoTail;
-		_prefetchReqInfo[idx] = { chunkId: chunk.id, key, lod };
-		_prefetchReqInfoTail = (idx + 1) & (_PREFAETCH_REQ_CAP - 1);
-		_prefetchPromises.push(
-			client.readMesh(key, lod).then(
-				(bytes) => _prefetchOnReadOk(idx, bytes),
-				(err) => _prefetchOnReadErr(idx, err),
-			),
-		);
-	}
-	await Promise.all(_prefetchPromises);
+	// OPFS removed — meshes are recomputed client-side. No-op.
 }
 
 function resetCycleOpfsCache(): void {
-	// The OPFS mesh cache is persistent across cycles. PrefetchOpfsMeshes
-	// skips reads for already-cached entries, so re-entry is O(1).  Prune
-	// entries for loaded chunks (whose mesh has already been applied) to
-	// reclaim memory and keep the cached set tight for budget-split re-entry.
-	if (opfsMeshCache.size > 64) {
-		for (const [id] of opfsMeshCache) {
-			const chunk = Chunk.chunkInstances.get(id);
-			if (chunk?.isLoaded) {
-				opfsMeshCache.delete(id);
-			}
-		}
-	}
+	// OPFS removed — no-op.
 }
 
 export function deleteBlock(worldX: number, worldY: number, worldZ: number) {

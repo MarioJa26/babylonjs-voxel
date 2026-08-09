@@ -21,10 +21,6 @@ export interface ChunkProcessSchedulerAdapter {
 		savedData: SavedChunkData,
 	): void;
 
-	prefetchOpfsMeshes(requests: QueuedChunkRequest[]): Promise<void>;
-
-	resetOpfsMeshCache(): void;
-
 	applyHydratedChunkFromSavedData(
 		chunk: Chunk,
 		savedData: SavedChunkData,
@@ -124,12 +120,33 @@ export class ChunkProcessScheduler {
 		state.hydrateIndex = 0;
 	}
 
+	private _processStartTime = 0;
+	private _overallDeadline = 0;
+	private static readonly OVERALL_TIMEOUT_MS = 500; // Max total time for one processQueues invocation
+
+	/** Check if overall timeout exceeded. Call after every await. */
+	private checkDeadline(): boolean {
+		if (performance.now() > this._overallDeadline) {
+			return true;
+		}
+		return false;
+	}
+
 	public async processQueues(): Promise<void> {
 		if (this.isProcessing) {
-			return;
+			// Safety: if stuck for >1 second, force reset
+			if (performance.now() - this._processStartTime > 1000) {
+				console.warn("[processQueues] FORCE RESET - stuck for >1s");
+				this.isProcessing = false;
+				this.inFlightProcessState = null;
+			} else {
+				return;
+			}
 		}
 
 		this.isProcessing = true;
+		this._processStartTime = performance.now();
+		this._overallDeadline = performance.now() + ChunkProcessScheduler.OVERALL_TIMEOUT_MS;
 
 		if (!this.inFlightProcessState) {
 			this.inFlightProcessState = this._state;
@@ -139,8 +156,18 @@ export class ChunkProcessScheduler {
 		const state = this.inFlightProcessState;
 		this.beginSlice(state);
 
+		let timedOut = false;
 		try {
-			while (this.hasBudget(state)) {
+			let loopCount = 0;
+			while (this.hasBudget(state) && !timedOut) {
+				loopCount++;
+				if (loopCount > 50) {
+					console.warn(`[processQueues] HARD STOP at iteration ${loopCount}, stage=${state.stage}`);
+					this.isProcessing = false;
+					this.adapter.updateSliceDebugStats(state);
+					this.scheduleProcessContinuation();
+					return;
+				}
 				switch (state.stage) {
 					case ProcessStage.Start: {
 						if (this.adapter.getUnloadQueueSet().size > 0) {
@@ -182,7 +209,7 @@ export class ChunkProcessScheduler {
 					}
 
 					case ProcessStage.SaveUnloadBatch: {
-						// M2: Reuse scratch array — avoids per-stage allocation
+						// M2: Reuse scratch array — avoids per-frame allocation
 						this._saveScratch.length = 0;
 
 						for (let i = 0; i < state.unloadBatch.length; i++) {
@@ -201,6 +228,7 @@ export class ChunkProcessScheduler {
 						if (this._saveScratch.length > 0) {
 							try {
 								await WorldStorage.saveChunks(this._saveScratch);
+								if (this.checkDeadline()) { timedOut = true; break; }
 								this.beginSlice(state);
 
 								for (let i = 0; i < this._saveScratch.length; i++) {
@@ -247,6 +275,7 @@ export class ChunkProcessScheduler {
 							}
 
 							await this.adapter.unloadChunkBoundEntitiesForChunk(chunk);
+							if (this.checkDeadline()) { timedOut = true; break; }
 
 							chunk.dispose();
 
@@ -283,10 +312,6 @@ export class ChunkProcessScheduler {
 						state.hydrateChunks.length = 0;
 						state.hydrateMap.clear();
 						state.hydrateIndex = 0;
-
-						// Clear OPFS mesh cache from previous cycle; prefetchOpfsMeshes
-						// repopulates it during LoadFromStorage.
-						this.adapter.resetOpfsMeshCache();
 
 						const takeCount = Math.min(batchSize, loadQueue.length);
 						if (takeCount > 0) {
@@ -326,6 +351,11 @@ export class ChunkProcessScheduler {
 						this.adapter.onQueueSnapshotChanged?.();
 
 						if (state.validLoadBatch.length === 0) {
+							if (state.loadBatch.length > 0) {
+								console.log(
+									`[T2] REJECTED ${state.loadBatch.length} chunks (first: isTerrainSched=${state.loadBatch[0]?.chunk.isTerrainScheduled})`,
+								);
+							}
 							state.stage =
 								this.adapter.getUnloadQueueSet().size > 0
 									? ProcessStage.PrepareUnloadBatch
@@ -333,11 +363,18 @@ export class ChunkProcessScheduler {
 							break;
 						}
 
+						console.log(
+							`[T2b] validLoadBatch=${state.validLoadBatch.length}, near=${state.nearRequests.length}, far=${state.farRequests.length}`,
+						);
 						state.stage = ProcessStage.LoadFromStorage;
 						break;
 					}
 
 					case ProcessStage.LoadFromStorage: {
+						console.log(
+							`[T2c] LoadFromStorage: near=${state.nearRequests.length}, far=${state.farRequests.length}`,
+						);
+						const loadStart = performance.now();
 						try {
 							this._nearIdScratch.length = 0;
 							this._farIdScratch.length = 0;
@@ -362,13 +399,12 @@ export class ChunkProcessScheduler {
 											state.farLoadedDataMap,
 										)
 									: Promise.resolve(),
-
-								// Fire OPFS mesh prefetch in parallel with the IDB voxel load.
-								// This populates the OPFS mesh cache so applyLoadedChunkFromSavedData
-								// can apply cached meshes synchronously, skipping remesh.
-								this.adapter.prefetchOpfsMeshes(state.validLoadBatch),
 							]);
+							if (this.checkDeadline()) { timedOut = true; break; }
 
+							this.beginSlice(state);
+							state.stage = ProcessStage.ApplyLoadedChunks;
+							break;
 							this.beginSlice(state);
 
 							state.stage = ProcessStage.ApplyLoadedChunks;
@@ -402,6 +438,9 @@ export class ChunkProcessScheduler {
 									savedData,
 								);
 							} else if (!request.chunk.isLoaded) {
+								console.log(
+									`[T3] GEN ${request.chunk.chunkX},${request.chunk.chunkY},${request.chunk.chunkZ}`,
+								);
 								state.chunksToGenerate.push(request.chunk);
 							}
 						}
@@ -425,6 +464,7 @@ export class ChunkProcessScheduler {
 								{ includeVoxelData: true },
 								state.hydrateMap,
 							);
+							if (this.checkDeadline()) { timedOut = true; break; }
 							this.beginSlice(state);
 
 							// Bug 5 fix — only count on success
@@ -499,6 +539,10 @@ export class ChunkProcessScheduler {
 				}
 			}
 			this.isProcessing = false;
+			if (timedOut) {
+				// Clear state to avoid re-doing the same work that timed out
+				this.inFlightProcessState = null;
+			}
 			this.adapter.updateSliceDebugStats(state);
 			this.scheduleProcessContinuation();
 		} catch (error) {
@@ -526,7 +570,10 @@ export class ChunkProcessScheduler {
 		this.processContinuationScheduled = true;
 		requestAnimationFrame(() => {
 			this.processContinuationScheduled = false;
-			void this.processQueues();
+			void this.processQueues().then(() => this.onContinuationSlice?.());
 		});
 	}
+
+	/** Hook called after each processQueues continuation slice completes. */
+	public onContinuationSlice: (() => void) | null = null;
 }

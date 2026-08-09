@@ -9,6 +9,7 @@ import {
 	initAtlas,
 	initEngineContext,
 } from "../World/Chunk/ChunkMesher";
+import { WorldStorage } from "../World/WorldStorage";
 import { WorldEnvironment } from "./WorldEnvironment";
 
 /**
@@ -42,6 +43,7 @@ export class Map1 {
 		try {
 			await initAtlas();
 			await initDistantTerrain();
+			await WorldStorage.initialize();
 			new PlayerLoadingGate(Map1.mainScene, this.#player);
 		} catch (error) {
 			console.error("Error loading environment or textures:", error);

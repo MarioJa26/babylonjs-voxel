@@ -13,6 +13,7 @@ import { showLiteExplorer } from "babylon-lite-explorer";
 import { createMobCoordinator } from "./Entities/Mobs/MobSetup";
 import { setTerrainSeed } from "./Generation/TerrainHeightMap";
 import { Map1 } from "./Maps/Map1";
+import { WorldStorage } from "./World/WorldStorage";
 import { type EyeCamera, UnderWaterEffect } from "./Maps/UnderWaterEffect";
 import { NetworkManager } from "./Network/NetworkManager";
 import { initializeBlockBreakingVisuals } from "./Player/Hud/BlockHighlight/BlockBreakingVisuals";
@@ -159,6 +160,7 @@ export class TestScene {
 		this.#disposeLightDebugTool?.();
 		this.#playerStatePersistence?.dispose();
 		this.#networkManager?.disconnect();
+		void WorldStorage.flush();
 		if (this.engine) stopEngine(this.engine);
 		Map1.disposeAll();
 		this.engine = undefined;

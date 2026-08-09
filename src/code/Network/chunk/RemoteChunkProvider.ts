@@ -45,13 +45,12 @@ export class RemoteChunkProvider {
 		this.client.addBinaryHandler((data: Uint8Array) => {
 			if (data.byteLength < 1) return;
 
+			console.log(`[T5] MSG type=0x${data[0].toString(16)} len=${data.byteLength} (ChunkData=0x15 Batch=0x19)`);
+
 			if (data[0] === MessageType.ChunkData) {
 				const chunk = decodeChunkData(data);
 				const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
-
-				// Cache the hash for future requests
 				this.chunkHashes.set(key, chunk.hash);
-
 				const pending = this.pending.get(key);
 				if (pending) {
 					this.pending.delete(key);
@@ -60,6 +59,7 @@ export class RemoteChunkProvider {
 			} else if (data[0] === MessageType.ChunkDataBatch) {
 				// Batch response — multiple chunks in one message
 				const chunks = decodeChunkDataBatch(data);
+				// console.log(`[RemoteChunkProvider] received batch of ${chunks.length} chunks, pending=${this.pending.size}`);
 				for (const chunk of chunks) {
 					const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
 					this.chunkHashes.set(key, chunk.hash);
@@ -68,6 +68,8 @@ export class RemoteChunkProvider {
 					if (pending) {
 						this.pending.delete(key);
 						pending.resolve(chunk);
+					} else {
+						// console.log(`[RemoteChunkProvider] no pending for ${key}`);
 					}
 				}
 			} else if (data[0] === MessageType.ChunkUnchanged) {
@@ -144,6 +146,7 @@ export class RemoteChunkProvider {
 		cz: number,
 		cachedHash: number,
 	): void {
+		// console.log(`[RemoteChunkProvider] sendRequest ${cx},${cy},${cz}`);
 		this.client.sendChunkRequest(cx, cy, cz, 0, cachedHash);
 	}
 

@@ -72,12 +72,4 @@ export type ChunkLoadingDebugStats = {
 	totalHydrated: number;
 	totalUnloaded: number;
 	totalSaved: number;
-	lastOpfsHits: number;
-	lastOpfsMisses: number;
-	totalOpfsHits: number;
-	totalOpfsMisses: number;
-	opfsUsedBytes: number;
-	opfsTotalBytes: number;
-	opfsSlotCount: number;
-	opfsEvictionCount: number;
 };

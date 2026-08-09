@@ -2,9 +2,9 @@ import { onSceneDispose, type SceneContext, type Vec3 } from "@babylonjs/lite";
 import {
 	flushChunkBoundEntities,
 	flushModifiedChunks,
-	flushOpfsStorage,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { worldLocalStorageKey } from "../World/WorldContext";
+import { WorldStorage } from "../World/WorldStorage";
 import type { SavedInventoryState } from "./Inventory/PlayerInventory";
 import type { Player } from "./Player";
 import { Gamemodes } from "./PlayerStats";
@@ -78,7 +78,7 @@ export class PlayerStatePersistence {
 				PlayerStatePersistence.CHUNK_SAVE_NOW_BATCH_SIZE,
 			);
 			await flushChunkBoundEntities();
-			await flushOpfsStorage();
+			await WorldStorage.flush();
 		} catch (err) {
 			console.warn("Failed to persist chunks on save-now.", err);
 		}

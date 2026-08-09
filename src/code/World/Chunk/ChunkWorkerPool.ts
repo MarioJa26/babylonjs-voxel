@@ -10,7 +10,6 @@ import {
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import { shapeInitPromise } from "../Shape/BlockShapes";
 import { packChunkKey } from "../Storage/ChunkKey";
-import { OpfsClient } from "../Storage/OpfsClient";
 import { getWorldNameFromUrl, worldSeedFor } from "../WorldContext";
 import { WorldStorage } from "../WorldStorage";
 import { addChunkDisposeHook, Chunk, getChunk } from "./Chunk";
@@ -255,12 +254,8 @@ export class ChunkWorkerPool {
 	private nextDistantTerrainRequestId = 1;
 
 	// ---------------------------------------------------------------------------
-	// OPFS mesh cache (replaces IDB mesh persistence)
+	// LevelDB chunk storage (replaces OPFS)
 	// ---------------------------------------------------------------------------
-	private opfsClient: OpfsClient | null = null;
-	private opfsReady = false;
-	private opfsInitPromise: Promise<void> | null = null;
-	private opfsFlushCounter = 0;
 
 	// ---------------------------------------------------------------------------
 	// Static scratch buffers — avoids per-call allocation on hot paths
@@ -769,16 +764,8 @@ export class ChunkWorkerPool {
 				}
 			}
 
-			// The replacement voxel worker's registration map is empty: give it
-			// a fresh OPFS channel (future storage loads reach it) and
-			// re-register every loaded chunk directly — the channel data for
-			// chunks loaded before/during the restart may have hit the stale
-			// port of the terminated worker.
-			if (this.opfsReady && this.opfsClient) {
-				const voxelChannel = new MessageChannel();
-				replacement.initVoxelWorkerChannel(voxelChannel.port1);
-				this.opfsClient.initWorkerChannel(voxelChannel.port2);
-			}
+			// The replacement voxel worker's registration map is empty:
+			// re-register every loaded chunk directly.
 			for (const [, chunk] of Chunk.chunkInstances) {
 				if (chunk.isLoaded) {
 					const snap = chunk.getLightStorageSnapshot();
@@ -907,9 +894,8 @@ export class ChunkWorkerPool {
 	}
 
 	private broadcastLightRegister(chunk: Chunk): void {
-		// SAB fields are null → the terrain worker merges them with the
-		// pre-sent channel data from the OPFS worker.  Saves ~22ms main-thread
-		// postMessage cost for the SAB references.
+		// Pass SABs directly — no OPFS worker-to-worker channel anymore.
+		const snap = chunk.getLightStorageSnapshot();
 		this.getLightWorker().postLightRegisterChunk({
 			seq: this.nextLightSeq(),
 			chunkId: chunk.id,
@@ -917,14 +903,15 @@ export class ChunkWorkerPool {
 			chunkY: chunk.chunkY,
 			chunkZ: chunk.chunkZ,
 			headerSlot: chunk.lightHeaderSlot,
-			blockSAB: null,
-			lightSAB: null,
-			paletteSAB: null,
-			blockStorageBytesPerElement: 1,
+			blockSAB: snap.blockSAB,
+			lightSAB: snap.lightSAB,
+			paletteSAB: snap.paletteSAB,
+			blockStorageBytesPerElement:
+				chunk.block_array instanceof Uint16Array ? 2 : 1,
 		});
 	}
 
-	/** Full-registration path for fresh-generation chunks (no OPFS channel). */
+	/** Full-registration path for fresh-generation chunks (no voxel channel). */
 	private broadcastLightRegisterFull(chunk: Chunk): void {
 		const snap = chunk.getLightStorageSnapshot();
 		this.getLightWorker().postLightRegisterChunk({
@@ -960,10 +947,10 @@ export class ChunkWorkerPool {
 
 	/**
 	 * Channel-path voxel registration: metadata only (SABs arrive via the
-	 * OPFS worker-to-worker channel, which already forwarded them while
-	 * serving the storage read). Mirrors broadcastLightRegister.
+	 * worker-to-worker channel). Mirrors broadcastLightRegister.
 	 */
 	private broadcastVoxelRegister(chunk: Chunk): void {
+		const snap = chunk.getLightStorageSnapshot();
 		for (let i = 0; i < this.workers.length; i++) {
 			this.workers[i].postVoxelRegisterChunk({
 				chunkId: chunk.id,
@@ -972,11 +959,12 @@ export class ChunkWorkerPool {
 				chunkZ: chunk.chunkZ,
 				isUniform: chunk.isUniform,
 				uniformBlockId: chunk.uniformBlockId,
-				blockStorageBytesPerElement: 1,
-				direct: false,
-				blockSAB: null,
-				paletteSAB: null,
-				lightSAB: null,
+				blockStorageBytesPerElement:
+					chunk.block_array instanceof Uint16Array ? 2 : 1,
+				direct: true,
+				blockSAB: snap.blockSAB,
+				paletteSAB: snap.paletteSAB,
+				lightSAB: snap.lightSAB,
 			});
 		}
 	}
@@ -1226,13 +1214,6 @@ export class ChunkWorkerPool {
 		}
 		if (flags & ChunkWorkerPool.WORK_SERIAL_QUEUE) {
 			this._meshSerialDrainScheduled = false;
-			if (
-				this._meshSerialQueue.length > 0 &&
-				this.opfsReady &&
-				this.opfsClient
-			) {
-				this._drainSerialQueue(this._meshSerialQueue);
-			}
 		}
 	};
 
@@ -1327,34 +1308,6 @@ export class ChunkWorkerPool {
 
 		this.processMeshQueueLoop();
 
-		// Fire-and-forget OPFS init; fall back gracefully if unavailable
-		this.opfsInitPromise = OpfsClient.create(getWorldNameFromUrl() ?? "default")
-			.then((client: OpfsClient) => {
-				this.opfsClient = client;
-				this.opfsReady = true;
-
-				// Wire up the worker-to-worker MessageChannel so the OPFS worker
-				// sends decompressed SAB refs directly to the terrain/light worker,
-				// bypassing the main thread's postMessage for LightRegisterChunk.
-				const channel = new MessageChannel();
-				this.getLightWorker().initWorkerChannel(channel.port1);
-				client.initWorkerChannel(channel.port2);
-
-				// One channel per voxel worker: the same "voxelData" forwards
-				// reach every voxel worker's registration map, so any worker
-				// can read the center grid / neighbor borders of any loaded
-				// chunk directly from shared memory.
-				for (let i = 0; i < this.workers.length; i++) {
-					const voxelChannel = new MessageChannel();
-					this.workers[i].initVoxelWorkerChannel(voxelChannel.port1);
-					client.initWorkerChannel(voxelChannel.port2);
-				}
-			})
-			.catch((err: any) => {
-				console.warn("[ChunkWorkerPool] OPFS unavailable:", err);
-				this.opfsReady = false;
-			});
-
 		// Fire-and-forget: once block shapes finish loading, precompute the
 		// per-face closed-mask lookup table and send it to the light worker
 		// so it can correctly handle non-full blocks (slabs, stairs, etc.).
@@ -1369,19 +1322,6 @@ export class ChunkWorkerPool {
 			.catch(() => {
 				/* shapes failed to load; worker keeps cube fallback */
 			});
-	}
-
-	public async ensureOpfsReady(): Promise<OpfsClient | null> {
-		if (this.opfsReady && this.opfsClient) return this.opfsClient;
-		if (this.opfsInitPromise) {
-			await this.opfsInitPromise;
-		}
-		return this.opfsReady ? this.opfsClient : null;
-	}
-
-	/** Public accessor for the OPFS client (null if not yet initialised). */
-	public getOpfsClient(): OpfsClient | null {
-		return this.opfsReady ? this.opfsClient : null;
 	}
 
 	// -------------------------------------------------------------------------
@@ -1667,16 +1607,6 @@ export class ChunkWorkerPool {
 					_meshApplyScratch.opaque = opaque ?? null;
 					_meshApplyScratch.transparent = transparent ?? null;
 					chunk.setCachedLODMesh(lod, _meshApplyScratch);
-
-					// Queue mesh serialization for OPFS *after* the hot loop so
-					// allocate+copy doesn't steal from the frame budget.
-					const entry = this._meshSerialPool.pop() ?? ({} as any);
-					entry.opaque = opaque;
-					entry.transparent = transparent;
-					entry.key = packChunkKey(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
-					entry.lod = lod;
-					entry.chunkId = chunkId;
-					serialQueue.push(entry);
 				}
 				if ((chunk.lodLevel ?? 0) === lod) {
 					createMeshFromData(chunk, opaque ?? null, transparent ?? null);
@@ -1699,22 +1629,6 @@ export class ChunkWorkerPool {
 		// Flush merged groups with a per-group budget so a heavy rebuild
 		// doesn't steal the entire frame.
 		flushDirtyMergedGroups();
-
-		// Drain serialization queue (outside the 5ms budget) in this same
-		// rAF so OPFS writes begin ASAP, but stop if we blow past budget.
-		if (serialQueue.length > 0 && this.opfsReady && this.opfsClient) {
-			this._drainSerialQueue(serialQueue);
-		}
-
-		if (processed > 0 && this.opfsReady && this.opfsClient) {
-			this.opfsFlushCounter++;
-			if (this.opfsFlushCounter >= 60) {
-				this.opfsFlushCounter = 0;
-				void this.opfsClient.flush().catch((err: any) => {
-					console.error("[ChunkWorkerPool] OPFS flush failed:", err);
-				});
-			}
-		}
 
 		if (this.meshResultQueueReadIdx < this.meshResultQueue.length) {
 			this.scheduleMeshFlush();
@@ -1739,20 +1653,6 @@ export class ChunkWorkerPool {
 		let i = 0;
 		for (; i < queue.length; i++) {
 			if ((i & 15) === 0 && performance.now() - start > 5) break;
-			const item = queue[i];
-			// Transfer raw MeshData arrays to OPFS worker — serialization
-			// happens there, eliminating main-thread allocation pressure.
-			void this.opfsClient!.writeMeshRaw(
-				item.key,
-				item.lod,
-				item.opaque,
-				item.transparent,
-			).catch((err: any) => {
-				console.error(
-					`[ChunkWorkerPool] OPFS mesh write failed for chunk ${item.chunkId} (key=${item.key}, lod=${item.lod}):`,
-					err,
-				);
-			});
 		}
 		// Return processed items to pool, then remove from queue
 		const pool = this._meshSerialPool;
@@ -2431,6 +2331,9 @@ export class ChunkWorkerPool {
 		chunks: Chunk[],
 		deferLighting = true,
 	): void {
+		if (chunks.length > 0) {
+			// console.log(`[scheduleTerrainGenerationBatch] ${chunks.length} chunks, remote=${this.remoteGenerationEnabled && !!this.remoteChunkProvider}`);
+		}
 		if (this.remoteGenerationEnabled && this.remoteChunkProvider) {
 			for (let i = 0; i < chunks.length; i++) {
 				this.enqueueRemoteGeneration(chunks[i], deferLighting);
@@ -2466,10 +2369,18 @@ export class ChunkWorkerPool {
 		this.remoteTaskQueue.push(chunk);
 		this.remoteTaskQueueSet.add(chunk);
 		chunk.isTerrainScheduled = true;
+		// console.log(`[RemoteGen] enqueued ${key} (queue: ${this.remoteTaskQueue.length})`);
 	}
 
-	private pumpRemoteGeneration(): void {
+	public hasRemoteChunksQueued(): boolean {
+		return this.remoteTaskQueue.length > 0;
+	}
+
+	public pumpRemoteGeneration(): void {
 		if (!this.remoteChunkProvider) return;
+
+		// Process the task queue: send up to MAX_REMOTE_CONCURRENT chunks per call.
+		// This is called every frame from processFrameBudgetedStreamingWork.
 
 		// Collect up to MAX_REMOTE_CONCURRENT chunks from the queue into a batch.
 		// Batch requests reduce round-trips: one network message fetches many chunks.
@@ -2489,6 +2400,8 @@ export class ChunkWorkerPool {
 		}
 
 		if (batch.length === 0) return;
+
+		console.log(`[T4] SEND ${batch.length} chunks to server: ${batch.map(c => `${c.chunkX},${c.chunkY},${c.chunkZ}`).join(' ')}`);
 
 		if (batch.length === 1) {
 			// Single chunk — use the simple path
@@ -2609,8 +2522,11 @@ export class ChunkWorkerPool {
 		// without a mesh even though its voxel data is present. If no live chunk
 		// exists anymore, fall back to the captured instance so the server's
 		// voxel data is never dropped (its replacement will reuse it).
-		const target = getChunk(data.chunkX, data.chunkY, data.chunkZ) ?? captured;
+		const liveChunk = getChunk(data.chunkX, data.chunkY, data.chunkZ);
+		const target = liveChunk ?? captured;
+		console.log(`[T6] handleRemoteChunkData ${key}: liveChunk=${!!liveChunk}, blocks=${data.blocks.byteLength}, uniform=${data.isUniform}, blockId=${data.uniformBlockId}`);
 		if (!target || target.isBoatChunk) {
+			console.log(`[T6b] SKIPPED ${key}: no target or boat chunk`);
 			// Free the concurrency slot (already decremented above) and keep the
 			// request queue moving so other pending chunks are not blocked.
 			this.pumpRemoteGeneration();
@@ -2618,8 +2534,10 @@ export class ChunkWorkerPool {
 		}
 		const chunk = target;
 
-		// Check if server said "unchanged" (empty blocks = no new data needed)
+		// Check if server said "unchanged" (empty blocks = no new data needed).
+		// Uniform chunks legitimately have blocks.byteLength === 0, so exclude them.
 		const unchanged =
+			!data.isUniform &&
 			data.blocks.byteLength === 0 &&
 			data.light.byteLength === 0 &&
 			data.hash !== 0;
@@ -2647,8 +2565,15 @@ export class ChunkWorkerPool {
 			chunk.isModified = true;
 		}
 
+		// Register the chunk with the light/voxel workers so meshing can proceed.
+		// In singleplayer this happens via _drainLightRegistration, but remote
+		// chunks arrive asynchronously and need explicit registration.
+		this.broadcastLightRegister(chunk);
+		this.broadcastVoxelRegister(chunk);
+
 		// Schedule meshing AFTER the server voxel data has been applied, so the
 		// generated mesh always reflects the requested-from-server blocks.
+		console.log(`[T7] scheduling remesh for ${key}, isLoaded=${chunk.isLoaded}`);
 		chunk.scheduleRemesh(true, true);
 		scheduleChunkAndNeighborsRemesh(chunk, this._boundScheduleRemesh);
 		maybeRemeshNeighborsNowStable(chunk, this._boundScheduleRemesh);
@@ -3144,13 +3069,6 @@ export class ChunkWorkerPool {
 		const instance = ChunkWorkerPool.instance;
 		if (!instance) return;
 		ChunkWorkerPool.instance = undefined;
-		const client = instance.opfsClient;
-		if (!client) return;
-		try {
-			await client.close();
-		} catch {
-			// terminate() was already called inside close()
-		}
 	}
 
 	private static readonly MAX_MESH_QUEUE = 512;

@@ -6,6 +6,8 @@ import "@/style/hud.css";
 import "@/style/Item.css";
 import "@/style/MultiplayerHUD.css";
 
+
+
 function showErrorOverlay(error: unknown): void {
 	console.error("Application startup failed:", error);
 

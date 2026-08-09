@@ -47,34 +47,28 @@ type RawBlockDefinition = {
 const BLOCKS_URL = "/data/blocks.json";
 const SHAPES_URL = "/data/block-shapes.json";
 
-// Resolve path to public/data/ for Node.js server-side generation
-async function resolvePublicData(filename: string): Promise<string> {
-	const { fileURLToPath } = await import("node:url");
-	const { dirname, join } = await import("node:path");
-	const __filename = fileURLToPath(import.meta.url);
-	const __dirname = dirname(__filename);
-	// From src/code/World/Shape/ to project root public/
-	return join(__dirname, "..", "..", "..", "..", "public", "data", filename);
-}
-
-async function loadJsonUrl(url: string): Promise<any> {
-	// In Node.js, read from disk; in browser, use fetch
-	if (
-		typeof window === "undefined" &&
-		typeof globalThis.process !== "undefined"
-	) {
-		// Server-side: read file from public/data/
-		const fs = await import("node:fs/promises");
-		const filePath = await resolvePublicData(url.replace("/data/", ""));
-		const text = await fs.readFile(filePath, "utf-8");
-		return JSON.parse(text);
-	}
-	// Client-side: use fetch
+// Browser: fetch from the dev server / public URL
+async function loadJsonBrowser(url: string): Promise<any> {
 	const response = await fetch(url);
 	if (!response.ok)
 		throw new Error(`Failed to load ${url}: ${response.status}`);
 	return response.json();
 }
+
+// Node.js: read from public/data/ on disk
+async function loadJsonServer(url: string): Promise<any> {
+	const { fileURLToPath } = await import("node:url");
+	const { dirname, join } = await import("node:path");
+	const { readFile } = await import("node:fs/promises");
+	const __filename = fileURLToPath(import.meta.url);
+	const __dirname = dirname(__filename);
+	const filePath = join(__dirname, "..", "..", "..", "..", "public", url.replace(/^\//, ""));
+	const text = await readFile(filePath, "utf-8");
+	return JSON.parse(text);
+}
+
+const loadJsonUrl =
+	typeof self !== "undefined" ? loadJsonBrowser : loadJsonServer;
 const SHAPE_SCALE = 16;
 
 export const FALLBACK_CUBE: ShapeDefinition = {

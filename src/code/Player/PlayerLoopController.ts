@@ -15,7 +15,6 @@ import { Chunk } from "../World/Chunk/Chunk";
 import {
 	getDebugStats,
 	processFrameBudgetedStreamingWork,
-	refreshOpfsDebugStats,
 	updateChunksAround,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
@@ -180,7 +179,11 @@ export class PlayerLoopController {
 		const cz = worldToChunkCoord(playerPos.z);
 
 		this.#updateChunksAroundPlayer(cx, cy, cz, playerPos);
-		processFrameBudgetedStreamingWork(cx, cy, cz);
+		try {
+			void processFrameBudgetedStreamingWork(cx, cy, cz);
+		} catch (err) {
+			console.error("[T0-ERR] processFrameBudgetedStreamingWork threw:", err);
+		}
 
 		this.#updateActiveMeshSelection(cx, cy, cz);
 
@@ -325,6 +328,7 @@ export class PlayerLoopController {
 			cy !== this.#loadLastCy ||
 			cz !== this.#loadLastCz
 		) {
+			// console.log(`[PlayerLoop] moved to chunk ${cx},${cy},${cz}, updating chunks`);
 			// Direct call (no setTimeout): updateChunksAround is already async
 			// and frame-budgeted, and PlayerLoadingGate calls it directly every
 			// frame while spawn-loading — the macrotask only added latency.
@@ -526,7 +530,6 @@ export class PlayerLoopController {
 
 		const loadStats = getDebugStats();
 		const workerStats = ChunkWorkerPool.getInstance().getDebugStats();
-		void refreshOpfsDebugStats();
 
 		PlayerHud.updateDebugInfo(
 			"Chunk Queues",
@@ -541,14 +544,6 @@ export class PlayerLoopController {
 		PlayerHud.updateDebugInfo(
 			"Chunk I/O",
 			`load:${loadStats.lastLoadedFromStorage} gen:${loadStats.lastGenerated} hyd:${loadStats.lastHydrated} unload:${loadStats.lastUnloaded} save:${loadStats.lastSaved}`,
-			"chunks",
-		);
-		PlayerHud.updateDebugInfo(
-			"OPFS Mesh",
-			`hits:${loadStats.lastOpfsHits} miss:${loadStats.lastOpfsMisses} ` +
-				`used:${(loadStats.opfsUsedBytes / 1024 / 1024).toFixed(1)}MB / ` +
-				`${(loadStats.opfsTotalBytes / 1024 / 1024).toFixed(0)}MB ` +
-				`slots:${loadStats.opfsSlotCount} evicts:${loadStats.opfsEvictionCount}`,
 			"chunks",
 		);
 		PlayerHud.updateDebugInfo(

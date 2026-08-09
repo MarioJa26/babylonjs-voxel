@@ -6,6 +6,11 @@
     <meta name="viewport" content="width=device-width,initial-scale=1.0" />
     <link rel="icon" href="<%= BASE_URL %>favicon.ico" />
     <title><%= htmlWebpackPlugin.options.title %></title>
+    <script>
+      // Polyfill for Node.js globals that level-js expects
+      if (typeof global === 'undefined') window.global = window;
+      if (typeof process === 'undefined') window.process = { env: {} };
+    </script>
   </head>
   <body>
     <noscript>

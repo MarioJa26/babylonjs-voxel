@@ -803,7 +803,18 @@ export class Chunk {
 			this._la32.byteOffset !== la.byteOffset ||
 			this._la32.length !== wordCount
 		) {
-			this._la32 = new Uint32Array(la.buffer, la.byteOffset, wordCount);
+			// Copy into a aligned buffer to avoid "start offset of Uint32Array
+			// should be a multiple of 4" when the source light array has a
+			// non-aligned byteOffset (e.g. deserialized from storage).
+			const aligned = new Uint32Array(wordCount);
+			aligned.set(
+				new Uint32Array(
+					la.buffer,
+					la.byteOffset - (la.byteOffset % 4),
+					wordCount + (la.byteOffset % 4) / 4,
+				).subarray(0, wordCount),
+			);
+			this._la32 = aligned;
 		}
 		const la32 = this._la32;
 		for (let i = 0; i < wordCount; i++) {
