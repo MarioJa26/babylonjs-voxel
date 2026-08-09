@@ -122,11 +122,17 @@ export class ChunkGenerationService {
 
 			const batchResults = await batchPromise;
 
+			// Finalize all chunks (CPU work, but fast compared to generation)
+			const finalized = new Array(toFetch.length);
 			for (let i = 0; i < toFetch.length; i++) {
-				const { index, cx, cy, cz } = toFetch[i];
-				const chunkData = this.finalizeChunk(cx, cy, cz, batchResults[i]);
-				await this.saveChunk(chunkData);
-				results[index] = chunkData;
+				finalized[i] = this.finalizeChunk(toFetch[i].cx, toFetch[i].cy, toFetch[i].cz, batchResults[i]);
+			}
+
+			// Save all chunks in parallel (I/O bound)
+			await Promise.all(finalized.map((data) => this.saveChunk(data)));
+
+			for (let i = 0; i < toFetch.length; i++) {
+				results[toFetch[i].index] = finalized[i];
 			}
 		}
 

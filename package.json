@@ -20,12 +20,9 @@
 		"@webgpu/types": "^0.1.71",
 		"alea": "^1.0.1",
 		"babylon-lite-explorer": "^0.6.0",
-		"buffer": "^6.0.3",
 		"idb": "^8.0.3",
 		"level": "^10.0.0",
-		"level-js": "^6.1.0",
-		"process": "^0.11.10",
-		"vite-plugin-node-polyfills": "^0.28.0"
+		"level-js": "^6.1.0"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.7",

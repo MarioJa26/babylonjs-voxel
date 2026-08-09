@@ -1,15 +1,10 @@
 import { fileURLToPath, URL } from "node:url";
 import { defineConfig } from "vite";
 import glsl from "vite-plugin-glsl"; // npm install vite-plugin-glsl --save-dev
-import { nodePolyfills } from "vite-plugin-node-polyfills";
 
 export default defineConfig({
 	plugins: [
 		glsl(), // This replaces your old 'raw-loader' for .glsl files
-		nodePolyfills({
-			include: ["buffer", "process", "util", "stream", "events"],
-			globals: { global: true, Buffer: true, process: true },
-		}),
 	],
 	resolve: {
 		alias: [
