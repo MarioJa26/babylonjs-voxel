@@ -434,6 +434,17 @@ export async function processFrameBudgetedStreamingWork(
 		255,
 	);
 
+	const proc = processScheduler as any;
+	if (
+		proc.isProcessing &&
+		(!proc._processStartTime ||
+			performance.now() - proc._processStartTime > 2000)
+	) {
+		// Safety: if stuck for >2 seconds, force reset
+		proc.isProcessing = false;
+		proc.inFlightProcessState = null;
+		proc._processStartTime = 0;
+	}
 	if (!processScheduler.processing) {
 		await processScheduler.processQueues();
 	}

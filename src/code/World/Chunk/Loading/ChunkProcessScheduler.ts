@@ -134,14 +134,7 @@ export class ChunkProcessScheduler {
 
 	public async processQueues(): Promise<void> {
 		if (this.isProcessing) {
-			// Safety: if stuck for >1 second, force reset
-			if (performance.now() - this._processStartTime > 1000) {
-				console.warn("[processQueues] FORCE RESET - stuck for >1s");
-				this.isProcessing = false;
-				this.inFlightProcessState = null;
-			} else {
-				return;
-			}
+			return;
 		}
 
 		this.isProcessing = true;
