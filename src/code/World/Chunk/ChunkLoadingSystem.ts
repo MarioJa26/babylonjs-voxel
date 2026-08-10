@@ -434,7 +434,6 @@ export async function processFrameBudgetedStreamingWork(
 		255,
 	);
 
-	processScheduler.ensureNotStuck();
 	if (!processScheduler.processing) {
 		await processScheduler.processQueues();
 	}

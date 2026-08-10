@@ -130,6 +130,7 @@ export class Chunk {
 	public isLoaded = false;
 	public isTerrainScheduled = false;
 	public isLightDirty = false;
+	public persistenceRevision = 0;
 	public remeshQueued = false;
 	/**
 	 * Set when a remesh arrives for a chunk whose mesh was superseded while
@@ -785,6 +786,7 @@ export class Chunk {
 		if (this.light_array[idx] !== level) {
 			this.light_array[idx] = level;
 			this.isModified = true;
+			this.persistenceRevision++;
 			this._isDarkCached = undefined;
 		}
 	}
@@ -1080,6 +1082,7 @@ export class Chunk {
 		this.dispatchLightMutate(localX, localY, localZ, oldPacked, packedBlock);
 
 		this.isModified = true;
+		this.persistenceRevision++;
 		this.connectivityDirty = true;
 		this.blockRevision++;
 		this.clearCachedLODMeshes();

@@ -2328,7 +2328,7 @@ export class ChunkWorkerPool {
 	}
 
 	public scheduleTerrainGenerationBatch(
-		chunks: Chunk[],
+		chunks: readonly Chunk[],
 		deferLighting = true,
 	): void {
 		if (chunks.length > 0) {

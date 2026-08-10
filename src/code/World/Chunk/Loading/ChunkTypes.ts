@@ -37,6 +37,7 @@ export type InFlightProcessState = {
 	unloadBatch: Chunk[];
 	unloadBatchIndex: number;
 	savedChunkIds: Set<bigint>;
+	savedChunkRevisions: Map<bigint, number>;
 
 	loadBatch: QueuedChunkRequest[];
 	validLoadBatch: QueuedChunkRequest[];
@@ -46,6 +47,7 @@ export type InFlightProcessState = {
 	farLoadedDataMap: Map<bigint, SavedChunkData>;
 	applyLoadedIndex: number;
 	chunksToGenerate: Chunk[];
+	chunksToGenerateIds: Set<bigint>;
 	chunksNeedingFullHydration: Set<bigint>;
 
 	hydrateIds: bigint[];

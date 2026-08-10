@@ -26,7 +26,7 @@ export interface ChunkProcessSchedulerAdapter {
 		savedData: SavedChunkData,
 	): void;
 
-	scheduleTerrainGenerationBatch(chunks: Chunk[]): void;
+	scheduleTerrainGenerationBatch(chunks: readonly Chunk[]): void;
 
 	updateSliceDebugStats(state: InFlightProcessState): void;
 	finalizeProcessState(state: InFlightProcessState): void;
@@ -42,12 +42,12 @@ export class ChunkProcessScheduler {
 	private _state: InFlightProcessState = this.createReusableProcessState();
 	private processContinuationScheduled = false;
 
-	// M2: Reusable scratch for SaveUnloadBatch — avoids per-stage array allocation
 	private _saveScratch: Chunk[] = [];
-
-	// M3: Reusable ID arrays for WorldStorage.loadChunks — avoids .map() allocation
 	private _nearIdScratch: bigint[] = [];
 	private _farIdScratch: bigint[] = [];
+
+	private preferLoadNext = false;
+	private unloadRetryAfterMs = 0;
 
 	public constructor(private readonly adapter: ChunkProcessSchedulerAdapter) {}
 
@@ -71,6 +71,7 @@ export class ChunkProcessScheduler {
 			unloadBatch: [],
 			unloadBatchIndex: 0,
 			savedChunkIds: new Set(),
+			savedChunkRevisions: new Map(),
 
 			loadBatch: [],
 			validLoadBatch: [],
@@ -80,6 +81,7 @@ export class ChunkProcessScheduler {
 			farLoadedDataMap: new Map(),
 			applyLoadedIndex: 0,
 			chunksToGenerate: [],
+			chunksToGenerateIds: new Set(),
 			chunksNeedingFullHydration: new Set(),
 
 			hydrateIds: [],
@@ -101,6 +103,7 @@ export class ChunkProcessScheduler {
 		state.unloadBatch.length = 0;
 		state.unloadBatchIndex = 0;
 		state.savedChunkIds.clear();
+		state.savedChunkRevisions.clear();
 
 		state.loadBatch.length = 0;
 		state.validLoadBatch.length = 0;
@@ -112,6 +115,7 @@ export class ChunkProcessScheduler {
 
 		state.applyLoadedIndex = 0;
 		state.chunksToGenerate.length = 0;
+		state.chunksToGenerateIds.clear();
 		state.chunksNeedingFullHydration.clear();
 
 		state.hydrateIds.length = 0;
@@ -120,48 +124,12 @@ export class ChunkProcessScheduler {
 		state.hydrateIndex = 0;
 	}
 
-	private _processStartTime = 0;
-	private _overallDeadline = 0;
-	private static readonly OVERALL_TIMEOUT_MS = 500;
-
-	private checkDeadline(): boolean {
-		return performance.now() > this._overallDeadline;
-	}
-
-	/** Race a promise against a timeout. Resolves with fallback on timeout. */
-	private withTimeout<T>(
-		promise: Promise<T>,
-		ms: number,
-		fallback: T,
-	): Promise<T> {
-		return Promise.race([
-			promise,
-			new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
-		]);
-	}
-
-	/** Force-reset if processing has been stuck for too long. Called every frame. */
-	public ensureNotStuck(): void {
-		if (
-			this.isProcessing &&
-			(!this._processStartTime ||
-				performance.now() - this._processStartTime > 2000)
-		) {
-			this.isProcessing = false;
-			this.inFlightProcessState = null;
-			this._processStartTime = 0;
-		}
-	}
-
 	public async processQueues(): Promise<void> {
-		if (this.isProcessing) {
-			return;
-		}
+		if (this.isProcessing) return;
+
+		let shouldContinue = false;
 
 		this.isProcessing = true;
-		this._processStartTime = performance.now();
-		this._overallDeadline =
-			performance.now() + ChunkProcessScheduler.OVERALL_TIMEOUT_MS;
 
 		if (!this.inFlightProcessState) {
 			this.inFlightProcessState = this._state;
@@ -171,22 +139,27 @@ export class ChunkProcessScheduler {
 		const state = this.inFlightProcessState;
 		this.beginSlice(state);
 
-		let timedOut = false;
 		try {
 			let loopCount = 0;
-			while (this.hasBudget(state) && !timedOut) {
-				loopCount++;
-				if (loopCount > 50) {
-					this.isProcessing = false;
-					this.adapter.updateSliceDebugStats(state);
-					this.scheduleProcessContinuation();
-					return;
+			while (this.hasBudget(state)) {
+				if (++loopCount > 1_000) {
+					throw new Error("Chunk scheduler stage-transition limit exceeded");
 				}
 				switch (state.stage) {
 					case ProcessStage.Start: {
-						if (this.adapter.getUnloadQueueSet().size > 0) {
+						const hasLoads = this.adapter.getLoadQueue().length > 0;
+						const hasUnloads = this.adapter.getUnloadQueueSet().size > 0;
+						const canProcessUnloads =
+							performance.now() >= this.unloadRetryAfterMs;
+
+						if (hasLoads && hasUnloads) {
+							state.stage = this.preferLoadNext
+								? ProcessStage.PrepareLoadBatch
+								: ProcessStage.PrepareUnloadBatch;
+							this.preferLoadNext = !this.preferLoadNext;
+						} else if (hasUnloads && canProcessUnloads) {
 							state.stage = ProcessStage.PrepareUnloadBatch;
-						} else if (this.adapter.getLoadQueue().length > 0) {
+						} else if (hasLoads) {
 							state.stage = ProcessStage.PrepareLoadBatch;
 						} else {
 							state.stage = ProcessStage.Finalize;
@@ -200,6 +173,7 @@ export class ChunkProcessScheduler {
 						state.unloadBatch.length = 0;
 						state.unloadBatchIndex = 0;
 						state.savedChunkIds.clear();
+						state.savedChunkRevisions.clear();
 
 						const unloadBatchSize = this.adapter.getUnloadBatchSize();
 						let count = 0;
@@ -223,7 +197,6 @@ export class ChunkProcessScheduler {
 					}
 
 					case ProcessStage.SaveUnloadBatch: {
-						// M2: Reuse scratch array — avoids per-frame allocation
 						this._saveScratch.length = 0;
 
 						for (let i = 0; i < state.unloadBatch.length; i++) {
@@ -238,27 +211,30 @@ export class ChunkProcessScheduler {
 						}
 
 						state.savedChunkIds.clear();
+						state.savedChunkRevisions.clear();
 
 						if (this._saveScratch.length > 0) {
 							try {
-								await this.withTimeout(
-									WorldStorage.saveChunks(this._saveScratch),
-									500,
-									undefined,
-								);
-								if (this.checkDeadline()) {
-									timedOut = true;
-									break;
+								const saveRevisions = new Map<bigint, number>();
+								for (let i = 0; i < this._saveScratch.length; i++) {
+									const chunk = this._saveScratch[i];
+									saveRevisions.set(chunk.id, chunk.persistenceRevision);
 								}
+
+								await WorldStorage.saveChunks(this._saveScratch);
+
 								this.beginSlice(state);
 
-								for (let i = 0; i < this._saveScratch.length; i++) {
-									state.savedChunkIds.add(this._saveScratch[i].id);
+								for (const [id, revision] of saveRevisions) {
+									state.savedChunkIds.add(id);
+									state.savedChunkRevisions.set(id, revision);
 								}
-								state.savedCount += this._saveScratch.length;
+								state.savedCount += saveRevisions.size;
 							} catch (error) {
 								console.error("Background save failed:", error);
 								state.savedChunkIds.clear();
+								state.savedChunkRevisions.clear();
+								this.unloadRetryAfterMs = performance.now() + 250;
 							}
 						}
 
@@ -273,32 +249,50 @@ export class ChunkProcessScheduler {
 						) {
 							const chunk = state.unloadBatch[state.unloadBatchIndex];
 
-							// Permanent skip — already disposed by another path, or a
-							// persistent chunk (boat chunk) that should never be unloaded.
-							// Advance the index without re-queueing.
 							if (!chunk.isLoaded || chunk.isBoatChunk) {
 								state.unloadBatchIndex++;
 								continue;
 							}
 
+							const isDirty = chunk.isModified || chunk.isLightDirty;
+							const savedRevision = state.savedChunkRevisions.get(chunk.id);
 							const canUnload =
-								!chunk.isModified || state.savedChunkIds.has(chunk.id);
+								!isDirty || savedRevision === chunk.persistenceRevision;
 
 							if (!canUnload) {
-								// The chunk is still dirty AND wasn't saved (e.g. it was
-								// modified again between SaveUnloadBatch and now, or the
-								// save failed). Put it back into the unload queue set so
-								// the next processQueues() invocation re-runs SaveUnloadBatch
-								// for it and gets a chance to dispose it.
 								this.adapter.getUnloadQueueSet().add(chunk);
 								state.unloadBatchIndex++;
 								continue;
 							}
 
-							await this.adapter.unloadChunkBoundEntitiesForChunk(chunk);
-							if (this.checkDeadline()) {
-								timedOut = true;
-								break;
+							try {
+								await this.adapter.unloadChunkBoundEntitiesForChunk(chunk);
+							} catch (error) {
+								console.warn("Failed to unload chunk entities", error);
+								this.adapter.getUnloadQueueSet().add(chunk);
+								state.unloadBatchIndex++;
+								continue;
+							}
+
+							this.beginSlice(state);
+
+							if (!chunk.isLoaded || chunk.isBoatChunk) {
+								state.unloadBatchIndex++;
+								continue;
+							}
+
+							const dirtyAfterAwait = chunk.isModified || chunk.isLightDirty;
+							const currentSavedRevision = state.savedChunkRevisions.get(
+								chunk.id,
+							);
+
+							if (
+								dirtyAfterAwait &&
+								currentSavedRevision !== chunk.persistenceRevision
+							) {
+								this.adapter.getUnloadQueueSet().add(chunk);
+								state.unloadBatchIndex++;
+								continue;
 							}
 
 							chunk.dispose();
@@ -330,6 +324,7 @@ export class ChunkProcessScheduler {
 
 						state.applyLoadedIndex = 0;
 						state.chunksToGenerate.length = 0;
+						state.chunksToGenerateIds.clear();
 						state.chunksNeedingFullHydration.clear();
 
 						state.hydrateIds.length = 0;
@@ -357,7 +352,7 @@ export class ChunkProcessScheduler {
 
 							if (
 								desired === undefined ||
-								desired >> 3 !== request.revision ||
+								desired >>> 3 !== request.revision ||
 								(desired & 0b111) !== request.desiredLod
 							) {
 								continue;
@@ -387,63 +382,62 @@ export class ChunkProcessScheduler {
 					}
 
 					case ProcessStage.LoadFromStorage: {
-						const loadStart = performance.now();
+						state.nearLoadedDataMap.clear();
+						state.farLoadedDataMap.clear();
+
+						this._nearIdScratch.length = 0;
+						this._farIdScratch.length = 0;
+
+						for (let i = 0; i < state.nearRequests.length; i++) {
+							this._nearIdScratch.push(state.nearRequests[i].chunk.id);
+						}
+
+						for (let i = 0; i < state.farRequests.length; i++) {
+							this._farIdScratch.push(state.farRequests[i].chunk.id);
+						}
+
 						try {
-							this._nearIdScratch.length = 0;
-							this._farIdScratch.length = 0;
-							for (const r of state.nearRequests)
-								this._nearIdScratch.push(r.chunk.id);
-							for (const r of state.farRequests)
-								this._farIdScratch.push(r.chunk.id);
+							await Promise.all([
+								this._nearIdScratch.length > 0
+									? WorldStorage.loadChunks(
+											this._nearIdScratch,
+											{ includeVoxelData: true },
+											state.nearLoadedDataMap,
+										)
+									: Promise.resolve(),
 
-							await this.withTimeout(
-								Promise.all([
-									state.nearRequests.length > 0
-										? WorldStorage.loadChunks(
-												this._nearIdScratch,
-												{ includeVoxelData: true },
-												state.nearLoadedDataMap,
-											)
-										: Promise.resolve(),
-
-									state.farRequests.length > 0
-										? WorldStorage.loadChunks(
-												this._farIdScratch,
-												{ includeVoxelData: false },
-												state.farLoadedDataMap,
-											)
-										: Promise.resolve(),
-								]),
-								500,
-								undefined,
-							);
-							if (this.checkDeadline()) {
-								timedOut = true;
-								break;
-							}
+								this._farIdScratch.length > 0
+									? WorldStorage.loadChunks(
+											this._farIdScratch,
+											{ includeVoxelData: false },
+											state.farLoadedDataMap,
+										)
+									: Promise.resolve(),
+							]);
 
 							this.beginSlice(state);
 							state.stage = ProcessStage.ApplyLoadedChunks;
-							break;
 						} catch (error) {
 							console.warn("Failed to load chunks from storage", error);
-							state.stage = ProcessStage.Finalize;
+							state.nearLoadedDataMap.clear();
+							state.farLoadedDataMap.clear();
+							this.beginSlice(state);
+							state.stage = ProcessStage.ApplyLoadedChunks;
 						}
 						break;
 					}
+
 					case ProcessStage.ApplyLoadedChunks: {
 						while (
 							state.applyLoadedIndex < state.validLoadBatch.length &&
 							this.hasBudget(state)
 						) {
 							const request = state.validLoadBatch[state.applyLoadedIndex++];
-							if (!request.chunk.isTerrainScheduled) {
+
+							if (!this.isStillDesired(request)) {
 								continue;
 							}
 
-							// Check savedData FIRST — if OPFS has data, always use it
-							// regardless of revision mismatch caused by frame-budget
-							// splitting between PrepareLoadBatch and ApplyLoadedChunks.
 							const savedData = request.includeVoxelData
 								? state.nearLoadedDataMap.get(request.chunk.id)
 								: state.farLoadedDataMap.get(request.chunk.id);
@@ -455,7 +449,7 @@ export class ChunkProcessScheduler {
 									savedData,
 								);
 							} else if (!request.chunk.isLoaded) {
-								state.chunksToGenerate.push(request.chunk);
+								this.queueGeneration(state, request.chunk);
 							}
 						}
 
@@ -470,32 +464,19 @@ export class ChunkProcessScheduler {
 
 					case ProcessStage.LoadHydrationData: {
 						try {
-							// PERF: same fix as LoadFromStorage above — write directly
-							// into state.hydrateMap instead of copying out of a temp Map.
 							state.hydrateMap.clear();
-							await this.withTimeout(
-								WorldStorage.loadChunks(
-									state.hydrateIds,
-									{ includeVoxelData: true },
-									state.hydrateMap,
-								),
-								500,
-								undefined,
-							);
-							if (this.checkDeadline()) {
-								timedOut = true;
-								break;
-							}
-							this.beginSlice(state);
 
-							// Bug 5 fix — only count on success
-							state.hydratedCount += state.hydrateIds.length;
+							await WorldStorage.loadChunks(
+								state.hydrateIds,
+								{ includeVoxelData: true },
+								state.hydrateMap,
+							);
+
+							this.beginSlice(state);
 						} catch (error) {
 							console.warn("Failed to hydrate chunks from storage", error);
 							state.hydrateMap.clear();
-							state.hydrateIds.length = 0;
-							state.hydrateChunks.length = 0;
-							state.chunksNeedingFullHydration.clear();
+							this.beginSlice(state);
 						}
 
 						state.stage = ProcessStage.ApplyHydration;
@@ -511,18 +492,19 @@ export class ChunkProcessScheduler {
 
 							if (!chunk.isTerrainScheduled) {
 								if (!chunk.isLoaded) {
-									state.chunksToGenerate.push(chunk);
+									this.queueGeneration(state, chunk);
 								}
 								continue;
 							}
 
 							const savedData = state.hydrateMap.get(chunk.id);
 							if (!savedData) {
-								state.chunksToGenerate.push(chunk);
+								this.queueGeneration(state, chunk);
 								continue;
 							}
 
 							this.adapter.applyHydratedChunkFromSavedData(chunk, savedData);
+							state.hydratedCount++;
 						}
 						if (state.hydrateIndex >= state.hydrateChunks.length) {
 							state.stage = ProcessStage.ScheduleGeneration;
@@ -531,9 +513,18 @@ export class ChunkProcessScheduler {
 					}
 
 					case ProcessStage.ScheduleGeneration: {
-						if (state.chunksToGenerate.length > 0) {
-							state.generatedCount += state.chunksToGenerate.length;
+						let writeIndex = 0;
+						for (let i = 0; i < state.chunksToGenerate.length; i++) {
+							const chunk = state.chunksToGenerate[i];
+							if (!chunk.isTerrainScheduled || chunk.isLoaded) {
+								continue;
+							}
+							state.chunksToGenerate[writeIndex++] = chunk;
+						}
+						state.chunksToGenerate.length = writeIndex;
 
+						if (writeIndex > 0) {
+							state.generatedCount += writeIndex;
 							this.adapter.scheduleTerrainGenerationBatch(
 								state.chunksToGenerate,
 							);
@@ -546,31 +537,81 @@ export class ChunkProcessScheduler {
 					case ProcessStage.Finalize: {
 						this.adapter.finalizeProcessState(state);
 						this.inFlightProcessState = null;
-						// isProcessing cleared here too, before the return
-						this.isProcessing = false;
 
-						if (
+						shouldContinue =
 							this.adapter.getLoadQueue().length > 0 ||
-							this.adapter.getUnloadQueueSet().size > 0
-						) {
-							this.scheduleProcessContinuation();
-						}
+							this.adapter.getUnloadQueueSet().size > 0;
+
 						return;
 					}
 				}
 			}
-			this.isProcessing = false;
-			if (timedOut) {
-				this.inFlightProcessState = null;
-			}
 			this.adapter.updateSliceDebugStats(state);
-			this.scheduleProcessContinuation();
+			shouldContinue = true;
 		} catch (error) {
 			console.error("ChunkProcessScheduler process loop failed:", error);
+			this.recoverProcessState(state);
 			this.inFlightProcessState = null;
-			this.isProcessing = false;
 			this.adapter.onProcessError?.(error);
+			shouldContinue =
+				this.adapter.getLoadQueue().length > 0 ||
+				this.adapter.getUnloadQueueSet().size > 0;
+		} finally {
+			this.isProcessing = false;
+
+			if (shouldContinue) {
+				this.scheduleProcessContinuation();
+			}
 		}
+	}
+
+	private recoverProcessState(state: InFlightProcessState): void {
+		const unloadQueue = this.adapter.getUnloadQueueSet();
+
+		for (let i = state.unloadBatchIndex; i < state.unloadBatch.length; i++) {
+			const chunk = state.unloadBatch[i];
+			if (chunk.isLoaded && !chunk.isBoatChunk) {
+				unloadQueue.add(chunk);
+			}
+		}
+
+		const loadQueue = this.adapter.getLoadQueue();
+		const queuedIds = new Set<bigint>();
+
+		for (let i = 0; i < loadQueue.length; i++) {
+			queuedIds.add(loadQueue[i].chunk.id);
+		}
+
+		for (let i = 0; i < state.loadBatch.length; i++) {
+			const request = state.loadBatch[i];
+
+			if (
+				request.chunk.isTerrainScheduled &&
+				!request.chunk.isLoaded &&
+				!queuedIds.has(request.chunk.id)
+			) {
+				queuedIds.add(request.chunk.id);
+				loadQueue.push(request);
+			}
+		}
+
+		this.adapter.onQueueSnapshotChanged?.();
+	}
+
+	private isStillDesired(request: QueuedChunkRequest): boolean {
+		if (!request.chunk.isTerrainScheduled) return false;
+		const desired = this.adapter.getDesiredState(request.chunk.numericId);
+		return (
+			desired !== undefined &&
+			desired >>> 3 === request.revision &&
+			(desired & 0b111) === request.desiredLod
+		);
+	}
+
+	private queueGeneration(state: InFlightProcessState, chunk: Chunk): void {
+		if (chunk.isLoaded || state.chunksToGenerateIds.has(chunk.id)) return;
+		state.chunksToGenerateIds.add(chunk.id);
+		state.chunksToGenerate.push(chunk);
 	}
 
 	public beginSlice(state: InFlightProcessState): void {
@@ -590,10 +631,11 @@ export class ChunkProcessScheduler {
 		this.processContinuationScheduled = true;
 		requestAnimationFrame(() => {
 			this.processContinuationScheduled = false;
-			void this.processQueues().then(() => this.onContinuationSlice?.());
+			void this.processQueues()
+				.then(() => this.onContinuationSlice?.())
+				.catch((error) => this.adapter.onProcessError?.(error));
 		});
 	}
 
-	/** Hook called after each processQueues continuation slice completes. */
 	public onContinuationSlice: (() => void) | null = null;
 }

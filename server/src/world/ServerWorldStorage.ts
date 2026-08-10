@@ -11,9 +11,11 @@
  * - applyBlockEdits() applies world-coord block edits to a stored chunk
  *   so player changes persist to disk (replaces the old flat edit-log).
  *
- * Replaces the old flat JSON edit-log approach. Block edits are now saved
- * as full chunk snapshots, so changing the server.properties seed requires
- * manually deleting the world folder (server-data/worlds/<name>/db/).
+ * Safety:
+ * - Per-chunk mutation queue serializes all writes to the same chunk.
+ * - Flush operations are serialized; dirty state is preserved on failure.
+ * - Disposal rejects new operations, waits for in-flight mutations, then flushes.
+ * - Seed metadata is validated on init, not overwritten.
  */
 
 import { hashChunk } from "@/code/Network/protocol/encoder.ts";
@@ -30,15 +32,15 @@ import {
 } from "./ChunkCompression.ts";
 
 export interface StoredChunkData {
-	chunkX: number;
-	chunkY: number;
-	chunkZ: number;
-	blocks: Uint8Array;
-	light: Uint8Array;
-	palette?: number[];
-	isUniform: boolean;
-	uniformBlockId: number;
-	hash: number;
+	readonly chunkX: number;
+	readonly chunkY: number;
+	readonly chunkZ: number;
+	readonly blocks: Uint8Array;
+	readonly light: Uint8Array;
+	readonly palette?: readonly number[];
+	readonly isUniform: boolean;
+	readonly uniformBlockId: number;
+	readonly hash: number;
 }
 
 export interface BlockEdit {
@@ -48,24 +50,38 @@ export interface BlockEdit {
 	blockId: number;
 }
 
+interface StoredPlayerPosition {
+	x: number;
+	y: number;
+	z: number;
+	yaw: number;
+	pitch: number;
+}
+
 const DEFAULT_CACHE_SIZE = 1024;
+
+function yieldToEventLoop(): Promise<void> {
+	return new Promise((resolve) => setImmediate(resolve));
+}
 
 export class ServerWorldStorage {
 	private store: LevelDbChunkStore;
-	// Keyed by packChunkKey(cx,cy,cz) — internal to this class only, so it's
-	// safe to use the packed numeric key here regardless of what key format
-	// LevelDbChunkStore uses internally (see readChunks() below, which keeps
-	// that boundary on the original string format on purpose).
 	private dirtyChunks = new Set<number>();
 	private flushTimer: ReturnType<typeof setTimeout> | null = null;
-	private flushPending = false;
+	private flushPromise: Promise<void> | null = null;
+	private flushRequested = false;
 	private seed: string;
 
-	// LRU cache of finalized chunk data (hash precomputed). Keyed by packed
-	// coord. Map iteration order is insertion order, so a cache *hit* now
-	// deletes+re-inserts the entry to move it to the "most recent" end —
-	// previously this only ever appended on miss and evicted from the front,
-	// which is FIFO behavior, not LRU, despite the name/comment.
+	private readonly chunkMutationQueues = new Map<number, Promise<void>>();
+
+	private disposing = false;
+	private disposed = false;
+
+	private readonly pendingReads = new Map<
+		number,
+		Promise<StoredChunkData | null>
+	>();
+
 	private readonly chunkCache = new Map<number, StoredChunkData>();
 	private readonly maxCacheSize: number;
 
@@ -77,56 +93,147 @@ export class ServerWorldStorage {
 	) {
 		this.seed = seed;
 		this.store = new LevelDbChunkStore(worldName, basePath);
-		this.maxCacheSize = maxCacheSize;
+		this.maxCacheSize = Math.max(0, Math.trunc(maxCacheSize));
+	}
+
+	private assertActive(): void {
+		if (this.disposing || this.disposed) {
+			throw new Error("ServerWorldStorage is closing or closed");
+		}
 	}
 
 	async init(): Promise<void> {
 		await this.store.open();
-		await this.store.setMeta("seed", this.seed);
-		await this.store.setMeta("version", "1");
+
+		const storedSeed = await this.store.getMeta("seed");
+		if (storedSeed !== null && storedSeed !== this.seed) {
+			await this.store.close();
+			throw new Error(
+				`World seed mismatch: storage uses "${storedSeed}", ` +
+					`server configured "${this.seed}". Delete or migrate ` +
+					`the world database before changing the seed.`,
+			);
+		}
+		if (storedSeed === null) {
+			await this.store.setMeta("seed", this.seed);
+		}
+
+		const version = await this.store.getMeta("version");
+		if (version === null) {
+			await this.store.setMeta("version", "1");
+		} else if (version !== "1") {
+			await this.store.close();
+			throw new Error(
+				`Unsupported world storage version: ${version}`,
+			);
+		}
+
+		await this.store.flush();
 	}
 
 	async dispose(): Promise<void> {
-		await this.store.close();
-		this.chunkCache.clear();
+		if (this.disposed) return;
+		if (this.disposing) {
+			throw new Error(
+				"ServerWorldStorage disposal already in progress",
+			);
+		}
+
+		this.disposing = true;
+
+		if (this.flushTimer) {
+			clearTimeout(this.flushTimer);
+			this.flushTimer = null;
+		}
+
+		try {
+			while (this.chunkMutationQueues.size > 0) {
+				const mutations = Array.from(
+					this.chunkMutationQueues.values(),
+				);
+				const results = await Promise.allSettled(mutations);
+				for (const result of results) {
+					if (result.status === "rejected") {
+						console.error(
+							"[ServerWorldStorage] Mutation failed during disposal:",
+							result.reason,
+						);
+					}
+				}
+			}
+
+			await this.flush();
+			await this.store.close();
+		} finally {
+			this.chunkCache.clear();
+			this.chunkMutationQueues.clear();
+			this.pendingReads.clear();
+			this.disposed = true;
+			this.disposing = false;
+		}
 	}
 
-	/**
-	 * Read a chunk from storage. Returns null if not found (needs generation).
-	 * Serves from the in-memory cache when available — no disk or deserialize.
-	 */
 	async readChunk(
 		cx: number,
 		cy: number,
 		cz: number,
 	): Promise<StoredChunkData | null> {
-		const key = packChunkKeyFast(cx, cy, cz);
+		this.assertActive();
 
+		const key = packChunkKeyFast(cx, cy, cz);
 		const cached = this.chunkCache.get(key);
 		if (cached) {
 			this.promoteInCache(key, cached);
 			return cached;
 		}
 
+		const pending = this.pendingReads.get(key);
+		if (pending) return pending;
+
+		const promise = this.readChunkFromStore(key, cx, cy, cz);
+		this.pendingReads.set(key, promise);
+
+		void promise.then(
+			() => {
+				if (this.pendingReads.get(key) === promise) {
+					this.pendingReads.delete(key);
+				}
+			},
+			() => {
+				if (this.pendingReads.get(key) === promise) {
+					this.pendingReads.delete(key);
+				}
+			},
+		);
+
+		return promise;
+	}
+
+	private async readChunkFromStore(
+		key: number,
+		cx: number,
+		cy: number,
+		cz: number,
+	): Promise<StoredChunkData | null> {
 		const blob = await this.store.readChunk(cx, cy, cz);
 		if (!blob) return null;
+
+		const newerCached = this.chunkCache.get(key);
+		if (newerCached) {
+			this.promoteInCache(key, newerCached);
+			return newerCached;
+		}
 
 		const data = this.parseBlob(cx, cy, cz, blob);
 		this.addToCache(key, data);
 		return data;
 	}
 
-	/**
-	 * Read many chunks in parallel (bulk disk path). Returns a map of
-	 * packChunkKey(cx,cy,cz) → chunk for those that exist.
-	 *
-	 * Disk reads are parallel via Promise.all. Deserialization is also
-	 * parallelized — each blob is parsed in its own microtask so the main
-	 * thread is not blocked for the entire batch.
-	 */
 	async readChunks(
 		coords: Array<{ cx: number; cy: number; cz: number }>,
 	): Promise<Map<number, StoredChunkData>> {
+		this.assertActive();
+
 		const results = new Map<number, StoredChunkData>();
 		const missCoords: typeof coords = [];
 
@@ -142,31 +249,30 @@ export class ServerWorldStorage {
 		}
 
 		if (missCoords.length > 0) {
-			// NOTE: `found` is returned by LevelDbChunkStore and keyed with
-			// its own internal "cx,cy,cz" string convention — that's a
-			// different module we don't control, so the lookup below
-			// intentionally keeps building that exact string rather than
-			// switching to packChunkKey (which is only valid for the local
-			// chunkCache/results maps in this file).
 			const found = await this.store.readChunks(missCoords);
 
-			// Parse all blobs concurrently — each parseBlob runs in its own
-			// microtask so the main thread stays responsive during large batches.
-			const parsePromises: Promise<void>[] = [];
+			let parsedSinceYield = 0;
 			for (const { cx, cy, cz } of missCoords) {
 				const storeKey = `${cx},${cy},${cz}`;
 				const blob = found.get(storeKey);
 				if (!blob) continue;
+
 				const key = packChunkKeyFast(cx, cy, cz);
-				parsePromises.push(
-					Promise.resolve().then(() => {
-						const data = this.parseBlob(cx, cy, cz, blob);
-						this.addToCache(key, data);
-						results.set(key, data);
-					}),
-				);
+				const cached = this.chunkCache.get(key);
+				if (cached) {
+					results.set(key, cached);
+					continue;
+				}
+
+				const data = this.parseBlob(cx, cy, cz, blob);
+				this.addToCache(key, data);
+				results.set(key, data);
+
+				if (++parsedSinceYield >= 16) {
+					parsedSinceYield = 0;
+					await yieldToEventLoop();
+				}
 			}
-			await Promise.all(parsePromises);
 		}
 
 		return results;
@@ -178,44 +284,88 @@ export class ServerWorldStorage {
 		cz: number,
 		blob: Uint8Array,
 	): StoredChunkData {
-		const deserialized = deserializeVoxelData(blob);
-		const rawBlocks = deserialized.blocks;
-		const blocksU8 =
-			rawBlocks instanceof Uint8Array
-				? rawBlocks
-				: rawBlocks
-					? new Uint8Array(
-							rawBlocks.buffer,
-							rawBlocks.byteOffset,
-							rawBlocks.byteLength,
-						)
-					: new Uint8Array(0);
-		const light = deserialized.lightArray ?? new Uint8Array(0);
-		const palette = deserialized.palette
-			? Array.from(deserialized.palette)
+		const value = deserializeVoxelData(blob);
+
+		if (!value.blocks) {
+			throw new Error(
+				`Chunk ${cx},${cy},${cz} has no block data`,
+			);
+		}
+
+		const blocks =
+			value.blocks instanceof Uint8Array
+				? value.blocks
+				: new Uint8Array(
+						value.blocks.buffer,
+						value.blocks.byteOffset,
+						value.blocks.byteLength,
+					);
+
+		const light =
+			value.lightArray instanceof Uint8Array
+				? value.lightArray
+				: new Uint8Array(0);
+
+		const palette = value.palette
+			? Array.from(value.palette)
 			: undefined;
+
+		const isUniform = value.isUniform ?? false;
+		const uniformBlockId = value.uniformBlockId ?? 0;
+
+		if (
+			!Number.isInteger(uniformBlockId) ||
+			uniformBlockId < 0 ||
+			uniformBlockId > 255
+		) {
+			throw new Error(
+				`Chunk ${cx},${cy},${cz} has invalid uniform block ID`,
+			);
+		}
+
+		if (
+			palette?.some(
+				(id) => !Number.isInteger(id) || id < 0 || id > 255,
+			)
+		) {
+			throw new Error(
+				`Chunk ${cx},${cy},${cz} has an invalid palette`,
+			);
+		}
+
 		return {
 			chunkX: cx,
 			chunkY: cy,
 			chunkZ: cz,
-			blocks: blocksU8,
+			blocks,
 			light,
 			palette,
-			isUniform: deserialized.isUniform ?? false,
-			uniformBlockId: deserialized.uniformBlockId ?? 0,
-			hash: hashChunk(blocksU8, light, palette),
+			isUniform,
+			uniformBlockId,
+			hash: hashChunk(blocks, light, palette),
 		};
 	}
 
-	/**
-	 * Write a chunk to storage (debounced) and keep it in the in-memory cache.
-	 * Call flush() to persist immediately.
-	 */
-	writeChunk(data: StoredChunkData): void {
-		const key = packChunkKeyFast(data.chunkX, data.chunkY, data.chunkZ);
-		this.addToCache(key, data);
+	async writeChunk(data: StoredChunkData): Promise<void> {
+		this.assertActive();
 
-		// Don't pre-compress — LevelDB compresses with Snappy internally.
+		const key = packChunkKeyFast(
+			data.chunkX,
+			data.chunkY,
+			data.chunkZ,
+		);
+		return this.queueChunkMutation(key, () =>
+			this.writeChunkUnlocked(data),
+		);
+	}
+
+	private async writeChunkUnlocked(data: StoredChunkData): Promise<void> {
+		const key = packChunkKeyFast(
+			data.chunkX,
+			data.chunkY,
+			data.chunkZ,
+		);
+
 		const blob = serializeVoxelData(
 			data.blocks,
 			data.palette ? Uint16Array.from(data.palette) : null,
@@ -224,28 +374,59 @@ export class ServerWorldStorage {
 			data.light,
 			false,
 		);
-		this.store.writeChunk(data.chunkX, data.chunkY, data.chunkZ, blob);
 
+		await this.store.writeChunk(
+			data.chunkX,
+			data.chunkY,
+			data.chunkZ,
+			blob,
+		);
+
+		this.addToCache(key, data);
 		this.dirtyChunks.add(key);
 		this.scheduleFlush();
 	}
 
-	/**
-	 * Apply world-coord block edits to a stored chunk and write it back.
-	 * Resolves the chunk from the cache or disk, decompresses, applies the
-	 * edits (last write wins per voxel), re-compresses and re-serializes.
-	 * Chunks that don't exist in storage (never generated) are ignored.
-	 */
 	async applyBlockEdits(
 		cx: number,
 		cy: number,
 		cz: number,
-		edits: BlockEdit[],
+		edits: readonly BlockEdit[],
 	): Promise<void> {
 		if (edits.length === 0) return;
+		this.assertActive();
 
+		const key = packChunkKeyFast(cx, cy, cz);
+		return this.queueChunkMutation(key, () =>
+			this.applyBlockEditsUnlocked(cx, cy, cz, edits),
+		);
+	}
+
+	private async applyBlockEditsUnlocked(
+		cx: number,
+		cy: number,
+		cz: number,
+		edits: readonly BlockEdit[],
+	): Promise<void> {
 		const existing = await this.readChunk(cx, cy, cz);
 		if (!existing) return;
+
+		for (const edit of edits) {
+			const expectedCx = Math.floor(edit.x / 32);
+			const expectedCy = Math.floor(edit.y / 32);
+			const expectedCz = Math.floor(edit.z / 32);
+			if (
+				expectedCx !== cx ||
+				expectedCy !== cy ||
+				expectedCz !== cz
+			) {
+				throw new Error(
+					`Edit for (${edit.x},${edit.y},${edit.z}) ` +
+						`targets chunk (${expectedCx},${expectedCy},${expectedCz}), ` +
+						`not (${cx},${cy},${cz})`,
+				);
+			}
+		}
 
 		let blocks = decompressBlocks({
 			data: existing.blocks,
@@ -253,16 +434,11 @@ export class ServerWorldStorage {
 			isUniform: existing.isUniform,
 			uniformBlockId: existing.uniformBlockId,
 		});
-		// Raw chunks view the blob buffer (shared with the store's blob cache) —
-		// never mutate in place; copy first.
 		if (blocks === existing.blocks) {
 			blocks = new Uint8Array(blocks);
 		}
 
 		for (const edit of edits) {
-			// 32 is a power of two, so a mask (&31) gives the same
-			// non-negative local coordinate as ((x % 32) + 32) % 32 for both
-			// positive and negative inputs, in one op instead of three.
 			const lx = edit.x & 31;
 			const ly = edit.y & 31;
 			const lz = edit.z & 31;
@@ -272,9 +448,13 @@ export class ServerWorldStorage {
 		}
 
 		const compressed = compressBlocks(blocks);
-		const hash = hashChunk(compressed.data, existing.light, compressed.palette);
+		const hash = hashChunk(
+			compressed.data,
+			existing.light,
+			compressed.palette,
+		);
 
-		this.writeChunk({
+		await this.writeChunkUnlocked({
 			chunkX: cx,
 			chunkY: cy,
 			chunkZ: cz,
@@ -287,17 +467,38 @@ export class ServerWorldStorage {
 		});
 	}
 
-	/** Move an existing cache entry to the most-recently-used position. */
+	private queueChunkMutation(
+		key: number,
+		operation: () => Promise<void>,
+	): Promise<void> {
+		const previous =
+			this.chunkMutationQueues.get(key) ?? Promise.resolve();
+		const current = previous.then(
+			() => operation(),
+			() => operation(),
+		);
+		this.chunkMutationQueues.set(key, current);
+		void current
+			.finally(() => {
+				if (this.chunkMutationQueues.get(key) === current) {
+					this.chunkMutationQueues.delete(key);
+				}
+			})
+			.catch(() => {});
+		return current;
+	}
+
 	private promoteInCache(key: number, data: StoredChunkData): void {
 		this.chunkCache.delete(key);
 		this.chunkCache.set(key, data);
 	}
 
 	private addToCache(key: number, data: StoredChunkData): void {
-		if (
-			this.chunkCache.size >= this.maxCacheSize &&
-			!this.chunkCache.has(key)
-		) {
+		if (this.maxCacheSize <= 0) return;
+
+		if (this.chunkCache.has(key)) {
+			this.chunkCache.delete(key);
+		} else if (this.chunkCache.size >= this.maxCacheSize) {
 			const firstKey = this.chunkCache.keys().next().value;
 			if (firstKey !== undefined) {
 				this.chunkCache.delete(firstKey);
@@ -306,7 +507,6 @@ export class ServerWorldStorage {
 		this.chunkCache.set(key, data);
 	}
 
-	/** Evict a chunk from the in-memory cache (e.g. seed change). */
 	clearCache(): void {
 		this.chunkCache.clear();
 	}
@@ -316,61 +516,108 @@ export class ServerWorldStorage {
 	}
 
 	private scheduleFlush(): void {
-		if (this.flushPending) return;
-		this.flushPending = true;
+		if (this.flushTimer) return;
+
 		this.flushTimer = setTimeout(() => {
-			void this.doFlush();
+			this.flushTimer = null;
+			void this.flush().catch((error) => {
+				console.error(
+					"[ServerWorldStorage] Scheduled flush failed:",
+					error,
+				);
+			});
 		}, 500);
 	}
 
-	private async doFlush(): Promise<void> {
-		this.flushPending = false;
-		if (this.flushTimer) {
-			clearTimeout(this.flushTimer);
-			this.flushTimer = null;
+	public flush(): Promise<void> {
+		this.flushRequested = true;
+
+		if (!this.flushPromise) {
+			this.flushPromise = this.runFlushLoop().finally(() => {
+				this.flushPromise = null;
+			});
 		}
-		this.dirtyChunks.clear();
-		await this.store.flush();
+
+		return this.flushPromise;
 	}
 
-	/**
-	 * Immediately flush all pending writes.
-	 */
-	async flush(): Promise<void> {
-		await this.doFlush();
+	private async runFlushLoop(): Promise<void> {
+		while (this.flushRequested || this.dirtyChunks.size > 0) {
+			this.flushRequested = false;
+
+			if (this.dirtyChunks.size === 0) continue;
+
+			const flushing = this.dirtyChunks;
+			this.dirtyChunks = new Set<number>();
+
+			try {
+				await this.store.flush();
+			} catch (error) {
+				for (const key of flushing) {
+					this.dirtyChunks.add(key);
+				}
+				throw error;
+			}
+		}
 	}
 
 	get pendingWrites(): number {
 		return this.dirtyChunks.size;
 	}
 
-	// ── Player position persistence ──────────────────────────────────────
-
 	async savePlayerPosition(
-		sessionId: string,
+		playerId: string,
 		x: number,
 		y: number,
 		z: number,
 		yaw: number,
 		pitch: number,
 	): Promise<void> {
+		this.assertActive();
+
+		if (
+			!Number.isFinite(x) ||
+			!Number.isFinite(y) ||
+			!Number.isFinite(z) ||
+			!Number.isFinite(yaw) ||
+			!Number.isFinite(pitch)
+		) {
+			throw new TypeError(
+				"Cannot persist non-finite player position",
+			);
+		}
+
 		const data = JSON.stringify({ x, y, z, yaw, pitch });
-		await this.store.setMeta(`player:${sessionId}`, data);
+		await this.store.setMeta(`player:${playerId}`, data);
 	}
 
-	async loadPlayerPosition(sessionId: string): Promise<{
-		x: number;
-		y: number;
-		z: number;
-		yaw: number;
-		pitch: number;
-	} | null> {
-		const data = await this.store.getMeta(`player:${sessionId}`);
+	async loadPlayerPosition(
+		playerId: string,
+	): Promise<StoredPlayerPosition | null> {
+		this.assertActive();
+
+		const data = await this.store.getMeta(`player:${playerId}`);
 		if (!data) return null;
+
 		try {
-			return JSON.parse(data);
+			const parsed: unknown = JSON.parse(data);
+			return this.isStoredPlayerPosition(parsed) ? parsed : null;
 		} catch {
 			return null;
 		}
+	}
+
+	private isStoredPlayerPosition(
+		value: unknown,
+	): value is StoredPlayerPosition {
+		if (typeof value !== "object" || value === null) return false;
+		const p = value as Partial<StoredPlayerPosition>;
+		return (
+			Number.isFinite(p.x) &&
+			Number.isFinite(p.y) &&
+			Number.isFinite(p.z) &&
+			Number.isFinite(p.yaw) &&
+			Number.isFinite(p.pitch)
+		);
 	}
 }

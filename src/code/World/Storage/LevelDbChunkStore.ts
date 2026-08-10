@@ -181,13 +181,7 @@ export class LevelDbChunkStore {
 			const pending = this.batch;
 			this.batch = null;
 			this.batchCount = 0;
-			if (typeof window !== "undefined") {
-				await new Promise<void>((resolve) => {
-					pending.write(() => resolve());
-				});
-			} else {
-				await pending.write();
-			}
+			await pending.write();
 		}
 	}
 
