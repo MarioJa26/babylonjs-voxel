@@ -1,19 +1,40 @@
 /**
  * RemotePlayerRenderer — visual representation of other players.
  *
- * Creates capsule meshes for remote players + floating name tags (DOM overlays).
+ * Creates capsule meshes for remote players + billboard name tags (Minecraft-style).
+ * Uses DynamicTexture2D + OffscreenCanvas for reliable text rendering, and
+ * FacingBillboardSpriteSystem for camera-facing sprites.
  */
 import type { EngineContext, Mesh, SceneContext } from "@babylonjs/lite";
 import {
+	addBillboardSpriteIndex,
+	addFacingBillboardSystem,
 	addToScene,
+	billboardBlendAlpha,
+	clearBillboardSprites,
 	createCapsule,
+	createDynamicTexture,
+	createFacingBillboardSystem,
+	createGridSpriteAtlas,
 	createStandardMaterial,
+	type DynamicTexture2D,
 	disposeMeshGpu,
+	type FacingBillboardSpriteSystem,
+	rebuildSceneRenderables,
+	type SpriteAtlas,
+	updateDynamicTexture,
 } from "@babylonjs/lite";
 import type { RemotePlayer } from "./NetClient";
 
 const PLAYER_HEIGHT = 1.8;
 const PLAYER_RADIUS = 0.3;
+
+// Name tag sizing
+const NAME_TAG_FONT_PX = 30;
+const NAME_TAG_PADDING = 10;
+const NAME_TAG_HEIGHT_WORLD = 0.55;
+const NAME_TAG_Y_OFFSET = 1.5;
+const NAME_TAG_TEX_HEIGHT = 64; // texture pixel height
 
 // Color palette for different players
 const PLAYER_COLORS: [number, number, number][] = [
@@ -27,12 +48,51 @@ const PLAYER_COLORS: [number, number, number][] = [
 	[0.8, 0.4, 0.1], // Brown
 ];
 
+/**
+ * Rasterise a player name onto an OffscreenCanvas with Minecraft-style
+ * dark background + white text, then return the canvas and its measured
+ * width/height in pixels.
+ */
+function rasteriseNameTag(name: string): {
+	canvas: OffscreenCanvas;
+	width: number;
+	height: number;
+} {
+	const canvas = new OffscreenCanvas(512, NAME_TAG_TEX_HEIGHT);
+	const ctx = canvas.getContext("2d")!;
+
+	// Measure text first to size the background
+	ctx.font = `bold ${NAME_TAG_FONT_PX}px monospace`;
+	const metrics = ctx.measureText(name);
+	const textWidth = metrics.width;
+	const bgWidth = Math.ceil(textWidth + NAME_TAG_PADDING * 2);
+	const bgHeight = NAME_TAG_TEX_HEIGHT;
+
+	// Clear to transparent
+	ctx.clearRect(0, 0, canvas.width, bgHeight);
+
+	// Draw dark background
+	const bx = (canvas.width - bgWidth) / 2;
+	const by = (bgHeight - NAME_TAG_FONT_PX - 4) / 2 - 2;
+	ctx.fillStyle = "rgba(0, 0, 0, 0.65)";
+	ctx.fillRect(bx, by, bgWidth, NAME_TAG_FONT_PX + 8);
+
+	// Draw white text, centred
+	ctx.fillStyle = "#ffffff";
+	ctx.textAlign = "center";
+	ctx.textBaseline = "middle";
+	ctx.fillText(name, canvas.width / 2, bgHeight / 2);
+
+	return { canvas, width: canvas.width, height: bgHeight };
+}
+
 export class RemotePlayerVisual {
 	readonly mesh: Mesh;
-	private nameTag: HTMLDivElement;
-	private _screenX = 0;
-	private _screenY = 0;
-	private _visible = true;
+	private tex: DynamicTexture2D;
+	private atlas: SpriteAtlas;
+	private billboard: FacingBillboardSpriteSystem;
+	private _nameTagWidthWorld: number;
+	private _flushed = false;
 
 	constructor(
 		private engine: EngineContext,
@@ -40,11 +100,11 @@ export class RemotePlayerVisual {
 		private player: RemotePlayer,
 		colorIndex: number,
 	) {
+		// Player capsule
 		this.mesh = createCapsule(engine, {
 			height: PLAYER_HEIGHT,
 			radius: PLAYER_RADIUS,
 		});
-
 		const color = PLAYER_COLORS[colorIndex % PLAYER_COLORS.length];
 		const mat = createStandardMaterial();
 		mat.emissiveColor = color;
@@ -53,88 +113,69 @@ export class RemotePlayerVisual {
 		this.mesh.pickable = false;
 		addToScene(this.scene, this.mesh);
 
-		// Create floating name tag
-		this.nameTag = document.createElement("div");
-		this.nameTag.className = "mp-name-tag";
-		this.nameTag.textContent = player.name;
-		document.body.appendChild(this.nameTag);
+		// Rasterise name tag to a canvas
+		const { canvas, width: texW, height: texH } = rasteriseNameTag(player.name);
+
+		// Compute world-space billboard width to preserve aspect ratio
+		this._nameTagWidthWorld = NAME_TAG_HEIGHT_WORLD * (texW / texH);
+
+		// Create GPU texture and upload the canvas pixels
+		this.tex = createDynamicTexture(engine, texW, texH, {
+			magFilter: "linear",
+			minFilter: "linear",
+			srgb: true,
+		});
+		updateDynamicTexture(engine, this.tex, canvas, { invertY: false });
+
+		// 1-frame sprite atlas (the whole texture is one frame)
+		this.atlas = createGridSpriteAtlas(this.tex, {
+			cellWidthPx: texW,
+			cellHeightPx: texH,
+		});
+
+		// Billboard system — one sprite capacity per player
+		this.billboard = createFacingBillboardSystem(this.atlas, {
+			capacity: 1,
+			blendMode: billboardBlendAlpha,
+		});
+		addFacingBillboardSystem(this.scene, this.billboard);
 	}
 
-	update(camera: any, screenW: number, screenH: number): void {
+	/**
+	 * Flush the deferred renderable on first update — must happen after the
+	 * scene is registered. Doing it here (instead of the constructor) avoids
+	 * the async-in-sync problem.
+	 */
+	private flushIfNeeded(): void {
+		if (this._flushed) return;
+		this._flushed = true;
+		rebuildSceneRenderables(this.scene).catch(() => {});
+	}
+
+	update(_camera: any, _screenW: number, _screenH: number): void {
+		this.flushIfNeeded();
+
+		// Capsule position + rotation
 		this.mesh.position.set(this.player.x, this.player.y, this.player.z);
 		this.mesh.rotation.y = (this.player.yaw * Math.PI) / 180;
 
-		// Project 3D position to screen space for name tag
-		const wx = this.player.x;
-		const wy = this.player.y + PLAYER_HEIGHT + 0.3; // above head
-		const wz = this.player.z;
-
-		const cam = camera;
-		if (cam?.position && cam.target) {
-			// Camera forward vector
-			let fx = cam.target.x - cam.position.x;
-			let fy = cam.target.y - cam.position.y;
-			let fz = cam.target.z - cam.position.z;
-			const fLen = Math.sqrt(fx * fx + fy * fy + fz * fz);
-			fx /= fLen;
-			fy /= fLen;
-			fz /= fLen;
-
-			// Vector from camera to player
-			const dx = wx - cam.position.x;
-			const dy = wy - cam.position.y;
-			const dz = wz - cam.position.z;
-
-			// Forward distance (dot product)
-			const forwardDist = dx * fx + dy * fy + dz * fz;
-
-			if (forwardDist > 0.1) {
-				// Right vector = forward × world_up
-				let rx = fy * 0 - fz * 1;
-				let ry = fz * 0 - fx * 0;
-				let rz = fx * 1 - fy * 0;
-				let rLen = Math.sqrt(rx * rx + ry * ry + rz * rz);
-				rx /= rLen;
-				ry /= rLen;
-				rz /= rLen;
-
-				// True camera up = right × forward (perpendicular to both)
-				const ux = ry * fz - rz * fy;
-				const uy = rz * fx - rx * fz;
-				const uz = rx * fy - ry * fx;
-
-				// Project onto camera plane
-				const rightDist = (dx * rx + dy * ry + dz * rz) / forwardDist;
-				const upDist = (dx * ux + dy * uy + dz * uz) / forwardDist;
-
-				// FOV-based scaling
-				const fov = cam.fov ?? 1.1;
-				const tanHalfFov = Math.tan(fov * 0.5);
-				const aspect = screenW / screenH;
-
-				// Normalized device coordinates [-1, 1]
-				// Negate X for left-handed coordinate system
-				const ndcX = -rightDist / (tanHalfFov * aspect);
-				const ndcY = upDist / tanHalfFov;
-
-				// Screen coordinates
-				this._screenX = screenW * 0.5 * (1 + ndcX);
-				this._screenY = screenH * 0.5 * (1 - ndcY);
-				this._visible = true;
-			} else {
-				this._visible = false;
-			}
-		}
-
-		// Update name tag position
-		this.nameTag.style.left = `${this._screenX}px`;
-		this.nameTag.style.top = `${this._screenY}px`;
-		this.nameTag.style.display = this._visible ? "block" : "none";
+		// Name tag billboard (above head, always facing camera)
+		clearBillboardSprites(this.billboard);
+		addBillboardSpriteIndex(this.billboard, {
+			position: [
+				this.player.x,
+				this.player.y + NAME_TAG_Y_OFFSET,
+				this.player.z,
+			],
+			sizeWorld: [this._nameTagWidthWorld, NAME_TAG_HEIGHT_WORLD],
+			color: [1, 1, 1, 1],
+		});
 	}
 
 	dispose(): void {
+		this.billboard.visible = false;
+		clearBillboardSprites(this.billboard);
 		disposeMeshGpu(this.mesh);
-		this.nameTag.remove();
 	}
 }
 
