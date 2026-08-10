@@ -2544,8 +2544,9 @@ export class ChunkWorkerPool {
 				.catch((err) => this.handleRemoteGenError(err, chunk, key));
 		} else {
 			// Multiple chunks — batch request
-			const coords: Array<{ cx: number; cy: number; cz: number }> =
-				new Array(toRequest.length);
+			const coords: Array<{ cx: number; cy: number; cz: number }> = new Array(
+				toRequest.length,
+			);
 			for (let i = 0; i < toRequest.length; i++) {
 				const chunk = toRequest[i];
 				const key = this.remoteChunkKey(chunk);

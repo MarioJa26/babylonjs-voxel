@@ -229,7 +229,8 @@ export function getBiomeFor(
 		humidity > 0.5 &&
 		humidity < 0.7
 	) {
-		return BIOLUMINESCENT_BAY;
+		//return BIOLUMINESCENT_BAY;
+		return SWAMP;
 	}
 
 	// ── Extreme altitude / far inland ─────────────────────────────────────────

@@ -8,6 +8,7 @@ import {
 	type Vec3,
 } from "@babylonjs/lite";
 import { copyVec3, Quaternion } from "@/code/Lib/Math";
+import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer.js";
 import type { ShapeDefinition } from "../Shape/BlockShapes";
 import { isPassThroughBlock } from "../Texture/BlockType";
 
@@ -638,12 +639,20 @@ export class VoxelAabbCollider {
 
 	public dispose(): void {
 		VoxelAabbCollider.#debugColliders.delete(this);
-		if (this.#debugMesh) {
-			disposeMeshGpu(this.#debugMesh);
-			this.#debugMesh = null;
-		}
-		this.#debugMesh = null;
+		this.#disposeDebugMesh();
 		this.#debugOptions = null;
+	}
+
+	#disposeDebugMesh(): void {
+		if (!this.#debugMesh) return;
+		const mesh = this.#debugMesh;
+		this.#debugMesh = null;
+		const engine = (this.#debugOptions?.scene?.surface as any)?.engine;
+		if (engine) {
+			void onGpuWorkDone(engine).then(() => disposeMeshGpu(mesh));
+		} else {
+			disposeMeshGpu(mesh);
+		}
 	}
 
 	public static toggleDebugEnabled(): void {
@@ -656,8 +665,7 @@ export class VoxelAabbCollider {
 			if (enabled) {
 				collider.#ensureDebugMesh();
 			} else if (collider.#debugMesh) {
-				disposeMeshGpu(collider.#debugMesh);
-				collider.#debugMesh = null;
+				collider.#disposeDebugMesh();
 			}
 		});
 	}

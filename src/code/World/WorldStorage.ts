@@ -202,8 +202,6 @@ class WorldStorageImpl {
 	): Promise<Map<bigint, SavedChunkData>> {
 		const result = outMap ?? new Map<bigint, SavedChunkData>();
 
-		// console.log(`[WorldStorage] loadChunks: ${chunkIds.length} chunks, includeVoxelData=${options?.includeVoxelData ?? true}`);
-
 		if (GLOBAL_VALUES.DISABLE_CHUNK_LOADING || chunkIds.length === 0) {
 			return result;
 		}
@@ -218,9 +216,12 @@ class WorldStorageImpl {
 		}));
 
 		if (!includeVoxelData) {
+			const existing = await store.hasChunks(
+				coords.map((c) => ({ cx: c.cx, cy: c.cy, cz: c.cz })),
+			);
 			for (const c of coords) {
-				const exists = await store.hasChunk(c.cx, c.cy, c.cz);
-				if (exists) result.set(c.id, { blocks: null });
+				const key = `${c.cx},${c.cy},${c.cz}`;
+				if (existing.has(key)) result.set(c.id, { blocks: null });
 			}
 			return result;
 		}

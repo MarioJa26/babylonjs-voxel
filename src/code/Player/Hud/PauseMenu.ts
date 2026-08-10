@@ -13,32 +13,39 @@ export class PauseMenu {
 	private mainButtonsContainer: HTMLElement;
 	private settingsContainer: HTMLElement;
 	private onResume: () => void;
+	private onLeaveServer: (() => void) | null = null;
 	private player: Player;
+	private resumeButton: HTMLButtonElement | null = null;
+	private saveButton: HTMLButtonElement | null = null;
+	private titleElement: HTMLHeadingElement | null = null;
+	private mainMenuButton: HTMLButtonElement | null = null;
+	private isMultiplayer = false;
 
 	constructor(onResume: () => void, player: Player) {
 		this.onResume = onResume;
-		this.player = player; // Assign the player instance
+		this.player = player;
 		this.menuContainer = this.createMenuElement();
-		this.mainButtonsContainer = this.createMainButtons(); // No change here, but uses player for settings
+		this.mainButtonsContainer = this.createMainButtons();
 		this.settingsContainer = this.createSettingsPanel();
 		this.menuContainer.appendChild(this.mainButtonsContainer);
 		this.menuContainer.appendChild(this.settingsContainer);
 		document.body.appendChild(this.menuContainer);
 
-		// Add styles to the document
 		this.addStyles();
-
-		// Initially hide the menu
 		this.hide();
+	}
+
+	public setLeaveServerCallback(cb: () => void): void {
+		this.onLeaveServer = cb;
 	}
 
 	private createMenuElement(): HTMLElement {
 		const container = document.createElement("div");
 		container.id = "pauseMenuContainer";
 
-		const title = document.createElement("h1");
-		title.innerText = "Paused";
-		container.appendChild(title);
+		this.titleElement = document.createElement("h1");
+		this.titleElement.innerText = "Paused";
+		container.appendChild(this.titleElement);
 		return container;
 	}
 
@@ -50,57 +57,48 @@ export class PauseMenu {
 		container.style.alignItems = "center";
 		container.style.gap = "15px";
 
-		// Resume Button
-		const resumeButton = document.createElement("button");
-		resumeButton.innerText = "Resume Game";
-		resumeButton.onclick = () => {
-			this.onResume();
-		};
-		container.appendChild(resumeButton);
+		this.resumeButton = document.createElement("button");
+		this.resumeButton.innerText = "Resume";
+		this.resumeButton.onclick = () => this.onResume();
+		container.appendChild(this.resumeButton);
 
-		// Save Game Button
-		const saveButton = document.createElement("button");
-		saveButton.innerText = "Save Game";
-		saveButton.onclick = async () => {
-			saveButton.innerText = "Saving...";
-			saveButton.disabled = true;
+		this.saveButton = document.createElement("button");
+		this.saveButton.innerText = "Save Game";
+		this.saveButton.onclick = async () => {
+			this.saveButton!.innerText = "Saving...";
+			this.saveButton!.disabled = true;
 			try {
 				await this.saveAll();
-				saveButton.innerText = "Saved!";
+				this.saveButton!.innerText = "Saved!";
 			} catch (e) {
 				console.error("Save failed", e);
-				saveButton.innerText = "Error!";
+				this.saveButton!.innerText = "Error!";
 			}
 
 			setTimeout(() => {
-				saveButton.innerText = "Save Game";
-				saveButton.disabled = false;
+				this.saveButton!.innerText = "Save Game";
+				this.saveButton!.disabled = false;
 			}, 1000);
 		};
-		container.appendChild(saveButton);
+		container.appendChild(this.saveButton);
 
-		// Settings Button
 		const settingsButton = document.createElement("button");
 		settingsButton.innerText = "Settings";
 		settingsButton.onclick = () => this.showSettings(true);
 		container.appendChild(settingsButton);
 
-		// Main Menu Button
-		const mainMenuButton = document.createElement("button");
-		mainMenuButton.innerText = "Main Menu";
-		mainMenuButton.onclick = async () => {
-			mainMenuButton.innerText = "Saving...";
-			mainMenuButton.disabled = true;
-			try {
-				await this.saveAll();
-				window.location.href = "/";
-			} catch (e) {
-				console.error("Failed to save before returning", e);
-				mainMenuButton.innerText = "Error!";
-				mainMenuButton.disabled = false;
+		this.mainMenuButton = document.createElement("button");
+		this.mainMenuButton.innerText = "Main Menu";
+		this.mainMenuButton.onclick = () => {
+			if (this.onLeaveServer) {
+				this.onLeaveServer();
+			} else {
+				this.saveAll().finally(() => {
+					window.location.href = "/";
+				});
 			}
 		};
-		container.appendChild(mainMenuButton);
+		container.appendChild(this.mainMenuButton);
 
 		return container;
 	}
@@ -377,13 +375,34 @@ export class PauseMenu {
 		return separator;
 	}
 
-	public show() {
+	public show(isMultiplayer = false) {
+		this.isMultiplayer = isMultiplayer;
+
+		if (this.titleElement) {
+			this.titleElement.innerText = isMultiplayer ? "Game Menu" : "Paused";
+		}
+
+		if (this.resumeButton) {
+			this.resumeButton.innerText = isMultiplayer ? "Resume" : "Resume Game";
+		}
+
+		if (this.saveButton) {
+			this.saveButton.style.display = isMultiplayer ? "none" : "block";
+		}
+
+		if (this.mainMenuButton) {
+			this.mainMenuButton.innerText = isMultiplayer
+				? "Leave Server"
+				: "Main Menu";
+		}
+
 		this.menuContainer.style.display = "flex";
 	}
 
 	public hide() {
 		this.menuContainer.style.display = "none";
-		this.showSettings(false); // Ensure settings are hidden when pause menu is hidden
+		this.showSettings(false);
+		this.isMultiplayer = false;
 	}
 
 	private showSettings(show: boolean) {
@@ -407,7 +426,7 @@ export class PauseMenu {
         justify-content: center;
         align-items: center;
         font-family: sans-serif;
-        z-index: 100;
+        z-index: 10000;
       }
 
       #pauseMenuContainer h1 {

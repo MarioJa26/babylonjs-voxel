@@ -199,6 +199,33 @@ export class LevelDbChunkStore {
 		return value != null;
 	}
 
+	async hasChunks(
+		coords: Array<{ cx: number; cy: number; cz: number; key?: string }>,
+	): Promise<Set<string>> {
+		const result = new Set<string>();
+		const misses: string[] = [];
+		for (const { cx, cy, cz, key } of coords) {
+			const k = key ?? chunkKey(cx, cy, cz);
+			if (this.cache.has(k)) {
+				result.add(k);
+			} else {
+				misses.push(k);
+			}
+		}
+		if (misses.length === 0 || !this.db) return result;
+		if (typeof window !== "undefined") {
+			const found = await (this.db as IndexedDbStore).has(misses);
+			for (const k of found) result.add(k);
+		} else {
+			const promises = misses.map(async (k) => {
+				const value = await this._get(k);
+				if (value != null) result.add(k);
+			});
+			await Promise.all(promises);
+		}
+		return result;
+	}
+
 	private async _get(key: string): Promise<any> {
 		if (typeof window !== "undefined") {
 			// Browser: IndexedDbStore uses promises
@@ -317,6 +344,25 @@ class IndexedDbStore {
 
 	batch(): IndexedDbBatch {
 		return new IndexedDbBatch(this.db!, this.storeName);
+	}
+
+	async has(keys: string[]): Promise<Set<string>> {
+		if (!this.db) throw new Error("IndexedDbStore not open");
+		if (keys.length === 0) return new Set();
+		return new Promise<Set<string>>((resolve, reject) => {
+			const found = new Set<string>();
+			const tx = this.db!.transaction(this.storeName, "readonly");
+			const store = tx.objectStore(this.storeName);
+			let pending = keys.length;
+			for (const key of keys) {
+				const req = store.count(key);
+				req.onsuccess = () => {
+					if (req.result > 0) found.add(key);
+					if (--pending === 0) resolve(found);
+				};
+				req.onerror = () => reject(req.error);
+			}
+		});
 	}
 }
 

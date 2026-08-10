@@ -238,13 +238,14 @@ export class NetworkManager {
 		if (action === BlockActionType.Place) {
 			setBlock(x, y, z, blockId, 0);
 		} else if (action === BlockActionType.Break) {
-			deleteBlock(x, y, z);
-
-			// Emit break particles locally (not transmitted over network)
+			// Sample light BEFORE deleting — deleteBlock clears the voxel's
+			// light data, which would make particles render black.
 			const px = x + 0.5;
 			const py = y + 0.5;
 			const pz = z + 0.5;
-			const packedLight = getLightByWorldCoords(px, py, pz);
+			const packedLight = this.#sampleBreakLight(px, py, pz);
+
+			deleteBlock(x, y, z);
 
 			play(
 				this.player.sceneRef,
@@ -254,6 +255,31 @@ export class NetworkManager {
 			);
 			playDebris(this.player.sceneRef, px, py, pz, blockId, packedLight);
 		}
+	}
+
+	#sampleBreakLight(x: number, y: number, z: number): number {
+		let best = getLightByWorldCoords(x, y, z);
+		let bestSky = (best >> 4) & 0xf;
+		let bestBlock = best & 0xf;
+		const offsets: [number, number, number][] = [
+			[0.5, 0, 0],
+			[-0.5, 0, 0],
+			[0, 0.5, 0],
+			[0, -0.5, 0],
+			[0, 0, 0.5],
+			[0, 0, -0.5],
+		];
+		for (const [dx, dy, dz] of offsets) {
+			const l = getLightByWorldCoords(x + dx, y + dy, z + dz);
+			const sky = (l >> 4) & 0xf;
+			const block = l & 0xf;
+			if (sky + block > bestSky + bestBlock) {
+				bestSky = sky;
+				bestBlock = block;
+				best = l;
+			}
+		}
+		return best;
 	}
 
 	sendChat(message: string): void {

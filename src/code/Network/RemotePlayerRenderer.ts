@@ -37,9 +37,11 @@ import {
 	disposeMeshGpu,
 	type FacingBillboardSpriteSystem,
 	rebuildSceneRenderables,
+	removeFromScene,
 	type SpriteAtlas,
 	updateDynamicTexture,
 } from "@babylonjs/lite";
+import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer.js";
 import type { RemotePlayer } from "./NetClient";
 
 type PlayerMaterial = ReturnType<typeof createStandardMaterial>;
@@ -208,7 +210,15 @@ export class RemotePlayerVisual {
 	dispose(): void {
 		this.billboard.visible = false;
 		clearBillboardSprites(this.billboard);
-		disposeMeshGpu(this.mesh);
+		removeFromScene(this.scene, this.mesh);
+		const engine = (this.scene as any).surface?.engine;
+		if (engine) {
+			void onGpuWorkDone(engine).then(() => {
+				disposeMeshGpu(this.mesh);
+			});
+		} else {
+			disposeMeshGpu(this.mesh);
+		}
 		// Material is pooled/owned by RemotePlayerRenderer — not disposed here.
 	}
 }
@@ -289,6 +299,7 @@ export class RemotePlayerRenderer {
 		this.list.pop();
 		this.ids.pop();
 		this.indexById.delete(sessionId);
+		this.pendingFlush = true;
 	}
 
 	update(_camera: any, _screenW: number, _screenH: number): void {

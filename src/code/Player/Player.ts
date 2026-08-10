@@ -120,6 +120,10 @@ export class Player {
 		);
 		this.#loopController.bind();
 		this.#pauseMenu = new PauseMenu(() => this.#resume(), this);
+		this.#pauseMenu.setLeaveServerCallback(() => {
+			this.networkManager?.disconnect();
+			window.location.href = "/";
+		});
 	}
 
 	/** Visible player capsule (third-person). Lite-native mesh + unlit material. */
@@ -157,19 +161,23 @@ export class Player {
 	}
 
 	#onPauseRequested(): void {
-		// Never open the pause menu while a non-blocking overlay (inventory,
-		// mason table) is open — those keep the world running and just free the
-		// mouse. Only a genuine pause request (Esc with no menu) reaches here.
 		if (getIsPaused() || isUiOpen() || !this.#pauseMenu) return;
-		setIsPaused(true);
-		Map1.isPaused = true;
-		this.#pauseMenu.show();
+
+		const isMultiplayer = !!this.networkManager;
+
+		if (!isMultiplayer) {
+			setIsPaused(true);
+			Map1.isPaused = true;
+		}
+		this.#pauseMenu.show(isMultiplayer);
 		if (document.pointerLockElement) document.exitPointerLock();
 	}
 
 	#resume(): void {
-		setIsPaused(false);
-		Map1.isPaused = false;
+		if (!this.networkManager) {
+			setIsPaused(false);
+			Map1.isPaused = false;
+		}
 		this.#pauseMenu.hide();
 		this.canvas.requestPointerLock();
 	}
