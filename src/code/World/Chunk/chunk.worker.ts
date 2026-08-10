@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 
+import { resetCacheAndTracking as resetDistantTerrainCache } from "@/code/Generation/DistantTerrain/DistantTerrainGenerator";
 import type { GenerationParamsType } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
 import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap";
@@ -361,6 +362,7 @@ const onMessageHandler = (event: MessageEvent) => {
 			// generation task, so no chunk can be generated with a stale seed.
 			const { seed } = event.data as { seed: string };
 			setTerrainSeed(seed);
+			resetDistantTerrainCache();
 			generator = new WorldGenerator({
 				...GenerationParams,
 				SEED: seed,

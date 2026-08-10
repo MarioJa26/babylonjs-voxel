@@ -81,6 +81,7 @@ export class ChunkWorkerPool {
 	private seed = "default";
 	private wasmEnabled = true;
 	private initialized = false;
+	private terminated = false;
 
 	async initialize(seed: string, wasmEnabled = true): Promise<void> {
 		if (this.initialized) {
@@ -92,6 +93,8 @@ export class ChunkWorkerPool {
 			return;
 		}
 
+		// Allow a fresh start after terminate() (e.g. for tests).
+		this.terminated = false;
 		this.seed = seed;
 		this.wasmEnabled = wasmEnabled;
 		const poolSize = resolvePoolSize();
@@ -164,6 +167,16 @@ export class ChunkWorkerPool {
 	}
 
 	private processQueue(): void {
+		// After terminate() no workers exist — drain the queue with rejections
+		// so queued tasks never hang (the terminate race: a task dispatched
+		// between pool.initialize() resolving and worker termination).
+		if (this.terminated) {
+			const err = new Error("Chunk worker pool terminated");
+			for (const task of this.queue) task.reject(err);
+			this.queue = [];
+			return;
+		}
+
 		// Dispatch as many tasks as there are free workers and queued tasks.
 		// The old single-dispatch version only filled one worker per call, so
 		// when multiple workers finished simultaneously the remaining free
@@ -206,6 +219,10 @@ export class ChunkWorkerPool {
 		chunkY: number,
 		chunkZ: number,
 	): Promise<ChunkResult> {
+		if (this.terminated) {
+			return Promise.reject(new Error("Chunk worker pool terminated"));
+		}
+
 		const id = this.nextId++;
 
 		return new Promise((resolve, reject) => {
@@ -231,6 +248,9 @@ export class ChunkWorkerPool {
 		coords: Array<{ chunkX: number; chunkY: number; chunkZ: number }>,
 	): Promise<ChunkResult[]> {
 		if (coords.length === 0) return Promise.resolve([]);
+		if (this.terminated) {
+			return Promise.reject(new Error("Chunk worker pool terminated"));
+		}
 
 		const workerCount = Math.max(1, this.workers.length);
 		const groupSize = Math.ceil(coords.length / workerCount);
@@ -305,6 +325,9 @@ export class ChunkWorkerPool {
 	}
 
 	async terminate(): Promise<void> {
+		if (this.terminated) return;
+		this.terminated = true;
+
 		// Settle everything so callers never hang on unresolved promises.
 		const err = new Error("Chunk worker pool terminated");
 		for (const task of this.queue) task.reject(err);

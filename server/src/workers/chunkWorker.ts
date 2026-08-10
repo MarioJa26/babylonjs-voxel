@@ -15,6 +15,7 @@
 import { parentPort } from "node:worker_threads";
 import { loadWasmNoiseFromFile } from "@/code/Lib/WasmNoise";
 import { hashChunk } from "@/code/Network/protocol/encoder.ts";
+import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap";
 import { compressBlocks } from "../world/ChunkCompression.ts";
 
 type ChunkCoord = {
@@ -103,6 +104,12 @@ async function ensureInit(seed: string, wasmEnabled: boolean): Promise<void> {
 
 	// Initialize WASM backend before first WorldGenerator construction
 	await ensureWasm(wasmEnabled);
+
+	// Re-seed the shared TerrainHeightMap module (continentalness, temperature,
+	// humidity, erosion, peaks-and-valleys noise) so that getBiome() and
+	// getFinalTerrainHeight() used by SurfaceGenerator / WorldGenerator produce
+	// the same results as the client.
+	setTerrainSeed(seed);
 
 	const { WorldGenerator: WG } = await import(
 		"@/code/Generation/WorldGenerator"

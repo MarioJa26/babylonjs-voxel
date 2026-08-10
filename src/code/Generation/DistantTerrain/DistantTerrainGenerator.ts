@@ -247,6 +247,17 @@ function resetTracking() {
 	lastCenterChunkZ = Number.NaN;
 }
 
+/**
+ * Clear the local height cache and reset grid tracking so the next generate()
+ * call performs a full rebuild. Must be called when the world seed changes
+ * (SetWorldSeed) so stale heights from the old seed are not reused.
+ */
+export function resetCacheAndTracking(): void {
+	_heightCache.fill(0);
+	_heightCacheKeys.fill(0);
+	resetTracking();
+}
+
 // =====================================================================
 // Full generation
 // =====================================================================
