@@ -91,6 +91,7 @@ const MAX_BLOCK_ID = 255; // Block data is stored as one byte per voxel
 const MAX_PROTOCOL_VIOLATIONS = 16; // Malformed packets before disconnect
 const FLUSH_CONCURRENCY = 8; // Max parallel chunk storage ops per flush
 const CHUNK_BATCH_BYTE_LIMIT = 256 * 1024; // Max bytes per ChunkDataBatch send
+const MAX_POOLED_EDIT_ENTRIES = 8192; // Cap the pendingChunkEdits entry free list
 
 export class VoxelRoom extends Room {
 	private players = new Map<string, ServerPlayerState>();
@@ -147,6 +148,31 @@ export class VoxelRoom extends Room {
 		pitch: 0,
 		animation: 0,
 	};
+	private readonly editScratch: BlockEditData = {
+		sessionId: "",
+		x: 0,
+		y: 0,
+		z: 0,
+		blockId: 0,
+		action: 0,
+	};
+	private readonly chunkRequestScratch = {
+		cx: 0,
+		cy: 0,
+		cz: 0,
+		lod: 0,
+		cachedHash: 0,
+	};
+	// Free list for pendingChunkEdits entries ({x,y,z,blockId} per voxel).
+	// Entries live at most one flush cycle (≤500ms debounce), so they're
+	// pooled instead of allocated per edit; released back after a successful
+	// flush. Entries requeued on flush failure are never pooled.
+	private editEntryPool: Array<{
+		x: number;
+		y: number;
+		z: number;
+		blockId: number;
+	}> = [];
 	private nextPlayerIndex = 0;
 	private freedIndices: number[] = [];
 	private lastFullSnapshot = 0;
@@ -441,9 +467,46 @@ export class VoxelRoom extends Room {
 			}
 			await runWithConcurrency(applyTasks, FLUSH_CONCURRENCY);
 			await this.worldStorage.flush();
+			// Every entry in the swapped-out map is fully persisted now —
+			// return them to the free list for reuse.
+			this.releaseEditEntries(edits);
 		} catch (error) {
 			this.mergeFailedChunkEdits(dirty, edits);
 			throw error;
+		}
+	}
+
+	/** Take an edit entry from the free list, or allocate a fresh one. */
+	private acquireEditEntry(): {
+		x: number;
+		y: number;
+		z: number;
+		blockId: number;
+	} {
+		return this.editEntryPool.pop() ?? { x: 0, y: 0, z: 0, blockId: 0 };
+	}
+
+	private releaseEditEntry(entry: {
+		x: number;
+		y: number;
+		z: number;
+		blockId: number;
+	}): void {
+		if (this.editEntryPool.length < MAX_POOLED_EDIT_ENTRIES) {
+			this.editEntryPool.push(entry);
+		}
+	}
+
+	private releaseEditEntries(
+		edits: Map<
+			number,
+			Map<number, { x: number; y: number; z: number; blockId: number }>
+		>,
+	): void {
+		for (const editMap of edits.values()) {
+			for (const entry of editMap.values()) {
+				this.releaseEditEntry(entry);
+			}
 		}
 	}
 
@@ -805,7 +868,9 @@ export class VoxelRoom extends Room {
 			}
 
 			case MessageType.BlockEdit: {
-				const edit = dec.readBlockEdit();
+				// Decode into the reused scratch object — every read below is
+				// synchronous, so sharing it across messages is safe.
+				const edit = dec.readBlockEditInto(this.editScratch);
 				const player = this.players.get(client.sessionId);
 				if (!player) return;
 				if (!this.isValidBlockEdit(edit)) return;
@@ -860,13 +925,19 @@ export class VoxelRoom extends Room {
 				const lx = edit.x & 31;
 				const ly = edit.y & 31;
 				const lz = edit.z & 31;
-				// Last write wins per voxel
-				editMap.set(lx + (ly << 5) + (lz << 10), {
-					x: edit.x,
-					y: edit.y,
-					z: edit.z,
-					blockId,
-				});
+				const voxelIndex = lx + (ly << 5) + (lz << 10);
+				// Last write wins per voxel. If the voxel already has a
+				// pending entry, hand the old one back to the pool — it can
+				// only be referenced by this map, which is never applied
+				// while it is still current (the flush swaps maps atomically).
+				const prev = editMap.get(voxelIndex);
+				if (prev) this.releaseEditEntry(prev);
+				const entry = this.acquireEditEntry();
+				entry.x = edit.x;
+				entry.y = edit.y;
+				entry.z = edit.z;
+				entry.blockId = blockId;
+				editMap.set(voxelIndex, entry);
 				this.dirtyChunks.add(key);
 				this.scheduleChunkFlush();
 
@@ -877,9 +948,18 @@ export class VoxelRoom extends Room {
 			}
 
 			case MessageType.ChunkRequest: {
-				const { cx, cy, cz, lod, cachedHash } = dec.readChunkRequest();
-				if (lod !== 0) break;
-				void this.handleChunkRequest(client, cx, cy, cz, cachedHash);
+				// Decode into the reused scratch object; the values are
+				// copied into the call arguments synchronously, so sharing
+				// the scratch across messages is safe.
+				const req = dec.readChunkRequestInto(this.chunkRequestScratch);
+				if (req.lod !== 0) break;
+				void this.handleChunkRequest(
+					client,
+					req.cx,
+					req.cy,
+					req.cz,
+					req.cachedHash,
+				);
 				break;
 			}
 

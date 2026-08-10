@@ -112,6 +112,21 @@ export class ServerWorldStorage {
 	private cacheHead: CacheNode | null = null; // most recently used
 	private cacheTail: CacheNode | null = null; // least recently used
 	private readonly maxCacheSize: number;
+	// Scratch for writeChunkUnlocked: serializeVoxelData copies palette
+	// bytes synchronously, so one reused buffer is safe for all writers.
+	private readonly paletteScratch = new Uint16Array(256);
+	// Free list for readChunks() missCoords entry objects. Each call pops its
+	// own entries (exclusive ownership per call) and returns them in a
+	// finally, so concurrent readChunks() calls can never observe each
+	// other's entries. The pool is bounded by peak concurrent misses (≤128
+	// per request).
+	private readonly missCoordPool: Array<{
+		cx: number;
+		cy: number;
+		cz: number;
+		cacheKey: number;
+		key: string;
+	}> = [];
 
 	constructor(
 		worldName: string,
@@ -269,56 +284,67 @@ export class ServerWorldStorage {
 			key: string;
 		}> = [];
 
-		for (const { cx, cy, cz } of coords) {
-			const cacheKey = packChunkKeyFast(cx, cy, cz);
-			const node = this.chunkCache.get(cacheKey);
-			if (node) {
-				this.lruTouch(node);
-				results.set(cacheKey, node.data);
-			} else {
-				// key is passed through to LevelDbChunkStore.readChunks, which
-				// skips recomputing the identical template string.
-				missCoords.push({
-					cx,
-					cy,
-					cz,
-					cacheKey,
-					key: `${cx},${cy},${cz}`,
-				});
-			}
-		}
-
-		if (missCoords.length > 0) {
-			// missCoords already has {cx, cy, cz, key} on every element, so it
-			// can be passed straight through — no need to .map() it into a
-			// second throwaway array first, and the precomputed key strings
-			// are reused instead of rebuilt.
-			const found = await this.store.readChunks(missCoords);
-
-			let parsedSinceYield = 0;
-			for (const { cacheKey, key, cx, cy, cz } of missCoords) {
-				const blob = found.get(key);
-				if (!blob) continue;
-
+		try {
+			for (const { cx, cy, cz } of coords) {
+				const cacheKey = packChunkKeyFast(cx, cy, cz);
 				const node = this.chunkCache.get(cacheKey);
 				if (node) {
 					this.lruTouch(node);
 					results.set(cacheKey, node.data);
-					continue;
-				}
-
-				const data = this.parseBlob(cx, cy, cz, blob);
-				this.addToCache(cacheKey, data);
-				results.set(cacheKey, data);
-
-				if (++parsedSinceYield >= 16) {
-					parsedSinceYield = 0;
-					await yieldToEventLoop();
+				} else {
+					// key is passed through to LevelDbChunkStore.readChunks,
+					// which skips recomputing the identical template string.
+					// Entries come from the pool (owned exclusively by this
+					// call) instead of a fresh object per miss.
+					const entry =
+						this.missCoordPool.pop() ?? { cx: 0, cy: 0, cz: 0, cacheKey: 0, key: "" };
+					entry.cx = cx;
+					entry.cy = cy;
+					entry.cz = cz;
+					entry.cacheKey = cacheKey;
+					entry.key = `${cx},${cy},${cz}`;
+					missCoords.push(entry);
 				}
 			}
-		}
 
-		return results;
+			if (missCoords.length > 0) {
+				// missCoords already has {cx, cy, cz, key} on every element, so
+				// it can be passed straight through — no need to .map() it into
+				// a second throwaway array first, and the precomputed key
+				// strings are reused instead of rebuilt.
+				const found = await this.store.readChunks(missCoords);
+
+				let parsedSinceYield = 0;
+				for (const { cacheKey, key, cx, cy, cz } of missCoords) {
+					const blob = found.get(key);
+					if (!blob) continue;
+
+					const node = this.chunkCache.get(cacheKey);
+					if (node) {
+						this.lruTouch(node);
+						results.set(cacheKey, node.data);
+						continue;
+					}
+
+					const data = this.parseBlob(cx, cy, cz, blob);
+					this.addToCache(cacheKey, data);
+					results.set(cacheKey, data);
+
+					if (++parsedSinceYield >= 16) {
+						parsedSinceYield = 0;
+						await yieldToEventLoop();
+					}
+				}
+			}
+
+			return results;
+		} finally {
+			// Return every entry to the pool. Runs on success, failure, and
+			// disposal alike; each entry is rewritten on the next acquire.
+			for (let i = missCoords.length - 1; i >= 0; i--) {
+				this.missCoordPool.push(missCoords[i]);
+			}
+		}
 	}
 
 	private parseBlob(
@@ -394,9 +420,17 @@ export class ServerWorldStorage {
 	private async writeChunkUnlocked(data: StoredChunkData): Promise<void> {
 		const key = packChunkKeyFast(data.chunkX, data.chunkY, data.chunkZ);
 
-		const paletteArr: Uint16Array | null = data.palette
-			? Uint16Array.from(data.palette)
-			: null;
+		// Copy the palette into the reused scratch buffer (palettes are ≤16
+		// entries, well under the 256 capacity) and pass a trimmed view —
+		// avoids one Uint16Array allocation per write.
+		let paletteArr: Uint16Array | null = null;
+		if (data.palette) {
+			const scratch = this.paletteScratch;
+			for (let i = 0; i < data.palette.length; i++) {
+				scratch[i] = data.palette[i];
+			}
+			paletteArr = scratch.subarray(0, data.palette.length);
+		}
 
 		const blob = serializeVoxelData(
 			data.blocks,

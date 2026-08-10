@@ -16,6 +16,12 @@ import {
 	type PlayerStateData,
 } from "./messages";
 
+// Module-level scratch encoders: writeString/readString allocate a fresh
+// TextEncoder/TextDecoder per call otherwise. The encode/decode calls are
+// synchronous, so a single shared instance per direction is safe.
+const _textEncoder = new TextEncoder();
+const _textDecoder = new TextDecoder();
+
 export class BinaryEncoder {
 	private buffer: Uint8Array;
 	private view: DataView;
@@ -75,7 +81,7 @@ export class BinaryEncoder {
 	}
 
 	writeString(str: string): void {
-		const encoded = new TextEncoder().encode(str);
+		const encoded = _textEncoder.encode(str);
 		this.writeUint16(encoded.byteLength);
 		this.ensure(encoded.byteLength);
 		this.buffer.set(encoded, this.offset);
@@ -242,7 +248,7 @@ export class BinaryDecoder {
 		const len = this.readUint16();
 		const start = this.offset;
 		this.offset += len;
-		return new TextDecoder().decode(this.buffer.subarray(start, this.offset));
+		return _textDecoder.decode(this.buffer.subarray(start, this.offset));
 	}
 
 	/** C→S: no sessionId field on the wire. */
@@ -281,6 +287,19 @@ export class BinaryDecoder {
 		return { sessionId: "", x, y, z, blockId, action };
 	}
 
+	/**
+	 * C→S: decode into a caller-owned object instead of allocating a fresh
+	 * one per message. Returns the target for chaining.
+	 */
+	readBlockEditInto(target: BlockEditData): BlockEditData {
+		target.x = this.readInt32();
+		target.y = this.readInt32();
+		target.z = this.readInt32();
+		target.blockId = this.readUint16();
+		target.action = this.readUint8();
+		return target;
+	}
+
 	readChatMessage(): ChatMessageData {
 		return {
 			sessionId: this.readString(),
@@ -302,6 +321,25 @@ export class BinaryDecoder {
 		const lod = this.readUint8();
 		const cachedHash = this.readUint32();
 		return { cx, cy, cz, lod, cachedHash };
+	}
+
+	/**
+	 * Decode into a caller-owned object instead of allocating a fresh one
+	 * per message. Returns the target for chaining.
+	 */
+	readChunkRequestInto(target: {
+		cx: number;
+		cy: number;
+		cz: number;
+		lod: number;
+		cachedHash: number;
+	}): typeof target {
+		target.cx = this.readInt32();
+		target.cy = this.readInt32();
+		target.cz = this.readInt32();
+		target.lod = this.readUint8();
+		target.cachedHash = this.readUint32();
+		return target;
 	}
 
 	readChunkRequestBatch(): Array<{

@@ -117,12 +117,10 @@ export class LevelDbChunkStore {
 		coords: Array<{ cx: number; cy: number; cz: number; key?: string }>,
 	): Promise<Map<string, Uint8Array>> {
 		const results = new Map<string, Uint8Array>();
-		const misses: Array<{
-			cx: number;
-			cy: number;
-			cz: number;
-			key: string;
-		}> = [];
+		// Single array: one promise per cache miss instead of a `misses`
+		// array of {cx,cy,cz,key} objects (only `key` is ever used) plus a
+		// second promises array built from it.
+		const pending: Array<Promise<void>> = [];
 
 		for (const { cx, cy, cz, key } of coords) {
 			const k = key ?? chunkKey(cx, cy, cz);
@@ -132,22 +130,21 @@ export class LevelDbChunkStore {
 				this.cache.set(k, cached);
 				results.set(k, cached);
 			} else {
-				misses.push({ cx, cy, cz, key: k });
+				pending.push(
+					this._get(k).then((value) => {
+						if (value) {
+							const data =
+								value instanceof Uint8Array ? value : new Uint8Array(value);
+							this.addToCache(k, data);
+							results.set(k, data);
+						}
+					}),
+				);
 			}
 		}
 
-		if (misses.length > 0) {
-			const promises = misses.map(({ key }) =>
-				this._get(key).then((value) => {
-					if (value) {
-						const data =
-							value instanceof Uint8Array ? value : new Uint8Array(value);
-						this.addToCache(key, data);
-						results.set(key, data);
-					}
-				}),
-			);
-			await Promise.all(promises);
+		if (pending.length > 0) {
+			await Promise.all(pending);
 		}
 
 		return results;
