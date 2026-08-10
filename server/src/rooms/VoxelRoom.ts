@@ -134,6 +134,7 @@ export class VoxelRoom extends Room {
 	private statePool: PlayerStateBatchEntry[] = [];
 	private statesScratch: PlayerStateBatchEntry[] = [];
 	private tickEncoder = new BinaryEncoder(2048);
+	private chunkBatchEncoder = new BinaryEncoder(65536);
 	private nextPlayerIndex = 0;
 	private freedIndices: number[] = [];
 	private lastFullSnapshot = 0;
@@ -704,28 +705,64 @@ export class VoxelRoom extends Room {
 		return size + 4 + c.light.length;
 	}
 
-	/**
-	 * Send a group of full chunks as ChunkDataBatch messages, split so no
-	 * single message exceeds CHUNK_BATCH_BYTE_LIMIT (bounded latency, memory
-	 * and retransmission cost).
-	 */
 	private sendChunkDataBatch(client: Client, chunks: StoredChunkData[]): void {
 		if (chunks.length === 0) return;
-		let group: StoredChunkData[] = [];
+		let groupStart = 0;
 		let size = 0;
-		for (const c of chunks) {
-			const cSize = this.estimateChunkBytes(c);
-			if (group.length > 0 && size + cSize > CHUNK_BATCH_BYTE_LIMIT) {
-				client.sendBytes("binary", encodeChunkDataBatch(group));
-				group = [];
+		for (let i = 0; i < chunks.length; i++) {
+			const cSize = this.estimateChunkBytes(chunks[i]);
+			if (groupStart < i && size + cSize > CHUNK_BATCH_BYTE_LIMIT) {
+				client.sendBytes(
+					"binary",
+					this.encodeChunkBatch(chunks, groupStart, i),
+				);
+				groupStart = i;
 				size = 0;
 			}
-			group.push(c);
 			size += cSize;
 		}
-		if (group.length > 0) {
-			client.sendBytes("binary", encodeChunkDataBatch(group));
+		if (groupStart < chunks.length) {
+			client.sendBytes(
+				"binary",
+				this.encodeChunkBatch(chunks, groupStart, chunks.length),
+			);
 		}
+	}
+
+	private encodeChunkBatch(
+		chunks: StoredChunkData[],
+		start: number,
+		end: number,
+	): Uint8Array {
+		const enc = this.chunkBatchEncoder;
+		enc.reset();
+		enc.writeUint8(MessageType.ChunkDataBatch);
+		enc.writeUint16(Math.min(end - start, 65535));
+		for (let i = start; i < end; i++) {
+			const c = chunks[i];
+			enc.writeInt32(c.chunkX);
+			enc.writeInt32(c.chunkY);
+			enc.writeInt32(c.chunkZ);
+			enc.writeUint32(c.hash);
+			let flags = 0;
+			if (c.isUniform) flags |= 1;
+			if (c.palette) flags |= 2;
+			enc.writeUint8(flags);
+			if (c.isUniform) {
+				enc.writeUint16(c.uniformBlockId);
+			} else if (c.palette) {
+				enc.writeUint16(c.palette.length);
+				for (let j = 0; j < c.palette.length; j++) {
+					enc.writeUint16(c.palette[j]);
+				}
+				enc.writeBytes(c.blocks);
+			} else {
+				enc.writeBytes(c.blocks);
+			}
+			enc.writeUint32(c.light.length);
+			enc.writeBytes(c.light);
+		}
+		return enc.getBytes();
 	}
 
 	private decodeAndHandleBinaryMessage(client: Client, data: Uint8Array): void {
@@ -919,49 +956,67 @@ export class VoxelRoom extends Room {
 		}>,
 	): Promise<void> {
 		try {
-			// Deduplicate coords — one response per unique chunk.
-			const seen = new Map<number, (typeof requests)[0]>();
-			for (const r of requests) {
-				const key = packChunkKeyFast(r.cx, r.cy, r.cz);
-				if (!seen.has(key)) seen.set(key, r);
-			}
-			const unique = Array.from(seen.values());
+			const unique: typeof requests = [];
+			const coords: Array<{ cx: number; cy: number; cz: number }> = [];
+			const seen = new Set<number>();
 
-			// Bulk read from storage in parallel — only generate what's missing.
-			const storedMap = await this.worldStorage.readChunks(
-				unique.map((r) => ({ cx: r.cx, cy: r.cy, cz: r.cz })),
-			);
+			for (let i = 0; i < requests.length; i++) {
+				const r = requests[i];
+				const key = packChunkKeyFast(r.cx, r.cy, r.cz);
+				if (seen.has(key)) continue;
+				seen.add(key);
+				unique.push(r);
+				coords.push({ cx: r.cx, cy: r.cy, cz: r.cz });
+			}
+
+			const storedMap = await this.worldStorage.readChunks(coords);
 
 			const missing: typeof requests = [];
 			const fullChunks: StoredChunkData[] = [];
-			for (const r of unique) {
-				const stored = storedMap.get(packChunkKeyFast(r.cx, r.cy, r.cz));
+			const missingCoords: Array<{
+				chunkX: number;
+				chunkY: number;
+				chunkZ: number;
+			}> = [];
+
+			for (let i = 0; i < unique.length; i++) {
+				const r = unique[i];
+				const stored = storedMap.get(
+					packChunkKeyFast(r.cx, r.cy, r.cz),
+				);
 				if (stored) {
 					if (r.cachedHash !== 0 && stored.hash === r.cachedHash) {
-						const msg = encodeChunkUnchanged(r.cx, r.cy, r.cz, stored.hash);
+						const msg = encodeChunkUnchanged(
+							r.cx,
+							r.cy,
+							r.cz,
+							stored.hash,
+						);
 						client.sendBytes("binary", msg);
 					} else {
-						// Batch stored chunks too — they're the common path in
-						// cache-heavy worlds.
 						fullChunks.push(stored);
 					}
 				} else {
 					missing.push(r);
+					missingCoords.push({
+						chunkX: r.cx,
+						chunkY: r.cy,
+						chunkZ: r.cz,
+					});
 				}
 			}
 
 			if (missing.length > 0) {
 				const generated = await this.chunkGen.generateChunksBatch(
-					missing.map((r) => ({
-						chunkX: r.cx,
-						chunkY: r.cy,
-						chunkZ: r.cz,
-					})),
+					missingCoords,
 				);
 
 				for (let i = 0; i < generated.length; i++) {
 					const cachedHash = missing[i].cachedHash;
-					if (cachedHash !== 0 && generated[i].hash === cachedHash) {
+					if (
+						cachedHash !== 0 &&
+						generated[i].hash === cachedHash
+					) {
 						const msg = encodeChunkUnchanged(
 							generated[i].chunkX,
 							generated[i].chunkY,

@@ -18,11 +18,6 @@ function chunkKey(cx: number, cy: number, cz: number): string {
 	return `${cx},${cy},${cz}`;
 }
 
-export interface CachedChunk {
-	data: Uint8Array;
-	timestamp: number;
-}
-
 export class LevelDbChunkStore {
 	private db: any = null;
 	private readonly dbPath: string;
@@ -31,11 +26,10 @@ export class LevelDbChunkStore {
 	private readonly maxBatchSize = 64;
 	private opened = false;
 
-	// LRU read cache
-	private readonly cache = new Map<string, CachedChunk>();
+	// LRU read cache — insertion order == access order. On hit, delete+re-set
+	// to move to most-recent end. On full, evict from .keys().next() (LRU).
+	private readonly cache = new Map<string, Uint8Array>();
 	private readonly maxCacheSize = 1024;
-	private cacheHits = 0;
-	private cacheMisses = 0;
 
 	constructor(worldName: string, basePath: string) {
 		this.dbPath =
@@ -103,11 +97,10 @@ export class LevelDbChunkStore {
 
 		const cached = this.cache.get(key);
 		if (cached) {
-			this.cacheHits++;
-			cached.timestamp = Date.now();
-			return cached.data;
+			this.cache.delete(key);
+			this.cache.set(key, cached);
+			return cached;
 		}
-		this.cacheMisses++;
 
 		if (!this.db) return null;
 
@@ -130,25 +123,25 @@ export class LevelDbChunkStore {
 			const key = chunkKey(cx, cy, cz);
 			const cached = this.cache.get(key);
 			if (cached) {
-				this.cacheHits++;
-				cached.timestamp = Date.now();
-				results.set(key, cached.data);
+				this.cache.delete(key);
+				this.cache.set(key, cached);
+				results.set(key, cached);
 			} else {
-				this.cacheMisses++;
 				misses.push({ cx, cy, cz, key });
 			}
 		}
 
 		if (misses.length > 0) {
-			const promises = misses.map(async ({ key }) => {
-				const value = await this._get(key);
-				if (value) {
-					const data =
-						value instanceof Uint8Array ? value : new Uint8Array(value);
-					this.addToCache(key, data);
-					results.set(key, data);
-				}
-			});
+			const promises = misses.map(({ key }) =>
+				this._get(key).then((value) => {
+					if (value) {
+						const data =
+							value instanceof Uint8Array ? value : new Uint8Array(value);
+						this.addToCache(key, data);
+						results.set(key, data);
+					}
+				}),
+			);
 			await Promise.all(promises);
 		}
 
@@ -233,18 +226,15 @@ export class LevelDbChunkStore {
 	}
 
 	private addToCache(key: string, data: Uint8Array): void {
-		if (this.cache.size >= this.maxCacheSize && !this.cache.has(key)) {
+		if (this.cache.has(key)) {
+			this.cache.delete(key);
+		} else if (this.cache.size >= this.maxCacheSize) {
 			const firstKey = this.cache.keys().next().value;
 			if (firstKey !== undefined) {
 				this.cache.delete(firstKey);
 			}
 		}
-		this.cache.set(key, { data, timestamp: Date.now() });
-	}
-
-	get cacheHitRate(): number {
-		const total = this.cacheHits + this.cacheMisses;
-		return total > 0 ? this.cacheHits / total : 0;
+		this.cache.set(key, data);
 	}
 
 	get cachedEntryCount(): number {

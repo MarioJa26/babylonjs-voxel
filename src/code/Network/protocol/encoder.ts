@@ -28,9 +28,10 @@ export class BinaryEncoder {
 	}
 
 	private ensure(needed: number): void {
-		if (this.offset + needed <= this.buffer.byteLength) return;
+		const required = this.offset + needed;
+		if (required <= this.buffer.byteLength) return;
 		let newCap = this.buffer.byteLength * 2;
-		while (newCap < this.offset + needed) newCap *= 2;
+		while (newCap < required) newCap *= 2;
 		const newBuf = new Uint8Array(newCap);
 		newBuf.set(this.buffer);
 		this.buffer = newBuf;
@@ -751,10 +752,70 @@ export function encodeChunkDataBatch(
 		hash: number;
 	}>,
 ): Uint8Array {
-	// Calculate total size
-	let totalSize = 3; // type + count
-	for (const c of chunks) {
-		totalSize += 12 + 4 + 1; // coords + hash + flags
+	const count = Math.min(chunks.length, 65535);
+	const buf = new Uint8Array(encodeChunkDataBatchMeasure(chunks, count));
+	let offset = 0;
+	const view = new DataView(buf.buffer);
+
+	buf[offset++] = MessageType.ChunkDataBatch;
+	view.setUint16(offset, count, true);
+	offset += 2;
+
+	for (let i = 0; i < count; i++) {
+		const c = chunks[i];
+		view.setInt32(offset, c.chunkX, true);
+		offset += 4;
+		view.setInt32(offset, c.chunkY, true);
+		offset += 4;
+		view.setInt32(offset, c.chunkZ, true);
+		offset += 4;
+		view.setUint32(offset, c.hash, true);
+		offset += 4;
+
+		let flags = 0;
+		if (c.isUniform) flags |= 1;
+		if (c.palette) flags |= 2;
+		buf[offset++] = flags;
+
+		if (c.isUniform) {
+			view.setUint16(offset, c.uniformBlockId, true);
+			offset += 2;
+		} else if (c.palette) {
+			view.setUint16(offset, c.palette.length, true);
+			offset += 2;
+			for (let j = 0; j < c.palette.length; j++) {
+				view.setUint16(offset, c.palette[j], true);
+				offset += 2;
+			}
+			buf.set(c.blocks, offset);
+			offset += c.blocks.length;
+		} else {
+			buf.set(c.blocks, offset);
+			offset += c.blocks.length;
+		}
+
+		view.setUint32(offset, c.light.length, true);
+		offset += 4;
+		buf.set(c.light, offset);
+		offset += c.light.length;
+	}
+
+	return buf;
+}
+
+function encodeChunkDataBatchMeasure(
+	chunks: Array<{
+		blocks: Uint8Array;
+		light: Uint8Array;
+		palette?: number[];
+		isUniform: boolean;
+	}>,
+	count: number,
+): number {
+	let totalSize = 3;
+	for (let i = 0; i < count; i++) {
+		const c = chunks[i];
+		totalSize += 17;
 		if (c.isUniform) {
 			totalSize += 2;
 		} else if (c.palette) {
@@ -764,39 +825,7 @@ export function encodeChunkDataBatch(
 		}
 		totalSize += 4 + c.light.length;
 	}
-
-	const enc = new BinaryEncoder(totalSize);
-	enc.writeUint8(MessageType.ChunkDataBatch);
-	enc.writeUint16(Math.min(chunks.length, 65535));
-
-	for (const c of chunks) {
-		enc.writeInt32(c.chunkX);
-		enc.writeInt32(c.chunkY);
-		enc.writeInt32(c.chunkZ);
-		enc.writeUint32(c.hash);
-
-		let flags = 0;
-		if (c.isUniform) flags |= 1;
-		if (c.palette) flags |= 2;
-		enc.writeUint8(flags);
-
-		if (c.isUniform) {
-			enc.writeUint16(c.uniformBlockId);
-		} else if (c.palette) {
-			enc.writeUint16(c.palette.length);
-			for (const pid of c.palette) {
-				enc.writeUint16(pid);
-			}
-			enc.writeBytes(c.blocks);
-		} else {
-			enc.writeBytes(c.blocks);
-		}
-
-		enc.writeUint32(c.light.length);
-		enc.writeBytes(c.light);
-	}
-
-	return enc.getBytes();
+	return totalSize;
 }
 
 export function decodeChunkDataBatch(buffer: Uint8Array): Array<{
