@@ -69,6 +69,10 @@ interface CacheNode {
 }
 
 const DEFAULT_CACHE_SIZE = 1024;
+// The blob cache in LevelDbChunkStore is redundant with this class's parsed
+// cache (same chunks, both in memory). A small cap keeps the double-cached
+// footprint low — serialized blobs are cheap to re-read from LevelDB.
+const DEFAULT_BLOB_CACHE_SIZE = 128;
 
 function yieldToEventLoop(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
@@ -114,9 +118,10 @@ export class ServerWorldStorage {
 		seed: string,
 		basePath = "./server-data",
 		maxCacheSize = DEFAULT_CACHE_SIZE,
+		blobCacheSize = DEFAULT_BLOB_CACHE_SIZE,
 	) {
 		this.seed = seed;
-		this.store = new LevelDbChunkStore(worldName, basePath);
+		this.store = new LevelDbChunkStore(worldName, basePath, blobCacheSize);
 		this.maxCacheSize = Math.max(0, Math.trunc(maxCacheSize));
 	}
 
@@ -260,42 +265,51 @@ export class ServerWorldStorage {
 			cx: number;
 			cy: number;
 			cz: number;
-			key: number;
-			storeKey: string;
+			cacheKey: number;
+			key: string;
 		}> = [];
 
 		for (const { cx, cy, cz } of coords) {
-			const key = packChunkKeyFast(cx, cy, cz);
-			const node = this.chunkCache.get(key);
+			const cacheKey = packChunkKeyFast(cx, cy, cz);
+			const node = this.chunkCache.get(cacheKey);
 			if (node) {
 				this.lruTouch(node);
-				results.set(key, node.data);
+				results.set(cacheKey, node.data);
 			} else {
-				missCoords.push({ cx, cy, cz, key, storeKey: `${cx},${cy},${cz}` });
+				// key is passed through to LevelDbChunkStore.readChunks, which
+				// skips recomputing the identical template string.
+				missCoords.push({
+					cx,
+					cy,
+					cz,
+					cacheKey,
+					key: `${cx},${cy},${cz}`,
+				});
 			}
 		}
 
 		if (missCoords.length > 0) {
-			// missCoords already has {cx, cy, cz} on every element, so it
-			// can be passed straight through — no need to .map() it into
-			// a second throwaway array first.
+			// missCoords already has {cx, cy, cz, key} on every element, so it
+			// can be passed straight through — no need to .map() it into a
+			// second throwaway array first, and the precomputed key strings
+			// are reused instead of rebuilt.
 			const found = await this.store.readChunks(missCoords);
 
 			let parsedSinceYield = 0;
-			for (const { key, storeKey, cx, cy, cz } of missCoords) {
-				const blob = found.get(storeKey);
+			for (const { cacheKey, key, cx, cy, cz } of missCoords) {
+				const blob = found.get(key);
 				if (!blob) continue;
 
-				const node = this.chunkCache.get(key);
+				const node = this.chunkCache.get(cacheKey);
 				if (node) {
 					this.lruTouch(node);
-					results.set(key, node.data);
+					results.set(cacheKey, node.data);
 					continue;
 				}
 
 				const data = this.parseBlob(cx, cy, cz, blob);
-				this.addToCache(key, data);
-				results.set(key, data);
+				this.addToCache(cacheKey, data);
+				results.set(cacheKey, data);
 
 				if (++parsedSinceYield >= 16) {
 					parsedSinceYield = 0;

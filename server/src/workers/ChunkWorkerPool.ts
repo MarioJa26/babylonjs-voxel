@@ -263,7 +263,19 @@ export class ChunkWorkerPool {
 		}
 
 		return Promise.all(groups.map((group) => this._dispatchBatch(group))).then(
-			(parts) => parts.flat(),
+			(parts) => {
+				// Flatten into a preallocated result array — no throwaway
+				// nested array + .flat() copy per batch dispatch.
+				const results = new Array<ChunkResult>(coords.length);
+				let offset = 0;
+				for (const part of parts) {
+					for (let i = 0; i < part.length; i++) {
+						results[offset + i] = part[i];
+					}
+					offset += part.length;
+				}
+				return results;
+			},
 		);
 	}
 

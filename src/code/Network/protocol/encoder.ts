@@ -167,8 +167,25 @@ export class BinaryEncoder {
 export class BinaryDecoder {
 	private view: DataView;
 	private offset: number;
+	private buffer: Uint8Array;
 
-	constructor(private buffer: Uint8Array) {
+	constructor(buffer: Uint8Array) {
+		this.buffer = buffer;
+		this.view = new DataView(
+			buffer.buffer,
+			buffer.byteOffset,
+			buffer.byteLength,
+		);
+		this.offset = 0;
+	}
+
+	/**
+	 * Rebind this decoder to a new buffer (resets the read offset). Lets
+	 * message handlers reuse one decoder instance across many packets instead
+	 * of allocating a fresh decoder + DataView per message.
+	 */
+	setBuffer(buffer: Uint8Array): void {
+		this.buffer = buffer;
 		this.view = new DataView(
 			buffer.buffer,
 			buffer.byteOffset,
@@ -237,6 +254,21 @@ export class BinaryDecoder {
 		const pitch = this.readUint8();
 		const animation = this.readUint8();
 		return { x, y, z, yaw, pitch, animation };
+	}
+
+	/**
+	 * C→S: decode into a caller-owned object instead of allocating a fresh
+	 * one per message. Returns the target for chaining. The previous values
+	 * are overwritten in place.
+	 */
+	readPlayerStateInto(target: PlayerStateData): PlayerStateData {
+		target.x = this.readFloat32();
+		target.y = this.readFloat32();
+		target.z = this.readFloat32();
+		target.yaw = this.readUint8();
+		target.pitch = this.readUint8();
+		target.animation = this.readUint8();
+		return target;
 	}
 
 	/** C→S: no sessionId field on the wire. */

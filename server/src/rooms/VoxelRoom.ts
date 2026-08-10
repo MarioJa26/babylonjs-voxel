@@ -31,6 +31,7 @@ import {
 	type ChatMessageData,
 	MessageType,
 	type PlayerStateBatchEntry,
+	type PlayerStateData,
 } from "@/code/Network/protocol/messages.ts";
 import {
 	packChunkKeyFast,
@@ -135,6 +136,17 @@ export class VoxelRoom extends Room {
 	private statesScratch: PlayerStateBatchEntry[] = [];
 	private tickEncoder = new BinaryEncoder(2048);
 	private chunkBatchEncoder = new BinaryEncoder(65536);
+	// Reused across incoming messages: no per-message decoder/DataView or
+	// per-message PlayerState object allocation on the receive path.
+	private decoder = new BinaryDecoder(new Uint8Array(0));
+	private readonly stateScratch: PlayerStateData = {
+		x: 0,
+		y: 0,
+		z: 0,
+		yaw: 0,
+		pitch: 0,
+		animation: 0,
+	};
 	private nextPlayerIndex = 0;
 	private freedIndices: number[] = [];
 	private lastFullSnapshot = 0;
@@ -171,6 +183,7 @@ export class VoxelRoom extends Room {
 			this.worldName,
 			this.seed,
 			this.config.worldStoragePath,
+			this.config.chunkCacheSize,
 		);
 		await this.worldStorage.init();
 		this.chunkGen.setStorage(this.worldStorage);
@@ -766,12 +779,15 @@ export class VoxelRoom extends Room {
 	}
 
 	private decodeAndHandleBinaryMessage(client: Client, data: Uint8Array): void {
-		const dec = new BinaryDecoder(data);
+		const dec = this.decoder;
+		dec.setBuffer(data);
 		const msgType = dec.readUint8(); // consume type byte
 
 		switch (msgType) {
 			case MessageType.PlayerState: {
-				const state = dec.readPlayerState();
+				// Decode into the reused scratch object — the values are read
+				// out synchronously, so sharing it across messages is safe.
+				const state = dec.readPlayerStateInto(this.stateScratch);
 				const player = this.players.get(client.sessionId);
 				if (player && this.isValidPlayerState(state)) {
 					player.x = state.x;
@@ -868,16 +884,31 @@ export class VoxelRoom extends Room {
 			}
 
 			case MessageType.ChunkRequestBatch: {
-				const requests = dec.readChunkRequestBatch();
-				const valid = requests.filter((r: { lod: number }) => r.lod === 0);
-				if (valid.length > MAX_CHUNK_BATCH) {
-					console.warn(
-						`[VoxelRoom] ChunkRequestBatch from ${client.sessionId} exceeds cap (${valid.length} > ${MAX_CHUNK_BATCH}), truncating`,
-					);
-					valid.length = MAX_CHUNK_BATCH;
+				// Decode into a single array, compacting out lod !== 0 entries
+				// in place (no second .filter() allocation) and bounding the
+				// decode at MAX_CHUNK_BATCH so a hostile packet can't force an
+				// unbounded array + decode pass.
+				const count = Math.min(dec.readUint16(), MAX_CHUNK_BATCH);
+				const requests = new Array<{
+					cx: number;
+					cy: number;
+					cz: number;
+					lod: number;
+					cachedHash: number;
+				}>(count);
+				let write = 0;
+				for (let i = 0; i < count; i++) {
+					const cx = dec.readInt32();
+					const cy = dec.readInt32();
+					const cz = dec.readInt32();
+					const lod = dec.readUint8();
+					const cachedHash = dec.readUint32();
+					if (lod !== 0) continue;
+					requests[write++] = { cx, cy, cz, lod, cachedHash };
 				}
-				if (valid.length > 0) {
-					void this.handleBatchChunkRequest(client, valid);
+				requests.length = write;
+				if (write > 0) {
+					void this.handleBatchChunkRequest(client, requests);
 				}
 				break;
 			}
@@ -981,17 +1012,10 @@ export class VoxelRoom extends Room {
 
 			for (let i = 0; i < unique.length; i++) {
 				const r = unique[i];
-				const stored = storedMap.get(
-					packChunkKeyFast(r.cx, r.cy, r.cz),
-				);
+				const stored = storedMap.get(packChunkKeyFast(r.cx, r.cy, r.cz));
 				if (stored) {
 					if (r.cachedHash !== 0 && stored.hash === r.cachedHash) {
-						const msg = encodeChunkUnchanged(
-							r.cx,
-							r.cy,
-							r.cz,
-							stored.hash,
-						);
+						const msg = encodeChunkUnchanged(r.cx, r.cy, r.cz, stored.hash);
 						client.sendBytes("binary", msg);
 					} else {
 						fullChunks.push(stored);
@@ -1007,16 +1031,12 @@ export class VoxelRoom extends Room {
 			}
 
 			if (missing.length > 0) {
-				const generated = await this.chunkGen.generateChunksBatch(
-					missingCoords,
-				);
+				const generated =
+					await this.chunkGen.generateChunksBatch(missingCoords);
 
 				for (let i = 0; i < generated.length; i++) {
 					const cachedHash = missing[i].cachedHash;
-					if (
-						cachedHash !== 0 &&
-						generated[i].hash === cachedHash
-					) {
+					if (cachedHash !== 0 && generated[i].hash === cachedHash) {
 						const msg = encodeChunkUnchanged(
 							generated[i].chunkX,
 							generated[i].chunkY,

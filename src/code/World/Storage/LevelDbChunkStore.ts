@@ -29,13 +29,14 @@ export class LevelDbChunkStore {
 	// LRU read cache — insertion order == access order. On hit, delete+re-set
 	// to move to most-recent end. On full, evict from .keys().next() (LRU).
 	private readonly cache = new Map<string, Uint8Array>();
-	private readonly maxCacheSize = 1024;
+	private readonly maxCacheSize: number;
 
-	constructor(worldName: string, basePath: string) {
+	constructor(worldName: string, basePath: string, maxCacheSize = 1024) {
 		this.dbPath =
 			typeof window !== "undefined"
 				? `b102:worlds:${worldName}`
 				: `${basePath}/worlds/${worldName}/db`;
+		this.maxCacheSize = Math.max(0, Math.trunc(maxCacheSize));
 	}
 
 	async open(): Promise<void> {
@@ -113,21 +114,25 @@ export class LevelDbChunkStore {
 	}
 
 	async readChunks(
-		coords: Array<{ cx: number; cy: number; cz: number }>,
+		coords: Array<{ cx: number; cy: number; cz: number; key?: string }>,
 	): Promise<Map<string, Uint8Array>> {
 		const results = new Map<string, Uint8Array>();
-		const misses: Array<{ cx: number; cy: number; cz: number; key: string }> =
-			[];
+		const misses: Array<{
+			cx: number;
+			cy: number;
+			cz: number;
+			key: string;
+		}> = [];
 
-		for (const { cx, cy, cz } of coords) {
-			const key = chunkKey(cx, cy, cz);
-			const cached = this.cache.get(key);
+		for (const { cx, cy, cz, key } of coords) {
+			const k = key ?? chunkKey(cx, cy, cz);
+			const cached = this.cache.get(k);
 			if (cached) {
-				this.cache.delete(key);
-				this.cache.set(key, cached);
-				results.set(key, cached);
+				this.cache.delete(k);
+				this.cache.set(k, cached);
+				results.set(k, cached);
 			} else {
-				misses.push({ cx, cy, cz, key });
+				misses.push({ cx, cy, cz, key: k });
 			}
 		}
 

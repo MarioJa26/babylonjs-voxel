@@ -22,6 +22,7 @@ export interface ServerConfig {
 	dayCycle: boolean;
 	wasmEnabled: boolean;
 	worldStoragePath: string;
+	chunkCacheSize: number;
 }
 
 const DEFAULTS: ServerConfig = {
@@ -37,6 +38,7 @@ const DEFAULTS: ServerConfig = {
 	dayCycle: true,
 	wasmEnabled: true,
 	worldStoragePath: "server-data",
+	chunkCacheSize: 1024,
 };
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
@@ -112,6 +114,10 @@ export function loadServerConfig(
 		dayCycle: parseBoolean(props["day-cycle"], DEFAULTS.dayCycle),
 		wasmEnabled: parseBoolean(props["wasm-enabled"], DEFAULTS.wasmEnabled),
 		worldStoragePath: props["world-storage-path"] ?? DEFAULTS.worldStoragePath,
+		chunkCacheSize: Math.max(
+			0,
+			parseIntSafe(props["chunk-cache-size"], DEFAULTS.chunkCacheSize),
+		),
 	};
 
 	return cachedConfig;
