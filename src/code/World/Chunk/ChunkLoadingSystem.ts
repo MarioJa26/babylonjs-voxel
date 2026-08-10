@@ -425,6 +425,8 @@ export async function processFrameBudgetedStreamingWork(
 	playerChunkY: number,
 	playerChunkZ: number,
 ): Promise<void> {
+	const sliceStart = performance.now();
+
 	streamingController.processLoadedRefreshQueue(
 		playerChunkX,
 		playerChunkY,
@@ -441,7 +443,15 @@ export async function processFrameBudgetedStreamingWork(
 	// Always pump remote generation every frame. This sends queued chunks
 	// to the server. Even if processQueues hasn't reached ScheduleGeneration
 	// yet, pumping is a no-op when the queue is empty.
-	ChunkWorkerPool.getInstance(2).pumpRemoteGeneration();
+	const pool = ChunkWorkerPool.getInstance(2);
+	if (performance.now() - sliceStart > getProcessFrameBudgetMs() * 4) {
+		// The streaming slice already consumed its share of the frame —
+		// defer the remote pump to a macrotask so its IndexedDB read + apply
+		// work lands outside the render frame instead of stacking into it.
+		setTimeout(() => pool.pumpRemoteGeneration(), 0);
+	} else {
+		pool.pumpRemoteGeneration();
+	}
 }
 
 export function registerChunkEntityLoader(

@@ -375,6 +375,14 @@ export class ChunkWorker {
 		});
 	}
 
+	public postLightUnregisterChunkBatch(chunkIds: bigint[]): void {
+		if (chunkIds.length === 0) return;
+		this.terrainWorker.postMessage({
+			type: WorkerTaskType.LightUnregisterChunkBatch,
+			chunkIds,
+		});
+	}
+
 	public postLightUpdateBuffers(req: {
 		chunkId: bigint;
 		headerSlot: number;
@@ -501,6 +509,16 @@ export class ChunkWorker {
 			chunkX,
 			chunkY,
 			chunkZ,
+		});
+	}
+
+	public postVoxelUnregisterChunkBatch(
+		chunks: Array<{ chunkX: number; chunkY: number; chunkZ: number }>,
+	): void {
+		if (chunks.length === 0) return;
+		this.voxelWorker.postMessage({
+			type: WorkerTaskType.VoxelUnregisterChunkBatch,
+			chunks,
 		});
 	}
 

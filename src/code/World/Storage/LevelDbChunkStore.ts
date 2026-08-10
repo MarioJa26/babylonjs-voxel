@@ -31,7 +31,7 @@ export class LevelDbChunkStore {
 	private readonly cache = new Map<string, Uint8Array>();
 	private readonly maxCacheSize: number;
 
-	constructor(worldName: string, basePath: string, maxCacheSize = 1024) {
+	constructor(worldName: string, basePath: string, maxCacheSize = 128) {
 		this.dbPath =
 			typeof window !== "undefined"
 				? `b102:worlds:${worldName}`

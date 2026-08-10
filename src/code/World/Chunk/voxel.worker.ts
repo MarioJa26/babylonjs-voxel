@@ -17,6 +17,7 @@ import {
 	type RelightMeshMissMessage,
 	type RelightMeshRequest,
 	type VoxelRegisterChunkRequest,
+	type VoxelUnregisterChunkBatchRequest,
 	type VoxelUnregisterChunkRequest,
 	type VoxelUpdateChunkBuffersRequest,
 	WorkerTaskType,
@@ -27,6 +28,7 @@ export type VoxelWorkerRequest =
 	| RelightMeshRequest
 	| VoxelRegisterChunkRequest
 	| VoxelUnregisterChunkRequest
+	| VoxelUnregisterChunkBatchRequest
 	| VoxelUpdateChunkBuffersRequest
 	| { type: WorkerTaskType.InitWorkerChannel; port: MessagePort };
 
@@ -587,6 +589,19 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 
 	if (data.type === WorkerTaskType.VoxelUnregisterChunk) {
 		_handleVoxelUnregister(data);
+		return;
+	}
+
+	if (data.type === WorkerTaskType.VoxelUnregisterChunkBatch) {
+		const chunks = data.chunks;
+		for (let i = 0; i < chunks.length; i++) {
+			_handleVoxelUnregister({
+				type: WorkerTaskType.VoxelUnregisterChunk,
+				chunkX: chunks[i].chunkX,
+				chunkY: chunks[i].chunkY,
+				chunkZ: chunks[i].chunkZ,
+			});
+		}
 		return;
 	}
 

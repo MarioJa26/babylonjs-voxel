@@ -14,6 +14,7 @@ import type {
 	LightRegisterChunkRequest,
 	LightSetClosedFaceMaskRequest,
 	LightSkyReconcileRequest,
+	LightUnregisterChunkBatchRequest,
 	LightUnregisterChunkRequest,
 	LightUpdateChunkBuffersRequest,
 } from "../DataStructures/WorkerMessageType";
@@ -188,6 +189,19 @@ function handleUnregisterChunk(req: LightUnregisterChunkRequest): void {
 	unregisterChunk(state.registry, req.chunkId);
 }
 
+function handleUnregisterChunkBatch(
+	req: LightUnregisterChunkBatchRequest,
+): void {
+	if (!state.registry) return;
+	const ids = req.chunkIds;
+	for (let i = 0; i < ids.length; i++) {
+		const id = ids[i];
+		pendingMutations.delete(id);
+		pendingDeferredSeeds.delete(id);
+		unregisterChunk(state.registry, id);
+	}
+}
+
 function handleUpdateBuffers(req: LightUpdateChunkBuffersRequest): void {
 	if (!state.registry) return;
 	const block_array = req.blockSAB
@@ -291,6 +305,7 @@ export const LightTaskHandlers = {
 	handleSetClosedFaceMask,
 	handleRegisterChunk,
 	handleUnregisterChunk,
+	handleUnregisterChunkBatch,
 	handleUpdateBuffers,
 	handleMutate,
 	handleAddEmission,

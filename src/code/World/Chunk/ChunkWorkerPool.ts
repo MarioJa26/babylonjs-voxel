@@ -1,4 +1,7 @@
-import type { RemoteChunkProvider } from "../../Network/chunk/RemoteChunkProvider";
+import type {
+	RemoteChunkData,
+	RemoteChunkProvider,
+} from "../../Network/chunk/RemoteChunkProvider";
 import {
 	FLAG_GREEDY,
 	FLAG_PARTIAL,
@@ -134,6 +137,10 @@ export class ChunkWorkerPool {
 	private remoteTaskQueue: Chunk[] = [];
 	private remoteTaskQueueSet = new Set<Chunk>();
 	private remoteInFlight = 0;
+	// Coalescing guard: at most one pump cycle (one batched cache read) is
+	// active at a time; continuation cycles are deferred to a macrotask so
+	// IndexedDB reads cannot chain into a single frame.
+	private remotePumpScheduled = false;
 	private readonly MAX_REMOTE_CONCURRENT = 8; // Max concurrent server requests
 
 	private distantTerrainSharedInit: {
@@ -740,6 +747,10 @@ export class ChunkWorkerPool {
 			this.workerRestartAtMs[workerIndex] = performance.now();
 			this.setWorkerTaskContext(workerIndex, null);
 
+			// Flush pending unregisters before re-registering, so a disposed
+			// chunk that got re-created is not dropped by the replacement.
+			this.flushPendingUnregisters();
+
 			if (this.lightHeaderBuffer && workerIndex === 0) {
 				replacement.initLightShared(this.lightHeaderBuffer);
 				if (this.closedFaceMaskBuffer) {
@@ -895,6 +906,7 @@ export class ChunkWorkerPool {
 
 	private broadcastLightRegister(chunk: Chunk): void {
 		// Pass SABs directly — no OPFS worker-to-worker channel anymore.
+		this.flushPendingUnregisters();
 		const snap = chunk.getLightStorageSnapshot();
 		this.getLightWorker().postLightRegisterChunk({
 			seq: this.nextLightSeq(),
@@ -913,6 +925,7 @@ export class ChunkWorkerPool {
 
 	/** Full-registration path for fresh-generation chunks (no voxel channel). */
 	private broadcastLightRegisterFull(chunk: Chunk): void {
+		this.flushPendingUnregisters();
 		const snap = chunk.getLightStorageSnapshot();
 		this.getLightWorker().postLightRegisterChunk({
 			seq: this.nextLightSeq(),
@@ -929,6 +942,7 @@ export class ChunkWorkerPool {
 	}
 
 	private broadcastLightUpdateBuffers(chunk: Chunk): void {
+		this.flushPendingUnregisters();
 		const snap = chunk.getLightStorageSnapshot();
 		this.getLightWorker().postLightUpdateBuffers({
 			chunkId: chunk.id,
@@ -940,9 +954,84 @@ export class ChunkWorkerPool {
 		});
 	}
 
+	// ---------------------------------------------------------------------------
+	// Pending unregister coalescing: dispose bursts (up to 255 chunks/frame)
+	// used to post one LightUnregisterChunk + one VoxelUnregisterChunk per
+	// worker per chunk (~1500 postMessages).  Unregisters are accumulated and
+	// flushed as a single batch message per worker.  Ordering is preserved by
+	// flushing before ANY register/update broadcast (see the register entry
+	// points) plus a macrotask drain so workers never keep stale entries.
+	// ---------------------------------------------------------------------------
+	private _pendingLightUnregisterIds: bigint[] = [];
+	private _pendingVoxelUnregisterCoords: number[] = [];
+	private _unregisterFlushTimer: ReturnType<typeof setTimeout> | null = null;
+	private static readonly UNREGISTER_FLUSH_THRESHOLD = 64;
+
 	private broadcastLightUnregister(chunk: Chunk): void {
-		this.getLightWorker().postLightUnregisterChunk(chunk.id);
 		this.lightSlotPendingSeq.delete(chunk.lightHeaderSlot);
+		this._pendingLightUnregisterIds.push(chunk.id);
+		this.flushPendingUnregistersIfNeeded();
+		this.schedulePendingUnregisterFlush();
+	}
+
+	private broadcastVoxelUnregister(chunk: Chunk): void {
+		const coords = this._pendingVoxelUnregisterCoords;
+		coords.push(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+		this.flushPendingUnregistersIfNeeded();
+		this.schedulePendingUnregisterFlush();
+	}
+
+	private flushPendingUnregistersIfNeeded(): void {
+		if (
+			this._pendingLightUnregisterIds.length >=
+				ChunkWorkerPool.UNREGISTER_FLUSH_THRESHOLD ||
+			this._pendingVoxelUnregisterCoords.length >=
+				ChunkWorkerPool.UNREGISTER_FLUSH_THRESHOLD * 3
+		) {
+			this.flushPendingUnregisters();
+		}
+	}
+
+	private schedulePendingUnregisterFlush(): void {
+		if (this._unregisterFlushTimer !== null) return;
+		this._unregisterFlushTimer = setTimeout(() => {
+			this._unregisterFlushTimer = null;
+			this.flushPendingUnregisters();
+		}, 0);
+	}
+
+	private flushPendingUnregisters(): void {
+		const ids = this._pendingLightUnregisterIds;
+		const coords = this._pendingVoxelUnregisterCoords;
+		if (ids.length === 0 && coords.length === 0) return;
+
+		this._pendingLightUnregisterIds = [];
+		this._pendingVoxelUnregisterCoords = [];
+		if (this._unregisterFlushTimer !== null) {
+			clearTimeout(this._unregisterFlushTimer);
+			this._unregisterFlushTimer = null;
+		}
+
+		if (ids.length > 0) {
+			this.getLightWorker().postLightUnregisterChunkBatch(ids);
+		}
+		if (coords.length > 0) {
+			const chunks: Array<{
+				chunkX: number;
+				chunkY: number;
+				chunkZ: number;
+			}> = new Array(coords.length / 3);
+			for (let i = 0, o = 0; i < chunks.length; i++, o += 3) {
+				chunks[i] = {
+					chunkX: coords[o],
+					chunkY: coords[o + 1],
+					chunkZ: coords[o + 2],
+				};
+			}
+			for (let i = 0; i < this.workers.length; i++) {
+				this.workers[i].postVoxelUnregisterChunkBatch(chunks);
+			}
+		}
 	}
 
 	/**
@@ -950,6 +1039,7 @@ export class ChunkWorkerPool {
 	 * worker-to-worker channel). Mirrors broadcastLightRegister.
 	 */
 	private broadcastVoxelRegister(chunk: Chunk): void {
+		this.flushPendingUnregisters();
 		const snap = chunk.getLightStorageSnapshot();
 		for (let i = 0; i < this.workers.length; i++) {
 			this.workers[i].postVoxelRegisterChunk({
@@ -971,6 +1061,7 @@ export class ChunkWorkerPool {
 
 	/** Direct-path voxel registration: SAB handles inline (fresh chunks). */
 	private broadcastVoxelRegisterFull(chunk: Chunk): void {
+		this.flushPendingUnregisters();
 		const snap = chunk.getLightStorageSnapshot();
 		for (let i = 0; i < this.workers.length; i++) {
 			this.workers[i].postVoxelRegisterChunk({
@@ -991,6 +1082,7 @@ export class ChunkWorkerPool {
 
 	/** Storage-layout transition (uniform<->palette<->u16): new SAB handles. */
 	private broadcastVoxelUpdateBuffers(chunk: Chunk): void {
+		this.flushPendingUnregisters();
 		const snap = chunk.getLightStorageSnapshot();
 		for (let i = 0; i < this.workers.length; i++) {
 			this.workers[i].postVoxelUpdateBuffers({
@@ -1005,16 +1097,6 @@ export class ChunkWorkerPool {
 				paletteSAB: snap.paletteSAB,
 				lightSAB: snap.lightSAB,
 			});
-		}
-	}
-
-	private broadcastVoxelUnregister(chunk: Chunk): void {
-		for (let i = 0; i < this.workers.length; i++) {
-			this.workers[i].postVoxelUnregisterChunk(
-				chunk.chunkX,
-				chunk.chunkY,
-				chunk.chunkZ,
-			);
 		}
 	}
 
@@ -2376,58 +2458,85 @@ export class ChunkWorkerPool {
 		return this.remoteTaskQueue.length > 0;
 	}
 
-	public async pumpRemoteGeneration(): Promise<void> {
+	public pumpRemoteGeneration(): void {
 		if (!this.remoteChunkProvider) return;
+		if (this.remotePumpScheduled) return;
+		this.remotePumpScheduled = true;
 
-		// Process the task queue: send up to MAX_REMOTE_CONCURRENT chunks per call.
-		// This is called every frame from processFrameBudgetedStreamingWork.
-
-		// Collect up to MAX_REMOTE_CONCURRENT chunks from the queue.
-		// Check local cache synchronously — only request from server what we don't
-		// have cached. The old fire-and-forget async cache check raced with the
-		// server request, causing handleRemoteChunkData to be called twice per
-		// chunk (once from cache, once from server), which double-decremented
-		// remoteInFlight and broke the concurrency limiter.
-		const toRequest: Chunk[] = [];
+		// Collect up to MAX_REMOTE_CONCURRENT chunks without awaiting — the
+		// cache check below is ONE batched readChunks call (single IndexedDB
+		// transaction) instead of N sequential per-chunk awaits.
+		const toCheck: Chunk[] = [];
 		while (
 			this.remoteTaskQueue.length > 0 &&
-			toRequest.length < this.MAX_REMOTE_CONCURRENT
+			toCheck.length < this.MAX_REMOTE_CONCURRENT
 		) {
 			const chunk = this.remoteTaskQueue.shift();
 			if (!chunk) continue;
 			this.remoteTaskQueueSet.delete(chunk);
 			if (chunk.isBoatChunk) continue;
-			const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
-			if (this.remotePendingChunks.has(key)) continue;
-
-			// Check local cache synchronously before sending a server request
-			try {
-				const cached = await this.remoteChunkProvider.getCachedChunk(
-					chunk.chunkX,
-					chunk.chunkY,
-					chunk.chunkZ,
-				);
-				if (cached) {
-					// Cache hit — apply directly, no server request needed
-					chunk.isTerrainScheduled = true;
-					this.handleRemoteChunkData(cached);
-					continue;
-				}
-			} catch {
-				// Cache read failed — fall through to server request
-			}
-
-			// Cache miss — queue for server request
-			this.remotePendingChunks.set(key, chunk);
-			toRequest.push(chunk);
+			if (this.remotePendingChunks.has(this.remoteChunkKey(chunk))) continue;
+			toCheck.push(chunk);
 		}
 
-		if (toRequest.length === 0) return;
+		if (toCheck.length === 0) {
+			this.remotePumpScheduled = false;
+			return;
+		}
+
+		this.remoteChunkProvider
+			.getCachedChunks(toCheck)
+			.then((hits) => this.finishRemotePumpCycle(hits, toCheck))
+			.catch(() => this.finishRemotePumpCycle(null, toCheck));
+	}
+
+	private remoteChunkKey(chunk: Chunk): string {
+		return `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
+	}
+
+	private finishRemotePumpCycle(
+		hits: Map<Chunk, RemoteChunkData | null> | null,
+		toCheck: Chunk[],
+	): void {
+		this.remotePumpScheduled = false;
+
+		const toRequest: Chunk[] = [];
+		for (let i = 0; i < toCheck.length; i++) {
+			const chunk = toCheck[i];
+			if (chunk.isBoatChunk) continue;
+			const cached = hits?.get(chunk);
+			if (cached) {
+				// Cache hit — apply directly, no server request needed
+				chunk.isTerrainScheduled = true;
+				this.handleRemoteChunkData(cached);
+			} else {
+				toRequest.push(chunk);
+			}
+		}
+
+		this.dispatchRemoteRequests(toRequest);
+		this.scheduleRemotePumpContinuation();
+	}
+
+	/** Defer the next drain to a macrotask so cache reads spread across tasks. */
+	private scheduleRemotePumpContinuation(): void {
+		if (this.remoteTaskQueue.length === 0) return;
+		if (this.remotePumpScheduled) return;
+		this.remotePumpScheduled = true;
+		setTimeout(() => {
+			this.remotePumpScheduled = false;
+			this.pumpRemoteGeneration();
+		}, 0);
+	}
+
+	private dispatchRemoteRequests(toRequest: Chunk[]): void {
+		if (toRequest.length === 0 || !this.remoteChunkProvider) return;
 
 		if (toRequest.length === 1) {
 			// Single chunk — use the simple path
 			const chunk = toRequest[0];
-			const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
+			const key = this.remoteChunkKey(chunk);
+			this.remotePendingChunks.set(key, chunk);
 			this.remoteInFlight++;
 			void this.remoteChunkProvider
 				.requestChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ)
@@ -2435,17 +2544,23 @@ export class ChunkWorkerPool {
 				.catch((err) => this.handleRemoteGenError(err, chunk, key));
 		} else {
 			// Multiple chunks — batch request
-			this.remoteInFlight += toRequest.length;
-			const promises = this.remoteChunkProvider.requestChunkBatch(
-				toRequest.map((c) => ({
-					cx: c.chunkX,
-					cy: c.chunkY,
-					cz: c.chunkZ,
-				})),
-			);
+			const coords: Array<{ cx: number; cy: number; cz: number }> =
+				new Array(toRequest.length);
 			for (let i = 0; i < toRequest.length; i++) {
 				const chunk = toRequest[i];
-				const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
+				const key = this.remoteChunkKey(chunk);
+				this.remotePendingChunks.set(key, chunk);
+				coords[i] = {
+					cx: chunk.chunkX,
+					cy: chunk.chunkY,
+					cz: chunk.chunkZ,
+				};
+			}
+			this.remoteInFlight += toRequest.length;
+			const promises = this.remoteChunkProvider.requestChunkBatch(coords);
+			for (let i = 0; i < toRequest.length; i++) {
+				const chunk = toRequest[i];
+				const key = this.remoteChunkKey(chunk);
 				void promises[i]
 					.then((data) => this.handleRemoteChunkData(data))
 					.catch((err) => this.handleRemoteGenError(err, chunk, key));
@@ -2530,7 +2645,7 @@ export class ChunkWorkerPool {
 		chunkZ: number;
 		blocks: Uint8Array;
 		light: Uint8Array;
-		palette?: number[];
+		palette?: Uint16Array;
 		isUniform: boolean;
 		uniformBlockId: number;
 		hash: number;
@@ -2579,9 +2694,7 @@ export class ChunkWorkerPool {
 					.then((cached) => {
 						if (cached) {
 							const blocks = cached.blocks;
-							const palette = cached.palette
-								? Uint16Array.from(cached.palette)
-								: null;
+							const palette = cached.palette ?? null;
 							chunk.loadFromStorage(
 								blocks,
 								palette,
@@ -2610,7 +2723,7 @@ export class ChunkWorkerPool {
 			// Do NOT decompress — loadFromStorage handles uniform/palette/dense formats
 			// and expects nibble-packed data when a palette is provided.
 			const blocks = data.blocks;
-			const palette = data.palette ? Uint16Array.from(data.palette) : null;
+			const palette = data.palette ?? null;
 
 			// Load into chunk (same path as local generation)
 			chunk.loadFromStorage(

@@ -335,6 +335,10 @@ const onMessageHandler = (event: MessageEvent) => {
 			LightTaskHandlers.handleUnregisterChunk(event.data);
 			return;
 		}
+		case WorkerTaskType.LightUnregisterChunkBatch: {
+			LightTaskHandlers.handleUnregisterChunkBatch(event.data);
+			return;
+		}
 		case WorkerTaskType.LightUpdateChunkBuffers: {
 			LightTaskHandlers.handleUpdateBuffers(event.data);
 			return;

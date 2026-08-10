@@ -8,6 +8,7 @@
  * re-sending all the data.
  */
 
+import type { Chunk } from "../../World/Chunk/Chunk";
 import { LevelDbChunkStore } from "../../World/Storage/LevelDbChunkStore";
 import {
 	deserializeVoxelData,
@@ -18,7 +19,6 @@ import {
 	decodeChunkData,
 	decodeChunkDataBatch,
 	decodeChunkUnchanged,
-	hashChunk,
 } from "../protocol/encoder";
 import { MessageType } from "../protocol/messages";
 
@@ -28,7 +28,7 @@ export interface RemoteChunkData {
 	chunkZ: number;
 	blocks: Uint8Array;
 	light: Uint8Array;
-	palette?: number[];
+	palette?: Uint16Array;
 	isUniform: boolean;
 	uniformBlockId: number;
 	hash: number;
@@ -60,46 +60,56 @@ export class RemoteChunkProvider {
 
 			if (data[0] === MessageType.ChunkData) {
 				const chunk = decodeChunkData(data);
-				const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
-				this.chunkHashes.set(key, chunk.hash);
+				const resolved: RemoteChunkData = {
+					...chunk,
+					palette: chunk.palette ? Uint16Array.from(chunk.palette) : undefined,
+				};
+				const key = `${resolved.chunkX},${resolved.chunkY},${resolved.chunkZ}`;
+				this.chunkHashes.set(key, resolved.hash);
 				// Cache chunk locally
 				this.saveChunkToLocal(
-					chunk.chunkX,
-					chunk.chunkY,
-					chunk.chunkZ,
-					chunk.blocks,
-					chunk.light,
-					chunk.palette,
-					chunk.isUniform,
-					chunk.uniformBlockId,
+					resolved.chunkX,
+					resolved.chunkY,
+					resolved.chunkZ,
+					resolved.blocks,
+					resolved.light,
+					resolved.palette,
+					resolved.isUniform,
+					resolved.uniformBlockId,
 				);
 				const pending = this.pending.get(key);
 				if (pending) {
 					this.pending.delete(key);
-					pending.resolve(chunk);
+					pending.resolve(resolved);
 				}
 			} else if (data[0] === MessageType.ChunkDataBatch) {
 				// Batch response — multiple chunks in one message
 				const chunks = decodeChunkDataBatch(data);
 				for (const chunk of chunks) {
-					const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
-					this.chunkHashes.set(key, chunk.hash);
+					const resolved: RemoteChunkData = {
+						...chunk,
+						palette: chunk.palette
+							? Uint16Array.from(chunk.palette)
+							: undefined,
+					};
+					const key = `${resolved.chunkX},${resolved.chunkY},${resolved.chunkZ}`;
+					this.chunkHashes.set(key, resolved.hash);
 					// Cache chunk locally
 					this.saveChunkToLocal(
-						chunk.chunkX,
-						chunk.chunkY,
-						chunk.chunkZ,
-						chunk.blocks,
-						chunk.light,
-						chunk.palette,
-						chunk.isUniform,
-						chunk.uniformBlockId,
+						resolved.chunkX,
+						resolved.chunkY,
+						resolved.chunkZ,
+						resolved.blocks,
+						resolved.light,
+						resolved.palette,
+						resolved.isUniform,
+						resolved.uniformBlockId,
 					);
 
 					const pending = this.pending.get(key);
 					if (pending) {
 						this.pending.delete(key);
-						pending.resolve(chunk);
+						pending.resolve(resolved);
 					}
 				}
 			} else if (data[0] === MessageType.ChunkUnchanged) {
@@ -136,31 +146,68 @@ export class RemoteChunkProvider {
 	): Promise<RemoteChunkData | null> {
 		const blob = await this.store.readChunk(cx, cy, cz);
 		if (!blob) return null;
+		return this.deserializeCached(blob, cx, cy, cz);
+	}
+
+	/**
+	 * Batched cache lookup for a set of chunks: single readChunks call (one
+	 * IndexedDB transaction) instead of N sequential per-chunk awaits.
+	 * PERF: skips hashChunk entirely — the hash is populated from server
+	 * responses, never recomputed from the blob.
+	 */
+	async getCachedChunks(
+		chunks: readonly Chunk[],
+	): Promise<Map<Chunk, RemoteChunkData | null>> {
+		const result = new Map<Chunk, RemoteChunkData | null>();
+		if (chunks.length === 0) return result;
+
+		const coords: Array<{ cx: number; cy: number; cz: number; key: string }> =
+			new Array(chunks.length);
+		for (let i = 0; i < chunks.length; i++) {
+			const c = chunks[i];
+			coords[i] = {
+				cx: c.chunkX,
+				cy: c.chunkY,
+				cz: c.chunkZ,
+				key: `${c.chunkX},${c.chunkY},${c.chunkZ}`,
+			};
+		}
+
+		const blobs = await this.store.readChunks(coords);
+		for (let i = 0; i < chunks.length; i++) {
+			const c = chunks[i];
+			const blob = blobs.get(coords[i].key);
+			result.set(
+				c,
+				blob
+					? this.deserializeCached(blob, c.chunkX, c.chunkY, c.chunkZ)
+					: null,
+			);
+		}
+		return result;
+	}
+
+	/** Zero-copy view conversion of a stored blob into RemoteChunkData. */
+	private deserializeCached(
+		blob: Uint8Array,
+		cx: number,
+		cy: number,
+		cz: number,
+	): RemoteChunkData {
 		const deserialized = deserializeVoxelData(blob);
-		const blocks =
-			deserialized.blocks instanceof Uint8Array
-				? deserialized.blocks
-				: new Uint8Array(0);
-		const light = deserialized.lightArray ?? new Uint8Array(0);
-		const hash = hashChunk(
-			blocks,
-			light,
-			deserialized.palette ? Array.from(deserialized.palette) : undefined,
-		);
-		const key = `${cx},${cy},${cz}`;
-		this.chunkHashes.set(key, hash);
 		return {
 			chunkX: cx,
 			chunkY: cy,
 			chunkZ: cz,
-			blocks,
-			light,
-			palette: deserialized.palette
-				? Array.from(deserialized.palette)
-				: undefined,
+			blocks:
+				deserialized.blocks instanceof Uint8Array
+					? deserialized.blocks
+					: new Uint8Array(0),
+			light: deserialized.lightArray ?? new Uint8Array(0),
+			palette: deserialized.palette ?? undefined,
 			isUniform: deserialized.isUniform ?? false,
 			uniformBlockId: deserialized.uniformBlockId ?? 0,
-			hash,
+			hash: 0,
 		};
 	}
 
@@ -171,14 +218,14 @@ export class RemoteChunkProvider {
 		cz: number,
 		blocks: Uint8Array,
 		light: Uint8Array,
-		palette: number[] | undefined,
+		palette: Uint16Array | undefined,
 		isUniform: boolean,
 		uniformBlockId: number,
 	): void {
 		try {
 			const blob = serializeVoxelData(
 				blocks,
-				palette ? Uint16Array.from(palette) : null,
+				palette ?? null,
 				isUniform,
 				uniformBlockId,
 				light,

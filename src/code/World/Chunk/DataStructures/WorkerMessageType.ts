@@ -21,6 +21,7 @@ export const enum WorkerTaskType {
 	LightSetClosedFaceMask,
 	LightRegisterChunk,
 	LightUnregisterChunk,
+	LightUnregisterChunkBatch,
 	LightUpdateChunkBuffers,
 	LightMutate,
 	LightAddEmission,
@@ -31,6 +32,7 @@ export const enum WorkerTaskType {
 	// --- Voxel-worker registration (SAB-direct mesh borders) ---
 	VoxelRegisterChunk,
 	VoxelUnregisterChunk,
+	VoxelUnregisterChunkBatch,
 	VoxelUpdateChunkBuffers,
 	// --- World bootstrap ---
 	SetWorldSeed,
@@ -173,6 +175,7 @@ export type WorkerRequestData =
 	| LightSetClosedFaceMaskRequest
 	| LightRegisterChunkRequest
 	| LightUnregisterChunkRequest
+	| LightUnregisterChunkBatchRequest
 	| LightUpdateChunkBuffersRequest
 	| LightMutateRequest
 	| LightAddEmissionRequest
@@ -180,6 +183,7 @@ export type WorkerRequestData =
 	| LightPropagateDeferredRequest
 	| VoxelRegisterChunkRequest
 	| VoxelUnregisterChunkRequest
+	| VoxelUnregisterChunkBatchRequest
 	| VoxelUpdateChunkBuffersRequest
 	| SetWorldSeedRequest;
 
@@ -214,6 +218,11 @@ export type LightRegisterChunkRequest = {
 export type LightUnregisterChunkRequest = {
 	type: WorkerTaskType.LightUnregisterChunk;
 	chunkId: bigint;
+};
+
+export type LightUnregisterChunkBatchRequest = {
+	type: WorkerTaskType.LightUnregisterChunkBatch;
+	chunkIds: bigint[];
 };
 
 export type LightUpdateChunkBuffersRequest = {
@@ -306,6 +315,11 @@ export type VoxelUnregisterChunkRequest = {
 	chunkX: number;
 	chunkY: number;
 	chunkZ: number;
+};
+
+export type VoxelUnregisterChunkBatchRequest = {
+	type: WorkerTaskType.VoxelUnregisterChunkBatch;
+	chunks: Array<{ chunkX: number; chunkY: number; chunkZ: number }>;
 };
 
 export type VoxelUpdateChunkBuffersRequest = {
