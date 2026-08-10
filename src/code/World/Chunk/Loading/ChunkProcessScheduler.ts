@@ -129,7 +129,11 @@ export class ChunkProcessScheduler {
 	}
 
 	/** Race a promise against a timeout. Resolves with fallback on timeout. */
-	private withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+	private withTimeout<T>(
+		promise: Promise<T>,
+		ms: number,
+		fallback: T,
+	): Promise<T> {
 		return Promise.race([
 			promise,
 			new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
@@ -392,31 +396,31 @@ export class ChunkProcessScheduler {
 							for (const r of state.farRequests)
 								this._farIdScratch.push(r.chunk.id);
 
-						await this.withTimeout(
-							Promise.all([
-								state.nearRequests.length > 0
-									? WorldStorage.loadChunks(
-											this._nearIdScratch,
-											{ includeVoxelData: true },
-											state.nearLoadedDataMap,
-										)
-									: Promise.resolve(),
+							await this.withTimeout(
+								Promise.all([
+									state.nearRequests.length > 0
+										? WorldStorage.loadChunks(
+												this._nearIdScratch,
+												{ includeVoxelData: true },
+												state.nearLoadedDataMap,
+											)
+										: Promise.resolve(),
 
-								state.farRequests.length > 0
-									? WorldStorage.loadChunks(
-											this._farIdScratch,
-											{ includeVoxelData: false },
-											state.farLoadedDataMap,
-										)
-									: Promise.resolve(),
-							]),
-							500,
-							undefined,
-						);
-						if (this.checkDeadline()) {
-							timedOut = true;
-							break;
-						}
+									state.farRequests.length > 0
+										? WorldStorage.loadChunks(
+												this._farIdScratch,
+												{ includeVoxelData: false },
+												state.farLoadedDataMap,
+											)
+										: Promise.resolve(),
+								]),
+								500,
+								undefined,
+							);
+							if (this.checkDeadline()) {
+								timedOut = true;
+								break;
+							}
 
 							this.beginSlice(state);
 							state.stage = ProcessStage.ApplyLoadedChunks;

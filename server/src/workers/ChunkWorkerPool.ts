@@ -19,6 +19,10 @@ import { Worker } from "node:worker_threads";
 interface ChunkResult {
 	blocks: Uint8Array;
 	light: Uint8Array;
+	palette?: number[];
+	isUniform: boolean;
+	uniformBlockId: number;
+	hash: number;
 }
 
 type PendingTask =
@@ -40,7 +44,16 @@ type PendingTask =
 	  };
 
 type WorkerMessage =
-	| { id: number; kind: "single"; blocks: Uint8Array; light: Uint8Array }
+	| {
+			id: number;
+			kind: "single";
+			blocks: Uint8Array;
+			light: Uint8Array;
+			palette?: number[];
+			isUniform: boolean;
+			uniformBlockId: number;
+			hash: number;
+	  }
 	| { id: number; kind: "batch"; items: ChunkResult[] }
 	| { id: number; error: string };
 
@@ -133,7 +146,14 @@ export class ChunkWorkerPool {
 		if ("error" in msg) {
 			task.reject(new Error(msg.error));
 		} else if (task.kind === "single" && msg.kind === "single") {
-			task.resolve({ blocks: msg.blocks, light: msg.light });
+			task.resolve({
+				blocks: msg.blocks,
+				light: msg.light,
+				palette: msg.palette,
+				isUniform: msg.isUniform,
+				uniformBlockId: msg.uniformBlockId,
+				hash: msg.hash,
+			});
 		} else if (task.kind === "batch" && msg.kind === "batch") {
 			task.resolve(msg.items);
 		} else {
@@ -214,8 +234,9 @@ export class ChunkWorkerPool {
 
 		const workerCount = Math.max(1, this.workers.length);
 		const groupSize = Math.ceil(coords.length / workerCount);
-		const groups: Array<Array<{ chunkX: number; chunkY: number; chunkZ: number }>> =
-			[];
+		const groups: Array<
+			Array<{ chunkX: number; chunkY: number; chunkZ: number }>
+		> = [];
 
 		for (let i = 0; i < coords.length; i += groupSize) {
 			groups.push(coords.slice(i, i + groupSize));

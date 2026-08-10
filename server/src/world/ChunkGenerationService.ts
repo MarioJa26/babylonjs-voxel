@@ -8,13 +8,8 @@
  * served from disk on subsequent requests (no regeneration needed).
  */
 
-import {
-	packChunkKeyFast,
-	unpackChunkKeyFast,
-} from "@/code/World/Storage/ChunkKey.ts";
-import { hashChunk } from "@/code/Network/protocol/encoder.ts";
+import { packChunkKeyFast } from "@/code/World/Storage/ChunkKey.ts";
 import { ChunkWorkerPool } from "../workers/ChunkWorkerPool.ts";
-import { compressBlocks } from "./ChunkCompression.ts";
 import type { ServerWorldStorage } from "./ServerWorldStorage.ts";
 
 export interface ChunkData {
@@ -27,11 +22,6 @@ export interface ChunkData {
 	isUniform: boolean;
 	uniformBlockId: number;
 	hash: number;
-}
-
-interface RawChunkResult {
-	blocks: Uint8Array;
-	light: Uint8Array;
 }
 
 export class ChunkGenerationService {
@@ -86,8 +76,19 @@ export class ChunkGenerationService {
 	): Promise<ChunkData> {
 		await this.ensurePool();
 		const raw = await this.pool.dispatch(chunkX, chunkY, chunkZ);
-		const data = this.finalizeChunk(chunkX, chunkY, chunkZ, raw);
-		await this.saveChunk(data);
+		// Worker already compressed + hashed — just wrap into ChunkData.
+		const data: ChunkData = {
+			chunkX,
+			chunkY,
+			chunkZ,
+			blocks: raw.blocks,
+			light: raw.light,
+			palette: raw.palette,
+			isUniform: raw.isUniform,
+			uniformBlockId: raw.uniformBlockId,
+			hash: raw.hash,
+		};
+		this.saveChunk(data);
 		return data;
 	}
 
@@ -103,6 +104,7 @@ export class ChunkGenerationService {
 			cx: number;
 			cy: number;
 			cz: number;
+			key: number;
 		}> = [];
 
 		for (let i = 0; i < coords.length; i++) {
@@ -115,66 +117,62 @@ export class ChunkGenerationService {
 				continue;
 			}
 
-			toFetch.push({ index: i, cx, cy, cz });
+			toFetch.push({ index: i, cx, cy, cz, key });
 		}
 
 		// Resolve dedup hits in parallel (they may already be in flight).
-		await Promise.all(
-			dedupHits.map((hit) =>
-				hit.promise.then((data) => {
-					results[hit.index] = data;
-				}),
-			),
-		);
+		if (dedupHits.length > 0) {
+			await Promise.all(
+				dedupHits.map((hit) =>
+					hit.promise.then((data) => {
+						results[hit.index] = data;
+					}),
+				),
+			);
+		}
 
 		if (toFetch.length > 0) {
+			// Create deferred promises and register them in dedupMap BEFORE
+			// dispatching, so concurrent overlapping batches reuse in-flight
+			// work instead of generating the same chunks again.
+			const deferreds = toFetch.map((t) => {
+				let resolve!: (data: ChunkData) => void;
+				const promise = new Promise<ChunkData>((r) => {
+					resolve = r;
+				});
+				this.dedupMap.set(t.key, promise);
+				return { t, resolve, promise };
+			});
+
+			// Dispatch all missing chunks to the worker pool in parallel.
+			// dispatchAll groups coords per worker for efficient batch IPC.
 			const batchResults = await this.pool.dispatchAll(
 				toFetch.map((t) => ({ chunkX: t.cx, chunkY: t.cy, chunkZ: t.cz })),
 			);
 
-			// Finalize all chunks (CPU work, but fast compared to generation)
-			const finalized = new Array(toFetch.length);
+			// Workers already compress + hash; finalize = build ChunkData.
 			for (let i = 0; i < toFetch.length; i++) {
-				finalized[i] = this.finalizeChunk(
-					toFetch[i].cx,
-					toFetch[i].cy,
-					toFetch[i].cz,
-					batchResults[i],
-				);
-			}
-
-			// Save all chunks in parallel (I/O bound)
-			await Promise.all(finalized.map((data) => this.saveChunk(data)));
-
-			for (let i = 0; i < toFetch.length; i++) {
-				results[toFetch[i].index] = finalized[i];
+				const d = deferreds[i];
+				const raw = batchResults[i];
+				const data: ChunkData = {
+					chunkX: d.t.cx,
+					chunkY: d.t.cy,
+					chunkZ: d.t.cz,
+					blocks: raw.blocks,
+					light: raw.light,
+					palette: raw.palette,
+					isUniform: raw.isUniform,
+					uniformBlockId: raw.uniformBlockId,
+					hash: raw.hash,
+				};
+				results[d.t.index] = data;
+				this.dedupMap.delete(d.t.key);
+				this.saveChunk(data);
+				d.resolve(data);
 			}
 		}
 
 		return results;
-	}
-
-	private finalizeChunk(
-		chunkX: number,
-		chunkY: number,
-		chunkZ: number,
-		raw: RawChunkResult,
-	): ChunkData {
-		const { blocks, light } = raw;
-		const compressed = compressBlocks(blocks);
-		const hash = hashChunk(compressed.data, light, compressed.palette);
-
-		return {
-			chunkX,
-			chunkY,
-			chunkZ,
-			blocks: compressed.data,
-			light,
-			palette: compressed.palette,
-			isUniform: compressed.isUniform,
-			uniformBlockId: compressed.uniformBlockId,
-			hash,
-		};
 	}
 
 	/**
@@ -184,7 +182,7 @@ export class ChunkGenerationService {
 		this.storage = storage;
 	}
 
-	private async saveChunk(data: ChunkData): Promise<void> {
+	private saveChunk(data: ChunkData): void {
 		if (!this.storage) return;
 		this.storage.writeChunk(data);
 	}

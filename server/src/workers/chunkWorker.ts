@@ -2,14 +2,20 @@
  * chunkWorker.ts — Node.js worker thread for parallel chunk generation.
  *
  * Each worker owns one WorldGenerator instance. Receives single or batch
- * chunk requests, generates terrain, and posts results back with zero-copy
- * buffer transfers (WorldGenerator allocates a fresh buffer per chunk).
+ * chunk requests, generates terrain, compresses blocks, computes the hash,
+ * and posts finalized results back with zero-copy buffer transfers.
+ *
+ * Compression + hashing happen here (not on the main thread) so the event
+ * loop is never blocked by per-chunk CPU work, and the IPC payload is
+ * smaller (compressed blocks instead of raw 32768-byte arrays).
  *
  * When wasmEnabled is true, loads the WASM SIMD noise backend before
  * constructing the WorldGenerator — same backend the client uses.
  */
 import { parentPort } from "node:worker_threads";
 import { loadWasmNoiseFromFile } from "@/code/Lib/WasmNoise";
+import { hashChunk } from "@/code/Network/protocol/encoder.ts";
+import { compressBlocks } from "../world/ChunkCompression.ts";
 
 type ChunkCoord = {
 	chunkX: number;
@@ -37,11 +43,20 @@ type ChunkResult = {
 	light: Uint8Array;
 };
 
+type FinalizedChunk = {
+	blocks: Uint8Array;
+	light: Uint8Array;
+	palette?: number[];
+	isUniform: boolean;
+	uniformBlockId: number;
+	hash: number;
+};
+
 type GenSuccess = GenResultMessage;
 type GenBatchSuccess = {
 	id: number;
 	kind: "batch";
-	items: ChunkResult[];
+	items: FinalizedChunk[];
 };
 
 type GenResultMessage = {
@@ -49,6 +64,10 @@ type GenResultMessage = {
 	kind: "single";
 	blocks: Uint8Array;
 	light: Uint8Array;
+	palette?: number[];
+	isUniform: boolean;
+	uniformBlockId: number;
+	hash: number;
 };
 
 type GenError = {
@@ -119,17 +138,35 @@ function generateOne(c: ChunkCoord): ChunkResult {
 	return gen.generateChunkData(c.chunkX, c.chunkY, c.chunkZ);
 }
 
+function finalizeOne(raw: ChunkResult): FinalizedChunk {
+	const compressed = compressBlocks(raw.blocks);
+	const hash = hashChunk(compressed.data, raw.light, compressed.palette);
+	return {
+		blocks: compressed.data,
+		light: raw.light,
+		palette: compressed.palette,
+		isUniform: compressed.isUniform,
+		uniformBlockId: compressed.uniformBlockId,
+		hash,
+	};
+}
+
 function handleRequest(req: GenRequest): void {
 	ensureInit(req.seed, req.wasmEnabled)
 		.then(() => {
-			const result = generateOne(req);
+			const raw = generateOne(req);
+			const finalized = finalizeOne(raw);
 			const msg: GenSuccess = {
 				id: req.id,
 				kind: "single",
-				blocks: result.blocks,
-				light: result.light,
+				blocks: finalized.blocks,
+				light: finalized.light,
+				palette: finalized.palette,
+				isUniform: finalized.isUniform,
+				uniformBlockId: finalized.uniformBlockId,
+				hash: finalized.hash,
 			};
-			parentPort!.postMessage(msg, collectTransferable([result]));
+			parentPort!.postMessage(msg, collectTransferable([raw]));
 		})
 		.catch((err: unknown) => {
 			const msg: GenError = {
@@ -143,12 +180,16 @@ function handleRequest(req: GenRequest): void {
 function handleBatchRequest(req: GenBatchRequest): void {
 	ensureInit(req.seed, req.wasmEnabled)
 		.then(() => {
-			const items: ChunkResult[] = [];
+			const raws: ChunkResult[] = [];
 			for (const c of req.items) {
-				items.push(generateOne(c));
+				raws.push(generateOne(c));
+			}
+			const items: FinalizedChunk[] = new Array(raws.length);
+			for (let i = 0; i < raws.length; i++) {
+				items[i] = finalizeOne(raws[i]);
 			}
 			const msg: GenBatchSuccess = { id: req.id, kind: "batch", items };
-			parentPort!.postMessage(msg, collectTransferable(items));
+			parentPort!.postMessage(msg, collectTransferable(raws));
 		})
 		.catch((err: unknown) => {
 			const msg: GenError = {

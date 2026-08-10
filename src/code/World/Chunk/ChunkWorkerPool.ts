@@ -2594,10 +2594,7 @@ export class ChunkWorkerPool {
 							this.broadcastLightRegister(chunk);
 							this.broadcastVoxelRegister(chunk);
 							chunk.scheduleRemesh(true, true);
-							scheduleChunkAndNeighborsRemesh(
-								chunk,
-								this._boundScheduleRemesh,
-							);
+							scheduleChunkAndNeighborsRemesh(chunk, this._boundScheduleRemesh);
 						} else {
 							// No local cache either — mark loaded so it's not stuck
 							chunk.isLoaded = true;

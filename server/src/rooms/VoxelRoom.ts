@@ -59,6 +59,7 @@ const MAX_STORED_EDITS = 1000; // Keep last N edits for new joiners
 const TIME_BROADCAST_INTERVAL = 5000; // Broadcast time every 5 seconds
 const FULL_SNAPSHOT_INTERVAL = 2000; // Periodic full player-state broadcast (ms)
 const PLAYER_SAVE_INTERVAL = 3000; // Position persistence debounce (ms)
+const MAX_CHUNK_BATCH = 128; // Cap chunks per batch request (prevents DoS)
 
 export class VoxelRoom extends Room {
 	private players = new Map<string, ServerPlayerState>();
@@ -503,6 +504,12 @@ export class VoxelRoom extends Room {
 			case MessageType.ChunkRequestBatch: {
 				const requests = dec.readChunkRequestBatch();
 				const valid = requests.filter((r: { lod: number }) => r.lod === 0);
+				if (valid.length > MAX_CHUNK_BATCH) {
+					console.warn(
+						`[VoxelRoom] ChunkRequestBatch from ${client.sessionId} exceeds cap (${valid.length} > ${MAX_CHUNK_BATCH}), truncating`,
+					);
+					valid.length = MAX_CHUNK_BATCH;
+				}
 				if (valid.length > 0) {
 					void this.handleBatchChunkRequest(client, valid);
 				}
