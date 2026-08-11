@@ -206,9 +206,13 @@ function handleRequest(req: GenRequest): void {
 function handleBatchRequest(req: GenBatchRequest): void {
 	ensureInit(req.seed, req.wasmEnabled)
 		.then(() => {
-			const raws: ChunkResult[] = [];
-			for (const c of req.items) {
-				raws.push(generateOne(c));
+			// Items arrive sorted by (chunkX, chunkZ, chunkY) from the server.
+			// Process them in order so same-column chunks are generated
+			// consecutively, maximizing hits in SurfaceGenerator.columnCache
+			// (which caches per-column prepasses keyed by chunkX, chunkZ).
+			const raws: ChunkResult[] = new Array(req.items.length);
+			for (let i = 0; i < req.items.length; i++) {
+				raws[i] = generateOne(req.items[i]);
 			}
 			const items: FinalizedChunk[] = new Array(raws.length);
 			for (let i = 0; i < raws.length; i++) {

@@ -258,6 +258,14 @@ export class ChunkGenerationService {
 		}
 
 		if (owned.length > 0) {
+			// Sort owned entries by column (chunkX, chunkZ) then by chunkY so
+			// that dispatchAll sends column-coherent batches to workers. This
+			// lets workers reuse column-level noise/state across Y-levels.
+			owned.sort((a, b) => {
+				if (a.entry.chunkX !== b.entry.chunkX) return a.entry.chunkX - b.entry.chunkX;
+				if (a.entry.chunkZ !== b.entry.chunkZ) return a.entry.chunkZ - b.entry.chunkZ;
+				return a.entry.chunkY - b.entry.chunkY;
+			});
 			void this.dispatchOwnedBatch(owned);
 		}
 

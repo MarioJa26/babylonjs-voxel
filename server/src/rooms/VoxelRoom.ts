@@ -1098,14 +1098,13 @@ export class VoxelRoom extends Room {
 			console.log(`[VoxelRoom] handleBatchChunkRequest: ${unique.length} unique chunks, versions: ${unique.slice(0, 3).map((r) => r.cachedVersion).join(",")}`);
 			const storedMap = await this.worldStorage.readChunks(coords);
 
-			const missing: typeof requests = [];
-			const fullChunks: StoredChunkData[] = [];
-			const unchangedChunks: Array<{ cx: number; cy: number; cz: number; version: number }> = [];
 			const missingCoords: Array<{
 				chunkX: number;
 				chunkY: number;
 				chunkZ: number;
 			}> = [];
+			const fullChunks: StoredChunkData[] = [];
+			const unchangedChunks: Array<{ cx: number; cy: number; cz: number; version: number }> = [];
 
 			for (let i = 0; i < unique.length; i++) {
 				const r = unique[i];
@@ -1124,7 +1123,6 @@ export class VoxelRoom extends Room {
 						fullChunks.push(stored);
 					}
 				} else {
-					missing.push(r);
 					missingCoords.push({
 						chunkX: r.cx,
 						chunkY: r.cy,
@@ -1133,36 +1131,70 @@ export class VoxelRoom extends Room {
 				}
 			}
 
-			if (missing.length > 0) {
-				const generated =
-					await this.chunkGen.generateChunksBatch(missingCoords);
-
-				for (let i = 0; i < generated.length; i++) {
-					fullChunks.push(generated[i]);
-				}
+			// Send storage hits immediately so the client doesn't wait for
+			// generation of missing chunks to get cached data.
+			if (fullChunks.length > 0) {
+				this.sendChunkDataBatch(client, fullChunks);
+			}
+			if (unchangedChunks.length > 0) {
+				this.sendUnchangedBatch(client, unchangedChunks);
 			}
 
-			this.sendChunkDataBatch(client, fullChunks);
-
-			if (unchangedChunks.length > 0) {
-				const enc = this.chunkBatchEncoder;
-				enc.reset();
-				enc.writeUint8(MessageType.ChunkUnchangedBatch);
-				enc.writeUint16(unchangedChunks.length);
-				for (let i = 0; i < unchangedChunks.length; i++) {
-					const u = unchangedChunks[i];
-					enc.writeInt32(u.cx);
-					enc.writeInt32(u.cy);
-					enc.writeInt32(u.cz);
-					enc.writeUint32(u.version);
+			// Generate missing chunks. Wrap in try-catch so a failure in one
+			// chunk doesn't prevent the batch from completing.
+			if (missingCoords.length > 0) {
+				try {
+					const generated =
+						await this.chunkGen.generateChunksBatch(missingCoords);
+					this.sendChunkDataBatch(client, generated);
+				} catch (genErr) {
+					console.error(
+						`[VoxelRoom] Generation failed for ${missingCoords.length} chunks:`,
+						genErr,
+					);
+					// Send individual requests as fallback so at least some chunks
+					// succeed even if the batch dispatch failed.
+					for (const coord of missingCoords) {
+						try {
+							const data = await this.chunkGen.generateChunk(
+								coord.chunkX,
+								coord.chunkY,
+								coord.chunkZ,
+							);
+							this.sendChunkDataBatch(client, [data]);
+						} catch (singleErr) {
+							console.error(
+								`[VoxelRoom] Single chunk gen failed: ${coord.chunkX},${coord.chunkY},${coord.chunkZ}`,
+								singleErr,
+							);
+						}
+					}
 				}
-				client.sendBytes("binary", enc.getBytes());
 			}
 		} catch (err) {
 			console.error(
-				`[VoxelRoom] Batch chunk gen failed (${requests.length} chunks):`,
+				`[VoxelRoom] Batch chunk request failed (${requests.length} chunks):`,
 				err,
 			);
 		}
+	}
+
+	private sendUnchangedBatch(
+		client: Client,
+		unchangedChunks: Array<{ cx: number; cy: number; cz: number; version: number }>,
+	): void {
+		if (unchangedChunks.length === 0) return;
+		const enc = this.chunkBatchEncoder;
+		enc.reset();
+		enc.writeUint8(MessageType.ChunkUnchangedBatch);
+		enc.writeUint16(unchangedChunks.length);
+		for (let i = 0; i < unchangedChunks.length; i++) {
+			const u = unchangedChunks[i];
+			enc.writeInt32(u.cx);
+			enc.writeInt32(u.cy);
+			enc.writeInt32(u.cz);
+			enc.writeUint32(u.version);
+		}
+		client.sendBytes("binary", enc.getBytes());
 	}
 }

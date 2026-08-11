@@ -144,11 +144,13 @@ export class ChunkWorkerPool {
 	private remoteTaskQueue: Chunk[] = [];
 	private remoteTaskQueueSet = new Set<Chunk>();
 	private remoteInFlight = 0;
+	private remoteRetryCount = new Map<string, number>();
+	private readonly MAX_REMOTE_RETRY = 3;
 	// Coalescing guard: at most one pump cycle (one batched cache read) is
 	// active at a time; continuation cycles are deferred to a macrotask so
 	// IndexedDB reads cannot chain into a single frame.
 	private remotePumpScheduled = false;
-	private readonly MAX_REMOTE_CONCURRENT = 8; // Max concurrent server requests
+	private readonly MAX_REMOTE_CONCURRENT = 16; // Max concurrent server requests per pump cycle
 
 	private distantTerrainSharedInit: {
 		positionsBuffer: SharedArrayBuffer;
@@ -2484,21 +2486,7 @@ export class ChunkWorkerPool {
 		if (this.remotePumpScheduled) return;
 		this.remotePumpScheduled = true;
 
-		// Collect up to MAX_REMOTE_CONCURRENT chunks without awaiting — the
-		// cache check below is ONE batched readChunks call (single IndexedDB
-		// transaction) instead of N sequential per-chunk awaits.
-		const toCheck: Chunk[] = [];
-		while (
-			this.remoteTaskQueue.length > 0 &&
-			toCheck.length < this.MAX_REMOTE_CONCURRENT
-		) {
-			const chunk = this.remoteTaskQueue.shift();
-			if (!chunk) continue;
-			this.remoteTaskQueueSet.delete(chunk);
-			if (chunk.isBoatChunk) continue;
-			if (this.remotePendingChunks.has(this.remoteChunkKey(chunk))) continue;
-			toCheck.push(chunk);
-		}
+		const toCheck = this.selectColumnBatch(this.MAX_REMOTE_CONCURRENT);
 
 		if (toCheck.length === 0) {
 			this.remotePumpScheduled = false;
@@ -2509,6 +2497,76 @@ export class ChunkWorkerPool {
 			.getCachedChunks(toCheck)
 			.then((hits) => this.finishRemotePumpCycle(hits, toCheck))
 			.catch(() => this.finishRemotePumpCycle(null, toCheck));
+	}
+
+	/**
+	 * Select up to maxCount chunks from the remote queue, prioritizing chunks
+	 * from the same vertical column (same chunkX, chunkZ) as the first chunk.
+	 * This aligns client request batches with server generation batching so
+	 * workers can reuse column-level noise/state across Y-levels.
+	 */
+	private selectColumnBatch(maxCount: number): Chunk[] {
+		const result: Chunk[] = [];
+		if (this.remoteTaskQueue.length === 0) return result;
+
+		// Take the first chunk as the column anchor
+		const anchor = this.remoteTaskQueue.shift()!;
+		this.remoteTaskQueueSet.delete(anchor);
+		if (!anchor.isBoatChunk && !this.remotePendingChunks.has(this.remoteChunkKey(anchor))) {
+			result.push(anchor);
+		}
+
+		if (result.length === 0 || this.remoteTaskQueue.length === 0) {
+			// Anchor was invalid but queue may still have valid chunks — drain FIFO
+			while (
+				this.remoteTaskQueue.length > 0 &&
+				result.length < maxCount
+			) {
+				const chunk = this.remoteTaskQueue.shift()!;
+				this.remoteTaskQueueSet.delete(chunk);
+				if (chunk.isBoatChunk) continue;
+				if (this.remotePendingChunks.has(this.remoteChunkKey(chunk))) continue;
+				result.push(chunk);
+			}
+			return result;
+		}
+
+		const anchorX = anchor.chunkX;
+		const anchorZ = anchor.chunkZ;
+
+		// Scan remaining queue for same-column chunks and pull them to front
+		let scanIdx = 0;
+		while (scanIdx < this.remoteTaskQueue.length && result.length < maxCount) {
+			const chunk = this.remoteTaskQueue[scanIdx];
+			if (
+				!chunk.isBoatChunk &&
+				!this.remotePendingChunks.has(this.remoteChunkKey(chunk)) &&
+				chunk.chunkX === anchorX &&
+				chunk.chunkZ === anchorZ
+			) {
+				// Remove from queue and add to result
+				this.remoteTaskQueue.splice(scanIdx, 1);
+				this.remoteTaskQueueSet.delete(chunk);
+				result.push(chunk);
+				// Don't increment scanIdx — next item shifted into this slot
+			} else {
+				scanIdx++;
+			}
+		}
+
+		// Fill remaining slots with whatever is available (FIFO fallback)
+		while (
+			this.remoteTaskQueue.length > 0 &&
+			result.length < maxCount
+		) {
+			const chunk = this.remoteTaskQueue.shift()!;
+			this.remoteTaskQueueSet.delete(chunk);
+			if (chunk.isBoatChunk) continue;
+			if (this.remotePendingChunks.has(this.remoteChunkKey(chunk))) continue;
+			result.push(chunk);
+		}
+
+		return result;
 	}
 
 	private remoteChunkKey(chunk: Chunk): string {
@@ -2598,22 +2656,25 @@ export class ChunkWorkerPool {
 		chunk.isTerrainScheduled = false;
 		this.remotePendingChunks.delete(key);
 		this.remoteInFlight--;
-		console.warn(`[RemoteGen] request FAILED ${key}:`, err);
-		// Re-queue so the chunk is retried rather than left unloaded.
+		// Track retry count — drop after MAX_REMOTERetry to avoid infinite loops.
+		const retries = (this.remoteRetryCount.get(key) ?? 0) + 1;
+		this.remoteRetryCount.set(key, retries);
+		if (retries >= this.MAX_REMOTE_RETRY) {
+			console.error(`[RemoteGen] GIVING UP on ${key} after ${retries} attempts:`, err);
+			this.remoteRetryCount.delete(key);
+			return;
+		}
+		console.warn(`[RemoteGen] request FAILED ${key} (attempt ${retries}/${this.MAX_REMOTE_RETRY}):`, err);
+		// Re-queue at FRONT so retries are prioritized over new requests.
 		const live = getChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 		if (live === chunk && !chunk.isLoaded && !chunk.isBoatChunk) {
-			this.enqueueRemoteGenerationRetry(chunk);
+			if (!this.remotePendingChunks.has(key) && !this.remoteTaskQueueSet.has(chunk)) {
+				this.remoteTaskQueue.unshift(chunk);
+				this.remoteTaskQueueSet.add(chunk);
+				chunk.isTerrainScheduled = true;
+			}
 		}
 		this.pumpRemoteGeneration();
-	}
-
-	private enqueueRemoteGenerationRetry(chunk: Chunk): void {
-		const key = `${chunk.chunkX},${chunk.chunkY},${chunk.chunkZ}`;
-		if (this.remotePendingChunks.has(key)) return;
-		if (this.remoteTaskQueueSet.has(chunk)) return;
-		this.remoteTaskQueue.push(chunk);
-		this.remoteTaskQueueSet.add(chunk);
-		chunk.isTerrainScheduled = true;
 	}
 
 	private getQueuedTerrainDeferLighting(chunk: Chunk): boolean {
@@ -2697,6 +2758,7 @@ export class ChunkWorkerPool {
 		const captured = this.remotePendingChunks.get(key) ?? null;
 		this.remotePendingChunks.delete(key);
 		this.remoteInFlight--;
+		this.remoteRetryCount.delete(key);
 
 		// Apply the data to the CURRENT live chunk at these coordinates, not the
 		// instance captured when the request was dispatched. The chunk may have
@@ -2779,7 +2841,11 @@ export class ChunkWorkerPool {
 								this.queueLocalTerrainGeneration(chunk);
 							} else if (retries < 1) {
 								this.remoteNoBlobRetries.set(key, retries + 1);
-								this.enqueueRemoteGenerationRetry(chunk);
+								if (!this.remotePendingChunks.has(key) && !this.remoteTaskQueueSet.has(chunk)) {
+									this.remoteTaskQueue.unshift(chunk);
+									this.remoteTaskQueueSet.add(chunk);
+									chunk.isTerrainScheduled = true;
+								}
 								this.pumpRemoteGeneration();
 							} else {
 								this.remoteNoBlobRetries.delete(key);

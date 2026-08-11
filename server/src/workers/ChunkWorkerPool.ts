@@ -271,9 +271,18 @@ export class ChunkWorkerPool {
 	}
 
 	/**
-	 * Dispatch many chunks in parallel. Coords are split into one contiguous
-	 * group per worker and sent as a single batch message each, so result
-	 * order matches the input order while round-trips stay low.
+	 * Max chunks per column to send to a single worker. Larger columns are
+	 * split across workers so that bulk generation (e.g. joining) can use all
+	 * workers in parallel, while still keeping adjacent Y-levels together for
+	 * SurfaceGenerator.columnCache hits.
+	 */
+	private static readonly MAX_COLUMN_GROUP_SIZE = 4;
+
+	/**
+	 * Dispatch many chunks in parallel. Coords are grouped by vertical column
+	 * (same chunkX, chunkZ) so each worker processes full columns and can
+	 * reuse column-level noise/state. Columns are distributed across workers,
+	 * and results are flattened back into input order.
 	 */
 	dispatchAll(
 		coords: Array<{ chunkX: number; chunkY: number; chunkZ: number }>,
@@ -283,27 +292,93 @@ export class ChunkWorkerPool {
 			return Promise.reject(new Error("Chunk worker pool terminated"));
 		}
 
-		const workerCount = Math.max(1, this.workers.length);
-		const groupSize = Math.ceil(coords.length / workerCount);
-		const groups: Array<
-			Array<{ chunkX: number; chunkY: number; chunkZ: number }>
-		> = [];
+		const maxGroup = ChunkWorkerPool.MAX_COLUMN_GROUP_SIZE;
 
-		for (let i = 0; i < coords.length; i += groupSize) {
-			groups.push(coords.slice(i, i + groupSize));
+		// Track original indices for result reordering
+		const indexed = coords.map((c, i) => ({ ...c, origIndex: i }));
+
+		// Group by column key (chunkX, chunkZ), sorted by chunkY within each column
+		const columnMap = new Map<string, Array<{ chunkX: number; chunkY: number; chunkZ: number; origIndex: number }>>();
+		for (const c of indexed) {
+			const colKey = `${c.chunkX},${c.chunkZ}`;
+			let col = columnMap.get(colKey);
+			if (!col) {
+				col = [];
+				columnMap.set(colKey, col);
+			}
+			col.push(c);
 		}
 
-		return Promise.all(groups.map((group) => this._dispatchBatch(group))).then(
+		// Split large columns into groups of maxGroup size (adjacent Y-levels)
+		const groups: Array<Array<{ chunkX: number; chunkY: number; chunkZ: number; origIndex: number }>> = [];
+		for (const col of columnMap.values()) {
+			col.sort((a, b) => a.chunkY - b.chunkY);
+			if (col.length <= maxGroup) {
+				groups.push(col);
+			} else {
+				// Split into chunks of maxGroup, keeping adjacent Y-levels together
+				for (let i = 0; i < col.length; i += maxGroup) {
+					groups.push(col.slice(i, i + maxGroup));
+				}
+			}
+		}
+
+		// Distribute groups across workers via least-loaded assignment
+		const workerCount = Math.max(1, this.workers.length);
+		const workerGroups: Array<Array<typeof groups[0]>> = Array.from({ length: workerCount }, () => []);
+		const totalChunksPerWorker = new Array(workerCount).fill(0);
+
+		for (const group of groups) {
+			let minWorker = 0;
+			let minChunks = totalChunksPerWorker[0];
+			for (let w = 1; w < workerCount; w++) {
+				if (totalChunksPerWorker[w] < minChunks) {
+					minChunks = totalChunksPerWorker[w];
+					minWorker = w;
+				}
+			}
+			workerGroups[minWorker].push(group);
+			totalChunksPerWorker[minWorker] += group.length;
+		}
+
+		// Build a mapping from flat result position back to original index
+		const origIndices: number[] = [];
+		for (const wGroups of workerGroups) {
+			for (const group of wGroups) {
+				for (const c of group) {
+					origIndices.push(c.origIndex);
+				}
+			}
+		}
+
+		// Dispatch each worker's groups as a single batch
+		const dispatchGroups: Array<Array<{ chunkX: number; chunkY: number; chunkZ: number }>> = [];
+		for (const wGroups of workerGroups) {
+			if (wGroups.length === 0) continue;
+			const batch: Array<{ chunkX: number; chunkY: number; chunkZ: number }> = [];
+			for (const group of wGroups) {
+				for (const c of group) {
+					batch.push({ chunkX: c.chunkX, chunkY: c.chunkY, chunkZ: c.chunkZ });
+				}
+			}
+			dispatchGroups.push(batch);
+		}
+
+		return Promise.all(dispatchGroups.map((g) => this._dispatchBatch(g))).then(
 			(parts) => {
-				// Flatten into a preallocated result array — no throwaway
-				// nested array + .flat() copy per batch dispatch.
-				const results = new Array<ChunkResult>(coords.length);
-				let offset = 0;
+				// Flatten parts in group order
+				const flatResults = new Array<ChunkResult>(coords.length);
+				let flatIdx = 0;
 				for (const part of parts) {
 					for (let i = 0; i < part.length; i++) {
-						results[offset + i] = part[i];
+						flatResults[flatIdx++] = part[i];
 					}
-					offset += part.length;
+				}
+
+				// Reorder: flatResults[i] came from origIndices[i]-th input coord
+				const results = new Array<ChunkResult>(coords.length);
+				for (let i = 0; i < flatResults.length; i++) {
+					results[origIndices[i]] = flatResults[i];
 				}
 				return results;
 			},
