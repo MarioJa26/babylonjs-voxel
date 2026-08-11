@@ -36,6 +36,7 @@ export const MessageType = {
 	WorldTime: 0x17,
 	ChatMessage: 0x18,
 	ChunkDataBatch: 0x19,
+	ChunkUnchangedBatch: 0x1c, // Server → client: multiple "still valid" stamps
 	WorldConfig: 0x1a, // Server → client: authoritative world seed on join
 	SpawnPosition: 0x1b, // Server → client: teleport player to saved position
 } as const;

@@ -347,7 +347,7 @@ export class NetClient {
 		cy: number,
 		cz: number,
 		lod: number,
-		cachedHash = 0,
+		cachedVersion = 0,
 	): void {
 		if (!this.connected || !this.room) {
 			console.warn(
@@ -356,7 +356,7 @@ export class NetClient {
 			return;
 		}
 		this.encoder.reset();
-		this.encoder.writeChunkRequest(cx, cy, cz, lod, cachedHash);
+		this.encoder.writeChunkRequest(cx, cy, cz, lod, cachedVersion);
 		this.room.sendBytes("binary", this.encoder.getBytes());
 	}
 
@@ -366,7 +366,7 @@ export class NetClient {
 			cy: number;
 			cz: number;
 			lod: number;
-			cachedHash: number;
+			cachedVersion: number;
 		}>,
 	): void {
 		if (!this.connected || !this.room || requests.length === 0) return;

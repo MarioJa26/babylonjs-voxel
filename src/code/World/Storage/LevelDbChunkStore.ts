@@ -23,13 +23,14 @@ export class LevelDbChunkStore {
 	private readonly dbPath: string;
 	private batch: any = null;
 	private batchCount = 0;
-	private readonly maxBatchSize = 64;
 	private opened = false;
+	private openPromise: Promise<void> | null = null;
 
 	// LRU read cache — insertion order == access order. On hit, delete+re-set
 	// to move to most-recent end. On full, evict from .keys().next() (LRU).
 	private readonly cache = new Map<string, Uint8Array>();
 	private readonly maxCacheSize: number;
+	private static readonly DEFAULT_BATCH_SIZE = 64;
 
 	constructor(worldName: string, basePath: string, maxCacheSize = 128) {
 		this.dbPath =
@@ -41,14 +42,19 @@ export class LevelDbChunkStore {
 
 	async open(): Promise<void> {
 		if (this.opened) return;
+		if (this.openPromise) return this.openPromise;
 
-		if (typeof window !== "undefined") {
-			await this.openBrowser();
-		} else {
-			await this.openNode();
-		}
-
-		this.opened = true;
+		const promise = (async () => {
+			if (typeof window !== "undefined") {
+				await this.openBrowser();
+			} else {
+				await this.openNode();
+			}
+			this.opened = true;
+		})();
+		this.openPromise = promise;
+		await promise;
+		this.openPromise = null;
 	}
 
 	private async openBrowser(): Promise<void> {
@@ -163,7 +169,7 @@ export class LevelDbChunkStore {
 		this.batch.put(key, data);
 		this.batchCount++;
 
-		if (this.batchCount >= this.maxBatchSize) {
+		if (this.batchCount >= LevelDbChunkStore.DEFAULT_BATCH_SIZE) {
 			const pending = this.batch;
 			this.batch = null;
 			this.batchCount = 0;
@@ -189,6 +195,18 @@ export class LevelDbChunkStore {
 		if (!this.db) return null;
 		const value = await this._get(`\x01${key}`);
 		return value != null ? String(value) : null;
+	}
+
+	async clear(): Promise<void> {
+		this.cache.clear();
+		this.batch = null;
+		this.batchCount = 0;
+		if (!this.db) return;
+		if (typeof window !== "undefined") {
+			await (this.db as IndexedDbStore).clear();
+		} else {
+			await this.db.clear();
+		}
 	}
 
 	async hasChunk(cx: number, cy: number, cz: number): Promise<boolean> {
@@ -243,12 +261,7 @@ export class LevelDbChunkStore {
 
 	private async _put(key: string, value: any): Promise<void> {
 		if (typeof window !== "undefined") {
-			await new Promise<void>((resolve, reject) => {
-				this.db.put(key, value, (err: Error | null) => {
-					if (err) reject(err);
-					else resolve();
-				});
-			});
+			await (this.db as IndexedDbStore).put(key, value);
 		} else {
 			await this.db.put(key, value);
 		}
@@ -344,6 +357,17 @@ class IndexedDbStore {
 
 	batch(): IndexedDbBatch {
 		return new IndexedDbBatch(this.db!, this.storeName);
+	}
+
+	async clear(): Promise<void> {
+		if (!this.db) return;
+		await new Promise<void>((resolve, reject) => {
+			const tx = this.db!.transaction(this.storeName, "readwrite");
+			const store = tx.objectStore(this.storeName);
+			const req = store.clear();
+			req.onsuccess = () => resolve();
+			req.onerror = () => reject(req.error);
+		});
 	}
 
 	async has(keys: string[]): Promise<Set<string>> {

@@ -41,6 +41,16 @@ type PendingTask =
 			coords: Array<{ chunkX: number; chunkY: number; chunkZ: number }>;
 			resolve: (results: ChunkResult[]) => void;
 			reject: (error: Error) => void;
+	  }
+	| {
+			id: number;
+			kind: "relight";
+			chunkX: number;
+			chunkY: number;
+			chunkZ: number;
+			blocks: Uint8Array;
+			resolve: (light: Uint8Array) => void;
+			reject: (error: Error) => void;
 	  };
 
 type WorkerMessage =
@@ -55,6 +65,7 @@ type WorkerMessage =
 			hash: number;
 	  }
 	| { id: number; kind: "batch"; items: ChunkResult[] }
+	| { id: number; light: Uint8Array }
 	| { id: number; error: string };
 
 interface WorkerState {
@@ -148,7 +159,13 @@ export class ChunkWorkerPool {
 
 		if ("error" in msg) {
 			task.reject(new Error(msg.error));
-		} else if (task.kind === "single" && msg.kind === "single") {
+		} else if (task.kind === "relight") {
+			if ("light" in msg && !("kind" in msg)) {
+				task.resolve(msg.light);
+			} else {
+				task.reject(new Error("Mismatched relight response"));
+			}
+		} else if (task.kind === "single" && "kind" in msg && msg.kind === "single") {
 			task.resolve({
 				blocks: msg.blocks,
 				light: msg.light,
@@ -157,7 +174,7 @@ export class ChunkWorkerPool {
 				uniformBlockId: msg.uniformBlockId,
 				hash: msg.hash,
 			});
-		} else if (task.kind === "batch" && msg.kind === "batch") {
+		} else if (task.kind === "batch" && "kind" in msg && msg.kind === "batch") {
 			task.resolve(msg.items);
 		} else {
 			task.reject(new Error("Mismatched worker response"));
@@ -202,6 +219,20 @@ export class ChunkWorkerPool {
 					chunkY: task.chunkY,
 					chunkZ: task.chunkZ,
 				});
+			} else if (task.kind === "relight") {
+				const buffer = task.blocks.buffer;
+				const transferList =
+					buffer instanceof SharedArrayBuffer ? [] : [buffer];
+				freeWorker.worker.postMessage(
+					{
+						id: task.id,
+						chunkX: task.chunkX,
+						chunkY: task.chunkY,
+						chunkZ: task.chunkZ,
+						blocks: task.blocks,
+					},
+					transferList,
+				);
 			} else {
 				freeWorker.worker.postMessage({
 					id: task.id,
@@ -289,6 +320,33 @@ export class ChunkWorkerPool {
 				id,
 				kind: "batch",
 				coords,
+				resolve,
+				reject,
+			});
+			this.processQueue();
+		});
+	}
+
+	postRelight(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		blocks: Uint8Array,
+	): Promise<Uint8Array> {
+		if (this.terminated) {
+			return Promise.reject(new Error("Chunk worker pool terminated"));
+		}
+
+		const id = this.nextId++;
+
+		return new Promise((resolve, reject) => {
+			this.queue.push({
+				id,
+				kind: "relight",
+				chunkX,
+				chunkY,
+				chunkZ,
+				blocks,
 				resolve,
 				reject,
 			});

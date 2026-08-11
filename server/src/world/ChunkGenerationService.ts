@@ -31,6 +31,7 @@ export interface ChunkData {
 	isUniform: boolean;
 	uniformBlockId: number;
 	hash: number;
+	version: number;
 }
 
 interface ChunkCoord {
@@ -176,14 +177,15 @@ export class ChunkGenerationService {
 		const data: ChunkData = {
 			chunkX,
 			chunkY,
-			chunkZ,
-			blocks: raw.blocks,
-			light: raw.light,
-			palette: raw.palette,
-			isUniform: raw.isUniform,
-			uniformBlockId: raw.uniformBlockId,
-			hash: raw.hash,
-		};
+		chunkZ,
+		blocks: raw.blocks,
+		light: raw.light,
+		palette: raw.palette,
+		isUniform: raw.isUniform,
+		uniformBlockId: raw.uniformBlockId,
+		hash: raw.hash,
+		version: 1,
+	};
 
 		// Persist before returning (and before the dedup entry is removed) so
 		// a concurrent request for the same chunk never regenerates it.
@@ -290,17 +292,18 @@ export class ChunkGenerationService {
 			for (let i = 0; i < owned.length; i++) {
 				const { entry } = owned[i];
 				const raw = rawResults[i];
-				chunks[i] = {
-					chunkX: entry.chunkX,
-					chunkY: entry.chunkY,
-					chunkZ: entry.chunkZ,
-					blocks: raw.blocks,
-					light: raw.light,
-					palette: raw.palette,
-					isUniform: raw.isUniform,
-					uniformBlockId: raw.uniformBlockId,
-					hash: raw.hash,
-				};
+			chunks[i] = {
+				chunkX: entry.chunkX,
+				chunkY: entry.chunkY,
+				chunkZ: entry.chunkZ,
+				blocks: raw.blocks,
+				light: raw.light,
+				palette: raw.palette,
+				isUniform: raw.isUniform,
+				uniformBlockId: raw.uniformBlockId,
+				hash: raw.hash,
+				version: 1,
+			};
 			}
 
 			// Persist before resolving so storage catches up while the dedup
@@ -351,6 +354,16 @@ export class ChunkGenerationService {
 				}
 			}),
 		);
+	}
+
+	async relightChunk(
+		cx: number,
+		cy: number,
+		cz: number,
+		blocks: Uint8Array,
+	): Promise<Uint8Array> {
+		await this.ensurePool();
+		return this.pool.postRelight(cx, cy, cz, blocks);
 	}
 
 	async terminate(): Promise<void> {

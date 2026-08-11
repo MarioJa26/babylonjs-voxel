@@ -161,7 +161,7 @@ export class VoxelRoom extends Room {
 		cy: 0,
 		cz: 0,
 		lod: 0,
-		cachedHash: 0,
+		cachedVersion: 0,
 	};
 	// Free list for pendingChunkEdits entries ({x,y,z,blockId} per voxel).
 	// Entries live at most one flush cycle (≤500ms debounce), so they're
@@ -213,6 +213,7 @@ export class VoxelRoom extends Room {
 		);
 		await this.worldStorage.init();
 		this.chunkGen.setStorage(this.worldStorage);
+		this.worldStorage.setWorldGenerator(this.chunkGen);
 
 		// Set up fixed-rate simulation tick (real elapsed time per tick)
 		this.startTickLoop();
@@ -770,7 +771,7 @@ export class VoxelRoom extends Room {
 
 	/** Estimated encoded size of one chunk inside a ChunkDataBatch. */
 	private estimateChunkBytes(c: StoredChunkData): number {
-		let size = 12 + 4 + 1; // coords + hash + flags
+		let size = 12 + 4 + 4 + 1; // coords + hash + version + flags
 		if (c.isUniform) {
 			size += 2;
 		} else if (c.palette) {
@@ -820,6 +821,7 @@ export class VoxelRoom extends Room {
 			enc.writeInt32(c.chunkY);
 			enc.writeInt32(c.chunkZ);
 			enc.writeUint32(c.hash);
+			enc.writeUint32(c.version);
 			let flags = 0;
 			if (c.isUniform) flags |= 1;
 			if (c.palette) flags |= 2;
@@ -948,9 +950,6 @@ export class VoxelRoom extends Room {
 			}
 
 			case MessageType.ChunkRequest: {
-				// Decode into the reused scratch object; the values are
-				// copied into the call arguments synchronously, so sharing
-				// the scratch across messages is safe.
 				const req = dec.readChunkRequestInto(this.chunkRequestScratch);
 				if (req.lod !== 0) break;
 				void this.handleChunkRequest(
@@ -958,23 +957,19 @@ export class VoxelRoom extends Room {
 					req.cx,
 					req.cy,
 					req.cz,
-					req.cachedHash,
+					req.cachedVersion,
 				);
 				break;
 			}
 
 			case MessageType.ChunkRequestBatch: {
-				// Decode into a single array, compacting out lod !== 0 entries
-				// in place (no second .filter() allocation) and bounding the
-				// decode at MAX_CHUNK_BATCH so a hostile packet can't force an
-				// unbounded array + decode pass.
 				const count = Math.min(dec.readUint16(), MAX_CHUNK_BATCH);
 				const requests = new Array<{
 					cx: number;
 					cy: number;
 					cz: number;
 					lod: number;
-					cachedHash: number;
+					cachedVersion: number;
 				}>(count);
 				let write = 0;
 				for (let i = 0; i < count; i++) {
@@ -982,9 +977,9 @@ export class VoxelRoom extends Room {
 					const cy = dec.readInt32();
 					const cz = dec.readInt32();
 					const lod = dec.readUint8();
-					const cachedHash = dec.readUint32();
+					const cachedVersion = dec.readUint32();
 					if (lod !== 0) continue;
-					requests[write++] = { cx, cy, cz, lod, cachedHash };
+					requests[write++] = { cx, cy, cz, lod, cachedVersion };
 				}
 				requests.length = write;
 				if (write > 0) {
@@ -1019,35 +1014,54 @@ export class VoxelRoom extends Room {
 	 * Serve a chunk to the requesting client.
 	 * Checks storage first — only generates if not found in LevelDB.
 	 */
+	/**
+	 * Apply all block edits received so far before serving a chunk request,
+	 * so the returned data always reflects every edit players have already
+	 * made. No-op when nothing is pending.
+	 */
+	private async ensureEditsApplied(): Promise<void> {
+		if (this.dirtyChunks.size === 0) return;
+		try {
+			await this.requestChunkFlush();
+		} catch (error) {
+			console.error(
+				"[VoxelRoom] ensureEditsApplied flush failed:",
+				error,
+			);
+		}
+	}
+
 	private async handleChunkRequest(
 		client: Client,
 		cx: number,
 		cy: number,
 		cz: number,
-		cachedHash: number,
+		cachedVersion: number,
 	): Promise<void> {
 		try {
-			// Check storage first (fast path — no regeneration)
+			await this.ensureEditsApplied();
+			// Version-based reconciliation: the client sends the version of
+			// the data it already has (local cache or save). If it matches
+			// the authoritative version, confirm with a short "unchanged"
+			// stamp so the client applies its local copy; otherwise send the
+			// full authoritative data. ensureEditsApplied() above guarantees
+			// pending edits are flushed before the version is compared, so a
+			// confirmation can never be based on an un-applied edit.
 			const stored = await this.worldStorage.readChunk(cx, cy, cz);
 			if (stored) {
-				if (cachedHash !== 0 && stored.hash === cachedHash) {
-					const msg = encodeChunkUnchanged(cx, cy, cz, stored.hash);
+				if (stored.version === cachedVersion) {
+					console.log(`[VoxelRoom] handleChunkRequest ${cx},${cy},${cz} cachedVersion=${cachedVersion} serverVersion=${stored.version} unchanged`);
+					const msg = encodeChunkUnchanged(cx, cy, cz, stored.version);
 					client.sendBytes("binary", msg);
 					return;
 				}
+				console.log(`[VoxelRoom] handleChunkRequest ${cx},${cy},${cz} cachedVersion=${cachedVersion} serverVersion=${stored.version} sendingFullData`);
 				const msg = encodeChunkData(stored);
 				client.sendBytes("binary", msg);
 				return;
 			}
 
-			// Not in storage — generate, which also saves to storage
 			const chunkData = await this.chunkGen.generateChunk(cx, cy, cz);
-
-			if (cachedHash !== 0 && chunkData.hash === cachedHash) {
-				const msg = encodeChunkUnchanged(cx, cy, cz, chunkData.hash);
-				client.sendBytes("binary", msg);
-				return;
-			}
 
 			const msg = encodeChunkData(chunkData);
 			client.sendBytes("binary", msg);
@@ -1063,10 +1077,11 @@ export class VoxelRoom extends Room {
 			cy: number;
 			cz: number;
 			lod: number;
-			cachedHash: number;
+			cachedVersion: number;
 		}>,
 	): Promise<void> {
 		try {
+			await this.ensureEditsApplied();
 			const unique: typeof requests = [];
 			const coords: Array<{ cx: number; cy: number; cz: number }> = [];
 			const seen = new Set<number>();
@@ -1080,10 +1095,12 @@ export class VoxelRoom extends Room {
 				coords.push({ cx: r.cx, cy: r.cy, cz: r.cz });
 			}
 
+			console.log(`[VoxelRoom] handleBatchChunkRequest: ${unique.length} unique chunks, versions: ${unique.slice(0, 3).map((r) => r.cachedVersion).join(",")}`);
 			const storedMap = await this.worldStorage.readChunks(coords);
 
 			const missing: typeof requests = [];
 			const fullChunks: StoredChunkData[] = [];
+			const unchangedChunks: Array<{ cx: number; cy: number; cz: number; version: number }> = [];
 			const missingCoords: Array<{
 				chunkX: number;
 				chunkY: number;
@@ -1094,9 +1111,15 @@ export class VoxelRoom extends Room {
 				const r = unique[i];
 				const stored = storedMap.get(packChunkKeyFast(r.cx, r.cy, r.cz));
 				if (stored) {
-					if (r.cachedHash !== 0 && stored.hash === r.cachedHash) {
-						const msg = encodeChunkUnchanged(r.cx, r.cy, r.cz, stored.hash);
-						client.sendBytes("binary", msg);
+					if (stored.version === r.cachedVersion) {
+						// Client's copy matches the authoritative version —
+						// confirm it so the client applies its local chunk.
+						unchangedChunks.push({
+							cx: r.cx,
+							cy: r.cy,
+							cz: r.cz,
+							version: stored.version,
+						});
 					} else {
 						fullChunks.push(stored);
 					}
@@ -1115,22 +1138,26 @@ export class VoxelRoom extends Room {
 					await this.chunkGen.generateChunksBatch(missingCoords);
 
 				for (let i = 0; i < generated.length; i++) {
-					const cachedHash = missing[i].cachedHash;
-					if (cachedHash !== 0 && generated[i].hash === cachedHash) {
-						const msg = encodeChunkUnchanged(
-							generated[i].chunkX,
-							generated[i].chunkY,
-							generated[i].chunkZ,
-							generated[i].hash,
-						);
-						client.sendBytes("binary", msg);
-					} else {
-						fullChunks.push(generated[i]);
-					}
+					fullChunks.push(generated[i]);
 				}
 			}
 
 			this.sendChunkDataBatch(client, fullChunks);
+
+			if (unchangedChunks.length > 0) {
+				const enc = this.chunkBatchEncoder;
+				enc.reset();
+				enc.writeUint8(MessageType.ChunkUnchangedBatch);
+				enc.writeUint16(unchangedChunks.length);
+				for (let i = 0; i < unchangedChunks.length; i++) {
+					const u = unchangedChunks[i];
+					enc.writeInt32(u.cx);
+					enc.writeInt32(u.cy);
+					enc.writeInt32(u.cz);
+					enc.writeUint32(u.version);
+				}
+				client.sendBytes("binary", enc.getBytes());
+			}
 		} catch (err) {
 			console.error(
 				`[VoxelRoom] Batch chunk gen failed (${requests.length} chunks):`,

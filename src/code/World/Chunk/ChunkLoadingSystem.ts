@@ -702,6 +702,25 @@ function applyLoadedChunkFromSavedData(
 	const chunk = request.chunk;
 	const targetLod = request.desiredLod;
 
+	// Multiplayer: a local save is at best a copy of an older server
+	// snapshot — another player may have edited this chunk since it was
+	// saved (even while it was unloaded). Never apply stored voxel data
+	// without the server's confirmation. This covers BOTH loading stages:
+	// near chunks (which would skip generation entirely once loaded) and
+	// far chunks (which would otherwise feed stale voxel data through the
+	// hydration stage — ApplyHydration applies the saved data without any
+	// server request). Route to generation instead, which in remote mode
+	// sends the chunk's version to the server so it can confirm the local
+	// copy (ChunkUnchanged) or return the authoritative data.
+	if (ChunkWorkerPool.getInstance().isRemoteGenerationEnabled()) {
+		if (!chunk.isLoaded && !state.chunksToGenerateIds.has(chunk.id)) {
+			chunk.isTerrainScheduled = true;
+			state.chunksToGenerateIds.add(chunk.id);
+			state.chunksToGenerate.push(chunk);
+		}
+		return;
+	}
+
 	state.loadedFromStorageCount++;
 	chunk.lodLevel = targetLod;
 

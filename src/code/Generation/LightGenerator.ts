@@ -247,6 +247,16 @@ export class LightGenerator {
 			}
 		}
 
+		// Seed block light from all emission sources (torches, lava, etc.)
+		for (let i = 0; i < blocks.length; i++) {
+			const emission = LightGenerator.getLightEmission(blocks[i]);
+			if (emission > 0 && (light[i] & 0x0f) < emission) {
+				light[i] = (light[i] & 0xf0) | emission;
+				queue[tail & mask] = i;
+				tail++;
+			}
+		}
+
 		return tail;
 	}
 
@@ -442,6 +452,21 @@ export class LightGenerator {
 
 	private static isTransparentBlock(blockId: number): boolean {
 		return blockId < 128 && LightGenerator._transparentLUT[blockId] === 1;
+	}
+
+	private static readonly _emissionLUT: Uint8Array = (() => {
+		const lut = new Uint8Array(256);
+		lut[10] = 15;
+		lut[11] = 15;
+		lut[24] = 15;
+		lut[94] = 15;
+		return lut;
+	})();
+
+	public static getLightEmission(blockId: number): number {
+		return blockId >= 0 && blockId < 256
+			? LightGenerator._emissionLUT[blockId]
+			: 0;
 	}
 }
 

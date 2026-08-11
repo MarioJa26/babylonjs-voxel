@@ -53,6 +53,19 @@ type FinalizedChunk = {
 	hash: number;
 };
 
+type RelightRequest = {
+	id: number;
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+	blocks: Uint8Array;
+};
+
+type RelightResult = {
+	id: number;
+	light: Uint8Array;
+};
+
 type GenSuccess = GenResultMessage;
 type GenBatchSuccess = {
 	id: number;
@@ -78,6 +91,12 @@ type GenError = {
 
 let generator: {
 	generateChunkData: (x: number, y: number, z: number) => ChunkResult;
+	relightChunk: (
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		blocks: Uint8Array,
+	) => Uint8Array;
 } | null = null;
 
 let currentSeed = "";
@@ -207,10 +226,38 @@ function handleBatchRequest(req: GenBatchRequest): void {
 		});
 }
 
-parentPort!.on("message", (msg: GenRequest | GenBatchRequest) => {
-	if (msg.kind === "batch") {
-		handleBatchRequest(msg);
+function handleRelightRequest(req: RelightRequest): void {
+	if (!generator) {
+		ensureInit("", false)
+			.then(() => doRelight(req))
+			.catch((err: unknown) => {
+				console.error("[chunk-worker] relight init failed:", err);
+			});
 	} else {
-		handleRequest(msg);
+		doRelight(req);
+	}
+}
+
+function doRelight(req: RelightRequest): void {
+	const gen = generator!;
+	const light = gen.relightChunk(
+		req.chunkX,
+		req.chunkY,
+		req.chunkZ,
+		req.blocks,
+	);
+	const msg: RelightResult = { id: req.id, light };
+	const transfer: ArrayBuffer[] =
+		light.buffer instanceof SharedArrayBuffer ? [] : [light.buffer as ArrayBuffer];
+	parentPort!.postMessage(msg, transfer);
+}
+
+parentPort!.on("message", (msg: GenRequest | GenBatchRequest | RelightRequest) => {
+	if ("blocks" in msg && "chunkX" in msg && !("kind" in msg)) {
+		handleRelightRequest(msg as RelightRequest);
+	} else if ((msg as GenBatchRequest).kind === "batch") {
+		handleBatchRequest(msg as GenBatchRequest);
+	} else {
+		handleRequest(msg as GenRequest);
 	}
 });

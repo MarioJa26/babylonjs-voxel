@@ -245,6 +245,17 @@ class WorldStorageImpl {
 		if (!store) return;
 		await store.flush();
 	}
+
+	/**
+	 * Wipe the local chunk store (IndexedDB + memory cache). Used on
+	 * connecting to a server so saved terrain from previous sessions can
+	 * never be served back as if it were server data.
+	 */
+	async clearLocalChunkCache(): Promise<void> {
+		const store = await this.getStore();
+		if (!store) return;
+		await store.clear();
+	}
 }
 
 function chunkIdToCoords(chunkId: bigint): [number, number, number] {

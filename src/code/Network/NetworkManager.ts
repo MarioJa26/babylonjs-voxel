@@ -29,6 +29,7 @@ import {
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
 import { getWorldNameFromUrl, worldSeedFor } from "@/code/World/WorldContext";
+import { WorldStorage } from "@/code/World/WorldStorage";
 import { RemoteChunkProvider } from "./chunk/RemoteChunkProvider";
 import { MultiplayerHUD } from "./MultiplayerHUD";
 import { NetClient, type RemotePlayer } from "./NetClient";
@@ -139,6 +140,14 @@ export class NetworkManager {
 			},
 		});
 
+		// Clear local chunk cache so stale chunks are re-fetched from server
+		await this.chunkProvider.clearCache();
+		// The singleplayer store (WorldStorage) shares the same IndexedDB and
+		// hydrates chunks from saved voxel data — wipe its memory cache + the
+		// shared DB too, otherwise locally saved terrain can be applied to
+		// chunks without ever asking the server.
+		await WorldStorage.clearLocalChunkCache();
+
 		// Multiplayer: don't send a seed — the server uses its config seed.
 		// The server sends back the authoritative seed via WorldConfig on join,
 		// which re-seeds our local terrain (see onWorldConfig callback).
@@ -235,6 +244,9 @@ export class NetworkManager {
 		blockId: number,
 		action: number,
 	): void {
+		console.log(
+			`[NetworkManager] applyRemoteBlockEdit: ${action === BlockActionType.Place ? "PLACE" : "BREAK"} blockId=${blockId} at ${x},${y},${z}`,
+		);
 		if (action === BlockActionType.Place) {
 			setBlock(x, y, z, blockId, 0);
 		} else if (action === BlockActionType.Break) {

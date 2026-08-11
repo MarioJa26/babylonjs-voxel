@@ -33,6 +33,7 @@ import {
 	serializeVoxelData,
 } from "@/code/World/Storage/VoxelSerializer";
 import { compressBlocks, decompressBlocks } from "./ChunkCompression.ts";
+import type { ChunkGenerationService } from "./ChunkGenerationService.ts";
 
 export interface StoredChunkData {
 	readonly chunkX: number;
@@ -44,6 +45,7 @@ export interface StoredChunkData {
 	readonly isUniform: boolean;
 	readonly uniformBlockId: number;
 	readonly hash: number;
+	version: number;
 }
 
 export interface BlockEdit {
@@ -94,6 +96,7 @@ export class ServerWorldStorage {
 	private flushPromise: Promise<void> | null = null;
 	private flushRequested = false;
 	private seed: string;
+	private worldGen: ChunkGenerationService | null = null;
 
 	private readonly chunkMutationQueues = new Map<number, Promise<void>>();
 
@@ -171,6 +174,10 @@ export class ServerWorldStorage {
 		}
 
 		await this.store.flush();
+	}
+
+	setWorldGenerator(gen: ChunkGenerationService): void {
+		this.worldGen = gen;
 	}
 
 	async dispose(): Promise<void> {
@@ -262,7 +269,7 @@ export class ServerWorldStorage {
 			return newerNode.data;
 		}
 
-		const data = this.parseBlob(cx, cy, cz, blob);
+		const data = await this.parseBlob(cx, cy, cz, blob);
 		this.addToCache(key, data);
 		return data;
 	}
@@ -326,7 +333,7 @@ export class ServerWorldStorage {
 						continue;
 					}
 
-					const data = this.parseBlob(cx, cy, cz, blob);
+					const data = await this.parseBlob(cx, cy, cz, blob);
 					this.addToCache(cacheKey, data);
 					results.set(cacheKey, data);
 
@@ -347,12 +354,12 @@ export class ServerWorldStorage {
 		}
 	}
 
-	private parseBlob(
+	private async parseBlob(
 		cx: number,
 		cy: number,
 		cz: number,
 		blob: Uint8Array,
-	): StoredChunkData {
+	): Promise<StoredChunkData> {
 		const value = deserializeVoxelData(blob);
 
 		if (!value.blocks) {
@@ -373,11 +380,6 @@ export class ServerWorldStorage {
 				? value.lightArray
 				: new Uint8Array(0);
 
-		// deserializeVoxelData() yields a Uint16Array (or null) for the
-		// palette. The rest of the server pipeline (hashChunk,
-		// decompressBlocks, VoxelRoom serialization) expects a plain
-		// number[], so convert it here. The palette is tiny (≤16 entries
-		// for packed chunks), so the copy is negligible.
 		const palette: number[] | undefined = value.palette
 			? Array.from(value.palette)
 			: undefined;
@@ -397,6 +399,8 @@ export class ServerWorldStorage {
 			throw new Error(`Chunk ${cx},${cy},${cz} has an invalid palette`);
 		}
 
+		const version = await this.readChunkVersion(cx, cy, cz);
+
 		return {
 			chunkX: cx,
 			chunkY: cy,
@@ -407,7 +411,27 @@ export class ServerWorldStorage {
 			isUniform,
 			uniformBlockId,
 			hash: hashChunk(blocks, light, palette),
+			version,
 		};
+	}
+
+	private async readChunkVersion(cx: number, cy: number, cz: number): Promise<number> {
+		const v = await this.store.getMeta(this.versionKey(cx, cy, cz));
+		if (v === null) return 0;
+		return Number.parseInt(v, 10) || 0;
+	}
+
+	private async writeChunkVersion(
+		cx: number,
+		cy: number,
+		cz: number,
+		version: number,
+	): Promise<void> {
+		await this.store.setMeta(this.versionKey(cx, cy, cz), String(version));
+	}
+
+	private versionKey(cx: number, cy: number, cz: number): string {
+		return `v:${cx},${cy},${cz}`;
 	}
 
 	async writeChunk(data: StoredChunkData): Promise<void> {
@@ -420,9 +444,6 @@ export class ServerWorldStorage {
 	private async writeChunkUnlocked(data: StoredChunkData): Promise<void> {
 		const key = packChunkKeyFast(data.chunkX, data.chunkY, data.chunkZ);
 
-		// Copy the palette into the reused scratch buffer (palettes are ≤16
-		// entries, well under the 256 capacity) and pass a trimmed view —
-		// avoids one Uint16Array allocation per write.
 		let paletteArr: Uint16Array | null = null;
 		if (data.palette) {
 			const scratch = this.paletteScratch;
@@ -442,6 +463,10 @@ export class ServerWorldStorage {
 		);
 
 		await this.store.writeChunk(data.chunkX, data.chunkY, data.chunkZ, blob);
+
+		if (data.version > 0) {
+			await this.writeChunkVersion(data.chunkX, data.chunkY, data.chunkZ, data.version);
+		}
 
 		this.addToCache(key, data);
 		this.dirtyChunks.add(key);
@@ -513,18 +538,30 @@ export class ServerWorldStorage {
 		}
 
 		const compressed = compressBlocks(blocks);
-		const hash = hashChunk(compressed.data, existing.light, compressed.palette);
+
+		// Recalculate light from scratch so emission sources (torches, etc.)
+		// placed by players propagate correctly to all clients.
+		let newLight = existing.light;
+		if (this.worldGen) {
+			newLight = await this.worldGen.relightChunk(cx, cy, cz, blocks);
+		}
+
+		const hash = hashChunk(compressed.data, newLight, compressed.palette);
+		const baseVersion = existing.version > 0 ? existing.version : 1;
+		const newVersion = baseVersion + 1;
+		console.log(`[ServerWorldStorage] applyBlockEdits ${cx},${cy},${cz}: version ${existing.version} (base ${baseVersion}) -> ${newVersion}`);
 
 		await this.writeChunkUnlocked({
 			chunkX: cx,
 			chunkY: cy,
 			chunkZ: cz,
 			blocks: compressed.data,
-			light: existing.light,
+			light: newLight,
 			palette: compressed.palette,
 			isUniform: compressed.isUniform,
 			uniformBlockId: compressed.uniformBlockId,
 			hash,
+			version: newVersion,
 		});
 	}
 

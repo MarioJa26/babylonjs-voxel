@@ -12,7 +12,6 @@ import {
 } from "../MeshPipeline/core/BlockInfoCache";
 import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import { shapeInitPromise } from "../Shape/BlockShapes";
-import { packChunkKey } from "../Storage/ChunkKey";
 import { getWorldNameFromUrl, worldSeedFor } from "../WorldContext";
 import { WorldStorage } from "../WorldStorage";
 import { addChunkDisposeHook, Chunk, getChunk } from "./Chunk";
@@ -133,6 +132,14 @@ export class ChunkWorkerPool {
 	// Remote server-side terrain generation (multiplayer mode)
 	private remoteChunkProvider: RemoteChunkProvider | null = null;
 	private remoteGenerationEnabled = false;
+	// Chunks the server confirmed as unchanged but the client had no local
+	// copy for — retried once before falling back to local generation.
+	private remoteNoBlobRetries = new Map<string, number>();
+
+	/** True when chunk voxel data comes from the server (multiplayer mode). */
+	public isRemoteGenerationEnabled(): boolean {
+		return this.remoteGenerationEnabled;
+	}
 	private remotePendingChunks = new Map<string, Chunk>();
 	private remoteTaskQueue: Chunk[] = [];
 	private remoteTaskQueueSet = new Set<Chunk>();
@@ -2398,6 +2405,20 @@ export class ChunkWorkerPool {
 			this.enqueueRemoteGeneration(chunk, deferLighting);
 			return;
 		}
+		this.queueLocalTerrainGeneration(chunk, deferLighting);
+	}
+
+	/**
+	 * Queue a chunk for LOCAL terrain generation even while remote mode is
+	 * active. Used as a fallback when the server confirms a chunk unchanged
+	 * at version 0 (untouched) and the client has no local copy — the
+	 * deterministic generator produces identical terrain to the server's
+	 * for untouched chunks (the seed is synced on join).
+	 */
+	private queueLocalTerrainGeneration(
+		chunk: Chunk,
+		deferLighting = true,
+	): void {
 		this.terrainTaskQueue.add(chunk);
 		const existing = this.terrainTaskDeferLighting.get(chunk.id);
 		if (existing === undefined) {
@@ -2505,10 +2526,14 @@ export class ChunkWorkerPool {
 			const chunk = toCheck[i];
 			if (chunk.isBoatChunk) continue;
 			const cached = hits?.get(chunk);
-			if (cached) {
-				// Cache hit — apply directly, no server request needed
+			if (cached && cached.version === 0) {
+				// No version info — must fetch from server
 				chunk.isTerrainScheduled = true;
-				this.handleRemoteChunkData(cached);
+				toRequest.push(chunk);
+			} else if (cached) {
+				// Cache hit — validate with server using cached version
+				chunk.isTerrainScheduled = true;
+				toRequest.push(chunk);
 			} else {
 				toRequest.push(chunk);
 			}
@@ -2628,13 +2653,30 @@ export class ChunkWorkerPool {
 
 	/**
 	 * Enable server-side terrain generation (multiplayer mode).
+	 * Any chunks already loaded (generated locally or hydrated from the local
+	 * save before multiplayer mode was enabled) are re-enqueued so the server's
+	 * authoritative data replaces whatever terrain the client built locally.
 	 */
 	public setRemoteChunkProvider(provider: RemoteChunkProvider | null): void {
 		this.remoteChunkProvider = provider;
 		this.remoteGenerationEnabled = provider !== null;
-		console.log(
-			`[RemoteGen] setRemoteChunkProvider enabled=${this.remoteGenerationEnabled}`,
-		);
+		if (provider) {
+			let requeued = 0;
+			for (const chunk of Chunk.chunkInstances.values()) {
+				if (chunk.isBoatChunk) continue;
+				if (!chunk.isLoaded && !chunk.hasVoxelData) continue;
+				this.enqueueRemoteGeneration(chunk);
+				requeued++;
+			}
+			if (requeued > 0) {
+				this.pumpRemoteGeneration();
+			}
+			console.log(
+				`[RemoteGen] setRemoteChunkProvider enabled=true (requeued ${requeued} loaded chunks)`,
+			);
+		} else {
+			console.log(`[RemoteGen] setRemoteChunkProvider enabled=false`);
+		}
 	}
 
 	/**
@@ -2649,7 +2691,7 @@ export class ChunkWorkerPool {
 		palette?: Uint16Array;
 		isUniform: boolean;
 		uniformBlockId: number;
-		hash: number;
+		version: number;
 	}): void {
 		const key = `${data.chunkX},${data.chunkY},${data.chunkZ}`;
 		const captured = this.remotePendingChunks.get(key) ?? null;
@@ -2673,23 +2715,31 @@ export class ChunkWorkerPool {
 		}
 		const chunk = target;
 
-		// Check if server said "unchanged" (empty blocks = no new data needed).
-		// Uniform chunks legitimately have blocks.byteLength === 0, so exclude them.
+		// An "unchanged" stamp is identified by EMPTY payload — real chunk
+		// data always carries non-empty block bytes (dense, palette, or 2
+		// bytes for uniform). The version guard must NOT be part of this
+		// test: the server legitimately stamps "unchanged" at version 0 for
+		// untouched chunks, and checking `version !== 0` would misread those
+		// stamps as full (empty!) data.
 		const unchanged =
 			!data.isUniform &&
 			data.blocks.byteLength === 0 &&
-			data.light.byteLength === 0 &&
-			data.hash !== 0;
+			data.light.byteLength === 0;
+
+		console.log(
+			`[ChunkWorkerPool] handleRemoteChunkData ${data.chunkX},${data.chunkY},${data.chunkZ} unchanged=${unchanged} version=${data.version} blocksLen=${data.blocks.byteLength}`,
+		);
 
 		if (unchanged) {
-			// Chunk data hasn't changed on the server.
-			// If the chunk already has voxel data, just mark it loaded.
-			// If it has NO voxel data (first time seen), load from local cache.
+			// The server confirmed that the client's known version is still
+			// authoritative. Apply the client's own (matching) copy — local
+			// cache or already-present voxel data. The version comparison
+			// guarantees this copy equals the server's data.
 			if (chunk.hasVoxelData) {
 				chunk.isLoaded = true;
 				chunk.isModified = true;
 			} else if (this.remoteChunkProvider) {
-				// First time seeing this chunk — pull from local cache
+				// Pull the matching local copy from the shared store
 				void this.remoteChunkProvider
 					.getCachedChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ)
 					.then((cached) => {
@@ -2705,13 +2755,36 @@ export class ChunkWorkerPool {
 								false,
 							);
 							chunk.isModified = true;
+							this.remoteNoBlobRetries.delete(this.remoteChunkKey(chunk));
 							this.broadcastLightRegister(chunk);
 							this.broadcastVoxelRegister(chunk);
 							chunk.scheduleRemesh(true, true);
 							scheduleChunkAndNeighborsRemesh(chunk, this._boundScheduleRemesh);
+							this.scheduleProcessQueuePump();
 						} else {
-							// No local cache either — mark loaded so it's not stuck
-							chunk.isLoaded = true;
+							// No local copy of the confirmed data. For an
+							// untouched chunk (version 0) deterministic local
+							// generation produces identical terrain (the seed
+							// was synced from the server on join). For an
+							// edited chunk (version > 0) retry the request
+							// once — the stamp should have been matched by a
+							// copy we no longer have; a second stamp means
+							// there is genuinely nothing to serve, so fall
+							// back to generation rather than leaving the
+							// chunk invisible.
+							const key = this.remoteChunkKey(chunk);
+							const retries = this.remoteNoBlobRetries.get(key) ?? 0;
+							if (data.version === 0) {
+								this.remoteNoBlobRetries.delete(key);
+								this.queueLocalTerrainGeneration(chunk);
+							} else if (retries < 1) {
+								this.remoteNoBlobRetries.set(key, retries + 1);
+								this.enqueueRemoteGenerationRetry(chunk);
+								this.pumpRemoteGeneration();
+							} else {
+								this.remoteNoBlobRetries.delete(key);
+								this.queueLocalTerrainGeneration(chunk);
+							}
 						}
 					})
 					.catch(() => {
@@ -2725,6 +2798,8 @@ export class ChunkWorkerPool {
 			// and expects nibble-packed data when a palette is provided.
 			const blocks = data.blocks;
 			const palette = data.palette ?? null;
+
+			this.remoteNoBlobRetries.delete(key);
 
 			// Load into chunk (same path as local generation)
 			chunk.loadFromStorage(

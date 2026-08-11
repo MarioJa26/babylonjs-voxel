@@ -402,4 +402,32 @@ export class WorldGenerator {
 		);
 		return { blocks, light, lightSeedState };
 	}
+
+	/**
+	 * Recalculate light for a chunk from scratch given its current blocks.
+	 * Used after block edits (player placement/breaking) to update lighting.
+	 */
+	public relightChunk(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		blocks: Uint8Array,
+	): Uint8Array {
+		const chunkVolume = this.chunkVolume;
+		const light = this.createBuffer(chunkVolume);
+
+		const chunkWorldY = chunkY * this.chunk_size;
+		if (chunkWorldY + this.chunk_size - 1 < -128) {
+			return light;
+		}
+
+		this.lightGenerator.seedAndPropagateLightImmediate(
+			chunkX,
+			chunkY,
+			chunkZ,
+			blocks,
+			light,
+		);
+		return light;
+	}
 }

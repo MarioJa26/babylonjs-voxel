@@ -19,6 +19,7 @@ import {
 	decodeChunkData,
 	decodeChunkDataBatch,
 	decodeChunkUnchanged,
+	decodeChunkUnchangedBatch,
 } from "../protocol/encoder";
 import { MessageType } from "../protocol/messages";
 
@@ -31,7 +32,7 @@ export interface RemoteChunkData {
 	palette?: Uint16Array;
 	isUniform: boolean;
 	uniformBlockId: number;
-	hash: number;
+	version: number;
 }
 
 type PendingChunk = {
@@ -42,10 +43,11 @@ type PendingChunk = {
 export class RemoteChunkProvider {
 	private pending = new Map<string, PendingChunk>();
 	private inFlight = new Map<string, Promise<RemoteChunkData>>();
-	private chunkHashes = new Map<string, number>(); // Cached chunk hashes
+	private chunkVersions = new Map<string, number>();
 	private static readonly CHUNK_SIZE = 32;
 	private static readonly CHUNK_VOLUME = 32 * 32 * 32;
 	private store: LevelDbChunkStore;
+	private cacheCleared = false;
 
 	constructor(private client: NetClient) {
 		this.store = new LevelDbChunkStore(
@@ -65,9 +67,11 @@ export class RemoteChunkProvider {
 					palette: chunk.palette ? Uint16Array.from(chunk.palette) : undefined,
 				};
 				const key = `${resolved.chunkX},${resolved.chunkY},${resolved.chunkZ}`;
-				this.chunkHashes.set(key, resolved.hash);
-				// Cache chunk locally
-				this.saveChunkToLocal(
+				console.log(
+					`[RemoteChunkProvider] received chunk ${key} version=${resolved.version}`,
+				);
+				this.chunkVersions.set(key, resolved.version);
+				void this.saveChunkToLocal(
 					resolved.chunkX,
 					resolved.chunkY,
 					resolved.chunkZ,
@@ -76,6 +80,7 @@ export class RemoteChunkProvider {
 					resolved.palette,
 					resolved.isUniform,
 					resolved.uniformBlockId,
+					resolved.version,
 				);
 				const pending = this.pending.get(key);
 				if (pending) {
@@ -83,7 +88,6 @@ export class RemoteChunkProvider {
 					pending.resolve(resolved);
 				}
 			} else if (data[0] === MessageType.ChunkDataBatch) {
-				// Batch response — multiple chunks in one message
 				const chunks = decodeChunkDataBatch(data);
 				for (const chunk of chunks) {
 					const resolved: RemoteChunkData = {
@@ -93,9 +97,11 @@ export class RemoteChunkProvider {
 							: undefined,
 					};
 					const key = `${resolved.chunkX},${resolved.chunkY},${resolved.chunkZ}`;
-					this.chunkHashes.set(key, resolved.hash);
-					// Cache chunk locally
-					this.saveChunkToLocal(
+					console.log(
+						`[RemoteChunkProvider] received batch chunk ${key} version=${resolved.version}`,
+					);
+					this.chunkVersions.set(key, resolved.version);
+					void this.saveChunkToLocal(
 						resolved.chunkX,
 						resolved.chunkY,
 						resolved.chunkZ,
@@ -104,6 +110,7 @@ export class RemoteChunkProvider {
 						resolved.palette,
 						resolved.isUniform,
 						resolved.uniformBlockId,
+						resolved.version,
 					);
 
 					const pending = this.pending.get(key);
@@ -113,13 +120,10 @@ export class RemoteChunkProvider {
 					}
 				}
 			} else if (data[0] === MessageType.ChunkUnchanged) {
-				// Server says our cached chunk is still valid
-				const { cx, cy, cz, hash } = decodeChunkUnchanged(data);
+				const { cx, cy, cz, version } = decodeChunkUnchanged(data);
 				const key = `${cx},${cy},${cz}`;
+				this.chunkVersions.set(key, version);
 
-				// Resolve pending with a synthetic "unchanged" marker
-				// The ChunkWorkerPool will see isUniform=false, blocks=empty, and
-				// know to skip meshing since the data hasn't changed
 				const pending = this.pending.get(key);
 				if (pending) {
 					this.pending.delete(key);
@@ -131,11 +135,43 @@ export class RemoteChunkProvider {
 						light: new Uint8Array(0),
 						isUniform: false,
 						uniformBlockId: 0,
-						hash,
+						version,
 					});
+				}
+			} else if (data[0] === MessageType.ChunkUnchangedBatch) {
+				const entries = decodeChunkUnchangedBatch(data);
+				for (const { cx, cy, cz, version } of entries) {
+					const key = `${cx},${cy},${cz}`;
+					this.chunkVersions.set(key, version);
+
+					const pending = this.pending.get(key);
+					if (pending) {
+						this.pending.delete(key);
+						pending.resolve({
+							chunkX: cx,
+							chunkY: cy,
+							chunkZ: cz,
+							blocks: new Uint8Array(0),
+							light: new Uint8Array(0),
+							isUniform: false,
+							uniformBlockId: 0,
+							version,
+						});
+					}
 				}
 			}
 		});
+	}
+
+	/** Clear local cache on reconnect so stale chunks are re-fetched from server */
+	async clearCache(): Promise<void> {
+		this.chunkVersions.clear();
+		try {
+			await this.store.open();
+			await this.store.clear();
+		} catch {
+			// Ignore clear failures
+		}
 	}
 
 	/** Load chunk from local cache. Returns null if not cached. */
@@ -146,7 +182,9 @@ export class RemoteChunkProvider {
 	): Promise<RemoteChunkData | null> {
 		const blob = await this.store.readChunk(cx, cy, cz);
 		if (!blob) return null;
-		return this.deserializeCached(blob, cx, cy, cz);
+		const versionStr = await this.store.getMeta(`v:${cx},${cy},${cz}`);
+		const version = versionStr ? Number.parseInt(versionStr, 10) || 0 : 0;
+		return this.deserializeCached(blob, cx, cy, cz, version);
 	}
 
 	/**
@@ -177,11 +215,21 @@ export class RemoteChunkProvider {
 		for (let i = 0; i < chunks.length; i++) {
 			const c = chunks[i];
 			const blob = blobs.get(coords[i].key);
+			if (!blob) {
+				result.set(c, null);
+				continue;
+			}
+			const versionStr = await this.store.getMeta(
+				`v:${c.chunkX},${c.chunkY},${c.chunkZ}`,
+			);
+			const version = versionStr ? Number.parseInt(versionStr, 10) || 0 : 0;
+			console.log(
+				`[RemoteChunkProvider] cache hit ${c.chunkX},${c.chunkY},${c.chunkZ} version=${version}`,
+			);
+			this.chunkVersions.set(coords[i].key, version);
 			result.set(
 				c,
-				blob
-					? this.deserializeCached(blob, c.chunkX, c.chunkY, c.chunkZ)
-					: null,
+				this.deserializeCached(blob, c.chunkX, c.chunkY, c.chunkZ, version),
 			);
 		}
 		return result;
@@ -193,6 +241,7 @@ export class RemoteChunkProvider {
 		cx: number,
 		cy: number,
 		cz: number,
+		version: number,
 	): RemoteChunkData {
 		const deserialized = deserializeVoxelData(blob);
 		return {
@@ -207,12 +256,11 @@ export class RemoteChunkProvider {
 			palette: deserialized.palette ?? undefined,
 			isUniform: deserialized.isUniform ?? false,
 			uniformBlockId: deserialized.uniformBlockId ?? 0,
-			hash: 0,
+			version,
 		};
 	}
 
-	/** Save chunk data to local OPFS cache (fire-and-forget). */
-	private saveChunkToLocal(
+	private async saveChunkToLocal(
 		cx: number,
 		cy: number,
 		cz: number,
@@ -221,7 +269,8 @@ export class RemoteChunkProvider {
 		palette: Uint16Array | undefined,
 		isUniform: boolean,
 		uniformBlockId: number,
-	): void {
+		version: number,
+	): Promise<void> {
 		try {
 			const blob = serializeVoxelData(
 				blocks,
@@ -231,9 +280,13 @@ export class RemoteChunkProvider {
 				light,
 				false,
 			);
-			this.store.writeChunk(cx, cy, cz, blob);
-		} catch {
-			// Ignore cache write failures
+			await this.store.writeChunk(cx, cy, cz, blob);
+			await this.store.setMeta(`v:${cx},${cy},${cz}`, String(version));
+			console.log(
+				`[RemoteChunkProvider] saved ${cx},${cy},${cz} version=${version} to local cache`,
+			);
+		} catch (e) {
+			console.warn(`[RemoteChunkProvider] saveChunkToLocal failed:`, e);
 		}
 	}
 
@@ -268,9 +321,8 @@ export class RemoteChunkProvider {
 				},
 			});
 
-			// Send request with cached hash (if we have one)
-			const cachedHash = this.chunkHashes.get(key) ?? 0;
-			this.sendRequest(cx, cy, cz, cachedHash);
+			const cachedVersion = this.chunkVersions.get(key) ?? 0;
+			this.sendRequest(cx, cy, cz, cachedVersion);
 		}).finally(() => {
 			this.inFlight.delete(key);
 		});
@@ -283,10 +335,12 @@ export class RemoteChunkProvider {
 		cx: number,
 		cy: number,
 		cz: number,
-		cachedHash: number,
+		cachedVersion: number,
 	): void {
-		// console.log(`[RemoteChunkProvider] sendRequest ${cx},${cy},${cz}`);
-		this.client.sendChunkRequest(cx, cy, cz, 0, cachedHash);
+		console.log(
+			`[RemoteChunkProvider] requestChunk ${cx},${cy},${cz} cachedVersion=${cachedVersion}`,
+		);
+		this.client.sendChunkRequest(cx, cy, cz, 0, cachedVersion);
 	}
 
 	/**
@@ -303,7 +357,7 @@ export class RemoteChunkProvider {
 			cy: number;
 			cz: number;
 			lod: number;
-			cachedHash: number;
+			cachedVersion: number;
 		}> = [];
 		const results: Promise<RemoteChunkData>[] = [];
 
@@ -338,7 +392,7 @@ export class RemoteChunkProvider {
 					cy,
 					cz,
 					lod: 0,
-					cachedHash: this.chunkHashes.get(key) ?? 0,
+					cachedVersion: this.chunkVersions.get(key) ?? 0,
 				});
 			}).finally(() => {
 				this.inFlight.delete(key);

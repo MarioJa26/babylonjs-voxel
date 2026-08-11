@@ -131,14 +131,14 @@ export class BinaryEncoder {
 		cy: number,
 		cz: number,
 		lod: number,
-		cachedHash = 0,
+		cachedVersion = 0,
 	): void {
 		this.writeUint8(MessageType.ChunkRequest);
 		this.writeInt32(cx);
 		this.writeInt32(cy);
 		this.writeInt32(cz);
 		this.writeUint8(lod);
-		this.writeUint32(cachedHash);
+		this.writeUint32(cachedVersion);
 	}
 
 	writeChunkRequestBatch(
@@ -147,7 +147,7 @@ export class BinaryEncoder {
 			cy: number;
 			cz: number;
 			lod: number;
-			cachedHash: number;
+			cachedVersion: number;
 		}>,
 	): void {
 		this.writeUint8(MessageType.ChunkRequestBatch);
@@ -157,7 +157,7 @@ export class BinaryEncoder {
 			this.writeInt32(r.cy);
 			this.writeInt32(r.cz);
 			this.writeUint8(r.lod);
-			this.writeUint32(r.cachedHash);
+			this.writeUint32(r.cachedVersion);
 		}
 	}
 
@@ -313,32 +313,28 @@ export class BinaryDecoder {
 		cy: number;
 		cz: number;
 		lod: number;
-		cachedHash: number;
+		cachedVersion: number;
 	} {
 		const cx = this.readInt32();
 		const cy = this.readInt32();
 		const cz = this.readInt32();
 		const lod = this.readUint8();
-		const cachedHash = this.readUint32();
-		return { cx, cy, cz, lod, cachedHash };
+		const cachedVersion = this.readUint32();
+		return { cx, cy, cz, lod, cachedVersion };
 	}
 
-	/**
-	 * Decode into a caller-owned object instead of allocating a fresh one
-	 * per message. Returns the target for chaining.
-	 */
 	readChunkRequestInto(target: {
 		cx: number;
 		cy: number;
 		cz: number;
 		lod: number;
-		cachedHash: number;
+		cachedVersion: number;
 	}): typeof target {
 		target.cx = this.readInt32();
 		target.cy = this.readInt32();
 		target.cz = this.readInt32();
 		target.lod = this.readUint8();
-		target.cachedHash = this.readUint32();
+		target.cachedVersion = this.readUint32();
 		return target;
 	}
 
@@ -347,7 +343,7 @@ export class BinaryDecoder {
 		cy: number;
 		cz: number;
 		lod: number;
-		cachedHash: number;
+		cachedVersion: number;
 	}> {
 		const count = this.readUint16();
 		const requests: Array<{
@@ -355,7 +351,7 @@ export class BinaryDecoder {
 			cy: number;
 			cz: number;
 			lod: number;
-			cachedHash: number;
+			cachedVersion: number;
 		}> = [];
 		for (let i = 0; i < count; i++) {
 			requests.push({
@@ -363,7 +359,7 @@ export class BinaryDecoder {
 				cy: this.readInt32(),
 				cz: this.readInt32(),
 				lod: this.readUint8(),
-				cachedHash: this.readUint32(),
+				cachedVersion: this.readUint32(),
 			});
 		}
 		return requests;
@@ -626,9 +622,10 @@ export function encodeChunkData(data: {
 	isUniform: boolean;
 	uniformBlockId: number;
 	hash: number;
+	version: number;
 }): Uint8Array {
 	const lightBytes = data.light.length;
-	const headerSize = 1 + 12 + 4 + 1; // type + chunk coords + hash + flags
+	const headerSize = 1 + 12 + 4 + 4 + 1; // type + chunk coords + hash + version + flags
 	const uniformSize = data.isUniform ? 2 : 0;
 	const paletteSize = data.palette ? 2 + data.palette.length * 2 : 0;
 	const totalSize =
@@ -645,6 +642,7 @@ export function encodeChunkData(data: {
 	enc.writeInt32(data.chunkY);
 	enc.writeInt32(data.chunkZ);
 	enc.writeUint32(data.hash);
+	enc.writeUint32(data.version);
 
 	// Flags
 	let flags = 0;
@@ -681,12 +679,14 @@ export function decodeChunkData(buffer: Uint8Array): {
 	isUniform: boolean;
 	uniformBlockId: number;
 	hash: number;
+	version: number;
 } {
 	const dec = new BinaryDecoder(buffer.subarray(1));
 	const chunkX = dec.readInt32();
 	const chunkY = dec.readInt32();
 	const chunkZ = dec.readInt32();
 	const hash = dec.readUint32();
+	const version = dec.readUint32();
 	const flags = dec.readUint8();
 	const isUniform = (flags & 1) !== 0;
 	const hasPalette = (flags & 2) !== 0;
@@ -738,25 +738,26 @@ export function decodeChunkData(buffer: Uint8Array): {
 		isUniform,
 		uniformBlockId,
 		hash,
+		version,
 	};
 }
 
 /**
  * Chunk unchanged — server → client (chunk hasn't changed since client's cached version).
- * Format: [type:1][chunkX:i32][chunkY:i32][chunkZ:i32][hash:u32]
+ * Format: [type:1][chunkX:i32][chunkY:i32][chunkZ:i32][version:u32]
  */
 export function encodeChunkUnchanged(
 	cx: number,
 	cy: number,
 	cz: number,
-	hash: number,
+	version: number,
 ): Uint8Array {
 	const enc = new BinaryEncoder(17);
 	enc.writeUint8(MessageType.ChunkUnchanged);
 	enc.writeInt32(cx);
 	enc.writeInt32(cy);
 	enc.writeInt32(cz);
-	enc.writeUint32(hash);
+	enc.writeUint32(version);
 	return enc.getBytes();
 }
 
@@ -764,20 +765,44 @@ export function decodeChunkUnchanged(buffer: Uint8Array): {
 	cx: number;
 	cy: number;
 	cz: number;
-	hash: number;
+	version: number;
 } {
 	const dec = new BinaryDecoder(buffer.subarray(1));
 	return {
 		cx: dec.readInt32(),
 		cy: dec.readInt32(),
 		cz: dec.readInt32(),
-		hash: dec.readUint32(),
+		version: dec.readUint32(),
 	};
+}
+
+/**
+ * Chunk unchanged batch — server → client.
+ * Format: [type:1][count:u16][cx:i32][cy:i32][cz:i32][version:u32] × count
+ */
+export function decodeChunkUnchangedBatch(buffer: Uint8Array): Array<{
+	cx: number;
+	cy: number;
+	cz: number;
+	version: number;
+}> {
+	const dec = new BinaryDecoder(buffer.subarray(1));
+	const count = Math.min(dec.readUint16(), 65535);
+	const results = new Array(count);
+	for (let i = 0; i < count; i++) {
+		results[i] = {
+			cx: dec.readInt32(),
+			cy: dec.readInt32(),
+			cz: dec.readInt32(),
+			version: dec.readUint32(),
+		};
+	}
+	return results;
 }
 
 // ---------------------------------------------------------------------------
 // Chunk request batch — client → server, multiple coords in one message
-// Format: [type:1][count:u16][cx:i32][cy:i32][cz:i32][lod:u8][cachedHash:u32] × count
+// Format: [type:1][count:u16][cx:i32][cy:i32][cz:i32][lod:u8][cachedVersion:u32] × count
 // ---------------------------------------------------------------------------
 
 export function encodeChunkRequestBatch(
@@ -786,7 +811,7 @@ export function encodeChunkRequestBatch(
 		cy: number;
 		cz: number;
 		lod: number;
-		cachedHash: number;
+		cachedVersion: number;
 	}>,
 ): Uint8Array {
 	const enc = new BinaryEncoder(3 + requests.length * 15);
@@ -797,7 +822,7 @@ export function encodeChunkRequestBatch(
 		enc.writeInt32(r.cy);
 		enc.writeInt32(r.cz);
 		enc.writeUint8(r.lod);
-		enc.writeUint32(r.cachedHash);
+		enc.writeUint32(r.cachedVersion);
 	}
 	return enc.getBytes();
 }
@@ -820,6 +845,7 @@ export function encodeChunkDataBatch(
 		isUniform: boolean;
 		uniformBlockId: number;
 		hash: number;
+		version: number;
 	}>,
 ): Uint8Array {
 	const count = Math.min(chunks.length, 65535);
@@ -840,6 +866,8 @@ export function encodeChunkDataBatch(
 		view.setInt32(offset, c.chunkZ, true);
 		offset += 4;
 		view.setUint32(offset, c.hash, true);
+		offset += 4;
+		view.setUint32(offset, c.version, true);
 		offset += 4;
 
 		let flags = 0;
@@ -885,7 +913,7 @@ function encodeChunkDataBatchMeasure(
 	let totalSize = 3;
 	for (let i = 0; i < count; i++) {
 		const c = chunks[i];
-		totalSize += 17;
+		totalSize += 21; // 12 (coords) + 4 (hash) + 4 (version) + 1 (flags)
 		if (c.isUniform) {
 			totalSize += 2;
 		} else if (c.palette) {
@@ -908,6 +936,7 @@ export function decodeChunkDataBatch(buffer: Uint8Array): Array<{
 	isUniform: boolean;
 	uniformBlockId: number;
 	hash: number;
+	version: number;
 }> {
 	const dec = new BinaryDecoder(buffer.subarray(1));
 	const count = dec.readUint16();
@@ -921,6 +950,7 @@ export function decodeChunkDataBatch(buffer: Uint8Array): Array<{
 		isUniform: boolean;
 		uniformBlockId: number;
 		hash: number;
+		version: number;
 	}> = [];
 
 	for (let i = 0; i < count; i++) {
@@ -928,6 +958,7 @@ export function decodeChunkDataBatch(buffer: Uint8Array): Array<{
 		const chunkY = dec.readInt32();
 		const chunkZ = dec.readInt32();
 		const hash = dec.readUint32();
+		const version = dec.readUint32();
 		const flags = dec.readUint8();
 		const isUniform = (flags & 1) !== 0;
 		const hasPalette = (flags & 2) !== 0;
@@ -975,6 +1006,7 @@ export function decodeChunkDataBatch(buffer: Uint8Array): Array<{
 			isUniform,
 			uniformBlockId,
 			hash,
+			version,
 		});
 	}
 
