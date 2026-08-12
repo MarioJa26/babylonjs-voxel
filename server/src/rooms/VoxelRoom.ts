@@ -9,6 +9,7 @@
  * - Manage world lifecycle (create on first join, destroy when empty)
  */
 import { type Client, ClientState, CloseCode, Room } from "colyseus";
+import { debugLog } from "@/code/Lib/debugLog";
 import {
 	BinaryDecoder,
 	BinaryEncoder,
@@ -1056,16 +1057,53 @@ export class VoxelRoom extends Room {
 	 * Checks storage first — only generates if not found in LevelDB.
 	 */
 	/**
-	 * Apply all block edits received so far before serving a chunk request,
-	 * so the returned data always reflects every edit players have already
-	 * made. No-op when nothing is pending.
+	 * Apply the pending block edits for exactly the chunks being requested
+	 * before serving a chunk request, so the returned data reflects every
+	 * edit players have already made. Unlike flushing the whole world's edit
+	 * queue, this never stalls a chunk request behind unrelated chunks.
+	 * No-op when nothing is pending for the requested chunks.
 	 */
-	private async ensureEditsApplied(): Promise<void> {
-		if (this.dirtyChunks.size === 0) return;
+	private async ensureEditsApplied(keys: readonly number[]): Promise<void> {
+		if (keys.length === 0) return;
+
+		// Move the requested chunks' pending edits out synchronously so a
+		// concurrent flush-loop swap can't double-own the same entries.
+		const mine = new Map<
+			number,
+			Map<number, { x: number; y: number; z: number; blockId: number }>
+		>();
+		for (const key of keys) {
+			const editMap = this.pendingChunkEdits.get(key);
+			if (!editMap || editMap.size === 0) continue;
+			this.pendingChunkEdits.delete(key);
+			mine.set(key, editMap);
+		}
+		if (mine.size === 0) return;
+
+		const applyTasks: Array<() => Promise<void>> = [];
+		for (const key of mine.keys()) {
+			const editMap = mine.get(key)!;
+			const [cx, cy, cz] = unpackChunkKeyFast(key);
+			applyTasks.push(() =>
+				this.worldStorage.applyBlockEdits(
+					cx,
+					cy,
+					cz,
+					Array.from(editMap.values()),
+				),
+			);
+		}
+
 		try {
-			await this.requestChunkFlush();
+			await runWithConcurrency(applyTasks, FLUSH_CONCURRENCY);
+			await this.worldStorage.flush();
+			// Every moved entry is fully applied now — return to the pool.
+			this.releaseEditEntries(mine);
 		} catch (error) {
-			console.error("[VoxelRoom] ensureEditsApplied flush failed:", error);
+			// Requeue so the normal flush loop retries; the request itself
+			// is served with the currently stored data.
+			this.mergeFailedChunkEdits(new Set(mine.keys()), mine);
+			throw error;
 		}
 	}
 
@@ -1077,25 +1115,25 @@ export class VoxelRoom extends Room {
 		cachedVersion: number,
 	): Promise<void> {
 		try {
-			await this.ensureEditsApplied();
+			await this.ensureEditsApplied([packChunkKeyFast(cx, cy, cz)]);
 			// Version-based reconciliation: the client sends the version of
 			// the data it already has (local cache or save). If it matches
 			// the authoritative version, confirm with a short "unchanged"
 			// stamp so the client applies its local copy; otherwise send the
 			// full authoritative data. ensureEditsApplied() above guarantees
-			// pending edits are flushed before the version is compared, so a
+			// pending edits are applied before the version is compared, so a
 			// confirmation can never be based on an un-applied edit.
 			const stored = await this.worldStorage.readChunk(cx, cy, cz);
 			if (stored) {
 				if (stored.version === cachedVersion) {
-					console.log(
+					debugLog(
 						`[VoxelRoom] handleChunkRequest ${cx},${cy},${cz} cachedVersion=${cachedVersion} serverVersion=${stored.version} unchanged`,
 					);
 					const msg = encodeChunkUnchanged(cx, cy, cz, stored.version);
 					client.sendBytes("binary", msg);
 					return;
 				}
-				console.log(
+				debugLog(
 					`[VoxelRoom] handleChunkRequest ${cx},${cy},${cz} cachedVersion=${cachedVersion} serverVersion=${stored.version} sendingFullData`,
 				);
 				const msg = encodeChunkData(stored);
@@ -1123,9 +1161,9 @@ export class VoxelRoom extends Room {
 		}>,
 	): Promise<void> {
 		try {
-			await this.ensureEditsApplied();
 			const unique: typeof requests = [];
 			const coords: Array<{ cx: number; cy: number; cz: number }> = [];
+			const keys: number[] = [];
 			const seen = new Set<number>();
 
 			for (let i = 0; i < requests.length; i++) {
@@ -1134,10 +1172,14 @@ export class VoxelRoom extends Room {
 				if (seen.has(key)) continue;
 				seen.add(key);
 				unique.push(r);
+				keys.push(key);
 				coords.push({ cx: r.cx, cy: r.cy, cz: r.cz });
 			}
 
-			console.log(
+			// Apply only this batch's pending edits — not the whole world's.
+			await this.ensureEditsApplied(keys);
+
+			debugLog(
 				`[VoxelRoom] handleBatchChunkRequest: ${unique.length} unique chunks, versions: ${unique
 					.slice(0, 3)
 					.map((r) => r.cachedVersion)
@@ -1160,7 +1202,7 @@ export class VoxelRoom extends Room {
 
 			for (let i = 0; i < unique.length; i++) {
 				const r = unique[i];
-				const stored = storedMap.get(packChunkKeyFast(r.cx, r.cy, r.cz));
+				const stored = storedMap.get(keys[i]);
 				if (stored) {
 					if (stored.version === r.cachedVersion) {
 						// Client's copy matches the authoritative version —

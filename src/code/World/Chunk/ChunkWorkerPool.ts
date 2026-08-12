@@ -143,7 +143,6 @@ export class ChunkWorkerPool {
 	private remotePendingChunks = new Map<string, Chunk>();
 	private remoteTaskQueue: Chunk[] = [];
 	private remoteTaskQueueSet = new Set<Chunk>();
-	private remoteInFlight = 0;
 	private remoteRetryCount = new Map<string, number>();
 	private readonly MAX_REMOTE_RETRY = 3;
 	// Coalescing guard: at most one pump cycle (one batched cache read) is
@@ -256,7 +255,6 @@ export class ChunkWorkerPool {
 	private static readonly WORK_LIGHT_REG = 1 << 3;
 	private static readonly WORK_REMESH_FLUSH = 1 << 4;
 	private static readonly WORK_LIGHT_DIRTY = 1 << 5;
-	private static readonly WORK_SERIAL_QUEUE = 1 << 6;
 	private _pendingWorkFlags = 0;
 	private _centralSchedulerScheduled = false;
 
@@ -1303,9 +1301,6 @@ export class ChunkWorkerPool {
 			this.lightDirtyPumpScheduled = false;
 			this.processLightDirtyQueue();
 		}
-		if (flags & ChunkWorkerPool.WORK_SERIAL_QUEUE) {
-			this._meshSerialDrainScheduled = false;
-		}
 	};
 
 	private _drainLightRegistration(): void {
@@ -1647,33 +1642,14 @@ export class ChunkWorkerPool {
 		this._scheduleCentralWork(ChunkWorkerPool.WORK_MESH);
 	};
 
-	private _meshSerialQueue: Array<{
-		opaque: MeshData | null | undefined;
-		transparent: MeshData | null | undefined;
-		key: bigint;
-		lod: number;
-		chunkId: bigint;
-	}> = [];
-	private _meshSerialPool: Array<{
-		opaque: MeshData | null | undefined;
-		transparent: MeshData | null | undefined;
-		key: bigint;
-		lod: number;
-		chunkId: bigint;
-	}> = [];
-	private _meshSerialDrainScheduled = false;
-
 	private processMeshQueueLoop = () => {
 		const start = performance.now();
-		let processed = 0;
 		let iterCount = 0;
-		const serialQueue = this._meshSerialQueue;
 		while (
 			this.meshResultQueueReadIdx < this.meshResultQueue.length &&
 			((iterCount++ & 15) !== 0 || performance.now() - start < 5)
 		) {
 			const data = this.meshResultQueue[this.meshResultQueueReadIdx++];
-			processed++;
 			const { chunkId, lod, opaque, transparent } = data;
 			const chunk = this.resolveChunkByMessageId(chunkId);
 			if (chunk) {
@@ -1725,43 +1701,6 @@ export class ChunkWorkerPool {
 			this.scheduleMeshFlush();
 		}
 	};
-
-	/**
-	 * Drain the mesh-serialization queue with its own 5ms budget so the
-	 * hot loop stays tight.  If more items remain, schedule a follow-up
-	 * rAF to finish them.
-	 */
-	private _drainSerialQueue(
-		queue: Array<{
-			opaque: MeshData | null | undefined;
-			transparent: MeshData | null | undefined;
-			key: bigint;
-			lod: number;
-			chunkId: bigint;
-		}>,
-	): void {
-		const start = performance.now();
-		let i = 0;
-		for (; i < queue.length; i++) {
-			if ((i & 15) === 0 && performance.now() - start > 5) break;
-		}
-		// Return processed items to pool, then remove from queue
-		const pool = this._meshSerialPool;
-		for (let j = 0; j < i; j++) {
-			const e = queue[j];
-			e.opaque = null;
-			e.transparent = null;
-			pool.push(e);
-		}
-		queue.splice(0, i);
-
-		if (queue.length > 0) {
-			if (!this._meshSerialDrainScheduled) {
-				this._meshSerialDrainScheduled = true;
-				this._scheduleCentralWork(ChunkWorkerPool.WORK_SERIAL_QUEUE);
-			}
-		}
-	}
 
 	// -------------------------------------------------------------------------
 	// Mesh result queue enqueue — shared by the terrain-worker and mesh-worker
@@ -2617,7 +2556,6 @@ export class ChunkWorkerPool {
 			const chunk = toRequest[0];
 			const key = this.remoteChunkKey(chunk);
 			this.remotePendingChunks.set(key, chunk);
-			this.remoteInFlight++;
 			void this.remoteChunkProvider
 				.requestChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ)
 				.then((data) => this.handleRemoteChunkData(data))
@@ -2637,7 +2575,6 @@ export class ChunkWorkerPool {
 					cz: chunk.chunkZ,
 				};
 			}
-			this.remoteInFlight += toRequest.length;
 			const promises = this.remoteChunkProvider.requestChunkBatch(coords);
 			for (let i = 0; i < toRequest.length; i++) {
 				const chunk = toRequest[i];
@@ -2652,7 +2589,6 @@ export class ChunkWorkerPool {
 	private handleRemoteGenError(err: Error, chunk: Chunk, key: string): void {
 		chunk.isTerrainScheduled = false;
 		this.remotePendingChunks.delete(key);
-		this.remoteInFlight--;
 		// Track retry count — drop after MAX_REMOTERetry to avoid infinite loops.
 		const retries = (this.remoteRetryCount.get(key) ?? 0) + 1;
 		this.remoteRetryCount.set(key, retries);
@@ -2763,7 +2699,6 @@ export class ChunkWorkerPool {
 		const key = `${data.chunkX},${data.chunkY},${data.chunkZ}`;
 		const captured = this.remotePendingChunks.get(key) ?? null;
 		this.remotePendingChunks.delete(key);
-		this.remoteInFlight--;
 		this.remoteRetryCount.delete(key);
 
 		// Apply the data to the CURRENT live chunk at these coordinates, not the

@@ -16,6 +16,7 @@
 import type { Vec3 } from "@babylonjs/lite";
 import { resetDistantTerrain } from "@/code/Generation/DistantTerrain/DistantTerrain";
 import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap";
+import { debugLog } from "@/code/Lib/debugLog";
 import { setIsPaused } from "@/code/Lib/GameRuntimeState";
 import { setVec3, vec3Zero } from "@/code/Lib/Math";
 import { play, playDebris } from "@/code/Maps/BlockBreakParticles";
@@ -247,7 +248,7 @@ export class NetworkManager {
 		blockId: number,
 		action: number,
 	): void {
-		console.log(
+		debugLog(
 			`[NetworkManager] applyRemoteBlockEdit: ${action === BlockActionType.Place ? "PLACE" : "BREAK"} blockId=${blockId} at ${x},${y},${z}`,
 		);
 		if (action === BlockActionType.Place) {

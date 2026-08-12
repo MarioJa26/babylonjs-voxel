@@ -8,6 +8,7 @@
  * re-sending all the data.
  */
 
+import { debugLog } from "../../Lib/debugLog";
 import type { Chunk } from "../../World/Chunk/Chunk";
 import { LevelDbChunkStore } from "../../World/Storage/LevelDbChunkStore";
 import {
@@ -40,14 +41,18 @@ type PendingChunk = {
 	reject: (err: Error) => void;
 };
 
+// Shared read-only empty arrays: unchanged-stamp responses and malformed
+// blobs both produce "no data" chunks — one allocation instead of 2-4
+// per chunk. Consumers never write into blocks/light.
+const EMPTY_BLOCKS = new Uint8Array(0);
+const EMPTY_LIGHT = new Uint8Array(0);
+
 export class RemoteChunkProvider {
 	private pending = new Map<string, PendingChunk>();
 	private inFlight = new Map<string, Promise<RemoteChunkData>>();
 	private chunkVersions = new Map<string, number>();
-	private static readonly CHUNK_SIZE = 32;
 	private static readonly CHUNK_VOLUME = 32 * 32 * 32;
 	private store: LevelDbChunkStore;
-	private cacheCleared = false;
 
 	constructor(private client: NetClient) {
 		this.store = new LevelDbChunkStore(
@@ -62,12 +67,9 @@ export class RemoteChunkProvider {
 
 			if (data[0] === MessageType.ChunkData) {
 				const chunk = decodeChunkData(data);
-				const resolved: RemoteChunkData = {
-					...chunk,
-					palette: chunk.palette ? Uint16Array.from(chunk.palette) : undefined,
-				};
+				const resolved: RemoteChunkData = { ...chunk };
 				const key = `${resolved.chunkX},${resolved.chunkY},${resolved.chunkZ}`;
-				console.log(
+				debugLog(
 					`[RemoteChunkProvider] received chunk ${key} version=${resolved.version}`,
 				);
 				this.chunkVersions.set(key, resolved.version);
@@ -90,14 +92,9 @@ export class RemoteChunkProvider {
 			} else if (data[0] === MessageType.ChunkDataBatch) {
 				const chunks = decodeChunkDataBatch(data);
 				for (const chunk of chunks) {
-					const resolved: RemoteChunkData = {
-						...chunk,
-						palette: chunk.palette
-							? Uint16Array.from(chunk.palette)
-							: undefined,
-					};
+					const resolved: RemoteChunkData = { ...chunk };
 					const key = `${resolved.chunkX},${resolved.chunkY},${resolved.chunkZ}`;
-					console.log(
+					debugLog(
 						`[RemoteChunkProvider] received batch chunk ${key} version=${resolved.version}`,
 					);
 					this.chunkVersions.set(key, resolved.version);
@@ -131,8 +128,8 @@ export class RemoteChunkProvider {
 						chunkX: cx,
 						chunkY: cy,
 						chunkZ: cz,
-						blocks: new Uint8Array(0),
-						light: new Uint8Array(0),
+						blocks: EMPTY_BLOCKS,
+						light: EMPTY_LIGHT,
 						isUniform: false,
 						uniformBlockId: 0,
 						version,
@@ -151,8 +148,8 @@ export class RemoteChunkProvider {
 							chunkX: cx,
 							chunkY: cy,
 							chunkZ: cz,
-							blocks: new Uint8Array(0),
-							light: new Uint8Array(0),
+							blocks: EMPTY_BLOCKS,
+							light: EMPTY_LIGHT,
 							isUniform: false,
 							uniformBlockId: 0,
 							version,
@@ -182,9 +179,7 @@ export class RemoteChunkProvider {
 	): Promise<RemoteChunkData | null> {
 		const blob = await this.store.readChunk(cx, cy, cz);
 		if (!blob) return null;
-		const versionStr = await this.store.getMeta(`v:${cx},${cy},${cz}`);
-		const version = versionStr ? Number.parseInt(versionStr, 10) || 0 : 0;
-		return this.deserializeCached(blob, cx, cy, cz, version);
+		return this.deserializeCached(blob, cx, cy, cz);
 	}
 
 	/**
@@ -219,18 +214,17 @@ export class RemoteChunkProvider {
 				result.set(c, null);
 				continue;
 			}
-			const versionStr = await this.store.getMeta(
-				`v:${c.chunkX},${c.chunkY},${c.chunkZ}`,
+			const resolved = this.deserializeCached(
+				blob,
+				c.chunkX,
+				c.chunkY,
+				c.chunkZ,
 			);
-			const version = versionStr ? Number.parseInt(versionStr, 10) || 0 : 0;
-			console.log(
-				`[RemoteChunkProvider] cache hit ${c.chunkX},${c.chunkY},${c.chunkZ} version=${version}`,
+			debugLog(
+				`[RemoteChunkProvider] cache hit ${c.chunkX},${c.chunkY},${c.chunkZ} version=${resolved.version}`,
 			);
-			this.chunkVersions.set(coords[i].key, version);
-			result.set(
-				c,
-				this.deserializeCached(blob, c.chunkX, c.chunkY, c.chunkZ, version),
-			);
+			this.chunkVersions.set(coords[i].key, resolved.version);
+			result.set(c, resolved);
 		}
 		return result;
 	}
@@ -241,7 +235,6 @@ export class RemoteChunkProvider {
 		cx: number,
 		cy: number,
 		cz: number,
-		version: number,
 	): RemoteChunkData {
 		const deserialized = deserializeVoxelData(blob);
 		return {
@@ -251,12 +244,12 @@ export class RemoteChunkProvider {
 			blocks:
 				deserialized.blocks instanceof Uint8Array
 					? deserialized.blocks
-					: new Uint8Array(0),
-			light: deserialized.lightArray ?? new Uint8Array(0),
+					: EMPTY_BLOCKS,
+			light: deserialized.lightArray ?? EMPTY_LIGHT,
 			palette: deserialized.palette ?? undefined,
 			isUniform: deserialized.isUniform ?? false,
 			uniformBlockId: deserialized.uniformBlockId ?? 0,
-			version,
+			version: deserialized.version ?? 0,
 		};
 	}
 
@@ -279,10 +272,10 @@ export class RemoteChunkProvider {
 				uniformBlockId,
 				light,
 				false,
+				version,
 			);
 			await this.store.writeChunk(cx, cy, cz, blob);
-			await this.store.setMeta(`v:${cx},${cy},${cz}`, String(version));
-			console.log(
+			debugLog(
 				`[RemoteChunkProvider] saved ${cx},${cy},${cz} version=${version} to local cache`,
 			);
 		} catch (e) {
@@ -337,7 +330,7 @@ export class RemoteChunkProvider {
 		cz: number,
 		cachedVersion: number,
 	): void {
-		console.log(
+		debugLog(
 			`[RemoteChunkProvider] requestChunk ${cx},${cy},${cz} cachedVersion=${cachedVersion}`,
 		);
 		this.client.sendChunkRequest(cx, cy, cz, 0, cachedVersion);

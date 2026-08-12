@@ -5,6 +5,8 @@ export type SavedChunkData = {
 	isUniform?: boolean;
 	lightArray?: Uint8Array;
 	compressed?: boolean;
+	/** Server chunk version, embedded in the blob so cache reads skip a meta lookup. */
+	version?: number;
 };
 
 /**
@@ -40,8 +42,10 @@ export function serializeVoxelData(
 	uniformBlockId: number | undefined,
 	lightArray: Uint8Array | null | undefined,
 	compressed: boolean | undefined,
+	version?: number,
 ): Uint8Array {
-	let totalLen = 2; // 2-byte flags (byte 0 = feature flags, byte 1 = format version)
+	// byte 0 = feature flags, byte 1 = format version, bytes 2-5 = chunk version
+	let totalLen = version != null ? 6 : 2;
 
 	let flags1 = 0;
 	if (blocks) flags1 |= FLAG_HAS_BLOCKS;
@@ -57,9 +61,14 @@ export function serializeVoxelData(
 
 	const result = new Uint8Array(totalLen);
 	const dv = new DataView(result.buffer);
-	let offset = 2;
 	result[0] = flags1;
-	result[1] = 0; // format version (reserved)
+	if (version != null) {
+		result[1] = 1; // format v1: includes chunk version
+		dv.setUint32(2, version, true);
+	} else {
+		result[1] = 0; // legacy format
+	}
+	let offset = version != null ? 6 : 2;
 
 	if (isUniform) {
 		dv.setUint16(offset, uniformBlockId ?? 0, true);
@@ -110,6 +119,11 @@ export function deserializeVoxelData(data: Uint8Array): SavedChunkData {
 
 	const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
 	let offset = 2;
+	let version: number | undefined;
+	if (data[1] >= 1 && data.byteLength >= 6) {
+		version = dv.getUint32(2, true);
+		offset = 6;
+	}
 
 	let uniformBlockId: number | undefined;
 	if (isUniform) {
@@ -164,6 +178,7 @@ export function deserializeVoxelData(data: Uint8Array): SavedChunkData {
 		isUniform: isUniform || undefined,
 		lightArray: lightArray ?? undefined,
 		compressed,
+		version,
 	};
 }
 

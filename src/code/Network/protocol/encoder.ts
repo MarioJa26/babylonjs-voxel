@@ -245,6 +245,17 @@ export class BinaryDecoder {
 		return v;
 	}
 
+	/**
+	 * Bulk-copy len bytes out of the buffer. One slice() copy instead of N
+	 * readUint8() calls — the hot chunk-decode paths move tens of thousands
+	 * of bytes per chunk.
+	 */
+	readBytes(len: number): Uint8Array {
+		const start = this.offset;
+		this.offset += len;
+		return this.buffer.slice(start, this.offset);
+	}
+
 	readString(): string {
 		const len = this.readUint16();
 		const start = this.offset;
@@ -709,7 +720,7 @@ export function decodeChunkData(buffer: Uint8Array): {
 	chunkZ: number;
 	blocks: Uint8Array;
 	light: Uint8Array;
-	palette?: number[];
+	palette?: Uint16Array;
 	isUniform: boolean;
 	uniformBlockId: number;
 	hash: number;
@@ -726,7 +737,7 @@ export function decodeChunkData(buffer: Uint8Array): {
 	const hasPalette = (flags & 2) !== 0;
 
 	let uniformBlockId = 0;
-	let palette: number[] | undefined;
+	let palette: Uint16Array | undefined;
 	let blocks: Uint8Array;
 
 	if (isUniform) {
@@ -734,33 +745,28 @@ export function decodeChunkData(buffer: Uint8Array): {
 		blocks = new Uint8Array(0);
 	} else if (hasPalette) {
 		const paletteLen = dec.readUint16();
-		palette = [];
-		for (let i = 0; i < paletteLen; i++) {
-			palette.push(dec.readUint16());
-		}
+		// readBytes copies into a fresh, zero-aligned buffer so the
+		// Uint16Array view is always aligned regardless of wire offset.
+		const paletteBytes = dec.readBytes(paletteLen * 2);
+		palette = new Uint16Array(
+			paletteBytes.buffer,
+			paletteBytes.byteOffset,
+			paletteLen,
+		);
 		// Packed nibble data: remaining before light
 		// We need to know the packed size — it's derived from chunk volume
 		const chunkVolume = 32 * 32 * 32; // CHUNK_SIZE^3
 		const packedSize = Math.ceil(chunkVolume / 2);
-		blocks = new Uint8Array(packedSize);
-		for (let i = 0; i < packedSize; i++) {
-			blocks[i] = dec.readUint8();
-		}
+		blocks = dec.readBytes(packedSize);
 	} else {
 		// Dense format: full chunk volume
 		const chunkVolume = 32 * 32 * 32;
-		blocks = new Uint8Array(chunkVolume);
-		for (let i = 0; i < chunkVolume; i++) {
-			blocks[i] = dec.readUint8();
-		}
+		blocks = dec.readBytes(chunkVolume);
 	}
 
 	// Light data
 	const lightLen = dec.readUint32();
-	const light = new Uint8Array(lightLen);
-	for (let i = 0; i < lightLen; i++) {
-		light[i] = dec.readUint8();
-	}
+	const light = dec.readBytes(lightLen);
 
 	return {
 		chunkX,
@@ -966,7 +972,7 @@ export function decodeChunkDataBatch(buffer: Uint8Array): Array<{
 	chunkZ: number;
 	blocks: Uint8Array;
 	light: Uint8Array;
-	palette?: number[];
+	palette?: Uint16Array;
 	isUniform: boolean;
 	uniformBlockId: number;
 	hash: number;
@@ -980,7 +986,7 @@ export function decodeChunkDataBatch(buffer: Uint8Array): Array<{
 		chunkZ: number;
 		blocks: Uint8Array;
 		light: Uint8Array;
-		palette?: number[];
+		palette?: Uint16Array;
 		isUniform: boolean;
 		uniformBlockId: number;
 		hash: number;
@@ -998,7 +1004,7 @@ export function decodeChunkDataBatch(buffer: Uint8Array): Array<{
 		const hasPalette = (flags & 2) !== 0;
 
 		let uniformBlockId = 0;
-		let palette: number[] | undefined;
+		let palette: Uint16Array | undefined;
 		let blocks: Uint8Array;
 
 		if (isUniform) {
@@ -1006,29 +1012,22 @@ export function decodeChunkDataBatch(buffer: Uint8Array): Array<{
 			blocks = new Uint8Array(0);
 		} else if (hasPalette) {
 			const paletteLen = dec.readUint16();
-			palette = [];
-			for (let j = 0; j < paletteLen; j++) {
-				palette.push(dec.readUint16());
-			}
+			const paletteBytes = dec.readBytes(paletteLen * 2);
+			palette = new Uint16Array(
+				paletteBytes.buffer,
+				paletteBytes.byteOffset,
+				paletteLen,
+			);
 			const chunkVolume = 32 * 32 * 32;
 			const packedSize = Math.ceil(chunkVolume / 2);
-			blocks = new Uint8Array(packedSize);
-			for (let j = 0; j < packedSize; j++) {
-				blocks[j] = dec.readUint8();
-			}
+			blocks = dec.readBytes(packedSize);
 		} else {
 			const chunkVolume = 32 * 32 * 32;
-			blocks = new Uint8Array(chunkVolume);
-			for (let j = 0; j < chunkVolume; j++) {
-				blocks[j] = dec.readUint8();
-			}
+			blocks = dec.readBytes(chunkVolume);
 		}
 
 		const lightLen = dec.readUint32();
-		const light = new Uint8Array(lightLen);
-		for (let j = 0; j < lightLen; j++) {
-			light[j] = dec.readUint8();
-		}
+		const light = dec.readBytes(lightLen);
 
 		chunks.push({
 			chunkX,

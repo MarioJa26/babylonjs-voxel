@@ -32,6 +32,13 @@ export class LevelDbChunkStore {
 	private readonly maxCacheSize: number;
 	private static readonly DEFAULT_BATCH_SIZE = 64;
 
+	// Meta writes go through the same write batch as chunk data so version /
+	// position updates coalesce into one LevelDB/IndexedDB write per flush.
+	// pendingMeta shadows unflushed values (counted per in-flight batch) so a
+	// getMeta right after a setMeta still sees the fresh value.
+	private readonly pendingMeta = new Map<string, number>();
+	private metaKeysInBatch: string[] = [];
+
 	constructor(worldName: string, basePath: string, maxCacheSize = 128) {
 		this.dbPath =
 			typeof window !== "undefined"
@@ -92,6 +99,8 @@ export class LevelDbChunkStore {
 			this.db = null;
 		}
 		this.cache.clear();
+		this.pendingMeta.clear();
+		this.metaKeysInBatch = [];
 		this.opened = false;
 	}
 
@@ -123,10 +132,7 @@ export class LevelDbChunkStore {
 		coords: Array<{ cx: number; cy: number; cz: number; key?: string }>,
 	): Promise<Map<string, Uint8Array>> {
 		const results = new Map<string, Uint8Array>();
-		// Single array: one promise per cache miss instead of a `misses`
-		// array of {cx,cy,cz,key} objects (only `key` is ever used) plus a
-		// second promises array built from it.
-		const pending: Array<Promise<void>> = [];
+		const misses: string[] = [];
 
 		for (const { cx, cy, cz, key } of coords) {
 			const k = key ?? chunkKey(cx, cy, cz);
@@ -136,21 +142,18 @@ export class LevelDbChunkStore {
 				this.cache.set(k, cached);
 				results.set(k, cached);
 			} else {
-				pending.push(
-					this._get(k).then((value) => {
-						if (value) {
-							const data =
-								value instanceof Uint8Array ? value : new Uint8Array(value);
-							this.addToCache(k, data);
-							results.set(k, data);
-						}
-					}),
-				);
+				misses.push(k);
 			}
 		}
 
-		if (pending.length > 0) {
-			await Promise.all(pending);
+		if (misses.length > 0) {
+			// Single batched read (one IndexedDB transaction / one level
+			// getMany) for all cache misses instead of N independent gets.
+			const found = await this._getMany(misses);
+			for (const [k, data] of found) {
+				this.addToCache(k, data);
+				results.set(k, data);
+			}
 		}
 
 		return results;
@@ -161,44 +164,85 @@ export class LevelDbChunkStore {
 		const key = chunkKey(cx, cy, cz);
 
 		this.addToCache(key, data);
-
-		if (!this.batch) {
-			this.batch = this.db.batch();
-			this.batchCount = 0;
-		}
-		this.batch.put(key, data);
-		this.batchCount++;
-
-		if (this.batchCount >= LevelDbChunkStore.DEFAULT_BATCH_SIZE) {
-			const pending = this.batch;
-			this.batch = null;
-			this.batchCount = 0;
-			void pending.write();
-		}
+		this.batchPut(key, data);
 	}
 
 	async flush(): Promise<void> {
-		if (this.batch && this.batchCount > 0) {
-			const pending = this.batch;
-			this.batch = null;
-			this.batchCount = 0;
-			await pending.write();
+		if (!this.batch || this.batchCount === 0) return;
+		const pending = this.batch;
+		const metaKeys = this.metaKeysInBatch;
+		this.batch = null;
+		this.batchCount = 0;
+		this.metaKeysInBatch = [];
+		await pending.write();
+		// Only release the shadow once the batch actually hit the DB, so a
+		// failed write keeps the fresh value readable from memory.
+		for (const k of metaKeys) {
+			this.releasePendingMetaKey(k);
 		}
 	}
 
 	async setMeta(key: string, value: string): Promise<void> {
 		if (!this.db) return;
-		await this._put(`\x01${key}`, value);
+		const k = `\x01${key}`;
+		this.pendingMeta.set(k, (this.pendingMeta.get(k) ?? 0) + 1);
+		this.metaKeysInBatch.push(k);
+		this.batchPut(k, value);
 	}
 
 	async getMeta(key: string): Promise<string | null> {
 		if (!this.db) return null;
-		const value = await this._get(`\x01${key}`);
+		const k = `\x01${key}`;
+		if (this.pendingMeta.has(k)) return String(this.pendingMeta.get(k));
+		const value = await this._get(k);
 		return value != null ? String(value) : null;
+	}
+
+	/**
+	 * Accumulate one put into the shared write batch, firing it off when it
+	 * reaches the size cap. Shared by chunk blobs and meta key/values so all
+	 * writes coalesce into a single LevelDB/IndexedDB transaction per flush.
+	 */
+	private batchPut(key: string, value: Uint8Array | string): void {
+		if (!this.batch) {
+			this.batch = this.db.batch();
+			this.batchCount = 0;
+		}
+		this.batch.put(key, value);
+		this.batchCount++;
+
+		if (this.batchCount >= LevelDbChunkStore.DEFAULT_BATCH_SIZE) {
+			const pending = this.batch;
+			const metaKeys = this.metaKeysInBatch;
+			this.batch = null;
+			this.batchCount = 0;
+			this.metaKeysInBatch = [];
+			void pending.write().then(
+				() => {
+					for (const k of metaKeys) {
+						this.releasePendingMetaKey(k);
+					}
+				},
+				() => {
+					// Keep the shadow on failure — the value stays readable.
+				},
+			);
+		}
+	}
+
+	private releasePendingMetaKey(k: string): void {
+		const count = this.pendingMeta.get(k) ?? 0;
+		if (count <= 1) {
+			this.pendingMeta.delete(k);
+		} else {
+			this.pendingMeta.set(k, count - 1);
+		}
 	}
 
 	async clear(): Promise<void> {
 		this.cache.clear();
+		this.pendingMeta.clear();
+		this.metaKeysInBatch = [];
 		this.batch = null;
 		this.batchCount = 0;
 		if (!this.db) return;
@@ -259,12 +303,35 @@ export class LevelDbChunkStore {
 		return this.db.get(key).catch(() => null);
 	}
 
-	private async _put(key: string, value: any): Promise<void> {
-		if (typeof window !== "undefined") {
-			await (this.db as IndexedDbStore).put(key, value);
-		} else {
-			await this.db.put(key, value);
+	/**
+	 * Batch read for cache misses. Browser: one IndexedDB transaction via
+	 * getMany. Node: level's getMany (single batch read). Keeps results in
+	 * input order; missing keys are simply absent from the map.
+	 */
+	private async _getMany(keys: string[]): Promise<Map<string, Uint8Array>> {
+		const results = new Map<string, Uint8Array>();
+		if (keys.length === 0 || !this.db) return results;
+		try {
+			let values: Array<any>;
+			if (typeof window !== "undefined") {
+				values = await (this.db as IndexedDbStore).getMany(keys);
+			} else {
+				values = await this.db.getMany(keys);
+			}
+			for (let i = 0; i < keys.length; i++) {
+				const value = values[i];
+				if (value != null) {
+					const data =
+						value instanceof Uint8Array
+							? value
+							: new Uint8Array(value as ArrayBuffer);
+					results.set(keys[i], data);
+				}
+			}
+		} catch (err) {
+			console.warn(`[LevelDb] _getMany failed for ${keys.length} keys:`, err);
 		}
+		return results;
 	}
 
 	private addToCache(key: string, data: Uint8Array): void {
@@ -383,6 +450,37 @@ class IndexedDbStore {
 				req.onsuccess = () => {
 					if (req.result > 0) found.add(key);
 					if (--pending === 0) resolve(found);
+				};
+				req.onerror = () => reject(req.error);
+			}
+		});
+	}
+
+	/**
+	 * Batch read: one readonly transaction for N keys instead of N
+	 * transactions (each store.get opens its own). Results are positionally
+	 * aligned with `keys` — undefined for missing keys.
+	 */
+	async getMany(keys: string[]): Promise<Array<Uint8Array | undefined>> {
+		if (!this.db) throw new Error("IndexedDbStore not open");
+		if (keys.length === 0) return [];
+		return new Promise<Array<Uint8Array | undefined>>((resolve, reject) => {
+			const results: Array<Uint8Array | undefined> = new Array(keys.length);
+			const tx = this.db!.transaction(this.storeName, "readonly");
+			const store = tx.objectStore(this.storeName);
+			let pending = keys.length;
+			for (let i = 0; i < keys.length; i++) {
+				const req = store.get(keys[i]);
+				req.onsuccess = () => {
+					const value = req.result;
+					if (value instanceof Uint8Array) {
+						results[i] = value;
+					} else if (value instanceof ArrayBuffer) {
+						results[i] = new Uint8Array(value);
+					} else {
+						results[i] = undefined;
+					}
+					if (--pending === 0) resolve(results);
 				};
 				req.onerror = () => reject(req.error);
 			}

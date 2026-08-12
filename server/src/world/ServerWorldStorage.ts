@@ -25,6 +25,7 @@
  *   in-flight calls never share (and corrupt) each other's results.
  */
 
+import { debugLog } from "@/code/Lib/debugLog";
 import { hashChunk } from "@/code/Network/protocol/encoder.ts";
 import { packChunkKeyFast } from "@/code/World/Storage/ChunkKey.ts";
 import { LevelDbChunkStore } from "@/code/World/Storage/LevelDbChunkStore";
@@ -303,8 +304,13 @@ export class ServerWorldStorage {
 					// which skips recomputing the identical template string.
 					// Entries come from the pool (owned exclusively by this
 					// call) instead of a fresh object per miss.
-					const entry =
-						this.missCoordPool.pop() ?? { cx: 0, cy: 0, cz: 0, cacheKey: 0, key: "" };
+					const entry = this.missCoordPool.pop() ?? {
+						cx: 0,
+						cy: 0,
+						cz: 0,
+						cacheKey: 0,
+						key: "",
+					};
 					entry.cx = cx;
 					entry.cy = cy;
 					entry.cz = cz;
@@ -399,7 +405,7 @@ export class ServerWorldStorage {
 			throw new Error(`Chunk ${cx},${cy},${cz} has an invalid palette`);
 		}
 
-		const version = await this.readChunkVersion(cx, cy, cz);
+		const version = value.version ?? 0;
 
 		return {
 			chunkX: cx,
@@ -413,25 +419,6 @@ export class ServerWorldStorage {
 			hash: hashChunk(blocks, light, palette),
 			version,
 		};
-	}
-
-	private async readChunkVersion(cx: number, cy: number, cz: number): Promise<number> {
-		const v = await this.store.getMeta(this.versionKey(cx, cy, cz));
-		if (v === null) return 0;
-		return Number.parseInt(v, 10) || 0;
-	}
-
-	private async writeChunkVersion(
-		cx: number,
-		cy: number,
-		cz: number,
-		version: number,
-	): Promise<void> {
-		await this.store.setMeta(this.versionKey(cx, cy, cz), String(version));
-	}
-
-	private versionKey(cx: number, cy: number, cz: number): string {
-		return `v:${cx},${cy},${cz}`;
 	}
 
 	async writeChunk(data: StoredChunkData): Promise<void> {
@@ -460,13 +447,10 @@ export class ServerWorldStorage {
 			data.uniformBlockId,
 			data.light,
 			false,
+			data.version,
 		);
 
 		await this.store.writeChunk(data.chunkX, data.chunkY, data.chunkZ, blob);
-
-		if (data.version > 0) {
-			await this.writeChunkVersion(data.chunkX, data.chunkY, data.chunkZ, data.version);
-		}
 
 		this.addToCache(key, data);
 		this.dirtyChunks.add(key);
@@ -549,7 +533,9 @@ export class ServerWorldStorage {
 		const hash = hashChunk(compressed.data, newLight, compressed.palette);
 		const baseVersion = existing.version > 0 ? existing.version : 1;
 		const newVersion = baseVersion + 1;
-		console.log(`[ServerWorldStorage] applyBlockEdits ${cx},${cy},${cz}: version ${existing.version} (base ${baseVersion}) -> ${newVersion}`);
+		debugLog(
+			`[ServerWorldStorage] applyBlockEdits ${cx},${cy},${cz}: version ${existing.version} (base ${baseVersion}) -> ${newVersion}`,
+		);
 
 		await this.writeChunkUnlocked({
 			chunkX: cx,
