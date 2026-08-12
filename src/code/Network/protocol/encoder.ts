@@ -109,6 +109,27 @@ export class BinaryEncoder {
 		this.writeUint8(data.animation);
 	}
 
+	/**
+	 * C→S: write player state from raw values without allocating an
+	 * intermediate PlayerStateData object (20 Hz hot path).
+	 */
+	writePlayerStateRaw(
+		x: number,
+		y: number,
+		z: number,
+		yaw: number,
+		pitch: number,
+		animation: number,
+	): void {
+		this.writeUint8(MessageType.PlayerState);
+		this.writeFloat32(x);
+		this.writeFloat32(y);
+		this.writeFloat32(z);
+		this.writeUint8(yaw);
+		this.writeUint8(pitch);
+		this.writeUint8(animation);
+	}
+
 	/** C→S: no sessionId — the server uses the connection identity. */
 	writeBlockEdit(data: BlockEditData): void {
 		this.writeUint8(MessageType.BlockEdit);
@@ -376,6 +397,36 @@ export class BinaryDecoder {
 		}
 		return requests;
 	}
+
+	/**
+	 * Decode chunk request batch into a reusable pre-allocated array.
+	 * Avoids per-entry object allocation on the server hot path.
+	 */
+	readChunkRequestBatchInto(
+		target: Array<{
+			cx: number;
+			cy: number;
+			cz: number;
+			lod: number;
+			cachedVersion: number;
+		}>,
+	): number {
+		const count = this.readUint16();
+		for (let i = 0; i < count; i++) {
+			let entry = target[i];
+			if (!entry) {
+				entry = { cx: 0, cy: 0, cz: 0, lod: 0, cachedVersion: 0 };
+				target[i] = entry;
+			}
+			entry.cx = this.readInt32();
+			entry.cy = this.readInt32();
+			entry.cz = this.readInt32();
+			entry.lod = this.readUint8();
+			entry.cachedVersion = this.readUint32();
+		}
+		target.length = count;
+		return count;
+	}
 }
 
 /**
@@ -555,9 +606,14 @@ export function encodeBlockEditBroadcast(data: BlockEditData): Uint8Array {
 
 export function decodeBlockEditBroadcast(buffer: Uint8Array): BlockEditData {
 	const dec = new BinaryDecoder(buffer.subarray(1));
-	const sessionId = dec.readString();
-	const edit = dec.readBlockEdit();
-	return { ...edit, sessionId };
+	return {
+		sessionId: dec.readString(),
+		x: dec.readInt32(),
+		y: dec.readInt32(),
+		z: dec.readInt32(),
+		blockId: dec.readUint16(),
+		action: dec.readUint8(),
+	};
 }
 
 /**

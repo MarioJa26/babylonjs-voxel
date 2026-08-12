@@ -309,15 +309,17 @@ export class NetClient {
 		if (!this.connected || !this.room) return;
 
 		this.encoder.reset();
-		this.encoder.writePlayerState({
-			x, // float32 — sub-block precision
+		// Write directly from raw values — avoids allocating an intermediate
+		// PlayerStateData object on the 20 Hz hot path.
+		this.encoder.writePlayerStateRaw(
+			x,
 			y,
 			z,
 			// yaw: 0-255 maps the full 360° circle
-			yaw: Math.round(((((yaw % 360) + 360) % 360) / 360) * 255) & 0xff,
-			pitch: Math.round(((pitch + 90) / 180) * 255) & 0xff,
+			Math.round(((((yaw % 360) + 360) % 360) / 360) * 255) & 0xff,
+			Math.round(((pitch + 90) / 180) * 255) & 0xff,
 			animation,
-		});
+		);
 
 		this.room.sendBytes("binary", this.encoder.getBytes());
 	}

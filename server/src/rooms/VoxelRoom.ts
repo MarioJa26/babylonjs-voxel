@@ -14,17 +14,14 @@ import {
 	BinaryDecoder,
 	BinaryEncoder,
 	encodeBlockEditBatch,
-	encodeBlockEditBroadcast,
 	encodeBlockEditRejected,
 	encodeChatMessage,
 	encodeChunkData,
-	encodeChunkDataBatch,
 	encodeChunkUnchanged,
 	encodePlayerJoin,
 	encodePlayerLeave,
 	encodeSpawnPosition,
 	encodeWorldConfig,
-	encodeWorldTime,
 	hashChunk,
 	writePlayerStateBatch,
 } from "@/code/Network/protocol/encoder.ts";
@@ -141,6 +138,10 @@ export class VoxelRoom extends Room {
 	private statesScratch: PlayerStateBatchEntry[] = [];
 	private tickEncoder = new BinaryEncoder(2048);
 	private chunkBatchEncoder = new BinaryEncoder(65536);
+	// Reused for infrequent broadcasts (time every 5s, block edits).
+	// Avoids a fresh BinaryEncoder + Uint8Array allocation per broadcast.
+	private timeEncoder = new BinaryEncoder(16);
+	private editBroadcastEncoder = new BinaryEncoder(64);
 	// Reused across incoming messages: no per-message decoder/DataView or
 	// per-message PlayerState object allocation on the receive path.
 	private decoder = new BinaryDecoder(new Uint8Array(0));
@@ -278,15 +279,32 @@ export class VoxelRoom extends Room {
 			// The client needs this to skip its own entry in PlayerStateBatch.
 			client.sendBytes("binary", joinMsg);
 
-			// Send existing players to the new client (so they can render them)
-			for (const [sid, p] of this.players) {
-				if (sid === client.sessionId) continue;
-				const existingJoin = encodePlayerJoin({
-					index: p.index,
-					sessionId: sid,
-					name: p.name,
-				});
-				client.sendBytes("binary", existingJoin);
+			// Send existing players to the new client (so they can render them).
+			// Concatenate all PlayerJoin messages into one buffer to avoid
+			// N individual WebSocket frames (each with frame header overhead).
+			if (this.players.size > 1) {
+				// Pre-size: each join ≈ 32 bytes (type + index + sessionId str + name str)
+				const parts: Uint8Array[] = [];
+				let totalLen = 0;
+				for (const [sid, p] of this.players) {
+					if (sid === client.sessionId) continue;
+					const msg = encodePlayerJoin({
+						index: p.index,
+						sessionId: sid,
+						name: p.name,
+					});
+					parts.push(msg);
+					totalLen += msg.length;
+				}
+				if (parts.length > 0) {
+					const merged = new Uint8Array(totalLen);
+					let offset = 0;
+					for (const part of parts) {
+						merged.set(part, offset);
+						offset += part.length;
+					}
+					client.sendBytes("binary", merged);
+				}
 			}
 
 			// Force a full dirty pass so the joiner gets current positions on
@@ -588,12 +606,14 @@ export class VoxelRoom extends Room {
 			this.timeOfDay = (this.timeOfDay + deltaMs / this.config.dayDuration) % 1;
 		}
 
-		// Broadcast time periodically
+		// Broadcast time periodically — reuse encoder to avoid per-broadcast alloc.
 		this.timeAccum += deltaMs;
 		if (this.timeAccum >= TIME_BROADCAST_INTERVAL) {
 			this.timeAccum = 0;
-			const timeMsg = encodeWorldTime(this.timeOfDay);
-			this.broadcastBytes("binary", timeMsg, {});
+			this.timeEncoder.reset();
+			this.timeEncoder.writeUint8(MessageType.WorldTime);
+			this.timeEncoder.writeFloat32(this.timeOfDay);
+			this.broadcastBytes("binary", this.timeEncoder.getBytes(), {});
 		}
 
 		// Debounced position persistence: moved off the message hot path and
@@ -981,9 +1001,16 @@ export class VoxelRoom extends Room {
 				this.dirtyChunks.add(key);
 				this.scheduleChunkFlush();
 
-				// Broadcast to all other clients
-				const msg = encodeBlockEditBroadcast(storedEdit);
-				this.broadcastBytes("binary", msg, { except: client });
+				// Broadcast to all other clients — reuse encoder to avoid alloc.
+				this.editBroadcastEncoder.reset();
+				this.editBroadcastEncoder.writeUint8(MessageType.BlockEditBroadcast);
+				this.editBroadcastEncoder.writeString(storedEdit.sessionId);
+				this.editBroadcastEncoder.writeInt32(storedEdit.x);
+				this.editBroadcastEncoder.writeInt32(storedEdit.y);
+				this.editBroadcastEncoder.writeInt32(storedEdit.z);
+				this.editBroadcastEncoder.writeUint16(storedEdit.blockId);
+				this.editBroadcastEncoder.writeUint8(storedEdit.action);
+				this.broadcastBytes("binary", this.editBroadcastEncoder.getBytes(), { except: client });
 				break;
 			}
 

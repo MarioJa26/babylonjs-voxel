@@ -39,6 +39,7 @@ export interface RemoteChunkData {
 type PendingChunk = {
 	resolve: (data: RemoteChunkData) => void;
 	reject: (err: Error) => void;
+	deadline: number;
 };
 
 // Shared read-only empty arrays: unchanged-stamp responses and malformed
@@ -53,6 +54,12 @@ export class RemoteChunkProvider {
 	private chunkVersions = new Map<string, number>();
 	private static readonly CHUNK_VOLUME = 32 * 32 * 32;
 	private store: LevelDbChunkStore;
+	// Single sweep timer for batch chunk request timeouts. Instead of
+	// creating one setTimeout per chunk (100 chunks = 100 timers), a single
+	// timer fires periodically and rejects all timed-out entries at once.
+	private sweepTimer: ReturnType<typeof setTimeout> | null = null;
+	private static readonly SWEEP_INTERVAL_MS = 5000;
+	private static readonly DEFAULT_TIMEOUT_MS = 30000;
 
 	constructor(private client: NetClient) {
 		this.store = new LevelDbChunkStore(
@@ -163,6 +170,10 @@ export class RemoteChunkProvider {
 	/** Clear local cache on reconnect so stale chunks are re-fetched from server */
 	async clearCache(): Promise<void> {
 		this.chunkVersions.clear();
+		if (this.sweepTimer) {
+			clearTimeout(this.sweepTimer);
+			this.sweepTimer = null;
+		}
 		try {
 			await this.store.open();
 			await this.store.clear();
@@ -287,7 +298,7 @@ export class RemoteChunkProvider {
 		cx: number,
 		cy: number,
 		cz: number,
-		timeoutMs = 30000,
+		timeoutMs = RemoteChunkProvider.DEFAULT_TIMEOUT_MS,
 	): Promise<RemoteChunkData> {
 		const key = `${cx},${cy},${cz}`;
 
@@ -296,23 +307,12 @@ export class RemoteChunkProvider {
 		if (existing) return existing;
 
 		const promise = new Promise<RemoteChunkData>((resolve, reject) => {
-			// Set timeout
-			const timer = setTimeout(() => {
-				this.pending.delete(key);
-				reject(new Error(`Chunk request timeout: ${key}`));
-			}, timeoutMs);
-
-			// Store pending
 			this.pending.set(key, {
-				resolve: (data) => {
-					clearTimeout(timer);
-					resolve(data);
-				},
-				reject: (err) => {
-					clearTimeout(timer);
-					reject(err);
-				},
+				resolve,
+				reject,
+				deadline: performance.now() + timeoutMs,
 			});
+			this.ensureSweepRunning();
 
 			const cachedVersion = this.chunkVersions.get(key) ?? 0;
 			this.sendRequest(cx, cy, cz, cachedVersion);
@@ -340,10 +340,11 @@ export class RemoteChunkProvider {
 	 * Request multiple chunks in a single batch message.
 	 * More efficient than individual requests — one round-trip for many chunks.
 	 * Returns promises that resolve when the batch response arrives.
+	 * Uses a single sweep timer for all timeouts instead of one per chunk.
 	 */
 	requestChunkBatch(
 		coords: Array<{ cx: number; cy: number; cz: number }>,
-		timeoutMs = 30000,
+		timeoutMs = RemoteChunkProvider.DEFAULT_TIMEOUT_MS,
 	): Promise<RemoteChunkData>[] {
 		const requests: Array<{
 			cx: number;
@@ -353,6 +354,8 @@ export class RemoteChunkProvider {
 			cachedVersion: number;
 		}> = [];
 		const results: Promise<RemoteChunkData>[] = [];
+		const now = performance.now();
+		const deadline = now + timeoutMs;
 
 		for (const { cx, cy, cz } of coords) {
 			const key = `${cx},${cy},${cz}`;
@@ -364,20 +367,10 @@ export class RemoteChunkProvider {
 			}
 
 			const promise = new Promise<RemoteChunkData>((resolve, reject) => {
-				const timer = setTimeout(() => {
-					this.pending.delete(key);
-					reject(new Error(`Chunk request timeout: ${key}`));
-				}, timeoutMs);
-
 				this.pending.set(key, {
-					resolve: (data) => {
-						clearTimeout(timer);
-						resolve(data);
-					},
-					reject: (err) => {
-						clearTimeout(timer);
-						reject(err);
-					},
+					resolve,
+					reject,
+					deadline,
 				});
 
 				requests.push({
@@ -397,10 +390,39 @@ export class RemoteChunkProvider {
 
 		// Send all requests in one message
 		if (requests.length > 0) {
+			this.ensureSweepRunning();
 			this.client.sendChunkRequestBatch(requests);
 		}
 
 		return results;
+	}
+
+	/**
+	 * Ensure the sweep timer is running. It fires periodically to reject
+	 * all timed-out pending chunk requests in one pass, instead of one
+	 * setTimeout per chunk.
+	 */
+	private ensureSweepRunning(): void {
+		if (this.sweepTimer) return;
+		this.sweepTimer = setTimeout(() => {
+			this.sweepTimer = null;
+			this.sweepPending();
+		}, RemoteChunkProvider.SWEEP_INTERVAL_MS);
+	}
+
+	/** Reject all pending entries whose deadline has passed. */
+	private sweepPending(): void {
+		const now = performance.now();
+		for (const [key, entry] of this.pending) {
+			if (now >= entry.deadline) {
+				this.pending.delete(key);
+				entry.reject(new Error(`Chunk request timeout: ${key}`));
+			}
+		}
+		// Keep the sweep alive as long as there are pending requests.
+		if (this.pending.size > 0) {
+			this.ensureSweepRunning();
+		}
 	}
 
 	/**
@@ -416,11 +438,14 @@ export class RemoteChunkProvider {
 		if (chunk.palette) {
 			const result = new Uint8Array(RemoteChunkProvider.CHUNK_VOLUME);
 			const packed = chunk.blocks;
-			for (let i = 0; i < RemoteChunkProvider.CHUNK_VOLUME; i++) {
-				const packedIdx = i >> 1;
-				const nibble =
-					i % 2 === 0 ? packed[packedIdx] & 0xf : packed[packedIdx] >> 4;
-				result[i] = chunk.palette[nibble] ?? 0;
+			const len = RemoteChunkProvider.CHUNK_VOLUME;
+			// Step by 2: read one byte, extract both nibbles. Bitwise & 1
+			// instead of modulo for parity check. Palette indices from the
+			// encoder are always valid — no ?? 0 fallback needed.
+			for (let i = 0; i < len; i += 2) {
+				const byte = packed[i >> 1];
+				result[i] = chunk.palette[byte & 0x0f];
+				result[i + 1] = chunk.palette[byte >> 4];
 			}
 			return result;
 		}

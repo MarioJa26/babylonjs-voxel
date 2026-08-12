@@ -522,15 +522,26 @@ export class ServerWorldStorage {
 
 		const compressed = compressBlocks(blocks);
 
-		// Return pooled decompression buffer now — compressed.data is a
-		// fresh packed buffer (or the original for raw, but we copied above).
-		releaseDecompBuffer(decomp);
+		// For raw chunks, compressBlocks returns the same reference as
+		// blocks. relightChunk transfers blocks.buffer to the worker,
+		// detaching it — clone so compressed.data survives the transfer.
+		if (compressed.data === blocks) {
+			compressed.data = new Uint8Array(blocks);
+		}
 
-		// Recalculate light from scratch so emission sources (torches, etc.)
-		// placed by players propagate correctly to all clients.
+		// Recalculate block light from scratch so emission sources (torches,
+		// etc.) placed by players propagate correctly to all clients.
+		// Preserve the original sky light (high nibble) — relightChunk seeds
+		// sky=15 at every column top because it lacks the topSunlightMask
+		// that the generation pipeline provides, which leaks sunlight
+		// underground.
 		let newLight = existing.light;
 		if (this.worldGen) {
-			newLight = await this.worldGen.relightChunk(cx, cy, cz, blocks);
+			const relit = await this.worldGen.relightChunk(cx, cy, cz, blocks);
+			for (let i = 0; i < relit.length; i++) {
+				relit[i] = (relit[i] & 0x0f) | (existing.light[i] & 0xf0);
+			}
+			newLight = relit;
 		}
 
 		const baseVersion = existing.version > 0 ? existing.version : 1;
@@ -550,6 +561,11 @@ export class ServerWorldStorage {
 			uniformBlockId: compressed.uniformBlockId,
 			version: newVersion,
 		});
+
+		// Return decompression buffer after all consumers are done.
+		// For palette chunks decomp was detached by relightChunk (length 0),
+		// so releaseDecompBuffer naturally skips it.
+		releaseDecompBuffer(decomp);
 	}
 
 	private queueChunkMutation(
