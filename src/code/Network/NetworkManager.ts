@@ -145,13 +145,16 @@ export class NetworkManager {
 			},
 		});
 
-		// Clear local chunk cache so stale chunks are re-fetched from server
-		await this.chunkProvider.clearCache();
+		// Clear local chunk cache so stale chunks are re-fetched from server.
 		// The singleplayer store (WorldStorage) shares the same IndexedDB and
 		// hydrates chunks from saved voxel data — wipe its memory cache + the
 		// shared DB too, otherwise locally saved terrain can be applied to
 		// chunks without ever asking the server.
-		await WorldStorage.clearLocalChunkCache();
+		// Both are independent IndexedDB operations — run in parallel.
+		await Promise.all([
+			this.chunkProvider.clearCache(),
+			WorldStorage.clearLocalChunkCache(),
+		]);
 
 		// Multiplayer: don't send a seed — the server uses its config seed.
 		// The server sends back the authoritative seed via WorldConfig on join,

@@ -82,7 +82,7 @@ interface ServerPlayerState {
 	lastSaveTime: number;
 }
 
-const MAX_STORED_EDITS = 1000; // Keep last N edits for new joiners
+const MAX_STORED_EDITS = 200; // Keep last N edits for new joiners
 const TIME_BROADCAST_INTERVAL = 5000; // Broadcast time every 5 seconds
 const FULL_SNAPSHOT_INTERVAL = 2000; // Periodic full player-state broadcast (ms)
 const PLAYER_SAVE_INTERVAL = 3000; // Position persistence debounce (ms)
@@ -319,12 +319,9 @@ export class VoxelRoom extends Room {
 				client.sendBytes("binary", batch);
 			}
 
-			// Send authoritative world seed so the client's clip map matches
-			// server terrain
+			// Send authoritative world seed + spawn position in one frame
+			// to reduce WebSocket frame overhead on join.
 			const configMsg = encodeWorldConfig(this.seed);
-			client.sendBytes("binary", configMsg);
-
-			// Tell client where to spawn (saved position or default)
 			const spawnMsg = encodeSpawnPosition(
 				state.x,
 				state.y,
@@ -332,7 +329,10 @@ export class VoxelRoom extends Room {
 				state.yaw,
 				state.pitch,
 			);
-			client.sendBytes("binary", spawnMsg);
+			const joinComplete = new Uint8Array(configMsg.length + spawnMsg.length);
+			joinComplete.set(configMsg, 0);
+			joinComplete.set(spawnMsg, configMsg.length);
+			client.sendBytes("binary", joinComplete);
 
 			// Now safe to save positions (client has been told where to spawn)
 			this.playersReady.add(client.sessionId);

@@ -84,7 +84,7 @@ export class TestScene {
 			await map.initPromise;
 
 			initializeBlockBreakingVisuals(scene);
-			DroppedItem.preloadAtlas();
+			void DroppedItem.preloadAtlas();
 			player.createHud(scene);
 			player.respawn();
 
