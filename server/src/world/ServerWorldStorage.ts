@@ -26,14 +26,13 @@
  */
 
 import { debugLog } from "@/code/Lib/debugLog";
-import { hashChunk } from "@/code/Network/protocol/encoder.ts";
 import { packChunkKeyFast } from "@/code/World/Storage/ChunkKey.ts";
 import { LevelDbChunkStore } from "@/code/World/Storage/LevelDbChunkStore";
 import {
 	deserializeVoxelData,
 	serializeVoxelData,
 } from "@/code/World/Storage/VoxelSerializer";
-import { compressBlocks, decompressBlocks } from "./ChunkCompression.ts";
+import { compressBlocks, decompressBlocks, releaseDecompBuffer } from "./ChunkCompression.ts";
 import type { ChunkGenerationService } from "./ChunkGenerationService.ts";
 
 export interface StoredChunkData {
@@ -45,7 +44,6 @@ export interface StoredChunkData {
 	palette?: number[];
 	readonly isUniform: boolean;
 	readonly uniformBlockId: number;
-	readonly hash: number;
 	version: number;
 }
 
@@ -416,7 +414,6 @@ export class ServerWorldStorage {
 			palette,
 			isUniform,
 			uniformBlockId,
-			hash: hashChunk(blocks, light, palette),
 			version,
 		};
 	}
@@ -461,14 +458,15 @@ export class ServerWorldStorage {
 		cx: number,
 		cy: number,
 		cz: number,
-		edits: readonly BlockEdit[],
+		edits: Iterable<BlockEdit>,
 	): Promise<void> {
-		if (edits.length === 0) return;
+		const editArr = Array.isArray(edits) ? edits : [...edits];
+		if (editArr.length === 0) return;
 		this.assertActive();
 
 		const key = packChunkKeyFast(cx, cy, cz);
 		return this.queueChunkMutation(key, () =>
-			this.applyBlockEditsUnlocked(cx, cy, cz, edits),
+			this.applyBlockEditsUnlocked(cx, cy, cz, editArr),
 		);
 	}
 
@@ -504,15 +502,16 @@ export class ServerWorldStorage {
 			}
 		}
 
-		let blocks = decompressBlocks({
+		const decomp = decompressBlocks({
 			data: existing.blocks,
 			palette: existing.palette,
 			isUniform: existing.isUniform,
 			uniformBlockId: existing.uniformBlockId,
 		});
-		if (blocks === existing.blocks) {
-			blocks = new Uint8Array(blocks);
-		}
+		// Raw data returns the stored reference — copy so edits don't
+		// mutate the cached version.
+		const blocks =
+			decomp === existing.blocks ? new Uint8Array(decomp) : decomp;
 
 		for (let i = 0; i < edits.length; i++) {
 			const edit = edits[i];
@@ -523,6 +522,10 @@ export class ServerWorldStorage {
 
 		const compressed = compressBlocks(blocks);
 
+		// Return pooled decompression buffer now — compressed.data is a
+		// fresh packed buffer (or the original for raw, but we copied above).
+		releaseDecompBuffer(decomp);
+
 		// Recalculate light from scratch so emission sources (torches, etc.)
 		// placed by players propagate correctly to all clients.
 		let newLight = existing.light;
@@ -530,7 +533,6 @@ export class ServerWorldStorage {
 			newLight = await this.worldGen.relightChunk(cx, cy, cz, blocks);
 		}
 
-		const hash = hashChunk(compressed.data, newLight, compressed.palette);
 		const baseVersion = existing.version > 0 ? existing.version : 1;
 		const newVersion = baseVersion + 1;
 		debugLog(
@@ -546,7 +548,6 @@ export class ServerWorldStorage {
 			palette: compressed.palette,
 			isUniform: compressed.isUniform,
 			uniformBlockId: compressed.uniformBlockId,
-			hash,
 			version: newVersion,
 		});
 	}

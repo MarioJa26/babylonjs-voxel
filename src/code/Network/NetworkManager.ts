@@ -66,6 +66,7 @@ export class NetworkManager {
 	private lastPitch = 0;
 	private _scratchVec: Vec3 = vec3Zero();
 	private serverSeed: string | null = null;
+	private _lastPlayerCount = 0;
 
 	constructor(player: Player, serverUrl?: string) {
 		this.player = player;
@@ -179,8 +180,14 @@ export class NetworkManager {
 
 		// Update HUD player count and names
 		const remotePlayers = this.client.getRemotePlayers();
-		const names = Array.from(remotePlayers.values()).map((p) => p.name);
-		this.hud.setPlayerNames(names);
+		if (remotePlayers.size !== this._lastPlayerCount) {
+			this._lastPlayerCount = remotePlayers.size;
+			const names: string[] = [];
+			for (const p of remotePlayers.values()) {
+				names.push(p.name);
+			}
+			this.hud.setPlayerNames(names);
+		}
 
 		// Send our position at fixed rate
 		this.sendAccum += deltaMs;

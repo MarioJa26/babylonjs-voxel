@@ -113,8 +113,6 @@ export class LevelDbChunkStore {
 
 		const cached = this.cache.get(key);
 		if (cached) {
-			this.cache.delete(key);
-			this.cache.set(key, cached);
 			return cached;
 		}
 
@@ -138,8 +136,6 @@ export class LevelDbChunkStore {
 			const k = key ?? chunkKey(cx, cy, cz);
 			const cached = this.cache.get(k);
 			if (cached) {
-				this.cache.delete(k);
-				this.cache.set(k, cached);
 				results.set(k, cached);
 			} else {
 				misses.push(k);
@@ -336,8 +332,14 @@ export class LevelDbChunkStore {
 
 	private addToCache(key: string, data: Uint8Array): void {
 		if (this.cache.has(key)) {
-			this.cache.delete(key);
-		} else if (this.cache.size >= this.maxCacheSize) {
+			// Entry already in cache — update the data but skip the
+			// delete+re-insert churn. Tolerates slight staleness in eviction
+			// order but avoids two Map hash operations + backing store resize
+			// on every cache hit (the hot path).
+			this.cache.set(key, data);
+			return;
+		}
+		if (this.cache.size >= this.maxCacheSize) {
 			const firstKey = this.cache.keys().next().value;
 			if (firstKey !== undefined) {
 				this.cache.delete(firstKey);

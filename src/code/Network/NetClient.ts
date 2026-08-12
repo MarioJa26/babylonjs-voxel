@@ -17,6 +17,7 @@ import {
 	decodePlayerJoin,
 	decodePlayerLeave,
 	decodePlayerStateBatch,
+	decodePlayerStateBatchInto,
 	decodeSpawnPosition,
 	decodeWorldConfig,
 	decodeWorldTime,
@@ -50,7 +51,7 @@ export interface NetClientCallbacks {
 	onDisconnected?: (code: number, reason?: string) => void;
 	onPlayerJoin?: (player: RemotePlayer) => void;
 	onPlayerLeave?: (sessionId: string, name?: string) => void;
-	onPlayerStates?: (states: RemotePlayer[]) => void;
+	onPlayerStates?: (states: Map<string, RemotePlayer> | RemotePlayer[]) => void;
 	onBlockEdit?: (edit: BlockEditData) => void;
 	onBlockEditRejected?: (rejection: BlockEditRejectedData) => void;
 	onChatMessage?: (chat: ChatMessageData) => void;
@@ -72,6 +73,7 @@ export class NetClient {
 	private client: ColyseusSDK | null = null;
 	private room: any = null;
 	private encoder = new BinaryEncoder(256);
+	private decoder = new BinaryDecoder(new Uint8Array(0));
 	private connected = false;
 	private callbacks: NetClientCallbacks = {};
 	private remotePlayers = new Map<string, RemotePlayer>();
@@ -79,6 +81,10 @@ export class NetClient {
 	private ownIndex = -1;
 	private playerName = "";
 	private binaryHandlers: BinaryHandler[] = [];
+	// Reusable scratch array for decodePlayerStateBatchInto — avoids per-tick
+	// array + object allocation on the 20 Hz hot path.
+	private batchScratch: import("./protocol/messages").PlayerStateBatchEntry[] =
+		[];
 	worldName = "default";
 
 	constructor(private serverUrl: string = this.defaultServerUrl()) {}
@@ -149,13 +155,17 @@ export class NetClient {
 
 		if (data.byteLength < 1) return;
 
-		const dec = new BinaryDecoder(data);
+		// Reuse the decoder — setBuffer is cheaper than allocating a new
+		// BinaryDecoder + DataView per message (20+ Hz).
+		const dec = this.decoder;
+		dec.setBuffer(data);
 		const msgType = dec.readUint8(); // consume type byte
 
 		switch (msgType) {
 			case MessageType.PlayerStateBatch: {
-				const states = decodePlayerStateBatch(data);
-				for (const state of states) {
+				decodePlayerStateBatchInto(data, this.batchScratch);
+				for (let i = 0; i < this.batchScratch.length; i++) {
+					const state = this.batchScratch[i];
 					if (state.index === this.ownIndex) continue;
 
 					// Map the room index back to a sessionId (PlayerJoin arrives
@@ -180,9 +190,9 @@ export class NetClient {
 					}
 				}
 
-				// Notify callback with current interpolated positions
-				const players = Array.from(this.remotePlayers.values());
-				this.callbacks.onPlayerStates?.(players);
+				// Notify callback — pass the Map directly instead of
+				// Array.from() which allocates a new array every tick.
+				this.callbacks.onPlayerStates?.(this.remotePlayers);
 				break;
 			}
 

@@ -30,6 +30,13 @@ export interface CompressedBlocks {
 const _countsScratch = new Uint16Array(256);
 const _blockToPaletteScratch = new Uint8Array(256);
 
+// Small pool of pre-allocated 32KB decompression buffers. Avoids GC pressure
+// from allocating a fresh Uint8Array(32768) on every decompressBlocks call.
+// Pool is safe without locks: JS is single-threaded and decompressBlocks is
+// synchronous, so no caller can observe a mid-use buffer.
+const _decompPool: Uint8Array[] = [];
+const DECOMP_POOL_MAX = 4;
+
 /**
  * Compress a full 32³ block array. The returned `data` is either a fresh
  * packed buffer or (when raw) the input buffer itself — never a copy of the
@@ -109,31 +116,49 @@ export function compressBlocks(blocks: Uint8Array): CompressedBlocks {
  * Expand a compressed chunk back into the full 32³ block array.
  * Returns a fresh buffer when the chunk was palette-packed; for raw chunks
  * the stored buffer is returned as-is (no copy).
+ *
+ * Uses a small buffer pool to avoid per-call 32KB allocations on the hot
+ * path (block edit flushes). Callers that need to hold the buffer beyond
+ * the synchronous scope should copy it.
  */
 export function decompressBlocks(compressed: CompressedBlocks): Uint8Array {
 	const { data, palette, isUniform, uniformBlockId } = compressed;
 	const len = CHUNK_VOLUME;
 
 	if (isUniform) {
-		const out = new Uint8Array(len);
+		const out = _decompPool.pop() ?? new Uint8Array(len);
 		out.fill(uniformBlockId);
 		return out;
 	}
 
 	if (palette && palette.length > 0) {
-		const out = new Uint8Array(len);
+		const out = _decompPool.pop() ?? new Uint8Array(len);
 		// Step by 2 and unpack both nibbles from one byte read, instead of
 		// re-reading `data[i>>1]` on every voxel (twice per byte) and
 		// branching on parity each iteration.
 		for (let i = 0; i < len; i += 2) {
 			const packed = data[i >> 1];
-			out[i] = palette[packed & 0x0f] ?? 0;
+			out[i] = palette[packed & 0x0f];
 			// packed is a uint8 (0-255), so packed >> 4 is already 0-15 —
 			// no mask needed for the high nibble.
-			out[i + 1] = palette[packed >> 4] ?? 0;
+			out[i + 1] = palette[packed >> 4];
 		}
 		return out;
 	}
 
 	return data;
+}
+
+/**
+ * Return a decompression buffer to the pool for reuse.
+ * Call after you're done with the buffer from decompressBlocks (e.g. after
+ * compressing the modified blocks or after mesh generation copies the data).
+ */
+export function releaseDecompBuffer(buf: Uint8Array): void {
+	if (
+		buf.length === CHUNK_VOLUME &&
+		_decompPool.length < DECOMP_POOL_MAX
+	) {
+		_decompPool.push(buf);
+	}
 }

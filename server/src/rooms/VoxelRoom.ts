@@ -25,6 +25,7 @@ import {
 	encodeSpawnPosition,
 	encodeWorldConfig,
 	encodeWorldTime,
+	hashChunk,
 	writePlayerStateBatch,
 } from "@/code/Network/protocol/encoder.ts";
 import {
@@ -461,12 +462,7 @@ export class VoxelRoom extends Room {
 				if (!editMap || editMap.size === 0) continue;
 				const [cx, cy, cz] = unpackChunkKeyFast(key);
 				applyTasks.push(() =>
-					this.worldStorage.applyBlockEdits(
-						cx,
-						cy,
-						cz,
-						Array.from(editMap.values()),
-					),
+					this.worldStorage.applyBlockEdits(cx, cy, cz, editMap.values()),
 				);
 			}
 			await runWithConcurrency(applyTasks, FLUSH_CONCURRENCY);
@@ -843,7 +839,7 @@ export class VoxelRoom extends Room {
 			enc.writeInt32(c.chunkX);
 			enc.writeInt32(c.chunkY);
 			enc.writeInt32(c.chunkZ);
-			enc.writeUint32(c.hash);
+			enc.writeUint32(hashChunk(c.blocks, c.light, c.palette));
 			enc.writeUint32(c.version);
 			let flags = 0;
 			if (c.isUniform) flags |= 1;
@@ -1085,12 +1081,7 @@ export class VoxelRoom extends Room {
 			const editMap = mine.get(key)!;
 			const [cx, cy, cz] = unpackChunkKeyFast(key);
 			applyTasks.push(() =>
-				this.worldStorage.applyBlockEdits(
-					cx,
-					cy,
-					cz,
-					Array.from(editMap.values()),
-				),
+				this.worldStorage.applyBlockEdits(cx, cy, cz, editMap.values()),
 			);
 		}
 
@@ -1136,14 +1127,20 @@ export class VoxelRoom extends Room {
 				debugLog(
 					`[VoxelRoom] handleChunkRequest ${cx},${cy},${cz} cachedVersion=${cachedVersion} serverVersion=${stored.version} sendingFullData`,
 				);
-				const msg = encodeChunkData(stored);
+				const msg = encodeChunkData({
+					...stored,
+					hash: hashChunk(stored.blocks, stored.light, stored.palette),
+				});
 				client.sendBytes("binary", msg);
 				return;
 			}
 
 			const chunkData = await this.chunkGen.generateChunk(cx, cy, cz);
 
-			const msg = encodeChunkData(chunkData);
+			const msg = encodeChunkData({
+				...chunkData,
+				hash: hashChunk(chunkData.blocks, chunkData.light, chunkData.palette),
+			});
 			client.sendBytes("binary", msg);
 		} catch (err) {
 			console.error(`[VoxelRoom] Chunk gen failed for ${cx},${cy},${cz}:`, err);

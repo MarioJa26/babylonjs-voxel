@@ -432,6 +432,35 @@ export function decodePlayerStateBatch(
 }
 
 /**
+ * Decode a player state batch into a reusable pre-allocated array.
+ * Avoids per-tick object + array allocation on the hot path.
+ * Returns the number of entries written.
+ */
+export function decodePlayerStateBatchInto(
+	buffer: Uint8Array,
+	target: PlayerStateBatchEntry[],
+): number {
+	const dec = new BinaryDecoder(buffer.subarray(1)); // skip type byte
+	const count = dec.readUint8();
+	for (let i = 0; i < count; i++) {
+		let entry = target[i];
+		if (!entry) {
+			entry = { index: 0, x: 0, y: 0, z: 0, yaw: 0, pitch: 0, animation: 0 };
+			target[i] = entry;
+		}
+		entry.index = dec.readUint8();
+		entry.x = dec.readFloat32();
+		entry.y = dec.readFloat32();
+		entry.z = dec.readFloat32();
+		entry.yaw = dec.readUint8();
+		entry.pitch = dec.readUint8();
+		entry.animation = dec.readUint8();
+	}
+	target.length = count;
+	return count;
+}
+
+/**
  * Encode a batch of block edits — sent to new players on join
  * so they sync existing world changes.
  * Format: [type:1][count:2][editData...]

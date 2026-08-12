@@ -12,6 +12,7 @@ export class MultiplayerHUD {
 	private chatInput: HTMLInputElement;
 	private chatOpen = false;
 	private messageCount = 0;
+	private _lastNamesKey = "";
 
 	constructor(
 		private onSendChat: (message: string) => void,
@@ -86,8 +87,13 @@ export class MultiplayerHUD {
 	setPlayerNames(names: string[]): void {
 		// names = remote players only; total = self + remotes
 		const total = names.length + 1;
+		// Skip DOM write if the player list hasn't changed — avoids
+		// layout/paint thrash on every frame when nobody joined/left.
+		const key = total <= 1 ? "1" : `${total}:${names.join(",")}`;
+		if (key === this._lastNamesKey) return;
+		this._lastNamesKey = key;
 		if (total <= 1) {
-			this.playerCountEl.textContent = "👤 1 (solo)";
+			this.playerCountEl.textContent = "1 (solo)";
 		} else {
 			this.playerCountEl.textContent = `👤 ${total}: ${names.join(", ")}`;
 		}
@@ -159,9 +165,12 @@ export class MultiplayerHUD {
 	}
 
 	private escapeHtml(text: string): string {
-		const div = document.createElement("div");
-		div.textContent = text;
-		return div.innerHTML;
+		return text
+			.replace(/&/g, "&amp;")
+			.replace(/</g, "&lt;")
+			.replace(/>/g, "&gt;")
+			.replace(/"/g, "&quot;")
+			.replace(/'/g, "&#39;");
 	}
 
 	dispose(): void {
