@@ -16,7 +16,6 @@ import {
 	decodeChatMessage,
 	decodePlayerJoin,
 	decodePlayerLeave,
-	decodePlayerStateBatch,
 	decodePlayerStateBatchInto,
 	decodeSpawnPosition,
 	decodeWorldConfig,

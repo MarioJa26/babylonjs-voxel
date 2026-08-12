@@ -121,6 +121,12 @@ export class VoxelRoom extends Room {
 	private flushPromise: Promise<void> | null = null;
 	private flushRequested = false;
 	private timeAccum = 0; // Accumulator for time broadcast
+	// In-memory cache of player positions — avoids LevelDB disk read on join.
+	// Keyed by player name (same as loadPlayerPosition/savePlayerPosition).
+	private playerPositionCache = new Map<
+		string,
+		{ x: number; y: number; z: number; yaw: number; pitch: number }
+	>();
 	private chunkGen!: ChunkGenerationService;
 	private config = getServerConfig();
 	private playersReady = new Set<string>(); // received spawn position
@@ -239,7 +245,10 @@ export class VoxelRoom extends Room {
 		try {
 			// Restore saved position or use default spawn (keyed by player
 			// name, not sessionId — sessionIds change on every reconnect).
-			const saved = await this.worldStorage.loadPlayerPosition(name);
+			// In-memory cache avoids LevelDB disk read for returning players.
+			const cached = this.playerPositionCache.get(name);
+			const saved =
+				cached ?? (await this.worldStorage.loadPlayerPosition(name));
 
 			// The client may have disconnected while the storage read was in
 			// flight — bail out instead of inserting a ghost player.
@@ -265,6 +274,16 @@ export class VoxelRoom extends Room {
 				saveDirty: false,
 				lastSaveTime: 0,
 			};
+			// Cache the position so next join skips LevelDB (even for first-timers).
+			if (!cached) {
+				this.playerPositionCache.set(name, {
+					x: state.x,
+					y: state.y,
+					z: state.z,
+					yaw: state.yaw,
+					pitch: state.pitch,
+				});
+			}
 			this.players.set(client.sessionId, state);
 
 			// Notify others of new player
@@ -319,9 +338,12 @@ export class VoxelRoom extends Room {
 				client.sendBytes("binary", batch);
 			}
 
-			// Send authoritative world seed + spawn position in one frame
-			// to reduce WebSocket frame overhead on join.
+			// Send authoritative world seed so the client's clip map matches
+			// server terrain
 			const configMsg = encodeWorldConfig(this.seed);
+			client.sendBytes("binary", configMsg);
+
+			// Tell client where to spawn (saved position or default)
 			const spawnMsg = encodeSpawnPosition(
 				state.x,
 				state.y,
@@ -329,10 +351,7 @@ export class VoxelRoom extends Room {
 				state.yaw,
 				state.pitch,
 			);
-			const joinComplete = new Uint8Array(configMsg.length + spawnMsg.length);
-			joinComplete.set(configMsg, 0);
-			joinComplete.set(spawnMsg, configMsg.length);
-			client.sendBytes("binary", joinComplete);
+			client.sendBytes("binary", spawnMsg);
 
 			// Now safe to save positions (client has been told where to spawn)
 			this.playersReady.add(client.sessionId);
@@ -361,7 +380,16 @@ export class VoxelRoom extends Room {
 		// a leave for index 0 — that would remove an existing player on clients.
 		if (!player) return;
 
-		// Persist final position on disconnect so it's ready on next join
+		// Persist final position on disconnect so it's ready on next join.
+		// Update in-memory cache immediately so a quick rejoin skips the
+		// LevelDB read even if the disk write is still in flight.
+		this.playerPositionCache.set(player.name, {
+			x: player.x,
+			y: player.y,
+			z: player.z,
+			yaw: player.yaw,
+			pitch: player.pitch,
+		});
 		this.reportAsync(
 			`Failed to save position for ${player.name} on disconnect`,
 			this.worldStorage.savePlayerPosition(
@@ -634,6 +662,15 @@ export class VoxelRoom extends Room {
 			) {
 				p.lastSaveTime = now;
 				p.saveDirty = false;
+				// Update in-memory cache immediately so a quick rejoin
+				// avoids the LevelDB read even if the disk write is in flight.
+				this.playerPositionCache.set(p.name, {
+					x: p.x,
+					y: p.y,
+					z: p.z,
+					yaw: p.yaw,
+					pitch: p.pitch,
+				});
 				void this.worldStorage
 					.savePlayerPosition(p.name, p.x, p.y, p.z, p.yaw, p.pitch)
 					.catch((error) => {
@@ -1010,7 +1047,9 @@ export class VoxelRoom extends Room {
 				this.editBroadcastEncoder.writeInt32(storedEdit.z);
 				this.editBroadcastEncoder.writeUint16(storedEdit.blockId);
 				this.editBroadcastEncoder.writeUint8(storedEdit.action);
-				this.broadcastBytes("binary", this.editBroadcastEncoder.getBytes(), { except: client });
+				this.broadcastBytes("binary", this.editBroadcastEncoder.getBytes(), {
+					except: client,
+				});
 				break;
 			}
 
