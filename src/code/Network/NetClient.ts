@@ -12,6 +12,7 @@ import {
 	BinaryEncoder,
 	decodeBlockEditBatch,
 	decodeBlockEditBroadcast,
+	decodeBlockEditRejected,
 	decodeChatMessage,
 	decodePlayerJoin,
 	decodePlayerLeave,
@@ -22,6 +23,7 @@ import {
 } from "./protocol/encoder";
 import {
 	type BlockEditData,
+	type BlockEditRejectedData,
 	type ChatMessageData,
 	MessageType,
 } from "./protocol/messages";
@@ -50,6 +52,7 @@ export interface NetClientCallbacks {
 	onPlayerLeave?: (sessionId: string, name?: string) => void;
 	onPlayerStates?: (states: RemotePlayer[]) => void;
 	onBlockEdit?: (edit: BlockEditData) => void;
+	onBlockEditRejected?: (rejection: BlockEditRejectedData) => void;
 	onChatMessage?: (chat: ChatMessageData) => void;
 	onWorldTime?: (timeOfDay: number) => void;
 	onWorldConfig?: (seed: string) => void;
@@ -226,6 +229,12 @@ export class NetClient {
 			case MessageType.BlockEditBroadcast: {
 				const edit = decodeBlockEditBroadcast(data);
 				this.callbacks.onBlockEdit?.(edit);
+				break;
+			}
+
+			case MessageType.BlockEditRejected: {
+				const rejection = decodeBlockEditRejected(data);
+				this.callbacks.onBlockEditRejected?.(rejection);
 				break;
 			}
 

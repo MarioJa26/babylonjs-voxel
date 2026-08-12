@@ -2512,16 +2512,16 @@ export class ChunkWorkerPool {
 		// Take the first chunk as the column anchor
 		const anchor = this.remoteTaskQueue.shift()!;
 		this.remoteTaskQueueSet.delete(anchor);
-		if (!anchor.isBoatChunk && !this.remotePendingChunks.has(this.remoteChunkKey(anchor))) {
+		if (
+			!anchor.isBoatChunk &&
+			!this.remotePendingChunks.has(this.remoteChunkKey(anchor))
+		) {
 			result.push(anchor);
 		}
 
 		if (result.length === 0 || this.remoteTaskQueue.length === 0) {
 			// Anchor was invalid but queue may still have valid chunks — drain FIFO
-			while (
-				this.remoteTaskQueue.length > 0 &&
-				result.length < maxCount
-			) {
+			while (this.remoteTaskQueue.length > 0 && result.length < maxCount) {
 				const chunk = this.remoteTaskQueue.shift()!;
 				this.remoteTaskQueueSet.delete(chunk);
 				if (chunk.isBoatChunk) continue;
@@ -2555,10 +2555,7 @@ export class ChunkWorkerPool {
 		}
 
 		// Fill remaining slots with whatever is available (FIFO fallback)
-		while (
-			this.remoteTaskQueue.length > 0 &&
-			result.length < maxCount
-		) {
+		while (this.remoteTaskQueue.length > 0 && result.length < maxCount) {
 			const chunk = this.remoteTaskQueue.shift()!;
 			this.remoteTaskQueueSet.delete(chunk);
 			if (chunk.isBoatChunk) continue;
@@ -2660,15 +2657,24 @@ export class ChunkWorkerPool {
 		const retries = (this.remoteRetryCount.get(key) ?? 0) + 1;
 		this.remoteRetryCount.set(key, retries);
 		if (retries >= this.MAX_REMOTE_RETRY) {
-			console.error(`[RemoteGen] GIVING UP on ${key} after ${retries} attempts:`, err);
+			console.error(
+				`[RemoteGen] GIVING UP on ${key} after ${retries} attempts:`,
+				err,
+			);
 			this.remoteRetryCount.delete(key);
 			return;
 		}
-		console.warn(`[RemoteGen] request FAILED ${key} (attempt ${retries}/${this.MAX_REMOTE_RETRY}):`, err);
+		console.warn(
+			`[RemoteGen] request FAILED ${key} (attempt ${retries}/${this.MAX_REMOTE_RETRY}):`,
+			err,
+		);
 		// Re-queue at FRONT so retries are prioritized over new requests.
 		const live = getChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 		if (live === chunk && !chunk.isLoaded && !chunk.isBoatChunk) {
-			if (!this.remotePendingChunks.has(key) && !this.remoteTaskQueueSet.has(chunk)) {
+			if (
+				!this.remotePendingChunks.has(key) &&
+				!this.remoteTaskQueueSet.has(chunk)
+			) {
 				this.remoteTaskQueue.unshift(chunk);
 				this.remoteTaskQueueSet.add(chunk);
 				chunk.isTerrainScheduled = true;
@@ -2841,7 +2847,10 @@ export class ChunkWorkerPool {
 								this.queueLocalTerrainGeneration(chunk);
 							} else if (retries < 1) {
 								this.remoteNoBlobRetries.set(key, retries + 1);
-								if (!this.remotePendingChunks.has(key) && !this.remoteTaskQueueSet.has(chunk)) {
+								if (
+									!this.remotePendingChunks.has(key) &&
+									!this.remoteTaskQueueSet.has(chunk)
+								) {
 									this.remoteTaskQueue.unshift(chunk);
 									this.remoteTaskQueueSet.add(chunk);
 									chunk.isTerrainScheduled = true;

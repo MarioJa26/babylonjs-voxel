@@ -33,7 +33,7 @@ import { WorldStorage } from "@/code/World/WorldStorage";
 import { RemoteChunkProvider } from "./chunk/RemoteChunkProvider";
 import { MultiplayerHUD } from "./MultiplayerHUD";
 import { NetClient, type RemotePlayer } from "./NetClient";
-import { BlockActionType } from "./protocol/messages";
+import { BlockActionType, BlockEditRejectReason } from "./protocol/messages";
 import { RemotePlayerRenderer } from "./RemotePlayerRenderer";
 
 const SEND_RATE = 20; // Hz — how often to send player position
@@ -112,6 +112,9 @@ export class NetworkManager {
 					edit.blockId,
 					edit.action,
 				);
+			},
+			onBlockEditRejected: (rejection) => {
+				this.revertRejectedBlockEdit(rejection);
 			},
 			onChatMessage: (chat) => {
 				console.log(`[${chat.name}]: ${chat.message}`);
@@ -267,6 +270,32 @@ export class NetworkManager {
 			);
 			playDebris(this.player.sceneRef, px, py, pz, blockId, packedLight);
 		}
+	}
+
+	/**
+	 * The server rejected one of our own block edits — revert the optimistic
+	 * local change so client and server stay in sync.
+	 */
+	private revertRejectedBlockEdit(rejection: {
+		x: number;
+		y: number;
+		z: number;
+		blockId: number;
+		action: number;
+		reason: number;
+	}): void {
+		if (rejection.action === BlockActionType.Place) {
+			deleteBlock(rejection.x, rejection.y, rejection.z);
+		} else if (rejection.action === BlockActionType.Break) {
+			setBlock(rejection.x, rejection.y, rejection.z, rejection.blockId, 0);
+		}
+		const reason =
+			rejection.reason === BlockEditRejectReason.TooFar
+				? "too far away"
+				: rejection.reason === BlockEditRejectReason.InvalidEdit
+					? "invalid edit"
+					: "unknown reason";
+		this.hud.addSystemMessage(`Block edit rejected (${reason}) — reverted`);
 	}
 
 	#sampleBreakLight(x: number, y: number, z: number): number {

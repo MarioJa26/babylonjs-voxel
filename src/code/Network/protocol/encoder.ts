@@ -8,6 +8,7 @@
  */
 import {
 	type BlockEditData,
+	type BlockEditRejectedData,
 	type ChatMessageData,
 	MessageType,
 	type PlayerJoinData,
@@ -517,6 +518,39 @@ export function decodeBlockEditBroadcast(buffer: Uint8Array): BlockEditData {
 	const sessionId = dec.readString();
 	const edit = dec.readBlockEdit();
 	return { ...edit, sessionId };
+}
+
+/**
+ * S→C: the server rejected one of this client's block edits.
+ * [type:1][x:i32][y:i32][z:i32][blockId:u16][action:u8][reason:u8]
+ * blockId echoes the client's edit so a rejected Break can be restored.
+ */
+export function encodeBlockEditRejected(
+	data: BlockEditRejectedData,
+): Uint8Array {
+	const enc = new BinaryEncoder(16);
+	enc.writeUint8(MessageType.BlockEditRejected);
+	enc.writeInt32(data.x);
+	enc.writeInt32(data.y);
+	enc.writeInt32(data.z);
+	enc.writeUint16(data.blockId);
+	enc.writeUint8(data.action);
+	enc.writeUint8(data.reason);
+	return enc.getBytes();
+}
+
+export function decodeBlockEditRejected(
+	buffer: Uint8Array,
+): BlockEditRejectedData {
+	const dec = new BinaryDecoder(buffer.subarray(1));
+	return {
+		x: dec.readInt32(),
+		y: dec.readInt32(),
+		z: dec.readInt32(),
+		blockId: dec.readUint16(),
+		action: dec.readUint8(),
+		reason: dec.readUint8(),
+	};
 }
 
 export function encodeChatMessage(data: ChatMessageData): Uint8Array {

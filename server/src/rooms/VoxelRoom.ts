@@ -14,6 +14,7 @@ import {
 	BinaryEncoder,
 	encodeBlockEditBatch,
 	encodeBlockEditBroadcast,
+	encodeBlockEditRejected,
 	encodeChatMessage,
 	encodeChunkData,
 	encodeChunkDataBatch,
@@ -28,6 +29,7 @@ import {
 import {
 	BlockActionType,
 	type BlockEditData,
+	BlockEditRejectReason,
 	type ChatMessageData,
 	MessageType,
 	type PlayerStateBatchEntry,
@@ -747,6 +749,26 @@ export class VoxelRoom extends Room {
 		);
 	}
 
+	/**
+	 * Notify the originating client that its block edit was rejected so it
+	 * can revert the optimistic local change.
+	 */
+	private sendBlockEditRejected(
+		client: Client,
+		edit: { x: number; y: number; z: number; blockId: number; action: number },
+		reason: number,
+	): void {
+		const msg = encodeBlockEditRejected({
+			x: edit.x,
+			y: edit.y,
+			z: edit.z,
+			blockId: edit.blockId,
+			action: edit.action,
+			reason,
+		});
+		client.sendBytes("binary", msg);
+	}
+
 	/** Append an edit to the ring buffer (O(1) insertion, no shift()). */
 	private recordBlockEdit(edit: BlockEditData): void {
 		const index =
@@ -874,8 +896,22 @@ export class VoxelRoom extends Room {
 				// synchronous, so sharing it across messages is safe.
 				const edit = dec.readBlockEditInto(this.editScratch);
 				const player = this.players.get(client.sessionId);
-				if (!player) return;
-				if (!this.isValidBlockEdit(edit)) return;
+				if (!player) {
+					this.sendBlockEditRejected(
+						client,
+						edit,
+						BlockEditRejectReason.NotAPlayer,
+					);
+					return;
+				}
+				if (!this.isValidBlockEdit(edit)) {
+					this.sendBlockEditRejected(
+						client,
+						edit,
+						BlockEditRejectReason.InvalidEdit,
+					);
+					return;
+				}
 
 				// Reach check: player must be within max-reach blocks
 				const dx = edit.x - player.x;
@@ -886,6 +922,11 @@ export class VoxelRoom extends Room {
 				if (distSq > maxReachSq) {
 					console.warn(
 						`[VoxelRoom] Block edit rejected: too far (${Math.sqrt(distSq).toFixed(1)} blocks)`,
+					);
+					this.sendBlockEditRejected(
+						client,
+						edit,
+						BlockEditRejectReason.TooFar,
 					);
 					return;
 				}
@@ -1024,10 +1065,7 @@ export class VoxelRoom extends Room {
 		try {
 			await this.requestChunkFlush();
 		} catch (error) {
-			console.error(
-				"[VoxelRoom] ensureEditsApplied flush failed:",
-				error,
-			);
+			console.error("[VoxelRoom] ensureEditsApplied flush failed:", error);
 		}
 	}
 
@@ -1050,12 +1088,16 @@ export class VoxelRoom extends Room {
 			const stored = await this.worldStorage.readChunk(cx, cy, cz);
 			if (stored) {
 				if (stored.version === cachedVersion) {
-					console.log(`[VoxelRoom] handleChunkRequest ${cx},${cy},${cz} cachedVersion=${cachedVersion} serverVersion=${stored.version} unchanged`);
+					console.log(
+						`[VoxelRoom] handleChunkRequest ${cx},${cy},${cz} cachedVersion=${cachedVersion} serverVersion=${stored.version} unchanged`,
+					);
 					const msg = encodeChunkUnchanged(cx, cy, cz, stored.version);
 					client.sendBytes("binary", msg);
 					return;
 				}
-				console.log(`[VoxelRoom] handleChunkRequest ${cx},${cy},${cz} cachedVersion=${cachedVersion} serverVersion=${stored.version} sendingFullData`);
+				console.log(
+					`[VoxelRoom] handleChunkRequest ${cx},${cy},${cz} cachedVersion=${cachedVersion} serverVersion=${stored.version} sendingFullData`,
+				);
 				const msg = encodeChunkData(stored);
 				client.sendBytes("binary", msg);
 				return;
@@ -1095,7 +1137,12 @@ export class VoxelRoom extends Room {
 				coords.push({ cx: r.cx, cy: r.cy, cz: r.cz });
 			}
 
-			console.log(`[VoxelRoom] handleBatchChunkRequest: ${unique.length} unique chunks, versions: ${unique.slice(0, 3).map((r) => r.cachedVersion).join(",")}`);
+			console.log(
+				`[VoxelRoom] handleBatchChunkRequest: ${unique.length} unique chunks, versions: ${unique
+					.slice(0, 3)
+					.map((r) => r.cachedVersion)
+					.join(",")}`,
+			);
 			const storedMap = await this.worldStorage.readChunks(coords);
 
 			const missingCoords: Array<{
@@ -1104,7 +1151,12 @@ export class VoxelRoom extends Room {
 				chunkZ: number;
 			}> = [];
 			const fullChunks: StoredChunkData[] = [];
-			const unchangedChunks: Array<{ cx: number; cy: number; cz: number; version: number }> = [];
+			const unchangedChunks: Array<{
+				cx: number;
+				cy: number;
+				cz: number;
+				version: number;
+			}> = [];
 
 			for (let i = 0; i < unique.length; i++) {
 				const r = unique[i];
@@ -1181,7 +1233,12 @@ export class VoxelRoom extends Room {
 
 	private sendUnchangedBatch(
 		client: Client,
-		unchangedChunks: Array<{ cx: number; cy: number; cz: number; version: number }>,
+		unchangedChunks: Array<{
+			cx: number;
+			cy: number;
+			cz: number;
+			version: number;
+		}>,
 	): void {
 		if (unchangedChunks.length === 0) return;
 		const enc = this.chunkBatchEncoder;

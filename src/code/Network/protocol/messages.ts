@@ -39,6 +39,7 @@ export const MessageType = {
 	ChunkUnchangedBatch: 0x1c, // Server → client: multiple "still valid" stamps
 	WorldConfig: 0x1a, // Server → client: authoritative world seed on join
 	SpawnPosition: 0x1b, // Server → client: teleport player to saved position
+	BlockEditRejected: 0x1d, // Server → client: a block edit was rejected
 } as const;
 
 export type MessageType = (typeof MessageType)[keyof typeof MessageType];
@@ -50,6 +51,26 @@ export const BlockActionType = {
 
 export type BlockActionType =
 	(typeof BlockActionType)[keyof typeof BlockActionType];
+
+export const BlockEditRejectReason = {
+	InvalidEdit: 0,
+	TooFar: 1,
+	NotAPlayer: 2,
+} as const;
+
+export type BlockEditRejectReason =
+	(typeof BlockEditRejectReason)[keyof typeof BlockEditRejectReason];
+
+/** Server → Client: the server rejected a block edit from this client. */
+export interface BlockEditRejectedData {
+	x: number;
+	y: number;
+	z: number;
+	/** The block the client tried to place, or the block it broke. */
+	blockId: number;
+	action: number;
+	reason: number;
+}
 
 /** Client → Server: full local player state (no sessionId — connection identity). */
 export interface PlayerStateData {
