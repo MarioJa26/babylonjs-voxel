@@ -6,8 +6,8 @@
  * first before generating new ones — terrain persists across restarts.
  *
  * Optimizations:
- * - In-memory LRU cache of deserialized chunks (hash precomputed once),
- *   backed by an intrusive doubly-linked list. Touching an entry on a
+ * - In-memory LRU cache of deserialized chunks, backed by an intrusive
+ *   doubly-linked list. Touching an entry on a
  *   cache hit is a pointer relink (no hashing); eviction pops the tail
  *   directly (no iterator allocation). This avoids the delete+re-insert
  *   churn a plain Map-based LRU incurs on every hit, which otherwise
@@ -32,7 +32,11 @@ import {
 	deserializeVoxelData,
 	serializeVoxelData,
 } from "@/code/World/Storage/VoxelSerializer";
-import { compressBlocks, decompressBlocks, releaseDecompBuffer } from "./ChunkCompression.ts";
+import {
+	compressBlocks,
+	decompressBlocks,
+	releaseDecompBuffer,
+} from "./ChunkCompression.ts";
 import type { ChunkGenerationService } from "./ChunkGenerationService.ts";
 
 export interface StoredChunkData {
@@ -89,6 +93,8 @@ function isValidPalette(palette: number[] | Uint16Array): boolean {
 }
 
 export class ServerWorldStorage {
+	private static readonly MAX_MISS_COORD_POOL = 512;
+
 	private store: LevelDbChunkStore;
 	private dirtyChunks = new Set<number>();
 	private flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -114,9 +120,6 @@ export class ServerWorldStorage {
 	private cacheHead: CacheNode | null = null; // most recently used
 	private cacheTail: CacheNode | null = null; // least recently used
 	private readonly maxCacheSize: number;
-	// Scratch for writeChunkUnlocked: serializeVoxelData copies palette
-	// bytes synchronously, so one reused buffer is safe for all writers.
-	private readonly paletteScratch = new Uint16Array(256);
 	// Free list for readChunks() missCoords entry objects. Each call pops its
 	// own entries (exclusive ownership per call) and returns them in a
 	// finally, so concurrent readChunks() calls can never observe each
@@ -223,12 +226,39 @@ export class ServerWorldStorage {
 		cz: number,
 	): Promise<StoredChunkData | null> {
 		this.assertActive();
+		return this.readChunkInternal(cx, cy, cz);
+	}
 
+	private async readChunkFromStore(
+		key: number,
+		cx: number,
+		cy: number,
+		cz: number,
+	): Promise<StoredChunkData | null> {
+		const blob = await this.store.readChunk(cx, cy, cz);
+		if (!blob) return null;
+
+		const newerNode = this.chunkCache.get(key);
+		if (newerNode) {
+			this.lruTouch(newerNode);
+			return newerNode.data;
+		}
+
+		const data = this.parseBlob(cx, cy, cz, blob);
+		this.addToCache(key, data);
+		return data;
+	}
+
+	private readChunkInternal(
+		cx: number,
+		cy: number,
+		cz: number,
+	): Promise<StoredChunkData | null> {
 		const key = packChunkKeyFast(cx, cy, cz);
 		const node = this.chunkCache.get(key);
 		if (node) {
 			this.lruTouch(node);
-			return node.data;
+			return Promise.resolve(node.data);
 		}
 
 		const pending = this.pendingReads.get(key);
@@ -253,35 +283,13 @@ export class ServerWorldStorage {
 		return promise;
 	}
 
-	private async readChunkFromStore(
-		key: number,
-		cx: number,
-		cy: number,
-		cz: number,
-	): Promise<StoredChunkData | null> {
-		const blob = await this.store.readChunk(cx, cy, cz);
-		if (!blob) return null;
-
-		const newerNode = this.chunkCache.get(key);
-		if (newerNode) {
-			this.lruTouch(newerNode);
-			return newerNode.data;
-		}
-
-		const data = await this.parseBlob(cx, cy, cz, blob);
-		this.addToCache(key, data);
-		return data;
-	}
-
 	async readChunks(
 		coords: Array<{ cx: number; cy: number; cz: number }>,
 	): Promise<Map<number, StoredChunkData>> {
 		this.assertActive();
 
-		// Allocated fresh per call: sharing a single reused Map across
-		// concurrent readChunks() calls would let one caller's clear()
-		// wipe out another in-flight caller's results.
 		const results = new Map<number, StoredChunkData>();
+		const seen = new Set<number>();
 		const missCoords: Array<{
 			cx: number;
 			cy: number;
@@ -289,40 +297,47 @@ export class ServerWorldStorage {
 			cacheKey: number;
 			key: string;
 		}> = [];
+		const pendingWaits: Array<Promise<void>> = [];
 
 		try {
 			for (const { cx, cy, cz } of coords) {
 				const cacheKey = packChunkKeyFast(cx, cy, cz);
+				if (seen.has(cacheKey)) continue;
+				seen.add(cacheKey);
+
 				const node = this.chunkCache.get(cacheKey);
 				if (node) {
 					this.lruTouch(node);
 					results.set(cacheKey, node.data);
-				} else {
-					// key is passed through to LevelDbChunkStore.readChunks,
-					// which skips recomputing the identical template string.
-					// Entries come from the pool (owned exclusively by this
-					// call) instead of a fresh object per miss.
-					const entry = this.missCoordPool.pop() ?? {
-						cx: 0,
-						cy: 0,
-						cz: 0,
-						cacheKey: 0,
-						key: "",
-					};
-					entry.cx = cx;
-					entry.cy = cy;
-					entry.cz = cz;
-					entry.cacheKey = cacheKey;
-					entry.key = `${cx},${cy},${cz}`;
-					missCoords.push(entry);
+					continue;
 				}
+
+				const pending = this.pendingReads.get(cacheKey);
+				if (pending) {
+					pendingWaits.push(
+						pending.then((data) => {
+							if (data) results.set(cacheKey, data);
+						}),
+					);
+					continue;
+				}
+
+				const entry = this.missCoordPool.pop() ?? {
+					cx: 0,
+					cy: 0,
+					cz: 0,
+					cacheKey: 0,
+					key: "",
+				};
+				entry.cx = cx;
+				entry.cy = cy;
+				entry.cz = cz;
+				entry.cacheKey = cacheKey;
+				entry.key = `${cx},${cy},${cz}`;
+				missCoords.push(entry);
 			}
 
 			if (missCoords.length > 0) {
-				// missCoords already has {cx, cy, cz, key} on every element, so
-				// it can be passed straight through — no need to .map() it into
-				// a second throwaway array first, and the precomputed key
-				// strings are reused instead of rebuilt.
 				const found = await this.store.readChunks(missCoords);
 
 				let parsedSinceYield = 0;
@@ -337,7 +352,7 @@ export class ServerWorldStorage {
 						continue;
 					}
 
-					const data = await this.parseBlob(cx, cy, cz, blob);
+					const data = this.parseBlob(cx, cy, cz, blob);
 					this.addToCache(cacheKey, data);
 					results.set(cacheKey, data);
 
@@ -348,22 +363,28 @@ export class ServerWorldStorage {
 				}
 			}
 
+			if (pendingWaits.length > 0) {
+				await Promise.all(pendingWaits);
+			}
+
 			return results;
 		} finally {
-			// Return every entry to the pool. Runs on success, failure, and
-			// disposal alike; each entry is rewritten on the next acquire.
 			for (let i = missCoords.length - 1; i >= 0; i--) {
-				this.missCoordPool.push(missCoords[i]);
+				if (
+					this.missCoordPool.length < ServerWorldStorage.MAX_MISS_COORD_POOL
+				) {
+					this.missCoordPool.push(missCoords[i]);
+				}
 			}
 		}
 	}
 
-	private async parseBlob(
+	private parseBlob(
 		cx: number,
 		cy: number,
 		cz: number,
 		blob: Uint8Array,
-	): Promise<StoredChunkData> {
+	): StoredChunkData {
 		const value = deserializeVoxelData(blob);
 
 		if (!value.blocks) {
@@ -430,11 +451,7 @@ export class ServerWorldStorage {
 
 		let paletteArr: Uint16Array | null = null;
 		if (data.palette) {
-			const scratch = this.paletteScratch;
-			for (let i = 0; i < data.palette.length; i++) {
-				scratch[i] = data.palette[i];
-			}
-			paletteArr = scratch.subarray(0, data.palette.length);
+			paletteArr = Uint16Array.from(data.palette);
 		}
 
 		const blob = serializeVoxelData(
@@ -476,7 +493,7 @@ export class ServerWorldStorage {
 		cz: number,
 		edits: readonly BlockEdit[],
 	): Promise<void> {
-		const existing = await this.readChunk(cx, cy, cz);
+		const existing = await this.readChunkInternal(cx, cy, cz);
 		if (!existing) return;
 
 		const cx32 = cx << 5;
@@ -500,6 +517,17 @@ export class ServerWorldStorage {
 						`is outside chunk (${cx},${cy},${cz})`,
 				);
 			}
+
+			if (
+				!Number.isInteger(edit.blockId) ||
+				edit.blockId < 0 ||
+				edit.blockId > 255
+			) {
+				throw new Error(
+					`Invalid block ID ${edit.blockId} for edit ` +
+						`(${edit.x},${edit.y},${edit.z})`,
+				);
+			}
 		}
 
 		const decomp = decompressBlocks({
@@ -508,68 +536,55 @@ export class ServerWorldStorage {
 			isUniform: existing.isUniform,
 			uniformBlockId: existing.uniformBlockId,
 		});
-		// Raw data returns the stored reference — copy so edits don't
-		// mutate the cached version.
-		const blocks =
-			decomp === existing.blocks ? new Uint8Array(decomp) : decomp;
 
-		for (let i = 0; i < edits.length; i++) {
-			const edit = edits[i];
-			const idx =
-				edit.x - cx32 + ((edit.y - cy32) << 5) + ((edit.z - cz32) << 10);
-			blocks[idx] = edit.blockId;
-		}
+		try {
+			const blocks =
+				decomp === existing.blocks ? new Uint8Array(decomp) : decomp;
 
-		const compressed = compressBlocks(blocks);
-
-		// For raw chunks, compressBlocks returns the same reference as
-		// blocks. relightChunk transfers blocks.buffer to the worker,
-		// detaching it — clone so compressed.data survives the transfer.
-		if (compressed.data === blocks) {
-			compressed.data = new Uint8Array(blocks);
-		}
-
-		// Recalculate block light from scratch so emission sources (torches,
-		// etc.) placed by players propagate correctly to all clients.
-		// Preserve the original sky light (high nibble) — relightChunk seeds
-		// sky=15 at every column top because it lacks the topSunlightMask
-		// that the generation pipeline provides, which leaks sunlight
-		// underground.
-		let newLight = existing.light;
-		if (this.worldGen) {
-			const relit = await this.worldGen.relightChunk(cx, cy, cz, blocks);
-			for (let i = 0; i < relit.length; i++) {
-				relit[i] = (relit[i] & 0x0f) | (existing.light[i] & 0xf0);
+			for (let i = 0; i < edits.length; i++) {
+				const edit = edits[i];
+				const idx =
+					edit.x - cx32 + ((edit.y - cy32) << 5) + ((edit.z - cz32) << 10);
+				blocks[idx] = edit.blockId;
 			}
-			newLight = relit;
+
+			const compressed = compressBlocks(blocks);
+
+			if (compressed.data === blocks) {
+				compressed.data = new Uint8Array(blocks);
+			}
+
+			let newLight = existing.light;
+			if (this.worldGen) {
+				const relit = await this.worldGen.relightChunk(cx, cy, cz, blocks);
+				for (let i = 0; i < relit.length; i++) {
+					relit[i] = (relit[i] & 0x0f) | (existing.light[i] & 0xf0);
+				}
+				newLight = relit;
+			}
+
+			const baseVersion = existing.version > 0 ? existing.version : 1;
+			const newVersion = baseVersion + 1;
+			if (DEBUG_ENABLED) {
+				debugLog(
+					`[ServerWorldStorage] applyBlockEdits ${cx},${cy},${cz}: version ${existing.version} (base ${baseVersion}) -> ${newVersion}`,
+				);
+			}
+
+			await this.writeChunkUnlocked({
+				chunkX: cx,
+				chunkY: cy,
+				chunkZ: cz,
+				blocks: compressed.data,
+				light: newLight,
+				palette: compressed.palette,
+				isUniform: compressed.isUniform,
+				uniformBlockId: compressed.uniformBlockId,
+				version: newVersion,
+			});
+		} finally {
+			releaseDecompBuffer(decomp);
 		}
-
-		const baseVersion = existing.version > 0 ? existing.version : 1;
-		const newVersion = baseVersion + 1;
-		// Gate so the template literal isn't built per edit flush when debug
-		// output is disabled.
-		if (DEBUG_ENABLED) {
-			debugLog(
-				`[ServerWorldStorage] applyBlockEdits ${cx},${cy},${cz}: version ${existing.version} (base ${baseVersion}) -> ${newVersion}`,
-			);
-		}
-
-		await this.writeChunkUnlocked({
-			chunkX: cx,
-			chunkY: cy,
-			chunkZ: cz,
-			blocks: compressed.data,
-			light: newLight,
-			palette: compressed.palette,
-			isUniform: compressed.isUniform,
-			uniformBlockId: compressed.uniformBlockId,
-			version: newVersion,
-		});
-
-		// Return decompression buffer after all consumers are done.
-		// For palette chunks decomp was detached by relightChunk (length 0),
-		// so releaseDecompBuffer naturally skips it.
-		releaseDecompBuffer(decomp);
 	}
 
 	private queueChunkMutation(
@@ -660,6 +675,10 @@ export class ServerWorldStorage {
 			this.flushTimer = null;
 			void this.flush().catch((error) => {
 				console.error("[ServerWorldStorage] Scheduled flush failed:", error);
+
+				if (!this.disposing && !this.disposed && this.dirtyChunks.size > 0) {
+					this.scheduleFlush();
+				}
 			});
 		}, 500);
 	}

@@ -177,15 +177,15 @@ export class ChunkGenerationService {
 		const data: ChunkData = {
 			chunkX,
 			chunkY,
-		chunkZ,
-		blocks: raw.blocks,
-		light: raw.light,
-		palette: raw.palette,
-		isUniform: raw.isUniform,
-		uniformBlockId: raw.uniformBlockId,
-		hash: raw.hash,
-		version: 1,
-	};
+			chunkZ,
+			blocks: raw.blocks,
+			light: raw.light,
+			palette: raw.palette,
+			isUniform: raw.isUniform,
+			uniformBlockId: raw.uniformBlockId,
+			hash: raw.hash,
+			version: 1,
+		};
 
 		// Persist before returning (and before the dedup entry is removed) so
 		// a concurrent request for the same chunk never regenerates it.
@@ -262,8 +262,10 @@ export class ChunkGenerationService {
 			// that dispatchAll sends column-coherent batches to workers. This
 			// lets workers reuse column-level noise/state across Y-levels.
 			owned.sort((a, b) => {
-				if (a.entry.chunkX !== b.entry.chunkX) return a.entry.chunkX - b.entry.chunkX;
-				if (a.entry.chunkZ !== b.entry.chunkZ) return a.entry.chunkZ - b.entry.chunkZ;
+				if (a.entry.chunkX !== b.entry.chunkX)
+					return a.entry.chunkX - b.entry.chunkX;
+				if (a.entry.chunkZ !== b.entry.chunkZ)
+					return a.entry.chunkZ - b.entry.chunkZ;
 				return a.entry.chunkY - b.entry.chunkY;
 			});
 			void this.dispatchOwnedBatch(owned);
@@ -280,15 +282,17 @@ export class ChunkGenerationService {
 		}>,
 	): Promise<void> {
 		try {
-			// dispatchAll preserves input ordering (contiguous groups per
-			// worker, flattened in the same order).
-			const rawResults = await this.pool.dispatchAll(
-				owned.map(({ entry }) => ({
+			const request = new Array<ChunkCoord>(owned.length);
+			for (let i = 0; i < owned.length; i++) {
+				const entry = owned[i].entry;
+				request[i] = {
 					chunkX: entry.chunkX,
 					chunkY: entry.chunkY,
 					chunkZ: entry.chunkZ,
-				})),
-			);
+				};
+			}
+
+			const rawResults = await this.pool.dispatchAll(request);
 
 			if (rawResults.length !== owned.length) {
 				throw new Error(
@@ -300,18 +304,18 @@ export class ChunkGenerationService {
 			for (let i = 0; i < owned.length; i++) {
 				const { entry } = owned[i];
 				const raw = rawResults[i];
-			chunks[i] = {
-				chunkX: entry.chunkX,
-				chunkY: entry.chunkY,
-				chunkZ: entry.chunkZ,
-				blocks: raw.blocks,
-				light: raw.light,
-				palette: raw.palette,
-				isUniform: raw.isUniform,
-				uniformBlockId: raw.uniformBlockId,
-				hash: raw.hash,
-				version: 1,
-			};
+				chunks[i] = {
+					chunkX: entry.chunkX,
+					chunkY: entry.chunkY,
+					chunkZ: entry.chunkZ,
+					blocks: raw.blocks,
+					light: raw.light,
+					palette: raw.palette,
+					isUniform: raw.isUniform,
+					uniformBlockId: raw.uniformBlockId,
+					hash: raw.hash,
+					version: 1,
+				};
 			}
 
 			// Persist before resolving so storage catches up while the dedup
@@ -352,16 +356,19 @@ export class ChunkGenerationService {
 
 		let next = 0;
 		const workers = Math.min(concurrency, chunks.length);
+		const tasks = new Array<Promise<void>>(workers);
 
-		await Promise.all(
-			Array.from({ length: workers }, async () => {
+		for (let worker = 0; worker < workers; worker++) {
+			tasks[worker] = (async () => {
 				for (;;) {
 					const index = next++;
 					if (index >= chunks.length) return;
 					await this.persistChunk(chunks[index]);
 				}
-			}),
-		);
+			})();
+		}
+
+		await Promise.all(tasks);
 	}
 
 	async relightChunk(
