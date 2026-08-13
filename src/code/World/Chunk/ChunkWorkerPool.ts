@@ -3,6 +3,7 @@ import type {
 	RemoteChunkProvider,
 	RemoteChunkResult,
 } from "../../Network/chunk/RemoteChunkProvider";
+import { ChunkResultKind } from "../../Network/protocol/messages";
 import {
 	FLAG_GREEDY,
 	FLAG_PARTIAL,
@@ -2722,7 +2723,7 @@ export class ChunkWorkerPool {
 		const chunk = target;
 
 		switch (result.kind) {
-			case "data": {
+			case ChunkResultKind.Data: {
 				// Pass raw compressed blocks directly to loadFromStorage.
 				// Do NOT decompress — loadFromStorage handles uniform/palette/dense formats
 				// and expects nibble-packed data when a palette is provided.
@@ -2743,7 +2744,7 @@ export class ChunkWorkerPool {
 				break;
 			}
 
-			case "unchanged": {
+			case ChunkResultKind.Unchanged: {
 				// The server confirmed that the client's known version is still
 				// authoritative. Apply the client's own (matching) copy — local
 				// cache or already-present voxel data. The version comparison

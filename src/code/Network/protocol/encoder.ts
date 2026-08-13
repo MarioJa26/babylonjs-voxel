@@ -12,6 +12,7 @@ import {
 	type BlockEditData,
 	type BlockEditRejectedData,
 	type ChatMessageData,
+	ChunkResultKind,
 	MessageType,
 	type PlayerJoinData,
 	type PlayerLeaveData,
@@ -886,7 +887,7 @@ export function decodeChunkData(
 	const light = dec.readBytesView(lightLen);
 
 	return {
-		kind: "data",
+		kind: ChunkResultKind.Data,
 		chunkX,
 		chunkY,
 		chunkZ,
@@ -1128,7 +1129,7 @@ export function decodeChunkDataBatch(
 		const light = dec.readBytesView(lightLen);
 
 		chunks.push({
-			kind: "data",
+			kind: ChunkResultKind.Data,
 			chunkX,
 			chunkY,
 			chunkZ,

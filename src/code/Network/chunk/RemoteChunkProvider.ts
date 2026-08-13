@@ -45,7 +45,7 @@ import {
 	decodeChunkUnchanged,
 	decodeChunkUnchangedBatch,
 } from "../protocol/encoder";
-import { MessageType } from "../protocol/messages";
+import { ChunkResultKind, MessageType } from "../protocol/messages";
 
 const CHUNK_VOLUME = 32 * 32 * 32;
 /** Nibble-packed block payload size for palette chunks (CHUNK_VOLUME / 2). */
@@ -62,7 +62,7 @@ export interface RemoteChunkBase {
 }
 
 export interface RemoteChunkData extends RemoteChunkBase {
-	kind: "data";
+	kind: ChunkResultKind.Data;
 	/** Encoded block payload: nibble-packed (palette), dense u8, or dense u16. */
 	blocks: Uint8Array | Uint16Array;
 	light: Uint8Array;
@@ -72,7 +72,7 @@ export interface RemoteChunkData extends RemoteChunkBase {
 }
 
 export interface RemoteChunkUnchanged extends RemoteChunkBase {
-	kind: "unchanged";
+	kind: ChunkResultKind.Unchanged;
 }
 
 export type RemoteChunkResult = RemoteChunkData | RemoteChunkUnchanged;
@@ -314,7 +314,7 @@ export class RemoteChunkProvider {
 		}
 
 		pending.resolve({
-			kind: "unchanged",
+			kind: ChunkResultKind.Unchanged,
 			chunkX: entry.cx,
 			chunkY: entry.cy,
 			chunkZ: entry.cz,
@@ -647,7 +647,7 @@ export class RemoteChunkProvider {
 		if (blocks === null) return null;
 
 		return {
-			kind: "data",
+			kind: ChunkResultKind.Data,
 			chunkX: cx,
 			chunkY: cy,
 			chunkZ: cz,

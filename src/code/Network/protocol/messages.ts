@@ -44,6 +44,17 @@ export const MessageType = {
 
 export type MessageType = (typeof MessageType)[keyof typeof MessageType];
 
+/**
+ * Discriminator for decoded chunk responses. Not part of the wire format
+ * (the wire distinguishes data vs unchanged via MessageType) — it is stamped
+ * by the decoders so consumers can switch on a numeric value instead of
+ * comparing strings.
+ */
+export enum ChunkResultKind {
+	Data = 0,
+	Unchanged = 1,
+}
+
 export const BlockActionType = {
 	Place: 0,
 	Break: 1,
