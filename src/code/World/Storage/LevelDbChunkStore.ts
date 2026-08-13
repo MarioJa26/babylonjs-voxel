@@ -234,6 +234,18 @@ export class LevelDbChunkStore {
 		return this.enqueueExclusive(() => this.clearUnsafe());
 	}
 
+	/** Serialized cache eviction: cannot race a clear() or an in-flight write. */
+	deleteChunk(cx: number, cy: number, cz: number): Promise<void> {
+		return this.enqueueExclusive(() => this.deleteChunkUnsafe(cx, cy, cz));
+	}
+
+	/** Serialized batch eviction (one delete batch, one final flush). */
+	deleteChunks(
+		coords: readonly { cx: number; cy: number; cz: number }[],
+	): Promise<void> {
+		return this.enqueueExclusive(() => this.deleteChunksUnsafe(coords));
+	}
+
 	// ---------------------------------------------------------------------
 	// Unsafe primitives — may only run while the write chain is held. Never
 	// call a public queued method from inside these.
@@ -255,6 +267,19 @@ export class LevelDbChunkStore {
 			this.batchCount = 0;
 		}
 		this.batch.put(key, value);
+		this.batchCount++;
+		if (this.batchCount >= LevelDbChunkStore.DEFAULT_BATCH_SIZE) {
+			await this.flushUnsafe();
+		}
+	}
+
+	private async batchDelUnsafe(key: string): Promise<void> {
+		if (!this.db) return;
+		if (!this.batch) {
+			this.batch = this.db.batch();
+			this.batchCount = 0;
+		}
+		this.batch.del(key);
 		this.batchCount++;
 		if (this.batchCount >= LevelDbChunkStore.DEFAULT_BATCH_SIZE) {
 			await this.flushUnsafe();
@@ -289,6 +314,32 @@ export class LevelDbChunkStore {
 			const key = chunkKey(write.cx, write.cy, write.cz);
 			this.addToCache(key, write.blob);
 			await this.batchPutUnsafe(key, write.blob);
+		}
+		await this.flushUnsafe();
+	}
+
+	private async deleteChunkUnsafe(
+		cx: number,
+		cy: number,
+		cz: number,
+	): Promise<void> {
+		const key = chunkKey(cx, cy, cz);
+		this.cache.delete(key);
+		this.touched.delete(key);
+		if (!this.db) return;
+		await this.batchDelUnsafe(key);
+	}
+
+	private async deleteChunksUnsafe(
+		coords: readonly { cx: number; cy: number; cz: number }[],
+	): Promise<void> {
+		for (let i = 0; i < coords.length; i++) {
+			const { cx, cy, cz } = coords[i];
+			const key = chunkKey(cx, cy, cz);
+			this.cache.delete(key);
+			this.touched.delete(key);
+			if (!this.db) continue;
+			await this.batchDelUnsafe(key);
 		}
 		await this.flushUnsafe();
 	}
@@ -601,7 +652,7 @@ class IndexedDbStore {
 }
 
 class IndexedDbBatch {
-	private ops: Array<{ key: string; value: Uint8Array | string }> = [];
+	private ops: Array<{ key: string; value: Uint8Array | string | null }> = [];
 
 	constructor(
 		private db: IDBDatabase,
@@ -612,6 +663,10 @@ class IndexedDbBatch {
 		this.ops.push({ key, value });
 	}
 
+	del(key: string): void {
+		this.ops.push({ key, value: null });
+	}
+
 	async write(): Promise<void> {
 		if (this.ops.length === 0) return;
 		const ops = this.ops;
@@ -620,7 +675,11 @@ class IndexedDbBatch {
 			const tx = this.db.transaction(this.storeName, "readwrite");
 			const store = tx.objectStore(this.storeName);
 			for (const { key, value } of ops) {
-				store.put(value, key);
+				if (value === null) {
+					store.delete(key);
+				} else {
+					store.put(value, key);
+				}
 			}
 			tx.oncomplete = () => resolve();
 			tx.onerror = () => reject(tx.error);

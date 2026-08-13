@@ -17,6 +17,11 @@
  *   is guaranteed by NetClient, which discards every message delivered by
  *   a room that is no longer the current one. The epoch only protects
  *   pending-request cleanup and post-clear persistence callbacks.
+ * - An "unchanged" stamp is only honored when its version exactly matches
+ *   the cachedVersion sent with the request. Anything else is a protocol
+ *   violation: the pending request is rejected, the cached version is
+ *   forgotten, and the local blob is evicted, so the caller's retry
+ *   re-fetches full data with cachedVersion 0.
  * - chunkVersions only ever records a version for which a local payload
  *   was actually persisted (data responses) or confirmed (cache reads).
  *   "unchanged" stamps never write the map, so a nonzero cachedVersion
@@ -72,11 +77,35 @@ export interface RemoteChunkUnchanged extends RemoteChunkBase {
 
 export type RemoteChunkResult = RemoteChunkData | RemoteChunkUnchanged;
 
+/** A server response that violates the chunk protocol (e.g. an unchanged
+ * stamp whose version does not match the requested cachedVersion). */
+export class ChunkProtocolError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "ChunkProtocolError";
+	}
+}
+
+/** Result of processing one unchanged stamp against the pending map. */
+enum UnchangedOutcome {
+	/** No pending request (or a stale-epoch one) — stamp dropped. */
+	Ignored,
+	/** Stamp matched the requested cachedVersion — request resolved. */
+	Resolved,
+	/** Stamp violated the protocol — request rejected and cache evicted. */
+	Rejected,
+}
+
 type PendingChunk = {
 	resolve: (result: RemoteChunkResult) => void;
 	reject: (error: Error) => void;
 	deadline: number;
 	epoch: number;
+	/** Exact cachedVersion sent with this request. */
+	cachedVersion: number;
+	/** True when the sent cachedVersion referenced a real local payload
+	 * (chunkVersions had an entry), as opposed to a cache-miss sentinel 0. */
+	hasCachedPayload: boolean;
 };
 
 export class RemoteChunkProvider {
@@ -234,51 +263,94 @@ export class RemoteChunkProvider {
 		cz: number;
 		version: number;
 	}): void {
-		const key = RemoteChunkProvider.makeKey(entry.cx, entry.cy, entry.cz);
-		if (this.isStaleVersion(key, entry.version)) {
-			if (DEBUG_ENABLED) {
-				debugLog(
-					`[RemoteChunkProvider] ignored stale unchanged stamp ${key} version=${entry.version}`,
-				);
-			}
-			return;
+		const outcome = this.processUnchangedEntry(entry);
+		if (outcome === UnchangedOutcome.Ignored) return;
+		if (outcome === UnchangedOutcome.Rejected) {
+			this.evictChunk(entry.cx, entry.cy, entry.cz);
 		}
-		// An unchanged stamp is protocol confirmation, not voxel data: it
-		// resolves the request but never writes chunkVersions (the map only
-		// tracks versions with a known local payload) and is never persisted.
-		this.resolvePending(key, {
+		this.scheduleSweep();
+	}
+
+	/**
+	 * An unchanged stamp asserts "your cached copy is current": it is only
+	 * honored when its version exactly matches the cachedVersion sent with
+	 * the request. On a mismatch (protocol violation/corruption) the pending
+	 * request is rejected as a terminal failure — never resolved, never left
+	 * to time out, never retried in place (without a request ID, an
+	 * automatic resend could be answered by a late response to the original
+	 * request). The cached version is forgotten and the local blob evicted,
+	 * so the caller's retry path re-fetches full data with cachedVersion 0.
+	 */
+	private processUnchangedEntry(entry: {
+		cx: number;
+		cy: number;
+		cz: number;
+		version: number;
+	}): UnchangedOutcome {
+		const key = RemoteChunkProvider.makeKey(entry.cx, entry.cy, entry.cz);
+		const pending = this.pending.get(key);
+		if (pending === undefined || pending.epoch !== this.epoch) {
+			return UnchangedOutcome.Ignored;
+		}
+
+		this.pending.delete(key);
+
+		// A stamp for a request that sent cachedVersion 0 (cache miss) is
+		// invalid too: version zero was the miss sentinel, so there is no
+		// payload the server could have confirmed as current.
+		const valid =
+			pending.hasCachedPayload && entry.version === pending.cachedVersion;
+
+		if (!valid) {
+			this.chunkVersions.delete(key);
+			pending.reject(
+				new ChunkProtocolError(
+					`Chunk unchanged version mismatch for ${key}: ` +
+						`requested cachedVersion=${pending.cachedVersion}, ` +
+						`received version=${entry.version}`,
+				),
+			);
+			return UnchangedOutcome.Rejected;
+		}
+
+		pending.resolve({
 			kind: "unchanged",
 			chunkX: entry.cx,
 			chunkY: entry.cy,
 			chunkZ: entry.cz,
 			version: entry.version,
 		});
-		this.scheduleSweep();
+		return UnchangedOutcome.Resolved;
 	}
 
 	private handleChunkUnchangedBatch(
 		entries: readonly { cx: number; cy: number; cz: number; version: number }[],
 	): void {
+		const evictCoords: Array<{ cx: number; cy: number; cz: number }> = [];
+		let removedAny = false;
+
 		for (let i = 0; i < entries.length; i++) {
 			const entry = entries[i];
-			const key = RemoteChunkProvider.makeKey(entry.cx, entry.cy, entry.cz);
-			if (this.isStaleVersion(key, entry.version)) {
-				if (DEBUG_ENABLED) {
-					debugLog(
-						`[RemoteChunkProvider] ignored stale unchanged stamp ${key} version=${entry.version}`,
-					);
-				}
-				continue;
+			const outcome = this.processUnchangedEntry(entry);
+			if (outcome === UnchangedOutcome.Ignored) continue;
+			removedAny = true;
+			if (outcome === UnchangedOutcome.Rejected) {
+				evictCoords.push({ cx: entry.cx, cy: entry.cy, cz: entry.cz });
 			}
-			this.resolvePending(key, {
-				kind: "unchanged",
-				chunkX: entry.cx,
-				chunkY: entry.cy,
-				chunkZ: entry.cz,
-				version: entry.version,
+		}
+
+		if (removedAny) {
+			this.scheduleSweep();
+		}
+		if (evictCoords.length > 0) {
+			// One batched eviction for all violated entries of this packet.
+			this.store.deleteChunks(evictCoords).catch((error) => {
+				console.warn(
+					"[RemoteChunkProvider] failed to evict invalid cache entries:",
+					error,
+				);
 			});
 		}
-		this.scheduleSweep();
 	}
 
 	/** Returns false if the response cannot resolve a current pending request. */
@@ -388,7 +460,13 @@ export class RemoteChunkProvider {
 		try {
 			const blob = await this.store.readChunk(cx, cy, cz);
 			if (!blob) return null;
-			return this.deserializeCached(blob, cx, cy, cz);
+			const resolved = this.deserializeCached(blob, cx, cy, cz);
+			if (resolved === null) {
+				// Corrupt blob: evict so it is not re-read and re-scanned
+				// on every miss, and cannot repopulate the version map.
+				this.evictChunk(cx, cy, cz);
+			}
+			return resolved;
 		} catch (error) {
 			console.warn(
 				`[RemoteChunkProvider] cache read failed for ${cx},${cy},${cz}:`,
@@ -440,6 +518,7 @@ export class RemoteChunkProvider {
 			}
 			return result;
 		}
+		const corruptCoords: Array<{ cx: number; cy: number; cz: number }> = [];
 		for (let i = 0; i < chunks.length; i++) {
 			const c = chunks[i];
 			const key = coords[i].key;
@@ -457,7 +536,14 @@ export class RemoteChunkProvider {
 			// A corrupt blob or one older than the in-memory version is a
 			// miss: the caller re-requests from the server instead of using
 			// (or re-recording) stale data.
-			if (resolved === null || this.isStaleVersion(key, resolved.version)) {
+			if (resolved === null) {
+				// Corrupt blob: evict in one batched store operation so it
+				// is not re-read and re-scanned on every miss.
+				corruptCoords.push({ cx: c.chunkX, cy: c.chunkY, cz: c.chunkZ });
+				result.set(c, null);
+				continue;
+			}
+			if (this.isStaleVersion(key, resolved.version)) {
 				result.set(c, null);
 				continue;
 			}
@@ -468,6 +554,14 @@ export class RemoteChunkProvider {
 			}
 			this.chunkVersions.set(key, resolved.version);
 			result.set(c, resolved);
+		}
+		if (corruptCoords.length > 0) {
+			this.store.deleteChunks(corruptCoords).catch((error) => {
+				console.warn(
+					"[RemoteChunkProvider] failed to evict corrupt cache entries:",
+					error,
+				);
+			});
 		}
 		return result;
 	}
@@ -516,13 +610,28 @@ export class RemoteChunkProvider {
 			) {
 				return null;
 			}
+			const packed = deserialized.blocks;
 			if (
-				!(deserialized.blocks instanceof Uint8Array) ||
-				deserialized.blocks.byteLength !== PACKED_BLOCK_SIZE
+				!(packed instanceof Uint8Array) ||
+				packed.byteLength !== PACKED_BLOCK_SIZE
 			) {
 				return null;
 			}
-			blocks = deserialized.blocks;
+			// Strict per-byte validation: every nibble must be a valid
+			// palette index. An out-of-range nibble would otherwise read
+			// undefined from the palette, which typed arrays coerce to 0 —
+			// silent corruption turning into air blocks. Allocation-free
+			// scan of PACKED_BLOCK_SIZE bytes.
+			const paletteLength = palette.length;
+			for (let i = 0; i < packed.length; i++) {
+				const byte = packed[i];
+				const low = byte & 0x0f;
+				const high = byte >>> 4;
+				if (low >= paletteLength || high >= paletteLength) {
+					return null;
+				}
+			}
+			blocks = packed;
 		} else if (deserialized.blocks instanceof Uint16Array) {
 			// Dense 16-bit block storage.
 			if (deserialized.blocks.length !== CHUNK_VOLUME) return null;
@@ -567,6 +676,9 @@ export class RemoteChunkProvider {
 		const existing = this.inFlight.get(key);
 		if (existing !== undefined) return existing;
 
+		const cachedVersion = this.chunkVersions.get(key) ?? 0;
+		const hasCachedPayload = this.chunkVersions.has(key);
+
 		let rejectRequest!: (error: Error) => void;
 		let promise!: Promise<RemoteChunkResult>;
 		promise = new Promise<RemoteChunkResult>((resolve, reject) => {
@@ -576,6 +688,8 @@ export class RemoteChunkProvider {
 				reject,
 				deadline: performance.now() + timeoutMs,
 				epoch: this.epoch,
+				cachedVersion,
+				hasCachedPayload,
 			});
 		}).finally(() => {
 			// Identity check: a stale rejection's finally can run after
@@ -590,7 +704,7 @@ export class RemoteChunkProvider {
 		this.scheduleSweep();
 
 		try {
-			this.sendRequest(cx, cy, cz, this.chunkVersions.get(key) ?? 0);
+			this.sendRequest(cx, cy, cz, cachedVersion);
 		} catch (error) {
 			// Synchronous send failure: drop the pending entry and surface
 			// the error to the caller instead of leaking it until a timeout.
@@ -653,6 +767,9 @@ export class RemoteChunkProvider {
 				continue;
 			}
 
+			const cachedVersion = this.chunkVersions.get(key) ?? 0;
+			const hasCachedPayload = this.chunkVersions.has(key);
+
 			let promise!: Promise<RemoteChunkResult>;
 			promise = new Promise<RemoteChunkResult>((resolve, reject) => {
 				this.pending.set(key, {
@@ -660,6 +777,8 @@ export class RemoteChunkProvider {
 					reject,
 					deadline,
 					epoch: this.epoch,
+					cachedVersion,
+					hasCachedPayload,
 				});
 
 				requests[requestCount++] = {
@@ -667,7 +786,7 @@ export class RemoteChunkProvider {
 					cy,
 					cz,
 					lod: 0,
-					cachedVersion: this.chunkVersions.get(key) ?? 0,
+					cachedVersion,
 				};
 			}).finally(() => {
 				// Identity check: never delete a newer request for the same
@@ -702,6 +821,19 @@ export class RemoteChunkProvider {
 		}
 
 		return results;
+	}
+
+	/**
+	 * Evict a local blob the client can no longer trust (protocol
+	 * violation or corruption). Serialized through the store write chain.
+	 */
+	private evictChunk(cx: number, cy: number, cz: number): void {
+		void this.store.deleteChunk(cx, cy, cz).catch((error) => {
+			console.warn(
+				`[RemoteChunkProvider] failed to evict invalid cache entry ${cx},${cy},${cz}:`,
+				error,
+			);
+		});
 	}
 
 	/**
