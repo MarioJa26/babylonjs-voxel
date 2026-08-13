@@ -11,15 +11,10 @@ import {
 	BinaryDecoder,
 	BinaryEncoder,
 	decodeBlockEditBatch,
-	decodeBlockEditBroadcast,
-	decodeBlockEditRejected,
-	decodeChatMessage,
-	decodePlayerJoin,
-	decodePlayerLeave,
-	decodePlayerStateBatchInto,
-	decodeSpawnPosition,
-	decodeWorldConfig,
-	decodeWorldTime,
+	decodeBlockEditBroadcastFrom,
+	decodeBlockEditRejectedFrom,
+	decodePlayerJoinFrom,
+	decodePlayerStateBatchEntriesInto,
 } from "./protocol/encoder";
 import {
 	type BlockEditData,
@@ -176,7 +171,7 @@ export class NetClient {
 
 		switch (msgType) {
 			case MessageType.PlayerStateBatch: {
-				decodePlayerStateBatchInto(data, this.batchScratch);
+				decodePlayerStateBatchEntriesInto(dec, this.batchScratch);
 				const players = this.playersByIndex;
 				for (let i = 0; i < this.batchScratch.length; i++) {
 					const state = this.batchScratch[i];
@@ -211,7 +206,7 @@ export class NetClient {
 			}
 
 			case MessageType.PlayerJoin: {
-				const join = decodePlayerJoin(data);
+				const join = decodePlayerJoinFrom(dec);
 				if (join.sessionId === this.room.sessionId) {
 					// This is our own join message — record our room index
 					this.ownIndex = join.index;
@@ -241,7 +236,7 @@ export class NetClient {
 			}
 
 			case MessageType.PlayerLeave: {
-				const index = decodePlayerLeave(data);
+				const index = dec.readUint8();
 				const existing = this.playersByIndex[index];
 				const sessionId = existing?.sessionId ?? "";
 				const name = existing?.name;
@@ -252,19 +247,19 @@ export class NetClient {
 			}
 
 			case MessageType.BlockEditBroadcast: {
-				const edit = decodeBlockEditBroadcast(data);
+				const edit = decodeBlockEditBroadcastFrom(dec);
 				this.callbacks.onBlockEdit?.(edit);
 				break;
 			}
 
 			case MessageType.BlockEditRejected: {
-				const rejection = decodeBlockEditRejected(data);
+				const rejection = decodeBlockEditRejectedFrom(dec);
 				this.callbacks.onBlockEditRejected?.(rejection);
 				break;
 			}
 
 			case MessageType.ChatMessage: {
-				const chat = decodeChatMessage(data);
+				const chat = dec.readChatMessage();
 				this.callbacks.onChatMessage?.(chat);
 				break;
 			}
@@ -279,19 +274,25 @@ export class NetClient {
 			}
 
 			case MessageType.WorldTime: {
-				const timeOfDay = decodeWorldTime(data);
+				const timeOfDay = dec.readFloat32();
 				this.callbacks.onWorldTime?.(timeOfDay);
 				break;
 			}
 
 			case MessageType.WorldConfig: {
-				const seed = decodeWorldConfig(data);
+				const seed = dec.readString();
 				this.callbacks.onWorldConfig?.(seed);
 				break;
 			}
 
 			case MessageType.SpawnPosition: {
-				const pos = decodeSpawnPosition(data);
+				const pos = {
+					x: dec.readFloat32(),
+					y: dec.readFloat32(),
+					z: dec.readFloat32(),
+					yaw: dec.readFloat32(),
+					pitch: dec.readFloat32(),
+				};
 				this.callbacks.onSpawnPosition?.(pos);
 				break;
 			}

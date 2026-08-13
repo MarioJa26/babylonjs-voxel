@@ -197,14 +197,14 @@ export class BinaryDecoder {
 	private offset: number;
 	private buffer: Uint8Array;
 
-	constructor(buffer: Uint8Array) {
+	constructor(buffer: Uint8Array, startOffset = 0) {
 		this.buffer = buffer;
 		this.view = new DataView(
 			buffer.buffer,
 			buffer.byteOffset,
 			buffer.byteLength,
 		);
-		this.offset = 0;
+		this.offset = startOffset;
 	}
 
 	/**
@@ -478,7 +478,7 @@ export function encodePlayerStateBatch(
 export function decodePlayerStateBatch(
 	buffer: Uint8Array,
 ): PlayerStateBatchEntry[] {
-	const dec = new BinaryDecoder(buffer.subarray(1)); // skip type byte
+	const dec = new BinaryDecoder(buffer, 1); // skip type byte
 	const count = dec.readUint8();
 	const states: PlayerStateBatchEntry[] = [];
 	for (let i = 0; i < count; i++) {
@@ -504,7 +504,21 @@ export function decodePlayerStateBatchInto(
 	buffer: Uint8Array,
 	target: PlayerStateBatchEntry[],
 ): number {
-	const dec = new BinaryDecoder(buffer.subarray(1)); // skip type byte
+	return decodePlayerStateBatchEntriesInto(
+		new BinaryDecoder(buffer, 1),
+		target,
+	);
+}
+
+/**
+ * Decoder-based variant of decodePlayerStateBatchInto — reads from an
+ * already-positioned decoder (type byte already consumed) instead of
+ * deriving a fresh one from the raw buffer.
+ */
+export function decodePlayerStateBatchEntriesInto(
+	dec: BinaryDecoder,
+	target: PlayerStateBatchEntry[],
+): number {
 	const count = dec.readUint8();
 	for (let i = 0; i < count; i++) {
 		let entry = target[i];
@@ -544,7 +558,7 @@ export function encodeBlockEditBatch(edits: BlockEditData[]): Uint8Array {
 }
 
 export function decodeBlockEditBatch(buffer: Uint8Array): BlockEditData[] {
-	const dec = new BinaryDecoder(buffer.subarray(1)); // skip type byte
+	const dec = new BinaryDecoder(buffer, 1); // skip type byte
 	const count = dec.readUint16();
 	const edits: BlockEditData[] = [];
 	for (let i = 0; i < count; i++) {
@@ -576,7 +590,10 @@ export function encodePlayerJoin(data: PlayerJoinData): Uint8Array {
 }
 
 export function decodePlayerJoin(buffer: Uint8Array): PlayerJoinData {
-	const dec = new BinaryDecoder(buffer.subarray(1));
+	return decodePlayerJoinFrom(new BinaryDecoder(buffer, 1));
+}
+
+export function decodePlayerJoinFrom(dec: BinaryDecoder): PlayerJoinData {
 	return {
 		index: dec.readUint8(),
 		sessionId: dec.readString(),
@@ -596,8 +613,7 @@ export function encodePlayerLeave(data: PlayerLeaveData): Uint8Array {
 }
 
 export function decodePlayerLeave(buffer: Uint8Array): number {
-	const dec = new BinaryDecoder(buffer.subarray(1));
-	return dec.readUint8();
+	return buffer[1];
 }
 
 /**
@@ -618,7 +634,12 @@ export function encodeBlockEditBroadcast(data: BlockEditData): Uint8Array {
 }
 
 export function decodeBlockEditBroadcast(buffer: Uint8Array): BlockEditData {
-	const dec = new BinaryDecoder(buffer.subarray(1));
+	return decodeBlockEditBroadcastFrom(new BinaryDecoder(buffer, 1));
+}
+
+export function decodeBlockEditBroadcastFrom(
+	dec: BinaryDecoder,
+): BlockEditData {
 	return {
 		sessionId: dec.readString(),
 		x: dec.readInt32(),
@@ -651,7 +672,12 @@ export function encodeBlockEditRejected(
 export function decodeBlockEditRejected(
 	buffer: Uint8Array,
 ): BlockEditRejectedData {
-	const dec = new BinaryDecoder(buffer.subarray(1));
+	return decodeBlockEditRejectedFrom(new BinaryDecoder(buffer, 1));
+}
+
+export function decodeBlockEditRejectedFrom(
+	dec: BinaryDecoder,
+): BlockEditRejectedData {
 	return {
 		x: dec.readInt32(),
 		y: dec.readInt32(),
@@ -669,7 +695,7 @@ export function encodeChatMessage(data: ChatMessageData): Uint8Array {
 }
 
 export function decodeChatMessage(buffer: Uint8Array): ChatMessageData {
-	const dec = new BinaryDecoder(buffer.subarray(1));
+	const dec = new BinaryDecoder(buffer, 1);
 	return dec.readChatMessage();
 }
 
@@ -683,27 +709,27 @@ export function hashChunk(
 	palette?: number[],
 ): number {
 	let h = 0x811c9dc5; // FNV offset basis
-	const mix = (v: number) => {
-		h ^= v & 0xff;
-		h = Math.imul(h, 0x01000193); // FNV prime
-	};
 
 	// Sample blocks (check first 256 bytes + every 64th byte for large chunks)
 	const step = blocks.length > 256 ? Math.floor(blocks.length / 64) : 1;
 	for (let i = 0; i < blocks.length; i += step) {
-		mix(blocks[i]);
+		h ^= blocks[i] & 0xff;
+		h = Math.imul(h, 0x01000193); // FNV prime
 	}
 
 	// Mix light data (sample every 128th byte)
 	for (let i = 0; i < light.length; i += 128) {
-		mix(light[i]);
+		h ^= light[i] & 0xff;
+		h = Math.imul(h, 0x01000193); // FNV prime
 	}
 
 	// Mix palette
 	if (palette) {
 		for (const p of palette) {
-			mix(p & 0xff);
-			mix((p >> 8) & 0xff);
+			h ^= p & 0xff;
+			h = Math.imul(h, 0x01000193); // FNV prime
+			h ^= (p >> 8) & 0xff;
+			h = Math.imul(h, 0x01000193); // FNV prime
 		}
 	}
 
@@ -723,7 +749,7 @@ export function encodeWorldTime(timeOfDay: number): Uint8Array {
 }
 
 export function decodeWorldTime(buffer: Uint8Array): number {
-	const dec = new BinaryDecoder(buffer.subarray(1));
+	const dec = new BinaryDecoder(buffer, 1);
 	return dec.readFloat32();
 }
 
@@ -741,7 +767,7 @@ export function encodeWorldConfig(seed: string): Uint8Array {
 }
 
 export function decodeWorldConfig(buffer: Uint8Array): string {
-	const dec = new BinaryDecoder(buffer.subarray(1));
+	const dec = new BinaryDecoder(buffer, 1);
 	return dec.readString();
 }
 
@@ -824,7 +850,7 @@ export function decodeChunkData(buffer: Uint8Array): {
 	hash: number;
 	version: number;
 } {
-	const dec = new BinaryDecoder(buffer.subarray(1));
+	const dec = new BinaryDecoder(buffer, 1);
 	const chunkX = dec.readInt32();
 	const chunkY = dec.readInt32();
 	const chunkZ = dec.readInt32();
@@ -905,7 +931,7 @@ export function decodeChunkUnchanged(buffer: Uint8Array): {
 	cz: number;
 	version: number;
 } {
-	const dec = new BinaryDecoder(buffer.subarray(1));
+	const dec = new BinaryDecoder(buffer, 1);
 	return {
 		cx: dec.readInt32(),
 		cy: dec.readInt32(),
@@ -924,7 +950,7 @@ export function decodeChunkUnchangedBatch(buffer: Uint8Array): Array<{
 	cz: number;
 	version: number;
 }> {
-	const dec = new BinaryDecoder(buffer.subarray(1));
+	const dec = new BinaryDecoder(buffer, 1);
 	const count = Math.min(dec.readUint16(), 65535);
 	const results = new Array(count);
 	for (let i = 0; i < count; i++) {
@@ -1076,7 +1102,7 @@ export function decodeChunkDataBatch(buffer: Uint8Array): Array<{
 	hash: number;
 	version: number;
 }> {
-	const dec = new BinaryDecoder(buffer.subarray(1));
+	const dec = new BinaryDecoder(buffer, 1);
 	const count = dec.readUint16();
 	const chunks: Array<{
 		chunkX: number;
@@ -1173,7 +1199,7 @@ export function decodeSpawnPosition(buffer: Uint8Array): {
 	yaw: number;
 	pitch: number;
 } {
-	const dec = new BinaryDecoder(buffer.subarray(1));
+	const dec = new BinaryDecoder(buffer, 1);
 	return {
 		x: dec.readFloat32(),
 		y: dec.readFloat32(),
