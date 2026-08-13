@@ -9,8 +9,11 @@
  * the backend — LevelDB on disk vs IndexedDB in the browser.
  *
  * Optimizations:
- * - LRU read cache (avoids disk/IDB I/O for recently accessed chunks)
+ * - Approximate-LRU read cache (avoids disk/IDB I/O for recently accessed
+ *   chunks) via second-chance/CLOCK eviction — see the `cache`/`touched`
+ *   fields below for why this isn't a plain delete+re-set LRU.
  * - Batched writes (amortizes I/O cost)
+ * - Batched reads for cache misses (readChunks/hasChunks), on both backends
  * - LevelDB handles compression (Snappy), no manual gzip
  * - Simple string keys for debugging
  */
@@ -26,9 +29,18 @@ export class LevelDbChunkStore {
 	private opened = false;
 	private openPromise: Promise<void> | null = null;
 
-	// LRU read cache — insertion order == access order. On hit, delete+re-set
-	// to move to most-recent end. On full, evict from .keys().next() (LRU).
+	// Cache storage: Map insertion order is the FIFO base ordering.
+	// `touched` is a second-chance ("CLOCK") bit set — a cache *hit* just
+	// adds the key to this Set (O(1), no Map mutation of `cache` itself).
+	// On eviction we walk from the oldest entry in `cache` and give any
+	// touched entry one more life (clearing its bit) instead of evicting
+	// it, then check the next-oldest. This approximates LRU — chunks that
+	// keep getting re-read (spawn area, wherever players linger) survive —
+	// without paying a full delete+reinsert reorder on every read, which
+	// matters because reads (chunk streaming as players move) vastly
+	// outnumber writes (edits/saves) against this cache.
 	private readonly cache = new Map<string, Uint8Array>();
+	private readonly touched = new Set<string>();
 	private readonly maxCacheSize: number;
 	private static readonly DEFAULT_BATCH_SIZE = 64;
 
@@ -99,6 +111,7 @@ export class LevelDbChunkStore {
 			this.db = null;
 		}
 		this.cache.clear();
+		this.touched.clear();
 		this.pendingMeta.clear();
 		this.metaKeysInBatch = [];
 		this.opened = false;
@@ -113,6 +126,7 @@ export class LevelDbChunkStore {
 
 		const cached = this.cache.get(key);
 		if (cached) {
+			this.touched.add(key);
 			return cached;
 		}
 
@@ -136,6 +150,7 @@ export class LevelDbChunkStore {
 			const k = key ?? chunkKey(cx, cy, cz);
 			const cached = this.cache.get(k);
 			if (cached) {
+				this.touched.add(k);
 				results.set(k, cached);
 			} else {
 				misses.push(k);
@@ -237,6 +252,7 @@ export class LevelDbChunkStore {
 
 	async clear(): Promise<void> {
 		this.cache.clear();
+		this.touched.clear();
 		this.pendingMeta.clear();
 		this.metaKeysInBatch = [];
 		this.batch = null;
@@ -275,11 +291,11 @@ export class LevelDbChunkStore {
 			const found = await (this.db as IndexedDbStore).has(misses);
 			for (const k of found) result.add(k);
 		} else {
-			const promises = misses.map(async (k) => {
-				const value = await this._get(k);
-				if (value != null) result.add(k);
-			});
-			await Promise.all(promises);
+			// Reuse the same batched primitive readChunks relies on, instead
+			// of fanning out into N independent level.get() calls (each its
+			// own promise + catch) for what is really one existence probe.
+			const found = await this._getMany(misses);
+			for (const k of found.keys()) result.add(k);
 		}
 		return result;
 	}
@@ -332,20 +348,38 @@ export class LevelDbChunkStore {
 
 	private addToCache(key: string, data: Uint8Array): void {
 		if (this.cache.has(key)) {
-			// Entry already in cache — update the data but skip the
-			// delete+re-insert churn. Tolerates slight staleness in eviction
-			// order but avoids two Map hash operations + backing store resize
-			// on every cache hit (the hot path).
+			// Entry already in cache — update the data and mark it touched
+			// (protects it from the next second-chance sweep) without
+			// paying for a delete+reinsert into the ordered Map.
 			this.cache.set(key, data);
+			this.touched.add(key);
 			return;
 		}
 		if (this.cache.size >= this.maxCacheSize) {
-			const firstKey = this.cache.keys().next().value;
-			if (firstKey !== undefined) {
-				this.cache.delete(firstKey);
-			}
+			this.evictOne();
 		}
 		this.cache.set(key, data);
+	}
+
+	/**
+	 * Second-chance (CLOCK) eviction. Walks from the FIFO-oldest entry in
+	 * `cache`; if it's been touched (read or rewritten) since it was
+	 * cached, give it one more life — clear the bit, check the next-oldest
+	 * — instead of evicting it outright.
+	 */
+	private evictOne(): void {
+		for (const key of this.cache.keys()) {
+			if (this.touched.delete(key)) continue;
+			this.cache.delete(key);
+			return;
+		}
+		// Every entry in the cache was touched during this sweep — evict
+		// the oldest anyway so inserts always make forward progress.
+		const oldest = this.cache.keys().next().value;
+		if (oldest !== undefined) {
+			this.touched.delete(oldest);
+			this.cache.delete(oldest);
+		}
 	}
 
 	get cachedEntryCount(): number {

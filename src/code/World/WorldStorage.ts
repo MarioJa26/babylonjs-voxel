@@ -19,6 +19,12 @@ export type LoadChunkOptions = {
 
 const ENTITY_PREFIX = "entity:";
 
+// Hoisted singletons — constructing a TextEncoder/TextDecoder is not free,
+// and both are stateless, so there's no reason to allocate a fresh one on
+// every entity save/load.
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
 class WorldStorageImpl {
 	private store: LevelDbChunkStore | null = null;
 	private initPromise: Promise<void> | null = null;
@@ -38,6 +44,10 @@ class WorldStorageImpl {
 	}
 
 	private async getStore(): Promise<LevelDbChunkStore | null> {
+		// Once initialized, `this.store` is set — skip the extra await on
+		// `initPromise` (an `await` on an already-resolved promise still
+		// costs a microtask hop) on this called-per-chunk hot path.
+		if (this.store) return this.store;
 		await this.initialize();
 		return this.store;
 	}
@@ -50,28 +60,7 @@ class WorldStorageImpl {
 		const store = await this.getStore();
 		if (!store) return;
 
-		const blocks = chunk.block_array;
-		const light = chunk.light_array;
-
-		const blob = serializeVoxelData(
-			blocks
-				? new Uint8Array(blocks.buffer, blocks.byteOffset, blocks.byteLength)
-				: null,
-			chunk.palette
-				? new Uint16Array(
-						chunk.palette.buffer,
-						chunk.palette.byteOffset,
-						chunk.palette.byteLength >> 1,
-					)
-				: null,
-			chunk.isUniform,
-			chunk.uniformBlockId,
-			light
-				? new Uint8Array(light.buffer, light.byteOffset, light.byteLength)
-				: null,
-			false,
-		);
-
+		const blob = packChunkBlob(chunk);
 		store.writeChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ, blob);
 
 		chunk.isModified = false;
@@ -96,28 +85,7 @@ class WorldStorageImpl {
 		if (!store) return;
 
 		for (const chunk of toSave) {
-			const blocks = chunk.block_array;
-			const light = chunk.light_array;
-
-			const blob = serializeVoxelData(
-				blocks
-					? new Uint8Array(blocks.buffer, blocks.byteOffset, blocks.byteLength)
-					: null,
-				chunk.palette
-					? new Uint16Array(
-							chunk.palette.buffer,
-							chunk.palette.byteOffset,
-							chunk.palette.byteLength >> 1,
-						)
-					: null,
-				chunk.isUniform,
-				chunk.uniformBlockId,
-				light
-					? new Uint8Array(light.buffer, light.byteOffset, light.byteLength)
-					: null,
-				false,
-			);
-
+			const blob = packChunkBlob(chunk);
 			store.writeChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ, blob);
 			chunk.isModified = false;
 			chunk.isLightDirty = false;
@@ -155,7 +123,7 @@ class WorldStorageImpl {
 		}
 
 		const bytes = serializeEntities(entities);
-		await store.setMeta(key, new TextDecoder().decode(bytes));
+		await store.setMeta(key, textDecoder.decode(bytes));
 	}
 
 	async loadChunkEntities(chunkId: bigint): Promise<SavedChunkEntityData[]> {
@@ -168,7 +136,7 @@ class WorldStorageImpl {
 		const value = await store.getMeta(key);
 		if (!value) return [];
 		try {
-			return deserializeEntities(new TextEncoder().encode(value));
+			return deserializeEntities(textEncoder.encode(value));
 		} catch {
 			return [];
 		}
@@ -210,28 +178,44 @@ class WorldStorageImpl {
 		if (!store) return result;
 
 		const includeVoxelData = options?.includeVoxelData ?? true;
-		const coords = chunkIds.map((id) => ({
-			id,
-			...chunkIdToCoordsObj(id),
-		}));
+
+		// Decode every chunk id once into exactly the shape downstream needs,
+		// including the "cx,cy,cz" string key up front. LevelDbChunkStore's
+		// readChunks/hasChunks accept an optional pre-computed `key` per
+		// coord specifically so callers can avoid rebuilding it — without
+		// this, the key gets built once inside the store (cache miss path)
+		// and *again* out here just to probe the returned Map/Set. Building
+		// it once here and passing it through both eliminates the duplicate
+		// and replaces what was previously three allocations per chunk
+		// ([cx,cy,cz] array, {cx,cy,cz} object, spread into {id,cx,cy,cz})
+		// with one.
+		const n = chunkIds.length;
+		const coords: {
+			id: bigint;
+			cx: number;
+			cy: number;
+			cz: number;
+			key: string;
+		}[] = new Array(n);
+		for (let i = 0; i < n; i++) {
+			const id = chunkIds[i];
+			const [cx, cy, cz] = chunkIdToCoords(id);
+			coords[i] = { id, cx, cy, cz, key: `${cx},${cy},${cz}` };
+		}
 
 		if (!includeVoxelData) {
-			const existing = await store.hasChunks(
-				coords.map((c) => ({ cx: c.cx, cy: c.cy, cz: c.cz })),
-			);
-			for (const c of coords) {
-				const key = `${c.cx},${c.cy},${c.cz}`;
-				if (existing.has(key)) result.set(c.id, { blocks: null });
+			const existing = await store.hasChunks(coords);
+			for (let i = 0; i < n; i++) {
+				const c = coords[i];
+				if (existing.has(c.key)) result.set(c.id, { blocks: null });
 			}
 			return result;
 		}
 
-		const readResults = await store.readChunks(
-			coords.map((c) => ({ cx: c.cx, cy: c.cy, cz: c.cz })),
-		);
-		for (const c of coords) {
-			const key = `${c.cx},${c.cy},${c.cz}`;
-			const blob = readResults.get(key);
+		const readResults = await store.readChunks(coords);
+		for (let i = 0; i < n; i++) {
+			const c = coords[i];
+			const blob = readResults.get(c.key);
 			if (blob) {
 				result.set(c.id, deserializeVoxelData(blob));
 			}
@@ -258,31 +242,61 @@ class WorldStorageImpl {
 	}
 }
 
-function chunkIdToCoords(chunkId: bigint): [number, number, number] {
-	const SIGN_BIT = 1n << 20n;
-	const COORD_MASK = (1n << 21n) - 1n;
-	const BIAS = 1n << 20n;
+/**
+ * Build the storage blob for a chunk. Shared by saveChunk/saveChunks so
+ * there's a single implementation to keep correct (and a single call site
+ * for the JIT to specialize).
+ */
+function packChunkBlob(chunk: Chunk): Uint8Array {
+	const blocks = chunk.block_array;
+	const light = chunk.light_array;
 
-	const cx = Number(
-		((chunkId >> 0n) & COORD_MASK) - (chunkId & SIGN_BIT ? BIAS : 0n),
+	return serializeVoxelData(
+		blocks
+			? new Uint8Array(blocks.buffer, blocks.byteOffset, blocks.byteLength)
+			: null,
+		chunk.palette
+			? new Uint16Array(
+					chunk.palette.buffer,
+					chunk.palette.byteOffset,
+					chunk.palette.byteLength >> 1,
+				)
+			: null,
+		chunk.isUniform,
+		chunk.uniformBlockId,
+		light
+			? new Uint8Array(light.buffer, light.byteOffset, light.byteLength)
+			: null,
+		false,
 	);
-	const cy = Number(
-		((chunkId >> 21n) & COORD_MASK) - (chunkId & (SIGN_BIT << 21n) ? BIAS : 0n),
-	);
-	const cz = Number(
-		((chunkId >> 42n) & COORD_MASK) - (chunkId & (SIGN_BIT << 42n) ? BIAS : 0n),
-	);
-
-	return [cx, cy, cz];
 }
 
-function chunkIdToCoordsObj(chunkId: bigint): {
-	cx: number;
-	cy: number;
-	cz: number;
-} {
-	const [cx, cy, cz] = chunkIdToCoords(chunkId);
-	return { cx, cy, cz };
+// Hoisted once — BigInt shifts/allocations are considerably more expensive
+// than plain Number ops. The old code recomputed `SIGN_BIT << 21n` and
+// `SIGN_BIT << 42n` (each a fresh BigInt allocation) on every single call
+// to chunkIdToCoords. Precomputing them here means each call only pays for
+// the unavoidable mask/shift extraction from the packed id.
+const COORD_BITS = 21n;
+const COORD_MASK = (1n << COORD_BITS) - 1n;
+const SIGN_BIT_X = 1n << 20n;
+const SIGN_BIT_Y = SIGN_BIT_X << COORD_BITS;
+const SIGN_BIT_Z = SIGN_BIT_X << (COORD_BITS * 2n);
+const BIAS_NUM = 1_048_576; // 2^20 — bias is applied in Number space now
+
+function chunkIdToCoords(chunkId: bigint): [number, number, number] {
+	// Extraction still needs BigInt (chunkId can carry 63 bits, beyond what
+	// JS's 32-bit bitwise operators support), but the bias subtraction that
+	// used to happen in BigInt space now happens on plain Numbers, which is
+	// materially cheaper.
+	const rawX = Number(chunkId & COORD_MASK);
+	const rawY = Number((chunkId >> COORD_BITS) & COORD_MASK);
+	const rawZ = Number((chunkId >> (COORD_BITS * 2n)) & COORD_MASK);
+
+	const cx = (chunkId & SIGN_BIT_X) !== 0n ? rawX - BIAS_NUM : rawX;
+	const cy = (chunkId & SIGN_BIT_Y) !== 0n ? rawY - BIAS_NUM : rawY;
+	const cz = (chunkId & SIGN_BIT_Z) !== 0n ? rawZ - BIAS_NUM : rawZ;
+
+	return [cx, cy, cz];
 }
 
 export const WorldStorage = new WorldStorageImpl();

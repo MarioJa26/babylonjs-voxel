@@ -40,6 +40,19 @@ import { RemotePlayerRenderer } from "./RemotePlayerRenderer";
 const SEND_RATE = 20; // Hz — how often to send player position
 const SEND_INTERVAL_MS = 1000 / SEND_RATE;
 
+// Flip to true only while actively debugging net sync. Left off, this
+// avoids building a template string on every single remote block edit
+// (place/break can happen at burst rates from other clients).
+const NET_DEBUG = false;
+
+// Hoisted once — previously allocated a fresh 6-element array of
+// [dx,dy,dz] tuples on every block break just to sample neighbor light.
+// Flat parallel arrays + indexed access avoid that allocation and the
+// per-iteration tuple destructure entirely.
+const BREAK_LIGHT_OFFSET_X = [0.5, -0.5, 0, 0, 0, 0];
+const BREAK_LIGHT_OFFSET_Y = [0, 0, 0.5, -0.5, 0, 0];
+const BREAK_LIGHT_OFFSET_Z = [0, 0, 0, 0, 0.5, -0.5];
+
 function gamemodeName(gm: Gamemodes): string {
 	switch (gm) {
 		case Gamemodes.Survival:
@@ -67,6 +80,10 @@ export class NetworkManager {
 	private _scratchVec: Vec3 = vec3Zero();
 	private serverSeed: string | null = null;
 	private _lastPlayerCount = 0;
+	// Cached rendering canvas — the element itself is stable across frames,
+	// only its client dimensions need to be re-read live. Avoids walking
+	// an `any`-cast `.engine?.getRenderingCanvas()` chain every tick.
+	private _canvas: HTMLCanvasElement | null = null;
 
 	constructor(player: Player, serverUrl?: string) {
 		this.player = player;
@@ -176,9 +193,12 @@ export class NetworkManager {
 
 		// Update renderer with camera for name tag projection
 		const cam = this.player.playerCamera.playerCamera;
-		const canvas = (this.player.sceneRef as any).engine?.getRenderingCanvas();
-		const w = canvas?.clientWidth ?? window.innerWidth;
-		const h = canvas?.clientHeight ?? window.innerHeight;
+		if (!this._canvas) {
+			this._canvas =
+				(this.player.sceneRef as any).engine?.getRenderingCanvas() ?? null;
+		}
+		const w = this._canvas?.clientWidth ?? window.innerWidth;
+		const h = this._canvas?.clientHeight ?? window.innerHeight;
 		this.renderer.update(cam, w, h);
 
 		// Update HUD player count and names
@@ -258,9 +278,11 @@ export class NetworkManager {
 		blockId: number,
 		action: number,
 	): void {
-		debugLog(
-			`[NetworkManager] applyRemoteBlockEdit: ${action === BlockActionType.Place ? "PLACE" : "BREAK"} blockId=${blockId} at ${x},${y},${z}`,
-		);
+		if (NET_DEBUG) {
+			debugLog(
+				`[NetworkManager] applyRemoteBlockEdit: ${action === BlockActionType.Place ? "PLACE" : "BREAK"} blockId=${blockId} at ${x},${y},${z}`,
+			);
+		}
 		if (action === BlockActionType.Place) {
 			setBlock(x, y, z, blockId, 0);
 		} else if (action === BlockActionType.Break) {
@@ -313,16 +335,12 @@ export class NetworkManager {
 		let best = getLightByWorldCoords(x, y, z);
 		let bestSky = (best >> 4) & 0xf;
 		let bestBlock = best & 0xf;
-		const offsets: [number, number, number][] = [
-			[0.5, 0, 0],
-			[-0.5, 0, 0],
-			[0, 0.5, 0],
-			[0, -0.5, 0],
-			[0, 0, 0.5],
-			[0, 0, -0.5],
-		];
-		for (const [dx, dy, dz] of offsets) {
-			const l = getLightByWorldCoords(x + dx, y + dy, z + dz);
+		for (let i = 0; i < 6; i++) {
+			const l = getLightByWorldCoords(
+				x + BREAK_LIGHT_OFFSET_X[i],
+				y + BREAK_LIGHT_OFFSET_Y[i],
+				z + BREAK_LIGHT_OFFSET_Z[i],
+			);
 			const sky = (l >> 4) & 0xf;
 			const block = l & 0xf;
 			if (sky + block > bestSky + bestBlock) {
@@ -455,6 +473,7 @@ export class NetworkManager {
 		this.client.disconnect();
 		this.renderer.dispose();
 		this.hud.dispose();
+		this._canvas = null;
 	}
 
 	get isConnected(): boolean {

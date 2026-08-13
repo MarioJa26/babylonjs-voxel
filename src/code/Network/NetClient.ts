@@ -76,7 +76,15 @@ export class NetClient {
 	private connected = false;
 	private callbacks: NetClientCallbacks = {};
 	private remotePlayers = new Map<string, RemotePlayer>();
-	private playerByIndex = new Map<number, string>(); // room player index → sessionId
+	// Dense array indexed by the server-assigned room player index. The old
+	// design chained a Map<number,string> (index → sessionId) into a
+	// Map<string,RemotePlayer> lookup for *every player, every state batch*
+	// (20Hz+). Room indices are small and bounded by max room players, so a
+	// plain array collapses that into one indexed read. NOTE: this assumes
+	// the server reuses freed indices rather than handing out ever-increasing
+	// ones over a long session — if that's not true server-side, this should
+	// go back to a Map.
+	private playersByIndex: (RemotePlayer | undefined)[] = [];
 	private ownIndex = -1;
 	private playerName = "";
 	private binaryHandlers: BinaryHandler[] = [];
@@ -84,6 +92,9 @@ export class NetClient {
 	// array + object allocation on the 20 Hz hot path.
 	private batchScratch: import("./protocol/messages").PlayerStateBatchEntry[] =
 		[];
+	// Guards against a warn-spam perf collapse if a state batch ever
+	// references an index we haven't seen a PlayerJoin for yet/anymore.
+	private warnedUnknownIndices = new Set<number>();
 	worldName = "default";
 
 	constructor(private serverUrl: string = this.defaultServerUrl()) {}
@@ -147,9 +158,12 @@ export class NetClient {
 	}
 
 	private handleBinaryMessage(data: Uint8Array): void {
-		// Notify external handlers first (e.g. RemoteChunkProvider)
-		for (const handler of this.binaryHandlers) {
-			handler(data);
+		// Notify external handlers first (e.g. RemoteChunkProvider). Indexed
+		// loop instead of for-of — this runs for every message, including
+		// the 20Hz+ player state batch, so we skip the iterator allocation.
+		const handlers = this.binaryHandlers;
+		for (let i = 0; i < handlers.length; i++) {
+			handlers[i](data);
 		}
 
 		if (data.byteLength < 1) return;
@@ -163,30 +177,31 @@ export class NetClient {
 		switch (msgType) {
 			case MessageType.PlayerStateBatch: {
 				decodePlayerStateBatchInto(data, this.batchScratch);
+				const players = this.playersByIndex;
 				for (let i = 0; i < this.batchScratch.length; i++) {
 					const state = this.batchScratch[i];
 					if (state.index === this.ownIndex) continue;
 
-					// Map the room index back to a sessionId (PlayerJoin arrives
-					// before any state for that player — ordering is per-connection).
-					const sessionId = this.playerByIndex.get(state.index);
-					if (!sessionId) {
-						console.warn(
-							`[NetClient] State for unknown player index ${state.index}, skipping`,
-						);
+					// Direct indexed lookup — replaces the old
+					// index→sessionId→player double Map hop.
+					const existing = players[state.index];
+					if (existing === undefined) {
+						if (!this.warnedUnknownIndices.has(state.index)) {
+							this.warnedUnknownIndices.add(state.index);
+							console.warn(
+								`[NetClient] State for unknown player index ${state.index}, skipping`,
+							);
+						}
 						continue;
 					}
 
-					const existing = this.remotePlayers.get(sessionId);
-					if (existing) {
-						// Update interpolation targets (yaw byte → degrees)
-						existing.targetX = state.x;
-						existing.targetY = state.y;
-						existing.targetZ = state.z;
-						existing.targetYaw = (state.yaw / 255) * 360;
-						existing.pitch = state.pitch;
-						existing.animation = state.animation;
-					}
+					// Update interpolation targets (yaw byte → degrees)
+					existing.targetX = state.x;
+					existing.targetY = state.y;
+					existing.targetZ = state.z;
+					existing.targetYaw = (state.yaw / 255) * 360;
+					existing.pitch = state.pitch;
+					existing.animation = state.animation;
 				}
 
 				// Notify callback — pass the Map directly instead of
@@ -203,7 +218,6 @@ export class NetClient {
 					break;
 				}
 
-				this.playerByIndex.set(join.index, join.sessionId);
 				const player: RemotePlayer = {
 					sessionId: join.sessionId,
 					index: join.index,
@@ -220,17 +234,19 @@ export class NetClient {
 					targetYaw: 0,
 				};
 				this.remotePlayers.set(join.sessionId, player);
+				this.playersByIndex[join.index] = player;
+				this.warnedUnknownIndices.delete(join.index);
 				this.callbacks.onPlayerJoin?.(player);
 				break;
 			}
 
 			case MessageType.PlayerLeave: {
 				const index = decodePlayerLeave(data);
-				const sessionId = this.playerByIndex.get(index) ?? "";
-				const existing = this.remotePlayers.get(sessionId);
+				const existing = this.playersByIndex[index];
+				const sessionId = existing?.sessionId ?? "";
 				const name = existing?.name;
-				this.remotePlayers.delete(sessionId);
-				this.playerByIndex.delete(index);
+				if (sessionId) this.remotePlayers.delete(sessionId);
+				this.playersByIndex[index] = undefined;
 				this.callbacks.onPlayerLeave?.(sessionId, name);
 				break;
 			}
@@ -407,7 +423,13 @@ export class NetClient {
 
 	updateRemotePlayerInterpolation(dt: number): void {
 		const lerpFactor = 1 - Math.exp(-10 * dt); // Smooth interpolation
-		for (const player of this.remotePlayers.values()) {
+		// Iterate the dense index array directly rather than Map.values() —
+		// skips the Map iterator allocation on this per-frame path.
+		const players = this.playersByIndex;
+		for (let i = 0; i < players.length; i++) {
+			const player = players[i];
+			if (player === undefined) continue;
+
 			player.x += (player.targetX - player.x) * lerpFactor;
 			player.y += (player.targetY - player.y) * lerpFactor;
 			player.z += (player.targetZ - player.z) * lerpFactor;
@@ -429,7 +451,8 @@ export class NetClient {
 		}
 		this.connected = false;
 		this.remotePlayers.clear();
-		this.playerByIndex.clear();
+		this.playersByIndex.length = 0;
+		this.warnedUnknownIndices.clear();
 		this.ownIndex = -1;
 	}
 
