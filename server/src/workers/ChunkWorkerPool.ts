@@ -32,7 +32,6 @@ type PendingTask =
 			chunkX: number;
 			chunkY: number;
 			chunkZ: number;
-			recoveryAttempts: number;
 			resolve: (result: ChunkResult) => void;
 			reject: (error: Error) => void;
 	  }
@@ -40,7 +39,6 @@ type PendingTask =
 			id: number;
 			kind: PendingTaskKindType.BATCH;
 			coords: Array<{ chunkX: number; chunkY: number; chunkZ: number }>;
-			recoveryAttempts: number;
 			resolve: (results: ChunkResult[]) => void;
 			reject: (error: Error) => void;
 	  }
@@ -51,7 +49,6 @@ type PendingTask =
 			chunkY: number;
 			chunkZ: number;
 			blocks: Uint8Array;
-			recoveryAttempts: number;
 			resolve: (light: Uint8Array) => void;
 			reject: (error: Error) => void;
 	  };
@@ -80,13 +77,6 @@ interface WorkerState {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
-/** Max times a single task is requeued after worker crashes before failing. */
-const MAX_TASK_RECOVERIES = 3;
-/** Max worker recreations per window before the pool gives up (guards a
- * crash loop that would otherwise requeue forever and stall every batch). */
-const MAX_RECREATIONS_PER_WINDOW = 8;
-const CRASH_WINDOW_MS = 60_000;
 
 /** Stable log label for a task kind (const enums erase to numbers). */
 function pendingTaskKindLabel(kind: PendingTaskKindType): string {
@@ -117,9 +107,6 @@ export class ChunkWorkerPool {
 	private wasmEnabled = true;
 	private initialized = false;
 	private terminated = false;
-	private crashCount = 0;
-	private crashWindowStart = 0;
-	private crashOverloaded = false;
 
 	async initialize(seed: string, wasmEnabled = true): Promise<void> {
 		if (this.initialized) {
@@ -133,9 +120,6 @@ export class ChunkWorkerPool {
 
 		// Allow a fresh start after terminate() (e.g. for tests).
 		this.terminated = false;
-		this.crashCount = 0;
-		this.crashWindowStart = 0;
-		this.crashOverloaded = false;
 		this.seed = seed;
 		this.wasmEnabled = wasmEnabled;
 		const poolSize = resolvePoolSize();
@@ -243,23 +227,6 @@ export class ChunkWorkerPool {
 			return;
 		}
 
-		// Crash-overload guard: too many worker crashes recently means the
-		// worker binary is broken, not transient — stop requeueing and fail
-		// everything fast instead of stalling every batch until client timeout.
-		if (this.crashOverloaded) {
-			if (Date.now() - this.crashWindowStart >= CRASH_WINDOW_MS) {
-				this.crashOverloaded = false;
-				this.crashCount = 0;
-				this.crashWindowStart = 0;
-			} else {
-				const err = new Error(
-					"Chunk worker crash overload — generation aborted",
-				);
-				this.rejectAllQueuedAndPending(err);
-				return;
-			}
-		}
-
 		// Dispatch as many tasks as there are free workers and queued tasks.
 		// Uses index-based dequeue (queueStart++) instead of shift() which
 		// is O(n) due to array re-indexing.
@@ -338,7 +305,6 @@ export class ChunkWorkerPool {
 				chunkX,
 				chunkY,
 				chunkZ,
-				recoveryAttempts: 0,
 				resolve,
 				reject,
 			});
@@ -494,7 +460,6 @@ export class ChunkWorkerPool {
 				id,
 				kind: PendingTaskKindType.BATCH,
 				coords,
-				recoveryAttempts: 0,
 				resolve,
 				reject,
 			});
@@ -522,7 +487,6 @@ export class ChunkWorkerPool {
 				chunkY,
 				chunkZ,
 				blocks,
-				recoveryAttempts: 0,
 				resolve,
 				reject,
 			});
@@ -539,66 +503,19 @@ export class ChunkWorkerPool {
 		this.workers.splice(wsIndex, 1);
 		this.workerByInstance.delete(deadWorker);
 
-		// Crash-rate accounting: reset the window when it has elapsed, then
-		// count this crash. Beyond the cap we stop recreating workers and fail
-		// all queued/pending work — a crash loop must not stall batches
-		// forever (clients would time out at 30s and the region never loads).
-		const now = Date.now();
-		if (now - this.crashWindowStart >= CRASH_WINDOW_MS) {
-			this.crashWindowStart = now;
-			this.crashCount = 0;
-		}
-		this.crashCount++;
-
-		if (this.crashCount >= MAX_RECREATIONS_PER_WINDOW) {
-			this.crashOverloaded = true;
-			console.error(
-				`[ChunkWorkerPool] ${this.crashCount} worker crashes within ${CRASH_WINDOW_MS}ms — ` +
-					`aborting all queued/pending chunk work (workers will resume after the window)`,
-			);
-			this.rejectAllQueuedAndPending(
-				new Error("Chunk worker crash overload — generation aborted"),
-			);
-			return;
-		}
-
-		// Requeue the dead worker's in-flight task so its work is redone —
-		// but cap retries per task so one poison chunk can't loop forever.
+		// Requeue the dead worker's in-flight task so its work is redone.
 		if (ws.activeTaskId !== undefined) {
 			const task = this.pendingTasks.get(ws.activeTaskId);
 			if (task) {
 				this.pendingTasks.delete(ws.activeTaskId);
-				if (task.recoveryAttempts + 1 < MAX_TASK_RECOVERIES) {
-					task.recoveryAttempts++;
-					// Use unshift to requeue at the front (priority for recovered tasks).
-					this.queue.unshift(task);
-					this.queueStart = 0;
-				} else {
-					console.error(
-						`[ChunkWorkerPool] task ${pendingTaskKindLabel(task.kind)} id=${task.id} exceeded ` +
-							`${MAX_TASK_RECOVERIES} recovery attempts — failing it`,
-					);
-					task.reject(
-						new Error(
-							`Chunk task failed after ${MAX_TASK_RECOVERIES} worker recoveries`,
-						),
-					);
-				}
+				// Use unshift to requeue at the front (priority for recovered tasks).
+				this.queue.unshift(task);
+				this.queueStart = 0;
 			}
 		}
 
 		this.workers.push(this.createWorkerState());
 		this.processQueue();
-	}
-
-	private rejectAllQueuedAndPending(error: Error): void {
-		for (let i = this.queueStart; i < this.queue.length; i++) {
-			this.queue[i].reject(error);
-		}
-		for (const task of this.pendingTasks.values()) task.reject(error);
-		this.queue = [];
-		this.queueStart = 0;
-		this.pendingTasks.clear();
 	}
 
 	private async recreateWorkers(): Promise<void> {
