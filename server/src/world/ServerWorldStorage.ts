@@ -25,7 +25,7 @@
  *   in-flight calls never share (and corrupt) each other's results.
  */
 
-import { debugLog } from "@/code/Lib/debugLog";
+import { DEBUG_ENABLED, debugLog } from "@/code/Lib/debugLog";
 import { packChunkKeyFast } from "@/code/World/Storage/ChunkKey.ts";
 import { LevelDbChunkStore } from "@/code/World/Storage/LevelDbChunkStore";
 import {
@@ -546,9 +546,13 @@ export class ServerWorldStorage {
 
 		const baseVersion = existing.version > 0 ? existing.version : 1;
 		const newVersion = baseVersion + 1;
-		debugLog(
-			`[ServerWorldStorage] applyBlockEdits ${cx},${cy},${cz}: version ${existing.version} (base ${baseVersion}) -> ${newVersion}`,
-		);
+		// Gate so the template literal isn't built per edit flush when debug
+		// output is disabled.
+		if (DEBUG_ENABLED) {
+			debugLog(
+				`[ServerWorldStorage] applyBlockEdits ${cx},${cy},${cz}: version ${existing.version} (base ${baseVersion}) -> ${newVersion}`,
+			);
+		}
 
 		await this.writeChunkUnlocked({
 			chunkX: cx,

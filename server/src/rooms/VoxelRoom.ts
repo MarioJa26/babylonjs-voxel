@@ -9,7 +9,7 @@
  * - Manage world lifecycle (create on first join, destroy when empty)
  */
 import { type Client, ClientState, CloseCode, Room } from "colyseus";
-import { debugLog } from "@/code/Lib/debugLog";
+import { DEBUG_ENABLED, debugLog } from "@/code/Lib/debugLog";
 import {
 	BinaryDecoder,
 	BinaryEncoder,
@@ -131,6 +131,8 @@ export class VoxelRoom extends Room {
 	private config = getServerConfig();
 	private playersReady = new Set<string>(); // received spawn position
 	private protocolViolations = new Map<string, number>(); // sessionId → bad packets
+	private reachRejectWarned = new Set<string>(); // sessionId → already warned TooFar
+	private unknownTypeWarned = new Set<string>(); // sessionId → already warned unknown type
 	private lastTickTime = 0; // Monotonic clock stamp for the tick loop
 
 	// Pooled PlayerStateBatchEntry objects + reused output array for the
@@ -371,6 +373,8 @@ export class VoxelRoom extends Room {
 
 	onLeave(client: Client, code?: number) {
 		this.protocolViolations.delete(client.sessionId);
+		this.reachRejectWarned.delete(client.sessionId);
+		this.unknownTypeWarned.delete(client.sessionId);
 		const player = this.players.get(client.sessionId);
 		console.log(
 			`[VoxelRoom] ${player?.name ?? client.sessionId} left (code: ${code})`,
@@ -726,21 +730,26 @@ export class VoxelRoom extends Room {
 			// Truncated/malformed packets must never escape into the room's
 			// message pipeline. Track violations and disconnect repeat
 			// offenders instead of logging every bad packet forever.
-			this.recordProtocolViolation(client);
-			console.warn(
-				`[VoxelRoom] Invalid binary packet from ${client.sessionId}:`,
-				error,
-			);
+			// Only the first violation per session is logged — the template
+			// literal would otherwise allocate a string on every bad packet.
+			if (this.recordProtocolViolation(client) === 1) {
+				console.warn(
+					`[VoxelRoom] Invalid binary packet from ${client.sessionId}:`,
+					error,
+				);
+			}
 		}
 	}
 
-	private recordProtocolViolation(client: Client): void {
+	/** @returns the new violation count for this session (1 on first offense). */
+	private recordProtocolViolation(client: Client): number {
 		const count = (this.protocolViolations.get(client.sessionId) ?? 0) + 1;
 		this.protocolViolations.set(client.sessionId, count);
 		if (count >= MAX_PROTOCOL_VIOLATIONS) {
 			this.protocolViolations.delete(client.sessionId);
 			client.leave(CloseCode.WITH_ERROR, "Too many malformed packets");
 		}
+		return count;
 	}
 
 	/**
@@ -974,9 +983,15 @@ export class VoxelRoom extends Room {
 				const distSq = dx * dx + dy * dy + dz * dz;
 				const maxReachSq = this.config.maxReach * this.config.maxReach;
 				if (distSq > maxReachSq) {
-					console.warn(
-						`[VoxelRoom] Block edit rejected: too far (${Math.sqrt(distSq).toFixed(1)} blocks)`,
-					);
+					// Log only the first rejection per session — computing the
+					// distance string on every rejection lets a client spam
+					// out-of-reach edits into per-packet string allocations.
+					if (!this.reachRejectWarned.has(client.sessionId)) {
+						this.reachRejectWarned.add(client.sessionId);
+						console.warn(
+							`[VoxelRoom] Block edit rejected: too far (${Math.sqrt(distSq).toFixed(1)} blocks)`,
+						);
+					}
 					this.sendBlockEditRejected(
 						client,
 						edit,
@@ -1108,9 +1123,14 @@ export class VoxelRoom extends Room {
 			}
 
 			default:
-				console.warn(
-					`[VoxelRoom] Unknown message type: 0x${msgType.toString(16)}`,
-				);
+				// First unknown type per session only — repeat offenders are
+				// silently dropped instead of allocating a log string each.
+				if (!this.unknownTypeWarned.has(client.sessionId)) {
+					this.unknownTypeWarned.add(client.sessionId);
+					console.warn(
+						`[VoxelRoom] Unknown message type: 0x${msgType.toString(16)}`,
+					);
+				}
 		}
 	}
 
@@ -1183,16 +1203,22 @@ export class VoxelRoom extends Room {
 			const stored = await this.worldStorage.readChunk(cx, cy, cz);
 			if (stored) {
 				if (stored.version === cachedVersion) {
-					debugLog(
-						`[VoxelRoom] handleChunkRequest ${cx},${cy},${cz} cachedVersion=${cachedVersion} serverVersion=${stored.version} unchanged`,
-					);
+					// Gate so the template literal isn't built per chunk
+					// request when debug output is disabled.
+					if (DEBUG_ENABLED) {
+						debugLog(
+							`[VoxelRoom] handleChunkRequest ${cx},${cy},${cz} cachedVersion=${cachedVersion} serverVersion=${stored.version} unchanged`,
+						);
+					}
 					const msg = encodeChunkUnchanged(cx, cy, cz, stored.version);
 					client.sendBytes("binary", msg);
 					return;
 				}
-				debugLog(
-					`[VoxelRoom] handleChunkRequest ${cx},${cy},${cz} cachedVersion=${cachedVersion} serverVersion=${stored.version} sendingFullData`,
-				);
+				if (DEBUG_ENABLED) {
+					debugLog(
+						`[VoxelRoom] handleChunkRequest ${cx},${cy},${cz} cachedVersion=${cachedVersion} serverVersion=${stored.version} sendingFullData`,
+					);
+				}
 				const msg = encodeChunkData({
 					...stored,
 					hash: hashChunk(stored.blocks, stored.light, stored.palette),
@@ -1242,12 +1268,16 @@ export class VoxelRoom extends Room {
 			// Apply only this batch's pending edits — not the whole world's.
 			await this.ensureEditsApplied(keys);
 
-			debugLog(
-				`[VoxelRoom] handleBatchChunkRequest: ${unique.length} unique chunks, versions: ${unique
-					.slice(0, 3)
-					.map((r) => r.cachedVersion)
-					.join(",")}`,
-			);
+			// Gate so the template + slice/map/join arrays are never built
+			// per batch request when debug output is disabled.
+			if (DEBUG_ENABLED) {
+				debugLog(
+					`[VoxelRoom] handleBatchChunkRequest: ${unique.length} unique chunks, versions: ${unique
+						.slice(0, 3)
+						.map((r) => r.cachedVersion)
+						.join(",")}`,
+				);
+			}
 			const storedMap = await this.worldStorage.readChunks(coords);
 
 			const missingCoords: Array<{

@@ -20,6 +20,9 @@ function isDebugEnabled(): boolean {
 
 const enabled = isDebugEnabled();
 
+/** Whether debug logging is active — gate hot-path template literals with this. */
+export const DEBUG_ENABLED = enabled;
+
 /** Log only when debug output is enabled — no-op in production. */
 export function debugLog(...args: unknown[]): void {
 	if (enabled) console.log(...args);
