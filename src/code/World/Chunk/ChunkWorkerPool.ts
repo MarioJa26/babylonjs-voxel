@@ -1,6 +1,7 @@
 import type {
 	RemoteChunkData,
 	RemoteChunkProvider,
+	RemoteChunkResult,
 } from "../../Network/chunk/RemoteChunkProvider";
 import {
 	FLAG_GREEDY,
@@ -116,6 +117,11 @@ type WorkerTaskContext = {
 	distantTask?: DistantTerrainTask;
 	terrainDeferLighting?: boolean;
 } | null;
+
+/** Exhaustiveness guard for the RemoteChunkResult switch. */
+function assertNever(value: never): never {
+	throw new Error("Unhandled remote chunk result kind");
+}
 
 export class ChunkWorkerPool {
 	private static instance: ChunkWorkerPool | undefined;
@@ -2688,20 +2694,12 @@ export class ChunkWorkerPool {
 	}
 
 	/**
-	 * Handle chunk data received from the server.
+	 * Handle chunk data received from the server. The result is a
+	 * discriminated union: "data" carries the voxel payload, "unchanged" is
+	 * a pure confirmation stamp (no payload fields).
 	 */
-	private handleRemoteChunkData(data: {
-		chunkX: number;
-		chunkY: number;
-		chunkZ: number;
-		blocks: Uint8Array;
-		light: Uint8Array;
-		palette?: Uint16Array;
-		isUniform: boolean;
-		uniformBlockId: number;
-		version: number;
-	}): void {
-		const key = `${data.chunkX},${data.chunkY},${data.chunkZ}`;
+	private handleRemoteChunkData(result: RemoteChunkResult): void {
+		const key = `${result.chunkX},${result.chunkY},${result.chunkZ}`;
 		const captured = this.remotePendingChunks.get(key) ?? null;
 		this.remotePendingChunks.delete(key);
 		this.remoteRetryCount.delete(key);
@@ -2713,7 +2711,7 @@ export class ChunkWorkerPool {
 		// without a mesh even though its voxel data is present. If no live chunk
 		// exists anymore, fall back to the captured instance so the server's
 		// voxel data is never dropped (its replacement will reuse it).
-		const liveChunk = getChunk(data.chunkX, data.chunkY, data.chunkZ);
+		const liveChunk = getChunk(result.chunkX, result.chunkY, result.chunkZ);
 		const target = liveChunk ?? captured;
 		if (!target || target.isBoatChunk) {
 			// Free the concurrency slot (already decremented above) and keep the
@@ -2723,107 +2721,107 @@ export class ChunkWorkerPool {
 		}
 		const chunk = target;
 
-		// An "unchanged" stamp is identified by EMPTY payload — real chunk
-		// data always carries non-empty block bytes (dense, palette, or 2
-		// bytes for uniform). The version guard must NOT be part of this
-		// test: the server legitimately stamps "unchanged" at version 0 for
-		// untouched chunks, and checking `version !== 0` would misread those
-		// stamps as full (empty!) data.
-		const unchanged =
-			!data.isUniform &&
-			data.blocks.byteLength === 0 &&
-			data.light.byteLength === 0;
+		switch (result.kind) {
+			case "data": {
+				console.log(
+					`[ChunkWorkerPool] handleRemoteChunkData ${result.chunkX},${result.chunkY},${result.chunkZ} unchanged=false version=${result.version} blocksLen=${result.blocks.byteLength}`,
+				);
 
-		console.log(
-			`[ChunkWorkerPool] handleRemoteChunkData ${data.chunkX},${data.chunkY},${data.chunkZ} unchanged=${unchanged} version=${data.version} blocksLen=${data.blocks.byteLength}`,
-		);
+				// Pass raw compressed blocks directly to loadFromStorage.
+				// Do NOT decompress — loadFromStorage handles uniform/palette/dense formats
+				// and expects nibble-packed data when a palette is provided.
+				const palette = result.palette ?? null;
 
-		if (unchanged) {
-			// The server confirmed that the client's known version is still
-			// authoritative. Apply the client's own (matching) copy — local
-			// cache or already-present voxel data. The version comparison
-			// guarantees this copy equals the server's data.
-			if (chunk.hasVoxelData) {
-				chunk.isLoaded = true;
+				this.remoteNoBlobRetries.delete(key);
+
+				// Load into chunk (same path as local generation)
+				chunk.loadFromStorage(
+					result.blocks,
+					palette,
+					result.isUniform,
+					result.uniformBlockId,
+					result.light,
+					false,
+				);
 				chunk.isModified = true;
-			} else if (this.remoteChunkProvider) {
-				// Pull the matching local copy from the shared store
-				void this.remoteChunkProvider
-					.getCachedChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ)
-					.then((cached) => {
-						if (cached) {
-							const blocks = cached.blocks;
-							const palette = cached.palette ?? null;
-							chunk.loadFromStorage(
-								blocks,
-								palette,
-								cached.isUniform,
-								cached.uniformBlockId,
-								cached.light,
-								false,
-							);
-							chunk.isModified = true;
-							this.remoteNoBlobRetries.delete(this.remoteChunkKey(chunk));
-							this.broadcastLightRegister(chunk);
-							this.broadcastVoxelRegister(chunk);
-							this.queueRemoteChunkRemesh(chunk);
-						} else {
-							// No local copy of the confirmed data. For an
-							// untouched chunk (version 0) deterministic local
-							// generation produces identical terrain (the seed
-							// was synced from the server on join). For an
-							// edited chunk (version > 0) retry the request
-							// once — the stamp should have been matched by a
-							// copy we no longer have; a second stamp means
-							// there is genuinely nothing to serve, so fall
-							// back to generation rather than leaving the
-							// chunk invisible.
-							const key = this.remoteChunkKey(chunk);
-							const retries = this.remoteNoBlobRetries.get(key) ?? 0;
-							if (data.version === 0) {
-								this.remoteNoBlobRetries.delete(key);
-								this.queueLocalTerrainGeneration(chunk);
-							} else if (retries < 1) {
-								this.remoteNoBlobRetries.set(key, retries + 1);
-								if (
-									!this.remotePendingChunks.has(key) &&
-									!this.remoteTaskQueueSet.has(chunk)
-								) {
-									this.remoteTaskQueue.unshift(chunk);
-									this.remoteTaskQueueSet.add(chunk);
-									chunk.isTerrainScheduled = true;
-								}
-								this.pumpRemoteGeneration();
-							} else {
-								this.remoteNoBlobRetries.delete(key);
-								this.queueLocalTerrainGeneration(chunk);
-							}
-						}
-					})
-					.catch(() => {
-						chunk.isLoaded = true;
-					});
-				return;
+				break;
 			}
-		} else {
-			// Pass raw compressed blocks directly to loadFromStorage.
-			// Do NOT decompress — loadFromStorage handles uniform/palette/dense formats
-			// and expects nibble-packed data when a palette is provided.
-			const blocks = data.blocks;
-			const palette = data.palette ?? null;
 
-			this.remoteNoBlobRetries.delete(key);
+			case "unchanged": {
+				console.log(
+					`[ChunkWorkerPool] handleRemoteChunkData ${result.chunkX},${result.chunkY},${result.chunkZ} unchanged=true version=${result.version}`,
+				);
 
-			// Load into chunk (same path as local generation)
-			chunk.loadFromStorage(
-				blocks,
-				palette,
-				data.isUniform,
-				data.uniformBlockId,
-				data.light,
-				false,
-			);
-			chunk.isModified = true;
+				// The server confirmed that the client's known version is still
+				// authoritative. Apply the client's own (matching) copy — local
+				// cache or already-present voxel data. The version comparison
+				// guarantees this copy equals the server's data.
+				if (chunk.hasVoxelData) {
+					chunk.isLoaded = true;
+					chunk.isModified = true;
+				} else if (this.remoteChunkProvider) {
+					// Pull the matching local copy from the shared store
+					void this.remoteChunkProvider
+						.getCachedChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ)
+						.then((cached) => {
+							if (cached) {
+								const blocks = cached.blocks;
+								const palette = cached.palette ?? null;
+								chunk.loadFromStorage(
+									blocks,
+									palette,
+									cached.isUniform,
+									cached.uniformBlockId,
+									cached.light,
+									false,
+								);
+								chunk.isModified = true;
+								this.remoteNoBlobRetries.delete(this.remoteChunkKey(chunk));
+								this.broadcastLightRegister(chunk);
+								this.broadcastVoxelRegister(chunk);
+								this.queueRemoteChunkRemesh(chunk);
+							} else {
+								// No local copy of the confirmed data. For an
+								// untouched chunk (version 0) deterministic local
+								// generation produces identical terrain (the seed
+								// was synced from the server on join). For an
+								// edited chunk (version > 0) retry the request
+								// once — the stamp should have been matched by a
+								// copy we no longer have; a second stamp means
+								// there is genuinely nothing to serve, so fall
+								// back to generation rather than leaving the
+								// chunk invisible.
+								const retries = this.remoteNoBlobRetries.get(key) ?? 0;
+								if (result.version === 0) {
+									this.remoteNoBlobRetries.delete(key);
+									this.queueLocalTerrainGeneration(chunk);
+								} else if (retries < 1) {
+									this.remoteNoBlobRetries.set(key, retries + 1);
+									if (
+										!this.remotePendingChunks.has(key) &&
+										!this.remoteTaskQueueSet.has(chunk)
+									) {
+										this.remoteTaskQueue.unshift(chunk);
+										this.remoteTaskQueueSet.add(chunk);
+										chunk.isTerrainScheduled = true;
+									}
+									this.pumpRemoteGeneration();
+								} else {
+									this.remoteNoBlobRetries.delete(key);
+									this.queueLocalTerrainGeneration(chunk);
+								}
+							}
+						})
+						.catch(() => {
+							chunk.isLoaded = true;
+						});
+					return;
+				}
+				break;
+			}
+
+			default:
+				assertNever(result);
 		}
 
 		// Register the chunk with the light/voxel workers so meshing can proceed.

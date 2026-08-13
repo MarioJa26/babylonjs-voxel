@@ -16,9 +16,23 @@
  * - Batched reads for cache misses (readChunks/hasChunks), on both backends
  * - LevelDB handles compression (Snappy), no manual gzip
  * - Simple string keys for debugging
+ *
+ * Write ordering: every write (chunk blob or meta) goes through a single
+ * serialized promise chain (`writeTail`). No transaction is ever started
+ * fire-and-forget — when a chained write operation resolves, every
+ * transaction it started has settled. This guarantees deterministic
+ * write ordering and makes clear() race-free (a clear queued after a
+ * write can never be undone by a late transaction).
  */
 function chunkKey(cx: number, cy: number, cz: number): string {
 	return `${cx},${cy},${cz}`;
+}
+
+export interface ChunkWrite {
+	cx: number;
+	cy: number;
+	cz: number;
+	blob: Uint8Array;
 }
 
 export class LevelDbChunkStore {
@@ -28,6 +42,11 @@ export class LevelDbChunkStore {
 	private batchCount = 0;
 	private opened = false;
 	private openPromise: Promise<void> | null = null;
+
+	// Single serialized write chain. Every public write method queues its
+	// operation here; operations run strictly one after another, so no two
+	// operations can ever touch `batch`/`pendingMeta` concurrently.
+	private writeTail: Promise<void> = Promise.resolve();
 
 	// Cache storage: Map insertion order is the FIFO base ordering.
 	// `touched` is a second-chance ("CLOCK") bit set — a cache *hit* just
@@ -44,12 +63,11 @@ export class LevelDbChunkStore {
 	private readonly maxCacheSize: number;
 	private static readonly DEFAULT_BATCH_SIZE = 64;
 
-	// Meta writes go through the same write batch as chunk data so version /
-	// position updates coalesce into one LevelDB/IndexedDB write per flush.
-	// pendingMeta shadows unflushed values (counted per in-flight batch) so a
+	// Meta writes go through the same write chain as chunk data so version /
+	// position updates cannot race a clear() or an in-flight chunk batch.
+	// pendingMeta shadows unflushed values (counted per in-flight write) so a
 	// getMeta right after a setMeta still sees the fresh value.
 	private readonly pendingMeta = new Map<string, number>();
-	private metaKeysInBatch: string[] = [];
 
 	constructor(worldName: string, basePath: string, maxCacheSize = 128) {
 		this.dbPath =
@@ -113,7 +131,6 @@ export class LevelDbChunkStore {
 		this.cache.clear();
 		this.touched.clear();
 		this.pendingMeta.clear();
-		this.metaKeysInBatch = [];
 		this.opened = false;
 	}
 
@@ -170,74 +187,140 @@ export class LevelDbChunkStore {
 		return results;
 	}
 
-	writeChunk(cx: number, cy: number, cz: number, data: Uint8Array): void {
-		if (!this.db) return;
-		const key = chunkKey(cx, cy, cz);
+	/**
+	 * Queue an operation on the single write chain. Only these public
+	 * methods may call this — everything that runs inside `operation` must
+	 * be an `*Unsafe` primitive, never a public queued method (a public
+	 * method called from inside the chain would enqueue behind itself and
+	 * deadlock).
+	 *
+	 * The caller observes its own operation's failure (`result` rejects),
+	 * while the internal tail recovers so later operations still run.
+	 * Synchronous throws from `operation` are converted into a rejection
+	 * by `.then(operation)`.
+	 */
+	private enqueueExclusive<T>(operation: () => Promise<T> | T): Promise<T> {
+		const result = this.writeTail.then(operation);
+		this.writeTail = result.then(
+			() => undefined,
+			() => undefined,
+		);
+		return result;
+	}
 
-		this.addToCache(key, data);
-		this.batchPut(key, data);
+	writeChunk(
+		cx: number,
+		cy: number,
+		cz: number,
+		data: Uint8Array,
+	): Promise<void> {
+		return this.enqueueExclusive(() => this.writeChunkUnsafe(cx, cy, cz, data));
+	}
+
+	/** Bulk write of a network batch: queued, one final flush at the end. */
+	writeChunks(writes: readonly ChunkWrite[]): Promise<void> {
+		return this.enqueueExclusive(() => this.writeChunksUnsafe(writes));
 	}
 
 	async flush(): Promise<void> {
-		if (!this.batch || this.batchCount === 0) return;
-		const pending = this.batch;
-		const metaKeys = this.metaKeysInBatch;
-		this.batch = null;
-		this.batchCount = 0;
-		this.metaKeysInBatch = [];
-		await pending.write();
-		// Only release the shadow once the batch actually hit the DB, so a
-		// failed write keeps the fresh value readable from memory.
-		for (const k of metaKeys) {
-			this.releasePendingMetaKey(k);
-		}
+		return this.enqueueExclusive(() => this.flushUnsafe());
 	}
 
 	async setMeta(key: string, value: string): Promise<void> {
-		if (!this.db) return;
-		const k = `\x01${key}`;
-		this.pendingMeta.set(k, (this.pendingMeta.get(k) ?? 0) + 1);
-		this.metaKeysInBatch.push(k);
-		this.batchPut(k, value);
+		return this.enqueueExclusive(() => this.setMetaUnsafe(key, value));
 	}
 
-	async getMeta(key: string): Promise<string | null> {
-		if (!this.db) return null;
-		const k = `\x01${key}`;
-		if (this.pendingMeta.has(k)) return String(this.pendingMeta.get(k));
-		const value = await this._get(k);
-		return value != null ? String(value) : null;
+	async clear(): Promise<void> {
+		return this.enqueueExclusive(() => this.clearUnsafe());
 	}
+
+	// ---------------------------------------------------------------------
+	// Unsafe primitives — may only run while the write chain is held. Never
+	// call a public queued method from inside these.
+	// ---------------------------------------------------------------------
 
 	/**
-	 * Accumulate one put into the shared write batch, firing it off when it
-	 * reaches the size cap. Shared by chunk blobs and meta key/values so all
-	 * writes coalesce into a single LevelDB/IndexedDB transaction per flush.
+	 * Invariant: when a chained write operation resolves, every transaction
+	 * it started has settled. The threshold commit below is awaited (never
+	 * fired fire-and-forget) so a later clear() can never be undone by a
+	 * late transaction.
 	 */
-	private batchPut(key: string, value: Uint8Array | string): void {
+	private async batchPutUnsafe(
+		key: string,
+		value: Uint8Array | string,
+	): Promise<void> {
+		if (!this.db) return;
 		if (!this.batch) {
 			this.batch = this.db.batch();
 			this.batchCount = 0;
 		}
 		this.batch.put(key, value);
 		this.batchCount++;
-
 		if (this.batchCount >= LevelDbChunkStore.DEFAULT_BATCH_SIZE) {
-			const pending = this.batch;
-			const metaKeys = this.metaKeysInBatch;
-			this.batch = null;
-			this.batchCount = 0;
-			this.metaKeysInBatch = [];
-			void pending.write().then(
-				() => {
-					for (const k of metaKeys) {
-						this.releasePendingMetaKey(k);
-					}
-				},
-				() => {
-					// Keep the shadow on failure — the value stays readable.
-				},
-			);
+			await this.flushUnsafe();
+		}
+	}
+
+	private async flushUnsafe(): Promise<void> {
+		if (!this.batch || this.batchCount === 0) return;
+		const pending = this.batch;
+		this.batch = null;
+		this.batchCount = 0;
+		await pending.write();
+	}
+
+	private async writeChunkUnsafe(
+		cx: number,
+		cy: number,
+		cz: number,
+		data: Uint8Array,
+	): Promise<void> {
+		if (!this.db) return;
+		const key = chunkKey(cx, cy, cz);
+		this.addToCache(key, data);
+		await this.batchPutUnsafe(key, data);
+	}
+
+	private async writeChunksUnsafe(
+		writes: readonly ChunkWrite[],
+	): Promise<void> {
+		for (let i = 0; i < writes.length; i++) {
+			const write = writes[i];
+			const key = chunkKey(write.cx, write.cy, write.cz);
+			this.addToCache(key, write.blob);
+			await this.batchPutUnsafe(key, write.blob);
+		}
+		await this.flushUnsafe();
+	}
+
+	/**
+	 * Metadata writes run inside the chain (so they order against clear())
+	 * but through their own transaction — they are deliberately NOT coupled
+	 * to the 64-put chunk flush policy. Meta writes are rare, so one
+	 * transaction each is fine.
+	 */
+	private async setMetaUnsafe(key: string, value: string): Promise<void> {
+		if (!this.db) return;
+		const k = `\x01${key}`;
+		this.pendingMeta.set(k, (this.pendingMeta.get(k) ?? 0) + 1);
+		try {
+			await this.db.batch().put(k, value).write();
+		} finally {
+			this.releasePendingMetaKey(k);
+		}
+	}
+
+	private async clearUnsafe(): Promise<void> {
+		this.cache.clear();
+		this.touched.clear();
+		this.pendingMeta.clear();
+		this.batch = null;
+		this.batchCount = 0;
+		if (!this.db) return;
+		if (typeof window !== "undefined") {
+			await (this.db as IndexedDbStore).clear();
+		} else {
+			await this.db.clear();
 		}
 	}
 
@@ -250,19 +333,12 @@ export class LevelDbChunkStore {
 		}
 	}
 
-	async clear(): Promise<void> {
-		this.cache.clear();
-		this.touched.clear();
-		this.pendingMeta.clear();
-		this.metaKeysInBatch = [];
-		this.batch = null;
-		this.batchCount = 0;
-		if (!this.db) return;
-		if (typeof window !== "undefined") {
-			await (this.db as IndexedDbStore).clear();
-		} else {
-			await this.db.clear();
-		}
+	async getMeta(key: string): Promise<string | null> {
+		if (!this.db) return null;
+		const k = `\x01${key}`;
+		if (this.pendingMeta.has(k)) return String(this.pendingMeta.get(k));
+		const value = await this._get(k);
+		return value != null ? String(value) : null;
 	}
 
 	async hasChunk(cx: number, cy: number, cz: number): Promise<boolean> {

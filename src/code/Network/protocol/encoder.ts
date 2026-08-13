@@ -6,6 +6,8 @@
  * Single source of truth for client AND server — the server imports this
  * module via its "@/code/Network/protocol/*" path alias.
  */
+
+import type { RemoteChunkData } from "../chunk/RemoteChunkProvider";
 import {
 	type BlockEditData,
 	type BlockEditRejectedData,
@@ -838,18 +840,9 @@ export function encodeChunkData(data: {
 	return enc.getBytes();
 }
 
-export function decodeChunkData(buffer: Uint8Array): {
-	chunkX: number;
-	chunkY: number;
-	chunkZ: number;
-	blocks: Uint8Array;
-	light: Uint8Array;
-	palette?: Uint16Array;
-	isUniform: boolean;
-	uniformBlockId: number;
-	hash: number;
-	version: number;
-} {
+export function decodeChunkData(
+	buffer: Uint8Array,
+): RemoteChunkData & { hash: number } {
 	const dec = new BinaryDecoder(buffer, 1);
 	const chunkX = dec.readInt32();
 	const chunkY = dec.readInt32();
@@ -893,6 +886,7 @@ export function decodeChunkData(buffer: Uint8Array): {
 	const light = dec.readBytesView(lightLen);
 
 	return {
+		kind: "data",
 		chunkX,
 		chunkY,
 		chunkZ,
@@ -1090,32 +1084,12 @@ function encodeChunkDataBatchMeasure(
 	return totalSize;
 }
 
-export function decodeChunkDataBatch(buffer: Uint8Array): Array<{
-	chunkX: number;
-	chunkY: number;
-	chunkZ: number;
-	blocks: Uint8Array;
-	light: Uint8Array;
-	palette?: Uint16Array;
-	isUniform: boolean;
-	uniformBlockId: number;
-	hash: number;
-	version: number;
-}> {
+export function decodeChunkDataBatch(
+	buffer: Uint8Array,
+): Array<RemoteChunkData & { hash: number }> {
 	const dec = new BinaryDecoder(buffer, 1);
 	const count = dec.readUint16();
-	const chunks: Array<{
-		chunkX: number;
-		chunkY: number;
-		chunkZ: number;
-		blocks: Uint8Array;
-		light: Uint8Array;
-		palette?: Uint16Array;
-		isUniform: boolean;
-		uniformBlockId: number;
-		hash: number;
-		version: number;
-	}> = [];
+	const chunks: Array<RemoteChunkData & { hash: number }> = [];
 
 	for (let i = 0; i < count; i++) {
 		const chunkX = dec.readInt32();
@@ -1154,6 +1128,7 @@ export function decodeChunkDataBatch(buffer: Uint8Array): Array<{
 		const light = dec.readBytesView(lightLen);
 
 		chunks.push({
+			kind: "data",
 			chunkX,
 			chunkY,
 			chunkZ,

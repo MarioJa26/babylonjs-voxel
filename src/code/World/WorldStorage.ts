@@ -61,7 +61,11 @@ class WorldStorageImpl {
 		if (!store) return;
 
 		const blob = packChunkBlob(chunk);
-		store.writeChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ, blob);
+		void store
+			.writeChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ, blob)
+			.catch((error) =>
+				console.warn("[WorldStorage] chunk save failed:", error),
+			);
 
 		chunk.isModified = false;
 		chunk.isLightDirty = false;
@@ -86,7 +90,11 @@ class WorldStorageImpl {
 
 		for (const chunk of toSave) {
 			const blob = packChunkBlob(chunk);
-			store.writeChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ, blob);
+			void store
+				.writeChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ, blob)
+				.catch((error) =>
+					console.warn("[WorldStorage] chunk save failed:", error),
+				);
 			chunk.isModified = false;
 			chunk.isLightDirty = false;
 		}

@@ -132,8 +132,15 @@ export class NetClient {
 	}
 
 	private setupRoomHandlers(): void {
+		const room = this.room;
 		// Handle binary messages (game data)
-		this.room.onMessage("binary", (data: Uint8Array) => {
+		room.onMessage("binary", (data: Uint8Array) => {
+			// Provenance guard: only messages from the current room are
+			// dispatched. A stale room object (old connection) can deliver
+			// buffered packets after a reconnect — dropping them here keeps
+			// handlers like RemoteChunkProvider free of old-connection data
+			// without any packet-level request/connection identifier.
+			if (this.room !== room) return;
 			this.handleBinaryMessage(data);
 		});
 
