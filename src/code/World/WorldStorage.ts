@@ -1,6 +1,9 @@
 import { Chunk } from "./Chunk/Chunk";
 import { GLOBAL_VALUES } from "./GLOBAL_VALUES";
-import { LevelDbChunkStore } from "./Storage/LevelDbChunkStore";
+import {
+	isCacheResetError,
+	LevelDbChunkStore,
+} from "./Storage/LevelDbChunkStore";
 import {
 	deserializeEntities,
 	deserializeVoxelData,
@@ -63,9 +66,10 @@ class WorldStorageImpl {
 		const blob = packChunkBlob(chunk);
 		void store
 			.writeChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ, blob)
-			.catch((error) =>
-				console.warn("[WorldStorage] chunk save failed:", error),
-			);
+			.catch((error) => {
+				if (isCacheResetError(error)) return;
+				console.warn("[WorldStorage] chunk save failed:", error);
+			});
 
 		chunk.isModified = false;
 		chunk.isLightDirty = false;
@@ -92,9 +96,10 @@ class WorldStorageImpl {
 			const blob = packChunkBlob(chunk);
 			void store
 				.writeChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ, blob)
-				.catch((error) =>
-					console.warn("[WorldStorage] chunk save failed:", error),
-				);
+				.catch((error) => {
+					if (isCacheResetError(error)) return;
+					console.warn("[WorldStorage] chunk save failed:", error);
+				});
 			chunk.isModified = false;
 			chunk.isLightDirty = false;
 		}
@@ -246,7 +251,9 @@ class WorldStorageImpl {
 	async clearLocalChunkCache(): Promise<void> {
 		const store = await this.getStore();
 		if (!store) return;
-		await store.clear();
+		// discardPendingWrites: queued local saves are wiped anyway, so
+		// commit-then-erase would be wasted I/O on reconnect.
+		await store.clear({ discardPendingWrites: true });
 	}
 }
 

@@ -32,6 +32,7 @@ import { DEBUG_ENABLED, debugLog } from "../../Lib/debugLog";
 import type { Chunk } from "../../World/Chunk/Chunk";
 import {
 	type ChunkWrite,
+	isCacheResetError,
 	LevelDbChunkStore,
 } from "../../World/Storage/LevelDbChunkStore";
 import {
@@ -253,6 +254,7 @@ export class RemoteChunkProvider {
 				}
 			})
 			.catch((error) => {
+				if (isCacheResetError(error)) return;
 				console.warn("[RemoteChunkProvider] batch persistence failed:", error);
 			});
 	}
@@ -345,6 +347,7 @@ export class RemoteChunkProvider {
 		if (evictCoords.length > 0) {
 			// One batched eviction for all violated entries of this packet.
 			this.store.deleteChunks(evictCoords).catch((error) => {
+				if (isCacheResetError(error)) return;
 				console.warn(
 					"[RemoteChunkProvider] failed to evict invalid cache entries:",
 					error,
@@ -399,6 +402,7 @@ export class RemoteChunkProvider {
 					}
 				})
 				.catch((error) => {
+					if (isCacheResetError(error)) return;
 					console.warn(
 						`[RemoteChunkProvider] local chunk save failed for ${key}:`,
 						error,
@@ -437,10 +441,11 @@ export class RemoteChunkProvider {
 		this.inFlight.clear();
 
 		// Only wipe the store if it initialized; network request state above
-		// is reset regardless.
+		// is reset regardless. discardPendingWrites skips committing queued
+		// chunks that the wipe would immediately erase.
 		if (await this.storeReady) {
 			try {
-				await this.store.clear();
+				await this.store.clear({ discardPendingWrites: true });
 			} catch (error) {
 				console.warn(
 					"[RemoteChunkProvider] failed to clear local cache:",
@@ -557,6 +562,7 @@ export class RemoteChunkProvider {
 		}
 		if (corruptCoords.length > 0) {
 			this.store.deleteChunks(corruptCoords).catch((error) => {
+				if (isCacheResetError(error)) return;
 				console.warn(
 					"[RemoteChunkProvider] failed to evict corrupt cache entries:",
 					error,
@@ -829,6 +835,7 @@ export class RemoteChunkProvider {
 	 */
 	private evictChunk(cx: number, cy: number, cz: number): void {
 		void this.store.deleteChunk(cx, cy, cz).catch((error) => {
+			if (isCacheResetError(error)) return;
 			console.warn(
 				`[RemoteChunkProvider] failed to evict invalid cache entry ${cx},${cy},${cz}:`,
 				error,
