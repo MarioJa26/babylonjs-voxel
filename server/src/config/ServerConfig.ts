@@ -8,6 +8,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { REACH_DISTANCE } from "@/code/Player/PlayerStats";
 
 export interface ServerConfig {
 	seed: string;
@@ -32,7 +33,7 @@ const DEFAULTS: ServerConfig = {
 	serverName: "b102 Server",
 	gamemode: "creative",
 	difficulty: "normal",
-	maxReach: 8,
+	maxReach: REACH_DISTANCE,
 	tickRate: 20,
 	dayDuration: 120000,
 	dayCycle: true,

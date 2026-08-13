@@ -5,7 +5,9 @@ export const enum Gamemodes {
 	Spectator = 3,
 }
 
+//Mining Placing Interaction
 export const REACH_DISTANCE = 64;
+//Pickup Aura
 export const REACH_AURA = 3;
 export class PlayerStats {
 	public gamemode: Gamemodes = Gamemodes.Creative;
