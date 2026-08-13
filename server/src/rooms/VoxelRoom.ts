@@ -93,6 +93,11 @@ const MAX_PROTOCOL_VIOLATIONS = 16; // Malformed packets before disconnect
 const FLUSH_CONCURRENCY = 8; // Max parallel chunk storage ops per flush
 const CHUNK_BATCH_BYTE_LIMIT = 256 * 1024; // Max bytes per ChunkDataBatch send
 const MAX_POOLED_EDIT_ENTRIES = 8192; // Cap the pendingChunkEdits entry free list
+// Spawn prewarm box (matches the client's render distances around the
+// default spawn chunk (0, 2, 0) at block y=80): 7x7 columns x 13 Y-levels.
+const PREWARM_HORIZONTAL_RADIUS = 3;
+const PREWARM_MIN_CHUNK_Y = -5;
+const PREWARM_MAX_CHUNK_Y = 7;
 
 export class VoxelRoom extends Room {
 	private players = new Map<string, ServerPlayerState>();
@@ -227,6 +232,10 @@ export class VoxelRoom extends Room {
 		await this.worldStorage.init();
 		this.chunkGen.setStorage(this.worldStorage);
 		this.worldStorage.setWorldGenerator(this.chunkGen);
+
+		// Kick off spawn-area generation in the background so the first join
+		// serves from storage instead of stalling behind ~637 cold chunks.
+		this.prewarmSpawnArea();
 
 		// Set up fixed-rate simulation tick (real elapsed time per tick)
 		this.startTickLoop();
@@ -616,6 +625,67 @@ export class VoxelRoom extends Room {
 		void promise.catch((error) => {
 			console.error(`[VoxelRoom] ${label}:`, error);
 		});
+	}
+
+	/**
+	 * Background pre-generation of the spawn area. The first join requests
+	 * ~637 chunks (7x7 columns x 13 Y-levels around the default spawn chunk
+	 * (0,2,0)); generating them all on-demand stalls the join, especially
+	 * while the worker pool is still loading WASM. Running it here means
+	 * join batches mostly hit storage. Runs concurrently with the normal
+	 * generation path — ChunkGenerationService dedupes shared coordinates,
+	 * so a player request overlapping the prewarm waits on the same work
+	 * instead of duplicating it.
+	 */
+	private prewarmSpawnArea(): void {
+		this.reportAsync("Spawn area prewarm failed", this.prewarmSpawnAreaImpl());
+	}
+
+	private async prewarmSpawnAreaImpl(): Promise<void> {
+		const coords: Array<{ cx: number; cy: number; cz: number }> = [];
+		for (
+			let dx = -PREWARM_HORIZONTAL_RADIUS;
+			dx <= PREWARM_HORIZONTAL_RADIUS;
+			dx++
+		) {
+			for (
+				let dz = -PREWARM_HORIZONTAL_RADIUS;
+				dz <= PREWARM_HORIZONTAL_RADIUS;
+				dz++
+			) {
+				for (
+					let cy = PREWARM_MIN_CHUNK_Y;
+					cy <= PREWARM_MAX_CHUNK_Y;
+					cy++
+				) {
+					coords.push({ cx: dx, cy, cz: dz });
+				}
+			}
+		}
+
+		const storedMap = await this.worldStorage.readChunks(coords);
+		const missing: Array<{ chunkX: number; chunkY: number; chunkZ: number }> =
+			[];
+		for (const c of coords) {
+			if (!storedMap.has(packChunkKeyFast(c.cx, c.cy, c.cz))) {
+				missing.push({ chunkX: c.cx, chunkY: c.cy, chunkZ: c.cz });
+			}
+		}
+
+		if (missing.length === 0) {
+			console.log(
+				"[VoxelRoom] Spawn area already generated — skipping prewarm",
+			);
+			return;
+		}
+
+		console.log(
+			`[VoxelRoom] Prewarming spawn area: ${missing.length}/${coords.length} chunks missing — generating...`,
+		);
+		await this.chunkGen.generateChunksBatch(missing);
+		console.log(
+			`[VoxelRoom] Spawn area prewarm complete (${missing.length} chunks)`,
+		);
 	}
 
 	private startTickLoop(): void {

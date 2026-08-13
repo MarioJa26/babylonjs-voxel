@@ -13,10 +13,11 @@
  * constructing the WorldGenerator — same backend the client uses.
  */
 import { parentPort } from "node:worker_threads";
+import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap";
 import { loadWasmNoiseFromFile } from "@/code/Lib/WasmNoise";
 import { hashChunk } from "@/code/Network/protocol/encoder.ts";
-import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap";
 import { compressBlocks } from "../world/ChunkCompression.ts";
+import { PendingTaskKindType } from "./workerProtocol.ts";
 
 type ChunkCoord = {
 	chunkX: number;
@@ -28,14 +29,14 @@ type GenRequest = {
 	id: number;
 	seed: string;
 	wasmEnabled: boolean;
-	kind: "single";
+	kind: PendingTaskKindType.SINGLE;
 } & ChunkCoord;
 
 type GenBatchRequest = {
 	id: number;
 	seed: string;
 	wasmEnabled: boolean;
-	kind: "batch";
+	kind: PendingTaskKindType.BATCH;
 	items: ChunkCoord[];
 };
 
@@ -59,6 +60,8 @@ type RelightRequest = {
 	chunkY: number;
 	chunkZ: number;
 	blocks: Uint8Array;
+	seed: string;
+	wasmEnabled: boolean;
 };
 
 type RelightResult = {
@@ -69,13 +72,13 @@ type RelightResult = {
 type GenSuccess = GenResultMessage;
 type GenBatchSuccess = {
 	id: number;
-	kind: "batch";
+	kind: PendingTaskKindType.BATCH;
 	items: FinalizedChunk[];
 };
 
 type GenResultMessage = {
 	id: number;
-	kind: "single";
+	kind: PendingTaskKindType.SINGLE;
 	blocks: Uint8Array;
 	light: Uint8Array;
 	palette?: number[];
@@ -100,46 +103,73 @@ let generator: {
 } | null = null;
 
 let currentSeed = "";
-let wasmInitialized = false;
+let wasmEnabledConfig = false;
+let wasmLoadPromise: Promise<void> | null = null;
 
 async function ensureWasm(wasmEnabled: boolean): Promise<void> {
-	if (wasmInitialized) return;
-	wasmInitialized = true;
+	// Once a worker has been told a request wants WASM, it stays WASM for
+	// its lifetime — relight requests must never downgrade a WASM worker to
+	// the JS noise backend (which is 2-5x slower and a huge spawn stall).
+	wasmEnabledConfig = wasmEnabledConfig || wasmEnabled;
 
-	if (wasmEnabled) {
-		const ok = await loadWasmNoiseFromFile();
-		if (ok) {
-			console.log("[chunk-worker] WASM noise backend active");
+	// Memoize the load so a burst of concurrent requests shares one load.
+	if (wasmLoadPromise) return wasmLoadPromise;
+
+	wasmLoadPromise = (async () => {
+		if (wasmEnabledConfig) {
+			const ok = await loadWasmNoiseFromFile();
+			if (ok) {
+				console.log("[chunk-worker] WASM noise backend active");
+			} else {
+				console.log("[chunk-worker] JS noise backend (WASM unavailable)");
+			}
 		} else {
-			console.log("[chunk-worker] JS noise backend (WASM unavailable)");
+			console.log("[chunk-worker] JS noise backend (wasm-enabled=false)");
 		}
-	} else {
-		console.log("[chunk-worker] JS noise backend (wasm-enabled=false)");
-	}
+	})();
+
+	return wasmLoadPromise;
 }
+
+let initPromise: Promise<void> | null = null;
 
 async function ensureInit(seed: string, wasmEnabled: boolean): Promise<void> {
 	if (generator && currentSeed === seed) return;
 
-	// Initialize WASM backend before first WorldGenerator construction
-	await ensureWasm(wasmEnabled);
+	// A relight with a different seed must re-initialize instead of racing
+	// the generation task: the old code seeded with "" + no WASM, which
+	// permanently downgraded the worker AND could persist wrong-seed terrain.
+	const pending = initPromise;
+	if (pending) {
+		await pending;
+		if (generator && currentSeed === seed) return;
+	}
 
-	// Re-seed the shared TerrainHeightMap module (continentalness, temperature,
-	// humidity, erosion, peaks-and-valleys noise) so that getBiome() and
-	// getFinalTerrainHeight() used by SurfaceGenerator / WorldGenerator produce
-	// the same results as the client.
-	setTerrainSeed(seed);
+	initPromise = (async () => {
+		// Initialize WASM backend before first WorldGenerator construction
+		await ensureWasm(wasmEnabled);
 
-	const { WorldGenerator: WG } = await import(
-		"@/code/Generation/WorldGenerator"
-	);
-	const { GenerationParams } = await import(
-		"@/code/Generation/NoiseAndParameters/GenerationParams"
-	);
+		// Re-seed the shared TerrainHeightMap module (continentalness, temperature,
+		// humidity, erosion, peaks-and-valleys noise) so that getBiome() and
+		// getFinalTerrainHeight() used by SurfaceGenerator / WorldGenerator produce
+		// the same results as the client.
+		setTerrainSeed(seed);
 
-	const params = { ...GenerationParams, SEED: seed };
-	generator = new WG(params as any);
-	currentSeed = seed;
+		const { WorldGenerator: WG } = await import(
+			"@/code/Generation/WorldGenerator"
+		);
+		const { GenerationParams } = await import(
+			"@/code/Generation/NoiseAndParameters/GenerationParams"
+		);
+
+		const params = { ...GenerationParams, SEED: seed };
+		generator = new WG(params as any);
+		currentSeed = seed;
+	})().finally(() => {
+		initPromise = null;
+	});
+
+	return initPromise;
 }
 
 /**
@@ -184,7 +214,7 @@ function handleRequest(req: GenRequest): void {
 			const finalized = finalizeOne(raw);
 			const msg: GenSuccess = {
 				id: req.id,
-				kind: "single",
+				kind: PendingTaskKindType.SINGLE,
 				blocks: finalized.blocks,
 				light: finalized.light,
 				palette: finalized.palette,
@@ -218,7 +248,11 @@ function handleBatchRequest(req: GenBatchRequest): void {
 			for (let i = 0; i < raws.length; i++) {
 				items[i] = finalizeOne(raws[i]);
 			}
-			const msg: GenBatchSuccess = { id: req.id, kind: "batch", items };
+			const msg: GenBatchSuccess = {
+				id: req.id,
+				kind: PendingTaskKindType.BATCH,
+				items,
+			};
 			parentPort!.postMessage(msg, collectTransferable(raws));
 		})
 		.catch((err: unknown) => {
@@ -231,8 +265,10 @@ function handleBatchRequest(req: GenBatchRequest): void {
 }
 
 function handleRelightRequest(req: RelightRequest): void {
-	if (!generator) {
-		ensureInit("", false)
+	// Re-init if the worker has no generator yet OR was seeded differently
+	// (relight must not clobber the generation seed or downgrade to JS noise).
+	if (!generator || currentSeed !== req.seed) {
+		ensureInit(req.seed, req.wasmEnabled)
 			.then(() => doRelight(req))
 			.catch((err: unknown) => {
 				console.error("[chunk-worker] relight init failed:", err);
@@ -252,16 +288,21 @@ function doRelight(req: RelightRequest): void {
 	);
 	const msg: RelightResult = { id: req.id, light };
 	const transfer: ArrayBuffer[] =
-		light.buffer instanceof SharedArrayBuffer ? [] : [light.buffer as ArrayBuffer];
+		light.buffer instanceof SharedArrayBuffer
+			? []
+			: [light.buffer as ArrayBuffer];
 	parentPort!.postMessage(msg, transfer);
 }
 
-parentPort!.on("message", (msg: GenRequest | GenBatchRequest | RelightRequest) => {
-	if ("blocks" in msg && "chunkX" in msg && !("kind" in msg)) {
-		handleRelightRequest(msg as RelightRequest);
-	} else if ((msg as GenBatchRequest).kind === "batch") {
-		handleBatchRequest(msg as GenBatchRequest);
-	} else {
-		handleRequest(msg as GenRequest);
-	}
-});
+parentPort!.on(
+	"message",
+	(msg: GenRequest | GenBatchRequest | RelightRequest) => {
+		if ("blocks" in msg && "chunkX" in msg && !("kind" in msg)) {
+			handleRelightRequest(msg as RelightRequest);
+		} else if ((msg as GenBatchRequest).kind === PendingTaskKindType.BATCH) {
+			handleBatchRequest(msg as GenBatchRequest);
+		} else {
+			handleRequest(msg as GenRequest);
+		}
+	},
+);
