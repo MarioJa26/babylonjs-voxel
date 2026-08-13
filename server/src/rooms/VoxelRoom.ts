@@ -1268,16 +1268,6 @@ export class VoxelRoom extends Room {
 			// Apply only this batch's pending edits — not the whole world's.
 			await this.ensureEditsApplied(keys);
 
-			// Gate so the template + slice/map/join arrays are never built
-			// per batch request when debug output is disabled.
-			if (DEBUG_ENABLED) {
-				debugLog(
-					`[VoxelRoom] handleBatchChunkRequest: ${unique.length} unique chunks, versions: ${unique
-						.slice(0, 3)
-						.map((r) => r.cachedVersion)
-						.join(",")}`,
-				);
-			}
 			const storedMap = await this.worldStorage.readChunks(coords);
 
 			const missingCoords: Array<{
@@ -1335,10 +1325,6 @@ export class VoxelRoom extends Room {
 						await this.chunkGen.generateChunksBatch(missingCoords);
 					this.sendChunkDataBatch(client, generated);
 				} catch (genErr) {
-					console.error(
-						`[VoxelRoom] Generation failed for ${missingCoords.length} chunks:`,
-						genErr,
-					);
 					// Send individual requests as fallback so at least some chunks
 					// succeed even if the batch dispatch failed.
 					for (const coord of missingCoords) {
@@ -1360,7 +1346,7 @@ export class VoxelRoom extends Room {
 			}
 		} catch (err) {
 			console.error(
-				`[VoxelRoom] Batch chunk request failed (${requests.length} chunks):`,
+				`[VoxelRoom] Batch chunk request FAILED (${requests.length} chunks):`,
 				err,
 			);
 		}

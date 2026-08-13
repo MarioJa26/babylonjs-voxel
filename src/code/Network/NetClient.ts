@@ -312,6 +312,14 @@ export class NetClient {
 				// Handled by RemoteChunkProvider via addBinaryHandler — no-op here
 				break;
 
+			case MessageType.ChunkUnchanged:
+				// Handled by RemoteChunkProvider via addBinaryHandler — no-op here
+				break;
+
+			case MessageType.ChunkUnchangedBatch:
+				// Handled by RemoteChunkProvider via addBinaryHandler — no-op here
+				break;
+
 			default:
 				console.warn(
 					`[NetClient] Unknown message type: 0x${msgType.toString(16)}`,
@@ -413,7 +421,14 @@ export class NetClient {
 			cachedVersion: number;
 		}>,
 	): void {
-		if (!this.connected || !this.room || requests.length === 0) return;
+		if (!this.connected || !this.room || requests.length === 0) {
+			if (requests.length > 0) {
+				console.warn(
+					`[NetClient] sendChunkRequestBatch skipped (connected=${this.connected}): ${requests.length} chunks`,
+				);
+			}
+			return;
+		}
 		this.encoder.reset();
 		this.encoder.writeChunkRequestBatch(requests);
 		this.room.sendBytes("binary", this.encoder.getBytes());

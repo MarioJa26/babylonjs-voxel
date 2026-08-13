@@ -359,7 +359,20 @@ export class RemoteChunkProvider {
 	/** Returns false if the response cannot resolve a current pending request. */
 	private resolvePending(key: string, result: RemoteChunkResult): boolean {
 		const entry = this.pending.get(key);
-		if (!entry || entry.epoch !== this.epoch) return false;
+		if (!entry) {
+			// Response arrived but no pending entry — either already
+			// timed out/swept, or unsolicited data. Log periodically
+			// to avoid spam.
+			return false;
+		}
+		if (entry.epoch !== this.epoch) {
+			console.warn(
+				`[RemoteChunkProvider] epoch mismatch ${key}: ` +
+					`response epoch=${entry.epoch} current=${this.epoch} (dropped)`,
+			);
+			this.pending.delete(key);
+			return false;
+		}
 		this.pending.delete(key);
 		entry.resolve(result);
 		return true;
@@ -727,6 +740,11 @@ export class RemoteChunkProvider {
 		cz: number,
 		cachedVersion: number,
 	): void {
+		if (!this.client.isConnected) {
+			throw new Error(
+				`Chunk request send failed: not connected (${cx},${cy},${cz})`,
+			);
+		}
 		if (DEBUG_ENABLED) {
 			debugLog(
 				`[RemoteChunkProvider] requestChunk ${cx},${cy},${cz} cachedVersion=${cachedVersion}`,
@@ -811,6 +829,17 @@ export class RemoteChunkProvider {
 
 		// Send all requests in one message
 		if (requestCount > 0) {
+			if (!this.client.isConnected) {
+				console.warn(
+					`[RemoteChunkProvider] batch send ABORTED (not connected): ${createdCount} new entries`,
+				);
+				const sendError = new Error("Chunk batch send failed: not connected");
+				for (let i = 0; i < createdCount; i++) {
+					const entry = this.removePending(createdKeys[i]);
+					if (entry) entry.reject(sendError);
+				}
+				return results;
+			}
 			this.scheduleSweep();
 			try {
 				this.client.sendChunkRequestBatch(requests);

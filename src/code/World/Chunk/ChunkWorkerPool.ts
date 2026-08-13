@@ -156,7 +156,9 @@ export class ChunkWorkerPool {
 	// active at a time; continuation cycles are deferred to a microtask
 	// (queueMicrotask) for minimal delay between batches.
 	private remotePumpScheduled = false;
-	private readonly MAX_REMOTE_CONCURRENT = 16; // Max concurrent server requests per pump cycle
+	private remoteBackpressureTimer: ReturnType<typeof setTimeout> | null = null;
+	private readonly MAX_REMOTE_CONCURRENT = 128; // Max concurrent server requests per pump cycle
+	private readonly MAX_OUTSTANDING_REMOTE = 1024; // Backpressure cap
 	// Batched remesh scheduling for remote chunks: instead of calling
 	// scheduleRemesh + scheduleChunkAndNeighborsRemesh per chunk (O(7N) work),
 	// collect chunks and flush once per frame (O(N) unique chunks + deduped neighbors).
@@ -2435,6 +2437,22 @@ export class ChunkWorkerPool {
 	public pumpRemoteGeneration(): void {
 		if (!this.remoteChunkProvider) return;
 		if (this.remotePumpScheduled) return;
+
+		// Backpressure: when too many requests are outstanding, wait for
+		// responses instead of firing more batches. This prevents the
+		// pending map from growing to 15k+ entries and timing out en masse.
+		const outstanding = this.remotePendingChunks.size;
+		if (outstanding >= this.MAX_OUTSTANDING_REMOTE) {
+			if (!this.remoteBackpressureTimer) {
+				this.remoteBackpressureTimer = setTimeout(() => {
+					this.remoteBackpressureTimer = null;
+					this.remotePumpScheduled = false;
+					this.pumpRemoteGeneration();
+				}, 100);
+			}
+			return;
+		}
+
 		this.remotePumpScheduled = true;
 
 		const toCheck = this.selectColumnBatch(this.MAX_REMOTE_CONCURRENT);
@@ -2553,6 +2571,9 @@ export class ChunkWorkerPool {
 	private scheduleRemotePumpContinuation(): void {
 		if (this.remoteTaskQueue.length === 0) return;
 		if (this.remotePumpScheduled) return;
+		// Under backpressure, use the timer path in pumpRemoteGeneration
+		// instead of microtask-speed scheduling.
+		if (this.remotePendingChunks.size >= this.MAX_OUTSTANDING_REMOTE) return;
 		this.remotePumpScheduled = true;
 		queueMicrotask(() => {
 			this.remotePumpScheduled = false;

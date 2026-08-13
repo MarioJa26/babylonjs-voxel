@@ -163,6 +163,11 @@ export class ChunkWorkerPool {
 		this.pendingTasks.delete(msg.id);
 
 		if ("error" in msg) {
+			const queueDepth = this.queue.length - this.queueStart;
+			console.error(
+				`[ChunkWorkerPool] worker error (task ${task.kind} id=${task.id}): ${msg.error}` +
+					` [pending=${this.pendingTasks.size} queued=${queueDepth} workers=${this.workers.length}]`,
+			);
 			task.reject(new Error(msg.error));
 		} else if (task.kind === "relight") {
 			if ("light" in msg && !("kind" in msg)) {
@@ -170,7 +175,11 @@ export class ChunkWorkerPool {
 			} else {
 				task.reject(new Error("Mismatched relight response"));
 			}
-		} else if (task.kind === "single" && "kind" in msg && msg.kind === "single") {
+		} else if (
+			task.kind === "single" &&
+			"kind" in msg &&
+			msg.kind === "single"
+		) {
 			task.resolve({
 				blocks: msg.blocks,
 				light: msg.light,
@@ -380,17 +389,27 @@ export class ChunkWorkerPool {
 		}
 
 		// Build dispatch batches: one coord array per worker.
-		const dispatchGroups: Array<Array<{ chunkX: number; chunkY: number; chunkZ: number }>> = [];
+		const dispatchGroups: Array<
+			Array<{ chunkX: number; chunkY: number; chunkZ: number }>
+		> = [];
 		for (const wGroups of workerGroups) {
 			if (wGroups.length === 0) continue;
 			let totalLen = 0;
 			for (const g of wGroups) totalLen += g.length;
-			const batch = new Array<{ chunkX: number; chunkY: number; chunkZ: number }>(totalLen);
+			const batch = new Array<{
+				chunkX: number;
+				chunkY: number;
+				chunkZ: number;
+			}>(totalLen);
 			let bPos = 0;
 			for (const group of wGroups) {
 				for (const idx of group.indices) {
 					const c = coords[idx];
-					batch[bPos++] = { chunkX: c.chunkX, chunkY: c.chunkY, chunkZ: c.chunkZ };
+					batch[bPos++] = {
+						chunkX: c.chunkX,
+						chunkY: c.chunkY,
+						chunkZ: c.chunkZ,
+					};
 				}
 			}
 			dispatchGroups.push(batch);
@@ -529,6 +548,6 @@ export class ChunkWorkerPool {
 	}
 
 	get pendingCount(): number {
-		return (this.queue.length - this.queueStart) + this.pendingTasks.size;
+		return this.queue.length - this.queueStart + this.pendingTasks.size;
 	}
 }
