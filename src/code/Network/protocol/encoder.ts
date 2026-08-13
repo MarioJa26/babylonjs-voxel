@@ -277,6 +277,19 @@ export class BinaryDecoder {
 		return this.buffer.slice(start, this.offset);
 	}
 
+	/**
+	 * Zero-copy view into the buffer — avoids the allocation + memcpy of
+	 * readBytes(). Safe only when the caller guarantees the underlying
+	 * buffer won't be reused before the view is consumed. For chunk decode
+	 * paths where data flows into loadFromStorage → ensureSharedBacking
+	 * (which copies into SAB), this is safe.
+	 */
+	readBytesView(len: number): Uint8Array {
+		const start = this.offset;
+		this.offset += len;
+		return this.buffer.subarray(start, this.offset);
+	}
+
 	readString(): string {
 		const len = this.readUint16();
 		const start = this.offset;
@@ -842,16 +855,16 @@ export function decodeChunkData(buffer: Uint8Array): {
 		// We need to know the packed size — it's derived from chunk volume
 		const chunkVolume = 32 * 32 * 32; // CHUNK_SIZE^3
 		const packedSize = Math.ceil(chunkVolume / 2);
-		blocks = dec.readBytes(packedSize);
+		blocks = dec.readBytesView(packedSize);
 	} else {
 		// Dense format: full chunk volume
 		const chunkVolume = 32 * 32 * 32;
-		blocks = dec.readBytes(chunkVolume);
+		blocks = dec.readBytesView(chunkVolume);
 	}
 
 	// Light data
 	const lightLen = dec.readUint32();
-	const light = dec.readBytes(lightLen);
+	const light = dec.readBytesView(lightLen);
 
 	return {
 		chunkX,
@@ -1105,14 +1118,14 @@ export function decodeChunkDataBatch(buffer: Uint8Array): Array<{
 			);
 			const chunkVolume = 32 * 32 * 32;
 			const packedSize = Math.ceil(chunkVolume / 2);
-			blocks = dec.readBytes(packedSize);
+			blocks = dec.readBytesView(packedSize);
 		} else {
 			const chunkVolume = 32 * 32 * 32;
-			blocks = dec.readBytes(chunkVolume);
+			blocks = dec.readBytesView(chunkVolume);
 		}
 
 		const lightLen = dec.readUint32();
-		const light = dec.readBytes(lightLen);
+		const light = dec.readBytesView(lightLen);
 
 		chunks.push({
 			chunkX,

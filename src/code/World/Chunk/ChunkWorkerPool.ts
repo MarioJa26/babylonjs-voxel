@@ -146,10 +146,15 @@ export class ChunkWorkerPool {
 	private remoteRetryCount = new Map<string, number>();
 	private readonly MAX_REMOTE_RETRY = 3;
 	// Coalescing guard: at most one pump cycle (one batched cache read) is
-	// active at a time; continuation cycles are deferred to a macrotask so
-	// IndexedDB reads cannot chain into a single frame.
+	// active at a time; continuation cycles are deferred to a microtask
+	// (queueMicrotask) for minimal delay between batches.
 	private remotePumpScheduled = false;
 	private readonly MAX_REMOTE_CONCURRENT = 16; // Max concurrent server requests per pump cycle
+	// Batched remesh scheduling for remote chunks: instead of calling
+	// scheduleRemesh + scheduleChunkAndNeighborsRemesh per chunk (O(7N) work),
+	// collect chunks and flush once per frame (O(N) unique chunks + deduped neighbors).
+	private pendingRemoteChunks = new Set<Chunk>();
+	private pendingRemeshScheduled = false;
 
 	private distantTerrainSharedInit: {
 		positionsBuffer: SharedArrayBuffer;
@@ -2537,15 +2542,15 @@ export class ChunkWorkerPool {
 		this.scheduleRemotePumpContinuation();
 	}
 
-	/** Defer the next drain to a macrotask so cache reads spread across tasks. */
+	/** Defer the next drain to a microtask — avoids the ~1-4ms macrotask delay of setTimeout(0). */
 	private scheduleRemotePumpContinuation(): void {
 		if (this.remoteTaskQueue.length === 0) return;
 		if (this.remotePumpScheduled) return;
 		this.remotePumpScheduled = true;
-		setTimeout(() => {
+		queueMicrotask(() => {
 			this.remotePumpScheduled = false;
 			this.pumpRemoteGeneration();
-		}, 0);
+		});
 	}
 
 	private dispatchRemoteRequests(toRequest: Chunk[]): void {
@@ -2761,9 +2766,7 @@ export class ChunkWorkerPool {
 							this.remoteNoBlobRetries.delete(this.remoteChunkKey(chunk));
 							this.broadcastLightRegister(chunk);
 							this.broadcastVoxelRegister(chunk);
-							chunk.scheduleRemesh(true, true);
-							scheduleChunkAndNeighborsRemesh(chunk, this._boundScheduleRemesh);
-							this.scheduleProcessQueuePump();
+							this.queueRemoteChunkRemesh(chunk);
 						} else {
 							// No local copy of the confirmed data. For an
 							// untouched chunk (version 0) deterministic local
@@ -2831,14 +2834,61 @@ export class ChunkWorkerPool {
 
 		// Schedule meshing AFTER the server voxel data has been applied, so the
 		// generated mesh always reflects the requested-from-server blocks.
-		chunk.scheduleRemesh(true, true);
-		scheduleChunkAndNeighborsRemesh(chunk, this._boundScheduleRemesh);
-		maybeRemeshNeighborsNowStable(chunk, this._boundScheduleRemesh);
-
-		// Process remesh queue
-		this.scheduleProcessQueuePump();
+		// Batch into a single pass per frame instead of per-chunk (O(7N) → O(N)).
+		this.queueRemoteChunkRemesh(chunk);
 		// Keep issuing the next server request (a slot just freed up).
 		this.pumpRemoteGeneration();
+	}
+
+	/**
+	 * Flush all pending remote chunks: schedule remesh for each chunk + deduped
+	 * neighbors in a single pass. Called once per frame via requestAnimationFrame
+	 * instead of per-chunk, reducing O(7N) remesh calls to O(N) unique chunks.
+	 */
+	private flushPendingRemoteChunkRemesh(): void {
+		this.pendingRemeshScheduled = false;
+		if (this.pendingRemoteChunks.size === 0) return;
+
+		const chunks = [...this.pendingRemoteChunks];
+		this.pendingRemoteChunks.clear();
+
+		// Single pass: mark all chunks + neighbors for remesh, deduplicating
+		// via the Set so each chunk is scheduled at most once.
+		const remeshSet = new Set<Chunk>();
+		for (const chunk of chunks) {
+			if (!remeshSet.has(chunk)) {
+				remeshSet.add(chunk);
+				chunk.scheduleRemesh(true, true);
+			}
+			const neighbors = [
+				chunk.getNeighbor(-1, 0, 0),
+				chunk.getNeighbor(0, 0, -1),
+				chunk.getNeighbor(0, -1, 0),
+				chunk.getNeighbor(1, 0, 0),
+				chunk.getNeighbor(0, 0, 1),
+				chunk.getNeighbor(0, 1, 0),
+			];
+			for (const n of neighbors) {
+				if (n && !remeshSet.has(n)) {
+					remeshSet.add(n);
+					n.scheduleRemesh(true, n.lodLevel === 0);
+				}
+			}
+		}
+
+		this.scheduleProcessQueuePump();
+	}
+
+	/**
+	 * Add a remote chunk to the pending remesh batch. If this is the first
+	 * chunk added this frame, schedule a single flush via requestAnimationFrame.
+	 */
+	private queueRemoteChunkRemesh(chunk: Chunk): void {
+		this.pendingRemoteChunks.add(chunk);
+		if (!this.pendingRemeshScheduled) {
+			this.pendingRemeshScheduled = true;
+			requestAnimationFrame(() => this.flushPendingRemoteChunkRemesh());
+		}
 	}
 
 	// -------------------------------------------------------------------------
@@ -3348,15 +3398,3 @@ addChunkDisposeHook((chunk) => {
 if (import.meta.hot) {
 	import.meta.hot.dispose(() => ChunkWorkerPool.teardownForHmr());
 }
-
-// Re-export extracted utilities for backward compatibility
-export {
-	clampLodForChunk,
-	normalizeChunkLod,
-	shouldSkipLodForChunk,
-} from "./Worker/LODUtilities";
-export {
-	hasStableVoxelNeighborsForCachedMesh,
-	maybeRemeshNeighborsNowStable,
-	scheduleChunkAndNeighborsRemesh,
-} from "./Worker/NeighborHelpers";
