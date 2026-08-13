@@ -2723,10 +2723,6 @@ export class ChunkWorkerPool {
 
 		switch (result.kind) {
 			case "data": {
-				console.log(
-					`[ChunkWorkerPool] handleRemoteChunkData ${result.chunkX},${result.chunkY},${result.chunkZ} unchanged=false version=${result.version} blocksLen=${result.blocks.byteLength}`,
-				);
-
 				// Pass raw compressed blocks directly to loadFromStorage.
 				// Do NOT decompress — loadFromStorage handles uniform/palette/dense formats
 				// and expects nibble-packed data when a palette is provided.
@@ -2748,10 +2744,6 @@ export class ChunkWorkerPool {
 			}
 
 			case "unchanged": {
-				console.log(
-					`[ChunkWorkerPool] handleRemoteChunkData ${result.chunkX},${result.chunkY},${result.chunkZ} unchanged=true version=${result.version}`,
-				);
-
 				// The server confirmed that the client's known version is still
 				// authoritative. Apply the client's own (matching) copy — local
 				// cache or already-present voxel data. The version comparison
