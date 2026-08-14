@@ -190,21 +190,25 @@ export class RemoteChunkProvider {
 	}
 
 	private handleChunkDataBatch(chunks: readonly RemoteChunkData[]): void {
-		if (chunks.length === 0) return;
-		const writes = new Array<ChunkWrite>(chunks.length);
-		const written: Array<{ key: string; version: number }> = new Array(
-			chunks.length,
-		);
-		let writeCount = 0;
+		const len = chunks.length;
+		if (len === 0) return;
 
-		for (let i = 0; i < chunks.length; i++) {
+		const writes = new Array<ChunkWrite>(len);
+		const written: Array<{ key: string; version: number }> = new Array(len);
+
+		let writeCount = 0;
+		const versions = this.chunkVersions;
+
+		for (let i = 0; i < len; i++) {
 			const chunk = chunks[i];
 			const key = RemoteChunkProvider.makeKey(
 				chunk.chunkX,
 				chunk.chunkY,
 				chunk.chunkZ,
 			);
-			if (this.isStaleVersion(key, chunk.version)) {
+
+			const currentVersion = versions.get(key);
+			if (currentVersion !== undefined && chunk.version < currentVersion) {
 				if (DEBUG_ENABLED) {
 					debugLog(
 						`[RemoteChunkProvider] ignored stale batch chunk ${key} version=${chunk.version}`,
@@ -212,7 +216,11 @@ export class RemoteChunkProvider {
 				}
 				continue;
 			}
-			if (!this.resolvePending(key, chunk)) continue;
+
+			if (!this.resolvePending(key, chunk)) {
+				continue;
+			}
+
 			writes[writeCount] = {
 				cx: chunk.chunkX,
 				cy: chunk.chunkY,
@@ -227,30 +235,35 @@ export class RemoteChunkProvider {
 					chunk.version,
 				),
 			};
-			written[writeCount] = { key, version: chunk.version };
+
+			written[writeCount] = {
+				key,
+				version: chunk.version,
+			};
+
 			writeCount++;
 		}
 
 		this.scheduleSweep();
 
 		if (writeCount === 0) return;
+
 		writes.length = writeCount;
 		written.length = writeCount;
-		// One detached persistence operation per network batch — a single
-		// serialization loop and a single write-chain entry with one final
-		// store flush, instead of one detached promise per chunk.
+
 		const responseEpoch = this.epoch;
+
 		void this.store
 			.writeChunks(writes)
 			.then(() => {
-				// Same persistence boundary as persistChunk: the chain only
-				// resolves after every transaction it started has settled.
 				if (this.epoch !== responseEpoch) return;
-				for (let i = 0; i < written.length; i++) {
-					const { key, version } = written[i];
-					const current = this.chunkVersions.get(key);
-					if (current === undefined || version >= current) {
-						this.chunkVersions.set(key, version);
+
+				for (let i = 0; i < writeCount; i++) {
+					const entry = written[i];
+					const current = versions.get(entry.key);
+
+					if (current === undefined || entry.version >= current) {
+						versions.set(entry.key, entry.version);
 					}
 				}
 			})
@@ -292,20 +305,16 @@ export class RemoteChunkProvider {
 	}): UnchangedOutcome {
 		const key = RemoteChunkProvider.makeKey(entry.cx, entry.cy, entry.cz);
 		const pending = this.pending.get(key);
+
 		if (pending === undefined || pending.epoch !== this.epoch) {
 			return UnchangedOutcome.Ignored;
 		}
 
 		this.pending.delete(key);
 
-		// A stamp for a request that sent cachedVersion 0 (cache miss) is
-		// invalid too: version zero was the miss sentinel, so there is no
-		// payload the server could have confirmed as current.
-		const valid =
-			pending.hasCachedPayload && entry.version === pending.cachedVersion;
-
-		if (!valid) {
+		if (!pending.hasCachedPayload || entry.version !== pending.cachedVersion) {
 			this.chunkVersions.delete(key);
+
 			pending.reject(
 				new ChunkProtocolError(
 					`Chunk unchanged version mismatch for ${key}: ` +
@@ -313,6 +322,7 @@ export class RemoteChunkProvider {
 						`received version=${entry.version}`,
 				),
 			);
+
 			return UnchangedOutcome.Rejected;
 		}
 
@@ -323,30 +333,56 @@ export class RemoteChunkProvider {
 			chunkZ: entry.cz,
 			version: entry.version,
 		});
+
 		return UnchangedOutcome.Resolved;
 	}
 
 	private handleChunkUnchangedBatch(
-		entries: readonly { cx: number; cy: number; cz: number; version: number }[],
+		entries: readonly {
+			cx: number;
+			cy: number;
+			cz: number;
+			version: number;
+		}[],
 	): void {
-		const evictCoords: Array<{ cx: number; cy: number; cz: number }> = [];
+		const len = entries.length;
+		if (len === 0) return;
+
+		let evictCoords: Array<{ cx: number; cy: number; cz: number }> | null =
+			null;
+		let evictCount = 0;
 		let removedAny = false;
 
-		for (let i = 0; i < entries.length; i++) {
+		for (let i = 0; i < len; i++) {
 			const entry = entries[i];
 			const outcome = this.processUnchangedEntry(entry);
-			if (outcome === UnchangedOutcome.Ignored) continue;
+
+			if (outcome === UnchangedOutcome.Ignored) {
+				continue;
+			}
+
 			removedAny = true;
+
 			if (outcome === UnchangedOutcome.Rejected) {
-				evictCoords.push({ cx: entry.cx, cy: entry.cy, cz: entry.cz });
+				if (evictCoords === null) {
+					evictCoords = new Array(len);
+				}
+
+				evictCoords[evictCount++] = {
+					cx: entry.cx,
+					cy: entry.cy,
+					cz: entry.cz,
+				};
 			}
 		}
 
 		if (removedAny) {
 			this.scheduleSweep();
 		}
-		if (evictCoords.length > 0) {
-			// One batched eviction for all violated entries of this packet.
+
+		if (evictCoords !== null && evictCount > 0) {
+			evictCoords.length = evictCount;
+
 			this.store.deleteChunks(evictCoords).catch((error) => {
 				if (isCacheResetError(error)) return;
 				console.warn(
@@ -448,15 +484,16 @@ export class RemoteChunkProvider {
 		const reconnectError = new Error(
 			"Chunk request cancelled because the connection was reset",
 		);
-		for (const entry of this.pending.values()) {
+
+		const pending = this.pending;
+
+		for (const entry of pending.values()) {
 			entry.reject(reconnectError);
 		}
-		this.pending.clear();
+
+		pending.clear();
 		this.inFlight.clear();
 
-		// Only wipe the store if it initialized; network request state above
-		// is reset regardless. discardPendingWrites skips committing queued
-		// chunks that the wipe would immediately erase.
 		if (await this.storeReady) {
 			try {
 				await this.store.clear({ discardPendingWrites: true });
@@ -505,75 +542,93 @@ export class RemoteChunkProvider {
 		chunks: readonly Chunk[],
 	): Promise<Map<Chunk, RemoteChunkData | null>> {
 		const result = new Map<Chunk, RemoteChunkData | null>();
-		if (chunks.length === 0) return result;
+		const len = chunks.length;
+
+		if (len === 0) return result;
+
 		if (!(await this.storeReady)) {
-			// Unusable store is a complete miss: every requested chunk is
-			// re-fetched from the server, never silently treated as cached.
-			for (let i = 0; i < chunks.length; i++) {
+			for (let i = 0; i < len; i++) {
 				result.set(chunks[i], null);
 			}
 			return result;
 		}
 
 		const coords: Array<{ cx: number; cy: number; cz: number; key: string }> =
-			new Array(chunks.length);
-		for (let i = 0; i < chunks.length; i++) {
+			new Array(len);
+
+		for (let i = 0; i < len; i++) {
 			const c = chunks[i];
+			const key = RemoteChunkProvider.makeKey(c.chunkX, c.chunkY, c.chunkZ);
+
 			coords[i] = {
 				cx: c.chunkX,
 				cy: c.chunkY,
 				cz: c.chunkZ,
-				key: `${c.chunkX},${c.chunkY},${c.chunkZ}`,
+				key,
 			};
 		}
 
 		let blobs: Map<string, Uint8Array>;
+
 		try {
 			blobs = await this.store.readChunks(coords);
 		} catch (error) {
 			console.warn("[RemoteChunkProvider] batch cache read failed:", error);
-			for (let i = 0; i < chunks.length; i++) {
+
+			for (let i = 0; i < len; i++) {
 				result.set(chunks[i], null);
 			}
+
 			return result;
 		}
+
 		const corruptCoords: Array<{ cx: number; cy: number; cz: number }> = [];
-		for (let i = 0; i < chunks.length; i++) {
+		const versions = this.chunkVersions;
+
+		for (let i = 0; i < len; i++) {
 			const c = chunks[i];
-			const key = coords[i].key;
+			const coord = coords[i];
+			const key = coord.key;
 			const blob = blobs.get(key);
-			if (!blob) {
+
+			if (blob === undefined) {
 				result.set(c, null);
 				continue;
 			}
+
 			const resolved = this.deserializeCached(
 				blob,
 				c.chunkX,
 				c.chunkY,
 				c.chunkZ,
 			);
-			// A corrupt blob or one older than the in-memory version is a
-			// miss: the caller re-requests from the server instead of using
-			// (or re-recording) stale data.
+
 			if (resolved === null) {
-				// Corrupt blob: evict in one batched store operation so it
-				// is not re-read and re-scanned on every miss.
-				corruptCoords.push({ cx: c.chunkX, cy: c.chunkY, cz: c.chunkZ });
+				corruptCoords.push({
+					cx: c.chunkX,
+					cy: c.chunkY,
+					cz: c.chunkZ,
+				});
 				result.set(c, null);
 				continue;
 			}
-			if (this.isStaleVersion(key, resolved.version)) {
+
+			const currentVersion = versions.get(key);
+			if (currentVersion !== undefined && resolved.version < currentVersion) {
 				result.set(c, null);
 				continue;
 			}
+
 			if (DEBUG_ENABLED) {
 				debugLog(
 					`[RemoteChunkProvider] cache hit ${key} version=${resolved.version}`,
 				);
 			}
-			this.chunkVersions.set(key, resolved.version);
+
+			versions.set(key, resolved.version);
 			result.set(c, resolved);
 		}
+
 		if (corruptCoords.length > 0) {
 			this.store.deleteChunks(corruptCoords).catch((error) => {
 				if (isCacheResetError(error)) return;
@@ -583,6 +638,7 @@ export class RemoteChunkProvider {
 				);
 			});
 		}
+
 		return result;
 	}
 
@@ -692,29 +748,30 @@ export class RemoteChunkProvider {
 
 		const key = RemoteChunkProvider.makeKey(cx, cy, cz);
 
-		// Deduplicate: if a request for this chunk is already in flight, share it
 		const existing = this.inFlight.get(key);
 		if (existing !== undefined) return existing;
 
-		const cachedVersion = this.chunkVersions.get(key) ?? 0;
-		const hasCachedPayload = this.chunkVersions.has(key);
+		const cached = this.chunkVersions.get(key);
+		const hasCachedPayload = cached !== undefined;
+		const cachedVersion = cached ?? 0;
+		const deadline = performance.now() + timeoutMs;
+		const requestEpoch = this.epoch;
 
 		let rejectRequest!: (error: Error) => void;
 		let promise!: Promise<RemoteChunkResult>;
+
 		promise = new Promise<RemoteChunkResult>((resolve, reject) => {
 			rejectRequest = reject;
+
 			this.pending.set(key, {
 				resolve,
 				reject,
-				deadline: performance.now() + timeoutMs,
-				epoch: this.epoch,
+				deadline,
+				epoch: requestEpoch,
 				cachedVersion,
 				hasCachedPayload,
 			});
 		}).finally(() => {
-			// Identity check: a stale rejection's finally can run after
-			// clearCache() replaced this entry with a new request for the
-			// same key — never delete a request that is not ours.
 			if (this.inFlight.get(key) === promise) {
 				this.inFlight.delete(key);
 			}
@@ -726,10 +783,12 @@ export class RemoteChunkProvider {
 		try {
 			this.sendRequest(cx, cy, cz, cachedVersion);
 		} catch (error) {
-			// Synchronous send failure: drop the pending entry and surface
-			// the error to the caller instead of leaking it until a timeout.
-			this.removePending(key);
-			rejectRequest(error instanceof Error ? error : new Error(String(error)));
+			const entry = this.removePending(key);
+			if (entry) {
+				rejectRequest(
+					error instanceof Error ? error : new Error(String(error)),
+				);
+			}
 		}
 
 		return promise;
@@ -768,91 +827,111 @@ export class RemoteChunkProvider {
 			throw new RangeError("timeoutMs must be a positive finite number");
 		}
 
-		const results = new Array<Promise<RemoteChunkResult>>(coords.length);
+		const len = coords.length;
+		const results = new Array<Promise<RemoteChunkResult>>(len);
+
+		if (len === 0) {
+			return results;
+		}
+
 		const requests: Array<{
 			cx: number;
 			cy: number;
 			cz: number;
 			lod: number;
 			cachedVersion: number;
-		}> = new Array(coords.length);
-		const createdKeys: string[] = new Array(coords.length);
+		}> = new Array(len);
+
+		const createdKeys: string[] = new Array(len);
 		let requestCount = 0;
 		let createdCount = 0;
-		const deadline = performance.now() + timeoutMs;
 
-		for (let i = 0; i < coords.length; i++) {
-			const { cx, cy, cz } = coords[i];
+		const deadline = performance.now() + timeoutMs;
+		const requestEpoch = this.epoch;
+		const inFlight = this.inFlight;
+		const pending = this.pending;
+		const versions = this.chunkVersions;
+
+		for (let i = 0; i < len; i++) {
+			const coord = coords[i];
+			const cx = coord.cx;
+			const cy = coord.cy;
+			const cz = coord.cz;
 			const key = RemoteChunkProvider.makeKey(cx, cy, cz);
 
-			// Skip if already in flight — share the existing promise
-			const existing = this.inFlight.get(key);
+			const existing = inFlight.get(key);
 			if (existing !== undefined) {
 				results[i] = existing;
 				continue;
 			}
 
-			const cachedVersion = this.chunkVersions.get(key) ?? 0;
-			const hasCachedPayload = this.chunkVersions.has(key);
+			const cached = versions.get(key);
+			const hasCachedPayload = cached !== undefined;
+			const cachedVersion = cached ?? 0;
 
 			let promise!: Promise<RemoteChunkResult>;
+
 			promise = new Promise<RemoteChunkResult>((resolve, reject) => {
-				this.pending.set(key, {
+				pending.set(key, {
 					resolve,
 					reject,
 					deadline,
-					epoch: this.epoch,
+					epoch: requestEpoch,
 					cachedVersion,
 					hasCachedPayload,
 				});
-
-				requests[requestCount++] = {
-					cx,
-					cy,
-					cz,
-					lod: 0,
-					cachedVersion,
-				};
 			}).finally(() => {
-				// Identity check: never delete a newer request for the same
-				// key that replaced ours after clearCache().
-				if (this.inFlight.get(key) === promise) {
-					this.inFlight.delete(key);
+				if (inFlight.get(key) === promise) {
+					inFlight.delete(key);
 				}
 			});
 
-			this.inFlight.set(key, promise);
+			inFlight.set(key, promise);
 			results[i] = promise;
+
+			requests[requestCount++] = {
+				cx,
+				cy,
+				cz,
+				lod: 0,
+				cachedVersion,
+			};
+
 			createdKeys[createdCount++] = key;
+		}
+
+		if (requestCount === 0) {
+			return results;
 		}
 
 		requests.length = requestCount;
 
-		// Send all requests in one message
-		if (requestCount > 0) {
-			if (!this.client.isConnected) {
-				console.warn(
-					`[RemoteChunkProvider] batch send ABORTED (not connected): ${createdCount} new entries`,
-				);
-				const sendError = new Error("Chunk batch send failed: not connected");
-				for (let i = 0; i < createdCount; i++) {
-					const entry = this.removePending(createdKeys[i]);
-					if (entry) entry.reject(sendError);
-				}
-				return results;
+		if (!this.client.isConnected) {
+			console.warn(
+				`[RemoteChunkProvider] batch send ABORTED (not connected): ${createdCount} new entries`,
+			);
+
+			const sendError = new Error("Chunk batch send failed: not connected");
+
+			for (let i = 0; i < createdCount; i++) {
+				const entry = this.removePending(createdKeys[i]);
+				if (entry) entry.reject(sendError);
 			}
-			this.scheduleSweep();
-			try {
-				this.client.sendChunkRequestBatch(requests);
-			} catch (error) {
-				// Synchronous send failure: reject only the requests created
-				// by THIS call (never pre-existing in-flight requests).
-				const sendError =
-					error instanceof Error ? error : new Error(String(error));
-				for (let i = 0; i < createdCount; i++) {
-					const entry = this.removePending(createdKeys[i]);
-					if (entry) entry.reject(sendError);
-				}
+
+			return results;
+		}
+
+		this.scheduleSweep();
+
+		try {
+			this.client.sendChunkRequestBatch(requests);
+		} catch (error) {
+			const sendError =
+				error instanceof Error ? error : new Error(String(error));
+
+			for (let i = 0; i < createdCount; i++) {
+				const entry = this.removePending(createdKeys[i]);
+				if (entry) entry.reject(sendError);
 			}
 		}
 
@@ -892,20 +971,25 @@ export class RemoteChunkProvider {
 	 * requests remain.
 	 */
 	private scheduleSweep(): void {
-		let earliest = Number.POSITIVE_INFINITY;
-		for (const entry of this.pending.values()) {
-			if (entry.deadline < earliest) {
-				earliest = entry.deadline;
-			}
-		}
+		const pending = this.pending;
 
-		if (earliest === Number.POSITIVE_INFINITY) {
+		if (pending.size === 0) {
 			if (this.sweepTimer !== null) {
 				clearTimeout(this.sweepTimer);
 				this.sweepTimer = null;
 			}
-			this.nextSweepDeadline = earliest;
+
+			this.nextSweepDeadline = Number.POSITIVE_INFINITY;
 			return;
+		}
+
+		let earliest = Number.POSITIVE_INFINITY;
+
+		for (const entry of pending.values()) {
+			const deadline = entry.deadline;
+			if (deadline < earliest) {
+				earliest = deadline;
+			}
 		}
 
 		if (this.sweepTimer !== null && earliest >= this.nextSweepDeadline) {
@@ -917,7 +1001,10 @@ export class RemoteChunkProvider {
 		}
 
 		this.nextSweepDeadline = earliest;
-		const delay = Math.max(0, earliest - performance.now());
+
+		const delay =
+			earliest <= performance.now() ? 0 : earliest - performance.now();
+
 		this.sweepTimer = setTimeout(() => {
 			this.sweepTimer = null;
 			this.nextSweepDeadline = Number.POSITIVE_INFINITY;
@@ -928,16 +1015,19 @@ export class RemoteChunkProvider {
 	/** Reject all pending entries whose deadline has passed. */
 	private sweepPending(): void {
 		const now = performance.now();
-		for (const [key, entry] of this.pending) {
+		const pending = this.pending;
+
+		for (const [key, entry] of pending) {
 			if (now >= entry.deadline) {
-				this.pending.delete(key);
+				pending.delete(key);
 				entry.reject(new Error(`Chunk request timeout: ${key}`));
 			}
 		}
+
 		this.scheduleSweep();
 	}
 
 	private static makeKey(cx: number, cy: number, cz: number): string {
-		return `${cx},${cy},${cz}`;
+		return cx + "," + cy + "," + cz;
 	}
 }
