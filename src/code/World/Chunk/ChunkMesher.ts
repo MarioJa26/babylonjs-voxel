@@ -246,8 +246,8 @@ export async function initAtlas(): Promise<void> {
 	const atlasMaxTiles = Math.floor(1.0 / tileSize + 0.5);
 
 	const baseOpts = {
-		engine: engine as EngineContext,
-		scene: scene as SceneContext,
+		engine,
+		scene,
 		tintLUT: LOD_TINT_LUT,
 		atlasTileSize: tileSize,
 		atlasMaxTiles,
@@ -260,36 +260,48 @@ export async function initAtlas(): Promise<void> {
 			diffuseTexture: diffuse,
 			normalTexture: normal,
 		});
+
 		transparentMaterial = createChunkTransparentMaterial({
 			...baseOpts,
 			diffuseTexture: transparentTexture,
 			normalTexture: null,
 		});
+
 		lod2OpaqueMaterial = createLod2OpaqueMaterial({
 			...baseOpts,
 			diffuseTexture: diffuse,
 		});
+
 		lod2TransparentMaterial = createLod2TransparentMaterial({
 			...baseOpts,
 			diffuseTexture: transparentTexture,
 		});
+
 		lod3OpaqueMaterial = createLod3OpaqueMaterial({
 			...baseOpts,
 			diffuseTexture: diffuse,
 		});
+
 		lod3TransparentMaterial = createLod3TransparentMaterial({
 			...baseOpts,
 			diffuseTexture: transparentTexture,
 		});
+
+		// Important: updateGlobalUniforms() can call populateMaterialList()
+		// before initAtlas() finishes, which would cache an empty materialList.
+		materialListDirty = true;
+
 		uploadTintLUT();
 	}
 
 	populateMaterialList();
+
 	const initTime = performance.now() * 0.001;
 	for (let i = 0; i < materialList.length; i++) {
 		const m = materialList[i];
 		if (m) setMaterialGroupUniforms(m, initTime);
 	}
+
 	pushFogUniforms();
 }
 
@@ -629,5 +641,21 @@ export function disposeSharedResources(): void {
 	engineRef = null;
 	sceneRef = null;
 	lastUpdateFrame = -1;
+
 	materialListDirty = true;
+
+	// Safer if the world/session is recreated.
+	lastLX = 0;
+	lastLY = 0;
+	lastLZ = 0;
+	lastSun = -1;
+	lastWet = -1;
+	_timeFrameCounter = 0;
+
+	_fogCachedStart = -1;
+	_fogCachedEnd = -1;
+	_fogCachedColorR = -1;
+	_fogCachedColorG = -1;
+	_fogCachedColorB = -1;
+	_fogCachedUnderwater = false;
 }

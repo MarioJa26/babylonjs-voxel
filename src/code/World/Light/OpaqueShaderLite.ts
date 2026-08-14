@@ -32,6 +32,10 @@ import {
 	type VertexShaderOptions,
 } from "./PackedChunkShaderWGSL.js";
 
+const DEFAULT_LIGHT_DIRECTION = new Float32Array([0, 1, 0]);
+const DEFAULT_FOG_INFOS = new Float32Array([0, 140, 2600, 0]);
+const DEFAULT_FOG_COLOR = new Float32Array([0.6, 0.7, 0.9]);
+
 export const opaqueChunkFragmentWGSL = /* wgsl */ `
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
@@ -86,100 +90,134 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 
 export const transparentChunkFragmentWGSL = /* wgsl */ `
 struct VSOut {
-  @builtin(position) pos : vec4<f32>,
-  @location(0) vUV : vec2<f32>,
-  @location(1) @interpolate(flat) vTileLayer : u32,
-  @location(2) vWorldPosition : vec3<f32>,
-  @location(5) @interpolate(flat) vNormal : vec3<f32>,
-  @location(6) vAO : f32,
-  @location(7) @interpolate(flat) vLight : vec2<f32>,
-  @location(9) @interpolate(flat) vMeta : u32,
-  @location(10) vFogFactor : f32,
-  @location(11) vFogColor : vec3<f32>,
-  @location(13) vViewDir : vec3<f32>,
+@builtin(position) pos : vec4<f32>,
+@location(0) vUV : vec2<f32>,
+@location(1) @interpolate(flat) vTileLayer : u32,
+@location(2) vWorldPosition : vec3<f32>,
+@location(5) @interpolate(flat) vNormal : vec3<f32>,
+@location(6) vAO : f32,
+@location(7) @interpolate(flat) vLight : vec2<f32>,
+@location(9) @interpolate(flat) vMeta : u32,
+@location(10) vFogFactor : f32,
+@location(11) vFogColor : vec3<f32>,
+@location(13) vViewDir : vec3<f32>,
 };
 
 fn hash(p : vec2<f32>) -> f32 {
-  var p3 = fract(vec3<f32>(p.xyx) * 0.1031);
-  p3 = p3 + dot(p3, p3.yzx + 33.33);
-  return fract((p3.x + p3.y) * p3.z);
+var p3 = fract(vec3<f32>(p.xyx) * 0.1031);
+p3 = p3 + dot(p3, p3.yzx + 33.33);
+return fract((p3.x + p3.y) * p3.z);
 }
 
 fn valueNoise(p : vec2<f32>) -> f32 {
-  let i = floor(p);
-  let f = fract(p);
-  let u = f * f * (3.0 - 2.0 * f);
-  return mix(
-    mix(hash(i + vec2<f32>(0.0, 0.0)), hash(i + vec2<f32>(1.0, 0.0)), u.x),
-    mix(hash(i + vec2<f32>(0.0, 1.0)), hash(i + vec2<f32>(1.0, 1.0)), u.x),
-    u.y
-  );
+let i = floor(p);
+let f = fract(p);
+let u = f * f * (3.0 - 2.0 * f);
+
+let a = hash(i);
+let b = hash(i + vec2<f32>(1.0, 0.0));
+let c = hash(i + vec2<f32>(0.0, 1.0));
+let d = hash(i + vec2<f32>(1.0, 1.0));
+
+return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
-  // meta (isWater flag in bit 2) is carried in vMeta for near transparent
-  // meshes; glass/other transparent have isWater = 0. Bit 3 stays posOffX.
-  let isWater = f32((in.vMeta >> 2u) & 1u);
+// meta carries isWater in bit 2 for near transparent meshes.
+let isWater = f32((in.vMeta >> 2u) & 1u);
 
-  let scrollDir = vec2<f32>(-shaderUniforms.time * 0.3, shaderUniforms.time * 0.4) * isWater;
-  let animatedUV = in.vUV + scrollDir;
-  let singleTileUV = fract(animatedUV);
-  let layer = in.vTileLayer;
+let scrollDir = vec2<f32>(
+-shaderUniforms.time * 0.3,
+shaderUniforms.time * 0.4
+) * isWater;
 
-  var diffuseColor = textureSampleGrad(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, dpdx(in.vUV), dpdy(in.vUV));
-  if (diffuseColor.a < 0.01) { discard; }
+let animatedUV = in.vUV + scrollDir;
+let singleTileUV = fract(animatedUV);
+let layer = in.vTileLayer;
 
-  var worldNormal : vec3<f32>;
-  if (isWater > 0.5) {
-    let wavePos = in.vWorldPosition.xz * 0.3 + scrollDir;
-    let eps = 0.05;
-    let wC = valueNoise(wavePos);
-    let wCDX = valueNoise(wavePos + vec2<f32>(eps, 0.0));
-    let wCDZ = valueNoise(wavePos + vec2<f32>(0.0, eps));
-    let waveStrength = 0.15;
-    worldNormal = normalize(vec3<f32>(
-      -(wCDX - wC) / eps * waveStrength,
-      1.0,
-      -(wCDZ - wC) / eps * waveStrength
-    ));
-  } else {
-    worldNormal = in.vNormal;
-  }
+var diffuseColor = textureSampleGrad(
+diffuseTexture,
+diffuseTextureSampler,
+singleTileUV,
+layer,
+dpdx(in.vUV),
+dpdy(in.vUV)
+);
 
-  let lightDirection = shaderUniforms.lightDirection;
-  let viewDir = in.vViewDir;
-  let diffuseIntensity = max(0.0, dot(worldNormal, lightDirection));
+if (diffuseColor.a < 0.01) {
+discard;
+}
 
-  let halfwayDir = normalize(viewDir + lightDirection);
-  let specPower = mix(16.0, 64.0, isWater);
-  let NH = max(dot(worldNormal, halfwayDir), 0.0);
-  let spec = exp2(clamp(specPower * 1.4427 * (NH - 1.0), -126.0, 0.0));
-  let specularIntensity = mix(0.2, 0.7, isWater) * in.vLight.x;
-  let specular = vec3<f32>(specularIntensity) * spec * shaderUniforms.sunLightIntensity;
+var worldNormal : vec3<f32>;
 
-  let aoFactor = 1.0 - in.vAO * 0.1;
-  let blockLight = in.vLight.y;
-  let skyLight = in.vLight.x;
-  let lightLevel = max(skyLight, blockLight);
+if (isWater > 0.5) {
+let wavePos = in.vWorldPosition.xz * 0.3 + scrollDir;
+let eps = 0.05;
+let invEpsWaveStrength = 0.15 / eps;
 
-  let skyScale = skyLight * 0.8 * (shaderUniforms.sunLightIntensity + 0.2);
-  let lightMix = clamp(skyScale + blockLight * vec3<f32>(0.9, 0.6, 0.2), vec3<f32>(0.0), vec3<f32>(1.0));
+let wC = valueNoise(wavePos);
+let wCDX = valueNoise(wavePos + vec2<f32>(eps, 0.0));
+let wCDZ = valueNoise(wavePos + vec2<f32>(0.0, eps));
 
-  var litColor = diffuseColor.rgb * (1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity * in.vLight.x) + specular;
-  let luminance = dot(litColor, vec3<f32>(0.299, 0.587, 0.114));
-  let saturation = mix(1.0, 0.5, isWater);
-  litColor = mix(vec3<f32>(luminance), litColor, lightLevel * saturation + (1.0 - saturation));
+worldNormal = normalize(vec3<f32>(
+-(wCDX - wC) * invEpsWaveStrength,
+1.0,
+-(wCDZ - wC) * invEpsWaveStrength
+));
+} else {
+worldNormal = in.vNormal;
+}
 
-  let finalColor = litColor * max(lightMix * aoFactor, vec3<f32>(mix(0.02, 0.08, isWater)));
+let lightDirection = shaderUniforms.lightDirection;
+let diffuseIntensity = max(0.0, dot(worldNormal, lightDirection));
 
-  let baseAlpha = diffuseColor.a;
-  let alpha = baseAlpha * mix(1.0, mix(0.9, 0.4, lightLevel), isWater);
+let halfwayDir = normalize(in.vViewDir + lightDirection);
+let specPower = mix(16.0, 64.0, isWater);
+let NH = max(dot(worldNormal, halfwayDir), 0.0);
+let spec = exp2(clamp(specPower * 1.4427 * (NH - 1.0), -126.0, 0.0));
 
-  return vec4<f32>(finalColor, alpha);
+let skyLight = in.vLight.x;
+let blockLight = in.vLight.y;
+let lightLevel = max(skyLight, blockLight);
+
+let specularIntensity = mix(0.2, 0.7, isWater) * skyLight;
+let specular = vec3<f32>(specularIntensity) * spec * shaderUniforms.sunLightIntensity;
+
+let aoFactor = 1.0 - in.vAO * 0.1;
+let skyScale = skyLight * 0.8 * (shaderUniforms.sunLightIntensity + 0.2);
+
+let lightMix = clamp(
+vec3<f32>(skyScale) + blockLight * vec3<f32>(0.9, 0.6, 0.2),
+vec3<f32>(0.0),
+vec3<f32>(1.0)
+);
+
+var litColor =
+diffuseColor.rgb *
+(1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity * skyLight) +
+specular;
+
+let luminance = dot(litColor, vec3<f32>(0.299, 0.587, 0.114));
+let saturation = mix(1.0, 0.5, isWater);
+litColor = mix(
+vec3<f32>(luminance),
+litColor,
+lightLevel * saturation + (1.0 - saturation)
+);
+
+let minLight = vec3<f32>(mix(0.02, 0.08, isWater));
+var finalColor = litColor * max(lightMix * aoFactor, minLight);
+
+// The vertex shader already computes these fog varyings.
+// Use them here instead of paying the varying cost and then ignoring them.
+finalColor = mix(finalColor, in.vFogColor, in.vFogFactor);
+
+let alpha = diffuseColor.a * mix(1.0, mix(0.9, 0.4, lightLevel), isWater);
+
+return vec4<f32>(finalColor, alpha);
 }
 `;
-
 export interface ChunkMaterialOptions {
 	engine: EngineContext;
 	scene: SceneContext;
@@ -198,21 +236,33 @@ function buildChunkMaterial(
 	vertexOptions: VertexShaderOptions,
 	opts: ChunkMaterialOptions,
 ): ShaderMaterial {
-	const samplers: { name: string; viewDimension: "2d" | "2d-array" }[] = [
-		{ name: "diffuseTexture", viewDimension: "2d-array" },
-	];
-	if (useNormal) {
-		samplers.push({ name: "normalTexture", viewDimension: "2d-array" });
-	}
-
+	const isTransparent = name === "chunkTransparentLite";
+	const useFog = vertexOptions.fog;
 	const arenaCount = Math.max(1, opts.faceArenaCount | 0);
-	const faceStorageBuffers = [];
+
+	const samplers: { name: string; viewDimension: "2d" | "2d-array" }[] =
+		useNormal
+			? [
+					{ name: "diffuseTexture", viewDimension: "2d-array" },
+					{ name: "normalTexture", viewDimension: "2d-array" },
+				]
+			: [{ name: "diffuseTexture", viewDimension: "2d-array" }];
+
+	const storageBuffers: { name: string; type: string }[] = new Array(
+		arenaCount + 1,
+	);
+
 	for (let i = 0; i < arenaCount; i++) {
-		faceStorageBuffers.push({
+		storageBuffers[i] = {
 			name: `faceData${i}`,
 			type: "array<u32>",
-		});
+		};
 	}
+
+	storageBuffers[arenaCount] = {
+		name: "chunkOffsets",
+		type: "array<vec4<f32>>",
+	};
 
 	const uniforms: ShaderUniformOption[] = [
 		"world",
@@ -225,11 +275,15 @@ function buildChunkMaterial(
 		{ name: "sunLightIntensity", type: "f32" },
 		{ name: "wetness", type: "f32" },
 	];
-	if (vertexOptions.fog) {
-		uniforms.push({ name: "fogInfos", type: "vec4<f32>" });
-		uniforms.push({ name: "fogColor", type: "vec3<f32>" });
+
+	if (useFog) {
+		uniforms.push(
+			{ name: "fogInfos", type: "vec4<f32>" },
+			{ name: "fogColor", type: "vec3<f32>" },
+		);
 	}
-	if (name === "chunkTransparentLite") {
+
+	if (isTransparent) {
 		uniforms.push({ name: "time", type: "f32" });
 	}
 
@@ -240,10 +294,7 @@ function buildChunkMaterial(
 		attributes: ["position"],
 		uniforms,
 		samplers,
-		storageBuffers: [
-			...faceStorageBuffers,
-			{ name: "chunkOffsets", type: "array<vec4<f32>>" },
-		],
+		storageBuffers,
 		backFaceCulling: useNormal,
 		needAlphaBlending: !useNormal,
 		blendMode: "alpha",
@@ -252,22 +303,27 @@ function buildChunkMaterial(
 	registerPackedMaterial(material);
 
 	setShaderTexture(material, "diffuseTexture", opts.diffuseTexture);
+
 	if (useNormal) {
 		setShaderTexture(material, "normalTexture", opts.normalTexture);
 	}
+
 	setShaderUniform(material, "atlasTileSize", opts.atlasTileSize);
 	setShaderUniform(material, "atlasMaxTiles", opts.atlasMaxTiles);
-	setShaderUniform(material, "atlasMaxTilesU32", opts.atlasMaxTiles);
+	setShaderUniform(material, "atlasMaxTilesU32", opts.atlasMaxTiles | 0);
+	setShaderUniform(material, "lightDirection", DEFAULT_LIGHT_DIRECTION);
 	setShaderUniform(material, "sunLightIntensity", 1);
 	setShaderUniform(material, "wetness", 0);
-	if (name === "chunkTransparentLite") {
+
+	if (isTransparent) {
 		setShaderUniform(material, "time", 0);
 	}
-	setShaderUniform(material, "lightDirection", [0, 1, 0]);
-	if (vertexOptions.fog) {
-		setShaderUniform(material, "fogInfos", [0, 140, 2600, 0]);
-		setShaderUniform(material, "fogColor", [0.6, 0.7, 0.9]);
+
+	if (useFog) {
+		setShaderUniform(material, "fogInfos", DEFAULT_FOG_INFOS);
+		setShaderUniform(material, "fogColor", DEFAULT_FOG_COLOR);
 	}
+
 	return material;
 }
 

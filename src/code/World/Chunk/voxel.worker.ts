@@ -356,6 +356,7 @@ function buildNeighborArrays(
 	cz: number,
 	size: number,
 	mask: number,
+	includeBlocks = true,
 ): void {
 	for (let i = 0; i < 26; i++) {
 		if ((mask & (1 << i)) === 0) {
@@ -363,16 +364,25 @@ function buildNeighborArrays(
 			_neighborLights[i] = undefined;
 			continue;
 		}
+
 		const { dx, dy, dz } = NEIGHBOR_OFFSETS[i];
 		const reg = _voxelRegistrations.get(packCoords(cx + dx, cy + dy, cz + dz));
+
 		if (!reg) {
-			// Benign race: the neighbor's registration (channel data) has not
-			// completed yet — treat as air; the next remesh heals it.
+			// Benign race: the neighbor's registration has not completed yet.
+			// Treat as air/unlit; the next remesh heals it.
 			_neighborBlocks[i] = undefined;
 			_neighborLights[i] = undefined;
 			continue;
 		}
-		_neighborBlocks[i] = extractBlockBorder(reg, i, size, dx, dy, dz);
+
+		// Full remesh needs block + light borders.
+		// Light-only remesh already owns the validated block grid in the relight cache,
+		// so extracting block borders here is wasted hot-path work.
+		_neighborBlocks[i] = includeBlocks
+			? extractBlockBorder(reg, i, size, dx, dy, dz)
+			: undefined;
+
 		_neighborLights[i] = extractLightBorder(reg, i, size, dx, dy, dz);
 	}
 }
@@ -640,6 +650,7 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 				data.chunkZ,
 				data.chunk_size,
 				data.neighborMask,
+				false,
 			);
 
 			// Light-only rebuild: bind the session to the entry's padded grids
@@ -674,6 +685,7 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 			data.chunkZ,
 			size,
 			data.neighborMask,
+			true,
 		);
 
 		// Uniform chunks carry no dense grid — pass the fill id so the padded
