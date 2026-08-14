@@ -542,7 +542,7 @@ export class MainMenu {
 		motdEl.innerText = "Pinging…";
 		const metaEl = document.createElement("div");
 		metaEl.className = "server-meta";
-		metaEl.innerHTML = `<span class="server-ping ping-offline"></span><span class="server-players">👤 —</span>`;
+		metaEl.innerHTML = `<span class="server-ping ping-offline"></span><span class="server-ping-num">—</span><span class="server-players">👤 —</span>`;
 		info.appendChild(nameEl);
 		info.appendChild(motdEl);
 		info.appendChild(metaEl);
@@ -574,6 +574,9 @@ export class MainMenu {
 	): void {
 		const motdEl = row.querySelector(".server-motd") as HTMLElement | null;
 		const pingEl = row.querySelector(".server-ping") as HTMLElement | null;
+		const pingNumEl = row.querySelector(
+			".server-ping-num",
+		) as HTMLElement | null;
 		const playersEl = row.querySelector(
 			".server-players",
 		) as HTMLElement | null;
@@ -594,11 +597,13 @@ export class MainMenu {
 			if (!status.online || status.pingMs < 0) {
 				pingEl.classList.add("ping-offline");
 				pingEl.title = "Offline";
+				if (pingNumEl) pingNumEl.innerText = "—";
 			} else {
 				pingEl.title = `${status.pingMs} ms`;
 				if (status.pingMs < 100) pingEl.classList.add("ping-good");
 				else if (status.pingMs < 300) pingEl.classList.add("ping-ok");
 				else pingEl.classList.add("ping-bad");
+				if (pingNumEl) pingNumEl.innerText = `${status.pingMs} ms`;
 			}
 		}
 	}
@@ -939,6 +944,11 @@ export class MainMenu {
 			.server-ping.ping-ok { background: #e8c84b; box-shadow: 0 0 6px #e8c84b; }
 			.server-ping.ping-bad { background: #e86a4b; box-shadow: 0 0 6px #e86a4b; }
 			.server-ping.ping-offline { background: #5a5a5a; }
+
+			.server-ping-num {
+				font-variant-numeric: tabular-nums;
+				min-width: 44px;
+			}
 
 			.server-players {
 				font-variant-numeric: tabular-nums;
