@@ -581,18 +581,6 @@ function scheduleChunkAndNeighborsRemesh(chunk: Chunk): void {
 	if (n[5]) pool.scheduleRemesh(n[5], true);
 }
 
-function scheduleNeighborsOnlyRemesh(chunk: Chunk): void {
-	const pool = ChunkWorkerPool.getInstance();
-	const n = getNeighbors(chunk);
-
-	if (n[0]) pool.scheduleRemesh(n[0], true);
-	if (n[1]) pool.scheduleRemesh(n[1], true);
-	if (n[2]) pool.scheduleRemesh(n[2], true);
-	if (n[3]) pool.scheduleRemesh(n[3], true);
-	if (n[4]) pool.scheduleRemesh(n[4], true);
-	if (n[5]) pool.scheduleRemesh(n[5], true);
-}
-
 export async function updateChunksAround(
 	chunkX: number,
 	chunkY: number,
@@ -676,13 +664,7 @@ function loadFarLodChunk(
 	}
 }
 
-function loadNearLodChunk(
-	chunk: Chunk,
-	savedData: SavedChunkData,
-	selectedMesh: SelectedSavedMesh | null,
-	hasDesiredMesh: boolean,
-	targetLod: number,
-): void {
+function loadNearLodChunk(chunk: Chunk, savedData: SavedChunkData): void {
 	chunk.loadFromStorage(
 		savedData.blocks,
 		savedData.palette,
@@ -732,7 +714,7 @@ function applyLoadedChunkFromSavedData(
 		return;
 	}
 
-	loadNearLodChunk(chunk, savedData, selectedMesh, hasDesiredMesh, targetLod);
+	loadNearLodChunk(chunk, savedData);
 }
 
 export function deleteBlock(worldX: number, worldY: number, worldZ: number) {

@@ -2664,10 +2664,6 @@ export class ChunkWorkerPool {
 		return result;
 	}
 
-	private remoteChunkKey(chunk: Chunk): string {
-		return chunk.chunkX + "," + chunk.chunkY + "," + chunk.chunkZ;
-	}
-
 	private finishRemotePumpCycle(
 		hits: Map<Chunk, RemoteChunkData | null> | null,
 		toCheck: Chunk[],
