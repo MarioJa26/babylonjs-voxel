@@ -12,7 +12,11 @@ import {
 	serializeEntities,
 	serializeVoxelData,
 } from "./Storage/VoxelSerializer";
-import { getWorldNameFromUrl } from "./WorldContext";
+import {
+	getServerNameFromUrl,
+	getWorldNameFromUrl,
+	mpLocalCacheName,
+} from "./WorldContext";
 
 export type { SavedChunkData, SavedChunkEntityData };
 
@@ -32,10 +36,17 @@ class WorldStorageImpl {
 	private store: LevelDbChunkStore | null = null;
 	private initPromise: Promise<void> | null = null;
 
-	initialize(): Promise<void> {
+	initialize(storeNameOverride?: string): Promise<void> {
 		if (this.initPromise) return this.initPromise;
 		this.initPromise = (async () => {
-			const worldName = getWorldNameFromUrl() ?? "default";
+			// In multiplayer the page is /server/<nick>; use a fresh ephemeral
+			// cache name per session so the connect-time IndexedDB clear() is
+			// instant (the old fixed "__mp__" store accumulated server chunks
+			// across sessions and made clear() take ~45s).
+			const worldName =
+				storeNameOverride ??
+				(getServerNameFromUrl() ? mpLocalCacheName() : getWorldNameFromUrl()) ??
+				"default";
 			console.log(`[WorldStorage] Initializing for world: ${worldName}`);
 			this.store = new LevelDbChunkStore(worldName, "./saves");
 			await this.store.open();

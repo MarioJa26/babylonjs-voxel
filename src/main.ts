@@ -1,7 +1,10 @@
 import { enableWasmNoise } from "./code/Lib/WasmNoise";
 import { TestScene } from "./code/TestScene";
 import { MainMenu } from "./code/UI/MainMenu";
-import { getWorldNameFromUrl } from "./code/World/WorldContext";
+import {
+	getServerNameFromUrl,
+	getWorldNameFromUrl,
+} from "./code/World/WorldContext";
 import "@/style/hud.css";
 import "@/style/Item.css";
 import "@/style/MultiplayerHUD.css";
@@ -36,9 +39,13 @@ function showErrorOverlay(error: unknown): void {
  *   /world/<name> → boot the game in that world
  */
 async function main(): Promise<void> {
+	const serverName = getServerNameFromUrl();
 	const worldName = getWorldNameFromUrl();
+	const bootName = serverName ?? worldName;
 
-	if (!worldName) {
+	// /server/<nick> (multiplayer) or /world/<name> (singleplayer) both
+	// boot the game; everything else shows the main menu.
+	if (!bootName) {
 		const menu = new MainMenu();
 		menu.mount(document.body);
 		return;
@@ -64,7 +71,7 @@ async function main(): Promise<void> {
 
 	document.body.appendChild(canvas);
 
-	const testScene = new TestScene(document, canvas, worldName);
+	const testScene = new TestScene(document, canvas, bootName);
 	await testScene.initPromise;
 
 	window.addEventListener("beforeunload", () => testScene.dispose(), {

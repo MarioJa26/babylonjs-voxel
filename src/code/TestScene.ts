@@ -9,13 +9,13 @@ import {
 	stopEngine,
 	vec3,
 } from "@babylonjs/lite";
-import { showLiteExplorer } from "babylon-lite-explorer";
+//import { showLiteExplorer } from "babylon-lite-explorer";
 import { createMobCoordinator } from "./Entities/Mobs/MobSetup";
 import { setTerrainSeed } from "./Generation/TerrainHeightMap";
 import { Map1 } from "./Maps/Map1";
-import { WorldStorage } from "./World/WorldStorage";
 import { type EyeCamera, UnderWaterEffect } from "./Maps/UnderWaterEffect";
 import { NetworkManager } from "./Network/NetworkManager";
+import { findSavedServerByName, getPlayerName } from "./Network/serverList";
 import { initializeBlockBreakingVisuals } from "./Player/Hud/BlockHighlight/BlockBreakingVisuals";
 import { DroppedItem } from "./Player/Inventory/DroppedItem";
 import { Player } from "./Player/Player";
@@ -23,7 +23,8 @@ import { PlayerCamera } from "./Player/PlayerCamera";
 import { PlayerStatePersistence } from "./Player/PlayerStatePersistence";
 import { updateGlobalUniforms } from "./World/Chunk/ChunkMesher";
 import { installLightDebugTool } from "./World/Chunk/LightDebugTool";
-import { worldSeedFor } from "./World/WorldContext";
+import { getServerNameFromUrl, worldSeedFor } from "./World/WorldContext";
+import { WorldStorage } from "./World/WorldStorage";
 
 /**
  * Lite (native) port of the engine/bootstrap entry point.
@@ -68,31 +69,44 @@ export class TestScene {
 
 		scene.camera = playerCamera.playerCamera;
 
-		// Multiplayer: connect to server if URL has ?mp=1
-		const urlParams = new URLSearchParams(window.location.search);
-		const isMultiplayer = urlParams.has("mp");
+		// Multiplayer: the URL is /server/<saved-server-nickname>. The nickname
+		// maps (via the saved-servers list) to a ws:// address; the player name
+		// is read from localStorage, never the URL.
+		const serverNick = getServerNameFromUrl();
+		const isMultiplayer = serverNick !== null;
 
 		if (isMultiplayer) {
 			// Multiplayer mode — no local world creation.
 			// The server uses its config seed; we receive it via WorldConfig on join.
-			const serverUrl = urlParams.get("server") ?? undefined;
+			const saved = serverNick ? findSavedServerByName(serverNick) : undefined;
+			const serverUrl = saved?.url ?? reconstructWsUrl(serverNick);
 			const playerName =
-				urlParams.get("name") ?? `Player${Math.floor(Math.random() * 1000)}`;
+				getPlayerName() || `Player${Math.floor(Math.random() * 1000)}`;
 
 			// Init a minimal Map1 (needed for player/environment/rendering)
 			const map = new Map1(engine, scene, player);
+			const mpT0 = performance.now();
+
+			// Create the network manager and start connecting NOW — before the
+			// world build finishes. The join POST must go out immediately; the
+			// spawn-area chunks stream from the server once connected, so we
+			// avoid generating (and then discarding) an entire local world.
+			this.#networkManager = new NetworkManager(player, serverUrl);
+			player.networkManager = this.#networkManager;
+			player.setDefaultBlockEditCallbacks(this.#networkManager);
+			// Keep a stable server-side world name ("__mp__") so all players on
+			// a server share a room regardless of the URL nickname.
+			void this.#networkManager.connect(playerName, "__mp__");
+
 			await map.initPromise;
+			console.log(
+				`[MP-init] map.initPromise resolved ${(performance.now() - mpT0).toFixed(0)}ms after MP start (WorldStorage + PlayerLoadingGate)`,
+			);
 
 			initializeBlockBreakingVisuals(scene);
 			void DroppedItem.preloadAtlas();
 			player.createHud(scene);
 			player.respawn();
-
-			this.#networkManager = new NetworkManager(player, serverUrl);
-			player.networkManager = this.#networkManager;
-			player.setDefaultBlockEditCallbacks(this.#networkManager);
-
-			void this.#networkManager.connect(playerName, this.worldName);
 
 			const underWaterEffect = new UnderWaterEffect(
 				scene,
@@ -167,4 +181,16 @@ export class TestScene {
 		this.scene = undefined;
 		this.#player = undefined;
 	}
+}
+
+/**
+ * Rebuild a ws:// (or wss:// on https) URL from a saved-server nickname.
+ * Used as a fallback when the nickname in the URL isn't in the saved-servers
+ * list (e.g. a shared link) — host:port style nicknames resolve directly.
+ */
+function reconstructWsUrl(nick: string | null): string | undefined {
+	if (!nick) return undefined;
+	if (nick.includes("://")) return nick;
+	const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
+	return `${scheme}//${nick}`;
 }

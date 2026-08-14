@@ -39,6 +39,7 @@ import {
 	deserializeVoxelData,
 	serializeVoxelData,
 } from "../../World/Storage/VoxelSerializer";
+import { mpLocalCacheName } from "../../World/WorldContext";
 import type { NetClient } from "../NetClient";
 import {
 	decodeChunkData,
@@ -128,10 +129,10 @@ export class RemoteChunkProvider {
 	private static readonly DEFAULT_TIMEOUT_MS = 30000;
 
 	constructor(private readonly client: NetClient) {
-		this.store = new LevelDbChunkStore(
-			client.worldName || "default",
-			"./saves",
-		);
+		// Ephemeral per-session cache name (not the server worldName) so the
+		// connect-time clear() is instant and the DB never accumulates server
+		// chunks across sessions.
+		this.store = new LevelDbChunkStore(mpLocalCacheName(), "./saves");
 		// The rejection is observed here and converted into readiness state,
 		// so an opening failure can never become an unhandled rejection.
 		this.storeReady = this.store.open().then(

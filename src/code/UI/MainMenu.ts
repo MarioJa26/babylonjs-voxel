@@ -1,7 +1,16 @@
 import {
+	getPlayerName,
+	getSavedServers,
+	removeServer,
+	type SavedServer,
+	saveServer,
+	setPlayerName,
+} from "../Network/serverList";
+import {
 	isValidWorldName,
 	removeStoredWorldSeed,
 	sanitizeWorldName,
+	serverPath,
 	setStoredWorldSeed,
 	WORLD_SEED_BASE_KEY,
 	worldLocalStorageKey,
@@ -11,14 +20,7 @@ import worldNames from "./worldNames.json";
 
 const OPFS_ROOT = "b102";
 const OPFS_WORLDS = "worlds";
-const PLAYER_NAME_KEY = "b102.playerName";
 const MULTIPLAYER_SERVER_KEY = "b102.mpServer";
-const SERVER_LIST_KEY = "b102.mpServers";
-
-export interface SavedServer {
-	name: string;
-	url: string;
-}
 
 function getRandomWorldName(): string {
 	const pick = (list: readonly string[]): string =>
@@ -81,38 +83,6 @@ async function deleteWorld(name: string): Promise<void> {
 	]) {
 		localStorage.removeItem(worldLocalStorageKey(name, baseKey));
 	}
-}
-
-export function getPlayerName(): string {
-	return localStorage.getItem(PLAYER_NAME_KEY) ?? "";
-}
-
-export function setPlayerName(name: string): void {
-	localStorage.setItem(PLAYER_NAME_KEY, name);
-}
-
-export function getSavedServers(): SavedServer[] {
-	try {
-		return JSON.parse(localStorage.getItem(SERVER_LIST_KEY) ?? "[]");
-	} catch {
-		return [];
-	}
-}
-
-export function saveServer(server: SavedServer): void {
-	const servers = getSavedServers();
-	const idx = servers.findIndex((s) => s.url === server.url);
-	if (idx >= 0) {
-		servers[idx] = server;
-	} else {
-		servers.push(server);
-	}
-	localStorage.setItem(SERVER_LIST_KEY, JSON.stringify(servers));
-}
-
-export function removeServer(url: string): void {
-	const servers = getSavedServers().filter((s) => s.url !== url);
-	localStorage.setItem(SERVER_LIST_KEY, JSON.stringify(servers));
 }
 
 type MenuScreen = "main" | "singleplayer" | "multiplayer";
@@ -472,14 +442,11 @@ export class MainMenu {
 		saveServer({ name: displayName, url: serverUrl });
 		void this.refreshServerList();
 
-		// Direct connect — navigate to the multiplayer route.
-		// No world creation; the server uses its config seed.
-		const params = new URLSearchParams({
-			mp: "1",
-			server: serverUrl,
-			name: playerName,
-		});
-		window.location.href = `${worldPath("__mp__")}?${params.toString()}`;
+		// Direct connect — navigate to the clean multiplayer route.
+		// No query string: the server address lives in the saved-servers list
+		// (keyed by the nickname in the URL), and the player name is read from
+		// localStorage on load.
+		window.location.href = serverPath(displayName);
 	}
 
 	private async refreshServerList(): Promise<void> {

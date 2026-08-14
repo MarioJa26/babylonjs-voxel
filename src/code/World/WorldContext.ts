@@ -11,6 +11,10 @@
 
 export const WORLD_ROUTE_PREFIX = "/world/";
 
+// Multiplayer route: /server/<saved-server-nickname>. The nickname maps (via
+// the saved-servers list) to a ws:// address; it carries no player name.
+export const SERVER_ROUTE_PREFIX = "/server/";
+
 // biome-ignore lint/suspicious/noControlCharactersInRegex: <explanation>
 const ILLEGAL_NAME_CHARS = /[\\/:*?"<>|\u0000-\u001f]/g;
 
@@ -51,6 +55,43 @@ export function getWorldNameFromUrl(
 /** URL path for a world, e.g. `/world/My%20World`. */
 export function worldPath(name: string): string {
 	return `${WORLD_ROUTE_PREFIX}${encodeURIComponent(name)}`;
+}
+
+/**
+ * Parse the multiplayer server nickname from the URL path, e.g.
+ * `/server/localhost` → `localhost`. Returns null when no server route is
+ * active (singleplayer world or the main menu).
+ */
+export function getServerNameFromUrl(
+	pathname: string = window.location.pathname,
+): string | null {
+	if (!pathname.startsWith(SERVER_ROUTE_PREFIX)) return null;
+	const raw = pathname.slice(SERVER_ROUTE_PREFIX.length).split("/")[0] ?? "";
+	if (!raw) return null;
+	try {
+		return decodeURIComponent(raw);
+	} catch {
+		return raw;
+	}
+}
+
+/** URL path for a saved server, e.g. `/server/localhost`. */
+export function serverPath(name: string): string {
+	return `${SERVER_ROUTE_PREFIX}${encodeURIComponent(name)}`;
+}
+
+/**
+ * Ephemeral per-page-load name for the multiplayer client chunk cache
+ * (IndexedDB). A fresh name every session means the cache DB is always empty,
+ * so the connect-time `clear()` is a no-op instead of grinding through a
+ * store that accumulates server chunks across sessions.
+ */
+let _mpSessionId: string | null = null;
+export function mpLocalCacheName(): string {
+	if (_mpSessionId === null) {
+		_mpSessionId = Math.random().toString(36).slice(2, 10);
+	}
+	return `__mp__cache__${_mpSessionId}`;
 }
 
 /**

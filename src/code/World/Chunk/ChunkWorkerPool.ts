@@ -139,6 +139,13 @@ export class ChunkWorkerPool {
 	// Remote server-side terrain generation (multiplayer mode)
 	private remoteChunkProvider: RemoteChunkProvider | null = null;
 	private remoteGenerationEnabled = false;
+	// Set as soon as multiplayer mode is entered (before the connection is
+	// established). While true but `remoteChunkProvider` is still null, chunk
+	// requests are deferred rather than generated locally — the client must
+	// not build spawn terrain itself, since the server is authoritative and
+	// the local copy would just be discarded once the connection lands.
+	private expectingRemoteProvider = false;
+	private readonly remoteDeferredChunks = new Set<Chunk>();
 	// Chunks the server confirmed as unchanged but the client had no local
 	// copy for — retried once before falling back to local generation.
 	private remoteNoBlobRetries = new Map<string, number>();
@@ -2360,6 +2367,13 @@ export class ChunkWorkerPool {
 			this.enqueueRemoteGeneration(chunk, deferLighting);
 			return;
 		}
+		// Multiplayer: the server owns terrain. Until the connection (and thus
+		// the remote provider) is live, hold the request instead of generating
+		// it locally — local gen here is pure waste that gets discarded anyway.
+		if (this.expectingRemoteProvider) {
+			this.deferChunkForRemote(chunk);
+			return;
+		}
 		this.queueLocalTerrainGeneration(chunk, deferLighting);
 	}
 
@@ -2399,6 +2413,13 @@ export class ChunkWorkerPool {
 			this.pumpRemoteGeneration();
 			return;
 		}
+		// Multiplayer: defer instead of generating locally (see scheduleTerrainGeneration).
+		if (this.expectingRemoteProvider) {
+			for (let i = 0; i < chunks.length; i++) {
+				this.deferChunkForRemote(chunks[i]);
+			}
+			return;
+		}
 		for (let i = 0; i < chunks.length; i++) {
 			const chunk = chunks[i];
 			this.terrainTaskQueue.add(chunk);
@@ -2428,6 +2449,34 @@ export class ChunkWorkerPool {
 		this.remoteTaskQueueSet.add(chunk);
 		chunk.isTerrainScheduled = true;
 		// console.log(`[RemoteGen] enqueued ${key} (queue: ${this.remoteTaskQueue.length})`);
+	}
+
+	/**
+	 * Hold a chunk request until the server connection is live. Used in
+	 * multiplayer before `remoteChunkProvider` is set, so we never fall back to
+	 * local terrain generation for chunks the server will provide.
+	 */
+	private deferChunkForRemote(chunk: Chunk): void {
+		if (!chunk || chunk.isBoatChunk) return;
+		this.remoteDeferredChunks.add(chunk);
+		chunk.isTerrainScheduled = true;
+	}
+
+	/** Enter multiplayer mode: defer chunk requests until the server connects. */
+	public enableRemoteMode(): void {
+		this.expectingRemoteProvider = true;
+	}
+
+	/** Leave multiplayer mode (e.g. join failed): allow local generation again. */
+	public disableRemoteMode(): void {
+		this.expectingRemoteProvider = false;
+		// The scheduler skips chunks already flagged isTerrainScheduled, so
+		// clear it here; otherwise deferred chunks would never fall back to
+		// local generation after a failed join.
+		for (const chunk of this.remoteDeferredChunks) {
+			chunk.isTerrainScheduled = false;
+		}
+		this.remoteDeferredChunks.clear();
 	}
 
 	public hasRemoteChunksQueued(): boolean {
@@ -2696,7 +2745,18 @@ export class ChunkWorkerPool {
 	public setRemoteChunkProvider(provider: RemoteChunkProvider | null): void {
 		this.remoteChunkProvider = provider;
 		this.remoteGenerationEnabled = provider !== null;
+		this.expectingRemoteProvider = provider !== null;
 		if (provider) {
+			// Flush chunks that were deferred (requested before the connection
+			// was live) so they now stream from the server instead of being
+			// generated locally.
+			let flushed = 0;
+			for (const chunk of this.remoteDeferredChunks) {
+				this.enqueueRemoteGeneration(chunk);
+				flushed++;
+			}
+			this.remoteDeferredChunks.clear();
+
 			let requeued = 0;
 			for (const chunk of Chunk.chunkInstances.values()) {
 				if (chunk.isBoatChunk) continue;
@@ -2704,11 +2764,11 @@ export class ChunkWorkerPool {
 				this.enqueueRemoteGeneration(chunk);
 				requeued++;
 			}
-			if (requeued > 0) {
+			if (flushed > 0 || requeued > 0) {
 				this.pumpRemoteGeneration();
 			}
 			console.log(
-				`[RemoteGen] setRemoteChunkProvider enabled=true (requeued ${requeued} loaded chunks)`,
+				`[RemoteGen] setRemoteChunkProvider enabled=true (requeued ${requeued} loaded chunks, flushed ${flushed} deferred)`,
 			);
 		} else {
 			console.log(`[RemoteGen] setRemoteChunkProvider enabled=false`);

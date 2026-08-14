@@ -162,6 +162,15 @@ export class NetworkManager {
 			},
 		});
 
+		// Enter multiplayer mode immediately so spawn chunks are deferred (not
+		// generated locally) until the server connection is live. This must
+		// happen before any chunk streaming starts, which begins as soon as the
+		// world finishes initializing.
+		ChunkWorkerPool.getInstance(2)?.enableRemoteMode();
+
+		const t0 = performance.now();
+		console.log(`[MP-connect] enableRemoteMode @ ${t0.toFixed(0)}ms`);
+
 		// Clear local chunk cache so stale chunks are re-fetched from server.
 		// The singleplayer store (WorldStorage) shares the same IndexedDB and
 		// hydrates chunks from saved voxel data — wipe its memory cache + the
@@ -172,11 +181,25 @@ export class NetworkManager {
 			this.chunkProvider.clearCache(),
 			WorldStorage.clearLocalChunkCache(),
 		]);
+		console.log(
+			`[MP-connect] after clearCache+localClear: ${(performance.now() - t0).toFixed(0)}ms`,
+		);
 
 		// Multiplayer: don't send a seed — the server uses its config seed.
 		// The server sends back the authoritative seed via WorldConfig on join,
 		// which re-seeds our local terrain (see onWorldConfig callback).
-		await this.client.connect(playerName, worldName, "");
+		try {
+			await this.client.connect(playerName, worldName, "");
+			console.log(
+				`[MP-connect] joinOrCreate resolved: ${(performance.now() - t0).toFixed(0)}ms`,
+			);
+		} catch (err) {
+			// Connection failed — abandon multiplayer mode so the world falls
+			// back to local terrain generation instead of stalling on deferred
+			// chunks that will never arrive from a server.
+			ChunkWorkerPool.getInstance(2)?.disableRemoteMode();
+			throw err;
+		}
 
 		// Enable server-side chunk generation
 		ChunkWorkerPool.getInstance(2)?.setRemoteChunkProvider(this.chunkProvider);
