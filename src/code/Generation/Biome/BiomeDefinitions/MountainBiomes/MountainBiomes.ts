@@ -10,7 +10,7 @@ export const ALPINE_MEADOW: Biome = {
 	id: BIOME_ID.ALPINE_MEADOW,
 	name: "Alpine_Meadow",
 	topBlock: BlockType.Grass001, // alpine grass
-	undergroundBlock: 19, // dirt
+	undergroundBlock: 46, // dirt
 	stoneBlock: 1, // stone
 	canSpawnTrees: true,
 	treeDensity: 0.08, // sparse conifers at treeline
