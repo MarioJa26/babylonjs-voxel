@@ -25,7 +25,6 @@ import type {
 	ChunkLoadingDebugStats,
 	InFlightProcessState,
 } from "./Loading/ChunkTypes";
-// After
 import {
 	ChunkWorldMutations,
 	getBlockStateByWorldCoords as getBlockStateFromMutations,
@@ -355,6 +354,7 @@ export function validateChunksAround(
 	verticalRadius = SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
 ): void {
 	const queuedIds = buildQueuedIdSet();
+
 	const missing: Array<{
 		chunkX: number;
 		chunkY: number;
@@ -369,48 +369,50 @@ export function validateChunksAround(
 	const minChunkY = SETTING_PARAMS.MIN_CHUNK_Y;
 	const maxChunkY = minChunkY + SETTING_PARAMS.MAX_CHUNK_HEIGHT - 1;
 
-	for (
-		let y = Math.max(minChunkY, centerChunkY - verticalRadius);
-		y <= Math.min(maxChunkY, centerChunkY + verticalRadius);
-		y++
-	) {
-		for (
-			let x = centerChunkX - horizontalRadius;
-			x <= centerChunkX + horizontalRadius;
-			x++
-		) {
-			for (
-				let z = centerChunkZ - horizontalRadius;
-				z <= centerChunkZ + horizontalRadius;
-				z++
-			) {
+	const startY = Math.max(minChunkY, centerChunkY - verticalRadius);
+	const endY = Math.min(maxChunkY, centerChunkY + verticalRadius);
+	const startX = centerChunkX - horizontalRadius;
+	const endX = centerChunkX + horizontalRadius;
+	const startZ = centerChunkZ - horizontalRadius;
+	const endZ = centerChunkZ + horizontalRadius;
+
+	const controller = streamingController;
+	const unloadSet = unloadQueueSet;
+
+	for (let y = startY; y <= endY; y++) {
+		for (let x = startX; x <= endX; x++) {
+			for (let z = startZ; z <= endZ; z++) {
 				const chunk = getChunk(x, y, z);
-				// PERF: reuse the already-fetched chunk's BigInt id instead of
-				// re-packing coords (packCoords is a costly BigInt op). Only pack
-				// when the chunk doesn't exist yet.
-				const chunkId = chunk ? chunk.id : packCoords(x, y, z);
 
-				const isLoaded = !!chunk?.isLoaded;
-				const isQueued = queuedIds.has(chunkId);
-				const isUnloading = !!chunk && unloadQueueSet.has(chunk);
-				// desiredStates is keyed by numericId and only contains entries
-				// for chunks that exist, so a missing chunk implies no desired state.
-				const hasDesiredState =
-					!!chunk &&
-					streamingController.getDesiredState(chunk.numericId) !== undefined;
-
-				if (hasDesiredState && !isLoaded && !isQueued && !isUnloading) {
-					missing.push({
-						chunkX: x,
-						chunkY: y,
-						chunkZ: z,
-						chunkId,
-						isLoaded,
-						isQueued,
-						isUnloading,
-						hasDesiredState,
-					});
+				// A non-existent chunk cannot have desired state because
+				// desired state is keyed by chunk.numericId from existing chunks.
+				if (!chunk) {
+					continue;
 				}
+
+				const hasDesiredState =
+					controller.getDesiredState(chunk.numericId) !== undefined;
+
+				if (!hasDesiredState || chunk.isLoaded || unloadSet.has(chunk)) {
+					continue;
+				}
+
+				const chunkId = chunk.id;
+
+				if (queuedIds.has(chunkId)) {
+					continue;
+				}
+
+				missing.push({
+					chunkX: x,
+					chunkY: y,
+					chunkZ: z,
+					chunkId,
+					isLoaded: false,
+					isQueued: false,
+					isUnloading: false,
+					hasDesiredState: true,
+				});
 			}
 		}
 	}
