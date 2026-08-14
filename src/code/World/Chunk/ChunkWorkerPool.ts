@@ -2963,8 +2963,6 @@ export class ChunkWorkerPool {
 
 				chunk.isModified = true;
 
-				this.broadcastLightRegister(chunk);
-				this.broadcastVoxelRegister(chunk);
 				this.queueRemoteChunkRemesh(chunk);
 				this.pumpRemoteGeneration();
 				return;
@@ -3005,8 +3003,6 @@ export class ChunkWorkerPool {
 							chunk.isModified = true;
 							this.remoteNoBlobRetries.delete(key);
 
-							this.broadcastLightRegister(chunk);
-							this.broadcastVoxelRegister(chunk);
 							this.queueRemoteChunkRemesh(chunk);
 							return;
 						}
