@@ -15,6 +15,8 @@ export interface ServerConfig {
 	serverPort: number;
 	maxPlayers: number;
 	serverName: string;
+	motd: string;
+	version: string;
 	gamemode: string;
 	difficulty: string;
 	maxReach: number;
@@ -31,6 +33,8 @@ const DEFAULTS: ServerConfig = {
 	serverPort: 2567,
 	maxPlayers: 24,
 	serverName: "b102 Server",
+	motd: "A Server",
+	version: "1.0.0",
 	gamemode: "creative",
 	difficulty: "normal",
 	maxReach: REACH_DISTANCE,
@@ -107,6 +111,8 @@ export function loadServerConfig(
 		serverPort: parseIntSafe(props["server-port"], DEFAULTS.serverPort),
 		maxPlayers: parseIntSafe(props["max-players"], DEFAULTS.maxPlayers),
 		serverName: props["server-name"] ?? DEFAULTS.serverName,
+		motd: props["server-motd"] ?? DEFAULTS.motd,
+		version: props["server-version"] ?? DEFAULTS.version,
 		gamemode: props.gamemode ?? DEFAULTS.gamemode,
 		difficulty: props.difficulty ?? DEFAULTS.difficulty,
 		maxReach: parseIntSafe(props["max-reach"], DEFAULTS.maxReach),

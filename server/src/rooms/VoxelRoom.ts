@@ -44,6 +44,18 @@ import type { StoredChunkData } from "../world/ServerWorldStorage.ts";
 import { ServerWorldStorage } from "../world/ServerWorldStorage.ts";
 
 /**
+ * Live count of connected players, shared with the HTTP status endpoint
+ * (see index.ts) so the client's server list can show "👤 x/y" without
+ * joining a room. Single-process server, so a module-level counter is safe.
+ */
+let onlinePlayers = 0;
+
+/** Current number of connected players (for the status endpoint). */
+export function getOnlinePlayers(): number {
+	return onlinePlayers;
+}
+
+/**
  * Run an array of promise-returning tasks with at most `limit` of them
  * in flight at once (bounded storage concurrency for chunk flushes).
  */
@@ -296,6 +308,7 @@ export class VoxelRoom extends Room {
 				});
 			}
 			this.players.set(client.sessionId, state);
+			onlinePlayers++;
 
 			// Notify others of new player
 			const joinMsg = encodePlayerJoin({
@@ -369,7 +382,8 @@ export class VoxelRoom extends Room {
 		} catch (error) {
 			// Storage failure must not leak an allocated index or a partially
 			// initialized player.
-			this.players.delete(client.sessionId);
+			const wasPresent = this.players.delete(client.sessionId);
+			if (wasPresent) onlinePlayers--;
 			this.playersReady.delete(client.sessionId);
 			this.freeIndex(index);
 			console.error(
@@ -416,6 +430,7 @@ export class VoxelRoom extends Room {
 		);
 
 		this.players.delete(client.sessionId);
+		onlinePlayers--;
 		this.playersReady.delete(client.sessionId);
 		this.freeIndex(player.index);
 

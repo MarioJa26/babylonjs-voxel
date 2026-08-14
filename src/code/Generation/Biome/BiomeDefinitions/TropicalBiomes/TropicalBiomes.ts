@@ -92,11 +92,11 @@ export const TROPICAL_ISLAND: Biome = {
 	beachBlock: 3, // white sand beach
 	seafloorBlock: 84, // coral / tropical seafloor
 
-	terrainScale: GenerationParams.TERRAIN_SCALE * 0.8,
+	terrainScale: GenerationParams.TERRAIN_SCALE * 10,
 	persistence: 0.19,
-	heightExponent: 1.3,
-	terrainHeightBase: GenerationParams.SEA_LEVEL + 3,
-	terrainHeightAmplitude: 35, // small hills, island peaks
+	heightExponent: 2.0,
+	terrainHeightBase: -67,
+	terrainHeightAmplitude: 33, // small hills, island peaks
 
 	getTreeForBlock(blockId: number): TreeDefinition | null {
 		if (blockId === this.topBlock) return PALM_TREE;

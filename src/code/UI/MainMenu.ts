@@ -6,6 +6,7 @@ import {
 	saveServer,
 	setPlayerName,
 } from "../Network/serverList";
+import { fetchAllStatuses, type ServerStatus } from "../Network/serverStatus";
 import {
 	isValidWorldName,
 	removeStoredWorldSeed,
@@ -103,6 +104,7 @@ export class MainMenu {
 
 	// Multiplayer elements
 	private readonly mpScreen!: HTMLElement;
+	private readonly mpNameInput!: HTMLInputElement;
 	private readonly mpServerInput!: HTMLInputElement;
 	private readonly mpStatusEl!: HTMLElement;
 	private readonly mpServerListEl!: HTMLElement;
@@ -257,12 +259,30 @@ export class MainMenu {
 		mpTitle.innerText = "Multiplayer";
 		this.mpScreen.appendChild(mpTitle);
 
-		// Server address (like Minecraft — just the address)
+		// ─── Add Server (Minecraft-style: name + IP) ───────────────
+		const addTitle = document.createElement("h3");
+		addTitle.className = "screen-subtitle";
+		addTitle.innerText = "Add Server";
+		this.mpScreen.appendChild(addTitle);
+
+		const nameGroup = document.createElement("div");
+		nameGroup.className = "input-group";
+		const mpNameLabel = document.createElement("label");
+		mpNameLabel.className = "input-label";
+		mpNameLabel.innerText = "Server Name";
+		this.mpNameInput = document.createElement("input");
+		this.mpNameInput.type = "text";
+		this.mpNameInput.placeholder = "My Server";
+		this.mpNameInput.maxLength = 32;
+		nameGroup.appendChild(mpNameLabel);
+		nameGroup.appendChild(this.mpNameInput);
+		this.mpScreen.appendChild(nameGroup);
+
 		const addrGroup = document.createElement("div");
 		addrGroup.className = "input-group";
 		const addrLabel = document.createElement("label");
 		addrLabel.className = "input-label";
-		addrLabel.innerText = "Server Address";
+		addrLabel.innerText = "Server Address (IP)";
 		this.mpServerInput = document.createElement("input");
 		this.mpServerInput.type = "text";
 		this.mpServerInput.placeholder = "ws://host:2567";
@@ -272,23 +292,31 @@ export class MainMenu {
 		addrGroup.appendChild(this.mpServerInput);
 		this.mpScreen.appendChild(addrGroup);
 
-		// Connect button — direct connect, no world creation
-		const connectRow = document.createElement("div");
-		connectRow.className = "menu-create-row";
-		const connectBtn = document.createElement("button");
-		btnMinecraft(connectBtn, "Connect to Server");
-		connectBtn.onclick = () => void this.connectMultiplayer();
-		connectRow.appendChild(connectBtn);
-		this.mpScreen.appendChild(connectRow);
+		const addRow = document.createElement("div");
+		addRow.className = "menu-create-row";
+		const addBtn = document.createElement("button");
+		btnMinecraft(addBtn, "Add Server");
+		addBtn.classList.add("mc-btn-green");
+		addBtn.onclick = () => void this.addServer();
+		addRow.appendChild(addBtn);
+		this.mpScreen.appendChild(addRow);
 
 		this.mpStatusEl = document.createElement("div");
 		this.mpStatusEl.className = "menu-status";
 		this.mpScreen.appendChild(this.mpStatusEl);
 
+		const listHeader = document.createElement("div");
+		listHeader.className = "menu-list-header";
 		const serverListTitle = document.createElement("h3");
 		serverListTitle.className = "screen-subtitle";
 		serverListTitle.innerText = "Saved Servers";
-		this.mpScreen.appendChild(serverListTitle);
+		const refreshBtn = document.createElement("button");
+		btnSmallMinecraft(refreshBtn, "Refresh");
+		refreshBtn.classList.add("mc-btn-refresh");
+		refreshBtn.onclick = () => void this.refreshServerList();
+		listHeader.appendChild(serverListTitle);
+		listHeader.appendChild(refreshBtn);
+		this.mpScreen.appendChild(listHeader);
 
 		this.mpServerListEl = document.createElement("div");
 		this.mpServerListEl.className = "menu-server-list";
@@ -419,34 +447,60 @@ export class MainMenu {
 
 	// ─── Multiplayer ───────────────────────────────────────────────────
 
-	private async connectMultiplayer(): Promise<void> {
-		const playerName = this.playerNameInput.value.trim();
-		const serverUrl = this.mpServerInput.value.trim();
-		// Display name for the saved server entry (derived from the address)
-		const displayName =
-			serverUrl.replace(/^wss?:\/\//, "").replace(/:\d+$/, "") || "Server";
+	/** Normalize a user-typed address into a ws:// (or wss://) URL. */
+	private normalizeServerUrl(raw: string): string {
+		const trimmed = raw.trim();
+		if (!trimmed) return "";
+		if (/^wss?:\/\//.test(trimmed)) return trimmed;
+		const scheme =
+			typeof window !== "undefined" && window.location.protocol === "https:"
+				? "wss://"
+				: "ws://";
+		return `${scheme}${trimmed}`;
+	}
 
-		if (!playerName) {
-			this.mpStatusEl.innerText = "Please enter your name.";
+	private addServer(): void {
+		const name = this.mpNameInput.value.trim();
+		const address = this.mpServerInput.value.trim();
+		const url = this.normalizeServerUrl(address);
+
+		if (!name) {
+			this.mpStatusEl.innerText = "Please enter a server name.";
 			this.mpStatusEl.classList.add("error");
 			return;
 		}
-		if (!serverUrl) {
+		if (!url) {
 			this.mpStatusEl.innerText = "Please enter a server address.";
 			this.mpStatusEl.classList.add("error");
 			return;
 		}
 
-		setPlayerName(playerName);
-		localStorage.setItem(MULTIPLAYER_SERVER_KEY, serverUrl);
-		saveServer({ name: displayName, url: serverUrl });
+		saveServer({ name, url });
+		localStorage.setItem(MULTIPLAYER_SERVER_KEY, address);
+		this.mpNameInput.value = "";
+		this.mpServerInput.value = "";
+		this.mpStatusEl.classList.remove("error");
+		this.mpStatusEl.innerText = `Added "${name}".`;
 		void this.refreshServerList();
+	}
 
-		// Direct connect — navigate to the clean multiplayer route.
+	private async connectMultiplayer(name: string, url: string): Promise<void> {
+		const playerName = this.playerNameInput.value.trim();
+		if (!playerName) {
+			this.mpStatusEl.innerText = "Please enter your name.";
+			this.mpStatusEl.classList.add("error");
+			return;
+		}
+
+		setPlayerName(playerName);
+		// Ensure the server entry exists (name → url mapping) so the clean
+		// /server/<name> route can resolve the address on load.
+		saveServer({ name, url });
+
 		// No query string: the server address lives in the saved-servers list
-		// (keyed by the nickname in the URL), and the player name is read from
+		// (keyed by the name in the URL), and the player name is read from
 		// localStorage on load.
-		window.location.href = serverPath(displayName);
+		window.location.href = serverPath(name);
 	}
 
 	private async refreshServerList(): Promise<void> {
@@ -454,15 +508,26 @@ export class MainMenu {
 		const servers = getSavedServers();
 
 		if (servers.length === 0) {
-			this.mpServerListEl.appendChild(this.loadingRow("No saved servers."));
+			this.mpServerListEl.appendChild(
+				this.loadingRow("No saved servers — add one above."),
+			);
 			return;
 		}
 
-		for (const server of servers) {
-			this.mpServerListEl.appendChild(this.serverRow(server));
-		}
+		// Show rows immediately, then fill in live status (MOTD / players / ping).
+		const rows = servers.map((server) => {
+			const row = this.serverRow(server);
+			this.mpServerListEl.appendChild(row);
+			return row;
+		});
+
+		const statuses = await fetchAllStatuses(servers);
+		servers.forEach((server, i) => {
+			this.updateServerRow(rows[i], server, statuses[i]);
+		});
 	}
 
+	/** Build the static parts of a server row (name + buttons). */
 	private serverRow(server: SavedServer): HTMLElement {
 		const row = document.createElement("div");
 		row.className = "menu-server-row";
@@ -472,19 +537,21 @@ export class MainMenu {
 		const nameEl = document.createElement("div");
 		nameEl.className = "server-name";
 		nameEl.innerText = server.name;
-		const urlEl = document.createElement("div");
-		urlEl.className = "server-url";
-		urlEl.innerText = server.url;
+		const motdEl = document.createElement("div");
+		motdEl.className = "server-motd";
+		motdEl.innerText = "Pinging…";
+		const metaEl = document.createElement("div");
+		metaEl.className = "server-meta";
+		metaEl.innerHTML = `<span class="server-ping ping-offline"></span><span class="server-players">👤 —</span>`;
 		info.appendChild(nameEl);
-		info.appendChild(urlEl);
+		info.appendChild(motdEl);
+		info.appendChild(metaEl);
 		row.appendChild(info);
 
 		const joinBtn = document.createElement("button");
 		btnSmallMinecraft(joinBtn, "Join");
-		joinBtn.onclick = () => {
-			this.mpServerInput.value = server.url;
-			void this.connectMultiplayer();
-		};
+		joinBtn.onclick = () =>
+			void this.connectMultiplayer(server.name, server.url);
 		row.appendChild(joinBtn);
 
 		const delBtn = document.createElement("button");
@@ -497,6 +564,43 @@ export class MainMenu {
 		row.appendChild(delBtn);
 
 		return row;
+	}
+
+	/** Fill a row with live status (MOTD, player count, ping dot). */
+	private updateServerRow(
+		row: HTMLElement,
+		server: SavedServer,
+		status: ServerStatus,
+	): void {
+		const motdEl = row.querySelector(".server-motd") as HTMLElement | null;
+		const pingEl = row.querySelector(".server-ping") as HTMLElement | null;
+		const playersEl = row.querySelector(
+			".server-players",
+		) as HTMLElement | null;
+
+		if (motdEl) motdEl.innerText = status.motd || "(no message)";
+		if (playersEl) {
+			playersEl.innerText = status.online
+				? `👤 ${status.players}/${status.maxPlayers}`
+				: "👤 —";
+		}
+		if (pingEl) {
+			pingEl.classList.remove(
+				"ping-offline",
+				"ping-good",
+				"ping-ok",
+				"ping-bad",
+			);
+			if (!status.online || status.pingMs < 0) {
+				pingEl.classList.add("ping-offline");
+				pingEl.title = "Offline";
+			} else {
+				pingEl.title = `${status.pingMs} ms`;
+				if (status.pingMs < 100) pingEl.classList.add("ping-good");
+				else if (status.pingMs < 300) pingEl.classList.add("ping-ok");
+				else pingEl.classList.add("ping-bad");
+			}
+		}
 	}
 
 	private loadingRow(text: string): HTMLElement {
@@ -779,6 +883,65 @@ export class MainMenu {
 				overflow: hidden;
 				text-overflow: ellipsis;
 				white-space: nowrap;
+			}
+
+			/* List header (title + Refresh) */
+			.menu-list-header {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				width: 100%;
+				max-width: 400px;
+				margin-top: 8px;
+			}
+
+			.menu-list-header .screen-subtitle {
+				margin: 16px 0 8px;
+			}
+
+			.mc-btn-refresh {
+				border-color: #3a5a6a;
+				background: #2d4a5a linear-gradient(180deg, rgba(255,255,255,0.08) 0%, transparent 50%);
+			}
+
+			.mc-btn-refresh:hover {
+				border-color: #5d9cc6;
+				background: #3d6a7a linear-gradient(180deg, rgba(255,255,255,0.12) 0%, transparent 50%);
+			}
+
+			/* Server row live status */
+			.server-motd {
+				font-size: 0.78em;
+				color: #c8d2da;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+				margin: 2px 0;
+			}
+
+			.server-meta {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				font-size: 0.75em;
+				color: #9aa7b0;
+			}
+
+			.server-ping {
+				width: 9px;
+				height: 9px;
+				border-radius: 50%;
+				display: inline-block;
+				flex: 0 0 auto;
+			}
+
+			.server-ping.ping-good { background: #5dd65d; box-shadow: 0 0 6px #5dd65d; }
+			.server-ping.ping-ok { background: #e8c84b; box-shadow: 0 0 6px #e8c84b; }
+			.server-ping.ping-bad { background: #e86a4b; box-shadow: 0 0 6px #e86a4b; }
+			.server-ping.ping-offline { background: #5a5a5a; }
+
+			.server-players {
+				font-variant-numeric: tabular-nums;
 			}
 
 			.menu-status {
