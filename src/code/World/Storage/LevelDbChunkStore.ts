@@ -30,7 +30,7 @@
  * - Reads never enter the write queue.
  */
 function chunkKey(cx: number, cy: number, cz: number): string {
-	return `${cx},${cy},${cz}`;
+	return cx + "," + cy + "," + cz;
 }
 
 export interface ChunkWrite {
@@ -295,11 +295,16 @@ export class LevelDbChunkStore {
 		const results = new Map<string, Uint8Array>();
 		const misses: string[] = [];
 
-		for (const { cx, cy, cz, key } of coords) {
-			const k = key ?? chunkKey(cx, cy, cz);
-			if (this.pendingDeletes.has(k)) continue;
+		for (let i = 0, len = coords.length; i < len; i++) {
+			const coord = coords[i];
+			const k = coord.key ?? chunkKey(coord.cx, coord.cy, coord.cz);
+
+			if (this.pendingDeletes.has(k)) {
+				continue;
+			}
+
 			const cached = this.cache.get(k);
-			if (cached) {
+			if (cached !== undefined) {
 				this.touched.add(k);
 				results.set(k, cached);
 			} else {
@@ -307,15 +312,19 @@ export class LevelDbChunkStore {
 			}
 		}
 
-		if (misses.length > 0) {
-			// Single batched read (one IndexedDB transaction / one level
-			// getMany) for all cache misses instead of N independent gets.
-			const found = await this._getMany(misses);
-			for (const [k, data] of found) {
-				if (this.pendingDeletes.has(k)) continue;
-				this.addToCache(k, data);
-				results.set(k, data);
+		if (misses.length === 0 || !this.db) {
+			return results;
+		}
+
+		const found = await this._getMany(misses);
+
+		for (const [k, data] of found) {
+			if (this.pendingDeletes.has(k)) {
+				continue;
 			}
+
+			this.addToCache(k, data);
+			results.set(k, data);
 		}
 
 		return results;
@@ -335,30 +344,46 @@ export class LevelDbChunkStore {
 	): Promise<Set<string>> {
 		const result = new Set<string>();
 		const misses: string[] = [];
-		for (const { cx, cy, cz, key } of coords) {
-			const k = key ?? chunkKey(cx, cy, cz);
-			if (this.pendingDeletes.has(k)) continue;
+
+		for (let i = 0, len = coords.length; i < len; i++) {
+			const coord = coords[i];
+			const k = coord.key ?? chunkKey(coord.cx, coord.cy, coord.cz);
+
+			if (this.pendingDeletes.has(k)) {
+				continue;
+			}
+
 			if (this.cache.has(k)) {
 				result.add(k);
 			} else {
 				misses.push(k);
 			}
 		}
-		if (misses.length === 0 || !this.db) return result;
+
+		if (misses.length === 0 || !this.db) {
+			return result;
+		}
+
 		if (typeof window !== "undefined") {
 			const found = await (this.db as IndexedDbStore).has(misses);
+
 			for (const k of found) {
-				if (!this.pendingDeletes.has(k)) result.add(k);
+				if (!this.pendingDeletes.has(k)) {
+					result.add(k);
+				}
 			}
-		} else {
-			// Reuse the same batched primitive readChunks relies on, instead
-			// of fanning out into N independent level.get() calls (each its
-			// own promise + catch) for what is really one existence probe.
-			const found = await this._getMany(misses);
-			for (const k of found.keys()) {
-				if (!this.pendingDeletes.has(k)) result.add(k);
+
+			return result;
+		}
+
+		const found = await this._getMany(misses);
+
+		for (const k of found.keys()) {
+			if (!this.pendingDeletes.has(k)) {
+				result.add(k);
 			}
 		}
+
 		return result;
 	}
 
@@ -392,11 +417,14 @@ export class LevelDbChunkStore {
 
 	/** Bulk write of a network batch: one job, shared transactions. */
 	writeChunks(writes: readonly ChunkWrite[]): Promise<void> {
-		if (writes.length === 0) return Promise.resolve();
+		const len = writes.length;
+		if (len === 0) return Promise.resolve();
 
-		const operations = new Array<WriteOperation>(writes.length);
-		for (let i = 0; i < writes.length; i++) {
+		const operations = new Array<WriteOperation>(len);
+
+		for (let i = 0; i < len; i++) {
 			const write = writes[i];
+
 			operations[i] = {
 				kind: "put",
 				key: chunkKey(write.cx, write.cy, write.cz),
@@ -430,25 +458,34 @@ export class LevelDbChunkStore {
 	deleteChunks(
 		coords: readonly { cx: number; cy: number; cz: number }[],
 	): Promise<void> {
-		if (coords.length === 0) return Promise.resolve();
+		const len = coords.length;
+		if (len === 0) return Promise.resolve();
+
 		if (!this.db || !this.opened) {
 			return Promise.reject(new Error("LevelDbChunkStore is not open"));
 		}
+
 		if (this.closing) {
 			return Promise.reject(new Error("LevelDbChunkStore is closing"));
 		}
 
-		const operations = new Array<WriteOperation>(coords.length);
-		for (let i = 0; i < coords.length; i++) {
+		const operations = new Array<WriteOperation>(len);
+		const pendingDeletes = this.pendingDeletes;
+		const cache = this.cache;
+		const touched = this.touched;
+
+		for (let i = 0; i < len; i++) {
 			const coordinate = coords[i];
 			const key = chunkKey(coordinate.cx, coordinate.cy, coordinate.cz);
-			this.pendingDeletes.add(key);
-			this.cache.delete(key);
-			this.touched.delete(key);
+
+			pendingDeletes.add(key);
+			cache.delete(key);
+			touched.delete(key);
+
 			operations[i] = { kind: "delete", key };
 		}
 
-		return this.enqueueWriteJob(operations);
+		return this.enqueueWriteJobUnchecked(operations);
 	}
 
 	/**
@@ -734,54 +771,57 @@ export class LevelDbChunkStore {
 	 */
 	private async commitNextTransaction(): Promise<void> {
 		const db = this.db;
+
 		if (!db) {
 			this.rejectRemainingJobs(new Error("LevelDbChunkStore is not open"));
 			return;
 		}
 
+		const maxOps = LevelDbChunkStore.MAX_TRANSACTION_OPS;
 		const batch = db.batch();
-		const prepared = new Array<PreparedOperation>(
-			LevelDbChunkStore.MAX_TRANSACTION_OPS,
-		);
+		const prepared = new Array<PreparedOperation>(maxOps);
+
 		let preparedCount = 0;
 		let operationCount = 0;
 		let queueIndex = this.writeQueueHead;
+		const queue = this.writeQueue;
 
-		while (
-			queueIndex < this.writeQueue.length &&
-			operationCount < LevelDbChunkStore.MAX_TRANSACTION_OPS
-		) {
-			const entry = this.writeQueue[queueIndex];
-			if (entry.kind !== "write") break;
+		while (queueIndex < queue.length && operationCount < maxOps) {
+			const entry = queue[queueIndex];
+
+			if (entry.kind !== "write") {
+				break;
+			}
+
 			const job = entry.job;
+
 			if (job.cancelled) {
 				queueIndex++;
 				continue;
 			}
 
-			while (
-				job.nextOperation < job.operations.length &&
-				operationCount < LevelDbChunkStore.MAX_TRANSACTION_OPS
-			) {
-				const operation = job.operations[job.nextOperation];
+			const operations = job.operations;
+
+			while (job.nextOperation < operations.length && operationCount < maxOps) {
+				const operation = operations[job.nextOperation];
+
 				if (operation.kind === "put") {
 					batch.put(operation.key, operation.value);
 				} else {
 					batch.del(operation.key);
 				}
+
 				prepared[preparedCount++] = { job, operation };
 				job.nextOperation++;
 				operationCount++;
 			}
 
-			if (job.nextOperation === job.operations.length) {
+			if (job.nextOperation === operations.length) {
 				queueIndex++;
 			} else {
 				break;
 			}
 		}
-
-		prepared.length = preparedCount;
 
 		if (operationCount === 0) {
 			this.settleFinishedJobs();
@@ -793,22 +833,24 @@ export class LevelDbChunkStore {
 		} catch (error) {
 			const commitError =
 				error instanceof Error ? error : new Error(String(error));
-			(globalThis as any).__dbg?.(
-				"commitNextTransaction caught:",
-				commitError.message,
+
+			this.rejectAffectedJobs(
+				preparedCount === prepared.length
+					? prepared
+					: prepared.slice(0, preparedCount),
+				commitError,
 			);
-			this.rejectAffectedJobs(prepared, commitError);
+
 			this.skipCancelledEntries();
-			(globalThis as any).__dbg?.(
-				"pump head after catch:",
-				this.writeQueueHead,
-				"/",
-				this.writeQueue.length,
-			);
 			return;
 		}
 
-		this.publishCommittedOperations(prepared);
+		this.publishCommittedOperations(
+			preparedCount === prepared.length
+				? prepared
+				: prepared.slice(0, preparedCount),
+		);
+
 		this.skipCancelledEntries();
 		this.settleFinishedJobs();
 	}
@@ -874,20 +916,30 @@ export class LevelDbChunkStore {
 	private publishCommittedOperations(
 		prepared: readonly PreparedOperation[],
 	): void {
-		for (let i = 0; i < prepared.length; i++) {
-			const { job, operation } = prepared[i];
-			if (job.cancelled) continue;
+		const pendingDeletes = this.pendingDeletes;
+		const cache = this.cache;
+		const touched = this.touched;
+
+		for (let i = 0, len = prepared.length; i < len; i++) {
+			const preparedOperation = prepared[i];
+			const job = preparedOperation.job;
+
+			if (job.cancelled) {
+				continue;
+			}
+
+			const operation = preparedOperation.operation;
+			const key = operation.key;
+
 			if (operation.kind === "put") {
 				if (operation.value instanceof Uint8Array) {
-					// A later successful put clears the tombstone so a newly
-					// fetched valid chunk can recover a tombstoned key.
-					this.pendingDeletes.delete(operation.key);
-					this.addToCache(operation.key, operation.value);
+					pendingDeletes.delete(key);
+					this.addToCache(key, operation.value);
 				}
 			} else {
-				this.pendingDeletes.delete(operation.key);
-				this.cache.delete(operation.key);
-				this.touched.delete(operation.key);
+				pendingDeletes.delete(key);
+				cache.delete(key);
+				touched.delete(key);
 			}
 		}
 	}
@@ -915,14 +967,20 @@ export class LevelDbChunkStore {
 		error: Error,
 	): void {
 		let previousJob: WriteJob | undefined;
-		for (let i = 0; i < prepared.length; i++) {
+
+		for (let i = 0, len = prepared.length; i < len; i++) {
 			const job = prepared[i].job;
-			if (job === previousJob) continue;
+
+			if (job === previousJob) {
+				continue;
+			}
+
 			previousJob = job;
 			job.cancelled = true;
 			job.nextOperation = job.operations.length;
 			this.rejectJob(job, error);
 		}
+
 		this.pendingBarrierError ??= error;
 	}
 
@@ -999,44 +1057,55 @@ export class LevelDbChunkStore {
 	 */
 	private async _getMany(keys: string[]): Promise<Map<string, Uint8Array>> {
 		const results = new Map<string, Uint8Array>();
-		if (keys.length === 0 || !this.db) return results;
+		const len = keys.length;
+
+		if (len === 0 || !this.db) {
+			return results;
+		}
+
 		try {
-			let values: Array<any>;
-			if (typeof window !== "undefined") {
-				values = await (this.db as IndexedDbStore).getMany(keys);
-			} else {
-				values = await this.db.getMany(keys);
-			}
-			for (let i = 0; i < keys.length; i++) {
+			const values: Array<any> =
+				typeof window !== "undefined"
+					? await (this.db as IndexedDbStore).getMany(keys)
+					: await this.db.getMany(keys);
+
+			for (let i = 0; i < len; i++) {
 				const value = values[i];
-				if (value != null) {
-					const data =
-						value instanceof Uint8Array
-							? value
-							: new Uint8Array(value as ArrayBuffer);
-					results.set(keys[i], data);
+
+				if (value == null) {
+					continue;
 				}
+
+				const data =
+					value instanceof Uint8Array
+						? value
+						: new Uint8Array(value as ArrayBuffer);
+
+				results.set(keys[i], data);
 			}
 		} catch (err) {
-			console.warn(`[LevelDb] _getMany failed for ${keys.length} keys:`, err);
+			console.warn(`[LevelDb] _getMany failed for ${len} keys:`, err);
 		}
+
 		return results;
 	}
 
 	private addToCache(key: string, data: Uint8Array): void {
 		if (this.maxCacheSize === 0) return;
-		if (this.cache.has(key)) {
-			// Entry already in cache — update the data and mark it touched
-			// (protects it from the next second-chance sweep) without
-			// paying for a delete+reinsert into the ordered Map.
-			this.cache.set(key, data);
+
+		const cache = this.cache;
+
+		if (cache.has(key)) {
+			cache.set(key, data);
 			this.touched.add(key);
 			return;
 		}
-		if (this.cache.size >= this.maxCacheSize) {
+
+		if (cache.size >= this.maxCacheSize) {
 			this.evictOne();
 		}
-		this.cache.set(key, data);
+
+		cache.set(key, data);
 	}
 
 	/**
@@ -1046,17 +1115,23 @@ export class LevelDbChunkStore {
 	 * — instead of evicting it outright.
 	 */
 	private evictOne(): void {
-		for (const key of this.cache.keys()) {
-			if (this.touched.delete(key)) continue;
-			this.cache.delete(key);
+		const cache = this.cache;
+		const touched = this.touched;
+
+		for (const key of cache.keys()) {
+			if (touched.delete(key)) {
+				continue;
+			}
+
+			cache.delete(key);
 			return;
 		}
-		// Every entry in the cache was touched during this sweep — evict
-		// the oldest anyway so inserts always make forward progress.
-		const oldest = this.cache.keys().next().value;
+
+		const oldest = cache.keys().next().value as string | undefined;
+
 		if (oldest !== undefined) {
-			this.touched.delete(oldest);
-			this.cache.delete(oldest);
+			touched.delete(oldest);
+			cache.delete(oldest);
 		}
 	}
 
@@ -1156,19 +1231,43 @@ class IndexedDbStore {
 
 	async has(keys: string[]): Promise<Set<string>> {
 		if (!this.db) throw new Error("IndexedDbStore not open");
-		if (keys.length === 0) return new Set();
+
+		const len = keys.length;
+		if (len === 0) return new Set();
+
 		return new Promise<Set<string>>((resolve, reject) => {
 			const found = new Set<string>();
 			const tx = this.db!.transaction(this.storeName, "readonly");
 			const store = tx.objectStore(this.storeName);
-			let pending = keys.length;
-			for (const key of keys) {
-				const req = store.count(key);
+
+			let pending = len;
+			let settled = false;
+
+			const fail = () => {
+				if (settled) return;
+				settled = true;
+				reject(tx.error ?? new Error("IndexedDB has() failed"));
+			};
+
+			tx.onerror = fail;
+			tx.onabort = fail;
+
+			for (let i = 0; i < len; i++) {
+				const key = keys[i];
+				const req = store.getKey(key);
+
 				req.onsuccess = () => {
-					if (req.result > 0) found.add(key);
-					if (--pending === 0) resolve(found);
+					if (req.result !== undefined) {
+						found.add(key);
+					}
+
+					if (--pending === 0 && !settled) {
+						settled = true;
+						resolve(found);
+					}
 				};
-				req.onerror = () => reject(req.error);
+
+				req.onerror = fail;
 			}
 		});
 	}
@@ -1180,33 +1279,57 @@ class IndexedDbStore {
 	 */
 	async getMany(keys: string[]): Promise<Array<Uint8Array | undefined>> {
 		if (!this.db) throw new Error("IndexedDbStore not open");
-		if (keys.length === 0) return [];
+
+		const len = keys.length;
+		if (len === 0) return [];
+
 		return new Promise<Array<Uint8Array | undefined>>((resolve, reject) => {
-			const results: Array<Uint8Array | undefined> = new Array(keys.length);
+			const results: Array<Uint8Array | undefined> = new Array(len);
 			const tx = this.db!.transaction(this.storeName, "readonly");
 			const store = tx.objectStore(this.storeName);
-			let pending = keys.length;
-			for (let i = 0; i < keys.length; i++) {
-				const req = store.get(keys[i]);
+
+			let pending = len;
+			let settled = false;
+
+			const fail = () => {
+				if (settled) return;
+				settled = true;
+				reject(tx.error ?? new Error("IndexedDB getMany() failed"));
+			};
+
+			tx.onerror = fail;
+			tx.onabort = fail;
+
+			for (let i = 0; i < len; i++) {
+				const index = i;
+				const req = store.get(keys[index]);
+
 				req.onsuccess = () => {
 					const value = req.result;
+
 					if (value instanceof Uint8Array) {
-						results[i] = value;
+						results[index] = value;
 					} else if (value instanceof ArrayBuffer) {
-						results[i] = new Uint8Array(value);
+						results[index] = new Uint8Array(value);
 					} else {
-						results[i] = undefined;
+						results[index] = undefined;
 					}
-					if (--pending === 0) resolve(results);
+
+					if (--pending === 0 && !settled) {
+						settled = true;
+						resolve(results);
+					}
 				};
-				req.onerror = () => reject(req.error);
+
+				req.onerror = fail;
 			}
 		});
 	}
 }
 
 class IndexedDbBatch {
-	private ops: Array<{ key: string; value: Uint8Array | string | null }> = [];
+	private keys: string[] = [];
+	private values: Array<Uint8Array | string | null> = [];
 
 	constructor(
 		private db: IDBDatabase,
@@ -1214,37 +1337,45 @@ class IndexedDbBatch {
 	) {}
 
 	put(key: string, value: Uint8Array | string): void {
-		this.ops.push({ key, value });
+		this.keys.push(key);
+		this.values.push(value);
 	}
 
 	del(key: string): void {
-		this.ops.push({ key, value: null });
+		this.keys.push(key);
+		this.values.push(null);
 	}
 
-	/**
-	 * One readwrite transaction for all queued operations. Resolves only
-	 * on tx.oncomplete (the commit boundary), rejects on error/abort; no
-	 * per-request success handlers.
-	 */
 	async write(): Promise<void> {
-		if (this.ops.length === 0) return;
-		const ops = this.ops;
-		this.ops = [];
+		const keys = this.keys;
+		const values = this.values;
+		const len = keys.length;
+
+		if (len === 0) return;
+
+		this.keys = [];
+		this.values = [];
+
 		await new Promise<void>((resolve, reject) => {
 			const tx = this.db.transaction(this.storeName, "readwrite");
 			const store = tx.objectStore(this.storeName);
-			for (let i = 0; i < ops.length; i++) {
-				const operation = ops[i];
-				if (operation.value === null) {
-					store.delete(operation.key);
+
+			for (let i = 0; i < len; i++) {
+				const value = values[i];
+
+				if (value === null) {
+					store.delete(keys[i]);
 				} else {
-					store.put(operation.value, operation.key);
+					store.put(value, keys[i]);
 				}
 			}
+
 			tx.oncomplete = () => resolve();
+
 			const fail = () => {
 				reject(tx.error ?? new Error("IndexedDB transaction failed"));
 			};
+
 			tx.onerror = fail;
 			tx.onabort = fail;
 		});
