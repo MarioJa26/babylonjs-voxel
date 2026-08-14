@@ -11,23 +11,44 @@ export const MeshEmitters = {
 	buildVoxelMesh,
 };
 
+const FACE_DATA_WORDS_PER_QUAD = 4;
+const CUSTOM_SHAPE_QUAD_HEADROOM_PER_BLOCK = 16;
+const GREEDY_FACE_HEADROOM_FACTOR = 3;
+
 /**
- * Reserve capacity for a full chunk build ONCE, up front, so the hot-path
+ * Reserve capacity for a full chunk build once, up front, so the hot-path
  * emitters can write branchlessly without per-emit ensureCapacity checks.
  *
- * maxQuads is a true upper bound: greedy emits at most 3*size*size merged
- * faces; custom shapes (fences, etc.) add more, so we size for size^3 blocks
- * with headroom. The ResizableTypedArray keeps capacity across builds (reset()
- * only zeroes length), so this stays allocated after the first build.
+ * maxQuads is an intentional upper bound:
+ *   - greedy emits at most 3 * size * size merged faces
+ *   - custom shapes can emit many more, so reserve size^3 * 16 headroom
+ *
+ * ResizableTypedArray keeps backing capacity across builds, so after the first
+ * large enough reservation this usually becomes a cheap no-op.
  */
 export function reserveMeshCapacity(
 	out: WorkerInternalMeshData,
 	maxQuads: number,
 ): void {
-	const cap = maxQuads << 2; // 4 entries per face
-	out.faceDataA.ensureCapacity(cap);
-	out.faceDataB.ensureCapacity(cap);
-	out.faceDataC.ensureCapacity(cap);
+	const requiredEntries = maxQuads * FACE_DATA_WORDS_PER_QUAD;
+
+	const faceDataA = out.faceDataA;
+	const faceDataB = out.faceDataB;
+	const faceDataC = out.faceDataC;
+
+	// Avoid calling ensureCapacity repeatedly once the reused buffers are large
+	// enough. This keeps the common rebuild path to a few direct length checks.
+	if (
+		faceDataA.backingArray.length >= requiredEntries &&
+		faceDataB.backingArray.length >= requiredEntries &&
+		faceDataC.backingArray.length >= requiredEntries
+	) {
+		return;
+	}
+
+	faceDataA.ensureCapacity(requiredEntries);
+	faceDataB.ensureCapacity(requiredEntries);
+	faceDataC.ensureCapacity(requiredEntries);
 }
 
 /**
@@ -35,34 +56,39 @@ export function reserveMeshCapacity(
  * buffers.
  *
  * The session carries the padded grids, greedy scratch buffers and the cached
- * VoxelPipeline (created once per worker), so a session can be reused across
- * builds on the single-threaded worker with zero per-build allocation.
+ * VoxelPipeline, so a session can be reused across builds on the single-threaded
+ * worker with minimal per-build allocation.
  */
 export function buildVoxelMesh(
 	session: MeshBuildSession,
 	opaqueOut: WorkerInternalMeshData,
 	transparentOut: WorkerInternalMeshData,
 ): void {
-	// Pre-occupy capacity once so the emitters never check/grow per quad.
-	// True upper bound: greedy merges to <= 3*size^2 faces; custom shapes
-	// (e.g. fences, ~15 quads/block worst case) can emit many more, so size
-	// for size^3 * 16 blocks + greedy headroom. Overestimate is transient
-	// (arrays are sliced to actual length and discarded after the build).
 	const size = session.size;
-	const maxQuads = size * size * size * 16 + 3 * size * size;
+	const sizeSquared = size * size;
+
+	const maxQuads =
+		sizeSquared *
+		(size * CUSTOM_SHAPE_QUAD_HEADROOM_PER_BLOCK + GREEDY_FACE_HEADROOM_FACTOR);
+
 	reserveMeshCapacity(opaqueOut, maxQuads);
 	reserveMeshCapacity(transparentOut, maxQuads);
 
-	// Point the session's quad buffers at the (reused) output meshes.
-	// bind() zeroes the internal face counter; the worker already reset the
-	// ResizableTypedArray lengths + faceCount before calling this.
+	// bind() resets visible lengths and faceCount, then emits write directly
+	// into the reused backing arrays.
 	session.quadOpaque.bind(opaqueOut);
 	session.quadTransparent.bind(transparentOut);
 
 	let pipeline = session.pipeline;
+
 	if (!pipeline) {
 		pipeline = new VoxelPipeline(session);
 		session.pipeline = pipeline;
 	}
+
 	pipeline.build();
+
+	// Publish final lengths once after all emitters have completed.
+	session.quadOpaque.finish();
+	session.quadTransparent.finish();
 }

@@ -7,6 +7,14 @@ import { VoxelFaceEmitterAdapter } from "./VoxelFaceEmitterAdapter";
 import { extractSliceMask } from "./VoxelMaskExtractor";
 import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
+type ExtractMaskCallback = (
+	slice: number,
+	maskBuf: WritableNumberArray,
+	lightBuf: WritableNumberArray,
+) => void;
+
+type EmitFaceCallback = (desc: GreedyFaceDescriptor) => void;
+
 /**
  * Drives the greedy mesher across all 3 axes (X, Y, Z),
  * using the stateless VoxelMaskExtractor and VoxelFaceEmitterAdapter.
@@ -14,59 +22,90 @@ import type { MeshBuildSession } from "./WorkerMeshHelpers";
  * This is the "middle layer" of the voxel meshing pipeline:
  *
  * Input:
- *   - session → padded block/light grids + scratch buffers + quad outputs
+ *   - session -> padded block/light grids + scratch buffers + quad outputs
  *
  * Output:
  *   - session.quadOpaque / session.quadTransparent filled with quads
  *
- * The adapter instance is cached per session (pipeline), so the closures
- * below are created once per worker instead of once per chunk build.
+ * The adapter instance is cached per session, so all callbacks below are
+ * created once per worker pipeline instead of once per chunk build.
  */
 export class VoxelGreedyAdapter {
 	private readonly _session: MeshBuildSession;
-	private faceEmitter: VoxelFaceEmitterAdapter;
-	// PERF: Pre-create closures once instead of re-creating per axis per build.
-	private readonly _extractMask: (
-		slice: number,
-		maskBuf: WritableNumberArray,
-		lightBuf: WritableNumberArray,
-	) => void;
-	private readonly _emitFace: (desc: GreedyFaceDescriptor) => void;
-	// Set by build() before each axis run so the closures capture a number, not
-	// a closure parameter — avoids per-axis closure re-creation.
-	private _currentAxis = 0;
+	private readonly _faceEmitter: VoxelFaceEmitterAdapter;
+
+	/**
+	 * Axis-specialized callbacks.
+	 *
+	 * Slightly more closures upfront, but avoids reading a mutable
+	 * `_currentAxis` property inside the hot greedy callback path.
+	 */
+	private readonly _extractMaskByAxis: readonly [
+		ExtractMaskCallback,
+		ExtractMaskCallback,
+		ExtractMaskCallback,
+	];
+
+	private readonly _emitFaceByAxis: readonly [
+		EmitFaceCallback,
+		EmitFaceCallback,
+		EmitFaceCallback,
+	];
 
 	constructor(session: MeshBuildSession) {
 		this._session = session;
-		this.faceEmitter = new VoxelFaceEmitterAdapter(session);
 
-		this._extractMask = (
-			slice: number,
-			maskBuf: WritableNumberArray,
-			lightBuf: WritableNumberArray,
-		) => {
-			extractSliceMask(
-				this._session,
-				this._currentAxis,
-				slice,
-				maskBuf,
-				lightBuf,
-			);
-		};
+		const faceEmitter = new VoxelFaceEmitterAdapter(session);
+		this._faceEmitter = faceEmitter;
 
-		this._emitFace = (desc: GreedyFaceDescriptor) => {
-			this.faceEmitter.emitVoxelFace(this._currentAxis, desc);
-		};
+		this._extractMaskByAxis = [
+			(
+				slice: number,
+				maskBuf: WritableNumberArray,
+				lightBuf: WritableNumberArray,
+			): void => {
+				extractSliceMask(session, 0, slice, maskBuf, lightBuf);
+			},
+			(
+				slice: number,
+				maskBuf: WritableNumberArray,
+				lightBuf: WritableNumberArray,
+			): void => {
+				extractSliceMask(session, 1, slice, maskBuf, lightBuf);
+			},
+			(
+				slice: number,
+				maskBuf: WritableNumberArray,
+				lightBuf: WritableNumberArray,
+			): void => {
+				extractSliceMask(session, 2, slice, maskBuf, lightBuf);
+			},
+		];
+
+		this._emitFaceByAxis = [
+			(desc: GreedyFaceDescriptor): void => {
+				faceEmitter.emitVoxelFace(0, desc);
+			},
+			(desc: GreedyFaceDescriptor): void => {
+				faceEmitter.emitVoxelFace(1, desc);
+			},
+			(desc: GreedyFaceDescriptor): void => {
+				faceEmitter.emitVoxelFace(2, desc);
+			},
+		];
 	}
 
 	/**
 	 * Runs greedy meshing on all 3 axes.
-	 * Emits quads for ALL voxel faces into the session's quad buffers.
+	 * Emits quads for all voxel faces into the session's quad buffers.
 	 */
 	public build(): void {
-		for (let axis = 0; axis < 3; axis++) {
-			this._currentAxis = axis;
-			greedyMesh(this._session, this._extractMask, this._emitFace);
-		}
+		const session = this._session;
+		const extractMaskByAxis = this._extractMaskByAxis;
+		const emitFaceByAxis = this._emitFaceByAxis;
+
+		greedyMesh(session, extractMaskByAxis[0], emitFaceByAxis[0]);
+		greedyMesh(session, extractMaskByAxis[1], emitFaceByAxis[1]);
+		greedyMesh(session, extractMaskByAxis[2], emitFaceByAxis[2]);
 	}
 }
