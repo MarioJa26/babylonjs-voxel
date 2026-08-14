@@ -229,7 +229,7 @@ const processScheduler = new ChunkProcessScheduler({
 
 // After each processQueues continuation slice, pump remote generation.
 processScheduler.onContinuationSlice = () => {
-	ChunkWorkerPool.getInstance(2).pumpRemoteGeneration();
+	ChunkWorkerPool.getInstance().pumpRemoteGeneration();
 };
 
 function isEntityAlive(entity: ChunkBoundEntity): boolean {
@@ -443,7 +443,7 @@ export async function processFrameBudgetedStreamingWork(
 	// Always pump remote generation every frame. This sends queued chunks
 	// to the server. Even if processQueues hasn't reached ScheduleGeneration
 	// yet, pumping is a no-op when the queue is empty.
-	const pool = ChunkWorkerPool.getInstance(2);
+	const pool = ChunkWorkerPool.getInstance();
 	if (performance.now() - sliceStart > getProcessFrameBudgetMs() * 4) {
 		// The streaming slice already consumed its share of the frame —
 		// defer the remote pump to a macrotask so its IndexedDB read + apply

@@ -150,7 +150,7 @@ export class NetworkManager {
 				console.log(`[NetworkManager] Received server seed: ${seed}`);
 				this.serverSeed = seed;
 				setTerrainSeed(seed);
-				ChunkWorkerPool.getInstance(2)?.setWorldSeed(seed);
+				ChunkWorkerPool.getInstance()?.setWorldSeed(seed);
 				resetDistantTerrain();
 			},
 			onSpawnPosition: (pos) => {
@@ -169,7 +169,7 @@ export class NetworkManager {
 		// generated locally) until the server connection is live. This must
 		// happen before any chunk streaming starts, which begins as soon as the
 		// world finishes initializing.
-		ChunkWorkerPool.getInstance(2)?.enableRemoteMode();
+		ChunkWorkerPool.getInstance()?.enableRemoteMode();
 
 		const t0 = performance.now();
 		console.log(`[MP-connect] enableRemoteMode @ ${t0.toFixed(0)}ms`);
@@ -200,12 +200,12 @@ export class NetworkManager {
 			// Connection failed — abandon multiplayer mode so the world falls
 			// back to local terrain generation instead of stalling on deferred
 			// chunks that will never arrive from a server.
-			ChunkWorkerPool.getInstance(2)?.disableRemoteMode();
+			ChunkWorkerPool.getInstance()?.disableRemoteMode();
 			throw err;
 		}
 
 		// Enable server-side chunk generation
-		ChunkWorkerPool.getInstance(2)?.setRemoteChunkProvider(this.chunkProvider);
+		ChunkWorkerPool.getInstance()?.setRemoteChunkProvider(this.chunkProvider);
 	}
 
 	/**
@@ -495,7 +495,7 @@ export class NetworkManager {
 	}
 
 	disconnect(): void {
-		ChunkWorkerPool.getInstance(2)?.setRemoteChunkProvider(null);
+		ChunkWorkerPool.getInstance()?.setRemoteChunkProvider(null);
 		this.client.disconnect();
 		this.renderer.dispose();
 		this.hud.dispose();

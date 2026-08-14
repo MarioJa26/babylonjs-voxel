@@ -55,8 +55,13 @@ const NAME_TAG_PADDING = 12;
 const NAME_TAG_HEIGHT_WORLD = 0.55;
 const NAME_TAG_Y_OFFSET = 1.5;
 const NAME_TAG_TEX_HEIGHT = 64; // texture pixel height
+
+const NAME_TAG_MAX_TEX_WIDTH = 384;
+2;
+const NAME_TAG_MIN_TEX_WIDTH = 32;
 //const NAME_TAG_FONT = "Arial";
 const NAME_TAG_FONT = "monospace";
+const ELLIPSIS = "…";
 
 const DEG_TO_RAD = Math.PI / 180;
 
@@ -86,6 +91,63 @@ function getMeasureCtx(): OffscreenCanvasRenderingContext2D {
 	return _measureCtx;
 }
 
+function clampInt(value: number, min: number, max: number): number {
+	return value < min ? min : value > max ? max : value | 0;
+}
+
+/**
+ * Fast deterministic hash for stable player colors.
+ * This avoids color changes caused by join/leave order.
+ */
+function hashString32(value: string): number {
+	let hash = 2166136261;
+	for (let i = 0; i < value.length; i++) {
+		hash ^= value.charCodeAt(i);
+		hash = Math.imul(hash, 16777619);
+	}
+	return hash >>> 0;
+}
+
+function getColorIndexForSession(sessionId: string): number {
+	return hashString32(sessionId) % PLAYER_COLORS.length;
+}
+
+/**
+ * Restricts text to fit inside maxTextWidthPx.
+ * This only runs when a name tag is created, not per frame.
+ */
+function fitTextWithEllipsis(
+	ctx: OffscreenCanvasRenderingContext2D,
+	text: string,
+	maxTextWidthPx: number,
+): string {
+	if (ctx.measureText(text).width <= maxTextWidthPx) {
+		return text;
+	}
+
+	const ellipsisWidth = ctx.measureText(ELLIPSIS).width;
+	if (ellipsisWidth >= maxTextWidthPx) {
+		return ELLIPSIS;
+	}
+
+	let lo = 0;
+	let hi = text.length;
+	let best = ELLIPSIS;
+
+	while (lo <= hi) {
+		const mid = (lo + hi) >> 1;
+		const candidate = text.slice(0, mid) + ELLIPSIS;
+
+		if (ctx.measureText(candidate).width <= maxTextWidthPx) {
+			best = candidate;
+			lo = mid + 1;
+		} else {
+			hi = mid - 1;
+		}
+	}
+
+	return best;
+}
 /**
  * Rasterise a player name onto an OffscreenCanvas with Minecraft-style
  * dark background + white text, then return the canvas and its measured
@@ -99,41 +161,61 @@ function rasteriseNameTag(name: string): {
 	width: number;
 	height: number;
 } {
+	const safeName = name && name.length > 0 ? name : "Player";
+
 	const measureCtx = getMeasureCtx();
 	measureCtx.font = `bold ${NAME_TAG_FONT_PX}px ${NAME_TAG_FONT}`;
-	const textWidth = measureCtx.measureText(name).width;
-	const bgWidth = Math.ceil(textWidth + NAME_TAG_PADDING * 2);
+
+	const maxTextWidth = NAME_TAG_MAX_TEX_WIDTH - NAME_TAG_PADDING * 2;
+	const displayName = fitTextWithEllipsis(measureCtx, safeName, maxTextWidth);
+	const textWidth = measureCtx.measureText(displayName).width;
+
+	const bgWidth = clampInt(
+		Math.ceil(textWidth + NAME_TAG_PADDING * 2),
+		NAME_TAG_MIN_TEX_WIDTH,
+		NAME_TAG_MAX_TEX_WIDTH,
+	);
+
 	const bgHeight = NAME_TAG_TEX_HEIGHT;
 
 	const canvas = new OffscreenCanvas(bgWidth, bgHeight);
 	const ctx = canvas.getContext("2d")!;
+
 	ctx.font = measureCtx.font;
-
-	// Freshly created canvases are already fully transparent — no clearRect needed.
-
-	// Draw dark background band (same vertical band as before, now full-width
-	// since the canvas is already trimmed to the content width).
-	const by = (bgHeight - NAME_TAG_FONT_PX - 4) / 2 - 4;
-	ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
-	ctx.fillRect(0, by, bgWidth, NAME_TAG_FONT_PX + 10);
-
-	// Draw white text, centred
-	ctx.fillStyle = "#ffffffff";
 	ctx.textAlign = "center";
 	ctx.textBaseline = "middle";
-	ctx.fillText(name, bgWidth / 2, bgHeight / 2);
 
-	return { canvas, width: bgWidth, height: bgHeight };
+	const bandHeight = NAME_TAG_FONT_PX + 10;
+	const bandY = ((bgHeight - bandHeight) * 0.5) | 0;
+
+	ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+	ctx.fillRect(0, bandY, bgWidth, bandHeight);
+
+	ctx.fillStyle = "#ffffffff";
+	ctx.fillText(displayName, bgWidth * 0.5, bgHeight * 0.5);
+
+	return {
+		canvas,
+		width: bgWidth,
+		height: bgHeight,
+	};
 }
 
 export class RemotePlayerVisual {
 	readonly mesh: Mesh;
+
 	private tex: DynamicTexture2D;
 	private atlas: SpriteAtlas;
 	private billboard: FacingBillboardSpriteSystem;
 
-	// Scratch state reused every frame — zero allocations in update().
+	private lastX = Number.NaN;
+	private lastY = Number.NaN;
+	private lastZ = Number.NaN;
+	private lastYaw = Number.NaN;
+
+	// Scratch state reused every frame.
 	private readonly _pos: [number, number, number] = [0, 0, 0];
+
 	private readonly _billboardOpts: {
 		position: [number, number, number];
 		sizeWorld: [number, number];
@@ -141,67 +223,80 @@ export class RemotePlayerVisual {
 	};
 
 	constructor(
-		engine: EngineContext,
+		private engine: EngineContext,
 		private scene: SceneContext,
 		private player: RemotePlayer,
 		material: PlayerMaterial,
 	) {
-		// Player capsule
 		this.mesh = createCapsule(engine, {
 			height: PLAYER_HEIGHT,
 			radius: PLAYER_RADIUS,
 		});
+
 		this.mesh.material = material;
 		this.mesh.pickable = false;
+
 		addToScene(this.scene, this.mesh);
 
-		// Rasterise name tag to a canvas
 		const { canvas, width: texW, height: texH } = rasteriseNameTag(player.name);
-
-		// Compute world-space billboard width to preserve aspect ratio
 		const nameTagWidthWorld = NAME_TAG_HEIGHT_WORLD * (texW / texH);
 
-		// Create GPU texture and upload the canvas pixels
 		this.tex = createDynamicTexture(engine, texW, texH, {
 			magFilter: "linear",
 			minFilter: "linear",
 			srgb: true,
 		});
+
 		updateDynamicTexture(engine, this.tex, canvas, { invertY: false });
 
-		// 1-frame sprite atlas (the whole texture is one frame)
 		this.atlas = createGridSpriteAtlas(this.tex, {
 			cellWidthPx: texW,
 			cellHeightPx: texH,
 		});
 
-		// Billboard system — one sprite capacity per player
 		this.billboard = createFacingBillboardSystem(this.atlas, {
 			capacity: 1,
 			blendMode: billboardBlendAlpha,
 		});
+
 		addFacingBillboardSystem(this.scene, this.billboard);
 
-		// Built once; `position` aliases `_pos` so mutating `_pos` each frame
-		// is automatically reflected here without re-allocating the object.
 		this._billboardOpts = {
 			position: this._pos,
 			sizeWorld: [nameTagWidthWorld, NAME_TAG_HEIGHT_WORLD],
 			color: WHITE_COLOR,
 		};
+
+		// Force initial placement on first update.
+		this.update();
 	}
 
 	update(): void {
-		// Capsule position + rotation
-		this.mesh.position.set(this.player.x, this.player.y, this.player.z);
-		this.mesh.rotation.y = this.player.yaw * DEG_TO_RAD;
+		const x = this.player.x;
+		const y = this.player.y;
+		const z = this.player.z;
+		const yaw = this.player.yaw;
 
-		// Name tag billboard (above head, always facing camera) — mutate the
-		// scratch position in place instead of allocating a new options object
-		// and new arrays every frame.
-		this._pos[0] = this.player.x;
-		this._pos[1] = this.player.y + NAME_TAG_Y_OFFSET;
-		this._pos[2] = this.player.z;
+		if (
+			x === this.lastX &&
+			y === this.lastY &&
+			z === this.lastZ &&
+			yaw === this.lastYaw
+		) {
+			return;
+		}
+
+		this.lastX = x;
+		this.lastY = y;
+		this.lastZ = z;
+		this.lastYaw = yaw;
+
+		this.mesh.position.set(x, y, z);
+		this.mesh.rotation.y = yaw * DEG_TO_RAD;
+
+		this._pos[0] = x;
+		this._pos[1] = y + NAME_TAG_Y_OFFSET;
+		this._pos[2] = z;
 
 		clearBillboardSprites(this.billboard);
 		addBillboardSpriteIndex(this.billboard, this._billboardOpts);
@@ -210,39 +305,40 @@ export class RemotePlayerVisual {
 	dispose(): void {
 		this.billboard.visible = false;
 		clearBillboardSprites(this.billboard);
+
 		removeFromScene(this.scene, this.mesh);
-		const engine = (this.scene as any).surface?.engine;
-		if (engine) {
-			void onGpuWorkDone(engine).then(() => {
-				disposeMeshGpu(this.mesh);
-			});
-		} else {
-			disposeMeshGpu(this.mesh);
-		}
-		// Material is pooled/owned by RemotePlayerRenderer — not disposed here.
+
+		const mesh = this.mesh;
+		const engine = this.engine;
+
+		void onGpuWorkDone(engine).then(
+			() => {
+				disposeMeshGpu(mesh);
+			},
+			() => {
+				disposeMeshGpu(mesh);
+			},
+		);
+
+		// If @babylonjs/lite exposes explicit disposal functions for
+		// FacingBillboardSpriteSystem, SpriteAtlas, or DynamicTexture2D,
+		// call them here as well. The current imports only expose disposeMeshGpu.
+		//
+		// Material is pooled and owned by RemotePlayerRenderer.
 	}
 }
 
 export class RemotePlayerRenderer {
-	// Flat, swap-remove array instead of a Map: iteration in `update()` is the
-	// hot path (every frame, every remote player), while join/leave are rare —
-	// so pay the O(1) index-lookup cost there and keep the frame loop a plain
-	// array walk with no iterator allocation.
 	private list: RemotePlayerVisual[] = [];
 	private ids: string[] = [];
 	private indexById = new Map<string, number>();
 
-	// Up to 8 shared materials (one per palette color) instead of one per
-	// player — color is purely a function of colorIndex, so players sharing
-	// an index already rendered identically; this just stops re-creating
-	// equivalent materials.
 	private materialPool: (PlayerMaterial | null)[] = new Array(
 		PLAYER_COLORS.length,
 	).fill(null);
 
-	// rebuildSceneRenderables is scene-wide, not per-mesh — batch it so N
-	// players joining in one frame trigger one rebuild instead of N.
 	private pendingFlush = false;
+	private rebuildInFlight = false;
 
 	private scene: SceneContext;
 	private engine: EngineContext;
@@ -254,20 +350,49 @@ export class RemotePlayerRenderer {
 
 	private getMaterial(colorIndex: number): PlayerMaterial {
 		let mat = this.materialPool[colorIndex];
-		if (!mat) {
+
+		if (mat === null) {
 			mat = createStandardMaterial();
 			mat.emissiveColor = PLAYER_COLORS[colorIndex];
 			mat.disableLighting = true;
 			this.materialPool[colorIndex] = mat;
 		}
+
 		return mat;
 	}
 
-	onPlayerJoin(player: RemotePlayer): void {
-		if (this.indexById.has(player.sessionId)) return;
+	private requestSceneRenderableFlush(): void {
+		this.pendingFlush = true;
+	}
 
-		const colorIndex = this.list.length % PLAYER_COLORS.length;
+	private flushSceneRenderablesIfNeeded(): void {
+		if (!this.pendingFlush || this.rebuildInFlight) {
+			return;
+		}
+
+		this.pendingFlush = false;
+		this.rebuildInFlight = true;
+
+		void rebuildSceneRenderables(this.scene).then(
+			() => {
+				this.rebuildInFlight = false;
+			},
+			() => {
+				this.rebuildInFlight = false;
+			},
+		);
+	}
+
+	onPlayerJoin(player: RemotePlayer): void {
+		const sessionId = player.sessionId;
+
+		if (this.indexById.has(sessionId)) {
+			return;
+		}
+
+		const colorIndex = getColorIndexForSession(sessionId);
 		const material = this.getMaterial(colorIndex);
+
 		const visual = new RemotePlayerVisual(
 			this.engine,
 			this.scene,
@@ -275,53 +400,71 @@ export class RemotePlayerRenderer {
 			material,
 		);
 
-		this.indexById.set(player.sessionId, this.list.length);
+		const index = this.list.length;
+
+		this.indexById.set(sessionId, index);
 		this.list.push(visual);
-		this.ids.push(player.sessionId);
-		this.pendingFlush = true;
+		this.ids.push(sessionId);
+
+		this.requestSceneRenderableFlush();
 	}
 
 	onPlayerLeave(sessionId: string): void {
 		const index = this.indexById.get(sessionId);
-		if (index === undefined) return;
 
-		this.list[index].dispose();
+		if (index === undefined) {
+			return;
+		}
 
-		// Swap-remove: move the last element into the freed slot.
-		const lastIndex = this.list.length - 1;
+		const list = this.list;
+		const ids = this.ids;
+		const lastIndex = list.length - 1;
+
+		list[index].dispose();
+
 		if (index !== lastIndex) {
-			const movedVisual = this.list[lastIndex];
-			const movedId = this.ids[lastIndex];
-			this.list[index] = movedVisual;
-			this.ids[index] = movedId;
+			const movedVisual = list[lastIndex];
+			const movedId = ids[lastIndex];
+
+			list[index] = movedVisual;
+			ids[index] = movedId;
+
 			this.indexById.set(movedId, index);
 		}
-		this.list.pop();
-		this.ids.pop();
+
+		list.pop();
+		ids.pop();
 		this.indexById.delete(sessionId);
-		this.pendingFlush = true;
+
+		this.requestSceneRenderableFlush();
 	}
 
 	update(_camera: any, _screenW: number, _screenH: number): void {
-		if (this.pendingFlush) {
-			rebuildSceneRenderables(this.scene).catch(() => {});
-			this.pendingFlush = false;
-		}
-		for (let i = 0; i < this.list.length; i++) {
-			this.list[i].update();
+		this.flushSceneRenderablesIfNeeded();
+
+		const list = this.list;
+		const count = list.length;
+
+		for (let i = 0; i < count; i++) {
+			list[i].update();
 		}
 	}
 
 	dispose(): void {
-		for (let i = 0; i < this.list.length; i++) {
-			this.list[i].dispose();
+		const list = this.list;
+
+		for (let i = 0; i < list.length; i++) {
+			list[i].dispose();
 		}
-		this.list.length = 0;
+
+		list.length = 0;
 		this.ids.length = 0;
 		this.indexById.clear();
-		// Pooled materials outlive individual visuals; if @babylonjs/lite
-		// exposes a material-disposal free function, call it per pool entry
-		// here before clearing.
+
+		this.pendingFlush = false;
+
+		// Pooled materials outlive individual visuals. If @babylonjs/lite exposes
+		// a material-disposal function, call it per non-null entry here.
 		this.materialPool.fill(null);
 	}
 }
