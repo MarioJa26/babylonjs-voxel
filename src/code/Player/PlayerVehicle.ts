@@ -7,7 +7,7 @@ import {
 	type BlockShapeInfo,
 	VoxelAabbCollider,
 } from "../World/Collision/VoxelAabbCollider";
-import { getShapeInfo } from "../World/MeshPipeline/core/ShapePipeline";
+import { getShapeInfo } from "../World/MeshPipeline/core/BlockInfoCache";
 import { FALLBACK_CUBE } from "../World/Shape/BlockShapes";
 import { PlayerBodyControlState } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
