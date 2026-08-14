@@ -27,6 +27,7 @@ export async function createWorldSpawn(
 	context: WorldSpawnGeneratorContext,
 ): Promise<WorldSpawn> {
 	const { seed, chunkGen, worldStorage, prewarmSpawnArea } = context;
+
 	const cached = await worldStorage.loadWorldSpawn();
 	if (cached) {
 		prewarmSpawnArea(
@@ -37,10 +38,24 @@ export async function createWorldSpawn(
 	}
 
 	setTerrainSeed(seed);
+
 	const seaLevel = GenerationParams.SEA_LEVEL;
 	const playerHalfHeight = 0.9;
 	const maxSearchRadius = 32;
 	const treeRejectGap = 4;
+
+	// Simple height cache so we don't recompute terrain noise repeatedly.
+	const heightCache = new Map<string, number>();
+	const terrainHeight = (x: number, z: number): number => {
+		const key = `${x},${z}`;
+		let h = heightCache.get(key);
+		if (h === undefined) {
+			h = Math.floor(getFinalTerrainHeight(x, z));
+			heightCache.set(key, h);
+		}
+		return h;
+	};
+
 	const candidates: Array<{ x: number; z: number }> = [];
 	for (let radius = 0; radius <= maxSearchRadius; radius++) {
 		for (let ox = -radius; ox <= radius; ox++) {
@@ -52,11 +67,20 @@ export async function createWorldSpawn(
 	}
 
 	let chosen: { x: number; z: number } | null = null;
+	let chosenBand: Array<{
+		chunkX: number;
+		chunkY: number;
+		chunkZ: number;
+	}> | null = null;
+	let chosenChunkX = 0;
+	let chosenChunkZ = 0;
+	let chosenChunkLow = 0;
+	let chosenChunkHigh = 0;
+
 	for (const candidate of candidates) {
-		const approximateGround = Math.floor(
-			getFinalTerrainHeight(candidate.x, candidate.z),
-		);
+		const approximateGround = terrainHeight(candidate.x, candidate.z);
 		if (approximateGround <= seaLevel) continue;
+
 		let approximatelyFlat = true;
 		for (const [dx, dz] of [
 			[-1, 0],
@@ -66,9 +90,7 @@ export async function createWorldSpawn(
 		] as const) {
 			if (
 				Math.abs(
-					Math.floor(
-						getFinalTerrainHeight(candidate.x + dx, candidate.z + dz),
-					) - approximateGround,
+					terrainHeight(candidate.x + dx, candidate.z + dz) - approximateGround,
 				) > 2
 			) {
 				approximatelyFlat = false;
@@ -84,83 +106,95 @@ export async function createWorldSpawn(
 			Math.floor((approximateGround - 8) / CHUNK_SIZE),
 		);
 		const chunkHigh = Math.floor((approximateGround + 16) / CHUNK_SIZE);
-		const band = [];
+
+		const band: Array<{ chunkX: number; chunkY: number; chunkZ: number }> = [];
 		for (let chunkY = chunkLow; chunkY <= chunkHigh; chunkY++) {
 			band.push({ chunkX, chunkY, chunkZ });
 		}
+
 		await chunkGen.generateChunksBatch(band);
 
 		const top = chunkHigh * CHUNK_SIZE + CHUNK_SIZE - 1;
 		const bottom = chunkLow * CHUNK_SIZE;
-		const surfaces: number[] = [];
-		let invalid = false;
-		for (let dx = -1; dx <= 1 && !invalid; dx++) {
-			for (let dz = -1; dz <= 1; dz++) {
-				const surface = await worldStorage.getTopSolidY(
+
+		// Parallelize the 3x3 surface queries.
+		const surfaceResults = await Promise.all(
+			Array.from({ length: 9 }, (_, i) => {
+				const dx = (i % 3) - 1;
+				const dz = Math.floor(i / 3) - 1;
+				return worldStorage.getTopSolidY(
 					candidate.x + dx,
 					candidate.z + dz,
 					top + 16,
 					bottom,
 				);
-				if (surface === -Infinity || surface <= seaLevel) {
-					invalid = true;
-					break;
-				}
-				surfaces.push(surface);
-				if (
-					surface -
-						Math.floor(
-							getFinalTerrainHeight(candidate.x + dx, candidate.z + dz),
-						) >
-					treeRejectGap
-				) {
-					invalid = true;
-					break;
-				}
+			}),
+		);
+
+		let invalid = false;
+		const surfaces: number[] = [];
+
+		for (let i = 0; i < surfaceResults.length; i++) {
+			const surface = surfaceResults[i];
+			const dx = (i % 3) - 1;
+			const dz = Math.floor(i / 3) - 1;
+
+			if (surface === -Infinity || surface <= seaLevel) {
+				invalid = true;
+				break;
+			}
+
+			surfaces.push(surface);
+
+			if (
+				surface - terrainHeight(candidate.x + dx, candidate.z + dz) >
+				treeRejectGap
+			) {
+				invalid = true;
+				break;
 			}
 		}
+
 		if (invalid || Math.max(...surfaces) - Math.min(...surfaces) > 2) continue;
+
 		chosen = candidate;
+		chosenBand = band;
+		chosenChunkX = chunkX;
+		chosenChunkZ = chunkZ;
+		chosenChunkLow = chunkLow;
+		chosenChunkHigh = chunkHigh;
 		break;
 	}
 
-	if (!chosen) {
+	if (!chosen || !chosenBand) {
 		throw new Error("Unable to find a safe world spawn above sea level");
 	}
 
-	const approximateGround = Math.floor(
-		getFinalTerrainHeight(chosen.x, chosen.z),
-	);
-	const chunkX = Math.floor(chosen.x / CHUNK_SIZE);
-	const chunkZ = Math.floor(chosen.z / CHUNK_SIZE);
-	const chunkLow = Math.max(
-		-1,
-		Math.floor((approximateGround - 8) / CHUNK_SIZE),
-	);
-	const chunkHigh = Math.floor((approximateGround + 16) / CHUNK_SIZE);
-	const band = [];
-	for (let chunkY = chunkLow; chunkY <= chunkHigh; chunkY++) {
-		band.push({ chunkX, chunkY, chunkZ });
-	}
-	await chunkGen.generateChunksBatch(band);
-
-	let surfaceY = -Infinity;
-	for (let dx = -1; dx <= 1; dx++) {
-		for (let dz = -1; dz <= 1; dz++) {
-			const surface = await worldStorage.getTopSolidY(
+	// We already generated this band during validation, so don't generate it again.
+	const surfaceResults = await Promise.all(
+		Array.from({ length: 9 }, (_, i) => {
+			const dx = (i % 3) - 1;
+			const dz = Math.floor(i / 3) - 1;
+			return worldStorage.getTopSolidY(
 				chosen.x + dx,
 				chosen.z + dz,
-				chunkHigh * CHUNK_SIZE + CHUNK_SIZE - 1,
-				chunkLow * CHUNK_SIZE,
+				chosenChunkHigh * CHUNK_SIZE + CHUNK_SIZE - 1,
+				chosenChunkLow * CHUNK_SIZE,
 			);
-			if (surface > surfaceY) surfaceY = surface;
-		}
+		}),
+	);
+
+	let surfaceY = -Infinity;
+	for (const surface of surfaceResults) {
+		if (surface > surfaceY) surfaceY = surface;
 	}
+
 	if (surfaceY === -Infinity) {
 		throw new Error("Chosen world spawn surface could not be read");
 	}
 
 	const edits: Array<{ x: number; y: number; z: number; blockId: number }> = [];
+
 	for (let dx = -1; dx <= 1; dx++) {
 		for (let dz = -1; dz <= 1; dz++) {
 			edits.push({
@@ -171,29 +205,35 @@ export async function createWorldSpawn(
 			});
 		}
 	}
+
 	for (let y = surfaceY + 2; y <= surfaceY + 4; y++) {
 		edits.push({ x: chosen.x, y, z: chosen.z, blockId: 0 });
 	}
 
 	const editsByChunk = new Map<string, typeof edits>();
+
 	for (const edit of edits) {
 		const key = `${Math.floor(edit.x / CHUNK_SIZE)},${Math.floor(edit.y / CHUNK_SIZE)},${Math.floor(edit.z / CHUNK_SIZE)}`;
 		const chunkEdits = editsByChunk.get(key) ?? [];
 		chunkEdits.push(edit);
 		editsByChunk.set(key, chunkEdits);
 	}
+
 	await chunkGen.generateChunksBatch(
 		[...editsByChunk.keys()].map((key) => {
 			const [chunkX, chunkY, chunkZ] = key.split(",").map(Number);
 			return { chunkX, chunkY, chunkZ };
 		}),
 	);
+
 	for (const [key, chunkEdits] of editsByChunk) {
 		const [chunkX, chunkY, chunkZ] = key.split(",").map(Number);
 		await worldStorage.applyBlockEdits(chunkX, chunkY, chunkZ, chunkEdits);
 	}
+
 	await worldStorage.flush();
-	prewarmSpawnArea(chunkX, chunkZ);
+
+	prewarmSpawnArea(chosenChunkX, chosenChunkZ);
 
 	const spawn = {
 		x: chosen.x + 0.5,
@@ -202,9 +242,12 @@ export async function createWorldSpawn(
 		yaw: 0,
 		pitch: 0,
 	};
+
 	await worldStorage.saveWorldSpawn(spawn);
+
 	console.log(
 		`[VoxelRoom] Generated world spawn at (${spawn.x}, ${spawn.y.toFixed(1)}, ${spawn.z})`,
 	);
+	heightCache.clear();
 	return spawn;
 }
