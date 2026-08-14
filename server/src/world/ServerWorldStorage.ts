@@ -1,28 +1,9 @@
 /**
  * ServerWorldStorage — LevelDB-backed chunk storage for the server.
  *
- * Stores full chunk data (blocks + light) using the same VoxelSerializer
- * blob format as singleplayer. On startup, the server checks stored chunks
- * first before generating new ones — terrain persists across restarts.
- *
- * Optimizations:
- * - In-memory LRU cache of deserialized chunks, backed by an intrusive
- *   doubly-linked list. Touching an entry on a
- *   cache hit is a pointer relink (no hashing); eviction pops the tail
- *   directly (no iterator allocation). This avoids the delete+re-insert
- *   churn a plain Map-based LRU incurs on every hit, which otherwise
- *   costs two hash operations per touch and lets V8's backing store grow
- *   past its logical size before it compacts.
- * - applyBlockEdits() applies world-coord block edits to a stored chunk
- *   so player changes persist to disk (replaces the old flat edit-log).
- *
- * Safety:
- * - Per-chunk mutation queue serializes all writes to the same chunk.
- * - Flush operations are serialized; dirty state is preserved on failure.
- * - Disposal rejects new operations, waits for in-flight mutations, then flushes.
- * - Seed metadata is validated on init, not overwritten.
- * - readChunks() allocates a fresh result Map per call so concurrent
- *   in-flight calls never share (and corrupt) each other's results.
+ * Stores full chunk data using the same VoxelSerializer blob format as
+ * singleplayer. On startup, stored chunks are checked before generation so
+ * terrain persists across restarts.
  */
 
 import { DEBUG_ENABLED, debugLog } from "@/code/Lib/debugLog";
@@ -73,11 +54,22 @@ interface CacheNode {
 	next: CacheNode | null;
 }
 
+interface MissCoordEntry {
+	cx: number;
+	cy: number;
+	cz: number;
+	cacheKey: number;
+	key: string;
+}
+
 const DEFAULT_CACHE_SIZE = 1024;
-// The blob cache in LevelDbChunkStore is redundant with this class's parsed
-// cache (same chunks, both in memory). A small cap keeps the double-cached
-// footprint low — serialized blobs are cheap to re-read from LevelDB.
 const DEFAULT_BLOB_CACHE_SIZE = 128;
+
+const CHUNK_SIZE = 32;
+const CHUNK_SHIFT = 5;
+const CHUNK_AREA = CHUNK_SIZE * CHUNK_SIZE;
+const WATER_BLOCK_ID = 30;
+const FLUSH_DELAY_MS = 500;
 
 function yieldToEventLoop(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
@@ -90,6 +82,10 @@ function isValidPalette(palette: number[] | Uint16Array): boolean {
 		if (!Number.isInteger(id) || id < 0 || id > 255) return false;
 	}
 	return true;
+}
+
+function isValidBlockId(id: number): boolean {
+	return Number.isInteger(id) && id >= 0 && id <= 255;
 }
 
 export class ServerWorldStorage {
@@ -113,25 +109,12 @@ export class ServerWorldStorage {
 		Promise<StoredChunkData | null>
 	>();
 
-	// LRU cache: Map gives O(1) key lookup, the intrusive doubly-linked
-	// list gives O(1) touch/evict without ever deleting+re-inserting into
-	// the Map on a cache hit.
 	private readonly chunkCache = new Map<number, CacheNode>();
-	private cacheHead: CacheNode | null = null; // most recently used
-	private cacheTail: CacheNode | null = null; // least recently used
+	private cacheHead: CacheNode | null = null;
+	private cacheTail: CacheNode | null = null;
 	private readonly maxCacheSize: number;
-	// Free list for readChunks() missCoords entry objects. Each call pops its
-	// own entries (exclusive ownership per call) and returns them in a
-	// finally, so concurrent readChunks() calls can never observe each
-	// other's entries. The pool is bounded by peak concurrent misses (≤128
-	// per request).
-	private readonly missCoordPool: Array<{
-		cx: number;
-		cy: number;
-		cz: number;
-		cacheKey: number;
-		key: string;
-	}> = [];
+
+	private readonly missCoordPool: MissCoordEntry[] = [];
 
 	constructor(
 		worldName: string,
@@ -163,6 +146,7 @@ export class ServerWorldStorage {
 					`the world database before changing the seed.`,
 			);
 		}
+
 		if (storedSeed === null) {
 			await this.store.setMeta("seed", this.seed);
 		}
@@ -199,7 +183,9 @@ export class ServerWorldStorage {
 			while (this.chunkMutationQueues.size > 0) {
 				const mutations = Array.from(this.chunkMutationQueues.values());
 				const results = await Promise.allSettled(mutations);
-				for (const result of results) {
+
+				for (let i = 0; i < results.length; i++) {
+					const result = results[i];
 					if (result.status === "rejected") {
 						console.error(
 							"[ServerWorldStorage] Mutation failed during disposal:",
@@ -230,11 +216,8 @@ export class ServerWorldStorage {
 	}
 
 	/**
-	 * World-Y of the topmost solid (non-air, non-water) block in column
-	 * (worldX, worldZ), or -Infinity if the column is empty/liquid. Used to
-	 * place the world spawn platform on the *real* terrain surface —
-	 * getFinalTerrainHeight is only an approximate center, so the actual top
-	 * solid block can be several blocks higher.
+	 * World-Y of the topmost solid non-air, non-water block in column
+	 * (worldX, worldZ), or -Infinity if the column is empty or liquid.
 	 */
 	async getTopSolidY(
 		worldX: number,
@@ -243,29 +226,47 @@ export class ServerWorldStorage {
 		yMin: number = 0,
 	): Promise<number> {
 		this.assertActive();
-		const CHUNK = 32;
-		const WATER = 30; // WATER_BLOCK_ID
-		const cx = Math.floor(worldX / CHUNK);
-		const cz = Math.floor(worldZ / CHUNK);
-		const localX = worldX - cx * CHUNK;
-		const localZ = worldZ - cz * CHUNK;
-		for (let y = yMax; y >= yMin; y--) {
-			const cy = Math.floor(y / CHUNK);
-			const chunk = await this.readChunk(cx, cy, cz);
+
+		const cx = Math.floor(worldX / CHUNK_SIZE);
+		const cz = Math.floor(worldZ / CHUNK_SIZE);
+		const localX = worldX - cx * CHUNK_SIZE;
+		const localZ = worldZ - cz * CHUNK_SIZE;
+
+		const topCy = Math.floor(yMax / CHUNK_SIZE);
+		const bottomCy = Math.floor(yMin / CHUNK_SIZE);
+
+		for (let cy = topCy; cy >= bottomCy; cy--) {
+			const chunk = await this.readChunkInternal(cx, cy, cz);
 			if (!chunk) continue;
+
+			const chunkBaseY = cy * CHUNK_SIZE;
+			const startLocalY = Math.min(CHUNK_SIZE - 1, yMax - chunkBaseY);
+			const endLocalY = Math.max(0, yMin - chunkBaseY);
+
 			const decomp = decompressBlocks({
 				data: chunk.blocks,
 				palette: chunk.palette,
 				isUniform: chunk.isUniform,
 				uniformBlockId: chunk.uniformBlockId,
 			});
-			const blocks = decomp === chunk.blocks ? new Uint8Array(decomp) : decomp;
-			const localY = y - cy * CHUNK;
-			const idx = localX + (localY << 5) + (localZ << 10);
-			const id = blocks[idx];
-			releaseDecompBuffer(decomp);
-			if (id !== 0 && id !== WATER) return y;
+
+			try {
+				const blocks = decomp;
+				const columnBase = localX + (localZ << 10);
+
+				for (let localY = startLocalY; localY >= endLocalY; localY--) {
+					const id = blocks[columnBase + (localY << CHUNK_SHIFT)];
+					if (id !== 0 && id !== WATER_BLOCK_ID) {
+						return chunkBaseY + localY;
+					}
+				}
+			} finally {
+				if (decomp !== chunk.blocks) {
+					releaseDecompBuffer(decomp);
+				}
+			}
 		}
+
 		return -Infinity;
 	}
 
@@ -295,6 +296,7 @@ export class ServerWorldStorage {
 		cz: number,
 	): Promise<StoredChunkData | null> {
 		const key = packChunkKeyFast(cx, cy, cz);
+
 		const node = this.chunkCache.get(key);
 		if (node) {
 			this.lruTouch(node);
@@ -307,18 +309,13 @@ export class ServerWorldStorage {
 		const promise = this.readChunkFromStore(key, cx, cy, cz);
 		this.pendingReads.set(key, promise);
 
-		void promise.then(
-			() => {
+		void promise
+			.finally(() => {
 				if (this.pendingReads.get(key) === promise) {
 					this.pendingReads.delete(key);
 				}
-			},
-			() => {
-				if (this.pendingReads.get(key) === promise) {
-					this.pendingReads.delete(key);
-				}
-			},
-		);
+			})
+			.catch(() => {});
 
 		return promise;
 	}
@@ -330,18 +327,15 @@ export class ServerWorldStorage {
 
 		const results = new Map<number, StoredChunkData>();
 		const seen = new Set<number>();
-		const missCoords: Array<{
-			cx: number;
-			cy: number;
-			cz: number;
-			cacheKey: number;
-			key: string;
-		}> = [];
-		const pendingWaits: Array<Promise<void>> = [];
+		const missCoords: MissCoordEntry[] = [];
+		const pendingKeys: number[] = [];
+		const pendingPromises: Array<Promise<StoredChunkData | null>> = [];
 
 		try {
-			for (const { cx, cy, cz } of coords) {
+			for (let i = 0; i < coords.length; i++) {
+				const { cx, cy, cz } = coords[i];
 				const cacheKey = packChunkKeyFast(cx, cy, cz);
+
 				if (seen.has(cacheKey)) continue;
 				seen.add(cacheKey);
 
@@ -354,11 +348,8 @@ export class ServerWorldStorage {
 
 				const pending = this.pendingReads.get(cacheKey);
 				if (pending) {
-					pendingWaits.push(
-						pending.then((data) => {
-							if (data) results.set(cacheKey, data);
-						}),
-					);
+					pendingKeys.push(cacheKey);
+					pendingPromises.push(pending);
 					continue;
 				}
 
@@ -369,6 +360,7 @@ export class ServerWorldStorage {
 					cacheKey: 0,
 					key: "",
 				};
+
 				entry.cx = cx;
 				entry.cy = cy;
 				entry.cz = cz;
@@ -381,20 +373,21 @@ export class ServerWorldStorage {
 				const found = await this.store.readChunks(missCoords);
 
 				let parsedSinceYield = 0;
-				for (const { cacheKey, key, cx, cy, cz } of missCoords) {
-					const blob = found.get(key);
+				for (let i = 0; i < missCoords.length; i++) {
+					const entry = missCoords[i];
+					const blob = found.get(entry.key);
 					if (!blob) continue;
 
-					const node = this.chunkCache.get(cacheKey);
+					const node = this.chunkCache.get(entry.cacheKey);
 					if (node) {
 						this.lruTouch(node);
-						results.set(cacheKey, node.data);
+						results.set(entry.cacheKey, node.data);
 						continue;
 					}
 
-					const data = this.parseBlob(cx, cy, cz, blob);
-					this.addToCache(cacheKey, data);
-					results.set(cacheKey, data);
+					const data = this.parseBlob(entry.cx, entry.cy, entry.cz, blob);
+					this.addToCache(entry.cacheKey, data);
+					results.set(entry.cacheKey, data);
 
 					if (++parsedSinceYield >= 16) {
 						parsedSinceYield = 0;
@@ -403,8 +396,15 @@ export class ServerWorldStorage {
 				}
 			}
 
-			if (pendingWaits.length > 0) {
-				await Promise.all(pendingWaits);
+			if (pendingPromises.length > 0) {
+				const pendingResults = await Promise.all(pendingPromises);
+
+				for (let i = 0; i < pendingResults.length; i++) {
+					const data = pendingResults[i];
+					if (data) {
+						results.set(pendingKeys[i], data);
+					}
+				}
 			}
 
 			return results;
@@ -445,26 +445,17 @@ export class ServerWorldStorage {
 				? value.lightArray
 				: new Uint8Array(0);
 
-		const palette: number[] | undefined = value.palette
-			? Array.from(value.palette)
-			: undefined;
-
+		const palette = value.palette ? Array.from(value.palette) : undefined;
 		const isUniform = value.isUniform ?? false;
 		const uniformBlockId = value.uniformBlockId ?? 0;
 
-		if (
-			!Number.isInteger(uniformBlockId) ||
-			uniformBlockId < 0 ||
-			uniformBlockId > 255
-		) {
+		if (!isValidBlockId(uniformBlockId)) {
 			throw new Error(`Chunk ${cx},${cy},${cz} has invalid uniform block ID`);
 		}
 
 		if (palette && !isValidPalette(palette)) {
 			throw new Error(`Chunk ${cx},${cy},${cz} has an invalid palette`);
 		}
-
-		const version = value.version ?? 0;
 
 		return {
 			chunkX: cx,
@@ -475,7 +466,7 @@ export class ServerWorldStorage {
 			palette,
 			isUniform,
 			uniformBlockId,
-			version,
+			version: value.version ?? 0,
 		};
 	}
 
@@ -488,11 +479,7 @@ export class ServerWorldStorage {
 
 	private async writeChunkUnlocked(data: StoredChunkData): Promise<void> {
 		const key = packChunkKeyFast(data.chunkX, data.chunkY, data.chunkZ);
-
-		let paletteArr: Uint16Array | null = null;
-		if (data.palette) {
-			paletteArr = Uint16Array.from(data.palette);
-		}
+		const paletteArr = data.palette ? Uint16Array.from(data.palette) : null;
 
 		const blob = serializeVoxelData(
 			data.blocks,
@@ -519,6 +506,7 @@ export class ServerWorldStorage {
 	): Promise<void> {
 		const editArr = Array.isArray(edits) ? edits : [...edits];
 		if (editArr.length === 0) return;
+
 		this.assertActive();
 
 		const key = packChunkKeyFast(cx, cy, cz);
@@ -536,21 +524,23 @@ export class ServerWorldStorage {
 		const existing = await this.readChunkInternal(cx, cy, cz);
 		if (!existing) return;
 
-		const cx32 = cx << 5;
-		const cy32 = cy << 5;
-		const cz32 = cz << 5;
+		const cx32 = cx << CHUNK_SHIFT;
+		const cy32 = cy << CHUNK_SHIFT;
+		const cz32 = cz << CHUNK_SHIFT;
+		const maxX = cx32 + CHUNK_SIZE;
+		const maxY = cy32 + CHUNK_SIZE;
+		const maxZ = cz32 + CHUNK_SIZE;
 
-		// Validate every edit before mutating anything, so a bad edit
-		// can't leave the decompressed block array half-applied.
 		for (let i = 0; i < edits.length; i++) {
 			const edit = edits[i];
+
 			if (
 				edit.x < cx32 ||
-				edit.x >= cx32 + 32 ||
+				edit.x >= maxX ||
 				edit.y < cy32 ||
-				edit.y >= cy32 + 32 ||
+				edit.y >= maxY ||
 				edit.z < cz32 ||
-				edit.z >= cz32 + 32
+				edit.z >= maxZ
 			) {
 				throw new Error(
 					`Edit for (${edit.x},${edit.y},${edit.z}) ` +
@@ -558,11 +548,7 @@ export class ServerWorldStorage {
 				);
 			}
 
-			if (
-				!Number.isInteger(edit.blockId) ||
-				edit.blockId < 0 ||
-				edit.blockId > 255
-			) {
+			if (!isValidBlockId(edit.blockId)) {
 				throw new Error(
 					`Invalid block ID ${edit.blockId} for edit ` +
 						`(${edit.x},${edit.y},${edit.z})`,
@@ -584,7 +570,11 @@ export class ServerWorldStorage {
 			for (let i = 0; i < edits.length; i++) {
 				const edit = edits[i];
 				const idx =
-					edit.x - cx32 + ((edit.y - cy32) << 5) + ((edit.z - cz32) << 10);
+					edit.x -
+					cx32 +
+					((edit.y - cy32) << CHUNK_SHIFT) +
+					((edit.z - cz32) << 10);
+
 				blocks[idx] = edit.blockId;
 			}
 
@@ -597,17 +587,22 @@ export class ServerWorldStorage {
 			let newLight = existing.light;
 			if (this.worldGen) {
 				const relit = await this.worldGen.relightChunk(cx, cy, cz, blocks);
+				const existingLight = existing.light;
+
 				for (let i = 0; i < relit.length; i++) {
-					relit[i] = (relit[i] & 0x0f) | (existing.light[i] & 0xf0);
+					relit[i] = (relit[i] & 0x0f) | (existingLight[i] & 0xf0);
 				}
+
 				newLight = relit;
 			}
 
 			const baseVersion = existing.version > 0 ? existing.version : 1;
 			const newVersion = baseVersion + 1;
+
 			if (DEBUG_ENABLED) {
 				debugLog(
-					`[ServerWorldStorage] applyBlockEdits ${cx},${cy},${cz}: version ${existing.version} (base ${baseVersion}) -> ${newVersion}`,
+					`[ServerWorldStorage] applyBlockEdits ${cx},${cy},${cz}: ` +
+						`version ${existing.version} (base ${baseVersion}) -> ${newVersion}`,
 				);
 			}
 
@@ -632,11 +627,10 @@ export class ServerWorldStorage {
 		operation: () => Promise<void>,
 	): Promise<void> {
 		const previous = this.chunkMutationQueues.get(key) ?? Promise.resolve();
-		// operation() ignores its argument, so it can be used directly as
-		// both the fulfilled and rejected handler — no extra wrapper
-		// closures allocated per mutation.
 		const current = previous.then(operation, operation);
+
 		this.chunkMutationQueues.set(key, current);
+
 		void current
 			.finally(() => {
 				if (this.chunkMutationQueues.get(key) === current) {
@@ -644,31 +638,39 @@ export class ServerWorldStorage {
 				}
 			})
 			.catch(() => {});
+
 		return current;
 	}
 
-	// --- LRU cache helpers -------------------------------------------------
-
 	private lruDetach(node: CacheNode): void {
-		const { prev, next } = node;
+		const prev = node.prev;
+		const next = node.next;
+
 		if (prev) prev.next = next;
 		else this.cacheHead = next;
+
 		if (next) next.prev = prev;
 		else this.cacheTail = prev;
+
 		node.prev = null;
 		node.next = null;
 	}
 
 	private lruPushFront(node: CacheNode): void {
+		const head = this.cacheHead;
+
 		node.prev = null;
-		node.next = this.cacheHead;
-		if (this.cacheHead) this.cacheHead.prev = node;
+		node.next = head;
+
+		if (head) head.prev = node;
+		else this.cacheTail = node;
+
 		this.cacheHead = node;
-		if (!this.cacheTail) this.cacheTail = node;
 	}
 
 	private lruTouch(node: CacheNode): void {
 		if (this.cacheHead === node) return;
+
 		this.lruDetach(node);
 		this.lruPushFront(node);
 	}
@@ -706,13 +708,12 @@ export class ServerWorldStorage {
 		return this.chunkCache.size;
 	}
 
-	// -------------------------------------------------------------------
-
 	private scheduleFlush(): void {
 		if (this.flushTimer) return;
 
 		this.flushTimer = setTimeout(() => {
 			this.flushTimer = null;
+
 			void this.flush().catch((error) => {
 				console.error("[ServerWorldStorage] Scheduled flush failed:", error);
 
@@ -720,7 +721,7 @@ export class ServerWorldStorage {
 					this.scheduleFlush();
 				}
 			});
-		}, 500);
+		}, FLUSH_DELAY_MS);
 	}
 
 	public flush(): Promise<void> {
@@ -750,6 +751,7 @@ export class ServerWorldStorage {
 				for (const key of flushing) {
 					this.dirtyChunks.add(key);
 				}
+
 				throw error;
 			}
 		}
@@ -779,8 +781,10 @@ export class ServerWorldStorage {
 			throw new TypeError("Cannot persist non-finite player position");
 		}
 
-		const data = JSON.stringify({ x, y, z, yaw, pitch });
-		await this.store.setMeta(`player:${playerId}`, data);
+		await this.store.setMeta(
+			`player:${playerId}`,
+			JSON.stringify({ x, y, z, yaw, pitch }),
+		);
 	}
 
 	async loadPlayerPosition(
@@ -799,7 +803,7 @@ export class ServerWorldStorage {
 		}
 	}
 
-	/** Persist the world's default spawn point (generated once at creation). */
+	/** Persist the world's default spawn point, generated once at creation. */
 	async saveWorldSpawn(spawn: {
 		x: number;
 		y: number;
@@ -823,8 +827,10 @@ export class ServerWorldStorage {
 		pitch: number;
 	} | null> {
 		this.assertActive();
+
 		const data = await this.store.getMeta("spawn");
 		if (!data) return null;
+
 		try {
 			const p = JSON.parse(data) as {
 				x: number;
@@ -833,13 +839,21 @@ export class ServerWorldStorage {
 				yaw?: number;
 				pitch?: number;
 			};
+
 			if (
 				typeof p.x === "number" &&
 				typeof p.y === "number" &&
 				typeof p.z === "number"
 			) {
-				return { x: p.x, y: p.y, z: p.z, yaw: p.yaw ?? 0, pitch: p.pitch ?? 0 };
+				return {
+					x: p.x,
+					y: p.y,
+					z: p.z,
+					yaw: p.yaw ?? 0,
+					pitch: p.pitch ?? 0,
+				};
 			}
+
 			return null;
 		} catch {
 			return null;
@@ -850,6 +864,7 @@ export class ServerWorldStorage {
 		value: unknown,
 	): value is StoredPlayerPosition {
 		if (typeof value !== "object" || value === null) return false;
+
 		const p = value as Partial<StoredPlayerPosition>;
 		return (
 			Number.isFinite(p.x) &&
