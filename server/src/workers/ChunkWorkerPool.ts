@@ -1,14 +1,6 @@
 /**
  * ChunkWorkerPool.ts — Manages a pool of Node.js worker threads for parallel
  * chunk generation. Handles task queuing, worker lifecycle, and crash recovery.
- *
- * Optimization notes:
- * - Each worker tracks its in-flight task id, so a crashed worker only
- *   affects its own work (the task is requeued) — healthy workers keep going.
- * - Batch dispatch groups coords into one message per worker instead of
- *   one message per chunk (fewer round-trips, fewer main-thread wakeups).
- * - terminate()/recreateWorkers() settle every queued/in-flight task, so
- *   callers never hang on unresolved promises.
  */
 
 import { cpus } from "node:os";
@@ -25,6 +17,13 @@ interface ChunkResult {
 	uniformBlockId: number;
 	hash: number;
 }
+
+type ChunkCoord = {
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+};
+
 type PendingTask =
 	| {
 			id: number;
@@ -38,7 +37,7 @@ type PendingTask =
 	| {
 			id: number;
 			kind: PendingTaskKindType.BATCH;
-			coords: Array<{ chunkX: number; chunkY: number; chunkZ: number }>;
+			coords: ChunkCoord[];
 			resolve: (results: ChunkResult[]) => void;
 			reject: (error: Error) => void;
 	  }
@@ -78,7 +77,6 @@ interface WorkerState {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-/** Stable log label for a task kind (const enums erase to numbers). */
 function pendingTaskKindLabel(kind: PendingTaskKindType): string {
 	switch (kind) {
 		case PendingTaskKindType.SINGLE:
@@ -87,6 +85,8 @@ function pendingTaskKindLabel(kind: PendingTaskKindType): string {
 			return "batch";
 		case PendingTaskKindType.RELIGHT:
 			return "relight";
+		default:
+			return "unknown";
 	}
 }
 
@@ -100,13 +100,20 @@ export class ChunkWorkerPool {
 	private workers: WorkerState[] = [];
 	private workerByInstance = new Map<Worker, WorkerState>();
 	private queue: PendingTask[] = [];
-	private queueStart = 0; // index-based dequeue (avoids O(n) shift)
+	private queueStart = 0;
 	private pendingTasks = new Map<number, PendingTask>();
 	private nextId = 1;
 	private seed = "default";
 	private wasmEnabled = true;
 	private initialized = false;
 	private terminated = false;
+
+	/**
+	 * Max chunks per column to send to a single worker. Larger columns are split
+	 * across workers so bulk generation can use all workers in parallel while
+	 * still keeping adjacent Y-levels together for column-cache hits.
+	 */
+	private static readonly MAX_COLUMN_GROUP_SIZE = 4;
 
 	async initialize(seed: string, wasmEnabled = true): Promise<void> {
 		if (this.initialized) {
@@ -118,17 +125,222 @@ export class ChunkWorkerPool {
 			return;
 		}
 
-		// Allow a fresh start after terminate() (e.g. for tests).
 		this.terminated = false;
 		this.seed = seed;
 		this.wasmEnabled = wasmEnabled;
-		const poolSize = resolvePoolSize();
 
+		const poolSize = resolvePoolSize();
 		for (let i = 0; i < poolSize; i++) {
 			this.workers.push(this.createWorkerState());
 		}
 
 		this.initialized = true;
+	}
+
+	dispatch(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+	): Promise<ChunkResult> {
+		const unavailable = this.getUnavailableError();
+		if (unavailable) return Promise.reject(unavailable);
+
+		const id = this.nextId++;
+
+		return new Promise((resolve, reject) => {
+			this.queue.push({
+				id,
+				kind: PendingTaskKindType.SINGLE,
+				chunkX,
+				chunkY,
+				chunkZ,
+				resolve,
+				reject,
+			});
+			this.processQueue();
+		});
+	}
+
+	dispatchAll(coords: ChunkCoord[]): Promise<ChunkResult[]> {
+		if (coords.length === 0) return Promise.resolve([]);
+
+		const unavailable = this.getUnavailableError();
+		if (unavailable) return Promise.reject(unavailable);
+
+		const maxGroup = ChunkWorkerPool.MAX_COLUMN_GROUP_SIZE;
+		const n = coords.length;
+
+		// Nested map avoids string keys and avoids the collision risk of packed
+		// 32-bit numeric keys for large or negative chunk coordinates.
+		const columnsByX = new Map<number, Map<number, number[]>>();
+
+		for (let i = 0; i < n; i++) {
+			const c = coords[i];
+
+			let byZ = columnsByX.get(c.chunkX);
+			if (!byZ) {
+				byZ = new Map<number, number[]>();
+				columnsByX.set(c.chunkX, byZ);
+			}
+
+			let indices = byZ.get(c.chunkZ);
+			if (!indices) {
+				indices = [];
+				byZ.set(c.chunkZ, indices);
+			}
+
+			indices.push(i);
+		}
+
+		const groups: Array<{ indices: number[]; length: number }> = [];
+
+		for (const byZ of columnsByX.values()) {
+			for (const indices of byZ.values()) {
+				if (indices.length > 1) {
+					indices.sort((a, b) => coords[a].chunkY - coords[b].chunkY);
+				}
+
+				if (indices.length <= maxGroup) {
+					groups.push({ indices, length: indices.length });
+				} else {
+					for (let i = 0; i < indices.length; i += maxGroup) {
+						const end = Math.min(i + maxGroup, indices.length);
+						const slice = indices.slice(i, end);
+						groups.push({ indices: slice, length: slice.length });
+					}
+				}
+			}
+		}
+
+		const workerCount = this.workers.length;
+		const workerGroups: Array<Array<{ indices: number[]; length: number }>> =
+			Array.from({ length: workerCount }, () => []);
+		const totalChunksPerWorker = new Array<number>(workerCount).fill(0);
+
+		for (const group of groups) {
+			let minWorker = 0;
+			let minChunks = totalChunksPerWorker[0];
+
+			for (let w = 1; w < workerCount; w++) {
+				const chunks = totalChunksPerWorker[w];
+				if (chunks < minChunks) {
+					minChunks = chunks;
+					minWorker = w;
+				}
+			}
+
+			workerGroups[minWorker].push(group);
+			totalChunksPerWorker[minWorker] += group.length;
+		}
+
+		const origIndices = new Array<number>(n);
+		const dispatchGroups: ChunkCoord[][] = [];
+
+		let flatPos = 0;
+		for (const wGroups of workerGroups) {
+			if (wGroups.length === 0) continue;
+
+			let totalLen = 0;
+			for (const group of wGroups) totalLen += group.length;
+
+			const batch = new Array<ChunkCoord>(totalLen);
+			let batchPos = 0;
+
+			for (const group of wGroups) {
+				for (const idx of group.indices) {
+					const c = coords[idx];
+
+					origIndices[flatPos++] = idx;
+					batch[batchPos++] = {
+						chunkX: c.chunkX,
+						chunkY: c.chunkY,
+						chunkZ: c.chunkZ,
+					};
+				}
+			}
+
+			dispatchGroups.push(batch);
+		}
+
+		return Promise.all(
+			dispatchGroups.map((group) => this._dispatchBatch(group)),
+		).then((parts) => {
+			const results = new Array<ChunkResult>(n);
+			let resultPos = 0;
+
+			for (const part of parts) {
+				for (let i = 0; i < part.length; i++) {
+					results[origIndices[resultPos++]] = part[i];
+				}
+			}
+
+			return results;
+		});
+	}
+
+	postRelight(
+		chunkX: number,
+		chunkY: number,
+		chunkZ: number,
+		blocks: Uint8Array,
+	): Promise<Uint8Array> {
+		const unavailable = this.getUnavailableError();
+		if (unavailable) return Promise.reject(unavailable);
+
+		const id = this.nextId++;
+
+		return new Promise((resolve, reject) => {
+			this.queue.push({
+				id,
+				kind: PendingTaskKindType.RELIGHT,
+				chunkX,
+				chunkY,
+				chunkZ,
+				blocks,
+				resolve,
+				reject,
+			});
+			this.processQueue();
+		});
+	}
+
+	async terminate(): Promise<void> {
+		if (this.terminated) return;
+
+		this.terminated = true;
+		this.rejectAllWork(new Error("Chunk worker pool terminated"));
+
+		for (const ws of this.workers) {
+			ws.disposed = true;
+		}
+
+		await Promise.all(this.workers.map((ws) => ws.worker.terminate()));
+
+		this.workers = [];
+		this.workerByInstance.clear();
+		this.initialized = false;
+	}
+
+	get pendingCount(): number {
+		return this.queue.length - this.queueStart + this.pendingTasks.size;
+	}
+
+	private _dispatchBatch(coords: ChunkCoord[]): Promise<ChunkResult[]> {
+		const unavailable = this.getUnavailableError();
+		if (unavailable) return Promise.reject(unavailable);
+
+		const id = this.nextId++;
+
+		return new Promise((resolve, reject) => {
+			this.queue.push({
+				id,
+				kind: PendingTaskKindType.BATCH,
+				coords,
+				resolve,
+				reject,
+			});
+			this.processQueue();
+		});
 	}
 
 	private createWorkerState(): WorkerState {
@@ -147,7 +359,8 @@ export class ChunkWorkerPool {
 
 		worker.on("exit", (code) => {
 			const existing = this.workerByInstance.get(worker);
-			if (existing?.disposed) return; // intentional termination
+			if (existing?.disposed) return;
+
 			if (code !== 0) {
 				console.error(`[ChunkWorkerPool] Worker exited with code ${code}`);
 				this.recoverWorker(worker);
@@ -159,12 +372,17 @@ export class ChunkWorkerPool {
 	}
 
 	private handleWorkerMessage(worker: Worker, msg: WorkerMessage): void {
-		// O(1) lookup instead of linear scan through workers array.
 		const ws = this.workerByInstance.get(worker);
-		if (ws) {
-			ws.busy = false;
-			ws.activeTaskId = undefined;
+
+		// Ignore stale messages from a worker that was already recovered or
+		// intentionally disposed. This prevents a late result from resolving a
+		// task that has already been requeued to a replacement worker.
+		if (!ws || ws.disposed) {
+			return;
 		}
+
+		ws.busy = false;
+		ws.activeTaskId = undefined;
 
 		const task = this.pendingTasks.get(msg.id);
 		if (!task) {
@@ -214,325 +432,129 @@ export class ChunkWorkerPool {
 	}
 
 	private processQueue(): void {
-		// After terminate() no workers exist — drain the queue with rejections
-		// so queued tasks never hang (the terminate race: a task dispatched
-		// between pool.initialize() resolving and worker termination).
 		if (this.terminated) {
-			const err = new Error("Chunk worker pool terminated");
-			for (let i = this.queueStart; i < this.queue.length; i++) {
-				this.queue[i].reject(err);
-			}
-			this.queue = [];
-			this.queueStart = 0;
+			this.rejectQueued(new Error("Chunk worker pool terminated"));
 			return;
 		}
 
-		// Dispatch as many tasks as there are free workers and queued tasks.
-		// Uses index-based dequeue (queueStart++) instead of shift() which
-		// is O(n) due to array re-indexing.
 		for (;;) {
-			if (this.queueStart >= this.queue.length) return;
+			if (this.queueStart >= this.queue.length) {
+				this.compactQueueIfNeeded();
+				return;
+			}
 
-			// Find a free worker — iterate workers array (bounded by pool
-			// size, typically 4-8) instead of scanning the queue.
-			let freeWorker: WorkerState | null = null;
+			let freeWorker: WorkerState | undefined;
 			for (let i = 0; i < this.workers.length; i++) {
-				if (!this.workers[i].busy) {
-					freeWorker = this.workers[i];
+				const ws = this.workers[i];
+				if (!ws.busy && !ws.disposed) {
+					freeWorker = ws;
 					break;
 				}
 			}
-			if (!freeWorker) return;
+
+			if (!freeWorker) {
+				this.compactQueueIfNeeded();
+				return;
+			}
 
 			const task = this.queue[this.queueStart++];
+
 			freeWorker.busy = true;
 			freeWorker.activeTaskId = task.id;
 			this.pendingTasks.set(task.id, task);
 
-			if (task.kind === PendingTaskKindType.SINGLE) {
-				freeWorker.worker.postMessage({
+			try {
+				this.postTaskToWorker(freeWorker.worker, task);
+			} catch (err) {
+				freeWorker.busy = false;
+				freeWorker.activeTaskId = undefined;
+				this.pendingTasks.delete(task.id);
+
+				task.reject(
+					err instanceof Error
+						? err
+						: new Error(`Failed to post task to worker: ${String(err)}`),
+				);
+			}
+		}
+	}
+
+	private postTaskToWorker(worker: Worker, task: PendingTask): void {
+		if (task.kind === PendingTaskKindType.SINGLE) {
+			worker.postMessage({
+				id: task.id,
+				kind: PendingTaskKindType.SINGLE,
+				seed: this.seed,
+				wasmEnabled: this.wasmEnabled,
+				chunkX: task.chunkX,
+				chunkY: task.chunkY,
+				chunkZ: task.chunkZ,
+			});
+			return;
+		}
+
+		if (task.kind === PendingTaskKindType.RELIGHT) {
+			const buffer = task.blocks.buffer;
+			const transferList = buffer instanceof SharedArrayBuffer ? [] : [buffer];
+
+			worker.postMessage(
+				{
 					id: task.id,
-					kind: PendingTaskKindType.SINGLE,
-					seed: this.seed,
-					wasmEnabled: this.wasmEnabled,
 					chunkX: task.chunkX,
 					chunkY: task.chunkY,
 					chunkZ: task.chunkZ,
-				});
-			} else if (task.kind === PendingTaskKindType.RELIGHT) {
-				const buffer = task.blocks.buffer;
-				const transferList =
-					buffer instanceof SharedArrayBuffer ? [] : [buffer];
-				freeWorker.worker.postMessage(
-					{
-						id: task.id,
-						chunkX: task.chunkX,
-						chunkY: task.chunkY,
-						chunkZ: task.chunkZ,
-						blocks: task.blocks,
-						seed: this.seed,
-						wasmEnabled: this.wasmEnabled,
-					},
-					transferList,
-				);
-			} else {
-				freeWorker.worker.postMessage({
-					id: task.id,
-					kind: PendingTaskKindType.BATCH,
+					blocks: task.blocks,
 					seed: this.seed,
 					wasmEnabled: this.wasmEnabled,
-					items: task.coords,
-				});
-			}
-		}
-	}
-
-	dispatch(
-		chunkX: number,
-		chunkY: number,
-		chunkZ: number,
-	): Promise<ChunkResult> {
-		if (this.terminated) {
-			return Promise.reject(new Error("Chunk worker pool terminated"));
+				},
+				transferList,
+			);
+			return;
 		}
 
-		const id = this.nextId++;
-
-		return new Promise((resolve, reject) => {
-			this.queue.push({
-				id,
-				kind: PendingTaskKindType.SINGLE,
-				chunkX,
-				chunkY,
-				chunkZ,
-				resolve,
-				reject,
-			});
-			this.processQueue();
-		});
-	}
-
-	/**
-	 * Max chunks per column to send to a single worker. Larger columns are
-	 * split across workers so that bulk generation (e.g. joining) can use all
-	 * workers in parallel, while still keeping adjacent Y-levels together for
-	 * SurfaceGenerator.columnCache hits.
-	 */
-	private static readonly MAX_COLUMN_GROUP_SIZE = 4;
-
-	/**
-	 * Dispatch many chunks in parallel. Coords are grouped by vertical column
-	 * (same chunkX, chunkZ) so each worker processes full columns and can
-	 * reuse column-level noise/state. Columns are distributed across workers,
-	 * and results are flattened back into input order.
-	 */
-	dispatchAll(
-		coords: Array<{ chunkX: number; chunkY: number; chunkZ: number }>,
-	): Promise<ChunkResult[]> {
-		if (coords.length === 0) return Promise.resolve([]);
-		if (this.terminated) {
-			return Promise.reject(new Error("Chunk worker pool terminated"));
-		}
-
-		const maxGroup = ChunkWorkerPool.MAX_COLUMN_GROUP_SIZE;
-		const n = coords.length;
-
-		// Track original indices for result reordering. Use a flat array
-		// instead of N spread-objects to avoid per-element allocation.
-		const origIndices = new Array<number>(n);
-		for (let i = 0; i < n; i++) origIndices[i] = i;
-
-		// Group by column key (chunkX, chunkZ) using a numeric packed key
-		// instead of string template literals — avoids N string allocations.
-		// Keys are encoded as chunkX * 0x100000 + (chunkZ & 0xfffff) to
-		// avoid collisions for coords in the ±512K range.
-		const columnMap = new Map<number, number[]>(); // packedKey → list of indices
-		for (let i = 0; i < n; i++) {
-			const c = coords[i];
-			const colKey = (c.chunkX * 0x100000 + (c.chunkZ & 0xfffff)) | 0;
-			let col = columnMap.get(colKey);
-			if (!col) {
-				col = [];
-				columnMap.set(colKey, col);
-			}
-			col.push(i);
-		}
-
-		// Build groups from column indices, sorted by chunkY within each column.
-		const groups: Array<{ indices: number[]; length: number }> = [];
-		for (const indices of columnMap.values()) {
-			// Sort indices by chunkY
-			if (indices.length > 1) {
-				indices.sort((a, b) => coords[a].chunkY - coords[b].chunkY);
-			}
-			if (indices.length <= maxGroup) {
-				groups.push({ indices, length: indices.length });
-			} else {
-				for (let i = 0; i < indices.length; i += maxGroup) {
-					const slice = indices.slice(i, i + maxGroup);
-					groups.push({ indices: slice, length: slice.length });
-				}
-			}
-		}
-
-		// Distribute groups across workers via least-loaded assignment.
-		const workerCount = Math.max(1, this.workers.length);
-		const workerGroups: Array<Array<{ indices: number[]; length: number }>> =
-			Array.from({ length: workerCount }, () => []);
-		const totalChunksPerWorker = new Array(workerCount).fill(0);
-
-		for (const group of groups) {
-			let minWorker = 0;
-			let minChunks = totalChunksPerWorker[0];
-			for (let w = 1; w < workerCount; w++) {
-				if (totalChunksPerWorker[w] < minChunks) {
-					minChunks = totalChunksPerWorker[w];
-					minWorker = w;
-				}
-			}
-			workerGroups[minWorker].push(group);
-			totalChunksPerWorker[minWorker] += group.length;
-		}
-
-		// Build origIndices mapping in group order (for result reordering).
-		// Overwrite origIndices in-place — we no longer need the original
-		// 0..n-1 order.
-		let pos = 0;
-		for (const wGroups of workerGroups) {
-			for (const group of wGroups) {
-				for (const idx of group.indices) {
-					origIndices[pos++] = idx;
-				}
-			}
-		}
-
-		// Build dispatch batches: one coord array per worker.
-		const dispatchGroups: Array<
-			Array<{ chunkX: number; chunkY: number; chunkZ: number }>
-		> = [];
-		for (const wGroups of workerGroups) {
-			if (wGroups.length === 0) continue;
-			let totalLen = 0;
-			for (const g of wGroups) totalLen += g.length;
-			const batch = new Array<{
-				chunkX: number;
-				chunkY: number;
-				chunkZ: number;
-			}>(totalLen);
-			let bPos = 0;
-			for (const group of wGroups) {
-				for (const idx of group.indices) {
-					const c = coords[idx];
-					batch[bPos++] = {
-						chunkX: c.chunkX,
-						chunkY: c.chunkY,
-						chunkZ: c.chunkZ,
-					};
-				}
-			}
-			dispatchGroups.push(batch);
-		}
-
-		return Promise.all(dispatchGroups.map((g) => this._dispatchBatch(g))).then(
-			(parts) => {
-				// Write results directly into final positions, skipping the
-				// flatResults intermediate array. origIndices[pos] tells us
-				// which input coord the result at flat position `pos` belongs to.
-				const results = new Array<ChunkResult>(n);
-				let flatIdx = 0;
-				for (const part of parts) {
-					for (let i = 0; i < part.length; i++) {
-						results[origIndices[flatIdx++]] = part[i];
-					}
-				}
-				return results;
-			},
-		);
-	}
-
-	private _dispatchBatch(
-		coords: Array<{ chunkX: number; chunkY: number; chunkZ: number }>,
-	): Promise<ChunkResult[]> {
-		const id = this.nextId++;
-
-		return new Promise((resolve, reject) => {
-			this.queue.push({
-				id,
-				kind: PendingTaskKindType.BATCH,
-				coords,
-				resolve,
-				reject,
-			});
-			this.processQueue();
-		});
-	}
-
-	postRelight(
-		chunkX: number,
-		chunkY: number,
-		chunkZ: number,
-		blocks: Uint8Array,
-	): Promise<Uint8Array> {
-		if (this.terminated) {
-			return Promise.reject(new Error("Chunk worker pool terminated"));
-		}
-
-		const id = this.nextId++;
-
-		return new Promise((resolve, reject) => {
-			this.queue.push({
-				id,
-				kind: PendingTaskKindType.RELIGHT,
-				chunkX,
-				chunkY,
-				chunkZ,
-				blocks,
-				resolve,
-				reject,
-			});
-			this.processQueue();
+		worker.postMessage({
+			id: task.id,
+			kind: PendingTaskKindType.BATCH,
+			seed: this.seed,
+			wasmEnabled: this.wasmEnabled,
+			items: task.coords,
 		});
 	}
 
 	private recoverWorker(deadWorker: Worker): void {
 		const ws = this.workerByInstance.get(deadWorker);
-		if (!ws) return; // already recovered (error + exit can double-fire)
-		if (ws.disposed) return; // intentional termination
+		if (!ws || ws.disposed) return;
+
 		const wsIndex = this.workers.indexOf(ws);
 		if (wsIndex < 0) return;
+
+		ws.disposed = true;
 		this.workers.splice(wsIndex, 1);
 		this.workerByInstance.delete(deadWorker);
 
-		// Requeue the dead worker's in-flight task so its work is redone.
 		if (ws.activeTaskId !== undefined) {
 			const task = this.pendingTasks.get(ws.activeTaskId);
 			if (task) {
 				this.pendingTasks.delete(ws.activeTaskId);
-				// Use unshift to requeue at the front (priority for recovered tasks).
-				this.queue.unshift(task);
-				this.queueStart = 0;
+				this.requeueFront(task);
 			}
 		}
 
-		this.workers.push(this.createWorkerState());
-		this.processQueue();
+		if (!this.terminated) {
+			this.workers.push(this.createWorkerState());
+			this.processQueue();
+		}
 	}
 
 	private async recreateWorkers(): Promise<void> {
-		// Settle all queued + in-flight work (seed changed → results invalid).
-		const err = new Error("Seed changed — chunk generation aborted");
-		for (let i = this.queueStart; i < this.queue.length; i++) {
-			this.queue[i].reject(err);
-		}
-		for (const task of this.pendingTasks.values()) task.reject(err);
-		this.queue = [];
-		this.queueStart = 0;
-		this.pendingTasks.clear();
+		this.rejectAllWork(new Error("Seed changed; chunk generation aborted"));
 
 		for (const ws of this.workers) {
 			ws.disposed = true;
-			await ws.worker.terminate();
 		}
+
+		await Promise.all(this.workers.map((ws) => ws.worker.terminate()));
+
 		this.workers = [];
 		this.workerByInstance.clear();
 
@@ -542,30 +564,59 @@ export class ChunkWorkerPool {
 		}
 	}
 
-	async terminate(): Promise<void> {
-		if (this.terminated) return;
-		this.terminated = true;
+	private requeueFront(task: PendingTask): void {
+		if (this.queueStart > 0) {
+			this.queue[--this.queueStart] = task;
+		} else {
+			this.queue.unshift(task);
+		}
+	}
 
-		// Settle everything so callers never hang on unresolved promises.
-		const err = new Error("Chunk worker pool terminated");
+	private rejectQueued(err: Error): void {
 		for (let i = this.queueStart; i < this.queue.length; i++) {
 			this.queue[i].reject(err);
 		}
-		for (const task of this.pendingTasks.values()) task.reject(err);
+
 		this.queue = [];
 		this.queueStart = 0;
-		this.pendingTasks.clear();
-
-		for (const ws of this.workers) {
-			ws.disposed = true;
-		}
-		await Promise.all(this.workers.map((w) => w.worker.terminate()));
-		this.workers = [];
-		this.workerByInstance.clear();
-		this.initialized = false;
 	}
 
-	get pendingCount(): number {
-		return this.queue.length - this.queueStart + this.pendingTasks.size;
+	private rejectAllWork(err: Error): void {
+		this.rejectQueued(err);
+
+		for (const task of this.pendingTasks.values()) {
+			task.reject(err);
+		}
+
+		this.pendingTasks.clear();
+	}
+
+	private compactQueueIfNeeded(): void {
+		if (this.queueStart === 0) return;
+
+		if (this.queueStart >= this.queue.length) {
+			this.queue = [];
+			this.queueStart = 0;
+			return;
+		}
+
+		// Avoid retaining already-dispatched task objects forever on long-lived
+		// pools. Compact only after meaningful drift to avoid copying too often.
+		if (this.queueStart > 1024 && this.queueStart * 2 >= this.queue.length) {
+			this.queue = this.queue.slice(this.queueStart);
+			this.queueStart = 0;
+		}
+	}
+
+	private getUnavailableError(): Error | null {
+		if (this.terminated) {
+			return new Error("Chunk worker pool terminated");
+		}
+
+		if (!this.initialized || this.workers.length === 0) {
+			return new Error("Chunk worker pool not initialized");
+		}
+
+		return null;
 	}
 }
