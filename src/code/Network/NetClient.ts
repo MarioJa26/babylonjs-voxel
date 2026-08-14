@@ -1,11 +1,12 @@
 /**
- * NetClient — connection manager for b102 multiplayer.
+ * NetClient - connection manager for b102 multiplayer.
  *
  * Wraps the Colyseus SDK to provide:
- * - Connection lifecycle (connect, disconnect, reconnect)
- * - Binary message send/receive for game data
+ * - Connection lifecycle: connect, disconnect, reconnect
+ * - Binary message send and receive for game data
  * - Event callbacks for player join/leave, state updates, block edits
  */
+
 import { ColyseusSDK } from "@colyseus/sdk";
 import {
 	BinaryDecoder,
@@ -21,6 +22,7 @@ import {
 	type BlockEditRejectedData,
 	type ChatMessageData,
 	MessageType,
+	type PlayerStateBatchEntry,
 } from "./protocol/messages";
 
 export interface RemotePlayer {
@@ -33,7 +35,7 @@ export interface RemotePlayer {
 	yaw: number;
 	pitch: number;
 	animation: number;
-	// Interpolation targets (yaw stored in degrees)
+	// Interpolation targets, yaw stored in degrees.
 	targetX: number;
 	targetY: number;
 	targetZ: number;
@@ -63,42 +65,55 @@ export interface NetClientCallbacks {
 
 type BinaryHandler = (data: Uint8Array) => void;
 
+type ChunkRequest = {
+	cx: number;
+	cy: number;
+	cz: number;
+	lod: number;
+	cachedVersion: number;
+};
+
 export class NetClient {
 	private client: ColyseusSDK | null = null;
 	private room: any = null;
-	private encoder = new BinaryEncoder(256);
-	private decoder = new BinaryDecoder(new Uint8Array(0));
+
+	private readonly encoder = new BinaryEncoder(256);
+	private readonly decoder = new BinaryDecoder(new Uint8Array(0));
+
 	private connected = false;
 	private callbacks: NetClientCallbacks = {};
-	private remotePlayers = new Map<string, RemotePlayer>();
-	// Dense array indexed by the server-assigned room player index. The old
-	// design chained a Map<number,string> (index → sessionId) into a
-	// Map<string,RemotePlayer> lookup for *every player, every state batch*
-	// (20Hz+). Room indices are small and bounded by max room players, so a
-	// plain array collapses that into one indexed read. NOTE: this assumes
-	// the server reuses freed indices rather than handing out ever-increasing
-	// ones over a long session — if that's not true server-side, this should
-	// go back to a Map.
+
+	private readonly remotePlayers = new Map<string, RemotePlayer>();
+
+	// Dense array indexed by server-assigned room player index. This avoids the
+	// old index -> sessionId -> player double lookup on the 20 Hz state path.
 	private playersByIndex: (RemotePlayer | undefined)[] = [];
+
 	private ownIndex = -1;
 	private playerName = "";
-	private binaryHandlers: BinaryHandler[] = [];
-	// Reusable scratch array for decodePlayerStateBatchInto — avoids per-tick
-	// array + object allocation on the 20 Hz hot path.
-	private batchScratch: import("./protocol/messages").PlayerStateBatchEntry[] =
-		[];
-	// Guards against a warn-spam perf collapse if a state batch ever
-	// references an index we haven't seen a PlayerJoin for yet/anymore.
-	private warnedUnknownIndices = new Set<number>();
+
+	private readonly binaryHandlers: BinaryHandler[] = [];
+
+	// Reusable decode scratch for the hot player-state path.
+	private readonly batchScratch: PlayerStateBatchEntry[] = [];
+
+	// Prevent warn spam if a state batch references an index we do not know.
+	private readonly warnedUnknownIndices = new Set<number>();
+
+	// Monotonic connection generation. Room handlers capture this value so
+	// packets/events from older rooms are ignored after reconnects.
+	private roomGeneration = 0;
+
 	worldName = "default";
 
-	constructor(private serverUrl: string = this.defaultServerUrl()) {}
+	constructor(private serverUrl: string = NetClient.defaultServerUrl()) {}
 
-	private defaultServerUrl(): string {
+	private static defaultServerUrl(): string {
 		if (typeof window !== "undefined") {
 			const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
 			return `${proto}//${window.location.hostname}:2567`;
 		}
+
 		return "ws://localhost:2567";
 	}
 
@@ -111,46 +126,64 @@ export class NetClient {
 		worldName: string,
 		seed: string,
 	): Promise<void> {
+		// Make reconnect explicit and safe. Old room events are ignored by the
+		// generation guard in setupRoomHandlers.
+		this.detachCurrentRoom();
+
 		this.playerName = playerName;
 		this.worldName = worldName;
 		this.client = new ColyseusSDK(this.serverUrl);
 
+		const generation = ++this.roomGeneration;
+
 		try {
-			this.room = await this.client.joinOrCreate("voxel", {
+			const room = await this.client.joinOrCreate("voxel", {
 				name: playerName,
 				worldName,
 				seed,
 			});
 
-			this.setupRoomHandlers();
+			// A newer connect/disconnect happened while this join was in flight.
+			if (generation !== this.roomGeneration) {
+				void room.leave();
+				throw new Error("Connection superseded");
+			}
+
+			this.room = room;
+			this.setupRoomHandlers(room, generation);
 			this.connected = true;
 			this.callbacks.onConnected?.();
 		} catch (err) {
+			if (generation === this.roomGeneration) {
+				this.connected = false;
+				this.room = null;
+				this.client = null;
+				this.resetRemoteState();
+			}
+
 			console.error("[NetClient] Connection failed:", err);
 			throw err;
 		}
 	}
 
-	private setupRoomHandlers(): void {
-		const room = this.room;
-		// Handle binary messages (game data)
+	private setupRoomHandlers(room: any, generation: number): void {
 		room.onMessage("binary", (data: Uint8Array) => {
-			// Provenance guard: only messages from the current room are
-			// dispatched. A stale room object (old connection) can deliver
-			// buffered packets after a reconnect — dropping them here keeps
-			// handlers like RemoteChunkProvider free of old-connection data
-			// without any packet-level request/connection identifier.
-			if (this.room !== room) return;
+			// Drop packets from stale rooms after reconnect.
+			if (!this.isCurrentRoom(room, generation)) return;
 			this.handleBinaryMessage(data);
 		});
 
-		// Handle connection lifecycle
-		this.room.onLeave((code: number, reason?: string) => {
+		room.onLeave((code: number, reason?: string) => {
+			if (!this.isCurrentRoom(room, generation)) return;
+
 			this.connected = false;
+			this.room = null;
+			this.resetRemoteState();
 			this.callbacks.onDisconnected?.(code, reason);
 		});
 
-		this.room.onError((code: number, message?: string) => {
+		room.onError((code: number, message?: string) => {
+			if (!this.isCurrentRoom(room, generation)) return;
 			this.callbacks.onServerError?.(code, message);
 		});
 	}
@@ -159,175 +192,214 @@ export class NetClient {
 		this.binaryHandlers.push(handler);
 	}
 
+	removeBinaryHandler(handler: BinaryHandler): void {
+		const index = this.binaryHandlers.indexOf(handler);
+		if (index >= 0) {
+			this.binaryHandlers.splice(index, 1);
+		}
+	}
+
 	private handleBinaryMessage(data: Uint8Array): void {
-		// Notify external handlers first (e.g. RemoteChunkProvider). Indexed
-		// loop instead of for-of — this runs for every message, including
-		// the 20Hz+ player state batch, so we skip the iterator allocation.
 		const handlers = this.binaryHandlers;
+
+		// External handlers first, preserving existing behavior. Individual
+		// handler failures are isolated so one consumer cannot break NetClient.
 		for (let i = 0; i < handlers.length; i++) {
-			handlers[i](data);
+			try {
+				handlers[i](data);
+			} catch (err) {
+				console.error("[NetClient] Binary handler failed:", err);
+			}
 		}
 
 		if (data.byteLength < 1) return;
 
-		// Reuse the decoder — setBuffer is cheaper than allocating a new
-		// BinaryDecoder + DataView per message (20+ Hz).
 		const dec = this.decoder;
 		dec.setBuffer(data);
-		const msgType = dec.readUint8(); // consume type byte
 
-		switch (msgType) {
-			case MessageType.PlayerStateBatch: {
-				decodePlayerStateBatchEntriesInto(dec, this.batchScratch);
-				const players = this.playersByIndex;
-				for (let i = 0; i < this.batchScratch.length; i++) {
-					const state = this.batchScratch[i];
-					if (state.index === this.ownIndex) continue;
+		try {
+			const msgType = dec.readUint8();
 
-					// Direct indexed lookup — replaces the old
-					// index→sessionId→player double Map hop.
-					const existing = players[state.index];
-					if (existing === undefined) {
-						if (!this.warnedUnknownIndices.has(state.index)) {
-							this.warnedUnknownIndices.add(state.index);
-							console.warn(
-								`[NetClient] State for unknown player index ${state.index}, skipping`,
-							);
-						}
-						continue;
-					}
+			switch (msgType) {
+				case MessageType.PlayerStateBatch:
+					this.handlePlayerStateBatch(dec);
+					break;
 
-					// Update interpolation targets (yaw byte → degrees)
-					existing.targetX = state.x;
-					existing.targetY = state.y;
-					existing.targetZ = state.z;
-					existing.targetYaw = (state.yaw / 255) * 360;
-					existing.pitch = state.pitch;
-					existing.animation = state.animation;
-				}
+				case MessageType.PlayerJoin:
+					this.handlePlayerJoin(dec);
+					break;
 
-				// Notify callback — pass the Map directly instead of
-				// Array.from() which allocates a new array every tick.
-				this.callbacks.onPlayerStates?.(this.remotePlayers);
-				break;
-			}
+				case MessageType.PlayerLeave:
+					this.handlePlayerLeave(dec);
+					break;
 
-			case MessageType.PlayerJoin: {
-				const join = decodePlayerJoinFrom(dec);
-				if (join.sessionId === this.room.sessionId) {
-					// This is our own join message — record our room index
-					this.ownIndex = join.index;
+				case MessageType.BlockEditBroadcast: {
+					const edit = decodeBlockEditBroadcastFrom(dec);
+					this.callbacks.onBlockEdit?.(edit);
 					break;
 				}
 
-				const player: RemotePlayer = {
-					sessionId: join.sessionId,
-					index: join.index,
-					name: join.name,
-					x: 0,
-					y: 80,
-					z: 0,
-					yaw: 0,
-					pitch: 0,
-					animation: 0,
-					targetX: 0,
-					targetY: 80,
-					targetZ: 0,
-					targetYaw: 0,
-				};
-				this.remotePlayers.set(join.sessionId, player);
-				this.playersByIndex[join.index] = player;
-				this.warnedUnknownIndices.delete(join.index);
-				this.callbacks.onPlayerJoin?.(player);
-				break;
-			}
-
-			case MessageType.PlayerLeave: {
-				const index = dec.readUint8();
-				const existing = this.playersByIndex[index];
-				const sessionId = existing?.sessionId ?? "";
-				const name = existing?.name;
-				if (sessionId) this.remotePlayers.delete(sessionId);
-				this.playersByIndex[index] = undefined;
-				this.callbacks.onPlayerLeave?.(sessionId, name);
-				break;
-			}
-
-			case MessageType.BlockEditBroadcast: {
-				const edit = decodeBlockEditBroadcastFrom(dec);
-				this.callbacks.onBlockEdit?.(edit);
-				break;
-			}
-
-			case MessageType.BlockEditRejected: {
-				const rejection = decodeBlockEditRejectedFrom(dec);
-				this.callbacks.onBlockEditRejected?.(rejection);
-				break;
-			}
-
-			case MessageType.ChatMessage: {
-				const chat = dec.readChatMessage();
-				this.callbacks.onChatMessage?.(chat);
-				break;
-			}
-
-			case MessageType.BlockEditBatch: {
-				// Received on join: sync all existing world edits
-				const edits = decodeBlockEditBatch(data);
-				for (const edit of edits) {
-					this.callbacks.onBlockEdit?.(edit);
+				case MessageType.BlockEditRejected: {
+					const rejection = decodeBlockEditRejectedFrom(dec);
+					this.callbacks.onBlockEditRejected?.(rejection);
+					break;
 				}
-				break;
+
+				case MessageType.ChatMessage: {
+					const chat = dec.readChatMessage();
+					this.callbacks.onChatMessage?.(chat);
+					break;
+				}
+
+				case MessageType.BlockEditBatch: {
+					const edits = decodeBlockEditBatch(data);
+					for (let i = 0; i < edits.length; i++) {
+						this.callbacks.onBlockEdit?.(edits[i]);
+					}
+					break;
+				}
+
+				case MessageType.WorldTime: {
+					const timeOfDay = dec.readFloat32();
+					this.callbacks.onWorldTime?.(timeOfDay);
+					break;
+				}
+
+				case MessageType.WorldConfig: {
+					const worldSeed = dec.readString();
+					this.callbacks.onWorldConfig?.(worldSeed);
+					break;
+				}
+
+				case MessageType.SpawnPosition:
+					this.callbacks.onSpawnPosition?.({
+						x: dec.readFloat32(),
+						y: dec.readFloat32(),
+						z: dec.readFloat32(),
+						yaw: dec.readFloat32(),
+						pitch: dec.readFloat32(),
+					});
+					break;
+
+				case MessageType.ChunkData:
+				case MessageType.ChunkDataBatch:
+				case MessageType.ChunkUnchanged:
+				case MessageType.ChunkUnchangedBatch:
+					// Handled by RemoteChunkProvider via addBinaryHandler.
+					break;
+
+				default:
+					console.warn(
+						`[NetClient] Unknown message type: 0x${msgType.toString(16)}`,
+					);
+					break;
 			}
-
-			case MessageType.WorldTime: {
-				const timeOfDay = dec.readFloat32();
-				this.callbacks.onWorldTime?.(timeOfDay);
-				break;
-			}
-
-			case MessageType.WorldConfig: {
-				const seed = dec.readString();
-				this.callbacks.onWorldConfig?.(seed);
-				break;
-			}
-
-			case MessageType.SpawnPosition: {
-				const pos = {
-					x: dec.readFloat32(),
-					y: dec.readFloat32(),
-					z: dec.readFloat32(),
-					yaw: dec.readFloat32(),
-					pitch: dec.readFloat32(),
-				};
-				this.callbacks.onSpawnPosition?.(pos);
-				break;
-			}
-
-			case MessageType.ChunkData:
-				// Handled by RemoteChunkProvider via addBinaryHandler — no-op here
-				break;
-
-			case MessageType.ChunkDataBatch:
-				// Handled by RemoteChunkProvider via addBinaryHandler — no-op here
-				break;
-
-			case MessageType.ChunkUnchanged:
-				// Handled by RemoteChunkProvider via addBinaryHandler — no-op here
-				break;
-
-			case MessageType.ChunkUnchangedBatch:
-				// Handled by RemoteChunkProvider via addBinaryHandler — no-op here
-				break;
-
-			default:
-				console.warn(
-					`[NetClient] Unknown message type: 0x${msgType.toString(16)}`,
-				);
+		} catch (err) {
+			console.error("[NetClient] Failed to handle binary message:", err);
 		}
 	}
 
-	// ─── Outgoing messages ─────────────────────────────────────────────
+	private handlePlayerStateBatch(dec: BinaryDecoder): void {
+		decodePlayerStateBatchEntriesInto(dec, this.batchScratch);
+
+		const scratch = this.batchScratch;
+		const players = this.playersByIndex;
+
+		for (let i = 0; i < scratch.length; i++) {
+			const state = scratch[i];
+
+			if (state.index === this.ownIndex) continue;
+
+			const existing = players[state.index];
+			if (existing === undefined) {
+				if (!this.warnedUnknownIndices.has(state.index)) {
+					this.warnedUnknownIndices.add(state.index);
+					console.warn(
+						`[NetClient] State for unknown player index ${state.index}, skipping`,
+					);
+				}
+				continue;
+			}
+
+			existing.targetX = state.x;
+			existing.targetY = state.y;
+			existing.targetZ = state.z;
+			existing.targetYaw = (state.yaw / 255) * 360;
+			existing.pitch = state.pitch;
+			existing.animation = state.animation;
+		}
+
+		this.callbacks.onPlayerStates?.(this.remotePlayers);
+	}
+
+	private handlePlayerJoin(dec: BinaryDecoder): void {
+		const join = decodePlayerJoinFrom(dec);
+
+		if (join.sessionId === this.room?.sessionId) {
+			this.ownIndex = join.index;
+			return;
+		}
+
+		let player = this.remotePlayers.get(join.sessionId);
+
+		if (player) {
+			// Same session joined again, likely after an index reassignment.
+			this.playersByIndex[player.index] = undefined;
+
+			player.index = join.index;
+			player.name = join.name;
+			player.x = 0;
+			player.y = 80;
+			player.z = 0;
+			player.yaw = 0;
+			player.pitch = 0;
+			player.animation = 0;
+			player.targetX = 0;
+			player.targetY = 80;
+			player.targetZ = 0;
+			player.targetYaw = 0;
+		} else {
+			player = {
+				sessionId: join.sessionId,
+				index: join.index,
+				name: join.name,
+				x: 0,
+				y: 80,
+				z: 0,
+				yaw: 0,
+				pitch: 0,
+				animation: 0,
+				targetX: 0,
+				targetY: 80,
+				targetZ: 0,
+				targetYaw: 0,
+			};
+
+			this.remotePlayers.set(join.sessionId, player);
+		}
+
+		this.playersByIndex[join.index] = player;
+		this.warnedUnknownIndices.delete(join.index);
+		this.callbacks.onPlayerJoin?.(player);
+	}
+
+	private handlePlayerLeave(dec: BinaryDecoder): void {
+		const index = dec.readUint8();
+		const existing = this.playersByIndex[index];
+
+		if (existing === undefined) {
+			this.warnedUnknownIndices.delete(index);
+			this.callbacks.onPlayerLeave?.("", undefined);
+			return;
+		}
+
+		this.remotePlayers.delete(existing.sessionId);
+		this.playersByIndex[index] = undefined;
+		this.warnedUnknownIndices.delete(index);
+		this.callbacks.onPlayerLeave?.(existing.sessionId, existing.name);
+	}
+
+	// Outgoing messages
 
 	sendPlayerState(
 		x: number,
@@ -337,22 +409,16 @@ export class NetClient {
 		pitch: number,
 		animation: number,
 	): void {
-		if (!this.connected || !this.room) return;
+		const room = this.getConnectedRoom();
+		if (!room) return;
+
+		const yawByte = NetClient.encodeYawByte(yaw);
+		const pitchByte = NetClient.encodePitchByte(pitch);
 
 		this.encoder.reset();
-		// Write directly from raw values — avoids allocating an intermediate
-		// PlayerStateData object on the 20 Hz hot path.
-		this.encoder.writePlayerStateRaw(
-			x,
-			y,
-			z,
-			// yaw: 0-255 maps the full 360° circle
-			Math.round(((((yaw % 360) + 360) % 360) / 360) * 255) & 0xff,
-			Math.round(((pitch + 90) / 180) * 255) & 0xff,
-			animation,
-		);
+		this.encoder.writePlayerStateRaw(x, y, z, yawByte, pitchByte, animation);
 
-		this.room.sendBytes("binary", this.encoder.getBytes());
+		room.sendBytes("binary", this.encoder.getBytes());
 	}
 
 	sendBlockEdit(
@@ -362,7 +428,8 @@ export class NetClient {
 		blockId: number,
 		action: number,
 	): void {
-		if (!this.connected || !this.room) return;
+		const room = this.getConnectedRoom();
+		if (!room) return;
 
 		this.encoder.reset();
 		this.encoder.writeBlockEdit({
@@ -374,23 +441,25 @@ export class NetClient {
 			action,
 		});
 
-		this.room.sendBytes("binary", this.encoder.getBytes());
+		room.sendBytes("binary", this.encoder.getBytes());
 	}
 
 	sendChat(message: string): void {
-		if (!this.connected || !this.room) return;
+		const room = this.getConnectedRoom();
+		if (!room) return;
 
 		this.encoder.reset();
+
 		const chat: ChatMessageData = {
-			sessionId: this.room.sessionId,
+			sessionId: room.sessionId,
 			name: this.playerName,
 			message,
 		};
-		this.encoder.writeChatMessage(chat);
-		this.room.sendBytes("binary", this.encoder.getBytes());
 
-		// Local echo — the server relays to everyone except the sender, so
-		// echo here to avoid a full round-trip delay on our own message.
+		this.encoder.writeChatMessage(chat);
+		room.sendBytes("binary", this.encoder.getBytes());
+
+		// Local echo. The server relays to everyone except the sender.
 		this.callbacks.onChatMessage?.(chat);
 	}
 
@@ -401,40 +470,38 @@ export class NetClient {
 		lod: number,
 		cachedVersion = 0,
 	): void {
-		if (!this.connected || !this.room) {
+		const room = this.getConnectedRoom();
+
+		if (!room) {
 			console.warn(
 				`[NetClient] sendChunkRequest skipped (not connected): ${cx},${cy},${cz}`,
 			);
 			return;
 		}
+
 		this.encoder.reset();
 		this.encoder.writeChunkRequest(cx, cy, cz, lod, cachedVersion);
-		this.room.sendBytes("binary", this.encoder.getBytes());
+		room.sendBytes("binary", this.encoder.getBytes());
 	}
 
-	sendChunkRequestBatch(
-		requests: Array<{
-			cx: number;
-			cy: number;
-			cz: number;
-			lod: number;
-			cachedVersion: number;
-		}>,
-	): void {
-		if (!this.connected || !this.room || requests.length === 0) {
-			if (requests.length > 0) {
-				console.warn(
-					`[NetClient] sendChunkRequestBatch skipped (connected=${this.connected}): ${requests.length} chunks`,
-				);
-			}
+	sendChunkRequestBatch(requests: ChunkRequest[]): void {
+		if (requests.length === 0) return;
+
+		const room = this.getConnectedRoom();
+
+		if (!room) {
+			console.warn(
+				`[NetClient] sendChunkRequestBatch skipped (connected=${this.connected}): ${requests.length} chunks`,
+			);
 			return;
 		}
+
 		this.encoder.reset();
 		this.encoder.writeChunkRequestBatch(requests);
-		this.room.sendBytes("binary", this.encoder.getBytes());
+		room.sendBytes("binary", this.encoder.getBytes());
 	}
 
-	// ─── Remote player access ──────────────────────────────────────────
+	// Remote player access
 
 	getRemotePlayers(): Map<string, RemotePlayer> {
 		return this.remotePlayers;
@@ -445,10 +512,9 @@ export class NetClient {
 	}
 
 	updateRemotePlayerInterpolation(dt: number): void {
-		const lerpFactor = 1 - Math.exp(-10 * dt); // Smooth interpolation
-		// Iterate the dense index array directly rather than Map.values() —
-		// skips the Map iterator allocation on this per-frame path.
+		const lerpFactor = 1 - Math.exp(-10 * dt);
 		const players = this.playersByIndex;
+
 		for (let i = 0; i < players.length; i++) {
 			const player = players[i];
 			if (player === undefined) continue;
@@ -457,26 +523,23 @@ export class NetClient {
 			player.y += (player.targetY - player.y) * lerpFactor;
 			player.z += (player.targetZ - player.z) * lerpFactor;
 
-			// Yaw interpolation (handle wraparound — yaw is stored in degrees)
 			let yawDiff = player.targetYaw - player.yaw;
 			if (yawDiff > 180) yawDiff -= 360;
-			if (yawDiff < -180) yawDiff += 360;
+			else if (yawDiff < -180) yawDiff += 360;
+
 			player.yaw += yawDiff * lerpFactor;
+
+			// Keep yaw bounded over long sessions to avoid unbounded drift.
+			if (player.yaw >= 360) player.yaw -= 360;
+			else if (player.yaw < 0) player.yaw += 360;
 		}
 	}
 
-	// ─── Lifecycle ─────────────────────────────────────────────────────
+	// Lifecycle
 
 	disconnect(): void {
-		if (this.room) {
-			this.room.leave();
-			this.room = null;
-		}
-		this.connected = false;
-		this.remotePlayers.clear();
-		this.playersByIndex.length = 0;
-		this.warnedUnknownIndices.clear();
-		this.ownIndex = -1;
+		this.detachCurrentRoom();
+		this.resetRemoteState();
 	}
 
 	get isConnected(): boolean {
@@ -485,5 +548,47 @@ export class NetClient {
 
 	get sessionId(): string {
 		return this.room?.sessionId ?? "";
+	}
+
+	private detachCurrentRoom(): void {
+		const room = this.room;
+
+		// Invalidate existing handlers before calling leave so late events from
+		// this room cannot affect the next connection.
+		this.roomGeneration++;
+		this.connected = false;
+		this.room = null;
+
+		if (room) {
+			void room.leave();
+		}
+	}
+
+	private resetRemoteState(): void {
+		this.remotePlayers.clear();
+		this.playersByIndex.length = 0;
+		this.warnedUnknownIndices.clear();
+		this.batchScratch.length = 0;
+		this.ownIndex = -1;
+	}
+
+	private isCurrentRoom(room: any, generation: number): boolean {
+		return this.room === room && this.roomGeneration === generation;
+	}
+
+	private getConnectedRoom(): any | null {
+		return this.connected ? this.room : null;
+	}
+
+	private static encodeYawByte(yaw: number): number {
+		const normalized = ((yaw % 360) + 360) % 360;
+		return Math.round((normalized / 360) * 255) & 0xff;
+	}
+
+	private static encodePitchByte(pitch: number): number {
+		// Valid pitch range is expected to be -90..90. Clamp instead of wrapping
+		// so bad input does not turn into a seemingly valid opposite angle.
+		const clamped = pitch < -90 ? -90 : pitch > 90 ? 90 : pitch;
+		return Math.round(((clamped + 90) / 180) * 255) & 0xff;
 	}
 }
