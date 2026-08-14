@@ -163,56 +163,77 @@ export class PlayerHud {
 		this.#mainInventoryContainer = inventoryContainer;
 
 		const inventory = PlayerHud.#inventory.inventory;
+		const fragment = document.createDocumentFragment();
+
 		for (let row = inventory.length - 1; row >= 1; row--) {
 			const rowContainer = document.createElement("div");
 			rowContainer.classList.add("inventory-row");
 
-			for (let col = 0; col < inventory[row].length; col++) {
-				const slot = this.getSlot(col, row);
+			const invRow = inventory[row];
+
+			for (let col = 0, len = invRow.length; col < len; col++) {
+				const slot = invRow[col].divItemSlot;
 				if (!slot) continue;
+
 				slot.addEventListener("dblclick", () => {
-					const item = PlayerHud.#inventory.inventory[row][col].item;
+					const item = invRow[col].item;
 					if (item) {
 						this.#craftMenu.addItemToFirstFreeSearchSlot(item.itemId);
 					}
 				});
+
 				rowContainer.appendChild(slot);
 			}
-			inventoryContainer.appendChild(rowContainer);
+
+			fragment.appendChild(rowContainer);
 		}
+
+		inventoryContainer.appendChild(fragment);
+
 		return inventoryContainer;
 	}
 	private createHotbarUI(): HTMLDivElement {
 		const existingWrapper = document.getElementById("hotbar-wrapper");
 		if (existingWrapper) {
-			existingWrapper.remove(); // Remove old one to rebuild with new scene context
+			existingWrapper.remove();
 		}
+
 		const hotbarWrapper = document.createElement("div");
 		hotbarWrapper.id = "hotbar-wrapper";
 		hotbarWrapper.classList.add("hotbar-wrapper");
-		// Create item name display
-		PlayerHud.#heldItemNameDiv.classList.add("held-item-name");
+
+		const nameDiv = PlayerHud.#heldItemNameDiv;
+		nameDiv.classList.add("held-item-name");
 
 		const hotbarContainer = document.createElement("div");
 		hotbarContainer.classList.add("hotbar-container");
 
 		const hotbarRow = PlayerHud.#inventory.inventory[0];
-		for (let col = 0; col < hotbarRow.length; col++) {
-			const slot = this.getSlot(col, 0);
+		const fragment = document.createDocumentFragment();
+
+		this.#hotbarSlots.length = 0;
+
+		for (let col = 0, len = hotbarRow.length; col < len; col++) {
+			const slot = hotbarRow[col].divItemSlot;
 			if (!slot) continue;
-			hotbarContainer.appendChild(slot);
-			this.#hotbarSlots.push(slot); // Store every slot
+
+			fragment.appendChild(slot);
+			this.#hotbarSlots.push(slot);
 		}
 
-		hotbarWrapper.appendChild(PlayerHud.#heldItemNameDiv);
+		hotbarContainer.appendChild(fragment);
+
+		hotbarWrapper.appendChild(nameDiv);
 		hotbarWrapper.appendChild(hotbarContainer);
 
 		this.updateHotbarSelection();
+
 		document.body.appendChild(hotbarWrapper);
 
 		onSceneDispose(this.#scene, () => {
 			hotbarWrapper.remove();
 		});
+
 		return hotbarContainer;
 	}
 
@@ -400,60 +421,62 @@ export class PlayerHud {
 
 	public hideWoodCrateUI(): void {
 		if (!this.#woodCrateOpen) return;
+
 		this.#woodCrateOpen = false;
 
-		// Persist block inventory
 		if (this.#woodCrateBlockPos && this.#woodCrateSlots) {
 			const saved = serializeBlockSlots(this.#woodCrateSlots);
 			const { x, y, z } = this.#woodCrateBlockPos;
 			saveBlockInventory(x, y, z, saved);
 		}
 
-		// Clear live slot references
 		this.#woodCrateSlots = null;
 		this.#woodCrateSavedState = null;
 		this.#woodCrateBlockPos = null;
 
 		closeUi(UiFocus.woodCrate);
+
 		if (this.#woodCrateDiv) {
 			this.#woodCrateDiv.style.display = "none";
 		}
 
-		// Move player inventory slots back to main inventory container
-		if (this.#mainInventoryContainer) {
+		const main = this.#mainInventoryContainer;
+		if (main) {
 			const inventory = PlayerHud.#inventory.inventory;
-			const rows =
-				this.#mainInventoryContainer.querySelectorAll(".inventory-row");
+			const rows = main.children;
+
 			for (let row = inventory.length - 1; row >= 1; row--) {
-				const rowDiv = rows[inventory.length - 1 - row];
+				const rowDiv = rows[inventory.length - 1 - row] as
+					| HTMLElement
+					| undefined;
 				if (!rowDiv) continue;
-				for (let col = 0; col < inventory[row].length; col++) {
-					const slot = inventory[row][col];
-					rowDiv.appendChild(slot.divItemSlot);
+
+				const invRow = inventory[row];
+				for (let col = 0, len = invRow.length; col < len; col++) {
+					rowDiv.appendChild(invRow[col].divItemSlot);
 				}
 			}
 		}
 
 		this.#activateWalkingControls();
 
-		// Remove Escape/Tab key listeners
-		if (this.#woodCrateKeyHandler) {
-			window.removeEventListener("keydown", this.#woodCrateKeyHandler, true);
-			window.removeEventListener("keyup", this.#woodCrateKeyHandler, true);
+		const keyHandler = this.#woodCrateKeyHandler;
+		if (keyHandler) {
+			window.removeEventListener("keydown", keyHandler, true);
+			window.removeEventListener("keyup", keyHandler, true);
 			this.#woodCrateKeyHandler = undefined;
 		}
 
-		// Remove shift-click handler
-		if (this.#woodCrateClickHandler && this.#woodCrateDiv) {
-			this.#woodCrateDiv.removeEventListener(
-				"click",
-				this.#woodCrateClickHandler,
-				true,
-			);
+		const clickHandler = this.#woodCrateClickHandler;
+		const div = this.#woodCrateDiv;
+		if (clickHandler && div) {
+			div.removeEventListener("click", clickHandler, true);
 			this.#woodCrateClickHandler = undefined;
 		}
 
-		if (!isUiOpen()) this.#enterPointerLock();
+		if (!isUiOpen()) {
+			this.#enterPointerLock();
+		}
 	}
 
 	public get isWoodCrateOpen(): boolean {
@@ -616,32 +639,45 @@ export class PlayerHud {
 
 	#refreshWoodCrateContent(): void {
 		const blockGrid = this.#woodCrateBlockGrid;
-		if (!blockGrid || !this.#woodCrateSlots) return;
-		blockGrid.innerHTML = "";
-		for (const row of this.#woodCrateSlots) {
+		const crateSlots = this.#woodCrateSlots;
+
+		if (!blockGrid || !crateSlots) return;
+
+		const blockFragment = document.createDocumentFragment();
+
+		for (let r = 0, rowCount = crateSlots.length; r < rowCount; r++) {
+			const row = crateSlots[r];
 			const rowDiv = document.createElement("div");
 			rowDiv.classList.add("woodcrate-row--vertical");
-			for (const slot of row) {
-				rowDiv.appendChild(slot.divItemSlot);
+
+			for (let c = 0, colCount = row.length; c < colCount; c++) {
+				rowDiv.appendChild(row[c].divItemSlot);
 			}
-			blockGrid.appendChild(rowDiv);
+
+			blockFragment.appendChild(rowDiv);
 		}
 
-		// Also rebuild the player inventory grid — slot divs were moved back
-		// to the main inventory container on the last close.
+		blockGrid.replaceChildren(blockFragment);
+
 		const playerGrid = this.#woodCratePlayerGrid;
 		if (!playerGrid) return;
-		playerGrid.innerHTML = "";
+
 		const inventory = PlayerHud.#inventory.inventory;
+		const playerFragment = document.createDocumentFragment();
+
 		for (let row = inventory.length - 1; row >= 1; row--) {
 			const rowDiv = document.createElement("div");
 			rowDiv.classList.add("inventory-row");
-			for (let col = 0; col < inventory[row].length; col++) {
-				const slot = inventory[row][col];
-				rowDiv.appendChild(slot.divItemSlot);
+
+			const invRow = inventory[row];
+			for (let col = 0, len = invRow.length; col < len; col++) {
+				rowDiv.appendChild(invRow[col].divItemSlot);
 			}
-			playerGrid.appendChild(rowDiv);
+
+			playerFragment.appendChild(rowDiv);
 		}
+
+		playerGrid.replaceChildren(playerFragment);
 	}
 
 	private createMasonTableUI(): HTMLDivElement {
@@ -885,44 +921,58 @@ export class PlayerHud {
 		this.updateHotbarSelection();
 	}
 	private updateHotbarSelection(): void {
-		this.#hotbarSlots.forEach((slot, index) => {
-			slot.classList.toggle("selected", index === this.#selectedHotbarSlot);
-		});
+		const selected = this.#selectedHotbarSlot;
+		const hotbarSlots = this.#hotbarSlots;
 
-		// Clear any existing fade-out timeout
-		if (this.#heldItemNameTimeout) {
-			clearTimeout(this.#heldItemNameTimeout);
+		for (let i = 0, len = hotbarSlots.length; i < len; i++) {
+			const slot = hotbarSlots[i];
+			const shouldBeSelected = i === selected;
+
+			if (slot.classList.contains("selected") !== shouldBeSelected) {
+				slot.classList.toggle("selected", shouldBeSelected);
+			}
 		}
 
-		// Update held item name display
-		const itemSlot =
-			PlayerHud.#inventory.inventory[0][this.#selectedHotbarSlot];
+		if (this.#heldItemNameTimeout) {
+			clearTimeout(this.#heldItemNameTimeout);
+			this.#heldItemNameTimeout = undefined;
+		}
+
+		const itemSlot = PlayerHud.#inventory.inventory[0][selected];
 		const item = itemSlot?.item;
-		if (PlayerHud.#heldItemNameDiv) {
-			const itemName = item ? item.name : "";
-			PlayerHud.#heldItemNameDiv.innerText = itemName;
+		const itemName = item ? item.name : "";
+		const nameDiv = PlayerHud.#heldItemNameDiv;
 
-			if (itemName) {
-				PlayerHud.#heldItemNameDiv.classList.add("visible");
-				this.#heldItemNameTimeout = window.setTimeout(() => {
-					PlayerHud.#heldItemNameDiv.classList.remove("visible");
-				}, 2000);
+		if ((nameDiv.dataset.itemName ?? "") !== itemName) {
+			nameDiv.dataset.itemName = itemName;
+			nameDiv.textContent = itemName;
+			this.#heldItemNameDivCachedWidth = 0;
+		}
 
-				// PERF: Cache heldItemNameDiv width to avoid second getBoundingClientRect().
-				if (this.#heldItemNameDivCachedWidth === 0) {
-					this.#heldItemNameDivCachedWidth =
-						PlayerHud.#heldItemNameDiv.getBoundingClientRect().width;
-				}
-				const slotRect = itemSlot.divItemSlot.getBoundingClientRect();
-				const widthOffset =
-					slotRect.left +
-					slotRect.width / 2 -
-					this.#heldItemNameDivCachedWidth / 2;
+		if (!itemName) {
+			nameDiv.classList.remove("visible");
+			return;
+		}
 
-				PlayerHud.#heldItemNameDiv.style.left = `${widthOffset}px`;
-			} else {
-				PlayerHud.#heldItemNameDiv.classList.remove("visible");
-			}
+		nameDiv.classList.add("visible");
+
+		this.#heldItemNameTimeout = window.setTimeout(() => {
+			nameDiv.classList.remove("visible");
+		}, 2000);
+
+		if (this.#heldItemNameDivCachedWidth === 0) {
+			this.#heldItemNameDivCachedWidth = nameDiv.getBoundingClientRect().width;
+		}
+
+		const slotRect = itemSlot.divItemSlot.getBoundingClientRect();
+		const widthOffset =
+			slotRect.left +
+			slotRect.width * 0.5 -
+			this.#heldItemNameDivCachedWidth * 0.5;
+
+		const left = `${widthOffset}px`;
+		if (nameDiv.style.left !== left) {
+			nameDiv.style.left = left;
 		}
 	}
 
@@ -1134,51 +1184,50 @@ export class PlayerHud {
 		value: string | number,
 		category?: string,
 	): void {
-		if (!PlayerHud.debugPanelDiv) return;
+		const panel = PlayerHud.debugPanelDiv;
+		if (!panel) return;
 
 		const stringValue = String(value);
-
 		const row = PlayerHud.infoRows[key];
 
-		if (!row) {
-			const container = document.createElement("div");
-			container.className = "debug-row";
-
-			const keySpan = document.createElement("span");
-			keySpan.className = "debug-key";
-			if (category) keySpan.dataset.cat = category;
-			keySpan.textContent = `${key}: `;
-
-			const valueSpan = document.createElement("span");
-			valueSpan.className = "debug-value";
-			valueSpan.textContent = stringValue;
-
-			container.appendChild(keySpan);
-			container.appendChild(valueSpan);
-
-			let textContainer = PlayerHud.debugPanelDiv.querySelector(
-				".debug-info-container",
-			) as HTMLDivElement;
-
-			if (!textContainer) {
-				textContainer = document.createElement("div");
-				textContainer.className = "debug-info-container";
-				PlayerHud.debugPanelDiv.prepend(textContainer);
-			}
-
-			textContainer.appendChild(container);
-
-			PlayerHud.infoRows[key] = {
-				container,
-				valueNode: valueSpan as unknown as Text,
-				valueSpan,
-				keySpan,
-			};
-		} else {
+		if (row) {
 			if (row.valueSpan && row.valueSpan.textContent !== stringValue) {
 				row.valueSpan.textContent = stringValue;
 			}
+			return;
 		}
+
+		const container = document.createElement("div");
+		container.className = "debug-row";
+
+		const keySpan = document.createElement("span");
+		keySpan.className = "debug-key";
+		if (category) keySpan.dataset.cat = category;
+		keySpan.textContent = `${key}: `;
+
+		const valueSpan = document.createElement("span");
+		valueSpan.className = "debug-value";
+		valueSpan.textContent = stringValue;
+
+		container.appendChild(keySpan);
+		container.appendChild(valueSpan);
+
+		let textContainer = panel.firstElementChild as HTMLDivElement | null;
+
+		if (textContainer?.className !== "debug-info-container") {
+			textContainer = document.createElement("div");
+			textContainer.className = "debug-info-container";
+			panel.prepend(textContainer);
+		}
+
+		textContainer.appendChild(container);
+
+		PlayerHud.infoRows[key] = {
+			container,
+			valueNode: valueSpan.firstChild as Text,
+			valueSpan,
+			keySpan,
+		};
 	}
 
 	private initializeTooltip(): void {
@@ -1192,52 +1241,78 @@ export class PlayerHud {
 	}
 
 	public static showItemTooltip(text: string, event: MouseEvent): void {
-		if (!PlayerHud.itemTooltipDiv) return;
+		const tooltip = PlayerHud.itemTooltipDiv;
+		if (!tooltip) return;
 
 		const item = PlayerInventory.currentlyHoveredSlot?.item;
-		PlayerHud.itemTooltipDiv.innerHTML = "";
-		if (item) {
-			const nameDiv = document.createElement("div");
-			nameDiv.className = "item-tooltip-name";
-			nameDiv.textContent = item.name;
-			PlayerHud.itemTooltipDiv.appendChild(nameDiv);
 
-			if (item.description) {
-				const descDiv = document.createElement("div");
-				descDiv.className = "item-tooltip-desc";
-				descDiv.textContent = item.description;
-				PlayerHud.itemTooltipDiv.appendChild(descDiv);
+		if (item) {
+			if (tooltip.dataset.itemName !== item.name) {
+				tooltip.dataset.itemName = item.name;
+				tooltip.dataset.itemDesc = item.description ?? "";
+
+				let nameDiv = tooltip.firstElementChild as HTMLDivElement | null;
+				if (nameDiv?.className !== "item-tooltip-name") {
+					tooltip.textContent = "";
+
+					nameDiv = document.createElement("div");
+					nameDiv.className = "item-tooltip-name";
+					tooltip.appendChild(nameDiv);
+				}
+
+				nameDiv.textContent = item.name;
+
+				const desc = item.description;
+				let descDiv = nameDiv.nextElementSibling as HTMLDivElement | null;
+
+				if (desc) {
+					if (descDiv?.className !== "item-tooltip-desc") {
+						descDiv = document.createElement("div");
+						descDiv.className = "item-tooltip-desc";
+						tooltip.appendChild(descDiv);
+					}
+
+					descDiv.textContent = desc;
+				} else if (descDiv) {
+					descDiv.remove();
+				}
 			}
-		} else {
-			PlayerHud.itemTooltipDiv.textContent = text;
+		} else if (tooltip.dataset.fallbackText !== text) {
+			tooltip.dataset.itemName = "";
+			tooltip.dataset.itemDesc = "";
+			tooltip.dataset.fallbackText = text;
+			tooltip.textContent = text;
 		}
 
-		PlayerHud.itemTooltipDiv.style.display = "block";
+		if (tooltip.style.display !== "block") {
+			tooltip.style.display = "block";
+		}
 
-		// Update position immediately and then follow the cursor
 		const updatePos = (e: MouseEvent) => {
-			const offsetX = 12;
-			const offsetY = 32;
-			PlayerHud.itemTooltipDiv.style.left = `${e.clientX + offsetX}px`;
-			PlayerHud.itemTooltipDiv.style.top = `${e.clientY - offsetY}px`;
+			const left = `${e.clientX + 12}px`;
+			const top = `${e.clientY - 32}px`;
+
+			if (tooltip.style.left !== left) tooltip.style.left = left;
+			if (tooltip.style.top !== top) tooltip.style.top = top;
 		};
 
-		// Set initial position from the original event
 		updatePos(event);
 
-		// Remove any previous listener to avoid duplicates
 		if (PlayerHud.itemTooltipMouseMove) {
 			document.removeEventListener("mousemove", PlayerHud.itemTooltipMouseMove);
 		}
 
 		PlayerHud.itemTooltipMouseMove = updatePos;
-		document.addEventListener("mousemove", PlayerHud.itemTooltipMouseMove);
+		document.addEventListener("mousemove", updatePos);
 	}
 
 	public static hideItemTooltip(): void {
-		if (!PlayerHud.itemTooltipDiv) return;
+		const tooltip = PlayerHud.itemTooltipDiv;
+		if (!tooltip) return;
 
-		PlayerHud.itemTooltipDiv.style.display = "none";
+		if (tooltip.style.display !== "none") {
+			tooltip.style.display = "none";
+		}
 
 		if (PlayerHud.itemTooltipMouseMove) {
 			document.removeEventListener("mousemove", PlayerHud.itemTooltipMouseMove);
@@ -1249,23 +1324,53 @@ export class PlayerHud {
 		const stats = this.#player.stats;
 		if (!stats) return;
 
-		// PERF: Only write to DOM when stat percentages actually change.
-		const healthPct = (stats.health / stats.maxHealth) * 100;
+		const healthPct =
+			stats.maxHealth > 0
+				? Math.max(
+						0,
+						Math.min(100, Math.round((stats.health / stats.maxHealth) * 100)),
+					)
+				: 0;
+
 		if (healthPct !== this.#prevHealthPct) {
 			this.#prevHealthPct = healthPct;
 			this.#healthBarFill.style.width = `${healthPct}%`;
 		}
-		const hungerPct = (stats.hunger / stats.maxHunger) * 100;
+
+		const hungerPct =
+			stats.maxHunger > 0
+				? Math.max(
+						0,
+						Math.min(100, Math.round((stats.hunger / stats.maxHunger) * 100)),
+					)
+				: 0;
+
 		if (hungerPct !== this.#prevHungerPct) {
 			this.#prevHungerPct = hungerPct;
 			this.#hungerBarFill.style.width = `${hungerPct}%`;
 		}
-		const staminaPct = (stats.stamina / stats.maxStamina) * 100;
+
+		const staminaPct =
+			stats.maxStamina > 0
+				? Math.max(
+						0,
+						Math.min(100, Math.round((stats.stamina / stats.maxStamina) * 100)),
+					)
+				: 0;
+
 		if (staminaPct !== this.#prevStaminaPct) {
 			this.#prevStaminaPct = staminaPct;
 			this.#staminaBarFill.style.width = `${staminaPct}%`;
 		}
-		const manaPct = (stats.mana / stats.maxMana) * 100;
+
+		const manaPct =
+			stats.maxMana > 0
+				? Math.max(
+						0,
+						Math.min(100, Math.round((stats.mana / stats.maxMana) * 100)),
+					)
+				: 0;
+
 		if (manaPct !== this.#prevManaPct) {
 			this.#prevManaPct = manaPct;
 			this.#manaBarFill.style.width = `${manaPct}%`;
