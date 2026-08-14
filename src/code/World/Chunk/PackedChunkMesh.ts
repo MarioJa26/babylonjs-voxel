@@ -215,6 +215,11 @@ let maxStorageBindingBytes = 128 * 1024 * 1024;
 // buffer) rides in the per-mesh instance matrix (world1.x) instead of a
 // 4th word — that cut the arena stride from 16 to 12 bytes per face.
 const FACE_BYTES = 12;
+const FACE_WORDS = 3;
+const FACE_WORD_BYTES = 12;
+
+const OFFSET_WORDS = 4;
+const OFFSET_ENTRY_BYTES = 16;
 
 // Element index inside the per-instance 4x4 matrix where we stash the group's
 // chunkOffsets base (world1.x = matrix element 4). The vertex shader computes
@@ -531,23 +536,16 @@ function growOffset(): void {
 		void onGpuWorkDone(e).then(() => disposeStorageBuffer(old));
 	}
 }
-
 function uploadFaceRange(arena: number, base: number, count: number): void {
 	const a = faceArenas[arena];
-	if (!a) return;
-
-	const elementsPerFace = 3; // vec3<u32>
-
-	const dstByteOffset = base * elementsPerFace * 4;
-	const srcElementOffset = base * elementsPerFace;
-	const elementCount = count * elementsPerFace;
+	if (!a || count <= 0) return;
 
 	writeBufferChunked(
 		a.buffer,
 		a.cpu,
-		dstByteOffset,
-		srcElementOffset,
-		elementCount,
+		base * FACE_WORD_BYTES,
+		base * FACE_WORDS,
+		count * FACE_WORDS,
 	);
 }
 
@@ -575,19 +573,12 @@ function uploadFaceRanges(
 function uploadOffsetRange(base: number): void {
 	if (!offsetBuffer) return;
 
-	const elementsPerEntry = 4; // vec4<f32>
-	const count = OFFSETS_PER_GROUP;
-
-	const dstByteOffset = base * elementsPerEntry * 4;
-	const srcElementOffset = base * elementsPerEntry;
-	const elementCount = count * elementsPerEntry;
-
 	writeBufferChunked(
 		offsetBuffer,
 		offsetCpu,
-		dstByteOffset,
-		srcElementOffset,
-		elementCount,
+		base * OFFSET_ENTRY_BYTES,
+		base * OFFSET_WORDS,
+		OFFSETS_PER_GROUP * OFFSET_WORDS,
 	);
 }
 
@@ -600,18 +591,30 @@ function writeBufferChunked(
 	srcElementOffset: number,
 	elementCount: number,
 ): void {
-	if (!engineRef) return;
+	if (!engineRef || elementCount <= 0) return;
+
 	const bytesPerElement = 4;
-	const maxElements = Math.max(1, Math.floor(maxWriteBytes / bytesPerElement));
+	const maxElements = Math.max(1, (maxWriteBytes / bytesPerElement) | 0);
+
+	if (elementCount <= maxElements) {
+		updateStorageBuffer(
+			engineRef,
+			buffer,
+			data.subarray(srcElementOffset, srcElementOffset + elementCount),
+			dstByteOffset,
+		);
+		return;
+	}
+
 	let remaining = elementCount;
 	let dst = dstByteOffset;
 	let src = srcElementOffset;
+
 	while (remaining > 0) {
 		const n = remaining > maxElements ? maxElements : remaining;
-		// updateStorageBuffer writes `data` verbatim starting at `byteOffset`,
-		// so slice the source to just the [src, src+n) element window.
-		const slice = data.subarray(src, src + n);
-		updateStorageBuffer(engineRef, buffer, slice, dst);
+
+		updateStorageBuffer(engineRef, buffer, data.subarray(src, src + n), dst);
+
 		dst += n * bytesPerElement;
 		src += n;
 		remaining -= n;
@@ -801,20 +804,37 @@ function packFaceRanges(
 }
 
 function packFaces(state: PackedMeshState): void {
-	const faceCount = state.input.faceDataA.length >>> 2;
-	packFaceRanges(state, [{ start: 0, count: faceCount }]);
+	ensureFaceWordViews(state);
+
+	const arena = faceArenas[state.faceArena];
+	if (!arena) return;
+
+	const faceCpu = arena.cpu;
+	const aWords = state.faceWordsA!;
+	const bWords = state.faceWordsB!;
+	const cWords = state.faceWordsC!;
+	const faceCount = aWords.length;
+
+	let o = state.faceBase * FACE_WORDS;
+
+	for (let i = 0; i < faceCount; i++) {
+		faceCpu[o++] = aWords[i];
+		faceCpu[o++] = bWords[i];
+		faceCpu[o++] = cWords[i];
+	}
 }
 
 function packOffsets(state: PackedMeshState): void {
-	const input = state.input;
-	const offsetBase = state.offsetBase;
-	const co = input.chunkOffsets;
+	const co = state.input.chunkOffsets;
+
+	let src = 0;
+	let dst = state.offsetBase * OFFSET_WORDS;
+
 	for (let idx = 0; idx < MAX_LOCAL; idx++) {
-		const o = (offsetBase + idx) * 4;
-		offsetCpu[o] = co[idx * 3] ?? 0;
-		offsetCpu[o + 1] = co[idx * 3 + 1] ?? 0;
-		offsetCpu[o + 2] = co[idx * 3 + 2] ?? 0;
-		offsetCpu[o + 3] = 0;
+		offsetCpu[dst++] = co[src++];
+		offsetCpu[dst++] = co[src++];
+		offsetCpu[dst++] = co[src++];
+		offsetCpu[dst++] = 0;
 	}
 }
 
@@ -922,19 +942,62 @@ function cloneInput(
 		boundsMax: reuseOrCloneVec3(prev?.boundsMax, input.boundsMax),
 	};
 }
+function copyFaceInputRanges(
+	dst: PackedMeshInput,
+	src: PackedMeshInput,
+	ranges: readonly MergedFaceRange[],
+): void {
+	const faceCount = src.faceDataA.length >>> 2;
+
+	for (let r = 0; r < ranges.length; r++) {
+		const range = ranges[r];
+
+		let start = range.start;
+		let count = range.count;
+
+		if (start < 0) {
+			count += start;
+			start = 0;
+		}
+
+		if (count <= 0 || start >= faceCount) continue;
+
+		if (start + count > faceCount) {
+			count = faceCount - start;
+		}
+
+		const byteStart = start << 2;
+		const byteEnd = byteStart + (count << 2);
+
+		dst.faceDataA.set(src.faceDataA.subarray(byteStart, byteEnd), byteStart);
+		dst.faceDataB.set(src.faceDataB.subarray(byteStart, byteEnd), byteStart);
+		dst.faceDataC.set(src.faceDataC.subarray(byteStart, byteEnd), byteStart);
+	}
+
+	dst.name = src.name;
+	dst.material = src.material;
+
+	dst.position[0] = src.position[0];
+	dst.position[1] = src.position[1];
+	dst.position[2] = src.position[2];
+
+	dst.boundsMin[0] = src.boundsMin[0];
+	dst.boundsMin[1] = src.boundsMin[1];
+	dst.boundsMin[2] = src.boundsMin[2];
+
+	dst.boundsMax[0] = src.boundsMax[0];
+	dst.boundsMax[1] = src.boundsMax[1];
+	dst.boundsMax[2] = src.boundsMax[2];
+}
 
 export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 	const engine = engineRef!;
 	const scene = sceneRef!;
 
-	const alloc = allocFaces(input.faceDataA.length / 4);
+	const faceCount = input.faceDataA.length >>> 2;
+	const alloc = allocFaces(faceCount);
 	const offsetBase = allocOffsetBlock();
-	const faceCount = input.faceDataA.length / 4;
 
-	// Arena exhausted (GPU storage-buffer arena limit reached). Skip this
-	// chunk's mesh entirely rather than writing past the buffer end, which
-	// would throw and blackscreen the world. The chunk still exists in data;
-	// it simply isn't drawn until faces are freed elsewhere.
 	if (alloc.arena < 0) {
 		console.warn(
 			`[PackedChunkMesh] skipping mesh for "${input.name}": ` +
@@ -950,6 +1013,7 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 		offsetBase,
 		input: cloneInput(input),
 	};
+
 	packFaces(state);
 	packOffsets(state);
 	uploadFaceRange(alloc.arena, alloc.base, faceCount);
@@ -962,21 +1026,22 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 		SHARED_QUAD_NORMALS,
 		SHARED_QUAD_INDICES,
 	);
+
 	mesh.material = input.material;
 	mesh.position.set(input.position[0], input.position[1], input.position[2]);
 	mesh.pickable = false;
+
 	const anyMesh = mesh as PackedMesh;
 	const boundMin = reuseOrCloneVec3(state.boundMin, input.boundsMin);
 	const boundMax = reuseOrCloneVec3(state.boundMax, input.boundsMax);
+
 	state.boundMin = boundMin;
 	state.boundMax = boundMax;
+
 	anyMesh.boundMin = boundMin;
 	anyMesh.boundMax = boundMax;
 	anyMesh.isVisible = true;
 
-	// Thin instances: draw `faceCount` copies of the shared quad, each addressed
-	// by instance_index; faceBase rides in world3.w, the arena index in
-	// world0.w, and the chunkOffsets base in world1.x.
 	const instanceMatrices = buildInstanceMatrices(
 		state.instanceMatrices,
 		alloc.arena,
@@ -984,12 +1049,14 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 		offsetBase,
 		faceCount,
 	);
+
 	state.instanceMatrices = instanceMatrices;
 	setThinInstances(mesh, instanceMatrices, faceCount);
 
 	addToScene(scene, mesh);
 	ensureInstancedBuild(input.material, mesh);
 	meshState.set(mesh, state);
+
 	return mesh;
 }
 
@@ -999,38 +1066,53 @@ export function updatePackedChunkMesh(
 	dirtyRanges?: readonly MergedFaceRange[] | null,
 ): Mesh {
 	const state = meshState.get(mesh);
+
 	if (!state) {
 		return createPackedChunkMesh(input) ?? mesh;
 	}
 
-	const faceCount = input.faceDataA.length / 4;
+	const faceCount = input.faceDataA.length >>> 2;
 
 	if (faceCount === state.faceCount) {
 		const anyMesh = mesh as PackedMesh;
+
 		const boundMin = reuseOrCloneVec3(state.boundMin, input.boundsMin);
 		const boundMax = reuseOrCloneVec3(state.boundMax, input.boundsMax);
+
 		state.boundMin = boundMin;
 		state.boundMax = boundMax;
+
 		anyMesh.boundMin = boundMin;
 		anyMesh.boundMax = boundMax;
-		anyMesh.isVisible = true;
-		mesh.material = input.material;
-		mesh.position.set(input.position[0], input.position[1], input.position[2]);
 
-		// Incremental path: `dirtyRanges` (merged-face coordinates) tells us
-		// exactly which members remeshed this pass. Empty means the merged
-		// buffer is byte-identical to what we last packed — skip the clone,
-		// the CPU re-pack and the GPU re-upload entirely (the retained
-		// `state.input` copy is still accurate).
+		if (!anyMesh.isVisible) {
+			anyMesh.isVisible = true;
+		}
+
+		if (mesh.material !== input.material) {
+			mesh.material = input.material;
+		}
+
+		const p = mesh.position;
+		const x = input.position[0];
+		const y = input.position[1];
+		const z = input.position[2];
+
+		if (p.x !== x || p.y !== y || p.z !== z) {
+			p.set(x, y, z);
+		}
+
+		// Empty dirty range means no face data changed.
 		if (dirtyRanges && dirtyRanges.length === 0) {
 			return mesh;
 		}
 
-		state.input = cloneInput(input, state.input);
 		if (dirtyRanges && dirtyRanges.length > 0) {
+			copyFaceInputRanges(state.input, input, dirtyRanges);
 			packFaceRanges(state, dirtyRanges);
 			uploadFaceRanges(state.faceArena, state.faceBase, faceCount, dirtyRanges);
 		} else {
+			state.input = cloneInput(input, state.input);
 			packFaces(state);
 			uploadFaceRange(state.faceArena, state.faceBase, faceCount);
 		}
@@ -1038,12 +1120,9 @@ export function updatePackedChunkMesh(
 		return mesh;
 	}
 
-	// Slow path
+	// Slow path: face count changed, so this mesh needs a new arena interval.
 	const alloc = allocFaces(faceCount);
 
-	// Arena exhausted. Keep the mesh's previously-allocated faces and its
-	// existing GPU geometry so it keeps rendering instead of writing past
-	// the buffer (which throws + blackscreens). We leave `state` as-is.
 	if (alloc.arena < 0) {
 		console.warn(
 			`[PackedChunkMesh] skipping update for chunk mesh: ` +
@@ -1058,21 +1137,40 @@ export function updatePackedChunkMesh(
 	state.faceBase = alloc.base;
 	state.faceCount = faceCount;
 	state.input = cloneInput(input, state.input);
+
 	packFaces(state);
 	packOffsets(state);
+
 	uploadFaceRange(alloc.arena, alloc.base, faceCount);
 	uploadOffsetRange(state.offsetBase);
 
 	const anyMesh = mesh as PackedMesh;
+
 	const boundMin = reuseOrCloneVec3(state.boundMin, input.boundsMin);
 	const boundMax = reuseOrCloneVec3(state.boundMax, input.boundsMax);
+
 	state.boundMin = boundMin;
 	state.boundMax = boundMax;
+
 	anyMesh.boundMin = boundMin;
 	anyMesh.boundMax = boundMax;
-	anyMesh.isVisible = true;
-	mesh.material = input.material;
-	mesh.position.set(input.position[0], input.position[1], input.position[2]);
+
+	if (!anyMesh.isVisible) {
+		anyMesh.isVisible = true;
+	}
+
+	if (mesh.material !== input.material) {
+		mesh.material = input.material;
+	}
+
+	const p = mesh.position;
+	const x = input.position[0];
+	const y = input.position[1];
+	const z = input.position[2];
+
+	if (p.x !== x || p.y !== y || p.z !== z) {
+		p.set(x, y, z);
+	}
 
 	const instanceMatrices = buildInstanceMatrices(
 		state.instanceMatrices,
@@ -1081,6 +1179,7 @@ export function updatePackedChunkMesh(
 		state.offsetBase,
 		faceCount,
 	);
+
 	state.instanceMatrices = instanceMatrices;
 	setThinInstances(mesh, instanceMatrices, faceCount);
 
