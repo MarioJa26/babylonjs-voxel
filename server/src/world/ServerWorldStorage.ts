@@ -229,6 +229,42 @@ export class ServerWorldStorage {
 		return this.readChunkInternal(cx, cy, cz);
 	}
 
+	/**
+	 * World-Y of the topmost solid (non-air, non-water) block in column
+	 * (worldX, worldZ), or -Infinity if the column is empty/liquid. Used to
+	 * place the world spawn platform on the *real* terrain surface —
+	 * getFinalTerrainHeight is only an approximate center, so the actual top
+	 * solid block can be several blocks higher.
+	 */
+	async getTopSolidY(worldX: number, worldZ: number): Promise<number> {
+		this.assertActive();
+		const CHUNK = 32;
+		const WATER = 30; // WATER_BLOCK_ID
+		const cx = Math.floor(worldX / CHUNK);
+		const cz = Math.floor(worldZ / CHUNK);
+		const localX = worldX - cx * CHUNK;
+		const localZ = worldZ - cz * CHUNK;
+		for (let y = 256; y >= -64; y--) {
+			const cy = Math.floor(y / CHUNK);
+			const chunk = await this.readChunk(cx, cy, cz);
+			if (!chunk) continue;
+			const decomp = decompressBlocks({
+				data: chunk.blocks,
+				palette: chunk.palette,
+				isUniform: chunk.isUniform,
+				uniformBlockId: chunk.uniformBlockId,
+			});
+			const blocks =
+				decomp === chunk.blocks ? new Uint8Array(decomp) : decomp;
+			const localY = y - cy * CHUNK;
+			const idx = localX + (localY << 5) + (localZ << 10);
+			const id = blocks[idx];
+			releaseDecompBuffer(decomp);
+			if (id !== 0 && id !== WATER) return y;
+		}
+		return -Infinity;
+	}
+
 	private async readChunkFromStore(
 		key: number,
 		cx: number,
@@ -754,6 +790,53 @@ export class ServerWorldStorage {
 		try {
 			const parsed: unknown = JSON.parse(data);
 			return this.isStoredPlayerPosition(parsed) ? parsed : null;
+		} catch {
+			return null;
+		}
+	}
+
+	/** Persist the world's default spawn point (generated once at creation). */
+	async saveWorldSpawn(spawn: {
+		x: number;
+		y: number;
+		z: number;
+		yaw: number;
+		pitch: number;
+	}): Promise<void> {
+		this.assertActive();
+		await this.store.setMeta("spawn", JSON.stringify(spawn));
+	}
+
+	/**
+	 * Load the world's default spawn point, or null if it has not been
+	 * generated yet.
+	 */
+	async loadWorldSpawn(): Promise<{
+		x: number;
+		y: number;
+		z: number;
+		yaw: number;
+		pitch: number;
+	} | null> {
+		this.assertActive();
+		const data = await this.store.getMeta("spawn");
+		if (!data) return null;
+		try {
+			const p = JSON.parse(data) as {
+				x: number;
+				y: number;
+				z: number;
+				yaw?: number;
+				pitch?: number;
+			};
+			if (
+				typeof p.x === "number" &&
+				typeof p.y === "number" &&
+				typeof p.z === "number"
+			) {
+				return { x: p.x, y: p.y, z: p.z, yaw: p.yaw ?? 0, pitch: p.pitch ?? 0 };
+			}
+			return null;
 		} catch {
 			return null;
 		}

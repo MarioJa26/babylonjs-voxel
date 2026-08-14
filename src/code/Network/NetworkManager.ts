@@ -29,6 +29,7 @@ import {
 	setBlock,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
+import { setSpawnPosition } from "@/code/World/SpawnPoint";
 import { getWorldNameFromUrl, worldSeedFor } from "@/code/World/WorldContext";
 import { WorldStorage } from "@/code/World/WorldStorage";
 import { RemoteChunkProvider } from "./chunk/RemoteChunkProvider";
@@ -153,7 +154,9 @@ export class NetworkManager {
 				resetDistantTerrain();
 			},
 			onSpawnPosition: (pos) => {
-				// Teleport to server-assigned spawn (saved position)
+				// Teleport to server-assigned spawn (saved position) and record
+				// it as the world spawn so the loading gate / respawn use it.
+				setSpawnPosition({ x: pos.x, y: pos.y, z: pos.z });
 				this.player.playerVehicle.restoreSavedPosition(pos);
 				this.player.playerVehicle.updateCameraAndVisuals();
 			},

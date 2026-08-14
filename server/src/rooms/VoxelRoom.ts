@@ -9,7 +9,13 @@
  * - Manage world lifecycle (create on first join, destroy when empty)
  */
 import { type Client, ClientState, CloseCode, Room } from "colyseus";
+import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
+import {
+	getFinalTerrainHeight,
+	setTerrainSeed,
+} from "@/code/Generation/TerrainHeightMap";
 import { DEBUG_ENABLED, debugLog } from "@/code/Lib/debugLog";
+import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
 import {
 	BinaryDecoder,
 	BinaryEncoder,
@@ -249,6 +255,10 @@ export class VoxelRoom extends Room {
 		// serves from storage instead of stalling behind ~637 cold chunks.
 		this.prewarmSpawnArea();
 
+		// Generate (once) the world spawn point on world creation so it is
+		// ready before any player joins. Memoized via ensureWorldSpawn().
+		void this.ensureWorldSpawn();
+
 		// Set up fixed-rate simulation tick (real elapsed time per tick)
 		this.startTickLoop();
 
@@ -283,15 +293,19 @@ export class VoxelRoom extends Room {
 				return;
 			}
 
+			// Generate (once) and use the server-authoritative world spawn as
+			// the default location for players without a saved position.
+			const worldSpawn = await this.ensureWorldSpawn();
+
 			const state: ServerPlayerState = {
 				sessionId: client.sessionId,
 				index,
 				name,
-				x: saved?.x ?? 0,
-				y: saved?.y ?? 80,
-				z: saved?.z ?? 0,
-				yaw: saved?.yaw ?? 0,
-				pitch: saved?.pitch ?? 0,
+				x: saved?.x ?? worldSpawn.x,
+				y: saved?.y ?? worldSpawn.y,
+				z: saved?.z ?? worldSpawn.z,
+				yaw: saved?.yaw ?? worldSpawn.yaw,
+				pitch: saved?.pitch ?? worldSpawn.pitch,
 				animation: 0,
 				dirty: true,
 				saveDirty: false,
@@ -643,6 +657,198 @@ export class VoxelRoom extends Room {
 	}
 
 	/**
+	 * Compute (and persist) the world's default spawn point exactly once, on
+	 * first world creation. Spiral outward from the origin for a flat column of
+	 * solid ground *above sea level*, build a 3x3 stone platform there, and
+	 * return {x,y,z,yaw,pitch}. Subsequent calls read the stored value, so the
+	 * search never runs again.
+	 *
+	 * The client must NOT search locally — it receives this spawn via the
+	 * SpawnPosition (0x1b) message on join.
+	 */
+	private worldSpawnPromise: Promise<{
+		x: number;
+		y: number;
+		z: number;
+		yaw: number;
+		pitch: number;
+	}> | null = null;
+
+	/** Memoized: generates the spawn once and caches the in-flight promise. */
+	private ensureWorldSpawn(): Promise<{
+		x: number;
+		y: number;
+		z: number;
+		yaw: number;
+		pitch: number;
+	}> {
+		if (this.worldSpawnPromise) return this.worldSpawnPromise;
+		this.worldSpawnPromise = this.computeWorldSpawn().catch((err) => {
+			this.worldSpawnPromise = null; // allow a later retry
+			throw err;
+		});
+		return this.worldSpawnPromise;
+	}
+
+	private async computeWorldSpawn(): Promise<{
+		x: number;
+		y: number;
+		z: number;
+		yaw: number;
+		pitch: number;
+	}> {
+		const cached = await this.worldStorage.loadWorldSpawn();
+		if (cached) return cached;
+
+		// Make terrain-height queries use the world seed so the computed spawn
+		// height matches the actually generated chunks.
+		setTerrainSeed(this.seed);
+
+		const SEA = GenerationParams.SEA_LEVEL;
+		const PLAYER_HALF_HEIGHT = 0.9;
+		const PLATFORM_ID = 1; // stone
+		const maxR = 16; // chunks outward from origin
+
+		// Spiral candidates in chunk-sized steps, closest first.
+		const candidates: Array<{ x: number; z: number }> = [];
+		for (let r = 0; r <= maxR; r++) {
+			for (let ox = -r; ox <= r; ox++) {
+				for (let oz = -r; oz <= r; oz++) {
+					if (Math.max(Math.abs(ox), Math.abs(oz)) !== r) continue;
+					candidates.push({ x: ox * CHUNK_SIZE, z: oz * CHUNK_SIZE });
+				}
+			}
+		}
+
+		let chosen: { x: number; z: number } | null = null;
+		for (const c of candidates) {
+			const s = Math.floor(getFinalTerrainHeight(c.x, c.z));
+			if (s <= SEA) continue; // must be land above sea level
+			// Require a reasonably flat footprint (within 2 blocks).
+			let flat = true;
+			for (const [dx, dz] of [
+				[-1, 0],
+				[1, 0],
+				[0, -1],
+				[0, 1],
+			] as const) {
+				const nh = Math.floor(getFinalTerrainHeight(c.x + dx, c.z + dz));
+				if (Math.abs(nh - s) > 2) {
+					flat = false;
+					break;
+				}
+			}
+			if (!flat) continue;
+			chosen = { x: c.x, z: c.z };
+			break;
+		}
+
+		if (!chosen) {
+			// Whole search area underwater — fall back to the origin.
+			chosen = { x: 0, z: 0 };
+		}
+
+		// Generate a tall vertical band of the spawn column (all 3x3 footprint
+		// columns share this chunk) so we can read the REAL top solid block —
+		// getFinalTerrainHeight is only an approximate center and the actual
+		// surface can be several blocks higher.
+		const cx0 = Math.floor(chosen.x / CHUNK_SIZE);
+		const cz0 = Math.floor(chosen.z / CHUNK_SIZE);
+		const bandCoords: Array<{
+			chunkX: number;
+			chunkY: number;
+			chunkZ: number;
+		}> = [];
+		for (let cy = -1; cy <= 8; cy++) {
+			bandCoords.push({ chunkX: cx0, chunkY: cy, chunkZ: cz0 });
+		}
+		await this.chunkGen.generateChunksBatch(bandCoords);
+
+		// Actual top solid block over the 3x3 footprint; use the highest so the
+		// platform is never buried under a neighbour.
+		let surfaceY = -Infinity;
+		for (let dx = -1; dx <= 1; dx++) {
+			for (let dz = -1; dz <= 1; dz++) {
+				const sy = await this.worldStorage.getTopSolidY(
+					chosen.x + dx,
+					chosen.z + dz,
+				);
+				if (sy !== -Infinity && sy > surfaceY) surfaceY = sy;
+			}
+		}
+		if (surfaceY === -Infinity) {
+			// Column read failed — fall back to the approximate height.
+			surfaceY = Math.max(
+				SEA + 2,
+				Math.floor(getFinalTerrainHeight(chosen.x, chosen.z)),
+			);
+		}
+
+		// 3x3 stone platform on top of the surface, with the player's body
+		// column cleared so nothing spawns them inside a block.
+		const edits: Array<{
+			x: number;
+			y: number;
+			z: number;
+			blockId: number;
+		}> = [];
+		for (let dx = -1; dx <= 1; dx++) {
+			for (let dz = -1; dz <= 1; dz++) {
+				edits.push({
+					x: chosen.x + dx,
+					y: surfaceY + 1,
+					z: chosen.z + dz,
+					blockId: PLATFORM_ID,
+				});
+			}
+		}
+		for (let y = surfaceY + 2; y <= surfaceY + 8; y++) {
+			edits.push({ x: chosen.x, y, z: chosen.z, blockId: 0 });
+		}
+
+		// Ensure the affected chunks exist, then apply edits per chunk.
+		const byChunk = new Map<
+			string,
+			Array<{ x: number; y: number; z: number; blockId: number }>
+		>();
+		for (const e of edits) {
+			const cx = Math.floor(e.x / CHUNK_SIZE);
+			const cy = Math.floor(e.y / CHUNK_SIZE);
+			const cz = Math.floor(e.z / CHUNK_SIZE);
+			const key = `${cx},${cy},${cz}`;
+			let arr = byChunk.get(key);
+			if (!arr) {
+				arr = [];
+				byChunk.set(key, arr);
+			}
+			arr.push(e);
+		}
+		const genCoords = [...byChunk.keys()].map((k) => {
+			const [cx, cy, cz] = k.split(",").map(Number);
+			return { chunkX: cx, chunkY: cy, chunkZ: cz };
+		});
+		await this.chunkGen.generateChunksBatch(genCoords);
+		for (const [k, es] of byChunk) {
+			const [cx, cy, cz] = k.split(",").map(Number);
+			await this.worldStorage.applyBlockEdits(cx, cy, cz, es);
+		}
+		await this.worldStorage.flush();
+
+		const spawn = {
+			x: chosen.x,
+			y: surfaceY + 2 + PLAYER_HALF_HEIGHT,
+			z: chosen.z,
+			yaw: 0,
+			pitch: 0,
+		};
+		await this.worldStorage.saveWorldSpawn(spawn);
+		console.log(
+			`[VoxelRoom] Generated world spawn at (${spawn.x}, ${spawn.y.toFixed(1)}, ${spawn.z})`,
+		);
+		return spawn;
+	}
+
+	/**
 	 * Background pre-generation of the spawn area. The first join requests
 	 * ~637 chunks (7x7 columns x 13 Y-levels around the default spawn chunk
 	 * (0,2,0)); generating them all on-demand stalls the join, especially
@@ -668,11 +874,7 @@ export class VoxelRoom extends Room {
 				dz <= PREWARM_HORIZONTAL_RADIUS;
 				dz++
 			) {
-				for (
-					let cy = PREWARM_MIN_CHUNK_Y;
-					cy <= PREWARM_MAX_CHUNK_Y;
-					cy++
-				) {
+				for (let cy = PREWARM_MIN_CHUNK_Y; cy <= PREWARM_MAX_CHUNK_Y; cy++) {
 					coords.push({ cx: dx, cy, cz: dz });
 				}
 			}

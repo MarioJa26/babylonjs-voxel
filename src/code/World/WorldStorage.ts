@@ -1,5 +1,6 @@
 import { Chunk } from "./Chunk/Chunk";
 import { GLOBAL_VALUES } from "./GLOBAL_VALUES";
+import type { SpawnPosition } from "./SpawnPoint";
 import {
 	isCacheResetError,
 	LevelDbChunkStore,
@@ -252,6 +253,40 @@ class WorldStorageImpl {
 		const store = await this.getStore();
 		if (!store) return;
 		await store.flush();
+	}
+
+	/**
+	 * Persist the prepared world spawn point so the spawn search/prepare step
+	 * never runs again for this world.
+	 */
+	async saveSpawnPoint(p: SpawnPosition): Promise<void> {
+		const store = await this.getStore();
+		if (!store) return;
+		await store.setMeta("spawn", JSON.stringify(p));
+	}
+
+	/**
+	 * Load a previously prepared spawn point, or null if the world has not
+	 * had one prepared yet.
+	 */
+	async loadSpawnPoint(): Promise<SpawnPosition | null> {
+		const store = await this.getStore();
+		if (!store) return null;
+		const v = await store.getMeta("spawn");
+		if (!v) return null;
+		try {
+			const p = JSON.parse(v) as Partial<SpawnPosition>;
+			if (
+				typeof p.x === "number" &&
+				typeof p.y === "number" &&
+				typeof p.z === "number"
+			) {
+				return { x: p.x, y: p.y, z: p.z };
+			}
+		} catch {
+			// ignore malformed payloads
+		}
+		return null;
 	}
 
 	/**

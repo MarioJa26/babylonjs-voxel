@@ -21,7 +21,6 @@ import {
 } from "@/code/World/Collision/VoxelAabbCollider";
 import { CustomBoat } from "../Entities/CustomBoat";
 import type { Mount } from "../Entities/Mount";
-import { getFinalTerrainHeight } from "../Generation/TerrainHeightMap";
 import type { BoatChunk } from "../World/Boat/BoatChunk";
 import { getChunk } from "../World/Chunk/Chunk";
 import {
@@ -34,6 +33,7 @@ import {
 	getFenceDynamicShape,
 	isFenceBlockId,
 } from "../World/Shape/FenceConnect";
+import { getSpawnPosition } from "../World/SpawnPoint";
 import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
 import type { IPlayerBody, PlayerBodyControlState } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
@@ -398,8 +398,21 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	}
 
 	public respawn(): void {
-		const y = getFinalTerrainHeight(0, 0) + 2;
+		const spawn = getSpawnPosition();
+		this.voxelPosition.x = spawn.x;
+		this.voxelPosition.y = spawn.y;
+		this.voxelPosition.z = spawn.z;
+		setVec3(this.voxelVelocity, 0, 0, 0);
+		this.#characterController.setPosition(this.voxelPosition);
+		this.#camera.snapToPlayer(this.voxelPosition);
+		this.#displayCapsule?.position.copyFrom(this.voxelPosition);
+		this.voxelCollider.syncDebugMesh(this.voxelPosition);
+	}
+
+	public teleportTo(x: number, y: number, z: number): void {
+		this.voxelPosition.x = x;
 		this.voxelPosition.y = y;
+		this.voxelPosition.z = z;
 		setVec3(this.voxelVelocity, 0, 0, 0);
 		this.#characterController.setPosition(this.voxelPosition);
 		this.#camera.snapToPlayer(this.voxelPosition);
