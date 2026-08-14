@@ -9,13 +9,7 @@
  * - Manage world lifecycle (create on first join, destroy when empty)
  */
 import { type Client, ClientState, CloseCode, Room } from "colyseus";
-import { GenerationParams } from "@/code/Generation/NoiseAndParameters/GenerationParams";
-import {
-	getFinalTerrainHeight,
-	setTerrainSeed,
-} from "@/code/Generation/TerrainHeightMap";
 import { DEBUG_ENABLED, debugLog } from "@/code/Lib/debugLog";
-import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
 import {
 	BinaryDecoder,
 	BinaryEncoder,
@@ -48,6 +42,10 @@ import { getServerConfig } from "../config/ServerConfig.ts";
 import { ChunkGenerationService } from "../world/ChunkGenerationService.ts";
 import type { StoredChunkData } from "../world/ServerWorldStorage.ts";
 import { ServerWorldStorage } from "../world/ServerWorldStorage.ts";
+import {
+	createWorldSpawn,
+	type WorldSpawn,
+} from "../world/WorldSpawnGenerator.ts";
 
 /**
  * Live count of connected players, shared with the HTTP status endpoint
@@ -251,12 +249,9 @@ export class VoxelRoom extends Room {
 		this.chunkGen.setStorage(this.worldStorage);
 		this.worldStorage.setWorldGenerator(this.chunkGen);
 
-		// Kick off spawn-area generation in the background so the first join
-		// serves from storage instead of stalling behind ~637 cold chunks.
-		this.prewarmSpawnArea();
-
-		// Generate (once) the world spawn point on world creation so it is
-		// ready before any player joins. Memoized via ensureWorldSpawn().
+		// Generate (once) the world spawn point on world creation, and prewarm
+		// the spawn-area chunks around the *actual* spawn (one-time cost, which
+		// is fine at world creation). Memoized via ensureWorldSpawn().
 		void this.ensureWorldSpawn();
 
 		// Set up fixed-rate simulation tick (real elapsed time per tick)
@@ -690,162 +685,14 @@ export class VoxelRoom extends Room {
 		return this.worldSpawnPromise;
 	}
 
-	private async computeWorldSpawn(): Promise<{
-		x: number;
-		y: number;
-		z: number;
-		yaw: number;
-		pitch: number;
-	}> {
-		const cached = await this.worldStorage.loadWorldSpawn();
-		if (cached) return cached;
-
-		// Make terrain-height queries use the world seed so the computed spawn
-		// height matches the actually generated chunks.
-		setTerrainSeed(this.seed);
-
-		const SEA = GenerationParams.SEA_LEVEL;
-		const PLAYER_HALF_HEIGHT = 0.9;
-		const PLATFORM_ID = 1; // stone
-		const maxR = 16; // chunks outward from origin
-
-		// Spiral candidates in chunk-sized steps, closest first.
-		const candidates: Array<{ x: number; z: number }> = [];
-		for (let r = 0; r <= maxR; r++) {
-			for (let ox = -r; ox <= r; ox++) {
-				for (let oz = -r; oz <= r; oz++) {
-					if (Math.max(Math.abs(ox), Math.abs(oz)) !== r) continue;
-					candidates.push({ x: ox * CHUNK_SIZE, z: oz * CHUNK_SIZE });
-				}
-			}
-		}
-
-		let chosen: { x: number; z: number } | null = null;
-		for (const c of candidates) {
-			const s = Math.floor(getFinalTerrainHeight(c.x, c.z));
-			if (s <= SEA) continue; // must be land above sea level
-			// Require a reasonably flat footprint (within 2 blocks).
-			let flat = true;
-			for (const [dx, dz] of [
-				[-1, 0],
-				[1, 0],
-				[0, -1],
-				[0, 1],
-			] as const) {
-				const nh = Math.floor(getFinalTerrainHeight(c.x + dx, c.z + dz));
-				if (Math.abs(nh - s) > 2) {
-					flat = false;
-					break;
-				}
-			}
-			if (!flat) continue;
-			chosen = { x: c.x, z: c.z };
-			break;
-		}
-
-		if (!chosen) {
-			// Whole search area underwater — fall back to the origin.
-			chosen = { x: 0, z: 0 };
-		}
-
-		// Generate a tall vertical band of the spawn column (all 3x3 footprint
-		// columns share this chunk) so we can read the REAL top solid block —
-		// getFinalTerrainHeight is only an approximate center and the actual
-		// surface can be several blocks higher.
-		const cx0 = Math.floor(chosen.x / CHUNK_SIZE);
-		const cz0 = Math.floor(chosen.z / CHUNK_SIZE);
-		const bandCoords: Array<{
-			chunkX: number;
-			chunkY: number;
-			chunkZ: number;
-		}> = [];
-		for (let cy = -1; cy <= 8; cy++) {
-			bandCoords.push({ chunkX: cx0, chunkY: cy, chunkZ: cz0 });
-		}
-		await this.chunkGen.generateChunksBatch(bandCoords);
-
-		// Actual top solid block over the 3x3 footprint; use the highest so the
-		// platform is never buried under a neighbour.
-		let surfaceY = -Infinity;
-		for (let dx = -1; dx <= 1; dx++) {
-			for (let dz = -1; dz <= 1; dz++) {
-				const sy = await this.worldStorage.getTopSolidY(
-					chosen.x + dx,
-					chosen.z + dz,
-				);
-				if (sy !== -Infinity && sy > surfaceY) surfaceY = sy;
-			}
-		}
-		if (surfaceY === -Infinity) {
-			// Column read failed — fall back to the approximate height.
-			surfaceY = Math.max(
-				SEA + 2,
-				Math.floor(getFinalTerrainHeight(chosen.x, chosen.z)),
-			);
-		}
-
-		// 3x3 stone platform on top of the surface, with the player's body
-		// column cleared so nothing spawns them inside a block.
-		const edits: Array<{
-			x: number;
-			y: number;
-			z: number;
-			blockId: number;
-		}> = [];
-		for (let dx = -1; dx <= 1; dx++) {
-			for (let dz = -1; dz <= 1; dz++) {
-				edits.push({
-					x: chosen.x + dx,
-					y: surfaceY + 1,
-					z: chosen.z + dz,
-					blockId: PLATFORM_ID,
-				});
-			}
-		}
-		for (let y = surfaceY + 2; y <= surfaceY + 8; y++) {
-			edits.push({ x: chosen.x, y, z: chosen.z, blockId: 0 });
-		}
-
-		// Ensure the affected chunks exist, then apply edits per chunk.
-		const byChunk = new Map<
-			string,
-			Array<{ x: number; y: number; z: number; blockId: number }>
-		>();
-		for (const e of edits) {
-			const cx = Math.floor(e.x / CHUNK_SIZE);
-			const cy = Math.floor(e.y / CHUNK_SIZE);
-			const cz = Math.floor(e.z / CHUNK_SIZE);
-			const key = `${cx},${cy},${cz}`;
-			let arr = byChunk.get(key);
-			if (!arr) {
-				arr = [];
-				byChunk.set(key, arr);
-			}
-			arr.push(e);
-		}
-		const genCoords = [...byChunk.keys()].map((k) => {
-			const [cx, cy, cz] = k.split(",").map(Number);
-			return { chunkX: cx, chunkY: cy, chunkZ: cz };
+	private async computeWorldSpawn(): Promise<WorldSpawn> {
+		return createWorldSpawn({
+			seed: this.seed,
+			chunkGen: this.chunkGen,
+			worldStorage: this.worldStorage,
+			prewarmSpawnArea: (chunkX, chunkZ) =>
+				this.prewarmSpawnArea(chunkX, chunkZ),
 		});
-		await this.chunkGen.generateChunksBatch(genCoords);
-		for (const [k, es] of byChunk) {
-			const [cx, cy, cz] = k.split(",").map(Number);
-			await this.worldStorage.applyBlockEdits(cx, cy, cz, es);
-		}
-		await this.worldStorage.flush();
-
-		const spawn = {
-			x: chosen.x,
-			y: surfaceY + 2 + PLAYER_HALF_HEIGHT,
-			z: chosen.z,
-			yaw: 0,
-			pitch: 0,
-		};
-		await this.worldStorage.saveWorldSpawn(spawn);
-		console.log(
-			`[VoxelRoom] Generated world spawn at (${spawn.x}, ${spawn.y.toFixed(1)}, ${spawn.z})`,
-		);
-		return spawn;
 	}
 
 	/**
@@ -858,11 +705,17 @@ export class VoxelRoom extends Room {
 	 * so a player request overlapping the prewarm waits on the same work
 	 * instead of duplicating it.
 	 */
-	private prewarmSpawnArea(): void {
-		this.reportAsync("Spawn area prewarm failed", this.prewarmSpawnAreaImpl());
+	private prewarmSpawnArea(centerCx = 0, centerCz = 0): void {
+		this.reportAsync(
+			"Spawn area prewarm failed",
+			this.prewarmSpawnAreaImpl(centerCx, centerCz),
+		);
 	}
 
-	private async prewarmSpawnAreaImpl(): Promise<void> {
+	private async prewarmSpawnAreaImpl(
+		centerCx: number,
+		centerCz: number,
+	): Promise<void> {
 		const coords: Array<{ cx: number; cy: number; cz: number }> = [];
 		for (
 			let dx = -PREWARM_HORIZONTAL_RADIUS;
@@ -875,7 +728,7 @@ export class VoxelRoom extends Room {
 				dz++
 			) {
 				for (let cy = PREWARM_MIN_CHUNK_Y; cy <= PREWARM_MAX_CHUNK_Y; cy++) {
-					coords.push({ cx: dx, cy, cz: dz });
+					coords.push({ cx: centerCx + dx, cy, cz: centerCz + dz });
 				}
 			}
 		}

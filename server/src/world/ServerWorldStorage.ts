@@ -236,7 +236,12 @@ export class ServerWorldStorage {
 	 * getFinalTerrainHeight is only an approximate center, so the actual top
 	 * solid block can be several blocks higher.
 	 */
-	async getTopSolidY(worldX: number, worldZ: number): Promise<number> {
+	async getTopSolidY(
+		worldX: number,
+		worldZ: number,
+		yMax: number = 256,
+		yMin: number = 0,
+	): Promise<number> {
 		this.assertActive();
 		const CHUNK = 32;
 		const WATER = 30; // WATER_BLOCK_ID
@@ -244,7 +249,7 @@ export class ServerWorldStorage {
 		const cz = Math.floor(worldZ / CHUNK);
 		const localX = worldX - cx * CHUNK;
 		const localZ = worldZ - cz * CHUNK;
-		for (let y = 256; y >= -64; y--) {
+		for (let y = yMax; y >= yMin; y--) {
 			const cy = Math.floor(y / CHUNK);
 			const chunk = await this.readChunk(cx, cy, cz);
 			if (!chunk) continue;
@@ -254,8 +259,7 @@ export class ServerWorldStorage {
 				isUniform: chunk.isUniform,
 				uniformBlockId: chunk.uniformBlockId,
 			});
-			const blocks =
-				decomp === chunk.blocks ? new Uint8Array(decomp) : decomp;
+			const blocks = decomp === chunk.blocks ? new Uint8Array(decomp) : decomp;
 			const localY = y - cy * CHUNK;
 			const idx = localX + (localY << 5) + (localZ << 10);
 			const id = blocks[idx];

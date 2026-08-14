@@ -56,7 +56,7 @@ gameServer.define("voxel", VoxelRoom);
 // Start listening
 gameServer
 	.listen(PORT)
-	.then(() => {
+	.then(async () => {
 		console.log(`[b102-server] Listening on ws://localhost:${PORT}`);
 		console.log(
 			`[b102-server] Status API: http://localhost:${PORT}/api/status`,
