@@ -400,39 +400,53 @@ function maxFacesPerArena(): number {
 }
 
 function allocFaces(count: number): FaceAlloc {
+	if (count <= 0) {
+		return { arena: 0, base: 0 };
+	}
+
 	const maxFaces = maxFacesPerArena();
 
-	// 1) Reuse a freed hole in any existing arena (keeps memory compact and
-	//    lets unloaded chunks' faces be recycled without growing).
+	// 1) Reuse a freed hole in any existing arena.
+	// Important: when splitting an existing free interval, mutate the existing
+	// pooled node in place instead of replacing it with a new pooled object.
+	// The old version leaked the old interval object from the pool path.
 	for (let ai = 0; ai < faceArenas.length; ai++) {
 		const arena = faceArenas[ai];
 		const free = arena.free;
-		for (let i = 0; i < free.length; i++) {
-			if (free[i].count >= count) {
-				const base = free[i].base;
-				const leftover = free[i].count - count;
+
+		for (let i = 0, len = free.length; i < len; i++) {
+			const node = free[i];
+
+			if (node.count >= count) {
+				const base = node.base;
+				const leftover = node.count - count;
+
 				if (leftover > 0) {
-					free[i] = acquireInterval(base + count, leftover);
+					node.base = base + count;
+					node.count = leftover;
 				} else {
 					free.splice(i, 1);
+					releaseInterval(node);
 				}
+
 				return { arena: ai, base };
 			}
 		}
 	}
 
-	// 2) Append to an arena's tail, growing that arena up to the cap first if
-	//    it still has headroom. Walk arenas in order so we fill arena 0 before
-	//    spilling into arena 1, etc.
+	// 2) Append to an arena tail, growing that arena first if possible.
 	for (let ai = 0; ai < faceArenas.length; ai++) {
 		const arena = faceArenas[ai];
+
 		if (arena.used + count <= arena.capacity) {
 			const base = arena.used;
 			arena.used += count;
 			return { arena: ai, base };
 		}
+
 		if (arena.capacity < maxFaces) {
 			growArena(arena, ai);
+
 			if (arena.used + count <= arena.capacity) {
 				const base = arena.used;
 				arena.used += count;
@@ -441,14 +455,13 @@ function allocFaces(count: number): FaceAlloc {
 		}
 	}
 
-	// 3) Every arena is full at the binding cap — the GPU face budget is
-	//    exhausted. Callers skip drawing rather than writing OOB.
 	console.error(
 		`[PackedChunkMesh] face arenas exhausted (${totalFacesUsed()} faces, ` +
 			`${faceArenas.length} arenas = ${totalFaceCapacity()} faces). ` +
 			`Loaded geometry exceeds the GPU storage-buffer arena limit ` +
 			`(maxFaceArenas=${maxFaceArenas}).`,
 	);
+
 	return { arena: -1, base: -1 };
 }
 
@@ -457,42 +470,65 @@ function freeFaceInterval(
 	base: number,
 	count: number,
 ): void {
-	// Binary search for the sorted insertion point. The splice() shift below
-	// is still O(n) (array-based free list), but this keeps the *search* at
-	// O(log n) instead of O(n) — matters for large unload bursts.
+	if (count <= 0) return;
+
 	let lo = 0;
 	let hi = free.length;
+
 	while (lo < hi) {
 		const mid = (lo + hi) >>> 1;
+
 		if (free[mid].base < base) {
 			lo = mid + 1;
 		} else {
 			hi = mid;
 		}
 	}
+
 	let i = lo;
+	const node = acquireInterval(base, count);
 
-	free.splice(i, 0, acquireInterval(base, count));
+	// Manual insert avoids Array.splice allocation/slow path overhead.
+	const oldLen = free.length;
+	free.length = oldLen + 1;
 
-	// merge left
+	for (let j = oldLen; j > i; j--) {
+		free[j] = free[j - 1];
+	}
+
+	free[i] = node;
+
+	// Merge left.
 	if (i > 0) {
 		const prev = free[i - 1];
 		const curr = free[i];
+
 		if (prev.base + prev.count === curr.base) {
 			prev.count += curr.count;
-			free.splice(i, 1);
+
+			for (let j = i; j < free.length - 1; j++) {
+				free[j] = free[j + 1];
+			}
+
+			free.length--;
 			releaseInterval(curr);
 			i--;
 		}
 	}
 
-	// merge right
+	// Merge right.
 	if (i < free.length - 1) {
 		const curr = free[i];
 		const next = free[i + 1];
+
 		if (curr.base + curr.count === next.base) {
 			curr.count += next.count;
-			free.splice(i + 1, 1);
+
+			for (let j = i + 1; j < free.length - 1; j++) {
+				free[j] = free[j + 1];
+			}
+
+			free.length--;
 			releaseInterval(next);
 		}
 	}
@@ -559,14 +595,28 @@ function uploadFaceRanges(
 	faceCount: number,
 	ranges: readonly MergedFaceRange[],
 ): void {
-	for (let r = 0; r < ranges.length; r++) {
-		const { start, count } = ranges[r];
-		const clampedStart = start < 0 ? 0 : start;
-		const clampedEnd = clampedStart + count;
-		if (clampedStart >= faceCount) continue;
-		const n = clampedEnd > faceCount ? faceCount - clampedStart : count;
-		if (n <= 0) continue;
-		uploadFaceRange(arena, faceBase + clampedStart, n);
+	if (faceCount <= 0 || ranges.length === 0) return;
+
+	for (let r = 0, len = ranges.length; r < len; r++) {
+		const range = ranges[r];
+
+		let start = range.start;
+		let count = range.count;
+
+		if (start < 0) {
+			count += start;
+			start = 0;
+		}
+
+		if (count <= 0 || start >= faceCount) {
+			continue;
+		}
+
+		if (start + count > faceCount) {
+			count = faceCount - start;
+		}
+
+		uploadFaceRange(arena, faceBase + start, count);
 	}
 }
 
@@ -772,33 +822,50 @@ function packFaceRanges(
 	ranges: readonly MergedFaceRange[],
 ): void {
 	if (ranges.length === 0) return;
+
 	ensureFaceWordViews(state);
+
 	const input = state.input;
 	const faceCount = input.faceDataA.length >>> 2;
 
+	if (faceCount <= 0) return;
+
 	const arena = faceArenas[state.faceArena];
 	if (!arena) return;
-	const faceCpu = arena.cpu;
 
+	const faceCpu = arena.cpu;
 	const aWords = state.faceWordsA!;
 	const bWords = state.faceWordsB!;
 	const cWords = state.faceWordsC!;
+	const baseWord = state.faceBase * FACE_WORDS;
 
-	const baseWord = state.faceBase * 3;
-	for (let r = 0; r < ranges.length; r++) {
-		const { start, count } = ranges[r];
-		const clampedStart = start < 0 ? 0 : start;
-		const clampedEnd = clampedStart + count;
-		if (clampedStart >= faceCount) continue;
-		const n = clampedEnd > faceCount ? faceCount - clampedStart : count;
-		if (n <= 0) continue;
-		let o = baseWord + clampedStart * 3;
-		const end = clampedStart + n;
-		for (let i = clampedStart; i < end; i++) {
-			faceCpu[o] = aWords[i];
-			faceCpu[o + 1] = bWords[i];
-			faceCpu[o + 2] = cWords[i];
-			o += 3;
+	for (let r = 0, len = ranges.length; r < len; r++) {
+		const range = ranges[r];
+
+		let start = range.start;
+		let count = range.count;
+
+		if (start < 0) {
+			count += start;
+			start = 0;
+		}
+
+		if (count <= 0 || start >= faceCount) {
+			continue;
+		}
+
+		if (start + count > faceCount) {
+			count = faceCount - start;
+		}
+
+		let dst = baseWord + start * FACE_WORDS;
+		const end = start + count;
+
+		for (let i = start; i < end; i++) {
+			faceCpu[dst] = aWords[i];
+			faceCpu[dst + 1] = bWords[i];
+			faceCpu[dst + 2] = cWords[i];
+			dst += FACE_WORDS;
 		}
 	}
 }
@@ -996,7 +1063,6 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 
 	const faceCount = input.faceDataA.length >>> 2;
 	const alloc = allocFaces(faceCount);
-	const offsetBase = allocOffsetBlock();
 
 	if (alloc.arena < 0) {
 		console.warn(
@@ -1005,6 +1071,10 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 		);
 		return null;
 	}
+
+	// Allocate offset block only after face allocation succeeds.
+	// The previous order leaked offset blocks when allocFaces failed.
+	const offsetBase = allocOffsetBlock();
 
 	const state: PackedMeshState = {
 		faceArena: alloc.arena,
@@ -1016,6 +1086,7 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 
 	packFaces(state);
 	packOffsets(state);
+
 	uploadFaceRange(alloc.arena, alloc.base, faceCount);
 	uploadOffsetRange(offsetBase);
 
@@ -1032,6 +1103,7 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 	mesh.pickable = false;
 
 	const anyMesh = mesh as PackedMesh;
+
 	const boundMin = reuseOrCloneVec3(state.boundMin, input.boundsMin);
 	const boundMax = reuseOrCloneVec3(state.boundMax, input.boundsMax);
 
@@ -1051,11 +1123,13 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 	);
 
 	state.instanceMatrices = instanceMatrices;
+
 	setThinInstances(mesh, instanceMatrices, faceCount);
 
 	addToScene(scene, mesh);
-	ensureInstancedBuild(input.material, mesh);
 	meshState.set(mesh, state);
+
+	ensureInstancedBuild(input.material, mesh);
 
 	return mesh;
 }
@@ -1188,12 +1262,18 @@ export function updatePackedChunkMesh(
 
 export function disposePackedMesh(mesh: Mesh): void {
 	const state = meshState.get(mesh);
+
 	if (state) {
+		meshState.delete(mesh);
+
 		freeFaces(state.faceArena, state.faceBase, state.faceCount);
 		freeOffsetBlock(state.offsetBase);
-		meshState.delete(mesh);
 	}
-	if (sceneRef && mesh) removeFromScene(sceneRef, mesh);
+
+	if (sceneRef && mesh) {
+		removeFromScene(sceneRef, mesh);
+	}
+
 	scheduleDeferredDisposal(mesh);
 }
 
