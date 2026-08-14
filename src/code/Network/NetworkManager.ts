@@ -38,21 +38,23 @@ import { NetClient, type RemotePlayer } from "./NetClient";
 import { BlockActionType, BlockEditRejectReason } from "./protocol/messages";
 import { RemotePlayerRenderer } from "./RemotePlayerRenderer";
 
-const SEND_RATE = 20; // Hz — how often to send player position
+const SEND_RATE = 20;
 const SEND_INTERVAL_MS = 1000 / SEND_RATE;
 
-// Flip to true only while actively debugging net sync. Left off, this
-// avoids building a template string on every single remote block edit
-// (place/break can happen at burst rates from other clients).
 const NET_DEBUG = false;
 
-// Hoisted once — previously allocated a fresh 6-element array of
-// [dx,dy,dz] tuples on every block break just to sample neighbor light.
-// Flat parallel arrays + indexed access avoid that allocation and the
-// per-iteration tuple destructure entirely.
 const BREAK_LIGHT_OFFSET_X = [0.5, -0.5, 0, 0, 0, 0];
 const BREAK_LIGHT_OFFSET_Y = [0, 0, 0.5, -0.5, 0, 0];
 const BREAK_LIGHT_OFFSET_Z = [0, 0, 0, 0, 0.5, -0.5];
+
+const HELP_MESSAGES = [
+	"Commands:",
+	"  !g <gamemode> - Set gamemode (survival, creative, adventure, spectator)",
+	"  !tp <x> <y> <z> - Teleport to coordinates (~ for current)",
+	"  !tp <x> <z> - Teleport keeping current y",
+	"  !seed       - Show the current world's seed",
+	"  !h / !help   - Show this help",
+] as const;
 
 function gamemodeName(gm: Gamemodes): string {
 	switch (gm) {
@@ -69,6 +71,18 @@ function gamemodeName(gm: Gamemodes): string {
 	}
 }
 
+function parseRelativeCoord(input: string, current: number): number | null {
+	if (input === "~") return current;
+
+	if (input.charCodeAt(0) === 126) {
+		const offset = Number.parseFloat(input.slice(1));
+		return Number.isNaN(offset) ? null : current + offset;
+	}
+
+	const value = Number.parseFloat(input);
+	return Number.isNaN(value) ? null : value;
+}
+
 export class NetworkManager {
 	private client: NetClient;
 	private renderer: RemotePlayerRenderer;
@@ -76,14 +90,9 @@ export class NetworkManager {
 	private chunkProvider: RemoteChunkProvider;
 	private player: Player;
 	private sendAccum = 0;
-	private lastYaw = 0;
-	private lastPitch = 0;
 	private _scratchVec: Vec3 = vec3Zero();
 	private serverSeed: string | null = null;
 	private _lastPlayerCount = 0;
-	// Cached rendering canvas — the element itself is stable across frames,
-	// only its client dimensions need to be re-read live. Avoids walking
-	// an `any`-cast `.engine?.getRenderingCanvas()` chain every tick.
 	private _canvas: HTMLCanvasElement | null = null;
 
 	constructor(player: Player, serverUrl?: string) {
@@ -121,8 +130,8 @@ export class NetworkManager {
 				this.renderer.onPlayerLeave(sessionId);
 				this.hud.addSystemMessage(`${name ?? "A player"} left`);
 			},
-			onPlayerStates: (_states) => {
-				// States are applied in tick() via interpolation
+			onPlayerStates: () => {
+				// States are applied in tick() via interpolation.
 			},
 			onBlockEdit: (edit) => {
 				this.applyRemoteBlockEdit(
@@ -141,12 +150,9 @@ export class NetworkManager {
 				this.hud.addChatMessage(chat.name, chat.message);
 			},
 			onWorldTime: (timeOfDay) => {
-				// Sync to server time — server is authoritative
 				Map1.environment?.setTime(timeOfDay);
 			},
 			onWorldConfig: (seed) => {
-				// Server sent authoritative seed — re-seed local terrain so the
-				// clip map matches the server's distant terrain.
 				console.log(`[NetworkManager] Received server seed: ${seed}`);
 				this.serverSeed = seed;
 				setTerrainSeed(seed);
@@ -154,8 +160,6 @@ export class NetworkManager {
 				resetDistantTerrain();
 			},
 			onSpawnPosition: (pos) => {
-				// Teleport to server-assigned spawn (saved position) and record
-				// it as the world spawn so the loading gate / respawn use it.
 				setSpawnPosition({ x: pos.x, y: pos.y, z: pos.z });
 				this.player.playerVehicle.restoreSavedPosition(pos);
 				this.player.playerVehicle.updateCameraAndVisuals();
@@ -165,80 +169,73 @@ export class NetworkManager {
 			},
 		});
 
-		// Enter multiplayer mode immediately so spawn chunks are deferred (not
-		// generated locally) until the server connection is live. This must
-		// happen before any chunk streaming starts, which begins as soon as the
-		// world finishes initializing.
-		ChunkWorkerPool.getInstance()?.enableRemoteMode();
+		const workerPool = ChunkWorkerPool.getInstance();
+		workerPool?.enableRemoteMode();
 
 		const t0 = performance.now();
 		console.log(`[MP-connect] enableRemoteMode @ ${t0.toFixed(0)}ms`);
 
-		// Clear local chunk cache so stale chunks are re-fetched from server.
-		// The singleplayer store (WorldStorage) shares the same IndexedDB and
-		// hydrates chunks from saved voxel data — wipe its memory cache + the
-		// shared DB too, otherwise locally saved terrain can be applied to
-		// chunks without ever asking the server.
-		// Both are independent IndexedDB operations — run in parallel.
 		await Promise.all([
 			this.chunkProvider.clearCache(),
 			WorldStorage.clearLocalChunkCache(),
 		]);
+
 		console.log(
 			`[MP-connect] after clearCache+localClear: ${(performance.now() - t0).toFixed(0)}ms`,
 		);
 
-		// Multiplayer: don't send a seed — the server uses its config seed.
-		// The server sends back the authoritative seed via WorldConfig on join,
-		// which re-seeds our local terrain (see onWorldConfig callback).
 		try {
 			await this.client.connect(playerName, worldName, "");
 			console.log(
 				`[MP-connect] joinOrCreate resolved: ${(performance.now() - t0).toFixed(0)}ms`,
 			);
 		} catch (err) {
-			// Connection failed — abandon multiplayer mode so the world falls
-			// back to local terrain generation instead of stalling on deferred
-			// chunks that will never arrive from a server.
-			ChunkWorkerPool.getInstance()?.disableRemoteMode();
+			workerPool?.disableRemoteMode();
 			throw err;
 		}
 
-		// Enable server-side chunk generation
-		ChunkWorkerPool.getInstance()?.setRemoteChunkProvider(this.chunkProvider);
+		workerPool?.setRemoteChunkProvider(this.chunkProvider);
 	}
 
 	/**
 	 * Called every frame from the game loop.
 	 */
 	tick(deltaMs: number): void {
-		if (!this.client.isConnected) return;
+		const client = this.client;
+		if (!client.isConnected) return;
 
-		// Update remote player interpolation
-		this.client.updateRemotePlayerInterpolation(deltaMs / 1000);
+		client.updateRemotePlayerInterpolation(deltaMs / 1000);
 
-		// Update renderer with camera for name tag projection
-		const cam = this.player.playerCamera.playerCamera;
-		if (!this._canvas) {
-			this._canvas =
+		const camera = this.player.playerCamera.playerCamera;
+
+		let canvas = this._canvas;
+		if (canvas === null) {
+			canvas =
 				(this.player.sceneRef as any).engine?.getRenderingCanvas() ?? null;
+			this._canvas = canvas;
 		}
-		const w = this._canvas?.clientWidth ?? window.innerWidth;
-		const h = this._canvas?.clientHeight ?? window.innerHeight;
-		this.renderer.update(cam, w, h);
 
-		// Update HUD player count and names
-		const remotePlayers = this.client.getRemotePlayers();
-		if (remotePlayers.size !== this._lastPlayerCount) {
-			this._lastPlayerCount = remotePlayers.size;
-			const names: string[] = [];
-			for (const p of remotePlayers.values()) {
-				names.push(p.name);
+		this.renderer.update(
+			camera,
+			canvas?.clientWidth ?? window.innerWidth,
+			canvas?.clientHeight ?? window.innerHeight,
+		);
+
+		const remotePlayers = client.getRemotePlayers();
+		const playerCount = remotePlayers.size;
+
+		if (playerCount !== this._lastPlayerCount) {
+			this._lastPlayerCount = playerCount;
+
+			const names = new Array<string>(playerCount);
+			let i = 0;
+			for (const player of remotePlayers.values()) {
+				names[i++] = player.name;
 			}
+
 			this.hud.setPlayerNames(names);
 		}
 
-		// Send our position at fixed rate
 		this.sendAccum += deltaMs;
 		if (this.sendAccum >= SEND_INTERVAL_MS) {
 			this.sendAccum -= SEND_INTERVAL_MS;
@@ -247,14 +244,13 @@ export class NetworkManager {
 	}
 
 	/**
-	 * Toggle chat input (called by the 'T' key handler).
+	 * Toggle chat input, called by the 'T' key handler.
 	 */
 	toggleChat(): void {
 		this.hud.openChat();
 	}
 
 	private onToggleChat(open: boolean): void {
-		// Pause/unpause player input while typing
 		setIsPaused(open);
 	}
 
@@ -262,17 +258,15 @@ export class NetworkManager {
 		const pos = this.player.position;
 		const cam = this.player.playerCamera.playerCamera;
 
-		// Extract yaw/pitch from camera
 		const dx = cam.target.x - cam.position.x;
 		const dy = cam.target.y - cam.position.y;
 		const dz = cam.target.z - cam.position.z;
+
 		const yaw = (Math.atan2(dx, dz) * 180) / Math.PI;
 		const pitch =
 			(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)) * 180) / Math.PI;
 
 		this.client.sendPlayerState(pos.x, pos.y, pos.z, yaw, pitch, 0);
-		this.lastYaw = yaw;
-		this.lastPitch = pitch;
 	}
 
 	/**
@@ -280,8 +274,9 @@ export class NetworkManager {
 	 * Sends the edit to the server for broadcast.
 	 */
 	onBlockPlaced = (x: number, y: number, z: number, blockId: number): void => {
-		if (!this.client.isConnected) return;
-		this.client.sendBlockEdit(x, y, z, blockId, BlockActionType.Place);
+		if (this.client.isConnected) {
+			this.client.sendBlockEdit(x, y, z, blockId, BlockActionType.Place);
+		}
 	};
 
 	/**
@@ -289,13 +284,14 @@ export class NetworkManager {
 	 * Sends the edit to the server for broadcast.
 	 */
 	onBlockBroken = (x: number, y: number, z: number, blockId: number): void => {
-		if (!this.client.isConnected) return;
-		this.client.sendBlockEdit(x, y, z, blockId, BlockActionType.Break);
+		if (this.client.isConnected) {
+			this.client.sendBlockEdit(x, y, z, blockId, BlockActionType.Break);
+		}
 	};
 
 	/**
 	 * Apply a block edit received from another client.
-	 * Particles are emitted locally — never transmitted over the network.
+	 * Particles are emitted locally, never transmitted over the network.
 	 */
 	private applyRemoteBlockEdit(
 		x: number,
@@ -306,34 +302,38 @@ export class NetworkManager {
 	): void {
 		if (NET_DEBUG) {
 			debugLog(
-				`[NetworkManager] applyRemoteBlockEdit: ${action === BlockActionType.Place ? "PLACE" : "BREAK"} blockId=${blockId} at ${x},${y},${z}`,
+				`[NetworkManager] applyRemoteBlockEdit: ${
+					action === BlockActionType.Place ? "PLACE" : "BREAK"
+				} blockId=${blockId} at ${x},${y},${z}`,
 			);
 		}
+
 		if (action === BlockActionType.Place) {
 			setBlock(x, y, z, blockId, 0);
-		} else if (action === BlockActionType.Break) {
-			// Sample light BEFORE deleting — deleteBlock clears the voxel's
-			// light data, which would make particles render black.
-			const px = x + 0.5;
-			const py = y + 0.5;
-			const pz = z + 0.5;
-			const packedLight = this.#sampleBreakLight(px, py, pz);
-
-			deleteBlock(x, y, z);
-
-			play(
-				this.player.sceneRef,
-				setVec3(this._scratchVec, px, py, pz),
-				blockId,
-				packedLight,
-			);
-			playDebris(this.player.sceneRef, px, py, pz, blockId, packedLight);
+			return;
 		}
+
+		if (action !== BlockActionType.Break) return;
+
+		const px = x + 0.5;
+		const py = y + 0.5;
+		const pz = z + 0.5;
+		const packedLight = this.sampleBreakLight(px, py, pz);
+
+		deleteBlock(x, y, z);
+
+		play(
+			this.player.sceneRef,
+			setVec3(this._scratchVec, px, py, pz),
+			blockId,
+			packedLight,
+		);
+		playDebris(this.player.sceneRef, px, py, pz, blockId, packedLight);
 	}
 
 	/**
-	 * The server rejected one of our own block edits — revert the optimistic
-	 * local change so client and server stay in sync.
+	 * The server rejected one of our own block edits.
+	 * Revert the optimistic local change so client and server stay in sync.
 	 */
 	private revertRejectedBlockEdit(rejection: {
 		x: number;
@@ -343,47 +343,60 @@ export class NetworkManager {
 		action: number;
 		reason: number;
 	}): void {
-		if (rejection.action === BlockActionType.Place) {
-			deleteBlock(rejection.x, rejection.y, rejection.z);
-		} else if (rejection.action === BlockActionType.Break) {
-			setBlock(rejection.x, rejection.y, rejection.z, rejection.blockId, 0);
+		const { x, y, z, blockId, action, reason } = rejection;
+
+		if (action === BlockActionType.Place) {
+			deleteBlock(x, y, z);
+		} else if (action === BlockActionType.Break) {
+			setBlock(x, y, z, blockId, 0);
 		}
-		const reason =
-			rejection.reason === BlockEditRejectReason.TooFar
-				? "too far away"
-				: rejection.reason === BlockEditRejectReason.InvalidEdit
-					? "invalid edit"
-					: "unknown reason";
-		this.hud.addSystemMessage(`Block edit rejected (${reason}) — reverted`);
+
+		let reasonText = "unknown reason";
+		if (reason === BlockEditRejectReason.TooFar) {
+			reasonText = "too far away";
+		} else if (reason === BlockEditRejectReason.InvalidEdit) {
+			reasonText = "invalid edit";
+		}
+
+		this.hud.addSystemMessage(`Block edit rejected (${reasonText}) — reverted`);
 	}
 
-	#sampleBreakLight(x: number, y: number, z: number): number {
+	private sampleBreakLight(x: number, y: number, z: number): number {
 		let best = getLightByWorldCoords(x, y, z);
 		let bestSky = (best >> 4) & 0xf;
 		let bestBlock = best & 0xf;
+		let bestScore = bestSky + bestBlock;
+
 		for (let i = 0; i < 6; i++) {
-			const l = getLightByWorldCoords(
+			const light = getLightByWorldCoords(
 				x + BREAK_LIGHT_OFFSET_X[i],
 				y + BREAK_LIGHT_OFFSET_Y[i],
 				z + BREAK_LIGHT_OFFSET_Z[i],
 			);
-			const sky = (l >> 4) & 0xf;
-			const block = l & 0xf;
-			if (sky + block > bestSky + bestBlock) {
+
+			const sky = (light >> 4) & 0xf;
+			const block = light & 0xf;
+			const score = sky + block;
+
+			if (score > bestScore) {
+				best = light;
 				bestSky = sky;
 				bestBlock = block;
-				best = l;
+				bestScore = score;
 			}
 		}
+
 		return best;
 	}
 
 	sendChat(message: string): void {
-		// Intercept commands (start with ! or /) — run locally, don't broadcast
-		if (message.startsWith("!") || message.startsWith("/")) {
+		const firstChar = message.charCodeAt(0);
+
+		if (firstChar === 33 || firstChar === 47) {
 			this.handleCommand(message.slice(1).trim());
 			return;
 		}
+
 		this.client.sendChat(message);
 	}
 
@@ -396,6 +409,7 @@ export class NetworkManager {
 			case "g":
 			case "gamemode": {
 				const gm = this.parseGamemode(args[0]);
+
 				if (gm !== null) {
 					this.player.stats.gamemode = gm;
 					this.hud.addSystemMessage(`Gamemode set to ${gamemodeName(gm)}`);
@@ -406,14 +420,17 @@ export class NetworkManager {
 				}
 				break;
 			}
+
 			case "tp":
 			case "teleport":
 				this.handleTeleport(args);
 				break;
+
 			case "seed": {
-				// In multiplayer, show the server's authoritative seed
-				if (this.serverSeed !== null) {
-					this.hud.addSystemMessage(`Server seed: ${this.serverSeed}`);
+				const serverSeed = this.serverSeed;
+
+				if (serverSeed !== null) {
+					this.hud.addSystemMessage(`Server seed: ${serverSeed}`);
 				} else {
 					const worldName = getWorldNameFromUrl() ?? "default";
 					this.hud.addSystemMessage(
@@ -422,76 +439,83 @@ export class NetworkManager {
 				}
 				break;
 			}
+
 			case "h":
 			case "help":
-				this.hud.addSystemMessage("Commands:");
-				this.hud.addSystemMessage(
-					"  !g <gamemode> - Set gamemode (survival, creative, adventure, spectator)",
-				);
-				this.hud.addSystemMessage(
-					"  !tp <x> <y> <z> - Teleport to coordinates (~ for current)",
-				);
-				this.hud.addSystemMessage("  !tp <x> <z> - Teleport keeping current y");
-				this.hud.addSystemMessage(
-					"  !seed       - Show the current world's seed",
-				);
-				this.hud.addSystemMessage("  !h / !help   - Show this help");
+				for (let i = 0; i < HELP_MESSAGES.length; i++) {
+					this.hud.addSystemMessage(HELP_MESSAGES[i]);
+				}
 				break;
+
 			default:
 				this.hud.addSystemMessage(`Unknown command: ${cmd}`);
 		}
 	}
 
 	private parseGamemode(input: string | undefined): Gamemodes | null {
-		if (!input) return null;
-		const lower = input.toLowerCase();
-		if (lower === "0" || lower === "survival") return Gamemodes.Survival;
-		if (lower === "1" || lower === "creative") return Gamemodes.Creative;
-		if (lower === "2" || lower === "adventure") return Gamemodes.Adventure;
-		if (lower === "3" || lower === "spectator") return Gamemodes.Spectator;
-		return null;
+		if (input === undefined) return null;
+
+		switch (input.toLowerCase()) {
+			case "0":
+			case "survival":
+				return Gamemodes.Survival;
+
+			case "1":
+			case "creative":
+				return Gamemodes.Creative;
+
+			case "2":
+			case "adventure":
+				return Gamemodes.Adventure;
+
+			case "3":
+			case "spectator":
+				return Gamemodes.Spectator;
+
+			default:
+				return null;
+		}
 	}
 
 	private handleTeleport(args: string[]): void {
 		const pos = this.player.position;
-		const current = { x: pos.x, y: pos.y, z: pos.z };
-
-		const parseCoord = (input: string, current: number): number | null => {
-			if (input === "~") return current;
-			if (input.startsWith("~")) {
-				const offset = Number.parseFloat(input.slice(1));
-				if (Number.isNaN(offset)) return null;
-				return current + offset;
-			}
-			const val = Number.parseFloat(input);
-			return Number.isNaN(val) ? null : val;
-		};
+		const currentX = pos.x;
+		const currentY = pos.y;
+		const currentZ = pos.z;
 
 		if (args.length === 2) {
-			const x = parseCoord(args[0], current.x);
-			const z = parseCoord(args[1], current.z);
+			const x = parseRelativeCoord(args[0], currentX);
+			const z = parseRelativeCoord(args[1], currentZ);
+
 			if (x === null || z === null) {
 				this.hud.addSystemMessage("Usage: !tp <x> <z>");
 				return;
 			}
+
 			pos.x = x;
 			pos.z = z;
-			this.hud.addSystemMessage(`Teleported to ${x} ${current.y} ${z}`);
-		} else if (args.length === 3) {
-			const x = parseCoord(args[0], current.x);
-			const y = parseCoord(args[1], current.y);
-			const z = parseCoord(args[2], current.z);
+			this.hud.addSystemMessage(`Teleported to ${x} ${currentY} ${z}`);
+			return;
+		}
+
+		if (args.length === 3) {
+			const x = parseRelativeCoord(args[0], currentX);
+			const y = parseRelativeCoord(args[1], currentY);
+			const z = parseRelativeCoord(args[2], currentZ);
+
 			if (x === null || y === null || z === null) {
 				this.hud.addSystemMessage("Usage: !tp <x> <y> <z>");
 				return;
 			}
+
 			pos.x = x;
 			pos.y = y;
 			pos.z = z;
 			this.hud.addSystemMessage(`Teleported to ${x} ${y} ${z}`);
-		} else {
-			this.hud.addSystemMessage("Usage: !tp <x> <y> <z> or !tp <x> <z>");
+			return;
 		}
+
+		this.hud.addSystemMessage("Usage: !tp <x> <y> <z> or !tp <x> <z>");
 	}
 
 	disconnect(): void {
