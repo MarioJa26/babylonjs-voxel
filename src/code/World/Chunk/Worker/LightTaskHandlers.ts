@@ -11,6 +11,7 @@ import type {
 	LightDirtyMessage,
 	LightMutateRequest,
 	LightPropagateDeferredRequest,
+	LightRegisterChunkBatchRequest,
 	LightRegisterChunkRequest,
 	LightSetClosedFaceMaskRequest,
 	LightSkyReconcileRequest,
@@ -182,6 +183,16 @@ function handleRegisterChunk(req: LightRegisterChunkRequest): void {
 	}
 }
 
+function handleRegisterChunkBatch(req: LightRegisterChunkBatchRequest): void {
+	const chunks = req.chunks;
+	for (let i = 0; i < chunks.length; i++) {
+		handleRegisterChunk({
+			type: WorkerTaskType.LightRegisterChunk,
+			...chunks[i],
+		});
+	}
+}
+
 function handleUnregisterChunk(req: LightUnregisterChunkRequest): void {
 	if (!state.registry) return;
 	pendingMutations.delete(req.chunkId);
@@ -304,6 +315,7 @@ export const LightTaskHandlers = {
 	handleInitLightShared,
 	handleSetClosedFaceMask,
 	handleRegisterChunk,
+	handleRegisterChunkBatch,
 	handleUnregisterChunk,
 	handleUnregisterChunkBatch,
 	handleUpdateBuffers,

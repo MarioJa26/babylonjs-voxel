@@ -8,6 +8,7 @@ import { WorldGenerator } from "@/code/Generation/WorldGenerator";
 import { enableWasmNoise } from "@/code/Lib/WasmNoise";
 import { packCoords } from "./DataStructures/ChunkCoords";
 import {
+	type LightRegisterChunkBatchRequest,
 	type LightRegisterChunkRequest,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
@@ -321,6 +322,44 @@ const onMessageHandler = (event: MessageEvent) => {
 					chunkId: req.chunkId,
 					headerSlot: req.headerSlot,
 				});
+			}
+			return;
+		}
+		case WorkerTaskType.LightRegisterChunkBatch: {
+			const chunks = (event.data as LightRegisterChunkBatchRequest).chunks;
+			for (let i = 0; i < chunks.length; i++) {
+				const req = {
+					type: WorkerTaskType.LightRegisterChunk,
+					...chunks[i],
+				} as LightRegisterChunkRequest;
+
+				if (req.blockSAB !== null) {
+					LightTaskHandlers.handleRegisterChunk(req);
+					continue;
+				}
+
+				const key = packCoords(req.chunkX, req.chunkY, req.chunkZ);
+				const voxel = _pendingVoxelData.get(key);
+				if (voxel) {
+					_pendingVoxelData.delete(key);
+					_registerFromBoth(
+						{
+							seq: req.seq,
+							chunkId: req.chunkId,
+							chunkX: req.chunkX,
+							chunkY: req.chunkY,
+							chunkZ: req.chunkZ,
+							headerSlot: req.headerSlot,
+						},
+						voxel,
+					);
+				} else {
+					_pendingRegistrations.set(key, {
+						seq: req.seq,
+						chunkId: req.chunkId,
+						headerSlot: req.headerSlot,
+					});
+				}
 			}
 			return;
 		}

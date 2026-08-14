@@ -27,6 +27,7 @@ import {
 	type DistantTerrainTask,
 	type FullMeshMessage,
 	type LightDirtyMessage,
+	type LightRegisterChunkBatchRequest,
 	type MeshWorkerResponse,
 	type RelightMeshMissMessage,
 	TaskType,
@@ -1327,17 +1328,58 @@ export class ChunkWorkerPool {
 	private _drainLightRegistration(): void {
 		const chunks = this._lightRegChunks;
 		const flags = this._lightRegFlags;
+		if (chunks.length === 0) return;
+
+		this.flushPendingUnregisters();
+
+		const lightRegistrations: LightRegisterChunkBatchRequest["chunks"] = [];
+		const voxelRegistrations: Parameters<
+			ChunkWorker["postVoxelRegisterChunkBatch"]
+		>[0] = [];
+		const seen = new Set<bigint>();
+
 		for (let i = 0; i < chunks.length; i++) {
-			if (flags[i]) {
-				this.broadcastLightRegister(chunks[i]);
-				this.broadcastVoxelRegister(chunks[i]);
-			} else {
-				this.broadcastLightRegisterFull(chunks[i]);
-				this.broadcastVoxelRegisterFull(chunks[i]);
-			}
+			const chunk = chunks[i];
+			if (seen.has(chunk.id)) continue;
+			seen.add(chunk.id);
+
+			const snap = chunk.getLightStorageSnapshot();
+			const blockStorageBytesPerElement = snap.blockStorageBytesPerElement;
+
+			lightRegistrations.push({
+				seq: this.nextLightSeq(),
+				chunkId: chunk.id,
+				chunkX: chunk.chunkX,
+				chunkY: chunk.chunkY,
+				chunkZ: chunk.chunkZ,
+				headerSlot: chunk.lightHeaderSlot,
+				blockSAB: snap.blockSAB,
+				lightSAB: snap.lightSAB!,
+				paletteSAB: snap.paletteSAB,
+				blockStorageBytesPerElement,
+			});
+
+			voxelRegistrations.push({
+				chunkId: chunk.id,
+				chunkX: chunk.chunkX,
+				chunkY: chunk.chunkY,
+				chunkZ: chunk.chunkZ,
+				isUniform: chunk.isUniform,
+				uniformBlockId: chunk.uniformBlockId,
+				blockStorageBytesPerElement,
+				direct: true,
+				blockSAB: snap.blockSAB,
+				paletteSAB: snap.paletteSAB,
+				lightSAB: snap.lightSAB,
+			});
 		}
 		chunks.length = 0;
 		flags.length = 0;
+
+		this.getLightWorker().postLightRegisterChunkBatch(lightRegistrations);
+		for (let i = 0; i < this.workers.length; i++) {
+			this.workers[i].postVoxelRegisterChunkBatch(voxelRegistrations);
+		}
 	}
 
 	// -------------------------------------------------------------------------

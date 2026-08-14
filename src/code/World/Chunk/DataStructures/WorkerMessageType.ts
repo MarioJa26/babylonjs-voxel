@@ -20,6 +20,7 @@ export const enum WorkerTaskType {
 	InitLightShared,
 	LightSetClosedFaceMask,
 	LightRegisterChunk,
+	LightRegisterChunkBatch,
 	LightUnregisterChunk,
 	LightUnregisterChunkBatch,
 	LightUpdateChunkBuffers,
@@ -31,6 +32,7 @@ export const enum WorkerTaskType {
 	InitWorkerChannel,
 	// --- Voxel-worker registration (SAB-direct mesh borders) ---
 	VoxelRegisterChunk,
+	VoxelRegisterChunkBatch,
 	VoxelUnregisterChunk,
 	VoxelUnregisterChunkBatch,
 	VoxelUpdateChunkBuffers,
@@ -174,6 +176,7 @@ export type WorkerRequestData =
 	| InitLightSharedRequest
 	| LightSetClosedFaceMaskRequest
 	| LightRegisterChunkRequest
+	| LightRegisterChunkBatchRequest
 	| LightUnregisterChunkRequest
 	| LightUnregisterChunkBatchRequest
 	| LightUpdateChunkBuffersRequest
@@ -182,6 +185,7 @@ export type WorkerRequestData =
 	| LightSkyReconcileRequest
 	| LightPropagateDeferredRequest
 	| VoxelRegisterChunkRequest
+	| VoxelRegisterChunkBatchRequest
 	| VoxelUnregisterChunkRequest
 	| VoxelUnregisterChunkBatchRequest
 	| VoxelUpdateChunkBuffersRequest
@@ -213,6 +217,11 @@ export type LightRegisterChunkRequest = {
 	lightSAB: SharedArrayBuffer;
 	paletteSAB: SharedArrayBuffer | null;
 	blockStorageBytesPerElement: 1 | 2;
+};
+
+export type LightRegisterChunkBatchRequest = {
+	type: WorkerTaskType.LightRegisterChunkBatch;
+	chunks: Array<Omit<LightRegisterChunkRequest, "type">>;
 };
 
 export type LightUnregisterChunkRequest = {
@@ -308,6 +317,11 @@ export type VoxelRegisterChunkRequest = {
 	blockSAB: SharedArrayBuffer | null;
 	paletteSAB: SharedArrayBuffer | null;
 	lightSAB: SharedArrayBuffer | null;
+};
+
+export type VoxelRegisterChunkBatchRequest = {
+	type: WorkerTaskType.VoxelRegisterChunkBatch;
+	chunks: Array<Omit<VoxelRegisterChunkRequest, "type">>;
 };
 
 export type VoxelUnregisterChunkRequest = {

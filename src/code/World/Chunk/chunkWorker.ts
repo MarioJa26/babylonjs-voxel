@@ -7,11 +7,13 @@ import {
 	type LightAddEmissionRequest,
 	type LightMutateRequest,
 	type LightPropagateDeferredRequest,
+	type LightRegisterChunkBatchRequest,
 	type LightSetClosedFaceMaskRequest,
 	type LightSkyReconcileRequest,
 	type MeshWorkerResponse,
 	type RelightMeshRequest,
 	type SetWorldSeedRequest,
+	type VoxelRegisterChunkBatchRequest,
 	type WorkerResponseData,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
@@ -368,6 +370,16 @@ export class ChunkWorker {
 		});
 	}
 
+	public postLightRegisterChunkBatch(
+		chunks: LightRegisterChunkBatchRequest["chunks"],
+	): void {
+		if (chunks.length === 0) return;
+		this.terrainWorker.postMessage({
+			type: WorkerTaskType.LightRegisterChunkBatch,
+			chunks,
+		});
+	}
+
 	public postLightUnregisterChunk(chunkId: bigint): void {
 		this.terrainWorker.postMessage({
 			type: WorkerTaskType.LightUnregisterChunk,
@@ -496,6 +508,16 @@ export class ChunkWorker {
 		this.voxelWorker.postMessage({
 			type: WorkerTaskType.VoxelRegisterChunk,
 			...req,
+		});
+	}
+
+	public postVoxelRegisterChunkBatch(
+		chunks: VoxelRegisterChunkBatchRequest["chunks"],
+	): void {
+		if (chunks.length === 0) return;
+		this.voxelWorker.postMessage({
+			type: WorkerTaskType.VoxelRegisterChunkBatch,
+			chunks,
 		});
 	}
 

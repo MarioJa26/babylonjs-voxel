@@ -564,7 +564,11 @@ export function flushDirtyMergedGroups(): void {
 			}
 		}
 
-		if (!_mergedFlushRafScheduled) {
+		if (_requestFlush) {
+			// Reuse the pool's centralized scheduler instead of creating another
+			// zero-delay timer for the remaining dirty groups.
+			_requestFlush();
+		} else if (!_mergedFlushRafScheduled) {
 			_mergedFlushRafScheduled = true;
 
 			setTimeout(() => {
