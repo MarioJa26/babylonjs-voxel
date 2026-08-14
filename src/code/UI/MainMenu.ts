@@ -259,6 +259,24 @@ export class MainMenu {
 		mpTitle.innerText = "Multiplayer";
 		this.mpScreen.appendChild(mpTitle);
 
+		// ─── Saved Servers (primary list, shown above the controls) ─
+		const listHeader = document.createElement("div");
+		listHeader.className = "menu-list-header";
+		const serverListTitle = document.createElement("h3");
+		serverListTitle.className = "screen-subtitle";
+		serverListTitle.innerText = "Saved Servers";
+		const refreshBtn = document.createElement("button");
+		btnSmallMinecraft(refreshBtn, "Refresh");
+		refreshBtn.classList.add("mc-btn-refresh");
+		refreshBtn.onclick = () => void this.refreshServerList();
+		listHeader.appendChild(serverListTitle);
+		listHeader.appendChild(refreshBtn);
+		this.mpScreen.appendChild(listHeader);
+
+		this.mpServerListEl = document.createElement("div");
+		this.mpServerListEl.className = "menu-server-list";
+		this.mpScreen.appendChild(this.mpServerListEl);
+
 		// ─── Add Server (Minecraft-style: name + IP) ───────────────
 		const addTitle = document.createElement("h3");
 		addTitle.className = "screen-subtitle";
@@ -304,23 +322,6 @@ export class MainMenu {
 		this.mpStatusEl = document.createElement("div");
 		this.mpStatusEl.className = "menu-status";
 		this.mpScreen.appendChild(this.mpStatusEl);
-
-		const listHeader = document.createElement("div");
-		listHeader.className = "menu-list-header";
-		const serverListTitle = document.createElement("h3");
-		serverListTitle.className = "screen-subtitle";
-		serverListTitle.innerText = "Saved Servers";
-		const refreshBtn = document.createElement("button");
-		btnSmallMinecraft(refreshBtn, "Refresh");
-		refreshBtn.classList.add("mc-btn-refresh");
-		refreshBtn.onclick = () => void this.refreshServerList();
-		listHeader.appendChild(serverListTitle);
-		listHeader.appendChild(refreshBtn);
-		this.mpScreen.appendChild(listHeader);
-
-		this.mpServerListEl = document.createElement("div");
-		this.mpServerListEl.className = "menu-server-list";
-		this.mpScreen.appendChild(this.mpServerListEl);
 
 		this.container.appendChild(this.mpScreen);
 
@@ -647,7 +648,7 @@ export class MainMenu {
 				align-items: center;
 				gap: 4px;
 				margin-bottom: 16px;
-				width: 260px;
+				width: 480px;
 			}
 
 			.player-name-label {
@@ -684,7 +685,7 @@ export class MainMenu {
 				align-items: center;
 				gap: 8px;
 				width: 100%;
-				max-width: 400px;
+				max-width: 560px;
 				max-height: 90vh;
 				overflow-y: auto;
 				padding: 16px;
@@ -700,7 +701,7 @@ export class MainMenu {
 
 			/* Minecraft-style button */
 			.mc-btn {
-				width: 320px;
+				width: 480px;
 				padding: 12px 24px;
 				font-size: 1.1em;
 				font-family: inherit;
@@ -766,7 +767,7 @@ export class MainMenu {
 				display: flex;
 				gap: 8px;
 				width: 100%;
-				max-width: 400px;
+				max-width: 50wh;
 				align-items: center;
 			}
 
@@ -804,7 +805,7 @@ export class MainMenu {
 				flex-direction: column;
 				gap: 2px;
 				width: 100%;
-				max-width: 400px;
+				max-width: 50wh;
 			}
 
 			.input-label {
@@ -839,8 +840,8 @@ export class MainMenu {
 				flex-direction: column;
 				gap: 4px;
 				width: 100%;
-				max-width: 400px;
-				max-height: 40vh;
+				max-width: 50wh;
+				max-height: 55vh;
 				overflow-y: auto;
 			}
 
@@ -896,7 +897,7 @@ export class MainMenu {
 				align-items: center;
 				justify-content: space-between;
 				width: 100%;
-				max-width: 400px;
+				max-width: 50wh;
 				margin-top: 8px;
 			}
 
@@ -959,7 +960,7 @@ export class MainMenu {
 				font-size: 0.85em;
 				color: #9aa7b0;
 				width: 100%;
-				max-width: 400px;
+				max-width: 50wh;
 			}
 
 			.menu-status.error {
@@ -967,7 +968,7 @@ export class MainMenu {
 			}
 
 			@media (max-width: 480px) {
-				.mc-btn { width: 260px; }
+				.mc-btn { width: 320px; }
 				#mainMenuContainer h1 { font-size: 2.5em; }
 			}
 		`;
