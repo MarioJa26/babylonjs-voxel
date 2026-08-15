@@ -20,8 +20,13 @@
 // ---------------------------------------------------------------------------
 
 export const LIGHT_HEADER_ROW_WORDS = 4;
-export const LIGHT_HEADER_ROW_SIZE = LIGHT_HEADER_ROW_WORDS * 4;
-export const MAX_HEADER_SLOTS = 4 * 65536;
+export const LIGHT_HEADER_ROW_SIZE =
+	LIGHT_HEADER_ROW_WORDS * Int32Array.BYTES_PER_ELEMENT;
+
+// 65,536 slots matches the documented 1 MiB footprint.
+export const MAX_HEADER_SLOTS = 65536;
+export const LIGHT_HEADER_BUFFER_SIZE =
+	MAX_HEADER_SLOTS * LIGHT_HEADER_ROW_SIZE;
 
 export const LIGHT_HEADER_FLAG_UNIFORM = 1 << 0;
 export const LIGHT_HEADER_FLAG_STORAGE_U16 = 1 << 1;
@@ -33,12 +38,31 @@ const WORD_LIGHT_SEQ = 1;
 const WORD_CHUNK_ID_LOW = 2;
 const WORD_CHUNK_ID_HIGH = 3;
 
+const META_FLAGS_MASK = 0xff;
+const META_UNIFORM_SHIFT = 16;
+const META_UNIFORM_MASK = 0xffff;
+
 export type LightHeaderView = {
 	words: Int32Array;
 };
 
 function rowBase(slot: number): number {
 	return slot * LIGHT_HEADER_ROW_WORDS;
+}
+
+function packMeta(flags: number, uniformBlockId: number): number {
+	return (
+		(flags & META_FLAGS_MASK) |
+		((uniformBlockId & META_UNIFORM_MASK) << META_UNIFORM_SHIFT)
+	);
+}
+
+function chunkIdLow32(chunkId: bigint): number {
+	return Number(chunkId & 0xffffffffn) | 0;
+}
+
+function chunkIdHigh32(chunkId: bigint): number {
+	return Number((chunkId >> 32n) & 0xffffffffn) | 0;
 }
 
 export function wrapLightHeader(buffer: SharedArrayBuffer): LightHeaderView {
@@ -52,14 +76,18 @@ export function readHeaderMeta(view: LightHeaderView, slot: number): number {
 }
 
 export function readHeaderFlags(view: LightHeaderView, slot: number): number {
-	return readHeaderMeta(view, slot) & 0xff;
+	return Atomics.load(view.words, rowBase(slot) + WORD_META) & META_FLAGS_MASK;
 }
 
 export function readHeaderUniformId(
 	view: LightHeaderView,
 	slot: number,
 ): number {
-	return (readHeaderMeta(view, slot) >>> 16) & 0xffff;
+	return (
+		(Atomics.load(view.words, rowBase(slot) + WORD_META) >>>
+			META_UNIFORM_SHIFT) &
+		META_UNIFORM_MASK
+	);
 }
 
 export function bumpHeaderLightSeq(
@@ -89,24 +117,24 @@ export function writeHeaderRow(
 	if (opts.hasPalette) flags |= LIGHT_HEADER_FLAG_HAS_PALETTE;
 	if (opts.isLoaded) flags |= LIGHT_HEADER_FLAG_LOADED;
 
-	const meta = (flags & 0xff) | ((opts.uniformBlockId & 0xffff) << 16);
-
 	// Publish order:
 	// Write chunk identity first, then publish layout/loaded state via meta.
 	// Workers treat meta.flags as the authoritative loaded/layout snapshot.
 	Atomics.store(
 		view.words,
 		base + WORD_CHUNK_ID_LOW,
-		Number(opts.chunkId & 0xffffffffn) | 0,
+		chunkIdLow32(opts.chunkId),
 	);
-
 	Atomics.store(
 		view.words,
 		base + WORD_CHUNK_ID_HIGH,
-		Number((opts.chunkId >> 32n) & 0xffffffffn) | 0,
+		chunkIdHigh32(opts.chunkId),
 	);
-
-	Atomics.store(view.words, base + WORD_META, meta);
+	Atomics.store(
+		view.words,
+		base + WORD_META,
+		packMeta(flags, opts.uniformBlockId),
+	);
 }
 
 export function clearHeaderRow(view: LightHeaderView, slot: number): void {
