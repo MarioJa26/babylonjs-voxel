@@ -16,6 +16,8 @@ import {
 	decodeBlockEditRejectedFrom,
 	decodePlayerJoinFrom,
 	decodePlayerStateBatchEntriesInto,
+	decodeWorldConfig,
+	type WorldConfigData,
 } from "./protocol/encoder";
 import {
 	type BlockEditData,
@@ -52,7 +54,7 @@ export interface NetClientCallbacks {
 	onBlockEditRejected?: (rejection: BlockEditRejectedData) => void;
 	onChatMessage?: (chat: ChatMessageData) => void;
 	onWorldTime?: (timeOfDay: number) => void;
-	onWorldConfig?: (seed: string) => void;
+	onWorldConfig?: (config: WorldConfigData) => void;
 	onSpawnPosition?: (pos: {
 		x: number;
 		y: number;
@@ -266,8 +268,8 @@ export class NetClient {
 				}
 
 				case MessageType.WorldConfig: {
-					const worldSeed = dec.readString();
-					this.callbacks.onWorldConfig?.(worldSeed);
+					const config = decodeWorldConfig(data);
+					this.callbacks.onWorldConfig?.(config);
 					break;
 				}
 

@@ -759,19 +759,36 @@ export function decodeWorldTime(buffer: Uint8Array): number {
 /**
  * World config — server → client on join.
  * Carries the authoritative world seed so the client's clip map matches
- * the server's terrain generation.
- * Format: [type:1][seedLength:u16][seedString...]
+ * the server's terrain generation, plus the day/night cycle settings so the
+ * client sun interpolates at the server's rate.
+ * Format: [type:1][seedLength:u16][seed...][dayDuration:f32][dayCycle:u8]
  */
-export function encodeWorldConfig(seed: string): Uint8Array {
-	const enc = new BinaryEncoder(256);
+export function encodeWorldConfig(
+	seed: string,
+	dayDurationMs: number,
+	dayCycle: boolean,
+): Uint8Array {
+	const enc = new BinaryEncoder(512);
 	enc.writeUint8(MessageType.WorldConfig);
 	enc.writeString(seed);
+	enc.writeFloat32(dayDurationMs);
+	enc.writeUint8(dayCycle ? 1 : 0);
 	return enc.getBytes();
 }
 
-export function decodeWorldConfig(buffer: Uint8Array): string {
+export interface WorldConfigData {
+	seed: string;
+	dayDurationMs: number;
+	dayCycle: boolean;
+}
+
+export function decodeWorldConfig(buffer: Uint8Array): WorldConfigData {
 	const dec = new BinaryDecoder(buffer, 1);
-	return dec.readString();
+	return {
+		seed: dec.readString(),
+		dayDurationMs: dec.readFloat32(),
+		dayCycle: dec.readUint8() !== 0,
+	};
 }
 
 /**

@@ -39,7 +39,7 @@ const DEFAULTS: ServerConfig = {
 	difficulty: "normal",
 	maxReach: REACH_DISTANCE,
 	tickRate: 20,
-	dayDuration: 120000,
+	dayDuration: 1_200_000, // 20 minutes for a full day (matches client DAY_DURATION_MS)
 	dayCycle: true,
 	wasmEnabled: true,
 	worldStoragePath: "server-data",

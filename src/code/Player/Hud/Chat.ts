@@ -1,4 +1,6 @@
 import { closeUi, openUi, UiFocus } from "@/code/Lib/GameRuntimeState";
+import { Map1 } from "@/code/Maps/Map1";
+import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { getWorldNameFromUrl, worldSeedFor } from "@/code/World/WorldContext";
 import type { Player } from "../Player";
 import { Gamemodes } from "../PlayerStats";
@@ -152,6 +154,9 @@ export class Chat {
 				this.#addSystem(`World "${worldName}" seed: ${seed}`);
 				break;
 			}
+			case "time":
+				this.#handleTime(parts.slice(1));
+				break;
 			case "h":
 			case "help":
 				this.#addSystem("Commands:");
@@ -162,6 +167,12 @@ export class Chat {
 					"  !tp <x> <y> <z> - Teleport to coordinates (~ for current)",
 				);
 				this.#addSystem("  !tp <x> <z> - Teleport keeping current y");
+				this.#addSystem(
+					"  !time        - Show the current time of day (0-1000)",
+				);
+				this.#addSystem("  !time <0-1000> - Set the time of day");
+				this.#addSystem("  !time +<amt> - Advance the time of day");
+				this.#addSystem("  !time day    - Set to day");
 				this.#addSystem("  !seed       - Show the current world's seed");
 				this.#addSystem("  !h / !help   - Show this help");
 				break;
@@ -220,6 +231,61 @@ export class Chat {
 		}
 		const val = Number.parseFloat(input);
 		return Number.isNaN(val) ? null : val;
+	}
+
+	#handleTime(args: string[]): void {
+		const env = Map1.environment;
+
+		if (!env) {
+			this.#addSystem("World environment is not ready");
+			return;
+		}
+
+		const arg = args[0];
+
+		if (!arg) {
+			const fraction = env.getTimeOfDayMs() / SETTING_PARAMS.DAY_DURATION_MS;
+			this.#addSystem(
+				`Time: ${Math.round(fraction * 1000)} (${this.#timeLabel(fraction)})`,
+			);
+			return;
+		}
+
+		if (arg.toLowerCase() === "day") {
+			Map1.setTime(0.1);
+			this.#addSystem("Time set to day");
+			return;
+		}
+
+		const isRelative = arg.startsWith("+") || arg.startsWith("-");
+		const numeric = Number.parseFloat(arg);
+
+		if (!Number.isFinite(numeric)) {
+			this.#addSystem("Usage: !time [<0-1000> | +<amount> | day]");
+			return;
+		}
+
+		if (isRelative) {
+			const currentFrac = env.getTimeOfDayMs() / SETTING_PARAMS.DAY_DURATION_MS;
+			const frac = (currentFrac + numeric / 1000) % 1;
+			Map1.setTime(frac);
+			this.#addSystem(
+				`Time advanced to ${Math.round(frac * 1000)} (${this.#timeLabel(frac)})`,
+			);
+		} else {
+			const frac = Math.max(0, Math.min(1000, numeric)) / 1000;
+			Map1.setTime(frac);
+			this.#addSystem(
+				`Time set to ${Math.round(frac * 1000)} (${this.#timeLabel(frac)})`,
+			);
+		}
+	}
+
+	#timeLabel(fraction: number): string {
+		if (fraction < 0.25) return "morning";
+		if (fraction < 0.5) return "day";
+		if (fraction < 0.75) return "evening";
+		return "night";
 	}
 
 	#addMessage(text: string, type: ChatMessage["type"]): void {

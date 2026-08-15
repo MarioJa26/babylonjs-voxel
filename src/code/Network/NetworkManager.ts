@@ -52,6 +52,10 @@ const HELP_MESSAGES = [
 	"  !g <gamemode> - Set gamemode (survival, creative, adventure, spectator)",
 	"  !tp <x> <y> <z> - Teleport to coordinates (~ for current)",
 	"  !tp <x> <z> - Teleport keeping current y",
+	"  !time        - Show the current time of day (0-1000)",
+	"  !time <0-1000> - Set the time of day",
+	"  !time +<amt> - Advance the time of day",
+	"  !time day    - Set to day",
 	"  !seed       - Show the current world's seed",
 	"  !h / !help   - Show this help",
 ] as const;
@@ -160,13 +164,19 @@ export class NetworkManager {
 				this.hud.addChatMessage(chat.name, chat.message);
 			},
 			onWorldTime: (timeOfDay) => {
-				Map1.environment?.setTime(timeOfDay);
+				Map1.environment?.syncWithServer(timeOfDay);
 			},
-			onWorldConfig: (seed) => {
-				console.log(`[NetworkManager] Received server seed: ${seed}`);
-				this.serverSeed = seed;
-				setTerrainSeed(seed);
-				ChunkWorkerPool.getInstance()?.setWorldSeed(seed);
+			onWorldConfig: (config) => {
+				console.log(
+					`[NetworkManager] Received server seed: ${config.seed} (day ${config.dayDurationMs}ms, cycle ${config.dayCycle})`,
+				);
+				this.serverSeed = config.seed;
+				setTerrainSeed(config.seed);
+				ChunkWorkerPool.getInstance()?.setWorldSeed(config.seed);
+				Map1.environment?.setServerDaySettings(
+					config.dayDurationMs,
+					config.dayCycle,
+				);
 				resetDistantTerrain();
 			},
 			onSpawnPosition: (pos) => {
@@ -408,7 +418,18 @@ export class NetworkManager {
 		const firstChar = message.charCodeAt(0);
 
 		if (firstChar === 33 || firstChar === 47) {
-			this.handleCommand(message.slice(1).trim());
+			const raw = message.slice(1).trim();
+			const cmd = raw.split(/\s+/)[0]?.toLowerCase();
+
+			// Time commands are server-authoritative in multiplayer: forward
+			// the raw text so the server updates the world clock and
+			// broadcasts the new time to every client.
+			if (cmd === "time") {
+				this.client.sendChat(message);
+				return;
+			}
+
+			this.handleCommand(raw);
 			return;
 		}
 
@@ -452,6 +473,11 @@ export class NetworkManager {
 						`World "${worldName}" seed: ${worldSeedFor(worldName)}`,
 					);
 				}
+				break;
+			}
+
+			case "time": {
+				// Server-authoritative: forwarded to the server in sendChat().
 				break;
 			}
 

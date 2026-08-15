@@ -80,6 +80,14 @@ async function runWithConcurrency(
 	await Promise.all(Array.from({ length: cap }, () => worker()));
 }
 
+/** Friendly label for a 0..1 day fraction (matches the sun's sky position). */
+function timeOfDayLabel(fraction: number): string {
+	if (fraction < 0.25) return "morning";
+	if (fraction < 0.5) return "day";
+	if (fraction < 0.75) return "evening";
+	return "night";
+}
+
 interface ServerPlayerState {
 	sessionId: string;
 	index: number;
@@ -99,7 +107,7 @@ interface ServerPlayerState {
 }
 
 const MAX_STORED_EDITS = 200; // Keep last N edits for new joiners
-const TIME_BROADCAST_INTERVAL = 5000; // Broadcast time every 5 seconds
+const TIME_BROADCAST_INTERVAL = 5000; // Broadcast time every 1 second
 const FULL_SNAPSHOT_INTERVAL = 2000; // Periodic full player-state broadcast (ms)
 const PLAYER_SAVE_INTERVAL = 3000; // Position persistence debounce (ms)
 const MAX_CHUNK_BATCH = 128; // Cap chunks per batch request (prevents DoS)
@@ -372,9 +380,22 @@ export class VoxelRoom extends Room {
 			}
 
 			// Send authoritative world seed so the client's clip map matches
-			// server terrain
-			const configMsg = encodeWorldConfig(this.seed);
+			// server terrain, plus day/night settings so the client sun
+			// interpolates at the server's rate
+			const configMsg = encodeWorldConfig(
+				this.seed,
+				this.config.dayDuration,
+				this.config.dayCycle,
+			);
 			client.sendBytes("binary", configMsg);
+
+			// Send the current day/night time immediately so the client's sun
+			// snaps to the authoritative time instead of waiting for the first
+			// periodic WorldTime broadcast (up to TIME_BROADCAST_INTERVAL ms).
+			const timeMsg = new BinaryEncoder(5);
+			timeMsg.writeUint8(MessageType.WorldTime);
+			timeMsg.writeFloat32(this.timeOfDay);
+			client.sendBytes("binary", timeMsg.getBytes());
 
 			// Tell client where to spawn (saved position or default)
 			const spawnMsg = encodeSpawnPosition(
@@ -448,6 +469,79 @@ export class VoxelRoom extends Room {
 			encodePlayerLeave({ index: player.index }),
 			{},
 		);
+	}
+
+	/**
+	 * Handle server-authoritative chat commands ('!' or '/' prefix).
+	 * Returns true when the message was consumed as a command and must not
+	 * be relayed to other players as chat.
+	 */
+	private handleChatCommand(
+		client: Client,
+		raw: string,
+	): boolean {
+		const parts = raw.split(/\s+/);
+		const cmd = parts[0]?.toLowerCase();
+		if (cmd !== "time") return false;
+
+		const args = parts.slice(1);
+
+		const reply = (text: string): void => {
+			client.sendBytes(
+				"binary",
+				encodeChatMessage({
+					sessionId: client.sessionId,
+					name: "Server",
+					message: text,
+				}),
+			);
+		};
+
+		if (args.length === 0) {
+			reply(
+				`Time: ${Math.round(this.timeOfDay * 1000)} (${timeOfDayLabel(this.timeOfDay)})`,
+			);
+			return true;
+		}
+
+		let fraction: number | null = null;
+		const arg = args[0].toLowerCase();
+
+		if (arg === "day") {
+			fraction = 0.25;
+		} else {
+			const isRelative = arg.startsWith("+") || arg.startsWith("-");
+			const numeric = Number.parseFloat(arg);
+
+			if (Number.isFinite(numeric)) {
+				if (isRelative) {
+					fraction = (this.timeOfDay + numeric / 1000) % 1;
+					if (fraction < 0) fraction += 1;
+				} else {
+					fraction = Math.max(0, Math.min(1000, numeric)) / 1000;
+				}
+			}
+		}
+
+		if (fraction === null) {
+			reply("Usage: !time [<0-1000> | +<amount> | day]");
+			return true;
+		}
+
+		this.timeOfDay = fraction;
+
+		// Broadcast the new authoritative time immediately so every client's
+		// sun snaps to it instead of waiting for the next periodic WorldTime
+		// broadcast. Fresh encoder: the tick loop reuses its own.
+		const timeMsg = new BinaryEncoder(5);
+		timeMsg.writeUint8(MessageType.WorldTime);
+		timeMsg.writeFloat32(this.timeOfDay);
+		this.broadcastBytes("binary", timeMsg.getBytes(), {});
+
+		reply(
+			`Time set to ${Math.round(fraction * 1000)} (${timeOfDayLabel(fraction)})`,
+		);
+		return true;
 	}
 
 	async onDispose() {
@@ -1251,6 +1345,23 @@ export class VoxelRoom extends Room {
 				const chat: ChatMessageData = dec.readChatMessage();
 				const player = this.players.get(client.sessionId);
 				if (!player) return;
+
+				const trimmed = chat.message.trim();
+				const firstChar = trimmed.charCodeAt(0);
+
+				// Server-authoritative commands are prefixed with '!' or '/'
+				// and consumed here instead of being relayed as chat.
+				if (firstChar === 33 || firstChar === 47) {
+					if (
+						this.handleChatCommand(
+							client,
+							trimmed.slice(1).trim(),
+						)
+					) {
+						break;
+					}
+				}
+
 				// Relay to everyone except the sender — the sender already
 				// echoed locally.
 				const payload = encodeChatMessage({
