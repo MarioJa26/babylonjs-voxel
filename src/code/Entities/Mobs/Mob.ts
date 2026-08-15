@@ -26,17 +26,31 @@ export type MobSpawnConfig = {
 export class MobRegistry {
 	#configs = new Map<string, MobSpawnConfig>();
 	#allMobs = new Set<Mob>();
+	#countsByType = new Map<string, number>();
 
 	register(config: MobSpawnConfig): void {
 		this.#configs.set(config.mobType, config);
 	}
 
 	addMob(mob: Mob): void {
+		if (this.#allMobs.has(mob)) return;
+
 		this.#allMobs.add(mob);
+		this.#countsByType.set(
+			mob.mobType,
+			(this.#countsByType.get(mob.mobType) || 0) + 1,
+		);
 	}
 
 	removeMob(mob: Mob): void {
-		this.#allMobs.delete(mob);
+		if (!this.#allMobs.delete(mob)) return;
+
+		const currentCount = this.#countsByType.get(mob.mobType) || 0;
+		if (currentCount <= 1) {
+			this.#countsByType.delete(mob.mobType);
+		} else {
+			this.#countsByType.set(mob.mobType, currentCount - 1);
+		}
 	}
 
 	getAllMobs(): ReadonlySet<Mob> {
@@ -52,11 +66,7 @@ export class MobRegistry {
 	}
 
 	getCountByType(mobType: string): number {
-		let count = 0;
-		for (const mob of this.#allMobs) {
-			if (mob.mobType === mobType) count++;
-		}
-		return count;
+		return this.#countsByType.get(mobType) || 0;
 	}
 
 	getTotalCount(): number {
@@ -67,22 +77,19 @@ export class MobRegistry {
 		for (const mob of [...this.#allMobs]) {
 			mob.dispose();
 		}
+
 		this.#allMobs.clear();
+		this.#countsByType.clear();
 	}
 
-	private counts = new Map<string, number>();
 	pickSpawnType(): MobSpawnConfig | null {
 		if (this.#configs.size === 0) return null;
 
-		this.counts.clear();
-		for (const mob of this.#allMobs) {
-			this.counts.set(mob.mobType, (this.counts.get(mob.mobType) || 0) + 1);
-		}
-
 		let totalWeight = 0;
 		const eligible: MobSpawnConfig[] = [];
+
 		for (const config of this.#configs.values()) {
-			if ((this.counts.get(config.mobType) || 0) < config.maxCount) {
+			if ((this.#countsByType.get(config.mobType) || 0) < config.maxCount) {
 				eligible.push(config);
 				totalWeight += config.spawnWeight;
 			}
@@ -106,14 +113,20 @@ export class MobRegistry {
 	} {
 		let cap = 0;
 		const perType: { type: string; count: number; max: number }[] = [];
+
 		for (const config of this.#configs.values()) {
 			cap += config.maxCount;
 			perType.push({
 				type: config.mobType,
-				count: this.getCountByType(config.mobType),
+				count: this.#countsByType.get(config.mobType) || 0,
 				max: config.maxCount,
 			});
 		}
-		return { total: this.#allMobs.size, cap, perType };
+
+		return {
+			total: this.#allMobs.size,
+			cap,
+			perType,
+		};
 	}
 }
