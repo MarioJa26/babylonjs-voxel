@@ -276,47 +276,160 @@ export const getTransformedShapeBoxes = (
 
 	const rotation = shape.rotateY ? blockState & 3 : 0;
 	const flipY = shape.allowFlipY && (blockState & 4) !== 0;
-	const noTransform = rotation === 0 && !flipY && !shape.usesSliceState;
+	const usesSliceState = shape.usesSliceState;
+
+	const noTransform = rotation === 0 && !flipY && !usesSliceState;
 
 	const sourceBoxes = shape.boxes;
 	const out: ShapeBounds[] = new Array(sourceBoxes.length);
 	let outLen = 0;
 
-	for (let i = 0; i < sourceBoxes.length; i++) {
-		const box = sourceBoxes[i];
-
-		if (noTransform) {
+	if (noTransform) {
+		for (let i = 0; i < sourceBoxes.length; i++) {
+			const box = sourceBoxes[i];
 			out[outLen++] = {
 				min: box.min,
 				max: box.max,
 				faceMask: box.faceMask,
 			};
-			continue;
 		}
 
-		let min = box.min;
-		let max = box.max;
+		out.length = outLen;
 
-		if (shape.usesSliceState) {
-			const sliced = applySliceToBox(min, max, blockState);
-			min = sliced.min;
-			max = sliced.max;
+		if (canCache) {
+			transformedShapeCache.set(cacheKey, out);
 		}
 
-		const transformed = transformBox(min, max, rotation, flipY);
+		return out;
+	}
 
-		if (
-			transformed.max[0] <= transformed.min[0] ||
-			transformed.max[1] <= transformed.min[1] ||
-			transformed.max[2] <= transformed.min[2]
-		) {
+	const slice = usesSliceState ? (blockState >> 3) & 7 : 0;
+	const hasSlice = slice !== 0;
+	const heightScale = slice / 8;
+
+	// Preserve existing behavior: slice orientation uses the raw state bits,
+	// not the shape-gated rotation/flip flags.
+	const sliceRotation = blockState & 7;
+	const sliceAxis = hasSlice ? getSliceAxis(sliceRotation) : 1;
+	const sliceFlipped = hasSlice && (sliceRotation & 4) !== 0;
+
+	const faceMaskTransformOffset =
+		((rotation & 3) << 6) | ((flipY ? 1 : 0) << 8);
+
+	for (let i = 0; i < sourceBoxes.length; i++) {
+		const box = sourceBoxes[i];
+		const boxMin = box.min;
+		const boxMax = box.max;
+
+		let minX = boxMin[0];
+		let minY = boxMin[1];
+		let minZ = boxMin[2];
+		let maxX = boxMax[0];
+		let maxY = boxMax[1];
+		let maxZ = boxMax[2];
+
+		if (hasSlice) {
+			if (sliceAxis === 0) {
+				if (sliceFlipped) {
+					minX = 1 - (1 - minX) * heightScale;
+					maxX = 1 - (1 - maxX) * heightScale;
+				} else {
+					minX *= heightScale;
+					maxX *= heightScale;
+				}
+
+				if (minX > maxX) {
+					const tmp = minX;
+					minX = maxX;
+					maxX = tmp;
+				}
+			} else if (sliceAxis === 1) {
+				if (sliceFlipped) {
+					minY = 1 - (1 - minY) * heightScale;
+					maxY = 1 - (1 - maxY) * heightScale;
+				} else {
+					minY *= heightScale;
+					maxY *= heightScale;
+				}
+
+				if (minY > maxY) {
+					const tmp = minY;
+					minY = maxY;
+					maxY = tmp;
+				}
+			} else {
+				if (sliceFlipped) {
+					minZ = 1 - (1 - minZ) * heightScale;
+					maxZ = 1 - (1 - maxZ) * heightScale;
+				} else {
+					minZ *= heightScale;
+					maxZ *= heightScale;
+				}
+
+				if (minZ > maxZ) {
+					const tmp = minZ;
+					minZ = maxZ;
+					maxZ = tmp;
+				}
+			}
+		}
+
+		switch (rotation) {
+			case 1: {
+				const oldMinX = minX;
+				const oldMaxX = maxX;
+				const oldMinZ = minZ;
+				const oldMaxZ = maxZ;
+
+				minX = 1 - oldMaxZ;
+				maxX = 1 - oldMinZ;
+				minZ = oldMinX;
+				maxZ = oldMaxX;
+				break;
+			}
+
+			case 2: {
+				const oldMinX = minX;
+				const oldMaxX = maxX;
+				const oldMinZ = minZ;
+				const oldMaxZ = maxZ;
+
+				minX = 1 - oldMaxX;
+				maxX = 1 - oldMinX;
+				minZ = 1 - oldMaxZ;
+				maxZ = 1 - oldMinZ;
+				break;
+			}
+
+			case 3: {
+				const oldMinX = minX;
+				const oldMaxX = maxX;
+				const oldMinZ = minZ;
+				const oldMaxZ = maxZ;
+
+				minX = oldMinZ;
+				maxX = oldMaxZ;
+				minZ = 1 - oldMaxX;
+				maxZ = 1 - oldMinX;
+				break;
+			}
+		}
+
+		if (flipY) {
+			const oldMinY = minY;
+			minY = 1 - maxY;
+			maxY = 1 - oldMinY;
+		}
+
+		if (maxX <= minX || maxY <= minY || maxZ <= minZ) {
 			continue;
 		}
 
 		out[outLen++] = {
-			min: transformed.min,
-			max: transformed.max,
-			faceMask: transformFaceMask(box.faceMask, rotation, flipY),
+			min: [minX, minY, minZ],
+			max: [maxX, maxY, maxZ],
+			faceMask:
+				FACE_MASK_TRANSFORM_LUT[(box.faceMask & 63) | faceMaskTransformOffset],
 		};
 	}
 
