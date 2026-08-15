@@ -31,6 +31,7 @@ import {
 	bumpLightVersion,
 	type ChunkViewRegistry,
 	createRegistry,
+	DirtySlotSet,
 	lightBlockReconcile,
 	lightMutate,
 	lightSkyReconcile,
@@ -47,10 +48,10 @@ type LightState = {
 const state: LightState = { registry: null };
 
 // PERF: worker-local reusable dirty-slot accumulator — avoids a per-message
-// Set allocation in handleRegisterChunk / handleAddEmission / handleSkyReconcile.
-// Safe because the worker is single-threaded and postDirty consumes the Set
+// allocation in handleRegisterChunk / handleAddEmission / handleSkyReconcile.
+// Safe because the worker is single-threaded and postDirty consumes the set
 // synchronously before it is cleared again (mirrors LightCore's scratch pattern).
-const _dirtyScratch = new Set<number>();
+const _dirtyScratch = new DirtySlotSet();
 
 // Pending LightMutate requests that arrived before the target chunk was
 // registered.  Replayed in handleRegisterChunk once the chunk view exists.
@@ -115,7 +116,7 @@ function ensureState(req: InitLightSharedRequest | null): ChunkViewRegistry {
 // a per-message allocation is inherent without a return channel, so no pool.
 function postDirty(
 	seq: number,
-	dirtySlots: Set<number>,
+	dirtySlots: DirtySlotSet,
 	registry: ChunkViewRegistry,
 ): void {
 	if (dirtySlots.size === 0) return;
@@ -194,7 +195,11 @@ function registerChunkFields(fields: LightRegisterChunkFields): void {
 	const seedState = pendingDeferredSeeds.get(fields.chunkId);
 	if (seedState && seedState.length > 0) {
 		pendingDeferredSeeds.delete(fields.chunkId);
-		for (const slot of propagateDeferred(registry, fields.headerSlot, seedState)) {
+		for (const slot of propagateDeferred(
+			registry,
+			fields.headerSlot,
+			seedState,
+		)) {
 			dirty.add(slot);
 		}
 	}

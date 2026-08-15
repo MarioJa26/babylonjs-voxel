@@ -36,10 +36,56 @@ import {
 } from "./ChunkLightHeader";
 import { filtersFullSunlight, WATER_BLOCK_ID } from "./ChunkMesherConstants";
 
-// Reusable scratch Set for dirtySlots — avoids per-call allocation.
+// ---------------------------------------------------------------------------
+// DirtySlotSet — stamp-epoch bitmap backed by a touched list.  Replaces the
+// Set<number> scratch accumulators: Set.add() is relatively expensive and
+// per-call allocations show up in profiles.  clear() is O(touched), add()
+// is two array writes, iteration walks the touched list directly.
 // Safe because the light worker is single-threaded and each function
-// consumes the Set synchronously before returning.
-const _dirtySlotsScratch = new Set<number>();
+// consumes the collection synchronously before the next clear().
+// ---------------------------------------------------------------------------
+
+export class DirtySlotSet {
+	private readonly stamps = new Uint8Array(MAX_HEADER_SLOTS);
+	private readonly touched = new Int32Array(MAX_HEADER_SLOTS);
+	private epoch = 0;
+	private count = 0;
+
+	get size(): number {
+		return this.count;
+	}
+
+	clear(): void {
+		this.epoch++;
+		if (this.epoch === 255) {
+			this.stamps.fill(0);
+			this.epoch = 1;
+		}
+		this.count = 0;
+	}
+
+	add(slot: number): void {
+		if (this.stamps[slot] === this.epoch) return;
+		this.stamps[slot] = this.epoch;
+		this.touched[this.count++] = slot;
+	}
+
+	[Symbol.iterator](): Iterator<number> {
+		const n = this.count;
+		const touched = this.touched;
+		let i = 0;
+		return {
+			next(): IteratorResult<number> {
+				return i < n
+					? { value: touched[i++], done: false }
+					: { value: undefined, done: true };
+			},
+		};
+	}
+}
+
+// Reusable scratch for dirtySlots — avoids per-call allocation.
+const _dirtySlotsScratch = new DirtySlotSet();
 
 // ---------------------------------------------------------------------------
 // Layout constants
@@ -140,7 +186,8 @@ import {
 
 const GLASS_01_BLOCK_ID = 60;
 const GLASS_02_BLOCK_ID = 61;
-const _emptyNumberSet = new Set<number>();
+// Shared empty collection for early-return paths in the public entry points.
+const _emptyDirtySlots = new DirtySlotSet();
 
 const _lightEmissionLUT = (() => {
 	const lut = new Uint8Array(256);
@@ -477,7 +524,7 @@ export function unregisterChunk(
  * at the shared face.
  */
 function addAdjacentBorderSlots(
-	dirtySlots: Set<number>,
+	dirtySlots: DirtySlotSet,
 	view: ChunkView,
 	x: number,
 	y: number,
@@ -493,7 +540,7 @@ function addAdjacentBorderSlots(
 }
 
 function _tryAddNeighbour(
-	dirtySlots: Set<number>,
+	dirtySlots: DirtySlotSet,
 	view: ChunkView,
 	dx: number,
 	dy: number,
@@ -514,21 +561,10 @@ function _tryAddNeighbour(
 // are always picked up.
 // ---------------------------------------------------------------------------
 
-function getViewBlockPacked(
-	view: ChunkView,
-	x: number,
-	y: number,
-	z: number,
-): number {
-	return getViewBlockPackedAt(
-		view,
-		x + y * LIGHT_CHUNK_SIZE + z * LIGHT_CHUNK_SIZE2,
-	);
-}
-
 /**
- * PERF: index-precomputed variant — the BFS hot loops already have the
- * flattened index in hand and were recomputing it inside getViewBlockPacked.
+ * Read a packed block value at a flattened index.  The BFS hot loops always
+ * have the flattened index in hand, so the x,y,z-computing variant was
+ * removed — callers that once recomputed it now pass it directly.
  */
 function getViewBlockPackedAt(view: ChunkView, idx: number): number {
 	if (view.isUniform) return view.uniformBlockId;
@@ -598,17 +634,20 @@ function clearLightByte(view: ChunkView, idx: number, isSky: boolean): boolean {
 
 // ---------------------------------------------------------------------------
 // BFS — processLightPropagationQueue
+//
+// Split by light channel (sky / block) so the invariant `isSkyLight` flag
+// never branches inside the hot loop; the shift/mask constants are baked in.
 // ---------------------------------------------------------------------------
 
-function processQueue(
+function processSkyQueue(
 	registry: ChunkViewRegistry,
 	q: LightQueue,
-	isSkyLight: boolean,
-	dirtySlots: Set<number>,
+	dirtySlots: DirtySlotSet,
 ): void {
 	const size = LIGHT_CHUNK_SIZE;
 	const size2 = LIGHT_CHUNK_SIZE2;
 	const skyShift = LIGHT_SKY_SHIFT;
+	const blockMask = LIGHT_BLOCK_MASK;
 
 	// refreshLayout is hoisted: a view's header row is re-read once per BFS
 	// pass (per role) instead of once per queue node / per neighbor cell.
@@ -642,14 +681,11 @@ function processQueue(
 		if (lightArr.length === 0) continue;
 
 		const idx = x + y * size + z * size2;
-		const level = isSkyLight
-			? (lightArr[idx] >> skyShift) & 0xf
-			: lightArr[idx] & 0xf;
+		const level = (lightArr[idx] >> skyShift) & 0xf;
 		if (level <= 0) continue;
 
 		const sourcePacked = getViewBlockPackedAt(view, idx);
 		const sourceBlockId = unpackBlockId(sourcePacked);
-		const sourceEmits = !isSkyLight && getLightEmission(sourceBlockId) > 0;
 		const srcFiltersFullSun = filtersFullSunlight(sourceBlockId);
 
 		for (
@@ -685,11 +721,9 @@ function processQueue(
 				ty = resolved.y;
 				tz = resolved.z;
 			}
-			if (targetView !== view) {
-				if (targetView !== lastRefreshedTarget) {
-					lastRefreshedTarget = targetView;
-					refreshLayout(registry, targetView);
-				}
+			if (targetView !== view && targetView !== lastRefreshedTarget) {
+				lastRefreshedTarget = targetView;
+				refreshLayout(registry, targetView);
 			}
 			if (!targetView.isLoaded) continue;
 
@@ -699,23 +733,18 @@ function processQueue(
 			const tSlot = targetView.headerSlot;
 			const targetPacked = getViewBlockPackedAt(targetView, tidx);
 
-			if (isSkyLight && isDown !== 1 && srcFiltersFullSun) {
+			if (isDown !== 1 && srcFiltersFullSun) {
 				const peekId = unpackBlockId(targetPacked);
 				if (!filtersFullSunlight(peekId)) continue;
-			} else if (
-				isSkyLight
-					? !isTransparent(sourcePacked, axis, dir)
-					: !sourceEmits && !isTransparent(sourcePacked, axis, dir)
-			) {
+			} else if (!isTransparent(sourcePacked, axis, dir)) {
 				continue;
 			}
 
 			if (!isTransparent(targetPacked, axis, -dir)) continue;
 
 			const tLight = targetView.light_array;
-			const currentLevel = isSkyLight
-				? (tLight[tidx] >> skyShift) & 0xf
-				: tLight[tidx] & 0xf;
+			const curLight = tLight[tidx];
+			const currentLevel = (curLight >> skyShift) & 0xf;
 
 			const targetBlockId = unpackBlockId(targetPacked);
 
@@ -727,7 +756,6 @@ function processQueue(
 			// through the connected water body, blacking out everything beyond
 			// the first water cell under a ceiling/overhang.
 			const preservesFullSun =
-				isSkyLight &&
 				isDown === 1 &&
 				level === 15 &&
 				!srcFiltersFullSun &&
@@ -736,33 +764,144 @@ function processQueue(
 			const nextLevel = preservesFullSun ? 15 : level - 1;
 			if (nextLevel <= 0 || currentLevel >= nextLevel) continue;
 
-			const result = casLightByte(targetView, tidx, isSkyLight, nextLevel);
-			if (result === WriteResult.Wrote) {
-				dirtySlots.add(tSlot);
-				addAdjacentBorderSlots(dirtySlots, targetView, tx, ty, tz);
-				q.push(tSlot, tx, ty, tz, nextLevel);
+			// Preserve the block-light nibble, write the sky nibble.
+			tLight[tidx] = (curLight & blockMask) | (nextLevel << skyShift);
+			dirtySlots.add(tSlot);
+			addAdjacentBorderSlots(dirtySlots, targetView, tx, ty, tz);
+			q.push(tSlot, tx, ty, tz, nextLevel);
+		}
+	}
+}
+
+function processBlockQueue(
+	registry: ChunkViewRegistry,
+	q: LightQueue,
+	dirtySlots: DirtySlotSet,
+): void {
+	const size = LIGHT_CHUNK_SIZE;
+	const size2 = LIGHT_CHUNK_SIZE2;
+	const skyMask = LIGHT_BLOCK_MASK << LIGHT_SKY_SHIFT;
+
+	// See processSkyQueue — refreshLayout is hoisted per pass per role.
+	let lastRefreshedView: ChunkView | null = null;
+	let lastRefreshedTarget: ChunkView | null = null;
+
+	while (q.head !== q.tail) {
+		const slot = q.head & (BFS_CAPACITY - 1);
+		q.head = (q.head + 1) & (BFS_CAPACITY - 1);
+		const headerSlot = q.slots[slot];
+		const coord = q.coords[slot];
+		const x = coord & 0x1f;
+		const y = (coord >> 5) & 0x1f;
+		const z = (coord >> 10) & 0x1f;
+
+		const view =
+			headerSlot >= 0 && headerSlot < MAX_HEADER_SLOTS
+				? registry.bySlot[headerSlot]
+				: undefined;
+		if (!view) continue;
+		if (view !== lastRefreshedView) {
+			lastRefreshedView = view;
+			refreshLayout(registry, view);
+		}
+		if (!view.isLoaded) continue;
+
+		const lightArr = view.light_array;
+		if (lightArr.length === 0) continue;
+
+		const idx = x + y * size + z * size2;
+		const level = lightArr[idx] & LIGHT_BLOCK_MASK;
+		if (level <= 0) continue;
+
+		const sourcePacked = getViewBlockPackedAt(view, idx);
+		const sourceBlockId = unpackBlockId(sourcePacked);
+		const sourceEmits =
+			sourceBlockId < 256 && _lightEmissionLUT[sourceBlockId] > 0;
+
+		for (
+			let i = 0, base = 0;
+			i < LIGHT_DIR_COUNT;
+			i++, base += LIGHT_DIR_STRIDE
+		) {
+			const dx = LIGHT_DIRS_FLAT[base];
+			const dy = LIGHT_DIRS_FLAT[base + 1];
+			const dz = LIGHT_DIRS_FLAT[base + 2];
+			const axis = LIGHT_DIRS_FLAT[base + 3];
+			const dir = LIGHT_DIRS_FLAT[base + 4];
+
+			let tx = x + dx;
+			let ty = y + dy;
+			let tz = z + dz;
+			let targetView: ChunkView = view;
+
+			// Resolve cross-chunk boundaries via cached neighbor views.
+			if (
+				tx < 0 ||
+				tx >= size ||
+				ty < 0 ||
+				ty >= size ||
+				tz < 0 ||
+				tz >= size
+			) {
+				const resolved = resolveNeighborView(view, tx, ty, tz, size);
+				if (!resolved) continue;
+				targetView = resolved.view;
+				tx = resolved.x;
+				ty = resolved.y;
+				tz = resolved.z;
 			}
+			if (targetView !== view && targetView !== lastRefreshedTarget) {
+				lastRefreshedTarget = targetView;
+				refreshLayout(registry, targetView);
+			}
+			if (!targetView.isLoaded) continue;
+
+			const tidx = tx + ty * size + tz * size2;
+			const tSlot = targetView.headerSlot;
+			const targetPacked = getViewBlockPackedAt(targetView, tidx);
+
+			if (!sourceEmits && !isTransparent(sourcePacked, axis, dir)) {
+				continue;
+			}
+
+			if (!isTransparent(targetPacked, axis, -dir)) continue;
+
+			const tLight = targetView.light_array;
+			const curLight = tLight[tidx];
+			const currentLevel = curLight & LIGHT_BLOCK_MASK;
+
+			const nextLevel = level - 1;
+			if (nextLevel <= 0 || currentLevel >= nextLevel) continue;
+
+			// Preserve the sky-light nibble, write the block-light nibble.
+			tLight[tidx] = (curLight & skyMask) | nextLevel;
+			dirtySlots.add(tSlot);
+			addAdjacentBorderSlots(dirtySlots, targetView, tx, ty, tz);
+			q.push(tSlot, tx, ty, tz, nextLevel);
 		}
 	}
 }
 
 // ---------------------------------------------------------------------------
 // BFS — removeLight
+//
+// Split by light channel (sky / block) so the invariant `isSkyLight` flag
+// never branches inside the hot loop.
 // ---------------------------------------------------------------------------
 
-function processRemoveQueue(
+function processRemoveSkyQueue(
 	registry: ChunkViewRegistry,
 	q: LightQueue,
-	isSkyLight: boolean,
-	dirtySlots: Set<number>,
+	dirtySlots: DirtySlotSet,
 	initialOldPacked?: number,
 ): void {
 	const size = LIGHT_CHUNK_SIZE;
 	const size2 = LIGHT_CHUNK_SIZE2;
+	const blockMask = LIGHT_BLOCK_MASK;
 
 	let isFirstDequeue = true;
 
-	// See processQueue — refreshLayout is hoisted per pass per role.
+	// See processSkyQueue — refreshLayout is hoisted per pass per role.
 	let lastRefreshedView: ChunkView | null = null;
 	let lastRefreshedTarget: ChunkView | null = null;
 
@@ -790,10 +929,9 @@ function processRemoveQueue(
 		const sourcePacked =
 			isFirstDequeue && initialOldPacked !== undefined
 				? initialOldPacked
-				: getViewBlockPacked(view, cx, cy, cz);
+				: getViewBlockPackedAt(view, cx + cy * size + cz * size2);
 		isFirstDequeue = false;
 		const sourceBlockId = unpackBlockId(sourcePacked);
-		const sourceEmits = !isSkyLight && getLightEmission(sourceBlockId) > 0;
 		const srcFiltersFullSun = filtersFullSunlight(sourceBlockId);
 
 		for (
@@ -828,20 +966,13 @@ function processRemoveQueue(
 				ty = resolved.y;
 				tz = resolved.z;
 			}
-			if (targetView !== view) {
-				if (targetView !== lastRefreshedTarget) {
-					lastRefreshedTarget = targetView;
-					refreshLayout(registry, targetView);
-				}
+			if (targetView !== view && targetView !== lastRefreshedTarget) {
+				lastRefreshedTarget = targetView;
+				refreshLayout(registry, targetView);
 			}
 			if (!targetView.isLoaded) continue;
 
-			if (
-				isSkyLight
-					? !isTransparent(sourcePacked, axis, dir)
-					: !sourceEmits && !isTransparent(sourcePacked, axis, dir)
-			)
-				continue;
+			if (!isTransparent(sourcePacked, axis, dir)) continue;
 
 			// Water lateral-emission rule: a water cell's skylight depends only
 			// on the cell above, so its removal never cascades into lateral or
@@ -851,17 +982,16 @@ function processRemoveQueue(
 			// can never re-light the water from the sky above and the surface
 			// stays permanently black (previous flow/relight sweeps blacked out
 			// every pond under open sky).
-			const isWaterLateralBlock =
-				isSkyLight && isDown !== 1 && srcFiltersFullSun;
+			const isWaterLateralBlock = isDown !== 1 && srcFiltersFullSun;
 
-			const targetPacked = getViewBlockPacked(targetView, tx, ty, tz);
+			// PERF: flattened index computed once — shared by the block read,
+			// the light read, and the clear below.
+			const tIdx = tx + ty * size + tz * size2;
+			const targetPacked = getViewBlockPackedAt(targetView, tIdx);
 			if (!isTransparent(targetPacked, axis, -dir)) continue;
 
-			const tIdx = tx + ty * size + tz * size2;
 			const tArr = targetView.light_array;
-			const neighborLevel = isSkyLight
-				? (tArr[tIdx] >> LIGHT_SKY_SHIFT) & 0xf
-				: tArr[tIdx] & 0xf;
+			const neighborLevel = (tArr[tIdx] >> LIGHT_SKY_SHIFT) & 0xf;
 
 			if (neighborLevel === 0) continue;
 
@@ -872,7 +1002,6 @@ function processRemoveQueue(
 
 			const targetBlockId = unpackBlockId(targetPacked);
 			const preservesFullSun =
-				isSkyLight &&
 				isDown === 1 &&
 				level === 15 &&
 				!srcFiltersFullSun &&
@@ -881,7 +1010,128 @@ function processRemoveQueue(
 				neighborLevel < level || (preservesFullSun && neighborLevel === 15);
 
 			if (isDependent) {
-				if (clearLightByte(targetView, tIdx, isSkyLight)) {
+				// Preserve the block-light nibble, clear the sky nibble.
+				const cur = tArr[tIdx];
+				const newByte = cur & blockMask;
+				if (newByte !== cur) {
+					tArr[tIdx] = newByte;
+					dirtySlots.add(targetView.headerSlot);
+					addAdjacentBorderSlots(dirtySlots, targetView, tx, ty, tz);
+				}
+				q.push(targetView.headerSlot, tx, ty, tz, neighborLevel);
+			} else {
+				Q_B.push(targetView.headerSlot, tx, ty, tz, neighborLevel);
+			}
+		}
+	}
+}
+
+function processRemoveBlockQueue(
+	registry: ChunkViewRegistry,
+	q: LightQueue,
+	dirtySlots: DirtySlotSet,
+	initialOldPacked?: number,
+): void {
+	const size = LIGHT_CHUNK_SIZE;
+	const size2 = LIGHT_CHUNK_SIZE2;
+	const skyMask = LIGHT_BLOCK_MASK << LIGHT_SKY_SHIFT;
+
+	let isFirstDequeue = true;
+
+	// See processBlockQueue — refreshLayout is hoisted per pass per role.
+	let lastRefreshedView: ChunkView | null = null;
+	let lastRefreshedTarget: ChunkView | null = null;
+
+	while (q.head !== q.tail) {
+		const slot = q.head & (BFS_CAPACITY - 1);
+		q.head = (q.head + 1) & (BFS_CAPACITY - 1);
+		const headerSlot = q.slots[slot];
+		const coord = q.coords[slot];
+		const cx = coord & 0x1f;
+		const cy = (coord >> 5) & 0x1f;
+		const cz = (coord >> 10) & 0x1f;
+		const view =
+			headerSlot >= 0 && headerSlot < MAX_HEADER_SLOTS
+				? registry.bySlot[headerSlot]
+				: undefined;
+		if (!view) continue;
+		if (view !== lastRefreshedView) {
+			lastRefreshedView = view;
+			refreshLayout(registry, view);
+		}
+		if (!view.isLoaded) continue;
+
+		const level = q.levels[slot];
+
+		const sourcePacked =
+			isFirstDequeue && initialOldPacked !== undefined
+				? initialOldPacked
+				: getViewBlockPackedAt(view, cx + cy * size + cz * size2);
+		isFirstDequeue = false;
+		const sourceBlockId = unpackBlockId(sourcePacked);
+		const sourceEmits =
+			sourceBlockId < 256 && _lightEmissionLUT[sourceBlockId] > 0;
+
+		for (
+			let i = 0, base = 0;
+			i < LIGHT_DIR_COUNT;
+			i++, base += LIGHT_DIR_STRIDE
+		) {
+			const dx = LIGHT_DIRS_FLAT[base];
+			const dy = LIGHT_DIRS_FLAT[base + 1];
+			const dz = LIGHT_DIRS_FLAT[base + 2];
+			const axis = LIGHT_DIRS_FLAT[base + 3];
+			const dir = LIGHT_DIRS_FLAT[base + 4];
+
+			let tx = cx + dx;
+			let ty = cy + dy;
+			let tz = cz + dz;
+			let targetView: ChunkView | undefined = view;
+
+			if (
+				tx < 0 ||
+				tx >= size ||
+				ty < 0 ||
+				ty >= size ||
+				tz < 0 ||
+				tz >= size
+			) {
+				const resolved = resolveNeighborView(view, tx, ty, tz, size);
+				if (!resolved) continue;
+				targetView = resolved.view;
+				tx = resolved.x;
+				ty = resolved.y;
+				tz = resolved.z;
+			}
+			if (targetView !== view && targetView !== lastRefreshedTarget) {
+				lastRefreshedTarget = targetView;
+				refreshLayout(registry, targetView);
+			}
+			if (!targetView.isLoaded) continue;
+
+			if (!sourceEmits && !isTransparent(sourcePacked, axis, dir)) {
+				continue;
+			}
+
+			// PERF: flattened index computed once — shared by the block read,
+			// the light read, and the clear below.
+			const tIdx = tx + ty * size + tz * size2;
+			const targetPacked = getViewBlockPackedAt(targetView, tIdx);
+			if (!isTransparent(targetPacked, axis, -dir)) continue;
+
+			const tArr = targetView.light_array;
+			const neighborLevel = tArr[tIdx] & LIGHT_BLOCK_MASK;
+
+			if (neighborLevel === 0) continue;
+
+			const isDependent = neighborLevel < level;
+
+			if (isDependent) {
+				// Preserve the sky-light nibble, clear the block-light nibble.
+				const cur = tArr[tIdx];
+				const newByte = cur & skyMask;
+				if (newByte !== cur) {
+					tArr[tIdx] = newByte;
 					dirtySlots.add(targetView.headerSlot);
 					addAdjacentBorderSlots(dirtySlots, targetView, tx, ty, tz);
 				}
@@ -918,14 +1168,14 @@ export function lightMutate(
 	z: number,
 	oldPacked: number,
 	_newPacked: number,
-): Set<number> {
+): DirtySlotSet {
 	const view =
 		headerSlot >= 0 && headerSlot < MAX_HEADER_SLOTS
 			? registry.bySlot[headerSlot]
 			: undefined;
-	if (!view) return _emptyNumberSet;
+	if (!view) return _emptyDirtySlots;
 	refreshLayout(registry, view);
-	if (!view.isLoaded) return _emptyNumberSet;
+	if (!view.isLoaded) return _emptyDirtySlots;
 
 	const idx = x + y * LIGHT_CHUNK_SIZE + z * LIGHT_CHUNK_SIZE2;
 	_dirtySlotsScratch.clear();
@@ -988,7 +1238,7 @@ function removeLightAt(
 	z: number,
 	startLevel: number,
 	isSkyLight: boolean,
-	dirtySlots: Set<number>,
+	dirtySlots: DirtySlotSet,
 	oldPacked?: number,
 ): void {
 	const idx = x + y * LIGHT_CHUNK_SIZE + z * LIGHT_CHUNK_SIZE2;
@@ -1003,10 +1253,18 @@ function removeLightAt(
 	Q_B.clear();
 	Q_A.push(view.headerSlot, x, y, z, startLevel);
 
-	processRemoveQueue(registry, Q_A, isSkyLight, dirtySlots, oldPacked);
+	if (isSkyLight) {
+		processRemoveSkyQueue(registry, Q_A, dirtySlots, oldPacked);
+	} else {
+		processRemoveBlockQueue(registry, Q_A, dirtySlots, oldPacked);
+	}
 
 	if (Q_B.head !== Q_B.tail) {
-		processQueue(registry, Q_B, isSkyLight, dirtySlots);
+		if (isSkyLight) {
+			processSkyQueue(registry, Q_B, dirtySlots);
+		} else {
+			processBlockQueue(registry, Q_B, dirtySlots);
+		}
 	}
 }
 
@@ -1017,7 +1275,7 @@ function updateLightFromNeighborsAt(
 	y: number,
 	z: number,
 	isSkyLight: boolean,
-	dirtySlots: Set<number>,
+	dirtySlots: DirtySlotSet,
 ): void {
 	if (!view.isLoaded) return;
 	refreshLayout(registry, view);
@@ -1025,12 +1283,16 @@ function updateLightFromNeighborsAt(
 	const size = LIGHT_CHUNK_SIZE;
 	const size2 = LIGHT_CHUNK_SIZE2;
 	const selfIdx = x + y * size + z * size2;
-	const targetBlockPacked = getViewBlockPacked(view, x, y, z);
+	const targetBlockPacked = getViewBlockPackedAt(view, selfIdx);
 	let currentTargetLevel = isSkyLight
 		? getSkyLight(view, selfIdx)
 		: getBlockLight(view, selfIdx);
 	const targetBlockId2 = unpackBlockId(targetBlockPacked);
 	const targetFiltersFullSun = filtersFullSunlight(targetBlockId2);
+
+	// refreshLayout is hoisted: `view` is refreshed once at entry and each
+	// distinct sourceView at most once.
+	let lastRefreshed: ChunkView = view;
 
 	Q_A.clear();
 
@@ -1059,7 +1321,8 @@ function updateLightFromNeighborsAt(
 			sy = resolved.y;
 			sz = resolved.z;
 		}
-		if (sourceView !== view) {
+		if (sourceView !== lastRefreshed) {
+			lastRefreshed = sourceView;
 			refreshLayout(registry, sourceView);
 			if (!sourceView.isLoaded) continue;
 		}
@@ -1069,7 +1332,10 @@ function updateLightFromNeighborsAt(
 		const sidx = sx + sy * size + sz * size2;
 		const sourceBlockPacked = getViewBlockPackedAt(sourceView, sidx);
 		const sourceBlockId = unpackBlockId(sourceBlockPacked);
-		const sourceEmits = !isSkyLight && getLightEmission(sourceBlockId) > 0;
+		const sourceEmits =
+			!isSkyLight &&
+			sourceBlockId < 256 &&
+			_lightEmissionLUT[sourceBlockId] > 0;
 		const sourceFiltersFullSun = filtersFullSunlight(sourceBlockId);
 
 		const lateralWaterToWater =
@@ -1110,7 +1376,11 @@ function updateLightFromNeighborsAt(
 	}
 
 	if (Q_A.head !== Q_A.tail) {
-		processQueue(registry, Q_A, isSkyLight, dirtySlots);
+		if (isSkyLight) {
+			processSkyQueue(registry, Q_A, dirtySlots);
+		} else {
+			processBlockQueue(registry, Q_A, dirtySlots);
+		}
 	}
 }
 
@@ -1121,7 +1391,7 @@ export function addLightAt(
 	y: number,
 	z: number,
 	level: number,
-	dirtySlots: Set<number>,
+	dirtySlots: DirtySlotSet,
 ): void {
 	if (!view.isLoaded) return;
 	refreshLayout(registry, view);
@@ -1136,7 +1406,7 @@ export function addLightAt(
 	}
 	Q_A.clear();
 	Q_A.push(view.headerSlot, x, y, z, level);
-	processQueue(registry, Q_A, false, dirtySlots);
+	processBlockQueue(registry, Q_A, dirtySlots);
 }
 
 function cutSkyLightBelowAt(
@@ -1145,7 +1415,7 @@ function cutSkyLightBelowAt(
 	x: number,
 	y: number,
 	z: number,
-	dirtySlots: Set<number>,
+	dirtySlots: DirtySlotSet,
 ): void {
 	if (!view.isLoaded) return;
 	refreshLayout(registry, view);
@@ -1163,12 +1433,16 @@ function cutSkyLightBelowAt(
 		targetView = next;
 		ty = size - 1;
 	}
-	refreshLayout(registry, targetView);
+	// refreshLayout is hoisted: `view` was already refreshed at entry, so a
+	// non-crossing targetView (=== view) is not refreshed again.
+	if (targetView !== view) {
+		refreshLayout(registry, targetView);
+	}
 	if (!targetView.isLoaded) return;
 
 	while (true) {
 		const tidx = tx + ty * size + tz * size2;
-		const belowBlockPacked = getViewBlockPacked(targetView, tx, ty, tz);
+		const belowBlockPacked = getViewBlockPackedAt(targetView, tidx);
 		if (!isTransparent(belowBlockPacked, 1, 1)) break;
 
 		const belowSky = getSkyLight(targetView, tidx);
@@ -1226,7 +1500,7 @@ function cutSkyLightBelowAt(
 export function lightSkyReconcile(
 	registry: ChunkViewRegistry,
 	headerSlot: number,
-): Set<number> {
+): DirtySlotSet {
 	_dirtySlotsScratch.clear();
 	const dirtySlots = _dirtySlotsScratch;
 	const view =
@@ -1267,7 +1541,7 @@ export function lightSkyReconcile(
 				const idx = x + y * size + z * size2;
 				const sky = (view.light_array[idx] >> LIGHT_SKY_SHIFT) & 0xf;
 				if (sky <= 1) continue;
-				if (!isTransparent(getViewBlockPacked(view, x, y, z), 1, 1)) {
+				if (!isTransparent(getViewBlockPackedAt(view, idx), 1, 1)) {
 					continue;
 				}
 				let seed = false;
@@ -1291,7 +1565,7 @@ export function lightSkyReconcile(
 					const neighborSky = (view.light_array[nIdx] >> LIGHT_SKY_SHIFT) & 0xf;
 					if (
 						neighborSky < sky - 1 &&
-						isTransparent(getViewBlockPacked(view, tx, ty, tz), 1, 1)
+						isTransparent(getViewBlockPackedAt(view, nIdx), 1, 1)
 					) {
 						seed = true;
 						break;
@@ -1309,11 +1583,13 @@ export function lightSkyReconcile(
 		}
 	}
 
+	// refreshLayout is hoisted: `view` was already refreshed at entry and
+	// nothing in the interior pass can change it, so the face loop only
+	// refreshes each neighbor once.
 	for (let f = 0; f < 6; f++) {
 		const neighbor = view.neighborViews[f ^ 1];
 		if (!neighbor) continue;
 		refreshLayout(registry, neighbor);
-		refreshLayout(registry, view);
 		if (!neighbor.isLoaded) continue;
 
 		const selfEdge = selfEdges[f];
@@ -1410,8 +1686,8 @@ export function lightSkyReconcile(
 		coords: Int32Array,
 		levels: Uint8Array,
 		count: number,
-		dirty: Set<number>,
-	): Set<number> {
+		dirty: DirtySlotSet,
+	): DirtySlotSet {
 		Q_A.clear();
 		for (let i = 0; i < count; i++) {
 			const base = i * 3;
@@ -1424,7 +1700,7 @@ export function lightSkyReconcile(
 			);
 		}
 		if (Q_A.head !== Q_A.tail) {
-			processQueue(registry, Q_A, true, dirty);
+			processSkyQueue(registry, Q_A, dirty);
 		}
 		return dirty;
 	}
@@ -1438,7 +1714,7 @@ export function lightSkyReconcile(
 export function lightBlockReconcile(
 	registry: ChunkViewRegistry,
 	headerSlot: number,
-): Set<number> {
+): DirtySlotSet {
 	_dirtySlotsScratch.clear();
 	const dirtySlots = _dirtySlotsScratch;
 	const view =
@@ -1480,7 +1756,8 @@ export function lightBlockReconcile(
 						const sourcePacked = getViewBlockPackedAt(view, sidx);
 						const targetPacked = getViewBlockPackedAt(neighbor, nidx);
 						const sourceBlockId = unpackBlockId(sourcePacked);
-						const sourceEmits = getLightEmission(sourceBlockId) > 0;
+						const sourceEmits =
+							sourceBlockId < 256 && _lightEmissionLUT[sourceBlockId] > 0;
 						if (
 							(sourceEmits || isTransparent(sourcePacked, fAxis, fDir)) &&
 							isTransparent(targetPacked, fAxis, -fDir)
@@ -1493,7 +1770,8 @@ export function lightBlockReconcile(
 						const sourcePacked = getViewBlockPackedAt(neighbor, nidx);
 						const targetPacked = getViewBlockPackedAt(view, sidx);
 						const sourceBlockId = unpackBlockId(sourcePacked);
-						const sourceEmits = getLightEmission(sourceBlockId) > 0;
+						const sourceEmits =
+							sourceBlockId < 256 && _lightEmissionLUT[sourceBlockId] > 0;
 						if (
 							(sourceEmits || isTransparent(sourcePacked, fAxis, -fDir)) &&
 							isTransparent(targetPacked, fAxis, fDir)
@@ -1517,7 +1795,8 @@ export function lightBlockReconcile(
 						const sourcePacked = getViewBlockPackedAt(view, sidx);
 						const targetPacked = getViewBlockPackedAt(neighbor, nidx);
 						const sourceBlockId = unpackBlockId(sourcePacked);
-						const sourceEmits = getLightEmission(sourceBlockId) > 0;
+						const sourceEmits =
+							sourceBlockId < 256 && _lightEmissionLUT[sourceBlockId] > 0;
 						if (
 							(sourceEmits || isTransparent(sourcePacked, fAxis, fDir)) &&
 							isTransparent(targetPacked, fAxis, -fDir)
@@ -1530,7 +1809,8 @@ export function lightBlockReconcile(
 						const sourcePacked = getViewBlockPackedAt(neighbor, nidx);
 						const targetPacked = getViewBlockPackedAt(view, sidx);
 						const sourceBlockId = unpackBlockId(sourcePacked);
-						const sourceEmits = getLightEmission(sourceBlockId) > 0;
+						const sourceEmits =
+							sourceBlockId < 256 && _lightEmissionLUT[sourceBlockId] > 0;
 						if (
 							(sourceEmits || isTransparent(sourcePacked, fAxis, -fDir)) &&
 							isTransparent(targetPacked, fAxis, fDir)
@@ -1554,7 +1834,8 @@ export function lightBlockReconcile(
 						const sourcePacked = getViewBlockPackedAt(view, sidx);
 						const targetPacked = getViewBlockPackedAt(neighbor, nidx);
 						const sourceBlockId = unpackBlockId(sourcePacked);
-						const sourceEmits = getLightEmission(sourceBlockId) > 0;
+						const sourceEmits =
+							sourceBlockId < 256 && _lightEmissionLUT[sourceBlockId] > 0;
 						if (
 							(sourceEmits || isTransparent(sourcePacked, fAxis, fDir)) &&
 							isTransparent(targetPacked, fAxis, -fDir)
@@ -1567,7 +1848,8 @@ export function lightBlockReconcile(
 						const sourcePacked = getViewBlockPackedAt(neighbor, nidx);
 						const targetPacked = getViewBlockPackedAt(view, sidx);
 						const sourceBlockId = unpackBlockId(sourcePacked);
-						const sourceEmits = getLightEmission(sourceBlockId) > 0;
+						const sourceEmits =
+							sourceBlockId < 256 && _lightEmissionLUT[sourceBlockId] > 0;
 						if (
 							(sourceEmits || isTransparent(sourcePacked, fAxis, -fDir)) &&
 							isTransparent(targetPacked, fAxis, fDir)
@@ -1581,7 +1863,7 @@ export function lightBlockReconcile(
 	}
 
 	if (Q_A.head !== Q_A.tail) {
-		processQueue(registry, Q_A, false, dirtySlots);
+		processBlockQueue(registry, Q_A, dirtySlots);
 	}
 
 	return dirtySlots;
@@ -1595,7 +1877,7 @@ export function propagateDeferred(
 	registry: ChunkViewRegistry,
 	headerSlot: number,
 	seedState: { queue: Uint16Array; length: number },
-): Set<number> {
+): DirtySlotSet {
 	_dirtySlotsScratch.clear();
 	const dirtySlots = _dirtySlotsScratch;
 	const view =
@@ -1617,16 +1899,16 @@ export function propagateDeferred(
 		const x = (val >> 10) & 0x1f;
 		const y = (val >> 5) & 0x1f;
 		const z = val & 0x1f;
-		const level =
-			(view.light_array[x + y * size + z * size2] >> skyShift) & 0xf;
+		const idx = x + y * size + z * size2;
+		const level = (view.light_array[idx] >> skyShift) & 0xf;
 		if (
 			level > 0 &&
-			!filtersFullSunlight(unpackBlockId(getViewBlockPacked(view, x, y, z)))
+			!filtersFullSunlight(unpackBlockId(getViewBlockPackedAt(view, idx)))
 		)
 			Q_A.push(view.headerSlot, x, y, z, level);
 	}
 	if (Q_A.head !== Q_A.tail) {
-		processQueue(registry, Q_A, true, dirtySlots);
+		processSkyQueue(registry, Q_A, dirtySlots);
 	}
 	return dirtySlots;
 }
