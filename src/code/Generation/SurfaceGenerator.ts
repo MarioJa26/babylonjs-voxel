@@ -94,6 +94,8 @@ type FloraColumnCacheEntry = {
 	treeNoiseValue: number;
 };
 
+type XZCacheKey = number | string;
+
 // Reusable scratch buffers for findlinge generation (max counts: 23/23/25).
 const _findlingeWx = new Float32Array(23);
 const _findlingeWz = new Float32Array(23);
@@ -199,7 +201,7 @@ export class SurfaceGenerator {
 	/**
 	 * Direct-mapped cache of expensive horizontal column prepass data.
 	 *
-	 * Keyed by (chunkX, chunkZ) packed into a number.
+	 * Keyed by (chunkX, chunkZ) packed into a collision-safe number.
 	 */
 	// PERF: column prepasses are a pure function of (chunkX, chunkZ) and cost
 	// ~2.8ms to build (findTopSurfaceY). Storing them in a persistent Map
@@ -207,14 +209,17 @@ export class SurfaceGenerator {
 	// generation, where row-major order + flora's wide scan window previously
 	// evicted and rebuilt the same prepasses many times.
 	private static readonly columnCache = new Map<
-		number,
+		XZCacheKey,
 		ColumnPrepassCacheEntry
 	>();
 
 	// PERF: flora-column data is a pure function of (worldX, worldZ). A
 	// persistent Map (built once per column) avoids the direct-mapped cache's
 	// hash-collision evictions that thrashed during bulk area generation.
-	private static readonly floraCache = new Map<number, FloraColumnCacheEntry>();
+	private static readonly floraCache = new Map<
+		XZCacheKey,
+		FloraColumnCacheEntry
+	>();
 
 	// PERF: Cap cache sizes to prevent unbounded memory growth during long
 	// play sessions. Each columnCache entry holds ~15KB of typed arrays;
@@ -224,19 +229,28 @@ export class SurfaceGenerator {
 	private static readonly COLUMN_CACHE_MAX = 4096;
 	private static readonly FLORA_CACHE_MAX = 8192;
 
-	private static evictCacheIfFull(
-		cache: Map<number, unknown>,
+	// Collision-safe XZ cache key packing. Fast path packs two signed 26-bit
+	// integers into one exact JS number (max value 2^52-1 < MAX_SAFE_INTEGER);
+	// coordinates beyond that range fall back to a unique string key.
+	private static readonly KEY_AXIS_BITS = 26;
+	private static readonly KEY_AXIS_SIZE = 1 << SurfaceGenerator.KEY_AXIS_BITS;
+	private static readonly KEY_AXIS_BIAS = SurfaceGenerator.KEY_AXIS_SIZE >>> 1;
+	private static readonly KEY_AXIS_MIN = -SurfaceGenerator.KEY_AXIS_BIAS;
+	private static readonly KEY_AXIS_MAX = SurfaceGenerator.KEY_AXIS_BIAS - 1;
+
+	private static evictCacheIfFull<K>(
+		cache: Map<K, unknown>,
 		maxSize: number,
 	): void {
-		if (cache.size < maxSize) return;
+		if (cache.size <= maxSize) return;
 		// FIFO eviction: delete oldest 25% of entries. Map iteration order
 		// is insertion order, so this evicts the oldest entries first.
-		const targetEvict = maxSize >> 2;
+		const targetEvict = Math.max(1, maxSize >> 2);
 		let evicted = 0;
 		for (const key of cache.keys()) {
 			cache.delete(key);
 			evicted++;
-			if (evicted >= targetEvict) break;
+			if (evicted >= targetEvict || cache.size <= maxSize) break;
 		}
 	}
 
@@ -353,15 +367,27 @@ export class SurfaceGenerator {
 		);
 	}
 
-	private packXZKey(x: number, z: number): number {
-		let h = (Math.imul(x, 374761393) + Math.imul(z, 668265263)) | 0;
-		h = Math.imul(h ^ (h >>> 13), 1274126177);
-		return (h ^ (h >>> 16)) >>> 0;
+	private packXZKey(x: number, z: number): XZCacheKey {
+		// Fast path: bijective packing of two signed 26-bit ints into one
+		// exact number (max 2^52-1 < Number.MAX_SAFE_INTEGER).
+		if (
+			x >= SurfaceGenerator.KEY_AXIS_MIN &&
+			x <= SurfaceGenerator.KEY_AXIS_MAX &&
+			z >= SurfaceGenerator.KEY_AXIS_MIN &&
+			z <= SurfaceGenerator.KEY_AXIS_MAX
+		) {
+			return (
+				(x + SurfaceGenerator.KEY_AXIS_BIAS) * SurfaceGenerator.KEY_AXIS_SIZE +
+				(z + SurfaceGenerator.KEY_AXIS_BIAS)
+			);
+		}
+
+		// Slow path: unique string key for extremely large coordinates.
+		return `${x},${z}`;
 	}
 
-	private getColumnPrepassKey(chunkX: number, chunkZ: number): number {
-		// Chunk coords are small; direct shift-pack is bijective within ±32768.
-		return (((chunkX & 0xffff) << 16) | (chunkZ & 0xffff)) >>> 0;
+	private getColumnPrepassKey(chunkX: number, chunkZ: number): XZCacheKey {
+		return this.packXZKey(chunkX, chunkZ);
 	}
 
 	/**
@@ -596,7 +622,7 @@ export class SurfaceGenerator {
 		return built;
 	}
 
-	private getFloraColumnKey(worldX: number, worldZ: number): number {
+	private getFloraColumnKey(worldX: number, worldZ: number): XZCacheKey {
 		return this.packXZKey(worldX, worldZ);
 	}
 

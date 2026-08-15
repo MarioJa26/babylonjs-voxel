@@ -220,8 +220,10 @@ const peaksAndValleysSpline = new Spline([
 
 const SETTINGS_STRIDE = 6;
 const CORNER_CACHE_MASK = MAX_BIOME_CORNERS - 1;
-const cornerKey = new Uint32Array(MAX_BIOME_CORNERS);
+const cornerKeyX = new Int32Array(MAX_BIOME_CORNERS);
+const cornerKeyZ = new Int32Array(MAX_BIOME_CORNERS);
 const cornerValid = new Uint8Array(MAX_BIOME_CORNERS);
+
 const cornerBase = new Float32Array(MAX_BIOME_CORNERS);
 const cornerAmp = new Float32Array(MAX_BIOME_CORNERS);
 const cornerScale = new Float32Array(MAX_BIOME_CORNERS);
@@ -286,6 +288,81 @@ function fillChunkCache(cx: number, cz: number, idx: number): void {
 	_ccBiome[idx] = biome;
 }
 
+function getCornerSlot(gx: number, gz: number): number {
+	return (
+		((Math.imul(gx, 2246822519) ^ Math.imul(gz, 3266489917)) >>> 0) &
+		CORNER_CACHE_MASK
+	);
+}
+function readCornerSlot(slot: number, out: Float32Array): void {
+	out[0] = cornerBase[slot];
+	out[1] = cornerAmp[slot];
+	out[2] = cornerScale[slot];
+	out[3] = cornerExp[slot];
+	out[4] = cornerPvScale[slot];
+	out[5] = cornerErosionScale[slot];
+}
+function writeCornerSlot(
+	slot: number,
+	gx: number,
+	gz: number,
+	base: number,
+	amp: number,
+	scale: number,
+	exp: number,
+	pvScale: number,
+	erosionScale: number,
+): void {
+	cornerKeyX[slot] = gx;
+	cornerKeyZ[slot] = gz;
+
+	cornerBase[slot] = base;
+	cornerAmp[slot] = amp;
+	cornerScale[slot] = scale;
+	cornerExp[slot] = exp;
+	cornerPvScale[slot] = pvScale;
+	cornerErosionScale[slot] = erosionScale;
+
+	// Mark valid last so partially-written slots are never observed as valid.
+	cornerValid[slot] = 1;
+}
+function writeCornerFromSignals(
+	gx: number,
+	gz: number,
+	rawContinent: number,
+	rawTemperature: number,
+	rawHumidity: number,
+	rawRiver: number,
+): void {
+	const continent = applyRidged(rawContinent);
+	const temperature = (rawTemperature + 1) * 0.5;
+	const humidity = (rawHumidity + 1) * 0.5;
+	const riverAbs = Math.abs(rawRiver);
+
+	const baseHeight =
+		GenerationParams.SEA_LEVEL + continentalnessSpline.getValue(continent);
+
+	const biome = getBiomeFor(
+		temperature,
+		humidity,
+		continent,
+		continent > 0.07 ? 1.0 : riverAbs,
+		baseHeight,
+	);
+
+	const slot = getCornerSlot(gx, gz);
+	writeCornerSlot(
+		slot,
+		gx,
+		gz,
+		getBiomeBase(biome),
+		getBiomeAmp(biome),
+		getBiomeScale(biome),
+		getBiomeExp(biome),
+		getBiomePvScale(biome),
+		getBiomeErosionScale(biome),
+	);
+}
 // Returns cache slot — internal use only. O(1), no allocation.
 function getChunkCacheIdx(worldX: number, worldZ: number): number {
 	const cx = worldX >> CHUNK_SHIFT;
@@ -624,58 +701,23 @@ function fillCorner(
 	worldZ: number,
 	out: Float32Array,
 ): void {
-	const key = encodeCornerKey(gx, gz);
-	const idx = key & CORNER_CACHE_MASK;
+	const slot = getCornerSlot(gx, gz);
 
-	if (cornerValid[idx] && cornerKey[idx] === key) {
-		out[0] = cornerBase[idx];
-		out[1] = cornerAmp[idx];
-		out[2] = cornerScale[idx];
-		out[3] = cornerExp[idx];
-		out[4] = cornerPvScale[idx];
-		out[5] = cornerErosionScale[idx];
+	if (cornerValid[slot] && cornerKeyX[slot] === gx && cornerKeyZ[slot] === gz) {
+		readCornerSlot(slot, out);
 		return;
 	}
 
-	// Cold path — compute and populate cache.
-	const rawContinent = continentalnessNoise(worldX, worldZ);
-	const continent = applyRidged(rawContinent);
-	const temperature = (temperatureNoise(worldX, worldZ) + 1) * 0.5;
-	const humidity = (humidityNoise(worldX, worldZ) + 1) * 0.5;
-	const riverAbs = Math.abs(riverGenerator.getRiverNoise(worldX, worldZ));
-	const baseHeight =
-		GenerationParams.SEA_LEVEL + continentalnessSpline.getValue(continent);
-	const effectiveRiver = continent > 0.07 ? 1.0 : riverAbs;
-	const biome = getBiomeFor(
-		temperature,
-		humidity,
-		continent,
-		effectiveRiver,
-		baseHeight,
+	writeCornerFromSignals(
+		gx,
+		gz,
+		continentalnessNoise(worldX, worldZ),
+		temperatureNoise(worldX, worldZ),
+		humidityNoise(worldX, worldZ),
+		riverGenerator.getRiverNoise(worldX, worldZ),
 	);
 
-	const base = getBiomeBase(biome);
-	const amp = getBiomeAmp(biome);
-	const scale = getBiomeScale(biome);
-	const exp = getBiomeExp(biome);
-	const pvScale = getBiomePvScale(biome);
-	const erosionScale = getBiomeErosionScale(biome);
-
-	cornerKey[idx] = key;
-	cornerBase[idx] = base;
-	cornerAmp[idx] = amp;
-	cornerScale[idx] = scale;
-	cornerExp[idx] = exp;
-	cornerPvScale[idx] = pvScale;
-	cornerErosionScale[idx] = erosionScale;
-	cornerValid[idx] = 1;
-
-	out[0] = base;
-	out[1] = amp;
-	out[2] = scale;
-	out[3] = exp;
-	out[4] = pvScale;
-	out[5] = erosionScale;
+	readCornerSlot(slot, out);
 }
 
 // ---------------------------------------------------------------------------
@@ -689,12 +731,6 @@ function fillCorner(
 // be safe without any runtime size check.
 // ---------------------------------------------------------------------------
 
-const _PREFETCH_MAX = 256;
-const _prefetchContinentBuf = new Float32Array(_PREFETCH_MAX);
-const _prefetchTempBuf = new Float32Array(_PREFETCH_MAX);
-const _prefetchHumidBuf = new Float32Array(_PREFETCH_MAX);
-const _prefetchRiverBuf = new Float32Array(_PREFETCH_MAX);
-
 export function prefetchChunkCorners(
 	chunkWorldX: number,
 	chunkWorldZ: number,
@@ -704,75 +740,30 @@ export function prefetchChunkCorners(
 	const gx1 = Math.floor((chunkWorldX + 31) * INV_BIOME_TERRAIN_GRID) + 1;
 	const gz1 = Math.floor((chunkWorldZ + 31) * INV_BIOME_TERRAIN_GRID) + 1;
 
-	const width = gx1 - gx0 + 1;
-	const height = gz1 - gz0 + 1;
-	const total = width * height;
-
-	// Guard against unexpectedly large grids overflowing our scratch buffers.
-	if (total > _PREFETCH_MAX) {
-		// Fall back to per-corner fills — correctness over speed.
-		for (let gz = gz0; gz <= gz1; gz++) {
-			for (let gx = gx0; gx <= gx1; gx++) {
-				fillCorner(
-					gx,
-					gz,
-					gx * BIOME_TERRAIN_GRID,
-					gz * BIOME_TERRAIN_GRID,
-					_s00,
-				);
-			}
-		}
-		return;
-	}
-
-	const offX = gx0 * BIOME_TERRAIN_GRID;
-	const offZ = gz0 * BIOME_TERRAIN_GRID;
-
-	// Batch noise — all four channels in a single FillNoise2D call each,
-	// result written into pre-allocated module-level buffers.
-	continentalnessInst.FillNoise2D(
-		_prefetchContinentBuf,
-		width,
-		height,
-		offX,
-		offZ,
-	);
-	temperatureInst.FillNoise2D(_prefetchTempBuf, width, height, offX, offZ);
-	humidityInst.FillNoise2D(_prefetchHumidBuf, width, height, offX, offZ);
-	riverGenerator.fillRiverNoise2D(_prefetchRiverBuf, width, height, offX, offZ);
-
-	// Walk the grid in row-major order (matches FillNoise2D layout).
 	for (let gz = gz0; gz <= gz1; gz++) {
-		const rowOff = (gz - gz0) * width;
+		const worldZ = gz * BIOME_TERRAIN_GRID;
+
 		for (let gx = gx0; gx <= gx1; gx++) {
-			const bufIdx = rowOff + (gx - gx0);
-			const rawContinent = _prefetchContinentBuf[bufIdx];
-			const continent = applyRidged(rawContinent);
-			const temperature = (_prefetchTempBuf[bufIdx] + 1) * 0.5;
-			const humidity = (_prefetchHumidBuf[bufIdx] + 1) * 0.5;
-			const riverAbs = Math.abs(_prefetchRiverBuf[bufIdx]);
-			const baseHeight =
-				GenerationParams.SEA_LEVEL + continentalnessSpline.getValue(continent);
-			const effectiveRiver = continent > 0.07 ? 1.0 : riverAbs;
-			const biome = getBiomeFor(
-				temperature,
-				humidity,
-				continent,
-				effectiveRiver,
-				baseHeight,
+			const slot = getCornerSlot(gx, gz);
+
+			if (
+				cornerValid[slot] &&
+				cornerKeyX[slot] === gx &&
+				cornerKeyZ[slot] === gz
+			) {
+				continue;
+			}
+
+			const worldX = gx * BIOME_TERRAIN_GRID;
+
+			writeCornerFromSignals(
+				gx,
+				gz,
+				continentalnessNoise(worldX, worldZ),
+				temperatureNoise(worldX, worldZ),
+				humidityNoise(worldX, worldZ),
+				riverGenerator.getRiverNoise(worldX, worldZ),
 			);
-
-			const key = encodeCornerKey(gx, gz);
-			const slot = key & CORNER_CACHE_MASK;
-
-			cornerKey[slot] = key;
-			cornerBase[slot] = getBiomeBase(biome);
-			cornerAmp[slot] = getBiomeAmp(biome);
-			cornerScale[slot] = getBiomeScale(biome);
-			cornerExp[slot] = getBiomeExp(biome);
-			cornerPvScale[slot] = getBiomePvScale(biome);
-			cornerErosionScale[slot] = getBiomeErosionScale(biome);
-			cornerValid[slot] = 1;
 		}
 	}
 }
