@@ -23,6 +23,7 @@ import { PlayerCamera } from "./Player/PlayerCamera";
 import { PlayerStatePersistence } from "./Player/PlayerStatePersistence";
 import { updateGlobalUniforms } from "./World/Chunk/ChunkMesher";
 import { installLightDebugTool } from "./World/Chunk/LightDebugTool";
+import { createFallbackSpawn } from "./World/SpawnPoint";
 import { getServerNameFromUrl, worldSeedFor } from "./World/WorldContext";
 import { WorldStorage } from "./World/WorldStorage";
 
@@ -128,6 +129,13 @@ export class TestScene {
 
 			const map = new Map1(engine, scene, player);
 			await map.initPromise;
+
+			// Prepare the world spawn immediately (no server to send a
+			// SpawnPosition) so the loading gate teleports right away and
+			// chunk streaming can start; previously this waited 30 s for the
+			// gate's stall fallback. setBlock goes through the mutation
+			// overlay, so building the platform before chunks load is safe.
+			createFallbackSpawn(0, 0);
 
 			initializeBlockBreakingVisuals(scene);
 			DroppedItem.preloadAtlas();

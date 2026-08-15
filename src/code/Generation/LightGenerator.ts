@@ -461,10 +461,6 @@ export class LightGenerator {
 		return tail;
 	}
 
-	private static isTransparentBlock(blockId: number): boolean {
-		return blockId < 128 && LightGenerator._transparentLUT[blockId] === 1;
-	}
-
 	public static getLightEmission(blockId: number): number {
 		return blockId >= 0 && blockId < 256
 			? LightGenerator._emissionLUT[blockId]

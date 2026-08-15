@@ -36,13 +36,47 @@ let cachedSpawn: SpawnPosition | null = null;
 // loading gate knows it can spawn the player there.
 let spawnPrepared = false;
 
+// One-shot listeners fired on the first spawn preparation. Systems that must
+// not stream chunks before the player is teleported (e.g. the per-frame
+// PlayerLoopController) subscribe instead of polling isSpawnPrepared().
+type SpawnPreparedListener = () => void;
+let spawnPreparedListeners: SpawnPreparedListener[] = [];
+
 export function getSpawnPosition(): SpawnPosition {
 	return cachedSpawn ?? { x: 0, y: 0, z: 0 };
 }
 
 export function setSpawnPosition(p: SpawnPosition): void {
 	cachedSpawn = p;
+	if (spawnPrepared) return;
 	spawnPrepared = true;
+	const listeners = spawnPreparedListeners;
+	spawnPreparedListeners = [];
+	for (const listener of listeners) {
+		try {
+			listener();
+		} catch (err) {
+			console.error("[SpawnPoint] spawn-prepared listener threw:", err);
+		}
+	}
+}
+
+/**
+ * Subscribe to the first spawn preparation. If the spawn is already prepared
+ * (the subscription raced the server's SpawnPosition message) the listener
+ * fires immediately. Returns an unsubscribe function.
+ */
+export function onSpawnPrepared(listener: SpawnPreparedListener): () => void {
+	if (spawnPrepared) {
+		listener();
+		return () => {};
+	}
+	spawnPreparedListeners.push(listener);
+	return () => {
+		spawnPreparedListeners = spawnPreparedListeners.filter(
+			(l) => l !== listener,
+		);
+	};
 }
 
 export function isSpawnPrepared(): boolean {

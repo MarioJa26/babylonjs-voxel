@@ -1,6 +1,6 @@
 // Add these module-level reusable scratch buffers near _indexedScratch.
 
-import type { SceneContext, Vec3 } from "@babylonjs/lite";
+import { onBeforeRender, type SceneContext, type Vec3 } from "@babylonjs/lite";
 import { CustomBoat } from "../Entities/CustomBoat";
 import { update as updateDistantTerrain } from "../Generation/DistantTerrain/DistantTerrain";
 import {
@@ -24,6 +24,7 @@ import { getMergedMeshFlushStats } from "../World/Chunk/MergedMeshManager";
 import { BlockTickScheduler } from "../World/Chunk/Worker/BlockTickScheduler";
 import { processWaterUpdate } from "../World/Chunk/Worker/WaterSimulation";
 import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
+import { onSpawnPrepared } from "../World/SpawnPoint";
 import {
 	type BlockRaycastHit,
 	pickTarget,
@@ -41,6 +42,10 @@ export class PlayerLoopController {
 	#loadLastCx = 0;
 	#loadLastCy = 0;
 	#loadLastCz = 0;
+	// World streaming runs in its own per-frame hook that is installed only
+	// once the spawn is prepared (see #installStreaming) — the hot tick()
+	// path never touches spawn state.
+	#offSpawnPrepared: (() => void) | null = null;
 
 	// ---- active-mesh selection position tracking (separate from loading) ----
 	#amLastCx = 0;
@@ -103,6 +108,12 @@ export class PlayerLoopController {
 	public bind(): void {
 		this.#blockTickScheduler.setProcessCallback(processWaterUpdate);
 
+		// Install world streaming only once the spawn is prepared — a one-shot
+		// notification instead of any spawn-state check in the per-frame hot
+		// path. Before the teleport the player sits at the origin; loading
+		// there would leave residual chunks at 0,0.
+		this.#offSpawnPrepared = onSpawnPrepared(() => this.#installStreaming());
+
 		this.#previousOnChunkLoaded = Chunk.onChunkLoaded;
 		Chunk.onChunkLoaded = (chunk: Chunk) => {
 			this.#previousOnChunkLoaded?.(chunk);
@@ -134,8 +145,6 @@ export class PlayerLoopController {
 
 		this.playerHud.crossHair.setTargetHit(pickHit);
 
-		updateDistantTerrain(playerPos.x, playerPos.z);
-
 		CustomBoat.tickAllActiveBoats(this.scene, playerPos);
 
 		vehicle.update(deltaMs);
@@ -159,13 +168,8 @@ export class PlayerLoopController {
 		const cy = worldToChunkCoord(playerPos.y);
 		const cz = worldToChunkCoord(playerPos.z);
 
-		this.#updateChunksAroundPlayer(cx, cy, cz, playerPos);
-
-		try {
-			void processFrameBudgetedStreamingWork(cx, cy, cz);
-		} catch (err) {
-			console.error("[T0-ERR] processFrameBudgetedStreamingWork threw:", err);
-		}
+		// Chunk streaming / distant terrain run in #streamTick (installed when
+		// the spawn is prepared) — see #installStreaming.
 
 		this.#updateActiveMeshSelection(cx, cy, cz);
 
@@ -179,6 +183,10 @@ export class PlayerLoopController {
 	}
 
 	public dispose(): void {
+		if (this.#offSpawnPrepared) {
+			this.#offSpawnPrepared();
+			this.#offSpawnPrepared = null;
+		}
 		if (this.#previousOnChunkLoaded !== null) {
 			Chunk.onChunkLoaded = this.#previousOnChunkLoaded;
 			this.#previousOnChunkLoaded = null;
@@ -310,6 +318,39 @@ export class PlayerLoopController {
 			playerPos.x,
 			playerPos.z,
 		);
+	}
+
+	/**
+	 * Installed exactly once, when the world spawn is prepared (server
+	 * SpawnPosition or the singleplayer fallback). Registers its own per-frame
+	 * scene hook — onBeforeRender prepends, so it runs first each frame — and
+	 * tick() stays free of any spawn-state gating. #loadLast* is pre-absorbed
+	 * at the still-current pre-teleport position so the teleport performed by
+	 * PlayerLoadingGate later that same frame is what triggers the first real
+	 * chunk update, never the origin.
+	 */
+	#installStreaming(): void {
+		const pos = this.getPlayerPosition();
+		this.#loadLastCx = worldToChunkCoord(pos.x);
+		this.#loadLastCy = worldToChunkCoord(pos.y);
+		this.#loadLastCz = worldToChunkCoord(pos.z);
+		onBeforeRender(this.scene, () => {
+			this.#streamTick();
+		});
+	}
+
+	#streamTick(): void {
+		const pos = this.getPlayerPosition();
+		updateDistantTerrain(pos.x, pos.z);
+		const cx = worldToChunkCoord(pos.x);
+		const cy = worldToChunkCoord(pos.y);
+		const cz = worldToChunkCoord(pos.z);
+		this.#updateChunksAroundPlayer(cx, cy, cz, pos);
+		try {
+			void processFrameBudgetedStreamingWork(cx, cy, cz);
+		} catch (err) {
+			console.error("[T0-ERR] processFrameBudgetedStreamingWork threw:", err);
+		}
 	}
 
 	#frozenOnce = false;

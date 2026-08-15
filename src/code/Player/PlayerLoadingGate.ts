@@ -69,10 +69,6 @@ export class PlayerLoadingGate {
 
 	private update(): void {
 		if (!this.isActive) return;
-		const playerPos = this.player.position;
-		const chunkX = worldToChunkCoord(playerPos.x);
-		const chunkY = worldToChunkCoord(playerPos.y);
-		const chunkZ = worldToChunkCoord(playerPos.z);
 
 		// Wait until the world spawn has been prepared (and persisted) before
 		// moving the player there. If preparation stalls, force a fallback.
@@ -103,6 +99,14 @@ export class PlayerLoadingGate {
 			this.player.playerVehicle.teleportTo(p.x, p.y, p.z);
 			this.teleported = true;
 		}
+
+		// Only stream chunks once the player is at the real spawn — loading
+		// around the pre-teleport (origin) position leaves residual chunks at
+		// 0,0. Chunk coords are derived from the post-teleport position.
+		const playerPos = this.player.position;
+		const chunkX = worldToChunkCoord(playerPos.x);
+		const chunkY = worldToChunkCoord(playerPos.y);
+		const chunkZ = worldToChunkCoord(playerPos.z);
 
 		updateChunksAround(
 			chunkX,

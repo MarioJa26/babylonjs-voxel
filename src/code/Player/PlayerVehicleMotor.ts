@@ -33,7 +33,7 @@ import {
 	getFenceDynamicShape,
 	isFenceBlockId,
 } from "../World/Shape/FenceConnect";
-import { getSpawnPosition } from "../World/SpawnPoint";
+import { getSpawnPosition, isSpawnPrepared } from "../World/SpawnPoint";
 import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
 import type { IPlayerBody, PlayerBodyControlState } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
@@ -398,6 +398,10 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	}
 
 	public respawn(): void {
+		// Until the world spawn is prepared the player has not been teleported
+		// to it yet; snapping to the default (0,0,0) would park the player
+		// inside terrain at the origin and trigger a pre-teleport chunk load.
+		if (!isSpawnPrepared()) return;
 		const spawn = getSpawnPosition();
 		this.voxelPosition.x = spawn.x;
 		this.voxelPosition.y = spawn.y;
