@@ -47,37 +47,17 @@ type RawBlockDefinition = {
 const BLOCKS_URL = "/data/blocks.json";
 const SHAPES_URL = "/data/block-shapes.json";
 
-// Browser: fetch from the dev server / public URL
-async function loadJsonBrowser(url: string): Promise<any> {
-	const response = await fetch(url);
-	if (!response.ok)
-		throw new Error(`Failed to load ${url}: ${response.status}`);
-	return response.json();
-}
-
-// Node.js: read from public/data/ on disk
-async function loadJsonServer(url: string): Promise<any> {
-	const { fileURLToPath } = await import("node:url");
-	const { dirname, join } = await import("node:path");
-	const { readFile } = await import("node:fs/promises");
-	const __filename = fileURLToPath(import.meta.url);
-	const __dirname = dirname(__filename);
-	const filePath = join(
-		__dirname,
-		"..",
-		"..",
-		"..",
-		"..",
-		"public",
-		url.replace(/^\//, ""),
-	);
-	const text = await readFile(filePath, "utf-8");
-	return JSON.parse(text);
-}
-
-const loadJsonUrl =
-	typeof self !== "undefined" ? loadJsonBrowser : loadJsonServer;
 const SHAPE_SCALE = 16;
+const VIRTUAL_BLOCK_ID_START = 500;
+const VIRTUAL_SHAPES = [
+	"slab",
+	"stairs",
+	"half_wall",
+	"pane",
+	"fence",
+] as const;
+
+const EMPTY_SHAPE_BY_BLOCK_ID = new Uint16Array(65536);
 
 export const FALLBACK_CUBE: ShapeDefinition = {
 	name: "cube",
@@ -87,76 +67,167 @@ export const FALLBACK_CUBE: ShapeDefinition = {
 	usesSliceState: false,
 };
 
-const quantize = (value: number): number =>
-	Math.round(value * SHAPE_SCALE) / SHAPE_SCALE;
+// Browser: fetch from the dev server / public URL
+async function loadJsonBrowser(url: string): Promise<unknown> {
+	const response = await fetch(url);
+	if (!response.ok) {
+		throw new Error(`Failed to load ${url}: ${response.status}`);
+	}
+	return response.json();
+}
 
-const clamp01 = (value: number): number => Math.min(1, Math.max(0, value));
+// Node.js: read from public/data/ on disk
+async function loadJsonServer(url: string): Promise<unknown> {
+	const { fileURLToPath } = await import("node:url");
+	const { dirname, join } = await import("node:path");
+	const { readFile } = await import("node:fs/promises");
+
+	const __filename = fileURLToPath(import.meta.url);
+	const __dirname = dirname(__filename);
+
+	const filePath = join(
+		__dirname,
+		"..",
+		"..",
+		"..",
+		"..",
+		"public",
+		url.charCodeAt(0) === 47 ? url.slice(1) : url,
+	);
+
+	return JSON.parse(await readFile(filePath, "utf-8"));
+}
+
+const loadJsonUrl =
+	typeof self !== "undefined" ? loadJsonBrowser : loadJsonServer;
+
+const quantizeClamp01 = (value: unknown): number => {
+	const n = Math.round(Number(value) * SHAPE_SCALE) / SHAPE_SCALE;
+	return n < 0 ? 0 : n > 1 ? 1 : n;
+};
 
 const normalizeBlockId = (id: number | string): number | null => {
-	if (typeof id === "number" && Number.isFinite(id)) return id;
-	if (typeof id === "string") {
-		const mapped = (BlockType as unknown as Record<string, number>)[id];
-		if (typeof mapped === "number") return mapped;
+	if (typeof id === "number") {
+		return Number.isFinite(id) ? id : null;
 	}
-	return null;
+
+	const mapped = (BlockType as unknown as Record<string, number>)[id];
+	return typeof mapped === "number" ? mapped : null;
 };
 
 const normalizeBox = (raw: RawShapeBox): ShapeBox | null => {
-	if (!raw || !Array.isArray(raw.min) || !Array.isArray(raw.max)) return null;
-	if (raw.min.length !== 3 || raw.max.length !== 3) return null;
-	const min = raw.min.map((v) => clamp01(quantize(Number(v))));
-	const max = raw.max.map((v) => clamp01(quantize(Number(v))));
-	if (min.some((v) => Number.isNaN(v)) || max.some((v) => Number.isNaN(v))) {
+	const rawMin = raw.min;
+	const rawMax = raw.max;
+
+	if (
+		!Array.isArray(rawMin) ||
+		!Array.isArray(rawMax) ||
+		rawMin.length !== 3 ||
+		rawMax.length !== 3
+	) {
 		return null;
 	}
-	const minX = Math.min(min[0], max[0]);
-	const minY = Math.min(min[1], max[1]);
-	const minZ = Math.min(min[2], max[2]);
-	const maxX = Math.max(min[0], max[0]);
-	const maxY = Math.max(min[1], max[1]);
-	const maxZ = Math.max(min[2], max[2]);
-	if (maxX <= minX || maxY <= minY || maxZ <= minZ) return null;
-	const faceMask =
-		typeof raw.faceMask === "number" && Number.isFinite(raw.faceMask)
-			? raw.faceMask & FACE_ALL
-			: FACE_ALL;
+
+	const aX = quantizeClamp01(rawMin[0]);
+	const aY = quantizeClamp01(rawMin[1]);
+	const aZ = quantizeClamp01(rawMin[2]);
+	const bX = quantizeClamp01(rawMax[0]);
+	const bY = quantizeClamp01(rawMax[1]);
+	const bZ = quantizeClamp01(rawMax[2]);
+
+	if (
+		Number.isNaN(aX) ||
+		Number.isNaN(aY) ||
+		Number.isNaN(aZ) ||
+		Number.isNaN(bX) ||
+		Number.isNaN(bY) ||
+		Number.isNaN(bZ)
+	) {
+		return null;
+	}
+
+	const minX = aX < bX ? aX : bX;
+	const minY = aY < bY ? aY : bY;
+	const minZ = aZ < bZ ? aZ : bZ;
+	const maxX = aX > bX ? aX : bX;
+	const maxY = aY > bY ? aY : bY;
+	const maxZ = aZ > bZ ? aZ : bZ;
+
+	if (maxX <= minX || maxY <= minY || maxZ <= minZ) {
+		return null;
+	}
+
 	return {
 		min: [minX, minY, minZ],
 		max: [maxX, maxY, maxZ],
-		faceMask,
+		faceMask:
+			typeof raw.faceMask === "number" && Number.isFinite(raw.faceMask)
+				? raw.faceMask & FACE_ALL
+				: FACE_ALL,
 	};
 };
 
 const loadShapeDefinitions = async (): Promise<ShapeDefinition[]> => {
 	try {
-		const data = (await loadJsonUrl(SHAPES_URL)) as unknown;
-		if (!Array.isArray(data)) throw new Error("Shape JSON must be an array.");
+		const data = await loadJsonUrl(SHAPES_URL);
+		if (!Array.isArray(data)) {
+			throw new Error("Shape JSON must be an array.");
+		}
 
 		const defs: ShapeDefinition[] = [];
-		for (const entry of data as RawShapeDefinition[]) {
-			if (!entry || typeof entry !== "object") continue;
+		let hasCube = false;
+
+		for (let i = 0; i < data.length; i++) {
+			const entry = data[i] as RawShapeDefinition | null;
+			if (entry === null || typeof entry !== "object") {
+				continue;
+			}
+
 			const name = typeof entry.name === "string" ? entry.name : "";
-			if (!name) continue;
+			if (name.length === 0) {
+				continue;
+			}
+
+			const rawBoxes = entry.boxes;
+			if (!Array.isArray(rawBoxes) || rawBoxes.length === 0) {
+				continue;
+			}
+
 			const boxes: ShapeBox[] = [];
-			if (Array.isArray(entry.boxes)) {
-				for (const rawBox of entry.boxes) {
-					const box = normalizeBox(rawBox ?? {});
-					if (box) boxes.push(box);
+
+			for (let j = 0; j < rawBoxes.length; j++) {
+				const rawBox = rawBoxes[j];
+				if (rawBox === null || typeof rawBox !== "object") {
+					continue;
+				}
+
+				const box = normalizeBox(rawBox);
+				if (box !== null) {
+					boxes.push(box);
 				}
 			}
-			if (boxes.length === 0) continue;
+
+			if (boxes.length === 0) {
+				continue;
+			}
+
+			if (name === "cube") {
+				hasCube = true;
+			}
+
 			defs.push({
 				name,
 				boxes,
-				rotateY: Boolean(entry.rotateY),
-				allowFlipY: Boolean(entry.allowFlipY),
-				usesSliceState: Boolean(entry.usesSliceState),
+				rotateY: entry.rotateY === true,
+				allowFlipY: entry.allowFlipY === true,
+				usesSliceState: entry.usesSliceState === true,
 			});
 		}
 
-		if (!defs.some((def) => def.name === "cube")) {
+		if (!hasCube) {
 			defs.unshift(FALLBACK_CUBE);
 		}
+
 		return defs;
 	} catch (error) {
 		console.warn("Block shapes failed to load:", error);
@@ -164,57 +235,71 @@ const loadShapeDefinitions = async (): Promise<ShapeDefinition[]> => {
 	}
 };
 
-const VIRTUAL_BLOCK_ID_START = 500;
-const VIRTUAL_SHAPES = ["slab", "stairs", "half_wall", "pane", "fence"];
-
 const loadBlockShapeMap = async (
 	shapes: ShapeDefinition[],
 ): Promise<{ map: Uint16Array; ids: Set<number> }> => {
 	const map = new Uint16Array(65536);
 	const ids = new Set<number>();
-	const cubeIndex = shapes.findIndex((shape) => shape.name === "cube");
-	map.fill(cubeIndex === -1 ? 0 : cubeIndex);
+
+	let cubeIndex = 0;
+	const shapeIndexByName = new Map<string, number>();
+
+	for (let i = 0; i < shapes.length; i++) {
+		const shape = shapes[i];
+		shapeIndexByName.set(shape.name, i);
+
+		if (shape.name === "cube") {
+			cubeIndex = i;
+		}
+	}
+
+	map.fill(cubeIndex);
 
 	try {
-		const data = (await loadJsonUrl(BLOCKS_URL)) as unknown;
-		if (!Array.isArray(data)) throw new Error("Blocks JSON must be an array.");
+		const data = await loadJsonUrl(BLOCKS_URL);
+		if (!Array.isArray(data)) {
+			throw new Error("Blocks JSON must be an array.");
+		}
 
-		const shapeIndexByName = new Map(
-			shapes.map((shape, index) => [shape.name, index]),
-		);
-		for (const entry of data as RawBlockDefinition[]) {
-			if (!entry || typeof entry !== "object") continue;
+		for (let i = 0; i < data.length; i++) {
+			const entry = data[i] as RawBlockDefinition | null;
+			if (entry === null || typeof entry !== "object") {
+				continue;
+			}
+
 			const id = normalizeBlockId(entry.id);
-			if (id === null) continue;
+			if (id === null) {
+				continue;
+			}
+
 			const shapeName =
 				typeof entry.shape === "string" && entry.shape.length > 0
 					? entry.shape
 					: "cube";
+
 			const shapeIndex = shapeIndexByName.get(shapeName);
-			if (shapeIndex === undefined) continue;
+			if (shapeIndex === undefined) {
+				continue;
+			}
+
 			map[id] = shapeIndex;
 			ids.add(id);
-		}
 
-		// Pre-compute virtual block shape entries for mason table shape variants.
-		// Uses the same deterministic ID scheme as BlockTextures.ts.
-		for (const entry of data as RawBlockDefinition[]) {
-			if (!entry || typeof entry !== "object") continue;
-			const id = normalizeBlockId(entry.id);
-			if (id === null) continue;
-			const sourceShape =
-				typeof entry.shape === "string" && entry.shape.length > 0
-					? entry.shape
-					: "cube";
-			if (sourceShape !== "cube") continue;
+			// Pre-compute virtual block shape entries for mason table shape variants.
+			// Uses the same deterministic ID scheme as BlockTextures.ts.
+			if (shapeName !== "cube") {
+				continue;
+			}
 
 			for (let si = 0; si < VIRTUAL_SHAPES.length; si++) {
-				const targetShape = VIRTUAL_SHAPES[si];
-				if (targetShape === sourceShape) continue;
-				const targetIndex = shapeIndexByName.get(targetShape);
-				if (targetIndex === undefined) continue;
+				const targetIndex = shapeIndexByName.get(VIRTUAL_SHAPES[si]);
+				if (targetIndex === undefined) {
+					continue;
+				}
+
 				const virtualId =
 					VIRTUAL_BLOCK_ID_START + (id - 1) * VIRTUAL_SHAPES.length + si;
+
 				map[virtualId] = targetIndex;
 				ids.add(virtualId);
 			}
@@ -235,24 +320,39 @@ let _cubeShapeIndex = 0;
 let _crossShapeIndex = -1;
 let _crossDiagonalShapeIndex = -1;
 
-const EMPTY_SHAPE_BY_BLOCK_ID = new Uint16Array(65536);
-
 function ensureShapeInit(): Promise<void> {
-	if (_shapeInitPromise === null) {
-		_shapeInitPromise = (async () => {
-			const defs = await loadShapeDefinitions();
-			const { map, ids } = await loadBlockShapeMap(defs);
-			_shapeDefinitions = defs;
-			_shapeByBlockId = map;
-			_registeredBlockIds = ids;
-			_cubeShapeIndex = defs.findIndex((d) => d.name === "cube");
-			if (_cubeShapeIndex === -1) _cubeShapeIndex = 0;
-			_crossShapeIndex = defs.findIndex((d) => d.name === "cross");
-			_crossDiagonalShapeIndex = defs.findIndex(
-				(d) => d.name === "cross_diagonal",
-			);
-		})();
+	if (_shapeInitPromise !== null) {
+		return _shapeInitPromise;
 	}
+
+	_shapeInitPromise = (async () => {
+		const defs = await loadShapeDefinitions();
+		const { map, ids } = await loadBlockShapeMap(defs);
+
+		let cubeShapeIndex = 0;
+		let crossShapeIndex = -1;
+		let crossDiagonalShapeIndex = -1;
+
+		for (let i = 0; i < defs.length; i++) {
+			const name = defs[i].name;
+
+			if (name === "cube") {
+				cubeShapeIndex = i;
+			} else if (name === "cross") {
+				crossShapeIndex = i;
+			} else if (name === "cross_diagonal") {
+				crossDiagonalShapeIndex = i;
+			}
+		}
+
+		_shapeDefinitions = defs;
+		_shapeByBlockId = map;
+		_registeredBlockIds = ids;
+		_cubeShapeIndex = cubeShapeIndex;
+		_crossShapeIndex = crossShapeIndex;
+		_crossDiagonalShapeIndex = crossDiagonalShapeIndex;
+	})();
+
 	return _shapeInitPromise;
 }
 
@@ -271,15 +371,14 @@ export function areShapesInitialized(): boolean {
 }
 
 /**
- * Returns true only for ids that are explicitly registered blocks (including
- * mason-table virtual shape variants). Non-block items (tools, weapons, etc.)
- * return false even though getShapeForBlockId falls back to the cube shape.
- * This is shape-driven, so blocks added later to the data files are detected
- * automatically without touching the atlas.
+ * Returns true only for ids that are explicitly registered blocks, including
+ * mason-table virtual shape variants. Non-block items return false even though
+ * getShapeForBlockId falls back to the cube shape.
  */
 export function isRegisteredBlockId(id: number | null): boolean {
-	if (id === null || _registeredBlockIds === null) return false;
-	return _registeredBlockIds.has(id);
+	return (
+		id !== null && _registeredBlockIds !== null && _registeredBlockIds.has(id)
+	);
 }
 
 export function getCubeShapeIndex(): number {
@@ -289,17 +388,27 @@ export function getCubeShapeIndex(): number {
 export const getShapeForBlockId = (id: number): ShapeDefinition => {
 	const defs = _shapeDefinitions;
 	const map = _shapeByBlockId;
-	if (!map || !defs) return FALLBACK_CUBE;
+
+	if (defs === null || map === null) {
+		return FALLBACK_CUBE;
+	}
+
 	const shapeIndex = map[id] ?? _cubeShapeIndex;
 	return defs[shapeIndex] ?? defs[_cubeShapeIndex] ?? FALLBACK_CUBE;
 };
 
 export function isCrossBlockId(blockId: number): boolean {
-	if (_crossShapeIndex < 0 || !_shapeByBlockId) return false;
-	return _shapeByBlockId[blockId] === _crossShapeIndex;
+	return (
+		_crossShapeIndex >= 0 &&
+		_shapeByBlockId !== null &&
+		_shapeByBlockId[blockId] === _crossShapeIndex
+	);
 }
 
 export function isCrossDiagonalBlockId(blockId: number): boolean {
-	if (_crossDiagonalShapeIndex < 0 || !_shapeByBlockId) return false;
-	return _shapeByBlockId[blockId] === _crossDiagonalShapeIndex;
+	return (
+		_crossDiagonalShapeIndex >= 0 &&
+		_shapeByBlockId !== null &&
+		_shapeByBlockId[blockId] === _crossDiagonalShapeIndex
+	);
 }
