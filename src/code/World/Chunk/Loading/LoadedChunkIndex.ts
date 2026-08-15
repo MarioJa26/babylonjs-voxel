@@ -1,7 +1,6 @@
 import type { Chunk } from "../Chunk";
 
 const CELL_SHIFT = 5;
-4;
 const CELL_SIZE = 1 << CELL_SHIFT;
 
 const HASH_X = 73856093;
@@ -27,15 +26,15 @@ function hashCellKey(cx: number, cy: number, cz: number): number {
 }
 
 function chunkCellX(chunk: Chunk): number {
-	return chunkCoordToCell(chunk.chunkX);
+	return chunk.chunkX >> CELL_SHIFT;
 }
 
 function chunkCellY(chunk: Chunk): number {
-	return chunkCoordToCell(chunk.chunkY);
+	return chunk.chunkY >> CELL_SHIFT;
 }
 
 function chunkCellZ(chunk: Chunk): number {
-	return chunkCoordToCell(chunk.chunkZ);
+	return chunk.chunkZ >> CELL_SHIFT;
 }
 
 export class LoadedChunkIndex {

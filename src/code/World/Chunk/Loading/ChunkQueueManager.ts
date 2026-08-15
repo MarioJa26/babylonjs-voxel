@@ -40,8 +40,18 @@ export interface ChunkQueueBatch {
 	hasMore: boolean;
 }
 
+function normalizeBatchSize(maxChunks: number, queueLength: number): number {
+	if (maxChunks <= 0 || Number.isNaN(maxChunks) || queueLength <= 0) {
+		return 0;
+	}
+
+	return Math.min(Math.trunc(maxChunks), queueLength);
+}
+
 export class ChunkQueueManager {
-	private readonly loadQueue: Chunk[] = [];
+	private readonly loadQueue: Array<Chunk | undefined> = [];
+	private loadQueueHead = 0;
+
 	private readonly loadQueueSet = new Set<bigint>();
 	private readonly unloadQueueSet = new Set<Chunk>();
 
@@ -64,7 +74,7 @@ export class ChunkQueueManager {
 	}
 
 	public getLoadQueueLength(): number {
-		return this.loadQueue.length;
+		return this.loadQueue.length - this.loadQueueHead;
 	}
 
 	public getUnloadQueueLength(): number {
@@ -72,7 +82,7 @@ export class ChunkQueueManager {
 	}
 
 	public hasPendingLoads(): boolean {
-		return this.loadQueue.length > 0;
+		return this.getLoadQueueLength() > 0;
 	}
 
 	public hasPendingUnloads(): boolean {
@@ -123,46 +133,77 @@ export class ChunkQueueManager {
 	public dequeueLoadBatch(
 		maxChunks: number = this.getLoadBatchSize(),
 	): ChunkQueueBatch {
-		const take = Math.max(0, Math.min(maxChunks, this.loadQueue.length));
+		const queueLength = this.getLoadQueueLength();
+		const take = normalizeBatchSize(maxChunks, queueLength);
+
 		if (take === 0) {
 			return {
 				chunks: [],
-				hasMore: this.loadQueue.length > 0,
+				hasMore: queueLength > 0,
 			};
 		}
 
-		const chunks = this.loadQueue.splice(0, take);
-		for (const chunk of chunks) {
+		const chunks = new Array<Chunk>(take);
+		let writeIndex = 0;
+
+		while (writeIndex < take) {
+			const readIndex = this.loadQueueHead++;
+			const chunk = this.loadQueue[readIndex];
+
+			// Release the reference immediately instead of waiting for compaction.
+			this.loadQueue[readIndex] = undefined;
+
+			if (chunk === undefined) {
+				continue;
+			}
+
 			this.loadQueueSet.delete(chunk.id);
+			chunks[writeIndex++] = chunk;
 		}
 
+		if (writeIndex !== take) {
+			chunks.length = writeIndex;
+		}
+
+		this.compactLoadQueueIfUseful();
 		this.refreshQueueDebugSnapshot();
 
 		return {
 			chunks,
-			hasMore: this.loadQueue.length > 0,
+			hasMore: this.getLoadQueueLength() > 0,
 		};
 	}
 
 	public dequeueUnloadBatch(
 		maxChunks: number = this.getUnloadBatchSize(),
 	): ChunkQueueBatch {
-		const chunks: Chunk[] = [];
-		if (maxChunks <= 0 || this.unloadQueueSet.size === 0) {
+		const queueLength = this.unloadQueueSet.size;
+		const take = normalizeBatchSize(maxChunks, queueLength);
+
+		if (take === 0) {
 			return {
-				chunks,
-				hasMore: this.unloadQueueSet.size > 0,
+				chunks: [],
+				hasMore: queueLength > 0,
 			};
 		}
 
+		const chunks = new Array<Chunk>(take);
 		const iterator = this.unloadQueueSet.values();
-		while (chunks.length < maxChunks) {
+
+		let writeIndex = 0;
+		while (writeIndex < take) {
 			const next = iterator.next();
-			if (next.done) break;
+			if (next.done) {
+				break;
+			}
 
 			const chunk = next.value;
 			this.unloadQueueSet.delete(chunk);
-			chunks.push(chunk);
+			chunks[writeIndex++] = chunk;
+		}
+
+		if (writeIndex !== take) {
+			chunks.length = writeIndex;
 		}
 
 		this.refreshQueueDebugSnapshot();
@@ -175,10 +216,14 @@ export class ChunkQueueManager {
 
 	public removeChunk(chunk: Chunk): void {
 		if (this.loadQueueSet.delete(chunk.id)) {
-			const index = this.loadQueue.indexOf(chunk);
-			if (index >= 0) {
-				this.loadQueue.splice(index, 1);
+			for (let i = this.loadQueueHead; i < this.loadQueue.length; i++) {
+				if (this.loadQueue[i] === chunk) {
+					this.loadQueue[i] = undefined;
+					break;
+				}
 			}
+
+			this.compactLoadQueueIfUseful();
 		}
 
 		this.unloadQueueSet.delete(chunk);
@@ -187,6 +232,7 @@ export class ChunkQueueManager {
 
 	public clear(): void {
 		this.loadQueue.length = 0;
+		this.loadQueueHead = 0;
 		this.loadQueueSet.clear();
 		this.unloadQueueSet.clear();
 		this.refreshQueueDebugSnapshot();
@@ -196,10 +242,12 @@ export class ChunkQueueManager {
 		loadQueue: readonly Chunk[];
 		unloadQueue: readonly Chunk[];
 	} {
-		// Return internal references directly — callers only read the arrays synchronously
-		// within the same frame, so copying is unnecessary.
+		// Compact first so callers get the same reference-style behavior as before:
+		// loadQueue is an internal array containing only pending chunks.
+		this.compactLoadQueue();
+
 		return {
-			loadQueue: this.loadQueue,
+			loadQueue: this.loadQueue as Chunk[],
 			unloadQueue: [...this.unloadQueueSet],
 		};
 	}
@@ -208,13 +256,51 @@ export class ChunkQueueManager {
 	 * Equivalent extraction target for refreshQueueDebugSnapshot(...).
 	 */
 	public refreshQueueDebugSnapshot(): void {
-		this.adapter.debug?.refreshQueueSnapshot({
-			loadQueueLength: this.loadQueue.length,
+		const debug = this.adapter.debug;
+		if (!debug) {
+			return;
+		}
+
+		debug.refreshQueueSnapshot({
+			loadQueueLength: this.getLoadQueueLength(),
 			unloadQueueLength: this.unloadQueueSet.size,
 			pendingChunkEntityReloadCount:
 				this.adapter.getPendingChunkEntityReloadCount?.(),
 			registeredChunkEntityCount:
 				this.adapter.getRegisteredChunkEntityCount?.(),
 		});
+	}
+
+	private compactLoadQueueIfUseful(): void {
+		const head = this.loadQueueHead;
+
+		if (head === 0) {
+			return;
+		}
+
+		// Avoid retaining many consumed slots, but do not compact every small dequeue.
+		if (head >= 64 && head * 2 >= this.loadQueue.length) {
+			this.compactLoadQueue();
+		}
+	}
+
+	private compactLoadQueue(): void {
+		const head = this.loadQueueHead;
+
+		if (head === 0) {
+			return;
+		}
+
+		let writeIndex = 0;
+
+		for (let readIndex = head; readIndex < this.loadQueue.length; readIndex++) {
+			const chunk = this.loadQueue[readIndex];
+			if (chunk !== undefined) {
+				this.loadQueue[writeIndex++] = chunk;
+			}
+		}
+
+		this.loadQueue.length = writeIndex;
+		this.loadQueueHead = 0;
 	}
 }
