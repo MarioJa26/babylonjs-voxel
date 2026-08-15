@@ -11,20 +11,51 @@
 
 export const WORLD_ROUTE_PREFIX = "/world/";
 
-// Multiplayer route: /server/<saved-server-nickname>. The nickname maps (via
-// the saved-servers list) to a ws:// address; it carries no player name.
+// Multiplayer route: /server/<saved-server-nickname>. The nickname maps via
+// the saved-servers list to a ws:// address; it carries no player name.
 export const SERVER_ROUTE_PREFIX = "/server/";
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: <explanation>
+const APP_PREFIX = "b102";
+const WORLD_LOCAL_STORAGE_PREFIX = `${APP_PREFIX}.world.`;
+const MP_CACHE_PREFIX = "__mp__cache__";
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: strips filesystem/path-unsafe chars
 const ILLEGAL_NAME_CHARS = /[\\/:*?"<>|\u0000-\u001f]/g;
+
+// Matches leading/trailing dots and spaces in one pass over each edge.
+const LEADING_DOTS_OR_SPACES = /^[. ]+/;
+const TRAILING_DOTS_OR_SPACES = /[. ]+$/g;
+
+function currentPathname(): string {
+	const location = globalThis?.location;
+	return typeof location?.pathname === "string" ? location.pathname : "";
+}
+
+function decodePathSegment(raw: string): string {
+	try {
+		return decodeURIComponent(raw);
+	} catch {
+		// Malformed percent-encoding, e.g. a literal "%".
+		return raw;
+	}
+}
+
+function firstRouteSegment(pathname: string, prefix: string): string | null {
+	if (!pathname.startsWith(prefix)) return null;
+
+	const start = prefix.length;
+	const slash = pathname.indexOf("/", start);
+
+	return slash === -1 ? pathname.slice(start) : pathname.slice(start, slash);
+}
 
 /** Strip characters that are unsafe in a URL path segment or OPFS dir name. */
 export function sanitizeWorldName(raw: string): string {
 	return raw
 		.trim()
 		.replace(ILLEGAL_NAME_CHARS, "")
-		.replace(/^[. ]+/, "") // no hidden/system-ish names (e.g. "..")
-		.replace(/[. ]+$/g, "")
+		.replace(LEADING_DOTS_OR_SPACES, "")
+		.replace(TRAILING_DOTS_OR_SPACES, "")
 		.slice(0, 64);
 }
 
@@ -34,50 +65,39 @@ export function isValidWorldName(name: string): boolean {
 
 /**
  * Parse the active world name from the URL path, e.g.
- * `/world/My%20World` → `My World`. Returns null when no world route is
- * active (i.e. the main menu).
+ * `/world/My%20World` -> `My World`. Returns null when no world route is
+ * active, i.e. the main menu.
  */
 export function getWorldNameFromUrl(
-	pathname: string = window.location.pathname,
+	pathname: string = currentPathname(),
 ): string | null {
-	if (!pathname.startsWith(WORLD_ROUTE_PREFIX)) return null;
-	const raw = pathname.slice(WORLD_ROUTE_PREFIX.length).split("/")[0] ?? "";
-	let decoded = raw;
-	try {
-		decoded = decodeURIComponent(raw);
-	} catch {
-		// Malformed percent-encoding (e.g. a literal "%") — fall back to raw.
-	}
-	const name = sanitizeWorldName(decoded);
+	const raw = firstRouteSegment(pathname, WORLD_ROUTE_PREFIX);
+	if (raw === null || raw.length === 0) return null;
+
+	const name = sanitizeWorldName(decodePathSegment(raw));
 	return isValidWorldName(name) ? name : null;
 }
 
 /** URL path for a world, e.g. `/world/My%20World`. */
 export function worldPath(name: string): string {
-	return `${WORLD_ROUTE_PREFIX}${encodeURIComponent(name)}`;
+	return WORLD_ROUTE_PREFIX + encodeURIComponent(name);
 }
 
 /**
  * Parse the multiplayer server nickname from the URL path, e.g.
- * `/server/localhost` → `localhost`. Returns null when no server route is
- * active (singleplayer world or the main menu).
+ * `/server/localhost` -> `localhost`. Returns null when no server route is
+ * active, singleplayer world, or the main menu.
  */
 export function getServerNameFromUrl(
-	pathname: string = window.location.pathname,
+	pathname: string = currentPathname(),
 ): string | null {
-	if (!pathname.startsWith(SERVER_ROUTE_PREFIX)) return null;
-	const raw = pathname.slice(SERVER_ROUTE_PREFIX.length).split("/")[0] ?? "";
-	if (!raw) return null;
-	try {
-		return decodeURIComponent(raw);
-	} catch {
-		return raw;
-	}
+	const raw = firstRouteSegment(pathname, SERVER_ROUTE_PREFIX);
+	return raw !== null && raw.length !== 0 ? decodePathSegment(raw) : null;
 }
 
 /** URL path for a saved server, e.g. `/server/localhost`. */
 export function serverPath(name: string): string {
-	return `${SERVER_ROUTE_PREFIX}${encodeURIComponent(name)}`;
+	return SERVER_ROUTE_PREFIX + encodeURIComponent(name);
 }
 
 /**
@@ -87,11 +107,16 @@ export function serverPath(name: string): string {
  * store that accumulates server chunks across sessions.
  */
 let _mpSessionId: string | null = null;
+
 export function mpLocalCacheName(): string {
-	if (_mpSessionId === null) {
-		_mpSessionId = Math.random().toString(36).slice(2, 10);
+	let id = _mpSessionId;
+
+	if (id === null) {
+		id = Math.random().toString(36).slice(2, 10);
+		_mpSessionId = id;
 	}
-	return `__mp__cache__${_mpSessionId}`;
+
+	return MP_CACHE_PREFIX + id;
 }
 
 /**
@@ -99,12 +124,12 @@ export function mpLocalCacheName(): string {
  * produces the same terrain.
  */
 export function worldSeed(name: string): string {
-	return `b102:${name}`;
+	return `${APP_PREFIX}:${name}`;
 }
 
 /** Per-world localStorage key, e.g. `b102.world.My World.playerPosition.v1`. */
 export function worldLocalStorageKey(name: string, baseKey: string): string {
-	return `b102.world.${name}.${baseKey}`;
+	return WORLD_LOCAL_STORAGE_PREFIX + name + "." + baseKey;
 }
 
 /** localStorage base key for a world's explicit terrain seed. */

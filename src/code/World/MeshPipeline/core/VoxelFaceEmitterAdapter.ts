@@ -83,7 +83,6 @@ export class VoxelFaceEmitterAdapter {
 
 	public emitVoxelFace(axis: number, desc: GreedyFaceDescriptor): void {
 		const rawMask = desc.idState | 0;
-		const isBackFace = (rawMask & BACK_FACE_MASK) !== 0;
 		const isNonCube = (rawMask & NON_CUBE_MASK) !== 0;
 		const packedBlock = rawMask & PACKED_WATER_MASK;
 
