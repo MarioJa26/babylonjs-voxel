@@ -328,36 +328,33 @@ const onMessageHandler = (event: MessageEvent) => {
 		case WorkerTaskType.LightRegisterChunkBatch: {
 			const chunks = (event.data as LightRegisterChunkBatchRequest).chunks;
 			for (let i = 0; i < chunks.length; i++) {
-				const req = {
-					type: WorkerTaskType.LightRegisterChunk,
-					...chunks[i],
-				} as LightRegisterChunkRequest;
+				const item = chunks[i];
 
-				if (req.blockSAB !== null) {
-					LightTaskHandlers.handleRegisterChunk(req);
+				if (item.blockSAB !== null) {
+					LightTaskHandlers.handleRegisterChunkFields(item);
 					continue;
 				}
 
-				const key = packCoords(req.chunkX, req.chunkY, req.chunkZ);
+				const key = packCoords(item.chunkX, item.chunkY, item.chunkZ);
 				const voxel = _pendingVoxelData.get(key);
 				if (voxel) {
 					_pendingVoxelData.delete(key);
 					_registerFromBoth(
 						{
-							seq: req.seq,
-							chunkId: req.chunkId,
-							chunkX: req.chunkX,
-							chunkY: req.chunkY,
-							chunkZ: req.chunkZ,
-							headerSlot: req.headerSlot,
+							seq: item.seq,
+							chunkId: item.chunkId,
+							chunkX: item.chunkX,
+							chunkY: item.chunkY,
+							chunkZ: item.chunkZ,
+							headerSlot: item.headerSlot,
 						},
 						voxel,
 					);
 				} else {
 					_pendingRegistrations.set(key, {
-						seq: req.seq,
-						chunkId: req.chunkId,
-						headerSlot: req.headerSlot,
+						seq: item.seq,
+						chunkId: item.chunkId,
+						headerSlot: item.headerSlot,
 					});
 				}
 			}

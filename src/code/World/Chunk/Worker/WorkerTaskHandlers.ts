@@ -63,6 +63,7 @@ export function handleGenerateTerrain(
 	);
 
 	const compressed = deps.compressBlocks(result.blocks);
+	const lightSeedState = result.lightSeedState;
 
 	const payload: TerrainGeneratedMessage = {
 		chunkId: request.chunkId,
@@ -74,12 +75,13 @@ export function handleGenerateTerrain(
 		palette: compressed.palette,
 	};
 
-	if (result.lightSeedState) {
-		payload.lightSeedQueue = result.lightSeedState.queue;
-		payload.lightSeedLength = result.lightSeedState.length;
+	if (lightSeedState) {
+		payload.lightSeedQueue = lightSeedState.queue;
+		payload.lightSeedLength = lightSeedState.length;
 	}
 
 	const transferables: Transferable[] = [];
+
 	pushTransferable(
 		transferables,
 		compressed.packedBlocks ?? undefined,
@@ -87,11 +89,10 @@ export function handleGenerateTerrain(
 	);
 	pushTransferable(transferables, result.light, "light_array");
 	pushTransferable(transferables, compressed.palette ?? undefined, "palette");
-	pushTransferable(
-		transferables,
-		result.lightSeedState?.queue,
-		"lightSeedQueue",
-	);
+
+	if (lightSeedState) {
+		pushTransferable(transferables, lightSeedState.queue, "lightSeedQueue");
+	}
 
 	return { payload, transferables };
 }
@@ -156,14 +157,18 @@ function pushTransferable(
 	view: ArrayBufferView | null | undefined,
 	label: string,
 ): void {
-	if (!view) return;
+	if (view == null) return;
 
-	if (view.buffer instanceof SharedArrayBuffer) return;
+	const buffer = view.buffer;
 
-	if (!(view.buffer instanceof ArrayBuffer))
+	// SharedArrayBuffer cannot be transferred.
+	if (buffer instanceof SharedArrayBuffer) return;
+
+	if (!(buffer instanceof ArrayBuffer)) {
 		throw new Error(
 			`Non-transferable buffer for "${label}". Must be ArrayBuffer-backed before posting.`,
 		);
+	}
 
-	transferables.push(view.buffer);
+	transferables.push(buffer);
 }

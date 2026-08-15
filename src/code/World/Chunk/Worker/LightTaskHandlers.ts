@@ -46,6 +46,12 @@ type LightState = {
 
 const state: LightState = { registry: null };
 
+// PERF: worker-local reusable dirty-slot accumulator — avoids a per-message
+// Set allocation in handleRegisterChunk / handleAddEmission / handleSkyReconcile.
+// Safe because the worker is single-threaded and postDirty consumes the Set
+// synchronously before it is cleared again (mirrors LightCore's scratch pattern).
+const _dirtyScratch = new Set<number>();
+
 // Pending LightMutate requests that arrived before the target chunk was
 // registered.  Replayed in handleRegisterChunk once the chunk view exists.
 const pendingMutations = new Map<bigint, LightMutateRequest[]>();
@@ -73,6 +79,23 @@ function viewForBuffer(
 	return bytesPerElement === 2
 		? new Uint16Array(sab, 0, length)
 		: new Uint8Array(sab, 0, length);
+}
+function getLoadedView(
+	registry: ChunkViewRegistry,
+	headerSlot: number,
+	chunkId: bigint,
+) {
+	if (headerSlot < 0 || headerSlot >= MAX_HEADER_SLOTS) {
+		return undefined;
+	}
+
+	const view = registry.bySlot[headerSlot];
+
+	if (!view || view.chunkId !== chunkId || !view.isLoaded) {
+		return undefined;
+	}
+
+	return view;
 }
 
 function ensureState(req: InitLightSharedRequest | null): ChunkViewRegistry {
@@ -122,36 +145,42 @@ function handleSetClosedFaceMask(req: LightSetClosedFaceMaskRequest): void {
 	self.postMessage({ type: WorkerTaskType.LightSetClosedFaceMask });
 }
 
-function handleRegisterChunk(req: LightRegisterChunkRequest): void {
+type LightRegisterChunkFields = Omit<LightRegisterChunkRequest, "type">;
+
+function registerChunkFields(fields: LightRegisterChunkFields): void {
 	const registry = ensureState(null);
 
-	const block_array = req.blockSAB
+	const block_array = fields.blockSAB
 		? viewForBuffer(
-				req.blockSAB,
-				req.blockStorageBytesPerElement,
-				req.blockSAB.byteLength / req.blockStorageBytesPerElement,
+				fields.blockSAB,
+				fields.blockStorageBytesPerElement,
+				fields.blockSAB.byteLength / fields.blockStorageBytesPerElement,
 			)
 		: null;
-	const palette = req.paletteSAB
-		? new Uint16Array(req.paletteSAB, 0, req.paletteSAB.byteLength / 2)
+	const palette = fields.paletteSAB
+		? new Uint16Array(fields.paletteSAB, 0, fields.paletteSAB.byteLength / 2)
 		: null;
-	const light_array = new Uint8Array(req.lightSAB, 0, req.lightSAB.byteLength);
+	const light_array = new Uint8Array(
+		fields.lightSAB,
+		0,
+		fields.lightSAB.byteLength,
+	);
 
 	registerChunk(registry, {
-		chunkId: req.chunkId,
-		chunkX: req.chunkX,
-		chunkY: req.chunkY,
-		chunkZ: req.chunkZ,
-		headerSlot: req.headerSlot,
+		chunkId: fields.chunkId,
+		chunkX: fields.chunkX,
+		chunkY: fields.chunkY,
+		chunkZ: fields.chunkZ,
+		headerSlot: fields.headerSlot,
 		block_array,
 		palette,
 		light_array,
 	});
 
 	// Replay light mutations that arrived before this chunk was registered.
-	const queue = pendingMutations.get(req.chunkId);
+	const queue = pendingMutations.get(fields.chunkId);
 	if (queue) {
-		pendingMutations.delete(req.chunkId);
+		pendingMutations.delete(fields.chunkId);
 		for (const mutation of queue) {
 			handleMutate(mutation);
 		}
@@ -160,11 +189,12 @@ function handleRegisterChunk(req: LightRegisterChunkRequest): void {
 	// Replay the deferred-light BFS that arrived before registration, so the
 	// refinement is never dropped.  Runs before the reconciles so they see
 	// the post-BFS light values (same order as the normal pump path).
-	const dirty = new Set<number>();
-	const seedState = pendingDeferredSeeds.get(req.chunkId);
+	const dirty = _dirtyScratch;
+	dirty.clear();
+	const seedState = pendingDeferredSeeds.get(fields.chunkId);
 	if (seedState && seedState.length > 0) {
-		pendingDeferredSeeds.delete(req.chunkId);
-		for (const slot of propagateDeferred(registry, req.headerSlot, seedState)) {
+		pendingDeferredSeeds.delete(fields.chunkId);
+		for (const slot of propagateDeferred(registry, fields.headerSlot, seedState)) {
 			dirty.add(slot);
 		}
 	}
@@ -172,24 +202,25 @@ function handleRegisterChunk(req: LightRegisterChunkRequest): void {
 	// Reconcile both block and sky light after registration.
 	// Catches propagation that was skipped earlier because this chunk
 	// was not visible in the worker registry yet.
-	for (const slot of lightBlockReconcile(registry, req.headerSlot)) {
+	for (const slot of lightBlockReconcile(registry, fields.headerSlot)) {
 		dirty.add(slot);
 	}
-	for (const slot of lightSkyReconcile(registry, req.headerSlot)) {
+	for (const slot of lightSkyReconcile(registry, fields.headerSlot)) {
 		dirty.add(slot);
 	}
 	if (dirty.size > 0) {
-		postDirty(req.seq, dirty, registry);
+		postDirty(fields.seq, dirty, registry);
 	}
+}
+
+function handleRegisterChunk(req: LightRegisterChunkRequest): void {
+	registerChunkFields(req);
 }
 
 function handleRegisterChunkBatch(req: LightRegisterChunkBatchRequest): void {
 	const chunks = req.chunks;
 	for (let i = 0; i < chunks.length; i++) {
-		handleRegisterChunk({
-			type: WorkerTaskType.LightRegisterChunk,
-			...chunks[i],
-		});
+		registerChunkFields(chunks[i]);
 	}
 }
 
@@ -234,25 +265,28 @@ function handleUpdateBuffers(req: LightUpdateChunkBuffersRequest): void {
 }
 
 function handleMutate(req: LightMutateRequest): void {
-	if (!state.registry) return;
-	const view =
-		req.headerSlot >= 0 && req.headerSlot < MAX_HEADER_SLOTS
-			? state.registry.bySlot[req.headerSlot]
-			: undefined;
-	if (!view || view.chunkId !== req.chunkId || !view.isLoaded) {
-		// Chunk not yet registered (mid-terrain-generation); replay later.
+	const registry = state.registry;
+	if (!registry) return;
+
+	const view = getLoadedView(registry, req.headerSlot, req.chunkId);
+
+	if (!view) {
 		let queue = pendingMutations.get(req.chunkId);
+
 		if (!queue) {
 			queue = [];
 			pendingMutations.set(req.chunkId, queue);
 		}
+
 		if (queue.length < MAX_PENDING_PER_CHUNK) {
 			queue.push(req);
 		}
+
 		return;
 	}
+
 	const dirty = lightMutate(
-		state.registry,
+		registry,
 		req.headerSlot,
 		req.x,
 		req.y,
@@ -260,24 +294,29 @@ function handleMutate(req: LightMutateRequest): void {
 		req.oldPacked,
 		req.newPacked,
 	);
-	postDirty(req.seq, dirty, state.registry);
-}
 
+	postDirty(req.seq, dirty, registry);
+}
 function handleAddEmission(req: LightAddEmissionRequest): void {
-	if (!state.registry) return;
-	const view =
-		req.headerSlot >= 0 && req.headerSlot < MAX_HEADER_SLOTS
-			? state.registry.bySlot[req.headerSlot]
-			: undefined;
-	if (!view || view.chunkId !== req.chunkId || !view.isLoaded) return;
-	const dirty = new Set<number>();
-	addLightAt(state.registry, view, req.x, req.y, req.z, req.level, dirty);
-	postDirty(req.seq, dirty, state.registry);
+	const registry = state.registry;
+	if (!registry) return;
+
+	const view = getLoadedView(registry, req.headerSlot, req.chunkId);
+
+	if (!view) return;
+
+	const dirty = _dirtyScratch;
+	dirty.clear();
+
+	addLightAt(registry, view, req.x, req.y, req.z, req.level, dirty);
+
+	postDirty(req.seq, dirty, registry);
 }
 
 function handleSkyReconcile(req: LightSkyReconcileRequest): void {
 	if (!state.registry) return;
-	const dirty = new Set<number>();
+	const dirty = _dirtyScratch;
+	dirty.clear();
 	for (const slot of lightSkyReconcile(state.registry, req.headerSlot)) {
 		dirty.add(slot);
 	}
@@ -288,14 +327,12 @@ function handleSkyReconcile(req: LightSkyReconcileRequest): void {
 }
 
 function handlePropagateDeferred(req: LightPropagateDeferredRequest): void {
-	if (!state.registry) return;
-	const view =
-		req.headerSlot >= 0 && req.headerSlot < MAX_HEADER_SLOTS
-			? state.registry.bySlot[req.headerSlot]
-			: undefined;
-	if (!view || view.chunkId !== req.chunkId || !view.isLoaded) {
-		// Chunk not yet registered (registration may still be waiting on
-		// worker-to-worker channel data); replay later in handleRegisterChunk.
+	const registry = state.registry;
+	if (!registry) return;
+
+	const view = getLoadedView(registry, req.headerSlot, req.chunkId);
+
+	if (!view) {
 		if (pendingDeferredSeeds.size < MAX_PENDING_SEEDS) {
 			pendingDeferredSeeds.set(req.chunkId, {
 				queue: req.seedQueue,
@@ -304,17 +341,20 @@ function handlePropagateDeferred(req: LightPropagateDeferredRequest): void {
 		}
 		return;
 	}
-	const dirty = propagateDeferred(state.registry, req.headerSlot, {
+
+	const dirty = propagateDeferred(registry, req.headerSlot, {
 		queue: req.seedQueue,
 		length: req.seedLength,
 	});
-	postDirty(req.seq, dirty, state.registry);
+
+	postDirty(req.seq, dirty, registry);
 }
 
 export const LightTaskHandlers = {
 	handleInitLightShared,
 	handleSetClosedFaceMask,
 	handleRegisterChunk,
+	handleRegisterChunkFields: registerChunkFields,
 	handleRegisterChunkBatch,
 	handleUnregisterChunk,
 	handleUnregisterChunkBatch,
