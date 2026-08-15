@@ -161,49 +161,60 @@ export class WorldGenerator {
 		chunkSize: number,
 		chunkSizeSq: number,
 	): void {
+		// No underground replacement needed for chunks entirely above the transition.
 		if (chunkWorldY >= 16) return;
 
-		const midY = Math.min(chunkWorldY + (chunkSize >> 1), -1);
+		const selector = this.undergroundBiomeSelector;
+
+		// Guard against tiny chunk sizes where chunkSize >> 1 could be 0.
+		const sampleStep = Math.max(1, chunkSize >> 1);
+		const midY = Math.min(chunkWorldY + sampleStep, -1);
+
+		// Fast path: sample a few points and skip the full pass if this chunk appears
+		// to be entirely default underground stone.
 		let allDefault = true;
-		for (let dx = 0; dx < chunkSize && allDefault; dx += chunkSize >> 1) {
-			for (let dz = 0; dz < chunkSize && allDefault; dz += chunkSize >> 1) {
+
+		for (let dx = 0; dx < chunkSize && allDefault; dx += sampleStep) {
+			const worldX = chunkWorldX + dx;
+
+			for (let dz = 0; dz < chunkSize; dz += sampleStep) {
 				if (
-					this.undergroundBiomeSelector.getBiome(
-						chunkWorldX + dx,
-						midY,
-						chunkWorldZ + dz,
-					).stoneBlock !== 29
+					selector.getBiome(worldX, midY, chunkWorldZ + dz).stoneBlock !== 29
 				) {
 					allDefault = false;
+					break;
 				}
 			}
 		}
+
 		if (allDefault) return;
 
-		for (let localY = 0; localY < chunkSize; localY++) {
+		// Only process the underground portion. This removes the inner-loop
+		// worldY >= 0 branch from the original version.
+		const maxLocalYExclusive =
+			chunkWorldY < 0 ? Math.min(chunkSize, -chunkWorldY) : 0;
+
+		if (maxLocalYExclusive <= 0) return;
+
+		for (let localY = 0; localY < maxLocalYExclusive; localY++) {
 			const worldY = chunkWorldY + localY;
-			if (worldY >= 0) continue;
-			// PERF: invariant across both the z and x loops.
-			const yOffset = localY * chunkSize;
+			const yBase = localY * chunkSize;
+
 			for (let localZ = 0; localZ < chunkSize; localZ++) {
 				const worldZ = chunkWorldZ + localZ;
-				// PERF: combine once per row instead of per-voxel.
-				const rowBase = yOffset + localZ * chunkSizeSq;
-				// PERF: Cache biome per column (worldY + worldZ are constant across X).
-				const colBiome = this.undergroundBiomeSelector.getBiome(
-					chunkWorldX,
-					worldY,
-					worldZ,
-				);
+				const rowBase = yBase + localZ * chunkSizeSq;
+
+				// Preserve your current optimization: biome is cached per Y/Z row.
+				// This assumes X variation is intentionally ignored for replacement.
+				const colBiome = selector.getBiome(chunkWorldX, worldY, worldZ);
+
 				for (let localX = 0; localX < chunkSize; localX++) {
-					const idx = localX + rowBase;
+					const idx = rowBase + localX;
 					const blockId = blocks[idx];
-					if (blockId === 0 || IS_ORE[blockId]) continue;
-					// PERF: Use column-cached biome (X offset is negligible for biome selection).
-					blocks[idx] = this.undergroundBiomeSelector.getStoneReplacement(
-						blockId,
-						colBiome,
-					);
+
+					if (blockId === 0 || IS_ORE[blockId] === 1) continue;
+
+					blocks[idx] = selector.getStoneReplacement(blockId, colBiome);
 				}
 			}
 		}
