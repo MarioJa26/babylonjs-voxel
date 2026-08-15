@@ -56,7 +56,12 @@ type FaceHit = { t: number; nx: number; ny: number; nz: number };
 
 /** Minimal ray shape (Lite has no core `Ray`). */
 type RayLike = { origin: Vec3; direction: Vec3; length: number };
+const FULL_BLOCK_UNKNOWN = 0;
+const FULL_BLOCK_NO = 1;
+const FULL_BLOCK_YES = 2;
+const _fullBlockBaseCache: number[] = [];
 
+const CUBE_SHAPE_INDEX = getCubeShapeIndex();
 /** All results are written into these shared objects — callers must not retain references across frames. */
 const _sharedHit: BlockRaycastHit = {
 	x: 0,
@@ -70,6 +75,65 @@ const _sharedHit: BlockRaycastHit = {
 	blockState: 0,
 	dynamicContext: null,
 };
+const _sharedTerrainHit: BlockRaycastHit = {
+	x: 0,
+	y: 0,
+	z: 0,
+	nx: 0,
+	ny: 0,
+	nz: 0,
+	t: 0,
+	blockId: 0,
+	blockState: 0,
+	dynamicContext: null,
+};
+
+const _sharedBoatHit: BlockRaycastHit = {
+	x: 0,
+	y: 0,
+	z: 0,
+	nx: 0,
+	ny: 0,
+	nz: 0,
+	t: 0,
+	blockId: 0,
+	blockState: 0,
+	dynamicContext: null,
+};
+
+const _sharedBestBoatHit: BlockRaycastHit = {
+	x: 0,
+	y: 0,
+	z: 0,
+	nx: 0,
+	ny: 0,
+	nz: 0,
+	t: 0,
+	blockId: 0,
+	blockState: 0,
+	dynamicContext: null,
+};
+
+const _sharedBestBoatContext: {
+	kind: string;
+	boatChunk: BoatChunk | null;
+	localX: number;
+	localY: number;
+	localZ: number;
+	localHitNx: number;
+	localHitNy: number;
+	localHitNz: number;
+} = {
+	kind: "boatChunk",
+	boatChunk: null,
+	localX: 0,
+	localY: 0,
+	localZ: 0,
+	localHitNx: 0,
+	localHitNy: 0,
+	localHitNz: 0,
+};
+
 const _sharedFaceHit: FaceHit = { t: 0, nx: 0, ny: 0, nz: 0 };
 const _sharedVec3 = vec3Zero();
 const _sharedVec3b = vec3Zero();
@@ -99,7 +163,35 @@ const _sharedBoatContext: {
 	localHitNz: 0,
 };
 let _sharedRay: RayLike | null = null;
-
+function copyBlockRaycastHit(
+	from: BlockRaycastHit,
+	to: BlockRaycastHit,
+): BlockRaycastHit {
+	to.x = from.x;
+	to.y = from.y;
+	to.z = from.z;
+	to.nx = from.nx;
+	to.ny = from.ny;
+	to.nz = from.nz;
+	to.t = from.t;
+	to.blockId = from.blockId;
+	to.blockState = from.blockState;
+	to.dynamicContext = from.dynamicContext;
+	return to;
+}
+function copyBoatContext(
+	from: typeof _sharedBoatContext,
+	to: typeof _sharedBestBoatContext,
+): void {
+	to.kind = from.kind;
+	to.boatChunk = from.boatChunk;
+	to.localX = from.localX;
+	to.localY = from.localY;
+	to.localZ = from.localZ;
+	to.localHitNx = from.localHitNx;
+	to.localHitNy = from.localHitNy;
+	to.localHitNz = from.localHitNz;
+}
 function getForwardRay(player: Player, length: number): RayLike {
 	if (!_sharedRay) {
 		_sharedRay = {
@@ -126,32 +218,48 @@ function getForwardRay(player: Player, length: number): RayLike {
 }
 
 function isTargetableBlock(blockId: number): boolean {
-	return (
-		isCollidableBlock(blockId) ||
-		blockId === BlockType.GrassCross ||
-		blockId === BlockType.SavannahGrassCross ||
-		blockId === BlockType.Grass006Cross ||
-		blockId === BlockType.Torch
-	);
+	if (isCollidableBlock(blockId)) return true;
+
+	switch (blockId) {
+		case BlockType.GrassCross:
+		case BlockType.SavannahGrassCross:
+		case BlockType.Grass006Cross:
+		case BlockType.Torch:
+			return true;
+		default:
+			return false;
+	}
 }
 
 function isFullBlockShape(blockId: number, blockState: number): boolean {
-	const slice = (blockState >> 3) & 7;
-	if (slice !== 0) return false;
+	// Slice variants are never treated as full blocks in the original logic.
+	if (((blockState >> 3) & 7) !== 0) return false;
+
+	const cached = _fullBlockBaseCache[blockId] || FULL_BLOCK_UNKNOWN;
+	if (cached !== FULL_BLOCK_UNKNOWN) return cached === FULL_BLOCK_YES;
+
+	let isFull = false;
+
 	const shapeIndex = getShapeByBlockId()[blockId] ?? 0;
-	if (shapeIndex === getCubeShapeIndex()) return true;
-	const shape = getShapeForBlockId(blockId);
-	if (!shape.usesSliceState || shape.boxes.length !== 1) return false;
-	const box = shape.boxes[0];
-	return (
-		box.faceMask === FACE_ALL &&
-		box.min[0] === 0 &&
-		box.min[1] === 0 &&
-		box.min[2] === 0 &&
-		box.max[0] === 1 &&
-		box.max[1] === 1 &&
-		box.max[2] === 1
-	);
+	if (shapeIndex === CUBE_SHAPE_INDEX) {
+		isFull = true;
+	} else {
+		const shape = getShapeForBlockId(blockId);
+		if (shape.usesSliceState && shape.boxes.length === 1) {
+			const box = shape.boxes[0];
+			isFull =
+				box.faceMask === FACE_ALL &&
+				box.min[0] === 0 &&
+				box.min[1] === 0 &&
+				box.min[2] === 0 &&
+				box.max[0] === 1 &&
+				box.max[1] === 1 &&
+				box.max[2] === 1;
+		}
+	}
+
+	_fullBlockBaseCache[blockId] = isFull ? FULL_BLOCK_YES : FULL_BLOCK_NO;
+	return isFull;
 }
 
 /**
@@ -375,11 +483,23 @@ function raycastFirstBlock(
 	shouldHit: (x: number, y: number, z: number, blockId: number) => boolean,
 ): BlockRaycastHit | null {
 	const ray = getForwardRay(player, REACH_DISTANCE);
+
 	const terrainHit = raycastFirstTerrainBlock(ray, shouldHit);
+	if (terrainHit) {
+		copyBlockRaycastHit(terrainHit, _sharedTerrainHit);
+	}
+
 	const boatHit = raycastFirstBoatBlock(ray, shouldHit);
-	if (!terrainHit) return boatHit;
-	if (!boatHit) return terrainHit;
-	return boatHit.t < terrainHit.t ? boatHit : terrainHit;
+	if (boatHit) {
+		copyBlockRaycastHit(boatHit, _sharedBoatHit);
+	}
+
+	if (!terrainHit) return boatHit ? _sharedBoatHit : null;
+	if (!boatHit) return _sharedTerrainHit;
+
+	return _sharedBoatHit.t < _sharedTerrainHit.t
+		? _sharedBoatHit
+		: _sharedTerrainHit;
 }
 
 const enum DdaVisitResult {
@@ -489,89 +609,135 @@ function raycastFirstTerrainBlock(
 	ray: RayLike,
 	shouldHit: (x: number, y: number, z: number, blockId: number) => boolean,
 ): BlockRaycastHit | null {
-	const ox = ray.origin.x,
-		oy = ray.origin.y,
-		oz = ray.origin.z;
-	const dx = ray.direction.x,
-		dy = ray.direction.y,
-		dz = ray.direction.z;
+	const ox = ray.origin.x;
+	const oy = ray.origin.y;
+	const oz = ray.origin.z;
+	const dx = ray.direction.x;
+	const dy = ray.direction.y;
+	const dz = ray.direction.z;
 	const maxDist = ray.length;
+
 	if (!(maxDist > 0)) return null;
 
-	let hit = false;
+	const stepX = dx > 0 ? 1 : dx < 0 ? -1 : 0;
+	const stepY = dy > 0 ? 1 : dy < 0 ? -1 : 0;
+	const stepZ = dz > 0 ? 1 : dz < 0 ? -1 : 0;
 
-	traceRayDda(
-		ox,
-		oy,
-		oz,
-		dx,
-		dy,
-		dz,
-		Math.floor(ox),
-		Math.floor(oy),
-		Math.floor(oz),
-		0,
-		maxDist,
-		false,
-		(x, y, z, t, nx, ny, nz, tExit) => {
-			const blockId = getTerrainBlockByWorldCoords(x, y, z);
-			if (!shouldHit(x, y, z, blockId)) return DdaVisitResult.Skip;
+	const invDx = stepX === 0 ? Infinity : 1 / Math.abs(dx);
+	const invDy = stepY === 0 ? Infinity : 1 / Math.abs(dy);
+	const invDz = stepZ === 0 ? Infinity : 1 / Math.abs(dz);
 
-			const blockState = getBlockStateByWorldCoords(x, y, z);
+	let x = Math.floor(ox);
+	let y = Math.floor(oy);
+	let z = Math.floor(oz);
 
-			if (isFullBlockShape(blockId, blockState)) {
-				_sharedHit.x = x;
-				_sharedHit.y = y;
-				_sharedHit.z = z;
-				_sharedHit.nx = nx;
-				_sharedHit.ny = ny;
-				_sharedHit.nz = nz;
-				_sharedHit.t = t;
-				_sharedHit.blockId = blockId;
-				_sharedHit.blockState = blockState;
-				_sharedHit.dynamicContext = null;
-				hit = true;
-				return DdaVisitResult.Hit;
+	const boundX = stepX > 0 ? x + 1 : x;
+	const boundY = stepY > 0 ? y + 1 : y;
+	const boundZ = stepZ > 0 ? z + 1 : z;
+
+	let tMaxX = stepX === 0 ? Infinity : (boundX - ox) / dx;
+	let tMaxY = stepY === 0 ? Infinity : (boundY - oy) / dy;
+	let tMaxZ = stepZ === 0 ? Infinity : (boundZ - oz) / dz;
+
+	let t = 0;
+	let nx = 0;
+	let ny = 0;
+	let nz = 0;
+
+	while (true) {
+		// Preserve the original tie-breaking behavior from traceRayDda:
+		// X only wins with strict X < Y and X < Z.
+		// Y only wins with strict Y < Z in the else branch.
+		// Z wins ties.
+		if (tMaxX < tMaxY) {
+			if (tMaxX < tMaxZ) {
+				x += stepX;
+				t = tMaxX;
+				tMaxX += invDx;
+				nx = -stepX;
+				ny = 0;
+				nz = 0;
+			} else {
+				z += stepZ;
+				t = tMaxZ;
+				tMaxZ += invDz;
+				nx = 0;
+				ny = 0;
+				nz = -stepZ;
 			}
-
-			const shapeHit = raycastShapeInVoxel(
-				ox,
-				oy,
-				oz,
-				dx,
-				dy,
-				dz,
-				x,
-				y,
-				z,
-				blockId,
-				blockState,
-				t,
-				tExit,
-				nx,
-				ny,
-				nz,
-			);
-			if (shapeHit) {
-				_sharedHit.x = x;
-				_sharedHit.y = y;
-				_sharedHit.z = z;
-				_sharedHit.nx = shapeHit.nx;
-				_sharedHit.ny = shapeHit.ny;
-				_sharedHit.nz = shapeHit.nz;
-				_sharedHit.t = shapeHit.t;
-				_sharedHit.blockId = blockId;
-				_sharedHit.blockState = blockState;
-				_sharedHit.dynamicContext = null;
-				hit = true;
-				return DdaVisitResult.Hit;
+		} else {
+			if (tMaxY < tMaxZ) {
+				y += stepY;
+				t = tMaxY;
+				tMaxY += invDy;
+				nx = 0;
+				ny = -stepY;
+				nz = 0;
+			} else {
+				z += stepZ;
+				t = tMaxZ;
+				tMaxZ += invDz;
+				nx = 0;
+				ny = 0;
+				nz = -stepZ;
 			}
+		}
 
-			return DdaVisitResult.Skip;
-		},
-	);
+		if (t > maxDist) return null;
 
-	return hit ? _sharedHit : null;
+		const blockId = getTerrainBlockByWorldCoords(x, y, z);
+		if (!shouldHit(x, y, z, blockId)) continue;
+
+		const blockState = getBlockStateByWorldCoords(x, y, z);
+
+		if (isFullBlockShape(blockId, blockState)) {
+			_sharedHit.x = x;
+			_sharedHit.y = y;
+			_sharedHit.z = z;
+			_sharedHit.nx = nx;
+			_sharedHit.ny = ny;
+			_sharedHit.nz = nz;
+			_sharedHit.t = t;
+			_sharedHit.blockId = blockId;
+			_sharedHit.blockState = blockState;
+			_sharedHit.dynamicContext = null;
+			return _sharedHit;
+		}
+
+		const tExit = Math.min(tMaxX, tMaxY, tMaxZ, maxDist);
+		const shapeHit = raycastShapeInVoxel(
+			ox,
+			oy,
+			oz,
+			dx,
+			dy,
+			dz,
+			x,
+			y,
+			z,
+			blockId,
+			blockState,
+			t,
+			tExit,
+			nx,
+			ny,
+			nz,
+		);
+
+		if (!shapeHit) continue;
+
+		_sharedHit.x = x;
+		_sharedHit.y = y;
+		_sharedHit.z = z;
+		_sharedHit.nx = shapeHit.nx;
+		_sharedHit.ny = shapeHit.ny;
+		_sharedHit.nz = shapeHit.nz;
+		_sharedHit.t = shapeHit.t;
+		_sharedHit.blockId = blockId;
+		_sharedHit.blockState = blockState;
+		_sharedHit.dynamicContext = null;
+		return _sharedHit;
+	}
 }
 
 function raycastFirstBoatBlock(
@@ -584,16 +750,17 @@ function raycastFirstBoatBlock(
 	for (const boatChunk of BoatChunk.getActiveChunks()) {
 		if (!isBoatChunkInReach(ray, boatChunk)) continue;
 		if (!raycastSingleBoatChunk(ray, boatChunk, shouldHit)) continue;
-		if (!hasHit || _sharedHit.t < bestT) {
-			bestT = _sharedHit.t;
-			hasHit = true;
-		}
+		if (_sharedHit.t >= bestT) continue;
+
+		bestT = _sharedHit.t;
+		hasHit = true;
+
+		copyBoatContext(_sharedBoatContext, _sharedBestBoatContext);
+		_sharedHit.dynamicContext = _sharedBestBoatContext;
+		copyBlockRaycastHit(_sharedHit, _sharedBestBoatHit);
 	}
 
-	if (!hasHit) return null;
-
-	_sharedHit.dynamicContext = _sharedBoatContext;
-	return _sharedHit;
+	return hasHit ? _sharedBestBoatHit : null;
 }
 
 // Half-diagonal of the 32³ local chunk box (sqrt(3) * 16) — used to bound
@@ -613,25 +780,42 @@ function isBoatChunkInReach(ray: RayLike, boatChunk: BoatChunk): boolean {
 	const cx = boatChunk.center.x;
 	const cy = boatChunk.center.y;
 	const cz = boatChunk.center.z;
-	// Local box center, offset by the chunk's center alignment.
+
 	const lcx = Chunk.SIZE / 2 - cx;
 	const lcy = Chunk.SIZE / 2 - cy;
 	const lcz = Chunk.SIZE / 2 - cz;
-	// M * (boxCenterLocal) — affine part only (m[12..14] is the translation).
+
 	const ax = wm[0] * lcx + wm[4] * lcy + wm[8] * lcz + wm[12];
 	const ay = wm[1] * lcx + wm[5] * lcy + wm[9] * lcz + wm[13];
 	const az = wm[2] * lcx + wm[6] * lcy + wm[10] * lcz + wm[14];
-	// Max matrix column length → conservative world-space bounding radius.
+
 	const scaleX = Math.hypot(wm[0], wm[1], wm[2]);
 	const scaleY = Math.hypot(wm[4], wm[5], wm[6]);
 	const scaleZ = Math.hypot(wm[8], wm[9], wm[10]);
 	const radius = Math.max(scaleX, scaleY, scaleZ) * BOAT_CHUNK_HALF_DIAG;
 
-	const ox = ray.origin.x - ax;
-	const oy = ray.origin.y - ay;
-	const oz = ray.origin.z - az;
-	const limit = ray.length + radius;
-	return ox * ox + oy * oy + oz * oz <= limit * limit;
+	const toCx = ax - ray.origin.x;
+	const toCy = ay - ray.origin.y;
+	const toCz = az - ray.origin.z;
+
+	let closestT =
+		toCx * ray.direction.x + toCy * ray.direction.y + toCz * ray.direction.z;
+
+	if (closestT < 0) {
+		closestT = 0;
+	} else if (closestT > ray.length) {
+		closestT = ray.length;
+	}
+
+	const px = ray.origin.x + ray.direction.x * closestT;
+	const py = ray.origin.y + ray.direction.y * closestT;
+	const pz = ray.origin.z + ray.direction.z * closestT;
+
+	const dx = ax - px;
+	const dy = ay - py;
+	const dz = az - pz;
+
+	return dx * dx + dy * dy + dz * dz <= radius * radius;
 }
 
 function raycastSingleBoatChunk(
@@ -643,9 +827,11 @@ function raycastSingleBoatChunk(
 	const center = boatChunk.center;
 
 	const wm = visualRoot.worldMatrix;
+	const m = _sharedWorldMatrix.m;
 	for (let i = 0; i < 16; i++) {
-		_sharedWorldMatrix.m[i] = wm[i];
+		m[i] = wm[i];
 	}
+
 	Matrix.InvertToRef(_sharedWorldMatrix, _sharedInvMatrix);
 
 	transformCoordinatesVec3ToRef(
@@ -654,19 +840,28 @@ function raycastSingleBoatChunk(
 		_sharedLocalOrigin,
 	);
 	addVec3InPlace(_sharedLocalOrigin, center);
+
+	/*
+	 * Keep the inverse-transformed direction unnormalized.
+	 * This preserves t in world-ray units, so ray.length remains valid.
+	 * Normalizing here changes the t scale and can make boat hits compare
+	 * incorrectly against terrain hits.
+	 */
 	transformNormalVec3ToRef(ray.direction, _sharedInvMatrix, _sharedLocalDir);
 
-	const localDirLen = lengthSqVec3(_sharedLocalDir);
-	if (localDirLen <= 1e-8) return false;
-	scaleVec3InPlace(_sharedLocalDir, 1 / localDirLen);
+	if (lengthSqVec3(_sharedLocalDir) <= 1e-8) return false;
+
+	const dx = _sharedLocalDir.x;
+	const dy = _sharedLocalDir.y;
+	const dz = _sharedLocalDir.z;
 
 	const boundsHit = intersectRayAabb(
 		_sharedLocalOrigin.x,
 		_sharedLocalOrigin.y,
 		_sharedLocalOrigin.z,
-		_sharedLocalDir.x,
-		_sharedLocalDir.y,
-		_sharedLocalDir.z,
+		dx,
+		dy,
+		dz,
 		0,
 		0,
 		0,
@@ -682,11 +877,13 @@ function raycastSingleBoatChunk(
 	if (!boundsHit) return false;
 
 	const tStart = Math.max(0, boundsHit.t);
+	const startEpsilon = 1e-6;
+
 	setVec3(
 		_sharedVec3,
-		_sharedLocalOrigin.x + _sharedLocalDir.x * (tStart + 1e-6),
-		_sharedLocalOrigin.y + _sharedLocalDir.y * (tStart + 1e-6),
-		_sharedLocalOrigin.z + _sharedLocalDir.z * (tStart + 1e-6),
+		_sharedLocalOrigin.x + dx * (tStart + startEpsilon),
+		_sharedLocalOrigin.y + dy * (tStart + startEpsilon),
+		_sharedLocalOrigin.z + dz * (tStart + startEpsilon),
 	);
 
 	const x = Math.floor(_sharedVec3.x);
@@ -694,10 +891,6 @@ function raycastSingleBoatChunk(
 	const z = Math.floor(_sharedVec3.z);
 
 	if (!boatChunk.isInsideLocalBounds(x, y, z)) return false;
-
-	const dx = _sharedLocalDir.x;
-	const dy = _sharedLocalDir.y;
-	const dz = _sharedLocalDir.z;
 
 	let hitResult = false;
 
@@ -715,13 +908,15 @@ function raycastSingleBoatChunk(
 		ray.length,
 		true,
 		(lx, ly, lz, t, _nx, _ny, _nz, tExit) => {
-			if (!boatChunk.isInsideLocalBounds(lx, ly, lz))
+			if (!boatChunk.isInsideLocalBounds(lx, ly, lz)) {
 				return DdaVisitResult.Stop;
+			}
 
 			const blockId = boatChunk.getBlockLocal(lx, ly, lz);
 			if (!shouldHit(lx, ly, lz, blockId)) return DdaVisitResult.Skip;
 
 			const blockState = boatChunk.getBlockStateLocal(lx, ly, lz);
+
 			let hitT = t;
 			let hitNx = _nx;
 			let hitNy = _ny;
@@ -747,6 +942,7 @@ function raycastSingleBoatChunk(
 					_ny,
 					_nz,
 				);
+
 				if (shapeHit) {
 					hitT = shapeHit.t;
 					hitNx = shapeHit.nx;
@@ -768,27 +964,32 @@ function raycastSingleBoatChunk(
 			const ax = Math.abs(_sharedVec3b.x);
 			const ay = Math.abs(_sharedVec3b.y);
 			const az = Math.abs(_sharedVec3b.z);
-			let worldNx = 0,
-				worldNy = 0,
-				worldNz = 0;
-			if (ax >= ay && ax >= az) worldNx = _sharedVec3b.x >= 0 ? 1 : -1;
-			else if (ay >= ax && ay >= az) worldNy = _sharedVec3b.y >= 0 ? 1 : -1;
-			else worldNz = _sharedVec3b.z >= 0 ? 1 : -1;
+
+			let worldNx = 0;
+			let worldNy = 0;
+			let worldNz = 0;
+
+			if (ax >= ay && ax >= az) {
+				worldNx = _sharedVec3b.x >= 0 ? 1 : -1;
+			} else if (ay >= ax && ay >= az) {
+				worldNy = _sharedVec3b.y >= 0 ? 1 : -1;
+			} else {
+				worldNz = _sharedVec3b.z >= 0 ? 1 : -1;
+			}
 
 			boatChunk.localToWorldCenterToRef(lx, ly, lz, _sharedWorldCenter);
-			const wx = Math.floor(_sharedWorldCenter.x);
-			const wy = Math.floor(_sharedWorldCenter.y);
-			const wz = Math.floor(_sharedWorldCenter.z);
 
 			_sharedHit.t = hitT;
-			_sharedHit.x = wx;
-			_sharedHit.y = wy;
-			_sharedHit.z = wz;
+			_sharedHit.x = Math.floor(_sharedWorldCenter.x);
+			_sharedHit.y = Math.floor(_sharedWorldCenter.y);
+			_sharedHit.z = Math.floor(_sharedWorldCenter.z);
 			_sharedHit.nx = worldNx;
 			_sharedHit.ny = worldNy;
 			_sharedHit.nz = worldNz;
 			_sharedHit.blockId = blockId;
 			_sharedHit.blockState = blockState;
+			_sharedHit.dynamicContext = _sharedBoatContext;
+
 			_sharedBoatContext.boatChunk = boatChunk;
 			_sharedBoatContext.localX = lx;
 			_sharedBoatContext.localY = ly;
@@ -796,6 +997,7 @@ function raycastSingleBoatChunk(
 			_sharedBoatContext.localHitNx = hitNx;
 			_sharedBoatContext.localHitNy = hitNy;
 			_sharedBoatContext.localHitNz = hitNz;
+
 			hitResult = true;
 			return DdaVisitResult.Hit;
 		},

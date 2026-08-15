@@ -5,6 +5,7 @@ import {
 	type Mesh,
 	onBeforeRender,
 	removeFromScene,
+	resizeMeshGeometry,
 	type SceneContext,
 	type ShaderMaterial,
 	setShaderUniform,
@@ -35,113 +36,106 @@ fn mainFragment() -> @location(0) vec4<f32> {
 
 type BoxLike = { min: readonly number[]; max: readonly number[] };
 
-function addBox(
-	positions: number[],
-	normals: number[],
-	indices: number[],
-	x0: number,
-	y0: number,
-	z0: number,
-	x1: number,
-	y1: number,
-	z1: number,
-): void {
-	const faces: Array<{
-		n: [number, number, number];
-		v: Array<[number, number, number]>;
-	}> = [
-		{
-			n: [1, 0, 0],
-			v: [
-				[x1, y0, z0],
-				[x1, y0, z1],
-				[x1, y1, z1],
-				[x1, y1, z0],
-			],
-		},
-		{
-			n: [-1, 0, 0],
-			v: [
-				[x0, y0, z1],
-				[x0, y0, z0],
-				[x0, y1, z0],
-				[x0, y1, z1],
-			],
-		},
-		{
-			n: [0, 1, 0],
-			v: [
-				[x0, y1, z0],
-				[x1, y1, z0],
-				[x1, y1, z1],
-				[x0, y1, z1],
-			],
-		},
-		{
-			n: [0, -1, 0],
-			v: [
-				[x0, y0, z1],
-				[x1, y0, z1],
-				[x1, y0, z0],
-				[x0, y0, z0],
-			],
-		},
-		{
-			n: [0, 0, 1],
-			v: [
-				[x0, y0, z1],
-				[x1, y0, z1],
-				[x1, y1, z1],
-				[x0, y1, z1],
-			],
-		},
-		{
-			n: [0, 0, -1],
-			v: [
-				[x1, y0, z0],
-				[x0, y0, z0],
-				[x0, y1, z0],
-				[x1, y1, z0],
-			],
-		},
-	];
+type BoxesGeometry = {
+	positions: Float32Array;
+	normals: Float32Array;
+	indices: Uint32Array;
+};
 
-	for (const face of faces) {
-		const base = positions.length / 3;
-		for (let i = 0; i < 4; i++) {
-			positions.push(face.v[i][0], face.v[i][1], face.v[i][2]);
-			normals.push(face.n[0], face.n[1], face.n[2]);
-		}
-		indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
-	}
-}
+const HIGHLIGHT_SHAPE_INFLATION = 0.005;
+const HIGHLIGHT_UNIT_INFLATION = 0.012;
 
 function buildBoxesGeometry(
 	boxes: readonly BoxLike[],
 	inflation: number,
-): { positions: Float32Array; normals: Float32Array; indices: Uint32Array } {
-	const positions: number[] = [];
-	const normals: number[] = [];
-	const indices: number[] = [];
-	const h = inflation / 2;
-	for (const box of boxes) {
-		addBox(
-			positions,
-			normals,
-			indices,
-			box.min[0] - h,
-			box.min[1] - h,
-			box.min[2] - h,
-			box.max[0] + h,
-			box.max[1] + h,
-			box.max[2] + h,
-		);
+): BoxesGeometry {
+	const boxCount = boxes.length;
+	const positions = new Float32Array(boxCount * 24 * 3);
+	const normals = new Float32Array(boxCount * 24 * 3);
+	const indices = new Uint32Array(boxCount * 36);
+
+	const h = inflation * 0.5;
+
+	let p = 0;
+	let n = 0;
+	let ii = 0;
+	let base = 0;
+
+	function writeVertex(
+		x: number,
+		y: number,
+		z: number,
+		nx: number,
+		ny: number,
+		nz: number,
+	): void {
+		positions[p++] = x;
+		positions[p++] = y;
+		positions[p++] = z;
+
+		normals[n++] = nx;
+		normals[n++] = ny;
+		normals[n++] = nz;
 	}
-	return {
-		positions: new Float32Array(positions),
-		normals: new Float32Array(normals),
-		indices: new Uint32Array(indices),
-	};
+
+	function writeFace(
+		nx: number,
+		ny: number,
+		nz: number,
+		x0: number,
+		y0: number,
+		z0: number,
+		x1: number,
+		y1: number,
+		z1: number,
+		x2: number,
+		y2: number,
+		z2: number,
+		x3: number,
+		y3: number,
+		z3: number,
+	): void {
+		const b = base;
+
+		writeVertex(x0, y0, z0, nx, ny, nz);
+		writeVertex(x1, y1, z1, nx, ny, nz);
+		writeVertex(x2, y2, z2, nx, ny, nz);
+		writeVertex(x3, y3, z3, nx, ny, nz);
+
+		indices[ii++] = b;
+		indices[ii++] = b + 1;
+		indices[ii++] = b + 2;
+		indices[ii++] = b;
+		indices[ii++] = b + 2;
+		indices[ii++] = b + 3;
+
+		base += 4;
+	}
+
+	for (let i = 0; i < boxCount; i++) {
+		const box = boxes[i];
+
+		const x0 = box.min[0] - h;
+		const y0 = box.min[1] - h;
+		const z0 = box.min[2] - h;
+		const x1 = box.max[0] + h;
+		const y1 = box.max[1] + h;
+		const z1 = box.max[2] + h;
+
+		writeFace(1, 0, 0, x1, y0, z0, x1, y0, z1, x1, y1, z1, x1, y1, z0);
+
+		writeFace(-1, 0, 0, x0, y0, z1, x0, y0, z0, x0, y1, z0, x0, y1, z1);
+
+		writeFace(0, 1, 0, x0, y1, z0, x1, y1, z0, x1, y1, z1, x0, y1, z1);
+
+		writeFace(0, -1, 0, x0, y0, z1, x1, y0, z1, x1, y0, z0, x0, y0, z0);
+
+		writeFace(0, 0, 1, x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1);
+
+		writeFace(0, 0, -1, x1, y0, z0, x0, y0, z0, x0, y1, z0, x1, y1, z0);
+	}
+
+	return { positions, normals, indices };
 }
 
 export class BlockHighlight {
@@ -149,17 +143,29 @@ export class BlockHighlight {
 	readonly #material: ShaderMaterial;
 
 	#mesh: Mesh;
-	#shapeKey = -1;
+
+	#shapeBlockId = -1;
+	#shapeBlockState = -1;
+
 	#prevVisible = false;
-	#prevHitX = 0;
-	#prevHitY = 0;
-	#prevHitZ = 0;
+	#prevHitX = Number.NaN;
+	#prevHitY = Number.NaN;
+	#prevHitZ = Number.NaN;
+	#prevDynamicContext: unknown = undefined;
+
+	/** Injected each frame by CrossHair so this class stays decoupled from Player. */
+	#currentHit: BlockRaycastHit | null = null;
 
 	constructor() {
 		this.#scene = Map1.mainScene;
 		this.#material = this.#createMaterial();
-		this.#mesh = this.#buildUnitCube();
-		this.#shapeKey = -1;
+
+		const geo = buildBoxesGeometry(
+			[{ min: [0, 0, 0], max: [1, 1, 1] }],
+			HIGHLIGHT_UNIT_INFLATION,
+		);
+
+		this.#mesh = this.#createMesh("blockHighlight", geo);
 
 		onBeforeRender(this.#scene, () => this.#update());
 	}
@@ -168,63 +174,97 @@ export class BlockHighlight {
 		removeFromScene(this.#scene, this.#mesh);
 	}
 
+	setHit(hit: BlockRaycastHit | null): void {
+		this.#currentHit = hit;
+	}
+
 	// ─── Per-frame update ────────────────────────────────────────────────────
 
 	#update(): void {
 		const hit = this.#currentHit;
 		const visible = hit !== null;
+
 		if (visible !== this.#prevVisible) {
 			this.#mesh.visible = visible;
 			this.#prevVisible = visible;
 		}
-		if (hit) {
-			this.#ensureShape(hit.blockId, hit.blockState);
-			if (
-				hit.x !== this.#prevHitX ||
-				hit.y !== this.#prevHitY ||
-				hit.z !== this.#prevHitZ
-			) {
-				this.#applyHitTransform(hit);
-				this.#prevHitX = hit.x;
-				this.#prevHitY = hit.y;
-				this.#prevHitZ = hit.z;
-			}
-		}
-	}
 
-	/** Injected each frame by CrossHair so this class stays decoupled from Player. */
-	#currentHit: BlockRaycastHit | null = null;
-	setHit(hit: BlockRaycastHit | null): void {
-		this.#currentHit = hit;
+		if (!hit) {
+			return;
+		}
+
+		this.#ensureShape(hit.blockId, hit.blockState);
+
+		if (
+			hit.x !== this.#prevHitX ||
+			hit.y !== this.#prevHitY ||
+			hit.z !== this.#prevHitZ ||
+			hit.dynamicContext !== this.#prevDynamicContext
+		) {
+			this.#applyHitTransform(hit);
+			this.#prevHitX = hit.x;
+			this.#prevHitY = hit.y;
+			this.#prevHitZ = hit.z;
+			this.#prevDynamicContext = hit.dynamicContext;
+		}
 	}
 
 	// ─── Shape management ────────────────────────────────────────────────────
 
 	#ensureShape(blockId: number, blockState: number): void {
-		const key = (blockId << 6) | blockState;
-		if (key === this.#shapeKey) return;
+		if (
+			blockId === this.#shapeBlockId &&
+			blockState === this.#shapeBlockState
+		) {
+			return;
+		}
 
-		const previousParent = this.#mesh.parent;
-		const px = this.#mesh.position.x;
-		const py = this.#mesh.position.y;
-		const pz = this.#mesh.position.z;
-		const visible = this.#mesh.visible ?? false;
-		const next = this.#buildForBlock(blockId, blockState);
-		next.position.set(px, py, pz);
-		next.parent = previousParent;
-		next.visible = visible;
-		removeFromScene(this.#scene, this.#mesh);
-		this.#mesh = next;
-		this.#shapeKey = key;
+		const geo = this.#buildGeometryForBlock(blockId, blockState);
+
+		resizeMeshGeometry(
+			Map1.engine,
+			this.#mesh,
+			geo.positions,
+			geo.normals,
+			geo.indices,
+		);
+
+		this.#shapeBlockId = blockId;
+		this.#shapeBlockState = blockState;
+	}
+
+	#buildGeometryForBlock(blockId: number, blockState: number): BoxesGeometry {
+		const transformedBoxes = getTransformedShapeBoxes(blockId, blockState);
+		const boxes: BoxLike[] = [];
+
+		for (let i = 0; i < transformedBoxes.length; i++) {
+			const box = transformedBoxes[i];
+
+			const w = box.max[0] - box.min[0];
+			const h = box.max[1] - box.min[1];
+			const d = box.max[2] - box.min[2];
+
+			if (w > 0 && h > 0 && d > 0) {
+				boxes.push({ min: box.min, max: box.max });
+			}
+		}
+
+		if (boxes.length === 0) {
+			return buildBoxesGeometry(
+				[{ min: [0, 0, 0], max: [1, 1, 1] }],
+				HIGHLIGHT_UNIT_INFLATION,
+			);
+		}
+
+		return buildBoxesGeometry(boxes, HIGHLIGHT_SHAPE_INFLATION);
 	}
 
 	#applyHitTransform(hit: BlockRaycastHit): void {
 		const boatContext = this.#asBoatBlockContext(hit.dynamicContext);
+
 		if (boatContext) {
 			// Parent the highlight to the boat's visual root so it inherits the
-			// boat's full transform (rotation + translation). Position it at the
-			// block's LOCAL center (un-floored) so it is not clamped to the world
-			// grid and rotates naturally with the boat.
+			// boat's full transform: rotation + translation.
 			this.#mesh.parent = boatContext.boatChunk.visualRoot as never;
 			this.#mesh.position.set(
 				boatContext.localX + 0.5 - boatContext.boatChunk.center.x,
@@ -244,6 +284,7 @@ export class BlockHighlight {
 		}
 
 		const value = context as Partial<BoatBlockHitContext>;
+
 		if (value.kind !== "boatChunk") {
 			return null;
 		}
@@ -259,6 +300,7 @@ export class BlockHighlight {
 		const boatChunk = value.boatChunk as
 			| BoatBlockHitContext["boatChunk"]
 			| undefined;
+
 		if (!boatChunk?.visualRoot || !boatChunk?.center) {
 			return null;
 		}
@@ -272,37 +314,9 @@ export class BlockHighlight {
 		};
 	}
 
-	#buildForBlock(blockId: number, blockState: number): Mesh {
-		const boxes: BoxLike[] = [];
-		for (const box of getTransformedShapeBoxes(blockId, blockState)) {
-			const w = box.max[0] - box.min[0];
-			const h = box.max[1] - box.min[1];
-			const d = box.max[2] - box.min[2];
-			if (w <= 0 || h <= 0 || d <= 0) continue;
-			boxes.push({ min: box.min, max: box.max });
-		}
-
-		if (boxes.length === 0) return this.#buildUnitCube();
-
-		const geo = buildBoxesGeometry(boxes, 0.005);
-		return this.#createMesh("blockHighlight", geo);
-	}
-
-	#buildUnitCube(): Mesh {
-		const geo = buildBoxesGeometry([{ min: [0, 0, 0], max: [1, 1, 1] }], 0.012);
-		return this.#createMesh("blockHighlightUnitCube", geo);
-	}
-
 	// ─── Helpers ─────────────────────────────────────────────────────────────
 
-	#createMesh(
-		name: string,
-		geo: {
-			positions: Float32Array;
-			normals: Float32Array;
-			indices: Uint32Array;
-		},
-	): Mesh {
+	#createMesh(name: string, geo: BoxesGeometry): Mesh {
 		const mesh = createMeshFromData(
 			Map1.engine,
 			name,
@@ -310,9 +324,11 @@ export class BlockHighlight {
 			geo.normals,
 			geo.indices,
 		);
+
 		mesh.material = this.#material;
 		mesh.pickable = false;
 		mesh.visible = false;
+
 		addToScene(this.#scene, mesh);
 		return mesh;
 	}
@@ -328,12 +344,14 @@ export class BlockHighlight {
 			depthWrite: false,
 			backFaceCulling: false,
 		});
+
 		setShaderUniform(mat, "uColor", [
 			SETTING_PARAMS.HIGHLIGHT_COLOR[0],
 			SETTING_PARAMS.HIGHLIGHT_COLOR[1],
 			SETTING_PARAMS.HIGHLIGHT_COLOR[2],
 			SETTING_PARAMS.HIGHLIGHT_ALPHA,
 		]);
+
 		return mat;
 	}
 }

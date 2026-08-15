@@ -26,6 +26,7 @@ import { pickTarget } from "./BlockRaycaster";
 const _scratchLightPos = vec3Zero();
 const _scratchParticlePos = vec3Zero();
 const _scratchMiningPos = vec3Zero();
+
 let variation = 1834927911;
 
 export type BoatBlockHitContext = {
@@ -46,17 +47,91 @@ export type BoatBlockHitContext = {
 	localZ: number;
 };
 
+type CrackBlockPosition = { x: number; y: number; z: number };
+
+function getDroppedBlockId(blockId: number): number {
+	if (blockId === BlockType.Grass001 || blockId === 14 || blockId === 51) {
+		return 46;
+	}
+
+	if (blockId === BlockType.Torch) {
+		return 1017;
+	}
+
+	return blockId;
+}
+
+function stirVariation(seed: number): void {
+	variation ^= seed;
+	variation ^= variation << 3;
+	variation ^= variation >>> 2;
+}
+
+function addDeterministicDropVelocity(
+	droppedItem: DroppedItem,
+	seed: number,
+	baseY: number,
+): void {
+	stirVariation(seed);
+
+	const pushX = ((variation & 7) - 3.5) * 0.44;
+	const pushY = baseY + ((variation >>> 3) & 3);
+	const pushZ = (((variation >>> 5) & 7) - 3.5) * 0.44;
+
+	droppedItem.addVelocity(pushX, pushY, pushZ);
+}
+
+function isBoatBlockContext(context: unknown): context is BoatBlockHitContext {
+	if (!context || typeof context !== "object") {
+		return false;
+	}
+
+	const value = context as Partial<BoatBlockHitContext>;
+
+	if (value.kind !== "boatChunk") {
+		return false;
+	}
+
+	if (
+		typeof value.localX !== "number" ||
+		typeof value.localY !== "number" ||
+		typeof value.localZ !== "number"
+	) {
+		return false;
+	}
+
+	const boatChunk = value.boatChunk;
+
+	return (
+		!!boatChunk &&
+		!!boatChunk.visualRoot &&
+		!!boatChunk.center &&
+		typeof boatChunk.setBlockLocal === "function"
+	);
+}
+
 export class BlockBreakingHandler {
 	#player: Player;
 	#onBlockBroken?: (x: number, y: number, z: number, blockId: number) => void;
 
 	#active = false;
+
 	#cachedX = 0;
 	#cachedY = 0;
 	#cachedZ = 0;
+	#cachedBlockId = -1;
+	#cachedBlockState = -1;
+
+	#cachedBoatChunk: BoatBlockHitContext["boatChunk"] | null = null;
+	#cachedLocalX = 0;
+	#cachedLocalY = 0;
+	#cachedLocalZ = 0;
+
 	#hasCachedBlock = false;
 	#breakTimer = 0;
 	#lastUpdateMs = 0;
+
+	readonly #crackBlock: CrackBlockPosition = { x: 0, y: 0, z: 0 };
 
 	constructor(player: Player) {
 		this.#player = player;
@@ -81,6 +156,11 @@ export class BlockBreakingHandler {
 		this.#hasCachedBlock = false;
 		this.#breakTimer = 0;
 		this.#lastUpdateMs = 0;
+
+		this.#cachedBlockId = -1;
+		this.#cachedBlockState = -1;
+		this.#cachedBoatChunk = null;
+
 		updateCrackingState(null, 0);
 	}
 
@@ -95,6 +175,7 @@ export class BlockBreakingHandler {
 		this.#lastUpdateMs = now;
 
 		hit ??= pickTarget(this.#player);
+
 		if (!hit) {
 			this.reset();
 			return;
@@ -103,9 +184,11 @@ export class BlockBreakingHandler {
 		const x = hit.x;
 		const y = hit.y;
 		const z = hit.z;
-
 		const blockId = hit.blockId;
 		const blockState = hit.blockState;
+		const boatContext = isBoatBlockContext(hit.dynamicContext)
+			? hit.dynamicContext
+			: null;
 
 		const selectedHotbarSlot = this.#player.playerHud.selectedHotbarSlot;
 		const item =
@@ -116,18 +199,14 @@ export class BlockBreakingHandler {
 				? 0.1
 				: getBlockBreakTime(blockId, item?.itemId) || 0.001;
 
-		const isSameBlock =
-			this.#hasCachedBlock &&
-			x === this.#cachedX &&
-			y === this.#cachedY &&
-			z === this.#cachedZ;
-
-		if (isSameBlock) {
+		if (this.#isSameTarget(hit, boatContext)) {
 			this.#breakTimer += dt;
 
 			const frac = Math.min(this.#breakTimer / breakTime, 1);
-			updateCrackingState(
-				{ x: this.#cachedX, y: this.#cachedY, z: this.#cachedZ },
+			this.#updateCrackVisual(
+				x,
+				y,
+				z,
 				frac,
 				blockId,
 				blockState,
@@ -146,25 +225,104 @@ export class BlockBreakingHandler {
 					lightPos.z,
 				);
 
-				this.#breakBlock(x, y, z, blockId, packedLight, hit.dynamicContext);
+				this.#breakBlock(x, y, z, blockId, packedLight, boatContext);
 			}
-		} else {
-			this.#cachedX = x;
-			this.#cachedY = y;
-			this.#cachedZ = z;
-			this.#hasCachedBlock = true;
-			this.#breakTimer = 0;
 
-			updateCrackingState(
-				{ x, y, z },
-				0,
-				blockId,
-				blockState,
-				hit.dynamicContext,
-			);
-
-			this.#emitMiningParticles(hit, x, y, z, blockId);
+			return;
 		}
+
+		this.#cacheTarget(hit, boatContext);
+		this.#breakTimer = 0;
+
+		this.#updateCrackVisual(
+			x,
+			y,
+			z,
+			0,
+			blockId,
+			blockState,
+			hit.dynamicContext,
+		);
+		this.#emitMiningParticles(hit, x, y, z, blockId);
+	}
+
+	#isSameTarget(
+		hit: BlockRaycastHit,
+		boatContext: BoatBlockHitContext | null,
+	): boolean {
+		if (!this.#hasCachedBlock) {
+			return false;
+		}
+
+		if (
+			hit.blockId !== this.#cachedBlockId ||
+			hit.blockState !== this.#cachedBlockState
+		) {
+			return false;
+		}
+
+		if (boatContext) {
+			return (
+				this.#cachedBoatChunk === boatContext.boatChunk &&
+				this.#cachedLocalX === boatContext.localX &&
+				this.#cachedLocalY === boatContext.localY &&
+				this.#cachedLocalZ === boatContext.localZ
+			);
+		}
+
+		return (
+			this.#cachedBoatChunk === null &&
+			hit.x === this.#cachedX &&
+			hit.y === this.#cachedY &&
+			hit.z === this.#cachedZ
+		);
+	}
+
+	#cacheTarget(
+		hit: BlockRaycastHit,
+		boatContext: BoatBlockHitContext | null,
+	): void {
+		this.#cachedX = hit.x;
+		this.#cachedY = hit.y;
+		this.#cachedZ = hit.z;
+		this.#cachedBlockId = hit.blockId;
+		this.#cachedBlockState = hit.blockState;
+		this.#hasCachedBlock = true;
+
+		if (boatContext) {
+			this.#cachedBoatChunk = boatContext.boatChunk;
+			this.#cachedLocalX = boatContext.localX;
+			this.#cachedLocalY = boatContext.localY;
+			this.#cachedLocalZ = boatContext.localZ;
+		} else {
+			this.#cachedBoatChunk = null;
+			this.#cachedLocalX = 0;
+			this.#cachedLocalY = 0;
+			this.#cachedLocalZ = 0;
+		}
+	}
+
+	#updateCrackVisual(
+		x: number,
+		y: number,
+		z: number,
+		progress: number,
+		blockId: number,
+		blockState: number,
+		dynamicContext: unknown,
+	): void {
+		const crackBlock = this.#crackBlock;
+		crackBlock.x = x;
+		crackBlock.y = y;
+		crackBlock.z = z;
+
+		updateCrackingState(
+			crackBlock,
+			progress,
+			blockId,
+			blockState,
+			dynamicContext,
+		);
 	}
 
 	#emitMiningParticles(
@@ -175,12 +333,14 @@ export class BlockBreakingHandler {
 		blockId: number,
 	): void {
 		const miningPos = _scratchMiningPos;
+
 		setVec3(
 			miningPos,
 			x + 0.5 + hit.nx * 0.5,
 			y + 0.5 + hit.ny * 0.5,
 			z + 0.5 + hit.nz * 0.5,
 		);
+
 		playMining(
 			this.#player.sceneRef,
 			miningPos.x,
@@ -193,48 +353,18 @@ export class BlockBreakingHandler {
 		);
 	}
 
-	#asBoatBlockContext(context: unknown): BoatBlockHitContext | null {
-		if (!context || typeof context !== "object") return null;
-
-		const value = context as Partial<BoatBlockHitContext>;
-		if (value.kind !== "boatChunk") return null;
-
-		if (
-			typeof value.localX !== "number" ||
-			typeof value.localY !== "number" ||
-			typeof value.localZ !== "number" ||
-			!value.boatChunk
-		) {
-			return null;
-		}
-
-		return {
-			kind: "boatChunk",
-			boatChunk: value.boatChunk,
-			localX: value.localX,
-			localY: value.localY,
-			localZ: value.localZ,
-		};
-	}
-
 	#breakBlock(
 		x: number,
 		y: number,
 		z: number,
 		blockId: number,
 		packedLight: number,
-		dynamicContext: unknown,
+		boatContext: BoatBlockHitContext | null,
 	): void {
 		const info = getBlockInfo(blockId);
 		if (!info) return;
 
-		//todo make it good
-		const dropId =
-			blockId === BlockType.Grass001 || blockId === 14 || blockId === 51
-				? 46
-				: blockId === BlockType.Torch
-					? 1017
-					: blockId;
+		const dropId = getDroppedBlockId(blockId);
 		const worldItem = Item.createById(dropId);
 		worldItem.stackSize = 1;
 		worldItem.itemId = dropId;
@@ -242,22 +372,14 @@ export class BlockBreakingHandler {
 		const di = new DroppedItem(worldItem, x + 0.5, y + 0.5, z + 0.5);
 
 		// The item spawns inside the still-solid block, whose voxel stores no
-		// light until the deferred light propagation lands — tint it from the
+		// light until the deferred light propagation lands. Tint it from the
 		// lit air voxel beside the mined face instead.
 		di.setInitialLight(packedLight);
-
-		variation ^= blockId;
-		variation ^= variation << 3;
-		variation ^= variation >>> 2;
-
-		const pushX = ((variation & 7) - 3.5) * 0.44;
-		const pushY = 0.67 + ((variation >>> 3) & 3);
-		const pushZ = (((variation >>> 5) & 7) - 3.5) * 0.44;
-
-		di.addVelocity(pushX, pushY, pushZ);
+		addDeterministicDropVelocity(di, blockId, 0.67);
 
 		const particlePos = _scratchParticlePos;
 		setVec3(particlePos, x + 0.5, y + 0.5, z + 0.5);
+
 		play(this.#player.sceneRef, particlePos, blockId, packedLight);
 		playDebris(
 			this.#player.sceneRef,
@@ -270,10 +392,9 @@ export class BlockBreakingHandler {
 
 		this.reset();
 
-		// Notify multiplayer of block break
+		// Notify multiplayer of block break.
 		this.#onBlockBroken?.(x, y, z, blockId);
 
-		const boatContext = this.#asBoatBlockContext(dynamicContext);
 		if (boatContext) {
 			boatContext.boatChunk.setBlockLocal(
 				boatContext.localX,
@@ -285,6 +406,7 @@ export class BlockBreakingHandler {
 		} else {
 			deleteBlock(x, y, z);
 		}
+
 		if (blockId === BlockType.WoodCrate) {
 			const blockInventory = getBlockInventory(x, y, z);
 
@@ -294,23 +416,17 @@ export class BlockBreakingHandler {
 
 			for (const row of blockInventory.slots) {
 				for (const savedItem of row) {
-					if (savedItem) {
-						const item = Item.createById(savedItem.itemId);
-						item.stackSize = savedItem.stackSize;
-						variation ^= savedItem.itemId;
-						variation ^= variation << 3;
-						variation ^= variation >>> 2;
+					if (!savedItem) continue;
 
-						const pushX = ((variation & 7) - 3.5) * 0.44;
-						const pushY = 0.5 + ((variation >>> 3) & 3);
-						const pushZ = (((variation >>> 5) & 7) - 3.5) * 0.44;
+					const item = Item.createById(savedItem.itemId);
+					item.stackSize = savedItem.stackSize;
 
-						const droppedItem = new DroppedItem(item, dropX, dropY, dropZ);
-						droppedItem.setInitialLight(packedLight);
-						droppedItem.addVelocity(pushX, pushY, pushZ);
-					}
+					const droppedItem = new DroppedItem(item, dropX, dropY, dropZ);
+					droppedItem.setInitialLight(packedLight);
+					addDeterministicDropVelocity(droppedItem, savedItem.itemId, 0.5);
 				}
 			}
+
 			const emptyInv = createEmptyInventory(
 				blockInventory.width,
 				blockInventory.height,
