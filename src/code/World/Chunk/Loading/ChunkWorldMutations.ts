@@ -58,7 +58,6 @@ const _localCoordsScratch: LocalBlockCoordinates = {
 	chunk: undefined,
 };
 
-// M4: Reusable BlockMutationContext — avoids per-mutation object allocation
 const _ctxScratch: BlockMutationContext = {
 	worldX: 0,
 	worldY: 0,
@@ -76,10 +75,6 @@ const _ctxScratch: BlockMutationContext = {
 	nextBlockState: 0,
 };
 
-// Cache the most-recently-resolved chunk so repeated world-coordinate
-// lookups that fall in the same chunk (the dominant case inside the water
-// sim's flow BFS and other tight loops) skip the packCoords() BigInt
-// allocation + Map<bigint,Chunk>.get() on every call.
 let _lastChunkX = NaN;
 let _lastChunkY = NaN;
 let _lastChunkZ = NaN;
@@ -90,24 +85,81 @@ function resolveCoords(
 	worldY: number,
 	worldZ: number,
 ): ResolvedChunkCoords {
+	const chunkX = worldToChunkCoord(worldX);
+	const chunkY = worldToChunkCoord(worldY);
+	const chunkZ = worldToChunkCoord(worldZ);
+
 	const scratch = _coordScratch;
-	const cx = worldToChunkCoord(worldX);
-	const cy = worldToChunkCoord(worldY);
-	const cz = worldToChunkCoord(worldZ);
-	scratch.chunkX = cx;
-	scratch.chunkY = cy;
-	scratch.chunkZ = cz;
+	scratch.chunkX = chunkX;
+	scratch.chunkY = chunkY;
+	scratch.chunkZ = chunkZ;
 	scratch.localX = worldToBlockCoord(worldX);
 	scratch.localY = worldToBlockCoord(worldY);
 	scratch.localZ = worldToBlockCoord(worldZ);
-	if (cx !== _lastChunkX || cy !== _lastChunkY || cz !== _lastChunkZ) {
-		_lastChunkX = cx;
-		_lastChunkY = cy;
-		_lastChunkZ = cz;
-		_lastChunk = getChunk(cx, cy, cz);
+
+	if (
+		chunkX !== _lastChunkX ||
+		chunkY !== _lastChunkY ||
+		chunkZ !== _lastChunkZ
+	) {
+		_lastChunkX = chunkX;
+		_lastChunkY = chunkY;
+		_lastChunkZ = chunkZ;
+		_lastChunk = getChunk(chunkX, chunkY, chunkZ);
 	}
+
 	scratch.chunk = _lastChunk;
 	return scratch;
+}
+
+function fillMutationContext(
+	ctx: BlockMutationContext,
+	worldX: number,
+	worldY: number,
+	worldZ: number,
+	chunkX: number,
+	chunkY: number,
+	chunkZ: number,
+	localX: number,
+	localY: number,
+	localZ: number,
+	chunk: Chunk,
+	previousBlockId: number,
+	previousBlockState: number,
+	nextBlockId: number,
+	nextBlockState: number,
+): BlockMutationContext {
+	ctx.worldX = worldX;
+	ctx.worldY = worldY;
+	ctx.worldZ = worldZ;
+	ctx.chunkX = chunkX;
+	ctx.chunkY = chunkY;
+	ctx.chunkZ = chunkZ;
+	ctx.localX = localX;
+	ctx.localY = localY;
+	ctx.localZ = localZ;
+	ctx.chunk = chunk;
+	ctx.previousBlockId = previousBlockId;
+	ctx.previousBlockState = previousBlockState;
+	ctx.nextBlockId = nextBlockId;
+	ctx.nextBlockState = nextBlockState;
+	return ctx;
+}
+
+function isBoundaryLocalCoord(
+	localX: number,
+	localY: number,
+	localZ: number,
+): boolean {
+	const max = Chunk.SIZE - 1;
+	return (
+		localX === 0 ||
+		localY === 0 ||
+		localZ === 0 ||
+		localX === max ||
+		localY === max ||
+		localZ === max
+	);
 }
 
 export class ChunkWorldMutations {
@@ -121,8 +173,11 @@ export class ChunkWorldMutations {
 		worldZ: number,
 	): number {
 		const coords = resolveCoords(worldX, worldY, worldZ);
-		if (!coords.chunk) return 0;
-		return coords.chunk.getBlock(coords.localX, coords.localY, coords.localZ);
+		const chunk = coords.chunk;
+
+		return chunk
+			? chunk.getBlock(coords.localX, coords.localY, coords.localZ)
+			: 0;
 	}
 
 	public getLightByWorldCoords(
@@ -131,8 +186,11 @@ export class ChunkWorldMutations {
 		worldZ: number,
 	): number {
 		const coords = resolveCoords(worldX, worldY, worldZ);
-		if (!coords.chunk) return 0;
-		return coords.chunk.getLight(coords.localX, coords.localY, coords.localZ);
+		const chunk = coords.chunk;
+
+		return chunk
+			? chunk.getLight(coords.localX, coords.localY, coords.localZ)
+			: 0;
 	}
 
 	public setBlock(
@@ -143,120 +201,106 @@ export class ChunkWorldMutations {
 		state: number = 0,
 	): boolean {
 		const coords = resolveCoords(worldX, worldY, worldZ);
+		const chunk = coords.chunk;
 
-		if (!coords.chunk) {
+		if (!chunk) {
 			return false;
 		}
 
-		const previousBlockId = coords.chunk.getBlock(
-			coords.localX,
-			coords.localY,
-			coords.localZ,
-		);
-		const previousBlockState = coords.chunk.getBlockState(
-			coords.localX,
-			coords.localY,
-			coords.localZ,
-		);
+		// Copy all scratch-derived values into locals before callbacks.
+		// Adapter callbacks may perform nested lookups/mutations that reuse _coordScratch.
+		const chunkX = coords.chunkX;
+		const chunkY = coords.chunkY;
+		const chunkZ = coords.chunkZ;
+		const localX = coords.localX;
+		const localY = coords.localY;
+		const localZ = coords.localZ;
 
-		const ctx = _ctxScratch;
-		ctx.worldX = worldX;
-		ctx.worldY = worldY;
-		ctx.worldZ = worldZ;
-		ctx.chunkX = coords.chunkX;
-		ctx.chunkY = coords.chunkY;
-		ctx.chunkZ = coords.chunkZ;
-		ctx.localX = coords.localX;
-		ctx.localY = coords.localY;
-		ctx.localZ = coords.localZ;
-		ctx.chunk = coords.chunk;
-		ctx.previousBlockId = previousBlockId;
-		ctx.previousBlockState = previousBlockState;
-		ctx.nextBlockId = blockId;
-		ctx.nextBlockState = state;
+		const previousBlockId = chunk.getBlock(localX, localY, localZ);
+		const previousBlockState = chunk.getBlockState(localX, localY, localZ);
 
-		this.adapter.onBeforeSetBlock?.(ctx);
-
-		coords.chunk.setBlock(
-			coords.localX,
-			coords.localY,
-			coords.localZ,
+		const ctx = fillMutationContext(
+			_ctxScratch,
+			worldX,
+			worldY,
+			worldZ,
+			chunkX,
+			chunkY,
+			chunkZ,
+			localX,
+			localY,
+			localZ,
+			chunk,
+			previousBlockId,
+			previousBlockState,
 			blockId,
 			state,
 		);
 
-		if (
-			this.isBoundaryLocalCoord(coords.localX, coords.localY, coords.localZ)
-		) {
-			this.adapter.onBoundaryMutation?.(ctx);
+		const adapter = this.adapter;
+
+		adapter.onBeforeSetBlock?.(ctx);
+
+		chunk.setBlock(localX, localY, localZ, blockId, state);
+
+		if (isBoundaryLocalCoord(localX, localY, localZ)) {
+			adapter.onBoundaryMutation?.(ctx);
 		}
 
-		this.adapter.onAfterSetBlock?.(ctx);
+		adapter.onAfterSetBlock?.(ctx);
 		return true;
 	}
 
 	public deleteBlock(worldX: number, worldY: number, worldZ: number): boolean {
 		const coords = resolveCoords(worldX, worldY, worldZ);
+		const chunk = coords.chunk;
 
-		if (!coords.chunk) {
+		if (!chunk) {
 			return false;
 		}
 
-		const previousBlockId = coords.chunk.getBlock(
-			coords.localX,
-			coords.localY,
-			coords.localZ,
+		// Copy all scratch-derived values into locals before callbacks.
+		// Adapter callbacks may perform nested lookups/mutations that reuse _coordScratch.
+		const chunkX = coords.chunkX;
+		const chunkY = coords.chunkY;
+		const chunkZ = coords.chunkZ;
+		const localX = coords.localX;
+		const localY = coords.localY;
+		const localZ = coords.localZ;
+
+		const previousBlockId = chunk.getBlock(localX, localY, localZ);
+		const previousBlockState = chunk.getBlockState(localX, localY, localZ);
+
+		const ctx = fillMutationContext(
+			_ctxScratch,
+			worldX,
+			worldY,
+			worldZ,
+			chunkX,
+			chunkY,
+			chunkZ,
+			localX,
+			localY,
+			localZ,
+			chunk,
+			previousBlockId,
+			previousBlockState,
+			0,
+			0,
 		);
-		const previousBlockState = coords.chunk.getBlockState(
-			coords.localX,
-			coords.localY,
-			coords.localZ,
-		);
 
-		const ctx = _ctxScratch;
-		ctx.worldX = worldX;
-		ctx.worldY = worldY;
-		ctx.worldZ = worldZ;
-		ctx.chunkX = coords.chunkX;
-		ctx.chunkY = coords.chunkY;
-		ctx.chunkZ = coords.chunkZ;
-		ctx.localX = coords.localX;
-		ctx.localY = coords.localY;
-		ctx.localZ = coords.localZ;
-		ctx.chunk = coords.chunk;
-		ctx.previousBlockId = previousBlockId;
-		ctx.previousBlockState = previousBlockState;
-		ctx.nextBlockId = 0;
-		ctx.nextBlockState = 0;
+		const adapter = this.adapter;
 
-		this.adapter.onBeforeDeleteBlock?.(ctx);
+		adapter.onBeforeDeleteBlock?.(ctx);
 
-		coords.chunk.deleteBlock(coords.localX, coords.localY, coords.localZ);
+		chunk.deleteBlock(localX, localY, localZ);
 
-		if (
-			this.isBoundaryLocalCoord(coords.localX, coords.localY, coords.localZ)
-		) {
-			this.adapter.onBoundaryMutation?.(ctx);
+		if (isBoundaryLocalCoord(localX, localY, localZ)) {
+			adapter.onBoundaryMutation?.(ctx);
 		}
 
-		this.adapter.onAfterDeleteBlock?.(ctx);
+		adapter.onAfterDeleteBlock?.(ctx);
 		return true;
-	}
-
-	private isBoundaryLocalCoord(
-		localX: number,
-		localY: number,
-		localZ: number,
-	): boolean {
-		const max = Chunk.SIZE - 1;
-		return (
-			localX === 0 ||
-			localY === 0 ||
-			localZ === 0 ||
-			localX === max ||
-			localY === max ||
-			localZ === max
-		);
 	}
 }
 
@@ -265,17 +309,22 @@ export function toLocalBlockCoordinates(
 	worldY: number,
 	worldZ: number,
 ): LocalBlockCoordinates {
+	const chunkX = worldToChunkCoord(worldX);
+	const chunkY = worldToChunkCoord(worldY);
+	const chunkZ = worldToChunkCoord(worldZ);
+
 	const s = _localCoordsScratch;
 	s.worldX = worldX;
 	s.worldY = worldY;
 	s.worldZ = worldZ;
-	s.chunkX = worldToChunkCoord(worldX);
-	s.chunkY = worldToChunkCoord(worldY);
-	s.chunkZ = worldToChunkCoord(worldZ);
+	s.chunkX = chunkX;
+	s.chunkY = chunkY;
+	s.chunkZ = chunkZ;
 	s.localX = worldToBlockCoord(worldX);
 	s.localY = worldToBlockCoord(worldY);
 	s.localZ = worldToBlockCoord(worldZ);
-	s.chunk = getChunk(s.chunkX, s.chunkY, s.chunkZ);
+	s.chunk = getChunk(chunkX, chunkY, chunkZ);
+
 	return s;
 }
 
@@ -285,10 +334,9 @@ export function getBlockStateByWorldCoords(
 	worldZ: number,
 ): number {
 	const coords = resolveCoords(worldX, worldY, worldZ);
-	if (!coords.chunk) return 0;
-	return coords.chunk.getBlockState(
-		coords.localX,
-		coords.localY,
-		coords.localZ,
-	);
+	const chunk = coords.chunk;
+
+	return chunk
+		? chunk.getBlockState(coords.localX, coords.localY, coords.localZ)
+		: 0;
 }
