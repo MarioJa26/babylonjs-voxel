@@ -23,15 +23,41 @@ let loadPromise: Promise<void> | null = null;
 let loadedUrl: string | null = null;
 
 const definitions = new Map<number, ItemDefinition>();
-// Reverse index for "what item places this block state" lookups
-// (e.g. hover tooltips), avoiding an O(n) scan of `definitions`.
-const blockIndex = new Map<string, ItemDefinition>();
+
+// Reverse index:
+// blockId -> blockState -> item definition
+// Avoids string-key allocation on register and lookup.
+const blockIndex = new Map<number, Map<number, ItemDefinition>>();
 
 // Cached sorted snapshot; invalidated on any write to `definitions`.
 let sortedCache: ItemDefinition[] | null = null;
 
-function blockKey(blockId: number, blockState: number): string {
-	return `${blockId}:${blockState}`;
+function getBlockState(def: ItemDefinition): number {
+	return def.blockState ?? 0;
+}
+
+function setBlockIndex(
+	blockId: number,
+	blockState: number,
+	def: ItemDefinition,
+): void {
+	let stateMap = blockIndex.get(blockId);
+	if (stateMap === undefined) {
+		stateMap = new Map<number, ItemDefinition>();
+		blockIndex.set(blockId, stateMap);
+	}
+	stateMap.set(blockState, def);
+}
+
+function deleteBlockIndex(blockId: number, blockState: number): void {
+	const stateMap = blockIndex.get(blockId);
+	if (stateMap === undefined) return;
+
+	stateMap.delete(blockState);
+
+	if (stateMap.size === 0) {
+		blockIndex.delete(blockId);
+	}
 }
 
 export function registerItemToDisplayName(rawName: string): string {
@@ -46,7 +72,7 @@ export function registerItemToDisplayName(rawName: string): string {
 function initDefaults(): void {
 	if (initialized) return;
 
-	if (import.meta.env?.DEV && !loadPromise) {
+	if (import.meta.env?.DEV && loadPromise === null) {
 		console.warn(
 			"ItemRegistry: reading definitions before ensureItemRegistryLoaded() " +
 				"has been called. TextureDefinitions may be incomplete.",
@@ -55,19 +81,27 @@ function initDefaults(): void {
 
 	initialized = true;
 
-	for (const textureDef of TextureDefinitions) {
+	for (let i = 0, len = TextureDefinitions.length; i < len; i++) {
+		const textureDef = TextureDefinitions[i];
 		const defaultState = 0;
+		const shape = textureDef.shape || "cube";
 		const baseLabel = registerItemToDisplayName(textureDef.name);
-		const itemLabel =
-			textureDef.shape === "slab" ? `${baseLabel} Full Block` : baseLabel;
+		const itemLabel = shape === "slab" ? `${baseLabel} Full Block` : baseLabel;
+
 		registerItem({
 			id: textureDef.id,
 			name: itemLabel,
-			description: `Shape: ${textureDef.shape || "cube"}\nID: ${textureDef.id}\nPath: ${textureDef.path}\nName: ${itemLabel}\nblockId: ${textureDef.id}\nblockState: ${defaultState}`,
+			description:
+				`Shape: ${shape}\n` +
+				`ID: ${textureDef.id}\n` +
+				`Path: ${textureDef.path}\n` +
+				`Name: ${itemLabel}\n` +
+				`blockId: ${textureDef.id}\n` +
+				`blockState: ${defaultState}`,
 			useAction: "place_block",
 			blockId: textureDef.id,
 			blockState: defaultState,
-			shape: textureDef.shape || "cube",
+			shape,
 		});
 	}
 }
@@ -75,7 +109,7 @@ function initDefaults(): void {
 export async function ensureItemRegistryLoaded(
 	url = DEFAULT_ITEMS_URL,
 ): Promise<void> {
-	if (loadPromise) {
+	if (loadPromise !== null) {
 		if (loadedUrl !== null && loadedUrl !== url) {
 			console.warn(
 				`ItemRegistry: ensureItemRegistryLoaded already loaded from "${loadedUrl}"; ` +
@@ -86,12 +120,14 @@ export async function ensureItemRegistryLoaded(
 	}
 
 	loadedUrl = url;
+
 	loadPromise = (async () => {
 		await TextureDefinitionsReady;
 		initDefaults();
 		await loadRegisteredItemFromUrl(url);
 		registerProceduralTools(registerItem);
 	})();
+
 	return loadPromise;
 }
 
@@ -101,16 +137,20 @@ async function loadRegisteredItemFromUrl(url: string): Promise<void> {
 		if (!response.ok) {
 			throw new Error(`Failed to load items: ${response.status}`);
 		}
+
 		const data = (await response.json()) as unknown;
 		if (!Array.isArray(data)) {
 			throw new Error("Items JSON must be an array.");
 		}
 
-		for (const entry of data) {
+		for (let i = 0, len = data.length; i < len; i++) {
+			const entry = data[i];
+
 			if (!isValidDefinition(entry)) {
 				console.warn("Skipping invalid item definition:", entry);
 				continue;
 			}
+
 			registerItem(entry);
 		}
 	} catch (error) {
@@ -120,12 +160,18 @@ async function loadRegisteredItemFromUrl(url: string): Promise<void> {
 
 export function registerItem(def: ItemDefinition): void {
 	const existing = definitions.get(def.id);
-	const merged = existing ? { ...existing, ...def } : def;
+
+	if (existing !== undefined && existing.blockId !== undefined) {
+		deleteBlockIndex(existing.blockId, getBlockState(existing));
+	}
+
+	const merged = existing === undefined ? def : { ...existing, ...def };
+
 	definitions.set(def.id, merged);
 	sortedCache = null;
 
 	if (merged.blockId !== undefined) {
-		blockIndex.set(blockKey(merged.blockId, merged.blockState ?? 0), merged);
+		setBlockIndex(merged.blockId, getBlockState(merged), merged);
 	}
 }
 
@@ -136,27 +182,37 @@ export function getRegisteredItemById(id: number): ItemDefinition | undefined {
 
 /**
  * Reverse lookup: find the item that places a given block/state pair.
- * O(1) via index instead of scanning all definitions.
+ * O(1) via nested numeric index instead of scanning all definitions.
  */
 export function getItemByBlock(
 	blockId: number,
 	blockState = 0,
 ): ItemDefinition | undefined {
 	initDefaults();
-	return blockIndex.get(blockKey(blockId, blockState));
+
+	const stateMap = blockIndex.get(blockId);
+	return stateMap === undefined ? undefined : stateMap.get(blockState);
 }
 
 export function getAllRegisteredItems(): ItemDefinition[] {
 	initDefaults();
+
 	if (sortedCache === null) {
-		sortedCache = [...definitions.values()].sort((a, b) => a.id - b.id);
+		sortedCache = [...definitions.values()].sort(compareItemIds);
 	}
+
 	return sortedCache;
 }
 
+function compareItemIds(a: ItemDefinition, b: ItemDefinition): number {
+	return a.id - b.id;
+}
+
 function isValidDefinition(value: unknown): value is ItemDefinition {
-	if (!value || typeof value !== "object") return false;
+	if (value === null || typeof value !== "object") return false;
+
 	const candidate = value as Partial<ItemDefinition>;
+
 	return (
 		Number.isInteger(candidate.id) &&
 		typeof candidate.name === "string" &&

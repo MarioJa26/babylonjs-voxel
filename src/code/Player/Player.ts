@@ -1,16 +1,8 @@
-import type {
-	EngineContext,
-	GpuPicker,
-	Mesh,
-	SceneContext,
-	Vec3,
-} from "@babylonjs/lite";
+import type { EngineContext, Mesh, SceneContext, Vec3 } from "@babylonjs/lite";
 import {
 	addToScene,
 	createCapsule,
-	createGpuPicker,
 	createStandardMaterial,
-	disposePicker,
 } from "@babylonjs/lite";
 import { Map1 } from "@/code/Maps/Map1";
 import { tryCreateBoatFromMarker } from "@/code/World/Boat/BoatCreatorSystem";
@@ -36,17 +28,11 @@ import { PlayerStats } from "./PlayerStats";
 import { PlayerVehicleMotor } from "./PlayerVehicleMotor";
 
 /**
- * Lite (native) port of the Player — Phase B slice.
+ * Lite (native) port of the Player.
  *
- * Wires the existing gameplay clusters (PlayerHud, PlayerInputController,
- * WalkingControls, PlayerInventory, BreakingBlockHandler, ItemUseActions,
- * DroppedItem) into the Babylon Lite runtime:
- *   - movement is owned by `PlayerVehicle` (driven by WalkingControls flags via
- *     the voxel AABB collider)
- *   - per-frame: move, update distant terrain, raycast a target for the
- *     crosshair highlight, tick WalkingControls (block breaking), refresh HUD
- *
- * Phase C (mobs/boats/mounts) and the full PlayerLoopController are deferred.
+ * Wires gameplay clusters into the Babylon Lite runtime:
+ *   - movement is owned by `PlayerVehicleMotor`
+ *   - per-frame: move, update terrain/player body, refresh HUD/controller loop
  */
 export class Player {
 	#playerCamera: PlayerCamera;
@@ -58,14 +44,14 @@ export class Player {
 	#playerHud!: PlayerHud;
 	#pauseMenu!: PauseMenu;
 	#inputController: PlayerInputController;
-	#picker: GpuPicker | null = null;
 	#pickInFlight = false;
+	#interactionsDisposed = false;
 	#loopController!: PlayerLoopController;
 	#playerBodyMesh: Mesh | null = null;
+
 	networkManager?: import("../Network/NetworkManager").NetworkManager;
 
-	// Current keyboard control scheme (WalkingControls, or InventoryControls
-	// while the inventory overlay is open).
+	// Current keyboard control scheme.
 	keyboardControls: IControls<unknown>;
 
 	constructor(
@@ -76,6 +62,7 @@ export class Player {
 	) {
 		this.#playerCamera = playerCam;
 		this.#stats = new PlayerStats();
+
 		this.#playerVehicle = new PlayerVehicleMotor({
 			scene,
 			engine,
@@ -83,8 +70,10 @@ export class Player {
 			controls: new PlayerBodyControlState(),
 			playerStats: this.#stats,
 		});
+
 		this.#walkingControls = new WalkingControls(this);
 		this.keyboardControls = this.#walkingControls;
+
 		this.#flashlight = new PlayerFlashLight(scene, playerCam.playerCamera);
 		this.#playerInventory = new PlayerInventory(scene, this, 10, 10);
 
@@ -95,20 +84,19 @@ export class Player {
 			() => this.keyboardControls,
 			() => this.#onPauseRequested(),
 		);
-		this.#inputController.bind();
 
-		this.#picker = createGpuPicker(scene);
+		this.#inputController.bind();
 	}
 
 	/**
-	 * Build the HUD (crosshair + inventory + stats). Deferred until after
-	 * `Map1.initPromise` so the highlight/`BlockBreakingVisuals` meshes can use
-	 * `Map1.engine`, which is only ready once the world has initialised.
+	 * Build the HUD once the world has initialized.
 	 */
 	public createHud(scene: SceneContext): void {
 		if (this.#playerHud) return;
+
 		this.#playerHud = new PlayerHud(scene, this);
 		this.#createPlayerBody(scene);
+
 		this.#loopController = new PlayerLoopController(
 			scene,
 			this.#playerVehicle,
@@ -118,7 +106,9 @@ export class Player {
 			() => this.keyboardControls,
 			() => this.position,
 		);
+
 		this.#loopController.bind();
+
 		this.#pauseMenu = new PauseMenu(() => this.#resume(), this);
 		this.#pauseMenu.setLeaveServerCallback(() => {
 			this.networkManager?.disconnect();
@@ -126,51 +116,62 @@ export class Player {
 		});
 	}
 
-	/** Visible player capsule (third-person). Lite-native mesh + unlit material. */
+	/** Visible player capsule for third-person mode. */
 	#createPlayerBody(scene: SceneContext): void {
 		const body = createCapsule(this.engine, { height: 1.8, radius: 0.3 });
 		const mat = createStandardMaterial();
+
 		mat.emissiveColor = [0.2, 0.6, 1.0];
 		mat.disableLighting = true;
+
 		body.material = mat;
 		body.pickable = false;
 		body.visible = false;
+
 		addToScene(scene, body);
 		this.#playerBodyMesh = body;
 	}
 
-	/** Recompute spawn height against the loaded terrain (call after map init). */
+	/** Recompute spawn height against the loaded terrain. */
 	public respawn(): void {
 		this.#playerVehicle.respawn();
 	}
 
 	public tick(deltaMs: number): void {
-		if (getIsPaused()) return;
-		if (!this.#loopController) return;
+		if (getIsPaused() || !this.#loopController) return;
+
 		this.#loopController.tick(deltaMs);
 		this.#updatePlayerBody();
 	}
 
 	#updatePlayerBody(): void {
-		if (!this.#playerBodyMesh) return;
+		const body = this.#playerBodyMesh;
+		if (!body) return;
+
 		const visible = this.#playerCamera.isThirdPerson;
-		this.#playerBodyMesh.visible = visible;
+		body.visible = visible;
+
 		if (!visible) return;
-		const p = this.position;
-		this.#playerBodyMesh.position.set(p.x, p.y, p.z);
+
+		const { x, y, z } = this.position;
+		body.position.set(x, y, z);
 	}
 
 	#onPauseRequested(): void {
 		if (getIsPaused() || isUiOpen() || !this.#pauseMenu) return;
 
-		const isMultiplayer = !!this.networkManager;
+		const isMultiplayer = this.networkManager !== undefined;
 
 		if (!isMultiplayer) {
 			setIsPaused(true);
 			Map1.isPaused = true;
 		}
+
 		this.#pauseMenu.show(isMultiplayer);
-		if (document.pointerLockElement) document.exitPointerLock();
+
+		if (document.pointerLockElement) {
+			document.exitPointerLock();
+		}
 	}
 
 	#resume(): void {
@@ -178,6 +179,7 @@ export class Player {
 			setIsPaused(false);
 			Map1.isPaused = false;
 		}
+
 		this.#pauseMenu.hide();
 		this.canvas.requestPointerLock();
 	}
@@ -186,13 +188,11 @@ export class Player {
 		this.keyboardControls?.handleKeyEvent(key, isKeyDown);
 	}
 
-	// ─── public surface consumed by WalkingControls / PlayerHud ─────────────
-
 	public get position(): Vec3 {
 		return this.#playerVehicle.position;
 	}
 
-	/** Current world-space velocity of the player body (m/s). */
+	/** Current world-space velocity of the player body, in m/s. */
 	public get velocity(): Vec3 {
 		return this.#playerVehicle.velocity;
 	}
@@ -229,69 +229,70 @@ export class Player {
 		return this.scene;
 	}
 
-	/** KEY_USE ('e') — interact with the usable mesh under the crosshair. */
+	/** KEY_USE ('e') — interact with the usable target under the crosshair. */
 	public use(): void {
-		if (this.#pickInFlight || !this.#picker) return;
+		if (this.#pickInFlight || this.#interactionsDisposed) return;
+
 		this.#pickInFlight = true;
 
-		// Crosshair is screen-centre; pick there in CSS pixels relative to canvas.
-		const _x = this.canvas.clientWidth / 2;
-		const _y = this.canvas.clientHeight / 2;
-
-		// Pick up the dropped item the player is looking at (within reach).
-		// Falls back to the nearest item if none is directly targeted.
-		const dropped = pickDroppedItem(this) ?? DroppedItem.nearestTo(this);
-		if (dropped) {
-			dropped.use(this);
-			this.#pickInFlight = false;
-			return;
-		}
-
-		// No usable mesh hit — fall back to block interaction.
-		const blockHit = pickTarget(this);
-		const blockId = blockHit?.blockId;
-		if (blockId === BlockType.MasonTable) {
-			if (this.#playerHud.isMasonTableOpen) {
-				this.#playerHud.hideMasonTableUI();
-			} else {
-				this.#playerHud.showMasonTableUI();
+		try {
+			const dropped = pickDroppedItem(this) ?? DroppedItem.nearestTo(this);
+			if (dropped) {
+				dropped.use(this);
+				return;
 			}
-			this.#pickInFlight = false;
-			return;
-		}
-		if (blockId === BlockType.BoatCreator && blockHit) {
-			tryCreateBoatFromMarker(
-				this,
-				Math.floor(blockHit.x),
-				Math.floor(blockHit.y),
-				Math.floor(blockHit.z),
-			);
-			this.#pickInFlight = false;
-			return;
-		}
-		if (blockId === BlockType.WoodCrate && blockHit) {
-			if (this.#playerHud.isWoodCrateOpen) {
-				this.#playerHud.hideWoodCrateUI();
-			} else {
-				this.#playerHud.showWoodCrateUI(
-					Math.floor(blockHit.x),
-					Math.floor(blockHit.y),
-					Math.floor(blockHit.z),
-				);
-			}
-			this.#pickInFlight = false;
-			return;
-		}
 
-		this.#pickInFlight = false;
+			const blockHit = pickTarget(this);
+			if (!blockHit) return;
+
+			switch (blockHit.blockId) {
+				case BlockType.MasonTable:
+					if (this.#playerHud.isMasonTableOpen) {
+						this.#playerHud.hideMasonTableUI();
+					} else {
+						this.#playerHud.showMasonTableUI();
+					}
+					return;
+
+				case BlockType.BoatCreator: {
+					const x = Math.floor(blockHit.x);
+					const y = Math.floor(blockHit.y);
+					const z = Math.floor(blockHit.z);
+
+					tryCreateBoatFromMarker(this, x, y, z);
+					return;
+				}
+
+				case BlockType.WoodCrate: {
+					if (this.#playerHud.isWoodCrateOpen) {
+						this.#playerHud.hideWoodCrateUI();
+						return;
+					}
+
+					const x = Math.floor(blockHit.x);
+					const y = Math.floor(blockHit.y);
+					const z = Math.floor(blockHit.z);
+
+					this.#playerHud.showWoodCrateUI(x, y, z);
+					return;
+				}
+
+				default:
+					return;
+			}
+		} finally {
+			this.#pickInFlight = false;
+		}
 	}
 
-	/** Release GPU picker resources. */
+	/**
+	 * Kept for API compatibility.
+	 *
+	 * The previous implementation allocated a GPU picker but never used it for
+	 * picking. This now simply disables future interactions after disposal.
+	 */
 	public disposePicker(): void {
-		if (this.#picker) {
-			disposePicker(this.#picker);
-			this.#picker = null;
-		}
+		this.#interactionsDisposed = true;
 	}
 
 	/**

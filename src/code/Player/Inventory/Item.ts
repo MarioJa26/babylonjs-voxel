@@ -226,15 +226,13 @@ export class Item implements IUsable {
 		const hit = getPlacementHit(player);
 		if (!hit) return;
 
-		const item =
-			player.playerInventory.inventory[0][player.playerHud.selectedHotbarSlot]
-				?.item;
-		if (!item) return;
+		const hotbar = player.playerInventory.inventory[0];
+		const slot = player.playerHud.selectedHotbarSlot;
+		const item = hotbar?.[slot]?.item;
+		if (item === null || item === undefined) return;
 
 		const blockId = item.blockId ?? item.itemId;
-		let blockState = item.blockState ?? 0;
-
-		if (blockId === BlockType.Water) blockState = 0;
+		let blockState = blockId === BlockType.Water ? 0 : (item.blockState ?? 0);
 
 		const shape = getShapeForBlockId(blockId);
 		const yaw = player.playerCamera.cameraYaw;
@@ -248,20 +246,25 @@ export class Item implements IUsable {
 			const sliceBits = blockState & ~7;
 			const existingRotation = blockState & 7;
 			const originalSliceAxis = getSliceAxis(existingRotation);
-			// Default true — only override if explicitly false in future
-			const rotateVertical = SLICE_ROTATE_VERTICAL_DEFAULT;
 
 			rotation = existingRotation & 3;
-			if (originalSliceAxis !== 1 && rotateVertical) {
+
+			if (originalSliceAxis !== 1 && SLICE_ROTATE_VERTICAL_DEFAULT) {
 				rotation = Item._wallRotFromYaw(yaw);
 			}
+
 			const sliceAxis = getSliceAxis(rotation);
 
 			flipY = (existingRotation & 4) !== 0;
+
 			if (sliceAxis === 1) {
-				if (hit.ny === -1) flipY = true;
-				else if (hit.ny === 1) flipY = false;
-				else flipY = hit.hitFracY > 0.5;
+				if (hit.ny === -1) {
+					flipY = true;
+				} else if (hit.ny === 1) {
+					flipY = false;
+				} else {
+					flipY = hit.hitFracY > 0.5;
+				}
 			} else if (sliceAxis === 0) {
 				flipY = hit.nx !== 0 ? hit.nx < 0 : hit.hitFracX > 0.5;
 			} else {
@@ -271,24 +274,21 @@ export class Item implements IUsable {
 			blockState = sliceBits | (flipY ? 4 : 0) | rotation;
 			slice = (blockState >> 3) & 7;
 		} else if (shape.rotateY) {
-			// Normalise yaw → [0, 2π) with single modulo
-			let normalized = yaw % TWO_PI;
-			if (normalized < 0) normalized += TWO_PI;
-			rotation = (((normalized + HALF_QUARTER) * INV_QUARTER) | 0) & 3;
-			rotation = (rotation ^ 2) & 3;
-			rotation = (4 - rotation) & 3;
+			rotation = Item._blockRotationFromYaw(yaw);
 			flipY = (shape.allowFlipY && hit.ny === -1) || hit.hitFracY > 0.5;
 			blockState = (blockState & ~7) | (flipY ? 4 : 0) | rotation;
 		}
 
 		const pos = hit.pos;
+		const x = pos.x;
+		const y = pos.y;
+		const z = pos.z;
 
-		// ─── Player overlap check ───
 		if (
 			player.playerVehicle.wouldBlockOverlapPlayer(
-				pos.x,
-				pos.y,
-				pos.z,
+				x,
+				y,
+				z,
 				shape,
 				rotation,
 				slice,
@@ -298,57 +298,48 @@ export class Item implements IUsable {
 			return;
 		}
 
-		// Mob overlap (Set iteration)
 		const mobRegistry = Map1.mobRegistry;
-		if (mobRegistry) {
-			const px = pos.x,
-				py = pos.y,
-				pz = pos.z;
-			const px1 = px + 1,
-				py1 = py + 1,
-				pz1 = pz + 1;
+		if (mobRegistry !== null && mobRegistry !== undefined) {
+			const x1 = x + 1;
+			const y1 = y + 1;
+			const z1 = z + 1;
+
 			for (const mob of mobRegistry.getAllMobs()) {
 				const mp = mob.position;
+
 				if (
-					mp.x >= px &&
-					mp.x < px1 &&
-					mp.y >= py &&
-					mp.y < py1 &&
-					mp.z >= pz &&
-					mp.z < pz1
+					mp.x >= x &&
+					mp.x < x1 &&
+					mp.y >= y &&
+					mp.y < y1 &&
+					mp.z >= z &&
+					mp.z < z1
 				) {
 					return;
 				}
 			}
 		}
 
-		// ─── Boat placement ───
 		const boatCtx = Item._extractBoatCtx(hit.dynamicContext);
-		if (boatCtx) {
+		if (boatCtx !== null) {
 			const plX = boatCtx.localX + boatCtx.localHitNx;
 			const plY = boatCtx.localY + boatCtx.localHitNy;
 			const plZ = boatCtx.localZ + boatCtx.localHitNz;
+
 			if (boatCtx.boatChunk.isInsideLocalBounds(plX, plY, plZ)) {
 				boatCtx.boatChunk.setBlockLocal(plX, plY, plZ, blockId, blockState);
 				return;
 			}
 		}
 
-		setBlock(pos.x, pos.y, pos.z, blockId, blockState);
-
-		// Notify multiplayer of block placement
-		_onBlockPlaced?.(pos.x, pos.y, pos.z, blockId);
+		setBlock(x, y, z, blockId, blockState);
+		_onBlockPlaced?.(x, y, z, blockId);
 	}
 
 	// ─── Zero-allocation boat context extraction ───
 	private static _extractBoatCtx(context: unknown): BoatCtx | null {
-		if (
-			context === null ||
-			context === undefined ||
-			typeof context !== "object"
-		) {
-			return null;
-		}
+		if (context === null || typeof context !== "object") return null;
+
 		const c = context as Record<string, unknown>;
 		if (
 			c.kind !== "boatChunk" ||
@@ -357,12 +348,14 @@ export class Item implements IUsable {
 		) {
 			return null;
 		}
-		const lx = c.localX,
-			ly = c.localY,
-			lz = c.localZ;
-		const hnx = c.localHitNx,
-			hny = c.localHitNy,
-			hnz = c.localHitNz;
+
+		const lx = c.localX;
+		const ly = c.localY;
+		const lz = c.localZ;
+		const hnx = c.localHitNx;
+		const hny = c.localHitNy;
+		const hnz = c.localHitNz;
+
 		if (
 			typeof lx !== "number" ||
 			typeof ly !== "number" ||
@@ -374,10 +367,11 @@ export class Item implements IUsable {
 			return null;
 		}
 
-		// Reuse scratch (stable hidden class)
+		const boatChunk = c.boatChunk as BoatChunk;
+
 		if (_boatCtx === null) {
 			_boatCtx = {
-				boatChunk: c.boatChunk as BoatChunk,
+				boatChunk,
 				localX: lx,
 				localY: ly,
 				localZ: lz,
@@ -386,7 +380,7 @@ export class Item implements IUsable {
 				localHitNz: hnz,
 			};
 		} else {
-			_boatCtx.boatChunk = c.boatChunk as BoatChunk;
+			_boatCtx.boatChunk = boatChunk;
 			_boatCtx.localX = lx;
 			_boatCtx.localY = ly;
 			_boatCtx.localZ = lz;
@@ -394,15 +388,25 @@ export class Item implements IUsable {
 			_boatCtx.localHitNy = hny;
 			_boatCtx.localHitNz = hnz;
 		}
+
 		return _boatCtx;
 	}
-
+	private static _blockRotationFromYaw(yaw: number): number {
+		let rotation = Item._yawQuarter(yaw);
+		rotation = (rotation ^ 2) & 3;
+		return (4 - rotation) & 3;
+	}
 	private static _wallRotFromYaw(yaw: number): number {
+		const qi = Item._yawQuarter(yaw);
+
+		// Keep wall-slice rotations on the two horizontal wall axes.
+		// The previous implementation returned 0 or 1 while the comment said 1 or 2.
+		return (qi & 1) !== 0 ? 1 : 2;
+	}
+	private static _yawQuarter(yaw: number): number {
 		let normalized = yaw % TWO_PI;
 		if (normalized < 0) normalized += TWO_PI;
-		const qi = (((normalized + HALF_QUARTER) * INV_QUARTER) | 0) & 3;
-		return qi & 1; // odd → 1, even → 0... wait, original returns 1 or 2
-		// Corrected: odd → 1, even → 2
+		return (((normalized + HALF_QUARTER) * INV_QUARTER) | 0) & 3;
 	}
 
 	// ─── Icon rendering ───

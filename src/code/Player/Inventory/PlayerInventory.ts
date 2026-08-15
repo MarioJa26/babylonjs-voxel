@@ -1,4 +1,4 @@
-import { addVec3, type SceneContext, vec3 } from "@babylonjs/lite";
+import type { SceneContext } from "@babylonjs/lite";
 import { Observable } from "@/code/Lib/Math";
 import { InventoryControls } from "../Controls/InventoryControls";
 import { generateShapeVariants } from "../Crafting/ShapeVariantGenerator";
@@ -8,8 +8,10 @@ import { Item } from "./Item";
 import {
 	ensureItemRegistryLoaded,
 	getAllRegisteredItems,
+	type ItemDefinition,
 } from "./ItemRegistry";
 import { ItemSlot } from "./ItemSlot";
+
 export type SavedInventoryItem = {
 	itemId: number;
 	stackSize: number;
@@ -23,13 +25,14 @@ export type SavedInventoryState = {
 
 export class PlayerInventory {
 	scene: SceneContext;
+
 	#player: Player;
 	#x: number;
 	#y: number;
 	#inventorySlots: ItemSlot[][];
+	#inventoryControls: InventoryControls;
 
 	public onInventoryChangedObservable = new Observable<void>();
-	#inventoryControls: InventoryControls;
 
 	public static currentlyHoveredSlot: ItemSlot | null = null;
 
@@ -38,80 +41,107 @@ export class PlayerInventory {
 		this.#player = player;
 		this.#x = x;
 		this.#y = y;
-		this.#inventorySlots = Array.from({ length: y }, () => Array(x).fill(null));
+		this.#inventorySlots = new Array<ItemSlot[]>(y);
 
 		this.#inventoryControls = new InventoryControls(
 			this,
 			player.keyboardControls,
-			this.#player,
+			player,
 		);
 
 		this.#generateInventorySlots();
 		void this.#loadInitialItems();
 	}
 
-	#generateInventorySlots() {
-		for (let i = 0; i < this.#inventorySlots.length; i++) {
-			for (let j = 0; j < this.#inventorySlots[i].length; j++) {
-				this.#inventorySlots[i][j] = new ItemSlot(i, j);
+	#generateInventorySlots(): void {
+		const height = this.#y;
+		const width = this.#x;
+
+		for (let row = 0; row < height; row++) {
+			const slots = new Array<ItemSlot>(width);
+
+			for (let col = 0; col < width; col++) {
+				slots[col] = new ItemSlot(row, col);
 			}
+
+			this.#inventorySlots[row] = slots;
 		}
 	}
 
-	async #loadInitialItems() {
+	async #loadInitialItems(): Promise<void> {
 		await ensureItemRegistryLoaded();
 		await generateShapeVariants();
 		this.#generateFakeItems();
+		this.onInventoryChangedObservable.notifyObservers();
 	}
 
-	#generateFakeItems() {
+	#generateFakeItems(): void {
 		const definitions = getAllRegisteredItems();
-		const width = this.#inventorySlots[0].length;
-		const height = this.#inventorySlots.length;
+		const slots = this.#inventorySlots;
+		const height = this.#y;
+		const width = this.#x;
+
+		if (height <= 0 || width <= 0) return;
+
 		const slotCount = width * height;
 		const placed = new Set<number>();
 
-		const placeItem = (
-			def: (typeof definitions)[number],
-			row: number,
-			col: number,
-		) => {
-			if (this.#inventorySlots[row][col].item) return false;
-			const item = this.#createItemById(def.id, row, col);
-			if (!item) return false;
-			item.stackSize = def.maxStack ?? Math.min(64, def.id);
-			this.#inventorySlots[row][col].item = item;
-			this.#inventorySlots[row][col].divItemSlot?.appendChild(item.div);
-			placed.add(def.id);
-			return true;
-		};
+		for (let i = 0, len = definitions.length; i < len; i++) {
+			const def = definitions[i];
 
-		// Pass 1: Keep existing IDs in their slots when they fit the grid.
-		for (const def of definitions) {
-			if (placed.has(def.id)) continue;
-			if (def.id < 1 || def.id > slotCount) continue;
-			const row = Math.floor((def.id - 1) / width);
-			const col = (def.id - 1) % width;
-			placeItem(def, row, col);
-		}
+			if (placed.has(def.id) || def.id < 1 || def.id > slotCount) {
+				continue;
+			}
 
-		// Pass 2: Fill remaining empty slots with any extra items (variants, etc.).
-		const emptySlots: Array<[number, number]> = [];
-		for (let row = 0; row < height; row++) {
-			for (let col = 0; col < width; col++) {
-				if (!this.#inventorySlots[row][col].item) {
-					emptySlots.push([row, col]);
-				}
+			const index = def.id - 1;
+			const row = (index / width) | 0;
+			const col = index % width;
+
+			if (this.#tryPlaceGeneratedItem(def, row, col)) {
+				placed.add(def.id);
 			}
 		}
 
-		let emptyIndex = 0;
-		for (const def of definitions) {
+		let scanIndex = 0;
+
+		for (let i = 0, len = definitions.length; i < len; i++) {
+			const def = definitions[i];
+
 			if (placed.has(def.id)) continue;
-			if (emptyIndex >= emptySlots.length) break;
-			const [row, col] = emptySlots[emptyIndex++];
-			placeItem(def, row, col);
+
+			while (scanIndex < slotCount) {
+				const row = (scanIndex / width) | 0;
+				const col = scanIndex % width;
+				scanIndex++;
+
+				if (slots[row][col].item === null) {
+					if (this.#tryPlaceGeneratedItem(def, row, col)) {
+						placed.add(def.id);
+					}
+					break;
+				}
+			}
+
+			if (scanIndex >= slotCount) break;
 		}
+	}
+
+	#tryPlaceGeneratedItem(
+		def: ItemDefinition,
+		row: number,
+		col: number,
+	): boolean {
+		const slot = this.#inventorySlots[row][col];
+
+		if (slot.item !== null) return false;
+
+		const item = this.#createItemById(def.id, row, col);
+		if (item === null) return false;
+
+		item.stackSize = def.maxStack ?? Math.min(64, def.id);
+		this.#placeItemInSlot(slot, item);
+
+		return true;
 	}
 
 	#createItemById(itemId: number, row: number, col: number): Item | null {
@@ -122,29 +152,59 @@ export class PlayerInventory {
 		}
 	}
 
-	public getSavedInventoryState(): SavedInventoryState {
-		const slots: (SavedInventoryItem | null)[][] = [];
-		for (let row = 0; row < this.#inventorySlots.length; row++) {
-			const savedRow: (SavedInventoryItem | null)[] = [];
-			for (let col = 0; col < this.#inventorySlots[row].length; col++) {
-				const item = this.#inventorySlots[row][col].item;
-				if (!item) {
-					savedRow.push(null);
-					continue;
-				}
+	#placeItemInSlot(slot: ItemSlot, item: Item): void {
+		item.row = slot.row;
+		item.col = slot.col;
+		slot.item = item;
 
-				savedRow.push({
-					itemId: item.itemId,
-					stackSize: item.stackSize,
-				});
+		const div = slot.divItemSlot;
+
+		if (item.div.parentElement !== div) {
+			div.appendChild(item.div);
+		}
+	}
+
+	#clearInventory(): void {
+		const slots = this.#inventorySlots;
+
+		for (let row = 0, height = slots.length; row < height; row++) {
+			const slotRow = slots[row];
+
+			for (let col = 0, width = slotRow.length; col < width; col++) {
+				slotRow[col].clearItemSlots();
 			}
-			slots.push(savedRow);
+		}
+	}
+
+	public getSavedInventoryState(): SavedInventoryState {
+		const height = this.#y;
+		const width = this.#x;
+		const inventorySlots = this.#inventorySlots;
+		const savedSlots = new Array<(SavedInventoryItem | null)[]>(height);
+
+		for (let row = 0; row < height; row++) {
+			const savedRow = new Array<SavedInventoryItem | null>(width);
+			const slotRow = inventorySlots[row];
+
+			for (let col = 0; col < width; col++) {
+				const item = slotRow[col].item;
+
+				savedRow[col] =
+					item === null
+						? null
+						: {
+								itemId: item.itemId,
+								stackSize: item.stackSize,
+							};
+			}
+
+			savedSlots[row] = savedRow;
 		}
 
 		return {
-			width: this.#x,
-			height: this.#y,
-			slots,
+			width,
+			height,
+			slots: savedSlots,
 		};
 	}
 
@@ -155,16 +215,20 @@ export class PlayerInventory {
 
 		this.#clearInventory();
 
-		for (let row = 0; row < savedState.slots.length; row++) {
-			for (let col = 0; col < savedState.slots[row].length; col++) {
-				const savedItem = savedState.slots[row][col];
-				if (!savedItem) continue;
+		const savedSlots = savedState.slots;
+
+		for (let row = 0, height = savedSlots.length; row < height; row++) {
+			const savedRow = savedSlots[row];
+
+			for (let col = 0, width = savedRow.length; col < width; col++) {
+				const savedItem = savedRow[col];
+				if (savedItem === null) continue;
 
 				const item = this.#createItemById(savedItem.itemId, row, col);
-				if (!item) continue;
+				if (item === null) continue;
+
 				item.stackSize = savedItem.stackSize;
-				this.#inventorySlots[row][col].item = item;
-				this.#inventorySlots[row][col].divItemSlot.appendChild(item.div);
+				this.#placeItemInSlot(this.#inventorySlots[row][col], item);
 			}
 		}
 
@@ -172,20 +236,15 @@ export class PlayerInventory {
 		return true;
 	}
 
-	#clearInventory(): void {
-		for (const row of this.#inventorySlots) {
-			for (const slot of row) {
-				slot.clearItemSlots();
-			}
-		}
-	}
-
 	#isValidSavedInventoryState(
 		savedState: unknown,
 	): savedState is SavedInventoryState {
-		if (!savedState || typeof savedState !== "object") return false;
+		if (savedState === null || typeof savedState !== "object") {
+			return false;
+		}
 
 		const candidate = savedState as Partial<SavedInventoryState>;
+
 		if (
 			candidate.width !== this.#x ||
 			candidate.height !== this.#y ||
@@ -195,11 +254,19 @@ export class PlayerInventory {
 			return false;
 		}
 
-		for (const row of candidate.slots) {
-			if (!Array.isArray(row) || row.length !== this.#x) return false;
-			for (const slot of row) {
-				if (slot === null) continue;
-				if (!this.#isValidSavedInventoryItem(slot)) return false;
+		for (let row = 0; row < this.#y; row++) {
+			const savedRow = candidate.slots[row];
+
+			if (!Array.isArray(savedRow) || savedRow.length !== this.#x) {
+				return false;
+			}
+
+			for (let col = 0; col < this.#x; col++) {
+				const slot = savedRow[col];
+
+				if (slot !== null && !this.#isValidSavedInventoryItem(slot)) {
+					return false;
+				}
 			}
 		}
 
@@ -207,8 +274,10 @@ export class PlayerInventory {
 	}
 
 	#isValidSavedInventoryItem(value: unknown): value is SavedInventoryItem {
-		if (!value || typeof value !== "object") return false;
+		if (value === null || typeof value !== "object") return false;
+
 		const item = value as Partial<SavedInventoryItem>;
+
 		return (
 			Number.isInteger(item.itemId) &&
 			Number.isInteger(item.stackSize) &&
@@ -217,134 +286,194 @@ export class PlayerInventory {
 	}
 
 	public addItem(item: Item): number {
-		for (let i = 0; i < this.#inventorySlots.length; i++) {
-			for (let j = 0; j < this.#inventorySlots[i].length; j++) {
-				if (this.#inventorySlots[i][j].item) {
-					const itemInInventory = this.#inventorySlots[i][j].item!;
-					const remainder = Item.stackItemAtoB(item, itemInInventory);
+		if (item.stackSize <= 0) return 0;
 
-					if (remainder <= 0) return remainder;
-					else continue;
-				} else {
-					item.row = i;
-					item.col = j;
-					this.#inventorySlots[i][j].item = item;
-					this.#inventorySlots[i][j].divItemSlot.appendChild(item.div);
+		const slots = this.#inventorySlots;
+		const itemId = item.itemId;
+		let changed = false;
+
+		for (let row = 0, height = slots.length; row < height; row++) {
+			const slotRow = slots[row];
+
+			for (let col = 0, width = slotRow.length; col < width; col++) {
+				const itemInInventory = slotRow[col].item;
+
+				if (itemInInventory === null || itemInInventory.itemId !== itemId) {
+					continue;
+				}
+
+				const before = item.stackSize;
+				const remainder = Item.stackItemAtoB(item, itemInInventory);
+
+				if (remainder !== before) {
+					changed = true;
+				}
+
+				if (remainder <= 0) {
+					this.onInventoryChangedObservable.notifyObservers();
 					return 0;
 				}
 			}
 		}
-		this.onInventoryChangedObservable.notifyObservers();
+
+		for (let row = 0, height = slots.length; row < height; row++) {
+			const slotRow = slots[row];
+
+			for (let col = 0, width = slotRow.length; col < width; col++) {
+				const slot = slotRow[col];
+
+				if (slot.item === null) {
+					this.#placeItemInSlot(slot, item);
+					this.onInventoryChangedObservable.notifyObservers();
+					return 0;
+				}
+			}
+		}
+
+		if (changed) {
+			this.onInventoryChangedObservable.notifyObservers();
+		}
+
 		return item.stackSize;
 	}
 
 	public hasItem(itemId: number, count: number): boolean {
-		let found = 0;
-		for (const row of this.#inventorySlots) {
-			for (const slot of row) {
-				if (slot.item && slot.item.itemId === itemId) {
-					found += slot.item.stackSize;
-					if (found >= count) return true;
-				}
-			}
-		}
-		return false;
-	}
+		if (count <= 0) return true;
 
-	public removeItems(itemId: number, count: number): void {
-		let remaining = count;
-		for (const row of this.#inventorySlots) {
-			for (const slot of row) {
-				if (remaining <= 0) return;
-				if (slot.item && slot.item.itemId === itemId) {
-					if (slot.item.stackSize > remaining) {
-						slot.item.stackSize -= remaining;
-						remaining = 0;
-					} else {
-						remaining -= slot.item.stackSize;
-						this.deleteItem(slot.item);
+		let found = 0;
+		const slots = this.#inventorySlots;
+
+		for (let row = 0, height = slots.length; row < height; row++) {
+			const slotRow = slots[row];
+
+			for (let col = 0, width = slotRow.length; col < width; col++) {
+				const item = slotRow[col].item;
+
+				if (item !== null && item.itemId === itemId) {
+					found += item.stackSize;
+
+					if (found >= count) {
+						return true;
 					}
 				}
 			}
 		}
-		this.onInventoryChangedObservable.notifyObservers();
+
+		return false;
+	}
+
+	public removeItems(itemId: number, count: number): void {
+		if (count <= 0) return;
+
+		let remaining = count;
+		let changed = false;
+		const slots = this.#inventorySlots;
+
+		for (
+			let row = 0, height = slots.length;
+			row < height && remaining > 0;
+			row++
+		) {
+			const slotRow = slots[row];
+
+			for (
+				let col = 0, width = slotRow.length;
+				col < width && remaining > 0;
+				col++
+			) {
+				const slot = slotRow[col];
+				const item = slot.item;
+
+				if (item === null || item.itemId !== itemId) {
+					continue;
+				}
+
+				changed = true;
+
+				if (item.stackSize > remaining) {
+					item.stackSize -= remaining;
+					remaining = 0;
+				} else {
+					remaining -= item.stackSize;
+					this.#deleteItemNoNotify(item);
+				}
+			}
+		}
+
+		if (changed) {
+			this.onInventoryChangedObservable.notifyObservers();
+		}
 	}
 
 	public createAndAddItem(itemId: number, count: number): void {
-		let item: Item;
-		try {
-			item = Item.createById(itemId, -1, -1);
-		} catch {
-			return;
-		}
+		if (count <= 0) return;
+
+		const item = this.#createItemById(itemId, -1, -1);
+		if (item === null) return;
+
 		item.stackSize = count;
 
 		const remainder = this.addItem(item);
+
 		if (remainder > 0) {
 			this.dropItem(item, remainder);
 		}
 	}
 
-	public dropItemFromHotbar() {
-		const item =
-			this.#inventorySlots[0][this.#player.playerHud.selectedHotbarSlot].item;
+	public dropItemFromHotbar(): void {
+		const slot =
+			this.#inventorySlots[0]?.[this.#player.playerHud.selectedHotbarSlot];
+		const item = slot?.item;
 
-		if (item) {
-			if (this.#inventoryControls.underlyingControls.pressedKeys.has("control"))
-				this.dropItem(item, item.stackSize);
-			else this.dropItem(item, 1);
-		}
+		if (item === null || item === undefined) return;
+
+		const quantity = this.#inventoryControls.underlyingControls.pressedKeys.has(
+			"control",
+		)
+			? item.stackSize
+			: 1;
+
+		this.dropItem(item, quantity);
 	}
-	public dropItem(item: Item, quantity?: number) {
-		if (!item || item.stackSize <= 0) return; // Create a new, clean Item instance for the world to prevent state corruption. // This decouples the inventory item from the world item.
-		const worldItem = new Item(
-			item.name,
-			item.description,
-			item.icon,
-			-1, // No row
-			-1, // No col
-		);
+
+	public dropItem(item: Item, quantity?: number): void {
+		if (item.stackSize <= 0) return;
+
+		let dropCount = quantity ?? item.stackSize;
+
+		if (dropCount <= 0) return;
+		if (dropCount > item.stackSize) dropCount = item.stackSize;
+
+		const worldItem = new Item(item.name, item.description, item.icon, -1, -1);
+
 		worldItem.itemId = item.itemId;
 		worldItem.blockId = item.blockId ?? item.itemId;
 		worldItem.blockState = item.blockState ?? 0;
 		worldItem.refreshIconStyle();
-		worldItem.stackSize = quantity ?? item.stackSize;
+		worldItem.stackSize = dropCount;
+
 		item.stackSize -= worldItem.stackSize;
 
-		// Drop from the player's current world position (Lite PlayerVehicle has
-		// no display capsule — use the plain position instead).
-		const playerPosition = vec3(
-			this.#player.position.x,
-			this.#player.position.y,
-			this.#player.position.z,
-		);
-
-		// Full 3D look direction so the item lands in front of AND in the
-		// direction the player is looking (including pitch).
-		const forward = this.#player.playerCamera.getForwardDirection();
-		const dropPosition = addVec3(playerPosition, forward);
+		const player = this.#player;
+		const forward = player.playerCamera.getForwardDirection();
 
 		const droppedItem = new DroppedItem(
 			worldItem,
-			dropPosition.x,
-			dropPosition.y + 0.5,
-			dropPosition.z,
+			player.position.x + forward.x,
+			player.position.y + forward.y + 0.5,
+			player.position.z + forward.z,
 		);
 
-		// Launch in the look direction, plus the player's own momentum so the
-		// item inherits the player's movement (thrown forward while running).
 		droppedItem.addVelocity(
-			forward.x * 8 + this.#player.velocity.x,
-			forward.y * 8 + this.#player.velocity.y,
-			forward.z * 8 + this.#player.velocity.z,
+			forward.x * 8 + player.velocity.x,
+			forward.y * 8 + player.velocity.y,
+			forward.z * 8 + player.velocity.z,
 		);
 
-		if (item.row >= 0 && item.col >= 0) {
-			if (item.stackSize <= 0) {
-				this.deleteItem(item);
-				return;
-			}
+		if (item.row >= 0 && item.col >= 0 && item.stackSize <= 0) {
+			this.#deleteItemNoNotify(item);
 		}
+
 		this.onInventoryChangedObservable.notifyObservers();
 	}
 
@@ -353,68 +482,105 @@ export class PlayerInventory {
 	}
 
 	public moveItemToInventory(slotFocused: ItemSlot): void {
-		this.moveItem(slotFocused, [1, this.inventory.length - 1]);
+		this.moveItem(slotFocused, [1, this.#inventorySlots.length - 1]);
 	}
+
 	public moveItem(
 		slotFocused: ItemSlot,
 		targetBarIndexRange: [number, number],
 	): void {
 		const itemToMove = slotFocused.item;
-		if (!itemToMove) return;
+		if (itemToMove === null) return;
 
-		// --- First Pass: Try to stack with existing items ---
-		for (
-			let barIndex = targetBarIndexRange[0];
-			barIndex <= targetBarIndexRange[1];
-			barIndex++
-		) {
-			for (let i = 0; i < this.inventory[barIndex].length; i++) {
-				const slot = this.inventory[barIndex][i];
+		const slots = this.#inventorySlots;
+		const start = targetBarIndexRange[0] < 0 ? 0 : targetBarIndexRange[0];
+		const end =
+			targetBarIndexRange[1] >= slots.length
+				? slots.length - 1
+				: targetBarIndexRange[1];
+
+		if (start > end) return;
+
+		let changed = false;
+
+		for (let row = start; row <= end; row++) {
+			const slotRow = slots[row];
+
+			for (let col = 0, width = slotRow.length; col < width; col++) {
+				const slot = slotRow[col];
+
+				if (slot === slotFocused) continue;
+
 				const itemInSlot = slot.item;
 
-				if (itemInSlot && itemInSlot.itemId === itemToMove.itemId) {
+				if (itemInSlot !== null && itemInSlot.itemId === itemToMove.itemId) {
+					const before = itemToMove.stackSize;
 					const remainder = Item.stackItemAtoB(itemToMove, itemInSlot);
-					if (remainder === 0) {
+
+					if (remainder !== before) {
+						changed = true;
+					}
+
+					if (remainder <= 0) {
 						slotFocused.clearItemSlots();
+						this.onInventoryChangedObservable.notifyObservers();
 						return;
 					}
 				}
 			}
 		}
 
-		// --- Second Pass: Move to an empty slot ---
-		for (
-			let barIndex = targetBarIndexRange[0];
-			barIndex <= targetBarIndexRange[1];
-			barIndex++
-		) {
-			for (let i = 0; i < this.inventory[barIndex].length; i++) {
-				const slot = this.inventory[barIndex][i];
-				if (!slot.item) {
+		for (let row = start; row <= end; row++) {
+			const slotRow = slots[row];
+
+			for (let col = 0, width = slotRow.length; col < width; col++) {
+				const slot = slotRow[col];
+
+				if (slot.item === null) {
 					slotFocused.clearItemSlots();
-
-					itemToMove.row = slot.row;
-					itemToMove.col = slot.col;
-					slot.divItemSlot.appendChild(itemToMove.div);
-					slot.item = itemToMove;
-
+					this.#placeItemInSlot(slot, itemToMove);
+					this.onInventoryChangedObservable.notifyObservers();
 					return;
 				}
 			}
 		}
-		this.onInventoryChangedObservable.notifyObservers();
+
+		if (changed) {
+			this.onInventoryChangedObservable.notifyObservers();
+		}
 	}
 
-	public deleteItem(item: Item) {
-		if (!item) return;
+	public deleteItem(item: Item): void {
+		if (this.#deleteItemNoNotify(item)) {
+			this.onInventoryChangedObservable.notifyObservers();
+		}
+	}
 
-		item.div.parentElement?.removeChild(item.div);
+	#deleteItemNoNotify(item: Item): boolean {
+		if (item === null || item === undefined) return false;
+
+		let changed = false;
+
+		const parent = item.div.parentElement;
+		if (parent !== null) {
+			parent.removeChild(item.div);
+			changed = true;
+		}
+
 		const slot =
 			item.row >= 0 && item.col >= 0
 				? this.#inventorySlots[item.row]?.[item.col]
 				: undefined;
-		slot?.clearItemSlots();
-		this.onInventoryChangedObservable.notifyObservers();
+
+		if (slot !== undefined && slot.item === item) {
+			slot.clearItemSlots();
+			changed = true;
+		}
+
+		item.row = -1;
+		item.col = -1;
+
+		return changed;
 	}
 
 	public get inventoryControls(): InventoryControls {

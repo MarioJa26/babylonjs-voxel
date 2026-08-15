@@ -4,15 +4,9 @@ import { PlayerInventory } from "./PlayerInventory";
 
 let draggedItem: ItemSlot | null = null;
 
-export class ItemSlot {
+export class ItemSlot implements EventListenerObject {
 	#item: Item | null = null;
-	#divItemSlot: HTMLDivElement = document.createElement("div");
-
-	#onDragStart: () => void;
-	#onDragOver: (e: DragEvent) => void;
-	#onDrop: (e: DragEvent) => void;
-	#onMouseOver: (e: MouseEvent) => void;
-	#onMouseOut: () => void;
+	#divItemSlot: HTMLDivElement;
 
 	row: number;
 	col: number;
@@ -21,111 +15,185 @@ export class ItemSlot {
 		this.row = row;
 		this.col = col;
 
-		this.#onDragStart = () => {
-			draggedItem = this;
-		};
-		this.#onDragOver = (e) => {
-			e.preventDefault();
-		};
-		this.#onDrop = (e) => {
-			e.preventDefault();
-			if (draggedItem !== null && draggedItem !== this)
-				this.swapSlots(draggedItem);
-		};
-		this.#onMouseOver = (e) => {
-			PlayerInventory.currentlyHoveredSlot = this;
-			if (this.item) {
-				PlayerHud.showItemTooltip(this.item.name, e);
-			}
-		};
-		this.#onMouseOut = () => {
-			PlayerInventory.currentlyHoveredSlot = null;
-			PlayerHud.hideItemTooltip();
-		};
+		const div = document.createElement("div");
+		div.classList.add("inventory-slot");
 
+		this.#divItemSlot = div;
 		this.initialize();
 	}
 
-	public swapSlots(slot: ItemSlot) {
-		// No-op if same slot
+	public swapSlots(slot: ItemSlot): void {
 		if (slot === this) return;
 
-		// --- If same item type, try stacking first ---
-		if (this.#item && slot.#item && this.#item.itemId === slot.#item.itemId) {
-			const remainder = Item.stackItemAtoB(slot.#item, this.#item);
-			// If fully stacked into the target slot, remove source item and its DOM
+		const targetItem = this.#item;
+		const sourceItem = slot.#item;
+
+		if (
+			targetItem !== null &&
+			sourceItem !== null &&
+			targetItem.itemId === sourceItem.itemId
+		) {
+			const remainder = Item.stackItemAtoB(sourceItem, targetItem);
+
 			if (remainder <= 0) {
-				if (slot.#divItemSlot.contains(slot.#item.div)) {
-					slot.#divItemSlot.removeChild(slot.#item.div);
-				}
 				slot.#item = null;
+				slot.#render();
 			}
-			// Whether fully stacked or partially stacked, we are done (no positional swap)
+
 			return;
 		}
 
-		// --- Swap item references and positions correctly ---
-		const tempItem = this.#item;
-		this.#item = slot.#item;
-		slot.#item = tempItem;
+		this.#item = sourceItem;
+		slot.#item = targetItem;
 
-		// Update item object's stored coordinates if you keep them on the Item
-		if (this.#item) {
-			this.#item.row = this.row;
-			this.#item.col = this.col;
-		}
-		if (slot.#item) {
-			slot.#item.row = slot.row;
-			slot.#item.col = slot.col;
+		if (sourceItem !== null) {
+			sourceItem.row = this.row;
+			sourceItem.col = this.col;
 		}
 
-		// --- Update the DOM for both slots in a safe way ---
-		// Clear each container then append child if item exists.
-		// Clearing using innerHTML avoids leftover nodes; using contains/removeChild is safer if you prefer.
-		this.#divItemSlot.innerHTML = "";
-		slot.#divItemSlot.innerHTML = "";
+		if (targetItem !== null) {
+			targetItem.row = slot.row;
+			targetItem.col = slot.col;
+		}
 
-		if (this.#item) this.#divItemSlot.appendChild(this.#item.div);
-		if (slot.#item) slot.#divItemSlot.appendChild(slot.#item.div);
+		this.#render();
+		slot.#render();
 	}
 
 	public get divItemSlot(): HTMLDivElement {
 		return this.#divItemSlot;
 	}
+
 	public set divItemSlot(div: HTMLDivElement) {
+		const oldDiv = this.#divItemSlot;
+
+		oldDiv.removeEventListener("dragstart", this);
+		oldDiv.removeEventListener("dragend", this);
+		oldDiv.removeEventListener("dragover", this);
+		oldDiv.removeEventListener("drop", this);
+		oldDiv.removeEventListener("mouseover", this);
+		oldDiv.removeEventListener("mouseout", this);
+
+		div.classList.add("inventory-slot");
 		this.#divItemSlot = div;
+
+		this.initialize();
+		this.#render();
 	}
+
 	public set item(item: Item | null) {
 		this.#item = item;
+
+		if (item !== null) {
+			item.row = this.row;
+			item.col = this.col;
+		}
+
+		this.#render();
 	}
 
 	public get item(): Item | null {
 		return this.#item;
 	}
 
-	public clearItemSlots() {
-		if (this.#item && this.#divItemSlot.contains(this.#item.div)) {
-			this.#divItemSlot.removeChild(this.#item.div);
-		}
+	public clearItemSlots(): void {
 		this.#item = null;
+		this.#render();
+
+		if (draggedItem === this) {
+			draggedItem = null;
+		}
 	}
 
-	public initialize() {
+	public initialize(): void {
 		const div = this.#divItemSlot;
-		div.classList.add("inventory-slot");
-		div.addEventListener("dragstart", this.#onDragStart);
-		div.addEventListener("dragover", this.#onDragOver);
-		div.addEventListener("drop", this.#onDrop);
-		div.addEventListener("mouseover", this.#onMouseOver);
-		div.addEventListener("mouseout", this.#onMouseOut);
+
+		div.addEventListener("dragstart", this);
+		div.addEventListener("dragend", this);
+		div.addEventListener("dragover", this);
+		div.addEventListener("drop", this);
+		div.addEventListener("mouseover", this);
+		div.addEventListener("mouseout", this);
 	}
 
 	public dispose(): void {
 		const div = this.#divItemSlot;
-		div.removeEventListener("dragstart", this.#onDragStart);
-		div.removeEventListener("dragover", this.#onDragOver);
-		div.removeEventListener("drop", this.#onDrop);
-		div.removeEventListener("mouseover", this.#onMouseOver);
-		div.removeEventListener("mouseout", this.#onMouseOut);
+
+		div.removeEventListener("dragstart", this);
+		div.removeEventListener("dragend", this);
+		div.removeEventListener("dragover", this);
+		div.removeEventListener("drop", this);
+		div.removeEventListener("mouseover", this);
+		div.removeEventListener("mouseout", this);
+
+		if (draggedItem === this) {
+			draggedItem = null;
+		}
+
+		if (PlayerInventory.currentlyHoveredSlot === this) {
+			PlayerInventory.currentlyHoveredSlot = null;
+			PlayerHud.hideItemTooltip();
+		}
+	}
+
+	public handleEvent(event: Event): void {
+		switch (event.type) {
+			case "dragstart":
+				draggedItem = this;
+				return;
+
+			case "dragend":
+				if (draggedItem === this) {
+					draggedItem = null;
+				}
+				return;
+
+			case "dragover":
+				event.preventDefault();
+				return;
+
+			case "drop": {
+				event.preventDefault();
+
+				const source = draggedItem;
+				draggedItem = null;
+
+				if (source !== null && source !== this) {
+					this.swapSlots(source);
+				}
+
+				return;
+			}
+
+			case "mouseover": {
+				PlayerInventory.currentlyHoveredSlot = this;
+
+				const item = this.#item;
+				if (item !== null) {
+					PlayerHud.showItemTooltip(item.name, event as MouseEvent);
+				}
+
+				return;
+			}
+
+			case "mouseout":
+				if (PlayerInventory.currentlyHoveredSlot === this) {
+					PlayerInventory.currentlyHoveredSlot = null;
+				}
+
+				PlayerHud.hideItemTooltip();
+				return;
+		}
+	}
+
+	#render(): void {
+		const item = this.#item;
+		const div = this.#divItemSlot;
+
+		if (item === null) {
+			div.replaceChildren();
+		} else {
+			div.replaceChildren(item.div);
+		}
 	}
 }
