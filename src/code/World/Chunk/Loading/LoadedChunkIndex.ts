@@ -1,7 +1,6 @@
 import type { Chunk } from "../Chunk";
 
 const CELL_SHIFT = 5;
-const CELL_SIZE = 1 << CELL_SHIFT;
 
 const HASH_X = 73856093;
 const HASH_Y = 19349663;

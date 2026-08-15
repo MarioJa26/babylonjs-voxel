@@ -240,27 +240,34 @@ function testShapeBoxOverlap(
 	blockY: number,
 	blockZ: number,
 ): boolean {
+	const boxes = shape.boxes;
+	const usesSliceState = shape.usesSliceState;
+	const needsFlipY = flipY;
 	const needsRotation = shape.rotateY && rotation !== 0;
 
-	for (const box of shape.boxes) {
+	for (let i = 0, count = boxes.length; i < count; i++) {
+		const box = boxes[i];
+
 		let minY = box.min[1];
 		let maxY = box.max[1];
 
-		if (shape.usesSliceState) {
-			const offset = slice * 0.5;
-			minY = offset;
-			maxY = offset + 0.5;
+		if (usesSliceState) {
+			minY = slice * 0.5;
+			maxY = minY + 0.5;
 		}
 
-		if (flipY) {
-			const flippedMin = 1 - maxY;
-			const flippedMax = 1 - minY;
-			minY = flippedMin;
-			maxY = flippedMax;
+		if (needsFlipY) {
+			const oldMinY = minY;
+			minY = 1 - maxY;
+			maxY = 1 - oldMinY;
 		}
 
-		let bMinX: number, bMinY: number, bMinZ: number;
-		let bMaxX: number, bMaxY: number, bMaxZ: number;
+		let bMinX: number;
+		let bMinY: number;
+		let bMinZ: number;
+		let bMaxX: number;
+		let bMaxY: number;
+		let bMaxZ: number;
 
 		if (needsRotation) {
 			rotateShapeBoxY(
@@ -273,6 +280,7 @@ function testShapeBoxOverlap(
 				rotation,
 				_rotatedBox,
 			);
+
 			bMinX = blockX + _rotatedBox[0];
 			bMinY = blockY + _rotatedBox[1];
 			bMinZ = blockZ + _rotatedBox[2];
@@ -299,6 +307,7 @@ function testShapeBoxOverlap(
 			return true;
 		}
 	}
+
 	return false;
 }
 
@@ -392,13 +401,14 @@ export class VoxelAabbCollider {
 		const z0 = Math.floor(aMinZ + eps);
 		const z1 = Math.floor(aMaxZ - eps);
 
+		const isSolidBlockAt = this.#isSolidBlockAt;
+
 		for (let x = x0; x <= x1; x++) {
 			for (let y = y0; y <= y1; y++) {
 				for (let z = z0; z <= z1; z++) {
-					const info = this.#isSolidBlockAt(x, y, z);
-					if (!info) continue;
-
+					const info = isSolidBlockAt(x, y, z);
 					if (
+						info &&
 						testShapeBoxOverlap(
 							aMinX,
 							aMaxX,
@@ -421,6 +431,7 @@ export class VoxelAabbCollider {
 				}
 			}
 		}
+
 		return false;
 	}
 
@@ -446,78 +457,24 @@ export class VoxelAabbCollider {
 		flipY: boolean,
 	): boolean {
 		const eps = this.#epsilon;
+		const halfExtents = this.#halfExtents;
 
-		const aMinX = position.x - this.#halfExtents.x;
-		const aMaxX = position.x + this.#halfExtents.x;
-		const aMinY = position.y - this.#halfExtents.y;
-		const aMaxY = position.y + this.#halfExtents.y;
-		const aMinZ = position.z - this.#halfExtents.z;
-		const aMaxZ = position.z + this.#halfExtents.z;
-
-		const info: BlockShapeInfo = {
-			shape: blockShape as ShapeDefinition,
+		return testShapeBoxOverlap(
+			position.x - halfExtents.x,
+			position.x + halfExtents.x,
+			position.y - halfExtents.y,
+			position.y + halfExtents.y,
+			position.z - halfExtents.z,
+			position.z + halfExtents.z,
+			eps,
+			blockShape as ShapeDefinition,
 			rotation,
 			slice,
 			flipY,
-		};
-
-		const { shape, rotation: rot, slice: sl, flipY: fy } = info;
-		const needsRotation = shape.rotateY && rot !== 0;
-
-		for (const box of shape.boxes) {
-			const minX = box.min[0];
-			let minY = box.min[1];
-			const minZ = box.min[2];
-			const maxX = box.max[0];
-			let maxY = box.max[1];
-			const maxZ = box.max[2];
-
-			if (shape.usesSliceState) {
-				const offset = sl * 0.5;
-				minY = offset;
-				maxY = offset + 0.5;
-			}
-
-			if (fy) {
-				const flippedMin = 1 - maxY;
-				const flippedMax = 1 - minY;
-				minY = flippedMin;
-				maxY = flippedMax;
-			}
-
-			let bMinX: number, bMinY: number, bMinZ: number;
-			let bMaxX: number, bMaxY: number, bMaxZ: number;
-
-			if (needsRotation) {
-				rotateShapeBoxY(minX, minY, minZ, maxX, maxY, maxZ, rot, _rotatedBox);
-				bMinX = blockX + _rotatedBox[0];
-				bMinY = blockY + _rotatedBox[1];
-				bMinZ = blockZ + _rotatedBox[2];
-				bMaxX = blockX + _rotatedBox[3];
-				bMaxY = blockY + _rotatedBox[4];
-				bMaxZ = blockZ + _rotatedBox[5];
-			} else {
-				bMinX = blockX + minX;
-				bMinY = blockY + minY;
-				bMinZ = blockZ + minZ;
-				bMaxX = blockX + maxX;
-				bMaxY = blockY + maxY;
-				bMaxZ = blockZ + maxZ;
-			}
-
-			if (
-				aMaxX - eps > bMinX &&
-				aMinX + eps < bMaxX &&
-				aMaxY - eps > bMinY &&
-				aMinY + eps < bMaxY &&
-				aMaxZ - eps > bMinZ &&
-				aMinZ + eps < bMaxZ
-			) {
-				return true;
-			}
-		}
-
-		return false;
+			blockX,
+			blockY,
+			blockZ,
+		);
 	}
 
 	/**
@@ -547,13 +504,14 @@ export class VoxelAabbCollider {
 		const z0 = Math.floor(aMinZ + eps);
 		const z1 = Math.floor(aMaxZ - eps);
 
+		const isSolidBlockAt = this.#isSolidBlockAt;
+
 		for (let x = x0; x <= x1; x++) {
 			for (let y = y0; y <= y1; y++) {
 				for (let z = z0; z <= z1; z++) {
-					const info = this.#isSolidBlockAt(x, y, z);
-					if (!info) continue;
-
+					const info = isSolidBlockAt(x, y, z);
 					if (
+						info &&
 						testShapeBoxOverlap(
 							aMinX,
 							aMaxX,
@@ -576,6 +534,7 @@ export class VoxelAabbCollider {
 				}
 			}
 		}
+
 		return null;
 	}
 
@@ -589,9 +548,8 @@ export class VoxelAabbCollider {
 		if (delta === 0) return;
 
 		const dir = delta > 0 ? 1 : -1;
-		let remaining = Math.abs(delta);
+		let remaining = delta * dir;
 
-		// pre-read position
 		let x = position.x;
 		let y = position.y;
 		let z = position.z;
@@ -604,26 +562,31 @@ export class VoxelAabbCollider {
 			let ny = y;
 			let nz = z;
 
-			if (axis === Axis.X) nx += move;
-			else if (axis === Axis.Y) ny += move;
-			else nz += move;
+			if (axis === Axis.X) {
+				nx += move;
+			} else if (axis === Axis.Y) {
+				ny += move;
+			} else {
+				nz += move;
+			}
 
 			if (this.overlapsXYZ(nx, ny, nz)) {
-				if (axis === Axis.X) velocity.x = 0;
-				else if (axis === Axis.Y) velocity.y = 0;
-				else velocity.z = 0;
+				if (axis === Axis.X) {
+					velocity.x = 0;
+				} else if (axis === Axis.Y) {
+					velocity.y = 0;
+				} else {
+					velocity.z = 0;
+				}
 				break;
 			}
 
-			// commit move
 			x = nx;
 			y = ny;
 			z = nz;
-
 			remaining -= step;
 		}
 
-		// write back once (important!)
 		position.x = x;
 		position.y = y;
 		position.z = z;

@@ -7,18 +7,18 @@ import {
 import { SETTING_PARAMS } from "../World/SETTINGS_PARAMS";
 
 /**
- * Lite (native) port of PlayerCamera.
+ * Lite native port of PlayerCamera.
  * Third-person follow camera. Drives a Lite `FreeCamera`'s
- * `position`/`target` (ObservableVec3) directly.
+ * `position`/`target` ObservableVec3 directly.
  */
 export class PlayerCamera {
 	#playerCamera: FreeCamera;
+
 	#followDistance = 0.001;
 	#eyeHeight = 1.8;
 
-	// Smoothed vertical eye height (world units). Kept between moves so the
-	// camera eases up steep steps instead of snapping a full block at once.
-	// Lazily initialised on the first snap so the very first frame is exact.
+	// Smoothed vertical eye height in world units.
+	// Lazily initialized so the first move/snap is exact.
 	#smoothedEyeY: number = this.#eyeHeight;
 	readonly #verticalSmoothSpeed = 36;
 
@@ -31,11 +31,17 @@ export class PlayerCamera {
 	readonly #maxZoom = 10000;
 	readonly #zoomSpeed = 20.333;
 
+	// Cached unit forward vector. Updated only when yaw/pitch changes.
+	#forwardX = 0;
+	#forwardY = 0;
+	#forwardZ = 1;
+
 	constructor() {
 		this.#playerCamera = createFreeCamera(
 			{ x: 0, y: this.#eyeHeight, z: 0 },
 			{ x: 0, y: this.#eyeHeight, z: 1 },
 		);
+
 		this.#playerCamera.fov = SETTING_PARAMS.CAMERA_FOV * (Math.PI / 180);
 		this.#playerCamera.nearPlane = 0.1;
 		this.#playerCamera.farPlane = 13000;
@@ -43,65 +49,75 @@ export class PlayerCamera {
 
 	/**
 	 * Follow `characterPosition`. When `deltaSeconds` is provided the vertical
-	 * eye height is exponentially eased toward the player (so block steps don't
-	 * jerk the view); horizontal tracking stays exact. Omitted/zero delta snaps
-	 * immediately — used for teleports.
+	 * eye height is exponentially eased toward the player, so block steps do not
+	 * jerk the view. Horizontal tracking stays exact. Omitted/zero delta snaps
+	 * immediately, which is used for teleports.
 	 */
 	public moveWithPlayer(characterPosition: Vec3, deltaSeconds?: number): void {
-		const cosP = Math.cos(this.#cameraPitch);
-		const fx = Math.sin(this.#cameraYaw) * cosP;
-		const fy = -Math.sin(this.#cameraPitch);
-		const fz = Math.cos(this.#cameraYaw) * cosP;
-
 		const eye = this.#followDistance > this.#minZoom ? this.#eyeHeight : 0.66;
 		const targetY = characterPosition.y + eye;
 
-		let cy = targetY;
-		if (
-			deltaSeconds !== undefined &&
-			deltaSeconds > 0 &&
-			this.#smoothedEyeY !== null
-		) {
-			this.#smoothedEyeY +=
-				(targetY - this.#smoothedEyeY) *
-				(1 - Math.exp(-this.#verticalSmoothSpeed * deltaSeconds));
-			cy = this.#smoothedEyeY;
+		let cameraY = targetY;
+
+		if (deltaSeconds !== undefined && deltaSeconds > 0) {
+			if (this.#smoothedEyeY === null) {
+				this.#smoothedEyeY = targetY;
+			} else {
+				this.#smoothedEyeY +=
+					(targetY - this.#smoothedEyeY) *
+					(1 - Math.exp(-this.#verticalSmoothSpeed * deltaSeconds));
+			}
+
+			cameraY = this.#smoothedEyeY;
 		} else {
 			this.#smoothedEyeY = targetY;
 		}
 
+		const distance = this.#followDistance;
+
 		this.#playerCamera.position.set(
-			characterPosition.x - fx * this.#followDistance,
-			cy - fy * this.#followDistance,
-			characterPosition.z - fz * this.#followDistance,
+			characterPosition.x - this.#forwardX * distance,
+			cameraY - this.#forwardY * distance,
+			characterPosition.z - this.#forwardZ * distance,
 		);
-		this.#playerCamera.target.set(characterPosition.x, cy, characterPosition.z);
+
+		this.#playerCamera.target.set(
+			characterPosition.x,
+			cameraY,
+			characterPosition.z,
+		);
 	}
 
-	/** Snap the camera straight to a position (respawn / save restore / locks). */
+	/** Snap the camera straight to a position, for respawn / save restore / locks. */
 	public snapToPlayer(characterPosition: Vec3): void {
 		this.moveWithPlayer(characterPosition, 0);
 	}
 
 	public handleMouseMovement(deltaX: number, deltaY: number): void {
-		this.#cameraYaw -= -deltaX * this.mouseSensitivity;
+		this.#cameraYaw += deltaX * this.mouseSensitivity;
 		this.#cameraPitch += deltaY * this.mouseSensitivity;
-		this.#cameraPitch = Math.max(
-			-this.#maxPitch,
-			Math.min(this.#maxPitch, this.#cameraPitch),
-		);
+
+		if (this.#cameraPitch > this.#maxPitch) {
+			this.#cameraPitch = this.#maxPitch;
+		} else if (this.#cameraPitch < -this.#maxPitch) {
+			this.#cameraPitch = -this.#maxPitch;
+		}
+
+		this.#updateForwardCache();
 	}
 
 	public zoomIn(): void {
-		if (this.#followDistance - this.#zoomSpeed > this.#minZoom)
-			this.#followDistance -= this.#zoomSpeed;
-		else this.#followDistance = this.#minZoom;
+		this.#followDistance = Math.max(
+			this.#minZoom,
+			this.#followDistance - this.#zoomSpeed,
+		);
 	}
 
 	public zoomOut(): void {
-		if (this.#followDistance + this.#zoomSpeed < this.#maxZoom)
-			this.#followDistance += this.#zoomSpeed;
-		else this.#followDistance = this.#maxZoom;
+		this.#followDistance = Math.min(
+			this.#maxZoom,
+			this.#followDistance + this.#zoomSpeed,
+		);
 	}
 
 	public get cameraYaw(): number {
@@ -114,15 +130,10 @@ export class PlayerCamera {
 
 	/** Full 3D unit vector pointing in the direction the camera is looking. */
 	public getForwardDirection(): Vec3 {
-		const cosP = Math.cos(this.#cameraPitch);
-		return vec3(
-			Math.sin(this.#cameraYaw) * cosP,
-			-Math.sin(this.#cameraPitch),
-			Math.cos(this.#cameraYaw) * cosP,
-		);
+		return vec3(this.#forwardX, this.#forwardY, this.#forwardZ);
 	}
 
-	/** True when zoomed out far enough to see the player body (third-person). */
+	/** True when zoomed out far enough to see the player body, meaning third-person. */
 	public get isThirdPerson(): boolean {
 		return this.#followDistance > 0.5;
 	}
@@ -136,8 +147,8 @@ export class PlayerCamera {
 	}
 
 	public get position(): Vec3 {
-		const p = this.#playerCamera.position;
-		return { x: p.x, y: p.y, z: p.z };
+		const position = this.#playerCamera.position;
+		return { x: position.x, y: position.y, z: position.z };
 	}
 
 	public set position(position: Vec3) {
@@ -146,5 +157,13 @@ export class PlayerCamera {
 
 	public set target(target: Vec3) {
 		this.#playerCamera.target.set(target.x, target.y, target.z);
+	}
+
+	#updateForwardCache(): void {
+		const cosPitch = Math.cos(this.#cameraPitch);
+
+		this.#forwardX = Math.sin(this.#cameraYaw) * cosPitch;
+		this.#forwardY = -Math.sin(this.#cameraPitch);
+		this.#forwardZ = Math.cos(this.#cameraYaw) * cosPitch;
 	}
 }

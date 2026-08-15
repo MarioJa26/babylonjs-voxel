@@ -1,6 +1,7 @@
 import { type SceneContext, type Vec3, vec3 } from "@babylonjs/lite";
 import type { Mount } from "../Entities/Mount";
 import { getFinalTerrainHeight } from "../Generation/TerrainHeightMap";
+import { vec3Zero } from "../Lib/Math";
 import { getBlockByWorldCoords } from "../World/Chunk/ChunkLoadingSystem";
 import {
 	Axis,
@@ -11,11 +12,6 @@ import { getShapeInfo } from "../World/MeshPipeline/core/BlockInfoCache";
 import { FALLBACK_CUBE } from "../World/Shape/BlockShapes";
 import { PlayerBodyControlState } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
-
-// Phase B (Lite) movement owner. Replaces the old core PlayerVehicle: it is
-// driven by the `inputDirection` / jump / sprint / sneak / fly flags that
-// WalkingControls writes, and resolves motion with the voxel AABB collider
-// (the same full-cube probe used by the Phase A milestone). No Babylon mesh.
 
 const SOLID_CUBE: BlockShapeInfo = {
 	shape: FALLBACK_CUBE,
@@ -31,9 +27,9 @@ const isSolidBlockAt = (
 ): BlockShapeInfo | null => {
 	const packed = getBlockByWorldCoords(x, y, z);
 	if (!packed) return null;
+
 	const info = getShapeInfo(packed);
-	if (!info?.isCube) return null;
-	return SOLID_CUBE;
+	return info?.isCube ? SOLID_CUBE : null;
 };
 
 const PLAYER_HALF_EXTENTS = {
@@ -45,6 +41,10 @@ const PLAYER_HALF_EXTENTS = {
 	},
 };
 
+type MutableVec3 = Vec3 & {
+	copyFrom(v: Vec3): void;
+};
+
 export class PlayerVehicle {
 	public scene: SceneContext;
 	public camera: PlayerCamera;
@@ -52,9 +52,11 @@ export class PlayerVehicle {
 	public mount: Mount | null = null;
 
 	private readonly controlState = new PlayerBodyControlState();
-	#position: Vec3 & { copyFrom(v: Vec3): void };
+
+	#position: MutableVec3;
 	#collider = new VoxelAabbCollider(PLAYER_HALF_EXTENTS, isSolidBlockAt, 0.001);
-	#velocity: { x: number; y: number; z: number } = { x: 0, y: 0, z: 0 };
+	#velocity: Vec3 = vec3Zero();
+
 	#grounded = false;
 	#speed = 8;
 	#movementLocked = false;
@@ -63,12 +65,14 @@ export class PlayerVehicle {
 	constructor(scene: SceneContext, camera: PlayerCamera) {
 		this.scene = scene;
 		this.camera = camera;
+
 		const y = getFinalTerrainHeight(0, 0) + 2;
+
 		this.#position = {
 			x: 0,
 			y,
 			z: 0,
-			copyFrom(v: Vec3) {
+			copyFrom(v: Vec3): void {
 				this.x = v.x;
 				this.y = v.y;
 				this.z = v.z;
@@ -87,6 +91,7 @@ export class PlayerVehicle {
 	public get wantJump(): number {
 		return this.controlState.wantJump;
 	}
+
 	public set wantJump(value: number) {
 		this.controlState.wantJump = value;
 	}
@@ -94,6 +99,7 @@ export class PlayerVehicle {
 	public get isSprinting(): boolean {
 		return this.controlState.isSprinting;
 	}
+
 	public set isSprinting(value: boolean) {
 		this.controlState.isSprinting = value;
 	}
@@ -101,6 +107,7 @@ export class PlayerVehicle {
 	public get isFlying(): boolean {
 		return this.controlState.isFlying;
 	}
+
 	public set isFlying(value: boolean) {
 		this.controlState.isFlying = value;
 	}
@@ -108,6 +115,7 @@ export class PlayerVehicle {
 	public get isJumpHeld(): boolean {
 		return this.controlState.isJumpHeld;
 	}
+
 	public set isJumpHeld(value: boolean) {
 		this.controlState.isJumpHeld = value;
 	}
@@ -115,6 +123,7 @@ export class PlayerVehicle {
 	public get isSneaking(): boolean {
 		return this.controlState.isSneaking;
 	}
+
 	public set isSneaking(value: boolean) {
 		this.controlState.isSneaking = value;
 	}
@@ -137,10 +146,12 @@ export class PlayerVehicle {
 
 	public lockMovementAtCurrentPosition(): void {
 		this.#movementLocked = true;
+
+		const p = this.#position;
 		this.#savedPosition = {
-			x: this.#position.x,
-			y: this.#position.y,
-			z: this.#position.z,
+			x: p.x,
+			y: p.y,
+			z: p.z,
 		};
 	}
 
@@ -149,23 +160,31 @@ export class PlayerVehicle {
 	}
 
 	public getSavedPosition(): Vec3 {
-		return this.#savedPosition
-			? vec3(
-					this.#savedPosition.x,
-					this.#savedPosition.y,
-					this.#savedPosition.z,
-				)
-			: vec3(0, 80, 0);
+		const saved = this.#savedPosition;
+		return saved ? vec3(saved.x, saved.y, saved.z) : vec3(0, 80, 0);
 	}
 
 	public restoreSavedPosition(position: unknown): boolean {
-		if (!position || typeof position !== "object") return false;
-		const p = position as { x: number; y: number; z: number };
-		if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z))
+		if (position === null || typeof position !== "object") return false;
+
+		const p = position as { x?: unknown; y?: unknown; z?: unknown };
+
+		if (
+			typeof p.x !== "number" ||
+			typeof p.y !== "number" ||
+			typeof p.z !== "number" ||
+			!Number.isFinite(p.x) ||
+			!Number.isFinite(p.y) ||
+			!Number.isFinite(p.z)
+		) {
 			return false;
-		this.#position.x = p.x;
-		this.#position.y = p.y;
-		this.#position.z = p.z;
+		}
+
+		const pos = this.#position;
+		pos.x = p.x;
+		pos.y = p.y;
+		pos.z = p.z;
+
 		return true;
 	}
 
@@ -174,85 +193,88 @@ export class PlayerVehicle {
 	}
 
 	public respawn(): void {
-		this.#position.y =
-			getFinalTerrainHeight(this.#position.x, this.#position.z) + 2;
-		this.#velocity.x = 0;
-		this.#velocity.y = 0;
-		this.#velocity.z = 0;
+		const pos = this.#position;
+		const velocity = this.#velocity;
+
+		pos.y = getFinalTerrainHeight(pos.x, pos.z) + 2;
+
+		velocity.x = 0;
+		velocity.y = 0;
+		velocity.z = 0;
+
 		this.#grounded = false;
 	}
 
 	public update(deltaTime: number): void {
+		const dt = deltaTime * 0.001;
+		const pos = this.#position;
+
 		if (this.#movementLocked) {
-			this.camera.moveWithPlayer(this.#position, deltaTime / 1000);
+			this.camera.moveWithPlayer(pos, dt);
 			return;
 		}
 
-		const dt = deltaTime / 1000;
-		const yaw = this.camera.cameraYaw;
-		const fx = Math.sin(yaw);
-		const fz = Math.cos(yaw);
+		const input = this.controlState.inputDirection;
+		const inX = input.x;
+		const inZ = input.z;
 
-		// WalkingControls writes inputDirection: .z = forward(+)/back(-),
-		// .x = right(+)/left(-). Transform to world space using camera yaw.
-		const inX = this.controlState.inputDirection.x;
-		const inZ = this.controlState.inputDirection.z;
-		let dx = inX * fz + inZ * fx;
-		let dz = -inX * fx + inZ * fz;
-		const len = Math.hypot(dx, dz);
-		if (len > 0) {
-			dx /= len;
-			dz /= len;
+		let dx = 0;
+		let dz = 0;
+
+		if (inX !== 0 || inZ !== 0) {
+			const yaw = this.camera.cameraYaw;
+			const sinYaw = Math.sin(yaw);
+			const cosYaw = Math.cos(yaw);
+
+			dx = inX * cosYaw + inZ * sinYaw;
+			dz = inZ * cosYaw - inX * sinYaw;
+
+			const lenSq = dx * dx + dz * dz;
+			if (lenSq > 0) {
+				const invLen = 1 / Math.sqrt(lenSq);
+				dx *= invLen;
+				dz *= invLen;
+			}
 		}
 
-		const speed =
-			(this.controlState.isSprinting ? this.#speed * 1.6 : this.#speed) *
-			(this.controlState.isSneaking ? 0.4 : 1);
+		let speed = this.#speed;
 
-		this.#velocity.x = dx * speed;
-		this.#velocity.z = dz * speed;
+		if (this.controlState.isSprinting) {
+			speed *= 1.6;
+		}
+
+		if (this.controlState.isSneaking) {
+			speed *= 0.4;
+		}
+
+		const velocity = this.#velocity;
+		velocity.x = dx * speed;
+		velocity.z = dz * speed;
 
 		if (this.controlState.isFlying) {
-			this.#velocity.y = (this.controlState.inputDirection.y || 0) * speed;
+			velocity.y = input.y ? input.y * speed : 0;
 		} else {
-			this.#velocity.y -= 30 * dt;
+			velocity.y -= 30 * dt;
+
 			if (this.#grounded && this.controlState.isJumpHeld) {
-				this.#velocity.y = 9;
+				velocity.y = 9;
 				this.#grounded = false;
 			}
 		}
 
-		this.#collider.moveAxis(
-			this.#position as Vec3,
-			this.#velocity as Vec3,
-			Axis.X,
-			this.#velocity.x * dt,
-			0.1,
-		);
-		this.#collider.moveAxis(
-			this.#position as Vec3,
-			this.#velocity as Vec3,
-			Axis.Z,
-			this.#velocity.z * dt,
-			0.1,
-		);
-		this.#collider.moveAxis(
-			this.#position as Vec3,
-			this.#velocity as Vec3,
-			Axis.Y,
-			this.#velocity.y * dt,
-			0.1,
-		);
+		this.#collider.moveAxis(pos, velocity, Axis.X, velocity.x * dt, 0.1);
+		this.#collider.moveAxis(pos, velocity, Axis.Z, velocity.z * dt, 0.1);
+		this.#collider.moveAxis(pos, velocity, Axis.Y, velocity.y * dt, 0.1);
 
-		this.#grounded = this.#velocity.y === 0;
+		this.#grounded = velocity.y === 0;
 
-		this.camera.moveWithPlayer(this.#position, dt);
+		this.camera.moveWithPlayer(pos, dt);
 	}
 
 	public updateCameraAndVisuals(deltaMs?: number): void {
 		this.camera.moveWithPlayer(
 			this.#position,
-			deltaMs !== undefined ? deltaMs / 1000 : undefined,
+			deltaMs === undefined ? undefined : deltaMs * 0.001,
 		);
 	}
 }
