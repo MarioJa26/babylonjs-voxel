@@ -428,28 +428,28 @@ export class PlayerVehicleMotor implements IPlayerBody {
 
 	/** Rotate world XZ vector into boat-local XZ. Y unchanged. */
 	#toBoatLocal(world: Vec3, _yaw: number, out: Vec3): void {
-		if (!this.#collisionBoat) {
-			out = world;
+		const boat = this.#collisionBoat;
+
+		if (!boat) {
+			copyVec3(out, world);
 			return;
 		}
 
-		this.#tmp5 = this.voxelPosition;
+		// Do not assign scratch references to voxelPosition.
+		const start = this.voxelPosition;
 
-		this.#tmp6.x = this.#tmp5.x + world.x;
-		this.#tmp6.y = this.#tmp5.y + world.y;
-		this.#tmp6.z = this.#tmp5.z + world.z;
-
-		const localStart = this.#collisionBoat.worldToBoatChunkLocalPoint(
-			this.#tmp5,
-			this.#tmp7,
-		);
-		const localEnd = this.#collisionBoat.worldToBoatChunkLocalPoint(
+		setVec3(
 			this.#tmp6,
-			this.#tmp8,
+			start.x + world.x,
+			start.y + world.y,
+			start.z + world.z,
 		);
+
+		const localStart = boat.worldToBoatChunkLocalPoint(start, this.#tmp7);
+		const localEnd = boat.worldToBoatChunkLocalPoint(this.#tmp6, this.#tmp8);
 
 		if (!localStart || !localEnd) {
-			out = world;
+			copyVec3(out, world);
 			return;
 		}
 
@@ -460,27 +460,28 @@ export class PlayerVehicleMotor implements IPlayerBody {
 
 	/** Rotate boat-local XZ vector into world XZ. Y unchanged. */
 	#toWorld(local: Vec3, _yaw: number, out: Vec3): void {
-		if (!this.#collisionBoat) {
-			out = local;
+		const boat = this.#collisionBoat;
+
+		if (!boat) {
+			copyVec3(out, local);
 			return;
 		}
 
-		this.#tmp5 = this.#boatLocalPos;
-		this.#tmp6.x = this.#tmp5.x + local.x;
-		this.#tmp6.y = this.#tmp5.y + local.y;
-		this.#tmp6.z = this.#tmp5.z + local.z;
+		// Do not assign scratch references to #boatLocalPos.
+		const start = this.#boatLocalPos;
 
-		const worldStart = this.#collisionBoat.boatChunkLocalPointToWorld(
-			this.#tmp5,
-			this.#tmp7,
-		);
-		const worldEnd = this.#collisionBoat.boatChunkLocalPointToWorld(
+		setVec3(
 			this.#tmp6,
-			this.#tmp8,
+			start.x + local.x,
+			start.y + local.y,
+			start.z + local.z,
 		);
+
+		const worldStart = boat.boatChunkLocalPointToWorld(start, this.#tmp7);
+		const worldEnd = boat.boatChunkLocalPointToWorld(this.#tmp6, this.#tmp8);
 
 		if (!worldStart || !worldEnd) {
-			out = local;
+			copyVec3(out, local);
 			return;
 		}
 
@@ -504,16 +505,22 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	}
 
 	#flushToWorld(): void {
-		if (!this.#collisionBoat) return;
-		const w = this.#collisionBoat.boatChunkLocalPointToWorld(
+		const boat = this.#collisionBoat;
+		if (!boat) return;
+
+		const world = boat.boatChunkLocalPointToWorld(
 			this.#boatLocalPos,
 			this.#tmp0,
 		);
-		if (!w) {
+
+		if (!world) {
 			this.#collisionBoat = null;
 			return;
 		}
-		this.voxelPosition = w;
+
+		// Important: copy into the stable position object.
+		// Do not replace voxelPosition with #tmp0, because #tmp0 is reused elsewhere.
+		copyVec3(this.voxelPosition, world);
 	}
 
 	/**
@@ -597,18 +604,23 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			const by = Math.floor(local.y);
 			const bz = Math.floor(local.z);
 
-			const blockHere = chunk.getBlockLocal(bx, by, bz);
-			const blockBelow = chunk.getBlockLocal(bx, by - 1, bz);
+			// chunk.getBlockLocal() appears to return a packed block value.
+			// Match the boat collider sampler and mask the block id before testing.
+			const blockHereId = chunk.getBlockLocal(bx, by, bz) & 0x3ff;
+			const blockBelowId = chunk.getBlockLocal(bx, by - 1, bz) & 0x3ff;
 
-			if (isCollidableBlock(blockHere) || isCollidableBlock(blockBelow)) {
+			if (isCollidableBlock(blockHereId) || isCollidableBlock(blockBelowId)) {
 				this.#supportBoat = boat;
-				boat.worldToBoatChunkLocalPoint(
+
+				const supportLocal = boat.worldToBoatChunkLocalPoint(
 					this.voxelPosition,
 					this.#boatSupportLocal,
 				);
-				return true;
+
+				return !!supportLocal;
 			}
 		}
+
 		return false;
 	}
 
