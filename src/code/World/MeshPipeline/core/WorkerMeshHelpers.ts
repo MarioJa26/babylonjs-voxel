@@ -102,6 +102,8 @@ export class MeshBuildSession implements MeshContext {
 	public needsCustom = new Uint8Array(0);
 	public ps = 0;
 	public ps2 = 0;
+	// Padded-grid stride for x, y, z; recomputed once per build.
+	public axisOffsets = new Int32Array(3);
 	public neighbors: (Uint16Array | undefined)[] = [];
 
 	// --- quad output buffers (bound per build via buildVoxelMesh) ---
@@ -216,6 +218,9 @@ export class MeshBuildSession implements MeshContext {
 		const paddedLight = this.light;
 		this.ps = ps;
 		this.ps2 = ps2;
+		this.axisOffsets[0] = 1;
+		this.axisOffsets[1] = ps;
+		this.axisOffsets[2] = ps2;
 
 		// ── Determine whether the zero-clear is actually needed ──
 		// PERF: The center chunk (indices 1..size on every axis) is always fully

@@ -1,6 +1,10 @@
 // MeshPipeline/core/AOPipeline.ts
 
 import {
+	BLOCK_ID_BITS,
+	BLOCK_ID_MASK,
+} from "../../Chunk/DataStructures/BlockEncoding";
+import {
 	FLAG_PARTIAL,
 	FLAG_SOLID,
 	getCachedFlagsAndId,
@@ -21,10 +25,50 @@ import type { MeshBuildSession } from "./WorkerMeshHelpers";
  *
  * Stateless: all reads go through the session's padded grid.
  */
-// Axis unit-vector LUTs (avoids per-axis ternary/branch in computeAO).
-const AXIS_DX = [1, 0, 0];
-const AXIS_DY = [0, 1, 0];
-const AXIS_DZ = [0, 0, 1];
+// AO only needs the solid/non-partial classification. Block IDs are dense and
+// the classification is independent of the packed block state for AO, so build
+// this once instead of probing the combined-flags cache for every AO sample.
+let AO_OPAQUE_LUT: Uint8Array | null = null;
+
+function getAOOpaqueLut(): Uint8Array {
+	if (AO_OPAQUE_LUT) return AO_OPAQUE_LUT;
+
+	const lut = new Uint8Array(1 << BLOCK_ID_BITS);
+	for (let id = 0; id <= BLOCK_ID_MASK; id++) {
+		const flags = getCachedFlagsAndId(id);
+		lut[id] =
+			(flags & FLAG_SOLID) !== 0 && (flags & FLAG_PARTIAL) === 0 ? 1 : 0;
+	}
+
+	AO_OPAQUE_LUT = lut;
+	return lut;
+}
+
+// Four 2-bit AO corner values packed into one byte, indexed by the eight
+// occupancy bits: -u, +u, -v, +v, -u-v, +u-v, +u+v, -u+v.
+const AO_LUT = (() => {
+	const lut = new Uint8Array(256);
+
+	for (let m = 0; m < 256; m++) {
+		const oMu = (m >>> 0) & 1;
+		const oPu = (m >>> 1) & 1;
+		const oMv = (m >>> 2) & 1;
+		const oPv = (m >>> 3) & 1;
+		const oMumv = (m >>> 4) & 1;
+		const oPumv = (m >>> 5) & 1;
+		const oPupv = (m >>> 6) & 1;
+		const oMupv = (m >>> 7) & 1;
+
+		const ao0 = oMu + oMv + (oMu & oMv & oMumv);
+		const ao1 = oPu + oMv + (oPu & oMv & oPumv);
+		const ao2 = oPu + oPv + (oPu & oPv & oPupv);
+		const ao3 = oMu + oPv + (oMu & oPv & oMupv);
+
+		lut[m] = ao0 | (ao1 << 2) | (ao2 << 4) | (ao3 << 6);
+	}
+
+	return lut;
+})();
 
 export function computeAO(
 	session: MeshBuildSession,
@@ -35,15 +79,7 @@ export function computeAO(
 	vAxis: number,
 ): number {
 	const blockArr = session.block;
-	const padIndex = session.padIndex;
-
-	const ux = AXIS_DX[uAxis];
-	const uy = AXIS_DY[uAxis];
-	const uz = AXIS_DZ[uAxis];
-
-	const vx = AXIS_DX[vAxis];
-	const vy = AXIS_DY[vAxis];
-	const vz = AXIS_DZ[vAxis];
+	const aoOpaque = getAOOpaqueLut();
 
 	// 8 unique positions — edge-adjacent cells shared by two corners each,
 	// plus four corner-diagonal cells. Fetched once, reused across all corners.
@@ -51,66 +87,29 @@ export function computeAO(
 	// the combined flags+id cache; only the low flags bits are needed for AO.
 	// u/v are unit axes, so the 8 samples are baseIdx +/- uOff +/- vOff — one
 	// padIndex call instead of eight.
-	const baseIdx = padIndex(faceX, faceY, faceZ);
-	const uOff = ux + uy * session.ps + uz * session.ps2;
-	const vOff = vx + vy * session.ps + vz * session.ps2;
-	const fMu = getCachedFlagsAndId(blockArr[baseIdx - uOff]);
-	const fPu = getCachedFlagsAndId(blockArr[baseIdx + uOff]);
-	const fMv = getCachedFlagsAndId(blockArr[baseIdx - vOff]);
-	const fPv = getCachedFlagsAndId(blockArr[baseIdx + vOff]);
-	const fMumv = getCachedFlagsAndId(blockArr[baseIdx - uOff - vOff]);
-	const fPumv = getCachedFlagsAndId(blockArr[baseIdx + uOff - vOff]);
-	const fPupv = getCachedFlagsAndId(blockArr[baseIdx + uOff + vOff]);
-	const fMupv = getCachedFlagsAndId(blockArr[baseIdx - uOff + vOff]);
+	const baseIdx =
+		faceX + 1 + (faceY + 1) * session.ps + (faceZ + 1) * session.ps2;
+	const axisOffsets = session.axisOffsets;
+	const uOff = axisOffsets[uAxis];
+	const vOff = axisOffsets[vAxis];
+	const oMu = aoOpaque[blockArr[baseIdx - uOff] & BLOCK_ID_MASK];
+	const oPu = aoOpaque[blockArr[baseIdx + uOff] & BLOCK_ID_MASK];
+	const oMv = aoOpaque[blockArr[baseIdx - vOff] & BLOCK_ID_MASK];
+	const oPv = aoOpaque[blockArr[baseIdx + vOff] & BLOCK_ID_MASK];
+	const oMumv = aoOpaque[blockArr[baseIdx - uOff - vOff] & BLOCK_ID_MASK];
+	const oPumv = aoOpaque[blockArr[baseIdx + uOff - vOff] & BLOCK_ID_MASK];
+	const oPupv = aoOpaque[blockArr[baseIdx + uOff + vOff] & BLOCK_ID_MASK];
+	const oMupv = aoOpaque[blockArr[baseIdx - uOff + vOff] & BLOCK_ID_MASK];
 
-	const occ = (f: number) =>
-		(f & FLAG_SOLID) !== 0 && (f & FLAG_PARTIAL) === 0 ? 1 : 0;
-	const oMu = occ(fMu);
-	const oPu = occ(fPu);
-	const oMv = occ(fMv);
-	const oPv = occ(fPv);
-	const oMumv = occ(fMumv);
-	const oPumv = occ(fPumv);
-	const oPupv = occ(fPupv);
-	const oMupv = occ(fMupv);
+	const occupancyMask =
+		(oMu << 0) |
+		(oPu << 1) |
+		(oMv << 2) |
+		(oPv << 3) |
+		(oMumv << 4) |
+		(oPumv << 5) |
+		(oPupv << 6) |
+		(oMupv << 7);
 
-	let packedAO = 0;
-
-	// Corner 0: (-u, -v)
-	{
-		const occU = oMu;
-		const occV = oMv;
-		let ao = occU + occV;
-		if (occU && occV && oMumv) ao++;
-		packedAO |= ao;
-	}
-
-	// Corner 1: (+u, -v)
-	{
-		const occU = oPu;
-		const occV = oMv;
-		let ao = occU + occV;
-		if (occU && occV && oPumv) ao++;
-		packedAO |= ao << 2;
-	}
-
-	// Corner 2: (+u, +v)
-	{
-		const occU = oPu;
-		const occV = oPv;
-		let ao = occU + occV;
-		if (occU && occV && oPupv) ao++;
-		packedAO |= ao << 4;
-	}
-
-	// Corner 3: (-u, +v)
-	{
-		const occU = oMu;
-		const occV = oPv;
-		let ao = occU + occV;
-		if (occU && occV && oMupv) ao++;
-		packedAO |= ao << 6;
-	}
-
-	return packedAO;
+	return AO_LUT[occupancyMask];
 }
