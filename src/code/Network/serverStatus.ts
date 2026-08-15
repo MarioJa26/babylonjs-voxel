@@ -97,7 +97,6 @@ export async function fetchServerStatus(
 			pingMs,
 		};
 	} catch (err) {
-		const pingMs = Math.round(performance.now() - t0);
 		const aborted = err instanceof Error && err.name === "AbortError";
 		return {
 			online: false,

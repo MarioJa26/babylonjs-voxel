@@ -212,9 +212,19 @@ export class RemotePlayerVisual {
 	private lastY = Number.NaN;
 	private lastZ = Number.NaN;
 	private lastYaw = Number.NaN;
+	private lastTargetX = Number.NaN;
+	private lastTargetY = Number.NaN;
+	private lastTargetZ = Number.NaN;
+	private lastTargetYaw = Number.NaN;
 
 	// Scratch state reused every frame.
 	private readonly _pos: [number, number, number] = [0, 0, 0];
+
+	// Throttle visual (mesh + billboard) GPU writes to ~60Hz. The interpolation
+	// targets only change at the server's send rate (20Hz), so flushing faster
+	// than the display refresh would just re-upload identical world matrices.
+	private lastFlushMs = -1;
+	private static readonly VISUAL_REFRESH_MS = 16;
 
 	private readonly _billboardOpts: {
 		position: [number, number, number];
@@ -276,8 +286,22 @@ export class RemotePlayerVisual {
 		const y = this.player.y;
 		const z = this.player.z;
 		const yaw = this.player.yaw;
+		const tx = this.player.targetX;
+		const ty = this.player.targetY;
+		const tz = this.player.targetZ;
+		const tyaw = this.player.targetYaw;
 
+		const targetChanged =
+			tx !== this.lastTargetX ||
+			ty !== this.lastTargetY ||
+			tz !== this.lastTargetZ ||
+			tyaw !== this.lastTargetYaw;
+
+		const now = performance.now();
+		// Full early-out: identical current state and identical interpolation
+		// targets → nothing to do this frame (idle remote player).
 		if (
+			!targetChanged &&
 			x === this.lastX &&
 			y === this.lastY &&
 			z === this.lastZ &&
@@ -286,10 +310,25 @@ export class RemotePlayerVisual {
 			return;
 		}
 
+		// Throttle: skip the flush unless the target moved (new server data) or
+		// the refresh interval elapsed. Interpolation keeps the state current in
+		// between; the visual resamples at ~60Hz, matching the display.
+		if (
+			!targetChanged &&
+			now - this.lastFlushMs < RemotePlayerVisual.VISUAL_REFRESH_MS
+		) {
+			return;
+		}
+		this.lastFlushMs = now;
+
 		this.lastX = x;
 		this.lastY = y;
 		this.lastZ = z;
 		this.lastYaw = yaw;
+		this.lastTargetX = tx;
+		this.lastTargetY = ty;
+		this.lastTargetZ = tz;
+		this.lastTargetYaw = tyaw;
 
 		this.mesh.position.set(x, y, z);
 		this.mesh.rotation.y = yaw * DEG_TO_RAD;

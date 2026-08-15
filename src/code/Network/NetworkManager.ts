@@ -94,6 +94,16 @@ export class NetworkManager {
 	private serverSeed: string | null = null;
 	private _lastPlayerCount = 0;
 	private _canvas: HTMLCanvasElement | null = null;
+	// Canvas size cache — reading clientWidth/clientHeight forces layout, so
+	// they are sampled once per resize instead of on every frame.
+	private _canvasWidth = 0;
+	private _canvasHeight = 0;
+	private readonly _onCanvasResize = (): void => {
+		const canvas = this._canvas;
+		if (!canvas) return;
+		this._canvasWidth = canvas.clientWidth;
+		this._canvasHeight = canvas.clientHeight;
+	};
 
 	constructor(player: Player, serverUrl?: string) {
 		this.player = player;
@@ -213,12 +223,17 @@ export class NetworkManager {
 			canvas =
 				(this.player.sceneRef as any).engine?.getRenderingCanvas() ?? null;
 			this._canvas = canvas;
+			if (canvas) {
+				this._canvasWidth = canvas.clientWidth;
+				this._canvasHeight = canvas.clientHeight;
+				window.addEventListener("resize", this._onCanvasResize);
+			}
 		}
 
 		this.renderer.update(
 			camera,
-			canvas?.clientWidth ?? window.innerWidth,
-			canvas?.clientHeight ?? window.innerHeight,
+			this._canvasWidth || window.innerWidth,
+			this._canvasHeight || window.innerHeight,
 		);
 
 		const remotePlayers = client.getRemotePlayers();
@@ -523,6 +538,7 @@ export class NetworkManager {
 		this.client.disconnect();
 		this.renderer.dispose();
 		this.hud.dispose();
+		window.removeEventListener("resize", this._onCanvasResize);
 		this._canvas = null;
 	}
 
