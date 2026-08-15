@@ -419,8 +419,6 @@ export function assignChunkToGroup(
 
 		group.members.set(chunk.numericId, memberData);
 		group.membersArray.push(memberData);
-
-		invalidateGroupBuildCache(group);
 	}
 
 	if (chunkLod < group.minLodLevel) {

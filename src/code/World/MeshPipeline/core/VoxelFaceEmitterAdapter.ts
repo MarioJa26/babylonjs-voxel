@@ -107,8 +107,8 @@ export class VoxelFaceEmitterAdapter {
 		const ao = desc.light & 0xff;
 		const light = (desc.light >> 8) & 0xff;
 
-		const back = isBackFace ? 1 : 0;
-		const faceIndex = axis * 2 + back;
+		const back = (rawMask >>> 31) & 1;
+		const faceIndex = (axis << 1) | back;
 		const faceName = FACE_NAME_TABLE[faceIndex];
 		const faceBit = FACE_BIT_TABLE[faceIndex];
 

@@ -93,17 +93,18 @@ interface PackedMeshState {
 	faceBase: number;
 	faceCount: number;
 	offsetBase: number;
-	/** Persistent copy of the mesh's input, retained for per-frame rebuilds. */
-	input: PackedMeshInput;
-	/** Retained instance-matrix buffer; reused across updates (no realloc). */
+	/** Retained instance-matrix buffer; reused across updates. Grows
+	 *  monotonically (power-of-two capacity), so repeated face-count
+	 *  growth never reallocates, but a larger need still reallocates. */
 	instanceMatrices?: Float32Array;
-	/** Retained mesh-visible bounds; reused across updates (no realloc),
-	 *  kept independent from state.input's own copies. */
+	/** Number of instances whose matrix lanes are currently valid in
+	 *  `instanceMatrices` (monotonic: lanes are only ever appended). */
+	instanceLanesValid?: number;
+	/** Retained mesh-visible bounds; reused across updates (no realloc). */
 	boundMin?: [number, number, number];
 	boundMax?: [number, number, number];
-	/** Cached u32 views over input.faceDataA/B/C — rebuilt only when the
-	 *  underlying buffer identity changes (i.e. reuseOrCloneU8 had to
-	 *  .slice() a new one instead of reusing via .set()). */
+	/** Cached u32 views over the caller's input.faceDataA/B/C — rebuilt only
+	 *  when the underlying buffer identity or range changes. */
 	faceWordsA?: Uint32Array;
 	faceWordsB?: Uint32Array;
 	faceWordsC?: Uint32Array;
@@ -465,6 +466,64 @@ function allocFaces(count: number): FaceAlloc {
 	return { arena: -1, base: -1 };
 }
 
+// Grow an existing face block in place from `oldCount` to `newCount` faces,
+// avoiding the allocFaces/freeFaces shuffle. Succeeds when the block ends at
+// the arena tail (the streaming-append case) or when a free interval starts
+// exactly where the block ends and is at least as large as the delta (the
+// block was previously adjacent to a freed hole). On success the arena's
+// used/free state is updated; the caller then packs + uploads only the dirty
+// ranges. Returns false when the block can't grow in place (caller falls
+// back to the full realloc path).
+function tryExtendFaces(
+	arena: FaceArena,
+	arenaIndex: number,
+	base: number,
+	oldCount: number,
+	newCount: number,
+): boolean {
+	if (newCount <= oldCount) return false;
+	const delta = newCount - oldCount;
+	const end = base + oldCount;
+
+	if (end === arena.used) {
+		if (base + newCount > arena.capacity) {
+			growArena(arena, arenaIndex);
+			if (base + newCount > arena.capacity) return false;
+		}
+		arena.used = base + newCount;
+		return true;
+	}
+
+	// Block is not at the tail: look for a free interval starting at `end`.
+	// `free` is sorted by base (freeFaceInterval keeps it ordered), so a
+	// binary search finds the candidate in O(log n) instead of a scan.
+	let lo = 0;
+	let hi = arena.free.length;
+	while (lo < hi) {
+		const mid = (lo + hi) >>> 1;
+		if (arena.free[mid].base < end) {
+			lo = mid + 1;
+		} else {
+			hi = mid;
+		}
+	}
+
+	const node = arena.free[lo];
+	if (node && node.base === end && node.count >= delta) {
+		const leftover = node.count - delta;
+		if (leftover > 0) {
+			node.base = end + delta;
+			node.count = leftover;
+		} else {
+			arena.free.splice(lo, 1);
+			releaseInterval(node);
+		}
+		return true;
+	}
+
+	return false;
+}
+
 function freeFaceInterval(
 	free: Array<{ base: number; count: number }>,
 	base: number,
@@ -751,28 +810,30 @@ export interface PackedMeshInput {
 	boundsMax: [number, number, number];
 }
 
-// `state.input` is only ever produced by `cloneInput` (below), whose typed
-// arrays are always either a fresh `.slice()` or a same-length in-place
-// `.set()` into a buffer that itself originated from `.slice()`. Either way
-// `faceDataA/B/C.byteOffset` is always 0 and `byteLength` is always a
-// multiple of 4, so reinterpreting each as a Uint32Array over the SAME
-// buffer is safe: the little-endian byte layout `a[i*4]` (LSB) .. `a[i*4+3]`
-// (MSB) is bit-for-bit identical to reading those four bytes as one u32 on
-// every realistic deployment target (WebGPU browsers are all little-endian).
+// `input` is the caller's (reused, module-level scratch) `PackedMeshInput`,
+// so its typed arrays are only ever replaced when the merged-group buffers
+// grow — the views below stay valid across calls and are rebuilt only when
+// the buffer identity or range changes.
+// Reinterpreting faceDataA/B/C (each a byte array with a 4-multiple length
+// and offset) as a Uint32Array over the SAME buffer is safe: the
+// little-endian byte layout `a[i*4]` (LSB) .. `a[i*4+3]` (MSB) is
+// bit-for-bit identical to reading those four bytes as one u32 on every
+// realistic deployment target (WebGPU browsers are all little-endian).
 // This turns 12 shifts+ORs per face into 3 direct word reads, and replaces
 // four independent `i * 4` index computations per array with one running
 // accumulator.
-// Rebuild the cached u32 views over state.input's face data. The views are
-// only invalid when the underlying buffer identity changes (reuseOrCloneU8
-// had to .slice() a fresh copy instead of reusing via .set()).
-function ensureFaceWordViews(state: PackedMeshState): void {
-	const input = state.input;
+// Rebuild the cached u32 views over `input`'s face data.
+function ensureFaceWordViews(
+	state: PackedMeshState,
+	input: PackedMeshInput,
+): void {
 	const faceCount = input.faceDataA.length >>> 2;
 
 	let aWords = state.faceWordsA;
 	if (
 		!aWords ||
 		aWords.buffer !== input.faceDataA.buffer ||
+		aWords.byteOffset !== input.faceDataA.byteOffset ||
 		aWords.length !== faceCount
 	) {
 		aWords = new Uint32Array(
@@ -786,6 +847,7 @@ function ensureFaceWordViews(state: PackedMeshState): void {
 	if (
 		!bWords ||
 		bWords.buffer !== input.faceDataB.buffer ||
+		bWords.byteOffset !== input.faceDataB.byteOffset ||
 		bWords.length !== faceCount
 	) {
 		bWords = new Uint32Array(
@@ -799,6 +861,7 @@ function ensureFaceWordViews(state: PackedMeshState): void {
 	if (
 		!cWords ||
 		cWords.buffer !== input.faceDataC.buffer ||
+		cWords.byteOffset !== input.faceDataC.byteOffset ||
 		cWords.length !== faceCount
 	) {
 		cWords = new Uint32Array(
@@ -819,13 +882,13 @@ function ensureFaceWordViews(state: PackedMeshState): void {
 // verbatim.
 function packFaceRanges(
 	state: PackedMeshState,
+	input: PackedMeshInput,
 	ranges: readonly MergedFaceRange[],
 ): void {
 	if (ranges.length === 0) return;
 
-	ensureFaceWordViews(state);
+	ensureFaceWordViews(state, input);
 
-	const input = state.input;
 	const faceCount = input.faceDataA.length >>> 2;
 
 	if (faceCount <= 0) return;
@@ -870,8 +933,8 @@ function packFaceRanges(
 	}
 }
 
-function packFaces(state: PackedMeshState): void {
-	ensureFaceWordViews(state);
+function packFaces(state: PackedMeshState, input: PackedMeshInput): void {
+	ensureFaceWordViews(state, input);
 
 	const arena = faceArenas[state.faceArena];
 	if (!arena) return;
@@ -891,8 +954,8 @@ function packFaces(state: PackedMeshState): void {
 	}
 }
 
-function packOffsets(state: PackedMeshState): void {
-	const co = state.input.chunkOffsets;
+function packOffsets(state: PackedMeshState, input: PackedMeshInput): void {
+	const co = input.chunkOffsets;
 
 	let src = 0;
 	let dst = state.offsetBase * OFFSET_WORDS;
@@ -912,31 +975,43 @@ function packOffsets(state: PackedMeshState): void {
 // position from faceData), so the rest of every matrix stays zero.
 //
 // PERF: the buffer is RETAINED per-mesh on PackedMeshState and reused across
-// updates — only the faceBase/offsetBase lanes per instance are rewritten, and
-// only when the instance count changes do we reallocate. This removes the
-// previous `count*16` Float32Array allocation on every chunk remesh (a major
-// GC source in the updatePackedChunkMesh hot path). The old single-shared-scratch
-// concern does not apply because each mesh owns its OWN retained buffer here.
+// updates — only the faceBase/arena/offsetBase lanes per instance are
+// rewritten, and only when the instance count changes do we reallocate. This
+// removes the previous `count*16` Float32Array allocation on every chunk
+// remesh (a major GC source in the updatePackedChunkMesh hot path).
+//
+// Capacity GROWS monotonically (never shrinks), so a mesh whose face count
+// fluctuates around a level reuses its buffer instead of zero-filling a
+// fresh `count*16` array on every rebuild. `start` is the first instance
+// index whose lanes need (re)writing — callers pass `state.faceCount` (the
+// old count) when only the appended instances are new, and 0 when the
+// faceBase/arena/offsetBase lanes themselves changed.
 function buildInstanceMatrices(
 	prev: Float32Array | undefined,
 	arena: number,
 	faceBase: number,
 	offsetBase: number,
 	count: number,
+	start: number,
 ): Float32Array {
 	const needLen = count * 16;
 	let matrices = prev;
-	if (!matrices || matrices.length !== needLen) {
-		matrices = new Float32Array(needLen);
+	if (!matrices || matrices.length < needLen) {
+		// Grow to a power of two above the need so repeated face-count
+		// growth (the streaming-append case) doesn't reallocate each time.
+		let capacity = 1024;
+		while (capacity < needLen) capacity <<= 1;
+		matrices = new Float32Array(capacity);
+		start = 0;
 	}
 	// The matrices are otherwise all-zero and never change, so only the
 	// faceBase (world3.w), arena (world0.w) and offsetBase (world1.x) lanes
 	// are ever rewritten. A running accumulator replaces `count`
 	// multiplications (i*16) with `count` additions.
-	let faceIdx = FACE_BASE_MATRIX_INDEX;
-	let arenaIdx = ARENA_MATRIX_INDEX;
-	let offsetIdx = OFFSET_BASE_MATRIX_INDEX;
-	for (let i = 0; i < count; i++) {
+	let faceIdx = FACE_BASE_MATRIX_INDEX + start * 16;
+	let arenaIdx = ARENA_MATRIX_INDEX + start * 16;
+	let offsetIdx = OFFSET_BASE_MATRIX_INDEX + start * 16;
+	for (let i = start; i < count; i++) {
 		matrices[faceIdx] = faceBase;
 		matrices[arenaIdx] = arena;
 		matrices[offsetIdx] = offsetBase;
@@ -945,31 +1020,6 @@ function buildInstanceMatrices(
 		offsetIdx += 16;
 	}
 	return matrices;
-}
-
-// `prev`'s arrays (if any) are always ones we ourselves allocated in an
-// earlier cloneInput call, so reusing them never aliases the caller's buffer
-// and never changes byteOffset-0 alignment (see packFaces).
-function reuseOrCloneU8(
-	prev: Uint8Array | undefined,
-	src: Uint8Array,
-): Uint8Array {
-	if (prev && prev.length === src.length) {
-		prev.set(src);
-		return prev;
-	}
-	return src.slice();
-}
-
-function reuseOrCloneF32(
-	prev: Float32Array | undefined,
-	src: Float32Array,
-): Float32Array {
-	if (prev && prev.length === src.length) {
-		prev.set(src);
-		return prev;
-	}
-	return src.slice();
 }
 
 function reuseOrCloneVec3(
@@ -983,78 +1033,6 @@ function reuseOrCloneVec3(
 		return prev;
 	}
 	return [src[0], src[1], src[2]];
-}
-
-// Deep-copies the typed-array payload so the retained input is independent of
-// the caller's (often reused, module-level) scratch `PackedMeshInput`. When a
-// previous clone (`prev`) is passed — the update path, where a chunk's
-// face/offset layout is frequently unchanged in size across relight/rebuild
-// passes — matching-length buffers are overwritten in place via `.set()`
-// instead of allocating fresh typed arrays, cutting GC churn on every mesh
-// rebuild. `chunkOffsets` is fixed at length 192 (MAX_LOCAL * 3), so it
-// always hits the reuse path once a mesh has been built once.
-function cloneInput(
-	input: PackedMeshInput,
-	prev?: PackedMeshInput,
-): PackedMeshInput {
-	return {
-		name: input.name,
-		material: input.material,
-		faceDataA: reuseOrCloneU8(prev?.faceDataA, input.faceDataA),
-		faceDataB: reuseOrCloneU8(prev?.faceDataB, input.faceDataB),
-		faceDataC: reuseOrCloneU8(prev?.faceDataC, input.faceDataC),
-		chunkOffsets: reuseOrCloneF32(prev?.chunkOffsets, input.chunkOffsets),
-		position: reuseOrCloneVec3(prev?.position, input.position),
-		boundsMin: reuseOrCloneVec3(prev?.boundsMin, input.boundsMin),
-		boundsMax: reuseOrCloneVec3(prev?.boundsMax, input.boundsMax),
-	};
-}
-function copyFaceInputRanges(
-	dst: PackedMeshInput,
-	src: PackedMeshInput,
-	ranges: readonly MergedFaceRange[],
-): void {
-	const faceCount = src.faceDataA.length >>> 2;
-
-	for (let r = 0; r < ranges.length; r++) {
-		const range = ranges[r];
-
-		let start = range.start;
-		let count = range.count;
-
-		if (start < 0) {
-			count += start;
-			start = 0;
-		}
-
-		if (count <= 0 || start >= faceCount) continue;
-
-		if (start + count > faceCount) {
-			count = faceCount - start;
-		}
-
-		const byteStart = start << 2;
-		const byteEnd = byteStart + (count << 2);
-
-		dst.faceDataA.set(src.faceDataA.subarray(byteStart, byteEnd), byteStart);
-		dst.faceDataB.set(src.faceDataB.subarray(byteStart, byteEnd), byteStart);
-		dst.faceDataC.set(src.faceDataC.subarray(byteStart, byteEnd), byteStart);
-	}
-
-	dst.name = src.name;
-	dst.material = src.material;
-
-	dst.position[0] = src.position[0];
-	dst.position[1] = src.position[1];
-	dst.position[2] = src.position[2];
-
-	dst.boundsMin[0] = src.boundsMin[0];
-	dst.boundsMin[1] = src.boundsMin[1];
-	dst.boundsMin[2] = src.boundsMin[2];
-
-	dst.boundsMax[0] = src.boundsMax[0];
-	dst.boundsMax[1] = src.boundsMax[1];
-	dst.boundsMax[2] = src.boundsMax[2];
 }
 
 export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
@@ -1081,11 +1059,10 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 		faceBase: alloc.base,
 		faceCount,
 		offsetBase,
-		input: cloneInput(input),
 	};
 
-	packFaces(state);
-	packOffsets(state);
+	packFaces(state, input);
+	packOffsets(state, input);
 
 	uploadFaceRange(alloc.arena, alloc.base, faceCount);
 	uploadOffsetRange(offsetBase);
@@ -1115,14 +1092,16 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 	anyMesh.isVisible = true;
 
 	const instanceMatrices = buildInstanceMatrices(
-		state.instanceMatrices,
+		undefined,
 		alloc.arena,
 		alloc.base,
 		offsetBase,
 		faceCount,
+		0,
 	);
 
 	state.instanceMatrices = instanceMatrices;
+	state.instanceLanesValid = faceCount;
 
 	setThinInstances(mesh, instanceMatrices, faceCount);
 
@@ -1148,33 +1127,7 @@ export function updatePackedChunkMesh(
 	const faceCount = input.faceDataA.length >>> 2;
 
 	if (faceCount === state.faceCount) {
-		const anyMesh = mesh as PackedMesh;
-
-		const boundMin = reuseOrCloneVec3(state.boundMin, input.boundsMin);
-		const boundMax = reuseOrCloneVec3(state.boundMax, input.boundsMax);
-
-		state.boundMin = boundMin;
-		state.boundMax = boundMax;
-
-		anyMesh.boundMin = boundMin;
-		anyMesh.boundMax = boundMax;
-
-		if (!anyMesh.isVisible) {
-			anyMesh.isVisible = true;
-		}
-
-		if (mesh.material !== input.material) {
-			mesh.material = input.material;
-		}
-
-		const p = mesh.position;
-		const x = input.position[0];
-		const y = input.position[1];
-		const z = input.position[2];
-
-		if (p.x !== x || p.y !== y || p.z !== z) {
-			p.set(x, y, z);
-		}
+		applyMeshMeta(mesh, state, input);
 
 		// Empty dirty range means no face data changed.
 		if (dirtyRanges && dirtyRanges.length === 0) {
@@ -1182,19 +1135,77 @@ export function updatePackedChunkMesh(
 		}
 
 		if (dirtyRanges && dirtyRanges.length > 0) {
-			copyFaceInputRanges(state.input, input, dirtyRanges);
-			packFaceRanges(state, dirtyRanges);
+			packFaceRanges(state, input, dirtyRanges);
 			uploadFaceRanges(state.faceArena, state.faceBase, faceCount, dirtyRanges);
 		} else {
-			state.input = cloneInput(input, state.input);
-			packFaces(state);
+			packFaces(state, input);
 			uploadFaceRange(state.faceArena, state.faceBase, faceCount);
 		}
 
 		return mesh;
 	}
 
-	// Slow path: face count changed, so this mesh needs a new arena interval.
+	// Slow path: face count changed.
+	//
+	// Fast sub-path: grow the existing arena block in place. Streaming
+	// appends (the common case) extend a group mesh at the tail, so the
+	// block's base and the instance-matrix constants (faceBase/arena/
+	// offsetBase) are all unchanged — only the appended face range needs
+	// packing/uploading and only the appended instances' matrix lanes need
+	// writing.
+	if (faceCount > state.faceCount) {
+		const arena = faceArenas[state.faceArena];
+		if (
+			arena &&
+			tryExtendFaces(
+				arena,
+				state.faceArena,
+				state.faceBase,
+				state.faceCount,
+				faceCount,
+			)
+		) {
+			const oldCount = state.faceCount;
+			state.faceCount = faceCount;
+
+			if (dirtyRanges && dirtyRanges.length > 0) {
+				packFaceRanges(state, input, dirtyRanges);
+				uploadFaceRanges(
+					state.faceArena,
+					state.faceBase,
+					faceCount,
+					dirtyRanges,
+				);
+			} else {
+				// No ranges (boat-chunk path, or defensive fallback): the
+				// block stayed put, so repack it fully in place — still
+				// avoids the allocFaces/freeFaces shuffle and keeps the
+				// instance-matrix constants intact.
+				packFaces(state, input);
+				uploadFaceRange(state.faceArena, state.faceBase, faceCount);
+			}
+
+			const instanceMatrices = buildInstanceMatrices(
+				state.instanceMatrices,
+				state.faceArena,
+				state.faceBase,
+				state.offsetBase,
+				faceCount,
+				state.instanceLanesValid ?? 0,
+			);
+
+			state.instanceMatrices = instanceMatrices;
+			state.instanceLanesValid = faceCount;
+			setThinInstances(mesh, instanceMatrices, faceCount);
+
+			applyMeshMeta(mesh, state, input);
+			return mesh;
+		}
+	}
+
+	// Full realloc path: face count changed and the block could not grow in
+	// place (shrinks, mid-arena blocks with no adjacent hole), so this mesh
+	// needs a new arena interval.
 	const alloc = allocFaces(faceCount);
 
 	if (alloc.arena < 0) {
@@ -1210,14 +1221,38 @@ export function updatePackedChunkMesh(
 	state.faceArena = alloc.arena;
 	state.faceBase = alloc.base;
 	state.faceCount = faceCount;
-	state.input = cloneInput(input, state.input);
 
-	packFaces(state);
-	packOffsets(state);
+	packFaces(state, input);
+	packOffsets(state, input);
 
 	uploadFaceRange(alloc.arena, alloc.base, faceCount);
 	uploadOffsetRange(state.offsetBase);
 
+	applyMeshMeta(mesh, state, input);
+
+	const instanceMatrices = buildInstanceMatrices(
+		state.instanceMatrices,
+		alloc.arena,
+		alloc.base,
+		state.offsetBase,
+		faceCount,
+		0,
+	);
+
+	state.instanceMatrices = instanceMatrices;
+	state.instanceLanesValid = faceCount;
+	setThinInstances(mesh, instanceMatrices, faceCount);
+
+	return mesh;
+}
+
+// Refresh the per-mesh transform/bounds/visibility state from `input`
+// without allocating (reuses the retained bound arrays).
+function applyMeshMeta(
+	mesh: Mesh,
+	state: PackedMeshState,
+	input: PackedMeshInput,
+): void {
 	const anyMesh = mesh as PackedMesh;
 
 	const boundMin = reuseOrCloneVec3(state.boundMin, input.boundsMin);
@@ -1245,19 +1280,6 @@ export function updatePackedChunkMesh(
 	if (p.x !== x || p.y !== y || p.z !== z) {
 		p.set(x, y, z);
 	}
-
-	const instanceMatrices = buildInstanceMatrices(
-		state.instanceMatrices,
-		alloc.arena,
-		alloc.base,
-		state.offsetBase,
-		faceCount,
-	);
-
-	state.instanceMatrices = instanceMatrices;
-	setThinInstances(mesh, instanceMatrices, faceCount);
-
-	return mesh;
 }
 
 export function disposePackedMesh(mesh: Mesh): void {
