@@ -184,6 +184,96 @@ export function deserializeVoxelData(data: Uint8Array): SavedChunkData {
 	};
 }
 
+/**
+ * Like deserializeVoxelData, but allocates block/palette/light directly as
+ * SharedArrayBuffers. The terrain worker can only observe live mutations
+ * through a SharedArrayBuffer, so Chunk.loadFromStorage's ensureSharedBacking
+ * would otherwise copy every deserialized buffer into a fresh SAB. Routing the
+ * storage load path through this variant makes that copy a no-op (the buffers
+ * are already SAB-backed on arrival), removing one full copy of every loaded
+ * chunk's voxel + light data and the associated transient allocation churn.
+ *
+ * The original blob (an ArrayBuffer, still held by the store's read cache)
+ * is left untouched — this only changes what the live Chunk receives.
+ */
+export function deserializeVoxelDataShared(data: Uint8Array): SavedChunkData {
+	if (data.byteLength < 2) {
+		return { blocks: null, compressed: false };
+	}
+	const flags = data[0];
+	const isUniform = !!(flags & FLAG_IS_UNIFORM);
+	const compressed = !!(flags & FLAG_COMPRESSED);
+
+	const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+	let offset = 2;
+	let version: number | undefined;
+	if (data[1] >= 1 && data.byteLength >= 6) {
+		version = dv.getUint32(2, true);
+		offset = 6;
+	}
+
+	let uniformBlockId: number | undefined;
+	if (isUniform) {
+		uniformBlockId = dv.getUint16(offset, true);
+		offset += 2;
+	}
+
+	let blocks: Uint8Array | Uint16Array | null = null;
+	if (flags & FLAG_HAS_BLOCKS) {
+		const len = dv.getUint32(offset, true);
+		offset += 4;
+		const raw = new Uint8Array(data.buffer, data.byteOffset + offset, len);
+		if (!compressed && len === 65536) {
+			const aligned = raw.byteOffset % 2 === 0 ? raw : new Uint8Array(raw);
+			const sab = new SharedArrayBuffer(aligned.byteLength);
+			new Uint8Array(sab).set(aligned);
+			blocks = new Uint16Array(sab);
+		} else {
+			const sab = new SharedArrayBuffer(raw.byteLength);
+			new Uint8Array(sab).set(raw);
+			blocks = new Uint8Array(sab);
+		}
+		offset += len;
+	}
+
+	let palette: Uint16Array | null = null;
+	if (flags & FLAG_HAS_PALETTE) {
+		const count = dv.getUint32(offset, true);
+		offset += 4;
+		const raw = new Uint8Array(
+			data.buffer,
+			data.byteOffset + offset,
+			count * 2,
+		);
+		const alignedPalette = raw.byteOffset % 2 === 0 ? raw : new Uint8Array(raw);
+		const sab = new SharedArrayBuffer(alignedPalette.byteLength);
+		new Uint8Array(sab).set(alignedPalette);
+		palette = new Uint16Array(sab, 0, count);
+		offset += count * 2;
+	}
+
+	let lightArray: Uint8Array | null = null;
+	if (flags & FLAG_HAS_LIGHT) {
+		const len = dv.getUint32(offset, true);
+		offset += 4;
+		const raw = new Uint8Array(data.buffer, data.byteOffset + offset, len);
+		const sab = new SharedArrayBuffer(raw.byteLength);
+		new Uint8Array(sab).set(raw);
+		lightArray = new Uint8Array(sab);
+		offset += len;
+	}
+
+	return {
+		blocks,
+		palette: palette ?? undefined,
+		uniformBlockId: isUniform ? uniformBlockId : undefined,
+		isUniform: isUniform || undefined,
+		lightArray: lightArray ?? undefined,
+		compressed,
+		version,
+	};
+}
+
 /** Serialize chunk entities to a JSON Uint8Array. */
 export function serializeEntities(
 	entities: SavedChunkEntityData[],

@@ -1105,72 +1105,76 @@ export class SurfaceGenerator {
 		chunkZ: number,
 		_biome: Biome,
 		placeBlock: (x: number, y: number, z: number, id: number) => void,
-	) {
+	): void {
 		const SCAN_RADIUS = 6;
 		const chunkSize = this.chunk_size;
 		const chunkWorldX = chunkX * chunkSize;
 		const chunkWorldZ = chunkZ * chunkSize;
+		const seaLevel = this.params.SEA_LEVEL;
 		const NO_SURFACE_Y = CAVE_NO_SURFACE_Y;
-		// O(1) cache hit — generateTerrain already built this entry.
-		const columnPrepass = this.getOrBuildColumnPrepass(chunkX, chunkZ);
 
-		for (
-			let localX = -SCAN_RADIUS;
-			localX < chunkSize + SCAN_RADIUS;
-			localX++
-		) {
+		// generateTerrain already built this entry.
+		const centerPrepass = this.getOrBuildColumnPrepass(chunkX, chunkZ);
+
+		// Flora scan radius is smaller than a chunk, so this scan can only touch
+		// the current chunk plus its 8 direct neighbors. Pre-resolve those once.
+		const prepasses = new Array<ColumnPrepassCacheEntry>(9);
+
+		for (let oz = -1; oz <= 1; oz++) {
+			for (let ox = -1; ox <= 1; ox++) {
+				const prepassIndex = ox + 1 + (oz + 1) * 3;
+				prepasses[prepassIndex] =
+					ox === 0 && oz === 0
+						? centerPrepass
+						: this.getOrBuildColumnPrepass(chunkX + ox, chunkZ + oz);
+			}
+		}
+
+		const scanMin = -SCAN_RADIUS;
+		const scanMax = chunkSize + SCAN_RADIUS;
+
+		for (let localX = scanMin; localX < scanMax; localX++) {
 			const worldX = chunkWorldX + localX;
 
-			for (
-				let localZ = -SCAN_RADIUS;
-				localZ < chunkSize + SCAN_RADIUS;
-				localZ++
-			) {
+			// Since SCAN_RADIUS < chunkSize, ownership can be resolved with two
+			// comparisons instead of Math.floor(worldX / chunkSize).
+			const ownerOffsetX = localX < 0 ? -1 : localX >= chunkSize ? 1 : 0;
+			const ownerIndexX = ownerOffsetX + 1;
+			const colLocalX = localX - ownerOffsetX * chunkSize;
+			const insideX = ownerOffsetX === 0;
+
+			for (let localZ = scanMin; localZ < scanMax; localZ++) {
 				const worldZ = chunkWorldZ + localZ;
 
-				const isInsideChunkColumn =
-					localX >= 0 &&
-					localX < chunkSize &&
-					localZ >= 0 &&
-					localZ < chunkSize;
+				const ownerOffsetZ = localZ < 0 ? -1 : localZ >= chunkSize ? 1 : 0;
+				const ownerIndexZ = ownerOffsetZ + 1;
+				const colLocalZ = localZ - ownerOffsetZ * chunkSize;
+				const isInsideChunkColumn = insideX && ownerOffsetZ === 0;
 
-				// PERF: Resolve the owning column prepass once per column with
-				// zero allocation — previously each border column built a fresh
-				// {entry, localX, localZ} object (twice per column) and border
-				// prepasses were looked up once per check. Border columns read
-				// from the neighbouring chunk's prepass (shared globally, already
-				// built by terrain generation), avoiding the slow `findTopSurfaceY`
-				// path inside `getOrBuildFloraColumnInfo` (~130 noise calls).
-				const prepassEntry: ColumnPrepassCacheEntry = isInsideChunkColumn
-					? columnPrepass
-					: this.getOrBuildColumnPrepass(
-							Math.floor(worldX / chunkSize),
-							Math.floor(worldZ / chunkSize),
-						);
-				const colLocalX = isInsideChunkColumn
-					? localX
-					: worldX - Math.floor(worldX / chunkSize) * chunkSize;
-				const colLocalZ = isInsideChunkColumn
-					? localZ
-					: worldZ - Math.floor(worldZ / chunkSize) * chunkSize;
+				const prepassEntry = prepasses[ownerIndexX + ownerIndexZ * 3];
 
-				const sv =
-					prepassEntry.topSurfaceYMap[colLocalX + colLocalZ * chunkSize];
-				if (sv === NO_SURFACE_Y || sv < this.params.SEA_LEVEL) continue;
-				const knownTopSurfaceY: number = sv;
+				const columnIndex = colLocalX + colLocalZ * chunkSize;
+				const surfaceYFromPrepass = prepassEntry.topSurfaceYMap[columnIndex];
+
+				if (
+					surfaceYFromPrepass === NO_SURFACE_Y ||
+					surfaceYFromPrepass < seaLevel
+				) {
+					continue;
+				}
 
 				const column = this.getOrBuildFloraColumnInfo(
 					worldX,
 					worldZ,
-					knownTopSurfaceY,
+					surfaceYFromPrepass,
 				);
 
 				const colBiome = column.biome;
-
 				const surfaceY = column.topSurfaceY;
-				if (surfaceY === NO_SURFACE_Y) continue;
 
-				if (surfaceY < this.params.SEA_LEVEL) continue;
+				if (surfaceY === NO_SURFACE_Y || surfaceY < seaLevel) {
+					continue;
+				}
 
 				if (
 					this.riverGenerator.isRiver(
@@ -1183,24 +1187,21 @@ export class SurfaceGenerator {
 					continue;
 				}
 
-				// Beach flag — read from prepass instead of calling isBeachLocation
-				// (which fires 4 getFinalTerrainHeight lookups per column).
-				const isBeach =
-					prepassEntry.isBeachMap[colLocalX + colLocalZ * chunkSize] === 1;
+				// Beach flag comes from the owning chunk prepass.
+				const isBeach = prepassEntry.isBeachMap[columnIndex] === 1;
+
 				const topBlockId =
-					isBeach &&
-					surfaceY >= this.params.SEA_LEVEL - 2 &&
-					surfaceY <= this.params.SEA_LEVEL + 2
+					isBeach && surfaceY >= seaLevel - 2 && surfaceY <= seaLevel + 2
 						? colBiome.beachBlock
 						: colBiome.topBlock;
 
-				// Trees are gated by canSpawnTrees + noise density check
 				if (colBiome.canSpawnTrees) {
 					if (column.treeNoiseValue < colBiome.treeDensity) {
 						const treeDefinition = colBiome.getTreeForBlock(
 							topBlockId,
 							column.treeNoiseValue,
 						);
+
 						treeDefinition?.generate(
 							worldX,
 							surfaceY + 1,
@@ -1209,40 +1210,38 @@ export class SurfaceGenerator {
 							SurfaceGenerator.seedAsInt,
 						);
 
-						//Skip grass
+						// Preserve original behavior: tree columns skip grass/findlinge.
 						continue;
 					}
 				}
 
-				// Grass (id 64) spawns on grass blocks (id 15) using noise density.
-				// treeNoiseValue is [0,1]; threshold of 0.6 gives ~60% coverage.
-				if (isInsideChunkColumn) {
-					const GRASS_DENSITY = _biome.grassDensity;
-					if (column.treeNoiseValue < GRASS_DENSITY) {
-						if (
-							topBlockId === BlockType.Grass001 ||
-							topBlockId === BlockType.RockyTerrain02 ||
-							topBlockId === BlockType.ConcreteMoss ||
-							topBlockId === BlockType.RockyTerrain02
-						) {
-							placeBlock(worldX, surfaceY + 1, worldZ, BlockType.Grass006Cross);
-						} else {
-							if (topBlockId === 65)
-								placeBlock(worldX, surfaceY + 1, worldZ, 66);
-						}
-					}
+				// Grass and findlinge only spawn from columns inside this chunk,
+				// while trees may be scanned outside the chunk to avoid border cuts.
+				if (!isInsideChunkColumn) {
+					continue;
+				}
 
-					// Findlinge (glacial erratics) — noise-displaced irregular boulders.
-					const findlingeChance = colBiome.findlingChance ?? 0.00005;
-					if (findlingeChance > 0) {
-						this.generateFindlinge(
-							worldX,
-							worldZ,
-							surfaceY,
-							colBiome,
-							placeBlock,
-						);
+				if (column.treeNoiseValue < _biome.grassDensity) {
+					if (
+						topBlockId === BlockType.Grass001 ||
+						topBlockId === BlockType.RockyTerrain02 ||
+						topBlockId === BlockType.ConcreteMoss
+					) {
+						placeBlock(worldX, surfaceY + 1, worldZ, BlockType.Grass006Cross);
+					} else if (topBlockId === 65) {
+						placeBlock(worldX, surfaceY + 1, worldZ, 66);
 					}
+				}
+
+				const findlingeChance = colBiome.findlingChance ?? 0.00005;
+				if (findlingeChance > 0) {
+					this.generateFindlinge(
+						worldX,
+						worldZ,
+						surfaceY,
+						colBiome,
+						placeBlock,
+					);
 				}
 			}
 		}

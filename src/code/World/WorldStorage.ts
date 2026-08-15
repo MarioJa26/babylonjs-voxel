@@ -7,7 +7,7 @@ import {
 } from "./Storage/LevelDbChunkStore";
 import {
 	deserializeEntities,
-	deserializeVoxelData,
+	deserializeVoxelDataShared,
 	type SavedChunkData,
 	type SavedChunkEntityData,
 	serializeEntities,
@@ -185,7 +185,7 @@ class WorldStorageImpl {
 
 		const blob = await store.readChunk(cx, cy, cz);
 		if (!blob) return null;
-		return deserializeVoxelData(blob);
+		return deserializeVoxelDataShared(blob);
 	}
 
 	async loadChunks(
@@ -242,7 +242,7 @@ class WorldStorageImpl {
 			const c = coords[i];
 			const blob = readResults.get(c.key);
 			if (blob) {
-				result.set(c.id, deserializeVoxelData(blob));
+				result.set(c.id, deserializeVoxelDataShared(blob));
 			}
 		}
 

@@ -805,18 +805,24 @@ export class Chunk {
 			this._la32.byteOffset !== la.byteOffset ||
 			this._la32.length !== wordCount
 		) {
-			// Copy into a aligned buffer to avoid "start offset of Uint32Array
-			// should be a multiple of 4" when the source light array has a
-			// non-aligned byteOffset (e.g. deserialized from storage).
-			const aligned = new Uint32Array(wordCount);
-			aligned.set(
-				new Uint32Array(
-					la.buffer,
-					la.byteOffset - (la.byteOffset % 4),
-					wordCount + (la.byteOffset % 4) / 4,
-				).subarray(0, wordCount),
-			);
-			this._la32 = aligned;
+			if (la.byteOffset % 4 === 0) {
+				// Light SABs are allocated 4-byte aligned (offset 0), so we can
+				// view them directly as Uint32 without a 32 KB copy per load.
+				this._la32 = new Uint32Array(la.buffer, la.byteOffset, wordCount);
+			} else {
+				// Copy into a aligned buffer to avoid "start offset of Uint32Array
+				// should be a multiple of 4" when the source light array has a
+				// non-aligned byteOffset (e.g. deserialized from storage).
+				const aligned = new Uint32Array(wordCount);
+				aligned.set(
+					new Uint32Array(
+						la.buffer,
+						la.byteOffset - (la.byteOffset % 4),
+						wordCount + (la.byteOffset % 4) / 4,
+					).subarray(0, wordCount),
+				);
+				this._la32 = aligned;
+			}
 		}
 		const la32 = this._la32;
 		for (let i = 0; i < wordCount; i++) {
