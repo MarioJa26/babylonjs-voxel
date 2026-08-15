@@ -253,23 +253,25 @@ export class DroppedItem implements IUsable {
 	#disposed = false;
 	#itemIndex = -1;
 
-	// OPTIMIZATION: Only update lighting when item crosses a voxel boundary
+	// Only update lighting when item crosses a voxel boundary.
 	#lastLightX = Number.NaN;
 	#lastLightY = Number.NaN;
 	#lastLightZ = Number.NaN;
 
-	// OPTIMIZATION: Reuse tint array to avoid GC pressure from setShaderVector3
+	// Reused tint tuple to avoid per-frame/per-light allocations.
 	#tint: [number, number, number] = [1, 1, 1];
 
-	// OPTIMIZATION: Skip transform updates when item hasn't moved
+	// Track last synced position.
 	#oldPositionX = Number.NaN;
 	#oldPositionY = Number.NaN;
 	#oldPositionZ = Number.NaN;
 
-	// OPTIMIZATION: Track grounded from Y-axis collision instead of extra overlap query
+	// Grounded is inferred from Y collision.
 	#grounded = false;
 
-	// OPTIMIZATION: Arrays iterate magnitudes faster than Sets in tight game loops
+	// PERF: settled items do not need physics every frame.
+	#sleeping = false;
+
 	static readonly #allItems: DroppedItem[] = [];
 	static #observerRegistered = false;
 
@@ -281,14 +283,15 @@ export class DroppedItem implements IUsable {
 			const dt = deltaMs * 0.001;
 			if (dt <= 0) return;
 
-			// PERF: skip item physics while any UI overlay owns the mouse
-			// (matches the mob observer and player-loop suppression).
+			// PERF: skip item physics while any UI overlay owns the mouse.
 			if (isUiOpen(UiFocus.pauseMenu)) return;
 
 			const items = DroppedItem.#allItems;
-			const len = items.length;
-			for (let i = 0; i < len; i++) {
-				items[i].#updatePhysics(dt);
+			for (let i = 0, len = items.length; i < len; i++) {
+				const item = items[i];
+				if (!item.#sleeping) {
+					item.#updatePhysics(dt);
+				}
 			}
 		});
 	}
@@ -302,7 +305,12 @@ export class DroppedItem implements IUsable {
 	static readonly SKY_LIGHT_COLOR = vec3(0.8, 0.8, 0.8);
 	static readonly BLOCK_LIGHT_COLOR = vec3(0.9, 0.6, 0.2);
 
+	static #sizeFor(stackSize: number): number {
+		return 0.25 + stackSize * 0.009;
+	}
+
 	static #atlasPromise: Promise<Texture2D | null> | null = null;
+
 	static #getAtlasTexture(): Promise<Texture2D | null> {
 		if (!DroppedItem.#atlasPromise) {
 			DroppedItem.#atlasPromise = loadTexture2D(
@@ -315,6 +323,7 @@ export class DroppedItem implements IUsable {
 				},
 			).catch(() => null);
 		}
+
 		return DroppedItem.#atlasPromise;
 	}
 
@@ -323,7 +332,6 @@ export class DroppedItem implements IUsable {
 	}
 
 	constructor(item: Item, x: number, y: number, z: number) {
-		const size = 0.25 + item.stackSize * 0.009;
 		const geometry = getUnitCubeGeometry();
 
 		this.#boxMesh = createMeshFromData(
@@ -334,6 +342,7 @@ export class DroppedItem implements IUsable {
 			geometry.indices,
 			geometry.uvs,
 		);
+
 		addToScene(Map1.mainScene, this.#boxMesh);
 
 		const meta = new MetadataContainer();
@@ -341,7 +350,7 @@ export class DroppedItem implements IUsable {
 		this.#boxMesh.metadata = meta as unknown as LiteMetadata;
 
 		this.#boxMesh.pickable = true;
-		this.#boxMesh.scaling.set(size, size, size);
+
 		this.#position = vec3(x, y, z);
 		this.#boxMesh.position.set(x, y, z);
 
@@ -349,8 +358,11 @@ export class DroppedItem implements IUsable {
 		this.#boxMesh.material = this.#material;
 		this.#boxMesh.visible = false;
 
-		this.#halfSize = size * 0.5;
 		this.#item = item;
+
+		const size = DroppedItem.#sizeFor(item.stackSize);
+		this.#boxMesh.scaling.set(size, size, size);
+		this.#halfSize = size * 0.5;
 
 		this.#voxelCollider = new VoxelAabbCollider(
 			vec3(this.#halfSize, this.#halfSize, this.#halfSize),
@@ -372,6 +384,7 @@ export class DroppedItem implements IUsable {
 		} else {
 			void DroppedItem.#getAtlasTexture().then((atlas) => {
 				if (this.#disposed || !atlas) return;
+
 				setShaderTexture(this.#material, "diffuseTexture", atlas);
 				this.#applyAtlasTile(item);
 				this.#boxMesh.visible = true;
@@ -383,21 +396,38 @@ export class DroppedItem implements IUsable {
 		this.#itemIndex = DroppedItem.#allItems.length;
 		DroppedItem.#allItems.push(this);
 
-		this.#updateLightingIfNeeded();
+		this.#syncTransformAndLightingIfMoved();
 	}
 
 	addVelocity(x: number, y: number, z: number): void {
 		this.#velocity.x += x;
 		this.#velocity.y += y;
 		this.#velocity.z += z;
+
+		if (x !== 0 || y !== 0 || z !== 0) {
+			this.#sleeping = false;
+		}
 	}
 
 	use = (player: Player): void => {
 		const remainder = player.playerInventory.addItem(this.#item);
 		if (remainder <= 0) {
 			this.#dispose();
+		} else {
+			this.#resize();
 		}
 	};
+
+	#resize(): void {
+		const size = DroppedItem.#sizeFor(this.#item.stackSize);
+		this.#boxMesh.scaling.set(size, size, size);
+		this.#halfSize = size * 0.5;
+		this.#voxelCollider.HalfExtents = vec3(
+			this.#halfSize,
+			this.#halfSize,
+			this.#halfSize,
+		);
+	}
 
 	#dispose(): void {
 		if (this.#disposed) return;
@@ -405,6 +435,7 @@ export class DroppedItem implements IUsable {
 
 		const items = DroppedItem.#allItems;
 		const last = items.pop();
+
 		if (last !== undefined && last !== this) {
 			items[this.#itemIndex] = last;
 			last.#itemIndex = this.#itemIndex;
@@ -419,10 +450,10 @@ export class DroppedItem implements IUsable {
 
 		this.#moveAxis(ColliderAxis.X, this.#velocity.x * dt);
 
-		// OPTIMIZATION: Track grounded from Y collision instead of extra overlap query
 		this.#grounded = false;
 		const preY = this.#position.y;
 		this.#moveAxis(ColliderAxis.Y, this.#velocity.y * dt);
+
 		if (this.#position.y === preY && this.#velocity.y < 0) {
 			this.#grounded = true;
 		}
@@ -432,7 +463,7 @@ export class DroppedItem implements IUsable {
 		const damping = this.#grounded
 			? DroppedItem.GROUND_DAMPING_PER_SEC
 			: DroppedItem.AIR_DAMPING_PER_SEC;
-		// OPTIMIZATION: Frame-rate independent exponential damping
+
 		const keep = Math.exp(-damping * dt);
 
 		this.#velocity.x *= keep;
@@ -446,39 +477,40 @@ export class DroppedItem implements IUsable {
 		if (
 			this.#velocity.x > -DroppedItem.MIN_SPEED &&
 			this.#velocity.x < DroppedItem.MIN_SPEED
-		)
+		) {
 			this.#velocity.x = 0;
+		}
+
 		if (
 			this.#velocity.y > -DroppedItem.MIN_SPEED &&
 			this.#velocity.y < DroppedItem.MIN_SPEED
-		)
+		) {
 			this.#velocity.y = 0;
+		}
+
 		if (
 			this.#velocity.z > -DroppedItem.MIN_SPEED &&
 			this.#velocity.z < DroppedItem.MIN_SPEED
-		)
-			this.#velocity.z = 0;
-
-		// OPTIMIZATION: Skip transform update when item hasn't moved
-		const px = this.#position.x;
-		const py = this.#position.y;
-		const pz = this.#position.z;
-		if (
-			px !== this.#oldPositionX ||
-			py !== this.#oldPositionY ||
-			pz !== this.#oldPositionZ
 		) {
-			this.#oldPositionX = px;
-			this.#oldPositionY = py;
-			this.#oldPositionZ = pz;
-			this.#boxMesh.position.set(px, py, pz);
+			this.#velocity.z = 0;
 		}
 
-		this.#voxelCollider.syncDebugMesh(this.#position);
-		this.#updateLightingIfNeeded();
+		this.#syncTransformAndLightingIfMoved();
+
+		// PERF: once settled on the ground, stop spending collision/light work every frame.
+		if (
+			this.#grounded &&
+			this.#velocity.x === 0 &&
+			this.#velocity.y === 0 &&
+			this.#velocity.z === 0
+		) {
+			this.#sleeping = true;
+		}
 	}
 
 	#moveAxis(axis: ColliderAxis, delta: number): void {
+		if (delta === 0) return;
+
 		this.#voxelCollider.moveAxis(
 			this.#position,
 			this.#velocity,
@@ -488,10 +520,33 @@ export class DroppedItem implements IUsable {
 		);
 	}
 
+	#syncTransformAndLightingIfMoved(): void {
+		const px = this.#position.x;
+		const py = this.#position.y;
+		const pz = this.#position.z;
+
+		if (
+			px === this.#oldPositionX &&
+			py === this.#oldPositionY &&
+			pz === this.#oldPositionZ
+		) {
+			return;
+		}
+
+		this.#oldPositionX = px;
+		this.#oldPositionY = py;
+		this.#oldPositionZ = pz;
+
+		this.#boxMesh.position.set(px, py, pz);
+		this.#voxelCollider.syncDebugMesh(this.#position);
+		this.#updateLightingIfNeeded();
+	}
+
 	#updateLightingIfNeeded(): void {
 		const lx = this.#position.x | 0;
 		const ly = this.#position.y | 0;
 		const lz = this.#position.z | 0;
+
 		if (
 			lx === this.#lastLightX &&
 			ly === this.#lastLightY &&
@@ -499,6 +554,7 @@ export class DroppedItem implements IUsable {
 		) {
 			return;
 		}
+
 		this.#lastLightX = lx;
 		this.#lastLightY = ly;
 		this.#lastLightZ = lz;
@@ -513,11 +569,8 @@ export class DroppedItem implements IUsable {
 	}
 
 	/**
-	 * One-shot tint from a pre-sampled packed light value (e.g. the lit air
-	 * voxel beside a freshly mined block). Does not touch the per-voxel cache:
-	 * the item keeps this tint until it actually crosses into another voxel,
-	 * which prevents a freshly dropped item from spawning dark inside the
-	 * still-unlit block it came from.
+	 * One-shot tint from a pre-sampled packed light value.
+	 * Does not touch the per-voxel cache.
 	 */
 	public setInitialLight(packedLight: number): void {
 		this.#applyTintFromPackedLight(packedLight);
@@ -539,10 +592,10 @@ export class DroppedItem implements IUsable {
 		const blockG = blockLight * DroppedItem.BLOCK_LIGHT_COLOR.y;
 		const blockB = blockLight * DroppedItem.BLOCK_LIGHT_COLOR.z;
 
-		// OPTIMIZATION: Reuse tint array to avoid GC from setShaderVector3
 		this.#tint[0] = Math.min(1.0, Math.max(0.3, skyR + blockR));
 		this.#tint[1] = Math.min(1.0, Math.max(0.3, skyG + blockG));
 		this.#tint[2] = Math.min(1.0, Math.max(0.3, skyB + blockB));
+
 		setShaderVector3(this.#material, "tintColor", this.#tint);
 	}
 
@@ -584,11 +637,11 @@ export class DroppedItem implements IUsable {
 		let bestSq = REACH_DISTANCE_SQ;
 
 		const items = DroppedItem.#allItems;
-		const len = items.length;
 
-		for (let i = 0; i < len; i++) {
+		for (let i = 0, len = items.length; i < len; i++) {
 			const item = items[i];
 			const m = item.#position;
+
 			const dx = m.x - p.x;
 			const dy = m.y - p.y;
 			const dz = m.z - p.z;
@@ -599,6 +652,7 @@ export class DroppedItem implements IUsable {
 				best = item;
 			}
 		}
+
 		return best;
 	}
 
