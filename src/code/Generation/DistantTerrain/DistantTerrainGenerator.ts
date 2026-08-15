@@ -23,16 +23,22 @@ let gridStep = 1;
 let radius = 0;
 let usingSharedBuffers = false;
 
-const _heightCache = new Float32Array(131072);
-const _heightCacheKeys = new Int32Array(131072);
-const _heightCacheMask = 131071;
+const HEIGHT_CACHE_SIZE = 131072;
+const HEIGHT_CACHE_MASK = HEIGHT_CACHE_SIZE - 1;
+const HEIGHT_CACHE_EMPTY = 0x7fffffff;
+
+const _heightCache = new Float32Array(HEIGHT_CACHE_SIZE);
+const _heightCacheKeys = new Int32Array(HEIGHT_CACHE_SIZE);
+_heightCacheKeys.fill(HEIGHT_CACHE_EMPTY);
 
 function cachedHeight(wx: number, wz: number): number {
 	const key = (wx & 0x3fff) | ((wz & 0x3fff) << 14);
-	const slot = key & _heightCacheMask;
+	const slot = key & HEIGHT_CACHE_MASK;
+
 	if (_heightCacheKeys[slot] === key) {
 		return _heightCache[slot];
 	}
+
 	const h = getFinalTerrainHeight(wx, wz);
 	_heightCacheKeys[slot] = key;
 	_heightCache[slot] = h;
@@ -254,7 +260,7 @@ function resetTracking() {
  */
 export function resetCacheAndTracking(): void {
 	_heightCache.fill(0);
-	_heightCacheKeys.fill(0);
+	_heightCacheKeys.fill(HEIGHT_CACHE_EMPTY);
 	resetTracking();
 }
 
@@ -357,17 +363,20 @@ function regenerateEdges(
 // =====================================================================
 
 function rewriteLocalXZ(ccx: number, ccz: number, gcx: number, gcz: number) {
-	const { CHUNK_SIZE } = GenerationParams;
+	const chunkSize = GenerationParams.CHUNK_SIZE;
 	const r = rowSize;
-	const step = gridStep;
-	const rad = radius;
+	const stepWorld = gridStep * chunkSize;
+	const baseLocalX = (gcx - radius - ccx) * chunkSize;
+	const baseLocalZ = (gcz - radius - ccz) * chunkSize;
 	const pos = positions!;
 
 	let i3 = 0;
-	for (let z = 0; z < r; z++) {
-		const localZ = (gcz - rad + z * step - ccz) * CHUNK_SIZE;
-		for (let x = 0; x < r; x++, i3 += 3) {
-			const localX = (gcx - rad + x * step - ccx) * CHUNK_SIZE;
+	let localZ = baseLocalZ;
+
+	for (let z = 0; z < r; z++, localZ += stepWorld) {
+		let localX = baseLocalX;
+
+		for (let x = 0; x < r; x++, i3 += 3, localX += stepWorld) {
 			pos[i3] = localX;
 			pos[i3 + 2] = localZ;
 		}
@@ -386,78 +395,56 @@ function generateVertex(
 	ccx: number,
 	ccz: number,
 ) {
-	const { CHUNK_SIZE } = GenerationParams;
+	const chunkSize = GenerationParams.CHUNK_SIZE;
 	const r = rowSize;
-	const i3 = (z * r + x) * 3;
-	const i2 = (z * r + x) * 2;
+	const vertexIndex = z * r + x;
+	const i3 = vertexIndex * 3;
+	const i2 = vertexIndex * 2;
 
 	const chunkX = gcx - radius + x * gridStep;
 	const chunkZ = gcz - radius + z * gridStep;
 	const localChunkX = chunkX - ccx;
 	const localChunkZ = chunkZ - ccz;
+
+	const worldX = chunkX * chunkSize;
+	const worldZ = chunkZ * chunkSize;
+
 	const isInsideRealTerrain =
 		localChunkX > -currentRenderDistance &&
 		localChunkX <= currentRenderDistance &&
 		localChunkZ > -currentRenderDistance &&
 		localChunkZ <= currentRenderDistance;
 
+	const y = isInsideRealTerrain ? INSIDE_CLIP_Y : cachedHeight(worldX, worldZ);
+
+	const hRight = cachedHeight(worldX + 1, worldZ);
+	const hDown = cachedHeight(worldX, worldZ + 1);
+
+	const dy1 = hRight - y;
+	const dy2 = hDown - y;
+	const invLen = 1 / (Math.sqrt(dy1 * dy1 + 1 + dy2 * dy2) || 1);
+
 	const pos = positions!;
 	const nrm = normals!;
 	const tiles = surfaceTiles!;
 
-	let y: number;
-
-	if (isInsideRealTerrain) {
-		const worldX = chunkX * CHUNK_SIZE;
-		const worldZ = chunkZ * CHUNK_SIZE;
-		y = INSIDE_CLIP_Y;
-
-		const hRight = cachedHeight(worldX + 1, worldZ);
-		const hDown = cachedHeight(worldX, worldZ + 1);
-		const dy1 = hRight - y;
-		const dy2 = hDown - y;
-		const len = Math.sqrt(dy1 * dy1 + 1 + dy2 * dy2) || 1;
-
-		nrm[i3] = (-dy1 / len) * 127;
-		nrm[i3 + 1] = (1 / len) * 127;
-		nrm[i3 + 2] = (-dy2 / len) * 127;
-
-		const topBlockId = getBiome(worldX, worldZ).topBlock;
-		const [tileX, tileY] = getTopTileForBlock(topBlockId);
-		tiles[i2] = tileX;
-		tiles[i2 + 1] = tileY;
-	} else {
-		const worldX = chunkX * CHUNK_SIZE;
-		const worldZ = chunkZ * CHUNK_SIZE;
-		y = cachedHeight(worldX, worldZ);
-
-		const hRight = cachedHeight(worldX + 1, worldZ);
-		const hDown = cachedHeight(worldX, worldZ + 1);
-		const dy1 = hRight - y;
-		const dy2 = hDown - y;
-		const len = Math.sqrt(dy1 * dy1 + 1 + dy2 * dy2) || 1;
-
-		nrm[i3] = (-dy1 / len) * 127;
-		nrm[i3 + 1] = (1 / len) * 127;
-		nrm[i3 + 2] = (-dy2 / len) * 127;
-
-		const topBlockId = getBiome(worldX, worldZ).topBlock;
-		const [tileX, tileY] = getTopTileForBlock(topBlockId);
-		tiles[i2] = tileX;
-		tiles[i2 + 1] = tileY;
-	}
-
-	pos[i3] = localChunkX * CHUNK_SIZE;
+	pos[i3] = localChunkX * chunkSize;
 	pos[i3 + 1] = y;
-	pos[i3 + 2] = localChunkZ * CHUNK_SIZE;
-}
+	pos[i3 + 2] = localChunkZ * chunkSize;
 
-// =====================================================================
-// Tile lookup
-// =====================================================================
+	nrm[i3] = -dy1 * invLen * 127;
+	nrm[i3 + 1] = invLen * 127;
+	nrm[i3 + 2] = -dy2 * invLen * 127;
 
-function getTopTileForBlock(blockId: number): [number, number] {
-	const tex = BlockTextures[blockId];
+	const topBlockId = getBiome(worldX, worldZ).topBlock;
+	const tex = BlockTextures[topBlockId];
 	const tile = tex?.[FaceName.Top] ?? tex?.[FaceName.All];
-	return tile ?? [DEFAULT_TILE_X, DEFAULT_TILE_Y];
+
+	if (tile) {
+		tiles[i2] = tile[0];
+		tiles[i2 + 1] = tile[1];
+	} else {
+		tiles[i2] = DEFAULT_TILE_X;
+		tiles[i2 + 1] = DEFAULT_TILE_Y;
+	}
 }

@@ -66,6 +66,14 @@ let scene: SceneContext;
 
 let initialized = false;
 
+const gridOriginScratch = new Float32Array(2);
+function setUniformBoth(name: string, value: number | Float32Array): void {
+	// Avoid `for (const mat of [material, waterMaterial])`, which allocates
+	// a new array every time uniforms change.
+	setShaderUniform(material, name, value);
+	setShaderUniform(waterMaterial, name, value);
+}
+
 // =====================================================================
 // Grid mesh construction
 // =====================================================================
@@ -75,11 +83,16 @@ function createEmptyGridMesh(engine: EngineContext, name: string): Mesh {
 	const quadCount = (res - 1) * (res - 1);
 	const indexCount = quadCount * 6;
 
+	// createMeshFromData is typed to accept Uint32Array only.
+	// Keep this as Uint32Array unless the @babylonjs/lite wrapper signature
+	// is changed to accept Uint16Array too.
 	const indices = new Uint32Array(indexCount);
+
 	let k = 0;
 	for (let z = 0; z < res - 1; z++) {
 		const row = z * res;
-		const next = (z + 1) * res;
+		const next = row + res;
+
 		for (let x = 0; x < res - 1; x++) {
 			const i0 = row + x;
 			const i1 = i0 + 1;
@@ -98,7 +111,8 @@ function createEmptyGridMesh(engine: EngineContext, name: string): Mesh {
 
 	const positions = new Float32Array(vertexCount * 3);
 	const normals = new Float32Array(vertexCount * 3);
-	for (let i = 1; i < normals.length; i += 3) {
+
+	for (let i = 1, len = normals.length; i < len; i += 3) {
 		normals[i] = 1;
 	}
 
@@ -141,27 +155,30 @@ function updateUniforms() {
 
 	const lightDir = GLOBAL_VALUES.skyLightDirection;
 	const shaderDirY = -lightDir.y;
-	const rawBlend = 1 - Math.min(1, Math.max(0, (shaderDirY + 0.2) / 0.4));
-	const blend = rawBlend * rawBlend * (3 - 2 * rawBlend);
 
-	const lx = -lightDir.x * (1 - blend);
-	const ly = -lightDir.y * (1 - blend) + blend;
-	const lz = -lightDir.z * (1 - blend);
+	const t = (shaderDirY + 0.2) / 0.4;
+	const clampedT = t < 0 ? 0 : t > 1 ? 1 : t;
+	const rawBlend = 1 - clampedT;
+	const blend = rawBlend * rawBlend * (3 - 2 * rawBlend);
+	const invBlend = 1 - blend;
+
+	const lx = -lightDir.x * invBlend;
+	const ly = -lightDir.y * invBlend + blend;
+	const lz = -lightDir.z * invBlend;
 
 	const rawIntensity = (-lightDir.y + 0.1) * 4.0;
 	const sunLightIntensity =
-		rawIntensity < 0.0 ? 0.0 : rawIntensity > 1.0 ? 1.0 : rawIntensity;
+		rawIntensity < 0 ? 0 : rawIntensity > 1 ? 1 : rawIntensity;
 
 	const camera = scene ? scene.camera : null;
 	const camPos = camera ? getCameraPosition(camera) : null;
 	const isUnderWater = camPos
 		? isEyeUnderwater(camPos.x, camPos.y, camPos.z)
 		: false;
+
 	const start = MapFog.getFogStart(isUnderWater);
 	const end = MapFog.getFogEnd(isUnderWater);
 	const fogColor = MapFog.getFogColor(isUnderWater);
-	// Precomputed reciprocal of (far - near) so the per-fragment fog factor can
-	// multiply instead of divide (mirrors the SKYBLEND_FACTOR trick).
 	const fogInvRange = 1.0 / Math.max(end - start, 1e-4);
 
 	const staticChanged =
@@ -169,6 +186,7 @@ function updateUniforms() {
 		ly !== lastLy ||
 		lz !== lastLz ||
 		sunLightIntensity !== lastSunIntensity;
+
 	const fogChanged =
 		isUnderWater !== lastUnderWater ||
 		start !== lastFogStart ||
@@ -184,14 +202,14 @@ function updateUniforms() {
 		lightDirScratch[0] = lx;
 		lightDirScratch[1] = ly;
 		lightDirScratch[2] = lz;
+
 		lastLx = lx;
 		lastLy = ly;
 		lastLz = lz;
 		lastSunIntensity = sunLightIntensity;
-		for (const mat of [material, waterMaterial]) {
-			setShaderUniform(mat, "lightDirection", lightDirScratch);
-			setShaderUniform(mat, "sunLightIntensity", sunLightIntensity);
-		}
+
+		setUniformBoth("lightDirection", lightDirScratch);
+		setUniformBoth("sunLightIntensity", sunLightIntensity);
 	}
 
 	if (fogChanged) {
@@ -199,9 +217,11 @@ function updateUniforms() {
 		fogInfosScratch[1] = start;
 		fogInfosScratch[2] = end;
 		fogInfosScratch[3] = 0;
+
 		fogColorScratch[0] = fogColor[0];
 		fogColorScratch[1] = fogColor[1];
 		fogColorScratch[2] = fogColor[2];
+
 		lastUnderWater = isUnderWater;
 		lastFogStart = start;
 		lastFogEnd = end;
@@ -209,11 +229,10 @@ function updateUniforms() {
 		lastFogColorG = fogColor[1];
 		lastFogColorB = fogColor[2];
 		lastFogInvRange = fogInvRange;
-		for (const mat of [material, waterMaterial]) {
-			setShaderUniform(mat, "fogInfos", fogInfosScratch);
-			setShaderUniform(mat, "fogColor", fogColorScratch);
-			setShaderUniform(mat, "fogInvRange", fogInvRange);
-		}
+
+		setUniformBoth("fogInfos", fogInfosScratch);
+		setUniformBoth("fogColor", fogColorScratch);
+		setUniformBoth("fogInvRange", fogInvRange);
 	}
 }
 
@@ -228,9 +247,11 @@ function applyTerrainData(
 	worldX: number,
 	worldZ: number,
 ) {
-	for (let i = 0; i < vertexCount * 3; i++) {
+	const len3 = vertexCount * 3;
+
+	for (let i = 0; i < len3; i++) {
 		floatPositions[i] = pos[i];
-		floatNormals[i] = nrm[i] / 127;
+		floatNormals[i] = nrm[i] * (1 / 127);
 	}
 
 	updateMeshPositions(engine, mesh, floatPositions);
@@ -239,14 +260,20 @@ function applyTerrainData(
 	mesh.position.set(worldX, -2, worldZ);
 	waterMesh.position.set(worldX, GenerationParams.SEA_LEVEL, worldZ);
 
-	gridOrigin[0] = worldX - radius * Chunk.SIZE;
-	gridOrigin[1] = worldZ - radius * Chunk.SIZE;
-	setShaderUniform(material, "gridOriginWorld", [gridOrigin[0], gridOrigin[1]]);
+	const originX = worldX - radius * Chunk.SIZE;
+	const originZ = worldZ - radius * Chunk.SIZE;
+
+	gridOrigin[0] = originX;
+	gridOrigin[1] = originZ;
+	gridOriginScratch[0] = originX;
+	gridOriginScratch[1] = originZ;
+	setShaderUniform(material, "gridOriginWorld", gridOriginScratch);
 
 	if (USE_LA_TILE_TEXTURE) {
 		surfaceTileLookupData.set(tiles.subarray(0, surfaceTileLookupData.length));
 	} else {
-		for (let s = 0, d = 0; s < tiles.length; s += 2, d += 4) {
+		const max = tiles.length;
+		for (let s = 0, d = 0; s < max; s += 2, d += 4) {
 			surfaceTileLookupData[d] = tiles[s];
 			surfaceTileLookupData[d + 1] = tiles[s + 1];
 			surfaceTileLookupData[d + 2] = 0;
