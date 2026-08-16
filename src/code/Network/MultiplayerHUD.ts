@@ -2,6 +2,7 @@
  * MultiplayerHUD — overlay showing connection status, player count, and chat.
  */
 import "@/style/MultiplayerHUD.css";
+import { ChatHistory } from "@/code/Lib/ChatHistory";
 
 export class MultiplayerHUD {
 	private container: HTMLElement;
@@ -11,6 +12,7 @@ export class MultiplayerHUD {
 	private chatMessagesEl: HTMLElement;
 	private chatInput: HTMLInputElement;
 	private chatOpen = false;
+	private history = new ChatHistory();
 	private messageCount = 0;
 	private _lastNamesKey = "";
 
@@ -53,11 +55,20 @@ export class MultiplayerHUD {
 		this.chatInput.addEventListener("keydown", (e) => {
 			e.stopPropagation();
 			if (e.key === "Enter" && this.chatInput.value.trim()) {
+				this.history.add(this.chatInput.value.trim());
 				this.onSendChat(this.chatInput.value.trim());
 				this.chatInput.value = "";
 				this.closeChat();
 			} else if (e.key === "Escape") {
 				this.closeChat();
+			} else if (e.key === "ArrowUp") {
+				e.preventDefault();
+				const prev = this.history.previous();
+				if (prev !== null) this.chatInput.value = prev;
+			} else if (e.key === "ArrowDown") {
+				e.preventDefault();
+				const next = this.history.next();
+				this.chatInput.value = next ?? "";
 			}
 		});
 		this.chatInput.addEventListener("blur", () => this.closeChat());
@@ -119,21 +130,8 @@ export class MultiplayerHUD {
 		msgEl.innerHTML = `<span class="mp-chat-name">${this.escapeHtml(name)}:</span> ${this.escapeHtml(message)}`;
 		this.chatMessagesEl.appendChild(msgEl);
 		this.messageCount++;
-
-		// Keep only last 50 messages
-		while (this.chatMessagesEl.children.length > 50) {
-			this.chatMessagesEl.removeChild(this.chatMessagesEl.firstChild!);
-		}
-
-		// Auto-scroll
-		this.chatMessagesEl.scrollTop = this.chatMessagesEl.scrollHeight;
-
-		// Fade out old messages after 10 seconds if chat is closed
-		if (!this.chatOpen) {
-			setTimeout(() => {
-				msgEl.classList.add("mp-chat-msg-fade");
-			}, 8000);
-		}
+		this.#trimToMax();
+		this.#scheduleFade(msgEl, 10000);
 	}
 
 	addSystemMessage(text: string): void {
@@ -142,16 +140,31 @@ export class MultiplayerHUD {
 		msgEl.textContent = text;
 		this.chatMessagesEl.appendChild(msgEl);
 		this.messageCount++;
+		this.#trimToMax();
+		this.#scheduleFade(msgEl, 4000);
+	}
 
+	#trimToMax(): void {
 		while (this.chatMessagesEl.children.length > 50) {
 			this.chatMessagesEl.removeChild(this.chatMessagesEl.firstChild!);
 		}
 		this.chatMessagesEl.scrollTop = this.chatMessagesEl.scrollHeight;
 	}
 
+	#scheduleFade(el: HTMLElement, delay: number): void {
+		setTimeout(() => {
+			el.classList.add("mp-chat-msg-fade");
+			setTimeout(() => {
+				if (el.parentNode) el.parentNode.removeChild(el);
+			}, 1000);
+		}, delay);
+	}
+
 	openChat(): void {
 		this.chatOpen = true;
 		this.chatInput.classList.remove("hidden");
+		this.chatInput.value = "";
+		this.history.reset();
 		this.chatInput.focus();
 		this.onToggleChat(true);
 	}

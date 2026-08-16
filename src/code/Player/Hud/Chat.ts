@@ -1,3 +1,4 @@
+import { ChatHistory } from "@/code/Lib/ChatHistory";
 import { closeUi, openUi, UiFocus } from "@/code/Lib/GameRuntimeState";
 import { Map1 } from "@/code/Maps/Map1";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
@@ -33,8 +34,8 @@ export class Chat {
 	#isOpen = false;
 	#messages: ChatMessage[] = [];
 	#maxMessages = 100;
-	#history: string[] = [];
-	#historyIndex = -1;
+	#maxVisibleHistory = 30;
+	#history = new ChatHistory();
 
 	constructor(player: Player) {
 		this.#player = player;
@@ -42,14 +43,13 @@ export class Chat {
 		this.#messageList = this.#createMessageList();
 		this.#input = this.#createInput();
 		this.#container.appendChild(this.#messageList);
-		this.#container.appendChild(this.#input);
 		document.body.appendChild(this.#container);
+		document.body.appendChild(this.#input);
 	}
 
 	#createContainer(): HTMLDivElement {
 		const el = document.createElement("div");
 		el.id = "chat-container";
-		el.style.display = "none";
 		return el;
 	}
 
@@ -63,6 +63,7 @@ export class Chat {
 		const el = document.createElement("input");
 		el.id = "chat-input";
 		el.type = "text";
+		el.style.display = "none";
 		el.placeholder = "Type a message...";
 		el.maxLength = 200;
 		el.addEventListener("keydown", (e) => {
@@ -94,8 +95,7 @@ export class Chat {
 			return;
 		}
 
-		this.#history.push(text);
-		this.#historyIndex = this.#history.length;
+		this.#history.add(text);
 		this.#input.value = "";
 
 		if (text.startsWith("/") || text.startsWith("!")) {
@@ -108,21 +108,13 @@ export class Chat {
 	}
 
 	#historyUp(): void {
-		if (this.#history.length === 0) return;
-		if (this.#historyIndex > 0) {
-			this.#historyIndex--;
-			this.#input.value = this.#history[this.#historyIndex];
-		}
+		const prev = this.#history.previous();
+		if (prev !== null) this.#input.value = prev;
 	}
 
 	#historyDown(): void {
-		if (this.#historyIndex < this.#history.length - 1) {
-			this.#historyIndex++;
-			this.#input.value = this.#history[this.#historyIndex];
-		} else {
-			this.#historyIndex = this.#history.length;
-			this.#input.value = "";
-		}
+		const next = this.#history.next();
+		this.#input.value = next ?? "";
 	}
 
 	#handleCommand(text: string): void {
@@ -295,15 +287,18 @@ export class Chat {
 			this.#messages.shift();
 		}
 		const el = this.#renderMessage(msg);
-		if (type === "system") {
-			setTimeout(() => {
-				el.classList.add("chat-message--fade");
-				setTimeout(() => {
-					if (el.parentNode) el.parentNode.removeChild(el);
-				}, 1000);
-			}, 4000);
-		}
+		this.#scheduleFade(el, type);
 		this.#trimVisible();
+	}
+
+	#scheduleFade(el: HTMLElement, type: ChatMessage["type"]): void {
+		const delay = type === "system" ? 4000 : 10000;
+		setTimeout(() => {
+			el.classList.add("chat-message--fade");
+			setTimeout(() => {
+				if (el.parentNode) el.parentNode.removeChild(el);
+			}, 1000);
+		}, delay);
 	}
 
 	#addSystem(text: string): void {
@@ -329,21 +324,41 @@ export class Chat {
 		if (this.#isOpen) return;
 		this.#isOpen = true;
 		openUi(UiFocus.chat);
-		this.#container.style.display = "flex";
+		this.#renderHistory();
+		this.#input.style.display = "";
 		this.#input.value = "";
-		this.#historyIndex = this.#history.length;
+		this.#history.reset();
 		this.#input.focus();
 		if (document.pointerLockElement) {
 			document.exitPointerLock();
 		}
 	}
 
+	#renderHistory(): void {
+		// Re-render the recent message history so it is visible while typing.
+		this.#messageList.innerHTML = "";
+		const start = Math.max(0, this.#messages.length - this.#maxVisibleHistory);
+		for (let i = start; i < this.#messages.length; i++) {
+			this.#messageList.appendChild(this.#renderMessage(this.#messages[i]));
+		}
+		this.#messageList.scrollTop = this.#messageList.scrollHeight;
+	}
+
 	close(): void {
 		if (!this.#isOpen) return;
 		this.#isOpen = false;
 		closeUi(UiFocus.chat);
-		this.#container.style.display = "none";
+		// Keep the message list visible as a HUD so messages can fade out;
+		// only hide the input.
+		this.#input.style.display = "none";
 		this.#input.blur();
+		// Restore HUD behavior for the history re-rendered on open().
+		for (const el of Array.from(this.#messageList.children) as HTMLElement[]) {
+			const type = el.classList.contains("chat-message--system")
+				? "system"
+				: "player";
+			this.#scheduleFade(el, type);
+		}
 	}
 
 	toggle(): void {

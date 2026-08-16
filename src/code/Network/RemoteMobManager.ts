@@ -153,12 +153,16 @@ export class RemoteMobManager {
 				config.color,
 				`${config.meshName}Mat`,
 			);
+			// Register the mesh in the scene exactly once. In this Babylon lite
+			// build removeFromScene disposes the mesh, so we keep it resident and
+			// toggle visibility with `visible` instead of add/remove.
+			addToScene(Map1.mainScene, mesh);
 		}
 
 		const yawRad = yaw * YAW_BYTE_TO_RAD;
 		mesh.position.set(x, y, z);
 		mesh.rotation.y = yawRad;
-		addToScene(Map1.mainScene, mesh);
+		mesh.visible = true;
 
 		this.mobs.set(id, {
 			mesh,
@@ -191,7 +195,7 @@ export class RemoteMobManager {
 		if (!mob) return;
 
 		this.mobs.delete(id);
-		removeFromScene(Map1.mainScene, mob.mesh);
+		mob.mesh.visible = false;
 
 		let pool = this.pool.get(mob.typeId);
 		if (!pool) {
@@ -232,6 +236,12 @@ export class RemoteMobManager {
 
 		for (const mob of this.mobs.values()) {
 			removeFromScene(Map1.mainScene, mob.mesh);
+		}
+		// Pooled meshes are still registered in the scene; free them too.
+		for (const list of this.pool.values()) {
+			for (const mesh of list) {
+				removeFromScene(Map1.mainScene, mesh);
+			}
 		}
 		this.mobs.clear();
 		this.pool.clear();
