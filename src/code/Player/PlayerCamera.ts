@@ -60,13 +60,9 @@ export class PlayerCamera {
 		let cameraY = targetY;
 
 		if (deltaSeconds !== undefined && deltaSeconds > 0) {
-			if (this.#smoothedEyeY === null) {
-				this.#smoothedEyeY = targetY;
-			} else {
-				this.#smoothedEyeY +=
-					(targetY - this.#smoothedEyeY) *
-					(1 - Math.exp(-this.#verticalSmoothSpeed * deltaSeconds));
-			}
+			this.#smoothedEyeY +=
+				(targetY - this.#smoothedEyeY) *
+				(1 - Math.exp(-this.#verticalSmoothSpeed * deltaSeconds));
 
 			cameraY = this.#smoothedEyeY;
 		} else {

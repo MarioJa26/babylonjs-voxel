@@ -125,6 +125,7 @@ export class TestScene {
 		this.#remoteMobManager = new RemoteMobManager(
 			this.#networkManager.netClient,
 		);
+		Map1.remoteMobManager = this.#remoteMobManager;
 
 		await map.initPromise;
 
@@ -237,6 +238,7 @@ export class TestScene {
 		this.#playerStatePersistence = undefined;
 		this.#networkManager = undefined;
 		this.#remoteMobManager = undefined;
+		Map1.remoteMobManager = null;
 		this.#disposeLightDebugTool = undefined;
 	}
 }

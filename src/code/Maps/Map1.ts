@@ -2,6 +2,7 @@ import type { EngineContext, SceneContext } from "@babylonjs/lite";
 import type { MobRegistry } from "../Entities/Mobs/Mob";
 import { initDistantTerrain } from "../Generation/DistantTerrain/DistantTerrain";
 import { setGameTimeScale } from "../Lib/GameRuntimeState";
+import type { RemoteMobManager } from "../Network/RemoteMobManager";
 import type { Player } from "../Player/Player";
 import { PlayerLoadingGate } from "../Player/PlayerLoadingGate";
 import {
@@ -23,6 +24,7 @@ export class Map1 {
 	public static engine: EngineContext;
 	public static environment: WorldEnvironment;
 	public static mobRegistry: MobRegistry | null = null;
+	public static remoteMobManager: RemoteMobManager | null = null;
 
 	#player: Player;
 
@@ -85,6 +87,7 @@ export class Map1 {
 	public static disposeAll(): void {
 		Map1.mobRegistry?.disposeAll();
 		Map1.mobRegistry = null;
+		Map1.remoteMobManager = null;
 		Map1.environment?.dispose();
 		disposeSharedResources();
 	}

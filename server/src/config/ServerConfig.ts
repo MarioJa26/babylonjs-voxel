@@ -43,7 +43,7 @@ const DEFAULTS: ServerConfig = {
 	dayCycle: true,
 	wasmEnabled: true,
 	worldStoragePath: "server-data",
-	chunkCacheSize: 1024,
+	chunkCacheSize: 4096,
 };
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {

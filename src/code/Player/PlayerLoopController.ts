@@ -13,6 +13,7 @@ import { isUiOpen, setInCave } from "../Lib/GameRuntimeState";
 import { worldToChunkCoord } from "../Lib/VoxelMath";
 import { playSprint } from "../Maps/BlockBreakParticles";
 import { Map1 } from "../Maps/Map1";
+import { MobTypeId } from "../Network/protocol/messages";
 import { Chunk } from "../World/Chunk/Chunk";
 import {
 	getDebugStats,
@@ -36,6 +37,11 @@ import { Gamemodes, type PlayerStats } from "./PlayerStats";
 // They replace the object-allocation + full-sort path for Worker Dist.
 const _topDispatchIndices = [-1, -1, -1, -1];
 const _topDispatchCounts = [0, 0, 0, 0];
+
+const MOB_TYPE_NAMES: Record<number, string> = {
+	[MobTypeId.Chicken]: "Chicken",
+	[MobTypeId.Sheep]: "Sheep",
+};
 
 export class PlayerLoopController {
 	// ---- chunk-loading position tracking ----
@@ -444,7 +450,6 @@ export class PlayerLoopController {
 			this.#mainThreadMs.toFixed(1),
 			"performance",
 		);
-		PlayerHud.updateDebugInfo("Faces", "n/a", "performance");
 
 		PlayerHud.updateDebugInfo(
 			"Player Pos",
@@ -608,25 +613,41 @@ export class PlayerLoopController {
 			"stats",
 		);
 
-		const mobStats = Map1.mobRegistry?.getDebugStats();
-		if (!mobStats) {
+		const localStats = Map1.mobRegistry?.getDebugStats();
+		const remoteStats = Map1.remoteMobManager?.getDebugStats();
+		if (!localStats && !remoteStats) {
 			return;
 		}
 
-		PlayerHud.updateDebugInfo(
-			"Mobs",
-			`${mobStats.total}/${mobStats.cap}`,
-			"mobs",
-		);
+		if (localStats) {
+			PlayerHud.updateDebugInfo(
+				"Mobs",
+				`${localStats.total}/${localStats.cap}`,
+				"mobs",
+			);
 
-		let breakdown = "";
-		for (let i = 0; i < mobStats.perType.length; i++) {
-			const t = mobStats.perType[i];
-			if (i > 0) breakdown += "  ";
-			breakdown += `${t.type}:${t.count}/${t.max}`;
+			let breakdown = "";
+			for (let i = 0; i < localStats.perType.length; i++) {
+				const t = localStats.perType[i];
+				if (i > 0) breakdown += "  ";
+				breakdown += `${t.type}:${t.count}/${t.max}`;
+			}
+
+			PlayerHud.updateDebugInfo("Mob Types", breakdown || "-", "mobs");
 		}
 
-		PlayerHud.updateDebugInfo("Mob Types", breakdown || "-", "mobs");
+		if (remoteStats) {
+			PlayerHud.updateDebugInfo("Mobs", `${remoteStats.total}`, "mobs");
+
+			let breakdown = "";
+			for (let i = 0; i < remoteStats.perType.length; i++) {
+				const t = remoteStats.perType[i];
+				if (i > 0) breakdown += "  ";
+				breakdown += `${MOB_TYPE_NAMES[t.typeId] ?? `type${t.typeId}`}:${t.count}`;
+			}
+
+			PlayerHud.updateDebugInfo("Mob Types", breakdown || "-", "mobs");
+		}
 	}
 
 	#formatTopDispatchWorkers(counts: readonly number[]): string {

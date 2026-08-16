@@ -1167,6 +1167,7 @@ export class PlayerHud {
 
 	public static showDebugPanel(): void {
 		if (PlayerHud.debugPanelDiv) {
+			PlayerHud.removeDebugInfo("Faces");
 			PlayerHud.debugPanelDiv.style.display = "block";
 			PlayerHud.debugPanelVisible = true;
 		}
@@ -1228,6 +1229,14 @@ export class PlayerHud {
 			valueSpan,
 			keySpan,
 		};
+	}
+
+	public static removeDebugInfo(key: string): void {
+		const row = PlayerHud.infoRows[key];
+		if (!row) return;
+
+		row.container.remove();
+		delete PlayerHud.infoRows[key];
 	}
 
 	private initializeTooltip(): void {

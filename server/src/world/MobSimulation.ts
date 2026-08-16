@@ -50,7 +50,6 @@ export interface ServerMobEvent {
 
 interface MobTypeConfig {
 	maxCount: number;
-	spawnBlockId: number;
 	speed: number;
 	/** Half the mob's body height, used for voxel collision. */
 	halfHeight: number;
@@ -58,29 +57,36 @@ interface MobTypeConfig {
 
 const MOB_TYPE_CONFIGS: Record<number, MobTypeConfig> = {
 	[MobTypeId.Chicken]: {
-		maxCount: 15,
-		spawnBlockId: BlockType.Grass001,
+		maxCount: 30,
 		speed: 1.8,
 		halfHeight: 0.25,
 	},
 	[MobTypeId.Sheep]: {
-		maxCount: 10,
-		spawnBlockId: BlockType.Grass001,
+		maxCount: 20,
 		speed: 1.5,
 		halfHeight: 0.35,
 	},
 };
 
-const SPAWN_INTERVAL_MS = 3000; // Mirror the client's spawn cadence
+/**
+ * Block ids a mob may spawn on top of (the surface voxel directly below the
+ * mob's feet). Add or remove entries freely to control where mobs appear.
+ */
+export const SPAWNABLE_BLOCK_IDS: readonly number[] = [
+	BlockType.RockyTerrain02, // 14
+	BlockType.Grass001, // 15
+	BlockType.ConcreteMoss, // 51
+];
+
+const SPAWN_INTERVAL_MS = 1000;
 const SPAWN_RING_MIN = 32;
 const SPAWN_RING_MAX = 128;
-const DESPAWN_DISTANCE = 255;
-const SPAWN_ATTEMPTS = 3;
+const SPAWN_ATTEMPTS = 6;
 const WANDER_MIN_MS = 1000;
 const WANDER_MAX_MS = 4000;
 const STUCK_MS = 1500;
 const FALL_LIMIT = 24; // Blocks of free-fall before the mob is removed
-const MAX_SPAWN_SCAN_Y = 255;
+const MAX_SPAWN_SCAN_Y = 1024;
 const FLEE_RADIUS = 8;
 const FLEE_RADIUS_SQ = FLEE_RADIUS * FLEE_RADIUS;
 const FLEE_SPEED = 5;
@@ -142,6 +148,8 @@ export class ServerMobSimulation {
 	private readonly mobs = new Map<number, ServerMob>();
 	private nextId = 1;
 	private spawnAccum = 0;
+	// TEMP DIAG: tick counter for periodic logging.
+	private diagTickCount = 0;
 	private readonly sampler: TickBlockSampler;
 	// Reused across ticks — the room broadcasts from it synchronously.
 	private readonly eventScratch: ServerMobEvent[] = [];
@@ -186,13 +194,6 @@ export class ServerMobSimulation {
 		}
 
 		if (players.length > 0) {
-			for (const mob of this.mobs.values()) {
-				if (this.isTooFar(mob, players)) {
-					this.mobs.delete(mob.id);
-					events.push({ kind: "despawn", mob });
-				}
-			}
-
 			this.spawnAccum += deltaMs;
 			if (this.spawnAccum >= SPAWN_INTERVAL_MS) {
 				this.spawnAccum = 0;
@@ -200,22 +201,15 @@ export class ServerMobSimulation {
 			}
 		}
 
-		return events;
-	}
-
-	private isTooFar(
-		mob: ServerMob,
-		players: ReadonlyArray<{ x: number; y: number; z: number }>,
-	): boolean {
-		for (const p of players) {
-			const dx = mob.x - p.x;
-			const dy = mob.y - p.y;
-			const dz = mob.z - p.z;
-			if (dx * dx + dy * dy + dz * dz <= DESPAWN_DISTANCE * DESPAWN_DISTANCE) {
-				return false;
-			}
+		// TEMP DIAG: periodic heartbeat (~every 5s at 20Hz tick).
+		this.diagTickCount++;
+		if (this.diagTickCount % 100 === 0) {
+			console.log(
+				`[MobDiag] tick players=${players.length} mobs=${this.mobs.size} cachedChunks=${this.storage.cachedChunkCount}`,
+			);
 		}
-		return true;
+
+		return events;
 	}
 
 	private updateMob(
@@ -400,16 +394,23 @@ export class ServerMobSimulation {
 		}
 
 		const key = (x: number, z: number, y: number): string => `${x},${z},${y}`;
-		const open: Node[] = [{
-			x: startX,
-			z: startZ,
-			groundY: startY,
-			g: 0,
-			f: Math.abs(startX - targetX) + Math.abs(startZ - targetZ),
-			parent: null,
-		}];
+		const open: Node[] = [
+			{
+				x: startX,
+				z: startZ,
+				groundY: startY,
+				g: 0,
+				f: Math.abs(startX - targetX) + Math.abs(startZ - targetZ),
+				parent: null,
+			},
+		];
 		const best = new Map<string, number>([[key(startX, startZ, startY), 0]]);
-		const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+		const dirs = [
+			[1, 0],
+			[-1, 0],
+			[0, 1],
+			[0, -1],
+		];
 
 		for (let expanded = 0; open.length > 0 && expanded < 300; expanded++) {
 			open.sort((a, b) => a.f - b.f);
@@ -433,8 +434,10 @@ export class ServerMobSimulation {
 				const x = current.x + dx;
 				const z = current.z + dz;
 				const surface = this.findLandSurface(x, z, current.groundY, halfHeight);
-				if (!surface || Math.abs(surface.groundY - current.groundY) > 1) continue;
-				const g = current.g + 1 + Math.abs(surface.groundY - current.groundY) * 4;
+				if (!surface || Math.abs(surface.groundY - current.groundY) > 1)
+					continue;
+				const g =
+					current.g + 1 + Math.abs(surface.groundY - current.groundY) * 4;
 				const nodeKey = key(x, z, surface.groundY);
 				if ((best.get(nodeKey) ?? Infinity) <= g) continue;
 				best.set(nodeKey, g);
@@ -586,6 +589,11 @@ export class ServerMobSimulation {
 		const player = players[Math.floor(Math.random() * players.length)];
 		if (!player) return;
 
+		// TEMP DIAG
+		console.log(
+			`[MobDiag] trySpawn players=${players.length} mobs=${this.mobs.size} cap=${totalCap} typeIdLimit=${Object.keys(MOB_TYPE_CONFIGS).length}`,
+		);
+
 		for (let i = 0; i < SPAWN_ATTEMPTS; i++) {
 			if (this.mobs.size >= totalCap) return;
 
@@ -656,13 +664,27 @@ export class ServerMobSimulation {
 		const wx = Math.floor(player.x + Math.cos(angle) * dist);
 		const wz = Math.floor(player.z + Math.sin(angle) * dist);
 
-		// Scan the column top-down for a grass block with air above it.
+		// TEMP DIAG: classify why a column fails to spawn.
+		let diagCachedVoxels = 0;
+		let diagTopSolidId = -1;
+		let diagSawSpawnable = false;
+		let diagAirBlocked = 0;
+
+		// Scan the column top-down for a spawnable block with air above it.
 		for (let wy = MAX_SPAWN_SCAN_Y; wy >= 0; wy--) {
+			const sampleId = this.sampler.sample(wx, wy, wz);
+			if (sampleId !== null) {
+				diagCachedVoxels++;
+				if (sampleId !== 0 && diagTopSolidId === -1) {
+					diagTopSolidId = sampleId;
+				}
+			}
+
 			if (
-				this.sampler.sample(wx, wy, wz) === config.spawnBlockId &&
-				this.sampler.sample(wx, wy + 1, wz) === 0 &&
-				this.sampler.sample(wx, wy + 2, wz) === 0
+				SPAWNABLE_BLOCK_IDS.includes(sampleId ?? -1) &&
+				this.sampler.sample(wx, wy + 1, wz) === 0
 			) {
+				diagSawSpawnable = true;
 				if (this.isSpawnTooClose(wx, wz)) continue;
 
 				const spawnY = wy + 1.02 + config.halfHeight;
@@ -673,9 +695,25 @@ export class ServerMobSimulation {
 					y: spawnY,
 					z: wz + 0.5,
 				};
+			} else if (
+				sampleId !== null &&
+				SPAWNABLE_BLOCK_IDS.includes(sampleId ?? -1)
+			) {
+				diagAirBlocked++;
 			}
 		}
 
+		if (diagCachedVoxels === 0) {
+			console.log(
+				`[MobDiag] spawn FAILED column=${wx},${wz} reason=noCachedChunks`,
+			);
+		} else {
+			console.log(
+				`[MobDiag] spawn FAILED column=${wx},${wz} reason=${
+					diagSawSpawnable ? "airBlocked" : "wrongBlock"
+				} cachedVoxels=${diagCachedVoxels} topSolidId=${diagTopSolidId} airBlocked=${diagAirBlocked}`,
+			);
+		}
 		return null;
 	}
 

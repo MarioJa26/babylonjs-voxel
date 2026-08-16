@@ -1051,6 +1051,10 @@ export class VoxelRoom extends Room {
 			scratch.push(slot);
 			idx++;
 		}
+
+		// Keep the chunk-cache eviction pinned to the area around players so
+		// the mob sim always finds the surface chunks it samples.
+		this.worldStorage.setPlayerPositions(scratch);
 	}
 
 	/** Broadcast all mob positions at MOB_UPDATE_INTERVAL (pooled, no alloc). */

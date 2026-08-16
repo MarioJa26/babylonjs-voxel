@@ -7,7 +7,10 @@
  */
 
 import { DEBUG_ENABLED, debugLog } from "@/code/Lib/debugLog";
-import { packChunkKeyFast } from "@/code/World/Storage/ChunkKey.ts";
+import {
+	packChunkKeyFast,
+	unpackChunkKeyFast,
+} from "@/code/World/Storage/ChunkKey.ts";
 import { LevelDbChunkStore } from "@/code/World/Storage/LevelDbChunkStore";
 import {
 	deserializeVoxelData,
@@ -71,6 +74,17 @@ const CHUNK_SHIFT = 5;
 const WATER_BLOCK_ID = 30;
 const FLUSH_DELAY_MS = 500;
 
+// Chunks whose center is within this horizontal distance of a player are
+// pinned in the LRU cache (distance-aware eviction). The client streams its
+// chunk shell nearest-first, so without this the pure-LRU eviction would
+// discard exactly the near-surface chunks the mob sim samples (ring 32-128).
+const PLAYER_PROTECTED_RADIUS_CHUNKS = 6;
+const PLAYER_PROTECTED_RADIUS_SQ =
+	PLAYER_PROTECTED_RADIUS_CHUNKS *
+	PLAYER_PROTECTED_RADIUS_CHUNKS *
+	CHUNK_SIZE *
+	CHUNK_SIZE;
+
 function yieldToEventLoop(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
 }
@@ -113,6 +127,9 @@ export class ServerWorldStorage {
 	private cacheHead: CacheNode | null = null;
 	private cacheTail: CacheNode | null = null;
 	private readonly maxCacheSize: number;
+
+	/** Current player positions (updated per room tick) used for eviction pinning. */
+	private readonly playerPositions: Array<{ x: number; z: number }> = [];
 
 	private readonly missCoordPool: MissCoordEntry[] = [];
 
@@ -709,6 +726,57 @@ export class ServerWorldStorage {
 		this.lruPushFront(node);
 	}
 
+	/**
+	 * Update the live player positions used to pin near-player chunks in the
+	 * cache. Called every room tick after player positions are collected.
+	 * With no players, eviction falls back to plain LRU.
+	 */
+	setPlayerPositions(positions: ReadonlyArray<{ x: number; z: number }>): void {
+		const target = this.playerPositions;
+		target.length = 0;
+		for (let i = 0; i < positions.length; i++) {
+			const p = positions[i];
+			target.push({ x: p.x, z: p.z });
+		}
+	}
+
+	/**
+	 * Pick a chunk to evict. Walks the LRU from the tail and returns the first
+	 * node outside the protected radius of every player; falls back to the LRU
+	 * tail when no non-protected node is found in the scan window (or there are
+	 * no players). This keeps the near-player surface chunks the mob sim
+	 * samples resident even while the client streams its large LOD shell.
+	 */
+	private findEvictCandidate(): CacheNode | null {
+		const players = this.playerPositions;
+		if (players.length === 0) return this.cacheTail;
+
+		// Walk the whole list: the client streams nearest-first, so the
+		// protected near-player chunks sit at the LRU tail and an early-exit
+		// window would never reach the evictable far chunks at the head.
+		let node = this.cacheTail;
+		while (node) {
+			const coords = unpackChunkKeyFast(node.key);
+			const x = coords[0] * CHUNK_SIZE + (CHUNK_SIZE >> 1);
+			const z = coords[2] * CHUNK_SIZE + (CHUNK_SIZE >> 1);
+
+			let isProtected = false;
+			for (let i = 0; i < players.length; i++) {
+				const dx = x - players[i].x;
+				const dz = z - players[i].z;
+				if (dx * dx + dz * dz <= PLAYER_PROTECTED_RADIUS_SQ) {
+					isProtected = true;
+					break;
+				}
+			}
+
+			if (!isProtected) return node;
+			node = node.prev;
+		}
+
+		return this.cacheTail;
+	}
+
 	private addToCache(key: number, data: StoredChunkData): void {
 		if (this.maxCacheSize <= 0) return;
 
@@ -720,7 +788,7 @@ export class ServerWorldStorage {
 		}
 
 		if (this.chunkCache.size >= this.maxCacheSize) {
-			const evict = this.cacheTail;
+			const evict = this.findEvictCandidate();
 			if (evict) {
 				this.lruDetach(evict);
 				this.chunkCache.delete(evict.key);

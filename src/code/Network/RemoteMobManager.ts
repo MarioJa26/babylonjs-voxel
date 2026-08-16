@@ -72,6 +72,27 @@ export class RemoteMobManager {
 		this.client.addBinaryHandler(this.handler);
 	}
 
+	get size(): number {
+		return this.mobs.size;
+	}
+
+	getDebugStats(): {
+		total: number;
+		perType: { typeId: number; count: number }[];
+	} {
+		const byType = new Map<number, number>();
+		for (const mob of this.mobs.values()) {
+			byType.set(mob.typeId, (byType.get(mob.typeId) ?? 0) + 1);
+		}
+
+		const perType: { typeId: number; count: number }[] = [];
+		for (const [typeId, count] of byType) {
+			perType.push({ typeId, count });
+		}
+
+		return { total: this.mobs.size, perType };
+	}
+
 	private handleBinaryMessage(data: Uint8Array): void {
 		if (data.byteLength < 1) return;
 
