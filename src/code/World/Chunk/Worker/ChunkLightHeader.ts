@@ -16,15 +16,14 @@
 //   2     +8      chunkId low 32 bits
 //   3     +12     chunkId high 32 bits
 //
-// Total SAB footprint = 16 * 65536 = 1 MiB.
+// Total SAB footprint = 4 * 16 * 65536 = 4 MiB.
 // ---------------------------------------------------------------------------
 
 export const LIGHT_HEADER_ROW_WORDS = 4;
 export const LIGHT_HEADER_ROW_SIZE =
 	LIGHT_HEADER_ROW_WORDS * Int32Array.BYTES_PER_ELEMENT;
 
-// 65,536 slots matches the documented 1 MiB footprint.
-export const MAX_HEADER_SLOTS = 65536;
+export const MAX_HEADER_SLOTS = 4 * 65536;
 export const LIGHT_HEADER_BUFFER_SIZE =
 	MAX_HEADER_SLOTS * LIGHT_HEADER_ROW_SIZE;
 

@@ -568,6 +568,12 @@ export class NetworkManager {
 		this._canvas = null;
 	}
 
+	/** Expose the underlying NetClient so subsystems (e.g. RemoteMobManager)
+	 * can register binary handlers without NetworkManager owning them. */
+	get netClient(): NetClient {
+		return this.client;
+	}
+
 	get isConnected(): boolean {
 		return this.client.isConnected;
 	}

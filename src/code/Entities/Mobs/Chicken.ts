@@ -1,7 +1,5 @@
 import {
 	addToScene,
-	createMeshFromData,
-	type LiteMetadata,
 	type Mesh,
 	removeFromScene,
 	type SceneContext,
@@ -9,11 +7,8 @@ import {
 } from "@babylonjs/lite";
 import { Color3 } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
-import type { Player } from "../../Player/Player";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
-
-import { MetadataContainer } from "../MetadataContainer";
-import { buildBoxGeometry, createMobColorMaterial } from "./MobMesh";
+import { createBoxMobMesh } from "./MobMesh";
 import { NeutralMob } from "./NeutralMob";
 
 const BODY_WIDTH = 0.5;
@@ -39,42 +34,8 @@ const CHICKEN_BODY_HALF_SIZE = vec3(
 	BODY_HALF_DEPTH,
 );
 
-const CHICKEN_BODY_GEOMETRY = buildBoxGeometry(
-	BODY_WIDTH,
-	BODY_HEIGHT,
-	BODY_DEPTH,
-);
-
-const CHICKEN_HEAD_GEOMETRY = buildBoxGeometry(HEAD_SIZE, HEAD_SIZE, HEAD_SIZE);
-
+const CHICKEN_BODY_COLOR = Color3.White();
 const CHICKEN_HEAD_COLOR = new Color3(0.95, 0.95, 0.85);
-
-let chickenBodyMaterial: ReturnType<typeof createMobColorMaterial> | null =
-	null;
-let chickenHeadMaterial: ReturnType<typeof createMobColorMaterial> | null =
-	null;
-
-function getChickenBodyMaterial(): ReturnType<typeof createMobColorMaterial> {
-	if (!chickenBodyMaterial) {
-		chickenBodyMaterial = createMobColorMaterial(
-			Color3.White(),
-			"chickenBodyMat",
-		);
-	}
-
-	return chickenBodyMaterial;
-}
-
-function getChickenHeadMaterial(): ReturnType<typeof createMobColorMaterial> {
-	if (!chickenHeadMaterial) {
-		chickenHeadMaterial = createMobColorMaterial(
-			CHICKEN_HEAD_COLOR,
-			"chickenHeadMat",
-		);
-	}
-
-	return chickenHeadMaterial;
-}
 
 type ChickenSerializedPayload = {
 	position: { x: number; y: number; z: number };
@@ -100,40 +61,31 @@ export class Chicken extends NeutralMob {
 	) {
 		super(hp ?? CHICKEN_DEFAULT_HP, scene, CHICKEN_BODY_HALF_SIZE);
 
-		this.#bodyMesh = createMeshFromData(
-			Map1.engine,
+		this.#bodyMesh = createBoxMobMesh(
 			"chickenBody",
-			CHICKEN_BODY_GEOMETRY.positions,
-			CHICKEN_BODY_GEOMETRY.normals,
-			CHICKEN_BODY_GEOMETRY.indices,
+			BODY_WIDTH,
+			BODY_HEIGHT,
+			BODY_DEPTH,
+			CHICKEN_BODY_COLOR,
+			"chickenBodyMat",
 		);
-
 		this.#bodyMesh.position.set(x, y, z);
-		this.#bodyMesh.pickable = true;
-		this.#bodyMesh.renderOrder = 1;
-		this.#bodyMesh.material = getChickenBodyMaterial();
 
-		this.#headMesh = createMeshFromData(
-			Map1.engine,
+		this.#headMesh = createBoxMobMesh(
 			"chickenHead",
-			CHICKEN_HEAD_GEOMETRY.positions,
-			CHICKEN_HEAD_GEOMETRY.normals,
-			CHICKEN_HEAD_GEOMETRY.indices,
+			HEAD_SIZE,
+			HEAD_SIZE,
+			HEAD_SIZE,
+			CHICKEN_HEAD_COLOR,
+			"chickenHeadMat",
 		);
-
 		this.#headMesh.parent = this.#bodyMesh;
 		this.#headMesh.position.set(0, HEAD_OFFSET_Y, HEAD_OFFSET_Z);
 		this.#headMesh.pickable = false;
-		this.#headMesh.renderOrder = 1;
-		this.#headMesh.material = getChickenHeadMaterial();
 
 		addToScene(Map1.mainScene, this.#bodyMesh);
 
-		const meta = new MetadataContainer();
-		this.#bodyMesh.metadata = meta as unknown as LiteMetadata;
-
 		this.setBodyMesh(this.#bodyMesh);
-		meta.set("use", (player: Player) => this.use(player));
 	}
 
 	configureChunkLoader(scene: SceneContext): void {

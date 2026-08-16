@@ -178,6 +178,7 @@ export abstract class NeutralMob {
 		}
 
 		meta.set("mob", this);
+		meta.set("use", (player: Player) => this.use(player));
 
 		this.configureChunkLoader(this.#scene);
 

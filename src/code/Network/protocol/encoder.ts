@@ -14,6 +14,7 @@ import {
 	type ChatMessageData,
 	ChunkResultKind,
 	MessageType,
+	type MobUpdateBatchEntry,
 	type PlayerJoinData,
 	type PlayerLeaveData,
 	type PlayerStateBatchEntry,
@@ -1200,4 +1201,108 @@ export function decodeSpawnPosition(buffer: Uint8Array): {
 		yaw: dec.readFloat32(),
 		pitch: dec.readFloat32(),
 	};
+}
+
+// ---------------------------------------------------------------------------
+// Server-authoritative mobs
+// MobSpawn:    [type:1][mobId:u16][mobType:u8][x:f32][y:f32][z:f32][yaw:u8]
+// MobUpdateBatch: [type:1][count:u8][mobId:u16][x:f32][y:f32][z:f32][yaw:u8] × count
+// MobDespawn:  [type:1][mobId:u16]
+// ---------------------------------------------------------------------------
+
+export function encodeMobSpawn(
+	mobId: number,
+	mobType: number,
+	x: number,
+	y: number,
+	z: number,
+	yaw: number,
+): Uint8Array {
+	const enc = new BinaryEncoder(16);
+	enc.writeUint8(MessageType.MobSpawn);
+	enc.writeUint16(mobId);
+	enc.writeUint8(mobType);
+	enc.writeFloat32(x);
+	enc.writeFloat32(y);
+	enc.writeFloat32(z);
+	enc.writeUint8(yaw);
+	return enc.getBytes();
+}
+
+export function decodeMobSpawn(buffer: Uint8Array): {
+	mobId: number;
+	mobType: number;
+	x: number;
+	y: number;
+	z: number;
+	yaw: number;
+} {
+	const dec = new BinaryDecoder(buffer, 1);
+	return {
+		mobId: dec.readUint16(),
+		mobType: dec.readUint8(),
+		x: dec.readFloat32(),
+		y: dec.readFloat32(),
+		z: dec.readFloat32(),
+		yaw: dec.readUint8(),
+	};
+}
+
+/**
+ * Batch encoding for server → client mob state broadcasts — same pattern as
+ * writePlayerStateBatch (count:u8, then 1+4+4+4+1 bytes per mob). Writes
+ * into a caller-owned (reused) encoder so the broadcast tick doesn't
+ * allocate a fresh buffer every cycle.
+ */
+export function writeMobUpdateBatch(
+	enc: BinaryEncoder,
+	entries: MobUpdateBatchEntry[],
+): void {
+	enc.writeUint8(MessageType.MobUpdateBatch);
+	enc.writeUint8(Math.min(entries.length, 255));
+	for (const e of entries) {
+		enc.writeUint16(e.mobId);
+		enc.writeFloat32(e.x);
+		enc.writeFloat32(e.y);
+		enc.writeFloat32(e.z);
+		enc.writeUint8(e.yaw);
+	}
+}
+
+export function encodeMobUpdateBatch(
+	entries: MobUpdateBatchEntry[],
+): Uint8Array {
+	const enc = new BinaryEncoder(2 + entries.length * 14);
+	writeMobUpdateBatch(enc, entries);
+	return enc.getBytes();
+}
+
+export function decodeMobUpdateBatch(
+	buffer: Uint8Array,
+): MobUpdateBatchEntry[] {
+	const dec = new BinaryDecoder(buffer, 1);
+	const count = dec.readUint8();
+	const entries: MobUpdateBatchEntry[] = [];
+	for (let i = 0; i < count; i++) {
+		entries.push({
+			mobId: dec.readUint16(),
+			x: dec.readFloat32(),
+			y: dec.readFloat32(),
+			z: dec.readFloat32(),
+			yaw: dec.readUint8(),
+		});
+	}
+	return entries;
+}
+
+export function encodeMobDespawn(mobId: number): Uint8Array {
+	const enc = new BinaryEncoder(3);
+	enc.writeUint8(MessageType.MobDespawn);
+	enc.writeUint16(mobId);
+	return enc.getBytes();
+}
+
+export function decodeMobDespawn(buffer: Uint8Array): number {
+	const dec = new BinaryDecoder(buffer, 1);
+	return dec.readUint16();
 }

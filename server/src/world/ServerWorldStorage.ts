@@ -14,6 +14,7 @@ import {
 	serializeVoxelData,
 } from "@/code/World/Storage/VoxelSerializer";
 import {
+	CHUNK_VOLUME,
 	compressBlocks,
 	decompressBlocks,
 	releaseDecompBuffer,
@@ -67,7 +68,6 @@ const DEFAULT_BLOB_CACHE_SIZE = 128;
 
 const CHUNK_SIZE = 32;
 const CHUNK_SHIFT = 5;
-const CHUNK_AREA = CHUNK_SIZE * CHUNK_SIZE;
 const WATER_BLOCK_ID = 30;
 const FLUSH_DELAY_MS = 500;
 
@@ -268,6 +268,40 @@ export class ServerWorldStorage {
 		}
 
 		return -Infinity;
+	}
+
+	/**
+	 * Synchronous dense-block accessor for the fixed-rate mob simulation.
+	 * Returns the chunk's 32³ block array from the in-memory LRU cache, or
+	 * null when the chunk is not cached. Never touches LevelDB.
+	 *
+	 * For raw (uncompressed) chunks the stored buffer itself is returned
+	 * (no copy); for uniform/palette chunks a pooled or fresh buffer is
+	 * materialized. The caller must not retain the result across ticks and
+	 * must not mutate it.
+	 *
+	 * Chunks near players are virtually always cached — the client just
+	 * requested them — so the mob sim stays fully synchronous and cheap.
+	 */
+	getCachedChunkBlocks(cx: number, cy: number, cz: number): Uint8Array | null {
+		if (this.disposing || this.disposed) return null;
+
+		const node = this.chunkCache.get(packChunkKeyFast(cx, cy, cz));
+		if (!node) return null;
+
+		const c = node.data;
+		if (c.isUniform) {
+			const out = new Uint8Array(CHUNK_VOLUME);
+			out.fill(c.uniformBlockId);
+			return out;
+		}
+
+		return decompressBlocks({
+			data: c.blocks,
+			palette: c.palette,
+			isUniform: c.isUniform,
+			uniformBlockId: c.uniformBlockId,
+		});
 	}
 
 	private async readChunkFromStore(

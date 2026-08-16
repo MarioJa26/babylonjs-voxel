@@ -1,10 +1,12 @@
 import {
 	createMeshFromData,
 	createShaderMaterial,
+	type Mesh,
 	type ShaderMaterial,
 	setShaderUniform,
 } from "@babylonjs/lite";
 import type { Color3 } from "@/code/Lib/Math";
+import { Map1 } from "@/code/Maps/Map1";
 
 const MOB_VERTEX_WGSL = /* wgsl */ `
 struct VSOut {
@@ -55,6 +57,23 @@ const BOX_NORMALS = new Float32Array([
 	0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1,
 ]);
 
+type BoxGeometry = {
+	positions: Float32Array;
+	normals: Float32Array;
+	indices: Uint32Array;
+};
+
+const boxGeometryCache = new Map<string, BoxGeometry>();
+const materialCache = new Map<string, ShaderMaterial>();
+
+function boxGeometryKey(width: number, height: number, depth: number): string {
+	return `${width},${height},${depth}`;
+}
+
+function colorMaterialKey(name: string, color: Color3): string {
+	return `${name}:${color.r},${color.g},${color.b}`;
+}
+
 export function createMobColorMaterial(
 	color: Color3,
 	name: string,
@@ -77,15 +96,26 @@ export function createMobColorMaterial(
 	return material;
 }
 
+export function getMobColorMaterial(
+	color: Color3,
+	name: string,
+): ShaderMaterial {
+	const key = colorMaterialKey(name, color);
+	let material = materialCache.get(key);
+
+	if (!material) {
+		material = createMobColorMaterial(color, name);
+		materialCache.set(key, material);
+	}
+
+	return material;
+}
+
 export function buildBoxGeometry(
 	width: number,
 	height: number,
 	depth: number,
-): {
-	positions: Float32Array;
-	normals: Float32Array;
-	indices: Uint32Array;
-} {
+): BoxGeometry {
 	const hx = width * 0.5;
 	const hy = height * 0.5;
 	const hz = depth * 0.5;
@@ -183,4 +213,43 @@ export function buildBoxGeometry(
 	};
 }
 
-export { createMeshFromData };
+export function getBoxGeometry(
+	width: number,
+	height: number,
+	depth: number,
+): BoxGeometry {
+	const key = boxGeometryKey(width, height, depth);
+	let geometry = boxGeometryCache.get(key);
+
+	if (!geometry) {
+		geometry = buildBoxGeometry(width, height, depth);
+		boxGeometryCache.set(key, geometry);
+	}
+
+	return geometry;
+}
+
+export function createBoxMobMesh(
+	name: string,
+	width: number,
+	height: number,
+	depth: number,
+	color: Color3,
+	materialName: string,
+): Mesh {
+	const geometry = getBoxGeometry(width, height, depth);
+
+	const mesh = createMeshFromData(
+		Map1.engine,
+		name,
+		geometry.positions,
+		geometry.normals,
+		geometry.indices,
+	);
+
+	mesh.pickable = true;
+	mesh.renderOrder = 1;
+	mesh.material = getMobColorMaterial(color, materialName);
+
+	return mesh;
+}

@@ -8,32 +8,27 @@ import { Sheep } from "./Sheep";
 
 const GRASS_SPAWN_BLOCK_ID = BlockType.Grass001;
 
-const createChickenMob: MobSpawnConfig["factory"] = (x, y, z, scene) =>
-	new Chicken(x, y, z, scene);
-
-const createSheepMob: MobSpawnConfig["factory"] = (x, y, z, scene) =>
-	new Sheep(x, y, z, scene);
-
-function registerDefaultMobs(registry: MobRegistry): void {
-	registry.register({
+const MOB_SPAWN_CONFIGS = [
+	{
 		mobType: "chicken",
-		factory: createChickenMob,
+		factory: (x: number, y: number, z: number, scene: SceneContext) =>
+			new Chicken(x, y, z, scene),
 		maxCount: 15,
 		spawnWeight: 1,
 		spawnBlockId: GRASS_SPAWN_BLOCK_ID,
 		despawnable: false,
-	});
-
-	registry.register({
+	},
+	{
 		mobType: "sheep",
-		factory: createSheepMob,
+		factory: (x: number, y: number, z: number, scene: SceneContext) =>
+			new Sheep(x, y, z, scene),
 		maxCount: 10,
 		spawnWeight: 1,
 		spawnBlockId: GRASS_SPAWN_BLOCK_ID,
 		despawnable: false,
 		spawnYOffset: 0.3,
-	});
-}
+	},
+] satisfies MobSpawnConfig[];
 
 export function createMobCoordinator(
 	scene: SceneContext,
@@ -41,7 +36,9 @@ export function createMobCoordinator(
 ): SpawnCoordinator {
 	const registry = new MobRegistry();
 
-	registerDefaultMobs(registry);
+	for (const config of MOB_SPAWN_CONFIGS) {
+		registry.register(config);
+	}
 
 	Map1.mobRegistry = registry;
 

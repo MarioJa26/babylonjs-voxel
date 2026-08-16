@@ -290,6 +290,12 @@ export class NetClient {
 					// Handled by RemoteChunkProvider via addBinaryHandler.
 					break;
 
+				case MessageType.MobSpawn:
+				case MessageType.MobUpdateBatch:
+				case MessageType.MobDespawn:
+					// Handled by RemoteMobManager via addBinaryHandler.
+					break;
+
 				default:
 					console.warn(
 						`[NetClient] Unknown message type: 0x${msgType.toString(16)}`,

@@ -1,7 +1,5 @@
 import {
 	addToScene,
-	createMeshFromData,
-	type LiteMetadata,
 	type Mesh,
 	removeFromScene,
 	type SceneContext,
@@ -11,10 +9,8 @@ import { Color3 } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import { DroppedItem } from "../../Player/Inventory/DroppedItem";
 import { Item } from "../../Player/Inventory/Item";
-import type { Player } from "../../Player/Player";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
-import { MetadataContainer } from "../MetadataContainer";
-import { buildBoxGeometry, createMobColorMaterial } from "./MobMesh";
+import { createBoxMobMesh } from "./MobMesh";
 import { NeutralMob } from "./NeutralMob";
 
 const BODY_WIDTH = 0.6;
@@ -38,12 +34,6 @@ const SHEEP_BODY_HALF_SIZE = vec3(
 	BODY_HALF_DEPTH,
 );
 
-const SHEEP_BODY_GEOMETRY = buildBoxGeometry(
-	BODY_WIDTH,
-	BODY_HEIGHT,
-	BODY_DEPTH,
-);
-
 const SHEEP_COLORS = [
 	{ name: "white", color: new Color3(0.95, 0.95, 0.95) },
 	{ name: "black", color: new Color3(0.15, 0.15, 0.15) },
@@ -51,11 +41,6 @@ const SHEEP_COLORS = [
 	{ name: "gray", color: new Color3(0.5, 0.5, 0.5) },
 	{ name: "pink", color: new Color3(0.9, 0.5, 0.6) },
 ] as const;
-
-const sheepBodyMaterials = new Map<
-	string,
-	ReturnType<typeof createMobColorMaterial>
->();
 
 type SheepSerializedPayload = {
 	position: { x: number; y: number; z: number };
@@ -69,24 +54,6 @@ function colorToPayload(c: Color3): { r: number; g: number; b: number } {
 
 function payloadToColor(p: { r: number; g: number; b: number }): Color3 {
 	return new Color3(p.r, p.g, p.b);
-}
-
-function colorMaterialKey(c: Color3): string {
-	return `${c.r},${c.g},${c.b}`;
-}
-
-function getSheepBodyMaterial(
-	color: Color3,
-): ReturnType<typeof createMobColorMaterial> {
-	const key = colorMaterialKey(color);
-	let material = sheepBodyMaterials.get(key);
-
-	if (!material) {
-		material = createMobColorMaterial(color, `sheepBodyMat:${key}`);
-		sheepBodyMaterials.set(key, material);
-	}
-
-	return material;
 }
 
 function randomSheepColor(): Color3 {
@@ -116,26 +83,19 @@ export class Sheep extends NeutralMob {
 
 		this.#color = color ?? randomSheepColor();
 
-		this.#bodyMesh = createMeshFromData(
-			Map1.engine,
+		this.#bodyMesh = createBoxMobMesh(
 			"sheepBody",
-			SHEEP_BODY_GEOMETRY.positions,
-			SHEEP_BODY_GEOMETRY.normals,
-			SHEEP_BODY_GEOMETRY.indices,
+			BODY_WIDTH,
+			BODY_HEIGHT,
+			BODY_DEPTH,
+			this.#color,
+			"sheepBodyMat",
 		);
-
 		this.#bodyMesh.position.set(x, y, z);
-		this.#bodyMesh.pickable = true;
-		this.#bodyMesh.renderOrder = 1;
-		this.#bodyMesh.material = getSheepBodyMaterial(this.#color);
 
 		addToScene(Map1.mainScene, this.#bodyMesh);
 
-		const meta = new MetadataContainer();
-		this.#bodyMesh.metadata = meta as unknown as LiteMetadata;
-
 		this.setBodyMesh(this.#bodyMesh);
-		meta.set("use", (player: Player) => this.use(player));
 	}
 
 	configureChunkLoader(scene: SceneContext): void {

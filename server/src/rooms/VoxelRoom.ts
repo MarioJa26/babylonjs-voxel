@@ -18,11 +18,14 @@ import {
 	encodeChatMessage,
 	encodeChunkData,
 	encodeChunkUnchanged,
+	encodeMobDespawn,
+	encodeMobSpawn,
 	encodePlayerJoin,
 	encodePlayerLeave,
 	encodeSpawnPosition,
 	encodeWorldConfig,
 	hashChunk,
+	writeMobUpdateBatch,
 	writePlayerStateBatch,
 } from "@/code/Network/protocol/encoder.ts";
 import {
@@ -31,6 +34,7 @@ import {
 	BlockEditRejectReason,
 	type ChatMessageData,
 	MessageType,
+	type MobUpdateBatchEntry,
 	type PlayerStateBatchEntry,
 	type PlayerStateData,
 } from "@/code/Network/protocol/messages.ts";
@@ -40,6 +44,7 @@ import {
 } from "@/code/World/Storage/ChunkKey.ts";
 import { getServerConfig } from "../config/ServerConfig.ts";
 import { ChunkGenerationService } from "../world/ChunkGenerationService.ts";
+import { type ServerMob, ServerMobSimulation } from "../world/MobSimulation.ts";
 import type { StoredChunkData } from "../world/ServerWorldStorage.ts";
 import { ServerWorldStorage } from "../world/ServerWorldStorage.ts";
 import {
@@ -110,6 +115,7 @@ const MAX_STORED_EDITS = 200; // Keep last N edits for new joiners
 const TIME_BROADCAST_INTERVAL = 5000; // Broadcast time every 1 second
 const FULL_SNAPSHOT_INTERVAL = 2000; // Periodic full player-state broadcast (ms)
 const PLAYER_SAVE_INTERVAL = 3000; // Position persistence debounce (ms)
+const MOB_UPDATE_INTERVAL = 100; // Mob position broadcast cadence (10 Hz)
 const MAX_CHUNK_BATCH = 128; // Cap chunks per batch request (prevents DoS)
 const WORLD_BOUNDARY = 1_000_000; // Reject world coords beyond ±1M blocks
 const MAX_BLOCK_ID = 255; // Block data is stored as one byte per voxel
@@ -126,6 +132,18 @@ const PREWARM_MAX_CHUNK_Y = 7;
 export class VoxelRoom extends Room {
 	private players = new Map<string, ServerPlayerState>();
 	private tickInterval: ReturnType<typeof setInterval> | null = null;
+	// Server-authoritative mob simulation — spawned near players, positions
+	// broadcast at MOB_UPDATE_INTERVAL; clients render them without local AI.
+	private mobSim!: ServerMobSimulation;
+	private mobTickAccum = 0;
+	// Reused across the mob broadcast: pooled entry objects + encoder, so the
+	// fixed-rate mob update cycle allocates nothing per broadcast.
+	private mobStatePool: MobUpdateBatchEntry[] = [];
+	private mobStateScratch: MobUpdateBatchEntry[] = [];
+	private mobSnapshotScratch: ServerMob[] = [];
+	private mobUpdateEncoder = new BinaryEncoder(2048);
+	private playerPosPool: Array<{ x: number; y: number; z: number }> = [];
+	private playerPosScratch: Array<{ x: number; y: number; z: number }> = [];
 	// Ring buffer of recent edits for sync on join (insertion O(1)).
 	private readonly blockEdits: Array<BlockEditData | undefined> = new Array(
 		MAX_STORED_EDITS,
@@ -257,6 +275,10 @@ export class VoxelRoom extends Room {
 		this.chunkGen.setStorage(this.worldStorage);
 		this.worldStorage.setWorldGenerator(this.chunkGen);
 
+		// Server-authoritative mobs read the LRU chunk cache synchronously on
+		// the room tick — no LevelDB on the sim path.
+		this.mobSim = new ServerMobSimulation(this.worldStorage);
+
 		// Generate (once) the world spawn point on world creation, and prewarm
 		// the spawn-area chunks around the *actual* spawn (one-time cost, which
 		// is fine at world creation). Memoized via ensureWorldSpawn().
@@ -379,6 +401,36 @@ export class VoxelRoom extends Room {
 				client.sendBytes("binary", batch);
 			}
 
+			// Sync current server mobs so the joiner sees the same animals as
+			// everyone else. Concatenated into one frame, like the player
+			// join sync above.
+			if (this.mobSim.size > 0) {
+				const mobs = this.mobSim.snapshotInto(this.mobSnapshotScratch);
+				const parts: Uint8Array[] = [];
+				let totalLen = 0;
+				for (const mob of mobs) {
+					const msg = encodeMobSpawn(
+						mob.id,
+						mob.typeId,
+						mob.x,
+						mob.y,
+						mob.z,
+						mob.yaw,
+					);
+					parts.push(msg);
+					totalLen += msg.length;
+				}
+				if (parts.length > 0) {
+					const merged = new Uint8Array(totalLen);
+					let offset = 0;
+					for (const part of parts) {
+						merged.set(part, offset);
+						offset += part.length;
+					}
+					client.sendBytes("binary", merged);
+				}
+			}
+
 			// Send authoritative world seed so the client's clip map matches
 			// server terrain, plus day/night settings so the client sun
 			// interpolates at the server's rate
@@ -476,10 +528,7 @@ export class VoxelRoom extends Room {
 	 * Returns true when the message was consumed as a command and must not
 	 * be relayed to other players as chat.
 	 */
-	private handleChatCommand(
-		client: Client,
-		raw: string,
-	): boolean {
+	private handleChatCommand(client: Client, raw: string): boolean {
 		const parts = raw.split(/\s+/);
 		const cmd = parts[0]?.toLowerCase();
 		if (cmd !== "time") return false;
@@ -890,6 +939,36 @@ export class VoxelRoom extends Room {
 			now - this.lastFullSnapshot >= FULL_SNAPSHOT_INTERVAL;
 		if (fullSnapshotDue) this.lastFullSnapshot = now;
 
+		// Server-authoritative mobs: simulate continuously, broadcast spawns
+		// and despawns immediately and positions at a lower rate than the
+		// player-state tick.
+		this.collectPlayerPositions();
+		const mobEvents = this.mobSim.tick(deltaMs, this.playerPosScratch);
+		for (let i = 0; i < mobEvents.length; i++) {
+			const event = mobEvents[i];
+			if (event.kind === "spawn") {
+				this.broadcastBytes(
+					"binary",
+					encodeMobSpawn(
+						event.mob.id,
+						event.mob.typeId,
+						event.mob.x,
+						event.mob.y,
+						event.mob.z,
+						event.mob.yaw,
+					),
+					{},
+				);
+			} else {
+				this.broadcastBytes("binary", encodeMobDespawn(event.mob.id), {});
+			}
+		}
+		this.mobTickAccum += deltaMs;
+		if (this.mobTickAccum >= MOB_UPDATE_INTERVAL) {
+			this.mobTickAccum = 0;
+			this.writeMobUpdateBatch();
+		}
+
 		this.statesScratch.length = 0;
 		let idx = 0;
 		for (const p of this.players.values()) {
@@ -953,6 +1032,53 @@ export class VoxelRoom extends Room {
 		this.tickEncoder.reset();
 		writePlayerStateBatch(this.tickEncoder, this.statesScratch);
 		this.broadcastBytes("binary", this.tickEncoder.getBytes(), {});
+	}
+
+	/** Fill the pooled scratch array with the players' positions (no alloc). */
+	private collectPlayerPositions(): void {
+		const scratch = this.playerPosScratch;
+		scratch.length = 0;
+		let idx = 0;
+		for (const p of this.players.values()) {
+			let slot = this.playerPosPool[idx];
+			if (!slot) {
+				slot = { x: 0, y: 0, z: 0 };
+				this.playerPosPool[idx] = slot;
+			}
+			slot.x = p.x;
+			slot.y = p.y;
+			slot.z = p.z;
+			scratch.push(slot);
+			idx++;
+		}
+	}
+
+	/** Broadcast all mob positions at MOB_UPDATE_INTERVAL (pooled, no alloc). */
+	private writeMobUpdateBatch(): void {
+		const mobs = this.mobSim.snapshotInto(this.mobSnapshotScratch);
+		if (mobs.length === 0) return;
+
+		const scratch = this.mobStateScratch;
+		scratch.length = 0;
+		let idx = 0;
+		for (const mob of mobs) {
+			let slot = this.mobStatePool[idx];
+			if (!slot) {
+				slot = { mobId: 0, x: 0, y: 0, z: 0, yaw: 0 };
+				this.mobStatePool[idx] = slot;
+			}
+			slot.mobId = mob.id;
+			slot.x = mob.x;
+			slot.y = mob.y;
+			slot.z = mob.z;
+			slot.yaw = mob.yaw;
+			scratch.push(slot);
+			idx++;
+		}
+
+		this.mobUpdateEncoder.reset();
+		writeMobUpdateBatch(this.mobUpdateEncoder, scratch);
+		this.broadcastBytes("binary", this.mobUpdateEncoder.getBytes(), {});
 	}
 
 	private handleBinaryMessage(client: Client, data: Uint8Array): void {
@@ -1352,12 +1478,7 @@ export class VoxelRoom extends Room {
 				// Server-authoritative commands are prefixed with '!' or '/'
 				// and consumed here instead of being relayed as chat.
 				if (firstChar === 33 || firstChar === 47) {
-					if (
-						this.handleChatCommand(
-							client,
-							trimmed.slice(1).trim(),
-						)
-					) {
+					if (this.handleChatCommand(client, trimmed.slice(1).trim())) {
 						break;
 					}
 				}

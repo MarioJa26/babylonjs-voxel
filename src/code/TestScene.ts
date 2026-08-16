@@ -14,6 +14,7 @@ import { setTerrainSeed } from "./Generation/TerrainHeightMap";
 import { Map1 } from "./Maps/Map1";
 import { type EyeCamera, UnderWaterEffect } from "./Maps/UnderWaterEffect";
 import { NetworkManager } from "./Network/NetworkManager";
+import { RemoteMobManager } from "./Network/RemoteMobManager";
 import { findSavedServerByName, getPlayerName } from "./Network/serverList";
 import { initializeBlockBreakingVisuals } from "./Player/Hud/BlockHighlight/BlockBreakingVisuals";
 import { DroppedItem } from "./Player/Inventory/DroppedItem";
@@ -44,6 +45,7 @@ export class TestScene {
 	#playerStatePersistence?: PlayerStatePersistence;
 	#disposeLightDebugTool?: () => void;
 	#networkManager?: NetworkManager;
+	#remoteMobManager?: RemoteMobManager;
 
 	constructor(
 		document: Document,
@@ -117,6 +119,13 @@ export class TestScene {
 		// Stable server-side room name so all players on the same server share a world.
 		void this.#networkManager.connect(playerName, "__mp__");
 
+		// Server-authoritative mobs: render remote mobs driven by MobSpawn /
+		// MobUpdateBatch / MobDespawn. Created after connect so its binary
+		// handler is registered for the lifetime of the connection.
+		this.#remoteMobManager = new RemoteMobManager(
+			this.#networkManager.netClient,
+		);
+
 		await map.initPromise;
 
 		console.log(
@@ -128,6 +137,7 @@ export class TestScene {
 
 		this.registerFrameUpdate(scene, playerCamera, (deltaMs) => {
 			this.#networkManager?.tick(deltaMs);
+			this.#remoteMobManager?.update(deltaMs);
 		});
 	}
 
@@ -211,6 +221,7 @@ export class TestScene {
 		this.#disposeLightDebugTool?.();
 		this.#playerStatePersistence?.dispose();
 		this.#networkManager?.disconnect();
+		this.#remoteMobManager?.dispose();
 
 		void WorldStorage.flush();
 
@@ -225,6 +236,7 @@ export class TestScene {
 		this.#player = undefined;
 		this.#playerStatePersistence = undefined;
 		this.#networkManager = undefined;
+		this.#remoteMobManager = undefined;
 		this.#disposeLightDebugTool = undefined;
 	}
 }
