@@ -488,69 +488,34 @@ export class PlayerHud {
 		if (!item) return false;
 
 		const inventory = PlayerHud.#inventory.inventory;
-		const isInInventory =
-			slot.row > 0 || (slot.row === 0 && inventory[0]?.includes(slot));
-		const isInCrate =
-			this.#woodCrateSlots?.some((row) => row.includes(slot)) ?? false;
+		const crateSlots = this.#woodCrateSlots;
+
+		const isInCrate = crateSlots
+			? this.slotExistsInRows(slot, crateSlots)
+			: false;
+
+		const isInInventory = !isInCrate && this.slotExistsInRows(slot, inventory);
 
 		if (!isInInventory && !isInCrate) return false;
 
-		if (isInInventory) {
-			// Move from inventory to crate
-			if (!this.#woodCrateSlots) return false;
+		const targetRows = isInCrate ? inventory : crateSlots;
+		if (!targetRows) return false;
 
-			// Try to stack with existing items in crate
-			for (const row of this.#woodCrateSlots) {
-				for (const crateSlot of row) {
-					if (crateSlot.item && crateSlot.item.itemId === item.itemId) {
-						const remainder = Item.stackItemAtoB(item, crateSlot.item);
-						if (remainder === 0) {
-							slot.clearItemSlots();
-							return true;
-						}
-					}
-				}
-			}
+		// First try to stack into existing stacks.
+		if (this.tryStackItemIntoRows(slot, item, targetRows)) {
+			return true;
+		}
 
-			// Try to move to empty slot in crate
-			for (const row of this.#woodCrateSlots) {
-				for (const crateSlot of row) {
-					if (!crateSlot.item) {
-						slot.clearItemSlots();
-						item.row = crateSlot.row;
-						item.col = crateSlot.col;
-						crateSlot.divItemSlot.appendChild(item.div);
-						crateSlot.item = item;
-						return true;
-					}
-				}
-			}
-		} else if (isInCrate) {
-			// Move from crate to inventory
-			// Try to stack with existing items in inventory
-			for (let row = inventory.length - 1; row >= 0; row--) {
-				for (const invSlot of inventory[row]) {
-					if (invSlot.item && invSlot.item.itemId === item.itemId) {
-						const remainder = Item.stackItemAtoB(item, invSlot.item);
-						if (remainder === 0) {
-							slot.clearItemSlots();
-							return true;
-						}
-					}
-				}
-			}
+		// Then try to move into the first empty slot.
+		return this.tryMoveItemToEmptySlot(slot, item, targetRows);
+	}
+	private slotExistsInRows(slot: ItemSlot, rows: ItemSlot[][]): boolean {
+		for (let row = 0, rowCount = rows.length; row < rowCount; row++) {
+			const slots = rows[row];
 
-			// Try to move to empty slot in inventory
-			for (let row = inventory.length - 1; row >= 0; row--) {
-				for (const invSlot of inventory[row]) {
-					if (!invSlot.item) {
-						slot.clearItemSlots();
-						item.row = invSlot.row;
-						item.col = invSlot.col;
-						invSlot.divItemSlot.appendChild(item.div);
-						invSlot.item = item;
-						return true;
-					}
+			for (let col = 0, colCount = slots.length; col < colCount; col++) {
+				if (slots[col] === slot) {
+					return true;
 				}
 			}
 		}
@@ -558,6 +523,62 @@ export class PlayerHud {
 		return false;
 	}
 
+	private tryStackItemIntoRows(
+		sourceSlot: ItemSlot,
+		item: Item,
+		targetRows: ItemSlot[][],
+	): boolean {
+		for (let row = targetRows.length - 1; row >= 0; row--) {
+			const slots = targetRows[row];
+
+			for (let col = 0, colCount = slots.length; col < colCount; col++) {
+				const targetItem = slots[col].item;
+
+				if (!targetItem || targetItem.itemId !== item.itemId) {
+					continue;
+				}
+
+				const remainder = Item.stackItemAtoB(item, targetItem);
+
+				if (remainder === 0) {
+					sourceSlot.clearItemSlots();
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	private tryMoveItemToEmptySlot(
+		sourceSlot: ItemSlot,
+		item: Item,
+		targetRows: ItemSlot[][],
+	): boolean {
+		for (let row = targetRows.length - 1; row >= 0; row--) {
+			const slots = targetRows[row];
+
+			for (let col = 0, colCount = slots.length; col < colCount; col++) {
+				const targetSlot = slots[col];
+
+				if (targetSlot.item) {
+					continue;
+				}
+
+				sourceSlot.clearItemSlots();
+
+				item.row = targetSlot.row;
+				item.col = targetSlot.col;
+
+				targetSlot.divItemSlot.appendChild(item.div);
+				targetSlot.item = item;
+
+				return true;
+			}
+		}
+
+		return false;
+	}
 	private createWoodCrateUI(): HTMLDivElement {
 		const overlay = document.createElement("div");
 		overlay.id = "woodcrate-overlay";

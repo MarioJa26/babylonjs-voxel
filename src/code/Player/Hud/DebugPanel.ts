@@ -1,12 +1,19 @@
 export class DebugPanel {
-	static instance: DebugPanel;
+	private static instance: DebugPanel | undefined;
+	private static div: HTMLDivElement | undefined;
 
-	static div: HTMLDivElement = document.createElement("div");
-	private static infoLines: { [key: string]: string } = {};
-	private static elements = new Map<string, HTMLDivElement>();
+	private static readonly elements = new Map<
+		string,
+		{
+			container: HTMLDivElement;
+			valueNode: Text;
+			value: string;
+		}
+	>();
 
 	private constructor() {
-		const div = DebugPanel.div;
+		const div = document.createElement("div");
+
 		div.style.position = "absolute";
 		div.style.top = "10px";
 		div.style.left = "10px";
@@ -16,37 +23,92 @@ export class DebugPanel {
 		div.style.fontFamily = "monospace";
 		div.style.fontSize = "16px";
 		div.style.zIndex = "100";
-		div.style.display = "none"; // Initially hidden
+		div.style.display = "none";
 		div.style.borderRadius = "5px";
+
 		document.body.appendChild(div);
+		DebugPanel.div = div;
 	}
 
-	static getInstance(): DebugPanel {
-		if (!DebugPanel.instance) {
-			DebugPanel.instance = new DebugPanel();
+	public static getInstance(): DebugPanel {
+		let instance = DebugPanel.instance;
+
+		if (!instance) {
+			instance = new DebugPanel();
+			DebugPanel.instance = instance;
 		}
-		return DebugPanel.instance;
+
+		return instance;
 	}
 
 	public static show(): void {
-		DebugPanel.div.style.display = "block";
+		const div = DebugPanel.getDiv();
+
+		if (div.style.display !== "block") {
+			div.style.display = "block";
+		}
 	}
 
 	public static hide(): void {
-		DebugPanel.div.style.display = "none";
+		const div = DebugPanel.getDiv();
+
+		if (div.style.display !== "none") {
+			div.style.display = "none";
+		}
 	}
 
 	public static updateInfo(key: string, value: string | number): void {
 		const strValue = String(value);
-		if (DebugPanel.infoLines[key] === strValue) return;
-		DebugPanel.infoLines[key] = strValue;
+		const entry = DebugPanel.elements.get(key);
 
-		let el = DebugPanel.elements.get(key);
-		if (!el) {
-			el = document.createElement("div");
-			DebugPanel.div.appendChild(el);
-			DebugPanel.elements.set(key, el);
+		if (entry) {
+			if (entry.value === strValue) {
+				return;
+			}
+
+			entry.value = strValue;
+			entry.valueNode.nodeValue = strValue;
+			return;
 		}
-		el.textContent = `${key}: ${strValue}`;
+
+		const container = document.createElement("div");
+		const valueNode = document.createTextNode(strValue);
+
+		container.appendChild(document.createTextNode(`${key}: `));
+		container.appendChild(valueNode);
+
+		DebugPanel.getDiv().appendChild(container);
+
+		DebugPanel.elements.set(key, {
+			container,
+			valueNode,
+			value: strValue,
+		});
+	}
+
+	public static removeInfo(key: string): void {
+		const entry = DebugPanel.elements.get(key);
+
+		if (!entry) {
+			return;
+		}
+
+		entry.container.remove();
+		DebugPanel.elements.delete(key);
+	}
+
+	public static clear(): void {
+		const div = DebugPanel.div;
+
+		if (div) {
+			div.textContent = "";
+		}
+
+		DebugPanel.elements.clear();
+	}
+
+	private static getDiv(): HTMLDivElement {
+		DebugPanel.getInstance();
+		return DebugPanel.div as HTMLDivElement;
 	}
 }
