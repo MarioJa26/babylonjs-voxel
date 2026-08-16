@@ -66,6 +66,26 @@ interface MissCoordEntry {
 	key: string;
 }
 
+/**
+ * Serializable snapshot of a mob for per-chunk-column persistence. Covers the
+ * full ServerMob state so a mob resumes exactly where it was when its column
+ * was unloaded.
+ */
+export interface PersistedMob {
+	id: number;
+	typeId: number;
+	x: number;
+	y: number;
+	z: number;
+	yaw: number;
+	headingTimer: number;
+	stuckTimer: number;
+	fleeing: boolean;
+	path: Array<{ x: number; z: number; groundY: number }>;
+	pathIndex: number;
+	pathTimer: number;
+}
+
 const DEFAULT_CACHE_SIZE = 1024;
 const DEFAULT_BLOB_CACHE_SIZE = 128;
 
@@ -976,4 +996,51 @@ export class ServerWorldStorage {
 			Number.isFinite(p.pitch)
 		);
 	}
+
+	/**
+	 * Persist the mobs occupying a chunk column (x/z level). Stored durably
+	 * under a per-column meta key and loaded back when the column is loaded
+	 * near a player. Mobs that are persisted are not active, so they do not
+	 * count toward the mob caps.
+	 */
+	async saveChunkMobs(cx: number, cz: number, mobs: PersistedMob[]): Promise<void> {
+		this.assertActive();
+		await this.store.setMeta(`mobcol:${cx}:${cz}`, JSON.stringify(mobs));
+	}
+
+	/** Load the mobs persisted for a chunk column (empty array if none). */
+	async loadChunkMobs(cx: number, cz: number): Promise<PersistedMob[]> {
+		this.assertActive();
+
+		const data = await this.store.getMeta(`mobcol:${cx}:${cz}`);
+		if (!data) return [];
+
+		try {
+			const parsed: unknown = JSON.parse(data);
+			if (!Array.isArray(parsed)) return [];
+			return parsed.filter(isPersistedMob);
+		} catch {
+			return [];
+		}
+	}
+}
+
+function isPersistedMob(value: unknown): value is PersistedMob {
+	if (typeof value !== "object" || value === null) return false;
+
+	const m = value as Partial<PersistedMob>;
+	return (
+		typeof m.id === "number" &&
+		typeof m.typeId === "number" &&
+		Number.isFinite(m.x) &&
+		Number.isFinite(m.y) &&
+		Number.isFinite(m.z) &&
+		typeof m.yaw === "number" &&
+		typeof m.headingTimer === "number" &&
+		typeof m.stuckTimer === "number" &&
+		typeof m.fleeing === "boolean" &&
+		Array.isArray(m.path) &&
+		typeof m.pathIndex === "number" &&
+		typeof m.pathTimer === "number"
+	);
 }

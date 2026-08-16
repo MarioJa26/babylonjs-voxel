@@ -601,6 +601,10 @@ export class VoxelRoom extends Room {
 		}
 		this.players.clear();
 
+		// Persist any still-active mobs to their chunk columns before the
+		// storage closes, so they survive a server restart.
+		await this.mobSim.persistAll();
+
 		// Flush any pending chunk saves through the serialized queue
 		this.clearChunkFlush();
 		await this.requestChunkFlush();

@@ -9,13 +9,23 @@
  * Spawn rules mirror the client's singleplayer SpawnCoordinator/MobSetup:
  * grass below, air above, ring 24–96 blocks around a player, per-type caps.
  * Sky-light is not checked server-side (the air-above test approximates it).
+ *
+ * Mobs are chunk-column scoped: a column within MOB_ACTIVE_RADIUS_CHUNKS of a
+ * player is "loaded". When a column leaves that radius its mobs are persisted
+ * to LevelDB and removed from the active set (freeing their cap slot); when a
+ * column re-enters it, the mobs are loaded back. Only loaded (active) mobs
+ * count toward the per-type caps, so a world full of persisted mobs never
+ * blocks new spawns near players.
  */
 
 import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
 import { MobTypeId } from "@/code/Network/protocol/messages.ts";
-import { packChunkKeyFast } from "@/code/World/Storage/ChunkKey.ts";
+import {
+	packChunkKeyFast,
+	unpackChunkKeyFast,
+} from "@/code/World/Storage/ChunkKey.ts";
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
-import type { ServerWorldStorage } from "./ServerWorldStorage.ts";
+import type { PersistedMob, ServerWorldStorage } from "./ServerWorldStorage.ts";
 
 export interface ServerMob {
 	readonly id: number;
@@ -82,6 +92,10 @@ const SPAWN_INTERVAL_MS = 1000;
 const SPAWN_RING_MIN = 32;
 const SPAWN_RING_MAX = 128;
 const SPAWN_ATTEMPTS = 6;
+// Chunk columns within this many chunks of a player are "loaded". Mobs in
+// unloaded columns are persisted and removed from the active set (freeing
+// their cap slot); they are loaded back when the column is loaded again.
+const MOB_ACTIVE_RADIUS_CHUNKS = 8;
 const WANDER_MIN_MS = 1000;
 const WANDER_MAX_MS = 4000;
 const STUCK_MS = 1500;
@@ -148,11 +162,15 @@ export class ServerMobSimulation {
 	private readonly mobs = new Map<number, ServerMob>();
 	private nextId = 1;
 	private spawnAccum = 0;
-	// TEMP DIAG: tick counter for periodic logging.
-	private diagTickCount = 0;
 	private readonly sampler: TickBlockSampler;
 	// Reused across ticks — the room broadcasts from it synchronously.
 	private readonly eventScratch: ServerMobEvent[] = [];
+	// Spawn events completed by async chunk-mob loads since the last tick.
+	private readonly asyncEvents: ServerMobEvent[] = [];
+	// Chunk columns (cx,cz) considered loaded on the last lifecycle pass.
+	private lastLoadedColumns = new Set<number>();
+	// Columns whose persisted mobs are currently being read back.
+	private readonly pendingColumnLoads = new Set<number>();
 
 	constructor(private readonly storage: ServerWorldStorage) {
 		this.sampler = new TickBlockSampler(storage);
@@ -187,6 +205,15 @@ export class ServerMobSimulation {
 	): ServerMobEvent[] {
 		const events = this.eventScratch;
 		events.length = 0;
+
+		// Drain events completed by async chunk-mob loads since the last tick.
+		// A load can only resolve between ticks (JS is single-threaded), so
+		// the room always broadcasts them on the following tick.
+		if (this.asyncEvents.length > 0) {
+			for (const event of this.asyncEvents) events.push(event);
+			this.asyncEvents.length = 0;
+		}
+
 		this.sampler.begin();
 
 		for (const mob of this.mobs.values()) {
@@ -194,19 +221,16 @@ export class ServerMobSimulation {
 		}
 
 		if (players.length > 0) {
+			// Persist mobs whose column left the loaded radius and load back
+			// the mobs of columns that entered it, so far mobs free their cap
+			// slots but are never lost.
+			this.updateChunkMobLifecycle(players, events);
+
 			this.spawnAccum += deltaMs;
 			if (this.spawnAccum >= SPAWN_INTERVAL_MS) {
 				this.spawnAccum = 0;
 				this.trySpawn(players, events);
 			}
-		}
-
-		// TEMP DIAG: periodic heartbeat (~every 5s at 20Hz tick).
-		this.diagTickCount++;
-		if (this.diagTickCount % 100 === 0) {
-			console.log(
-				`[MobDiag] tick players=${players.length} mobs=${this.mobs.size} cachedChunks=${this.storage.cachedChunkCount}`,
-			);
 		}
 
 		return events;
@@ -589,11 +613,6 @@ export class ServerMobSimulation {
 		const player = players[Math.floor(Math.random() * players.length)];
 		if (!player) return;
 
-		// TEMP DIAG
-		console.log(
-			`[MobDiag] trySpawn players=${players.length} mobs=${this.mobs.size} cap=${totalCap} typeIdLimit=${Object.keys(MOB_TYPE_CONFIGS).length}`,
-		);
-
 		for (let i = 0; i < SPAWN_ATTEMPTS; i++) {
 			if (this.mobs.size >= totalCap) return;
 
@@ -653,6 +672,187 @@ export class ServerMobSimulation {
 		return cap;
 	}
 
+	/**
+	 * Chunk-column mob lifecycle. A column within MOB_ACTIVE_RADIUS_CHUNKS of
+	 * any player is "loaded":
+	 * - mobs in columns that left the loaded radius are persisted to storage
+	 *   and removed from the active set (broadcast as despawn), freeing their
+	 *   cap slots,
+	 * - columns that entered the loaded radius read their persisted mobs back
+	 *   (broadcast as spawn on the following tick).
+	 */
+	private updateChunkMobLifecycle(
+		players: ReadonlyArray<{ x: number; z: number }>,
+		events: ServerMobEvent[],
+	): void {
+		const radius = MOB_ACTIVE_RADIUS_CHUNKS;
+		const loaded = new Set<number>();
+
+		for (const p of players) {
+			const pcx = Math.floor(p.x / CHUNK_SIZE);
+			const pcz = Math.floor(p.z / CHUNK_SIZE);
+			for (let dx = -radius; dx <= radius; dx++) {
+				for (let dz = -radius; dz <= radius; dz++) {
+					loaded.add(packChunkKeyFast(pcx + dx, 0, pcz + dz));
+				}
+			}
+		}
+
+		// 1) Persist + evict active mobs in columns that are no longer loaded.
+		if (this.mobs.size > 0) {
+			const toUnload: Array<{ mob: ServerMob; cx: number; cz: number }> = [];
+			for (const mob of this.mobs.values()) {
+				const cx = Math.floor(mob.x / CHUNK_SIZE);
+				const cz = Math.floor(mob.z / CHUNK_SIZE);
+				if (!loaded.has(packChunkKeyFast(cx, 0, cz))) {
+					toUnload.push({ mob, cx, cz });
+				}
+			}
+
+			if (toUnload.length > 0) {
+				const byColumn = new Map<number, PersistedMob[]>();
+				for (const { mob, cx, cz } of toUnload) {
+					this.mobs.delete(mob.id);
+					events.push({ kind: "despawn", mob });
+
+					const col = packChunkKeyFast(cx, 0, cz);
+					let list = byColumn.get(col);
+					if (!list) {
+						list = [];
+						byColumn.set(col, list);
+					}
+					list.push(this.persistMob(mob));
+				}
+
+				for (const [col, list] of byColumn) {
+					const coords = unpackChunkKeyFast(col);
+					void this.storage.saveChunkMobs(coords[0], coords[2], list);
+				}
+			}
+		}
+
+		// 2) Read back the persisted mobs of columns that just entered the
+		//    loaded set.
+		for (const col of loaded) {
+			if (this.lastLoadedColumns.has(col)) continue;
+			if (this.pendingColumnLoads.has(col)) continue;
+
+			this.pendingColumnLoads.add(col);
+			const coords = unpackChunkKeyFast(col);
+			void this.loadColumnMobs(coords[0], coords[2], col);
+		}
+
+		this.lastLoadedColumns = loaded;
+	}
+
+	private async loadColumnMobs(
+		cx: number,
+		cz: number,
+		col: number,
+	): Promise<void> {
+		try {
+			const persisted = await this.storage.loadChunkMobs(cx, cz);
+			if (persisted.length === 0) return;
+
+			// The column may have left the loaded radius while the read was in
+			// flight — leave its mobs persisted in that case.
+			if (!this.lastLoadedColumns.has(col)) return;
+
+			const kept: PersistedMob[] = [];
+			for (const pm of persisted) {
+				const config = MOB_TYPE_CONFIGS[pm.typeId];
+				if (!config) continue; // Unknown type — drop.
+
+				// Already active (id collision) — keep it persisted.
+				if (this.mobs.has(pm.id)) {
+					kept.push(pm);
+					continue;
+				}
+
+				// Loaded mobs count toward the per-type cap; if it's full,
+				// leave this one persisted until a slot frees up.
+				if (this.countByType(pm.typeId) >= config.maxCount) {
+					kept.push(pm);
+					continue;
+				}
+
+				const mob = this.restoreMob(pm);
+				this.mobs.set(mob.id, mob);
+				this.asyncEvents.push({ kind: "spawn", mob });
+			}
+
+			if (kept.length !== persisted.length) {
+				void this.storage.saveChunkMobs(cx, cz, kept);
+			}
+		} finally {
+			this.pendingColumnLoads.delete(col);
+		}
+	}
+
+	/** Snapshot a mob into its durable, column-scoped representation. */
+	private persistMob(mob: ServerMob): PersistedMob {
+		return {
+			id: mob.id,
+			typeId: mob.typeId,
+			x: mob.x,
+			y: mob.y,
+			z: mob.z,
+			yaw: mob.yaw,
+			headingTimer: mob.headingTimer,
+			stuckTimer: mob.stuckTimer,
+			fleeing: mob.fleeing,
+			path: mob.path.map((w) => ({ x: w.x, z: w.z, groundY: w.groundY })),
+			pathIndex: mob.pathIndex,
+			pathTimer: mob.pathTimer,
+		};
+	}
+
+	/** Reconstruct a live mob from its persisted snapshot. */
+	private restoreMob(pm: PersistedMob): ServerMob {
+		// Keep id allocation above every restored id so a fresh spawn can
+		// never collide with a mob loaded back from storage.
+		if (pm.id >= this.nextId) this.nextId = pm.id + 1;
+
+		return {
+			id: pm.id,
+			typeId: pm.typeId,
+			x: pm.x,
+			y: pm.y,
+			z: pm.z,
+			yaw: pm.yaw,
+			headingTimer: pm.headingTimer,
+			stuckTimer: pm.stuckTimer,
+			fleeing: pm.fleeing,
+			path: pm.path.map((w) => ({ x: w.x, z: w.z, groundY: w.groundY })),
+			pathIndex: pm.pathIndex,
+			pathTimer: pm.pathTimer,
+		};
+	}
+
+	/** Persist every active mob to its column (room shutdown). */
+	async persistAll(): Promise<void> {
+		const byColumn = new Map<number, PersistedMob[]>();
+		for (const mob of this.mobs.values()) {
+			const cx = Math.floor(mob.x / CHUNK_SIZE);
+			const cz = Math.floor(mob.z / CHUNK_SIZE);
+			const col = packChunkKeyFast(cx, 0, cz);
+
+			let list = byColumn.get(col);
+			if (!list) {
+				list = [];
+				byColumn.set(col, list);
+			}
+			list.push(this.persistMob(mob));
+		}
+
+		const writes: Promise<void>[] = [];
+		for (const [col, list] of byColumn) {
+			const coords = unpackChunkKeyFast(col);
+			writes.push(this.storage.saveChunkMobs(coords[0], coords[2], list));
+		}
+		await Promise.allSettled(writes);
+	}
+
 	private findSpawnPosition(
 		player: { x: number; y: number; z: number },
 		config: MobTypeConfig,
@@ -664,27 +864,12 @@ export class ServerMobSimulation {
 		const wx = Math.floor(player.x + Math.cos(angle) * dist);
 		const wz = Math.floor(player.z + Math.sin(angle) * dist);
 
-		// TEMP DIAG: classify why a column fails to spawn.
-		let diagCachedVoxels = 0;
-		let diagTopSolidId = -1;
-		let diagSawSpawnable = false;
-		let diagAirBlocked = 0;
-
 		// Scan the column top-down for a spawnable block with air above it.
 		for (let wy = MAX_SPAWN_SCAN_Y; wy >= 0; wy--) {
-			const sampleId = this.sampler.sample(wx, wy, wz);
-			if (sampleId !== null) {
-				diagCachedVoxels++;
-				if (sampleId !== 0 && diagTopSolidId === -1) {
-					diagTopSolidId = sampleId;
-				}
-			}
-
 			if (
-				SPAWNABLE_BLOCK_IDS.includes(sampleId ?? -1) &&
+				SPAWNABLE_BLOCK_IDS.includes(this.sampler.sample(wx, wy, wz) ?? -1) &&
 				this.sampler.sample(wx, wy + 1, wz) === 0
 			) {
-				diagSawSpawnable = true;
 				if (this.isSpawnTooClose(wx, wz)) continue;
 
 				const spawnY = wy + 1.02 + config.halfHeight;
@@ -695,25 +880,9 @@ export class ServerMobSimulation {
 					y: spawnY,
 					z: wz + 0.5,
 				};
-			} else if (
-				sampleId !== null &&
-				SPAWNABLE_BLOCK_IDS.includes(sampleId ?? -1)
-			) {
-				diagAirBlocked++;
 			}
 		}
 
-		if (diagCachedVoxels === 0) {
-			console.log(
-				`[MobDiag] spawn FAILED column=${wx},${wz} reason=noCachedChunks`,
-			);
-		} else {
-			console.log(
-				`[MobDiag] spawn FAILED column=${wx},${wz} reason=${
-					diagSawSpawnable ? "airBlocked" : "wrongBlock"
-				} cachedVoxels=${diagCachedVoxels} topSolidId=${diagTopSolidId} airBlocked=${diagAirBlocked}`,
-			);
-		}
 		return null;
 	}
 
