@@ -18,6 +18,26 @@ const MASON_SHAPES = ["slab", "stairs", "half_wall", "pane", "fence"] as const;
 
 let _generated = false;
 
+function toDisplayName(value: string): string {
+	let result = "";
+	let capitalizeNext = true;
+
+	for (let i = 0; i < value.length; i++) {
+		const ch = value[i];
+
+		if (ch === "_") {
+			result += " ";
+			capitalizeNext = true;
+			continue;
+		}
+
+		result += capitalizeNext ? ch.toUpperCase() : ch;
+		capitalizeNext = false;
+	}
+
+	return result;
+}
+
 export async function generateShapeVariants(): Promise<void> {
 	if (_generated) return;
 	_generated = true;
@@ -27,74 +47,89 @@ export async function generateShapeVariants(): Promise<void> {
 
 	const shapeDefs = getShapeDefinitions();
 	const shapeMap = getShapeByBlockId();
+	const fallbackShapeDef = shapeDefs[0];
 
 	const shapeIndexByName = new Map<string, number>();
 	for (let i = 0; i < shapeDefs.length; i++) {
 		shapeIndexByName.set(shapeDefs[i].name, i);
 	}
 
-	const sourceBlocks: TextureDefinition[] = [];
-	for (const def of TextureDefinitions) {
-		if (def.id >= 500) continue;
-		if (def.id === BlockType.Air) continue;
-		if (def.id === BlockType.MasonTable) continue;
+	const targetShapes: Array<{
+		name: (typeof MASON_SHAPES)[number];
+		index: number;
+		displayName: string;
+	}> = [];
 
-		const shapeDef = shapeDefs[shapeMap[def.id]] ?? shapeDefs[0];
+	for (const targetShape of MASON_SHAPES) {
+		const index = shapeIndexByName.get(targetShape);
+		if (index !== undefined) {
+			targetShapes.push({
+				name: targetShape,
+				index,
+				displayName: toDisplayName(targetShape),
+			});
+		}
+	}
+
+	if (targetShapes.length === 0) return;
+
+	const sourceBlocks: TextureDefinition[] = [];
+
+	for (const def of TextureDefinitions) {
+		if (
+			def.id >= 500 ||
+			def.id === BlockType.Air ||
+			def.id === BlockType.MasonTable
+		) {
+			continue;
+		}
+
+		const shapeIndex = shapeMap[def.id];
+		const shapeDef =
+			shapeIndex !== undefined
+				? (shapeDefs[shapeIndex] ?? fallbackShapeDef)
+				: fallbackShapeDef;
+
 		if (shapeDef.name === "cube") {
 			sourceBlocks.push(def);
 		}
 	}
 
 	for (const sourceDef of sourceBlocks) {
-		const sourceShapeDef = shapeDefs[shapeMap[sourceDef.id]] ?? shapeDefs[0];
+		const sourceDisplayName = toDisplayName(sourceDef.name);
 
-		for (const targetShape of MASON_SHAPES) {
-			if (targetShape === sourceShapeDef.name) continue;
-
-			const shapeIndex = shapeIndexByName.get(targetShape);
-			if (shapeIndex === undefined) continue;
-
-			const virtualId = getVirtualBlockId(sourceDef.id, targetShape);
+		for (const targetShape of targetShapes) {
+			const virtualId = getVirtualBlockId(sourceDef.id, targetShape.name);
 			if (virtualId === null) continue;
-
-			const variantName = `${sourceDef.name}_${targetShape}`;
-			const displayName = `${sourceDef.name
-				.split("_")
-				.map((p) => p.charAt(0).toUpperCase() + p.slice(1))
-				.join(" ")} ${targetShape
-				.split("_")
-				.map((p) => p.charAt(0).toUpperCase() + p.slice(1))
-				.join(" ")}`;
 
 			const variantDef: TextureDefinition = {
 				id: virtualId,
-				name: variantName,
+				name: `${sourceDef.name}_${targetShape.name}`,
 				path: sourceDef.path,
 				hardness: sourceDef.hardness,
-				shape: targetShape,
+				shape: targetShape.name,
 			};
 
 			TextureDefinitions.push(variantDef);
 			TextureDefinitionMap.set(virtualId, variantDef);
 
 			// Atlas tile is already set by buildBlockTextures() in BlockTextures.ts
-			// No need to call setBlockAtlasTile here — workers already have the data
-
-			shapeMap[virtualId] = shapeIndex;
+			// No need to call setBlockAtlasTile here, workers already have the data
+			shapeMap[virtualId] = targetShape.index;
 
 			registerItem({
 				id: virtualId,
-				name: displayName,
-				description: `Shape: ${targetShape}\nID: ${virtualId}\nSource: ${sourceDef.name}\nblockId: ${virtualId}\nblockState: 0`,
+				name: `${sourceDisplayName} ${targetShape.displayName}`,
+				description: `Shape: ${targetShape.name}\nID: ${virtualId}\nSource: ${sourceDef.name}\nblockId: ${virtualId}\nblockState: 0`,
 				useAction: "place_block",
 				blockId: virtualId,
 				blockState: 0,
-				shape: targetShape,
+				shape: targetShape.name,
 			});
 
 			MasonRecipes.push({
 				sourceBlockId: sourceDef.id,
-				targetShape,
+				targetShape: targetShape.name,
 				resultBlockId: virtualId,
 				resultBlockState: 0,
 			});

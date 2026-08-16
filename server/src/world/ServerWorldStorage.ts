@@ -54,6 +54,15 @@ interface StoredPlayerPosition {
 interface CacheNode {
 	key: number;
 	data: StoredChunkData;
+
+	/**
+	 * Lazily materialized dense 32³ block buffer for synchronous samplers.
+	 * - Raw chunks may point directly at data.blocks.
+	 * - Uniform/palette/compressed chunks get one owned dense buffer.
+	 * Invalidated whenever data is replaced in addToCache().
+	 */
+	denseBlocks: Uint8Array | null;
+
 	prev: CacheNode | null;
 	next: CacheNode | null;
 }
@@ -312,13 +321,8 @@ export class ServerWorldStorage {
 	 * Returns the chunk's 32³ block array from the in-memory LRU cache, or
 	 * null when the chunk is not cached. Never touches LevelDB.
 	 *
-	 * For raw (uncompressed) chunks the stored buffer itself is returned
-	 * (no copy); for uniform/palette chunks a pooled or fresh buffer is
-	 * materialized. The caller must not retain the result across ticks and
-	 * must not mutate it.
-	 *
-	 * Chunks near players are virtually always cached — the client just
-	 * requested them — so the mob sim stays fully synchronous and cheap.
+	 * The returned array is owned by the storage cache. Callers must not mutate it
+	 * or retain it beyond their short synchronous use.
 	 */
 	getCachedChunkBlocks(cx: number, cy: number, cz: number): Uint8Array | null {
 		if (this.disposing || this.disposed) return null;
@@ -326,19 +330,11 @@ export class ServerWorldStorage {
 		const node = this.chunkCache.get(packChunkKeyFast(cx, cy, cz));
 		if (!node) return null;
 
-		const c = node.data;
-		if (c.isUniform) {
-			const out = new Uint8Array(CHUNK_VOLUME);
-			out.fill(c.uniformBlockId);
-			return out;
-		}
+		// Keep mob-sampled chunks hot in the LRU. TickBlockSampler already avoids
+		// repeated touches for the same chunk inside one simulation tick.
+		this.lruTouch(node);
 
-		return decompressBlocks({
-			data: c.blocks,
-			palette: c.palette,
-			isUniform: c.isUniform,
-			uniformBlockId: c.uniformBlockId,
-		});
+		return this.getDenseBlocksForNode(node);
 	}
 
 	private async readChunkFromStore(
@@ -489,7 +485,45 @@ export class ServerWorldStorage {
 			}
 		}
 	}
+	private getDenseBlocksForNode(node: CacheNode): Uint8Array {
+		const cached = node.denseBlocks;
+		if (cached) return cached;
 
+		const c = node.data;
+
+		if (c.isUniform) {
+			const dense = new Uint8Array(CHUNK_VOLUME);
+			dense.fill(c.uniformBlockId);
+			node.denseBlocks = dense;
+			return dense;
+		}
+
+		// Fast path for already-dense, uncompressed chunks.
+		if (!c.palette && c.blocks.byteLength === CHUNK_VOLUME) {
+			node.denseBlocks = c.blocks;
+			return c.blocks;
+		}
+
+		const decomp = decompressBlocks({
+			data: c.blocks,
+			palette: c.palette,
+			isUniform: c.isUniform,
+			uniformBlockId: c.uniformBlockId,
+		});
+
+		// If decompression returned the stored buffer itself, it is safe to retain.
+		if (decomp === c.blocks) {
+			node.denseBlocks = c.blocks;
+			return c.blocks;
+		}
+
+		// Otherwise copy into an owned cache buffer, then release the pooled buffer.
+		const dense = new Uint8Array(decomp);
+		releaseDecompBuffer(decomp);
+
+		node.denseBlocks = dense;
+		return dense;
+	}
 	private parseBlob(
 		cx: number,
 		cy: number,
@@ -803,6 +837,7 @@ export class ServerWorldStorage {
 		const existing = this.chunkCache.get(key);
 		if (existing) {
 			existing.data = data;
+			existing.denseBlocks = null;
 			this.lruTouch(existing);
 			return;
 		}
@@ -812,15 +847,30 @@ export class ServerWorldStorage {
 			if (evict) {
 				this.lruDetach(evict);
 				this.chunkCache.delete(evict.key);
+
+				// Help GC release any lazily materialized dense buffer promptly.
+				evict.denseBlocks = null;
 			}
 		}
 
-		const node: CacheNode = { key, data, prev: null, next: null };
+		const node: CacheNode = {
+			key,
+			data,
+			denseBlocks: null,
+			prev: null,
+			next: null,
+		};
+
 		this.lruPushFront(node);
 		this.chunkCache.set(key, node);
 	}
-
 	clearCache(): void {
+		let node = this.cacheHead;
+		while (node) {
+			node.denseBlocks = null;
+			node = node.next;
+		}
+
 		this.chunkCache.clear();
 		this.cacheHead = null;
 		this.cacheTail = null;
@@ -1003,7 +1053,11 @@ export class ServerWorldStorage {
 	 * near a player. Mobs that are persisted are not active, so they do not
 	 * count toward the mob caps.
 	 */
-	async saveChunkMobs(cx: number, cz: number, mobs: PersistedMob[]): Promise<void> {
+	async saveChunkMobs(
+		cx: number,
+		cz: number,
+		mobs: PersistedMob[],
+	): Promise<void> {
 		this.assertActive();
 		await this.store.setMeta(`mobcol:${cx}:${cz}`, JSON.stringify(mobs));
 	}

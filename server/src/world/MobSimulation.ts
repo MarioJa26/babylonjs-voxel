@@ -25,6 +25,7 @@ import {
 	unpackChunkKeyFast,
 } from "@/code/World/Storage/ChunkKey.ts";
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
+import { MinHeap } from "./MinHeap.ts";
 import type { PersistedMob, ServerWorldStorage } from "./ServerWorldStorage.ts";
 
 export interface ServerMob {
@@ -77,6 +78,11 @@ const MOB_TYPE_CONFIGS: Record<number, MobTypeConfig> = {
 		halfHeight: 0.35,
 	},
 };
+const MOB_TYPE_IDS = Object.keys(MOB_TYPE_CONFIGS).map(Number);
+const TOTAL_MOB_CAP = MOB_TYPE_IDS.reduce(
+	(sum, typeId) => sum + MOB_TYPE_CONFIGS[typeId].maxCount,
+	0,
+);
 
 /**
  * Block ids a mob may spawn on top of (the surface voxel directly below the
@@ -87,7 +93,7 @@ export const SPAWNABLE_BLOCK_IDS: readonly number[] = [
 	BlockType.Grass001, // 15
 	BlockType.ConcreteMoss, // 51
 ];
-
+const SPAWNABLE_BLOCK_ID_SET = new Set<number>(SPAWNABLE_BLOCK_IDS);
 const SPAWN_INTERVAL_MS = 1000;
 const SPAWN_RING_MIN = 32;
 const SPAWN_RING_MAX = 128;
@@ -168,9 +174,15 @@ export class ServerMobSimulation {
 	// Spawn events completed by async chunk-mob loads since the last tick.
 	private readonly asyncEvents: ServerMobEvent[] = [];
 	// Chunk columns (cx,cz) considered loaded on the last lifecycle pass.
-	private lastLoadedColumns = new Set<number>();
+	// Double-buffered so updateChunkMobLifecycle does not allocate a new Set every tick.
+	private loadedColumnsA = new Set<number>();
+	private loadedColumnsB = new Set<number>();
+	private lastLoadedColumns = this.loadedColumnsA;
+
 	// Columns whose persisted mobs are currently being read back.
 	private readonly pendingColumnLoads = new Set<number>();
+
+	private readonly typeCounts = new Map<number, number>();
 
 	constructor(private readonly storage: ServerWorldStorage) {
 		this.sampler = new TickBlockSampler(storage);
@@ -192,8 +204,24 @@ export class ServerMobSimulation {
 
 	clear(): void {
 		this.mobs.clear();
+		this.typeCounts.clear();
 	}
+	private addActiveMob(mob: ServerMob): void {
+		this.mobs.set(mob.id, mob);
+		this.typeCounts.set(mob.typeId, (this.typeCounts.get(mob.typeId) ?? 0) + 1);
+	}
+	private removeActiveMob(mob: ServerMob): boolean {
+		if (!this.mobs.delete(mob.id)) return false;
 
+		const next = (this.typeCounts.get(mob.typeId) ?? 1) - 1;
+		if (next > 0) {
+			this.typeCounts.set(mob.typeId, next);
+		} else {
+			this.typeCounts.delete(mob.typeId);
+		}
+
+		return true;
+	}
 	/**
 	 * Advance the simulation by deltaMs and return the spawn/despawn events
 	 * that must be broadcast (positions are broadcast separately via
@@ -418,27 +446,36 @@ export class ServerMobSimulation {
 		}
 
 		const key = (x: number, z: number, y: number): string => `${x},${z},${y}`;
-		const open: Node[] = [
-			{
-				x: startX,
-				z: startZ,
-				groundY: startY,
-				g: 0,
-				f: Math.abs(startX - targetX) + Math.abs(startZ - targetZ),
-				parent: null,
-			},
-		];
-		const best = new Map<string, number>([[key(startX, startZ, startY), 0]]);
+		const heuristic = (x: number, z: number): number =>
+			Math.abs(x - targetX) + Math.abs(z - targetZ);
+
+		const open = new MinHeap<Node>((a, b) => a.f < b.f);
+		open.push({
+			x: startX,
+			z: startZ,
+			groundY: startY,
+			g: 0,
+			f: heuristic(startX, startZ),
+			parent: null,
+		});
+
+		const best = new Map<string, number>();
+		best.set(key(startX, startZ, startY), 0);
+
 		const dirs = [
 			[1, 0],
 			[-1, 0],
 			[0, 1],
 			[0, -1],
-		];
+		] as const;
 
 		for (let expanded = 0; open.length > 0 && expanded < 300; expanded++) {
-			open.sort((a, b) => a.f - b.f);
-			const current = open.shift()!;
+			const current = open.pop()!;
+			const currentKey = key(current.x, current.z, current.groundY);
+
+			// Skip stale heap entries that were superseded by a cheaper path.
+			if ((best.get(currentKey) ?? Infinity) < current.g) continue;
+
 			if (
 				current.x === targetX &&
 				current.z === targetZ &&
@@ -446,10 +483,16 @@ export class ServerMobSimulation {
 			) {
 				const result: ServerWaypoint[] = [];
 				let node: Node | null = current;
+
 				while (node?.parent) {
-					result.push({ x: node.x, z: node.z, groundY: node.groundY });
+					result.push({
+						x: node.x,
+						z: node.z,
+						groundY: node.groundY,
+					});
 					node = node.parent;
 				}
+
 				result.reverse();
 				return result;
 			}
@@ -458,19 +501,24 @@ export class ServerMobSimulation {
 				const x = current.x + dx;
 				const z = current.z + dz;
 				const surface = this.findLandSurface(x, z, current.groundY, halfHeight);
-				if (!surface || Math.abs(surface.groundY - current.groundY) > 1)
+
+				if (!surface || Math.abs(surface.groundY - current.groundY) > 1) {
 					continue;
-				const g =
-					current.g + 1 + Math.abs(surface.groundY - current.groundY) * 4;
+				}
+
+				const stepCost = 1 + Math.abs(surface.groundY - current.groundY) * 4;
+				const g = current.g + stepCost;
 				const nodeKey = key(x, z, surface.groundY);
+
 				if ((best.get(nodeKey) ?? Infinity) <= g) continue;
+
 				best.set(nodeKey, g);
 				open.push({
 					x,
 					z,
 					groundY: surface.groundY,
 					g,
-					f: g + Math.abs(x - targetX) + Math.abs(z - targetZ),
+					f: g + heuristic(x, z),
 					parent: current,
 				});
 			}
@@ -607,14 +655,13 @@ export class ServerMobSimulation {
 		players: ReadonlyArray<{ x: number; y: number; z: number }>,
 		events: ServerMobEvent[],
 	): void {
-		const totalCap = this.totalCap();
-		if (this.mobs.size >= totalCap) return;
+		if (this.mobs.size >= TOTAL_MOB_CAP) return;
 
 		const player = players[Math.floor(Math.random() * players.length)];
 		if (!player) return;
 
 		for (let i = 0; i < SPAWN_ATTEMPTS; i++) {
-			if (this.mobs.size >= totalCap) return;
+			if (this.mobs.size >= TOTAL_MOB_CAP) return;
 
 			const typeId = this.pickSpawnType();
 			if (typeId === null) return;
@@ -638,7 +685,8 @@ export class ServerMobSimulation {
 				pathIndex: 0,
 				pathTimer: 0,
 			};
-			this.mobs.set(mob.id, mob);
+
+			this.addActiveMob(mob);
 			events.push({ kind: "spawn", mob });
 		}
 	}
@@ -646,98 +694,97 @@ export class ServerMobSimulation {
 	/** Random species whose cap isn't reached yet (equal weights, like the client). */
 	private pickSpawnType(): number | null {
 		const available: number[] = [];
-		for (const typeId of Object.keys(MOB_TYPE_CONFIGS).map(Number)) {
+
+		for (const typeId of MOB_TYPE_IDS) {
 			const config = MOB_TYPE_CONFIGS[typeId];
-			if (this.countByType(typeId) < config.maxCount) {
+			if ((this.typeCounts.get(typeId) ?? 0) < config.maxCount) {
 				available.push(typeId);
 			}
 		}
+
 		if (available.length === 0) return null;
 		return available[Math.floor(Math.random() * available.length)];
 	}
 
 	private countByType(typeId: number): number {
-		let count = 0;
-		for (const mob of this.mobs.values()) {
-			if (mob.typeId === typeId) count++;
-		}
-		return count;
-	}
-
-	private totalCap(): number {
-		let cap = 0;
-		for (const typeId of Object.keys(MOB_TYPE_CONFIGS).map(Number)) {
-			cap += MOB_TYPE_CONFIGS[typeId].maxCount;
-		}
-		return cap;
+		return this.typeCounts.get(typeId) ?? 0;
 	}
 
 	/**
 	 * Chunk-column mob lifecycle. A column within MOB_ACTIVE_RADIUS_CHUNKS of
 	 * any player is "loaded":
 	 * - mobs in columns that left the loaded radius are persisted to storage
-	 *   and removed from the active set (broadcast as despawn), freeing their
-	 *   cap slots,
+	 * and removed from the active set, broadcast as despawn, freeing their
+	 * cap slots,
 	 * - columns that entered the loaded radius read their persisted mobs back
-	 *   (broadcast as spawn on the following tick).
+	 * and are broadcast as spawn on the following tick.
 	 */
 	private updateChunkMobLifecycle(
 		players: ReadonlyArray<{ x: number; z: number }>,
 		events: ServerMobEvent[],
 	): void {
 		const radius = MOB_ACTIVE_RADIUS_CHUNKS;
-		const loaded = new Set<number>();
 
-		for (const p of players) {
+		// Reuse the inactive buffer instead of allocating a new Set every tick.
+		const loaded =
+			this.lastLoadedColumns === this.loadedColumnsA
+				? this.loadedColumnsB
+				: this.loadedColumnsA;
+
+		loaded.clear();
+
+		for (let i = 0; i < players.length; i++) {
+			const p = players[i];
 			const pcx = Math.floor(p.x / CHUNK_SIZE);
 			const pcz = Math.floor(p.z / CHUNK_SIZE);
+
 			for (let dx = -radius; dx <= radius; dx++) {
+				const cx = pcx + dx;
+
 				for (let dz = -radius; dz <= radius; dz++) {
-					loaded.add(packChunkKeyFast(pcx + dx, 0, pcz + dz));
+					loaded.add(packChunkKeyFast(cx, 0, pcz + dz));
 				}
 			}
 		}
 
-		// 1) Persist + evict active mobs in columns that are no longer loaded.
+		// Persist and evict active mobs in columns that are no longer loaded.
+		// Deleting the current item during Map iteration is safe in JS, and avoids
+		// building a temporary toUnload array.
 		if (this.mobs.size > 0) {
-			const toUnload: Array<{ mob: ServerMob; cx: number; cz: number }> = [];
+			const byColumn = new Map<number, PersistedMob[]>();
+
 			for (const mob of this.mobs.values()) {
 				const cx = Math.floor(mob.x / CHUNK_SIZE);
 				const cz = Math.floor(mob.z / CHUNK_SIZE);
-				if (!loaded.has(packChunkKeyFast(cx, 0, cz))) {
-					toUnload.push({ mob, cx, cz });
+				const col = packChunkKeyFast(cx, 0, cz);
+
+				if (loaded.has(col)) continue;
+
+				this.removeActiveMob(mob);
+				events.push({ kind: "despawn", mob });
+
+				let list = byColumn.get(col);
+				if (list === undefined) {
+					list = [];
+					byColumn.set(col, list);
 				}
+
+				list.push(this.persistMob(mob));
 			}
 
-			if (toUnload.length > 0) {
-				const byColumn = new Map<number, PersistedMob[]>();
-				for (const { mob, cx, cz } of toUnload) {
-					this.mobs.delete(mob.id);
-					events.push({ kind: "despawn", mob });
-
-					const col = packChunkKeyFast(cx, 0, cz);
-					let list = byColumn.get(col);
-					if (!list) {
-						list = [];
-						byColumn.set(col, list);
-					}
-					list.push(this.persistMob(mob));
-				}
-
-				for (const [col, list] of byColumn) {
-					const coords = unpackChunkKeyFast(col);
-					void this.storage.saveChunkMobs(coords[0], coords[2], list);
-				}
+			for (const [col, list] of byColumn) {
+				const coords = unpackChunkKeyFast(col);
+				void this.storage.saveChunkMobs(coords[0], coords[2], list);
 			}
 		}
 
-		// 2) Read back the persisted mobs of columns that just entered the
-		//    loaded set.
+		// Read back the persisted mobs of columns that just entered the loaded set.
 		for (const col of loaded) {
 			if (this.lastLoadedColumns.has(col)) continue;
 			if (this.pendingColumnLoads.has(col)) continue;
 
 			this.pendingColumnLoads.add(col);
+
 			const coords = unpackChunkKeyFast(col);
 			void this.loadColumnMobs(coords[0], coords[2], col);
 		}
@@ -777,7 +824,7 @@ export class ServerMobSimulation {
 				}
 
 				const mob = this.restoreMob(pm);
-				this.mobs.set(mob.id, mob);
+				this.addActiveMob(mob);
 				this.asyncEvents.push({ kind: "spawn", mob });
 			}
 
@@ -832,6 +879,7 @@ export class ServerMobSimulation {
 	/** Persist every active mob to its column (room shutdown). */
 	async persistAll(): Promise<void> {
 		const byColumn = new Map<number, PersistedMob[]>();
+
 		for (const mob of this.mobs.values()) {
 			const cx = Math.floor(mob.x / CHUNK_SIZE);
 			const cz = Math.floor(mob.z / CHUNK_SIZE);
@@ -842,14 +890,17 @@ export class ServerMobSimulation {
 				list = [];
 				byColumn.set(col, list);
 			}
+
 			list.push(this.persistMob(mob));
 		}
 
 		const writes: Promise<void>[] = [];
+
 		for (const [col, list] of byColumn) {
 			const coords = unpackChunkKeyFast(col);
 			writes.push(this.storage.saveChunkMobs(coords[0], coords[2], list));
 		}
+
 		await Promise.allSettled(writes);
 	}
 
@@ -864,20 +915,42 @@ export class ServerMobSimulation {
 		const wx = Math.floor(player.x + Math.cos(angle) * dist);
 		const wz = Math.floor(player.z + Math.sin(angle) * dist);
 
-		// Scan the column top-down for a spawnable block with air above it.
-		for (let wy = MAX_SPAWN_SCAN_Y; wy >= 0; wy--) {
-			if (
-				SPAWNABLE_BLOCK_IDS.includes(this.sampler.sample(wx, wy, wz) ?? -1) &&
-				this.sampler.sample(wx, wy + 1, wz) === 0
-			) {
+		const cx = Math.floor(wx / CHUNK_SIZE);
+		const cz = Math.floor(wz / CHUNK_SIZE);
+		const localX = wx - cx * CHUNK_SIZE;
+		const localZ = wz - cz * CHUNK_SIZE;
+
+		const maxCy = Math.floor(MAX_SPAWN_SCAN_Y / CHUNK_SIZE);
+
+		// Scan top-down, but fetch each cached chunk section only once instead of
+		// routing every Y coordinate through TickBlockSampler.sample().
+		for (let cy = maxCy; cy >= 0; cy--) {
+			const blocks = this.storage.getCachedChunkBlocks(cx, cy, cz);
+			if (!blocks) continue;
+
+			const chunkBaseY = cy * CHUNK_SIZE;
+			const startLocalY =
+				cy === maxCy
+					? Math.min(CHUNK_SIZE - 1, MAX_SPAWN_SCAN_Y - chunkBaseY)
+					: CHUNK_SIZE - 1;
+
+			const columnBase = localX + (localZ << 10);
+
+			for (let localY = startLocalY; localY >= 0; localY--) {
+				const blockId = blocks[columnBase + (localY << 5)];
+				if (!SPAWNABLE_BLOCK_ID_SET.has(blockId)) continue;
+
+				const wy = chunkBaseY + localY;
+
+				// Preserve the original air-above rule. This intentionally uses
+				// the sampler because wy + 1 may cross into the next chunk section.
+				if (this.sampler.sample(wx, wy + 1, wz) !== 0) continue;
+
 				if (this.isSpawnTooClose(wx, wz)) continue;
 
-				const spawnY = wy + 1.02 + config.halfHeight;
 				return {
 					x: wx + 0.5,
-					// The visual mesh is centered on y. Keep its feet exactly on
-					// the top face of the spawn block.
-					y: spawnY,
+					y: wy + 1.02 + config.halfHeight,
 					z: wz + 0.5,
 				};
 			}
@@ -885,7 +958,6 @@ export class ServerMobSimulation {
 
 		return null;
 	}
-
 	private isSpawnTooClose(wx: number, wz: number): boolean {
 		for (const mob of this.mobs.values()) {
 			const dx = mob.x - wx;

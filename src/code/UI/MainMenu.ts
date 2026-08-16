@@ -206,10 +206,11 @@ export class MainMenu {
 
 		const createBtnRow = document.createElement("div");
 		createBtnRow.className = "menu-create-row";
+
 		const createBtn = document.createElement("button");
 		btnMinecraft(createBtn, "Create New World");
+		createBtn.classList.add("mc-btn-green");
 		createBtn.onclick = () => void this.createWorld();
-		createBtnRow.appendChild(createBtn);
 
 		this.seedInput = document.createElement("input");
 		this.seedInput.type = "text";
@@ -218,22 +219,20 @@ export class MainMenu {
 		this.seedInput.addEventListener("keydown", (e) => {
 			if (e.key === "Enter") void this.createWorld();
 		});
+
 		const seedRandomBtn = diceButton("Random seed", () => {
 			this.seedInput.value = getRandomSeed();
 			this.seedInput.focus();
 		});
+
 		const seedWrap = document.createElement("div");
 		seedWrap.className = "menu-input-wrap";
-		seedWrap.appendChild(this.seedInput);
-		seedWrap.appendChild(seedRandomBtn);
-		createBtnRow.appendChild(seedWrap);
+		seedWrap.append(this.seedInput, seedRandomBtn);
 
-		const seedBtnRow = document.createElement("div");
-		seedBtnRow.className = "menu-create-row";
-		seedBtnRow.appendChild(this.seedInput);
-		seedBtnRow.appendChild(seedRandomBtn);
+		createBtnRow.append(createBtn, seedWrap);
 		this.spScreen.appendChild(createBtnRow);
 
+		//
 		this.spStatusEl = document.createElement("div");
 		this.spStatusEl.className = "menu-status";
 		this.spScreen.appendChild(this.spStatusEl);
@@ -376,29 +375,33 @@ export class MainMenu {
 	}
 
 	private async refreshWorlds(): Promise<void> {
-		this.worldListEl.textContent = "";
-		this.worldListEl.appendChild(this.loadingRow("Loading worlds…"));
+		this.spStatusEl.innerText = "";
+		this.spStatusEl.classList.remove("error");
+		this.worldListEl.replaceChildren(this.loadingRow("Loading worlds…"));
 
 		let worlds: string[];
 		try {
 			worlds = await listWorlds();
 		} catch (err) {
+			this.worldListEl.replaceChildren();
 			this.spStatusEl.innerText = `Could not read saved worlds: ${String(err)}`;
 			this.spStatusEl.classList.add("error");
 			return;
 		}
-		this.worldListEl.textContent = "";
 
 		if (worlds.length === 0) {
-			this.worldListEl.appendChild(
+			this.worldListEl.replaceChildren(
 				this.loadingRow("No worlds yet — create one above."),
 			);
 			return;
 		}
 
+		const fragment = document.createDocumentFragment();
 		for (const name of worlds) {
-			this.worldListEl.appendChild(this.worldRow(name));
+			fragment.appendChild(this.worldRow(name));
 		}
+
+		this.worldListEl.replaceChildren(fragment);
 	}
 
 	private worldRow(name: string): HTMLElement {
@@ -505,27 +508,41 @@ export class MainMenu {
 	}
 
 	private async refreshServerList(): Promise<void> {
-		this.mpServerListEl.textContent = "";
+		this.mpStatusEl.innerText = "";
+		this.mpStatusEl.classList.remove("error");
+
 		const servers = getSavedServers();
 
 		if (servers.length === 0) {
-			this.mpServerListEl.appendChild(
+			this.mpServerListEl.replaceChildren(
 				this.loadingRow("No saved servers — add one above."),
 			);
 			return;
 		}
 
-		// Show rows immediately, then fill in live status (MOTD / players / ping).
-		const rows = servers.map((server) => {
-			const row = this.serverRow(server);
-			this.mpServerListEl.appendChild(row);
-			return row;
-		});
+		const fragment = document.createDocumentFragment();
+		const rows: HTMLElement[] = new Array(servers.length);
 
-		const statuses = await fetchAllStatuses(servers);
-		servers.forEach((server, i) => {
-			this.updateServerRow(rows[i], server, statuses[i]);
-		});
+		for (let i = 0; i < servers.length; i++) {
+			const row = this.serverRow(servers[i]);
+			rows[i] = row;
+			fragment.appendChild(row);
+		}
+
+		this.mpServerListEl.replaceChildren(fragment);
+
+		let statuses: ServerStatus[];
+		try {
+			statuses = await fetchAllStatuses(servers);
+		} catch (err) {
+			this.mpStatusEl.innerText = `Could not refresh server status: ${String(err)}`;
+			this.mpStatusEl.classList.add("error");
+			return;
+		}
+
+		for (let i = 0; i < servers.length; i++) {
+			this.updateServerRow(rows[i], servers[i], statuses[i]);
+		}
 	}
 
 	/** Build the static parts of a server row (name + buttons). */
@@ -767,7 +784,7 @@ export class MainMenu {
 				display: flex;
 				gap: 8px;
 				width: 100%;
-				max-width: 50wh;
+				max-width: 50vh;
 				align-items: center;
 			}
 
@@ -805,7 +822,7 @@ export class MainMenu {
 				flex-direction: column;
 				gap: 2px;
 				width: 100%;
-				max-width: 50wh;
+				max-width: 50vh;
 			}
 
 			.input-label {
@@ -840,7 +857,7 @@ export class MainMenu {
 				flex-direction: column;
 				gap: 4px;
 				width: 100%;
-				max-width: 50wh;
+				max-width: 50vh;
 				max-height: 55vh;
 				overflow-y: auto;
 			}
@@ -897,7 +914,7 @@ export class MainMenu {
 				align-items: center;
 				justify-content: space-between;
 				width: 100%;
-				max-width: 50wh;
+				max-width: 50vh;
 				margin-top: 8px;
 			}
 
@@ -960,7 +977,7 @@ export class MainMenu {
 				font-size: 0.85em;
 				color: #9aa7b0;
 				width: 100%;
-				max-width: 50wh;
+				max-width: 50vh;
 			}
 
 			.menu-status.error {
@@ -986,8 +1003,4 @@ function btnMinecraft(btn: HTMLButtonElement, text: string): void {
 function btnSmallMinecraft(btn: HTMLButtonElement, text: string): void {
 	btn.className = "mc-btn mc-btn-small";
 	btn.innerText = text;
-}
-
-function quitScreen(btn: HTMLButtonElement): void {
-	// visual indicator — could add icon
 }

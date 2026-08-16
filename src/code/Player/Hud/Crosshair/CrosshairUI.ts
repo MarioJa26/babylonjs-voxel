@@ -1,36 +1,62 @@
-const CROSSHAIR_TEXTURE_PATH = (id: string) =>
-	`/texture/gui/kenney_crosshair-pack/PNG/Outline Retina/crosshair${id}.png`;
+const CROSSHAIR_TEXTURE_BASE =
+	"/texture/gui/kenney_crosshair-pack/PNG/Outline Retina/crosshair";
+const CROSSHAIR_TEXTURE_EXT = ".png";
+const HIT_MARKER_TEXTURE_PATH = "/texture/gui/hitmarker01.png";
+
+const CROSSHAIR_CLASS_NAME = "crosshair";
+const HIT_MARKER_CLASS_NAME = "hit-marker";
 
 const HIT_MARKER_DURATION_MS = 330;
+
+const crosshairTexturePath = (id: string): string =>
+	`${CROSSHAIR_TEXTURE_BASE}${id}${CROSSHAIR_TEXTURE_EXT}`;
+
+const createImage = (src: string, className: string): HTMLImageElement => {
+	const image = document.createElement("img");
+	image.src = src;
+	image.className = className;
+	document.body.appendChild(image);
+	return image;
+};
 
 export class CrosshairUI {
 	#crosshair: HTMLImageElement;
 	#hitMarker: HTMLImageElement;
 	#hitMarkerTimeout?: ReturnType<typeof setTimeout>;
+	#crosshairId: string;
 
 	constructor(initialCrosshairId = "179") {
-		this.#crosshair = document.createElement("img");
-		this.#crosshair.src = CROSSHAIR_TEXTURE_PATH(initialCrosshairId);
-		this.#crosshair.className = "crosshair";
-		document.body.appendChild(this.#crosshair);
+		this.#crosshairId = initialCrosshairId;
 
-		this.#hitMarker = document.createElement("img");
-		this.#hitMarker.src = "/texture/gui/hitmarker01.png";
-		this.#hitMarker.className = "hit-marker";
-		document.body.appendChild(this.#hitMarker);
+		this.#crosshair = createImage(
+			crosshairTexturePath(initialCrosshairId),
+			CROSSHAIR_CLASS_NAME,
+		);
+
+		this.#hitMarker = createImage(
+			HIT_MARKER_TEXTURE_PATH,
+			HIT_MARKER_CLASS_NAME,
+		);
 	}
 
 	setCrosshair(id: string): void {
-		this.#crosshair.src = CROSSHAIR_TEXTURE_PATH(id);
+		if (id === this.#crosshairId) return;
+
+		this.#crosshairId = id;
+		this.#crosshair.src = crosshairTexturePath(id);
 	}
 
 	showHitMarker(): void {
-		if (this.#hitMarkerTimeout) clearTimeout(this.#hitMarkerTimeout);
+		const timeout = this.#hitMarkerTimeout;
+		if (timeout !== undefined) {
+			clearTimeout(timeout);
+		}
 
 		this.#hitMarker.style.opacity = "1";
 
 		this.#hitMarkerTimeout = setTimeout(() => {
 			this.#hitMarker.style.opacity = "0";
+			this.#hitMarkerTimeout = undefined;
 		}, HIT_MARKER_DURATION_MS);
 	}
 }

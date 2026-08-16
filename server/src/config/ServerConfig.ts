@@ -48,11 +48,8 @@ const DEFAULTS: ServerConfig = {
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
 	if (value === undefined) return fallback;
-	return (
-		value.toLowerCase() === "true" ||
-		value === "1" ||
-		value.toLowerCase() === "yes"
-	);
+	const normalized = value.toLowerCase();
+	return normalized === "true" || value === "1" || normalized === "yes";
 }
 
 function parseIntSafe(value: string | undefined, fallback: number): number {
@@ -65,7 +62,7 @@ function parseIntSafe(value: string | undefined, fallback: number): number {
  * Parse a server.properties file (key=value, # comments).
  */
 function parseProperties(content: string): Record<string, string> {
-	const props: Record<string, string> = {};
+	const props: Record<string, string> = Object.create(null);
 	for (const rawLine of content.split("\n")) {
 		const line = rawLine.trim();
 		if (!line || line.startsWith("#")) continue;
@@ -89,12 +86,12 @@ export function loadServerConfig(
 ): ServerConfig {
 	if (cachedConfig) return cachedConfig;
 
-	const props: Record<string, string> = {};
+	let props: Record<string, string> = Object.create(null);
 
 	if (existsSync(configPath)) {
 		try {
 			const content = readFileSync(configPath, "utf-8");
-			Object.assign(props, parseProperties(content));
+			props = parseProperties(content);
 			console.log(`[ServerConfig] Loaded from ${configPath}`);
 		} catch (err) {
 			console.warn(
