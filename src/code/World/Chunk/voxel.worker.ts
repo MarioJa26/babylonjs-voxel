@@ -8,7 +8,6 @@ import {
 	toTransferableMeshData,
 	type WorkerMeshInput,
 } from "../MeshPipeline/core/WorkerMeshHelpers";
-import { shapeInitPromise } from "../Shape/BlockShapes";
 import { packCoords } from "./DataStructures/ChunkCoords";
 import { PaletteExpander } from "./DataStructures/PaletteExpander";
 import {
@@ -134,7 +133,7 @@ function _handleChannelMessage(event: MessageEvent): void {
 		_pendingChannelData.set(key, voxel);
 	}
 }
-function _handleVoxelRegisterFields(req: {
+function _handleVoxelRegister(req: {
 	chunkX: number;
 	chunkY: number;
 	chunkZ: number;
@@ -178,9 +177,6 @@ function _handleVoxelRegisterFields(req: {
 		isUniform: req.isUniform,
 		uniformBlockId: req.uniformBlockId,
 	});
-}
-function _handleVoxelRegister(req: VoxelRegisterChunkRequest): void {
-	_handleVoxelRegisterFields(req);
 }
 
 function _handleVoxelUnregister(req: VoxelUnregisterChunkRequest): void {
@@ -578,32 +574,6 @@ function getOrCreateRelightEntry(
 
 const _paletteExpander = new PaletteExpander();
 
-// Mesh generation depends on the async block-shape/block JSON. If we mesh
-// before that finishes loading, the shape-dependent caches are permanently
-// populated with the cube fallback (e.g. grass crosses render as transparent
-// cubes). Await shape init once per worker before the first mesh task.
-let _shapesReady: Promise<void> | null = null;
-let _shapesReadyDone = false;
-function ensureShapesReady(): Promise<void> {
-	if (_shapesReadyDone) return Promise.resolve();
-
-	if (!_shapesReady) {
-		_shapesReady = shapeInitPromise.then(() => {
-			_shapesReadyDone = true;
-		});
-	}
-
-	return _shapesReady;
-}
-function runWhenShapesReady(fn: () => void): void {
-	if (_shapesReadyDone) {
-		fn();
-		return;
-	}
-
-	void ensureShapesReady().then(fn);
-}
-
 // PERF: Reuse the session (padded grids, greedy scratch, cached pipeline) and
 // the output buffers across every mesh task in this worker.
 // buildVoxelMesh reserves a worst-case (size^3 * 16) capacity up front so the
@@ -694,7 +664,7 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 	if (data.type === WorkerTaskType.VoxelRegisterChunkBatch) {
 		const chunks = data.chunks;
 		for (let i = 0; i < chunks.length; i++) {
-			_handleVoxelRegisterFields(chunks[i]);
+			_handleVoxelRegister(chunks[i]);
 		}
 		return;
 	}
@@ -723,54 +693,52 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 	}
 
 	if (data.type === WorkerTaskType.RelightMesh) {
-		runWhenShapesReady(() => {
-			const entry = relightCache.get(data.chunkId);
-			const expectedPaddedVol =
-				(data.chunk_size + 2) * (data.chunk_size + 2) * (data.chunk_size + 2);
+		const entry = relightCache.get(data.chunkId);
+		const expectedPaddedVol =
+			(data.chunk_size + 2) * (data.chunk_size + 2) * (data.chunk_size + 2);
 
-			if (
-				!entry ||
-				entry.generation !== data.generation ||
-				entry.blockRevision !== data.blockRevision ||
-				entry.grids.block.length !== expectedPaddedVol
-			) {
-				const miss: RelightMeshMissMessage = {
-					type: WorkerTaskType.RelightMesh,
-					chunkId: data.chunkId,
-					meshRevision: data.meshRevision,
-					lod: data.lod,
-				};
-				self.postMessage(miss);
-				return;
-			}
+		if (
+			!entry ||
+			entry.generation !== data.generation ||
+			entry.blockRevision !== data.blockRevision ||
+			entry.grids.block.length !== expectedPaddedVol
+		) {
+			const miss: RelightMeshMissMessage = {
+				type: WorkerTaskType.RelightMesh,
+				chunkId: data.chunkId,
+				meshRevision: data.meshRevision,
+				lod: data.lod,
+			};
+			self.postMessage(miss);
+			return;
+		}
 
-			const reg = _voxelRegistrations.get(
-				packCoords(data.chunkX, data.chunkY, data.chunkZ),
-			);
+		const reg = _voxelRegistrations.get(
+			packCoords(data.chunkX, data.chunkY, data.chunkZ),
+		);
 
-			buildNeighborArrays(
-				data.chunkX,
-				data.chunkY,
-				data.chunkZ,
-				data.chunk_size,
-				data.neighborMask,
-				false,
-			);
+		buildNeighborArrays(
+			data.chunkX,
+			data.chunkY,
+			data.chunkZ,
+			data.chunk_size,
+			data.neighborMask,
+			false,
+		);
 
-			buildVoxelMeshFromInput(
-				{
-					neighbors: entry.neighbors,
-					light_array: centerLightArray(reg),
-					neighborLights: _neighborLights,
-				},
-				data.chunk_size,
-				data.lod,
-				entry.grids,
-				true,
-			);
+		buildVoxelMeshFromInput(
+			{
+				neighbors: entry.neighbors,
+				light_array: centerLightArray(reg),
+				neighborLights: _neighborLights,
+			},
+			data.chunk_size,
+			data.lod,
+			entry.grids,
+			true,
+		);
 
-			postMeshResponse(data.chunkId, data.meshRevision, data.lod);
-		});
+		postMeshResponse(data.chunkId, data.meshRevision, data.lod);
 
 		return;
 	}
@@ -782,7 +750,7 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 	}
 	if (data.type !== WorkerTaskType.GenerateFullMesh) return;
 
-	runWhenShapesReady(() => {
+	{
 		const size = data.chunk_size;
 		const reg = _voxelRegistrations.get(
 			packCoords(data.chunkX, data.chunkY, data.chunkZ),
@@ -822,5 +790,5 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 		);
 
 		postMeshResponse(data.chunkId, data.meshRevision, data.lod ?? 0);
-	});
+	}
 };

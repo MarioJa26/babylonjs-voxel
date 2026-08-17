@@ -1,3 +1,5 @@
+import blockShapesRaw from "../../../../public/data/block-shapes.json";
+import blocksRaw from "../../../../public/data/blocks.json";
 import { BlockType } from "../Texture/BlockType";
 
 // Face mask bits: +X=0, -X=1, +Y=2, -Y=3, +Z=4, -Z=5
@@ -44,9 +46,6 @@ type RawBlockDefinition = {
 	shape?: string | null;
 };
 
-const BLOCKS_URL = "/data/blocks.json";
-const SHAPES_URL = "/data/block-shapes.json";
-
 const SHAPE_SCALE = 16;
 const VIRTUAL_BLOCK_ID_START = 500;
 const VIRTUAL_SHAPES = [
@@ -66,40 +65,6 @@ export const FALLBACK_CUBE: ShapeDefinition = {
 	allowFlipY: false,
 	usesSliceState: false,
 };
-
-// Browser: fetch from the dev server / public URL
-async function loadJsonBrowser(url: string): Promise<unknown> {
-	const response = await fetch(url);
-	if (!response.ok) {
-		throw new Error(`Failed to load ${url}: ${response.status}`);
-	}
-	return response.json();
-}
-
-// Node.js: read from public/data/ on disk
-async function loadJsonServer(url: string): Promise<unknown> {
-	const { fileURLToPath } = await import("node:url");
-	const { dirname, join } = await import("node:path");
-	const { readFile } = await import("node:fs/promises");
-
-	const __filename = fileURLToPath(import.meta.url);
-	const __dirname = dirname(__filename);
-
-	const filePath = join(
-		__dirname,
-		"..",
-		"..",
-		"..",
-		"..",
-		"public",
-		url.charCodeAt(0) === 47 ? url.slice(1) : url,
-	);
-
-	return JSON.parse(await readFile(filePath, "utf-8"));
-}
-
-const loadJsonUrl =
-	typeof self !== "undefined" ? loadJsonBrowser : loadJsonServer;
 
 const quantizeClamp01 = (value: unknown): number => {
 	const n = Math.round(Number(value) * SHAPE_SCALE) / SHAPE_SCALE;
@@ -167,9 +132,9 @@ const normalizeBox = (raw: RawShapeBox): ShapeBox | null => {
 	};
 };
 
-const loadShapeDefinitions = async (): Promise<ShapeDefinition[]> => {
+const loadShapeDefinitions = (): ShapeDefinition[] => {
 	try {
-		const data = await loadJsonUrl(SHAPES_URL);
+		const data: unknown = blockShapesRaw;
 		if (!Array.isArray(data)) {
 			throw new Error("Shape JSON must be an array.");
 		}
@@ -235,9 +200,9 @@ const loadShapeDefinitions = async (): Promise<ShapeDefinition[]> => {
 	}
 };
 
-const loadBlockShapeMap = async (
+const loadBlockShapeMap = (
 	shapes: ShapeDefinition[],
-): Promise<{ map: Uint16Array; ids: Set<number> }> => {
+): { map: Uint16Array; ids: Set<number> } => {
 	const map = new Uint16Array(65536);
 	const ids = new Set<number>();
 
@@ -256,7 +221,7 @@ const loadBlockShapeMap = async (
 	map.fill(cubeIndex);
 
 	try {
-		const data = await loadJsonUrl(BLOCKS_URL);
+		const data: unknown = blocksRaw;
 		if (!Array.isArray(data)) {
 			throw new Error("Blocks JSON must be an array.");
 		}
