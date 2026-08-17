@@ -104,12 +104,15 @@ export type ChunkWorkerPoolDebugStats = {
 };
 
 // ---------------------------------------------------------------------------
-// Packed in-flight key: (numericId << 4 | lod) avoids BigInt packing allocs
-// on the worker-message hot path. LOD values are expected to be 0–15 so
-// 4 bits is sufficient.
+// Packed in-flight key: numericId * 16 + lod.
+//
+// Important: do NOT use `numericId << 4` here.
+// JavaScript bitwise operators coerce to signed 32-bit integers, so large
+// numericId values collide and can cause unrelated chunks/LODs to be treated
+// as the same in-flight task.
 // ---------------------------------------------------------------------------
 function packInflightKey(numericId: number, lod: number): number {
-	return (numericId << 4) | (lod & 0xf);
+	return numericId * 16 + (lod & 0xf);
 }
 
 type WorkerTaskContext = {
@@ -133,6 +136,15 @@ export class ChunkWorkerPool {
 	private static readonly DEFERRED_LIGHTING_BUDGET_MS = 2.5;
 	private static readonly DEFERRED_LIGHTING_MAX_CHUNKS_PER_FRAME = 48;
 	private static readonly LAST_DISPATCH_RING_SIZE = 24;
+
+	private static readonly MAX_MESH_QUEUE = 512;
+
+	// T2-11: worker 0's terrainWorker is the dedicated light worker — the
+	// only worker whose terrainWorker runs Light* tasks (initLightShared is
+	// called on it in the constructor and the HMR replacement path).  Terrain
+	// generation is excluded from this worker so light registration, reconcile
+	// and propagation never queue behind generation jobs.
+	private static readonly LIGHT_WORKER_INDEX = 0;
 
 	private workers: ChunkWorker[] = [];
 	private workerTaskContext: WorkerTaskContext[] = [];
@@ -3750,15 +3762,6 @@ export class ChunkWorkerPool {
 		if (!instance) return;
 		ChunkWorkerPool.instance = undefined;
 	}
-
-	private static readonly MAX_MESH_QUEUE = 512;
-
-	// T2-11: worker 0's terrainWorker is the dedicated light worker — the
-	// only worker whose terrainWorker runs Light* tasks (initLightShared is
-	// called on it in the constructor and the HMR replacement path).  Terrain
-	// generation is excluded from this worker so light registration, reconcile
-	// and propagation never queue behind generation jobs.
-	private static readonly LIGHT_WORKER_INDEX = 0;
 }
 
 // ---------------------------------------------------------------------------

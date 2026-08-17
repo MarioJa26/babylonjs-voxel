@@ -1055,7 +1055,7 @@ function setThinInstancesRange(
 	}
 
 	let ti = anyMesh.thinInstances;
-	const needsGrowth = !ti || !ti._gpuBuffer || capacity > (ti._capacity ?? 0);
+	const needsGrowth = !ti?._gpuBuffer || capacity > (ti._capacity ?? 0);
 
 	if (needsGrowth) {
 		// Size the underlying buffer to the full capacity, not just `count`,
