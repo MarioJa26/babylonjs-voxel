@@ -243,10 +243,15 @@ function testShapeBoxOverlap(
 	const boxes = shape.boxes;
 	const usesSliceState = shape.usesSliceState;
 	const needsFlipY = flipY;
-	const needsRotation = shape.rotateY && rotation !== 0;
+	const rot = shape.rotateY ? rotation & 3 : 0;
 
 	for (let i = 0, count = boxes.length; i < count; i++) {
 		const box = boxes[i];
+
+		const boxMinX = box.min[0];
+		const boxMinZ = box.min[2];
+		const boxMaxX = box.max[0];
+		const boxMaxZ = box.max[2];
 
 		let minY = box.min[1];
 		let maxY = box.max[1];
@@ -263,38 +268,45 @@ function testShapeBoxOverlap(
 		}
 
 		let bMinX: number;
-		let bMinY: number;
 		let bMinZ: number;
 		let bMaxX: number;
-		let bMaxY: number;
 		let bMaxZ: number;
 
-		if (needsRotation) {
-			rotateShapeBoxY(
-				box.min[0],
-				minY,
-				box.min[2],
-				box.max[0],
-				maxY,
-				box.max[2],
-				rotation,
-				_rotatedBox,
-			);
+		switch (rot) {
+			case 1:
+				// 90 degrees CW around block center: (x, z) -> (1 - z, x)
+				bMinX = blockX + 1 - boxMaxZ;
+				bMaxX = blockX + 1 - boxMinZ;
+				bMinZ = blockZ + boxMinX;
+				bMaxZ = blockZ + boxMaxX;
+				break;
 
-			bMinX = blockX + _rotatedBox[0];
-			bMinY = blockY + _rotatedBox[1];
-			bMinZ = blockZ + _rotatedBox[2];
-			bMaxX = blockX + _rotatedBox[3];
-			bMaxY = blockY + _rotatedBox[4];
-			bMaxZ = blockZ + _rotatedBox[5];
-		} else {
-			bMinX = blockX + box.min[0];
-			bMinY = blockY + minY;
-			bMinZ = blockZ + box.min[2];
-			bMaxX = blockX + box.max[0];
-			bMaxY = blockY + maxY;
-			bMaxZ = blockZ + box.max[2];
+			case 2:
+				// 180 degrees
+				bMinX = blockX + 1 - boxMaxX;
+				bMaxX = blockX + 1 - boxMinX;
+				bMinZ = blockZ + 1 - boxMaxZ;
+				bMaxZ = blockZ + 1 - boxMinZ;
+				break;
+
+			case 3:
+				// 270 degrees CW around block center: (x, z) -> (z, 1 - x)
+				bMinX = blockX + boxMinZ;
+				bMaxX = blockX + boxMaxZ;
+				bMinZ = blockZ + 1 - boxMaxX;
+				bMaxZ = blockZ + 1 - boxMinX;
+				break;
+
+			default:
+				bMinX = blockX + boxMinX;
+				bMaxX = blockX + boxMaxX;
+				bMinZ = blockZ + boxMinZ;
+				bMaxZ = blockZ + boxMaxZ;
+				break;
 		}
+
+		const bMinY = blockY + minY;
+		const bMaxY = blockY + maxY;
 
 		if (
 			aMaxX - eps > bMinX &&
@@ -317,8 +329,12 @@ export class VoxelAabbCollider {
 	#isSolidBlockAt: IsSolidBlockAt;
 	#debugMesh: Mesh | null = null;
 	#debugOptions: VoxelAabbDebugOptions | null = null;
+
 	static #debugEnabled = false;
 	static readonly #debugColliders = new Set<VoxelAabbCollider>();
+
+	private readonly tmpPos = { x: 0, y: 0, z: 0 } as Vec3;
+	private readonly tmpVoxelHit = { x: 0, y: 0, z: 0 };
 
 	constructor(
 		halfExtents: Vec3,
@@ -329,9 +345,11 @@ export class VoxelAabbCollider {
 		this.#halfExtents = halfExtents;
 		this.#isSolidBlockAt = isSolidBlockAt;
 		this.#epsilon = epsilon;
+
 		if (debugOptions) {
 			this.#debugOptions = debugOptions;
 			VoxelAabbCollider.#debugColliders.add(this);
+
 			if (VoxelAabbCollider.#debugEnabled) {
 				this.#createDebugMesh(debugOptions);
 			}
@@ -339,52 +357,48 @@ export class VoxelAabbCollider {
 	}
 
 	#createDebugMesh(options: VoxelAabbDebugOptions): void {
-		if (this.#debugMesh) {
-			return;
-		}
+		if (this.#debugMesh) return;
+
 		const name = options.name ?? "voxelAabbDebug";
 		const size =
 			((this.#halfExtents.x + this.#halfExtents.y + this.#halfExtents.z) * 2) /
 			3;
+
 		this.#debugMesh = createBox(options.scene.surface.engine, size);
 		this.#debugMesh.name = name;
 		this.#debugMesh.pickable = false;
 		this.#debugMesh.rotationQuaternion.copyFrom(Quaternion.Identity());
+
 		const material = createStandardMaterial();
 		material.name = `${name}Mat`;
 		material.alpha = 0;
 		material.diffuseColor = [0.2, 1, 0.2];
+
 		this.#debugMesh.material = material;
 		addToScene(options.scene, this.#debugMesh);
+
 		if (options.position) {
 			this.#debugMesh.position.copyFrom(options.position);
 		}
 	}
 
 	#ensureDebugMesh(): void {
-		if (!this.#debugOptions) return;
-		this.#createDebugMesh(this.#debugOptions);
-	}
-
-	public overlaps(position: Vec3): boolean {
-		return this.overlapsBox(position, this.#halfExtents);
-	}
-	private tmpPos = { x: 0, y: 0, z: 0 } as Vec3;
-	public overlapsXYZ(x: number, y: number, z: number): boolean {
-		const p = this.tmpPos;
-		p.x = x;
-		p.y = y;
-		p.z = z;
-		return this.overlapsBox(p, this.#halfExtents);
+		if (this.#debugOptions) {
+			this.#createDebugMesh(this.#debugOptions);
+		}
 	}
 
 	/**
-	 * Like `overlaps`, but with an explicit (possibly smaller/larger) half-extent
-	 * box. Lets callers probe sub-regions of the body — e.g. a thin foot slab to
-	 * detect floor, or a side slab to detect wall contact — without allocating a
-	 * second collider.
+	 * Shared hot voxel scanner used by overlapsBox() and firstSolidVoxel().
+	 * Returns true on the first actual shape overlap.
+	 *
+	 * If hitOut is provided, it is filled with the hit voxel coordinates.
 	 */
-	public overlapsBox(position: Vec3, halfExtents: Vec3): boolean {
+	#scanSolidVoxel(
+		position: Vec3,
+		halfExtents: Vec3,
+		hitOut?: { x: number; y: number; z: number },
+	): boolean {
 		const eps = this.#epsilon;
 
 		const aMinX = position.x - halfExtents.x;
@@ -407,6 +421,7 @@ export class VoxelAabbCollider {
 			for (let y = y0; y <= y1; y++) {
 				for (let z = z0; z <= z1; z++) {
 					const info = isSolidBlockAt(x, y, z);
+
 					if (
 						info &&
 						testShapeBoxOverlap(
@@ -426,6 +441,12 @@ export class VoxelAabbCollider {
 							z,
 						)
 					) {
+						if (hitOut) {
+							hitOut.x = x;
+							hitOut.y = y;
+							hitOut.z = z;
+						}
+
 						return true;
 					}
 				}
@@ -435,9 +456,28 @@ export class VoxelAabbCollider {
 		return false;
 	}
 
+	public overlaps(position: Vec3): boolean {
+		return this.#scanSolidVoxel(position, this.#halfExtents);
+	}
+
+	public overlapsXYZ(x: number, y: number, z: number): boolean {
+		const p = this.tmpPos;
+		p.x = x;
+		p.y = y;
+		p.z = z;
+
+		return this.#scanSolidVoxel(p, this.#halfExtents);
+	}
+
+	/**
+	 * Like `overlaps`, but with an explicit half-extent box.
+	 */
+	public overlapsBox(position: Vec3, halfExtents: Vec3): boolean {
+		return this.#scanSolidVoxel(position, halfExtents);
+	}
+
 	/**
 	 * Check if the AABB at the given position would overlap with a specific block.
-	 * This uses the same collision logic as overlaps(), but only checks one block.
 	 */
 	public wouldOverlapBlock(
 		position: Vec3,
@@ -478,64 +518,24 @@ export class VoxelAabbCollider {
 	}
 
 	/**
-	 * Like `overlapsBox`, but returns the integer coordinates of the first solid
-	 * voxel the box overlaps (or null). Lets callers reason about *which* block
-	 * was hit — e.g. to test what's above/below the contacted block — without
-	 * re-deriving the voxel from a probe center (which is fragile at column
-	 * boundaries).
+	 * Returns the integer coordinates of the first solid voxel the box overlaps.
 	 */
 	public firstSolidVoxel(
 		position: Vec3,
 		halfExtents: Vec3,
 	): { x: number; y: number; z: number } | null {
-		const eps = this.#epsilon;
+		const hit = this.tmpVoxelHit;
 
-		const aMinX = position.x - halfExtents.x;
-		const aMaxX = position.x + halfExtents.x;
-		const aMinY = position.y - halfExtents.y;
-		const aMaxY = position.y + halfExtents.y;
-		const aMinZ = position.z - halfExtents.z;
-		const aMaxZ = position.z + halfExtents.z;
-
-		const x0 = Math.floor(aMinX + eps);
-		const x1 = Math.floor(aMaxX - eps);
-		const y0 = Math.floor(aMinY + eps);
-		const y1 = Math.floor(aMaxY - eps);
-		const z0 = Math.floor(aMinZ + eps);
-		const z1 = Math.floor(aMaxZ - eps);
-
-		const isSolidBlockAt = this.#isSolidBlockAt;
-
-		for (let x = x0; x <= x1; x++) {
-			for (let y = y0; y <= y1; y++) {
-				for (let z = z0; z <= z1; z++) {
-					const info = isSolidBlockAt(x, y, z);
-					if (
-						info &&
-						testShapeBoxOverlap(
-							aMinX,
-							aMaxX,
-							aMinY,
-							aMaxY,
-							aMinZ,
-							aMaxZ,
-							eps,
-							info.shape,
-							info.rotation,
-							info.slice,
-							info.flipY,
-							x,
-							y,
-							z,
-						)
-					) {
-						return { x, y, z };
-					}
-				}
-			}
+		if (!this.#scanSolidVoxel(position, halfExtents, hit)) {
+			return null;
 		}
 
-		return null;
+		// Return a fresh object so callers can safely retain it.
+		return {
+			x: hit.x,
+			y: hit.y,
+			z: hit.z,
+		};
 	}
 
 	public moveAxis(
@@ -578,6 +578,7 @@ export class VoxelAabbCollider {
 				} else {
 					velocity.z = 0;
 				}
+
 				break;
 			}
 
@@ -596,8 +597,10 @@ export class VoxelAabbCollider {
 		if (VoxelAabbCollider.#debugEnabled) {
 			this.#ensureDebugMesh();
 		}
-		if (!this.#debugMesh) return;
-		this.#debugMesh.position.copyFrom(position);
+
+		if (this.#debugMesh) {
+			this.#debugMesh.position.copyFrom(position);
+		}
 	}
 
 	public dispose(): void {
@@ -608,9 +611,12 @@ export class VoxelAabbCollider {
 
 	#disposeDebugMesh(): void {
 		if (!this.#debugMesh) return;
+
 		const mesh = this.#debugMesh;
 		this.#debugMesh = null;
+
 		const engine = (this.#debugOptions?.scene?.surface as any)?.engine;
+
 		if (engine) {
 			void onGpuWorkDone(engine).then(() => disposeMeshGpu(mesh));
 		} else {
@@ -624,6 +630,7 @@ export class VoxelAabbCollider {
 
 	public static setDebugEnabled(enabled: boolean): void {
 		VoxelAabbCollider.#debugEnabled = enabled;
+
 		VoxelAabbCollider.#debugColliders.forEach((collider) => {
 			if (enabled) {
 				collider.#ensureDebugMesh();

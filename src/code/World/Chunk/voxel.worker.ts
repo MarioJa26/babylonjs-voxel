@@ -628,8 +628,6 @@ function resetMeshOut(): void {
 	_transparentOut.faceCount = 0;
 }
 
-let transferables: Transferable[];
-
 function buildVoxelMeshFromInput(
 	input: WorkerMeshInput,
 	size: number,
@@ -687,13 +685,6 @@ function postMeshResponse(
 
 self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 	const data = event.data;
-
-	if (data.type === WorkerTaskType.InitWorkerChannel) {
-		const port = data.port;
-		port.onmessage = _handleChannelMessage;
-		port.start();
-		return;
-	}
 
 	if (data.type === WorkerTaskType.VoxelRegisterChunk) {
 		_handleVoxelRegister(data);
@@ -783,7 +774,12 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 
 		return;
 	}
-
+	if (data.type === WorkerTaskType.InitWorkerChannel) {
+		const port = data.port;
+		port.onmessage = _handleChannelMessage;
+		port.start();
+		return;
+	}
 	if (data.type !== WorkerTaskType.GenerateFullMesh) return;
 
 	runWhenShapesReady(() => {
