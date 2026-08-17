@@ -64,6 +64,7 @@ export class BoatChunk {
 	#neighborChunks: Chunk[] = [];
 	#attachedOpaqueMesh: Mesh | null = null;
 	#attachedTransparentMesh: Mesh | null = null;
+	#attachedCutoutMesh: Mesh | null = null;
 	#blockChangeListeners = new Set<BoatChunkBlockChangeListener>();
 
 	constructor(blocks: BoatChunkBlock[], center: Vec3) {
@@ -315,11 +316,16 @@ export class BoatChunk {
 			this.#attachedOpaqueMesh,
 		);
 		this.#attachedTransparentMesh = this.syncMeshRef(
-			this.#centerChunk.transparentMesh,
+			this.#centerChunk.waterMesh,
 			this.#attachedTransparentMesh,
+		);
+		this.#attachedCutoutMesh = this.syncMeshRef(
+			this.#centerChunk.cutoutMesh,
+			this.#attachedCutoutMesh,
 		);
 		this.updateAttachedMeshTransform(this.#attachedOpaqueMesh);
 		this.updateAttachedMeshTransform(this.#attachedTransparentMesh);
+		this.updateAttachedMeshTransform(this.#attachedCutoutMesh);
 	}
 
 	public remesh(priority = true): void {

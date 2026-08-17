@@ -61,11 +61,16 @@ import {
 
 type CachedLODMesh = {
 	opaque: MeshData | null;
-	transparent: MeshData | null;
+	water: MeshData | null;
+	cutout: MeshData | null;
 };
 type SerializedLODMeshCache = Record<
 	number,
-	{ opaque?: MeshData | null; transparent?: MeshData | null }
+	{
+		opaque?: MeshData | null;
+		water?: MeshData | null;
+		cutout?: MeshData | null;
+	}
 >;
 
 const _twoEntryPalette = new Uint16Array(2);
@@ -234,9 +239,11 @@ export class Chunk {
 	public chunkZ: number;
 
 	public mesh: Mesh | null = null;
-	public transparentMesh: Mesh | null = null;
+	public waterMesh: Mesh | null = null;
+	public cutoutMesh: Mesh | null = null;
 	public opaqueMeshData: MeshData | null = null;
-	public transparentMeshData: MeshData | null = null;
+	public waterMeshData: MeshData | null = null;
+	public cutoutMeshData: MeshData | null = null;
 
 	// Merged mesh group key (packed group-grid coords + lod bucket, see
 	// MergedMeshManager.makeGroupKey). null if not merged.
@@ -574,7 +581,7 @@ export class Chunk {
 	}
 	public hasCachedLODMesh(lod: number): boolean {
 		const c = this._cachedLODMeshes?.get(lod);
-		return !!c && (!!c.opaque || !!c.transparent);
+		return !!c && (!!c.opaque || !!c.water || !!c.cutout);
 	}
 	public setCachedLODMesh(lod: number, mesh: CachedLODMesh): void {
 		let cache = this._cachedLODMeshes;
@@ -585,11 +592,13 @@ export class Chunk {
 		const entry = cache.get(lod);
 		if (entry) {
 			entry.opaque = mesh.opaque ?? null;
-			entry.transparent = mesh.transparent ?? null;
+			entry.water = mesh.water ?? null;
+			entry.cutout = mesh.cutout ?? null;
 		} else {
 			cache.set(lod, {
 				opaque: mesh.opaque ?? null,
-				transparent: mesh.transparent ?? null,
+				water: mesh.water ?? null,
+				cutout: mesh.cutout ?? null,
 			});
 		}
 	}
@@ -603,10 +612,11 @@ export class Chunk {
 		const out: SerializedLODMeshCache = {};
 		let count = 0;
 		for (const [lod, mesh] of this._cachedLODMeshes.entries()) {
-			if (!mesh.opaque && !mesh.transparent) continue;
+			if (!mesh.opaque && !mesh.water && !mesh.cutout) continue;
 			out[lod] = {
 				opaque: mesh.opaque ?? null,
-				transparent: mesh.transparent ?? null,
+				water: mesh.water ?? null,
+				cutout: mesh.cutout ?? null,
 			};
 			count++;
 		}
@@ -619,10 +629,11 @@ export class Chunk {
 			const lod = Number(key);
 			if (!Number.isFinite(lod)) continue;
 			const entry = cache[lod];
-			if (!entry?.opaque && !entry?.transparent) continue;
+			if (!entry?.opaque && !entry?.water && !entry?.cutout) continue;
 			this.setCachedLODMesh(lod, {
 				opaque: entry.opaque ?? null,
-				transparent: entry.transparent ?? null,
+				water: entry.water ?? null,
+				cutout: entry.cutout ?? null,
 			});
 		}
 	}
@@ -1401,16 +1412,22 @@ export class Chunk {
 				removeFromScene(Map1.mainScene, this.mesh);
 				deferMeshDisposal(this.mesh);
 			}
-			if (this.transparentMesh) {
-				removeFromScene(Map1.mainScene, this.transparentMesh);
-				deferMeshDisposal(this.transparentMesh);
+			if (this.waterMesh) {
+				removeFromScene(Map1.mainScene, this.waterMesh);
+				deferMeshDisposal(this.waterMesh);
+			}
+			if (this.cutoutMesh) {
+				removeFromScene(Map1.mainScene, this.cutoutMesh);
+				deferMeshDisposal(this.cutoutMesh);
 			}
 		}
 		this.clearCachedLODMeshes();
 		this.mesh = null;
-		this.transparentMesh = null;
+		this.waterMesh = null;
+		this.cutoutMesh = null;
 		this.opaqueMeshData = null;
-		this.transparentMeshData = null;
+		this.waterMeshData = null;
+		this.cutoutMeshData = null;
 		this._block_array = null;
 		this._isUniform = true;
 		this._uniformBlockId = 0;

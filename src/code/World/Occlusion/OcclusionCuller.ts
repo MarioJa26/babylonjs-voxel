@@ -422,8 +422,10 @@ export class OcclusionCuller {
 					const mesh = chunk.mesh;
 					if (mesh?.visible) {
 						mesh.visible = false;
-						const tm = chunk.transparentMesh;
-						if (tm) tm.visible = false;
+						const wm = chunk.waterMesh;
+						if (wm) wm.visible = false;
+						const cm = chunk.cutoutMesh;
+						if (cm) cm.visible = false;
 						hidden++;
 					}
 				}
@@ -565,8 +567,10 @@ export class OcclusionCuller {
 
 			if (mesh.visible !== visible) {
 				mesh.visible = visible;
-				const tm = chunk.transparentMesh;
-				if (tm) tm.visible = visible;
+				const wm = chunk.waterMesh;
+				if (wm) wm.visible = visible;
+				const cm = chunk.cutoutMesh;
+				if (cm) cm.visible = visible;
 			}
 			if (visible) visibleCount++;
 		}
@@ -581,10 +585,12 @@ export class OcclusionCuller {
 				if (pc.bfsQueryId !== queryId) {
 					if (pc.mergedGroupKey) continue;
 					const pm = pc.mesh;
-					const ptm = pc.transparentMesh;
+					const pwm = pc.waterMesh;
+					const pcm = pc.cutoutMesh;
 					if (pm?.visible) {
 						pm.visible = false;
-						if (ptm) ptm.visible = false;
+						if (pwm) pwm.visible = false;
+						if (pcm) pcm.visible = false;
 					}
 				}
 			}
@@ -691,11 +697,11 @@ export class OcclusionCuller {
 			if (group.opaqueMeshRef && group.opaqueMeshRef.isVisible !== vis) {
 				group.opaqueMeshRef.isVisible = vis;
 			}
-			if (
-				group.transparentMeshRef &&
-				group.transparentMeshRef.isVisible !== vis
-			) {
-				group.transparentMeshRef.isVisible = vis;
+			if (group.waterMeshRef && group.waterMeshRef.isVisible !== vis) {
+				group.waterMeshRef.isVisible = vis;
+			}
+			if (group.cutoutMeshRef && group.cutoutMeshRef.isVisible !== vis) {
+				group.cutoutMeshRef.isVisible = vis;
 			}
 		}
 
@@ -858,7 +864,8 @@ export class OcclusionCuller {
 
 		if (newChunk.bfsQueryId === queryId && newChunk.mesh) {
 			newChunk.mesh.visible = true;
-			if (newChunk.transparentMesh) newChunk.transparentMesh.visible = true;
+			if (newChunk.waterMesh) newChunk.waterMesh.visible = true;
+			if (newChunk.cutoutMesh) newChunk.cutoutMesh.visible = true;
 		}
 	}
 

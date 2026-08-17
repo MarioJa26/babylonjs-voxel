@@ -14,8 +14,9 @@ import type { MeshBuildSession } from "./WorkerMeshHelpers";
  * All per-build state lives on the MeshBuildSession passed in; the pipeline
  * instance is cached on the session (`session.pipeline`) so its adapter and
  * per-axis closures are created once per worker. Quads are emitted into
- * session.quadOpaque / session.quadTransparent, which buildVoxelMesh binds
- * to the worker's reused output buffers before calling build().
+ * session.quadOpaque / session.quadWater / session.quadCutout, which
+ * buildVoxelMesh binds to the worker's reused output buffers before calling
+ * build().
  */
 export class VoxelPipeline {
 	// PERF: Cache VoxelGreedyAdapter to avoid per-build allocations of adapter + sub-objects.

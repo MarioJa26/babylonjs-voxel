@@ -66,9 +66,11 @@ export class ChunkReadiness {
 
 		const hasRuntimeMesh =
 			chunk.mesh !== null ||
-			chunk.transparentMesh !== null ||
+			chunk.waterMesh !== null ||
+			chunk.cutoutMesh !== null ||
 			chunk.opaqueMeshData !== null ||
-			chunk.transparentMeshData !== null;
+			chunk.waterMeshData !== null ||
+			chunk.cutoutMeshData !== null;
 
 		return hasRuntimeMesh;
 	}

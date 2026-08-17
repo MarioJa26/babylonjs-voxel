@@ -64,15 +64,27 @@ type EmitFn = (
 	faceBit: number,
 ) => void;
 
+type SplitTransparentSession = MeshBuildSession & {
+	/**
+	 * Optional GPU-optimized buckets.
+	 *
+	 * If these do not exist yet, this adapter falls back to quadTransparent,
+	 * preserving current behavior.
+	 */
+	quadWater?: QuadBuffer;
+	quadCutout?: QuadBuffer;
+};
+
 export class VoxelFaceEmitterAdapter {
-	private readonly _session: MeshBuildSession;
+	private readonly _session: SplitTransparentSession;
+
 	// Dispatch LUT indexed by (isWater << 1) | isCube:
 	//   0 = custom shape non-water, 1 = cube non-water,
 	//   2 = custom shape water, 3 = cube water
 	private readonly _dispatch: readonly EmitFn[];
 
 	constructor(session: MeshBuildSession) {
-		this._session = session;
+		this._session = session as SplitTransparentSession;
 		this._dispatch = [
 			this.emitCustomShapeFace.bind(this),
 			this.emitCubeFace.bind(this),
@@ -83,7 +95,6 @@ export class VoxelFaceEmitterAdapter {
 
 	public emitVoxelFace(axis: number, desc: GreedyFaceDescriptor): void {
 		const rawMask = desc.idState | 0;
-		const isNonCube = (rawMask & NON_CUBE_MASK) !== 0;
 		const packedBlock = rawMask & PACKED_WATER_MASK;
 
 		if (!packedBlock) return;
@@ -94,14 +105,21 @@ export class VoxelFaceEmitterAdapter {
 		// itself), so the per-face getShapeInfo cache probe is redundant —
 		// isCube is simply !isNonCube.
 		const materialType = getMaterialType(blockId);
-		const isWater =
-			materialType === MaterialType.WaterOrGlass && blockId === WATER_BLOCK_ID;
+
+		const isTransparentMaterial = materialType === MaterialType.WaterOrGlass;
+		const isWater = isTransparentMaterial && blockId === WATER_BLOCK_ID;
 
 		const session = this._session;
-		const out =
-			materialType === MaterialType.WaterOrGlass
-				? session.quadTransparent
-				: session.quadOpaque;
+
+		// GPU-important split:
+		// - true water goes to quadWater if available
+		// - other transparent/cutout/glass goes to quadCutout if available
+		// - old path falls back to quadTransparent
+		const out = isTransparentMaterial
+			? isWater
+				? (session.quadWater ?? session.quadTransparent)
+				: (session.quadCutout ?? session.quadTransparent)
+			: session.quadOpaque;
 
 		const ao = desc.light & 0xff;
 		const light = (desc.light >> 8) & 0xff;
@@ -111,6 +129,7 @@ export class VoxelFaceEmitterAdapter {
 		const faceName = FACE_NAME_TABLE[faceIndex];
 		const faceBit = FACE_BIT_TABLE[faceIndex];
 
+		const isNonCube = (rawMask & NON_CUBE_MASK) !== 0;
 		const isCube = !isNonCube;
 		const dispatchKey = (isWater ? 2 : 0) | (isCube ? 1 : 0);
 		this._dispatch[dispatchKey](
@@ -217,30 +236,36 @@ export class VoxelFaceEmitterAdapter {
 		if (boxes.length === 0) return;
 
 		inlineOrigin(axis, back, desc);
+
 		const rawDim = needsRawDim(blockId, desc.width, desc.height) ? 1 : 0;
+		const u = (axis + 1) % 3;
+		const v = (axis + 2) % 3;
+		const originX = _origin.ox;
+		const originY = _origin.oy;
+		const originZ = _origin.oz;
+		const descWidth = desc.width;
+		const descHeight = desc.height;
 
 		for (let i = 0; i < boxes.length; i++) {
 			const box = boxes[i];
+
 			if ((box.faceMask & faceBit) === 0) continue;
 
 			const min = box.min;
 			const max = box.max;
 			const bc = back ? min[axis] : max[axis];
-			const x = _origin.ox + (axis === 0 ? bc : min[0]);
-			const y = _origin.oy + (axis === 1 ? bc : min[1]);
-			const z = _origin.oz + (axis === 2 ? bc : min[2]);
-			const u = (axis + 1) % 3;
-			const v = (axis + 2) % 3;
-			const width = desc.width * (max[u] - min[u]);
-			const height = desc.height * (max[v] - min[v]);
+
+			const x = originX + (axis === 0 ? bc : min[0]);
+			const y = originY + (axis === 1 ? bc : min[1]);
+			const z = originZ + (axis === 2 ? bc : min[2]);
 
 			out.emitQuad(
 				x,
 				y,
 				z,
 				axis,
-				width,
-				height,
+				descWidth * (max[u] - min[u]),
+				descHeight * (max[v] - min[v]),
 				blockId,
 				back,
 				light,
@@ -275,28 +300,34 @@ export class VoxelFaceEmitterAdapter {
 
 		inlineOrigin(axis, back, desc);
 
+		const u = (axis + 1) % 3;
+		const v = (axis + 2) % 3;
+		const originX = _origin.ox;
+		const originY = _origin.oy;
+		const originZ = _origin.oz;
+		const descWidth = desc.width;
+		const descHeight = desc.height;
+
 		for (let i = 0; i < boxes.length; i++) {
 			const box = boxes[i];
+
 			if ((box.faceMask & faceBit) === 0) continue;
 
 			const min = box.min;
 			const max = box.max;
 			const bc = back ? min[axis] : max[axis];
-			const x = _origin.ox + (axis === 0 ? bc : min[0]);
-			const y = _origin.oy + (axis === 1 ? bc : min[1]);
-			const z = _origin.oz + (axis === 2 ? bc : min[2]);
-			const u = (axis + 1) % 3;
-			const v = (axis + 2) % 3;
-			const width = desc.width * (max[u] - min[u]);
-			const height = desc.height * (max[v] - min[v]);
+
+			const x = originX + (axis === 0 ? bc : min[0]);
+			const y = originY + (axis === 1 ? bc : min[1]);
+			const z = originZ + (axis === 2 ? bc : min[2]);
 
 			out.emitWaterQuad(
 				x,
 				y,
 				z,
 				axis,
-				width,
-				height,
+				descWidth * (max[u] - min[u]),
+				descHeight * (max[v] - min[v]),
 				blockId,
 				back,
 				light,
@@ -315,7 +346,7 @@ function inlineOrigin(
 	axis: number,
 	back: number,
 	desc: GreedyFaceDescriptor,
-): { ox: number; oy: number; oz: number } {
+): void {
 	const faceBlockCoord = desc.slice + back;
 	if (axis === 0) {
 		_origin.ox = faceBlockCoord;
@@ -330,5 +361,4 @@ function inlineOrigin(
 		_origin.oy = desc.vStart;
 		_origin.oz = faceBlockCoord;
 	}
-	return _origin;
 }

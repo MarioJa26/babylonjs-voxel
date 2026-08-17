@@ -28,7 +28,7 @@ type ResolvedVertexShaderOptions = Required<VertexShaderOptions>;
 //  11: vFogColor    (optional)
 //  12: vTint        (optional)
 //  13: vViewDir     (optional)
-//  14: vLightDirTS   (optional, tangent-space lighting only)
+//  14: vLightDirTS   (optional, tangent-space lighting only, normalized)
 
 function fogWGSL(enabled: boolean): string {
 	if (!enabled) return "";
@@ -116,11 +116,11 @@ function vsOutAssignments(opts: ResolvedVertexShaderOptions): string {
 		a.push("    dot(toCamera * invDist, sharedBitangent),");
 		a.push("    dot(toCamera * invDist, sharedNormal)");
 		a.push("  );");
-		a.push("  out.vLightDirTS = vec3<f32>(");
+		a.push("  out.vLightDirTS = normalize(vec3<f32>(");
 		a.push("    dot(shaderUniforms.lightDirection, sharedTangent),");
 		a.push("    dot(shaderUniforms.lightDirection, sharedBitangent),");
 		a.push("    dot(shaderUniforms.lightDirection, sharedNormal)");
-		a.push("  );");
+		a.push("  ));");
 	} else if (opts.viewDir) {
 		a.push("  out.vViewDir = toCamera * invDist;");
 	}

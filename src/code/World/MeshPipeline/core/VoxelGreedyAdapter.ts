@@ -25,7 +25,9 @@ type EmitFaceCallback = (desc: GreedyFaceDescriptor) => void;
  *   - session -> padded block/light grids + scratch buffers + quad outputs
  *
  * Output:
- *   - session.quadOpaque / session.quadTransparent filled with quads
+ *   - session.quadOpaque / session.quadWater / session.quadCutout filled
+ *     with quads (transparent bucket split into animated water + alpha-tested
+ *     cutout)
  *
  * The adapter instance is cached per session, so all callbacks below are
  * created once per worker pipeline instead of once per chunk build.

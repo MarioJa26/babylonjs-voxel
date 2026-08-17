@@ -62,7 +62,8 @@ export function reserveMeshCapacity(
 export function buildVoxelMesh(
 	session: MeshBuildSession,
 	opaqueOut: WorkerInternalMeshData,
-	transparentOut: WorkerInternalMeshData,
+	waterOut: WorkerInternalMeshData,
+	cutoutOut: WorkerInternalMeshData,
 ): void {
 	const size = session.size;
 	const sizeSquared = size * size;
@@ -72,12 +73,16 @@ export function buildVoxelMesh(
 		(size * CUSTOM_SHAPE_QUAD_HEADROOM_PER_BLOCK + GREEDY_FACE_HEADROOM_FACTOR);
 
 	reserveMeshCapacity(opaqueOut, maxQuads);
-	reserveMeshCapacity(transparentOut, maxQuads);
+	reserveMeshCapacity(waterOut, maxQuads);
+	reserveMeshCapacity(cutoutOut, maxQuads);
 
 	// bind() resets visible lengths and faceCount, then emits write directly
-	// into the reused backing arrays.
+	// into the reused backing arrays. quadTransparent is intentionally left
+	// unbound: the emitter's new-bucket fallback only fires when the session
+	// lacks quadWater/quadCutout.
 	session.quadOpaque.bind(opaqueOut);
-	session.quadTransparent.bind(transparentOut);
+	session.quadWater.bind(waterOut);
+	session.quadCutout.bind(cutoutOut);
 
 	let pipeline = session.pipeline;
 
@@ -90,5 +95,6 @@ export function buildVoxelMesh(
 
 	// Publish final lengths once after all emitters have completed.
 	session.quadOpaque.finish();
-	session.quadTransparent.finish();
+	session.quadWater.finish();
+	session.quadCutout.finish();
 }

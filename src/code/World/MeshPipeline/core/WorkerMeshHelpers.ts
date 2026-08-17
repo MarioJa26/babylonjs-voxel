@@ -110,6 +110,11 @@ export class MeshBuildSession implements MeshContext {
 	// --- quad output buffers ---
 	public quadOpaque = new QuadBuffer();
 	public quadTransparent = new QuadBuffer();
+	// GPU-split transparent buckets: true water vs alpha-cutout (glass) get
+	// separate meshes so the renderer can use a cheap cutout material instead
+	// of forcing every non-water transparent face through the water shader.
+	public quadWater = new QuadBuffer();
+	public quadCutout = new QuadBuffer();
 
 	// --- greedy scratch ---
 	public scratchMask = new Int32Array(0);

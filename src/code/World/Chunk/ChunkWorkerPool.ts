@@ -56,13 +56,15 @@ function compareLodCandidateScores(a: number, b: number): number {
 }
 
 // Reused across processMeshQueueLoop to avoid a fresh object literal per mesh
-// result. Callers must pass the live opaque/transparent views immediately.
+// result. Callers must pass the live opaque/water/cutout views immediately.
 const _meshApplyScratch: {
 	opaque: MeshData | null;
-	transparent: MeshData | null;
+	water: MeshData | null;
+	cutout: MeshData | null;
 } = {
 	opaque: null,
-	transparent: null,
+	water: null,
+	cutout: null,
 };
 
 export type ChunkWorkerPoolDebugStats = {
@@ -1554,11 +1556,13 @@ export class ChunkWorkerPool {
 	private clearChunkMeshIfPresent(chunk: Chunk): void {
 		if (
 			chunk.mesh ||
-			chunk.transparentMesh ||
+			chunk.waterMesh ||
+			chunk.cutoutMesh ||
 			chunk.opaqueMeshData ||
-			chunk.transparentMeshData
+			chunk.waterMeshData ||
+			chunk.cutoutMeshData
 		) {
-			createMeshFromData(chunk, null, null);
+			createMeshFromData(chunk, null, null, null);
 		}
 	}
 
@@ -1727,7 +1731,7 @@ export class ChunkWorkerPool {
 			((iterCount++ & 15) !== 0 || performance.now() - start < 5)
 		) {
 			const data = this.meshResultQueue[this.meshResultQueueReadIdx++];
-			const { chunkId, lod, opaque, transparent } = data;
+			const { chunkId, lod, opaque, water, cutout } = data;
 			const chunk = this.resolveChunkByMessageId(chunkId);
 
 			if (!chunk) {
@@ -1753,25 +1757,28 @@ export class ChunkWorkerPool {
 			}
 
 			const opaqueData = opaque ?? null;
-			const transparentData = transparent ?? null;
+			const waterData = water ?? null;
+			const cutoutData = cutout ?? null;
 			const canCacheMesh =
 				lod === 0 || hasStableVoxelNeighborsForCachedMesh(chunk);
 
 			if (canCacheMesh) {
 				_meshApplyScratch.opaque = opaqueData;
-				_meshApplyScratch.transparent = transparentData;
+				_meshApplyScratch.water = waterData;
+				_meshApplyScratch.cutout = cutoutData;
 				chunk.setCachedLODMesh(lod, _meshApplyScratch);
 			}
 
 			if ((chunk.lodLevel ?? 0) === lod) {
-				createMeshFromData(chunk, opaqueData, transparentData);
+				createMeshFromData(chunk, opaqueData, waterData, cutoutData);
 				chunk.isDirty = false;
 				chunk.remeshQueued = false;
 				this.queuePostRemeshSave(chunk);
 			} else {
 				if (!canCacheMesh) {
 					_meshApplyScratch.opaque = opaqueData;
-					_meshApplyScratch.transparent = transparentData;
+					_meshApplyScratch.water = waterData;
+					_meshApplyScratch.cutout = cutoutData;
 					chunk.setCachedLODMesh(lod, _meshApplyScratch);
 				}
 
@@ -2029,9 +2036,9 @@ export class ChunkWorkerPool {
 		}
 
 		const cached = chunk.getCachedLODMesh(chunk.lodLevel);
-		if (!cached?.opaque && !cached?.transparent) return false;
+		if (!cached?.opaque && !cached?.water && !cached?.cutout) return false;
 
-		createMeshFromData(chunk, cached.opaque, cached.transparent);
+		createMeshFromData(chunk, cached.opaque, cached.water, cached.cutout);
 		chunk.isDirty = false;
 		return true;
 	}

@@ -30,7 +30,6 @@ struct VSOut {
   @location(10) vFogFactor : f32,
   @location(11) vFogColor : vec3<f32>,
   @location(12) @interpolate(flat) vTint : u32,
-  @location(13) vViewDir : vec3<f32>,
 };
 
 fn hash12(p : vec2<f32>) -> f32 {
@@ -64,26 +63,24 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 
   var diffuseColor = textureSampleLevel(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, 3.0);
   if (diffuseColor.a < 0.01) { discard; }
-  diffuseColor = vec4<f32>(diffuseColor.rgb * mix(1.0, 0.55, shaderUniforms.wetness), diffuseColor.a);
 
-  let worldNormal = in.vNormal;
+  let skyLight = in.vLight.x;
+  let blockLight = in.vLight.y;
+  let sunIntensity = shaderUniforms.sunLightIntensity;
 
-  let diffuseIntensity = max(0.0, dot(worldNormal, shaderUniforms.lightDirection));
-  let viewDirection = in.vViewDir;
-  let halfwayDir = normalize(viewDirection + shaderUniforms.lightDirection);
-  let shininess = mix(16.0, 96.0, shaderUniforms.wetness);
-  let NH = max(dot(worldNormal, halfwayDir), 0.0);
-  let spec = exp2(clamp(shininess * 1.4427 * (NH - 1.0), -126.0, 0.0));
-  let specIntensity = mix(0.02, 0.5, shaderUniforms.wetness) * in.vLight.x;
-  let specular = vec3<f32>(specIntensity) * spec * max(shaderUniforms.sunLightIntensity - 0.1, 0.0);
+  // LOD wetness should not create shine. It only darkens/richens distance terrain.
+  let wetDiffuseMul = mix(1.0, 0.65, shaderUniforms.wetness);
+  diffuseColor = vec4<f32>(diffuseColor.rgb * wetDiffuseMul, diffuseColor.a);
 
-  let skyScale = in.vLight.x * 0.8 * (shaderUniforms.sunLightIntensity + 0.2);
-  let lightMix = clamp(skyScale + in.vLight.y * vec3<f32>(0.9, 0.6, 0.2), vec3<f32>(0.18), vec3<f32>(1.0));
+  let diffuseIntensity = max(0.0, dot(in.vNormal, shaderUniforms.lightDirection));
+
+  let skyScale = skyLight * 0.8 * (sunIntensity + 0.2);
+  let lightMix = clamp(vec3<f32>(skyScale) + blockLight * vec3<f32>(0.9, 0.6, 0.2), vec3<f32>(0.18), vec3<f32>(1.0));
 
   let topBottom = select(0.58, 1.0, in.vNormal.y > 0.0);
   let faceShade = select(0.78, topBottom, abs(in.vNormal.y) > 0.5);
 
-  var color = (diffuseColor.rgb * (1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity * in.vLight.x) + specular) * lightMix * faceShade;
+  var color = diffuseColor.rgb * (1.0 + diffuseIntensity * sunIntensity * skyLight) * lightMix * faceShade;
   color = applyTintBucket(color, in.vTint);
 
   color = mix(color, in.vFogColor, in.vFogFactor);
@@ -103,7 +100,6 @@ struct VSOut {
   @location(10) vFogFactor : f32,
   @location(11) vFogColor : vec3<f32>,
   @location(12) @interpolate(flat) vTint : u32,
-  @location(13) vViewDir : vec3<f32>,
 };
 fn hash12(p : vec2<f32>) -> f32 {
   var p3 = fract(vec3<f32>(p.xyx) * 0.1031);
@@ -129,34 +125,35 @@ fn applyTintBucket(color : vec3<f32>, bucket : u32) -> vec3<f32> {
 
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
+  // Free win: discard LOD fade before the texture sample.
+  applyDitherFade(in.pos.xy);
+
   let singleTileUV = fract(in.vUV);
   let layer = in.vTileLayer;
 
   var diffuseColor = textureSampleLevel(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, 3.0);
-  applyDitherFade(in.pos.xy);
   if (diffuseColor.a < 0.02) { discard; }
-  diffuseColor = vec4<f32>(diffuseColor.rgb * mix(1.0, 0.55, shaderUniforms.wetness), diffuseColor.a);
 
-  let worldNormal = in.vNormal;
-  let diffuseIntensity = max(0.0, dot(worldNormal, shaderUniforms.lightDirection));
-  let viewDirection = in.vViewDir;
-  let halfwayDir = normalize(viewDirection + shaderUniforms.lightDirection);
-  let shininess = mix(16.0, 96.0, shaderUniforms.wetness);
-  let NH = max(dot(worldNormal, halfwayDir), 0.0);
-  let spec = exp2(clamp(shininess * 1.4427 * (NH - 1.0), -126.0, 0.0));
-  let specIntensity = mix(0.02, 0.5, shaderUniforms.wetness) * in.vLight.x;
-  let specular = vec3<f32>(specIntensity) * spec * max(shaderUniforms.sunLightIntensity - 0.1, 0.0);
+  let skyLight = in.vLight.x;
+  let blockLight = in.vLight.y;
+  let sunIntensity = shaderUniforms.sunLightIntensity;
 
-  let skyScale = in.vLight.x * 0.8 * (shaderUniforms.sunLightIntensity + 0.2);
-  let lightMix = clamp(skyScale + in.vLight.y * vec3<f32>(0.9, 0.6, 0.2), vec3<f32>(0.18), vec3<f32>(1.0));
+  // Far transparent also should not become shiny/bright when wet.
+  let wetDiffuseMul = mix(1.0, 0.65, shaderUniforms.wetness);
+  diffuseColor = vec4<f32>(diffuseColor.rgb * wetDiffuseMul, diffuseColor.a);
+
+  let diffuseIntensity = max(0.0, dot(in.vNormal, shaderUniforms.lightDirection));
+
+  let skyScale = skyLight * 0.8 * (sunIntensity + 0.2);
+  let lightMix = clamp(vec3<f32>(skyScale) + blockLight * vec3<f32>(0.9, 0.6, 0.2), vec3<f32>(0.18), vec3<f32>(1.0));
 
   let topBottom = select(0.58, 1.0, in.vNormal.y > 0.0);
   let faceShade = select(0.78, topBottom, abs(in.vNormal.y) > 0.5);
 
-  var color = (diffuseColor.rgb * (1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity * in.vLight.x) + specular) * lightMix * faceShade;
+  var color = diffuseColor.rgb * (1.0 + diffuseIntensity * sunIntensity * skyLight) * lightMix * faceShade;
   color = applyTintBucket(color, in.vTint);
 
-  // meta (isWater flag in bit 2) tints the water surface a flat blue.
+  // meta isWater bit. Keep far water readable, but do not make wetness brighten it.
   let isWater = f32((in.vMeta >> 2u) & 1u);
   color = mix(color, vec3<f32>(0.1, 0.4, 0.7) * lightMix, isWater);
 
@@ -210,6 +207,9 @@ export function createLod2OpaqueMaterial(
 			meta: false,
 			tint: true,
 			fog: true,
+
+			// Free win: no view-dependent LOD lighting now.
+			viewDir: false,
 		}),
 		fragmentSource: lod2OpaqueFragmentWGSL,
 		attributes: ["position"],
@@ -260,6 +260,9 @@ export function createLod2TransparentMaterial(
 			meta: true,
 			tint: true,
 			fog: true,
+
+			// Free win: no view-dependent LOD lighting now.
+			viewDir: false,
 		}),
 		fragmentSource: lod2TransparentFragmentWGSL,
 		attributes: ["position"],
@@ -272,6 +275,7 @@ export function createLod2TransparentMaterial(
 		],
 		backFaceCulling: false,
 		needAlphaBlending: true,
+		blendMode: "alpha",
 	});
 
 	registerPackedMaterial(material);

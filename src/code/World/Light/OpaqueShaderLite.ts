@@ -61,7 +61,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   var normalMap = textureSampleGrad(normalTexture, normalTextureSampler, singleTileUV, layer, dx, dy).rgb;
   normalMap = normalize(normalMap * 2.0 - 1.0);
 
-  let lightDirectionTS = normalize(in.vLightDirTS);
+  let lightDirectionTS = in.vLightDirTS;
   let viewDirTS = normalize(in.vViewDirTS);
 
   let diffuseIntensity = max(0.0, dot(normalMap, lightDirectionTS));
@@ -75,7 +75,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 
   let aoFactor = 1.0 - in.vAO * 0.23;
   let skyScale = in.vLight.x * 0.8 * (shaderUniforms.sunLightIntensity + 0.2);
-  let lightMix = clamp(skyScale + in.vLight.y * vec3<f32>(0.9, 0.6, 0.2), vec3<f32>(0.2), vec3<f32>(1.0));
+  let lightMix = clamp(vec3<f32>(skyScale) + in.vLight.y * vec3<f32>(0.9, 0.6, 0.2), vec3<f32>(0.2), vec3<f32>(1.0));
 
   let color = (diffuseColor.rgb * (1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity * in.vLight.x) + specular) * lightMix * aoFactor;
 
@@ -83,16 +83,20 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 }
 `;
 
+/**
+ * Water-only transparent fragment shader. The transparent bucket now carries
+ * only water faces, so the isWater branch and its mix()s are gone — every
+ * remaining instruction is water work: scroll, procedural waves, specular,
+ * fog and blended alpha.
+ */
 export const transparentChunkFragmentWGSL = /* wgsl */ `
 struct VSOut {
 @builtin(position) pos : vec4<f32>,
 @location(0) vUV : vec2<f32>,
 @location(1) @interpolate(flat) vTileLayer : u32,
 @location(2) vWorldPosition : vec3<f32>,
-@location(5) @interpolate(flat) vNormal : vec3<f32>,
 @location(6) vAO : f32,
 @location(7) @interpolate(flat) vLight : vec2<f32>,
-@location(9) @interpolate(flat) vMeta : u32,
 @location(10) vFogFactor : f32,
 @location(11) vFogColor : vec3<f32>,
 @location(13) vViewDir : vec3<f32>,
@@ -119,65 +123,57 @@ return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
-// meta carries isWater in bit 2 for near transparent meshes.
-let isWater = f32((in.vMeta >> 2u) & 1u);
-
 let scrollDir = vec2<f32>(
 -shaderUniforms.time * 0.3,
 shaderUniforms.time * 0.4
-) * isWater;
+);
 
 let animatedUV = in.vUV + scrollDir;
 let singleTileUV = fract(animatedUV);
 let layer = in.vTileLayer;
 
-var diffuseColor = textureSampleGrad(
+let dx = dpdx(in.vUV);
+let dy = dpdy(in.vUV);
+
+let diffuseColor = textureSampleGrad(
 diffuseTexture,
 diffuseTextureSampler,
 singleTileUV,
 layer,
-dpdx(in.vUV),
-dpdy(in.vUV)
+dx,
+dy
 );
 
 if (diffuseColor.a < 0.01) {
 discard;
 }
 
-var worldNormal : vec3<f32>;
-
-if (isWater > 0.5) {
 let wavePos = in.vWorldPosition.xz * 0.3 + scrollDir;
 let eps = 0.05;
-let invEpsWaveStrength = 0.15 / eps;
+let invEpsWaveStrength = 3.0;
 
 let wC = valueNoise(wavePos);
 let wCDX = valueNoise(wavePos + vec2<f32>(eps, 0.0));
 let wCDZ = valueNoise(wavePos + vec2<f32>(0.0, eps));
 
-worldNormal = normalize(vec3<f32>(
+let worldNormal = normalize(vec3<f32>(
 -(wCDX - wC) * invEpsWaveStrength,
 1.0,
 -(wCDZ - wC) * invEpsWaveStrength
 ));
-} else {
-worldNormal = in.vNormal;
-}
 
 let lightDirection = shaderUniforms.lightDirection;
 let diffuseIntensity = max(0.0, dot(worldNormal, lightDirection));
 
 let halfwayDir = normalize(in.vViewDir + lightDirection);
-let specPower = mix(16.0, 64.0, isWater);
 let NH = max(dot(worldNormal, halfwayDir), 0.0);
-let spec = exp2(clamp(specPower * 1.4427 * (NH - 1.0), -126.0, 0.0));
+let spec = exp2(clamp(64.0 * 1.4427 * (NH - 1.0), -126.0, 0.0));
 
 let skyLight = in.vLight.x;
 let blockLight = in.vLight.y;
 let lightLevel = max(skyLight, blockLight);
 
-let specularIntensity = mix(0.2, 0.7, isWater) * skyLight;
-let specular = vec3<f32>(specularIntensity) * spec * shaderUniforms.sunLightIntensity;
+let specular = vec3<f32>(0.7 * skyLight) * spec * shaderUniforms.sunLightIntensity;
 
 let aoFactor = 1.0 - in.vAO * 0.1;
 let skyScale = skyLight * 0.8 * (shaderUniforms.sunLightIntensity + 0.2);
@@ -194,23 +190,93 @@ diffuseColor.rgb *
 specular;
 
 let luminance = dot(litColor, vec3<f32>(0.299, 0.587, 0.114));
-let saturation = mix(1.0, 0.5, isWater);
+
 litColor = mix(
 vec3<f32>(luminance),
 litColor,
-lightLevel * saturation + (1.0 - saturation)
+lightLevel * 0.5 + 0.5
 );
 
-let minLight = vec3<f32>(mix(0.02, 0.08, isWater));
-var finalColor = litColor * max(lightMix * aoFactor, minLight);
+var finalColor = litColor * max(lightMix * aoFactor, vec3<f32>(0.08));
 
-// The vertex shader already computes these fog varyings.
-// Use them here instead of paying the varying cost and then ignoring them.
 finalColor = mix(finalColor, in.vFogColor, in.vFogFactor);
 
-let alpha = diffuseColor.a * mix(1.0, mix(0.9, 0.4, lightLevel), isWater);
+let alpha = diffuseColor.a * mix(0.9, 0.4, lightLevel);
 
 return vec4<f32>(finalColor, alpha);
+}
+`;
+
+/**
+ * Cheap alpha-test cutout shader for glass, grass leaves and other fully-
+ * transparent-texel materials. One diffuse sample, alpha-test, simple world-
+ * space lighting; wetness is cheap diffuse darkening only (no normal map, no
+ * specular). Deliberately does NOT declare `time`, waves, fog or
+ * vWorldPosition — the water shader's per-fragment costs are all absent here.
+ * The surface is drawn in the opaque pass (no blending, no deferred sort);
+ * fragments below the alphaCutoff system uniform are discarded and survivors
+ * write alpha 1.
+ */
+export const cutoutChunkFragmentWGSL = /* wgsl */ `
+struct VSOut {
+  @builtin(position) pos : vec4<f32>,
+  @location(0) vUV : vec2<f32>,
+  @location(1) @interpolate(flat) vTileLayer : u32,
+  @location(5) @interpolate(flat) vNormal : vec3<f32>,
+  @location(6) vAO : f32,
+  @location(7) @interpolate(flat) vLight : vec2<f32>,
+};
+
+@fragment
+fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
+  let singleTileUV = fract(in.vUV);
+  let layer = in.vTileLayer;
+  let dx = dpdx(in.vUV);
+  let dy = dpdy(in.vUV);
+
+  var diffuseColor = textureSampleGrad(
+    diffuseTexture,
+    diffuseTextureSampler,
+    singleTileUV,
+    layer,
+    dx,
+    dy
+  );
+
+  // alphaCutoff is a system uniform: declaring it in the uniforms list routes
+  // it into the auto-generated shaderSystem struct (not shaderUniforms).
+  if (diffuseColor.a < shaderSystem.alphaCutoff) {
+    discard;
+  }
+
+  // Cheap wet look: darken the diffuse only (no normal/specular wetness).
+  diffuseColor = vec4<f32>(
+    diffuseColor.rgb * shaderUniforms.cutoutWetDiffuseMul,
+    diffuseColor.a
+  );
+
+  let skyLight = in.vLight.x;
+  let blockLight = in.vLight.y;
+  let sunIntensity = shaderUniforms.sunLightIntensity;
+
+  let diffuseIntensity = max(0.0, dot(in.vNormal, shaderUniforms.lightDirection));
+
+  let aoFactor = 1.0 - in.vAO * 0.1;
+  let skyScale = skyLight * 0.8 * (sunIntensity + 0.2);
+
+  let lightMix = clamp(
+    vec3<f32>(skyScale) + blockLight * vec3<f32>(0.9, 0.6, 0.2),
+    vec3<f32>(0.02),
+    vec3<f32>(1.0)
+  );
+
+  let color =
+    diffuseColor.rgb *
+    (1.0 + diffuseIntensity * sunIntensity * skyLight) *
+    lightMix *
+    aoFactor;
+
+  return vec4<f32>(color, 1.0);
 }
 `;
 export interface ChunkMaterialOptions {
@@ -224,19 +290,23 @@ export interface ChunkMaterialOptions {
 	faceArenaCount: number;
 }
 
+type ChunkMaterialKind = "opaque" | "transparent" | "cutout";
+
 function buildChunkMaterial(
 	name: string,
 	fragmentSource: string,
-	useNormal: boolean,
+	kind: ChunkMaterialKind,
 	vertexOptions: VertexShaderOptions,
 	opts: ChunkMaterialOptions,
 ): ShaderMaterial {
-	const isTransparent = name === "chunkTransparentLite";
-	const useFog = vertexOptions.fog;
+	const isOpaque = kind === "opaque";
+	const isTransparent = kind === "transparent";
+	const isCutout = kind === "cutout";
+	const useFog = vertexOptions.fog === true;
 	const arenaCount = Math.max(1, opts.faceArenaCount | 0);
 
 	const samplers: { name: string; viewDimension: "2d" | "2d-array" }[] =
-		useNormal
+		isOpaque
 			? [
 					{ name: "diffuseTexture", viewDimension: "2d-array" },
 					{ name: "normalTexture", viewDimension: "2d-array" },
@@ -268,8 +338,26 @@ function buildChunkMaterial(
 		{ name: "atlasMaxTilesU32", type: "u32" },
 		{ name: "lightDirection", type: "vec3<f32>" },
 		{ name: "sunLightIntensity", type: "f32" },
-		{ name: "wetness", type: "f32" },
 	];
+
+	// Only opaque declares/uses wetness (normal-map specular response).
+	// Cutout gets the cheaper cutoutWetDiffuseMul; transparent water has its
+	// own look.
+	if (isOpaque) {
+		uniforms.push({ name: "wetness", type: "f32" });
+	}
+
+	if (isCutout) {
+		// System uniform: declaring it here both adds alphaCutoff to the
+		// auto-generated shaderSystem struct and creates the material's value
+		// slot so setShaderUniform(material, "alphaCutoff", ...) can set it.
+		uniforms.push(
+			{ name: "alphaCutoff", type: "f32" },
+			// Regular per-material uniform: wet-diffuse multiplier in [1, 0.65],
+			// driven from the shared wetness uniform each frame.
+			{ name: "cutoutWetDiffuseMul", type: "f32" },
+		);
+	}
 
 	if (useFog) {
 		uniforms.push(
@@ -290,16 +378,24 @@ function buildChunkMaterial(
 		uniforms,
 		samplers,
 		storageBuffers,
-		backFaceCulling: useNormal,
-		needAlphaBlending: !useNormal,
-		blendMode: "alpha",
+
+		// Only opaque culls back faces. Cutout stays double-sided for
+		// grass/cross-plane vegetation; transparent needs both sides too
+		// (water is viewed from under the surface).
+		backFaceCulling: isOpaque,
+
+		// The important part: cutout is alpha-tested, not alpha-blended, so it
+		// draws in the opaque pass and keeps depth writes.
+		needAlphaBlending: isTransparent,
+		needAlphaTesting: isCutout,
+		blendMode: isTransparent ? "alpha" : undefined,
 	});
 
 	registerPackedMaterial(material);
 
 	setShaderTexture(material, "diffuseTexture", opts.diffuseTexture);
 
-	if (useNormal) {
+	if (isOpaque) {
 		setShaderTexture(material, "normalTexture", opts.normalTexture);
 	}
 
@@ -308,10 +404,18 @@ function buildChunkMaterial(
 	setShaderUniform(material, "atlasMaxTilesU32", opts.atlasMaxTiles | 0);
 	setShaderUniform(material, "lightDirection", DEFAULT_LIGHT_DIRECTION);
 	setShaderUniform(material, "sunLightIntensity", 1);
-	setShaderUniform(material, "wetness", 0);
+
+	if (isOpaque) {
+		setShaderUniform(material, "wetness", 0);
+	}
 
 	if (isTransparent) {
 		setShaderUniform(material, "time", 0);
+	}
+
+	if (isCutout) {
+		setShaderUniform(material, "alphaCutoff", 0.5);
+		setShaderUniform(material, "cutoutWetDiffuseMul", 1);
 	}
 
 	if (useFog) {
@@ -328,7 +432,7 @@ export function createChunkOpaqueMaterial(
 	return buildChunkMaterial(
 		"chunkOpaqueLite",
 		opaqueChunkFragmentWGSL,
-		true,
+		"opaque",
 		{
 			tangent: false,
 			worldPosition: false,
@@ -348,8 +452,51 @@ export function createChunkTransparentMaterial(
 	return buildChunkMaterial(
 		"chunkTransparentLite",
 		transparentChunkFragmentWGSL,
-		false,
-		{ tangent: false, worldPosition: true, meta: true, tint: false, fog: true },
+		"transparent",
+		{
+			tangent: false,
+			worldPosition: true,
+			meta: false,
+			tint: false,
+			fog: true,
+			viewDir: true,
+			tangentSpaceLighting: false,
+		},
+		opts,
+	);
+}
+
+/**
+ * Cheap alpha-test material for the cutout bucket (glass, grass leaves).
+ * One diffuse sample + simple world-space lighting; wetness is cheap diffuse
+ * darkening via cutoutWetDiffuseMul (no normal map, no specular). No `time`
+ * uniform, no worldPosition/meta/fog/viewDir varyings, no blending — drawn
+ * in the opaque pass ahead of the deferred blended water mesh, double-sided
+ * for grass.
+ */
+export function createChunkCutoutMaterial(
+	opts: ChunkMaterialOptions,
+): ShaderMaterial {
+	return buildChunkMaterial(
+		"chunkCutoutLite",
+		cutoutChunkFragmentWGSL,
+		"cutout",
+		{
+			tangent: false,
+			worldPosition: false,
+			meta: false,
+			tint: false,
+
+			// Cutout skips fog entirely (ChunkMesher.materialUsesFog already
+			// excludes cutoutMaterial): no fog varyings, no fog uniforms.
+			fog: false,
+
+			// No specular in the cheap cutout path.
+			viewDir: false,
+
+			// Not needed for cutout.
+			tangentSpaceLighting: false,
+		},
 		opts,
 	);
 }

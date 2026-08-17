@@ -945,14 +945,15 @@ export class ChunkStreamingController {
 	): boolean {
 		const cached = chunk.getCachedLODMesh(targetLod);
 
-		if (!cached || (!cached.opaque && !cached.transparent)) {
+		if (!cached || (!cached.opaque && !cached.water && !cached.cutout)) {
 			return false;
 		}
 
 		createMeshFromData(
 			chunk,
 			cached.opaque ?? null,
-			cached.transparent ?? null,
+			cached.water ?? null,
+			cached.cutout ?? null,
 		);
 
 		chunk.isDirty = false;

@@ -585,17 +585,22 @@ const _paletteExpander = new PaletteExpander();
 // detached.
 const _session = new MeshBuildSession();
 const _opaqueOut = createEmptyWorkerInternalMeshData();
-const _transparentOut = createEmptyWorkerInternalMeshData();
+const _waterOut = createEmptyWorkerInternalMeshData();
+const _cutoutOut = createEmptyWorkerInternalMeshData();
 
 function resetMeshOut(): void {
 	_opaqueOut.faceDataA.reset();
 	_opaqueOut.faceDataB.reset();
 	_opaqueOut.faceDataC.reset();
 	_opaqueOut.faceCount = 0;
-	_transparentOut.faceDataA.reset();
-	_transparentOut.faceDataB.reset();
-	_transparentOut.faceDataC.reset();
-	_transparentOut.faceCount = 0;
+	_waterOut.faceDataA.reset();
+	_waterOut.faceDataB.reset();
+	_waterOut.faceDataC.reset();
+	_waterOut.faceCount = 0;
+	_cutoutOut.faceDataA.reset();
+	_cutoutOut.faceDataB.reset();
+	_cutoutOut.faceDataC.reset();
+	_cutoutOut.faceCount = 0;
 }
 
 function buildVoxelMeshFromInput(
@@ -607,7 +612,7 @@ function buildVoxelMeshFromInput(
 ): void {
 	_session.begin(size, lod, input, grids, skipBlockFill);
 	resetMeshOut();
-	MeshEmitters.buildVoxelMesh(_session, _opaqueOut, _transparentOut);
+	MeshEmitters.buildVoxelMesh(_session, _opaqueOut, _waterOut, _cutoutOut);
 }
 
 function postMeshResponse(
@@ -618,10 +623,11 @@ function postMeshResponse(
 	const opaque =
 		_opaqueOut.faceCount > 0 ? toTransferableMeshData(_opaqueOut) : null;
 
-	const transparent =
-		_transparentOut.faceCount > 0
-			? toTransferableMeshData(_transparentOut)
-			: null;
+	const water =
+		_waterOut.faceCount > 0 ? toTransferableMeshData(_waterOut) : null;
+
+	const cutout =
+		_cutoutOut.faceCount > 0 ? toTransferableMeshData(_cutoutOut) : null;
 
 	const response: FullMeshMessage = {
 		type: WorkerTaskType.GenerateFullMesh,
@@ -629,7 +635,8 @@ function postMeshResponse(
 		meshRevision,
 		lod,
 		opaque,
-		transparent,
+		water,
+		cutout,
 	};
 
 	const localTransferables: Transferable[] = [];
@@ -642,11 +649,19 @@ function postMeshResponse(
 		);
 	}
 
-	if (transparent) {
+	if (water) {
 		localTransferables.push(
-			transparent.faceDataA.buffer,
-			transparent.faceDataB.buffer,
-			transparent.faceDataC.buffer,
+			water.faceDataA.buffer,
+			water.faceDataB.buffer,
+			water.faceDataC.buffer,
+		);
+	}
+
+	if (cutout) {
+		localTransferables.push(
+			cutout.faceDataA.buffer,
+			cutout.faceDataB.buffer,
+			cutout.faceDataC.buffer,
 		);
 	}
 

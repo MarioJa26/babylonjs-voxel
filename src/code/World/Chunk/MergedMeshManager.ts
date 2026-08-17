@@ -17,14 +17,16 @@ function disposeGroupMesh(mesh: Mesh): void {
 
 enum Meshkind {
 	opaque,
-	transparent,
+	water,
+	cutout,
 }
 
 export interface ChunkMemberData {
 	chunkId: number;
 	chunk: Chunk;
 	opaqueData: MeshData | null;
-	transparentData: MeshData | null;
+	waterData: MeshData | null;
+	cutoutData: MeshData | null;
 	localIndex: number; // 0-63 within the group
 	// `lastBuilt*` records the MeshData reference we last copied into the
 	// merged buffer for this member. On a group rebuild we skip re-copying a
@@ -34,13 +36,15 @@ export interface ChunkMemberData {
 	// updates hand a *new* MeshData to just the changed chunk, so only that
 	// one member's reference differs and gets re-copied (up to 63x cheaper).
 	lastBuiltOpaque: MeshData | null;
-	lastBuiltTransparent: MeshData | null;
+	lastBuiltWater: MeshData | null;
+	lastBuiltCutout: MeshData | null;
 	// The writeByte offset each was copied at. A member is only safe to
 	// skip when BOTH its data reference AND its target offset are unchanged
 	// from last rebuild — an earlier member's face-count change shifts every
 	// later member's offset even if that later member itself didn't remesh.
 	lastBuiltOpaqueOffset: number;
-	lastBuiltTransparentOffset: number;
+	lastBuiltWaterOffset: number;
+	lastBuiltCutoutOffset: number;
 }
 
 export interface MergedVertexData {
@@ -77,29 +81,38 @@ export interface MergedMeshGroup {
 	members: Map<number, ChunkMemberData>;
 	membersArray: ChunkMemberData[];
 	totalOpaqueFaces: number;
-	totalTransparentFaces: number;
+	totalWaterFaces: number;
+	totalCutoutFaces: number;
 	chunkOffsets: Float32Array; // 64 * 3 = 192 floats
 	cachedOpaque: MergedVertexData | null;
-	cachedTransparent: MergedVertexData | null;
+	cachedWater: MergedVertexData | null;
+	cachedCutout: MergedVertexData | null;
 
 	opaqueCapacityFaces: number;
-	transparentCapacityFaces: number;
+	waterCapacityFaces: number;
+	cutoutCapacityFaces: number;
 
 	opaqueA: Uint8Array | null;
 	opaqueB: Uint8Array | null;
 	opaqueC: Uint8Array | null;
 
-	transparentA: Uint8Array | null;
-	transparentB: Uint8Array | null;
-	transparentC: Uint8Array | null;
+	waterA: Uint8Array | null;
+	waterB: Uint8Array | null;
+	waterC: Uint8Array | null;
+
+	cutoutA: Uint8Array | null;
+	cutoutB: Uint8Array | null;
+	cutoutC: Uint8Array | null;
 
 	// Cached wrappers to avoid allocating `{ a, b, c }` every rebuild.
 	opaqueBuffers: MergedBuffers | null;
-	transparentBuffers: MergedBuffers | null;
+	waterBuffers: MergedBuffers | null;
+	cutoutBuffers: MergedBuffers | null;
 
 	// Cached vertex data wrappers to avoid allocating new objects every rebuild.
 	opaqueVertexData: MergedVertexData | null;
-	transparentVertexData: MergedVertexData | null;
+	waterVertexData: MergedVertexData | null;
+	cutoutVertexData: MergedVertexData | null;
 
 	dirty: boolean;
 
@@ -108,12 +121,14 @@ export interface MergedMeshGroup {
 	// re-pack + re-upload only the members that actually remeshed instead of
 	// the whole merged group. Cleared/regenerated on every rebuild.
 	dirtyOpaqueRanges: MergedFaceRange[] | null;
-	dirtyTransparentRanges: MergedFaceRange[] | null;
+	dirtyWaterRanges: MergedFaceRange[] | null;
+	dirtyCutoutRanges: MergedFaceRange[] | null;
 
 	// Mesh references — set by ChunkMesher.ts after creating/updating.
 	// These are NOT owned by MergedMeshManager; ownership stays with ChunkMesher.
 	opaqueMeshRef: any | null;
-	transparentMeshRef: any | null;
+	waterMeshRef: any | null;
+	cutoutMeshRef: any | null;
 }
 
 // Metadata stored on merged meshes for onBind callbacks.
@@ -141,7 +156,8 @@ const dirtyGroups = new Set<MergedMeshGroup>();
 // Scratch face-count caches for rebuildGroupData.
 // MAX_GROUP_MEMBERS is 64, so these avoid per-rebuild arrays.
 const _opaqueFaceCounts = new Uint32Array(MAX_GROUP_MEMBERS);
-const _transparentFaceCounts = new Uint32Array(MAX_GROUP_MEMBERS);
+const _waterFaceCounts = new Uint32Array(MAX_GROUP_MEMBERS);
+const _cutoutFaceCounts = new Uint32Array(MAX_GROUP_MEMBERS);
 
 // Invalidate the per-member "already built" cache. Must be called whenever
 // the merged-buffer layout can change independent of member data references:
@@ -151,7 +167,8 @@ const _transparentFaceCounts = new Uint32Array(MAX_GROUP_MEMBERS);
 function invalidateGroupBuildCache(group: MergedMeshGroup): void {
 	for (const m of group.membersArray) {
 		m.lastBuiltOpaque = null;
-		m.lastBuiltTransparent = null;
+		m.lastBuiltWater = null;
+		m.lastBuiltCutout = null;
 	}
 }
 
@@ -340,7 +357,8 @@ export function getAllGroups(): MergedMeshGroup[] {
 export function assignChunkToGroup(
 	chunk: Chunk,
 	opaqueData: MeshData | null,
-	transparentData: MeshData | null,
+	waterData: MeshData | null,
+	cutoutData: MeshData | null,
 ): MergedMeshGroup {
 	const gx = Math.floor(chunk.chunkX / GROUP_SIZE);
 	const gy = Math.floor(chunk.chunkY / GROUP_SIZE);
@@ -367,35 +385,46 @@ export function assignChunkToGroup(
 			members: new Map(),
 			membersArray: [],
 			totalOpaqueFaces: 0,
-			totalTransparentFaces: 0,
+			totalWaterFaces: 0,
+			totalCutoutFaces: 0,
 			chunkOffsets: _precomputedOffsets,
 			cachedOpaque: null,
-			cachedTransparent: null,
+			cachedWater: null,
+			cachedCutout: null,
 
 			opaqueCapacityFaces: 0,
-			transparentCapacityFaces: 0,
+			waterCapacityFaces: 0,
+			cutoutCapacityFaces: 0,
 
 			opaqueA: null,
 			opaqueB: null,
 			opaqueC: null,
 
-			transparentA: null,
-			transparentB: null,
-			transparentC: null,
+			waterA: null,
+			waterB: null,
+			waterC: null,
+
+			cutoutA: null,
+			cutoutB: null,
+			cutoutC: null,
 
 			opaqueBuffers: null,
-			transparentBuffers: null,
+			waterBuffers: null,
+			cutoutBuffers: null,
 
 			opaqueVertexData: null,
-			transparentVertexData: null,
+			waterVertexData: null,
+			cutoutVertexData: null,
 
 			dirty: true,
 
 			dirtyOpaqueRanges: null,
-			dirtyTransparentRanges: null,
+			dirtyWaterRanges: null,
+			dirtyCutoutRanges: null,
 
 			opaqueMeshRef: null,
-			transparentMeshRef: null,
+			waterMeshRef: null,
+			cutoutMeshRef: null,
 		};
 
 		groups.set(groupKey, group);
@@ -406,25 +435,30 @@ export function assignChunkToGroup(
 	if (existing) {
 		if (
 			existing.opaqueData === opaqueData &&
-			existing.transparentData === transparentData &&
+			existing.waterData === waterData &&
+			existing.cutoutData === cutoutData &&
 			chunk.mergedGroupKey === groupKey
 		) {
 			return group;
 		}
 
 		existing.opaqueData = opaqueData;
-		existing.transparentData = transparentData;
+		existing.waterData = waterData;
+		existing.cutoutData = cutoutData;
 	} else {
 		const memberData: ChunkMemberData = {
 			chunkId: chunk.numericId,
 			chunk,
 			opaqueData,
-			transparentData,
+			waterData,
+			cutoutData,
 			localIndex: getLocalIndex(chunk.chunkX, chunk.chunkY, chunk.chunkZ),
 			lastBuiltOpaque: null,
-			lastBuiltTransparent: null,
+			lastBuiltWater: null,
+			lastBuiltCutout: null,
 			lastBuiltOpaqueOffset: -1,
-			lastBuiltTransparentOffset: -1,
+			lastBuiltWaterOffset: -1,
+			lastBuiltCutoutOffset: -1,
 		};
 
 		group.members.set(chunk.numericId, memberData);
@@ -465,9 +499,14 @@ export function removeChunkFromGroup(chunk: Chunk): void {
 			group.opaqueMeshRef = null;
 		}
 
-		if (group.transparentMeshRef) {
-			disposeGroupMesh(group.transparentMeshRef);
-			group.transparentMeshRef = null;
+		if (group.waterMeshRef) {
+			disposeGroupMesh(group.waterMeshRef);
+			group.waterMeshRef = null;
+		}
+
+		if (group.cutoutMeshRef) {
+			disposeGroupMesh(group.cutoutMeshRef);
+			group.cutoutMeshRef = null;
 		}
 
 		groups.delete(groupKey);
@@ -604,13 +643,19 @@ export function disposeAll(): void {
 			group.opaqueMeshRef = null;
 		}
 
-		if (group.transparentMeshRef) {
-			disposeGroupMesh(group.transparentMeshRef);
-			group.transparentMeshRef = null;
+		if (group.waterMeshRef) {
+			disposeGroupMesh(group.waterMeshRef);
+			group.waterMeshRef = null;
+		}
+
+		if (group.cutoutMeshRef) {
+			disposeGroupMesh(group.cutoutMeshRef);
+			group.cutoutMeshRef = null;
 		}
 
 		group.cachedOpaque = null;
-		group.cachedTransparent = null;
+		group.cachedWater = null;
+		group.cachedCutout = null;
 
 		group.opaqueA = null;
 		group.opaqueB = null;
@@ -618,11 +663,17 @@ export function disposeAll(): void {
 		group.opaqueBuffers = null;
 		group.opaqueCapacityFaces = 0;
 
-		group.transparentA = null;
-		group.transparentB = null;
-		group.transparentC = null;
-		group.transparentBuffers = null;
-		group.transparentCapacityFaces = 0;
+		group.waterA = null;
+		group.waterB = null;
+		group.waterC = null;
+		group.waterBuffers = null;
+		group.waterCapacityFaces = 0;
+
+		group.cutoutA = null;
+		group.cutoutB = null;
+		group.cutoutC = null;
+		group.cutoutBuffers = null;
+		group.cutoutCapacityFaces = 0;
 
 		group.members.clear();
 		group.membersArray.length = 0;
@@ -675,17 +726,17 @@ function ensureOpaqueMergedCapacity(
 	return group.opaqueBuffers!;
 }
 
-function ensureTransparentMergedCapacity(
+function ensureWaterMergedCapacity(
 	group: MergedMeshGroup,
 	faceCount: number,
 ): MergedBuffers {
-	let capacity = group.transparentCapacityFaces;
+	let capacity = group.waterCapacityFaces;
 
 	if (capacity < faceCount) {
 		// See ensureOpaqueMergedCapacity — same wrap/clamp rationale.
 		const maxFaces = maxFacesPerArena();
 		capacity = Math.min(Math.max(faceCount, capacity * 2, 256), maxFaces);
-		group.transparentCapacityFaces = capacity;
+		group.waterCapacityFaces = capacity;
 
 		const byte4 = capacity * 4;
 
@@ -693,20 +744,54 @@ function ensureTransparentMergedCapacity(
 		const b = new Uint8Array(byte4);
 		const c = new Uint8Array(byte4);
 
-		group.transparentA = a;
-		group.transparentB = b;
-		group.transparentC = c;
+		group.waterA = a;
+		group.waterB = b;
+		group.waterC = c;
 
-		if (group.transparentBuffers) {
-			group.transparentBuffers.a = a;
-			group.transparentBuffers.b = b;
-			group.transparentBuffers.c = c;
+		if (group.waterBuffers) {
+			group.waterBuffers.a = a;
+			group.waterBuffers.b = b;
+			group.waterBuffers.c = c;
 		} else {
-			group.transparentBuffers = { a, b, c };
+			group.waterBuffers = { a, b, c };
 		}
 	}
 
-	return group.transparentBuffers!;
+	return group.waterBuffers!;
+}
+
+function ensureCutoutMergedCapacity(
+	group: MergedMeshGroup,
+	faceCount: number,
+): MergedBuffers {
+	let capacity = group.cutoutCapacityFaces;
+
+	if (capacity < faceCount) {
+		// See ensureOpaqueMergedCapacity — same wrap/clamp rationale.
+		const maxFaces = maxFacesPerArena();
+		capacity = Math.min(Math.max(faceCount, capacity * 2, 256), maxFaces);
+		group.cutoutCapacityFaces = capacity;
+
+		const byte4 = capacity * 4;
+
+		const a = new Uint8Array(byte4);
+		const b = new Uint8Array(byte4);
+		const c = new Uint8Array(byte4);
+
+		group.cutoutA = a;
+		group.cutoutB = b;
+		group.cutoutC = c;
+
+		if (group.cutoutBuffers) {
+			group.cutoutBuffers.a = a;
+			group.cutoutBuffers.b = b;
+			group.cutoutBuffers.c = c;
+		} else {
+			group.cutoutBuffers = { a, b, c };
+		}
+	}
+
+	return group.cutoutBuffers!;
 }
 
 // Returns the member's face count for `kind`, clamped to what its payload
@@ -717,7 +802,12 @@ function ensureTransparentMergedCapacity(
 // length is the ground truth: the packed mesh derives its face count from it
 // too (faceDataA.length >>> 2).
 function memberFaceCount(m: ChunkMemberData, kind: Meshkind): number {
-	const data = kind === Meshkind.opaque ? m.opaqueData : m.transparentData;
+	const data =
+		kind === Meshkind.opaque
+			? m.opaqueData
+			: kind === Meshkind.water
+				? m.waterData
+				: m.cutoutData;
 	if (!data) return 0;
 
 	const raw = data.faceCount;
@@ -733,7 +823,7 @@ function memberFaceCount(m: ChunkMemberData, kind: Meshkind): number {
 
 	console.warn(
 		`[MergedMeshManager] chunk #${m.chunkId} (lod ${m.chunk.lodLevel ?? 0}) ` +
-			`${kind} faceCount (${raw}) inconsistent with buffer lengths ` +
+			`${Meshkind[kind]} faceCount (${raw}) inconsistent with buffer lengths ` +
 			`(${aLen}/${bLen}/${cLen} bytes) — using ${derived} instead.`,
 	);
 
@@ -751,10 +841,17 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		}
 	}
 
-	const prevTransparentRanges = group.dirtyTransparentRanges;
-	if (prevTransparentRanges) {
-		for (let i = 0, len = prevTransparentRanges.length; i < len; i++) {
-			_rangePool.push(prevTransparentRanges[i]);
+	const prevWaterRanges = group.dirtyWaterRanges;
+	if (prevWaterRanges) {
+		for (let i = 0, len = prevWaterRanges.length; i < len; i++) {
+			_rangePool.push(prevWaterRanges[i]);
+		}
+	}
+
+	const prevCutoutRanges = group.dirtyCutoutRanges;
+	if (prevCutoutRanges) {
+		for (let i = 0, len = prevCutoutRanges.length; i < len; i++) {
+			_rangePool.push(prevCutoutRanges[i]);
 		}
 	}
 
@@ -762,12 +859,17 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	const opaqueRanges = group.dirtyOpaqueRanges;
 	opaqueRanges.length = 0;
 
-	group.dirtyTransparentRanges ??= [];
-	const transparentRanges = group.dirtyTransparentRanges;
-	transparentRanges.length = 0;
+	group.dirtyWaterRanges ??= [];
+	const waterRanges = group.dirtyWaterRanges;
+	waterRanges.length = 0;
+
+	group.dirtyCutoutRanges ??= [];
+	const cutoutRanges = group.dirtyCutoutRanges;
+	cutoutRanges.length = 0;
 
 	let totalOpaque = 0;
-	let totalTransparent = 0;
+	let totalWater = 0;
+	let totalCutout = 0;
 
 	// Count once, cache per-member counts, and reuse those counts in the copy
 	// pass. This avoids repeated validation/logging and repeated buffer-length
@@ -776,31 +878,37 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		const m = members[i];
 
 		const opaqueCount = m.opaqueData ? memberFaceCount(m, Meshkind.opaque) : 0;
-		const transparentCount = m.transparentData
-			? memberFaceCount(m, Meshkind.transparent)
-			: 0;
+		const waterCount = m.waterData ? memberFaceCount(m, Meshkind.water) : 0;
+		const cutoutCount = m.cutoutData ? memberFaceCount(m, Meshkind.cutout) : 0;
 
 		_opaqueFaceCounts[i] = opaqueCount;
-		_transparentFaceCounts[i] = transparentCount;
+		_waterFaceCounts[i] = waterCount;
+		_cutoutFaceCounts[i] = cutoutCount;
 
 		totalOpaque += opaqueCount;
-		totalTransparent += transparentCount;
+		totalWater += waterCount;
+		totalCutout += cutoutCount;
 	}
 
 	group.totalOpaqueFaces = totalOpaque;
-	group.totalTransparentFaces = totalTransparent;
+	group.totalWaterFaces = totalWater;
+	group.totalCutoutFaces = totalCutout;
 
 	// A merged group must fit a single face-arena block per mesh to be
 	// uploaded; above that allocFaces can never succeed. Refuse before
 	// allocating gigabytes of merged buffers.
 	const maxGroupFaces = maxFacesPerArena();
-	if (totalOpaque > maxGroupFaces || totalTransparent > maxGroupFaces) {
+	if (
+		totalOpaque > maxGroupFaces ||
+		totalWater > maxGroupFaces ||
+		totalCutout > maxGroupFaces
+	) {
 		console.warn(
 			`[MergedMeshManager] group (${group.gridX}, ${group.gridY}, ` +
 				`${group.gridZ}) lod bucket ${group.lodBucket} exceeds the ` +
-				`per-mesh arena limit (opaque ${totalOpaque}, transparent ` +
-				`${totalTransparent}, max ${maxGroupFaces} faces) — mesh ` +
-				`rebuild skipped.`,
+				`per-mesh arena limit (opaque ${totalOpaque}, water ` +
+				`${totalWater}, cutout ${totalCutout}, max ${maxGroupFaces} ` +
+				`faces) — mesh rebuild skipped.`,
 		);
 
 		group.dirty = false;
@@ -808,15 +916,20 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	}
 
 	const opaqueGrew = totalOpaque > group.opaqueCapacityFaces;
-	const transparentGrew = totalTransparent > group.transparentCapacityFaces;
+	const waterGrew = totalWater > group.waterCapacityFaces;
+	const cutoutGrew = totalCutout > group.cutoutCapacityFaces;
 
 	let opaqueA: Uint8Array | null = null;
 	let opaqueB: Uint8Array | null = null;
 	let opaqueC: Uint8Array | null = null;
 
-	let transparentA: Uint8Array | null = null;
-	let transparentB: Uint8Array | null = null;
-	let transparentC: Uint8Array | null = null;
+	let waterA: Uint8Array | null = null;
+	let waterB: Uint8Array | null = null;
+	let waterC: Uint8Array | null = null;
+
+	let cutoutA: Uint8Array | null = null;
+	let cutoutB: Uint8Array | null = null;
+	let cutoutC: Uint8Array | null = null;
 
 	if (totalOpaque > 0) {
 		const buffers = ensureOpaqueMergedCapacity(group, totalOpaque);
@@ -835,28 +948,48 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		group.cachedOpaque = null;
 	}
 
-	if (totalTransparent > 0) {
-		const buffers = ensureTransparentMergedCapacity(group, totalTransparent);
-		transparentA = buffers.a;
-		transparentB = buffers.b;
-		transparentC = buffers.c;
+	if (totalWater > 0) {
+		const buffers = ensureWaterMergedCapacity(group, totalWater);
+		waterA = buffers.a;
+		waterB = buffers.b;
+		waterC = buffers.c;
 
-		if (transparentGrew) {
+		if (waterGrew) {
 			for (let i = 0; i < memberCount; i++) {
 				const m = members[i];
-				m.lastBuiltTransparent = null;
-				m.lastBuiltTransparentOffset = -1;
+				m.lastBuiltWater = null;
+				m.lastBuiltWaterOffset = -1;
 			}
 		}
 	} else {
-		group.cachedTransparent = null;
+		group.cachedWater = null;
+	}
+
+	if (totalCutout > 0) {
+		const buffers = ensureCutoutMergedCapacity(group, totalCutout);
+		cutoutA = buffers.a;
+		cutoutB = buffers.b;
+		cutoutC = buffers.c;
+
+		if (cutoutGrew) {
+			for (let i = 0; i < memberCount; i++) {
+				const m = members[i];
+				m.lastBuiltCutout = null;
+				m.lastBuiltCutoutOffset = -1;
+			}
+		}
+	} else {
+		group.cachedCutout = null;
 	}
 
 	let opaqueWriteByte = 0;
 	let opaqueWriteFace = 0;
 
-	let transparentWriteByte = 0;
-	let transparentWriteFace = 0;
+	let waterWriteByte = 0;
+	let waterWriteFace = 0;
+
+	let cutoutWriteByte = 0;
+	let cutoutWriteFace = 0;
 
 	for (let i = 0; i < memberCount; i++) {
 		const m = members[i];
@@ -897,60 +1030,76 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 			opaqueWriteFace += opaqueFaceCount;
 		}
 
-		const transparent = m.transparentData;
-		const transparentFaceCount = _transparentFaceCounts[i];
+		const water = m.waterData;
+		const waterFaceCount = _waterFaceCounts[i];
 
-		if (transparent && transparentFaceCount > 0) {
-			const byteCount = transparentFaceCount * 4;
+		if (water && waterFaceCount > 0) {
+			const byteCount = waterFaceCount * 4;
 
 			if (
-				m.lastBuiltTransparent !== transparent ||
-				m.lastBuiltTransparentOffset !== transparentWriteByte
+				m.lastBuiltWater !== water ||
+				m.lastBuiltWaterOffset !== waterWriteByte
 			) {
-				copyFaceBytes(
-					transparentA!,
-					transparent.faceDataA,
-					byteCount,
-					transparentWriteByte,
-				);
-				copyFaceBytes(
-					transparentB!,
-					transparent.faceDataB,
-					byteCount,
-					transparentWriteByte,
-				);
-				copyFaceBytes(
-					transparentC!,
-					transparent.faceDataC,
-					byteCount,
-					transparentWriteByte,
-				);
+				copyFaceBytes(waterA!, water.faceDataA, byteCount, waterWriteByte);
+				copyFaceBytes(waterB!, water.faceDataB, byteCount, waterWriteByte);
+				copyFaceBytes(waterC!, water.faceDataC, byteCount, waterWriteByte);
 
 				const ci = m.localIndex;
 
 				if (ci !== 0) {
 					for (
-						let k = transparentWriteByte + 3,
-							end = transparentWriteByte + byteCount;
+						let k = waterWriteByte + 3, end = waterWriteByte + byteCount;
 						k < end;
 						k += 4
 					) {
-						transparentC![k] |= ci;
+						waterC![k] |= ci;
 					}
 				}
 
-				m.lastBuiltTransparent = transparent;
-				m.lastBuiltTransparentOffset = transparentWriteByte;
+				m.lastBuiltWater = water;
+				m.lastBuiltWaterOffset = waterWriteByte;
 
-				pushDirtyRange(
-					transparentRanges,
-					transparentWriteFace,
-					transparentFaceCount,
-				);
+				pushDirtyRange(waterRanges, waterWriteFace, waterFaceCount);
 			}
 
-			transparentWriteByte += byteCount;
-			transparentWriteFace += transparentFaceCount;
+			waterWriteByte += byteCount;
+			waterWriteFace += waterFaceCount;
+		}
+
+		const cutout = m.cutoutData;
+		const cutoutFaceCount = _cutoutFaceCounts[i];
+
+		if (cutout && cutoutFaceCount > 0) {
+			const byteCount = cutoutFaceCount * 4;
+
+			if (
+				m.lastBuiltCutout !== cutout ||
+				m.lastBuiltCutoutOffset !== cutoutWriteByte
+			) {
+				copyFaceBytes(cutoutA!, cutout.faceDataA, byteCount, cutoutWriteByte);
+				copyFaceBytes(cutoutB!, cutout.faceDataB, byteCount, cutoutWriteByte);
+				copyFaceBytes(cutoutC!, cutout.faceDataC, byteCount, cutoutWriteByte);
+
+				const ci = m.localIndex;
+
+				if (ci !== 0) {
+					for (
+						let k = cutoutWriteByte + 3, end = cutoutWriteByte + byteCount;
+						k < end;
+						k += 4
+					) {
+						cutoutC![k] |= ci;
+					}
+				}
+
+				m.lastBuiltCutout = cutout;
+				m.lastBuiltCutoutOffset = cutoutWriteByte;
+
+				pushDirtyRange(cutoutRanges, cutoutWriteFace, cutoutFaceCount);
+			}
+
+			cutoutWriteByte += byteCount;
+			cutoutWriteFace += cutoutFaceCount;
 		}
 	}
 
@@ -985,11 +1134,11 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		group.cachedOpaque = vd;
 	}
 
-	if (totalTransparent > 0) {
-		const totalBytes = totalTransparent * 4;
+	if (totalWater > 0) {
+		const totalBytes = totalWater * 4;
 
-		if (!group.transparentVertexData) {
-			group.transparentVertexData = {
+		if (!group.waterVertexData) {
+			group.waterVertexData = {
 				faceDataA: new Uint8Array(0),
 				faceDataB: new Uint8Array(0),
 				faceDataC: new Uint8Array(0),
@@ -997,23 +1146,48 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 			};
 		}
 
-		const vd = group.transparentVertexData;
+		const vd = group.waterVertexData;
 
 		vd.faceDataA =
-			transparentA!.length === totalBytes
-				? transparentA!
-				: transparentA!.subarray(0, totalBytes);
+			waterA!.length === totalBytes ? waterA! : waterA!.subarray(0, totalBytes);
 		vd.faceDataB =
-			transparentB!.length === totalBytes
-				? transparentB!
-				: transparentB!.subarray(0, totalBytes);
+			waterB!.length === totalBytes ? waterB! : waterB!.subarray(0, totalBytes);
 		vd.faceDataC =
-			transparentC!.length === totalBytes
-				? transparentC!
-				: transparentC!.subarray(0, totalBytes);
-		vd.faceCount = totalTransparent;
+			waterC!.length === totalBytes ? waterC! : waterC!.subarray(0, totalBytes);
+		vd.faceCount = totalWater;
 
-		group.cachedTransparent = vd;
+		group.cachedWater = vd;
+	}
+
+	if (totalCutout > 0) {
+		const totalBytes = totalCutout * 4;
+
+		if (!group.cutoutVertexData) {
+			group.cutoutVertexData = {
+				faceDataA: new Uint8Array(0),
+				faceDataB: new Uint8Array(0),
+				faceDataC: new Uint8Array(0),
+				faceCount: 0,
+			};
+		}
+
+		const vd = group.cutoutVertexData;
+
+		vd.faceDataA =
+			cutoutA!.length === totalBytes
+				? cutoutA!
+				: cutoutA!.subarray(0, totalBytes);
+		vd.faceDataB =
+			cutoutB!.length === totalBytes
+				? cutoutB!
+				: cutoutB!.subarray(0, totalBytes);
+		vd.faceDataC =
+			cutoutC!.length === totalBytes
+				? cutoutC!
+				: cutoutC!.subarray(0, totalBytes);
+		vd.faceCount = totalCutout;
+
+		group.cachedCutout = vd;
 	}
 
 	group.dirty = false;

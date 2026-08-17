@@ -359,7 +359,8 @@ export type FullMeshMessage = {
 	meshRevision: number;
 	lod: number;
 	opaque: MeshData | null;
-	transparent: MeshData | null;
+	water: MeshData | null;
+	cutout: MeshData | null;
 };
 
 export type TerrainGeneratedMessage = {
@@ -412,5 +413,6 @@ export type MeshWorkerResponse = {
 	meshRevision: number;
 	lod: number;
 	opaque: MeshData | null;
-	transparent: MeshData | null;
+	water: MeshData | null;
+	cutout: MeshData | null;
 };

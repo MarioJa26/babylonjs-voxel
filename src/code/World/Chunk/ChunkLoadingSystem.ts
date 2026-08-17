@@ -77,7 +77,8 @@ const _queuedIdSet: Set<bigint> = new Set();
 
 interface SelectedSavedMesh {
 	opaque: MeshData | null;
-	transparent: MeshData | null;
+	water: MeshData | null;
+	cutout: MeshData | null;
 }
 
 const _entityPayloadMap = new Map<bigint, SavedChunkEntityData[]>();
@@ -300,11 +301,11 @@ function getNeighbors(chunk: Chunk): (Chunk | undefined)[] {
 }
 
 function applyMeshToChunk(chunk: Chunk, mesh: SelectedSavedMesh | null): void {
-	if (!mesh || (!mesh.opaque && !mesh.transparent)) {
+	if (!mesh || (!mesh.opaque && !mesh.water && !mesh.cutout)) {
 		return;
 	}
 
-	createMeshFromData(chunk, mesh.opaque, mesh.transparent);
+	createMeshFromData(chunk, mesh.opaque, mesh.water, mesh.cutout);
 }
 
 function refreshQueueDebugSnapshot(): void {
