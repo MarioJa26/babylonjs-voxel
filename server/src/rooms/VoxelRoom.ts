@@ -24,7 +24,6 @@ import {
 	encodePlayerLeave,
 	encodeSpawnPosition,
 	encodeWorldConfig,
-	hashChunk,
 	writeMobUpdateBatch,
 	writePlayerStateBatch,
 } from "@/code/Network/protocol/encoder.ts";
@@ -112,12 +111,13 @@ interface ServerPlayerState {
 }
 
 const MAX_STORED_EDITS = 200; // Keep last N edits for new joiners
-const TIME_BROADCAST_INTERVAL = 5000; // Broadcast time every 1 second
+const TIME_BROADCAST_INTERVAL = 5000; // Broadcast time every 5 seconds
 const FULL_SNAPSHOT_INTERVAL = 2000; // Periodic full player-state broadcast (ms)
 const PLAYER_SAVE_INTERVAL = 3000; // Position persistence debounce (ms)
 const MOB_UPDATE_INTERVAL = 100; // Mob position broadcast cadence (10 Hz)
 const MAX_CHUNK_BATCH = 255; // Cap chunks per batch request (prevents DoS)
 const WORLD_BOUNDARY = 1_000_000; // Reject world coords beyond ±1M blocks
+const MAX_CHUNK_COORD = WORLD_BOUNDARY >> 5; // Reject chunk coords beyond boundary
 const MAX_BLOCK_ID = 255; // Block data is stored as one byte per voxel
 const MAX_PROTOCOL_VIOLATIONS = 16; // Malformed packets before disconnect
 const FLUSH_CONCURRENCY = 8; // Max parallel chunk storage ops per flush
@@ -150,7 +150,7 @@ export class VoxelRoom extends Room {
 	);
 	private blockEditStart = 0;
 	private blockEditCount = 0;
-	private timeOfDay = 0.3; // Start at morning (0..1)
+	private timeOfDay = 0.2; // Start at morning (0..1)
 	private worldStorage!: ServerWorldStorage;
 	private worldName = "default";
 	private seed = "default";
@@ -167,6 +167,12 @@ export class VoxelRoom extends Room {
 	// concurrent flushes can't reorder writes or drop retry state.
 	private flushPromise: Promise<void> | null = null;
 	private flushRequested = false;
+	// Chunks being flushed by the in-flight flushDirtyChunksOnce() pass, plus
+	// the promise that settles when that pass completes. Chunk requests whose
+	// keys overlap the active flush wait for it before applying their own
+	// edits, so edits for the same chunk are never applied concurrently.
+	private activeFlushKeys: Set<number> | null = null;
+	private activeFlushPromise: Promise<void> | null = null;
 	private timeAccum = 0; // Accumulator for time broadcast
 	// In-memory cache of player positions — avoids LevelDB disk read on join.
 	// Keyed by player name (same as loadPlayerPosition/savePlayerPosition).
@@ -235,6 +241,9 @@ export class VoxelRoom extends Room {
 	}> = [];
 	private nextPlayerIndex = 0;
 	private freedIndices: number[] = [];
+	// Membership set mirroring freedIndices, so a double free (e.g. join
+	// failure racing onLeave) can never push the same index twice.
+	private freedIndexSet = new Set<number>();
 	private lastFullSnapshot = 0;
 
 	constructor() {
@@ -389,11 +398,10 @@ export class VoxelRoom extends Room {
 				}
 			}
 
-			// Force a full dirty pass so the joiner gets current positions on
-			// the next tick even if nobody is moving.
-			for (const p of this.players.values()) {
-				p.dirty = true;
-			}
+			// Send the current player-state batch directly to the joiner so it
+			// sees every existing player position immediately — without a
+			// global dirty pass / full broadcast to everyone else.
+			this.sendFullPlayerSnapshot(client);
 
 			// Sync block edit history so new player sees existing world changes
 			if (this.blockEditCount > 0) {
@@ -599,7 +607,16 @@ export class VoxelRoom extends Room {
 			clearInterval(this.tickInterval);
 			this.tickInterval = null;
 		}
+		// Keep the shared onlinePlayers counter consistent with the player map
+		// (the HTTP status endpoint reads it without joining the room).
+		const remainingPlayers = this.players.size;
+		onlinePlayers = Math.max(0, onlinePlayers - remainingPlayers);
 		this.players.clear();
+		// Per-session tracking must not leak across room instances.
+		this.playersReady.clear();
+		this.protocolViolations.clear();
+		this.reachRejectWarned.clear();
+		this.unknownTypeWarned.clear();
 
 		// Persist any still-active mobs to their chunk columns before the
 		// storage closes, so they survive a server restart.
@@ -683,6 +700,31 @@ export class VoxelRoom extends Room {
 		this.dirtyChunks = new Set();
 		this.pendingChunkEdits = new Map();
 
+		// Publish the in-flight flush *before* the first await so a concurrent
+		// chunk request can wait on it instead of applying edits for the same
+		// chunks in parallel (see waitForOverlappingFlush).
+		this.activeFlushKeys = new Set(dirty);
+		this.activeFlushPromise = this.applyFlushedEdits(dirty, edits).finally(
+			() => {
+				this.activeFlushKeys = null;
+				this.activeFlushPromise = null;
+			},
+		);
+		await this.activeFlushPromise;
+	}
+
+	/**
+	 * Apply + persist one swapped-out batch of chunk edits. Split out of
+	 * flushDirtyChunksOnce() so the active-flush tracking can be published
+	 * synchronously before the first await.
+	 */
+	private async applyFlushedEdits(
+		dirty: Set<number>,
+		edits: Map<
+			number,
+			Map<number, { x: number; y: number; z: number; blockId: number }>
+		>,
+	): Promise<void> {
 		try {
 			// Apply pending block edits to the stored chunks with bounded
 			// concurrency (avoid unbounded Promise.all fan-out on huge batches).
@@ -703,6 +745,30 @@ export class VoxelRoom extends Room {
 		} catch (error) {
 			this.mergeFailedChunkEdits(dirty, edits);
 			throw error;
+		}
+	}
+
+	/**
+	 * Wait for the in-flight flush pass to settle when any of `keys` overlaps
+	 * the chunks it is writing. Guarantees a chunk request never applies
+	 * edits for the same chunk concurrently with the flush loop.
+	 */
+	private async waitForOverlappingFlush(
+		keys: readonly number[],
+	): Promise<void> {
+		const activeKeys = this.activeFlushKeys;
+		const activePromise = this.activeFlushPromise;
+		if (!activeKeys || !activePromise) return;
+		for (let i = 0; i < keys.length; i++) {
+			if (activeKeys.has(keys[i])) {
+				try {
+					await activePromise;
+				} catch {
+					// The flush failed and requeued its edits — proceed; the
+					// requeued (older) edits are picked up below.
+				}
+				return;
+			}
 		}
 	}
 
@@ -767,7 +833,10 @@ export class VoxelRoom extends Room {
 	/** Assign the lowest free room player index (0-255). */
 	private allocateIndex(): number {
 		const recycled = this.freedIndices.pop();
-		if (recycled !== undefined) return recycled;
+		if (recycled !== undefined) {
+			this.freedIndexSet.delete(recycled);
+			return recycled;
+		}
 
 		if (this.nextPlayerIndex > 255) {
 			// Never silently hand out duplicate indices — identity collisions
@@ -779,6 +848,12 @@ export class VoxelRoom extends Room {
 	}
 
 	private freeIndex(index: number): void {
+		// Ignore invalid frees (non-integer or out of the 0-255 index space)
+		// and duplicate frees, so a double-free can never put the same index
+		// into the free list twice. All O(1).
+		if (!Number.isInteger(index) || index < 0 || index > 255) return;
+		if (this.freedIndexSet.has(index)) return;
+		this.freedIndexSet.add(index);
 		this.freedIndices.push(index);
 	}
 
@@ -1061,6 +1136,49 @@ export class VoxelRoom extends Room {
 		this.worldStorage.setPlayerPositions(scratch);
 	}
 
+	/**
+	 * Send the current player-state batch directly to a joining client so it
+	 * sees every existing player position immediately — no global dirty pass,
+	 * no broadcast to other players. Uses the pooled entry objects + the
+	 * reused tick encoder, so a join allocates nothing.
+	 */
+	private sendFullPlayerSnapshot(client: Client): void {
+		const scratch = this.statesScratch;
+		scratch.length = 0;
+		let idx = 0;
+		for (const p of this.players.values()) {
+			if (p.sessionId === client.sessionId) continue;
+			let slot = this.statePool[idx];
+			if (!slot) {
+				slot = {
+					index: 0,
+					x: 0,
+					y: 0,
+					z: 0,
+					yaw: 0,
+					pitch: 0,
+					animation: 0,
+				};
+				this.statePool[idx] = slot;
+			}
+			slot.index = p.index;
+			slot.x = p.x;
+			slot.y = p.y;
+			slot.z = p.z;
+			slot.yaw = p.yaw;
+			slot.pitch = p.pitch;
+			slot.animation = p.animation;
+			scratch.push(slot);
+			idx++;
+		}
+
+		if (scratch.length === 0) return;
+
+		this.tickEncoder.reset();
+		writePlayerStateBatch(this.tickEncoder, scratch);
+		client.sendBytes("binary", this.tickEncoder.getBytes());
+	}
+
 	/** Broadcast all mob positions at MOB_UPDATE_INTERVAL (pooled, no alloc). */
 	private writeMobUpdateBatch(): void {
 		const mobs = this.mobSim.snapshotInto(this.mobSnapshotScratch);
@@ -1181,6 +1299,32 @@ export class VoxelRoom extends Room {
 	}
 
 	/**
+	 * Chunk requests must reference a real chunk: safe integer coordinates
+	 * inside the world boundary, LOD 0 (no LOD support), and a cachedVersion
+	 * that fits the wire's uint32. Invalid requests are silently ignored.
+	 */
+	private isValidChunkRequest(
+		cx: number,
+		cy: number,
+		cz: number,
+		lod: number,
+		cachedVersion: number,
+	): boolean {
+		return (
+			Number.isSafeInteger(cx) &&
+			Number.isSafeInteger(cy) &&
+			Number.isSafeInteger(cz) &&
+			Math.abs(cx) <= MAX_CHUNK_COORD &&
+			Math.abs(cy) <= MAX_CHUNK_COORD &&
+			Math.abs(cz) <= MAX_CHUNK_COORD &&
+			lod === 0 &&
+			Number.isInteger(cachedVersion) &&
+			cachedVersion >= 0 &&
+			cachedVersion <= 0xffffffff
+		);
+	}
+
+	/**
 	 * Notify the originating client that its block edit was rejected so it
 	 * can revert the optimistic local change.
 	 */
@@ -1224,7 +1368,7 @@ export class VoxelRoom extends Room {
 
 	/** Estimated encoded size of one chunk inside a ChunkDataBatch. */
 	private estimateChunkBytes(c: StoredChunkData): number {
-		let size = 12 + 4 + 4 + 1; // coords + hash + version + flags
+		let size = 12 + 4 + 1; // coords + version + flags
 		if (c.isUniform) {
 			size += 2;
 		} else if (c.palette) {
@@ -1273,7 +1417,6 @@ export class VoxelRoom extends Room {
 			enc.writeInt32(c.chunkX);
 			enc.writeInt32(c.chunkY);
 			enc.writeInt32(c.chunkZ);
-			enc.writeUint32(hashChunk(c.blocks, c.light, c.palette));
 			enc.writeUint32(c.version);
 			let flags = 0;
 			if (c.isUniform) flags |= 1;
@@ -1430,15 +1573,29 @@ export class VoxelRoom extends Room {
 				this.editBroadcastEncoder.writeInt32(storedEdit.z);
 				this.editBroadcastEncoder.writeUint16(storedEdit.blockId);
 				this.editBroadcastEncoder.writeUint8(storedEdit.action);
-				this.broadcastBytes("binary", this.editBroadcastEncoder.getBytes(), {
-					except: client,
-				});
+				this.broadcastBytes(
+					"binary",
+					this.editBroadcastEncoder.getBytes(),
+					{
+						except: client,
+					},
+				);
 				break;
 			}
 
 			case MessageType.ChunkRequest: {
 				const req = dec.readChunkRequestInto(this.chunkRequestScratch);
-				if (req.lod !== 0) break;
+				if (
+					!this.isValidChunkRequest(
+						req.cx,
+						req.cy,
+						req.cz,
+						req.lod,
+						req.cachedVersion,
+					)
+				) {
+					break;
+				}
 				void this.handleChunkRequest(
 					client,
 					req.cx,
@@ -1465,7 +1622,9 @@ export class VoxelRoom extends Room {
 					const cz = dec.readInt32();
 					const lod = dec.readUint8();
 					const cachedVersion = dec.readUint32();
-					if (lod !== 0) continue;
+					if (!this.isValidChunkRequest(cx, cy, cz, lod, cachedVersion)) {
+						continue;
+					}
 					requests[write++] = { cx, cy, cz, lod, cachedVersion };
 				}
 				requests.length = write;
@@ -1481,6 +1640,7 @@ export class VoxelRoom extends Room {
 				if (!player) return;
 
 				const trimmed = chat.message.trim();
+				if (trimmed.length === 0) return; // ignore empty messages
 				const firstChar = trimmed.charCodeAt(0);
 
 				// Server-authoritative commands are prefixed with '!' or '/'
@@ -1527,6 +1687,11 @@ export class VoxelRoom extends Room {
 	 */
 	private async ensureEditsApplied(keys: readonly number[]): Promise<void> {
 		if (keys.length === 0) return;
+
+		// Never apply edits for a chunk an in-flight flush is still writing:
+		// waiting keeps per-chunk apply order and prevents a chunk request
+		// from racing the flush loop for the same chunk.
+		await this.waitForOverlappingFlush(keys);
 
 		// Move the requested chunks' pending edits out synchronously so a
 		// concurrent flush-loop swap can't double-own the same entries.
@@ -1599,20 +1764,14 @@ export class VoxelRoom extends Room {
 						`[VoxelRoom] handleChunkRequest ${cx},${cy},${cz} cachedVersion=${cachedVersion} serverVersion=${stored.version} sendingFullData`,
 					);
 				}
-				const msg = encodeChunkData({
-					...stored,
-					hash: hashChunk(stored.blocks, stored.light, stored.palette),
-				});
+				const msg = encodeChunkData(stored);
 				client.sendBytes("binary", msg);
 				return;
 			}
 
 			const chunkData = await this.chunkGen.generateChunk(cx, cy, cz);
 
-			const msg = encodeChunkData({
-				...chunkData,
-				hash: hashChunk(chunkData.blocks, chunkData.light, chunkData.palette),
-			});
+			const msg = encodeChunkData(chunkData);
 			client.sendBytes("binary", msg);
 		} catch (err) {
 			console.error(`[VoxelRoom] Chunk gen failed for ${cx},${cy},${cz}:`, err);

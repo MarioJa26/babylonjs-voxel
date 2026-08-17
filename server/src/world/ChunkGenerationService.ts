@@ -20,7 +20,6 @@ export interface ChunkData {
 	palette?: number[];
 	isUniform: boolean;
 	uniformBlockId: number;
-	hash: number;
 	version: number;
 }
 
@@ -36,7 +35,6 @@ interface RawChunkResult {
 	palette?: number[];
 	isUniform: boolean;
 	uniformBlockId: number;
-	hash: number;
 }
 
 /** One unique coordinate inside a batch, mapping to every output slot it fills. */
@@ -79,7 +77,6 @@ function toChunkData(
 		palette: raw.palette,
 		isUniform: raw.isUniform,
 		uniformBlockId: raw.uniformBlockId,
-		hash: raw.hash,
 		version: 1,
 	};
 }

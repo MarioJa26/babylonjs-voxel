@@ -15,7 +15,6 @@ interface ChunkResult {
 	palette?: number[];
 	isUniform: boolean;
 	uniformBlockId: number;
-	hash: number;
 }
 
 type ChunkCoord = {
@@ -61,7 +60,6 @@ type WorkerMessage =
 			palette?: number[];
 			isUniform: boolean;
 			uniformBlockId: number;
-			hash: number;
 	  }
 	| { id: number; kind: PendingTaskKindType.BATCH; items: ChunkResult[] }
 	| { id: number; light: Uint8Array }
@@ -416,7 +414,6 @@ export class ChunkWorkerPool {
 				palette: msg.palette,
 				isUniform: msg.isUniform,
 				uniformBlockId: msg.uniformBlockId,
-				hash: msg.hash,
 			});
 		} else if (
 			task.kind === PendingTaskKindType.BATCH &&

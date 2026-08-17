@@ -7,8 +7,6 @@ export type SavedChunkData = {
 	compressed?: boolean;
 	/** Server chunk version, embedded in the blob so cache reads skip a meta lookup. */
 	version?: number;
-	/** Precomputed hash, embedded in the blob so reads skip recomputation. */
-	hash?: number;
 };
 
 /**

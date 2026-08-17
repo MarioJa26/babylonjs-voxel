@@ -3,7 +3,7 @@
  * instead of generating it locally. Replaces the terrain worker
  * when in multiplayer mode.
  *
- * Caches chunk hashes and sends them with requests. If the server's chunk
+ * Caches chunk versions and sends them with requests. If the server's chunk
  * hasn't changed, it responds with a short "unchanged" stamp instead of
  * re-sending all the data.
  *
@@ -535,8 +535,7 @@ export class RemoteChunkProvider {
 	/**
 	 * Batched cache lookup for a set of chunks: single readChunks call (one
 	 * IndexedDB transaction) instead of N sequential per-chunk awaits.
-	 * PERF: skips hashChunk entirely — the hash is populated from server
-	 * responses, never recomputed from the blob.
+	 * PERF: deserializes the blob directly — no content hashing on read.
 	 */
 	async getCachedChunks(
 		chunks: readonly Chunk[],

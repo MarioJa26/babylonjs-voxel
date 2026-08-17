@@ -2,11 +2,11 @@
  * chunkWorker.ts — Node.js worker thread for parallel chunk generation.
  *
  * Each worker owns one WorldGenerator instance. Receives single or batch
- * chunk requests, generates terrain, compresses blocks, computes the hash,
- * and posts finalized results back with zero-copy buffer transfers.
+ * chunk requests, generates terrain, compresses blocks, and posts finalized
+ * results back with zero-copy buffer transfers.
  *
- * Compression + hashing happen here so the main event loop is never blocked
- * by per-chunk CPU work, and the IPC payload is smaller.
+ * Compression happens here so the main event loop is never blocked by
+ * per-chunk CPU work, and the IPC payload is smaller.
  *
  * When wasmEnabled is true, loads the WASM SIMD noise backend before
  * constructing the WorldGenerator.
@@ -14,7 +14,6 @@
 import { parentPort } from "node:worker_threads";
 import { setTerrainSeed } from "@/code/Generation/TerrainHeightMap";
 import { loadWasmNoiseFromFile } from "@/code/Lib/WasmNoise";
-import { hashChunk } from "@/code/Network/protocol/encoder.ts";
 import { compressBlocks } from "../world/ChunkCompression.ts";
 import { PendingTaskKindType } from "./workerProtocol.ts";
 
@@ -50,7 +49,6 @@ type FinalizedChunk = {
 	palette?: number[];
 	isUniform: boolean;
 	uniformBlockId: number;
-	hash: number;
 };
 
 type RelightRequest = {
@@ -76,7 +74,6 @@ type GenResultMessage = {
 	palette?: number[];
 	isUniform: boolean;
 	uniformBlockId: number;
-	hash: number;
 };
 
 type GenSuccess = GenResultMessage;
@@ -262,7 +259,6 @@ function finalizeOne(raw: ChunkResult): FinalizedChunk {
 		palette: compressed.palette,
 		isUniform: compressed.isUniform,
 		uniformBlockId: compressed.uniformBlockId,
-		hash: hashChunk(compressed.data, raw.light, compressed.palette),
 	};
 }
 
@@ -279,7 +275,6 @@ async function handleRequest(req: GenRequest): Promise<void> {
 			palette: finalized.palette,
 			isUniform: finalized.isUniform,
 			uniformBlockId: finalized.uniformBlockId,
-			hash: finalized.hash,
 		};
 
 		parentPort!.postMessage(msg, collectSingleTransferable(finalized));
