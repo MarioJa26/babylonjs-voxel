@@ -4,6 +4,13 @@ export interface VertexShaderOptions {
 	meta?: boolean;
 	tangent?: boolean;
 	worldPosition?: boolean;
+	viewDir?: boolean;
+	/**
+	 * For normal-mapped lighting.
+	 * Emits light/view direction in tangent space so the fragment shader can use
+	 * the sampled normal map directly.
+	 */
+	tangentSpaceLighting?: boolean;
 }
 
 type ResolvedVertexShaderOptions = Required<VertexShaderOptions>;
@@ -20,7 +27,8 @@ type ResolvedVertexShaderOptions = Required<VertexShaderOptions>;
 //  10: vFogFactor   (optional)
 //  11: vFogColor    (optional)
 //  12: vTint        (optional)
-//  13: vViewDir     (always)
+//  13: vViewDir     (optional)
+//  14: vLightDirTS   (optional, tangent-space lighting only)
 
 function fogWGSL(enabled: boolean): string {
 	if (!enabled) return "";
@@ -65,7 +73,12 @@ function vsOutFields(opts: ResolvedVertexShaderOptions): string {
 		f.push("  @location(11) vFogColor : vec3<f32>,");
 	}
 	if (opts.tint) f.push("  @location(12) @interpolate(flat) vTint : u32,");
-	f.push("  @location(13) vViewDir : vec3<f32>,");
+	if (opts.tangentSpaceLighting) {
+		f.push("  @location(13) vViewDirTS : vec3<f32>,");
+		f.push("  @location(14) @interpolate(flat) vLightDirTS : vec3<f32>,");
+	} else if (opts.viewDir) {
+		f.push("  @location(13) vViewDir : vec3<f32>,");
+	}
 	return f.join("\n");
 }
 
@@ -97,6 +110,20 @@ function vsOutAssignments(opts: ResolvedVertexShaderOptions): string {
 		a.push("  let skyBlend = clamp((dist - 1400.0) * 0.0003333, 0.0, 1.0);");
 		a.push("  out.vFogColor = mix(baseFogColor, skyboxColor, skyBlend);");
 	}
+	if (opts.tangentSpaceLighting) {
+		a.push("  out.vViewDirTS = vec3<f32>(");
+		a.push("    dot(toCamera * invDist, sharedTangent),");
+		a.push("    dot(toCamera * invDist, sharedBitangent),");
+		a.push("    dot(toCamera * invDist, sharedNormal)");
+		a.push("  );");
+		a.push("  out.vLightDirTS = vec3<f32>(");
+		a.push("    dot(shaderUniforms.lightDirection, sharedTangent),");
+		a.push("    dot(shaderUniforms.lightDirection, sharedBitangent),");
+		a.push("    dot(shaderUniforms.lightDirection, sharedNormal)");
+		a.push("  );");
+	} else if (opts.viewDir) {
+		a.push("  out.vViewDir = toCamera * invDist;");
+	}
 	return a.join("\n");
 }
 
@@ -111,6 +138,8 @@ export function buildPackedVertexWGSL(
 		meta: opts.meta ?? true,
 		tangent: opts.tangent ?? true,
 		worldPosition: opts.worldPosition ?? true,
+		viewDir: opts.viewDir ?? true,
+		tangentSpaceLighting: opts.tangentSpaceLighting ?? false,
 	};
 
 	let loadFaceBody = "";
@@ -253,6 +282,7 @@ ${o.tint ? "  let tintBucket = (face.x >> 27u) & 7u;" : ""}
 
   let sharedNormal = select(aNormal, dNormal, isDiag);
   let sharedTangent = select(aTangent, dTangent, isDiag);
+${o.tangentSpaceLighting ? "  let sharedBitangent = cross(sharedNormal, sharedTangent);" : ""}
 
   let vid = vertexIndex;
   let corner = CORNER_LUT[cornerState * 4u + vid];
@@ -298,7 +328,6 @@ ${o.tint ? "  let tintBucket = (face.x >> 27u) & 7u;" : ""}
   let invDist = inverseSqrt(max(distSq, 1e-8));
 ${o.fog ? "  let dist = distSq * invDist;" : ""}
 ${vsOutAssignments(o)}
-  out.vViewDir = toCamera * invDist;
   return out;
 }
 `;

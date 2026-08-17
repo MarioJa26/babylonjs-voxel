@@ -100,12 +100,17 @@ function populateMaterialList(): void {
 
 // Static-uniform dirty tracking: skip the 6-material GPU uniform write when the
 // scene lighting hasn't changed (only the animated `time` uniform keeps updating).
+const UNIFORM_EPSILON = 0.00001;
 let lastLX = 0;
 let lastLY = 0;
 let lastLZ = 0;
 let lastSun = -1;
 let lastWet = -1;
 let _timeFrameCounter = 0;
+
+function nearlyEqual(a: number, b: number, eps = UNIFORM_EPSILON): boolean {
+	return Math.abs(a - b) <= eps;
+}
 
 function getOpaqueMaterialForLodBucket(lod: number): ShaderMaterial {
 	return lod >= 3
@@ -161,13 +166,40 @@ function uploadTintLUT(): void {
 const fogInfosArray = new Float32Array(4);
 const fogColorArray = new Float32Array(3);
 
-function setMaterialGroupUniforms(m: ShaderMaterial, time?: number): void {
+function hasStaticLightingChanged(): boolean {
+	const u = cachedUniforms;
+	return (
+		!nearlyEqual(u.lightDirection.x, lastLX) ||
+		!nearlyEqual(u.lightDirection.y, lastLY) ||
+		!nearlyEqual(u.lightDirection.z, lastLZ) ||
+		!nearlyEqual(u.sunLightIntensity, lastSun) ||
+		!nearlyEqual(u.wetness, lastWet)
+	);
+}
+
+function cacheStaticLightingState(): void {
+	const u = cachedUniforms;
+	lastLX = u.lightDirection.x;
+	lastLY = u.lightDirection.y;
+	lastLZ = u.lightDirection.z;
+	lastSun = u.sunLightIntensity;
+	lastWet = u.wetness;
+	lightDirArray[0] = u.lightDirection.x;
+	lightDirArray[1] = u.lightDirection.y;
+	lightDirArray[2] = u.lightDirection.z;
+}
+
+function setStaticMaterialUniforms(m: ShaderMaterial): void {
+	setShaderUniform(m, "lightDirection", lightDirArray);
 	setShaderUniform(m, "sunLightIntensity", cachedUniforms.sunLightIntensity);
 	setShaderUniform(m, "wetness", cachedUniforms.wetness);
-	// Only the transparent shader declares/uses `time`; Lite prunes it from the
-	// other materials' generated uniform struct, so guard the write.
-	if (m === transparentMaterial) {
-		setShaderUniform(m, "time", time ?? performance.now() * 0.001);
+}
+
+function setTransparentTimeUniform(time: number): void {
+	// Only the near transparent shader declares/uses `time`; Lite prunes it
+	// from the other materials' generated uniform struct, so guard the write.
+	if (transparentMaterial) {
+		setShaderUniform(transparentMaterial, "time", time);
 	}
 }
 
@@ -191,29 +223,32 @@ function pushFogUniforms(): void {
 	const start = MapFog.getFogStart(isUnderWater);
 	const end = MapFog.getFogEnd(isUnderWater);
 	const color = MapFog.getFogColor(isUnderWater);
+	const r = color[0];
+	const g = color[1];
+	const b = color[2];
 	if (
-		start === _fogCachedStart &&
-		end === _fogCachedEnd &&
-		color[0] === _fogCachedColorR &&
-		color[1] === _fogCachedColorG &&
-		color[2] === _fogCachedColorB &&
+		nearlyEqual(start, _fogCachedStart) &&
+		nearlyEqual(end, _fogCachedEnd) &&
+		nearlyEqual(r, _fogCachedColorR) &&
+		nearlyEqual(g, _fogCachedColorG) &&
+		nearlyEqual(b, _fogCachedColorB) &&
 		isUnderWater === _fogCachedUnderwater
 	) {
 		return;
 	}
 	_fogCachedStart = start;
 	_fogCachedEnd = end;
-	_fogCachedColorR = color[0];
-	_fogCachedColorG = color[1];
-	_fogCachedColorB = color[2];
+	_fogCachedColorR = r;
+	_fogCachedColorG = g;
+	_fogCachedColorB = b;
 	_fogCachedUnderwater = isUnderWater;
 	fogInfosArray[0] = 0;
 	fogInfosArray[1] = start;
 	fogInfosArray[2] = end;
 	fogInfosArray[3] = 0;
-	fogColorArray[0] = color[0];
-	fogColorArray[1] = color[1];
-	fogColorArray[2] = color[2];
+	fogColorArray[0] = r;
+	fogColorArray[1] = g;
+	fogColorArray[2] = b;
 	for (let i = 0; i < materialList.length; i++) {
 		const m = materialList[i];
 		if (!m) continue;
@@ -299,7 +334,10 @@ export async function initAtlas(): Promise<void> {
 	const initTime = performance.now() * 0.001;
 	for (let i = 0; i < materialList.length; i++) {
 		const m = materialList[i];
-		if (m) setMaterialGroupUniforms(m, initTime);
+		if (m) {
+			setStaticMaterialUniforms(m);
+			setTransparentTimeUniform(initTime);
+		}
 	}
 
 	pushFogUniforms();
@@ -583,43 +621,31 @@ export function updateGlobalUniforms(frameId: number): void {
 
 	u.wetness = Map1.environment ? (Map1.environment.wetness ?? 0) : 0;
 
-	populateMaterialList();
-
-	const staticChanged =
-		u.lightDirection.x !== lastLX ||
-		u.lightDirection.y !== lastLY ||
-		u.lightDirection.z !== lastLZ ||
-		u.sunLightIntensity !== lastSun ||
-		u.wetness !== lastWet;
+	const staticChanged = hasStaticLightingChanged();
 
 	if (staticChanged) {
-		lastLX = u.lightDirection.x;
-		lastLY = u.lightDirection.y;
-		lastLZ = u.lightDirection.z;
-		lastSun = u.sunLightIntensity;
-		lastWet = u.wetness;
-		const updateTime = performance.now() * 0.001;
+		populateMaterialList();
+		cacheStaticLightingState();
+
+		const now = performance.now() * 0.001;
 		for (let i = 0; i < materialList.length; i++) {
 			const m = materialList[i];
 			if (!m) continue;
-
-			lightDirArray[0] = u.lightDirection.x;
-			lightDirArray[1] = u.lightDirection.y;
-			lightDirArray[2] = u.lightDirection.z;
-
-			setShaderUniform(m, "lightDirection", lightDirArray);
-
-			setMaterialGroupUniforms(m, updateTime);
+			setStaticMaterialUniforms(m);
 		}
+
+		setTransparentTimeUniform(now);
+		_timeFrameCounter = 1;
 	} else if (transparentMaterial) {
 		// Lighting is static, but the transparent shader still animates `time`.
 		// Throttle to ~20fps (every 3 frames) since the shader uses time for
 		// slow water animation — smooth float changes at 16ms granularity
 		// produce the same visual result while cutting 2/3 of the custom-UBO
 		// writeBuffer calls for the transparent material.
-		if (_timeFrameCounter++ % 3 !== 0) return;
-		const time = performance.now() * 0.001;
-		setShaderUniform(transparentMaterial, "time", time);
+		// Important: do not `return` here, fog may still need updating.
+		if (_timeFrameCounter++ % 3 === 0) {
+			setTransparentTimeUniform(performance.now() * 0.001);
+		}
 	}
 
 	// Fog reacts to MapFog overrides + underwater transitions, so push every frame.

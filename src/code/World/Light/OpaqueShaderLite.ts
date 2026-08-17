@@ -41,38 +41,34 @@ struct VSOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) vUV : vec2<f32>,
   @location(1) @interpolate(flat) vTileLayer : u32,
-  @location(3) @interpolate(flat) vTangent : vec3<f32>,
-  @location(5) @interpolate(flat) vNormal : vec3<f32>,
   @location(6) vAO : f32,
   @location(7) @interpolate(flat) vLight : vec2<f32>,
-  @location(13) vViewDir : vec3<f32>,
+  @location(13) vViewDirTS : vec3<f32>,
+  @location(14) @interpolate(flat) vLightDirTS : vec3<f32>,
 };
 
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let singleTileUV = fract(in.vUV);
   let layer = in.vTileLayer;
+  let dx = dpdx(in.vUV);
+  let dy = dpdy(in.vUV);
 
-  var diffuseColor = textureSampleGrad(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, dpdx(in.vUV), dpdy(in.vUV));
+  var diffuseColor = textureSampleGrad(diffuseTexture, diffuseTextureSampler, singleTileUV, layer, dx, dy);
   if (diffuseColor.a < 0.01) { discard; }
   diffuseColor = vec4<f32>(diffuseColor.rgb * mix(1.0, 0.5, shaderUniforms.wetness), diffuseColor.a);
 
-  var normalMap = textureSampleGrad(normalTexture, normalTextureSampler, singleTileUV, layer, dpdx(in.vUV), dpdy(in.vUV)).rgb;
+  var normalMap = textureSampleGrad(normalTexture, normalTextureSampler, singleTileUV, layer, dx, dy).rgb;
   normalMap = normalize(normalMap * 2.0 - 1.0);
 
-  let N = in.vNormal;
-  let T = in.vTangent;
-  let B = cross(N, T);
-  let worldNormal = normalize(mat3x3<f32>(T, B, N) * normalMap);
+  let lightDirectionTS = normalize(in.vLightDirTS);
+  let viewDirTS = normalize(in.vViewDirTS);
 
-  let lightDirection = shaderUniforms.lightDirection;
-  let viewDir = in.vViewDir;
-
-  let diffuseIntensity = max(0.0, dot(worldNormal, lightDirection));
+  let diffuseIntensity = max(0.0, dot(normalMap, lightDirectionTS));
 
   let shininess = mix(16.0, 128.0, shaderUniforms.wetness);
-  let halfwayDir = normalize(viewDir + lightDirection);
-  let NH = max(dot(worldNormal, halfwayDir), 0.0);
+  let halfwayDirTS = normalize(viewDirTS + lightDirectionTS);
+  let NH = max(dot(normalMap, halfwayDirTS), 0.0);
   let spec = exp2(clamp(shininess * 1.4427 * (NH - 1.0), -126.0, 0.0));
   let specIntensity = mix(0.03, 0.7, shaderUniforms.wetness) * in.vLight.x;
   let specular = vec3<f32>(specIntensity) * spec * max(shaderUniforms.sunLightIntensity - 0.1, 0.0);
@@ -83,8 +79,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 
   let color = (diffuseColor.rgb * (1.0 + diffuseIntensity * shaderUniforms.sunLightIntensity * in.vLight.x) + specular) * lightMix * aoFactor;
 
-  let finalColor = color;
-  return vec4<f32>(finalColor, 1.0);
+  return vec4<f32>(color, 1.0);
 }
 `;
 
@@ -335,11 +330,13 @@ export function createChunkOpaqueMaterial(
 		opaqueChunkFragmentWGSL,
 		true,
 		{
-			tangent: true,
+			tangent: false,
 			worldPosition: false,
 			meta: false,
 			tint: false,
 			fog: false,
+			viewDir: true,
+			tangentSpaceLighting: true,
 		},
 		opts,
 	);
