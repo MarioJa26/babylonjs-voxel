@@ -2,7 +2,7 @@ import type { Mesh } from "@babylonjs/lite";
 import { CHUNK_SIZE } from "@/code/Lib/VoxelMath";
 import type { Chunk } from "./Chunk";
 import type { MeshData } from "./DataStructures/MeshData";
-import { disposePackedMesh } from "./PackedChunkMesh.js";
+import { disposePackedMesh, maxFacesPerArena } from "./PackedChunkMesh.js";
 
 // Lite `Mesh` has no `.dispose()` — free its packed-arena slices, unregister
 // from the scene, then free GPU resources.
@@ -14,6 +14,11 @@ function disposeGroupMesh(mesh: Mesh): void {
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+enum Meshkind {
+	opaque,
+	transparent,
+}
 
 export interface ChunkMemberData {
 	chunkId: number;
@@ -132,6 +137,11 @@ const MAX_GROUP_MEMBERS = GROUP_SIZE * GROUP_SIZE * GROUP_SIZE;
 
 const groups = new Map<number, MergedMeshGroup>();
 const dirtyGroups = new Set<MergedMeshGroup>();
+
+// Scratch face-count caches for rebuildGroupData.
+// MAX_GROUP_MEMBERS is 64, so these avoid per-rebuild arrays.
+const _opaqueFaceCounts = new Uint32Array(MAX_GROUP_MEMBERS);
+const _transparentFaceCounts = new Uint32Array(MAX_GROUP_MEMBERS);
 
 // Invalidate the per-member "already built" cache. Must be called whenever
 // the merged-buffer layout can change independent of member data references:
@@ -439,7 +449,7 @@ export function assignChunkToGroup(
 export function removeChunkFromGroup(chunk: Chunk): void {
 	const groupKey = chunk.mergedGroupKey;
 
-	if (!groupKey) return;
+	if (groupKey === null) return;
 
 	const group = groups.get(groupKey);
 
@@ -633,10 +643,17 @@ function ensureOpaqueMergedCapacity(
 	let capacity = group.opaqueCapacityFaces;
 
 	if (capacity < faceCount) {
-		capacity = Math.max(faceCount, capacity << 1, 256);
+		// Plain multiplication, NOT `<<`: a left shift is 32-bit and wraps
+		// negative above 2^30, which would produce a bogus (possibly huge or
+		// negative) byte length. Also clamp to the face-arena per-block
+		// limit: a merged group above it can never be uploaded to the GPU
+		// anyway, and this stops a corrupt faceCount from allocating
+		// gigabytes of merged buffers.
+		const maxFaces = maxFacesPerArena();
+		capacity = Math.min(Math.max(faceCount, capacity * 2, 256), maxFaces);
 		group.opaqueCapacityFaces = capacity;
 
-		const byte4 = capacity << 2;
+		const byte4 = capacity * 4;
 
 		const a = new Uint8Array(byte4);
 		const b = new Uint8Array(byte4);
@@ -665,10 +682,12 @@ function ensureTransparentMergedCapacity(
 	let capacity = group.transparentCapacityFaces;
 
 	if (capacity < faceCount) {
-		capacity = Math.max(faceCount, capacity << 1, 256);
+		// See ensureOpaqueMergedCapacity — same wrap/clamp rationale.
+		const maxFaces = maxFacesPerArena();
+		capacity = Math.min(Math.max(faceCount, capacity * 2, 256), maxFaces);
 		group.transparentCapacityFaces = capacity;
 
-		const byte4 = capacity << 2;
+		const byte4 = capacity * 4;
 
 		const a = new Uint8Array(byte4);
 		const b = new Uint8Array(byte4);
@@ -688,6 +707,37 @@ function ensureTransparentMergedCapacity(
 	}
 
 	return group.transparentBuffers!;
+}
+
+// Returns the member's face count for `kind`, clamped to what its payload
+// buffers actually hold. A stale/desynced MeshData (e.g. from the OPFS cache)
+// can declare a faceCount wildly larger than its buffers — which would
+// balloon the merged group and, downstream, OOM the packed-mesh
+// instance-matrix buffer ("Array buffer allocation failed"). The buffer
+// length is the ground truth: the packed mesh derives its face count from it
+// too (faceDataA.length >>> 2).
+function memberFaceCount(m: ChunkMemberData, kind: Meshkind): number {
+	const data = kind === Meshkind.opaque ? m.opaqueData : m.transparentData;
+	if (!data) return 0;
+
+	const raw = data.faceCount;
+	const aLen = data.faceDataA.length;
+	const bLen = data.faceDataB.length;
+	const cLen = data.faceDataC.length;
+
+	if (raw >= 0 && raw * 4 === aLen && aLen === bLen && aLen === cLen) {
+		return raw;
+	}
+
+	const derived = Math.min(aLen, bLen, cLen) >>> 2;
+
+	console.warn(
+		`[MergedMeshManager] chunk #${m.chunkId} (lod ${m.chunk.lodLevel ?? 0}) ` +
+			`${kind} faceCount (${raw}) inconsistent with buffer lengths ` +
+			`(${aLen}/${bLen}/${cLen} bytes) — using ${derived} instead.`,
+	);
+
+	return derived;
 }
 
 function rebuildGroupData(group: MergedMeshGroup): void {
@@ -719,17 +769,43 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	let totalOpaque = 0;
 	let totalTransparent = 0;
 
+	// Count once, cache per-member counts, and reuse those counts in the copy
+	// pass. This avoids repeated validation/logging and repeated buffer-length
+	// reads for every dirty rebuild.
 	for (let i = 0; i < memberCount; i++) {
 		const m = members[i];
-		const opaque = m.opaqueData;
-		const transparent = m.transparentData;
 
-		if (opaque) totalOpaque += opaque.faceCount;
-		if (transparent) totalTransparent += transparent.faceCount;
+		const opaqueCount = m.opaqueData ? memberFaceCount(m, Meshkind.opaque) : 0;
+		const transparentCount = m.transparentData
+			? memberFaceCount(m, Meshkind.transparent)
+			: 0;
+
+		_opaqueFaceCounts[i] = opaqueCount;
+		_transparentFaceCounts[i] = transparentCount;
+
+		totalOpaque += opaqueCount;
+		totalTransparent += transparentCount;
 	}
 
 	group.totalOpaqueFaces = totalOpaque;
 	group.totalTransparentFaces = totalTransparent;
+
+	// A merged group must fit a single face-arena block per mesh to be
+	// uploaded; above that allocFaces can never succeed. Refuse before
+	// allocating gigabytes of merged buffers.
+	const maxGroupFaces = maxFacesPerArena();
+	if (totalOpaque > maxGroupFaces || totalTransparent > maxGroupFaces) {
+		console.warn(
+			`[MergedMeshManager] group (${group.gridX}, ${group.gridY}, ` +
+				`${group.gridZ}) lod bucket ${group.lodBucket} exceeds the ` +
+				`per-mesh arena limit (opaque ${totalOpaque}, transparent ` +
+				`${totalTransparent}, max ${maxGroupFaces} faces) — mesh ` +
+				`rebuild skipped.`,
+		);
+
+		group.dirty = false;
+		return;
+	}
 
 	const opaqueGrew = totalOpaque > group.opaqueCapacityFaces;
 	const transparentGrew = totalTransparent > group.transparentCapacityFaces;
@@ -750,7 +826,9 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 
 		if (opaqueGrew) {
 			for (let i = 0; i < memberCount; i++) {
-				members[i].lastBuiltOpaque = null;
+				const m = members[i];
+				m.lastBuiltOpaque = null;
+				m.lastBuiltOpaqueOffset = -1;
 			}
 		}
 	} else {
@@ -765,7 +843,9 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 
 		if (transparentGrew) {
 			for (let i = 0; i < memberCount; i++) {
-				members[i].lastBuiltTransparent = null;
+				const m = members[i];
+				m.lastBuiltTransparent = null;
+				m.lastBuiltTransparentOffset = -1;
 			}
 		}
 	} else {
@@ -782,100 +862,100 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		const m = members[i];
 
 		const opaque = m.opaqueData;
-		if (opaque) {
-			const fc = opaque.faceCount;
+		const opaqueFaceCount = _opaqueFaceCounts[i];
 
-			if (fc > 0) {
-				const byteCount = fc << 2;
+		if (opaque && opaqueFaceCount > 0) {
+			const byteCount = opaqueFaceCount * 4;
 
-				if (
-					m.lastBuiltOpaque !== opaque ||
-					m.lastBuiltOpaqueOffset !== opaqueWriteByte
-				) {
-					copyFaceBytes(opaqueA!, opaque.faceDataA, byteCount, opaqueWriteByte);
-					copyFaceBytes(opaqueB!, opaque.faceDataB, byteCount, opaqueWriteByte);
-					copyFaceBytes(opaqueC!, opaque.faceDataC, byteCount, opaqueWriteByte);
+			if (
+				m.lastBuiltOpaque !== opaque ||
+				m.lastBuiltOpaqueOffset !== opaqueWriteByte
+			) {
+				copyFaceBytes(opaqueA!, opaque.faceDataA, byteCount, opaqueWriteByte);
+				copyFaceBytes(opaqueB!, opaque.faceDataB, byteCount, opaqueWriteByte);
+				copyFaceBytes(opaqueC!, opaque.faceDataC, byteCount, opaqueWriteByte);
 
-					const ci = m.localIndex;
+				const ci = m.localIndex;
 
-					if (ci !== 0) {
-						for (
-							let k = opaqueWriteByte + 3, end = opaqueWriteByte + byteCount;
-							k < end;
-							k += 4
-						) {
-							opaqueC![k] |= ci;
-						}
+				if (ci !== 0) {
+					for (
+						let k = opaqueWriteByte + 3, end = opaqueWriteByte + byteCount;
+						k < end;
+						k += 4
+					) {
+						opaqueC![k] |= ci;
 					}
-
-					m.lastBuiltOpaque = opaque;
-					m.lastBuiltOpaqueOffset = opaqueWriteByte;
-
-					pushDirtyRange(opaqueRanges, opaqueWriteFace, fc);
 				}
 
-				opaqueWriteByte += byteCount;
-				opaqueWriteFace += fc;
+				m.lastBuiltOpaque = opaque;
+				m.lastBuiltOpaqueOffset = opaqueWriteByte;
+
+				pushDirtyRange(opaqueRanges, opaqueWriteFace, opaqueFaceCount);
 			}
+
+			opaqueWriteByte += byteCount;
+			opaqueWriteFace += opaqueFaceCount;
 		}
 
 		const transparent = m.transparentData;
-		if (transparent) {
-			const fc = transparent.faceCount;
+		const transparentFaceCount = _transparentFaceCounts[i];
 
-			if (fc > 0) {
-				const byteCount = fc << 2;
+		if (transparent && transparentFaceCount > 0) {
+			const byteCount = transparentFaceCount * 4;
 
-				if (
-					m.lastBuiltTransparent !== transparent ||
-					m.lastBuiltTransparentOffset !== transparentWriteByte
-				) {
-					copyFaceBytes(
-						transparentA!,
-						transparent.faceDataA,
-						byteCount,
-						transparentWriteByte,
-					);
-					copyFaceBytes(
-						transparentB!,
-						transparent.faceDataB,
-						byteCount,
-						transparentWriteByte,
-					);
-					copyFaceBytes(
-						transparentC!,
-						transparent.faceDataC,
-						byteCount,
-						transparentWriteByte,
-					);
+			if (
+				m.lastBuiltTransparent !== transparent ||
+				m.lastBuiltTransparentOffset !== transparentWriteByte
+			) {
+				copyFaceBytes(
+					transparentA!,
+					transparent.faceDataA,
+					byteCount,
+					transparentWriteByte,
+				);
+				copyFaceBytes(
+					transparentB!,
+					transparent.faceDataB,
+					byteCount,
+					transparentWriteByte,
+				);
+				copyFaceBytes(
+					transparentC!,
+					transparent.faceDataC,
+					byteCount,
+					transparentWriteByte,
+				);
 
-					const ci = m.localIndex;
+				const ci = m.localIndex;
 
-					if (ci !== 0) {
-						for (
-							let k = transparentWriteByte + 3,
-								end = transparentWriteByte + byteCount;
-							k < end;
-							k += 4
-						) {
-							transparentC![k] |= ci;
-						}
+				if (ci !== 0) {
+					for (
+						let k = transparentWriteByte + 3,
+							end = transparentWriteByte + byteCount;
+						k < end;
+						k += 4
+					) {
+						transparentC![k] |= ci;
 					}
-
-					m.lastBuiltTransparent = transparent;
-					m.lastBuiltTransparentOffset = transparentWriteByte;
-
-					pushDirtyRange(transparentRanges, transparentWriteFace, fc);
 				}
 
-				transparentWriteByte += byteCount;
-				transparentWriteFace += fc;
+				m.lastBuiltTransparent = transparent;
+				m.lastBuiltTransparentOffset = transparentWriteByte;
+
+				pushDirtyRange(
+					transparentRanges,
+					transparentWriteFace,
+					transparentFaceCount,
+				);
 			}
+
+			transparentWriteByte += byteCount;
+			transparentWriteFace += transparentFaceCount;
 		}
 	}
 
 	if (totalOpaque > 0) {
-		const totalBytes = totalOpaque << 2;
+		const totalBytes = totalOpaque * 4;
 
 		if (!group.opaqueVertexData) {
 			group.opaqueVertexData = {
@@ -906,7 +986,7 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	}
 
 	if (totalTransparent > 0) {
-		const totalBytes = totalTransparent << 2;
+		const totalBytes = totalTransparent * 4;
 
 		if (!group.transparentVertexData) {
 			group.transparentVertexData = {

@@ -88,6 +88,12 @@ const SHARED_QUAD_INDICES = new Uint32Array([0, 2, 1, 0, 3, 2]);
 // world3 is the 4th column; .w is element 15. The shader reads it as world3.w.
 const FACE_BASE_MATRIX_INDEX = 15;
 
+// Upper bound (elements) for a per-mesh thin-instance matrix buffer: 256 MiB
+// at 4 B/element, i.e. up to 4,194,304 faces per mesh. A merged group above
+// this is pathological or corrupt — refusing beats allocating gigabytes and
+// hard-crashing the tab.
+const MAX_INSTANCE_MATRIX_ELEMENTS = 1 << 26;
+
 interface PackedMeshState {
 	faceArena: number;
 	faceBase: number;
@@ -396,7 +402,9 @@ function growArena(arena: FaceArena, index: number): void {
 
 // Total faces one arena may hold (the binding-size cap). All arenas are
 // created up front (see ensureArenas) and grow toward this independently.
-function maxFacesPerArena(): number {
+// Exported so MergedMeshManager can clamp merged-group capacity to what a
+// single arena block can actually hold.
+export function maxFacesPerArena(): number {
 	return Math.floor(maxStorageBindingBytes / FACE_BYTES);
 }
 
@@ -986,6 +994,11 @@ function packOffsets(state: PackedMeshState, input: PackedMeshInput): void {
 // index whose lanes need (re)writing — callers pass `state.faceCount` (the
 // old count) when only the appended instances are new, and 0 when the
 // faceBase/arena/offsetBase lanes themselves changed.
+//
+// Returns null (and logs) when `count` is not a sane non-negative number or
+// would need more than MAX_INSTANCE_MATRIX_ELEMENTS — the caller then skips
+// the mesh update instead of attempting a multi-gigabyte allocation (which
+// hard-crashes the tab with "Array buffer allocation failed").
 function buildInstanceMatrices(
 	prev: Float32Array | undefined,
 	arena: number,
@@ -993,14 +1006,36 @@ function buildInstanceMatrices(
 	offsetBase: number,
 	count: number,
 	start: number,
-): Float32Array {
+): Float32Array | null {
+	if (!Number.isFinite(count) || count < 0) {
+		console.warn(
+			`[PackedChunkMesh] refusing instance-matrix buffer: ` +
+				`invalid face count ${count}.`,
+		);
+		return null;
+	}
+
 	const needLen = count * 16;
+
+	if (needLen > MAX_INSTANCE_MATRIX_ELEMENTS) {
+		console.warn(
+			`[PackedChunkMesh] refusing instance-matrix buffer: ` +
+				`${count} faces (${needLen} matrix elements) exceeds the safe ` +
+				`limit of ${MAX_INSTANCE_MATRIX_ELEMENTS >> 4} faces per mesh. ` +
+				`Mesh update skipped.`,
+		);
+		return null;
+	}
+
 	let matrices = prev;
 	if (!matrices || matrices.length < needLen) {
 		// Grow to a power of two above the need so repeated face-count
 		// growth (the streaming-append case) doesn't reallocate each time.
+		// Plain multiplication, NOT `<<=`: a left shift is 32-bit and wraps
+		// negative above 2^30, which turns this loop into an infinite loop
+		// and the allocation into an OOM crash.
 		let capacity = 1024;
-		while (capacity < needLen) capacity <<= 1;
+		while (capacity < needLen) capacity *= 2;
 		matrices = new Float32Array(capacity);
 		start = 0;
 	}
@@ -1104,6 +1139,19 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 	const scene = sceneRef!;
 
 	const faceCount = input.faceDataA.length >>> 2;
+
+	// Refuse before doing any work (arena/offset allocation, mesh creation):
+	// a corrupt face count would otherwise reach buildInstanceMatrices and
+	// attempt a multi-gigabyte allocation.
+	if (faceCount * 16 > MAX_INSTANCE_MATRIX_ELEMENTS) {
+		console.warn(
+			`[PackedChunkMesh] skipping mesh for "${input.name}": ` +
+				`${faceCount} faces exceeds the safe per-mesh limit of ` +
+				`${MAX_INSTANCE_MATRIX_ELEMENTS >> 4}.`,
+		);
+		return null;
+	}
+
 	const alloc = allocFaces(faceCount);
 
 	if (alloc.arena < 0) {
@@ -1164,6 +1212,17 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 		0,
 	);
 
+	if (!instanceMatrices) {
+		// Unreachable after the count validation above; keep the guard so a
+		// future regression cannot leak the arena block, offset block and
+		// mesh. The mesh was never added to the scene, so disposing its GPU
+		// resources immediately is safe.
+		freeFaces(alloc.arena, alloc.base, faceCount);
+		freeOffsetBlock(offsetBase);
+		disposeMeshGpu(mesh);
+		return null;
+	}
+
 	state.instanceMatrices = instanceMatrices;
 	state.instanceLanesValid = faceCount;
 
@@ -1219,6 +1278,28 @@ export function updatePackedChunkMesh(
 	// writing.
 	if (faceCount > state.faceCount) {
 		const arena = faceArenas[state.faceArena];
+		const oldValid = state.instanceLanesValid ?? 0;
+		const prevMatrices = state.instanceMatrices;
+
+		// Build the instance matrices BEFORE touching the arena: a corrupt
+		// huge face count then bails here with the arena block intact.
+		const instanceMatrices = buildInstanceMatrices(
+			prevMatrices,
+			state.faceArena,
+			state.faceBase,
+			state.offsetBase,
+			faceCount,
+			oldValid,
+		);
+
+		if (!instanceMatrices) {
+			console.warn(
+				`[PackedChunkMesh] skipping growth update for chunk mesh ` +
+					`(${faceCount} faces) — instance-matrix limit hit.`,
+			);
+			return mesh;
+		}
+
 		if (
 			arena &&
 			tryExtendFaces(
@@ -1229,7 +1310,6 @@ export function updatePackedChunkMesh(
 				faceCount,
 			)
 		) {
-			const oldCount = state.faceCount;
 			state.faceCount = faceCount;
 
 			if (dirtyRanges && dirtyRanges.length > 0) {
@@ -1248,18 +1328,6 @@ export function updatePackedChunkMesh(
 				packFaces(state, input);
 				uploadFaceRange(state.faceArena, state.faceBase, faceCount);
 			}
-
-			const oldValid = state.instanceLanesValid ?? 0;
-			const prevMatrices = state.instanceMatrices;
-
-			const instanceMatrices = buildInstanceMatrices(
-				prevMatrices,
-				state.faceArena,
-				state.faceBase,
-				state.offsetBase,
-				faceCount,
-				oldValid,
-			);
 
 			// buildInstanceMatrices only reallocates the retained buffer when the
 			// new face count outgrows it (power-of-two growth). If it did, every
@@ -1319,6 +1387,14 @@ export function updatePackedChunkMesh(
 		faceCount,
 		0,
 	);
+
+	if (!instanceMatrices) {
+		console.warn(
+			`[PackedChunkMesh] skipping thin-instance update for chunk mesh ` +
+				`(${faceCount} faces) — instance-matrix limit hit.`,
+		);
+		return mesh;
+	}
 
 	state.instanceMatrices = instanceMatrices;
 	state.instanceLanesValid = faceCount;
