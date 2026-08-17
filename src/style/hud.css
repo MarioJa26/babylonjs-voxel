@@ -1017,3 +1017,18 @@
 	flex-direction: row;
 	gap: 0.66em;
 }
+
+/* ─── F1: hide all persistent HUD elements ──────────────────────────────── */
+
+body.hud-hidden .crosshair,
+body.hud-hidden .hit-marker,
+body.hud-hidden #hotbar-wrapper,
+body.hud-hidden #stats-container,
+body.hud-hidden #item-tooltip,
+body.hud-hidden #debug-panel,
+body.hud-hidden .mp-hud,
+body.hud-hidden #chat-container,
+body.hud-hidden #chat-messages,
+body.hud-hidden #chat-input {
+	display: none !important;
+}

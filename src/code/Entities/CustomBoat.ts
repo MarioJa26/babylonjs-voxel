@@ -241,7 +241,7 @@ export class CustomBoat implements IUsable {
 
 	#currentYaw = 0;
 	// PERF: Cache cos/sin to avoid recomputing when yaw is unchanged.
-	#cachedYaw = NaN;
+	#cachedYaw = 0;
 	#cachedCos = 0;
 	#cachedSin = 0;
 	#linearVelocity = vec3Zero();

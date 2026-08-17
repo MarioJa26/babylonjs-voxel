@@ -76,6 +76,7 @@ export class PlayerHud {
 
 	static debugPanelDiv: HTMLDivElement;
 	static debugPanelVisible = true;
+	static #hudHidden = false;
 	private static infoRows: {
 		[key: string]: {
 			container: HTMLDivElement;
@@ -1071,6 +1072,7 @@ export class PlayerHud {
 		document.head.appendChild(style);
 
 		const div = document.createElement("div");
+		div.id = "debug-panel";
 		div.style.position = "absolute";
 		div.style.top = "10px";
 		div.style.left = "10px";
@@ -1174,6 +1176,16 @@ export class PlayerHud {
 			}
 		};
 		div.appendChild(wetnessSlider);
+	}
+
+	/** Toggle visibility of all persistent HUD elements via the `hud-hidden` body class. */
+	public static toggleHud(): void {
+		PlayerHud.#hudHidden = !PlayerHud.#hudHidden;
+		document.body.classList.toggle("hud-hidden", PlayerHud.#hudHidden);
+	}
+
+	public static get isHudHidden(): boolean {
+		return PlayerHud.#hudHidden;
 	}
 
 	public static toggleDebugInfo(): void {
