@@ -13,7 +13,7 @@
 		"build:test-ts7": "tsc --noEmit && \"F:\\NodeJs\\node.exe\" ./node_modules/vite/bin/vite.js build"
 	},
 	"dependencies": {
-		"@babylonjs/lite": "^1.21.0",
+		"@babylonjs/lite": "^1.22.0",
 		"@colyseus/sdk": "^0.17.43",
 		"@types/level": "^8.0.0",
 		"@types/level-js": "^4.0.5",

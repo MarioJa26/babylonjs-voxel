@@ -1021,7 +1021,71 @@ function buildInstanceMatrices(
 	}
 	return matrices;
 }
+// ── Thin-instance range updates ─────────────────────────────────────────────
+// Low-level replacement for the public setThinInstances() that avoids paying
+// for a full buffer recreation + full re-upload on every face-count change.
+//
+// Two paths:
+//  1. GROWTH (rare): capacity actually increased, or there's no GPU buffer
+//     yet. We delegate to the real setThinInstances(), but size it to the
+//     mesh's full retained capacity rather than the current logical count —
+//     this is what lets subsequent count increases, up to that capacity,
+//     avoid path 1 entirely. Full dirty range here is fine; it only happens
+//     on mesh creation and on the (power-of-two) doublings.
+//  2. IN-PLACE (common): same GPU buffer, only `count` and a sub-range of
+//     lanes changed. We mutate `matrices`/`count` directly and widen the
+//     dirty range instead of resetting it to [0, count), so Lite's sync step
+//     uploads only the changed lanes on the next frame.
+function setThinInstancesRange(
+	mesh: Mesh,
+	matrices: Float32Array,
+	count: number,
+	dirtyStart: number,
+	dirtyEnd: number,
+): void {
+	const anyMesh = mesh as PackedMesh;
+	const capacity = matrices.length / 16;
 
+	if (count > capacity) {
+		console.error(
+			`[PackedChunkMesh] thin-instance count (${count}) exceeds ` +
+				`matrices capacity (${capacity}) — caller bug.`,
+		);
+		return;
+	}
+
+	let ti = anyMesh.thinInstances;
+	const needsGrowth = !ti || !ti._gpuBuffer || capacity > (ti._capacity ?? 0);
+
+	if (needsGrowth) {
+		// Size the underlying buffer to the full capacity, not just `count`,
+		// so future in-place updates (path 2) have headroom to grow into
+		// without ever hitting this branch again.
+		setThinInstances(mesh, matrices, capacity);
+		ti = anyMesh.thinInstances;
+		if (ti) {
+			ti._capacity = capacity;
+			ti.count = count; // fix the draw count back down; buffer stays capacity-sized
+		}
+		return;
+	}
+
+	// Fast path — same GPU buffer, just update what changed.
+	ti!.matrices = matrices;
+	ti!.count = count;
+
+	const lo = Math.max(0, Math.min(dirtyStart, dirtyEnd));
+	const hi = Math.min(capacity, Math.max(dirtyStart, dirtyEnd));
+	if (hi <= lo) return;
+
+	// If the previous dirty range was already consumed (version caught up),
+	// it's safe to overwrite with just this update's range. If not, a prior
+	// update is still pending an upload — union with it instead of clobbering it.
+	const inSync = ti!._version === ti!._gpuVersion;
+	ti!._dirtyMin = inSync ? lo : Math.min(ti!._dirtyMin, lo);
+	ti!._dirtyMax = inSync ? hi : Math.max(ti!._dirtyMax, hi);
+	ti!._version++;
+}
 function reuseOrCloneVec3(
 	prev: [number, number, number] | undefined,
 	src: readonly [number, number, number],
@@ -1103,7 +1167,7 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 	state.instanceMatrices = instanceMatrices;
 	state.instanceLanesValid = faceCount;
 
-	setThinInstances(mesh, instanceMatrices, faceCount);
+	setThinInstancesRange(mesh, instanceMatrices, faceCount, 0, faceCount);
 
 	addToScene(scene, mesh);
 	meshState.set(mesh, state);
@@ -1185,18 +1249,35 @@ export function updatePackedChunkMesh(
 				uploadFaceRange(state.faceArena, state.faceBase, faceCount);
 			}
 
+			const oldValid = state.instanceLanesValid ?? 0;
+			const prevMatrices = state.instanceMatrices;
+
 			const instanceMatrices = buildInstanceMatrices(
-				state.instanceMatrices,
+				prevMatrices,
 				state.faceArena,
 				state.faceBase,
 				state.offsetBase,
 				faceCount,
-				state.instanceLanesValid ?? 0,
+				oldValid,
 			);
+
+			// buildInstanceMatrices only reallocates the retained buffer when the
+			// new face count outgrows it (power-of-two growth). If it did, every
+			// lane is freshly written, so the dirty range must be full; if not,
+			// only the appended lanes [oldValid, faceCount) changed. (When it
+			// reallocates, capacity grew, so setThinInstancesRange self-selects
+			// the growth path and the `0` here is ignored anyway.)
+			const reallocated = instanceMatrices !== prevMatrices;
 
 			state.instanceMatrices = instanceMatrices;
 			state.instanceLanesValid = faceCount;
-			setThinInstances(mesh, instanceMatrices, faceCount);
+			setThinInstancesRange(
+				mesh,
+				instanceMatrices,
+				faceCount,
+				reallocated ? 0 : oldValid,
+				faceCount,
+			);
 
 			applyMeshMeta(mesh, state, input);
 			return mesh;
@@ -1241,7 +1322,9 @@ export function updatePackedChunkMesh(
 
 	state.instanceMatrices = instanceMatrices;
 	state.instanceLanesValid = faceCount;
-	setThinInstances(mesh, instanceMatrices, faceCount);
+	// Full realloc: arena/faceBase moved, so every lane's faceBase/arena/
+	// offsetBase changed — keep the dirty range full.
+	setThinInstancesRange(mesh, instanceMatrices, faceCount, 0, faceCount);
 
 	return mesh;
 }
