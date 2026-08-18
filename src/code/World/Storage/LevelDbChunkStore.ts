@@ -171,8 +171,6 @@ export class LevelDbChunkStore {
 	private readonly pendingMeta = new Map<string, PendingMeta>();
 	private metaGeneration = 0;
 	// Platform-specialized once per instance.
-	// Remove the old `private async _get(...)` method.
-	private readonly _get: (key: string) => Promise<any>;
 	private readonly _hasMany: (keys: string[]) => Promise<Set<string>>;
 
 	private static readonly MAX_TRANSACTION_OPS = 256;
@@ -185,7 +183,6 @@ export class LevelDbChunkStore {
 
 		this.maxCacheSize = Math.max(0, Math.trunc(maxCacheSize));
 
-		this._get = this.isBrowser ? this._getBrowser : this._getNode;
 		this._hasMany = this.isBrowser ? this._hasManyBrowser : this._hasManyNode;
 	}
 
@@ -341,7 +338,7 @@ export class LevelDbChunkStore {
 		const db = this.db;
 		if (!db) return null;
 
-		const value = await this._get(k);
+		const value = await db.get(k);
 
 		if (value == null || pendingDeletes.has(k)) return null;
 
@@ -425,7 +422,7 @@ export class LevelDbChunkStore {
 
 		if (!this.db) return false;
 
-		const value = await this._get(k);
+		const value = await this.db.get(k);
 		return value != null && !pendingDeletes.has(k);
 	}
 
@@ -1148,28 +1145,6 @@ export class LevelDbChunkStore {
 	// -------------------------------------------------------------------
 	// Backend primitives
 	// -------------------------------------------------------------------
-
-	private readonly _getBrowser = async (
-		key: string,
-	): Promise<Uint8Array | string | null> => {
-		try {
-			const value = await (this.db as IndexedDbStore).get(key);
-			return value ?? null;
-		} catch (err) {
-			console.warn(`[LevelDb] _get failed for ${key}:`, err);
-			return null;
-		}
-	};
-
-	private readonly _getNode = async (
-		key: string,
-	): Promise<Uint8Array | string | null> => {
-		try {
-			return await this.db.get(key);
-		} catch {
-			return null;
-		}
-	};
 
 	private readonly _hasManyBrowser = async (
 		keys: string[],
