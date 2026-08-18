@@ -27,6 +27,8 @@ import {
 const _textEncoder = new TextEncoder();
 const _textDecoder = new TextDecoder();
 
+const CHUNK_VOLUME = 32 * 32 * 32; // Chunk.SIZE^3 — light arrays are this size
+
 export class BinaryEncoder {
 	private buffer: Uint8Array;
 	private view: DataView;
@@ -292,6 +294,28 @@ export class BinaryDecoder {
 		const start = this.offset;
 		this.offset += len;
 		return this.buffer.subarray(start, this.offset);
+	}
+
+	/**
+	 * Copy len bytes into a fresh SharedArrayBuffer-backed view, allocating
+	 * `capacity` bytes (default: len). Used by the chunk decoders when the
+	 * consumer will hand the arrays to workers via loadFromStorage — the
+	 * SAB view skips ensureSharedBacking()'s later copy, and the zero-aligned
+	 * fresh buffer also satisfies the palette's alignment requirement without
+	 * the readBytes() slice. The capacity form lets the light array come out
+	 * at Chunk.SIZE3 (matching ensureSharedBacking's invariant) while
+	 * advancing the decoder offset by the real wire length.
+	 */
+	readBytesViewSAB(len: number, capacity = len): Uint8Array {
+		const start = this.offset;
+		const end = start + len;
+		if (end > this.buffer.byteLength) {
+			throw new RangeError("readBytesViewSAB: out of bounds");
+		}
+		const sab = new SharedArrayBuffer(capacity);
+		new Uint8Array(sab).set(this.buffer.subarray(start, end));
+		this.offset = end;
+		return new Uint8Array(sab);
 	}
 
 	readString(): string {
@@ -819,7 +843,10 @@ export function encodeChunkData(data: {
 	return enc.getBytes();
 }
 
-export function decodeChunkData(buffer: Uint8Array): RemoteChunkData {
+export function decodeChunkData(
+	buffer: Uint8Array,
+	allocSAB = false,
+): RemoteChunkData {
 	const dec = new BinaryDecoder(buffer, 1);
 	const chunkX = dec.readInt32();
 	const chunkY = dec.readInt32();
@@ -839,8 +866,11 @@ export function decodeChunkData(buffer: Uint8Array): RemoteChunkData {
 	} else if (hasPalette) {
 		const paletteLen = dec.readUint16();
 		// readBytes copies into a fresh, zero-aligned buffer so the
-		// Uint16Array view is always aligned regardless of wire offset.
-		const paletteBytes = dec.readBytes(paletteLen * 2);
+		// Uint16Array view is always aligned regardless of wire offset;
+		// readBytesViewSAB provides the same alignment on a SAB backing.
+		const paletteBytes = allocSAB
+			? dec.readBytesViewSAB(paletteLen * 2)
+			: dec.readBytes(paletteLen * 2);
 		palette = new Uint16Array(
 			paletteBytes.buffer,
 			paletteBytes.byteOffset,
@@ -848,18 +878,24 @@ export function decodeChunkData(buffer: Uint8Array): RemoteChunkData {
 		);
 		// Packed nibble data: remaining before light
 		// We need to know the packed size — it's derived from chunk volume
-		const chunkVolume = 32 * 32 * 32; // CHUNK_SIZE^3
-		const packedSize = Math.ceil(chunkVolume / 2);
-		blocks = dec.readBytesView(packedSize);
+		const packedSize = Math.ceil(CHUNK_VOLUME / 2);
+		blocks = allocSAB
+			? dec.readBytesViewSAB(packedSize)
+			: dec.readBytesView(packedSize);
 	} else {
 		// Dense format: full chunk volume
-		const chunkVolume = 32 * 32 * 32;
-		blocks = dec.readBytesView(chunkVolume);
+		blocks = allocSAB
+			? dec.readBytesViewSAB(CHUNK_VOLUME)
+			: dec.readBytesView(CHUNK_VOLUME);
 	}
 
-	// Light data
+	// Light data — SAB backing is sized to CHUNK_VOLUME (the invariant
+	// ensureSharedBacking maintains) but the decoder offset advances by the
+	// real wire length.
 	const lightLen = dec.readUint32();
-	const light = dec.readBytesView(lightLen);
+	const light = allocSAB
+		? dec.readBytesViewSAB(lightLen, CHUNK_VOLUME)
+		: dec.readBytesView(lightLen);
 
 	return {
 		kind: ChunkResultKind.Data,
@@ -1058,6 +1094,7 @@ function encodeChunkDataBatchMeasure(
 
 export function decodeChunkDataBatch(
 	buffer: Uint8Array,
+	allocSAB = false,
 ): Array<RemoteChunkData> {
 	const dec = new BinaryDecoder(buffer, 1);
 	const count = dec.readUint16();
@@ -1081,22 +1118,28 @@ export function decodeChunkDataBatch(
 			blocks = new Uint8Array(0);
 		} else if (hasPalette) {
 			const paletteLen = dec.readUint16();
-			const paletteBytes = dec.readBytes(paletteLen * 2);
+			const paletteBytes = allocSAB
+				? dec.readBytesViewSAB(paletteLen * 2)
+				: dec.readBytes(paletteLen * 2);
 			palette = new Uint16Array(
 				paletteBytes.buffer,
 				paletteBytes.byteOffset,
 				paletteLen,
 			);
-			const chunkVolume = 32 * 32 * 32;
-			const packedSize = Math.ceil(chunkVolume / 2);
-			blocks = dec.readBytesView(packedSize);
+			const packedSize = Math.ceil(CHUNK_VOLUME / 2);
+			blocks = allocSAB
+				? dec.readBytesViewSAB(packedSize)
+				: dec.readBytesView(packedSize);
 		} else {
-			const chunkVolume = 32 * 32 * 32;
-			blocks = dec.readBytesView(chunkVolume);
+			blocks = allocSAB
+				? dec.readBytesViewSAB(CHUNK_VOLUME)
+				: dec.readBytesView(CHUNK_VOLUME);
 		}
 
 		const lightLen = dec.readUint32();
-		const light = dec.readBytesView(lightLen);
+		const light = allocSAB
+			? dec.readBytesViewSAB(lightLen, CHUNK_VOLUME)
+			: dec.readBytesView(lightLen);
 
 		chunks.push({
 			kind: ChunkResultKind.Data,

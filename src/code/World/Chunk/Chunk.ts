@@ -467,7 +467,9 @@ export class Chunk {
 		} else {
 			this.initializeSunlight();
 		}
-		this.recomputeDarkCache();
+		// Dark-cache scan is deferred to first occlusion use (isDarkCached) so
+		// load storms don't pay a full 32 KB light scan per chunk.
+		this._isDarkCached = undefined;
 
 		this.blockRevision++;
 		this.generation = ++Chunk._generationCounter;
@@ -850,6 +852,20 @@ export class Chunk {
 		}
 		this._isDarkCached = true;
 	}
+
+	/**
+	 * Lazily computed dark-cache answer for the occlusion culler. The scan is
+	 * only run when a chunk's state is unknown (undefined) — loadFromStorage
+	 * and light mutations leave it undefined, so the 32 KB light scan is paid
+	 * once per invalidation and only for chunks the culler actually touches.
+	 */
+	public isDarkCached(): boolean {
+		if (this._isDarkCached === undefined) {
+			this.recomputeDarkCache();
+		}
+		return this._isDarkCached === true;
+	}
+
 	public setBlockLight(x: number, y: number, z: number, level: number): void {
 		const cur = this.getLight(x, y, z);
 		this.setLight(

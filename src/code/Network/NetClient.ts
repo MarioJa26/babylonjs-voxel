@@ -588,12 +588,12 @@ export class NetClient {
 		return this.connected ? this.room : null;
 	}
 
-	private static encodeYawByte(yaw: number): number {
+	public static encodeYawByte(yaw: number): number {
 		const normalized = ((yaw % 360) + 360) % 360;
 		return Math.round((normalized / 360) * 255) & 0xff;
 	}
 
-	private static encodePitchByte(pitch: number): number {
+	public static encodePitchByte(pitch: number): number {
 		// Valid pitch range is expected to be -90..90. Clamp instead of wrapping
 		// so bad input does not turn into a seemingly valid opposite angle.
 		const clamped = pitch < -90 ? -90 : pitch > 90 ? 90 : pitch;

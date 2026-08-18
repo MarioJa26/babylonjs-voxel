@@ -94,6 +94,15 @@ export class NetworkManager {
 	private chunkProvider: RemoteChunkProvider;
 	private player: Player;
 	private sendAccum = 0;
+	// Last state actually sent to the server, quantized to wire values. The
+	// idle-skip compares against this so identical bytes are never re-sent.
+	private lastSentState: {
+		x: number;
+		y: number;
+		z: number;
+		yawByte: number;
+		pitchByte: number;
+	} | null = null;
 	private _scratchVec: Vec3 = vec3Zero();
 	private serverSeed: string | null = null;
 	private _lastPlayerCount = 0;
@@ -222,7 +231,12 @@ export class NetworkManager {
 	 */
 	tick(deltaMs: number): void {
 		const client = this.client;
-		if (!client.isConnected) return;
+		if (!client.isConnected) {
+			// Session boundary: any (re)connect starts a fresh authoritative
+			// state, so the first update after the boundary must always send.
+			this.lastSentState = null;
+			return;
+		}
 
 		client.updateRemotePlayerInterpolation(deltaMs / 1000);
 
@@ -291,6 +305,28 @@ export class NetworkManager {
 		const pitch =
 			(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)) * 180) / Math.PI;
 
+		const yawByte = NetClient.encodeYawByte(yaw);
+		const pitchByte = NetClient.encodePitchByte(pitch);
+
+		const last = this.lastSentState;
+		if (
+			last &&
+			last.yawByte === yawByte &&
+			last.pitchByte === pitchByte &&
+			Math.abs(pos.x - last.x) < 0.001 &&
+			Math.abs(pos.y - last.y) < 0.001 &&
+			Math.abs(pos.z - last.z) < 0.001
+		) {
+			return;
+		}
+
+		this.lastSentState = {
+			x: pos.x,
+			y: pos.y,
+			z: pos.z,
+			yawByte,
+			pitchByte,
+		};
 		this.client.sendPlayerState(pos.x, pos.y, pos.z, yaw, pitch, 0);
 	}
 

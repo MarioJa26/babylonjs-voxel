@@ -30,13 +30,15 @@
 
 import { DEBUG_ENABLED, debugLog } from "../../Lib/debugLog";
 import type { Chunk } from "../../World/Chunk/Chunk";
+import { packCoords } from "../../World/Chunk/DataStructures/ChunkCoords";
 import {
 	type ChunkWrite,
+	chunkKey,
 	isCacheResetError,
 	LevelDbChunkStore,
 } from "../../World/Storage/LevelDbChunkStore";
 import {
-	deserializeVoxelData,
+	deserializeVoxelDataShared,
 	serializeVoxelData,
 } from "../../World/Storage/VoxelSerializer";
 import { mpLocalCacheName } from "../../World/WorldContext";
@@ -111,9 +113,9 @@ type PendingChunk = {
 };
 
 export class RemoteChunkProvider {
-	private pending = new Map<string, PendingChunk>();
-	private inFlight = new Map<string, Promise<RemoteChunkResult>>();
-	private chunkVersions = new Map<string, number>();
+	private pending = new Map<bigint, PendingChunk>();
+	private inFlight = new Map<bigint, Promise<RemoteChunkResult>>();
+	private chunkVersions = new Map<bigint, number>();
 	private store: LevelDbChunkStore;
 	/** Resolves true when the local cache store is usable, false on failure. */
 	private readonly storeReady: Promise<boolean>;
@@ -150,10 +152,10 @@ export class RemoteChunkProvider {
 		try {
 			switch (data[0]) {
 				case MessageType.ChunkData:
-					this.handleChunkData(decodeChunkData(data));
+					this.handleChunkData(decodeChunkData(data, true));
 					break;
 				case MessageType.ChunkDataBatch:
-					this.handleChunkDataBatch(decodeChunkDataBatch(data));
+					this.handleChunkDataBatch(decodeChunkDataBatch(data, true));
 					break;
 				case MessageType.ChunkUnchanged:
 					this.handleChunkUnchanged(decodeChunkUnchanged(data));
@@ -168,11 +170,7 @@ export class RemoteChunkProvider {
 	}
 
 	private handleChunkData(chunk: RemoteChunkData): void {
-		const key = RemoteChunkProvider.makeKey(
-			chunk.chunkX,
-			chunk.chunkY,
-			chunk.chunkZ,
-		);
+		const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 		if (this.isStaleVersion(key, chunk.version)) {
 			if (DEBUG_ENABLED) {
 				debugLog(
@@ -194,18 +192,14 @@ export class RemoteChunkProvider {
 		if (len === 0) return;
 
 		const writes = new Array<ChunkWrite>(len);
-		const written: Array<{ key: string; version: number }> = new Array(len);
+		const written: Array<{ key: bigint; version: number }> = new Array(len);
 
 		let writeCount = 0;
 		const versions = this.chunkVersions;
 
 		for (let i = 0; i < len; i++) {
 			const chunk = chunks[i];
-			const key = RemoteChunkProvider.makeKey(
-				chunk.chunkX,
-				chunk.chunkY,
-				chunk.chunkZ,
-			);
+			const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 
 			const currentVersion = versions.get(key);
 			if (currentVersion !== undefined && chunk.version < currentVersion) {
@@ -303,7 +297,7 @@ export class RemoteChunkProvider {
 		cz: number;
 		version: number;
 	}): UnchangedOutcome {
-		const key = RemoteChunkProvider.makeKey(entry.cx, entry.cy, entry.cz);
+		const key = packCoords(entry.cx, entry.cy, entry.cz);
 		const pending = this.pending.get(key);
 
 		if (pending === undefined || pending.epoch !== this.epoch) {
@@ -394,7 +388,7 @@ export class RemoteChunkProvider {
 	}
 
 	/** Returns false if the response cannot resolve a current pending request. */
-	private resolvePending(key: string, result: RemoteChunkResult): boolean {
+	private resolvePending(key: bigint, result: RemoteChunkResult): boolean {
 		const entry = this.pending.get(key);
 		if (!entry) {
 			// Response arrived but no pending entry — either already
@@ -416,17 +410,13 @@ export class RemoteChunkProvider {
 	}
 
 	/** True when an incoming version is older than the one we already hold. */
-	private isStaleVersion(key: string, incomingVersion: number): boolean {
+	private isStaleVersion(key: bigint, incomingVersion: number): boolean {
 		const current = this.chunkVersions.get(key);
 		return current !== undefined && incomingVersion < current;
 	}
 
 	private persistChunk(chunk: RemoteChunkData): void {
-		const key = RemoteChunkProvider.makeKey(
-			chunk.chunkX,
-			chunk.chunkY,
-			chunk.chunkZ,
-		);
+		const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 		const responseEpoch = this.epoch;
 		try {
 			const blob = serializeVoxelData(
@@ -552,19 +542,19 @@ export class RemoteChunkProvider {
 			return result;
 		}
 
-		const coords: Array<{ cx: number; cy: number; cz: number; key: string }> =
-			new Array(len);
+		const coords: Array<{ cx: number; cy: number; cz: number }> = new Array(
+			len,
+		);
+		const keys: Array<bigint> = new Array(len);
 
 		for (let i = 0; i < len; i++) {
 			const c = chunks[i];
-			const key = RemoteChunkProvider.makeKey(c.chunkX, c.chunkY, c.chunkZ);
-
 			coords[i] = {
 				cx: c.chunkX,
 				cy: c.chunkY,
 				cz: c.chunkZ,
-				key,
 			};
+			keys[i] = packCoords(c.chunkX, c.chunkY, c.chunkZ);
 		}
 
 		let blobs: Map<string, Uint8Array>;
@@ -587,8 +577,8 @@ export class RemoteChunkProvider {
 		for (let i = 0; i < len; i++) {
 			const c = chunks[i];
 			const coord = coords[i];
-			const key = coord.key;
-			const blob = blobs.get(key);
+			const key = keys[i];
+			const blob = blobs.get(chunkKey(coord.cx, coord.cy, coord.cz));
 
 			if (blob === undefined) {
 				result.set(c, null);
@@ -652,7 +642,7 @@ export class RemoteChunkProvider {
 		cy: number,
 		cz: number,
 	): RemoteChunkData | null {
-		const deserialized = deserializeVoxelData(blob);
+		const deserialized = deserializeVoxelDataShared(blob);
 
 		const version = deserialized.version ?? 0;
 		if (!Number.isInteger(version) || version < 0) return null;
@@ -745,7 +735,7 @@ export class RemoteChunkProvider {
 			throw new RangeError("timeoutMs must be a positive finite number");
 		}
 
-		const key = RemoteChunkProvider.makeKey(cx, cy, cz);
+		const key = packCoords(cx, cy, cz);
 
 		const existing = this.inFlight.get(key);
 		if (existing !== undefined) return existing;
@@ -841,7 +831,7 @@ export class RemoteChunkProvider {
 			cachedVersion: number;
 		}> = new Array(len);
 
-		const createdKeys: string[] = new Array(len);
+		const createdKeys: bigint[] = new Array(len);
 		let requestCount = 0;
 		let createdCount = 0;
 
@@ -856,7 +846,7 @@ export class RemoteChunkProvider {
 			const cx = coord.cx;
 			const cy = coord.cy;
 			const cz = coord.cz;
-			const key = RemoteChunkProvider.makeKey(cx, cy, cz);
+			const key = packCoords(cx, cy, cz);
 
 			const existing = inFlight.get(key);
 			if (existing !== undefined) {
@@ -956,7 +946,7 @@ export class RemoteChunkProvider {
 	 * the earliest deadline can only move later (or the map can become
 	 * empty), so the nearest-deadline timer must stay synchronized.
 	 */
-	private removePending(key: string): PendingChunk | undefined {
+	private removePending(key: bigint): PendingChunk | undefined {
 		const entry = this.pending.get(key);
 		if (entry === undefined) return undefined;
 		this.pending.delete(key);
@@ -1024,9 +1014,5 @@ export class RemoteChunkProvider {
 		}
 
 		this.scheduleSweep();
-	}
-
-	private static makeKey(cx: number, cy: number, cz: number): string {
-		return cx + "," + cy + "," + cz;
 	}
 }

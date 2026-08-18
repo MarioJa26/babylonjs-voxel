@@ -677,9 +677,26 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 	}
 
 	if (data.type === WorkerTaskType.VoxelRegisterChunkBatch) {
-		const chunks = data.chunks;
-		for (let i = 0; i < chunks.length; i++) {
-			_handleVoxelRegister(chunks[i]);
+		const n = data.chunkIds.length;
+		if (data.coords.length !== n * 3 || data.meta.length !== n * 3) {
+			throw new Error(
+				`bad VoxelRegisterChunkBatch lengths (ids ${n}, ` +
+					`coords ${data.coords.length}, meta ${data.meta.length})`,
+			);
+		}
+		for (let i = 0; i < n; i++) {
+			_handleVoxelRegister({
+				chunkX: data.coords[i * 3],
+				chunkY: data.coords[i * 3 + 1],
+				chunkZ: data.coords[i * 3 + 2],
+				isUniform: data.meta[i * 3] === 1,
+				uniformBlockId: data.meta[i * 3 + 1],
+				blockStorageBytesPerElement: data.meta[i * 3 + 2] as 1 | 2,
+				direct: true,
+				blockSAB: data.blockSABs[i],
+				paletteSAB: data.paletteSABs[i],
+				lightSAB: data.lightSABs[i],
+			});
 		}
 		return;
 	}
@@ -690,13 +707,13 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 	}
 
 	if (data.type === WorkerTaskType.VoxelUnregisterChunkBatch) {
-		const chunks = data.chunks;
-		for (let i = 0; i < chunks.length; i++) {
+		const n = data.coords.length / 3;
+		for (let i = 0; i < n; i++) {
 			_handleVoxelUnregister({
 				type: WorkerTaskType.VoxelUnregisterChunk,
-				chunkX: chunks[i].chunkX,
-				chunkY: chunks[i].chunkY,
-				chunkZ: chunks[i].chunkZ,
+				chunkX: data.coords[i * 3],
+				chunkY: data.coords[i * 3 + 1],
+				chunkZ: data.coords[i * 3 + 2],
 			});
 		}
 		return;

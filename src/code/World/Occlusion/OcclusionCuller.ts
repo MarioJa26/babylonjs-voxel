@@ -774,7 +774,7 @@ export class OcclusionCuller {
 
 			let newSteps = minNbrSteps + 1;
 			if (nY * SIZE < SEA_LEVEL) newSteps++;
-			if (newChunk._isDarkCached === true) newSteps += 3;
+			if (newChunk.isDarkCached()) newSteps += 3;
 			if (newSteps > MAX_BFS_STEPS) continue;
 
 			// Initialise new chunk for this query if needed
@@ -830,7 +830,7 @@ export class OcclusionCuller {
 
 				let newSteps = steps + 1;
 				if (ny * SIZE < SEA_LEVEL) newSteps++;
-				if (nbr._isDarkCached === true) newSteps += 3;
+				if (nbr.isDarkCached()) newSteps += 3;
 				if (newSteps > MAX_BFS_STEPS) continue;
 
 				// Connectivity gate
@@ -986,7 +986,7 @@ export class OcclusionCuller {
 
 				let newSteps = steps + 1;
 				if (ny * SIZE < SEA_LEVEL) newSteps++;
-				if (nbr._isDarkCached === true) newSteps += 3;
+				if (nbr.isDarkCached()) newSteps += 3;
 				if (newSteps > MAX_BFS_STEPS) continue;
 
 				// Connectivity gate

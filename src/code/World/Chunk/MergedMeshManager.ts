@@ -569,7 +569,7 @@ export function getMergedMeshFlushStats(): {
 let _mergedFlushRafScheduled = false;
 const _flushSnapshot: MergedMeshGroup[] = [];
 
-export function flushDirtyMergedGroups(): void {
+export function flushDirtyMergedGroups(maxBudgetMs = 5): void {
 	if (dirtyGroups.size === 0) return;
 
 	const start = performance.now();
@@ -587,7 +587,7 @@ export function flushDirtyMergedGroups(): void {
 	let budgetExhausted = false;
 
 	for (; i < snapshot.length; i++) {
-		if (i !== 0 && performance.now() - start > 5) {
+		if (i !== 0 && performance.now() - start > maxBudgetMs) {
 			budgetExhausted = true;
 			break;
 		}
@@ -794,6 +794,90 @@ function ensureCutoutMergedCapacity(
 	return group.cutoutBuffers!;
 }
 
+// Shrink a group's merged buffers when its member set collapsed (unload
+// storm / LOD drop). Hysteresis: only when faces fall below 1/4 of capacity
+// so a group never churns on alternating totals; never below the 256-face
+// floor. The next rebuild's copy pass rewrites from member data, so the
+// capacity change is transparent; lastBuilt offsets are invalidated so the
+// stale-offset fast path is never reused.
+function maybeShrinkOpaqueCapacity(
+	group: MergedMeshGroup,
+	faceCount: number,
+): void {
+	const capacity = group.opaqueCapacityFaces;
+	if (capacity <= 256 || faceCount * 4 >= capacity) return;
+
+	const newCap = Math.max(faceCount * 2, 256);
+	if (newCap >= capacity) return;
+
+	group.opaqueCapacityFaces = newCap;
+	const byte4 = newCap * 4;
+	group.opaqueA = new Uint8Array(byte4);
+	group.opaqueB = new Uint8Array(byte4);
+	group.opaqueC = new Uint8Array(byte4);
+	if (group.opaqueBuffers) {
+		group.opaqueBuffers.a = group.opaqueA;
+		group.opaqueBuffers.b = group.opaqueB;
+		group.opaqueBuffers.c = group.opaqueC;
+	}
+	for (let i = 0; i < group.membersArray.length; i++) {
+		group.membersArray[i].lastBuiltOpaque = null;
+		group.membersArray[i].lastBuiltOpaqueOffset = -1;
+	}
+}
+
+function maybeShrinkWaterCapacity(
+	group: MergedMeshGroup,
+	faceCount: number,
+): void {
+	const capacity = group.waterCapacityFaces;
+	if (capacity <= 256 || faceCount * 4 >= capacity) return;
+
+	const newCap = Math.max(faceCount * 2, 256);
+	if (newCap >= capacity) return;
+
+	group.waterCapacityFaces = newCap;
+	const byte4 = newCap * 4;
+	group.waterA = new Uint8Array(byte4);
+	group.waterB = new Uint8Array(byte4);
+	group.waterC = new Uint8Array(byte4);
+	if (group.waterBuffers) {
+		group.waterBuffers.a = group.waterA;
+		group.waterBuffers.b = group.waterB;
+		group.waterBuffers.c = group.waterC;
+	}
+	for (let i = 0; i < group.membersArray.length; i++) {
+		group.membersArray[i].lastBuiltWater = null;
+		group.membersArray[i].lastBuiltWaterOffset = -1;
+	}
+}
+
+function maybeShrinkCutoutCapacity(
+	group: MergedMeshGroup,
+	faceCount: number,
+): void {
+	const capacity = group.cutoutCapacityFaces;
+	if (capacity <= 256 || faceCount * 4 >= capacity) return;
+
+	const newCap = Math.max(faceCount * 2, 256);
+	if (newCap >= capacity) return;
+
+	group.cutoutCapacityFaces = newCap;
+	const byte4 = newCap * 4;
+	group.cutoutA = new Uint8Array(byte4);
+	group.cutoutB = new Uint8Array(byte4);
+	group.cutoutC = new Uint8Array(byte4);
+	if (group.cutoutBuffers) {
+		group.cutoutBuffers.a = group.cutoutA;
+		group.cutoutBuffers.b = group.cutoutB;
+		group.cutoutBuffers.c = group.cutoutC;
+	}
+	for (let i = 0; i < group.membersArray.length; i++) {
+		group.membersArray[i].lastBuiltCutout = null;
+		group.membersArray[i].lastBuiltCutoutOffset = -1;
+	}
+}
+
 // Returns the member's face count for `kind`, clamped to what its payload
 // buffers actually hold. A stale/desynced MeshData (e.g. from the OPFS cache)
 // can declare a faceCount wildly larger than its buffers — which would
@@ -893,6 +977,10 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 	group.totalOpaqueFaces = totalOpaque;
 	group.totalWaterFaces = totalWater;
 	group.totalCutoutFaces = totalCutout;
+
+	maybeShrinkOpaqueCapacity(group, totalOpaque);
+	maybeShrinkWaterCapacity(group, totalWater);
+	maybeShrinkCutoutCapacity(group, totalCutout);
 
 	// A merged group must fit a single face-arena block per mesh to be
 	// uploaded; above that allocFaces can never succeed. Refuse before

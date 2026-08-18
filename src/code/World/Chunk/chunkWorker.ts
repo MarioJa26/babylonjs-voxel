@@ -18,6 +18,31 @@ import {
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
 
+// Offset order must match the voxel worker's NEIGHBOR_OFFSETS table
+// (slot i = mask bit i): dz outer → dx inner, center (0,0,0) omitted.
+export const NEIGHBOR_OFFSETS_26: readonly {
+	readonly dx: number;
+	readonly dy: number;
+	readonly dz: number;
+}[] = (() => {
+	const out: { dx: number; dy: number; dz: number }[] = [];
+	for (let z = -1; z <= 1; z++) {
+		for (let y = -1; y <= 1; y++) {
+			for (let x = -1; x <= 1; x++) {
+				if (x === 0 && y === 0 && z === 0) continue;
+				out.push({ dx: x, dy: y, dz: z });
+			}
+		}
+	}
+	return out;
+})();
+
+// Cached 26-bit neighbor presence masks, keyed by chunk. Invalidation is
+// exact: a mask only depends on each neighbor's isLoaded && hasVoxelData,
+// both of which flip solely on load/dispose (the pool's onLightChunkLoaded /
+// onLightChunkDisposed hooks delete the affected entries). WeakMap = no leaks.
+export const neighborMaskCache = new WeakMap<Chunk, number>();
+
 export class ChunkWorker {
 	private terrainWorker: Worker; // terrain + distant terrain + light
 	private voxelWorker: Worker; // voxel mesh
@@ -130,22 +155,7 @@ export class ChunkWorker {
 		this.voxelWorker.terminate();
 	}
 
-	private static readonly _REMESH_OFFSETS: readonly {
-		readonly dx: number;
-		readonly dy: number;
-		readonly dz: number;
-	}[] = (() => {
-		const out: { dx: number; dy: number; dz: number }[] = [];
-		for (let z = -1; z <= 1; z++) {
-			for (let y = -1; y <= 1; y++) {
-				for (let x = -1; x <= 1; x++) {
-					if (x === 0 && y === 0 && z === 0) continue;
-					out.push({ dx: x, dy: y, dz: z });
-				}
-			}
-		}
-		return out;
-	})();
+	private static readonly _REMESH_OFFSETS = NEIGHBOR_OFFSETS_26;
 
 	/**
 	 * 26-bit presence snapshot for the voxel worker: slot i (same offset order
@@ -154,11 +164,13 @@ export class ChunkWorker {
 	 * transfer path would have sent. The worker reads those borders directly
 	 * from its voxel-registration map.
 	 */
-	private static _buildNeighborMask(
-		cx: number,
-		cy: number,
-		cz: number,
-	): number {
+	private static _buildNeighborMask(chunk: Chunk): number {
+		const cached = neighborMaskCache.get(chunk);
+		if (cached !== undefined) return cached;
+
+		const cx = chunk.chunkX;
+		const cy = chunk.chunkY;
+		const cz = chunk.chunkZ;
 		let mask = 0;
 		for (let i = 0; i < ChunkWorker._REMESH_OFFSETS.length; i++) {
 			const { dx, dy, dz } = ChunkWorker._REMESH_OFFSETS[i];
@@ -170,6 +182,7 @@ export class ChunkWorker {
 				mask |= 1 << i;
 			}
 		}
+		neighborMaskCache.set(chunk, mask);
 		return mask;
 	}
 
@@ -186,11 +199,7 @@ export class ChunkWorker {
 		msg.chunkX = chunk.chunkX;
 		msg.chunkY = chunk.chunkY;
 		msg.chunkZ = chunk.chunkZ;
-		msg.neighborMask = ChunkWorker._buildNeighborMask(
-			chunk.chunkX,
-			chunk.chunkY,
-			chunk.chunkZ,
-		);
+		msg.neighborMask = ChunkWorker._buildNeighborMask(chunk);
 		msg.uniformBlockId = chunk.isUniform ? chunk.uniformBlockId : undefined;
 
 		// SAB-direct: no payload buffers, no transfer list. The worker reads
@@ -218,11 +227,7 @@ export class ChunkWorker {
 		msg.chunkX = chunk.chunkX;
 		msg.chunkY = chunk.chunkY;
 		msg.chunkZ = chunk.chunkZ;
-		msg.neighborMask = ChunkWorker._buildNeighborMask(
-			chunk.chunkX,
-			chunk.chunkY,
-			chunk.chunkZ,
-		);
+		msg.neighborMask = ChunkWorker._buildNeighborMask(chunk);
 
 		this.voxelWorker.postMessage(msg);
 	}
@@ -512,12 +517,12 @@ export class ChunkWorker {
 	}
 
 	public postVoxelRegisterChunkBatch(
-		chunks: VoxelRegisterChunkBatchRequest["chunks"],
+		req: Omit<VoxelRegisterChunkBatchRequest, "type">,
 	): void {
-		if (chunks.length === 0) return;
+		if (req.chunkIds.length === 0) return;
 		this.voxelWorker.postMessage({
 			type: WorkerTaskType.VoxelRegisterChunkBatch,
-			chunks,
+			...req,
 		});
 	}
 
@@ -534,13 +539,11 @@ export class ChunkWorker {
 		});
 	}
 
-	public postVoxelUnregisterChunkBatch(
-		chunks: Array<{ chunkX: number; chunkY: number; chunkZ: number }>,
-	): void {
-		if (chunks.length === 0) return;
+	public postVoxelUnregisterChunkBatch(coords: Int32Array): void {
+		if (coords.length === 0) return;
 		this.voxelWorker.postMessage({
 			type: WorkerTaskType.VoxelUnregisterChunkBatch,
-			chunks,
+			coords,
 		});
 	}
 

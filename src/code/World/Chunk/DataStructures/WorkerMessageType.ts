@@ -321,7 +321,14 @@ export type VoxelRegisterChunkRequest = {
 
 export type VoxelRegisterChunkBatchRequest = {
 	type: WorkerTaskType.VoxelRegisterChunkBatch;
-	chunks: Array<Omit<VoxelRegisterChunkRequest, "type">>;
+	chunkIds: BigInt64Array;
+	// SoA batch: flat chunkX, chunkY, chunkZ per entry (Int32 — coords can be negative).
+	coords: Int32Array;
+	// isUniform(0|1), uniformBlockId, blockStorageBytesPerElement per entry.
+	meta: Uint32Array;
+	blockSABs: Array<SharedArrayBuffer | null>;
+	paletteSABs: Array<SharedArrayBuffer | null>;
+	lightSABs: Array<SharedArrayBuffer | null>;
 };
 
 export type VoxelUnregisterChunkRequest = {
@@ -333,7 +340,8 @@ export type VoxelUnregisterChunkRequest = {
 
 export type VoxelUnregisterChunkBatchRequest = {
 	type: WorkerTaskType.VoxelUnregisterChunkBatch;
-	chunks: Array<{ chunkX: number; chunkY: number; chunkZ: number }>;
+	// SoA batch: flat chunkX, chunkY, chunkZ per entry (Int32 — coords can be negative).
+	coords: Int32Array;
 };
 
 export type VoxelUpdateChunkBuffersRequest = {

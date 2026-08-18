@@ -29,7 +29,7 @@
  * - flush() is a FIFO success barrier; clear() is a FIFO ordering barrier.
  * - Reads never enter the write queue.
  */
-function chunkKey(cx: number, cy: number, cz: number): string {
+export function chunkKey(cx: number, cy: number, cz: number): string {
 	return cx + "," + cy + "," + cz;
 }
 

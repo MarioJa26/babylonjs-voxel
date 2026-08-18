@@ -19,7 +19,12 @@ import { WorldStorage } from "../WorldStorage";
 import { addChunkDisposeHook, Chunk, getChunk } from "./Chunk";
 import { precomputeClosedFaceMasks } from "./ChunkFaceMasks";
 import { createMeshFromData } from "./ChunkMesher";
-import { ChunkWorker } from "./chunkWorker";
+import {
+	ChunkWorker,
+	NEIGHBOR_OFFSETS_26,
+	neighborMaskCache,
+} from "./chunkWorker";
+import { packCoords } from "./DataStructures/ChunkCoords";
 import type { MeshData } from "./DataStructures/MeshData";
 import { RingBuffer } from "./DataStructures/RingBuffer";
 import {
@@ -163,16 +168,16 @@ export class ChunkWorkerPool {
 	private readonly remoteDeferredChunks = new Set<Chunk>();
 	// Chunks the server confirmed as unchanged but the client had no local
 	// copy for — retried once before falling back to local generation.
-	private remoteNoBlobRetries = new Map<string, number>();
+	private remoteNoBlobRetries = new Map<bigint, number>();
 
 	/** True when chunk voxel data comes from the server (multiplayer mode). */
 	public isRemoteGenerationEnabled(): boolean {
 		return this.remoteGenerationEnabled;
 	}
-	private remotePendingChunks = new Map<string, Chunk>();
+	private remotePendingChunks = new Map<bigint, Chunk>();
 	private remoteTaskQueue: Chunk[] = [];
 	private remoteTaskQueueSet = new Set<Chunk>();
-	private remoteRetryCount = new Map<string, number>();
+	private remoteRetryCount = new Map<bigint, number>();
 	private readonly MAX_REMOTE_RETRY = 3;
 	// Coalescing guard: at most one pump cycle (one batched cache read) is
 	// active at a time; continuation cycles are deferred to a microtask
@@ -281,10 +286,15 @@ export class ChunkWorkerPool {
 	private remeshFlushScheduled = false;
 	private processQueuePumpScheduled = false;
 	private meshDrainScheduled = false;
+	private insideMeshDrain = false;
 
 	// PERF: Centralized work-coalescing scheduler. Instead of scheduling
 	// independent setTimeout callbacks per subsystem (mesh, lighting, remesh),
 	// flag pending work here and drain everything in a single macrotask.
+	// The mesh drain and the merged-group flush SHARE this one budget so a
+	// chunk storm can never burn ~10ms of main thread in a single tick
+	// (5ms drain + 5ms flush previously).
+	private static readonly MESH_DRAIN_BUDGET_MS = 5.5;
 	private static readonly WORK_PROCESS_QUEUE = 1 << 0;
 	private static readonly WORK_MESH = 1 << 1;
 	private static readonly WORK_DEFERRED_LIGHT = 1 << 2;
@@ -1059,20 +1069,9 @@ export class ChunkWorkerPool {
 			this.getLightWorker().postLightUnregisterChunkBatch(ids);
 		}
 		if (coords.length > 0) {
-			const chunks: Array<{
-				chunkX: number;
-				chunkY: number;
-				chunkZ: number;
-			}> = new Array(coords.length / 3);
-			for (let i = 0, o = 0; i < chunks.length; i++, o += 3) {
-				chunks[i] = {
-					chunkX: coords[o],
-					chunkY: coords[o + 1],
-					chunkZ: coords[o + 2],
-				};
-			}
+			const packedCoords = new Int32Array(coords);
 			for (let i = 0; i < this.workers.length; i++) {
-				this.workers[i].postVoxelUnregisterChunkBatch(chunks);
+				this.workers[i].postVoxelUnregisterChunkBatch(packedCoords);
 			}
 		}
 	}
@@ -1148,6 +1147,7 @@ export class ChunkWorkerPool {
 	private _lightRegDrainScheduled = false;
 
 	private onLightChunkLoaded(chunk: Chunk, fromChannel: boolean): void {
+		this.invalidateNeighborMasks(chunk);
 		this.lightChunkByHeaderSlot.set(chunk.lightHeaderSlot, chunk);
 		this._lightRegChunks.push(chunk);
 		this._lightRegFlags.push(fromChannel);
@@ -1163,6 +1163,7 @@ export class ChunkWorkerPool {
 	}
 
 	private onLightChunkDisposed(chunk: Chunk): void {
+		this.invalidateNeighborMasks(chunk);
 		this.lightChunkByHeaderSlot.delete(chunk.lightHeaderSlot);
 		this.broadcastLightUnregister(chunk);
 		this.broadcastVoxelUnregister(chunk);
@@ -1181,6 +1182,21 @@ export class ChunkWorkerPool {
 				q[i] = null as unknown as Chunk;
 				break;
 			}
+		}
+	}
+
+	private invalidateNeighborMasks(chunk: Chunk): void {
+		// The chunk's own mask depends on its neighbors, and its neighbors'
+		// masks depend on it — delete all 27 entries defensively.
+		neighborMaskCache.delete(chunk);
+		for (let i = 0; i < NEIGHBOR_OFFSETS_26.length; i++) {
+			const { dx, dy, dz } = NEIGHBOR_OFFSETS_26[i];
+			const n = getChunk(
+				chunk.chunkX + dx,
+				chunk.chunkY + dy,
+				chunk.chunkZ + dz,
+			);
+			if (n) neighborMaskCache.delete(n);
 		}
 	}
 
@@ -1347,10 +1363,13 @@ export class ChunkWorkerPool {
 		this.flushPendingUnregisters();
 
 		const lightRegistrations: LightRegisterChunkBatchRequest["chunks"] = [];
-		const voxelRegistrations: Parameters<
-			ChunkWorker["postVoxelRegisterChunkBatch"]
-		>[0] = [];
 		const seen = new Set<bigint>();
+		const voxelIds: bigint[] = [];
+		const voxelCoords: number[] = [];
+		const voxelMeta: number[] = [];
+		const voxelBlockSABs: (SharedArrayBuffer | null)[] = [];
+		const voxelPaletteSABs: (SharedArrayBuffer | null)[] = [];
+		const voxelLightSABs: (SharedArrayBuffer | null)[] = [];
 
 		for (let i = 0; i < chunks.length; i++) {
 			const chunk = chunks[i];
@@ -1373,26 +1392,38 @@ export class ChunkWorkerPool {
 				blockStorageBytesPerElement,
 			});
 
-			voxelRegistrations.push({
-				chunkId: chunk.id,
-				chunkX: chunk.chunkX,
-				chunkY: chunk.chunkY,
-				chunkZ: chunk.chunkZ,
-				isUniform: chunk.isUniform,
-				uniformBlockId: chunk.uniformBlockId,
+			voxelIds.push(chunk.id);
+			voxelCoords.push(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
+			voxelMeta.push(
+				chunk.isUniform ? 1 : 0,
+				chunk.uniformBlockId,
 				blockStorageBytesPerElement,
-				direct: true,
-				blockSAB: snap.blockSAB,
-				paletteSAB: snap.paletteSAB,
-				lightSAB: snap.lightSAB,
-			});
+			);
+			voxelBlockSABs.push(snap.blockSAB);
+			voxelPaletteSABs.push(snap.paletteSAB);
+			voxelLightSABs.push(snap.lightSAB);
 		}
 		chunks.length = 0;
 		flags.length = 0;
 
 		this.getLightWorker().postLightRegisterChunkBatch(lightRegistrations);
+
+		// PERF: SoA flat arrays, constructed once per drain — structured clone
+		// still copies the typed-array backing per worker, but ~32 bytes per
+		// chunk instead of an 11-keyed object.
+		const voxelChunkIdsArray = new BigInt64Array(voxelIds);
+		const voxelCoordsArray = new Int32Array(voxelCoords);
+		const voxelMetaArray = new Uint32Array(voxelMeta);
+
 		for (let i = 0; i < this.workers.length; i++) {
-			this.workers[i].postVoxelRegisterChunkBatch(voxelRegistrations);
+			this.workers[i].postVoxelRegisterChunkBatch({
+				chunkIds: voxelChunkIdsArray,
+				coords: voxelCoordsArray,
+				meta: voxelMetaArray,
+				blockSABs: voxelBlockSABs,
+				paletteSABs: voxelPaletteSABs,
+				lightSABs: voxelLightSABs,
+			});
 		}
 	}
 
@@ -1716,97 +1747,113 @@ export class ChunkWorkerPool {
 	// -------------------------------------------------------------------------
 
 	private scheduleMeshFlush = (): void => {
-		if (this.meshDrainScheduled) return;
+		if (this.meshDrainScheduled || this.insideMeshDrain) return;
 		this.meshDrainScheduled = true;
 		this._scheduleCentralWork(ChunkWorkerPool.WORK_MESH);
 	};
 
 	private processMeshQueueLoop = (): void => {
-		const start = performance.now();
-		let iterCount = 0;
-		let processed = 0;
+		this.insideMeshDrain = true;
+		try {
+			const start = performance.now();
+			let iterCount = 0;
+			let processed = 0;
 
-		while (
-			this.meshResultQueueReadIdx < this.meshResultQueue.length &&
-			((iterCount++ & 15) !== 0 || performance.now() - start < 5)
-		) {
-			const data = this.meshResultQueue[this.meshResultQueueReadIdx++];
-			const { chunkId, lod, opaque, water, cutout } = data;
-			const chunk = this.resolveChunkByMessageId(chunkId);
+			while (
+				this.meshResultQueueReadIdx < this.meshResultQueue.length &&
+				((iterCount++ & 15) !== 0 ||
+					performance.now() - start < ChunkWorkerPool.MESH_DRAIN_BUDGET_MS)
+			) {
+				const data = this.meshResultQueue[this.meshResultQueueReadIdx++];
+				const { chunkId, lod, opaque, water, cutout } = data;
+				const chunk = this.resolveChunkByMessageId(chunkId);
 
-			if (!chunk) {
-				processed++;
-				continue;
-			}
+				if (!chunk) {
+					processed++;
+					continue;
+				}
 
-			if (data.meshRevision !== chunk.meshRevision) {
-				chunk.isDirty = true;
-				chunk.remeshQueued = false;
-				this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0, false);
-				processed++;
-				continue;
-			}
+				if (data.meshRevision !== chunk.meshRevision) {
+					chunk.isDirty = true;
+					chunk.remeshQueued = false;
+					this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0, false);
+					processed++;
+					continue;
+				}
 
-			if (shouldSkipLodForChunk(chunk, lod)) {
-				normalizeChunkLod(chunk);
-				chunk.isDirty = true;
-				chunk.remeshQueued = false;
-				this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);
-				processed++;
-				continue;
-			}
+				if (shouldSkipLodForChunk(chunk, lod)) {
+					normalizeChunkLod(chunk);
+					chunk.isDirty = true;
+					chunk.remeshQueued = false;
+					this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);
+					processed++;
+					continue;
+				}
 
-			const opaqueData = opaque ?? null;
-			const waterData = water ?? null;
-			const cutoutData = cutout ?? null;
-			const canCacheMesh =
-				lod === 0 || hasStableVoxelNeighborsForCachedMesh(chunk);
+				const opaqueData = opaque ?? null;
+				const waterData = water ?? null;
+				const cutoutData = cutout ?? null;
+				const canCacheMesh =
+					lod === 0 || hasStableVoxelNeighborsForCachedMesh(chunk);
 
-			if (canCacheMesh) {
-				_meshApplyScratch.opaque = opaqueData;
-				_meshApplyScratch.water = waterData;
-				_meshApplyScratch.cutout = cutoutData;
-				chunk.setCachedLODMesh(lod, _meshApplyScratch);
-			}
-
-			if ((chunk.lodLevel ?? 0) === lod) {
-				createMeshFromData(chunk, opaqueData, waterData, cutoutData);
-				chunk.isDirty = false;
-				chunk.remeshQueued = false;
-				this.queuePostRemeshSave(chunk);
-			} else {
-				if (!canCacheMesh) {
+				if (canCacheMesh) {
 					_meshApplyScratch.opaque = opaqueData;
 					_meshApplyScratch.water = waterData;
 					_meshApplyScratch.cutout = cutoutData;
 					chunk.setCachedLODMesh(lod, _meshApplyScratch);
 				}
 
-				chunk.isDirty = true;
-				chunk.remeshQueued = false;
-				this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);
+				if ((chunk.lodLevel ?? 0) === lod) {
+					createMeshFromData(chunk, opaqueData, waterData, cutoutData);
+					chunk.isDirty = false;
+					chunk.remeshQueued = false;
+					this.queuePostRemeshSave(chunk);
+				} else {
+					if (!canCacheMesh) {
+						_meshApplyScratch.opaque = opaqueData;
+						_meshApplyScratch.water = waterData;
+						_meshApplyScratch.cutout = cutoutData;
+						chunk.setCachedLODMesh(lod, _meshApplyScratch);
+					}
+
+					chunk.isDirty = true;
+					chunk.remeshQueued = false;
+					this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);
+				}
+
+				processed++;
 			}
 
-			processed++;
-		}
+			// Reentrant marks during the drain are covered by the
+			// flushDirtyMergedGroups() below, so the guard must be clear
+			// before the end-of-drain re-schedule and the flush.
+			this.insideMeshDrain = false;
 
-		this.debugStats.lastMeshProcessed = processed;
-		this.debugStats.totalMeshProcessed += processed;
-		this.debugStats.lastMeshDrainMs = performance.now() - start;
+			this.debugStats.lastMeshProcessed = processed;
+			this.debugStats.totalMeshProcessed += processed;
+			this.debugStats.lastMeshDrainMs = performance.now() - start;
 
-		if (
-			this.meshResultQueueReadIdx > 64 &&
-			this.meshResultQueueReadIdx * 2 > this.meshResultQueue.length
-		) {
-			this.meshResultQueue.copyWithin(0, this.meshResultQueueReadIdx);
-			this.meshResultQueue.length -= this.meshResultQueueReadIdx;
-			this.meshResultQueueReadIdx = 0;
-		}
+			if (
+				this.meshResultQueueReadIdx > 64 &&
+				this.meshResultQueueReadIdx * 2 > this.meshResultQueue.length
+			) {
+				this.meshResultQueue.copyWithin(0, this.meshResultQueueReadIdx);
+				this.meshResultQueue.length -= this.meshResultQueueReadIdx;
+				this.meshResultQueueReadIdx = 0;
+			}
 
-		flushDirtyMergedGroups();
+			flushDirtyMergedGroups(
+				Math.max(
+					0.5,
+					ChunkWorkerPool.MESH_DRAIN_BUDGET_MS - (performance.now() - start),
+				),
+			);
 
-		if (this.meshResultQueueReadIdx < this.meshResultQueue.length) {
-			this.scheduleMeshFlush();
+			if (this.meshResultQueueReadIdx < this.meshResultQueue.length) {
+				this.scheduleMeshFlush();
+			}
+		} finally {
+			this.insideMeshDrain = false;
 		}
 	};
 
@@ -2530,7 +2577,7 @@ export class ChunkWorkerPool {
 	private enqueueRemoteGeneration(chunk: Chunk, _deferLighting = true): void {
 		if (!chunk || chunk.isBoatChunk) return;
 
-		const key = chunk.chunkX + "," + chunk.chunkY + "," + chunk.chunkZ;
+		const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 
 		if (
 			this.remotePendingChunks.has(key) ||
@@ -2635,7 +2682,7 @@ export class ChunkWorkerPool {
 			const chunk = queue[i];
 			if (chunk.isBoatChunk) continue;
 
-			const key = chunk.chunkX + "," + chunk.chunkY + "," + chunk.chunkZ;
+			const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 			if (pending.has(key)) continue;
 
 			anchor = chunk;
@@ -2676,7 +2723,7 @@ export class ChunkWorkerPool {
 				continue;
 			}
 
-			const key = chunk.chunkX + "," + chunk.chunkY + "," + chunk.chunkZ;
+			const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 			if (pending.has(key)) continue;
 
 			result.push(chunk);
@@ -2691,7 +2738,7 @@ export class ChunkWorkerPool {
 				continue;
 			}
 
-			const key = chunk.chunkX + "," + chunk.chunkY + "," + chunk.chunkZ;
+			const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 			if (pending.has(key)) continue;
 
 			result.push(chunk);
@@ -2710,7 +2757,7 @@ export class ChunkWorkerPool {
 				continue;
 			}
 
-			const key = chunk.chunkX + "," + chunk.chunkY + "," + chunk.chunkZ;
+			const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 			if (pending.has(key)) {
 				queueSet.delete(chunk);
 				continue;
@@ -2790,7 +2837,7 @@ export class ChunkWorkerPool {
 				return;
 			}
 
-			const key = chunk.chunkX + "," + chunk.chunkY + "," + chunk.chunkZ;
+			const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 			pending.set(key, chunk);
 
 			void provider
@@ -2803,7 +2850,7 @@ export class ChunkWorkerPool {
 
 		const coords: Array<{ cx: number; cy: number; cz: number }> = [];
 		const chunks: Chunk[] = [];
-		const keys: string[] = [];
+		const keys: bigint[] = [];
 
 		for (let i = 0; i < len; i++) {
 			const chunk = toRequest[i];
@@ -2819,7 +2866,7 @@ export class ChunkWorkerPool {
 			const cx = chunk.chunkX;
 			const cy = chunk.chunkY;
 			const cz = chunk.chunkZ;
-			const key = cx + "," + cy + "," + cz;
+			const key = packCoords(cx, cy, cz);
 
 			pending.set(key, chunk);
 			chunks.push(chunk);
@@ -2841,7 +2888,7 @@ export class ChunkWorkerPool {
 		}
 	}
 
-	private handleRemoteGenError(err: Error, chunk: Chunk, key: string): void {
+	private handleRemoteGenError(err: Error, chunk: Chunk, key: bigint): void {
 		this.remotePendingChunks.delete(key);
 
 		const live = getChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
@@ -2989,7 +3036,7 @@ export class ChunkWorkerPool {
 	 * a pure confirmation stamp (no payload fields).
 	 */
 	private handleRemoteChunkData(result: RemoteChunkResult): void {
-		const key = result.chunkX + "," + result.chunkY + "," + result.chunkZ;
+		const key = packCoords(result.chunkX, result.chunkY, result.chunkZ);
 		const captured = this.remotePendingChunks.get(key) ?? null;
 
 		this.remotePendingChunks.delete(key);
@@ -3683,7 +3730,7 @@ export class ChunkWorkerPool {
 	public onChunkDisposed(chunk: Chunk): void {
 		if (chunk.isBoatChunk) return;
 
-		const remoteKey = chunk.chunkX + "," + chunk.chunkY + "," + chunk.chunkZ;
+		const remoteKey = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 
 		// Remote-generation cleanup. These structures can otherwise retain
 		// disposed Chunk objects and their voxel/light SharedArrayBuffers.
