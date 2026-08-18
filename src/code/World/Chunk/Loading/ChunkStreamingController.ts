@@ -55,10 +55,6 @@ function packLodRevision(lod: number, revision: number): number {
 	return lod + revision * 8;
 }
 
-function unpackLod(packed: number): number {
-	return packed & 0b111;
-}
-
 function unpackRevision(packed: number): number {
 	return Math.floor(packed / 8);
 }
@@ -164,27 +160,21 @@ export class ChunkStreamingController {
 		return this._cachedOutdoorLodRuleSet;
 	}
 
-	private getCachedDecisionLod(
-		key: number,
-		ruleRevision: number,
-		isDirty: boolean,
-	): number {
+	private getCachedDecisionLod(key: number, isDirty: boolean): number {
 		if (isDirty) return -1;
 
-		const cached = this._refreshCache.get(key);
-		if (cached === undefined || unpackRevision(cached) !== ruleRevision) {
-			return -1;
-		}
-
-		return unpackLod(cached);
+		const cachedLod = this._refreshCache.get(key);
+		return cachedLod === undefined ? -1 : cachedLod;
 	}
 
 	private setCachedDecisionLod(
 		key: number,
 		lod: number,
-		ruleRevision: number,
+		isDirty: boolean,
 	): void {
-		this._refreshCache.set(key, packLodRevision(lod, ruleRevision));
+		if (isDirty) return;
+
+		this._refreshCache.set(key, lod);
 	}
 
 	public async updateChunksAround(
@@ -249,7 +239,6 @@ export class ChunkStreamingController {
 			Math.max(lod0HorizontalRadius, lod1HorizontalRadius) + 2;
 		const nearZoneVertical =
 			Math.max(lod0VerticalRadius, lod1VerticalRadius) + 2;
-		const lodRuleRevision = lodRuleSet.revision;
 
 		const loadQueue = this.adapter.getLoadQueue();
 		const unloadQueueSet = this.adapter.getUnloadQueueSet();
@@ -287,12 +276,7 @@ export class ChunkStreamingController {
 				const previousLod = chunk.lodLevel ?? request.desiredLod;
 				const key = packOffsetKey(relX, relY, relZ, previousLod);
 
-				desiredLod = this.getCachedDecisionLod(
-					key,
-					lodRuleRevision,
-					chunk.isDirty,
-				);
-
+				desiredLod = this.getCachedDecisionLod(key, chunk.isDirty);
 				if (desiredLod < 0) {
 					desiredLod = lodRuleSet.resolveWithHysteresisFromDistance(
 						hDist,
@@ -300,7 +284,12 @@ export class ChunkStreamingController {
 						previousLod,
 					).lodLevel;
 
-					this.setCachedDecisionLod(key, desiredLod, lodRuleRevision);
+					this.setCachedDecisionLod(
+						key,
+						desiredLod,
+
+						chunk.isDirty,
+					);
 				}
 			}
 
@@ -453,8 +442,6 @@ export class ChunkStreamingController {
 		const lod2H2 = lod2HorizontalRadius + 2;
 		const lod2V2 = lod2VerticalRadius + 2;
 
-		const ruleRev = lodRuleSet.revision;
-
 		for (let i = 0; i < _queryScratch.length; i++) {
 			const chunk = _queryScratch[i];
 			const numericId = chunk.numericId;
@@ -481,7 +468,7 @@ export class ChunkStreamingController {
 			const chunkLod = chunk.lodLevel ?? 3;
 			const key = packOffsetKey(relX, relY, relZ, chunkLod);
 
-			let decisionLod = this.getCachedDecisionLod(key, ruleRev, chunk.isDirty);
+			let decisionLod = this.getCachedDecisionLod(key, chunk.isDirty);
 
 			if (decisionLod < 0) {
 				decisionLod = lodRuleSet.resolveWithHysteresisFromDistance(
@@ -489,8 +476,7 @@ export class ChunkStreamingController {
 					vDist,
 					chunkLod,
 				).lodLevel;
-
-				this.setCachedDecisionLod(key, decisionLod, ruleRev);
+				this.setCachedDecisionLod(key, decisionLod, chunk.isDirty);
 			}
 
 			if (
@@ -582,22 +568,16 @@ export class ChunkStreamingController {
 		playerChunkZ: number,
 		lodRuleSet: ChunkLodRuleSet,
 	): void {
-		let chunk = getChunk(x, y, z);
-
+		const chunk = getChunk(x, y, z);
 		const previousLod = chunk?.lodLevel ?? 3;
-		const ruleRev = lodRuleSet.revision;
+		const isDirty = chunk?.isDirty === true;
 
 		const relX = x - playerChunkX;
 		const relY = y - playerChunkY;
 		const relZ = z - playerChunkZ;
 
 		const cacheKey = packOffsetKey(relX, relY, relZ, previousLod);
-
-		let desiredLod = this.getCachedDecisionLod(
-			cacheKey,
-			ruleRev,
-			chunk?.isDirty === true,
-		);
+		let desiredLod = this.getCachedDecisionLod(cacheKey, isDirty);
 
 		if (desiredLod < 0) {
 			const absX = relX < 0 ? -relX : relX;
@@ -616,8 +596,20 @@ export class ChunkStreamingController {
 			if (!decision.allowsChunkCreation) return;
 
 			desiredLod = decision.lodLevel;
-			this.setCachedDecisionLod(cacheKey, desiredLod, ruleRev);
+			this.setCachedDecisionLod(cacheKey, desiredLod, isDirty);
 		}
+
+		this.applyTargetChunkDecision(x, y, z, chunk, previousLod, desiredLod);
+	}
+	private applyTargetChunkDecision(
+		x: number,
+		y: number,
+		z: number,
+		existingChunk: Chunk | undefined,
+		previousLod: number,
+		desiredLod: number,
+	): void {
+		let chunk = existingChunk;
 
 		if (!chunk) {
 			chunk = new Chunk(x, y, z);
@@ -699,7 +691,6 @@ export class ChunkStreamingController {
 			);
 		}
 	}
-
 	private processMovementRings(
 		chunkX: number,
 		chunkY: number,
@@ -861,35 +852,48 @@ export class ChunkStreamingController {
 				const vDist = relY < 0 ? -relY : relY;
 
 				for (let z = startZ; z <= endZ; z++) {
+					const relZ = z - chunkZ;
+					const absZ = relZ < 0 ? -relZ : relZ;
+					const hDist = absX > absZ ? absX : absZ;
+
 					const existing = getChunk(x, y, z);
+					const previousLod = existing?.lodLevel ?? 3;
+					const isDirty = existing?.isDirty === true;
+					const cacheKey = packOffsetKey(relX, relY, relZ, previousLod);
 
-					if (existing?.isLoaded && !existing.isDirty) {
-						const relZ = z - chunkZ;
-						const absZ = relZ < 0 ? -relZ : relZ;
-						const hDist = absX > absZ ? absX : absZ;
+					let desiredLod = this.getCachedDecisionLod(cacheKey, isDirty);
 
+					if (desiredLod < 0) {
 						const decision = lodRuleSet.resolveWithHysteresisFromDistance(
 							hDist,
 							vDist,
-							existing.lodLevel ?? 3,
+							previousLod,
 						);
 
-						if (
-							existing.lodLevel === decision.lodLevel &&
-							!(decision.lodLevel <= 1 && !existing.hasVoxelData)
-						) {
+						if (!decision.allowsChunkCreation) {
 							continue;
 						}
+
+						desiredLod = decision.lodLevel;
+						this.setCachedDecisionLod(cacheKey, desiredLod, isDirty);
 					}
 
-					this.processTargetChunkCoordinate(
+					if (
+						existing?.isLoaded &&
+						!isDirty &&
+						existing.lodLevel === desiredLod &&
+						!(desiredLod <= 1 && !existing.hasVoxelData)
+					) {
+						continue;
+					}
+
+					this.applyTargetChunkDecision(
 						x,
 						y,
 						z,
-						chunkX,
-						chunkY,
-						chunkZ,
-						lodRuleSet,
+						existing,
+						previousLod,
+						desiredLod,
 					);
 				}
 			}

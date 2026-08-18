@@ -1339,7 +1339,13 @@ export class VoxelRoom extends Room {
 	 */
 	private sendBlockEditRejected(
 		client: Client,
-		edit: { x: number; y: number; z: number; blockId: number; action: number },
+		edit: {
+			x: number;
+			y: number;
+			z: number;
+			blockId: number;
+			action: number;
+		},
 		reason: number,
 	): void {
 		const msg = encodeBlockEditRejected({
@@ -1794,22 +1800,39 @@ export class VoxelRoom extends Room {
 		}>,
 	): Promise<void> {
 		try {
-			const unique: typeof requests = [];
-			const coords: Array<{ cx: number; cy: number; cz: number }> = [];
-			const keys: number[] = [];
-			const seen = new Set<number>();
+			const requestCount = requests.length;
+			if (requestCount === 0) return;
 
-			for (let i = 0; i < requests.length; i++) {
+			// Pre-size arrays to avoid repeated growth during large batch requests.
+			const unique: typeof requests = new Array(requestCount);
+			const coords: Array<{ cx: number; cy: number; cz: number }> = new Array(
+				requestCount,
+			);
+			const keys: number[] = new Array(requestCount);
+
+			const seen = new Set<number>();
+			let uniqueCount = 0;
+
+			for (let i = 0; i < requestCount; i++) {
 				const r = requests[i];
 				const key = packChunkKeyFast(r.cx, r.cy, r.cz);
+
 				if (seen.has(key)) continue;
 				seen.add(key);
-				unique.push(r);
-				keys.push(key);
-				coords.push({ cx: r.cx, cy: r.cy, cz: r.cz });
+
+				unique[uniqueCount] = r;
+				coords[uniqueCount] = { cx: r.cx, cy: r.cy, cz: r.cz };
+				keys[uniqueCount] = key;
+				uniqueCount++;
 			}
 
-			// Apply only this batch's pending edits — not the whole world's.
+			if (uniqueCount === 0) return;
+
+			unique.length = uniqueCount;
+			coords.length = uniqueCount;
+			keys.length = uniqueCount;
+
+			// Apply only this batch's pending edits, not the whole world's queue.
 			await this.ensureEditsApplied(keys);
 
 			const storedMap = await this.worldStorage.readChunks(coords);
@@ -1827,64 +1850,65 @@ export class VoxelRoom extends Room {
 				version: number;
 			}> = [];
 
-			for (let i = 0; i < unique.length; i++) {
+			for (let i = 0; i < uniqueCount; i++) {
 				const r = unique[i];
 				const stored = storedMap.get(keys[i]);
-				if (stored) {
-					if (stored.version === r.cachedVersion) {
-						// Client's copy matches the authoritative version —
-						// confirm it so the client applies its local chunk.
-						unchangedChunks.push({
-							cx: r.cx,
-							cy: r.cy,
-							cz: r.cz,
-							version: stored.version,
-						});
-					} else {
-						fullChunks.push(stored);
-					}
-				} else {
+
+				if (!stored) {
 					missingCoords.push({
 						chunkX: r.cx,
 						chunkY: r.cy,
 						chunkZ: r.cz,
 					});
+					continue;
+				}
+
+				if (stored.version === r.cachedVersion) {
+					unchangedChunks.push({
+						cx: r.cx,
+						cy: r.cy,
+						cz: r.cz,
+						version: stored.version,
+					});
+				} else {
+					fullChunks.push(stored);
 				}
 			}
 
-			// Send storage hits immediately so the client doesn't wait for
-			// generation of missing chunks to get cached data.
+			// Send storage hits before generating missing chunks so clients can
+			// render cached/ready chunks without waiting for generation work.
 			if (fullChunks.length > 0) {
 				this.sendChunkDataBatch(client, fullChunks);
 			}
+
 			if (unchangedChunks.length > 0) {
 				this.sendUnchangedBatch(client, unchangedChunks);
 			}
 
-			// Generate missing chunks. Wrap in try-catch so a failure in one
-			// chunk doesn't prevent the batch from completing.
-			if (missingCoords.length > 0) {
-				try {
-					const generated =
-						await this.chunkGen.generateChunksBatch(missingCoords);
-					this.sendChunkDataBatch(client, generated);
-				} catch (genErr) {
-					// Send individual requests as fallback so at least some chunks
-					// succeed even if the batch dispatch failed.
-					for (const coord of missingCoords) {
-						try {
-							const data = await this.chunkGen.generateChunk(
-								coord.chunkX,
-								coord.chunkY,
-								coord.chunkZ,
-							);
-							this.sendChunkDataBatch(client, [data]);
-						} catch (singleErr) {
-							console.error(
-								`[VoxelRoom] Single chunk gen failed: ${coord.chunkX},${coord.chunkY},${coord.chunkZ}`,
-								singleErr,
-							);
-						}
+			if (missingCoords.length === 0) return;
+
+			try {
+				const generated =
+					await this.chunkGen.generateChunksBatch(missingCoords);
+				this.sendChunkDataBatch(client, generated);
+			} catch (genErr) {
+				// Fallback preserves existing behavior: a failed batch does not stop
+				// individual chunks from being attempted.
+				for (let i = 0; i < missingCoords.length; i++) {
+					const coord = missingCoords[i];
+
+					try {
+						const data = await this.chunkGen.generateChunk(
+							coord.chunkX,
+							coord.chunkY,
+							coord.chunkZ,
+						);
+						this.sendChunkDataBatch(client, [data]);
+					} catch (singleErr) {
+						console.error(
+							`[VoxelRoom] Single chunk gen failed: ${coord.chunkX},${coord.chunkY},${coord.chunkZ}`,
+							singleErr,
+						);
 					}
 				}
 			}

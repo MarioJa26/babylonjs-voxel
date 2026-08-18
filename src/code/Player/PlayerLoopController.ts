@@ -75,7 +75,7 @@ export class PlayerLoopController {
 	#lastCaveState = false;
 
 	// ---- occlusion culling ----
-	#occlusionCuller = new OcclusionCuller();
+	//#occlusionCuller = new OcclusionCuller();
 	#lastOcclusionStats = { total: 0, occluded: 0, timeMs: 0 };
 
 	// ---- debug HUD throttle ----
@@ -179,7 +179,7 @@ export class PlayerLoopController {
 
 		this.#updateActiveMeshSelection(cx, cy, cz);
 
-		this.#occlusionCuller.update(this.#lastOcclusionStats);
+		//this.#occlusionCuller.update(this.#lastOcclusionStats);
 
 		const frameMs = performance.now() - frameStart;
 		this.#mainThreadMs = this.#mainThreadMs * 0.9 + frameMs * 0.1;
