@@ -146,29 +146,20 @@ export class QuadBuffer {
 
 		const tileIdx = blockId * FaceName.Count + faceName;
 
-		let meta = (materialType & 0x3) << 1;
+		let meta =
+			((materialType & 0x3) << 1) |
+			(flip ? META_FLIP : 0) |
+			(diagonal ? META_DIAG : 0) |
+			(diagonal === 2 ? META_DIAG_VARIANT : 0) |
+			(rawDim ? META_RAW_DIM : 0);
 
-		if (flip) {
-			meta |= META_FLIP;
-		}
-
-		if (xs % 1 !== 0) {
+		// Usually cheaper than xs % 1 !== 0 in tight loops.
+		// This preserves the intent here because positions are already bounded through sx/sy/sz.
+		if (xs !== (xs | 0)) {
 			meta |= META_POS_OFF_X;
 		}
 
-		if (diagonal !== 0) {
-			meta |= META_DIAG;
-
-			if (diagonal === 2) {
-				meta |= META_DIAG_VARIANT;
-			}
-		}
-
-		if (rawDim) {
-			meta |= META_RAW_DIM;
-		}
-
-		if (zs % 1 !== 0) {
+		if (zs !== (zs | 0)) {
 			meta |= META_POS_OFF_Z;
 		}
 
@@ -192,8 +183,62 @@ export class QuadBuffer {
 	}
 
 	/**
+	 * Specialized unchecked cube face emitter.
+	 *
+	 * This is faster than the generic emitQuadUnchecked path because cube faces
+	 * emitted from VoxelFaceEmitterAdapter always use:
+	 * - MaterialType.Default
+	 * - flip = 0
+	 * - diagonal = 0
+	 * - integer block-space positions
+	 */
+	public emitCubeQuadUnchecked(
+		x: number,
+		y: number,
+		z: number,
+		axis: number,
+		width: number,
+		height: number,
+		blockId: number,
+		backFace: number,
+		light: number,
+		ao: number,
+		faceName: FaceName,
+		rawDim: number,
+	): void {
+		const xs = x * POS_SCALE + 0.5;
+		const ys = y * POS_SCALE + 0.5;
+		const zs = z * POS_SCALE + 0.5;
+
+		const tileIdx = blockId * FaceName.Count + faceName;
+
+		const sw = rawDim ? width : width * POS_SCALE;
+		const sh = rawDim ? height : height * POS_SCALE;
+
+		// Cube greedy faces have no flip, no diagonal, default material.
+		// Positions are integer block coords, so no META_POS_OFF_X/Z needed.
+		const meta = rawDim ? META_RAW_DIM : 0;
+
+		this.emitRaw(
+			xs,
+			ys,
+			zs,
+			axis * 2 + backFace,
+			sw,
+			sh,
+			BlockFaceTileX[tileIdx],
+			BlockFaceTileY[tileIdx],
+			ao,
+			light,
+			BlockTint[blockId],
+			meta,
+		);
+	}
+
+	/**
 	 * General-purpose quad without bounds check.
-	 * Intended for the greedy cube path only.
+	 * Keep this for non-cube or future callers that may use flip, diagonal,
+	 * fractional positions, or non-default material types.
 	 */
 	public emitQuadUnchecked(
 		x: number,
@@ -218,29 +263,18 @@ export class QuadBuffer {
 
 		const tileIdx = blockId * FaceName.Count + faceName;
 
-		let meta = (materialType & 0x3) << 1;
+		let meta =
+			((materialType & 0x3) << 1) |
+			(flip ? META_FLIP : 0) |
+			(diagonal ? META_DIAG : 0) |
+			(diagonal === 2 ? META_DIAG_VARIANT : 0) |
+			(rawDim ? META_RAW_DIM : 0);
 
-		if (flip) {
-			meta |= META_FLIP;
-		}
-
-		if (xs % 1 !== 0) {
+		if (xs !== (xs | 0)) {
 			meta |= META_POS_OFF_X;
 		}
 
-		if (diagonal !== 0) {
-			meta |= META_DIAG;
-
-			if (diagonal === 2) {
-				meta |= META_DIAG_VARIANT;
-			}
-		}
-
-		if (rawDim) {
-			meta |= META_RAW_DIM;
-		}
-
-		if (zs % 1 !== 0) {
+		if (zs !== (zs | 0)) {
 			meta |= META_POS_OFF_Z;
 		}
 

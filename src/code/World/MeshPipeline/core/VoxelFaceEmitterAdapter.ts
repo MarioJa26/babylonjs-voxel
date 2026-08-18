@@ -164,9 +164,8 @@ export class VoxelFaceEmitterAdapter {
 		const x = axis === 0 ? _origin.ox + off : _origin.ox;
 		const y = axis === 1 ? _origin.oy + off : _origin.oy;
 		const z = axis === 2 ? _origin.oz + off : _origin.oz;
-		// P3.8: unchecked emit — greedy cube faces sit at positions 0..size-1,
-		// so the scaled coordinates can never leave the u8 range.
-		out.emitQuadUnchecked(
+
+		out.emitCubeQuadUnchecked(
 			x,
 			y,
 			z,
@@ -178,9 +177,6 @@ export class VoxelFaceEmitterAdapter {
 			light,
 			ao,
 			faceName,
-			MaterialType.Default,
-			0,
-			0,
 			needsRawDim(blockId, desc.width, desc.height) ? 1 : 0,
 		);
 	}
