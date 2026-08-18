@@ -86,26 +86,30 @@ function createVoxelRegistration(args: {
 	const blockSAB = args.blockSAB ?? null;
 	const paletteSAB = args.paletteSAB ?? null;
 	const lightSAB = args.lightSAB ?? null;
+	const blockBytesPerElement = args.blockBytesPerElement;
+
+	let blockU8: Uint8Array | null = null;
+	let blockU16: Uint16Array | null = null;
+
+	if (blockSAB) {
+		if (blockBytesPerElement === 1) {
+			blockU8 = new Uint8Array(blockSAB);
+		} else {
+			blockU16 = new Uint16Array(blockSAB);
+		}
+	}
 
 	return {
 		blockSAB,
 		paletteSAB,
 		lightSAB,
 
-		blockU8:
-			blockSAB && args.blockBytesPerElement === 1
-				? new Uint8Array(blockSAB)
-				: null,
-
-		blockU16:
-			blockSAB && args.blockBytesPerElement === 2
-				? new Uint16Array(blockSAB)
-				: null,
-
+		blockU8,
+		blockU16,
 		palette: paletteSAB ? new Uint16Array(paletteSAB) : null,
 		light: lightSAB ? new Uint8Array(lightSAB) : null,
 
-		blockBytesPerElement: args.blockBytesPerElement,
+		blockBytesPerElement,
 		isUniform: args.isUniform,
 		uniformBlockId: args.uniformBlockId,
 	};
@@ -304,17 +308,16 @@ function extractBlockBorder(
 		let ci = 0;
 
 		for (let bz = 0; bz < zCount; bz++) {
-			const nlz = lzStart + bz;
+			const zBase = (lzStart + bz) * size2;
 
 			for (let by = 0; by < yCount; by++) {
-				const nly = lyStart + by;
-				const rowBase = nly * size + nlz * size2;
+				const rowBase = zBase + (lyStart + by) * size;
 
 				if (dx === 0) {
 					out.set(dense16.subarray(rowBase, rowBase + xCount), ci);
 					ci += xCount;
 				} else {
-					out[ci++] = dense16[lxStart + rowBase];
+					out[ci++] = dense16[rowBase + lxStart];
 				}
 			}
 		}
@@ -329,32 +332,35 @@ function extractBlockBorder(
 	}
 
 	const palette = reg.palette;
-	if (palette && palette.length > 1) {
+	const paletteLen = palette?.length ?? 0;
+
+	if (palette && paletteLen > 1) {
 		let ci = 0;
 
 		for (let bz = 0; bz < zCount; bz++) {
-			const nlz = lzStart + bz;
+			const zBase = (lzStart + bz) * size2;
 
 			for (let by = 0; by < yCount; by++) {
-				const nly = lyStart + by;
-				const rowBase = nly * size + nlz * size2;
+				const rowBase = zBase + (lyStart + by) * size;
 
 				if (dx === 0) {
-					// Assumes even chunk size, which matches Chunk.SIZE = 32.
 					let packedIndex = rowBase >>> 1;
 					const pairCount = xCount >>> 1;
 
 					for (let pair = 0; pair < pairCount; pair++) {
 						const byte = packed[packedIndex++];
-						out[ci++] = palette[byte & 0x0f] ?? 0;
-						out[ci++] = palette[(byte >>> 4) & 0x0f] ?? 0;
+						const lo = byte & 0x0f;
+						const hi = (byte >>> 4) & 0x0f;
+
+						out[ci++] = lo < paletteLen ? palette[lo] : 0;
+						out[ci++] = hi < paletteLen ? palette[hi] : 0;
 					}
 				} else {
-					const idx = lxStart + rowBase;
+					const idx = rowBase + lxStart;
 					const byte = packed[idx >>> 1];
 					const pIdx = (idx & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
 
-					out[ci++] = palette[pIdx] ?? 0;
+					out[ci++] = pIdx < paletteLen ? palette[pIdx] : 0;
 				}
 			}
 		}
@@ -365,17 +371,16 @@ function extractBlockBorder(
 	let ci = 0;
 
 	for (let bz = 0; bz < zCount; bz++) {
-		const nlz = lzStart + bz;
+		const zBase = (lzStart + bz) * size2;
 
 		for (let by = 0; by < yCount; by++) {
-			const nly = lyStart + by;
-			const rowBase = nly * size + nlz * size2;
+			const rowBase = zBase + (lyStart + by) * size;
 
 			if (dx === 0) {
 				out.set(packed.subarray(rowBase, rowBase + xCount), ci);
 				ci += xCount;
 			} else {
-				out[ci++] = packed[lxStart + rowBase];
+				out[ci++] = packed[rowBase + lxStart];
 			}
 		}
 	}
@@ -406,17 +411,16 @@ function extractLightBorder(
 	let li = 0;
 
 	for (let bz = 0; bz < zCount; bz++) {
-		const nlz = lzStart + bz;
+		const zBase = (lzStart + bz) * size2;
 
 		for (let by = 0; by < yCount; by++) {
-			const nly = lyStart + by;
-			const rowBase = nly * size + nlz * size2;
+			const rowBase = zBase + (lyStart + by) * size;
 
 			if (dx === 0) {
 				lb.set(nLight.subarray(rowBase, rowBase + xCount), li);
 				li += xCount;
 			} else {
-				lb[li++] = nLight[lxStart + rowBase];
+				lb[li++] = nLight[rowBase + lxStart];
 			}
 		}
 	}
@@ -433,6 +437,7 @@ for (let i = 0; i < 26; i++) {
 	NEIGHBOR_DY[i] = NEIGHBOR_OFFSETS[i].dy;
 	NEIGHBOR_DZ[i] = NEIGHBOR_OFFSETS[i].dz;
 }
+
 function buildNeighborArrays(
 	cx: number,
 	cy: number,
@@ -441,30 +446,39 @@ function buildNeighborArrays(
 	mask: number,
 	includeBlocks = true,
 ): void {
-	for (let i = 0; i < 26; i++) {
-		if ((mask & (1 << i)) === 0) {
-			_neighborBlocks[i] = undefined;
-			_neighborLights[i] = undefined;
+	const regs = _voxelRegistrations;
+	const neighborBlocks = _neighborBlocks;
+	const neighborLights = _neighborLights;
+	const dxs = NEIGHBOR_DX;
+	const dys = NEIGHBOR_DY;
+	const dzs = NEIGHBOR_DZ;
+
+	// Force unsigned 32-bit shifting. The neighbor mask only uses 26 bits.
+	let bits = mask >>> 0;
+
+	for (let i = 0; i < 26; i++, bits >>>= 1) {
+		if ((bits & 1) === 0) {
+			neighborBlocks[i] = undefined;
+			neighborLights[i] = undefined;
 			continue;
 		}
 
-		const dx = NEIGHBOR_DX[i];
-		const dy = NEIGHBOR_DY[i];
-		const dz = NEIGHBOR_DZ[i];
+		const dx = dxs[i];
+		const dy = dys[i];
+		const dz = dzs[i];
 
-		const reg = _voxelRegistrations.get(packCoords(cx + dx, cy + dy, cz + dz));
-
+		const reg = regs.get(packCoords(cx + dx, cy + dy, cz + dz));
 		if (!reg) {
-			_neighborBlocks[i] = undefined;
-			_neighborLights[i] = undefined;
+			neighborBlocks[i] = undefined;
+			neighborLights[i] = undefined;
 			continue;
 		}
 
-		_neighborBlocks[i] = includeBlocks
+		neighborBlocks[i] = includeBlocks
 			? extractBlockBorder(reg, i, size, dx, dy, dz)
 			: undefined;
 
-		_neighborLights[i] = extractLightBorder(reg, i, size, dx, dy, dz);
+		neighborLights[i] = extractLightBorder(reg, i, size, dx, dy, dz);
 	}
 }
 

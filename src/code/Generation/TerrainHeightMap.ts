@@ -21,35 +21,36 @@ import { RiverGenerator } from "./RiverGeneration";
 
 const params: GenerationParamsType = GenerationParams;
 
+const CHUNK_SIZE = 1 << CHUNK_SHIFT;
+const CHUNK_LAST_WORLD_OFFSET = CHUNK_SIZE - 1;
+
 const BIOME_TERRAIN_GRID = 192;
 const INV_BIOME_TERRAIN_GRID = 1 / BIOME_TERRAIN_GRID;
 
 const MAX_BIOME_CORNERS = 8192;
 const MAX_CHUNK_CACHE = 4096;
+const MAX_FINAL_HEIGHT_CACHE = 131072;
 
-// Mask arithmetic is safe only when sizes are powers of two — assert that
-// at module load time rather than silently producing wrong cache indices.
-if ((MAX_BIOME_CORNERS & (MAX_BIOME_CORNERS - 1)) !== 0)
+if ((MAX_BIOME_CORNERS & (MAX_BIOME_CORNERS - 1)) !== 0) {
 	throw new Error("MAX_BIOME_CORNERS must be a power of two");
-if ((MAX_CHUNK_CACHE & (MAX_CHUNK_CACHE - 1)) !== 0)
+}
+if ((MAX_CHUNK_CACHE & (MAX_CHUNK_CACHE - 1)) !== 0) {
 	throw new Error("MAX_CHUNK_CACHE must be a power of two");
+}
+if ((MAX_FINAL_HEIGHT_CACHE & (MAX_FINAL_HEIGHT_CACHE - 1)) !== 0) {
+	throw new Error("MAX_FINAL_HEIGHT_CACHE must be a power of two");
+}
 
-// Single >>> 0 coercion is sufficient; the second was a no-op.
-const encodeChunkKey = (cx: number, cz: number): number =>
-	(((cx & 0xffff) << 16) | (cz & 0xffff)) >>> 0;
+const CORNER_CACHE_MASK = MAX_BIOME_CORNERS - 1;
+const CHUNK_CACHE_MASK = MAX_CHUNK_CACHE - 1;
+const FHC_MASK = MAX_FINAL_HEIGHT_CACHE - 1;
 
-const encodeCornerKey = (gx: number, gz: number): number =>
-	(((gx & 0xffff) << 16) | (gz & 0xffff)) >>> 0;
+function hash2(x: number, z: number, mask: number): number {
+	return ((Math.imul(x, 2246822519) ^ Math.imul(z, 3266489917)) >>> 0) & mask;
+}
 
 // ---------------------------------------------------------------------------
 // One-time initialization
-//
-// The noise instances are held in `let` bindings so they can be rebuilt at
-// runtime via setTerrainSeed() — this module is evaluated once per thread
-// (main + every worker) at bundle load, but the world seed is only known
-// after URL routing. All consumers call through the exported accessors, so
-// swapping the instances is safe as long as the swap happens before the
-// first sample (it does: world boot / SetWorldSeed, before any generation).
 // ---------------------------------------------------------------------------
 
 type TerrainNoiseSet = {
@@ -114,83 +115,72 @@ function createTerrainNoise(seed: string): TerrainNoiseSet {
 }
 
 let _noise = createTerrainNoise(GenerationParams.SEED);
+
 let riverGenerator = _noise.riverGenerator;
 let temperatureNoise = _noise.temperature.fn;
-let temperatureInst = _noise.temperature.instance;
 let humidityNoise = _noise.humidity.fn;
-let humidityInst = _noise.humidity.instance;
+
 let continentalnessNoise = _noise.continentalness.fn;
 let continentalnessInst = _noise.continentalness.instance;
+
 let erosionNoise = _noise.erosion.fn;
 let erosionInst = _noise.erosion.instance;
+
 let peaksAndValleysNoise = _noise.peaksAndValleys.fn;
 let peaksAndValleysInst = _noise.peaksAndValleys.instance;
+
 let heightNoise = _noise.height;
 
 /**
- * Rebuild every noise instance + river generator from a new seed string and
- * clear the sampled caches so no pre-seed values leak. Must be called before
- * the first terrain sample on each thread (main thread: world boot; workers:
- * SetWorldSeed task).
+ * Rebuild every noise instance plus the river generator from a new seed string
+ * and clear sampled caches so no pre-seed values leak.
  */
 export function setTerrainSeed(seed: string): void {
 	_noise = createTerrainNoise(seed);
+
 	riverGenerator = _noise.riverGenerator;
 	temperatureNoise = _noise.temperature.fn;
-	temperatureInst = _noise.temperature.instance;
 	humidityNoise = _noise.humidity.fn;
-	humidityInst = _noise.humidity.instance;
+
 	continentalnessNoise = _noise.continentalness.fn;
 	continentalnessInst = _noise.continentalness.instance;
+
 	erosionNoise = _noise.erosion.fn;
 	erosionInst = _noise.erosion.instance;
+
 	peaksAndValleysNoise = _noise.peaksAndValleys.fn;
 	peaksAndValleysInst = _noise.peaksAndValleys.instance;
+
 	heightNoise = _noise.height;
+
 	cornerValid.fill(0);
 	chunkCacheValid.fill(0);
-	_fhcValid.fill(0);
+	fhcValid.fill(0);
 }
 
-// Inline — avoids a function call on every noise sample on the hot path.
-// raw is in [-1, 1]; result maps it to [1, -1] with abs.
-// @inline candidate for bundlers that support it.
 function applyRidged(raw: number): number {
 	const num = 1 - Math.abs(raw) * 2;
-	if (num < 0) return -(num ** 2);
-	return num ** 2;
+	return num < 0 ? -(num * num) : num * num;
 }
 
 const continentalnessSpline = new Spline([
-	// Deep ocean trenches
 	{ t: -1.0, v: -150 },
 	{ t: -0.8, v: -120 },
 	{ t: -0.6, v: -90 },
 	{ t: -0.4, v: -70 },
 	{ t: -0.3, v: -60 },
 	{ t: -0.25, v: -50 },
-	// Coastline / sea level
 	{ t: -0.18, v: -42 },
-	// Lowlands / plains
 	{ t: -0.1, v: 5 },
 	{ t: 0.0, v: 15 },
 	{ t: 0.1, v: 40 },
 	{ t: 0.2, v: 80 },
-	// Hills
 	{ t: 0.3, v: 130 },
 	{ t: 0.4, v: 200 },
 	{ t: 0.5, v: 300 },
-	// Mountains
 	{ t: 0.6, v: 400 },
 	{ t: 0.7, v: 500 },
 	{ t: 0.8, v: 550 },
-	/*
-	// High peaks
-	{ t: 0.85, v: 750 },
-	{ t: 0.9, v: 850 },
-	{ t: 0.95, v: 950 },
-	{ t: 1.0, v: 1000 },
-	 */
 ]);
 
 const erosionSpline = new Spline([
@@ -214,12 +204,9 @@ const peaksAndValleysSpline = new Spline([
 ]);
 
 // ---------------------------------------------------------------------------
-// Biome terrain settings — packed Float32 arrays, direct-mapped cache.
-// Layout per slot: [base, amplitude, scale, exponent, pvNoiseScale, erosionNoiseScale]
+// Biome terrain settings cache
 // ---------------------------------------------------------------------------
 
-const SETTINGS_STRIDE = 6;
-const CORNER_CACHE_MASK = MAX_BIOME_CORNERS - 1;
 const cornerKeyX = new Int32Array(MAX_BIOME_CORNERS);
 const cornerKeyZ = new Int32Array(MAX_BIOME_CORNERS);
 const cornerValid = new Uint8Array(MAX_BIOME_CORNERS);
@@ -232,30 +219,19 @@ const cornerPvScale = new Float32Array(MAX_BIOME_CORNERS);
 const cornerErosionScale = new Float32Array(MAX_BIOME_CORNERS);
 
 // ---------------------------------------------------------------------------
-// Chunk sample cache — direct-mapped.
-// cx/cz stored in separate Int32 arrays to avoid any object allocation and
-// to keep the hot comparison branch on adjacent typed-array memory.
+// Chunk sample cache
 // ---------------------------------------------------------------------------
 
-const CHUNK_CACHE_MASK = MAX_CHUNK_CACHE - 1;
 const chunkCacheKeyX = new Int32Array(MAX_CHUNK_CACHE);
 const chunkCacheKeyZ = new Int32Array(MAX_CHUNK_CACHE);
 const chunkCacheValid = new Uint8Array(MAX_CHUNK_CACHE);
 
-// Terrain sample values stored flat — no object allocation in the hot path.
-// Public reads go through getChunkSample*() accessors below.
-const _ccBaseHeight = new Float32Array(MAX_CHUNK_CACHE);
-const _ccContinent = new Float32Array(MAX_CHUNK_CACHE);
-const _ccTemperature = new Float32Array(MAX_CHUNK_CACHE);
-const _ccHumidity = new Float32Array(MAX_CHUNK_CACHE);
-const _ccRiverAbs = new Float32Array(MAX_CHUNK_CACHE);
-// Biome is a reference type — kept in a parallel object array.
-const _ccBiome: (Biome | undefined)[] = new Array(MAX_CHUNK_CACHE);
-
-// ---------------------------------------------------------------------------
-// Internal chunk-sample fill — computes and stores all fields for (cx, cz).
-// Returns the cache slot so callers can read directly without a second lookup.
-// ---------------------------------------------------------------------------
+const ccBaseHeight = new Float32Array(MAX_CHUNK_CACHE);
+const ccContinent = new Float32Array(MAX_CHUNK_CACHE);
+const ccTemperature = new Float32Array(MAX_CHUNK_CACHE);
+const ccHumidity = new Float32Array(MAX_CHUNK_CACHE);
+const ccRiverAbs = new Float32Array(MAX_CHUNK_CACHE);
+const ccBiome: (Biome | undefined)[] = new Array(MAX_CHUNK_CACHE);
 
 function fillChunkCache(cx: number, cz: number, idx: number): void {
 	const baseX = cx << CHUNK_SHIFT;
@@ -266,42 +242,90 @@ function fillChunkCache(cx: number, cz: number, idx: number): void {
 	const temperature = (temperatureNoise(baseX, baseZ) + 1) * 0.5;
 	const humidity = (humidityNoise(baseX, baseZ) + 1) * 0.5;
 	const riverAbs = Math.abs(riverGenerator.getRiverNoise(baseX, baseZ));
+
 	const baseHeight =
 		GenerationParams.SEA_LEVEL + continentalnessSpline.getValue(continent);
-	const effectiveRiver = continent > 0.07 ? 1.0 : riverAbs;
+
 	const biome = getBiomeFor(
 		temperature,
 		humidity,
 		continent,
-		effectiveRiver,
+		continent > 0.07 ? 1.0 : riverAbs,
 		baseHeight,
 	);
 
 	chunkCacheKeyX[idx] = cx;
 	chunkCacheKeyZ[idx] = cz;
+	ccBaseHeight[idx] = baseHeight;
+	ccContinent[idx] = continent;
+	ccTemperature[idx] = temperature;
+	ccHumidity[idx] = humidity;
+	ccRiverAbs[idx] = riverAbs;
+	ccBiome[idx] = biome;
+
 	chunkCacheValid[idx] = 1;
-	_ccBaseHeight[idx] = baseHeight;
-	_ccContinent[idx] = continent;
-	_ccTemperature[idx] = temperature;
-	_ccHumidity[idx] = humidity;
-	_ccRiverAbs[idx] = riverAbs;
-	_ccBiome[idx] = biome;
+}
+
+function getChunkCacheIdx(worldX: number, worldZ: number): number {
+	const cx = worldX >> CHUNK_SHIFT;
+	const cz = worldZ >> CHUNK_SHIFT;
+	const idx = hash2(cx, cz, CHUNK_CACHE_MASK);
+
+	if (
+		chunkCacheValid[idx] === 0 ||
+		chunkCacheKeyX[idx] !== cx ||
+		chunkCacheKeyZ[idx] !== cz
+	) {
+		fillChunkCache(cx, cz, idx);
+	}
+
+	return idx;
+}
+
+// ---------------------------------------------------------------------------
+// Final height cache
+// ---------------------------------------------------------------------------
+
+const fhcKeyX = new Int32Array(MAX_FINAL_HEIGHT_CACHE);
+const fhcKeyZ = new Int32Array(MAX_FINAL_HEIGHT_CACHE);
+const fhcValue = new Int32Array(MAX_FINAL_HEIGHT_CACHE);
+const fhcValid = new Uint8Array(MAX_FINAL_HEIGHT_CACHE);
+
+function fhcSlot(x: number, z: number): number {
+	return hash2(x, z, FHC_MASK);
+}
+
+// ---------------------------------------------------------------------------
+// Biome terrain settings helpers
+// ---------------------------------------------------------------------------
+
+const biomeDefaultBase = params.TERRAIN_HEIGHT_BASE;
+const biomeDefaultAmplitude = params.TERRAIN_HEIGHT_AMPLITUDE;
+const biomeDefaultScale = params.TERRAIN_SCALE;
+
+function getBiomeBase(b: Biome): number {
+	return b.terrainHeightBase ?? biomeDefaultBase;
+}
+function getBiomeAmp(b: Biome): number {
+	return b.terrainHeightAmplitude ?? biomeDefaultAmplitude;
+}
+function getBiomeScale(b: Biome): number {
+	return b.terrainScale ?? biomeDefaultScale;
+}
+function getBiomeExp(b: Biome): number {
+	return b.heightExponent ?? 1;
+}
+function getBiomePvScale(b: Biome): number {
+	return b.pvNoiseScale ?? 1;
+}
+function getBiomeErosionScale(b: Biome): number {
+	return b.erosionNoiseScale ?? 1;
 }
 
 function getCornerSlot(gx: number, gz: number): number {
-	return (
-		((Math.imul(gx, 2246822519) ^ Math.imul(gz, 3266489917)) >>> 0) &
-		CORNER_CACHE_MASK
-	);
+	return hash2(gx, gz, CORNER_CACHE_MASK);
 }
-function readCornerSlot(slot: number, out: Float32Array): void {
-	out[0] = cornerBase[slot];
-	out[1] = cornerAmp[slot];
-	out[2] = cornerScale[slot];
-	out[3] = cornerExp[slot];
-	out[4] = cornerPvScale[slot];
-	out[5] = cornerErosionScale[slot];
-}
+
 function writeCornerSlot(
 	slot: number,
 	gx: number,
@@ -323,9 +347,9 @@ function writeCornerSlot(
 	cornerPvScale[slot] = pvScale;
 	cornerErosionScale[slot] = erosionScale;
 
-	// Mark valid last so partially-written slots are never observed as valid.
 	cornerValid[slot] = 1;
 }
+
 function writeCornerFromSignals(
 	gx: number,
 	gz: number,
@@ -333,7 +357,7 @@ function writeCornerFromSignals(
 	rawTemperature: number,
 	rawHumidity: number,
 	rawRiver: number,
-): void {
+): number {
 	const continent = applyRidged(rawContinent);
 	const temperature = (rawTemperature + 1) * 0.5;
 	const humidity = (rawHumidity + 1) * 0.5;
@@ -351,6 +375,7 @@ function writeCornerFromSignals(
 	);
 
 	const slot = getCornerSlot(gx, gz);
+
 	writeCornerSlot(
 		slot,
 		gx,
@@ -362,65 +387,52 @@ function writeCornerFromSignals(
 		getBiomePvScale(biome),
 		getBiomeErosionScale(biome),
 	);
+
+	return slot;
 }
-// Returns cache slot — internal use only. O(1), no allocation.
-function getChunkCacheIdx(worldX: number, worldZ: number): number {
-	const cx = worldX >> CHUNK_SHIFT;
-	const cz = worldZ >> CHUNK_SHIFT;
-	const key = encodeChunkKey(cx, cz);
-	const idx = key & CHUNK_CACHE_MASK;
+
+function ensureCorner(
+	gx: number,
+	gz: number,
+	worldX: number,
+	worldZ: number,
+): number {
+	const slot = getCornerSlot(gx, gz);
 
 	if (
-		!chunkCacheValid[idx] ||
-		chunkCacheKeyX[idx] !== cx ||
-		chunkCacheKeyZ[idx] !== cz
+		cornerValid[slot] !== 0 &&
+		cornerKeyX[slot] === gx &&
+		cornerKeyZ[slot] === gz
 	) {
-		fillChunkCache(cx, cz, idx);
+		return slot;
 	}
-	return idx;
-}
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Per-column final height cache.
-//
-// `getFinalTerrainHeight` performs ~3 noise samples + 2 splines + a biome
-// blend per call. Callers like the flora loop invoke it 4 times per column
-// (via isBeachLocation → isNearWater) and the structure features invoke it
-// several times per chunk. Caching is behaviour-preserving: the function
-// still returns the same deterministic value for any (x, z) pair.
-//
-// Implementation: direct-mapped typed-array cache with Int32 key storage.
-// Replaces the previous Map<bigint, number> to eliminate BigInt allocation
-// on every cache probe — BigInt(x) triggers a heap allocation in V8 even
-// when the value is already a small integer (no SMI fast-path for bigint).
-// A direct-mapped open-addressing scheme gives O(1) probe with zero GC
-// pressure; collision rate is negligible for the spatially-coherent access
-// pattern of chunk generation.
-// ---------------------------------------------------------------------------
-const MAX_FINAL_HEIGHT_CACHE = 131072; // power-of-two, ~2 MB of typed arrays
-const _FHC_MASK = MAX_FINAL_HEIGHT_CACHE - 1;
-const _fhcKeyX = new Int32Array(MAX_FINAL_HEIGHT_CACHE);
-const _fhcKeyZ = new Int32Array(MAX_FINAL_HEIGHT_CACHE);
-const _fhcValue = new Int32Array(MAX_FINAL_HEIGHT_CACHE); // floor() → always integer
-const _fhcValid = new Uint8Array(MAX_FINAL_HEIGHT_CACHE);
-
-function _fhcSlot(x: number, z: number): number {
-	return (
-		(((Math.imul(x, 2246822519) ^ Math.imul(z, 3266489917)) >>> 0) &
-			_FHC_MASK) >>>
-		0
+	return writeCornerFromSignals(
+		gx,
+		gz,
+		continentalnessNoise(worldX, worldZ),
+		temperatureNoise(worldX, worldZ),
+		humidityNoise(worldX, worldZ),
+		riverGenerator.getRiverNoise(worldX, worldZ),
 	);
 }
 
+function shapeHeightNoise(rawNoise: number, exp: number): number {
+	const n01 = (rawNoise + 1) * 0.5;
+
+	if (n01 <= 0) return 0;
+	if (n01 >= 1) return 1;
+
+	if (exp === 1) return n01;
+	if (exp === 2) return n01 * n01;
+	if (exp === 0.5) return Math.sqrt(n01);
+
+	return Math.exp(exp * Math.log(n01));
+}
+
 /**
- * Core final-height computation. All 2D/3D noise inputs are passed in so the
- * same formula is shared by the scalar path (getFinalTerrainHeight) and the
- * batch-grid path (getFinalTerrainHeightFromGrid). Must stay bit-identical to
- * the previous inline implementation.
+ * Core final-height computation. All 2D noise inputs are passed in so the
+ * scalar path and batch-grid path stay bit-identical.
  */
 function computeFinalTerrainHeight(
 	x: number,
@@ -430,8 +442,6 @@ function computeFinalTerrainHeight(
 	pv: number,
 	rawContinent: number,
 ): number {
-	// Inline getBlendedBiomeTerrainSettings to avoid shared-scratch Float32Array
-	// indirection and extra function-call overhead on this already-hot path.
 	const gx = Math.floor(x * INV_BIOME_TERRAIN_GRID);
 	const gz = Math.floor(z * INV_BIOME_TERRAIN_GRID);
 	const x0 = gx * BIOME_TERRAIN_GRID;
@@ -440,56 +450,75 @@ function computeFinalTerrainHeight(
 	let tx = (x - x0) * INV_BIOME_TERRAIN_GRID;
 	tx = tx < 0 ? 0 : tx > 1 ? 1 : tx;
 	tx = tx * tx * tx * (tx * (tx * 6 - 15) + 10);
+
 	let tz = (z - z0) * INV_BIOME_TERRAIN_GRID;
 	tz = tz < 0 ? 0 : tz > 1 ? 1 : tz;
 	tz = tz * tz * tz * (tz * (tz * 6 - 15) + 10);
 
-	fillCorner(gx, gz, x0, z0, _s00);
-	fillCorner(gx + 1, gz, x0 + BIOME_TERRAIN_GRID, z0, _s10);
-	fillCorner(gx, gz + 1, x0, z0 + BIOME_TERRAIN_GRID, _s01);
-	fillCorner(
+	const s00 = ensureCorner(gx, gz, x0, z0);
+	const s00Base = cornerBase[s00];
+	const s00Amp = cornerAmp[s00];
+	const s00Scale = cornerScale[s00];
+	const s00Exp = cornerExp[s00];
+	const s00PvScale = cornerPvScale[s00];
+	const s00ErosScale = cornerErosionScale[s00];
+
+	const s10 = ensureCorner(gx + 1, gz, x0 + BIOME_TERRAIN_GRID, z0);
+	const s10Base = cornerBase[s10];
+	const s10Amp = cornerAmp[s10];
+	const s10Scale = cornerScale[s10];
+	const s10Exp = cornerExp[s10];
+	const s10PvScale = cornerPvScale[s10];
+	const s10ErosScale = cornerErosionScale[s10];
+
+	const s01 = ensureCorner(gx, gz + 1, x0, z0 + BIOME_TERRAIN_GRID);
+	const s01Base = cornerBase[s01];
+	const s01Amp = cornerAmp[s01];
+	const s01Scale = cornerScale[s01];
+	const s01Exp = cornerExp[s01];
+	const s01PvScale = cornerPvScale[s01];
+	const s01ErosScale = cornerErosionScale[s01];
+
+	const s11 = ensureCorner(
 		gx + 1,
 		gz + 1,
 		x0 + BIOME_TERRAIN_GRID,
 		z0 + BIOME_TERRAIN_GRID,
-		_s11,
 	);
+	const s11Base = cornerBase[s11];
+	const s11Amp = cornerAmp[s11];
+	const s11Scale = cornerScale[s11];
+	const s11Exp = cornerExp[s11];
+	const s11PvScale = cornerPvScale[s11];
+	const s11ErosScale = cornerErosionScale[s11];
 
 	const itx = 1 - tx;
 	const itz = 1 - tz;
 
-	// Read all 6 blended settings as locals — keeps them in registers.
 	const sBase =
-		(_s00[0] * itx + _s10[0] * tx) * itz + (_s01[0] * itx + _s11[0] * tx) * tz;
-	const sAmp =
-		(_s00[1] * itx + _s10[1] * tx) * itz + (_s01[1] * itx + _s11[1] * tx) * tz;
-	const sScale =
-		(_s00[2] * itx + _s10[2] * tx) * itz + (_s01[2] * itx + _s11[2] * tx) * tz;
-	const sExp =
-		(_s00[3] * itx + _s10[3] * tx) * itz + (_s01[3] * itx + _s11[3] * tx) * tz;
-	const sPvScale =
-		(_s00[4] * itx + _s10[4] * tx) * itz + (_s01[4] * itx + _s11[4] * tx) * tz;
-	const sErosScale =
-		(_s00[5] * itx + _s10[5] * tx) * itz + (_s01[5] * itx + _s11[5] * tx) * tz;
+		(s00Base * itx + s10Base * tx) * itz + (s01Base * itx + s11Base * tx) * tz;
 
-	// computeHeightNoiseOnly — inline to avoid re-reading settings via Float32Array index.
-	const rawNoise = heightNoise(x * sScale, z * sScale);
-	let n01 = (rawNoise + 1) * 0.5;
-	if (n01 < 0) n01 = 0;
-	else if (n01 > 1) n01 = 1;
-	let shaped: number;
-	if (sExp === 1) {
-		shaped = n01;
-	} else if (sExp === 2) {
-		shaped = n01 * n01;
-	} else if (sExp === 0.5) {
-		shaped = Math.sqrt(n01);
-	} else {
-		shaped = n01 === 0 ? 0 : Math.exp(sExp * Math.log(n01));
-	}
+	const sAmp =
+		(s00Amp * itx + s10Amp * tx) * itz + (s01Amp * itx + s11Amp * tx) * tz;
+
+	const sScale =
+		(s00Scale * itx + s10Scale * tx) * itz +
+		(s01Scale * itx + s11Scale * tx) * tz;
+
+	const sExp =
+		(s00Exp * itx + s10Exp * tx) * itz + (s01Exp * itx + s11Exp * tx) * tz;
+
+	const sPvScale =
+		(s00PvScale * itx + s10PvScale * tx) * itz +
+		(s01PvScale * itx + s11PvScale * tx) * tz;
+
+	const sErosScale =
+		(s00ErosScale * itx + s10ErosScale * tx) * itz +
+		(s01ErosScale * itx + s11ErosScale * tx) * tz;
+
+	const shaped = shapeHeightNoise(heightNoise(x * sScale, z * sScale), sExp);
 	const noiseHeight = shaped * sAmp;
 
-	// computeDetail — inline.
 	const riverFactor = riverAbs < 0.1 ? riverAbs * 10 : 1;
 	const roughness = erosionSpline.getValue(erosion) * riverFactor * sErosScale;
 	const detail =
@@ -504,44 +533,31 @@ function computeFinalTerrainHeight(
 }
 
 export function getFinalTerrainHeight(x: number, z: number): number {
-	const slot = _fhcSlot(x, z);
+	const slot = fhcSlot(x, z);
 
-	if (_fhcValid[slot] && _fhcKeyX[slot] === x && _fhcKeyZ[slot] === z) {
-		return _fhcValue[slot];
+	if (fhcValid[slot] !== 0 && fhcKeyX[slot] === x && fhcKeyZ[slot] === z) {
+		return fhcValue[slot];
 	}
-
-	const riverAbs = Math.abs(riverGenerator.getRiverNoise(x, z));
-	const erosion = erosionNoise(x, z);
-	const pv = peaksAndValleysNoise(x, z);
-	const rawContinent = continentalnessNoise(x, z);
 
 	const result = computeFinalTerrainHeight(
 		x,
 		z,
-		riverAbs,
-		erosion,
-		pv,
-		rawContinent,
+		Math.abs(riverGenerator.getRiverNoise(x, z)),
+		erosionNoise(x, z),
+		peaksAndValleysNoise(x, z),
+		continentalnessNoise(x, z),
 	);
 
-	_fhcKeyX[slot] = x;
-	_fhcKeyZ[slot] = z;
-	_fhcValue[slot] = result;
-	_fhcValid[slot] = 1;
+	fhcKeyX[slot] = x;
+	fhcKeyZ[slot] = z;
+	fhcValue[slot] = result;
+	fhcValid[slot] = 1;
+
 	return result;
 }
 
 // ---------------------------------------------------------------------------
-// Batch 2D column prepass — grid noise fields
-//
-// The surface prepass evaluates getFinalTerrainHeight for every column in a
-// chunk (1024 crossings). The 2D noise inputs (river/erosion/pv/continentalness)
-// live on a uniform world-X/world-Z lattice, so each can be prefilled for the
-// whole chunk with a single FillNoise2D call; only the biome-scaled height
-// noise stays per-column scalar (its scale blends per column inside
-// computeFinalTerrainHeight). The grid path returns bit-identical heights to
-// the scalar path and also backfills the _fhc cache so later scalar callers
-// hit it.
+// Batch 2D column prepass
 // ---------------------------------------------------------------------------
 
 export type TerrainNoiseGrid = {
@@ -591,45 +607,44 @@ export function getFinalTerrainHeightFromGrid(
 ): number {
 	const col = x - grid.offsetX;
 	const row = z - grid.offsetZ;
+
 	if (col < 0 || row < 0 || col >= grid.width || row >= grid.height) {
 		return getFinalTerrainHeight(x, z);
 	}
-	const idx = col + row * grid.width;
 
-	const slot = _fhcSlot(x, z);
-	if (_fhcValid[slot] && _fhcKeyX[slot] === x && _fhcKeyZ[slot] === z) {
-		return _fhcValue[slot];
+	const slot = fhcSlot(x, z);
+
+	if (fhcValid[slot] !== 0 && fhcKeyX[slot] === x && fhcKeyZ[slot] === z) {
+		return fhcValue[slot];
 	}
 
-	const riverAbs = Math.abs(grid.river[idx]);
-	const erosion = grid.erosion[idx];
-	const pv = grid.pv[idx];
-	const rawContinent = grid.continentalness[idx];
+	const idx = col + row * grid.width;
 
 	const result = computeFinalTerrainHeight(
 		x,
 		z,
-		riverAbs,
-		erosion,
-		pv,
-		rawContinent,
+		Math.abs(grid.river[idx]),
+		grid.erosion[idx],
+		grid.pv[idx],
+		grid.continentalness[idx],
 	);
 
-	_fhcKeyX[slot] = x;
-	_fhcKeyZ[slot] = z;
-	_fhcValue[slot] = result;
-	_fhcValid[slot] = 1;
+	fhcKeyX[slot] = x;
+	fhcKeyZ[slot] = z;
+	fhcValue[slot] = result;
+	fhcValid[slot] = 1;
+
 	return result;
 }
 
 export function getBiome(x: number, z: number): Biome {
 	const idx = getChunkCacheIdx(x, z);
-	return _ccBiome[idx]!;
+	return ccBiome[idx]!;
 }
 
 export function getCachedRiverNoise(x: number, z: number): number {
 	const idx = getChunkCacheIdx(x, z);
-	return _ccRiverAbs[idx];
+	return ccRiverAbs[idx];
 }
 
 // Alias kept for call-site compatibility.
@@ -649,86 +664,19 @@ export function getTerrainNoiseDebug(
 	pv: number;
 } {
 	const idx = getChunkCacheIdx(x, z);
+
 	return {
-		continent: _ccContinent[idx],
-		temperature: _ccTemperature[idx],
-		humidity: _ccHumidity[idx],
-		river: _ccRiverAbs[idx],
+		continent: ccContinent[idx],
+		temperature: ccTemperature[idx],
+		humidity: ccHumidity[idx],
+		river: ccRiverAbs[idx],
 		erosion: erosionNoise(x, z),
 		pv: peaksAndValleysNoise(x, z),
 	};
 }
 
 // ---------------------------------------------------------------------------
-// Biome terrain settings
-// ---------------------------------------------------------------------------
-
-// Read biome field with typed-array-friendly number check; avoids property
-// access on the prototype chain when the field is missing.
-const _biomeDefaultBase = params.TERRAIN_HEIGHT_BASE;
-const _biomeDefaultAmplitude = params.TERRAIN_HEIGHT_AMPLITUDE;
-const _biomeDefaultScale = params.TERRAIN_SCALE;
-
-function getBiomeBase(b: Biome): number {
-	return b.terrainHeightBase ?? _biomeDefaultBase;
-}
-function getBiomeAmp(b: Biome): number {
-	return b.terrainHeightAmplitude ?? _biomeDefaultAmplitude;
-}
-function getBiomeScale(b: Biome): number {
-	return b.terrainScale ?? _biomeDefaultScale;
-}
-function getBiomeExp(b: Biome): number {
-	return b.heightExponent ?? 1;
-}
-function getBiomePvScale(b: Biome): number {
-	return b.pvNoiseScale ?? 1;
-}
-function getBiomeErosionScale(b: Biome): number {
-	return b.erosionNoiseScale ?? 1;
-}
-
-// Module-level scratch arrays — zero allocation on the hot path.
-const _s00 = new Float32Array(SETTINGS_STRIDE);
-const _s10 = new Float32Array(SETTINGS_STRIDE);
-const _s01 = new Float32Array(SETTINGS_STRIDE);
-const _s11 = new Float32Array(SETTINGS_STRIDE);
-
-function fillCorner(
-	gx: number,
-	gz: number,
-	worldX: number,
-	worldZ: number,
-	out: Float32Array,
-): void {
-	const slot = getCornerSlot(gx, gz);
-
-	if (cornerValid[slot] && cornerKeyX[slot] === gx && cornerKeyZ[slot] === gz) {
-		readCornerSlot(slot, out);
-		return;
-	}
-
-	writeCornerFromSignals(
-		gx,
-		gz,
-		continentalnessNoise(worldX, worldZ),
-		temperatureNoise(worldX, worldZ),
-		humidityNoise(worldX, worldZ),
-		riverGenerator.getRiverNoise(worldX, worldZ),
-	);
-
-	readCornerSlot(slot, out);
-}
-
-// ---------------------------------------------------------------------------
-// Prefetch — batch-fill corner cache for an entire chunk using FillNoise2D.
-// Avoids per-corner noise function dispatch; all four noise fields computed
-// as contiguous typed arrays in a single pass.
-//
-// Module-level scratch buffers eliminate repeated allocation on every call.
-// Size is generous: a 32-wide chunk spans at most ceil(33 / 192) + 2 = 3
-// grid cells per axis, so 9 corners max. We allocate for 16×16 = 256 to
-// be safe without any runtime size check.
+// Prefetch
 // ---------------------------------------------------------------------------
 
 export function prefetchChunkCorners(
@@ -737,8 +685,14 @@ export function prefetchChunkCorners(
 ): void {
 	const gx0 = Math.floor(chunkWorldX * INV_BIOME_TERRAIN_GRID);
 	const gz0 = Math.floor(chunkWorldZ * INV_BIOME_TERRAIN_GRID);
-	const gx1 = Math.floor((chunkWorldX + 31) * INV_BIOME_TERRAIN_GRID) + 1;
-	const gz1 = Math.floor((chunkWorldZ + 31) * INV_BIOME_TERRAIN_GRID) + 1;
+	const gx1 =
+		Math.floor(
+			(chunkWorldX + CHUNK_LAST_WORLD_OFFSET) * INV_BIOME_TERRAIN_GRID,
+		) + 1;
+	const gz1 =
+		Math.floor(
+			(chunkWorldZ + CHUNK_LAST_WORLD_OFFSET) * INV_BIOME_TERRAIN_GRID,
+		) + 1;
 
 	for (let gz = gz0; gz <= gz1; gz++) {
 		const worldZ = gz * BIOME_TERRAIN_GRID;
@@ -747,7 +701,7 @@ export function prefetchChunkCorners(
 			const slot = getCornerSlot(gx, gz);
 
 			if (
-				cornerValid[slot] &&
+				cornerValid[slot] !== 0 &&
 				cornerKeyX[slot] === gx &&
 				cornerKeyZ[slot] === gz
 			) {

@@ -4,7 +4,11 @@ import type { GreedyFaceDescriptor } from "../types/MeshTypes";
 
 import { greedyMesh, type WritableNumberArray } from "./GreedyPipeline";
 import { VoxelFaceEmitterAdapter } from "./VoxelFaceEmitterAdapter";
-import { extractSliceMask } from "./VoxelMaskExtractor";
+import {
+	extractSliceMaskX,
+	extractSliceMaskY,
+	extractSliceMaskZ,
+} from "./VoxelMaskExtractor";
 import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
 type ExtractMaskCallback = (
@@ -19,82 +23,64 @@ type EmitFaceCallback = (desc: GreedyFaceDescriptor) => void;
  * Drives the greedy mesher across all 3 axes (X, Y, Z),
  * using the stateless VoxelMaskExtractor and VoxelFaceEmitterAdapter.
  *
- * This is the "middle layer" of the voxel meshing pipeline:
- *
- * Input:
- *   - session -> padded block/light grids + scratch buffers + quad outputs
- *
- * Output:
- *   - session.quadOpaque / session.quadWater / session.quadCutout filled
- *     with quads (transparent bucket split into animated water + alpha-tested
- *     cutout)
- *
- * The adapter instance is cached per session, so all callbacks below are
- * created once per worker pipeline instead of once per chunk build.
+ * The adapter instance is cached per session, so callbacks are allocated once
+ * per worker pipeline, not once per chunk build.
  */
 export class VoxelGreedyAdapter {
 	private readonly _session: MeshBuildSession;
-	private readonly _faceEmitter: VoxelFaceEmitterAdapter;
+	private readonly _extractMaskX: ExtractMaskCallback;
+	private readonly _extractMaskY: ExtractMaskCallback;
+	private readonly _extractMaskZ: ExtractMaskCallback;
 
-	/**
-	 * Axis-specialized callbacks.
-	 *
-	 * Slightly more closures upfront, but avoids reading a mutable
-	 * `_currentAxis` property inside the hot greedy callback path.
-	 */
-	private readonly _extractMaskByAxis: readonly [
-		ExtractMaskCallback,
-		ExtractMaskCallback,
-		ExtractMaskCallback,
-	];
-
-	private readonly _emitFaceByAxis: readonly [
-		EmitFaceCallback,
-		EmitFaceCallback,
-		EmitFaceCallback,
-	];
+	private readonly _emitFaceX: EmitFaceCallback;
+	private readonly _emitFaceY: EmitFaceCallback;
+	private readonly _emitFaceZ: EmitFaceCallback;
 
 	constructor(session: MeshBuildSession) {
 		this._session = session;
-
 		const faceEmitter = new VoxelFaceEmitterAdapter(session);
-		this._faceEmitter = faceEmitter;
 
-		this._extractMaskByAxis = [
-			(
-				slice: number,
-				maskBuf: WritableNumberArray,
-				lightBuf: WritableNumberArray,
-			): void => {
-				extractSliceMask(session, 0, slice, maskBuf, lightBuf);
-			},
-			(
-				slice: number,
-				maskBuf: WritableNumberArray,
-				lightBuf: WritableNumberArray,
-			): void => {
-				extractSliceMask(session, 1, slice, maskBuf, lightBuf);
-			},
-			(
-				slice: number,
-				maskBuf: WritableNumberArray,
-				lightBuf: WritableNumberArray,
-			): void => {
-				extractSliceMask(session, 2, slice, maskBuf, lightBuf);
-			},
-		];
+		// Axis-specialized extractor callbacks.
+		// This avoids the extractSliceMask(session, axis, ...) branch on every
+		// slice extraction.
+		this._extractMaskX = (
+			slice: number,
+			maskBuf: WritableNumberArray,
+			lightBuf: WritableNumberArray,
+		): void => {
+			extractSliceMaskX(session, slice, maskBuf, lightBuf);
+		};
 
-		this._emitFaceByAxis = [
-			(desc: GreedyFaceDescriptor): void => {
-				faceEmitter.emitVoxelFace(0, desc);
-			},
-			(desc: GreedyFaceDescriptor): void => {
-				faceEmitter.emitVoxelFace(1, desc);
-			},
-			(desc: GreedyFaceDescriptor): void => {
-				faceEmitter.emitVoxelFace(2, desc);
-			},
-		];
+		this._extractMaskY = (
+			slice: number,
+			maskBuf: WritableNumberArray,
+			lightBuf: WritableNumberArray,
+		): void => {
+			extractSliceMaskY(session, slice, maskBuf, lightBuf);
+		};
+
+		this._extractMaskZ = (
+			slice: number,
+			maskBuf: WritableNumberArray,
+			lightBuf: WritableNumberArray,
+		): void => {
+			extractSliceMaskZ(session, slice, maskBuf, lightBuf);
+		};
+
+		// Axis-specialized emitter callbacks.
+		// These are still closures, but they are created once and avoid a
+		// mutable current-axis field in the hot greedy path.
+		this._emitFaceX = (desc: GreedyFaceDescriptor): void => {
+			faceEmitter.emitVoxelFace(0, desc);
+		};
+
+		this._emitFaceY = (desc: GreedyFaceDescriptor): void => {
+			faceEmitter.emitVoxelFace(1, desc);
+		};
+
+		this._emitFaceZ = (desc: GreedyFaceDescriptor): void => {
+			faceEmitter.emitVoxelFace(2, desc);
+		};
 	}
 
 	/**
@@ -103,11 +89,9 @@ export class VoxelGreedyAdapter {
 	 */
 	public build(): void {
 		const session = this._session;
-		const extractMaskByAxis = this._extractMaskByAxis;
-		const emitFaceByAxis = this._emitFaceByAxis;
 
-		greedyMesh(session, extractMaskByAxis[0], emitFaceByAxis[0]);
-		greedyMesh(session, extractMaskByAxis[1], emitFaceByAxis[1]);
-		greedyMesh(session, extractMaskByAxis[2], emitFaceByAxis[2]);
+		greedyMesh(session, this._extractMaskX, this._emitFaceX);
+		greedyMesh(session, this._extractMaskY, this._emitFaceY);
+		greedyMesh(session, this._extractMaskZ, this._emitFaceZ);
 	}
 }

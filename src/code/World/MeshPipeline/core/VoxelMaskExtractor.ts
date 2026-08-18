@@ -49,37 +49,11 @@ const WATER_PAIR_LEVEL_CLEAR = ~(
 
 type WritableNumberArray = number[] | Int32Array | Uint16Array | Uint32Array;
 
-/**
- * Extracts the 2D slice mask for greedy meshing on one axis.
- *
- * IMPORTANT:
- * - only greedy-compatible blocks may emit through this path
- * - non-greedy custom shapes may still occlude neighboring faces
- * - custom shapes themselves should be emitted in a separate custom-shape pass
- *
- * Stateless: all state lives on the MeshBuildSession passed in.
- */
-export function extractSliceMask(
-	session: MeshBuildSession,
-	axis: number,
-	slice: number,
-	mask: WritableNumberArray,
-	lightMask: WritableNumberArray,
-): void {
-	if (axis === 0) {
-		extractSliceMaskX(session, slice, mask, lightMask);
-	} else if (axis === 1) {
-		extractSliceMaskY(session, slice, mask, lightMask);
-	} else {
-		extractSliceMaskZ(session, slice, mask, lightMask);
-	}
-}
-
 function clearMask(mask: WritableNumberArray, size: number): void {
 	mask.fill(0, 0, size * size);
 }
 
-function extractSliceMaskX(
+export function extractSliceMaskX(
 	session: MeshBuildSession,
 	slice: number,
 	mask: WritableNumberArray,
@@ -201,7 +175,7 @@ function extractSliceMaskX(
 	}
 }
 
-function extractSliceMaskY(
+export function extractSliceMaskY(
 	session: MeshBuildSession,
 	slice: number,
 	mask: WritableNumberArray,
@@ -325,7 +299,7 @@ function extractSliceMaskY(
 	}
 }
 
-function extractSliceMaskZ(
+export function extractSliceMaskZ(
 	session: MeshBuildSession,
 	slice: number,
 	mask: WritableNumberArray,
@@ -475,7 +449,7 @@ function processCell(
 	const neighborPacked = blockArr[nbrIdx];
 
 	// Air-air.
-	if (!currentPacked && !neighborPacked) {
+	if ((currentPacked | neighborPacked) === 0) {
 		mask[outIndex] = 0;
 		return;
 	}
@@ -490,101 +464,116 @@ function processCell(
 	const nbrSolid = nbrFlags & FLAG_SOLID;
 
 	// No solid blocks means no face.
-	if (!(currSolid | nbrSolid)) {
+	if ((currSolid | nbrSolid) === 0) {
+		mask[outIndex] = 0;
+		return;
+	}
+
+	const currGreedy = currFlags & FLAG_GREEDY;
+	const nbrGreedy = nbrFlags & FLAG_GREEDY;
+
+	const currParticipates = currSolid !== 0 && currGreedy !== 0;
+	const nbrParticipates = nbrSolid !== 0 && nbrGreedy !== 0;
+
+	// If neither solid side can be emitted through greedy meshing, only a
+	// closed-face occlusion test could have mattered. Since no side emits,
+	// this cell contributes nothing.
+	if (!currParticipates && !nbrParticipates) {
 		mask[outIndex] = 0;
 		return;
 	}
 
 	const currTransparent = currFlags & FLAG_TRANSPARENT;
 	const nbrTransparent = nbrFlags & FLAG_TRANSPARENT;
-
-	const currGreedy = currFlags & FLAG_GREEDY;
-	const nbrGreedy = nbrFlags & FLAG_GREEDY;
-
 	const currPartial = currFlags & FLAG_PARTIAL;
 	const nbrPartial = nbrFlags & FLAG_PARTIAL;
-
 	const currWaterGlass = currFlags & FLAG_WATER_GLASS;
 	const nbrWaterGlass = nbrFlags & FLAG_WATER_GLASS;
 
-	const currParticipates = currSolid && currGreedy;
-	const nbrParticipates = nbrSolid && nbrGreedy;
+	const bothCube =
+		currParticipates &&
+		nbrParticipates &&
+		currPartial === 0 &&
+		nbrPartial === 0;
 
 	// Two opaque participating full cubes never produce a visible face.
-	const bothCube =
-		currParticipates && nbrParticipates && !currPartial && !nbrPartial;
-
-	if (bothCube && !currTransparent && !nbrTransparent) {
+	if (bothCube && currTransparent === 0 && nbrTransparent === 0) {
 		mask[outIndex] = 0;
 		return;
 	}
 
-	const currId = getIdFromCombined(currCombined);
-	const nbrId = getIdFromCombined(nbrCombined);
+	let currId = -1;
+	let nbrId = -1;
 
-	// Preserve only transparent water/glass interfaces with different IDs.
+	// IDs are only needed for water/glass interface and water-level behavior.
+	if (
+		currSolid !== 0 &&
+		nbrSolid !== 0 &&
+		currWaterGlass !== 0 &&
+		nbrWaterGlass !== 0
+	) {
+		currId = getIdFromCombined(currCombined);
+		nbrId = getIdFromCombined(nbrCombined);
+
+		// Same water/glass cube state with same level is hidden.
+		if (bothCube && currId === nbrId) {
+			const currLevel =
+				(currentPacked >>> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
+			const nbrLevel =
+				(neighborPacked >>> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
+
+			if (currLevel === nbrLevel) {
+				mask[outIndex] = 0;
+				return;
+			}
+		}
+	}
+
 	let preserveInterface = 0;
 
 	if (
-		currSolid &&
-		nbrSolid &&
-		currTransparent &&
-		nbrTransparent &&
-		currWaterGlass &&
-		nbrWaterGlass &&
-		currId !== nbrId
+		currSolid !== 0 &&
+		nbrSolid !== 0 &&
+		currTransparent !== 0 &&
+		nbrTransparent !== 0 &&
+		currWaterGlass !== 0 &&
+		nbrWaterGlass !== 0
 	) {
-		preserveInterface = 1;
-	}
+		if (currId < 0) currId = getIdFromCombined(currCombined);
+		if (nbrId < 0) nbrId = getIdFromCombined(nbrCombined);
 
-	// Same water level against same water block produces no face.
-	if (bothCube && currWaterGlass && nbrWaterGlass && currId === nbrId) {
-		const currLevel = (currentPacked >> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
-		const nbrLevel = (neighborPacked >> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
-
-		if (currLevel === nbrLevel) {
-			mask[outIndex] = 0;
-			return;
+		if (currId !== nbrId) {
+			preserveInterface = 1;
 		}
 	}
 
 	let currShapeInfo: BlockShapeInfo | null = null;
 	let nbrShapeInfo: BlockShapeInfo | null = null;
 
-	// Shape lookup is skipped for the common cube/cube path.
-	if (!bothCube) {
-		let currCloses = 0;
-		let nbrCloses = 0;
+	// Only when both sides are solid and this is not the common full-cube path
+	// do we need closed-face shape tests for mutual occlusion.
+	if (!bothCube && currSolid !== 0 && nbrSolid !== 0) {
+		currShapeInfo = getShapeInfo(currentPacked);
+		nbrShapeInfo = getShapeInfo(neighborPacked);
 
-		if (currSolid) {
-			currShapeInfo = getShapeInfo(currentPacked);
-			currCloses = currShapeInfo.closedFaceMask & currentFaceBit;
-		}
-
-		if (nbrSolid) {
-			nbrShapeInfo = getShapeInfo(neighborPacked);
-			nbrCloses = nbrShapeInfo.closedFaceMask & neighborFaceBit;
-		}
-
-		if (!preserveInterface && currCloses && nbrCloses) {
+		if (
+			!preserveInterface &&
+			(currShapeInfo.closedFaceMask & currentFaceBit) !== 0 &&
+			(nbrShapeInfo.closedFaceMask & neighborFaceBit) !== 0
+		) {
 			mask[outIndex] = 0;
 			return;
 		}
 	}
-
-	const currLight = lightArr[curIdx];
-	const nbrLight = lightArr[nbrIdx];
-	const maxLight = currLight > nbrLight ? currLight : nbrLight;
-
-	const packedLightOnly = disableAO
-		? quantizeLightForLOD(maxLight, true)
-		: maxLight & 0xff;
 
 	// ============================================================
 	// TRANSPARENT INTERFACE EMISSION
 	// ============================================================
 
 	if (preserveInterface) {
+		if (currId < 0) currId = getIdFromCombined(currCombined);
+		if (nbrId < 0) nbrId = getIdFromCombined(nbrCombined);
+
 		const preferCurrent = isGlassBlock(currId)
 			? 1
 			: isGlassBlock(nbrId)
@@ -595,13 +584,8 @@ function processCell(
 		let packedAO = 0;
 
 		if (preferCurrent && currParticipates) {
-			if (!currShapeInfo && currSolid) {
-				currShapeInfo = getShapeInfo(currentPacked);
-			}
-
 			if (!currShapeInfo) {
-				mask[outIndex] = 0;
-				return;
+				currShapeInfo = getShapeInfo(currentPacked);
 			}
 
 			packedMask =
@@ -610,13 +594,8 @@ function processCell(
 
 			packedAO = disableAO ? 0 : computeAO(session, nx, ny, nz, uAxis, vAxis);
 		} else if (!preferCurrent && nbrParticipates) {
-			if (!nbrShapeInfo && nbrSolid) {
-				nbrShapeInfo = getShapeInfo(neighborPacked);
-			}
-
 			if (!nbrShapeInfo) {
-				mask[outIndex] = 0;
-				return;
+				nbrShapeInfo = getShapeInfo(neighborPacked);
 			}
 
 			packedMask =
@@ -638,6 +617,13 @@ function processCell(
 			}
 		}
 
+		const currLight = lightArr[curIdx];
+		const nbrLight = lightArr[nbrIdx];
+		const maxLight = currLight > nbrLight ? currLight : nbrLight;
+		const packedLightOnly = disableAO
+			? quantizeLightForLOD(maxLight, true)
+			: maxLight & 0xff;
+
 		mask[outIndex] = packedMask;
 		lightMask[outIndex] = (packedAO & 0xff) | ((packedLightOnly & 0xff) << 8);
 		return;
@@ -647,39 +633,55 @@ function processCell(
 	// NORMAL EMISSION PATH
 	// ============================================================
 
-	if (!nbrShapeInfo && nbrSolid) {
-		nbrShapeInfo = getShapeInfo(neighborPacked);
+	let nbrClosesFace = 0;
+	let currClosesFace = 0;
+
+	// For normal emission, only the opposite solid side's closed face can
+	// suppress the candidate face.
+	if (nbrSolid !== 0) {
+		if (!nbrShapeInfo) {
+			nbrShapeInfo = getShapeInfo(neighborPacked);
+		}
+		nbrClosesFace = nbrShapeInfo.closedFaceMask & neighborFaceBit;
 	}
 
-	if (!currShapeInfo && currSolid) {
-		currShapeInfo = getShapeInfo(currentPacked);
+	if (currSolid !== 0) {
+		if (!currShapeInfo) {
+			currShapeInfo = getShapeInfo(currentPacked);
+		}
+		currClosesFace = currShapeInfo.closedFaceMask & currentFaceBit;
 	}
-
-	const nbrClosesFace =
-		nbrSolid && nbrShapeInfo && nbrShapeInfo.closedFaceMask & neighborFaceBit;
-
-	const currClosesFace =
-		currSolid && currShapeInfo && currShapeInfo.closedFaceMask & currentFaceBit;
 
 	let emitCurrent =
 		currParticipates &&
-		(!nbrSolid || (nbrTransparent && !currTransparent) || !nbrClosesFace);
+		(nbrSolid === 0 ||
+			(nbrTransparent !== 0 && currTransparent === 0) ||
+			nbrClosesFace === 0);
 
 	let emitNeighbor =
 		nbrParticipates &&
-		(!currSolid || (currTransparent && !nbrTransparent) || !currClosesFace);
+		(currSolid === 0 ||
+			(currTransparent !== 0 && nbrTransparent === 0) ||
+			currClosesFace === 0);
 
 	let waterCurrLevel = -1;
 	let waterNbrLevel = -1;
 
 	if (
-		currWaterGlass &&
-		nbrWaterGlass &&
-		currId === WATER_BLOCK_ID &&
-		nbrId === WATER_BLOCK_ID
+		currWaterGlass !== 0 &&
+		nbrWaterGlass !== 0 &&
+		currSolid !== 0 &&
+		nbrSolid !== 0
 	) {
-		waterCurrLevel = (currentPacked >> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
-		waterNbrLevel = (neighborPacked >> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
+		if (currId < 0) currId = getIdFromCombined(currCombined);
+		if (nbrId < 0) nbrId = getIdFromCombined(nbrCombined);
+
+		if (currId === WATER_BLOCK_ID && nbrId === WATER_BLOCK_ID) {
+			waterCurrLevel =
+				(currentPacked >>> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
+			waterNbrLevel =
+				(neighborPacked >>> WATER_LEVEL_SHIFT) & WATER_LEVEL_MASK_4;
+		}
 	}
 
 	// Special case: adjacent water columns of different levels need a sliver.
@@ -761,14 +763,21 @@ function processCell(
 		}
 
 		// Bit layout, must match FaceEmitter.decode:
-		//   tallerLevel    -> bits 10-12
-		//   shallowerLevel -> bits 13-15
+		// tallerLevel -> bits 10-12
+		// shallowerLevel -> bits 13-15
 		packedMask =
 			(packedMask & WATER_PAIR_LEVEL_CLEAR) |
 			(tallerLevel << WATER_LEVEL_SHIFT) |
 			(shallowerLevel << WATER_SHALLOWER_SHIFT) |
 			WATER_LEVEL_PAIR_MASK;
 	}
+
+	const currLight = lightArr[curIdx];
+	const nbrLight = lightArr[nbrIdx];
+	const maxLight = currLight > nbrLight ? currLight : nbrLight;
+	const packedLightOnly = disableAO
+		? quantizeLightForLOD(maxLight, true)
+		: maxLight & 0xff;
 
 	mask[outIndex] = packedMask;
 	lightMask[outIndex] = (packedAO & 0xff) | ((packedLightOnly & 0xff) << 8);
