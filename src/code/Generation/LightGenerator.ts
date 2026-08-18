@@ -16,21 +16,28 @@ export type LightSeedState = {
 };
 
 export class LightGenerator {
-	private static chunkSize: number;
-	private static chunkSizeSq: number;
-	private static csShift: number;
-	private static csShift2: number;
-	private static queueMask: number;
+	private readonly chunkSize: number;
+	private readonly chunkSizeSq: number;
+	private readonly csShift: number;
+	private readonly csShift2: number;
+	private readonly queueMask: number;
 
 	/**
 	 * Reusable queue buffer for the immediate path.
+	 *
+	 * Capacity is intentionally larger than chunk volume because seeding can add:
+	 * - skylight entries
+	 * - block emission entries
+	 *
+	 * In the densest case those can both approach chunk volume.
 	 */
-	private lightQueue: Uint16Array;
+	private readonly lightQueue: Uint16Array;
 
 	/**
-	 * Static scratch buffer reused across all propagateLight calls.
+	 * Instance-local scratch buffer for deferred propagation.
+	 * Avoids cross-instance/static state corruption when different chunk sizes exist.
 	 */
-	private static scratchQueue: Uint16Array | null = null;
+	private readonly scratchQueue: Uint16Array;
 
 	private static readonly SKYLIGHT_GENERATION_MIN_WORLD_Y = 32;
 
@@ -43,6 +50,16 @@ export class LightGenerator {
 		lut[64] = 1;
 		lut[66] = 1;
 		lut[91] = 1;
+		return lut;
+	})();
+
+	private static readonly _filtersFullSunLUT: Uint8Array = (() => {
+		const lut = new Uint8Array(128);
+
+		for (let blockId = 0; blockId < lut.length; blockId++) {
+			lut[blockId] = filtersFullSunlight(blockId) ? 1 : 0;
+		}
+
 		return lut;
 	})();
 
@@ -59,11 +76,20 @@ export class LightGenerator {
 		const chunkSize = params.CHUNK_SIZE;
 		const chunkSizeSq = chunkSize * chunkSize;
 		const rawCap = chunkSize * chunkSizeSq;
-		const pot = nextPowerOfTwo(rawCap);
 
-		LightGenerator.chunkSize = chunkSize;
-		LightGenerator.chunkSizeSq = chunkSizeSq;
-		LightGenerator.queueMask = pot - 1;
+		/*
+		 * Seeding can enqueue up to roughly:
+		 * - every cell due to skylight
+		 * - every cell due to block emission
+		 *
+		 * The old queue size of rawCap could silently overwrite entries before
+		 * seedInitialLight() sliced the compact snapshot.
+		 */
+		const queueCapacity = nextPowerOfTwo(rawCap * 2);
+
+		this.chunkSize = chunkSize;
+		this.chunkSizeSq = chunkSizeSq;
+		this.queueMask = queueCapacity - 1;
 
 		// CHUNK_SIZE is expected to be a power of two.
 		let csShift = 0;
@@ -71,11 +97,11 @@ export class LightGenerator {
 			csShift++;
 		}
 
-		LightGenerator.csShift = csShift;
-		LightGenerator.csShift2 = csShift * 2;
+		this.csShift = csShift;
+		this.csShift2 = csShift * 2;
 
-		this.lightQueue = new Uint16Array(pot);
-		LightGenerator.scratchQueue = new Uint16Array(pot);
+		this.lightQueue = new Uint16Array(queueCapacity);
+		this.scratchQueue = new Uint16Array(queueCapacity);
 	}
 
 	/**
@@ -117,11 +143,12 @@ export class LightGenerator {
 		seedState: LightSeedState,
 	): void {
 		const initialTail = seedState.length;
+
 		if (initialTail <= 0) {
 			return;
 		}
 
-		const queue = LightGenerator.scratchQueue!;
+		const queue = this.scratchQueue;
 		queue.set(seedState.queue, 0);
 
 		this.propagateLightFromQueue(blocks, light, queue, initialTail);
@@ -166,10 +193,10 @@ export class LightGenerator {
 		let tail = 0;
 
 		const queue = this.lightQueue;
-		const mask = LightGenerator.queueMask;
-		const CHUNK_SIZE = LightGenerator.chunkSize;
-		const CHUNK_SIZE_SQ = LightGenerator.chunkSizeSq;
+		const CHUNK_SIZE = this.chunkSize;
+		const CHUNK_SIZE_SQ = this.chunkSizeSq;
 		const transparentLUT = LightGenerator._transparentLUT;
+		const filtersFullSunLUT = LightGenerator._filtersFullSunLUT;
 		const emissionLUT = LightGenerator._emissionLUT;
 
 		const chunkWorldY = chunkY * CHUNK_SIZE;
@@ -194,7 +221,7 @@ export class LightGenerator {
 						? 15
 						: 0;
 
-				let sourceFiltersFullSun = false;
+				let sourceFiltersFullSun = 0;
 				let idx = colBase + (CHUNK_SIZE - 1) * CHUNK_SIZE;
 
 				for (let y = CHUNK_SIZE - 1; y >= 0; y--, idx -= CHUNK_SIZE) {
@@ -202,7 +229,7 @@ export class LightGenerator {
 
 					if (worldY < LightGenerator.SKYLIGHT_GENERATION_MIN_WORLD_Y) {
 						incomingSkyLight = 0;
-						sourceFiltersFullSun = false;
+						sourceFiltersFullSun = 0;
 						continue;
 					}
 
@@ -210,29 +237,28 @@ export class LightGenerator {
 
 					if (blockId >= 128 || transparentLUT[blockId] === 0) {
 						incomingSkyLight = 0;
-						sourceFiltersFullSun = false;
+						sourceFiltersFullSun = 0;
 
 						// Preserve existing special lava behavior.
 						if (blockId === 24) {
 							light[idx] = (light[idx] & 0xf0) | 15;
-							queue[tail & mask] = idx;
-							tail++;
+							queue[tail++] = idx;
 						}
 
 						continue;
 					}
 
+					const blockFiltersFullSun = filtersFullSunLUT[blockId];
+
 					if (incomingSkyLight <= 0) {
-						sourceFiltersFullSun = filtersFullSunlight(blockId);
+						sourceFiltersFullSun = blockFiltersFullSun;
 						continue;
 					}
 
-					const blockFiltersFullSun = filtersFullSunlight(blockId);
-
 					const preservesFullSun =
 						incomingSkyLight === 15 &&
-						!sourceFiltersFullSun &&
-						!blockFiltersFullSun;
+						sourceFiltersFullSun === 0 &&
+						blockFiltersFullSun === 0;
 
 					const cellSkyLight = preservesFullSun ? 15 : incomingSkyLight - 1;
 
@@ -244,10 +270,11 @@ export class LightGenerator {
 
 					light[idx] = (light[idx] & 0x0f) | (cellSkyLight << 4);
 
-					const shouldSeed = !blockFiltersFullSun || !sourceFiltersFullSun;
+					const shouldSeed =
+						blockFiltersFullSun === 0 || sourceFiltersFullSun === 0;
+
 					if (shouldSeed) {
-						queue[tail & mask] = idx;
-						tail++;
+						queue[tail++] = idx;
 					}
 
 					incomingSkyLight = cellSkyLight;
@@ -259,10 +286,10 @@ export class LightGenerator {
 		// Seed block light from all emission sources.
 		for (let i = 0, len = blocks.length; i < len; i++) {
 			const emission = emissionLUT[blocks[i]];
+
 			if (emission > 0 && (light[i] & 0x0f) < emission) {
 				light[i] = (light[i] & 0xf0) | emission;
-				queue[tail & mask] = i;
-				tail++;
+				queue[tail++] = i;
 			}
 		}
 
@@ -283,13 +310,14 @@ export class LightGenerator {
 		let head = 0;
 		let tail = initialTail;
 
-		const mask = LightGenerator.queueMask;
-		const CHUNK_SIZE = LightGenerator.chunkSize;
-		const CHUNK_SIZE_SQ = LightGenerator.chunkSizeSq;
-		const csShift = LightGenerator.csShift;
-		const csShift2 = LightGenerator.csShift2;
+		const mask = this.queueMask;
+		const CHUNK_SIZE = this.chunkSize;
+		const CHUNK_SIZE_SQ = this.chunkSizeSq;
+		const csShift = this.csShift;
+		const csShift2 = this.csShift2;
 		const csMask = CHUNK_SIZE - 1;
 		const transparentLUT = LightGenerator._transparentLUT;
+		const filtersFullSunLUT = LightGenerator._filtersFullSunLUT;
 
 		while (head < tail) {
 			const idx = queue[head & mask];
@@ -304,7 +332,9 @@ export class LightGenerator {
 			}
 
 			const sourceBlockId = blocks[idx];
-			const sourceFiltersFullSun = filtersFullSunlight(sourceBlockId);
+			const sourceFiltersFullSun =
+				sourceBlockId < 128 ? filtersFullSunLUT[sourceBlockId] : 0;
+
 			const skyM1 = skyLight - 1;
 			const blkM1 = blockLight - 1;
 
@@ -321,6 +351,7 @@ export class LightGenerator {
 					tail,
 					mask,
 					transparentLUT,
+					filtersFullSunLUT,
 				);
 			}
 
@@ -337,6 +368,7 @@ export class LightGenerator {
 					tail,
 					mask,
 					transparentLUT,
+					filtersFullSunLUT,
 				);
 			}
 
@@ -353,17 +385,20 @@ export class LightGenerator {
 					tail,
 					mask,
 					transparentLUT,
+					filtersFullSunLUT,
 				);
 			}
 
 			if (((idx >> csShift) & csMask) !== 0) {
 				const belowIdx = idx - CHUNK_SIZE;
 				const belowBlockId = blocks[belowIdx];
+				const belowFiltersFullSun =
+					belowBlockId < 128 ? filtersFullSunLUT[belowBlockId] : 0;
 
 				const preservesFullSunDown =
 					skyLight === 15 &&
-					!sourceFiltersFullSun &&
-					!filtersFullSunlight(belowBlockId);
+					sourceFiltersFullSun === 0 &&
+					belowFiltersFullSun === 0;
 
 				tail = this.tryPropagate(
 					belowIdx,
@@ -377,6 +412,7 @@ export class LightGenerator {
 					tail,
 					mask,
 					transparentLUT,
+					filtersFullSunLUT,
 				);
 			}
 
@@ -393,6 +429,7 @@ export class LightGenerator {
 					tail,
 					mask,
 					transparentLUT,
+					filtersFullSunLUT,
 				);
 			}
 
@@ -409,6 +446,7 @@ export class LightGenerator {
 					tail,
 					mask,
 					transparentLUT,
+					filtersFullSunLUT,
 				);
 			}
 		}
@@ -418,7 +456,7 @@ export class LightGenerator {
 		nIdx: number,
 		targetSky: number,
 		targetBlock: number,
-		sourceFiltersFullSun: boolean,
+		sourceFiltersFullSun: number,
 		isDown: boolean,
 		blocks: Uint8Array,
 		light: Uint8Array,
@@ -426,6 +464,7 @@ export class LightGenerator {
 		tail: number,
 		mask: number,
 		transparentLUT: Uint8Array,
+		filtersFullSunLUT: Uint8Array,
 	): number {
 		const targetBlockId = blocks[nIdx];
 
@@ -437,12 +476,12 @@ export class LightGenerator {
 		// - filtered blocks receive lateral skylight only from filtered blocks
 		// - filtered blocks emit lateral skylight only into filtered blocks
 		// - downward propagation is allowed
-		if (targetSky > 0 && !isDown) {
-			const targetFiltersFullSun = filtersFullSunlight(targetBlockId);
-
-			if (targetFiltersFullSun !== sourceFiltersFullSun) {
-				return tail;
-			}
+		if (
+			targetSky > 0 &&
+			!isDown &&
+			filtersFullSunLUT[targetBlockId] !== sourceFiltersFullSun
+		) {
+			return tail;
 		}
 
 		const currentVal = light[nIdx];
@@ -471,7 +510,9 @@ export class LightGenerator {
 /** Returns the smallest power of two that is >= n. */
 function nextPowerOfTwo(n: number): number {
 	if (n <= 1) return 1;
+
 	let p = 1;
 	while (p < n) p <<= 1;
+
 	return p;
 }
