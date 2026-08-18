@@ -67,13 +67,22 @@ export interface ChunkStorage {
 	open(): Promise<void>;
 	close?(): Promise<void>;
 
-	readChunk(cx: number, cy: number, cz: number): Promise<Uint8Array | undefined>;
+	readChunk(
+		cx: number,
+		cy: number,
+		cz: number,
+	): Promise<Uint8Array | undefined>;
 	readChunks(coords: readonly ChunkCoord[]): Promise<Map<string, Uint8Array>>;
 
 	hasChunk(cx: number, cy: number, cz: number): Promise<boolean>;
 	hasChunks(coords: readonly ChunkCoord[]): Promise<Set<string>>;
 
-	writeChunk(cx: number, cy: number, cz: number, blob: Uint8Array): Promise<void>;
+	writeChunk(
+		cx: number,
+		cy: number,
+		cz: number,
+		blob: Uint8Array,
+	): Promise<void>;
 	writeChunks(writes: readonly ChunkWrite[]): Promise<void>;
 
 	setMetaBytes(key: string, value: Uint8Array): Promise<void>;
@@ -476,9 +485,7 @@ export class LevelDbChunkStore implements ChunkStorage {
 		return value != null && !pendingDeletes.has(k);
 	}
 
-	async hasChunks(
-		coords: readonly ChunkCoord[],
-	): Promise<Set<string>> {
+	async hasChunks(coords: readonly ChunkCoord[]): Promise<Set<string>> {
 		const result = new Set<string>();
 		const misses: string[] = [];
 
@@ -622,9 +629,7 @@ export class LevelDbChunkStore implements ChunkStorage {
 	}
 
 	/** Bulk eviction: one job, tombstoned immediately, shared transactions. */
-	deleteChunks(
-		coords: readonly ChunkCoord[],
-	): Promise<void> {
+	deleteChunks(coords: readonly ChunkCoord[]): Promise<void> {
 		const len = coords.length;
 		if (len === 0) return Promise.resolve();
 
@@ -1570,14 +1575,15 @@ class IndexedDbStore {
 	 * soon as every request settled; any request error rejects exactly once.
 	 */
 	async has(keys: string[]): Promise<Set<string>> {
-		if (!this.db) throw new Error("IndexedDbStore not open");
+		const db = this.db;
+		if (!db) throw new Error("IndexedDbStore not open");
 
 		const n = keys.length;
 		if (n === 0) return new Set<string>();
 
 		return new Promise<Set<string>>((resolve, reject) => {
 			const found = new Set<string>();
-			const tx = this.db!.transaction(this.storeName, "readonly");
+			const tx = db.transaction(this.storeName, "readonly");
 			const store = tx.objectStore(this.storeName);
 
 			let settled = false;
@@ -1586,7 +1592,7 @@ class IndexedDbStore {
 			const fail = () => {
 				if (settled) return;
 				settled = true;
-				reject(tx.error);
+				reject(tx.error ?? new Error("IndexedDB has failed"));
 			};
 
 			tx.onerror = fail;
@@ -1594,10 +1600,12 @@ class IndexedDbStore {
 
 			for (let i = 0; i < n; i++) {
 				const key = keys[i];
-				const req = store.count(key);
+				const req = store.getKey(key);
 
 				req.onsuccess = () => {
-					if (req.result > 0) found.add(key);
+					if (req.result !== undefined) {
+						found.add(key);
+					}
 
 					if (--pending === 0 && !settled) {
 						settled = true;
@@ -1616,14 +1624,15 @@ class IndexedDbStore {
 	 * settled; any request error rejects exactly once.
 	 */
 	async getMany(keys: string[]): Promise<Array<Uint8Array | undefined>> {
-		if (!this.db) throw new Error("IndexedDbStore not open");
+		const db = this.db;
+		if (!db) throw new Error("IndexedDbStore not open");
 
 		const n = keys.length;
 		if (n === 0) return [];
 
 		return new Promise<Array<Uint8Array | undefined>>((resolve, reject) => {
 			const results: Array<Uint8Array | undefined> = new Array(n);
-			const tx = this.db!.transaction(this.storeName, "readonly");
+			const tx = db.transaction(this.storeName, "readonly");
 			const store = tx.objectStore(this.storeName);
 
 			let settled = false;
@@ -1632,7 +1641,7 @@ class IndexedDbStore {
 			const fail = () => {
 				if (settled) return;
 				settled = true;
-				reject(tx.error);
+				reject(tx.error ?? new Error("IndexedDB getMany failed"));
 			};
 
 			tx.onerror = fail;
@@ -1642,15 +1651,8 @@ class IndexedDbStore {
 				const req = store.get(keys[i]);
 
 				req.onsuccess = () => {
-					const value = req.result;
-
-					if (value instanceof Uint8Array) {
-						results[i] = value;
-					} else if (value instanceof ArrayBuffer) {
-						results[i] = new Uint8Array(value);
-					} else {
-						results[i] = undefined;
-					}
+					const value = this.normalizeValue(req.result);
+					results[i] = value instanceof Uint8Array ? value : undefined;
 
 					if (--pending === 0 && !settled) {
 						settled = true;
@@ -1661,6 +1663,12 @@ class IndexedDbStore {
 				req.onerror = fail;
 			}
 		});
+	}
+	private normalizeValue(value: unknown): Uint8Array | string | undefined {
+		if (value instanceof Uint8Array) return value;
+		if (value instanceof ArrayBuffer) return new Uint8Array(value);
+		if (typeof value === "string") return value;
+		return undefined;
 	}
 }
 

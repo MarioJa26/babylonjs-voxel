@@ -51,7 +51,9 @@ class WorldStorageImpl {
 				// across sessions and made clear() take ~45s).
 				const worldName =
 					storeNameOverride ??
-					(getServerNameFromUrl() ? mpLocalCacheName() : getWorldNameFromUrl()) ??
+					(getServerNameFromUrl()
+						? mpLocalCacheName()
+						: getWorldNameFromUrl()) ??
 					"default";
 				console.log(`[WorldStorage] Initializing for world: ${worldName}`);
 
@@ -251,8 +253,9 @@ class WorldStorageImpl {
 		outMap?: Map<bigint, SavedChunkData>,
 	): Promise<Map<bigint, SavedChunkData>> {
 		const result = outMap ?? new Map<bigint, SavedChunkData>();
+		const n = chunkIds.length;
 
-		if (GLOBAL_VALUES.DISABLE_CHUNK_LOADING || chunkIds.length === 0) {
+		if (GLOBAL_VALUES.DISABLE_CHUNK_LOADING || n === 0) {
 			return result;
 		}
 
@@ -260,19 +263,6 @@ class WorldStorageImpl {
 		if (!store) return result;
 
 		const includeVoxelData = options?.includeVoxelData ?? true;
-
-		// Decode every chunk id once into exactly the shape downstream needs,
-		// including the "cx,cy,cz" string key up front. LevelDbChunkStore's
-		// readChunks/hasChunks accept an optional pre-computed `key` per
-		// coord specifically so callers can avoid rebuilding it — without
-		// this, the key gets built once inside the store (cache miss path)
-		// and *again* out here just to probe the returned Map/Set. Building
-		// it once here and passing it through both eliminates the duplicate
-		// and replaces what was previously three allocations per chunk
-		// ([cx,cy,cz] array, {cx,cy,cz} object, spread into {id,cx,cy,cz})
-		// with one. A single reusable out object avoids a fresh tuple
-		// allocation per id in the decode loop.
-		const n = chunkIds.length;
 		const coords: ChunkReadCoord[] = new Array(n);
 		const out: ChunkCoordsOut = { cx: 0, cy: 0, cz: 0 };
 
@@ -300,6 +290,7 @@ class WorldStorageImpl {
 		}
 
 		const readResults = await store.readChunks(coords);
+
 		for (let i = 0; i < n; i++) {
 			const c = coords[i];
 			const blob = readResults.get(c.key!);
@@ -408,25 +399,22 @@ function packChunkBlob(chunk: Chunk): Uint8Array {
 // the unavoidable mask/shift extraction from the packed id.
 const COORD_BITS = 21n;
 const COORD_MASK = (1n << COORD_BITS) - 1n;
+const Z_SHIFT = COORD_BITS * 2n;
 const SIGN_BIT_X = 1n << 20n;
 const SIGN_BIT_Y = SIGN_BIT_X << COORD_BITS;
-const SIGN_BIT_Z = SIGN_BIT_X << (COORD_BITS * 2n);
+const SIGN_BIT_Z = SIGN_BIT_X << Z_SHIFT;
 const BIAS_NUM = 1_048_576; // 2^20 — bias is applied in Number space now
 
 function chunkIdToCoords(chunkId: bigint): [number, number, number] {
-	// Extraction still needs BigInt (chunkId can carry 63 bits, beyond what
-	// JS's 32-bit bitwise operators support), but the bias subtraction that
-	// used to happen in BigInt space now happens on plain Numbers, which is
-	// materially cheaper.
 	const rawX = Number(chunkId & COORD_MASK);
 	const rawY = Number((chunkId >> COORD_BITS) & COORD_MASK);
-	const rawZ = Number((chunkId >> (COORD_BITS * 2n)) & COORD_MASK);
+	const rawZ = Number((chunkId >> Z_SHIFT) & COORD_MASK);
 
-	const cx = (chunkId & SIGN_BIT_X) !== 0n ? rawX - BIAS_NUM : rawX;
-	const cy = (chunkId & SIGN_BIT_Y) !== 0n ? rawY - BIAS_NUM : rawY;
-	const cz = (chunkId & SIGN_BIT_Z) !== 0n ? rawZ - BIAS_NUM : rawZ;
-
-	return [cx, cy, cz];
+	return [
+		(chunkId & SIGN_BIT_X) !== 0n ? rawX - BIAS_NUM : rawX,
+		(chunkId & SIGN_BIT_Y) !== 0n ? rawY - BIAS_NUM : rawY,
+		(chunkId & SIGN_BIT_Z) !== 0n ? rawZ - BIAS_NUM : rawZ,
+	];
 }
 
 interface ChunkCoordsOut {
@@ -445,7 +433,7 @@ function chunkIdToCoordsOut(
 ): ChunkCoordsOut {
 	const rawX = Number(chunkId & COORD_MASK);
 	const rawY = Number((chunkId >> COORD_BITS) & COORD_MASK);
-	const rawZ = Number((chunkId >> (COORD_BITS * 2n)) & COORD_MASK);
+	const rawZ = Number((chunkId >> Z_SHIFT) & COORD_MASK);
 
 	out.cx = (chunkId & SIGN_BIT_X) !== 0n ? rawX - BIAS_NUM : rawX;
 	out.cy = (chunkId & SIGN_BIT_Y) !== 0n ? rawY - BIAS_NUM : rawY;
