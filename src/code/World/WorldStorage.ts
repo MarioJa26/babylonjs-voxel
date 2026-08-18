@@ -2,6 +2,8 @@ import { Chunk } from "./Chunk/Chunk";
 import { GLOBAL_VALUES } from "./GLOBAL_VALUES";
 import type { SpawnPosition } from "./SpawnPoint";
 import {
+	type ChunkReadCoord,
+	type ChunkWrite,
 	isCacheResetError,
 	LevelDbChunkStore,
 } from "./Storage/LevelDbChunkStore";
@@ -27,11 +29,13 @@ export type LoadChunkOptions = {
 
 const ENTITY_PREFIX = "entity:";
 
-// Hoisted singletons — constructing a TextEncoder/TextDecoder is not free,
-// and both are stateless, so there's no reason to allocate a fresh one on
-// every entity save/load.
-const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder();
+/**
+ * Existence marker for loadChunk/loadChunks with includeVoxelData: false.
+ * Never mutated by any consumer (only used as a truthy signal that the chunk
+ * exists in storage), so a single shared instance avoids one allocation per
+ * found chunk on pure existence checks.
+ */
+const CHUNK_EXISTS_WITHOUT_BLOCKS: SavedChunkData = { blocks: null };
 
 class WorldStorageImpl {
 	private store: LevelDbChunkStore | null = null;
@@ -40,20 +44,32 @@ class WorldStorageImpl {
 	initialize(storeNameOverride?: string): Promise<void> {
 		if (this.initPromise) return this.initPromise;
 		this.initPromise = (async () => {
-			// In multiplayer the page is /server/<nick>; use a fresh ephemeral
-			// cache name per session so the connect-time IndexedDB clear() is
-			// instant (the old fixed "__mp__" store accumulated server chunks
-			// across sessions and made clear() take ~45s).
-			const worldName =
-				storeNameOverride ??
-				(getServerNameFromUrl() ? mpLocalCacheName() : getWorldNameFromUrl()) ??
-				"default";
-			console.log(`[WorldStorage] Initializing for world: ${worldName}`);
-			this.store = new LevelDbChunkStore(worldName, "./saves");
-			await this.store.open();
-			console.log(
-				`[WorldStorage] Initialized successfully, isReady=${this.store.isReady}`,
-			);
+			try {
+				// In multiplayer the page is /server/<nick>; use a fresh ephemeral
+				// cache name per session so the connect-time IndexedDB clear() is
+				// instant (the old fixed "__mp__" store accumulated server chunks
+				// across sessions and made clear() take ~45s).
+				const worldName =
+					storeNameOverride ??
+					(getServerNameFromUrl() ? mpLocalCacheName() : getWorldNameFromUrl()) ??
+					"default";
+				console.log(`[WorldStorage] Initializing for world: ${worldName}`);
+
+				const store = new LevelDbChunkStore(worldName, "./saves");
+				await store.open();
+
+				this.store = store;
+
+				console.log(
+					`[WorldStorage] Initialized successfully, isReady=${store.isReady}`,
+				);
+			} catch (error) {
+				// Drop the cached promise so a failed open can be retried by a
+				// later call instead of poisoning every future getStore().
+				this.store = null;
+				this.initPromise = null;
+				throw error;
+			}
 		})();
 		return this.initPromise;
 	}
@@ -76,58 +92,94 @@ class WorldStorageImpl {
 		if (!store) return;
 
 		const blob = packChunkBlob(chunk);
-		void store
-			.writeChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ, blob)
-			.catch((error) => {
-				if (isCacheResetError(error)) return;
-				console.warn("[WorldStorage] chunk save failed:", error);
-			});
 
-		chunk.isModified = false;
-		chunk.isLightDirty = false;
+		try {
+			await store.writeChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ, blob);
+			chunk.isModified = false;
+			chunk.isLightDirty = false;
+		} catch (error) {
+			if (isCacheResetError(error)) return;
+			console.warn("[WorldStorage] chunk save failed:", error);
+		}
 	}
 
 	async saveChunks(chunks: Chunk[]): Promise<void> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_SAVING) return;
 
-		const toSave: Chunk[] = [];
-		for (let i = 0; i < chunks.length; i++) {
+		const store = await this.getStore();
+		if (!store) return;
+
+		const writes: ChunkWrite[] = [];
+		const savedChunks: Chunk[] = [];
+
+		for (let i = 0, n = chunks.length; i < n; i++) {
 			const chunk = chunks[i];
+
 			if (chunk.isBoatChunk) continue;
-			if (chunk.isModified || chunk.isLightDirty) {
-				toSave.push(chunk);
-			}
+			if (!chunk.isModified && !chunk.isLightDirty) continue;
+
+			writes.push({
+				cx: chunk.chunkX,
+				cy: chunk.chunkY,
+				cz: chunk.chunkZ,
+				blob: packChunkBlob(chunk),
+			});
+			savedChunks.push(chunk);
 		}
 
-		if (toSave.length === 0) return;
+		if (writes.length === 0) return;
+
+		try {
+			await store.writeChunks(writes);
+			await store.flush();
+
+			for (let i = 0, n = savedChunks.length; i < n; i++) {
+				const chunk = savedChunks[i];
+				chunk.isModified = false;
+				chunk.isLightDirty = false;
+			}
+		} catch (error) {
+			if (isCacheResetError(error)) return;
+			console.warn("[WorldStorage] chunk batch save failed:", error);
+		}
+	}
+
+	async saveAllModifiedChunks(): Promise<void> {
+		if (GLOBAL_VALUES.DISABLE_CHUNK_SAVING) return;
 
 		const store = await this.getStore();
 		if (!store) return;
 
-		for (const chunk of toSave) {
-			const blob = packChunkBlob(chunk);
-			void store
-				.writeChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ, blob)
-				.catch((error) => {
-					if (isCacheResetError(error)) return;
-					console.warn("[WorldStorage] chunk save failed:", error);
-				});
-			chunk.isModified = false;
-			chunk.isLightDirty = false;
-		}
+		const writes: ChunkWrite[] = [];
+		const savedChunks: Chunk[] = [];
 
-		await store.flush();
-	}
-
-	async saveAllModifiedChunks(): Promise<void> {
-		const modified: Chunk[] = [];
 		for (const chunk of Chunk.chunkInstances.values()) {
-			if (chunk.needsPersistence() && !chunk.isBoatChunk) {
-				modified.push(chunk);
-			}
+			if (!chunk.needsPersistence()) continue;
+			if (chunk.isBoatChunk) continue;
+
+			writes.push({
+				cx: chunk.chunkX,
+				cy: chunk.chunkY,
+				cz: chunk.chunkZ,
+				blob: packChunkBlob(chunk),
+			});
+			savedChunks.push(chunk);
 		}
-		if (modified.length > 0) {
-			await this.saveChunks(modified);
+
+		if (writes.length === 0) return;
+
+		try {
+			await store.writeChunks(writes);
+			await store.flush();
+
+			for (let i = 0, n = savedChunks.length; i < n; i++) {
+				const chunk = savedChunks[i];
+				chunk.isModified = false;
+				chunk.isLightDirty = false;
+			}
+		} catch (error) {
+			if (isCacheResetError(error)) return;
+			console.warn("[WorldStorage] save all modified chunks failed:", error);
 		}
 	}
 
@@ -136,6 +188,7 @@ class WorldStorageImpl {
 		entities: SavedChunkEntityData[],
 	): Promise<void> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_SAVING) return;
+
 		const store = await this.getStore();
 		if (!store) return;
 
@@ -143,12 +196,14 @@ class WorldStorageImpl {
 		const key = `${ENTITY_PREFIX}${cx},${cy},${cz}`;
 
 		if (entities.length === 0) {
-			// entities removed — nothing to do, they won't be read back
+			// All entities removed — delete the stored payload so a later
+			// load cannot resurrect stale entities.
+			await store.deleteMeta(key);
 			return;
 		}
 
 		const bytes = serializeEntities(entities);
-		await store.setMeta(key, textDecoder.decode(bytes));
+		await store.setMetaBytes(key, bytes);
 	}
 
 	async loadChunkEntities(chunkId: bigint): Promise<SavedChunkEntityData[]> {
@@ -158,10 +213,12 @@ class WorldStorageImpl {
 
 		const [cx, cy, cz] = chunkIdToCoords(chunkId);
 		const key = `${ENTITY_PREFIX}${cx},${cy},${cz}`;
-		const value = await store.getMeta(key);
-		if (!value) return [];
+		const bytes = await store.getMetaBytes(key);
+
+		if (!bytes) return [];
+
 		try {
-			return deserializeEntities(textEncoder.encode(value));
+			return deserializeEntities(bytes);
 		} catch {
 			return [];
 		}
@@ -180,7 +237,7 @@ class WorldStorageImpl {
 
 		if (!includeVoxelData) {
 			const exists = await store.hasChunk(cx, cy, cz);
-			return exists ? { blocks: null } : null;
+			return exists ? CHUNK_EXISTS_WITHOUT_BLOCKS : null;
 		}
 
 		const blob = await store.readChunk(cx, cy, cz);
@@ -213,26 +270,31 @@ class WorldStorageImpl {
 		// it once here and passing it through both eliminates the duplicate
 		// and replaces what was previously three allocations per chunk
 		// ([cx,cy,cz] array, {cx,cy,cz} object, spread into {id,cx,cy,cz})
-		// with one.
+		// with one. A single reusable out object avoids a fresh tuple
+		// allocation per id in the decode loop.
 		const n = chunkIds.length;
-		const coords: {
-			id: bigint;
-			cx: number;
-			cy: number;
-			cz: number;
-			key: string;
-		}[] = new Array(n);
+		const coords: ChunkReadCoord[] = new Array(n);
+		const out: ChunkCoordsOut = { cx: 0, cy: 0, cz: 0 };
+
 		for (let i = 0; i < n; i++) {
 			const id = chunkIds[i];
-			const [cx, cy, cz] = chunkIdToCoords(id);
-			coords[i] = { id, cx, cy, cz, key: `${cx},${cy},${cz}` };
+			chunkIdToCoordsOut(id, out);
+
+			const cx = out.cx;
+			const cy = out.cy;
+			const cz = out.cz;
+			const key = `${cx},${cy},${cz}`;
+
+			coords[i] = { id, cx, cy, cz, key };
 		}
 
 		if (!includeVoxelData) {
 			const existing = await store.hasChunks(coords);
 			for (let i = 0; i < n; i++) {
 				const c = coords[i];
-				if (existing.has(c.key)) result.set(c.id, { blocks: null });
+				if (existing.has(c.key!)) {
+					result.set(c.id!, CHUNK_EXISTS_WITHOUT_BLOCKS);
+				}
 			}
 			return result;
 		}
@@ -240,9 +302,9 @@ class WorldStorageImpl {
 		const readResults = await store.readChunks(coords);
 		for (let i = 0; i < n; i++) {
 			const c = coords[i];
-			const blob = readResults.get(c.key);
+			const blob = readResults.get(c.key!);
 			if (blob) {
-				result.set(c.id, deserializeVoxelDataShared(blob));
+				result.set(c.id!, deserializeVoxelDataShared(blob));
 			}
 		}
 
@@ -310,24 +372,31 @@ class WorldStorageImpl {
  */
 function packChunkBlob(chunk: Chunk): Uint8Array {
 	const blocks = chunk.block_array;
+	const palette = chunk.palette;
 	const light = chunk.light_array;
 
+	const blockBytes = blocks
+		? new Uint8Array(blocks.buffer, blocks.byteOffset, blocks.byteLength)
+		: null;
+
+	const paletteWords = palette
+		? new Uint16Array(
+				palette.buffer,
+				palette.byteOffset,
+				palette.byteLength >> 1,
+			)
+		: null;
+
+	const lightBytes = light
+		? new Uint8Array(light.buffer, light.byteOffset, light.byteLength)
+		: null;
+
 	return serializeVoxelData(
-		blocks
-			? new Uint8Array(blocks.buffer, blocks.byteOffset, blocks.byteLength)
-			: null,
-		chunk.palette
-			? new Uint16Array(
-					chunk.palette.buffer,
-					chunk.palette.byteOffset,
-					chunk.palette.byteLength >> 1,
-				)
-			: null,
+		blockBytes,
+		paletteWords,
 		chunk.isUniform,
 		chunk.uniformBlockId,
-		light
-			? new Uint8Array(light.buffer, light.byteOffset, light.byteLength)
-			: null,
+		lightBytes,
 		false,
 	);
 }
@@ -358,6 +427,31 @@ function chunkIdToCoords(chunkId: bigint): [number, number, number] {
 	const cz = (chunkId & SIGN_BIT_Z) !== 0n ? rawZ - BIAS_NUM : rawZ;
 
 	return [cx, cy, cz];
+}
+
+interface ChunkCoordsOut {
+	cx: number;
+	cy: number;
+	cz: number;
+}
+
+/**
+ * Tuple-free variant of chunkIdToCoords for bulk decode loops: writes into a
+ * reusable out object instead of allocating a fresh tuple per chunk id.
+ */
+function chunkIdToCoordsOut(
+	chunkId: bigint,
+	out: ChunkCoordsOut,
+): ChunkCoordsOut {
+	const rawX = Number(chunkId & COORD_MASK);
+	const rawY = Number((chunkId >> COORD_BITS) & COORD_MASK);
+	const rawZ = Number((chunkId >> (COORD_BITS * 2n)) & COORD_MASK);
+
+	out.cx = (chunkId & SIGN_BIT_X) !== 0n ? rawX - BIAS_NUM : rawX;
+	out.cy = (chunkId & SIGN_BIT_Y) !== 0n ? rawY - BIAS_NUM : rawY;
+	out.cz = (chunkId & SIGN_BIT_Z) !== 0n ? rawZ - BIAS_NUM : rawZ;
+
+	return out;
 }
 
 export const WorldStorage = new WorldStorageImpl();

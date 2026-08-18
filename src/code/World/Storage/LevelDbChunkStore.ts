@@ -33,11 +33,57 @@ export function chunkKey(cx: number, cy: number, cz: number): string {
 	return cx + "," + cy + "," + cz;
 }
 
+export interface ChunkCoord {
+	cx: number;
+	cy: number;
+	cz: number;
+	key?: string;
+}
+
+export interface ChunkReadCoord extends ChunkCoord {
+	id?: bigint;
+}
+
 export interface ChunkWrite {
 	cx: number;
 	cy: number;
 	cz: number;
 	blob: Uint8Array;
+	key?: string;
+}
+
+/**
+ * Storage contract used by WorldStorage. `readChunk` returns undefined for a
+ * missing chunk; batch variants return maps/sets keyed by the chunk key
+ * ("cx,cy,cz") so callers can pre-compute keys once.
+ *
+ * Blob mutability contract for writeChunk/writeChunks:
+ * The caller must not mutate `blob` after passing it to the store. This lets
+ * the store and its read cache reuse the caller's Uint8Array instead of
+ * making defensive copies. packChunkBlob / serializeVoxelData always produce
+ * fresh, isolated buffers, so all callers in this codebase already satisfy it.
+ */
+export interface ChunkStorage {
+	open(): Promise<void>;
+	close?(): Promise<void>;
+
+	readChunk(cx: number, cy: number, cz: number): Promise<Uint8Array | undefined>;
+	readChunks(coords: readonly ChunkCoord[]): Promise<Map<string, Uint8Array>>;
+
+	hasChunk(cx: number, cy: number, cz: number): Promise<boolean>;
+	hasChunks(coords: readonly ChunkCoord[]): Promise<Set<string>>;
+
+	writeChunk(cx: number, cy: number, cz: number, blob: Uint8Array): Promise<void>;
+	writeChunks(writes: readonly ChunkWrite[]): Promise<void>;
+
+	setMetaBytes(key: string, value: Uint8Array): Promise<void>;
+	getMetaBytes(key: string): Promise<Uint8Array | undefined>;
+	deleteMeta(key: string): Promise<void>;
+
+	flush(): Promise<void>;
+	clear(): Promise<void>;
+
+	readonly isReady: boolean;
 }
 
 export enum WriteOperationKind {
@@ -90,9 +136,13 @@ type QueueEntry =
 	  };
 
 type PendingMeta = {
-	value: string;
+	value: string | Uint8Array | null;
 	generation: number;
 };
+
+// Only used to upgrade legacy string-valued meta (e.g. entities persisted by
+// older versions) to bytes on read; everything new writes raw bytes.
+const metaTextEncoder = new TextEncoder();
 
 /** Thrown when queued writes are discarded by a reconnect clear(). */
 export class CacheResetError extends Error {
@@ -113,7 +163,7 @@ export function isCacheResetError(error: unknown): error is CacheResetError {
 	);
 }
 
-export class LevelDbChunkStore {
+export class LevelDbChunkStore implements ChunkStorage {
 	private db: any = null;
 	private readonly isBrowser = typeof window !== "undefined";
 	private readonly dbPath: string;
@@ -323,11 +373,11 @@ export class LevelDbChunkStore {
 		cy: number,
 		cz: number,
 		key?: string,
-	): Promise<Uint8Array | null> {
+	): Promise<Uint8Array | undefined> {
 		const k = key ?? chunkKey(cx, cy, cz);
 		const pendingDeletes = this.pendingDeletes;
 
-		if (pendingDeletes.has(k)) return null;
+		if (pendingDeletes.has(k)) return undefined;
 
 		const cached = this.cache.get(k);
 		if (cached !== undefined) {
@@ -336,11 +386,11 @@ export class LevelDbChunkStore {
 		}
 
 		const db = this.db;
-		if (!db) return null;
+		if (!db) return undefined;
 
 		const value = await db.get(k);
 
-		if (value == null || pendingDeletes.has(k)) return null;
+		if (value == null || pendingDeletes.has(k)) return undefined;
 
 		const data = value instanceof Uint8Array ? value : new Uint8Array(value);
 		this.addToCache(k, data);
@@ -348,7 +398,7 @@ export class LevelDbChunkStore {
 	}
 
 	async readChunks(
-		coords: Array<{ cx: number; cy: number; cz: number; key?: string }>,
+		coords: readonly ChunkCoord[],
 	): Promise<Map<string, Uint8Array>> {
 		const results = new Map<string, Uint8Array>();
 		const misses: string[] = [];
@@ -427,7 +477,7 @@ export class LevelDbChunkStore {
 	}
 
 	async hasChunks(
-		coords: Array<{ cx: number; cy: number; cz: number; key?: string }>,
+		coords: readonly ChunkCoord[],
 	): Promise<Set<string>> {
 		const result = new Set<string>();
 		const misses: string[] = [];
@@ -483,10 +533,31 @@ export class LevelDbChunkStore {
 	async getMeta(key: string): Promise<string | null> {
 		const storageKey = `\x01${key}`;
 		const pending = this.pendingMeta.get(storageKey);
-		if (pending !== undefined) return pending.value;
+		if (pending !== undefined) {
+			if (pending.value === null) return null;
+			return pending.value instanceof Uint8Array ? null : pending.value;
+		}
 		if (!this.db) return null;
 		const value = await this.db.get(storageKey);
-		return value == null ? null : String(value);
+		if (value == null) return null;
+		return value instanceof Uint8Array ? null : String(value);
+	}
+
+	async getMetaBytes(key: string): Promise<Uint8Array | undefined> {
+		const storageKey = `\x01${key}`;
+		const pending = this.pendingMeta.get(storageKey);
+		if (pending !== undefined) {
+			if (pending.value === null) return undefined;
+			return pending.value instanceof Uint8Array
+				? pending.value
+				: metaTextEncoder.encode(pending.value);
+		}
+		if (!this.db) return undefined;
+		const value = await this.db.get(storageKey);
+		if (value == null) return undefined;
+		return value instanceof Uint8Array
+			? value
+			: metaTextEncoder.encode(String(value));
 	}
 
 	// -------------------------------------------------------------------
@@ -510,7 +581,7 @@ export class LevelDbChunkStore {
 		]);
 	}
 
-	/** Bulk write of a network batch: one job, shared transactions. */
+	/** Bulk write: one queued job, shared transactions, key built once per write. */
 	writeChunks(writes: readonly ChunkWrite[]): Promise<void> {
 		const len = writes.length;
 		if (len === 0) return Promise.resolve();
@@ -522,7 +593,7 @@ export class LevelDbChunkStore {
 
 			operations[i] = {
 				kind: WriteOperationKind.Put,
-				key: chunkKey(write.cx, write.cy, write.cz),
+				key: write.key ?? chunkKey(write.cx, write.cy, write.cz),
 				value: write.blob,
 			};
 		}
@@ -552,7 +623,7 @@ export class LevelDbChunkStore {
 
 	/** Bulk eviction: one job, tombstoned immediately, shared transactions. */
 	deleteChunks(
-		coords: readonly { cx: number; cy: number; cz: number; key?: string }[],
+		coords: readonly ChunkCoord[],
 	): Promise<void> {
 		const len = coords.length;
 		if (len === 0) return Promise.resolve();
@@ -675,6 +746,69 @@ export class LevelDbChunkStore {
 
 		const promise = this.enqueueWriteJobUnchecked([
 			{ kind: WriteOperationKind.Put, key: storageKey, value },
+		]);
+
+		return promise.finally(() => {
+			const current = this.pendingMeta.get(storageKey);
+			if (current?.generation === generation) {
+				this.pendingMeta.delete(storageKey);
+			}
+		});
+	}
+
+	/**
+	 * Binary meta write (e.g. serialized chunk entities): same write queue,
+	 * same coalescing, no string round-trip. The shadow value is the raw
+	 * Uint8Array so getMetaBytes sees the fresh value before the commit.
+	 */
+	setMetaBytes(key: string, value: Uint8Array): Promise<void> {
+		if (!this.db || !this.opened) {
+			return Promise.reject(new Error("LevelDbChunkStore is not open"));
+		}
+		if (this.closing) {
+			return Promise.reject(new Error("LevelDbChunkStore is closing"));
+		}
+
+		const storageKey = `\x01${key}`;
+		const generation = ++this.metaGeneration;
+
+		this.pendingMeta.set(storageKey, { value, generation });
+
+		const promise = this.enqueueWriteJobUnchecked([
+			{ kind: WriteOperationKind.Put, key: storageKey, value },
+		]);
+
+		return promise.finally(() => {
+			const current = this.pendingMeta.get(storageKey);
+			if (current?.generation === generation) {
+				this.pendingMeta.delete(storageKey);
+			}
+		});
+	}
+
+	/**
+	 * Meta delete (e.g. clearing a chunk's entity list): serialized through
+	 * the same write queue as chunk writes and other meta writes. The key is
+	 * shadowed as deleted immediately so getMeta/getMetaBytes stop returning
+	 * the old value before the delete commits; the shadow is generation-
+	 * guarded so a later write for the same key is never erased by this
+	 * completion.
+	 */
+	deleteMeta(key: string): Promise<void> {
+		if (!this.db || !this.opened) {
+			return Promise.reject(new Error("LevelDbChunkStore is not open"));
+		}
+		if (this.closing) {
+			return Promise.reject(new Error("LevelDbChunkStore is closing"));
+		}
+
+		const storageKey = `\x01${key}`;
+		const generation = ++this.metaGeneration;
+
+		this.pendingMeta.set(storageKey, { value: null, generation });
+
+		const promise = this.enqueueWriteJobUnchecked([
+			{ kind: WriteOperationKind.Delete, key: storageKey },
 		]);
 
 		return promise.finally(() => {
@@ -1329,8 +1463,6 @@ export class LevelDbChunkStore {
  * API matches what LevelDbChunkStore needs: get, put, batch, open, close.
  */
 class IndexedDbStore {
-	private static readonly MAX_READ_KEYS_PER_TX = 256;
-
 	private db: IDBDatabase | null = null;
 	private readonly dbName: string;
 	private readonly storeName = "chunks";
@@ -1433,148 +1565,157 @@ class IndexedDbStore {
 		});
 	}
 
+	/**
+	 * Existence check for many keys in one readonly transaction. Resolves as
+	 * soon as every request settled; any request error rejects exactly once.
+	 */
 	async has(keys: string[]): Promise<Set<string>> {
 		if (!this.db) throw new Error("IndexedDbStore not open");
 
-		const len = keys.length;
-		if (len === 0) return new Set();
+		const n = keys.length;
+		if (n === 0) return new Set<string>();
 
-		const found = new Set<string>();
-
-		await this.readInBatches(
-			keys,
-			(store, key) => store.getKey(key),
-			(value, index) => {
-				if (value !== undefined) {
-					found.add(keys[index]);
-				}
-			},
-		);
-
-		return found;
-	}
-
-	async getMany(keys: string[]): Promise<Array<Uint8Array | undefined>> {
-		if (!this.db) throw new Error("IndexedDbStore not open");
-
-		const len = keys.length;
-		if (len === 0) return [];
-
-		const results: Array<Uint8Array | undefined> = new Array(len);
-
-		await this.readInBatches(
-			keys,
-			(store, key) => store.get(key),
-			(value, index) => {
-				if (value instanceof Uint8Array) {
-					results[index] = value;
-				} else if (value instanceof ArrayBuffer) {
-					results[index] = new Uint8Array(value);
-				} else {
-					results[index] = undefined;
-				}
-			},
-		);
-
-		return results;
-	}
-
-	private async readInBatches<T>(
-		keys: string[],
-		read: (store: IDBObjectStore, key: string) => IDBRequest<T>,
-		onValue: (value: T, index: number) => void,
-	): Promise<void> {
-		const len = keys.length;
-		const maxPerTx = IndexedDbStore.MAX_READ_KEYS_PER_TX;
-
-		for (let start = 0; start < len; start += maxPerTx) {
-			const end = Math.min(start + maxPerTx, len);
+		return new Promise<Set<string>>((resolve, reject) => {
+			const found = new Set<string>();
 			const tx = this.db!.transaction(this.storeName, "readonly");
 			const store = tx.objectStore(this.storeName);
 
-			await new Promise<void>((resolve, reject) => {
-				let settled = false;
+			let settled = false;
+			let pending = n;
 
-				const fail = () => {
-					if (settled) return;
-					settled = true;
-					reject(tx.error ?? new Error("IndexedDB batch read failed"));
+			const fail = () => {
+				if (settled) return;
+				settled = true;
+				reject(tx.error);
+			};
+
+			tx.onerror = fail;
+			tx.onabort = fail;
+
+			for (let i = 0; i < n; i++) {
+				const key = keys[i];
+				const req = store.count(key);
+
+				req.onsuccess = () => {
+					if (req.result > 0) found.add(key);
+
+					if (--pending === 0 && !settled) {
+						settled = true;
+						resolve(found);
+					}
 				};
 
-				tx.oncomplete = () => {
-					if (settled) return;
-					settled = true;
-					resolve();
+				req.onerror = fail;
+			}
+		});
+	}
+
+	/**
+	 * Read many keys in one readonly transaction, results in input order.
+	 * Missing keys map to undefined. Resolves as soon as every request
+	 * settled; any request error rejects exactly once.
+	 */
+	async getMany(keys: string[]): Promise<Array<Uint8Array | undefined>> {
+		if (!this.db) throw new Error("IndexedDbStore not open");
+
+		const n = keys.length;
+		if (n === 0) return [];
+
+		return new Promise<Array<Uint8Array | undefined>>((resolve, reject) => {
+			const results: Array<Uint8Array | undefined> = new Array(n);
+			const tx = this.db!.transaction(this.storeName, "readonly");
+			const store = tx.objectStore(this.storeName);
+
+			let settled = false;
+			let pending = n;
+
+			const fail = () => {
+				if (settled) return;
+				settled = true;
+				reject(tx.error);
+			};
+
+			tx.onerror = fail;
+			tx.onabort = fail;
+
+			for (let i = 0; i < n; i++) {
+				const req = store.get(keys[i]);
+
+				req.onsuccess = () => {
+					const value = req.result;
+
+					if (value instanceof Uint8Array) {
+						results[i] = value;
+					} else if (value instanceof ArrayBuffer) {
+						results[i] = new Uint8Array(value);
+					} else {
+						results[i] = undefined;
+					}
+
+					if (--pending === 0 && !settled) {
+						settled = true;
+						resolve(results);
+					}
 				};
 
-				tx.onerror = fail;
-				tx.onabort = fail;
-
-				for (let i = start; i < end; i++) {
-					const index = i;
-					const req = read(store, keys[index]);
-
-					req.onsuccess = () => {
-						onValue(req.result, index);
-					};
-
-					req.onerror = fail;
-				}
-			});
-		}
+				req.onerror = fail;
+			}
+		});
 	}
 }
 
 class IndexedDbBatch {
-	private keys: string[] = [];
-	private values: Array<Uint8Array | string | null> = [];
+	private ops: Array<
+		| { type: "put"; key: string; value: Uint8Array | string }
+		| { type: "delete"; key: string }
+	> = [];
 
 	constructor(
-		private db: IDBDatabase,
-		private storeName: string,
+		private readonly db: IDBDatabase,
+		private readonly storeName: string,
 	) {}
 
-	put(key: string, value: Uint8Array | string): void {
-		this.keys.push(key);
-		this.values.push(value);
+	put(key: string, value: Uint8Array | string): this {
+		this.ops.push({ type: "put", key, value });
+		return this;
 	}
 
-	del(key: string): void {
-		this.keys.push(key);
-		this.values.push(null);
+	del(key: string): this {
+		this.ops.push({ type: "delete", key });
+		return this;
 	}
 
+	/** Alias for `del`, matching the level Batch API used by the write pump. */
+	delete(key: string): this {
+		return this.del(key);
+	}
+
+	/** Commits every queued op in exactly one readwrite transaction. */
 	async write(): Promise<void> {
-		const keys = this.keys;
-		const values = this.values;
-		const len = keys.length;
+		const ops = this.ops;
+		const n = ops.length;
 
-		if (len === 0) return;
-
-		this.keys = [];
-		this.values = [];
+		if (n === 0) return;
 
 		await new Promise<void>((resolve, reject) => {
 			const tx = this.db.transaction(this.storeName, "readwrite");
 			const store = tx.objectStore(this.storeName);
 
-			const fail = () => {
-				reject(tx.error ?? new Error("IndexedDB transaction failed"));
-			};
-
 			tx.oncomplete = () => resolve();
-			tx.onerror = fail;
-			tx.onabort = fail;
+			tx.onerror = () => reject(tx.error);
+			tx.onabort = () => reject(tx.error);
 
-			for (let i = 0; i < len; i++) {
-				const value = values[i];
+			for (let i = 0; i < n; i++) {
+				const op = ops[i];
 
-				if (value === null) {
-					store.delete(keys[i]);
+				if (op.type === "put") {
+					store.put(op.value, op.key);
 				} else {
-					store.put(value, keys[i]);
+					store.delete(op.key);
 				}
 			}
 		});
+
+		this.ops.length = 0;
 	}
 }
