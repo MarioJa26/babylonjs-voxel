@@ -547,7 +547,12 @@ export class LevelDbChunkStore implements ChunkStorage {
 		if (!this.db) return null;
 		const value = await this.db.get(storageKey);
 		if (value == null) return null;
-		return value instanceof Uint8Array ? null : String(value);
+		// Node's `level` backend (valueEncoding: "buffer") returns every value
+		// as a Buffer, and Buffer extends Uint8Array — so on Node all string
+		// meta would be misclassified as byte meta and dropped. Only the
+		// browser's IndexedDB backend can distinguish byte meta (Uint8Array,
+		// written via setMetaBytes) from string meta.
+		return this.isBrowser && value instanceof Uint8Array ? null : String(value);
 	}
 
 	async getMetaBytes(key: string): Promise<Uint8Array | undefined> {

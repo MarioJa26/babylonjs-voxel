@@ -122,6 +122,10 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	readonly #upZ = -this.#characterGravity.z / this.#characterGravityLen;
 	#movementLocked = false;
 	#lockedPosition: Vec3 | null = null;
+	// Set when a saved position was restored from local storage (or the
+	// server's SpawnPosition) — tells the loading gate not to teleport the
+	// player over it.
+	#savedPositionRestored = false;
 	readonly #zeroVelocity: Vec3 = vec3(0, 0, 0);
 
 	#collisionBoat: CustomBoat | null = null;
@@ -1310,7 +1314,13 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.#camera.snapToPlayer(p);
 		this.#displayCapsule.position.copyFrom(p);
 		this.voxelCollider.syncDebugMesh(this.voxelPosition);
+		this.#savedPositionRestored = true;
 		return true;
+	}
+
+	/** True once a previously saved position has been restored this session. */
+	public hasRestoredSavedPosition(): boolean {
+		return this.#savedPositionRestored;
 	}
 
 	// ── Integration ───────────────────────────────────────────────────────────

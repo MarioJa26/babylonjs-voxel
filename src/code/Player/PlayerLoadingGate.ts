@@ -93,7 +93,10 @@ export class PlayerLoadingGate {
 			}
 		}
 
-		if (!this.teleported) {
+		if (
+			!this.teleported &&
+			!this.player.playerVehicle.hasRestoredSavedPosition()
+		) {
 			const p = getSpawnPosition();
 			console.log(PREFIX, "teleporting player to spawn", p);
 			this.player.playerVehicle.teleportTo(p.x, p.y, p.z);
