@@ -1159,6 +1159,30 @@ export function decodeChunkDataBatch(
 }
 
 // ---------------------------------------------------------------------------
+// Yaw/pitch byte helpers. The periodic wire format carries rotations as
+// 0-255 bytes (yaw: 0-255 maps 0°..360°; pitch: 0-255 maps -90°..+90°).
+// Float fields (e.g. SpawnPosition) carry the decoded DEGREE values.
+// ---------------------------------------------------------------------------
+
+export function encodeYawByte(yaw: number): number {
+	const normalized = ((yaw % 360) + 360) % 360;
+	return Math.round((normalized / 360) * 255) & 0xff;
+}
+
+export function encodePitchByte(pitch: number): number {
+	const clamped = pitch < -90 ? -90 : pitch > 90 ? 90 : pitch;
+	return Math.round(((clamped + 90) / 180) * 255) & 0xff;
+}
+
+export function decodeYawByte(byte: number): number {
+	return (byte / 255) * 360;
+}
+
+export function decodePitchByte(byte: number): number {
+	return (byte / 255) * 180 - 90;
+}
+
+// ---------------------------------------------------------------------------
 // Spawn position — server → client on join
 // Format: [type:1][x:f32][y:f32][z:f32][yaw:f32][pitch:f32]
 // ---------------------------------------------------------------------------

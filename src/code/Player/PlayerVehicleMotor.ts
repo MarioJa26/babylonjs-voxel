@@ -1314,6 +1314,18 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.#camera.snapToPlayer(p);
 		this.#displayCapsule.position.copyFrom(p);
 		this.voxelCollider.syncDebugMesh(this.voxelPosition);
+		const view = position as { yaw?: unknown; pitch?: unknown };
+		if (
+			typeof view.yaw === "number" &&
+			Number.isFinite(view.yaw) &&
+			typeof view.pitch === "number" &&
+			Number.isFinite(view.pitch)
+		) {
+			// View angles use the network convention (degrees, negative pitch =
+			// looking down); the camera stores radians with the opposite sign.
+			this.#camera.cameraYaw = (view.yaw * Math.PI) / 180;
+			this.#camera.cameraPitch = (-view.pitch * Math.PI) / 180;
+		}
 		this.#savedPositionRestored = true;
 		return true;
 	}
@@ -1321,6 +1333,27 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	/** True once a previously saved position has been restored this session. */
 	public hasRestoredSavedPosition(): boolean {
 		return this.#savedPositionRestored;
+	}
+
+	/**
+	 * Current position plus the camera view angles (degrees, network
+	 * convention: negative pitch means looking down).
+	 */
+	public getSavedViewState(): {
+		x: number;
+		y: number;
+		z: number;
+		yaw: number;
+		pitch: number;
+	} {
+		const p = this.getPositionInternal();
+		return {
+			x: p.x,
+			y: p.y,
+			z: p.z,
+			yaw: (this.#camera.cameraYaw * 180) / Math.PI,
+			pitch: (-this.#camera.cameraPitch * 180) / Math.PI,
+		};
 	}
 
 	// ── Integration ───────────────────────────────────────────────────────────

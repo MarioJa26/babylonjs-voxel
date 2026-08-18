@@ -120,8 +120,23 @@ export class PlayerCamera {
 		return this.#cameraYaw;
 	}
 
+	public set cameraYaw(value: number) {
+		this.#cameraYaw = value;
+		this.#updateForwardCache();
+	}
+
 	public get cameraPitch(): number {
 		return this.#cameraPitch;
+	}
+
+	public set cameraPitch(value: number) {
+		if (value > this.#maxPitch) {
+			value = this.#maxPitch;
+		} else if (value < -this.#maxPitch) {
+			value = -this.#maxPitch;
+		}
+		this.#cameraPitch = value;
+		this.#updateForwardCache();
 	}
 
 	/** Full 3D unit vector pointing in the direction the camera is looking. */

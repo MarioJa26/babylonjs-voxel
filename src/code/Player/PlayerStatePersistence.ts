@@ -1,4 +1,4 @@
-import { onSceneDispose, type SceneContext, type Vec3 } from "@babylonjs/lite";
+import { onSceneDispose, type SceneContext } from "@babylonjs/lite";
 import {
 	flushChunkBoundEntities,
 	flushModifiedChunks,
@@ -147,7 +147,7 @@ export class PlayerStatePersistence {
 		if (this.player.playerVehicle.isMovementLocked) return;
 
 		try {
-			const positionState = this.player.playerVehicle.getSavedPosition();
+			const positionState = this.player.playerVehicle.getSavedViewState();
 			window.localStorage.setItem(
 				this.storageKey(PlayerStatePersistence.PLAYER_POSITION_STORAGE_KEY),
 				JSON.stringify(positionState),
@@ -185,7 +185,13 @@ export class PlayerStatePersistence {
 			);
 			if (!raw) return;
 
-			const savedPosition = JSON.parse(raw) satisfies Vec3;
+			const savedPosition = JSON.parse(raw) satisfies {
+				x: number;
+				y: number;
+				z: number;
+				yaw?: number;
+				pitch?: number;
+			};
 			if (this.player.playerVehicle.restoreSavedPosition(savedPosition)) {
 				this.player.playerVehicle.updateCameraAndVisuals();
 			} else {

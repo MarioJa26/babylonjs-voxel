@@ -295,15 +295,9 @@ export class NetworkManager {
 
 	private sendPlayerState(): void {
 		const pos = this.player.position;
-		const cam = this.player.playerCamera.playerCamera;
 
-		const dx = cam.target.x - cam.position.x;
-		const dy = cam.target.y - cam.position.y;
-		const dz = cam.target.z - cam.position.z;
-
-		const yaw = (Math.atan2(dx, dz) * 180) / Math.PI;
-		const pitch =
-			(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)) * 180) / Math.PI;
+		const yaw = (this.player.playerCamera.cameraYaw * 180) / Math.PI;
+		const pitch = (-this.player.playerCamera.cameraPitch * 180) / Math.PI;
 
 		const yawByte = NetClient.encodeYawByte(yaw);
 		const pitchByte = NetClient.encodePitchByte(pitch);

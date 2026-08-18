@@ -13,6 +13,8 @@ import { DEBUG_ENABLED, debugLog } from "@/code/Lib/debugLog";
 import {
 	BinaryDecoder,
 	BinaryEncoder,
+	decodePitchByte,
+	decodeYawByte,
 	encodeBlockEditBatch,
 	encodeBlockEditRejected,
 	encodeChatMessage,
@@ -20,10 +22,12 @@ import {
 	encodeChunkUnchanged,
 	encodeMobDespawn,
 	encodeMobSpawn,
+	encodePitchByte,
 	encodePlayerJoin,
 	encodePlayerLeave,
 	encodeSpawnPosition,
 	encodeWorldConfig,
+	encodeYawByte,
 	writeMobUpdateBatch,
 	writePlayerStateBatch,
 } from "@/code/Network/protocol/encoder.ts";
@@ -346,13 +350,16 @@ export class VoxelRoom extends Room {
 				lastSaveTime: 0,
 			};
 			// Cache the position so next join skips LevelDB (even for first-timers).
+			// First-timer cache entries come from the worldSpawn (degrees), but
+			// returning-player entries are the 0-255 rotation bytes the client
+			// sends — normalize to bytes so the cache has one unit system.
 			if (!cached) {
 				this.playerPositionCache.set(name, {
 					x: state.x,
 					y: state.y,
 					z: state.z,
-					yaw: state.yaw,
-					pitch: state.pitch,
+					yaw: encodeYawByte(state.yaw),
+					pitch: encodePitchByte(state.pitch),
 				});
 			}
 			this.players.set(client.sessionId, state);
@@ -457,13 +464,15 @@ export class VoxelRoom extends Room {
 			timeMsg.writeFloat32(this.timeOfDay);
 			client.sendBytes("binary", timeMsg.getBytes());
 
-			// Tell client where to spawn (saved position or default)
+			// Tell client where to spawn (saved position or default). Saved angles
+			// are 0-255 rotation bytes; the worldSpawn defaults are already
+			// degrees. The SpawnPosition message carries degrees.
 			const spawnMsg = encodeSpawnPosition(
 				state.x,
 				state.y,
 				state.z,
-				state.yaw,
-				state.pitch,
+				saved ? decodeYawByte(state.yaw) : state.yaw,
+				saved ? decodePitchByte(state.pitch) : state.pitch,
 			);
 			client.sendBytes("binary", spawnMsg);
 
@@ -1573,13 +1582,9 @@ export class VoxelRoom extends Room {
 				this.editBroadcastEncoder.writeInt32(storedEdit.z);
 				this.editBroadcastEncoder.writeUint16(storedEdit.blockId);
 				this.editBroadcastEncoder.writeUint8(storedEdit.action);
-				this.broadcastBytes(
-					"binary",
-					this.editBroadcastEncoder.getBytes(),
-					{
-						except: client,
-					},
-				);
+				this.broadcastBytes("binary", this.editBroadcastEncoder.getBytes(), {
+					except: client,
+				});
 				break;
 			}
 
