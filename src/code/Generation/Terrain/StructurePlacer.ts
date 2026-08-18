@@ -3,6 +3,7 @@ import type {
 	ColumnPrepassResolver,
 	IWorldFeature,
 } from "../Structure/IWorldFeature";
+import type { PlaceBlockFn } from "../SurfaceGenerator";
 
 const STRUCTURE_SEARCH_RADIUS = 2;
 
@@ -14,13 +15,7 @@ export function generateStructures(
 	biome: Biome,
 	features: IWorldFeature[],
 	seedAsInt: number,
-	placeBlock: (
-		x: number,
-		y: number,
-		z: number,
-		id: number,
-		ow: boolean,
-	) => void,
+	placeBlock: PlaceBlockFn,
 	columnPrepassResolver?: ColumnPrepassResolver,
 ): void {
 	const chunkMinY = chunkY * chunkSize;

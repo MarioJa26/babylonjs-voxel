@@ -64,6 +64,14 @@ import {
 	type TerrainNoiseGrid,
 } from "./TerrainHeightMap";
 
+export type PlaceBlockFn = (
+	x: number,
+	y: number,
+	z: number,
+	blockId: number,
+	overwrite?: boolean,
+) => void;
+
 export type SurfaceGenerationResult = {
 	topSunlightMask: Uint8Array;
 	topSurfaceYMap: Int16Array;
@@ -695,13 +703,7 @@ export class SurfaceGenerator {
 		chunkY: number,
 		chunkZ: number,
 		biome: Biome,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow?: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 
 		columnBaseLocal: (lx: number, lz: number) => number,
 		placeColumnLocal: (
@@ -1130,7 +1132,7 @@ export class SurfaceGenerator {
 		_chunkY: number,
 		chunkZ: number,
 		_biome: Biome,
-		placeBlock: (x: number, y: number, z: number, id: number) => void,
+		placeBlock: PlaceBlockFn,
 	): void {
 		const SCAN_RADIUS = 6;
 		const chunkSize = this.chunk_size;
@@ -1278,7 +1280,7 @@ export class SurfaceGenerator {
 		worldZ: number,
 		surfaceY: number,
 		colBiome: Biome,
-		placeBlock: (x: number, y: number, z: number, id: number) => void,
+		placeBlock: PlaceBlockFn,
 	): void {
 		const findlingeChance = colBiome.findlingChance ?? 0.00005;
 		const h = this.hashColumn(worldX, worldZ, SurfaceGenerator.seedAsInt);
@@ -1417,13 +1419,7 @@ export class SurfaceGenerator {
 		chunkY: number,
 		chunkZ: number,
 		biome: Biome,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 	): void {
 		generateStructures(
 			chunkX,

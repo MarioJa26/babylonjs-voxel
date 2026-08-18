@@ -1,5 +1,6 @@
 import type { Biome } from "../Biome/BiomeTypes";
 import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
+import type { PlaceBlockFn } from "../SurfaceGenerator";
 import type { IWorldFeature } from "./IWorldFeature";
 import { chunkWorldBounds, computeRegion } from "./RegionFeature";
 
@@ -15,13 +16,7 @@ export class MineshaftFeature implements IWorldFeature {
 		_chunkY: number,
 		chunkZ: number,
 		_biome: Biome,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 		seed: number,
 		chunkSize: number,
 		generatingChunkX: number,
@@ -99,13 +94,7 @@ export class MineshaftFeature implements IWorldFeature {
 		maxX: number,
 		minZ: number,
 		maxZ: number,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 	) {
 		const TUNNEL_HALF_WIDTH = 2;
 

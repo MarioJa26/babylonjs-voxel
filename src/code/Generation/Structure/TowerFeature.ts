@@ -1,5 +1,6 @@
 import type { Biome } from "../Biome/BiomeTypes";
 import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
+import type { PlaceBlockFn } from "../SurfaceGenerator";
 import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
@@ -17,13 +18,7 @@ export class TowerFeature implements IWorldFeature {
 		chunkY: number,
 		chunkZ: number,
 		biome: Biome,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 		seed: number,
 		chunkSize: number,
 		generatingChunkX: number,
@@ -181,13 +176,7 @@ export class TowerFeature implements IWorldFeature {
 		towerRadius: number,
 		groundHeight: number,
 		biome: Biome,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 		chunkSize: number,
 		seed: number,
 		prepassByChunk:
@@ -247,13 +236,7 @@ export class TowerFeature implements IWorldFeature {
 		towerCenterZ: number,
 		towerRadius: number,
 		groundHeight: number,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 		chunkSize: number,
 	) {
 		const wallBlockId = 26;

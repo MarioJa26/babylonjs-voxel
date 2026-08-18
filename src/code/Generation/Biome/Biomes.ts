@@ -82,7 +82,6 @@ import {
 import { BIOME_ID, type Biome } from "./BiomeTypes";
 
 export const BIOME_REGISTRY: Record<BIOME_ID, Biome> = {
-	// Existing
 	[BIOME_ID.FOREST]: FOREST,
 	[BIOME_ID.TUNDRA]: TUNDRA,
 	[BIOME_ID.TUNDRA_MOUNTAINS]: TUNDRA_MOUNTAINS,
@@ -183,6 +182,7 @@ export function getBiomeFor(
 	terrainShapedHeight: number,
 ): Biome {
 	const SEA = GenerationParams.SEA_LEVEL;
+	const heightAboveSea = terrainShapedHeight - SEA;
 
 	// ── Deep ocean trench ─────────────────────────────────────────────────────
 	if (continentalness < -0.9) {
@@ -190,7 +190,7 @@ export function getBiomeFor(
 	}
 
 	// ── Open ocean ────────────────────────────────────────────────────────────
-	if (continentalness < -0.27 && terrainShapedHeight < SEA) {
+	if (continentalness < -0.27 && heightAboveSea < 0) {
 		if (temperature < 0.2) return FROZEN_OCEAN;
 		if (temperature > 0.6) return CORAL_REEF;
 		if (temperature < 0.45) return KELP_FOREST;
@@ -202,6 +202,7 @@ export function getBiomeFor(
 		) {
 			return ARCHIPELAGO;
 		}
+
 		return OCEAN;
 	}
 
@@ -223,8 +224,8 @@ export function getBiomeFor(
 	if (
 		continentalness >= -0.5 &&
 		continentalness < 0.0 &&
-		terrainShapedHeight >= SEA &&
-		terrainShapedHeight < SEA + 4 &&
+		heightAboveSea >= 0 &&
+		heightAboveSea < 4 &&
 		temperature > 0.5 &&
 		humidity > 0.5 &&
 		humidity < 0.7
@@ -242,7 +243,7 @@ export function getBiomeFor(
 	}
 
 	// ── Mountain / Highland biomes ────────────────────────────────────────────
-	if (terrainShapedHeight > SEA + 50 && continentalness > 0.4) {
+	if (heightAboveSea > 50 && continentalness > 0.4) {
 		if (temperature < 0.25) return CLOUD_PEAKS;
 		if (temperature > 0.85) return VOLCANIC_CALDERA;
 		if (humidity < 0.15 && temperature > 0.6) return MESA_PLATEAU;
@@ -251,7 +252,7 @@ export function getBiomeFor(
 		return ROCKY_HIGHLANDS;
 	}
 
-	if (terrainShapedHeight > SEA + 35 && continentalness > 0.3) {
+	if (heightAboveSea > 35 && continentalness > 0.3) {
 		if (temperature < 0.3) return CLOUD_PEAKS;
 		if (temperature > 0.8 && humidity < 0.2) return VOLCANIC_CALDERA;
 		if (humidity < 0.2 && temperature > 0.55) return MESA_PLATEAU;
@@ -261,7 +262,7 @@ export function getBiomeFor(
 
 	// ── Freezing temperature ──────────────────────────────────────────────────
 	if (temperature < 0.2) {
-		if (terrainShapedHeight > SEA + 40) return ICE_SPIKES;
+		if (heightAboveSea > 40) return ICE_SPIKES;
 		if (humidity < 0.15) return FROZEN_TUNDRA_PLAINS;
 		if (humidity < 0.3) return SNOWY_PLAINS;
 		if (humidity < 0.55) return GLACIER;
@@ -269,32 +270,33 @@ export function getBiomeFor(
 		return PERMAFROST_BOG;
 	}
 
-	// ── Cold temperature ──────────────────────────────────────────────────────
 	if (temperature < 0.45) {
 		if (continentalness > 0.5) {
 			return humidity < 0.5 ? TUNDRA : TUNDRA_MOUNTAINS;
 		}
+
 		if (humidity < 0.12) return FROZEN_TUNDRA_PLAINS;
 		if (humidity < 0.2) return SNOWY_PLAINS;
 		if (humidity < 0.45) return GRASS_LAND;
-		if (humidity > 0.65 && terrainShapedHeight < SEA + 15)
-			return PERMAFROST_BOG;
-		if (humidity > 0.55 && terrainShapedHeight < SEA + 30) return AURORA_TUNDRA;
+		if (humidity > 0.65 && heightAboveSea < 15) return PERMAFROST_BOG;
+		if (humidity > 0.55 && heightAboveSea < 30) return AURORA_TUNDRA;
+
 		return TUNDRA;
 	}
 
 	// ── Waterlogged / low-lying wet biomes ───────────────────────────────────
-	if (terrainShapedHeight < SEA + 8) {
+	if (heightAboveSea < 8) {
 		if (humidity > 0.65) {
 			if (temperature > 0.6) return MANGROVE;
 			return SWAMP;
 		}
+
 		if (humidity > 0.5 && temperature < 0.6) return WETLANDS;
 		if (humidity > 0.5 && temperature > 0.6) return MANGROVE;
 	}
 
 	// ── Near sea level — shore-adjacent flat biomes ───────────────────────────
-	if (terrainShapedHeight < SEA + 12) {
+	if (heightAboveSea < 12) {
 		if (temperature > 0.7 && humidity < 0.1) return SALT_FLATS;
 		if (temperature > 0.55 && humidity < 0.4) return TIDAL_FLATS;
 		if (humidity > 0.55 && temperature < 0.5) return PEAT_BOG;
@@ -312,8 +314,8 @@ export function getBiomeFor(
 		humidity < 0.1 &&
 		continentalness > 0.15 &&
 		continentalness < 0.55 &&
-		terrainShapedHeight > SEA + 10 &&
-		terrainShapedHeight < SEA + 45
+		heightAboveSea > 10 &&
+		heightAboveSea < 45
 	) {
 		return ASHEN_WASTELAND;
 	}
@@ -321,34 +323,40 @@ export function getBiomeFor(
 	// ── Hot + dry gradients ───────────────────────────────────────────────────
 	if (temperature > 0.67) {
 		if (humidity < 0.08) {
-			if (terrainShapedHeight < SEA + 20) return DUST_BOWL;
+			if (heightAboveSea < 20) return DUST_BOWL;
 			return CRACKED_EARTH;
 		}
+
 		if (humidity < 0.2) {
-			if (terrainShapedHeight > SEA + 50) return RED_ROCK_CANYON;
-			if (terrainShapedHeight > SEA + 25) return BADLANDS;
+			if (heightAboveSea > 50) return RED_ROCK_CANYON;
+			if (heightAboveSea > 25) return BADLANDS;
 			return DUNE_SEA;
 		}
+
 		if (humidity < 0.3) {
-			if (terrainShapedHeight > SEA + 30) return BADLANDS;
+			if (heightAboveSea > 30) return BADLANDS;
 			return DESERT;
 		}
+
 		if (humidity < 0.38) {
-			if (terrainShapedHeight < SEA + 20) return OASIS;
+			if (heightAboveSea < 20) return OASIS;
 			if (continentalness < 0.3) return SALT_FLATS;
 		}
+
 		if (humidity < 0.5) {
-			if (terrainShapedHeight > SEA + 35) return RED_ROCK_CANYON;
+			if (heightAboveSea > 35) return RED_ROCK_CANYON;
 			return SCORCHED_SAVANNAH;
 		}
+
 		if (humidity < 0.62) return SAVANNAH;
-		if (terrainShapedHeight > SEA + 55) return CLOUD_FOREST;
+		if (heightAboveSea > 55) return CLOUD_FOREST;
+
 		return JUNGLE;
 	}
 
 	// ── Temperate wet biomes ──────────────────────────────────────────────────
 	if (humidity > 0.65) {
-		if (terrainShapedHeight < SEA + 15) return SWAMP;
+		if (heightAboveSea < 15) return SWAMP;
 		if (temperature > 0.55) return GROVE;
 		return TEMPERATE_RAINFOREST;
 	}
@@ -364,8 +372,8 @@ export function getBiomeFor(
 		humidity > 0.5 &&
 		temperature > 0.4 &&
 		temperature < 0.65 &&
-		terrainShapedHeight < SEA + 10 &&
-		terrainShapedHeight >= SEA
+		heightAboveSea < 10 &&
+		heightAboveSea >= 0
 	) {
 		return FERN_GULLY;
 	}
@@ -386,7 +394,7 @@ export function getBiomeFor(
 		temperature > 0.35 &&
 		temperature < 0.6 &&
 		humidity < 0.2 &&
-		terrainShapedHeight > SEA + 60
+		heightAboveSea > 60
 	) {
 		return CRYSTAL_CAVES;
 	}
@@ -396,7 +404,7 @@ export function getBiomeFor(
 		humidity < 0.25 &&
 		continentalness > 0.3 &&
 		continentalness < 0.65 &&
-		terrainShapedHeight < SEA + 20
+		heightAboveSea < 20
 	) {
 		return OBSIDIAN_FLATS;
 	}
@@ -414,8 +422,8 @@ export function getBiomeFor(
 		humidity < 0.22 &&
 		temperature > 0.35 &&
 		temperature < 0.65 &&
-		terrainShapedHeight > SEA + 20 &&
-		terrainShapedHeight < SEA + 50
+		heightAboveSea > 20 &&
+		heightAboveSea < 50
 	) {
 		return PETRIFIED_FOREST;
 	}
@@ -425,19 +433,15 @@ export function getBiomeFor(
 		temperature < 0.65 &&
 		humidity > 0.3 &&
 		humidity < 0.5 &&
-		terrainShapedHeight > SEA + 15 &&
-		terrainShapedHeight < SEA + 40 &&
+		heightAboveSea > 15 &&
+		heightAboveSea < 40 &&
 		continentalness > 0.1 &&
 		continentalness < 0.5
 	) {
 		return ANCIENT_RUINS_BIOME;
 	}
 
-	if (
-		temperature > 0.6 &&
-		continentalness > -0.33 &&
-		terrainShapedHeight < SEA + 20
-	) {
+	if (temperature > 0.6 && continentalness > -0.33 && heightAboveSea < 20) {
 		return TROPICAL_ISLAND;
 	}
 
@@ -452,8 +456,8 @@ export function getBiomeFor(
 		temperature < 0.55 &&
 		humidity > 0.3 &&
 		humidity < 0.5 &&
-		terrainShapedHeight > SEA + 15 &&
-		terrainShapedHeight < SEA + 50
+		heightAboveSea > 15 &&
+		heightAboveSea < 50
 	) {
 		return PINE_FOREST;
 	}
@@ -463,8 +467,8 @@ export function getBiomeFor(
 		temperature < 0.62 &&
 		humidity > 0.35 &&
 		humidity < 0.55 &&
-		terrainShapedHeight > SEA + 10 &&
-		terrainShapedHeight < SEA + 40 &&
+		heightAboveSea > 10 &&
+		heightAboveSea < 40 &&
 		continentalness > 0.05 &&
 		continentalness < 0.45
 	) {
@@ -476,8 +480,8 @@ export function getBiomeFor(
 		temperature < 0.6 &&
 		humidity > 0.28 &&
 		humidity < 0.45 &&
-		terrainShapedHeight > SEA + 10 &&
-		terrainShapedHeight < SEA + 45
+		heightAboveSea > 10 &&
+		heightAboveSea < 45
 	) {
 		return AUTUMN_FOREST;
 	}
@@ -488,7 +492,7 @@ export function getBiomeFor(
 	}
 
 	if (humidity > 0.35) {
-		if (terrainShapedHeight > SEA + 35) return HEDGEROW;
+		if (heightAboveSea > 35) return HEDGEROW;
 		return MEADOW;
 	}
 

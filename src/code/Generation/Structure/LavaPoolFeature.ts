@@ -1,5 +1,6 @@
 import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
+import type { PlaceBlockFn } from "../SurfaceGenerator";
 import { getBiome, getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
@@ -16,13 +17,7 @@ export class LavaPoolFeature implements IWorldFeature {
 		_chunkY: number,
 		chunkZ: number,
 		biome: Biome,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 		seed: number,
 		chunkSize: number,
 		generatingChunkX: number,
@@ -113,13 +108,7 @@ export class LavaPoolFeature implements IWorldFeature {
 		poolCenterX: number,
 		poolCenterY: number,
 		poolCenterZ: number,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 		seed: number,
 	) {
 		const poolRadius = 25 + (getPRNGBySeed(poolCenterX, seed) % 5);

@@ -1,4 +1,5 @@
 import { getPRNGBySeed } from "@/code/Generation/NoiseAndParameters/Squirrel13";
+import type { PlaceBlockFn } from "@/code/Generation/SurfaceGenerator";
 import type { TreeDefinition } from "../../BiomeTypes";
 import { DIAG_X, DIAG_Z, generateSlinkyTree } from "../../TreeDefinition";
 
@@ -198,13 +199,7 @@ function placeFaceConnected(
 	toZ: number,
 	blockId: number,
 	replace: boolean,
-	placeBlock: (
-		x: number,
-		y: number,
-		z: number,
-		blockId: number,
-		replace: boolean,
-	) => void,
+	placeBlock: PlaceBlockFn,
 ): void {
 	let x = fromX;
 	let y = fromY;

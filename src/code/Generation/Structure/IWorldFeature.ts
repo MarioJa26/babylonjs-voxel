@@ -1,5 +1,8 @@
 import type { Biome } from "../Biome/BiomeTypes";
-import type { ColumnPrepassCacheEntry } from "../SurfaceGenerator";
+import type {
+	ColumnPrepassCacheEntry,
+	PlaceBlockFn,
+} from "../SurfaceGenerator";
 
 /**
  * Optional absolute vertical bounds for an IWorldFeature, expressed in world
@@ -53,13 +56,7 @@ export interface IWorldFeature {
 		chunkY: number,
 		chunkZ: number,
 		_chunkBiome: Biome,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 		seed: number,
 		chunkSize: number,
 		generatingChunkX: number,

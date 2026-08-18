@@ -1,13 +1,6 @@
+import type { PlaceBlockFn } from "../SurfaceGenerator";
 import { getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver } from "./IWorldFeature";
-
-export type PlaceFn = (
-	x: number,
-	y: number,
-	z: number,
-	id: number,
-	ow: boolean,
-) => void;
 
 export type DoorSide = "x+" | "x-" | "z+" | "z-";
 
@@ -50,12 +43,12 @@ export interface HouseOptions {
  * primitives so individual features stay small and readable.
  */
 export class StructureBuilder {
-	public readonly place: PlaceFn;
+	public readonly place: PlaceBlockFn;
 	public readonly resolver: ColumnPrepassResolver | undefined;
 	public readonly seed: number;
 
 	constructor(
-		place: PlaceFn,
+		place: PlaceBlockFn,
 		resolver: ColumnPrepassResolver | undefined,
 		seed: number,
 	) {

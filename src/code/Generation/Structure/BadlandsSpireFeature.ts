@@ -3,6 +3,7 @@ import { BIOME_ID, type Biome } from "../Biome/BiomeTypes";
 import { createFastNoise3DWithInstance } from "../NoiseAndParameters/FastNoise/FastNoiseFactory";
 import { FractalType } from "../NoiseAndParameters/FastNoise/FastNoiseLite";
 import { getPRNGBySeed } from "../NoiseAndParameters/Squirrel13";
+import type { PlaceBlockFn } from "../SurfaceGenerator";
 import { getBiome, getFinalTerrainHeight } from "../TerrainHeightMap";
 import type { ColumnPrepassResolver, IWorldFeature } from "./IWorldFeature";
 import { aabbOverlaps, chunkWorldBounds, computeRegion } from "./RegionFeature";
@@ -71,13 +72,7 @@ export class BadlandsSpireFeature implements IWorldFeature {
 		chunkY: number,
 		chunkZ: number,
 		biome: Biome,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 		seed: number,
 		chunkSize: number,
 		generatingChunkX: number,
@@ -173,13 +168,7 @@ export class BadlandsSpireFeature implements IWorldFeature {
 		spireHeight: number,
 		tierHeight: number,
 		halfFp: number,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 		chunkSize: number,
 		seed: number,
 	) {
@@ -217,13 +206,7 @@ export class BadlandsSpireFeature implements IWorldFeature {
 		centerZ: number,
 		noiseOffX: number,
 		noiseOffZ: number,
-		placeBlock: (
-			x: number,
-			y: number,
-			z: number,
-			id: number,
-			ow: boolean,
-		) => void,
+		placeBlock: PlaceBlockFn,
 		seed: number,
 	) {
 		const spireLocalY = worldY - groundHeight;
