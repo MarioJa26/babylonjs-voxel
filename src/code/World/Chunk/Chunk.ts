@@ -14,21 +14,57 @@ let _meshDisposalScheduled = false;
 
 function deferMeshDisposal(mesh: Mesh): void {
 	if (!mesh) return;
+
 	_pendingMeshDisposal.push(mesh);
+	schedulePendingMeshDisposal();
+}
+
+function schedulePendingMeshDisposal(): void {
 	if (_meshDisposalScheduled) return;
 	_meshDisposalScheduled = true;
+
 	const engine = Map1.engine;
+
 	if (!engine) {
-		for (const m of _pendingMeshDisposal) disposeMeshGpu(m);
-		_pendingMeshDisposal.length = 0;
 		_meshDisposalScheduled = false;
+		drainPendingMeshDisposal();
 		return;
 	}
-	void onGpuWorkDone(engine).then(() => {
-		_meshDisposalScheduled = false;
-		for (const m of _pendingMeshDisposal) disposeMeshGpu(m);
-		_pendingMeshDisposal.length = 0;
-	});
+
+	void onGpuWorkDone(engine)
+		.catch((err) => {
+			console.warn("Deferred mesh disposal waited on GPU work but failed", err);
+		})
+		.finally(() => {
+			_meshDisposalScheduled = false;
+			drainPendingMeshDisposal();
+
+			// If disposal indirectly queued more meshes, schedule another GPU-safe drain.
+			if (_pendingMeshDisposal.length > 0) {
+				schedulePendingMeshDisposal();
+			}
+		});
+}
+function drainPendingMeshDisposal(): void {
+	while (_pendingMeshDisposal.length > 0) {
+		const mesh = _pendingMeshDisposal.pop();
+		if (mesh) disposeMeshGpu(mesh);
+	}
+}
+function makeSharedUint16(
+	valuesOrLength: number | ArrayLike<number>,
+): Uint16Array {
+	if (typeof valuesOrLength === "number") {
+		return new Uint16Array(new SharedArrayBuffer(valuesOrLength * 2));
+	}
+
+	const out = new Uint16Array(new SharedArrayBuffer(valuesOrLength.length * 2));
+	out.set(valuesOrLength);
+	return out;
+}
+
+function makeSharedUint8(length: number): Uint8Array {
+	return new Uint8Array(new SharedArrayBuffer(length));
 }
 
 import {
@@ -73,11 +109,8 @@ type SerializedLODMeshCache = Record<
 	}
 >;
 
-const _twoEntryPalette = new Uint16Array(2);
-
 const _ccVisited = new Uint8Array(GenerationParams.CHUNK_SIZE ** 3);
 const _ccStack = new Int32Array(GenerationParams.CHUNK_SIZE ** 3);
-const _ccOpaque = new Uint8Array(GenerationParams.CHUNK_SIZE ** 3);
 const _ccFaceCounts = new Uint16Array(6);
 
 // Reusable seed queue for initializeSunlight().  Sized once from the
@@ -123,6 +156,7 @@ export class Chunk {
 	public static readonly SIZE = GenerationParams.CHUNK_SIZE;
 	public static readonly SIZE2 = Chunk.SIZE * Chunk.SIZE;
 	public static readonly SIZE3 = Chunk.SIZE * Chunk.SIZE * Chunk.SIZE;
+	public static readonly SM1 = Chunk.SIZE - 1;
 	public static readonly chunkInstances = new Map<bigint, Chunk>();
 
 	static _chunkByCoords = new Map<number, Chunk>();
@@ -657,31 +691,39 @@ export class Chunk {
 				typeof SharedArrayBuffer !== "undefined"
 					? new Uint8Array(new SharedArrayBuffer(Chunk.SIZE3))
 					: new Uint8Array(Chunk.SIZE3);
+			this._la32 = null;
 		}
 
 		const la = this.light_array;
-		// Word-wise clear: keeps the block-light nibble, zeroes sky light. 4x
-		// fewer iterations than the byte loop (SIZE3 is divisible by 4).
-		const la32 = new Uint32Array(la.buffer, la.byteOffset, la.length >>> 2);
-		for (let i = 0; i < la32.length; i++) la32[i] &= 0x0f0f0f0f;
+
+		// Reuse the cached aligned word view instead of allocating a new Uint32Array
+		// on every sunlight initialization.
+		const wordCount = la.length >>> 2;
+		const la32 = this.getAlignedLightWords(la, wordCount);
+		if (la32) {
+			for (let i = 0; i < wordCount; i++) la32[i] &= 0x0f0f0f0f;
+
+			for (let i = wordCount << 2; i < la.length; i++) {
+				la[i] &= blockMask;
+			}
+		} else {
+			for (let i = 0; i < la.length; i++) {
+				la[i] &= blockMask;
+			}
+		}
 
 		const chunkBaseX = this.chunkX * size;
 		const chunkBaseZ = this.chunkZ * size;
 		const chunkBaseY = this.chunkY * size;
 		const hasLoadedAbove = !!aboveChunk?.isLoaded;
 
-		// Reuse the module-level scratch seed queue.  The function is
-		// synchronous and never re-enters, so sharing is safe.  At the
-		// hand-off we .slice() to give the pool an array it can safely
-		// own/transfer — passing the raw scratch would detach it if
-		// postMessage uses a transfer list, and would be overwritten if
-		// a second chunk loads before the deferred-light pump fires.
 		const seedCapacity = _sunlightSeedQueue.length;
 		const seedQueue = _sunlightSeedQueue;
 		let seedLength = 0;
 
 		for (let x = 0; x < size; x++) {
 			const worldX = chunkBaseX + x;
+
 			for (let z = 0; z < size; z++) {
 				const worldZ = chunkBaseZ + z;
 				const colBase = x + z * size2;
@@ -707,8 +749,10 @@ export class Chunk {
 				}
 
 				let idx = colBase + (size - 1) * size;
+
 				for (let y = size - 1; y >= 0; y--, idx -= size) {
 					const worldY = chunkBaseY + y;
+
 					if (
 						!hasLoadedAbove &&
 						worldY < Chunk.SKYLIGHT_GENERATION_MIN_WORLD_Y
@@ -719,11 +763,13 @@ export class Chunk {
 					}
 
 					const blockPacked = this.getBlockPacked(x, y, z);
+
 					if (!isTransparent(blockPacked, 1, 1)) {
 						incomingSkyLight = 0;
 						sourceFiltersFullSun = false;
 						continue;
 					}
+
 					if (incomingSkyLight <= 0) continue;
 
 					const thisFiltersFullSun = filtersFullSunlight(
@@ -752,24 +798,24 @@ export class Chunk {
 						sourceFiltersFullSun = thisFiltersFullSun;
 						continue;
 					}
+
 					incomingSkyLight = cellSkyLight;
 					sourceFiltersFullSun = thisFiltersFullSun;
 				}
 			}
 		}
 
-		// Hand the seed queue off to the worker pool's deferred-light pump
-		// which forwards it to a worker thread for the BFS pass.
 		if (seedLength > 0) {
 			const pool = Chunk._lightPool;
 			if (pool) {
 				const seedCopy = new Uint16Array(seedLength);
-				seedCopy.set(seedQueue.subarray(0, seedLength));
+				for (let i = 0; i < seedLength; i++) {
+					seedCopy[i] = seedQueue[i];
+				}
 				pool.enqueueDeferredLightFromSunlightInit?.(this, seedCopy, seedLength);
 			}
 		}
 	}
-
 	// =========================================================================
 	// Light accessors
 	// =========================================================================
@@ -804,52 +850,46 @@ export class Chunk {
 		}
 	}
 
+	// Replace recomputeDarkCache with this version.
 	public recomputeDarkCache(): void {
 		const la = this.light_array;
+
 		if (!la || la.length === 0) {
 			this._isDarkCached = false;
+			this._la32 = null;
 			return;
 		}
+
 		const len = la.length;
 		const wordCount = len >>> 2;
-		if (
-			!this._la32 ||
-			this._la32.buffer !== la.buffer ||
-			this._la32.byteOffset !== la.byteOffset ||
-			this._la32.length !== wordCount
-		) {
-			if (la.byteOffset % 4 === 0) {
-				// Light SABs are allocated 4-byte aligned (offset 0), so we can
-				// view them directly as Uint32 without a 32 KB copy per load.
-				this._la32 = new Uint32Array(la.buffer, la.byteOffset, wordCount);
-			} else {
-				// Copy into a aligned buffer to avoid "start offset of Uint32Array
-				// should be a multiple of 4" when the source light array has a
-				// non-aligned byteOffset (e.g. deserialized from storage).
-				const aligned = new Uint32Array(wordCount);
-				aligned.set(
-					new Uint32Array(
-						la.buffer,
-						la.byteOffset - (la.byteOffset % 4),
-						wordCount + (la.byteOffset % 4) / 4,
-					).subarray(0, wordCount),
-				);
-				this._la32 = aligned;
+		const la32 = this.getAlignedLightWords(la, wordCount);
+
+		if (la32) {
+			for (let i = 0; i < wordCount; i++) {
+				if ((la32[i] & 0xf0f0f0f0) !== 0) {
+					this._isDarkCached = false;
+					return;
+				}
 			}
-		}
-		const la32 = this._la32;
-		for (let i = 0; i < wordCount; i++) {
-			if (la32[i] & 0xf0f0f0f0) {
-				this._isDarkCached = false;
-				return;
+
+			for (let i = wordCount << 2; i < len; i++) {
+				if ((la[i] & 0xf0) !== 0) {
+					this._isDarkCached = false;
+					return;
+				}
 			}
+
+			this._isDarkCached = true;
+			return;
 		}
-		for (let i = wordCount << 2; i < len; i++) {
+
+		for (let i = 0; i < len; i++) {
 			if ((la[i] & 0xf0) !== 0) {
 				this._isDarkCached = false;
 				return;
 			}
 		}
+
 		this._isDarkCached = true;
 	}
 
@@ -1008,49 +1048,42 @@ export class Chunk {
 
 			this._isUniform = false;
 			this._hasVoxelData = true;
-			this._palette = new Uint16Array([this._uniformBlockId]);
-			let newIndex = 0;
-			if (this._palette[0] !== packedBlock) {
-				_twoEntryPalette[0] = this._palette[0];
-				_twoEntryPalette[1] = packedBlock;
-				this._palette = new Uint16Array(_twoEntryPalette);
-				newIndex = 1;
-			}
-			this._block_array = new Uint8Array(
-				new SharedArrayBuffer(Chunk.SIZE3 / 2),
-			);
-			this._block_array.fill(0);
-			this.setNibble(index, newIndex);
+			this._palette = makeSharedUint16([oldPacked, packedBlock]);
+			this._block_array = makeSharedUint8(Chunk.SIZE3 / 2);
+			this.setNibble(index, 1);
+
 			storageLayoutChanged = true;
 			paletteChanged = true;
 		} else if (this._palette) {
 			const paletteIndex = this.getNibble(index);
 			oldPacked = this._palette[paletteIndex];
+
 			if (oldPacked === packedBlock) return;
 
-			// PERF: linear scan instead of a per-chunk Map — palettes are
-			// capped at 16 entries before promoting to dense storage, so the
-			// Map's build+churn cost was pure garbage per chunk load.
-			let npi = -1;
 			const pal = this._palette;
+			let npi = -1;
+
 			for (let i = 0; i < pal.length; i++) {
 				if (pal[i] === packedBlock) {
 					npi = i;
 					break;
 				}
 			}
+
 			if (npi < 0) {
 				if (pal.length < 16) {
 					npi = pal.length;
-					const ep = new Uint16Array(npi + 1);
+					const ep = makeSharedUint16(npi + 1);
 					ep.set(pal);
 					ep[npi] = packedBlock;
 					this._palette = ep;
 					this.setNibble(index, npi);
 					paletteChanged = true;
 				} else {
-					const na = new Uint16Array(new SharedArrayBuffer(Chunk.SIZE3 * 2));
-					for (let i = 0; i < Chunk.SIZE3; i++) na[i] = pal[this.getNibble(i)];
+					const na = makeSharedUint16(Chunk.SIZE3);
+					for (let i = 0; i < Chunk.SIZE3; i++) {
+						na[i] = pal[this.getNibble(i)];
+					}
 					na[index] = packedBlock;
 					this._block_array = na;
 					this._palette = null;
@@ -1060,31 +1093,25 @@ export class Chunk {
 				this.setNibble(index, npi);
 			}
 		} else {
-			if (packedBlock > 255 && this._block_array instanceof Uint8Array) {
-				const na = new Uint16Array(new SharedArrayBuffer(Chunk.SIZE3 * 2));
-				na.set(this._block_array);
+			const blockArray = this._block_array!;
+
+			if (packedBlock > 255 && blockArray instanceof Uint8Array) {
+				const na = makeSharedUint16(Chunk.SIZE3);
+				na.set(blockArray);
 				this._block_array = na;
 				storageLayoutChanged = true;
 			}
+
 			oldPacked = this._block_array![index];
 			if (oldPacked === packedBlock) return;
-			this._block_array![index] = packedBlock;
-		}
 
-		// Ensure any newly created palette is backed by SharedArrayBuffer so
-		// the light worker can read block IDs through its view.
-		if (paletteChanged && this._palette) {
-			const buf = this._palette.buffer;
-			if (!(buf instanceof SharedArrayBuffer)) {
-				const sab = new SharedArrayBuffer(this._palette.byteLength);
-				new Uint8Array(sab).set(
-					new Uint8Array(
-						buf,
-						this._palette.byteOffset,
-						this._palette.byteLength,
-					),
-				);
-				this._palette = new Uint16Array(sab, 0, this._palette.length);
+			this._block_array![index] = packedBlock;
+
+			if (this._denseOpacity) {
+				this._denseOpacity[index] =
+					packedBlock !== 0 && BLOCK_TYPE[unpackBlockId(packedBlock)] === 0
+						? 1
+						: 0;
 			}
 		}
 
@@ -1099,15 +1126,10 @@ export class Chunk {
 			this._denseOpacity = null;
 		}
 
-		// Block storage layout changed — refresh the worker-visible header
-		// row BEFORE the light BFS dispatches, so any in-flight BFS picks
-		// up the new layout on its next cell access.
 		if (storageLayoutChanged) {
 			this.writeLightHeaderRow();
 		}
-		// Broadcast updated buffer references to the light worker whenever
-		// the palette changed (even without a layout change), so the worker
-		// can resolve nibble indices to block IDs.
+
 		if (storageLayoutChanged || paletteChanged) {
 			Chunk.onLightChunkLayoutChanged?.(this);
 		}
@@ -1123,10 +1145,13 @@ export class Chunk {
 		Chunk.onBlockModified?.(this);
 
 		const S = Chunk.SIZE;
+
 		if (localX === 0) this.getNeighbor(-1, 0, 0)?.scheduleRemesh(true);
 		else if (localX === S - 1) this.getNeighbor(1, 0, 0)?.scheduleRemesh(true);
+
 		if (localY === 0) this.getNeighbor(0, -1, 0)?.scheduleRemesh(true);
 		else if (localY === S - 1) this.getNeighbor(0, 1, 0)?.scheduleRemesh(true);
+
 		if (localZ === 0) this.getNeighbor(0, 0, -1)?.scheduleRemesh(true);
 		else if (localZ === S - 1) this.getNeighbor(0, 0, 1)?.scheduleRemesh(true);
 	}
@@ -1184,12 +1209,9 @@ export class Chunk {
 
 	public scheduleRemesh(priority = false, includeNeighbors = false): void {
 		if (!this.isLoaded) return;
+
 		this.meshRevision++;
 		this.isDirty = true;
-		if (this.remeshQueued) {
-			return;
-		}
-		this.remeshQueued = true;
 
 		if (includeNeighbors) {
 			this.getNeighbor(-1, 0, 0)?.scheduleRemesh(priority);
@@ -1200,6 +1222,9 @@ export class Chunk {
 			this.getNeighbor(0, 0, 1)?.scheduleRemesh(priority);
 		}
 
+		if (this.remeshQueued) return;
+
+		this.remeshQueued = true;
 		Chunk.onRequestRemesh?.(this, priority);
 	}
 
@@ -1255,73 +1280,63 @@ export class Chunk {
 				this._isUniform && this._uniformBlockId === 0
 					? connectFacesMask(0x3f)
 					: 0;
+
 			this.faceConnectivity = mask;
 			this.connectivityDirty = false;
 			return mask;
 		}
 
 		const S = Chunk.SIZE;
-		const S2 = S * S;
+		const S2 = Chunk.SIZE2;
 		const S3 = Chunk.SIZE3;
-		const SM1 = S - 1;
+		const SM1 = Chunk.SM1;
+		const threshold = FACE_CONNECT_THRESHOLD;
+		const fullConnectivity = connectFacesMask(0x3f);
+		const useSize32FastPath = S === 32;
 
-		_ccVisited.fill(0, 0, S3);
 		const visited = _ccVisited;
 		const stack = _ccStack;
-		const opaque = _ccOpaque;
+		const fc = _ccFaceCounts;
 
-		// Type-specialized opaque fill — avoids per-voxel function call overhead.
+		visited.fill(0, 0, S3);
+
+		// Pre-mark opaque cells as visited. Transparent cells remain 0 and are
+		// traversed by BFS.
 		if (this._paletteOpacity) {
 			const blockArr = this._block_array as Uint8Array;
 			const palOp = this._paletteOpacity;
+
 			for (let i = 0; i < S3; i++) {
 				const byte = blockArr[i >>> 1];
 				const nibble = (i & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
-				opaque[i] = palOp[nibble];
+				visited[i] = palOp[nibble];
 			}
 		} else if (this._denseOpacity) {
-			opaque.set(this._denseOpacity.subarray(0, S3));
+			visited.set(this._denseOpacity.subarray(0, S3));
 		} else {
-			// Inline isOpaqueAtIndex for the fallback path to avoid per-voxel method dispatch overhead.
-			const uId = this._uniformBlockId;
-			const palOp = this._paletteOpacity;
-			const denseOp = this._denseOpacity;
-			const blockArr = this._block_array;
-			const isUniform = this._isUniform;
-			if (isUniform) {
-				const opaqueVal =
-					uId !== 0 && BLOCK_TYPE[unpackBlockId(uId)] === 0 ? 1 : 0;
-				for (let i = 0; i < S3; i++) opaque[i] = opaqueVal;
-			} else if (palOp && blockArr instanceof Uint8Array) {
-				for (let i = 0; i < S3; i++) {
-					const byte = blockArr[i >>> 1];
-					const nibble = (i & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f;
-					opaque[i] = palOp[nibble];
-				}
-			} else if (denseOp) {
-				for (let i = 0; i < S3; i++) opaque[i] = denseOp[i];
-			} else {
-				for (let i = 0; i < S3; i++) opaque[i] = 0;
+			// Defensive fallback for unusual non-uniform layouts.
+			for (let i = 0; i < S3; i++) {
+				visited[i] = this.isOpaqueAtIndex(i);
 			}
 		}
 
 		let connectivity = 0;
 
 		for (let z = 0; z < S; z++) {
-			for (let y = 0; y < S; y++) {
-				for (let x = 0; x < S; x++) {
-					const idx = x + y * S + z * S2;
-					if (visited[idx]) continue;
+			const zBase = z * S2;
 
-					if (opaque[idx]) {
-						visited[idx] = 1;
-						continue;
-					}
+			for (let y = 0; y < S; y++) {
+				const yzBase = zBase + y * S;
+
+				for (let x = 0; x < S; x++) {
+					const idx = yzBase + x;
+
+					if (visited[idx]) continue;
 
 					let stackTop = 0;
 					stack[stackTop++] = idx;
 					visited[idx] = 1;
-					const fc = _ccFaceCounts;
+
 					fc[0] = 0;
 					fc[1] = 0;
 					fc[2] = 0;
@@ -1331,10 +1346,23 @@ export class Chunk {
 
 					while (stackTop > 0) {
 						const cur = stack[--stackTop];
-						// Bitwise coord extraction — S=32 is a power of 2.
-						const cx = cur & 31;
-						const cy = (cur >>> 5) & 31;
-						const cz = cur >>> 10;
+
+						let cx: number;
+						let cy: number;
+						let cz: number;
+
+						if (useSize32FastPath) {
+							// Fast path for the current 32x32x32 chunk layout.
+							cx = cur & 31;
+							cy = (cur >>> 5) & 31;
+							cz = cur >>> 10;
+						} else {
+							// Correct fallback if CHUNK_SIZE is ever changed.
+							cz = Math.floor(cur / S2);
+							const rem = cur - cz * S2;
+							cy = Math.floor(rem / S);
+							cx = rem - cy * S;
+						}
 
 						if (cx === 0) fc[1]++;
 						if (cx === SM1) fc[0]++;
@@ -1345,42 +1373,47 @@ export class Chunk {
 
 						if (cx > 0) {
 							const n = cur - 1;
-							if (!visited[n] && !opaque[n]) {
+							if (!visited[n]) {
 								visited[n] = 1;
 								stack[stackTop++] = n;
 							}
 						}
+
 						if (cx < SM1) {
 							const n = cur + 1;
-							if (!visited[n] && !opaque[n]) {
+							if (!visited[n]) {
 								visited[n] = 1;
 								stack[stackTop++] = n;
 							}
 						}
+
 						if (cy > 0) {
 							const n = cur - S;
-							if (!visited[n] && !opaque[n]) {
+							if (!visited[n]) {
 								visited[n] = 1;
 								stack[stackTop++] = n;
 							}
 						}
+
 						if (cy < SM1) {
 							const n = cur + S;
-							if (!visited[n] && !opaque[n]) {
+							if (!visited[n]) {
 								visited[n] = 1;
 								stack[stackTop++] = n;
 							}
 						}
+
 						if (cz > 0) {
 							const n = cur - S2;
-							if (!visited[n] && !opaque[n]) {
+							if (!visited[n]) {
 								visited[n] = 1;
 								stack[stackTop++] = n;
 							}
 						}
+
 						if (cz < SM1) {
 							const n = cur + S2;
-							if (!visited[n] && !opaque[n]) {
+							if (!visited[n]) {
 								visited[n] = 1;
 								stack[stackTop++] = n;
 							}
@@ -1388,13 +1421,25 @@ export class Chunk {
 					}
 
 					let openFaces = 0;
-					if (fc[0] >= FACE_CONNECT_THRESHOLD) openFaces |= 1;
-					if (fc[1] >= FACE_CONNECT_THRESHOLD) openFaces |= 2;
-					if (fc[2] >= FACE_CONNECT_THRESHOLD) openFaces |= 4;
-					if (fc[3] >= FACE_CONNECT_THRESHOLD) openFaces |= 8;
-					if (fc[4] >= FACE_CONNECT_THRESHOLD) openFaces |= 16;
-					if (fc[5] >= FACE_CONNECT_THRESHOLD) openFaces |= 32;
-					connectivity |= connectFacesMask(openFaces);
+
+					if (fc[0] >= threshold) openFaces |= 1;
+					if (fc[1] >= threshold) openFaces |= 2;
+					if (fc[2] >= threshold) openFaces |= 4;
+					if (fc[3] >= threshold) openFaces |= 8;
+					if (fc[4] >= threshold) openFaces |= 16;
+					if (fc[5] >= threshold) openFaces |= 32;
+
+					if (openFaces !== 0) {
+						connectivity |= connectFacesMask(openFaces);
+
+						// Once every face pair is connected, no later component can
+						// add useful information.
+						if (connectivity === fullConnectivity) {
+							this.faceConnectivity = connectivity;
+							this.connectivityDirty = false;
+							return connectivity;
+						}
+					}
 				}
 			}
 		}
@@ -1402,6 +1447,27 @@ export class Chunk {
 		this.faceConnectivity = connectivity;
 		this.connectivityDirty = false;
 		return connectivity;
+	}
+
+	private getAlignedLightWords(
+		la: Uint8Array,
+		wordCount: number,
+	): Uint32Array | null {
+		if ((la.byteOffset & 3) !== 0) {
+			this._la32 = null;
+			return null;
+		}
+
+		if (
+			!this._la32 ||
+			this._la32.buffer !== la.buffer ||
+			this._la32.byteOffset !== la.byteOffset ||
+			this._la32.length !== wordCount
+		) {
+			this._la32 = new Uint32Array(la.buffer, la.byteOffset, wordCount);
+		}
+
+		return this._la32;
 	}
 
 	// =========================================================================
@@ -1483,17 +1549,17 @@ export class Chunk {
 // X(21b) | Y(10b) | Z(21b); each coord is masked to its bit width so negative
 // coordinates encode consistently (two's-complement low bits) and decode-free
 // lookups always match the stored key.
-const _COORD_X_MASK = (1 << 21) - 1; // 0x1FFFFF
-const _COORD_Y_MASK = (1 << 10) - 1; // 0x3FF
-const _COORD_Z_MASK = (1 << 21) - 1; // 0x1FFFFF
-const _COORD_YZ_MULT = 2147483648; // 2^31 (< 2^53)
-const _COORD_Z_MULT = 1 << 10; // 2^10
+const _COORD_X_MASK = (1 << 21) - 1;
+const _COORD_Y_MASK = (1 << 10) - 1;
+const _COORD_Z_MASK = (1 << 21) - 1;
+const _COORD_X_MULT = 2 ** 31; // Z(21) + Y(10)
+const _COORD_Z_MULT = 2 ** 10; // Y(10)
 
 function packCoordKey(cx: number, cy: number, cz: number): number {
 	return (
-		(cx & _COORD_X_MASK) * _COORD_YZ_MULT +
-		(cy & _COORD_Y_MASK) * _COORD_Z_MULT +
-		(cz & _COORD_Z_MASK)
+		(cx & _COORD_X_MASK) * _COORD_X_MULT +
+		(cz & _COORD_Z_MASK) * _COORD_Z_MULT +
+		(cy & _COORD_Y_MASK)
 	);
 }
 

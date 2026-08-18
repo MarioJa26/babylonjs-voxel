@@ -51,6 +51,7 @@ function normalizeBatchSize(maxChunks: number, queueLength: number): number {
 export class ChunkQueueManager {
 	private readonly loadQueue: Array<Chunk | undefined> = [];
 	private loadQueueHead = 0;
+	private loadQueueHoleCount = 0;
 
 	private readonly loadQueueSet = new Set<bigint>();
 	private readonly unloadQueueSet = new Set<Chunk>();
@@ -82,7 +83,7 @@ export class ChunkQueueManager {
 	}
 
 	public hasPendingLoads(): boolean {
-		return this.getLoadQueueLength() > 0;
+		return this.loadQueueSet.size > 0;
 	}
 
 	public hasPendingUnloads(): boolean {
@@ -133,7 +134,7 @@ export class ChunkQueueManager {
 	public dequeueLoadBatch(
 		maxChunks: number = this.getLoadBatchSize(),
 	): ChunkQueueBatch {
-		const queueLength = this.getLoadQueueLength();
+		const queueLength = this.loadQueueSet.size;
 		const take = normalizeBatchSize(maxChunks, queueLength);
 
 		if (take === 0) {
@@ -146,7 +147,7 @@ export class ChunkQueueManager {
 		const chunks = new Array<Chunk>(take);
 		let writeIndex = 0;
 
-		while (writeIndex < take) {
+		while (writeIndex < take && this.loadQueueHead < this.loadQueue.length) {
 			const readIndex = this.loadQueueHead++;
 			const chunk = this.loadQueue[readIndex];
 
@@ -157,7 +158,12 @@ export class ChunkQueueManager {
 				continue;
 			}
 
-			this.loadQueueSet.delete(chunk.id);
+			// delete(...) also protects against stale queue entries if a chunk was removed
+			// by id but the exact object reference was not found in the sparse array.
+			if (!this.loadQueueSet.delete(chunk.id)) {
+				continue;
+			}
+
 			chunks[writeIndex++] = chunk;
 		}
 
@@ -170,7 +176,7 @@ export class ChunkQueueManager {
 
 		return {
 			chunks,
-			hasMore: this.getLoadQueueLength() > 0,
+			hasMore: this.loadQueueSet.size > 0,
 		};
 	}
 
@@ -217,8 +223,11 @@ export class ChunkQueueManager {
 	public removeChunk(chunk: Chunk): void {
 		if (this.loadQueueSet.delete(chunk.id)) {
 			for (let i = this.loadQueueHead; i < this.loadQueue.length; i++) {
-				if (this.loadQueue[i] === chunk) {
+				const queuedChunk = this.loadQueue[i];
+
+				if (queuedChunk !== undefined && queuedChunk.id === chunk.id) {
 					this.loadQueue[i] = undefined;
+					this.loadQueueHoleCount++;
 					break;
 				}
 			}
@@ -233,6 +242,7 @@ export class ChunkQueueManager {
 	public clear(): void {
 		this.loadQueue.length = 0;
 		this.loadQueueHead = 0;
+		this.loadQueueHoleCount = 0;
 		this.loadQueueSet.clear();
 		this.unloadQueueSet.clear();
 		this.refreshQueueDebugSnapshot();
@@ -262,7 +272,7 @@ export class ChunkQueueManager {
 		}
 
 		debug.refreshQueueSnapshot({
-			loadQueueLength: this.getLoadQueueLength(),
+			loadQueueLength: this.loadQueueSet.size,
 			unloadQueueLength: this.unloadQueueSet.size,
 			pendingChunkEntityReloadCount:
 				this.adapter.getPendingChunkEntityReloadCount?.(),
@@ -273,13 +283,30 @@ export class ChunkQueueManager {
 
 	private compactLoadQueueIfUseful(): void {
 		const head = this.loadQueueHead;
+		const holes = this.loadQueueHoleCount;
 
-		if (head === 0) {
+		if (head === 0 && holes === 0) {
+			return;
+		}
+
+		const activeSlots = this.loadQueue.length - head;
+
+		// Fully reset once everything has been consumed or removed.
+		if (this.loadQueueSet.size === 0) {
+			this.loadQueue.length = 0;
+			this.loadQueueHead = 0;
+			this.loadQueueHoleCount = 0;
 			return;
 		}
 
 		// Avoid retaining many consumed slots, but do not compact every small dequeue.
 		if (head >= 64 && head * 2 >= this.loadQueue.length) {
+			this.compactLoadQueue();
+			return;
+		}
+
+		// Also compact when many active slots are holes from removeChunk(...).
+		if (holes >= 64 && holes * 2 >= activeSlots) {
 			this.compactLoadQueue();
 		}
 	}
@@ -287,7 +314,7 @@ export class ChunkQueueManager {
 	private compactLoadQueue(): void {
 		const head = this.loadQueueHead;
 
-		if (head === 0) {
+		if (head === 0 && this.loadQueueHoleCount === 0) {
 			return;
 		}
 
@@ -295,12 +322,14 @@ export class ChunkQueueManager {
 
 		for (let readIndex = head; readIndex < this.loadQueue.length; readIndex++) {
 			const chunk = this.loadQueue[readIndex];
-			if (chunk !== undefined) {
+
+			if (chunk !== undefined && this.loadQueueSet.has(chunk.id)) {
 				this.loadQueue[writeIndex++] = chunk;
 			}
 		}
 
 		this.loadQueue.length = writeIndex;
 		this.loadQueueHead = 0;
+		this.loadQueueHoleCount = 0;
 	}
 }
