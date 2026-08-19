@@ -46,6 +46,13 @@ export const MessageType = {
 	MobSpawn: 0x21, // New mob appeared (also sent as join snapshot)
 	MobUpdateBatch: 0x22, // Position batch for all mobs (fixed-rate broadcast)
 	MobDespawn: 0x23, // Mob removed (wandered off / despawned)
+
+	// Server → Client: deflated chunk blobs — the full serialized storage
+	// blob (serializeVoxelData output) compressed with zlib deflate. Carries
+	// the same data as ChunkData/ChunkDataBatch but ~5-10x smaller on the
+	// wire, and the client can persist it without re-serializing.
+	ChunkDataDeflated: 0x24, // Single chunk: [cx:i32][cy:i32][cz:i32][version:u32][len:u32][deflated blob]
+	ChunkDataDeflatedBatch: 0x25, // Multiple deflated chunk blobs in one message
 } as const;
 
 export type MessageType = (typeof MessageType)[keyof typeof MessageType];

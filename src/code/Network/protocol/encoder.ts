@@ -7,6 +7,7 @@
  * module via its "@/code/Network/protocol/*" path alias.
  */
 
+import { deflate } from "../../World/Storage/BlobCompression";
 import type { RemoteChunkData } from "../chunk/RemoteChunkProvider";
 import {
 	type BlockEditData,
@@ -1153,6 +1154,97 @@ export function decodeChunkDataBatch(
 			uniformBlockId,
 			version,
 		});
+	}
+
+	return chunks;
+}
+
+// ---------------------------------------------------------------------------
+// Deflated chunk blobs — server → client.
+//
+// The server serializes each chunk once (serializeVoxelData output) and
+// deflates it with zlib deflate; the client inflates it into an exact-size
+// buffer (origLen) and persists the (now-decompressed) serialized blob
+// directly, skipping the decode→reserialize round trip of the legacy
+// ChunkData/ChunkDataBatch messages.
+//
+// Single:   [type:1][cx:i32][cy:i32][cz:i32][version:u32][len:u32][origLen:u32][deflated]
+// Batch:    [type:1][count:u16][(cx:i32)(cy:i32)(cz:i32)(version:u32)(len:u32)(origLen:u32)(deflated)] × count
+// ---------------------------------------------------------------------------
+
+export interface DeflatedChunk {
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+	version: number;
+	/** Uncompressed length of the serialized storage blob. */
+	origLen: number;
+	/** Zlib-deflate of the serialized storage blob. */
+	deflated: Uint8Array;
+}
+
+/** Encode one deflated chunk message (async: deflation streams off-thread). */
+export async function encodeChunkDataDeflated(data: {
+	chunkX: number;
+	chunkY: number;
+	chunkZ: number;
+	version: number;
+	blob: Uint8Array;
+}): Promise<Uint8Array> {
+	const deflated = await deflate(data.blob);
+	const enc = new BinaryEncoder(1 + 12 + 4 + 4 + 4 + deflated.byteLength);
+	enc.writeUint8(MessageType.ChunkDataDeflated);
+	enc.writeInt32(data.chunkX);
+	enc.writeInt32(data.chunkY);
+	enc.writeInt32(data.chunkZ);
+	enc.writeUint32(data.version);
+	enc.writeUint32(deflated.byteLength);
+	enc.writeUint32(data.blob.byteLength);
+	enc.writeBytes(deflated);
+	return enc.getBytes();
+}
+
+export function decodeChunkDataDeflated(buffer: Uint8Array): DeflatedChunk {
+	const dec = new BinaryDecoder(buffer, 1);
+	const chunkX = dec.readInt32();
+	const chunkY = dec.readInt32();
+	const chunkZ = dec.readInt32();
+	const version = dec.readUint32();
+	const len = dec.readUint32();
+	const origLen = dec.readUint32();
+	return {
+		chunkX,
+		chunkY,
+		chunkZ,
+		version,
+		origLen,
+		deflated: dec.readBytes(len),
+	};
+}
+
+/** Decode a batch of deflated chunks. */
+export function decodeChunkDataDeflatedBatch(
+	buffer: Uint8Array,
+): DeflatedChunk[] {
+	const dec = new BinaryDecoder(buffer, 1);
+	const count = dec.readUint16();
+	const chunks: DeflatedChunk[] = new Array(count);
+
+	for (let i = 0; i < count; i++) {
+		const chunkX = dec.readInt32();
+		const chunkY = dec.readInt32();
+		const chunkZ = dec.readInt32();
+		const version = dec.readUint32();
+		const len = dec.readUint32();
+		const origLen = dec.readUint32();
+		chunks[i] = {
+			chunkX,
+			chunkY,
+			chunkZ,
+			version,
+			origLen,
+			deflated: dec.readBytes(len),
+		};
 	}
 
 	return chunks;

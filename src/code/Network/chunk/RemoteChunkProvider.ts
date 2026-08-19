@@ -31,6 +31,7 @@
 import { DEBUG_ENABLED, debugLog } from "../../Lib/debugLog";
 import type { Chunk } from "../../World/Chunk/Chunk";
 import { packCoords } from "../../World/Chunk/DataStructures/ChunkCoords";
+import { inflateInto } from "../../World/Storage/BlobCompression";
 import {
 	type ChunkWrite,
 	chunkKey,
@@ -44,8 +45,11 @@ import {
 import { mpLocalCacheName } from "../../World/WorldContext";
 import type { NetClient } from "../NetClient";
 import {
+	type DeflatedChunk,
 	decodeChunkData,
 	decodeChunkDataBatch,
+	decodeChunkDataDeflated,
+	decodeChunkDataDeflatedBatch,
 	decodeChunkUnchanged,
 	decodeChunkUnchangedBatch,
 } from "../protocol/encoder";
@@ -157,6 +161,14 @@ export class RemoteChunkProvider {
 				case MessageType.ChunkDataBatch:
 					this.handleChunkDataBatch(decodeChunkDataBatch(data, true));
 					break;
+				case MessageType.ChunkDataDeflated:
+					void this.handleChunkDataDeflated(decodeChunkDataDeflated(data));
+					break;
+				case MessageType.ChunkDataDeflatedBatch:
+					void this.handleChunkDataDeflatedBatch(
+						decodeChunkDataDeflatedBatch(data),
+					);
+					break;
 				case MessageType.ChunkUnchanged:
 					this.handleChunkUnchanged(decodeChunkUnchanged(data));
 					break;
@@ -236,6 +248,190 @@ export class RemoteChunkProvider {
 			};
 
 			writeCount++;
+		}
+
+		this.scheduleSweep();
+
+		if (writeCount === 0) return;
+
+		writes.length = writeCount;
+		written.length = writeCount;
+
+		const responseEpoch = this.epoch;
+
+		void this.store
+			.writeChunks(writes)
+			.then(() => {
+				if (this.epoch !== responseEpoch) return;
+
+				for (let i = 0; i < writeCount; i++) {
+					const entry = written[i];
+					const current = versions.get(entry.key);
+
+					if (current === undefined || entry.version >= current) {
+						versions.set(entry.key, entry.version);
+					}
+				}
+			})
+			.catch((error) => {
+				if (isCacheResetError(error)) return;
+				console.warn("[RemoteChunkProvider] batch persistence failed:", error);
+			});
+	}
+
+	/**
+	 * Handle a deflated single-chunk response: inflate the serialized blob,
+	 * validate it through the same path as cache reads, then resolve + persist.
+	 * The inflated blob is stored directly — the store re-compresses it for
+	 * IndexedDB — so the decode→reserialize round trip of the legacy message
+	 * is skipped and the blob bytes are byte-identical to the server's.
+	 */
+	private async handleChunkDataDeflated(entry: DeflatedChunk): Promise<void> {
+		const key = packCoords(entry.chunkX, entry.chunkY, entry.chunkZ);
+		if (this.isStaleVersion(key, entry.version)) {
+			if (DEBUG_ENABLED) {
+				debugLog(
+					`[RemoteChunkProvider] ignored stale chunk ${key} version=${entry.version}`,
+				);
+			}
+			return;
+		}
+
+		let blob: Uint8Array;
+		try {
+			blob = await inflateInto(entry.deflated, entry.origLen);
+		} catch (error) {
+			console.warn(
+				`[RemoteChunkProvider] failed to inflate chunk ${key}:`,
+				error,
+			);
+			this.rejectPendingRequest(
+				key,
+				new ChunkProtocolError("Chunk payload failed to decompress"),
+			);
+			return;
+		}
+
+		const chunk = this.deserializeCached(
+			blob,
+			entry.chunkX,
+			entry.chunkY,
+			entry.chunkZ,
+		);
+		if (chunk === null) {
+			console.warn(
+				`[RemoteChunkProvider] corrupt deflated chunk ${key} (dropped)`,
+			);
+			this.rejectPendingRequest(
+				key,
+				new ChunkProtocolError("Chunk payload failed validation"),
+			);
+			return;
+		}
+
+		// A response is only honored (version recorded, data persisted) when
+		// it resolves a current pending request; anything unmatched is
+		// dropped — it is unsolicited or late-connection data.
+		if (!this.resolvePending(key, chunk)) return;
+		this.persistChunk(chunk, blob);
+		this.scheduleSweep();
+	}
+
+	private async handleChunkDataDeflatedBatch(
+		entries: readonly DeflatedChunk[],
+	): Promise<void> {
+		const len = entries.length;
+		if (len === 0) return;
+
+		const writes = new Array<ChunkWrite>(len);
+		const written: Array<{ key: bigint; version: number }> = new Array(len);
+
+		const versions = this.chunkVersions;
+
+		// Pass 1: filter stale entries synchronously, then inflate in windows
+		// of 4 — CompressionStream runs off the event loop, so concurrent
+		// streams overlap instead of serializing.
+		const inflatable = new Array<{ entry: DeflatedChunk; key: bigint }>(len);
+		let inflatableCount = 0;
+
+		for (let i = 0; i < len; i++) {
+			const entry = entries[i];
+			const key = packCoords(entry.chunkX, entry.chunkY, entry.chunkZ);
+
+			const currentVersion = versions.get(key);
+			if (currentVersion !== undefined && entry.version < currentVersion) {
+				if (DEBUG_ENABLED) {
+					debugLog(
+						`[RemoteChunkProvider] ignored stale batch chunk ${key} version=${entry.version}`,
+					);
+				}
+				continue;
+			}
+
+			inflatable[inflatableCount++] = { entry, key };
+		}
+
+		const WINDOW = 4;
+		let writeCount = 0;
+
+		for (let start = 0; start < inflatableCount; start += WINDOW) {
+			const end = Math.min(start + WINDOW, inflatableCount);
+
+			await Promise.all(
+				Array.from({ length: end - start }, async (_, j) => {
+					const { entry, key } = inflatable[start + j];
+
+					let blob: Uint8Array;
+					try {
+						blob = await inflateInto(entry.deflated, entry.origLen);
+					} catch (error) {
+						console.warn(
+							`[RemoteChunkProvider] failed to inflate chunk ${key}:`,
+							error,
+						);
+						this.rejectPendingRequest(
+							key,
+							new ChunkProtocolError("Chunk payload failed to decompress"),
+						);
+						return;
+					}
+
+					const chunk = this.deserializeCached(
+						blob,
+						entry.chunkX,
+						entry.chunkY,
+						entry.chunkZ,
+					);
+					if (chunk === null) {
+						console.warn(
+							`[RemoteChunkProvider] corrupt deflated chunk ${key} (dropped)`,
+						);
+						this.rejectPendingRequest(
+							key,
+							new ChunkProtocolError("Chunk payload failed validation"),
+						);
+						return;
+					}
+
+					if (!this.resolvePending(key, chunk)) {
+						return;
+					}
+
+					writes[writeCount] = {
+						cx: chunk.chunkX,
+						cy: chunk.chunkY,
+						cz: chunk.chunkZ,
+						blob,
+					};
+
+					written[writeCount] = {
+						key,
+						version: chunk.version,
+					};
+
+					writeCount++;
+				}),
+			);
 		}
 
 		this.scheduleSweep();
@@ -415,19 +611,24 @@ export class RemoteChunkProvider {
 		return current !== undefined && incomingVersion < current;
 	}
 
-	private persistChunk(chunk: RemoteChunkData): void {
+	private persistChunk(
+		chunk: RemoteChunkData,
+		blobOverride?: Uint8Array,
+	): void {
 		const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 		const responseEpoch = this.epoch;
 		try {
-			const blob = serializeVoxelData(
-				chunk.blocks,
-				chunk.palette ?? null,
-				chunk.isUniform,
-				chunk.uniformBlockId,
-				chunk.light,
-				false,
-				chunk.version,
-			);
+			const blob =
+				blobOverride ??
+				serializeVoxelData(
+					chunk.blocks,
+					chunk.palette ?? null,
+					chunk.isUniform,
+					chunk.uniformBlockId,
+					chunk.light,
+					false,
+					chunk.version,
+				);
 			void this.store
 				.writeChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ, blob)
 				.then(() => {
@@ -925,6 +1126,15 @@ export class RemoteChunkProvider {
 		}
 
 		return results;
+	}
+
+	/**
+	 * Reject the pending request for `key` (e.g. a corrupt or undecompressible
+	 * payload). Terminal like a timeout — the caller will retry on demand.
+	 */
+	private rejectPendingRequest(key: bigint, error: Error): void {
+		const entry = this.removePending(key);
+		if (entry) entry.reject(error);
 	}
 
 	/**

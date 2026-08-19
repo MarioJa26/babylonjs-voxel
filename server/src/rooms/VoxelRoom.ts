@@ -19,6 +19,7 @@ import {
 	encodeBlockEditRejected,
 	encodeChatMessage,
 	encodeChunkData,
+	encodeChunkDataDeflated,
 	encodeChunkUnchanged,
 	encodeMobDespawn,
 	encodeMobSpawn,
@@ -45,6 +46,11 @@ import {
 	packChunkKeyFast,
 	unpackChunkKeyFast,
 } from "@/code/World/Storage/ChunkKey.ts";
+import {
+	deflate,
+	deflateSupported,
+} from "@/code/World/Storage/BlobCompression.ts";
+import { serializeVoxelData } from "@/code/World/Storage/VoxelSerializer.ts";
 import { getServerConfig } from "../config/ServerConfig.ts";
 import { ChunkGenerationService } from "../world/ChunkGenerationService.ts";
 import { type ServerMob, ServerMobSimulation } from "../world/MobSimulation.ts";
@@ -1381,7 +1387,7 @@ export class VoxelRoom extends Room {
 		return history;
 	}
 
-	/** Estimated encoded size of one chunk inside a ChunkDataBatch. */
+	/** Estimated encoded size of one chunk inside a legacy ChunkDataBatch. */
 	private estimateChunkBytes(c: StoredChunkData): number {
 		let size = 12 + 4 + 1; // coords + version + flags
 		if (c.isUniform) {
@@ -1394,26 +1400,111 @@ export class VoxelRoom extends Room {
 		return size + 4 + c.light.length;
 	}
 
+	/**
+	 * Serialize a stored chunk back to the exact storage blob format
+	 * (byte-identical to what ServerWorldStorage.writeChunkUnlocked wrote), so
+	 * the deflated wire payload matches what a client would have persisted.
+	 */
+	private serializeStored(c: StoredChunkData): Uint8Array {
+		const paletteArr = c.palette ? Uint16Array.from(c.palette) : null;
+		return serializeVoxelData(
+			c.blocks,
+			paletteArr,
+			c.isUniform,
+			c.uniformBlockId,
+			c.light,
+			false,
+			c.version,
+		);
+	}
+
 	private sendChunkDataBatch(client: Client, chunks: StoredChunkData[]): void {
 		if (chunks.length === 0) return;
-		let groupStart = 0;
-		let size = 0;
-		for (let i = 0; i < chunks.length; i++) {
-			const cSize = this.estimateChunkBytes(chunks[i]);
-			if (groupStart < i && size + cSize > CHUNK_BATCH_BYTE_LIMIT) {
+
+		if (!deflateSupported()) {
+			// Fallback for runtimes without CompressionStream: legacy raw format.
+			let groupStart = 0;
+			let size = 0;
+			for (let i = 0; i < chunks.length; i++) {
+				const cSize = this.estimateChunkBytes(chunks[i]);
+				if (groupStart < i && size + cSize > CHUNK_BATCH_BYTE_LIMIT) {
+					client.sendBytes(
+						"binary",
+						this.encodeChunkBatch(chunks, groupStart, i),
+					);
+					groupStart = i;
+					size = 0;
+				}
+				size += cSize;
+			}
+			if (groupStart < chunks.length) {
 				client.sendBytes(
 					"binary",
-					this.encodeChunkBatch(chunks, groupStart, i),
+					this.encodeChunkBatch(chunks, groupStart, chunks.length),
+				);
+			}
+			return;
+		}
+
+		void this.sendChunkDataBatchDeflated(client, chunks);
+	}
+
+	/** Deflate each chunk once, group by deflated size, send deflated batches. */
+	private async sendChunkDataBatchDeflated(
+		client: Client,
+		chunks: StoredChunkData[],
+	): Promise<void> {
+		const count = chunks.length;
+		const payloads = new Array<Uint8Array>(count);
+		const origLens = new Array<number>(count);
+		const sizes = new Array<number>(count);
+
+		// Deflate in windows of 4: CompressionStream runs off the event loop,
+		// so concurrent streams overlap instead of serializing.
+		const WINDOW = 4;
+		for (let start = 0; start < count; start += WINDOW) {
+			const end = Math.min(start + WINDOW, count);
+			await Promise.all(
+				Array.from({ length: end - start }, async (_, j) => {
+					const i = start + j;
+					const blob = this.serializeStored(chunks[i]);
+					const deflated = await deflate(blob);
+					payloads[i] = deflated;
+					origLens[i] = blob.byteLength;
+					sizes[i] = 24 + deflated.byteLength; // coords + version + len + origLen
+				}),
+			);
+		}
+
+		let groupStart = 0;
+		let size = 0;
+		for (let i = 0; i < count; i++) {
+			if (groupStart < i && size + sizes[i] > CHUNK_BATCH_BYTE_LIMIT) {
+				client.sendBytes(
+					"binary",
+					this.encodeDeflatedChunkBatch(
+						payloads,
+						origLens,
+						chunks,
+						groupStart,
+						i,
+					),
 				);
 				groupStart = i;
 				size = 0;
 			}
-			size += cSize;
+			size += sizes[i];
 		}
-		if (groupStart < chunks.length) {
+		if (groupStart < count) {
 			client.sendBytes(
 				"binary",
-				this.encodeChunkBatch(chunks, groupStart, chunks.length),
+				this.encodeDeflatedChunkBatch(
+					payloads,
+					origLens,
+					chunks,
+					groupStart,
+					count,
+				),
 			);
 		}
 	}
@@ -1450,6 +1541,30 @@ export class VoxelRoom extends Room {
 			}
 			enc.writeUint32(c.light.length);
 			enc.writeBytes(c.light);
+		}
+		return enc.getBytes();
+	}
+
+	private encodeDeflatedChunkBatch(
+		payloads: readonly Uint8Array[],
+		origLens: readonly number[],
+		chunks: readonly StoredChunkData[],
+		start: number,
+		end: number,
+	): Uint8Array {
+		const enc = this.chunkBatchEncoder;
+		enc.reset();
+		enc.writeUint8(MessageType.ChunkDataDeflatedBatch);
+		enc.writeUint16(Math.min(end - start, 65535));
+		for (let i = start; i < end; i++) {
+			const c = chunks[i];
+			enc.writeInt32(c.chunkX);
+			enc.writeInt32(c.chunkY);
+			enc.writeInt32(c.chunkZ);
+			enc.writeUint32(c.version);
+			enc.writeUint32(payloads[i].byteLength);
+			enc.writeUint32(origLens[i]);
+			enc.writeBytes(payloads[i]);
 		}
 		return enc.getBytes();
 	}
@@ -1775,15 +1890,35 @@ export class VoxelRoom extends Room {
 						`[VoxelRoom] handleChunkRequest ${cx},${cy},${cz} cachedVersion=${cachedVersion} serverVersion=${stored.version} sendingFullData`,
 					);
 				}
-				const msg = encodeChunkData(stored);
-				client.sendBytes("binary", msg);
+				if (deflateSupported()) {
+					const msg = await encodeChunkDataDeflated({
+						chunkX: stored.chunkX,
+						chunkY: stored.chunkY,
+						chunkZ: stored.chunkZ,
+						version: stored.version,
+						blob: this.serializeStored(stored),
+					});
+					client.sendBytes("binary", msg);
+				} else {
+					client.sendBytes("binary", encodeChunkData(stored));
+				}
 				return;
 			}
 
 			const chunkData = await this.chunkGen.generateChunk(cx, cy, cz);
 
-			const msg = encodeChunkData(chunkData);
-			client.sendBytes("binary", msg);
+			if (deflateSupported()) {
+				const msg = await encodeChunkDataDeflated({
+					chunkX: chunkData.chunkX,
+					chunkY: chunkData.chunkY,
+					chunkZ: chunkData.chunkZ,
+					version: chunkData.version,
+					blob: this.serializeStored(chunkData),
+				});
+				client.sendBytes("binary", msg);
+			} else {
+				client.sendBytes("binary", encodeChunkData(chunkData));
+			}
 		} catch (err) {
 			console.error(`[VoxelRoom] Chunk gen failed for ${cx},${cy},${cz}:`, err);
 		}

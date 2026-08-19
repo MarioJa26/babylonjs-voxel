@@ -28,7 +28,14 @@
  *   to the memory cache post-commit, while deletes tombstone immediately.
  * - flush() is a FIFO success barrier; clear() is a FIFO ordering barrier.
  * - Reads never enter the write queue.
+ *
+ * Browser backend compression: values stored in IndexedDB are zlib-deflate
+ * compressed (BlobCompression) before put() — the synchronous structured
+ * clone inside IDB put() dominates the per-write cost and scales with value
+ * size — and inflated again on read, transparently. Legacy un-prefixed
+ * values read back unchanged.
  */
+import { compressBlob, decompressBlob } from "./BlobCompression";
 export function chunkKey(cx: number, cy: number, cz: number): string {
 	return cx + "," + cy + "," + cz;
 }
@@ -222,6 +229,15 @@ export class LevelDbChunkStore implements ChunkStorage {
 	// commits (or a later put for the same key commits).
 	private readonly pendingDeletes = new Set<string>();
 
+	// Read-your-writes: queued/in-flight chunk puts are invisible to reads
+	// until their job commits (the memory cache is only populated post-commit
+	// in publishCommittedOperations). pendingWrites shadows each pending put
+	// key with its job promise so a read of a just-saved key awaits the commit
+	// (then finds the fresh value in the cache) instead of reading stale data.
+	// Cleanup is identity-checked so a later put for the same key is never
+	// erased by an earlier job's completion. Cleared on clear().
+	private readonly pendingWrites = new Map<string, Promise<void>>();
+
 	// Meta writes go through the same write queue as chunk data so version /
 	// position updates cannot race a clear() or an in-flight chunk batch.
 	// pendingMeta shadows unflushed values (with per-write generations) so
@@ -394,6 +410,19 @@ export class LevelDbChunkStore implements ChunkStorage {
 			return cached;
 		}
 
+		// Read-your-writes: await the in-flight put for this key; the commit
+		// populates the cache, so the fresh value is served from memory.
+		const pending = this.pendingWrites.get(k);
+		if (pending !== undefined) {
+			await pending.catch(() => {});
+			if (pendingDeletes.has(k)) return undefined;
+			const fresh = this.cache.get(k);
+			if (fresh !== undefined) {
+				this.touched.add(k);
+				return fresh;
+			}
+		}
+
 		const db = this.db;
 		if (!db) return undefined;
 
@@ -451,6 +480,35 @@ export class LevelDbChunkStore implements ChunkStorage {
 			return results;
 		}
 
+		// Read-your-writes: await in-flight puts for the miss keys; commits
+		// populate the cache, so re-check before hitting storage.
+		let awaited: Promise<void>[] | null = null;
+		for (let i = 0; i < misses.length; i++) {
+			const p = this.pendingWrites.get(misses[i]);
+			if (p !== undefined) {
+				(awaited ??= []).push(p.catch(() => {}));
+			}
+		}
+		if (awaited !== null) {
+			await Promise.all(awaited);
+			let toFetchCount = 0;
+			for (let i = 0; i < misses.length; i++) {
+				const k = misses[i];
+				if (pendingDeletes.has(k)) continue;
+				const cachedNow = cache.get(k);
+				if (cachedNow !== undefined) {
+					touched.add(k);
+					results.set(k, cachedNow);
+					continue;
+				}
+				misses[toFetchCount++] = k;
+			}
+			misses.length = toFetchCount;
+			if (misses.length === 0) {
+				return results;
+			}
+		}
+
 		const found = await this._getMany(misses);
 
 		for (const [k, data] of found) {
@@ -477,6 +535,18 @@ export class LevelDbChunkStore implements ChunkStorage {
 		if (this.cache.has(k)) {
 			this.touched.add(k);
 			return true;
+		}
+
+		// Read-your-writes: await the in-flight put; the commit populates the
+		// cache, so re-check before hitting storage.
+		const pending = this.pendingWrites.get(k);
+		if (pending !== undefined) {
+			await pending.catch(() => {});
+			if (pendingDeletes.has(k)) return false;
+			if (this.cache.has(k)) {
+				this.touched.add(k);
+				return true;
+			}
 		}
 
 		if (!this.db) return false;
@@ -524,6 +594,34 @@ export class LevelDbChunkStore implements ChunkStorage {
 
 		if (misses.length === 0 || !this.db) {
 			return result;
+		}
+
+		// Read-your-writes: await in-flight puts for the miss keys; commits
+		// populate the cache, so re-check before hitting storage.
+		let awaited: Promise<void>[] | null = null;
+		for (let i = 0; i < misses.length; i++) {
+			const p = this.pendingWrites.get(misses[i]);
+			if (p !== undefined) {
+				(awaited ??= []).push(p.catch(() => {}));
+			}
+		}
+		if (awaited !== null) {
+			await Promise.all(awaited);
+			let toFetchCount = 0;
+			for (let i = 0; i < misses.length; i++) {
+				const k = misses[i];
+				if (pendingDeletes.has(k)) continue;
+				if (cache.has(k)) {
+					touched.add(k);
+					result.add(k);
+					continue;
+				}
+				misses[toFetchCount++] = k;
+			}
+			misses.length = toFetchCount;
+			if (misses.length === 0) {
+				return result;
+			}
 		}
 
 		const found = await this._hasMany(misses);
@@ -860,6 +958,34 @@ export class LevelDbChunkStore implements ChunkStorage {
 			});
 		});
 		this.scheduleWritePump();
+
+		// Shadow put keys so reads can await the commit (read-your-writes).
+		const pendingWrites = this.pendingWrites;
+		let tracked = false;
+		for (let i = 0; i < operations.length; i++) {
+			const op = operations[i];
+			if (op.kind === WriteOperationKind.Put) {
+				pendingWrites.set(op.key, promise);
+				tracked = true;
+			}
+		}
+		if (tracked) {
+			const cleanup = () => {
+				for (let i = 0; i < operations.length; i++) {
+					const op = operations[i];
+					if (
+						op.kind === WriteOperationKind.Put &&
+						pendingWrites.get(op.key) === promise
+					) {
+						pendingWrites.delete(op.key);
+					}
+				}
+			};
+			// then(cleanup, cleanup) instead of finally(): the derived promise
+			// resolves, so a rejected job cannot produce an unhandled rejection.
+			void promise.then(cleanup, cleanup);
+		}
+
 		return promise;
 	}
 
@@ -1130,6 +1256,7 @@ export class LevelDbChunkStore implements ChunkStorage {
 
 		this.clearMetaShadowsThrough(entry.metaGeneration);
 		this.pendingDeletes.clear();
+		this.pendingWrites.clear();
 		this.cache.clear();
 		this.touched.clear();
 		this.order.length = 0;
@@ -1515,17 +1642,29 @@ class IndexedDbStore {
 			const store = tx.objectStore(this.storeName);
 			const req = store.get(key);
 
-			req.onsuccess = () => {
+			req.onsuccess = async () => {
 				const value = req.result;
 
-				if (value instanceof Uint8Array) {
-					resolve(value);
-				} else if (value instanceof ArrayBuffer) {
-					resolve(new Uint8Array(value));
-				} else if (typeof value === "string") {
-					resolve(value);
-				} else {
-					resolve(undefined);
+				try {
+					if (value instanceof Uint8Array) {
+						resolve(await decompressBlob(value));
+					} else if (value instanceof ArrayBuffer) {
+						resolve(await decompressBlob(new Uint8Array(value)));
+					} else if (typeof value === "string") {
+						resolve(value);
+					} else {
+						resolve(undefined);
+					}
+				} catch {
+					// Corrupt/malformed payload: degrade to the raw value so the
+					// caller's corrupt-blob handling evicts it.
+					if (value instanceof Uint8Array) {
+						resolve(value);
+					} else if (value instanceof ArrayBuffer) {
+						resolve(new Uint8Array(value));
+					} else {
+						resolve(undefined);
+					}
 				}
 			};
 
@@ -1535,6 +1674,9 @@ class IndexedDbStore {
 
 	async put(key: string, value: Uint8Array | string): Promise<void> {
 		if (!this.db) throw new Error("IndexedDbStore not open");
+
+		const stored =
+			value instanceof Uint8Array ? await compressBlob(value) : value;
 
 		await new Promise<void>((resolve, reject) => {
 			const tx = this.db!.transaction(this.storeName, "readwrite");
@@ -1548,7 +1690,7 @@ class IndexedDbStore {
 			tx.onerror = fail;
 			tx.onabort = fail;
 
-			store.put(value, key);
+			store.put(stored, key);
 		});
 	}
 
@@ -1655,8 +1797,19 @@ class IndexedDbStore {
 			for (let i = 0; i < n; i++) {
 				const req = store.get(keys[i]);
 
-				req.onsuccess = () => {
-					const value = this.normalizeValue(req.result);
+				req.onsuccess = async () => {
+					const raw = this.normalizeValue(req.result);
+					let value: Uint8Array | string | undefined;
+					if (raw instanceof Uint8Array) {
+						try {
+							value = await decompressBlob(raw);
+						} catch {
+							value = raw;
+						}
+					} else {
+						value = raw;
+					}
+
 					results[i] = value instanceof Uint8Array ? value : undefined;
 
 					if (--pending === 0 && !settled) {
@@ -1710,6 +1863,18 @@ class IndexedDbBatch {
 
 		if (n === 0) return;
 
+		// Compress every byte value before the transaction starts. Compression
+		// streams off the main thread in Chromium, and shrinking the value is
+		// what makes the synchronous structured clone inside IDB put() cheap.
+		const stored: Array<Uint8Array | string | null> = new Array(n);
+		for (let i = 0; i < n; i++) {
+			const op = ops[i];
+			stored[i] =
+				op.type === "put" && op.value instanceof Uint8Array
+					? await compressBlob(op.value)
+					: null;
+		}
+
 		await new Promise<void>((resolve, reject) => {
 			const tx = this.db.transaction(this.storeName, "readwrite");
 			const store = tx.objectStore(this.storeName);
@@ -1722,7 +1887,7 @@ class IndexedDbBatch {
 				const op = ops[i];
 
 				if (op.type === "put") {
-					store.put(op.value, op.key);
+					store.put(stored[i] ?? op.value, op.key);
 				} else {
 					store.delete(op.key);
 				}
