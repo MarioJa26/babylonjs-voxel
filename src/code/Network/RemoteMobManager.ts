@@ -16,11 +16,15 @@ import { Color3 } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
 import type { NetClient } from "./NetClient";
 import {
+	BinaryDecoder,
 	decodeMobDespawn,
 	decodeMobSpawn,
-	decodeMobUpdateBatch,
 } from "./protocol/encoder";
-import { MessageType, MobTypeId } from "./protocol/messages";
+import {
+	MessageType,
+	MobTypeId,
+	type MobUpdateBatchEntry,
+} from "./protocol/messages";
 
 interface RemoteMobConfig {
 	width: number;
@@ -67,6 +71,10 @@ export class RemoteMobManager {
 	private readonly pool = new Map<number, Mesh[]>();
 	private readonly handler: (data: Uint8Array) => void;
 
+	private readonly decoder = new BinaryDecoder(new Uint8Array(0));
+
+	private readonly mobUpdateScratch: MobUpdateBatchEntry[] = [];
+
 	constructor(private readonly client: NetClient) {
 		this.handler = (data) => this.handleBinaryMessage(data);
 		this.client.addBinaryHandler(this.handler);
@@ -111,11 +119,21 @@ export class RemoteMobManager {
 			}
 
 			case MessageType.MobUpdateBatch: {
-				const entries = decodeMobUpdateBatch(data);
-				for (let i = 0; i < entries.length; i++) {
-					const e = entries[i];
-					this.updateMob(e.mobId, e.x, e.y, e.z, e.yaw);
+				this.decoder.setBuffer(data);
+
+				this.decoder.readUint8(); // type
+				const count = this.decoder.readUint8();
+
+				for (let i = 0; i < count; i++) {
+					const mobId = this.decoder.readUint16();
+					const x = this.decoder.readFloat32();
+					const y = this.decoder.readFloat32();
+					const z = this.decoder.readFloat32();
+					const yaw = this.decoder.readUint8();
+
+					this.updateMob(mobId, x, y, z, yaw);
 				}
+
 				break;
 			}
 

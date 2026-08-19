@@ -291,6 +291,21 @@ export class VoxelRoom extends Room {
 	private freedIndexSet = new Set<number>();
 	private lastFullSnapshot = 0;
 
+	private readonly chunkRequestBatchScratch: Array<{
+		cx: number;
+		cy: number;
+		cz: number;
+		lod: number;
+		cachedVersion: number;
+	}> = [];
+
+	private readonly chunkRequestBatchPool: Array<{
+		cx: number;
+		cy: number;
+		cz: number;
+		lod: number;
+		cachedVersion: number;
+	}> = [];
 	constructor() {
 		super();
 		// maxClients is authoritative for the player index space (0-255):
@@ -1784,29 +1799,51 @@ export class VoxelRoom extends Room {
 
 			case MessageType.ChunkRequestBatch: {
 				const count = Math.min(dec.readUint16(), MAX_CHUNK_BATCH);
-				const requests = new Array<{
-					cx: number;
-					cy: number;
-					cz: number;
-					lod: number;
-					cachedVersion: number;
-				}>(count);
+
+				const requests = this.chunkRequestBatchScratch;
+				requests.length = 0;
+
 				let write = 0;
+
 				for (let i = 0; i < count; i++) {
 					const cx = dec.readInt32();
 					const cy = dec.readInt32();
 					const cz = dec.readInt32();
 					const lod = dec.readUint8();
 					const cachedVersion = dec.readUint32();
+
 					if (!this.isValidChunkRequest(cx, cy, cz, lod, cachedVersion)) {
 						continue;
 					}
-					requests[write++] = { cx, cy, cz, lod, cachedVersion };
+
+					let entry = this.chunkRequestBatchPool[write];
+
+					if (!entry) {
+						entry = {
+							cx: 0,
+							cy: 0,
+							cz: 0,
+							lod: 0,
+							cachedVersion: 0,
+						};
+
+						this.chunkRequestBatchPool[write] = entry;
+					}
+
+					entry.cx = cx;
+					entry.cy = cy;
+					entry.cz = cz;
+					entry.lod = lod;
+					entry.cachedVersion = cachedVersion;
+
+					requests.push(entry);
+					write++;
 				}
-				requests.length = write;
+
 				if (write > 0) {
 					void this.handleBatchChunkRequest(client, requests);
 				}
+
 				break;
 			}
 

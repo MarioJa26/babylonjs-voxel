@@ -28,6 +28,10 @@ import {
 const _textEncoder = new TextEncoder();
 const _textDecoder = new TextDecoder();
 
+const PLAYER_STATE_BATCH_ENTRY_BYTES = 16; // index:u8 + x/y/z:f32 + yaw/pitch/anim:u8
+const BLOCK_EDIT_ENTRY_BYTES = 15; // x/y/z:i32 + blockId:u16 + action:u8
+const CHUNK_REQUEST_ENTRY_BYTES = 17; // cx/cy/cz:i32 + lod:u8 + cachedVersion:u32
+const MOB_UPDATE_ENTRY_BYTES = 15; // mobId:u16 + x/y/z:f32 + yaw:u8
 const CHUNK_VOLUME = 32 * 32 * 32; // Chunk.SIZE^3 — light arrays are this size
 
 export class BinaryEncoder {
@@ -179,9 +183,12 @@ export class BinaryEncoder {
 			cachedVersion: number;
 		}>,
 	): void {
+		const count = Math.min(requests.length, 65535);
 		this.writeUint8(MessageType.ChunkRequestBatch);
-		this.writeUint16(Math.min(requests.length, 65535));
-		for (const r of requests) {
+		this.writeUint16(count);
+
+		for (let i = 0; i < count; i++) {
+			const r = requests[i];
 			this.writeInt32(r.cx);
 			this.writeInt32(r.cy);
 			this.writeInt32(r.cz);
@@ -483,9 +490,13 @@ export function writePlayerStateBatch(
 	enc: BinaryEncoder,
 	states: PlayerStateBatchEntry[],
 ): void {
+	const count = Math.min(states.length, 255);
+
 	enc.writeUint8(MessageType.PlayerStateBatch);
-	enc.writeUint8(Math.min(states.length, 255));
-	for (const s of states) {
+	enc.writeUint8(count);
+
+	for (let i = 0; i < count; i++) {
+		const s = states[i];
 		enc.writeUint8(s.index);
 		enc.writeFloat32(s.x);
 		enc.writeFloat32(s.y);
@@ -499,7 +510,8 @@ export function writePlayerStateBatch(
 export function encodePlayerStateBatch(
 	states: PlayerStateBatchEntry[],
 ): Uint8Array {
-	const enc = new BinaryEncoder(2 + states.length * 13);
+	const count = Math.min(states.length, 255);
+	const enc = new BinaryEncoder(2 + count * PLAYER_STATE_BATCH_ENTRY_BYTES);
 	writePlayerStateBatch(enc, states);
 	return enc.getBytes();
 }
@@ -507,11 +519,12 @@ export function encodePlayerStateBatch(
 export function decodePlayerStateBatch(
 	buffer: Uint8Array,
 ): PlayerStateBatchEntry[] {
-	const dec = new BinaryDecoder(buffer, 1); // skip type byte
+	const dec = new BinaryDecoder(buffer, 1);
 	const count = dec.readUint8();
-	const states: PlayerStateBatchEntry[] = [];
+	const states = new Array<PlayerStateBatchEntry>(count);
+
 	for (let i = 0; i < count; i++) {
-		states.push({
+		states[i] = {
 			index: dec.readUint8(),
 			x: dec.readFloat32(),
 			y: dec.readFloat32(),
@@ -519,8 +532,9 @@ export function decodePlayerStateBatch(
 			yaw: dec.readUint8(),
 			pitch: dec.readUint8(),
 			animation: dec.readUint8(),
-		});
+		};
 	}
+
 	return states;
 }
 
@@ -573,33 +587,40 @@ export function decodePlayerStateBatchEntriesInto(
  * Format: [type:1][count:2][editData...]
  */
 export function encodeBlockEditBatch(edits: BlockEditData[]): Uint8Array {
-	const enc = new BinaryEncoder(3 + edits.length * 16);
+	const count = Math.min(edits.length, 65535);
+	const enc = new BinaryEncoder(3 + count * BLOCK_EDIT_ENTRY_BYTES);
+
 	enc.writeUint8(MessageType.BlockEditBatch);
-	enc.writeUint16(Math.min(edits.length, 65535));
-	for (const e of edits) {
+	enc.writeUint16(count);
+
+	for (let i = 0; i < count; i++) {
+		const e = edits[i];
 		enc.writeInt32(e.x);
 		enc.writeInt32(e.y);
 		enc.writeInt32(e.z);
 		enc.writeUint16(e.blockId);
 		enc.writeUint8(e.action);
 	}
+
 	return enc.getBytes();
 }
 
 export function decodeBlockEditBatch(buffer: Uint8Array): BlockEditData[] {
-	const dec = new BinaryDecoder(buffer, 1); // skip type byte
+	const dec = new BinaryDecoder(buffer, 1);
 	const count = dec.readUint16();
-	const edits: BlockEditData[] = [];
+	const edits = new Array<BlockEditData>(count);
+
 	for (let i = 0; i < count; i++) {
-		edits.push({
+		edits[i] = {
 			sessionId: "", // filled in by caller
 			x: dec.readInt32(),
 			y: dec.readInt32(),
 			z: dec.readInt32(),
 			blockId: dec.readUint16(),
 			action: dec.readUint8(),
-		});
+		};
 	}
+
 	return edits;
 }
 
@@ -687,7 +708,8 @@ export function decodeBlockEditBroadcastFrom(
 export function encodeBlockEditRejected(
 	data: BlockEditRejectedData,
 ): Uint8Array {
-	const enc = new BinaryEncoder(16);
+	const enc = new BinaryEncoder(17);
+
 	enc.writeUint8(MessageType.BlockEditRejected);
 	enc.writeInt32(data.x);
 	enc.writeInt32(data.y);
@@ -695,6 +717,7 @@ export function encodeBlockEditRejected(
 	enc.writeUint16(data.blockId);
 	enc.writeUint8(data.action);
 	enc.writeUint8(data.reason);
+
 	return enc.getBytes();
 }
 
@@ -829,8 +852,8 @@ export function encodeChunkData(data: {
 		enc.writeUint16(data.uniformBlockId);
 	} else if (data.palette) {
 		enc.writeUint16(data.palette.length);
-		for (const pid of data.palette) {
-			enc.writeUint16(pid);
+		for (let i = 0; i < data.palette.length; i++) {
+			enc.writeUint16(data.palette[i]);
 		}
 		enc.writeBytes(data.blocks);
 	} else {
@@ -848,7 +871,12 @@ export function decodeChunkData(
 	buffer: Uint8Array,
 	allocSAB = false,
 ): RemoteChunkData {
-	const dec = new BinaryDecoder(buffer, 1);
+	return decodeChunkDataEntry(new BinaryDecoder(buffer, 1), allocSAB);
+}
+function decodeChunkDataEntry(
+	dec: BinaryDecoder,
+	allocSAB: boolean,
+): RemoteChunkData {
 	const chunkX = dec.readInt32();
 	const chunkY = dec.readInt32();
 	const chunkZ = dec.readInt32();
@@ -866,33 +894,26 @@ export function decodeChunkData(
 		blocks = new Uint8Array(0);
 	} else if (hasPalette) {
 		const paletteLen = dec.readUint16();
-		// readBytes copies into a fresh, zero-aligned buffer so the
-		// Uint16Array view is always aligned regardless of wire offset;
-		// readBytesViewSAB provides the same alignment on a SAB backing.
 		const paletteBytes = allocSAB
 			? dec.readBytesViewSAB(paletteLen * 2)
 			: dec.readBytes(paletteLen * 2);
+
 		palette = new Uint16Array(
 			paletteBytes.buffer,
 			paletteBytes.byteOffset,
 			paletteLen,
 		);
-		// Packed nibble data: remaining before light
-		// We need to know the packed size — it's derived from chunk volume
+
 		const packedSize = Math.ceil(CHUNK_VOLUME / 2);
 		blocks = allocSAB
 			? dec.readBytesViewSAB(packedSize)
 			: dec.readBytesView(packedSize);
 	} else {
-		// Dense format: full chunk volume
 		blocks = allocSAB
 			? dec.readBytesViewSAB(CHUNK_VOLUME)
 			: dec.readBytesView(CHUNK_VOLUME);
 	}
 
-	// Light data — SAB backing is sized to CHUNK_VOLUME (the invariant
-	// ensureSharedBacking maintains) but the decoder offset advances by the
-	// real wire length.
 	const lightLen = dec.readUint32();
 	const light = allocSAB
 		? dec.readBytesViewSAB(lightLen, CHUNK_VOLUME)
@@ -957,8 +978,14 @@ export function decodeChunkUnchangedBatch(buffer: Uint8Array): Array<{
 	version: number;
 }> {
 	const dec = new BinaryDecoder(buffer, 1);
-	const count = Math.min(dec.readUint16(), 65535);
-	const results = new Array(count);
+	const count = dec.readUint16();
+	const results = new Array<{
+		cx: number;
+		cy: number;
+		cz: number;
+		version: number;
+	}>(count);
+
 	for (let i = 0; i < count; i++) {
 		results[i] = {
 			cx: dec.readInt32(),
@@ -984,16 +1011,21 @@ export function encodeChunkRequestBatch(
 		cachedVersion: number;
 	}>,
 ): Uint8Array {
-	const enc = new BinaryEncoder(3 + requests.length * 15);
+	const count = Math.min(requests.length, 65535);
+	const enc = new BinaryEncoder(3 + count * CHUNK_REQUEST_ENTRY_BYTES);
+
 	enc.writeUint8(MessageType.ChunkRequestBatch);
-	enc.writeUint16(Math.min(requests.length, 65535));
-	for (const r of requests) {
+	enc.writeUint16(count);
+
+	for (let i = 0; i < count; i++) {
+		const r = requests[i];
 		enc.writeInt32(r.cx);
 		enc.writeInt32(r.cy);
 		enc.writeInt32(r.cz);
 		enc.writeUint8(r.lod);
 		enc.writeUint32(r.cachedVersion);
 	}
+
 	return enc.getBytes();
 }
 
@@ -1099,61 +1131,10 @@ export function decodeChunkDataBatch(
 ): Array<RemoteChunkData> {
 	const dec = new BinaryDecoder(buffer, 1);
 	const count = dec.readUint16();
-	const chunks: Array<RemoteChunkData> = [];
+	const chunks = new Array<RemoteChunkData>(count);
 
 	for (let i = 0; i < count; i++) {
-		const chunkX = dec.readInt32();
-		const chunkY = dec.readInt32();
-		const chunkZ = dec.readInt32();
-		const version = dec.readUint32();
-		const flags = dec.readUint8();
-		const isUniform = (flags & 1) !== 0;
-		const hasPalette = (flags & 2) !== 0;
-
-		let uniformBlockId = 0;
-		let palette: Uint16Array | undefined;
-		let blocks: Uint8Array;
-
-		if (isUniform) {
-			uniformBlockId = dec.readUint16();
-			blocks = new Uint8Array(0);
-		} else if (hasPalette) {
-			const paletteLen = dec.readUint16();
-			const paletteBytes = allocSAB
-				? dec.readBytesViewSAB(paletteLen * 2)
-				: dec.readBytes(paletteLen * 2);
-			palette = new Uint16Array(
-				paletteBytes.buffer,
-				paletteBytes.byteOffset,
-				paletteLen,
-			);
-			const packedSize = Math.ceil(CHUNK_VOLUME / 2);
-			blocks = allocSAB
-				? dec.readBytesViewSAB(packedSize)
-				: dec.readBytesView(packedSize);
-		} else {
-			blocks = allocSAB
-				? dec.readBytesViewSAB(CHUNK_VOLUME)
-				: dec.readBytesView(CHUNK_VOLUME);
-		}
-
-		const lightLen = dec.readUint32();
-		const light = allocSAB
-			? dec.readBytesViewSAB(lightLen, CHUNK_VOLUME)
-			: dec.readBytesView(lightLen);
-
-		chunks.push({
-			kind: ChunkResultKind.Data,
-			chunkX,
-			chunkY,
-			chunkZ,
-			blocks,
-			light,
-			palette,
-			isUniform,
-			uniformBlockId,
-			version,
-		});
+		chunks[i] = decodeChunkDataEntry(dec, allocSAB);
 	}
 
 	return chunks;
@@ -1238,6 +1219,23 @@ export function decodeChunkDataDeflated(buffer: Uint8Array): DeflatedChunk {
 		deflated: dec.readBytes(len),
 	};
 }
+function decodeDeflatedChunkEntry(dec: BinaryDecoder): DeflatedChunk {
+	const chunkX = dec.readInt32();
+	const chunkY = dec.readInt32();
+	const chunkZ = dec.readInt32();
+	const version = dec.readUint32();
+	const len = dec.readUint32();
+	const origLen = dec.readUint32();
+
+	return {
+		chunkX,
+		chunkY,
+		chunkZ,
+		version,
+		origLen,
+		deflated: dec.readBytes(len),
+	};
+}
 
 /** Decode a batch of deflated chunks. */
 export function decodeChunkDataDeflatedBatch(
@@ -1245,23 +1243,10 @@ export function decodeChunkDataDeflatedBatch(
 ): DeflatedChunk[] {
 	const dec = new BinaryDecoder(buffer, 1);
 	const count = dec.readUint16();
-	const chunks: DeflatedChunk[] = new Array(count);
+	const chunks = new Array<DeflatedChunk>(count);
 
 	for (let i = 0; i < count; i++) {
-		const chunkX = dec.readInt32();
-		const chunkY = dec.readInt32();
-		const chunkZ = dec.readInt32();
-		const version = dec.readUint32();
-		const len = dec.readUint32();
-		const origLen = dec.readUint32();
-		chunks[i] = {
-			chunkX,
-			chunkY,
-			chunkZ,
-			version,
-			origLen,
-			deflated: dec.readBytes(len),
-		};
+		chunks[i] = decodeDeflatedChunkEntry(dec);
 	}
 
 	return chunks;
@@ -1345,7 +1330,8 @@ export function encodeMobSpawn(
 	z: number,
 	yaw: number,
 ): Uint8Array {
-	const enc = new BinaryEncoder(16);
+	const enc = new BinaryEncoder(17);
+
 	enc.writeUint8(MessageType.MobSpawn);
 	enc.writeUint16(mobId);
 	enc.writeUint8(mobType);
@@ -1353,6 +1339,7 @@ export function encodeMobSpawn(
 	enc.writeFloat32(y);
 	enc.writeFloat32(z);
 	enc.writeUint8(yaw);
+
 	return enc.getBytes();
 }
 
@@ -1385,41 +1372,19 @@ export function writeMobUpdateBatch(
 	enc: BinaryEncoder,
 	entries: MobUpdateBatchEntry[],
 ): void {
+	const count = Math.min(entries.length, 255);
+
 	enc.writeUint8(MessageType.MobUpdateBatch);
-	enc.writeUint8(Math.min(entries.length, 255));
-	for (const e of entries) {
+	enc.writeUint8(count);
+
+	for (let i = 0; i < count; i++) {
+		const e = entries[i];
 		enc.writeUint16(e.mobId);
 		enc.writeFloat32(e.x);
 		enc.writeFloat32(e.y);
 		enc.writeFloat32(e.z);
 		enc.writeUint8(e.yaw);
 	}
-}
-
-export function encodeMobUpdateBatch(
-	entries: MobUpdateBatchEntry[],
-): Uint8Array {
-	const enc = new BinaryEncoder(2 + entries.length * 14);
-	writeMobUpdateBatch(enc, entries);
-	return enc.getBytes();
-}
-
-export function decodeMobUpdateBatch(
-	buffer: Uint8Array,
-): MobUpdateBatchEntry[] {
-	const dec = new BinaryDecoder(buffer, 1);
-	const count = dec.readUint8();
-	const entries: MobUpdateBatchEntry[] = [];
-	for (let i = 0; i < count; i++) {
-		entries.push({
-			mobId: dec.readUint16(),
-			x: dec.readFloat32(),
-			y: dec.readFloat32(),
-			z: dec.readFloat32(),
-			yaw: dec.readUint8(),
-		});
-	}
-	return entries;
 }
 
 export function encodeMobDespawn(mobId: number): Uint8Array {
