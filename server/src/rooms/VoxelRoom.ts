@@ -20,6 +20,7 @@ import {
 	encodeChatMessage,
 	encodeChunkData,
 	encodeChunkDataDeflated,
+	encodeChunkDataDeflatedPayload,
 	encodeChunkUnchanged,
 	encodeMobDespawn,
 	encodeMobSpawn,
@@ -43,13 +44,13 @@ import {
 	type PlayerStateData,
 } from "@/code/Network/protocol/messages.ts";
 import {
-	packChunkKeyFast,
-	unpackChunkKeyFast,
-} from "@/code/World/Storage/ChunkKey.ts";
-import {
 	deflate,
 	deflateSupported,
 } from "@/code/World/Storage/BlobCompression.ts";
+import {
+	packChunkKeyFast,
+	unpackChunkKeyFast,
+} from "@/code/World/Storage/ChunkKey.ts";
 import { serializeVoxelData } from "@/code/World/Storage/VoxelSerializer.ts";
 import { getServerConfig } from "../config/ServerConfig.ts";
 import { ChunkGenerationService } from "../world/ChunkGenerationService.ts";
@@ -209,6 +210,40 @@ export class VoxelRoom extends Room {
 	private statesScratch: PlayerStateBatchEntry[] = [];
 	private tickEncoder = new BinaryEncoder(2048);
 	private chunkBatchEncoder = new BinaryEncoder(65536);
+	/**
+	 * LRU cache of deflated wire payloads, keyed by packed chunk key. Serving
+	 * a chunk skips serializeStored + deflate when the cached entry's version
+	 * matches the stored one — every edit bumps the stored version, so stale
+	 * entries are transparently re-deflated and replaced. Entries are
+	 * immutable and shared across clients (encoders copy bytes out).
+	 */
+	private static readonly WIRE_CACHE_CAP = 2048;
+	private readonly wireCache = new Map<
+		number,
+		{ version: number; origLen: number; payload: Uint8Array }
+	>();
+	private getWireEntry(
+		key: number,
+		version: number,
+	): { version: number; origLen: number; payload: Uint8Array } | undefined {
+		const entry = this.wireCache.get(key);
+		if (entry === undefined) return undefined;
+		if (entry.version !== version) return undefined;
+		// Refresh recency: re-insert so Map iteration order is LRU order.
+		this.wireCache.delete(key);
+		this.wireCache.set(key, entry);
+		return entry;
+	}
+	private setWireEntry(
+		key: number,
+		entry: { version: number; origLen: number; payload: Uint8Array },
+	): void {
+		this.wireCache.set(key, entry);
+		if (this.wireCache.size > VoxelRoom.WIRE_CACHE_CAP) {
+			const oldest = this.wireCache.keys().next().value;
+			if (oldest !== undefined) this.wireCache.delete(oldest);
+		}
+	}
 	// Reused for infrequent broadcasts (time every 5s, block edits).
 	// Avoids a fresh BinaryEncoder + Uint8Array allocation per broadcast.
 	private timeEncoder = new BinaryEncoder(16);
@@ -1460,15 +1495,30 @@ export class VoxelRoom extends Room {
 		const sizes = new Array<number>(count);
 
 		// Deflate in windows of 4: CompressionStream runs off the event loop,
-		// so concurrent streams overlap instead of serializing.
+		// so concurrent streams overlap instead of serializing. Chunks with a
+		// current wire-cache entry skip serializeStored + deflate entirely.
 		const WINDOW = 4;
 		for (let start = 0; start < count; start += WINDOW) {
 			const end = Math.min(start + WINDOW, count);
 			await Promise.all(
 				Array.from({ length: end - start }, async (_, j) => {
 					const i = start + j;
-					const blob = this.serializeStored(chunks[i]);
+					const c = chunks[i];
+					const key = packChunkKeyFast(c.chunkX, c.chunkY, c.chunkZ);
+					const cached = this.getWireEntry(key, c.version);
+					if (cached) {
+						payloads[i] = cached.payload;
+						origLens[i] = cached.origLen;
+						sizes[i] = 24 + cached.payload.byteLength;
+						return;
+					}
+					const blob = this.serializeStored(c);
 					const deflated = await deflate(blob);
+					this.setWireEntry(key, {
+						version: c.version,
+						origLen: blob.byteLength,
+						payload: deflated,
+					});
 					payloads[i] = deflated;
 					origLens[i] = blob.byteLength;
 					sizes[i] = 24 + deflated.byteLength; // coords + version + len + origLen
@@ -1891,14 +1941,33 @@ export class VoxelRoom extends Room {
 					);
 				}
 				if (deflateSupported()) {
-					const msg = await encodeChunkDataDeflated({
-						chunkX: stored.chunkX,
-						chunkY: stored.chunkY,
-						chunkZ: stored.chunkZ,
-						version: stored.version,
-						blob: this.serializeStored(stored),
-					});
-					client.sendBytes("binary", msg);
+					const key = packChunkKeyFast(
+						stored.chunkX,
+						stored.chunkY,
+						stored.chunkZ,
+					);
+					let entry = this.getWireEntry(key, stored.version);
+					if (!entry) {
+						const blob = this.serializeStored(stored);
+						const deflated = await deflate(blob);
+						entry = {
+							version: stored.version,
+							origLen: blob.byteLength,
+							payload: deflated,
+						};
+						this.setWireEntry(key, entry);
+					}
+					client.sendBytes(
+						"binary",
+						encodeChunkDataDeflatedPayload({
+							chunkX: stored.chunkX,
+							chunkY: stored.chunkY,
+							chunkZ: stored.chunkZ,
+							version: stored.version,
+							origLen: entry.origLen,
+							deflated: entry.payload,
+						}),
+					);
 				} else {
 					client.sendBytes("binary", encodeChunkData(stored));
 				}

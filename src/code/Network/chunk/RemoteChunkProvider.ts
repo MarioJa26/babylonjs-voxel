@@ -31,7 +31,10 @@
 import { DEBUG_ENABLED, debugLog } from "../../Lib/debugLog";
 import type { Chunk } from "../../World/Chunk/Chunk";
 import { packCoords } from "../../World/Chunk/DataStructures/ChunkCoords";
-import { inflateInto } from "../../World/Storage/BlobCompression";
+import {
+	frameDeflated,
+	inflateInto,
+} from "../../World/Storage/BlobCompression";
 import {
 	type ChunkWrite,
 	chunkKey,
@@ -333,7 +336,11 @@ export class RemoteChunkProvider {
 		// it resolves a current pending request; anything unmatched is
 		// dropped — it is unsolicited or late-connection data.
 		if (!this.resolvePending(key, chunk)) return;
-		this.persistChunk(chunk, blob);
+		this.persistChunk(
+			chunk,
+			frameDeflated(entry.origLen, entry.deflated),
+			true,
+		);
 		this.scheduleSweep();
 	}
 
@@ -421,7 +428,8 @@ export class RemoteChunkProvider {
 						cx: chunk.chunkX,
 						cy: chunk.chunkY,
 						cz: chunk.chunkZ,
-						blob,
+						blob: frameDeflated(entry.origLen, entry.deflated),
+						preCompressed: true,
 					};
 
 					written[writeCount] = {
@@ -614,6 +622,7 @@ export class RemoteChunkProvider {
 	private persistChunk(
 		chunk: RemoteChunkData,
 		blobOverride?: Uint8Array,
+		preCompressed = false,
 	): void {
 		const key = packCoords(chunk.chunkX, chunk.chunkY, chunk.chunkZ);
 		const responseEpoch = this.epoch;
@@ -630,7 +639,14 @@ export class RemoteChunkProvider {
 					chunk.version,
 				);
 			void this.store
-				.writeChunk(chunk.chunkX, chunk.chunkY, chunk.chunkZ, blob)
+				.writeChunk(
+					chunk.chunkX,
+					chunk.chunkY,
+					chunk.chunkZ,
+					blob,
+					undefined,
+					preCompressed,
+				)
 				.then(() => {
 					// The store's write chain resolves only after the write's
 					// transactions settled, so this is the persistence

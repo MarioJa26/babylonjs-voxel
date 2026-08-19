@@ -1192,15 +1192,32 @@ export async function encodeChunkDataDeflated(data: {
 	blob: Uint8Array;
 }): Promise<Uint8Array> {
 	const deflated = await deflate(data.blob);
-	const enc = new BinaryEncoder(1 + 12 + 4 + 4 + 4 + deflated.byteLength);
+	return encodeChunkDataDeflatedPayload({
+		chunkX: data.chunkX,
+		chunkY: data.chunkY,
+		chunkZ: data.chunkZ,
+		version: data.version,
+		origLen: data.blob.byteLength,
+		deflated,
+	});
+}
+
+/**
+ * Encode one deflated chunk message from an already-deflated payload (the
+ * deflate step is skipped entirely — callers with a wire cache reuse it).
+ */
+export function encodeChunkDataDeflatedPayload(
+	data: DeflatedChunk,
+): Uint8Array {
+	const enc = new BinaryEncoder(1 + 12 + 4 + 4 + 4 + data.deflated.byteLength);
 	enc.writeUint8(MessageType.ChunkDataDeflated);
 	enc.writeInt32(data.chunkX);
 	enc.writeInt32(data.chunkY);
 	enc.writeInt32(data.chunkZ);
 	enc.writeUint32(data.version);
-	enc.writeUint32(deflated.byteLength);
-	enc.writeUint32(data.blob.byteLength);
-	enc.writeBytes(deflated);
+	enc.writeUint32(data.deflated.byteLength);
+	enc.writeUint32(data.origLen);
+	enc.writeBytes(data.deflated);
 	return enc.getBytes();
 }
 

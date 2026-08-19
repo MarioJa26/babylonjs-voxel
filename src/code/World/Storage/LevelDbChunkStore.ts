@@ -57,6 +57,13 @@ export interface ChunkWrite {
 	cz: number;
 	blob: Uint8Array;
 	key?: string;
+	/**
+	 * True when `blob` is already framed for storage ([marker][origLen][deflate]
+	 * or [marker][raw] — e.g. a deflated wire payload persisted as-is). The
+	 * browser backend skips compressBlob for these values; the Node backend
+	 * ignores the flag (Snappy handles it).
+	 */
+	preCompressed?: boolean;
 }
 
 /**
@@ -112,6 +119,8 @@ export type WriteOperation =
 			kind: WriteOperationKind.Put;
 			key: string;
 			value: Uint8Array | string;
+			/** Skip compressBlob in the browser backend (value already framed). */
+			preCompressed?: boolean;
 	  }
 	| {
 			kind: WriteOperationKind.Delete;
@@ -680,6 +689,7 @@ export class LevelDbChunkStore implements ChunkStorage {
 		cz: number,
 		data: Uint8Array,
 		key?: string,
+		preCompressed?: boolean,
 	): Promise<void> {
 		const k = key ?? chunkKey(cx, cy, cz);
 		return this.enqueueWriteJob([
@@ -687,6 +697,7 @@ export class LevelDbChunkStore implements ChunkStorage {
 				kind: WriteOperationKind.Put,
 				key: k,
 				value: data,
+				preCompressed,
 			},
 		]);
 	}
@@ -705,6 +716,7 @@ export class LevelDbChunkStore implements ChunkStorage {
 				kind: WriteOperationKind.Put,
 				key: write.key ?? chunkKey(write.cx, write.cy, write.cz),
 				value: write.blob,
+				preCompressed: write.preCompressed,
 			};
 		}
 
@@ -1181,7 +1193,7 @@ export class LevelDbChunkStore implements ChunkStorage {
 				const operation = operations[job.nextOperation];
 
 				if (operation.kind === WriteOperationKind.Put) {
-					batch.put(operation.key, operation.value);
+					batch.put(operation.key, operation.value, operation.preCompressed);
 				} else {
 					batch.del(operation.key);
 				}
@@ -1217,7 +1229,11 @@ export class LevelDbChunkStore implements ChunkStorage {
 			return;
 		}
 
-		this.publishCommittedOperations(preparedJobs, preparedOps, preparedCount);
+		await this.publishCommittedOperations(
+			preparedJobs,
+			preparedOps,
+			preparedCount,
+		);
 		this.clearPreparedScratch(preparedCount);
 
 		this.skipCancelledEntries();
@@ -1291,12 +1307,17 @@ export class LevelDbChunkStore implements ChunkStorage {
 	 * Publishes committed operations to the durable read cache — only
 	 * after the transaction commits, and only for jobs that were not
 	 * cancelled by a reconnect clear.
+	 *
+	 * preCompressed puts carry a framed deflated payload, but the cache must
+	 * hold the same (decompressed) bytes reads return, so those are inflated
+	 * before being added — awaited in operation order so a later delete in
+	 * this or the next transaction still removes the entry.
 	 */
-	private publishCommittedOperations(
+	private async publishCommittedOperations(
 		preparedJobs: readonly WriteJob[],
 		preparedOps: readonly WriteOperation[],
 		preparedCount: number,
-	): void {
+	): Promise<void> {
 		const pendingDeletes = this.pendingDeletes;
 		const cache = this.cache;
 		const touched = this.touched;
@@ -1314,7 +1335,16 @@ export class LevelDbChunkStore implements ChunkStorage {
 			if (operation.kind === WriteOperationKind.Put) {
 				if (operation.value instanceof Uint8Array) {
 					pendingDeletes.delete(key);
-					this.addToCache(key, operation.value);
+					if (operation.preCompressed) {
+						try {
+							this.addToCache(key, await decompressBlob(operation.value));
+						} catch {
+							// Corrupt payload: leave uncached; reads fall through
+							// to storage, which evicts it as corrupt.
+						}
+					} else {
+						this.addToCache(key, operation.value);
+					}
 				}
 			} else {
 				pendingDeletes.delete(key);
@@ -1832,7 +1862,12 @@ class IndexedDbStore {
 
 class IndexedDbBatch {
 	private ops: Array<
-		| { type: "put"; key: string; value: Uint8Array | string }
+		| {
+				type: "put";
+				key: string;
+				value: Uint8Array | string;
+				preCompressed?: boolean;
+		  }
 		| { type: "delete"; key: string }
 	> = [];
 
@@ -1841,8 +1876,8 @@ class IndexedDbBatch {
 		private readonly storeName: string,
 	) {}
 
-	put(key: string, value: Uint8Array | string): this {
-		this.ops.push({ type: "put", key, value });
+	put(key: string, value: Uint8Array | string, preCompressed?: boolean): this {
+		this.ops.push({ type: "put", key, value, preCompressed });
 		return this;
 	}
 
@@ -1866,12 +1901,16 @@ class IndexedDbBatch {
 		// Compress every byte value before the transaction starts. Compression
 		// streams off the main thread in Chromium, and shrinking the value is
 		// what makes the synchronous structured clone inside IDB put() cheap.
+		// preCompressed values (e.g. deflated wire payloads persisted as-is)
+		// are already framed and skip the deflate entirely.
 		const stored: Array<Uint8Array | string | null> = new Array(n);
 		for (let i = 0; i < n; i++) {
 			const op = ops[i];
 			stored[i] =
 				op.type === "put" && op.value instanceof Uint8Array
-					? await compressBlob(op.value)
+					? op.preCompressed
+						? op.value
+						: await compressBlob(op.value)
 					: null;
 		}
 
