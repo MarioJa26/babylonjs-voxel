@@ -2805,17 +2805,25 @@ export class ChunkWorkerPool {
 	}
 
 	/** Defer the next drain to a microtask — avoids the ~1-4ms macrotask delay of setTimeout(0). */
+	private remoteContinuationCounter = 0;
+
 	private scheduleRemotePumpContinuation(): void {
 		if (this.remoteTaskQueue.length === 0) return;
 		if (this.remotePumpScheduled) return;
-		// Under backpressure, use the timer path in pumpRemoteGeneration
-		// instead of microtask-speed scheduling.
-		if (this.remotePendingChunks.size >= this.MAX_OUTSTANDING_REMOTE) return;
+
 		this.remotePumpScheduled = true;
-		queueMicrotask(() => {
-			this.remotePumpScheduled = false;
-			this.pumpRemoteGeneration();
-		});
+
+		if ((++this.remoteContinuationCounter & 31) === 0) {
+			setTimeout(() => {
+				this.remotePumpScheduled = false;
+				this.pumpRemoteGeneration();
+			}, 0);
+		} else {
+			queueMicrotask(() => {
+				this.remotePumpScheduled = false;
+				this.pumpRemoteGeneration();
+			});
+		}
 	}
 
 	private dispatchRemoteRequests(toRequest: Chunk[]): void {

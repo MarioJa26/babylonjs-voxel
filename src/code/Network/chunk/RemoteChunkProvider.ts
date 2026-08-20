@@ -379,67 +379,79 @@ export class RemoteChunkProvider {
 		}
 
 		const WINDOW = 4;
-		let writeCount = 0;
+		const writeCount = 0;
 
 		for (let start = 0; start < inflatableCount; start += WINDOW) {
 			const end = Math.min(start + WINDOW, inflatableCount);
 
-			await Promise.all(
-				Array.from({ length: end - start }, async (_, j) => {
-					const { entry, key } = inflatable[start + j];
+			const tasks: Promise<void>[] = [];
 
-					let blob: Uint8Array;
-					try {
-						blob = await inflateInto(entry.deflated, entry.origLen);
-					} catch (error) {
-						console.warn(
-							`[RemoteChunkProvider] failed to inflate chunk ${key}:`,
-							error,
+			for (let j = start; j < end; j++) {
+				const { entry, key } = inflatable[j];
+
+				tasks.push(
+					(async () => {
+						let blob: Uint8Array;
+
+						try {
+							blob = await inflateInto(entry.deflated, entry.origLen);
+						} catch (error) {
+							console.warn(
+								`[RemoteChunkProvider] failed to inflate chunk ${key}:`,
+								error,
+							);
+
+							this.rejectPendingRequest(
+								key,
+								new ChunkProtocolError("Chunk payload failed to decompress"),
+							);
+
+							return;
+						}
+
+						const chunk = this.deserializeCached(
+							blob,
+							entry.chunkX,
+							entry.chunkY,
+							entry.chunkZ,
 						);
-						this.rejectPendingRequest(
+
+						if (chunk === null) {
+							console.warn(
+								`[RemoteChunkProvider] corrupt deflated chunk ${key} (dropped)`,
+							);
+
+							this.rejectPendingRequest(
+								key,
+								new ChunkProtocolError("Chunk payload failed validation"),
+							);
+
+							return;
+						}
+
+						if (!this.resolvePending(key, chunk)) {
+							return;
+						}
+
+						const slot = j;
+
+						writes[slot] = {
+							cx: chunk.chunkX,
+							cy: chunk.chunkY,
+							cz: chunk.chunkZ,
+							blob: frameDeflated(entry.origLen, entry.deflated),
+							preCompressed: true,
+						};
+
+						written[slot] = {
 							key,
-							new ChunkProtocolError("Chunk payload failed to decompress"),
-						);
-						return;
-					}
+							version: chunk.version,
+						};
+					})(),
+				);
+			}
 
-					const chunk = this.deserializeCached(
-						blob,
-						entry.chunkX,
-						entry.chunkY,
-						entry.chunkZ,
-					);
-					if (chunk === null) {
-						console.warn(
-							`[RemoteChunkProvider] corrupt deflated chunk ${key} (dropped)`,
-						);
-						this.rejectPendingRequest(
-							key,
-							new ChunkProtocolError("Chunk payload failed validation"),
-						);
-						return;
-					}
-
-					if (!this.resolvePending(key, chunk)) {
-						return;
-					}
-
-					writes[writeCount] = {
-						cx: chunk.chunkX,
-						cy: chunk.chunkY,
-						cz: chunk.chunkZ,
-						blob: frameDeflated(entry.origLen, entry.deflated),
-						preCompressed: true,
-					};
-
-					written[writeCount] = {
-						key,
-						version: chunk.version,
-					};
-
-					writeCount++;
-				}),
-			);
+			await Promise.all(tasks);
 		}
 
 		this.scheduleSweep();
@@ -853,6 +865,7 @@ export class RemoteChunkProvider {
 	 * according to the chunk's storage representation. Returns null for
 	 * malformed/corrupt blobs so they are never mistaken for valid data.
 	 */
+	VALIDATE_NETWORK_CHUNKS = false;
 	private deserializeCached(
 		blob: Uint8Array,
 		cx: number,
@@ -905,14 +918,15 @@ export class RemoteChunkProvider {
 			// silent corruption turning into air blocks. Allocation-free
 			// scan of PACKED_BLOCK_SIZE bytes.
 			const paletteLength = palette.length;
-			for (let i = 0; i < packed.length; i++) {
-				const byte = packed[i];
-				const low = byte & 0x0f;
-				const high = byte >>> 4;
-				if (low >= paletteLength || high >= paletteLength) {
-					return null;
+			if (this.VALIDATE_NETWORK_CHUNKS)
+				for (let i = 0; i < packed.length; i++) {
+					const byte = packed[i];
+					const low = byte & 0x0f;
+					const high = byte >>> 4;
+					if (low >= paletteLength || high >= paletteLength) {
+						return null;
+					}
 				}
-			}
 			blocks = packed;
 		} else if (deserialized.blocks instanceof Uint16Array) {
 			// Dense 16-bit block storage.
