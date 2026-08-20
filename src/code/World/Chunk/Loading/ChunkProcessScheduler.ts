@@ -91,6 +91,8 @@ export class ChunkProcessScheduler {
 			hydrateChunks: [],
 			hydrateMap: new Map(),
 			hydrateIndex: 0,
+
+			queuedLoadIdsScratch: new Set<bigint>(),
 		};
 	}
 
@@ -107,6 +109,8 @@ export class ChunkProcessScheduler {
 		state.unloadBatchIndex = 0;
 		state.savedChunkIds.clear();
 		state.savedChunkRevisions.clear();
+
+		state.queuedLoadIdsScratch.clear();
 
 		this.clearLoadState(state);
 	}
@@ -622,7 +626,9 @@ export class ChunkProcessScheduler {
 		}
 
 		const loadQueue = this.adapter.getLoadQueue();
-		const queuedIds = new Set<bigint>();
+		const queuedIds = state.queuedLoadIdsScratch;
+
+		queuedIds.clear();
 
 		for (let i = 0, length = loadQueue.length; i < length; i++) {
 			queuedIds.add(loadQueue[i].chunk.id);
@@ -641,6 +647,12 @@ export class ChunkProcessScheduler {
 				loadQueue.push(request);
 			}
 		}
+
+		/*
+		 * The scratch set is no longer needed after the synchronous loops above.
+		 * Clearing it avoids retaining IDs until the next process operation.
+		 */
+		queuedIds.clear();
 
 		this.adapter.onQueueSnapshotChanged?.();
 	}

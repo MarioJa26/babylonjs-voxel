@@ -49,3 +49,6 @@ Thumbs.db
 # Build info
 *.tsbuildinfo
 graphify-out/
+src/code_bundle.txt
+code_js_bundle.txt
+src/composer.bat

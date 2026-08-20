@@ -142,6 +142,12 @@ export class BlockHighlight {
 	readonly #scene: SceneContext;
 	readonly #material: ShaderMaterial;
 
+	#isDisposed = false;
+	readonly #beforeRender = (): void => {
+		if (this.#isDisposed) return;
+		this.#update();
+	};
+
 	#mesh: Mesh;
 
 	#shapeBlockId = -1;
@@ -167,10 +173,13 @@ export class BlockHighlight {
 
 		this.#mesh = this.#createMesh("blockHighlight", geo);
 
-		onBeforeRender(this.#scene, () => this.#update());
+		onBeforeRender(this.#scene, this.#beforeRender);
 	}
 
 	dispose(): void {
+		if (this.#isDisposed) return;
+		this.#isDisposed = true;
+
 		removeFromScene(this.#scene, this.#mesh);
 	}
 
