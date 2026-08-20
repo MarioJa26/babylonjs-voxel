@@ -161,60 +161,102 @@ export class WorldGenerator {
 		chunkSize: number,
 		chunkSizeSq: number,
 	): void {
-		// No underground replacement needed for chunks entirely above the transition.
+		// Chunks beginning at or above Y=16 cannot contain underground blocks
+		// affected by this pass.
 		if (chunkWorldY >= 16) return;
 
-		const selector = this.undergroundBiomeSelector;
-
-		// Guard against tiny chunk sizes where chunkSize >> 1 could be 0.
-		const sampleStep = Math.max(1, chunkSize >> 1);
-		const midY = Math.min(chunkWorldY + sampleStep, -1);
-
-		// Fast path: sample a few points and skip the full pass if this chunk appears
-		// to be entirely default underground stone.
-		let allDefault = true;
-
-		for (let dx = 0; dx < chunkSize && allDefault; dx += sampleStep) {
-			const worldX = chunkWorldX + dx;
-
-			for (let dz = 0; dz < chunkSize; dz += sampleStep) {
-				if (
-					selector.getBiome(worldX, midY, chunkWorldZ + dz).stoneBlock !== 29
-				) {
-					allDefault = false;
-					break;
-				}
-			}
-		}
-
-		if (allDefault) return;
-
-		// Only process the underground portion. This removes the inner-loop
-		// worldY >= 0 branch from the original version.
+		// Restrict processing to local coordinates whose world Y is below zero.
 		const maxLocalYExclusive =
 			chunkWorldY < 0 ? Math.min(chunkSize, -chunkWorldY) : 0;
 
-		if (maxLocalYExclusive <= 0) return;
+		if (maxLocalYExclusive === 0) return;
 
+		const selector = this.undergroundBiomeSelector;
+		const defaultStoneBlock = 29;
+
+		/*
+		 * Cheap conservative early-out.
+		 *
+		 * Include both chunk edges so an odd or very small chunk size does not
+		 * accidentally omit the far side. This remains a heuristic, matching the
+		 * behavior of the original implementation.
+		 */
+		const lastLocal = chunkSize - 1;
+		const midLocal = chunkSize >> 1;
+		const sampleWorldY = Math.min(chunkWorldY + (maxLocalYExclusive >> 1), -1);
+
+		const x0 = chunkWorldX;
+		const x1 = chunkWorldX + midLocal;
+		const x2 = chunkWorldX + lastLocal;
+
+		const z0 = chunkWorldZ;
+		const z1 = chunkWorldZ + midLocal;
+		const z2 = chunkWorldZ + lastLocal;
+
+		if (
+			selector.getBiome(x0, sampleWorldY, z0).stoneBlock ===
+				defaultStoneBlock &&
+			selector.getBiome(x1, sampleWorldY, z0).stoneBlock ===
+				defaultStoneBlock &&
+			selector.getBiome(x2, sampleWorldY, z0).stoneBlock ===
+				defaultStoneBlock &&
+			selector.getBiome(x0, sampleWorldY, z1).stoneBlock ===
+				defaultStoneBlock &&
+			selector.getBiome(x1, sampleWorldY, z1).stoneBlock ===
+				defaultStoneBlock &&
+			selector.getBiome(x2, sampleWorldY, z1).stoneBlock ===
+				defaultStoneBlock &&
+			selector.getBiome(x0, sampleWorldY, z2).stoneBlock ===
+				defaultStoneBlock &&
+			selector.getBiome(x1, sampleWorldY, z2).stoneBlock ===
+				defaultStoneBlock &&
+			selector.getBiome(x2, sampleWorldY, z2).stoneBlock === defaultStoneBlock
+		) {
+			return;
+		}
+
+		/*
+		 * Preserve the existing behavior where one biome is selected for every
+		 * Y/Z row and X variation is intentionally ignored.
+		 *
+		 * Memory layout:
+		 *   index = localX + localY * chunkSize + localZ * chunkSizeSq
+		 */
 		for (let localY = 0; localY < maxLocalYExclusive; localY++) {
 			const worldY = chunkWorldY + localY;
-			const yBase = localY * chunkSize;
+			const yOffset = localY * chunkSize;
 
 			for (let localZ = 0; localZ < chunkSize; localZ++) {
-				const worldZ = chunkWorldZ + localZ;
-				const rowBase = yBase + localZ * chunkSizeSq;
+				const biome = selector.getBiome(
+					chunkWorldX,
+					worldY,
+					chunkWorldZ + localZ,
+				);
 
-				// Preserve your current optimization: biome is cached per Y/Z row.
-				// This assumes X variation is intentionally ignored for replacement.
-				const colBiome = selector.getBiome(chunkWorldX, worldY, worldZ);
+				// If this biome uses default stone, replacement may still be needed
+				// for other replaceable block IDs, so only specialize stone itself.
+				const replacementStone = biome.stoneBlock;
+				let index = yOffset + localZ * chunkSizeSq;
+				const rowEnd = index + chunkSize;
 
-				for (let localX = 0; localX < chunkSize; localX++) {
-					const idx = rowBase + localX;
-					const blockId = blocks[idx];
+				for (; index < rowEnd; index++) {
+					const blockId = blocks[index];
 
-					if (blockId === 0 || IS_ORE[blockId] === 1) continue;
+					if (
+						blockId === 0 ||
+						blockId >= IS_ORE.length ||
+						IS_ORE[blockId] !== 0
+					) {
+						continue;
+					}
 
-					blocks[idx] = selector.getStoneReplacement(blockId, colBiome);
+					// Stone is expected to dominate underground chunks. Avoid the
+					// method call for this overwhelmingly common case.
+					if (blockId === defaultStoneBlock) {
+						blocks[index] = replacementStone;
+					} else {
+						blocks[index] = selector.getStoneReplacement(blockId, biome);
+					}
 				}
 			}
 		}
