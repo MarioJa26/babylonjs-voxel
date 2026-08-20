@@ -285,6 +285,8 @@ export class NetClient {
 
 				case MessageType.ChunkData:
 				case MessageType.ChunkDataBatch:
+				case MessageType.ChunkDataDeflated:
+				case MessageType.ChunkDataDeflatedBatch:
 				case MessageType.ChunkUnchanged:
 				case MessageType.ChunkUnchangedBatch:
 					// Handled by RemoteChunkProvider via addBinaryHandler.
