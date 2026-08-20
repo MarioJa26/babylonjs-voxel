@@ -7,7 +7,7 @@ import {
 } from "@babylonjs/lite";
 import { Color3 } from "@/code/Lib/Math";
 import { Map1 } from "@/code/Maps/Map1";
-import { DroppedItem } from "../../Player/Inventory/DroppedItem";
+import { dropWorldItem } from "../../Player/Inventory/dropWorldItem";
 import { Item } from "../../Player/Inventory/Item";
 import { registerChunkEntityLoader } from "../../World/Chunk/ChunkLoadingSystem";
 import { createBoxMobMesh } from "./MobMesh";
@@ -147,7 +147,7 @@ export class Sheep extends NeutralMob {
 
 		item.stackSize = 1;
 
-		new DroppedItem(item, pos.x, pos.y + 0.5, pos.z);
+		dropWorldItem(item, pos.x, pos.y + 0.5, pos.z, 0, 0, 0);
 	}
 
 	dispose(): void {

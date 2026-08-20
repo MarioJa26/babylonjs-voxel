@@ -15,7 +15,7 @@ import {
 	getBlockBreakTime,
 	getBlockInfo,
 } from "@/code/World/Texture/TextureDefinitions";
-import { DroppedItem } from "../../Inventory/DroppedItem";
+import { dropWorldItem } from "../../Inventory/dropWorldItem";
 import { Item } from "../../Inventory/Item";
 import type { Player } from "../../Player";
 import { Gamemodes } from "../../PlayerStats";
@@ -67,18 +67,17 @@ function stirVariation(seed: number): void {
 	variation ^= variation >>> 2;
 }
 
-function addDeterministicDropVelocity(
-	droppedItem: DroppedItem,
+export function computeDeterministicDropVelocity(
 	seed: number,
 	baseY: number,
-): void {
+): { x: number; y: number; z: number } {
 	stirVariation(seed);
 
 	const pushX = ((variation & 7) - 3.5) * 0.44;
 	const pushY = baseY + ((variation >>> 3) & 3);
 	const pushZ = (((variation >>> 5) & 7) - 3.5) * 0.44;
 
-	droppedItem.addVelocity(pushX, pushY, pushZ);
+	return { x: pushX, y: pushY, z: pushZ };
 }
 
 function isBoatBlockContext(context: unknown): context is BoatBlockHitContext {
@@ -369,13 +368,22 @@ export class BlockBreakingHandler {
 		worldItem.stackSize = 1;
 		worldItem.itemId = dropId;
 
-		const di = new DroppedItem(worldItem, x + 0.5, y + 0.5, z + 0.5);
+		const v = computeDeterministicDropVelocity(blockId, 0.67);
+		const di = dropWorldItem(
+			worldItem,
+			x + 0.5,
+			y + 0.5,
+			z + 0.5,
+			v.x,
+			v.y,
+			v.z,
+			this.#player,
+		);
 
 		// The item spawns inside the still-solid block, whose voxel stores no
 		// light until the deferred light propagation lands. Tint it from the
 		// lit air voxel beside the mined face instead.
-		di.setInitialLight(packedLight);
-		addDeterministicDropVelocity(di, blockId, 0.67);
+		di?.setInitialLight(packedLight);
 
 		const particlePos = _scratchParticlePos;
 		setVec3(particlePos, x + 0.5, y + 0.5, z + 0.5);
@@ -421,9 +429,18 @@ export class BlockBreakingHandler {
 					const item = Item.createById(savedItem.itemId);
 					item.stackSize = savedItem.stackSize;
 
-					const droppedItem = new DroppedItem(item, dropX, dropY, dropZ);
-					droppedItem.setInitialLight(packedLight);
-					addDeterministicDropVelocity(droppedItem, savedItem.itemId, 0.5);
+					const v = computeDeterministicDropVelocity(savedItem.itemId, 0.5);
+					const droppedItem = dropWorldItem(
+						item,
+						dropX,
+						dropY,
+						dropZ,
+						v.x,
+						v.y,
+						v.z,
+						this.#player,
+					);
+					droppedItem?.setInitialLight(packedLight);
 				}
 			}
 
@@ -434,7 +451,7 @@ export class BlockBreakingHandler {
 			saveBlockInventory(x, y, z, emptyInv);
 		}
 
-		if (this.#player.stats.gamemode === Gamemodes.Creative) {
+		if (di && this.#player.stats.gamemode === Gamemodes.Creative) {
 			di.use(this.#player);
 		}
 	}

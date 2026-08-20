@@ -13,6 +13,8 @@ import { DEBUG_ENABLED, debugLog } from "@/code/Lib/debugLog";
 import {
 	BinaryDecoder,
 	BinaryEncoder,
+	decodeItemDrop,
+	decodeItemPickup,
 	decodePitchByte,
 	decodeYawByte,
 	encodeBlockEditBatch,
@@ -22,6 +24,8 @@ import {
 	encodeChunkDataDeflated,
 	encodeChunkDataDeflatedPayload,
 	encodeChunkUnchanged,
+	encodeItemDespawn,
+	encodeItemSpawn,
 	encodeMobDespawn,
 	encodeMobSpawn,
 	encodePitchByte,
@@ -30,6 +34,7 @@ import {
 	encodeSpawnPosition,
 	encodeWorldConfig,
 	encodeYawByte,
+	writeItemUpdateBatch,
 	writeMobUpdateBatch,
 	writePlayerStateBatch,
 } from "@/code/Network/protocol/encoder.ts";
@@ -38,6 +43,10 @@ import {
 	type BlockEditData,
 	BlockEditRejectReason,
 	type ChatMessageData,
+	type ItemDropData,
+	type ItemPickupData,
+	type ItemSpawnData,
+	type ItemUpdateBatchEntry,
 	MessageType,
 	type MobUpdateBatchEntry,
 	type PlayerStateBatchEntry,
@@ -54,6 +63,8 @@ import {
 import { serializeVoxelData } from "@/code/World/Storage/VoxelSerializer.ts";
 import { getServerConfig } from "../config/ServerConfig.ts";
 import { ChunkGenerationService } from "../world/ChunkGenerationService.ts";
+import type { ServerItem } from "../world/ItemSimulation.ts";
+import { ServerItemSimulation } from "../world/ItemSimulation.ts";
 import { type ServerMob, ServerMobSimulation } from "../world/MobSimulation.ts";
 import type { StoredChunkData } from "../world/ServerWorldStorage.ts";
 import { ServerWorldStorage } from "../world/ServerWorldStorage.ts";
@@ -126,6 +137,12 @@ const TIME_BROADCAST_INTERVAL = 5000; // Broadcast time every 5 seconds
 const FULL_SNAPSHOT_INTERVAL = 2000; // Periodic full player-state broadcast (ms)
 const PLAYER_SAVE_INTERVAL = 3000; // Position persistence debounce (ms)
 const MOB_UPDATE_INTERVAL = 100; // Mob position broadcast cadence (10 Hz)
+const ITEM_UPDATE_INTERVAL = 100; // Item position broadcast cadence (10 Hz)
+const ITEM_PICKUP_RADIUS = 2.5; // Max distance a player can pick up an item
+const ITEM_PICKUP_RADIUS_SQ = ITEM_PICKUP_RADIUS * ITEM_PICKUP_RADIUS;
+const MAX_ITEM_ID = 65535; // Item ids are sent over the wire as uint16
+const MAX_ITEM_STACK = 1024; // Sanity cap on a dropped stack size
+const MAX_ITEM_VELOCITY = 64; // Reject absurd drop velocities
 const MAX_CHUNK_BATCH = 255; // Cap chunks per batch request (prevents DoS)
 const WORLD_BOUNDARY = 1_000_000; // Reject world coords beyond ±1M blocks
 const MAX_CHUNK_COORD = WORLD_BOUNDARY >> 5; // Reject chunk coords beyond boundary
@@ -153,6 +170,16 @@ export class VoxelRoom extends Room {
 	private mobStateScratch: MobUpdateBatchEntry[] = [];
 	private mobSnapshotScratch: ServerMob[] = [];
 	private mobUpdateEncoder = new BinaryEncoder(2048);
+	// Server-authoritative dropped items — positions/lifetimes owned by the
+	// server; clients render them via ItemSpawn / ItemUpdateBatch / ItemDespawn.
+	private itemSim!: ServerItemSimulation;
+	private itemTickAccum = 0;
+	// Reused across the item broadcast: pooled entry objects + encoder, so the
+	// fixed-rate item update cycle allocates nothing per broadcast.
+	private itemStatePool: ItemUpdateBatchEntry[] = [];
+	private itemStateScratch: ItemUpdateBatchEntry[] = [];
+	private itemSnapshotScratch: ServerItem[] = [];
+	private itemUpdateEncoder = new BinaryEncoder(4096);
 	private playerPosPool: Array<{ x: number; y: number; z: number }> = [];
 	private playerPosScratch: Array<{ x: number; y: number; z: number }> = [];
 	// Ring buffer of recent edits for sync on join (insertion O(1)).
@@ -348,6 +375,10 @@ export class VoxelRoom extends Room {
 		// the room tick — no LevelDB on the sim path.
 		this.mobSim = new ServerMobSimulation(this.worldStorage);
 
+		// Server-authoritative dropped items: physics + lifetime owned by the
+		// server; clients only render + interpolate the broadcast positions.
+		this.itemSim = new ServerItemSimulation(this.worldStorage);
+
 		// Generate (once) the world spawn point on world creation, and prewarm
 		// the spawn-area chunks around the *actual* spawn (one-time cost, which
 		// is fine at world creation). Memoized via ensureWorldSpawn().
@@ -488,6 +519,39 @@ export class VoxelRoom extends Room {
 						mob.z,
 						mob.yaw,
 					);
+					parts.push(msg);
+					totalLen += msg.length;
+				}
+				if (parts.length > 0) {
+					const merged = new Uint8Array(totalLen);
+					let offset = 0;
+					for (const part of parts) {
+						merged.set(part, offset);
+						offset += part.length;
+					}
+					client.sendBytes("binary", merged);
+				}
+			}
+
+			// Sync current server items so the joiner sees the same dropped
+			// items as everyone else. Concatenated into one frame, like the
+			// mob join sync above.
+			if (this.itemSim.size > 0) {
+				const items = this.itemSim.snapshotInto(this.itemSnapshotScratch);
+				const parts: Uint8Array[] = [];
+				let totalLen = 0;
+				for (const item of items) {
+					const msg = encodeItemSpawn({
+						id: item.id,
+						itemId: item.itemId,
+						stackSize: item.stackSize,
+						x: item.x,
+						y: item.y,
+						z: item.z,
+						vx: item.vx,
+						vy: item.vy,
+						vz: item.vz,
+					});
 					parts.push(msg);
 					totalLen += msg.length;
 				}
@@ -1113,6 +1177,22 @@ export class VoxelRoom extends Room {
 			this.writeMobUpdateBatch();
 		}
 
+		// Server-authoritative items: advance physics, broadcast despawns
+		// immediately and positions at a lower rate than the player tick.
+		const itemEvents = this.itemSim.tick(deltaMs);
+		for (let i = 0; i < itemEvents.length; i++) {
+			this.broadcastBytes(
+				"binary",
+				encodeItemDespawn(itemEvents[i].item.id),
+				{},
+			);
+		}
+		this.itemTickAccum += deltaMs;
+		if (this.itemTickAccum >= ITEM_UPDATE_INTERVAL) {
+			this.itemTickAccum = 0;
+			this.writeItemUpdateBatch();
+		}
+
 		this.statesScratch.length = 0;
 		let idx = 0;
 		for (const p of this.players.values()) {
@@ -1272,6 +1352,36 @@ export class VoxelRoom extends Room {
 		this.broadcastBytes("binary", this.mobUpdateEncoder.getBytes(), {});
 	}
 
+	/** Broadcast all item positions at ITEM_UPDATE_INTERVAL (pooled, no alloc). */
+	private writeItemUpdateBatch(): void {
+		const items = this.itemSim.snapshotInto(this.itemSnapshotScratch);
+		if (items.length === 0) return;
+
+		const scratch = this.itemStateScratch;
+		scratch.length = 0;
+		let idx = 0;
+		for (const item of items) {
+			let slot = this.itemStatePool[idx];
+			if (!slot) {
+				slot = { id: 0, x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0 };
+				this.itemStatePool[idx] = slot;
+			}
+			slot.id = item.id;
+			slot.x = item.x;
+			slot.y = item.y;
+			slot.z = item.z;
+			slot.vx = item.vx;
+			slot.vy = item.vy;
+			slot.vz = item.vz;
+			scratch.push(slot);
+			idx++;
+		}
+
+		this.itemUpdateEncoder.reset();
+		writeItemUpdateBatch(this.itemUpdateEncoder, scratch);
+		this.broadcastBytes("binary", this.itemUpdateEncoder.getBytes(), {});
+	}
+
 	private handleBinaryMessage(client: Client, data: Uint8Array): void {
 		if (data.byteLength < 1) return;
 
@@ -1360,6 +1470,35 @@ export class VoxelRoom extends Room {
 			edit.blockId <= MAX_BLOCK_ID &&
 			(edit.action === BlockActionType.Place ||
 				edit.action === BlockActionType.Break)
+		);
+	}
+
+	/**
+	 * Dropped-item messages must carry a known item id, a sane stack size, and
+	 * finite coordinates/velocities inside the world boundary. Bitwise packing
+	 * would silently truncate fractional or huge values, so we validate before
+	 * mutating authoritative item state.
+	 */
+	private isValidItemDrop(drop: ItemDropData): boolean {
+		return (
+			Number.isInteger(drop.itemId) &&
+			drop.itemId >= 1 &&
+			drop.itemId <= MAX_ITEM_ID &&
+			Number.isInteger(drop.stackSize) &&
+			drop.stackSize >= 1 &&
+			drop.stackSize <= MAX_ITEM_STACK &&
+			Number.isFinite(drop.x) &&
+			Number.isFinite(drop.y) &&
+			Number.isFinite(drop.z) &&
+			Number.isFinite(drop.vx) &&
+			Number.isFinite(drop.vy) &&
+			Number.isFinite(drop.vz) &&
+			Math.abs(drop.x) <= WORLD_BOUNDARY &&
+			Math.abs(drop.y) <= WORLD_BOUNDARY &&
+			Math.abs(drop.z) <= WORLD_BOUNDARY &&
+			Math.abs(drop.vx) <= MAX_ITEM_VELOCITY &&
+			Math.abs(drop.vy) <= MAX_ITEM_VELOCITY &&
+			Math.abs(drop.vz) <= MAX_ITEM_VELOCITY
 		);
 	}
 
@@ -1872,6 +2011,65 @@ export class VoxelRoom extends Room {
 					message: chat.message,
 				});
 				this.broadcastBytes("binary", payload, { except: client });
+				break;
+			}
+
+			case MessageType.ItemDrop: {
+				// Decode from a fresh decoder (the shared one already consumed
+				// the type byte); every read below is synchronous.
+				const drop = decodeItemDrop(data);
+				const player = this.players.get(client.sessionId);
+				if (!player) return;
+				if (!this.isValidItemDrop(drop)) return;
+
+				// The server owns the item's instance id + lifetime. Broadcast
+				// the spawn to everyone (including the dropper) so all clients
+				// render the same authoritative item.
+				const item = this.itemSim.add(
+					drop.itemId,
+					drop.stackSize,
+					drop.x,
+					drop.y,
+					drop.z,
+					drop.vx,
+					drop.vy,
+					drop.vz,
+				);
+				this.broadcastBytes(
+					"binary",
+					encodeItemSpawn({
+						id: item.id,
+						itemId: item.itemId,
+						stackSize: item.stackSize,
+						x: item.x,
+						y: item.y,
+						z: item.z,
+						vx: item.vx,
+						vy: item.vy,
+						vz: item.vz,
+					}),
+					{},
+				);
+				break;
+			}
+
+			case MessageType.ItemPickup: {
+				const pickup = decodeItemPickup(data);
+				const player = this.players.get(client.sessionId);
+				if (!player) return;
+
+				const item = this.itemSim.get(pickup.itemId);
+				if (!item) return;
+
+				// Reach check: the player must be near the item to pick it up,
+				// preventing teleport-pickup of items across the map.
+				const dx = item.x - player.x;
+				const dy = item.y - player.y;
+				const dz = item.z - player.z;
+				if (dx * dx + dy * dy + dz * dz > ITEM_PICKUP_RADIUS_SQ) return;
+
+				this.itemSim.remove(pickup.itemId);
+				this.broadcastBytes("binary", encodeItemDespawn(pickup.itemId), {});
 				break;
 			}
 

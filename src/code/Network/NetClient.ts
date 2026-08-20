@@ -296,6 +296,12 @@ export class NetClient {
 					// Handled by RemoteMobManager via addBinaryHandler.
 					break;
 
+				case MessageType.ItemSpawn:
+				case MessageType.ItemUpdateBatch:
+				case MessageType.ItemDespawn:
+					// Handled by RemoteItemManager via addBinaryHandler.
+					break;
+
 				default:
 					console.warn(
 						`[NetClient] Unknown message type: 0x${msgType.toString(16)}`,
@@ -506,6 +512,44 @@ export class NetClient {
 
 		this.encoder.reset();
 		this.encoder.writeChunkRequestBatch(requests);
+		room.sendBytes("binary", this.encoder.getBytes());
+	}
+
+	/** C→S: a player dropped an item into the world (server-authoritative). */
+	sendItemDrop(
+		itemId: number,
+		stackSize: number,
+		x: number,
+		y: number,
+		z: number,
+		vx: number,
+		vy: number,
+		vz: number,
+	): void {
+		const room = this.getConnectedRoom();
+		if (!room) return;
+
+		this.encoder.reset();
+		this.encoder.writeUint8(MessageType.ItemDrop);
+		this.encoder.writeUint16(itemId);
+		this.encoder.writeUint16(stackSize);
+		this.encoder.writeFloat32(x);
+		this.encoder.writeFloat32(y);
+		this.encoder.writeFloat32(z);
+		this.encoder.writeFloat32(vx);
+		this.encoder.writeFloat32(vy);
+		this.encoder.writeFloat32(vz);
+		room.sendBytes("binary", this.encoder.getBytes());
+	}
+
+	/** C→S: a player picked up a server item, referenced by its instance id. */
+	sendItemPickup(instanceId: number): void {
+		const room = this.getConnectedRoom();
+		if (!room) return;
+
+		this.encoder.reset();
+		this.encoder.writeUint8(MessageType.ItemPickup);
+		this.encoder.writeUint32(instanceId);
 		room.sendBytes("binary", this.encoder.getBytes());
 	}
 

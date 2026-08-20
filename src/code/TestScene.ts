@@ -14,6 +14,7 @@ import { setTerrainSeed } from "./Generation/TerrainHeightMap";
 import { Map1 } from "./Maps/Map1";
 import { type EyeCamera, UnderWaterEffect } from "./Maps/UnderWaterEffect";
 import { NetworkManager } from "./Network/NetworkManager";
+import { RemoteItemManager } from "./Network/RemoteItemManager";
 import { RemoteMobManager } from "./Network/RemoteMobManager";
 import { findSavedServerByName, getPlayerName } from "./Network/serverList";
 import { initializeBlockBreakingVisuals } from "./Player/Hud/BlockHighlight/BlockBreakingVisuals";
@@ -46,6 +47,7 @@ export class TestScene {
 	#disposeLightDebugTool?: () => void;
 	#networkManager?: NetworkManager;
 	#remoteMobManager?: RemoteMobManager;
+	#remoteItemManager?: RemoteItemManager;
 
 	constructor(
 		document: Document,
@@ -127,6 +129,13 @@ export class TestScene {
 		);
 		Map1.remoteMobManager = this.#remoteMobManager;
 
+		// Server-authoritative items: render remote dropped items driven by
+		// ItemSpawn / ItemUpdateBatch / ItemDespawn. Created after connect so
+		// its binary handler is registered for the lifetime of the connection.
+		this.#remoteItemManager = new RemoteItemManager(
+			this.#networkManager.netClient,
+		);
+
 		await map.initPromise;
 
 		console.log(
@@ -139,6 +148,7 @@ export class TestScene {
 		this.registerFrameUpdate(scene, playerCamera, (deltaMs) => {
 			this.#networkManager?.tick(deltaMs);
 			this.#remoteMobManager?.update(deltaMs);
+			this.#remoteItemManager?.update(deltaMs);
 		});
 	}
 
@@ -223,6 +233,7 @@ export class TestScene {
 		this.#playerStatePersistence?.dispose();
 		this.#networkManager?.disconnect();
 		this.#remoteMobManager?.dispose();
+		this.#remoteItemManager?.dispose();
 
 		void WorldStorage.flush();
 
@@ -238,6 +249,7 @@ export class TestScene {
 		this.#playerStatePersistence = undefined;
 		this.#networkManager = undefined;
 		this.#remoteMobManager = undefined;
+		this.#remoteItemManager = undefined;
 		Map1.remoteMobManager = null;
 		this.#disposeLightDebugTool = undefined;
 	}

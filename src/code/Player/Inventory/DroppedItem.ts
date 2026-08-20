@@ -272,6 +272,12 @@ export class DroppedItem implements IUsable {
 	// PERF: settled items do not need physics every frame.
 	#sleeping = false;
 
+	// Remote (server-authoritative) items: the server owns position +
+	// lifetime. The client only renders + interpolates, so local physics is
+	// disabled (kept "sleeping") and position is driven via setRemotePosition().
+	#remoteInstanceId: number | null = null;
+	#remotePickup: ((instanceId: number) => void) | null = null;
+
 	static readonly #allItems: DroppedItem[] = [];
 	static #observerRegistered = false;
 
@@ -410,6 +416,16 @@ export class DroppedItem implements IUsable {
 	}
 
 	use = (player: Player): void => {
+		// Remote (server-authoritative) items: tell the server we picked this
+		// one up (it will broadcast a despawn to everyone), then add it to the
+		// inventory locally and remove our own mesh.
+		if (this.#remoteInstanceId !== null && this.#remotePickup) {
+			this.#remotePickup(this.#remoteInstanceId);
+			player.playerInventory.addItem(this.#item);
+			this.#dispose();
+			return;
+		}
+
 		const remainder = player.playerInventory.addItem(this.#item);
 		if (remainder <= 0) {
 			this.#dispose();
@@ -574,6 +590,37 @@ export class DroppedItem implements IUsable {
 	 */
 	public setInitialLight(packedLight: number): void {
 		this.#applyTintFromPackedLight(packedLight);
+	}
+
+	/**
+	 * Mark this item as server-authoritative. Disables local physics (the
+	 * global observer skips sleeping items) and registers the pickup callback
+	 * invoked when the local player interacts with it.
+	 */
+	public setRemote(
+		instanceId: number,
+		onPickup: (instanceId: number) => void,
+	): void {
+		this.#remoteInstanceId = instanceId;
+		this.#remotePickup = onPickup;
+		this.#sleeping = true;
+	}
+
+	/**
+	 * Drive the rendered position from the server's authoritative state.
+	 * Reused transform + lighting sync keeps the item lit correctly as it
+	 * moves between voxels.
+	 */
+	public setRemotePosition(x: number, y: number, z: number): void {
+		this.#position.x = x;
+		this.#position.y = y;
+		this.#position.z = z;
+		this.#syncTransformAndLightingIfMoved();
+	}
+
+	/** Public dispose (idempotent) for the RemoteItemManager. */
+	public dispose(): void {
+		this.#dispose();
 	}
 
 	#applyTintFromPackedLight(packedLight: number): void {

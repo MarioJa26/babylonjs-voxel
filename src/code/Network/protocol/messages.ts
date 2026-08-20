@@ -24,6 +24,8 @@ export const MessageType = {
 	BlockEdit: 0x02,
 	ChunkRequest: 0x03,
 	ChunkRequestBatch: 0x04,
+	ItemDrop: 0x05, // C→S: a player dropped an item into the world
+	ItemPickup: 0x06, // C→S: a player picked up a server item (by instance id)
 
 	// Server → Client
 	PlayerStateBatch: 0x10,
@@ -53,6 +55,11 @@ export const MessageType = {
 	// wire, and the client can persist it without re-serializing.
 	ChunkDataDeflated: 0x24, // Single chunk: [cx:i32][cy:i32][cz:i32][version:u32][len:u32][deflated blob]
 	ChunkDataDeflatedBatch: 0x25, // Multiple deflated chunk blobs in one message
+
+	// Server → Client: server-authoritative dropped items
+	ItemSpawn: 0x26, // A dropped item appeared in the world
+	ItemUpdateBatch: 0x27, // Position batch for all dropped items (fixed-rate)
+	ItemDespawn: 0x28, // A dropped item was picked up / expired / removed
 } as const;
 
 export type MessageType = (typeof MessageType)[keyof typeof MessageType];
@@ -175,4 +182,60 @@ export interface MobSpawnData {
 export interface MobDespawnData {
 	/** Server-assigned mob id (uint16). */
 	mobId: number;
+}
+
+/**
+ * Server-authoritative dropped items. Mirrors the client's DroppedItem so
+ * both sides agree on what an item id renders as. The server owns all world
+ * item positions and lifetimes; clients only render + interpolate.
+ */
+
+/** C→S: a player dropped an item into the world. */
+export interface ItemDropData {
+	itemId: number;
+	stackSize: number;
+	x: number;
+	y: number;
+	z: number;
+	vx: number;
+	vy: number;
+	vz: number;
+}
+
+/** C→S: a player picked up a server item, referenced by its instance id. */
+export interface ItemPickupData {
+	/** Server-assigned item instance id (uint32). */
+	itemId: number;
+}
+
+/** S→C: a dropped item appeared in the world. */
+export interface ItemSpawnData {
+	/** Server-assigned item instance id (uint32). */
+	id: number;
+	itemId: number;
+	stackSize: number;
+	x: number;
+	y: number;
+	z: number;
+	vx: number;
+	vy: number;
+	vz: number;
+}
+
+/** One entry of a S→C ItemUpdateBatch: identity + snapshot state. */
+export interface ItemUpdateBatchEntry {
+	/** Server-assigned item instance id (uint32). */
+	id: number;
+	x: number;
+	y: number;
+	z: number;
+	vx: number;
+	vy: number;
+	vz: number;
+}
+
+/** S→C: a dropped item was removed (picked up / expired / out of bounds). */
+export interface ItemDespawnData {
+	/** Server-assigned item instance id (uint32). */
+	id: number;
 }

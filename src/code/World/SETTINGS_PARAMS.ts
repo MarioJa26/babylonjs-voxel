@@ -7,8 +7,8 @@ export const SETTING_PARAMS = {
 	MAX_CHUNK_HEIGHT: 64,
 	CHUNK_UNLOAD_DISTANCE_BUFFER: 1, // How many extra chunks to keep before unloading
 	// 0 = auto (render-distance based), >0 = explicit per-cycle cap
-	CHUNK_LOAD_BATCH_LIMIT: 255,
-	CHUNK_UNLOAD_BATCH_LIMIT: 255,
+	CHUNK_LOAD_BATCH_LIMIT: 511,
+	CHUNK_UNLOAD_BATCH_LIMIT: 511,
 	// Soft budget used by chunk loading scheduler to decide whether to continue
 	// work in microtasks or yield to next frame.
 	CHUNK_LOADING_FRAME_BUDGET_MS: 2.0,

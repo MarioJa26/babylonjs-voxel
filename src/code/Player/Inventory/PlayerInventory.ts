@@ -3,7 +3,7 @@ import { Observable } from "@/code/Lib/Math";
 import { InventoryControls } from "../Controls/InventoryControls";
 import { generateShapeVariants } from "../Crafting/ShapeVariantGenerator";
 import type { Player } from "../Player";
-import { DroppedItem } from "./DroppedItem";
+import { dropWorldItem } from "./dropWorldItem";
 import { Item } from "./Item";
 import {
 	ensureItemRegistryLoaded,
@@ -457,17 +457,15 @@ export class PlayerInventory {
 		const player = this.#player;
 		const forward = player.playerCamera.getForwardDirection();
 
-		const droppedItem = new DroppedItem(
+		dropWorldItem(
 			worldItem,
 			player.position.x + forward.x,
 			player.position.y + forward.y + 0.5,
 			player.position.z + forward.z,
-		);
-
-		droppedItem.addVelocity(
 			forward.x * 8 + player.velocity.x,
 			forward.y * 8 + player.velocity.y,
 			forward.z * 8 + player.velocity.z,
+			player,
 		);
 
 		if (item.row >= 0 && item.col >= 0 && item.stackSize <= 0) {

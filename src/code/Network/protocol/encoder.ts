@@ -14,6 +14,10 @@ import {
 	type BlockEditRejectedData,
 	type ChatMessageData,
 	ChunkResultKind,
+	type ItemDropData,
+	type ItemPickupData,
+	type ItemSpawnData,
+	type ItemUpdateBatchEntry,
 	MessageType,
 	type MobUpdateBatchEntry,
 	type PlayerJoinData,
@@ -1397,4 +1401,115 @@ export function encodeMobDespawn(mobId: number): Uint8Array {
 export function decodeMobDespawn(buffer: Uint8Array): number {
 	const dec = new BinaryDecoder(buffer, 1);
 	return dec.readUint16();
+}
+
+// ---------------------------------------------------------------------------
+// Server-authoritative dropped items
+// ItemDrop (C→S):       [type:1][itemId:u16][stackSize:u16][x:f32][y:f32][z:f32][vx:f32][vy:f32][vz:f32]
+// ItemPickup (C→S):     [type:1][itemId:u32]  (server-assigned instance id)
+// ItemSpawn (S→C):      [type:1][id:u32][itemId:u16][stackSize:u16][x:f32][y:f32][z:f32][vx:f32][vy:f32][vz:f32]
+// ItemUpdateBatch (S→C):[type:1][count:u8][id:u32][x:f32][y:f32][z:f32][vx:f32][vy:f32][vz:f32] × count
+// ItemDespawn (S→C):    [type:1][id:u32]
+// ---------------------------------------------------------------------------
+
+export function encodeItemDrop(data: ItemDropData): Uint8Array {
+	const enc = new BinaryEncoder(1 + 2 + 2 + 4 * 7);
+	enc.writeUint8(MessageType.ItemDrop);
+	enc.writeUint16(data.itemId);
+	enc.writeUint16(data.stackSize);
+	enc.writeFloat32(data.x);
+	enc.writeFloat32(data.y);
+	enc.writeFloat32(data.z);
+	enc.writeFloat32(data.vx);
+	enc.writeFloat32(data.vy);
+	enc.writeFloat32(data.vz);
+	return enc.getBytes();
+}
+
+export function decodeItemDrop(buffer: Uint8Array): ItemDropData {
+	const dec = new BinaryDecoder(buffer, 1);
+	return {
+		itemId: dec.readUint16(),
+		stackSize: dec.readUint16(),
+		x: dec.readFloat32(),
+		y: dec.readFloat32(),
+		z: dec.readFloat32(),
+		vx: dec.readFloat32(),
+		vy: dec.readFloat32(),
+		vz: dec.readFloat32(),
+	};
+}
+
+export function encodeItemPickup(data: ItemPickupData): Uint8Array {
+	const enc = new BinaryEncoder(5);
+	enc.writeUint8(MessageType.ItemPickup);
+	enc.writeUint32(data.itemId);
+	return enc.getBytes();
+}
+
+export function decodeItemPickup(buffer: Uint8Array): ItemPickupData {
+	const dec = new BinaryDecoder(buffer, 1);
+	return { itemId: dec.readUint32() };
+}
+
+export function encodeItemSpawn(data: ItemSpawnData): Uint8Array {
+	const enc = new BinaryEncoder(1 + 4 + 2 + 2 + 4 * 7);
+	enc.writeUint8(MessageType.ItemSpawn);
+	enc.writeUint32(data.id);
+	enc.writeUint16(data.itemId);
+	enc.writeUint16(data.stackSize);
+	enc.writeFloat32(data.x);
+	enc.writeFloat32(data.y);
+	enc.writeFloat32(data.z);
+	enc.writeFloat32(data.vx);
+	enc.writeFloat32(data.vy);
+	enc.writeFloat32(data.vz);
+	return enc.getBytes();
+}
+
+export function decodeItemSpawn(buffer: Uint8Array): ItemSpawnData {
+	const dec = new BinaryDecoder(buffer, 1);
+	return {
+		id: dec.readUint32(),
+		itemId: dec.readUint16(),
+		stackSize: dec.readUint16(),
+		x: dec.readFloat32(),
+		y: dec.readFloat32(),
+		z: dec.readFloat32(),
+		vx: dec.readFloat32(),
+		vy: dec.readFloat32(),
+		vz: dec.readFloat32(),
+	};
+}
+
+/** Batch encoding for server → client item position broadcasts (pooled). */
+export function writeItemUpdateBatch(
+	enc: BinaryEncoder,
+	entries: ItemUpdateBatchEntry[],
+): void {
+	const count = Math.min(entries.length, 255);
+	enc.writeUint8(MessageType.ItemUpdateBatch);
+	enc.writeUint8(count);
+	for (let i = 0; i < count; i++) {
+		const e = entries[i];
+		enc.writeUint32(e.id);
+		enc.writeFloat32(e.x);
+		enc.writeFloat32(e.y);
+		enc.writeFloat32(e.z);
+		enc.writeFloat32(e.vx);
+		enc.writeFloat32(e.vy);
+		enc.writeFloat32(e.vz);
+	}
+}
+
+export function encodeItemDespawn(id: number): Uint8Array {
+	const enc = new BinaryEncoder(5);
+	enc.writeUint8(MessageType.ItemDespawn);
+	enc.writeUint32(id);
+	return enc.getBytes();
+}
+
+export function decodeItemDespawn(buffer: Uint8Array): number {
+	const dec = new BinaryDecoder(buffer, 1);
+	return dec.readUint32();
 }
