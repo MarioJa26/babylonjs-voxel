@@ -27,7 +27,7 @@ type GenerateChunkResult = {
 };
 
 const IS_ORE = new Uint8Array(128);
-for (const id of [14, 16, 18, 19, 21, 25, 26, 79]) {
+for (const id of [16, 21, 79, 80, 96, 97, 98, 99]) {
 	IS_ORE[id] = 1;
 }
 

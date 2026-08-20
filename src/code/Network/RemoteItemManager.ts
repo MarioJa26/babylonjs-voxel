@@ -202,9 +202,7 @@ export class RemoteItemManager {
 			// extrapolation causes items to phase through blocks
 			// between server position updates.
 			const extrapolatedX = inst.targetX + inst.velX * t;
-			const extrapolatedY =
-				inst.targetY +
-				(inst.velY > 0 ? inst.velY * t : 0);
+			const extrapolatedY = inst.targetY + (inst.velY > 0 ? inst.velY * t : 0);
 			const extrapolatedZ = inst.targetZ + inst.velZ * t;
 
 			// Smooth toward the extrapolated target.
