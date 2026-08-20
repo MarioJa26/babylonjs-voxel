@@ -77,6 +77,10 @@ export const USE_GPU_FACE_DECODING = true;
 
 const MAX_LOCAL = 64; // subchunks per group (GROUP_SIZE^3)
 const OFFSETS_PER_GROUP = MAX_LOCAL; // vec4 entries per group block
+// log2(OFFSETS_PER_GROUP) — OFFSETS_PER_GROUP (== MAX_LOCAL) must stay a
+// power of two for allocOffsetBlock/freeOffsetBlock's shifts below to stay
+// equivalent to `* OFFSETS_PER_GROUP` / `/ OFFSETS_PER_GROUP`.
+const OFFSETS_PER_GROUP_SHIFT = 6;
 
 const SHARED_QUAD_POSITIONS = new Float32Array([
 	0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1,
@@ -333,7 +337,7 @@ function createFaceArena(initialCapacity: number): FaceArena {
 	if (capacity < 1) capacity = 1;
 	if (capacity > maxFaces) capacity = maxFaces;
 	const cpu = new Uint32Array(capacity * 3);
-	const buffer = createStorageBuffer(engineRef!, cpu, "face-set");
+	const buffer = createStorageBuffer(engineRef!, cpu);
 	const arena: FaceArena = {
 		cpu,
 		buffer,
@@ -392,7 +396,7 @@ function growArena(arena: FaceArena, index: number): void {
 	arena.cpu = newCpu;
 	arena.capacity = newCapacity;
 	const old = arena.buffer;
-	arena.buffer = createStorageBuffer(engineRef!, arena.cpu, "face-set");
+	arena.buffer = createStorageBuffer(engineRef!, arena.cpu);
 	bindArenaToMaterials(arena, index);
 	if (engineRef && old) {
 		const e = engineRef;
@@ -607,19 +611,23 @@ function freeFaces(arena: number, base: number, count: number): void {
 }
 
 function freeOffsetBlock(base: number): void {
-	const blockIndex = (base / OFFSETS_PER_GROUP) | 0; // faster than Math.floor
+	// OFFSETS_PER_GROUP is a power of two (64): an unsigned right shift is
+	// exact for non-negative `base` and skips the float division + `|0`
+	// truncation the previous `(base / OFFSETS_PER_GROUP) | 0` did — same
+	// idea as the "faster than Math.floor" comment already on this line.
+	const blockIndex = base >>> OFFSETS_PER_GROUP_SHIFT;
 	offsetFree.push(blockIndex);
 }
 
 function allocOffsetBlock(): number {
 	if (offsetFree.length > 0) {
 		const blockIndex = offsetFree.pop()!;
-		return blockIndex * OFFSETS_PER_GROUP;
+		return blockIndex << OFFSETS_PER_GROUP_SHIFT;
 	}
 	if (offsetUsedGroups + 1 > offsetCapacityGroups) growOffset();
 	const blockIndex = offsetUsedGroups;
 	offsetUsedGroups += 1;
-	return blockIndex * OFFSETS_PER_GROUP;
+	return blockIndex << OFFSETS_PER_GROUP_SHIFT;
 }
 
 function growOffset(): void {
@@ -888,6 +896,15 @@ function ensureFaceWordViews(
 // Each face is 3 u32 words; the per-face chunk index (ci) is already stamped
 // into word2 byte 3 by the merged-group assembly, so the words are copied
 // verbatim.
+//
+// PERF: the inner copy is 4-way unrolled. This is the hottest per-element
+// kernel in the file (runs over every dirty face on every remesh) — with the
+// plain 1-at-a-time loop, the increment/compare/branch of the loop itself is
+// a significant fraction of the 6 memory ops (3 loads + 3 stores) each
+// iteration does. Unrolling amortizes that control overhead across 4 faces
+// and gives the CPU more independent load/store pairs to overlap. As with
+// any hand-unroll, verify the win against a trace rather than assuming it —
+// gains here are JIT/engine dependent.
 function packFaceRanges(
 	state: PackedMeshState,
 	input: PackedMeshInput,
@@ -929,10 +946,33 @@ function packFaceRanges(
 			count = faceCount - start;
 		}
 
-		let dst = baseWord + start * FACE_WORDS;
 		const end = start + count;
+		const unrolledEnd = start + (count - (count % 4));
 
-		for (let i = start; i < end; i++) {
+		let dst = baseWord + start * FACE_WORDS;
+		let i = start;
+
+		for (; i < unrolledEnd; i += 4) {
+			faceCpu[dst] = aWords[i];
+			faceCpu[dst + 1] = bWords[i];
+			faceCpu[dst + 2] = cWords[i];
+
+			faceCpu[dst + 3] = aWords[i + 1];
+			faceCpu[dst + 4] = bWords[i + 1];
+			faceCpu[dst + 5] = cWords[i + 1];
+
+			faceCpu[dst + 6] = aWords[i + 2];
+			faceCpu[dst + 7] = bWords[i + 2];
+			faceCpu[dst + 8] = cWords[i + 2];
+
+			faceCpu[dst + 9] = aWords[i + 3];
+			faceCpu[dst + 10] = bWords[i + 3];
+			faceCpu[dst + 11] = cWords[i + 3];
+
+			dst += 12;
+		}
+
+		for (; i < end; i++) {
 			faceCpu[dst] = aWords[i];
 			faceCpu[dst + 1] = bWords[i];
 			faceCpu[dst + 2] = cWords[i];
@@ -941,6 +981,8 @@ function packFaceRanges(
 	}
 }
 
+// Same 4-way unroll as packFaceRanges above, for the full-mesh pack path
+// (initial build / full realloc). See that function's PERF comment.
 function packFaces(state: PackedMeshState, input: PackedMeshInput): void {
 	ensureFaceWordViews(state, input);
 
@@ -953,12 +995,36 @@ function packFaces(state: PackedMeshState, input: PackedMeshInput): void {
 	const cWords = state.faceWordsC!;
 	const faceCount = aWords.length;
 
-	let o = state.faceBase * FACE_WORDS;
+	const unrolledEnd = faceCount - (faceCount % 4);
 
-	for (let i = 0; i < faceCount; i++) {
-		faceCpu[o++] = aWords[i];
-		faceCpu[o++] = bWords[i];
-		faceCpu[o++] = cWords[i];
+	let o = state.faceBase * FACE_WORDS;
+	let i = 0;
+
+	for (; i < unrolledEnd; i += 4) {
+		faceCpu[o] = aWords[i];
+		faceCpu[o + 1] = bWords[i];
+		faceCpu[o + 2] = cWords[i];
+
+		faceCpu[o + 3] = aWords[i + 1];
+		faceCpu[o + 4] = bWords[i + 1];
+		faceCpu[o + 5] = cWords[i + 1];
+
+		faceCpu[o + 6] = aWords[i + 2];
+		faceCpu[o + 7] = bWords[i + 2];
+		faceCpu[o + 8] = cWords[i + 2];
+
+		faceCpu[o + 9] = aWords[i + 3];
+		faceCpu[o + 10] = bWords[i + 3];
+		faceCpu[o + 11] = cWords[i + 3];
+
+		o += 12;
+	}
+
+	for (; i < faceCount; i++) {
+		faceCpu[o] = aWords[i];
+		faceCpu[o + 1] = bWords[i];
+		faceCpu[o + 2] = cWords[i];
+		o += 3;
 	}
 }
 
@@ -999,6 +1065,12 @@ function packOffsets(state: PackedMeshState, input: PackedMeshInput): void {
 // would need more than MAX_INSTANCE_MATRIX_ELEMENTS — the caller then skips
 // the mesh update instead of attempting a multi-gigabyte allocation (which
 // hard-crashes the tab with "Array buffer allocation failed").
+//
+// PERF: the write loop is 4-way unrolled. It only ever writes 3 scalar lanes
+// per instance (faceBase/arena/offsetBase are constant across the whole
+// call), so the loop-control-to-work ratio here is even worse than
+// packFaces' — unrolling has more relative overhead to amortize. Verify
+// against a trace, same caveat as packFaceRanges.
 function buildInstanceMatrices(
 	prev: Float32Array | undefined,
 	arena: number,
@@ -1039,14 +1111,41 @@ function buildInstanceMatrices(
 		matrices = new Float32Array(capacity);
 		start = 0;
 	}
+
 	// The matrices are otherwise all-zero and never change, so only the
 	// faceBase (world3.w), arena (world0.w) and offsetBase (world1.x) lanes
-	// are ever rewritten. A running accumulator replaces `count`
-	// multiplications (i*16) with `count` additions.
+	// are ever rewritten.
+	const span = count - start;
+	const unrolledEnd = start + (span - (span % 4));
+
+	let i = start;
 	let faceIdx = FACE_BASE_MATRIX_INDEX + start * 16;
 	let arenaIdx = ARENA_MATRIX_INDEX + start * 16;
 	let offsetIdx = OFFSET_BASE_MATRIX_INDEX + start * 16;
-	for (let i = start; i < count; i++) {
+
+	for (; i < unrolledEnd; i += 4) {
+		matrices[faceIdx] = faceBase;
+		matrices[arenaIdx] = arena;
+		matrices[offsetIdx] = offsetBase;
+
+		matrices[faceIdx + 16] = faceBase;
+		matrices[arenaIdx + 16] = arena;
+		matrices[offsetIdx + 16] = offsetBase;
+
+		matrices[faceIdx + 32] = faceBase;
+		matrices[arenaIdx + 32] = arena;
+		matrices[offsetIdx + 32] = offsetBase;
+
+		matrices[faceIdx + 48] = faceBase;
+		matrices[arenaIdx + 48] = arena;
+		matrices[offsetIdx + 48] = offsetBase;
+
+		faceIdx += 64;
+		arenaIdx += 64;
+		offsetIdx += 64;
+	}
+
+	for (; i < count; i++) {
 		matrices[faceIdx] = faceBase;
 		matrices[arenaIdx] = arena;
 		matrices[offsetIdx] = offsetBase;
@@ -1054,6 +1153,7 @@ function buildInstanceMatrices(
 		arenaIdx += 16;
 		offsetIdx += 16;
 	}
+
 	return matrices;
 }
 // ── Thin-instance range updates ─────────────────────────────────────────────
