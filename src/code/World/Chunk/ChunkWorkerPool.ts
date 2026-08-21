@@ -1,3 +1,4 @@
+import { yieldToEventLoop } from "../../Lib/yieldToEventLoop";
 import type {
 	RemoteChunkData,
 	RemoteChunkProvider,
@@ -2804,26 +2805,26 @@ export class ChunkWorkerPool {
 		this.scheduleRemotePumpContinuation();
 	}
 
-	/** Defer the next drain to a microtask — avoids the ~1-4ms macrotask delay of setTimeout(0). */
-	private remoteContinuationCounter = 0;
-
+	/**
+	 * Defer the next drain to a macrotask via MessageChannel (see
+	 * Lib/yieldToEventLoop.ts). This has ~0ms delay (no setTimeout(0) clamp)
+	 * BUT, crucially, it re-arms through a macrotask rather than a
+	 * microtask. The previous implementation re-armed via `queueMicrotask`
+	 * for 31/32 continuations, which let the pump chain spin entirely inside
+	 * the microtask queue — `Run microtasks` would dominate a frame and
+	 * starve rendering/input. Yielding to a macrotask lets the event loop
+	 * breathe once per pump cycle.
+	 */
 	private scheduleRemotePumpContinuation(): void {
 		if (this.remoteTaskQueue.length === 0) return;
 		if (this.remotePumpScheduled) return;
 
 		this.remotePumpScheduled = true;
 
-		if ((++this.remoteContinuationCounter & 31) === 0) {
-			setTimeout(() => {
-				this.remotePumpScheduled = false;
-				this.pumpRemoteGeneration();
-			}, 0);
-		} else {
-			queueMicrotask(() => {
-				this.remotePumpScheduled = false;
-				this.pumpRemoteGeneration();
-			});
-		}
+		void yieldToEventLoop().then(() => {
+			this.remotePumpScheduled = false;
+			this.pumpRemoteGeneration();
+		});
 	}
 
 	private dispatchRemoteRequests(toRequest: Chunk[]): void {

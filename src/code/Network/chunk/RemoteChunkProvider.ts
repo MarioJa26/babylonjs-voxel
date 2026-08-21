@@ -129,41 +129,9 @@ type InflatedResult = {
 	version: number;
 };
 
-/**
- * Yield control back to the event loop without paying the minimum delay
- * `setTimeout(fn, 0)` incurs in browsers — first call is ~1ms, and per the
- * HTML spec, timers nested 5+ deep get clamped to a 4ms floor. A batch with
- * many inflate windows can hit that clamp on every window boundary, adding
- * real latency to something that's meant to be a cheap "let the browser
- * breathe" checkpoint.
- *
- * A MessageChannel round trip dispatches as an ordinary macrotask with no
- * such floor, so this stays close to true zero-delay regardless of nesting.
- * Shared module-level channel: concurrent callers (e.g. two chunk batches
- * decoding at once) coalesce onto the same port and get flushed together,
- * which is strictly less overhead than one channel per call site.
- */
-let yieldPort: MessagePort | null = null;
-let yieldResolvers: Array<() => void> = [];
-
-function yieldToEventLoop(): Promise<void> {
-	if (typeof MessageChannel === "undefined") {
-		return new Promise((resolve) => setTimeout(resolve, 0));
-	}
-	return new Promise((resolve) => {
-		if (yieldPort === null) {
-			const channel = new MessageChannel();
-			channel.port1.onmessage = () => {
-				const resolvers = yieldResolvers;
-				yieldResolvers = [];
-				for (let i = 0; i < resolvers.length; i++) resolvers[i]();
-			};
-			yieldPort = channel.port2;
-		}
-		yieldResolvers.push(resolve);
-		yieldPort.postMessage(null);
-	});
-}
+// See Lib/yieldToEventLoop.ts for the shared zero-delay event-loop yield
+// (MessageChannel macrotask, no setTimeout(0) clamp).
+import { yieldToEventLoop } from "../../Lib/yieldToEventLoop";
 
 export class RemoteChunkProvider {
 	private pending = new Map<bigint, PendingChunk>();

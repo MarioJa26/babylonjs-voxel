@@ -4,6 +4,14 @@
  * Shared by the browser IndexedDB store (shrinks the value an IDB put() has
  * to structured-clone synchronously — the bulk of the per-put cost) and the
  * server→client wire format (bandwidth).
+ *
+ * Engine Optimizations:
+ * 1. Native Stream Consumption: Replaced JS `reader.read()` loops with
+ *    `Response.arrayBuffer()`. This offloads stream-to-buffer aggregation
+ *    to the browser's C++ network stack, eliminating JS microtask overhead,
+ *    promise chaining, and intermediate chunk array allocations.
+ * 2. Direct ReadableStream: Bypassed `Blob` creation and `.stream()` overhead
+ *    by piping directly from a `ReadableStream` controller.
  */
 
 export const BLOB_MARKER_RAW = 0x00;
@@ -18,12 +26,13 @@ const MAX_INFLATE_BYTES = 1 << 26; // 64 MiB
 const FORMAT = "deflate";
 
 /**
- * Blob() only accepts views backed by a plain ArrayBuffer, so a value backed
- * by a SharedArrayBuffer (or a resizable buffer) must be copied first.
+ * Blob() and some stream implementations only accept views backed by a plain
+ * ArrayBuffer. A value backed by a SharedArrayBuffer (or resizable buffer)
+ * must be copied first to prevent detached-buffer errors downstream.
  */
-function toPlainBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+function toPlainBytes(bytes: Uint8Array): Uint8Array {
 	if (bytes.buffer instanceof ArrayBuffer) {
-		return bytes as Uint8Array<ArrayBuffer>;
+		return bytes;
 	}
 	return new Uint8Array(bytes);
 }
@@ -46,22 +55,37 @@ export function deflateSupported(): boolean {
 	}
 }
 
+/**
+ * Engine optimization: Create a ReadableStream directly from bytes.
+ * Bypasses the overhead of `new Blob([bytes]).stream()`.
+ */
+function createByteStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
+	return new ReadableStream({
+		start(controller) {
+			controller.enqueue(bytes);
+			controller.close();
+		},
+	});
+}
+
 /** Compress bytes with zlib "deflate". */
 export async function deflate(bytes: Uint8Array): Promise<Uint8Array> {
 	if (typeof CompressionStream === "undefined") {
 		throw new Error("CompressionStream is not available");
 	}
 
-	const stream = new Blob([toPlainBytes(bytes)])
-		.stream()
-		.pipeThrough(new CompressionStream(FORMAT));
+	const stream = createByteStream(toPlainBytes(bytes)).pipeThrough(
+		new CompressionStream(FORMAT),
+	);
 
-	return drainCollect(stream);
+	// Engine optimization: Response.arrayBuffer() consumes the stream natively
+	// in C++, avoiding the JS microtask queue and manual chunk aggregation.
+	const buffer = await new Response(stream).arrayBuffer();
+	return new Uint8Array(buffer);
 }
 
 /**
- * Decompress bytes produced by deflate into a preallocated buffer of exactly
- * outLen bytes.
+ * Decompress bytes produced by deflate into a buffer of exactly outLen bytes.
  */
 export async function inflateInto(
 	data: Uint8Array,
@@ -75,66 +99,21 @@ export async function inflateInto(
 		throw new Error("DecompressionStream is not available");
 	}
 
-	const stream = new Blob([toPlainBytes(data)])
-		.stream()
-		.pipeThrough(new DecompressionStream(FORMAT));
+	const stream = createByteStream(toPlainBytes(data)).pipeThrough(
+		new DecompressionStream(FORMAT),
+	);
 
-	const out = new Uint8Array(outLen);
-	const reader = stream.getReader();
-	let offset = 0;
+	// Native C++ consumption avoids JS reader loops and offset tracking.
+	const buffer = await new Response(stream).arrayBuffer();
+	const out = new Uint8Array(buffer);
 
-	try {
-		while (true) {
-			const { value, done } = await reader.read();
-			if (done) break;
-			if (!value) continue;
-
-			out.set(value, offset);
-			offset += value.byteLength;
-		}
-	} finally {
-		reader.releaseLock();
-	}
-
-	if (offset !== outLen) {
+	if (out.byteLength !== outLen) {
 		throw new Error(
-			`Decompressed size mismatch: expected ${outLen}, got ${offset}`,
+			`Decompressed size mismatch: expected ${outLen}, got ${out.byteLength}`,
 		);
 	}
 
 	return out;
-}
-
-/** Drain a stream into a single freshly allocated Uint8Array. */
-async function drainCollect(
-	stream: ReadableStream<Uint8Array>,
-): Promise<Uint8Array> {
-	const reader = stream.getReader();
-	const chunks: Uint8Array[] = [];
-	let totalBytes = 0;
-
-	try {
-		while (true) {
-			const { value, done } = await reader.read();
-			if (done) break;
-			if (!value) continue;
-
-			chunks.push(value);
-			totalBytes += value.byteLength;
-		}
-	} finally {
-		reader.releaseLock();
-	}
-
-	const result = new Uint8Array(totalBytes);
-	let offset = 0;
-
-	for (const chunk of chunks) {
-		result.set(chunk, offset);
-		offset += chunk.byteLength;
-	}
-
-	return result;
 }
 
 function writeUint32LE(bytes: Uint8Array, offset: number, value: number): void {
