@@ -36,6 +36,7 @@ export const enum WorkerTaskType {
 	VoxelUnregisterChunk,
 	VoxelUnregisterChunkBatch,
 	VoxelUpdateChunkBuffers,
+	VoxelRecycleBuffers,
 	// --- World bootstrap ---
 	SetWorldSeed,
 }
@@ -189,6 +190,7 @@ export type WorkerRequestData =
 	| VoxelUnregisterChunkRequest
 	| VoxelUnregisterChunkBatchRequest
 	| VoxelUpdateChunkBuffersRequest
+	| VoxelRecycleBuffersRequest
 	| SetWorldSeedRequest;
 
 /* =========================================================
@@ -356,6 +358,18 @@ export type VoxelUpdateChunkBuffersRequest = {
 	blockSAB: SharedArrayBuffer | null;
 	paletteSAB: SharedArrayBuffer | null;
 	lightSAB: SharedArrayBuffer | null;
+};
+
+/**
+ * Main thread → voxel worker: mesh output buffers whose consumers are done
+ * with them, transferred back so the worker can reuse them instead of
+ * slicing fresh ones per response. Only ever sent for results the main
+ * thread DROPPED (stale revision / unknown chunk / LOD skip) — applied
+ * results stay alive in the LOD caches and must never be recycled.
+ */
+export type VoxelRecycleBuffersRequest = {
+	type: WorkerTaskType.VoxelRecycleBuffers;
+	buffers: ArrayBuffer[];
 };
 
 /* =========================================================

@@ -13,11 +13,11 @@
 		"build:test-ts7": "tsc --noEmit && \"F:\\NodeJs\\node.exe\" ./node_modules/vite/bin/vite.js build"
 	},
 	"dependencies": {
-		"@babylonjs/lite": "^1.22.0",
+		"@babylonjs/lite": "^1.23.0",
 		"@colyseus/sdk": "^0.17.43",
 		"@types/level": "^8.0.0",
 		"@types/level-js": "^4.0.5",
-		"@webgpu/types": "^0.1.71",
+		"@webgpu/types": "^0.1.72",
 		"alea": "^1.0.1",
 		"babylon-lite-explorer": "^0.6.0",
 		"idb": "^8.0.3",
@@ -29,7 +29,7 @@
 		"assemblyscript": "^0.28.20",
 		"tsx": "^4.23.12",
 		"typescript": "^7.0.2",
-		"vite": "^8.2.1",
+		"vite": "^8.2.2",
 		"vite-plugin-glsl": "^1.6.1"
 	}
 }

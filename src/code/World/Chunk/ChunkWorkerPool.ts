@@ -98,6 +98,17 @@ export type ChunkWorkerPoolDebugStats = {
 	lastMeshDrainMs: number;
 	lastMeshProcessed: number;
 	totalMeshProcessed: number;
+	// Mesh ingestion outcome counters (P0 instrumentation): applied results
+	// vs. dropped ones. The dropped fractions are what buffer recycling
+	// recovers; a high applied-per-chunk multiplier during load indicates
+	// redundant remesh volume.
+	meshAppliedTotal: number;
+	meshCachedForOtherLodTotal: number;
+	meshStaleDroppedTotal: number;
+	meshUnknownChunkDroppedTotal: number;
+	meshLodSkippedDroppedTotal: number;
+	meshRecycledBuffersTotal: number;
+	meshRecycledBytesTotal: number;
 	totalTerrainDispatches: number;
 	totalRemeshDispatches: number;
 	totalLodPrecomputeDispatches: number;
@@ -121,6 +132,15 @@ export type ChunkWorkerPoolDebugStats = {
 // ---------------------------------------------------------------------------
 function packInflightKey(numericId: number, lod: number): number {
 	return numericId * 16 + (lod & 0xf);
+}
+
+// byteLength > 0 guards against the shared EMPTY_U8 sentinel buffer —
+// transferring it would detach a module global. The instanceof check
+// excludes SharedArrayBuffer-backed views (never produced by the mesh
+// worker, but the static type allows them).
+function pushRecyclableBuffer(scratch: ArrayBuffer[], arr: Uint8Array): void {
+	const buf = arr.buffer;
+	if (buf instanceof ArrayBuffer && buf.byteLength > 0) scratch.push(buf);
 }
 
 type WorkerTaskContext = {
@@ -284,6 +304,18 @@ export class ChunkWorkerPool {
 
 	private meshResultQueue: FullMeshMessage[] = [];
 	private meshResultQueueReadIdx = 0;
+	// Originating worker index per queued result (parallel to meshResultQueue
+	// from meshResultQueueReadIdx onward) — recycled buffers go back to the
+	// sender's voxel worker.
+	private meshResultWorkerIdx: number[] = [];
+	// Scratch for recycle-message buffer collection (reused, never retained).
+	private readonly _recycleScratch: ArrayBuffer[] = [];
+	// Since-last-summary accumulators for the burst ingestion log.
+	private _summaryApplied = 0;
+	private _summaryDropped = 0;
+	// Distinct chunks applied since last summary — distinguishes "world is
+	// big, ~1 mesh per chunk" from "chunks re-meshing multiple times".
+	private readonly _summaryDistinct = new Set<bigint>();
 	private remeshFlushScheduled = false;
 	private processQueuePumpScheduled = false;
 	private meshDrainScheduled = false;
@@ -327,6 +359,8 @@ export class ChunkWorkerPool {
 
 	// Pre-bound methods — avoids per-call .bind(this) allocation
 	private readonly _boundScheduleRemesh = this.scheduleRemesh.bind(this);
+	private readonly _boundScheduleHealRemesh =
+		this.scheduleDeferredNeighborHeal.bind(this);
 	// SoA scratch for scheduleBackgroundLodPrecompute — avoids per-candidate
 	// object allocation.  Indices are grown via .push() to stay on
 	// PACKED_SMI_ELEMENTS (array.length = N followed by fill triggers a
@@ -403,6 +437,13 @@ export class ChunkWorkerPool {
 		lastMeshDrainMs: 0,
 		lastMeshProcessed: 0,
 		totalMeshProcessed: 0,
+		meshAppliedTotal: 0,
+		meshCachedForOtherLodTotal: 0,
+		meshStaleDroppedTotal: 0,
+		meshUnknownChunkDroppedTotal: 0,
+		meshLodSkippedDroppedTotal: 0,
+		meshRecycledBuffersTotal: 0,
+		meshRecycledBytesTotal: 0,
 		totalTerrainDispatches: 0,
 		totalRemeshDispatches: 0,
 		totalLodPrecomputeDispatches: 0,
@@ -1765,16 +1806,26 @@ export class ChunkWorkerPool {
 				((iterCount++ & 15) !== 0 ||
 					performance.now() - start < ChunkWorkerPool.MESH_DRAIN_BUDGET_MS)
 			) {
-				const data = this.meshResultQueue[this.meshResultQueueReadIdx++];
+				const data = this.meshResultQueue[this.meshResultQueueReadIdx];
+				const workerIdx =
+					this.meshResultWorkerIdx[this.meshResultQueueReadIdx] ?? 0;
+				this.meshResultQueueReadIdx++;
 				const { chunkId, lod, opaque, water, cutout } = data;
 				const chunk = this.resolveChunkByMessageId(chunkId);
 
 				if (!chunk) {
+					// Dropped: buffers unreferenced — recycle them.
+					this.debugStats.meshUnknownChunkDroppedTotal++;
+					this._summaryDropped++;
+					this.recycleMeshBuffers(workerIdx, data);
 					processed++;
 					continue;
 				}
 
 				if (data.meshRevision !== chunk.meshRevision) {
+					this.debugStats.meshStaleDroppedTotal++;
+					this._summaryDropped++;
+					this.recycleMeshBuffers(workerIdx, data);
 					chunk.isDirty = true;
 					chunk.remeshQueued = false;
 					this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0, false);
@@ -1783,6 +1834,9 @@ export class ChunkWorkerPool {
 				}
 
 				if (shouldSkipLodForChunk(chunk, lod)) {
+					this.debugStats.meshLodSkippedDroppedTotal++;
+					this._summaryDropped++;
+					this.recycleMeshBuffers(workerIdx, data);
 					normalizeChunkLod(chunk);
 					chunk.isDirty = true;
 					chunk.remeshQueued = false;
@@ -1809,6 +1863,9 @@ export class ChunkWorkerPool {
 					chunk.isDirty = false;
 					chunk.remeshQueued = false;
 					this.queuePostRemeshSave(chunk);
+					this.debugStats.meshAppliedTotal++;
+					this._summaryApplied++;
+					this._summaryDistinct.add(chunkId);
 				} else {
 					if (!canCacheMesh) {
 						_meshApplyScratch.opaque = opaqueData;
@@ -1820,6 +1877,7 @@ export class ChunkWorkerPool {
 					chunk.isDirty = true;
 					chunk.remeshQueued = false;
 					this.scheduleRemesh(chunk, (chunk.lodLevel ?? 0) === 0);
+					this.debugStats.meshCachedForOtherLodTotal++;
 				}
 
 				processed++;
@@ -1839,7 +1897,9 @@ export class ChunkWorkerPool {
 				this.meshResultQueueReadIdx * 2 > this.meshResultQueue.length
 			) {
 				this.meshResultQueue.copyWithin(0, this.meshResultQueueReadIdx);
+				this.meshResultWorkerIdx.copyWithin(0, this.meshResultQueueReadIdx);
 				this.meshResultQueue.length -= this.meshResultQueueReadIdx;
+				this.meshResultWorkerIdx.length -= this.meshResultQueueReadIdx;
 				this.meshResultQueueReadIdx = 0;
 			}
 
@@ -1852,6 +1912,23 @@ export class ChunkWorkerPool {
 
 			if (this.meshResultQueueReadIdx < this.meshResultQueue.length) {
 				this.scheduleMeshFlush();
+			} else if (this._summaryApplied + this._summaryDropped >= 256) {
+				// P0 burst summary: one line per ingestion burst so the
+				// applied-per-chunk remesh multiplier and the recycled fraction
+				// are visible without hooking a profiler. distinct < applied
+				// means chunks are being re-meshed within the burst.
+				console.info(
+					`[MeshIngestion] burst: ${this._summaryApplied} applied ` +
+						`(${this._summaryDistinct.size} distinct chunks), ` +
+						`${this.debugStats.meshCachedForOtherLodTotal} cached-for-other-lod, ` +
+						`${this._summaryDropped} dropped (recycled), ` +
+						`${this.debugStats.meshRecycledBuffersTotal} buffers ` +
+						`(${(this.debugStats.meshRecycledBytesTotal / 1048576).toFixed(1)} MB) returned to workers, ` +
+						`remeshQueue=${this.debugStats.remeshQueueLength}`,
+				);
+				this._summaryApplied = 0;
+				this._summaryDropped = 0;
+				this._summaryDistinct.clear();
 			}
 		} finally {
 			this.insideMeshDrain = false;
@@ -1874,20 +1951,70 @@ export class ChunkWorkerPool {
 	// just overwrote holds the newest result and is still unread, so the
 	// oldest entry is the one discarded instead.
 	// -------------------------------------------------------------------------
-	private enqueueMeshResult(data: FullMeshMessage): void {
+	private enqueueMeshResult(data: FullMeshMessage, workerIndex: number): void {
 		const pending = this.meshResultQueue.length - this.meshResultQueueReadIdx;
 		if (
 			pending >= ChunkWorkerPool.MAX_MESH_QUEUE &&
 			this.meshResultQueueReadIdx < this.meshResultQueue.length
 		) {
+			// Backpressure discard: the oldest unread result is being replaced —
+			// its buffers are unreferenced, so recycle them.
+			this.recycleMeshBuffers(
+				workerIndex,
+				this.meshResultQueue[this.meshResultQueueReadIdx],
+			);
 			this.meshResultQueue[this.meshResultQueueReadIdx] = data;
+			this.meshResultWorkerIdx[this.meshResultQueueReadIdx] = workerIndex;
 		} else {
 			this.meshResultQueue.push(data);
+			this.meshResultWorkerIdx.push(workerIndex);
 		}
 		if (!this.meshDrainScheduled) {
 			this.meshDrainScheduled = true;
 			this._scheduleCentralWork(ChunkWorkerPool.WORK_MESH);
 		}
+	}
+
+	/**
+	 * Transfer a dropped mesh result's output buffers back to the sending
+	 * worker's voxel worker for reuse. ONLY safe for results that were never
+	 * applied: applied results stay referenced by the chunk LOD caches and
+	 * MergedMeshManager lastBuilt* pointers until their group rebuilds.
+	 */
+	private recycleMeshBuffers(workerIndex: number, data: FullMeshMessage): void {
+		const scratch = this._recycleScratch;
+		scratch.length = 0;
+
+		const o = data.opaque;
+		const w = data.water;
+		const c = data.cutout;
+
+		if (o) {
+			pushRecyclableBuffer(scratch, o.faceDataA);
+			pushRecyclableBuffer(scratch, o.faceDataB);
+			pushRecyclableBuffer(scratch, o.faceDataC);
+		}
+		if (w) {
+			pushRecyclableBuffer(scratch, w.faceDataA);
+			pushRecyclableBuffer(scratch, w.faceDataB);
+			pushRecyclableBuffer(scratch, w.faceDataC);
+		}
+		if (c) {
+			pushRecyclableBuffer(scratch, c.faceDataA);
+			pushRecyclableBuffer(scratch, c.faceDataB);
+			pushRecyclableBuffer(scratch, c.faceDataC);
+		}
+
+		if (scratch.length === 0) return;
+
+		let bytes = 0;
+		for (let i = 0; i < scratch.length; i++) {
+			bytes += scratch[i].byteLength;
+		}
+		this.debugStats.meshRecycledBuffersTotal += scratch.length;
+		this.debugStats.meshRecycledBytesTotal += bytes;
+
+		this.workers[workerIndex]?.postVoxelRecycleBuffers(scratch);
 	}
 
 	private queuePostRemeshSave(chunk: Chunk): void {
@@ -2008,6 +2135,40 @@ export class ChunkWorkerPool {
 		if (this.remeshFlushScheduled) return;
 		this.remeshFlushScheduled = true;
 		this._scheduleCentralWork(ChunkWorkerPool.WORK_REMESH_FLUSH);
+	}
+
+	// -------------------------------------------------------------------------
+	// Deferred neighbor-heal remeshes (P2 load-burst coalescing).
+	//
+	// Every generated chunk schedules remeshes for its 6 face-neighbors. In a
+	// load burst, chunk C therefore got one FULL heal remesh per late-arriving
+	// neighbor (up to 6 extra mesh builds per chunk) even though only the
+	// last one matters. Heals requested within HEAL_REMESH_DEBOUNCE_MS of
+	// each other now collapse into a single scheduleRemesh call per chunk.
+	// One pooled timer total — no per-chunk timers.
+	// -------------------------------------------------------------------------
+	// 300ms covers the observed terrain-generation wave cadence (~230-450ms
+	// between bursts) so heals from consecutive waves coalesce into one
+	// rebuild instead of landing as a second full mesh per chunk.
+	private static readonly HEAL_REMESH_DEBOUNCE_MS = 300;
+	private deferredHealRemesh = new Map<Chunk, boolean>();
+	private healFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+	private scheduleDeferredNeighborHeal(chunk: Chunk, priority: boolean): void {
+		const existing = this.deferredHealRemesh.get(chunk);
+		this.deferredHealRemesh.set(chunk, (existing ?? false) || priority);
+
+		if (this.healFlushTimer !== null) return;
+		this.healFlushTimer = setTimeout(() => {
+			this.healFlushTimer = null;
+			if (this.deferredHealRemesh.size === 0) return;
+			for (const [c, p] of this.deferredHealRemesh) {
+				// scheduleRemesh re-validates liveness/emptiness/in-flight state;
+				// the isLoaded check here just skips dead entries cheaply.
+				if (c.isLoaded) this._boundScheduleRemesh(c, p);
+			}
+			this.deferredHealRemesh.clear();
+		}, ChunkWorkerPool.HEAL_REMESH_DEBOUNCE_MS);
 	}
 
 	private flushPendingRemeshQueue(): void {
@@ -2153,7 +2314,7 @@ export class ChunkWorkerPool {
 		if (type === WorkerTaskType.GenerateFullMesh) {
 			const meshData = data as FullMeshMessage;
 			this.clearInflightRemeshByMessage(meshData.chunkId, meshData.lod);
-			this.enqueueMeshResult(meshData);
+			this.enqueueMeshResult(meshData, workerIndex);
 
 			const resolvedChunk = this.resolveChunkByMessageId(meshData.chunkId);
 			if (resolvedChunk) {
@@ -2223,7 +2384,11 @@ export class ChunkWorkerPool {
 					this.setWorkerTaskContext(workerIndex, null);
 					this._markWorkerIdle(workerIndex);
 					if (needsLightRefinement) {
-						scheduleChunkAndNeighborsRemesh(chunk, this._boundScheduleRemesh);
+						scheduleChunkAndNeighborsRemesh(
+							chunk,
+							this._boundScheduleRemesh,
+							this._boundScheduleHealRemesh,
+						);
 						this.enqueueDeferredLightingRefinement(
 							chunk,
 							lightSeedQueue as Uint16Array,
@@ -2241,8 +2406,16 @@ export class ChunkWorkerPool {
 					return false;
 				}
 
-				scheduleChunkAndNeighborsRemesh(chunk, this._boundScheduleRemesh);
-				maybeRemeshNeighborsNowStable(chunk, this._boundScheduleRemesh);
+				scheduleChunkAndNeighborsRemesh(
+					chunk,
+					this._boundScheduleRemesh,
+					this._boundScheduleHealRemesh,
+				);
+				maybeRemeshNeighborsNowStable(
+					chunk,
+					this._boundScheduleRemesh,
+					this._boundScheduleHealRemesh,
+				);
 
 				if (needsLightRefinement) {
 					this.enqueueDeferredLightingRefinement(
@@ -2332,7 +2505,7 @@ export class ChunkWorkerPool {
 		this.clearInflightRemeshByMessage(data.chunkId, data.lod);
 
 		const fullMeshMessage = data as unknown as FullMeshMessage;
-		this.enqueueMeshResult(fullMeshMessage);
+		this.enqueueMeshResult(fullMeshMessage, workerIndex);
 
 		const resolvedChunk = this.resolveChunkByMessageId(data.chunkId);
 		if (resolvedChunk) {

@@ -5,16 +5,19 @@ import {
 	createEmptyWorkerInternalMeshData,
 	MeshBuildSession,
 	type PaddedGrids,
-	toTransferableMeshData,
 	type WorkerMeshInput,
 } from "../MeshPipeline/core/WorkerMeshHelpers";
 import { packCoords } from "./DataStructures/ChunkCoords";
+import { MeshData } from "./DataStructures/MeshData";
 import { PaletteExpander } from "./DataStructures/PaletteExpander";
+import type { ResizableTypedArray } from "./DataStructures/ResizableTypedArray";
+import type { WorkerInternalMeshData } from "./DataStructures/WorkerInternalMeshData";
 import {
 	type FullMeshMessage,
 	type GenerateFullMeshRequest,
 	type RelightMeshMissMessage,
 	type RelightMeshRequest,
+	type VoxelRecycleBuffersRequest,
 	type VoxelRegisterChunkBatchRequest,
 	type VoxelRegisterChunkRequest,
 	type VoxelUnregisterChunkBatchRequest,
@@ -31,6 +34,7 @@ export type VoxelWorkerRequest =
 	| VoxelUnregisterChunkRequest
 	| VoxelUnregisterChunkBatchRequest
 	| VoxelUpdateChunkBuffersRequest
+	| VoxelRecycleBuffersRequest
 	| { type: WorkerTaskType.InitWorkerChannel; port: MessagePort };
 
 // ---------------------------------------------------------------------------
@@ -669,19 +673,82 @@ function buildVoxelMeshFromInput(
 	MeshEmitters.buildVoxelMesh(_session, _opaqueOut, _waterOut, _cutoutOut);
 }
 
+// ---------------------------------------------------------------------------
+// Mesh output buffer pool (T3-2).
+//
+// toTransferableMeshData slices a fresh exact-size copy per response buffer
+// (up to 9 per mesh). The main thread copies those bytes into merged group
+// buffers, so every dropped result generation became garbage on BOTH sides.
+// Dropped results (stale revision / unknown chunk / LOD skip) are now
+// transferred back here and reused: takeTransferableOutput copies into a
+// pooled exact-size buffer when one is available, else falls back to the
+// plain slice. Exact-size invariant is preserved — downstream consumers
+// derive face counts from array lengths, so pooled buffers must match
+// byteLength exactly (no slack).
+//
+// Only dropped results are ever recycled. Applied results stay alive in the
+// main thread's LOD caches and member lastBuilt* references; recycling those
+// would be use-after-free.
+// ---------------------------------------------------------------------------
+const _recyclePool: Uint8Array[] = [];
+let _recyclePoolBytes = 0;
+const RECYCLE_POOL_MAX_BUFFERS = 96;
+const RECYCLE_POOL_MAX_BYTES = 12 * 1024 * 1024;
+
+function takePooledMeshBuffer(byteLength: number): Uint8Array | null {
+	for (let i = 0; i < _recyclePool.length; i++) {
+		const buf = _recyclePool[i];
+		if (buf.length === byteLength) {
+			_recyclePool[i] = _recyclePool[_recyclePool.length - 1];
+			_recyclePool.pop();
+			_recyclePoolBytes -= byteLength;
+			return buf;
+		}
+	}
+	return null;
+}
+
+function givePooledMeshBuffer(buf: Uint8Array): void {
+	if (_recyclePool.length >= RECYCLE_POOL_MAX_BUFFERS) return;
+	if (_recyclePoolBytes + buf.length > RECYCLE_POOL_MAX_BYTES) return;
+	_recyclePool.push(buf);
+	_recyclePoolBytes += buf.length;
+}
+
+function fillMeshBuffer(
+	rta: ResizableTypedArray<Uint8Array>,
+	byteLength: number,
+): Uint8Array {
+	const pooled = takePooledMeshBuffer(byteLength);
+	if (pooled) {
+		pooled.set(rta.backingArray.subarray(0, byteLength));
+		return pooled;
+	}
+	return rta.finalArray;
+}
+
+function takeTransferableOutput(data: WorkerInternalMeshData): MeshData | null {
+	if (data.faceCount <= 0) return null;
+
+	const bytes = data.faceCount << 2;
+	const out = new MeshData();
+	out.faceCount = data.faceCount;
+	out.faceDataA = fillMeshBuffer(data.faceDataA, bytes);
+	out.faceDataB = fillMeshBuffer(data.faceDataB, bytes);
+	out.faceDataC = fillMeshBuffer(data.faceDataC, bytes);
+	return out;
+}
+
 function postMeshResponse(
 	chunkId: bigint,
 	meshRevision: number,
 	lod: number,
 ): void {
-	const opaque =
-		_opaqueOut.faceCount > 0 ? toTransferableMeshData(_opaqueOut) : null;
+	const opaque = takeTransferableOutput(_opaqueOut);
 
-	const water =
-		_waterOut.faceCount > 0 ? toTransferableMeshData(_waterOut) : null;
+	const water = takeTransferableOutput(_waterOut);
 
-	const cutout =
-		_cutoutOut.faceCount > 0 ? toTransferableMeshData(_cutoutOut) : null;
+	const cutout = takeTransferableOutput(_cutoutOut);
 
 	const response: FullMeshMessage = {
 		type: WorkerTaskType.GenerateFullMesh,
@@ -775,6 +842,14 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 
 	if (data.type === WorkerTaskType.VoxelUpdateChunkBuffers) {
 		_handleVoxelUpdateBuffers(data);
+		return;
+	}
+
+	if (data.type === WorkerTaskType.VoxelRecycleBuffers) {
+		const buffers = data.buffers;
+		for (let i = 0; i < buffers.length; i++) {
+			givePooledMeshBuffer(new Uint8Array(buffers[i]));
+		}
 		return;
 	}
 

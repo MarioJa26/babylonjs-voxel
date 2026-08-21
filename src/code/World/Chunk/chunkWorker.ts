@@ -13,6 +13,7 @@ import {
 	type MeshWorkerResponse,
 	type RelightMeshRequest,
 	type SetWorldSeedRequest,
+	type VoxelRecycleBuffersRequest,
 	type VoxelRegisterChunkBatchRequest,
 	type WorkerResponseData,
 	WorkerTaskType,
@@ -206,6 +207,23 @@ export class ChunkWorker {
 		// the center grid and the 26 neighbor borders straight from the
 		// SharedArrayBuffers registered via VoxelRegisterChunk.
 		this.voxelWorker.postMessage(msg);
+	}
+
+	/**
+	 * Return consumed mesh output buffers to this worker's voxel worker so it
+	 * can reuse them instead of slicing fresh ones per response. The buffers
+	 * are transferred (detached here); only call for results whose data is no
+	 * longer referenced anywhere on the main thread.
+	 */
+	public postVoxelRecycleBuffers(buffers: ArrayBuffer[]): void {
+		if (buffers.length === 0) return;
+		this.voxelWorker.postMessage(
+			{
+				type: WorkerTaskType.VoxelRecycleBuffers,
+				buffers,
+			} satisfies VoxelRecycleBuffersRequest,
+			buffers,
+		);
 	}
 
 	/**
