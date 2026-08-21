@@ -37,3 +37,41 @@ export function yieldToEventLoop(): Promise<void> {
 		yieldPort.postMessage(null);
 	});
 }
+
+/**
+ * Map `items` through `fn` with bounded concurrency: processes in waves of
+ * `waveSize`, yielding to the event loop (macrotask) between waves.
+ *
+ * A large batch of promise-heavy work fanned out with a single Promise.all
+ * (e.g. hundreds of CompressionStream pipelines completing at once) drains
+ * as one giant microtask burst and can monopolize the main thread even
+ * though each individual operation is cheap. Splitting into waves keeps
+ * each microtask drain small and lets rendering/input interleave between
+ * waves; the MessageChannel yield keeps the per-wave overhead near zero.
+ */
+export async function mapInWaves<T, R>(
+	items: readonly T[],
+	waveSize: number,
+	fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+	const results = new Array<R>(items.length);
+
+	for (let start = 0; start < items.length; start += waveSize) {
+		if (start > 0) await yieldToEventLoop();
+
+		const end = Math.min(start + waveSize, items.length);
+		const wave: Promise<void>[] = [];
+
+		for (let i = start; i < end; i++) {
+			wave.push(
+				fn(items[i], i).then((result) => {
+					results[i] = result;
+				}),
+			);
+		}
+
+		await Promise.all(wave);
+	}
+
+	return results;
+}

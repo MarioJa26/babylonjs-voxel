@@ -2,10 +2,11 @@
  * LevelDbChunkStore — Unified LevelDB storage for browser and server.
  *
  * Engine Optimizations Applied:
- * 1. Parallelized Compression/Decompression: Replaced sequential `await` loops
- *    in IDB batch writes and reads with `Promise.all`. This fully saturates the
- *    CompressionStream web worker threads and prevents the main thread from
- *    blocking on zlib inflate/deflate.
+ * 1. Wave-Bounded Compression/Decompression: IDB batch writes and reads fan
+ *    their compress/inflate work out in waves of CODEC_WAVE_SIZE pipelines,
+ *    yielding to the event loop between waves (mapInWaves). Concurrency
+ *    keeps zlib inflate/deflate saturated while the yields prevent a large
+ *    batch from monopolizing the main thread as one "Run microtasks" drain.
  * 2. IDB Transaction Isolation: Separated IDB `onsuccess` callbacks from
  *    `decompressBlob` microtasks. This prevents IDB transactions from being
  *    held open (or prematurely auto-committing) while the JS event loop
@@ -16,7 +17,16 @@
  * 4. Cache Lookup Reduction: Collapsed `Map.has()` + `Map.set()` into a single
  *    `Map.get()` check to halve the hash-probe overhead on cache hits.
  */
+
+import { mapInWaves } from "../../Lib/yieldToEventLoop";
 import { compressBlob, decompressBlob } from "./BlobCompression";
+
+/**
+ * Max concurrent compress/inflate stream pipelines per wave when fanning a
+ * batch out. Waves yield to the event loop between batches (macrotask), so
+ * a 256-op transaction cannot turn into one giant "Run microtasks" drain.
+ */
+const CODEC_WAVE_SIZE = 64;
 
 export function chunkKey(cx: number, cy: number, cz: number): string {
 	return cx + "," + cy + "," + cz;
@@ -1407,24 +1417,22 @@ class IndexedDbStore {
 			},
 		);
 
-		// Engine optimization: Parallelize decompression streams
-		const decompressPromises = new Array(n);
+		// Bounded-concurrency decompression: waves of CODEC_WAVE_SIZE with an
+		// event-loop yield between waves. A bare Promise.all over every value
+		// drains all pipeline completions as one microtask burst and starves
+		// rendering (the "Run microtasks" profile hotspot).
+		const finalResults = new Array<Uint8Array | undefined>(n);
+		const toDecompress: number[] = [];
+
 		for (let i = 0; i < n; i++) {
-			const raw = rawValues[i];
-			if (raw instanceof Uint8Array) {
-				decompressPromises[i] = decompressBlob(raw).catch(() => raw);
-			} else {
-				decompressPromises[i] = raw;
-			}
+			if (rawValues[i] instanceof Uint8Array) toDecompress.push(i);
 		}
 
-		const decompressed = await Promise.all(decompressPromises);
+		await mapInWaves(toDecompress, CODEC_WAVE_SIZE, async (i) => {
+			const raw = rawValues[i] as Uint8Array;
+			finalResults[i] = await decompressBlob(raw).catch(() => raw);
+		});
 
-		const finalResults = new Array(n);
-		for (let i = 0; i < n; i++) {
-			const val = decompressed[i];
-			finalResults[i] = val instanceof Uint8Array ? val : undefined;
-		}
 		return finalResults;
 	}
 
@@ -1472,29 +1480,26 @@ class IndexedDbBatch {
 		if (n === 0) return;
 
 		const stored: Array<Uint8Array | string | null> = new Array(n);
-		const compressPromises: Promise<void>[] = [];
+		const toCompress: Array<{ index: number; value: Uint8Array }> = [];
 
-		// Engine optimization: Parallelize compression instead of sequential await loop
 		for (let i = 0; i < n; i++) {
 			const op = ops[i];
 			if (op.type === "put" && op.value instanceof Uint8Array) {
 				if (op.preCompressed) {
 					stored[i] = op.value;
 				} else {
-					compressPromises.push(
-						compressBlob(op.value).then((res) => {
-							stored[i] = res;
-						}),
-					);
+					toCompress.push({ index: i, value: op.value });
 				}
 			} else if (op.type === "put") {
 				stored[i] = op.value;
 			}
 		}
 
-		if (compressPromises.length > 0) {
-			await Promise.all(compressPromises);
-		}
+		// Bounded-concurrency compression: same rationale as the read path —
+		// waves + event-loop yields instead of one Promise.all microtask burst.
+		await mapInWaves(toCompress, CODEC_WAVE_SIZE, async (entry) => {
+			stored[entry.index] = await compressBlob(entry.value);
+		});
 
 		await new Promise<void>((resolve, reject) => {
 			const tx = this.db.transaction(this.storeName, "readwrite");

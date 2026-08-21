@@ -120,6 +120,29 @@ export class MeshBuildSession implements MeshContext {
 	public scratchMask = new Int32Array(0);
 	public scratchLights = new Uint16Array(0);
 
+	// --- batched mask banks ---
+	// Pre-extracted greedy masks for ALL slices of one axis, filled by a
+	// single contiguous sweep per axis (VoxelMaskExtractor.extractAllSliceMasks*)
+	// and consumed by greedyMesh's banked mode. Slice s (-1..size-1) lives at
+	// (s+1) * area. One bank pair serves all three axes because extraction for
+	// the next axis only starts after the current axis' merge completed.
+	public maskBank = new Int32Array(0);
+	public lightBank = new Uint16Array(0);
+
+	public ensureMaskBank(minLength: number): Int32Array {
+		if (this.maskBank.length < minLength) {
+			this.maskBank = new Int32Array(minLength);
+		}
+		return this.maskBank;
+	}
+
+	public ensureLightBank(minLength: number): Uint16Array {
+		if (this.lightBank.length < minLength) {
+			this.lightBank = new Uint16Array(minLength);
+		}
+		return this.lightBank;
+	}
+
 	// --- shared face descriptor ---
 	public faceScratch = {
 		slice: 0,
@@ -254,9 +277,10 @@ export class MeshBuildSession implements MeshContext {
 						const pIdx = 1 + (y + 1) * ps + pZ;
 						const cIdx = y * size + cZ;
 
-						for (let x = 0; x < size; x++) {
-							padded[pIdx + x] = blockArray[cIdx + x];
-						}
+						// Row-wise memcpy via set(subarray): both grids are x-major,
+						// so each source row is contiguous and lands on a contiguous
+						// padded row segment.
+						padded.set(blockArray.subarray(cIdx, cIdx + size), pIdx);
 					}
 				}
 			}
@@ -271,9 +295,7 @@ export class MeshBuildSession implements MeshContext {
 					const pIdx = 1 + (y + 1) * ps + pZ;
 					const cIdx = y * size + cZ;
 
-					for (let x = 0; x < size; x++) {
-						paddedLight[pIdx + x] = lightArray[cIdx + x];
-					}
+					paddedLight.set(lightArray.subarray(cIdx, cIdx + size), pIdx);
 				}
 			}
 		}
@@ -308,16 +330,14 @@ export class MeshBuildSession implements MeshContext {
 					for (let dy = 0; dy < yCount; dy++) {
 						const destOffset = pXStart + (pYStart + dy) * ps + pZ;
 
+						// Face slabs store one contiguous x-row per (dz,dy) step
+						// in the scratch buffers — copy row-wise.
 						if (!skipBlockFill && neighbor !== undefined) {
-							for (let x = 0; x < size; x++) {
-								padded[destOffset + x] = neighbor[ci + x];
-							}
+							padded.set(neighbor.subarray(ci, ci + size), destOffset);
 						}
 
 						if (nLight !== undefined) {
-							for (let x = 0; x < size; x++) {
-								paddedLight[destOffset + x] = nLight[ci + x];
-							}
+							paddedLight.set(nLight.subarray(ci, ci + size), destOffset);
 						}
 
 						ci += size;

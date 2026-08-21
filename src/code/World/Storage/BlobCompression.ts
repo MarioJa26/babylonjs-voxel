@@ -6,12 +6,14 @@
  * server→client wire format (bandwidth).
  *
  * Engine Optimizations:
- * 1. Native Stream Consumption: Replaced JS `reader.read()` loops with
- *    `Response.arrayBuffer()`. This offloads stream-to-buffer aggregation
- *    to the browser's C++ network stack, eliminating JS microtask overhead,
- *    promise chaining, and intermediate chunk array allocations.
- * 2. Direct ReadableStream: Bypassed `Blob` creation and `.stream()` overhead
- *    by piping directly from a `ReadableStream` controller.
+ * 1. Direct codec feeding: each op writes into the CompressionStream/
+ *    DecompressionStream writable and drains the readable via
+ *    Response.arrayBuffer() — no custom ReadableStream, no pipeThrough
+ *    pumping loop, minimal promise/microtask hops per blob.
+ * 2. Bounded concurrency: callers batch compress/inflate fan-outs through
+ *    mapInWaves (Lib/yieldToEventLoop.ts) so hundreds of concurrent
+ *    pipelines cannot monopolize the main thread with one giant microtask
+ *    drain (the "Run microtasks" profile hotspot).
  */
 
 export const BLOB_MARKER_RAW = 0x00;
@@ -30,9 +32,9 @@ const FORMAT = "deflate";
  * ArrayBuffer. A value backed by a SharedArrayBuffer (or resizable buffer)
  * must be copied first to prevent detached-buffer errors downstream.
  */
-function toPlainBytes(bytes: Uint8Array): Uint8Array {
+function toPlainBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
 	if (bytes.buffer instanceof ArrayBuffer) {
-		return bytes;
+		return bytes as Uint8Array<ArrayBuffer>;
 	}
 	return new Uint8Array(bytes);
 }
@@ -56,16 +58,37 @@ export function deflateSupported(): boolean {
 }
 
 /**
- * Engine optimization: Create a ReadableStream directly from bytes.
- * Bypasses the overhead of `new Blob([bytes]).stream()`.
+ * Feed a single-chunk payload straight into a codec's writable and drain its
+ * readable via Response. Going through `source.pipeThrough(codec)` instead
+ * would run the streams-spec pumping loop — several promise/microtask hops
+ * per chunk plus a custom ReadableStream allocation — and when a batch of
+ * hundreds of small blobs compresses concurrently, those hops dominate the
+ * profile (`Run microtasks`). A direct write+close keeps each pipeline at
+ * the minimum number of hops.
  */
-function createByteStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
-	return new ReadableStream({
-		start(controller) {
-			controller.enqueue(bytes);
-			controller.close();
-		},
-	});
+async function runCodec(
+	codec: {
+		readable: ReadableStream<Uint8Array>;
+		writable: WritableStream<BufferSource>;
+	},
+	bytes: Uint8Array,
+): Promise<Uint8Array> {
+	// Start draining the readable before feeding the writable so a large
+	// payload can never stall on readable-side backpressure.
+	const done = new Response(codec.readable).arrayBuffer();
+
+	const writer = codec.writable.getWriter();
+	try {
+		await writer.write(toPlainBytes(bytes));
+		await writer.close();
+	} catch (error) {
+		done.catch(() => {}); // avoid an unhandled rejection on the read side
+		throw error;
+	} finally {
+		writer.releaseLock();
+	}
+
+	return new Uint8Array(await done);
 }
 
 /** Compress bytes with zlib "deflate". */
@@ -74,14 +97,7 @@ export async function deflate(bytes: Uint8Array): Promise<Uint8Array> {
 		throw new Error("CompressionStream is not available");
 	}
 
-	const stream = createByteStream(toPlainBytes(bytes)).pipeThrough(
-		new CompressionStream(FORMAT),
-	);
-
-	// Engine optimization: Response.arrayBuffer() consumes the stream natively
-	// in C++, avoiding the JS microtask queue and manual chunk aggregation.
-	const buffer = await new Response(stream).arrayBuffer();
-	return new Uint8Array(buffer);
+	return runCodec(new CompressionStream(FORMAT), bytes);
 }
 
 /**
@@ -99,13 +115,7 @@ export async function inflateInto(
 		throw new Error("DecompressionStream is not available");
 	}
 
-	const stream = createByteStream(toPlainBytes(data)).pipeThrough(
-		new DecompressionStream(FORMAT),
-	);
-
-	// Native C++ consumption avoids JS reader loops and offset tracking.
-	const buffer = await new Response(stream).arrayBuffer();
-	const out = new Uint8Array(buffer);
+	const out = await runCodec(new DecompressionStream(FORMAT), data);
 
 	if (out.byteLength !== outLen) {
 		throw new Error(

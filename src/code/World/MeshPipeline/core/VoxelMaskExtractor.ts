@@ -421,6 +421,220 @@ export function extractSliceMaskZ(
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Batched per-axis mask extraction.
+//
+// The per-slice extractors above re-walk the padded grid once per slice
+// (33 slices × 3 axes per chunk) with strided inner loops for the X/Y axes,
+// which dominated worker profiles. These sweep variants compute every slice
+// mask of one axis in a SINGLE pass whose inner loop walks contiguous x,
+// turning all grid reads (opaque pre-check, block/light stencil, AO samples)
+// sequential. Each adjacency pair is also consumed exactly once instead of
+// twice.
+//
+// Bank layout: slice s (-1..size-1) lives at (s+1) * area; cell order within
+// a slice matches the corresponding extractSliceMask* exactly so greedyMesh's
+// merge loop is unchanged apart from the base offset.
+//
+// Slice -1 compares the padded border layer against the first interior layer
+// and is only computed when the neighbor chunk exists; slice size-1 never
+// emits (no chunk beyond the +axis boundary). Both stay zero via pre-fill.
+// ---------------------------------------------------------------------------
+
+export function extractAllSliceMasksX(
+	session: MeshBuildSession,
+	maskBank: WritableNumberArray,
+	lightBank: WritableNumberArray,
+): void {
+	const size = session.size;
+	const area = size * size;
+
+	maskBank.fill(0, 0, (size + 1) * area);
+	lightBank.fill(0, 0, (size + 1) * area);
+
+	const hasNegNeighbor = session.hasNeighborChunk(-1, 0, 0);
+
+	const blockArr = session.block;
+	const lightArr = session.light;
+	const opaqueArr = session.opaque;
+	const disableAO = session.disableAO;
+	const ps = session.ps;
+	const ps2 = session.ps2;
+
+	const pxStart = hasNegNeighbor ? 0 : 1;
+
+	for (let z = 0; z < size; z++) {
+		const zBase = (z + 1) * ps2;
+		const outCell = z * size;
+
+		for (let y = 0; y < size; y++) {
+			let curIdx = (y + 1) * ps + zBase;
+			let nbrIdx = curIdx + 1;
+
+			for (let px = pxStart; px < size; px++) {
+				if ((opaqueArr[curIdx] & opaqueArr[nbrIdx]) === 0) {
+					processCell(
+						session,
+						blockArr,
+						lightArr,
+						disableAO,
+						px - 1,
+						y,
+						z,
+						px,
+						y,
+						z,
+						curIdx,
+						nbrIdx,
+						1,
+						2,
+						FACE_PX,
+						FACE_NX,
+						px * area + outCell + y,
+						maskBank,
+						lightBank,
+					);
+				}
+
+				curIdx++;
+				nbrIdx++;
+			}
+		}
+	}
+}
+
+export function extractAllSliceMasksY(
+	session: MeshBuildSession,
+	maskBank: WritableNumberArray,
+	lightBank: WritableNumberArray,
+): void {
+	const size = session.size;
+	const area = size * size;
+
+	maskBank.fill(0, 0, (size + 1) * area);
+	lightBank.fill(0, 0, (size + 1) * area);
+
+	const hasNegNeighbor = session.hasNeighborChunk(0, -1, 0);
+
+	const blockArr = session.block;
+	const lightArr = session.light;
+	const opaqueArr = session.opaque;
+	const disableAO = session.disableAO;
+	const ps = session.ps;
+	const ps2 = session.ps2;
+
+	// Axis Y uses u = Z and v = X (mask index = x * size + z), matching the
+	// per-slice extractor. py is the padded y of the "current" cell; the
+	// neighbor cell sits one y-row up.
+	const pyStart = hasNegNeighbor ? 0 : 1;
+
+	for (let py = pyStart; py < size; py++) {
+		const curRow = py * ps;
+		const nbrRow = curRow + ps;
+		const outSliceBase = py * area;
+
+		for (let z = 0; z < size; z++) {
+			const zBase = (z + 1) * ps2;
+			let curIdx = 1 + curRow + zBase;
+			let nbrIdx = 1 + nbrRow + zBase;
+			const outCol = outSliceBase + z;
+
+			for (let x = 0; x < size; x++) {
+				if ((opaqueArr[curIdx] & opaqueArr[nbrIdx]) === 0) {
+					processCell(
+						session,
+						blockArr,
+						lightArr,
+						disableAO,
+						x,
+						py - 1,
+						z,
+						x,
+						py,
+						z,
+						curIdx,
+						nbrIdx,
+						2,
+						0,
+						FACE_PY,
+						FACE_NY,
+						outCol + x * size,
+						maskBank,
+						lightBank,
+					);
+				}
+
+				curIdx++;
+				nbrIdx++;
+			}
+		}
+	}
+}
+
+export function extractAllSliceMasksZ(
+	session: MeshBuildSession,
+	maskBank: WritableNumberArray,
+	lightBank: WritableNumberArray,
+): void {
+	const size = session.size;
+	const area = size * size;
+
+	maskBank.fill(0, 0, (size + 1) * area);
+	lightBank.fill(0, 0, (size + 1) * area);
+
+	const hasNegNeighbor = session.hasNeighborChunk(0, 0, -1);
+
+	const blockArr = session.block;
+	const lightArr = session.light;
+	const opaqueArr = session.opaque;
+	const disableAO = session.disableAO;
+	const ps = session.ps;
+	const ps2 = session.ps2;
+
+	const pzStart = hasNegNeighbor ? 0 : 1;
+
+	for (let pz = pzStart; pz < size; pz++) {
+		const zCur = pz * ps2;
+		const outSliceBase = pz * area;
+
+		for (let y = 0; y < size; y++) {
+			const yBase = (y + 1) * ps;
+			let curIdx = 1 + yBase + zCur;
+			let nbrIdx = curIdx + ps2;
+			const outRow = outSliceBase + y * size;
+
+			for (let x = 0; x < size; x++) {
+				if ((opaqueArr[curIdx] & opaqueArr[nbrIdx]) === 0) {
+					processCell(
+						session,
+						blockArr,
+						lightArr,
+						disableAO,
+						x,
+						y,
+						pz - 1,
+						x,
+						y,
+						pz,
+						curIdx,
+						nbrIdx,
+						0,
+						1,
+						FACE_PZ,
+						FACE_NZ,
+						outRow + x,
+						maskBank,
+						lightBank,
+					);
+				}
+
+				curIdx++;
+				nbrIdx++;
+			}
+		}
+	}
+}
+
 /**
  * Per-voxel mask computation. Module-level free function for V8 inlining.
  */

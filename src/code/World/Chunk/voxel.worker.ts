@@ -482,8 +482,29 @@ function buildNeighborArrays(
 	}
 }
 
-function decodeCenterBlocks(
+// T3-1: decoded center-block cache.
+//
+// Palette-encoded chunks paid a fresh 64 KiB expandPalette allocation on
+// every full remesh (decodeCenterBlocks), feeding minor GC on busy remesh
+// frames. Dense results are cached per chunk and validated against
+// (generation, blockRevision) — the same staleness contract as the relight
+// cache — so repeated full rebuilds of an unmodified chunk reuse the expanded
+// grid. Direct SAB views (dense16/packed) are returned as-is and never
+// cached; they are stable and need no copy.
+type DecodedBlocksEntry = {
+	generation: number;
+	blockRevision: number;
+	blocks: Uint8Array | Uint16Array;
+};
+
+const DECODED_BLOCKS_CACHE_MAX = 8;
+const decodedBlocksCache = new Map<bigint, DecodedBlocksEntry>();
+
+function getDecodedCenterBlocks(
 	reg: VoxelRegistration | undefined,
+	chunkId: bigint,
+	generation: number,
+	blockRevision: number,
 	size: number,
 ): Uint8Array | Uint16Array | null {
 	if (!reg?.blockSAB) return null;
@@ -494,23 +515,42 @@ function decodeCenterBlocks(
 	const packed = reg.blockU8;
 	if (!packed) return null;
 
-	const totalBlocks = size * size * size;
 	const palette = reg.palette;
+	if (!palette || palette.length <= 0) return packed;
 
-	if (palette && palette.length > 1) {
-		return _paletteExpander.expandPalette(packed, palette, totalBlocks);
+	const totalBlocks = size * size * size;
+
+	const cached = decodedBlocksCache.get(chunkId);
+	if (
+		cached &&
+		cached.generation === generation &&
+		cached.blockRevision === blockRevision &&
+		cached.blocks.length === totalBlocks
+	) {
+		// Refresh insertion order so Map eviction stays LRU.
+		decodedBlocksCache.delete(chunkId);
+		decodedBlocksCache.set(chunkId, cached);
+		return cached.blocks;
 	}
 
-	if (palette && palette.length === 1) {
+	let blocks: Uint8Array | Uint16Array;
+	if (palette.length === 1) {
 		const blockId = palette[0];
 		if (blockId === 0) return null;
 
-		const dense = new Uint16Array(totalBlocks);
-		dense.fill(blockId);
-		return dense;
+		blocks = new Uint16Array(totalBlocks);
+		blocks.fill(blockId);
+	} else {
+		blocks = _paletteExpander.expandPalette(packed, palette, totalBlocks);
 	}
 
-	return packed;
+	if (decodedBlocksCache.size >= DECODED_BLOCKS_CACHE_MAX) {
+		const oldest = decodedBlocksCache.keys().next();
+		if (!oldest.done) decodedBlocksCache.delete(oldest.value);
+	}
+	decodedBlocksCache.set(chunkId, { generation, blockRevision, blocks });
+
+	return blocks;
 }
 
 function centerLightArray(
@@ -811,13 +851,23 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 			true,
 		);
 
+		const generation = data.generation ?? -1;
+		const blockRevision = data.blockRevision ?? -1;
 		const uniform = data.uniformBlockId !== undefined;
-		const centerBlockArray = uniform ? null : decodeCenterBlocks(reg, size);
+		const centerBlockArray = uniform
+			? null
+			: getDecodedCenterBlocks(
+					reg,
+					data.chunkId,
+					generation,
+					blockRevision,
+					size,
+				);
 
 		const entry = getOrCreateRelightEntry(
 			data.chunkId,
-			data.generation ?? -1,
-			data.blockRevision ?? -1,
+			generation,
+			blockRevision,
 			presenceFromMask(data.neighborMask),
 		);
 

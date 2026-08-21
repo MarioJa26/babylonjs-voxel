@@ -37,13 +37,16 @@ export type FaceEmitterCallback = (desc: GreedyFaceDescriptor) => void;
  *
  * It accepts:
  *   - session for dimensions + reusable scratch buffers
- *   - extractMask(...) to fill mask & light arrays for a slice
+ *   - extractMask(...) to fill mask & light arrays for a slice, OR
+ *   - maskBank/lightBank holding pre-extracted masks for ALL slices
+ *     (banked mode — slice s lives at (s+1) * area; filled by the
+ *     extractAllSliceMasks* sweeps in VoxelMaskExtractor)
  *   - emitFace(...) callback that builds quads using the merged results
  *
  * Optimized version:
- * - reuses the session's typed-array scratch buffers
+ * - reuses the session's typed-array scratch buffers (or caller-provided banks)
  * - avoids per-call array allocation
- * - avoids per-slice .fill(0) because extractMask overwrites every entry
+ * - avoids per-slice .fill(0) because extraction overwrites every entry
  * - clears only mask after merging because mask is the processed/empty marker
  *
  * The shared face descriptor lives on the session, so greedyMesh is
@@ -51,29 +54,49 @@ export type FaceEmitterCallback = (desc: GreedyFaceDescriptor) => void;
  */
 export function greedyMesh(
 	session: MeshBuildSession,
-	extractMask: MaskExtractor,
+	extractMask: MaskExtractor | null,
 	emitFace: FaceEmitterCallback,
+	maskBank?: Int32Array,
+	lightBank?: Uint16Array,
 ): void {
 	const size = session.size;
 	const area = size * size;
 
-	if (session.scratchMask.length < area) {
-		session.scratchMask = new Int32Array(area);
+	const banked = maskBank !== undefined && lightBank !== undefined;
+	if (!banked && !extractMask) {
+		throw new Error("greedyMesh requires extractMask or mask banks");
 	}
 
-	if (session.scratchLights.length < area) {
-		session.scratchLights = new Uint16Array(area);
+	let mask: WritableNumberArray;
+	let lights: WritableNumberArray;
+
+	if (banked) {
+		mask = maskBank;
+		lights = lightBank;
+	} else {
+		if (session.scratchMask.length < area) {
+			session.scratchMask = new Int32Array(area);
+		}
+
+		if (session.scratchLights.length < area) {
+			session.scratchLights = new Uint16Array(area);
+		}
+
+		mask = session.scratchMask;
+		lights = session.scratchLights;
 	}
 
-	const mask = session.scratchMask;
-	const lights = session.scratchLights;
+	const extractor = extractMask as MaskExtractor;
 	const faceScratch = session.faceScratch;
 
 	for (let slice = -1; slice < size; slice++) {
-		extractMask(slice, mask, lights);
+		// Banked mode reads straight from the pre-extracted bank region;
+		// scratch mode extracts into the area-sized buffers at offset 0.
+		const base = banked ? (slice + 1) * area : 0;
+		if (!banked) extractor(slice, mask, lights);
 
 		for (let v = 0; v < size; v++) {
-			const rowBase = v * size;
+			const rowBase = base + v * size;
 
 			for (let u = 0; u < size; ) {
 				const index = rowBase + u;
@@ -125,8 +148,8 @@ export function greedyMesh(
 				emitFace(faceScratch);
 
 				// Only mask needs clearing. It is the sole processed-cell marker.
-				// lights is ignored whenever mask is 0 and extractMask overwrites it
-				// before the next slice is processed.
+				// lights is ignored whenever mask is 0 and extraction overwrites
+				// (or pre-fills) it before the next slice is processed.
 				if (width === size) {
 					mask.fill(0, index, index + height * size);
 				} else if (width < 8) {
