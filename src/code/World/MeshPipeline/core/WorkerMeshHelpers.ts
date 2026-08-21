@@ -96,6 +96,14 @@ export class MeshBuildSession implements MeshContext {
 	public size = 0;
 	public lod = 0;
 	public disableAO = false;
+	/**
+	 * Geometric downsampling factor for this build: 1 for LOD<=3 (full
+	 * resolution), 2 for LOD4, 4 for LOD5, ... Each mask cell then covers
+	 * lodStep^3 voxels and every emitted quad spans lodStep blocks per cell.
+	 */
+	public lodStep = 1;
+	/** Logical greedy-grid dimension: size / lodStep (mask cells per axis). */
+	public meshGridSize = 0;
 
 	// --- active padded grids ---
 	public block = new Uint16Array(0);
@@ -204,6 +212,14 @@ export class MeshBuildSession implements MeshContext {
 		this.size = size;
 		this.lod = lod;
 		this.disableAO = lod >= 2;
+
+		// Downsampling begins at LOD4 (user spec): LOD4 -> step 2, LOD5 -> 4...
+		// Fall back to full resolution if the chunk size is not evenly
+		// divisible, so the greedy grid always stays integral.
+		const rawStep = lod >= 4 ? 1 << (lod - 3) : 1;
+		this.lodStep = size % rawStep === 0 ? rawStep : 1;
+		this.meshGridSize = size / this.lodStep;
+
 		this.ps = ps;
 		this.ps2 = ps2;
 

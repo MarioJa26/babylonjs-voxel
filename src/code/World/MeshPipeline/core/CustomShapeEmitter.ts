@@ -130,6 +130,11 @@ function isWaterGlassInterface(curr: ParsedBlock, nbr: ParsedBlock): boolean {
  * so the adjacent chunk's own mesher handles the outward-facing side.
  */
 export function emitCustomShapes(session: MeshBuildSession): void {
+	// Downsampled builds (LOD4+) skip custom geometry entirely: fences,
+	// crosses and multi-box shapes are invisible at those distances and the
+	// forced-cube greedy path already covers their cells.
+	if (session.lodStep > 1) return;
+
 	const size = session.size;
 	const getBlock = session.getBlock;
 	const getLight = session.getLight;

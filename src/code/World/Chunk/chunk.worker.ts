@@ -16,6 +16,7 @@ import { WATER_BLOCK_ID } from "./Worker/ChunkMesherConstants";
 import { LightTaskHandlers } from "./Worker/LightTaskHandlers";
 import {
 	handleGenerateDistantTerrain,
+	handleGenerateFarTile,
 	handleGenerateTerrain,
 	handleInitDistantTerrainShared,
 } from "./Worker/WorkerTaskHandlers";
@@ -279,6 +280,25 @@ const onMessageHandler = (event: MessageEvent) => {
 					centerChunkX,
 					centerChunkZ,
 					failed: true,
+				});
+			}
+			return;
+		}
+
+		case WorkerTaskType.GenerateFarTile: {
+			try {
+				const { payload, transferables } = handleGenerateFarTile(event.data);
+				self.postMessage(payload, transferables);
+			} catch (err) {
+				console.error("GenerateFarTile failed:", err);
+				self.postMessage({
+					type: WorkerTaskType.GenerateFarTile,
+					requestId: event.data.requestId,
+					levelIndex: event.data.levelIndex,
+					tileX: event.data.tileX,
+					tileZ: event.data.tileZ,
+					opaqueFaces: new Uint32Array(0),
+					waterFaces: new Uint32Array(0),
 				});
 			}
 			return;

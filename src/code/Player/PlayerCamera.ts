@@ -44,7 +44,9 @@ export class PlayerCamera {
 
 		this.#playerCamera.fov = SETTING_PARAMS.CAMERA_FOV * (Math.PI / 180);
 		this.#playerCamera.nearPlane = 0.1;
-		this.#playerCamera.farPlane = 13000;
+		// Must exceed the far-tile horizon (FAR_TILE_DISTANCE chunks) so the
+		// full 512-chunk render distance stays inside the frustum.
+		this.#playerCamera.farPlane = 20000;
 	}
 
 	/**

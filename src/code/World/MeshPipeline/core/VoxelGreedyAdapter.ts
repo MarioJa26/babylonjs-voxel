@@ -58,8 +58,11 @@ export class VoxelGreedyAdapter {
 	 */
 	public build(): void {
 		const session = this._session;
-		const size = session.size;
-		const bankLength = (size + 1) * size * size;
+		// Bank layout follows the greedy grid (compacted when lodStep > 1),
+		// matching what the stride-aware extractors write.
+		const gridSize =
+			session.meshGridSize > 0 ? session.meshGridSize : session.size;
+		const bankLength = (gridSize + 1) * gridSize * gridSize;
 
 		const maskBank = session.ensureMaskBank(bankLength);
 		const lightBank = session.ensureLightBank(bankLength);

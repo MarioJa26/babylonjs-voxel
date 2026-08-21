@@ -59,7 +59,11 @@ export function greedyMesh(
 	maskBank?: Int32Array,
 	lightBank?: Uint16Array,
 ): void {
-	const size = session.size;
+	// Greedy merging runs on the (possibly downsampled) mask grid. For
+	// lodStep > 1 the extractor writes one cell per lodStep^3 voxel region,
+	// so descriptors come back in grid cells and the face emitter scales
+	// them back to block units.
+	const size = session.meshGridSize > 0 ? session.meshGridSize : session.size;
 	const area = size * size;
 
 	const banked = maskBank !== undefined && lightBank !== undefined;

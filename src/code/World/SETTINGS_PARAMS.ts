@@ -20,14 +20,22 @@ export const SETTING_PARAMS = {
 	LOD_1_OFFSET: 2,
 	LOD_2_OFFSET: 4,
 	LOD_3_OFFSET: 6,
+	// Geometric downsampling begins at LOD4 (step = 1 << (lod - 3)).
+	LOD_4_OFFSET: 10,
+	LOD_5_OFFSET: 18,
 	LOD_VERTICAL_0_OFFSET: 0,
 	LOD_VERTICAL_1_OFFSET: 2,
 	LOD_VERTICAL_2_OFFSET: 4,
 	LOD_VERTICAL_3_OFFSET: 6,
+	LOD_VERTICAL_4_OFFSET: 8,
+	LOD_VERTICAL_5_OFFSET: 12,
 	LOD_PRECOMPUTE_HORIZONTAL_OFFSET: 14,
 	LOD_PRECOMPUTE_VERTICAL_OFFSET: 4,
 
 	DISTANT_RENDER_DISTANCE: 128, //128,
+	// Far-tile LOD system (LOD6-9): real decimated voxel geometry out to this
+	// many chunks in every direction. 0 disables far tiles.
+	FAR_TILE_DISTANCE: 512,
 	LOD_PRECOMPUTE_SCHEDULE_THROTTLE_MS: 120, //120
 	LOD_PRECOMPUTE_MAX_ENQUEUE_PER_UPDATE: 48,
 	// 0 = unlimited dispatch while workers are idle

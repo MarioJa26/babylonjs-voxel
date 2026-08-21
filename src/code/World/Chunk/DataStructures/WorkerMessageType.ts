@@ -6,6 +6,7 @@ export const enum TaskType {
 	LodPrecompute,
 	DistantTerrain,
 	Relight,
+	FarTile,
 }
 
 export const enum WorkerTaskType {
@@ -16,6 +17,8 @@ export const enum WorkerTaskType {
 	GenerateDistantTerrain,
 	InitDistantTerrainShared,
 	WorkerReady,
+	// --- Far-tile LOD tasks (LOD6+) ---
+	GenerateFarTile,
 	// --- Light worker tasks ---
 	InitLightShared,
 	LightSetClosedFaceMask,
@@ -162,6 +165,24 @@ export type GenerateDistantTerrainRequest = {
 	renderDistance: number;
 };
 
+export type GenerateFarTileRequest = {
+	type: WorkerTaskType.GenerateFarTile;
+	requestId: number;
+	levelIndex: number;
+	tileX: number;
+	tileZ: number;
+};
+
+export type FarTileGeneratedMessage = {
+	type: WorkerTaskType.GenerateFarTile;
+	requestId: number;
+	levelIndex: number;
+	tileX: number;
+	tileZ: number;
+	opaqueFaces: Uint32Array;
+	waterFaces: Uint32Array;
+};
+
 export type SetWorldSeedRequest = {
 	type: WorkerTaskType.SetWorldSeed;
 	/** Seed string fed to the generator (world name derived). */
@@ -174,6 +195,7 @@ export type WorkerRequestData =
 	| RelightMeshRequest
 	| GenerateDistantTerrainRequest
 	| InitDistantTerrainSharedRequest
+	| GenerateFarTileRequest
 	| InitLightSharedRequest
 	| LightSetClosedFaceMaskRequest
 	| LightRegisterChunkRequest
@@ -424,6 +446,7 @@ export type WorkerResponseData =
 	| TerrainGeneratedMessage
 	| RelightMeshMissMessage
 	| DistantTerrainGeneratedMessage
+	| FarTileGeneratedMessage
 	| { type: WorkerTaskType.InitDistantTerrainShared } // ← ack only, no payload
 	| { type: WorkerTaskType.InitLightShared } // ← ack only
 	| { type: WorkerTaskType.LightSetClosedFaceMask } // ← ack only

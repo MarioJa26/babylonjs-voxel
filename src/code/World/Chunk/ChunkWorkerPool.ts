@@ -31,6 +31,7 @@ import { RingBuffer } from "./DataStructures/RingBuffer";
 import {
 	type DistantTerrainGeneratedMessage,
 	type DistantTerrainTask,
+	type FarTileGeneratedMessage,
 	type FullMeshMessage,
 	type LightDirtyMessage,
 	type LightRegisterChunkBatchRequest,
@@ -739,6 +740,10 @@ export class ChunkWorkerPool {
 			this.distantTerrainInFlight = false;
 		}
 
+		if (context?.taskType === TaskType.FarTile) {
+			this.farTilesInFlightCount = Math.max(0, this.farTilesInFlightCount - 1);
+		}
+
 		if (
 			(context?.taskType === TaskType.Remesh ||
 				context?.taskType === TaskType.LodPrecompute ||
@@ -795,6 +800,9 @@ export class ChunkWorkerPool {
 			} else {
 				this.distantTerrainTaskQueue.push(context.distantTask);
 			}
+		} else if (context?.taskType === TaskType.FarTile) {
+			// Far-tile results are derived data; the manager's request simply
+			// times out and re-requests. Nothing to restore here.
 		}
 
 		// Remove from idle structures using the safe helper.
@@ -2231,6 +2239,36 @@ export class ChunkWorkerPool {
 	}
 
 	// -------------------------------------------------------------------------
+	// Far tiles (LOD6+)
+	// -------------------------------------------------------------------------
+
+	private farTileQueue: {
+		requestId: number;
+		levelIndex: number;
+		tileX: number;
+		tileZ: number;
+	}[] = [];
+	private farTileQueueReadIdx = 0;
+	private farTilesInFlightCount = 0;
+	private nextFarTileRequestId = 1;
+	private readonly maxFarTilesInFlight = 3;
+
+	/** Callback fired on the main thread when a worker finishes a far tile. */
+	public onFarTileGenerated: ((data: FarTileGeneratedMessage) => void) | null =
+		null;
+
+	public scheduleFarTile(
+		levelIndex: number,
+		tileX: number,
+		tileZ: number,
+	): number {
+		const requestId = this.nextFarTileRequestId++;
+		this.farTileQueue.push({ requestId, levelIndex, tileX, tileZ });
+		this.processQueue();
+		return requestId;
+	}
+
+	// -------------------------------------------------------------------------
 	// Cached LOD mesh
 	// -------------------------------------------------------------------------
 
@@ -2432,6 +2470,9 @@ export class ChunkWorkerPool {
 		} else if (type === WorkerTaskType.GenerateDistantTerrain_Generated) {
 			this.onDistantTerrainGenerated?.(data as DistantTerrainGeneratedMessage);
 			this.distantTerrainInFlight = false;
+		} else if (type === WorkerTaskType.GenerateFarTile) {
+			this.farTilesInFlightCount = Math.max(0, this.farTilesInFlightCount - 1);
+			this.onFarTileGenerated?.(data as FarTileGeneratedMessage);
 		}
 
 		return failed;
@@ -3609,6 +3650,14 @@ export class ChunkWorkerPool {
 		) {
 			let taskChunk: Chunk | undefined;
 			let distantTask: DistantTerrainTask | undefined;
+			let farTask:
+				| {
+						requestId: number;
+						levelIndex: number;
+						tileX: number;
+						tileZ: number;
+				  }
+				| undefined;
 			let precomputeLod: number | undefined;
 			let taskType: TaskType;
 
@@ -3667,11 +3716,29 @@ export class ChunkWorkerPool {
 				);
 
 				taskType = TaskType.Relight;
+			} else if (
+				this.farTileQueueReadIdx < this.farTileQueue.length &&
+				this.farTilesInFlightCount < this.maxFarTilesInFlight
+			) {
+				farTask = this.farTileQueue[this.farTileQueueReadIdx++];
+
+				if (!farTask) continue;
+
+				taskType = TaskType.FarTile;
+			} else if (
+				// Periodic compaction: drop consumed queue prefix.
+				this.farTileQueueReadIdx > 64 &&
+				this.farTileQueueReadIdx * 2 >= this.farTileQueue.length
+			) {
+				this.farTileQueue.copyWithin(0, this.farTileQueueReadIdx);
+				this.farTileQueue.length -= this.farTileQueueReadIdx;
+				this.farTileQueueReadIdx = 0;
+				break;
 			} else {
 				break;
 			}
 
-			if (!taskChunk && !distantTask) break;
+			if (!taskChunk && !distantTask && !farTask) break;
 
 			if (taskType === TaskType.Remesh) {
 				if (!taskChunk!.isLoaded) {
@@ -3845,6 +3912,19 @@ export class ChunkWorkerPool {
 
 				this.recordWorkerDispatch(workerIndex);
 				this.debugStats.totalRelightDispatches++;
+				dispatchedThisTick++;
+			} else if (taskType === TaskType.FarTile && farTask) {
+				this.setWorkerTaskContext(workerIndex, { taskType });
+				this.farTilesInFlightCount++;
+
+				worker.postGenerateFarTile(
+					farTask.requestId,
+					farTask.levelIndex,
+					farTask.tileX,
+					farTask.tileZ,
+				);
+
+				this.recordWorkerDispatch(workerIndex);
 				dispatchedThisTick++;
 			} else {
 				this.setWorkerTaskContext(workerIndex, { taskType, distantTask });

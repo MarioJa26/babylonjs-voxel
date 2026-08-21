@@ -3,11 +3,14 @@ import {
 	initSharedBuffers,
 	setRenderDistance,
 } from "@/code/Generation/DistantTerrain/DistantTerrainGenerator";
+import { generateFarTile } from "@/code/World/FarTiles/FarTileGenerator";
 import type { WorldGenerator } from "@/code/Generation/WorldGenerator";
 import type { FaceName } from "@/code/World/Texture/FaceName";
 import type { WorkerInternalMeshData } from "../DataStructures/WorkerInternalMeshData";
 import {
+	type FarTileGeneratedMessage,
 	type GenerateDistantTerrainRequest,
+	type GenerateFarTileRequest,
 	type GenerateTerrainRequest,
 	type TerrainGeneratedMessage,
 	WorkerTaskType,
@@ -149,6 +152,31 @@ export function handleGenerateDistantTerrain(
 			centerChunkZ: data.centerChunkZ,
 		},
 		transferables: [],
+	};
+}
+
+export function handleGenerateFarTile(request: GenerateFarTileRequest): {
+	payload: FarTileGeneratedMessage;
+	transferables: Transferable[];
+} {
+	const result = generateFarTile({
+		requestId: request.requestId,
+		levelIndex: request.levelIndex,
+		tileX: request.tileX,
+		tileZ: request.tileZ,
+	});
+
+	return {
+		payload: {
+			type: WorkerTaskType.GenerateFarTile,
+			requestId: result.requestId,
+			levelIndex: result.levelIndex,
+			tileX: result.tileX,
+			tileZ: result.tileZ,
+			opaqueFaces: result.opaqueFaces,
+			waterFaces: result.waterFaces,
+		},
+		transferables: [result.opaqueFaces.buffer, result.waterFaces.buffer],
 	};
 }
 

@@ -447,10 +447,13 @@ export function extractAllSliceMasksX(
 	lightBank: WritableNumberArray,
 ): void {
 	const size = session.size;
-	const area = size * size;
+	const step = session.lodStep;
+	const gridSize =
+		session.meshGridSize > 0 ? session.meshGridSize : size / step;
+	const area = gridSize * gridSize;
 
-	maskBank.fill(0, 0, (size + 1) * area);
-	lightBank.fill(0, 0, (size + 1) * area);
+	maskBank.fill(0, 0, (gridSize + 1) * area);
+	lightBank.fill(0, 0, (gridSize + 1) * area);
 
 	const hasNegNeighbor = session.hasNeighborChunk(-1, 0, 0);
 
@@ -461,43 +464,49 @@ export function extractAllSliceMasksX(
 	const ps = session.ps;
 	const ps2 = session.ps2;
 
-	const pxStart = hasNegNeighbor ? 0 : 1;
+	// Downsampled mode: one mask cell per lodStep^3 voxel region. Each
+	// adjacency pair samples the representative (region-origin) voxels of
+	// the current and neighboring regions; padded-grid reads stay exact so
+	// chunk-border faces remain correct.
+	for (let cz = 0; cz < gridSize; cz++) {
+		const vz = cz * step;
+		const zBase = (vz + 1) * ps2;
+		const outCell = cz * gridSize;
 
-	for (let z = 0; z < size; z++) {
-		const zBase = (z + 1) * ps2;
-		const outCell = z * size;
+		for (let cy = 0; cy < gridSize; cy++) {
+			const vy = cy * step;
+			const rowIdx = (vy + 1) * ps + zBase;
 
-		for (let y = 0; y < size; y++) {
-			let curIdx = (y + 1) * ps + zBase;
-			let nbrIdx = curIdx + 1;
+			for (let cs = -1; cs < gridSize - 1; cs++) {
+				if (cs === -1 && !hasNegNeighbor) continue;
 
-			for (let px = pxStart; px < size; px++) {
+				const bx = cs * step;
+				const curIdx = bx + 1 + rowIdx;
+				const nbrIdx = curIdx + step;
+
 				if ((opaqueArr[curIdx] & opaqueArr[nbrIdx]) === 0) {
 					processCell(
 						session,
 						blockArr,
 						lightArr,
 						disableAO,
-						px - 1,
-						y,
-						z,
-						px,
-						y,
-						z,
+						bx,
+						vy,
+						vz,
+						bx + step,
+						vy,
+						vz,
 						curIdx,
 						nbrIdx,
 						1,
 						2,
 						FACE_PX,
 						FACE_NX,
-						px * area + outCell + y,
+						(cs + 1) * area + outCell + cy,
 						maskBank,
 						lightBank,
 					);
 				}
-
-				curIdx++;
-				nbrIdx++;
 			}
 		}
 	}
@@ -509,10 +518,13 @@ export function extractAllSliceMasksY(
 	lightBank: WritableNumberArray,
 ): void {
 	const size = session.size;
-	const area = size * size;
+	const step = session.lodStep;
+	const gridSize =
+		session.meshGridSize > 0 ? session.meshGridSize : size / step;
+	const area = gridSize * gridSize;
 
-	maskBank.fill(0, 0, (size + 1) * area);
-	lightBank.fill(0, 0, (size + 1) * area);
+	maskBank.fill(0, 0, (gridSize + 1) * area);
+	lightBank.fill(0, 0, (gridSize + 1) * area);
 
 	const hasNegNeighbor = session.hasNeighborChunk(0, -1, 0);
 
@@ -523,49 +535,52 @@ export function extractAllSliceMasksY(
 	const ps = session.ps;
 	const ps2 = session.ps2;
 
-	// Axis Y uses u = Z and v = X (mask index = x * size + z), matching the
-	// per-slice extractor. py is the padded y of the "current" cell; the
-	// neighbor cell sits one y-row up.
-	const pyStart = hasNegNeighbor ? 0 : 1;
+	// Axis Y uses u = Z and v = X (mask index = x * gridSize + z), matching
+	// the per-slice extractor's permutation. Downsampled pairs sample the
+	// region-origin voxels one y-step apart.
+	const yStep = ps * step;
 
-	for (let py = pyStart; py < size; py++) {
-		const curRow = py * ps;
-		const nbrRow = curRow + ps;
-		const outSliceBase = py * area;
+	for (let cvx = 0; cvx < gridSize; cvx++) {
+		const vx = cvx * step;
+		const xOffset = vx + 1;
 
-		for (let z = 0; z < size; z++) {
-			const zBase = (z + 1) * ps2;
-			let curIdx = 1 + curRow + zBase;
-			let nbrIdx = 1 + nbrRow + zBase;
-			const outCol = outSliceBase + z;
+		for (let cs = -1; cs < gridSize - 1; cs++) {
+			if (cs === -1 && !hasNegNeighbor) continue;
 
-			for (let x = 0; x < size; x++) {
+			const nyVox = (cs + 1) * step;
+			const by = nyVox - step;
+			const curRowBase = (by + 1) * ps;
+			const outSliceBase = (cs + 1) * area;
+
+			for (let cvz = 0; cvz < gridSize; cvz++) {
+				const vz = cvz * step;
+				const zBase = (vz + 1) * ps2;
+				const curIdx = xOffset + curRowBase + zBase;
+				const nbrIdx = curIdx + yStep;
+
 				if ((opaqueArr[curIdx] & opaqueArr[nbrIdx]) === 0) {
 					processCell(
 						session,
 						blockArr,
 						lightArr,
 						disableAO,
-						x,
-						py - 1,
-						z,
-						x,
-						py,
-						z,
+						vx,
+						by,
+						vz,
+						vx,
+						nyVox,
+						vz,
 						curIdx,
 						nbrIdx,
 						2,
 						0,
 						FACE_PY,
 						FACE_NY,
-						outCol + x * size,
+						outSliceBase + cvz + cvx * gridSize,
 						maskBank,
 						lightBank,
 					);
 				}
-
-				curIdx++;
-				nbrIdx++;
 			}
 		}
 	}
@@ -577,10 +592,13 @@ export function extractAllSliceMasksZ(
 	lightBank: WritableNumberArray,
 ): void {
 	const size = session.size;
-	const area = size * size;
+	const step = session.lodStep;
+	const gridSize =
+		session.meshGridSize > 0 ? session.meshGridSize : size / step;
+	const area = gridSize * gridSize;
 
-	maskBank.fill(0, 0, (size + 1) * area);
-	lightBank.fill(0, 0, (size + 1) * area);
+	maskBank.fill(0, 0, (gridSize + 1) * area);
+	lightBank.fill(0, 0, (gridSize + 1) * area);
 
 	const hasNegNeighbor = session.hasNeighborChunk(0, 0, -1);
 
@@ -591,45 +609,49 @@ export function extractAllSliceMasksZ(
 	const ps = session.ps;
 	const ps2 = session.ps2;
 
-	const pzStart = hasNegNeighbor ? 0 : 1;
+	// Axis Z uses u = X and v = Y (mask index = y * gridSize + x).
+	const zStep = ps2 * step;
 
-	for (let pz = pzStart; pz < size; pz++) {
-		const zCur = pz * ps2;
-		const outSliceBase = pz * area;
+	for (let cvy = 0; cvy < gridSize; cvy++) {
+		const vy = cvy * step;
+		const yBase = (vy + 1) * ps;
 
-		for (let y = 0; y < size; y++) {
-			const yBase = (y + 1) * ps;
-			let curIdx = 1 + yBase + zCur;
-			let nbrIdx = curIdx + ps2;
-			const outRow = outSliceBase + y * size;
+		for (let cs = -1; cs < gridSize - 1; cs++) {
+			if (cs === -1 && !hasNegNeighbor) continue;
 
-			for (let x = 0; x < size; x++) {
+			const nzVox = (cs + 1) * step;
+			const bz = nzVox - step;
+			const curZBase = (bz + 1) * ps2;
+			const outSliceBase = (cs + 1) * area;
+
+			for (let cvx = 0; cvx < gridSize; cvx++) {
+				const vx = cvx * step;
+				const curIdx = vx + 1 + yBase + curZBase;
+				const nbrIdx = curIdx + zStep;
+
 				if ((opaqueArr[curIdx] & opaqueArr[nbrIdx]) === 0) {
 					processCell(
 						session,
 						blockArr,
 						lightArr,
 						disableAO,
-						x,
-						y,
-						pz - 1,
-						x,
-						y,
-						pz,
+						vx,
+						vy,
+						bz,
+						vx,
+						vy,
+						nzVox,
 						curIdx,
 						nbrIdx,
 						0,
 						1,
 						FACE_PZ,
 						FACE_NZ,
-						outRow + x,
+						outSliceBase + cvy * gridSize + cvx,
 						maskBank,
 						lightBank,
 					);
 				}
-
-				curIdx++;
-				nbrIdx++;
 			}
 		}
 	}

@@ -1,6 +1,7 @@
 import { Chunk, getChunk } from "./Chunk";
 import {
 	type GenerateDistantTerrainRequest,
+	type GenerateFarTileRequest,
 	type GenerateFullMeshRequest,
 	type InitDistantTerrainSharedRequest,
 	type InitLightSharedRequest,
@@ -313,6 +314,23 @@ export class ChunkWorker {
 			radius,
 			gridStep,
 			renderDistance,
+		};
+
+		this.terrainWorker.postMessage(message);
+	}
+
+	public postGenerateFarTile(
+		requestId: number,
+		levelIndex: number,
+		tileX: number,
+		tileZ: number,
+	): void {
+		const message: GenerateFarTileRequest = {
+			type: WorkerTaskType.GenerateFarTile,
+			requestId,
+			levelIndex,
+			tileX,
+			tileZ,
 		};
 
 		this.terrainWorker.postMessage(message);

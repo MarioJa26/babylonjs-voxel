@@ -146,6 +146,20 @@ export class SurfaceGenerator {
 	private static treeNoise: (x: number, z: number) => number;
 	private static densityNoise: (x: number, y: number, z: number) => number;
 
+	/**
+	 * Public flora-noise accessors for the far-tile LOD system: they expose
+	 * the exact per-column tree probability used by real generation
+	 * (getOrBuildFloraColumnInfo), so distant tiles can stamp trees at the
+	 * same world positions without duplicating noise setup.
+	 */
+	public static getTreeNoiseValue(worldX: number, worldZ: number): number {
+		return (SurfaceGenerator.treeNoise(worldX, worldZ) + 1) * 0.5;
+	}
+
+	public static getSeedAsInt(): number {
+		return SurfaceGenerator.seedAsInt;
+	}
+
 	private cheeseNoise: (x: number, y: number, z: number) => number;
 	private tunnelNoise: (x: number, y: number, z: number) => number;
 	private detailNoise: (x: number, y: number, z: number) => number;

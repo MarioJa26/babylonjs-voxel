@@ -130,7 +130,12 @@ export class VoxelFaceEmitterAdapter {
 		const faceBit = FACE_BIT_TABLE[faceIndex];
 
 		const isNonCube = (rawMask & NON_CUBE_MASK) !== 0;
-		const isCube = !isNonCube;
+		// Downsampled builds (lodStep > 1) collapse every participating cell
+		// to a full cube: sub-block shapes (slabs, crosses) cannot be
+		// represented meaningfully at that scale, and box-scaled emission
+		// would stretch partial shapes across whole regions.
+		const step = session.lodStep;
+		const isCube = step > 1 ? true : !isNonCube;
 		const dispatchKey = (isWater ? 2 : 0) | (isCube ? 1 : 0);
 		this._dispatch[dispatchKey](
 			out,
@@ -158,26 +163,32 @@ export class VoxelFaceEmitterAdapter {
 		faceName: FaceName,
 		_faceBit: number,
 	): void {
-		inlineOrigin(axis, back, desc);
+		const step = this._session.lodStep;
+		inlineOrigin(axis, back, desc, step);
 
-		const off = 1 ^ back;
+		// Front faces advance one full cell (step blocks) to the shared
+		// face plane; back faces already sit on it via inlineOrigin.
+		const off = (1 ^ back) * step;
 		const x = axis === 0 ? _origin.ox + off : _origin.ox;
 		const y = axis === 1 ? _origin.oy + off : _origin.oy;
 		const z = axis === 2 ? _origin.oz + off : _origin.oz;
+
+		const width = desc.width * step;
+		const height = desc.height * step;
 
 		out.emitCubeQuadUnchecked(
 			x,
 			y,
 			z,
 			axis,
-			desc.width,
-			desc.height,
+			width,
+			height,
 			blockId,
 			back,
 			light,
 			ao,
 			faceName,
-			needsRawDim(blockId, desc.width, desc.height) ? 1 : 0,
+			needsRawDim(blockId, width, height) ? 1 : 0,
 		);
 	}
 
@@ -193,9 +204,10 @@ export class VoxelFaceEmitterAdapter {
 		faceName: FaceName,
 		_faceBit: number,
 	): void {
-		inlineOrigin(axis, back, desc);
+		const step = this._session.lodStep;
+		inlineOrigin(axis, back, desc, step);
 
-		const off = 1 ^ back;
+		const off = (1 ^ back) * step;
 		const x = axis === 0 ? _origin.ox + off : _origin.ox;
 		const y = axis === 1 ? _origin.oy + off : _origin.oy;
 		const z = axis === 2 ? _origin.oz + off : _origin.oz;
@@ -204,8 +216,8 @@ export class VoxelFaceEmitterAdapter {
 			y,
 			z,
 			axis,
-			desc.width,
-			desc.height,
+			desc.width * step,
+			desc.height * step,
 			blockId,
 			back,
 			light,
@@ -231,16 +243,19 @@ export class VoxelFaceEmitterAdapter {
 		const boxes = getRuntimeShapeBoxes(packedBlock & PACKED_ID_STATE_MASK);
 		if (boxes.length === 0) return;
 
-		inlineOrigin(axis, back, desc);
+		const step = this._session.lodStep;
+		inlineOrigin(axis, back, desc, step);
 
-		const rawDim = needsRawDim(blockId, desc.width, desc.height) ? 1 : 0;
+		const rawDim = needsRawDim(blockId, desc.width * step, desc.height * step)
+			? 1
+			: 0;
 		const u = (axis + 1) % 3;
 		const v = (axis + 2) % 3;
 		const originX = _origin.ox;
 		const originY = _origin.oy;
 		const originZ = _origin.oz;
-		const descWidth = desc.width;
-		const descHeight = desc.height;
+		const descWidth = desc.width * step;
+		const descHeight = desc.height * step;
 
 		for (let i = 0; i < boxes.length; i++) {
 			const box = boxes[i];
@@ -294,15 +309,16 @@ export class VoxelFaceEmitterAdapter {
 		const boxes = getRuntimeShapeBoxes(packedBlock & PACKED_ID_STATE_MASK);
 		if (boxes.length === 0) return;
 
-		inlineOrigin(axis, back, desc);
+		const step = this._session.lodStep;
+		inlineOrigin(axis, back, desc, step);
 
 		const u = (axis + 1) % 3;
 		const v = (axis + 2) % 3;
 		const originX = _origin.ox;
 		const originY = _origin.oy;
 		const originZ = _origin.oz;
-		const descWidth = desc.width;
-		const descHeight = desc.height;
+		const descWidth = desc.width * step;
+		const descHeight = desc.height * step;
 
 		for (let i = 0; i < boxes.length; i++) {
 			const box = boxes[i];
@@ -342,19 +358,22 @@ function inlineOrigin(
 	axis: number,
 	back: number,
 	desc: GreedyFaceDescriptor,
+	step: number,
 ): void {
-	const faceBlockCoord = desc.slice + back;
+	// Descriptor coords are grid cells; scale back to block units. `back`
+	// advances one cell (= step blocks) to the face plane.
+	const faceBlockCoord = (desc.slice + back) * step;
 	if (axis === 0) {
 		_origin.ox = faceBlockCoord;
-		_origin.oy = desc.uStart;
-		_origin.oz = desc.vStart;
+		_origin.oy = desc.uStart * step;
+		_origin.oz = desc.vStart * step;
 	} else if (axis === 1) {
-		_origin.ox = desc.vStart;
+		_origin.ox = desc.vStart * step;
 		_origin.oy = faceBlockCoord;
-		_origin.oz = desc.uStart;
+		_origin.oz = desc.uStart * step;
 	} else {
-		_origin.ox = desc.uStart;
-		_origin.oy = desc.vStart;
+		_origin.ox = desc.uStart * step;
+		_origin.oy = desc.vStart * step;
 		_origin.oz = faceBlockCoord;
 	}
 }

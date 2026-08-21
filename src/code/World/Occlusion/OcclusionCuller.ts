@@ -26,10 +26,7 @@ import { Map1 } from "@/code/Maps/Map1";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import { Chunk, getChunk } from "../Chunk/Chunk";
 import { facePairIndex } from "../Chunk/ChunkFaceMasks";
-import {
-	consumeGroupsMutated,
-	getAllGroups,
-} from "../Chunk/MergedMeshManager";
+import { consumeGroupsMutated, getAllGroups } from "../Chunk/MergedMeshManager";
 
 // ---------------------------------------------------------------------------
 export interface OcclusionStats {
@@ -46,7 +43,15 @@ const MAX_BFS_STEPS = 32;
 // The cull range must cover every streamed LOD ring — RENDER_DISTANCE plus the
 // largest LOD offset — otherwise loaded terrain pops out at the cull boundary.
 const MAX_RENDER_RADIUS =
-	SETTING_PARAMS.RENDER_DISTANCE + SETTING_PARAMS.LOD_3_OFFSET + 2;
+	SETTING_PARAMS.RENDER_DISTANCE +
+	Math.max(
+		SETTING_PARAMS.LOD_1_OFFSET,
+		SETTING_PARAMS.LOD_2_OFFSET,
+		SETTING_PARAMS.LOD_3_OFFSET,
+		SETTING_PARAMS.LOD_4_OFFSET,
+		SETTING_PARAMS.LOD_5_OFFSET,
+	) +
+	2;
 const SEA_LEVEL = GenerationParams.SEA_LEVEL;
 const FRUSTUM_MARGIN = 32.0;
 

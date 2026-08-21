@@ -26,6 +26,7 @@ import {
 	createDistantWaterMaterial,
 } from "@/code/World/Light/DistantTerrainShaderLite";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
+import { farTileOutermostRingChunks } from "@/code/World/FarTiles/FarTileLadder";
 import {
 	atlasTileSize,
 	getDiffuseTexture2D,
@@ -307,7 +308,6 @@ export async function initDistantTerrain(): Promise<void> {
 	gridResolution = segments + 1;
 	vertexCount = gridResolution * gridResolution;
 	ensureFloatBuffers();
-	const size = radius * 2 * Chunk.SIZE;
 
 	if (
 		typeof SharedArrayBuffer === "undefined" ||
@@ -348,6 +348,11 @@ export async function initDistantTerrain(): Promise<void> {
 
 	mesh = createEmptyGridMesh(engine, "distantTerrain");
 
+	// The flat water plane spans the FULL far-tile horizon so oceans don't
+	// hard-cut at the clip-map edge; the terrain heightmap keeps its own
+	// (smaller) radius as a streaming underlay.
+	const waterReach = Math.max(radius, farTileOutermostRingChunks());
+	const size = waterReach * 2 * Chunk.SIZE;
 	waterMesh = createGround(engine, {
 		width: size,
 		height: size,
@@ -443,10 +448,18 @@ export function resetDistantTerrain(): void {
 export function update(worldX: number, worldZ: number) {
 	const cx = worldToChunkCoord(worldX);
 	const cz = worldToChunkCoord(worldZ);
+	// The impostor dips below every real-geometry LOD band (INSIDE_CLIP_Y),
+	// so the clip radius must cover the OUTERMOST per-chunk LOD ring — not
+	// just the near bands.
 	const effectiveRenderDistance =
 		SETTING_PARAMS.RENDER_DISTANCE +
-		SETTING_PARAMS.LOD_1_OFFSET +
-		SETTING_PARAMS.LOD_2_OFFSET;
+		Math.max(
+			SETTING_PARAMS.LOD_1_OFFSET,
+			SETTING_PARAMS.LOD_2_OFFSET,
+			SETTING_PARAMS.LOD_3_OFFSET,
+			SETTING_PARAMS.LOD_4_OFFSET,
+			SETTING_PARAMS.LOD_5_OFFSET,
+		);
 	const renderDistanceChanged = effectiveRenderDistance !== lastRenderDistance;
 	if (cx === lastChunkX && cz === lastChunkZ && !renderDistanceChanged) return;
 	lastChunkX = cx;

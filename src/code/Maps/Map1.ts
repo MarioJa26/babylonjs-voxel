@@ -5,6 +5,7 @@ import { setGameTimeScale } from "../Lib/GameRuntimeState";
 import type { RemoteMobManager } from "../Network/RemoteMobManager";
 import type { Player } from "../Player/Player";
 import { PlayerLoadingGate } from "../Player/PlayerLoadingGate";
+import { FarTileManager } from "../World/FarTiles/FarTileManager";
 import {
 	disposeSharedResources,
 	initAtlas,
@@ -45,6 +46,8 @@ export class Map1 {
 		try {
 			await initAtlas();
 			await initDistantTerrain();
+			// Far tiles (LOD6+): real decimated geometry out to the horizon.
+			FarTileManager.init(Map1.engine, Map1.mainScene);
 			await WorldStorage.initialize();
 			new PlayerLoadingGate(Map1.mainScene, this.#player);
 		} catch (error) {

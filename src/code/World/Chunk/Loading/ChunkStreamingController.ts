@@ -12,6 +12,7 @@ import {
 	DistantOnlyChunkCreationRule,
 	Lod0ChunkCreationRule,
 } from "../LOD/ChunkLodRules";
+import { FarTileManager } from "../../FarTiles/FarTileManager";
 
 export type QueuedChunkRequest = {
 	chunk: Chunk;
@@ -129,11 +130,17 @@ export class ChunkStreamingController {
 						lod2VerticalRadius: 0,
 						lod3HorizontalRadius: 0,
 						lod3VerticalRadius: 0,
+						lod4HorizontalRadius: 0,
+						lod4VerticalRadius: 0,
+						lod5HorizontalRadius: 0,
+						lod5VerticalRadius: 0,
 					},
 					[
 						new Lod0ChunkCreationRule(lod0HorizontalRadius, lod0VerticalRadius),
 						new DistantOnlyChunkCreationRule(),
 					],
+					[lod0HorizontalRadius, 0, 0, 0, 0, 0],
+					[lod0VerticalRadius, 0, 0, 0, 0, 0],
 					this.nextRuleGeneration(),
 				);
 			}
@@ -203,42 +210,28 @@ export class ChunkStreamingController {
 			updateDistantTerrain(distantTerrainX, distantTerrainZ);
 		}
 
+		FarTileManager.update(distantTerrainX, distantTerrainZ);
+
 		const lodRuleSet = this.getLodRuleSet(
 			caveState,
 			renderDistance,
 			verticalRadius,
 		);
 
-		const radii = lodRuleSet.radii;
-		const {
-			lod3HorizontalRadius,
-			lod3VerticalRadius,
-			lod0HorizontalRadius,
-			lod0VerticalRadius,
-			lod1HorizontalRadius,
-			lod1VerticalRadius,
-			lod2HorizontalRadius,
-			lod2VerticalRadius,
-		} = radii;
-
-		const operationalRadius = Math.max(
-			lod0HorizontalRadius,
-			lod1HorizontalRadius,
-			lod2HorizontalRadius,
-			lod3HorizontalRadius,
-		);
-
-		const operationalVerticalRadius = Math.max(
-			lod0VerticalRadius,
-			lod1VerticalRadius,
-			lod2VerticalRadius,
-			lod3VerticalRadius,
-		);
+		// Operational bounds span every chunk-creating band (LOD0..LOD5).
+		const operationalRadius = lodRuleSet.maxHorizontalRadius();
+		const operationalVerticalRadius = lodRuleSet.maxVerticalRadius();
 
 		const nearZoneRadius =
-			Math.max(lod0HorizontalRadius, lod1HorizontalRadius) + 2;
+			Math.max(
+				lodRuleSet.horizontalRadiusFor(0),
+				lodRuleSet.horizontalRadiusFor(1),
+			) + 2;
 		const nearZoneVertical =
-			Math.max(lod0VerticalRadius, lod1VerticalRadius) + 2;
+			Math.max(
+				lodRuleSet.verticalRadiusFor(0),
+				lodRuleSet.verticalRadiusFor(1),
+			) + 2;
 
 		const loadQueue = this.adapter.getLoadQueue();
 		const unloadQueueSet = this.adapter.getUnloadQueueSet();
@@ -330,13 +323,13 @@ export class ChunkStreamingController {
 			const effectiveVerticalAllowance =
 				!caveState && chunk.chunkY < 0
 					? Math.min(
-							lod3VerticalRadius,
+							lodRuleSet.maxVerticalRadius(),
 							SETTING_PARAMS.CAVE_VERTICAL_RENDER_DISTANCE,
 						)
-					: lod3VerticalRadius;
+					: lodRuleSet.maxVerticalRadius();
 
 			if (
-				hDist <= lod3HorizontalRadius &&
+				hDist <= lodRuleSet.maxHorizontalRadius() &&
 				vDist <= effectiveVerticalAllowance
 			) {
 				unloadQueueSet.delete(chunk);
@@ -705,21 +698,8 @@ export class ChunkStreamingController {
 		const dy = chunkY - prevChunkY;
 		const dz = chunkZ - prevChunkZ;
 
-		const radii = lodRuleSet.radii;
-
-		const r = Math.max(
-			radii.lod0HorizontalRadius,
-			radii.lod1HorizontalRadius,
-			radii.lod2HorizontalRadius,
-			radii.lod3HorizontalRadius,
-		);
-
-		const ry = Math.max(
-			radii.lod0VerticalRadius,
-			radii.lod1VerticalRadius,
-			radii.lod2VerticalRadius,
-			radii.lod3VerticalRadius,
-		);
+		const r = lodRuleSet.maxHorizontalRadius();
+		const ry = lodRuleSet.maxVerticalRadius();
 
 		const downwardRy = caveState
 			? ry
@@ -808,21 +788,8 @@ export class ChunkStreamingController {
 		lodRuleSet: ChunkLodRuleSet,
 		caveState: boolean,
 	): void {
-		const radii = lodRuleSet.radii;
-
-		const r = Math.max(
-			radii.lod0HorizontalRadius,
-			radii.lod1HorizontalRadius,
-			radii.lod2HorizontalRadius,
-			radii.lod3HorizontalRadius,
-		);
-
-		const ry = Math.max(
-			radii.lod0VerticalRadius,
-			radii.lod1VerticalRadius,
-			radii.lod2VerticalRadius,
-			radii.lod3VerticalRadius,
-		);
+		const r = lodRuleSet.maxHorizontalRadius();
+		const ry = lodRuleSet.maxVerticalRadius();
 
 		const downwardRy = caveState
 			? ry
