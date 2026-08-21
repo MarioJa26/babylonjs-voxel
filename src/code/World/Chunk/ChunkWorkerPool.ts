@@ -161,8 +161,8 @@ export class ChunkWorkerPool {
 	private static readonly WORKER_ERROR_COOLDOWN_MS = 120;
 	private static readonly MIN_AUTO_POOL_SIZE = 2;
 	private static readonly MAX_AUTO_POOL_SIZE = 12;
-	private static readonly DEFERRED_LIGHTING_BUDGET_MS = 2.5;
-	private static readonly DEFERRED_LIGHTING_MAX_CHUNKS_PER_FRAME = 48;
+	private static readonly DEFERRED_LIGHTING_BUDGET_MS = 2.0;
+	private static readonly DEFERRED_LIGHTING_MAX_CHUNKS_PER_FRAME = 64;
 	private static readonly LAST_DISPATCH_RING_SIZE = 24;
 
 	private static readonly MAX_MESH_QUEUE = 512;

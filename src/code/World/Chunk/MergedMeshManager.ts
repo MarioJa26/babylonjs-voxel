@@ -117,6 +117,18 @@ const MAX_GROUP_MEMBERS = GROUP_SIZE * GROUP_SIZE * GROUP_SIZE;
 const groups = new Map<number, MergedMeshGroup>();
 const dirtyGroups = new Set<MergedMeshGroup>();
 
+// Set whenever group membership or mesh refs change (new/removed members,
+// rebuilt meshes). The occlusion culler consumes it once per frame to force a
+// visibility sweep even when the camera is standing still — otherwise rebuilt
+// meshes come back forced-visible and stay unculled until the camera moves.
+let _groupsMutatedSinceSweep = false;
+
+export function consumeGroupsMutated(): boolean {
+	const mutated = _groupsMutatedSinceSweep;
+	_groupsMutatedSinceSweep = false;
+	return mutated;
+}
+
 const _opaqueFaceCounts = new Uint32Array(MAX_GROUP_MEMBERS);
 const _waterFaceCounts = new Uint32Array(MAX_GROUP_MEMBERS);
 const _cutoutFaceCounts = new Uint32Array(MAX_GROUP_MEMBERS);
@@ -160,6 +172,7 @@ function pushDirtyRange(
 function markGroupDirty(group: MergedMeshGroup): void {
 	group.dirty = true;
 	dirtyGroups.add(group);
+	_groupsMutatedSinceSweep = true;
 	_requestFlush?.();
 }
 
@@ -394,6 +407,7 @@ export function removeChunkFromGroup(chunk: Chunk): void {
 		}
 		groups.delete(groupKey);
 		dirtyGroups.delete(group);
+		_groupsMutatedSinceSweep = true;
 		return;
 	}
 

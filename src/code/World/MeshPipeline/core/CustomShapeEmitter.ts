@@ -142,6 +142,13 @@ export function emitCustomShapes(session: MeshBuildSession): void {
 	const waterOut = session.quadWater ?? transparentOut;
 	const cutoutOut = session.quadCutout ?? transparentOut;
 
+	// Hoisted out of the per-cell loop: this only closes over the
+	// loop-invariant getBlock (computeFenceNeighborMask supplies its own
+	// nx/ny/nz), so allocating it per fence block was pure GC churn in any
+	// fence-heavy region.
+	const fenceGetBlock = (nx: number, ny: number, nz: number): number =>
+		getBlock(nx, ny, nz, 0);
+
 	for (let y = -1; y <= size; y++) {
 		const rowBaseY = (y + 1) * ps;
 		for (let z = -1; z <= size; z++) {
@@ -208,9 +215,7 @@ export function emitCustomShapes(session: MeshBuildSession): void {
 				}
 
 				if (flags & FLAG_CUSTOM_FENCE) {
-					const neighborMask = computeFenceNeighborMask(x, y, z, (nx, ny, nz) =>
-						getBlock(nx, ny, nz, 0),
-					);
+					const neighborMask = computeFenceNeighborMask(x, y, z, fenceGetBlock);
 					const fenceShape = getFenceDynamicShape(neighborMask);
 
 					for (let i = 0; i < fenceShape.boxes.length; i++) {

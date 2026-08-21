@@ -9,7 +9,6 @@ import {
 	FLAG_SOLID,
 	FLAG_TRANSPARENT,
 	getCachedFlagsAndId,
-	getFlagsFromCombined,
 } from "./BlockInfoCache";
 import { QuadBuffer } from "./QuadBuffer";
 import type { VoxelPipeline } from "./VoxelPipeline";
@@ -58,6 +57,13 @@ const NEIGHBOR_OFFSETS_FLAT: Int8Array = (() => {
 
 const OPAQUE_REQUIRED = FLAG_SOLID | FLAG_GREEDY;
 const OPAQUE_FORBIDDEN = FLAG_TRANSPARENT | FLAG_PARTIAL;
+// Combining required+forbidden into one mask turns the opaque test from two
+// ANDs + a boolean AND into a single masked comparison: the surviving bits
+// must equal exactly OPAQUE_REQUIRED (required bits set, forbidden bits clear).
+const OPAQUE_TEST_MASK = OPAQUE_REQUIRED | OPAQUE_FORBIDDEN;
+// Same trick for needsCustom (solid && !greedy): surviving bits under this
+// mask must equal exactly FLAG_SOLID.
+const CUSTOM_TEST_MASK = FLAG_SOLID | FLAG_GREEDY;
 
 /**
  * A single build-time context for the voxel meshing pipeline.
@@ -392,16 +398,13 @@ export class MeshBuildSession implements MeshContext {
 		const padded = this.block;
 
 		for (let i = 0; i < psVol; i++) {
-			const flags = getFlagsFromCombined(getCachedFlagsAndId(padded[i]));
+			// getCachedFlagsAndId's low 16 bits ARE the flags, so masking the
+			// combined value directly is equivalent to getFlagsFromCombined()
+			// but skips a function call per cell over the whole padded volume.
+			const flags = getCachedFlagsAndId(padded[i]) & 0xffff;
 
-			opaqueBits[i] =
-				(flags & OPAQUE_REQUIRED) === OPAQUE_REQUIRED &&
-				(flags & OPAQUE_FORBIDDEN) === 0
-					? 1
-					: 0;
-
-			customBits[i] =
-				(flags & FLAG_SOLID) !== 0 && (flags & FLAG_GREEDY) === 0 ? 1 : 0;
+			opaqueBits[i] = (flags & OPAQUE_TEST_MASK) === OPAQUE_REQUIRED ? 1 : 0;
+			customBits[i] = (flags & CUSTOM_TEST_MASK) === FLAG_SOLID ? 1 : 0;
 		}
 	}
 }

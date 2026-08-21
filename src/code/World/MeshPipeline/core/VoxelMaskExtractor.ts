@@ -766,12 +766,15 @@ function processCell(
 
 	// Only when both sides are solid and this is not the common full-cube path
 	// do we need closed-face shape tests for mutual occlusion.
-	if (!bothCube && currSolid !== 0 && nbrSolid !== 0) {
+	// preserveInterface always keeps the face regardless of closed-face
+	// occlusion (that's the whole point of a transparent interface), so this
+	// early-return path can never fire when it's set — skip the fetch
+	// entirely instead of computing shape info that's discarded below.
+	if (!preserveInterface && !bothCube && currSolid !== 0 && nbrSolid !== 0) {
 		currShapeInfo = getShapeInfo(currentPacked);
 		nbrShapeInfo = getShapeInfo(neighborPacked);
 
 		if (
-			!preserveInterface &&
 			(currShapeInfo.closedFaceMask & currentFaceBit) !== 0 &&
 			(nbrShapeInfo.closedFaceMask & neighborFaceBit) !== 0
 		) {
@@ -850,8 +853,6 @@ function processCell(
 	let nbrClosesFace = 0;
 	let currClosesFace = 0;
 
-	// For normal emission, only the opposite solid side's closed face can
-	// suppress the candidate face.
 	if (nbrSolid !== 0) {
 		if (!nbrShapeInfo) {
 			nbrShapeInfo = getShapeInfo(neighborPacked);

@@ -119,13 +119,18 @@ function postDirty(
 	dirtySlots: DirtySlotSet,
 	registry: ChunkViewRegistry,
 ): void {
-	if (dirtySlots.size === 0) return;
-	const arr = new Uint32Array(dirtySlots.size);
+	const count = dirtySlots.size;
+	if (count === 0) return;
+
+	const arr = new Uint32Array(count);
 	let i = 0;
-	for (const slot of dirtySlots) {
+
+	// Direct iteration avoids Iterator object allocation overhead
+	dirtySlots.forEach((slot) => {
 		bumpLightVersion(registry, slot);
 		arr[i++] = slot;
-	}
+	});
+
 	const msg: LightDirtyMessage = {
 		type: WorkerTaskType.LightDirty,
 		seq,
@@ -182,37 +187,33 @@ function registerChunkFields(fields: LightRegisterChunkFields): void {
 	const queue = pendingMutations.get(fields.chunkId);
 	if (queue) {
 		pendingMutations.delete(fields.chunkId);
-		for (const mutation of queue) {
-			handleMutate(mutation);
+		for (let i = 0; i < queue.length; i++) {
+			handleMutate(queue[i]);
 		}
 	}
 
-	// Replay the deferred-light BFS that arrived before registration, so the
-	// refinement is never dropped.  Runs before the reconciles so they see
-	// the post-BFS light values (same order as the normal pump path).
+	// Replay the deferred-light BFS that arrived before registration.
 	const dirty = _dirtyScratch;
 	dirty.clear();
+
 	const seedState = pendingDeferredSeeds.get(fields.chunkId);
 	if (seedState && seedState.length > 0) {
 		pendingDeferredSeeds.delete(fields.chunkId);
-		for (const slot of propagateDeferred(
-			registry,
-			fields.headerSlot,
-			seedState,
-		)) {
-			dirty.add(slot);
-		}
+		propagateDeferred(registry, fields.headerSlot, seedState).forEach(
+			(slot) => {
+				dirty.add(slot);
+			},
+		);
 	}
 
 	// Reconcile both block and sky light after registration.
-	// Catches propagation that was skipped earlier because this chunk
-	// was not visible in the worker registry yet.
-	for (const slot of lightBlockReconcile(registry, fields.headerSlot)) {
+	lightBlockReconcile(registry, fields.headerSlot).forEach((slot) => {
 		dirty.add(slot);
-	}
-	for (const slot of lightSkyReconcile(registry, fields.headerSlot)) {
+	});
+	lightSkyReconcile(registry, fields.headerSlot).forEach((slot) => {
 		dirty.add(slot);
-	}
+	});
+
 	if (dirty.size > 0) {
 		postDirty(fields.seq, dirty, registry);
 	}

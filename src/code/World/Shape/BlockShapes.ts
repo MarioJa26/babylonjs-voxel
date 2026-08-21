@@ -1,5 +1,5 @@
-import blockShapesRaw from "../../../../public/data/block-shapes.json";
-import blocksRaw from "../../../../public/data/blocks.json";
+import blockShapesRaw from "../../../data/block-shapes.json";
+import blocksRaw from "../../../data/blocks.json";
 import { BlockType } from "../Texture/BlockType";
 
 // Face mask bits: +X=0, -X=1, +Y=2, -Y=3, +Z=4, -Z=5
