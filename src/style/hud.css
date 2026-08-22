@@ -1118,7 +1118,6 @@
 	pointer-events: none;
 	z-index: 10;
 	image-rendering: auto;
-	filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.9));
 }
 
 .hit-marker {
@@ -1133,7 +1132,6 @@
 	opacity: 0;
 	transition: opacity 0.15s ease-out;
 	image-rendering: auto;
-	filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.9));
 }
 
 /* ─── Chat ────────────────────────────────────────────────────────────────── */

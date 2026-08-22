@@ -11,14 +11,22 @@ import {
 	disposeMeshGpu,
 	disposeScene,
 	type EngineContext,
+	loadTexture2D,
 	type Mesh,
 	onBeforeRender,
+	rebuildMaterial,
 	registerScene,
 	type SceneContext,
 	startEngine,
 	stopEngine,
 	vec3,
 } from "@babylonjs/lite";
+import { getAtlasTile } from "@/code/World/Texture/BlockTextures";
+import { BlockType } from "@/code/World/Texture/BlockType";
+import {
+	atlasSize,
+	atlasTileSize,
+} from "@/code/World/Texture/TextureAtlasFactory";
 import {
 	applyPlayerSkin,
 	buildFloorSlabData,
@@ -27,6 +35,7 @@ import {
 
 const PREVIEW_SIZE = { width: 220, height: 300 };
 const SPIN_SPEED = Math.PI / 2.5; // rad/s
+const ATLAS_TEXTURE_PATH = "/texture/diffuse_atlas.png";
 
 /** Equipment slot ids shown beside/below the character, Minecraft-style. */
 const ARMOR_SLOT_LABELS: readonly [string, string][] = [
@@ -173,14 +182,27 @@ export class PlayerPreview {
 
 		applyPlayerSkin(engine, scene, mat, () => this.#alive);
 
-		// Floor slab (top surface at feet level) — light gray, never dark.
-		const floorData = buildFloorSlabData();
+		// Floor slab (top surface at feet level) — textured from the SAME
+		// diffuse atlas the chunk shader uses, sampling exactly one Cobble
+		// tile so it reads as a real block face. Gray until it loads.
+		const tile = getAtlasTile(BlockType.Cobble) ?? [0, 0];
+		const tx = Math.max(0, Math.min(atlasSize - 1, tile[0]));
+		const ty = Math.max(0, Math.min(atlasSize - 1, tile[1]));
+		const ts = atlasTileSize;
+		const atlasRow = atlasSize - 1 - ty; // same v-flip as DroppedItem
+		const u0 = tx * ts;
+		const u1 = (tx + 1) * ts;
+		const vLow = atlasRow * ts;
+		const vHigh = (atlasRow + 1) * ts;
+
+		const floorData = buildFloorSlabData(1.7, [u0, vHigh, u1, vLow]);
 		const floor = createMeshFromData(
 			engine,
 			"playerPreviewFloor",
 			floorData.positions,
 			floorData.normals,
 			floorData.indices,
+			floorData.uvs,
 		);
 		const floorMat = createStandardMaterial();
 		floorMat.diffuseColor = [0.6, 0.63, 0.66];
@@ -190,6 +212,19 @@ export class PlayerPreview {
 		floor.pickable = false;
 		addToScene(scene, floor);
 		this.#floor = floor;
+
+		void loadTexture2D(engine, ATLAS_TEXTURE_PATH, {
+			magFilter: "nearest",
+			minFilter: "nearest",
+			srgb: true,
+		})
+			.then((tex) => {
+				if (!this.#alive) return;
+				floorMat.diffuseTexture = tex;
+				floorMat.diffuseColor = [1, 1, 1];
+				rebuildMaterial(scene, floorMat);
+			})
+			.catch(() => {});
 
 		// Deterministic framing of the whole rig — and it must actually become
 		// the active camera, otherwise nothing renders at all.

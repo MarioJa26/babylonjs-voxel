@@ -11,6 +11,7 @@ import {
 	type StandardMaterialProps,
 	type Texture2D,
 } from "@babylonjs/lite";
+import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 
 /**
  * Minecraft-style player rig (head/torso/arms/legs) built from textured boxes
@@ -87,7 +88,7 @@ interface MeshData {
 	uvs?: Float32Array;
 }
 
-function appendBox(out: MeshBuffers, p: BoxPart): void {
+function appendBox(out: MeshBuffers, p: BoxPart, uvDivisor = 64): void {
 	const hx = p.w / 2;
 	const hy = p.h / 2;
 	const hz = p.d / 2;
@@ -168,11 +169,13 @@ function appendBox(out: MeshBuffers, p: BoxPart): void {
 			out.positions.push(f.v[i][0], f.v[i][1], f.v[i][2]);
 			out.normals.push(f.n[0], f.n[1], f.n[2]);
 			if (f.r) {
-				// v=1 maps to the image top (Babylon invertY convention)
-				const vTop = 1 - f.r[1] / 64;
-				const vBottom = 1 - f.r[3] / 64;
+				// v=1 maps to the image top (Babylon invertY convention).
+				// uvDivisor=64 => rects are skin-pixel coords; 1 => already
+				// normalized atlas coordinates (used by the floor slab).
+				const vTop = 1 - f.r[1] / uvDivisor;
+				const vBottom = 1 - f.r[3] / uvDivisor;
 				out.uvs.push(
-					i === 0 || i === 3 ? f.r[0] / 64 : f.r[2] / 64,
+					i === 0 || i === 3 ? f.r[0] / uvDivisor : f.r[2] / uvDivisor,
 					i < 2 ? vBottom : vTop,
 				);
 			}
@@ -250,11 +253,35 @@ export function buildPlayerRigData(origin: RigOrigin = "feet"): MeshData {
 	return toData(out);
 }
 
-/** Thin light-gray reference slab used under the preview model. */
-export function buildFloorSlabData(width = 1.7): MeshData {
+/**
+ * Thin reference slab used under the preview model.
+ *
+ * When `atlasRect` is supplied it must be FINAL normalized atlas coordinates
+ * [u0, v0, u1, v1] (computed with the same tile math as DroppedItem), so the
+ * slab samples exactly one block tile — pixel-identical to how the world
+ * renders that block through the chunk atlas shader.
+ */
+export function buildFloorSlabData(
+	width = 1.7,
+	atlasRect?: readonly [number, number, number, number],
+): MeshData {
 	const out: MeshBuffers = { positions: [], normals: [], indices: [], uvs: [] };
-	appendBox(out, { x: 0, y: -0.04, z: 0, w: width, h: 0.08, d: width });
-	return { ...toData(out), uvs: undefined };
+	const uv: UvSet | undefined = atlasRect
+		? {
+				front: atlasRect,
+				back: atlasRect,
+				right: atlasRect,
+				left: atlasRect,
+				top: atlasRect,
+				bottom: atlasRect,
+			}
+		: undefined;
+	appendBox(
+		out,
+		{ x: 0, y: -0.04, z: 0, w: width, h: 0.08, d: width, uv },
+		atlasRect ? 1 : 64,
+	);
+	return toData(out);
 }
 
 // ─── Factories ──────────────────────────────────────────────────────────────
@@ -320,6 +347,23 @@ export function applyPlayerSkin(
 }
 
 const litScenes = new WeakSet<SceneContext>();
+
+/**
+ * Scale a rig material by packed voxel light (sky << 4 | block), using the
+ * same sun-elevation day factor as the dropped-item lighting in DroppedItem.
+ * The floor of 0.35 keeps the model readable in pitch darkness.
+ */
+export function applyVoxelLightToRig(
+	mat: StandardMaterialProps,
+	packed: number,
+): void {
+	const sky = ((packed >> 4) & 0xf) / 15;
+	const block = (packed & 0xf) / 15;
+	const sunElevation = -GLOBAL_VALUES.skyLightDirection.y + 0.1;
+	const sunScale = Math.min(1, Math.max(0, sunElevation * 4)) + 0.3;
+	const brightness = Math.min(1, Math.max(0.35, sky * sunScale + block));
+	mat.diffuseColor = [brightness, brightness, brightness];
+}
 
 /**
  * The voxel world renders through its own shader pipeline, so plain

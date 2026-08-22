@@ -12,6 +12,7 @@ import {
 } from "@babylonjs/lite";
 import { copyVec3, lengthSqVec3, Quaternion, setVec3 } from "@/code/Lib/Math";
 import { worldToChunkCoord } from "@/code/Lib/VoxelMath";
+import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import {
 	Axis,
 	createVoxelColliderBlockSampler,
@@ -38,6 +39,7 @@ import type { IPlayerBody, PlayerBodyControlState } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
 import {
 	applyPlayerSkin,
+	applyVoxelLightToRig,
 	createPlayerRigMesh,
 	ensureWorldRigLights,
 } from "./PlayerModel";
@@ -113,6 +115,10 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	public isMounted = false;
 
 	#displayCapsule!: Mesh;
+	#displayMat: import("@babylonjs/lite").StandardMaterialProps | null = null;
+	#displayLightX = Number.NaN;
+	#displayLightY = Number.NaN;
+	#displayLightZ = Number.NaN;
 	#characterController!: SimpleCharacterController;
 	#characterOrientation = Quaternion.Identity();
 	#characterGravity: Vec3 = vec3(0, -18, 0);
@@ -418,6 +424,11 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.#characterController.setPosition(this.voxelPosition);
 		this.#camera.snapToPlayer(this.voxelPosition);
 		this.#displayCapsule?.position.copyFrom(this.voxelPosition);
+		this.#syncDisplayLight(
+			this.voxelPosition.x,
+			this.voxelPosition.y,
+			this.voxelPosition.z,
+		);
 		this.voxelCollider.syncDebugMesh(this.voxelPosition);
 	}
 
@@ -429,6 +440,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.#characterController.setPosition(this.voxelPosition);
 		this.#camera.snapToPlayer(this.voxelPosition);
 		this.#displayCapsule?.position.copyFrom(this.voxelPosition);
+		this.#syncDisplayLight(x, y, z);
 		this.voxelCollider.syncDebugMesh(this.voxelPosition);
 	}
 
@@ -1185,6 +1197,11 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			deltaMs !== undefined ? deltaMs / 1000 : undefined,
 		);
 		this.#displayCapsule.position.copyFrom(this.getPositionInternal());
+		this.#syncDisplayLight(
+			this.voxelPosition.x,
+			this.voxelPosition.y,
+			this.voxelPosition.z,
+		);
 		const rq = this.#displayCapsule.rotationQuaternion;
 		rq.set(
 			this.#characterOrientation.x,
@@ -1289,6 +1306,11 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.#characterController.setVelocity(this.#zeroVelocity);
 		this.#camera.snapToPlayer(this.#lockedPosition);
 		this.#displayCapsule.position.copyFrom(this.#lockedPosition);
+		this.#syncDisplayLight(
+			this.#lockedPosition.x,
+			this.#lockedPosition.y,
+			this.#lockedPosition.z,
+		);
 		this.voxelCollider.syncDebugMesh(this.voxelPosition);
 	}
 
@@ -1317,6 +1339,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		if (this.#movementLocked) this.#lockedPosition = vec3(p.x, p.y, p.z);
 		this.#camera.snapToPlayer(p);
 		this.#displayCapsule.position.copyFrom(p);
+		this.#syncDisplayLight(p.x, p.y, p.z);
 		this.voxelCollider.syncDebugMesh(this.voxelPosition);
 		const view = position as { yaw?: unknown; pitch?: unknown };
 		if (
@@ -1395,8 +1418,29 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		body.pickable = false;
 		body.visible = false;
 		addToScene(this.scene, body);
+		this.#displayMat = mat;
 		applyPlayerSkin(this.#engine, this.scene, mat);
 		return body;
+	}
+
+	/** Re-tint the display rig when it crosses into a different voxel. */
+	#syncDisplayLight(x: number, y: number, z: number): void {
+		const mat = this.#displayMat;
+		if (!mat) return;
+		const lx = Math.floor(x);
+		const ly = Math.floor(y + 1);
+		const lz = Math.floor(z);
+		if (
+			lx === this.#displayLightX &&
+			ly === this.#displayLightY &&
+			lz === this.#displayLightZ
+		) {
+			return;
+		}
+		this.#displayLightX = lx;
+		this.#displayLightY = ly;
+		this.#displayLightZ = lz;
+		applyVoxelLightToRig(mat, getLightByWorldCoords(x, y + 1, z));
 	}
 
 	private integrateMovement(deltaTime: number): void {

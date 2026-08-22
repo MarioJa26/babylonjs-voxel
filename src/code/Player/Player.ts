@@ -2,6 +2,7 @@ import type { EngineContext, Mesh, SceneContext, Vec3 } from "@babylonjs/lite";
 import { addToScene, createStandardMaterial } from "@babylonjs/lite";
 import { Map1 } from "@/code/Maps/Map1";
 import { tryCreateBoatFromMarker } from "@/code/World/Boat/BoatCreatorSystem";
+import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { BlockType } from "@/code/World/Texture/BlockType";
 import type { IControls } from "../Interface/IControls";
 import { getIsPaused, isUiOpen, setIsPaused } from "../Lib/GameRuntimeState";
@@ -22,6 +23,7 @@ import { PlayerInputController } from "./PlayerInputController";
 import { PlayerLoopController } from "./PlayerLoopController";
 import {
 	applyPlayerSkin,
+	applyVoxelLightToRig,
 	createPlayerRigMesh,
 	ensureWorldRigLights,
 } from "./PlayerModel";
@@ -49,10 +51,15 @@ export class Player {
 	#interactionsDisposed = false;
 	#loopController!: PlayerLoopController;
 	#playerBodyMesh: Mesh | null = null;
+	#playerBodyMat: import("@babylonjs/lite").StandardMaterialProps | null = null;
 	// Third-person body facing: derived from movement (Minecraft-style).
 	#lastBodyX = Number.NaN;
 	#lastBodyZ = Number.NaN;
 	#bodyYaw = 0;
+	// Voxel-light sampling cache (re-tint only on voxel change).
+	#bodyLightX = Number.NaN;
+	#bodyLightY = Number.NaN;
+	#bodyLightZ = Number.NaN;
 
 	networkManager?: import("../Network/NetworkManager").NetworkManager;
 
@@ -135,6 +142,7 @@ export class Player {
 		ensureWorldRigLights(scene);
 		addToScene(scene, body);
 		this.#playerBodyMesh = body;
+		this.#playerBodyMat = mat;
 
 		applyPlayerSkin(this.engine, scene, mat);
 	}
@@ -165,6 +173,25 @@ export class Player {
 
 		const { x, y, z } = this.position;
 		body.position.set(x, y, z);
+
+		// Re-tint the model when it crosses into a different voxel so its
+		// brightness follows the light the player actually stands in.
+		const mat = this.#playerBodyMat;
+		if (mat) {
+			const lx = Math.floor(x);
+			const ly = Math.floor(y + 1);
+			const lz = Math.floor(z);
+			if (
+				lx !== this.#bodyLightX ||
+				ly !== this.#bodyLightY ||
+				lz !== this.#bodyLightZ
+			) {
+				this.#bodyLightX = lx;
+				this.#bodyLightY = ly;
+				this.#bodyLightZ = lz;
+				applyVoxelLightToRig(mat, getLightByWorldCoords(x, y + 1, z));
+			}
+		}
 
 		// Face the movement direction (Minecraft-style), smoothing through the
 		// shortest arc so the model never spins the long way around.

@@ -84,6 +84,12 @@ const BOXES: (readonly ShapeBounds[] | undefined)[] = new Array(
 	DENSE_CACHE_SIZE,
 ).fill(undefined);
 
+// Dense closed-face masks (6 bits, FACE_PX..FACE_NZ) parallel to ENTRIES.
+// PERF: lets hot paths read closedFaceMask as a typed-array load instead of
+// fetching the BlockShapeInfo object. Filled in buildEntry for dense keys;
+// sparse overflow keys (> 0xffff) must keep using getShapeInfo().
+export const CLOSED_FACES_LUT = new Uint8Array(DENSE_CACHE_SIZE);
+
 // Sparse overflow fallback (only for packed keys beyond the dense range).
 const ENTRIES_OVERFLOW = new Map<number, number>();
 const SHAPES_OVERFLOW = new Map<number, BlockShapeInfo>();
@@ -99,14 +105,16 @@ function canUseDenseCache(packed: number): boolean {
 // ---------------------------------------------------------------------------
 
 const GLASS_BLOCK_IDS = new Set([60, 61]);
-const GLASS_LUT = (() => {
-	const lut = new Uint8Array(256);
+// Sized to BLOCK_ID_MASK range (10-bit ids) so hot paths can index directly
+// without bounds guards: any id from unpacked packed values hits the LUT.
+export const GLASS_ID_LUT = (() => {
+	const lut = new Uint8Array(1024);
 	for (const id of GLASS_BLOCK_IDS) lut[id] = 1;
 	return lut;
 })();
 
 export function isGlassBlock(blockId: number): boolean {
-	return blockId >= 0 && blockId < 256 && GLASS_LUT[blockId] !== 0;
+	return blockId >= 0 && blockId < 1024 && GLASS_ID_LUT[blockId] !== 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -561,6 +569,7 @@ function buildEntry(packed: number): number {
 		(shapeInfo.isCube ? FIC_ISCUBE : 0);
 
 	if (canUseDenseCache(packed)) {
+		CLOSED_FACES_LUT[packed] = shapeInfo.closedFaceMask;
 		ENTRIES[packed] = entry >>> 0;
 		SHAPES[packed] = shapeInfo;
 		BOXES[packed] = boxes;
@@ -590,6 +599,18 @@ function getEntry(packed: number): number {
 	const overflow = ENTRIES_OVERFLOW.get(packed);
 	if (overflow !== undefined) return overflow;
 	return buildEntry(packed);
+}
+
+// Entry bit layout exported for direct typed-array decoding in hot paths:
+//   flags = entry & 0xffff, id = (entry >>> 16) & 0x3ff, isCube bit 30.
+export const ENTRY_IS_CUBE = FIC_ISCUBE;
+
+/**
+ * Full raw entry (ready | isCube | id | flags) — one probe gives hot paths
+ * every per-block scalar without touching BlockShapeInfo objects.
+ */
+export function getFullBlockEntry(packed: number): number {
+	return getEntry(packed);
 }
 
 // ---------------------------------------------------------------------------
