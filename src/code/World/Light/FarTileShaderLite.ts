@@ -73,7 +73,10 @@ fn sampleAtlasTile(tile : vec2<f32>, worldUV : vec2<f32>) -> vec3<f32> {
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let worldNormal = normalize(in.vNormal);
-  let ndotl = max(0.0, dot(worldNormal, -shaderUniforms.lightDirection));
+  // Same sun convention as the chunk shaders (dot(N, +lightDirection)) so
+  // slope shading matches across ring boundaries — the old negated dot came
+  // from DistantTerrain's port and rendered far slopes lit from behind.
+  let ndotl = max(0.0, dot(worldNormal, shaderUniforms.lightDirection));
 
   // Triplanar-ish UV selection so side faces tile correctly.
   var worldUV = in.vPositionW.xz / shaderUniforms.textureScale;

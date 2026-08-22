@@ -135,6 +135,10 @@ export function emitCustomShapes(session: MeshBuildSession): void {
 	// forced-cube greedy path already covers their cells.
 	if (session.lodStep > 1) return;
 
+	// Plain terrain (no crosses/fences/multi-box anywhere in the chunk)
+	// skips the whole 34^3 volume walk.
+	if (session.needsCustomCount === 0) return;
+
 	const size = session.size;
 	const getBlock = session.getBlock;
 	const getLight = session.getLight;

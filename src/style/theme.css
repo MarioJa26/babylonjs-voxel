@@ -1,0 +1,77 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+   Central HUD design tokens — the single source of truth for every in-game
+   UI surface (hotbar, inventory, crafting, mason, crate, stats, chat, debug,
+   pause menu, multiplayer overlay). Components must consume these variables
+   instead of hardcoding colors, radii or fonts.
+
+   Design language: dark blue-slate glass panels + single cyan accent,
+   light hairline borders, one type family, three radii steps.
+   ────────────────────────────────────────────────────────────────────────── */
+
+:root {
+	/* ── Typography ─────────────────────────────────────────────────────── */
+	--ui-font-family:
+		"Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+	--hud-font-mono: "Cascadia Mono", Consolas, "Courier New", monospace;
+	--hud-text: #eef4f8;
+	--hud-text-muted: #9fb2bf;
+
+	/* ── Accent (primary interactive color) ─────────────────────────────── */
+	--hud-accent: rgb(0, 187, 255);
+	--hud-accent-soft: rgba(0, 187, 255, 0.45);
+	--hud-accent-faint: rgba(0, 187, 255, 0.14);
+	--hud-accent-glow: rgba(0, 187, 255, 0.55);
+
+	/* ── Olive frame (signature chrome color for frames & slots) ────────── */
+	--hud-frame: rgba(96, 96, 64, 0.9);
+	--hud-frame-bright: rgb(138, 138, 90);
+	--hud-frame-dim: rgba(96, 96, 64, 0.55);
+
+	/* ── Surfaces (dark slate glass, layered by elevation) ──────────────── */
+	--hud-bg-scrim: rgba(8, 13, 18, 0.6); /* fullscreen overlays behind content */
+	--hud-bg-panel: rgba(13, 20, 27, 0.82); /* standard panel / card */
+	--hud-bg-modal: rgba(10, 15, 21, 0.95); /* strong modal surface */
+	--hud-bg-inset: rgba(0, 0, 0, 0.5); /* wells inside a panel */
+	--hud-bg-slot: rgba(5, 9, 13, 0.72); /* item slot wells */
+
+	/* ── Borders ────────────────────────────────────────────────────────── */
+	--hud-border-soft: rgba(173, 205, 224, 0.1);
+	--hud-border: rgba(173, 205, 224, 0.2);
+	--hud-border-strong: rgba(173, 205, 224, 0.38);
+	--hud-border-accent: var(--hud-accent);
+
+	/* ── Semantic status colors ─────────────────────────────────────────── */
+	--hud-health: #ef5350;
+	--hud-hunger: #ffa726;
+	--hud-stamina: #66bb6a;
+	--hud-mana: #42a5f5;
+	--hud-ok: var(--hud-stamina);
+	--hud-warn: var(--hud-hunger);
+	--hud-danger: var(--hud-health);
+
+	/* ── Debug panel category coding (single ramp, one family) ──────────── */
+	--hud-cat-performance: #66bb6a;
+	--hud-cat-position: #42a5f5;
+	--hud-cat-world: #ffb74d;
+	--hud-cat-chunks: #ff8a65;
+	--hud-cat-workers: #ba68c8;
+	--hud-cat-stats: #f06292;
+	--hud-cat-biome: #a2cf6e;
+	--hud-cat-mobs: #4dd0e1;
+
+	/* ── Radii scale ────────────────────────────────────────────────────── */
+	--hud-radius-sm: 4px;
+	--hud-radius-md: 8px;
+	--hud-radius-lg: 12px;
+
+	/* ── Elevation / effects ────────────────────────────────────────────── */
+	--hud-shadow-soft: 0 2px 10px rgba(0, 0, 0, 0.35);
+	--hud-shadow-panel: 0 10px 32px rgba(0, 0, 0, 0.45);
+	--hud-text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9), 0 0 1px rgba(0, 0, 0, 0.9);
+	--hud-focus-ring: 0 0 0 2px var(--hud-accent-faint);
+
+	/* ── Shared control metrics ─────────────────────────────────────────── */
+	--hud-border-width: 1px;
+	--hud-control-pad-y: 0.45em;
+	--hud-control-pad-x: 0.9em;
+}

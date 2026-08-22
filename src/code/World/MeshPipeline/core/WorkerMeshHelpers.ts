@@ -172,6 +172,23 @@ export class MeshBuildSession implements MeshContext {
 		return this.lightBank;
 	}
 
+	/**
+	 * Per-slice occupancy for the banked greedy mode: slot s+1 is 1 when
+	 * extraction wrote any nonzero mask cell into slice s. Lets greedyMesh
+	 * skip all-empty slices entirely — most far chunks are majority air.
+	 */
+	public sliceOccupancy = new Uint8Array(0);
+
+	public ensureSliceOccupancy(minLength: number): Uint8Array {
+		if (this.sliceOccupancy.length < minLength) {
+			this.sliceOccupancy = new Uint8Array(minLength);
+		}
+		return this.sliceOccupancy;
+	}
+
+	/** Number of needsCustom cells in the active padded grid (0 = plain). */
+	public needsCustomCount = 0;
+
 	// --- shared face descriptor ---
 	public faceScratch = {
 		slice: 0,
@@ -428,6 +445,8 @@ export class MeshBuildSession implements MeshContext {
 		const customBits = this.needsCustom;
 		const padded = this.block;
 
+		let customCount = 0;
+
 		for (let i = 0; i < psVol; i++) {
 			// getCachedFlagsAndId's low 16 bits ARE the flags, so masking the
 			// combined value directly is equivalent to getFlagsFromCombined()
@@ -435,8 +454,14 @@ export class MeshBuildSession implements MeshContext {
 			const flags = getCachedFlagsAndId(padded[i]) & 0xffff;
 
 			opaqueBits[i] = (flags & OPAQUE_TEST_MASK) === OPAQUE_REQUIRED ? 1 : 0;
-			customBits[i] = (flags & CUSTOM_TEST_MASK) === FLAG_SOLID ? 1 : 0;
+			const custom = (flags & CUSTOM_TEST_MASK) === FLAG_SOLID ? 1 : 0;
+			customBits[i] = custom;
+			customCount += custom;
 		}
+
+		// Lets emitCustomShapes bail out without scanning the volume for
+		// plain terrain chunks (the overwhelming majority).
+		this.needsCustomCount = customCount;
 	}
 }
 

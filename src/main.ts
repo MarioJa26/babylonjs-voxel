@@ -5,6 +5,7 @@ import {
 	getServerNameFromUrl,
 	getWorldNameFromUrl,
 } from "./code/World/WorldContext";
+import "@/style/theme.css";
 import "@/style/hud.css";
 import "@/style/Item.css";
 import "@/style/MultiplayerHUD.css";

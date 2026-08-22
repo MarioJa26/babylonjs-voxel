@@ -1921,6 +1921,7 @@ export class ChunkWorkerPool {
 			if (this.meshResultQueueReadIdx < this.meshResultQueue.length) {
 				this.scheduleMeshFlush();
 			} else if (this._summaryApplied + this._summaryDropped >= 256) {
+				/*
 				// P0 burst summary: one line per ingestion burst so the
 				// applied-per-chunk remesh multiplier and the recycled fraction
 				// are visible without hooking a profiler. distinct < applied
@@ -1934,6 +1935,7 @@ export class ChunkWorkerPool {
 						`(${(this.debugStats.meshRecycledBytesTotal / 1048576).toFixed(1)} MB) returned to workers, ` +
 						`remeshQueue=${this.debugStats.remeshQueueLength}`,
 				);
+				*/
 				this._summaryApplied = 0;
 				this._summaryDropped = 0;
 				this._summaryDistinct.clear();

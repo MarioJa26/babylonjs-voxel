@@ -26,6 +26,7 @@ import { PlayerInventory } from "../Inventory/PlayerInventory";
 import type { Player } from "../Player";
 import { Chat } from "./Chat";
 import { Crosshair } from "./Crosshair/Crosshair";
+import { PlayerPreview } from "./PlayerPreview";
 
 export class PlayerHud {
 	#scene: SceneContext;
@@ -73,6 +74,7 @@ export class PlayerHud {
 	#overlayDiv: HTMLDivElement;
 	#craftingContainer!: HTMLDivElement;
 	#mainInventoryContainer!: HTMLDivElement;
+	#playerPreview = new PlayerPreview();
 
 	static debugPanelDiv: HTMLDivElement;
 	static debugPanelVisible = true;
@@ -143,6 +145,7 @@ export class PlayerHud {
 		this.#craftingContainer = document.createElement("div");
 		this.#craftingContainer.classList.add("crafting-container");
 
+		contentWrapper.appendChild(this.#playerPreview.container);
 		contentWrapper.appendChild(inventoryUI);
 		contentWrapper.appendChild(this.#craftingContainer);
 
@@ -151,6 +154,7 @@ export class PlayerHud {
 		document.body.appendChild(overlayDiv);
 
 		onSceneDispose(this.#scene, () => {
+			this.#playerPreview.dispose();
 			overlayDiv.remove();
 			document.exitPointerLock();
 		});
@@ -289,6 +293,7 @@ export class PlayerHud {
 			this.#craftMenu.updateCraftingAvailability();
 			PlayerHud.#heldItemNameDiv.classList.remove("visible");
 			this.#overlayDiv.style.display = "flex";
+			this.#playerPreview.show();
 			this.#exitPointerLock();
 		} else {
 			closeUi(UiFocus.inventory);
@@ -296,6 +301,7 @@ export class PlayerHud {
 			// (Tab, Escape, or the close button) so world interactions work again.
 			this.#activateWalkingControls();
 			this.#overlayDiv.style.display = "none";
+			this.#playerPreview.hide();
 			this.#craftMenu.closePicker();
 			// Only re-grab the mouse if no other overlay is still open.
 			if (!isUiOpen()) this.#enterPointerLock();
@@ -1001,88 +1007,8 @@ export class PlayerHud {
 	private initializeDebugPanel(): void {
 		if (PlayerHud.debugPanelDiv) return;
 
-		const style = document.createElement("style");
-		style.textContent = `
-			.debug-info-container {
-				display: flex;
-				flex-direction: column;
-				gap: 1px;
-			}
-			.debug-row {
-				display: flex;
-				gap: 4px;
-				line-height: 1.3;
-			}
-			.debug-key {
-				font-weight: bold;
-				color: #e0e0e0;
-				-webkit-text-stroke: 0.6px #000;
-				text-stroke: 0.6px #000;
-				paint-order: stroke fill;
-				text-shadow:
-					-1px -1px 0 #000,
-					 1px -1px 0 #000,
-					-1px  1px 0 #000,
-					 1px  1px 0 #000,
-					 0px  1px 0 #000,
-					 0px -1px 0 #000,
-					-1px  0px 0 #000,
-					 1px  0px 0 #000;
-			}
-			.debug-value {
-				color: #fff;
-				-webkit-text-stroke: 0.4px #000;
-				text-stroke: 0.4px #000;
-				paint-order: stroke fill;
-				text-shadow:
-					-1px -1px 0 #000,
-					 1px -1px 0 #000,
-					-1px  1px 0 #000,
-					 1px  1px 0 #000,
-					 0px  1px 0 #000,
-					 0px -1px 0 #000,
-					-1px  0px 0 #000,
-					 1px  0px 0 #000;
-			}
-			.debug-key[data-cat="performance"] { color: #00ff88; }
-			.debug-key[data-cat="position"]    { color: #44aaff; }
-			.debug-key[data-cat="world"]       { color: #ffcc44; }
-			.debug-key[data-cat="chunks"]      { color: #ff8844; }
-			.debug-key[data-cat="workers"]     { color: #cc66ff; }
-			.debug-key[data-cat="stats"]       { color: #ff6688; }
-			.debug-key[data-cat="biome"]       { color: #88ff44; }
-			.debug-key[data-cat="mobs"]        { color: #44ffff; }
-			.debug-slider-label {
-				color: #ffcc44;
-				font-weight: bold;
-				-webkit-text-stroke: 0.6px #000;
-				text-stroke: 0.6px #000;
-				paint-order: stroke fill;
-				text-shadow:
-					-1px -1px 0 #000,
-					 1px -1px 0 #000,
-					-1px  1px 0 #000,
-					 1px  1px 0 #000,
-					 0px  1px 0 #000,
-					 0px -1px 0 #000,
-					-1px  0px 0 #000,
-					 1px  0px 0 #000;
-			}
-		`;
-		document.head.appendChild(style);
-
 		const div = document.createElement("div");
 		div.id = "debug-panel";
-		div.style.position = "absolute";
-		div.style.top = "10px";
-		div.style.left = "10px";
-		div.style.padding = "10px";
-		div.style.backgroundColor = "rgba(0, 0, 0, 0.5)";
-		div.style.fontFamily = "monospace";
-		div.style.fontSize = "14px";
-		div.style.zIndex = "100";
-		div.style.display = "block";
-		div.style.borderRadius = "5px";
 		document.body.appendChild(div);
 		PlayerHud.debugPanelDiv = div;
 

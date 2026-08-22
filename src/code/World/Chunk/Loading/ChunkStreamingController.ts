@@ -13,6 +13,13 @@ import {
 	Lod0ChunkCreationRule,
 } from "../LOD/ChunkLodRules";
 import { FarTileManager } from "../../FarTiles/FarTileManager";
+import { maxLodForChunkY } from "../Worker/LODUtilities";
+
+/** Underground (cave) chunks never coarsen: clamp any desired LOD. */
+function clampLodForY(chunkY: number, lod: number): number {
+	const max = maxLodForChunkY(chunkY);
+	return lod > max ? max : lod;
+}
 
 export type QueuedChunkRequest = {
 	chunk: Chunk;
@@ -286,6 +293,8 @@ export class ChunkStreamingController {
 				}
 			}
 
+			desiredLod = clampLodForY(chunk.chunkY, desiredLod);
+
 			request.desiredLod = desiredLod;
 			request.revision = revision;
 			request.includeVoxelData = desiredLod <= 1;
@@ -464,11 +473,14 @@ export class ChunkStreamingController {
 			let decisionLod = this.getCachedDecisionLod(key, chunk.isDirty);
 
 			if (decisionLod < 0) {
-				decisionLod = lodRuleSet.resolveWithHysteresisFromDistance(
-					hDist,
-					vDist,
-					chunkLod,
-				).lodLevel;
+				decisionLod = clampLodForY(
+					chunk.chunkY,
+					lodRuleSet.resolveWithHysteresisFromDistance(
+						hDist,
+						vDist,
+						chunkLod,
+					).lodLevel,
+				);
 				this.setCachedDecisionLod(key, decisionLod, chunk.isDirty);
 			}
 
@@ -588,7 +600,7 @@ export class ChunkStreamingController {
 
 			if (!decision.allowsChunkCreation) return;
 
-			desiredLod = decision.lodLevel;
+			desiredLod = clampLodForY(y, decision.lodLevel);
 			this.setCachedDecisionLod(cacheKey, desiredLod, isDirty);
 		}
 
@@ -841,7 +853,7 @@ export class ChunkStreamingController {
 							continue;
 						}
 
-						desiredLod = decision.lodLevel;
+						desiredLod = clampLodForY(y, decision.lodLevel);
 						this.setCachedDecisionLod(cacheKey, desiredLod, isDirty);
 					}
 
@@ -937,6 +949,8 @@ export class ChunkStreamingController {
 		revision: number,
 		includeVoxelData = desiredLod <= 1,
 	): void {
+		desiredLod = clampLodForY(chunk.chunkY, desiredLod);
+
 		if (chunk.isLoaded && (!includeVoxelData || chunk.hasVoxelData)) {
 			return;
 		}

@@ -93,6 +93,8 @@ export class QuadBuffer {
 		const b = this.b;
 		const c = this.c;
 
+		// Positions/dims are single bytes; emitters guarantee in-range values
+		// (boundary faces encode 255 + shader sentinel, never raw 256).
 		a[i] = sx;
 		a[i + 1] = sy;
 		a[i + 2] = sz;

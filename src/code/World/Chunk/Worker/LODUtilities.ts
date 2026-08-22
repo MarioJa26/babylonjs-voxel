@@ -12,6 +12,16 @@ export function clampLodForChunk(chunk: Chunk, lod: number): number {
 		: lod;
 }
 
+/**
+ * ChunkY-only variant for the streaming controller, which decides LODs from
+ * coordinates before a Chunk object may exist. Underground (cave) chunks are
+ * never downsampled — coarse shells would wall off cave interiors and
+ * misrender against the full-res bands around them.
+ */
+export function maxLodForChunkY(chunkY: number): number {
+	return chunkY < 0 ? UNDERGROUND_MAX_LOD : Number.MAX_SAFE_INTEGER;
+}
+
 export function normalizeChunkLod(chunk: Chunk): void {
 	const lod = chunk.lodLevel ?? 0;
 	const clamped = clampLodForChunk(chunk, lod);

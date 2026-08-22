@@ -111,6 +111,11 @@ export class VoxelFaceEmitterAdapter {
 
 		const session = this._session;
 
+		// Downsampled builds: cull water SIDE faces outright. Shoreline
+		// slivers are sub-pixel behind terrain at these distances, and any
+		// wall geometry there reads as artifacts (floating water rims).
+		if (session.lodStep > 1 && isWater && axis !== 1) return;
+
 		// GPU-important split:
 		// - true water goes to quadWater if available
 		// - other transparent/cutout/glass goes to quadCutout if available
@@ -168,7 +173,8 @@ export class VoxelFaceEmitterAdapter {
 		faceName: FaceName,
 		_faceBit: number,
 	): void {
-		const step = this._session.lodStep;
+		const session = this._session;
+		const step = session.lodStep;
 		inlineOrigin(axis, back, desc, step);
 
 		// Front faces advance one full cell (step blocks) to the shared
@@ -180,6 +186,46 @@ export class VoxelFaceEmitterAdapter {
 
 		const width = desc.width * step;
 		const height = desc.height * step;
+
+		// Boundary-slice detection: the last greedy slice pairs this chunk's
+		// final region with the +axis neighbor's first region. Its face plane
+		// sits exactly at the chunk border (coord = size), which the u8
+		// position encoding clamps to size-1/8. Flag it with materialType=3;
+		// the shader adds the missing +1 unit along the face axis.
+		const isBoundary =
+			desc.slice === session.meshGridSize - 1 &&
+			session.hasNeighborChunk(
+				axis === 0 ? 1 : 0,
+				axis === 1 ? 1 : 0,
+				axis === 2 ? 1 : 0,
+			);
+
+		if (isBoundary) {
+			// The true plane (coord = size = 32) exceeds the u8 position
+			// grid, so encode at the LAST representable unit (31.875) here —
+			// at the source, never via a downstream clamp — and flag with
+			// materialType=3; the shader adds INV_POS along the face axis,
+			// restoring the exact plane.
+			const ENC_MAX = 255 / 8;
+			out.emitQuadUnchecked(
+				Math.min(x, ENC_MAX),
+				Math.min(y, ENC_MAX),
+				Math.min(z, ENC_MAX),
+				axis,
+				width,
+				height,
+				blockId,
+				back,
+				light,
+				ao,
+				faceName,
+				3, // boundary sentinel — shader nudges +INV_POS on the axis
+				0,
+				0,
+				1,
+			);
+			return;
+		}
 
 		out.emitCubeQuadUnchecked(
 			x,

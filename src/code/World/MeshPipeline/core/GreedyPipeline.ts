@@ -92,12 +92,25 @@ export function greedyMesh(
 
 	const extractor = extractMask as MaskExtractor;
 	const faceScratch = session.faceScratch;
+	// Banked sweeps mark per-slice occupancy; skipping all-empty slices
+	// avoids scanning (up to) gridSize² mask cells per dead slice — most
+	// far chunks are majority air above the terrain line.
+	const occ = session.sliceOccupancy;
 
 	for (let slice = -1; slice < size; slice++) {
 		// Banked mode reads straight from the pre-extracted bank region;
 		// scratch mode extracts into the area-sized buffers at offset 0.
 		const base = banked ? (slice + 1) * area : 0;
 		if (!banked) extractor(slice, mask, lights);
+
+		if (
+			banked &&
+			slice >= 0 &&
+			base + area <= occ.length &&
+			occ[slice + 1] === 0
+		) {
+			continue;
+		}
 
 		for (let v = 0; v < size; v++) {
 			const rowBase = base + v * size;

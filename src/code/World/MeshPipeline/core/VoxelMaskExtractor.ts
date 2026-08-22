@@ -455,7 +455,11 @@ export function extractAllSliceMasksX(
 	maskBank.fill(0, 0, (gridSize + 1) * area);
 	lightBank.fill(0, 0, (gridSize + 1) * area);
 
-	const hasNegNeighbor = session.hasNeighborChunk(-1, 0, 0);
+	// Per-slice occupancy: lets greedyMesh skip all-empty slices.
+	const occ = session.ensureSliceOccupancy(gridSize + 1);
+	occ.fill(0, 0, gridSize + 1);
+
+	const hasPosNeighbor = session.hasNeighborChunk(1, 0, 0);
 
 	const blockArr = session.block;
 	const lightArr = session.light;
@@ -464,10 +468,18 @@ export function extractAllSliceMasksX(
 	const ps = session.ps;
 	const ps2 = session.ps2;
 
-	// Downsampled mode: one mask cell per lodStep^3 voxel region. Each
-	// adjacency pair samples the representative (region-origin) voxels of
-	// the current and neighboring regions; padded-grid reads stay exact so
-	// chunk-border faces remain correct.
+	// Downsampled mode: one mask cell per lodStep^3 voxel region. Interior
+	// pairs sample the representative (region-origin) voxels of adjacent
+	// regions.
+	//
+	// BORDER OWNERSHIP: each chunk emits exactly ONE boundary slice on its
+	// +X side, pairing its own last region representative (voxel size-step,
+	// internal) with the neighbor's FIRST region representative (voxel size,
+	// available in the padding). The old -1 slice paired the padding's edge
+	// voxel (-1) against region representatives of a different size, which
+	// mismatched heights on both sides and opened gaps along every LOD>=4
+	// border. With +X ownership every internal boundary is emitted once,
+	// by the lower-side chunk, with matched representatives.
 	for (let cz = 0; cz < gridSize; cz++) {
 		const vz = cz * step;
 		const zBase = (vz + 1) * ps2;
@@ -477,12 +489,11 @@ export function extractAllSliceMasksX(
 			const vy = cy * step;
 			const rowIdx = (vy + 1) * ps + zBase;
 
-			for (let cs = -1; cs < gridSize - 1; cs++) {
-				if (cs === -1 && !hasNegNeighbor) continue;
-
+			for (let cs = 0; cs < gridSize - 1; cs++) {
 				const bx = cs * step;
 				const curIdx = bx + 1 + rowIdx;
 				const nbrIdx = curIdx + step;
+				const outIndex = (cs + 1) * area + outCell + cy;
 
 				if ((opaqueArr[curIdx] & opaqueArr[nbrIdx]) === 0) {
 					processCell(
@@ -502,10 +513,45 @@ export function extractAllSliceMasksX(
 						2,
 						FACE_PX,
 						FACE_NX,
-						(cs + 1) * area + outCell + cy,
+						outIndex,
 						maskBank,
 						lightBank,
 					);
+
+					if (maskBank[outIndex] !== 0) occ[cs + 1] = 1;
+				}
+			}
+
+			if (hasPosNeighbor) {
+				const bx = (gridSize - 1) * step;
+				const curIdx = bx + 1 + rowIdx;
+				const nbrIdx = curIdx + step; // padding layer at voxel size
+				const outIndex = gridSize * area + outCell + cy;
+
+				if ((opaqueArr[curIdx] & opaqueArr[nbrIdx]) === 0) {
+					processCell(
+						session,
+						blockArr,
+						lightArr,
+						disableAO,
+						bx,
+						vy,
+						vz,
+						size,
+						vy,
+						vz,
+						curIdx,
+						nbrIdx,
+						1,
+						2,
+						FACE_PX,
+						FACE_NX,
+						outIndex,
+						maskBank,
+						lightBank,
+					);
+
+					if (maskBank[outIndex] !== 0) occ[gridSize] = 1;
 				}
 			}
 		}
@@ -526,7 +572,10 @@ export function extractAllSliceMasksY(
 	maskBank.fill(0, 0, (gridSize + 1) * area);
 	lightBank.fill(0, 0, (gridSize + 1) * area);
 
-	const hasNegNeighbor = session.hasNeighborChunk(0, -1, 0);
+	const occ = session.ensureSliceOccupancy(gridSize + 1);
+	occ.fill(0, 0, gridSize + 1);
+
+	const hasPosNeighbor = session.hasNeighborChunk(0, 1, 0);
 
 	const blockArr = session.block;
 	const lightArr = session.light;
@@ -535,18 +584,16 @@ export function extractAllSliceMasksY(
 	const ps = session.ps;
 	const ps2 = session.ps2;
 
-	// Axis Y uses u = Z and v = X (mask index = x * gridSize + z), matching
-	// the per-slice extractor's permutation. Downsampled pairs sample the
-	// region-origin voxels one y-step apart.
+	// Axis Y uses u = Z and v = X (mask index = x * gridSize + z). Border
+	// ownership mirrors the X sweep: one +Y boundary slice pairs this
+	// chunk's top region representative with the neighbor's bottom one.
 	const yStep = ps * step;
 
 	for (let cvx = 0; cvx < gridSize; cvx++) {
 		const vx = cvx * step;
 		const xOffset = vx + 1;
 
-		for (let cs = -1; cs < gridSize - 1; cs++) {
-			if (cs === -1 && !hasNegNeighbor) continue;
-
+		for (let cs = 0; cs < gridSize - 1; cs++) {
 			const nyVox = (cs + 1) * step;
 			const by = nyVox - step;
 			const curRowBase = (by + 1) * ps;
@@ -555,6 +602,7 @@ export function extractAllSliceMasksY(
 			for (let cvz = 0; cvz < gridSize; cvz++) {
 				const vz = cvz * step;
 				const zBase = (vz + 1) * ps2;
+				const outIndex = outSliceBase + cvz + cvx * gridSize;
 				const curIdx = xOffset + curRowBase + zBase;
 				const nbrIdx = curIdx + yStep;
 
@@ -576,10 +624,52 @@ export function extractAllSliceMasksY(
 						0,
 						FACE_PY,
 						FACE_NY,
-						outSliceBase + cvz + cvx * gridSize,
+						outIndex,
 						maskBank,
 						lightBank,
 					);
+
+					if (maskBank[outIndex] !== 0) occ[cs + 1] = 1;
+				}
+			}
+		}
+
+		if (hasPosNeighbor) {
+			const by = (gridSize - 1) * step;
+			const curRowBase = (by + 1) * ps;
+			const outSliceBase = gridSize * area;
+
+			for (let cvz = 0; cvz < gridSize; cvz++) {
+				const vz = cvz * step;
+				const zBase = (vz + 1) * ps2;
+				const outIndex = outSliceBase + cvz + cvx * gridSize;
+				const curIdx = xOffset + curRowBase + zBase;
+				const nbrIdx = curIdx + yStep; // padding layer at voxel size
+
+				if ((opaqueArr[curIdx] & opaqueArr[nbrIdx]) === 0) {
+					processCell(
+						session,
+						blockArr,
+						lightArr,
+						disableAO,
+						vx,
+						by,
+						vz,
+						vx,
+						size,
+						vz,
+						curIdx,
+						nbrIdx,
+						2,
+						0,
+						FACE_PY,
+						FACE_NY,
+						outIndex,
+						maskBank,
+						lightBank,
+					);
+
+					if (maskBank[outIndex] !== 0) occ[gridSize] = 1;
 				}
 			}
 		}
@@ -600,7 +690,10 @@ export function extractAllSliceMasksZ(
 	maskBank.fill(0, 0, (gridSize + 1) * area);
 	lightBank.fill(0, 0, (gridSize + 1) * area);
 
-	const hasNegNeighbor = session.hasNeighborChunk(0, 0, -1);
+	const occ = session.ensureSliceOccupancy(gridSize + 1);
+	occ.fill(0, 0, gridSize + 1);
+
+	const hasPosNeighbor = session.hasNeighborChunk(0, 0, 1);
 
 	const blockArr = session.block;
 	const lightArr = session.light;
@@ -609,16 +702,15 @@ export function extractAllSliceMasksZ(
 	const ps = session.ps;
 	const ps2 = session.ps2;
 
-	// Axis Z uses u = X and v = Y (mask index = y * gridSize + x).
+	// Axis Z uses u = X and v = Y (mask index = y * gridSize + x). Border
+	// ownership mirrors the X/Y sweeps: one +Z boundary slice.
 	const zStep = ps2 * step;
 
 	for (let cvy = 0; cvy < gridSize; cvy++) {
 		const vy = cvy * step;
 		const yBase = (vy + 1) * ps;
 
-		for (let cs = -1; cs < gridSize - 1; cs++) {
-			if (cs === -1 && !hasNegNeighbor) continue;
-
+		for (let cs = 0; cs < gridSize - 1; cs++) {
 			const nzVox = (cs + 1) * step;
 			const bz = nzVox - step;
 			const curZBase = (bz + 1) * ps2;
@@ -626,6 +718,7 @@ export function extractAllSliceMasksZ(
 
 			for (let cvx = 0; cvx < gridSize; cvx++) {
 				const vx = cvx * step;
+				const outIndex = outSliceBase + cvy * gridSize + cvx;
 				const curIdx = vx + 1 + yBase + curZBase;
 				const nbrIdx = curIdx + zStep;
 
@@ -647,10 +740,51 @@ export function extractAllSliceMasksZ(
 						1,
 						FACE_PZ,
 						FACE_NZ,
-						outSliceBase + cvy * gridSize + cvx,
+						outIndex,
 						maskBank,
 						lightBank,
 					);
+
+					if (maskBank[outIndex] !== 0) occ[cs + 1] = 1;
+				}
+			}
+		}
+
+		if (hasPosNeighbor) {
+			const bz = (gridSize - 1) * step;
+			const curZBase = (bz + 1) * ps2;
+			const outSliceBase = gridSize * area;
+
+			for (let cvx = 0; cvx < gridSize; cvx++) {
+				const vx = cvx * step;
+				const outIndex = outSliceBase + cvy * gridSize + cvx;
+				const curIdx = vx + 1 + yBase + curZBase;
+				const nbrIdx = curIdx + zStep; // padding layer at voxel size
+
+				if ((opaqueArr[curIdx] & opaqueArr[nbrIdx]) === 0) {
+					processCell(
+						session,
+						blockArr,
+						lightArr,
+						disableAO,
+						vx,
+						vy,
+						bz,
+						vx,
+						vy,
+						size,
+						curIdx,
+						nbrIdx,
+						0,
+						1,
+						FACE_PZ,
+						FACE_NZ,
+						outIndex,
+						maskBank,
+						lightBank,
+					);
+
+					if (maskBank[outIndex] !== 0) occ[gridSize] = 1;
 				}
 			}
 		}

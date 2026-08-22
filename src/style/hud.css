@@ -1,39 +1,107 @@
-/* General HUD Containers */
+/* ─────────────────────────────────────────────────────────────────────────────
+   Player HUD styles. All colors, radii and fonts come from theme.css tokens —
+   do not hardcode values here. Olive (--hud-frame) is the signature chrome
+   color; cyan (--hud-accent) marks interactive states only.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* ─── Shared slot metrics (keep hotbar & inventory grids identical) ───────── */
+
 :root {
-	--ui-font-family: Arial, Helvetica, sans-serif;
+	--slot-size: clamp(2em, 5vw, 4em);
+	--slot-frame-w: 3px;
+	--slot-gap: 0.66em;
+	--panel-pad: 0.5em;
+	--panel-frame-w: 2px;
+	/* Rows shown above the hotbar (inventory is 10 rows incl. the hotbar row) */
+	--inventory-rows: 9;
+	--hotbar-bottom: 1vh;
+	/* Outer height of the hotbar bar (slots are border-box: size incl. frame) */
+	--hotbar-outer-h: calc(
+		var(--slot-size) + 2 * var(--panel-pad) + 2 * var(--hud-border-width)
+	);
+	/* Outer height of the inventory panel — crafting matches it exactly */
+	--inventory-panel-h: calc(
+		var(--inventory-rows) * var(--slot-size) +
+			(var(--inventory-rows) - 1) * var(--slot-gap) +
+			2 * var(--panel-pad) + 2 * var(--panel-frame-w)
+	);
 }
+
+/* ─── HUD box model ─────────────────────────────────────────────────────────
+   No global reset exists in this codebase, so every sized HUD surface opts
+   into border-box explicitly — padding/border must never push a panel past
+   its grid track (the crafting-panel cutoff bug).
+   ──────────────────────────────────────────────────────────────────────── */
+
+.hud-overlay,
+.hud-content-wrapper,
+.mason-overlay,
+.woodcrate-overlay,
+.inventory-container,
+.inventory-slot,
+.crafting-slot,
+.crafting-container,
+.player-preview-panel,
+.player-preview-canvas,
+.preview-body,
+.equipment-slots,
+.accessory-slots,
+.equip-slot,
+.recipe-search-slot,
+.recipe-picker,
+#settingsContainer,
+.stat-bar-wrapper,
+.hotbar-wrapper,
+.hotbar-container,
+.hud-close-button,
+#chat-input,
+.mp-chat-input,
+#item-tooltip {
+	box-sizing: border-box;
+}
+
+/* ─── Fullscreen overlays (inventory / mason / crate) ─────────────────────── */
 
 .hud-overlay {
 	position: absolute;
-	top: 5%;
+	/* Anchored to the hotbar only — height follows content so no dead
+	   space collects above the panels */
+	bottom: calc(
+		var(--hotbar-bottom) + var(--hotbar-outer-h) + var(--slot-gap)
+	);
 	left: 50%;
 	transform: translateX(-50%);
 
-	/* scale with window size */
-	width: 90vw;
-	max-width: 1200px;
-	height: 80vh;
-	max-height: 800px;
+	/* Definite width => the grid's two 1fr side columns stay exactly equal,
+	   which pins the inventory grid dead-center over the hotbar */
+	width: min(96vw, 1500px);
 
-	background-color: rgba(0, 0, 0, 0.4);
+	background-color: var(--hud-bg-scrim);
+	backdrop-filter: blur(6px);
+	border: 2px solid var(--hud-frame);
+	border-radius: var(--hud-radius-lg);
+	box-shadow: var(--hud-shadow-panel);
+
 	padding: 1em;
 	z-index: 100;
 
 	display: flex;
-	/* flex container */
 	flex-direction: column;
-	/* stack content */
 	align-items: center;
 	justify-content: flex-end;
 
 	font-family: var(--ui-font-family);
 	font-size: 1em;
+	color: var(--hud-text);
 }
 
 .hud-content-wrapper {
-	display: flex;
-	flex-direction: row;
-	align-items: stretch;
+	position: relative;
+	/* [player preview] [inventory] [crafting] — equal side columns keep the
+	   inventory grid perfectly centered over the hotbar */
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+	align-items: end; /* pin everything just above the hotbar */
 	gap: 1em;
 	flex: 1 1 auto;
 	min-height: 0;
@@ -41,18 +109,137 @@
 	overflow: hidden;
 }
 
+/* Shared overlay close button */
+.hud-close-button {
+	position: absolute;
+	top: -0.7em;
+	right: -0.7em;
+
+	width: 1.6em;
+	height: 1.6em;
+	line-height: 1;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+
+	font-size: 1.4em;
+	font-family: var(--ui-font-family);
+
+	color: var(--hud-text-muted);
+	background-color: var(--hud-bg-modal);
+	border: var(--hud-border-width) solid var(--hud-frame);
+	border-radius: var(--hud-radius-sm);
+
+	user-select: none;
+	cursor: pointer;
+	transition:
+		color 0.15s,
+		border-color 0.15s;
+}
+
+.hud-close-button:hover {
+	color: var(--hud-danger);
+	border-color: var(--hud-danger);
+}
+
+/* ─── Inventory grid + slots ──────────────────────────────────────────────── */
+
+.inventory-container {
+	grid-column: 2;
+
+	display: flex;
+	flex-direction: column;
+	gap: var(--slot-gap);
+	padding: var(--panel-pad);
+
+	overflow-y: auto;
+
+	background-color: var(--hud-bg-panel);
+	border: var(--panel-frame-w) solid var(--hud-frame);
+	border-radius: var(--hud-radius-md);
+}
+
+.inventory-row {
+	display: flex;
+	gap: var(--slot-gap);
+}
+
+.inventory-slot {
+	transition: 100ms;
+	flex: 0 0 auto;
+	aspect-ratio: 1 / 1; /* keeps them square */
+	width: var(--slot-size);
+
+	border: var(--slot-frame-w) solid var(--hud-frame);
+	border-radius: var(--hud-radius-sm);
+	background-color: var(--hud-bg-slot);
+
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-family: var(--ui-font-family);
+}
+
+/* Style for the selected hotbar slot */
+.inventory-slot.selected {
+	border-color: #fff;
+	box-shadow:
+		0 0 0 1px rgba(255, 255, 255, 0.35),
+		var(--hud-shadow-soft);
+}
+
+.inventory-slot:hover {
+	border-color: var(--hud-accent);
+	transition-duration: 150ms;
+	transform: scale(1.1);
+}
+
+/* ─── Hotbar ──────────────────────────────────────────────────────────────── */
+
 .hotbar-container {
 	position: absolute;
-	bottom: 1vh;
+	bottom: var(--hotbar-bottom);
 	left: 50%;
 	transform: translateX(-50%);
 	z-index: 101;
 
 	display: flex;
-	gap: 0.66em;
-	padding: 0.5em;
-	background-color: rgba(0, 0, 0, 0.4);
+	gap: var(--slot-gap);
+	padding: var(--panel-pad);
+
+	background-color: var(--hud-bg-panel);
+	border: var(--hud-border-width) solid var(--hud-frame);
+	border-radius: var(--hud-radius-md);
+	box-shadow: var(--hud-shadow-panel);
+	backdrop-filter: blur(6px);
 }
+
+.held-item-name {
+	position: absolute;
+	bottom: 10vh; /* above the hotbar */
+
+	color: var(--hud-text);
+	background-color: var(--hud-bg-panel);
+	border: var(--hud-border-width) solid var(--hud-frame-dim);
+	border-radius: var(--hud-radius-md);
+	padding: 4px 12px;
+
+	font-family: var(--ui-font-family);
+	font-size: clamp(0.6em, 2vw, 1em); /* scales with screen */
+	font-weight: 600;
+	text-shadow: var(--hud-text-shadow);
+	margin: 0.2em;
+
+	pointer-events: none; /* must not block mouse clicks */
+	opacity: 0;
+	transition: opacity 0.04s 0.5s ease-in-out;
+}
+
+.held-item-name.visible {
+	opacity: 1;
+}
+
+/* ─── Crafting panel ──────────────────────────────────────────────────────── */
 
 .crafting-view-switcher {
 	display: flex;
@@ -60,39 +247,96 @@
 	margin-bottom: 0.5em;
 }
 
-.crafting-view-switcher button {
-	flex: 1;
-	padding: 0.25em;
-	background-color: rgba(0, 0, 0, 0.6);
-	border: 2px solid rgba(96, 96, 64, 0.9);
-	color: white;
-	cursor: pointer;
-	transition: 0.1s;
-}
-
-.crafting-view-switcher button:hover {
-	border-color: rgb(0, 187, 255);
-}
-
-.crafting-view-switcher button.active {
-	background-color: rgba(50, 50, 50, 0.8);
-	border-color: rgb(0, 187, 255);
-}
-
 .crafting-container {
+	grid-column: 3;
+	align-self: end;
+
 	display: flex;
 	flex-direction: column;
 	gap: 0.5em;
-	padding: 0.5em;
-	background-color: rgba(20, 30, 40, 0.55);
-	border: 2px solid rgba(96, 96, 64, 0.9);
-	border-radius: 10px;
-	min-width: 240px;
+	padding: 0.75em;
+
+	background-color: var(--hud-bg-panel);
+	border: var(--panel-frame-w) solid var(--hud-frame);
+	border-radius: var(--hud-radius-md);
+
+	width: 100%;
 	max-width: 340px;
+	/* Exactly as tall as the inventory panel; the recipe list scrolls */
+	height: var(--inventory-panel-h);
 	min-height: 0;
-	flex: 1 1 auto;
-	max-height: 100%;
 	overflow: hidden;
+}
+
+/* ─── Player preview (left of the inventory) ──────────────────────────────── */
+
+.player-preview-panel {
+	grid-column: 1;
+	justify-self: end; /* hug the left side of the inventory */
+	align-self: end;
+
+	background-color: var(--hud-bg-panel);
+	border: 2px solid var(--hud-frame);
+	border-radius: var(--hud-radius-md);
+	box-shadow: var(--hud-shadow-panel);
+	padding: 6px;
+	backdrop-filter: blur(6px);
+}
+
+.player-preview-canvas {
+	display: block;
+	width: 100%;
+	max-width: 210px;
+	height: auto; /* keeps the engine's aspect ratio when shrinking */
+	border-radius: var(--hud-radius-sm);
+	background-color: var(--hud-bg-slot);
+}
+
+.preview-body {
+	display: flex;
+	gap: 0.5em;
+	align-items: stretch;
+}
+
+/* Armor column — sits on the right side of the player mesh */
+.equipment-slots {
+	display: flex;
+	flex-direction: column;
+	justify-content: space-between;
+	gap: var(--slot-gap);
+}
+
+/* Necklace + rings row under the character */
+.accessory-slots {
+	display: flex;
+	justify-content: center;
+	gap: var(--slot-gap);
+	margin-top: 0.6em;
+}
+
+.equip-slot {
+	flex: 0 0 auto;
+
+	width: calc(var(--slot-size) * 0.72);
+	aspect-ratio: 1 / 1;
+
+	display: flex;
+	align-items: center;
+	justify-content: center;
+
+	border: var(--slot-frame-w) solid var(--hud-frame);
+	border-radius: var(--hud-radius-sm);
+	background-color: var(--hud-bg-slot);
+
+	color: var(--hud-text-muted);
+	font-family: var(--ui-font-family);
+	font-size: clamp(0.55em, 1.2vw, 0.85em);
+	font-weight: 600;
+	user-select: none;
+}
+
+.equip-slot::after {
+	content: attr(data-label);
 }
 
 .crafting-header {
@@ -111,25 +355,45 @@
 	min-height: 0;
 	overflow-y: auto;
 	scrollbar-width: thin;
-	scrollbar-color: rgba(96, 96, 64, 0.9) rgba(0, 0, 0, 0.3);
+	scrollbar-color: var(--hud-accent-soft) transparent;
 }
 
-.crafting-list::-webkit-scrollbar {
+.crafting-list::-webkit-scrollbar,
+.recipe-search-results::-webkit-scrollbar,
+.inventory-container::-webkit-scrollbar,
+#settingsContainer::-webkit-scrollbar,
+.mason-source-panel::-webkit-scrollbar,
+.woodcrate-panel::-webkit-scrollbar {
 	width: 8px;
 }
 
-.crafting-list::-webkit-scrollbar-track {
-	background: rgba(0, 0, 0, 0.3);
-	border-radius: 8px;
+.crafting-list::-webkit-scrollbar-track,
+.recipe-search-results::-webkit-scrollbar-track,
+.inventory-container::-webkit-scrollbar-track,
+#settingsContainer::-webkit-scrollbar-track,
+.mason-source-panel::-webkit-scrollbar-track,
+.woodcrate-panel::-webkit-scrollbar-track {
+	background: var(--hud-bg-inset);
+	border-radius: var(--hud-radius-md);
 }
 
-.crafting-list::-webkit-scrollbar-thumb {
-	background: rgba(0, 187, 255, 0.5);
-	border-radius: 8px;
+.crafting-list::-webkit-scrollbar-thumb,
+.recipe-search-results::-webkit-scrollbar-thumb,
+.inventory-container::-webkit-scrollbar-thumb,
+#settingsContainer::-webkit-scrollbar-thumb,
+.mason-source-panel::-webkit-scrollbar-thumb,
+.woodcrate-panel::-webkit-scrollbar-thumb {
+	background: var(--hud-frame-bright);
+	border-radius: var(--hud-radius-md);
 }
 
-.crafting-list::-webkit-scrollbar-thumb:hover {
-	background: rgba(0, 187, 255, 0.8);
+.crafting-list::-webkit-scrollbar-thumb:hover,
+.recipe-search-results::-webkit-scrollbar-thumb:hover,
+.inventory-container::-webkit-scrollbar-thumb:hover,
+#settingsContainer::-webkit-scrollbar-thumb:hover,
+.mason-source-panel::-webkit-scrollbar-thumb:hover,
+.woodcrate-panel::-webkit-scrollbar-thumb:hover {
+	background: var(--hud-accent);
 }
 
 .crafting-recipe {
@@ -137,36 +401,40 @@
 	align-items: center;
 	gap: 0.5em;
 	padding: 0.5em 0.75em;
-	background-color: rgba(0, 0, 0, 0.6);
-	border: 2px solid rgba(96, 96, 64, 0.9);
-	border-radius: 8px;
+	min-width: 0;
+
+	background-color: var(--hud-bg-inset);
+	border: var(--hud-border-width) solid var(--hud-frame);
+	border-radius: var(--hud-radius-sm);
+
 	cursor: pointer;
-	color: white;
-	transition: 0.1s;
+	color: var(--hud-text);
+	transition: border-color 0.1s, background-color 0.1s;
 }
 
 .crafting-recipe.not-craftable {
-	opacity: 0.5;
+	opacity: 0.45;
 	filter: grayscale(100%);
-	border-color: #555;
+	border-color: var(--hud-border-soft);
 	cursor: not-allowed;
 }
 
 .crafting-recipe:hover {
-	border-color: rgb(0, 187, 255);
-	background-color: rgba(50, 50, 50, 0.8);
+	border-color: var(--hud-accent);
+	background-color: var(--hud-accent-faint);
 }
 
 .crafting-recipe-inputs {
 	display: flex;
 	align-items: center;
 	gap: 0.25em;
+	min-width: 0;
 }
 
 .crafting-arrow {
 	font-size: 1.4em;
 	line-height: 1;
-	color: rgb(0, 187, 255);
+	color: var(--hud-accent);
 	padding: 0 0.1em;
 	flex: 0 0 auto;
 }
@@ -185,14 +453,14 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	background-color: rgba(255, 255, 255, 0.06);
-	border: 1px solid rgba(255, 255, 255, 0.15);
-	border-radius: 6px;
+
+	background-color: var(--hud-bg-slot);
+	border: var(--hud-border-width) solid var(--hud-frame);
+	border-radius: var(--hud-radius-sm);
 }
 
 .crafting-slot-output {
-	border-color: rgba(0, 187, 255, 0.6);
-	background-color: rgba(255, 255, 255, 0.15);
+	border-color: var(--hud-accent-soft);
 }
 
 .crafting-slot-count {
@@ -201,10 +469,8 @@
 	bottom: 1px;
 	font-size: 0.7em;
 	font-weight: bold;
-	color: white;
-	text-shadow:
-		1px 1px 2px black,
-		-1px -1px 2px black;
+	color: var(--hud-text);
+	text-shadow: var(--hud-text-shadow);
 	pointer-events: none;
 }
 
@@ -212,6 +478,7 @@
 	width: 32px;
 	height: 32px;
 	object-fit: contain;
+	flex-shrink: 0;
 }
 
 .crafting-container.compact-view .crafting-list {
@@ -230,27 +497,29 @@
 	font-size: 1.1em;
 }
 
-/* Recipe semantic search panel */
+/* ─── Recipe semantic search panel ────────────────────────────────────────── */
+
 .recipe-search-panel {
 	display: flex;
 	flex-direction: column;
 	gap: 0.4em;
 	padding: 0.6em;
 	margin-bottom: 0.5em;
-	background-color: rgba(0, 0, 0, 0.15);
-	border: 2px solid rgba(96, 96, 64, 0.9);
-	border-radius: 8px;
+
+	background-color: var(--hud-bg-inset);
+	border: var(--hud-border-width) solid var(--hud-frame-dim);
+	border-radius: var(--hud-radius-sm);
 }
 
 .recipe-search-title {
 	font-weight: bold;
-	color: white;
+	color: var(--hud-text);
 	font-size: 0.95em;
 }
 
 .recipe-search-hint {
 	font-size: 0.75em;
-	color: #888;
+	color: var(--hud-text-muted);
 	opacity: 0.7;
 }
 
@@ -266,21 +535,22 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	background-color: rgba(0, 0, 0, 0.6);
-	border: 2px dashed rgba(96, 96, 64, 0.9);
-	border-radius: 6px;
+
+	background-color: var(--hud-bg-slot);
+	border: var(--hud-border-width) dashed var(--hud-frame);
+	border-radius: var(--hud-radius-sm);
 	cursor: pointer;
-	transition: 0.1s;
+	transition: border-color 0.1s, box-shadow 0.1s;
 }
 
 .recipe-search-slot:hover {
-	border-color: rgb(0, 187, 255);
+	border-color: var(--hud-accent);
 }
 
 .recipe-search-slot.drag-over {
-	border-color: rgb(0, 187, 255);
+	border-color: var(--hud-accent);
 	border-style: solid;
-	box-shadow: 0 0 8px rgba(0, 187, 255, 0.6);
+	box-shadow: 0 0 8px var(--hud-accent-glow);
 }
 
 .recipe-search-slot.dragging {
@@ -289,10 +559,10 @@
 
 .recipe-search-slot.empty .recipe-search-slot-plus {
 	font-size: 1.4em;
-	color: rgba(96, 96, 64, 0.9);
+	color: var(--hud-text-muted);
 }
 .recipe-search-slot.empty:hover .recipe-search-slot-plus {
-	color: rgb(0, 187, 255);
+	color: var(--hud-accent);
 }
 
 .recipe-search-slot-remove {
@@ -304,30 +574,19 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
+
 	font-size: 0.8em;
 	line-height: 1;
-	background-color: rgb(180, 40, 40);
-	color: white;
-	border-radius: 50%;
+
+	background-color: var(--hud-danger);
+	color: var(--hud-text);
+	border-radius: var(--hud-radius-sm);
 	cursor: pointer;
 }
 
 .recipe-search-controls {
 	display: flex;
 	gap: 0.4em;
-}
-
-.recipe-search-controls button {
-	padding: 0.2em 0.6em;
-	background-color: rgba(0, 0, 0, 0.6);
-	border: 2px solid rgba(96, 96, 64, 0.9);
-	color: white;
-	cursor: pointer;
-	transition: 0.1s;
-}
-
-.recipe-search-controls button:hover {
-	border-color: rgb(0, 187, 255);
 }
 
 .recipe-search-results {
@@ -337,25 +596,7 @@
 	max-height: 240px;
 	overflow-y: auto;
 	scrollbar-width: thin;
-	scrollbar-color: rgba(0, 187, 255, 0.5) rgba(0, 0, 0, 0.3);
-}
-
-.recipe-search-results::-webkit-scrollbar {
-	width: 8px;
-}
-
-.recipe-search-results::-webkit-scrollbar-track {
-	background: rgba(0, 0, 0, 0.3);
-	border-radius: 8px;
-}
-
-.recipe-search-results::-webkit-scrollbar-thumb {
-	background: rgba(0, 187, 255, 0.5);
-	border-radius: 8px;
-}
-
-.recipe-search-results::-webkit-scrollbar-thumb:hover {
-	background: rgba(0, 187, 255, 0.8);
+	scrollbar-color: var(--hud-accent-soft) transparent;
 }
 
 .recipe-search-result {
@@ -363,19 +604,20 @@
 }
 
 .recipe-search-exact {
-	border-color: rgb(0, 187, 255);
-	box-shadow: 0 0 6px rgba(0, 187, 255, 0.5);
+	border-color: var(--hud-accent);
+	box-shadow: 0 0 6px var(--hud-accent-glow);
 }
 
 .recipe-search-empty {
 	font-size: 0.8em;
-	color: #888;
+	color: var(--hud-text-muted);
 	opacity: 0.6;
 	font-style: italic;
 	padding: 0.3em 0;
 }
 
-/* Recipe picker (item selection overlay) */
+/* ─── Recipe picker (item selection overlay) ──────────────────────────────── */
+
 .recipe-picker-overlay {
 	position: fixed;
 	inset: 0;
@@ -383,7 +625,8 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	background-color: rgba(0, 0, 0, 0.6);
+	background-color: var(--hud-bg-scrim);
+	backdrop-filter: blur(4px);
 }
 
 .recipe-picker {
@@ -393,23 +636,28 @@
 	flex-direction: column;
 	gap: 0.5em;
 	padding: 0.75em;
-	background-color: rgba(20, 25, 30, 0.97);
-	border: 2px solid rgba(0, 187, 255, 0.6);
-	border-radius: 10px;
+
+	background-color: var(--hud-bg-modal);
+	border: 2px solid var(--hud-frame);
+	border-radius: var(--hud-radius-lg);
+	box-shadow: var(--hud-shadow-panel);
 }
 
 .recipe-picker-search {
 	padding: 0.4em;
 	font-size: 1em;
-	background-color: rgba(0, 0, 0, 0.5);
-	border: 2px solid rgba(96, 96, 64, 0.9);
-	color: white;
-	border-radius: 6px;
+
+	background-color: var(--hud-bg-inset);
+	border: var(--hud-border-width) solid var(--hud-frame);
+	border-radius: var(--hud-radius-sm);
+	color: var(--hud-text);
+	font-family: var(--ui-font-family);
 }
 
 .recipe-picker-search:focus {
 	outline: none;
-	border-color: rgb(0, 187, 255);
+	border-color: var(--hud-accent);
+	box-shadow: var(--hud-focus-ring);
 }
 
 .recipe-picker-grid {
@@ -425,17 +673,20 @@
 	align-items: center;
 	gap: 0.15em;
 	padding: 0.3em;
-	background-color: rgba(255, 255, 255, 0.05);
-	border: 1px solid rgba(255, 255, 255, 0.15);
-	border-radius: 6px;
+
+	background-color: var(--hud-bg-slot);
+	border: var(--hud-border-width) solid var(--hud-frame);
+	border-radius: var(--hud-radius-sm);
 	cursor: pointer;
 	font-size: 0.7em;
 	text-align: center;
+	color: var(--hud-text);
+	font-family: var(--ui-font-family);
 }
 
 .recipe-picker-item:hover {
-	border-color: rgb(0, 187, 255);
-	background-color: rgba(50, 50, 50, 0.8);
+	border-color: var(--hud-accent);
+	background-color: var(--hud-accent-faint);
 }
 
 .recipe-picker-item img {
@@ -446,228 +697,25 @@
 
 .recipe-picker-done {
 	margin-top: 0.25em;
-	padding: 0.4em;
+	padding: var(--hud-control-pad-y) var(--hud-control-pad-x);
 	font-size: 1em;
-	background-color: rgba(0, 0, 0, 0.6);
-	border: 2px solid rgba(96, 96, 64, 0.9);
-	color: white;
+	font-family: var(--ui-font-family);
+
+	background-color: var(--hud-bg-inset);
+	border: var(--hud-border-width) solid var(--hud-frame);
+	border-radius: var(--hud-radius-sm);
+	color: var(--hud-text);
 	cursor: pointer;
-	border-radius: 6px;
-	transition: 0.1s;
+	transition: border-color 0.1s, background-color 0.1s;
 }
 
 .recipe-picker-done:hover {
-	border-color: rgb(0, 187, 255);
+	border-color: var(--hud-accent);
+	background-color: var(--hud-accent-faint);
 }
 
-.inventory-container {
-	display: flex;
-	flex-direction: column;
-	gap: 0.66em;
-	padding: 0.5em;
+/* ─── Mason Table UI ──────────────────────────────────────────────────────── */
 
-	overflow-y: auto;
-
-	background-color: rgba(0, 0, 0, 0.4);
-}
-
-.inventory-row {
-	display: flex;
-	gap: 0.66em;
-}
-
-.inventory-slot {
-	transition: 100ms;
-	flex: 0 0 auto;
-	aspect-ratio: 1 / 1;
-	/* keeps them square */
-	width: clamp(2em, 5vw, 4em);
-	border: 3px solid rgba(96, 96, 64, 0.9);
-	background-color: rgba(0, 0, 0, 0.6);
-
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	font-family: var(--ui-font-family);
-}
-
-/* Style for the selected hotbar slot */
-.inventory-slot.selected {
-	border: 3px solid rgb(192, 192, 192);
-}
-
-.inventory-slot:hover {
-	border: 3px solid rgb(0, 187, 255);
-	transition-duration: 150ms;
-	transform: scale(1.2);
-}
-
-/* HUD Buttons */
-.hud-close-button {
-	position: absolute;
-	top: -1em;
-	right: -1em;
-	border: none;
-	background: transparent;
-	color: black;
-	font-size: 2em;
-	user-select: none;
-	cursor: pointer;
-}
-
-.hud-close-button:hover {
-	color: red;
-}
-
-.held-item-name {
-	position: absolute;
-	bottom: 10vh;
-	/* Adjust to position it above your hotbar */
-	color: white;
-	font-size: clamp(0.6em, 2vw, 1em);
-	/* scales with screen */
-	font-weight: bold;
-	text-shadow: 2px 2px 2px black;
-	margin: 0.2em;
-
-	font-family: var(--ui-font-family);
-	pointer-events: none;
-	/* Make sure it doesn't block mouse clicks */
-	background-color: rgba(0, 0, 0, 0.5);
-	padding: 4px 8px;
-}
-
-.held-item-name {
-	opacity: 0;
-	transition: opacity 0.04s 0.5s ease-in-out;
-}
-
-.held-item-name.visible {
-	opacity: 1;
-}
-
-/* Item Tooltip */
-#item-tooltip {
-	position: absolute;
-	background-color: rgba(0, 0, 0, 0.5);
-	color: white;
-	padding: 5px 10px;
-	font-family: var(--ui-font-family);
-	font-size: clamp(0.6em, 2vw, 1em);
-	font-weight: bold;
-	z-index: 200;
-	/* Ensure it's on top of other UI */
-	pointer-events: none;
-	/* Prevent the tooltip from blocking mouse events */
-	white-space: nowrap;
-	/* Keep the name on a single line */
-	text-shadow: 2px 2px 2px black;
-	border-radius: 4px;
-}
-
-.item-tooltip-name {
-	font-weight: bold;
-}
-
-.item-tooltip-desc {
-	font-style: italic;
-	color: #cccccc;
-	font-size: 0.9em;
-	margin-top: 4px;
-	white-space: pre-line;
-}
-
-/* Stats Bars */
-:root {
-	--stats-offset-bottom: 20px; /* distance of the stats block from the viewport bottom */
-	--stats-bar-height: 12px;
-	--stats-bar-count: 4;
-	--stats-bar-gap: 8px;
-	--chat-input-height: 40px; /* chat input bar height */
-	/* Derived: vertical top edge shared by the bars block and the chat position */
-	--stats-top: calc(
-		var(--stats-offset-bottom) +
-		var(--stats-bar-count) *
-		var(--stats-bar-height) +
-		(var(--stats-bar-count) - 1) *
-		var(--stats-bar-gap)
-	);
-	/* Input bar bottom offset: sits just above the stats block */
-	--chat-input-bottom: calc(var(--stats-top) + 24px);
-	/* Chat box bottom offset: sits above the input bar */
-	--chat-bottom: calc(var(--chat-input-bottom) + var(--chat-input-height));
-}
-
-#stats-container {
-	position: absolute;
-	bottom: var(--stats-offset-bottom);
-	left: 20px;
-	display: flex;
-	flex-direction: column;
-	gap: var(--stats-bar-gap);
-	pointer-events: none;
-}
-
-.stat-bar-wrapper {
-	width: 250px;
-	height: var(--stats-bar-height);
-	background-color: rgba(0, 0, 0, 0.6);
-	border: 1px solid rgba(255, 255, 255, 0.2);
-	border-radius: 2px;
-}
-
-.stat-bar-fill {
-	width: 100%;
-	height: 100%;
-	transition: width 0.1s;
-	border-radius: 1px;
-}
-
-.stat-bar-fill.health {
-	background-color: #e74c3c;
-}
-
-.stat-bar-fill.hunger {
-	background-color: #e67e22;
-}
-
-.stat-bar-fill.stamina {
-	background-color: #2ecc71;
-}
-
-.stat-bar-fill.mana {
-	background-color: #3498db;
-}
-
-/* Crosshair */
-.crosshair {
-	position: fixed;
-	top: 50%;
-	left: 50%;
-	transform: translate(-50%, -50%);
-	width: 48px;
-	height: 48px;
-	pointer-events: none;
-	z-index: 10;
-	image-rendering: auto;
-}
-
-/* Hit marker */
-.hit-marker {
-	position: fixed;
-	top: 50%;
-	left: 50%;
-	transform: translate(-50%, -50%);
-	width: 28px;
-	height: 28px;
-	pointer-events: none;
-	z-index: 10;
-	opacity: 0;
-	transition: opacity 0.15s ease-out;
-	image-rendering: auto;
-}
-
-/* Mason Table UI */
 .mason-overlay {
 	position: absolute;
 	top: 5%;
@@ -677,24 +725,29 @@
 	max-width: 1200px;
 	height: 80vh;
 	max-height: 800px;
-	background-color: rgba(0, 0, 0, 0.85);
+
+	background-color: var(--hud-bg-scrim);
+	backdrop-filter: blur(6px);
+	border: 2px solid var(--hud-frame);
+	border-radius: var(--hud-radius-lg);
+	box-shadow: var(--hud-shadow-panel);
+
 	padding: 1em;
 	z-index: 100;
 	display: none;
 	flex-direction: column;
 	font-family: var(--ui-font-family);
 	font-size: 1em;
-	border: 2px solid rgba(96, 96, 64, 0.9);
-	border-radius: 8px;
+	color: var(--hud-text);
 }
 
 .mason-title {
-	color: white;
+	color: var(--hud-text);
 	font-size: 1.5em;
 	font-weight: bold;
 	text-align: center;
 	padding: 0.5em;
-	text-shadow: 2px 2px 2px black;
+	text-shadow: var(--hud-text-shadow);
 }
 
 .mason-content {
@@ -707,17 +760,19 @@
 .mason-panel {
 	display: flex;
 	flex-direction: column;
-	background-color: rgba(0, 0, 0, 0.4);
+
+	background-color: var(--hud-bg-panel);
+	border: 2px solid var(--hud-frame);
+	border-radius: var(--hud-radius-md);
 	padding: 0.5em;
-	border-radius: 4px;
 }
 
 .mason-panel-title {
-	color: #ccc;
+	color: var(--hud-text-muted);
 	font-weight: bold;
 	padding: 0.5em;
 	text-align: center;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+	border-bottom: var(--hud-border-width) solid var(--hud-frame-dim);
 	margin-bottom: 0.5em;
 }
 
@@ -750,21 +805,23 @@
 	flex-direction: column;
 	align-items: center;
 	padding: 0.5em;
-	background-color: rgba(0, 0, 0, 0.6);
-	border: 2px solid rgba(96, 96, 64, 0.9);
-	border-radius: 4px;
+
+	background-color: var(--hud-bg-inset);
+	border: 2px solid var(--hud-frame);
+	border-radius: var(--hud-radius-sm);
 	cursor: pointer;
-	transition: 0.1s;
+	transition: border-color 0.1s, background-color 0.1s;
 }
 
 .mason-source-btn:hover {
-	border-color: rgb(0, 187, 255);
-	background-color: rgba(50, 50, 50, 0.8);
+	border-color: var(--hud-accent);
+	background-color: var(--hud-accent-faint);
 }
 
 .mason-source-btn.selected {
-	border-color: rgb(0, 187, 255);
-	background-color: rgba(0, 187, 255, 0.2);
+	border-color: var(--hud-accent);
+	background-color: var(--hud-accent-faint);
+	box-shadow: inset 0 0 0 1px var(--hud-accent-soft);
 }
 
 .mason-icon {
@@ -774,7 +831,7 @@
 }
 
 .mason-source-label {
-	color: white;
+	color: var(--hud-text);
 	font-size: 0.75em;
 	text-align: center;
 	margin-top: 0.25em;
@@ -793,30 +850,32 @@
 	align-items: center;
 	justify-content: center;
 	padding: 0.75em;
-	background-color: rgba(0, 0, 0, 0.6);
-	border: 2px solid rgba(96, 96, 64, 0.9);
-	border-radius: 4px;
+
+	background-color: var(--hud-bg-inset);
+	border: 2px solid var(--hud-frame);
+	border-radius: var(--hud-radius-sm);
 	cursor: pointer;
-	transition: 0.1s;
+	transition: border-color 0.1s, background-color 0.1s;
 }
 
 .mason-shape-btn:hover {
-	border-color: rgb(0, 187, 255);
-	background-color: rgba(50, 50, 50, 0.8);
+	border-color: var(--hud-accent);
+	background-color: var(--hud-accent-faint);
 }
 
 .mason-shape-btn.selected {
-	border-color: rgb(0, 187, 255);
-	background-color: rgba(0, 187, 255, 0.2);
+	border-color: var(--hud-accent);
+	background-color: var(--hud-accent-faint);
+	box-shadow: inset 0 0 0 1px var(--hud-accent-soft);
 }
 
 .mason-shape-label {
-	color: white;
+	color: var(--hud-text);
 	font-weight: bold;
 }
 
 .mason-result-preview {
-	color: white;
+	color: var(--hud-text);
 	font-size: 1.1em;
 	text-align: center;
 	padding: 1em;
@@ -827,27 +886,28 @@
 }
 
 .mason-craft-btn {
-	padding: 0.75em 2em;
-	background-color: rgba(0, 0, 0, 0.6);
-	border: 2px solid rgba(96, 96, 64, 0.9);
-	border-radius: 4px;
-	color: #888;
+	padding: var(--hud-control-pad-y) calc(var(--hud-control-pad-x) * 2);
+	background-color: var(--hud-bg-inset);
+	border: 2px solid var(--hud-frame);
+	border-radius: var(--hud-radius-sm);
+	color: var(--hud-text-muted);
+	font-family: var(--ui-font-family);
 	font-size: 1em;
 	font-weight: bold;
 	cursor: not-allowed;
-	transition: 0.1s;
+	transition: border-color 0.1s, background-color 0.1s, color 0.1s;
 	margin-top: 1em;
 }
 
 .mason-craft-btn.available {
-	background-color: rgba(0, 187, 255, 0.3);
-	border-color: rgb(0, 187, 255);
-	color: white;
+	background-color: var(--hud-accent-faint);
+	border-color: var(--hud-accent);
+	color: var(--hud-text);
 	cursor: pointer;
 }
 
 .mason-craft-btn.available:hover {
-	background-color: rgba(0, 187, 255, 0.5);
+	background-color: var(--hud-accent-glow);
 }
 
 .mason-craft-btn.shake {
@@ -867,73 +927,7 @@
 	}
 }
 
-/* Chat */
-#chat-container {
-	position: fixed;
-	bottom: var(--chat-bottom); /* above the input bar */
-	left: 20px; /* matches #stats-container left edge */
-	width: min(30vw, 400px);
-	display: flex;
-	flex-direction: column;
-	justify-content: flex-end;
-	pointer-events: none; /* Minecraft-style: text only, never blocks gameplay */
-}
-
-#chat-messages {
-	display: flex;
-	flex-direction: column;
-	justify-content: flex-end;
-	gap: 2px;
-}
-
-.chat-message {
-	color: #e0e0e0;
-	word-wrap: break-word;
-	line-height: 1.3;
-	text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.9);
-}
-
-.chat-message--player {
-	color: #fff;
-}
-
-.chat-message--system {
-	color: rgba(0, 187, 255, 0.9);
-	font-style: italic;
-}
-
-.chat-message--command {
-	color: rgba(255, 200, 0, 0.95);
-}
-
-.chat-message--fade {
-	opacity: 0;
-	transition: opacity 1s ease-out;
-}
-
-#chat-input {
-	position: fixed;
-	bottom: var(
-		--chat-input-bottom
-	); /* sits above the stats block, below the chat box */
-	left: 20px; /* matches #stats-container left edge */
-	width: min(30vw, 400px);
-	box-sizing: border-box;
-	background: rgba(0, 0, 0, 0.5);
-	border: 1px solid rgba(0, 187, 255, 0.3);
-	border-radius: 2px;
-	color: #fff;
-	padding: 6px 8px;
-	font-family: var(--ui-font-family);
-	font-size: 1em;
-	outline: none;
-}
-
-#chat-input:focus {
-	border-color: rgba(0, 187, 255, 0.7);
-}
-
-/* ─── Wood Crate Overlay ───────────────────────────────────────────────── */
+/* ─── Wood Crate Overlay ──────────────────────────────────────────────────── */
 
 .woodcrate-overlay {
 	position: absolute;
@@ -944,24 +938,29 @@
 	max-width: 1200px;
 	height: 80vh;
 	max-height: 800px;
-	background-color: rgba(0, 0, 0, 0.85);
+
+	background-color: var(--hud-bg-scrim);
+	backdrop-filter: blur(6px);
+	border: 2px solid var(--hud-frame);
+	border-radius: var(--hud-radius-lg);
+	box-shadow: var(--hud-shadow-panel);
+
 	padding: 1em;
 	z-index: 100;
 	display: none;
 	flex-direction: column;
 	font-family: var(--ui-font-family);
 	font-size: 1em;
-	border: 2px solid rgba(96, 96, 64, 0.9);
-	border-radius: 8px;
+	color: var(--hud-text);
 }
 
 .woodcrate-title {
-	color: white;
+	color: var(--hud-text);
 	font-size: 1.5em;
 	font-weight: bold;
 	text-align: center;
 	padding: 0.5em;
-	text-shadow: 2px 2px 2px black;
+	text-shadow: var(--hud-text-shadow);
 }
 
 .woodcrate-content {
@@ -977,9 +976,11 @@
 .woodcrate-panel {
 	display: flex;
 	flex-direction: column;
-	background-color: rgba(0, 0, 0, 0.4);
+
+	background-color: var(--hud-bg-panel);
+	border: var(--hud-border-width) solid var(--hud-border-soft);
+	border-radius: var(--hud-radius-md);
 	padding: 0.5em;
-	border-radius: 4px;
 	overflow-y: auto;
 }
 
@@ -993,11 +994,11 @@
 }
 
 .woodcrate-panel-title {
-	color: #ccc;
+	color: var(--hud-text-muted);
 	font-weight: bold;
 	padding: 0.5em;
 	text-align: center;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.2);
+	border-bottom: var(--hud-border-width) solid var(--hud-frame-dim);
 	margin-bottom: 0.5em;
 	width: 100%;
 }
@@ -1005,7 +1006,7 @@
 .woodcrate-grid {
 	display: flex;
 	flex-direction: column;
-	gap: 0.66em;
+	gap: var(--slot-gap);
 	padding: 0.5em;
 	width: 100%;
 	justify-content: center;
@@ -1015,10 +1016,444 @@
 .woodcrate-row--vertical {
 	display: flex;
 	flex-direction: row;
-	gap: 0.66em;
+	gap: var(--slot-gap);
 }
 
-/* ─── F1: hide all persistent HUD elements ──────────────────────────────── */
+/* ─── Stats Bars ──────────────────────────────────────────────────────────── */
+
+:root {
+	--stats-offset-bottom: 20px; /* distance of the stats block from the viewport bottom */
+	--stats-bar-height: 12px;
+	--stats-bar-count: 4;
+	--stats-bar-gap: 8px;
+	--chat-input-height: 40px; /* chat input bar height */
+	/* Derived: vertical top edge shared by the bars block and the chat position */
+	--stats-top: calc(
+		var(--stats-offset-bottom) +
+			var(--stats-bar-count) * var(--stats-bar-height) +
+			(var(--stats-bar-count) - 1) * var(--stats-bar-gap)
+	);
+	/* Input bar bottom offset: sits just above the stats block */
+	--chat-input-bottom: calc(var(--stats-top) + 24px);
+	/* Chat box bottom offset: sits above the input bar */
+	--chat-bottom: calc(var(--chat-input-bottom) + var(--chat-input-height));
+}
+
+#stats-container {
+	position: absolute;
+	bottom: var(--stats-offset-bottom);
+	left: 20px;
+	display: flex;
+	flex-direction: column;
+	gap: var(--stats-bar-gap);
+	pointer-events: none;
+}
+
+.stat-bar-wrapper {
+	width: 250px;
+	height: var(--stats-bar-height);
+
+	background-color: var(--hud-bg-slot);
+	border: var(--hud-border-width) solid var(--hud-frame-dim);
+	border-radius: var(--hud-radius-sm);
+	overflow: hidden;
+	box-shadow: var(--hud-shadow-soft);
+}
+
+.stat-bar-fill {
+	width: 100%;
+	height: 100%;
+	transition: width 0.1s;
+}
+
+.stat-bar-fill.health {
+	background-color: var(--hud-health);
+}
+
+.stat-bar-fill.hunger {
+	background-color: var(--hud-hunger);
+}
+
+.stat-bar-fill.stamina {
+	background-color: var(--hud-stamina);
+}
+
+.stat-bar-fill.mana {
+	background-color: var(--hud-mana);
+}
+
+/* ─── Crosshair / hit marker ──────────────────────────────────────────────── */
+
+.crosshair {
+	position: fixed;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+	width: 48px;
+	height: 48px;
+	pointer-events: none;
+	z-index: 10;
+	image-rendering: auto;
+	filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.9));
+}
+
+.hit-marker {
+	position: fixed;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+	width: 28px;
+	height: 28px;
+	pointer-events: none;
+	z-index: 10;
+	opacity: 0;
+	transition: opacity 0.15s ease-out;
+	image-rendering: auto;
+	filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.9));
+}
+
+/* ─── Chat ────────────────────────────────────────────────────────────────── */
+
+#chat-container {
+	position: fixed;
+	bottom: var(--chat-bottom); /* above the input bar */
+	left: 20px; /* matches #stats-container left edge */
+	width: min(30vw, 400px);
+	display: flex;
+	flex-direction: column;
+	justify-content: flex-end;
+	pointer-events: none; /* Minecraft-style: text only, never blocks gameplay */
+	font-family: var(--ui-font-family);
+}
+
+#chat-messages {
+	display: flex;
+	flex-direction: column;
+	justify-content: flex-end;
+	gap: 2px;
+}
+
+.chat-message {
+	color: var(--hud-text-muted);
+	word-wrap: break-word;
+	line-height: 1.3;
+	text-shadow: var(--hud-text-shadow);
+}
+
+.chat-message--player {
+	color: var(--hud-text);
+}
+
+.chat-message--system {
+	color: var(--hud-accent);
+	font-style: italic;
+}
+
+.chat-message--command {
+	color: var(--hud-warn);
+}
+
+.chat-message--fade {
+	opacity: 0;
+	transition: opacity 1s ease-out;
+}
+
+#chat-input {
+	position: fixed;
+	bottom: var(--chat-input-bottom); /* sits above the stats block, below the chat box */
+	left: 20px; /* matches #stats-container left edge */
+	width: min(30vw, 400px);
+	box-sizing: border-box;
+
+	background: var(--hud-bg-inset);
+	border: var(--hud-border-width) solid var(--hud-frame-dim);
+	border-radius: var(--hud-radius-sm);
+	color: var(--hud-text);
+	padding: 6px 8px;
+	font-family: var(--ui-font-family);
+	font-size: 1em;
+	outline: none;
+}
+
+#chat-input:focus {
+	border-color: var(--hud-accent);
+}
+
+/* ─── Item Tooltip ────────────────────────────────────────────────────────── */
+
+#item-tooltip {
+	position: absolute;
+	background-color: var(--hud-bg-modal);
+	border: var(--hud-border-width) solid var(--hud-frame);
+	border-radius: var(--hud-radius-sm);
+	box-shadow: var(--hud-shadow-panel);
+
+	color: var(--hud-text);
+	padding: 6px 12px;
+	font-family: var(--ui-font-family);
+	font-size: clamp(0.6em, 2vw, 1em);
+	font-weight: bold;
+	z-index: 200; /* on top of other UI */
+	pointer-events: none; /* must not block mouse events */
+	white-space: nowrap; /* keep the name on a single line */
+}
+
+.item-tooltip-name {
+	font-weight: bold;
+}
+
+.item-tooltip-desc {
+	font-style: italic;
+	color: var(--hud-text-muted);
+	font-size: 0.9em;
+	margin-top: 4px;
+	white-space: pre-line;
+}
+
+/* ─── Debug Panel (top-left) ──────────────────────────────────────────────── */
+
+#debug-panel,
+.debug-panel {
+	position: absolute;
+	top: 10px;
+	left: 10px;
+	z-index: 100;
+	display: block;
+
+	padding: 10px 12px;
+	background-color: var(--hud-bg-panel);
+	border: var(--hud-border-width) solid var(--hud-frame-dim);
+	border-radius: var(--hud-radius-md);
+	box-shadow: var(--hud-shadow-soft);
+	backdrop-filter: blur(4px);
+
+	font-family: var(--hud-font-mono);
+	font-size: 14px;
+	color: var(--hud-text);
+}
+
+.debug-info-container {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+}
+
+.debug-row {
+	display: flex;
+	gap: 4px;
+	line-height: 1.35;
+}
+
+.debug-key {
+	font-weight: bold;
+	color: var(--hud-text);
+	white-space: nowrap;
+	text-shadow: var(--hud-text-shadow);
+}
+
+.debug-value {
+	color: var(--hud-text);
+	opacity: 0.95;
+	text-shadow: var(--hud-text-shadow);
+}
+
+.debug-key[data-cat="performance"] {
+	color: var(--hud-cat-performance);
+}
+.debug-key[data-cat="position"] {
+	color: var(--hud-cat-position);
+}
+.debug-key[data-cat="world"] {
+	color: var(--hud-cat-world);
+}
+.debug-key[data-cat="chunks"] {
+	color: var(--hud-cat-chunks);
+}
+.debug-key[data-cat="workers"] {
+	color: var(--hud-cat-workers);
+}
+.debug-key[data-cat="stats"] {
+	color: var(--hud-cat-stats);
+}
+.debug-key[data-cat="biome"] {
+	color: var(--hud-cat-biome);
+}
+.debug-key[data-cat="mobs"] {
+	color: var(--hud-cat-mobs);
+}
+
+.debug-slider-label {
+	color: var(--hud-warn);
+	font-weight: bold;
+	text-shadow: var(--hud-text-shadow);
+}
+
+#debug-panel input[type="range"],
+.slider-container input[type="range"] {
+	width: 100%;
+	accent-color: var(--hud-accent);
+	cursor: pointer;
+}
+
+/* ─── Pause Menu & Settings ───────────────────────────────────────────────── */
+
+#pauseMenuContainer {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 100%;
+	height: 100%;
+
+	background-color: var(--hud-bg-scrim);
+	backdrop-filter: blur(6px);
+	color: var(--hud-text);
+	font-family: var(--ui-font-family);
+	z-index: 10000;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	align-items: center;
+}
+
+#pauseMenuContainer h1 {
+	font-size: 3em;
+	margin-bottom: 20px;
+	font-weight: 700;
+	letter-spacing: 1px;
+	text-shadow: var(--hud-text-shadow), 0 0 40px var(--hud-accent-faint);
+	user-select: none;
+}
+
+#pauseMenuContainer button,
+.recipe-picker-done,
+.crafting-view-switcher button,
+.recipe-search-controls button {
+	font-family: var(--ui-font-family);
+	color: var(--hud-text);
+	background-color: var(--hud-bg-inset);
+	border: 2px solid var(--hud-frame);
+	border-radius: var(--hud-radius-sm);
+	cursor: pointer;
+	user-select: none;
+	transition:
+		border-color 0.15s,
+		background-color 0.15s,
+		color 0.15s;
+}
+
+#pauseMenuContainer button {
+	font-size: 1.5em;
+	padding: var(--hud-control-pad-y) var(--hud-control-pad-x);
+	min-width: 220px;
+}
+
+#pauseMenuContainer button:hover,
+.recipe-picker-done:hover,
+.crafting-view-switcher button:hover,
+.recipe-search-controls button:hover {
+	border-color: var(--hud-accent);
+	background-color: var(--hud-accent-faint);
+}
+
+#settingsContainer {
+	max-height: 80vh;
+	overflow-y: auto;
+	width: 300px;
+	padding: 20px;
+
+	background-color: var(--hud-bg-modal);
+	border: 2px solid var(--hud-frame);
+	border-radius: var(--hud-radius-lg);
+	box-shadow: var(--hud-shadow-panel);
+	scrollbar-width: thin;
+	scrollbar-color: var(--hud-frame-bright) transparent;
+}
+
+.collapsible-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	width: 100%;
+	font-weight: bold;
+	margin-top: 15px;
+	padding: 5px 0;
+	border-bottom: var(--hud-border-width) solid var(--hud-frame-dim);
+	cursor: pointer;
+	user-select: none;
+	color: var(--hud-text);
+}
+
+.collapsible-header:hover {
+	color: var(--hud-accent);
+}
+
+.collapsible-arrow {
+	font-size: 0.8em;
+}
+
+.settings-separator {
+	font-weight: bold;
+	color: var(--hud-text-muted);
+	letter-spacing: 0.5px;
+	margin-top: 15px;
+	margin-bottom: 5px;
+	border-bottom: var(--hud-border-width) solid var(--hud-frame-dim);
+	width: 100%;
+	text-align: center;
+}
+
+#settingsContainer hr.settings-hr {
+	width: 100%;
+	border: none;
+	border-top: var(--hud-border-width) solid var(--hud-frame-dim);
+	margin: 20px 0 5px;
+}
+
+.slider-container {
+	width: 100%;
+	display: grid;
+	grid-template-columns: 1fr auto;
+	grid-template-rows: auto auto;
+	gap: 5px;
+	margin-top: 10px;
+	color: var(--hud-text);
+}
+
+.slider-container label {
+	grid-column: 1 / 2;
+}
+
+.slider-container .slider-value {
+	grid-column: 2 / 3;
+	justify-self: end;
+	color: var(--hud-accent);
+	font-variant-numeric: tabular-nums;
+}
+
+.slider-container input[type="range"] {
+	grid-column: 1 / 3;
+	width: 100%;
+}
+
+/* ─── Narrow screens: stack crafting below the inventory ──────────────────── */
+
+@media (max-width: 1180px) {
+	.hud-content-wrapper {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: flex-start;
+		gap: 0.75em;
+		overflow-y: auto;
+	}
+
+	.crafting-container {
+		width: min(340px, 90vw);
+		max-height: none;
+	}
+}
+
+/* ─── F1: hide all persistent HUD elements ────────────────────────────────── */
 
 body.hud-hidden .crosshair,
 body.hud-hidden .hit-marker,
@@ -1026,6 +1461,7 @@ body.hud-hidden #hotbar-wrapper,
 body.hud-hidden #stats-container,
 body.hud-hidden #item-tooltip,
 body.hud-hidden #debug-panel,
+body.hud-hidden .debug-panel,
 body.hud-hidden .mp-hud,
 body.hud-hidden #chat-container,
 body.hud-hidden #chat-messages,

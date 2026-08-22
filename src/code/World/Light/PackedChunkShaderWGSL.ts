@@ -175,6 +175,8 @@ ${vsOutFields(o)}
 // meta byte (word2 byte 2) bit usage:
 //   bit0 flip · bit1-2 materialType(2) · bit3 posOffX · bit4 diag ·
 //   bit5 diagVariant · bit6 rawDim · bit7 posOffZ
+//   materialType=3 is a vertex-stage sentinel: chunk-boundary faces clamp to
+//   the u8 position grid and the shader restores the exact plane (+1 unit).
 // Water faces carry isWater in bit 2 (their materialType=1 leaves bit 2 clear;
 // Cutout=2 faces render on the opaque pipeline), so bit 3 stays a clean
 // posOffX correction for every face — water never sets posOffX/posOffZ.
@@ -259,9 +261,19 @@ ${o.tint ? "  let tintBucket = (face.x >> 27u) & 7u;" : ""}
 
   let posX = aByte * INV_POS - f32((metaByte >> 3u) & 1u) * 0.5 * INV_POS;
   let posZ = cByte * INV_POS - f32((metaByte >> 7u) & 1u) * 0.5 * INV_POS;
-  let baseX = posX + co.x;
-  let baseY = bByte * INV_POS + co.y;
-  let baseZ = posZ + co.z;
+  var baseX = posX + co.x;
+  var baseY = bByte * INV_POS + co.y;
+  var baseZ = posZ + co.z;
+
+  // materialType==3 marks chunk-boundary faces: their true plane (coord =
+  // CHUNK_SIZE) exceeds the u8 position encoding, which clamped them 1/8
+  // block inward. Restore the exact plane along the face axis (+1 position
+  // unit = INV_POS, NOT one block).
+  if (((metaByte >> 1u) & 3u) == 3u) {
+    if (axis == 0u) { baseX = baseX + INV_POS; }
+    else if (axis == 1u) { baseY = baseY + INV_POS; }
+    else { baseZ = baseZ + INV_POS; }
+  }
 
   let skyLight = f32((lightByte >> 4u) & 0x0fu) * INV_LIGHT;
   let blockLight = f32(lightByte & 0x0fu) * INV_LIGHT;

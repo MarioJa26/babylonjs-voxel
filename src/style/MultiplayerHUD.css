@@ -1,4 +1,7 @@
-/* Multiplayer HUD Overlay */
+/* ─────────────────────────────────────────────────────────────────────────────
+   Multiplayer HUD overlay. Consumes central design tokens from theme.css.
+   ────────────────────────────────────────────────────────────────────────── */
+
 .mp-hud {
 	position: fixed;
 	top: 0;
@@ -7,9 +10,10 @@
 	height: 100%;
 	pointer-events: none;
 	z-index: 1000;
-	font-family: "Segoe UI", system-ui, sans-serif;
+	font-family: var(--ui-font-family);
 	font-size: 14px;
-	overflow: hidden; /* Prevent scrollbars from off-screen name tags */
+	color: var(--hud-text);
+	overflow: hidden; /* prevent scrollbars from off-screen name tags */
 }
 
 /* Prevent body scrollbars from multiplayer elements */
@@ -17,53 +21,72 @@ body {
 	overflow: hidden;
 }
 
+/* ─── Connection status + player count (top-right) ────────────────────────── */
+
 .mp-status-bar {
 	position: absolute;
-	top: 8px;
-	left: 36px; /* offset from center crosshair area */
+	top: 10px;
+	right: 12px; /* clear of the debug panel, which owns the top-left corner */
 	display: flex;
 	flex-direction: column;
+	align-items: flex-end;
 	gap: 2px;
+
+	background-color: var(--hud-bg-panel);
+	border: var(--hud-border-width) solid var(--hud-frame);
+	border-radius: var(--hud-radius-sm);
+	padding: 5px 10px;
+	backdrop-filter: blur(4px);
+	box-shadow: var(--hud-shadow-soft);
+	text-align: right;
 }
 
 .mp-status {
 	font-size: 12px;
 	font-weight: 600;
-	text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+	text-shadow: var(--hud-text-shadow);
 }
 
 .mp-status-connecting {
-	color: #f0a020;
+	color: var(--hud-warn);
 	animation: mp-pulse 1.5s ease-in-out infinite;
 }
 
 .mp-status-connected {
-	color: #40d040;
+	color: var(--hud-ok);
 }
 
 .mp-status-disconnected {
-	color: #d04040;
+	color: var(--hud-danger);
 }
 
 .mp-player-count {
 	font-size: 12px;
-	color: #ccc;
-	text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+	color: var(--hud-text-muted);
+	text-shadow: var(--hud-text-shadow);
 }
+
+/* ─── Player list (Tab) ───────────────────────────────────────────────────── */
 
 .mp-player-list {
 	position: absolute;
 	top: 50%;
 	left: 50%;
 	transform: translate(-50%, -50%);
-	background: rgba(0, 0, 0, 0.85);
-	border: 1px solid rgba(255, 255, 255, 0.15);
-	border-radius: 4px;
+
+	background-color: var(--hud-bg-modal);
+	border: 2px solid var(--hud-frame);
+	border-radius: var(--hud-radius-md);
+	box-shadow: var(--hud-shadow-panel);
+
 	padding: 12px 16px;
-	min-width: 200px;
+	min-width: 220px;
 	max-height: 60vh;
 	overflow-y: auto;
 	pointer-events: auto;
+	font-family: var(--ui-font-family);
+	scrollbar-width: thin;
+	scrollbar-color: var(--hud-frame-bright) transparent;
 }
 
 .mp-player-list.hidden {
@@ -76,43 +99,43 @@ body {
 	font-size: 12px;
 	text-transform: uppercase;
 	letter-spacing: 1px;
-	color: #888;
+	color: var(--hud-text-muted);
 	margin-bottom: 8px;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+	border-bottom: var(--hud-border-width) solid var(--hud-border-soft);
 	padding-bottom: 4px;
 }
 
 .mp-player-row {
 	padding: 4px 0;
-	color: #ddd;
+	color: var(--hud-text);
 	font-size: 14px;
 }
 
 .mp-player-row::before {
 	content: "● ";
-	color: #40d040;
+	color: var(--hud-ok);
 }
+
+/* ─── Chat ────────────────────────────────────────────────────────────────── */
 
 .mp-chat-messages {
 	position: absolute;
-	bottom: var(
-		--chat-bottom,
-		178px
-	); /* above the input bar (vars defined in hud.css) */
+	bottom: var(--chat-bottom, 178px); /* above the input bar (vars defined in hud.css) */
 	left: 20px; /* matches #stats-container left edge */
 	max-width: 400px;
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
 	pointer-events: none;
+	font-family: var(--ui-font-family);
 }
 
 .mp-chat-msg {
-	color: #ddd;
+	color: var(--hud-text-muted);
 	font-size: 13px;
 	max-width: 100%;
 	word-wrap: break-word;
-	text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.9);
+	text-shadow: var(--hud-text-shadow);
 	transition: opacity 1s ease-out;
 }
 
@@ -122,29 +145,28 @@ body {
 
 .mp-chat-name {
 	font-weight: 600;
-	color: #80c0ff;
+	color: var(--hud-mana);
 }
 
 .mp-chat-system {
-	color: #a0a0a0;
+	color: var(--hud-text-muted);
 	font-style: italic;
 	font-size: 12px;
 }
 
 .mp-chat-input {
 	position: absolute;
-	bottom: var(
-		--chat-input-bottom,
-		138px
-	); /* below .mp-chat-messages, above the stats block */
+	bottom: var(--chat-input-bottom, 138px); /* below .mp-chat-messages, above the stats block */
 	left: 20px; /* matches #stats-container left edge */
 	width: min(30vw, 400px);
 	box-sizing: border-box;
 	padding: 8px 12px;
-	background: rgba(0, 0, 0, 0.85);
-	border: 1px solid rgba(255, 255, 255, 0.2);
-	border-radius: 4px;
-	color: #fff;
+
+	background: var(--hud-bg-inset);
+	border: var(--hud-border-width) solid var(--hud-frame-dim);
+	border-radius: var(--hud-radius-sm);
+	color: var(--hud-text);
+	font-family: var(--ui-font-family);
 	font-size: 14px;
 	outline: none;
 	pointer-events: auto;
@@ -155,10 +177,11 @@ body {
 }
 
 .mp-chat-input:focus {
-	border-color: rgba(255, 255, 255, 0.4);
+	border-color: var(--hud-accent);
+	box-shadow: var(--hud-focus-ring);
 }
 
-/* Player name tags — now rendered as billboard sprites, not DOM overlays */
+/* Player name tags — rendered as billboard sprites, not DOM overlays */
 
 @keyframes mp-pulse {
 	0%,

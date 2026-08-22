@@ -13,18 +13,8 @@ export class DebugPanel {
 
 	private constructor() {
 		const div = document.createElement("div");
-
-		div.style.position = "absolute";
-		div.style.top = "10px";
-		div.style.left = "10px";
-		div.style.padding = "10px";
-		div.style.backgroundColor = "rgba(0, 0, 0, 0.6)";
-		div.style.color = "white";
-		div.style.fontFamily = "monospace";
-		div.style.fontSize = "16px";
-		div.style.zIndex = "100";
+		div.className = "debug-panel";
 		div.style.display = "none";
-		div.style.borderRadius = "5px";
 
 		document.body.appendChild(div);
 		DebugPanel.div = div;

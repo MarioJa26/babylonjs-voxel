@@ -31,7 +31,6 @@ export class PauseMenu {
 		this.menuContainer.appendChild(this.settingsContainer);
 		document.body.appendChild(this.menuContainer);
 
-		this.addStyles();
 		this.hide();
 	}
 
@@ -115,9 +114,6 @@ export class PauseMenu {
 		container.style.flexDirection = "column";
 		container.style.alignItems = "center";
 		container.style.gap = "15px";
-		container.style.width = "300px";
-		container.style.padding = "20px";
-		container.style.backgroundColor = "rgba(0, 0, 0, 0.7)";
 
 		// --- World & Time ---
 		container.appendChild(this.createSeparator("World & Time"));
@@ -311,10 +307,7 @@ export class PauseMenu {
 
 		// --- Separator and Back Button ---
 		const separator = document.createElement("hr");
-		separator.style.width = "100%";
-		separator.style.border = "none";
-		separator.style.borderTop = "1px solid #555";
-		separator.style.margin = "20px 0";
+		separator.className = "settings-hr";
 		container.appendChild(separator);
 
 		// Back Button
@@ -365,13 +358,8 @@ export class PauseMenu {
 
 	private createSeparator(text: string): HTMLElement {
 		const separator = document.createElement("div");
+		separator.className = "settings-separator";
 		separator.innerText = text;
-		separator.style.fontWeight = "bold";
-		separator.style.marginTop = "15px";
-		separator.style.marginBottom = "5px";
-		separator.style.borderBottom = "1px solid #777";
-		separator.style.width = "100%";
-		separator.style.textAlign = "center";
 		return separator;
 	}
 
@@ -408,93 +396,5 @@ export class PauseMenu {
 	private showSettings(show: boolean) {
 		this.mainButtonsContainer.style.display = show ? "none" : "flex";
 		this.settingsContainer.style.display = show ? "flex" : "none";
-	}
-
-	private addStyles() {
-		const style = document.createElement("style");
-		style.innerHTML = `
-      #pauseMenuContainer {
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 100%;
-        height: 100%;
-        background-color: rgba(0, 0, 0, 0.5);
-        color: white;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-        font-family: sans-serif;
-        z-index: 10000;
-      }
-
-      #pauseMenuContainer h1 {
-        font-size: 3em;
-        margin-bottom: 20px;
-        text-shadow: 2px 2px 4px #000000;
-        user-select: none;
-      }
-
-      #pauseMenuContainer button {
-        font-size: 1.5em;
-        padding: 10px 20px;
-        border: 2px solid white;
-        background-color: #333;
-        color: white;
-        min-width: 200px;
-        cursor: pointer;
-        user-select: none;
-        transition: background-color 0.3s, color 0.3s;
-      }
-
-      #pauseMenuContainer button:hover {
-        background-color: white;
-        color: #333;
-      }
-
-      .slider-container {
-        width: 100%;
-        display: grid;
-        grid-template-columns: 1fr auto;
-        grid-template-rows: auto auto;
-        gap: 5px;
-        margin-top: 10px;
-      }
-      .slider-container label {
-        grid-column: 1 / 2;
-      }
-      .slider-container .slider-value {
-        grid-column: 2 / 3;
-        justify-self: end;
-      }
-      .slider-container input[type="range"] {
-        grid-column: 1 / 3;
-        width: 100%;
-      }
-      .collapsible-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        width: 100%;
-        font-weight: bold;
-        margin-top: 15px;
-        padding: 5px 0;
-        border-bottom: 1px solid #777;
-        cursor: pointer;
-        user-select: none;
-      }
-      .collapsible-header:hover {
-        color: #ccc;
-      }
-      .collapsible-arrow {
-        font-size: 0.8em;
-      }
-      #settingsContainer {
-        max-height: 80vh;
-        overflow-y: auto;
-      }
-    `;
-		document.head.appendChild(style);
 	}
 }
