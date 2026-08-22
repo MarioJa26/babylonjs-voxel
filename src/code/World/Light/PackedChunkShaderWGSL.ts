@@ -11,6 +11,11 @@ export interface VertexShaderOptions {
 	 * the sampled normal map directly.
 	 */
 	tangentSpaceLighting?: boolean;
+	/**
+	 * Hoists N·L to the vertex stage. Exact for flat faces (greedy quads have
+	 * constant normals) and removes a per-pixel dot+max from the fragment.
+	 */
+	vertexDiffuse?: boolean;
 }
 
 type ResolvedVertexShaderOptions = Required<VertexShaderOptions>;
@@ -29,6 +34,7 @@ type ResolvedVertexShaderOptions = Required<VertexShaderOptions>;
 //  12: vTint        (optional)
 //  13: vViewDir     (optional)
 //  14: vLightDirTS   (optional, tangent-space lighting only, normalized)
+//  15: vDiffuse     (optional, flat — vertex-hoisted N·L for flat faces)
 
 function fogWGSL(enabled: boolean): string {
 	if (!enabled) return "";
@@ -73,6 +79,8 @@ function vsOutFields(opts: ResolvedVertexShaderOptions): string {
 		f.push("  @location(11) vFogColor : vec3<f32>,");
 	}
 	if (opts.tint) f.push("  @location(12) @interpolate(flat) vTint : u32,");
+	if (opts.vertexDiffuse)
+		f.push("  @location(15) @interpolate(flat) vDiffuse : f32,");
 	if (opts.tangentSpaceLighting) {
 		f.push("  @location(13) vViewDirTS : vec3<f32>,");
 		f.push("  @location(14) @interpolate(flat) vLightDirTS : vec3<f32>,");
@@ -93,6 +101,10 @@ function vsOutAssignments(opts: ResolvedVertexShaderOptions): string {
 	a.push("  out.vLight = vec2<f32>(skyLight, blockLight);");
 	if (opts.meta) a.push("  out.vMeta = metaByte;");
 	if (opts.tint) a.push("  out.vTint = tintBucket;");
+	if (opts.vertexDiffuse)
+		a.push(
+			"  out.vDiffuse = max(0.0, dot(shaderUniforms.lightDirection, sharedNormal));",
+		);
 	if (opts.fog) {
 		a.push("  let infos = shaderUniforms.fogInfos;");
 		a.push("  let fogStart = infos.y;");
@@ -140,6 +152,7 @@ export function buildPackedVertexWGSL(
 		worldPosition: opts.worldPosition ?? true,
 		viewDir: opts.viewDir ?? true,
 		tangentSpaceLighting: opts.tangentSpaceLighting ?? false,
+		vertexDiffuse: opts.vertexDiffuse ?? false,
 	};
 
 	let loadFaceBody = "";

@@ -2,7 +2,9 @@ import {
 	isInitialized as isDistantTerrainReady,
 	update as updateDistantTerrain,
 } from "@/code/Generation/DistantTerrain/DistantTerrain";
+import { getFinalTerrainHeight } from "@/code/Generation/TerrainHeightMap";
 import { isInCave } from "@/code/Lib/GameRuntimeState";
+import { FarTileManager } from "../../FarTiles/FarTileManager";
 import { SETTING_PARAMS } from "../../SETTINGS_PARAMS";
 import { Chunk, getChunk } from "../Chunk";
 import { createMeshFromData } from "../ChunkMesher";
@@ -12,7 +14,6 @@ import {
 	DistantOnlyChunkCreationRule,
 	Lod0ChunkCreationRule,
 } from "../LOD/ChunkLodRules";
-import { FarTileManager } from "../../FarTiles/FarTileManager";
 import { maxLodForChunkY } from "../Worker/LODUtilities";
 
 /** Underground (cave) chunks never coarsen: clamp any desired LOD. */
@@ -71,6 +72,30 @@ export interface ChunkStreamingControllerAdapter {
 	getLoadQueue(): QueuedChunkRequest[];
 	getUnloadQueueSet(): Set<Chunk>;
 	onQueueSnapshotChanged?(): void;
+}
+
+// Column-top cache for the far-band air skip in processTargetChunkCoordinate.
+// Key packs (x,z) at 16 bits each; collisions only yield a stale approximate
+// height, which at worst delays a chunk by one ring — never corrupts state.
+const COL_TOP_CACHE_MAX = 16384;
+const colTopCache = new Map<number, number>();
+
+function columnTopChunkY(x: number, z: number): number {
+	const key = (x & 0xffff) | ((z & 0xffff) << 16);
+	const cached = colTopCache.get(key);
+	if (cached !== undefined) return cached;
+
+	const h = getFinalTerrainHeight(x * Chunk.SIZE + 16, z * Chunk.SIZE + 16);
+	const topY = Math.ceil(h / Chunk.SIZE);
+	colTopCache.set(key, topY);
+
+	if (colTopCache.size > COL_TOP_CACHE_MAX) {
+		// Cheap reset — heights are deterministic, recomputation is fine.
+		colTopCache.clear();
+		colTopCache.set(key, topY);
+	}
+
+	return topY;
 }
 
 export class ChunkStreamingController {
@@ -358,9 +383,9 @@ export class ChunkStreamingController {
 				chunkX,
 				chunkY,
 				chunkZ,
-				prevChunkX!,
-				prevChunkY!,
-				prevChunkZ!,
+				prevChunkX,
+				prevChunkY,
+				prevChunkZ,
 				lodRuleSet,
 				caveState,
 			);
@@ -475,11 +500,8 @@ export class ChunkStreamingController {
 			if (decisionLod < 0) {
 				decisionLod = clampLodForY(
 					chunk.chunkY,
-					lodRuleSet.resolveWithHysteresisFromDistance(
-						hDist,
-						vDist,
-						chunkLod,
-					).lodLevel,
+					lodRuleSet.resolveWithHysteresisFromDistance(hDist, vDist, chunkLod)
+						.lodLevel,
 				);
 				this.setCachedDecisionLod(key, decisionLod, chunk.isDirty);
 			}
@@ -573,25 +595,39 @@ export class ChunkStreamingController {
 		playerChunkZ: number,
 		lodRuleSet: ChunkLodRuleSet,
 	): void {
-		const chunk = getChunk(x, y, z);
-		const previousLod = chunk?.lodLevel ?? 3;
-		const isDirty = chunk?.isDirty === true;
-
 		const relX = x - playerChunkX;
 		const relY = y - playerChunkY;
 		const relZ = z - playerChunkZ;
+		const absX = relX < 0 ? -relX : relX;
+		const absZ = relZ < 0 ? -relZ : relZ;
+		const hDist = absX > absZ ? absX : absZ;
+		const vDist = relY < 0 ? -relY : relY;
+
+		// ALLOCATION GUARD (profile: 45% of heap churn flowed through here
+		// via `new Chunk` for sky/void cells). For cells that would resolve
+		// to a downsampled far band (LOD>=2), skip provably-empty columns:
+		// above the terrain surface, or deep underground beyond cave reach.
+		// Near bands (LOD<=1) always process — gameplay depends on them.
+		const nearVertical = lodRuleSet.verticalRadiusFor(1);
+		if (vDist > nearVertical || y < 0) {
+			const nearHorizontal =
+				SETTING_PARAMS.RENDER_DISTANCE + SETTING_PARAMS.LOD_1_OFFSET;
+			const isFarBand = vDist > nearVertical || hDist > nearHorizontal;
+
+			if (isFarBand) {
+				if (y < 0 && hDist > nearHorizontal) return; // void caves
+				if (y >= 0 && y > columnTopChunkY(x, z) + 1) return; // sky
+			}
+		}
+
+		const chunk = getChunk(x, y, z);
+		const previousLod = chunk?.lodLevel ?? 3;
+		const isDirty = chunk?.isDirty === true;
 
 		const cacheKey = packOffsetKey(relX, relY, relZ, previousLod);
 		let desiredLod = this.getCachedDecisionLod(cacheKey, isDirty);
 
 		if (desiredLod < 0) {
-			const absX = relX < 0 ? -relX : relX;
-			const absY = relY < 0 ? -relY : relY;
-			const absZ = relZ < 0 ? -relZ : relZ;
-
-			const hDist = absX > absZ ? absX : absZ;
-			const vDist = absY;
-
 			const decision = lodRuleSet.resolveWithHysteresisFromDistance(
 				hDist,
 				vDist,

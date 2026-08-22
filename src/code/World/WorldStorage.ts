@@ -90,7 +90,7 @@ class WorldStorageImpl {
 		if (chunk.isBoatChunk) return;
 		if (!chunk.isModified && !chunk.isLightDirty) return;
 
-		const store = await this.getStore();
+		const store = this.store ?? (await this.getStore());
 		if (!store) return;
 
 		const blob = packChunkBlob(chunk);
@@ -108,7 +108,7 @@ class WorldStorageImpl {
 	async saveChunks(chunks: Chunk[]): Promise<void> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_SAVING) return;
 
-		const store = await this.getStore();
+		const store = this.store ?? (await this.getStore());
 		if (!store) return;
 
 		const writes: ChunkWrite[] = [];
@@ -149,7 +149,7 @@ class WorldStorageImpl {
 	async saveAllModifiedChunks(): Promise<void> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_SAVING) return;
 
-		const store = await this.getStore();
+		const store = this.store ?? (await this.getStore());
 		if (!store) return;
 
 		const writes: ChunkWrite[] = [];
@@ -191,7 +191,7 @@ class WorldStorageImpl {
 	): Promise<void> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_SAVING) return;
 
-		const store = await this.getStore();
+		const store = this.store ?? (await this.getStore());
 		if (!store) return;
 
 		const [cx, cy, cz] = chunkIdToCoords(chunkId);
@@ -210,7 +210,7 @@ class WorldStorageImpl {
 
 	async loadChunkEntities(chunkId: bigint): Promise<SavedChunkEntityData[]> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_LOADING) return [];
-		const store = await this.getStore();
+		const store = this.store ?? (await this.getStore());
 		if (!store) return [];
 
 		const [cx, cy, cz] = chunkIdToCoords(chunkId);
@@ -231,7 +231,7 @@ class WorldStorageImpl {
 		options?: LoadChunkOptions,
 	): Promise<SavedChunkData | null> {
 		if (GLOBAL_VALUES.DISABLE_CHUNK_LOADING) return null;
-		const store = await this.getStore();
+		const store = this.store ?? (await this.getStore());
 		if (!store) return null;
 
 		const [cx, cy, cz] = chunkIdToCoords(chunkId);
@@ -259,7 +259,7 @@ class WorldStorageImpl {
 			return result;
 		}
 
-		const store = await this.getStore();
+		const store = this.store ?? (await this.getStore());
 		if (!store) return result;
 
 		const includeVoxelData = options?.includeVoxelData ?? true;
@@ -303,7 +303,7 @@ class WorldStorageImpl {
 	}
 
 	async flush(): Promise<void> {
-		const store = await this.getStore();
+		const store = this.store ?? (await this.getStore());
 		if (!store) return;
 		await store.flush();
 	}
@@ -313,7 +313,7 @@ class WorldStorageImpl {
 	 * never runs again for this world.
 	 */
 	async saveSpawnPoint(p: SpawnPosition): Promise<void> {
-		const store = await this.getStore();
+		const store = this.store ?? (await this.getStore());
 		if (!store) return;
 		await store.setMeta("spawn", JSON.stringify(p));
 	}
@@ -323,7 +323,7 @@ class WorldStorageImpl {
 	 * had one prepared yet.
 	 */
 	async loadSpawnPoint(): Promise<SpawnPosition | null> {
-		const store = await this.getStore();
+		const store = this.store ?? (await this.getStore());
 		if (!store) return null;
 		const v = await store.getMeta("spawn");
 		if (!v) return null;
@@ -348,7 +348,7 @@ class WorldStorageImpl {
 	 * never be served back as if it were server data.
 	 */
 	async clearLocalChunkCache(): Promise<void> {
-		const store = await this.getStore();
+		const store = this.store ?? (await this.getStore());
 		if (!store) return;
 		// discardPendingWrites: queued local saves are wiped anyway, so
 		// commit-then-erase would be wasted I/O on reconnect.
@@ -392,35 +392,27 @@ function packChunkBlob(chunk: Chunk): Uint8Array {
 	);
 }
 
-// Hoisted once — BigInt shifts/allocations are considerably more expensive
-// than plain Number ops. The old code recomputed `SIGN_BIT << 21n` and
-// `SIGN_BIT << 42n` (each a fresh BigInt allocation) on every single call
-// to chunkIdToCoords. Precomputing them here means each call only pays for
-// the unavoidable mask/shift extraction from the packed id.
-const COORD_BITS = 21n;
-const COORD_MASK = (1n << COORD_BITS) - 1n;
-const Z_SHIFT = COORD_BITS * 2n;
-const SIGN_BIT_X = 1n << 20n;
-const SIGN_BIT_Y = SIGN_BIT_X << COORD_BITS;
-const SIGN_BIT_Z = SIGN_BIT_X << Z_SHIFT;
-const BIAS_NUM = 1_048_576; // 2^20 — bias is applied in Number space now
-
-function chunkIdToCoords(chunkId: bigint): [number, number, number] {
-	const rawX = Number(chunkId & COORD_MASK);
-	const rawY = Number((chunkId >> COORD_BITS) & COORD_MASK);
-	const rawZ = Number((chunkId >> Z_SHIFT) & COORD_MASK);
-
-	return [
-		(chunkId & SIGN_BIT_X) !== 0n ? rawX - BIAS_NUM : rawX,
-		(chunkId & SIGN_BIT_Y) !== 0n ? rawY - BIAS_NUM : rawY,
-		(chunkId & SIGN_BIT_Z) !== 0n ? rawZ - BIAS_NUM : rawZ,
-	];
-}
+// Hoisted once — BigInt ops are non-SMI and heap-allocated in V8, so the
+// decoder bridges bigint→Number exactly once per call: one mask + one shift
+// split the packed id into two Numbers, and every field below is extracted
+// with pure SMI bit ops. Field layout matches packCoords: x = bits 0..20,
+// y = bits 21..41, z = bits 42..62; each axis stores value + 2^20 biased,
+// so a field is negative when its raw value is below 2^20.
+const LOW32_MASK = 0xffffffffn;
+const BIAS_NUM = 1_048_576; // 2^20
 
 interface ChunkCoordsOut {
 	cx: number;
 	cy: number;
 	cz: number;
+}
+
+const _coordsOutScratch: ChunkCoordsOut = { cx: 0, cy: 0, cz: 0 };
+
+function chunkIdToCoords(chunkId: bigint): [number, number, number] {
+	chunkIdToCoordsOut(chunkId, _coordsOutScratch);
+	const s = _coordsOutScratch;
+	return [s.cx, s.cy, s.cz];
 }
 
 /**
@@ -431,13 +423,16 @@ function chunkIdToCoordsOut(
 	chunkId: bigint,
 	out: ChunkCoordsOut,
 ): ChunkCoordsOut {
-	const rawX = Number(chunkId & COORD_MASK);
-	const rawY = Number((chunkId >> COORD_BITS) & COORD_MASK);
-	const rawZ = Number((chunkId >> Z_SHIFT) & COORD_MASK);
+	const lo = Number(chunkId & LOW32_MASK);
+	const hi = Number((chunkId >> 32n) & LOW32_MASK);
 
-	out.cx = (chunkId & SIGN_BIT_X) !== 0n ? rawX - BIAS_NUM : rawX;
-	out.cy = (chunkId & SIGN_BIT_Y) !== 0n ? rawY - BIAS_NUM : rawY;
-	out.cz = (chunkId & SIGN_BIT_Z) !== 0n ? rawZ - BIAS_NUM : rawZ;
+	// packCoords stores value + 2^20 per field (offset binary), so the
+	// inverse is an unconditional bias subtraction — matching
+	// ChunkCoords.unpackChunkCoords. The previous sign-bit-conditional
+	// variant mis-decoded every negative coordinate as raw + 2^20.
+	out.cx = (lo & 0x1fffff) - BIAS_NUM;
+	out.cy = (((lo >>> 21) | (hi << 11)) & 0x1fffff) - BIAS_NUM;
+	out.cz = (hi >>> 10) - BIAS_NUM;
 
 	return out;
 }

@@ -19,6 +19,21 @@ function deferMeshDisposal(mesh: Mesh): void {
 	schedulePendingMeshDisposal();
 }
 
+// PERF: module-level callbacks — no closure allocation per scheduled drain.
+function _afterMeshDisposalWait(): void {
+	_meshDisposalScheduled = false;
+	drainPendingMeshDisposal();
+
+	// If disposal indirectly queued more meshes, schedule another GPU-safe drain.
+	if (_pendingMeshDisposal.length > 0) {
+		schedulePendingMeshDisposal();
+	}
+}
+
+function _onMeshDisposalWaitError(err: unknown): void {
+	console.warn("Deferred mesh disposal waited on GPU work but failed", err);
+}
+
 function schedulePendingMeshDisposal(): void {
 	if (_meshDisposalScheduled) return;
 	_meshDisposalScheduled = true;
@@ -32,18 +47,8 @@ function schedulePendingMeshDisposal(): void {
 	}
 
 	void onGpuWorkDone(engine)
-		.catch((err) => {
-			console.warn("Deferred mesh disposal waited on GPU work but failed", err);
-		})
-		.finally(() => {
-			_meshDisposalScheduled = false;
-			drainPendingMeshDisposal();
-
-			// If disposal indirectly queued more meshes, schedule another GPU-safe drain.
-			if (_pendingMeshDisposal.length > 0) {
-				schedulePendingMeshDisposal();
-			}
-		});
+		.catch(_onMeshDisposalWaitError)
+		.finally(_afterMeshDisposalWait);
 }
 function drainPendingMeshDisposal(): void {
 	while (_pendingMeshDisposal.length > 0) {
@@ -108,6 +113,12 @@ type SerializedLODMeshCache = Record<
 		cutout?: MeshData | null;
 	}
 >;
+type LightStorageSnapshot = {
+	lightSAB: SharedArrayBuffer | null;
+	blockSAB: SharedArrayBuffer | null;
+	paletteSAB: SharedArrayBuffer | null;
+	blockStorageBytesPerElement: 1 | 2;
+};
 
 const _ccVisited = new Uint8Array(GenerationParams.CHUNK_SIZE ** 3);
 const _ccStack = new Int32Array(GenerationParams.CHUNK_SIZE ** 3);
@@ -159,7 +170,6 @@ export class Chunk {
 	public static readonly SM1 = Chunk.SIZE - 1;
 	public static readonly chunkInstances = new Map<bigint, Chunk>();
 
-	static _chunkByCoords = new Map<number, Chunk>();
 	public static readonly loadedChunks = new Set<Chunk>();
 	public static readonly loadedChunkIndex = new LoadedChunkIndex();
 
@@ -298,13 +308,25 @@ export class Chunk {
 	 * ChunkWorkerPool to broadcast new SharedArrayBuffer handles after a
 	 * storage layout transition (uniform->palette, palette->u16, ...).
 	 * Centralised here so the pool never touches private fields directly.
+	 *
+	 * PERF: the snapshot object is cached on the instance and mutated in
+	 * place — zero allocation per call.  Callers must consume the fields
+	 * immediately (all current callers spread them into postMessage
+	 * payloads); do not retain the returned object across layout changes.
 	 */
-	public getLightStorageSnapshot(): {
-		lightSAB: SharedArrayBuffer | null;
-		blockSAB: SharedArrayBuffer | null;
-		paletteSAB: SharedArrayBuffer | null;
-		blockStorageBytesPerElement: 1 | 2;
-	} {
+	private _storageSnapshot: LightStorageSnapshot | null = null;
+
+	public getLightStorageSnapshot(): LightStorageSnapshot {
+		let s = this._storageSnapshot;
+		if (s === null) {
+			s = {
+				lightSAB: null,
+				blockSAB: null,
+				paletteSAB: null,
+				blockStorageBytesPerElement: 1,
+			};
+			this._storageSnapshot = s;
+		}
 		const lightBuffer = this.light_array?.buffer as
 			| SharedArrayBuffer
 			| ArrayBuffer
@@ -317,14 +339,13 @@ export class Chunk {
 			| SharedArrayBuffer
 			| ArrayBuffer
 			| undefined;
-		return {
-			lightSAB: lightBuffer instanceof SharedArrayBuffer ? lightBuffer : null,
-			blockSAB: blockBuffer instanceof SharedArrayBuffer ? blockBuffer : null,
-			paletteSAB:
-				paletteBuffer instanceof SharedArrayBuffer ? paletteBuffer : null,
-			blockStorageBytesPerElement:
-				this._block_array instanceof Uint16Array ? 2 : 1,
-		};
+		s.lightSAB = lightBuffer instanceof SharedArrayBuffer ? lightBuffer : null;
+		s.blockSAB = blockBuffer instanceof SharedArrayBuffer ? blockBuffer : null;
+		s.paletteSAB =
+			paletteBuffer instanceof SharedArrayBuffer ? paletteBuffer : null;
+		s.blockStorageBytesPerElement =
+			this._block_array instanceof Uint16Array ? 2 : 1;
+		return s;
 	}
 
 	/** Dense integer ID for this chunk, assigned from a static counter.
@@ -349,8 +370,11 @@ export class Chunk {
 
 	/**
 	 * Cached direct references to the 6 face-adjacent neighbours.
-	 * Populated lazily by the OcclusionCuller on first BFS traversal and
-	 * nulled eagerly in dispose() so there are no dangling references.
+	 * Maintained eagerly: linkNeighbors() populates both sides on
+	 * construction/load, dispose() nulls both sides on teardown — so there
+	 * are never dangling references and no Map lookups are needed to resolve
+	 * a face neighbour. The OcclusionCuller's lazy repair pass remains as a
+	 * harmless no-op when links already exist.
 	 *
 	 * Direction layout matches neighborIds / the culler's face constants:
 	 *   [0]=+X  [1]=-X  [2]=+Y  [3]=-Y  [4]=+Z  [5]=-Z
@@ -404,10 +428,11 @@ export class Chunk {
 		// but we assign here to use the static counter correctly.
 		this.numericId = Chunk._nextNumericId++;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
+		this.updateLightView();
 		this.lightHeaderSlot = Chunk.allocLightHeaderSlot();
 		this._isDarkCached = false;
 		Chunk.chunkInstances.set(this.id, this);
-		_setByCoords(this);
+		this.linkNeighbors();
 	}
 
 	// =========================================================================
@@ -519,6 +544,8 @@ export class Chunk {
 		// SharedArrayBuffer, so copy each non-Shared buffer into a fresh
 		// SAB before broadcasting to the worker pool.
 		this.ensureSharedBacking();
+		this.updateLightView();
+		this.linkNeighbors();
 
 		this.writeLightHeaderRow();
 		Chunk.onLightChunkLoaded?.(this, _fromStorage);
@@ -587,6 +614,8 @@ export class Chunk {
 			}
 			this._palette = new Uint16Array(sab, 0, palette.length);
 		}
+
+		this.updateLightView();
 	}
 
 	public loadLodOnlyFromStorage(scheduleRemesh = false): void {
@@ -598,6 +627,7 @@ export class Chunk {
 		this._paletteOpacity = null;
 		this._denseOpacity = null;
 		this.light_array = Chunk.EMPTY_LIGHT_ARRAY;
+		this.updateLightView();
 		this._isDarkCached = false;
 		this.blockRevision++;
 		this.generation = ++Chunk._generationCounter;
@@ -605,6 +635,7 @@ export class Chunk {
 		Chunk.loadedChunks.add(this);
 		Chunk.loadedChunkIndex.register(this);
 		this.isTerrainScheduled = false;
+		this.linkNeighbors();
 		if (scheduleRemesh) this.scheduleRemesh();
 	}
 
@@ -691,15 +722,15 @@ export class Chunk {
 				typeof SharedArrayBuffer !== "undefined"
 					? new Uint8Array(new SharedArrayBuffer(Chunk.SIZE3))
 					: new Uint8Array(Chunk.SIZE3);
-			this._la32 = null;
 		}
+		this.updateLightView();
 
 		const la = this.light_array;
 
-		// Reuse the cached aligned word view instead of allocating a new Uint32Array
-		// on every sunlight initialization.
+		// PERF: use the eagerly-cached aligned word view — no per-call
+		// helper/validation, no new Uint32Array allocation.
 		const wordCount = la.length >>> 2;
-		const la32 = this.getAlignedLightWords(la, wordCount);
+		const la32 = this._la32;
 		if (la32) {
 			for (let i = 0; i < wordCount; i++) la32[i] &= 0x0f0f0f0f;
 
@@ -720,6 +751,18 @@ export class Chunk {
 		const seedCapacity = _sunlightSeedQueue.length;
 		const seedQueue = _sunlightSeedQueue;
 		let seedLength = 0;
+
+		// PERF: hoist the storage-layout dispatch out of the voxel loop and
+		// inline getBlockPacked using the already-computed flat idx — keeps
+		// the hot loop free of method calls and index recomputation.
+		// NOTE: mirrors getBlockPacked's isLoaded guard: loadFromStorage runs
+		// this before isLoaded=true, where reads must yield air (0).
+		const canReadBlocks = this.isLoaded;
+		const isUniform = this._isUniform;
+		const uniformBlockId = this._uniformBlockId;
+		const palette = this._palette;
+		const blocks = this._block_array as Uint8Array | Uint16Array | null;
+		const palBytes = palette !== null ? (blocks as Uint8Array) : null;
 
 		for (let x = 0; x < size; x++) {
 			const worldX = chunkBaseX + x;
@@ -762,7 +805,18 @@ export class Chunk {
 						continue;
 					}
 
-					const blockPacked = this.getBlockPacked(x, y, z);
+					let blockPacked: number;
+					if (!canReadBlocks) {
+						blockPacked = 0;
+					} else if (isUniform) {
+						blockPacked = uniformBlockId;
+					} else if (palBytes !== null) {
+						const byte = palBytes[idx >>> 1];
+						blockPacked =
+							palette![(idx & 1) === 0 ? byte & 0x0f : (byte >>> 4) & 0x0f];
+					} else {
+						blockPacked = blocks![idx];
+					}
 
 					if (!isTransparent(blockPacked, 1, 1)) {
 						incomingSkyLight = 0;
@@ -862,9 +916,12 @@ export class Chunk {
 
 		const len = la.length;
 		const wordCount = len >>> 2;
-		const la32 = this.getAlignedLightWords(la, wordCount);
 
-		if (la32) {
+		// PERF: _la32 is maintained eagerly by updateLightView() at every
+		// light_array assignment site — no per-call helper/validation here.
+		const la32 = this._la32;
+
+		if (la32 && la32.length === wordCount) {
 			for (let i = 0; i < wordCount; i++) {
 				if ((la32[i] & 0xf0f0f0f0) !== 0) {
 					this._isDarkCached = false;
@@ -1233,34 +1290,64 @@ export class Chunk {
 	// =========================================================================
 
 	public getNeighbor(dx: number, dy: number, dz: number): Chunk | undefined {
-		return getChunk(this.chunkX + dx, this.chunkY + dy, this.chunkZ + dz);
+		// PERF: direct array access into eagerly-maintained neighborRefs —
+		// no coordinate math, no Map hash lookup on this hot path.
+		if (dx === 1) return this.neighborRefs[0] ?? undefined;
+		if (dx === -1) return this.neighborRefs[1] ?? undefined;
+		if (dy === 1) return this.neighborRefs[2] ?? undefined;
+		if (dy === -1) return this.neighborRefs[3] ?? undefined;
+		if (dz === 1) return this.neighborRefs[4] ?? undefined;
+		if (dz === -1) return this.neighborRefs[5] ?? undefined;
+		return undefined;
 	}
 
-	// Face-order offsets matching neighborRefs / the culler's face constants:
+	// Face-order layout matching neighborRefs / the culler's face constants:
 	// [0]=+X  [1]=-X  [2]=+Y  [3]=-Y  [4]=+Z  [5]=-Z
-	private static readonly _NEIGHBOR_OFFSETS: readonly (readonly [
-		number,
-		number,
-		number,
-	])[] = [
-		[1, 0, 0],
-		[-1, 0, 0],
-		[0, 1, 0],
-		[0, -1, 0],
-		[0, 0, 1],
-		[0, 0, -1],
-	];
-
-	// PERF: resolve a face-adjacent neighbor via the number-keyed coords
-	// registry instead of deriving+caching 6 BigInt ids per chunk — zero
-	// allocation on the culling/dispose paths.
 	public getNeighborChunk(faceIdx: number): Chunk | undefined {
-		const off = Chunk._NEIGHBOR_OFFSETS[faceIdx];
-		return getChunk(
-			this.chunkX + off[0],
-			this.chunkY + off[1],
-			this.chunkZ + off[2],
+		return this.neighborRefs[faceIdx] ?? undefined;
+	}
+
+	/**
+	 * Eagerly link face-adjacent neighbours (both directions) from
+	 * chunkInstances so getNeighbor/getNeighborChunk never touch a Map.
+	 * Called on construction and after each load path; idempotent.
+	 */
+	private linkNeighbors(): void {
+		const refs = this.neighborRefs;
+		const instances = Chunk.chunkInstances;
+
+		let nbr = instances.get(
+			packCoords(this.chunkX + 1, this.chunkY, this.chunkZ),
 		);
+		if (nbr) {
+			refs[0] = nbr;
+			nbr.neighborRefs[1] = this;
+		}
+		nbr = instances.get(packCoords(this.chunkX - 1, this.chunkY, this.chunkZ));
+		if (nbr) {
+			refs[1] = nbr;
+			nbr.neighborRefs[0] = this;
+		}
+		nbr = instances.get(packCoords(this.chunkX, this.chunkY + 1, this.chunkZ));
+		if (nbr) {
+			refs[2] = nbr;
+			nbr.neighborRefs[3] = this;
+		}
+		nbr = instances.get(packCoords(this.chunkX, this.chunkY - 1, this.chunkZ));
+		if (nbr) {
+			refs[3] = nbr;
+			nbr.neighborRefs[2] = this;
+		}
+		nbr = instances.get(packCoords(this.chunkX, this.chunkY, this.chunkZ + 1));
+		if (nbr) {
+			refs[4] = nbr;
+			nbr.neighborRefs[5] = this;
+		}
+		nbr = instances.get(packCoords(this.chunkX, this.chunkY, this.chunkZ - 1));
+		if (nbr) {
+			refs[5] = nbr;
+			nbr.neighborRefs[4] = this;
+		}
 	}
 
 	public markLightChanged(): void {
@@ -1449,25 +1536,24 @@ export class Chunk {
 		return connectivity;
 	}
 
-	private getAlignedLightWords(
-		la: Uint8Array,
-		wordCount: number,
-	): Uint32Array | null {
-		if ((la.byteOffset & 3) !== 0) {
-			this._la32 = null;
-			return null;
-		}
-
+	/**
+	 * Rebuild the cached Uint32Array word view over light_array.  Called
+	 * eagerly at every light_array assignment site (constructor, load paths,
+	 * ensureSharedBacking, initializeSunlight, dispose) so hot scans can use
+	 * this._la32 directly with zero per-call validation.
+	 */
+	private updateLightView(): void {
+		const la = this.light_array;
 		if (
-			!this._la32 ||
-			this._la32.buffer !== la.buffer ||
-			this._la32.byteOffset !== la.byteOffset ||
-			this._la32.length !== wordCount
+			la &&
+			la.length >= 4 &&
+			(la.byteOffset & 3) === 0 &&
+			la.byteOffset + la.length <= la.buffer.byteLength
 		) {
-			this._la32 = new Uint32Array(la.buffer, la.byteOffset, wordCount);
+			this._la32 = new Uint32Array(la.buffer, la.byteOffset, la.length >>> 2);
+		} else {
+			this._la32 = null;
 		}
-
-		return this._la32;
 	}
 
 	// =========================================================================
@@ -1477,12 +1563,14 @@ export class Chunk {
 	public dispose(): void {
 		// Null our slot in each live neighbour's neighborRefs before removing
 		// ourselves from chunkInstances, so no chunk holds a dangling ref to us.
+		// PERF: read our own eagerly-maintained refs directly — no Map lookups.
 		// d ^ 1 gives the opposite direction (the face pointing back toward us).
+		const refs = this.neighborRefs;
 		for (let d = 0; d < 6; d++) {
-			const nbr = this.getNeighborChunk(d);
+			const nbr = refs[d];
 			if (nbr) nbr.neighborRefs[d ^ 1] = null;
+			refs[d] = null;
 		}
-		this.neighborRefs.fill(null);
 
 		// Remove from merged mesh group — the group manager handles mesh disposal.
 		if (this.mergedGroupKey) {
@@ -1536,7 +1624,6 @@ export class Chunk {
 		this.remeshQueued = false;
 		this.rerunRemeshAfterInflight = false;
 		Chunk.chunkInstances.delete(this.id);
-		_deleteByCoords(this);
 		this.bfsQueryId = 0;
 		this.bfsVisitedFaces = 0;
 		this.bfsQueuedForConnectivity = false;
@@ -1545,37 +1632,13 @@ export class Chunk {
 	}
 }
 
-// Pack (cx, cy, cz) into a single safe-integer number key for _chunkByCoords.
-// X(21b) | Y(10b) | Z(21b); each coord is masked to its bit width so negative
-// coordinates encode consistently (two's-complement low bits) and decode-free
-// lookups always match the stored key.
-const _COORD_X_MASK = (1 << 21) - 1;
-const _COORD_Y_MASK = (1 << 10) - 1;
-const _COORD_Z_MASK = (1 << 21) - 1;
-const _COORD_X_MULT = 2 ** 31; // Z(21) + Y(10)
-const _COORD_Z_MULT = 2 ** 10; // Y(10)
-
-function packCoordKey(cx: number, cy: number, cz: number): number {
-	return (
-		(cx & _COORD_X_MASK) * _COORD_X_MULT +
-		(cz & _COORD_Z_MASK) * _COORD_Z_MULT +
-		(cy & _COORD_Y_MASK)
-	);
-}
-
+// Resolve a loaded/constructed chunk by chunk coordinates.  Single registry
+// (chunkInstances) — the old number-keyed _chunkByCoords mirror is gone;
+// hot paths use eagerly-linked neighborRefs instead of this function.
 export function getChunk(
 	cx: number,
 	cy: number,
 	cz: number,
 ): Chunk | undefined {
-	return Chunk._chunkByCoords.get(packCoordKey(cx, cy, cz));
-}
-
-// ── _chunkByCoords mirror maintenance ────────────────────────────────────────
-function _setByCoords(c: Chunk): void {
-	Chunk._chunkByCoords.set(packCoordKey(c.chunkX, c.chunkY, c.chunkZ), c);
-}
-
-function _deleteByCoords(c: Chunk): void {
-	Chunk._chunkByCoords.delete(packCoordKey(c.chunkX, c.chunkY, c.chunkZ));
+	return Chunk.chunkInstances.get(packCoords(cx, cy, cz));
 }

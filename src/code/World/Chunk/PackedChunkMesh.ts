@@ -389,7 +389,10 @@ interface FaceAlloc {
 // keeps the instanced pipeline, so this is safe.
 function growArena(arena: FaceArena, index: number): void {
 	const maxFaces = Math.floor(maxStorageBindingBytes / FACE_BYTES);
-	const newCapacity = Math.min(arena.capacity * 2, maxFaces);
+	// 4x steps: each grow is expensive (full CPU copy + new GPU storage
+	// buffer + material rebinds), so halve the number of events during
+	// wide-ring streaming even at the cost of extra VRAM slack.
+	const newCapacity = Math.min(arena.capacity * 4, maxFaces);
 	if (newCapacity <= arena.capacity) return;
 	const newCpu = new Uint32Array(newCapacity * 3);
 	newCpu.set(arena.cpu.subarray(0, arena.used * 3));

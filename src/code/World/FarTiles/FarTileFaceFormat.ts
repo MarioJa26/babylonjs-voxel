@@ -141,12 +141,27 @@ export function decodeFarTileFace(
 
 const CORNER_WEIGHTS = [0, 0, 1, 0, 1, 1, 0, 1]; // (au, av) per corner
 
-// Per-axis basis: [Ux,Uy,Uz, Vx,Vy,Vz]
-const AXIS_BASIS: Int8Array[] = [
-	Int8Array.from([0, 1, 0, 0, 0, 1]), // X: U=Y, V=Z
-	Int8Array.from([0, 0, 1, 1, 0, 0]), // Y: U=Z, V=X
-	Int8Array.from([1, 0, 0, 0, 1, 0]), // Z: U=X, V=Y
-];
+// Flat typed arrays for CPU cache locality
+const AXIS_BASIS = new Int8Array([
+	0,
+	1,
+	0,
+	0,
+	0,
+	1, // X: U=Y, V=Z
+	0,
+	0,
+	1,
+	1,
+	0,
+	0, // Y: U=Z, V=X
+	1,
+	0,
+	0,
+	0,
+	1,
+	0, // Z: U=X, V=Y
+]);
 
 export interface TileVertexData {
 	positions: Float32Array;
@@ -159,8 +174,7 @@ export interface TileVertexData {
 export interface ExpandedTile {
 	opaque: TileVertexData | null;
 	waterPositions: Float32Array | null;
-	/** Per-water-quad indices (ORDER A walk + reversed tris => top-up). */
-	waterIndices: Uint32Array | null;
+	// waterIndices removed - generated on the fly in the main thread
 }
 
 /**
@@ -185,41 +199,53 @@ export function expandTileFaces(
 	let iOff = 0;
 
 	for (let f = 0; f < opaqueCount; f++) {
-		const q = decodeFarTileFace(opaqueFaces, f);
+		const i = f * 4;
+		const w0 = opaqueFaces[i];
+		const w1 = opaqueFaces[i + 1];
+		const w2 = opaqueFaces[i + 2];
+		const w3 = opaqueFaces[i + 3];
 
-		const x = originX + q.x;
-		const y = q.y;
-		const z = originZ + q.z;
+		// INLINE DECODING: Eliminates decodeFarTileFace() object allocation
+		const x = originX + (w0 & 0x3ff);
+		const y = ((w0 >>> 10) & 0xfff) - FAR_TILE_Y_OFFSET;
+		const z = originZ + ((w0 >>> 22) & 0x3ff);
 
-		const basis = AXIS_BASIS[q.axis];
-		const ux = basis[0];
-		const uy = basis[1];
-		const uz = basis[2];
-		const vx = basis[3];
-		const vy = basis[4];
-		const vz = basis[5];
+		const w = w1 & 0x3ff;
+		const h = (w1 >>> 10) & 0x3ff;
+		const axis = (w1 >>> 21) & 0x3;
+		const backFace = (w1 >>> 20) & 0x1;
 
-		const nx = q.axis === 0 ? (q.backFace ? -1 : 1) : 0;
-		const ny = q.axis === 1 ? (q.backFace ? -1 : 1) : 0;
-		const nz = q.axis === 2 ? (q.backFace ? -1 : 1) : 0;
+		const tileX = w2 & 0xff;
+		const tileY = (w2 >>> 8) & 0xff;
+		const light = (w2 >>> 16) & 0xff;
 
-		const lightFactor = q.light >= 224 ? 1 : 0.8;
+		const bOff = axis * 6;
+		const ux = AXIS_BASIS[bOff];
+		const uy = AXIS_BASIS[bOff + 1];
+		const uz = AXIS_BASIS[bOff + 2];
+		const vx = AXIS_BASIS[bOff + 3];
+		const vy = AXIS_BASIS[bOff + 4];
+		const vz = AXIS_BASIS[bOff + 5];
+
+		const nx = axis === 0 ? (backFace ? -1 : 1) : 0;
+		const ny = axis === 1 ? (backFace ? -1 : 1) : 0;
+		const nz = axis === 2 ? (backFace ? -1 : 1) : 0;
+		const lightFactor = light >= 224 ? 1 : 0.8;
 
 		for (let corner = 0; corner < 4; corner++) {
 			const au = CORNER_WEIGHTS[corner * 2];
 			const av = CORNER_WEIGHTS[corner * 2 + 1];
-
 			const vi = vOff + corner;
-			positions[vi * 3] = x + au * q.w * ux + av * q.h * vx;
-			positions[vi * 3 + 1] = y + au * q.w * uy + av * q.h * vy;
-			positions[vi * 3 + 2] = z + au * q.w * uz + av * q.h * vz;
+
+			positions[vi * 3] = x + au * w * ux + av * h * vx;
+			positions[vi * 3 + 1] = y + au * w * uy + av * h * vy;
+			positions[vi * 3 + 2] = z + au * w * uz + av * h * vz;
 
 			normals[vi * 3] = nx;
 			normals[vi * 3 + 1] = ny;
 			normals[vi * 3 + 2] = nz;
-
-			uv2[vi * 2] = q.tileX;
-			uv2[vi * 2 + 1] = q.tileY;
+			uv2[vi * 2] = tileX;
+			uv2[vi * 2 + 1] = tileY;
 
 			colors[vi * 4] = lightFactor;
 			colors[vi * 4 + 1] = lightFactor;
@@ -227,8 +253,7 @@ export function expandTileFaces(
 			colors[vi * 4 + 3] = 1;
 		}
 
-		if (q.backFace) {
-			// -axis intent: straight keeps cross=+axis, opposing it.
+		if (backFace) {
 			indices[iOff++] = vOff;
 			indices[iOff++] = vOff + 1;
 			indices[iOff++] = vOff + 2;
@@ -236,7 +261,6 @@ export function expandTileFaces(
 			indices[iOff++] = vOff + 2;
 			indices[iOff++] = vOff + 3;
 		} else {
-			// +axis intent: reversed flips the cross to -axis.
 			indices[iOff++] = vOff;
 			indices[iOff++] = vOff + 2;
 			indices[iOff++] = vOff + 1;
@@ -244,38 +268,41 @@ export function expandTileFaces(
 			indices[iOff++] = vOff + 3;
 			indices[iOff++] = vOff + 2;
 		}
-
 		vOff += 4;
 	}
 
-	// Water: position-only quads, ORDER A corner walk.
+	// Water: position-only quads
 	const waterQuadCount = waterFaces.length >> 2;
 	const waterPositions = new Float32Array(waterQuadCount * 12);
 	let wOff = 0;
-
 	for (let f = 0; f < waterQuadCount; f++) {
-		const q = decodeFarTileFace(waterFaces, f);
-		const x = originX + q.x;
-		const y = q.y;
-		const z = originZ + q.z;
+		const i = f * 4;
+		const w0 = waterFaces[i];
+		const w1 = waterFaces[i + 1];
+
+		const x = originX + (w0 & 0x3ff);
+		const y = ((w0 >>> 10) & 0xfff) - FAR_TILE_Y_OFFSET;
+		const z = originZ + ((w0 >>> 22) & 0x3ff);
+		const w = w1 & 0x3ff;
+		const h = (w1 >>> 10) & 0x3ff;
 
 		waterPositions[wOff++] = x;
 		waterPositions[wOff++] = y;
 		waterPositions[wOff++] = z;
 		waterPositions[wOff++] = x;
 		waterPositions[wOff++] = y;
-		waterPositions[wOff++] = z + q.h;
-		waterPositions[wOff++] = x + q.w;
+		waterPositions[wOff++] = z + h;
+		waterPositions[wOff++] = x + w;
 		waterPositions[wOff++] = y;
-		waterPositions[wOff++] = z + q.h;
-		waterPositions[wOff++] = x + q.w;
+		waterPositions[wOff++] = z + h;
+		waterPositions[wOff++] = x + w;
 		waterPositions[wOff++] = y;
 		waterPositions[wOff++] = z;
 	}
 
 	return {
 		opaque:
-			iOff > 0
+			opaqueCount > 0
 				? {
 						positions: positions.subarray(0, vOff * 3),
 						normals: normals.subarray(0, vOff * 3),
@@ -284,24 +311,7 @@ export function expandTileFaces(
 						indices: indices.subarray(0, iOff),
 					}
 				: null,
-		waterPositions: wOff > 0 ? waterPositions.subarray(0, wOff) : null,
-		waterIndices:
-			wOff > 0
-				? (() => {
-						const qi = new Uint32Array(waterQuadCount * 6);
-						let q = 0;
-						for (let f = 0; f < waterQuadCount; f++) {
-							const b = f * 4;
-							// Reversed: ORDER-A walk needs it for top-up (+Y).
-							qi[q++] = b;
-							qi[q++] = b + 2;
-							qi[q++] = b + 1;
-							qi[q++] = b;
-							qi[q++] = b + 3;
-							qi[q++] = b + 2;
-						}
-						return qi;
-					})()
-				: null,
+		waterPositions:
+			waterQuadCount > 0 ? waterPositions.subarray(0, wOff) : null,
 	};
 }

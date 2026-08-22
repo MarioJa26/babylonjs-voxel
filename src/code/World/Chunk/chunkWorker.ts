@@ -616,6 +616,8 @@ export class ChunkWorker {
 		req: Omit<VoxelRegisterChunkBatchRequest, "type">,
 	): void {
 		if (req.chunkIds.length === 0) return;
+		// NOTE: intentionally NOT transferred — the pool fans these arrays
+		// out to EVERY voxel worker, so the buffers must stay alive here.
 		this.voxelWorker.postMessage({
 			type: WorkerTaskType.VoxelRegisterChunkBatch,
 			...req,

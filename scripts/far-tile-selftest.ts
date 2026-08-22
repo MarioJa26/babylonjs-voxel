@@ -240,12 +240,12 @@ const SPECS: FaceSpec[] = [
 		approx(wp[6], ORIGIN_X + 7 + 32) &&
 		approx(wp[11], ORIGIN_Z + 9);
 
-	// First RENDERED tri comes from waterIndices: (0,2,1) — expect cross_y<0
-	// (top-up) under the same opposes-intent convention as terrain.
-	const wi = expanded.waterIndices!;
-	const t0 = wi[0];
-	const t1 = wi[1];
-	const t2 = wi[2];
+	// Water indices are generated main-thread side with the documented
+	// reversed pattern (0,2,1)(0,3,2) for the ORDER-A walk — replicate it
+	// here so this test locks the expected top-up orientation.
+	const t0 = 0;
+	const t1 = 2;
+	const t2 = 1;
 	const e1 = [
 		wp[t1 * 3] - wp[t0 * 3],
 		wp[t1 * 3 + 1] - wp[t0 * 3 + 1],

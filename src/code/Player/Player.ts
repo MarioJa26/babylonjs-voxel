@@ -1,9 +1,5 @@
 import type { EngineContext, Mesh, SceneContext, Vec3 } from "@babylonjs/lite";
-import {
-	addToScene,
-	createCapsule,
-	createStandardMaterial,
-} from "@babylonjs/lite";
+import { addToScene, createStandardMaterial } from "@babylonjs/lite";
 import { Map1 } from "@/code/Maps/Map1";
 import { tryCreateBoatFromMarker } from "@/code/World/Boat/BoatCreatorSystem";
 import { BlockType } from "@/code/World/Texture/BlockType";
@@ -24,6 +20,11 @@ import type { PlayerCamera } from "./PlayerCamera";
 import { PlayerFlashLight } from "./PlayerFlashLight";
 import { PlayerInputController } from "./PlayerInputController";
 import { PlayerLoopController } from "./PlayerLoopController";
+import {
+	applyPlayerSkin,
+	createPlayerRigMesh,
+	ensureWorldRigLights,
+} from "./PlayerModel";
 import { PlayerStats } from "./PlayerStats";
 import { PlayerVehicleMotor } from "./PlayerVehicleMotor";
 
@@ -48,6 +49,10 @@ export class Player {
 	#interactionsDisposed = false;
 	#loopController!: PlayerLoopController;
 	#playerBodyMesh: Mesh | null = null;
+	// Third-person body facing: derived from movement (Minecraft-style).
+	#lastBodyX = Number.NaN;
+	#lastBodyZ = Number.NaN;
+	#bodyYaw = 0;
 
 	networkManager?: import("../Network/NetworkManager").NetworkManager;
 
@@ -116,20 +121,22 @@ export class Player {
 		});
 	}
 
-	/** Visible player capsule for third-person mode. */
+	/** Visible Minecraft-style player model for third-person mode. */
 	#createPlayerBody(scene: SceneContext): void {
-		const body = createCapsule(this.engine, { height: 1.8, radius: 0.3 });
+		const body = createPlayerRigMesh(this.engine, "playerBodyRig", "center");
 		const mat = createStandardMaterial();
-
-		mat.emissiveColor = [0.2, 0.6, 1.0];
-		mat.disableLighting = true;
+		mat.specularColor = [0, 0, 0];
+		mat.backFaceCulling = false;
 
 		body.material = mat;
 		body.pickable = false;
 		body.visible = false;
 
+		ensureWorldRigLights(scene);
 		addToScene(scene, body);
 		this.#playerBodyMesh = body;
+
+		applyPlayerSkin(this.engine, scene, mat);
 	}
 
 	/** Recompute spawn height against the loaded terrain. */
@@ -151,10 +158,31 @@ export class Player {
 		const visible = this.#playerCamera.isThirdPerson;
 		body.visible = visible;
 
-		if (!visible) return;
+		if (!visible) {
+			this.#lastBodyX = Number.NaN;
+			return;
+		}
 
 		const { x, y, z } = this.position;
 		body.position.set(x, y, z);
+
+		// Face the movement direction (Minecraft-style), smoothing through the
+		// shortest arc so the model never spins the long way around.
+		if (!Number.isNaN(this.#lastBodyX)) {
+			const dx = x - this.#lastBodyX;
+			const dz = z - this.#lastBodyZ;
+			if (dx * dx + dz * dz > 1e-6) {
+				const targetYaw = Math.atan2(dx, dz);
+				const diff = Math.atan2(
+					targetYaw - this.#bodyYaw,
+					Math.cos(targetYaw - this.#bodyYaw),
+				);
+				this.#bodyYaw += diff * 0.25;
+				body.rotation.y = this.#bodyYaw;
+			}
+		}
+		this.#lastBodyX = x;
+		this.#lastBodyZ = z;
 	}
 
 	#onPauseRequested(): void {

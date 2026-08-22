@@ -1,7 +1,6 @@
 import {
 	addToScene,
 	addVec3InPlace,
-	createCapsule,
 	createStandardMaterial,
 	type EngineContext,
 	type Mesh,
@@ -37,6 +36,11 @@ import { getSpawnPosition, isSpawnPrepared } from "../World/SpawnPoint";
 import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
 import type { IPlayerBody, PlayerBodyControlState } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
+import {
+	applyPlayerSkin,
+	createPlayerRigMesh,
+	ensureWorldRigLights,
+} from "./PlayerModel";
 import { Gamemodes, type PlayerStats } from "./PlayerStats";
 import { SimpleCharacterController } from "./SimpleCharacterController";
 
@@ -1359,7 +1363,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	// ── Integration ───────────────────────────────────────────────────────────
 
 	private initializeCharacter(): void {
-		this.#displayCapsule = this.createCharacterMesh(1.75, 0.6);
+		this.#displayCapsule = this.createCharacterMesh();
 		const start = vec3(0, 165, 0);
 		this.#characterController = new SimpleCharacterController(start);
 		this.configureCharacterController();
@@ -1377,18 +1381,21 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.#characterController.maxSlopeCosine = Math.cos((50 * Math.PI) / 180);
 	}
 
-	private createCharacterMesh(height: number, width: number): Mesh {
-		const body = createCapsule(this.#engine, {
-			height,
-			radius: width / 2,
-		});
+	private createCharacterMesh(): Mesh {
+		ensureWorldRigLights(this.scene);
+		const body = createPlayerRigMesh(
+			this.#engine,
+			"playerDisplayRig",
+			"center",
+		);
 		const mat = createStandardMaterial();
-		mat.diffuseColor = [0.2, 0.9, 0.8];
-		mat.disableLighting = true;
+		mat.specularColor = [0, 0, 0];
+		mat.backFaceCulling = false;
 		body.material = mat;
 		body.pickable = false;
 		body.visible = false;
 		addToScene(this.scene, body);
+		applyPlayerSkin(this.#engine, this.scene, mat);
 		return body;
 	}
 

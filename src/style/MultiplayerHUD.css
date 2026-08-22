@@ -120,7 +120,10 @@ body {
 
 .mp-chat-messages {
 	position: absolute;
-	bottom: var(--chat-bottom, 178px); /* above the input bar (vars defined in hud.css) */
+	bottom: var(
+		--chat-bottom,
+		178px
+	); /* above the input bar (vars defined in hud.css) */
 	left: 20px; /* matches #stats-container left edge */
 	max-width: 400px;
 	display: flex;
@@ -156,7 +159,10 @@ body {
 
 .mp-chat-input {
 	position: absolute;
-	bottom: var(--chat-input-bottom, 138px); /* below .mp-chat-messages, above the stats block */
+	bottom: var(
+		--chat-input-bottom,
+		138px
+	); /* below .mp-chat-messages, above the stats block */
 	left: 20px; /* matches #stats-container left edge */
 	width: min(30vw, 400px);
 	box-sizing: border-box;

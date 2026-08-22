@@ -14,6 +14,7 @@ import {
 	saveBlockInventory,
 	serializeBlockSlots,
 } from "@/code/World/BlockInventory/BlockInventoryManager";
+import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { MaterialFactory } from "@/code/World/Texture/MaterialFactory";
 import { TextureDefinitions } from "@/code/World/Texture/TextureDefinitions";
 import MapFog from "../../Maps/MapFog";
@@ -74,7 +75,12 @@ export class PlayerHud {
 	#overlayDiv: HTMLDivElement;
 	#craftingContainer!: HTMLDivElement;
 	#mainInventoryContainer!: HTMLDivElement;
-	#playerPreview = new PlayerPreview();
+	#playerPreview = new PlayerPreview(() => {
+		// Sample the voxel light at chest height so the preview is lit like
+		// the spot the player is standing in.
+		const p = this.#player.position;
+		return getLightByWorldCoords(p.x, p.y + 1, p.z);
+	});
 
 	static debugPanelDiv: HTMLDivElement;
 	static debugPanelVisible = true;

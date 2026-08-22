@@ -36,18 +36,50 @@ fn getSkyboxColor(viewDirY : f32, nightAmount : f32) -> vec3<f32> {
 `;
 
 const terrainVertexWGSL = /* wgsl */ `
+${FOG_HELPER_WGSL}
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
-  @location(0) vNormal : vec3<f32>,
+  @location(0) vShade : f32,
   @location(1) vPositionW : vec3<f32>,
+  @location(2) vFogColor : vec3<f32>,
+  @location(3) vFogFactor : f32,
 };
 
 @vertex
 fn mainVertex(input : VertexInput) -> VSOut {
   var out : VSOut;
+  let worldPos = input.position + shaderSystem.world[3].xyz;
   out.pos = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
-  out.vPositionW = input.position + shaderSystem.world[3].xyz;
-  out.vNormal = input.normal;
+  out.vPositionW = worldPos;
+
+  // Clip-map quads are flat 32-block cells with smoothly varying normals;
+  // interpolating N·L per-vertex is visually identical to normalizing the
+  // interpolated normal per-pixel, at a fraction of the ALU.
+  let nrm = normalize(input.normal);
+  // Same sun convention as the chunk shaders (dot(N, +lightDirection)).
+  let ndotl = max(0.0, dot(nrm, shaderUniforms.lightDirection));
+  let sun = shaderUniforms.sunLightIntensity;
+  let skyTerm = 0.48 * (sun + 0.2); // (vec3(0.8)*(sun+0.2))*0.6 collapsed
+  out.vShade = ndotl * sun * 0.6 + skyTerm;
+
+  let viewVec = shaderSystem.cameraPosition - worldPos;
+  let dist = length(viewVec);
+
+  let infos = shaderUniforms.fogInfos;
+  let fogFactor = clamp((infos.z - dist) * shaderUniforms.fogInvRange, 0.0, 1.0);
+
+  let heightFactor = clamp(worldPos.y * 0.003, 0.0, 1.0);
+  let atmosphereColor = getAtmosphereColor(heightFactor);
+  var baseFogColor = mix(shaderUniforms.fogColor, atmosphereColor, 0.8);
+  let nightAmount = clamp(1.0 - sun, 0.0, 1.0);
+  baseFogColor = mix(baseFogColor, vec3<f32>(0.0, 0.0, 0.0), nightAmount);
+
+  let viewDirY = viewVec.y / max(dist, 1e-4);
+  let skyboxColor = getSkyboxColor(viewDirY, nightAmount);
+  let skyBlend = clamp((dist - 1400.0) * 0.0003333, 0.0, 1.0);
+
+  out.vFogColor = mix(baseFogColor, skyboxColor, skyBlend);
+  out.vFogFactor = fogFactor;
   return out;
 }
 `;
@@ -56,8 +88,10 @@ const terrainFragmentWGSL = /* wgsl */ `
 ${FOG_HELPER_WGSL}
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
-  @location(0) vNormal : vec3<f32>,
+  @location(0) vShade : f32,
   @location(1) vPositionW : vec3<f32>,
+  @location(2) vFogColor : vec3<f32>,
+  @location(3) vFogFactor : f32,
 };
 
 fn sampleAtlasTile(tile : vec2<f32>, worldUV : vec2<f32>) -> vec3<f32> {
@@ -75,9 +109,6 @@ fn readTopTileFromLookup(vPositionW : vec3<f32>) -> vec2<f32> {
 
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
-  let worldNormal = normalize(in.vNormal);
-  let ndotl = max(0.0, dot(worldNormal, -shaderUniforms.lightDirection));
-
   let useTex = shaderUniforms.useTexture;
   var texColor = vec3<f32>(0.5);
   if (useTex > 0.5) {
@@ -87,29 +118,9 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   }
 
   let albedo = mix(vec3<f32>(0.5), texColor, useTex);
+  let finalColor = albedo * in.vShade;
 
-  let skyColor = vec3<f32>(0.8) * (shaderUniforms.sunLightIntensity + 0.2);
-  let finalColor = albedo * (ndotl * shaderUniforms.sunLightIntensity * 0.6 + skyColor * 0.6);
-
-  // Fog computed per-fragment from the interpolated world position.
-  let viewVec = in.vPositionW - shaderSystem.cameraPosition;
-  let dist = length(viewVec);
-  let infos = shaderUniforms.fogInfos;
-  let fogFactor = clamp((infos.z - dist) * shaderUniforms.fogInvRange, 0.0, 1.0);
-
-  let heightFactor = clamp(in.vPositionW.y * 0.003, 0.0, 1.0);
-  let atmosphereColor = getAtmosphereColor(heightFactor);
-  var baseFogColor = mix(shaderUniforms.fogColor, atmosphereColor, 0.8);
-  let nightAmount = clamp(1.0 - shaderUniforms.sunLightIntensity, 0.0, 1.0);
-  baseFogColor = mix(baseFogColor, vec3<f32>(0.0, 0.0, 0.0), nightAmount);
-
-  let viewDirY = viewVec.y / max(dist, 1e-4);
-  let skyboxColor = getSkyboxColor(viewDirY, nightAmount);
-  let skyBlend = clamp((dist - 1400.0) * 0.0003333, 0.0, 1.0);
-  let fogColor = mix(baseFogColor, skyboxColor, skyBlend);
-
-  let colorWithFog = mix(fogColor, finalColor, fogFactor);
-  return vec4<f32>(colorWithFog, 1.0);
+  return vec4<f32>(mix(in.vFogColor, finalColor, in.vFogFactor), 1.0);
 }
 `;
 

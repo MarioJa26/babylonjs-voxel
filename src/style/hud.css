@@ -17,13 +17,22 @@
 	--hotbar-bottom: 1vh;
 	/* Outer height of the hotbar bar (slots are border-box: size incl. frame) */
 	--hotbar-outer-h: calc(
-		var(--slot-size) + 2 * var(--panel-pad) + 2 * var(--hud-border-width)
+		var(--slot-size) +
+		2 *
+		var(--panel-pad) +
+		2 *
+		var(--hud-border-width)
 	);
 	/* Outer height of the inventory panel — crafting matches it exactly */
 	--inventory-panel-h: calc(
-		var(--inventory-rows) * var(--slot-size) +
-			(var(--inventory-rows) - 1) * var(--slot-gap) +
-			2 * var(--panel-pad) + 2 * var(--panel-frame-w)
+		var(--inventory-rows) *
+		var(--slot-size) +
+		(var(--inventory-rows) - 1) *
+		var(--slot-gap) +
+		2 *
+		var(--panel-pad) +
+		2 *
+		var(--panel-frame-w)
 	);
 }
 
@@ -66,9 +75,7 @@
 	position: absolute;
 	/* Anchored to the hotbar only — height follows content so no dead
 	   space collects above the panels */
-	bottom: calc(
-		var(--hotbar-bottom) + var(--hotbar-outer-h) + var(--slot-gap)
-	);
+	bottom: calc(var(--hotbar-bottom) + var(--hotbar-outer-h) + var(--slot-gap));
 	left: 50%;
 	transform: translateX(-50%);
 
@@ -289,7 +296,9 @@
 	max-width: 210px;
 	height: auto; /* keeps the engine's aspect ratio when shrinking */
 	border-radius: var(--hud-radius-sm);
-	background-color: var(--hud-bg-slot);
+	/* Opaque on purpose: the game canvas sits behind this panel, and any
+	   translucency lets in-world capsules bleed through into the preview */
+	background-color: rgb(10, 14, 18);
 }
 
 .preview-body {
@@ -409,7 +418,9 @@
 
 	cursor: pointer;
 	color: var(--hud-text);
-	transition: border-color 0.1s, background-color 0.1s;
+	transition:
+		border-color 0.1s,
+		background-color 0.1s;
 }
 
 .crafting-recipe.not-craftable {
@@ -540,7 +551,9 @@
 	border: var(--hud-border-width) dashed var(--hud-frame);
 	border-radius: var(--hud-radius-sm);
 	cursor: pointer;
-	transition: border-color 0.1s, box-shadow 0.1s;
+	transition:
+		border-color 0.1s,
+		box-shadow 0.1s;
 }
 
 .recipe-search-slot:hover {
@@ -706,7 +719,9 @@
 	border-radius: var(--hud-radius-sm);
 	color: var(--hud-text);
 	cursor: pointer;
-	transition: border-color 0.1s, background-color 0.1s;
+	transition:
+		border-color 0.1s,
+		background-color 0.1s;
 }
 
 .recipe-picker-done:hover {
@@ -810,7 +825,9 @@
 	border: 2px solid var(--hud-frame);
 	border-radius: var(--hud-radius-sm);
 	cursor: pointer;
-	transition: border-color 0.1s, background-color 0.1s;
+	transition:
+		border-color 0.1s,
+		background-color 0.1s;
 }
 
 .mason-source-btn:hover {
@@ -855,7 +872,9 @@
 	border: 2px solid var(--hud-frame);
 	border-radius: var(--hud-radius-sm);
 	cursor: pointer;
-	transition: border-color 0.1s, background-color 0.1s;
+	transition:
+		border-color 0.1s,
+		background-color 0.1s;
 }
 
 .mason-shape-btn:hover {
@@ -895,7 +914,10 @@
 	font-size: 1em;
 	font-weight: bold;
 	cursor: not-allowed;
-	transition: border-color 0.1s, background-color 0.1s, color 0.1s;
+	transition:
+		border-color 0.1s,
+		background-color 0.1s,
+		color 0.1s;
 	margin-top: 1em;
 }
 
@@ -1030,8 +1052,10 @@
 	/* Derived: vertical top edge shared by the bars block and the chat position */
 	--stats-top: calc(
 		var(--stats-offset-bottom) +
-			var(--stats-bar-count) * var(--stats-bar-height) +
-			(var(--stats-bar-count) - 1) * var(--stats-bar-gap)
+		var(--stats-bar-count) *
+		var(--stats-bar-height) +
+		(var(--stats-bar-count) - 1) *
+		var(--stats-bar-gap)
 	);
 	/* Input bar bottom offset: sits just above the stats block */
 	--chat-input-bottom: calc(var(--stats-top) + 24px);
@@ -1160,7 +1184,9 @@
 
 #chat-input {
 	position: fixed;
-	bottom: var(--chat-input-bottom); /* sits above the stats block, below the chat box */
+	bottom: var(
+		--chat-input-bottom
+	); /* sits above the stats block, below the chat box */
 	left: 20px; /* matches #stats-container left edge */
 	width: min(30vw, 400px);
 	box-sizing: border-box;
@@ -1320,7 +1346,9 @@
 	margin-bottom: 20px;
 	font-weight: 700;
 	letter-spacing: 1px;
-	text-shadow: var(--hud-text-shadow), 0 0 40px var(--hud-accent-faint);
+	text-shadow:
+		var(--hud-text-shadow),
+		0 0 40px var(--hud-accent-faint);
 	user-select: none;
 }
 
@@ -1466,5 +1494,6 @@ body.hud-hidden .mp-hud,
 body.hud-hidden #chat-container,
 body.hud-hidden #chat-messages,
 body.hud-hidden #chat-input {
+	/* biome-ignore lint/complexity/noImportantStyles: <Needed to hide elements> */
 	display: none !important;
 }

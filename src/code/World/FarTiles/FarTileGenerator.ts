@@ -8,11 +8,12 @@ import {
 import { BlockTextures } from "../Texture/BlockTextures";
 import { FaceName } from "../Texture/FaceName";
 import {
+	FAR_TILE_Y_OFFSET,
 	KIND_OPAQUE,
 	KIND_WATER,
 	LIGHT_FULL,
 	LIGHT_SIDE,
-	packFace,
+	packWord1,
 } from "./FarTileFaceFormat";
 import type { FarTileLevelDef } from "./FarTileLadder";
 import { getFarTileLevels } from "./FarTileLadder";
@@ -49,7 +50,12 @@ export interface FarTileResult {
 }
 
 class FaceWriter {
-	public faces: number[] = [];
+	public faces: Uint32Array;
+	public count: number = 0;
+
+	constructor(initialCapacity: number = 4096) {
+		this.faces = new Uint32Array(initialCapacity * 4); // 4 words per face
+	}
 
 	public emit(
 		x: number,
@@ -64,24 +70,39 @@ class FaceWriter {
 		light: number,
 		kind: number,
 	): void {
-		packFace(
-			this.faces,
-			x,
-			y,
-			z,
-			w,
-			h,
-			axis,
-			backFace,
-			tileX,
-			tileY,
-			light,
-			kind,
-		);
+		const yBiased = y + FAR_TILE_Y_OFFSET;
+		if (
+			x < 0 ||
+			z < 0 ||
+			yBiased < 0 ||
+			x > 1023 ||
+			z > 1023 ||
+			yBiased > 4095 ||
+			w > 1023 ||
+			h > 1023
+		)
+			return;
+
+		if (this.count + 4 > this.faces.length) {
+			const newFaces = new Uint32Array(this.faces.length * 2);
+			newFaces.set(this.faces);
+			this.faces = newFaces;
+		}
+
+		const i = this.count;
+		this.faces[i] = x | (yBiased << 10) | (z << 22);
+		this.faces[i + 1] = packWord1(w, h, axis, backFace);
+		this.faces[i + 2] =
+			(tileX & 0xff) | ((tileY & 0xff) << 8) | ((light & 0xff) << 16);
+		this.faces[i + 3] = kind & 0xff;
+
+		this.count += 4;
 	}
 
 	public toUint32Array(): Uint32Array {
-		return new Uint32Array(this.faces);
+		// Slice creates a new ArrayBuffer, safe to transfer to main thread
+		// without detaching the worker's reusable buffer.
+		return this.faces.slice(0, this.count);
 	}
 }
 
@@ -115,6 +136,7 @@ interface HeightLattice {
  * Same-level neighbors then produce flush edges (no skirt -> no seam fins),
  * while genuine cliffs and level-ring boundaries still get exact skirts.
  */
+let _latticeBuffer = new Float64Array(1024);
 function buildHeightLattice(
 	originX: number,
 	originZ: number,
@@ -122,8 +144,13 @@ function buildHeightLattice(
 	step: number,
 ): HeightLattice {
 	const n = sizeBlocks / step + 1;
-	const padded = n + 2; // indices -1..n
-	const heights = new Float64Array(padded * padded);
+	const padded = n + 2;
+	const required = padded * padded;
+
+	if (required > _latticeBuffer.length) {
+		_latticeBuffer = new Float64Array(required * 2);
+	}
+	const heights = _latticeBuffer;
 
 	for (let cz = -1; cz <= n; cz++) {
 		const wz = originZ + cz * step;
@@ -345,7 +372,6 @@ function stampTrees(
 	// Scale the scan stride with sampling coarseness so coarse levels stay
 	// cheap; canopies remain visible because they're stamped as boxes.
 	const stride = Math.max(TREE_SCAN_STRIDE, step);
-	const seedAsInt = SurfaceGenerator.getSeedAsInt();
 
 	for (let lz = 0; lz < sizeBlocks; lz += stride) {
 		for (let lx = 0; lx < sizeBlocks; lx += stride) {

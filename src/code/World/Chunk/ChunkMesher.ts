@@ -727,13 +727,19 @@ export function updateGlobalUniforms(frameId: number): void {
 	const blend = rawBlend * rawBlend * (3 - 2 * rawBlend);
 	const invBlend = 1 - blend;
 
-	u.lightDirection.x = -lightDir.x * invBlend;
-	u.lightDirection.y = -lightDir.y * invBlend + blend;
-	u.lightDirection.z = -lightDir.z * invBlend;
+	// Quantize to 1/256 steps: the sun drifts continuously through the day
+	// cycle, and exact floats would flip hasStaticLightingChanged every
+	// frame, re-writing every material's UBO for imperceptible deltas.
+	const q = (v: number): number => Math.round(v * 256) / 256;
+
+	u.lightDirection.x = q(-lightDir.x * invBlend);
+	u.lightDirection.y = q(-lightDir.y * invBlend + blend);
+	u.lightDirection.z = q(-lightDir.z * invBlend);
 
 	const rawIntensity = (-lightDir.y + 0.1) * 4.0;
-	u.sunLightIntensity =
-		rawIntensity < 0.0 ? 0.0 : rawIntensity > 1.0 ? 1.0 : rawIntensity;
+	u.sunLightIntensity = q(
+		rawIntensity < 0.0 ? 0.0 : rawIntensity > 1.0 ? 1.0 : rawIntensity,
+	);
 
 	u.wetness = Map1.environment ? (Map1.environment.wetness ?? 0) : 0;
 

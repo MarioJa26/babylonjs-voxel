@@ -1367,11 +1367,19 @@ export class ChunkWorkerPool {
 	// 1-2ms in separate event-loop ticks.
 	// -------------------------------------------------------------------------
 
+	private _centralChannel: MessageChannel | null = null;
+
 	private _scheduleCentralWork(flags: number): void {
 		this._pendingWorkFlags |= flags;
 		if (this._centralSchedulerScheduled) return;
 		this._centralSchedulerScheduled = true;
-		setTimeout(this._centralFlush, 0);
+		// MessageChannel instead of setTimeout(0): browsers clamp nested
+		// timers to ~4ms, which fragmented heavy streaming into hundreds of
+		// clamped timer callbacks. A posted message is a true macrotask
+		// with no clamp and fires before the next frame's timers.
+		const ch = (this._centralChannel ??= new MessageChannel());
+		ch.port1.onmessage = this._centralFlush;
+		ch.port2.postMessage(0);
 	}
 
 	private _centralFlush = (): void => {

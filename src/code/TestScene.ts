@@ -22,6 +22,7 @@ import { DroppedItem } from "./Player/Inventory/DroppedItem";
 import { Player } from "./Player/Player";
 import { PlayerCamera } from "./Player/PlayerCamera";
 import { PlayerStatePersistence } from "./Player/PlayerStatePersistence";
+import { applyGameSettingsToEngine, loadGameSettings } from "./UI/GameSettings";
 import { updateGlobalUniforms } from "./World/Chunk/ChunkMesher";
 import { installLightDebugTool } from "./World/Chunk/LightDebugTool";
 import { createFallbackSpawn } from "./World/SpawnPoint";
@@ -67,7 +68,11 @@ export class TestScene {
 		this.engine = engine;
 		this.scene = scene;
 
+		// Apply locally persisted options before anything reads the params.
+		const savedSettings = applyGameSettingsToEngine(loadGameSettings());
+
 		const playerCamera = new PlayerCamera();
+		playerCamera.mouseSensitivity = savedSettings.mouseSensitivity;
 		const player = new Player(engine, scene, playerCamera, this.canvas);
 
 		this.#player = player;

@@ -1,5 +1,10 @@
 import { worldToChunkCoord } from "@/code/Lib/VoxelMath";
 import { Map1 } from "@/code/Maps/Map1";
+import {
+	type GameSettings,
+	loadGameSettings,
+	saveGameSettings,
+} from "@/code/UI/GameSettings";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
 import {
 	flushChunkBoundEntities,
@@ -107,6 +112,12 @@ export class PauseMenu {
 		await flushChunkBoundEntities();
 	}
 
+	#persistSetting<K extends keyof GameSettings>(key: K, value: number): void {
+		const settings = loadGameSettings();
+		settings[key] = value;
+		saveGameSettings(settings);
+	}
+
 	private createSettingsPanel(): HTMLElement {
 		const container = document.createElement("div");
 		container.id = "settingsContainer";
@@ -141,6 +152,7 @@ export class PauseMenu {
 			(value) => {
 				const sensitivity = value / 1000;
 				this.player.playerCamera.mouseSensitivity = sensitivity;
+				this.#persistSetting("mouseSensitivity", sensitivity);
 				return sensitivity.toFixed(3);
 			},
 		);
@@ -153,6 +165,7 @@ export class PauseMenu {
 			this.player.playerCamera.playerCamera.fov * (180 / Math.PI),
 			(value) => {
 				this.player.playerCamera.fov = value;
+				this.#persistSetting("fov", value);
 				return `${value}°`;
 			},
 		);
@@ -170,6 +183,7 @@ export class PauseMenu {
 			SETTING_PARAMS.RENDER_DISTANCE,
 			(value) => {
 				SETTING_PARAMS.RENDER_DISTANCE = value;
+				this.#persistSetting("renderDistance", value);
 
 				if (initialized) {
 					const pos = this.player.position;
@@ -220,6 +234,7 @@ export class PauseMenu {
 			SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
 			(value) => {
 				SETTING_PARAMS.VERTICAL_RENDER_DISTANCE = value;
+				this.#persistSetting("verticalRenderDistance", value);
 				return `${value} chunks`;
 			},
 		);

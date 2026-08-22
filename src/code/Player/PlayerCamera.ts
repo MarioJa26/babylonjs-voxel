@@ -29,7 +29,7 @@ export class PlayerCamera {
 
 	readonly #minZoom = 0.01;
 	readonly #maxZoom = 10000;
-	readonly #zoomSpeed = 20.333;
+	readonly #zoomSpeed = 5.0;
 
 	// Cached unit forward vector. Updated only when yaw/pitch changes.
 	#forwardX = 0;

@@ -17,6 +17,7 @@ import {
 	worldLocalStorageKey,
 	worldPath,
 } from "../World/WorldContext";
+import { loadGameSettings, saveGameSettings } from "./GameSettings";
 import worldNames from "./worldNames.json";
 
 const OPFS_ROOT = "b102";
@@ -86,7 +87,7 @@ async function deleteWorld(name: string): Promise<void> {
 	}
 }
 
-type MenuScreen = "main" | "singleplayer" | "multiplayer";
+type MenuScreen = "main" | "singleplayer" | "multiplayer" | "options";
 
 export class MainMenu {
 	private readonly container: HTMLElement;
@@ -111,6 +112,14 @@ export class MainMenu {
 	// Player name (shared)
 	private readonly playerNameInput!: HTMLInputElement;
 
+	// Options elements
+	private readonly optionsScreen!: HTMLElement;
+	private optFov!: { row: HTMLElement; getValue: () => number };
+	private optSens!: { row: HTMLElement; getValue: () => number };
+	private optRenderDist!: { row: HTMLElement; getValue: () => number };
+	private optVertDist!: { row: HTMLElement; getValue: () => number };
+	private optStatusEl!: HTMLElement;
+
 	constructor() {
 		this.container = document.createElement("div");
 		this.container.id = "mainMenuContainer";
@@ -118,6 +127,11 @@ export class MainMenu {
 		const title = document.createElement("h1");
 		title.innerText = "b102";
 		this.container.appendChild(title);
+
+		const tagline = document.createElement("div");
+		tagline.className = "menu-tagline";
+		tagline.innerText = "Voxel Sandbox";
+		this.container.appendChild(tagline);
 
 		// ─── Player Name (top of main screen) ────────────────────────
 		const nameBar = document.createElement("div");
@@ -158,7 +172,7 @@ export class MainMenu {
 
 		const optsBtn = document.createElement("button");
 		btnMinecraft(optsBtn, "Options…");
-		optsBtn.onclick = () => alert("Options not yet implemented");
+		optsBtn.onclick = () => this.showScreen("options");
 		this.mainScreen.appendChild(optsBtn);
 
 		const quitBtn = document.createElement("button");
@@ -324,7 +338,127 @@ export class MainMenu {
 
 		this.container.appendChild(this.mpScreen);
 
+		// ─── Options Screen ───────────────────────────────────────────
+		this.optionsScreen = this.createOptionsScreen();
+		this.container.appendChild(this.optionsScreen);
+
 		this.addStyles();
+	}
+
+	makeOptionSlider(
+		labelText: string,
+		min: number,
+		max: number,
+		step: number,
+		initial: number,
+		format: (value: number) => string,
+	): { row: HTMLElement; getValue: () => number } {
+		const row = document.createElement("div");
+		row.className = "slider-container";
+
+		const label = document.createElement("label");
+		label.innerText = labelText;
+
+		const value = document.createElement("span");
+		value.className = "slider-value";
+		value.innerText = format(initial);
+
+		const input = document.createElement("input");
+		input.type = "range";
+		input.min = String(min);
+		input.max = String(max);
+		input.step = String(step);
+		input.value = String(initial);
+		input.addEventListener("input", () => {
+			value.innerText = format(Number(input.value));
+		});
+
+		row.append(label, value, input);
+		return { row, getValue: () => Number(input.value) };
+	}
+
+	private createOptionsScreen(): HTMLElement {
+		const screen = document.createElement("div");
+		screen.className = "menu-screen";
+		screen.id = "optionsScreen";
+
+		const back = document.createElement("button");
+		btnMinecraft(back, "← Back");
+		back.classList.add("mc-btn-back");
+		back.onclick = () => this.showScreen("main");
+		screen.appendChild(back);
+
+		const title = document.createElement("h2");
+		title.className = "screen-title";
+		title.innerText = "Options";
+		screen.appendChild(title);
+
+		const settings = loadGameSettings();
+
+		this.optFov = this.makeOptionSlider(
+			"Field of View (FOV)",
+			50,
+			140,
+			1,
+			settings.fov,
+			(v) => `${v}°`,
+		);
+		this.optSens = this.makeOptionSlider(
+			"Mouse Sensitivity",
+			1,
+			20,
+			1,
+			Math.round(settings.mouseSensitivity * 1000),
+			(v) => (v / 1000).toFixed(3),
+		);
+		this.optRenderDist = this.makeOptionSlider(
+			"Render Distance",
+			1,
+			32,
+			1,
+			settings.renderDistance,
+			(v) => `${v} chunks`,
+		);
+		this.optVertDist = this.makeOptionSlider(
+			"Vertical Render Distance",
+			1,
+			20,
+			1,
+			settings.verticalRenderDistance,
+			(v) => `${v} chunks`,
+		);
+
+		for (const opt of [
+			this.optFov,
+			this.optSens,
+			this.optRenderDist,
+			this.optVertDist,
+		]) {
+			screen.appendChild(opt.row);
+		}
+
+		const saveBtn = document.createElement("button");
+		btnMinecraft(saveBtn, "Save Settings");
+		saveBtn.classList.add("mc-btn-green", "options-save");
+		saveBtn.onclick = () => {
+			const next = loadGameSettings();
+			next.fov = this.optFov.getValue();
+			next.mouseSensitivity = this.optSens.getValue() / 1000;
+			next.renderDistance = this.optRenderDist.getValue();
+			next.verticalRenderDistance = this.optVertDist.getValue();
+			saveGameSettings(next);
+			this.optStatusEl.classList.remove("error");
+			this.optStatusEl.innerText =
+				"Settings saved — they apply the next time a world loads.";
+		};
+		screen.appendChild(saveBtn);
+
+		this.optStatusEl = document.createElement("div");
+		this.optStatusEl.className = "menu-status";
+		this.optStatusEl.style.textAlign = "center";
+		screen.appendChild(this.optStatusEl);
+
+		return screen;
 	}
 
 	private showScreen(screen: MenuScreen): void {
@@ -343,6 +477,9 @@ export class MainMenu {
 			case "multiplayer":
 				this.mpScreen.classList.add("active");
 				void this.refreshServerList();
+				break;
+			case "options":
+				this.optionsScreen.classList.add("active");
 				break;
 		}
 	}
@@ -645,17 +782,42 @@ export class MainMenu {
 				align-items: center;
 				justify-content: center;
 				gap: 8px;
-				background: radial-gradient(circle at 50% 30%, #1e2a33, #0e1418);
-				color: #e8e8e8;
-				font-family: "Segoe UI", system-ui, sans-serif;
+				padding: 24px;
+				box-sizing: border-box;
+				background:
+					radial-gradient(circle at 50% 22%, rgba(26, 163, 148, 0.07), transparent 55%),
+					radial-gradient(circle at 50% 35%, rgb(18, 26, 34), rgb(7, 11, 15));
+				color: var(--hud-text);
+				font-family: var(--ui-font-family);
 			}
 
 			#mainMenuContainer h1 {
 				font-size: 3.5em;
-				margin: 0 0 16px;
-				text-shadow: 0 4px 12px rgba(0, 0, 0, 0.8), 0 0 40px rgba(127, 179, 213, 0.3);
+				margin: 0 0 2px;
+				text-shadow:
+					var(--hud-text-shadow),
+					0 0 42px var(--hud-accent-faint);
 				letter-spacing: 6px;
 				font-weight: 700;
+			}
+
+			/* Olive signature bar under the title */
+			#mainMenuContainer h1::after {
+				content: "";
+				display: block;
+				width: 64px;
+				height: 3px;
+				margin: 10px auto 0;
+				background: var(--hud-frame-bright);
+				border-radius: var(--hud-radius-sm);
+			}
+
+			.menu-tagline {
+				font-size: 0.85em;
+				letter-spacing: 3px;
+				text-transform: uppercase;
+				color: var(--hud-text-muted);
+				margin-bottom: 18px;
 			}
 
 			/* Player name bar at top of main screen */
@@ -665,14 +827,14 @@ export class MainMenu {
 				align-items: center;
 				gap: 4px;
 				margin-bottom: 16px;
-				width: 480px;
+				width: min(480px, 90vw);
 			}
 
 			.player-name-label {
 				font-size: 0.75em;
 				text-transform: uppercase;
 				letter-spacing: 1px;
-				color: #9aa7b0;
+				color: var(--hud-text-muted);
 				align-self: flex-start;
 				margin-left: 4px;
 			}
@@ -686,13 +848,13 @@ export class MainMenu {
 			#mainMenuContainer h2.screen-title {
 				font-size: 1.5em;
 				margin: 0 0 16px;
-				color: #e8e8e8;
+				color: var(--hud-text);
 			}
 
 			#mainMenuContainer h3.screen-subtitle {
 				font-size: 1em;
 				margin: 16px 0 8px;
-				color: #9aa7b0;
+				color: var(--hud-text-muted);
 				font-weight: 400;
 			}
 
@@ -706,70 +868,95 @@ export class MainMenu {
 				max-height: 90vh;
 				overflow-y: auto;
 				padding: 16px;
+				scrollbar-width: thin;
+				scrollbar-color: var(--hud-frame-bright) transparent;
 			}
 
 			.menu-screen.active {
 				display: flex;
+				animation: menu-fade-in 0.18s ease-out;
+			}
+
+			@keyframes menu-fade-in {
+				from {
+					opacity: 0;
+					transform: translateY(6px);
+				}
+				to {
+					opacity: 1;
+					transform: translateY(0);
+				}
 			}
 
 			.menu-spacer {
 				height: 16px;
 			}
 
-			/* Minecraft-style button */
+			/* Minecraft-style button, HUD design language */
 			.mc-btn {
-				width: 480px;
+				box-sizing: border-box;
+				width: min(480px, 90vw);
 				padding: 12px 24px;
-				font-size: 1.1em;
+				font-size: 1.05em;
 				font-family: inherit;
-				border: 2px solid #3a3a3a;
+				border: 2px solid var(--hud-frame);
 				border-radius: 0;
-				background: #5a5a5a linear-gradient(180deg, rgba(255,255,255,0.1) 0%, transparent 50%);
-				color: #e8e8e8;
+				background-color: var(--hud-bg-inset);
+				background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.09) 0%, transparent 55%);
+				color: var(--hud-text);
 				cursor: pointer;
-				text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
-				transition: all 0.1s;
-				position: relative;
+				text-shadow: var(--hud-text-shadow);
+				user-select: none;
+				transition:
+					border-color 0.15s,
+					background-color 0.15s,
+					transform 0.1s;
 			}
 
 			.mc-btn:hover {
-				background: #6a6a6a linear-gradient(180deg, rgba(255,255,255,0.15) 0%, transparent 50%);
-				border-color: #7fb3d5;
+				background-image: linear-gradient(180deg, rgba(0, 187, 255, 0.12) 0%, transparent 60%);
+				border-color: var(--hud-accent);
 				color: #fff;
 			}
 
 			.mc-btn:active {
-				background: #4a4a4a;
+				background-color: rgba(0, 0, 0, 0.55);
+				transform: translateY(1px);
+			}
+
+			.mc-btn:focus-visible {
+				outline: none;
+				box-shadow: var(--hud-focus-ring);
 			}
 
 			/* Small button variant */
 			.mc-btn-small {
-				padding: 6px 12px;
+				padding: 7px 14px;
 				font-size: 0.9em;
 				width: auto;
-				min-width: 70px;
+				min-width: 74px;
 			}
 
-			/* Create world / connect buttons — green accent */
+			/* Primary action buttons — cyan accent (matches --hud-accent) */
 			.mc-btn-green {
-				border-color: #3a6a3a;
-				background: #2d5a2d linear-gradient(180deg, rgba(255,255,255,0.08) 0%, transparent 50%);
+				border-color: rgba(0, 187, 255, 0.45);
+				background-color: var(--hud-accent-faint);
 			}
 
 			.mc-btn-green:hover {
-				border-color: #5d9c6a;
-				background: #3d7a3d linear-gradient(180deg, rgba(255,255,255,0.12) 0%, transparent 50%);
+				border-color: var(--hud-accent);
+				background-color: rgba(0, 187, 255, 0.26);
 			}
 
-			/* Delete / remove buttons — red accent */
+			/* Delete / remove buttons — red accent (matches --hud-danger) */
 			.mc-btn-red {
-				border-color: #6a3a3a;
-				background: #5a2d2d linear-gradient(180deg, rgba(255,255,255,0.08) 0%, transparent 50%);
+				border-color: rgba(239, 83, 80, 0.45);
+				background-color: rgba(239, 83, 80, 0.12);
 			}
 
 			.mc-btn-red:hover {
-				border-color: #9c5d5d;
-				background: #7a3d3d linear-gradient(180deg, rgba(255,255,255,0.12) 0%, transparent 50%);
+				border-color: var(--hud-danger);
+				background-color: rgba(239, 83, 80, 0.24);
 			}
 
 			/* Back button — left aligned */
@@ -784,13 +971,22 @@ export class MainMenu {
 				display: flex;
 				gap: 8px;
 				width: 100%;
-				max-width: 50vh;
+				max-width: min(480px, 90vw);
 				align-items: center;
+			}
+
+			/* Buttons inside rows keep their natural size instead of stealing
+			   the full column (this used to squeeze the seed input + dice). */
+			.menu-create-row .mc-btn {
+				width: auto;
+				flex: 0 0 auto;
+				white-space: nowrap;
 			}
 
 			.menu-input-wrap {
 				position: relative;
 				flex: 1;
+				min-width: 0;
 			}
 
 			.menu-input-wrap input {
@@ -806,7 +1002,7 @@ export class MainMenu {
 				transform: translateY(-50%);
 				background: none;
 				border: none;
-				color: #9aa7b0;
+				color: var(--hud-text-muted);
 				cursor: pointer;
 				padding: 4px;
 				font-size: 1.1em;
@@ -814,7 +1010,7 @@ export class MainMenu {
 			}
 
 			.menu-input-wrap button:hover {
-				color: #e8e8e8;
+				color: var(--hud-accent);
 			}
 
 			.input-group {
@@ -822,14 +1018,14 @@ export class MainMenu {
 				flex-direction: column;
 				gap: 2px;
 				width: 100%;
-				max-width: 50vh;
+				max-width: min(480px, 90vw);
 			}
 
 			.input-label {
 				font-size: 0.7em;
 				text-transform: uppercase;
 				letter-spacing: 1px;
-				color: #9aa7b0;
+				color: var(--hud-text-muted);
 				margin-left: 4px;
 			}
 
@@ -838,45 +1034,82 @@ export class MainMenu {
 				padding: 10px 12px;
 				font-size: 1em;
 				font-family: inherit;
-				border: 2px solid #3a3a3a;
+				border: 2px solid var(--hud-frame-dim);
 				border-radius: 0;
-				background: #1a1a1a;
-				color: #e8e8e8;
+				background: var(--hud-bg-inset);
+				color: var(--hud-text);
 				outline: none;
 				box-sizing: border-box;
+				transition:
+					border-color 0.15s,
+					box-shadow 0.15s,
+					background-color 0.15s;
+			}
+
+			#mainMenuContainer input::placeholder {
+				color: var(--hud-text-muted);
+				opacity: 0.7;
 			}
 
 			#mainMenuContainer input:focus {
-				border-color: #7fb3d5;
-				background: #222;
+				border-color: var(--hud-accent);
+				background: rgba(0, 0, 0, 0.6);
+				box-shadow: var(--hud-focus-ring);
 			}
 
 			.menu-world-list,
 			.menu-server-list {
 				display: flex;
 				flex-direction: column;
-				gap: 4px;
+				gap: 6px;
 				width: 100%;
-				max-width: 50vh;
+				max-width: min(480px, 90vw);
 				max-height: 55vh;
 				overflow-y: auto;
+				scrollbar-width: thin;
+				scrollbar-color: var(--hud-frame-bright) transparent;
+			}
+
+			.menu-world-list::-webkit-scrollbar,
+			.menu-server-list::-webkit-scrollbar,
+			.menu-screen::-webkit-scrollbar {
+				width: 8px;
+			}
+
+			.menu-world-list::-webkit-scrollbar-thumb,
+			.menu-server-list::-webkit-scrollbar-thumb,
+			.menu-screen::-webkit-scrollbar-thumb {
+				background: var(--hud-frame-bright);
+				border-radius: var(--hud-radius-md);
 			}
 
 			.menu-world-row,
 			.menu-server-row {
+				box-sizing: border-box;
 				display: flex;
 				align-items: center;
 				gap: 8px;
-				padding: 8px 12px;
-				background: rgba(255, 255, 255, 0.03);
-				border: 1px solid #2c3a44;
+				padding: 10px 12px;
+				background-color: var(--hud-bg-panel);
+				background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.03) 0%, transparent 60%);
+				border: var(--hud-border-width) solid var(--hud-border-soft);
+				border-radius: var(--hud-radius-sm);
+				transition: border-color 0.15s;
+			}
+
+			.menu-world-row:hover,
+			.menu-server-row:hover {
+				border-color: var(--hud-border-strong);
 			}
 
 			.menu-world-row.empty,
 			.menu-server-row.empty {
 				justify-content: center;
-				color: #9aa7b0;
+				color: var(--hud-text-muted);
 				font-style: italic;
+				background-image: none;
+				background-color: transparent;
+				border-style: dashed;
 			}
 
 			.world-name {
@@ -902,7 +1135,7 @@ export class MainMenu {
 
 			.server-url {
 				font-size: 0.75em;
-				color: #9aa7b0;
+				color: var(--hud-text-muted);
 				overflow: hidden;
 				text-overflow: ellipsis;
 				white-space: nowrap;
@@ -914,7 +1147,7 @@ export class MainMenu {
 				align-items: center;
 				justify-content: space-between;
 				width: 100%;
-				max-width: 50vh;
+				max-width: min(480px, 90vw);
 				margin-top: 8px;
 			}
 
@@ -923,19 +1156,18 @@ export class MainMenu {
 			}
 
 			.mc-btn-refresh {
-				border-color: #3a5a6a;
-				background: #2d4a5a linear-gradient(180deg, rgba(255,255,255,0.08) 0%, transparent 50%);
+				border-color: var(--hud-frame);
 			}
 
 			.mc-btn-refresh:hover {
-				border-color: #5d9cc6;
-				background: #3d6a7a linear-gradient(180deg, rgba(255,255,255,0.12) 0%, transparent 50%);
+				border-color: var(--hud-accent);
 			}
 
 			/* Server row live status */
 			.server-motd {
 				font-size: 0.78em;
-				color: #c8d2da;
+				color: var(--hud-text);
+				opacity: 0.85;
 				overflow: hidden;
 				text-overflow: ellipsis;
 				white-space: nowrap;
@@ -947,7 +1179,7 @@ export class MainMenu {
 				align-items: center;
 				gap: 8px;
 				font-size: 0.75em;
-				color: #9aa7b0;
+				color: var(--hud-text-muted);
 			}
 
 			.server-ping {
@@ -958,10 +1190,21 @@ export class MainMenu {
 				flex: 0 0 auto;
 			}
 
-			.server-ping.ping-good { background: #5dd65d; box-shadow: 0 0 6px #5dd65d; }
-			.server-ping.ping-ok { background: #e8c84b; box-shadow: 0 0 6px #e8c84b; }
-			.server-ping.ping-bad { background: #e86a4b; box-shadow: 0 0 6px #e86a4b; }
-			.server-ping.ping-offline { background: #5a5a5a; }
+			.server-ping.ping-good {
+				background: var(--hud-ok);
+				box-shadow: 0 0 6px var(--hud-ok);
+			}
+			.server-ping.ping-ok {
+				background: var(--hud-warn);
+				box-shadow: 0 0 6px var(--hud-warn);
+			}
+			.server-ping.ping-bad {
+				background: var(--hud-danger);
+				box-shadow: 0 0 6px var(--hud-danger);
+			}
+			.server-ping.ping-offline {
+				background: #5a646e;
+			}
 
 			.server-ping-num {
 				font-variant-numeric: tabular-nums;
@@ -975,18 +1218,19 @@ export class MainMenu {
 			.menu-status {
 				min-height: 1.2em;
 				font-size: 0.85em;
-				color: #9aa7b0;
+				color: var(--hud-text-muted);
 				width: 100%;
-				max-width: 50vh;
+				max-width: min(480px, 90vw);
 			}
 
 			.menu-status.error {
-				color: #ff9b9b;
+				color: var(--hud-danger);
 			}
 
 			@media (max-width: 480px) {
-				.mc-btn { width: 320px; }
-				#mainMenuContainer h1 { font-size: 2.5em; }
+				#mainMenuContainer h1 {
+					font-size: 2.5em;
+				}
 			}
 		`;
 		document.head.appendChild(style);

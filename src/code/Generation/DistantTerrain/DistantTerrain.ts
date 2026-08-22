@@ -171,6 +171,15 @@ function updateUniforms() {
 	const sunLightIntensity =
 		rawIntensity < 0 ? 0 : rawIntensity > 1 ? 1 : rawIntensity;
 
+	// Quantize to 1/256 steps — the sun drifts continuously through the day
+	// cycle, and exact floats would re-write both UBOs every frame for
+	// imperceptible deltas (writeBuffer was a top render-loop cost).
+	const q = (v: number): number => Math.round(v * 256) / 256;
+	const lxQ = q(lx);
+	const lyQ = q(ly);
+	const lzQ = q(lz);
+	const sunQ = q(sunLightIntensity);
+
 	const camera = scene ? scene.camera : null;
 	const camPos = camera ? getCameraPosition(camera) : null;
 	const isUnderWater = camPos
@@ -183,10 +192,10 @@ function updateUniforms() {
 	const fogInvRange = 1.0 / Math.max(end - start, 1e-4);
 
 	const staticChanged =
-		lx !== lastLx ||
-		ly !== lastLy ||
-		lz !== lastLz ||
-		sunLightIntensity !== lastSunIntensity;
+		lxQ !== lastLx ||
+		lyQ !== lastLy ||
+		lzQ !== lastLz ||
+		sunQ !== lastSunIntensity;
 
 	const fogChanged =
 		isUnderWater !== lastUnderWater ||
@@ -200,17 +209,16 @@ function updateUniforms() {
 	if (!staticChanged && !fogChanged) return;
 
 	if (staticChanged) {
-		lightDirScratch[0] = lx;
-		lightDirScratch[1] = ly;
-		lightDirScratch[2] = lz;
-
-		lastLx = lx;
-		lastLy = ly;
-		lastLz = lz;
-		lastSunIntensity = sunLightIntensity;
+		lightDirScratch[0] = lxQ;
+		lightDirScratch[1] = lyQ;
+		lightDirScratch[2] = lzQ;
+		lastLx = lxQ;
+		lastLy = lyQ;
+		lastLz = lzQ;
+		lastSunIntensity = sunQ;
 
 		setUniformBoth("lightDirection", lightDirScratch);
-		setUniformBoth("sunLightIntensity", sunLightIntensity);
+		setUniformBoth("sunLightIntensity", sunQ);
 	}
 
 	if (fogChanged) {

@@ -34,22 +34,60 @@ fn ftSkyboxColor(viewDirY : f32, nightAmount : f32) -> vec3<f32> {
 `;
 
 const terrainVertexWGSL = /* wgsl */ `
+${FOG_HELPER_WGSL}
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
-  @location(0) vNormal : vec3<f32>,
-  @location(1) vPositionW : vec3<f32>,
-  @location(2) vTile : vec2<f32>,
-  @location(3) vLight : f32,
+  @location(0) vPositionW : vec3<f32>,
+  @location(1) vTile : vec2<f32>,
+  // Per-vertex shading: every far-tile face is FLAT (axis-aligned constant
+  // normal), so N·L and the sky term are identical across each quad's pixels
+  // and fold exactly into one scalar here instead of per-pixel work.
+  @location(2) vShade : f32,
+  // Axis hint for triplanar UV selection: 0 = X-facing, 1 = Y-facing, 2 = Z.
+  @location(3) vAxisMode : f32,
+  @location(4) vFogColor : vec3<f32>,
+  @location(5) vFogFactor : f32,
 };
 
 @vertex
 fn mainVertex(input : VertexInput) -> VSOut {
   var out : VSOut;
+  let worldPos = input.position + shaderSystem.world[3].xyz;
   out.pos = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
-  out.vPositionW = input.position + shaderSystem.world[3].xyz;
-  out.vNormal = input.normal;
+  out.vPositionW = worldPos;
   out.vTile = input.uv2;
-  out.vLight = input.color.r;
+
+  let nrm = normalize(input.normal);
+  // Chunk-matching sun convention: dot(N, +lightDirection).
+  let ndotl = max(0.0, dot(nrm, shaderUniforms.lightDirection));
+  let sun = shaderUniforms.sunLightIntensity;
+  let shade =
+    (ndotl * sun * 0.6 + 0.48 * (sun + 0.2)) * mix(0.55, 1.0, input.color.r);
+  out.vShade = shade;
+
+  // Triplanar axis hint from the face normal's dominant component.
+  let an = abs(nrm);
+  out.vAxisMode =
+    select(select(2.0, 0.0, an.x > an.y), 1.0, an.y >= an.x && an.y >= an.z);
+
+  let toCamera = shaderSystem.cameraPosition - worldPos;
+  let dist = length(toCamera);
+
+  let infos = shaderUniforms.fogInfos;
+  let fogFactor = clamp((infos.z - dist) * shaderUniforms.fogInvRange, 0.0, 1.0);
+
+  let heightFactor = clamp(worldPos.y * 0.003, 0.0, 1.0);
+  let atmosphereColor = ftAtmosphereColor(heightFactor);
+  var baseFogColor = mix(shaderUniforms.fogColor, atmosphereColor, 0.8);
+  let nightAmount = clamp(1.0 - sun, 0.0, 1.0);
+  baseFogColor = mix(baseFogColor, vec3<f32>(0.0, 0.0, 0.0), nightAmount);
+
+  let viewDirY = toCamera.y / max(dist, 1e-4);
+  let skyboxColor = ftSkyboxColor(viewDirY, nightAmount);
+  let skyBlend = clamp((dist - 1400.0) * 0.0003333, 0.0, 1.0);
+
+  out.vFogColor = mix(baseFogColor, skyboxColor, skyBlend);
+  out.vFogFactor = fogFactor;
   return out;
 }
 `;
@@ -58,10 +96,12 @@ const terrainFragmentWGSL = /* wgsl */ `
 ${FOG_HELPER_WGSL}
 struct VSOut {
   @builtin(position) pos : vec4<f32>,
-  @location(0) vNormal : vec3<f32>,
-  @location(1) vPositionW : vec3<f32>,
-  @location(2) vTile : vec2<f32>,
-  @location(3) vLight : f32,
+  @location(0) vPositionW : vec3<f32>,
+  @location(1) vTile : vec2<f32>,
+  @location(2) vShade : f32,
+  @location(3) vAxisMode : f32,
+  @location(4) vFogColor : vec3<f32>,
+  @location(5) vFogFactor : f32,
 };
 
 fn sampleAtlasTile(tile : vec2<f32>, worldUV : vec2<f32>) -> vec3<f32> {
@@ -72,43 +112,19 @@ fn sampleAtlasTile(tile : vec2<f32>, worldUV : vec2<f32>) -> vec3<f32> {
 
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
-  let worldNormal = normalize(in.vNormal);
-  // Same sun convention as the chunk shaders (dot(N, +lightDirection)) so
-  // slope shading matches across ring boundaries — the old negated dot came
-  // from DistantTerrain's port and rendered far slopes lit from behind.
-  let ndotl = max(0.0, dot(worldNormal, shaderUniforms.lightDirection));
-
-  // Triplanar-ish UV selection so side faces tile correctly.
+  // Triplanar-ish UV selection so side faces tile correctly. The dominant
+  // axis arrives precomputed from the vertex stage (faces are flat).
   var worldUV = in.vPositionW.xz / shaderUniforms.textureScale;
-  if (abs(worldNormal.y) < 0.5) {
-    worldUV = select(in.vPositionW.zy, in.vPositionW.xy, abs(worldNormal.x) > 0.5) / shaderUniforms.textureScale;
+  if (in.vAxisMode < 0.5) {
+    worldUV = in.vPositionW.zy / shaderUniforms.textureScale;
+  } else if (in.vAxisMode > 1.5) {
+    worldUV = in.vPositionW.xy / shaderUniforms.textureScale;
   }
 
   let texColor = sampleAtlasTile(in.vTile, worldUV);
+  let finalColor = texColor * in.vShade;
 
-  let skyColor = vec3<f32>(0.8) * (shaderUniforms.sunLightIntensity + 0.2);
-  let lightByte = in.vLight;
-  let finalColor = texColor
-    * (ndotl * shaderUniforms.sunLightIntensity * 0.6 + skyColor * 0.6)
-    * mix(0.55, 1.0, lightByte);
-
-  let viewVec = in.vPositionW - shaderSystem.cameraPosition;
-  let dist = length(viewVec);
-  let infos = shaderUniforms.fogInfos;
-  let fogFactor = clamp((infos.z - dist) * shaderUniforms.fogInvRange, 0.0, 1.0);
-
-  let heightFactor = clamp(in.vPositionW.y * 0.003, 0.0, 1.0);
-  let atmosphereColor = ftAtmosphereColor(heightFactor);
-  var baseFogColor = mix(shaderUniforms.fogColor, atmosphereColor, 0.8);
-  let nightAmount = clamp(1.0 - shaderUniforms.sunLightIntensity, 0.0, 1.0);
-  baseFogColor = mix(baseFogColor, vec3<f32>(0.0, 0.0, 0.0), nightAmount);
-
-  let viewDirY = viewVec.y / max(dist, 1e-4);
-  let skyboxColor = ftSkyboxColor(viewDirY, nightAmount);
-  let skyBlend = clamp((dist - 1400.0) * 0.0003333, 0.0, 1.0);
-  let fogColor = mix(baseFogColor, skyboxColor, skyBlend);
-
-  let colorWithFog = mix(fogColor, finalColor, fogFactor);
+  let colorWithFog = mix(in.vFogColor, finalColor, in.vFogFactor);
   return vec4<f32>(colorWithFog, 1.0);
 }
 `;

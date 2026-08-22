@@ -28,6 +28,7 @@ struct VSOut {
   @location(10) vFogFactor : f32,
   @location(11) vFogColor : vec3<f32>,
   @location(12) @interpolate(flat) vTint : u32,
+  @location(15) @interpolate(flat) vDiffuse : f32,
 };
 fn hash12(p : vec2<f32>) -> f32 {
   var p3 = fract(vec3<f32>(p.xyx) * 0.1031);
@@ -68,7 +69,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let wetDiffuseMul = mix(1.0, 0.65, shaderUniforms.wetness);
   diffuseColor = vec4<f32>(diffuseColor.rgb * wetDiffuseMul, diffuseColor.a);
 
-  let diffuseIntensity = max(0.0, dot(in.vNormal, shaderUniforms.lightDirection));
+  let diffuseIntensity = in.vDiffuse;
 
   let skyScale = skyLight * 0.8 * (sunIntensity + 0.2);
   let lightMix = clamp(vec3<f32>(skyScale) + blockLight * vec3<f32>(0.9, 0.6, 0.2), vec3<f32>(0.18), vec3<f32>(1.0));
@@ -94,6 +95,7 @@ struct VSOut {
   @location(10) vFogFactor : f32,
   @location(11) vFogColor : vec3<f32>,
   @location(12) @interpolate(flat) vTint : u32,
+  @location(15) @interpolate(flat) vDiffuse : f32,
 };
 fn hash12(p : vec2<f32>) -> f32 {
   var p3 = fract(vec3<f32>(p.xyx) * 0.1031);
@@ -134,7 +136,7 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
   let wetDiffuseMul = mix(1.0, 0.65, shaderUniforms.wetness);
   diffuseColor = vec4<f32>(diffuseColor.rgb * wetDiffuseMul, diffuseColor.a);
 
-  let diffuseIntensity = max(0.0, dot(in.vNormal, shaderUniforms.lightDirection));
+  let diffuseIntensity = in.vDiffuse;
 
   let skyScale = skyLight * 0.8 * (sunIntensity + 0.2);
   let lightMix = clamp(vec3<f32>(skyScale) + blockLight * vec3<f32>(0.9, 0.6, 0.2), vec3<f32>(0.18), vec3<f32>(1.0));
@@ -178,6 +180,8 @@ export function createLod3OpaqueMaterial(
 
 			// Free win: no view-dependent LOD lighting now.
 			viewDir: false,
+			// Flat faces: N·L hoisted to vertex (exact, removes per-pixel dot).
+			vertexDiffuse: true,
 		}),
 		fragmentSource: lod3OpaqueFragmentWGSL,
 		attributes: ["position"],
@@ -246,6 +250,7 @@ export function createLod3TransparentMaterial(
 
 			// Free win: no view-dependent LOD lighting now.
 			viewDir: false,
+			vertexDiffuse: true,
 		}),
 		fragmentSource: lod3TransparentFragmentWGSL,
 		attributes: ["position"],

@@ -45,16 +45,26 @@ interface TileEntry {
 	tz: number;
 	opaque: import("./FarTileFaceFormat").TileVertexData | null;
 	waterPositions: Float32Array | null;
-	waterIndices: Uint32Array | null;
+	// waterIndices removed - generated on the fly in rebuildWater()
 }
 
 interface LevelRenderState {
 	mesh: Mesh | null;
 	dirty: boolean;
+	// Buffer Pooling to prevent O(N^2) GC Stutter
+	capacityQuads: number;
+	positions: Float32Array | null;
+	normals: Float32Array | null;
+	uv2: Float32Array | null;
+	colors: Float32Array | null;
+	indices: Uint32Array | null;
 }
 
 class FarTileManagerImpl {
 	private static instance: FarTileManagerImpl | null = null;
+	private waterPositionsBuf: Float32Array | null = null;
+	private waterNormalsBuf: Float32Array | null = null;
+	private waterIndicesBuf: Uint32Array | null = null;
 
 	public static getInstance(): FarTileManagerImpl {
 		if (!FarTileManagerImpl.instance) {
@@ -120,7 +130,16 @@ class FarTileManagerImpl {
 		this.waterMaterial = createFarTileWaterMaterial();
 
 		for (let i = 0; i < getFarTileLevels().length; i++) {
-			this.levels.push({ mesh: null, dirty: false });
+			this.levels.push({
+				mesh: null,
+				dirty: false,
+				capacityQuads: 0,
+				positions: null,
+				normals: null,
+				uv2: null,
+				colors: null,
+				indices: null,
+			});
 		}
 
 		const pool = ChunkWorkerPool.getInstance();
@@ -252,7 +271,6 @@ class FarTileManagerImpl {
 			tz: data.tileZ,
 			opaque: expanded.opaque,
 			waterPositions: expanded.waterPositions,
-			waterIndices: expanded.waterIndices,
 		};
 
 		this.tiles.set(key, entry);
@@ -322,7 +340,6 @@ class FarTileManagerImpl {
 		}
 
 		const state = this.levels[levelIndex];
-
 		if (totalQuads === 0) {
 			if (state.mesh) {
 				disposeFarMesh(this.scene, state.mesh);
@@ -331,21 +348,31 @@ class FarTileManagerImpl {
 			return;
 		}
 
-		const quadCount = totalQuads;
-		const vertCount = quadCount * 4;
-		const positions = new Float32Array(vertCount * 3);
-		const normals = new Float32Array(vertCount * 3);
-		const uv2 = new Float32Array(vertCount * 2);
-		const colors = new Float32Array(vertCount * 4);
-		const indices = new Uint32Array(quadCount * 6);
+		// 1.2x Over-allocation prevents thrashing when multiple tiles load rapidly
+		if (!state.positions || totalQuads > state.capacityQuads) {
+			const cap = Math.ceil(totalQuads * 1.2);
+			state.capacityQuads = cap;
+			state.positions = new Float32Array(cap * 4 * 3);
+			state.normals = new Float32Array(cap * 4 * 3);
+			state.uv2 = new Float32Array(cap * 4 * 2);
+			state.colors = new Float32Array(cap * 4 * 4);
+			state.indices = new Uint32Array(cap * 4 * 1.5); // 6 indices per quad
+		}
+
+		const positions = state.positions!;
+		const normals = state.normals!;
+		const uv2 = state.uv2!;
+		const colors = state.colors!;
+		const indices = state.indices!;
 
 		let vOff = 0;
 		let iOff = 0;
 
 		for (const entry of this.tiles.values()) {
 			if (entry.levelIndex !== levelIndex || !entry.opaque) continue;
-
 			const src = entry.opaque;
+
+			// Fast TypedArray Copy
 			positions.set(src.positions, vOff * 3);
 			normals.set(src.normals, vOff * 3);
 			uv2.set(src.uv2, vOff * 2);
@@ -354,33 +381,39 @@ class FarTileManagerImpl {
 			for (let i = 0; i < src.indices.length; i++) {
 				indices[iOff++] = src.indices[i] + vOff;
 			}
-
 			vOff += src.positions.length / 3;
 		}
+
+		// Use subarrays to pass exact bounds to WebGL without slicing/copying
+		const posView = positions.subarray(0, vOff * 3);
+		const normView = normals.subarray(0, vOff * 3);
+		const uv2View = uv2.subarray(0, vOff * 2);
+		const colorView = colors.subarray(0, vOff * 4);
+		const idxView = indices.subarray(0, iOff);
 
 		if (state.mesh) {
 			resizeMeshGeometry(
 				this.engine,
 				state.mesh,
-				positions,
-				normals,
-				indices,
+				posView,
+				normView,
+				idxView,
 				undefined,
-				uv2,
+				uv2View,
 				undefined,
-				colors,
+				colorView,
 			);
 		} else {
 			const mesh = createMeshFromData(
 				this.engine,
 				`farTilesLod${6 + levelIndex}`,
-				positions,
-				normals,
-				indices,
+				posView,
+				normView,
+				idxView,
 				undefined,
-				uv2,
+				uv2View,
 				undefined,
-				colors,
+				colorView,
 			);
 			mesh.material = this.terrainMaterial;
 			mesh.pickable = false;
@@ -394,9 +427,7 @@ class FarTileManagerImpl {
 
 		let totalQuads = 0;
 		for (const entry of this.tiles.values()) {
-			if (entry.waterPositions) {
-				totalQuads += entry.waterPositions.length / 12;
-			}
+			if (entry.waterPositions) totalQuads += entry.waterPositions.length / 12;
 		}
 
 		if (totalQuads === 0) {
@@ -407,64 +438,73 @@ class FarTileManagerImpl {
 			return;
 		}
 
-		const vertCount = totalQuads * 4;
-		const positions = new Float32Array(vertCount * 3);
-		const normals = new Float32Array(vertCount * 3);
-		const indices = new Uint32Array(totalQuads * 6);
+		if (
+			!this.waterPositionsBuf ||
+			totalQuads > this.waterPositionsBuf.length / 12
+		) {
+			const cap = Math.ceil(totalQuads * 1.2);
+			this.waterPositionsBuf = new Float32Array(cap * 12);
+			this.waterNormalsBuf = new Float32Array(cap * 12);
+			this.waterIndicesBuf = new Uint32Array(cap * 6);
+		}
+
+		const positions = this.waterPositionsBuf;
+		const normals = this.waterNormalsBuf!;
+		const indices = this.waterIndicesBuf!;
 
 		let vOff = 0;
 		let iOff = 0;
 
 		for (const entry of this.tiles.values()) {
-			if (!entry.waterPositions || !entry.waterIndices) continue;
-
-			const base = vOff;
+			if (!entry.waterPositions) continue; // Only check waterPositions now
 
 			const src = entry.waterPositions;
-			for (let i = 0; i < src.length; i += 12) {
-				const b = vOff * 3;
+			const quadCount = src.length / 12;
+			const base = vOff;
 
-				positions[b] = src[i];
-				positions[b + 1] = src[i + 1];
-				positions[b + 2] = src[i + 2];
-				positions[b + 3] = src[i + 3];
-				positions[b + 4] = src[i + 4];
-				positions[b + 5] = src[i + 5];
-				positions[b + 6] = src[i + 6];
-				positions[b + 7] = src[i + 7];
-				positions[b + 8] = src[i + 8];
-				positions[b + 9] = src[i + 9];
-				positions[b + 10] = src[i + 10];
-				positions[b + 11] = src[i + 11];
+			positions.set(src, vOff * 3);
 
+			// Generate Indices on the fly (Eliminates worker-side waterIndices generation)
+			for (let f = 0; f < quadCount; f++) {
+				const b = base + f * 4;
+				indices[iOff++] = b;
+				indices[iOff++] = b + 2;
+				indices[iOff++] = b + 1;
+				indices[iOff++] = b;
+				indices[iOff++] = b + 3;
+				indices[iOff++] = b + 2;
+			}
+
+			// Set Normals (Y=1)
+			for (let k = 0; k < quadCount; k++) {
+				const b = (vOff + k * 4) * 3;
 				normals[b + 1] = 1;
 				normals[b + 4] = 1;
 				normals[b + 7] = 1;
 				normals[b + 10] = 1;
-
-				vOff += 4;
 			}
-
-			for (let k = 0; k < entry.waterIndices.length; k++) {
-				indices[iOff++] = entry.waterIndices[k] + base;
-			}
+			vOff += quadCount * 4;
 		}
+
+		const posView = positions.subarray(0, vOff * 3);
+		const normView = normals!.subarray(0, vOff * 3);
+		const idxView = indices!.subarray(0, iOff);
 
 		if (this.waterMesh) {
 			resizeMeshGeometry(
 				this.engine,
 				this.waterMesh,
-				positions,
-				normals,
-				indices,
+				posView,
+				normView,
+				idxView,
 			);
 		} else {
 			const mesh = createMeshFromData(
 				this.engine,
 				"farTilesWater",
-				positions,
-				normals,
-				indices,
+				posView,
+				normView,
+				idxView,
 			);
 			mesh.material = this.waterMaterial;
 			mesh.pickable = false;
@@ -497,6 +537,14 @@ class FarTileManagerImpl {
 		const sunLightIntensity =
 			rawIntensity < 0 ? 0 : rawIntensity > 1 ? 1 : rawIntensity;
 
+		// Quantize to 1/256 steps so continuous day-cycle drift doesn't
+		// re-write every far-tile material UBO each frame.
+		const q = (v: number): number => Math.round(v * 256) / 256;
+		const lxQ = q(lx);
+		const lyQ = q(ly);
+		const lzQ = q(lz);
+		const sunQ = q(sunLightIntensity);
+
 		const camera = this.scene ? this.scene.camera : null;
 		const camPos = camera ? getCameraPosition(camera) : null;
 		const isUnderWater = camPos
@@ -509,10 +557,10 @@ class FarTileManagerImpl {
 		const fogInvRange = 1.0 / Math.max(end - start, 1e-4);
 
 		const staticChanged =
-			lx !== this.lastLx ||
-			ly !== this.lastLy ||
-			lz !== this.lastLz ||
-			sunLightIntensity !== this.lastSunIntensity;
+			lxQ !== this.lastLx ||
+			lyQ !== this.lastLy ||
+			lzQ !== this.lastLz ||
+			sunQ !== this.lastSunIntensity;
 
 		const fogChanged =
 			isUnderWater !== this.lastUnderWater ||
@@ -528,17 +576,17 @@ class FarTileManagerImpl {
 		const mats = [this.terrainMaterial, this.waterMaterial];
 
 		if (staticChanged) {
-			this.lightDirScratch[0] = lx;
-			this.lightDirScratch[1] = ly;
-			this.lightDirScratch[2] = lz;
-			this.lastLx = lx;
-			this.lastLy = ly;
-			this.lastLz = lz;
-			this.lastSunIntensity = sunLightIntensity;
+			this.lightDirScratch[0] = lxQ;
+			this.lightDirScratch[1] = lyQ;
+			this.lightDirScratch[2] = lzQ;
+			this.lastLx = lxQ;
+			this.lastLy = lyQ;
+			this.lastLz = lzQ;
+			this.lastSunIntensity = sunQ;
 
 			for (const m of mats) {
 				setShaderUniform(m, "lightDirection", this.lightDirScratch);
-				setShaderUniform(m, "sunLightIntensity", sunLightIntensity);
+				setShaderUniform(m, "sunLightIntensity", sunQ);
 			}
 		}
 

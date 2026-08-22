@@ -58,7 +58,7 @@ const FRUSTUM_MARGIN = 32.0;
 // TEMP DEBUG: set true to disable frustum culling (for testing the gap).
 const DISABLE_FRUSTUM_CULL = false;
 
-const BFS_FRAME_BUDGET = 3000;
+const BFS_FRAME_BUDGET = 1500;
 const BFS_CAP = 32768; // must be power-of-2
 const BFS_MASK = BFS_CAP - 1;
 
@@ -358,6 +358,14 @@ export class OcclusionCuller {
 	// gating — fail-open so a missing origin can never blank out the world.
 	private _bfsOriginMissing = true;
 
+	// Temporal slicing for the merged-group sweep: far groups re-evaluate on
+	// a rotating 1/N frame slot while near groups run every frame. Visibility
+	// state persists between visits, so a far group's cull decision can lag
+	// N-1 frames — imperceptible at horizon distances, ~N× cheaper sweep.
+	private static readonly SWEEP_AMORTIZE_FRAMES = 3;
+	private static readonly SWEEP_NEAR_DIST_SQ = (10 * Chunk.SIZE) ** 2;
+	private _sweepSlot = 0;
+
 	// ─── update ────────────────────────────────────────────────────────────────
 	update(out: OcclusionStats): OcclusionStats {
 		const camera = (Map1.mainScene?.camera as FreeCamera) ?? null;
@@ -449,12 +457,13 @@ export class OcclusionCuller {
 			_lastVP.set(vp);
 		}
 
+		const groupsMutated = consumeGroupsMutated();
 		const needSweep =
 			cameraMoved ||
 			vpChanged ||
 			bfsWasInProgress ||
 			needInitialBFS ||
-			consumeGroupsMutated();
+			groupsMutated;
 
 		if (!needSweep) {
 			out.total = this._lastTotal;
@@ -485,14 +494,38 @@ export class OcclusionCuller {
 		let groupTotal = 0;
 		let groupHidden = 0;
 
+		// Full pass on structural changes; otherwise far groups rotate
+		// through slots and near groups always evaluate.
+		const fullPass = groupsMutated || needInitialBFS || topologyTrigger;
+		const slotCount = OcclusionCuller.SWEEP_AMORTIZE_FRAMES;
+		const activeSlot = this._sweepSlot;
+		const nearDistSq = OcclusionCuller.SWEEP_NEAR_DIST_SQ;
+
 		for (let i = 0; i < allGroups.length; i++) {
 			const group = allGroups[i]!;
 			const minGX = group.gridX * groupExtent;
 			const minGY = group.gridY * groupExtent;
 			const minGZ = group.gridZ * groupExtent;
 
-			const groupCenterY = minGY + gHalf;
-			const isSurfaceGroup = groupCenterY >= SEA_LEVEL;
+			const centerGX = minGX + gHalf;
+			const centerGY = minGY + gHalf;
+			const centerGZ = minGZ + gHalf;
+
+			const ddx = centerGX - camPos.x;
+			const ddy = centerGY - camPos.y;
+			const ddz = centerGZ - camPos.z;
+
+			// Temporal slicing: near groups every frame, far groups rotate
+			// through 1/N slots. Skipped groups keep their last visibility
+			// state untouched.
+			if (!fullPass) {
+				const distSq = ddx * ddx + ddy * ddy + ddz * ddz;
+				if (distSq > nearDistSq && i % slotCount !== activeSlot) {
+					continue;
+				}
+			}
+
+			const isSurfaceGroup = centerGY >= SEA_LEVEL;
 
 			// Distance check between group AABB and camera chunk range in chunk coordinates.
 			const minChunkX = group.gridX * G;
@@ -587,6 +620,8 @@ export class OcclusionCuller {
 
 		out.total = groupTotal;
 		out.occluded = groupHidden;
+
+		this._sweepSlot = (this._sweepSlot + 1) % slotCount;
 		out.timeMs = performance.now() - t0;
 		this._lastTotal = groupTotal;
 		this._lastOccluded = groupHidden;
