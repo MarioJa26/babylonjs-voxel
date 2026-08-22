@@ -29,10 +29,10 @@ const BASE_CHUNK_SIZE = 32;
  * Static ladder definition. Ring widths double per level so every ring
  * contains a similar number of tiles.
  *
- *   LOD6:  2x2-chunk tiles, step 8,  ring +34  -> reach  55 chunks
- *   LOD7:  4x4-chunk tiles, step 16, ring +66  -> reach 121 chunks
- *   LOD8:  8x8-chunk tiles, step 32, ring +130 -> reach 251 chunks
- *   LOD9:  8x8-chunk tiles, step 32, ring +261 -> reach 512 chunks
+ *   LOD6:  2x2-chunk tiles,  step 8,  ring +34  -> reach  55 chunks
+ *   LOD7:  4x4-chunk tiles,  step 16, ring +66  -> reach 121 chunks
+ *   LOD8:  8x8-chunk tiles,  step 32, ring +130 -> reach 251 chunks
+ *   LOD9: 16x16-chunk tiles, step 32, ring +261 -> reach 512 chunks
  */
 function buildLadder(farDistance: number): FarTileLevelDef[] {
 	if (farDistance <= 0) return [];
@@ -53,7 +53,7 @@ function buildLadder(farDistance: number): FarTileLevelDef[] {
 		{ size: 2, step: 8 },
 		{ size: 4, step: 16 },
 		{ size: 8, step: 32 },
-		{ size: 8, step: 32 },
+		{ size: 16, step: 32 },
 	];
 
 	for (let i = 0; i < ladders.length; i++) {

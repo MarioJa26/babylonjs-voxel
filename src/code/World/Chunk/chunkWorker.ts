@@ -45,6 +45,58 @@ export const NEIGHBOR_OFFSETS_26: readonly {
 // onLightChunkDisposed hooks delete the affected entries). WeakMap = no leaks.
 export const neighborMaskCache = new WeakMap<Chunk, number>();
 
+/** Mirrors MeshBuildSession's lodStep derivation. */
+function lodStepOfLod(lod: number | null | undefined): number {
+	return lod !== null && lod !== undefined && lod >= 4 ? 1 << (lod - 3) : 1;
+}
+
+const SKIRT_SIDE_ALL = 0xf;
+
+/**
+ * Decide which horizontal borders this chunk owns skirts for, so two chunks
+ * never wall the same boundary plane (coplanar z-fighting). A side gets a
+ * skirt only when its neighbor is MISSING or FINER; same-level boundaries
+ * are seamless via padded slabs and coarser neighbors own their own side.
+ */
+export function computeBorderSkirtMasks(chunk: Chunk): {
+	sides: number;
+	nearInset: number;
+} {
+	const myStep = lodStepOfLod(chunk.lodLevel);
+	if (myStep <= 1) return { sides: 0, nearInset: 0 };
+
+	let sides = 0;
+	let nearInset = 0;
+
+	const check = (
+		dx: number,
+		dz: number,
+		bit: number,
+		isNearSide: boolean,
+	): void => {
+		const n = getChunk(chunk.chunkX + dx, chunk.chunkY, chunk.chunkZ + dz);
+
+		if (!n?.isLoaded) {
+			sides |= bit;
+			return;
+		}
+
+		if (lodStepOfLod(n.lodLevel) < myStep) {
+			sides |= bit;
+			// Near planes coincide with the greedy mesher's slice=-1
+			// boundary walls when a neighbor exists — inset by one block.
+			if (isNearSide) nearInset |= bit;
+		}
+	};
+
+	check(-1, 0, 1, true);
+	check(1, 0, 2, false);
+	check(0, -1, 4, true);
+	check(0, 1, 8, false);
+
+	return { sides, nearInset };
+}
+
 export class ChunkWorker {
 	private terrainWorker: Worker; // terrain + distant terrain + light
 	private voxelWorker: Worker; // voxel mesh
@@ -204,6 +256,10 @@ export class ChunkWorker {
 		msg.neighborMask = ChunkWorker._buildNeighborMask(chunk);
 		msg.uniformBlockId = chunk.isUniform ? chunk.uniformBlockId : undefined;
 
+		const skirts = computeBorderSkirtMasks(chunk);
+		msg.borderSkirtSides = skirts.sides;
+		msg.borderSkirtNearInset = skirts.nearInset;
+
 		// SAB-direct: no payload buffers, no transfer list. The worker reads
 		// the center grid and the 26 neighbor borders straight from the
 		// SharedArrayBuffers registered via VoxelRegisterChunk.
@@ -247,6 +303,10 @@ export class ChunkWorker {
 		msg.chunkY = chunk.chunkY;
 		msg.chunkZ = chunk.chunkZ;
 		msg.neighborMask = ChunkWorker._buildNeighborMask(chunk);
+
+		const skirts = computeBorderSkirtMasks(chunk);
+		msg.borderSkirtSides = skirts.sides;
+		msg.borderSkirtNearInset = skirts.nearInset;
 
 		this.voxelWorker.postMessage(msg);
 	}

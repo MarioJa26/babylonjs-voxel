@@ -669,6 +669,8 @@ function buildVoxelMeshFromInput(
 	skipBlockFill = false,
 ): void {
 	_session.begin(size, lod, input, grids, skipBlockFill);
+	_session.borderSkirtSides = input.borderSkirtSides ?? 0xf;
+	_session.borderSkirtNearInset = input.borderSkirtNearInset ?? 0;
 	resetMeshOut();
 	MeshEmitters.buildVoxelMesh(_session, _opaqueOut, _waterOut, _cutoutOut);
 }
@@ -892,6 +894,8 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 				neighbors: entry.neighbors,
 				light_array: centerLightArray(reg),
 				neighborLights: _neighborLights,
+				borderSkirtSides: data.borderSkirtSides,
+				borderSkirtNearInset: data.borderSkirtNearInset,
 			},
 			data.chunk_size,
 			data.lod,
@@ -953,6 +957,8 @@ self.onmessage = (event: MessageEvent<VoxelWorkerRequest>): void => {
 				light_array: centerLightArray(reg),
 				neighbors: _neighborBlocks,
 				neighborLights: _neighborLights,
+				borderSkirtSides: data.borderSkirtSides,
+				borderSkirtNearInset: data.borderSkirtNearInset,
 			},
 			size,
 			data.lod ?? 0,

@@ -20,13 +20,13 @@ import MapFog from "@/code/Maps/MapFog";
 import { isEyeUnderwater } from "@/code/Maps/UnderWaterEffect";
 import { Chunk } from "@/code/World/Chunk/Chunk";
 import { ChunkWorkerPool } from "@/code/World/Chunk/ChunkWorkerPool";
+import { farTileOutermostRingChunks } from "@/code/World/FarTiles/FarTileLadder";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 import {
 	createDistantTerrainMaterial,
 	createDistantWaterMaterial,
 } from "@/code/World/Light/DistantTerrainShaderLite";
 import { SETTING_PARAMS } from "@/code/World/SETTINGS_PARAMS";
-import { farTileOutermostRingChunks } from "@/code/World/FarTiles/FarTileLadder";
 import {
 	atlasTileSize,
 	getDiffuseTexture2D,
@@ -259,7 +259,9 @@ function applyTerrainData(
 	updateMeshNormals(engine, mesh, floatNormals);
 
 	mesh.position.set(worldX, -2, worldZ);
-	waterMesh.position.set(worldX, GenerationParams.SEA_LEVEL, worldZ);
+	// Sit the flat clip-map water a few blocks below sea level so it can
+	// never z-fight with far-tile water tops (which draw AT sea level).
+	waterMesh.position.set(worldX, GenerationParams.SEA_LEVEL - 3, worldZ);
 
 	const originX = worldX - radius * Chunk.SIZE;
 	const originZ = worldZ - radius * Chunk.SIZE;

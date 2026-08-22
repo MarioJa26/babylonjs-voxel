@@ -3,18 +3,19 @@ import {
 	createMeshFromData,
 	disposeMeshGpu,
 	type EngineContext,
+	getCameraPosition,
 	type Mesh,
 	onBeforeRender,
-	type SceneContext,
 	removeFromScene,
 	resizeMeshGeometry,
+	type SceneContext,
 	setShaderUniform,
-	getCameraPosition,
 } from "@babylonjs/lite";
 import MapFog from "@/code/Maps/MapFog";
 import { isEyeUnderwater } from "@/code/Maps/UnderWaterEffect";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 import { ChunkWorkerPool } from "../Chunk/ChunkWorkerPool";
+import type { FarTileGeneratedMessage } from "../Chunk/DataStructures/WorkerMessageType";
 import {
 	createFarTileTerrainMaterial,
 	createFarTileWaterMaterial,
@@ -23,8 +24,7 @@ import {
 	atlasTileSize,
 	getDiffuseTexture2D,
 } from "../Texture/TextureAtlasFactory";
-import type { FarTileGeneratedMessage } from "../Chunk/DataStructures/WorkerMessageType";
-import { decodeFarTileFace } from "./FarTileGenerator";
+import { expandTileFaces } from "./FarTileFaceFormat";
 import { getFarTileLevels, isFarTilesEnabled } from "./FarTileLadder";
 
 /**
@@ -39,33 +39,19 @@ import { getFarTileLevels, isFarTilesEnabled } from "./FarTileLadder";
 const MAX_TILE_REQUESTS_PER_UPDATE = 24;
 const UNLOAD_MARGIN_CHUNKS = 4;
 
-interface TileVertexData {
-	positions: Float32Array;
-	normals: Float32Array;
-	uv2: Float32Array;
-	colors: Float32Array;
-	indices: Uint32Array;
-}
-
 interface TileEntry {
 	levelIndex: number;
 	tx: number;
 	tz: number;
-	opaque: TileVertexData | null;
+	opaque: import("./FarTileFaceFormat").TileVertexData | null;
 	waterPositions: Float32Array | null;
+	waterIndices: Uint32Array | null;
 }
 
 interface LevelRenderState {
 	mesh: Mesh | null;
 	dirty: boolean;
 }
-
-// Per-axis corner delta tables (dx,dy,dz per corner), chosen so that
-// edge1 x edge2 points along the POSITIVE axis normal with index order
-// 0,1,2 / 0,2,3. Negative-facing quads reverse the index order.
-const CORNERS_AXIS_X = [0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1];
-const CORNERS_AXIS_Y = [0, 0, 0, 0, 0, 1, 1, 0, 1, 1, 0, 0];
-const CORNERS_AXIS_Z = [0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0];
 
 class FarTileManagerImpl {
 	private static instance: FarTileManagerImpl | null = null;
@@ -266,6 +252,7 @@ class FarTileManagerImpl {
 			tz: data.tileZ,
 			opaque: expanded.opaque,
 			waterPositions: expanded.waterPositions,
+			waterIndices: expanded.waterIndices,
 		};
 
 		this.tiles.set(key, entry);
@@ -429,7 +416,9 @@ class FarTileManagerImpl {
 		let iOff = 0;
 
 		for (const entry of this.tiles.values()) {
-			if (!entry.waterPositions) continue;
+			if (!entry.waterPositions || !entry.waterIndices) continue;
+
+			const base = vOff;
 
 			const src = entry.waterPositions;
 			for (let i = 0; i < src.length; i += 12) {
@@ -453,14 +442,11 @@ class FarTileManagerImpl {
 				normals[b + 7] = 1;
 				normals[b + 10] = 1;
 
-				indices[iOff++] = vOff;
-				indices[iOff++] = vOff + 1;
-				indices[iOff++] = vOff + 2;
-				indices[iOff++] = vOff;
-				indices[iOff++] = vOff + 2;
-				indices[iOff++] = vOff + 3;
-
 				vOff += 4;
+			}
+
+			for (let k = 0; k < entry.waterIndices.length; k++) {
+				indices[iOff++] = entry.waterIndices[k] + base;
 			}
 		}
 
@@ -580,139 +566,6 @@ class FarTileManagerImpl {
 			}
 		}
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Face expansion
-// ---------------------------------------------------------------------------
-
-interface ExpandedTile {
-	opaque: TileVertexData | null;
-	waterPositions: Float32Array | null;
-}
-
-function expandTileFaces(
-	opaqueFaces: Uint32Array,
-	waterFaces: Uint32Array,
-	originX: number,
-	originZ: number,
-): ExpandedTile {
-	// Upper bound: every face becomes 4 verts.
-	const opaqueCount = opaqueFaces.length >> 2;
-	const positions = new Float32Array(opaqueCount * 4 * 3);
-	const normals = new Float32Array(opaqueCount * 4 * 3);
-	const uv2 = new Float32Array(opaqueCount * 4 * 2);
-	const colors = new Float32Array(opaqueCount * 4 * 4);
-	const indices = new Uint32Array(opaqueCount * 6);
-
-	let vOff = 0;
-	let iOff = 0;
-
-	for (let f = 0; f < opaqueCount; f++) {
-		const q = decodeFarTileFace(opaqueFaces, f);
-
-		const x = originX + q.x;
-		const y = q.y;
-		const z = originZ + q.z;
-		const { w, h } = q;
-
-		let c: number[];
-		let nx = 0;
-		let ny = 0;
-		let nz = 0;
-
-		if (q.axis === 0) {
-			c = CORNERS_AXIS_X;
-			nx = q.backFace ? -1 : 1;
-		} else if (q.axis === 1) {
-			c = CORNERS_AXIS_Y;
-			ny = q.backFace ? -1 : 1;
-		} else {
-			c = CORNERS_AXIS_Z;
-			nz = q.backFace ? -1 : 1;
-		}
-
-		for (let corner = 0; corner < 4; corner++) {
-			const dx = c[corner * 3];
-			const dy = c[corner * 3 + 1];
-			const dz = c[corner * 3 + 2];
-
-			const vi = vOff + corner;
-			positions[vi * 3] = x + dx * w;
-			positions[vi * 3 + 1] = y + dy * h;
-			positions[vi * 3 + 2] = z + dz * w;
-
-			normals[vi * 3] = nx;
-			normals[vi * 3 + 1] = ny;
-			normals[vi * 3 + 2] = nz;
-
-			uv2[vi * 2] = q.tileX;
-			uv2[vi * 2 + 1] = q.tileY;
-
-			const lightFactor = q.light >= 224 ? 1 : 0.8;
-			colors[vi * 4] = lightFactor;
-			colors[vi * 4 + 1] = lightFactor;
-			colors[vi * 4 + 2] = lightFactor;
-			colors[vi * 4 + 3] = 1;
-		}
-
-		if (q.backFace) {
-			indices[iOff++] = vOff;
-			indices[iOff++] = vOff + 2;
-			indices[iOff++] = vOff + 1;
-			indices[iOff++] = vOff;
-			indices[iOff++] = vOff + 3;
-			indices[iOff++] = vOff + 2;
-		} else {
-			indices[iOff++] = vOff;
-			indices[iOff++] = vOff + 1;
-			indices[iOff++] = vOff + 2;
-			indices[iOff++] = vOff;
-			indices[iOff++] = vOff + 2;
-			indices[iOff++] = vOff + 3;
-		}
-
-		vOff += 4;
-	}
-
-	// Water: position-only quads (12 floats per quad).
-	const waterQuadCount = waterFaces.length >> 2;
-	const waterPositions = new Float32Array(waterQuadCount * 12);
-	let wOff = 0;
-
-	for (let f = 0; f < waterQuadCount; f++) {
-		const q = decodeFarTileFace(waterFaces, f);
-		const x = originX + q.x;
-		const y = q.y;
-		const z = originZ + q.z;
-
-		waterPositions[wOff++] = x;
-		waterPositions[wOff++] = y;
-		waterPositions[wOff++] = z;
-		waterPositions[wOff++] = x;
-		waterPositions[wOff++] = y;
-		waterPositions[wOff++] = z + q.h;
-		waterPositions[wOff++] = x + q.w;
-		waterPositions[wOff++] = y;
-		waterPositions[wOff++] = z + q.h;
-		waterPositions[wOff++] = x + q.w;
-		waterPositions[wOff++] = y;
-		waterPositions[wOff++] = z;
-	}
-
-	return {
-		opaque:
-			iOff > 0
-				? {
-						positions: positions.subarray(0, vOff * 3),
-						normals: normals.subarray(0, vOff * 3),
-						uv2: uv2.subarray(0, vOff * 2),
-						colors: colors.subarray(0, vOff * 4),
-						indices: indices.subarray(0, iOff),
-					}
-				: null,
-		waterPositions: wOff > 0 ? waterPositions.subarray(0, wOff) : null,
-	};
 }
 
 export const FarTileManager = {

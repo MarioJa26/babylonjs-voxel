@@ -112,6 +112,14 @@ export type GenerateFullMeshRequest = {
 	uniformBlockId?: number;
 
 	chunk_size: number;
+
+	/**
+	 * Border-skirt ownership for downsampled builds (bit per side:
+	 * 1=-X, 2=+X, 4=-Z, 8=+Z). Computed on the main thread from neighbor
+	 * LODs so exactly one chunk owns each boundary plane's skirt.
+	 */
+	borderSkirtSides?: number;
+	borderSkirtNearInset?: number;
 };
 
 /**
@@ -135,6 +143,9 @@ export type RelightMeshRequest = {
 	chunkY: number;
 	chunkZ: number;
 	neighborMask: number;
+
+	borderSkirtSides?: number;
+	borderSkirtNearInset?: number;
 };
 
 export type DistantTerrainTask = {

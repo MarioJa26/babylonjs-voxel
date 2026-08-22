@@ -26,6 +26,15 @@ export type WorkerMeshInput = {
 	light_array?: Uint8Array;
 	neighbors: (Uint16Array | undefined)[];
 	neighborLights?: (Uint8Array | undefined)[];
+	/**
+	 * Border-skirt ownership (downsampled builds only). Bit per horizontal
+	 * side (1=-X, 2=+X, 4=-Z, 8=+Z): a bit set means THIS chunk emits skirt
+	 * walls on that border — decided main-thread-side so two neighboring
+	 * chunks never both wall the same plane (coplanar z-fighting).
+	 */
+	borderSkirtSides?: number;
+	/** Sides from borderSkirtSides whose NEAR plane is inset by one block. */
+	borderSkirtNearInset?: number;
 };
 
 /**
@@ -104,6 +113,12 @@ export class MeshBuildSession implements MeshContext {
 	public lodStep = 1;
 	/** Logical greedy-grid dimension: size / lodStep (mask cells per axis). */
 	public meshGridSize = 0;
+	/**
+	 * Per-side skirt ownership mask (1=-X, 2=+X, 4=-Z, 8=+Z). Defaults to
+	 * "all sides" so callers that don't know neighbor LODs keep coverage.
+	 */
+	public borderSkirtSides = 0xf;
+	public borderSkirtNearInset = 0;
 
 	// --- active padded grids ---
 	public block = new Uint16Array(0);

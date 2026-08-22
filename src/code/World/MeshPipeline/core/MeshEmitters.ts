@@ -1,6 +1,7 @@
 // MeshPipeline/core/MeshEmitters.ts
 
 import type { WorkerInternalMeshData } from "../../Chunk/DataStructures/WorkerInternalMeshData";
+import { emitLodBorderSkirts } from "./LodBorderSkirts";
 import { VoxelPipeline } from "./VoxelPipeline";
 import type { MeshBuildSession } from "./WorkerMeshHelpers";
 
@@ -92,6 +93,10 @@ export function buildVoxelMesh(
 	}
 
 	pipeline.build();
+
+	// Downsampled chunks get outward border walls so LOD band transitions
+	// never show cracks against finer neighbors.
+	emitLodBorderSkirts(session);
 
 	// Publish final lengths once after all emitters have completed.
 	session.quadOpaque.finish();

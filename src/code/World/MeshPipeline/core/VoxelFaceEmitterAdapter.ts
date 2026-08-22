@@ -135,8 +135,13 @@ export class VoxelFaceEmitterAdapter {
 		// represented meaningfully at that scale, and box-scaled emission
 		// would stretch partial shapes across whole regions.
 		const step = session.lodStep;
-		const isCube = step > 1 ? true : !isNonCube;
-		const dispatchKey = (isWater ? 2 : 0) | (isCube ? 1 : 0);
+		const forceCube = step > 1;
+		const isCube = forceCube ? true : !isNonCube;
+		// Water also rides the cube path when downsampled: emitWaterQuad's
+		// fractional level-span math assumes <=31-block runs and breaks under
+		// merged stepped dimensions (rawDim decodes the fraction carrier as
+		// whole blocks -> shoreline walls render far above the surface).
+		const dispatchKey = (isWater && !forceCube ? 2 : 0) | (isCube ? 1 : 0);
 		this._dispatch[dispatchKey](
 			out,
 			axis,

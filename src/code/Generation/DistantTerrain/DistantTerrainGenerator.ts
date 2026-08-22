@@ -1,3 +1,4 @@
+import { isFarTilesEnabled } from "@/code/World/FarTiles/FarTileLadder";
 import { BlockTextures } from "@/code/World/Texture/BlockTextures";
 import { FaceName } from "@/code/World/Texture/FaceName";
 import { GenerationParams } from "../NoiseAndParameters/GenerationParams";
@@ -6,6 +7,9 @@ import { getBiome, getFinalTerrainHeight } from "../TerrainHeightMap";
 const DEFAULT_TILE_X = 14;
 const DEFAULT_TILE_Y = 0;
 const INSIDE_CLIP_Y = -200;
+// Vertical clearance between the sunken impostor underlay and far-tile
+// surfaces in the overlap zone.
+const FAR_TILE_UNDERLAY_DROP = 16;
 
 let positions: Int16Array | undefined;
 let normals: Int8Array | undefined;
@@ -17,6 +21,7 @@ let lastCenterChunkX = Number.NaN;
 let lastCenterChunkZ = Number.NaN;
 
 let currentRenderDistance = 0;
+let farTilesActive = false;
 let rowSize = 0;
 let segments = 0;
 let gridStep = 1;
@@ -51,6 +56,7 @@ function cachedHeight(wx: number, wz: number): number {
 
 export function setRenderDistance(value: number): void {
 	currentRenderDistance = value;
+	farTilesActive = isFarTilesEnabled();
 }
 
 // =====================================================================
@@ -415,7 +421,14 @@ function generateVertex(
 		localChunkZ > -currentRenderDistance &&
 		localChunkZ <= currentRenderDistance;
 
-	const y = isInsideRealTerrain ? INSIDE_CLIP_Y : cachedHeight(worldX, worldZ);
+	let y = isInsideRealTerrain ? INSIDE_CLIP_Y : cachedHeight(worldX, worldZ);
+
+	// Beyond the per-chunk LOD bands the far-tile system owns the surface;
+	// sink the impostor so the two never z-fight while both are visible
+	// (the impostor remains as a streaming underlay / fallback).
+	if (!isInsideRealTerrain && farTilesActive) {
+		y -= FAR_TILE_UNDERLAY_DROP;
+	}
 
 	const hRight = cachedHeight(worldX + 1, worldZ);
 	const hDown = cachedHeight(worldX, worldZ + 1);
