@@ -1,17 +1,58 @@
 import {
 	addToScene,
-	createDirectionalLight,
-	createHemisphericLight,
 	createMeshFromData,
+	createShaderMaterial,
 	type EngineContext,
 	loadTexture2D,
 	type Mesh,
-	rebuildMaterial,
 	type SceneContext,
-	type StandardMaterialProps,
+	type ShaderMaterial,
+	setShaderFloat,
+	setShaderTexture,
 	type Texture2D,
+	vec3,
 } from "@babylonjs/lite";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
+
+// ─── Rig shader sources (unlit textured, brightness uniform) ────────────────
+// Mirrors the proven DroppedItem shader so no scene lights or
+// StandardMaterial state can interfere with how the model looks.
+
+const RIG_VERTEX_WGSL = /* wgsl */ `
+struct VSOut {
+	@builtin(position) pos : vec4<f32>,
+	@location(0) vUV : vec2<f32>,
+	@location(1) vNormal : vec3<f32>,
+	@location(2) vWorldPos : vec3<f32>,
+};
+
+@vertex
+fn mainVertex(input : VertexInput) -> VSOut {
+	var out : VSOut;
+	let worldPos = shaderSystem.world * vec4<f32>(input.position, 1.0);
+	out.pos = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
+	out.vUV = input.uv;
+	out.vNormal = input.normal;
+	out.vWorldPos = worldPos.xyz;
+	return out;
+}
+`;
+
+const RIG_FRAGMENT_WGSL = /* wgsl */ `
+struct VSOut {
+	@builtin(position) pos : vec4<f32>,
+	@location(0) vUV : vec2<f32>,
+	@location(1) vNormal : vec3<f32>,
+	@location(2) vWorldPos : vec3<f32>,
+};
+
+@fragment
+fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
+	let tex = textureSample(diffuseTexture, diffuseTextureSampler, in.vUV);
+	let b = shaderUniforms.uBrightness;
+	return vec4<f32>(tex.rgb * b, 1.0);
+}
+`;
 
 /**
  * Minecraft-style player rig (head/torso/arms/legs) built from textured boxes
@@ -88,7 +129,11 @@ interface MeshData {
 	uvs?: Float32Array;
 }
 
-function appendBox(out: MeshBuffers, p: BoxPart, uvDivisor = 64): void {
+function appendBox(
+	out: MeshBuffers,
+	p: BoxPart,
+	uvMode: "skin" | "atlas" = "skin",
+): void {
 	const hx = p.w / 2;
 	const hy = p.h / 2;
 	const hz = p.d / 2;
@@ -169,15 +214,22 @@ function appendBox(out: MeshBuffers, p: BoxPart, uvDivisor = 64): void {
 			out.positions.push(f.v[i][0], f.v[i][1], f.v[i][2]);
 			out.normals.push(f.n[0], f.n[1], f.n[2]);
 			if (f.r) {
-				// v=1 maps to the image top (Babylon invertY convention).
-				// uvDivisor=64 => rects are skin-pixel coords; 1 => already
-				// normalized atlas coordinates (used by the floor slab).
-				const vTop = 1 - f.r[1] / uvDivisor;
-				const vBottom = 1 - f.r[3] / uvDivisor;
-				out.uvs.push(
-					i === 0 || i === 3 ? f.r[0] / uvDivisor : f.r[2] / uvDivisor,
-					i < 2 ? vBottom : vTop,
-				);
+				if (uvMode === "atlas") {
+					// Final normalized atlas coords, passed through verbatim:
+					// bl=(r0,r1) br=(r2,r1) tr=(r2,r3) tl=(r0,r3).
+					out.uvs.push(
+						i === 0 || i === 3 ? f.r[0] : f.r[2],
+						i < 2 ? f.r[1] : f.r[3],
+					);
+				} else {
+					// Skin-pixel space (÷64) with v=1 at image top.
+					const vTop = 1 - f.r[1] / 64;
+					const vBottom = 1 - f.r[3] / 64;
+					out.uvs.push(
+						i === 0 || i === 3 ? f.r[0] / 64 : f.r[2] / 64,
+						i < 2 ? vBottom : vTop,
+					);
+				}
 			}
 		}
 		out.indices.push(base, base + 2, base + 1, base, base + 3, base + 2);
@@ -256,10 +308,9 @@ export function buildPlayerRigData(origin: RigOrigin = "feet"): MeshData {
 /**
  * Thin reference slab used under the preview model.
  *
- * When `atlasRect` is supplied it must be FINAL normalized atlas coordinates
- * [u0, v0, u1, v1] (computed with the same tile math as DroppedItem), so the
- * slab samples exactly one block tile — pixel-identical to how the world
- * renders that block through the chunk atlas shader.
+ * `atlasRect` = FINAL normalized atlas coords [u0, vLow, u1, vHigh] (computed
+ * with the same tile math as DroppedItem), so the slab samples exactly one
+ * block tile — pixel-identical to how the world renders that block.
  */
 export function buildFloorSlabData(
 	width = 1.7,
@@ -279,7 +330,7 @@ export function buildFloorSlabData(
 	appendBox(
 		out,
 		{ x: 0, y: -0.04, z: 0, w: width, h: 0.08, d: width, uv },
-		atlasRect ? 1 : 64,
+		atlasRect ? "atlas" : "skin",
 	);
 	return toData(out);
 }
@@ -321,58 +372,70 @@ export function loadPlayerSkin(engine: EngineContext): Promise<Texture2D> {
 }
 
 /**
- * Wire a standard material to the skin texture (teal fallback while loading /
- * on failure). The material should already be assigned to a mesh. A material
- * rebuild is required after the late texture assignment, otherwise the
- * compiled pipeline keeps sampling nothing and renders white.
+ * Bind the skin texture to a rig ShaderMaterial and initialize the brightness
+ * uniform. Mirrors DroppedItem: the mesh must stay HIDDEN until the texture is
+ * bound (onBind), because drawing with an unbound sampler invalidates the pass.
  */
-export function applyPlayerSkin(
+export function applyRigSkin(
 	engine: EngineContext,
-	scene: SceneContext,
-	mat: StandardMaterialProps,
+	mat: ShaderMaterial,
+	onBind?: () => void,
 	isAlive: () => boolean = () => true,
 ): void {
+	setShaderFloat(mat, "uBrightness", 1);
 	loadPlayerSkin(engine)
 		.then((tex) => {
 			if (!isAlive()) return;
-			mat.diffuseTexture = tex;
-			mat.diffuseColor = [1, 1, 1];
-			rebuildMaterial(scene, mat);
+			setShaderTexture(mat, "diffuseTexture", tex);
+			setShaderFloat(mat, "uBrightness", 1);
+			onBind?.();
 		})
 		.catch(() => {
 			if (!isAlive()) return;
-			mat.diffuseColor = [0.2, 0.9, 0.8];
-			rebuildMaterial(scene, mat);
+			onBind?.();
 		});
 }
 
-const litScenes = new WeakSet<SceneContext>();
-
 /**
- * Scale a rig material by packed voxel light (sky << 4 | block), using the
- * same sun-elevation day factor as the dropped-item lighting in DroppedItem.
- * The floor of 0.35 keeps the model readable in pitch darkness.
+ * Convert packed voxel light (sky << 4 | block) into a 0..1 brightness,
+ * including the same sun-elevation day factor as dropped-item lighting.
  */
-export function applyVoxelLightToRig(
-	mat: StandardMaterialProps,
-	packed: number,
-): void {
+export function packedLightToLevel(packed: number): number {
 	const sky = ((packed >> 4) & 0xf) / 15;
 	const block = (packed & 0xf) / 15;
 	const sunElevation = -GLOBAL_VALUES.skyLightDirection.y + 0.1;
 	const sunScale = Math.min(1, Math.max(0, sunElevation * 4)) + 0.3;
-	const brightness = Math.min(1, Math.max(0.35, sky * sunScale + block));
-	mat.diffuseColor = [brightness, brightness, brightness];
+	return Math.min(1, Math.max(0, Math.max(sky * sunScale, block)));
 }
 
 /**
- * The voxel world renders through its own shader pipeline, so plain
- * StandardMaterials would render black. Add one shared hemispheric +
- * directional pair per scene so rig meshes are always readable.
+ * Unlit textured ShaderMaterial for rigs: samples the skin texture and
+ * multiplies by a uBrightness uniform — fully bypassing scene lights and
+ * StandardMaterial state.
  */
-export function ensureWorldRigLights(scene: SceneContext): void {
-	if (litScenes.has(scene)) return;
-	litScenes.add(scene);
-	addToScene(scene, createHemisphericLight([0, 1, 0], 0.85));
-	addToScene(scene, createDirectionalLight([-0.4, -1, -0.3], 0.8));
+export function createRigShaderMaterial(
+	engine: EngineContext,
+	name: string,
+): ShaderMaterial {
+	return createShaderMaterial({
+		name,
+		vertexSource: RIG_VERTEX_WGSL,
+		fragmentSource: RIG_FRAGMENT_WGSL,
+		attributes: ["position", "normal", "uv"],
+		uniforms: [
+			"world",
+			"worldViewProjection",
+			{ name: "uBrightness", type: "f32" },
+		],
+		samplers: ["diffuseTexture"],
+		backFaceCulling: false,
+	});
+}
+
+export function bindRigTexture(mat: ShaderMaterial, tex: Texture2D): void {
+	setShaderTexture(mat, "diffuseTexture", tex);
+}
+
+export function setRigBrightness(mat: ShaderMaterial, level: number): void {
+	setShaderFloat(mat, "uBrightness", Math.min(1, Math.max(0.25, level)));
 }

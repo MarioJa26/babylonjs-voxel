@@ -49,378 +49,6 @@ const WATER_PAIR_LEVEL_CLEAR = ~(
 
 type WritableNumberArray = number[] | Int32Array | Uint16Array | Uint32Array;
 
-function clearMask(mask: WritableNumberArray, size: number): void {
-	mask.fill(0, 0, size * size);
-}
-
-export function extractSliceMaskX(
-	session: MeshBuildSession,
-	slice: number,
-	mask: WritableNumberArray,
-	lightMask: WritableNumberArray,
-): void {
-	const size = session.size;
-
-	if (slice === -1) {
-		if (!session.hasNeighborChunk(-1, 0, 0)) {
-			clearMask(mask, size);
-			return;
-		}
-
-		const blockArr = session.block;
-		const lightArr = session.light;
-		const opaqueArr = session.opaque;
-		const disableAO = session.disableAO;
-		const ps = session.ps;
-		const ps2 = session.ps2;
-		const nbrDelta = 1;
-
-		let outIndex = 0;
-
-		for (let z = 0; z < size; z++) {
-			const zBase = (z + 1) * ps2;
-
-			for (let y = 0; y < size; y++) {
-				const curIdx = (y + 1) * ps + zBase;
-				const nbrIdx = curIdx + nbrDelta;
-
-				if (opaqueArr[curIdx] & opaqueArr[nbrIdx]) {
-					mask[outIndex++] = 0;
-					continue;
-				}
-
-				processCell(
-					session,
-					blockArr,
-					lightArr,
-					disableAO,
-					-1,
-					y,
-					z,
-					0,
-					y,
-					z,
-					curIdx,
-					nbrIdx,
-					1,
-					2,
-					FACE_PX,
-					FACE_NX,
-					outIndex,
-					mask,
-					lightMask,
-				);
-
-				outIndex++;
-			}
-		}
-
-		return;
-	}
-
-	if (slice === size - 1) {
-		clearMask(mask, size);
-		return;
-	}
-
-	const blockArr = session.block;
-	const lightArr = session.light;
-	const opaqueArr = session.opaque;
-	const disableAO = session.disableAO;
-	const ps = session.ps;
-	const ps2 = session.ps2;
-	const x = slice;
-	const nx = slice + 1;
-	const xOffset = slice + 1;
-	const nbrDelta = 1;
-
-	let outIndex = 0;
-
-	for (let z = 0; z < size; z++) {
-		const zBase = (z + 1) * ps2;
-
-		for (let y = 0; y < size; y++) {
-			const curIdx = xOffset + (y + 1) * ps + zBase;
-			const nbrIdx = curIdx + nbrDelta;
-
-			if (opaqueArr[curIdx] & opaqueArr[nbrIdx]) {
-				mask[outIndex++] = 0;
-				continue;
-			}
-
-			processCell(
-				session,
-				blockArr,
-				lightArr,
-				disableAO,
-				x,
-				y,
-				z,
-				nx,
-				y,
-				z,
-				curIdx,
-				nbrIdx,
-				1,
-				2,
-				FACE_PX,
-				FACE_NX,
-				outIndex,
-				mask,
-				lightMask,
-			);
-
-			outIndex++;
-		}
-	}
-}
-
-export function extractSliceMaskY(
-	session: MeshBuildSession,
-	slice: number,
-	mask: WritableNumberArray,
-	lightMask: WritableNumberArray,
-): void {
-	const size = session.size;
-
-	if (slice === -1) {
-		if (!session.hasNeighborChunk(0, -1, 0)) {
-			clearMask(mask, size);
-			return;
-		}
-
-		const blockArr = session.block;
-		const lightArr = session.light;
-		const opaqueArr = session.opaque;
-		const disableAO = session.disableAO;
-		const ps = session.ps;
-		const ps2 = session.ps2;
-		const nbrDelta = ps;
-
-		let outIndex = 0;
-
-		// Axis Y uses u = Z and v = X, matching the original permutation.
-		for (let x = 0; x < size; x++) {
-			const xOffset = x + 1;
-
-			for (let z = 0; z < size; z++) {
-				const curIdx = xOffset + (z + 1) * ps2;
-				const nbrIdx = curIdx + nbrDelta;
-
-				if (opaqueArr[curIdx] & opaqueArr[nbrIdx]) {
-					mask[outIndex++] = 0;
-					continue;
-				}
-
-				processCell(
-					session,
-					blockArr,
-					lightArr,
-					disableAO,
-					x,
-					-1,
-					z,
-					x,
-					0,
-					z,
-					curIdx,
-					nbrIdx,
-					2,
-					0,
-					FACE_PY,
-					FACE_NY,
-					outIndex,
-					mask,
-					lightMask,
-				);
-
-				outIndex++;
-			}
-		}
-
-		return;
-	}
-
-	if (slice === size - 1) {
-		clearMask(mask, size);
-		return;
-	}
-
-	const blockArr = session.block;
-	const lightArr = session.light;
-	const opaqueArr = session.opaque;
-	const disableAO = session.disableAO;
-	const ps = session.ps;
-	const ps2 = session.ps2;
-	const y = slice;
-	const ny = slice + 1;
-	const yOffset = (slice + 1) * ps;
-	const nbrDelta = ps;
-
-	let outIndex = 0;
-
-	// Axis Y uses u = Z and v = X, matching the original permutation.
-	for (let x = 0; x < size; x++) {
-		const xOffset = x + 1;
-
-		for (let z = 0; z < size; z++) {
-			const curIdx = xOffset + yOffset + (z + 1) * ps2;
-			const nbrIdx = curIdx + nbrDelta;
-
-			if (opaqueArr[curIdx] & opaqueArr[nbrIdx]) {
-				mask[outIndex++] = 0;
-				continue;
-			}
-
-			processCell(
-				session,
-				blockArr,
-				lightArr,
-				disableAO,
-				x,
-				y,
-				z,
-				x,
-				ny,
-				z,
-				curIdx,
-				nbrIdx,
-				2,
-				0,
-				FACE_PY,
-				FACE_NY,
-				outIndex,
-				mask,
-				lightMask,
-			);
-
-			outIndex++;
-		}
-	}
-}
-
-export function extractSliceMaskZ(
-	session: MeshBuildSession,
-	slice: number,
-	mask: WritableNumberArray,
-	lightMask: WritableNumberArray,
-): void {
-	const size = session.size;
-
-	if (slice === -1) {
-		if (!session.hasNeighborChunk(0, 0, -1)) {
-			clearMask(mask, size);
-			return;
-		}
-
-		const blockArr = session.block;
-		const lightArr = session.light;
-		const opaqueArr = session.opaque;
-		const disableAO = session.disableAO;
-		const ps = session.ps;
-		const ps2 = session.ps2;
-		const nbrDelta = ps2;
-
-		let outIndex = 0;
-
-		for (let y = 0; y < size; y++) {
-			const yBase = (y + 1) * ps;
-
-			for (let x = 0; x < size; x++) {
-				const curIdx = x + 1 + yBase;
-				const nbrIdx = curIdx + nbrDelta;
-
-				if (opaqueArr[curIdx] & opaqueArr[nbrIdx]) {
-					mask[outIndex++] = 0;
-					continue;
-				}
-
-				processCell(
-					session,
-					blockArr,
-					lightArr,
-					disableAO,
-					x,
-					y,
-					-1,
-					x,
-					y,
-					0,
-					curIdx,
-					nbrIdx,
-					0,
-					1,
-					FACE_PZ,
-					FACE_NZ,
-					outIndex,
-					mask,
-					lightMask,
-				);
-
-				outIndex++;
-			}
-		}
-
-		return;
-	}
-
-	if (slice === size - 1) {
-		clearMask(mask, size);
-		return;
-	}
-
-	const blockArr = session.block;
-	const lightArr = session.light;
-	const opaqueArr = session.opaque;
-	const disableAO = session.disableAO;
-	const ps = session.ps;
-	const ps2 = session.ps2;
-	const z = slice;
-	const nz = slice + 1;
-	const zOffset = (slice + 1) * ps2;
-	const nbrDelta = ps2;
-
-	let outIndex = 0;
-
-	for (let y = 0; y < size; y++) {
-		const yBase = (y + 1) * ps;
-
-		for (let x = 0; x < size; x++) {
-			const curIdx = x + 1 + yBase + zOffset;
-			const nbrIdx = curIdx + nbrDelta;
-
-			if (opaqueArr[curIdx] & opaqueArr[nbrIdx]) {
-				mask[outIndex++] = 0;
-				continue;
-			}
-
-			processCell(
-				session,
-				blockArr,
-				lightArr,
-				disableAO,
-				x,
-				y,
-				z,
-				x,
-				y,
-				nz,
-				curIdx,
-				nbrIdx,
-				0,
-				1,
-				FACE_PZ,
-				FACE_NZ,
-				outIndex,
-				mask,
-				lightMask,
-			);
-
-			outIndex++;
-		}
-	}
-}
-
 // ---------------------------------------------------------------------------
 // Batched per-axis mask extraction.
 //
@@ -433,8 +61,10 @@ export function extractSliceMaskZ(
 // twice.
 //
 // Bank layout: slice s (-1..size-1) lives at (s+1) * area; cell order within
-// a slice matches the corresponding extractSliceMask* exactly so greedyMesh's
-// merge loop is unchanged apart from the base offset.
+// each slice matches the greedy merge loop's expectations directly.
+//
+// PERF: banks are typed to the exact arrays produced by
+// session.ensureMaskBank/ensureLightBank so every access site stays monomorphic.
 //
 // Slice -1 compares the padded border layer against the first interior layer
 // and is only computed when the neighbor chunk exists; slice size-1 never
@@ -443,8 +73,8 @@ export function extractSliceMaskZ(
 
 export function extractAllSliceMasksX(
 	session: MeshBuildSession,
-	maskBank: WritableNumberArray,
-	lightBank: WritableNumberArray,
+	maskBank: Int32Array,
+	lightBank: Uint16Array,
 ): void {
 	const size = session.size;
 	const step = session.lodStep;
@@ -560,8 +190,8 @@ export function extractAllSliceMasksX(
 
 export function extractAllSliceMasksY(
 	session: MeshBuildSession,
-	maskBank: WritableNumberArray,
-	lightBank: WritableNumberArray,
+	maskBank: Int32Array,
+	lightBank: Uint16Array,
 ): void {
 	const size = session.size;
 	const step = session.lodStep;
@@ -678,8 +308,8 @@ export function extractAllSliceMasksY(
 
 export function extractAllSliceMasksZ(
 	session: MeshBuildSession,
-	maskBank: WritableNumberArray,
-	lightBank: WritableNumberArray,
+	maskBank: Int32Array,
+	lightBank: Uint16Array,
 ): void {
 	const size = session.size;
 	const step = session.lodStep;

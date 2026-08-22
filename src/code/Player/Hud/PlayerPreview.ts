@@ -17,6 +17,7 @@ import {
 	rebuildMaterial,
 	registerScene,
 	type SceneContext,
+	type ShaderMaterial,
 	startEngine,
 	stopEngine,
 	vec3,
@@ -28,9 +29,11 @@ import {
 	atlasTileSize,
 } from "@/code/World/Texture/TextureAtlasFactory";
 import {
-	applyPlayerSkin,
+	applyRigSkin,
 	buildFloorSlabData,
 	createPlayerRigMesh,
+	createRigShaderMaterial,
+	setRigBrightness,
 } from "../PlayerModel";
 
 const PREVIEW_SIZE = { width: 220, height: 300 };
@@ -66,6 +69,7 @@ export class PlayerPreview {
 	#engine: EngineContext | null = null;
 	#scene: SceneContext | null = null;
 	#model: Mesh | null = null;
+	#rigMat: ShaderMaterial | null = null;
 	#floor: Mesh | null = null;
 	#initPromise: Promise<void> | null = null;
 	#running = false;
@@ -167,20 +171,27 @@ export class PlayerPreview {
 
 		// Character rig (single merged mesh so it rotates as one piece).
 		const mesh = createPlayerRigMesh(engine, "playerPreviewRig");
-		const mat = createStandardMaterial();
-		mat.specularColor = [0, 0, 0];
-		// The rig's winding comes from the game's custom-shader box builder;
-		// disable culling so it can never be culled inside-out here.
-		mat.backFaceCulling = false;
+		const mat = createRigShaderMaterial(engine, "playerPreviewRigMat");
 		mesh.material = mat;
 		mesh.pickable = false;
+		// DroppedItem pattern: stay hidden until the texture is bound —
+		// drawing with an unbound sampler invalidates the render pass.
+		mesh.visible = false;
 		addToScene(scene, mesh);
 
 		this.#model = mesh;
+		this.#rigMat = mat;
 		this.#engine = engine;
 		this.#scene = scene;
 
-		applyPlayerSkin(engine, scene, mat, () => this.#alive);
+		applyRigSkin(
+			engine,
+			mat,
+			() => {
+				if (this.#alive) mesh.visible = true;
+			},
+			() => this.#alive,
+		);
 
 		// Floor slab (top surface at feet level) — textured from the SAME
 		// diffuse atlas the chunk shader uses, sampling exactly one Cobble
@@ -195,7 +206,7 @@ export class PlayerPreview {
 		const vLow = atlasRow * ts;
 		const vHigh = (atlasRow + 1) * ts;
 
-		const floorData = buildFloorSlabData(1.7, [u0, vHigh, u1, vLow]);
+		const floorData = buildFloorSlabData(1.7, [u0, vLow, u1, vHigh]);
 		const floor = createMeshFromData(
 			engine,
 			"playerPreviewFloor",
@@ -236,14 +247,14 @@ export class PlayerPreview {
 			if (this.#model) {
 				this.#model.rotation.y += (deltaMs / 1000) * SPIN_SPEED;
 			}
-			if (this.#getLightLevel && hemi) {
+			if (this.#getLightLevel && this.#rigMat) {
 				// Decode packed voxel light (sky << 4 | block), same as the
 				// dropped-item lighting in DroppedItem.
 				const packed = this.#getLightLevel();
 				const sky = ((packed >> 4) & 0xf) / 15;
 				const block = (packed & 0xf) / 15;
 				const level = Math.min(1, Math.max(sky, block));
-				hemi.intensity = 0.35 + level * 0.55;
+				setRigBrightness(this.#rigMat, level);
 			}
 		});
 

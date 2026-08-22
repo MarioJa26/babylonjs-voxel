@@ -1,5 +1,11 @@
-import type { EngineContext, Mesh, SceneContext, Vec3 } from "@babylonjs/lite";
-import { addToScene, createStandardMaterial } from "@babylonjs/lite";
+import type {
+	EngineContext,
+	Mesh,
+	SceneContext,
+	ShaderMaterial,
+	Vec3,
+} from "@babylonjs/lite";
+import { addToScene } from "@babylonjs/lite";
 import { Map1 } from "@/code/Maps/Map1";
 import { tryCreateBoatFromMarker } from "@/code/World/Boat/BoatCreatorSystem";
 import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
@@ -22,10 +28,11 @@ import { PlayerFlashLight } from "./PlayerFlashLight";
 import { PlayerInputController } from "./PlayerInputController";
 import { PlayerLoopController } from "./PlayerLoopController";
 import {
-	applyPlayerSkin,
-	applyVoxelLightToRig,
+	applyRigSkin,
 	createPlayerRigMesh,
-	ensureWorldRigLights,
+	createRigShaderMaterial,
+	packedLightToLevel,
+	setRigBrightness,
 } from "./PlayerModel";
 import { PlayerStats } from "./PlayerStats";
 import { PlayerVehicleMotor } from "./PlayerVehicleMotor";
@@ -51,15 +58,18 @@ export class Player {
 	#interactionsDisposed = false;
 	#loopController!: PlayerLoopController;
 	#playerBodyMesh: Mesh | null = null;
-	#playerBodyMat: import("@babylonjs/lite").StandardMaterialProps | null = null;
+	#playerBodyMat: ShaderMaterial | null = null;
+	#bodySkinBound = false;
 	// Third-person body facing: derived from movement (Minecraft-style).
 	#lastBodyX = Number.NaN;
 	#lastBodyZ = Number.NaN;
 	#bodyYaw = 0;
-	// Voxel-light sampling cache (re-tint only on voxel change).
+	// Voxel-light sampling cache (re-tint on voxel change OR every 250ms so
+	// the day/night sun factor updates while standing still).
 	#bodyLightX = Number.NaN;
 	#bodyLightY = Number.NaN;
 	#bodyLightZ = Number.NaN;
+	#bodyLightSampleMs = Number.NEGATIVE_INFINITY;
 
 	networkManager?: import("../Network/NetworkManager").NetworkManager;
 
@@ -131,20 +141,20 @@ export class Player {
 	/** Visible Minecraft-style player model for third-person mode. */
 	#createPlayerBody(scene: SceneContext): void {
 		const body = createPlayerRigMesh(this.engine, "playerBodyRig", "center");
-		const mat = createStandardMaterial();
-		mat.specularColor = [0, 0, 0];
-		mat.backFaceCulling = false;
+		const mat = createRigShaderMaterial(this.engine, "playerBodyRigMat");
 
 		body.material = mat;
 		body.pickable = false;
+		// Hidden until the skin texture binds (unbound sampler = invalid pass).
 		body.visible = false;
 
-		ensureWorldRigLights(scene);
 		addToScene(scene, body);
 		this.#playerBodyMesh = body;
 		this.#playerBodyMat = mat;
 
-		applyPlayerSkin(this.engine, scene, mat);
+		applyRigSkin(this.engine, mat, () => {
+			this.#bodySkinBound = true;
+		});
 	}
 
 	/** Recompute spawn height against the loaded terrain. */
@@ -163,7 +173,9 @@ export class Player {
 		const body = this.#playerBodyMesh;
 		if (!body) return;
 
-		const visible = this.#playerCamera.isThirdPerson;
+		// Don't render until the skin texture is bound (unbound sampler would
+		// produce an invalid pass), and only in third person.
+		const visible = this.#playerCamera.isThirdPerson && this.#bodySkinBound;
 		body.visible = visible;
 
 		if (!visible) {
@@ -175,21 +187,31 @@ export class Player {
 		body.position.set(x, y, z);
 
 		// Re-tint the model when it crosses into a different voxel so its
-		// brightness follows the light the player actually stands in.
-		const mat = this.#playerBodyMat;
-		if (mat) {
+		// brightness follows the light the player actually stands in — and
+		// re-sample on a short interval so the day/night sun factor keeps
+		// updating even while standing still.
+		{
 			const lx = Math.floor(x);
 			const ly = Math.floor(y + 1);
 			const lz = Math.floor(z);
+			const nowMs = performance.now();
 			if (
 				lx !== this.#bodyLightX ||
 				ly !== this.#bodyLightY ||
-				lz !== this.#bodyLightZ
+				lz !== this.#bodyLightZ ||
+				nowMs - this.#bodyLightSampleMs > 250
 			) {
 				this.#bodyLightX = lx;
 				this.#bodyLightY = ly;
 				this.#bodyLightZ = lz;
-				applyVoxelLightToRig(mat, getLightByWorldCoords(x, y + 1, z));
+				this.#bodyLightSampleMs = nowMs;
+				const mat = this.#playerBodyMat;
+				if (mat) {
+					setRigBrightness(
+						mat,
+						packedLightToLevel(getLightByWorldCoords(x, y + 1, z)),
+					);
+				}
 			}
 		}
 

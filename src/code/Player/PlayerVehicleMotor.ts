@@ -1,10 +1,10 @@
 import {
 	addToScene,
 	addVec3InPlace,
-	createStandardMaterial,
 	type EngineContext,
 	type Mesh,
 	type SceneContext,
+	type ShaderMaterial,
 	scaleVec3InPlace,
 	scaleVec3ToRef,
 	type Vec3,
@@ -38,10 +38,11 @@ import { BlockType, isCollidableBlock } from "../World/Texture/BlockType";
 import type { IPlayerBody, PlayerBodyControlState } from "./PlayerBody";
 import type { PlayerCamera } from "./PlayerCamera";
 import {
-	applyPlayerSkin,
-	applyVoxelLightToRig,
+	applyRigSkin,
 	createPlayerRigMesh,
-	ensureWorldRigLights,
+	createRigShaderMaterial,
+	packedLightToLevel,
+	setRigBrightness,
 } from "./PlayerModel";
 import { Gamemodes, type PlayerStats } from "./PlayerStats";
 import { SimpleCharacterController } from "./SimpleCharacterController";
@@ -115,7 +116,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	public isMounted = false;
 
 	#displayCapsule!: Mesh;
-	#displayMat: import("@babylonjs/lite").StandardMaterialProps | null = null;
+	#displayMat: ShaderMaterial | null = null;
 	#displayLightX = Number.NaN;
 	#displayLightY = Number.NaN;
 	#displayLightZ = Number.NaN;
@@ -1405,21 +1406,18 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	}
 
 	private createCharacterMesh(): Mesh {
-		ensureWorldRigLights(this.scene);
 		const body = createPlayerRigMesh(
 			this.#engine,
 			"playerDisplayRig",
 			"center",
 		);
-		const mat = createStandardMaterial();
-		mat.specularColor = [0, 0, 0];
-		mat.backFaceCulling = false;
+		const mat = createRigShaderMaterial(this.#engine, "playerDisplayRigMat");
 		body.material = mat;
 		body.pickable = false;
 		body.visible = false;
 		addToScene(this.scene, body);
 		this.#displayMat = mat;
-		applyPlayerSkin(this.#engine, this.scene, mat);
+		applyRigSkin(this.#engine, mat);
 		return body;
 	}
 
@@ -1440,7 +1438,10 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.#displayLightX = lx;
 		this.#displayLightY = ly;
 		this.#displayLightZ = lz;
-		applyVoxelLightToRig(mat, getLightByWorldCoords(x, y + 1, z));
+		setRigBrightness(
+			mat,
+			packedLightToLevel(getLightByWorldCoords(x, y + 1, z)),
+		);
 	}
 
 	private integrateMovement(deltaTime: number): void {

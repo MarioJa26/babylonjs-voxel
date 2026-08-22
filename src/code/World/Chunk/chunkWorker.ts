@@ -9,13 +9,17 @@ import {
 	type LightMutateRequest,
 	type LightPropagateDeferredRequest,
 	type LightRegisterChunkBatchRequest,
+	type LightRegisterChunkRequest,
 	type LightSetClosedFaceMaskRequest,
 	type LightSkyReconcileRequest,
+	type LightUpdateChunkBuffersRequest,
 	type MeshWorkerResponse,
 	type RelightMeshRequest,
 	type SetWorldSeedRequest,
 	type VoxelRecycleBuffersRequest,
 	type VoxelRegisterChunkBatchRequest,
+	type VoxelRegisterChunkRequest,
+	type VoxelUpdateChunkBuffersRequest,
 	type WorkerResponseData,
 	WorkerTaskType,
 } from "./DataStructures/WorkerMessageType";
@@ -176,6 +180,77 @@ export class ChunkWorker {
 		chunkY: 0,
 		chunkZ: 0,
 		neighborMask: 0,
+	};
+
+	// PERF: prebuilt, reused registration/update descriptors. Fields are
+	// mutated in place and postMessage clones synchronously at call time, so
+	// the per-call spread literal ({ type, ...req }) allocation is gone while
+	// the wire bytes stay identical to the old spread output.
+	readonly #lightRegisterMsg: Omit<LightRegisterChunkRequest, "lightSAB"> & {
+		lightSAB: SharedArrayBuffer | null;
+	} = {
+		type: WorkerTaskType.LightRegisterChunk,
+		seq: 0,
+		chunkId: 0n,
+		chunkX: 0,
+		chunkY: 0,
+		chunkZ: 0,
+		headerSlot: 0,
+		blockSAB: null,
+		lightSAB: null,
+		paletteSAB: null,
+		blockStorageBytesPerElement: 1,
+	};
+
+	readonly #lightUpdateMsg: Omit<LightUpdateChunkBuffersRequest, "lightSAB"> & {
+		lightSAB: SharedArrayBuffer | null;
+	} = {
+		type: WorkerTaskType.LightUpdateChunkBuffers,
+		chunkId: 0n,
+		headerSlot: 0,
+		blockSAB: null,
+		paletteSAB: null,
+		lightSAB: null,
+		blockStorageBytesPerElement: 1,
+	};
+
+	readonly #voxelRegisterMsg: VoxelRegisterChunkRequest = {
+		type: WorkerTaskType.VoxelRegisterChunk,
+		chunkId: 0n,
+		chunkX: 0,
+		chunkY: 0,
+		chunkZ: 0,
+		isUniform: false,
+		uniformBlockId: 0,
+		blockStorageBytesPerElement: 1,
+		direct: false,
+		blockSAB: null,
+		paletteSAB: null,
+		lightSAB: null,
+	};
+
+	readonly #voxelRegisterBatchMsg: VoxelRegisterChunkBatchRequest = {
+		type: WorkerTaskType.VoxelRegisterChunkBatch,
+		chunkIds: new BigInt64Array(0),
+		coords: new Int32Array(0),
+		meta: new Uint32Array(0),
+		blockSABs: [],
+		paletteSABs: [],
+		lightSABs: [],
+	};
+
+	readonly #voxelUpdateMsg: VoxelUpdateChunkBuffersRequest = {
+		type: WorkerTaskType.VoxelUpdateChunkBuffers,
+		chunkId: 0n,
+		chunkX: 0,
+		chunkY: 0,
+		chunkZ: 0,
+		isUniform: false,
+		uniformBlockId: 0,
+		blockStorageBytesPerElement: 1,
+		blockSAB: null,
+		paletteSAB: null,
+		lightSAB: null,
 	};
 
 	constructor(
@@ -465,10 +540,18 @@ export class ChunkWorker {
 		paletteSAB: SharedArrayBuffer | null;
 		blockStorageBytesPerElement: 1 | 2;
 	}): void {
-		this.terrainWorker.postMessage({
-			type: WorkerTaskType.LightRegisterChunk,
-			...req,
-		});
+		const msg = this.#lightRegisterMsg;
+		msg.seq = req.seq;
+		msg.chunkId = req.chunkId;
+		msg.chunkX = req.chunkX;
+		msg.chunkY = req.chunkY;
+		msg.chunkZ = req.chunkZ;
+		msg.headerSlot = req.headerSlot;
+		msg.blockSAB = req.blockSAB;
+		msg.lightSAB = req.lightSAB;
+		msg.paletteSAB = req.paletteSAB;
+		msg.blockStorageBytesPerElement = req.blockStorageBytesPerElement;
+		this.terrainWorker.postMessage(msg);
 	}
 
 	public postLightRegisterChunkBatch(
@@ -504,10 +587,14 @@ export class ChunkWorker {
 		lightSAB: SharedArrayBuffer | null;
 		blockStorageBytesPerElement: 1 | 2;
 	}): void {
-		this.terrainWorker.postMessage({
-			type: WorkerTaskType.LightUpdateChunkBuffers,
-			...req,
-		});
+		const msg = this.#lightUpdateMsg;
+		msg.chunkId = req.chunkId;
+		msg.headerSlot = req.headerSlot;
+		msg.blockSAB = req.blockSAB;
+		msg.paletteSAB = req.paletteSAB;
+		msg.lightSAB = req.lightSAB;
+		msg.blockStorageBytesPerElement = req.blockStorageBytesPerElement;
+		this.terrainWorker.postMessage(msg);
 	}
 
 	public postLightMutate(req: {
@@ -606,22 +693,35 @@ export class ChunkWorker {
 		paletteSAB: SharedArrayBuffer | null;
 		lightSAB: SharedArrayBuffer | null;
 	}): void {
-		this.voxelWorker.postMessage({
-			type: WorkerTaskType.VoxelRegisterChunk,
-			...req,
-		});
+		const msg = this.#voxelRegisterMsg;
+		msg.chunkId = req.chunkId;
+		msg.chunkX = req.chunkX;
+		msg.chunkY = req.chunkY;
+		msg.chunkZ = req.chunkZ;
+		msg.isUniform = req.isUniform;
+		msg.uniformBlockId = req.uniformBlockId;
+		msg.blockStorageBytesPerElement = req.blockStorageBytesPerElement;
+		msg.direct = req.direct;
+		msg.blockSAB = req.blockSAB;
+		msg.paletteSAB = req.paletteSAB;
+		msg.lightSAB = req.lightSAB;
+		this.voxelWorker.postMessage(msg);
 	}
 
 	public postVoxelRegisterChunkBatch(
 		req: Omit<VoxelRegisterChunkBatchRequest, "type">,
 	): void {
 		if (req.chunkIds.length === 0) return;
+		const msg = this.#voxelRegisterBatchMsg;
+		msg.chunkIds = req.chunkIds;
+		msg.coords = req.coords;
+		msg.meta = req.meta;
+		msg.blockSABs = req.blockSABs;
+		msg.paletteSABs = req.paletteSABs;
+		msg.lightSABs = req.lightSABs;
 		// NOTE: intentionally NOT transferred — the pool fans these arrays
 		// out to EVERY voxel worker, so the buffers must stay alive here.
-		this.voxelWorker.postMessage({
-			type: WorkerTaskType.VoxelRegisterChunkBatch,
-			...req,
-		});
+		this.voxelWorker.postMessage(msg);
 	}
 
 	public postVoxelUnregisterChunk(
@@ -657,9 +757,17 @@ export class ChunkWorker {
 		paletteSAB: SharedArrayBuffer | null;
 		lightSAB: SharedArrayBuffer | null;
 	}): void {
-		this.voxelWorker.postMessage({
-			type: WorkerTaskType.VoxelUpdateChunkBuffers,
-			...req,
-		});
+		const msg = this.#voxelUpdateMsg;
+		msg.chunkId = req.chunkId;
+		msg.chunkX = req.chunkX;
+		msg.chunkY = req.chunkY;
+		msg.chunkZ = req.chunkZ;
+		msg.isUniform = req.isUniform;
+		msg.uniformBlockId = req.uniformBlockId;
+		msg.blockStorageBytesPerElement = req.blockStorageBytesPerElement;
+		msg.blockSAB = req.blockSAB;
+		msg.paletteSAB = req.paletteSAB;
+		msg.lightSAB = req.lightSAB;
+		this.voxelWorker.postMessage(msg);
 	}
 }
