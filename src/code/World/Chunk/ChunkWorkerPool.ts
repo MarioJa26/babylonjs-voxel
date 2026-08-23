@@ -1042,24 +1042,6 @@ export class ChunkWorkerPool {
 		});
 	}
 
-	/** Full-registration path for fresh-generation chunks (no voxel channel). */
-	private broadcastLightRegisterFull(chunk: Chunk): void {
-		this.flushPendingUnregisters();
-		const snap = chunk.getLightStorageSnapshot();
-		this.getLightWorker().postLightRegisterChunk({
-			seq: this.nextLightSeq(),
-			chunkId: chunk.id,
-			chunkX: chunk.chunkX,
-			chunkY: chunk.chunkY,
-			chunkZ: chunk.chunkZ,
-			headerSlot: chunk.lightHeaderSlot,
-			blockSAB: snap.blockSAB,
-			lightSAB: snap.lightSAB,
-			paletteSAB: snap.paletteSAB,
-			blockStorageBytesPerElement: snap.blockStorageBytesPerElement,
-		});
-	}
-
 	private broadcastLightUpdateBuffers(chunk: Chunk): void {
 		this.flushPendingUnregisters();
 		const snap = chunk.getLightStorageSnapshot();
@@ -1159,27 +1141,6 @@ export class ChunkWorkerPool {
 				uniformBlockId: chunk.uniformBlockId,
 				blockStorageBytesPerElement:
 					chunk.block_array instanceof Uint16Array ? 2 : 1,
-				direct: true,
-				blockSAB: snap.blockSAB,
-				paletteSAB: snap.paletteSAB,
-				lightSAB: snap.lightSAB,
-			});
-		}
-	}
-
-	/** Direct-path voxel registration: SAB handles inline (fresh chunks). */
-	private broadcastVoxelRegisterFull(chunk: Chunk): void {
-		this.flushPendingUnregisters();
-		const snap = chunk.getLightStorageSnapshot();
-		for (let i = 0; i < this.workers.length; i++) {
-			this.workers[i].postVoxelRegisterChunk({
-				chunkId: chunk.id,
-				chunkX: chunk.chunkX,
-				chunkY: chunk.chunkY,
-				chunkZ: chunk.chunkZ,
-				isUniform: chunk.isUniform,
-				uniformBlockId: chunk.uniformBlockId,
-				blockStorageBytesPerElement: snap.blockStorageBytesPerElement,
 				direct: true,
 				blockSAB: snap.blockSAB,
 				paletteSAB: snap.paletteSAB,

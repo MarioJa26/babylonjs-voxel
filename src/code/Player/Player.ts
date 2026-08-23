@@ -141,7 +141,7 @@ export class Player {
 	/** Visible Minecraft-style player model for third-person mode. */
 	#createPlayerBody(scene: SceneContext): void {
 		const body = createPlayerRigMesh(this.engine, "playerBodyRig", "center");
-		const mat = createRigShaderMaterial(this.engine, "playerBodyRigMat");
+		const mat = createRigShaderMaterial("playerBodyRigMat");
 
 		body.material = mat;
 		body.pickable = false;

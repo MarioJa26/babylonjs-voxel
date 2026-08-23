@@ -171,7 +171,7 @@ export class PlayerPreview {
 
 		// Character rig (single merged mesh so it rotates as one piece).
 		const mesh = createPlayerRigMesh(engine, "playerPreviewRig");
-		const mat = createRigShaderMaterial(engine, "playerPreviewRigMat");
+		const mat = createRigShaderMaterial("playerPreviewRigMat");
 		mesh.material = mat;
 		mesh.pickable = false;
 		// DroppedItem pattern: stay hidden until the texture is bound —
