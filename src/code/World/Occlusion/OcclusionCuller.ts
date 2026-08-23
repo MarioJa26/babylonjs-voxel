@@ -115,7 +115,9 @@ function setFrustumPlane(
 	nz: number,
 	d: number,
 ): void {
-	const len = Math.hypot(nx, ny, nz) || 1;
+	// PERF: Math.sqrt(x*x+y*y+z*z) avoids Math.hypot's varargs + overflow
+	// handling; this runs 6x per view-projection change.
+	const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
 	_frustumPacked[off] = nx / len;
 	_frustumPacked[off + 1] = ny / len;
 	_frustumPacked[off + 2] = nz / len;

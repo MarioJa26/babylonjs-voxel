@@ -1698,3 +1698,39 @@ export function getChunk(
 ): Chunk | undefined {
 	return Chunk.chunkInstances.get(packCoords(cx, cy, cz));
 }
+
+// PERF: multi-slot chunk cache.  getChunk() builds three BigInts via packCoords
+// on every call; hot per-voxel paths (collision, light sampling, raycasts)
+// resolve the same few chunks repeatedly, so a small ring of recent
+// (cx,cy,cz)->Chunk entries avoids the BigInt allocation on cache hits.  An
+// AABB sweep spans at most 2 chunks per axis (~8 distinct chunks), so 8 slots
+// keep the miss rate near zero after warmup.  Stale (disposed) entries are
+// validated by callers via chunk.isLoaded / hasVoxelData, exactly as the raw
+// map lookup would be.
+const _FAST_SLOTS = 8;
+const _fastCx = new Int32Array(_FAST_SLOTS).fill(0x7fffffff);
+const _fastCy = new Int32Array(_FAST_SLOTS).fill(0x7fffffff);
+const _fastCz = new Int32Array(_FAST_SLOTS).fill(0x7fffffff);
+const _fastChunk: (Chunk | undefined)[] = new Array(_FAST_SLOTS).fill(
+	undefined,
+);
+let _fastCursor = 0;
+
+export function getChunkFast(
+	cx: number,
+	cy: number,
+	cz: number,
+): Chunk | undefined {
+	for (let i = 0; i < _FAST_SLOTS; i++) {
+		if (_fastCx[i] === cx && _fastCy[i] === cy && _fastCz[i] === cz) {
+			return _fastChunk[i];
+		}
+	}
+	const chunk = Chunk.chunkInstances.get(packCoords(cx, cy, cz));
+	_fastCx[_fastCursor] = cx;
+	_fastCy[_fastCursor] = cy;
+	_fastCz[_fastCursor] = cz;
+	_fastChunk[_fastCursor] = chunk;
+	_fastCursor = (_fastCursor + 1) % _FAST_SLOTS;
+	return chunk;
+}

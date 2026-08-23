@@ -246,6 +246,30 @@ export class VoxelRoom extends Room {
 		}
 	}
 
+	// PERF: reuse the existing cache entry object instead of allocating a fresh
+	// one on every write (the tick save path runs every PLAYER_SAVE_INTERVAL per
+	// player). The Map retains the reference, so a single shared scratch would
+	// alias every player's entry — we mutate in place when the entry exists.
+	private cachePlayerPosition(
+		name: string,
+		x: number,
+		y: number,
+		z: number,
+		yaw: number,
+		pitch: number,
+	): void {
+		const existing = this.playerPositionCache.get(name);
+		if (existing) {
+			existing.x = x;
+			existing.y = y;
+			existing.z = z;
+			existing.yaw = yaw;
+			existing.pitch = pitch;
+		} else {
+			this.playerPositionCache.set(name, { x, y, z, yaw, pitch });
+		}
+	}
+
 	private timeEncoder = new BinaryEncoder(16);
 	private editBroadcastEncoder = new BinaryEncoder(64);
 	private decoder = new BinaryDecoder(new Uint8Array(0));
@@ -389,13 +413,14 @@ export class VoxelRoom extends Room {
 			};
 
 			if (!cached) {
-				this.playerPositionCache.set(name, {
-					x: state.x,
-					y: state.y,
-					z: state.z,
-					yaw: encodeYawByte(state.yaw),
-					pitch: encodePitchByte(state.pitch),
-				});
+				this.cachePlayerPosition(
+					name,
+					state.x,
+					state.y,
+					state.z,
+					encodeYawByte(state.yaw),
+					encodePitchByte(state.pitch),
+				);
 			}
 			this.players.set(client.sessionId, state);
 			onlinePlayers++;
@@ -547,13 +572,14 @@ export class VoxelRoom extends Room {
 
 		if (!player) return;
 
-		this.playerPositionCache.set(player.name, {
-			x: player.x,
-			y: player.y,
-			z: player.z,
-			yaw: player.yaw,
-			pitch: player.pitch,
-		});
+		this.cachePlayerPosition(
+			player.name,
+			player.x,
+			player.y,
+			player.z,
+			player.yaw,
+			player.pitch,
+		);
 		this.reportAsync(
 			`Failed to save position for ${player.name} on disconnect`,
 			this.worldStorage.savePlayerPosition(
@@ -1019,13 +1045,7 @@ export class VoxelRoom extends Room {
 			) {
 				p.lastSaveTime = now;
 				p.saveDirty = false;
-				this.playerPositionCache.set(p.name, {
-					x: p.x,
-					y: p.y,
-					z: p.z,
-					yaw: p.yaw,
-					pitch: p.pitch,
-				});
+				this.cachePlayerPosition(p.name, p.x, p.y, p.z, p.yaw, p.pitch);
 				void this.worldStorage
 					.savePlayerPosition(p.name, p.x, p.y, p.z, p.yaw, p.pitch)
 					.catch((error) => {

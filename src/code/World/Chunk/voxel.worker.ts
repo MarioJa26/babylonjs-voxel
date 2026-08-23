@@ -706,29 +706,34 @@ function buildVoxelMeshFromInput(
 // main thread's LOD caches and member lastBuilt* references; recycling those
 // would be use-after-free.
 // ---------------------------------------------------------------------------
-const _recyclePool: Uint8Array[] = [];
+// PERF: size-keyed pool (Map<byteLength, stack>) gives O(1) lookup instead of
+// the previous O(n) linear scan over up to 96 buffers (9 lookups per mesh).
+const _recyclePool = new Map<number, Uint8Array[]>();
 let _recyclePoolBytes = 0;
+let _recyclePoolCount = 0;
 const RECYCLE_POOL_MAX_BUFFERS = 96;
 const RECYCLE_POOL_MAX_BYTES = 12 * 1024 * 1024;
 
 function takePooledMeshBuffer(byteLength: number): Uint8Array | null {
-	for (let i = 0; i < _recyclePool.length; i++) {
-		const buf = _recyclePool[i];
-		if (buf.length === byteLength) {
-			_recyclePool[i] = _recyclePool[_recyclePool.length - 1];
-			_recyclePool.pop();
-			_recyclePoolBytes -= byteLength;
-			return buf;
-		}
-	}
-	return null;
+	const stack = _recyclePool.get(byteLength);
+	if (stack === undefined || stack.length === 0) return null;
+	const buf = stack.pop()!;
+	_recyclePoolBytes -= byteLength;
+	_recyclePoolCount--;
+	return buf;
 }
 
 function givePooledMeshBuffer(buf: Uint8Array): void {
-	if (_recyclePool.length >= RECYCLE_POOL_MAX_BUFFERS) return;
+	if (_recyclePoolCount >= RECYCLE_POOL_MAX_BUFFERS) return;
 	if (_recyclePoolBytes + buf.length > RECYCLE_POOL_MAX_BYTES) return;
-	_recyclePool.push(buf);
+	let stack = _recyclePool.get(buf.length);
+	if (stack === undefined) {
+		stack = [];
+		_recyclePool.set(buf.length, stack);
+	}
+	stack.push(buf);
 	_recyclePoolBytes += buf.length;
+	_recyclePoolCount++;
 }
 
 function fillMeshBuffer(
@@ -755,6 +760,21 @@ function takeTransferableOutput(data: WorkerInternalMeshData): MeshData | null {
 	return out;
 }
 
+// PERF: reused across postMeshResponse calls. self.postMessage structured-clones
+// the message synchronously, so the same object can be reused each call without
+// aliasing. Avoids one FullMeshMessage object + one Transferable[] allocation
+// per mesh result.
+const _meshResponseScratch: FullMeshMessage = {
+	type: WorkerTaskType.GenerateFullMesh,
+	chunkId: 0n,
+	meshRevision: 0,
+	lod: 0,
+	opaque: null,
+	water: null,
+	cutout: null,
+};
+const _localTransferablesScratch: Transferable[] = [];
+
 function postMeshResponse(
 	chunkId: bigint,
 	meshRevision: number,
@@ -766,17 +786,17 @@ function postMeshResponse(
 
 	const cutout = takeTransferableOutput(_cutoutOut);
 
-	const response: FullMeshMessage = {
-		type: WorkerTaskType.GenerateFullMesh,
-		chunkId,
-		meshRevision,
-		lod,
-		opaque,
-		water,
-		cutout,
-	};
+	const response = _meshResponseScratch;
+	response.type = WorkerTaskType.GenerateFullMesh;
+	response.chunkId = chunkId;
+	response.meshRevision = meshRevision;
+	response.lod = lod;
+	response.opaque = opaque;
+	response.water = water;
+	response.cutout = cutout;
 
-	const localTransferables: Transferable[] = [];
+	const localTransferables = _localTransferablesScratch;
+	localTransferables.length = 0;
 
 	if (opaque) {
 		localTransferables.push(

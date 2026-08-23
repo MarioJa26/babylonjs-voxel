@@ -5,7 +5,7 @@ import {
 	type SavedChunkEntityData,
 	WorldStorage,
 } from "../WorldStorage";
-import { addChunkDisposeHook, Chunk, getChunk } from "./Chunk";
+import { addChunkDisposeHook, Chunk, getChunk, getChunkFast } from "./Chunk";
 import { createMeshFromData } from "./ChunkMesher";
 import { ChunkWorkerPool } from "./ChunkWorkerPool";
 import { packCoords } from "./DataStructures/ChunkCoords";
@@ -794,9 +794,54 @@ export function getBlockAndStateByWorldCoordsInto(
 		out.blockState = sample.blockState;
 		return out;
 	}
-	out.blockId = worldMutations.getBlockByWorldCoords(worldX, worldY, worldZ);
-	out.blockState = getBlockStateFromMutations(worldX, worldY, worldZ);
+	// PERF: single resolveCoords for both fields (was two: one for the block
+	// id, one for the state), avoiding a redundant BigInt packCoords getChunk
+	// on every chunk-boundary crossing.
+	worldMutations.getBlockAndStateAtWorldCoordsInto(worldX, worldY, worldZ, out);
 	return out;
+}
+
+export type ResolvedBlock = {
+	blockId: number;
+	blockState: number;
+	loaded: boolean;
+	unloaded: boolean;
+};
+
+const _resolvedBlockScratch: ResolvedBlock = {
+	blockId: 0,
+	blockState: 0,
+	loaded: false,
+	unloaded: false,
+};
+
+// PERF: single-resolve collidable-block lookup for the player collision
+// sampler.  Resolves the chunk once (cached) and reports whether it is
+// unloaded so the caller can treat it as solid terrain — replacing the old
+// isChunkLoadedAtWorldCoords() + getBlockAndStateByWorldCoords() pair, which
+// resolved the chunk twice per voxel.
+export function resolveBlockAtWorldCoords(
+	worldX: number,
+	worldY: number,
+	worldZ: number,
+	options?: DynamicBlockQueryOptions,
+): ResolvedBlock {
+	const sample = sampleDynamicBlock(worldX, worldY, worldZ, options);
+	if (sample) {
+		_resolvedBlockScratch.blockId = sample.blockId;
+		_resolvedBlockScratch.blockState = sample.blockState;
+		_resolvedBlockScratch.loaded = true;
+		_resolvedBlockScratch.unloaded = false;
+		return _resolvedBlockScratch;
+	}
+	worldMutations.getBlockAndStateAtWorldCoordsInto(
+		worldX,
+		worldY,
+		worldZ,
+		_resolvedBlockScratch,
+	);
+	_resolvedBlockScratch.unloaded = !_resolvedBlockScratch.loaded;
+	return _resolvedBlockScratch;
 }
 
 const _blockAndStateScratch: BlockAndStateOut = { blockId: 0, blockState: 0 };
@@ -830,7 +875,9 @@ export function getLightByWorldCoords(
 	const chunkX = worldToChunkCoord(worldX);
 	const chunkY = worldToChunkCoord(worldY);
 	const chunkZ = worldToChunkCoord(worldZ);
-	const chunk = getChunk(chunkX, chunkY, chunkZ);
+	// PERF: cached chunk lookup avoids the BigInt packCoords getChunk on the
+	// common (same/recent chunk) case.
+	const chunk = getChunkFast(chunkX, chunkY, chunkZ);
 
 	if (!chunk?.isLoaded) {
 		return 15 << Chunk.SKY_LIGHT_SHIFT;

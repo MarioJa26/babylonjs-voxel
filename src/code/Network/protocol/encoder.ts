@@ -210,6 +210,14 @@ export class BinaryEncoder {
 	}
 }
 
+// PERF: reused scratch encoder for the small single-event encode helpers below
+// (player join/leave, mob spawn/despawn, item spawn/despawn). Each helper resets
+// and writes into it, then returns getBytes() (a subarray view) which the caller
+// consumes synchronously via broadcastBytes/sendBytes — so the buffer is never
+// aliased across live messages. This avoids one BinaryEncoder + backing Uint8Array
+// allocation per spawn/despawn/join/leave event (the benchmark's GC pressure).
+const _singleEventEncoder = new BinaryEncoder(64);
+
 export class BinaryDecoder {
 	private view: DataView;
 	private offset: number;
@@ -635,7 +643,8 @@ export function decodeBlockEditBatch(buffer: Uint8Array): BlockEditData[] {
  * clients receive it via broadcast.
  */
 export function encodePlayerJoin(data: PlayerJoinData): Uint8Array {
-	const enc = new BinaryEncoder(64);
+	const enc = _singleEventEncoder;
+	enc.reset();
 	enc.writeUint8(MessageType.PlayerJoin);
 	enc.writeUint8(data.index);
 	enc.writeString(data.sessionId);
@@ -660,7 +669,8 @@ export function decodePlayerJoinFrom(dec: BinaryDecoder): PlayerJoinData {
  * [type:1][index:u8] — the client resolves sessionId via its index map.
  */
 export function encodePlayerLeave(data: PlayerLeaveData): Uint8Array {
-	const enc = new BinaryEncoder(2);
+	const enc = _singleEventEncoder;
+	enc.reset();
 	enc.writeUint8(MessageType.PlayerLeave);
 	enc.writeUint8(data.index);
 	return enc.getBytes();
@@ -1334,7 +1344,8 @@ export function encodeMobSpawn(
 	z: number,
 	yaw: number,
 ): Uint8Array {
-	const enc = new BinaryEncoder(17);
+	const enc = _singleEventEncoder;
+	enc.reset();
 
 	enc.writeUint8(MessageType.MobSpawn);
 	enc.writeUint16(mobId);
@@ -1392,7 +1403,8 @@ export function writeMobUpdateBatch(
 }
 
 export function encodeMobDespawn(mobId: number): Uint8Array {
-	const enc = new BinaryEncoder(3);
+	const enc = _singleEventEncoder;
+	enc.reset();
 	enc.writeUint8(MessageType.MobDespawn);
 	enc.writeUint16(mobId);
 	return enc.getBytes();
@@ -1453,7 +1465,8 @@ export function decodeItemPickup(buffer: Uint8Array): ItemPickupData {
 }
 
 export function encodeItemSpawn(data: ItemSpawnData): Uint8Array {
-	const enc = new BinaryEncoder(1 + 4 + 2 + 2 + 4 * 7);
+	const enc = _singleEventEncoder;
+	enc.reset();
 	enc.writeUint8(MessageType.ItemSpawn);
 	enc.writeUint32(data.id);
 	enc.writeUint16(data.itemId);
@@ -1503,7 +1516,8 @@ export function writeItemUpdateBatch(
 }
 
 export function encodeItemDespawn(id: number): Uint8Array {
-	const enc = new BinaryEncoder(5);
+	const enc = _singleEventEncoder;
+	enc.reset();
 	enc.writeUint8(MessageType.ItemDespawn);
 	enc.writeUint32(id);
 	return enc.getBytes();

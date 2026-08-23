@@ -12,8 +12,8 @@ import { Map1 } from "@/code/Maps/Map1";
 import type { Player } from "@/code/Player/Player";
 import { Chunk, getChunk } from "@/code/World/Chunk/Chunk";
 import {
+	getBlockAndStateByWorldCoords,
 	getBlockByWorldCoords,
-	getBlockStateByWorldCoords,
 	registerChunkBoundEntity,
 	unregisterChunkBoundEntity,
 } from "@/code/World/Chunk/ChunkLoadingSystem";
@@ -166,16 +166,14 @@ export abstract class NeutralMob {
 			halfSize,
 			createVoxelColliderBlockSampler(
 				(wx, wy, wz) => {
-					const blockId = getBlockByWorldCoords(wx, wy, wz);
-					if (!isCollidableBlock(blockId)) return null;
+					// PERF: single chunk resolution (was two: block id + state),
+					// halving the BigInt packCoords getChunk calls per voxel.
+					const r = getBlockAndStateByWorldCoords(wx, wy, wz);
+					if (!isCollidableBlock(r.blockId)) return null;
 
 					// Shared scratch — consumed immediately by the sampler.
-					_voxelResolveScratch.blockId = blockId;
-					_voxelResolveScratch.blockState = getBlockStateByWorldCoords(
-						wx,
-						wy,
-						wz,
-					);
+					_voxelResolveScratch.blockId = r.blockId;
+					_voxelResolveScratch.blockState = r.blockState;
 					return _voxelResolveScratch;
 				},
 				{

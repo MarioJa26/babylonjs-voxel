@@ -27,6 +27,7 @@ import { type Chunk, getChunk } from "../World/Chunk/Chunk";
 import {
 	getBlockAndStateByWorldCoords,
 	getBlockByWorldCoords,
+	resolveBlockAtWorldCoords,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { getShapeForBlockId } from "../World/Shape/BlockShapes";
 import {
@@ -95,18 +96,18 @@ const _unloadedSolid: { blockId: number; blockState: number } = {
 // voxel data. Used to gate collision: an unloaded chunk is treated as solid so
 // the player never falls through terrain that hasn't streamed in.
 //
-// PERF: Collision sweeps probe clusters of adjacent voxels that almost always
-// live in the same chunk, but getChunk() builds three BigInts per call via
-// packCoords. Mirror ChunkWorldMutations.resolveCoords' last-chunk cache: only
-// re-resolve when the chunk coords change, and drop the cached entry as soon
-// as it reports unloaded so a disposed chunk can't stick (the next probe
-// falls through to the registry again).
-const _probeCache: {
-	cx: number;
-	cy: number;
-	cz: number;
-	chunk: Chunk | undefined;
-} = { cx: NaN, cy: NaN, cz: NaN, chunk: undefined };
+// PERF: Collision sweeps probe clusters of adjacent voxels that usually live
+// in one of a handful of chunks, but getChunk() builds three BigInts per call
+// via packCoords. Mirror ChunkWorldMutations.resolveCoords' 8-slot ring: an
+// AABB sweep spans at most 2 chunks per axis (~8 distinct chunks), so hits
+// stay near-constant after warmup. A stale (disposed) entry is refreshed via
+// re-resolution instead of being trusted.
+const _PROBE_SLOTS = 8;
+const _pcx = new Int32Array(_PROBE_SLOTS).fill(0x7fffffff);
+const _pcy = new Int32Array(_PROBE_SLOTS).fill(0x7fffffff);
+const _pcz = new Int32Array(_PROBE_SLOTS).fill(0x7fffffff);
+const _pchunk: (Chunk | undefined)[] = new Array(_PROBE_SLOTS).fill(undefined);
+let _pcursor = 0;
 
 function isChunkLoadedAtWorldCoords(
 	worldX: number,
@@ -117,23 +118,23 @@ function isChunkLoadedAtWorldCoords(
 	const cy = worldToChunkCoord(worldY);
 	const cz = worldToChunkCoord(worldZ);
 
-	let chunk =
-		_probeCache.cx === cx && _probeCache.cy === cy && _probeCache.cz === cz
-			? _probeCache.chunk
-			: undefined;
-
-	if (!chunk) {
-		chunk = getChunk(cx, cy, cz);
-		_probeCache.cx = cx;
-		_probeCache.cy = cy;
-		_probeCache.cz = cz;
-		_probeCache.chunk = chunk;
-	} else if (!chunk.isLoaded) {
-		// Stale entry (chunk disposed since caching) — release it so future
-		// probes re-resolve instead of trusting a dead object forever.
-		_probeCache.chunk = undefined;
-		return false;
+	for (let i = 0; i < _PROBE_SLOTS; i++) {
+		if (_pcx[i] === cx && _pcy[i] === cy && _pcz[i] === cz) {
+			const cached = _pchunk[i];
+			if (cached && cached.isLoaded) {
+				return cached.hasVoxelData;
+			}
+			// Stale/disposed entry — fall through and refresh this slot.
+			break;
+		}
 	}
+
+	const chunk = getChunk(cx, cy, cz);
+	_pcx[_pcursor] = cx;
+	_pcy[_pcursor] = cy;
+	_pcz[_pcursor] = cz;
+	_pchunk[_pcursor] = chunk;
+	_pcursor = (_pcursor + 1) % _PROBE_SLOTS;
 
 	return !!chunk && chunk.isLoaded && chunk.hasVoxelData;
 }
@@ -321,13 +322,16 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			},
 			createVoxelColliderBlockSampler(
 				(x, y, z) => {
-					if (!isChunkLoadedAtWorldCoords(x, y, z)) {
+					// PERF: single chunk resolution per voxel (was two: a loaded
+					// check via getChunk + a block/state read). resolveBlockAtWorldCoords
+					// resolves once and reports unloaded so we can treat it as solid.
+					const r = resolveBlockAtWorldCoords(x, y, z);
+					if (r.unloaded) {
 						// Chunk under this probe is not loaded: treat it as solid
 						// terrain so the player collides with / rests on it instead
 						// of falling through into the void while chunks stream in.
 						return _unloadedSolid;
 					}
-					const r = getBlockAndStateByWorldCoords(x, y, z);
 					if (!isCollidableBlock(r.blockId)) return null;
 					return r;
 				},
