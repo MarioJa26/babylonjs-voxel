@@ -9,6 +9,12 @@ export const enum Gamemodes {
 export const REACH_DISTANCE = 64;
 //Pickup Aura
 export const REACH_AURA = 3;
+// Max distance for picking up SERVER-authoritative dropped items. The server
+// only accepts ItemPickup within its own radius (2.5) of the last reported
+// player position, so requests beyond this are guaranteed rejections —
+// clamping client-side keeps optimistic pickups from silently desyncing.
+// Local (singleplayer) items keep the full interaction reach.
+export const ITEM_PICKUP_MAX_REACH = 2.0;
 export class PlayerStats {
 	public gamemode: Gamemodes = Gamemodes.Creative;
 

@@ -37,6 +37,7 @@ import {
 	encodeChunkDataDeflatedPayload,
 	encodeChunkUnchanged,
 	encodeItemDespawn,
+	encodeItemPickupRejected,
 	encodeItemSpawn,
 	encodeMobDespawn,
 	encodeMobSpawn,
@@ -58,6 +59,7 @@ import {
 	type ChatMessageData,
 	type ItemDropData,
 	type ItemPickupData,
+	ItemPickupRejectReason,
 	type ItemSpawnData,
 	type ItemUpdateBatchEntry,
 	MAX_SKIN_BYTES,
@@ -1187,9 +1189,17 @@ export class VoxelRoom extends Room {
 		}
 		scratch.length = itemCount;
 
-		this.itemUpdateEncoder.reset();
-		writeItemUpdateBatch(this.itemUpdateEncoder, scratch);
-		this.broadcastBytes("binary", this.itemUpdateEncoder.getBytes(), {});
+		// The wire format stores the entry count in one byte, so batches are
+		// capped at 255. Split larger snapshots into consecutive messages
+		// instead of silently truncating (which would freeze distant items).
+		for (let offset = 0; offset < itemCount; offset += 255) {
+			this.itemUpdateEncoder.reset();
+			writeItemUpdateBatch(
+				this.itemUpdateEncoder,
+				scratch.slice(offset, offset + 255),
+			);
+			this.broadcastBytes("binary", this.itemUpdateEncoder.getBytes(), {});
+		}
 	}
 
 	private handleBinaryMessage(client: Client, data: Uint8Array): void {
@@ -1772,12 +1782,32 @@ export class VoxelRoom extends Room {
 				if (!player) return;
 
 				const item = this.itemSim.get(pickup.itemId);
-				if (!item) return;
+				if (!item) {
+					// Tell the picker their optimistic pickup failed so they can
+					// roll the phantom stack out of their inventory.
+					client.sendBytes(
+						"binary",
+						encodeItemPickupRejected({
+							id: pickup.itemId,
+							reason: ItemPickupRejectReason.NotFound,
+						}),
+					);
+					return;
+				}
 
 				const dx = item.x - player.x;
 				const dy = item.y - player.y;
 				const dz = item.z - player.z;
-				if (dx * dx + dy * dy + dz * dz > ITEM_PICKUP_RADIUS_SQ) return;
+				if (dx * dx + dy * dy + dz * dz > ITEM_PICKUP_RADIUS_SQ) {
+					client.sendBytes(
+						"binary",
+						encodeItemPickupRejected({
+							id: pickup.itemId,
+							reason: ItemPickupRejectReason.TooFar,
+						}),
+					);
+					return;
+				}
 
 				this.itemSim.remove(pickup.itemId);
 				this.broadcastBytes("binary", encodeItemDespawn(pickup.itemId), {});

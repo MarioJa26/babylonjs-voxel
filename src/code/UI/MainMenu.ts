@@ -147,7 +147,7 @@ export class MainMenu {
 
 		this.playerNameInput = document.createElement("input");
 		this.playerNameInput.type = "text";
-		this.playerNameInput.placeholder = "Steve";
+		this.playerNameInput.placeholder = "Player";
 		this.playerNameInput.maxLength = 24;
 		this.playerNameInput.value = getPlayerName();
 		nameBar.appendChild(this.playerNameInput);

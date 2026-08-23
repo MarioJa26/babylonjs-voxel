@@ -36,35 +36,34 @@ import {
 	setRigLightColor,
 } from "../PlayerModel";
 
-const PREVIEW_SIZE = { width: 220, height: 320 };
-const SPIN_SPEED = Math.PI / 3.0; // rad/s
+const PREVIEW_SIZE = { width: 220, height: 320 } as const;
+const SPIN_SPEED = Math.PI / 3;
 const ATLAS_TEXTURE_PATH = "/texture/diffuse_atlas.png";
 
-/** Equipment slot ids shown beside/below the character, Minecraft-style. */
-const ARMOR_SLOT_LABELS: readonly [string, string][] = [
+const ARMOR_SLOT_LABELS: readonly (readonly [id: string, label: string])[] = [
 	["head", "Helmet"],
 	["chest", "Chestplate"],
 	["legs", "Leggings"],
 	["feet", "Boots"],
 ];
 
-const ACCESSORY_SLOT_LABELS: readonly [string, string][] = [
-	["necklace", "Necklace"],
-	["ring1", "Ring"],
-	["ring2", "Ring"],
-];
+const ACCESSORY_SLOT_LABELS: readonly (readonly [id: string, label: string])[] =
+	[
+		["necklace", "Necklace"],
+		["ring1", "Ring"],
+		["ring2", "Ring"],
+	];
 
 /**
  * Small standalone render surface showing a Minecraft-style player model
- * inside the inventory screen. Uses its own tiny engine on a dedicated
- * canvas; the engine only runs while the inventory is open. Lighting
- * follows the voxel light level at the player's position (when supplied).
+ * inside the inventory screen. Uses its own engine on a dedicated canvas.
+ * The engine only runs while the inventory is open.
  */
 export class PlayerPreview {
 	readonly container: HTMLDivElement;
 
-	#canvas: HTMLCanvasElement;
-	#getLightLevel?: () => number;
+	canvas: HTMLCanvasElement;
+	getLightLevel?: () => number;
 
 	#engine: EngineContext | null = null;
 	#scene: SceneContext | null = null;
@@ -72,82 +71,113 @@ export class PlayerPreview {
 	#rigMat: ShaderMaterial | null = null;
 	#floor: Mesh | null = null;
 	#floorMat: ShaderMaterial | null = null;
+
 	#initPromise: Promise<void> | null = null;
 	#running = false;
-	#alive = false;
+	#disposed = false;
+
+	/*
+	 * Stores the last packed light value so shader uniforms are updated only
+	 * when the player's voxel lighting actually changes.
+	 */
+	#lastLightLevel: number | undefined;
 
 	constructor(getLightLevel?: () => number) {
-		// getLightLevel returns PACKED voxel light (sky << 4 | block), as
-		// returned by ChunkLoadingSystem.getLightByWorldCoords.
-		this.#getLightLevel = getLightLevel;
+		this.getLightLevel = getLightLevel;
 
 		this.container = document.createElement("div");
 		this.container.className = "player-preview-panel";
 
-		// Player name above the model, Minecraft-inventory style.
 		const name = document.createElement("div");
 		name.className = "player-preview-name";
-		name.textContent = getPlayerName().trim() || "Steve";
-		this.container.appendChild(name);
+		name.textContent = getPlayerName().trim() || "Player";
 
 		const body = document.createElement("div");
 		body.className = "preview-body";
 
-		this.#canvas = document.createElement("canvas");
-		this.#canvas.className = "player-preview-canvas";
-		this.#canvas.width = PREVIEW_SIZE.width;
-		this.#canvas.height = PREVIEW_SIZE.height;
-		body.appendChild(this.#canvas);
+		this.canvas = document.createElement("canvas");
+		this.canvas.className = "player-preview-canvas";
+		this.canvas.width = PREVIEW_SIZE.width;
+		this.canvas.height = PREVIEW_SIZE.height;
+		body.appendChild(this.canvas);
 
 		const armorStrip = document.createElement("div");
 		armorStrip.className = "equipment-slots";
-		for (const [id, label] of ARMOR_SLOT_LABELS) {
-			armorStrip.appendChild(PlayerPreview.#createEquipSlot(id, label));
-		}
+		PlayerPreview.#appendEquipSlots(armorStrip, ARMOR_SLOT_LABELS);
 		body.appendChild(armorStrip);
 
 		const accessories = document.createElement("div");
 		accessories.className = "accessory-slots";
-		for (const [id, label] of ACCESSORY_SLOT_LABELS) {
-			accessories.appendChild(PlayerPreview.#createEquipSlot(id, label));
+		PlayerPreview.#appendEquipSlots(accessories, ACCESSORY_SLOT_LABELS);
+
+		this.container.append(name, body, accessories);
+	}
+
+	static #appendEquipSlots(
+		parent: HTMLElement,
+		slots: readonly (readonly [id: string, label: string])[],
+	): void {
+		const fragment = document.createDocumentFragment();
+
+		for (let i = 0; i < slots.length; i++) {
+			const [id, label] = slots[i];
+			fragment.appendChild(PlayerPreview.#createEquipSlot(id, label));
 		}
 
-		this.container.appendChild(body);
-		this.container.appendChild(accessories);
+		parent.appendChild(fragment);
 	}
 
 	static #createEquipSlot(id: string, label: string): HTMLDivElement {
 		const slot = document.createElement("div");
 		slot.className = "equip-slot";
 		slot.dataset.slot = id;
-		slot.dataset.label = label.charAt(0);
+		slot.dataset.label = label[0] ?? "";
 		slot.title = label;
 		return slot;
 	}
 
-	/** Show (and lazily boot) the preview. Safe to call repeatedly. */
+	/** Show and lazily initialize the preview. Safe to call repeatedly. */
 	show(): void {
-		this.#ensureInit()
-			.then(() => this.#start())
-			.catch((e) => console.error("PlayerPreview unavailable:", e));
+		if (this.#disposed) return;
+
+		void this.#ensureInit()
+			.then(() => {
+				if (!this.#disposed) {
+					this.#start();
+				}
+			})
+			.catch((error: unknown) => {
+				if (!this.#disposed) {
+					console.error("PlayerPreview unavailable:", error);
+				}
+			});
 	}
 
 	/** Pause rendering while the inventory is closed. */
 	hide(): void {
-		if (!this.#engine || !this.#running) return;
+		const engine = this.#engine;
+
+		if (!engine || !this.#running) return;
+
 		this.#running = false;
-		stopEngine(this.#engine);
+		stopEngine(engine);
 	}
 
 	dispose(): void {
+		if (this.#disposed) return;
+
+		this.#disposed = true;
 		this.hide();
-		this.#alive = false;
 
-		if (this.#model) disposeMeshGpu(this.#model);
-		if (this.#floor) disposeMeshGpu(this.#floor);
-		if (this.#scene) disposeScene(this.#scene);
-		if (this.#engine) disposeEngine(this.#engine);
+		const model = this.#model;
+		const floor = this.#floor;
+		const scene = this.#scene;
+		const engine = this.#engine;
 
+		/*
+		 * Clear references before disposing GPU objects. This prevents late
+		 * async callbacks from observing resources that are being destroyed.
+		 */
 		this.#model = null;
 		this.#floor = null;
 		this.#rigMat = null;
@@ -155,65 +185,101 @@ export class PlayerPreview {
 		this.#scene = null;
 		this.#engine = null;
 		this.#initPromise = null;
+		this.getLightLevel = undefined;
+		this.#lastLightLevel = undefined;
+
+		if (model) disposeMeshGpu(model);
+		if (floor) disposeMeshGpu(floor);
+		if (scene) disposeScene(scene);
+		if (engine) disposeEngine(engine);
 
 		this.container.remove();
 	}
 
 	#ensureInit(): Promise<void> {
-		this.#initPromise ??= this.#init();
+		if (this.#disposed) {
+			return Promise.reject(
+				new Error("Cannot initialize a disposed PlayerPreview."),
+			);
+		}
+
+		if (!this.#initPromise) {
+			this.#initPromise = this.#init().catch((error: unknown) => {
+				/*
+				 * Permit a later show() call to retry initialization after a
+				 * transient engine or asset-loading failure.
+				 */
+				if (!this.#disposed) {
+					this.#initPromise = null;
+				}
+
+				throw error;
+			});
+		}
+
 		return this.#initPromise;
 	}
 
 	async #init(): Promise<void> {
-		const engine = await createEngine(this.#canvas, {});
-		const scene = createSceneContext(engine, { defaultRenderTask: true });
-		this.#alive = true;
+		const engine = await createEngine(this.canvas, {});
 
-		// Explicit dark clear so "nothing drawn" is never mistaken for white.
-		scene.clearColor = { r: 0.04, g: 0.055, b: 0.07, a: 1 };
+		/*
+		 * dispose() may run while createEngine() is awaiting.
+		 */
+		if (this.#disposed) {
+			disposeEngine(engine);
+			return;
+		}
 
-		// No scene lights needed: rig + floor both use the unlit textured
-		// ShaderMaterial tinted by the voxel-light color (see below), so the
-		// block under the model is colored EXACTLY like the model itself.
+		const scene = createSceneContext(engine, {
+			defaultRenderTask: true,
+		});
 
-		// Character rig (single merged mesh so it rotates as one piece).
-		const mesh = createPlayerRigMesh(engine, "playerPreviewRig");
-		const mat = createRigShaderMaterial("playerPreviewRigMat");
-		mesh.material = mat;
-		mesh.pickable = false;
-		// DroppedItem pattern: stay hidden until the texture is bound —
-		// drawing with an unbound sampler invalidates the render pass.
-		mesh.visible = false;
-		addToScene(scene, mesh);
+		scene.clearColor = {
+			r: 0.04,
+			g: 0.055,
+			b: 0.07,
+			a: 1,
+		};
 
-		this.#model = mesh;
-		this.#rigMat = mat;
 		this.#engine = engine;
 		this.#scene = scene;
 
+		const mesh = createPlayerRigMesh(engine, "playerPreviewRig");
+		const rigMat = createRigShaderMaterial("playerPreviewRigMat");
+
+		mesh.material = rigMat;
+		mesh.pickable = false;
+		mesh.visible = false;
+
+		addToScene(scene, mesh);
+
+		this.#model = mesh;
+		this.#rigMat = rigMat;
+
 		applyRigSkin(
 			engine,
-			mat,
+			rigMat,
 			() => {
-				if (this.#alive) mesh.visible = true;
+				if (!this.#disposed && this.#model === mesh) {
+					mesh.visible = true;
+				}
 			},
-			() => this.#alive,
+			() => !this.#disposed && this.#model === mesh,
 		);
 
-		// Floor slab (top surface at feet level) — textured from the SAME
-		// diffuse atlas the chunk shader uses, sampling exactly one Cobble
-		// tile so it reads as a real block face. Gray until it loads.
-		const tile = getAtlasTile(BlockType.Cobble) ?? [0, 0];
-		const tx = Math.max(0, Math.min(atlasSize - 1, tile[0]));
-		const ty = Math.max(0, Math.min(atlasSize - 1, tile[1]));
-		const ts = atlasTileSize;
-		const atlasRow = atlasSize - 1 - ty; // same v-flip as DroppedItem
-		const u0 = tx * ts;
-		const u1 = (tx + 1) * ts;
-		const vLow = atlasRow * ts;
-		const vHigh = (atlasRow + 1) * ts;
+		const tile = getAtlasTile(BlockType.Cobble);
+		const tileX = PlayerPreview.#clampAtlasCoordinate(tile?.[0] ?? 0);
+		const tileY = PlayerPreview.#clampAtlasCoordinate(tile?.[1] ?? 0);
+		const atlasRow = atlasSize - 1 - tileY;
 
-		const floorData = buildFloorSlabData(1.0, [u0, vLow, u1, vHigh]);
+		const u0 = tileX * atlasTileSize;
+		const u1 = (tileX + 1) * atlasTileSize;
+		const vLow = atlasRow * atlasTileSize;
+		const vHigh = (atlasRow + 1) * atlasTileSize;
+
+		const floorData = buildFloorSlabData(1, [u0, vLow, u1, vHigh]);
+
 		const floor = createMeshFromData(
 			engine,
 			"playerPreviewFloor",
@@ -222,14 +288,16 @@ export class PlayerPreview {
 			floorData.indices,
 			floorData.uvs,
 		);
-		// Same unlit rig shader as the model — its UVs are final atlas coords
-		// (buildFloorSlabData "atlas" mode), so one material swap makes the
-		// slab share the model's exact voxel-light tint.
+
 		const floorMat = createRigShaderMaterial("playerPreviewFloorMat");
+
 		setShaderTexture(floorMat, "diffuseTexture", getRigFallbackTexture(engine));
+
 		floor.material = floorMat;
 		floor.pickable = false;
+
 		addToScene(scene, floor);
+
 		this.#floor = floor;
 		this.#floorMat = floorMat;
 
@@ -237,38 +305,150 @@ export class PlayerPreview {
 			magFilter: "nearest",
 			minFilter: "nearest",
 		})
-			.then((tex) => {
-				if (!this.#alive || !this.#floorMat) return;
-				setShaderTexture(this.#floorMat, "diffuseTexture", tex);
-			})
-			.catch(() => {});
+			.then((texture) => {
+				if (
+					this.#disposed ||
+					this.#engine !== engine ||
+					this.#floorMat !== floorMat
+				) {
+					return;
+				}
 
-		// Deterministic framing of the whole rig — and it must actually become
-		// the active camera, otherwise nothing renders at all.
+				setShaderTexture(floorMat, "diffuseTexture", texture);
+			})
+			.catch(() => {
+				/*
+				 * The fallback texture remains bound if atlas loading fails.
+				 */
+			});
+
 		const camera = createArcRotateCamera(0.85, 1.25, 2.6, vec3(0, 0.8, 0));
+
 		addToScene(scene, camera);
 		scene.camera = camera;
 
 		onBeforeRender(scene, (deltaMs) => {
-			if (this.#model) {
-				this.#model.rotation.y += (deltaMs / 1000) * SPIN_SPEED;
+			const currentModel = this.#model;
+
+			if (currentModel) {
+				currentModel.rotation.y += deltaMs * 0.001 * SPIN_SPEED;
 			}
-			if (this.#getLightLevel) {
-				// Match the in-world rig lighting: colored sky/torch mix from
-				// packed voxel light (sky << 4 | block). Applied to BOTH the
-				// model and the floor slab so they share one exact color.
-				const color = packedLightToLightColor(this.#getLightLevel());
-				if (this.#rigMat) setRigLightColor(this.#rigMat, color);
-				if (this.#floorMat) setRigLightColor(this.#floorMat, color);
+
+			const getLightLevel = this.getLightLevel;
+			if (!getLightLevel) return;
+
+			const packedLight = getLightLevel();
+
+			if (packedLight === this.#lastLightLevel) return;
+			this.#lastLightLevel = packedLight;
+
+			const color = packedLightToLightColor(packedLight);
+
+			const currentRigMat = this.#rigMat;
+			if (currentRigMat) {
+				setRigLightColor(currentRigMat, color);
+			}
+
+			const currentFloorMat = this.#floorMat;
+			if (currentFloorMat) {
+				setRigLightColor(currentFloorMat, color);
 			}
 		});
 
+		/*
+		 * Apply the initial light immediately so the first rendered frame
+		 * does not briefly use the shader's default tint.
+		 */
+		this.#updateLight();
+
+		if (this.#disposed) {
+			this.#disposeInitializedResources(engine, scene, mesh, floor);
+			return;
+		}
+
 		await registerScene(scene);
+
+		/*
+		 * dispose() may also run while registerScene() is awaiting.
+		 */
+		if (this.#disposed) {
+			this.#disposeInitializedResources(engine, scene, mesh, floor);
+		}
+	}
+
+	#updateLight(): void {
+		const getLightLevel = this.getLightLevel;
+		if (!getLightLevel) return;
+
+		const packedLight = getLightLevel();
+		this.#lastLightLevel = packedLight;
+
+		const color = packedLightToLightColor(packedLight);
+
+		if (this.#rigMat) {
+			setRigLightColor(this.#rigMat, color);
+		}
+
+		if (this.#floorMat) {
+			setRigLightColor(this.#floorMat, color);
+		}
+	}
+
+	#disposeInitializedResources(
+		engine: EngineContext,
+		scene: SceneContext,
+		model: Mesh,
+		floor: Mesh,
+	): void {
+		/*
+		 * Only dispose resources still owned by this initialization attempt.
+		 * Normal dispose() may already have cleared and destroyed them.
+		 */
+		if (this.#model === model) {
+			this.#model = null;
+			disposeMeshGpu(model);
+		}
+
+		if (this.#floor === floor) {
+			this.#floor = null;
+			disposeMeshGpu(floor);
+		}
+
+		if (this.#scene === scene) {
+			this.#scene = null;
+			disposeScene(scene);
+		}
+
+		if (this.#engine === engine) {
+			this.#engine = null;
+			disposeEngine(engine);
+		}
+
+		this.#rigMat = null;
+		this.#floorMat = null;
 	}
 
 	#start(): void {
-		if (!this.#engine || this.#running) return;
+		const engine = this.#engine;
+
+		if (this.#disposed || !engine || this.#running) return;
+
 		this.#running = true;
-		void startEngine(this.#engine);
+
+		void startEngine(engine).catch((error: unknown) => {
+			if (this.#engine === engine) {
+				this.#running = false;
+			}
+
+			if (!this.#disposed) {
+				console.error("PlayerPreview could not start:", error);
+			}
+		});
+	}
+
+	static #clampAtlasCoordinate(value: number): number {
+		if (value <= 0) return 0;
+		if (value >= atlasSize - 1) return atlasSize - 1;
+		return value;
 	}
 }

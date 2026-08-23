@@ -32,7 +32,7 @@ import {
 import { BlockType, isCollidableBlock } from "@/code/World/Texture/BlockType";
 import { DroppedItem } from "../../Inventory/DroppedItem";
 import type { Player } from "../../Player";
-import { REACH_DISTANCE } from "../../PlayerStats";
+import { ITEM_PICKUP_MAX_REACH, REACH_DISTANCE } from "../../PlayerStats";
 
 export type BlockRaycastHit = {
 	x: number;
@@ -1018,6 +1018,10 @@ export function pickTarget(player: Player): BlockRaycastHit | null {
  * or null. Picks the closest item whose AABB is hit by the look ray within
  * `REACH_DISTANCE`. Used by `Player.use()` (the E key) so the targeted item —
  * not merely the nearest one — is picked up.
+ *
+ * Server-authoritative (remote) items are limited to `ITEM_PICKUP_MAX_REACH`
+ * because anything beyond that distance is guaranteed to be rejected by the
+ * server's pickup-radius validation.
  */
 export function pickDroppedItem(player: Player): DroppedItem | null {
 	const ray = getForwardRay(player, REACH_DISTANCE);
@@ -1032,6 +1036,22 @@ export function pickDroppedItem(player: Player): DroppedItem | null {
 	let bestT = Infinity;
 
 	for (const item of DroppedItem.activeItems) {
+		if (item.isRemote) {
+			// Cheap reject before the AABB test: remote items can never be
+			// picked beyond ITEM_PICKUP_MAX_REACH (ray direction is
+			// normalized, so the dot product is world-space distance).
+			const c = item.position;
+			const toX = c.x - ox;
+			const toY = c.y - oy;
+			const toZ = c.z - oz;
+			if (
+				toX * dx + toY * dy + toZ * dz >
+				ITEM_PICKUP_MAX_REACH + item.halfExtent
+			) {
+				continue;
+			}
+		}
+
 		const c = item.position;
 		const h = item.halfExtent;
 		const hit = intersectRayAabb(
@@ -1053,10 +1073,10 @@ export function pickDroppedItem(player: Player): DroppedItem | null {
 			0,
 			0,
 		);
-		if (hit && hit.t < bestT) {
-			bestT = hit.t;
-			best = item;
-		}
+		if (!hit || hit.t >= bestT) continue;
+		if (item.isRemote && hit.t > ITEM_PICKUP_MAX_REACH) continue;
+		bestT = hit.t;
+		best = item;
 	}
 
 	return best;

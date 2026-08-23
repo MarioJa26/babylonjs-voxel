@@ -46,6 +46,9 @@ import {
 	PLAYER_LIGHT_SAMPLE_Y_OFFSET,
 	packedLightToLightColor,
 	setRigLightColor,
+	setRigWalk,
+	WALK_REF_SPEED,
+	WALK_STRIDE_FACTOR,
 } from "./PlayerModel";
 import { Gamemodes, type PlayerStats } from "./PlayerStats";
 import { SimpleCharacterController } from "./SimpleCharacterController";
@@ -152,6 +155,9 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	#displayCapsule!: Mesh;
 	#displayMat: ShaderMaterial | null = null;
 	#displayLightX = Number.NaN;
+	// Walk-swing state for the display rig.
+	#displayWalkPhase = 0;
+	#displayWalkAmp = 0;
 	#displayLightY = Number.NaN;
 	#displayLightZ = Number.NaN;
 	#characterController!: SimpleCharacterController;
@@ -1241,6 +1247,19 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			this.voxelPosition.y,
 			this.voxelPosition.z,
 		);
+		{
+			const v = this.velocity;
+			const hSpeed = Math.hypot(v.x, v.z);
+			const dt = (deltaMs ?? 16.6) / 1000;
+			this.#displayWalkPhase += hSpeed * dt * WALK_STRIDE_FACTOR;
+			const targetAmp = Math.min(1, hSpeed / WALK_REF_SPEED);
+			this.#displayWalkAmp +=
+				(targetAmp - this.#displayWalkAmp) * Math.min(1, dt * 10);
+			const mat = this.#displayMat;
+			if (mat) {
+				setRigWalk(mat, this.#displayWalkPhase, this.#displayWalkAmp);
+			}
+		}
 		const rq = this.#displayCapsule.rotationQuaternion;
 		rq.set(
 			this.#characterOrientation.x,

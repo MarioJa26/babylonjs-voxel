@@ -34,6 +34,9 @@ import {
 	PLAYER_LIGHT_SAMPLE_Y_OFFSET,
 	packedLightToLightColor,
 	setRigLightColor,
+	setRigWalk,
+	WALK_REF_SPEED,
+	WALK_STRIDE_FACTOR,
 } from "./PlayerModel";
 import { PlayerStats } from "./PlayerStats";
 import { PlayerVehicleMotor } from "./PlayerVehicleMotor";
@@ -71,6 +74,9 @@ export class Player {
 	#bodyLightY = Number.NaN;
 	#bodyLightZ = Number.NaN;
 	#bodyLightSampleMs = Number.NEGATIVE_INFINITY;
+	// Walk-swing state for the third-person rig.
+	#bodyWalkPhase = 0;
+	#bodyWalkAmp = 0;
 
 	networkManager?: import("../Network/NetworkManager").NetworkManager;
 
@@ -167,12 +173,26 @@ export class Player {
 		if (getIsPaused() || !this.#loopController) return;
 
 		this.#loopController.tick(deltaMs);
-		this.#updatePlayerBody();
+		this.#updatePlayerBody(deltaMs);
 	}
 
-	#updatePlayerBody(): void {
+	#updatePlayerBody(deltaMs: number): void {
 		const body = this.#playerBodyMesh;
 		if (!body) return;
+
+		// Walk swing: phase advances with ground speed; amplitude eases toward
+		// full stride at WALK_REF_SPEED and decays back to the rest pose.
+		{
+			const v = this.velocity;
+			const hSpeed = Math.hypot(v.x, v.z);
+			const dt = deltaMs / 1000;
+			this.#bodyWalkPhase += hSpeed * dt * WALK_STRIDE_FACTOR;
+			const targetAmp = Math.min(1, hSpeed / WALK_REF_SPEED);
+			this.#bodyWalkAmp +=
+				(targetAmp - this.#bodyWalkAmp) * Math.min(1, dt * 10);
+			const mat = this.#playerBodyMat;
+			if (mat) setRigWalk(mat, this.#bodyWalkPhase, this.#bodyWalkAmp);
+		}
 
 		// Don't render until the skin texture is bound (unbound sampler would
 		// produce an invalid pass), and only in third person.

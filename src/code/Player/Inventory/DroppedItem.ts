@@ -281,6 +281,15 @@ export class DroppedItem implements IUsable {
 	#remoteInstanceId: number | null = null;
 	#remotePickup: ((instanceId: number) => void) | null = null;
 
+	// Optimistic pickup bookkeeping: what was granted locally while waiting
+	// for the server's despawn/rejection. Cleared on success (despawn) or
+	// rolled back on ItemPickupRejected.
+	#remotePendingPickup: {
+		player: Player;
+		itemId: number;
+		granted: number;
+	} | null = null;
+
 	static readonly #allItems: DroppedItem[] = [];
 	static #observerRegistered = false;
 
@@ -419,13 +428,27 @@ export class DroppedItem implements IUsable {
 	}
 
 	use = (player: Player): void => {
-		// Remote (server-authoritative) items: tell the server we picked this
-		// one up (it will broadcast a despawn to everyone), then add it to the
-		// inventory locally and remove our own mesh.
+		// Remote (server-authoritative) items: optimistically add the stack to
+		// the inventory and keep the mesh until the server confirms. The
+		// server broadcasts ItemDespawn on success (RemoteItemManager then
+		// disposes us) or ItemPickupRejected on failure (rollbackRemotePickup
+		// removes the phantom stack again).
 		if (this.#remoteInstanceId !== null && this.#remotePickup) {
+			// A pickup is already in flight for this item — ignore repeats
+			// so a double-click cannot grant two phantom stacks.
+			if (this.#remotePendingPickup) return;
+
 			this.#remotePickup(this.#remoteInstanceId);
-			player.playerInventory.addItem(this.#item);
-			this.#dispose();
+
+			// addItem() drains item.stackSize into existing stacks, so the
+			// granted amount is captured BEFORE the call.
+			const requestedCount = this.#item.stackSize;
+			const remainder = player.playerInventory.addItem(this.#item);
+			this.#remotePendingPickup = {
+				player,
+				itemId: this.#item.itemId,
+				granted: Math.max(0, requestedCount - remainder),
+			};
 			return;
 		}
 
@@ -451,6 +474,11 @@ export class DroppedItem implements IUsable {
 	#dispose(): void {
 		if (this.#disposed) return;
 		this.#disposed = true;
+
+		// If we vanish while a pickup is in flight (ItemDespawn arrived =
+		// success, or scene teardown), cancel rollback bookkeeping so a late
+		// rejection can never remove stacks the server actually confirmed.
+		this.#remotePendingPickup = null;
 
 		const items = DroppedItem.#allItems;
 		const last = items.pop();
@@ -607,6 +635,31 @@ export class DroppedItem implements IUsable {
 		this.#remoteInstanceId = instanceId;
 		this.#remotePickup = onPickup;
 		this.#sleeping = true;
+	}
+
+	get isRemote(): boolean {
+		return this.#remoteInstanceId !== null;
+	}
+
+	/**
+	 * The server rejected our optimistic pickup (ItemPickupRejected). Undo
+	 * the local inventory grant so no phantom stack lingers. The mesh stays
+	 * visible and pickable — for TooFar rejections the player can simply walk
+	 * closer and try again.
+	 */
+	public rollbackRemotePickup(instanceId: number): void {
+		if (this.#remoteInstanceId !== instanceId) return;
+
+		const pending = this.#remotePendingPickup;
+		if (!pending) return;
+		this.#remotePendingPickup = null;
+
+		if (pending.granted > 0) {
+			pending.player.playerInventory.removeItems(
+				pending.itemId,
+				pending.granted,
+			);
+		}
 	}
 
 	/**

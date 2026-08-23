@@ -15,9 +15,10 @@ import type { NetClient } from "./NetClient";
 import {
 	BinaryDecoder,
 	decodeItemDespawn,
+	decodeItemPickupRejected,
 	decodeItemSpawn,
 } from "./protocol/encoder";
-import { MessageType } from "./protocol/messages";
+import { ItemPickupRejectReason, MessageType } from "./protocol/messages";
 
 /** Time since last server update before we stop extrapolating (seconds). */
 const EXTRAPOLATION_WINDOW = 0.04;
@@ -42,10 +43,17 @@ export class RemoteItemManager {
 	private readonly items = new Map<number, RemoteItemInstance>();
 	private readonly decoder = new BinaryDecoder(new Uint8Array(0));
 	private readonly handler: (data: Uint8Array) => void;
+	private readonly onDisconnected: () => void;
 
 	constructor(private readonly client: NetClient) {
 		this.handler = (data) => this.handleBinaryMessage(data);
 		this.client.addBinaryHandler(this.handler);
+
+		// Drop every ghost mesh when the connection dies. The server restarts
+		// its item ids per room instance, so stale entries from a previous
+		// session would otherwise collide with recycled ids after reconnect.
+		this.onDisconnected = () => this.clearAll();
+		this.client.addDisconnectListener(this.onDisconnected);
 	}
 
 	get size(): number {
@@ -92,6 +100,22 @@ export class RemoteItemManager {
 				this.despawnItem(decodeItemDespawn(data));
 				break;
 			}
+
+			case MessageType.ItemPickupRejected: {
+				const rejection = decodeItemPickupRejected(data);
+				if (
+					rejection.reason !== ItemPickupRejectReason.NotFound &&
+					rejection.reason !== ItemPickupRejectReason.TooFar
+				) {
+					console.warn(
+						`[RemoteItemManager] Unknown pickup reject reason ${rejection.reason}`,
+					);
+				}
+				this.items
+					.get(rejection.id)
+					?.dropped.rollbackRemotePickup(rejection.id);
+				break;
+			}
 		}
 	}
 
@@ -106,14 +130,26 @@ export class RemoteItemManager {
 		// A duplicate spawn (e.g. a re-sent join snapshot) just refreshes state.
 		const existing = this.items.get(id);
 		if (existing) {
-			existing.targetX = x;
-			existing.targetY = y;
-			existing.targetZ = z;
-			existing.currentX = x;
-			existing.currentY = y;
-			existing.currentZ = z;
-			existing.dropped.setRemotePosition(x, y, z);
-			return;
+			if (
+				existing.dropped.item.itemId === itemId &&
+				existing.dropped.item.stackSize === stackSize
+			) {
+				existing.targetX = x;
+				existing.targetY = y;
+				existing.targetZ = z;
+				existing.currentX = x;
+				existing.currentY = y;
+				existing.currentZ = z;
+				existing.lastUpdateMs = performance.now();
+				existing.dropped.setRemotePosition(x, y, z);
+				return;
+			}
+
+			// Same id but a different item identity — the server restarted and
+			// recycled ids. Rebuild from scratch instead of rendering the old
+			// item with the new one's id.
+			existing.dropped.dispose();
+			this.items.delete(id);
 		}
 
 		let item: Item;
@@ -217,11 +253,17 @@ export class RemoteItemManager {
 		}
 	}
 
-	dispose(): void {
-		this.client.removeBinaryHandler(this.handler);
+	/** Dispose every tracked remote item without touching the NetClient. */
+	clearAll(): void {
 		for (const inst of this.items.values()) {
 			inst.dropped.dispose();
 		}
 		this.items.clear();
+	}
+
+	dispose(): void {
+		this.client.removeBinaryHandler(this.handler);
+		this.client.removeDisconnectListener(this.onDisconnected);
+		this.clearAll();
 	}
 }

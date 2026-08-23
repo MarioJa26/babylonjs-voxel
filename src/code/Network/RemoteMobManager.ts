@@ -75,9 +75,16 @@ export class RemoteMobManager {
 
 	private readonly mobUpdateScratch: MobUpdateBatchEntry[] = [];
 
+	private readonly onDisconnected: () => void;
+
 	constructor(private readonly client: NetClient) {
 		this.handler = (data) => this.handleBinaryMessage(data);
 		this.client.addBinaryHandler(this.handler);
+
+		// Clear ghost mobs when the connection dies — server mob ids restart
+		// per room instance, so stale entries would collide after reconnect.
+		this.onDisconnected = () => this.clearAll();
+		this.client.addDisconnectListener(this.onDisconnected);
 	}
 
 	get size(): number {
@@ -249,9 +256,8 @@ export class RemoteMobManager {
 		}
 	}
 
-	dispose(): void {
-		this.client.removeBinaryHandler(this.handler);
-
+	/** Remove every tracked mob + pooled mesh without touching the NetClient. */
+	clearAll(): void {
 		for (const mob of this.mobs.values()) {
 			removeFromScene(Map1.mainScene, mob.mesh);
 		}
@@ -263,5 +269,11 @@ export class RemoteMobManager {
 		}
 		this.mobs.clear();
 		this.pool.clear();
+	}
+
+	dispose(): void {
+		this.client.removeBinaryHandler(this.handler);
+		this.client.removeDisconnectListener(this.onDisconnected);
+		this.clearAll();
 	}
 }

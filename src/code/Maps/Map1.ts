@@ -5,12 +5,12 @@ import { setGameTimeScale } from "../Lib/GameRuntimeState";
 import type { RemoteMobManager } from "../Network/RemoteMobManager";
 import type { Player } from "../Player/Player";
 import { PlayerLoadingGate } from "../Player/PlayerLoadingGate";
-import { FarTileManager } from "../World/FarTiles/FarTileManager";
 import {
 	disposeSharedResources,
 	initAtlas,
 	initEngineContext,
 } from "../World/Chunk/ChunkMesher";
+import { FarTileManager } from "../World/FarTiles/FarTileManager";
 import { WorldStorage } from "../World/WorldStorage";
 import { WorldEnvironment } from "./WorldEnvironment";
 
@@ -26,6 +26,9 @@ export class Map1 {
 	public static environment: WorldEnvironment;
 	public static mobRegistry: MobRegistry | null = null;
 	public static remoteMobManager: RemoteMobManager | null = null;
+	/** The local player, exposed for world entities (e.g. mob drops) that
+	 * need to route through NetworkManager without a direct reference. */
+	public static mainPlayer: Player | null = null;
 
 	#player: Player;
 
@@ -33,6 +36,7 @@ export class Map1 {
 
 	constructor(engine: EngineContext, scene: SceneContext, player: Player) {
 		this.#player = player;
+		Map1.mainPlayer = player;
 		Map1.engine = engine;
 		Map1.mainScene = scene;
 

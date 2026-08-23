@@ -104,6 +104,11 @@ export class NetClient {
 
 	private readonly binaryHandlers: BinaryHandler[] = [];
 
+	// Subscribers notified whenever the connection drops (leave, error,
+	// explicit disconnect). Used by entity managers to clear ghost meshes so
+	// stale server state can never leak into the next session.
+	private readonly disconnectListeners: (() => void)[] = [];
+
 	// Reusable decode scratch for the hot player-state path.
 	private readonly batchScratch: PlayerStateBatchEntry[] = [];
 
@@ -210,6 +215,15 @@ export class NetClient {
 		if (index >= 0) {
 			this.binaryHandlers.splice(index, 1);
 		}
+	}
+
+	addDisconnectListener(listener: () => void): void {
+		this.disconnectListeners.push(listener);
+	}
+
+	removeDisconnectListener(listener: () => void): void {
+		const index = this.disconnectListeners.indexOf(listener);
+		if (index !== -1) this.disconnectListeners.splice(index, 1);
 	}
 
 	private handleBinaryMessage(data: Uint8Array): void {
@@ -667,6 +681,14 @@ export class NetClient {
 	}
 
 	private resetRemoteState(): void {
+		for (const listener of this.disconnectListeners) {
+			try {
+				listener();
+			} catch (err) {
+				console.error("[NetClient] Disconnect listener failed:", err);
+			}
+		}
+
 		this.remotePlayers.clear();
 		this.playersByIndex.length = 0;
 		this.warnedUnknownIndices.clear();

@@ -62,6 +62,7 @@ export const MessageType = {
 	ItemSpawn: 0x26, // A dropped item appeared in the world
 	ItemUpdateBatch: 0x27, // Position batch for all dropped items (fixed-rate)
 	ItemDespawn: 0x28, // A dropped item was picked up / expired / removed
+	ItemPickupRejected: 0x29, // S→C: this client's ItemPickup was denied
 } as const;
 
 export type MessageType = (typeof MessageType)[keyof typeof MessageType];
@@ -255,4 +256,23 @@ export interface ItemUpdateBatchEntry {
 export interface ItemDespawnData {
 	/** Server-assigned item instance id (uint32). */
 	id: number;
+}
+
+/** Why the server refused an ItemPickup request. Mirrors BlockEditRejectReason. */
+export const ItemPickupRejectReason = {
+	/** No such item exists (already picked up, expired, or never spawned). */
+	NotFound: 0,
+	/** The item exists but is farther from the player than the pickup radius. */
+	TooFar: 1,
+} as const;
+
+export type ItemPickupRejectReason =
+	(typeof ItemPickupRejectReason)[keyof typeof ItemPickupRejectReason];
+
+/** S→C: the server rejected this client's optimistic ItemPickup request. */
+export interface ItemPickupRejectedData {
+	/** Server-assigned item instance id (uint32). */
+	id: number;
+	/** One of ItemPickupRejectReason. */
+	reason: number;
 }

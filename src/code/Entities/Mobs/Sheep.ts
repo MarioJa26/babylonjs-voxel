@@ -147,7 +147,18 @@ export class Sheep extends NeutralMob {
 
 		item.stackSize = 1;
 
-		dropWorldItem(item, pos.x, pos.y + 0.5, pos.z, 0, 0, 0);
+		// Pass the local player so the drop routes through ItemDrop in
+		// multiplayer instead of spawning a server-unaware local item.
+		dropWorldItem(
+			item,
+			pos.x,
+			pos.y + 0.5,
+			pos.z,
+			0,
+			0,
+			0,
+			Map1.mainPlayer ?? undefined,
+		);
 	}
 
 	dispose(): void {

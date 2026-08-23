@@ -12,10 +12,27 @@ import {
 } from "@babylonjs/lite";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
 
+// Rig metrics (must precede the WGSL template, which bakes them in).
+export const PLAYER_MODEL_HEIGHT = 1.8;
+const PX = PLAYER_MODEL_HEIGHT / 32; // meters per skin pixel (rig is 32px tall)
+
+/** Limb ids baked into normal.x for the walk-swing shader. */
+const PART_STATIC = 0;
+const PART_ARM_L = 1;
+const PART_ARM_R = 2;
+const PART_LEG_L = 3;
+const PART_LEG_R = 4;
+
 // ─── Rig shader sources (unlit textured, brightness uniform) ────────────────
 // Mirrors the proven DroppedItem shader so no scene lights or
 // StandardMaterial state can interfere with how the model looks.
 
+// Limb animation is driven by a PART ID stored in the normal attribute
+// (normal.x = id, see appendBox). The unlit fragment shader never reads
+// normals, so the slot is free — tagging at build time gives exact limb
+// membership with none of the coplanar-boundary ambiguity of classifying by
+// position (arm bottoms / leg tops / torso underside all share y-planes).
+// IDs: 0 static · 1 arm-left · 2 arm-right · 3 leg-left · 4 leg-right.
 const RIG_VERTEX_WGSL = /* wgsl */ `
 struct VSOut {
 	@builtin(position) pos : vec4<f32>,
@@ -24,11 +41,40 @@ struct VSOut {
 	@location(2) vWorldPos : vec3<f32>,
 };
 
+const ARM_PIVOT_Y : f32 = ${(8 * PX).toFixed(6)};
+const HIP_PIVOT_Y : f32 = ${(-(4 * PX)).toFixed(6)};
+const SWING_MAX : f32 = 0.75;
+
+fn animateRig(p : vec3<f32>, part : f32) -> vec3<f32> {
+	if (shaderUniforms.uWalkAmp <= 0.0 || part < 0.5) {
+		return p;
+	}
+	let osc = sin(shaderUniforms.uWalkPhase)
+		* SWING_MAX
+		* shaderUniforms.uWalkAmp;
+	var pivotY : f32;
+	var ang : f32;
+	if (part < 2.5) {
+		// arms: right swings opposite to left
+		pivotY = ARM_PIVOT_Y;
+		ang = osc * select(-1.0, 1.0, part > 1.5) * -1.0;
+	} else {
+		// legs: right in phase with left arm
+		pivotY = HIP_PIVOT_Y;
+		ang = osc * select(-1.0, 1.0, part > 3.5);
+	}
+	let s = sin(ang);
+	let c = cos(ang);
+	let cy = p.y - pivotY;
+	return vec3<f32>(p.x, pivotY + cy * c - p.z * s, cy * s + p.z * c);
+}
+
 @vertex
 fn mainVertex(input : VertexInput) -> VSOut {
 	var out : VSOut;
-	let worldPos = shaderSystem.world * vec4<f32>(input.position, 1.0);
-	out.pos = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
+	let animated = animateRig(input.position, input.normal.x);
+	let worldPos = shaderSystem.world * vec4<f32>(animated, 1.0);
+	out.pos = shaderSystem.worldViewProjection * vec4<f32>(animated, 1.0);
 	out.vUV = input.uv;
 	out.vNormal = input.normal;
 	out.vWorldPos = worldPos.xyz;
@@ -58,7 +104,6 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
  */
 
 export const PLAYER_SKIN_PATH = "/texture/player/skin.png";
-export const PLAYER_MODEL_HEIGHT = 1.8;
 
 /**
  * Vertical offset (meters) from the mid-body controller origin where rig
@@ -66,8 +111,6 @@ export const PLAYER_MODEL_HEIGHT = 1.8;
  * contact while jumping never reads inside-block darkness.
  */
 export const PLAYER_LIGHT_SAMPLE_Y_OFFSET = 0.5;
-
-const PX = PLAYER_MODEL_HEIGHT / 32; // meters per skin pixel (rig is 32px tall)
 
 // ─── Skin atlas layout (64x64 classic base layer, pixel coords) ─────────────
 
@@ -126,6 +169,8 @@ interface BoxPart {
 	h: number;
 	d: number;
 	uv?: UvSet;
+	/** Limb tag baked into normal.x (see the WGSL header comment). */
+	partId?: number;
 }
 
 interface MeshData {
@@ -148,12 +193,10 @@ function appendBox(
 	// Face vertex order: [bottom-left, bottom-right, top-right, top-left] as
 	// seen from outside — identical to the game's proven box winding.
 	const faces: Array<{
-		n: [number, number, number];
 		r: UvRect | undefined;
 		v: Array<[number, number, number]>;
 	}> = [
 		{
-			n: [1, 0, 0],
 			r: p.uv?.left,
 			v: [
 				[x + hx, y - hy, z + hz],
@@ -163,7 +206,6 @@ function appendBox(
 			],
 		},
 		{
-			n: [-1, 0, 0],
 			r: p.uv?.right,
 			v: [
 				[x - hx, y - hy, z - hz],
@@ -173,7 +215,6 @@ function appendBox(
 			],
 		},
 		{
-			n: [0, 1, 0],
 			r: p.uv?.top,
 			v: [
 				[x - hx, y + hy, z + hz],
@@ -183,7 +224,6 @@ function appendBox(
 			],
 		},
 		{
-			n: [0, -1, 0],
 			r: p.uv?.bottom,
 			v: [
 				[x - hx, y - hy, z - hz],
@@ -193,7 +233,6 @@ function appendBox(
 			],
 		},
 		{
-			n: [0, 0, 1],
 			r: p.uv?.front,
 			v: [
 				[x - hx, y - hy, z + hz],
@@ -203,7 +242,6 @@ function appendBox(
 			],
 		},
 		{
-			n: [0, 0, -1],
 			r: p.uv?.back,
 			v: [
 				[x + hx, y - hy, z - hz],
@@ -218,7 +256,8 @@ function appendBox(
 		const base = out.positions.length / 3;
 		for (let i = 0; i < 4; i++) {
 			out.positions.push(f.v[i][0], f.v[i][1], f.v[i][2]);
-			out.normals.push(f.n[0], f.n[1], f.n[2]);
+			// normal.x carries the limb tag (unused by the unlit fragment).
+			out.normals.push(p.partId ?? PART_STATIC, 0, 0);
 			if (f.r) {
 				if (uvMode === "atlas") {
 					// Final normalized atlas coords, passed through verbatim:
@@ -267,8 +306,24 @@ export function buildPlayerRigData(origin: RigOrigin = "feet"): MeshData {
 	const yOffset = origin === "center" ? -PLAYER_MODEL_HEIGHT / 2 : -0.1;
 
 	const parts: BoxPart[] = [
-		{ x: 0, y: 28 * PX, z: 0, w: 8 * PX, h: 8 * PX, d: 8 * PX, uv: HEAD_UV },
-		{ x: 0, y: 18 * PX, z: 0, w: 8 * PX, h: 12 * PX, d: 4 * PX, uv: BODY_UV },
+		{
+			x: 0,
+			y: 28 * PX,
+			z: 0,
+			w: 8 * PX,
+			h: 8 * PX,
+			d: 8 * PX,
+			uv: HEAD_UV,
+		},
+		{
+			x: 0,
+			y: 18 * PX,
+			z: 0,
+			w: 8 * PX,
+			h: 12 * PX,
+			d: 4 * PX,
+			uv: BODY_UV,
+		},
 		{
 			x: -6 * PX,
 			y: 18 * PX,
@@ -277,6 +332,7 @@ export function buildPlayerRigData(origin: RigOrigin = "feet"): MeshData {
 			h: 12 * PX,
 			d: 4 * PX,
 			uv: ARM_L_UV,
+			partId: PART_ARM_L,
 		},
 		{
 			x: 6 * PX,
@@ -286,6 +342,7 @@ export function buildPlayerRigData(origin: RigOrigin = "feet"): MeshData {
 			h: 12 * PX,
 			d: 4 * PX,
 			uv: ARM_R_UV,
+			partId: PART_ARM_R,
 		},
 		{
 			x: -2 * PX,
@@ -295,6 +352,7 @@ export function buildPlayerRigData(origin: RigOrigin = "feet"): MeshData {
 			h: 12 * PX,
 			d: 4 * PX,
 			uv: LEG_L_UV,
+			partId: PART_LEG_L,
 		},
 		{
 			x: 2 * PX,
@@ -304,6 +362,7 @@ export function buildPlayerRigData(origin: RigOrigin = "feet"): MeshData {
 			h: 12 * PX,
 			d: 4 * PX,
 			uv: LEG_R_UV,
+			partId: PART_LEG_R,
 		},
 	];
 	for (const part of parts) appendBox(out, { ...part, y: part.y + yOffset });
@@ -414,6 +473,8 @@ export function applyRigSkin(
 	loadSkin: (engine: EngineContext) => Promise<Texture2D> = loadPlayerSkin,
 ): void {
 	setShaderUniform(mat, "uLightColor", [1, 1, 1]);
+	setShaderUniform(mat, "uWalkPhase", 0);
+	setShaderUniform(mat, "uWalkAmp", 0);
 	setShaderTexture(mat, "diffuseTexture", getFallbackTexture(engine));
 	loadSkin(engine)
 		.then((tex) => {
@@ -461,6 +522,8 @@ export function createRigShaderMaterial(name: string): ShaderMaterial {
 			"world",
 			"worldViewProjection",
 			{ name: "uLightColor", type: "vec3<f32>" },
+			{ name: "uWalkPhase", type: "f32" },
+			{ name: "uWalkAmp", type: "f32" },
 		],
 		samplers: ["diffuseTexture"],
 		backFaceCulling: false,
@@ -476,4 +539,20 @@ export function setRigLightColor(
 	color: readonly [number, number, number],
 ): void {
 	setShaderUniform(mat, "uLightColor", [color[0], color[1], color[2]]);
+}
+
+/** Radians of walk-stride phase accumulated per meter traveled. */
+export const WALK_STRIDE_FACTOR = 1.8;
+
+/** Horizontal speed (m/s) at which the swing reaches full amplitude. */
+export const WALK_REF_SPEED = 3;
+
+/** Drive the rig's walk-swing (amp 0 = rest pose, 1 = full stride). */
+export function setRigWalk(
+	mat: ShaderMaterial,
+	phase: number,
+	amp: number,
+): void {
+	setShaderUniform(mat, "uWalkPhase", phase);
+	setShaderUniform(mat, "uWalkAmp", Math.max(0, Math.min(1, amp)));
 }

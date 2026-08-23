@@ -16,6 +16,7 @@ import {
 	ChunkResultKind,
 	type ItemDropData,
 	type ItemPickupData,
+	type ItemPickupRejectedData,
 	type ItemSpawnData,
 	type ItemUpdateBatchEntry,
 	MessageType,
@@ -1456,6 +1457,7 @@ export function decodeMobDespawn(buffer: Uint8Array): number {
 // ItemSpawn (S→C):      [type:1][id:u32][itemId:u16][stackSize:u16][x:f32][y:f32][z:f32][vx:f32][vy:f32][vz:f32]
 // ItemUpdateBatch (S→C):[type:1][count:u8][id:u32][x:f32][y:f32][z:f32][vx:f32][vy:f32][vz:f32] × count
 // ItemDespawn (S→C):    [type:1][id:u32]
+// ItemPickupRejected (S→C): [type:1][id:u32][reason:u8]
 // ---------------------------------------------------------------------------
 
 export function encodeItemDrop(data: ItemDropData): Uint8Array {
@@ -1560,4 +1562,22 @@ export function encodeItemDespawn(id: number): Uint8Array {
 export function decodeItemDespawn(buffer: Uint8Array): number {
 	const dec = new BinaryDecoder(buffer, 1);
 	return dec.readUint32();
+}
+
+export function encodeItemPickupRejected(
+	data: ItemPickupRejectedData,
+): Uint8Array {
+	const enc = _singleEventEncoder;
+	enc.reset();
+	enc.writeUint8(MessageType.ItemPickupRejected);
+	enc.writeUint32(data.id);
+	enc.writeUint8(data.reason);
+	return enc.getBytes();
+}
+
+export function decodeItemPickupRejected(
+	buffer: Uint8Array,
+): ItemPickupRejectedData {
+	const dec = new BinaryDecoder(buffer, 1);
+	return { id: dec.readUint32(), reason: dec.readUint8() };
 }
