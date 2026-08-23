@@ -1,6 +1,7 @@
 import {
 	createMeshFromData,
 	createShaderMaterial,
+	createSolidTexture2D,
 	type EngineContext,
 	loadTexture2D,
 	type Mesh,
@@ -354,6 +355,17 @@ export function createPlayerRigMesh(
 
 const skinCache = new WeakMap<EngineContext, Promise<Texture2D>>();
 
+const fallbackTextureCache = new WeakMap<EngineContext, Texture2D>();
+
+function getFallbackTexture(engine: EngineContext): Texture2D {
+	let tex = fallbackTextureCache.get(engine);
+	if (!tex) {
+		tex = createSolidTexture2D(engine, 255, 255, 255, 255);
+		fallbackTextureCache.set(engine, tex);
+	}
+	return tex;
+}
+
 export function loadPlayerSkin(engine: EngineContext): Promise<Texture2D> {
 	let promise = skinCache.get(engine);
 	if (!promise) {
@@ -372,6 +384,11 @@ export function loadPlayerSkin(engine: EngineContext): Promise<Texture2D> {
  * Bind the skin texture to a rig ShaderMaterial and initialize the brightness
  * uniform. Mirrors DroppedItem: the mesh must stay HIDDEN until the texture is
  * bound (onBind), because drawing with an unbound sampler invalidates the pass.
+ *
+ * An opaque-white placeholder is bound SYNCHRONOUSLY first: lite builds a
+ * ShaderMaterial's bind group as soon as its renderable is constructed (scene
+ * registration / material swap), and throws error #241 if any declared sampler
+ * has no Texture2D — even when the mesh is invisible.
  */
 export function applyRigSkin(
 	engine: EngineContext,
@@ -380,6 +397,7 @@ export function applyRigSkin(
 	isAlive: () => boolean = () => true,
 ): void {
 	setShaderFloat(mat, "uBrightness", 1);
+	setShaderTexture(mat, "diffuseTexture", getFallbackTexture(engine));
 	loadPlayerSkin(engine)
 		.then((tex) => {
 			if (!isAlive()) return;
@@ -410,10 +428,7 @@ export function packedLightToLevel(packed: number): number {
  * multiplies by a uBrightness uniform — fully bypassing scene lights and
  * StandardMaterial state.
  */
-export function createRigShaderMaterial(
-	engine: EngineContext,
-	name: string,
-): ShaderMaterial {
+export function createRigShaderMaterial(name: string): ShaderMaterial {
 	return createShaderMaterial({
 		name,
 		vertexSource: RIG_VERTEX_WGSL,
