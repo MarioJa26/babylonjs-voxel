@@ -31,8 +31,8 @@ import {
 	applyRigSkin,
 	createPlayerRigMesh,
 	createRigShaderMaterial,
-	packedLightToLevel,
-	setRigBrightness,
+	packedLightToLightColor,
+	setRigLightColor,
 } from "./PlayerModel";
 import { PlayerStats } from "./PlayerStats";
 import { PlayerVehicleMotor } from "./PlayerVehicleMotor";
@@ -207,9 +207,9 @@ export class Player {
 				this.#bodyLightSampleMs = nowMs;
 				const mat = this.#playerBodyMat;
 				if (mat) {
-					setRigBrightness(
+					setRigLightColor(
 						mat,
-						packedLightToLevel(getLightByWorldCoords(x, y + 1, z)),
+						packedLightToLightColor(getLightByWorldCoords(x, y + 1, z)),
 					);
 				}
 			}

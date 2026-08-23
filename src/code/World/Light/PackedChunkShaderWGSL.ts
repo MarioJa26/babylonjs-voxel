@@ -167,11 +167,12 @@ struct VSOut {
 ${vsOutFields(o)}
 };
 
-// Thin-instance matrix columns (locations 1..4): Babylon Lite's instancing path
-// injects the per-instance 4x4 matrix as four vec4 vertex attributes.
-//   world3.w carries this mesh's faceBase offset into its face arena.
-//   world0.w carries the arena index (which faceDataN buffer to read).
-//   world1.x carries the group's chunkOffsets base (the 64-offset block index).
+// Compact per-instance record (location injected by Lite's instancing path,
+// patched via patch-package to a single vec4<f32> per instance instead of a
+// full 4x4 matrix):
+//   instData.x carries this mesh's faceBase offset into its face arena.
+//   instData.y carries the arena index (which faceDataN buffer to read).
+//   instData.z carries the group's chunkOffsets base (the 64-offset block).
 // The rest of the matrix is unused (the vertex position is derived from
 // faceData, not the matrix).
 //
@@ -239,9 +240,9 @@ const V_AXIS = array<u32, 3>(2u, 0u, 1u);
 fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32, @builtin(vertex_index) vertexIndex : u32) -> VSOut {
   var out : VSOut;
 
-  let faceBase = u32(input.world3.w);
-  let arena = u32(input.world0.w);
-  let offsetBase = u32(input.world1.x);
+  let faceBase = u32(input.instData.x);
+  let arena = u32(input.instData.y);
+  let offsetBase = u32(input.instData.z);
   let face = loadFace(arena, faceBase + instanceIndex);
 
   let aByte = f32(face.x & 0xffu);

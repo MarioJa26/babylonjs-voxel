@@ -33,7 +33,8 @@ import {
 	buildFloorSlabData,
 	createPlayerRigMesh,
 	createRigShaderMaterial,
-	setRigBrightness,
+	packedLightToLightColor,
+	setRigLightColor,
 } from "../PlayerModel";
 
 const PREVIEW_SIZE = { width: 220, height: 300 };
@@ -227,7 +228,6 @@ export class PlayerPreview {
 		void loadTexture2D(engine, ATLAS_TEXTURE_PATH, {
 			magFilter: "nearest",
 			minFilter: "nearest",
-			srgb: true,
 		})
 			.then((tex) => {
 				if (!this.#alive) return;
@@ -248,13 +248,12 @@ export class PlayerPreview {
 				this.#model.rotation.y += (deltaMs / 1000) * SPIN_SPEED;
 			}
 			if (this.#getLightLevel && this.#rigMat) {
-				// Decode packed voxel light (sky << 4 | block), same as the
-				// dropped-item lighting in DroppedItem.
-				const packed = this.#getLightLevel();
-				const sky = ((packed >> 4) & 0xf) / 15;
-				const block = (packed & 0xf) / 15;
-				const level = Math.min(1, Math.max(sky, block));
-				setRigBrightness(this.#rigMat, level);
+				// Match the in-world rig lighting: colored sky/torch mix from
+				// packed voxel light (sky << 4 | block).
+				setRigLightColor(
+					this.#rigMat,
+					packedLightToLightColor(this.#getLightLevel()),
+				);
 			}
 		});
 

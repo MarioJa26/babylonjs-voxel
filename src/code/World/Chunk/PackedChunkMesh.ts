@@ -6,23 +6,26 @@
  * (faceData) and per-group chunk origins in a second global buffer
  * (chunkOffsets). The vertex shader selects the face via
  * `@builtin(instance_index)` combined with a per-mesh `faceBase` offset that is
- * carried in the thin-instance matrix (world3.w).
+ * carried in the compact per-instance record (instData.x).
  *
  * Each face is 3 u32 words (12 bytes — see QuadBuffer.ts for the bit layout);
  * the per-face local chunk index (0..63) is OR'd into word2 byte 3 during
  * merged-group assembly, and the group's chunkOffsets base rides in the
- * instance matrix (world1.x), so no 4th word is needed.
+ * instance record (instData.z), so no 4th word is needed.
  *
  * Babylon Lite 1.11 has no instanced-draw support in the plain ShaderMaterial
  * path (drawIndexed is called with no instance count), but it DOES support
  * thin instances: a mesh with `mesh.thinInstances` set is drawn `ti.count`
- * times, each with a `@builtin(instance_index)`, and the instance matrices are
- * supplied as a vertex buffer. We exploit that: each mesh gets
- * `ti.count = faceCount` and an instance matrix whose world3.w carries
- * `faceBase`, so the shader reads `faceData[faceBase + instanceIndex]`.
+ * times, each with a `@builtin(instance_index)`, and the instance data is
+ * supplied as a vertex buffer. We exploit that — and, via a patch-package
+ * patch to lite ("compact instance mode", ti.compact), each instance carries
+ * only ONE vec4<f32> instead of a full 4x4 matrix:
+ *   instData.x = faceBase · instData.y = arena index · instData.z = offsetBase
+ * Each mesh gets `ti.count = faceCount` and the shader reads
+ * `faceData[faceBase + instanceIndex]`.
  *
  * Because `setShaderStorageBuffer` is material-wide, all meshes share ONE arena;
- * each mesh only carries its integer `faceBase` offset via the instance matrix.
+ * each mesh only carries its integer `faceBase` offset via the instance record.
  * No thin-instance colors, no identity-matrix arrays, no per-mesh storage
  * buffers.
  */
@@ -43,6 +46,7 @@ import {
 	updateStorageBuffer,
 } from "@babylonjs/lite";
 import { onGpuWorkDone } from "../Light/liteGpuBuffer.js";
+import { SETTING_PARAMS } from "../SETTINGS_PARAMS";
 import type { MergedFaceRange } from "./MergedMeshManager.js";
 
 // Babylon Lite's public type surface omits the thinInstances field and a few
@@ -56,6 +60,9 @@ interface PackedMesh extends Mesh {
 	thinInstances?: {
 		matrices: Float32Array;
 		count: number;
+		/** Compact instance mode (patch-package patch to lite): each instance
+		 *  is a single vec4<f32> (16 B) instead of a full mat4 (64 B). */
+		compact?: boolean;
 		_capacity: number;
 		_version: number;
 		_gpuBuffer: GPUBuffer | null;
@@ -88,26 +95,36 @@ const SHARED_QUAD_POSITIONS = new Float32Array([
 const SHARED_QUAD_NORMALS = new Float32Array(12);
 const SHARED_QUAD_INDICES = new Uint32Array([0, 2, 1, 0, 3, 2]);
 
-// Float index inside the per-instance 4x4 matrix where we stash `faceBase`.
-// world3 is the 4th column; .w is element 15. The shader reads it as world3.w.
-const FACE_BASE_MATRIX_INDEX = 15;
+// Compact per-instance record layout: one vec4<f32> (4 floats) per face,
+// written by buildInstanceData and read by the shader as `instData`:
+//   x = faceBase · y = arena index · z = chunkOffsets base · w = unused
+const INSTANCE_FLOATS = 4;
+const FACE_BASE_INSTANCE_INDEX = 0;
+const ARENA_INSTANCE_INDEX = 1;
+const OFFSET_BASE_INSTANCE_INDEX = 2;
 
-// Upper bound (elements) for a per-mesh thin-instance matrix buffer: 256 MiB
-// at 4 B/element, i.e. up to 4,194,304 faces per mesh. A merged group above
-// this is pathological or corrupt — refusing beats allocating gigabytes and
-// hard-crashing the tab.
-const MAX_INSTANCE_MATRIX_ELEMENTS = 1 << 26;
+// Upper bound (elements) for a per-mesh compact instance buffer: 32 MiB at
+// 4 B/element, i.e. up to 2,097,152 faces per mesh — ~8x headroom above any
+// realistic merged group. A group above this is pathological or corrupt —
+// refusing beats allocating gigabytes and hard-crashing the tab.
+const MAX_INSTANCE_DATA_ELEMENTS = 1 << 23;
+
+// Buffers at or below this size (16 KiB) are never shrunk — the churn isn't
+// worth it. Shrink hysteresis only applies to buffers that actually cost
+// memory (see buildInstanceData).
+const MIN_MATRIX_SHRINK_ELEMENTS = 4096;
 
 interface PackedMeshState {
 	faceArena: number;
 	faceBase: number;
 	faceCount: number;
 	offsetBase: number;
-	/** Retained instance-matrix buffer; reused across updates. Grows
-	 *  monotonically (power-of-two capacity), so repeated face-count
-	 *  growth never reallocates, but a larger need still reallocates. */
+	/** Retained compact instance buffer (INSTANCE_FLOATS floats per face);
+	 *  reused across updates. Grows monotonically (power-of-two capacity),
+	 *  so repeated face-count growth never reallocates, but a larger need
+	 *  still reallocates. */
 	instanceMatrices?: Float32Array;
-	/** Number of instances whose matrix lanes are currently valid in
+	/** Number of instances whose lanes are currently valid in
 	 *  `instanceMatrices` (monotonic: lanes are only ever appended). */
 	instanceLanesValid?: number;
 	/** Retained mesh-visible bounds; reused across updates (no realloc). */
@@ -228,7 +245,7 @@ let maxStorageBindingBytes = 128 * 1024 * 1024;
 //   w2 = ao | light<<8 | meta<<16 | chunkIndex(6)<<24
 // The per-face chunk index (0..63) is OR'd in at merge time; the group's
 // offsetBase (where its 64 chunk offsets live in the global chunkOffsets
-// buffer) rides in the per-mesh instance matrix (world1.x) instead of a
+// buffer) rides in the per-instance record (instData.z) instead of a
 // 4th word — that cut the arena stride from 16 to 12 bytes per face.
 const FACE_BYTES = 12;
 const FACE_WORDS = 3;
@@ -236,17 +253,6 @@ const FACE_WORD_BYTES = 12;
 
 const OFFSET_WORDS = 4;
 const OFFSET_ENTRY_BYTES = 16;
-
-// Element index inside the per-instance 4x4 matrix where we stash the group's
-// chunkOffsets base (world1.x = matrix element 4). The vertex shader computes
-// the per-face offset as `chunkOffsets[offsetBase + ci]`. f32 holds integers
-// up to 2^24 exactly; offsetBase is far below that (offsetUsedGroups * 64).
-const OFFSET_BASE_MATRIX_INDEX = 4;
-
-// Element index inside the per-instance 4x4 matrix where we stash `arenaIndex`.
-// world0.w is column 0, row 3 (matrix element 3). The vertex shader reads it
-// as world0.w; nothing else uses world0, so it's safe to repurpose.
-const ARENA_MATRIX_INDEX = 3;
 
 const registeredMaterials: ShaderMaterial[] = [];
 // Materials already bound to the shared arena buffers. We bind each material's
@@ -398,8 +404,31 @@ function growArena(arena: FaceArena, index: number): void {
 	// 4x steps: each grow is expensive (full CPU copy + new GPU storage
 	// buffer + material rebinds), so halve the number of events during
 	// wide-ring streaming even at the cost of extra VRAM slack.
-	const newCapacity = Math.min(arena.capacity * 4, maxFaces);
+	let newCapacity = Math.min(arena.capacity * 4, maxFaces);
 	if (newCapacity <= arena.capacity) return;
+
+	// Aggregate budget: refuse/shrink growth that would push the SUM of all
+	// arena capacities past the cap. Other arenas' capacity is reserved —
+	// only this arena's current capacity is replaceable within the budget.
+	const othersCapacity = totalFaceCapacity() - arena.capacity;
+	const budgetFaces = arenaBudgetFaces();
+	if (othersCapacity + newCapacity > budgetFaces) {
+		const fitCapacity = budgetFaces - othersCapacity;
+		if (fitCapacity <= arena.capacity) {
+			if (!_arenaBudgetWarned) {
+				_arenaBudgetWarned = true;
+				console.warn(
+					`[PackedChunkMesh] arena growth budget reached ` +
+						`(${SETTING_PARAMS.ARENA_BUDGET_MB} MiB across ` +
+						`${faceArenas.length} arenas) — further growth refused. ` +
+						`Far meshes will skip updates until geometry unloads.`,
+				);
+			}
+			return;
+		}
+		newCapacity = fitCapacity;
+	}
+
 	const newCpu = new Uint32Array(newCapacity * 3);
 	newCpu.set(arena.cpu.subarray(0, arena.used * 3));
 	arena.cpu = newCpu;
@@ -419,6 +448,21 @@ function growArena(arena: FaceArena, index: number): void {
 // single arena block can actually hold.
 export function maxFacesPerArena(): number {
 	return Math.floor(maxStorageBindingBytes / FACE_BYTES);
+}
+
+// Aggregate cap on face storage across ALL arenas (CPU copy AND GPU mirror).
+// Individually each arena may grow to its 128 MiB binding cap; with the usual
+// 6 arenas that permits ~0.8 GB of face data — and heap snapshots showed
+// exactly that: several full-capacity 134 MB arena buffers for what is
+// typically tens of MB of live geometry. The budget gates GROWTH only: the
+// initial 6 × 262k-face (~3 MiB) arenas always fit, and when growth is
+// refused allocFaces returns arena:-1, which every caller already handles
+// by skipping the mesh update with a warning.
+const _arenaBudgetBytes = SETTING_PARAMS.ARENA_BUDGET_MB * 1024 * 1024;
+let _arenaBudgetWarned = false;
+
+function arenaBudgetFaces(): number {
+	return Math.floor(_arenaBudgetBytes / FACE_BYTES);
 }
 
 function allocFaces(count: number): FaceAlloc {
@@ -775,10 +819,10 @@ export function registerPackedMaterial(material: ShaderMaterial): void {
 	// builder. In this app the first shader-material group built is the set of
 	// non-instanced meshes (sky, cracks, highlights, ...), so the singleton's
 	// `_rebuildSingle` becomes the PLAIN (non-thin-instance) rebuild. Every
-	// shader mesh added later — including our thin-instance packed chunks — is
-	// then rebuilt through that plain path, which omits the `world0..3` vertex
-	// attributes our shader reads, producing the "struct member world3 not found"
-	// WGSL error.
+	// 	shader mesh added later — including our thin-instance packed chunks — is
+	// 	then rebuilt through that plain path, which omits the `instData` vertex
+	// 	attribute our shader reads, producing a "struct member instData not found"
+	// 	WGSL error.
 	//
 	// Fix: give every packed material its OWN independent `_buildGroup` (delegating
 	// to the shared Lite builder but capturing its own `_rebuildSingle`). Each
@@ -1060,36 +1104,34 @@ function packOffsets(state: PackedMeshState, input: PackedMeshInput): void {
 	}
 }
 
-// Build / reuse the thin-instance matrix buffer for a mesh: `count` matrices
-// whose world3.w (matrices[i*16 + FACE_BASE_MATRIX_INDEX]) carries `faceBase`
-// and world1.x (OFFSET_BASE_MATRIX_INDEX) carries the group's chunkOffsets
-// base. The shader reads those and ignores the rest (it computes the vertex
-// position from faceData), so the rest of every matrix stays zero.
+// Build / reuse the compact thin-instance buffer for a mesh: `count` records
+// of 4 floats each (INSTANCE_FLOATS), where record i carries
+//   [i*4 + FACE_BASE_INSTANCE_INDEX]    = faceBase
+//   [i*4 + ARENA_INSTANCE_INDEX]        = arena
+//   [i*4 + OFFSET_BASE_INSTANCE_INDEX]  = the group's chunkOffsets base
+// and w stays zero. The shader reads them as `instData` (a patch-package
+// patch to lite gives these meshes a stride-16 vec4 vertex attribute instead
+// of a full 64-byte mat4).
 //
 // PERF: the buffer is RETAINED per-mesh on PackedMeshState and reused across
 // updates — only the faceBase/arena/offsetBase lanes per instance are
 // rewritten, and only when the instance count changes do we reallocate. This
-// removes the previous `count*16` Float32Array allocation on every chunk
-// remesh (a major GC source in the updatePackedChunkMesh hot path).
+// removes the previous per-remesh Float32Array allocation (a major GC source
+// in the updatePackedChunkMesh hot path).
 //
-// Capacity GROWS monotonically (never shrinks), so a mesh whose face count
-// fluctuates around a level reuses its buffer instead of zero-filling a
-// fresh `count*16` array on every rebuild. `start` is the first instance
-// index whose lanes need (re)writing — callers pass `state.faceCount` (the
-// old count) when only the appended instances are new, and 0 when the
-// faceBase/arena/offsetBase lanes themselves changed.
+// Capacity GROWS monotonically, so a mesh whose face count fluctuates around
+// a level reuses its buffer instead of zero-filling a fresh array on every
+// rebuild; a hysteresis shrink releases memory after spikes. `start` is the
+// first instance index whose lanes need (re)writing — callers pass
+// `state.faceCount` (the old count) when only the appended instances are new,
+// and 0 when the faceBase/arena/offsetBase lanes themselves changed.
 //
-// Returns null (and logs) when `count` is not a sane non-negative number or
-// would need more than MAX_INSTANCE_MATRIX_ELEMENTS — the caller then skips
-// the mesh update instead of attempting a multi-gigabyte allocation (which
-// hard-crashes the tab with "Array buffer allocation failed").
-//
-// PERF: the write loop is 4-way unrolled. It only ever writes 3 scalar lanes
-// per instance (faceBase/arena/offsetBase are constant across the whole
-// call), so the loop-control-to-work ratio here is even worse than
-// packFaces' — unrolling has more relative overhead to amortize. Verify
-// against a trace, same caveat as packFaceRanges.
-function buildInstanceMatrices(
+// Returns null (and logs) when `count` is not a sane non-negative number,
+// would need more than MAX_INSTANCE_DATA_ELEMENTS, or the allocation itself
+// fails (OOM under the cap) — the caller then skips the mesh update instead
+// of attempting a multi-gigabyte allocation (which hard-crashes the tab with
+// "Array buffer allocation failed").
+function buildInstanceData(
 	prev: Float32Array | undefined,
 	arena: number,
 	faceBase: number,
@@ -1099,26 +1141,26 @@ function buildInstanceMatrices(
 ): Float32Array | null {
 	if (!Number.isFinite(count) || count < 0) {
 		console.warn(
-			`[PackedChunkMesh] refusing instance-matrix buffer: ` +
+			`[PackedChunkMesh] refusing instance buffer: ` +
 				`invalid face count ${count}.`,
 		);
 		return null;
 	}
 
-	const needLen = count * 16;
+	const needLen = count * INSTANCE_FLOATS;
 
-	if (needLen > MAX_INSTANCE_MATRIX_ELEMENTS) {
+	if (needLen > MAX_INSTANCE_DATA_ELEMENTS) {
 		console.warn(
-			`[PackedChunkMesh] refusing instance-matrix buffer: ` +
-				`${count} faces (${needLen} matrix elements) exceeds the safe ` +
-				`limit of ${MAX_INSTANCE_MATRIX_ELEMENTS >> 4} faces per mesh. ` +
-				`Mesh update skipped.`,
+			`[PackedChunkMesh] refusing instance buffer: ` +
+				`${count} faces (${needLen} elements) exceeds the safe ` +
+				`limit of ${MAX_INSTANCE_DATA_ELEMENTS / INSTANCE_FLOATS} faces ` +
+				`per mesh. Mesh update skipped.`,
 		);
 		return null;
 	}
 
-	let matrices = prev;
-	if (!matrices || matrices.length < needLen) {
+	let data = prev;
+	if (!data || data.length < needLen) {
 		// Grow to a power of two above the need so repeated face-count
 		// growth (the streaming-append case) doesn't reallocate each time.
 		// Plain multiplication, NOT `<<=`: a left shift is 32-bit and wraps
@@ -1126,53 +1168,51 @@ function buildInstanceMatrices(
 		// and the allocation into an OOM crash.
 		let capacity = 1024;
 		while (capacity < needLen) capacity *= 2;
-		matrices = new Float32Array(capacity);
+		try {
+			data = new Float32Array(capacity);
+		} catch {
+			// Under the size cap but the renderer heap still refused (real
+			// memory pressure). Returning null skips this mesh update —
+			// callers warn + keep the previous mesh — instead of letting a
+			// RangeError escape through flushDirtyMergedGroups and kill the
+			// whole mesh-drain tick.
+			console.warn(
+				`[PackedChunkMesh] instance allocation failed ` +
+					`(${capacity} elements, ${(capacity * 4) >> 20} MiB) — ` +
+					`out of memory. Mesh update skipped.`,
+			);
+			return null;
+		}
 		start = 0;
+	} else if (
+		data.length >= MIN_MATRIX_SHRINK_ELEMENTS &&
+		needLen * 4 <= data.length
+	) {
+		// Hysteresis shrink: retained buffers grow monotonically, so after a
+		// spike (streaming burst, LOD swap) every mesh used to hold its peak
+		// buffer forever. Release memory when the need falls to a quarter of
+		// capacity. Identity changes → callers treat it as a realloc and
+		// rewrite every lane, so reset `start` to cover [0, count).
+		try {
+			data = new Float32Array(Math.max(1024, needLen));
+			start = 0;
+		} catch {
+			// Keep the oversized buffer rather than dropping the update.
+		}
 	}
 
-	// The matrices are otherwise all-zero and never change, so only the
-	// faceBase (world3.w), arena (world0.w) and offsetBase (world1.x) lanes
-	// are ever rewritten.
-	const span = count - start;
-	const unrolledEnd = start + (span - (span % 4));
-
-	let i = start;
-	let faceIdx = FACE_BASE_MATRIX_INDEX + start * 16;
-	let arenaIdx = ARENA_MATRIX_INDEX + start * 16;
-	let offsetIdx = OFFSET_BASE_MATRIX_INDEX + start * 16;
-
-	for (; i < unrolledEnd; i += 4) {
-		matrices[faceIdx] = faceBase;
-		matrices[arenaIdx] = arena;
-		matrices[offsetIdx] = offsetBase;
-
-		matrices[faceIdx + 16] = faceBase;
-		matrices[arenaIdx + 16] = arena;
-		matrices[offsetIdx + 16] = offsetBase;
-
-		matrices[faceIdx + 32] = faceBase;
-		matrices[arenaIdx + 32] = arena;
-		matrices[offsetIdx + 32] = offsetBase;
-
-		matrices[faceIdx + 48] = faceBase;
-		matrices[arenaIdx + 48] = arena;
-		matrices[offsetIdx + 48] = offsetBase;
-
-		faceIdx += 64;
-		arenaIdx += 64;
-		offsetIdx += 64;
+	// Only faceBase/arena/offsetBase are ever written; lane w stays zero from
+	// the initial fill. f32 holds integers up to 2^24 exactly — faceBase and
+	// offsetBase stay far below that (see arena capacity / offsetUsedGroups).
+	let idx = start * INSTANCE_FLOATS;
+	for (let i = start; i < count; i++) {
+		data[idx + FACE_BASE_INSTANCE_INDEX] = faceBase;
+		data[idx + ARENA_INSTANCE_INDEX] = arena;
+		data[idx + OFFSET_BASE_INSTANCE_INDEX] = offsetBase;
+		idx += INSTANCE_FLOATS;
 	}
 
-	for (; i < count; i++) {
-		matrices[faceIdx] = faceBase;
-		matrices[arenaIdx] = arena;
-		matrices[offsetIdx] = offsetBase;
-		faceIdx += 16;
-		arenaIdx += 16;
-		offsetIdx += 16;
-	}
-
-	return matrices;
+	return data;
 }
 // ── Thin-instance range updates ─────────────────────────────────────────────
 // Low-level replacement for the public setThinInstances() that avoids paying
@@ -1197,12 +1237,12 @@ function setThinInstancesRange(
 	dirtyEnd: number,
 ): void {
 	const anyMesh = mesh as PackedMesh;
-	const capacity = matrices.length / 16;
+	const capacity = matrices.length / INSTANCE_FLOATS;
 
 	if (count > capacity) {
 		console.error(
 			`[PackedChunkMesh] thin-instance count (${count}) exceeds ` +
-				`matrices capacity (${capacity}) — caller bug.`,
+				`instance buffer capacity (${capacity}) — caller bug.`,
 		);
 		return;
 	}
@@ -1217,10 +1257,20 @@ function setThinInstancesRange(
 		setThinInstances(mesh, matrices, capacity);
 		ti = anyMesh.thinInstances;
 		if (ti) {
+			ti.compact = true; // stride-16 vec4 records, NOT mat4s
 			ti._capacity = capacity;
 			ti.count = count; // fix the draw count back down; buffer stays capacity-sized
+			// setThinInstances() reset the dirty range to [0, capacity);
+			// clamp it to what's actually valid so sync uploads only real data.
+			ti._dirtyMin = 0;
+			ti._dirtyMax = count;
 		}
 		return;
+	} else if (ti && !ti.compact) {
+		// Buffer created before compact mode (or by another path): mark and
+		// force a full re-upload + pipeline rebuild via a fresh version.
+		ti.compact = true;
+		ti._gpuVersion = -1;
 	}
 
 	// Fast path — same GPU buffer, just update what changed.
@@ -1261,11 +1311,11 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 	// Refuse before doing any work (arena/offset allocation, mesh creation):
 	// a corrupt face count would otherwise reach buildInstanceMatrices and
 	// attempt a multi-gigabyte allocation.
-	if (faceCount * 16 > MAX_INSTANCE_MATRIX_ELEMENTS) {
+	if (faceCount * INSTANCE_FLOATS > MAX_INSTANCE_DATA_ELEMENTS) {
 		console.warn(
 			`[PackedChunkMesh] skipping mesh for "${input.name}": ` +
 				`${faceCount} faces exceeds the safe per-mesh limit of ` +
-				`${MAX_INSTANCE_MATRIX_ELEMENTS >> 4}.`,
+				`${MAX_INSTANCE_DATA_ELEMENTS / INSTANCE_FLOATS}.`,
 		);
 		return null;
 	}
@@ -1321,7 +1371,7 @@ export function createPackedChunkMesh(input: PackedMeshInput): Mesh | null {
 	anyMesh.boundMax = boundMax;
 	anyMesh.isVisible = true;
 
-	const instanceMatrices = buildInstanceMatrices(
+	const instanceMatrices = buildInstanceData(
 		undefined,
 		alloc.arena,
 		alloc.base,
@@ -1388,6 +1438,19 @@ export function updatePackedChunkMesh(
 
 	// Slow path: face count changed.
 	//
+	// Refuse oversized counts up front, before either sub-path mutates
+	// anything: the full-realloc path below re-allocs/packs faces BEFORE
+	// building matrices, and a refusal there would leave thin-instance
+	// lanes pointing at the old arena block (corrupted rendering).
+	if (faceCount * INSTANCE_FLOATS > MAX_INSTANCE_DATA_ELEMENTS) {
+		console.warn(
+			`[PackedChunkMesh] skipping mesh update: ${faceCount} faces ` +
+				`exceeds the safe per-mesh limit of ` +
+				`${MAX_INSTANCE_DATA_ELEMENTS / INSTANCE_FLOATS}.`,
+		);
+		return mesh;
+	}
+	//
 	// Fast sub-path: grow the existing arena block in place. Streaming
 	// appends (the common case) extend a group mesh at the tail, so the
 	// block's base and the instance-matrix constants (faceBase/arena/
@@ -1401,7 +1464,7 @@ export function updatePackedChunkMesh(
 
 		// Build the instance matrices BEFORE touching the arena: a corrupt
 		// huge face count then bails here with the arena block intact.
-		const instanceMatrices = buildInstanceMatrices(
+		const instanceMatrices = buildInstanceData(
 			prevMatrices,
 			state.faceArena,
 			state.faceBase,
@@ -1497,7 +1560,7 @@ export function updatePackedChunkMesh(
 
 	applyMeshMeta(mesh, state, input);
 
-	const instanceMatrices = buildInstanceMatrices(
+	const instanceMatrices = buildInstanceData(
 		state.instanceMatrices,
 		alloc.arena,
 		alloc.base,
@@ -1607,4 +1670,37 @@ export function destroyPackedArenas(): void {
 	boundMaterials.clear();
 	engineRef = null;
 	sceneRef = null;
+}
+
+// Diagnostics: packed-mesh memory footprint (bytes). Instance buffers count
+// the COMPACT stride (16 B/face); arenas count CPU copy + GPU mirror.
+export function getPackedMeshMemoryStats(): {
+	meshes: number;
+	instanceBytes: number;
+	arenaCapacityFaces: number;
+	arenaUsedFaces: number;
+	arenaBytes: number;
+	offsetBytes: number;
+} {
+	let meshes = 0;
+	let instanceBytes = 0;
+	for (const state of meshState.values()) {
+		meshes++;
+		const ti = (state as { instanceMatrices?: Float32Array }).instanceMatrices;
+		if (ti) instanceBytes += ti.length * 4;
+	}
+	let arenaCapacityFaces = 0;
+	let arenaUsedFaces = 0;
+	for (const a of faceArenas) {
+		arenaCapacityFaces += a.capacity;
+		arenaUsedFaces += a.used;
+	}
+	return {
+		meshes,
+		instanceBytes,
+		arenaCapacityFaces,
+		arenaUsedFaces,
+		arenaBytes: arenaCapacityFaces * FACE_BYTES,
+		offsetBytes: offsetCpu.length * 4,
+	};
 }

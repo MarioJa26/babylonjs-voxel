@@ -714,9 +714,84 @@ export class Chunk {
 				cutout: mesh.cutout ?? null,
 			});
 		}
+		this.pruneDistantLODCaches(lod);
+	}
+
+	// MEMORY: each cached entry holds full MeshData buffers (transferred
+	// worker arrays). Chunks streaming outward through LOD bands used to
+	// accumulate one entry per band ever rendered and kept them all until
+	// unload — unbounded heap growth proportional to explored world area.
+	// Keep only entries near the chunk's CURRENT lod (±1 covers the deliberate
+	// "cache result for a neighbouring band" path in ChunkWorkerPool); distant
+	// bands re-mesh from voxel data on the rare switch-back.
+	private pruneDistantLODCaches(justStoredLod: number): void {
+		const cache = this._cachedLODMeshes;
+		if (!cache || cache.size <= 3) return;
+		const cur = this.lodLevel ?? 0;
+		const keepLo = Math.min(cur, justStoredLod) - 1;
+		const keepHi = Math.max(cur, justStoredLod) + 1;
+		for (const key of cache.keys()) {
+			if (key < keepLo || key > keepHi) cache.delete(key);
+		}
 	}
 	public clearCachedLODMeshes(): void {
 		this._cachedLODMeshes?.clear();
+	}
+
+	// Diagnostics: live-chunk census for the memory HUD. A heap snapshot
+	// showed ~73k Chunk shells retaining ~2.9 GB; this breakdown identifies
+	// which LOD band / voxel state owns them without needing a snapshot.
+	public static getCensus(): {
+		total: number;
+		withVoxels: number;
+		lodLow: number;
+		lodMid: number;
+		lodHigh: number;
+		cachedMeshEntries: number;
+		cachedMeshBytes: number;
+	} {
+		let total = 0,
+			withVoxels = 0,
+			lodLow = 0,
+			lodMid = 0,
+			lodHigh = 0,
+			cachedMeshEntries = 0,
+			cachedMeshBytes = 0;
+		for (const c of Chunk.loadedChunks) {
+			total++;
+			if (c.hasVoxelData) withVoxels++;
+			const lod = c.lodLevel ?? 0;
+			if (lod <= 1) lodLow++;
+			else if (lod <= 3) lodMid++;
+			else lodHigh++;
+			const cache = c.getCensusCacheView();
+			if (cache) {
+				cachedMeshEntries += cache.size;
+				for (const entry of cache.values()) {
+					for (const md of [entry.opaque, entry.water, entry.cutout]) {
+						if (!md) continue;
+						cachedMeshBytes +=
+							md.faceDataA.byteLength +
+							md.faceDataB.byteLength +
+							md.faceDataC.byteLength;
+					}
+				}
+			}
+		}
+		return {
+			total,
+			withVoxels,
+			lodLow,
+			lodMid,
+			lodHigh,
+			cachedMeshEntries,
+			cachedMeshBytes,
+		};
+	}
+
+	/** Internal: read-only view of the LOD cache for diagnostics. */
+	private getCensusCacheView(): Map<number, CachedLODMesh> | null {
+		return this._cachedLODMeshes;
 	}
 	public getSerializableLODMeshCache(): SerializedLODMeshCache | undefined {
 		if (this._cachedLODMeshes === null || this._cachedLODMeshes.size === 0) {

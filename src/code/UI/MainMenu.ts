@@ -118,6 +118,9 @@ export class MainMenu {
 	private optSens!: { row: HTMLElement; getValue: () => number };
 	private optRenderDist!: { row: HTMLElement; getValue: () => number };
 	private optVertDist!: { row: HTMLElement; getValue: () => number };
+	private optRenderScale!: { row: HTMLElement; getValue: () => number };
+	private optMsaa!: { row: HTMLElement; getValue: () => boolean };
+	private optFpsCap!: { row: HTMLElement; getValue: () => number };
 	private optStatusEl!: HTMLElement;
 
 	constructor() {
@@ -377,6 +380,36 @@ export class MainMenu {
 		return { row, getValue: () => Number(input.value) };
 	}
 
+	makeOptionToggle(
+		labelText: string,
+		initial: boolean,
+		format: (value: boolean) => string,
+	): { row: HTMLElement; getValue: () => boolean } {
+		const row = document.createElement("div");
+		row.className = "slider-container";
+
+		const label = document.createElement("label");
+		label.innerText = labelText;
+
+		const value = document.createElement("span");
+		value.className = "slider-value";
+		value.innerText = format(initial);
+
+		const btn = document.createElement("button");
+		btn.className = "mc-btn mc-btn-small";
+		btn.innerText = initial ? "ON" : "OFF";
+		btn.onclick = () => {
+			const next = !btn.classList.contains("on");
+			btn.classList.toggle("on", next);
+			btn.innerText = next ? "ON" : "OFF";
+			value.innerText = format(next);
+		};
+		btn.classList.toggle("on", initial);
+
+		row.append(label, value, btn);
+		return { row, getValue: () => btn.classList.contains("on") };
+	}
+
 	private createOptionsScreen(): HTMLElement {
 		const screen = document.createElement("div");
 		screen.className = "menu-screen";
@@ -427,12 +460,36 @@ export class MainMenu {
 			settings.verticalRenderDistance,
 			(v) => `${v} chunks`,
 		);
+		this.optRenderScale = this.makeOptionSlider(
+			"Render Scale (GPU load)",
+			50,
+			200,
+			5,
+			Math.round(settings.renderScale * 100),
+			(v) => `${v}%`,
+		);
+		this.optMsaa = this.makeOptionToggle(
+			"MSAA (4x, costly)",
+			settings.msaaEnabled,
+			() => "",
+		);
+		this.optFpsCap = this.makeOptionSlider(
+			"FPS Limit",
+			0,
+			120,
+			30,
+			settings.fpsCap,
+			(v) => (v === 0 ? "Uncapped" : `${v} fps`),
+		);
 
 		for (const opt of [
 			this.optFov,
 			this.optSens,
 			this.optRenderDist,
 			this.optVertDist,
+			this.optRenderScale,
+			this.optMsaa,
+			this.optFpsCap,
 		]) {
 			screen.appendChild(opt.row);
 		}
@@ -446,6 +503,9 @@ export class MainMenu {
 			next.mouseSensitivity = this.optSens.getValue() / 1000;
 			next.renderDistance = this.optRenderDist.getValue();
 			next.verticalRenderDistance = this.optVertDist.getValue();
+			next.renderScale = this.optRenderScale.getValue() / 100;
+			next.msaaEnabled = this.optMsaa.getValue();
+			next.fpsCap = this.optFpsCap.getValue();
 			saveGameSettings(next);
 			this.optStatusEl.classList.remove("error");
 			this.optStatusEl.innerText =

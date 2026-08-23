@@ -622,6 +622,24 @@ export function getMergedMeshFlushStats(): { lastMs: number; avgMs: number } {
 	};
 }
 
+// Diagnostics: CPU bytes held by merged-group layer arrays (3 layers ×
+// A/B/C × capacity×4 B). Compare against getPackedMeshMemoryStats().
+export function getMergedLayerMemoryStats(): {
+	groups: number;
+	layerBytes: number;
+} {
+	let groupCount = 0;
+	let layerBytes = 0;
+	for (const g of groups.values()) {
+		groupCount++;
+		layerBytes +=
+			(g.opaqueCapacityFaces + g.waterCapacityFaces + g.cutoutCapacityFaces) *
+			4 *
+			3;
+	}
+	return { groups: groupCount, layerBytes };
+}
+
 let _mergedFlushRafScheduled = false;
 const _flushSnapshot: MergedMeshGroup[] = [];
 
@@ -834,6 +852,117 @@ function getValidatedFaceCount(
 		`[MergedMeshManager] chunk #${chunkId} (lod ${lod}) ${kindName} faceCount (${raw}) inconsistent with buffer lengths (${aLen}/${bLen}/${cLen} bytes) â€” using ${derived} instead.`,
 	);
 	return derived;
+}
+
+// ---------------------------------------------------------------------------
+// Hysteresis shrink for a merged layer's backing arrays.
+//
+// Layer arrays grow by doubling (ensure*MergedCapacity) and used to never
+// release: after a streaming spike or LOD swap every group kept its peak
+// allocation forever — 3 arrays × capacity×4 B per layer, ×3 layers. When the
+// settled slot extent falls to a quarter of capacity, reallocate at
+// max(256, extent*2) faces and wholesale-copy the live prefix [0, extent).
+// Slot offsets are stable and fully contained in the prefix, so member
+// lastBuilt* bookkeeping stays valid without invalidation; only the group's
+// own array identity changes, and the vertex-data views are re-sliced right
+// after this runs in rebuildGroupData.
+//
+// Thresholds: never touch groups below 2048-face capacity (8 KiB/array — the
+// copy churn isn't worth it), and the *4 hysteresis vs *2 regrowth slack
+// prevents grow/shrink oscillation.
+// ---------------------------------------------------------------------------
+
+const LAYER_SHRINK_MIN_CAPACITY_FACES = 2048;
+
+function shrinkLayerTriple(
+	a: Uint8Array | null,
+	b: Uint8Array | null,
+	c: Uint8Array | null,
+	capacityFaces: number,
+	extentFaces: number,
+): { a: Uint8Array; b: Uint8Array; c: Uint8Array; cap: number } | null {
+	if (
+		!a ||
+		capacityFaces < LAYER_SHRINK_MIN_CAPACITY_FACES ||
+		extentFaces > capacityFaces ||
+		extentFaces << 2 > capacityFaces
+	) {
+		return null;
+	}
+	const newCap = Math.max(256, Math.min(extentFaces << 1, capacityFaces));
+	if (newCap >= capacityFaces) return null;
+	const byte4 = newCap << 2;
+	const copyPrefix = (src: Uint8Array | null): Uint8Array => {
+		// src.length == oldCapacity<<2 >= byte4: the live prefix always fits.
+		const n = new Uint8Array(byte4);
+		if (src) n.set(src.subarray(0, byte4));
+		return n;
+	};
+	return {
+		a: copyPrefix(a),
+		b: copyPrefix(b),
+		c: copyPrefix(c),
+		cap: newCap,
+	};
+}
+
+function maybeShrinkGroupLayers(group: MergedMeshGroup): void {
+	const op = shrinkLayerTriple(
+		group.opaqueA,
+		group.opaqueB,
+		group.opaqueC,
+		group.opaqueCapacityFaces,
+		group.opaqueSlots.appendedFaces,
+	);
+	if (op) {
+		group.opaqueA = op.a;
+		group.opaqueB = op.b;
+		group.opaqueC = op.c;
+		group.opaqueCapacityFaces = op.cap;
+		if (group.opaqueBuffers) {
+			group.opaqueBuffers.a = op.a;
+			group.opaqueBuffers.b = op.b;
+			group.opaqueBuffers.c = op.c;
+		}
+	}
+
+	const wa = shrinkLayerTriple(
+		group.waterA,
+		group.waterB,
+		group.waterC,
+		group.waterCapacityFaces,
+		group.waterSlots.appendedFaces,
+	);
+	if (wa) {
+		group.waterA = wa.a;
+		group.waterB = wa.b;
+		group.waterC = wa.c;
+		group.waterCapacityFaces = wa.cap;
+		if (group.waterBuffers) {
+			group.waterBuffers.a = wa.a;
+			group.waterBuffers.b = wa.b;
+			group.waterBuffers.c = wa.c;
+		}
+	}
+
+	const cu = shrinkLayerTriple(
+		group.cutoutA,
+		group.cutoutB,
+		group.cutoutC,
+		group.cutoutCapacityFaces,
+		group.cutoutSlots.appendedFaces,
+	);
+	if (cu) {
+		group.cutoutA = cu.a;
+		group.cutoutB = cu.b;
+		group.cutoutC = cu.c;
+		group.cutoutCapacityFaces = cu.cap;
+		if (group.cutoutBuffers) {
+			group.cutoutBuffers.a = cu.a;
+			group.cutoutBuffers.b = cu.b;
+			group.cutoutBuffers.c = cu.c;
+		}
+	}
 }
 
 function rebuildGroupData(group: MergedMeshGroup): void {
@@ -1250,6 +1379,10 @@ function rebuildGroupData(group: MergedMeshGroup): void {
 		pushDirtyRange(waterRanges, 0, waSt.appendedFaces);
 	if (cuStructChanged && cuSt.appendedFaces > 0)
 		pushDirtyRange(cutoutRanges, 0, cuSt.appendedFaces);
+
+	// Release layer-array slack after spikes (see shrinkLayerTriple) BEFORE
+	// re-slicing the vertex-data views, so they wrap the shrunken arrays.
+	maybeShrinkGroupLayers(group);
 
 	// Wrap up vertex data buffers.
 	//

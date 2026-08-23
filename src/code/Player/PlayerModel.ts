@@ -6,8 +6,8 @@ import {
 	loadTexture2D,
 	type Mesh,
 	type ShaderMaterial,
-	setShaderFloat,
 	setShaderTexture,
+	setShaderUniform,
 	type Texture2D,
 } from "@babylonjs/lite";
 import { GLOBAL_VALUES } from "@/code/World/GLOBAL_VALUES";
@@ -47,8 +47,7 @@ struct VSOut {
 @fragment
 fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 	let tex = textureSample(diffuseTexture, diffuseTextureSampler, in.vUV);
-	let b = shaderUniforms.uBrightness;
-	return vec4<f32>(tex.rgb * b, 1.0);
+	return vec4<f32>(tex.rgb * shaderUniforms.uLightColor, 1.0);
 }
 `;
 
@@ -372,7 +371,6 @@ export function loadPlayerSkin(engine: EngineContext): Promise<Texture2D> {
 		promise = loadTexture2D(engine, PLAYER_SKIN_PATH, {
 			magFilter: "nearest",
 			minFilter: "nearest",
-			srgb: true,
 		});
 		skinCache.set(engine, promise);
 		promise.catch(() => {}); // callers handle failures; keep console clean
@@ -381,9 +379,10 @@ export function loadPlayerSkin(engine: EngineContext): Promise<Texture2D> {
 }
 
 /**
- * Bind the skin texture to a rig ShaderMaterial and initialize the brightness
- * uniform. Mirrors DroppedItem: the mesh must stay HIDDEN until the texture is
- * bound (onBind), because drawing with an unbound sampler invalidates the pass.
+ * Bind the skin texture to a rig ShaderMaterial and initialize the light-color
+ * uniform to neutral white. Mirrors DroppedItem: the mesh must stay HIDDEN
+ * until the texture is bound (onBind), because drawing with an unbound sampler
+ * invalidates the pass.
  *
  * An opaque-white placeholder is bound SYNCHRONOUSLY first: lite builds a
  * ShaderMaterial's bind group as soon as its renderable is constructed (scene
@@ -396,13 +395,12 @@ export function applyRigSkin(
 	onBind?: () => void,
 	isAlive: () => boolean = () => true,
 ): void {
-	setShaderFloat(mat, "uBrightness", 1);
+	setShaderUniform(mat, "uLightColor", [1, 1, 1]);
 	setShaderTexture(mat, "diffuseTexture", getFallbackTexture(engine));
 	loadPlayerSkin(engine)
 		.then((tex) => {
 			if (!isAlive()) return;
 			setShaderTexture(mat, "diffuseTexture", tex);
-			setShaderFloat(mat, "uBrightness", 1);
 			onBind?.();
 		})
 		.catch(() => {
@@ -412,20 +410,27 @@ export function applyRigSkin(
 }
 
 /**
- * Convert packed voxel light (sky << 4 | block) into a 0..1 brightness,
- * including the same sun-elevation day factor as dropped-item lighting.
+ * Convert packed voxel light (sky << 4 | block) into an RGB light color,
+ * mirroring the terrain shaders' mix: neutral skylight scaled by the
+ * sun-elevation day factor plus a warm torch tint, with an ambient floor.
  */
-export function packedLightToLevel(packed: number): number {
+export function packedLightToLightColor(
+	packed: number,
+): readonly [number, number, number] {
 	const sky = ((packed >> 4) & 0xf) / 15;
 	const block = (packed & 0xf) / 15;
 	const sunElevation = -GLOBAL_VALUES.skyLightDirection.y + 0.1;
-	const sunScale = Math.min(1, Math.max(0, sunElevation * 4)) + 0.3;
-	return Math.min(1, Math.max(0, Math.max(sky * sunScale, block)));
+	const sunIntensity = Math.min(1, Math.max(0, sunElevation * 4));
+	// Same mix as OpaqueShaderLite/Lod2/Lod3 fragment stages.
+	const skyScale = sky * 0.8 * (sunIntensity + 0.2);
+	const channel = (torch: number): number =>
+		Math.min(1, Math.max(0.2, skyScale + block * torch));
+	return [channel(0.9), channel(0.6), channel(0.2)];
 }
 
 /**
  * Unlit textured ShaderMaterial for rigs: samples the skin texture and
- * multiplies by a uBrightness uniform — fully bypassing scene lights and
+ * multiplies by a uLightColor RGB uniform — fully bypassing scene lights and
  * StandardMaterial state.
  */
 export function createRigShaderMaterial(name: string): ShaderMaterial {
@@ -437,7 +442,7 @@ export function createRigShaderMaterial(name: string): ShaderMaterial {
 		uniforms: [
 			"world",
 			"worldViewProjection",
-			{ name: "uBrightness", type: "f32" },
+			{ name: "uLightColor", type: "vec3<f32>" },
 		],
 		samplers: ["diffuseTexture"],
 		backFaceCulling: false,
@@ -448,6 +453,9 @@ export function bindRigTexture(mat: ShaderMaterial, tex: Texture2D): void {
 	setShaderTexture(mat, "diffuseTexture", tex);
 }
 
-export function setRigBrightness(mat: ShaderMaterial, level: number): void {
-	setShaderFloat(mat, "uBrightness", Math.min(1, Math.max(0.25, level)));
+export function setRigLightColor(
+	mat: ShaderMaterial,
+	color: readonly [number, number, number],
+): void {
+	setShaderUniform(mat, "uLightColor", [color[0], color[1], color[2]]);
 }

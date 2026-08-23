@@ -112,7 +112,10 @@ export class PauseMenu {
 		await flushChunkBoundEntities();
 	}
 
-	#persistSetting<K extends keyof GameSettings>(key: K, value: number): void {
+	#persistSetting<K extends Exclude<keyof GameSettings, "msaaEnabled">>(
+		key: K,
+		value: number,
+	): void {
 		const settings = loadGameSettings();
 		settings[key] = value;
 		saveGameSettings(settings);

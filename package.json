@@ -11,7 +11,8 @@
 		"selftest": "tsc --ignoreConfig --outDir .tmp-selftest --module esnext --target es2020 --moduleResolution bundler --skipLibCheck scripts/far-tile-selftest.ts && node .tmp-selftest/scripts/far-tile-selftest.js",
 		"ts7:version": "tsc --version",
 		"typecheck:ts7": "tsc --noEmit",
-		"build:test-ts7": "tsc --noEmit && \"F:\\NodeJs\\node.exe\" ./node_modules/vite/bin/vite.js build"
+		"build:test-ts7": "tsc --noEmit && \"F:\\NodeJs\\node.exe\" ./node_modules/vite/bin/vite.js build",
+		"postinstall": "patch-package"
 	},
 	"dependencies": {
 		"@babylonjs/lite": "^1.23.0",
@@ -24,13 +25,14 @@
 		"idb": "^8.0.3",
 		"level": "^10.0.0"
 	},
-	"devDependencies": {
-		"@biomejs/biome": "2.5.9",
-		"@types/node": "^26.2.0",
-		"assemblyscript": "^0.28.20",
-		"tsx": "^4.23.12",
-		"typescript": "^7.0.2",
-		"vite": "^8.2.2",
-		"vite-plugin-glsl": "^1.6.1"
-	}
+ 	"devDependencies": {
+ 		"@biomejs/biome": "2.5.10",
+ 		"@types/node": "^26.2.0",
+ 		"assemblyscript": "^0.28.20",
+ 		"patch-package": "^8.0.1",
+ 		"tsx": "^4.23.12",
+ 		"typescript": "^7.0.2",
+ 		"vite": "^8.2.2",
+ 		"vite-plugin-glsl": "^1.6.1"
+ 	}
 }

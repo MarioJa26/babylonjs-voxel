@@ -21,7 +21,11 @@ import {
 	updateChunksAround,
 } from "../World/Chunk/ChunkLoadingSystem";
 import { ChunkWorkerPool } from "../World/Chunk/ChunkWorkerPool";
-import { getMergedMeshFlushStats } from "../World/Chunk/MergedMeshManager";
+import {
+	getMergedLayerMemoryStats,
+	getMergedMeshFlushStats,
+} from "../World/Chunk/MergedMeshManager";
+import { getPackedMeshMemoryStats } from "../World/Chunk/PackedChunkMesh";
 import { BlockTickScheduler } from "../World/Chunk/Worker/BlockTickScheduler";
 import { processWaterUpdate } from "../World/Chunk/Worker/WaterSimulation";
 import { OcclusionCuller } from "../World/Occlusion/OcclusionCuller";
@@ -579,6 +583,26 @@ export class PlayerLoopController {
 		PlayerHud.updateDebugInfo(
 			"Mesh Build",
 			`${meshStats.lastMs.toFixed(1)}ms (avg ${meshStats.avgMs.toFixed(1)}ms)`,
+			"workers",
+		);
+
+		const mem = getPackedMeshMemoryStats();
+		const layers = getMergedLayerMemoryStats();
+		const mib = (b: number) => `${(b / 1048576).toFixed(1)}`;
+		PlayerHud.updateDebugInfo(
+			"Mesh Memory",
+			`inst:${mib(mem.instanceBytes)} arenas:${mib(mem.arenaBytes)} ` +
+				`(${mem.arenaUsedFaces}/${mem.arenaCapacityFaces}f) ` +
+				`off:${mib(mem.offsetBytes)} grp:${layers.groups}/${mib(layers.layerBytes)}MiB`,
+			"workers",
+		);
+
+		const census = Chunk.getCensus();
+		PlayerHud.updateDebugInfo(
+			"Chunk Census",
+			`total:${census.total} vox:${census.withVoxels} ` +
+				`lod<=1:${census.lodLow} lod2-3:${census.lodMid} lod4+:${census.lodHigh} ` +
+				`meshes:${census.cachedMeshEntries}/${mib(census.cachedMeshBytes)}MiB`,
 			"workers",
 		);
 

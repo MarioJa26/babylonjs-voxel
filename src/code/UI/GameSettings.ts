@@ -10,6 +10,12 @@ export interface GameSettings {
 	verticalRenderDistance: number;
 	fov: number;
 	mouseSensitivity: number;
+	/** Multiplier on window.devicePixelRatio for the render canvas. */
+	renderScale: number;
+	/** 4x MSAA on the main surface (costly; see SETTINGS_PARAMS.ENABLE_MSAA). */
+	msaaEnabled: boolean;
+	/** Frame-rate cap in Hz; 0 = uncapped. */
+	fpsCap: number;
 }
 
 const STORAGE_KEY = "b102.settings.v1";
@@ -19,6 +25,9 @@ const DEFAULTS: GameSettings = {
 	verticalRenderDistance: SETTING_PARAMS.VERTICAL_RENDER_DISTANCE,
 	fov: SETTING_PARAMS.CAMERA_FOV,
 	mouseSensitivity: 0.003,
+	renderScale: SETTING_PARAMS.RENDER_SCALE,
+	msaaEnabled: SETTING_PARAMS.ENABLE_MSAA,
+	fpsCap: SETTING_PARAMS.FPS_CAP,
 };
 
 function clamp(v: number, min: number, fallback: number, max: number): number {
@@ -52,6 +61,19 @@ export function loadGameSettings(): GameSettings {
 				defaults.mouseSensitivity,
 				0.02,
 			),
+			renderScale: clamp(
+				parsed.renderScale ?? defaults.renderScale,
+				defaults.renderScale * 0.5,
+				defaults.renderScale,
+				2,
+			),
+			msaaEnabled:
+				typeof parsed.msaaEnabled === "boolean"
+					? parsed.msaaEnabled
+					: defaults.msaaEnabled,
+			fpsCap: [0, 30, 60, 120].includes(parsed.fpsCap ?? defaults.fpsCap)
+				? (parsed.fpsCap ?? defaults.fpsCap)
+				: defaults.fpsCap,
 		};
 	} catch {
 		return defaults;
@@ -71,5 +93,8 @@ export function applyGameSettingsToEngine(
 		settings.verticalRenderDistance,
 	);
 	SETTING_PARAMS.CAMERA_FOV = Math.round(settings.fov);
+	SETTING_PARAMS.RENDER_SCALE = settings.renderScale;
+	SETTING_PARAMS.ENABLE_MSAA = settings.msaaEnabled;
+	SETTING_PARAMS.FPS_CAP = settings.fpsCap;
 	return settings;
 }

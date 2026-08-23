@@ -54,4 +54,21 @@ export const SETTING_PARAMS = {
 
 	// --- Lighting ---
 	HEMISPHERIC_LIGHT_INTENSITY: 1.0,
+
+	// --- Rendering quality / GPU load ---
+	// Multiplier applied to window.devicePixelRatio for the WebGPU canvas.
+	// 1 = native resolution; 0.75/0.5 render fewer pixels (biggest single
+	// fragment-cost lever on HiDPI displays).
+	RENDER_SCALE: 1,
+	// 4x MSAA on the main surface. Costly (~4x raster + resolve); voxel
+	// geometry barely benefits — keep false unless edges look jaggy.
+	ENABLE_MSAA: true,
+	// Frame-rate cap. The engine loop is an uncapped requestAnimationFrame,
+	// so on 120Hz+ monitors the GPU renders flat-out even when each frame is
+	// cheap. 60 is a good default; 0 = uncapped.
+	FPS_CAP: 60,
+	// Aggregate cap (MiB) on face-arena storage across ALL arenas (CPU+GPU
+	// each). Without it, every arena may legally grow to its own 128 MiB
+	// binding cap (~0.8 GB total with the usual 6 arenas).
+	ARENA_BUDGET_MB: 192,
 };

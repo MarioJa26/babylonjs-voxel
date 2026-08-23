@@ -18,6 +18,8 @@ convert.bat
 /public/texture/*
 !/public/texture/diffuse_atlas.png
 !/public/texture/normal_atlas.png
+!/public/texture/player/
+!/public/texture/player/skin.png
 
 *.zip
 *.env

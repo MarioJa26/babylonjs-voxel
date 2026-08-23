@@ -60,7 +60,16 @@ export class TestScene {
 	}
 
 	async init(): Promise<void> {
-		const engine = await createEngine(this.canvas, {});
+		// Load persisted settings BEFORE the engine exists: render scale and
+		// MSAA are surface-creation options (canvas size + pipeline sample
+		// counts) and cannot be changed afterwards without a full rebuild.
+		const savedSettings = loadGameSettings();
+		const dpr =
+			typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+		const engine = await createEngine(this.canvas, {
+			msaaSamples: savedSettings.msaaEnabled ? 4 : 1,
+			maxDevicePixelRatio: Math.max(0.5, dpr * savedSettings.renderScale),
+		});
 		const scene = createSceneContext(engine, {
 			defaultRenderTask: true,
 		});
@@ -69,7 +78,7 @@ export class TestScene {
 		this.scene = scene;
 
 		// Apply locally persisted options before anything reads the params.
-		const savedSettings = applyGameSettingsToEngine(loadGameSettings());
+		applyGameSettingsToEngine(savedSettings);
 
 		const playerCamera = new PlayerCamera();
 		playerCamera.mouseSensitivity = savedSettings.mouseSensitivity;
@@ -98,10 +107,43 @@ export class TestScene {
 
 		await registerScene(scene);
 		await startEngine(engine);
+		this.#installFpsCap(engine, savedSettings.fpsCap);
 
 		if (ENABLE_LITE_EXPLORER) {
 			await this.showLiteExplorer(engine, scene);
 		}
+	}
+
+	/**
+	 * Cap the engine's rAF loop without patching lite.
+	 *
+	 * startEngine() schedules an uncapped requestAnimationFrame chain, so on
+	 * 120Hz+ monitors the GPU renders flat-out. We wrap `engine._renderFn`:
+	 * when a frame is due we call the original (which re-schedules our
+	 * wrapper — exactly one chain), and when skipped WE re-schedule instead.
+	 */
+	#installFpsCap(engine: EngineContext, fpsCap: number): void {
+		if (!fpsCap || fpsCap <= 0) return; // 0 = uncapped
+		const anyEngine = engine as unknown as {
+			_renderFn: ((now: number) => void) | null;
+			_animFrameId: number;
+		};
+		const original = anyEngine._renderFn;
+		if (!original) return;
+		const minInterval = 1000 / Math.min(fpsCap, 240) - 1;
+		let lastRender = -Infinity;
+		const wrapped = (now: number): void => {
+			if (anyEngine._renderFn !== wrapped) return; // engine stopped
+			if (now - lastRender >= minInterval || now < lastRender) {
+				lastRender = now;
+				original(now); // re-schedules `wrapped`
+			} else {
+				anyEngine._animFrameId = requestAnimationFrame(wrapped);
+			}
+		};
+		cancelAnimationFrame(anyEngine._animFrameId);
+		anyEngine._renderFn = wrapped;
+		anyEngine._animFrameId = requestAnimationFrame(wrapped);
 	}
 
 	private async initMultiplayer(

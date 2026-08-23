@@ -43,8 +43,8 @@ import {
 	applyRigSkin,
 	createPlayerRigMesh,
 	createRigShaderMaterial,
-	packedLightToLevel,
-	setRigBrightness,
+	packedLightToLightColor,
+	setRigLightColor,
 } from "./PlayerModel";
 import { Gamemodes, type PlayerStats } from "./PlayerStats";
 import { SimpleCharacterController } from "./SimpleCharacterController";
@@ -1475,9 +1475,9 @@ export class PlayerVehicleMotor implements IPlayerBody {
 		this.#displayLightX = lx;
 		this.#displayLightY = ly;
 		this.#displayLightZ = lz;
-		setRigBrightness(
+		setRigLightColor(
 			mat,
-			packedLightToLevel(getLightByWorldCoords(x, y + 1, z)),
+			packedLightToLightColor(getLightByWorldCoords(x, y + 1, z)),
 		);
 	}
 

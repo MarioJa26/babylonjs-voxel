@@ -1,0 +1,114 @@
+diff --git a/node_modules/@babylonjs/lite/lib/material/shader/shader-thin-instance.js b/node_modules/@babylonjs/lite/lib/material/shader/shader-thin-instance.js
+index 54253b5..66806b0 100644
+--- a/node_modules/@babylonjs/lite/lib/material/shader/shader-thin-instance.js
++++ b/node_modules/@babylonjs/lite/lib/material/shader/shader-thin-instance.js
+@@ -1,8 +1,17 @@
+ import { syncThinInstanceBuffers, syncThinInstanceForDraw } from '../../mesh/thin-instance-gpu.js';
+ 
+-function instanceVertexLayouts(baseLocation, hasColor) {
+-  const layouts = [
+-    {
++function instanceVertexLayouts(baseLocation, hasColor, compact) {
++  const layouts = [];
++  if (compact) {
++    layouts.push({
++      arrayStride: 16,
++      stepMode: "instance",
++      attributes: [
++        { shaderLocation: baseLocation, offset: 0, format: "float32x4" }
++      ]
++    });
++  } else {
++    layouts.push({
+       arrayStride: 64,
+       stepMode: "instance",
+       attributes: [
+@@ -11,8 +20,8 @@ function instanceVertexLayouts(baseLocation, hasColor) {
+         { shaderLocation: baseLocation + 2, offset: 32, format: "float32x4" },
+         { shaderLocation: baseLocation + 3, offset: 48, format: "float32x4" }
+       ]
+-    }
+-  ];
++    });
++  }
+   if (hasColor) {
+     layouts.push({
+       arrayStride: 16,
+@@ -22,12 +31,18 @@ function instanceVertexLayouts(baseLocation, hasColor) {
+   }
+   return layouts;
+ }
+-function instancePreludeAttributes(baseLocation, hasColor) {
+-  let wgsl = `@location(${baseLocation}) world0: vec4<f32>,
++function instancePreludeAttributes(baseLocation, hasColor, compact) {
++  let wgsl;
++  if (compact) {
++    wgsl = `@location(${baseLocation}) instData: vec4<f32>,
++`;
++  } else {
++    wgsl = `@location(${baseLocation}) world0: vec4<f32>,
+ @location(${baseLocation + 1}) world1: vec4<f32>,
+ @location(${baseLocation + 2}) world2: vec4<f32>,
+ @location(${baseLocation + 3}) world3: vec4<f32>,
+ `;
++  }
+   if (hasColor) {
+     wgsl += `@location(${baseLocation + 4}) instanceColor: vec4<f32>,
+ `;
+@@ -39,10 +54,11 @@ function createShaderInstancedRenderable(scene, material, packet, isOverride, h,
+   const mesh = packet.mesh;
+   const ti = mesh.thinInstances;
+   const hasColor = !!ti.colors && material._tic != 0;
++  const compact = !!ti.compact;
+   const baseLocation = material.attributes.length;
+-  const instanceLayouts = instanceVertexLayouts(baseLocation, hasColor);
+-  const instanceAttrs = instancePreludeAttributes(baseLocation, hasColor);
+-  const variantKey = "" + +hasColor;
++  const instanceLayouts = instanceVertexLayouts(baseLocation, hasColor, compact);
++  const instanceAttrs = instancePreludeAttributes(baseLocation, hasColor, compact);
++  const variantKey = "" + +hasColor + ":" + +compact;
+   const wm = mesh.worldMatrix;
+   const sortCenter = [wm[12], wm[13], wm[14]];
+   let drawArgs = null;
+diff --git a/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js b/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js
+index 5f7cd08..2390564 100644
+--- a/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js
++++ b/node_modules/@babylonjs/lite/lib/mesh/thin-instance-gpu.js
+@@ -7,11 +7,16 @@ import { retireGpuResources } from '../engine/gpu-resource-retirement.js';
+ function syncThinInstanceGpuData(engine, ti, hasColor) {
+   const device = engine._device;
+   const needsStorage = ti._gpuCullingEnabled;
++  // Compact instance mode (ti.compact): each instance is a single vec4<f32>
++  // (16 bytes) instead of a full mat4 (64 bytes). Only valid for meshes whose
++  // shaders read instData (custom ShaderMaterial path); never combine with
++  // _gpuCullingEnabled or standard/PBR materials, which assume mat4 lanes.
++  const stride = ti.compact ? 16 : 64;
+   let retiredMatrix = null;
+   let retiredColor = null;
+   let recreated = false;
+   if (ti._version !== ti._gpuVersion || ti._gpuBufferStorage !== needsStorage) {
+-    const byteSize = ti.count * 64;
++    const byteSize = ti.count * stride;
+     let bufferRecreated = false;
+     if (!ti._gpuBuffer || ti._gpuBuffer.size < byteSize || ti._gpuBufferStorage !== needsStorage) {
+       if (ti._gpuBuffer) {
+@@ -19,7 +24,7 @@ function syncThinInstanceGpuData(engine, ti, hasColor) {
+       }
+       ti._gpuBuffer = device.createBuffer({
+         label: "thin-instance-matrices",
+-        size: Math.max(ti._capacity * 64, 4),
++        size: Math.max(ti._capacity * stride, 4),
+         // STORAGE is always included: the GPU picker binds this matrix
+         // buffer as a read-only storage buffer for thin-instance picking,
+         // so it must be storage-capable even when compute culling is off
+@@ -33,8 +38,8 @@ function syncThinInstanceGpuData(engine, ti, hasColor) {
+     const dirtyMin = bufferRecreated ? 0 : ti._dirtyMin;
+     const dirtyMax = bufferRecreated ? ti.count : Math.min(ti._dirtyMax, ti.count);
+     if (dirtyMax > dirtyMin) {
+-      const minByte = dirtyMin * 64;
+-      const maxByte = dirtyMax * 64;
++      const minByte = dirtyMin * stride;
++      const maxByte = dirtyMax * stride;
+       if (ti.matrices instanceof F32) {
+         device.queue.writeBuffer(ti._gpuBuffer, minByte, ti.matrices.buffer, ti.matrices.byteOffset + minByte, maxByte - minByte);
+       } else {
