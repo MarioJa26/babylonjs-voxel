@@ -60,6 +60,13 @@ fn mainFragment(in : VSOut) -> @location(0) vec4<f32> {
 export const PLAYER_SKIN_PATH = "/texture/player/skin.png";
 export const PLAYER_MODEL_HEIGHT = 1.8;
 
+/**
+ * Vertical offset (meters) from the mid-body controller origin where rig
+ * lighting samples voxel light. Chest height — below the head, so ceiling
+ * contact while jumping never reads inside-block darkness.
+ */
+export const PLAYER_LIGHT_SAMPLE_Y_OFFSET = 0.5;
+
 const PX = PLAYER_MODEL_HEIGHT / 32; // meters per skin pixel (rig is 32px tall)
 
 // ─── Skin atlas layout (64x64 classic base layer, pixel coords) ─────────────
@@ -102,9 +109,11 @@ const limbUv = (ox: number, oy: number): UvSet => ({
 	back: [ox + 12, oy + 4, ox + 16, oy + 16],
 });
 
-const ARM_L_UV = limbUv(32, 48);
+// Compact sheet: left limbs sit directly below their right counterparts
+// (y32-48 band) instead of Minecraft's default bottom row (y48-64).
+const ARM_L_UV = limbUv(40, 32);
 const ARM_R_UV = limbUv(40, 16);
-const LEG_L_UV = limbUv(16, 48);
+const LEG_L_UV = limbUv(0, 32);
 const LEG_R_UV = limbUv(0, 16);
 
 // ─── Box builder (winding matches DroppedItem.getUnitCubeGeometry) ──────────
@@ -365,6 +374,11 @@ function getFallbackTexture(engine: EngineContext): Texture2D {
 	return tex;
 }
 
+/** Shared opaque-white placeholder for rig materials (see applyRigSkin). */
+export function getRigFallbackTexture(engine: EngineContext): Texture2D {
+	return getFallbackTexture(engine);
+}
+
 export function loadPlayerSkin(engine: EngineContext): Promise<Texture2D> {
 	let promise = skinCache.get(engine);
 	if (!promise) {
@@ -379,7 +393,7 @@ export function loadPlayerSkin(engine: EngineContext): Promise<Texture2D> {
 }
 
 /**
- * Bind the skin texture to a rig ShaderMaterial and initialize the light-color
+ * Bind a skin texture to a rig ShaderMaterial and initialize the light-color
  * uniform to neutral white. Mirrors DroppedItem: the mesh must stay HIDDEN
  * until the texture is bound (onBind), because drawing with an unbound sampler
  * invalidates the pass.
@@ -388,16 +402,20 @@ export function loadPlayerSkin(engine: EngineContext): Promise<Texture2D> {
  * ShaderMaterial's bind group as soon as its renderable is constructed (scene
  * registration / material swap), and throws error #241 if any declared sampler
  * has no Texture2D — even when the mesh is invisible.
+ *
+ * `loadSkin` overrides where the skin comes from — remote players pass their
+ * server-synced skin loader here instead of the default local PNG fetch.
  */
 export function applyRigSkin(
 	engine: EngineContext,
 	mat: ShaderMaterial,
 	onBind?: () => void,
 	isAlive: () => boolean = () => true,
+	loadSkin: (engine: EngineContext) => Promise<Texture2D> = loadPlayerSkin,
 ): void {
 	setShaderUniform(mat, "uLightColor", [1, 1, 1]);
 	setShaderTexture(mat, "diffuseTexture", getFallbackTexture(engine));
-	loadPlayerSkin(engine)
+	loadSkin(engine)
 		.then((tex) => {
 			if (!isAlive()) return;
 			setShaderTexture(mat, "diffuseTexture", tex);

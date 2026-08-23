@@ -279,16 +279,35 @@
 .player-preview-panel {
 	grid-column: 1;
 	justify-self: end;
-	align-self: end;
+	align-self: start;
 
-	/* Transparent center on purpose: the model itself is rendered by the main
-	   scene BEHIND this DOM panel — the frame + equipment slots are the only
-	   DOM here. */
-	background: transparent;
-	border: 2px solid var(--hud-frame);
+	background-color: var(--hud-bg-panel);
+	border: var(--panel-frame-w) solid var(--hud-frame);
 	border-radius: var(--hud-radius-md);
+	box-shadow: var(--hud-shadow-panel);
 	padding: 6px;
 	pointer-events: none;
+}
+
+/* Player name label above the model (Minecraft-inventory style) */
+.player-preview-name {
+	text-align: center;
+
+	font-family: var(--ui-font-family);
+	font-size: clamp(0.6em, 2vw, 1em);
+	font-weight: 600;
+	color: var(--hud-frame-bright);
+	text-shadow: var(--hud-text-shadow);
+
+	margin-bottom: 0.4em;
+	pointer-events: none;
+}
+
+/* Canvas well — same inset frame as .recipe-search-panel */
+.player-preview-canvas {
+	background-color: var(--hud-bg-inset);
+	border: var(--hud-border-width) solid var(--hud-frame-dim);
+	border-radius: var(--hud-radius-sm);
 }
 
 .preview-body {

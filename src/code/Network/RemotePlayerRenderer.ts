@@ -1,15 +1,14 @@
 /**
  * RemotePlayerRenderer — visual representation of other players.
  *
- * Creates capsule meshes for remote players + billboard name tags (Minecraft-style).
+ * Creates Minecraft-style player rigs for remote players (textured with each
+ * player's server-synced skin PNG) + billboard name tags (Minecraft-style).
  * Uses DynamicTexture2D + OffscreenCanvas for reliable text rendering, and
  * FacingBillboardSpriteSystem for camera-facing sprites.
  *
  * Perf notes (see individual comments below):
  *  - Per-frame billboard update no longer allocates (position/size/color arrays
  *    and the options object are created once per player and mutated in place).
- *  - Materials are pooled by color index (max 8 live materials, not one per
- *    player) since color is purely a function of `colorIndex % PLAYER_COLORS.length`.
  *  - Name-tag textures are sized to the actual rasterised text instead of a
  *    fixed 512px canvas, cutting texture memory/upload bandwidth for typical
  *    names without changing the rendered on-screen scale (the texel→world
@@ -21,33 +20,43 @@
  *  - Remote players are iterated over a flat array (swap-remove on leave)
  *    instead of `Map.values()` for a tighter, allocation-free hot loop.
  */
-import type { EngineContext, Mesh, SceneContext } from "@babylonjs/lite";
+import type {
+	EngineContext,
+	Mesh,
+	SceneContext,
+	Texture2D,
+} from "@babylonjs/lite";
 import {
 	addBillboardSpriteIndex,
 	addFacingBillboardSystem,
 	addToScene,
 	billboardBlendAlpha,
 	clearBillboardSprites,
-	createCapsule,
 	createDynamicTexture,
 	createFacingBillboardSystem,
 	createGridSpriteAtlas,
-	createStandardMaterial,
+	createTexture2DFromPixels,
 	type DynamicTexture2D,
 	disposeMeshGpu,
 	type FacingBillboardSpriteSystem,
 	rebuildSceneRenderables,
 	removeFromScene,
 	type SpriteAtlas,
+	setShaderTexture,
 	updateDynamicTexture,
 } from "@babylonjs/lite";
+import { getLightByWorldCoords } from "@/code/World/Chunk/ChunkLoadingSystem";
 import { onGpuWorkDone } from "@/code/World/Light/liteGpuBuffer.js";
+import {
+	applyRigSkin,
+	createPlayerRigMesh,
+	createRigShaderMaterial,
+	getRigFallbackTexture,
+	PLAYER_LIGHT_SAMPLE_Y_OFFSET,
+	packedLightToLightColor,
+	setRigLightColor,
+} from "../Player/PlayerModel";
 import type { RemotePlayer } from "./NetClient";
-
-type PlayerMaterial = ReturnType<typeof createStandardMaterial>;
-
-const PLAYER_HEIGHT = 1.8;
-const PLAYER_RADIUS = 0.3;
 
 // Name tag sizing
 const NAME_TAG_FONT_PX = 30;
@@ -57,7 +66,6 @@ const NAME_TAG_Y_OFFSET = 1.5;
 const NAME_TAG_TEX_HEIGHT = 64; // texture pixel height
 
 const NAME_TAG_MAX_TEX_WIDTH = 384;
-2;
 const NAME_TAG_MIN_TEX_WIDTH = 32;
 //const NAME_TAG_FONT = "Arial";
 const NAME_TAG_FONT = "monospace";
@@ -69,17 +77,50 @@ const DEG_TO_RAD = Math.PI / 180;
 // visual shares one immutable array instead of allocating its own.
 const WHITE_COLOR: [number, number, number, number] = [1, 1, 1, 1];
 
-// Color palette for different players
-const PLAYER_COLORS: readonly [number, number, number][] = [
-	[0.2, 0.6, 1.0], // Blue
-	[1.0, 0.4, 0.2], // Orange
-	[0.2, 1.0, 0.4], // Green
-	[1.0, 0.2, 0.6], // Pink
-	[0.6, 0.2, 1.0], // Purple
-	[1.0, 0.8, 0.2], // Yellow
-	[0.2, 0.8, 1.0], // Cyan
-	[0.8, 0.4, 0.1], // Brown
-];
+// Light-tint refresh cadence, matching the local body in Player.ts.
+const LIGHT_RESAMPLE_MS = 250;
+
+/**
+ * Decode skin PNG bytes into a 64x64 RGBA8 GPU texture.
+ *
+ * The bytes are scale-drawn onto an exact 64x64 canvas (nearest neighbor) so
+ * HD square skins (e.g. 128x128) land correctly in the rig's /64 UV space;
+ * legacy 64x32 skins stretch vertically (acceptable fallback). Sampling stays
+ * nearest to preserve the pixel-art look.
+ *
+ * Rows are reversed BEFORE upload: createTexture2DFromPixels writes raw
+ * top-row-first bytes, while loadTexture2D flips during upload
+ * (invertY default true). The manual flip keeps both skin paths sampling
+ * identically under the rig's v=1-at-image-top UVs.
+ */
+async function decodeSkinToTexture(
+	engine: EngineContext,
+	png: Uint8Array,
+): Promise<Texture2D> {
+	// Copy into a plain ArrayBuffer-backed view (Blob rejects SAB-backed views).
+	const bytes = new Uint8Array(png.byteLength);
+	bytes.set(png);
+	const blob = new Blob([bytes], { type: "image/png" });
+	const bitmap = await createImageBitmap(blob);
+	try {
+		const canvas = new OffscreenCanvas(64, 64);
+		const ctx = canvas.getContext("2d")!;
+		ctx.imageSmoothingEnabled = false;
+		ctx.drawImage(bitmap, 0, 0, 64, 64);
+		const src = ctx.getImageData(0, 0, 64, 64).data;
+		const rowBytes = 64 * 4;
+		const flipped = new Uint8Array(src.length);
+		for (let y = 0; y < 64; y++) {
+			flipped.set(
+				src.subarray((63 - y) * rowBytes, (64 - y) * rowBytes),
+				y * rowBytes,
+			);
+		}
+		return createTexture2DFromPixels(engine, flipped, 64, 64);
+	} finally {
+		bitmap.close();
+	}
+}
 
 // Shared scratch canvas used only for `measureText` calls, so rasterising a
 // name tag doesn't need a throwaway full-size canvas just to size itself.
@@ -93,23 +134,6 @@ function getMeasureCtx(): OffscreenCanvasRenderingContext2D {
 
 function clampInt(value: number, min: number, max: number): number {
 	return value < min ? min : value > max ? max : value | 0;
-}
-
-/**
- * Fast deterministic hash for stable player colors.
- * This avoids color changes caused by join/leave order.
- */
-function hashString32(value: string): number {
-	let hash = 2166136261;
-	for (let i = 0; i < value.length; i++) {
-		hash ^= value.charCodeAt(i);
-		hash = Math.imul(hash, 16777619);
-	}
-	return hash >>> 0;
-}
-
-function getColorIndexForSession(sessionId: string): number {
-	return hashString32(sessionId) % PLAYER_COLORS.length;
 }
 
 /**
@@ -204,9 +228,17 @@ function rasteriseNameTag(name: string): {
 export class RemotePlayerVisual {
 	readonly mesh: Mesh;
 
+	private mat: ReturnType<typeof createRigShaderMaterial>;
 	private tex: DynamicTexture2D;
 	private atlas: SpriteAtlas;
 	private billboard: FacingBillboardSpriteSystem;
+
+	// Skin delivery: the loader handed to applyRigSkin resolves either
+	// immediately (PNG already synced) or when onSkinPng() receives it.
+	private skinPromise: Promise<Texture2D> | null = null;
+	private skinArrived: ((tex: Texture2D) => void) | null = null;
+	private skinBound = false;
+	private alive = true;
 
 	private lastX = Number.NaN;
 	private lastY = Number.NaN;
@@ -216,6 +248,12 @@ export class RemotePlayerVisual {
 	private lastTargetY = Number.NaN;
 	private lastTargetZ = Number.NaN;
 	private lastTargetYaw = Number.NaN;
+
+	// Voxel-light tint bookkeeping (same cadence as the local body).
+	private lastLightX = Number.NaN;
+	private lastLightY = Number.NaN;
+	private lastLightZ = Number.NaN;
+	private lastLightSampleMs = -Infinity;
 
 	// Scratch state reused every frame.
 	private readonly _pos: [number, number, number] = [0, 0, 0];
@@ -236,17 +274,31 @@ export class RemotePlayerVisual {
 		private engine: EngineContext,
 		private scene: SceneContext,
 		private player: RemotePlayer,
-		material: PlayerMaterial,
 	) {
-		this.mesh = createCapsule(engine, {
-			height: PLAYER_HEIGHT,
-			radius: PLAYER_RADIUS,
-		});
+		this.mesh = createPlayerRigMesh(
+			engine,
+			`remoteRig_${player.sessionId.slice(0, 8)}`,
+			"center",
+		);
 
-		this.mesh.material = material;
+		this.mat = createRigShaderMaterial("remoteRigMat");
+		this.mesh.material = this.mat;
 		this.mesh.pickable = false;
+		// Hidden until the skin texture binds (unbound sampler = invalid pass),
+		// mirroring the local third-person body in Player.ts.
+		this.mesh.visible = false;
 
 		addToScene(this.scene, this.mesh);
+
+		applyRigSkin(
+			engine,
+			this.mat,
+			() => {
+				this.skinBound = true;
+			},
+			() => this.alive,
+			(eng) => this.getSkinTexture(eng),
+		);
 
 		const { canvas, width: texW, height: texH } = rasteriseNameTag(player.name);
 		const nameTagWidthWorld = NAME_TAG_HEIGHT_WORLD * (texW / texH);
@@ -281,7 +333,76 @@ export class RemotePlayerVisual {
 		this.update();
 	}
 
+	/**
+	 * Loader override for applyRigSkin: resolves from the already-synced PNG
+	 * when present, otherwise parks until onSkinPng delivers the bytes.
+	 */
+	private getSkinTexture(engine: EngineContext): Promise<Texture2D> {
+		if (!this.skinPromise) {
+			const existing = this.player.skinPng;
+			if (existing) {
+				this.skinPromise = decodeSkinToTexture(engine, existing);
+			} else {
+				this.skinPromise = new Promise<Texture2D>((resolve) => {
+					this.skinArrived = resolve;
+				});
+			}
+		}
+		return this.skinPromise;
+	}
+
+	/** Called when the server delivers this player's skin PNG. */
+	onSkinPng(png: Uint8Array): void {
+		const resolve = this.skinArrived;
+		if (resolve) {
+			this.skinArrived = null;
+			void decodeSkinToTexture(this.engine, png).then(resolve, () =>
+				resolve(getRigFallbackTexture(this.engine)),
+			);
+			return;
+		}
+		// Safety net for a re-delivered/updated skin: decode and rebind.
+		void decodeSkinToTexture(this.engine, png).then(
+			(tex) => {
+				if (!this.alive) return;
+				setShaderTexture(this.mat, "diffuseTexture", tex);
+				this.skinBound = true;
+			},
+			() => {},
+		);
+	}
+
+	/** Voxel-light tint at the remote player's position (chest height). */
+	private syncLight(): void {
+		const p = this.player;
+		const lx = Math.floor(p.x);
+		const ly = Math.floor(p.y + PLAYER_LIGHT_SAMPLE_Y_OFFSET);
+		const lz = Math.floor(p.z);
+		const now = performance.now();
+		if (
+			lx === this.lastLightX &&
+			ly === this.lastLightY &&
+			lz === this.lastLightZ &&
+			now - this.lastLightSampleMs < LIGHT_RESAMPLE_MS
+		) {
+			return;
+		}
+		this.lastLightX = lx;
+		this.lastLightY = ly;
+		this.lastLightZ = lz;
+		this.lastLightSampleMs = now;
+		setRigLightColor(
+			this.mat,
+			packedLightToLightColor(
+				getLightByWorldCoords(p.x, p.y + PLAYER_LIGHT_SAMPLE_Y_OFFSET, p.z),
+			),
+		);
+	}
+
 	update(): void {
+		this.syncLight();
+		this.mesh.visible = this.skinBound;
+
 		const x = this.player.x;
 		const y = this.player.y;
 		const z = this.player.z;
@@ -342,6 +463,7 @@ export class RemotePlayerVisual {
 	}
 
 	dispose(): void {
+		this.alive = false;
 		this.billboard.visible = false;
 		clearBillboardSprites(this.billboard);
 
@@ -362,8 +484,6 @@ export class RemotePlayerVisual {
 		// If @babylonjs/lite exposes explicit disposal functions for
 		// FacingBillboardSpriteSystem, SpriteAtlas, or DynamicTexture2D,
 		// call them here as well. The current imports only expose disposeMeshGpu.
-		//
-		// Material is pooled and owned by RemotePlayerRenderer.
 	}
 }
 
@@ -371,10 +491,6 @@ export class RemotePlayerRenderer {
 	private list: RemotePlayerVisual[] = [];
 	private ids: string[] = [];
 	private indexById = new Map<string, number>();
-
-	private materialPool: (PlayerMaterial | null)[] = new Array(
-		PLAYER_COLORS.length,
-	).fill(null);
 
 	private pendingFlush = false;
 	private rebuildInFlight = false;
@@ -385,19 +501,6 @@ export class RemotePlayerRenderer {
 	constructor(engine: EngineContext, scene: SceneContext) {
 		this.engine = engine;
 		this.scene = scene;
-	}
-
-	private getMaterial(colorIndex: number): PlayerMaterial {
-		let mat = this.materialPool[colorIndex];
-
-		if (mat === null) {
-			mat = createStandardMaterial();
-			mat.emissiveColor = PLAYER_COLORS[colorIndex];
-			mat.disableLighting = true;
-			this.materialPool[colorIndex] = mat;
-		}
-
-		return mat;
 	}
 
 	private requestSceneRenderableFlush(): void {
@@ -429,15 +532,7 @@ export class RemotePlayerRenderer {
 			return;
 		}
 
-		const colorIndex = getColorIndexForSession(sessionId);
-		const material = this.getMaterial(colorIndex);
-
-		const visual = new RemotePlayerVisual(
-			this.engine,
-			this.scene,
-			player,
-			material,
-		);
+		const visual = new RemotePlayerVisual(this.engine, this.scene, player);
 
 		const index = this.list.length;
 
@@ -446,6 +541,13 @@ export class RemotePlayerRenderer {
 		this.ids.push(sessionId);
 
 		this.requestSceneRenderableFlush();
+	}
+
+	/** Deliver a server-synced skin PNG to the matching player's visual. */
+	onPlayerSkin(sessionId: string, png: Uint8Array): void {
+		const index = this.indexById.get(sessionId);
+		if (index === undefined) return;
+		this.list[index].onSkinPng(png);
 	}
 
 	onPlayerLeave(sessionId: string): void {
@@ -501,9 +603,5 @@ export class RemotePlayerRenderer {
 		this.indexById.clear();
 
 		this.pendingFlush = false;
-
-		// Pooled materials outlive individual visuals. If @babylonjs/lite exposes
-		// a material-disposal function, call it per non-null entry here.
-		this.materialPool.fill(null);
 	}
 }

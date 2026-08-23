@@ -26,6 +26,7 @@ export const MessageType = {
 	ChunkRequestBatch: 0x04,
 	ItemDrop: 0x05, // C→S: a player dropped an item into the world
 	ItemPickup: 0x06, // C→S: a player picked up a server item (by instance id)
+	SkinUpload: 0x07, // C→S: this client's avatar skin as PNG bytes
 
 	// Server → Client
 	PlayerStateBatch: 0x10,
@@ -42,6 +43,7 @@ export const MessageType = {
 	WorldConfig: 0x1a, // Server → client: authoritative world seed on join
 	SpawnPosition: 0x1b, // Server → client: teleport player to saved position
 	BlockEditRejected: 0x1d, // Server → client: a block edit was rejected
+	PlayerSkin: 0x1e, // S→C: another player's skin PNG, keyed by room index
 
 	// Server → Client: server-authoritative mobs
 	// 0x20 is reserved for a future client → server MobDamage message.
@@ -135,6 +137,21 @@ export interface PlayerJoinData {
 
 export interface PlayerLeaveData {
 	index: number;
+}
+
+/**
+ * Maximum accepted skin PNG size. Classic 64x64 skins are 0.5-5 KB; the cap
+ * leaves headroom for HD (128x128) skins while blocking abuse.
+ */
+export const MAX_SKIN_BYTES = 16 * 1024;
+
+/**
+ * Server → Client: a player's avatar skin as raw PNG bytes, keyed by the
+ * same per-room uint8 index used by PlayerJoin / PlayerStateBatch.
+ */
+export interface PlayerSkinData {
+	index: number;
+	png: Uint8Array;
 }
 
 export interface ChatMessageData {

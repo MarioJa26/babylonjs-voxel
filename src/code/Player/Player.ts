@@ -31,6 +31,7 @@ import {
 	applyRigSkin,
 	createPlayerRigMesh,
 	createRigShaderMaterial,
+	PLAYER_LIGHT_SAMPLE_Y_OFFSET,
 	packedLightToLightColor,
 	setRigLightColor,
 } from "./PlayerModel";
@@ -192,7 +193,7 @@ export class Player {
 		// updating even while standing still.
 		{
 			const lx = Math.floor(x);
-			const ly = Math.floor(y + 1);
+			const ly = Math.floor(y + PLAYER_LIGHT_SAMPLE_Y_OFFSET);
 			const lz = Math.floor(z);
 			const nowMs = performance.now();
 			if (
@@ -209,7 +210,9 @@ export class Player {
 				if (mat) {
 					setRigLightColor(
 						mat,
-						packedLightToLightColor(getLightByWorldCoords(x, y + 1, z)),
+						packedLightToLightColor(
+							getLightByWorldCoords(x, y + PLAYER_LIGHT_SAMPLE_Y_OFFSET, z),
+						),
 					);
 				}
 			}

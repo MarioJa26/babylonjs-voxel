@@ -153,6 +153,11 @@ export class NetworkManager {
 				this.renderer.onPlayerLeave(sessionId);
 				this.hud.addSystemMessage(`${name ?? "A player"} left`);
 			},
+			onPlayerSkin: (player) => {
+				if (player.skinPng) {
+					this.renderer.onPlayerSkin(player.sessionId, player.skinPng);
+				}
+			},
 			onPlayerStates: () => {
 				// States are applied in tick() via interpolation.
 			},

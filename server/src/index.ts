@@ -50,8 +50,15 @@ function handleStatus(_req: express.Request, res: express.Response): void {
 	});
 }
 
+// Incoming-frame cap. ws-transport's default is only 4 KB, which any avatar
+// skin upload (MAX_SKIN_BYTES = 16 KB) exceeds and gets the socket killed
+// with "Max payload size exceeded". 64 KB covers skins with headroom while
+// still bounding per-frame abuse; outgoing chunk batches are unaffected
+// (maxPayload only limits what the server RECEIVES).
+const WS_MAX_PAYLOAD = 64 * 1024;
+
 const gameServer = new Server({
-	transport: new WebSocketTransport(),
+	transport: new WebSocketTransport({ maxPayload: WS_MAX_PAYLOAD }),
 	express: (app) => {
 		app.options(STATUS_ROUTE, handleStatusOptions);
 		app.get(STATUS_ROUTE, handleStatus);

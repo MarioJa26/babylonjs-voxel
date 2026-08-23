@@ -712,7 +712,7 @@ export class MainMenu {
 
 		if (servers.length === 0) {
 			this.mpServerListEl.replaceChildren(
-				this.loadingRow("No saved servers — add one above."),
+				this.loadingRow("No saved servers, add one below."),
 			);
 			return;
 		}

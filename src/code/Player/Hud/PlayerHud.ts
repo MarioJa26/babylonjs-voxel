@@ -25,6 +25,7 @@ import { Item } from "../Inventory/Item";
 import type { ItemSlot } from "../Inventory/ItemSlot";
 import { PlayerInventory } from "../Inventory/PlayerInventory";
 import type { Player } from "../Player";
+import { PLAYER_LIGHT_SAMPLE_Y_OFFSET } from "../PlayerModel";
 import { Chat } from "./Chat";
 import { Crosshair } from "./Crosshair/Crosshair";
 import { PlayerPreview } from "./PlayerPreview";
@@ -76,10 +77,11 @@ export class PlayerHud {
 	#craftingContainer!: HTMLDivElement;
 	#mainInventoryContainer!: HTMLDivElement;
 	#playerPreview = new PlayerPreview(() => {
-		// Sample the voxel light at chest height so the preview is lit like
-		// the spot the player is standing in.
+		// Sample the voxel light at chest height (below the head) so the
+		// preview is lit like the spot the player is standing in — and never
+		// goes dark when the head clips a ceiling mid-jump.
 		const p = this.#player.position;
-		return getLightByWorldCoords(p.x, p.y + 1, p.z);
+		return getLightByWorldCoords(p.x, p.y + PLAYER_LIGHT_SAMPLE_Y_OFFSET, p.z);
 	});
 
 	static debugPanelDiv: HTMLDivElement;

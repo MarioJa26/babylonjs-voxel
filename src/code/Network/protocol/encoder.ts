@@ -22,6 +22,7 @@ import {
 	type MobUpdateBatchEntry,
 	type PlayerJoinData,
 	type PlayerLeaveData,
+	type PlayerSkinData,
 	type PlayerStateBatchEntry,
 	type PlayerStateData,
 } from "./messages";
@@ -678,6 +679,39 @@ export function encodePlayerLeave(data: PlayerLeaveData): Uint8Array {
 
 export function decodePlayerLeave(buffer: Uint8Array): number {
 	return buffer[1];
+}
+
+/**
+ * C→S: upload this client's avatar skin.
+ * [type:1][len:u16][png bytes]
+ * Sent once after joining; the server validates and relays it to others.
+ */
+export function encodeSkinUpload(png: Uint8Array): Uint8Array {
+	const enc = new BinaryEncoder(3 + png.byteLength);
+	enc.writeUint8(MessageType.SkinUpload);
+	enc.writeUint16(png.byteLength);
+	enc.writeBytes(png);
+	return enc.getBytes();
+}
+
+/**
+ * S→C: another player's avatar skin, keyed by room index.
+ * [type:1][index:u8][len:u16][png bytes]
+ */
+export function encodePlayerSkin(data: PlayerSkinData): Uint8Array {
+	const enc = new BinaryEncoder(4 + data.png.byteLength);
+	enc.writeUint8(MessageType.PlayerSkin);
+	enc.writeUint8(data.index);
+	enc.writeUint16(data.png.byteLength);
+	enc.writeBytes(data.png);
+	return enc.getBytes();
+}
+
+export function decodePlayerSkin(buffer: Uint8Array): PlayerSkinData {
+	const dec = new BinaryDecoder(buffer, 1);
+	const index = dec.readUint8();
+	const len = dec.readUint16();
+	return { index, png: dec.readBytes(len) };
 }
 
 /**

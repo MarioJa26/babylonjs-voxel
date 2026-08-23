@@ -43,6 +43,7 @@ import {
 	applyRigSkin,
 	createPlayerRigMesh,
 	createRigShaderMaterial,
+	PLAYER_LIGHT_SAMPLE_Y_OFFSET,
 	packedLightToLightColor,
 	setRigLightColor,
 } from "./PlayerModel";
@@ -121,7 +122,7 @@ function isChunkLoadedAtWorldCoords(
 	for (let i = 0; i < _PROBE_SLOTS; i++) {
 		if (_pcx[i] === cx && _pcy[i] === cy && _pcz[i] === cz) {
 			const cached = _pchunk[i];
-			if (cached && cached.isLoaded) {
+			if (cached?.isLoaded) {
 				return cached.hasVoxelData;
 			}
 			// Stale/disposed entry — fall through and refresh this slot.
@@ -1462,22 +1463,22 @@ export class PlayerVehicleMotor implements IPlayerBody {
 	#syncDisplayLight(x: number, y: number, z: number): void {
 		const mat = this.#displayMat;
 		if (!mat) return;
+		const ly = y + PLAYER_LIGHT_SAMPLE_Y_OFFSET;
 		const lx = Math.floor(x);
-		const ly = Math.floor(y + 1);
 		const lz = Math.floor(z);
 		if (
 			lx === this.#displayLightX &&
-			ly === this.#displayLightY &&
+			Math.floor(ly) === this.#displayLightY &&
 			lz === this.#displayLightZ
 		) {
 			return;
 		}
 		this.#displayLightX = lx;
-		this.#displayLightY = ly;
+		this.#displayLightY = Math.floor(ly);
 		this.#displayLightZ = lz;
 		setRigLightColor(
 			mat,
-			packedLightToLightColor(getLightByWorldCoords(x, y + 1, z)),
+			packedLightToLightColor(getLightByWorldCoords(x, ly, z)),
 		);
 	}
 

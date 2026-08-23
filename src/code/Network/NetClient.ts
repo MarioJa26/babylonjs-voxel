@@ -8,6 +8,7 @@
  */
 
 import { ColyseusSDK } from "@colyseus/sdk";
+import { PLAYER_SKIN_PATH } from "../Player/PlayerModel";
 import {
 	BinaryDecoder,
 	BinaryEncoder,
@@ -15,14 +16,17 @@ import {
 	decodeBlockEditBroadcastFrom,
 	decodeBlockEditRejectedFrom,
 	decodePlayerJoinFrom,
+	decodePlayerSkin,
 	decodePlayerStateBatchEntriesInto,
 	decodeWorldConfig,
+	encodeSkinUpload,
 	type WorldConfigData,
 } from "./protocol/encoder";
 import {
 	type BlockEditData,
 	type BlockEditRejectedData,
 	type ChatMessageData,
+	MAX_SKIN_BYTES,
 	MessageType,
 	type PlayerStateBatchEntry,
 } from "./protocol/messages";
@@ -37,6 +41,8 @@ export interface RemotePlayer {
 	yaw: number;
 	pitch: number;
 	animation: number;
+	/** Server-synced avatar skin PNG (null until received). */
+	skinPng: Uint8Array | null;
 	// Interpolation targets, yaw stored in degrees.
 	targetX: number;
 	targetY: number;
@@ -49,6 +55,8 @@ export interface NetClientCallbacks {
 	onDisconnected?: (code: number, reason?: string) => void;
 	onPlayerJoin?: (player: RemotePlayer) => void;
 	onPlayerLeave?: (sessionId: string, name?: string) => void;
+	/** Fired when a remote player's skin PNG arrives (or is re-sent). */
+	onPlayerSkin?: (player: RemotePlayer, png: Uint8Array) => void;
 	onPlayerStates?: (states: Map<string, RemotePlayer> | RemotePlayer[]) => void;
 	onBlockEdit?: (edit: BlockEditData) => void;
 	onBlockEditRejected?: (rejection: BlockEditRejectedData) => void;
@@ -155,6 +163,9 @@ export class NetClient {
 			this.setupRoomHandlers(room, generation);
 			this.connected = true;
 			this.callbacks.onConnected?.();
+
+			// Fire-and-forget: share this client's avatar skin with the room.
+			void this.uploadOwnSkin();
 		} catch (err) {
 			if (generation === this.roomGeneration) {
 				this.connected = false;
@@ -230,6 +241,21 @@ export class NetClient {
 				case MessageType.PlayerJoin:
 					this.handlePlayerJoin(dec);
 					break;
+
+				case MessageType.PlayerSkin: {
+					const skin = decodePlayerSkin(data);
+					const player = this.playersByIndex[skin.index];
+					if (player === undefined) {
+						// Server sends join before skin, so this is a protocol oddity.
+						console.warn(
+							`[NetClient] Skin for unknown player index ${skin.index}, skipping`,
+						);
+						break;
+					}
+					player.skinPng = skin.png;
+					this.callbacks.onPlayerSkin?.(player, skin.png);
+					break;
+				}
 
 				case MessageType.PlayerLeave:
 					this.handlePlayerLeave(dec);
@@ -385,6 +411,7 @@ export class NetClient {
 				yaw: 0,
 				pitch: 0,
 				animation: 0,
+				skinPng: null,
 				targetX: 0,
 				targetY: 80,
 				targetZ: 0,
@@ -553,6 +580,27 @@ export class NetClient {
 		this.encoder.writeUint8(MessageType.ItemPickup);
 		this.encoder.writeUint32(instanceId);
 		room.sendBytes("binary", this.encoder.getBytes());
+	}
+
+	/** C→S: share this client's avatar skin PNG with the room. */
+	uploadSkin(png: Uint8Array): void {
+		const room = this.getConnectedRoom();
+		if (!room) return;
+
+		if (png.byteLength === 0 || png.byteLength > MAX_SKIN_BYTES) return;
+		room.sendBytes("binary", encodeSkinUpload(png));
+	}
+
+	/** Fetch the local skin PNG and upload it (best-effort, once per connect). */
+	private async uploadOwnSkin(): Promise<void> {
+		try {
+			const res = await fetch(PLAYER_SKIN_PATH);
+			if (!res.ok) return;
+			const buf = await res.arrayBuffer();
+			this.uploadSkin(new Uint8Array(buf));
+		} catch {
+			// Skin sharing is best-effort; never block gameplay.
+		}
 	}
 
 	// Remote player access

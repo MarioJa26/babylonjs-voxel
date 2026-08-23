@@ -43,6 +43,7 @@ import {
 	encodePitchByte,
 	encodePlayerJoin,
 	encodePlayerLeave,
+	encodePlayerSkin,
 	encodeSpawnPosition,
 	encodeWorldConfig,
 	encodeYawByte,
@@ -59,6 +60,7 @@ import {
 	type ItemPickupData,
 	type ItemSpawnData,
 	type ItemUpdateBatchEntry,
+	MAX_SKIN_BYTES,
 	MessageType,
 	type MobUpdateBatchEntry,
 	type PlayerStateBatchEntry,
@@ -125,6 +127,17 @@ function timeOfDayLabel(fraction: number): string {
 	return "night";
 }
 
+/** PNG signature bytes (\x89PNG\r\n\x1a\n). */
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+function isPngBytes(bytes: Uint8Array): boolean {
+	if (bytes.byteLength < PNG_SIGNATURE.length) return false;
+	for (let i = 0; i < PNG_SIGNATURE.length; i++) {
+		if (bytes[i] !== PNG_SIGNATURE[i]) return false;
+	}
+	return true;
+}
+
 interface ServerPlayerState {
 	sessionId: string;
 	index: number;
@@ -135,6 +148,8 @@ interface ServerPlayerState {
 	yaw: number;
 	pitch: number;
 	animation: number;
+	/** Session-scoped avatar skin PNG (validated on upload; never persisted). */
+	skin: Uint8Array | null;
 	dirty: boolean;
 	saveDirty: boolean;
 	lastSaveTime: number;
@@ -407,6 +422,7 @@ export class VoxelRoom extends Room {
 				yaw: saved?.yaw ?? worldSpawn.yaw,
 				pitch: saved?.pitch ?? worldSpawn.pitch,
 				animation: 0,
+				skin: null,
 				dirty: true,
 				saveDirty: false,
 				lastSaveTime: 0,
@@ -458,6 +474,16 @@ export class VoxelRoom extends Room {
 			}
 
 			this.sendFullPlayerSnapshot(client);
+
+			// Deliver existing players' skins to the newcomer. One frame per
+			// skin — clients parse a single message per binary frame.
+			for (const [sid, p] of this.players) {
+				if (sid === client.sessionId || !p.skin) continue;
+				client.sendBytes(
+					"binary",
+					encodePlayerSkin({ index: p.index, png: p.skin }),
+				);
+			}
 
 			if (this.blockEditCount > 0) {
 				client.sendBytes(
@@ -1535,6 +1561,30 @@ export class VoxelRoom extends Room {
 					player.dirty = true;
 					player.saveDirty = true;
 				}
+				break;
+			}
+
+			case MessageType.SkinUpload: {
+				const player = this.players.get(client.sessionId);
+				if (!player) break;
+
+				const len = dec.readUint16();
+				if (len === 0 || len > MAX_SKIN_BYTES) {
+					throw new Error(`skin upload out of range: ${len} bytes`);
+				}
+				const png = dec.readBytes(len);
+				if (!isPngBytes(png)) {
+					throw new Error("skin upload is not a PNG");
+				}
+
+				// Session-scoped: store and relay to everyone else. Late joiners
+				// get it via the onJoin snapshot.
+				player.skin = png;
+				this.broadcastBytes(
+					"binary",
+					encodePlayerSkin({ index: player.index, png }),
+					{ except: client },
+				);
 				break;
 			}
 

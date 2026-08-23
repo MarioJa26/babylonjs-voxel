@@ -1,12 +1,9 @@
 import {
 	addToScene,
 	createArcRotateCamera,
-	createDirectionalLight,
 	createEngine,
-	createHemisphericLight,
 	createMeshFromData,
 	createSceneContext,
-	createStandardMaterial,
 	disposeEngine,
 	disposeMeshGpu,
 	disposeScene,
@@ -14,14 +11,15 @@ import {
 	loadTexture2D,
 	type Mesh,
 	onBeforeRender,
-	rebuildMaterial,
 	registerScene,
 	type SceneContext,
 	type ShaderMaterial,
+	setShaderTexture,
 	startEngine,
 	stopEngine,
 	vec3,
 } from "@babylonjs/lite";
+import { getPlayerName } from "@/code/Network/serverList";
 import { getAtlasTile } from "@/code/World/Texture/BlockTextures";
 import { BlockType } from "@/code/World/Texture/BlockType";
 import {
@@ -33,6 +31,7 @@ import {
 	buildFloorSlabData,
 	createPlayerRigMesh,
 	createRigShaderMaterial,
+	getRigFallbackTexture,
 	packedLightToLightColor,
 	setRigLightColor,
 } from "../PlayerModel";
@@ -72,6 +71,7 @@ export class PlayerPreview {
 	#model: Mesh | null = null;
 	#rigMat: ShaderMaterial | null = null;
 	#floor: Mesh | null = null;
+	#floorMat: ShaderMaterial | null = null;
 	#initPromise: Promise<void> | null = null;
 	#running = false;
 	#alive = false;
@@ -83,6 +83,12 @@ export class PlayerPreview {
 
 		this.container = document.createElement("div");
 		this.container.className = "player-preview-panel";
+
+		// Player name above the model, Minecraft-inventory style.
+		const name = document.createElement("div");
+		name.className = "player-preview-name";
+		name.textContent = getPlayerName().trim() || "Steve";
+		this.container.appendChild(name);
 
 		const body = document.createElement("div");
 		body.className = "preview-body";
@@ -144,6 +150,8 @@ export class PlayerPreview {
 
 		this.#model = null;
 		this.#floor = null;
+		this.#rigMat = null;
+		this.#floorMat = null;
 		this.#scene = null;
 		this.#engine = null;
 		this.#initPromise = null;
@@ -164,11 +172,9 @@ export class PlayerPreview {
 		// Explicit dark clear so "nothing drawn" is never mistaken for white.
 		scene.clearColor = { r: 0.04, g: 0.055, b: 0.07, a: 1 };
 
-		// Lights — hemispheric keeps every surface readable, directional adds
-		// shape. Kept modest: combined intensity above ~1 washes the skin out.
-		const hemi = createHemisphericLight([0, 1, 0], 0.55);
-		addToScene(scene, hemi);
-		addToScene(scene, createDirectionalLight([-0.45, -1, -0.35], 0.5));
+		// No scene lights needed: rig + floor both use the unlit textured
+		// ShaderMaterial tinted by the voxel-light color (see below), so the
+		// block under the model is colored EXACTLY like the model itself.
 
 		// Character rig (single merged mesh so it rotates as one piece).
 		const mesh = createPlayerRigMesh(engine, "playerPreviewRig");
@@ -216,24 +222,24 @@ export class PlayerPreview {
 			floorData.indices,
 			floorData.uvs,
 		);
-		const floorMat = createStandardMaterial();
-		floorMat.diffuseColor = [0.6, 0.63, 0.66];
-		floorMat.specularColor = [0, 0, 0];
-		floorMat.backFaceCulling = false;
+		// Same unlit rig shader as the model — its UVs are final atlas coords
+		// (buildFloorSlabData "atlas" mode), so one material swap makes the
+		// slab share the model's exact voxel-light tint.
+		const floorMat = createRigShaderMaterial("playerPreviewFloorMat");
+		setShaderTexture(floorMat, "diffuseTexture", getRigFallbackTexture(engine));
 		floor.material = floorMat;
 		floor.pickable = false;
 		addToScene(scene, floor);
 		this.#floor = floor;
+		this.#floorMat = floorMat;
 
 		void loadTexture2D(engine, ATLAS_TEXTURE_PATH, {
 			magFilter: "nearest",
 			minFilter: "nearest",
 		})
 			.then((tex) => {
-				if (!this.#alive) return;
-				floorMat.diffuseTexture = tex;
-				floorMat.diffuseColor = [1, 1, 1];
-				rebuildMaterial(scene, floorMat);
+				if (!this.#alive || !this.#floorMat) return;
+				setShaderTexture(this.#floorMat, "diffuseTexture", tex);
 			})
 			.catch(() => {});
 
@@ -247,13 +253,13 @@ export class PlayerPreview {
 			if (this.#model) {
 				this.#model.rotation.y += (deltaMs / 1000) * SPIN_SPEED;
 			}
-			if (this.#getLightLevel && this.#rigMat) {
+			if (this.#getLightLevel) {
 				// Match the in-world rig lighting: colored sky/torch mix from
-				// packed voxel light (sky << 4 | block).
-				setRigLightColor(
-					this.#rigMat,
-					packedLightToLightColor(this.#getLightLevel()),
-				);
+				// packed voxel light (sky << 4 | block). Applied to BOTH the
+				// model and the floor slab so they share one exact color.
+				const color = packedLightToLightColor(this.#getLightLevel());
+				if (this.#rigMat) setRigLightColor(this.#rigMat, color);
+				if (this.#floorMat) setRigLightColor(this.#floorMat, color);
 			}
 		});
 
