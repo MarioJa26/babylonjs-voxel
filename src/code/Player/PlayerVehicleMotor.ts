@@ -1444,7 +1444,7 @@ export class PlayerVehicleMotor implements IPlayerBody {
 			"playerDisplayRig",
 			"center",
 		);
-		const mat = createRigShaderMaterial(this.#engine, "playerDisplayRigMat");
+		const mat = createRigShaderMaterial("playerDisplayRigMat");
 		body.material = mat;
 		body.pickable = false;
 		body.visible = false;
