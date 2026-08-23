@@ -37,8 +37,8 @@ import {
 	setRigLightColor,
 } from "../PlayerModel";
 
-const PREVIEW_SIZE = { width: 220, height: 300 };
-const SPIN_SPEED = Math.PI / 2.5; // rad/s
+const PREVIEW_SIZE = { width: 220, height: 320 };
+const SPIN_SPEED = Math.PI / 3.0; // rad/s
 const ATLAS_TEXTURE_PATH = "/texture/diffuse_atlas.png";
 
 /** Equipment slot ids shown beside/below the character, Minecraft-style. */
@@ -207,7 +207,7 @@ export class PlayerPreview {
 		const vLow = atlasRow * ts;
 		const vHigh = (atlasRow + 1) * ts;
 
-		const floorData = buildFloorSlabData(1.7, [u0, vLow, u1, vHigh]);
+		const floorData = buildFloorSlabData(1.0, [u0, vLow, u1, vHigh]);
 		const floor = createMeshFromData(
 			engine,
 			"playerPreviewFloor",

@@ -22,10 +22,11 @@ function skirtDepthFor(step: number): number {
 	return Math.min(48, step * 8);
 }
 
-// Positions are stored as x*8 in a byte (max 255 = 31.875 blocks), so the
-// far border plane at `size` is nudged inward by a sub-block amount.
-const PLANE_FAR_UNITS = 255;
-const PLANE_FAR = PLANE_FAR_UNITS / 8;
+// Skirts exist only on downsampled builds (see early-out above), so every
+// face here is emitted through QuadBuffer.emitQuadRawUnits — whole-block
+// coordinates written verbatim. The old ×8-scaled encoding could not reach
+// the far border plane (255/8 = 31.875 blocks max), so it nudged the plane
+// inward by a sub-block amount; raw units encode `size` exactly.
 
 export function emitLodBorderSkirts(session: MeshBuildSession): void {
 	const step = session.lodStep;
@@ -119,7 +120,7 @@ function emitSkirt(
 		height = vertical;
 	}
 
-	out.emitQuadUnchecked(
+	out.emitQuadRawUnits(
 		x,
 		yBottom,
 		z,
@@ -131,10 +132,6 @@ function emitSkirt(
 		quantizedLight,
 		0,
 		faceName,
-		0,
-		0,
-		0,
-		1,
 	);
 }
 
@@ -176,7 +173,7 @@ function emitSkirtPairX(
 				pos,
 				0,
 				0,
-				PLANE_FAR,
+				session.size,
 				pos.y + 1 - depth,
 				z,
 				stepSpan,
@@ -223,7 +220,7 @@ function emitSkirtPairZ(
 				0,
 				x,
 				pos.y + 1 - depth,
-				PLANE_FAR,
+				session.size,
 				stepSpan,
 				faceName,
 			);

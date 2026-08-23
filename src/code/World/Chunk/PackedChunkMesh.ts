@@ -135,6 +135,9 @@ interface PackedMeshState {
 	faceWordsA?: Uint32Array;
 	faceWordsB?: Uint32Array;
 	faceWordsC?: Uint32Array;
+	/** Scratch flag used by compactArena to mark meshes whose faceBase moved
+	 *  (their instance-record faceBase lanes need rewriting). */
+	_compactMoved?: boolean;
 }
 
 const meshState = new Map<Mesh, PackedMeshState>();
@@ -472,67 +475,67 @@ function allocFaces(count: number): FaceAlloc {
 
 	const maxFaces = maxFacesPerArena();
 
-	// 1) Reuse a freed hole in any existing arena.
-	// Important: when splitting an existing free interval, mutate the existing
-	// pooled node in place instead of replacing it with a new pooled object.
-	// The old version leaked the old interval object from the pool path.
-	for (let ai = 0; ai < faceArenas.length; ai++) {
-		const arena = faceArenas[ai];
+	// Pass 0 may trigger defragmentation when free faces exist but no
+	// contiguous hole fits; pass 1 rescans the normalized free lists.
+	for (let pass = 0; pass < 2; pass++) {
+		// 1) Reuse a freed hole in any existing arena.
+		// Important: when splitting an existing free interval, mutate the existing
+		// pooled node in place instead of replacing it with a new pooled object.
+		// The old version leaked the old interval object from the pool path.
+		for (let ai = 0; ai < faceArenas.length; ai++) {
+			const arena = faceArenas[ai];
 
-		// No hole in this arena can hold `count` faces — skip the scan.
-		if (arena.freeCount < count) continue;
+			// No hole in this arena can hold `count` faces — skip the scan.
+			if (arena.freeCount < count) continue;
 
-		const free = arena.free;
+			const free = arena.free;
 
-		for (let i = 0, len = free.length; i < len; i++) {
-			const node = free[i];
+			for (let i = 0, len = free.length; i < len; i++) {
+				const node = free[i];
 
-			if (node.count >= count) {
-				const base = node.base;
-				const leftover = node.count - count;
+				if (node.count >= count) {
+					const base = node.base;
+					const leftover = node.count - count;
 
-				if (leftover > 0) {
-					node.base = base + count;
-					node.count = leftover;
-				} else {
-					free.splice(i, 1);
-					releaseInterval(node);
+					if (leftover > 0) {
+						node.base = base + count;
+						node.count = leftover;
+					} else {
+						free.splice(i, 1);
+						releaseInterval(node);
+					}
+
+					arena.freeCount -= count;
+					return { arena: ai, base };
 				}
-
-				arena.freeCount -= count;
-				return { arena: ai, base };
 			}
 		}
-	}
 
-	// 2) Append to an arena tail, growing that arena first if possible.
-	for (let ai = 0; ai < faceArenas.length; ai++) {
-		const arena = faceArenas[ai];
-
-		if (arena.used + count <= arena.capacity) {
-			const base = arena.used;
-			arena.used += count;
-			return { arena: ai, base };
-		}
-
-		if (arena.capacity < maxFaces) {
-			growArena(arena, ai);
+		// 2) Append to an arena tail, growing that arena first if possible.
+		for (let ai = 0; ai < faceArenas.length; ai++) {
+			const arena = faceArenas[ai];
 
 			if (arena.used + count <= arena.capacity) {
 				const base = arena.used;
 				arena.used += count;
 				return { arena: ai, base };
 			}
+
+			if (arena.capacity < maxFaces) {
+				growArena(arena, ai);
+
+				if (arena.used + count <= arena.capacity) {
+					const base = arena.used;
+					arena.used += count;
+					return { arena: ai, base };
+				}
+			}
 		}
+
+		if (pass === 0 && !tryCompactFor(count)) break;
 	}
 
-	console.error(
-		`[PackedChunkMesh] face arenas exhausted (${totalFacesUsed()} faces, ` +
-			`${faceArenas.length} arenas = ${totalFaceCapacity()} faces). ` +
-			`Loaded geometry exceeds the GPU storage-buffer arena limit ` +
-			`(maxFaceArenas=${maxFaceArenas}).`,
-	);
-
+	reportArenaExhaustion(count);
 	return { arena: -1, base: -1 };
 }
 
@@ -690,6 +693,178 @@ function allocOffsetBlock(): number {
 	const blockIndex = offsetUsedGroups;
 	offsetUsedGroups += 1;
 	return blockIndex << OFFSETS_PER_GROUP_SHIFT;
+}
+
+// ── Arena defragmentation ───────────────────────────────────────────────────
+// Streaming churn leaves scattered free holes; once the arenas sit near the
+// aggregate budget, a large request can fail even though total free faces
+// exceed it. compactArena slides every live block in one arena down to be
+// contiguous from 0, turning ALL free faces into a single tail hole.
+
+let _compacting = false;
+
+function largestHoleFaces(a: FaceArena): number {
+	let max = 0;
+	for (let i = 0; i < a.free.length; i++) {
+		if (a.free[i].count > max) max = a.free[i].count;
+	}
+	return max;
+}
+
+function compactArena(index: number): boolean {
+	const arena = faceArenas[index];
+	if (!arena || _compacting) return false;
+	if (arena.freeCount <= 0 || arena.free.length === 0) return false;
+
+	_compacting = true;
+	try {
+		const entries: Array<{ mesh: Mesh; s: PackedMeshState }> = [];
+		for (const [mesh, s] of meshState) {
+			if (s.faceArena === index && s.faceCount > 0) entries.push({ mesh, s });
+		}
+		if (entries.length === 0) return false;
+		entries.sort((a, b) => a.s.faceBase - b.s.faceBase);
+
+		const cpu = arena.cpu;
+		let write = 0;
+		let runDst = -1;
+		let runSrc = -1;
+		let runLen = 0;
+		let moved = 0;
+
+		const flushRun = (): void => {
+			if (runLen > 0) {
+				cpu.copyWithin(
+					runDst * FACE_WORDS,
+					runSrc * FACE_WORDS,
+					(runSrc + runLen) * FACE_WORDS,
+				);
+				runDst = -1;
+				runSrc = -1;
+				runLen = 0;
+			}
+		};
+
+		for (let i = 0; i < entries.length; i++) {
+			const s = entries[i].s;
+			const src = s.faceBase;
+			if (src === write) {
+				write += s.faceCount;
+				continue;
+			}
+			if (
+				runLen > 0 &&
+				(runDst + runLen !== write || runSrc + runLen !== src)
+			) {
+				flushRun();
+			}
+			if (runLen === 0) {
+				runDst = write;
+				runSrc = src;
+			}
+			runLen += s.faceCount;
+			s.faceBase = write;
+			s._compactMoved = true;
+			moved++;
+			write += s.faceCount;
+		}
+		flushRun();
+
+		if (moved === 0) return false;
+
+		// One contiguous upload covers the compacted prefix; any untouched
+		// blocks inside it re-upload identical bytes (CPU mirror is truth).
+		uploadFaceRange(index, 0, write);
+
+		arena.used = write;
+		arena.free.length = 0;
+		arena.freeCount = 0;
+		const tail = arena.capacity - write;
+		if (tail > 0) {
+			arena.free.push(acquireInterval(write, tail));
+			arena.freeCount = tail;
+		}
+
+		for (let i = 0; i < entries.length; i++) {
+			const { mesh, s } = entries[i];
+			if (!s._compactMoved) continue;
+			s._compactMoved = false;
+			const data = s.instanceMatrices;
+			if (!data) continue;
+			const lanes = Math.min(
+				s.instanceLanesValid ?? s.faceCount,
+				(data.length / INSTANCE_FLOATS) | 0,
+			);
+			let idx = FACE_BASE_INSTANCE_INDEX;
+			for (let f = 0; f < lanes; f++) {
+				data[idx] = s.faceBase;
+				idx += INSTANCE_FLOATS;
+			}
+			setThinInstancesRange(mesh, data, s.faceCount, 0, s.faceCount);
+		}
+
+		console.warn(
+			`[PackedChunkMesh] defragmented face arena #${index}: relocated ` +
+				`${moved} mesh(es), recovered ${arena.freeCount}-face contiguous tail.`,
+		);
+		return true;
+	} finally {
+		_compacting = false;
+	}
+}
+
+// Compaction candidate: an arena with enough total free faces for `count`
+// whose free space is actually fragmented (largest hole much smaller than the
+// total). Returns false when compaction cannot plausibly help.
+function tryCompactFor(count: number): boolean {
+	if (_compacting) return false;
+	let totalFree = 0;
+	for (let i = 0; i < faceArenas.length; i++)
+		totalFree += faceArenas[i].freeCount;
+	if (totalFree < count) return false;
+
+	let best = -1;
+	let bestFragmented = 0;
+	for (let ai = 0; ai < faceArenas.length; ai++) {
+		const a = faceArenas[ai];
+		if (a.freeCount < count) continue;
+		const fragmented = a.freeCount - largestHoleFaces(a);
+		if (fragmented > bestFragmented) {
+			bestFragmented = fragmented;
+			best = ai;
+		}
+	}
+	if (best < 0) return false;
+	return compactArena(best);
+}
+
+// Detailed exhaustion report: distinguishes genuine capacity exhaustion
+// ("live" dominates) from fragmentation ("free" dominates, small largest
+// hole). `used` alone is a high-water mark and misleads — freed interior
+// holes still count toward it.
+function reportArenaExhaustion(count: number): void {
+	let liveTotal = 0;
+	let freeTotal = 0;
+	const parts: string[] = [];
+	for (let ai = 0; ai < faceArenas.length; ai++) {
+		const a = faceArenas[ai];
+		const live = a.capacity - a.used - a.freeCount;
+		liveTotal += live;
+		freeTotal += a.freeCount;
+		parts.push(
+			`  #${ai}: cap ${a.capacity}, live ${live}, highWater ${a.used}, ` +
+				`free ${a.freeCount} (largest hole ${largestHoleFaces(a)})`,
+		);
+	}
+	console.error(
+		`[PackedChunkMesh] face arenas exhausted (request ${count} faces): ` +
+			`live ${liveTotal} + free ${freeTotal} of ${totalFaceCapacity()} ` +
+			`capacity (${faceArenas.length} arenas, maxFaceArenas=` +
+			`${maxFaceArenas}, budget ${SETTING_PARAMS.ARENA_BUDGET_MB} MiB).\n` +
+			parts.join("\n") +
+			`\nIf "live" dominates, loaded geometry exceeds the arena budget; ` +
+			`if "free" dominates with small holes, churn fragmented the arenas.`,
+	);
 }
 
 function growOffset(): void {
@@ -1536,7 +1711,76 @@ export function updatePackedChunkMesh(
 	// Full realloc path: face count changed and the block could not grow in
 	// place (shrinks, mid-arena blocks with no adjacent hole), so this mesh
 	// needs a new arena interval.
-	const alloc = allocFaces(faceCount);
+	const oldArenaIdx = state.faceArena;
+	const oldBase = state.faceBase;
+	const oldCount = state.faceCount;
+
+	let alloc = allocFaces(faceCount);
+	let oldFreed = false;
+
+	if (alloc.arena < 0 && oldCount > 0) {
+		// Near-full allocator wedge: requiring the NEW block to fit BEFORE
+		// releasing the old one means every resize needs old+new headroom at
+		// once — once the arenas reach the aggregate budget, resizes fail
+		// forever and keep the arenas pinned at their high-water mark. Free
+		// this mesh's block first and retry.
+		//
+		// The retry cannot strand the mesh: freeing produced a contiguous run
+		// of >= oldCount faces (freeFaceInterval merges with neighbors), and
+		// nothing else runs between the failed retry and the restore below,
+		// so allocFaces(oldCount) always succeeds and the snapshot restores
+		// the previous geometry verbatim wherever it lands.
+		const oldCpu = faceArenas[oldArenaIdx]?.cpu;
+		const snapshot = oldCpu
+			? oldCpu.slice(oldBase * FACE_WORDS, (oldBase + oldCount) * FACE_WORDS)
+			: null;
+		freeFaces(oldArenaIdx, oldBase, oldCount);
+		oldFreed = true;
+
+		alloc = allocFaces(faceCount);
+
+		if (alloc.arena < 0) {
+			const restore =
+				snapshot !== null ? allocFaces(oldCount) : { arena: -1, base: -1 };
+			if (restore.arena >= 0 && snapshot) {
+				faceArenas[restore.arena]!.cpu.set(snapshot, restore.base * FACE_WORDS);
+				state.faceArena = restore.arena;
+				state.faceBase = restore.base;
+				uploadFaceRange(restore.arena, restore.base, oldCount);
+				if (restore.arena !== oldArenaIdx || restore.base !== oldBase) {
+					const data = buildInstanceData(
+						state.instanceMatrices,
+						restore.arena,
+						restore.base,
+						state.offsetBase,
+						oldCount,
+						0,
+					);
+					if (data) {
+						state.instanceMatrices = data;
+						state.instanceLanesValid = oldCount;
+						setThinInstancesRange(mesh, data, oldCount, 0, oldCount);
+					} else {
+						(mesh as PackedMesh).isVisible = false;
+					}
+				}
+				console.warn(
+					`[PackedChunkMesh] arenas exhausted for remesh ` +
+						`(${oldCount} -> ${faceCount} faces); kept previous geometry.`,
+				);
+				return mesh;
+			}
+			// Unreachable per the invariant above; fail safe anyway — stop
+			// drawing rather than risk stale lanes rendering another mesh's
+			// faces. applyMeshMeta revives visibility on a later success.
+			(mesh as PackedMesh).isVisible = false;
+			console.error(
+				`[PackedChunkMesh] arena restore failed for ${faceCount}-face ` +
+					`remesh — mesh hidden until its next successful update.`,
+			);
+			return mesh;
+		}
+	}
 
 	if (alloc.arena < 0) {
 		console.warn(
@@ -1546,7 +1790,7 @@ export function updatePackedChunkMesh(
 		return mesh;
 	}
 
-	freeFaces(state.faceArena, state.faceBase, state.faceCount);
+	if (!oldFreed) freeFaces(oldArenaIdx, oldBase, oldCount);
 
 	state.faceArena = alloc.arena;
 	state.faceBase = alloc.base;

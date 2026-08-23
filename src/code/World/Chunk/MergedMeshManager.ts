@@ -347,17 +347,24 @@ export function setOnGroupMeshNeedsRebuild(cb: GroupMeshRebuildCallback): void {
 function getLodRenderBucket(lod: number): number {
 	if (lod <= 1) return 0;
 	if (lod === 2) return 2;
-	return 3;
+	if (lod === 3) return 3;
+	// LOD4+ (lodStep > 1): dedicated bucket so these meshes get the slim
+	// raw-units materials (Lod4ShaderLite) — their face words carry whole
+	// blocks, not the ×8-scaled encoding the LOD0-3 shaders decode.
+	return 4;
 }
 
 // Engine optimization: Bitwise shifts instead of multiplication to keep V8 SMIs (Small Integers)
+// Field layout (little-endian digit order): lodBucket occupies 3 bits (0..7 —
+// widened from 2 when the LOD4+ raw-units bucket was added), gz 10 bits,
+// gy 11 bits, gx the remainder. All terms non-negative and disjoint.
 function makeGroupKey(
 	gx: number,
 	gy: number,
 	gz: number,
 	lodBucket: number,
 ): number {
-	return (gx + 512) * 1048576 + (gy + 512) * 4096 + (gz + 512) * 4 + lodBucket;
+	return (gx + 512) * 16777216 + (gy + 512) * 8192 + (gz + 512) * 8 + lodBucket;
 }
 
 function getLocalIndex(chunkX: number, chunkY: number, chunkZ: number): number {

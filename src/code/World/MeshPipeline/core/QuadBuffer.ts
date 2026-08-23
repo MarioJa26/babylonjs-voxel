@@ -238,6 +238,46 @@ export class QuadBuffer {
 	}
 
 	/**
+	 * Raw-units quad emitter for downsampled builds (lodStep > 1).
+	 *
+	 * Positions and dimensions are whole blocks (all ≤ CHUNK_SIZE = 32), so
+	 * they are written verbatim with NO POS_SCALE multiply and a fully zero
+	 * meta byte — no flip, no diagonal, no posOff, no materialType sentinel,
+	 * no rawDim flag. Only the dedicated LOD4+ "raw units" shader variant may
+	 * consume faces written through this path.
+	 */
+	public emitQuadRawUnits(
+		x: number,
+		y: number,
+		z: number,
+		axis: number,
+		width: number,
+		height: number,
+		blockId: number,
+		backFace: number,
+		light: number,
+		ao: number,
+		faceName: FaceName,
+	): void {
+		const tileIdx = blockId * FaceName.Count + faceName;
+
+		this.emitRaw(
+			x,
+			y,
+			z,
+			axis * 2 + backFace,
+			width,
+			height,
+			BlockFaceTileX[tileIdx],
+			BlockFaceTileY[tileIdx],
+			ao,
+			light,
+			BlockTint[blockId],
+			0,
+		);
+	}
+
+	/**
 	 * General-purpose quad without bounds check.
 	 * Keep this for non-cube or future callers that may use flip, diagonal,
 	 * fractional positions, or non-default material types.

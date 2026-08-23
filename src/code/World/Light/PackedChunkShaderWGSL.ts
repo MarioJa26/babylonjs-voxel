@@ -16,6 +16,24 @@ export interface VertexShaderOptions {
 	 * constant normals) and removes a per-pixel dot+max from the fragment.
 	 */
 	vertexDiffuse?: boolean;
+	/**
+	 * Raw-units variant for downsampled LOD4+ builds. Faces are emitted by
+	 * QuadBuffer.emitQuadRawUnits: positions/dimensions are WHOLE BLOCKS
+	 * written verbatim (no ×8 POS_SCALE), the meta byte is guaranteed zero,
+	 * diagonal faces cannot exist, and chunk-boundary planes encode exactly —
+	 * so this strips the INV_POS scaling, the posOff corrections, the
+	 * materialType==3 boundary restore, the rawDimensions selects, the flip
+	 * bit, the diagonal branch and the fractional UV offsets entirely.
+	 */
+	rawUnits?: boolean;
+	/**
+	 * Emit the ambient-occlusion varying. Downsampled builds (lodStep > 1)
+	 * run with session.disableAO=true, which zeroes every face's packed AO
+	 * word — pass false there to drop the byte decode, the per-corner
+	 * shift/mask and the varying itself. The fragment stage MUST agree:
+	 * remove the matching VSOut field when this is false.
+	 */
+	ao?: boolean;
 }
 
 type ResolvedVertexShaderOptions = Required<VertexShaderOptions>;
@@ -71,7 +89,7 @@ function vsOutFields(opts: ResolvedVertexShaderOptions): string {
 	if (opts.tangent)
 		f.push("  @location(3) @interpolate(flat) vTangent : vec3<f32>,");
 	f.push("  @location(5) @interpolate(flat) vNormal : vec3<f32>,");
-	f.push("  @location(6) vAO : f32,");
+	if (opts.ao) f.push("  @location(6) vAO : f32,");
 	f.push("  @location(7) @interpolate(flat) vLight : vec2<f32>,");
 	if (opts.meta) f.push("  @location(9) @interpolate(flat) vMeta : u32,");
 	if (opts.fog) {
@@ -97,7 +115,7 @@ function vsOutAssignments(opts: ResolvedVertexShaderOptions): string {
 	if (opts.worldPosition) a.push("  out.vWorldPosition = worldPos.xyz;");
 	if (opts.tangent) a.push("  out.vTangent = sharedTangent;");
 	a.push("  out.vNormal = sharedNormal;");
-	a.push("  out.vAO = f32(ambientOcclusion);");
+	if (opts.ao) a.push("  out.vAO = f32(ambientOcclusion);");
 	a.push("  out.vLight = vec2<f32>(skyLight, blockLight);");
 	if (opts.meta) a.push("  out.vMeta = metaByte;");
 	if (opts.tint) a.push("  out.vTint = tintBucket;");
@@ -153,6 +171,8 @@ export function buildPackedVertexWGSL(
 		viewDir: opts.viewDir ?? true,
 		tangentSpaceLighting: opts.tangentSpaceLighting ?? false,
 		vertexDiffuse: opts.vertexDiffuse ?? false,
+		rawUnits: opts.rawUnits ?? false,
+		ao: opts.ao ?? true,
 	};
 
 	let loadFaceBody = "";
@@ -161,6 +181,128 @@ export function buildPackedVertexWGSL(
 	}
 	loadFaceBody +=
 		"  return vec3<u32>(faceData0[i3], faceData0[i3 + 1u], faceData0[i3 + 2u]);\n";
+
+	// ── Segment 1: meta decode → face dims → base position (+ boundary fix) ──
+	const decodeBlock = o.rawUnits
+		? `  // Raw-units variant: the meta byte is guaranteed zero on every face
+  // emitted by emitQuadRawUnits — no flip/diag/posOff/sentinel/rawDim.
+  let localChunk = (face.z >> 24u) & 0x3fu;
+${o.tint ? "  let tintBucket = (face.x >> 27u) & 7u;" : ""}
+
+  let axis = axisFace >> 1u;
+  let isBackFace = axisFace & 1u;
+
+  // Whole-block units read straight out of the bytes (no INV_POS scaling).
+  let faceWidth = f32(widthByte);
+  let faceHeight = f32(heightByte);
+
+  let co = chunkOffsets[offsetBase + localChunk];
+
+  let baseX = f32(aByte) + co.x;
+  let baseY = f32(bByte) + co.y;
+  let baseZ = f32(cByte) + co.z;
+`
+		: `  let metaByte = (face.z >> 16u) & 0xffu;
+  let localChunk = (face.z >> 24u) & 0x3fu;
+${o.tint ? "  let tintBucket = (face.x >> 27u) & 7u;" : ""}
+
+  let axis = axisFace >> 1u;
+  let isBackFace = axisFace & 1u;
+  let flip = metaByte & 1u;
+  let diagonalEnabled = (metaByte >> 4u) & 1u;
+  let diagonalVariant = (metaByte >> 5u) & 1u;
+  let rawDimensions = (metaByte >> 6u) & 1u;
+
+  let faceWidth = select(f32(widthByte) * INV_POS, f32(widthByte), rawDimensions != 0u);
+  let faceHeight = select(f32(heightByte) * INV_POS, f32(heightByte), rawDimensions != 0u);
+
+  let co = chunkOffsets[offsetBase + localChunk];
+
+  let posX = aByte * INV_POS - f32((metaByte >> 3u) & 1u) * 0.5 * INV_POS;
+  let posZ = cByte * INV_POS - f32((metaByte >> 7u) & 1u) * 0.5 * INV_POS;
+  var baseX = posX + co.x;
+  var baseY = bByte * INV_POS + co.y;
+  var baseZ = posZ + co.z;
+
+  // materialType==3 marks chunk-boundary faces: their true plane (coord =
+  // CHUNK_SIZE) exceeds the u8 position encoding, which clamped them 1/8
+  // block inward. Restore the exact plane along the face axis (+1 position
+  // unit = INV_POS, NOT one block).
+  if (((metaByte >> 1u) & 3u) == 3u) {
+    if (axis == 0u) { baseX = baseX + INV_POS; }
+    else if (axis == 1u) { baseY = baseY + INV_POS; }
+    else { baseZ = baseZ + INV_POS; }
+  }
+`;
+
+	// ── Segment 2: corner state + normal/tangent basis ───────────────────────
+	const normalBlock = o.rawUnits
+		? `  let cornerState = isBackFace << 1u;
+  let uAxis = U_AXIS[axis];
+  let vAxis = V_AXIS[axis];
+  let faceSign = select(1.0, -1.0, isBackFace != 0u);
+
+  let sharedNormal = AXIS_BASIS[axis] * faceSign;
+  let sharedTangent = AXIS_BASIS[uAxis] * faceSign;
+`
+		: `  let cornerState = (isBackFace << 1u) | flip;
+  let uAxis = U_AXIS[axis];
+  let vAxis = V_AXIS[axis];
+  let faceSign = select(1.0, -1.0, isBackFace != 0u);
+
+  let isDiag = diagonalEnabled != 0u;
+
+  let aNormal = AXIS_BASIS[axis] * faceSign;
+  let aTangent = AXIS_BASIS[uAxis] * faceSign;
+
+  let dZ = select(-DIAGONAL, DIAGONAL, diagonalVariant == 0u);
+  let dTangent = vec3<f32>(DIAGONAL, 0.0, dZ);
+  let dNormal = vec3<f32>(dZ * faceSign, 0.0, -DIAGONAL * faceSign);
+
+  let sharedNormal = select(aNormal, dNormal, isDiag);
+  let sharedTangent = select(aTangent, dTangent, isDiag);
+`;
+
+	// ── Segment 3: vertex position + atlas UVs ───────────────────────────────
+	const positionBlock = o.rawUnits
+		? `  let pu = cuF * faceWidth;
+  let pv = cvF * faceHeight;
+  position = vec3<f32>(baseX, baseY, baseZ) + AXIS_BASIS[uAxis] * pu + AXIS_BASIS[vAxis] * pv;
+
+  let ac = ATLAS_CORNER_LUT[axisFace * 4u + corner];
+  let atlasU = (ac ^ (ac >> 1u)) & 1u;
+  let atlasV = ac >> 1u;
+  let swapUV = axisFace < 4u;
+  faceU = select(f32(atlasU) * faceWidth, f32(atlasU) * faceHeight, swapUV);
+  faceV = select(f32(atlasV) * faceHeight, f32(atlasV) * faceWidth, swapUV);
+`
+		: `  if (isDiag) {
+    let diagH = (cuF - 0.5) * faceWidth;
+    position = vec3<f32>(
+      baseX + sharedTangent.x * diagH,
+      baseY + cvF * faceHeight,
+      baseZ + sharedTangent.z * diagH
+    );
+    faceU = cuF;
+    faceV = cvF;
+  } else {
+    let fractionalX = fract(posX);
+    let fractionalZ = fract(posZ);
+    let uvOffsetU = select(fractionalX, fractionalZ, uAxis == 0u);
+    let uvOffsetV = select(fractionalX, fractionalZ, vAxis == 0u);
+
+    let pu = cuF * faceWidth;
+    let pv = cvF * faceHeight;
+    position = vec3<f32>(baseX, baseY, baseZ) + AXIS_BASIS[uAxis] * pu + AXIS_BASIS[vAxis] * pv;
+
+    let ac = ATLAS_CORNER_LUT[axisFace * 4u + corner];
+    let atlasU = (ac ^ (ac >> 1u)) & 1u;
+    let atlasV = ac >> 1u;
+    let swapUV = axisFace < 4u;
+    faceU = select(f32(atlasU) * faceWidth + uvOffsetU, f32(atlasU) * faceHeight + uvOffsetV, swapUV);
+    faceV = select(f32(atlasV) * faceHeight + uvOffsetV, f32(atlasV) * faceWidth + uvOffsetU, swapUV);
+  }
+`;
 
 	return /* wgsl */ `
 struct VSOut {
@@ -255,59 +397,14 @@ fn mainVertex(input : VertexInput, @builtin(instance_index) instanceIndex : u32,
   let tileX = (face.y >> 16u) & 0xffu;
   let tileY = (face.y >> 24u) & 0xffu;
 
-  let packedAO = face.z & 0xffu;
+${o.ao ? "  let packedAO = face.z & 0xffu;" : ""}
   let lightByte = (face.z >> 8u) & 0xffu;
-  let metaByte = (face.z >> 16u) & 0xffu;
-  let localChunk = (face.z >> 24u) & 0x3fu;
-${o.tint ? "  let tintBucket = (face.x >> 27u) & 7u;" : ""}
-
-  let axis = axisFace >> 1u;
-  let isBackFace = axisFace & 1u;
-  let flip = metaByte & 1u;
-  let diagonalEnabled = (metaByte >> 4u) & 1u;
-  let diagonalVariant = (metaByte >> 5u) & 1u;
-  let rawDimensions = (metaByte >> 6u) & 1u;
-
-  let faceWidth = select(f32(widthByte) * INV_POS, f32(widthByte), rawDimensions != 0u);
-  let faceHeight = select(f32(heightByte) * INV_POS, f32(heightByte), rawDimensions != 0u);
-
-  let co = chunkOffsets[offsetBase + localChunk];
-
-  let posX = aByte * INV_POS - f32((metaByte >> 3u) & 1u) * 0.5 * INV_POS;
-  let posZ = cByte * INV_POS - f32((metaByte >> 7u) & 1u) * 0.5 * INV_POS;
-  var baseX = posX + co.x;
-  var baseY = bByte * INV_POS + co.y;
-  var baseZ = posZ + co.z;
-
-  // materialType==3 marks chunk-boundary faces: their true plane (coord =
-  // CHUNK_SIZE) exceeds the u8 position encoding, which clamped them 1/8
-  // block inward. Restore the exact plane along the face axis (+1 position
-  // unit = INV_POS, NOT one block).
-  if (((metaByte >> 1u) & 3u) == 3u) {
-    if (axis == 0u) { baseX = baseX + INV_POS; }
-    else if (axis == 1u) { baseY = baseY + INV_POS; }
-    else { baseZ = baseZ + INV_POS; }
-  }
+${decodeBlock}
 
   let skyLight = f32((lightByte >> 4u) & 0x0fu) * INV_LIGHT;
   let blockLight = f32(lightByte & 0x0fu) * INV_LIGHT;
 
-  let cornerState = (isBackFace << 1u) | flip;
-  let uAxis = U_AXIS[axis];
-  let vAxis = V_AXIS[axis];
-  let faceSign = select(1.0, -1.0, isBackFace != 0u);
-
-  let isDiag = diagonalEnabled != 0u;
-
-  let aNormal = AXIS_BASIS[axis] * faceSign;
-  let aTangent = AXIS_BASIS[uAxis] * faceSign;
-
-  let dZ = select(-DIAGONAL, DIAGONAL, diagonalVariant == 0u);
-  let dTangent = vec3<f32>(DIAGONAL, 0.0, dZ);
-  let dNormal = vec3<f32>(dZ * faceSign, 0.0, -DIAGONAL * faceSign);
-
-  let sharedNormal = select(aNormal, dNormal, isDiag);
-  let sharedTangent = select(aTangent, dTangent, isDiag);
+${normalBlock}
 ${o.tangentSpaceLighting ? "  let sharedBitangent = cross(sharedNormal, sharedTangent);" : ""}
 
   let vid = vertexIndex;
@@ -318,37 +415,12 @@ ${o.tangentSpaceLighting ? "  let sharedBitangent = cross(sharedNormal, sharedTa
   var position : vec3<f32>;
   var faceU : f32;
   var faceV : f32;
-  if (isDiag) {
-    let diagH = (cuF - 0.5) * faceWidth;
-    position = vec3<f32>(
-      baseX + sharedTangent.x * diagH,
-      baseY + cvF * faceHeight,
-      baseZ + sharedTangent.z * diagH
-    );
-    faceU = cuF;
-    faceV = cvF;
-  } else {
-    let fractionalX = fract(posX);
-    let fractionalZ = fract(posZ);
-    let uvOffsetU = select(fractionalX, fractionalZ, uAxis == 0u);
-    let uvOffsetV = select(fractionalX, fractionalZ, vAxis == 0u);
-
-    let pu = cuF * faceWidth;
-    let pv = cvF * faceHeight;
-    position = vec3<f32>(baseX, baseY, baseZ) + AXIS_BASIS[uAxis] * pu + AXIS_BASIS[vAxis] * pv;
-
-    let ac = ATLAS_CORNER_LUT[axisFace * 4u + corner];
-    let atlasU = (ac ^ (ac >> 1u)) & 1u;
-    let atlasV = ac >> 1u;
-    let swapUV = axisFace < 4u;
-    faceU = select(f32(atlasU) * faceWidth + uvOffsetU, f32(atlasU) * faceHeight + uvOffsetV, swapUV);
-    faceV = select(f32(atlasV) * faceHeight + uvOffsetV, f32(atlasV) * faceWidth + uvOffsetU, swapUV);
-  }
+${positionBlock}
 
   let localPosition = vec4<f32>(position, 1.0);
   let worldPos = shaderSystem.world * localPosition;
   out.pos = shaderSystem.worldViewProjection * localPosition;
-  let ambientOcclusion = (packedAO >> (corner << 1u)) & 3u;
+${o.ao ? "  let ambientOcclusion = (packedAO >> (corner << 1u)) & 3u;" : ""}
   let toCamera = shaderSystem.cameraPosition - worldPos.xyz;
   let distSq = dot(toCamera, toCamera);
   let invDist = inverseSqrt(max(distSq, 1e-8));

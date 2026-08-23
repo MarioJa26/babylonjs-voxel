@@ -21,6 +21,10 @@ import {
 	createLod3TransparentMaterial,
 } from "../Light/Lod3ShaderLite";
 import {
+	createLod4OpaqueMaterial,
+	createLod4TransparentMaterial,
+} from "../Light/Lod4ShaderLite";
+import {
 	createChunkCutoutMaterial,
 	createChunkOpaqueMaterial,
 	createChunkTransparentMaterial,
@@ -57,6 +61,8 @@ let transparentMaterial: ShaderMaterial | null = null;
 let cutoutMaterial: ShaderMaterial | null = null;
 let lod3OpaqueMaterial: ShaderMaterial | null = null;
 let lod3TransparentMaterial: ShaderMaterial | null = null;
+let lod4OpaqueMaterial: ShaderMaterial | null = null;
+let lod4TransparentMaterial: ShaderMaterial | null = null;
 let lod2OpaqueMaterial: ShaderMaterial | null = null;
 let lod2TransparentMaterial: ShaderMaterial | null = null;
 
@@ -97,6 +103,8 @@ function populateMaterialList(): void {
 	if (lod2TransparentMaterial) materialList.push(lod2TransparentMaterial);
 	if (lod3OpaqueMaterial) materialList.push(lod3OpaqueMaterial);
 	if (lod3TransparentMaterial) materialList.push(lod3TransparentMaterial);
+	if (lod4OpaqueMaterial) materialList.push(lod4OpaqueMaterial);
+	if (lod4TransparentMaterial) materialList.push(lod4TransparentMaterial);
 
 	materialListDirty = false;
 }
@@ -116,33 +124,39 @@ function nearlyEqual(a: number, b: number, eps = UNIFORM_EPSILON): boolean {
 }
 
 function getOpaqueMaterialForLodBucket(lod: number): ShaderMaterial {
-	return lod >= 3
-		? lod3OpaqueMaterial!
-		: lod >= 2
-			? lod2OpaqueMaterial!
-			: atlasMaterial!;
+	return lod >= 4
+		? lod4OpaqueMaterial!
+		: lod >= 3
+			? lod3OpaqueMaterial!
+			: lod >= 2
+				? lod2OpaqueMaterial!
+				: atlasMaterial!;
 }
 
 function getTransparentMaterialForLodBucket(lod: number): ShaderMaterial {
-	return lod >= 3
-		? lod3TransparentMaterial!
-		: lod >= 2
-			? lod2TransparentMaterial!
-			: transparentMaterial!;
+	return lod >= 4
+		? lod4TransparentMaterial!
+		: lod >= 3
+			? lod3TransparentMaterial!
+			: lod >= 2
+				? lod2TransparentMaterial!
+				: transparentMaterial!;
 }
 
 /**
  * Cutout (alpha-test) bucket material per LOD. Near chunks use the cheap
- * dedicated cutout material; LOD2/LOD3 reuse their existing transparent
+ * dedicated cutout material; LOD2/LOD3/LOD4 reuse their existing transparent
  * materials (no water-only uniforms there, so both meshes look identical to
  * the old single transparent mesh).
  */
 function getCutoutMaterialForLodBucket(lod: number): ShaderMaterial {
-	return lod >= 3
-		? lod3TransparentMaterial!
-		: lod >= 2
-			? lod2TransparentMaterial!
-			: cutoutMaterial!;
+	return lod >= 4
+		? lod4TransparentMaterial!
+		: lod >= 3
+			? lod3TransparentMaterial!
+			: lod >= 2
+				? lod2TransparentMaterial!
+				: cutoutMaterial!;
 }
 
 // Constant per-bucket tint applied by the LOD2/LOD3 shaders' applyTintBucket.
@@ -216,7 +230,8 @@ function setStaticMaterialUniforms(m: ShaderMaterial): void {
 	if (
 		m === atlasMaterial ||
 		m === lod2OpaqueMaterial ||
-		m === lod3OpaqueMaterial
+		m === lod3OpaqueMaterial ||
+		m === lod4OpaqueMaterial
 	) {
 		setShaderUniform(m, "wetness", wetness);
 	}
@@ -372,6 +387,16 @@ export async function initAtlas(): Promise<void> {
 		});
 
 		lod3TransparentMaterial = createLod3TransparentMaterial({
+			...baseOpts,
+			diffuseTexture: transparentTexture,
+		});
+
+		lod4OpaqueMaterial = createLod4OpaqueMaterial({
+			...baseOpts,
+			diffuseTexture: diffuse,
+		});
+
+		lod4TransparentMaterial = createLod4TransparentMaterial({
 			...baseOpts,
 			diffuseTexture: transparentTexture,
 		});
@@ -769,6 +794,8 @@ export function disposeSharedResources(): void {
 	cutoutMaterial = null;
 	lod3OpaqueMaterial = null;
 	lod3TransparentMaterial = null;
+	lod4OpaqueMaterial = null;
+	lod4TransparentMaterial = null;
 	lod2OpaqueMaterial = null;
 	lod2TransparentMaterial = null;
 

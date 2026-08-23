@@ -232,101 +232,112 @@ export function generateFarTile(
 			const x0 = cx * step;
 			const z0 = cz * step;
 
-			const biome = getBiome(originX + x0 + step / 2, originZ + z0 + step / 2);
-			const [tileX, tileY] = topTileFor(biome);
+			// Fully submerged cells emit ONLY the water plane: their ground
+			// quad and skirts are invisible behind the water surface + fog at
+			// these distances, so generating them is pure face/VRAM waste.
+			// Land cells keep everything; a land skirt adjacent to a submerged
+			// neighbor still spans down to that neighbor's cellMax (its
+			// above-water portion is what the shoreline shows).
+			const submerged = cellMax < seaLevel;
 
-			// Top surface quad at the highest corner so no neighbor pokes
-			// through; skirts cover the exposed sides down to each neighbor.
-			// Facing convention: backFace 0 = positive-axis normal.
-			opaque.emit(
-				x0,
-				cellMax,
-				z0,
-				step,
-				step,
-				1,
-				0,
-				tileX,
-				tileY,
-				LIGHT_FULL,
-				KIND_OPAQUE,
-			);
+			if (!submerged) {
+				const biome = getBiome(
+					originX + x0 + step / 2,
+					originZ + z0 + step / 2,
+				);
+				const [tileX, tileY] = topTileFor(biome);
 
-			// -Z skirt (neighbor toward smaller z)
-			const nzMax = colPairMax(cz - 1, cx);
-			if (nzMax < cellMax) {
+				// Top surface quad at the highest corner so no neighbor pokes
+				// through; skirts cover the exposed sides down to each neighbor.
+				// Facing convention: backFace 0 = positive-axis normal.
 				opaque.emit(
 					x0,
-					nzMax,
+					cellMax,
 					z0,
 					step,
-					cellMax - nzMax,
-					2,
+					step,
 					1,
-					tileX,
-					tileY,
-					LIGHT_SIDE,
-					KIND_OPAQUE,
-				);
-			}
-
-			// +Z skirt
-			const pzMax = colPairMax(cz + 2, cx);
-			if (pzMax < cellMax) {
-				opaque.emit(
-					x0,
-					pzMax,
-					z0 + step,
-					step,
-					cellMax - pzMax,
-					2,
 					0,
 					tileX,
 					tileY,
-					LIGHT_SIDE,
+					LIGHT_FULL,
 					KIND_OPAQUE,
 				);
-			}
 
-			// -X skirt
-			const nxMax = rowPairMax(cz, cx - 1);
-			if (nxMax < cellMax) {
-				opaque.emit(
-					x0,
-					nxMax,
-					z0,
-					cellMax - nxMax,
-					step,
-					0,
-					1,
-					tileX,
-					tileY,
-					LIGHT_SIDE,
-					KIND_OPAQUE,
-				);
-			}
+				// -Z skirt (neighbor toward smaller z)
+				const nzMax = colPairMax(cz - 1, cx);
+				if (nzMax < cellMax) {
+					opaque.emit(
+						x0,
+						nzMax,
+						z0,
+						step,
+						cellMax - nzMax,
+						2,
+						1,
+						tileX,
+						tileY,
+						LIGHT_SIDE,
+						KIND_OPAQUE,
+					);
+				}
 
-			// +X skirt
-			const pxMax = rowPairMax(cz, cx + 2);
-			if (pxMax < cellMax) {
-				opaque.emit(
-					x0 + step,
-					pxMax,
-					z0,
-					cellMax - pxMax,
-					step,
-					0,
-					0,
-					tileX,
-					tileY,
-					LIGHT_SIDE,
-					KIND_OPAQUE,
-				);
-			}
+				// +Z skirt
+				const pzMax = colPairMax(cz + 2, cx);
+				if (pzMax < cellMax) {
+					opaque.emit(
+						x0,
+						pzMax,
+						z0 + step,
+						step,
+						cellMax - pzMax,
+						2,
+						0,
+						tileX,
+						tileY,
+						LIGHT_SIDE,
+						KIND_OPAQUE,
+					);
+				}
 
-			// Ocean/lake surfaces: flat water plane at sea level above submerged
-			// ground.
-			if (cellMax < seaLevel) {
+				// -X skirt
+				const nxMax = rowPairMax(cz, cx - 1);
+				if (nxMax < cellMax) {
+					opaque.emit(
+						x0,
+						nxMax,
+						z0,
+						cellMax - nxMax,
+						step,
+						0,
+						1,
+						tileX,
+						tileY,
+						LIGHT_SIDE,
+						KIND_OPAQUE,
+					);
+				}
+
+				// +X skirt
+				const pxMax = rowPairMax(cz, cx + 2);
+				if (pxMax < cellMax) {
+					opaque.emit(
+						x0 + step,
+						pxMax,
+						z0,
+						cellMax - pxMax,
+						step,
+						0,
+						0,
+						tileX,
+						tileY,
+						LIGHT_SIDE,
+						KIND_OPAQUE,
+					);
+				}
+			} else {
+				// Ocean/lake surfaces: flat water plane at sea level above the
+				// (skipped) submerged ground.
 				water.emit(
 					x0,
 					seaLevel,

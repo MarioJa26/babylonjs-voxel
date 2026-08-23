@@ -187,6 +187,28 @@ export class VoxelFaceEmitterAdapter {
 		const width = desc.width * step;
 		const height = desc.height * step;
 
+		if (step > 1) {
+			// Downsampled builds feed the dedicated LOD4+ raw-units pipeline:
+			// coordinates and dimensions are whole blocks ≤ CHUNK_SIZE (32),
+			// so they encode exactly in the u8 face words — no boundary clamp,
+			// no materialType==3 sentinel, no POS_SCALE. Only the slim LOD4
+			// "raw units" shader may be bound to meshes built this way.
+			out.emitQuadRawUnits(
+				x,
+				y,
+				z,
+				axis,
+				width,
+				height,
+				blockId,
+				back,
+				light,
+				ao,
+				faceName,
+			);
+			return;
+		}
+
 		// Boundary-slice detection: the last greedy slice pairs this chunk's
 		// final region with the +axis neighbor's first region. Its face plane
 		// sits exactly at the chunk border (coord = size), which the u8

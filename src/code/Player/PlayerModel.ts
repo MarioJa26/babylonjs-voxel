@@ -255,7 +255,7 @@ export function buildPlayerRigData(origin: RigOrigin = "feet"): MeshData {
 
 	// World bodies anchor at the character controller's position, which sits
 	// mid-body (the old capsule was center-origin); shift accordingly.
-	const yOffset = origin === "center" ? -PLAYER_MODEL_HEIGHT / 2 : 0;
+	const yOffset = origin === "center" ? -PLAYER_MODEL_HEIGHT / 2 : -0.1;
 
 	const parts: BoxPart[] = [
 		{ x: 0, y: 28 * PX, z: 0, w: 8 * PX, h: 8 * PX, d: 8 * PX, uv: HEAD_UV },
@@ -310,7 +310,7 @@ export function buildPlayerRigData(origin: RigOrigin = "feet"): MeshData {
  * block tile — pixel-identical to how the world renders that block.
  */
 export function buildFloorSlabData(
-	width = 1.7,
+	width = 1.0,
 	atlasRect?: readonly [number, number, number, number],
 ): MeshData {
 	const out: MeshBuffers = { positions: [], normals: [], indices: [], uvs: [] };
@@ -326,7 +326,7 @@ export function buildFloorSlabData(
 		: undefined;
 	appendBox(
 		out,
-		{ x: 0, y: -0.04, z: 0, w: width, h: 0.08, d: width, uv },
+		{ x: 0, y: -0.6, z: 0, w: width, h: 1.0, d: width, uv },
 		atlasRect ? "atlas" : "skin",
 	);
 	return toData(out);
